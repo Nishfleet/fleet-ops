@@ -1023,4 +1023,19 @@ grep -Eq '^[[:space:]]*bash[[:space:]]+"?\$here/console-truth-pytest\.test\.sh"?
   || fail "console-truth-pytest.test.sh must not be a known orphan (fleet-ops#5072)"
 ok "console-truth-pytest.test.sh host line in console-tile-verify.test.sh is pinned (fleet-ops#5072)"
 
+# fleet-ops#5588: hard-pin the host line for one-fleet-rule-pointer.test.sh in
+# ci-standards-audit.test.sh (itself listed in ci.yml). The consolidation
+# detector guards the one-fleet title+pointer shape in canonical + rendered
+# targets; the worker App cannot push .github/workflows/**, so the host line
+# is the only gate path. Parking it on known_orphans must also fail by name
+# here, same shape as every other hosted test.
+grep -Eq '^[[:space:]]*bash[[:space:]]+"?\$here/one-fleet-rule-pointer\.test\.sh"?' \
+  "$here/ci-standards-audit.test.sh" \
+  || fail "ci-standards-audit.test.sh must bash-invoke one-fleet-rule-pointer.test.sh (fleet-ops#5588)"
+[[ -n "${reachable[one-fleet-rule-pointer.test.sh]:-}" ]] \
+  || fail "one-fleet-rule-pointer.test.sh must be hosted by a listed test (fleet-ops#5588)"
+[[ -z "${known_orphan_set[one-fleet-rule-pointer.test.sh]:-}" ]] \
+  || fail "one-fleet-rule-pointer.test.sh must not be a known orphan (fleet-ops#5588)"
+ok "one-fleet-rule-pointer.test.sh host line in ci-standards-audit.test.sh is pinned (fleet-ops#5588)"
+
 echo "OK: p14-test-listing-gate.test.sh: P14 test list is closed"

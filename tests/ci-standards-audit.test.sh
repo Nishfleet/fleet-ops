@@ -889,3 +889,14 @@ bash "$here/fleet-cpu-sampler-ready.test.sh"
 # drop of this host line fails by name. Hermetic (scratch MANIFEST + scratch
 # HOME + fake checkout, stubbed systemctl, no live install).
 bash "$here/helper-symlink-resolution.test.sh"
+
+# fleet-ops#5588: the one-fleet-rule consolidation detector. Guards that the
+# canonical one-fleet section is title + archive pointer, the heading carries
+# the 'corrected 2026-08-25' amendment, and the real rendered targets
+# (~/.claude/CLAUDE.md, ~/.codex/AGENTS.md on the VPS) echo the same title +
+# pointer. Standalone (not a standing-rules-drift fixture) by design, so it
+# proves live host state; in CI it exercises the canonical/archive fixtures.
+# Hosted here (a listed test) so P14 runs it without a workflow-file edit
+# (the worker App cannot push .github/workflows/**). Hermetic in CI (vault
+# paths only read).
+bash "$here/one-fleet-rule-pointer.test.sh"
