@@ -1458,6 +1458,25 @@ groups:
         annotations:
           summary: "fleet-ops deploy blocked for 15+ minutes (fleet-ops#2725 pattern)"
           description: "fleet_deploy_blocked_duration_seconds{repo=\"fleet-ops\"} exceeded 900s (15 min): the fleet-ops deploy clone is stuck DEPLOY-BLOCKED. 2026-09-02 live case: >1h blocked on dirty tracked files with zero mechanized alert (fleet-ops#2725). Merge-to-live is halted; clear the dirty state on /home/nish/workspaces/tooling/fleet-ops-deploy-clone or root-cause the block. Check journalctl --user -u fleet-deploy-check.service."
+      # fleet-ops#5786: DEPLOY-CLONE DRIFT — the deploy clone has been off
+      # main or dirty for >15 minutes. The clone is the live install source;
+      # drift means merge-to-live may be riding unmerged code AND it lets a
+      # worker back a false LIVE claim (2026-09-12: an alert-repair worker
+      # left the clone on its fix branch and reported "Live on this host"
+      # while its PR was still open with auto-merge off). The 2-min
+      # fleet-deploy-check tick already emits DEPLOY-CHECK-OFF-MAIN and
+      # invokes the sanctioned deploy to converge; this rule is the page
+      # when convergence has failed for 15+ minutes. The gauge clears the
+      # first tick the clone is clean main again.
+      - alert: DeployCloneOffMain
+        expr: fleet_deploy_clone_off_main == 1
+        for: 15m
+        labels:
+          severity: critical
+          service: fleet
+        annotations:
+          summary: "{{ $labels.repo }} deploy clone off main or dirty for 15+ minutes (fleet-ops#5786)"
+          description: "fleet_deploy_clone_off_main{repo=\"{{ $labels.repo }}\"} has been 1 for 15+ minutes: the deploy clone is on a non-main branch, detached, or dirty — the live install source is not clean origin/main, so 'LIVE on this host' may be riding unmerged code. Repair: name the writer first (journalctl --user -u fleet-deploy-check.service for DEPLOY-CHECK-OFF-MAIN / DEPLOY-CHECK-DIRTY-CLONE; ls of /home/nish/workspaces/agent-worktrees for the branch owner). Salvage the branch's diff into the writer's claim worktree if it is not already in a PR, then converge the clone to clean origin/main (bin/fleet-ops-deploy, or `git -C /home/nish/workspaces/tooling/fleet-ops-deploy-clone checkout main && git reset --hard origin/main`). Done means the gauge reads 0 next tick. Never claim LIVE for a change still on a branch — the packet-verdict checker rejects the deliverable (fleet-ops#5786)."
       # fleet-ops#5140: a product repo's production deploy has been non-green
       # for over an hour — the 2026-09-10 stall class where 131 merged product
       # PRs sat undelivered for 28h while every dashboard read green.

@@ -18,6 +18,11 @@ verdict overrides this when they differ.
 
 Modes:
   --body FILE       Check a single PR body or packet output file.
+  --live-claims FILE
+                    Only run the LIVE-claim gate (fleet-ops#5786): every line
+                    containing LIVE / DEPLOYED / live-on-host must cite, on
+                    the same line, a SHA proven present on origin/main of a
+                    known clone (`git merge-base --is-ancestor`).
   --scan            Scan open nishfleet-worker PRs for VERIFY blocks.
   --scan-prs FILE   Like --scan but reads a pre-fetched gh JSON array.
   --metricsonly     Write zeroed metrics and exit.
@@ -32,6 +37,12 @@ Environment seams (for test injection):
   PI_VERDICT_CAP          per-tick auto-file cap (default 5)
   PI_VERDICT_LIST_LIMIT   gh issue list limit (default 1000)
   PI_VERDICT_NOW          ISO timestamp override
+  PI_VERDICT_LIVE_REPO_DIRS
+                          os.pathsep-separated extra repo checkouts for the
+                          LIVE-claim gate (always appended to the default set)
+  PI_VERDICT_LIVE_FETCH   1/0 — `git fetch -q origin` before ancestry checks
+                          (default 1)
+  FLEET_OPS_CHECKOUT      deploy clone path (default live claim repo)
   FLEET_HEARTBEAT_TRIAGE  triage log path
 """
 
@@ -73,6 +84,22 @@ CAP           = int(os.environ.get("PI_VERDICT_CAP", "5"))
 LIST_LIMIT    = int(os.environ.get("PI_VERDICT_LIST_LIMIT", "1000"))
 ISSUE_REPO    = os.environ.get("PI_VERDICT_ISSUE_REPO", "Nishfleet/fleet-ops")
 METRIC_FILE   = Path("/var/lib/prometheus/node-exporter/fleet-verdict.prom")
+
+# ---- LIVE-claim gate (fleet-ops#5786) ---------------------------------------
+# A deliverable may only claim LIVE / DEPLOYED / live-on-host when the SAME
+# line cites a SHA already present on origin/main of a known clone —
+# `git merge-base --is-ancestor`. A fix still on a branch is a PR, not live
+# state: the 2026-09-12 incident was an alert-repair worker reporting
+# "Live on this host" after inspecting a deploy clone it had left checked out
+# on its fix branch while the PR was still open with auto-merge off.
+LIVE_CLAIM = re.compile(
+    r"\bLIVE\b"                                             # all-caps token
+    r"|(?i:\bdeployed\b)"                                   # deployed/DEPLOYED
+    r"|(?i:\blive[- ]+on[- ]+(?:(?:this|the)[- ]+)?host\b)" # live on (this|the) host
+)
+SHA_TOKEN  = re.compile(r"\b[0-9a-f]{7,40}\b", re.I)
+LIVE_REFS  = ("origin/main", "main")
+LIVE_FETCH = os.environ.get("PI_VERDICT_LIVE_FETCH", "1") == "1"
 
 
 # ---- helpers --------------------------------------------------------------
@@ -229,14 +256,24 @@ def check_block(block):
     return {"passed": all_ok, "details": details}
 
 
-def check_body(body_text):
-    """Check all VERIFY blocks in a body."""
+def check_body(body_text, repo_dirs=None):
+    """Check all VERIFY blocks in a body plus the LIVE-claim gate.
+
+    repo_dirs: pre-resolved repo checkouts for the LIVE-claim gate, or None
+    to resolve --repo-dir/PI_VERDICT_LIVE_REPO_DIRS/defaults.
+    """
     blocks = parse_blocks(body_text)
+    violations = live_claim_violations(body_text, repo_dirs)
     if not blocks:
-        return {"has_blocks": False, "passed": None, "blocks": []}
+        return {
+            "has_blocks": False,
+            "passed": False if violations else None,
+            "blocks": [],
+            "live_claim_violations": violations,
+        }
 
     results = []
-    all_ok = True
+    all_ok = not violations
     for blk in blocks:
         r = check_block(blk)
         r["worker_verdict"] = blk["worker_verdict"]
@@ -244,7 +281,8 @@ def check_body(body_text):
         if not r["passed"]:
             all_ok = False
 
-    return {"has_blocks": True, "passed": all_ok, "blocks": results}
+    return {"has_blocks": True, "passed": all_ok, "blocks": results,
+            "live_claim_violations": violations}
 
 
 # ---- intake repos ----------------------------------------------------------
@@ -319,10 +357,10 @@ def scan():
         result = check_body(body)
 
         wvs = [b.get("worker_verdict") for b in result["blocks"]]
-        worker_clamed_ok = any(v == "PASS" for v in wvs)
+        worker_claimed_ok = any(v == "PASS" for v in wvs)
 
         if not result["passed"]:
-            override = worker_clamed_ok
+            override = worker_claimed_ok
             findings.append({
                 "slug":            pr.get("headRefName") or str(pr.get("number", "")),
                 "number":          pr.get("number"),
@@ -333,6 +371,7 @@ def scan():
                 "real_passed":     False,
                 "override":        override,
                 "details":         result["blocks"],
+                "live_claim_violations": result.get("live_claim_violations", []),
             })
         else:
             passed += 1
@@ -355,7 +394,7 @@ def scan_prs(prs):
         result = check_body(body)
 
         wvs = [b.get("worker_verdict") for b in result["blocks"]]
-        worker_clamed_ok = any(v == "PASS" for v in wvs)
+        worker_claimed_ok = any(v == "PASS" for v in wvs)
 
         if not result["passed"]:
             findings.append({
@@ -366,8 +405,9 @@ def scan_prs(prs):
                 "repo":            pr.get("repo", ""),
                 "worker_verdicts": wvs,
                 "real_passed":     False,
-                "override":        worker_clamed_ok,
+                "override":        worker_claimed_ok,
                 "details":         result["blocks"],
+                "live_claim_violations": result.get("live_claim_violations", []),
             })
         else:
             passed += 1
@@ -379,7 +419,7 @@ def scan_prs(prs):
 
 
 def _existing_signal_issues():
-    """Return set of 'sinal: pi-packet-verdict/<slu>' narkers in open issus."""
+    """Return set of 'signal: pi-packet-verdict/<slug>' markers in open issues."""
     try:
         r = subprocess.run(
             [GH, "issue", "list", "-R", ISSUE_REPO, "--state", "open",
@@ -391,12 +431,12 @@ def _existing_signal_issues():
         issues = json.loads(r.stdout or "[]")
     except Exception:
         return set()
-    prefix = "sinal: pi-packet-verdict/"
+    prefix = "signal: pi-packet-verdict/"
     sigs = set()
     for iss in issues:
         body = iss.get("body") or ""
         for m in re.finditer(re.escape(prefix) + r"(\S+)", body):
-            sigs.add("sinal: pi-packet-verdict/" + m.group(1))
+            sigs.add("signal: pi-packet-verdict/" + m.group(1))
     return sigs
 
 
@@ -407,18 +447,18 @@ def file_findings(findings):
     existing = _existing_signal_issues()
     filed = 0
 
-    for f in findigs:
+    for f in findings:
         if filed >= CAP:
             _log(f"file cap reached ({CAP}), skipping remaining")
             break
 
-        slug = f["slu"]
-        narker = f"signal: pi-packet-verdict/{slu}"
+        slug = f["slug"]
+        marker = f"signal: pi-packet-verdict/{slug}"
 
         if marker in existing:
-            _log(f"dedup: {slu} already filed")
+            _log(f"dedup: {slug} already filed")
             continue
-        existing.add(narker)
+        existing.add(marker)
 
         detail_lines = ""
         for d in f.get("details", []):
@@ -426,17 +466,17 @@ def file_findings(findings):
             if d.get("missing"):
                 detail_lines += "\n  missing: " + ", ".join(d["missing"])
 
-        title = f"verdict(verdict-override): {slu} — worker claimd PASS, real verdict FAIL"
+        title = f"verdict(verdict-override): {slug} — worker claimed PASS, real verdict FAIL"
         body = (
             "The pi-packet-verdict checker (fleet-ops#1134) re-ran the VERIFY block "
-            "and found a missnatch between the worker's claim and reality.\n\n"
+            "and found a mismatch between the worker's claim and reality.\n\n"
             f"- PR:  {f.get('url', '')}\n"
             f"- repo: {f.get('repo', '')}\n"
             f"- worker verdicts: {', '.join(f.get('worker_verdicts', []))}\n"
             f"- real verdict:   FAIL\n\n"
             "Missing deliverables:\n"
             f"{detail_lines}\n\n"
-            f"{narker}"
+            f"{marker}"
         )
 
         try:
@@ -448,16 +488,16 @@ def file_findings(findings):
                 timeout=30,
             )
             if r.returncode == 0:
-                _log(f"filed: {slu}")
+                _log(f"filed: {slug}")
                 filed += 1
             else:
-                _log(f"file failed: {slu}: {r.stderr[:200]}")
-        except Exceptio as exc:
-            _log(f"file exception: {slu}: {exc}")
+                _log(f"file failed: {slug}: {r.stderr[:200]}")
+        except Exception as exc:
+            _log(f"file exception: {slug}: {exc}")
 
 
-def observe_to_close(current_sluugs):
-    """Close verdict-override tickets whose slu is no longer failing."""
+def observe_to_close(current_slugs):
+    """Close verdict-override tickets whose slug is no longer failing."""
     if CLOSE_ISSUES != "1":
         return
     try:
@@ -486,9 +526,9 @@ def observe_to_close(current_sluugs):
         m = re.search(re.escape(prefix) + r"(\S+)", body)
         if not m:
             continue
-        slu = m.group(1)
+        slug = m.group(1)
 
-        if slu not in current_sluugs:
+        if slug not in current_slugs:
             try:
                 r = subprocess.run(
                     [GH, "issue", "close", "-R", ISSUE_REPO, str(num),
@@ -498,7 +538,7 @@ def observe_to_close(current_sluugs):
                     timeout=15,
                 )
                 if r.returncode == 0:
-                    _log(f"closed: #{num} ({slu}) — verdict now passes")
+                    _log(f"closed: #{num} ({slug}) — verdict now passes")
                     closed += 1
             except Exception as exc:
                 _log(f"close failed: #{num}: {exc}")
@@ -525,6 +565,108 @@ def write_metrics(pass_cnt, fail_cnt):
         _log(f"cannot write verdict metrics: {exc}")
 
 
+# ---- LIVE-claim gate implementation (fleet-ops#5786) ------------------------
+
+
+def _default_live_repo_dirs():
+    """Deploy clone + local mirrors + product checkouts — the repos a live
+    claim can cite."""
+    dirs = [os.environ.get(
+        "FLEET_OPS_CHECKOUT",
+        str(HOME / "workspaces/tooling/fleet-ops-deploy-clone"),
+    )]
+    mirrors = HOME / "workspaces/.mirrors"
+    if mirrors.is_dir():
+        dirs += sorted(str(p) for p in mirrors.glob("*.git"))
+    products = HOME / "workspaces/products"
+    if products.is_dir():
+        dirs += sorted(
+            str(p) for p in products.iterdir()
+            if p.is_dir() and (p / ".git").exists()
+        )
+    return dirs
+
+
+def _live_repo_dirs(explicit=None, no_defaults=False):
+    """Resolve claim-gate repos: --repo-dir args, then env extras, then the
+    default deploy-clone+mirrors set (unless --no-default-repos)."""
+    dirs = list(explicit or [])
+    env = os.environ.get("PI_VERDICT_LIVE_REPO_DIRS", "")
+    dirs += [d for d in env.split(os.pathsep) if d]
+    if no_defaults:
+        return dirs
+    return dirs + _default_live_repo_dirs()
+
+
+def _is_git_repo(path):
+    try:
+        r = subprocess.run(
+            ["git", "-C", str(path), "rev-parse", "--git-dir"],
+            capture_output=True, timeout=15)
+        return r.returncode == 0
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+
+
+def _sha_on_origin_main(repo_dir, sha):
+    """True when `sha` is an ancestor of origin/main (or main) in repo_dir."""
+    for ref in LIVE_REFS:
+        try:
+            r = subprocess.run(
+                ["git", "-C", str(repo_dir), "merge-base",
+                 "--is-ancestor", sha, ref],
+                capture_output=True, timeout=15)
+        except (OSError, subprocess.TimeoutExpired):
+            continue
+        if r.returncode == 0:
+            return True
+    return False
+
+
+def live_claim_violations(text, repo_dirs=None, fetch=None):
+    """Lines claiming LIVE/DEPLOYED/live-on-host with no merged SHA cited.
+
+    Returns [{line, text, shas}] — one entry per offending line. A line with
+    claim tokens but no SHA, or whose SHAs are all off origin/main in every
+    known clone, is a violation. No exception path: unverifiable = rejected.
+    """
+    claim_lines = [(n, l) for n, l in enumerate(text.splitlines(), 1)
+                   if LIVE_CLAIM.search(l)]
+    if not claim_lines:
+        return []
+    if repo_dirs is None:
+        repo_dirs = _live_repo_dirs()
+    repos = [d for d in repo_dirs if _is_git_repo(d)]
+    if fetch is None:
+        fetch = LIVE_FETCH
+    if fetch:
+        for d in repos:
+            try:
+                subprocess.run(["git", "-C", str(d), "fetch", "-q", "origin"],
+                               capture_output=True, timeout=30)
+            except (OSError, subprocess.TimeoutExpired):
+                pass
+    proven = {}
+    violations = []
+    for lineno, line in claim_lines:
+        shas = SHA_TOKEN.findall(line)
+        ok = False
+        for sha in shas:
+            key = sha.lower()
+            if key not in proven:
+                proven[key] = any(_sha_on_origin_main(d, sha) for d in repos)
+            if proven[key]:
+                ok = True
+                break
+        if not ok:
+            violations.append({
+                "line": lineno,
+                "text": line.strip()[:200],
+                "shas": shas,
+            })
+    return violations
+
+
 # ---- main ----------------------------------------------------------------
 
 
@@ -532,6 +674,13 @@ def main():
     import argparse
     ap = argparse.ArgumentParser()
     ap.add_argument("--body", help="Check a single body text file")
+    ap.add_argument("--live-claims",
+                    help="Run only the LIVE-claim gate on a text file")
+    ap.add_argument("--repo-dir", action="append", default=[],
+                    help="extra repo checkout for LIVE-claim SHA proof "
+                         "(repeatable; appended to the default set)")
+    ap.add_argument("--no-default-repos", action="store_true",
+                    help="LIVE-claim gate uses only --repo-dir/env dirs")
     ap.add_argument("--scan", action="store_true", help="Scan open worker PRs")
     ap.add_argument("--scan-prs", help="Read pre-fetched JSON array of PRs")
     ap.add_argument("--metricsonly", action="store_true",
@@ -542,31 +691,42 @@ def main():
         write_metrics(0, 0)
         return
 
+    live_repos = _live_repo_dirs(args.repo_dir,
+                                 no_defaults=args.no_default_repos)
+
+    # --live-claims mode: claim gate only
+    if args.live_claims:
+        violations = live_claim_violations(
+            Path(args.live_claims).read_text(errors="replace"), live_repos)
+        print(json.dumps(
+            {"passed": not violations, "violations": violations}, indent=2))
+        sys.exit(1 if violations else 0)
+
     # --body mode: single check
     if args.body:
-        body_text = Path(args.body).read_text()
-        result = check_body(body_text)
+        body_text = Path(args.body).read_text(errors="replace")
+        result = check_body(body_text, live_repos)
         print(json.dumps(result, indent=2))
-        if result["has_blocks"] and result["passed"] is False:
+        if result["passed"] is False:
             sys.exit(1)
         return
 
     # --scan / --scan-prs mode
     if args.scan_prs:
         prs = json.loads(Path(args.scan_prs).read_text())
-        findings, scanned, passd = scan_prs(prs)
+        findings, scanned, passed = scan_prs(prs)
     elif args.scan:
-        findings, scanned, passd = scan()
+        findings, scanned, passed = scan()
     else:
         ap.print_help()
         sys.exit(0)
 
-    file_findings(fndings)
-    current_sluugs = {f["slu"] for f in findings}
-    observe_to_close(current_sluugs)
+    file_findings(findings)
+    current_slugs = {f["slug"] for f in findings}
+    observe_to_close(current_slugs)
 
     fail_cnt = len(findings)
-    write_metrics(passd, fail_cnt)
+    write_metrics(passed, fail_cnt)
 
     if findings:
         _loud("PI-VERDICT-FAIL", f"real verdict FAIL for {fail_cnt} PRs (scanned={scanned})")
@@ -575,7 +735,7 @@ def main():
 
     print(json.dumps({
         "scanned": scanned,
-        "passed": passd,
+        "passed": passed,
         "failed": fail_cnt,
         "findings": findings,
     }))
