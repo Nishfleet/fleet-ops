@@ -96,22 +96,22 @@ prompt_bytes=$(wc -c <"$PROMPT")
 trim_packet_sections() {
     # $1 = source packet, $2 = trimmed output, $3 = target bytes.
     # Prints one log line per dropped section ("trim: dropped ...").
-    local src="$1" dest="$2" target="$3"
+    local t_src="$1" t_dest="$2" t_t_target="$3"
     local -a sec_lines
     local total_lines i end_line head_text sec_bytes dropped_bytes=0 dropped_count=0
 
-    cp "$src" "$dest"
-    total_lines=$(wc -l <"$src")
-    mapfile -t sec_lines < <(grep -n '^## ' "$src" | cut -d: -f1)
+    cp "$t_src" "$t_dest"
+    total_lines=$(wc -l <"$t_src")
+    mapfile -t sec_lines < <(grep -n '^## ' "$t_src" | cut -d: -f1)
     ((${#sec_lines[@]} > 0)) || return 0
 
     i=$(( ${#sec_lines[@]} - 1 ))
     while (( i >= 0 )); do
-        (( $(wc -c <"$dest") > target )) || break
+        (( $(wc -c <"$t_dest") > target )) || break
         # Line numbers stay valid as we delete ONLY later ranges first
         # (end-inward), so earlier sections keep their original numbering.
         head_line=${sec_lines[i]}
-        head_text=$(sed -n "${head_line}p;${head_line}q" "$src")
+        head_text=$(sed -n "${head_line}p;${head_line}q" "$t_src")
         # Protected: STANDING orders and sections the packet pins with
         # "never delete this section". The preamble before the first
         # heading is never inside the drop window.
@@ -119,8 +119,8 @@ trim_packet_sections() {
             (( i-- )); continue
         fi
         if (( i == ${#sec_lines[@]} - 1 )); then end_line=$(( total_lines + 1 )); else end_line=${sec_lines[i+1]}; fi
-        sec_bytes=$(sed -n "${head_line},$(( end_line - 1 ))p" "$src" | wc -c)
-        sed -i "${head_line},$(( end_line - 1 ))d" "$dest"
+        sec_bytes=$(sed -n "${head_line},$(( end_line - 1 ))p" "$t_src" | wc -c)
+        sed -i "${head_line},$(( end_line - 1 ))d" "$t_dest"
         dropped_bytes=$(( dropped_bytes + sec_bytes ))
         dropped_count=$(( dropped_count + 1 ))
         printf 'trim: dropped section %s (-%d bytes)\n' "$head_text" "$sec_bytes"
@@ -243,7 +243,7 @@ fi
 spawn_end_s=$(date -u +%s)
 spawn_elapsed_s=$((spawn_end_s - spawn_start_s))
 # fleet-ops#5739: the trimmed packet temp file was consumed by the pipe.
-[[ -z ""$trimmed_tmp"" ]] || rm -f "$trimmed_tmp"
+[[ -z "$trimmed_tmp" ]] || rm -f "$trimmed_tmp"
 
 # rc=124 is timeout(1)'s own exit when it killed pi (the hang watchdog).
 if (( rc == 124 )); then
