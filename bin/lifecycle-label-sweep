@@ -416,6 +416,26 @@ deploy_fault_check_failed=0
 drill_repo=""
 drill_num=""
 
+# fleet-ops#5890: spec-gate refusal dedup, once per body digest. The hourly
+# sweep used to re-post the identical "spec-gate: refused agent-ready"
+# comment on every tick for the same unchanged body (#4939: 45 identical
+# comments over ~45h). REFUSAL_DIGEST[<repo>#<num>] = sha256 of the body at
+# the time the refusal comment last landed, seeded from the summary state
+# file this sweep already owns and written back at the end of the sweep.
+# While the digest is unchanged the sweep logs one short line and posts
+# nothing; an edited body gets a fresh digest and is re-evaluated (commented)
+# on the next tick. Entries persist: a body that cycles refused→passing→
+# refused-with-the-same-text still sits at one comment ("at most one refusal
+# comment per distinct body"). A failed gh comment is never stored, so it
+# retries next tick instead of vanishing.
+declare -A REFUSAL_DIGEST=()
+if [ -r "$SUMMARY_FILE" ]; then
+    while IFS=$'\t' read -r _rk _rv; do
+        [ -n "$_rk" ] && REFUSAL_DIGEST["$_rk"]="$_rv"
+    done < <(jq -r '.refusals // {} | to_entries[] | "\(.key)\t\(.value)"' "$SUMMARY_FILE" 2>/dev/null)
+fi
+unloaded_refusals=0
+
 # fleet-ops#4022: scout-candidate bounce cooldown. A spec-less scout-candidate
 # issue older than 72h gets ONE bounce comment; the comment marker is the
 # cooldown signal so the next sweep does not re-bounce it and the unlabeled
@@ -759,10 +779,29 @@ while IFS= read -r repo; do
             && ! printf '%s' "$labels_json" | jq -e '.[] | select(.name=="gap-audit")' >/dev/null 2>&1; then
             if ! issue_passes_spec_gate "$issue_body" "$repo"; then
                 log "  $repo#$num: SPEC-GATE-REFUSED agent-ready ($title)"
+                # fleet-ops#5890: at most one refusal comment per distinct
+                # body. Skip silently (one terse journal line, no comment)
+                # while sha256(body) is unchanged; an edited body yields a
+                # fresh digest and is re-evaluated next tick. The digest is
+                # recorded only after the comment actually lands, so a
+                # dropped notice (fleet-ops#5439) retries instead of
+                # disappearing.
+                _sd=$(printf '%s' "$issue_body" | sha256sum | cut -d' ' -f1)
+                _sk="$repo#$num"
                 if [ "$DRY" != "1" ]; then
-                    comment_issue "$repo" "$num" \
-                        "spec-gate: refused agent-ready (fleet-ops#543). Body needs termination: / accept: / required: / metric:." \
-                        "spec-gate refusal"
+                    if [ "${REFUSAL_DIGEST[$_sk]:-}" = "$_sd" ]; then
+                        log "  $repo#$num: spec-gate refusal: unchanged body digest — comment skipped (fleet-ops#5890)"
+                    else
+                        _rc=0
+                        gh issue comment "$num" -R "$repo" \
+                            --body "spec-gate: refused agent-ready (fleet-ops#543). Body needs termination: / accept: / required: / metric:." \
+                            >/dev/null 2>&1 || _rc=$?
+                        if [ "$_rc" -ne 0 ]; then
+                            log "ALERT $repo#$num: spec-gate refusal comment FAILED (rc=$_rc) — notice dropped, retried next tick (fleet-ops#5439)"
+                        else
+                            REFUSAL_DIGEST["$_sk"]="$_sd"
+                        fi
+                    fi
                 fi
                 skipped=$((skipped + 1))
                 continue
@@ -1076,11 +1115,22 @@ printf 'lifecycle-label-sweep relabeled=%s skipped=%s failed=%s reclassified=%s 
 # IS the "deploy-fault issues closed without a green run" count — each
 # reopen means a violation was found this tick. Written every sweep so the
 # gauge returns to 0 once the class is clean.
+# fleet-ops#5890: the same file persists the spec-gate refusal digests
+# (repo#num -> sha256(body) of the last refused comment) across ticks.
+_refusals_json="{}"
+for _sk in "${!REFUSAL_DIGEST[@]}"; do
+    _refusals_json=$(jq -c --arg k "$_sk" --arg v "${REFUSAL_DIGEST[$_sk]}" '. + {($k): $v}' <<<"$_refusals_json")
+done
 if [ -n "$SUMMARY_FILE" ] \
-    && mkdir -p "$(dirname "$SUMMARY_FILE")" 2>/dev/null; then
-    cat >"$SUMMARY_FILE" <<EOF
-{"_meta":{"ts":"$NOW_ISO","tool":"lifecycle-label-sweep"},"deploy_fault_labeled":$deploy_fault_labeled,"deploy_fault_closed_without_green":$deploy_fault_reopened,"deploy_fault_check_failed":$deploy_fault_check_failed}
-EOF
+    && mkdir -p "$(dirname "$SUMMARY_FILE")" 2>/dev/null \
+    && jq -n --arg ts "$NOW_ISO" \
+        --argjson df_labeled "$deploy_fault_labeled" \
+        --argjson df_closed_without_green "$deploy_fault_reopened" \
+        --argjson df_check_failed "$deploy_fault_check_failed" \
+        --argjson refusals "$_refusals_json" \
+        '{_meta:{ts:$ts,tool:"lifecycle-label-sweep"},deploy_fault_labeled:$df_labeled,deploy_fault_closed_without_green:$df_closed_without_green,deploy_fault_check_failed:$df_check_failed,refusals:$refusals}' \
+    >"$SUMMARY_FILE"; then
+    :
 else
     log "WARN: could not write summary $SUMMARY_FILE"
 fi
