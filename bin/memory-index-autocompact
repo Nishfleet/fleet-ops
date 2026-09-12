@@ -44,7 +44,16 @@ THRESHOLD="${MEMORY_INDEX_AUTOCOMPACT_THRESHOLD:-20480}"
 # Hard ceiling. Compaction that leaves the file at or above this did not work.
 FAIL_AT="${MEMORY_INDEX_AUTOCOMPACT_FAIL_AT:-24576}"
 TARGET="${MEMORY_INDEX_AUTOCOMPACT_TARGET:-15360}"
-MODEL="${MEMORY_INDEX_AUTOCOMPACT_MODEL:-claude-opus-5}"
+# fleet-ops#5903 (Nish 2026-09-12: everything through Pi directly): the
+# compaction runs on a Pi seat picked by seat-lib, never on `claude -p`. Pi's
+# providers.md says Claude Pro/Max through a third-party harness bills to extra
+# usage, so this job deliberately never asks for a Claude model. Override with
+# MEMORY_INDEX_AUTOCOMPACT_SEAT=<provider>/<model> (tests, pinned seats).
+SEAT_LIB="${PI_PACKET_SEAT_LIB:-$HOME/.local/lib/pi-packet/seat-lib.sh}"
+PI_BIN="${PI_BIN:-$HOME/.local/bin/pi}"
+PI_TIMEOUT_S="${MEMORY_INDEX_AUTOCOMPACT_TIMEOUT_S:-1500}"
+# Label only (log lines); the real seat is chosen below.
+MODEL="${MEMORY_INDEX_AUTOCOMPACT_SEAT:-pi:auto-seat}"
 
 die() { echo "MEMORY-AUTOCOMPACT FAIL: $*" >&2; exit 1; }
 
@@ -149,16 +158,30 @@ PROMPT_EOF
 
 cd /home/nish || die "cannot cd to /home/nish"
 
-# Headless, single pass. systemd owns the timeout (TimeoutStartSec).
-printf '%s' "$PROMPT" | claude -p \
-  --model "$MODEL" \
-  --permission-mode bypassPermissions \
-  --add-dir "$MEM_DIR"
+# Headless, single pass on a Pi seat. systemd owns the outer timeout
+# (TimeoutStartSec); the inner timeout guards the known pi --print hang.
+if [[ -n "${MEMORY_INDEX_AUTOCOMPACT_SEAT:-}" ]]; then
+  np="${MEMORY_INDEX_AUTOCOMPACT_SEAT%%/*}"; nm="${MEMORY_INDEX_AUTOCOMPACT_SEAT#*/}"
+else
+  [[ -r "$SEAT_LIB" ]] || { cp -p "$backup" "$IDX"; die "seat-lib missing at $SEAT_LIB"; }
+  # shellcheck disable=SC1090
+  source "$SEAT_LIB"
+  tried_file=$(mktemp)
+  seat=$(pick_seat "" "" 0 "$tried_file" light || true)
+  rm -f "$tried_file"
+  [[ -n "$seat" ]] || { cp -p "$backup" "$IDX"; die "no healthy Pi seat (pick_seat empty). Index restored from $backup."; }
+  np=$(printf '%s' "$seat" | cut -f1); nm=$(printf '%s' "$seat" | cut -f2)
+fi
+echo "MEMORY-AUTOCOMPACT: compacting via pi $np/$nm"
+pi_log=$(mktemp)
+printf '%s' "$PROMPT" | (cd "$MEM_DIR" && timeout --kill-after=30s "${PI_TIMEOUT_S}s" "$PI_BIN" --print --provider "$np" --model "$nm") >"$pi_log" 2>&1
 rc=$?
+tail -n 5 "$pi_log" | sed 's/^/MEMORY-AUTOCOMPACT pi: /'
+rm -f "$pi_log"
 
 if (( rc != 0 )); then
   cp -p "$backup" "$IDX"
-  die "headless claude exited $rc (auth dead? quota?). Index restored from $backup."
+  die "pi --print ($np/$nm) exited $rc (seat walled? timeout?). Index restored from $backup."
 fi
 
 # --- validate, or roll back ---------------------------------------------------

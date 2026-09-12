@@ -279,6 +279,7 @@ SANCTIONED_PI_RUNNERS=(
     fleet-heartbeat-tier2
     fleet-researcher-run
     fleet-rulebook-redteam
+    memory-index-autocompact
     pi-audit-run
     pi-intake-run
     pi-intake-repair-run
