@@ -208,10 +208,12 @@ acquire_lock() {
 # Look up the live proxy's captured MINIMAX_API_KEY by reading /proc.
 # Returns 0 on hit (prints the key); 1 on miss. Honours
 # MINIMAX_TOKEN_REFRESH_PROC_ROOT so tests can point at a fake tree.
+# The proxy pid comes from the unit's MainPID, never a substring cmdline
+# match (fleet-wipe lesson: pgrep -f can pin the wrong process).
 read_proxy_key() {
     local pid
-    pid=$(pgrep -f "litellm --config" 2>/dev/null | head -1 || true)
-    if [[ -z "$pid" ]]; then
+    pid=$("$SYSTEMCTL_BIN" --user show -p MainPID --value "$PROXY_UNIT" 2>/dev/null || true)
+    if [[ -z "$pid" || "$pid" == "0" ]]; then
         return 1
     fi
     local key

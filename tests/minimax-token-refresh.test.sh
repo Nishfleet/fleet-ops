@@ -115,6 +115,12 @@ case "$1" in
         if [[ "${STUBCTL_FAIL:-0}" == "1" ]]; then exit 1; fi
         exit 0
         ;;
+      show)
+        # show -p MainPID --value <unit> -> the fake proxy pid
+        # (0 when STUB_PID is unset/empty: unit not running).
+        printf '%s\n' "${STUB_PID:-0}"
+        exit 0
+        ;;
       *)
         printf 'unknown systemctl --user subcommand: %s\n' "$*" >&2
         exit 2
@@ -129,17 +135,10 @@ esac
 STUBCTL
 chmod +x "$STUBCTL"
 
-# Stub pgrep to point at a fake /proc/<pid>/environ that carries the
-# MINIMAX_API_KEY the test wants the proxy to "have captured". The
-# script calls `pgrep -f "litellm --config" | head -1`, so the stub
-# just prints the fake PID.
-PGREP="$STUBCTL_DIR/pgrep"
-cat >"$PGREP" <<'PGREPSTUB'
-#!/usr/bin/env bash
-# Stub: prints the value of $STUB_PID (or empty if unset).
-printf '%s' "${STUB_PID:-}"
-PGREPSTUB
-chmod +x "$PGREP"
+# The script asks systemd for the proxy pid (`systemctl --user show -p
+# MainPID --value <unit>`); the systemctl stub above answers with
+# $STUB_PID, and the fake /proc/<pid>/environ below carries the
+# MINIMAX_API_KEY the test wants the proxy to "have captured".
 
 # Make the stubs win over the live binaries on PATH.
 export PATH="$STUBCTL_DIR:$KEY_BIN_DIR:$PATH"
