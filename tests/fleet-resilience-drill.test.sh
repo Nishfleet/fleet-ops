@@ -274,6 +274,17 @@ ok "detached ping failure is best-effort (exit 0)"
 export HOME="$scratch/home"
 mkdir -p "$HOME"
 
+# fleet-ops#3445: pi-salvage-worktree mints a worker App token via
+# NISHFLEET_WORKER_TOKEN_BIN (default $HOME/.local/bin/worker-token) whenever
+# GITHUB_ACTIONS is unset — i.e. on this VPS. The scratch HOME has no real
+# token, so stub the mint (the salvage plane's gh calls are stubbed too).
+cat >"$scratch/worker-token" <<'EOF'
+#!/usr/bin/env bash
+printf 'export GH_TOKEN=fake-test-token-cccccccccccccccc\n'
+EOF
+chmod +x "$scratch/worker-token"
+export NISHFLEET_WORKER_TOKEN_BIN="$scratch/worker-token"
+
 repo="$scratch/repo"
 mkdir -p "$repo/bin" "$repo/docs" "$repo/config" "$repo/.github/workflows" \
   "$repo/lib" "$repo/systemd/system/tailscaled.service.d"
@@ -738,6 +749,23 @@ run_drill
 grep -q 'KEYSTONE-HC-SHARED' "$triage" \
   || fail "heartbeat reuse must LOUD KEYSTONE-HC-SHARED, triage=$(cat "$triage")"
 ok "keystone URL equal to heartbeat dead-man is FAIL + LOUD"
+
+# fleet-ops#5456 F: the heartbeat dead-man unprovisioned (hc.env missing or
+# HC_URL unset) is FAIL + LOUD — a stopped user manager alerts nobody.
+reset_all
+: >"$HEARTBEAT_HC_ENV"
+run_drill
+[[ "$drill_rc" -eq 1 ]] || fail "unset heartbeat HC_URL should fail, rc=$drill_rc out=$drill_out"
+grep -q 'HEARTBEAT-HC-UNCONFIGURED' "$triage" \
+  || fail "unset heartbeat HC_URL must LOUD HEARTBEAT-HC-UNCONFIGURED, triage=$(cat "$triage")"
+python3 - "$last" <<'PY' || fail "unset heartbeat HC_URL must record fail"
+import json, sys
+data = json.load(open(sys.argv[1], encoding="utf-8"))
+fails = [r for r in data["results"] if r.get("name") == "keystone_deadman" and r.get("status") == "fail"]
+assert fails, data
+PY
+printf 'HC_URL=https://example.invalid/ping/heartbeat-uuid\n' >"$HEARTBEAT_HC_ENV"
+ok "heartbeat dead-man HC_URL unprovisioned is FAIL + LOUD (fleet-ops#5456 F)"
 
 # --check
 reset_all

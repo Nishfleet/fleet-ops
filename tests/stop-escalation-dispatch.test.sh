@@ -864,6 +864,54 @@ set +e; "$dispatch"; rc=$?; set -e
 grep -q '\[unit-death\]' "$AS/resume-drill/issues.jsonl" || fail "drill sink (live-dummy name): issue payload not recorded"
 ok "resume: live-dummy-resume-drill-* (the drill's live names) also hit the sink"
 
+# --- resume: pi-issue@<repo>-<N> with a CLOSED derived issue -> moot --------
+# fleet-ops#5456 live defect: the 16:31Z page acted on pi-issue@fleet-ops-37
+# whose issue #37 was already MERGED. A derived-and-closed target is the
+# distinct named outcome derived-target-closed — a findings row, never a
+# [unit-death] issue and never a page.
+cat >"$scratch/fake-gh-view" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' "gh $*" >> "${STOP_ESCALATION_TEST_GH_LOG}"
+if [ "$1" = "issue" ] && [ "$2" = "view" ]; then
+  cat "${STOP_ESCALATION_TEST_GH_VIEW:-/dev/null}" 2>/dev/null || true
+  exit 0
+fi
+if [ "$1" = "issue" ] && [ "$2" = "list" ]; then :; exit 0; fi
+if [ "$1" = "issue" ] && [ "$2" = "create" ]; then
+  printf 'https://github.com/Nishfleet/fleet-ops/issues/5456\n'; exit 0
+fi
+exit 0
+EOF
+chmod +x "$scratch/fake-gh-view"
+export STOP_ESCALATION_TEST_GH_VIEW="$AS/gh-view-state"
+
+: > "$STOP_ESCALATION_TEST_GH_LOG"; : > "$STOP_ESCALATION_TEST_FINDINGS_LOG"; : > "$STOP_ESCALATION_RESUME_TRIAGE"
+printf 'CLOSED\n' > "$STOP_ESCALATION_TEST_GH_VIEW"
+resume_sr "pi-issue@fleet-ops-37.service" "unit-failure"
+set +e
+STOP_ESCALATION_RESUME_GH="$scratch/fake-gh-view" "$dispatch"; rc=$?
+set -e
+[[ $rc -eq 0 ]] || fail "derived-closed: expected exit 0, got $rc"
+grep -q 'issue view 37' "$STOP_ESCALATION_TEST_GH_LOG" || fail "derived-closed: dispatcher never checked the derived issue state"
+if grep -q 'issue create\|issue comment' "$STOP_ESCALATION_TEST_GH_LOG"; then
+  fail "derived-closed: must NOT file/comment — the derived issue is already merged"
+fi
+grep -q 'derived-target-closed' "$STOP_ESCALATION_TEST_FINDINGS_LOG" \
+  || fail "derived-closed: findings row with the derived-target-closed reason missing"
+[[ -s "$STOP_ESCALATION_RESUME_TRIAGE" ]] && fail "derived-closed: a moot death must not write a UNIT-DEATH-DISPATCH triage line"
+ok "resume: pi-issue@fleet-ops-37 + merged #37 -> derived-target-closed findings row, no issue, no page"
+
+# OPEN derived issue -> the normal dispatch path still applies.
+: > "$STOP_ESCALATION_TEST_GH_LOG"; : > "$STOP_ESCALATION_RESUME_TRIAGE"
+printf 'OPEN\n' > "$STOP_ESCALATION_TEST_GH_VIEW"
+resume_sr "pi-issue@fleet-ops-38.service" "unit-failure"
+set +e
+STOP_ESCALATION_RESUME_GH="$scratch/fake-gh-view" "$dispatch"; rc=$?
+set -e
+[[ $rc -eq 0 ]] || fail "derived-open: expected exit 0, got $rc"
+grep -q 'issue create' "$STOP_ESCALATION_TEST_GH_LOG" || fail "derived-open: open derived issue still dispatches a [unit-death] issue"
+ok "resume: pi-issue@fleet-ops-38 + OPEN #38 -> normal unit-death dispatch"
+
 # --- resume: circuit-trip reasons never take the resume path -----------------
 : > "$STOP_ESCALATION_TEST_PIRUN_LOG"; : > "$STOP_ESCALATION_TEST_GH_LOG"
 resume_sr "resume-test-pkt.service" "max_auto_continues"
