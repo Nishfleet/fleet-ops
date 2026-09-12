@@ -68,7 +68,7 @@ bin/memory-index-autocompact:5
 bin/money-boundary-raise:2
 bin/pi-audit-run:12
 bin/pi-intake-repair-run:7
-bin/pi-issue-failed-reap:5
+bin/pi-issue-failed-reap:6
 bin/pi-issue-run:40
 bin/pi-issue-start:3
 bin/pi-packet-run:8
@@ -208,6 +208,7 @@ tests/pi-intake-tick-seat-gate.test.sh:9
 tests/pi-intake-tick-self-maint-cap.test.sh:12
 tests/pi-intake-tick-spawn-stagger.test.sh:7
 tests/pi-intake-topup.test.sh:2
+tests/pi-issue-failed-reap-overload-requeue.test.sh:5
 tests/pi-issue-failed-reap.test.sh:8
 tests/pi-issue-park-resurrection.test.sh:2
 tests/pi-issue-run-app-identity.test.sh:2
@@ -289,7 +290,7 @@ tests/subagent-extload.test.sh:2
 tests/token-economy-routing.test.sh:7
 tests/watch-log-rotation.test.sh:5
 tests/weekly-fleet-review.test.sh:2
-tests/worker-memory-dropin.test.sh:18
+tests/worker-memory-dropin.test.sh:20
 MANIFEST
 
 ((${#frozen[@]} > 200)) || fail "frozen manifest looks truncated (${#frozen[@]} entries)"
