@@ -273,6 +273,17 @@ ok "detached ping failure is best-effort (exit 0)"
 # ============================================================================
 export HOME="$scratch/home"
 mkdir -p "$HOME"
+# The salvage_orphan plane runs bin/pi-salvage-worktree with env -u GH_TOKEN,
+# so the hook mints via ${HOME}/.local/bin/worker-token (fleet-ops#3445).
+# Ship a stub whose --print output evals cleanly; without it the mint ENOENTs
+# under this remapped HOME and the plane fails on the VPS (CI skips minting
+# via GITHUB_ACTIONS=true, which is why this only failed here).
+mkdir -p "$HOME/.local/bin"
+cat >"$HOME/.local/bin/worker-token" <<'STUB'
+#!/usr/bin/env bash
+echo 'GH_TOKEN=stub-worker-token-0000000000000000000000000000'
+STUB
+chmod +x "$HOME/.local/bin/worker-token"
 
 repo="$scratch/repo"
 mkdir -p "$repo/bin" "$repo/docs" "$repo/config" "$repo/.github/workflows" \
@@ -715,7 +726,7 @@ ok "unconfigured keystone HC URLs are SKIP + LOUD, not a silent pass"
 
 # Shared keystone URLs (two keystones, same check) are FAIL + LOUD.
 reset_all
-printf 'HC_URL_INTAKE=https://example.invalid/shared\nHC_URL_SCOUT=https://example.invalid/shared\nHC_URL_RECONCILE=https://example.invalid/r\nHC_URL_RESTORE=https://example.invalid/b\n' \
+printf 'HC_URL_INTAKE=https://example.invalid/shared\nHC_URL_SCOUT=https://example.invalid/shared\nHC_URL_RECONCILE=https://example.invalid/r\nHC_URL_RESTORE=https://example.invalid/b\nHC_URL_ORGANWATCH=https://example.invalid/o\n' \
   >"$KEYSTONE_HC_ENV"
 run_drill
 [[ "$drill_rc" -eq 1 ]] || fail "shared keystone URL should fail, rc=$drill_rc out=$drill_out"
@@ -731,7 +742,7 @@ ok "shared keystone HC URLs are FAIL + LOUD"
 
 # Reusing the heartbeat dead-man URL is FAIL + LOUD.
 reset_all
-printf 'HC_URL_INTAKE=https://example.invalid/ping/heartbeat-uuid\nHC_URL_SCOUT=https://example.invalid/s\nHC_URL_RECONCILE=https://example.invalid/r\nHC_URL_RESTORE=https://example.invalid/b\n' \
+printf 'HC_URL_INTAKE=https://example.invalid/ping/heartbeat-uuid\nHC_URL_SCOUT=https://example.invalid/s\nHC_URL_RECONCILE=https://example.invalid/r\nHC_URL_RESTORE=https://example.invalid/b\nHC_URL_ORGANWATCH=https://example.invalid/o\n' \
   >"$KEYSTONE_HC_ENV"
 run_drill
 [[ "$drill_rc" -eq 1 ]] || fail "heartbeat reuse should fail, rc=$drill_rc out=$drill_out"
