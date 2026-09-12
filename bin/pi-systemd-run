@@ -443,6 +443,14 @@ if [[ "$dry_run" != "1" && "${FLEET_DISPATCH_LEDGER_NO_WRITE:-0}" != "1" && -n "
     pkt_copy="$PKT_DIR/${unit}-$(date -u +%Y%m%dT%H%M%SZ)-${dispatch_id}.md"
     cp -- "$stdin_file" "$pkt_copy"
     packet_path="$(readlink -f "$pkt_copy")"
+    # fleet-ops (auditor 2026-09-11, review-issue-2446b class): --deliverable
+    # arms PI_DEADMAN_DELIVERABLE but nothing told the RUN it must create the
+    # file — the reviewer finished APPROVE and the deadman still tripped
+    # unit-stopped-without-deliverable. Inject the instruction into the
+    # durable copy so the packet the unit reads is self-contained.
+    if [[ -n "$deliverable" ]]; then
+        printf '\n\nDELIVERABLE (required): before finishing, write your final deliverable/verdict to the file: %s — without this file the run is judged failed no matter what you printed.\n' "$deliverable" >> "$packet_path"
+    fi
     stdin_file="$packet_path"
 fi
 

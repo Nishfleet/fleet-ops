@@ -377,3 +377,23 @@ set -e
 [[ ! -f "$LEDGER" ]] || fail "FLEET_DISPATCH_LEDGER_NO_WRITE must suppress ledger"
 
 ok "FLEET_DISPATCH_LEDGER_NO_WRITE suppresses ledger append (fleet-ops#1009)"
+
+# --- 11. --deliverable injects the instruction into the packet copy ----------
+# Auditor 2026-09-11 (review-issue-2446b): --deliverable armed the deadman but
+# nothing told the run to create the file — reviewer finished APPROVE, trip
+# fired anyway. The durable packet copy must carry the instruction.
+rm -f "$LEDGER"; : > "$scratch2/sr.log"
+set +e
+SYSTEMD_RUN="$scratch2/fake-systemd-run" SYSTEMCTL="$scratch2/fake-systemctl" \
+PI_SALVAGE_DISABLE=1 AGENT_STATE="$AS" \
+FLEET_DISPATCH_LEDGER="$LEDGER" SR_LOG="$scratch2/sr.log" \
+  "$bin" --unit injtest --stdin "$pkt" --deliverable /tmp/injtest-verdict.md -- /bin/sleep 1 2>/dev/null
+rc=$?
+set -e
+[[ "$rc" == "0" ]] || fail "inject dispatch rc=$rc"
+copy=$(grep '"unit":"injtest"' "$LEDGER" | python3 -c 'import sys,json;print(json.load(sys.stdin)["packet_path"])')
+grep -qF 'write your final deliverable/verdict to the file: /tmp/injtest-verdict.md' "$copy" \
+  || fail "--deliverable path must be injected into the durable packet copy"
+[[ "$(grep -cF 'DELIVERABLE (required)' "$pkt")" == "0" ]] \
+  || fail "original stdin file must NOT be mutated"
+ok "--deliverable injects instruction into packet copy, original untouched (auditor 2026-09-11 review-issue-2446b)"
