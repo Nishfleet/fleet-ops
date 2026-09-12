@@ -45,7 +45,7 @@
 #      (prompt-side lock).
 #   5. lib/failed-command-flagged.py docstring cites fleet-ops#1219
 #      (detector-side lock).
-#   6. seat-lib.test.sh hosts this file (CI cannot gain a P14 line).
+#   6. seat.lib.test.sh hosts this file (CI cannot gain a P14 line).
 
 set -euo pipefail
 
@@ -157,10 +157,10 @@ grep -q "gh issue view" "$lib" \
   || fail "lib/failed-command-flagged.py docstring must name the live 'gh issue view' command"
 ok "lib/failed-command-flagged.py docstring cites fleet-ops#1219 and the gh issue view --json unknown field shape"
 
-# --- 6. seat-lib.test.sh hosts this file (CI cannot gain a P14 line) ---------
+# --- 6. seat.lib.test.sh hosts this file (CI cannot gain a P14 line) ---------
 grep -Fq 'bash "$here/fleet-failed-command-gh-issue-view-unknown-field.test.sh"' \
-  "$here/seat-lib.test.sh" \
-  || fail "seat-lib.test.sh must nest this file (CI cannot gain a new workflow line)"
-ok "seat-lib.test.sh hosts this file"
+  "$here/seat.lib.test.sh" \
+  || fail "seat.lib.test.sh must nest this file (CI cannot gain a new workflow line)"
+ok "seat.lib.test.sh hosts this file"
 
 echo "OK: fleet-failed-command-gh-issue-view-unknown-field: live #1219 gh issue view --json unknown field drills"

@@ -20,7 +20,7 @@
 #      This is the shape-lock.
 #   D. The existing bin/fleet-heartbeat-rc-propagation.test.sh (tier 1 /
 #      tier 2 stub shape) MUST stay green; this new test MUST be nested
-#      under tests/seat-lib.test.sh (workers cannot add a ci.yml line).
+#      under tests/seat.lib.test.sh (workers cannot add a ci.yml line).
 #
 # Test approach (no live tier1 invocation):
 #
@@ -62,7 +62,7 @@
 #   - systemd drop-in to suppress OnFailure= on fleet-heartbeat.service
 #     (that hides real crashes like a python import error).
 #
-# Nested under tests/seat-lib.test.sh because workers cannot add a
+# Nested under tests/seat.lib.test.sh because workers cannot add a
 # .github/workflows/ci.yml line (standing rule, fleet-ops#1116 class lock
 # point D).
 
@@ -265,8 +265,8 @@ done
 ok "source gate: $D_PASS/$D_TOTAL detector rc-propagation guards are -ge 2 (no -ne 0 leak)"
 
 # Nested CI host (workers cannot add a ci.yml line).
-grep -Fq 'bash "$here/fleet-heartbeat-alarm-rc-decoupling.test.sh"' "$here/seat-lib.test.sh" \
-  || fail "seat-lib.test.sh must nest this file (CI cannot gain a new workflow line)"
-ok "nested under seat-lib.test.sh"
+grep -Fq 'bash "$here/fleet-heartbeat-alarm-rc-decoupling.test.sh"' "$here/seat.lib.test.sh" \
+  || fail "seat.lib.test.sh must nest this file (CI cannot gain a new workflow line)"
+ok "nested under seat.lib.test.sh"
 
 echo "ALL OK"

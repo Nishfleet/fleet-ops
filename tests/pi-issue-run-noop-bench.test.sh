@@ -2,7 +2,7 @@
 # tests/pi-issue-run-noop-bench.test.sh
 #
 # fleet-ops#390: a no-op (pi exits 0 with stdout < OUT_MIN) must bench the
-# seat via mark_seat_spawn_fail BEFORE exiting 1. Otherwise pick_seat sees
+# seat via mark_seat_spawn_fail BEFORE exiting 1. Otherwise pick-seat sees
 # a still-healthy seat and an intake re-spawn with an empty tried-seats
 # file re-selects the same no-op'ing seat — the 2026-08-26 fleet-ops-378
 # stuck loop (devin/swe-1-7, 1 byte stdout, unit dead, tried-seats empty).
@@ -91,7 +91,7 @@ export WORKER_TOKEN_BIN="$stub_bin/worker-token"
 cat >"$stub_bin/systemctl" <<'STUB'
 #!/usr/bin/env bash
 args=" $* "
-# fleet-ops#142/#508: if pick_seat consults live unit counts, this poison stub
+# fleet-ops#142/#508: if pick-seat consults live unit counts, this poison stub
 # reports the fixture seats as fully occupied and the test fails.
 if [[ "$args" == *" list-units "* ]]; then
   for i in 1 2 3 4; do
@@ -115,7 +115,7 @@ chmod +x "$stub_bin/systemctl"
 
 export PATH="$stub_bin:/usr/local/bin:/usr/bin:/bin"
 
-# Two subscription seats so after the no-op seat is benched, pick_seat
+# Two subscription seats so after the no-op seat is benched, pick-seat
 # still has somewhere else to go (the intake re-spawn case).
 cat >"$PI_MODELS_JSON" <<'JSON'
 {
@@ -142,9 +142,9 @@ JSON
 
 # Overlay: record mark_seat_spawn_fail calls, then run the real function
 # so the per-seat ledger is actually written.
-cat >"$scratch/seat-lib.sh" <<EOF
+cat >"$scratch/seatlib.sh" <<EOF
 # shellcheck shell=bash
-source "$repo_root/lib/seat-lib.sh"
+source "$repo_root/lib/litellm-seat.sh"
 eval "\$(declare -f mark_seat_spawn_fail | sed '1s/^mark_seat_spawn_fail/orig_mark_seat_spawn_fail/')"
 mark_seat_spawn_fail() {
     printf '%s/%s %s\n' "\$1" "\$2" "\${3:-}" >>"$scratch/mark_calls"
@@ -156,7 +156,7 @@ mark_seat_empty_run() {
     orig_mark_seat_empty_run "\$@"
 }
 EOF
-export PI_PACKET_SEAT_LIB="$scratch/seat-lib.sh"
+export PI_PACKET_SEAT_LIB="$scratch/seatlib.sh"
 
 # fleet-ops#1378: the default in-process retry loop would try the second seat
 # before exiting 1. Set EMPTY_RUN_RETRY_MAX=0 to preserve the original
@@ -184,7 +184,7 @@ nm="${seat_line#*/}"
 # (a) fleet-ops#1298: provider no-ops (stdout < OUT_MIN, exit 0) ARE seat
 # faults — same class as the verdict tools=0 empty-run (fleet-ops#902).
 # The seat is benched via mark_seat_empty_run (FLAT cooldown,
-# EMPTY_RUN_BACKOFF_S = 15 min, fleet-ops#2343) so pick_seat skips it on the
+# EMPTY_RUN_BACKOFF_S = 15 min, fleet-ops#2343) so pick-seat skips it on the
 # next intake re-spawn and reroutes to a healthy seat. #1298 reversed the
 # #1416 "lane fault, no bench" decision: without a bench, an intake re-spawn
 # (fresh claim, empty tried-seats) re-picked the same no-op'ing seat and
@@ -326,7 +326,7 @@ tried3="$STATE_DIR/attempts/pi-issue-${inst3}.tried-seats"
 ok "tried-seats reset after successful in-process retry"
 
 # fleet-ops#1298: the first no-op group is logged via mark_seat_empty_run.
-# P3b: that group is litellm/worker-cheap, not a per-model pick_seat row.
+# P3b: that group is litellm/worker-cheap, not a per-model pick-seat row.
 if grep -qF 'litellm/worker-cheap' "$scratch/mark_calls" 2>/dev/null; then
     fail "first no-op group must use mark_seat_empty_run, not mark_seat_spawn_fail (calls: $(cat "$scratch/mark_calls"))"
 fi

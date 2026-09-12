@@ -2,7 +2,7 @@
 # tests/seat-credentials-bad-replay.test.sh
 #
 # fleet-ops#5788 replay drill: classify the journal excerpt of the
-# 2026-09-12 10:16-10:19 IST MiniMax 401 burst through the seat-lib
+# 2026-09-12 10:16-10:19 IST MiniMax 401 burst through the seatlib
 # credentials-error helpers, and confirm the resulting bench marker
 # makes the seat non-routable until the wall expires [so a follow-up
 # worker retry lands on a different senior deployment instead of
@@ -47,15 +47,15 @@
 set -euo pipefail
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 repo_root="$(cd "$here/.." && pwd)"
-seat_lib="$repo_root/lib/seat-lib.sh"
+seat_lib="$repo_root/lib/litellm-seat.sh"
 
 fail() { echo "FAIL: $*" >&2; exit 1; }
 ok()   { echo "OK: $*"; }
 
-[[ -f "$seat_lib" ]] || fail "missing seat-lib.sh: $seat_lib"
+[[ -f "$seat_lib" ]] || fail "missing seatlib.sh: $seat_lib"
 command -v jq >/dev/null 2>&1 || fail "jq missing"
 
-# Build a clean env to source seat-lib.sh into. seat-lib.sh pulls in
+# Build a clean env to source seatlib.sh into. seatlib.sh pulls in
 # many variables [LEDGER_DIR, etc.]; we set the minimum needed for
 # mark_seat_credentials_bad to write to a scratch ledger.
 scratch="$(mktemp -d -t seat-cred-bad-replay.XXXXXX)"
@@ -66,14 +66,14 @@ mkdir -p "$LEDGER_DIR"
 export LEDGER_DIR
 export SEAT_HEALTH_SIDECAR="$scratch/pi-seat-health.json"
 
-# Stub functions seat-lib.sh expects so a clean source does not blow
+# Stub functions seatlib.sh expects so a clean source does not blow
 # up. We only exercise is_credentials_error + mark_seat_credentials_bad,
 # which have small transitive deps.
 log()  { :; }
 warn() { :; }
 err()  { :; }
 export -f log warn err
-# Stub the transport-down probe - seat-lib uses it to short-circuit
+# Stub the transport-down probe - seatlib uses it to short-circuit
 # during a fleet-wide outage. Default: transport is healthy.
 _transport_is_down() { return 1; }
 _seat_key_guard()      { return 0; }
@@ -89,7 +89,7 @@ _seat_log_noop() { :; }
 seat_log() { :; }   # mark_seat_credentials_bad logs via seat_log directly
 _seat_co_write_sidecar_to_legacy() { return 0; }
 # Stub of seat_ledger_path - constructs the per-seat ledger path the
-# same way lib/seat-lib.sh does (sanitise provider/model, prepend
+# same way lib/litellm-seat.sh does (sanitise provider/model, prepend
 # LEDGER_DIR).
 seat_ledger_path() {
     local p="$1" m="$2"
@@ -99,12 +99,12 @@ seat_ledger_path() {
 }
 export -f _transport_is_down _seat_key_guard _seat_now_epoch _seat_co_write_sidecar _seat_write_spawn_bench _seat_mark_transport_down _seat_observed_fresh _seat_wall_source_justified _seat_write_parked_ledger _seat_log _seat_log_noop seat_log _seat_co_write_sidecar_to_legacy seat_ledger_path
 
-# Source seat-lib.sh. We have to whitelist only the two functions we
+# Source seatlib.sh. We have to whitelist only the two functions we
 # need so a typo or transitive dep does not drag in the rest.
 #
 # Simplest approach: extract the two function definitions from
-# seat-lib.sh into a temp file and source that. This avoids pulling in
-# every helper seat-lib.sh defines.
+# seatlib.sh into a temp file and source that. This avoids pulling in
+# every helper seatlib.sh defines.
 extract_fn() {
     local fname="$1"
     awk -v fn="$fname" '
@@ -117,8 +117,8 @@ extract_fn() {
 
 is_credentials_error_def="$(extract_fn is_credentials_error)"
 mark_seat_credentials_bad_def="$(extract_fn mark_seat_credentials_bad)"
-[[ -n "$is_credentials_error_def" ]] || fail "could not extract is_credentials_error from seat-lib.sh"
-[[ -n "$mark_seat_credentials_bad_def" ]] || fail "could not extract mark_seat_credentials_bad from seat-lib.sh"
+[[ -n "$is_credentials_error_def" ]] || fail "could not extract is_credentials_error from seatlib.sh"
+[[ -n "$mark_seat_credentials_bad_def" ]] || fail "could not extract mark_seat_credentials_bad from seatlib.sh"
 
 eval "$is_credentials_error_def"
 eval "$mark_seat_credentials_bad_def"

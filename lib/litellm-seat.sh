@@ -6,10 +6,10 @@
 # Callers pick a group and run: pi --print --provider litellm --model <group>
 # Groups: worker-cheap, worker-capable, worker-private, senior, judge.
 #
-# This file is the P3b replacement for the deleted routing library. Keep-list
-# from the P0 design: packet/privacy helpers, RAM charge
-# from seat-caps.json, active-seat registry, verdict-log stubs. pick_seat is
-# gone.
+# Keep-list from the P0 design: packet/privacy helpers, worker_memory/env
+# drop-ins from seat-caps.json, active-seat registry, verdict-log stubs. The
+# retired seat picker and its RAM-charge governor are deleted (fleet-ops#4263):
+# admission is systemd MemoryMax/oomd plus the proxy's group routing.
 
 export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
 export HOME="${HOME:-/home/nish}"
@@ -60,7 +60,7 @@ seat_log() {
 }
 
 # Args: $1 = LiteLLM model group. Prints provider<TAB>model.
-litellm_pick_seat() {
+litellm_seat() {
     local group="${1:-worker-cheap}"
     printf 'litellm\t%s\n' "$group"
 }
@@ -96,9 +96,14 @@ litellm_ready() {
 }
 
 # Headroom for intake claim bounding. Prints an integer or empty (fail-open).
+# The proxy owns routing; the count is the declared cap sum minus live worker
+# units — a worker COUNT, not a RAM charge (fleet-ops#4263).
 litellm_headroom() {
     if litellm_ready; then
-        echo "${LITELLM_HEADROOM_DEFAULT:-16}"
+        local cap active
+        cap=$(seat_max_concurrent)
+        active=$(count_active_workers)
+        awk -v c="$cap" -v a="$active" 'BEGIN{ s=c-a; if(s<0)s=0; print int(s) }'
         return 0
     fi
     echo ""
@@ -165,7 +170,7 @@ packet_repo() {
 # --- repo product flag (intake-repos.json product flag, fleet-ops#3724) -----
 # Resolves next to the running code so a stale sibling checkout cannot shadow
 # the deployed config (fleet-ops#4450). repo_is_product is still called by
-# lib/work-supply.sh; pick_seat is gone but this utility survived the P3b cut.
+# lib/work-supply.sh; the picker is gone but this utility survived the P3b cut.
 INTAKE_REPOS_JSON="${FLEET_INTAKE_REPOS_JSON:-}"
 declare -A REPO_PRODUCT_MAP=()
 _intake_repos_loaded=0
@@ -208,59 +213,27 @@ repo_is_product() {
     [[ -n "$repo" && "${REPO_PRODUCT_MAP[$repo]:-0}" == "1" ]]
 }
 
-# --- RAM / spawn helpers from seat-caps.json (not routing) -------------------
+# --- spawn helpers from seat-caps.json (not routing) --------------------------
+# Per-worker RAM is bounded by the per-instance systemd MemoryMax drop-in
+# (worker_memory_for_* below) and oomd — there is no hand-set charge.
 _seat_caps_loaded=0
-SEAT_RAM_GB_PER_WORKER=1.5
 SEAT_ORG_RESERVE=2
 SEAT_SPAWN_STAGGER_S=0
 
 load_seat_caps() {
     _seat_caps_loaded=1
-    SEAT_RAM_GB_PER_WORKER=1.5
     SEAT_ORG_RESERVE=2
     SEAT_SPAWN_STAGGER_S=0
     [[ -f "$SEAT_CAPS_JSON" ]] || return 1
     if ! jq -e . "$SEAT_CAPS_JSON" >/dev/null 2>&1; then
         return 1
     fi
-    local ram ores stagger
-    ram=$(jq -r '.ram_gb_per_worker // 1.5' "$SEAT_CAPS_JSON")
-    [[ "$ram" =~ ^[0-9]+(\.[0-9]+)?$ ]] && SEAT_RAM_GB_PER_WORKER="$ram"
+    local ores stagger
     ores=$(jq -r '.org_reserve // 2' "$SEAT_CAPS_JSON")
     [[ "$ores" =~ ^[0-9]+$ ]] && SEAT_ORG_RESERVE="$ores"
     stagger=$(jq -r '.spawn_stagger_s // 0' "$SEAT_CAPS_JSON")
     [[ "$stagger" =~ ^[0-9]+$ ]] && SEAT_SPAWN_STAGGER_S="$stagger"
     return 0
-}
-
-_systemd_quantity_gb() {
-    local q="$1" num unit
-    [[ "$q" =~ ^([0-9]+(\.[0-9]+)?)([KMG])$ ]] || { echo 0; return; }
-    num="${BASH_REMATCH[1]}"
-    unit="${BASH_REMATCH[3]}"
-    case "$unit" in
-        K) awk -v n="$num" 'BEGIN{ printf "%.3f", n/1024/1024 }' ;;
-        M) awk -v n="$num" 'BEGIN{ printf "%.3f", n/1024 }' ;;
-        G) awk -v n="$num" 'BEGIN{ printf "%.3f", n }' ;;
-    esac
-}
-
-ram_charge_gb_for() {
-    local repo="$1" difficulty="$2" high gb
-    if [[ "$difficulty" == "heavy" || "$difficulty" == "keystone" ]]; then
-        echo "1.0"
-        return
-    fi
-    if (( ! _seat_caps_loaded )); then load_seat_caps || true; fi
-    high=$(jq -r --arg r "$repo" '.worker_memory[$r].MemoryHigh // empty' "$SEAT_CAPS_JSON" 2>/dev/null || true)
-    if [[ -n "$high" ]]; then
-        gb=$(_systemd_quantity_gb "$high")
-        if awk -v g="$gb" 'BEGIN{ exit !(g > 0) }'; then
-            echo "$gb"
-            return
-        fi
-    fi
-    echo "$SEAT_RAM_GB_PER_WORKER"
 }
 
 worker_memory_for_repo() {
@@ -294,50 +267,30 @@ worker_env_for_repo() {
     jq -r --arg r "$repo" '.worker_env[$r] // empty | to_entries[] | "\(.key)=\(.value)"' "$SEAT_CAPS_JSON" 2>/dev/null || true
 }
 
-# Lane count for low-water / RAM governor. Proxy owns routing; this is
-# min(sum of declared caps, MemAvailable / ram_gb_per_worker).
-ram_governor_cap() {
-    if (( ! _seat_caps_loaded )); then load_seat_caps || true; fi
-    local mem_avail_kb ram_budget
-    mem_avail_kb=$(awk '/^MemAvailable:/ { print $2 }' /proc/meminfo 2>/dev/null || echo 0)
-    if (( mem_avail_kb <= 0 )); then
-        echo 9999
-        return
-    fi
-    local floor_mb=${SEAT_MIN_FREE_RAM_MB:-2500}
-    ram_budget=$(awk -v mem_kb="$mem_avail_kb" -v per="$SEAT_RAM_GB_PER_WORKER" -v floor_mb="$floor_mb" 'BEGIN {
-        if (per + 0 <= 0) per = 1.5
-        mem_gb   = mem_kb / 1024 / 1024
-        floor_gb = floor_mb / 1024
-        spare = mem_gb - floor_gb
-        if (spare < 0) spare = 0
-        r = int(spare / per)
-        if (r < 1) r = 1
-        print r
-    }')
-    if [[ ! "$ram_budget" =~ ^[0-9]+$ ]]; then
-        return 1
-    fi
-    if (( ram_budget >= 64 )); then
-        return 1
-    fi
-    echo "$ram_budget"
-}
-
+# Fleet concurrency bound: sum of the declared provider caps in
+# seat-caps.json. RAM safety is per-unit MemoryMax + oomd, not a charge.
 seat_max_concurrent() {
     if (( ! _seat_caps_loaded )); then load_seat_caps || true; fi
-    local sum=0 ram_cap
+    local sum=0
     if [[ -f "$SEAT_CAPS_JSON" ]]; then
         sum=$(jq '[.providers[]?.cap // 0] | add // 0' "$SEAT_CAPS_JSON" 2>/dev/null || echo 0)
     fi
     [[ "$sum" =~ ^[0-9]+$ ]] || sum=0
-    ram_cap=$(ram_governor_cap) || ram_cap=0
-    [[ "$ram_cap" =~ ^[0-9]+$ ]] || ram_cap=0
-    if (( sum > 0 && (ram_cap == 0 || sum < ram_cap) )); then
-        echo "$sum"
-    else
-        echo "$ram_cap"
+    echo "$sum"
+}
+
+# Undersaturation admit ceiling (fleet-heartbeat-undersaturation): was
+# min(target_concurrent, RAM governor); the RAM charge is gone, so it is
+# min(target_concurrent, declared cap sum).
+admit_ceiling() {
+    if (( ! _seat_caps_loaded )); then load_seat_caps || true; fi
+    local tgt=25 sum
+    if [[ -f "$SEAT_CAPS_JSON" ]]; then
+        tgt=$(jq -r '.target_concurrent // 25' "$SEAT_CAPS_JSON" 2>/dev/null || echo 25)
     fi
+    [[ "$tgt" =~ ^[0-9]+$ ]] || tgt=25
+    sum=$(seat_max_concurrent)
+    if (( sum > 0 && sum < tgt )); then echo "$sum"; else echo "$tgt"; fi
 }
 
 # Per-seat hang watchdog (seconds). Default 2520 (42 min).
@@ -353,10 +306,9 @@ seat_hang_timeout_s() {
     echo 2520
 }
 
-# Count active pi-issue registry files as RAM units. Proxy owns concurrency;
-# this only feeds the intake RAM governor.
-active_ram_charge() {
-    if (( ! _seat_caps_loaded )); then load_seat_caps || true; fi
+# Count of live worker units registered under ACTIVE_SEATS_DIR (a count, not
+# a RAM charge). Feeds the intake claim bound.
+count_active_workers() {
     local n=0
     if [[ -d "$ACTIVE_SEATS_DIR" ]]; then
         n=$(find "$ACTIVE_SEATS_DIR" -maxdepth 1 -name '*.json' 2>/dev/null | wc -l)
@@ -449,7 +401,7 @@ seat_usable() {
     local p="$1" m="$2" f hc bench_until dead
     f=$(seat_ledger_path "$p" "$m")
     [[ -f "$f" ]] || return 0
-    # bench_until // usable_at — matches pick_seat's wall filter (fleet-ops#4263).
+    # bench_until // usable_at — the retired picker's wall filter (fleet-ops#4263).
     bench_until=$(jq -r '.bench_until // .usable_at // empty' "$f" 2>/dev/null || true)
     if [[ -n "$bench_until" ]] && _seat_in_future "$bench_until"; then
         return 1

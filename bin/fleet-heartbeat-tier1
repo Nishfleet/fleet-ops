@@ -2617,7 +2617,7 @@ if require_manifest_helper "$VIBES_CANARY_BIN"; then
         log "40. vibes canary complete"
     else
         vibes_canary_rc=$?
-        log "40. vibes canary FAILED (rc=$vibes_canary_rc) — ram_gb_per_worker is unmeasured or seat-caps is broken; unit will land in --state=failed"
+        log "40. vibes canary FAILED (rc=$vibes_canary_rc) — seat-caps is broken or uncited; unit will land in --state=failed"
     fi
 else
     _req=$?

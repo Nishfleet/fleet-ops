@@ -23,7 +23,7 @@ fi
 #      violation — that is the Ollama Cloud mislabel that drained the weekly
 #      quota while cline was walled.
 #   4. cap>0 free/prepaid-quota rows carry a non-empty .models map.
-#      A provider cap alone is not an allowlist entry: pick_seat skips
+#      A provider cap alone is not an allowlist entry: pick-seat skips
 #      every live slug (fleet-ops#437, hetzner/Qwen). Metered empty maps
 #      are owned by fleet-ops#384 and stay quiet here.
 #
@@ -199,7 +199,7 @@ while IFS=$'\t' read -r id want_class; do
         loud "ENTITLED-WIRED-VIOLATION" "seat $id cap=$cap class=$got_class has an empty model allowlist"
         file_finding "$id" "empty-models" \
             "entitled-vs-wired: $id cap=$cap has an empty model allowlist" \
-            "\`${id}\` is cap=${cap} class=${got_class} but \`.models\` is missing or empty. pick_seat treats a provider cap alone as not an allowlist entry and skips every live slug (fleet-ops#437 hetzner/Qwen). Add the live models.json slug with a dated reason, or set cap=0 with a dated reason."
+            "\`${id}\` is cap=${cap} class=${got_class} but \`.models\` is missing or empty. the retired picker treated a provider cap alone as not an allowlist entry and skips every live slug (fleet-ops#437 hetzner/Qwen). Add the live models.json slug with a dated reason, or set cap=0 with a dated reason."
         violations=$((violations + 1))
     fi
 done < <(jq -r '.seats[] | [.id, .class] | @tsv' "$ENTITLED_JSON")

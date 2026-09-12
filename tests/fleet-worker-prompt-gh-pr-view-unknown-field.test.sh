@@ -29,7 +29,7 @@
 #   3. unpiped positive control: same body with isError:true and
 #      `Command exited with code 1` + empty next turns -> 1 finding.
 #   4. lib/failed-command-flagged.py docstring cites fleet-ops#1193.
-#   5. seat-lib.test.sh hosts this file (CI cannot gain a P14 line).
+#   5. seat.lib.test.sh hosts this file (CI cannot gain a P14 line).
 #
 set -euo pipefail
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -127,10 +127,10 @@ grep -q 'mergedAt' "$lib" \
   || fail "lib/failed-command-flagged.py docstring must name the valid mergedAt field"
 ok "lib/failed-command-flagged.py docstring cites fleet-ops#1193 and the gh pr view pipe-mask shape"
 
-# --- 5. seat-lib.test.sh hosts this file (CI cannot gain a P14 line) --------
+# --- 5. seat.lib.test.sh hosts this file (CI cannot gain a P14 line) --------
 grep -Fq 'bash "$here/fleet-worker-prompt-gh-pr-view-unknown-field.test.sh"' \
-  "$here/seat-lib.test.sh" \
-  || fail "seat-lib.test.sh must nest this file (CI cannot gain a new workflow line)"
-ok "seat-lib.test.sh hosts this file"
+  "$here/seat.lib.test.sh" \
+  || fail "seat.lib.test.sh must nest this file (CI cannot gain a new workflow line)"
+ok "seat.lib.test.sh hosts this file"
 
 ok "worker-prompt gh pr view unknown-field wording locked (fleet-ops#1193)"

@@ -2,7 +2,7 @@
 # tests/fleet-gap-closure-conference-senior-seat.test.sh
 #
 # fleet-ops#4211 (gap-audit conference dissent, senior, cycle 4):
-# find_senior_seat, the live path in lib/seat-lib.sh, emits the senior seat as
+# find_senior_seat, the live path in lib/litellm-seat.sh, emits the senior seat as
 # provider<TAB>model. bin/fleet-gap-closure-conference used to parse that
 # seat on '/', so BOTH SENIOR_PROVIDER and SENIOR_MODEL became the whole
 # tab-separated string and the conference seat was unresolvable — the senior

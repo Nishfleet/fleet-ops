@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
-# tests/seat-lib-product-only-spend-cap.test.sh
+# tests/seatlib-product-only-spend-cap.test.sh
 #
 # fleet-ops#3724: the paid openrouter/deepseek-v4-flash-0731 seat is a
-# product_only last-resort seat with a USD/day spend cap. pick_seat may offer
+# product_only last-resort seat with a USD/day spend cap. pick-seat may offer
 # it ONLY when all of these hold:
 #   1. the packet repo carries the `product` flag in config/intake-repos.json
 #      (0509 today; fleet-ops is control plane and must NEVER land on it;
@@ -19,7 +19,7 @@
 #
 # What we prove (replay drill against synthetic Pi session files):
 #   1. Packet repo = fleet-ops (control plane): the paid seat is never
-#      offered — pick_seat returns nothing even when it is the only seat
+#      offered — pick-seat returns nothing even when it is the only seat
 #      with cap>0.
 #   2. Packet repo unclassified (no PI_PACKET_REPO): same — fails closed.
 #   3. Packet repo = 0509 (product): a usable free seat wins even when the
@@ -40,15 +40,15 @@
 set -euo pipefail
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 repo_root="$(cd "$here/.." && pwd)"
-lib="$repo_root/lib/seat-lib.sh"
+lib="$repo_root/lib/litellm-seat.sh"
 
 fail() { echo "FAIL: $*" >&2; exit 1; }
 ok()   { echo "OK: $*"; }
 
-[[ -f "$lib" ]] || fail "seat-lib.sh not found: $lib"
+[[ -f "$lib" ]] || fail "seatlib.sh not found: $lib"
 command -v jq >/dev/null || fail "jq required"
 
-scratch="$(mktemp -d -t seat-lib-po.XXXXXX)"
+scratch="$(mktemp -d -t seatlib-po.XXXXXX)"
 trap 'rm -rf "$scratch"' EXIT INT TERM
 
 # Offline: no live systemd units, no no-usable-seat cooldown.
@@ -172,14 +172,14 @@ write_session() {
     } >"$f"
 }
 
-# pick helper: runs pick_seat in a clean bash with the given repo env.
+# pick helper: runs pick-seat in a clean bash with the given repo env.
 # Args: packet_repo pick_role
 run_pick() {
     local repo="$1" role="${2:-scout}"
     if [[ -n "$repo" ]]; then
-        bash -c 'source "$0"; load_seat_caps; PI_PACKET_REPO="'"$repo"'" PI_PICK_ROLE="'"$role"'" pick_seat "" "" 0 "" light' "$lib" 2>/dev/null
+        bash -c 'source "$0"; load_seat_caps; PI_PACKET_REPO="'"$repo"'" PI_PICK_ROLE="'"$role"'" pick-seat "" "" 0 "" light' "$lib" 2>/dev/null
     else
-        bash -c 'source "$0"; load_seat_caps; unset PI_PACKET_REPO; PI_PICK_ROLE="'"$role"'" pick_seat "" "" 0 "" light' "$lib" 2>/dev/null
+        bash -c 'source "$0"; load_seat_caps; unset PI_PACKET_REPO; PI_PICK_ROLE="'"$role"'" pick-seat "" "" 0 "" light' "$lib" 2>/dev/null
     fi
 }
 

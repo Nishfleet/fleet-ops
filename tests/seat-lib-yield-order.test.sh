@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# tests/seat-lib-yield-order.test.sh
+# tests/seatlib-yield-order.test.sh
 #
 # fleet-ops#3125 (accepted assumption + decisions 2026-09-04): product picks
 # (PI_PICK_ROLE=product, exported by pi-issue-run/pi-packet-run) order issue-
@@ -7,7 +7,7 @@
 # product_order: "yield") instead of the retired volume front-of-ladder.
 # The ledger itself is written by libexec/fleet-metrics-export.py
 # (fleet-ops#3250) as a top-level {"provider/model": {yield, sessions,
-# provisional}} JSON. This drill proves pick_seat behaviour the config drill
+# provisional}} JSON. This drill proves pick-seat behaviour the config drill
 # cannot see:
 #   1. Product picks route to the highest-yield seat (ledger beats the class
 #      ladder: a 0.90-yield prepaid seat beats the free-first pick).
@@ -17,7 +17,7 @@
 #      tried, not starved.
 #   4. Scout/canary/audit picks (any other PI_PICK_ROLE) keep the free-first
 #      class ladder; the ledger is ignored.
-#   5. The pick_seat yield-order log line fires once per product pick.
+#   5. The pick-seat yield-order log line fires once per product pick.
 #
 # fleet-ops#3323 extends the drill for product_order: "value" — the ledger
 # also carries cost_per_session and product picks rank by value =
@@ -25,13 +25,13 @@
 # (free seats sort first at equal yield), heavy/keystone packets order by
 # yield first (quality) then value.
 #
-# Hosted by tests/seat-lib.test.sh (workers cannot add a ci.yml line).
+# Hosted by tests/seat.lib.test.sh (workers cannot add a ci.yml line).
 # Offline. Scratch models/caps/yield so live state cannot leak.
 
 set -euo pipefail
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 repo_root="$(cd "$here/.." && pwd)"
-lib="$repo_root/lib/seat-lib.sh"
+lib="$repo_root/lib/litellm-seat.sh"
 
 fail() { echo "FAIL: $*" >&2; exit 1; }
 ok()   { echo "OK: $*"; }
@@ -39,7 +39,7 @@ ok()   { echo "OK: $*"; }
 [[ -f "$lib" ]] || fail "missing $lib"
 command -v jq >/dev/null 2>&1 || fail "jq missing"
 
-scratch=$(mktemp -d -t seat-lib-yield-order.XXXXXX)
+scratch=$(mktemp -d -t seatlib-yield-order.XXXXXX)
 trap 'rm -rf "$scratch"' EXIT INT TERM
 
 cat >"$scratch/models.json" <<'JSON'
@@ -110,7 +110,7 @@ mkdir -p "$PI_PACKET_STATE" "$PI_SEAT_HEALTH_LEDGER_DIR"
 pick() {
     # pick <role> [tried] [difficulty]
     local role="${1:-scout}" tried="${2:-}" difficulty="${3:-light}"
-    bash -c 'source "$0"; load_seat_caps; PI_PICK_ROLE="'"$role"'" pick_seat "" "" 0 "'"$tried"'" "'"$difficulty"'"' "$lib" 2>/dev/null
+    bash -c 'source "$0"; load_seat_caps; PI_PICK_ROLE="'"$role"'" pick-seat "" "" 0 "'"$tried"'" "'"$difficulty"'"' "$lib" 2>/dev/null
 }
 
 # --- 1. product picks route by yield (highest-yield, not free-first) ------
@@ -160,14 +160,14 @@ export SEAT_LOG_FORCE_FILE=1
 export PI_PACKET_STATE="$scratch/state-log"
 mkdir -p "$PI_PACKET_STATE"
 SEAT_YIELD_JSON="$scratch/seat-yield.json" bash -c \
-  'source "$0"; load_seat_caps; PI_PICK_ROLE=product pick_seat "" "" 0 "" light >/dev/null' "$lib" 2>/dev/null || true
+  'source "$0"; load_seat_caps; PI_PICK_ROLE=product pick-seat "" "" 0 "" light >/dev/null' "$lib" 2>/dev/null || true
 picklog="$PI_PACKET_STATE/watch.log"
 [[ -f "$picklog" ]] || fail "5: missing pick log $picklog"
 grep -c 'yield-order (product):' "$picklog" | grep -qx '1' \
   || fail "5: expected exactly one yield-order log line, got: $(grep -c 'yield-order (product):' "$picklog" 2>/dev/null || echo 0)"
 grep 'yield-order (product):' "$picklog" | grep -q 'xai-oauth/grok-4.6@0.9' \
   || fail "5: log must show the computed order with yields"
-ok "5: pick_seat logs the yield order once per pick"
+ok "5: pick-seat logs the yield order once per pick"
 
 # =========================================================================
 # fleet-ops#3323: product_order=value. The ledger also carries
@@ -254,14 +254,14 @@ ok "9: scout role ignores the value ledger and stays free-first"
 export PI_PACKET_STATE="$scratch/state-log-value"
 mkdir -p "$PI_PACKET_STATE"
 SEAT_CAPS_JSON="$scratch/seat-caps-value.json" SEAT_YIELD_JSON="$scratch/seat-yield-cost.json" bash -c \
-  'source "$0"; load_seat_caps; PI_PICK_ROLE=product pick_seat "" "" 0 "" light >/dev/null' "$lib" 2>/dev/null || true
+  'source "$0"; load_seat_caps; PI_PICK_ROLE=product pick-seat "" "" 0 "" light >/dev/null' "$lib" 2>/dev/null || true
 picklog="$PI_PACKET_STATE/watch.log"
 [[ -f "$picklog" ]] || fail "10: missing pick log $picklog"
 grep -c 'value-order (product,light):' "$picklog" | grep -qx '1' \
   || fail "10: expected exactly one value-order log line, got: $(grep -c 'value-order (product,light):' "$picklog" 2>/dev/null || echo 0)"
 grep 'value-order (product,light):' "$picklog" | grep -q 'commandcode/poolside/laguna-s-2.1-free@y=0.500000,v=500.000000' \
   || fail "10: log must show the computed order with yield and value"
-ok "10: pick_seat logs the value order once per pick"
+ok "10: pick-seat logs the value order once per pick"
 
 # =========================================================================
 # fleet-ops#4558: light value-order drains by class tier — free first, then
@@ -401,4 +401,4 @@ done
   || fail "14: worker 5 (overflow after devin cap) must be pareto, got: ${cohort_p[4]}"
 ok "14: 4-worker cohort — devin takes all 4 slots, pareto only as the 5th (overflow) pick"
 
-ok "seat-lib-yield-order: product-yield ordering, class tie-break, provisional, scout free-first, log line; value ordering light/heavy/keystone; 4558 prepaid-drain tiers"
+ok "seatlib-yield-order: product-yield ordering, class tie-break, provisional, scout free-first, log line; value ordering light/heavy/keystone; 4558 prepaid-drain tiers"

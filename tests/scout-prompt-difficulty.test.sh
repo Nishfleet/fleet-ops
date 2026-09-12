@@ -2,8 +2,8 @@
 # tests/scout-prompt-difficulty.test.sh
 #
 # Proves the scout and scout-repair prompts classify as `light` difficulty
-# via the real lib/seat-lib.sh packet_difficulty(), so pi-scout-run sets
-# need_capable=0 and pick_seat may use healthy commodity lanes (ollama, bai,
+# via the real lib/litellm-seat.sh packet_difficulty(), so pi-scout-run sets
+# need_capable=0 and pick-seat may use healthy commodity lanes (ollama, bai,
 # cline, hetzner, opencode free lanes) instead of being locked to the small
 # "capable" set (devin, xai-oauth, minimax, straitly, cursor) that is
 # frequently full or walled.
@@ -12,21 +12,21 @@
 # false-positives on scout/scout-repair prompt BOILERPLATE (e.g. "do not
 # file a fix-shaped issue", "fix what you safely can") and returns "heavy",
 # forcing need_capable=1. With every capable seat at-capacity or walled,
-# pick_seat returned NO USABLE SEAT and the scout + scout-repair units
+# pick-seat returned NO USABLE SEAT and the scout + scout-repair units
 # exited non-zero on both lanes for 18h. The prompts do NOT edit code
 # (scout.md: "never edit repo code"; scout-repair.md: "NEVER weaken the
 # unit"), so an explicit `difficulty: light` manifest line overrides the
 # heuristic (fleet-ops#1133/#1383). This test fails if the marker is
 # removed or packet_difficulty regresses.
 #
-# Hosted by tests/seat-lib.test.sh (workers cannot add a ci.yml line).
-# Offline. Sources the real seat-lib.sh but only exercises
+# Hosted by tests/seat.lib.test.sh (workers cannot add a ci.yml line).
+# Offline. Sources the real seatlib.sh but only exercises
 # packet_difficulty (no seat-caps/models/ledger reads).
 
 set -euo pipefail
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 repo_root="$(cd "$here/.." && pwd)"
-lib="$repo_root/lib/seat-lib.sh"
+lib="$repo_root/lib/litellm-seat.sh"
 
 fail() { echo "FAIL: $*" >&2; exit 1; }
 ok()   { echo "OK: $*"; }

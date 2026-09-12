@@ -882,7 +882,7 @@ ok "conference dry-run tallies unanimous DONE from three stubs"
 
 # ---------------------------------------------------------------------------
 # fleet-ops#4210: the glm-5-3 auditor must resolve to a LIVE wired free-GLM
-# seat (seat-lib health ledger), not the hardcoded unwired
+# seat (seatlib health ledger), not the hardcoded unwired
 # zenmux/z-ai/glm-5.3-free slug that made every termination conference file a
 # mechanical gap-audit dissent.
 # ---------------------------------------------------------------------------
@@ -904,7 +904,7 @@ printf '{"cycle":1}\n' >"$state_dir/state.json"
 GAP_LOOP_CONF_ID="$res_conf" GAP_LOOP_DRY_RUN=1 GAP_LOOP_STATE_DIR="$state_dir" \
   GAP_LOOP_TALLY_BIN="$tally" GAP_LOOP_GH="$scratch/bin/gh" \
   GAP_LOOP_SYSTEMCTL="$scratch/bin/systemctl" \
-  PI_PACKET_SEAT_LIB="$repo_root/lib/seat-lib.sh" \
+  PI_PACKET_SEAT_LIB="$repo_root/lib/litellm-seat.sh" \
   SEAT_CAPS_JSON="$res_caps/seat-caps.json" \
   PI_MODELS_JSON="$res_caps/models.json" \
   PI_SEAT_HEALTH_LEDGER_DIR="$res_seat_state" \
@@ -932,7 +932,7 @@ printf '{"cycle":1}\n' >"$state_dir/state.json"
 GAP_LOOP_CONF_ID="$res_conf2" GAP_LOOP_DRY_RUN=1 GAP_LOOP_STATE_DIR="$state_dir" \
   GAP_LOOP_TALLY_BIN="$tally" GAP_LOOP_GH="$scratch/bin/gh" \
   GAP_LOOP_SYSTEMCTL="$scratch/bin/systemctl" \
-  PI_PACKET_SEAT_LIB="$repo_root/lib/seat-lib.sh" \
+  PI_PACKET_SEAT_LIB="$repo_root/lib/litellm-seat.sh" \
   SEAT_CAPS_JSON="$res_caps/seat-caps.json" \
   PI_MODELS_JSON="$res_caps/models.json" \
   PI_SEAT_HEALTH_LEDGER_DIR="$res_seat_state" \
@@ -965,7 +965,7 @@ printf '{"cycle":1}\n' >"$state_dir/state.json"
 GAP_LOOP_CONF_ID="$res_conf3" GAP_LOOP_DRY_RUN=1 GAP_LOOP_STATE_DIR="$state_dir" \
   GAP_LOOP_TALLY_BIN="$tally" GAP_LOOP_GH="$scratch/bin/gh" \
   GAP_LOOP_SYSTEMCTL="$scratch/bin/systemctl" \
-  PI_PACKET_SEAT_LIB="$repo_root/lib/seat-lib.sh" \
+  PI_PACKET_SEAT_LIB="$repo_root/lib/litellm-seat.sh" \
   SEAT_CAPS_JSON="$res_caps/seat-caps.json" \
   PI_MODELS_JSON="$res_caps/models.json" \
   PI_SEAT_HEALTH_LEDGER_DIR="$res_seat_state" \
@@ -1016,7 +1016,7 @@ printf '{"cycle":1}\n' >"$state_dir/state.json"
 GAP_LOOP_CONF_ID="$res_conf4" GAP_LOOP_DRY_RUN=1 GAP_LOOP_STATE_DIR="$state_dir" \
   GAP_LOOP_TALLY_BIN="$tally" GAP_LOOP_GH="$scratch/bin/gh" \
   GAP_LOOP_SYSTEMCTL="$scratch/bin/systemctl" \
-  PI_PACKET_SEAT_LIB="$repo_root/lib/seat-lib.sh" \
+  PI_PACKET_SEAT_LIB="$repo_root/lib/litellm-seat.sh" \
   SEAT_CAPS_JSON="$cap5/seat-caps.json" \
   PI_MODELS_JSON="$cap5/models.json" \
   PI_SEAT_HEALTH_LEDGER_DIR="$res_seat_state" \
@@ -1063,7 +1063,7 @@ printf '{"cycle":1}\n' >"$state_dir/state.json"
 GAP_LOOP_CONF_ID="$res_conf4" GAP_LOOP_DRY_RUN=1 GAP_LOOP_STATE_DIR="$state_dir" \
   GAP_LOOP_TALLY_BIN="$tally" GAP_LOOP_GH="$scratch/bin/gh" \
   GAP_LOOP_SYSTEMCTL="$scratch/bin/systemctl" \
-  PI_PACKET_SEAT_LIB="$repo_root/lib/seat-lib.sh" \
+  PI_PACKET_SEAT_LIB="$repo_root/lib/litellm-seat.sh" \
   SEAT_CAPS_JSON="$res_caps2/seat-caps.json" \
   PI_MODELS_JSON="$res_caps2/models.json" \
   PI_SEAT_HEALTH_LEDGER_DIR="$res_seat_state2" \
@@ -1093,7 +1093,7 @@ printf '{"cycle":1}\n' >"$state_dir/state.json"
 GAP_LOOP_CONF_ID="$res_conf5" GAP_LOOP_DRY_RUN=1 GAP_LOOP_STATE_DIR="$state_dir" \
   GAP_LOOP_TALLY_BIN="$tally" GAP_LOOP_GH="$scratch/bin/gh" \
   GAP_LOOP_SYSTEMCTL="$scratch/bin/systemctl" \
-  PI_PACKET_SEAT_LIB="$repo_root/lib/seat-lib.sh" \
+  PI_PACKET_SEAT_LIB="$repo_root/lib/litellm-seat.sh" \
   SEAT_CAPS_JSON="$res_caps2/seat-caps.json" \
   PI_MODELS_JSON="$res_caps2/models.json" \
   PI_SEAT_HEALTH_LEDGER_DIR="$res_seat_state2" \
@@ -1132,7 +1132,7 @@ printf '{"cycle":1}\n' >"$state_dir/state.json"
 GAP_LOOP_CONF_ID="$res_conf6" GAP_LOOP_DRY_RUN=1 GAP_LOOP_STATE_DIR="$state_dir" \
   GAP_LOOP_TALLY_BIN="$tally" GAP_LOOP_GH="$scratch/bin/gh" \
   GAP_LOOP_SYSTEMCTL="$scratch/bin/systemctl" \
-  PI_PACKET_SEAT_LIB="$repo_root/lib/seat-lib.sh" \
+  PI_PACKET_SEAT_LIB="$repo_root/lib/litellm-seat.sh" \
   SEAT_CAPS_JSON="$res_caps2/seat-caps.json" \
   PI_MODELS_JSON="$res_caps2/models.json" \
   PI_SEAT_HEALTH_LEDGER_DIR="$res_seat_state2" \
@@ -1158,7 +1158,7 @@ printf '{"cycle":1}\n' >"$state_dir/state.json"
 GAP_LOOP_CONF_ID="$res_conf7" GAP_LOOP_DRY_RUN=1 GAP_LOOP_STATE_DIR="$state_dir" \
   GAP_LOOP_TALLY_BIN="$tally" GAP_LOOP_GH="$scratch/bin/gh" \
   GAP_LOOP_SYSTEMCTL="$scratch/bin/systemctl" \
-  PI_PACKET_SEAT_LIB="$repo_root/lib/seat-lib.sh" \
+  PI_PACKET_SEAT_LIB="$repo_root/lib/litellm-seat.sh" \
   SEAT_CAPS_JSON="$res_caps2/seat-caps.json" \
   PI_MODELS_JSON="$res_caps2/models.json" \
   PI_SEAT_HEALTH_LEDGER_DIR="$res_seat_state2" \

@@ -34,7 +34,7 @@
 #   2. same shape plus a later user-facing flag that NAMES the
 #      failure -> clean.
 #   3. lib/failed-command-flagged.py cites fleet-ops#958 (detector-side lock: case list moved to lib, fleet-ops#3246).
-#   4. seat-lib.test.sh hosts this file (CI cannot gain a new P14 line).
+#   4. seat.lib.test.sh hosts this file (CI cannot gain a new P14 line).
 #   5. guard-fires drill: a worker.md copy stripped of the locked
 #      wording fails the scenario-3 checks (fleet-ops#2101 prevention).
 
@@ -150,10 +150,10 @@ set -e
 [[ "$rc" == 1 ]] || fail "guard must fire when worker.md loses the ENOENT wording (got rc=$rc)"
 ok "guard fires when worker.md drifts off the fleet-ops#958 lock wording"
 
-# --- 4. seat-lib.test.sh hosts this file (CI cannot gain a P14 line) -------
+# --- 4. seat.lib.test.sh hosts this file (CI cannot gain a P14 line) -------
 grep -Fq 'bash "$here/fleet-failed-command-read-enoent-skip-todos.test.sh"' \
-  "$here/seat-lib.test.sh" \
-  || fail "seat-lib.test.sh must nest this file (CI cannot gain a new workflow line)"
-ok "seat-lib.test.sh hosts this file"
+  "$here/seat.lib.test.sh" \
+  || fail "seat.lib.test.sh must nest this file (CI cannot gain a new workflow line)"
+ok "seat.lib.test.sh hosts this file"
 
 echo "OK: fleet-failed-command-read-enoent-skip-todos: live #958 multi-turn skip + todos drills"

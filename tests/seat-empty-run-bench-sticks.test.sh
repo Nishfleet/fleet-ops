@@ -3,7 +3,7 @@
 #
 # fleet-ops#3602: an empty-run bench must SURVIVE a subsequent successful
 # (HTTP 200) probe until its wall_end, and a seat with an unexpired empty-run
-# bench can NEVER be returned by pick_seat.
+# bench can NEVER be returned by pick-seat.
 #
 # Incident 2026-09-05T11:30:03Z: ollama/deepseek-v4-flash:0731 was re-benched
 # 8x in 2h (count=6,7,8 at 09:33/09:37/09:47Z, backoff=86400s) yet the
@@ -12,22 +12,22 @@
 # rotation and burning issues on guaranteed no-ops. The clobber-proof
 # spawn-bench marker (fleet-ops#1512) is the survival mechanism: seat_usable
 # checks it BEFORE the ledger, so a healthy ledger clobber does not re-admit
-# the seat. This test proves the contract end-to-end through pick_seat (not
+# the seat. This test proves the contract end-to-end through pick-seat (not
 # just seat_usable), which is the routing authority that hands seats to
 # workers.
 #
 # This test proves:
-#   (1) After ONE empty run (mark_seat_empty_run), pick_seat with empty
+#   (1) After ONE empty run (mark_seat_empty_run), pick-seat with empty
 #       tried-seats (the intake re-spawn case) NEVER returns the benched
 #       seat — it reroutes to a healthy seat. (the "replay showing the seat
 #       excluded after one empty run" the issue asks for)
 #   (2) After a healthy 200-probe clobbers the ledger to
 #       health_class=healthy / count=0 / usable_at=null (exactly what
-#       seat-health.ts writes on a later simple packet's 200), pick_seat
+#       seat-health.ts writes on a later simple packet's 200), pick-seat
 #       STILL never returns the benched seat — the spawn-bench marker holds
 #       the bench until wall_end.
 #   (3) After the marker's wall_end passes, a FRESH marker that is still
-#       the seat's latest evidence is held for pick_seat (probe-gated
+#       the seat's latest evidence is held for pick-seat (probe-gated
 #       re-admission, fleet-ops#3737 — a dead-weight seat never costs a work
 #       item a turn); a POST-bench healthy observation (real recovery) or
 #       marker age >24h releases the hold so a recovered seat is never
@@ -44,7 +44,7 @@
 set -euo pipefail
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 repo_root="$(cd "$here/.." && pwd)"
-seat_lib="$repo_root/lib/seat-lib.sh"
+seat_lib="$repo_root/lib/litellm-seat.sh"
 
 fail() { echo "FAIL: $*" >&2; exit 1; }
 ok()   { echo "OK: $*"; }
@@ -66,11 +66,11 @@ export SEAT_CAPS_JSON="$scratch/seat-caps.json"
 export XDG_RUNTIME_DIR="$scratch/xdg"
 export PI_SEAT_LIB_CHECK_SYSTEMD=0
 # Credential precheck off: test fixtures have no apiKey; the reactive ledger
-# is the backstop (same as the rest of the seat-lib test suite).
+# is the backstop (same as the rest of the seatlib test suite).
 export PI_SEAT_CREDENTIAL_PRECHECK=0
 mkdir -p "$XDG_RUNTIME_DIR"
 
-# Two seats on one provider so pick_seat has somewhere to reroute after the
+# Two seats on one provider so pick-seat has somewhere to reroute after the
 # empty-run seat is benched. Both are free-class (no privacy gate), cap 4.
 cat >"$PI_MODELS_JSON" <<'JSON'
 {
@@ -138,7 +138,7 @@ bench_mf=$(marker_file "$bench_p" "$bench_m")
 other_lf=$(ledger_file "$bench_p" "$other_m")
 other_mf=$(marker_file "$bench_p" "$other_m")
 
-# Helper: assert pick_seat never returns the benched seat. Runs pick_seat
+# Helper: assert pick-seat never returns the benched seat. Runs pick-seat
 # several times (the intake re-spawn case: empty tried-seats each call) and
 # fails if the benched seat is ever selected.
 assert_pick_skips_benched() {
@@ -148,24 +148,24 @@ assert_pick_skips_benched() {
         # Empty tried-seats = a fresh intake re-spawn (the exact path that
         # re-picked the no-op'ing ollama seat 8x in 2h, fleet-ops#3602).
         : >"$STATE_DIR/attempts/pi-issue-fleet-ops-3602.tried-seats" 2>/dev/null || true
-        picked=$(pick_seat "" "" 0 "" "light" "public" || true)
-        [[ -n "$picked" ]] || fail "$label: pick_seat returned empty (iteration $i)"
+        picked=$(pick-seat "" "" 0 "" "light" "public" || true)
+        [[ -n "$picked" ]] || fail "$label: pick-seat returned empty (iteration $i)"
         picked_p=$(printf '%s' "$picked" | cut -f1)
         picked_m=$(printf '%s' "$picked" | cut -f2)
         if [[ "$picked_p/$picked_m" == "$bench_p/$bench_m" ]]; then
-            fail "$label: pick_seat returned the benched seat $bench_p/$bench_m on iteration $i — empty-run bench did NOT survive (fleet-ops#3602)"
+            fail "$label: pick-seat returned the benched seat $bench_p/$bench_m on iteration $i — empty-run bench did NOT survive (fleet-ops#3602)"
         fi
         if [[ "$expect_other" == "1" ]]; then
             [[ "$picked_p/$picked_m" == "$bench_p/$other_m" ]] \
-              || fail "$label: pick_seat rerouted to $picked_p/$picked_m, expected $bench_p/$other_m"
+              || fail "$label: pick-seat rerouted to $picked_p/$picked_m, expected $bench_p/$other_m"
         fi
     done
-    ok "$label: pick_seat never returned the benched seat across 5 intake re-spawns"
+    ok "$label: pick-seat never returned the benched seat across 5 intake re-spawns"
 }
 
-# --- (1) ONE empty run -> pick_seat excludes the seat (the replay) ---------
+# --- (1) ONE empty run -> pick-seat excludes the seat (the replay) ---------
 rm -f "$LEDGER"/*.json "$LEDGER"/*.spawn-bench.json 2>/dev/null || true
-# Seed the other seat healthy so pick_seat has somewhere to reroute.
+# Seed the other seat healthy so pick-seat has somewhere to reroute.
 clobber_with_healthy_200 "$bench_p" "$other_m" "$other_lf"
 # ONE empty run on the bench seat.
 mark_seat_empty_run "$bench_p" "$bench_m" "test:empty-run:tools=0" >/dev/null 2>&1 \
@@ -177,12 +177,12 @@ marker_usable=$(jq -r '.usable_at // ""' "$bench_mf")
 # The ledger was also written (transient_fault / empty_run); seat_usable would
 # block even without the marker. The real test is AFTER the clobber below.
 assert_pick_skips_benched "(1) after one empty run (ledger+marker)"
-ok "(1) replay: one empty run excludes the seat from pick_seat (fleet-ops#3602)"
+ok "(1) replay: one empty run excludes the seat from pick-seat (fleet-ops#3602)"
 
-# --- (2) healthy 200-probe clobber -> pick_seat STILL excludes the seat ----
+# --- (2) healthy 200-probe clobber -> pick-seat STILL excludes the seat ----
 # This is the core fleet-ops#3602 regression: a later simple packet's 200
 # clobbers the ledger to healthy (count=0, usable_at=null). Before the
-# clobber-proof marker, pick_seat re-admitted the seat and burned 8 runs/2h.
+# clobber-proof marker, pick-seat re-admitted the seat and burned 8 runs/2h.
 clobber_with_healthy_200 "$bench_p" "$bench_m" "$bench_lf"
 ledger_hc=$(jq -r '.health_class' "$bench_lf")
 [[ "$ledger_hc" == "healthy" ]] \
@@ -194,12 +194,12 @@ ledger_count=$(jq -r '.consecutive_failure_count // 0' "$bench_lf")
 _seat_in_future "$marker_usable" \
   || fail "spawn-bench marker usable_at ($marker_usable) is no longer in the future — wall_end passed mid-test"
 assert_pick_skips_benched "(2) after healthy 200-probe clobber (marker held)"
-ok "(2) empty-run bench SURVIVES a healthy 200-probe clobber — pick_seat still excludes the seat until wall_end (fleet-ops#3602)"
+ok "(2) empty-run bench SURVIVES a healthy 200-probe clobber — pick-seat still excludes the seat until wall_end (fleet-ops#3602)"
 
 # --- (3) wall_end passes: fresh marker held as latest evidence (probe-gate) --
 # fleet-ops#3737: an expired wrapper bench no longer fails open. While the
 # marker is fresh (< EMPTY_RUN_COUNT_WINDOW_S) and still the seat's latest
-# evidence, pick_seat holds it for the comeback organ's tool-using probe —
+# evidence, pick-seat holds it for the comeback organ's tool-using probe —
 # so a dead-weight seat never costs a work item a turn. The clobber's
 # healthy observed_at corresponds to the SAME run as the marker write (the
 # mid-run 200 the extension logged during the empty run), so it is NOT
@@ -226,14 +226,14 @@ jq --arg o "$later_iso" '.observed_at = $o' "$bench_lf" >"$tmp" 2>/dev/null && m
 saw_bench=0
 for i in 1 2 3 4 5; do
     : >"$STATE_DIR/attempts/pi-issue-fleet-ops-3602.tried-seats" 2>/dev/null || true
-    picked=$(pick_seat "" "" 0 "" "light" "public" || true)
-    [[ -n "$picked" ]] || fail "pick_seat returned empty after post-bench recovery (iter $i)"
+    picked=$(pick-seat "" "" 0 "" "light" "public" || true)
+    [[ -n "$picked" ]] || fail "pick-seat returned empty after post-bench recovery (iter $i)"
     picked_p=$(printf '%s' "$picked" | cut -f1)
     picked_m=$(printf '%s' "$picked" | cut -f2)
     [[ "$picked_p/$picked_m" == "$bench_p/$bench_m" ]] && saw_bench=1
 done
 [[ "$saw_bench" == "1" ]] \
-  || fail "pick_seat never returned the recovered seat after post-bench evidence — recovery release broken"
+  || fail "pick-seat never returned the recovered seat after post-bench evidence — recovery release broken"
 ok "(3b) post-bench healthy observation releases the hold — recovered seat re-eligible (not walled permanently)"
 
 # --- (3c) archaeology: a stale marker (>24h) fail-opens --------------------
@@ -247,14 +247,14 @@ jq --arg o "$old_iso" '.observed_at = $o' "$bench_lf" >"$tmp" 2>/dev/null && mv 
 saw_bench=0
 for i in 1 2 3 4 5; do
     : >"$STATE_DIR/attempts/pi-issue-fleet-ops-3602.tried-seats" 2>/dev/null || true
-    picked=$(pick_seat "" "" 0 "" "light" "public" || true)
-    [[ -n "$picked" ]] || fail "pick_seat returned empty for stale marker (iter $i)"
+    picked=$(pick-seat "" "" 0 "" "light" "public" || true)
+    [[ -n "$picked" ]] || fail "pick-seat returned empty for stale marker (iter $i)"
     picked_p=$(printf '%s' "$picked" | cut -f1)
     picked_m=$(printf '%s' "$picked" | cut -f2)
     [[ "$picked_p/$picked_m" == "$bench_p/$bench_m" ]] && saw_bench=1
 done
 [[ "$saw_bench" == "1" ]] \
-  || fail "pick_seat walled a stale (>24h) marker — dead-organ escape hatch broken"
+  || fail "pick-seat walled a stale (>24h) marker — dead-organ escape hatch broken"
 ok "(3c) stale marker (>24h) fail-opens — dead-organ escape hatch intact"
 
 # --- (4) marker write is NOT best-effort: failure is loud ------------------
@@ -295,4 +295,4 @@ ok "(3c) stale marker (>24h) fail-opens — dead-organ escape hatch intact"
 sub_rc=$?
 [[ "$sub_rc" == "0" ]] || fail "(4) subshell failed (rc=$sub_rc)"
 
-ok "seat empty-run bench sticks: survives a healthy 200-probe clobber until wall_end, pick_seat never returns it (fleet-ops#3602)"
+ok "seat empty-run bench sticks: survives a healthy 200-probe clobber until wall_end, pick-seat never returns it (fleet-ops#3602)"

@@ -67,7 +67,7 @@
 #      (detector-side lock: case list moved to lib, fleet-ops#3246).
 #   7. lib/failed-command-flagged.py docstring cites fleet-ops#1174
 #      (detector-side lock).
-#   8. seat-lib.test.sh hosts this file (CI cannot gain a P14 line).
+#   8. seat.lib.test.sh hosts this file (CI cannot gain a P14 line).
 
 set -euo pipefail
 
@@ -211,10 +211,10 @@ grep -q 'Could not deserialize key data' "$lib" \
   || fail "lib/failed-command-flagged.py docstring must name the live Could not deserialize key data wording"
 ok "lib/failed-command-flagged.py docstring cites fleet-ops#1174 and the load_pem shape"
 
-# --- 8. seat-lib.test.sh hosts this file (CI cannot gain a P14 line) ------
+# --- 8. seat.lib.test.sh hosts this file (CI cannot gain a P14 line) ------
 grep -Fq 'bash "$here/fleet-failed-command-pem-deserialize.test.sh"' \
-  "$here/seat-lib.test.sh" \
-  || fail "seat-lib.test.sh must nest this file (CI cannot gain a new workflow line)"
-ok "seat-lib.test.sh hosts this file"
+  "$here/seat.lib.test.sh" \
+  || fail "seat.lib.test.sh must nest this file (CI cannot gain a new workflow line)"
+ok "seat.lib.test.sh hosts this file"
 
 echo "OK: fleet-failed-command-pem-deserialize: live #1174 load_pem_private_key drills"

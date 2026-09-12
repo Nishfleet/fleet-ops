@@ -711,8 +711,8 @@ grep -q 'bin/fleet-debug-playbook' "$repo_root/MANIFEST" \
   || fail "MANIFEST must install bin/fleet-debug-playbook"
 grep -q 'lib/debug-playbook.py' "$repo_root/MANIFEST" \
   || fail "MANIFEST must install lib/debug-playbook.py"
-grep -Fq 'bash "$here/fleet-debug-playbook.test.sh"' "$here/seat-lib.test.sh" \
-  || fail "seat-lib.test.sh must nest this file (CI cannot gain a new workflow line)"
+grep -Fq 'bash "$here/fleet-debug-playbook.test.sh"' "$here/seat.lib.test.sh" \
+  || fail "seat.lib.test.sh must nest this file (CI cannot gain a new workflow line)"
 jq -e '.rules[] | select(.id == "sr-debug-playbook" and .status == "enforced")' \
   "$repo_root/config/rule-enforcement.json" >/dev/null \
   || fail "sr-debug-playbook must be status=enforced in the matrix"

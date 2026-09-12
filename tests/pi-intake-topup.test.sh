@@ -68,11 +68,11 @@ burst=$(grep -E '^StartLimitBurst=' "$intake_unit" | cut -d= -f2)
 ok "pi-intake@.service StartLimitBurst=$burst admits one top-up per debounce window"
 
 # --- 4. tick debounce coalesces a cohort ------------------------------------
-stubs="$scratch/seat-lib-stub.sh"
+stubs="$scratch/seatlib-stub.sh"
 cat >"$stubs" <<'SH'
 total_seat_cap() { echo 8; }
 issue_seat_cap() { echo 5; }
-pick_seat() { echo "commandcode	deepseek/deepseek-v4-flash		0"; return 0; }
+litellm_seat() { echo "commandcode	deepseek/deepseek-v4-flash		0"; return 0; }
 precedence_band_phase() { echo "band"; }
 precedence_band_pending_clear() { true; }
 precedence_band_pending_starvation_clear() { true; }

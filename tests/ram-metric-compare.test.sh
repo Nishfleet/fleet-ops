@@ -129,14 +129,14 @@ ok "3. zero units exit 0 and write state"
 [[ "$(jq -r '.ram_gb_per_worker' "$caps")" == "0.65" ]] \
     || fail "ram_gb_per_worker must be 0.65 (got $(jq -r '.ram_gb_per_worker' "$caps")) — update this assertion and the scenario-4 comment in the same PR (fleet-ops#1190)"
 if grep -q 'ram_governor_recalibrate\|ram_governor_effective_gb' "$lib"; then
-    fail "seat-lib.sh must not self-calibrate per_worker from live RSS (#489 keeps the config as the source of truth)"
+    fail "seatlib.sh must not self-calibrate per_worker from live RSS (#489 keeps the config as the source of truth)"
 fi
 grep -q 'per="$SEAT_RAM_GB_PER_WORKER"' "$lib" \
     || fail "ram_governor_cap must still divide by SEAT_RAM_GB_PER_WORKER"
 # fleet-ops#3679: admission charges per-repo MemoryHigh, not a flat 2.0.
 # ram_charge_gb_for must exist and return the repo's MemoryHigh in GB.
 grep -q 'ram_charge_gb_for()' "$lib" \
-    || fail "seat-lib.sh must define ram_charge_gb_for (per-repo charge, fleet-ops#3679)"
+    || fail "seatlib.sh must define ram_charge_gb_for (per-repo charge, fleet-ops#3679)"
 # fleet-ops light has NO MemoryHigh after #3930 -> fallback 1.5; unknown repo -> fallback 1.5.
 fo_charge=$(SEAT_CAPS_JSON="$caps" bash -c 'source "$0"; _seat_caps_loaded=0; load_seat_caps; ram_charge_gb_for fleet-ops light' "$lib")
 [[ "$fo_charge" == "0.65" ]] || fail "ram_charge_gb_for fleet-ops light want fallback 0.65 got '$fo_charge'"

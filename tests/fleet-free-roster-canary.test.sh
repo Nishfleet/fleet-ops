@@ -670,7 +670,7 @@ ok "scenario19: production seat-caps keep every V4 flash id off the opencode all
 # credentials_bad corpse (seat_dead=true, no comeback clock). The cap=0 +
 # intentional_cap_zero=corpse row is the production lock: it keeps the
 # free-roster-canary from re-filing "free-slug-available" on every tick,
-# and the seat-lib cap-0 classifier treats corpse as INTENTIONAL (never
+# and the seatlib cap-0 classifier treats corpse as INTENTIONAL (never
 # re-audition, fleet-ops#2435) instead of stale. A later PR that removes
 # the row or re-raises the cap without a passing re-audition fails here.
 m3f_cap=$(jq -r '(.providers.commandcode.models["minimax/minimax-m3-free"] // "missing") | if type == "object" then .cap else . end' \
@@ -715,7 +715,7 @@ ok "scenario19b: production seat-caps keep commandcode minimax/minimax-m3-free r
 # is a credentials_bad corpse (seat_dead=true, no comeback clock). The
 # cap=0 + intentional_cap_zero=corpse row is the production lock: it
 # keeps the free-roster-canary from re-filing "free-slug-available" on
-# every tick, and the seat-lib cap-0 classifier treats corpse as
+# every tick, and the seatlib cap-0 classifier treats corpse as
 # INTENTIONAL (never re-audition, fleet-ops#2435) instead of stale. A
 # later PR that removes the row or re-raises the cap without a passing
 # re-audition fails here. fleet-ops#2742 is a stale duplicate of #2667

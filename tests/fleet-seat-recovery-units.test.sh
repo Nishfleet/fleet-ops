@@ -194,7 +194,7 @@ ok "negative control: seat_sentinel plane wedges a burst=5 stub on the same stor
 
 # --- 5. the sentinel latch is written by bin/pi-issue-run, edge-only ---------
 # fleet-ops#5093: nothing else in the repo observes BOTH seat verdicts, so
-# bin/pi-issue-run writes the sentinel: `no-usable` when pick_seat returns
+# bin/pi-issue-run writes the sentinel: `no-usable` when pick-seat returns
 # nothing, `usable` when a pick succeeds while the sentinel said no-usable
 # (the recovery edge the fast path exists to fire on). An unchanged verdict
 # writes NOTHING — that is what takes the fast path from ~2500 starts/h to
@@ -222,7 +222,7 @@ ok "negative control: seat_sentinel plane wedges a burst=5 stub on the same stor
   export XDG_RUNTIME_DIR="$scratch/xdg"
   mkdir -p "$XDG_RUNTIME_DIR"
   export PI_SEAT_LIB_CHECK_SYSTEMD=0
-  export PI_PACKET_SEAT_LIB="$repo_root/lib/seat-lib.sh"
+  export PI_PACKET_SEAT_LIB="$repo_root/lib/litellm-seat.sh"
   export PI_SEAT_NOUSABLE_COOLDOWN_S=0
   export EMPTY_RUN_RETRY_MAX=0
   export FLEET_DEBUG_PLAYBOOK_GATE=0

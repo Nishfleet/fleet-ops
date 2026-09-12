@@ -240,10 +240,10 @@ grep -q 'compound' "$lib" \
   || fail "lib/failed-command-flagged.py docstring must name the 'compound' bash chain shape"
 ok "lib/failed-command-flagged.py docstring cites fleet-ops#1061 and the compound-ls Permission-denied shape"
 
-# --- 7. seat-lib.test.sh hosts this file (CI cannot gain a P14 line) -------
+# --- 7. seat.lib.test.sh hosts this file (CI cannot gain a P14 line) -------
 grep -Fq 'bash "$here/fleet-failed-command-compound-ls-permission-denied.test.sh"' \
-  "$here/seat-lib.test.sh" \
-  || fail "seat-lib.test.sh must nest this file (CI cannot gain a new workflow line)"
-ok "seat-lib.test.sh hosts this file"
+  "$here/seat.lib.test.sh" \
+  || fail "seat.lib.test.sh must nest this file (CI cannot gain a new workflow line)"
+ok "seat.lib.test.sh hosts this file"
 
 echo "OK: fleet-failed-command-compound-ls-permission-denied: live #1061 drills"

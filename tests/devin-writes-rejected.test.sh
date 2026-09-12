@@ -8,7 +8,7 @@
 # runs, 30+ on 2026-09-09). The fix is dropping `--sandbox` (the provider
 # now runs `--permission-mode dangerous` unsandboxed). This test pins:
 #
-#   1. The seat-lib detector is_devin_writes_rejected matches the literal
+#   1. The seatlib detector is_devin_writes_rejected matches the literal
 #      "rejected a tool call that requires confirmation".
 #   2. classify_death_error classifies the literal as `devin-writes-rejected`,
 #      not `unknown` (so the fast-death fallthrough does not re-bench it as an
@@ -33,10 +33,10 @@ command -v jq >/dev/null || fail "jq required"
 scratch="$(mktemp -d -t devin-writes-rejected.XXXXXX)"
 trap 'rm -rf "$scratch"' EXIT INT TERM
 
-lib="$repo_root/lib/seat-lib.sh"
-[[ -f "$lib" ]] || fail "seat-lib.sh not found: $lib"
+lib="$repo_root/lib/litellm-seat.sh"
+[[ -f "$lib" ]] || fail "seatlib.sh not found: $lib"
 
-# Minimal seat-caps.json so seat-lib loads.
+# Minimal seat-caps.json so seatlib loads.
 cat >"$scratch/seat-caps.json" <<'JSON'
 {
   "ram_gb_per_worker": 1.5,
@@ -87,7 +87,7 @@ export XDG_RUNTIME_DIR="$scratch/xdg"
 mkdir -p "$XDG_RUNTIME_DIR"
 
 # ============================================================================
-# 1. seat-lib: is_devin_writes_rejected matcher
+# 1. seatlib: is_devin_writes_rejected matcher
 # ============================================================================
 # 1a. Matcher matches the exact literal.
 set +e
@@ -183,7 +183,7 @@ seat_dead=$(jq -r '.seat_dead' "$ledger_file")
 [[ "$seat_dead" == "false" ]] \
     || fail "mark_seat_devin_writes_rejected_bench must write seat_dead=false (CLI/flag config fault is infrastructure, NOT yield/corpse), got '$seat_dead'"
 
-# The bench must have a usable_at in the future (short bench so pick_seat dodges it).
+# The bench must have a usable_at in the future (short bench so pick-seat dodges it).
 usable_at=$(jq -r '.usable_at // "MISSING"' "$ledger_file")
 [[ "$usable_at" != "MISSING" ]] || fail "mark_seat_devin_writes_rejected_bench must write usable_at, missing"
 bench_until=$(jq -r '.bench_until // "MISSING"' "$ledger_file")
@@ -227,12 +227,12 @@ grep -q 'mark_seat_devin_writes_rejected_bench' "$run_src" \
 ok "pi-issue-run: write-rejection detection block calls is_devin_writes_rejected + mark_seat_devin_writes_rejected_bench"
 
 # ============================================================================
-# 5. Regression pin: the classifier literal is present in seat-lib.sh
+# 5. Regression pin: the classifier literal is present in seatlib.sh
 # ============================================================================
-# The issue's termination criterion: grep -q 'rejected a tool call' lib/seat-lib.sh
+# The issue's termination criterion: grep -q 'rejected a tool call' lib/litellm-seat.sh
 grep -q 'rejected a tool call' "$lib" \
-    || fail "REGRESSION PIN (fleet-ops#4780): lib/seat-lib.sh must carry the literal 'rejected a tool call'"
-ok "REGRESSION PIN (fleet-ops#4780): lib/seat-lib.sh carries the write-reject literal"
+    || fail "REGRESSION PIN (fleet-ops#4780): lib/litellm-seat.sh must carry the literal 'rejected a tool call'"
+ok "REGRESSION PIN (fleet-ops#4780): lib/litellm-seat.sh carries the write-reject literal"
 
 echo
 echo "ALL OK: devin-writes-rejected.test.sh (fleet-ops#4780)"

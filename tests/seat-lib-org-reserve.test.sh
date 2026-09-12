@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# tests/seat-lib-org-reserve.test.sh
+# tests/seatlib-org-reserve.test.sh
 # fleet-ops#4263 P3b: listed in ci.yml. org-reserve AIMD path deleted with
 # the routing library. This file proves the delete landed.
 
@@ -10,7 +10,7 @@ repo_root="$(cd "$here/.." && pwd)"
 fail() { echo "FAIL: $*" >&2; exit 1; }
 ok()   { echo "OK: $*"; }
 
-if [[ -f "$repo_root/lib/seat-lib.sh" ]] && grep -q 'pick_seat()' "$repo_root/lib/seat-lib.sh"; then
-  fail "routing library still defines pick_seat"
+if [[ -f "$repo_root/lib/litellm-seat.sh" ]] && grep -q 'litellm_seat()' "$repo_root/lib/litellm-seat.sh"; then
+  fail "routing library still defines pick-seat"
 fi
-ok "org-reserve routing path retired with pick_seat"
+ok "org-reserve routing path retired with pick-seat"

@@ -2,7 +2,7 @@
 # tests/pi-scout-seat-rotation.test.sh
 #
 # Proves the scout and scout-repair systemd units no longer hard-code a
-# provider/model. The new wrapper (bin/pi-scout-run) calls pick_seat and
+# provider/model. The new wrapper (bin/pi-scout-run) calls pick-seat and
 # runs pi with the returned provider/model, exiting cleanly when a healthy
 # seat exists and failing loud when none are available.
 
@@ -19,8 +19,8 @@ ok()   { echo "OK: $*"; }
 scratch="$(mktemp -d -t pi-scout-seat.XXXXXX)"
 trap 'rm -rf "$scratch"' EXIT INT TERM
 
-# Stub seat-lib with a deterministic pick_seat and no-op seat_log.
-stub_lib="$scratch/seat-lib.sh"
+# Stub seatlib with a deterministic pick-seat and no-op seat_log.
+stub_lib="$scratch/seatlib.sh"
 cat >"$stub_lib" <<'EOF'
 export HOME="${HOME:-/home/nish}"
 export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/1000}"
@@ -28,16 +28,16 @@ export PI_BIN="${PI_BIN:-/home/nish/.local/bin/pi}"
 seat_log() { :; }
 task_weight() { echo "light"; }
 # fleet-ops#520: stub the privacy helpers the wrapper now calls. The stub
-# returns "public" so the test's deterministic pick_seat path is unchanged;
+# returns "public" so the test's deterministic pick-seat path is unchanged;
 # the privacy guard itself is drilled in tests/repo-privacy-guard.test.sh.
 repo_privacy() { echo "public"; }
 packet_repo() { echo ""; }
-pick_seat() {
+litellm_seat() {
     printf 'minimax\tMiniMax-M3\n'
     return 0
 }
-# fleet-ops#4263 P3b: wrappers call litellm_pick_seat, not pick_seat.
-litellm_pick_seat() { printf 'litellm\tworker-cheap\n'; return 0; }
+# fleet-ops#4263 P3b: wrappers call litellm_seat, not pick-seat.
+litellm_seat() { printf 'litellm\tworker-cheap\n'; return 0; }
 EOF
 
 # Fake pi that records args and stdin, then prints output.
@@ -100,12 +100,12 @@ export PI_BIN="${PI_BIN:-/home/nish/.local/bin/pi}"
 seat_log() { :; }
 task_weight() { echo "light"; }
 # fleet-ops#520: stub the privacy helpers the wrapper now calls. The stub
-# returns "public" so the test's deterministic pick_seat path is unchanged;
+# returns "public" so the test's deterministic pick-seat path is unchanged;
 # the privacy guard itself is drilled in tests/repo-privacy-guard.test.sh.
 repo_privacy() { echo "public"; }
 packet_repo() { echo ""; }
-pick_seat() { :; return 1; }
-litellm_pick_seat() { :; return 1; }
+litellm_seat() { :; return 1; }
+litellm_seat() { :; return 1; }
 EOF
 
 set +e

@@ -44,7 +44,7 @@
 #      no-match with the same marker stays a probe.
 #   6. worker.md cites fleet-ops#1107 and the live wording.
 #   7. lib/failed-command-flagged.py docstring cites fleet-ops#1107.
-#   8. seat-lib.test.sh hosts this file (CI cannot gain a P14 line).
+#   8. seat.lib.test.sh hosts this file (CI cannot gain a P14 line).
 
 set -euo pipefail
 
@@ -178,10 +178,10 @@ grep -q '=== MERGED RECENT ===' "$lib" \
   || fail "lib/failed-command-flagged.py docstring must name the live '=== MERGED RECENT ===' wording"
 ok "lib/failed-command-flagged.py docstring cites fleet-ops#1107 and the invalid-sort shape"
 
-# --- 8. seat-lib.test.sh hosts this file (CI cannot gain a P14 line) -------
+# --- 8. seat.lib.test.sh hosts this file (CI cannot gain a P14 line) -------
 grep -Fq 'bash "$here/fleet-failed-command-gh-pr-list-invalid-sort.test.sh"' \
-  "$here/seat-lib.test.sh" \
-  || fail "seat-lib.test.sh must nest this file (CI cannot gain a new workflow line)"
-ok "seat-lib.test.sh hosts this file"
+  "$here/seat.lib.test.sh" \
+  || fail "seat.lib.test.sh must nest this file (CI cannot gain a new workflow line)"
+ok "seat.lib.test.sh hosts this file"
 
 echo "OK: fleet-failed-command-gh-pr-list-invalid-sort: live #1107 silenced invalid-sort drills"

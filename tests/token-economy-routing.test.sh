@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # tests/token-economy-routing.test.sh
 #
-# Proves fleet-ops#1167 pick_seat behaviour that the config drill
+# Proves fleet-ops#1167 pick-seat behaviour that the config drill
 # (tests/fleet-token-economy.test.sh) cannot see:
 #   1. Light packets never land on cursor (keystone-only).
 #   2. Leftover prepaid is xai-oauth, not cursor.
@@ -9,13 +9,13 @@
 #   4. When included_exhausted=true, only cursor-grok-4.6-high is offered.
 #   5. Every pick appends seat-selection.jsonl (fleet_seat_selection_24h).
 #
-# Hosted by tests/seat-lib.test.sh (workers cannot add a ci.yml line).
+# Hosted by tests/seat.lib.test.sh (workers cannot add a ci.yml line).
 # Offline. Scratch models/caps so live seat-caps cannot leak.
 
 set -euo pipefail
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 repo_root="$(cd "$here/.." && pwd)"
-lib="$repo_root/lib/seat-lib.sh"
+lib="$repo_root/lib/litellm-seat.sh"
 
 fail() { echo "FAIL: $*" >&2; exit 1; }
 ok()   { echo "OK: $*"; }
@@ -91,9 +91,9 @@ pick() {
     export PI_PACKET_STATE="$scratch/state-$capable-$difficulty-$$"
     mkdir -p "$PI_PACKET_STATE"
     if [[ -n "$tried" ]]; then
-        bash -c 'source "$0"; load_seat_caps; pick_seat "" "" "'"$capable"'" "'"$tried"'" "'"$difficulty"'"' "$lib" 2>/dev/null
+        bash -c 'source "$0"; load_seat_caps; pick-seat "" "" "'"$capable"'" "'"$tried"'" "'"$difficulty"'"' "$lib" 2>/dev/null
     else
-        bash -c 'source "$0"; load_seat_caps; pick_seat "" "" "'"$capable"'" "" "'"$difficulty"'"' "$lib" 2>/dev/null
+        bash -c 'source "$0"; load_seat_caps; pick-seat "" "" "'"$capable"'" "" "'"$difficulty"'"' "$lib" 2>/dev/null
     fi
 }
 
@@ -147,6 +147,6 @@ prom="$scratch/state-1-keystone-$$/fleet-seat-selection.prom"
 [[ -f "$prom" ]] || fail "6b: missing $prom"
 grep -q 'fleet_seat_selection_24h{provider="cursor"}' "$prom" \
   || fail "6b: expected fleet_seat_selection_24h cursor row in $prom"
-ok "6: pick_seat appends seat-selection.jsonl and writes fleet_seat_selection_24h"
+ok "6: pick-seat appends seat-selection.jsonl and writes fleet_seat_selection_24h"
 
 ok "token-economy-routing: cursor keystone-only, leftover prepaid is xai-oauth, overage pin, selection ledger"

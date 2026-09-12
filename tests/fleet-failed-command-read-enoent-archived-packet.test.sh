@@ -51,7 +51,7 @@
 #      the archived cat succeeds.
 #   4. lib/failed-command-flagged.py cites fleet-ops#1059 (detector-side lock: case list moved to lib, fleet-ops#3246).
 #   5. lib/failed-command-flagged.py docstring cites fleet-ops#1059.
-#   6. seat-lib.test.sh hosts this file (CI cannot gain a new workflow line).
+#   6. seat.lib.test.sh hosts this file (CI cannot gain a new workflow line).
 
 set -euo pipefail
 
@@ -168,10 +168,10 @@ grep -q '01a04220 archived-packet session' "$libdoc" \
   || fail "lib/failed-command-flagged.py docstring must name the 01a04220 archived-packet session next to the #1059 citation"
 ok "lib/failed-command-flagged.py docstring cites fleet-ops#1059"
 
-# --- 6. seat-lib.test.sh hosts this file (CI cannot gain a P14 line) --------
+# --- 6. seat.lib.test.sh hosts this file (CI cannot gain a P14 line) --------
 grep -Fq 'bash "$here/fleet-failed-command-read-enoent-archived-packet.test.sh"' \
-  "$here/seat-lib.test.sh" \
-  || fail "seat-lib.test.sh must nest this file (CI cannot gain a new workflow line)"
-ok "seat-lib.test.sh hosts this file"
+  "$here/seat.lib.test.sh" \
+  || fail "seat.lib.test.sh must nest this file (CI cannot gain a new workflow line)"
+ok "seat.lib.test.sh hosts this file"
 
 echo "OK: fleet-failed-command-read-enoent-archived-packet: live #1059 read ENOENT + cause prose 'The file was archived' drill"

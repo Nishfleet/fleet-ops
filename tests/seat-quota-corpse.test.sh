@@ -12,7 +12,7 @@
 # the seat failed again, the cycle repeated, count kept climbing on a seat
 # that was clearly dead. The 2594 audit's snapshot called out the gap.
 #
-# The fix (lib/seat-lib.sh):
+# The fix (lib/litellm-seat.sh):
 #   - New SEAT_DEAD_CONSECUTIVE_THRESHOLD env var (default 25, matching
 #     seat-health.ts's seat_dead_consecutive_threshold so both writers agree
 #     on the corpse boundary).
@@ -48,7 +48,7 @@
 set -euo pipefail
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 repo_root="$(cd "$here/.." && pwd)"
-seat_lib="$repo_root/lib/seat-lib.sh"
+seat_lib="$repo_root/lib/litellm-seat.sh"
 
 fail() { echo "FAIL: $*" >&2; exit 1; }
 ok()   { echo "OK: $*"; }

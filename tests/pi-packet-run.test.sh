@@ -7,7 +7,7 @@
 #   3. resets (removes) the tried-seats file on success,
 #   4. calls pi with the selected provider and model.
 #
-# Runs offline: pick_seat, systemctl and pi are all stubbed. No Claude, no
+# Runs offline: pick-seat, systemctl and pi are all stubbed. No Claude, no
 # systemd user session, no network.
 set -euo pipefail
 
@@ -25,10 +25,10 @@ trap 'rm -rf "$scratch"' EXIT INT TERM
 
 mkdir -p "$scratch/bin" "$scratch/state/attempts"
 
-# --- stub seat-lib.sh --------------------------------------------------------
+# --- stub seatlib.sh --------------------------------------------------------
 # The real lib calls systemctl and reads models.json/cap-maps. We override the
 # three functions pi-packet-run actually uses and set the state paths it needs.
-fake_seat_lib="$scratch/seat-lib.sh"
+fake_seat_lib="$scratch/seatlib.sh"
 cat >"$fake_seat_lib" <<'LIB'
 # shellcheck shell=bash
 export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
@@ -48,11 +48,11 @@ task_weight() {
 # First call (empty tried file) returns devin/glm-5-2. Once devin is in the
 # tried-seats file, return a different seat (cursor/composer-2.5).
 # fleet-ops#520: stub the privacy helpers the wrapper now calls. The stub
-# returns "public" so the test's deterministic pick_seat path is unchanged;
+# returns "public" so the test's deterministic pick-seat path is unchanged;
 # the privacy guard itself is drilled in tests/repo-privacy-guard.test.sh.
 repo_privacy() { echo "public"; }
 packet_repo() { echo ""; }
-pick_seat() {
+litellm_seat() {
   local tried_file="${4:-}"
   if [[ -n "$tried_file" && -f "$tried_file" ]] \
       && grep -qx 'devin/glm-5-2' "$tried_file"; then
@@ -61,8 +61,8 @@ pick_seat() {
     printf 'devin\tglm-5-2\n'
   fi
 }
-litellm_pick_seat() {
-  pick_seat "" "" 0 "$ATTEMPTS_DIR/testpkt.tried-seats"
+litellm_seat() {
+  pick-seat "" "" 0 "$ATTEMPTS_DIR/testpkt.tried-seats"
 }
 packet_difficulty() { echo "light"; }
 litellm_group_for_privacy() { echo "worker-cheap"; }
@@ -96,7 +96,7 @@ PI
 chmod +x "$fake_pi"
 
 # --- stub systemctl ----------------------------------------------------------
-# Not used while pick_seat is stubbed, but present so the test environment does
+# Not used while pick-seat is stubbed, but present so the test environment does
 # not accidentally call a live systemctl if the stub lib is ever removed.
 fake_systemctl="$scratch/bin/systemctl"
 cat >"$fake_systemctl" <<'SCTL'

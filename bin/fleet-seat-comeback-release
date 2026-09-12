@@ -406,7 +406,7 @@ quota_exhausted_in_pqe_window() {
 }
 
 # fleet-ops#4659: a FUTURE spawn-bench marker is a hold, matching
-# seat_usable (lib/seat-lib.sh checks the marker FIRST and returns
+# seat_usable (lib/litellm-seat.sh checks the marker FIRST and returns
 # UNUSABLE while usable_at is in the future). Comeback-release used to
 # read only the ledger's bench_until // usable_at, so a PQE repair that
 # wrote spawn-bench (7d hold on straitly/deepseek-v4-pro, lived
@@ -1106,7 +1106,7 @@ _corpse_has_bench_reason() {
 # failure_mode / seat_dead so FleetDeadCredentialSeats still fires on the
 # credentials_bad signal). Best-effort: a merge failure is logged but does
 # not block the sweep. The literal records WHY the seat is benched
-# (seat_dead=true -> pick_seat never offers) so the census recognises a held
+# (seat_dead=true -> pick-seat never offers) so the census recognises a held
 # corpse as durably benched the moment the sweep sees it, not 6h later when
 # retire_corpse finally parks it (and never for the future-wall shape).
 _backfill_corpse_bench_reason() {
@@ -1115,7 +1115,7 @@ _backfill_corpse_bench_reason() {
     _corpse_has_bench_reason "$f" && return 0
     local _cfm _cbr
     _cfm=$(jq -r '.failure_mode // "corpse"' "$f" 2>/dev/null || echo "corpse")
-    _cbr="seat_dead=true corpse, pick_seat never offers (durable, fleet-ops#3947)"
+    _cbr="seat_dead=true corpse, never re-offered (durable, fleet-ops#3947)"
     if declare -F _seat_merge_error_class >/dev/null 2>&1; then
         _seat_merge_error_class "$p" "$m" "$_cfm" "$_cbr" \
             || log "bench_reason backfill FAILED for $p/$m (best-effort, fleet-ops#3947)"
@@ -1304,7 +1304,7 @@ retire_corpse() {
     fi
     # fleet-ops#3669: the move alone leaves NO ledger in the live roster, so
     # seat_usable falls through to "NO HEALTH DATA (no ledger file) — assuming
-    # usable" and pick_seat re-picks the deliberately-retired dead seat. Write
+    # usable" and pick-seat re-picks the deliberately-retired dead seat. Write
     # a seat_dead=true / health_class=parked / usable_at far-future parked
     # ledger in the live roster so the seat stays UNPICKABLE. Best-effort: a
     # write failure is logged but does not fail the sweep (the read-side

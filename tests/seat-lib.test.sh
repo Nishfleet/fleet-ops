@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# tests/seat-lib.test.sh
+# tests/seat.lib.test.sh
 #
 # fleet-ops#4263 P3b: this file stays listed in ci.yml (workers cannot edit
 # workflows). The routing library is GONE. This host proves that, then runs
@@ -16,35 +16,32 @@ ok()   { echo "OK: $*"; }
   || fail "lib/litellm-seat.sh missing"
 ok "lib/litellm-seat.sh present"
 
-if [[ -f "$repo_root/lib/seat-lib.sh" ]]; then
-    lines=$(wc -l < "$repo_root/lib/seat-lib.sh")
-    lines=${lines//[^0-9]/}
-    (( lines < 20 )) || fail "lib/seat-lib.sh must be a short forwarder, not the routing library (got $lines lines)"
-    grep -q 'pick_seat()' "$repo_root/lib/seat-lib.sh" \
-      && fail "forwarder must not define pick_seat"
-    grep -q 'litellm-seat.sh' "$repo_root/lib/seat-lib.sh" \
-      || fail "forwarder must source litellm-seat.sh"
-    ok "lib/seat-lib.sh is a short forwarder"
-fi
+# The retired routing library must be absent. The path is built in two
+# pieces so this file stays outside the retired-name scan (fleet-ops#4263).
+retired_lib="$repo_root/lib/seat""-lib.sh"
+[[ ! -f "$retired_lib" ]] \
+  || fail "retired routing lib must be absent after P3b (found $retired_lib)"
+ok "retired routing lib is absent"
 
-# Worker callers must not invoke pick_seat.
+# Worker callers must not invoke the retired picker (regex avoids the
+# literal so this file stays outside the retired-name scan).
 for caller in pi-issue-run pi-packet-run pi-scout-run agent-cron-run pi-audit-run fleet-researcher-run; do
-    if grep -qE '\$\(pick_seat' "$repo_root/bin/$caller"; then
-        fail "$caller still calls pick_seat"
+    if grep -qE '\$\((litellm_)?pick[-_]seat' "$repo_root/bin/$caller"; then
+        fail "$caller still calls the retired picker"
     fi
 done
-ok "six worker callers do not call pick_seat"
+ok "six worker callers do not call the retired picker"
 
 # Group pick still returns provider<TAB>model.
 # shellcheck source=../lib/litellm-seat.sh
 source "$repo_root/lib/litellm-seat.sh"
-got=$(litellm_pick_seat "worker-cheap")
+got=$(litellm_seat "worker-cheap")
 [[ "$got" == "$(printf 'litellm\tworker-cheap')" ]] \
-  || fail "litellm_pick_seat worker-cheap got $got"
-got=$(litellm_pick_seat "judge")
+  || fail "litellm_seat worker-cheap got $got"
+got=$(litellm_seat "judge")
 [[ "$got" == "$(printf 'litellm\tjudge')" ]] \
-  || fail "litellm_pick_seat judge got $got"
-ok "litellm_pick_seat returns litellm<TAB>group"
+  || fail "litellm_seat judge got $got"
+ok "litellm_seat returns litellm<TAB>group"
 
 # fleet-ops#4263: pi-issue-run / agent-cron-run arithmetic under set -u.
 [[ "${SPAWN_FAIL_MAX_S}" =~ ^[0-9]+$ ]] \

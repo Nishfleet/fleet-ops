@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# tests/seat-lib-cursor-usd-today.test.sh
+# tests/seatlib-cursor-usd-today.test.sh
 #
 # fleet-ops#4621: cursor-cli sessions record 0 usage tokens and pi-models
 # carries no cursor cost, so the token meter is structurally $0. The vendor
@@ -20,15 +20,15 @@
 set -euo pipefail
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 repo_root="$(cd "$here/.." && pwd)"
-lib="$repo_root/lib/seat-lib.sh"
+lib="$repo_root/lib/litellm-seat.sh"
 
 fail() { echo "FAIL: $*" >&2; exit 1; }
 ok()   { echo "OK: $*"; }
 
-[[ -f "$lib" ]] || fail "seat-lib.sh not found: $lib"
+[[ -f "$lib" ]] || fail "seatlib.sh not found: $lib"
 command -v jq >/dev/null || fail "jq required"
 
-scratch="$(mktemp -d -t seat-lib-cursor-usd.XXXXXX)"
+scratch="$(mktemp -d -t seatlib-cursor-usd.XXXXXX)"
 trap 'rm -rf "$scratch"' EXIT INT TERM
 
 export PI_SEAT_LIB_CHECK_SYSTEMD=0
@@ -102,4 +102,4 @@ ut=$(jq -r '.usd_today // empty' "$cf")
     || fail "scenario 3: usd_today non-numeric: '$ut'"
 ok "scenario 3: usd_today=$ut (token-derived path, no overlay)"
 
-ok "seat-lib-cursor-usd-today: all scenarios pass"
+ok "seatlib-cursor-usd-today: all scenarios pass"

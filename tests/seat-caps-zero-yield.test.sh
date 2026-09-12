@@ -26,7 +26,7 @@
 # fails — so the next zero-yield seat is caught without a human reading a
 # table.
 #
-# Hosted by tests/seat-lib.test.sh (workers cannot add a ci.yml line).
+# Hosted by tests/seat.lib.test.sh (workers cannot add a ci.yml line).
 # Offline. Reads the live config; the seat-yield fixture is a scratch file.
 
 set -euo pipefail

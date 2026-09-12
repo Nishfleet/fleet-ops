@@ -2,7 +2,7 @@
 # tests/pi-worker-execstart-live.test.sh
 #
 # fleet-ops#1155 live drill: spawn an odd-named user service whose ExecStart
-# command line contains the literal "pi --print", and assert the seat-lib
+# command line contains the literal "pi --print", and assert the seatlib
 # counters see it. This is the acceptance test for the class fix: worker
 # counts must match by ExecStart content, not unit-name patterns.
 #
@@ -14,12 +14,12 @@ set -euo pipefail
 
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 repo_root="$(cd "$here/.." && pwd)"
-lib="$repo_root/lib/seat-lib.sh"
+lib="$repo_root/lib/litellm-seat.sh"
 
 fail() { echo "FAIL: $*" >&2; exit 1; }
 ok()   { echo "OK: $*"; }
 
-[[ -f "$lib" ]] || fail "seat-lib.sh not found: $lib"
+[[ -f "$lib" ]] || fail "seatlib.sh not found: $lib"
 
 # --- unique, clearly-test-only unit name -----------------------------------
 unit="odd-pi-1155-$(date -u +%s).service"
@@ -56,8 +56,8 @@ state=$(systemctl --user is-active "$unit" 2>/dev/null || echo inactive)
 [[ "$state" == "active" || "$state" == "activating" ]] \
   || fail "unit $unit never became active/activating (state=$state)"
 
-# --- source seat-lib with live systemd probing enabled ---------------------
-# Use a scratch seat-caps/models so pick_seat helpers do not fail.
+# --- source seatlib with live systemd probing enabled ---------------------
+# Use a scratch seat-caps/models so pick-seat helpers do not fail.
 export PI_PACKET_STATE="$scratch/pi-packet"
 export ACTIVE_SEATS_DIR="$PI_PACKET_STATE/active-seats"
 mkdir -p "$ACTIVE_SEATS_DIR"
@@ -84,7 +84,7 @@ export PI_MODELS_JSON="$scratch/models.json"
 
 # Probe live systemd.
 export PI_SEAT_LIB_CHECK_SYSTEMD=1
-# shellcheck source=../lib/seat-lib.sh
+# shellcheck source=../lib/litellm-seat.sh
 source "$lib"
 
 # --- assert every counter sees the odd-named unit --------------------------
@@ -119,4 +119,4 @@ issue=$(count_active_issue)
 [[ "$issue" == "0" ]] || fail "count_active_issue must be 0 for an org odd-named unit, got $issue"
 ok "count_active_issue stays 0 for the org odd-named unit"
 
-echo "ALL OK: odd-named pi --print unit is visible to every seat-lib counter"
+echo "ALL OK: odd-named pi --print unit is visible to every seatlib counter"

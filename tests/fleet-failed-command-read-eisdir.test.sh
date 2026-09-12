@@ -49,7 +49,7 @@
 #      (detector-side lock: case list moved to lib, fleet-ops#3246).
 #   6. lib/failed-command-flagged.py docstring cites #1170 and
 #      #1243 (lib contract for the next detector maintainer).
-#   7. seat-lib.test.sh hosts this file (CI cannot gain a P14 line).
+#   7. seat.lib.test.sh hosts this file (CI cannot gain a P14 line).
 
 set -euo pipefail
 
@@ -200,10 +200,10 @@ grep -q '01a043ee' "$lib" \
   || fail "lib/failed-command-flagged.py docstring must name the 01a043ee EISDIR session next to the #1243 citation"
 ok "lib/failed-command-flagged.py docstring cites fleet-ops#1170 and #1243"
 
-# --- 7. seat-lib.test.sh hosts this file (CI cannot gain a P14 line) -------
+# --- 7. seat.lib.test.sh hosts this file (CI cannot gain a P14 line) -------
 grep -Fq 'bash "$here/fleet-failed-command-read-eisdir.test.sh"' \
-  "$here/seat-lib.test.sh" \
-  || fail "seat-lib.test.sh must nest this file (CI cannot gain a new workflow line)"
-ok "seat-lib.test.sh hosts this file"
+  "$here/seat.lib.test.sh" \
+  || fail "seat.lib.test.sh must nest this file (CI cannot gain a new workflow line)"
+ok "seat.lib.test.sh hosts this file"
 
 echo "OK: fleet-failed-command-read-eisdir: live #1170 / #1243 read EISDIR + thinking-only recovery + unrelated prose drills"

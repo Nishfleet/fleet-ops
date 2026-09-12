@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # tests/seat-floor-failopen.test.sh
 #
-# fleet-ops#3324: when pick_seat's usable capable set is empty but at least
+# fleet-ops#3324: when pick-seat's usable capable set is empty but at least
 # one benched seat is a recoverable class (transient_fault, rate_limited,
 # overload_bench), fail-open the shortest remaining bench
 # instead of stalling with NO USABLE SEAT. A money wall (402 /
@@ -11,19 +11,19 @@
 # no-op seat burns issues).
 #
 # Replay drill, fully offline: scratch models.json + seat-caps.json + ledger.
-# Hosted from tests/seat-lib.test.sh (already listed in ci.yml) so the P14
+# Hosted from tests/seat.lib.test.sh (already listed in ci.yml) so the P14
 # test-listing gate stays green without a workflow edit.
 
 set -euo pipefail
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 repo_root="$(cd "$here/.." && pwd)"
-lib="$repo_root/lib/seat-lib.sh"
+lib="$repo_root/lib/litellm-seat.sh"
 rules="$repo_root/config/fleet_rules.yml"
 
 fail() { echo "FAIL: $*" >&2; exit 1; }
 ok()   { echo "OK: $*"; }
 
-[[ -f "$lib" ]] || fail "seat-lib.sh not found: $lib"
+[[ -f "$lib" ]] || fail "seatlib.sh not found: $lib"
 [[ -f "$rules" ]] || fail "fleet_rules.yml not found: $rules"
 command -v jq >/dev/null || fail "jq required"
 
@@ -89,7 +89,7 @@ pick() {
     mkdir -p "$PI_PACKET_STATE" "$scratch/ledger"
     export PI_SEAT_HEALTH_LEDGER_DIR="$scratch/ledger"
     : >"$PI_PACKET_STATE/watch.log"
-    bash -c 'source "$0"; load_seat_caps; pick_seat "" "" 0' "$lib"
+    bash -c 'source "$0"; load_seat_caps; pick-seat "" "" 0' "$lib"
 }
 
 reset_ledger() {
@@ -265,7 +265,7 @@ export PI_PACKET_STATE="$scratch/state-priv"
 export PI_SEAT_HEALTH_LEDGER_DIR="$scratch/ledger"
 : >"$PI_PACKET_STATE/watch.log"
 set +e
-out=$(bash -c 'source "$0"; load_seat_caps; pick_seat "" "" 0 "" light private' "$lib" 2>/dev/null)
+out=$(bash -c 'source "$0"; load_seat_caps; pick-seat "" "" 0 "" light private' "$lib" 2>/dev/null)
 rc=$?
 set -e
 [[ "$rc" == "1" ]] || fail "private: expected rc=1 (free-class floor blocked), got rc=$rc out='$out'"

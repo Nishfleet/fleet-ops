@@ -7,7 +7,7 @@
 # opencode/muse-spark-1.2-contributor-free at 80 (http 500 transient_http,
 # flat 30s wall, "usable_at already in the past so re-probed every cycle");
 # muse-spark reached 149 by 2026-08-30. The bash-side fences
-# (fleet-ops#1362/#1408, lib/seat-lib.sh) only cover bash-written markers
+# (fleet-ops#1362/#1408, lib/litellm-seat.sh) only cover bash-written markers
 # (spawn-fail cli_timeout, empty-run and quota/overload/hang benches). The
 # extension-written markers (source=provider_fetch / after_provider_response,
 # all wall classes) went through computeUsableAt with a FIXED per-mode backoff

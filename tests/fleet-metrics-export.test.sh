@@ -1206,7 +1206,7 @@ PY
 # 14. fleet-ops#2407: seat release-at-usable_at + comeback-overdue metric
 # =========================================================================
 # A walled seat whose usable_at/bench_until has passed is RELEASED by the
-# router (lib/seat-lib.sh seat_usable fail-opens it) but stays classed
+# router (lib/litellm-seat.sh seat_usable fail-opens it) but stays classed
 # non-healthy in the ledger until the next observation reclassifies it.
 # The availability rollup must count released seats (so a past-wall seat
 # does not silently depress seat_availability), the comeback-overdue gauge
@@ -1414,7 +1414,7 @@ PY
 # 16. fleet-ops#2738: healthy-but-parked seat visibility metric.
 #     A seat whose ledger is healthy (health_class=healthy, seat_dead=false)
 #     but whose model cap in seat-caps.json is 0 is silently costing
-#     throughput — pick_seat skips it every tick while the seat-availability
+#     throughput — pick-seat skips it every tick while the seat-availability
 #     SLO burns. The devin/glm-5-2 restore lapsed this way (ledger healthy,
 #     cap 0 for 3+ days, no metric surfaced it). _read_healthy_cap0 must
 #     count exactly those seats: a healthy ledger + cap-0 config -> 1;
@@ -1515,7 +1515,7 @@ caps = m._seat_caps_model_cap_map()
 assert caps["devin/glm-5-2"] == 0, caps
 assert caps["devin/swe-1-7"] == 0, caps
 assert caps["ollama/deepseek-v4-flash:0731"] == 2, caps
-# Unlisted model defaults to 0 (mirrors seat-lib model_cap).
+# Unlisted model defaults to 0 (mirrors seatlib model_cap).
 assert caps.get("devin/unlisted-model", 0) == 0, caps
 print("OK: _seat_caps_model_cap_map parses int + object + unlisted->0")
 PY
@@ -1718,7 +1718,7 @@ bash "$here/fleet-visitor-probe.test.sh" || fail "fleet-visitor-probe tests fail
 #     re-writes the ledger as health_class=healthy on a 200 OK, but the
 #     wrapper's spawn-bench marker (written for an empty run / no-op /
 #     spawn-fail) persists in the same directory. The census said
-#     "healthy" while pick_seat said "no usable seat" — fleet-ops#2493
+#     "healthy" while pick-seat said "no usable seat" — fleet-ops#2493
 #     closed that gap. The seat MUST drop out of the availability rollup
 #     while the bench is in the future, and return when the bench expires.
 # =========================================================================
@@ -1828,7 +1828,7 @@ print("OK: malformed / garbage spawn-bench does not gate the rollup")
 # healthy the moment the seat-health extension wrote a NEWER false-healthy
 # 200 to the ledger (after_provider_response carries status+headers only,
 # never the rc — an rc=1 spawn failure reads as a healthy 200). The bench
-# overlay held it out of pick_seat, but the ledger "re-offered" it on the
+# overlay held it out of pick-seat, but the ledger "re-offered" it on the
 # count/availability side. Both fences now demote the effective ledger class.
 #
 # Scenario E — corpse fence: marker seat_dead=true (chronic spawn_fail,
@@ -2515,7 +2515,7 @@ assert j["devin/glm-5-2"]["cost_per_session"] == 0.10
 # opencode/mimo-v2.5-free: 10 of 20 sessions at 0.20 -> 0.10.
 assert abs(result["opencode/mimo-v2.5-free"]["cost_per_session"] - 0.10) < 1e-9
 # devin/swe-1-7 sessions carry no usage.cost -> 0.0 (the value floor
-# 0.001 is applied in pick_seat, not in the ledger).
+# 0.001 is applied in pick-seat, not in the ledger).
 assert result["devin/swe-1-7"]["cost_per_session"] == 0.0
 assert result["opencode/nemotron-3.5-lightning-free"]["cost_per_session"] == 0.0
 print("OK: seat-yield ledger carries rolling cost_per_session (fleet-ops#3323)")

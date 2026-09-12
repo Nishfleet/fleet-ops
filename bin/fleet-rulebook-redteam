@@ -223,8 +223,8 @@ else
         source "$SEAT_LIB"
     fi
     seat=""
-    if declare -F litellm_pick_seat >/dev/null 2>&1; then
-        seat=$(litellm_pick_seat "senior" || true)
+    if declare -F litellm_seat >/dev/null 2>&1; then
+        seat=$(litellm_seat "senior" || true)
     fi
     if [ -z "${seat:-}" ]; then
         log "FATAL: no capable seat available"

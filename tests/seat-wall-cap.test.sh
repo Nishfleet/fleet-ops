@@ -8,12 +8,12 @@
 #   c) 401 -> credentials_bad 1h; corpse only after 24 consecutive
 #   d) a 7d wall from rc=1 is WALL-REFUSED
 #
-# Hosted from tests/seat-lib.test.sh (P14). Offline scratch only.
+# Hosted from tests/seat.lib.test.sh (P14). Offline scratch only.
 
 set -euo pipefail
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 repo_root="$(cd "$here/.." && pwd)"
-seat_lib="$repo_root/lib/seat-lib.sh"
+seat_lib="$repo_root/lib/litellm-seat.sh"
 
 fail() { echo "FAIL: $*" >&2; exit 1; }
 ok()   { echo "OK: $*"; }

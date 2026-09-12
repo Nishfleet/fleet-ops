@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
-# tests/seat-lib-provider-daily-budget.test.sh
+# tests/seatlib-provider-daily-budget.test.sh
 #
 # fleet-ops#4453: ParetoInference's Pareto Pass is a prepaid worker seat with a
 # $20/day allowance that EXPIRES at 23:59 (unused $ is lost). The provider
 # reports usage.cost=0 on the Pass (the $3/wk credits bill off the rate card,
 # not per-call cost), so the per-seat usage.cost meter (fleet-ops#3724) reads 0
-# forever. seat-lib therefore meters the provider by TOKENS x the provider's
+# forever. seatlib therefore meters the provider by TOKENS x the provider's
 # own pi-models rate card (per 1M) — for paretoinference
 #   usd = input*0.081/1e6 + output*0.162/1e6 + cacheRead*0.016/1e6
 # — records `usd_today` in the existing prepaid-usage counter file, and benches
@@ -16,7 +16,7 @@
 #   1. Below the stop: a paretoinference model is pickable.
 #   2. At/above the stop: the paretoinference seat is benched (quota_bench
 #      ledger, source=provider_daily_budget, count 0, dated reason, until
-#      00:00 UTC) and pick_seat skips it; the free fallback is picked.
+#      00:00 UTC) and pick-seat skips it; the free fallback is picked.
 #   3. The prepaid-usage counter file shows `usd_today` and it never exceeds
 #      the stop (i.e. the budget is respected).
 #   4. Only today's spend on THIS provider counts: yesterday's sessions and a
@@ -27,15 +27,15 @@
 set -euo pipefail
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 repo_root="$(cd "$here/.." && pwd)"
-lib="$repo_root/lib/seat-lib.sh"
+lib="$repo_root/lib/litellm-seat.sh"
 
 fail() { echo "FAIL: $*" >&2; exit 1; }
 ok()   { echo "OK: $*"; }
 
-[[ -f "$lib" ]] || fail "seat-lib.sh not found: $lib"
+[[ -f "$lib" ]] || fail "seatlib.sh not found: $lib"
 command -v jq >/dev/null || fail "jq required"
 
-scratch="$(mktemp -d -t seat-lib-pdb.XXXXXX)"
+scratch="$(mktemp -d -t seatlib-pdb.XXXXXX)"
 trap 'rm -rf "$scratch"' EXIT INT TERM
 
 # Offline: no live systemd units, no no-usable-seat cooldown.
@@ -47,7 +47,7 @@ export QUALITY_ROUTING_JSON="$scratch/no-quality.json"
 echo '{}' >"$scratch/no-quality.json"
 
 # paretoinference (prepaid-quota, rate card exactly as in pi-models.json) plus
-# an ollama free fallback lane so pick_seat has somewhere to go when the
+# an ollama free fallback lane so pick-seat has somewhere to go when the
 # pareto seat is benched. Models[0].cost is what the token meter reads.
 cat >"$scratch/models.json" <<'JSON'
 {
@@ -136,10 +136,10 @@ write_session_tokens() {
     } >"$f"
 }
 
-# pick helper: runs pick_seat in a clean bash with the given pick role.
+# pick helper: runs pick-seat in a clean bash with the given pick role.
 run_pick() {
     local role="${1:-scout}"
-    bash -c 'source "$0"; load_seat_caps; PI_PICK_ROLE="'"$role"'" pick_seat "" "" 0 "" light' "$lib" 2>/dev/null
+    bash -c 'source "$0"; load_seat_caps; PI_PICK_ROLE="'"$role"'" pick-seat "" "" 0 "" light' "$lib" 2>/dev/null
 }
 
 today=$(date -u +%Y-%m-%d)
@@ -309,10 +309,10 @@ grep -q 'no-context-files' "$live_run" \
     && ok "pi-issue-run: trimmed prefix (--no-context-files) on paretoinference" \
     || fail "pi-issue-run: missing --no-context-files for paretoinference"
 # Workers cannot add a P14 verify-command line. This test rides
-# tests/seat-lib.test.sh (already listed).
-grep -q 'seat-lib-provider-daily-budget.test.sh' "$repo_root/.github/workflows/ci.yml" \
-    && fail "ci.yml must NOT list this test (no Workflows permission); host it from seat-lib.test.sh" \
-    || ok "ci.yml does not list this test (hosted by seat-lib.test.sh)"
+# tests/seat.lib.test.sh (already listed).
+grep -q 'seatlib-provider-daily-budget.test.sh' "$repo_root/.github/workflows/ci.yml" \
+    && fail "ci.yml must NOT list this test (no Workflows permission); host it from seat.lib.test.sh" \
+    || ok "ci.yml does not list this test (hosted by seat.lib.test.sh)"
 
 echo
 echo "ALL OK: fleet-ops#4453 provider daily-budget spend meter replay drill"

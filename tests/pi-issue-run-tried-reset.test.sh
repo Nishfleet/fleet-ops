@@ -2,7 +2,7 @@
 # tests/pi-issue-run-tried-reset.test.sh
 #
 # Proves the 2026-08-26 fleet-ops-32 stuck-loop fix: when every allowlisted
-# seat has been tried and pick_seat returns empty, pi-issue-run MUST reset the
+# seat has been tried and pick-seat returns empty, pi-issue-run MUST reset the
 # tried-seats file before exiting 1, so the next systemd Restart retries the
 # full pool (seats that have recovered become eligible again; seats still in
 # backoff stay gated by the seat-health ledger's usable_at).
@@ -48,7 +48,7 @@ exit 0
 STUB
 chmod +x "$stub_bin/worker-token"
 
-# fleet-ops#142/#508: pick_seat must NOT consult live unit counts in a scratch
+# fleet-ops#142/#508: pick-seat must NOT consult live unit counts in a scratch
 # test. If it does, this poison stub reports the fixture seats as fully
 # occupied and the test fails instead of silently bleeding host state.
 cat >"$stub_bin/systemctl" <<'STUB'
@@ -90,14 +90,14 @@ export PI_ISSUES_DIR="$ISSUES_DIR"
 export PI_BIN="$scratch/pi-stub"
 export SEAT_CAPS_JSON="$scratch/seat-caps.json"
 export PI_MODELS_JSON="$scratch/models.json"
-# fleet-ops#4263 P3b: routing is litellm_pick_seat, not ledger-gated pick_seat.
+# fleet-ops#4263 P3b: routing is litellm_seat, not ledger-gated pick-seat.
 # A marker file makes the stub picker return empty so we still prove the
 # tried-seats reset when the picker has nothing to offer.
-export PI_PACKET_SEAT_LIB="$scratch/seat-lib.sh"
+export PI_PACKET_SEAT_LIB="$scratch/seatlib.sh"
 cat >"$PI_PACKET_SEAT_LIB" <<EOF
 # shellcheck shell=bash
-source "$repo_root/lib/seat-lib.sh"
-litellm_pick_seat() {
+source "$repo_root/lib/litellm-seat.sh"
+litellm_seat() {
   if [[ -f "$scratch/pick-empty" ]]; then
     return 1
   fi
@@ -132,7 +132,7 @@ cat >"$SEAT_CAPS_JSON" <<'JSON'
 }
 JSON
 
-# pi stub: not reached in the all-walled case (pick_seat returns empty before
+# pi stub: not reached in the all-walled case (pick-seat returns empty before
 # pi is invoked). For the success-path case it must emit >= OUT_MIN bytes.
 cat >"$PI_BIN" <<'SH'
 #!/usr/bin/env bash
@@ -187,7 +187,7 @@ set -e
 ok "all seats walled -> pi-issue-run exits 1 AND resets tried_file (next restart retries the full pool)"
 
 # --- invariant 2: success path resets the tried file -----------------------
-# Unblock the picker so litellm_pick_seat returns a group, and make the pi
+# Unblock the picker so litellm_seat returns a group, and make the pi
 # stub succeed with enough output. Pre-populate tried_file with a stale
 # failed seat; after a successful run it must be cleared.
 rm -f "$scratch/pick-empty" "$LEDGER"/*

@@ -133,8 +133,8 @@ print('{"findings":[]}')
 NOOP_GATE
 chmod +x "$scratch/noop-gate.py"
 
-cat > "$scratch/seat-lib-fake.sh" <<'FAKE_SEAT_LIB'
-pick_seat() { printf 'fakeprovider\tfakemodel'; }
+cat > "$scratch/seatlib-fake.sh" <<'FAKE_SEAT_LIB'
+litellm_seat() { printf 'fakeprovider\tfakemodel'; }
 FAKE_SEAT_LIB
 
 cat > "$scratch/deliberate-states.md" <<'EOF'
@@ -199,7 +199,7 @@ PATH="$scratch/fakebin:$PATH" \
   AUDIT_STATE_DIR="$scratch/state" \
   AUDIT_PROMPT="$repo_root/prompts/blind-audit.md" \
   AUDIT_PANEL_BIN="$repo_root/bin/fleet-blind-audit-panel" \
-  AUDIT_SEAT_LIB="$scratch/seat-lib-fake.sh" \
+  AUDIT_SEAT_LIB="$scratch/seatlib-fake.sh" \
   AUDIT_PLAN_FILE="$plan" \
   AUDIT_FAKE_NOW="2026-08-26T06:20:00Z" \
   AUDIT_PI_BIN="$scratch/fakebin/pi" \

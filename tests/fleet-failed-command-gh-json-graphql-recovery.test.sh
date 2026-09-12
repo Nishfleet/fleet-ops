@@ -60,7 +60,7 @@
 #      + `gh api graphql` wording (detector-side lock: case list moved to lib, fleet-ops#3246).
 #   7. lib/failed-command-flagged.py docstring cites fleet-ops#1142
 #      (detector-side lock).
-#   8. seat-lib.test.sh hosts this file (CI cannot gain a P14 line).
+#   8. seat.lib.test.sh hosts this file (CI cannot gain a P14 line).
 
 set -euo pipefail
 
@@ -190,10 +190,10 @@ grep -q '01a04326' "$lib" \
   || fail "lib/failed-command-flagged.py docstring must name the live #1142 session slug 01a04326"
 ok "lib/failed-command-flagged.py docstring cites fleet-ops#1142 and the graphql-recovery shape"
 
-# --- 8. seat-lib.test.sh hosts this file (CI cannot gain a P14 line) -------
+# --- 8. seat.lib.test.sh hosts this file (CI cannot gain a P14 line) -------
 grep -Fq 'bash "$here/fleet-failed-command-gh-json-graphql-recovery.test.sh"' \
-  "$here/seat-lib.test.sh" \
-  || fail "seat-lib.test.sh must nest this file (CI cannot gain a new workflow line)"
-ok "seat-lib.test.sh hosts this file"
+  "$here/seat.lib.test.sh" \
+  || fail "seat.lib.test.sh must nest this file (CI cannot gain a new workflow line)"
+ok "seat.lib.test.sh hosts this file"
 
 echo "OK: fleet-failed-command-gh-json-graphql-recovery: live #1142 gh--json KeyError graphql-recovery drills"

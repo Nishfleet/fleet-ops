@@ -158,10 +158,10 @@ grep -q "edits\[0\]" "$lib" \
   || fail "lib/failed-command-flagged.py docstring must name the live 'edits[0]' wording"
 ok "lib/failed-command-flagged.py docstring cites fleet-ops#1173 and the 'edits[0]' shape"
 
-# --- 8. seat-lib.test.sh hosts this file (CI cannot gain a P14 line) -------
+# --- 8. seat.lib.test.sh hosts this file (CI cannot gain a P14 line) -------
 grep -Fq 'bash "$here/fleet-failed-command-edit-array-unmatch.test.sh"' \
-  "$here/seat-lib.test.sh" \
-  || fail "seat-lib.test.sh must nest this file (CI cannot gain a new workflow line)"
-ok "seat-lib.test.sh hosts this file"
+  "$here/seat.lib.test.sh" \
+  || fail "seat.lib.test.sh must nest this file (CI cannot gain a new workflow line)"
+ok "seat.lib.test.sh hosts this file"
 
 echo "OK: fleet-failed-command-edit-array-unmatch: live #1173 multi-edit 'edits[0]' drills"

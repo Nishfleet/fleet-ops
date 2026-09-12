@@ -64,11 +64,10 @@ bin/fleet-seat-comeback-release:21
 bin/fleet-seat-live-validate:4
 bin/fleet-seat-recovery:16
 bin/fleet-vibes-canary:11
-bin/memory-index-autocompact:5
 bin/money-boundary-raise:2
 bin/pi-audit-run:12
 bin/pi-intake-repair-run:7
-bin/pi-issue-failed-reap:6
+bin/pi-issue-failed-reap:5
 bin/pi-issue-run:40
 bin/pi-issue-start:3
 bin/pi-packet-run:8
@@ -208,8 +207,7 @@ tests/pi-intake-tick-seat-gate.test.sh:9
 tests/pi-intake-tick-self-maint-cap.test.sh:12
 tests/pi-intake-tick-spawn-stagger.test.sh:7
 tests/pi-intake-topup.test.sh:2
-tests/pi-issue-failed-reap-overload-requeue.test.sh:5
-tests/pi-issue-failed-reap.test.sh:8
+tests/pi-issue-failed-reap.test.sh:6
 tests/pi-issue-park-resurrection.test.sh:2
 tests/pi-issue-run-app-identity.test.sh:2
 tests/pi-issue-run-cwd-anchor.test.sh:2
@@ -290,7 +288,7 @@ tests/subagent-extload.test.sh:2
 tests/token-economy-routing.test.sh:7
 tests/watch-log-rotation.test.sh:5
 tests/weekly-fleet-review.test.sh:2
-tests/worker-memory-dropin.test.sh:20
+tests/worker-memory-dropin.test.sh:18
 MANIFEST
 
 ((${#frozen[@]} > 200)) || fail "frozen manifest looks truncated (${#frozen[@]} entries)"
@@ -303,8 +301,20 @@ while IFS= read -r f; do
         echo "FAIL: new retired-routing match in $f — pick_seat caller set is frozen while fleet-ops#4263 deletion is open" >&2
         new_hits=1
     fi
-done < <(git grep -lE "$PAT" -- bin lib tests 2>/dev/null | sort)
+done < <(grep -rlE "$PAT" bin lib tests 2>/dev/null | sort)
 (( new_hits == 0 )) || fail "new retired-routing matches found (see above)"
+
+# fleet-ops#4263 accept: once the deletion lands, the retired routing
+# library file is gone and no caller remains. (This file is the tombstone
+# test — the only file still allowed to carry the retired names.)
+[[ ! -f "$repo_root/lib/seat-lib.sh" ]] \
+    || fail "lib/seat-lib.sh must be absent after the P3b deletion"
+if grep -rqE '\$\(pick_seat|(^|[[:space:]])pick_seat\(' bin lib 2>/dev/null; then
+    fail "a pick_seat caller remains under bin/ or lib/"
+fi
+if grep -rqE 'ram_governor_cap|active_ram_charge' bin lib 2>/dev/null; then
+    fail "a RAM-governor caller remains under bin/ or lib/"
+fi
 
 # (b) No manifest file may GROW its match count. Shrinking is allowed —
 # that is the deletion doing its job.
@@ -313,7 +323,7 @@ for f in "${!frozen[@]}"; do
     [[ -f "$f" ]] || continue
     n=$(grep -oE "$PAT" "$f" 2>/dev/null | wc -l)
     n=${n//[^0-9]/}
-    if (( n > frozen[$f] )); then
+    if (( n > ${frozen[$f]:-0} )); then
         echo "FAIL: $f grew retired-routing matches ${frozen[$f]} -> $n — no new pick_seat callers while fleet-ops#4263 deletion is open" >&2
         grown=1
     fi

@@ -23,9 +23,9 @@ check() {
 }
 
 [[ -f "$repo_root/lib/litellm-seat.sh" ]] || fail "missing lib/litellm-seat.sh"
-if [[ -f "$repo_root/lib/seat-lib.sh" ]]; then
-    grep -q 'pick_seat()' "$repo_root/lib/seat-lib.sh" \
-      && fail "lib/seat-lib.sh must not define pick_seat"
+if [[ -f "$repo_root/lib/litellm-seat.sh" ]]; then
+    grep -q 'litellm_seat()' "$repo_root/lib/litellm-seat.sh" \
+      && fail "lib/litellm-seat.sh must not define pick-seat"
 fi
 
 scratch="$(mktemp -d -t seat-source.XXXXXX)"
@@ -40,16 +40,16 @@ check "SPAWN_FAIL_MAX_S set after source" \
 check "SPAWN_FAIL_BACKOFF_S set after source" \
     test "${SPAWN_FAIL_BACKOFF_S}" -gt 0
 
-result=$(litellm_pick_seat "worker-cheap")
-check "litellm_pick_seat worker-cheap" \
+result=$(litellm_seat "worker-cheap")
+check "litellm_seat worker-cheap" \
     test "$result" = "$(printf 'litellm\tworker-cheap')"
 
-result=$(litellm_pick_seat "judge")
-check "litellm_pick_seat judge" \
+result=$(litellm_seat "judge")
+check "litellm_seat judge" \
     test "$result" = "$(printf 'litellm\tjudge')"
 
-result=$(litellm_pick_seat "worker-private")
-check "litellm_pick_seat worker-private" \
+result=$(litellm_seat "worker-private")
+check "litellm_seat worker-private" \
     test "$result" = "$(printf 'litellm\tworker-private')"
 
 check "pi-issue-run uses worker-cheap" \
@@ -66,8 +66,8 @@ check "fleet-researcher-run uses worker-cheap" \
     grep -q 'worker-cheap' "$repo_root/bin/fleet-researcher-run"
 check "agent-cron-run uses judge" \
     grep -q 'judge' "$repo_root/bin/agent-cron-run"
-check "pi-issue-run does not call pick_seat" \
-    bash -c '! grep -qE "\$\(pick_seat" "$0"' "$repo_root/bin/pi-issue-run"
+check "pi-issue-run does not call pick-seat" \
+    bash -c '! grep -qE "\$\(pick-seat" "$0"' "$repo_root/bin/pi-issue-run"
 
 # Proxy fallbacks own worker-capable. Leftover need_capable= trips SC2034
 # on pi-issue-run and fails P14 (claim-loop-gate Test 8).
@@ -76,14 +76,14 @@ for _f in pi-issue-run pi-packet-run pi-scout-run agent-cron-run; do
         bash -c '! grep -qE "^[[:space:]]*need_capable=" "$0"' "$repo_root/bin/$_f"
 done
 
-check "pi-scout-packet-assembly stub defines litellm_pick_seat (P14 #4263)" \
-    grep -q 'litellm_pick_seat()' "$repo_root/tests/pi-scout-packet-assembly.test.sh"
-check "pi-scout-seat-rotation stub defines litellm_pick_seat (P14 #4263)" \
-    grep -q 'litellm_pick_seat()' "$repo_root/tests/pi-scout-seat-rotation.test.sh"
+check "pi-scout-packet-assembly stub defines litellm_seat (P14 #4263)" \
+    grep -q 'litellm_seat()' "$repo_root/tests/pi-scout-packet-assembly.test.sh"
+check "pi-scout-seat-rotation stub defines litellm_seat (P14 #4263)" \
+    grep -q 'litellm_seat()' "$repo_root/tests/pi-scout-seat-rotation.test.sh"
 check "pi-scout-seat-rotation expects --provider litellm" \
     grep -q -- '--provider litellm' "$repo_root/tests/pi-scout-seat-rotation.test.sh"
 
-ok "pi-issue-run has no pick_seat call"
+ok "pi-issue-run has no pick-seat call"
 (( ++pass ))
 
 echo "OK: $pass checks"

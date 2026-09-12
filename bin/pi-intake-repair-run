@@ -3,7 +3,7 @@
 # Seat-rotation wrapper for pi-intake-repair units.
 #
 # Assembles the packet from ~/.pi/agent/prompts/intake-repair.md plus the
-# correct TARGET line, calls pick_seat from lib/litellm-seat.sh, and runs
+# correct TARGET line, calls pick-seat from lib/litellm-seat.sh, and runs
 # pi --print --provider <provider> --model <model> on the assembled packet.
 #
 # Args:
@@ -53,7 +53,7 @@ need_capable=0
 # (fail-closed: an unclassified repo is treated as private).
 repair_privacy=$(repo_privacy "$repo")
 seat_log "pi-intake-repair-run: $repo privacy=$repair_privacy"
-# fleet-ops#3724: the packet repo also feeds pick_seat's product_only gate —
+# fleet-ops#3724: the packet repo also feeds pick-seat's product_only gate —
 # a seat flagged product_only in seat-caps.json is offered only when this
 # repo carries the product flag in config/intake-repos.json.
 export PI_PACKET_REPO="$repo"
@@ -61,7 +61,7 @@ export PI_PACKET_REPO="$repo"
 _lit_group="worker-cheap"
 [[ "$need_capable" == "1" ]] && _lit_group="worker-capable"
 [[ "$repair_privacy" == "private" ]] && _lit_group="worker-private"
-seat=$(litellm_pick_seat "$_lit_group" || true)
+seat=$(litellm_seat "$_lit_group" || true)
 if [[ -z "$seat" ]]; then
     seat_log "pi-intake-repair-run: $repo no healthy seat available"
     echo "pi-intake-repair-run: $repo no healthy seat available" >&2

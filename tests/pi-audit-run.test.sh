@@ -9,7 +9,7 @@
 #      systemd unit to exhaust StartLimitBurst.
 #
 # This test exercises the full pi-audit-run binary with stubbed gh, pi, and
-# seat-lib. It proves the senior ladder emits a real tab-separated
+# seatlib. It proves the senior ladder emits a real tab-separated
 # provider/model pair (walled first entry falls through to the next), that
 # an incomplete reason is padded not rejected, and that a fully-walled lane
 # is a lane fault (exit 0, no vote).
@@ -81,10 +81,10 @@ printf '%s' "${PI_RESPONSE:-}"
 FAKE
 chmod +x "$pi_fake"
 
-# --- fake seat-lib -----------------------------------------------------------
+# --- fake seatlib -----------------------------------------------------------
 # Provides only the helpers pi-audit-run uses. The default straitly seat is
 # unavailable so the fallback path (the one with the "\t" bug) is exercised.
-seat_lib="$scratch/seat-lib.sh"
+seat_lib="$scratch/seatlib.sh"
 cat >"$seat_lib" <<'LIB'
 # shellcheck shell=bash
 export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
@@ -112,7 +112,7 @@ class_of() {
 
 model_cap() { printf '1\n'; }
 
-litellm_pick_seat() { printf 'litellm\t%s\n' "${1:-worker-cheap}"; }
+litellm_seat() { printf 'litellm\t%s\n' "${1:-worker-cheap}"; }
 
 seat_usable() {
   # fleet-ops#3121: within the senior ladder (seat-caps senior_seats_in_order)
@@ -340,7 +340,7 @@ reason6=$(jq -r '.reason' "$state_dir/demo/47/free-glm-5-3.vote")
 ok "scenario6: provider wall writes SKIP vote, exit 0 (no auto-restart, no StartLimit burn)"
 
 # -----------------------------------------------------------------------------
-# Scenario 7: fleet-ops#1011. pi-audit-run sources seat-lib.sh, which
+# Scenario 7: fleet-ops#1011. pi-audit-run sources seatlib.sh, which
 # itself sets STATE_DIR=$HOME/.local/state/pi-packet for its own
 # attempts/active-seats ledger. Without the VOTE_DIR rename, the source
 # silently overwrites pi-audit-run's STATE_DIR and the vote lands in
@@ -349,17 +349,17 @@ ok "scenario6: provider wall writes SKIP vote, exit 0 (no auto-restart, no Start
 # never graduate to agent-ready, and the ready buffer stays below 12h
 # forever — exactly the green-and-empty scout futility that #454 was
 # supposed to escalate. The #1011 live instance stayed open for the
-# same reason. This scenario sources a stub seat-lib that mirrors the
+# same reason. This scenario sources a stub seatlib that mirrors the
 # real one (it sets STATE_DIR) and asserts the vote lands in the
-# AUDIT_STATE_DIR override, not the seat-lib's STATE_DIR.
+# AUDIT_STATE_DIR override, not the seatlib's STATE_DIR.
 # -----------------------------------------------------------------------------
 reset_state
 audit_dir="$scratch/audit-1011"
 mkdir -p "$audit_dir"
-seaty="$scratch/seat-lib-buggy.sh"
+seaty="$scratch/seatlib-buggy.sh"
 cat >"$seaty" <<'LIB'
 # shellcheck shell=bash
-# Mirrors the real seat-lib.sh variable clobber (fleet-ops#1011).
+# Mirrors the real seatlib.sh variable clobber (fleet-ops#1011).
 STATE_DIR="${PI_PACKET_STATE:-$HOME/.local/state/pi-packet}"
 export STATE_DIR
 
@@ -377,25 +377,25 @@ LIB
 
 export PI_PACKET_SEAT_LIB="$seaty"
 export AUDIT_STATE_DIR="$audit_dir"
-# Sanity: the seat-lib clobbers STATE_DIR; the runner must NOT use that.
+# Sanity: the seatlib clobbers STATE_DIR; the runner must NOT use that.
 PI_RESPONSE=$'PASS\nThis is a complete reason with duplicate and north-star keywords.' \
   bash "$bin" 'demo--48--devin' >"$scratch/scenario7.out" 2>"$scratch/scenario7.err"
 unset PI_PACKET_SEAT_LIB
 unset AUDIT_STATE_DIR
 
-# Vote must land in AUDIT_STATE_DIR ($audit_dir), NOT in seat-lib's
+# Vote must land in AUDIT_STATE_DIR ($audit_dir), NOT in seatlib's
 # $HOME/.local/state/pi-packet. The real fleet_ops/a/a votes are
 # invisible to the heartbeat-auditor when this fix is missing.
 [[ -f "$audit_dir/demo/48/devin.vote" ]] \
-  || fail "scenario7: vote missing from AUDIT_STATE_DIR ($audit_dir) — seat-lib STATE_DIR clobber not contained ($(cat "$scratch/scenario7.err"))"
+  || fail "scenario7: vote missing from AUDIT_STATE_DIR ($audit_dir) — seatlib STATE_DIR clobber not contained ($(cat "$scratch/scenario7.err"))"
 verdict7=$(jq -r '.verdict' "$audit_dir/demo/48/devin.vote")
 [[ "$verdict7" == "PASS" ]] || fail "scenario7: vote verdict was '$verdict7' (expected PASS)"
 
-# Defensive: a stray vote in seat-lib's STATE_DIR proves the bug. It
+# Defensive: a stray vote in seatlib's STATE_DIR proves the bug. It
 # must NOT exist; the fix must keep pi-audit-run out of pi-packet.
 [[ ! -f "/home/nish/.local/state/pi-packet/demo/48/devin.vote" ]] \
-  || fail "scenario7: vote leaked to seat-lib STATE_DIR (/home/nish/.local/state/pi-packet/demo/48/devin.vote) — VOTE_DIR rename did not contain the clobber"
-ok "scenario7: seat-lib STATE_DIR clobber contained — vote lands in AUDIT_STATE_DIR, not in pi-packet"
+  || fail "scenario7: vote leaked to seatlib STATE_DIR (/home/nish/.local/state/pi-packet/demo/48/devin.vote) — VOTE_DIR rename did not contain the clobber"
+ok "scenario7: seatlib STATE_DIR clobber contained — vote lands in AUDIT_STATE_DIR, not in pi-packet"
 
 # -----------------------------------------------------------------------------
 # Scenario 8: fully-walled auditor lane -> exit 0, NO vote written, no pi call.
@@ -409,7 +409,7 @@ ok "scenario7: seat-lib STATE_DIR clobber contained — vote lands in AUDIT_STAT
 # re-starts this unit when the wall clears and a real PASS/FAIL lands.
 # -----------------------------------------------------------------------------
 reset_state
-wall_lib="$scratch/seat-lib-wall.sh"
+wall_lib="$scratch/seatlib-wall.sh"
 cat >"$wall_lib" <<'LIB'
 # shellcheck shell=bash
 # Total wall: every seat unusable.
@@ -454,7 +454,7 @@ ok "scenario8: fully-walled lane exits 0, writes NO vote, calls no pi (candidate
 # is never invoked.
 # -----------------------------------------------------------------------------
 reset_state
-quota_lib="$scratch/seat-lib-quota.sh"
+quota_lib="$scratch/seatlib-quota.sh"
 cat >"$quota_lib" <<'LIB'
 # shellcheck shell=bash
 load_seat_caps() { :; }

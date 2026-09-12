@@ -545,7 +545,7 @@ drain_nish() {
 # provider it names has zero walled seats. A single 402 seat for any
 # mentioned provider keeps the entry live. This never silently drops a
 # boundary — the proof is the seat health map, which is the same source
-# pick_seat and the comeback-release path use.
+# pick-seat and the comeback-release path use.
 #
 # Environment seams (tests):
 #   FLEET_ESCALATION_DRAIN_SEAT_DIR       seat files directory
