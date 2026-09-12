@@ -16,6 +16,11 @@
 # same issue (intake re-claim -> pi-issue-start) starts with the full pool
 # instead of the stale list of seats that failed before the one that worked.
 #
+# fleet-ops#6032: the walled case is also proven for a KEYSTONE packet. The
+# keystone two-strike special case is deleted — the proxy's senior-group
+# fallback is the replacement — so a walled keystone pick now takes the same
+# generic no-seat exit: exit 1, tried-seats RESET, death_class=infra.
+#
 # Runs entirely offline: stubbed models.json, seat-caps.json, ledger dir, a
 # pi stub, and PI_ISSUES_DIR redirected into scratch. No live state dir, no
 # network, no systemd.
@@ -186,10 +191,39 @@ set -e
   || fail "all seats walled: tried_file was NOT reset (still has $(wc -l <"$tried") line(s)). err=$(cat "$scratch/run.err")"
 ok "all seats walled -> pi-issue-run exits 1 AND resets tried_file (next restart retries the full pool)"
 
+# --- invariant 1b: keystone + walled pick takes the GENERIC no-seat exit ---
+# fleet-ops#6032: the pre-P3b two-strike keystone escalation (fleet-ops#1133)
+# sat on the no-seat edge and kept tried-seats; pick_seat is deleted, so the
+# proxy's senior-group fallback is the replacement and the special case is
+# gone. A keystone packet routed to the walled edge must behave like
+# any other difficulty: exit 1 WITH the tried-seats reset, death_class=infra.
+
+key_inst="keystone-probe"
+printf 'difficulty: keystone\nEscalate the keystone build now.\n' >"$ISSUES_DIR/${key_inst}.in"
+key_tried="$STATE_DIR/attempts/pi-issue-${key_inst}.tried-seats"
+printf 'litellm/worker-cheap\nlitellm/worker-capable\n' >"$key_tried"
+[[ -s "$key_tried" ]] || fail "precondition: keystone tried_file must be non-empty"
+
+set +e
+bash "$repo_root/bin/pi-issue-run" "$key_inst" >"$scratch/run-key.out" 2>"$scratch/run-key.err"
+key_rc=$?
+set -e
+
+[[ "$key_rc" == 1 ]] \
+  || fail "keystone+all walled: pi-issue-run exited $key_rc, expected 1. err=$(cat "$scratch/run-key.err")"
+[[ ! -s "$key_tried" ]] \
+  || fail "keystone+all walled: tried_file was NOT reset (still $(wc -l <"$key_tried") line(s)) — the deleted two-strike branch is still live?"
+grep -q 'KEYSTONE ESCALATION' "$scratch/run-key.err" \
+  && fail "keystone+all walled: the retired KEYSTONE ESCALATION branch still fired"
+[[ "$(cat "$STATE_DIR/attempts/pi-issue-${key_inst}.last-death-class" 2>/dev/null)" == "infra" ]] \
+  || fail "keystone+all walled: last-death-class must be infra, got '$(cat "$STATE_DIR/attempts/pi-issue-${key_inst}.last-death-class" 2>/dev/null)'"
+ok "keystone + all walled -> generic no-seat exit: rc=1, tried_file reset, death_class=infra (#6032: two-strike branch deleted)"
+
 # --- invariant 2: success path resets the tried file -----------------------
 # Unblock the picker so litellm_seat returns a group, and make the pi
 # stub succeed with enough output. Pre-populate tried_file with a stale
-# failed seat; after a successful run it must be cleared.
+# failed seat; after a successful run it must be cleared. (Invariant 1b above
+# needs the picker still blocked; this is the step that unblocks it.)
 rm -f "$scratch/pick-empty" "$LEDGER"/*
 cat >"$PI_BIN" <<'SH'
 #!/usr/bin/env bash

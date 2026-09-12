@@ -123,9 +123,18 @@ ok "2c: explicit difficulty: light"
 # (4b/5/6 were routed/escalated ledger events and one/two-strike picks from the
 # deleted picker; retired with it.)
 
-# --- 7. retired (fleet-ops#4263): the keystone two-strike escalation fired when
-# the picker returned no seat; litellm_seat always answers, so that path now runs
-# only when the proxy is down. The behaviour decision is tracked in fleet-ops#6032.
+# --- 7. retired (fleet-ops#4263), DECIDED in #6032: the keystone two-strike
+# escalation fired when the deleted picker returned no seat; litellm_seat
+# always answers, so the branch fired only when the proxy itself was down.
+# DECISION: accept the proxy's senior-group fallback as the replacement and
+# delete the branch. The proxy owns reliability-first routing now
+# (config/litellm-proxy.yaml: worker-cheap -> [worker-capable, senior],
+# worker-capable -> [senior]); the universal unit-escalation drop-in
+# (systemd/service.d/10-escalate.conf) summons the senior auditor on every
+# failed pi-issue unit; and #2462 MAX_RECLAIMS parks a repeatedly
+# WORK-failing issue for the senior conference. The walled keystone case now
+# takes the generic no-seat exit, pinned by the keystone case in
+# tests/pi-issue-run-tried-reset.test.sh.
 
 # --- contract: nested under the CI host -----------------------------------
 grep -Fq 'bash "$here/keystone-routing.test.sh"' "$here/seat""-lib.test.sh" \
