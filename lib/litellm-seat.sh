@@ -267,6 +267,92 @@ worker_env_for_repo() {
     jq -r --arg r "$repo" '.worker_env[$r] // empty | to_entries[] | "\(.key)=\(.value)"' "$SEAT_CAPS_JSON" 2>/dev/null || true
 }
 
+# Per-model wiring cap (fleet-ops#6074). Deleted with the routing library in
+# fleet-ops#4263 while eight callers survived (bin/pi-audit-run x3,
+# bin/fleet-gap-closure-conference x5). Every one of them guards with
+# `|| echo 0`, so an undefined model_cap read as "cap 0 / not wired" and the
+# audit panel silently fell back to its hardcoded unwired ladder slug
+# (zenmux/z-ai/glm-5.3-free) on every termination conference.
+# A provider at cap 0 unwires all of its models (that is how a seat is
+# retired, e.g. devin/swe-1-7); a provider without a models map answers with
+# its own cap.
+model_cap() {
+    local p="${1:-}" m="${2:-}" cap
+    if (( ! _seat_caps_loaded )); then load_seat_caps || true; fi
+    [[ -f "$SEAT_CAPS_JSON" ]] || { echo 0; return; }
+    cap=$(jq -r --arg p "$p" --arg m "$m" '
+        .providers[$p] as $prov
+        | if $prov == null then 0
+          elif (($prov.cap // 0) == 0) then 0
+          elif (($prov.models | type) == "object") then ($prov.models[$m].cap // 0)
+          else ($prov.cap // 0) end' "$SEAT_CAPS_JSON" 2>/dev/null || echo 0)
+    [[ "$cap" =~ ^[0-9]+$ ]] || cap=0
+    echo "$cap"
+}
+
+# Seat class ("free", "prepaid-quota", ...), model first then provider.
+# Same deletion as model_cap: bin/fleet-gap-closure-conference uses it to
+# prefer the free lane for the glm-5-3 role.
+model_class_of() {
+    local p="${1:-}" m="${2:-}"
+    if (( ! _seat_caps_loaded )); then load_seat_caps || true; fi
+    [[ -f "$SEAT_CAPS_JSON" ]] || return 0
+    jq -r --arg p "$p" --arg m "$m" '
+        .providers[$p] as $prov
+        | if $prov == null then ""
+          else (($prov.models[$m].class // $prov.class) // "") end' \
+        "$SEAT_CAPS_JSON" 2>/dev/null || true
+}
+
+# Seat inventory source. Same default as the deleted routing library.
+MODELS_JSON="${PI_MODELS_JSON:-$HOME/.pi/agent/models.json}"
+
+# Wired-seat inventory: provider<TAB>model<TAB>zero_cost<TAB>capable.
+# Restored verbatim-equivalent from lib/seat-lib.sh@5411da097~1 (fleet-ops#6074);
+# deleted in fleet-ops#5993/#4263 while bin/pi-audit-run (x2) and
+# bin/fleet-gap-closure-conference (x2) still read from it, so both audit
+# panels enumerated nothing and fell back to their hardcoded ladder slugs.
+enumerate_seats() {
+    jq -r '
+      .providers | to_entries[] | .key as $p |
+      (
+        (.value.models // [])[] |
+        [ $p, .id,
+          (if ((.cost.input // 1) == 0) then "1" else "0" end),
+          (if ( ((.reasoning // false) == true)
+                or (((.contextWindow // 0) >= 200000) and (($p != "cursor") or (.id == "cursor-grok-4.6-high")))
+                or ($p | IN("devin","opencode-anthropic")) )
+           then "1" else "0" end)
+        ]
+      ),
+      (
+        (.value.modelOverrides // {}) | to_entries[] |
+        [ $p, .key, "0",
+          (if ( ((.value.reasoning // false) == true)
+                or (((.value.contextWindow // 0) >= 200000) and (($p != "cursor") or (.key == "cursor-grok-4.6-high")))
+                or ($p | IN("devin","opencode-anthropic")) )
+           then "1" else "0" end)
+        ]
+      )
+      | @tsv
+    ' "$MODELS_JSON" 2>/dev/null || true
+}
+
+# Provider seat class. The deleted original read a SEAT_PROVIDER_CLASS map
+# that load_seat_caps no longer builds; this reads the same field straight
+# from seat-caps.json with the same default and the same subscription alias.
+class_of() {
+    local p="${1:-}" c
+    if (( ! _seat_caps_loaded )); then load_seat_caps || true; fi
+    c=free
+    if [[ -f "$SEAT_CAPS_JSON" ]]; then
+        c=$(jq -r --arg p "$p" '.providers[$p].class // "free"' "$SEAT_CAPS_JSON" 2>/dev/null || echo free)
+    fi
+    [[ -n "$c" && "$c" != "null" ]] || c=free
+    [[ "$c" == "subscription" ]] && c="prepaid-quota"
+    echo "$c"
+}
+
 # Fleet concurrency bound: sum of the declared provider caps in
 # seat-caps.json. RAM safety is per-unit MemoryMax + oomd, not a charge.
 seat_max_concurrent() {

@@ -896,6 +896,26 @@ NOW="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 cat >"$res_seat_state/cline__z-ai_glm-5.3-flash.json" <<EOF
 {"provider":"cline","model":"z-ai/glm-5.3-flash","health_class":"healthy","seat_dead":false,"observed_at":"$NOW","source":"test"}
 EOF
+# fleet-ops#6074: pin the two seat-lib primitives the resolver depends on.
+# They were deleted with the routing library (fleet-ops#4263) while eight
+# callers survived; every caller swallows the error with `|| echo 0`, so the
+# loss was silent and only showed up as the wrong seat in the job below.
+(
+  set +u
+  # shellcheck source=/dev/null
+  source "$repo_root/lib/litellm-seat.sh"
+  SEAT_CAPS_JSON="$res_caps/seat-caps.json" _seat_caps_loaded=0
+  declare -F model_cap >/dev/null || fail "lib/litellm-seat.sh must define model_cap"
+  declare -F model_class_of >/dev/null || fail "lib/litellm-seat.sh must define model_class_of"
+  [[ "$(model_cap cline z-ai/glm-5.3-flash)" == "1" ]] \
+    || fail "model_cap must read the wired model cap, got $(model_cap cline z-ai/glm-5.3-flash)"
+  [[ "$(model_cap zenmux z-ai/glm-5.3-free)" == "0" ]] \
+    || fail "model_cap must report an unwired provider as 0"
+  [[ "$(model_class_of cline z-ai/glm-5.3-flash)" == "free" ]] \
+    || fail "model_class_of must read the model class, got $(model_class_of cline z-ai/glm-5.3-flash)"
+) || exit 1
+ok "seat lib defines model_cap/model_class_of for the audit-panel resolver"
+
 # Scenario A: cline/z-ai/glm-5.3-flash wired + healthy -> glm-5-3 lands there.
 res_conf="resolve-conf"
 mkdir -p "$state_dir/conferences/$res_conf"
