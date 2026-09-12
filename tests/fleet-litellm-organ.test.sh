@@ -436,8 +436,9 @@ for d in cfg["model_list"]:
     ua = headers.get("User-Agent") or headers.get("user-agent") or ""
     assert ua, f"{d.get('model_name')} extra_headers missing User-Agent"
     assert ver in ua, f"{d.get('model_name')} User-Agent {ua!r} must carry version {ver}"
-assert found, "no grok-4.6 / xai-oauth deployment found in model_list"
-print(f"grok identity headers OK on {len(found)} deployment(s)")
+# 2026-09-12: presence is a routing decision (grok was benched 403 / out of credits);
+# the class this check pins (#4629) is header stamping WHEN a grok deployment is wired.
+print(f"grok identity headers OK on {len(found)} deployment(s)" if found else "no grok deployment wired (benched) — header rule vacuously satisfied")
 PY
 ok "10: grok-4.6 / xai-oauth deployments stamp cli-chat-proxy identity extra_headers (fleet-ops#4629)"
 
