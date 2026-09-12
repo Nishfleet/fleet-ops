@@ -69,9 +69,11 @@ Local sources (journal, actions log) are cached for 60s so an idle scrape is
 a cheap read.
 
 The product family (fleet-ops#5140) has a SEPARATE, hard-capped budget:
-MAX_PRODUCT_FETCHES_PER_SCRAPE = 2 gh calls per scrape, counted in
+MAX_PRODUCT_FETCHES_PER_SCRAPE = 3 gh calls per scrape, counted in
 _PRODUCT_FETCHES_THIS_RUN so _GH_FETCHED_THIS_RUN and the fleet-ops numbers
-are untouched. The product compute path fetches runs first, merges second.
+are untouched. The product compute path fetches runs first, merges second,
+and the newest red run's jobs third (only while red — the failing-step
+label for the repair packet, fleet-ops#5785).
 Runs use RUNS_TTL = 120s (shorter than the 5-min tick, so a NEW stall is
 visible on the very next tick) / RUNS_STALE = 3600s; merges reuse the
 fleet-ops GH_TTL/GH_STALE envelope. PRODUCT_GH_TIMEOUT = 15 caps one product
@@ -96,6 +98,9 @@ Environment seams (tests):
   FLEET_DQ_DEPLOY_RUNS      path to a JSON {"<repo>": [run, ...]} object of
                             production-deploy workflow runs, newest first
                             (skips gh for that repo)
+  FLEET_DQ_DEPLOY_JOBS      path to a JSON {"<repo>": {"<run databaseId>":
+                            {"jobs": [...]}}} object for the newest red
+                            run's failing-step lookup (skips gh)
   FLEET_DQ_PRODUCT_MERGED   path to a JSON {"<repo>": [{"mergedAt": ...}]}
                             object (skips gh for that repo's merges)
   AGENT_STATE               default: ~/workspaces/agent-state
@@ -192,10 +197,11 @@ RUNS_STALE = 3600
 # Hard cap on product-repo gh calls per scrape. Kept separate from
 # _GH_FETCHED_THIS_RUN so this family can neither spend nor block the
 # fleet-ops single-call budget. Two covers the one declared product repo
-# (runs + merges). A SECOND product repo goes up=0 with a stderr line until
+# (runs + merges + the newest red run's jobs for the failing-step series,
+# fleet-ops#5785). A SECOND product repo goes up=0 with a stderr line until
 # this cap is raised on purpose — that is the tripwire, not a bug, same class
 # as a repo missing from PRODUCT_DEPLOY_WORKFLOWS.
-MAX_PRODUCT_FETCHES_PER_SCRAPE = 2
+MAX_PRODUCT_FETCHES_PER_SCRAPE = 3
 PRODUCT_GH_TIMEOUT = 15
 _PRODUCT_FETCHES_THIS_RUN = 0
 # Only conclusion == "success" is green. cancelled / failure / timed_out /
@@ -257,6 +263,29 @@ METRIC_DEFS = (
      "1 on the newest non-green run of a product repo's production-deploy workflow, carrying "
      "that run's url so ProductDeployStalled can name it; absent when the newest run is green "
      "or the repo could not be measured this scrape. fleet-ops#5140."),
+    ("fleet_product_deploy_last_red_step_info",
+     "1 on the newest non-green run of a product repo's production-deploy workflow, carrying "
+     "that run's failing job+step names so a repair packet can read the failure directly; "
+     "absent when the newest run is green, the jobs fetch failed, or the repo could not be "
+     "measured this scrape. fleet-ops#5785."),
+    ("fleet_product_production_stale_hours",
+     "Hours since this product repo's production-deploy workflow last completed GREEN "
+     "(completion timestamp). When no green run exists in the fetched window the value is a "
+     "lower bound anchored at the oldest fetched run's createdAt. NaN when the repo could not "
+     "be measured this scrape. fleet-ops#5785 — the FleetProductionStale signal."),
+    ("fleet_product_deploy_last_green_seconds",
+     "Completion epoch of the newest green run of a product repo's production-deploy "
+     "workflow; NaN when no green run exists in the fetched window or the repo could not be "
+     "measured. fleet-ops#5785."),
+    ("fleet_product_main_last_merge_seconds",
+     "Epoch of the newest mergedAt on a product repo's default branch in the trailing window; "
+     "0 when no merges were fetched, NaN when the merges fetch failed. Informational — the "
+     "merge-vs-green comparison lives on fleet_product_undeployed_merges. fleet-ops#5785."),
+    ("fleet_product_undeployed_merges",
+     "1 when the product repo's newest default-branch merge is newer than the newest GREEN "
+     "production-deploy completion — code is merged that production has never shipped — or "
+     "when merges exist and no green run is in the fetched window at all; 0 otherwise; NaN "
+     "when the merges fetch failed. fleet-ops#5785 — the second half of FleetProductionStale."),
 )
 
 # Payload keys per metric name. Keys must cover every METRIC_DEFS name that
@@ -280,11 +309,20 @@ _PRODUCT_VALUE_KEYS = {
     "fleet_deploy_blocked_duration_seconds": "blocked_duration",
     "fleet_deployment_quality_up": "up",
     "fleet_product_deploy_green": "green",
+    "fleet_product_production_stale_hours": "production_stale_hours",
+    "fleet_product_deploy_last_green_seconds": "last_green_seconds",
+    "fleet_product_main_last_merge_seconds": "main_last_merge_seconds",
+    "fleet_product_undeployed_merges": "undeployed_merges",
 }
 # Product-only metrics: no fleet-ops series at all.
 _PRODUCT_ONLY_METRICS = frozenset({
     "fleet_product_deploy_green",
     "fleet_product_deploy_last_red_run_info",
+    "fleet_product_deploy_last_red_step_info",
+    "fleet_product_production_stale_hours",
+    "fleet_product_deploy_last_green_seconds",
+    "fleet_product_main_last_merge_seconds",
+    "fleet_product_undeployed_merges",
 })
 
 
@@ -899,6 +937,12 @@ def _failed_product(repo, workflow):
         "blocked_lower_bound": False,
         "green": None,
         "last_red_url": None,
+        "red_job": None,
+        "red_step": None,
+        "production_stale_hours": None,
+        "last_green_seconds": None,
+        "main_last_merge_seconds": None,
+        "undeployed_merges": None,
     }
 
 
@@ -1097,7 +1141,7 @@ def _product_runs(repo, workflow, env):
         return _gh_json([
             gh, "run", "list", "--repo", f"Nishfleet/{repo}",
             "--workflow", workflow, "--limit", "30",
-            "--json", "databaseId,status,conclusion,createdAt,updatedAt,url",
+            "--json", "databaseId,status,conclusion,createdAt,updatedAt,url,headSha",
         ], env, timeout=PRODUCT_GH_TIMEOUT)
 
     rows = _cached_product(runs_cache, RUNS_TTL, RUNS_STALE, fetch, env)
@@ -1178,6 +1222,93 @@ def _product_greens(runs):
             greens.append(completion)
     greens.sort()
     return greens
+
+
+def _product_red_step(repo, run, env):
+    """(job_name, step_name) of the first failed step in a non-green run,
+    or (None, None).
+
+    fleet-ops#5785: FleetProductionStale's repair packet needs the failing
+    step named, not just the run URL — a worker opening the newest red run
+    blind re-does the diagnosis. Reads the run's jobs via `gh run view
+    <databaseId> --json jobs`; the seam FLEET_DQ_DEPLOY_JOBS is a JSON object
+    {repo: {"<databaseId>": {"jobs": [...]}}} so tests never touch gh.
+
+    Counted in the MAX_PRODUCT_FETCHES_PER_SCRAPE budget via
+    _cached_product (cache file deploy-quality-jobs-<repo>.json, RUNS_TTL
+    freshness — a red run's job list is immutable once concluded, but the
+    cache TTL keeps the code path identical to runs).
+    """
+    run_id = run.get("databaseId")
+    if run_id is None:
+        return None, None
+    seam = (env or os.environ).get("FLEET_DQ_DEPLOY_JOBS")
+    data = None
+    if seam:
+        try:
+            blob = json.loads(Path(seam).read_text(encoding="utf-8"))
+            per_repo = blob.get(repo) if isinstance(blob, dict) else None
+            if isinstance(per_repo, dict):
+                data = per_repo.get(str(run_id))
+        except (OSError, json.JSONDecodeError, UnicodeDecodeError) as exc:
+            print(f"deploy-quality: FLEET_DQ_DEPLOY_JOBS unreadable: {exc}",
+                  file=sys.stderr)
+            return None, None
+        if not isinstance(data, dict):
+            print(f"deploy-quality: FLEET_DQ_DEPLOY_JOBS has no jobs for "
+                  f"{repo} run {run_id}", file=sys.stderr)
+            return None, None
+    else:
+        gh = (env or os.environ).get("FLEET_DQ_GH") or "gh"
+        jobs_cache = _product_cache_paths(env, repo)[0].with_name(
+            _product_cache_paths(env, repo)[0].name.replace("runs", "jobs"))
+
+        def fetch():
+            return _gh_json([
+                gh, "run", "view", str(run_id), "--repo", f"Nishfleet/{repo}",
+                "--json", "jobs",
+            ], env, timeout=PRODUCT_GH_TIMEOUT)
+
+        data = _cached_product(jobs_cache, RUNS_TTL, RUNS_STALE, fetch, env)
+    if not isinstance(data, dict):
+        return None, None
+    for job in data.get("jobs") or []:
+        if not isinstance(job, dict):
+            continue
+        for step in job.get("steps") or []:
+            if not isinstance(step, dict):
+                continue
+            if step.get("conclusion") == "failure":
+                job_name = str(job.get("name") or "").strip() or None
+                step_name = str(step.get("name") or "").strip() or None
+                if step_name:
+                    return job_name, step_name
+    return None, None
+
+
+def _product_stale(runs, now):
+    """(stale_seconds, last_green_completion, lower_bound) — how long since
+    the production-deploy workflow last completed GREEN (fleet-ops#5785).
+
+    Unlike _product_blocked (which asks "is the NEWEST run red"), this asks
+    "how old is the newest green run" — a repo whose newest run is green but
+    3 days old is stale production when main carries newer merges, and
+    blocked_duration reads 0 for it. When no green run exists in the fetched
+    window the value is a lower bound anchored at the oldest fetched run's
+    createdAt (same discipline as _product_blocked's lower_bound flag).
+    """
+    greens = _product_greens(runs)
+    if greens:
+        last_green = greens[-1]
+        return max(0.0, now - last_green), last_green, False
+    start = None
+    for run in runs:
+        created, _completion = _run_completion(run)
+        if created is not None:
+            start = created
+    if start is None:
+        return None, None, False
+    return max(0.0, now - start), None, True
 
 
 def _product_blocked(runs, now):
@@ -1269,11 +1400,34 @@ def compute_product(repo, workflow, env=None):
     newest = runs[0]
     green = 1 if newest.get("conclusion") == GREEN_CONCLUSION else 0
     last_red_url = None
+    red_job = None
+    red_step = None
     if not green:
         last_red_url = str(newest.get("url") or "").strip() or None
         if last_red_url is None:
             print(f"deploy-quality: {repo} newest run is non-green but carries no url",
                   file=sys.stderr)
+        red_job, red_step = _product_red_step(repo, newest, env)
+
+    # fleet-ops#5785: staleness = age of the LAST GREEN completion, not the
+    # newest run's redness. The newest-green-but-ancient case (blocked=0,
+    # green=1, production 3 days old) is invisible to ProductDeployStalled;
+    # FleetProductionStale compares this age against the newest main merge.
+    stale_seconds, last_green, stale_lower_bound = _product_stale(runs, now)
+    if stale_lower_bound:
+        print(f"deploy-quality: {repo} no green run in the fetched list — "
+              "production stale hours is a LOWER BOUND", file=sys.stderr)
+    main_last_merge = None
+    undeployed = None
+    if merged is not None:
+        main_last_merge = max(merged) if merged else 0.0
+        # fleet-ops#5785: "main has newer merges" than the last green deploy.
+        # No green run in the fetched window + any merge at all means the
+        # merge is certainly undeployed (nothing has shipped in the window).
+        if last_green is not None:
+            undeployed = 1 if (merged and max(merged) > last_green) else 0
+        else:
+            undeployed = 1 if merged else 0
 
     return {
         "repo": repo,
@@ -1287,6 +1441,13 @@ def compute_product(repo, workflow, env=None):
         "blocked_lower_bound": lower_bound,
         "green": green,
         "last_red_url": last_red_url,
+        "red_job": red_job,
+        "red_step": red_step,
+        "production_stale_hours": (
+            None if stale_seconds is None else round(stale_seconds / 3600.0, 3)),
+        "last_green_seconds": last_green,
+        "main_last_merge_seconds": main_last_merge,
+        "undeployed_merges": undeployed,
     }
 
 
@@ -1317,7 +1478,9 @@ def _product_row(name, payload):
     workflow = _prom_quote(payload.get("workflow") or "")
     key = _PRODUCT_VALUE_KEYS.get(name)
     if key is not None:
-        if name == "fleet_deploy_blocked_duration_seconds":
+        if name in ("fleet_deploy_blocked_duration_seconds",
+                    "fleet_product_production_stale_hours",
+                    "fleet_product_deploy_last_green_seconds"):
             labels = f'repo="{repo}",workflow="{workflow}"'
         else:
             labels = f'repo="{repo}"'
@@ -1327,6 +1490,13 @@ def _product_row(name, payload):
         if not url:
             return None
         return f'repo="{repo}",workflow="{workflow}",url="{_prom_quote(url)}"', "1"
+    if name == "fleet_product_deploy_last_red_step_info":
+        step = payload.get("red_step")
+        if not step:
+            return None
+        job = _prom_quote(payload.get("red_job") or "")
+        return (f'repo="{repo}",workflow="{workflow}",job="{job}",'
+                f'step="{_prom_quote(step)}"', "1")
     return None
 
 

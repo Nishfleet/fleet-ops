@@ -197,6 +197,11 @@ lib/slo_budget.py /home/nish/.local/lib/pi-packet/slo_budget.py
 # the issue's rollback contract); the gauges land in fleet.prom on the
 # existing 5-min tick. Same install dir as the other lib modules.
 lib/fleet-deploy-quality.py /home/nish/.local/lib/pi-packet/fleet-deploy-quality.py
+# fleet-ops#5785: deploy-fault issue class + green-run production proof,
+# shared by bin/fleet-merged-pr-close (close gate) and
+# bin/lifecycle-label-sweep (deploy-fault labelling + reopen pass). A lib,
+# not an organ — no unit, no timer.
+lib/deploy-fault-gate.sh /home/nish/.local/lib/pi-packet/deploy-fault-gate.sh
 # fleet-ops#4459: rate-card USD math shared by measure.sh and the exporter's
 # fleet_usd_24h metric (like fleet-deploy-quality.py, lazy-loaded inside
 # libexec/fleet-metrics-export.py, no service change).
