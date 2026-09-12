@@ -424,7 +424,7 @@ psr_offenders=$( {
         [[ -d "$FLEET_OPS_REPO/$d" ]] || continue
         find "$FLEET_OPS_REPO/$d" -type f 2>/dev/null
     done
-} | grep -v "/$self_name$" | while IFS= read -r f; do
+} | (grep -v "/$self_name$" || true) | while IFS= read -r f; do
     perl -0777 -ne '
         my $t = $_;
         $t =~ s/\\\n\s*/ /g;   # join backslash-continuations so a
