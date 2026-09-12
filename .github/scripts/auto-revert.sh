@@ -3,6 +3,12 @@
 #
 # Revert red commits on main. Two repair shapes:
 #
+#   - non-CI trigger gate: a "Deploy production" failure is a symptom, not
+#     evidence — the deploy job can die on its own (build, secrets, runner)
+#     while every check is green. A non-CI trigger may not revert unless
+#     >=1 OTHER check on the main tip ended non-green (self excluded by the
+#     deploy-on-green name token, same as the deploy green gate). A deploy
+#     trigger cannot revert a checks-green main (fleet-ops#5625 review).
 #   - single red: the failing run's head is still main HEAD -> revert that
 #     commit, but only when at least one required status check failed.
 #     Non-required failures (e.g. P14 tests on a hosted runner) surface as a
@@ -87,10 +93,13 @@ halt () {
 # A refusal is a deliberate decision not to open a revert PR. It files the
 # loud halt issue (the surface humans read), writes the refused: line to the
 # step summary, and ends the run NEUTRAL — never a false red (fleet-ops#5597).
+# $4 optionally overrides the summary line for refusals whose meaning is not
+# "checks non-green" (e.g. the non-CI deploy gate refuses BECAUSE checks are
+# green — fleet-ops#5625 review).
 refuse () {
   title="$1"; body="$2"; reason="$3"
   halt "$title" "$body"
-  line="refused: checks non-green on ${HEAD_SHA} — ${reason}"
+  line="${4:-refused: checks non-green on ${HEAD_SHA} — ${reason}}"
   echo "$line"
   if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
     printf -- '- %s\n' "$line" >> "$GITHUB_STEP_SUMMARY" || true
@@ -109,6 +118,49 @@ repair_failed () {
 
 main_head="$(git rev-parse HEAD)"
 main_short="$(git rev-parse --short=7 "$main_head")"
+
+# --- non-CI trigger: prove code-redness before any revert (fleet-ops#5625
+# review) ------------------------------------------------------------------
+# A "Deploy production" red is a SYMPTOM, not evidence. Its green gate
+# refuses when any OTHER check on the sha is non-green — but the deploy job
+# also fails on its own (build, deploy-command, health check, secrets,
+# runner) while every check is green, and reverting on that signal would
+# undo green code. So a non-CI trigger may not revert — single or range —
+# unless >=1 OTHER check on the main tip ended non-green. Self is excluded
+# by the same deploy-on-green name token the deploy gate uses; success and
+# skipped are green, and a still-pending check is not red evidence (its own
+# workflow_run re-triggers this repair when it completes red). Zero
+# non-green others -> refuse loud; a genuinely red tip re-triggers through
+# the failing check's own lane.
+if [ "$RUN_NAME" != "CI" ]; then
+  other_red=0
+  other_red_names=""
+  other_checks_tsv="$(gh api "repos/$REPO/commits/$main_head/check-runs" --paginate \
+    --jq '.check_runs[] | [.name, (.conclusion // "pending")] | @tsv' 2>/dev/null || true)"
+  while IFS=$'\t' read -r cname cconcl; do
+    [ -z "${cname:-}" ] && continue
+    case "$cname" in *deploy-on-green*) continue ;; esac
+    case "$cconcl" in
+      success|skipped|pending) ;;
+      *) other_red=$((other_red + 1))
+         other_red_names="${other_red_names}- \`${cname}\` — ${cconcl}"$'\n' ;;
+    esac
+  done <<< "$other_checks_tsv"
+  other_red_names="${other_red_names%$'\n'}"
+  if [ "$other_red" -eq 0 ]; then
+    refuse "AUTO-REVERT SKIP: ${RUN_NAME} red but checks green on main" \
+"The triggering ${RUN_NAME} run failed on main, but every other check on the main tip is green or still pending — a deploy-infra failure (build, deploy-command, health check, secrets, runner), not code-red evidence. Nothing reverted.
+
+- Failing run: $RUN_NAME — $RUN_URL
+- main tip: \`$main_head\` — all non-deploy checks green/pending
+
+A green check set cannot be reverted by a deploy trigger (fleet-ops#5625 review): if the tip is actually red, the failing check's own workflow_run re-triggers this repair through its lane." \
+      "deploy self-failure — all other checks green/pending on ${main_short}" \
+      "refused: checks green on ${HEAD_SHA} — ${RUN_NAME} failed but every other check on ${main_short} is green"
+  fi
+  echo "${RUN_NAME} red and ${other_red} other check(s) non-green on ${main_short} — code-red evidence confirmed:"
+  printf '%s\n' "$other_red_names"
+fi
 
 # --- consecutive-red streak (fleet-ops#5597) --------------------------------
 # Count the newest completed push runs of the triggering workflow on main
