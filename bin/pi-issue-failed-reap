@@ -101,6 +101,45 @@ log_to_triage() {
     } >> "$TRIAGE_FILE" 2>/dev/null || log "WARN: could not append to triage $TRIAGE_FILE"
 }
 
+# --- fleet-ops#5781: App-GraphQL write failure -> App-REST retry -> LOUD -----
+# `gh issue edit` / `gh issue comment` are GraphQL calls on the App
+# installation's graphql bucket. When that bucket is exhausted (live case
+# 2026-09-12T03:06Z on #5734: "label flip failed" + "comment post failed"
+# while installation 156789042 was rate-limited) the write retries once
+# through the matching REST endpoint on the SAME App credential — the core
+# bucket is independent of the graphql bucket. Writes NEVER drop to the
+# human identity (fleet-ops#3445). A double failure emits one LOUD line —
+# journal AND the heartbeat triage the judges read — so the inconsistent
+# issue state is a named fault, not a silent WARN.
+
+# reap_labels_rest_retry <add-ready:yes|no>
+# PUT the full desired label set in one atomic call: the pre-flip labels
+# from $state_json minus agent-in-progress, plus agent-ready when $1=yes.
+reap_labels_rest_retry() {
+    local add_ready="$1" desired
+    desired=$(printf '%s' "$state_json" | jq -c --arg ar "$add_ready" '
+        ([.labels[]?.name | select(. != "agent-in-progress")]
+         + (if $ar == "yes" then ["agent-ready"] else [] end)) | unique' 2>/dev/null) || return 1
+    [[ -n "$desired" ]] || return 1
+    printf '{"labels":%s}' "$desired" \
+        | gh api "repos/$repo_slug/issues/$issue/labels" -X PUT --input - >/dev/null 2>&1
+}
+
+# reap_comment_rest_retry <body>
+reap_comment_rest_retry() {
+    gh api "repos/$repo_slug/issues/$issue/comments" -X POST -f body="$1" >/dev/null 2>&1
+}
+
+# reap_write_fail <tag> <detail...>
+# One LOUD line to the journal and one [TAG] line to the judges' triage —
+# the #5489 visibility rule: an issue left inconsistent by a dead write is
+# a named fault, not a mystery.
+reap_write_fail() {
+    local tag="$1"; shift
+    log "LOUD [$tag] $* (instance=$instance)"
+    log_to_triage "$tag" "LOUD instance=$instance — $* (failed on App GraphQL AND App REST retry; issue state left inconsistent)"
+}
+
 [[ $# -ge 1 ]] || { log "usage: $0 [--dry-run] <repo>-<issue>"; exit 1; }
 
 instance="$1"
@@ -260,21 +299,33 @@ if [[ "$issue_state" == "OPEN" ]]; then
             else
                 log "issue $repo_slug#$issue is agent-blocked; cleared agent-in-progress only (left agent-blocked for blocked-reconcile)"
             fi
+        elif reap_labels_rest_retry no; then
+            label_ok=yes
+            if [[ "$awaiting_gate" == "yes" ]]; then
+                log "issue $repo_slug#$issue is parked (awaiting-runtime-gate); cleared agent-in-progress only via App REST retry, agent-ready NOT restored (fleet-ops#5092 fail-closed)"
+            else
+                log "issue $repo_slug#$issue is agent-blocked; cleared agent-in-progress only via App REST retry (left agent-blocked for blocked-reconcile)"
+            fi
         else
-            log "label flip (remove in-progress only, agent-blocked held) failed on $repo_slug#$issue"
-            log_to_triage "CLAIM-REAP-LABEL-FAIL" "instance=$instance step=open_labels_blocked"
+            reap_write_fail CLAIM-REAP-LABEL-FAIL "label flip (remove in-progress only, agent-blocked held) failed on $repo_slug#$issue"
         fi
     elif gh issue edit "$issue" -R "$repo_slug" --remove-label agent-in-progress --add-label agent-ready 2>/dev/null; then
         label_ok=yes
+    elif reap_labels_rest_retry yes; then
+        label_ok=yes
+        log "label flip (remove in-progress / add ready) on $repo_slug#$issue succeeded via App REST retry after GraphQL failure"
     else
-        log "label flip (remove in-progress / add ready) failed on $repo_slug#$issue"
-        log_to_triage "CLAIM-REAP-LABEL-FAIL" "instance=$instance step=open_labels"
+        reap_write_fail CLAIM-REAP-LABEL-FAIL "label flip (remove in-progress / add ready) failed on $repo_slug#$issue"
     fi
     comment_ok=no
-    if gh issue comment "$issue" -R "$repo_slug" --body "claim branch released after pi-issue-$instance reached StartLimitBurst at $(date -u +%FT%TZ)" 2>/dev/null; then
+    comment_body="claim branch released after pi-issue-$instance reached StartLimitBurst at $(date -u +%FT%TZ)"
+    if gh issue comment "$issue" -R "$repo_slug" --body "$comment_body" 2>/dev/null; then
         comment_ok=yes
+    elif reap_comment_rest_retry "$comment_body"; then
+        comment_ok=yes
+        log "comment post on $repo_slug#$issue succeeded via App REST retry after GraphQL failure"
     else
-        log "comment post failed on $repo_slug#$issue (label flip already attempted)"
+        reap_write_fail CLAIM-REAP-COMMENT-FAIL "comment post failed on $repo_slug#$issue (label flip already attempted)"
     fi
     log_to_triage "CLAIM-RELEASED" "instance=$instance repo=$repo_slug branch=$branch_name branch_deleted=$branch_deleted label_flipped=$label_ok comment_posted=$comment_ok"
     # --- reclaim cooldown (fleet-ops#2133, auditor 2026-08-30) -----------------
@@ -395,9 +446,11 @@ elif [[ "$issue_state" == "CLOSED" ]]; then
     if [[ "$in_progress" == "yes" ]]; then
         if gh issue edit "$issue" -R "$repo_slug" --remove-label agent-in-progress 2>/dev/null; then
             label_ok=yes
+        elif reap_labels_rest_retry no; then
+            label_ok=yes
+            log "label remove (in-progress) on closed $repo_slug#$issue succeeded via App REST retry after GraphQL failure"
         else
-            log "label remove (in-progress) failed on closed $repo_slug#$issue"
-            log_to_triage "CLAIM-REAP-LABEL-FAIL" "instance=$instance step=closed_labels"
+            reap_write_fail CLAIM-REAP-LABEL-FAIL "label remove (in-progress) failed on closed $repo_slug#$issue"
         fi
     fi
     should_archive_packets=1

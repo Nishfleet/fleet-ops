@@ -23,6 +23,11 @@ PACKET_DIRECTION_LEDGER_FILE="${PACKET_DIRECTION_LEDGER_FILE:-$HOME/workspaces/t
 PACKET_DIRECTION_SECTION="${PACKET_DIRECTION_SECTION:-2026-09-09 — 0509 direction}"
 PACKET_GH="${PACKET_GH:-gh}"
 
+# PACKET_CF_FILE must be defined before PACKET_PRODUCT_CF_FILE (which
+# defaults to it) — sourcing this lib under `set -u` (fleet-blind-audit)
+# otherwise trips on the forward reference.
+PACKET_CF_FILE="${PACKET_CF_FILE:-$HOME/.config/cloudflare/deploy-ci.env}"
+
 # fleet-ops#5699: live 0509 signup metrics for the Direction block, read at
 # packet assembly from production D1 through the same sanctioned seam the
 # measure feed uses (token from a deploy-ci.env-style file, D1 REST query).
@@ -39,7 +44,6 @@ PACKET_JQ="${PACKET_JQ:-jq}"
 # source that is missing, unreachable, permission-denied, or empty is DROPPED
 # from the usage block with a visible marker, never failing the scout run.
 PACKET_0509_DIR="${PACKET_0509_DIR:-$HOME/workspaces/products/0509}"
-PACKET_CF_FILE="${PACKET_CF_FILE:-$HOME/.config/cloudflare/deploy-ci.env}"
 PACKET_ZONE_NAME="${PACKET_ZONE_NAME:-0509.io}"
 PACKET_CF_ZONE="${PACKET_CF_ZONE:-}"
 PACKET_USAGE_SOURCES="${PACKET_USAGE_SOURCES:-1}"
@@ -201,21 +205,103 @@ packet_direction_block() {
     fi
 }
 
+# _packet_gh_quota <credential>
+# One `gh api rate_limit` read on the named credential (the endpoint is
+# free — it does not consume the bucket it reports). Prints
+# `core=<n>,graphql=<n>`; `?` fields when unreadable.
+_packet_gh_quota() {
+    local cred="$1" out q
+    if [[ "$cred" == "user-rest" ]]; then
+        out=$( ( unset GH_TOKEN GITHUB_TOKEN; "$PACKET_GH" api rate_limit ) 2>/dev/null)
+    else
+        out=$("$PACKET_GH" api rate_limit 2>/dev/null)
+    fi
+    q=$(printf '%s' "$out" | command "$PACKET_JQ" -r \
+        '(.resources // {}) | "core=\(.core.remaining // "?"),graphql=\(.graphql.remaining // "?")"' \
+        2>/dev/null)
+    printf '%s' "${q:-core=?,graphql=?}"
+}
+
+# _packet_gh_stamp <label> <served-by>
+# Append one credential-provenance line per list call to
+# $PACKET_GH_STAMP_FILE when set (stderr otherwise):
+#   gh-credential <label>: served-by=<cred> quota=core=<n>,graphql=<n>
+_packet_gh_stamp() {
+    local line
+    line="gh-credential $1: served-by=$2 quota=$(_packet_gh_quota "$2")"
+    if [[ -n "${PACKET_GH_STAMP_FILE:-}" ]]; then
+        printf '%s\n' "$line" >>"$PACKET_GH_STAMP_FILE" 2>/dev/null || true
+    else
+        printf '%s\n' "$line" >&2
+    fi
+}
+
+# packet_gh_read <label> <rest_path> <rest_jq> -- <gh args...>
+# fleet-ops#5781: run `gh <args>` under the App installation credential
+# (`gh issue|pr list` are GraphQL calls on the installation's graphql
+# bucket). On error, retry the equivalent REST list via `gh api
+# <rest_path>` with GH_TOKEN/GITHUB_TOKEN unset — gh then uses the human
+# identity, which the fleet contract allows for organ READS
+# (fleet-ops#3445 "Human gh is read-only for organs"; the #5489 _gh_read
+# precedent). The installation and user buckets are independent, as are
+# each credential's core (REST) and graphql buckets, so an exhausted
+# installation-GraphQL budget no longer blinds the packet (live case
+# 2026-09-12: the audit packet read "Open issues: []" on a repo with 200+
+# open issues while the user REST bucket still held ~4984).
+# <rest_jq> reshapes the REST response into the same JSON shape the
+# primary `--json` list would have printed (REST /issues also returns
+# PRs — filter on `.pull_request == null`; REST uses `closed_at` /
+# `merged_at` snake_case where GraphQL uses closedAt/mergedAt, and has
+# no closedByPullRequestsReferences equivalent — emit [] there).
+# Prints the JSON on stdout; on a double failure prints nothing and
+# returns 1 so callers keep their `|| echo '[]'` / `|| true` shape.
+packet_gh_read() {
+    local label="$1" rest_path="$2" rest_jq="$3"
+    shift 3
+    [[ "${1:-}" == "--" ]] && shift
+    local out
+    if out=$("$PACKET_GH" "$@" 2>/dev/null); then
+        _packet_gh_stamp "$label" "installation"
+        printf '%s' "$out"
+        return 0
+    fi
+    if out=$( ( unset GH_TOKEN GITHUB_TOKEN; "$PACKET_GH" api "$rest_path" ) 2>/dev/null \
+              | command "$PACKET_JQ" -c "$rest_jq" 2>/dev/null) \
+        && [[ -n "$out" ]]; then
+        _packet_gh_stamp "$label" "user-rest"
+        printf '%s' "$out"
+        return 0
+    fi
+    _packet_gh_stamp "$label" "unavailable"
+    return 1
+}
+
 # packet_repo_reality <repo>
 # Print recent merged PR titles (last 20), open issues, and open PRs.
 packet_repo_reality() {
     local repo="$1"
     local merged issues prs
 
-    merged=$("$PACKET_GH" pr list -R "Nishfleet/$repo" --state merged \
-        --json title --limit 20 2>/dev/null \
-        | jq -r '[.[] | .title] | join("\n")' || true)
-    issues=$("$PACKET_GH" issue list -R "Nishfleet/$repo" --state open \
-        --json number,title --limit 200 2>/dev/null \
-        | jq -r '[.[] | "#\(.number): \(.title)"] | join("\n")' || true)
-    prs=$("$PACKET_GH" pr list -R "Nishfleet/$repo" --state open \
-        --json number,title --limit 100 2>/dev/null \
-        | jq -r '[.[] | "#\(.number): \(.title)"] | join("\n")' || true)
+    # fleet-ops#5781: every list goes through packet_gh_read; the serving
+    # credential + remaining quota are stamped into the block so the packet
+    # can never silently read "no open issues" on a repo full of them.
+    local _stamp_f _saved_stamp
+    _stamp_f=$(mktemp "${TMPDIR:-/tmp}/packet-gh-stamps.XXXXXX" 2>/dev/null || true)
+    _saved_stamp="${PACKET_GH_STAMP_FILE:-}"
+    [[ -n "$_stamp_f" ]] && PACKET_GH_STAMP_FILE="$_stamp_f"
+
+    merged=$(packet_gh_read merged-prs "repos/Nishfleet/$repo/pulls?state=closed&per_page=100" \
+        '[.[] | select(.merged_at != null)] | sort_by(.merged_at) | reverse | .[0:20] | map({title})' \
+        -- pr list -R "Nishfleet/$repo" --state merged --json title --limit 20 \
+        | command "$PACKET_JQ" -r '[.[] | .title] | join("\n")' || true)
+    issues=$(packet_gh_read open-issues "repos/Nishfleet/$repo/issues?state=open&per_page=100" \
+        '[.[] | select(.pull_request == null) | {number,title}] | .[0:200]' \
+        -- issue list -R "Nishfleet/$repo" --state open --json number,title --limit 200 \
+        | command "$PACKET_JQ" -r '[.[] | "#\(.number): \(.title)"] | join("\n")' || true)
+    prs=$(packet_gh_read open-prs "repos/Nishfleet/$repo/pulls?state=open&per_page=100" \
+        '[.[] | {number,title}] | .[0:100]' \
+        -- pr list -R "Nishfleet/$repo" --state open --json number,title --limit 100 \
+        | command "$PACKET_JQ" -r '[.[] | "#\(.number): \(.title)"] | join("\n")' || true)
 
     {
         printf '## Recent merged PR titles (last 20)\n'
@@ -228,7 +314,20 @@ packet_repo_reality() {
         printf '%s\n\n' "${issues:-<none>}"
         printf '## Open PRs\n'
         printf '%s\n\n' "${prs:-<none>}"
+        if [[ -n "$_stamp_f" && -s "$_stamp_f" ]]; then
+            while IFS= read -r _credline; do
+                printf '> %s\n' "$_credline"
+            done < "$_stamp_f"
+            printf '\n'
+        fi
     }
+
+    if [[ -n "$_saved_stamp" ]]; then
+        PACKET_GH_STAMP_FILE="$_saved_stamp"
+    else
+        unset PACKET_GH_STAMP_FILE
+    fi
+    [[ -n "$_stamp_f" ]] && rm -f "$_stamp_f"
 }
 
 # packet_cf_token <file>

@@ -610,6 +610,164 @@ grep -q -- '--remove-label agent-in-progress' "$edit_log_f2" \
     || fail "normal reap must remove agent-in-progress: edit log: $(cat "$edit_log_f2")"
 ok "reaper still flips agent-in-progress -> agent-ready on an unblocked issue (no guard regression)"
 
+# --- Test G: App-GraphQL write failure retries via App REST (fleet-ops#5781) --
+# Live case 2026-09-12T03:06Z on #5734: installation 156789042's graphql
+# bucket was exhausted, so `gh issue edit` / `gh issue comment` failed and the
+# claim stayed inconsistent with only WARN-level lines. The reaper must retry
+# each failed write once through the REST endpoint on the SAME App credential
+# (the core bucket is independent of graphql; writes never drop to the human
+# identity — fleet-ops#3445). Fake gh: every GraphQL write fails, REST writes
+# succeed and are logged.
+state_g="$fake/state-g"
+mkdir -p "$state_g/attempts"
+ledger_g="$fake/ledger-g"
+mkdir -p "$ledger_g"
+write_log_g="$fake/write-log-g"
+rm -f "$write_log_g"
+cat >"$gh_bin/gh" <<'FAKE_GH'
+#!/usr/bin/env bash
+case "$1" in
+  api)
+    path="${2:-}"
+    if [[ "$*" == *"-X PUT"* ]]; then
+      # Label-set write: body arrives on stdin via --input -.
+      printf 'PUT %s body=%s\n' "$path" "$(cat)" >>"${GH_WRITE_LOG:-/dev/null}"
+      exit 0
+    fi
+    if [[ "$*" == *"-X POST"* ]]; then
+      printf 'POST %s %s\n' "$path" "$*" >>"${GH_WRITE_LOG:-/dev/null}"
+      exit 0
+    fi
+    if [[ "$*" == *"-X DELETE"* ]]; then
+      exit 0
+    fi
+    if [[ "$path" == */issues/* ]]; then
+      printf '%s\n' '{"state":"open","labels":[{"name":"agent-in-progress"}]}'
+      exit 0
+    fi
+    if [[ "$path" == */pulls* ]]; then
+      printf '%s\n' '[]'
+      exit 0
+    fi
+    if [[ "$path" == */git/refs/heads/* ]]; then
+      exit 0
+    fi
+    echo "unexpected gh api $*" >&2
+    exit 1
+    ;;
+  issue)
+    case "$2" in
+      # The installation's graphql bucket is dead.
+      edit|comment)
+        echo "GraphQL: API rate limit already exceeded for installation ID 156789042" >&2
+        exit 1
+        ;;
+      *) echo "unexpected gh issue $*" >&2; exit 1 ;;
+    esac
+    ;;
+  *) echo "unexpected gh $*" >&2; exit 1 ;;
+esac
+FAKE_GH
+chmod +x "$gh_bin/gh"
+: >"$triage"
+write_fake inactive 0
+set +e
+out="$(PATH="$gh_bin:$PATH" SYSTEMCTL="$fake/systemctl" TRIAGE_FILE="$triage" \
+    PI_PACKET_STATE="$state_g" \
+    SEAT_LIB="$repo_root/lib/seat-lib.sh" \
+    PI_SEAT_HEALTH_LEDGER_DIR="$ledger_g" \
+    PI_SEAT_LIB_CHECK_SYSTEMD=0 \
+    GH_WRITE_LOG="$write_log_g" \
+    "$bin" fleet-ops-7001 2>&1)"
+rc=$?
+set -e
+[[ "$rc" == "0" ]] || fail "REST-retry reap must exit 0, got $rc ($out)"
+grep -q 'PUT repos/Nishfleet/fleet-ops/issues/7001/labels' "$write_log_g" \
+    || fail "failed label flip must retry via REST PUT on the labels endpoint, write log: $(cat "$write_log_g" 2>/dev/null)"
+grep -q 'body={"labels":\["agent-ready"\]}' "$write_log_g" \
+    || fail "REST retry must PUT the desired label set (agent-in-progress out, agent-ready in), got: $(cat "$write_log_g")"
+grep -q 'POST repos/Nishfleet/fleet-ops/issues/7001/comments' "$write_log_g" \
+    || fail "failed comment must retry via REST POST on the comments endpoint, write log: $(cat "$write_log_g")"
+printf '%s' "$out" | grep -q 'via App REST retry' \
+    || fail "log must record the REST-retry path, got: $out"
+grep -q 'label_flipped=yes comment_posted=yes' "$triage" \
+    || fail "CLAIM-RELEASED must report both writes succeeded via retry: $(cat "$triage")"
+grep -q 'CLAIM-REAP-LABEL-FAIL\|CLAIM-REAP-COMMENT-FAIL' "$triage" \
+    && fail "a successful REST retry must not emit the FAIL tag: $(cat "$triage")" || true
+ok "failed GraphQL writes retry once via App REST and the reap lands (fleet-ops#5781)"
+
+# --- Test H: double write failure emits one LOUD triage line ------------------
+# When BOTH the GraphQL write and the App-REST retry fail, the issue is left
+# inconsistent — that is a named fault the judges must see, not a WARN buried
+# in a unit journal. The reaper must emit one LOUD line per failed write.
+state_h="$fake/state-h"
+mkdir -p "$state_h/attempts"
+ledger_h="$fake/ledger-h"
+mkdir -p "$ledger_h"
+cat >"$gh_bin/gh" <<'FAKE_GH'
+#!/usr/bin/env bash
+case "$1" in
+  api)
+    path="${2:-}"
+    if [[ "$*" == *"-X PUT"* || "$*" == *"-X POST"* ]]; then
+      # App REST bucket is dead too (e.g. 5xx) — retry fails.
+      echo "HTTP 502: upstream connect error" >&2
+      exit 1
+    fi
+    if [[ "$*" == *"-X DELETE"* ]]; then
+      exit 0
+    fi
+    if [[ "$path" == */issues/* ]]; then
+      printf '%s\n' '{"state":"open","labels":[{"name":"agent-in-progress"}]}'
+      exit 0
+    fi
+    if [[ "$path" == */pulls* ]]; then
+      printf '%s\n' '[]'
+      exit 0
+    fi
+    if [[ "$path" == */git/refs/heads/* ]]; then
+      exit 0
+    fi
+    echo "unexpected gh api $*" >&2
+    exit 1
+    ;;
+  issue)
+    case "$2" in
+      edit|comment)
+        echo "GraphQL: API rate limit already exceeded for installation ID 156789042" >&2
+        exit 1
+        ;;
+      *) echo "unexpected gh issue $*" >&2; exit 1 ;;
+    esac
+    ;;
+  *) echo "unexpected gh $*" >&2; exit 1 ;;
+esac
+FAKE_GH
+chmod +x "$gh_bin/gh"
+: >"$triage"
+write_fake inactive 0
+set +e
+out="$(PATH="$gh_bin:$PATH" SYSTEMCTL="$fake/systemctl" TRIAGE_FILE="$triage" \
+    PI_PACKET_STATE="$state_h" \
+    SEAT_LIB="$repo_root/lib/seat-lib.sh" \
+    PI_SEAT_HEALTH_LEDGER_DIR="$ledger_h" \
+    PI_SEAT_LIB_CHECK_SYSTEMD=0 \
+    "$bin" fleet-ops-7002 2>&1)"
+rc=$?
+set -e
+[[ "$rc" == "0" ]] || fail "double-fail reap still exits 0 (partial cleanup is not a hard error), got $rc ($out)"
+printf '%s' "$out" | grep -q 'LOUD \[CLAIM-REAP-LABEL-FAIL\]' \
+    || fail "double label failure must emit one LOUD journal line, got: $out"
+printf '%s' "$out" | grep -q 'LOUD \[CLAIM-REAP-COMMENT-FAIL\]' \
+    || fail "double comment failure must emit one LOUD journal line, got: $out"
+grep -q 'CLAIM-REAP-LABEL-FAIL' "$triage" \
+    || fail "triage must carry CLAIM-REAP-LABEL-FAIL for the judges: $(cat "$triage")"
+grep -q 'CLAIM-REAP-COMMENT-FAIL' "$triage" \
+    || fail "triage must carry CLAIM-REAP-COMMENT-FAIL for the judges: $(cat "$triage")"
+grep -q 'label_flipped=no comment_posted=no' "$triage" \
+    || fail "CLAIM-RELEASED must record both writes failed: $(cat "$triage")"
+ok "double write failure emits LOUD journal + triage lines instead of a silent WARN (fleet-ops#5781)"
+
 # fleet-ops#5092: park-resurrection regression — reaper fail-closed on
 # awaiting-runtime-gate, pi-issue-run exits 0 on a parked issue. Hosted here
 # because the worker App token has no Workflows scope to list it in ci.yml.

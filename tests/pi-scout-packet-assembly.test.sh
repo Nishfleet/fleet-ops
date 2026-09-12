@@ -301,4 +301,9 @@ bash "$repo_root/tests/sr-token-efficiency-debt.test.sh"
 bash "$repo_root/tests/packet-direction-block.test.sh"
 bash "$repo_root/tests/packet-direction-live-metric.test.sh"
 
+# fleet-ops#5781: App-GraphQL -> user-REST list fallback with credential/quota
+# stamps (packet_gh_read). Hosted here so P14 runs it without a workflow-file
+# edit. Hermetic (fake gh; simulates installation rate-limit exhaustion).
+bash "$repo_root/tests/packet-assembly-graphql-fallback.test.sh"
+
 ok "0509 scout packet assembly: research-seeded, stale-fail-loud, pi-bound"

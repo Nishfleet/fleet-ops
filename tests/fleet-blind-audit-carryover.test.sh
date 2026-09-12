@@ -135,6 +135,7 @@ common_env=(
   AUDIT_REPO="Nishfleet/fleet-ops"
   AUDIT_REPO_ROOT="$repo_root"
   AUDIT_PANEL_BIN="$repo_root/bin/fleet-blind-audit-panel"
+  AUDIT_PACKET_ASSEMBLY_LIB="$repo_root/lib/packet-assembly.sh"
   AUDIT_STATE_DIR="$scratch/state"
   AUDIT_PLAN_FILE="$plan"
   AUDIT_SEAM_LIB="$repo_root/lib/manual-seam-lens.py"
