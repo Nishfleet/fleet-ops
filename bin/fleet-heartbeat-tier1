@@ -566,11 +566,13 @@ fi
 #   p<N>/*           -> packet branches
 #   lane*/           -> lane worker branches
 #   revert/          -> auto-revert worker
+#   reconcile/       -> drift-canary hot-patch reconcile PR (fleet-ops#5663);
+#                       keeps auto-merge armed if the canary's own arm failed
 #   dependabot/      -> leave to dependabot policy; we skip
 #
 # We only queue PRs whose headRef starts with claim/issue- or p<digit>/
-# or lane<digit>- or revert/. The full gate proof is `gh pr checks` returning
-# all PASS.
+# or lane<digit>- or revert/ or reconcile/. The full gate proof is
+# `gh pr checks` returning all PASS.
 queued=0
 skipped=0
 log "2. queue pass starting"
@@ -585,7 +587,7 @@ while IFS= read -r repo; do
     # dependabot (handled by its own policy).
     prs_json=$(gh pr list -R "$repo" --state open \
         --json number,headRefName,isDraft,mergeable,title,labels \
-        --jq '[.[] | select((.headRefName | startswith("claim/issue-")) or (.headRefName | test("^(p[0-9]+|lane[0-9]+|revert)/")))]' \
+        --jq '[.[] | select((.headRefName | startswith("claim/issue-")) or (.headRefName | test("^(p[0-9]+|lane[0-9]+|revert|reconcile)/")))]' \
         2>/dev/null) || {
             log "2.  - $repo: gh pr list FAILED — skipping (auth/network?)"
             continue
