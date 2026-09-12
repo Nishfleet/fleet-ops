@@ -119,7 +119,28 @@ find_senior_seat() {
 }
 
 senior_seat_available() {
-    litellm_ready || [[ "${GITHUB_ACTIONS:-}" == "true" ]]
+    # fleet-ops#3709: a senior seat is available when an entry of
+    # senior_seats_in_order is not benched in the seat-health ledger. The
+    # real enumeration lived in the routing library deleted by #4263; what
+    # replaced it (`litellm_ready || GITHUB_ACTIONS == true`) is always true
+    # under CI, so the reviewer-round fallback gate could never fire there
+    # and tests/fleet-review-arm-check.test.sh case 1 failed on main.
+    local seats seat p m
+    if (( ! _seat_caps_loaded )); then load_seat_caps || true; fi
+    [[ -f "$SEAT_CAPS_JSON" ]] || { litellm_ready; return $?; }
+    seats=$(jq -r '.senior_seats_in_order[]? // empty' "$SEAT_CAPS_JSON" 2>/dev/null || true)
+    # No senior list configured: fall back to proxy reachability.
+    [[ -n "$seats" ]] || { litellm_ready; return $?; }
+    while IFS= read -r seat; do
+        [[ -n "$seat" ]] || continue
+        p="${seat%%/*}"
+        m="${seat#*/}"
+        [[ -n "$p" && -n "$m" && "$p" != "$seat" ]] || continue
+        if seat_usable "$p" "$m"; then
+            return 0
+        fi
+    done <<<"$seats"
+    return 1
 }
 
 # --- repo privacy (free-tier privacy line, vault 2026-08-18) ----------------
