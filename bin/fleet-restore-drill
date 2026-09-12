@@ -475,6 +475,15 @@ plane_e_litellm_pg() {
     rm -rf "$scratch"
     return 1
   fi
+  # pg_ctl -k needs the socket dir to EXIST: the live cluster's run/ dir is
+  # created by the install runbook, but nothing pre-creates the scratch's —
+  # 2026-09-12 21:56 IST live run: FATAL could not create lock file
+  # .../sock/.s.PGSQL.5433.lock. (The test fake pg_ctl never hits this.)
+  if ! mkdir -p "$scratch/sock"; then
+    loud "RESTORE-DRILL-FAIL" "cannot create scratch socket dir under $scratch — plane E cannot prove the dump loads"
+    rm -rf "$scratch"
+    return 1
+  fi
   if ! "$pgctlbin" -D "$scratch/data" -o "-p $port -k $scratch/sock -c listen_addresses=''" \
       -l "$scratch/pglog" -w start >/dev/null 2>&1; then
     loud "RESTORE-DRILL-FAIL" "scratch cluster failed to start on port $port — plane E cannot prove the dump loads"

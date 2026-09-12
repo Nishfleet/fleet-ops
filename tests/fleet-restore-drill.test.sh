@@ -215,6 +215,9 @@ reset_all() {
   rm -f "$triage"; : >"$triage"
   rm -rf "$sys_state"; mkdir -p "$sys_state"
   rm -rf "$state/alert-repair"
+  # The dump dir is scenario state too: L's rotation survivors must not
+  # satisfy M's no-lingering-dump assertion.
+  rm -rf "$state/backups"; mkdir -p "$state/backups"
   write_green_system
   write_seat_caps
   write_claims
@@ -415,7 +418,11 @@ grep -q 'scratch-restore proven' <<<"$drill_out" || fail "scenarioL: drill must 
 grep -q 'litellm-pg dump+scratch-restore proven' "$state/alert-repair/fleet-restore-drill-marker" \
   || fail "scenarioL: marker must cite the litellm-pg proof"
 # Rotation: seed 16 older dumps (16 + the fresh dump = 17) -> keep-14 must
-# rotate out the 3 oldest of the seeded set.
+# rotate out the 3 oldest BY MTIME. The touch arithmetic puts 000014Z
+# uniquely at 2 days ago (the oldest seeded mtime -> rotated out) and
+# 000025..000029 one day in the future (the newest seeded mtimes -> all
+# survive); the shared-second groups (15..19, 20..24) tie inside ls -t and
+# are NOT name-assertable — only the unique mtime boundaries are.
 for i in $(seq 14 29); do
   printf '%02d' "$i" >"$state/backups/litellm-20260101T0000${i}Z.sql.gz"
   touch -d "$((4 - i / 5)) days ago" "$state/backups/litellm-20260101T0000${i}Z.sql.gz" 2>/dev/null \
@@ -424,10 +431,10 @@ done
 run_drill
 count=$(find "$state/backups" -maxdepth 1 -name 'litellm-*.sql.gz' | wc -l)
 [[ "$count" -le 14 ]] || fail "scenarioL: rotation must keep <= 14 dumps, got $count"
-[[ -f "$state/backups/litellm-20260101T000014Z.sql.gz" ]] \
+[[ -f "$state/backups/litellm-20260101T000029Z.sql.gz" ]] \
   || fail "scenarioL: the newest of the seeded old dumps must survive rotation"
-[[ ! -f "$state/backups/litellm-20260101T000029Z.sql.gz" ]] \
-  || fail "scenarioL: the oldest seeded dumps must be rotated out"
+[[ ! -f "$state/backups/litellm-20260101T000014Z.sql.gz" ]] \
+  || fail "scenarioL: the oldest seeded dump must be rotated out"
 ok "scenarioL: plane E green — dump + scratch-restore proof + marker cite + rotation"
 
 # ============================================================================
@@ -444,7 +451,7 @@ run_drill
 [[ "$drill_rc" == 1 ]] || fail "scenarioM: must exit 1 (pg_dump failed), got $drill_rc ($drill_out)"
 grep -q 'litellm pg_dump failed' "$triage" || fail "scenarioM: triage must name the pg_dump failure"
 [[ -z "$(find "$state/backups" -maxdepth 1 -name 'litellm-*.sql.gz' 2>/dev/null)" ]] \
-  || fail "scenarioM: a failed dump must not linger as a fulle artifact"
+  || fail "scenarioM: a failed dump must not linger as a stale artifact"
 ok "scenarioM: plane E pg_dump failure -> exit 1, LOUD"
 
 # ============================================================================
