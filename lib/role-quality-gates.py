@@ -136,6 +136,14 @@ NON_ROLE_UNIT_PREFIXES = (
     # fleet_grok_token_refresh_last_success_seconds plus
     # tests/grok-token-refresh.test.sh.
     "grok-token-refresh",
+    # fleet-ops#5788: minimax-token-refresh is the same class of
+    # credential plumbing for the MiniMax seat — it calls the
+    # claude-minimax-key wrapper every 2h, compares the freshly issued
+    # key to the fleet-litellm-proxy captured env var, and bounces the
+    # proxy on mismatch. Own gate is the absent() rule on
+    # fleet_minimax_token_refresh_last_success_seconds plus
+    # tests/minimax-token-refresh.test.sh.
+    "minimax-token-refresh",
     # fleet-ops#180 / #1557: gap-closure loop. Drill stubs + the loop
     # oneshot are observability/orchestration plumbing (no model of their
     # own). Auditor/conference/research prompts+units are catalogued under
