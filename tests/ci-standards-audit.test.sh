@@ -895,8 +895,8 @@ bash "$here/helper-symlink-resolution.test.sh"
 # the 'corrected 2026-08-25' amendment, and the real rendered targets
 # (~/.claude/CLAUDE.md, ~/.codex/AGENTS.md on the VPS) echo the same title +
 # pointer. Standalone (not a standing-rules-drift fixture) by design, so it
-# proves live host state; in CI it exercises the canonical/archive fixtures.
+# proves live host state. In CI the canonical shape checks run and the
+# vault/host-path checks skip (no /home/nish tree on ubuntu-latest).
 # Hosted here (a listed test) so P14 runs it without a workflow-file edit
-# (the worker App cannot push .github/workflows/**). Hermetic in CI (vault
-# paths only read).
+# (the worker App cannot push .github/workflows/**).
 bash "$here/one-fleet-rule-pointer.test.sh"

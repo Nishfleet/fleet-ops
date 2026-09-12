@@ -17,7 +17,10 @@ fail() { echo "FAIL: $*" >&2; exit 1; }
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 canonical="$repo_root/lib/standing-rules/canonical.md"
-archive="${ONE_FLEET_ARCHIVE:-/home/nish/workspaces/tooling/nish-vault/_system/shared-memory/standing-rules-archive.md}"
+archive="${ONE_FLEET_ARCHIVE-/home/nish/workspaces/tooling/nish-vault/_system/shared-memory/standing-rules-archive.md}"
+# Rendered targets are VPS host paths; overridable so a fixture can stand in
+# and so CI (ubuntu-latest, no /home/nish tree) can pass an empty list.
+targets="${ONE_FLEET_TARGETS-/home/nish/.claude/CLAUDE.md /home/nish/.codex/AGENTS.md}"
 heading='## One fleet (Nish, 2026-08-21; machinery superseded 2026-08-23 — corrected 2026-08-25)'
 
 [[ -f "$canonical" ]] || fail "canonical not found: $canonical"
@@ -38,14 +41,19 @@ nonempty="$(echo "$section" | grep -v '^[[:space:]]*$' | grep -vc '^##')"
 echo "$section" | grep -q "^Full text: .*standing-rules-archive.md" \
   || fail "canonical one-fleet section missing the archive Full text pointer"
 
-# The archive target of the pointer must exist and carry the exact heading.
-[[ -f "$archive" ]] || fail "archive not found: $archive"
-grep -qxF "$heading" "$archive" \
-  || fail "archive does not contain the exact one-fleet heading"
+# The archive target of the pointer must carry the exact heading — checked
+# only where the vault is mounted. CI (ubuntu-latest) has no
+# /home/nish/workspaces tree, same conditional shape as the target loop.
+if [[ -n "$archive" && -f "$archive" ]]; then
+  grep -qxF "$heading" "$archive" \
+    || fail "archive does not contain the exact one-fleet heading"
+else
+  echo "SKIP: vault archive not present on this host"
+fi
 
 # If the real rendered targets exist on this host, they must echo the same
 # title + pointer and must NOT carry the old paraphrased body.
-for target in /home/nish/.claude/CLAUDE.md /home/nish/.codex/AGENTS.md; do
+for target in $targets; do
   [[ -f "$target" ]] || continue
   block="$(sed -n '/<!-- BEGIN GENERATED: one-fleet-rule -->/,/<!-- END GENERATED: one-fleet-rule -->/p' "$target")"
   [[ -n "$block" ]] || fail "$target lost its one-fleet-rule generated region"
