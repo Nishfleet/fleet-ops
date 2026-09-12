@@ -148,6 +148,7 @@ if [ ! -f "$_DF_LIB" ]; then
     exit 2
 fi
 # shellcheck source=../lib/deploy-fault-gate.sh
+# shellcheck source=lib/deploy-fault-gate.sh
 . "$_DF_LIB"
 unset _DF_LIB _df_here
 
