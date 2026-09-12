@@ -150,6 +150,19 @@ backup_rule_files() {
         [ -f "$src" ] || { log "skip missing rule file: $src"; continue; }
         base="$(basename "$src")"
         dest="$(dirname "$src")/${base}.pre-rulebook-redteam-${UTC_STAMP}"
+        # fleet-ops#5687: a sibling backup next to a rule file inside this
+        # checkout lands in the DEPLOY CLONE in production (the installed
+        # symlink resolves here) — live install source must stay clean
+        # (fleet-ops#3758) and every redteam run otherwise trips
+        # DEPLOY-CHECK-DIRTY-CLONE (live dirt 2026-09-12:
+        # AGENTS.md.pre-rulebook-redteam-20260912T040016Z). Backups for
+        # in-checkout files go to the report dir — same manifest, same
+        # rollback path, no clone dirt.
+        case "$src" in
+            "$repo_fallback"/*)
+                dest="$REPORT_DIR/${base}.pre-rulebook-redteam-${UTC_STAMP}"
+                ;;
+        esac
         cp -a "$src" "$dest"
         printf '%s\t%s\tundo: cp %s %s\n' "$src" "$dest" "$dest" "$src" \
             >>"$BACKUP_MANIFEST"
