@@ -134,6 +134,97 @@ const DANGEROUS_RULES: Array<{ id: string; pattern: RegExp }> = [
 const WRANGLER_DEPLOY_0509 =
 	/\b(?:wrangler\s+(?:deploy|versions\s+upload)|npm\s+run\s+deploy|node\s+scripts\/deploy-production\.mjs)\b/;
 
+/**
+ * fleet-ops#5700: the raw WRANGLER_DEPLOY_0509 regex is tested against the
+ * FULL command text, so read-only commands that merely MENTION a deploy
+ * phrase inside a quoted string or a heredoc body were blocked — 98 blocks,
+ * majority false positives (a worker cannot grep for wrangler, write a PR
+ * body via `cat <<EOF`, or even file this issue without tripping the gate;
+ * the scout that filed #5700 was SPAWN_BLOCKED three times while filing it).
+ *
+ * stripQuotedShellText returns the command with heredoc bodies dropped and
+ * quoted spans replaced by NUL separators, so only executable-position text
+ * remains. Quoted content is prose — grep patterns, PR bodies, issue text.
+ * Defensive edge: `sh -c 'wrangler deploy'` hides the deploy inside a quote
+ * while still EXECUTING it, so when a `sh|bash -c` wrapper appears in the
+ * stripped text and the raw text matches, the guard falls back to blocking
+ * (conservative — the gate's teeth are kept at the cost of over-matching a
+ * rare `grep 'sh -c'` shape). See fleet-spawn-guard-stash-readonly.test.sh
+ * for the same principle (read-only mention ≠ execution).
+ */
+export function stripQuotedShellText(command: string): string {
+	// 1. Drop heredoc bodies (everything up to the terminator line). A
+	// heredoc body is prose — PR bodies, issue filings — never executable.
+	const lines = command.split("\n");
+	const kept: string[] = [];
+	let terminator: string | null = null;
+	for (const line of lines) {
+		if (terminator !== null) {
+			if (line.trim() === terminator) {
+				terminator = null;
+				kept.push("");
+			}
+			continue;
+		}
+		kept.push(line);
+		const m = line.match(/<<(-?)\s*(['\"`]?)([A-Za-z_][A-Za-z0-9_-]*)\2/);
+		if (m) terminator = m[3];
+	}
+	const noHeredocs = kept.join("\n");
+	// 2. Blank out quoted spans with NUL separators: the tokens inside a
+	// quote can neither match nor splice together around the quote bounds.
+	let out = "";
+	let quote: string | null = null;
+	for (const ch of noHeredocs) {
+		if (quote === null) {
+			if (ch === "'" || ch === '"') {
+				quote = ch;
+				out += "\x00";
+			} else {
+				out += ch;
+			}
+		} else if (ch === quote) {
+			quote = null;
+			out += "\x00";
+		}
+	}
+	return out;
+}
+
+/**
+ * fleet-ops#5700 dry-run precision: a wrangler deploy/versions upload
+ * invocation that carries --dry-run deploys NOTHING (it only bundles), and
+ * it is the one legitimate local pre-push verification for a wrangler
+ * change. It is exempt — but any OTHER deploy entry point appearing in a
+ * command separator-sibling segment (`&&`, `;`, `|`, `\n`) still blocks:
+ * `wrangler deploy --dry-run && npm run deploy` is a deploy.
+ */
+export function wranglerDeployExecutableEntry(
+	command: string,
+): string | null {
+	const stripped = stripQuotedShellText(command);
+	const segments = stripped.split(/&&|\|\||[;|\n]/);
+	for (const seg of segments) {
+		if (!WRANGLER_DEPLOY_0509.test(seg)) continue;
+		const isWranglerDryRunOnly =
+			/\bwrangler\s+(?:deploy|versions\s+upload)\b/.test(seg) &&
+			/--dry-run/.test(seg) &&
+			!/\bnpm\s+run\s+deploy\b|\bnode\s+scripts\/deploy-production\.mjs\b/.test(
+				seg,
+			);
+		if (isWranglerDryRunOnly) continue;
+		return seg.trim();
+	}
+	// `sh -c` conservative fallback: see stripQuotedShellText.
+	if (
+		/(?:^|[;&|("\s])(?:sudo\s+)?(?:sh|bash)\s+-c\b/.test(stripped) &&
+		WRANGLER_DEPLOY_0509.test(command)
+	) {
+		return command;
+	}
+	return null;
+}
+
 function parseDepth(env: NodeJS.ProcessEnv): number {
 	const raw = env.FLEET_SPEC_DEPTH ?? env.FLEET_SPAWN_DEPTH ?? "0";
 	const depth = Number.parseInt(String(raw), 10);
@@ -195,8 +286,8 @@ function logBlock(reason: string, ctx: SpawnContext): void {
  * `cd /path/to/0509 && wrangler deploy` sets cwd inside the shell, so we must
  * check both the spawn cwd and the command string for 0509 path references.
  */
-function wranglerDeployBlock(ctx: SpawnContext): string | null {
-	if (!WRANGLER_DEPLOY_0509.test(ctx.command)) return null;
+export function wranglerDeployBlock(ctx: SpawnContext): string | null {
+	if (!wranglerDeployExecutableEntry(ctx.command)) return null;
 	if (ctx.env[BREAKGLASS_DEPLOY_0509] === "1") return null;
 	if (!/0509/.test(ctx.cwd) && !/0509/.test(ctx.command)) return null;
 	return "wrangler_deploy_0509";
