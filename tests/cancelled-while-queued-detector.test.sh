@@ -247,6 +247,7 @@ grep -q 'timeout-minutes:' "$wf" || fail "cancelled-while-queued.yml job must se
 grep -q 'issues: write' "$wf" || fail "workflow needs issues: write to file labelled issues"
 grep -q 'actions: read' "$wf" || fail "workflow needs actions: read to call the actions API"
 grep -q 'config/intake-repos.json' "$wf" || fail "sweep must enumerate enrolled repos from config/intake-repos.json (#185 auto-discovery)"
+grep -q 'secrets.FLEET_SYNC_PAT' "$wf" || fail "sweep must authenticate with FLEET_SYNC_PAT — GITHUB_TOKEN is repo-scoped and the worker App cannot cancel runs (fleet-ops#5732)"
 grep -q 'cancel' "$script" || fail "detector must call the cancel endpoint"
 grep -q "method.*POST\|POST" "$script" || fail "detector must POST to the cancel endpoint"
 ok "cancelled-while-queued.yml shape (workflow_call + schedule + issues:write + actions:read + auto-discovery + POST)"
