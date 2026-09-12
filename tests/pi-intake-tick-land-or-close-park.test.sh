@@ -17,8 +17,10 @@
 #      protected-merged path, never replaces it.
 #   3. It requires: NOT protected (`_park_protected == 0`; bot-authored /
 #      no critical-path) AND a `termination:` clause AND the body names
-#      other PRs via the `gh pr view` signature AND no merged claim-branch
-#      delivery PR — all four, else no land-or-close park.
+#      other PRs via a `gh pr <verb>` probe (`view`, `checks`, `list`,
+#      `merge` — fleet-ops#5835 widened this from `gh pr view`-only after
+#      #5761's `gh pr checks 5744` termination evaded the park) AND no
+#      merged claim-branch delivery PR — all four, else no land-or-close park.
 #   4. On trip: awaiting-runtime-gate label added, agent-ready removed, a
 #      land-or-close-specific comment (fleet-ops#4553) posted, and the issue
 #      skipped via continue.
@@ -51,14 +53,33 @@ ok "Test 2: land-or-close branch is an elif; protected-merged path unchanged"
 # === Test 3: all four land-or-close preconditions wired ===
 grep -qF 'grep -qi '\''termination:'\''' "$tick" \
     || fail "termination: clause check not found"
-grep -qF 'grep -qi '\''gh pr view'\''' "$tick" \
-    || fail "gh pr view signature (names other PRs) check not found"
+grep -qF "grep -Eiq 'gh pr (view|checks|list|merge)'" "$tick" \
+    || fail "gh pr <verb> probe (names other PRs) check not found (fleet-ops#5835 widened past 'gh pr view'-only)"
+grep -qF "grep -qi 'gh pr view'" "$tick" \
+    && fail "the old 'gh pr view'-only probe is still present (fleet-ops#5835: #5761's 'gh pr checks' termination evades it)" \
+    || true
 grep -qF -- '--head "claim/issue-$N" --state merged' "$tick" \
     || fail "merged claim-branch delivery PR probe not found (land-or-close must park only when ABSENT)"
 # the no-merged probe is reused by both branches; count it.
 probe_count=$(grep -cF -- '--head "claim/issue-$N" --state merged' "$tick")
 (( probe_count >= 1 )) || fail "merged claim-branch probe missing"
-ok "Test 3: land-or-close requires termination: + gh pr view + no-protection + no merged claim-branch PR"
+ok "Test 3: land-or-close requires termination: + gh pr <verb> probe + no-protection + no merged claim-branch PR"
+
+# === Test 3b: the widened verb grep matches the #5761 live-miss termination ===
+# fleet-ops#5835: #5761's termination is 'gh pr checks 5744 -R Nishfleet/fleet-ops'
+# — the old predicate grepped only for 'gh pr view' and never matched, so the
+# issue re-spun a worker every intake cycle. Pin the actual regex against that
+# body shape.
+_checks_body='termination: gh pr checks 5744 -R Nishfleet/fleet-ops'
+printf '%s' "$_checks_body" | grep -Eiq 'gh pr (view|checks|list|merge)' \
+    || fail "the widened gh pr verb regex must match a 'gh pr checks' termination (fleet-ops#5835 live miss on #5761)"
+for _other_verb in view list merge; do
+    printf '%s' "termination: gh pr $_other_verb 1234 -R Nishfleet/fleet-ops" | grep -Eiq 'gh pr (view|checks|list|merge)' >/dev/null \
+        || fail "the widened regex must match 'gh pr $_other_verb' terminations"
+done
+printf '%s' "termination: some future event" | grep -Eiq 'gh pr (view|checks|list|merge)' >/dev/null \
+    && fail "the widened regex must NOT match a termination with no gh pr probe" \
+    || true
 
 # === Test 4: non-protected requirement (bot-authored / no critical-path) ===
 # _park_protected defaults to 0 and is set to 1 only by critical-path or

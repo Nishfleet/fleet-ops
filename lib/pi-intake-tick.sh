@@ -2363,7 +2363,8 @@ blocked-on: orchestrator" 2>/dev/null || true
     # snapshot; past PARK_MAX_CLAIMS, an issue whose remaining work is already
     # delivered is parked under the awaiting-runtime-gate label:
     #   - #4540: protected + termination: + merged claim-branch delivery PR
-    #   - #4553: non-protected + termination: + gh pr view + no merged claim-branch
+    #   - #4553/#5835: non-protected + termination: + gh pr <verb>
+    #     (view|checks|list|merge) + no merged claim-branch
     #   - #5048: protected + no termination: + no merged claim-branch + either
     #     an active user .timer/.service or merged PR(s) on a non-claim branch.
     # The gh pr list probe runs only when the cheap preconditions
@@ -2409,16 +2410,21 @@ blocked-on: orchestrator" 2>/dev/null || true
                 continue
             fi
         elif (( _park_protected == 0 )); then
-            # fleet-ops#4553 + fleet-ops#5045: the two NON-protected park
+            # fleet-ops#4553 + #5835 + fleet-ops#5045: the two NON-protected park
             # shapes share the hoisted merged claim-branch PR probe (body
             # included — the #5045 mention classification needs the trailer).
             if (( _park_merged_count == 0 )) \
                 && printf '%s' "$body" | grep -qi 'termination:' \
-                && printf '%s' "$body" | grep -qi 'gh pr view'; then
-                # fleet-ops#4553: land-or-close spin. A NON-protected
+                && printf '%s' "$body" | grep -Eiq 'gh pr (view|checks|list|merge)'; then
+                # fleet-ops#4553 + #5835: land-or-close spin. A NON-protected
                 # (bot-authored, no critical-path) OPEN issue whose
-                # \`termination:\` clause NAMES OTHER PRs via \`gh pr view\` —
-                # the land-or-close shape. Acceptance is met by driving other
+                # \`termination:\` clause NAMES OTHER PRs via any
+                # \`gh pr <verb>\` probe (\`view\`, \`checks\`, \`list\`,
+                # \`merge\`) — the land-or-close shape. Live miss (#5835):
+                # #5761's termination is \`gh pr checks 5744 -R
+                # Nishfleet/fleet-ops\`, which the original \`gh pr view\`-only
+                # grep never matched, so the park never fired past
+                # PARK_MAX_CLAIMS. Acceptance is met by driving other
                 # PRs to merge (#1992, #4070), the worker cannot
                 # \`gh issue close\` (land-or-close issues are closed by Nish),
                 # and there is NO claim-branch delivery PR, so the #4540
@@ -2429,7 +2435,7 @@ blocked-on: orchestrator" 2>/dev/null || true
                 gh label create awaiting-runtime-gate -R "$FULL" --color D4C5F9 \
                     --description "Parked: land-or-close issue whose termination: met by other PRs; do not claim (fleet-ops#4553)" --force >/dev/null 2>&1 || true
                 gh issue edit "$N" -R "$FULL" --add-label awaiting-runtime-gate --remove-label agent-ready 2>/dev/null || true
-                gh issue comment "$N" -R "$FULL" --body "fleet-ops#4553: issue $N is a land-or-close ticket — its \`termination:\` clause names OTHER PRs (\`gh pr view\`) and it has no merged claim-branch delivery PR, so acceptance is met without opening its own PR. Land-or-close issues stay OPEN by design (the worker cannot \`gh issue close\`), and the reset (#2462) and window (#2772) gates miss the slow-spaced spin, so this issue has been re-claimed ${_park_claims} times since its PRs landed. Parking it: labelled \`awaiting-runtime-gate\`, removed from agent-ready; the intake will not re-claim it until Nish closes the issue or the label is cleared." 2>/dev/null || true
+                gh issue comment "$N" -R "$FULL" --body "fleet-ops#4553 + #5835: issue $N is a land-or-close ticket — its \`termination:\` clause names OTHER PRs via a \`gh pr\` probe (\`view\`, \`checks\`, \`list\`, or \`merge\`) and it has no merged claim-branch delivery PR, so acceptance is met without opening its own PR. Land-or-close issues stay OPEN by design (the worker cannot \`gh issue close\`), and the reset (#2462) and window (#2772) gates miss the slow-spaced spin, so this issue has been re-claimed ${_park_claims} times since its PRs landed. Parking it: labelled \`awaiting-runtime-gate\`, removed from agent-ready; the intake will not re-claim it until Nish closes the issue or the label is cleared." 2>/dev/null || true
                 continue
             elif printf '%s' "$_park_merged" | jq -e 'length > 0' >/dev/null 2>&1; then
                 # fleet-ops#5045: mention-strand spin — the middle shape both
