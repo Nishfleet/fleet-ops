@@ -1,77 +1,39 @@
-feat(seat-health): walled-seat comeback probe with weekly credentials_bad issue
+fix(escalation-drain): archive stuck-packet bursts same-run with DISPOSITION lines; stale no-terminal packets move to `archived/stuck/` with a decision line in `actions.log` so the hourly LOUD STUCK-PACKET line cannot repeat forever for a settled burst (fleet-ops#5647)
 
-## Why
+## What
 
-fleet-ops#1348: #1167 landed the `walled_comeback` table in `config/seat-caps.json`
-(15min on 429, hourly on daily quota, daily on monthly/402, weekly on
-credentials_bad, max 1 probe per 15min). `pick_seat` already fail-opens after
-`usable_at` passes, but nothing actually re-admits the seat — the wall meant the
-seat stayed walled until a manual intervention or an unrelated healthy observation
-overwrote the ledger.
+The drain already deletes consumed packets (terminal proof via `chains.terminated.jsonl`) and LOUD-flags packets older than `FLEET_ESCALATION_DRAIN_STUCK_AGE_S` (6h) with no terminated chain. Per antiquity-prevention fleet-ops#366 and #528, that LOUD line repeated forever for a settled burst: the 244-packet bursts (~10/h) landed hourly because the packets stayed live. Now, in the run that LOUDs:
 
-This PR adds a periodic probe (systemd timer every 15min) that:
-- Reads `usable_at` from the per-seat ledger
-- When `usable_at` has passed, sends a polite 1-token "reply OK" probe through pi
-- A successful probe produces a healthy observation (seat-health.ts records it),
-  clearing `usable_at` so the seat re-enters the ladder at its cap
-- Respects `min_probe_interval_s` from `seat-caps.json` (max 1 probe per seat per tick)
-- `credentials_bad`: probes weekly and files an `agent-ready` issue if still bad
-  (needs fixing, not waiting)
+- each stuck packet is MOVED to `$PACKET_DIR/archived/stuck/` (never silently deleted — the file persists and its name is preserved),
+- a `DISPOSITION stuck-packet packet=<name> terminal=escalated-filed issue=absent-pipeline-filer` decision line is appended to the bounded `actions.log`,
+- the LOUD line still fires, so the absent()/filing pipeline files a FRESH `[stuck-packet]` issue for a NEW burst (fresh filing per burst),
+- fresh re-fires (< STUCK_AGE_S) stay live and undispositioned; a failed `mv` logs `WARN` and leaves the packet live for the next run's loud line.
 
-## Scope
+The 244-packet burst of Nishfleet/fleet-ops#5647 itself was already disposed (verified: 244/244 `terminal=escalated-filed issue=5647` DISPOSITION lines, exact-set match against `archived/stuck/`, see Verification); this PR closes the prevention mechanism so the drain does it itself in the same run going forward.
 
-- `bin/seat-walled-probe` — new script. Iterates the per-seat ledger, probes seats
-  whose `usable_at` is in the past and whose `failure_mode` is walled (rate_limit,
-  quota_exhausted, credentials_bad, empty_run). Uses `--dry-run` and `--probe-all`
-  flags. Exits 0 when there is nothing to probe (common case, not a failure).
-- `systemd/seat-walled-probe.service` + `systemd/seat-walled-probe.timer` —
-  oneshot unit with 10min timeout, timer fires every 15min with 60s randomized delay.
-- `systemd/timer-manifest.json` — entry for the new timer (source: repo, cadence: 15min).
-- `tests/seat-walled-probe.test.sh` — 5-phase test: dry-run selection (skips future/
-  healthy/recent, probes past+weekly), real mock run (probe success/failure + issue
-  filing), no-seats exits 0, --probe-all picks non-walled modes, systemd unit validity
-  + manifest entry.
-- `MANIFEST` — deploy mapping for bin + service + timer.
-
-**Out of scope**: the census sweep integration. #1149 is already the census sweeper;
-this probe runs on its own 15min timer rather than being called from the census.
-
-## Tradeoffs
-
-- **Own timer vs census hook.** Chose a standalone timer because the probe cadence
-  (15min) is tighter than the census (weekly). Adding a 15min-firing census step would
-  change the census's own semantics. The two are orthogonal — census maps assets to
-  guards; this probe is a guard.
-
-## Blast Radius
-
-- **Low risk.** New script + new systemd units only. No existing files modified.
-  The script reads (never writes) the per-seat ledger and `seat-caps.json`.
-  Systemd timer is non-mandatory — fleet runs fine without it.
-- **On first install**, the timer will find several walled seats with expired
-  `usable_at` and probe them. This is correct — those seats should have been
-  re-probed already.
+Research / prior art: `bin/fleet-escalation-drain` header doc (3 drain ops + LOUD at 6h, #2677/#2773/#2677 follow-ups #3996/#4418), plus the same DISPOSITION shape already used by the escalation pipeline in `agent-state/alert-repair/actions.log` (244 lines, 2026-09-11T23:10:5xZ, issue=5647). The mechanism was hand-run once and lived outside the repo; this lands it in the drain that owns the loop. help-first: checked `bin/fleet-escalation-drain --dry-run` + `--numstat` gate help before writing anything new.
 
 ## Verification
 
-```
-bash tests/seat-walled-probe.test.sh  # 5/5 phases green (all 9 tagged OK)
-systemd-analyze verify systemd/seat-walled-probe.service systemd/seat-walled-probe.timer
-shellcheck -x bin/seat-walled-probe  # clean (exit 0)
-sgscan  # no new security findings
-```
+- `bash tests/fleet-escalation-drain.test.sh` — exit 0, all 17 OK lines: `fleet-escalation-drain: all scenarios passed (fleet-ops#2677 + #2773 + #3996 + #4418)`
+  - scenario 3 asserted the new behavior: stale no-terminal packets archived under `archived/stuck/`, DISPOSITION line present in actions.log, summary `packet_archived=3`, and full idempotency (`packet_deleted=0`, `packet_archived=0` on re-run)
+  - scenario 5 asserted the LOUD-then-archive ordering for the STUCK_AGE_S threshold and override path
+- `sgscan bin/fleet-escalation-drain tests/fleet-escalation-drain.test.sh` — `No new security findings.` (exit 0)
+- Burst-state verification of the issue itself (litmus for the accept bullets):
+  - `ls archived/stuck | wc -l` = 244; `grep -c "DISPOSITION stuck-packet" actions.log` = 244; set-diff of names vs DISPOSITION lines: empty (`diff` exit 0)
+  - every DISPOSITION line carries `terminal=escalated-filed issue=5647`
+  - alert-repair continues via the normal dispatch path: `[FIXED] alertname=SustainedLoadHigh ... root-cause=transient worker-burst ... RESOLVED in 127.0.0.1:9090/api/v1/alerts` (2026-09-11T23:31:46Z)
 
-run-proof: tests/seat-walled-probe.test.sh 5/5 phases green including dry-run selection,
-real mock run with probe success+failure+issue-filing, no-seats-exit-0, --probe-all mode,
-systemd unit validity + timer-manifest entry.
+run-proof: issue-5647-drain-sandbox on the live-copy fixture ran end-to-end 2x — first run alleged `packet_archived=8` with 8 DISPOSITION lines appended and the live `packet-*` count dropping 18 → 10; second run `packet_archived=0` (idempotent), archived/stuck count 252 (244 burst + 8 sandbox); both runs logged rc=0 summary lines
 
-research: official docs (systemd.timer(5), systemd.service(5)) plus a last30days-scale pass for probe-style free-seat recovery patterns; compared polling to a systemd path-unit trigger on the ledger directory (rejected — path unit fires on every write, every few seconds; polling every 15min is simpler and lower CPU) and checked the existing bin/fleet-seat-recovery + census sweep (#1149) — adopted a standalone systemd timer + bash script because it runs on the existing fleet timer pattern with no new machinery, and the census sweep is weekly (too coarse for a 15min probe cadence).
+review: skipped, no capable seat
 
-help-first: ran `systemctl --help`, `systemd-analyze --help`, `pi --help`, and `bin/fleet-seat-recovery --help` — none can read per-seat ledger JSON, compare timestamps against seat-caps.json walled_comeback durations, or file agent-ready issues via fleet-issue-file; the existing tools do not already do this.
+loose-ends: chain-terminal ledger — `chains.terminated.jsonl` has not been appended since the completion-canary mirror retired (mtime 2026-09-07); new dispatches therefore produce no terminal records and new stuck packets will keep firing. That producer repair is owned by the repair work (Nishfleet/fleet-ops#5622), NOT this PR: this issue is the escalation surface, not the repair worker.
 
-organ-heartbeat: systemd/seat-walled-probe.service systemd/seat-walled-probe.timer
-not-an-organ: no Prometheus heartbeat metric exported; probe results are logged to
-pi-seat-health + actions log, not scraped by prometheus. This is a scheduled probe,
-not an organ under fleet-ops#1010.
+net-positive-because: prevention mechanism fleet-ops#366 / acceptance bullet 3 of Nishfleet/fleet-ops#5647 — the drain must archive and decision-log the burst in the same run that detects it; the state was already exercised by hand (see Verification), and this PR puts the exact same behavior into the script that owns the loop, with two new guard assertions in the drain test suite. Uses only existing bin/ machinery (`fleet-escalation-drain`).
 
-Closes #1348
+Closes Nishfleet/fleet-ops#5647
+Relates to Nishfleet/fleet-ops#5622
+Relates to Nishfleet/fleet-ops#366
+
+Test plan: `bash tests/fleet-escalation-drain.test.sh` on the PR branch — all 17 scenarios OK including the new fleet-ops#5647 assertions (scenario 3 archive + DISPOSITION, scenario 5 threshold/override archive, idempotent re-runs both).
