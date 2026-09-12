@@ -150,11 +150,11 @@ bleed=$(
   export PI_SEAT_LIB_CHECK_SYSTEMD=1
   # shellcheck disable=SC1091
   source "$repo_root/lib/litellm-seat.sh"
-  pick-seat "" "" 0 "" || true
+  litellm_seat worker-cheap || true
 )
-[[ -z "$bleed" ]] \
-  || fail "poison stub did not fill the cap under PI_SEAT_LIB_CHECK_SYSTEMD=1 (got '$bleed'); the #142 lock is inert"
-ok "poison stub fills cap when systemd listing is on (fleet-ops#142 lock is live)"
+[[ -n "$bleed" ]] \
+  || fail "litellm_seat must still return a group when systemd listing is poisoned (P3b: proxy owns routing, got '$bleed')"
+ok "litellm_seat ignores systemd listing poison (fleet-ops#4263 P3b; #142 lock retired)"
 
 # --- Case 1: normal run — tries file is written, attempts dir survives -----
 set +e

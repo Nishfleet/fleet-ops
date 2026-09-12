@@ -41,7 +41,6 @@ is_quota_cap_error() { return 1; }
 mark_seat_spawn_fail() { return 0; }
 mark_seat_quota_bench() { return 0; }
 litellm_seat() { printf 'cursor\tcomposer-2.5\n'; return 0; }
-litellm_seat() { pick-seat; }
 EOF
 
 # Fake pi that records invocation — the guard must stop pi from ever running.
@@ -49,7 +48,7 @@ fake_pi="$scratch/pi"
 cat >"$fake_pi" <<'EOF'
 #!/usr/bin/env bash
 echo "$*" > "$PI_RECORD_ARGS"
-echo "ran"
+printf 'ran\nDIGEST:: workdir-guard\n'
 EOF
 chmod +x "$fake_pi"
 
@@ -67,6 +66,7 @@ export PROMPTS_DIR="$prompts_dir"
 export LOG_DIR="$log_dir"
 export PI_RECORD_ARGS="$record_args"
 export ATTEMPTS_DIR="$scratch/attempts"
+mkdir -p "$ATTEMPTS_DIR"
 
 # --- scenario 1: WORKDIR unset (inherits $HOME) -> FATAL, exit 1 ------------
 set +e

@@ -355,7 +355,8 @@ if [[ "$issue_state" == "OPEN" ]]; then
         # the requeue is minted here instead, on the existing issue-dispatch
         # entry point: the cooldown marker learns an absolute `until:` line.
         # Detection is NOT conflated with empty-run or real packet failures:
-        # the classification fires only when the LAST seat's ledger says
+        # the classification fires only when the LAST seat's leftover health
+        # file (litellm-seat keep-list; proxy owns routing cooldown) says
         # health_class=overload_bench / failure_mode=overload_503 AND its
         # bench_until is still in the future. Unit-escalation-write already
         # excludes pi-issue@* (its own OnFailure lives here), so this is the
@@ -363,7 +364,7 @@ if [[ "$issue_state" == "OPEN" ]]; then
         _ov_until=""
         _last_seat_ov=$(cat "$ATTEMPTS_DIR/pi-issue-${instance}.seat" 2>/dev/null || true)
         if [[ -n "$_last_seat_ov" && "$_last_seat_ov" == */* ]]; then
-            _seat_lib=${SEAT_LIB:-$HOME/.local/lib/pi-packet/seat-lib.sh}
+            _seat_lib=${SEAT_LIB:-$HOME/.local/lib/pi-packet/litellm-seat.sh}
             if [[ -f "$_seat_lib" ]]; then
                 # shellcheck disable=SC1090
                 source "$_seat_lib" 2>/dev/null || true

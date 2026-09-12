@@ -39,8 +39,6 @@ litellm_seat() {
     printf 'minimax\tMiniMax-M3\n'
     return 0
 }
-# fleet-ops#4263 P3b: wrappers call litellm_seat, not pick-seat.
-litellm_seat() { pick-seat; }
 EOF
 
 # Fake pi records args and stdin, then prints output.

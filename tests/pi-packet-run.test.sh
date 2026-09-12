@@ -53,16 +53,13 @@ task_weight() {
 repo_privacy() { echo "public"; }
 packet_repo() { echo ""; }
 litellm_seat() {
-  local tried_file="${4:-}"
+  local tried_file="${2:-}"
   if [[ -n "$tried_file" && -f "$tried_file" ]] \
       && grep -qx 'devin/glm-5-2' "$tried_file"; then
     printf 'cursor\tcomposer-2.5\n'
   else
     printf 'devin\tglm-5-2\n'
   fi
-}
-litellm_seat() {
-  pick-seat "" "" 0 "$ATTEMPTS_DIR/testpkt.tried-seats"
 }
 packet_difficulty() { echo "light"; }
 litellm_group_for_privacy() { echo "worker-cheap"; }

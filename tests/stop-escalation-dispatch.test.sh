@@ -55,7 +55,8 @@ cat >"$SEAT_LIB_STUB" <<'EOF'
 # $'\t' gives a real tab; a double-quoted "\t" is a literal backslash-t and
 # would not split in `read` / `cut`, breaking provider/model parsing.
 litellm_seat() {
-  local fail_p="$1" fail_m="$2" need_capable="${3:-0}" tried_file="${4:-}"
+  local group="${1:-}" tried_file="${2:-}"
+  local need_capable=1
   local mode="${STOP_ESCALATION_TEST_SEAT_MODE:-healthy}"
   local TAB=$'\t'
   local -a cands=()
@@ -78,20 +79,13 @@ litellm_seat() {
     # tried seats (the dispatcher records each pick in the tried file)
     if [ -n "$tried_file" ] && [ -f "$tried_file" ] \
        && grep -qxF "$p/$m" "$tried_file" 2>/dev/null; then continue; fi
-    # fleet-ops#2661: escalate-lane provider-wedge skip (mirror of the
-    # real seatlib pick-seat when FLEET_ESCALATION_WEDGE_CHECK=1):a
-    # provider listed in $STOP_ESCALATION_TEST_WEDGE_FILE is overload-wedged
-    # and ALL its seats are excluded from this pick.
+    # fleet-ops#2661: escalate-lane provider-wedge skip
     if [ "${FLEET_ESCALATION_WEDGE_CHECK:-0}" = "1" ] && [ -n "${STOP_ESCALATION_TEST_WEDGE_FILE:-}" ] && [ -f "$STOP_ESCALATION_TEST_WEDGE_FILE" ] \
        && grep -qxF "$p" "$STOP_ESCALATION_TEST_WEDGE_FILE" 2>/dev/null; then continue; fi
     printf '%s%s%s\n' "$p" "$TAB" "$m"
     return 0
   done
   return 1
-}
-litellm_seat() {
-  local tried="${2:-}"
-  pick-seat "" "" 1 "$tried"
 }
 mark_seat_spawn_fail() {
   local p="$1" m="$2"

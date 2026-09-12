@@ -37,7 +37,6 @@ litellm_seat() {
     printf 'minimax\tMiniMax-M3\n'
     return 0
 }
-litellm_seat() { pick-seat; }
 packet_difficulty() { echo "heavy"; }
 EOF
 

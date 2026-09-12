@@ -5,7 +5,7 @@
 # minted by pi-issue-failed-reap on the existing issue-dispatch rail (the
 # reclaim-cooldown marker) — no hand-added READY-WORK.md `after:` row.
 #
-# Proves (offline, mocked gh + systemctl + stub seat-lib):
+# Proves (offline, mocked gh + systemctl + stub leftover health lookup):
 #   1. OPEN issue + branch deleted + last seat's ledger health_class=
 #      overload_bench / failure_mode=overload_503 with a future bench_until
 #      that outlives the cooldown floor -> the cooldown marker carries an
@@ -87,15 +87,15 @@ FAKE_GH
 }
 write_gh 0 0
 
-# Stub the seat-lib surface pi-issue-failed-reap touches. seat_ledger_path
-# resolves inside the test's ledger dir; everything else is a no-op so the
-# reap never reads the live VPS ledger in CI.
-cat >"$fake/seat-lib.sh" <<'FAKE_SEAT'
+# Stub the leftover health lookup pi-issue-failed-reap touches.
+# seat_ledger_path resolves inside the test's ledger dir; everything else
+# is a no-op so the reap never reads the live VPS ledger in CI.
+cat >"$fake/litellm-seat.sh" <<'FAKE_SEAT'
 seat_ledger_path() { printf '%s/%s--%s.json' "$SEAT_LEDGER_DIR" "$1" "$2"; }
 seat_usable() { return 0; }
 seat_log() { :; }
 FAKE_SEAT
-export SEAT_LIB="$fake/seat-lib.sh"
+export SEAT_LIB="$fake/litellm-seat.sh"
 export SEAT_LEDGER_DIR="$fake/ledgers"
 mkdir -p "$SEAT_LEDGER_DIR"
 export PI_INTAKE_RECLAIM_COOLDOWN_S=900
@@ -109,8 +109,8 @@ export PI_ISSUES_DIR="$issues_dir"
 
 seed_ledger() {
     # seed_ledger <hc> <fm> <until-ts-or-empty>
-    # The model name carries a slash, so the ledger path nests (the real
-    # seat_ledger_path convention seat-lib.sh uses).
+    # The model name carries a slash, so the ledger path nests (the stub's
+    # seat_ledger_path convention).
     mkdir -p "$SEAT_LEDGER_DIR/commandcode--minimax"
     local hc="$1" fm="$2" until="$3"
     jq -nc --arg hc "$hc" --arg fm "$fm" --arg bu "$until" \

@@ -95,7 +95,7 @@ export PI_PACKET_REPO="${pkt_repo:-}"
 # fleet-ops#4263 P3b: always route through the LiteLLM proxy group.
 _lit_group="worker-cheap"
 [[ "$pkt_privacy" == "private" ]] && _lit_group="worker-private"
-seat=$(litellm_seat "$_lit_group" || true)
+seat=$(litellm_seat "$_lit_group" "$tried_file" || true)
 seat_log "pi-packet-run: $pid group=$_lit_group (privacy=$pkt_privacy)"
 if [[ -z "$seat" ]]; then
     if [[ "$difficulty" == "keystone" ]]; then

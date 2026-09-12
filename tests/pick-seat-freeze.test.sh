@@ -110,7 +110,7 @@ tests/seat-spawn-corpse.test.sh:1
 tests/seat-wall-cap.test.sh:1
 tests/senior-review-routing.test.sh:1
 tests/token-economy-routing.test.sh:1
-tests/worker-memory-dropin.test.sh:13
+tests/worker-memory-dropin.test.sh:15
 MANIFEST
 
 ((${#frozen[@]} >= 30)) || fail "residual manifest looks truncated (${#frozen[@]} entries)"

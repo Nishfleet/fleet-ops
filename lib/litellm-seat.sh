@@ -436,7 +436,24 @@ seat_worked_no_text_path() { echo ""; }
 # means "not a remote agent classified here" so the loud-fail path runs.
 provider_remote_agent() { return 1; }
 session_tool_calls() { echo 0; }
-is_spawn_etimeout() { return 1; }
+# Spawn-phase timeout / E2BIG (keep-list detector; routing stays in the proxy).
+# fleet-ops#5309: spawnSync E2BIG must classify so a missed pre-flight cap
+# benches instead of crash-looping the same seat to StartLimitBurst.
+is_spawn_etimeout() {
+    local out="$1" err="$2"
+    local combined="$out"$'\n'"$err"
+    [[ -n "$combined" ]] || return 1
+    if ! grep -qiE 'ETIMEDOUT|E2BIG|connection timed out|connect ETIMEDOUT|timed out waiting' <<<"$combined"; then
+        return 1
+    fi
+    if grep -qiE '.{0,120}(ETIMEDOUT|E2BIG|timed out).{0,120}(spawn|socket|connect|child|fetch|handshake)' <<<"$combined"; then
+        return 0
+    fi
+    if grep -qiE '(spawn|socket|connect|child|fetch|handshake).{0,120}(ETIMEDOUT|E2BIG|timed out)' <<<"$combined"; then
+        return 0
+    fi
+    return 1
+}
 is_mid_session_death() { return 1; }
 is_overload_error() { return 1; }
 is_quota_error() { return 1; }
