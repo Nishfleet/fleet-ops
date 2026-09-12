@@ -203,6 +203,10 @@ MAX_CLAIMS_IN_WINDOW="${PI_INTAKE_RECLAIM_MAX_CLAIMS:-4}"
 # No new timer — the label is the state. Overridable
 # for tests.
 PARK_MAX_CLAIMS="${PI_INTAKE_PARK_MAX_CLAIMS:-3}"
+# fleet-ops#5082: lookback bound for the duplicate-of-merged-work probe —
+# the number of most recent merged PRs scanned for a files:-set overlap
+# when a protected issue's own claim branch never merged a delivery PR.
+PARK_DUP_LOOKBACK="${PI_INTAKE_PARK_DUP_LOOKBACK:-30}"
 # The reclaim-cooldown reader below reads $ATTEMPTS_DIR/pi-issue-*.cooldown
 # — the same dir pi-issue-failed-reap writes (both use
 # ${PI_PACKET_STATE:-$HOME/.local/state/pi-packet}/attempts). seat-lib.sh
@@ -373,7 +377,8 @@ fi
 # either: ONE LOUD line per tick goes to the heartbeat triage file.
 _gh_app_loud() {
     local triage="${FLEET_HEARTBEAT_TRIAGE:-/home/nish/workspaces/agent-state/FLEET-HEARTBEAT-TRIAGE.md}"
-    printf '[%s] LOUD [GH-APP-BUDGET] %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$*" \
+    _loud_ts="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    printf '[%s] LOUD [GH-APP-BUDGET] %s\n' "${_loud_ts}" "$*" \
         >>"$triage" 2>/dev/null || true
 }
 
@@ -1041,6 +1046,42 @@ geo_aeo_needed() {
     [[ -n "$labels_json" ]] || return 1
     printf '%s' "$labels_json" | jq -e \
         'any(.[]?; (.name // "") | test("geo|aeo"; "i"))' >/dev/null 2>&1
+}
+
+# fleet-ops#5082: duplicate-of-merged-work probe for the park detector. A
+# PROTECTED issue past PARK_MAX_CLAIMS whose own claim/issue-$N branch never
+# merged a delivery PR can still have its `do:` already delivered — by
+# ANOTHER issue's merged claim PR (live case: 0509#2369, delivered by
+# claim/issue-2363's merged PR #2641 while #2369's own PR #2643 closed
+# unmerged on a content conflict; #2641's body never named #2369). The #4540
+# head-branch probe can never see that delivery. Deterministic, no LLM:
+# scan the last PARK_DUP_LOOKBACK merged PRs for one whose changed-file set
+# overlaps the issue's `files:` line AND that either came from a different
+# claim/issue-<M> branch or names `#N` in its title/body. No `files:` line,
+# no file overlap, or a prose mention alone -> no match (fleet-ops#3231).
+# $1 = repo (Nishfleet/<name>), $2 = issue number, $3 = issue body.
+# Echoes the duplicate PR number on match; empty output = no duplicate.
+# Always returns 0 — a probe failure must never abort the tick.
+park_duplicate_delivery() {
+    local full="$1" n="$2" body="$3"
+    local files_line recent
+    files_line=$(printf '%s\n' "$body" | sed -n 's/^files:[[:space:]]*//p' | head -1 || true)
+    [[ -n "$files_line" ]] || return 0
+    recent=$(gh pr list -R "$full" --state merged \
+        --json number,title,body,headRefName,files \
+        --limit "${PARK_DUP_LOOKBACK:-30}" 2>/dev/null || echo "[]")
+    printf '%s' "$recent" | jq -r --arg n "$n" --arg files "$files_line" '
+        ($files | split(",") | map(gsub("^\\s+|\\s+$"; "")) | map(select(length > 0))) as $paths
+        | [ .[] | . as $pr
+            | ([$pr.files[]?.path // empty]) as $have
+            | select(($paths | length) > 0)
+            | select([$paths[] | select(. as $p | ($have | index($p)) != null)] | length > 0)
+            | select(
+                (($pr.headRefName // "") | test("^claim/issue-[0-9]+$") and $pr.headRefName != ("claim/issue-" + $n))
+                or ((($pr.title // "") + "\n" + ($pr.body // "")) | test("#" + $n + "\\b"))
+              )
+          ] | .[0].number // empty' 2>/dev/null || true
+    return 0
 }
 
 # fleet-ops#4016: event-driven work supply. An empty ready pool is the one
@@ -2333,6 +2374,10 @@ blocked-on: orchestrator" 2>/dev/null || true
     fi
     if (( _park_claims > PARK_MAX_CLAIMS )); then
         _park_protected=0
+        # fleet-ops#5082: _park_merged is bound per-issue so the duplicate
+        # branch below can reuse the head-branch probe when the #4540 or
+        # #4553 branch already ran it, or fill it lazily when they did not.
+        _park_merged=""
         if printf '%s' "${labels[$i]:-}" | jq -e '[.[]?.name // empty] | index("critical-path") != null' >/dev/null 2>&1; then
             _park_protected=1
         fi
@@ -2492,6 +2537,29 @@ blocked-on: orchestrator" 2>/dev/null || true
                         --description "Parked: protected issue + delivered work awaiting a runtime gate; do not claim (fleet-ops#5048)" --force >/dev/null 2>&1 || true
                     gh issue edit "$N" -R "$FULL" --add-label awaiting-runtime-gate --remove-label agent-ready 2>/dev/null || true
                     gh issue comment "$N" -R "$FULL" --body "fleet-ops#5048: issue $N is protected (owner-authored or critical-path) with no merged claim-branch delivery PR, but its remaining work is already delivered on a non-claim branch or delegated to an active runtime unit (${_park_reason}). It has been re-claimed ${_park_claims} times while the runtime gate is not yet met. Parking it: labelled \`awaiting-runtime-gate\`, removed from agent-ready; the intake will not re-claim it until the runtime event fires (clear the label then) or Nish closes the issue. No new timer." 2>/dev/null || true
+                    continue
+                fi
+            fi
+        fi
+        # fleet-ops#5082: duplicate-of-merged-work branch — the probe itself
+        # is park_duplicate_delivery() above. Runs for every protected
+        # past-cap issue whose own claim-branch merged probe is empty —
+        # termination: clause or not (the #4540 branch above already
+        # continue'd on a merged claim-branch delivery). Deterministic only:
+        # a `files:` overlap plus a different claim/issue-<M> head or a `#N`
+        # reference; a bare prose mention never parks (fleet-ops#3231).
+        if (( _park_protected == 1 )); then
+            if [[ -z "$_park_merged" ]]; then
+                _park_merged=$(gh pr list -R "$FULL" --head "claim/issue-$N" --state merged --json number,url,mergedAt 2>/dev/null || echo "[]")
+            fi
+            if ! printf '%s' "$_park_merged" | jq -e 'length > 0' >/dev/null 2>&1; then
+                _park_dup=$(park_duplicate_delivery "$FULL" "$N" "$body")
+                if [[ -n "$_park_dup" ]]; then
+                    echo "issue $N ($title): skipped-parked-protected-duplicate ($_park_claims cumulative claims > cap $PARK_MAX_CLAIMS; no merged claim/issue-$N PR; merged PR #$_park_dup delivered the files: work; awaiting runtime gate)" >&2
+                    gh label create awaiting-runtime-gate -R "$FULL" --color D4C5F9 \
+                        --description "Parked: protected issue already delivered by another issue's merged PR; do not claim (fleet-ops#5082)" --force >/dev/null 2>&1 || true
+                    gh issue edit "$N" -R "$FULL" --add-label awaiting-runtime-gate --remove-label agent-ready 2>/dev/null || true
+                    gh issue comment "$N" -R "$FULL" --body "fleet-ops#5082: issue $N is protected (owner-authored or critical-path) and has been claimed ${_park_claims} times, but no PR on its own claim branch (\`claim/issue-$N\`) ever merged — its \`do:\` was already delivered by merged PR #$_park_dup, whose diff overlaps the issue's \`files:\` set. observe-to-close stays comment-only on protected issues (fleet-ops#1435), so the issue stays OPEN by design while every anti-loop gate misses the slow-spaced spin (the #4540 head-branch probe can only see delivery on the issue's OWN claim branch). Parking it: labelled \`awaiting-runtime-gate\`, removed from agent-ready; the intake will not re-claim it until Nish closes the issue or the label is cleared." 2>/dev/null || true
                     continue
                 fi
             fi

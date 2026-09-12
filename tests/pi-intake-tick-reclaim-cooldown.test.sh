@@ -149,4 +149,13 @@ bash "$here/pi-intake-tick-awaiting-runtime-gate.test.sh" || fail "fleet-ops-454
 # #2772/#4273/#4540 hosts above.
 bash "$here/pi-intake-tick-mention-strand-park.test.sh" || fail "fleet-ops-5045 mention-strand park detector tests failed"
 
+# fleet-ops#5082: the protected + duplicate-of-merged-work slow-spaced
+# reclaim spin — a protected issue whose do: was delivered by ANOTHER
+# issue's merged claim-branch PR (live: 0509#2369, delivered by
+# claim/issue-2363's merged PR #2641). Hosted here from
+# pi-intake-tick-protected-duplicate-park.test.sh (the worker App cannot
+# push .github/workflows/**). Same intake dispatch family as the
+# #2772/#4273/#4540/#5045 hosts above.
+bash "$here/pi-intake-tick-protected-duplicate-park.test.sh" || fail "fleet-ops-5082 protected-duplicate park detector tests failed"
+
 echo "ALL OK: intake-tick reclaim cooldown + stale-claim release (fleet-ops#2133)"
