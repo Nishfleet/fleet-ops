@@ -454,6 +454,47 @@ grep -q 'ESCALATION-CANARY-EXCLUDED' "$triage" || fail "scenario1: triage missin
 ok "scenario1: both planes covered -> exit 0 with OK, PENDING, EXCLUDED"
 
 # ============================================================================
+# Scenario 1d (fleet-ops#5745, detached-work deliverable lint):
+#   - a pi-systemd-run launch WITH --deliverable -> clean (exit 0, 2b OK line)
+#   - a pi-systemd-run launch WITHOUT --deliverable -> VIOLATION, named
+#   - prose mentions without a ` -- <cmd>` tail (README-style wording) and
+#     multi-line backslash launches with --deliverable must NOT fire
+# ============================================================================
+reset_state
+cover "good-worker.service"
+sanctioned_wrapper "pi-issue-run"
+write_intake "0509"
+write_claim_repos "Nishfleet/0509"
+mkdir -p "$repo/prompts"
+printf 'prose only: mentions `pi-systemd-run` and `nohup` — no ` -- <cmd>` tail\n' >"$repo/prompts/doc.md"
+printf '#!/usr/bin/env bash\n# comment example: pi-systemd-run --unit x --stdin p.md -- pi --print\n:\n' >"$repo/bin/clean.sh"
+# clean case: only full-flag + prose
+printf '#!/usr/bin/env bash\npi-systemd-run --unit ok --stdin p.md --deadline 42 \\\n  --deliverable /tmp/outcome.md -- pi --print --provider devin --model glm-5-2\n' >"$repo/bin/fine-runner"
+run_canary
+[[ ! "$env_out" =~ "PSR-NO-DELIVERABLE" ]] || fail "scenario1d: clean case must not name a PI launch"
+grep -q 'fleet-escalation-canary] 2b' <<<"$env_out" || fail "scenario1d: 2b block must run"
+ok "scenario1d: clean launch + prose + multiline --deliverable -> no violation"
+
+reset_state
+cover "good-worker.service"
+sanctioned_wrapper "pi-issue-run"
+write_intake "0509"
+write_claim_repos "Nishfleet/0509"
+mkdir -p "$repo/prompts"
+printf '#!/usr/bin/env bash\npi-systemd-run --unit flagless --stdin p.md -- pi --print --provider devin --model glm-5-2\n' >"$repo/bin/flagless-runner"
+printf 'bad: `pi-systemd-run --unit x --stdin p.md -- claude -p --model m`\n' >"$repo/prompts/flagless.md"
+
+run_canary
+[[ "$env_rc" == 1 ]] || fail "scenario1d: flag-less launch must fail loud, got $env_rc"
+grep -q 'PSR-NO-DELIVERABLE' "$triage" || fail "scenario1d: triage must name PSR-NO-DELIVERABLE"
+grep -q 'fleet-ops#5745' "$triage" || fail "scenario1d: triage must name the signal"
+ok "scenario1d: flag-less pi-systemd-run launch -> VIOLATION named (fleet-ops#5745)"
+
+# Clean up the prompt fixture so later scenarios start blank.
+rm -rf -- "$repo/prompts"
+rm -f -- "$repo/bin/flagless-runner"
+
+# ============================================================================
 # Scenario 1b (regression, 2026-08-27): the #455 resilience drill's throwaway
 # stub must be in the anti-recursion exclusion set. The drill DELIBERATELY
 # SIGKILLs the stub to prove Restart=always; that intentional kill marks the

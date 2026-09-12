@@ -63,7 +63,7 @@ Call `pi` directly, prompt on **stdin** (Pi rejects a `--` end-of-options flag):
 pi --print --provider <provider> --model <model>
 ```
 
-For work that must outlive this session, use `pi-systemd-run`, never `nohup pi ... &` — the launching shell reaps a nohup'd child and leaves dead-seat EXTLOAD lines. `pi-systemd-run --unit <name> --stdin <packet.md> -- pi --print --provider <provider> --model <model>` (a thin `systemd-run --user --collect --no-block` wrapper; not a dispatcher — no retry, no queue). Canonical wording: fleet-ops README and `prompts/heartbeat.md`.
+For work that must outlive this session, use `pi-systemd-run`, never `nohup pi ... &` — the launching shell reaps a nohup'd child and leaves dead-seat EXTLOAD lines. `pi-systemd-run --unit <name> --stdin <packet.md> --deadline <min> --deliverable <path> -- <cmd>` (a thin `systemd-run --user --collect --no-block` wrapper; not a dispatcher — no retry, no queue). Canonical copy-paste block: fleet-ops README (README.md "systemd by default"). Every detached launch carries `--deadline` and `--deliverable`: the wrapper installs the deliverable verdict ONLY when `--deliverable` is set, so a flag-less invocation could stop clean at exit 0 with no artifact and the exit-0-no-deliverable FAILURE verdict (fleet-ops#4266) could never fire.
 
 For delegated work use Pi's stock `subagent` extension (`scout`, `planner`, `worker`, `reviewer`; `/implement`, `/scout-and-plan`, `/implement-and-review`):
 
