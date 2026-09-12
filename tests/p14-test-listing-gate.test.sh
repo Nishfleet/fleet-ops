@@ -3,10 +3,28 @@
 #
 # fleet-ops#566: P14 verify-command in .github/workflows/ci.yml is an explicit
 # list. Workers cannot edit .github/workflows/**, so new tests must be invoked
-# from an already-listed test file. This gate proves the list is closed:
-# every tests/*.test.sh is either listed in ci.yml, transitively invoked from a
-# listed test, or explicitly allowed as a live/destructive test or a known
-# existing orphan. New tests that are none of these fail this gate.
+# from an already-listed test file.
+#
+# fleet-ops#5889 (2026-09-12): that requirement structurally red'd every
+# worker PR that adds a tests/*.test.sh file — the nishfleet-worker App has
+# no Workflows scope, so it can never add the ci.yml listing itself
+# (measured 2026-09-12 08:45Z: 10 of 21 open fleet-ops PRs red on exactly
+# "... are neither in ci.yml, hosted by a listed test, live/destructive, nor
+# a known orphan"). Predecessor tickets #3483, #3482, #1687 were per-file
+# and never admitted; #4939 was the symptom ticket (closed superseded).
+#
+# Fix class 1 of #5889 (self-hosting gate), minus the ci.yml edit workers
+# cannot push: this gate is itself hosted by tests/ci-standards-audit.test.sh
+# (already listed in ci.yml), so the gate now RUNS every otherwise-unaccounted
+# tests/*.test.sh instead of failing on it. A new test file is therefore
+# executed in P14 without any ci.yml edit: it is reachable by construction
+# through this auto-host. The live/destructive denylist (live_skip) and
+# known_orphans stay explicit exceptions; live/destructive or VPS-only tests
+# are exempted by editing live_skip below — and this file is a tests/*.sh,
+# which the worker App CAN push.
+#
+# The named pins below are unchanged: a user-listed test that is dropped
+# from its host still fails by name before the auto-host accounting.
 #
 # Hosted by tests/ci-standards-audit.test.sh so it runs in CI without a
 # workflow-file edit.
@@ -731,18 +749,35 @@ for f in "${all_tests[@]}"; do
   bad+=("$t")
 done
 
+# fleet-ops#5889: auto-host instead of fail. Any test not reachable from a
+# ci.yml listing and not explicitly exempt (live/destructive, known orphan)
+# is executed right here, so a worker PR that adds a new test with NO
+# ci.yml change turns the P14 check green — and the new test actually
+# runs. This deletes the per-file listing requirement (the gate IS the
+# glob host; the ci.yml-edit variant of class 1 is impossible for the
+# worker App token, which lacks Workflows scope).
 if (( ${#bad[@]} > 0 )); then
-  {
-    echo "FAIL: ${#bad[@]} test file(s) are neither in ci.yml, hosted by a listed test, live/destructive, nor a known orphan:"
-    for t in "${bad[@]}"; do
-      echo "  $t"
-    done
-    echo "Add the test to ci.yml (requires workflow scope) or invoke it from a listed test."
-  } >&2
-  exit 1
+  auto_host_failures=()
+  for t in "${bad[@]}"; do
+    echo "auto-host (fleet-ops#5889): bash tests/$t"
+    if ! bash "$here/$t"; then
+      auto_host_failures+=("$t")
+    fi
+  done
+  if (( ${#auto_host_failures[@]} > 0 )); then
+    {
+      echo "FAIL: ${#auto_host_failures[@]} auto-hosted test file(s) failed via the #5889 glob host:"
+      for t in "${auto_host_failures[@]}"; do
+        echo "  $t"
+      done
+      echo "Fix the test, or (live/destructive/VPS-only) add it to the live_skip denylist in tests/p14-test-listing-gate.test.sh (worker-writable)."
+    } >&2
+    exit 1
+  fi
+  ok "auto-hosted ${#bad[@]} unaccounted test file(s) via the #5889 glob host: ${bad[*]}"
 fi
 
-ok "all ${#all_tests[@]} test files accounted for (listed+hosted: $reachable_count, live skip: $live_count, known orphan: $known_count)"
+ok "all ${#all_tests[@]} test files accounted for (listed+hosted: $reachable_count, live skip: $live_count, known orphan: $known_count, auto-hosted: ${#bad[@]})"
 
 # The known-orphan list must not contain tests that have become reachable.
 stale=()
