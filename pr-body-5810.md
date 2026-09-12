@@ -24,6 +24,9 @@ Three parts, all gated on one label family (the issue's `required:` bullets):
 - `bash tests/seat-lib.test.sh` — PASS (full P3b CI-host chain, including the new repair-queue-jump test and #6037's re-hosted suite).
 - `bash tests/fleet-heartbeat-rc-propagation.test.sh`, `bash tests/fleet-heartbeat-alarm-rc-decoupling.test.sh`, `bash tests/auto-revert-required-check-gate.test.sh`, `bash tests/alert-repair-claim-mutex.test.sh`, `bash tests/alert-repair-flagship-seat.test.sh` — all PASS (my two touched behaviour files' existing gates).
 - `sgscan --base origin/main` — no new security findings (rc=0).
+- `node .github/scripts/repair-queue-jump.mjs enqueue --repo Nishfleet/0509 --pr 3191 --dry-run` — resolves #3191 against the LIVE GraphQL queue shape and reports "already merged; nothing to do" (rc=1 by design; the query itself is the proof — the PR-line and `mergeQueue(branch:"main")` shapes match the live schema 2026-09-12).
+- `node .github/scripts/repair-queue-jump.mjs sweep --repo Nishfleet/0509 --apply --dry-run` — rc=0, no repair-labelled open PRs on 0509, zero merge-queue endpoint spend (the budget guard observed live).
+- `bash -n bin/fleet-heartbeat-tier1`, `python3 -m py_compile libexec/alert-repair-dispatch`, `bash tests/fleet-heartbeat-queue-claim-from-intake.test.sh` — PASS.
 - Local drift note: while this was in flight, #6037 landed on main (re-host of #5993's dropped tests); this branch was re-based onto the true tip (32bed3c17). The #6037 rewrite already fixed the stale `seat.lib.test.sh` nesting-grep this branch's earlier salvage had patched; the only surviving touch here is the one-line repair-queue-jump CI-host registration in the re-hosted `tests/seat-lib.test.sh`.
 
 ## run-proof
@@ -36,7 +39,7 @@ CI: `tests/repair-queue-jump.test.sh` via `tests/seat-lib.test.sh` on this PR's 
 net-positive-because: one 414-line helper + 85 heartbeat lines replaces a recurring human hand-step (every red-main incident needs a manual dequeue + jump:true, proven again at 05:55Z today); zero new systemd units, timers, workflows, labels, or languages — it runs inside the existing hourly fleet-heartbeat-tier1 pass and the existing repair lanes, and the 30-min head-wait safeguard deletes the human-on-call's 05:55Z step.
 
 - organ-heartbeat: bin/fleet-heartbeat-tier1, libexec/alert-repair-dispatch, .github/scripts/auto-revert.sh not-an-organ: none of the three is a registered organ in config/fleet-organs.json (registry files[] lists only libexec/fleet-metrics-export.py, systemd units, and other exporters/guards); no absent() rule owed.
-- drill: the acceptance's live drill ("a labelled PR on a test repo lands at the head") runs in a comment on this PR when possible; no repo in the org other than 0509 has a merge queue, and creating a merge-queue ruleset needs Administration, which this unit's App token does not carry. The queue-jump contract itself is proven by the incident-snapshot test plus the mutation-shape drill in tests/repair-queue-jump.test.sh.
+- drill: the acceptance's live drill ("a labelled PR on a test repo lands at the head") has no repo to run on — only Nishfleet/0509 has a merge queue, it has no repair-labelled open PR, and creating a merge-queue ruleset needs Administration, which this unit's App token does not carry. The jump contract is proven by the incident-snapshot selection (#3191), the stubbed-gh mutation drills (dequeue → enqueue(jump:true), exact field shape), and the live-GraphQL read proof on 0509 listed in Verification. Queued as a loose end below.
 - loose-ends: 5810-live-queue-jump-drill — the live head-of-queue drill on a merge-queue repo (only Nishfleet/0509 has one; needs a quiet queue window).
 
 Closes #5810
