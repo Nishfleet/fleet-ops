@@ -721,6 +721,68 @@ resolve_exit() {
     printf '1\n'
 }
 
+# fleet-ops#5667: on a TimeoutStartSec kill (SERVICE_RESULT=timeout) the pi
+# run that wedged never EXITS, so pi-scout-run's post-exit hang-bench
+# (fleet-ops#2133/#4602) never fires: the ledger never learns, pick_seat
+# re-draws the same wedged seat on the next tick, and each redraw burns the
+# full TimeoutStartSec with zero output. Live 2026-09-12T00:38Z:
+# paretoinference/z-ai/glm-5.3-flash hung 3600s with 0 journal lines and
+# 1m54s CPU (mostly the pre-flight gh calls), and the 00:39:21Z tick
+# re-picked the SAME seat (which then completed green in 2m — the seat is
+# intermittent, not dead, so the fix is a bench, not a wall).
+# bench_timed_out_seat extracts the seat this run used from the unit
+# journal (pi-scout-run's `running on <provider>/<model>` line, scoped to
+# begin_at) and calls mark_seat_hang_bench with the OBSERVED hang, so
+# #4602's window scaling, #1362's failure ceiling and #4640's 6h non-money
+# clamp all apply unchanged. Best-effort: a missing seat-lib or an
+# unparseable journal logs a WARN and leaves the pre-fix behavior (no
+# bench) — the tracker must never fail the scout.
+source_seat_lib() {
+    local lib
+    for lib in "$(cd "$(dirname "$(readlink -f "$0")")/.." && pwd)/lib/seat-lib.sh" \
+               "${PI_PACKET_SEAT_LIB:-$HOME/.local/lib/pi-packet/seat-lib.sh}"; do
+        [[ -f "$lib" ]] || continue
+        # shellcheck source=../lib/seat-lib.sh source-path=SCRIPTDIR
+        source "$lib" && return 0
+    done
+    return 1
+}
+
+bench_timed_out_seat() {
+    local repo="$1" begin_at="$2" unit out line tok p m obs_s
+    unit="pi-scout@${repo}.service"
+    if ! command -v "$JOURNALCTL" >/dev/null 2>&1 && [[ ! -x "$JOURNALCTL" ]]; then
+        log "WARN: journalctl unavailable — no seat to bench"
+        return 1
+    fi
+    local -a since_args=()
+    [[ -n "$begin_at" ]] && since_args=(--since "$begin_at")
+    out=$("$JOURNALCTL" --user -u "$unit" -n 50 --no-pager -o cat "${since_args[@]}" 2>/dev/null || true)
+    line=$(grep -m1 -E 'running on [^ ]+' <<<"$out" || true)
+    [[ -n "$line" ]] || { log "WARN: timeout without a 'running on' journal line — no seat to bench"; return 1; }
+    tok=$(sed -nE 's/.*running on ([^ ]+).*/\1/p' <<<"$line")
+    p="${tok%%/*}"
+    m="${tok#*/}"
+    [[ -n "$p" && -n "$m" && "$m" != "$tok" ]] || { log "WARN: could not parse seat from '$line'"; return 1; }
+    obs_s=0
+    if [[ -n "$begin_at" ]]; then
+        obs_s=$(( $(date -u +%s) - $(date -u -d "$begin_at" +%s 2>/dev/null || echo 0) ))
+        (( obs_s > 0 )) || obs_s=0
+    fi
+    if ! source_seat_lib; then
+        log "WARN: seat-lib unavailable — could not bench $p/$m (re-draw loop persists until the lib lands)"
+        return 1
+    fi
+    if mark_seat_hang_bench "$p" "$m" \
+        "pi-scout@${repo} TimeoutStartSec SIGTERM after ${obs_s}s zero-progress hang (auditor 2026-09-12, fleet-ops#5667)" \
+        "$obs_s"; then
+        log "end: $repo Result=timeout — benched seat $p/$m for the observed ${obs_s}s hang (hang_bench; #4602 scaling, #1362 ceiling, #4640 clamp)"
+        return 0
+    fi
+    log "WARN: hang-bench NOT written for $p/$m (phantom key / transport-down marker / rename failure) — relying on reactive ledger"
+    return 1
+}
+
 cmd_end() {
     local repo="$1"
     local exit_code
@@ -835,6 +897,19 @@ cmd_end() {
         next_wall=$wall_count
         log "end: $repo exit=$exit_code seat-skip (no usable seat, saturated pool) — leave consecutive_dry=$dry, consecutive_wall=$wall_count"
     elif [[ "$exit_code" != "0" ]]; then
+        # fleet-ops#5667: a TimeoutStartSec SIGTERM means the seat WEDGED
+        # (zero progress, pi never exited). Bench it before the #2468 wall
+        # classifier runs — a pure hang has no wall evidence in the journal
+        # and used to be misread as "not green, not provider-wall" with no
+        # ledger learning, re-arming the same bomb every tick. Bench
+        # semantics match the seat-skip path: infrastructure, not a scout
+        # outcome — leave BOTH counters untouched (a bench that clears via
+        # the comeback probe must not look like a dry run, and
+        # consecutive_wall stays reserved for fast provider-wall crashes).
+        if [[ "${SERVICE_RESULT:-}" == "timeout" ]] && bench_timed_out_seat "$repo" "$begin_at"; then
+            next_dry=$dry
+            next_wall=$wall_count
+            log "end: $repo exit=$exit_code Result=timeout — wedged seat benched; leave consecutive_dry=$dry, consecutive_wall=$wall_count"
         # Crash path (fleet-ops#2468): classify the crash by scanning the
         # scout unit's error-priority journal. ALL non-empty error lines
         # matching a provider-wall pattern => wall-class. Increment the
@@ -842,7 +917,7 @@ cmd_end() {
         # green-and-empty path so #2351 dedupe gate suppresses the repair-
         # hop re-summon). Any non-wall error resets consecutive_wall to 0
         # so a transient assertion / OOM does NOT burn the auditor budget.
-        if detect_provider_wall "$repo"; then
+        elif detect_provider_wall "$repo"; then
             next_wall=$((wall_count + 1))
             log "end: $repo exit=$exit_code wall-crash #${next_wall} — leave consecutive_dry=$dry, consecutive_wall=${next_wall}"
             if [[ "$next_wall" -ge "$N" ]]; then

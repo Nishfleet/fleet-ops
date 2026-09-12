@@ -1366,4 +1366,67 @@ unset GH_CREATED_FIXTURE
 rm -f "$scratch/created-inflate.json"
 ok "scenario17: provider-wall crash loop escalates + dedupes (fleet-ops#2468)"
 
+# --- 22. fleet-ops#5667: TimeoutStartSec kill benches the wedged seat -------
+# A pure hang (pi wedged on a socket, zero output) never exits, so
+# pi-scout-run's post-exit hang-bench (#2133/#4602) never fires and the
+# ledger re-draws the seat next tick (live 2026-09-12T00:38Z). The end
+# handler must bench the seat from the journal's `running on` line when
+# SERVICE_RESULT=timeout, with seat-skip counter semantics (untouched).
+unset SERVICE_RESULT EXIT_STATUS || true
+export PI_SEAT_LIB_CHECK_TRANSPORT=0          # no transport probe in tests
+export PI_SEAT_HEALTH_LEDGER_DIR="$scratch/ledger"
+export SEAT_CAPS_JSON="$scratch/seat-caps.json"  # absent => #3661 guard fail-open
+mkdir -p "$PI_SEAT_HEALTH_LEDGER_DIR"
+rm -f "$state/0509.state"
+printf '%s\n' 'before=2' 'consecutive_dry=2' >"$state/0509.state"
+cat >"$scratch/journalctl-timeout" <<'STUB'
+#!/usr/bin/env bash
+printf '%s\n' \
+  '[2026-09-12T00:39:17Z] [scout-futility-check] begin: 0509 ready_before=15 runway_before=6.4h' \
+  '[2026-09-12T00:39:21Z] pi-scout-run: 0509/scout running on paretoinference/z-ai/glm-5.3-flash (weight=light)' \
+  'pi-scout@0509.service: Main process exited, code=killed, status=15/TERM'
+STUB
+chmod +x "$scratch/journalctl-timeout"
+export JOURNALCTL="$scratch/journalctl-timeout"
+"$bin" begin 0509 >/dev/null
+SERVICE_RESULT=timeout EXIT_STATUS=15 "$bin" end 0509 >/dev/null
+ledger_file="$PI_SEAT_HEALTH_LEDGER_DIR/paretoinference__z-ai_glm-5.3-flash.json"
+[[ -f "$ledger_file" ]] \
+  || fail "scenario22: timeout must bench the seat parsed from the journal"
+jq -e '.health_class == "hang_bench" and .provider == "paretoinference" and .model == "z-ai/glm-5.3-flash" and .consecutive_failure_count >= 1' "$ledger_file" >/dev/null \
+  || fail "scenario22: ledger entry must be a hang_bench for the wedged seat (file=$(cat "$ledger_file"))"
+jq -e '.hang_window_s >= 180 and .hang_window_s <= 21600' "$ledger_file" >/dev/null \
+  || fail "scenario22: hang window must be the observed-hang-scaled, clamped value ($(jq .hang_window_s "$ledger_file"))"
+[[ "$(state_field consecutive_dry)" == "2" ]] \
+  || fail "scenario22: timeout bench must leave consecutive_dry untouched, got '$(state_field consecutive_dry)'"
+[[ "$(state_field consecutive_wall)" == "0" ]] \
+  || fail "scenario22: timeout bench must leave consecutive_wall untouched, got '$(state_field consecutive_wall)'"
+! grep -q 'issue create' "$gh_log" || fail "scenario22: timeout bench must not file a ticket"
+ok "scenario22: timeout benches the wedged seat with seat-skip counter semantics"
+
+# --- 22b. timeout with no parsable seat line stays fail-open ----------------
+rm -f "$ledger_file"
+cat >"$scratch/journalctl-timeout2" <<'STUB2'
+#!/usr/bin/env bash
+printf '%s\n' \
+  '[2026-09-12T00:39:17Z] [scout-futility-check] begin: 0509 ready_before=15 runway_before=6.4h' \
+  'pi-scout@0509.service: Main process exited, code=killed, status=15/TERM'
+STUB2
+chmod +x "$scratch/journalctl-timeout2"
+export JOURNALCTL="$scratch/journalctl-timeout2"
+rm -f "$state/0509.state"
+"$bin" begin 0509 >/dev/null
+set +e
+SERVICE_RESULT=timeout EXIT_STATUS=15 "$bin" end 0509 >/dev/null 2>"$scratch/s22b.err"
+rc=$?
+set -e
+[[ "$rc" == "0" ]] || fail "scenario22b: fail-open bench must exit 0, got $rc"
+[[ ! -f "$ledger_file" ]] || fail "scenario22b: no seat line => no bench may be written"
+grep -q "no seat to bench" "$scratch/s22b.err" \
+  || fail "scenario22b: expected a WARN for the missing seat line (err=$(cat "$scratch/s22b.err"))"
+ok "scenario22b: timeout without a seat line is fail-open (WARN, no bench)"
+
+unset JOURNALCTL PI_SEAT_LIB_CHECK_TRANSPORT PI_SEAT_HEALTH_LEDGER_DIR SEAT_CAPS_JSON
+rm -f "$scratch/journalctl-timeout" "$scratch/journalctl-timeout2"
+
 echo "OK: scout-futility: green-and-empty + provider-wall crash loop escalates after N, never loops quietly"
