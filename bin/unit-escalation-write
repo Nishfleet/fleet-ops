@@ -131,8 +131,24 @@ fi
 # units are ephemeral (--collect) and named live-dummy* by convention; a
 # REAL detached job never carries that name, so this carve-out cannot mask
 # a genuine dead-man failure.
+# fleet-seat-recovery-drill* (fleet-ops#5096): tests/fleet-seat-recovery-
+# units.test.sh installs THROWAWAY fixtures into the user scope —
+# fleet-seat-recovery-drill (positive control: 60 triggers inside the
+# shipped 200/1h ceiling) and fleet-seat-recovery-drill-tiny (NEGATIVE
+# control: the same storm with a deliberately tiny ceiling, whose whole
+# point is that it DOES wedge). The wedge is the assertion, so the
+# fixture's unit-start-limit-hit is the drill working, not a fault.
+# Observed 2026-09-11T02:58:27+05:30: the negative control wedged, the
+# global path.d/10-escalate.conf fired OnFailure on it, and a real SENIOR
+# AUDITOR was summoned for a test that had just passed. A per-fixture
+# OnFailure= reset drop-in cannot fix this (proven live this turn: the
+# type-global path.d/ drop-in is applied AFTER the unit-specific drop-in,
+# so the escalation survives the reset) — this name guard is the only
+# lever. The prefix is owned by the test (the only definition in the repo
+# is the test's drill_unit=), and no fleet organ is named *-drill-tiny*, so
+# this carve-out cannot mask a genuine seat-recovery failure.
 case "$UNIT" in
-  unit-escalation@*|stop-escalation.service|stop-escalation.path|ready-work.service|escalation-daily-sweep.service|escalation-daily-sweep.timer|resilience-drill-stub*|gap-closure-drill-stub*.service|gap-closure-drill-mask-probe.service|notify-probe.service|notify-probe.onfail.service|probe-*.service|fleet-orphan-reset-probe@*.service|multi-*-sink.service|pi-issue@*.service|init.scope|app-*.scope|live-dummy*)
+  unit-escalation@*|stop-escalation.service|stop-escalation.path|ready-work.service|escalation-daily-sweep.service|escalation-daily-sweep.timer|resilience-drill-stub*|gap-closure-drill-stub*.service|gap-closure-drill-mask-probe.service|notify-probe.service|notify-probe.onfail.service|probe-*.service|fleet-orphan-reset-probe@*.service|multi-*-sink.service|pi-issue@*.service|init.scope|app-*.scope|live-dummy*|fleet-seat-recovery-drill*)
     echo "unit-escalation-write: skipping excluded unit '$UNIT' (no self-trigger / own failure handling)" >&2
     exit 0
     ;;

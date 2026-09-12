@@ -194,6 +194,8 @@ grep -qF 'multi-*-sink.service' "$unit_write" \
   || fail "unit-escalation-write: must exclude multi-*-sink.service (fleet-ops#1526 live-drill scaffolding)"
 grep -qF 'pi-issue@*.service' "$unit_write" \
   || fail "unit-escalation-write: must exclude pi-issue@*.service (#2133/#2475 amplifier: pi-issue workers have own failure handling via OnFailure=pi-issue-failed@%i)"
+grep -qF 'fleet-seat-recovery-drill*' "$unit_write" \
+  || fail "unit-escalation-write: must exclude fleet-seat-recovery-drill* (fleet-ops#5096: the test's own throwaway fixtures — the -tiny negative control wedges ON PURPOSE, and a real fixture wedge summoned a senior auditor 2026-09-11T02:58:27+05:30)"
 ok "unit-escalation-write self-trigger guard"
 
 # 12. systemd-analyze verify on the unit files (.service, .path, .timer).
