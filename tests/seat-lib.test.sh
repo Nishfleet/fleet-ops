@@ -3848,6 +3848,14 @@ bash "$here/pi-issue-run-noop-bench.test.sh" || fail "pi-issue-run-noop-bench te
 # ci.yml (workers cannot push .github/workflows/**).
 bash "$here/pi-issue-run-empty-success.test.sh" || fail "pi-issue-run-empty-success tests failed"
 
+# fleet-ops#5687: pi-issue-run must anchor the child pi session cwd to the
+# ABSOLUTE worktree parent (agent-worktrees/). A worker launched with its
+# working directory inside the deploy clone planted a relative worktree
+# (`issue-fleet-ops-5746/`) directly in the live install source, tripping
+# DEPLOY-CHECK-DIRTY-CLONE. Hosted here because this file is listed directly in
+# ci.yml (workers cannot push .github/workflows/**).
+bash "$here/pi-issue-run-cwd-anchor.test.sh" || fail "pi-issue-run-cwd-anchor tests failed"
+
 # fleet-ops#4690: missing 127.0.0.1 localhost holds every devin seat as
 # sandbox-localhost-unresolvable (a host class, not a 900s empty-run timer).
 # Hosted here because this file is listed directly in ci.yml.
