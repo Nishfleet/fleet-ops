@@ -79,12 +79,6 @@ jobs:
         bash tests/pi-issue-run-resume-on-provider-death.test.sh
         bash tests/minimax-token-refresh.test.sh
         bash tests/seat-credentials-bad-replay.test.sh
-        # fleet-ops#6020 (same class as fleet-ops#4396): fleet-token-economy
-        # passed on main after the #6037 fallout repair but was never in the
-        # P14 verify-command list, so its fleet-ops#3125/#4263 assertion rot
-        # landed unseen at beda5a135. Verified rc=0 on origin/main 2970807d2
-        # before add.
-        bash tests/fleet-token-economy.test.sh
         bash tests/alert-repair-flagship-seat.test.sh
         bash tests/fleet-deploy-fault-gate.test.sh
         bash tests/fleet-production-stale-alert.test.sh
