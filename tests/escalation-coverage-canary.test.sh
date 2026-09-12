@@ -1533,6 +1533,110 @@ ok "scenario32: fleet-ops local-richer -> standards-drift block skips it (no new
 ok "escalation-coverage-canary: block 13 standards-drift prevention (P11-B) covered"
 
 
+# ============================================================================
+# Scenario 33 (fleet-ops#5749): sunset ratchet — a NEW unmarked standing rule
+# past matrix.sunset_unmarked_baseline is a VIOLATION and auto-files under
+# the sunset-<id> signal namespace; a rule past review-by is PENDING.
+# ============================================================================
+cat >"$scratch/issue-file-sunset" <<'FAKEIF'
+#!/usr/bin/env bash
+printf '%s\n' "$@" >>"$SUNSET_FILED_LOG"
+echo "https://github.com/Nishfleet/fleet-ops/issues/99998"
+exit 0
+FAKEIF
+chmod +x "$scratch/issue-file-sunset"
+
+write_sunset_vault() {
+  # $1 = extra rule block appended after the covered fixture rule.
+  cat >"$FLEET_STANDING_RULES" <<EOF
+# fixture standing rules
+## Covered fixture rule (Nish, 2026-08-26)
+A rule the matrix already covers. Sunset: review-by 2030-01-01.
+$1
+EOF
+}
+
+# Scenario 33a: unmarked rule over the baseline -> VIOLATION + auto-file.
+reset_state
+cover "fleet-heartbeat.service"
+cover "pi-issue@.service"
+sanctioned_wrapper pi-issue-run
+wire_delivery
+write_covered_vault
+printf 'pending\n' >"$FLEET_ESCALATION_CANARY_DELIVERY"
+printf 'pending\n' >"$FLEET_ESCALATION_CANARY_REDCI"
+printf 'pending\n' >"$FLEET_ESCALATION_CANARY_BRIDGE"
+write_sunset_vault '## New unmarked sunset rule (Nish, 2026-08-26)
+A fresh rule with no exit marker.'
+cat >"$FLEET_RULE_ENFORCEMENT_JSON" <<'EOF'
+{
+  "queued_stale_days": 7,
+  "auto_file_cap_per_tick": 5,
+  "sunset_unmarked_baseline": 0,
+  "rules": [
+    {"id":"sr-covered-fixture","source":"global-standing-rules.md: Covered fixture rule (Nish, 2026-08-26)","mechanism":"test gate","proof":"tests/escalation-coverage-canary.test.sh","status":"enforced"},
+    {"id":"led-covered-fixture","source":"decisions-ledger.md: 2026-08-26 | covered ledger rule","mechanism":"test gate","proof":"tests/escalation-coverage-canary.test.sh","status":"enforced"},
+    {"id":"sr-new-unmarked","source":"global-standing-rules.md: New unmarked sunset rule (Nish, 2026-08-26)","mechanism":"test gate","proof":"tests/escalation-coverage-canary.test.sh","status":"enforced"}
+  ]
+}
+EOF
+sunset_filed="$scratch/sunset-filed.log"
+: >"$sunset_filed"
+export SUNSET_FILED_LOG="$sunset_filed"
+export FLEET_ISSUE_FILE="$scratch/issue-file-sunset"
+export GH="$gh_fake"
+export FLEET_RULE_ENFORCEMENT_FILE_ISSUES=1
+
+run_canary
+
+unset SUNSET_FILED_LOG FLEET_ISSUE_FILE GH
+export FLEET_RULE_ENFORCEMENT_FILE_ISSUES=0
+[[ "$env_rc" == 1 ]] || fail "scenario33a: unmarked rule over baseline must exit 1, got $env_rc ($env_out)"
+grep -q 'sunset convention.*New unmarked sunset rule' "$triage" \
+  || fail "scenario33a: triage must name the unmarked rule over baseline"
+grep -q 'FILED sunset/sunset-sr-new-unmarked' <<<"$env_out" \
+  || fail "scenario33a: canary must auto-file the sunset item ($env_out)"
+grep -q 'signal: rule-enforcement/sunset-sr-new-unmarked' "$sunset_filed" \
+  || fail "scenario33a: filed issue must carry the sunset- signal: $(cat "$sunset_filed")"
+ok "scenario33a: unmarked rule over sunset baseline -> VIOLATION + auto-filed"
+
+# Scenario 33b: a rule past its review-by date -> PENDING, still OK.
+reset_state
+cover "fleet-heartbeat.service"
+cover "pi-issue@.service"
+sanctioned_wrapper pi-issue-run
+wire_delivery
+write_covered_vault
+printf 'pending\n' >"$FLEET_ESCALATION_CANARY_DELIVERY"
+printf 'pending\n' >"$FLEET_ESCALATION_CANARY_REDCI"
+printf 'pending\n' >"$FLEET_ESCALATION_CANARY_BRIDGE"
+# FLEET_RULE_ENFORCEMENT_NOW is frozen at 2026-08-26T12:00:00Z, so a
+# review-by of 2026-08-01 is already due.
+write_sunset_vault '## Due review fixture rule (Nish, 2026-08-26)
+Sunset: review-by: 2026-08-01.'
+cat >"$FLEET_RULE_ENFORCEMENT_JSON" <<'EOF'
+{
+  "queued_stale_days": 7,
+  "auto_file_cap_per_tick": 5,
+  "sunset_unmarked_baseline": 1,
+  "rules": [
+    {"id":"sr-covered-fixture","source":"global-standing-rules.md: Covered fixture rule (Nish, 2026-08-26)","mechanism":"test gate","proof":"tests/escalation-coverage-canary.test.sh","status":"enforced"},
+    {"id":"led-covered-fixture","source":"decisions-ledger.md: 2026-08-26 | covered ledger rule","mechanism":"test gate","proof":"tests/escalation-coverage-canary.test.sh","status":"enforced"},
+    {"id":"sr-due-review","source":"global-standing-rules.md: Due review fixture rule (Nish, 2026-08-26)","mechanism":"test gate","proof":"tests/escalation-coverage-canary.test.sh","status":"enforced"}
+  ]
+}
+EOF
+
+run_canary
+
+[[ "$env_rc" == 0 ]] || fail "scenario33b: a due review-by is PENDING, not a violation — got $env_rc ($env_out)"
+grep -q 'ESCALATION-CANARY-OK' "$triage" || fail "scenario33b: triage missing OK line"
+grep -q 'sunset review-by passed.*Due review fixture rule' "$triage" \
+  || fail "scenario33b: triage must name the due rule"
+ok "scenario33b: rule past review-by -> PENDING for the WFR ratchet, canary stays green"
+
+ok "escalation-coverage-canary: sunset convention ratchet (fleet-ops#5749) covered"
+
 # fleet-ops#387: entitled-vs-wired is a sibling heartbeat canary. Invoked from
 # this CI-listed file so hosted runners run it without a workflow edit
 # (worker tokens cannot push .github/workflows/**).
