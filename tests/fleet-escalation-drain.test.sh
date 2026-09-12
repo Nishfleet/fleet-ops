@@ -389,6 +389,33 @@ fi
 ok "scenario 5: FLEET_ESCALATION_DRAIN_STUCK_AGE_S override is honored"
 
 # ---------------------------------------------------------------------------
+# Scenario 5c: --dry-run over a stuck burst is non-mutating (fleet-ops#5647
+# follow-up). The DRY announcement must name the would-be archive path, the
+# stuck packet must stay live, and no DISPOSITION line may be written.
+# Guards the dry-run branch of the same-run disposition (CI shellcheck caught
+# an unassigned $archive there; this asserts the path actually renders).
+# ---------------------------------------------------------------------------
+ts_7h_ago_dry="$(date -u -d '7 hours ago' +%Y%m%dT%H%M%SZ)"
+rm -f "$scratch/run.stderr"
+touch "$AS/alert-repair/packet-FleetStaleD-${ts_7h_ago_dry}.md"
+FLEET_ESCALATION_DRAIN_AGENT_STATE="$AS" \
+FLEET_ESCALATION_DRAIN_NISH="$AS/NISH-ESCALATIONS.md" \
+FLEET_ESCALATION_DRAIN_SEEN="$AS/lanes/nish-boundary-notify.seen" \
+FLEET_ESCALATION_DRAIN_PACKET_DIR="$AS/alert-repair" \
+FLEET_ESCALATION_DRAIN_MAX_LINES=50 \
+    bash "$bin" --dry-run 2>"$scratch/run.stderr"
+grep -q "DRY: would archive 1 stuck packet(s) to $AS/alert-repair/archived/stuck" "$scratch/run.stderr" \
+    || fail "scenario 5c: --dry-run must announce the would-be archive path; stderr: $(cat "$scratch/run.stderr")"
+[[ -f "$AS/alert-repair/packet-FleetStaleD-${ts_7h_ago_dry}.md" ]] \
+    || fail "scenario 5c: --dry-run must NOT move the stuck packet out of the packet dir"
+[[ ! -f "$AS/alert-repair/archived/stuck/packet-FleetStaleD-${ts_7h_ago_dry}.md" ]] \
+    || fail "scenario 5c: --dry-run must NOT archive the stuck packet"
+if grep -q "DISPOSITION stuck-packet packet=packet-FleetStaleD-${ts_7h_ago_dry}.md" "$AS/alert-repair/actions.log" 2>/dev/null; then
+    fail "scenario 5c: --dry-run must NOT append a DISPOSITION line; log: $(cat "$AS/alert-repair/actions.log")"
+fi
+ok "scenario 5c: --dry-run stuck burst announces archive path, mutates nothing (fleet-ops#5647)"
+
+# ---------------------------------------------------------------------------
 # Scenario 6: bad arg path (usage error).
 # ---------------------------------------------------------------------------
 set +e

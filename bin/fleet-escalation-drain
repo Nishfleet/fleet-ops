@@ -883,7 +883,7 @@ drain_packets() {
         local stamp
         stamp=$(date -u +%Y-%m-%dT%H:%M:%SZ)
         if [ "$DRY_RUN" = "1" ]; then
-            log "DRY: would archive ${n_stuck} stuck packet(s) to $archive with DISPOSITION terminal=escalated-filed"
+            log "DRY: would archive ${n_stuck} stuck packet(s) to $archive_dir with DISPOSITION terminal=escalated-filed"
         else
             mkdir -p "$archive_dir"
             for s in "${stuck[@]}"; do
