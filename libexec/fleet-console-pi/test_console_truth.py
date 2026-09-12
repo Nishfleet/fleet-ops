@@ -102,6 +102,113 @@ def test_zero_is_ok_when_cache_fresh(monkeypatch):
     assert ci["red_count"] == 0
 
 
+def test_merge_queue_gauges_overlay_onto_ci_rows(monkeypatch):
+    """fleet-ops#5807: collect_main_ci overlays the merge-queue/hosted-slot
+    gauges onto each repo's MAIN-CI row, keyed by the repo label. Overlay is
+    per-repo: a repo whose families are absent renders exactly as before."""
+    now = time.time()
+
+    def q(expr, timeout=5):
+        if expr == "fleet_main_ci_green":
+            return [
+                {"metric": {"repo": "Nishfleet/0509"}, "value": 0},
+                {"metric": {"repo": "Nishfleet/fleet-ops"}, "value": 1},
+            ]
+        if "ci_merge_queue_head_wait_seconds or" in expr:
+            return [
+                {"metric": {"__name__": "ci_merge_queue_head_wait_seconds",
+                            "repo": "Nishfleet/0509"}, "value": "8400"},
+                {"metric": {"__name__": "ci_merge_queue_entries",
+                            "repo": "Nishfleet/0509"}, "value": "14"},
+                {"metric": {"__name__": "ci_hosted_runs_queued",
+                            "repo": "Nishfleet/0509"}, "value": "58"},
+                {"metric": {"__name__": "ci_hosted_runs_in_progress",
+                            "repo": "Nishfleet/0509"}, "value": "11"},
+            ]
+        if "fleet_gh_cache_fresh" in expr and "repo_snapshot" in expr:
+            return [{"metric": {"kind": "repo_snapshot"}, "value": 1}]
+        return []
+
+    monkeypatch.setattr(G, "_prom_query", q)
+    monkeypatch.setattr(G, "_textfile_mtime", lambda: now)
+    ci = G.collect_main_ci()
+    assert ci["ok"] is True and ci["red_count"] == 1
+    by_repo = {row["repo"]: row for row in ci["items"]}
+    row = by_repo["Nishfleet/0509"]
+    assert row["head_wait_s"] == 8400
+    assert row["queue_entries"] == 14
+    assert row["runs_queued"] == 58
+    assert row["runs_in_progress"] == 11
+    overlay_free = by_repo["Nishfleet/fleet-ops"]
+    for k in ("head_wait_s", "queue_entries", "runs_queued",
+              "runs_in_progress"):
+        assert k not in overlay_free
+
+
+def test_merge_queue_overlay_is_fail_open(monkeypatch):
+    """fleet-ops#5807: a failed/absent ci_merge_queue family must never blank
+    the MAIN-RED tile — the extra fields are simply omitted from the rows."""
+    now = time.time()
+
+    def q(expr, timeout=5):
+        if expr == "fleet_main_ci_green":
+            return [{"metric": {"repo": "Nishfleet/0509"}, "value": 0}]
+        if "ci_merge_queue_head_wait_seconds or" in expr:
+            # garbage series (no repo label / non-numeric value) are skipped,
+            # and nothing usable is left for the overlay
+            return [
+                {"metric": {"__name__": "ci_merge_queue_entries",
+                            "repo": ""}, "value": "14"},
+                {"metric": {"__name__": "ci_hosted_runs_queued",
+                            "repo": "Nishfleet/0509"}, "value": "n/a"},
+            ]
+        if "fleet_gh_cache_fresh" in expr and "repo_snapshot" in expr:
+            return [{"metric": {"kind": "repo_snapshot"}, "value": 1}]
+        return []
+
+    monkeypatch.setattr(G, "_prom_query", q)
+    monkeypatch.setattr(G, "_textfile_mtime", lambda: now)
+    ci = G.collect_main_ci()
+    assert ci["ok"] is True and ci["red_count"] == 1
+    row = ci["items"][0]
+    assert row["repo"] == "Nishfleet/0509" and row["green"] == 0
+    for k in ("head_wait_s", "queue_entries", "runs_queued",
+              "runs_in_progress"):
+        assert k not in row
+
+
+def test_merge_query_prom_outage_still_renders_main_ci(monkeypatch):
+    """fleet-ops#5807: the overlay query failing (PromError) is swallowed —
+    the MAIN-CI tile stays ok with plain rows (fail-open, #5272 class)."""
+    now = time.time()
+
+    def q(expr, timeout=5):
+        if expr == "fleet_main_ci_green":
+            return [{"metric": {"repo": "Nishfleet/0509"}, "value": 0}]
+        if "fleet_gh_cache_fresh" in expr and "repo_snapshot" in expr:
+            return [{"metric": {"kind": "repo_snapshot"}, "value": 1}]
+        if "ci_merge_queue_head_wait_seconds or" in expr:
+            raise G.PromError("simulated overlay outage")
+        return []
+
+    monkeypatch.setattr(G, "_prom_query", q)
+    monkeypatch.setattr(G, "_textfile_mtime", lambda: now)
+    ci = G.collect_main_ci()
+    assert ci["ok"] is True and ci["red_count"] == 1
+    row = ci["items"][0]
+    assert row["repo"] == "Nishfleet/0509"
+    assert "head_wait_s" not in row
+
+
+def test_shell_overlay_renders_the_four_gauges():
+    """fleet-ops#5807: shell.html renders the overlay bits (head wait, queue
+    entries, runs queued, in flight) joined with esc()'d separators."""
+    shell = (G.Path(__file__).resolve().parent / "shell.html").read_text()
+    for needle in ("head_wait_s", "queue_entries", "runs_queued",
+                   "runs_in_progress", 'bits.join(" · ")'):
+        assert needle in shell, needle
+
+
 def test_shipped_org_total_secondary_line(monkeypatch):
     """fleet-ops#3984: shipped_24h carries the org-wide trailing-24h merge
     total (all repos incl. fleet-ops) as a secondary line, so the product-only
