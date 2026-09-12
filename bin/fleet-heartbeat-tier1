@@ -1463,7 +1463,9 @@ if [ "${FLEET_BLIND_AUDIT_DISABLE:-0}" != "1" ]; then
                 ;;
             *)
                 log "10.  - gap-board empty, starting fleet-blind-audit.service"
-                if systemctl --user start fleet-blind-audit.service 2>/dev/null; then
+                # --no-block: the audit takes ~30min; a blocking start here
+                # blew the heartbeat's TimeoutStartSec=45min (fleet-ops#5338).
+                if systemctl --user start --no-block fleet-blind-audit.service 2>/dev/null; then
                     audit_started=1
                     new_ts=$(date -u +%Y-%m-%dT%H:%M:%SZ)
                     python3 - "$PLAN_FILE" "$new_ts" <<'PY'
