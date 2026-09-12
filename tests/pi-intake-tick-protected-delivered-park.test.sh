@@ -1,22 +1,24 @@
 #!/usr/bin/env bash
 # tests/pi-intake-tick-protected-delivered-park.test.sh
 #
-# fleet-ops#5048: the protected-delivered slow-spaced reclaim spin. A
-# protected open issue (owner-authored or critical-path) with NO
-# `termination:` clause and NO merged claim-branch delivery PR still
-# re-claims forever when its remaining work was already delivered by a
-# merged PR on a non-claim branch, or delegated to a named user
-# .timer/.service that is active — the live case was #4891 (delivered by
-# fable-branch PRs #4893 + #4897, remainder delegated to
-# `remeasure-4891-timer.timer`, 12 claims in one day).
+# fleet-ops#5048 (amended by #5689): the protected-delivered slow-spaced
+# reclaim spin. A protected open issue (owner-authored or critical-path)
+# with NO merged claim-branch delivery PR still re-claims forever when its
+# remaining work was already delivered by a merged PR on a non-claim
+# branch, or delegated to a named user .timer/.service that is active —
+# the live case was #4891 (delivered by fable-branch PRs #4893 + #4897,
+# remainder delegated to `remeasure-4891-timer.timer`, 12 claims in one
+# day). Since #5689 the scan runs WITH OR WITHOUT a `termination:` clause
+# in the body (see the #4625 sibling test).
 #
 # This test pins the third park-cell contract:
 #
 #   1. The `skipped-parked-protected-delivered` marker exists.
-#   2. The branch is an `elif` on `_park_protected == 1` plus a NEGATED
-#      `termination:` check — it ADDS to the #4540 and #4553 paths, never
-#      replaces them, and never touches protected issues that still carry
-#      a termination clause.
+#   2. The branch is an `elif` on `_park_protected == 1` gated on the
+#      shared `_park_merged_count == 0` probe — it ADDS to the #4540 and
+#      #4553 paths, never replaces them. (#5689: the negated `termination:`
+#      check was REMOVED — a clause naming a gate that can never fire is
+#      exactly the delivered-spin shape, see the #4625 sibling test.)
 #   3. It requires the shared merged-claim-branch probe to be ABSENT
 #      (`_park_merged_count == 0`) before any delivery signal is read.
 #   4. Delivery signals, either sufficient:
@@ -50,9 +52,9 @@ grep -qF 'skipped-parked-protected-delivered' "$tick" \
 ok "Test 1: skipped-parked-protected-delivered marker present"
 
 # === Test 2: the new cell is an additive elif, ordered after land-or-close ===
-elif_line=$(grep -n 'elif (( _park_protected == 1 )) && ! printf' "$tick" | head -1 | cut -d: -f1)
+elif_line=$(grep -n 'elif (( _park_protected == 1 )) && (( _park_merged_count == 0 ))' "$tick" | head -1 | cut -d: -f1)
 [[ -n "$elif_line" ]] \
-    || fail "protected-delivered branch must be an elif on _park_protected == 1 with negated termination: check"
+    || fail "protected-delivered branch must be an elif on _park_protected == 1 gated on _park_merged_count == 0"
 land_line=$(grep -n 'elif (( _park_protected == 0 ))' "$tick" | head -1 | cut -d: -f1)
 [[ -n "$land_line" ]] || fail "land-or-close elif (#4553) missing"
 (( elif_line > land_line )) \
@@ -61,13 +63,19 @@ grep -qF 'if (( _park_protected == 1 )) &&' "$tick" \
     || fail "the #4540 protected-merged if branch must still be present (unchanged)"
 ok "Test 2: protected-delivered branch is an additive elif after the land-or-close branch"
 
-# === Test 3: gated on no merged claim-branch delivery PR ===
+# === Test 3: gated on no merged claim-branch delivery PR; termination: is not an exemption ===
 cell=$(sed -n "${elif_line},/^        fi$/p" "$tick")
-printf '%s' "$cell" | grep -qF 'if (( _park_merged_count == 0 ))' \
-    || fail "protected-delivered cell must require _park_merged_count == 0 (no claim-branch delivery PR)"
-printf '%s' "$cell" | grep -qF "grep -qi 'termination:'" \
-    || fail "protected-delivered elif must carry the negated termination: check"
-ok "Test 3: cell requires protected + no termination: + no merged claim-branch PR"
+printf '%s' "$cell" | grep -qF '(( _park_merged_count == 0 ))' \
+    || fail "protected-delivered elif must require _park_merged_count == 0 (no claim-branch delivery PR)"
+# fleet-ops#5689: the #4540 branch guard must carry the merged-claim-PR
+# condition, so a protected+termination: issue with NO merged claim-branch
+# PR falls through INTO this scan instead of skipping it.
+guard_line=$(grep -n 'if (( _park_protected == 1 )) && printf' "$tick" | head -1 | cut -d: -f1)
+[[ -n "$guard_line" ]] || fail "#4540 branch guard missing"
+guard=$(sed -n "${guard_line},$(( guard_line + 1 ))p" "$tick")
+printf '%s' "$guard" | grep -qF '(( _park_merged_count > 0 ))' \
+    || fail "#4540 branch guard must require _park_merged_count > 0 (#5689)"
+ok "Test 3: cell requires protected + no merged claim-branch PR; #4540 guard keeps merged-claim priority"
 
 # === Test 4: runtime-unit signal — all .timer/.service tokens probed with is-active ===
 printf '%s' "$cell" | grep -qF "grep -oE '[A-Za-z0-9_.@:-]+\\.(timer|service)'" \

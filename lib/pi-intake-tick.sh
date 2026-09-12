@@ -2393,22 +2393,26 @@ blocked-on: orchestrator" 2>/dev/null || true
             _park_merged_count=$(printf '%s' "$_park_merged" | jq 'length' 2>/dev/null || echo 0)
         fi
 
-        if (( _park_protected == 1 )) && printf '%s' "$body" | grep -qi 'termination:'; then
+        if (( _park_protected == 1 )) && printf '%s' "$body" | grep -qi 'termination:' \
+            && (( _park_merged_count > 0 )); then
             # fleet-ops#4540: protected issue with a termination clause and a
-            # merged claim-branch delivery PR.
-            if (( _park_merged_count > 0 )); then
-                _park_pr=$(printf '%s' "$_park_merged" | jq -r '.[0].number')
-                echo "issue $N ($title): skipped-parked-protected-merged ($_park_claims cumulative claims > cap $PARK_MAX_CLAIMS; merged PR #$_park_pr delivered it; awaiting runtime gate)" >&2
-                # fleet-ops#4540: gh issue edit --add-label does NOT auto-create a
-                # missing label (it fails \"<name> not found\"), so ensure the park
-                # label exists first (idempotent --force). Without this the add
-                # fails silently and the slow-spaced reclaim spin is NOT stopped.
-                gh label create awaiting-runtime-gate -R "$FULL" --color D4C5F9 \
-                    --description "Parked: protected issue + merged delivery PR awaiting a future runtime gate; do not claim (fleet-ops#4540)" --force >/dev/null 2>&1 || true
-                gh issue edit "$N" -R "$FULL" --add-label awaiting-runtime-gate --remove-label agent-ready 2>/dev/null || true
-                gh issue comment "$N" -R "$FULL" --body "fleet-ops#4540: issue $N is protected (owner-authored or critical-path) with a merged delivery PR (claim/issue-$N, PR #$_park_pr) and a \`termination:\` clause naming a future runtime event. observe-to-close stays comment-only on protected issues (fleet-ops#1435), so the issue stays OPEN by design — but it has been re-claimed ${_park_claims} times since the merge on a slow spin every anti-loop gate misses (#2462 counter resets on non-empty output; #2772 window sees only ~3 claims per 2h at the 15-min cooldown spacing). Parking it: labelled \`awaiting-runtime-gate\`, removed from agent-ready; the intake will not re-claim it until the named runtime event fires (clear the label then) or Nish closes the issue. No new timer." 2>/dev/null || true
-                continue
-            fi
+            # merged claim-branch delivery PR. The merged-claim-PR condition
+            # moved into the branch guard (#5689): when NO claim-branch PR is
+            # merged, the #5048 delivered-scan below must still run — the live
+            # case was #4625 (protected + termination: naming a retired
+            # provider, delivered via merged non-claim PR #5081, claim branch
+            # closed conflicting, ~15 re-claims since 2026-09-10).
+            _park_pr=$(printf '%s' "$_park_merged" | jq -r '.[0].number')
+            echo "issue $N ($title): skipped-parked-protected-merged ($_park_claims cumulative claims > cap $PARK_MAX_CLAIMS; merged PR #$_park_pr delivered it; awaiting runtime gate)" >&2
+            # fleet-ops#4540: gh issue edit --add-label does NOT auto-create a
+            # missing label (it fails \"<name> not found\"), so ensure the park
+            # label exists first (idempotent --force). Without this the add
+            # fails silently and the slow-spaced reclaim spin is NOT stopped.
+            gh label create awaiting-runtime-gate -R "$FULL" --color D4C5F9 \
+                --description "Parked: protected issue + merged delivery PR awaiting a future runtime gate; do not claim (fleet-ops#4540)" --force >/dev/null 2>&1 || true
+            gh issue edit "$N" -R "$FULL" --add-label awaiting-runtime-gate --remove-label agent-ready 2>/dev/null || true
+            gh issue comment "$N" -R "$FULL" --body "fleet-ops#4540: issue $N is protected (owner-authored or critical-path) with a merged delivery PR (claim/issue-$N, PR #$_park_pr) and a \`termination:\` clause naming a future runtime event. observe-to-close stays comment-only on protected issues (fleet-ops#1435), so the issue stays OPEN by design — but it has been re-claimed ${_park_claims} times since the merge on a slow spin every anti-loop gate misses (#2462 counter resets on non-empty output; #2772 window sees only ~3 claims per 2h at the 15-min cooldown spacing). Parking it: labelled \`awaiting-runtime-gate\`, removed from agent-ready; the intake will not re-claim it until the named runtime event fires (clear the label then) or Nish closes the issue. No new timer." 2>/dev/null || true
+            continue
         elif (( _park_protected == 0 )); then
             # fleet-ops#4553 + #5835 + fleet-ops#5045: the two NON-protected park
             # shapes share the hoisted merged claim-branch PR probe (body
@@ -2477,74 +2481,75 @@ blocked-on: orchestrator" 2>/dev/null || true
                     continue
                 fi
             fi
-        elif (( _park_protected == 1 )) && ! printf '%s' "$body" | grep -qi 'termination:'; then
-            # fleet-ops#5048: protected issue with NO termination clause and NO
-            # merged claim-branch delivery PR. If the remaining work was already
-            # delivered by merged PR(s) on a non-claim branch, or is delegated
-            # to an active user .timer/.service, the slow-spaced reclaim spin
-            # is the same as #4540 — park it.
-            if (( _park_merged_count == 0 )); then
-                _park_text=""
-                _park_comments=""
-                _park_cjson=$(gh issue view "$N" -R "$FULL" --json comments 2>/dev/null) || _park_cjson='{"comments":[]}'
-                _park_comments=$(printf '%s' "$_park_cjson" | jq -r '[.comments[]?.body // empty] | join("\n")' 2>/dev/null || true)
-                _park_text="${body}"$'\n'"${_park_comments}"
+        elif (( _park_protected == 1 )) && (( _park_merged_count == 0 )); then
+            # fleet-ops#5048: protected issue with NO merged claim-branch
+            # delivery PR. If the remaining work was already delivered by
+            # merged PR(s) on a non-claim branch, or is delegated to an active
+            # user .timer/.service, the slow-spaced reclaim spin is the same
+            # as #4540 — park it. A termination: clause is NOT an exemption
+            # (fleet-ops#5689): a clause naming a gate that can never fire
+            # (retired provider) is exactly the delivered-spin shape. The
+            # merged_count == 0 guard moved here from the inner if (#5689).
+            _park_text=""
+            _park_comments=""
+            _park_cjson=$(gh issue view "$N" -R "$FULL" --json comments 2>/dev/null) || _park_cjson='{"comments":[]}'
+            _park_comments=$(printf '%s' "$_park_cjson" | jq -r '[.comments[]?.body // empty] | join("\n")' 2>/dev/null || true)
+            _park_text="${body}"$'\n'"${_park_comments}"
 
-                _park_runtime_unit=""
+            _park_runtime_unit=""
+            if [[ -n "$_park_text" ]]; then
+                while IFS= read -r _park_unit; do
+                    [[ -z "$_park_unit" ]] && continue
+                    if XDG_RUNTIME_DIR="/run/user/$(id -u)" systemctl --user is-active "$_park_unit" >/dev/null 2>&1; then
+                        _park_runtime_unit="$_park_unit"
+                        break
+                    fi
+                done <<<"$(printf '%s' "$_park_text" | grep -oE '[A-Za-z0-9_.@:-]+\.(timer|service)' | sort -u || true)"
+            fi
+
+            _park_nonclaim_merged=0
+            _park_delivered_pr=""
+            if [[ -z "$_park_runtime_unit" ]]; then
+                _park_refs=""
                 if [[ -n "$_park_text" ]]; then
-                    while IFS= read -r _park_unit; do
-                        [[ -z "$_park_unit" ]] && continue
-                        if XDG_RUNTIME_DIR="/run/user/$(id -u)" systemctl --user is-active "$_park_unit" >/dev/null 2>&1; then
-                            _park_runtime_unit="$_park_unit"
+                    _park_refs=$(printf '%s' "$_park_text" | grep -oE '[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+#[0-9]+|[A-Za-z0-9_.-]+#[0-9]+|#[0-9]+' | sed 's/^#//' | sort -u) || true
+                fi
+                if [[ -n "$_park_refs" ]]; then
+                    while IFS= read -r _park_ref; do
+                        if [[ "$_park_ref" =~ ^[0-9]+$ ]]; then
+                            _park_ref_full="$FULL"
+                        elif [[ "$_park_ref" == */* ]]; then
+                            _park_ref_owner="${_park_ref%%/*}"
+                            _park_ref_rest="${_park_ref#*/}"
+                            _park_ref_repo="${_park_ref_rest%%#*}"
+                            _park_ref_full="${_park_ref_owner}/${_park_ref_repo}"
+                        else
+                            _park_ref_repo="${_park_ref%#*}"
+                            _park_ref_full="Nishfleet/${_park_ref_repo}"
+                        fi
+                        _park_ref_num="${_park_ref##*#}"
+                        _park_pr_info=$(_gh_read pr view "$_park_ref_num" -R "$_park_ref_full" --json state,headRefName 2>/dev/null || true)
+                        if [[ -n "$_park_pr_info" ]] && printf '%s' "$_park_pr_info" | jq -e '.state == "MERGED" and .headRefName != "claim/issue-'"$N"'"' >/dev/null 2>&1; then
+                            _park_nonclaim_merged=1
+                            _park_delivered_pr="$_park_ref_num"
                             break
                         fi
-                    done <<<"$(printf '%s' "$_park_text" | grep -oE '[A-Za-z0-9_.@:-]+\.(timer|service)' | sort -u || true)"
+                    done <<<"$_park_refs"
                 fi
+            fi
 
-                _park_nonclaim_merged=0
-                _park_delivered_pr=""
-                if [[ -z "$_park_runtime_unit" ]]; then
-                    _park_refs=""
-                    if [[ -n "$_park_text" ]]; then
-                        _park_refs=$(printf '%s' "$_park_text" | grep -oE '[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+#[0-9]+|[A-Za-z0-9_.-]+#[0-9]+|#[0-9]+' | sed 's/^#//' | sort -u) || true
-                    fi
-                    if [[ -n "$_park_refs" ]]; then
-                        while IFS= read -r _park_ref; do
-                            if [[ "$_park_ref" =~ ^[0-9]+$ ]]; then
-                                _park_ref_full="$FULL"
-                            elif [[ "$_park_ref" == */* ]]; then
-                                _park_ref_owner="${_park_ref%%/*}"
-                                _park_ref_rest="${_park_ref#*/}"
-                                _park_ref_repo="${_park_ref_rest%%#*}"
-                                _park_ref_full="${_park_ref_owner}/${_park_ref_repo}"
-                            else
-                                _park_ref_repo="${_park_ref%#*}"
-                                _park_ref_full="Nishfleet/${_park_ref_repo}"
-                            fi
-                            _park_ref_num="${_park_ref##*#}"
-                            _park_pr_info=$(_gh_read pr view "$_park_ref_num" -R "$_park_ref_full" --json state,headRefName 2>/dev/null || true)
-                            if [[ -n "$_park_pr_info" ]] && printf '%s' "$_park_pr_info" | jq -e '.state == "MERGED" and .headRefName != "claim/issue-'"$N"'"' >/dev/null 2>&1; then
-                                _park_nonclaim_merged=1
-                                _park_delivered_pr="$_park_ref_num"
-                                break
-                            fi
-                        done <<<"$_park_refs"
-                    fi
+            if [[ -n "$_park_runtime_unit" || $_park_nonclaim_merged -eq 1 ]]; then
+                if [[ -n "$_park_runtime_unit" ]]; then
+                    _park_reason="active user unit $_park_runtime_unit"
+                else
+                    _park_reason="merged non-claim PR #$_park_delivered_pr delivered it"
                 fi
-
-                if [[ -n "$_park_runtime_unit" || $_park_nonclaim_merged -eq 1 ]]; then
-                    if [[ -n "$_park_runtime_unit" ]]; then
-                        _park_reason="active user unit $_park_runtime_unit"
-                    else
-                        _park_reason="merged non-claim PR #$_park_delivered_pr delivered it"
-                    fi
-                    echo "issue $N ($title): skipped-parked-protected-delivered ($_park_claims cumulative claims > cap $PARK_MAX_CLAIMS; $_park_reason; awaiting runtime gate, fleet-ops#5048)" >&2
-                    gh label create awaiting-runtime-gate -R "$FULL" --color D4C5F9 \
-                        --description "Parked: protected issue + delivered work awaiting a runtime gate; do not claim (fleet-ops#5048)" --force >/dev/null 2>&1 || true
-                    gh issue edit "$N" -R "$FULL" --add-label awaiting-runtime-gate --remove-label agent-ready 2>/dev/null || true
-                    gh issue comment "$N" -R "$FULL" --body "fleet-ops#5048: issue $N is protected (owner-authored or critical-path) with no merged claim-branch delivery PR, but its remaining work is already delivered on a non-claim branch or delegated to an active runtime unit (${_park_reason}). It has been re-claimed ${_park_claims} times while the runtime gate is not yet met. Parking it: labelled \`awaiting-runtime-gate\`, removed from agent-ready; the intake will not re-claim it until the runtime event fires (clear the label then) or Nish closes the issue. No new timer." 2>/dev/null || true
-                    continue
-                fi
+                echo "issue $N ($title): skipped-parked-protected-delivered ($_park_claims cumulative claims > cap $PARK_MAX_CLAIMS; $_park_reason; awaiting runtime gate, fleet-ops#5048)" >&2
+                gh label create awaiting-runtime-gate -R "$FULL" --color D4C5F9 \
+                    --description "Parked: protected issue + delivered work awaiting a runtime gate; do not claim (fleet-ops#5048)" --force >/dev/null 2>&1 || true
+                gh issue edit "$N" -R "$FULL" --add-label awaiting-runtime-gate --remove-label agent-ready 2>/dev/null || true
+                gh issue comment "$N" -R "$FULL" --body "fleet-ops#5048: issue $N is protected (owner-authored or critical-path) with no merged claim-branch delivery PR, but its remaining work is already delivered on a non-claim branch or delegated to an active runtime unit (${_park_reason}). It has been re-claimed ${_park_claims} times while the runtime gate is not yet met. Parking it: labelled \`awaiting-runtime-gate\`, removed from agent-ready; the intake will not re-claim it until the runtime event fires (clear the label then) or Nish closes the issue. No new timer." 2>/dev/null || true
+                continue
             fi
         fi
         # fleet-ops#5082: duplicate-of-merged-work branch — the probe itself
