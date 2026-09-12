@@ -24,6 +24,14 @@
 #      entries (NOT in the seen set) stay so a not-yet-delivered page is
 #      never lost.
 #
+#   1b. alert-repair stuck-packet burst closure (fleet-ops#5647): after the
+#      LOUD STUCK-PACKET line is emitted, the same run ARCHIVES every stuck
+#      packet under $PACKET_DIR/archived/stuck/ (never silently deleted —
+#      the file moves and a DISPOSITION decision line lands in actions.log)
+#      so the hourly LOUD line cannot repeat forever for a settled burst.
+#      The absent()/filing pipeline files a fresh [stuck-packet] issue from
+#      the LOUD line; a NEW stuck packet after that starts a fresh filing.
+#
 #   2. alert-repair packets: delete packet-*.md files whose dispatch cycle
 #      TERMINATED. The termination proof is chains.terminated.jsonl — the
 #      ledger fleet-completion-canary appends to (with the mirror under
@@ -72,6 +80,9 @@
 #   FLEET_ESCALATION_DRAIN_MAX_LINES      default 50
 #   FLEET_ESCALATION_DRAIN_TERMINATED     ledger path (default $PACKET_DIR/chains.terminated.jsonl)
 #   FLEET_ESCALATION_DRAIN_STUCK_AGE_S     webhook packet age past which a no-terminal
+#                                          packet is LOUD-flagged then archived to
+#                                          $PACKET_DIR/archived/stuck/ with a DISPOSITION
+#                                          line in $PACKET_DIR/actions.log (fleet-ops#5647)
 #                                          packet is flagged LOUD (default 21600 = 6h,
 #                                          fleet-ops#2677: a packet older than ~6h
 #                                          must be either consumed (terminal record)
@@ -159,6 +170,7 @@ nish_body_resolved=0
 nish_digested=0
 packet_deleted=0
 packet_skipped=0
+packet_archived=0
 
 # Body-level RESOLVED marker regex (fleet-ops#3996). Entries whose header class
 # is NOT literally RESOLVED/REVOKED-BY-PROBE can still carry a resolution marker
@@ -1129,7 +1141,32 @@ drain_packets() {
         for s in "${stuck[@]:0:10}"; do
             head_line="$head_line $s"
         done
-        log "LOUD [STUCK-PACKET] $n_stuck webhook packet(s) older than ${STUCK_AGE_S}s have NO terminated chain in $TERMINATED — drain leaves them (never silently delete); left for the Prometheus/Alertmanager absent() pipeline to escalate:$head_line"
+        log "LOUD [STUCK-PACKET] $n_stuck webhook packet(s) older than ${STUCK_AGE_S}s have NO terminated chain in $TERMINATED — left for the Prometheus/Alertmanager absent() pipeline to escalate (fresh filing per burst):$head_line"
+        # fleet-ops#366 / #5647: same-run disposition. The packets were
+        # already escalated loud in this run; leaving them live makes the
+        # hourly LOUD line repeat forever for a settled burst. Archive
+        # them (never silently delete: the file MOVES and a DISPOSITION
+        # decision line is written to actions.log) so the backlog trends
+        # to 0, not up.
+        local archive_dir="$PACKET_DIR/archived/stuck"
+        local alog="$PACKET_DIR/actions.log"
+        local stamp
+        stamp=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+        if [ "$DRY_RUN" = "1" ]; then
+            log "DRY: would archive ${n_stuck} stuck packet(s) to $archive_dir with DISPOSITION terminal=escalated-filed"
+        else
+            mkdir -p "$archive_dir"
+            for s in "${stuck[@]}"; do
+                s_name="${s%% (*}"
+                if mv -- "$PACKET_DIR/$s_name" "$archive_dir/$s_name" 2>/dev/null; then
+                    echo "[$stamp] DISPOSITION stuck-packet packet=$s_name terminal=escalated-filed issue=absent-pipeline-filer" >> "$alog"
+                    packet_archived=$((packet_archived + 1))
+                    log "archived $s_name terminal=escalated-filed issue=absent-pipeline-filer (actions.log)"
+                else
+                    log "WARN: failed to archive $s_name — leaving in place (loud line will re-flag it)"
+                fi
+            done
+        fi
     fi
 }
 
@@ -1138,5 +1175,5 @@ drain_nish_conditions
 drain_nish_bound
 drain_packets
 
-log "summary: nish_archived=$nish_archived nish_bounded=$nish_bounded nish_body_resolved=$nish_body_resolved nish_condition_resolved=$nish_condition_resolved nish_condition_live=$nish_condition_live nish_digested=$nish_digested packet_deleted=$packet_deleted packet_skipped=$packet_skipped dry_run=$DRY_RUN"
+log "summary: nish_archived=$nish_archived nish_bounded=$nish_bounded nish_body_resolved=$nish_body_resolved nish_condition_resolved=$nish_condition_resolved nish_condition_live=$nish_condition_live nish_digested=$nish_digested packet_deleted=$packet_deleted packet_skipped=$packet_skipped packet_archived=$packet_archived dry_run=$DRY_RUN"
 exit 0

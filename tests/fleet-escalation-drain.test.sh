@@ -236,14 +236,21 @@ run_drain
     || fail "scenario 3: FleetA (terminated after dispatch) must be DELETED"
 [[ ! -f "$AS/alert-repair/packet-FleetB-20260901T100000Z.md" ]] \
     || fail "scenario 3: FleetB 10:00Z (intermediate dispatch under 12:00Z terminal) must be DELETED"
-[[ -f "$AS/alert-repair/packet-FleetB-20260901T130000Z.md" ]] \
-    || fail "scenario 3: FleetB 13:00Z (dispatched AFTER terminal) must be KEPT (in-flight)"
-[[ -f "$AS/alert-repair/packet-FleetC-20260901T050000Z.md" ]] \
-    || fail "scenario 3: FleetC (no ledger terminal) must be KEPT (stuck chain)"
-[[ -f "$AS/alert-repair/packet-FleetStuck-20260820T000000Z.md" ]] \
-    || fail "scenario 3: FleetStuck (old, no terminal) must be KEPT (never silently deleted)"
+# fleet-ops#5647: old no-terminal packets are archived same-run (moved, not deleted).
+[[ -f "$AS/alert-repair/archived/stuck/packet-FleetStuck-20260820T000000Z.md" ]] \
+    || fail "scenario 3: FleetStuck (old, no terminal) must be ARCHIVED under archived/stuck (never silently deleted)"
+[[ -f "$AS/alert-repair/archived/stuck/packet-FleetC-20260901T050000Z.md" ]] \
+    || fail "scenario 3: FleetC (no terminal, stale) must be ARCHIVED under archived/stuck"
+[[ -f "$AS/alert-repair/archived/stuck/packet-FleetB-20260901T130000Z.md" ]] \
+    || fail "scenario 3: FleetB 13:00Z (re-fired, stale) must be ARCHIVED under archived/stuck"
 grep -q "STUCK-PACKET.*packet-FleetStuck-20260820T000000Z.md" "$scratch/run.stderr" \
     || fail "scenario 3: drain must flag old no-terminal packets LOUD; stderr: $(cat "$scratch/run.stderr")"
+grep -q "archived packet-FleetStuck-20260820T000000Z.md terminal=escalated-filed" "$scratch/run.stderr" \
+    || fail "scenario 3: drain must log fleet-ops#5647 same-run archive; stderr: $(cat "$scratch/run.stderr")"
+grep -q "DISPOSITION stuck-packet packet=packet-FleetStuck-20260820T000000Z.md terminal=escalated-filed" "$AS/alert-repair/actions.log" \
+    || fail "scenario 3: actions.log must carry the DISPOSITION decision line; log: $(cat "$AS/alert-repair/actions.log")"
+grep -q "packet_archived=3" "$scratch/run.stderr" \
+    || fail "scenario 3: summary must report packet_archived=3; stderr: $(cat "$scratch/run.stderr")"
 [[ -f "$AS/alert-repair/packet-11-canary-scaffold.md" ]] \
     || fail "scenario 3: canary scaffolding (packet-11-) must be KEPT (no ts suffix)"
 [[ -f "$AS/alert-repair/packet-13-undersaturation-guard.md" ]] \
@@ -252,12 +259,14 @@ grep -q "STUCK-PACKET.*packet-FleetStuck-20260820T000000Z.md" "$scratch/run.stde
     || fail "scenario 3: legacy scaffolding (packet-red-main-2) must be KEPT (no ts suffix)"
 grep -q "deleted packet-FleetA-20260901T060000Z.md" "$scratch/run.stderr" \
     || fail "scenario 3: drain log must name the FleetA deletion; stderr: $(cat "$scratch/run.stderr")"
-ok "scenario 3: terminated packets deleted; in-flight / no-terminal / scaffolding preserved"
+ok "scenario 3: terminated packets deleted; stale no-terminal archived (fleet-ops#5647); scaffolding preserved"
 # Idempotency: re-running is a no-op for the packet drain too.
 rm -f "$scratch/run.stderr"
 run_drain
 grep -q "packet_deleted=0" "$scratch/run.stderr" \
     || fail "scenario 3: re-run must delete nothing (idempotent); stderr: $(cat "$scratch/run.stderr")"
+grep -q "packet_archived=0" "$scratch/run.stderr" \
+    || fail "scenario 3: re-run must archive nothing (idempotent); stderr: $(cat "$scratch/run.stderr")"
 ok "scenario 3: re-run on drained packet dir is a no-op (idempotency)"
 
 # ---------------------------------------------------------------------------
@@ -326,17 +335,23 @@ touch "$AS/alert-repair/packet-11-canary-scaffold.md"
 
 run_drain
 
-# Both packets must be preserved (never silently deleted).
-[[ -f "$AS/alert-repair/packet-FleetStaleA-${ts_7h_ago}.md" ]] \
-    || fail "scenario 5: 7h-old packet (no terminal) must be KEPT, never silently deleted"
+# fleet-ops#5647: the 7h-old packet was LOUD-flagged then archived same-run.
+# Never silently deleted: it lands under archived/stuck with a DISPOSITION line.
+[[ -f "$AS/alert-repair/archived/stuck/packet-FleetStaleA-${ts_7h_ago}.md" ]] \
+    || fail "scenario 5: 7h-old packet (no terminal) must be ARCHIVED under archived/stuck, never silently deleted"
+[[ -f "$AS/alert-repair/actions.log" ]] \
+    || fail "scenario 5: actions.log must exist after the stuck-packet disposition"
+# 1h-old packet (fresh re-fire) stays live - NOT archived.
 [[ -f "$AS/alert-repair/packet-FleetStaleB-${ts_1h_ago}.md" ]] \
-    || fail "scenario 5: 1h-old packet (no terminal) must be KEPT, never silently deleted"
+    || fail "scenario 5: 1h-old packet (no terminal) must be KEPT live (fresh re-fire)"
 [[ -f "$AS/alert-repair/packet-11-canary-scaffold.md" ]] \
     || fail "scenario 5: canary scaffolding must be KEPT (no ts suffix)"
 
 # 7h-old packet must be flagged LOUD.
 grep -q "STUCK-PACKET.*packet-FleetStaleA-${ts_7h_ago}.md" "$scratch/run.stderr" \
     || fail "scenario 5: 7h-old no-terminal packet MUST trip LOUD STUCK-PACKET; stderr: $(cat "$scratch/run.stderr")"
+grep -qF "DISPOSITION stuck-packet packet=packet-FleetStaleA-${ts_7h_ago}.md terminal=escalated-filed" "$AS/alert-repair/actions.log" \
+    || fail "scenario 5: archived StaleA must have a DISPOSITION line in actions.log; log: $(cat "$AS/alert-repair/actions.log")"
 # 1h-old packet must NOT be in the LOUD line (the LOUD line only names
 # packets older than the threshold).
 if grep -q "STUCK-PACKET.*packet-FleetStaleB-${ts_1h_ago}.md" "$scratch/run.stderr"; then
@@ -346,7 +361,7 @@ fi
 if grep -q "STUCK-PACKET.*packet-11-canary-scaffold.md" "$scratch/run.stderr"; then
     fail "scenario 5: canary scaffolding must NEVER appear in LOUD line; stderr: $(cat "$scratch/run.stderr")"
 fi
-ok "scenario 5: 6h threshold - 7h packet LOUD, 1h packet silent, scaffolding ignored"
+ok "scenario 5: 6h threshold - 7h packet LOUD + archived (fleet-ops#5647), 1h packet live, scaffolding ignored"
 
 # Override the threshold: with STUCK_AGE_S=2h (7200s), a 3h-old packet
 # must now LOUD (it was silent under the 6h default), and the line must
@@ -372,6 +387,33 @@ if grep -q "STUCK-PACKET.*packet-FleetStaleB-${ts_1h_ago}.md" "$scratch/run.stde
     fail "scenario 5: 1h-old packet must STAY silent under STUCK_AGE_S=2h; stderr: $(cat "$scratch/run.stderr")"
 fi
 ok "scenario 5: FLEET_ESCALATION_DRAIN_STUCK_AGE_S override is honored"
+
+# ---------------------------------------------------------------------------
+# Scenario 5c: --dry-run over a stuck burst is non-mutating (fleet-ops#5647
+# follow-up). The DRY announcement must name the would-be archive path, the
+# stuck packet must stay live, and no DISPOSITION line may be written.
+# Guards the dry-run branch of the same-run disposition (CI shellcheck caught
+# an unassigned $archive there; this asserts the path actually renders).
+# ---------------------------------------------------------------------------
+ts_7h_ago_dry="$(date -u -d '7 hours ago' +%Y%m%dT%H%M%SZ)"
+rm -f "$scratch/run.stderr"
+touch "$AS/alert-repair/packet-FleetStaleD-${ts_7h_ago_dry}.md"
+FLEET_ESCALATION_DRAIN_AGENT_STATE="$AS" \
+FLEET_ESCALATION_DRAIN_NISH="$AS/NISH-ESCALATIONS.md" \
+FLEET_ESCALATION_DRAIN_SEEN="$AS/lanes/nish-boundary-notify.seen" \
+FLEET_ESCALATION_DRAIN_PACKET_DIR="$AS/alert-repair" \
+FLEET_ESCALATION_DRAIN_MAX_LINES=50 \
+    bash "$bin" --dry-run 2>"$scratch/run.stderr"
+grep -q "DRY: would archive 1 stuck packet(s) to $AS/alert-repair/archived/stuck" "$scratch/run.stderr" \
+    || fail "scenario 5c: --dry-run must announce the would-be archive path; stderr: $(cat "$scratch/run.stderr")"
+[[ -f "$AS/alert-repair/packet-FleetStaleD-${ts_7h_ago_dry}.md" ]] \
+    || fail "scenario 5c: --dry-run must NOT move the stuck packet out of the packet dir"
+[[ ! -f "$AS/alert-repair/archived/stuck/packet-FleetStaleD-${ts_7h_ago_dry}.md" ]] \
+    || fail "scenario 5c: --dry-run must NOT archive the stuck packet"
+if grep -q "DISPOSITION stuck-packet packet=packet-FleetStaleD-${ts_7h_ago_dry}.md" "$AS/alert-repair/actions.log" 2>/dev/null; then
+    fail "scenario 5c: --dry-run must NOT append a DISPOSITION line; log: $(cat "$AS/alert-repair/actions.log")"
+fi
+ok "scenario 5c: --dry-run stuck burst announces archive path, mutates nothing (fleet-ops#5647)"
 
 # ---------------------------------------------------------------------------
 # Scenario 6: bad arg path (usage error).
