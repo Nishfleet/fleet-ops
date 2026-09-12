@@ -118,6 +118,44 @@ jq -e '.seams[0].disposition == "matched" and .seams[0].mechanism == "#358"' "$s
   || fail "explicit #ref seam should map to #358: $(cat "$scratch/ref/seams.json")"
 ok "seam naming an explicit issue ref matches the queued mechanism (fleet-ops#1708)"
 
+# fleet-ops#5477: a github-source seam's evidence names its own issue
+# (`github issue #2042`). That issue IS the mechanism — matched when still
+# open (queued) or closed by a merged PR (delivered). Only an issue closed
+# by hand with no PR stays unmatched; the closed-but-undelivered hunt owns
+# that class. Without this, every hand-filed issue that was later delivered
+# is re-filed as a fresh gap-audit duplicate.
+mkdir -p "$scratch/ghself"
+cat >"$scratch/ghself/candidates.json" <<'JSON'
+{"since":"2026-08-29T12:00:00Z","now":"2026-08-29T16:00:00Z","candidates":[
+  {"seam":"P14 staleness-checker.test.sh fails in CI when nish-vault is not mounted","source":"github","kind":"issue","number":2042,"when":"2026-08-29T15:00:00Z","evidence":"github issue #2042"},
+  {"seam":"hand-merged the release","source":"github","kind":"comment","number":358,"when":"2026-08-29T15:10:00Z","evidence":"github comment #358"},
+  {"seam":"hand-applied hot patch then closed the issue by hand","source":"github","kind":"issue","number":9999,"when":"2026-08-29T15:20:00Z","evidence":"github issue #9999"}
+]}
+JSON
+printf '%s\n' '[{"number":358,"title":"hand-started the first blind-audit run / fleet-blind-audit.service"}]' >"$scratch/ghself/open.json"
+printf '%s\n' '[{"number":2042,"title":"P14 staleness-checker.test.sh fails in CI","closedByPullRequestsReferences":[{"number":2043}]},{"number":9999,"title":"hand-applied hot patch then closed the issue by hand","closedByPullRequestsReferences":[]}]' >"$scratch/ghself/closed.json"
+printf '%s\n' '{"findings":[],"seams":[]}' >"$scratch/ghself/findings.json"
+: >"$scratch/ghself/report.md"
+python3 "$lens" close \
+  --candidates "$scratch/ghself/candidates.json" \
+  --findings "$scratch/ghself/findings.json" \
+  --open-issues "$scratch/ghself/open.json" \
+  --closed-issues "$scratch/ghself/closed.json" \
+  --report "$scratch/ghself/report.md" \
+  --seams-out "$scratch/ghself/seams.json" \
+  --now "2026-08-29T16:00:00Z" >"$scratch/ghself/close.json"
+jq -e '.matched == 2 and .filed == 1 and .added == 1' "$scratch/ghself/close.json" >/dev/null \
+  || fail "github self-match counts wrong: $(cat "$scratch/ghself/close.json")"
+jq -e '.seams[0].disposition == "matched" and .seams[0].mechanism == "#2042"' "$scratch/ghself/seams.json" >/dev/null \
+  || fail "delivered issue should match itself: $(cat "$scratch/ghself/seams.json")"
+jq -e '.seams[1].disposition == "matched" and .seams[1].mechanism == "#358"' "$scratch/ghself/seams.json" >/dev/null \
+  || fail "comment seam should match its open parent issue: $(cat "$scratch/ghself/seams.json")"
+jq -e '.seams[2].disposition == "filed"' "$scratch/ghself/seams.json" >/dev/null \
+  || fail "hand-closed issue with no merged PR must stay unmatched: $(cat "$scratch/ghself/seams.json")"
+grep -q 'delivered by merged PR' "$scratch/ghself/report.md" \
+  || fail "report table missing delivered-by-merge reason"
+ok "github-issue seams self-match open or delivered mechanisms (fleet-ops#5477)"
+
 # Worker-claim comments and timer-parent starts must not become seams.
 mkdir -p "$scratch/mem"
 cat >"$scratch/actions.log" <<'LOG'
@@ -186,6 +224,46 @@ jq -e '[.candidates[].seam] | index("hand-repaired a /tmp symlink")' "$scratch/a
 jq -e '[.candidates[].seam | select(test("Confer-with-peers|AUTO-REVERT HALT|Live hot-patch|wrong-assumption|WRITER-SIDE dedupe|Precedence-band canary|CAATCH-ALL|NEW GAP caught|stale-state class|Cooldown"))] | length == 0' "$scratch/auditor/collected.json" >/dev/null \
   || fail "auditor bullet slipped through: $(jq -r '[.candidates[].seam] | join("|")' "$scratch/auditor/collected.json")"
 ok "auditor report bullets filtered from actions-log (fleet-ops#2706)"
+
+# fleet-ops#5472: the scheduled fable-fleet-check / fleet-judge timers write
+# a memoryctl outcome after every run. Those outcome titles are machinery
+# output, not hand-performed operations, and must not surface as manual-seam
+# candidates. Outcomes that are NOT scheduled-run records must still surface.
+mkdir -p "$scratch/memctl"
+mkoutcome() {
+  local name="$1" title="$2"
+  cat >"$scratch/memctl/$name" <<EOF
+---
+memory_kind: "outcome"
+created_at: "2026-09-11T08:29:23Z"
+---
+# $title
+
+## Result
+
+did things
+EOF
+}
+mkoutcome a.md "Fable 2h fleet check 06:29: judge landing set, repair within allowed list"
+mkoutcome b.md "fleet judge :40 slot 2026-09-11T08:40Z-08:58Z"
+mkoutcome c.md "hourly fable-check: guardrails, land #3505, repair seat-pool thrash"
+mkoutcome d.md "fable-fleet-check run 23: guardrails, top-up proof, critical-first intake fix"
+mkoutcome e.md "fleet judge fable-check 2026-09-10T16:50Z"
+mkoutcome keep1.md "Repair fleet2-morning-check.service which was in systemd state failed"
+mkoutcome keep2.md "hand-refined the intake prompt after three dead runs"
+
+python3 "$lens" collect \
+  --since "2026-09-11T07:00:00Z" \
+  --now "2026-09-11T09:00:00Z" \
+  --memoryctl-dir "$scratch/memctl" >"$scratch/memctl-collected.json"
+
+jq -e '.candidates | length == 2' "$scratch/memctl-collected.json" >/dev/null \
+  || fail "scheduled-run outcomes must be filtered, only the two hand seams stay; got $(jq '.candidates | length' "$scratch/memctl-collected.json"): $(cat "$scratch/memctl-collected.json")"
+jq -e '[.candidates[].seam] | index("Repair fleet2-morning-check.service which was in systemd state failed")' "$scratch/memctl-collected.json" >/dev/null \
+  || fail "non-scheduled outcome dropped while filtering scheduled runs"
+jq -e '[.candidates[].seam] | index("hand-refined the intake prompt after three dead runs")' "$scratch/memctl-collected.json" >/dev/null \
+  || fail "hand-work outcome dropped while filtering scheduled runs"
+ok "scheduled fable-check/fleet-judge outcomes filtered from memoryctl (fleet-ops#5472)"
 
 # --- 4+5. Harness writes the table when the reviewer omits it --------------
 mkdir -p "$scratch/fakebin" "$scratch/state"
@@ -285,6 +363,7 @@ PATH="$scratch/fakebin:$PATH" \
   AUDIT_PI_BIN="$scratch/fakebin/pi" \
   AUDIT_MAX_FINDINGS="5" \
   AUDIT_SEAM_EVIDENCE="$scratch/seams-in.json" \
+  AUDIT_SEAM_LIB="$lens" \
   AUDIT_MECHANISM_GATE="$scratch/noop-gate.py" \
   AUDIT_MACHINERY_GATE="$scratch/noop-gate.py" \
   "$audit" >"$scratch/run.log" 2>&1 || rc=$?

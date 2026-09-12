@@ -10,9 +10,18 @@ if [[ -z "${GH_TOKEN:-}" && "${GITHUB_ACTIONS:-}" != "true" && "${GH:-gh}" == "g
     # unconditionally put /home/nish/.local/bin AHEAD of an inherited stub
     # gh, so a drill run from a shell with no GH_TOKEN resolved the real gh
     # and filed its synthetic fixture into the live tracker.
-    command -v gh >/dev/null 2>&1 || export PATH="/home/nish/.local/bin:/usr/local/bin:/usr/bin:/bin:${PATH:-}"
+    command -v gh >/dev/null 2>&1 || export PATH=/home/nish/.local/bin:/usr/local/bin:/usr/bin:/bin:${PATH:-}
     _wt="${NISHFLEET_WORKER_TOKEN_BIN:-${HOME:-/home/nish}/.local/bin/worker-token}"
-    _minted="$("$_wt" --print)" || { echo "fleet-ops#3445: $_wt --print failed - refusing human-gh writes" >&2; exit 1; }
+    if ! _minted="$("$_wt" --print)"; then
+        echo "fleet-ops#3445: $_wt --print failed - refusing human-gh writes" >&2
+        # Nish 2026-09-11: a dead App in the blind audit is a LOUD fault —
+        # one line into the triage file the heartbeat reads.
+        _ts="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+        printf '%s [fleet-blind-audit] LOUD [AUDIT-BACKLOG] worker-token mint failed; run aborted\n' "$_ts" \
+            >> "${FLEET_HEARTBEAT_TRIAGE:-/home/nish/workspaces/agent-state/FLEET-HEARTBEAT-TRIAGE.md}" 2>/dev/null || true
+        unset _wt _ts
+        exit 1
+    fi
     eval "$_minted"
     unset _wt _minted
 fi
@@ -53,7 +62,14 @@ fi
 #   AUDIT_SEAT_LIB          seat-lib.sh path
 #   AUDIT_PI_BIN            pi binary (default: ~/.local/bin/pi)
 #   AUDIT_PANEL_BIN         panel binary (default: ~/.local/bin/fleet-blind-audit-panel)
-#   AUDIT_MAX_FINDINGS      cap on filed issues per run (default: 1)
+#   AUDIT_MAX_FINDINGS      cap on filed issues per run (default: 8); unfiled
+#                           panel-PASS findings go to the carry-over ledger
+#                           ($STATE_DIR/carryover.jsonl) and the next run
+#                           panels carry-over entries FIRST
+#   AUDIT_CARRYOVER_FILE    carry-over ledger override
+#   AUDIT_TRIAGE            triage file the heartbeat reads (default
+#                           FLEET_HEARTBEAT_TRIAGE env or
+#                           .../agent-state/FLEET-HEARTBEAT-TRIAGE.md)
 #   AUDIT_DRY_RUN           if 1, do not run pi or file issues
 #   AUDIT_DRILL             if 1, skip pi/seat and file AUDIT_DRILL_FINDINGS
 #   AUDIT_DRILL_FINDINGS    findings JSON for AUDIT_DRILL=1
@@ -89,7 +105,7 @@ PROMPT="${AUDIT_PROMPT:-$HOME/.pi/agent/prompts/blind-audit.md}"
 PLAN_FILE="${AUDIT_PLAN_FILE:-/home/nish/workspaces/agent-state/fleet-restoration-2026-08-25.md}"
 PI_BIN="${AUDIT_PI_BIN:-$HOME/.local/bin/pi}"
 PANEL_BIN="${AUDIT_PANEL_BIN:-$HOME/.local/bin/fleet-blind-audit-panel}"
-MAX_FINDINGS="${AUDIT_MAX_FINDINGS:-1}"
+MAX_FINDINGS="${AUDIT_MAX_FINDINGS:-8}"
 DRY_RUN="${AUDIT_DRY_RUN:-0}"
 DRILL="${AUDIT_DRILL:-0}"
 DRILL_GH_STUB_DIR="${AUDIT_DRILL_GH_STUB_DIR:-}"
@@ -97,6 +113,13 @@ AUDIT_NONCANON_MARKER="audit-target-noncanonical: fleet-ops#367"
 
 # Resolve this script's repo root for fallbacks when not installed yet.
 here="$(cd "$(dirname "$(readlink -f "$0")")" && pwd)"
+
+# Nish 2026-09-11: a panel-PASS finding must never be dropped again. Unfiled
+# PASS findings are appended to a carry-over ledger; the next run panels the
+# ledger FIRST (oldest first), before new findings, under the same cap.
+CARRYOVER_FILE="${AUDIT_CARRYOVER_FILE:-$STATE_DIR/carryover.jsonl}"
+# The triage file the heartbeat already reads, so judges see the backlog.
+TRIAGE_FILE="${AUDIT_TRIAGE:-${FLEET_HEARTBEAT_TRIAGE:-/home/nish/workspaces/agent-state/FLEET-HEARTBEAT-TRIAGE.md}}"
 repo_fallback="$(cd "$here/.." && pwd)"
 
 # fleet-ops#1212: route issue filings through the same-problem dedupe gate.
@@ -113,12 +136,41 @@ CYCLE_CRITERIA="${AUDIT_CYCLE_CRITERIA:-$repo_fallback/config/gap-closure-cycle-
 # --- help ---------------------------------------------------------------
 # fleet-ops#1549: --help/-h must print usage and exit 0 without taking the
 # flock, calling pi, starting a unit, or writing a report directory.
+BACKFILL_MODE=0
+BACKFILL_SINCE=""
+TOMATCH="${1:-}"
+if [ "$TOMATCH" = "--backfill" ]; then
+    BACKFILL_MODE=1
+    BACKFILL_SINCE="${2:-}"
+    shift 2 2>/dev/null || shift $# 2>/dev/null || true
+fi
+# fleet-ops#1549 class guard (tests/fleet-help-flag-runs-live.test.sh) greps
+# for the literal `case "${1:-}" in` — dispatch on argv[1] directly, not a
+# shadowing copy.
 case "${1:-}" in
     --help|-h)
         cat <<'HELP'
 fleet-blind-audit — one mechanical no-context sweep of the repo + live state.
 
-Usage: fleet-blind-audit [--help|-h]
+Usage: fleet-blind-audit [--help|-h] [--backfill <since-date>]
+
+  --backfill <since-date>  Reconstruct every panel-PASS-but-cap-skipped
+                           finding since <since-date> from the persisted
+                           report dirs, dedupe by signature (and against
+                           open/closed issues), re-run the panel, and file
+                           the survivors as gap-audit + agent-ready issues
+                           in severity order. No cap. Stops with a LOUD
+                           line if the worker token cannot mint.
+
+Environment:
+  AUDIT_MAX_FINDINGS    cap on filed issues per run (default: 8). Unfiled
+                        panel-PASS findings go to a carry-over ledger
+                        ($STATE_DIR/carryover.jsonl) and the next run files
+                        carry-over entries FIRST (oldest first).
+  AUDIT_CARRYOVER_FILE  carry-over ledger override
+  AUDIT_TRIAGE          triage file the heartbeat reads (default:
+                        FLEET_HEARTBEAT_TRIAGE, else
+                        /home/nish/workspaces/agent-state/FLEET-HEARTBEAT-TRIAGE.md)
 
 Environment:
   AUDIT_REPO            repo to audit (default: Nishfleet/fleet-ops)
@@ -129,7 +181,6 @@ Environment:
   AUDIT_PLAN_FILE       fleet plan file for stamps
   AUDIT_PI_BIN          pi binary
   AUDIT_PANEL_BIN       panel binary
-  AUDIT_MAX_FINDINGS    cap on filed issues per run (default: 1)
   AUDIT_DRY_RUN         if 1, do not run pi or file issues
   AUDIT_DRILL           if 1, skip pi/seat and file AUDIT_DRILL_FINDINGS
   AUDIT_DRILL_GH_STUB_DIR  directory the resolved gh must live in for a
@@ -143,23 +194,530 @@ esac
 
 mkdir -p "$STATE_DIR"
 
-# Per-run report directory (UTC timestamp).
-if [ -n "${AUDIT_FAKE_NOW:-}" ]; then
-    NOW_ISO="$AUDIT_FAKE_NOW"
-    NOW_DIR="${NOW_ISO//[^A-Za-z0-9]/_}"
-else
-    NOW_ISO="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-    NOW_DIR="$(date -u +%Y%m%dT%H%M%SZ)"
-fi
-REPORT_DIR="$STATE_DIR/reports/$NOW_DIR"
-mkdir -p "$REPORT_DIR"
+# --- shared signature + loud helpers (Nish 2026-09-11 carry-over) ---------
+# Signature = normalised title (+ evidence hash when present) so duplicates
+# collapse across runs without a second dedupe engine. The result is a
+# sha256 hex string, safe to grep in the ledger.
+finding_signature() {
+    python3 -c '
+import hashlib, json, re, sys
+f = json.loads(sys.argv[1])
+title = (f.get("title") or "").lower()
+title = re.sub(r"[^a-z0-9]+", " ", title).strip()
+seed = title
+ev = f.get("evidence")
+if isinstance(ev, str) and ev.strip():
+    seed += "\x00" + hashlib.sha256(ev.strip().encode()).hexdigest()
+print(hashlib.sha256(seed.encode()).hexdigest())
+' "$1"
+}
 
-FINDINGS_JSON="$REPORT_DIR/findings.json"
-REPORT_MD="$REPORT_DIR/report.md"
-PI_STDOUT="$REPORT_DIR/pi-stdout.txt"
-PI_STDERR="$REPORT_DIR/pi-stderr.txt"
-VERDICTS_LOG="$REPORT_DIR/verdicts.jsonl"
-: >"$VERDICTS_LOG"
+# Normalised title key used to match a finding against an issue that already
+# carries the same problem. Issues we file are titled "[gap-audit] <title>",
+# so the prefix is stripped before normalising.
+norm_title() { # $1 = raw title -> normalised key on stdout
+    python3 -c '
+import re, sys
+t = re.sub(r"^\[gap-audit\]\s*", "", (sys.argv[1] or "").strip(), flags=re.I)
+print(re.sub(r"[^a-z0-9]+", " ", t.lower()).strip())
+' "$1"
+}
+norm_titles_stdin() { # titles on stdin -> one normalised key per line
+    python3 -c '
+import re, sys
+for l in sys.stdin:
+    l = re.sub(r"^\[gap-audit\]\s*", "", l.strip(), flags=re.I)
+    if l:
+        print(re.sub(r"[^a-z0-9]+", " ", l.lower()).strip())
+'
+}
+
+loud_backlog() { # $1 = unfiled_pass, $2 = carryover_total, $3 = context
+    local line
+    line="LOUD [AUDIT-BACKLOG] unfiled_pass=$1 carryover_total=$2 context=$3"
+    log "$line"
+    # Static-first timestamp: the timestamp is computed on its own line, not
+    # inside a printf emitted before the packet cat (fleet-ops#523;
+    # token-efficiency gate blocks volatile-before-static in this assembler).
+    local triage_ts
+    triage_ts="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    printf '%s [fleet-blind-audit] %s\n' "$triage_ts" "$line" \
+        >> "$TRIAGE_FILE" 2>/dev/null \
+        || log "WARN: could not append to triage $TRIAGE_FILE"
+}
+
+# --- carry-over ledger -------------------------------------------------
+carryover_load() {
+    # Prints one JSON line per ledger entry, oldest first.
+    if [ -s "$CARRYOVER_FILE" ]; then
+        jq -c . "$CARRYOVER_FILE" 2>/dev/null
+    fi
+}
+
+# Carry-over bookkeeping. Resolved signatures are collected into
+# $RESOLVED_SIGS and the ledger is rewritten after the loop: a resolved
+# entry (filed, dedupe-hit, or panel-FAIL on re-panel) is removed; backlog
+# entries remain for the next run. Defined here because --backfill also
+# appends unfiled survivors to the ledger.
+carryover_append() { # $1 = finding json, $2 = signature
+    # Skip if the signature is already pending; a sha256 string cannot
+    # appear in an unrelated line, so a fixed-string grep is enough.
+    if [ -s "$CARRYOVER_FILE" ] && grep -qF "$2" "$CARRYOVER_FILE" 2>/dev/null; then
+        return 0
+    fi
+    jq -cn --argjson f "$1" --arg sig "$2" --arg run "$NOW_DIR" --arg now "$NOW_ISO" \
+        '{first_seen: $now, run: $run, signature: $sig, finding: $f}' \
+        >> "$CARRYOVER_FILE" 2>/dev/null \
+        || { log "WARN: could not append to carry-over ledger"; return 1; }
+    log "carry-over: appended to ledger ($2)"
+}
+carryover_resolve() { # $1 = signature, $2 = why
+    printf '%s\n' "$1" >> "$RESOLVED_SIGS"
+    log "carry-over: resolved ($2) ($1)"
+}
+
+# Canonical findings-ledger mirror (fleet-ops#5443): every verdict becomes one
+# idempotent ledger row. lib/findings_ledger.py is the ONLY writer. The row's
+# run-id is the finding's FIRST-SIGHTING run (a carry-over entry's origin run,
+# else this run), and --match-title reuses an earlier row's finding_id when
+# this organ already carries the same normalised title — so filing a finding
+# that the #5466 seeding marked carried_over UPSERTS that row by stable
+# finding_id instead of forking a second one (fleet-ops#5475, do not
+# double-file). FINDINGS_LEDGER_FILE overrides the ledger path (tests).
+# Defined BEFORE the --backfill dispatch: backfill mirrors its filings too.
+FINDINGS_LEDGER_BIN="${FINDINGS_LEDGER_BIN:-$here/lib/findings_ledger.py}"
+# $here is the script's own dir (bin/); the lib lives in the repo's lib/.
+# The fallback keeps the mirror alive for installed copies too (~/.local/bin
+# -> ~/.local/lib, the MANIFEST layout).
+[ -f "$FINDINGS_LEDGER_BIN" ] || FINDINGS_LEDGER_BIN="$(dirname "$here")/lib/findings_ledger.py"
+findings_ledger_row() { # $1 disposition  $2 ref  $3 reason  [$4 origin-run]
+    [ -f "$FINDINGS_LEDGER_BIN" ] || return 0
+    local -a ledger_args=()
+    [ -n "${FINDINGS_LEDGER_FILE:-}" ] && ledger_args+=(--ledger "$FINDINGS_LEDGER_FILE")
+    python3 "$FINDINGS_LEDGER_BIN" "${ledger_args[@]}" 2>/dev/null \
+        append --match-title --source-organ fleet-blind-audit \
+        --run-id "${4:-$NOW_DIR}" \
+        --title "$title" --severity "${severity:-info}" \
+        --evidence-ref "$VERDICTS_LOG" --disposition "$1" --ref "$2" \
+        --reason "$3" || true
+}
+
+# Parse a deliberate-states markdown table into a JSON list (packet + panel).
+load_deliberate_json() { # $1 = deliberate-states path -> JSON list on stdout
+    local ds="$1"
+    [ -f "$ds" ] || { printf '[]'; return 0; }
+    python3 - "$ds" <<'PY'
+import sys, re, json
+path = sys.argv[1]
+rows = []
+with open(path, 'r', encoding='utf-8') as f:
+    in_table = False
+    for ln in f:
+        if not in_table:
+            if re.match(r'^\|?\s*state\s*\|', ln, re.I):
+                in_table = True
+            continue
+        cells = [c.strip() for c in ln.split('|')]
+        # Drop empty cells caused by leading/trailing pipes.
+        while cells and cells[0] == '':
+            cells.pop(0)
+        while cells and cells[-1] == '':
+            cells.pop()
+        # Skip the separator line and blank lines.
+        if not cells or all(re.match(r'^[-:]+$', c) for c in cells):
+            continue
+        if len(cells) >= 4 and cells[0].lower() != 'state' and cells[0]:
+            rows.append({
+                'state': cells[0],
+                'reason': cells[1] if len(cells) > 1 else '',
+                'expiry': cells[2] if len(cells) > 2 else '',
+                'owner': cells[3] if len(cells) > 3 else ''
+            })
+print(json.dumps(rows))
+PY
+}
+
+# --- backfill mode (deliverable B) ---------------------------------------
+# Nothing a panel accepted may sit in a skipped state forever. Reconstruct
+# unfiled PASS findings from the persisted report dirs and file survivors.
+run_backfill() {
+    local since="$1"
+    if [ -z "$since" ]; then
+        log "FATAL: --backfill requires a since-date (e.g. --backfill 2026-08-20)"
+        exit 2
+    fi
+    # Backfill runs before the normal report-dir setup; the run stamp is
+    # already set at the dispatch site.
+    log "backfill: reconstructing unfiled PASS findings since $since"
+    local bf_dir="$STATE_DIR/backfill"
+    mkdir -p "$bf_dir"
+
+    # Open + closed issue titles (read-only) for the signature pre-filter.
+    # Closed issues also carry labels + closedByPullRequestsReferences, and a
+    # wide merged-PR set is fetched, so the closed-but-undelivered gate can
+    # re-verify reconstructed findings against live state (fleet-ops#5479).
+    gh issue list -R "$REPO" --state open --json number,title -L 500 \
+        >"$bf_dir/open-$NOW_DIR.json" 2>/dev/null || printf '[]\n' >"$bf_dir/open-$NOW_DIR.json"
+    gh issue list -R "$REPO" --state closed --json number,title,labels,closedAt,closedByPullRequestsReferences -L 500 \
+        >"$bf_dir/closed-$NOW_DIR.json" 2>/dev/null || printf '[]\n' >"$bf_dir/closed-$NOW_DIR.json"
+    gh pr list -R "$REPO" --state merged --json number -L 500 \
+        >"$bf_dir/merged-$NOW_DIR.json" 2>/dev/null || printf '[]\n' >"$bf_dir/merged-$NOW_DIR.json"
+
+    # One python stage: reconstruct unfiled PASS verdicts (matched into the
+    # persisted findings.json of each report dir), dedupe by signature across
+    # runs, pre-drop signatures already carried by an open/closed issue
+    # title, and order blocker/critical > high > medium > low, earliest
+    # run first.
+    local queue="$bf_dir/queue-$NOW_DIR.jsonl"
+    local bf_stats
+    bf_stats=$(python3 - "$STATE_DIR/reports" "$since" \
+        "$bf_dir/open-$NOW_DIR.json" "$bf_dir/closed-$NOW_DIR.json" "$queue" \
+        "$SEAM_LIB" \
+        "${AUDIT_CLOSED_UNDELIVERED_LIB:-$repo_fallback/lib/closed-undelivered-gate.py}" \
+        "$bf_dir/merged-$NOW_DIR.json" <<'BF'
+import hashlib, json, os, re, sys
+reports_root, since, open_path, closed_path, out, lens_path, cud_path, merged_path = sys.argv[1:9]
+SEV = {"blocker": 0, "critical": 0, "high": 1, "medium": 2}
+
+def sig(seed):
+    return hashlib.sha256(seed.encode()).hexdigest()
+
+def tkey(s):
+    return re.sub(r"[^a-z0-9]+", " ", (s or "").lower()).strip()
+
+def sigof(f):
+    seed = tkey(f.get("title"))
+    ev = f.get("evidence")
+    if isinstance(ev, str) and ev.strip():
+        seed += "\x00" + hashlib.sha256(ev.strip().encode()).hexdigest()
+    return sig(seed)
+
+rows, lost, no_verdicts = [], [], []
+if os.path.isdir(reports_root):
+    for name in sorted(os.listdir(reports_root)):
+        # dir names are YYYYMMDDTHHMMSSZ (16 chars); date-compare +  since.
+        if not (len(name) == 16 and name.startswith("2026") and name.endswith("Z")) \
+            or name[:10] < since[:10].replace("-", ""):
+            continue
+        d = os.path.join(reports_root, name)
+        vpath = os.path.join(d, "verdicts.jsonl")
+        if not os.path.isfile(vpath):
+            no_verdicts.append(name)
+            continue
+        pass_titles = set()
+        for line in open(vpath, encoding="utf-8"):
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                v = json.loads(line)
+            except Exception:
+                continue
+            if v.get("verdict") == "PASS" and not (v.get("issue") or ""):
+                pass_titles.add(v.get("title") or "")
+        if not pass_titles:
+            continue
+        try:
+            data = json.load(open(os.path.join(d, "findings.json"), encoding="utf-8"))
+            fs = data.get("findings", []) if isinstance(data, dict) else data
+        except Exception:
+            fs = []
+        got = 0
+        for f in fs:
+            if f.get("title") in pass_titles:
+                g = dict(f)
+                g["first_run"] = name
+                rows.append(g)
+                got += 1
+        if got < len(pass_titles):
+            lost.append({"run": name, "pass_but_lost": len(pass_titles) - got})
+
+seen, dups = {}, 0
+for f in rows:
+    s = sigof(f)
+    if s in seen:
+        dups += 1
+        continue
+    seen[s] = f
+
+issued = set()
+for path in (open_path, closed_path):
+    try:
+        issues = json.load(open(path, encoding="utf-8"))
+    except Exception:
+        issues = []
+    for i in issues if isinstance(issues, list) else []:
+        # Issues we file are titled "[gap-audit] <title>"; strip the prefix
+        # on the raw title BEFORE normalising, or it can never match.
+        t = tkey(re.sub(r"^\[gap-audit\]\s*", "", (i.get("title") or "").strip(), flags=re.I))
+        if t:
+            issued.add(t)
+
+# fleet-ops#5464: stale pre-filter findings must not be resurrected. The
+# manual-seam lens's automated-escalation filter (lib/manual-seam-lens.py,
+# fleet-ops#2115) has evolved over time; persisted findings.json rows written
+# by an older lens can carry seams the CURRENT lens would never file
+# (LADDER-WALLED, DISPATCH, TIMEKILL-OUTPUT, ...). Re-apply the live filter at
+# reconstruction time so backfill files only seams still standing.
+import importlib.util as _ilu
+auto_dropped = 0
+_escal_re = None
+try:
+    _spec = _ilu.spec_from_file_location("manual_seam_lens", lens_path)
+    _msl = _ilu.module_from_spec(_spec)
+    _spec.loader.exec_module(_msl)
+    _escal_re = getattr(_msl, "ESCALATION_LOG_RE", None)
+except Exception as _e:
+    print("backfill filter: manual-seam-lens import failed (%s); no escalation re-filter" % _e, file=sys.stderr)
+if _escal_re is not None:
+    for s, f in list(seen.items()):
+        title = f.get("title") or ""
+        seam_text = re.sub(r"^manual seam:\s*", "", title)
+        if _escal_re.search(seam_text) or _escal_re.search(title):
+            del seen[s]
+            auto_dropped += 1
+
+# fleet-ops#5479: a reconstructed closed-but-undelivered finding can be stale
+# by file time — the referencing PR may have merged between the source run
+# and the backfill (#4896 flagged 08:50Z, its PR #4897 merged 10:42Z, the
+# finding filed next day). Re-run the live gate over the just-fetched closed
+# issues + merged set and drop findings it no longer flags. Fail-soft: an
+# import/fetch error skips the re-check and leaves the panel to judge.
+cud_dropped = 0
+_cud_live = None
+try:
+    _spec = _ilu.spec_from_file_location("closed_undelivered_gate", cud_path)
+    _cug = _ilu.module_from_spec(_spec)
+    _spec.loader.exec_module(_cug)
+    _closed_now = json.load(open(closed_path, encoding="utf-8"))
+    _merged_now = json.load(open(merged_path, encoding="utf-8"))
+    if isinstance(_closed_now, list) and isinstance(_merged_now, list):
+        _cud_live = set()
+        for _lf in (_cug.hunt({"closed_issues": _closed_now,
+                              "merged_prs": _merged_now}).get("findings") or []):
+            _lm = re.search(r"issue #(\d+)", _lf.get("title") or "")
+            if _lm:
+                _cud_live.add(_lm.group(1))
+except Exception as _e:
+    print("backfill filter: closed-undelivered re-check failed (%s); no stale-drop" % _e, file=sys.stderr)
+if _cud_live is not None:
+    for s, f in list(seen.items()):
+        _t = f.get("title") or ""
+        _m = re.search(r"issue #(\d+)", _t) if _t.startswith("closed-but-undelivered:") else None
+        if _m and _m.group(1) not in _cud_live:
+            del seen[s]
+            cud_dropped += 1
+
+kept, pre_dropped = [], 0
+for s, f in seen.items():
+    if tkey(f.get("title")) in issued:
+        pre_dropped += 1
+        print("backfill dedupe-issue: open/closed issue already carries " + (f.get("title") or ""), file=sys.stderr)
+        continue
+    f["sev_rank"] = SEV.get(f.get("severity") or "", 3)
+    kept.append(f)
+kept.sort(key=lambda f: (f["sev_rank"], f.get("first_run") or ""))
+with open(out, "w", encoding="utf-8") as fh:
+    for f in kept:
+        fh.write(json.dumps(f) + "\n")
+print("reconstructed=%d unique=%d dupes_across_runs=%d auto_escalation_dropped=%d cud_resolved_dropped=%d dropped_vs_issue=%d queue=%d lost=%s no_verdicts=%s"
+      % (len(rows), len(seen) + dups, dups, auto_dropped, cud_dropped, pre_dropped, len(kept), json.dumps(lost), json.dumps(no_verdicts)))
+BF
+)
+    log "backfill reconstruct: $bf_stats"
+
+    if [ ! -s "$queue" ]; then
+        local summary="$bf_dir/summary-$NOW_DIR.txt"
+        printf '## Backfill summary (--backfill %s)\n\nNothing to backfill.\n' "$since" | tee "$summary"
+        log "backfill complete: nothing unfiled to reconstruct"
+        exit 0
+    fi
+
+    # Outage fail-fast (fleet-ops#5497): if the open-issue fetch came back
+    # empty while an earlier backfill snapshot was non-empty, that is the
+    # gh-outage signature — dedupe goes blind and every remaining filing
+    # dies inside the outage. Carry everything; say so once, LOUDly.
+    local bf_outage=0 bf_prev_snap="" bf_file_err_count=0 bf_file_err_first=""
+    # fleet-ops#5497: previous snapshot = newest open-*.json that is not
+    # this run's. Plain glob loop — no | head -N truncation pipe
+    # (fleet-ops#838). Glob order is ASCII = chronological for these
+    # timestamp names, so the last non-current assignment is the newest
+    # previous snapshot.
+    local _bf_snap
+    bf_prev_snap=""
+    for _bf_snap in "$bf_dir"/open-*.json; do
+        [ -e "$_bf_snap" ] || continue
+        if [ "$_bf_snap" = "$bf_dir/open-$NOW_DIR.json" ]; then continue; fi
+        bf_prev_snap="$_bf_snap"
+    done
+    if [ -n "$bf_prev_snap" ] && [ -s "$bf_prev_snap" ] \
+        && [ "$(jq 'length' "$bf_dir/open-$NOW_DIR.json" 2>/dev/null || echo 0)" -eq 0 ] \
+        && [ "$(jq 'length' "$bf_prev_snap" 2>/dev/null || echo 0)" -gt 0 ]; then
+        bf_outage=1
+        log "LOUD [AUDIT-BACKFILL-OUTAGE] open-issue list empty but previous snapshot non-empty ($bf_prev_snap); aborting filing loop, remaining items -> carry-over"
+    fi
+
+    # Filing loop: re-panel each survivor, file via the #1212 gate, no cap.
+    # (Backfill runs before the reviewer branch, so the panel context is
+    # bounded here instead of reusing the reviewer's build.)
+    local bv_log="$bf_dir/verdicts.jsonl"
+    : >"$bv_log"
+    # findings_ledger_row cites the verdict log as its evidence-ref; backfill
+    # runs before the normal report-dir setup, so point it at the backfill log.
+    VERDICTS_LOG="$bv_log"
+    local bf_finding bf_verdict b_title b_body b_evidence b_severity b_first
+    local b_action b_url b_rc bf_v bf_reason bf_sig
+    # Panel context: the open-issue list just fetched doubles as the panel's
+    # duplicate view; recent merges and deliberate states bound the rest.
+    bf_open=$(cat "$bf_dir/open-$NOW_DIR.json" 2>/dev/null || printf '[]')
+    bf_recent=$(gh pr list -R "$REPO" --state merged --json number,title -L 50 2>/dev/null || true)
+    [ -n "$bf_recent" ] || bf_recent='[]'
+    local bf_ds="${AUDIT_DELIBERATE_STATES:-$REPO_ROOT/docs/deliberate-states.md}"
+    [ -f "$bf_ds" ] || bf_ds="$repo_fallback/docs/deliberate-states.md"
+    bf_delib=$(load_deliberate_json "$bf_ds")
+    duplicates=0
+    panel_fail=0
+    filed=0
+    bf_unfiled=0
+    issue_nums=""
+    # Initialise so the post-loop rm -f stays set -u-safe even when the
+    # outage fail-fast skips every iteration (fleet-ops#5497).
+    panel_input=""
+    bf_body=""
+    while IFS= read -r bf_finding; do
+        [ -n "$bf_finding" ] || continue
+        if [ "$bf_outage" = "1" ]; then
+            # Outage: skip panel + filing, straight to carry-over.
+            bf_unfiled=$((bf_unfiled+1))
+            bf_sig=$(finding_signature "$bf_finding")
+            carryover_append "$bf_finding" "$bf_sig" || true
+            continue
+        fi
+        panel_input=$(mktemp)
+        bf_body=$(mktemp)
+        b_title=$(printf '%s' "$bf_finding" | jq -r '.title // ""')
+        if [ -z "$b_title" ]; then
+            panel_fail=$((panel_fail+1))
+            rm -f "$panel_input" "$bf_body"
+            continue
+        fi
+        b_body=$(printf '%s' "$bf_finding" | jq -r '.body // ""')
+        b_evidence=$(printf '%s' "$bf_finding" | jq -r '.evidence // ""')
+        b_severity=$(printf '%s' "$bf_finding" | jq -r '.severity // ""')
+        b_first=$(printf '%s' "$bf_finding" | jq -r '.first_run // ""')
+        # fleet-ops#5608 class: payload via files (--slurpfile), not argv —
+        # bf_open (50 issue bodies) crosses the 128KB single-argv cap.
+        jq -n --arg repo "$REPO" \
+            --slurpfile finding <(printf '%s' "$bf_finding") \
+            --slurpfile open_issues <(printf '%s' "$bf_open") \
+            --slurpfile recent_merges <(printf '%s' "$bf_recent") \
+            --slurpfile deliberate_states <(printf '%s' "$bf_delib") \
+            '{repo: $repo, finding: $finding[0], open_issues: $open_issues[0], recent_merges: $recent_merges[0], deliberate_states: $deliberate_states[0]}' \
+            > "$panel_input"
+        bf_verdict=$("$PANEL_BIN" < "$panel_input" 2>&1 || true)
+        if [ -z "$bf_verdict" ] || ! printf '%s' "$bf_verdict" | jq -e . >/dev/null 2>&1; then
+            panel_fail=$((panel_fail+1))
+            log "backfill: PANEL-FAIL panel error ($b_title)"
+            title="$b_title"; severity="${b_severity:-info}"
+            findings_ledger_row "panel_fail" "$bv_log" "panel error" "$b_first"
+            continue
+        fi
+        bf_v=$(printf '%s' "$bf_verdict" | jq -r '.verdict // ""')
+        bf_reason=$(printf '%s' "$bf_verdict" | jq -r '.reason // ""')
+        if [ "$bf_v" != "PASS" ]; then
+            panel_fail=$((panel_fail+1))
+            log "backfill: PANEL-FAIL ($bf_reason) ($b_title)"
+            title="$b_title"; severity="${b_severity:-info}"
+            findings_ledger_row "panel_fail" "$bv_log" "${bf_reason:-panel error}" "$b_first"
+            continue
+        fi
+        local bf_at
+        bf_at="$NOW_ISO"
+        {
+            printf '%s\n\n' "$b_body"
+            printf '**Evidence:** %s\n\n' "$b_evidence"
+            printf '**Severity:** %s\n\n' "$b_severity"
+            printf '**First audit report:** %s\n\n' "$b_first"
+            printf '*Backfilled by fleet-blind-audit --backfill at %s.*\n' "$bf_at"
+        } > "$bf_body"
+        # Under `set -e` a bare var=$(cmd) kills the whole run silently when
+        # the #1212 gate hiccups (stderr discarded by 2>/dev/null) — the
+        # 2026-09-11T16:50Z backfill died at 101/814 exactly this way. Capture
+        # the rc instead so one gate failure becomes the designed
+        # carry-over, not a silent mid-queue death.
+        b_rc=0
+        bf_new=$("$ISSUE_FILE" file --json -R "$REPO" \
+            --title "[gap-audit] $b_title" --body-file "$bf_body" \
+            --label gap-audit --label agent-ready 2>"$bf_dir/filegate-err-$NOW_DIR.log") || b_rc=$?
+        if [ "$b_rc" -eq 0 ] && [ -n "$bf_new" ]; then
+            b_action=$(printf '%s' "$bf_new" | jq -r '.action // "filed"')
+            b_url=$(printf '%s' "$bf_new" | jq -r '.url // ""')
+            if [ "$b_action" = "commented" ]; then
+                duplicates=$((duplicates+1))
+                log "backfill: DEDUPED existing issue carries this problem ($b_title)"
+                title="$b_title"; severity="${b_severity:-info}"
+                findings_ledger_row "duplicate_of" "${b_url:-}" "deduped: existing issue carries this problem" "$b_first"
+            else
+                filed=$((filed+1))
+                issue_nums="$issue_nums ${b_url#*issues/}"
+                log "backfill: FILED $b_url ($b_title)"
+                title="$b_title"; severity="${b_severity:-info}"
+                findings_ledger_row "filed" "$b_url" "backfilled from cap-skip (fleet-ops#5475)" "$b_first"
+            fi
+        else
+            # fleet-ops#5497: 828 identical "file failed" lines during the
+            # 2026-09-11 gh outage gave zero diagnostics. Surface the FIRST
+            # failure's stderr in the log; count + it again in the summary.
+            bf_file_err_count=$((bf_file_err_count+1))
+            if [ "$bf_file_err_count" -eq 1 ]; then
+                bf_file_err_first="$(tail -5 "$bf_dir/filegate-err-$NOW_DIR.log" 2>/dev/null || true)"
+                log "backfill: file-fail-stderr(1st of N): $(head -n 1 "$bf_dir/filegate-err-$NOW_DIR.log" 2>/dev/null || true)"
+            fi
+            log "backfill: file failed for ($b_title) -> carry-over"
+            bf_unfiled=$((bf_unfiled+1))
+            bf_sig=$(finding_signature "$bf_finding")
+            carryover_append "$bf_finding" "$bf_sig" || true
+            title="$b_title"; severity="${b_severity:-info}"
+            findings_ledger_row "carried_over" "audit_fix_pending:blind-audit-cap" "backfill file failed; carried over" "$b_first"
+        fi
+        # panel journal (audit trail for the summary table)
+        jq -cn --arg t "$b_title" --arg v "${bf_v:-ERR}" --arg r "${bf_reason:-file-failed}" \
+            --arg u "${b_url:-}" \
+            '{timestamp: (now | todate), title:$t, verdict:$v, reason:$r, issue:$u, loud:false}' \
+            >> "$bv_log" 2>/dev/null || true
+    done < "$queue"
+    rm -f "$panel_input" "$bf_body"
+
+    # Summary table (deliverable B proof): reconstructed / duplicates /
+    # panel-FAIL / filed, with the filed issue numbers.
+    local summary="$bf_dir/summary-$NOW_DIR.txt"
+    {
+        printf '## Backfill summary (--backfill %s)\n\n' "$since"
+        printf '| reconstructed(candidates) | duplicates(1212+prefilter) | panel-FAIL | filed |\n|---|---|---|---|\n'
+        printf '| %d | %d | %d | %d |\n\n' \
+            "$(grep -c . "$queue" 2>/dev/null || echo 0)" "$duplicates" "$panel_fail" "$filed"
+        printf 'Filed issues:%s\n\n' "${issue_nums:- (none)}"
+        # Runs where reconstruction was partial or impossible (data not
+        # persisted): PASS verdicts whose title is absent from findings.json,
+        # and report dirs with no verdicts.jsonl at all.
+        printf 'Unreconstructed detail: %s\n' "$bf_stats"
+        # fleet-ops#5497: outage abort + file-gate diagnostics. The 2026-09-11
+        # outage produced 828 silent failures; these lines are the difference.
+        if [ "$bf_outage" = "1" ]; then
+            printf '\nOutage fail-fast: open-issue list empty (previous snapshot %s non-empty); filing loop aborted, %d item(s) carried over.\n' "$bf_prev_snap" "$bf_unfiled"
+        fi
+        if [ "${bf_file_err_count:-0}" -gt 0 ]; then
+            printf '\nFile-gate failures: %d. First failure stderr:\n\n```\n%s\n```\n' \
+                "$bf_file_err_count" "${bf_file_err_first:-<none captured>}"
+        fi
+    } | tee "$summary"
+    if [ "${bf_unfiled:-0}" -gt 0 ] || [ "${panel_fail:-0}" -gt 0 ]; then
+        loud_backlog "${bf_unfiled:-0}" "$(grep -c . "$CARRYOVER_FILE" 2>/dev/null || echo 0)" "backfill=$since"
+    fi
+    # Nothing else in the normal run must happen for a backfill invocation.
+    log "backfill complete: reconstructed=$(grep -c . "$queue" 2>/dev/null || echo 0) duplicates=$duplicates panel_fail=$panel_fail filed=$filed unfiled=${bf_unfiled:-0}"
+    [ "${bf_unfiled:-0}" -eq 0 ] && exit 0 || exit 1
+}
 
 # fleet-ops#786: timestamp split out so the printf line stays free of
 # $(date). The variable name avoids the volatile alternatives (TS/...)
@@ -170,6 +728,42 @@ log() {
     printf '[%s] [fleet-blind-audit] %s\n' "$_stamp" "$*" >&2
 }
 
+# --- backfill dispatch: backfill exits before the normal run --------------
+# Per-run clock (UTC) is set BEFORE the dispatch: backfill file names and
+# stamps use the same run stamp as a normal run.
+if [ -n "${AUDIT_FAKE_NOW:-}" ]; then
+    NOW_ISO="$AUDIT_FAKE_NOW"
+    NOW_DIR="${NOW_ISO//[^A-Za-z0-9]/_}"
+else
+    NOW_ISO="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    NOW_DIR="$(date -u +%Y%m%dT%H%M%SZ)"
+fi
+# --- one audit at a time (fleet-ops#5497) ----------------------------------
+# Taken BEFORE the backfill dispatch too: the flock used to sit after it, so
+# concurrent --backfill runs shared one state dir, double-deduped, and
+# double-filed the same findings. A second invocation now exits fast.
+exec 9>"$STATE_DIR/audit.lock"
+if ! flock -n 9; then
+    log "audit already running (no-op)"
+    exit 0
+fi
+
+if [ "$BACKFILL_MODE" = "1" ]; then
+    run_backfill "${BACKFILL_SINCE:-}"
+    # run_backfill normally exits itself; never fall through to a normal run.
+    exit $?
+fi
+
+# Per-run report directory (UTC timestamp).
+REPORT_DIR="$STATE_DIR/reports/$NOW_DIR"
+mkdir -p "$REPORT_DIR"
+
+FINDINGS_JSON="$REPORT_DIR/findings.json"
+REPORT_MD="$REPORT_DIR/report.md"
+PI_STDOUT="$REPORT_DIR/pi-stdout.txt"
+PI_STDERR="$REPORT_DIR/pi-stderr.txt"
+VERDICTS_LOG="$REPORT_DIR/verdicts.jsonl"
+: >"$VERDICTS_LOG"
 resolve_path() {
     readlink -f "$1" 2>/dev/null || printf '%s' "$1"
 }
@@ -275,13 +869,6 @@ PY
     fi
 }
 
-# --- one audit at a time ---------------------------------------------------
-exec 9>"$STATE_DIR/audit.lock"
-if ! flock -n 9; then
-    log "audit already running (no-op)"
-    exit 0
-fi
-
 # Read the previous run stamp BEFORE overwriting it — the seam window
 # starts there (or 24h back if this is the first run). fleet-ops#377.
 prev_audit_run=""
@@ -382,8 +969,8 @@ log "seat selected: $provider/$model"
 repo_files=$(find "$REPO_ROOT" -type f -not -path '*/\.git/*' 2>/dev/null | sort)
 systemctl_failed=$(systemctl --user list-units --state=failed --no-legend --plain 2>/dev/null | awk '{print $1}' | grep -E '^(pi-|fleet-|siterep-)' || true)
 systemctl_timers=$(systemctl --user list-timers --no-legend 2>/dev/null | awk '{print $1, $3}' || true)
-open_issues=$(gh issue list -R "$REPO" --state open --json number,title,labels -L 50 2>/dev/null || echo '[]')
-closed_issues=$(gh issue list -R "$REPO" --state closed --json number,title,labels,closedAt,closedByPullRequestsReferences -L 100 2>/dev/null || echo '[]')
+open_issues=$(gh issue list -R "$REPO" --state open --json number,title,labels,body -L 50 2>/dev/null || echo '[]')
+closed_issues=$(gh issue list -R "$REPO" --state closed --json number,title,labels,closedAt,closedByPullRequestsReferences,body -L 100 2>/dev/null || echo '[]')
 recent_merges=$(gh pr list -R "$REPO" --state merged --json number,title,mergedAt -L 20 2>/dev/null || echo '[]')
 # Wide merged-PR set for the closed-but-undelivered hunt (fleet-ops#3683):
 # covers the referencing PRs of the last 100 closed issues. Not printed, so
@@ -396,39 +983,7 @@ MACHINERY_GATE_LIB="${AUDIT_MACHINERY_GATE:-$HOME/.local/lib/pi-packet/machinery
 CLOSED_UNDELIVERED_LIB="${AUDIT_CLOSED_UNDELIVERED_LIB:-$repo_fallback/lib/closed-undelivered-gate.py}"
 
 # Parse deliberate-states into a JSON list for the packet.
-deliberate_json='[]'
-if [ -f "$DELIBERATE_STATES" ]; then
-    deliberate_json=$(python3 - "$DELIBERATE_STATES" <<'PY'
-import sys, re, json
-path = sys.argv[1]
-rows = []
-with open(path, 'r', encoding='utf-8') as f:
-    in_table = False
-    for ln in f:
-        if not in_table:
-            if re.match(r'^\|?\s*state\s*\|', ln, re.I):
-                in_table = True
-            continue
-        cells = [c.strip() for c in ln.split('|')]
-        # Drop empty cells caused by leading/trailing pipes.
-        while cells and cells[0] == '':
-            cells.pop(0)
-        while cells and cells[-1] == '':
-            cells.pop()
-        # Skip the separator line and blank lines.
-        if not cells or all(re.match(r'^[-:]+$', c) for c in cells):
-            continue
-        if len(cells) >= 4 and cells[0].lower() != 'state' and cells[0]:
-            rows.append({
-                'state': cells[0],
-                'reason': cells[1] if len(cells) > 1 else '',
-                'expiry': cells[2] if len(cells) > 2 else '',
-                'owner': cells[3] if len(cells) > 3 else ''
-            })
-print(json.dumps(rows))
-PY
-    )
-fi
+deliberate_json=$(load_deliberate_json "$DELIBERATE_STATES")
 
 # --- manual-seam evidence (fleet-ops#377) ---------------------------------
 # Enumerate hand-performed operations since the last cycle so the reviewer
@@ -480,7 +1035,6 @@ pkt="$REPORT_DIR/packet.md"
     printf -- '- Deliberate-states file: `%s`\n' "$DELIBERATE_STATES"
     printf -- '- Where to save findings JSON: `%s`\n' "$FINDINGS_JSON"
     printf -- '- Where to save the full report: `%s`\n' "$REPORT_MD"
-    printf -- '- Max findings to return: `%s`\n' "$MAX_FINDINGS"
     printf -- '- Audit run timestamp: `%s`\n' "$NOW_ISO"
     printf -- '- Deliberate-states JSON: `%s`\n' "${deliberate_json:-[]}"
     printf -- '- Open issues in this repo: `%s`\n' "${open_issues:-[]}"
@@ -572,11 +1126,17 @@ fi
 # findings. Merged here so filing does not depend on the reviewer noticing.
 if [ -f "$GATE_LIB" ]; then
     failed_json=$(printf '%s\n' "$systemctl_failed" | jq -R -s -c 'split("\n") | map(select(length>0))')
+    # 2026-09-12 (fleet-ops#5608 class): these payloads ride FILES, not argv —
+    # a single argv string is kernel-capped at MAX_ARG_STRLEN (128KB) and the
+    # closed-issues JSON reached 404KB (2026-09-12T22:00Z run: `jq: Argument
+    # list too long`, unit exit 126). --slurpfile + process substitution is
+    # semantically identical to --argjson for these already-validated JSON
+    # arrays (each guards to '[]'), with no argv size ceiling.
     hunt_in=$(jq -n \
-        --argjson closed "${closed_issues:-[]}" \
-        --argjson failed "$failed_json" \
-        --argjson open "${open_issues:-[]}" \
-        '{closed_issues:$closed, failed_units:$failed, open_issues:$open}')
+        --slurpfile closed <(printf '%s' "${closed_issues:-[]}") \
+        --slurpfile failed <(printf '%s' "$failed_json") \
+        --slurpfile open <(printf '%s' "${open_issues:-[]}") \
+        '{closed_issues:$closed[0], failed_units:$failed[0], open_issues:$open[0]}')
     hunt_out=$(printf '%s' "$hunt_in" | python3 "$GATE_LIB" hunt)
     if ! printf '%s' "$findings" | jq -e 'type=="object" and has("findings")' >/dev/null 2>&1; then
         if printf '%s' "$findings" | jq -e 'type=="array"' >/dev/null 2>&1; then
@@ -623,9 +1183,9 @@ fi
 # for a human to notice them.
 if [ -f "$CLOSED_UNDELIVERED_LIB" ]; then
     cud_in=$(jq -n \
-        --argjson closed "${closed_issues:-[]}" \
-        --argjson merged "${merged_prs:-[]}" \
-        '{closed_issues:$closed, merged_prs:$merged}')
+        --slurpfile closed <(printf '%s' "${closed_issues:-[]}") \
+        --slurpfile merged <(printf '%s' "${merged_prs:-[]}") \
+        '{closed_issues:$closed[0], merged_prs:$merged[0]}')
     cud_out=$(printf '%s' "$cud_in" | python3 "$CLOSED_UNDELIVERED_LIB" hunt 2>/dev/null || echo '{"findings":[]}')
     if ! printf '%s' "$cud_out" | jq -e 'type=="object" and has("findings")' >/dev/null 2>&1; then
         cud_out='{"findings":[]}'
@@ -657,11 +1217,16 @@ if ! printf '%s' "$findings" | jq -e 'type=="object" and has("findings")' >/dev/
 fi
 printf '%s\n' "$findings" >"$FINDINGS_JSON"
 printf '%s\n' "${open_issues:-[]}" >"$REPORT_DIR/open-issues.json"
+# fleet-ops#5477: the lens matches a github-issue seam to its own issue when
+# it is open or was delivered by a merged PR; the closed_issues fetch already
+# carries closedByPullRequestsReferences for the undelivered hunt.
+printf '%s\n' "${closed_issues:-[]}" >"$REPORT_DIR/closed-issues.json"
 set +e
 close_json=$(python3 "$SEAM_LIB" close \
     --candidates "$SEAM_CANDIDATES" \
     --findings "$FINDINGS_JSON" \
     --open-issues "$REPORT_DIR/open-issues.json" \
+    --closed-issues "$REPORT_DIR/closed-issues.json" \
     --report "$REPORT_MD" \
     --seams-out "$REPORT_DIR/seams.json" \
     --since "$SEAM_SINCE" \
@@ -681,10 +1246,16 @@ fi
 # --- findings empty? -------------------------------------------------------
 findings_count=$(printf '%s' "$findings" | jq '(.findings // .) | length')
 if [ "$findings_count" -eq 0 ]; then
-    log "no findings produced by reviewer"
-    update_plan_stamp "last-blind-audit-run" "$NOW_ISO (completed, 0 findings)"
-    # Still success: an empty sweep is a valid outcome.
-    exit 0
+    if [ ! -s "$CARRYOVER_FILE" ]; then
+        log "no findings produced by reviewer"
+        update_plan_stamp "last-blind-audit-run" "$NOW_ISO (completed, 0 findings)"
+        # Still success: an empty sweep is a valid outcome.
+        exit 0
+    fi
+    # Carry-over entries are processed even when this run produced no new
+    # findings (Nish 2026-09-11: backlog never waits for a finding).
+    log "no new findings from reviewer; processing carry-over ledger"
+    findings='{"findings":[]}'
 fi
 
 log "findings count: $findings_count"
@@ -693,6 +1264,7 @@ fi # DRILL vs reviewer
 # --- run panel and file issues ---------------------------------------------
 filed=0
 unfiled_pass=0
+dedupe_dropped=0
 
 # fleet-ops#5037: a drill files a fixture, so it may file only through a
 # declared test stub. The check resolves gh the same way the filing call
@@ -714,20 +1286,51 @@ body_file=$(mktemp)
 trap 'rm -f "$panel_input" "$body_file"' EXIT
 
 # Pre-fetch open gap-audit issues and recent merges once for the panel.
-open_gap_issues=$(gh issue list -R "$REPO" -l gap-audit --state open --json number,title -L 100 2>/dev/null || echo '[]')
-recent_merged=$(gh pr list -R "$REPO" --state merged --json number,title -L 50 2>/dev/null || echo '[]')
+# A gh failure that prints nothing still yields a valid '[]' for jq.
+open_gap_issues=$(gh issue list -R "$REPO" -l gap-audit --state open --json number,title -L 100 2>/dev/null || true)
+[ -n "$open_gap_issues" ] || open_gap_issues='[]'
+recent_merged=$(gh pr list -R "$REPO" --state merged --json number,title -L 50 2>/dev/null || true)
+[ -n "$recent_merged" ] || recent_merged='[]'
 
-while IFS= read -r finding; do
-    [ -n "$finding" ] || continue
-    rank=$(printf '%s' "$finding" | jq -r '.rank // "?"')
+# Open + recently-closed gap-audit issue titles, normalised once for the
+# carry-over signature drop in the loop below ("recently" = newest 200
+# closed gap-audit issues; gh returns newest first).
+issue_titles_norm=$(
+    {
+        printf '%s' "$open_gap_issues" | jq -r '.[].title // empty' 2>/dev/null
+        gh issue list -R "$REPO" -l gap-audit --state closed --json title -L 200 2>/dev/null \
+            | jq -r '.[].title // empty' 2>/dev/null
+    } | norm_titles_stdin
+)
+
+# Carry-over bookkeeping. Resolved signatures are collected here and the
+# ledger is rewritten after the loop: a resolved entry (filed, dedupe-hit,
+# or panel-FAIL twice) is removed; backlog entries remain for the next run.
+RESOLVED_SIGS="$REPORT_DIR/carryover-resolved.txt"
+: >"$RESOLVED_SIGS"
+
+# Process one finding: panel, then cap/dedupe/file. $1 = finding JSON,
+# $2 = "1" when this is a carry-over ledger entry (so unfiled outcome keeps
+# the existing ledger entry instead of appending a duplicate).
+process_one_finding() {
+    local finding="$1" is_carryover="$2" entry_sig="${3:-}"
+    local rank title body evidence severity sig origin_run filed_action
+    rank=$(printf '%s' "$finding" | jq -r '.rank // "CO"')
     title=$(printf '%s' "$finding" | jq -r '.title // ""')
     body=$(printf '%s' "$finding" | jq -r '.body // ""')
     evidence=$(printf '%s' "$finding" | jq -r '.evidence // ""')
     severity=$(printf '%s' "$finding" | jq -r '.severity // ""')
+    # First-sighting run for the canonical ledger row's stable finding_id
+    # (carry-over entries carry .origin_run; new findings use NOW_DIR).
+    origin_run=$(printf '%s' "$finding" | jq -r '.origin_run // ""')
+    sig=${entry_sig:-$(finding_signature "$finding")}
 
     if [ -z "$title" ]; then
         log "finding $rank: SKIP (empty title)"
-        continue
+        if [ "$is_carryover" = "1" ] && [ -n "$sig" ]; then
+            carryover_resolve "$sig" "empty title"
+        fi
+        return 0
     fi
 
     # Build panel input.
@@ -761,13 +1364,28 @@ while IFS= read -r finding; do
 
     if [ "$verdict" != "PASS" ]; then
         log "finding $rank: PANEL-FAIL ($reason)"
+        # A carry-over entry that the panel rejects on re-review is dropped:
+        # the current panel context (fresh open issues + deliberate states)
+        # is the most recent judgment available.
+        if [ "$is_carryover" = "1" ]; then
+            carryover_resolve "$sig" "panel-FAIL on re-panel"
+        fi
     elif [ "$filed" -ge "$MAX_FINDINGS" ]; then
-        reason="skipped: max findings $MAX_FINDINGS reached"
-        log "finding $rank: SKIP ($reason)"
+        reason="skipped: max findings $MAX_FINDINGS reached (carried over)"
+        if [ "$is_carryover" = "1" ]; then
+            log "carry-over $rank: kept for next run (cap $MAX_FINDINGS)"
+            issue_url=""
+        else
+            # Nothing is dropped: the finding goes to the carry-over ledger
+            # so the next run files it first (Nish 2026-09-11).
+            log "finding $rank: SKIP ($reason) -> carry-over"
+            carryover_append "$finding" "$sig" || true
+        fi
     elif ! drill_may_file; then
         # A drill must not put synthetic findings in the live tracker.
         # Counted as unfiled so the drill exits non-zero instead of
         # reporting success for a filing it never made (fleet-ops#5037).
+        # Synthetic drill findings never enter the carry-over ledger.
         reason="refused: drill does not file into the live tracker (set AUDIT_DRILL_GH_STUB_DIR to the stub gh dir)"
         log "finding $rank: REFUSED ($reason)"
         unfiled_pass=$((unfiled_pass + 1))
@@ -786,6 +1404,7 @@ while IFS= read -r finding; do
         new_issue=$("$ISSUE_FILE" file --json -R "$REPO" --title "[gap-audit] $title" --body-file "$body_file" --label gap-audit --label agent-ready 2>/dev/null)
         new_rc=$?
         set -e
+        filed_action=$(printf '%s' "$new_issue" | jq -r '.action // "filed"' 2>/dev/null || echo "filed")
         if [ "$new_rc" -eq 0 ] && [ -n "$new_issue" ]; then
             issue_url=$(printf '%s' "$new_issue" | jq -r '.url // empty' 2>/dev/null)
             if [ -z "$issue_url" ]; then
@@ -797,12 +1416,28 @@ while IFS= read -r finding; do
             if [ -n "$issue_url" ] && [[ "$issue_url" != http* ]]; then
                 issue_url="https://github.com/${issue_url#*github.com/}"
             fi
-            log "finding $rank: FILED $issue_url"
-            filed=$((filed + 1))
+            if [ "$filed_action" = "commented" ]; then
+                # fleet-ops#1212 gate: an open issue already carries this
+                # same problem. The finding is resolved, not filed.
+                log "finding $rank: DEDUPED (gate commented on $issue_url)"
+                dedupe_dropped=$((dedupe_dropped + 1))
+                if [ "$is_carryover" = "1" ]; then
+                    carryover_resolve "$sig" "already carried by an open issue (#1212 gate)"
+                fi
+            else
+                log "finding $rank: FILED $issue_url"
+                filed=$((filed + 1))
+                if [ "$is_carryover" = "1" ]; then
+                    carryover_resolve "$sig" "filed"
+                fi
+            fi
         else
             reason="fleet-issue-file failed: $new_issue"
             log "finding $rank: FAILED to file issue ($new_issue)"
             unfiled_pass=$((unfiled_pass + 1))
+            if [ "$is_carryover" != "1" ]; then
+                carryover_append "$finding" "$sig" || true
+            fi
         fi
     fi
 
@@ -814,11 +1449,101 @@ while IFS= read -r finding; do
         --arg issue "$issue_url" \
         --argjson loud "$loud" \
         -c '{timestamp: (now | todate), rank:$rank, title:$title, verdict:$verdict, reason:$reason, issue:$issue, loud:$loud}' >> "$VERDICTS_LOG"
+    # Canonical findings ledger row — one per verdict, idempotent by
+    # finding_id (fleet-ops#5443). The origin-run run-id + --match-title
+    # upsert a previously carried_over row instead of double-filing it
+    # (fleet-ops#5475). A #1212-gate dedupe (commented on the existing
+    # issue) is duplicate_of, never a second "filed".
+    case "$verdict:$reason:$issue_url:${filed_action:-filed}" in
+        PASS:*fleet-issue-file*fail*:*)
+            findings_ledger_row "carried_over" "audit_fix_pending:blind-audit-cap" "$reason" "$origin_run" ;;
+        PASS:*"skipped: max findings"*:*)
+            findings_ledger_row "carried_over" "audit_fix_pending:blind-audit-cap" "$reason" "$origin_run" ;;
+        PASS:*refused:*:*)
+            findings_ledger_row "carried_over" "audit_fix_pending:blind-audit-drill" "$reason" "$origin_run" ;;
+        PASS:*:*:commented)
+            findings_ledger_row "duplicate_of" "${issue_url:-}" "deduped: existing issue carries this problem" "$origin_run" ;;
+        PASS:*:*:filed)
+            findings_ledger_row "filed" "${issue_url:-Nishfleet/unresolved-$REPO}" "filed with verdict=$reason" "$origin_run" ;;
+        FAIL:*:*:*)
+            findings_ledger_row "panel_fail" "$VERDICTS_LOG" "$reason" "$origin_run" ;;
+    esac
+}
+
+# --- carry-over entries FIRST (oldest first), before new findings ---------
+carryover_total=0
+while IFS= read -r entry; do
+    [ -n "$entry" ] || continue
+    co_sig=$(printf '%s' "$entry" | jq -r '.signature // ""')
+    co_finding=$(printf '%s' "$entry" | jq -c '.finding + {origin_run: (.run // "")}')
+    [ -n "$co_finding" ] || continue
+    # Drop an entry whose signature an open or recently-closed issue
+    # already carries; the panel dup-check and the #1212 gate remain the
+    # fuzzy backstops for anything past this exact-title match.
+    co_tnorm=$(norm_title "$(printf '%s' "$co_finding" | jq -r '.title // ""')")
+    if [ -n "$co_tnorm" ] && printf '%s\n' "$issue_titles_norm" | grep -qxF "$co_tnorm"; then
+        # Mirror the drop as duplicate_of in the canonical ledger — a
+        # carry-over whose problem an open issue already carries is a
+        # dedupe, never a filed finding (fleet-ops#5475). Cite the matching
+        # open issue; a closed-only match falls back to the signature ref.
+        co_dup_ref="carryover:$co_sig"
+        while IFS= read -r co_issue; do
+            if [ "$(norm_title "$(printf '%s' "$co_issue" | jq -r '.title // ""')")" = "$co_tnorm" ]; then
+                co_dup_ref="https://github.com/$REPO/issues/$(printf '%s' "$co_issue" | jq -r '.number')"
+                break
+            fi
+        done < <(printf '%s' "$open_gap_issues" | jq -c '.[]' 2>/dev/null)
+        title=$(printf '%s' "$co_finding" | jq -r '.title // ""')
+        severity=$(printf '%s' "$co_finding" | jq -r '.severity // "info"')
+        findings_ledger_row "duplicate_of" "$co_dup_ref" \
+            "carried by an open/closed issue (title signature match)" \
+            "$(printf '%s' "$entry" | jq -r '.run // ""')"
+        carryover_resolve "$co_sig" "carried by an open/closed issue (title signature match)"
+        continue
+    fi
+    log "carry-over: re-panelling entry ($co_sig)"
+    process_one_finding "$co_finding" "1" "$co_sig"
+    # A kept entry (cap reached again) stays in the ledger.
+done < <(carryover_load)
+
+# New findings this run, ranked blocker>critical>high>medium>low then rank.
+# The sorting is best-effort: an invalid findings payload keeps its original
+# order and still goes through the same cap/carry-over path.
+if [ -n "${findings:-}" ]; then
+    sorted=$(printf '%s\n' "$findings" | jq -c '
+    def sevrank($s):
+        if $s == "blocker" or $s == "critical" then 0
+        elif $s == "high" then 1
+        elif $s == "medium" then 2
+        else 3 end;
+    {
+      findings: (
+        .findings | sort_by(
+          [sevrank(.severity), ((.rank // 9999) | if type == "number" then . else (tonumber? // 9999) end)])
+      )
+    }' 2>/dev/null || true)
+    if printf '%s' "$sorted" | jq -e . >/dev/null 2>&1; then
+        findings=$sorted
+    fi
+fi
+
+while IFS= read -r finding; do
+    [ -n "$finding" ] || continue
+    process_one_finding "$finding" "0"
 done < <(printf '%s\n' "$findings" | jq -c '.findings[]' 2>/dev/null)
 
-# The reviewer is forbidden from filing, and writes "no GitHub issues filed"
-# into report.md. Step 6 is this harness: append the actual filing ledger so
-# a human reading the report cannot conclude the panel produced zero issues.
+# Rewrite the ledger: drop resolved signatures, keep the backlog (oldest
+# first). Signatures are sha256 lines, so a fixed-string grep is exact.
+if [ -s "$RESOLVED_SIGS" ] && [ -s "$CARRYOVER_FILE" ]; then
+    jq -c . "$CARRYOVER_FILE" \
+        | grep -vF -f "$RESOLVED_SIGS" \
+        > "$CARRYOVER_FILE.tmp" || true
+    mv "$CARRYOVER_FILE.tmp" "$CARRYOVER_FILE"
+fi
+carryover_total=0
+[ -s "$CARRYOVER_FILE" ] && carryover_total=$(grep -c . "$CARRYOVER_FILE")
+
+# Filing results appended to report.md (the end-of-run block).
 {
     printf '\n## Filing results\n\n'
     printf 'The reviewer does not file GitHub issues. This harness does, after the panel.\n\n'
@@ -828,7 +1553,8 @@ done < <(printf '%s\n' "$findings" | jq -c '.findings[]' 2>/dev/null)
         jq -r '"| \(.rank) | \(.verdict) | \(if (.issue // "") != "" then .issue else (.reason // "—") end) |"' "$VERDICTS_LOG"
         printf '\n'
     fi
-    printf 'Filed: %s (cap %s). Unfiled PASS findings: %s.\n' "$filed" "$MAX_FINDINGS" "$unfiled_pass"
+    printf 'Filed: %s (cap %s). Unfiled PASS findings: %s. Carry-over backlog: %s.\n' \
+        "$filed" "$MAX_FINDINGS" "$unfiled_pass" "${carryover_total:-0}"
 } >> "$REPORT_MD"
 
 # fleet-ops#375: once per audit cycle, run the chain-e2e drill (whole-chain
@@ -850,8 +1576,15 @@ else
     log "chain-e2e drill: skipped (binary absent or AUDIT_RUN_CHAIN_E2E_DRILL=0)"
 fi
 
-log "audit complete: filed=$filed unfiled_pass=$unfiled_pass"
-if [ "$unfiled_pass" -gt 0 ]; then
+# Nothing dropped (Nish 2026-09-11): whenever a PASS finding was not filed
+# or the carry-over backlog is non-empty, the triage file the heartbeat
+# reads gets one LOUD line so the judges see the backlog hourly.
+if [ "${unfiled_pass:-0}" -gt 0 ] || [ "${carryover_total:-0}" -gt 0 ]; then
+    loud_backlog "${unfiled_pass:-0}" "${carryover_total:-0}" "run=$NOW_DIR"
+fi
+
+log "audit complete: filed=$filed unfiled_pass=$unfiled_pass carryover_total=${carryover_total:-0}"
+if [ "${unfiled_pass:-0}" -gt 0 ]; then
     update_plan_stamp "last-blind-audit-run" "$NOW_ISO (failed, filed=$filed unfiled_pass=$unfiled_pass)"
     log "FATAL: $unfiled_pass PASS finding(s) were not filed"
     exit 1

@@ -18,5 +18,19 @@ Environment=XDG_RUNTIME_DIR=/run/user/1000
 # '-' keeps CI/hosts without a live key from failing unit load.
 EnvironmentFile=-/home/nish/.config/fleet-ops/litellm-master-key.env
 ExecStart=/usr/bin/python3 /home/nish/.local/libexec/fleet-litellm-health-canary.py
-TimeoutStartSec=30
+# Starvation headroom, not a longer verdict budget (senior auditor 2026-09-11).
+# 30s was the tightest start timeout of any network canary here (siblings:
+# siterep-uptime 1min, fleet-deploy-check 5min, demo-brand-timeline 30min,
+# search-tier 30min, sneaker-resale-recall 45min). Under the memory pressure
+# that is this box's normal state, 30s is a knife: at 2026-09-11T05:06:51 IST
+# this unit was SIGTERMed with result=timeout having printed NOTHING and
+# written NO prom file (3.277s CPU against 0.18s for a healthy run, i.e.
+# starved, not slow), so the trip carried no diagnosis and the organ
+# heartbeat metric went dark for the window. Measured worst case for a
+# complete run is 21s (readiness 10s + pg 5s + redis 5s, proven against a
+# black-hole listener), so 120s is ~6x headroom. Verdict latency is set by
+# the 60s timer + the script's own 60s dead-tolerance (tick count), NOT by
+# this timeout, so the extra headroom delays no detection and stops a starved
+# run from being killed before it can report.
+TimeoutStartSec=120
 Restart=no

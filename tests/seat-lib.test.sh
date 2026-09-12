@@ -1306,7 +1306,12 @@ rc=$?
 set -e
 [[ "$rc" == "0" ]] || fail "default: cline (has default) expected rc=0, got $rc"
 bw=$(jq -r '.bench_window_s' "$ledger/cline__cline-pass_minimax-m3.json")
-[[ "$bw" == "604800" ]] || fail "default: cline bench_window_s expected 604800, got $bw"
+# fleet-ops#5285 (2026-09-11): the 604800s (7-day) ClinePass default is a static
+# guess, not an advertised reset. A guessed window is capped at 900s so the
+# bench-truth probe re-checks the seat at 15 min; a real weekly wall fails its
+# probe (a 402 costs nothing) and stays benched. A 6-day bench on a minutes-scale
+# limit (the lived devin/swe-1-7 case) is the class this makes impossible.
+[[ "$bw" == "900" ]] || fail "default: cline bench_window_s expected 900 (static default capped by the bench-truth contract, fleet-ops#5285), got $bw"
 # cursor has NO quota_bench_default_s -> fail open, no marker.
 rm -f "$ledger/cursor__composer-2.5.json"
 set +e
@@ -1357,6 +1362,50 @@ live=$(SEAT_LIVE_QUOTA_PROM="$live_prom" bash -c 'source "$0"; provider_live_res
 live=$(SEAT_LIVE_QUOTA_PROM="$scratch/no-such-file.prom" bash -c 'source "$0"; provider_live_reset_s cursor' "$lib")
 [[ "$live" == "0" ]] || fail "live-reset: missing prom file expected 0, got '$live'"
 ok "9f-live: provider_live_reset_s honours exhaustion, staleness, passed resets, min-across-windows"
+
+# 9f-prepaid (fleet-ops#5022): a prepaid subscription's SHORT window comes from
+# its own usage endpoint via bin/fleet-prepaid-util-canary (prepaid-usage.prom),
+# not from fleet_seat_quota_*. OpenCode Go's 5h rolling window is walled at
+# >= 95% USED, so this source uses a used-percent threshold where the
+# fleet_seat_quota source uses a remaining-percent one; the same freshness gate
+# applies (the emitted observed timestamp is absolute, so now comes from bash).
+prepaid_prom="$scratch/prepaid-usage.prom"
+prepaid_now=$(date -u +%s)
+cat >"$prepaid_prom" <<PROM
+fleet_prepaid_usage_pct{provider="opencode-go",window="5h"} 97
+fleet_prepaid_window_reset_seconds{provider="opencode-go",window="5h"} 3000
+fleet_prepaid_usage_pct{provider="opencode-go",window="weekly"} 97
+fleet_prepaid_window_reset_seconds{provider="opencode-go",window="weekly"} 90000
+fleet_prepaid_usage_observed_timestamp{provider="opencode-go"} $prepaid_now
+fleet_prepaid_usage_pct{provider="below-wall",window="5h"} 94
+fleet_prepaid_window_reset_seconds{provider="below-wall",window="5h"} 3000
+fleet_prepaid_usage_observed_timestamp{provider="below-wall"} $prepaid_now
+fleet_prepaid_usage_pct{provider="stale-og",window="5h"} 97
+fleet_prepaid_window_reset_seconds{provider="stale-og",window="5h"} 3000
+fleet_prepaid_usage_observed_timestamp{provider="stale-og"} $((prepaid_now - 7200))
+PROM
+live=$(SEAT_LIVE_PREPAID_PROM="$prepaid_prom" bash -c 'source "$0"; provider_live_reset_s opencode-go' "$lib")
+# Wall-clock granularity: the fixture's observed timestamp and the function's
+# internal `date -u +%s` can straddle a second boundary, making age=1 and the
+# live value 2999. That is the function working as designed, not a regression
+# (red main 2026-09-11T04:05Z, run 34560880788: "expected the 5h reset 3000,
+# got '2999'"). Accept both; the exact path is pinned by the mechanism repro.
+[[ "$live" == "3000" || "$live" == "2999" ]] \
+  || fail "9f-prepaid: opencode-go (5h at 97% used) expected the 5h reset 3000 (2999 at a second boundary), got '${live:-<none>}'"
+live=$(SEAT_LIVE_PREPAID_PROM="$prepaid_prom" bash -c 'source "$0"; provider_live_reset_s below-wall' "$lib")
+[[ "$live" == "0" ]] \
+  || fail "9f-prepaid: 94% used is below the 95% wall and must not bench, got '$live'"
+live=$(SEAT_LIVE_PREPAID_PROM="$prepaid_prom" bash -c 'source "$0"; provider_live_reset_s stale-og' "$lib")
+[[ "$live" == "0" ]] \
+  || fail "9f-prepaid: a 2h-old observation must not bench, got '$live'"
+live=$(SEAT_LIVE_PREPAID_PROM="$scratch/no-such-prepaid.prom" bash -c 'source "$0"; provider_live_reset_s opencode-go' "$lib")
+[[ "$live" == "0" ]] \
+  || fail "9f-prepaid: missing prepaid-usage.prom expected 0, got '$live'"
+# The fleet_seat_quota source still wins when it has an answer.
+live=$(SEAT_LIVE_QUOTA_PROM="$live_prom" SEAT_LIVE_PREPAID_PROM="$prepaid_prom" bash -c 'source "$0"; provider_live_reset_s cursor' "$lib")
+[[ "$live" == "5000" ]] \
+  || fail "9f-prepaid: the fleet_seat_quota source must still win for cursor, got '$live'"
+ok "9f-prepaid: provider_live_reset_s reads the 5h prepaid window at >= 95% used, honours freshness"
 # Writer wiring: cursor has NO static default (fails open in 9f above), but a
 # live exhausted row must bench it at the live window (count=1 -> no geometric
 # escalation, bench_window_s == live value).
@@ -1382,7 +1431,8 @@ rc=$?
 set -e
 [[ "$rc" == "0" ]] || fail "live-reset writer: cline expected rc=0, got $rc"
 bw=$(jq -r '.bench_window_s' "$live_ledger/cline__cline-pass_minimax-m3.json")
-[[ "$bw" == "604800" ]] || fail "live-reset writer: cline (95% live) must use the static default 604800, got $bw"
+# fleet-ops#5285 (2026-09-11): see the 9f pin above — a static weekly default is a guess, capped at 900s.
+[[ "$bw" == "900" ]] || fail "live-reset writer: cline (95% live) static default 604800 is capped at 900 by the bench-truth contract (fleet-ops#5285: a live meter at 95% is not an advertised reset; the 15-min PONG re-checks it), got $bw"
 # A wall whose error text DOES carry a window still wins over the live figure
 # (parsed text is ground truth for that wall).
 set +e
@@ -3742,6 +3792,11 @@ bash "$here/keystone-routing.test.sh" || fail "keystone-routing tests failed"
 # before the keystone class ladder. Hosted here (no workflow edit).
 bash "$here/senior-review-routing.test.sh" || fail "senior-review-routing tests failed"
 
+# fleet-ops#5189: a seat whose tool-approval gate refuses the run's writes
+# must fail loud (agent-cron-run exit 1 + config_fault bench) instead of
+# exiting 0 with a report. Hosted here (no workflow edit).
+bash "$here/agent-cron-writes-refused.test.sh" || fail "agent-cron-writes-refused tests failed"
+
 # fleet-ops#1167: cursor keystone-only + leftover prepaid is xai-oauth +
 # selection ledger. Hosted here (no workflow edit).
 bash "$here/token-economy-routing.test.sh" || fail "token-economy-routing tests failed"
@@ -3752,6 +3807,12 @@ bash "$here/token-economy-routing.test.sh" || fail "token-economy-routing tests 
 # by yield/cost value; heavy/keystone yield-first then value).
 # Hosted here (no workflow edit).
 bash "$here/seat-lib-yield-order.test.sh" || fail "seat-lib-yield-order tests failed"
+
+# fleet-ops#5281: PI_PICK_PREFER_CLASS with a depleted class bucket must log
+# nothing (no 'bad array subscript', no 'routing to <empty>' phantom seat)
+# and fall through to the normal class ladder.
+# Hosted here (no workflow edit).
+bash "$here/seat-lib-prefer-class-empty.test.sh" || fail "seat-lib-prefer-class-empty tests failed"
 
 # fleet-ops#520: free-tier privacy guard drill. CI lists this file, not the
 # privacy guard test, because workers cannot edit .github/workflows.

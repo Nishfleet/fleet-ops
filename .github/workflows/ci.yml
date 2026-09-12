@@ -54,7 +54,7 @@ jobs:
       node-version: ""
       install-command: ""
       scan-secrets: true
-      timeout-minutes: 20
+      timeout-minutes: 30
       verify-command: |
         set -euo pipefail
         # fleet-ops#3235 part six (the follow-up its own commit message planned:
@@ -103,12 +103,27 @@ jobs:
         # and never claims a ticket whose named dependencies are not
         # merged/closed (the 0509 seam batch had to be hand-gated).
         bash tests/pi-intake-tick-depends-on.test.sh
+        # fleet-ops#5165: intake also honors the ticket's own
+        # `collision-gate:` line — never claim a ticket whose named
+        # same-file blockers are still open.
+        bash tests/pi-intake-tick-collision-gate.test.sh
+        # fleet-ops#5238: the auto-merge arm refuses gate-path PRs whose
+        # advisory gate-integrity check is not green (#5207 escaped this
+        # way).
+        bash tests/gate-arm-guard.test.sh
         bash tests/pi-intake-topup.test.sh
         bash tests/pi-intake-tick-scout-on-empty.test.sh
         bash tests/blocked-reconcile-large-issue-json.test.sh
         bash tests/pi-intake-tick-land-or-close-park.test.sh
+        # fleet-ops#5048: park the protected + no-termination + no-claim-PR
+        # cell when a named user timer/service is active or a merged
+        # non-claim-branch PR delivered the work (live case #4891).
+        bash tests/pi-intake-tick-protected-delivered-park.test.sh
         bash tests/fleet-console-pi-utc.test.sh
         bash tests/pi-issue-run-session-error-feed.test.sh
+        # Devin message rate limit = pause + in-session resume, never a worker
+        # death (114 deaths/24h on that one message, 2026-09-11).
+        bash tests/devin-provider-rate-limit-retry.test.sh
         bash tests/repair-rotation.test.sh
         bash tests/alert-repair-seat-walled.test.sh
         bash tests/alert-repair-class-park-skip.test.sh
@@ -139,6 +154,10 @@ jobs:
         bash tests/pi-scout-packet-assembly.test.sh
         bash tests/fleet-heartbeat-low-water-mark.test.sh
         bash tests/fleet-blind-audit.test.sh
+        # fleet-ops#5475: new blind-audit test files must run in P14 (orphan
+        # tests fail the workflow check otherwise).
+        bash tests/fleet-blind-audit-carryover.test.sh
+        bash tests/fleet-blind-audit-backfill.test.sh
         bash tests/fleet-heartbeat-blind-audit-trigger.test.sh
         bash tests/mass-close-guard.test.sh
         bash tests/codex-orphan-reap.test.sh
@@ -146,6 +165,9 @@ jobs:
         bash tests/orphan-workflow-detector.test.sh
         bash tests/open-question-sweep-deleted.test.sh
         bash tests/escalation-coverage-canary.test.sh
+        # fleet-ops#5443: canonical findings ledger — strict writer + judge line.
+        bash tests/findings-ledger.test.sh
+        bash tests/findings-measure-line.test.sh
         bash tests/fleet-unjustified-wait.test.sh
         bash tests/fleet-deploy-check.test.sh
         bash tests/fleet-seat-recovery.test.sh
@@ -232,6 +254,11 @@ jobs:
         # SERVICE_RESULT "success") and the wall-streak masking, plus both
         # control paths. Offline (stubbed gh, real helper).
         bash tests/pi-scout-seat-skip.test.sh
+        # fleet-ops#5385 live-run fixes: enforce_admins=false in the relax window
+        # (+ restore verify), snapshot refresh, refs/pull-aware ancestor check,
+        # and stage5 rename-back eventual-consistency polling. Offline drills
+        # (stubbed gh/sleep, local mirror fixture).
+        bash tests/rewrite-0509-author-live-fixes.test.sh
         # fleet-ops#70: former required jobs, now inside the batched caller.
         # TODO(fleet-ops): add the fleet's orchestration rules config from
         # Nishfleet/siterep-public .semgrep/no-hand-built-orchestration.yml at an

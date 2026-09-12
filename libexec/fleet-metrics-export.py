@@ -193,10 +193,12 @@ HELP_AD = "# HELP fleet_alert_outcome_24h Per-alertname repair outcomes in the t
 TYPE_AD = "# TYPE fleet_alert_outcome_24h gauge"
 HELP_OPEN = "# HELP fleet_open_prs Open pull-request count per repo from a cached org snapshot."
 TYPE_OPEN = "# TYPE fleet_open_prs gauge"
-HELP_CI = "# HELP fleet_main_ci_green 1 if default-branch CI is green, 0 if red. PENDING rollup resolved from latest completed CI run; repos with no CI omitted."
+HELP_CI = "# HELP fleet_main_ci_green 1 if default-branch CI is green, 0 if red. PENDING rollup resolved from latest completed CI run; repos with no CI omitted. Tracks only the workflow literally named \"CI\" — a repo's production-deploy greenness is fleet_product_deploy_green (fleet-ops#5140)."
 TYPE_CI = "# TYPE fleet_main_ci_green gauge"
 HELP_FRESH = "# HELP fleet_gh_cache_fresh 1 if this gh-derived family is served from a cache younger than 2h."
 TYPE_FRESH = "# TYPE fleet_gh_cache_fresh gauge"
+HELP_CTS = "# HELP fleet_gh_cache_timestamp_seconds Epoch seconds at which the served data for this gh-derived family was MEASURED. Equals the cache write time when the cache was served, and the export time when gh was just fetched. A consumer of a cached family (the console tiles) must stamp this, not its own run time: stamping the export time on a <=30 min old count reads as seconds-fresh (fleet-ops#5155, ConsoleLying tile=open_prs)."
+TYPE_CTS = "# TYPE fleet_gh_cache_timestamp_seconds gauge"
 
 # Undersaturation-guard metrics (2026-08-27, fleet-ops UNDERSATURATED — the
 # deleted fleet1 watchdog's Pi-era reincarnation on stock machinery).
@@ -1647,7 +1649,7 @@ _S7_CF_TOKEN_CANDIDATES = [
 # query — the issue's “FROM User” is the conceptual table, not the schema.
 _S7_SQL = (
     "SELECT COUNT(*) AS n FROM user "
-    "WHERE createdAt >= datetime('now','-7 days');"
+    "WHERE julianday(createdAt) >= julianday('now','-7 days');"
 )
 # Hex alphabet for validating the Cloudflare D1 account/database IDs before
 # they are interpolated into the fixed api.cloudflare.com URL (fleet-ops#4456).
@@ -2744,6 +2746,11 @@ def _emit_seat_quota_headers(lines):
 
 _GH_FETCHED_THIS_RUN = False
 
+# Measurement time (epoch seconds) of the data _cached_json actually served,
+# per family. See HELP_CTS: a cached family's number was measured when the
+# CACHE was written, not when this exporter run copied it out.
+_CACHE_TS_SERVED = {}
+
 
 def _cached_json(path, fetcher, name):
     """Return fetched/cached data, or None to omit the metric family.
@@ -2757,19 +2764,23 @@ def _cached_json(path, fetcher, name):
     global _GH_FETCHED_THIS_RUN
     cached, cache_age = _read_cache(path)
     if cache_age is not None and cache_age <= PR_CACHE_TTL and cached is not None:
+        _CACHE_TS_SERVED[name] = time.time() - cache_age
         return cached
     if _GH_FETCHED_THIS_RUN:
         if cached is not None and cache_age is not None and cache_age <= PR_CACHE_STALE:
+            _CACHE_TS_SERVED[name] = time.time() - cache_age
             return cached
         return None
     data = fetcher()
     _GH_FETCHED_THIS_RUN = True
     if data is not None:
         _write_cache(path, data)
+        _CACHE_TS_SERVED[name] = time.time()
         return data
     if cached is not None and cache_age is not None and cache_age <= PR_CACHE_STALE:
         print(f"{name} gh failed, serving stale cache (age={int(cache_age)}s)",
               file=sys.stderr)
+        _CACHE_TS_SERVED[name] = time.time() - cache_age
         return cached
     return None
 
@@ -2796,7 +2807,7 @@ def _merged_prs_detail():
     classification, AND the verified-merges numerator all derive from this
     single fetch (fleet-ops#1136) — no extra gh call per exporter run.
     """
-    detail = _cached_json(DETAIL_CACHE, _gh_merged_prs_raw, "merged_prs_detail")
+    detail = _cached_json(DETAIL_CACHE, _gh_merged_prs_raw, "merged_prs")
     # Shape guard: a cache written by the pre-#1136-verified exporter has only
     # {repo, title} (no body/additions/deletions/changed_files). The verified-
     # merges numerator would see all-zero diff stats and classify every PR as
@@ -2812,7 +2823,7 @@ def _merged_prs_detail():
             DETAIL_CACHE.unlink()
         except OSError:
             pass
-        detail = _cached_json(DETAIL_CACHE, _gh_merged_prs_raw, "merged_prs_detail")
+        detail = _cached_json(DETAIL_CACHE, _gh_merged_prs_raw, "merged_prs")
     return detail
 
 
@@ -5258,7 +5269,7 @@ _BLOCKED_KINDS = (
 )
 HELP_FBI = "# HELP fleet_blocked_issues Open blocked issues by kind from the last blocked-reconcile sweep (fleet-ops#4260). kind=needs-orchestrator counts the label sweep across all open issues; the other kinds count the agent-blocked queue."
 TYPE_FBI = "# TYPE fleet_blocked_issues gauge"
-HELP_FBIA = "# HELP fleet_blocked_issue_age_seconds Age stats for blocked issues by kind, seconds since issue creation, from the last blocked-reconcile sweep (fleet-ops#4260)."
+HELP_FBIA = "# HELP fleet_blocked_issue_age_seconds Age stats for blocked issues by kind, seconds, from the last blocked-reconcile sweep (fleet-ops#4260). kind=needs-orchestrator reports time since the issue entered that class (last label add), not issue age: FleetNeedsOrchestratorStale measures a parked drain, not old tickets."
 TYPE_FBIA = "# TYPE fleet_blocked_issue_age_seconds gauge"
 
 
@@ -6231,6 +6242,14 @@ def main():
         lines.append(TYPE_FRESH)
         for kind in fresh_kinds:
             lines.append(f'fleet_gh_cache_fresh{{kind="{kind}"}} 1')
+    if _CACHE_TS_SERVED:
+        lines.append("")
+        lines.append(HELP_CTS)
+        lines.append(TYPE_CTS)
+        for _kind, _ts in sorted(_CACHE_TS_SERVED.items()):
+            lines.append(
+                f'fleet_gh_cache_timestamp_seconds{{kind="{_kind}"}} {_ts:.0f}'
+            )
 
     # Escalations per unit (top 20).
     esc_counts = _escalations_24h()

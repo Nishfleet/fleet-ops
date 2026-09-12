@@ -2,37 +2,72 @@
 Description=Fleet seat-recovery trigger (fire intake on NO-USABLE-SEAT -> usable, fleet-ops#468)
 # systemd.path: a StartLimit hit on THIS oneshot is propagated to
 # fleet-seat-recovery.path and takes the watcher down (fleet-ops#617).
-# The bin always exits 0; ledger writes are the expected trigger rate.
-# Disable the default 5/10s burst so a chatty seats/ dir cannot wedge TOP GEAR.
-StartLimitIntervalSec=0
-
-# Event-driven: any write to the per-seat health ledger (a seat-health
-# extension update) wakes this service. It compares the current "any seat
-# usable?" verdict against the last one and fires pi-intake@<repo>.service
-# INSTANTLY on the recovery transition — no waiting for the 15-min tick.
-# Time-based bench expiry is the heartbeat's slow-path floor; this is the
-# fast path for the common case (a health write marks a seat usable).
-
-# fleet-ops#622: the seats ledger is written every few seconds (every
-# seat-health extension update), so fleet-seat-recovery.path fires this
-# service ~30x/min. The DEFAULT StartLimitBurst=5 / StartLimitIntervalSec=10s
-# is blown through in well under a minute of normal fleet traffic, which
-# wedges BOTH this service AND the .path unit with unit-start-limit-hit
-# (proven live: the path unit went inactive/failed 12min after start on
-# 2026-08-27). The bin's own FLEET_SEAT_RECOVERY_COOLDOWN (default 120s) is
-# the real rate-limiter for the side effect (the intake fire); the systemd
-# start limit here only needs to tolerate the no-op trigger storm, not gate
-# the fire. Raise it well above the worst-case sustained write rate so a
-# healthy fleet cannot wedge its own seat-recovery fast path. StartLimit*
-# must live in [Unit], not [Service] (same convention as pi-intake@.service).
-#
-# fleet-ops#5024: the bin now debounces last=usable (skip the ~1.1s ledger
-# scan). That cuts CPU; it does not reduce systemd activations — PathChanged
-# still starts this oneshot on every seats/ write. StartLimitBurst must
-# therefore stay above the write storm (~1800/h). Lowering it to 200
-# would re-wedge the path unit without making the hot loop quieter.
+# fleet-ops#5096: the trigger storm is fixed (see below), so a SMALL BOUNDED
+# ceiling is the right shape — never reached in normal operation, so it can
+# only fire on a churn REGRESSION, and then it fires LOUDLY instead of
+# silently wedging the fast path. StartLimit* must live in [Unit], not
+# [Service] (systemd rejects it there; same convention as pi-intake@.service).
 StartLimitIntervalSec=1h
-StartLimitBurst=2000
+StartLimitBurst=200
+
+# Event-driven: a seat-VERDICT EDGE wakes this service. It compares the
+# current "any seat usable?" verdict against the last one and fires
+# pi-intake@<repo>.service INSTANTLY on the recovery transition — no waiting
+# for the 15-min tick. Time-based bench expiry is the heartbeat's slow-path
+# floor; this is the fast path for the common case.
+#
+# fleet-ops#5093: the wake-up is ONE sentinel file
+# (agent-state/lanes/seats/.no-usable-seat) written by bin/pi-issue-run only on
+# a verdict EDGE, NOT the seats/ directory. Watching the directory started this
+# oneshot on every seat-health ledger write (~2500/h), which is what blew the
+# old ceiling and killed the fast path.
+
+# fleet-ops#617 is why the ceiling must be bounded but never tight: a
+# StartLimit hit is propagated from this oneshot to the .path watcher, so any
+# ceiling BELOW the real trigger rate does not throttle the unit, it kills the
+# whole seat-recovery fast path. The 2026-08-27 default 5/10s and the
+# fleet-ops#622 accommodation StartLimitBurst=2000 were both sized against a
+# trigger rate nothing bounded — and live 2026-09-11 that rate (2471-2536/h)
+# blew the 2000 and wedged the fast path anyway.
+#
+# fleet-ops#5096 removed the last unbounded term in that rate: the seat-health
+# extension (which is out-of-repo, on the live box) no longer rewrites an
+# unchanged ledger record — a write is skipped when health_class,
+# failure_mode, seat_dead, usable_at and consecutive_failure_count are all
+# unchanged AND the on-disk record is younger than its refresh interval
+# (default 30 min; seat-lib.sh only distrusts a record past STALE_SECS=21600).
+# Measured before: 2471-2536 ledger-driven starts/h. Measured after, while the
+# trigger was STILL the seats/ directory: 810 -> 440 -> 300 -> 60 starts/h as
+# pre-fix pi processes exited (the extension is loaded per process), with 0
+# starts in 3 of 4 consecutive minutes before #5093's sentinel trigger even
+# deployed. Its closure test is tests/seat-health-ledger-noop-write.test.sh.
+#
+# So the activation rate is now ~0 in normal operation on BOTH counts — an
+# edge-only trigger (#5093) and a write-suppressed ledger (#5096) — and 200/h
+# is never reached by traffic. This ceiling is a TRIPWIRE for a future churn
+# regression, and it fires loudly. #5024's debounce cut the per-run CPU but
+# could not touch systemd activation counting; these two are the halves that
+# could, which is why the 200 #5024 asked for is correct now and was not then.
+# The bin's own FLEET_SEAT_RECOVERY_COOLDOWN (120s) remains the rate-limiter
+# for the side effect (the intake fire).
+#
+# tests/fleet-seat-recovery-units.test.sh pins this ceiling and gates that the
+# live proof still exists in bin/fleet-resilience-drill's seat_sentinel plane —
+# which proves on the daily drill timer that a sentinel storm fires the
+# watcher AND that a ceiling BELOW the storm wedges it — i.e. that the guard
+# is armed, not decorative.
+#
+# BRIDGE DROP-IN (retired 2026-09-11): the live-only
+# ~/.config/systemd/user/fleet-seat-recovery.service.d/20-no-start-limit.conf,
+# which set StartLimitIntervalSec=0 so the 2026-09-11 storm could not wedge the
+# fast path, was removed in the same change that landed this ceiling — the
+# measured rate had fallen to 0-60 starts/h over a 4-minute window (three of
+# those minutes at zero). Verify it stays gone with:
+#   systemctl --user show -p DropInPaths fleet-seat-recovery.service
+# which must list only the universal service.d/10-escalate.conf.
+# Do not re-add a bridge or raise this ceiling to silence churn: a ceiling
+# under the real trigger rate does not throttle the unit, it kills the fast
+# path (fleet-ops#617). Fix the trigger instead.
 
 [Service]
 Type=oneshot

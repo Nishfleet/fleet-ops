@@ -157,6 +157,35 @@ the former leaves a per-tick log at
 `~/.local/state/fleet-heartbeat/tier1-<UTC>.log` with `failed_seen=0`; the
 latter leaves nothing and the unit is still failed.
 
+### Step 2b — bench-lie check (fleet-ops#5285)
+
+Benches lie: a ledger bench claims the provider is walled; a live probe is
+the only truth. Every tick:
+
+1. Read the bench-lie counter and the bench list:
+   - `curl -s localhost:9100/metrics | grep fleet_seat_bench_lied_total`
+     (per-seat counters; `increase(...[6h]) > 3` for one provider is the
+     `FleetSeatBenchLied` alert threshold — if it is near or past it, name
+     the provider and the writer in your report).
+   - List the benched seats:
+     `jq -r 'select(.bench_until != null and .seat_dead != true) | [.provider,.model,.bench_until,.source] | @tsv'`
+     over `/home/nish/workspaces/agent-state/lanes/seats/`*.json (skip
+     `*.spawn-bench.json`, `seat_dead=true`, money/policy walls and cap 0
+     seats — the bench-truth contract excludes them).
+2. Probe each benched cap>0 non-money seat once:
+   `echo 'Reply with exactly the word PONG' | pi --print --provider <p>
+   --model <m>'` — success is the literal `PONG` in stdout (exit 0 alone is
+   not proof).
+3. A seat that answers PONG while benched is a bench lie — a fault you
+   repair now: run `fleet-seat-comeback-release --false-wall-only` (it
+   unwalls the seat with `source=bench_truth_probe` and increments
+   `fleet_seat_bench_lied_total`), then report it as a bench lie in your
+   heartbeat block: seat, writer that benched it, and the advertised window
+   it claimed. Do not hand-edit the ledger — the probe's unwall write is
+   the audit trail.
+4. A probe that FAILS leaves the seat benched; that is the system working,
+   not a fault. Only a live seat that is benched is a lie.
+
 ---
 
 ## Step 3 — queue green fleet-authored PRs

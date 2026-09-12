@@ -13,4 +13,7 @@ gate_globs:
   - "lib/gate-integrity-config.sh"
   - "tests/gate-integrity.test.sh"
   - "tests/gate-integrity-config.test.sh"
+  - "bin/fleet-gate-arm-guard"
+  - "lib/gate-arm-guard.py"
+  - "tests/gate-arm-guard.test.sh"
 ratchet_paths: []

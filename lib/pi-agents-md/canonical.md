@@ -30,7 +30,7 @@ workers into wrong defaults (fleet-ops#180's claimant, blind-audit finding #8).
 **Authoritative check, in order:** (1) if `~/workspaces/agent-state/FLEET-PAUSED`
 exists, the fleet is deliberately down — respect it; (2) otherwise
 `XDG_RUNTIME_DIR=/run/user/$(id -u) systemctl --user list-timers` is the truth.
-As of 2026-08-26 the fleet is RESTORED and running (~26 user timers); enrolment
+As of 2026-08-26 the fleet is RESTORED and running; enrolment
 is declared in fleet-ops `config/intake-repos.json`, converged by the
 reconciler (fleet-ops#32). Worktrees, recent commits,
 packet files and memories are artefacts of past work and prove nothing about now.
@@ -86,17 +86,26 @@ Simple language is never baby talk and never condescending.
 - **Switched on and proven, or it is not done.** Never report "armed" or "ready"
   as if it were "running". One proven end-to-end run.
 - **Act, don't ask.** Do reversible work autonomously. "Say the word and I'll dig
-  in" is the failure mode. Bring Nish in only for money, privacy, security,
-  legal, product direction, or destructive/irreversible steps.
+  in" is the failure mode. Bring Nish in only for the canonical reserved
+  classes: money/pricing, privacy, security, legal, brand, product direction,
+  customer-data deletion, destructive/irreversible steps, and authority he has
+  explicitly reserved. That is the single source of truth — it lives in the
+  vault (`global-standing-rules.md` → "Only the un-fixable reaches Nish" →
+  "Canonical reserved-classes list"), older or shorter surface lists fold into
+  it, and a surface is a pointer, not a second source (fleet-ops#5586).
 - **Verify live truth.** Nothing assumed. Official docs over local folklore. Say
   when something is an inference.
 - **Queue every finding.** A fix only mentioned in chat is lost. Queue it.
 - **Session-outliving work uses `pi-systemd-run`, never `nohup`.** A
   `nohup pi ... &` dies when the launching shell ends and leaves dead-seat
-  EXTLOAD lines. `pi-systemd-run --unit <name> --stdin <packet.md> -- pi
+  EXTLOAD lines. `pi-systemd-run --unit <name> --stdin <packet.md>
+  --deadline <min> --deliverable <path> -- pi
   --print --provider <provider> --model <model>` (a thin
   `systemd-run --user --collect --no-block` wrapper; not a dispatcher).
-  Canonical wording: fleet-ops README and `prompts/heartbeat.md`.
+  `--deadline` is the grace budget and `--deliverable` the artifact the run MUST
+  produce; the wrapper adds the healthchecks dead-man and OnFailure escalation
+  (fleet-ops#4266). Canonical wording: fleet-ops README and
+  `prompts/heartbeat.md`.
 
 ## Hard lines
 
@@ -118,7 +127,7 @@ Read these rather than guessing. They are canonical and they change.
 | Standing rules, all machines | `~/workspaces/tooling/nish-vault/_system/shared-memory/global-standing-rules.md` |
 | Vault contract — read before writing | `~/workspaces/tooling/nish-vault/_system/shared-memory/agent-contract.md` |
 | Vault governance | `~/workspaces/tooling/nish-vault/_system/governance.md` |
-| Model/lane routing policy | `~/workspaces/tooling/nish-vault/_system/shared-memory/codex-model-routing.md` |
+| Model/lane routing — `pi --print --provider <provider> --model <model>` direct; old `codex-model-routing.md` ladder is history only | `~/workspaces/agent-state/lanes/pi-seat-health.json` |
 | Pre-implementation contract | `~/workspaces/tooling/nish-vault/_system/shared-memory/pre-implementation-contract.md` |
 | House method skills | `~/workspaces/tooling/nish-vault/_system/shared-memory/skills-library/` |
 | Durable memories (index first) | `~/.claude/projects/-home-nish/memory/MEMORY.md` |

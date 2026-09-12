@@ -1021,6 +1021,30 @@ is_devin_writes_rejected() {
     grep -qiF 'rejected a tool call that requires confirmation' <<<"$combined"
 }
 
+# fleet-ops#5189: a seat behind a tool-approval gate can end a run rc=0 while
+# every write the agent attempted was refused — the run "succeeds", the
+# report says the verdicts "did not post", and nothing escalates (the
+# orchestrator-decision-sweep drafted 10+ verdicts across five 2026-09-10
+# sweeps on cursor/cursor-grok-4.6-high under --auto-review and landed none;
+# the unit exited 0 each time). Two signals, either is a match:
+#   1. the WRITES-REFUSED contract sentinel — a write-doing prompt declares a
+#      refused required write with that marker (prompts declare it; the
+#      runner greps it);
+#   2. the refusal phrases the gated seats already produce in stdout:
+#      "approval card(s) rejected" (cursor's auto-review card), "blocked by
+#      auto-review" / "auto-review blocked", and devin's "rejected a tool
+#      call" literal (same class, different seat).
+# Args are TEXT (not paths), matching is_quota_cap_error / is_overload_error.
+is_writes_refused() {
+    local out="$1" err="$2"
+    local combined="$out"$'\n'"$err"
+    [[ -n "$combined" ]] || return 1
+    if grep -q 'WRITES-REFUSED' <<<"$combined"; then
+        return 0
+    fi
+    grep -qiE 'approval[[:space:]-]?cards?[[:space:]]+(were|was[[:space:]]+)?(rejected|refused|denied)|blocked[[:space:]]+by[[:space:]]+(cursor[[:space:]]+)?auto-review|auto-review[[:space:]]+blocked|rejected[[:space:]]+a[[:space:]]+tool[[:space:]]+call' <<<"$combined"
+}
+
 # Default bench window (seconds) for a provider's quota/cap 429 when the
 # error text carries no explicit reset window (fleet-ops#90). 0 = no default
 # configured; the writer then fails open (no marker) and relies on the
@@ -1054,10 +1078,30 @@ provider_quota_bench_default() {
 # window, or the reset has already passed). Callers fall back to the static
 # default — this helper must never brick a bench decision.
 SEAT_LIVE_QUOTA_PROM="${SEAT_LIVE_QUOTA_PROM:-/var/lib/prometheus/node-exporter/fleet.prom}"
+# fleet-ops#5022: a prepaid subscription's SHORT window (OpenCode Go's 5-hour
+# rolling window, written by bin/fleet-prepaid-util-canary) is walled well
+# before it is fully exhausted, so it uses a USED-percent threshold where the
+# fleet_seat_quota_* source uses a remaining-percent one. Same purpose: when a
+# quota wall's error text carries no reset window, bench the seat to the
+# window's real reset instead of the static quota_bench_default_s.
+SEAT_LIVE_PREPAID_PROM="${SEAT_LIVE_PREPAID_PROM:-/var/lib/prometheus/node-exporter/prepaid-usage.prom}"
+SEAT_LIVE_PREPAID_WALL_PCT="${SEAT_LIVE_PREPAID_WALL_PCT:-95}"
 SEAT_LIVE_QUOTA_STALE_S="${SEAT_LIVE_QUOTA_STALE_S:-900}"
 SEAT_LIVE_QUOTA_EXHAUSTED_PCT="${SEAT_LIVE_QUOTA_EXHAUSTED_PCT:-1}"
 
 provider_live_reset_s() {
+    local p="$1" out
+    out=$(_provider_seat_quota_reset_s "$p")
+    if [[ "$out" =~ ^[0-9]+$ ]] && (( out > 0 )); then
+        echo "$out"
+        return 0
+    fi
+    _provider_prepaid_reset_s "$p"
+}
+
+# fleet_seat_quota_* source (fleet-metrics-export.py): only an EXHAUSTED window
+# (remaining_pct <= SEAT_LIVE_QUOTA_EXHAUSTED_PCT) counts.
+_provider_seat_quota_reset_s() {
     local p="$1"
     [[ -r "$SEAT_LIVE_QUOTA_PROM" ]] || { echo 0; return 0; }
     awk -v prov="$p" -v stale="$SEAT_LIVE_QUOTA_STALE_S" -v thresh="$SEAT_LIVE_QUOTA_EXHAUSTED_PCT" '
@@ -1092,6 +1136,50 @@ provider_live_reset_s() {
             print best
         }
     ' "$SEAT_LIVE_QUOTA_PROM" 2>/dev/null || echo 0
+}
+
+# fleet_prepaid_usage_pct / fleet_prepaid_window_reset_seconds source
+# (bin/fleet-prepaid-util-canary, fleet-ops#5022): the provider's own usage
+# endpoint says what percent of the SHORT (5h) window is used and when it
+# resets. A window at/above SEAT_LIVE_PREPAID_WALL_PCT used is this wall's
+# recovery time. Honours the same freshness bound as the fleet_seat_quota
+# source; the emitted observed timestamp is absolute, so "now" comes from the
+# caller (awk's systime() is a gawk extension this box does not have).
+_provider_prepaid_reset_s() {
+    local p="$1" now
+    [[ -r "$SEAT_LIVE_PREPAID_PROM" ]] || { echo 0; return 0; }
+    now=$(date -u +%s)
+    awk -v prov="$p" -v wall="$SEAT_LIVE_PREPAID_WALL_PCT" -v stale="$SEAT_LIVE_QUOTA_STALE_S" -v now="$now" '
+        function label(line, key,    re, s) {
+            re = key "=\"[^\"]*\""
+            if (match(line, re)) {
+                s = substr(line, RSTART, RLENGTH)
+                sub("^" key "=\"", "", s)
+                sub("\"$", "", s)
+                return s
+            }
+            return ""
+        }
+        /^fleet_prepaid_usage_pct\{/ && label($1, "provider") == prov && label($1, "window") == "5h" {
+            used = $2 + 0; have_used = 1
+        }
+        /^fleet_prepaid_window_reset_seconds\{/ && label($1, "provider") == prov && label($1, "window") == "5h" {
+            rst = $2 + 0; have_rst = 1
+        }
+        /^fleet_prepaid_usage_observed_timestamp\{/ && label($1, "provider") == prov {
+            obs = $2 + 0; have_obs = 1
+        }
+        END {
+            if (!have_used || !have_rst || !have_obs) { print 0; exit }
+            if (used + 0 < wall + 0) { print 0; exit }
+            age = now - obs
+            if (age < 0) age = 0
+            if (age > stale + 0) { print 0; exit }
+            live = int(rst - age)
+            if (live <= 0) { print 0; exit }
+            print live
+        }
+    ' "$SEAT_LIVE_PREPAID_PROM" 2>/dev/null || echo 0
 }
 
 # --- wall ceiling: the provider's real reset horizon (fleet-ops#2563) -------
@@ -1590,13 +1678,142 @@ _tick_spawn_count() {
     echo "$n"
 }
 
-# Return 0 (exceeded) if the provider has hit its per-tick spawn cap, 1
-# (not exceeded) otherwise. A provider without SEAT_TICK_SPAWN_CAP or with
-# cap=0 is unlimited. Args: provider
-tick_spawn_cap_exceeded() {
+# fleet-ops#4723: true (return 0) if another provider still has a usable
+# seat this pick could fall through to. The #3690 burst guard stays in
+# force whenever a fallback exists; the AIMD ride below is only for the
+# sole-usable-provider starve. Does not call pick_seat (re-entrancy).
+_tick_spawn_has_other_usable() {
+    local skip="$1" p m pcap
+    local _SEAT_USABLE_SILENT=1
+    if (( ! _seat_caps_loaded )); then load_seat_caps || true; fi
+    while IFS=$'\t' read -r p m _; do
+        [[ -n "$p" && -n "$m" && "$p" != "$skip" ]] || continue
+        pcap="${SEAT_PROVIDER_CAP[$p]:-0}"
+        [[ "$pcap" =~ ^[0-9]+$ ]] || pcap=0
+        (( pcap > 0 )) || continue
+        [[ -z "${SEAT_CAP_ZERO_CLASS_INTENTIONAL[$p]:-}" ]] || continue
+        if seat_usable "$p" "$m"; then
+            return 0
+        fi
+    done < <(enumerate_seats)
+    return 1
+}
+
+# fleet-ops#4723: true if watch.log shows this provider dying rc=143 or
+# rc=124 in the last 60s. The #3690 burst (5 simultaneous SIGTERM/timeout
+# deaths) is the veto: ride AIMD only when those deaths are absent.
+_provider_recent_fast_death() {
+    local p="$1"
+    local f="$LOG_FILE"
+    [[ -n "$p" && -f "$f" ]] || return 1
+    local now
+    now=$(date -u +%s)
+    awk -v p="$p" -v now="$now" '
+        index($0, p "/") && ($0 ~ /rc=143/ || $0 ~ /rc=124/) {
+            ts = $0
+            sub(/^\[/, "", ts)
+            sub(/\].*/, "", ts)
+            cmd = "date -u -d \"" ts "\" +%s"
+            cmd | getline s
+            close(cmd)
+            if (s + 0 > 0 && (now - s) <= 60 && (now - s) >= 0) { found = 1; exit }
+        }
+        END { exit found ? 0 : 1 }
+    ' "$f"
+}
+
+# fleet-ops#4723: true if AIMD has actually admitted a raise (last_result
+# probe, or learned_cap above the floor/2 ramp seed). A fresh ramp seed at
+# floor/2 is NOT a raise — that is the #3690 slow-start and must keep the
+# fixed tick_spawn_cap.
+_aimd_has_admitted_raise() {
+    local p="$1" lr lc declared floor
+    if (( ! _seat_caps_loaded )); then load_seat_caps || true; fi
+    if (( ! _seat_learned_loaded )); then load_learned_caps || true; fi
+    lr=""
+    if [[ -f "$LEARNED_CAPS_JSON" ]]; then
+        lr=$(jq -r --arg p "$p" '.providers[$p].last_result // empty' "$LEARNED_CAPS_JSON" 2>/dev/null || true)
+    fi
+    [[ "$lr" == "probe" ]] && return 0
+    lc="${LEARNED_CAP[$p]:-}"
+    declared=$(provider_cap "$p")
+    [[ "$declared" =~ ^[0-9]+$ ]] || return 1
+    floor=$(( declared / 2 ))
+    (( floor < 1 )) && floor=1
+    [[ "$lc" =~ ^[0-9]+$ ]] && (( lc > floor )) && return 0
+    return 1
+}
+
+# fleet-ops#4723: ride the live AIMD ceiling instead of the fixed
+# tick_spawn_cap when this is the only usable provider, AIMD has admitted
+# a raise, and there is no recent fast death. Must not raise an
+# intentional_cap_zero seat and must not drop the burst guard when a
+# fallback provider exists (#3690).
+_tick_spawn_ride_aimd() {
+    local p="$1"
+    local cap="${SEAT_TICK_SPAWN_CAP[$p]:-0}"
+    [[ "$cap" =~ ^[0-9]+$ ]] || cap=0
+    (( cap > 0 )) || return 1
+    [[ -z "${SEAT_CAP_ZERO_CLASS_INTENTIONAL[$p]:-}" ]] || return 1
+    if _tick_spawn_has_other_usable "$p"; then return 1; fi
+    if _provider_recent_fast_death "$p"; then return 1; fi
+    if provider_has_recent_error "$p"; then return 1; fi
+    _aimd_has_admitted_raise "$p"
+}
+
+# Echo the per-tick cap pick_seat honours for this provider. Default is
+# tick_spawn_cap from seat-caps.json. When _tick_spawn_ride_aimd holds,
+# the live AIMD ceiling (effective_provider_cap) is used if it is higher.
+_tick_spawn_effective_cap() {
     local p="$1"
     if (( ! _seat_caps_loaded )); then load_seat_caps || true; fi
     local cap="${SEAT_TICK_SPAWN_CAP[$p]:-0}"
+    [[ "$cap" =~ ^[0-9]+$ ]] || cap=0
+    if _tick_spawn_ride_aimd "$p"; then
+        local aimd
+        aimd=$(effective_provider_cap "$p")
+        [[ "$aimd" =~ ^[0-9]+$ ]] || aimd=0
+        (( aimd > cap )) && cap=$aimd
+    fi
+    echo "$cap"
+}
+
+# Compact "p/m until=ISO" list of seats whose usable_at or bench_until is
+# still in the future. Intake prints this on the #3732 line so the next
+# run can judge supply without a 66-file census (fleet-ops#4723).
+seat_walled_breakdown() {
+    local p m f ua bu wall
+    local -a parts=()
+    while IFS=$'\t' read -r p m _; do
+        [[ -n "$p" && -n "$m" ]] || continue
+        f=$(seat_ledger_path "$p" "$m")
+        [[ -f "$f" ]] || continue
+        IFS=$'\x1f'$'\n' read -r ua bu < <(
+            jq -r '[(.usable_at//""),(.bench_until//"")] | join("\u001f")' "$f" 2>/dev/null || true
+        )
+        wall="$ua"
+        [[ -z "$wall" ]] && wall="$bu"
+        [[ -n "$wall" ]] && _seat_in_future "$wall" || continue
+        parts+=("$p/$m until=$wall")
+    done < <(enumerate_seats)
+    (( ${#parts[@]} > 0 )) || return 0
+    local -a shown=("${parts[@]:0:6}")
+    local i
+    printf '%s' "${shown[0]}"
+    for (( i = 1; i < ${#shown[@]}; i++ )); do
+        printf '; %s' "${shown[i]}"
+    done
+}
+
+# Return 0 (exceeded) if the provider has hit its per-tick spawn cap, 1
+# (not exceeded) otherwise. A provider without SEAT_TICK_SPAWN_CAP or with
+# cap=0 is unlimited. fleet-ops#4723: the cap is the AIMD ceiling when this
+# is the sole usable provider and it is demonstrably healthy. Args: provider
+tick_spawn_cap_exceeded() {
+    local p="$1"
+    if (( ! _seat_caps_loaded )); then load_seat_caps || true; fi
+    local cap
+    cap=$(_tick_spawn_effective_cap "$p")
     [[ "$cap" =~ ^[0-9]+$ ]] || cap=0
     (( cap > 0 )) || return 1
     local n
@@ -2827,6 +3044,12 @@ seat_spawn_bench_path() {
 _seat_wall_source_justified() {
     case "${1:-}" in
         money_boundary|provider_quota_window) return 0 ;;
+        # fleet-ops#5274: a permanent corpse from an OpenRouter 404
+        # "unavailable for free" is a provider retirement, not a lane fault —
+        # the provider's own 404 body is the evidence, and the seat-caps.json
+        # intentional_cap_zero=corpse entry is the standing declaration. The
+        # corpse marker's usable_at is far-future by design (terminal wall).
+        free_retired_corpse) return 0 ;;
     esac
     return 1
 }
@@ -4352,7 +4575,7 @@ _expiring_seat_behind_pace() {
 _pick_expiring_floor_seat() {
     local -a behind=()
     local fm p m
-    for fm in "${prepaid_seats[@]:-}"; do
+    for fm in ${prepaid_seats[@]+"${prepaid_seats[@]}"}; do
         [[ -n "$fm" ]] || continue
         p="${fm%%$'\t'*}"
         m="${fm#*$'\t'}"
@@ -4384,7 +4607,7 @@ _order_seats_by() {
     done
     for fm in "${src[@]}"; do
         in_ordered=0
-        for x in "${ordered[@]:-}"; do
+        for x in ${ordered[@]+"${ordered[@]}"}; do
             [[ "$x" == "$fm" ]] && in_ordered=1 && break
         done
         (( in_ordered )) || ordered+=("$fm")
@@ -5589,7 +5812,7 @@ pick_seat() {
         local -a _vranked=()
         mapfile -t _vranked < <(
             _i=0
-            for _fm in "${prepaid_seats[@]:-}" "${metered_seats[@]:-}" "${free_seats[@]:-}"; do
+            for _fm in ${prepaid_seats[@]+"${prepaid_seats[@]}"} ${metered_seats[@]+"${metered_seats[@]}"} ${free_seats[@]+"${free_seats[@]}"}; do
                 [[ -n "$_fm" ]] || continue
                 _p="${_fm%%$'\t'*}"
                 _m="${_fm#*$'\t'}"
@@ -5615,7 +5838,7 @@ pick_seat() {
             }' | sort -t$'\t' ${_vsort:--k1,1nr -k2,2nr -k3,3n}
         )
         local _vline _vlog="" _vn=0
-        for _vline in "${_vranked[@]:-}"; do
+        for _vline in ${_vranked[@]+"${_vranked[@]}"}; do
             [[ -n "$_vline" ]] || continue
             local _k1 _k2 _vi _vp _vm _vy _vv
             if (( _qfirst )); then
@@ -5641,7 +5864,7 @@ pick_seat() {
         local -a _yranked=()
         mapfile -t _yranked < <(
             _i=0
-            for _fm in "${prepaid_seats[@]:-}" "${metered_seats[@]:-}" "${free_seats[@]:-}"; do
+            for _fm in ${prepaid_seats[@]+"${prepaid_seats[@]}"} ${metered_seats[@]+"${metered_seats[@]}"} ${free_seats[@]+"${free_seats[@]}"}; do
                 [[ -n "$_fm" ]] || continue
                 _p="${_fm%%$'\t'*}"
                 _m="${_fm#*$'\t'}"
@@ -5656,7 +5879,7 @@ pick_seat() {
             done | sort -t$'\t' -k1,1nr -k2,2n -k3,3n
         )
         local _yline _ylog="" _yn=0
-        for _yline in "${_yranked[@]:-}"; do
+        for _yline in ${_yranked[@]+"${_yranked[@]}"}; do
             [[ -n "$_yline" ]] || continue
             local _ys _yr _yi _yp _ym
             IFS=$'\t' read -r _ys _yr _yi _yp _ym <<<"$_yline"
@@ -5695,9 +5918,9 @@ pick_seat() {
             prepaid|metered|free)
                 local -a _pref_bucket=()
                 case "$PI_PICK_PREFER_CLASS" in
-                    prepaid) _pref_bucket=("${prepaid_seats[@]:-}") ;;
-                    metered) _pref_bucket=("${metered_seats[@]:-}") ;;
-                    free)    _pref_bucket=("${free_seats[@]:-}") ;;
+                    prepaid) _pref_bucket=(${prepaid_seats[@]+"${prepaid_seats[@]}"}) ;;
+                    metered) _pref_bucket=(${metered_seats[@]+"${metered_seats[@]}"}) ;;
+                    free)    _pref_bucket=(${free_seats[@]+"${free_seats[@]}"}) ;;
                 esac
                 if (( ${#_pref_bucket[@]} > 0 )); then
                     chosen="${_pref_bucket[0]}"
@@ -5726,12 +5949,12 @@ pick_seat() {
     # role resolves to its fallback, not a stall).
     if [[ -z "${chosen:-}" && "$difficulty" == "senior-review" ]]; then
         local _sn _sp _sm _bucket_seat
-        for _sn in "${SEAT_SENIOR_ORDER[@]:-}"; do
+        for _sn in ${SEAT_SENIOR_ORDER[@]+"${SEAT_SENIOR_ORDER[@]}"}; do
             [[ -n "$_sn" ]] || continue
             _sp="${_sn%%/*}"
             _sm="${_sn#*/}"
             [[ -n "$_sp" && -n "$_sm" ]] || continue
-            for _bucket_seat in "${prepaid_seats[@]:-}" "${metered_seats[@]:-}" "${free_seats[@]:-}" "${product_only_seats[@]:-}"; do
+            for _bucket_seat in ${prepaid_seats[@]+"${prepaid_seats[@]}"} ${metered_seats[@]+"${metered_seats[@]}"} ${free_seats[@]+"${free_seats[@]}"} ${product_only_seats[@]+"${product_only_seats[@]}"}; do
                 [[ "$_bucket_seat" == "$_sp"$'\t'"$_sm" ]] || continue
                 chosen="$_bucket_seat"
                 chosen_p="$_sp"
@@ -5967,6 +6190,16 @@ SPAWN_FAIL_MAX_S="${SPAWN_FAIL_MAX_S:-120}"
 # fleet-ops#2343: EMPTY RUNS (provider no-op, exit 0 + <OUT_MIN stdout) are
 # NOT a wall and must NOT take this ladder — see mark_seat_empty_run.
 SPAWN_FAIL_BACKOFF_CAP_S="${SPAWN_FAIL_BACKOFF_CAP_S:-3600}"  # 1 h
+
+# fleet-ops#5189: bench window for mark_seat_writes_refused_bench (a seat
+# whose tool-approval gate refused the run's writes). The window must OUTLAST
+# the caller unit's RestartSec: agent-cron-orchestrator-decision-sweep
+# re-runs 900s after a failure, and senior-review tried-seats are dropped
+# once the seat reads usable again (fleet-ops#4220), so a sub-900s bench
+# would re-pick the same gated seat and refuse again. 3600s bounds the gate
+# to one refused attempt per seat per hour — the classifier is intermittent,
+# so each expiry re-probes the seat before the next refusal re-benches it.
+SEAT_WRITES_REFUSED_BENCH_S="${SEAT_WRITES_REFUSED_BENCH_S:-3600}"
 
 # _escalated_backoff base count [cap]
 # Compute a backoff that doubles per consecutive failure, capped at <cap>.
@@ -6209,7 +6442,7 @@ is_spawn_etimeout() {
     local out="$1" err="$2"
     local combined="$out"$'\n'"$err"
     [[ -n "$combined" ]] || return 1
-    if ! grep -qiE 'ETIMEDOUT|connection timed out|connect ETIMEDOUT|timed out waiting' <<<"$combined"; then
+    if ! grep -qiE 'ETIMEDOUT|E2BIG|connection timed out|connect ETIMEDOUT|timed out waiting' <<<"$combined"; then
         return 1
     fi
     # Co-occurrence guard: a worker that took down stdout verbosely could
@@ -6218,10 +6451,16 @@ is_spawn_etimeout() {
     # is the cheap regex-version of "did this happen before pi had a real
     # response" — a real timeout mid-session is paired with an HTTP status,
     # never with spawn/socket/connect/child.
-    if grep -qiE '.{0,120}(ETIMEDOUT|timed out).{0,120}(spawn|socket|connect|child|fetch|handshake)' <<<"$combined"; then
+    # fleet-ops#5309: E2BIG joins the signature set — `spawnSync <bin> E2BIG`
+    # is pi's cursor provider passing a prompt past the kernel's per-arg
+    # limit. Benching the seat is not the true fix (the prompt is the fault;
+    # agent-cron-run's pre-flight cap refuses oversize prompts before spawn),
+    # but a missed case must bench with a spawn-bench marker instead of
+    # crash-looping the same seat to StartLimitBurst.
+    if grep -qiE '.{0,120}(ETIMEDOUT|E2BIG|timed out).{0,120}(spawn|socket|connect|child|fetch|handshake)' <<<"$combined"; then
         return 0
     fi
-    if grep -qiE '(spawn|socket|connect|child|fetch|handshake).{0,120}(ETIMEDOUT|timed out)' <<<"$combined"; then
+    if grep -qiE '(spawn|socket|connect|child|fetch|handshake).{0,120}(ETIMEDOUT|E2BIG|timed out)' <<<"$combined"; then
         return 0
     fi
     return 1
@@ -6897,6 +7136,7 @@ mark_seat_empty_success() {
 _matcher_dispatch() {
     local matcher="$1" out="$2" err="$3"
     case "$matcher" in
+        is_openrouter_free_retired_error) is_openrouter_free_retired_error "$out" "$err" ;;
         is_quota_cap_error) is_quota_cap_error "$out" "$err" ;;
         is_overload_error)  is_overload_error "$out" "$err" ;;
         *)                  return 1 ;;
@@ -6910,6 +7150,7 @@ _matcher_dispatch() {
 _writer_dispatch() {
     local writer="$1" p="$2" m="$3" text="$4"
     case "$writer" in
+        mark_seat_free_retired_corpse) mark_seat_free_retired_corpse "$p" "$m" "$text" ;;
         mark_seat_quota_bench)    mark_seat_quota_bench "$p" "$m" "$text" ;;
         mark_seat_overload_bench) mark_seat_overload_bench "$p" "$m" "$text" ;;
         *)                        return 1 ;;
@@ -6996,7 +7237,9 @@ classify_death_error() {
     [[ -n "$out" && -f "$out" ]] && out_text=$(cat "$out" 2>/dev/null || true)
     [[ -n "$err" && -f "$err" ]] && err_text=$(cat "$err" 2>/dev/null || true)
     local cls="unknown"
-    if is_quota_cap_error "$out_text" "$err_text"; then
+    if is_openrouter_free_retired_error "$out_text" "$err_text"; then
+        cls="openrouter_free_retired"
+    elif is_quota_cap_error "$out_text" "$err_text"; then
         cls="quota_cap"
     elif is_overload_error "$out_text" "$err_text"; then
         cls="overload_503"
@@ -7419,6 +7662,81 @@ mark_seat_devin_writes_rejected_bench() {
     return 1
 }
 
+# Bench a seat whose tool-approval gate refused the run's writes
+# (fleet-ops#5189). Args: provider model [reason]. Same infrastructure class
+# as mark_seat_devin_writes_rejected_bench (fleet-ops#4780): health_class
+# config_fault, seat_dead=false, NEVER retired — a seat-side permission gate
+# is a lane fault, not seat yield. The difference is the window: this bench
+# must outlast the caller unit's RestartSec so the systemd retry walks the
+# seat ladder instead of re-picking the same gated seat (senior-review
+# tried-seats drop once the seat reads usable, fleet-ops#4220).
+# Writes LEDGER_DIR/<sanitised-provider>__<sanitised-model>.json atomically.
+# Best-effort: any failure is logged but does NOT fail the caller's exit.
+mark_seat_writes_refused_bench() {
+    local p="$1" m="$2" reason="${3:-writes-refused}"
+    # fleet-ops#3661: never write a ledger for a phantom seat key.
+    if ! _seat_key_guard "$p" "$m" "mark_seat_writes_refused_bench"; then return 1; fi
+    if _transport_is_down; then _mark_transport_down "$p" "$m"; return 1; fi
+    local path
+    path=$(seat_ledger_path "$p" "$m")
+    mkdir -p "$LEDGER_DIR" 2>/dev/null || true
+
+    local window_s="${SEAT_WRITES_REFUSED_BENCH_S:-3600}"
+    [[ "$window_s" =~ ^[0-9]+$ ]] || window_s=3600
+
+    local now_utc now_s bench_until
+    now_s=$(date -u +%s)
+    now_utc=$(date -u -d "@$now_s" +%Y-%m-%dT%H:%M:%SZ)
+    bench_until=$(date -u -d "@$((now_s + window_s))" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || echo "$now_utc")
+
+    # Merge consecutive_failure_count from any existing entry, but NEVER
+    # escalate to a corpse — a tool-approval gate is infrastructure, not
+    # seat yield.
+    local prev_count=0
+    if [[ -f "$path" ]]; then
+        prev_count=$(jq -r '.consecutive_failure_count // 0' "$path" 2>/dev/null || echo 0)
+        [[ "$prev_count" =~ ^[0-9]+$ ]] || prev_count=0
+    fi
+    local merged_count=$((prev_count + 1))
+
+    local tmp="$path.wr.$$.$RANDOM.tmp"
+    if ! jq -nc \
+        --arg provider "$p" --arg model "$m" --arg reason "$reason" \
+        --arg observed "$now_utc" --arg bench "$bench_until" --arg usable "$bench_until" \
+        --argjson window "$window_s" --argjson merged "$merged_count" \
+        --argjson http_status 0 --argjson retry_after null \
+        --argjson retryable true --argjson seat_dead false --argjson poison_ladder false \
+        --arg writer "mark_seat_writes_refused_bench" \
+        '{
+          provider:$provider, model:$model,
+          http_status:$http_status, retry_after:$retry_after,
+          health_class:"config_fault",
+          retryable:$retryable, seat_dead:$seat_dead, poison_ladder:$poison_ladder,
+          observed_at:$observed,
+          source:"writes-refused",
+          failure_mode:"writes-refused",
+          bench_until:$bench,
+          usable_at:$usable,
+          bench_window_s:$window,
+          consecutive_failure_count:$merged,
+          last_error_class:"writes-refused",
+          bench_reason:$reason,
+          writer:$writer
+        }' > "$tmp" 2>/dev/null; then
+        seat_log "writes-refused-bench: jq compose FAILED for $p/$m — marker NOT written"
+        rm -f "$tmp" 2>/dev/null || true
+        return 1
+    fi
+    chmod 0644 "$tmp" 2>/dev/null || true
+    if mv "$tmp" "$path" 2>/dev/null; then
+        seat_log "writes-refused-bench: benched $p/$m until $bench_until (window=${window_s}s, count=$merged_count, reason=$reason) — approval-gate fault, NOT retired (fleet-ops#5189)"
+        return 0
+    fi
+    seat_log "writes-refused-bench: rename FAILED for $p/$m at $path"
+    rm -f "$tmp" 2>/dev/null || true
+    return 1
+}
+
 # True if the captured output looks like a quota/cap wall (NOT a transient
 # rate-limit retry). Strict enough to require a quota/cap keyword AND a reset
 # signal, so a plain 429-with-retry-after (transient) does NOT trigger a long
@@ -7476,6 +7794,55 @@ is_quota_cap_error() {
         return 0
     fi
     return 1
+}
+
+# fleet-ops#5274: OpenRouter retired the free tier of a model. The upstream
+# body is HTTP 404 {"message":"This model is unavailable for free. The paid
+# version is available now - use this slug instead: <paid-slug>"}. Neither
+# is_quota_cap_error (quota words) nor is_overload_error (503) matches it, so
+# pi-issue-run booked error_class=unknown, benched 300s, and the corpse seat
+# was re-offered every restart (pi-issue@0509-2724, 8 reclaims). The 404 is
+# PERMANENT: OpenRouter's /api/v1/models no longer lists the slug. Match it
+# explicitly so it classifies as a corpse, not a transient bench.
+is_openrouter_free_retired_error() {
+    local out="$1" err="$2"
+    local combined="$out"$'\n'"$err"
+    [[ -n "${combined//$'\n'/}" ]] || return 1
+    # fleet-ops#5274: require BOTH a 404 status token and OpenRouter's exact
+    # 'unavailable for free' phrase — a bare 404, a 503 overload, or a quota
+    # body alone must never corpse a seat.
+    grep -qiE '404' <<<"$combined" \
+        && grep -qiE 'unavailable[[:space:]_-]+for[[:space:]]+free' <<<"$combined"
+}
+
+# mark_seat_free_retired_corpse <provider> <model> [error_text]
+# Permanent-corpse writer for the free_retired_corpse error class (fleet-ops#5274
+# row in seat-caps.json's error_classes registry). Composes the existing corpse
+# pieces instead of adding an organ: write_parked_ledger writes the terminal
+# seat_dead=true ledger, _seat_merge_error_class stamps the classifiable class
+# + literal on top, and _seat_write_spawn_bench (seat_dead=true, far-future,
+# source=free_retired_corpse) carries the corpse onto the clobber-proof marker
+# so the false-healthy transport-200 clobber (fleet-ops#3889) cannot resurrect
+# it. Best-effort: a marker failure does not undo the ledger.
+mark_seat_free_retired_corpse() {
+    local p="$1" m="$2" text="${3:-}"
+    # fleet-ops#3661: never write a ledger for a phantom seat key.
+    if ! _seat_key_guard "$p" "$m" "mark_seat_free_retired_corpse"; then return 1; fi
+    if _transport_is_down; then _mark_transport_down "$p" "$m"; return 1; fi
+    local lit="${text:0:300}"
+    if ! write_parked_ledger "$p" "$m" \
+        "free-retired corpse: OpenRouter 404 unavailable-for-free is PERMANENT (provider retired the free tier; cap=0 intentional_cap_zero=corpse, fleet-ops#5274): $lit"; then
+        return 1
+    fi
+    _seat_merge_error_class "$p" "$m" "openrouter_free_retired" \
+        "OpenRouter 404 unavailable-for-free — permanent corpse (fleet-ops#5274): $lit" 2>/dev/null || true
+    local now_s far_future
+    now_s=$(date -u +%s)
+    far_future=$(date -u -d "@$((now_s + 315360000))" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || true)
+    _seat_write_spawn_bench "$p" "$m" "$far_future" \
+        "openrouter 404 unavailable-for-free — permanent corpse (fleet-ops#5274)" \
+        0 1 "free_retired_404" "true" "free_retired_corpse" 2>/dev/null || true
+    return 0
 }
 
 # Bench a seat for a quota/cap wall. Args: provider model [error_text]
@@ -7570,6 +7937,30 @@ mark_seat_quota_bench() {
         fi
     fi
     window_s=$(_seat_clamp_non_money_window_s "$window_s" "$wall_source" "$declared_window_s")
+    # fleet-ops#5285: a bench longer than 15 min owes the seat a bench-truth
+    # probe at min(advertised reset, 15 min). A window built ONLY from the
+    # provider's static quota_bench_default_s is not an advertised reset —
+    # no provider reset was parsed or observed live — so cap it at 15 min
+    # before the first truth probe (DECISION 2026-09-11). Parsed windows and
+    # live fleet_seat_quota resets ARE advertised and keep their window (the
+    # probe corrects a lying advertisement within one 15-min cycle); money
+    # walls (wall_source=money_boundary) are policy, never probed, and keep
+    # their full declared window. The #3531 geometric escalation on top of a
+    # default is also capped here: escalating a guessed window multiplies a
+    # guess (the lived Devin "reset in 2…" -> 15360s misparse class), and the
+    # bench-truth probe at 15-min cadence is the correct brake now.
+    # A failure-ceiling PARK (merged_count >= SEAT_FAILURE_CEILING) is not a
+    # guess: it is N consecutive real failures, and #4640's 6h clamp on it
+    # stands — the expired-wall tool probe owns parked seats, not the
+    # 15-min PONG.
+    if [[ -n "$declared_window_s" && "$wall_source" == "quota_bench" ]] \
+        && (( merged_count < ${SEAT_FAILURE_CEILING:-20} )); then
+        local truth_max="${SEAT_QUOTA_BENCH_DEFAULT_MAX_S:-900}"
+        if [[ "$truth_max" =~ ^[0-9]+$ ]] && (( truth_max > 0 )) && (( window_s > truth_max )); then
+            seat_log "quota-bench: $p/$m default-driven window ${window_s}s capped at ${truth_max}s — no advertised reset; bench-truth probe owes the seat a PONG at 15 min (fleet-ops#5285)"
+            window_s="$truth_max"
+        fi
+    fi
     bench_until=$(date -u -d "@$((now_s + window_s))" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || echo "$now_utc")
 
     # fleet-ops#2594: corpse reclassification for quota_cap. seat-health.ts

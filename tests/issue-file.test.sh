@@ -12,6 +12,8 @@
 #   6. Sweep clusters a 3-issue redo group from a fixture.
 #   7. Fake-gh file: duplicate comments, new issue creates with --body-file.
 #   8. Auto-filers in bin/ route through fleet-issue-file, not raw gh create.
+#  10. Spec-schema bodies for two DIFFERENT problems never reach DUP_THRESHOLD,
+#      while a genuinely same-problem pair still does (fleet-ops#5058).
 set -euo pipefail
 
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -164,8 +166,144 @@ sweep=$(python3 "$lib" sweep --from-json "$scratch/seat-corpse.json")
 count=$(jq '.cluster_count' <<<"$sweep")
 size=$(jq '[.clusters[].size] | max' <<<"$sweep")
 [[ "$count" -ge 1 ]] || fail "sweep must find the seat-corpse cluster, got $sweep"
-[[ "$size" -ge 3 ]] || fail "seat-corpse cluster must have size >= 3, got $sweep"
-ok "sweep clusters the 3-issue seat-corpse group (clusters=$count max_size=$size)"
+# fleet-ops#5152: relaxed 3 -> 2. #21 (a specific seat's credentials_bad
+# corpse) shares no content with #22/#23 (pool-level SloSeatAvailSlowBurn
+# SLO alerts) — they were welded only by the bare derived signal. Under the
+# corroborated-floor contract only the SLO pair still clusters; the
+# same-signature trio case is covered in 6c.
+[[ "$size" -ge 2 ]] || fail "seat-corpse cluster must have size >= 2, got $sweep"
+ok "sweep clusters the seat-corpse SLO pair (clusters=$count max_size=$size)"
+
+# --- 6c. derived fleet/seat-crisis floor needs corroboration (fleet-ops#5152)
+# Two DIFFERENT problems that both carry seat-flavoured prose (the
+# fleet-ops#4626 blocked-on-gate shape vs the fleet-ops#4641
+# credits-exhausted shape) must score below DUP_THRESHOLD — the bare derived
+# signal may not weld them. And the fleet-ops#2899 seat-corpse trio — same
+# incident, shared FleetSloSeatAvailSlowBurn signature — still clusters by
+# content.
+python3 - "$lib" <<'PY'
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location("if", sys.argv[1])
+m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
+
+gate = ("blocked-on date gates are prose: 're-open-<ISO>' on fleet-ops#4447 has "
+        "no parser, so parked items never come back on their own",
+        "fleet-ops#4447 was parked by the orchestrator sweep with blocked-on: "
+        "re-open-2026-09-14-alibaba-smoke-ok. No script in bin/ parses a "
+        "re-open-<ISO8601> blocked-on value, so the gate is prose: on the date "
+        "nothing flips the issue back to agent-ready and it sits until a human "
+        "notices. On fail the reconciler re-parks with a new timestamp = the "
+        "seat usable_at, and the seat stays walled until then.")
+crof = ("question (Nish): Crof credits exhausted (0.009 left) — top up or park; "
+        "the 401 'Invalid Token' is an empty balance, not a dead key",
+        "the Crof API key in ~/.pi/agent/models.json returns 200 on /models but "
+        "401 'Invalid Token' on /chat/completions. Crof is the designated "
+        "DeepSeek V4 Flash seat. Only Nish can rotate the key at crof.ai; "
+        "until then the seat stays a corpse. blocked-on: nish-decision")
+d = m.score_pair(*gate, *crof)
+assert m._has_seat_crisis(gate[0] + "\n" + gate[1]), "gate shape must carry the derived signal"
+assert m._has_seat_crisis(crof[0] + "\n" + crof[1]), "crof shape must carry the derived signal"
+assert d["shared_signals"] == ["fleet/seat-crisis"], d["shared_signals"]
+assert d["score"] < m.DUP_THRESHOLD, (
+    "two different seat-flavoured problems must not dedupe on the bare "
+    "derived signal", d["score"])
+print(f"OK: different seat-flavoured problems score {d['score']} < {m.DUP_THRESHOLD}")
+
+# fleet-ops#2899-shaped trio (modeled on real #2798 / #3057 / #3738): same
+# incident, shared FleetSloSeatAvailSlowBurn signature — must still cluster.
+trio = [
+    ("Two corpse seats + 6 walled: seat-avail SLO burning 2 days",
+     "Snapshot: 10/19 seats healthy. Corpses: cline/cline-pass_minimax-m3 "
+     "(cfc=19, manual_repair_corpse) and opencode/mimo-v2.5-free (cfc=15, "
+     "429). Walled 6, incl straitly x3 quota_exhausted until 2026-09-03. "
+     "FleetSloSeatAvailSlowBurn firing since 2026-08-31 and its repair chain "
+     "terminal=escalated. Triage each corpse: re-bench or retire the seat "
+     "entry so healthy_n reflects reality."),
+    ("Two seat corpses never released: minimax/MiniMax-M3 and "
+     "opencode/nemotron-3-ultra-free, fail_count=25",
+     "Both seats health_class=corpse, seat_dead=true, "
+     "failure_mode=comeback_never_released, consecutive_failure_count=25. "
+     "FleetSloSeatAvailSlowBurn has been firing since 2026-08-31 with 10/23 "
+     "seats walled. Either re-bench and release these two, or mark them "
+     "permanently excluded so the seat-availability SLO stops burning on "
+     "corpses."),
+    ("seat pool at 6 healthy / 29 — SloSeatAvailSlowBurn escalated 6 days, "
+     "SeatFloorFailopen pending",
+     "seats_healthy=6, seats_walled=20, seats_dead=3, seats_excluded=17. "
+     "FleetSloSeatAvailSlowBurn firing since 2026-08-31 with "
+     "terminal=escalated and a 28800s cycle — six days unresolved. Dead: "
+     "commandcode/minimax/minimax-m3-free (403 credentials_bad, corpse). "
+     "Money-walled seats are Nish-reserved and out of scope."),
+]
+for i in range(3):
+    for j in range(i + 1, 3):
+        p = m.score_pair(*trio[i], *trio[j])
+        # by content: a shared concrete signature (not the bare derived
+        # signal) or real token overlap did the corroboration.
+        assert len(p["shared_signals"]) > 1 \
+            or p["token_overlap_max"] >= m.SEAT_CRISIS_CONTENT_FLOOR, p
+        assert p["score"] >= m.DUP_THRESHOLD, p
+issues = [{"number": 2798 + i, "repository": "Nishfleet/fleet-ops",
+           "title": t, "body": b, "labels": [], "url": ""}
+          for i, (t, b) in enumerate(trio)]
+clusters = m.cluster_issues(issues)
+assert clusters and clusters[0]["size"] >= 3, clusters
+print("OK: #2899 seat-corpse trio still clusters by content "
+      f"(size={clusters[0]['size']} max={clusters[0]['max_score']})")
+PY
+ok "derived-signal floor corroboration guard (fleet-ops#5152)"
+
+# --- 6d. generic path keys earn no key bonus (fleet-ops#5198) --------------
+# Repo refs (`nishfleet/<repo>` inside `Nishfleet/<repo>#N`), bare CI dirs,
+# the worktree root, fractions (`3/3`) and rates (`activations/h`) all match
+# PATH_RE but carry no file identity — they must not reach shared_keys or
+# earn the +0.10 key bonus.
+python3 - "$lib" <<'PY'
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location("if", sys.argv[1])
+m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
+
+for noisy in (
+    "nishfleet/fleet-ops", "nishfleet/0509", "3/3", "10/19",
+    "activations/h", "requests/s",
+    "home/nish/workspaces/tooling/fleet-ops",
+    "home/nish/workspaces/agent-worktrees/issue-fleet-ops-5198",
+    ".github/scripts", "fleet/ci", "origin/main",
+):
+    got = m.key_paths(f"see {noisy} here")
+    assert got == set(), (noisy, got)
+
+# real file/unit identity still counts
+kept = m.key_paths(
+    "bin/fleet-issue-file, lib/issue-file.py, pi-issue@x-1.service, "
+    "home/nish/workspaces/tooling/fleet-ops/lib/issue-file.py"
+)
+for want in (
+    "bin/fleet-issue-file", "lib/issue-file.py", "pi-issue@x-1.service",
+    "home/nish/workspaces/tooling/fleet-ops/lib/issue-file.py",
+):
+    assert want in kept, (want, kept)
+
+# the issue's verify pair: bodies sharing only the repo ref and a fraction
+# get key_bonus = 0 (shared_keys empty, score is token overlap only)
+d = m.score_pair(
+    "alpha", "see nishfleet/fleet-ops#1, ratio 3/3",
+    "omega", "see nishfleet/fleet-ops#2, ratio 3/3",
+)
+assert d["shared_keys"] == [], d["shared_keys"]
+assert d["specific_shared_keys"] == [], d["specific_shared_keys"]
+assert d["score"] == d["token_overlap_max"], d
+
+# positive control: a shared real path still earns the bonus
+e = m.score_pair(
+    "alpha", "touches bin/fleet-heartbeat-tier1",
+    "omega", "bin/fleet-heartbeat-tier1 drifts",
+)
+assert e["specific_shared_keys"] == ["bin/fleet-heartbeat-tier1"], e
+assert e["score"] > e["token_overlap_max"], e
+print("OK: generic path keys filtered, real keys still earn the bonus")
+PY
+ok "generic-path key filter (fleet-ops#5198)"
 
 # --- 7. fake gh: comment vs create -----------------------------------------
 mkdir -p "$scratch/fakebin"
@@ -268,6 +406,105 @@ do
     || fail "$f must route filings through fleet-issue-file / lib/issue-file.py"
 done
 ok "wired auto-filers route through the helper"
+
+# --- 10. spec-schema bodies for different problems are not duplicates -------
+# fleet-ops#5058: three different-problem candidates were suppressed onto
+# #4959 (a cpu-sampler scoring step) at exactly PRIMARY_SIGNAL_FLOOR, 0.70,
+# while their token overlap was 0.05-0.24. Two causes, both regression-locked:
+#   (a) the derived #2899 `fleet/seat-crisis` PRIMARY signal fired on ANY body
+#       that mentioned a seat next to a failure word. #4959 carries "seat
+#       rate-limit walls" and, in an unrelated sentence, "the unit is dead
+#       with no deliverable" / "dead-man" — so the cpu-sampler packet, a
+#       dangling-symlink packet and a seat packet all looked like one problem.
+#       The failure cause is now a seat-health marker, or a seat state word in
+#       the same breath as the seat word.
+#   (b) the packet field skeleton (metric:/observed:/evidence:/...) is in
+#       every well-formed candidate, so it counted as overlap evidence; it is
+#       stripped before tokenising.
+# Asserted both ways: the real different-problem pairs stay below
+# DUP_THRESHOLD, and a genuinely same-problem pair still clears it.
+cat >"$scratch/against-4959.json" <<'JSON'
+[
+  {
+    "number": 4959,
+    "repository": "Nishfleet/fleet-ops",
+    "title": "score the throughput Decision rule conjunct 2 from the completed 24h cpu-sampler run (fleet-ops#4956)",
+    "body": "metric: the #4804 throughput Decision rule conjunct 2 (`saturated_with_backlog_hours` >= 6 of 24h) is scored from a completed 24h sampler window with a real `ready` value.\n\nobserved: 2026-09-10. #4956 landed the fixed sampler (`libexec/fleet-cpu-sampler.py`): `ready` is read from `queue-composition-cache.json` with a freshness bound.\n\naccept:\n- Read the completed window: `agent-state/fleet-metrics/cpu-sampler-4956-24h.jsonl`.\n- If the run is incomplete (unit still active, no deliverable, or JSONL < 6h): post `blocked-on: re-open-2026-09-11T16:00Z` plus `agent-blocked` on this issue and stop. Do not re-run the sampler yourself unless the unit is dead with no deliverable (then relaunch it exactly as #4956 documented, with a `--deliverable` and dead-man).\n- Otherwise name the next route to throughput from the study's two named candidates (seat rate-limit walls / claim-loop empty-success churn #4457).\n\nimpact: answers the fleet's central throughput question with a real 24h window.\n\nproduct_surface: fleet CPU/throughput measurement (worker-worktree CPU limiter Q)\n\nsource: Nishfleet/fleet-ops#4956 + docs/throughput-limiter-study.md"
+  }
+]
+JSON
+
+cand_supergrok_title="SuperGrok seat dead: grok CLI unauthenticated; xai-oauth is healthy"
+cat >"$scratch/cand-supergrok.md" <<'MD'
+fleet-seat-live-validate (fleet-ops#917) found the grok CLI dead but the
+xai-oauth extension token in ~/.pi/agent/auth.json is still valid (the
+subscription proxy cli-chat-proxy.grok.com returned 200).
+
+This is the #1450 case: the previous canary blindly mirrored the grok
+dead-class onto xai-oauth, marking xai-oauth seats credentials_bad even
+though the xai-oauth token was healthy.
+
+Nish must sign in TODAY on netcup-rs2000:
+
+    grok login --device-auth
+MD
+
+cand_symlink_title="No detector for dangling helper symlinks: unit-escalation-write was 127 for ~7.5h (every OnFailure escalation died silently); straitly canary link still dangling"
+cat >"$scratch/cand-symlink.md" <<'MD'
+metric: every helper symlink under ~/.local/bin and ~/.local/lib/pi-packet
+resolves to an existing file, and a check fails loud the moment one dangles
+
+observed: 2026-09-10T21:46Z-23:50Z - during the deploy-clone wrong-remote
+reset (fleet-ops#5016), ~/.local/bin/unit-escalation-write dangled ~7.5h;
+every OnFailure escalation (unit-escalation@*.service) exited 127, so failed
+units recorded no STOP-REASON and nothing paged on the escalation path
+itself being dead. fleet-seat-recovery alone 203/EXEC'd 44x and its
+escalation 127'd 40x in the window.
+
+evidence:
+- journalctl --user -u 'unit-escalation@fleet-seat-recovery.service.service'
+  --since '24 hours ago' -> status=127, repeated 40x on 2026-09-10
+MD
+
+for pair in "supergrok:$cand_supergrok_title" "symlink:$cand_symlink_title"; do
+  name="${pair%%:*}"
+  title="${pair#*:}"
+  out=$(score "$title" "$(cat "$scratch/cand-$name.md")" "$scratch/against-4959.json")
+  kind=$(jq -r .kind <<<"$out")
+  sc=$(jq -r .score <<<"$out")
+  below=$(jq -r '.score < 0.65' <<<"$out")
+  prim=$(jq -r '.primary_shared_signals | length' <<<"$out")
+  [[ "$kind" != "duplicate" ]] \
+    || fail "different-problem spec-schema pair ($name vs #4959) must not be a duplicate, got $out"
+  [[ "$below" == "true" ]] \
+    || fail "different-problem spec-schema pair ($name vs #4959) must score below DUP_THRESHOLD, got $out"
+  [[ "$prim" == "0" ]] \
+    || fail "incidental seat/dead wording must not raise the seat-crisis floor ($name), got $out"
+  ok "different-problem spec-schema pair stays unfiled ($name vs #4959, score=$sc)"
+done
+
+# And the other direction: a real same-problem pair must still be suppressed.
+cat >"$scratch/against-symlink-dup.json" <<'JSON'
+[
+  {
+    "number": 5059,
+    "repository": "Nishfleet/fleet-ops",
+    "title": "unit-escalation-write symlink dangles: OnFailure escalations exit 127 with no STOP-REASON",
+    "body": "metric: every OnFailure escalation writes a STOP-REASON\n\nobserved: ~/.local/bin/unit-escalation-write dangles, so unit-escalation@*.service exits 127 and no STOP-REASON is written.\n"
+  }
+]
+JSON
+out=$(score \
+  "Dangling unit-escalation-write helper: OnFailure escalations exit 127 and write no STOP-REASON" \
+  "metric: every OnFailure escalation writes a STOP-REASON
+
+observed: ~/.local/bin/unit-escalation-write is a dangling symlink; unit-escalation@*.service exits 127 and writes no STOP-REASON." \
+  "$scratch/against-symlink-dup.json")
+kind=$(jq -r .kind <<<"$out")
+sc=$(jq -r .score <<<"$out")
+[[ "$kind" == "duplicate" ]] \
+  || fail "genuinely same-problem spec-schema pair must stay duplicate, got $out"
+ok "same-problem spec-schema pair is still duplicate (score=$sc)"
 
 # --- 9. standards-drift dedupe keys on the missing file (fleet-ops#4591) ---
 bash "$here/standards-drift-dedupe.test.sh"

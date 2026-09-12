@@ -13,7 +13,9 @@
 #      (repair) -> exit 0, stall marker set.
 #   4. Next tick still stalled, pipeline idle -> FAIL LOUD (exit 1).
 #   5. Detector GREEN + non-terminal STOP-REASON + pipeline IDLE -> stale
-#      trip -> exit 1 immediately.
+#      trip ladder (fleet-ops#5190): LOUD + re-fire the auditor pipeline ->
+#      exit 0; quiet hold between actions; FAIL LOUD (exit 1) only once the
+#      re-fire bound is spent — never on consecutive stale ticks.
 #   6. Detector GREEN + non-terminal STOP-REASON + pipeline ACTIVE -> the
 #      closeout is in flight -> exit 0 (not stale).
 #   7. NISH-ESCALATIONS.md holds hash -> Nish-reserved wall -> exit 0.
@@ -79,6 +81,7 @@ echo "inactive"  > "$sysctl_store/stop-escalation.service.active"
 # The STOP-REASON points at the failed unit.
 STOP_REASON="$scratch/STOP-REASON.json"
 SEEN="$scratch/seen.txt"
+WALLED="$scratch/stop-escalation-walled.txt"
 NISH="$scratch/NISH-ESCALATIONS.md"
 AUDLOG="$scratch/AUDITOR-LOG.md"
 
@@ -98,12 +101,15 @@ run_bin() {
   FLEET_ESCALATION_COMPLETION_BUDGET="3600" \
   FLEET_STOP_REASON="$STOP_REASON" \
   FLEET_STOP_ESCALATION_SEEN="$SEEN" \
+  FLEET_STOP_ESCALATION_WALLED="$WALLED" \
   FLEET_NISH_ESCALATIONS="$NISH" \
   FLEET_AUDITOR_LOG="$AUDLOG" \
   FLEET_ESCALATION_COMPLETION_SYSTEMCTL="$scratch/systemctl" \
   SYSCTL_STORE="$sysctl_store" \
   FLEET_ESCALATION_COMPLETION_NOW="$now" \
   FLEET_ESCALATION_COMPLETION_DRY_RUN="1" \
+  FLEET_ESCALATION_COMPLETION_STALE_HOLD="${STALE_HOLD:-10800}" \
+  FLEET_ESCALATION_COMPLETION_STALE_REFIRES="${STALE_REFIRES:-2}" \
   FLEET_HEARTBEAT_TRIAGE="$scratch/triage.md" \
     "$bin" >/dev/null 2>"$scratch/err.log"
   local rc=$?
@@ -144,14 +150,50 @@ rc=$(run_bin "2026-08-27T04:00:00Z")
 grep -q "FAIL-LOUD" "$scratch/err.log" || fail "missing FAIL-LOUD loud line"
 ok "consecutive stale tick fails loud (exit 1)"
 
-# --- 5. detector green + non-terminal + pipeline idle -> stale trip ---------
+# --- 5. detector green + non-terminal + pipeline idle -> stale trip ladder --
+# fleet-ops#5190: a stale trip re-fires the auditor pipeline and HOLDS
+# (exit 0) instead of failing the heartbeat every tick; exit 1 is reserved
+# for a chain still stale after the re-fire bound is spent.
 rm -rf "$scratch/state"; mkdir -p "$scratch/state"
 echo "success" > "$sysctl_store/pi-issue@0509-1.service.result"
 echo "active"  > "$sysctl_store/pi-issue@0509-1.service.active"
+# 5a. First stale tick: LOUD + re-fire + hold (exit 0), not a heartbeat failure.
 rc=$(run_bin "2026-08-27T00:00:00Z")
-[[ "$rc" == "1" ]] || fail "green detector + non-terminal + idle pipeline should fail (got $rc)"
+[[ "$rc" == "0" ]] || fail "first stale tick should re-fire and hold (exit 0), got $rc"
 grep -q "STALE-TRIP" "$scratch/err.log" || fail "missing STALE-TRIP loud line"
-ok "green detector + non-terminal + idle pipeline = stale trip (exit 1)"
+grep -q "would restart stop-escalation.service" "$scratch/err.log" \
+  || fail "stale trip must re-fire the auditor pipeline (restart stop-escalation.service)"
+ok "stale trip: LOUD + auditor re-fire, exit 0 (no heartbeat failure)"
+# 5b. Next tick inside the hold window: quiet hold — no second action, no
+# second STALE-TRIP line (bounded, not one per tick).
+rc=$(run_bin "2026-08-27T00:30:00Z")
+[[ "$rc" == "0" ]] || fail "held stale tick should exit 0 (got $rc)"
+! grep -q "STALE-TRIP" "$scratch/err.log" \
+  || fail "held stale tick must not re-emit STALE-TRIP (bounded lines)"
+grep -q "stale trip held" "$scratch/err.log" || fail "missing stale-trip hold log"
+ok "stale tick inside hold window is quiet (exit 0, no second STALE-TRIP)"
+# 5c. Tick past the hold window: second action -> second re-fire -> exit 0.
+rc=$(run_bin "2026-08-27T04:00:00Z")
+[[ "$rc" == "0" ]] || fail "second stale-trip action should re-fire (exit 0), got $rc"
+grep -q "re-fire 2/2" "$scratch/err.log" || fail "missing second re-fire log"
+ok "stale tick past hold re-fires again (re-fire 2/2, exit 0)"
+# 5d. Still stale once the re-fire bound is spent: FAIL LOUD once (exit 1).
+rc=$(run_bin "2026-08-27T08:00:00Z")
+[[ "$rc" == "1" ]] || fail "stale trip past re-fire bound should fail loud (got $rc)"
+grep -q "STALE-TRIP" "$scratch/err.log" || fail "missing STALE-TRIP on fail-loud tick"
+grep -q "FAIL-LOUD" "$scratch/err.log" || fail "missing FAIL-LOUD line"
+ok "stale trip past re-fire bound fails loud (exit 1)"
+# 5e. The tick right after a fail-loud is a quiet hold (exit 0): two
+# consecutive stale ticks must not both exit 1.
+rc=$(run_bin "2026-08-27T08:10:00Z")
+[[ "$rc" == "0" ]] || fail "tick after fail-loud must hold (exit 0), got $rc"
+ok "consecutive stale ticks never both fail (post-fail hold, exit 0)"
+# 5f. And the ladder cycles: the next action tick re-fires again rather
+# than failing forever.
+rc=$(run_bin "2026-08-27T12:00:00Z")
+[[ "$rc" == "0" ]] || fail "post-fail action tick should re-fire (exit 0), got $rc"
+grep -q "re-fire 1/2" "$scratch/err.log" || fail "ladder must cycle back to re-fire 1/2"
+ok "stale-trip ladder cycles (fail-loud -> re-fire), exit 0"
 
 # --- 6. green detector + non-terminal + pipeline ACTIVE -> closeout in flight
 echo "activating" > "$sysctl_store/stop-escalation.service.active"
@@ -173,6 +215,41 @@ rc=$(run_bin "2026-08-27T02:00:00Z")
 grep -q "Nish-reserved wall" "$scratch/err.log" || fail "missing wall log"
 ok "Nish-reserved wall is a legal terminal (exit 0)"
 
+# --- 7b. LADDER-WALLED chain -> dispatcher-spent terminal (exit 0) -------
+# fleet-ops#623 / 2026-08-28 storm fix: a fully-walled seat ladder records the
+# hash in stop-escalation-walled.txt and deliberately does NOT write a
+# NISH-ESCALATIONS.md line for a non-payment reason. Without this case the
+# chain had no legal terminal and the enforcer re-fired STALE-TRIP every tick
+# (green detector + idle pipeline + non-terminal STOP-REASON), failing
+# fleet-heartbeat.service and summoning a fresh auditor for a spent chain.
+rm -rf "$scratch/state"; mkdir -p "$scratch/state"
+rm -f "$NISH"
+echo "success" > "$sysctl_store/pi-issue@0509-1.service.result"
+echo "active"  > "$sysctl_store/pi-issue@0509-1.service.active"
+echo "inactive" > "$sysctl_store/stop-escalation.service.active"
+write_trip "unit-failure"
+hash=$(sha256sum "$STOP_REASON" | awk '{print $1}')
+printf '%s 1789079695\n' "$hash" > "$WALLED"
+rc=$(run_bin "2026-08-27T00:00:00Z")
+[[ "$rc" == "0" ]] || fail "ladder-walled chain should exit 0 (got $rc)"
+grep -q "ladder-walled" "$scratch/err.log" || fail "missing ladder-walled log"
+! grep -q "STALE-TRIP" "$scratch/err.log" \
+  || fail "ladder-walled chain must not STALE-TRIP"
+terminal=$(jq -r '.terminal // ""' "$scratch/state/$hash.json" 2>/dev/null || true)
+[[ "$terminal" == "ladder-walled" ]] || fail "chain state must record terminal=ladder-walled (got '$terminal')"
+# A different hash in the ledger must NOT free this chain: it still
+# STALE-TRIPs (first stale tick re-fires + holds, exit 0 — fleet-ops#5190).
+printf 'deadbeef 1789079695\n' > "$WALLED"
+rm -rf "$scratch/state"; mkdir -p "$scratch/state"
+rc=$(run_bin "2026-08-27T00:00:00Z")
+[[ "$rc" == "0" ]] || fail "unwalled hash must still STALE-TRIP (re-fire+hold exit 0, got $rc)"
+grep -q "STALE-TRIP" "$scratch/err.log" || fail "unwalled hash missing STALE-TRIP loud line"
+rm -f "$WALLED"
+# Restore the RED detector case 8 expects (7b flipped it green).
+echo "exit-code" > "$sysctl_store/pi-issue@0509-1.service.result"
+echo "failed"    > "$sysctl_store/pi-issue@0509-1.service.active"
+ok "ladder-walled chain is a legal terminal (exit 0); unwalled hash still trips"
+
 # --- 8. pipeline-active guard on stalled chain ------------------------------
 rm -rf "$scratch/state"; mkdir -p "$scratch/state"
 rm -f "$NISH"
@@ -187,21 +264,23 @@ grep -qE "actively dispatching|closeout in flight" "$scratch/err.log" || fail "m
 echo "inactive" > "$sysctl_store/stop-escalation.service.active"
 ok "pipeline-active guard prevents false stall (exit 0)"
 
-# --- 8b. observe-to-close: a STALE-TRIP chain that was loud (exit 1) must
-# recover to clean (exit 0) once the auditor advances STOP-REASON to a
-# terminal reason, so the detector->queue reconciler observe-to-closes the
-# filed alarm issue. This is the exact closeout trajectory fleet-ops#4919
-# (chain fbe128) rides: the warning fired on a green+idle non-terminal
-# STOP-REASON, the senior auditor then wrote auditor-resolved, and the next
-# heartbeat tick must exit 0 clean (no STALE-TRIP) for the alarm to resolve.
+# --- 8b. observe-to-close: a STALE-TRIP chain that was loud (re-fire +
+# hold, exit 0) must recover to clean (exit 0) once the auditor advances
+# STOP-REASON to a terminal reason, so the detector->queue reconciler
+# observe-to-closes the filed alarm issue. This is the exact closeout
+# trajectory fleet-ops#4919 (chain fbe128) rides: the warning fired on a
+# green+idle non-terminal STOP-REASON, the senior auditor then wrote
+# auditor-resolved, and the next heartbeat tick must exit 0 clean (no
+# STALE-TRIP) for the alarm to resolve.
 rm -rf "$scratch/state"; mkdir -p "$scratch/state"
 echo "success" > "$sysctl_store/pi-issue@0509-1.service.result"
 echo "active"  > "$sysctl_store/pi-issue@0509-1.service.active"
 echo "inactive" > "$sysctl_store/stop-escalation.service.active"
-# Trip open (non-terminal), detector green, pipeline idle -> STALE-TRIP (exit 1).
+# Trip open (non-terminal), detector green, pipeline idle -> STALE-TRIP
+# re-fire + hold (exit 0 — the ladder is in motion, not a failure).
 write_trip "unit-failure"
 rc=$(run_bin "2026-08-27T00:00:00Z")
-[[ "$rc" == "1" ]] || fail "observe-to-close: open trip on green+idle should STALE-TRIP (got $rc)"
+[[ "$rc" == "0" ]] || fail "observe-to-close: open trip on green+idle should re-fire and hold (exit 0), got $rc"
 grep -q "STALE-TRIP" "$scratch/err.log" || fail "observe-to-close: missing STALE-TRIP loud line"
 # Senior auditor closes the STOP-REASON (advance to terminal). Detector stays green.
 write_trip "auditor-resolved"

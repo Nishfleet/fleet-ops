@@ -10,6 +10,13 @@
 # bin, lib and prompts for any known stale machine literal.
 # fleet-ops#1399: the unit now delegates to lib/fleet-heartbeat-failed-notify.py,
 # which keeps per-unit state and pages only after N consecutive failures.
+# fleet-ops#5462: the gap-audit re-filed the already-fixed #373 finding. Its
+# residual ask — "do the same audit on stop-escalation and any other Telegram
+# path" — is mechanized here: every file that can put text on a Telegram page
+# (all unit templates, every `hermes send` caller, the stop-escalation
+# dispatcher) must carry NO bare machine-name literal — neither a known-stale
+# host NOR the current host, resolved at test runtime. A literal is wrong the
+# moment the fleet migrates; pages must resolve the hostname at runtime.
 
 set -euo pipefail
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -82,6 +89,79 @@ for bad_host in "${stale_hosts[@]}"; do
   ok "drill: planted $bad_host is rejected"
   rm -f "$drill/systemd/$bad_host.page.service"
 done
+
+# --- page-sender host-literal guard (fleet-ops#5462) -------------------------
+# The same audit on stop-escalation and every other Telegram path, mechanized.
+# A page-sender file is: any unit template under systemd/, any file under
+# bin/lib/prompts that invokes `hermes send`, and the stop-escalation
+# dispatcher (it feeds the escalation page pipeline even though it does not
+# call hermes directly). None of them may carry a bare machine-name literal —
+# known-stale OR current. The current host is resolved at test runtime so the
+# guard follows the fleet to the next machine without a list update.
+page_sender_files() {
+  local root="$1"
+  {
+    grep -R -l -F "hermes send" "$root/systemd" "$root/bin" "$root/lib" "$root/prompts" 2>/dev/null || true
+    printf '%s\n' "$root/bin/stop-escalation-dispatch"
+    find "$root/systemd" -type f 2>/dev/null || true
+  } | sort -u
+}
+
+current_hosts() {
+  {
+    hostname -s 2>/dev/null || true
+    hostname 2>/dev/null || true
+    hostname -f 2>/dev/null || true
+  } | while IFS= read -r h; do [[ -n "$h" ]] && printf '%s\n' "$h"; done | sort -u
+}
+
+scan_page_senders() {
+  local root="$1" file host hits all_hits=""
+  local forbidden=("${stale_hosts[@]}")
+  while IFS= read -r h; do
+    forbidden+=("$h")
+  done < <(current_hosts)
+  while IFS= read -r file; do
+    [[ -f "$file" ]] || continue
+    for host in "${forbidden[@]}"; do
+      hits="$(grep -n -F "$host" "$file" 2>/dev/null || true)"
+      if [[ -n "$hits" ]]; then
+        all_hits+="$file: literal [$host]"$'\n'"$hits"$'\n'
+      fi
+    done
+  done < <(page_sender_files "$root")
+  if [[ -n "$all_hits" ]]; then
+    printf '%s' "$all_hits"
+    return 0
+  fi
+  return 1
+}
+
+# Real scan (must be clean).
+if hits="$(scan_page_senders "$repo_root")"; then
+  fail "machine-name literal found in a Telegram page sender:"$'\n'"$hits"
+fi
+ok "page-sender host-literal guard is clean (stale + current host, all page paths)"
+
+# Runtime-resolution pin: the page text must come from a runtime hostname, so
+# the helper must actually call socket.gethostname (fleet-ops#5462 fix path).
+grep -q "socket.gethostname" "$helper" \
+  || fail "failed-notify helper must resolve the hostname at runtime (socket.gethostname), never a literal"
+ok "failed-notify page resolves the hostname at runtime"
+
+# Drill: a planted CURRENT-host literal in a fake page sender MUST be detected.
+cur_host="$(hostname -s 2>/dev/null || true)"
+if [[ -n "$cur_host" ]]; then
+  printf '%s\n' "ExecStart=/bin/sh -c \"hermes send -t telegram failed on $cur_host\"" \
+    >"$drill/systemd/current-host.page.service"
+  if ! hits="$(scan_page_senders "$drill")"; then
+    fail "drill: planted current-host literal ($cur_host) was NOT detected — page-sender guard is broken"
+  fi
+  grep -qF "$cur_host" <<<"$hits" \
+    || fail "drill: detection output does not name the planted host $cur_host"
+  ok "drill: planted current-host literal ($cur_host) is rejected"
+  rm -f "$drill/systemd/current-host.page.service"
+fi
 
 # --- threshold behaviour ----------------------------------------------------
 bash "$here/fleet-heartbeat-failed-notify-threshold.test.sh" \

@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # tests/manifest-required-bins.test.sh
 #
-# fleet-ops#175 + #485: MANIFEST-declared binaries must stay in MANIFEST, and
+# fleet-ops#175 + #485 + #5458: MANIFEST-declared binaries must stay in
+# MANIFEST, and
 # the installed heartbeat must fail loud when a required helper is missing.
 # Silent `skip (not installed)` hid dead passes.
 #
@@ -31,6 +32,7 @@ ok()   { echo "OK: $*"; }
 required=(
   "lib/guard_pi_packet.py /home/nish/.local/lib/pi-packet/guard_pi_packet.py"
   "bin/pi-packet-guard /home/nish/.local/bin/pi-packet-guard"
+  "bin/pi-scout-run /home/nish/.local/bin/pi-scout-run"
   "bin/blocked-reconcile /home/nish/.local/bin/blocked-reconcile"
   "bin/fleet-heartbeat-undersaturation /home/nish/.local/bin/fleet-heartbeat-undersaturation"
   "bin/oomd-drill /home/nish/.local/bin/oomd-drill"

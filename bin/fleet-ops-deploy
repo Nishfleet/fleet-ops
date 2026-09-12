@@ -6,9 +6,12 @@
 # and the other /etc/... MANIFEST entries), reloads prometheus when it is
 # active, converges the declared per-repo set, then runs the drift canary.
 # Dirty tracked files or a non-fast-forward checkout block the update (no reset, no
-# stash). A named non-main branch also blocks (fleet-ops#477): merge
-# --ff-only would rewind that auditor/hotfix branch onto origin/main.
-# Any remaining divergence fails loud (exit 1).
+# stash). A named non-main branch whose HEAD is already on a remote is
+# recovered onto main (fleet-ops#5222). Unique unpushed commits on a named
+# branch still block (fleet-ops#477): merge --ff-only would rewind that
+# auditor/hotfix branch onto origin/main. Any remaining divergence fails loud
+# (exit 1).
+#   --dry-run  recover/refuse the checkout then skip install (fleet-ops#5222)
 #
 # Environment:
 #   FLEET_OPS_CHECKOUT          deploy checkout (default: this script's repo)
@@ -17,9 +20,25 @@
 #   FLEET_OPS_DRIFT_BIN         drift canary (default: $HOME/.local/bin/fleet-ops-drift)
 #   FLEET_OPS_EXPECTED_ORIGIN_URL  expected origin fetch URL (default: fleet-ops;
 #                                  tests point it at a local bare remote)
+#   FLEET_DEPLOY_ORIGIN_REPAIR_PROM / FLEET_DEPLOY_ORIGIN_REPAIR_LOG
+#                                  origin-remote repair counter + 24h history
+#                                  (fleet-ops#5301)
 set -euo pipefail
 
 export HOME="${HOME:-/home/nish}"
+
+DEPLOY_DRY_RUN=0
+for arg in "$@"; do
+    case "$arg" in
+        --dry-run) DEPLOY_DRY_RUN=1 ;;
+        --help|-h)
+            printf '%s\n' \
+                "usage: fleet-ops-deploy [--dry-run]" \
+                "  --dry-run  assert/recover the deploy-clone checkout, skip install"
+            exit 0
+            ;;
+    esac
+done
 
 self=$(readlink -f "$0")
 DEPLOY_CHECKOUT="${FLEET_OPS_CHECKOUT:-$(cd "$(dirname "$self")/.." && pwd)}"
@@ -82,12 +101,18 @@ auto_file_deploy_blocked_main() {
 # has its cwd inside the deploy checkout. If one does, the clone is actively
 # in use and must not be reset out from under it — keep the LOUD block.
 # Otherwise the clone is abandoned and we can self-rescue.
+# fleet-ops#5222: also capture pid + cmdline so DEPLOY-BLOCKED names the
+# holder instead of only saying a process exists.
+CLONE_HOLDER_PID=""
+CLONE_HOLDER_CMDLINE=""
 clone_held_as_cwd() {
     local clone="$1"
     local canon
     canon=$(readlink -f "$clone" 2>/dev/null || printf '%s' "$clone")
     local self=$$
-    local p pid tgt
+    local p pid tgt cmd
+    CLONE_HOLDER_PID=""
+    CLONE_HOLDER_CMDLINE=""
     for p in /proc/[0-9]*/cwd; do
         [ -e "$p" ] || continue
         tgt=$(readlink "$p" 2>/dev/null) || continue
@@ -95,10 +120,41 @@ clone_held_as_cwd() {
             "$canon"|"$canon"/*)
                 pid=${p#/proc/}; pid=${pid%/cwd}
                 [ "$pid" = "$self" ] && continue
+                cmd=$(tr '\0' ' ' < "/proc/$pid/cmdline" 2>/dev/null || true)
+                cmd=$(printf '%s' "$cmd" | sed 's/[[:space:]]*$//')
+                cmd=${cmd:0:200}
+                CLONE_HOLDER_PID="$pid"
+                CLONE_HOLDER_CMDLINE="$cmd"
                 return 0
                 ;;
         esac
     done
+    return 1
+}
+
+format_clone_holder() {
+    if clone_held_as_cwd "$DEPLOY_CHECKOUT"; then
+        printf 'live process holds the clone as cwd: pid=%s cmdline=%s' \
+            "$CLONE_HOLDER_PID" "$CLONE_HOLDER_CMDLINE"
+    else
+        printf 'no live process holds the clone as cwd'
+    fi
+}
+
+# fleet-ops#5222: HEAD is "fully pushed" when it is an ancestor of at least
+# one origin remote-tracking ref. A local branch name that does not exist
+# on the remote still counts if the commit itself is on origin/main (or
+# any other origin/*).
+head_is_on_remote() {
+    local head r
+    head=$(git -C "$DEPLOY_CHECKOUT" rev-parse HEAD 2>/dev/null) || return 1
+    [ -n "$head" ] || return 1
+    while IFS= read -r r; do
+        [ -n "$r" ] || continue
+        if git -C "$DEPLOY_CHECKOUT" merge-base --is-ancestor "$head" "$r" >/dev/null 2>&1; then
+            return 0
+        fi
+    done < <(git -C "$DEPLOY_CHECKOUT" for-each-ref --format='%(refname)' refs/remotes/origin)
     return 1
 }
 
@@ -203,9 +259,9 @@ normalize_origin_url() {
     printf '%s\n' "${u,,}"
 }
 
-# Empty output = the origin fetch URL is the expected one. Anything else is a
-# human-readable reason to refuse.
-origin_remote_problem() {
+# Empty output = the origin fetch URL is the expected one. Anything else is
+# the URL (or 'origin remote is missing') to repair (fleet-ops#5301).
+origin_remote_to_repair() {
     local url got want
     if ! url=$(git -C "$DEPLOY_CHECKOUT" remote get-url origin 2>/dev/null); then
         printf 'origin remote is missing'
@@ -214,9 +270,56 @@ origin_remote_problem() {
     got=$(normalize_origin_url "$url")
     want=$(normalize_origin_url "$EXPECTED_ORIGIN_URL")
     if [ "$got" != "$want" ]; then
-        printf 'origin fetch URL is %s (expected %s)' "$url" "$EXPECTED_ORIGIN_URL"
+        printf '%s' "$url"
     fi
     return 0
+}
+
+# fleet-ops#5301: repair-and-continue. The clone is disposable and the
+# correct URL is a constant, so an automatic set-url is safe: set origin
+# back to the expected URL (or `remote add` when missing), drop any extra
+# remote carrying the expected URL under another name, then proceed with
+# the deploy in the SAME tick. Counter + 24h-rate alert via the shared
+# .prom (same metric name as fleet-deploy-check).
+repair_origin_remote() {
+    local was="$1" name rurl prom hist now prev n
+    if [ "$was" = "origin remote is missing" ]; then
+        git -C "$DEPLOY_CHECKOUT" remote add origin "$EXPECTED_ORIGIN_URL" 2>/dev/null || true
+    else
+        git -C "$DEPLOY_CHECKOUT" remote set-url origin "$EXPECTED_ORIGIN_URL"
+    fi
+    while IFS=$'\t' read -r name rurl; do
+        [ "$name" = "origin" ] && continue
+        [ -z "$name" ] && continue
+        if [ "$(normalize_origin_url "$rurl")" = "$(normalize_origin_url "$EXPECTED_ORIGIN_URL")" ]; then
+            git -C "$DEPLOY_CHECKOUT" remote remove "$name" 2>/dev/null || true
+        fi
+    done < <(git -C "$DEPLOY_CHECKOUT" remote -v 2>/dev/null | awk -F'\t' '$2 ~ / \(fetch\)$/ { sub(/ \(fetch\)$/, "", $2); print $1 "\t" $2 }')
+    loud "DEPLOY-ORIGIN-REMOTE" \
+        "repaired at $DEPLOY_CHECKOUT (was $was) — origin set back to $EXPECTED_ORIGIN_URL, deploy proceeds (fleet-ops#5301)"
+    deploy_audit "fleet-ops" "origin-remote-repaired" "$was"
+    prom="${FLEET_DEPLOY_ORIGIN_REPAIR_PROM:-/var/lib/prometheus/node-exporter/fleet-deploy-check.prom}"
+    hist="${FLEET_DEPLOY_ORIGIN_REPAIR_LOG:-${AGENT_STATE}/deploy-clone-origin-repairs.log}"
+    now=$(date -u +%s)
+    mkdir -p "$(dirname "$prom")" "$(dirname "$hist")" 2>/dev/null || true
+    printf '%s\n' "$now" >>"$hist" 2>/dev/null || true
+    n=$(awk -v cutoff=$((now - 86400)) '$1 >= cutoff' "$hist" 2>/dev/null | wc -l)
+    if [ "$n" -gt 2 ]; then
+        loud "DEPLOY-ORIGIN-REMOTE" \
+            "origin repaired ${n}x in 24h (>2) — something is rewriting the deploy clone's origin URL; find the writer (fleet-ops#5301)"
+    fi
+    prev=0
+    if [ -f "$prom" ]; then
+        prev=$(awk '$1 ~ /^fleet_deploy_origin_remote_repaired_total$/ { print $2; exit }' "$prom" 2>/dev/null) || prev=0
+        prev="${prev:-0}"
+    fi
+    if {
+        printf '# HELP fleet_deploy_origin_remote_repaired_total Deploy-clone origin fetch URL repairs (fleet-ops#5301).\n'
+        printf '# TYPE fleet_deploy_origin_remote_repaired_total counter\n'
+        printf 'fleet_deploy_origin_remote_repaired_total %d\n' "$((prev + 1))"
+    } >"$prom.tmp" 2>/dev/null; then
+        mv "$prom.tmp" "$prom" 2>/dev/null || true
+    fi
 }
 
 log "starting: checkout=$DEPLOY_CHECKOUT"
@@ -252,6 +355,21 @@ for u in fable-fleet-check fable-fleet-check-kimi fable-fleet-check-opus; do
         log "removed bridge judge-budget drop-in: $dropin (fleet-ops#4906)"
         systemctl --user daemon-reload >/dev/null 2>&1 \
             || log "WARN: daemon-reload after judge-budget drop-in removal failed"
+    fi
+done
+
+# fleet-ops#5203: bridge start-timeout drop-ins (hand-written 2026-09-11
+# while #5200 was in flight); the value lives in the unit files now.
+# install.sh also removes them on a successful install; remove here too on a
+# dirty/non-ff deploy. File-only removal — the repo-sourced
+# 10-pg-socket.conf symlink in fleet-litellm-health-canary.service.d stays.
+for u in fleet-litellm-health-canary gh-webhook-canary; do
+    dropin="${HOME}/.config/systemd/user/${u}.service.d/20-start-timeout.conf"
+    if [ -e "$dropin" ] || [ -L "$dropin" ]; then
+        rm -f "$dropin"
+        log "removed bridge start-timeout drop-in: $dropin (fleet-ops#5203)"
+        systemctl --user daemon-reload >/dev/null 2>&1 \
+            || log "WARN: daemon-reload after start-timeout drop-in removal failed"
     fi
 done
 
@@ -408,15 +526,13 @@ if [ "${FLEET_OPS_ALLOW_NONCANONICAL:-}" != 1 ]; then
     fi
 fi
 
-# fleet-ops#5016: assert the origin fetch URL before anything is fetched,
-# rescued, reset or installed (see origin_remote_problem above). A foreign URL
-# means origin/main is another repo's main; the checkout must stay untouched.
-remote_problem=$(origin_remote_problem)
+# fleet-ops#5301: repair the origin fetch URL before anything is fetched,
+# rescued, reset or installed (replacing the fleet-ops#5016 refuse). A
+# foreign URL means origin/main is another repo's main; the URL is a
+# constant, so set it back and proceed in the same tick.
+remote_problem=$(origin_remote_to_repair)
 if [ -n "$remote_problem" ]; then
-    loud "DEPLOY-ORIGIN-REMOTE" \
-        "refusing deploy at $DEPLOY_CHECKOUT: $remote_problem — never reset a checkout to an origin/main the remote URL does not own (fleet-ops#5016)"
-    deploy_audit "fleet-ops" "origin-remote-refused" "$remote_problem"
-    exit 1
+    repair_origin_remote "$remote_problem"
 fi
 
 if ! git -C "$DEPLOY_CHECKOUT" fetch origin >/dev/null 2>&1; then
@@ -450,6 +566,38 @@ reasons=()
 [ "$nonff" = 1 ] && reasons+=("checkout not an ancestor of origin/main (hot-patch/diverged)")
 branch=""
 branch=$(git -C "$DEPLOY_CHECKOUT" symbolic-ref --short HEAD 2>/dev/null || true)
+# fleet-ops#5222: a clean named branch whose HEAD is already on a remote is
+# not a workspace. Check out main (no reset, no clean) even if a process
+# holds the clone as cwd — the work is already pushed. Unique unpushed
+# commits are refused in place; never discard them via rescue/reset.
+if [ -n "$branch" ] && [ "$branch" != "main" ]; then
+    if [ -z "$dirty" ] && head_is_on_remote; then
+        if git -C "$DEPLOY_CHECKOUT" checkout -q main 2>/dev/null \
+            || git -C "$DEPLOY_CHECKOUT" checkout -q -B main origin/main 2>/dev/null; then
+            log "recovered deploy clone from $branch to main (HEAD was an ancestor of a remote ref; no reset, no clean; fleet-ops#5222)"
+            deploy_audit "fleet-ops" "off-main-recovered" "$branch -> main"
+            branch="main"
+            ahead=$(git -C "$DEPLOY_CHECKOUT" rev-list --count HEAD..origin/main 2>/dev/null || echo 0)
+            dirty=""
+            dirty=$(git -C "$DEPLOY_CHECKOUT" status --porcelain --untracked-files=no 2>/dev/null || true)
+            untracked=$(git -C "$DEPLOY_CHECKOUT" ls-files --others --exclude-standard 2>/dev/null || true)
+            nonff=0
+            if ! git -C "$DEPLOY_CHECKOUT" merge-base --is-ancestor HEAD origin/main >/dev/null 2>&1; then
+                nonff=1
+            fi
+            reasons=()
+            [ -n "$dirty" ] && reasons+=("dirty tracked files")
+            [ -n "$untracked" ] && reasons+=("untracked files")
+            [ "$nonff" = 1 ] && reasons+=("checkout not an ancestor of origin/main (hot-patch/diverged)")
+        fi
+    elif ! head_is_on_remote; then
+        why="checkout on '$branch' not main (fleet-ops#477); HEAD is not an ancestor of any origin ref (unpushed)"
+        auto_file_off_main "$why"
+        loud "DEPLOY-BLOCKED" "merge-to-live blocked at $DEPLOY_CHECKOUT: $why ($(format_clone_holder))"
+        deploy_audit "fleet-ops" "deploy-blocked" "$why"
+        exit 1
+    fi
+fi
 if [ -n "$branch" ] && [ "$branch" != "main" ]; then
     reasons+=("checkout on '$branch' not main (fleet-ops#477)")
 fi
@@ -468,7 +616,7 @@ if [ "${#reasons[@]}" -gt 0 ]; then
             # blind-audit catches it 30+ min later.
             auto_file_deploy_blocked_main "$why"
         fi
-        loud "DEPLOY-BLOCKED" "merge-to-live blocked at $DEPLOY_CHECKOUT: $why (live process holds the clone as cwd)"
+        loud "DEPLOY-BLOCKED" "merge-to-live blocked at $DEPLOY_CHECKOUT: $why (live process holds the clone as cwd: pid=$CLONE_HOLDER_PID cmdline=$CLONE_HOLDER_CMDLINE)"
         deploy_audit "fleet-ops" "deploy-blocked" "$why"
         exit 1
     fi
@@ -480,7 +628,7 @@ if [ "${#reasons[@]}" -gt 0 ]; then
         else
             auto_file_deploy_blocked_main "$why"
         fi
-        loud "DEPLOY-BLOCKED" "merge-to-live blocked at $DEPLOY_CHECKOUT: $why (rescue failed)"
+        loud "DEPLOY-BLOCKED" "merge-to-live blocked at $DEPLOY_CHECKOUT: $why (rescue failed; $(format_clone_holder))"
         deploy_audit "fleet-ops" "deploy-blocked" "$why"
         exit 1
     fi
@@ -502,6 +650,12 @@ if [ "${ahead:-0}" -gt 0 ]; then
     deploy_audit "fleet-ops" "merge" "origin/main to $newhead"
 else
     log "checkout up to date"
+fi
+
+if [ "$DEPLOY_DRY_RUN" = 1 ]; then
+    log "dry-run: checkout recovered/verified; skipping install (fleet-ops#5222)"
+    deploy_audit "fleet-ops" "dry-run" "skip-install"
+    exit 0
 fi
 
 # fleet-ops#1247: default install.sh skips /etc/... MANIFEST entries

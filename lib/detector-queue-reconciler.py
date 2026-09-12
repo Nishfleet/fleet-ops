@@ -18,6 +18,7 @@ Environment (all have --flag equivalents):
   FLEET_SIGNAL_RECONCILE_OK_TO_CLOSE  1/0 (default 1)
   FLEET_SIGNAL_RECONCILE_STALL_HOURS  default 6
   FLEET_SIGNAL_RECONCILE_HEARTBEAT_COMMENT_MIN_HOURS  default 24
+  FLEET_SIGNAL_RECONCILE_CLOSE_GRACE_S  default 21600 (6h)
   FLEET_SIGNAL_RECONCILE_NOW       ISO timestamp override (tests)
   FLEET_SIGNAL_RECONCILE_OPEN_ISSUES_JSON  test override for gh list output
   FLEET_SIGNAL_RECONCILE_DRY_RUN   1/0 (default 0)
@@ -51,6 +52,19 @@ GREEN_SUFFIXES = (
 )
 GREEN_TAGS = {"THROUGHPUT", "ESCALATION-CANARY-EXCLUDED", "ESCALATION-CANARY-OK"}
 SKIP_MSG_PREFIXES = ("rule-enforcement:",)
+
+# fleet-ops#5190 close-grace (flap guard): the escalation-completion
+# stale-trip enforcer deliberately holds quiet ticks between bounded ladder
+# actions (re-fire / fail-loud), so its alarm is ABSENT from most ticks
+# while the chain is still open. Observe-to-close on a single quiet tick
+# flapped: #4989 was closed while its chain still fired hours later. A
+# signal under CLOSE_GRACE_TAGS that fired within the grace window (read
+# back from triage history — the file IS the state, no new organ) is
+# deferred, not closed. Scoped to the stale-trip tag: other detectors emit
+# every tick while alarmed, and a blanket close delay would hold resolved
+# agent-ready issues open for claimable hours.
+CLOSE_GRACE_TAGS = {"ESCALATION-COMPLETION-STALE-TRIP"}
+CLOSE_GRACE_SIGNAL_PREFIX = "loud/escalation-completion-stale-trip/"
 # Per-session DEBUG-PLAYBOOK-MISSING LOUD lines are the detector's own
 # deterrent log. The detector already files one daily aggregate
 # (fleet-ops#4384). Queuing them as loud/debug-playbook-missing created a
@@ -456,6 +470,28 @@ def parse_triage(path: Path, tick_start: str | None) -> list[dict[str, str]]:
     return out
 
 
+def close_grace_last_seen(path: Path) -> dict[str, str]:
+    """Latest triage emission per close-grace signal across the WHOLE file.
+
+    fleet-ops#5190: the flap guard needs to know when a signal last fired,
+    not just whether it is in the current tick. Scoped to CLOSE_GRACE_TAGS
+    lines so the scan costs nothing for every other detector.
+    """
+    out: dict[str, str] = {}
+    if not path.is_file():
+        return out
+    with open(path, "r", encoding="utf-8", errors="replace") as f:
+        for line in f:
+            m = TRIAGE_RE.match(line.rstrip("\n"))
+            if not m or m.group(2) not in CLOSE_GRACE_TAGS:
+                continue
+            ts = m.group(1)
+            for sig in derive_signals(m.group(2), m.group(3)):
+                if sig.startswith(CLOSE_GRACE_SIGNAL_PREFIX) and ts > out.get(sig, ""):
+                    out[sig] = ts
+    return out
+
+
 def routing_labels(tag: str) -> list[str]:
     # fleet-ops#4966: DEGRADED-LANES alarms are observe-to-close-only. The
     # heartbeat Tier 1 \u00a77 sees auto-restart lanes as "held, no work \u2014
@@ -490,7 +526,19 @@ def routing_labels(tag: str) -> list[str]:
     # gone after #4884, so the whole tag is observe-to-close-only. File under
     # observe-to-close (fleet-ops#1401) so the intake does not claim them; the
     # detector's observe-to-close still closes them on the green tick.
-    if tag in {"DEGRADED-LANES", "AUDITOR-PANEL-PENDING", "FAILED-COMMAND-SWALLOWED"}:
+    #
+    # fleet-ops#5057: same for ESCALATION-PANEL-PENDING. The exact loud() tag
+    # asserted first in bin/pi-escalation-audit — a pending senior escalation
+    # panel is load-borne (the per-tick start cap defers seat starts under
+    # backlog) and self-heals via stale-SKIP recast (fleet-ops#3962) and
+    # SKIP-EXHAUSTED abstention (fleet-ops#4503). There is no manual worker
+    # action: every prior filing closed via observe-to-close with zero
+    # worker code. Routing them to agent-ready burned an admission-priced
+    # worker seat per occurrence on workers that re-verified the alarm and
+    # exited with no PR. File under observe-to-close (fleet-ops#1401) so the
+    # intake does not claim them; the detector's observe-to-close still
+    # closes them on the green tick.
+    if tag in {"DEGRADED-LANES", "AUDITOR-PANEL-PENDING", "FAILED-COMMAND-SWALLOWED", "ESCALATION-PANEL-PENDING"}:
         return ["observe-to-close"]
     senior = (
         tag.endswith(("-VIOLATION", "-FAIL", "-BROKEN", "-ESCALATE"))
@@ -837,8 +885,12 @@ def reconcile(
     issue_file: str,
     triage: Path | None,
     dry_run: bool,
+    close_grace_last_seen_map: dict[str, str] | None = None,
+    close_grace_s: int = 0,
 ) -> dict[str, Any]:
     now = _parse_iso(now_str)
+    if close_grace_last_seen_map is None:
+        close_grace_last_seen_map = {}
     summary: dict[str, Any] = {
         "alarm_count": 0,
         "filed": 0,
@@ -847,6 +899,7 @@ def reconcile(
         "closed": 0,
         "rerouted": 0,
         "capped": 0,
+        "close_deferred": 0,
     }
 
     # Build current signal set and signal -> alarm map.
@@ -955,6 +1008,23 @@ def reconcile(
     current_open_signals = set(open_by_signal.keys())
     for sig in sorted(current_open_signals - current_signals):
         issue = open_by_signal[sig]
+        # fleet-ops#5190 close-grace (flap guard): a close-grace signal that
+        # fired within the grace window is deferred, not closed — a single
+        # quiet tick between the detector's bounded actions must not resolve
+        # the alarm while the condition persists.
+        last_fired = close_grace_last_seen_map.get(sig)
+        if last_fired is not None:
+            try:
+                fired_age_s = (now - _parse_iso(last_fired)).total_seconds()
+            except ValueError:
+                fired_age_s = close_grace_s
+            if fired_age_s < close_grace_s:
+                summary["close_deferred"] += 1
+                log(
+                    f"observe-to-close: deferred #{issue['number']} (signal={sig} "
+                    f"last fired {int(fired_age_s)}s ago < {close_grace_s}s grace — flap guard)"
+                )
+                continue
         if ok_to_close:
             body = (
                 f"observe-to-close: detector no longer reports `{sig}` "
@@ -1010,6 +1080,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--ok-to-close", type=int, default=None)
     p.add_argument("--stall-hours", type=int, default=None)
     p.add_argument("--comment-min-hours", type=int, default=None)
+    p.add_argument("--close-grace-s", type=int, default=None)
     p.add_argument("--now", default="")
     p.add_argument("--open-issues-json", default="")
     p.add_argument("--dry-run", action="store_true")
@@ -1044,6 +1115,11 @@ def main(argv: list[str] | None = None) -> int:
         if args.comment_min_hours is not None
         else int(os.environ.get("FLEET_SIGNAL_RECONCILE_HEARTBEAT_COMMENT_MIN_HOURS") or 24)
     )
+    close_grace_s = (
+        args.close_grace_s
+        if args.close_grace_s is not None
+        else int(os.environ.get("FLEET_SIGNAL_RECONCILE_CLOSE_GRACE_S") or 21600)
+    )
     now = now_iso(args.now or os.environ.get("FLEET_SIGNAL_RECONCILE_NOW"))
     open_issues_json = args.open_issues_json or os.environ.get("FLEET_SIGNAL_RECONCILE_OPEN_ISSUES_JSON")
     dry_run = args.dry_run or os.environ.get("FLEET_SIGNAL_RECONCILE_DRY_RUN") == "1"
@@ -1070,6 +1146,7 @@ def main(argv: list[str] | None = None) -> int:
     )
 
     alarms = parse_triage(triage_path, tick_start)
+    grace_last_seen = close_grace_last_seen(triage_path) if ok_to_close else {}
     open_issues: list[dict[str, Any]] = []
     if (file_issues or ok_to_close) and not dry_run:
         open_issues = load_open_issues(repo, gh, open_issues_json)
@@ -1090,12 +1167,15 @@ def main(argv: list[str] | None = None) -> int:
         issue_file or "fleet-issue-file",
         triage_path if not dry_run else None,
         dry_run,
+        close_grace_last_seen_map=grace_last_seen,
+        close_grace_s=close_grace_s,
     )
 
     log(
         f"complete: alarms={summary['alarm_count']} filed={summary['filed']} "
         f"deduped={summary['deduped']} heartbeat={summary['heartbeat_comments']} "
-        f"closed={summary['closed']} rerouted={summary['rerouted']} capped={summary['capped']}"
+        f"closed={summary['closed']} rerouted={summary['rerouted']} capped={summary['capped']} "
+        f"close_deferred={summary['close_deferred']}"
     )
     if args.json:
         print(json.dumps(summary, sort_keys=True))

@@ -62,7 +62,7 @@
 set -Eeuo pipefail
 
 export HOME="${HOME:-/home/nish}"
-export PATH="/home/nish/.local/bin:/usr/local/bin:/usr/bin:/bin:${PATH:-}"
+command -v gh >/dev/null 2>&1 || export PATH=/home/nish/.local/bin:/usr/local/bin:/usr/bin:/bin:${PATH:-}
 export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
 
 _canon_script=$(readlink -f "$0")

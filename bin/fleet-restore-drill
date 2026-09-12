@@ -74,7 +74,7 @@
 set -Eeuo pipefail
 
 export HOME="${HOME:-/home/nish}"
-export PATH="/home/nish/.local/bin:/usr/local/bin:/usr/bin:/bin"
+command -v gh >/dev/null 2>&1 || export PATH=/home/nish/.local/bin:/usr/local/bin:/usr/bin:/bin
 
 SYSTEMCTL="${SYSTEMCTL:-systemctl}"
 FLEET_OPS_REPO="${FLEET_OPS_REPO:-$(cd "$(dirname "$(readlink -f "$0")")/.." && pwd)}"

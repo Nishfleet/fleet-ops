@@ -85,6 +85,62 @@ STOPWORDS = frozenset(
 PATH_RE = re.compile(
     r"(?:(?:\./)?[A-Za-z0-9_.-]+/){1,}[A-Za-z0-9_.-]+(?:\.[A-Za-z0-9]+)?"
 )
+
+# fleet-ops#5198: PATH_RE is a shape matcher — it cannot tell a real file
+# key from a repo ref (`nishfleet/fleet-ops` inside a `Nishfleet/<repo>#N`
+# mention, or `origin/main` inside a git command), a bare CI directory
+# (`.github/scripts`, `fleet/ci`), the machine worktree root
+# (`home/nish/workspaces/tooling/fleet-ops`), a fraction (`3/3`), or a rate
+# (`activations/h`). None of those is a file identity, and the repo ref in
+# particular appears in nearly every fleet-ops issue — they welded a +0.10
+# key bonus onto unrelated pairs and corrupted shared_keys diagnostics.
+# Filtered out of key_paths so only real file/unit identity remains.
+REPO_REF_KEY_RE = re.compile(r"^(?:nishfleet|origin|upstream)/[a-z0-9._-]+$")
+FRACTION_KEY_RE = re.compile(r"^\d+(?:\.\d+)?/\d+(?:\.\d+)?$")
+WORKTREE_ROOT_KEY_RE = re.compile(
+    r"^home/nish/workspaces(?:/[a-z0-9._-]+){0,2}$"
+)
+RATE_LEAF_RE = re.compile(
+    r"^(?:ms|s|sec|secs|m|min|mins|h|hr|hrs|d|day|days|w|wk|wks|mo|mos|"
+    r"y|yr|yrs|cycle|cycles|tick|ticks|run|runs|op|ops|req|reqs)$"
+)
+GENERIC_DIR_LEAFS = frozenset(
+    "ci script scripts workflow workflows action actions .github".split()
+)
+
+
+def _generic_key(key: str) -> bool:
+    """True for path-shaped keys carrying no file identity (fleet-ops#5198)."""
+    if (
+        REPO_REF_KEY_RE.match(key)
+        or FRACTION_KEY_RE.match(key)
+        or WORKTREE_ROOT_KEY_RE.match(key)
+    ):
+        return True
+    leaf = key.rsplit("/", 1)[-1]
+    return bool(RATE_LEAF_RE.match(leaf)) or leaf in GENERIC_DIR_LEAFS
+
+
+# fleet-ops#5058: packet spec-schema field labels (metric:/observed:/
+# evidence:/accept:/verify:/rollback:/dedupe:/impact:/product_surface:/
+# termination:/source:) are shared boilerplate — every well-formed candidate
+# carries them, so two different-problem schema bodies start with label
+# overlap before any content is compared. Strip the labels before tokenising
+# so only field VALUES count as overlap evidence.
+SPEC_FIELD_LABEL_RE = re.compile(
+    r"(?im)^[ \t]*(?:metric|observed|evidence|accept|verify|rollback|dedupe"
+    r"|impact|product_surface|termination|source|signal)[ \t]*:"
+)
+# fleet-ops#5058: a seat-crisis state word only counts when it sits in the
+# same breath as the seat word (<=60 chars, same line). "burn a seat on an
+# empty deliverable" paragraphs away from "the unit is dead" is incidental,
+# not the #2899 seat-corpse/walled cluster — the loose any-where match let
+# the PRIMARY_SIGNAL_FLOOR collapse unrelated problems onto #4959 at 0.70.
+SEAT_STATE_NEAR_RE = re.compile(
+    r"(?:\bseats?\b[^\n]{0,60}?\b(?:dead|down|comeback)\b)"
+    r"|(?:\b(?:dead|down|comeback)\b[^\n]{0,60}?\bseats?\b)",
+    re.IGNORECASE,
+)
 UNIT_RE = re.compile(
     r"\b[A-Za-z0-9_@.:-]+\.(?:service|timer|socket|target|path|slice)\b"
 )
@@ -101,6 +157,15 @@ INSTANCE_RE = re.compile(
 SIGNAL_BONUS = 0.15
 SIGNAL_BONUS_MAX = 0.30
 PRIMARY_SIGNAL_FLOOR = 0.70
+# fleet-ops#5152: the DERIVED fleet/seat-crisis signal may reach
+# PRIMARY_SIGNAL_FLOOR only when content corroborates it — pairwise token
+# overlap max(t,b) at or above this floor, or a shared concrete secondary
+# signal (same alert/failure/health signature). The token floor is chosen
+# from the live corpus: the seat-crisis-welded blob measured 0.03-0.24
+# pairwise, while the real fleet-ops#2899 semantic cluster the floor was
+# built for measured 0.37-0.57; 0.30 sits in the gap. Uncorroborated, the
+# derived signal is worth one ordinary shared-signal bonus, nothing more.
+SEAT_CRISIS_CONTENT_FLOOR = 0.30
 
 SIGNAL_RE = re.compile(r"^signal:\s*(\S+)", re.MULTILINE | re.IGNORECASE)
 # fleet-ops#4622/#4841: the detector->queue reconciler (lib/detector-queue-
@@ -154,6 +219,7 @@ def norm(text: str) -> str:
 
 
 def tokens(text: str) -> set[str]:
+    text = SPEC_FIELD_LABEL_RE.sub(" ", text or "")
     out: set[str] = set()
     for raw in norm(text).split():
         if len(raw) < 2 or raw in STOPWORDS:
@@ -173,7 +239,8 @@ def key_paths(text: str) -> set[str]:
     found = set(PATH_RE.findall(text or ""))
     found |= set(UNIT_RE.findall(text or ""))
     found |= set(INSTANCE_RE.findall(text or ""))
-    return {p.lower() for p in found}
+    out = {p.lower() for p in found}
+    return {p for p in out if not _generic_key(p)}
 
 
 def _has_seat_crisis(text: str) -> bool:
@@ -181,6 +248,13 @@ def _has_seat_crisis(text: str) -> bool:
 
     Requires both a seat context and a failure state/cause.  This is intentionally
     specific: a generic "seat cap" or "healthy seats" mention must not trigger.
+    fleet-ops#5058: a bare "dead"/"comeback" anywhere in the text counted as a
+    cause, so incidental mentions ("burn a seat", "the unit is dead",
+    "dead-man") fired the signal and PRIMARY_SIGNAL_FLOOR collapsed three
+    different-problem candidates onto #4959. Causes are now seat-health
+    markers (corpse/walled/credentials_bad/quota_exhausted/seat_dead/
+    health_class=corpse/manual_repair_corpse) or a seat state word adjacent
+    to the seat word (SEAT_STATE_NEAR_RE).
     """
     low = (text or "").lower()
     seat = bool(
@@ -190,18 +264,19 @@ def _has_seat_crisis(text: str) -> bool:
         or "manual_repair_corpse" in low
         or "seat_dead" in low
     )
-    cause = bool(
+    if not seat:
+        return False
+    return bool(
         "corpse" in low
-        or "dead" in low
         or "walled" in low
-        or "comeback" in low
+        or "quota_exhausted" in low
         or "credentials_bad" in low
         or "credentials bad" in low
         or "manual_repair_corpse" in low
         or "health_class=corpse" in low
         or "seat_dead" in low
+        or SEAT_STATE_NEAR_RE.search(text or "")
     )
-    return seat and cause
 
 
 def signal_keys(text: str) -> set[str]:
@@ -285,11 +360,27 @@ def score_pair(
     signals_b = signal_keys(combined_b)
     shared_signals = signals_a & signals_b
     primary_shared = {s for s in shared_signals if _is_primary_signal(s)}
-    secondary_shared = shared_signals - primary_shared - COMMON_SIGNALS
+    # Explicit `signal:` markers are deliberate keys and floor
+    # unconditionally. Derived signals (fleet/seat-crisis) fire on loose
+    # seat + failure prose that nearly every fleet issue carries — alone
+    # they welded 21 unrelated open issues into one 0.70 cluster
+    # (fleet-ops#5152). They floor only when content corroborates: token
+    # overlap >= SEAT_CRISIS_CONTENT_FLOOR, or a shared concrete secondary
+    # signal (same alert/failure/health signature). Otherwise they count as
+    # one ordinary secondary signal.
+    secondary_pool = shared_signals - primary_shared - COMMON_SIGNALS
+    corroborated = (
+        max(t, b) >= SEAT_CRISIS_CONTENT_FLOOR or bool(secondary_pool)
+    )
+    floored_primary = {
+        s for s in primary_shared
+        if s.startswith("signal/") or corroborated
+    }
+    secondary_shared = shared_signals - floored_primary - COMMON_SIGNALS
     secondary_bonus = min(SIGNAL_BONUS * len(secondary_shared), SIGNAL_BONUS_MAX)
 
     score = min(1.0, max(t, b) + key_bonus + secondary_bonus)
-    if primary_shared:
+    if floored_primary:
         score = max(score, PRIMARY_SIGNAL_FLOOR)
     if _same_item_signal_divergence(signals_a, signals_b):
         # Distinct concrete signals in the same per-item family: the token
@@ -309,7 +400,10 @@ def score_pair(
         "shared_keys": sorted(shared),
         "specific_shared_keys": sorted(specific_shared),
         "shared_signals": sorted(shared_signals),
-        "primary_shared_signals": sorted(primary_shared),
+        # Signals that actually applied the floor: explicit `signal:` markers
+        # always; a derived signal only when content corroborated it
+        # (fleet-ops#5152). A demoted derived signal stays in shared_signals.
+        "primary_shared_signals": sorted(floored_primary),
     }
 
 
@@ -547,6 +641,45 @@ def issue_has_dup_marker(repo: str, number: int, canon_ref: str) -> bool:
     return False
 
 
+def issue_has_filing_comment(repo: str, number: int, src_repo: str, title: str) -> bool:
+    """True if the issue already carries an issue-file dedupe comment covering
+    this (source repo, title) filing (fleet-ops#5496).
+
+    The file-time duplicate branch posted comment_body() on EVERY dedupe hit
+    with no memory of prior comments; the blind-audit backfill piled 675+
+    identical dedupe comments on one canonical issue. Same class as
+    fleet-ops#3728 (issue_has_dup_marker) but for the filing-gate comment
+    path. Matches both new (marker-carrying) and legacy comment bodies via
+    the human-visible `Would have filed in <repo>` + title lines.
+
+    Fail-open: on gh error returns False so the comment is still posted.
+    """
+    try:
+        proc = subprocess.run(
+            [gh_bin(), "issue", "view", str(number), "--repo", repo,
+             "--json", "comments"],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=30,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    if proc.returncode != 0:
+        return False
+    try:
+        data = json.loads(proc.stdout or "{}")
+    except json.JSONDecodeError:
+        return False
+    filed_line = f"Would have filed in `{src_repo}`:"
+    title_line = f"**{title}**"
+    for c in data.get("comments") or []:
+        body = (c.get("body") or "") if isinstance(c, dict) else ""
+        if filed_line in body and title_line in body:
+            return True
+    return False
+
+
 def gh_close(repo: str, number: int, comment: str) -> tuple[int, str]:
     proc = subprocess.run(
         [gh_bin(), "issue", "close", str(number), "--repo", repo, "--comment", comment],
@@ -615,11 +748,20 @@ def cmd_file(args: argparse.Namespace) -> int:
     else:
         body = args.body or ""
     labels = list(args.label or [])
+    # fleet-ops#5620: the `file` dedupe corpus is scoped to the repo passed
+    # via --repo. A same-problem open issue in a DIFFERENT Nishfleet repo
+    # must never suppress or redirect a filing — the auto-revert halt
+    # channel previously delivered fleet-ops filings as comments on
+    # noise-class issues in other repos (0509#2923). Cross-repo hits may
+    # be noted as "related" in the body, never used as the dedupe target.
+    # (--no-cross-repo / --search-repo remain accepted for compatibility
+    # but no longer widen the `file` corpus.) The `sweep` subcommand keeps
+    # its own cross-repo clustering behaviour.
     issues = collect_open(
         args.repo,
         args.from_json,
-        cross_repo=not args.no_cross_repo,
-        extra_repos=args.search_repo or [],
+        cross_repo=False,
+        extra_repos=[],
     )
     match = best_match(title, body, issues) if issues else None
     score = match["score"] if match else 0.0
@@ -644,6 +786,14 @@ def cmd_file(args: argparse.Namespace) -> int:
         payload["url"] = existing.get("url") or f"https://github.com/{repo}/issues/{number}"
         if args.dry_run:
             print(f"[issue-file] dry-run comment {payload['existing']} score={score:.2f}", file=sys.stderr)
+            emit(payload, args.json, payload["url"])
+            return 0
+        if issue_has_filing_comment(repo, number, args.repo, title):
+            print(
+                f"[issue-file] already commented on {payload['existing']} "
+                f"for this filing (score={score:.2f}), suppressing re-post",
+                file=sys.stderr,
+            )
             emit(payload, args.json, payload["url"])
             return 0
         rc, out = gh_comment(repo, number, comment_body(title, body, score, args.repo))

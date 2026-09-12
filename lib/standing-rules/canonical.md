@@ -49,7 +49,7 @@ Before implementation work, automatically read and follow `/home/nish/workspaces
 <!-- END SECTION: nish-preimplementation-contract -->
 
 <!-- SECTION: shared-fleet-routing -->
-**Everything runs through Pi, directly. No launchers.** (Nish, 2026-08-23 — vault `_system/shared-memory/global-standing-rules.md`.) The fleet control plane AND the `implementation-worker-*` launcher layer are both DELETED. There is no dispatch wrapper. `governed-run` and `~/.local/share/implementation-worker-routing/` are gone with them; the old `codex-model-routing.md` ladder is superseded.
+**Everything runs through Pi, directly. No launchers.** (Nish, 2026-08-23 — vault `_system/shared-memory/global-standing-rules.md`.) The fleet control plane AND the `implementation-worker-*` launcher layer are both DELETED. There is no dispatch wrapper for Pi work. `governed-run` and `~/.local/share/implementation-worker-routing/` are retired for Pi dispatch, NOT deleted (verified 2026-09-11: `test -x ~/.local/bin/governed-run && echo still-present`); `governed-run` remains sanctioned for non-Pi ad-hoc commands (sanction lives in `~/.codex/AGENTS.md`). The old `codex-model-routing.md` ladder is superseded.
 
 Call `pi` directly, prompt on **stdin** (Pi rejects a `--` end-of-options flag):
 
@@ -89,10 +89,15 @@ Find it, fix it, verify it, log it - then report the result.
 - If a later shift could do it, this shift could have done it.
 - Close with a result, never an offer.
 
-Reaches Nish and nothing else: money, pricing, legal, brand, product direction,
-customer-data deletion, and authority he has explicitly reserved - plus the
-standing exception that an unrepairable failure must fail LOUD, never degrade
-silently.
+Reaches Nish and nothing else: **the canonical reserved-classes list** in the
+vault (`nish-vault/_system/shared-memory/global-standing-rules.md` → "Only
+the un-fixable reaches Nish" → "Canonical reserved-classes list"):
+money/pricing, privacy, security, legal, brand, product direction,
+customer-data deletion, destructive/irreversible steps, and authority he
+has explicitly reserved — plus the standing exception that an unrepairable
+failure must fail LOUD, never degrade silently. That vault list is the
+single source of truth and wins over any shorter surface list; this bullet
+is a pointer, not a restatement (fleet-ops#5586).
 
 Corollary: **if a human had to notice it by hand, that blind spot is the real
 bug.** Fix the instance AND the detector. Canonical text:

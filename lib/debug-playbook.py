@@ -83,6 +83,14 @@ SCHEMA_BLOCK_RE = re.compile(
 # changes the debug-playbook gate — it does NOT touch
 # lib/failed-command-flagged.py, where the same string is still a real
 # swallowed failure the worker must flag in user-facing text (fleet-ops#1139).
+# The debug-playbook detector inspecting its own session must not ratchet the
+# count it is inspecting (fleet-ops#4979): `fleet-debug-playbook gate <session>`
+# or `... scan` exits 1 BY DESIGN when it finds a missing-playbook session, and
+# that rc=1 is a check exit code, not a work failure. Any command that invokes
+# the detector (bin/fleet-debug-playbook or lib/debug-playbook.py directly) is
+# exempt from the failed-attempt count.
+DETECTOR_INVOCATION_RE = re.compile(r"debug-playbook", re.I)
+
 EDIT_NOOP_RE = re.compile(
     r"No changes made to \S+ \s*The replacement produced identical content",
     re.I | re.S,
@@ -145,13 +153,28 @@ def _blob_from_args(args: Any) -> str:
 
 
 def _exit_code(text: str) -> int | None:
-    match = EXIT_RE.search(text)
-    if match is None:
-        return None
-    try:
-        return int(match.group(1))
-    except ValueError:
-        return None
+    """The toolResult's OWN exit status, from the trailing status line only.
+
+    The harness appends `Command exited with code N` as the FINAL non-empty
+    line of a real toolResult. A match anywhere else in the text is content
+    the command merely PRINTED (a sed/cat of a file that contains the literal
+    phrase, e.g. a session fixture or a cited log excerpt) — not the
+    command's own status (fleet-ops#4979). Search the whole text again and a
+    count is self-reinforcing: every probe that prints session text raises
+    the count under inspection.
+    """
+    for line in reversed(text.splitlines()):
+        line = line.strip()
+        if not line:
+            continue
+        match = EXIT_RE.fullmatch(line)
+        if match is None:
+            return None
+        try:
+            return int(match.group(1))
+        except ValueError:
+            return None
+    return None
 
 
 def _ls_nomatch_only(text: str) -> bool:
@@ -193,6 +216,11 @@ def is_benign_no_match(command: str, text: str, code: int | None) -> bool:
 
 
 def result_failed(msg: dict[str, Any], command: str) -> tuple[bool, str]:
+    # Probing the detector itself (its gate exits 1 on a block BY DESIGN) is a
+    # check exit code, not a work failure; counting it ratchets the very count
+    # under inspection (fleet-ops#4979).
+    if DETECTOR_INVOCATION_RE.search(command):
+        return False, _text_chunks(msg.get("content"))
     text = _text_chunks(msg.get("content"))
     if HARNESS_BLOCK_RE.search(text):
         return False, text

@@ -150,6 +150,16 @@ cp config/litellm-proxy.yaml ~/.config/fleet-ops/litellm-proxy.yaml
 #   4. mint the sk-fleet-worker / sk-fleet-senior / sk-fleet-private
 #      virtual keys via the proxy's /key/generate admin API (LiteLLM
 #      virtual_keys docs), pinning each key's model allowlist to a group.
+#   5. keep `disable_prisma_schema_update: true` under general_settings
+#      (fleet-ops#4832): without it, startup `prisma migrate deploy`
+#      retries 20250416115320_add_tag_table_to_db, whose redundant
+#      single-column unique index LiteLLM_DailyTagSpend_tag_key cannot
+#      build on a table that holds several rows per tag (they differ on
+#      the composite key — legitimate rows, not duplicates). The retry
+#      loop stalls every restart ~10min on P3018. Upstream's own
+#      20250416151339_drop_tag_uniqueness_requirement drops that index;
+#      the composite unique index is the real constraint. Re-enable the
+#      flag only to apply migrations from a LiteLLM bump, then re-disable.
 # If a live config already exists, edit it in place instead of copying.
 ```
 
@@ -189,20 +199,31 @@ set -euo pipefail
 set -a
 
 # --- env-file providers (KEY=value format, safe to source) ---
-# Source exactly the seats the live router config declares. Only
-# OpenAI-compatible providers belong here; Cursor/Devin speak proprietary
-# protocols and are reached through their own harnesses, not the proxy.
 source /home/nish/fleet2/etc/opencode.env
 source /home/nish/fleet2/etc/commandcode.env
 source /home/nish/fleet2/etc/hetzner.env
 source /home/nish/fleet2/etc/devin.env
 source /home/nish/fleet2/etc/cursor.env
 source /home/nish/fleet2/etc/openrouter.env
+# fleet-ops#4219: P3a dual-run found the original pool walled/dead in seat-lib
+# (opencode-zen balance, commandcode model unsupported, hetzner corpse, straitly
+# credits exhausted, grok cli-chat-proxy 426). Source the credential env files of
+# the seats that are actually usable and OpenAI-compatible.
 source /home/nish/fleet2/etc/alibaba-coding.env
 source /home/nish/fleet2/etc/groq.env
 source /home/nish/fleet2/etc/ollama.env
+source /home/nish/fleet2/etc/cline.env
+source /home/nish/fleet2/etc/paretoinference.env
+source /home/nish/.config/xkiro/.env
+source /home/nish/fleet2/etc/runinfra.env
 source /home/nish/fleet2/etc/entrim.env
 source /home/nish/fleet2/etc/crof.env
+# 2026-09-11 seat wire-up: synthetic + llmgateway-devpass prepaid worker seats
+# (fleet-ops packet; env files mode 600 under ~/.config/fleet-ops/seats/).
+source /home/nish/.config/fleet-ops/seats/synthetic.env
+source /home/nish/.config/fleet-ops/seats/llmgateway-devpass.env
+
+# --- straitly (lives in ~/.config/straitly/) ---
 source /home/nish/.config/straitly/straitly.env
 
 # --- xai-oauth: OAuth access token from auth.json (refreshed every 4h by

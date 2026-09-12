@@ -14,8 +14,14 @@
 #
 # fleet-ops#5093: the storm is gone — the .path watches ONE sentinel file that
 # bin/pi-issue-run writes only on a seat verdict EDGE, instead of the seats/
-# directory. The StartLimit guard below is kept (and must not be lowered) as
-# the loud tripwire if a future edit reintroduces a directory-wide trigger.
+# directory.
+#
+# fleet-ops#5096: the ledger rewrite rate itself is fixed too (the seat-health
+# extension no longer rewrites an unchanged routing record), which is what made
+# a small BOUNDED StartLimit correct rather than an accommodation. With an
+# edge-only sentinel trigger AND a write-suppressed ledger, activations are ~0
+# in normal operation, so StartLimitBurst=200 is never reached by traffic and
+# can only fire on a churn regression — loudly.
 #
 # This test is split from tests/fleet-seat-recovery.test.sh (which exercises
 # the bin's transition/cooldown logic) so the unit-shape + live trigger
@@ -24,17 +30,24 @@
 # invoked from a listed test).
 #
 # What we prove:
-#   1. fleet-seat-recovery.service carries a storm-tolerant StartLimit guard
-#      in [Unit] (StartLimitIntervalSec=1h, StartLimitBurst>1800). fleet-ops#5093
-#      moved the trigger to the sentinel, so this guard is a tripwire now, not
-#      an accommodation — lowering it re-creates the #617 wedge.
+#   1. fleet-seat-recovery.service carries a BOUNDED StartLimit guard in [Unit]
+#      (StartLimitIntervalSec=1h, StartLimitBurst=200 — the ceiling
+#      fleet-ops#5024 asked for, made safe by fleet-ops#5096's trigger fix).
 #   2. StartLimit* does NOT leak into [Service] (systemd rejects it there).
 #   3. systemd-analyze verify accepts both unit files (syntax + directives).
 #   4. The trigger is the sentinel file only: no seats/ directory watch, no
 #      TriggerLimit* (the #5106 wedge trap).
-#   4b. Live sentinel drill: 100 seat-json writes -> 0 starts; one sentinel
-#      touch -> exactly 1 start; a second write -> 1 more; watcher stays
-#      active/success. Skipped outside a user-systemd session (hosted CI).
+#   4b. The live sentinel drill (100 seat-json writes -> 0 starts; one touch
+#      -> exactly 1; second write -> 1 more; watcher active/success) runs as
+#      the seat_sentinel plane of bin/fleet-resilience-drill on the daily
+#      05:47 timer (fleet-ops#5106) — NOT here, on every test-suite run. A
+#      worker re-running this suite in an inner loop put the drill stub at
+#      247 starts/h (2026-09-11), the box's top unit. This test only gates
+#      that the plane exists, so the assurance cannot be silently dropped.
+#   4c. NEGATIVE CONTROL, same plane: the seat_sentinel drill also drives the
+#      same sentinel storm against a burst=5 stub and asserts it DOES wedge
+#      the watcher — the shipped guard is armed, not decorative
+#      (fleet-ops#5096). Pinned here the same way as 4b.
 #   5. bin/pi-issue-run writes the sentinel on both verdict edges (no-usable,
 #      usable) and writes NOTHING when the verdict is unchanged — driven
 #      end-to-end against a scratch ledger/cap map (offline).
@@ -57,10 +70,9 @@ path_unit="$repo_root/systemd/fleet-seat-recovery.path"
 [[ -f "$svc_unit" ]] || fail "missing: $svc_unit"
 [[ -f "$path_unit" ]] || fail "missing: $path_unit"
 
-# --- 1. StartLimit guard in [Unit] -------------------------------------------
+# --- 1. Bounded StartLimit guard in [Unit] -----------------------------------
 # StartLimit* must live in [Unit] (systemd rejects them in [Service]).
-# Extract the [Unit] section and assert both directives are present and high
-# enough to survive a sustained ledger-write storm.
+# Extract the [Unit] section and assert the ceiling is present and BOUNDED.
 unit_section=$(awk '/^\[Unit\]/{f=1} /^\[/{if(f&&$0!~/^\[Unit\]/)f=0} f' "$svc_unit")
 [[ -n "$unit_section" ]] || fail "no [Unit] section in $svc_unit"
 echo "$unit_section" | grep -qE '^StartLimitIntervalSec=1h$' \
@@ -69,14 +81,18 @@ echo "$unit_section" | grep -qE '^StartLimitBurst=[0-9]+$' \
   || fail "StartLimitBurst missing from [Unit] in $svc_unit"
 burst=$(echo "$unit_section" | sed -nE 's/^StartLimitBurst=([0-9]+)$/\1/p')
 [[ -n "$burst" ]] || fail "could not parse StartLimitBurst"
-# 30 triggers/min * 60min = 1800/hr worst case for a DIRECTORY trigger; the
-# guard must clear that with headroom so a healthy fleet cannot wedge its own
-# fast path. fleet-ops#5093 moved the trigger to the sentinel, so this is a
-# tripwire against a directory-watch regression now. Burst=200 would re-wedge
-# the path unit (#617).
-(( burst > 1800 )) \
-  || fail "StartLimitBurst=$burst too low for ~1800/hr trigger storm (need >1800)"
-ok "fleet-seat-recovery.service carries a storm-tolerant StartLimit guard in [Unit] (burst=$burst)"
+# Exactly 200: the ceiling fleet-ops#5024 asked for, made safe by the two
+# trigger fixes (fleet-ops#5093's edge-only sentinel, fleet-ops#5096's
+# no-op-write suppression). Asserted EXACTLY (not just bounded) because the
+# whole point is that this number is meaningless without those fixes and must
+# not silently drift back above the storm it is supposed to catch. The old
+# #622 accommodation (StartLimitBurst=2000) was sized from a ~1800/h ESTIMATE
+# of a write rate nothing bounded; live 2026-09-11 it was 2471-2536/h and blew
+# the burst, wedging the fast path. A ceiling must sit ABOVE steady state and
+# BELOW the storm — it cannot do both against an unbounded trigger rate.
+[[ "$burst" == "200" ]] \
+  || fail "StartLimitBurst=$burst, expected 200 (fleet-ops#5024's ceiling, safe because the trigger rate is bounded by #5093 + #5096)"
+ok "fleet-seat-recovery.service carries a bounded StartLimit guard in [Unit] (interval=1h burst=$burst)"
 
 # --- 2. StartLimit* must not leak into [Service] -----------------------------
 svc_section=$(awk '/^\[Service\]/{f=1} /^\[/{if(f&&$0!~/^\[Service\]/)f=0} f' "$svc_unit")
@@ -146,95 +162,35 @@ grep -qF '.no-usable-seat' "$repo_root/bin/pi-issue-run" \
   || fail "bin/pi-issue-run must write the .no-usable-seat sentinel (fleet-ops#5093)"
 ok "trigger: .path watches <seats>/.no-usable-seat only (no directory watch, no TriggerLimit*)"
 
-# --- 4b. live sentinel drill -------------------------------------------------
-# Prove the acceptance end-to-end against real systemd: install the SHIPPED
-# unit files (name-swapped, escalation-excluded stub name) into the user
-# systemd scope, write 100 seat-jsons next to the sentinel, and assert ZERO
-# service starts; then touch the sentinel once and assert EXACTLY ONE start.
-# Skipped outside the VPS (no user systemd session) so CI hosted runners don't
-# false-positive.
-#
-# fleet-ops#622: the original gate only checked for an XDG_RUNTIME_DIR socket
-# and a systemctl binary. GitHub-hosted runners (Ubuntu 24.04 image) provide
-# BOTH, and HOME has no `~/.config/systemd/user/` directory by default — so
-# the test's `sed > "$drill_svc"` opened a non-existent path and red'd P14 on
-# a runner that has no user-systemd-managed services to actually exercise.
-# Gate on the existence of the per-user unit dir (the VPS has it; CI does
-# not) so the drill only runs where it can actually exercise the real
-# path-watcher trigger.
-if [[ -n "${XDG_RUNTIME_DIR:-}" ]] && [[ -S "${XDG_RUNTIME_DIR}/systemd/private" ]] \
-   && [[ -d "$HOME/.config/systemd/user" ]] \
-   && command -v systemctl >/dev/null 2>&1; then
-  # resilience-drill-stub* is on unit-escalation-write's exclusion list, so a
-  # throwaway drill failure cannot write a STOP-REASON for the stub.
-  drill_unit="resilience-drill-stub-seat-sentinel"
-  drill_svc="$HOME/.config/systemd/user/${drill_unit}.service"
-  drill_path="$HOME/.config/systemd/user/${drill_unit}.path"
-  drill_root="$(mktemp -d -t sr-sentinel-drill.XXXXXX)"
-  drill_log="$drill_root/starts.log"
-  drill_start="$drill_root/log-start.sh"
-  printf '#!/usr/bin/env bash\necho start >>"%s"\n' "$drill_log" > "$drill_start"
-  chmod +x "$drill_start"
-  # Copy the SHIPPED unit files with the unit name swapped in and the seats
-  # dir redirected to the scratch root, so the drill exercises the real
-  # watched path, not a hand-written stand-in.
-  sed "s/fleet-seat-recovery/${drill_unit}/g" "$svc_unit" > "$drill_svc"
-  sed "s|/home/nish/workspaces/agent-state/lanes/seats|${drill_root}|g; s/fleet-seat-recovery/${drill_unit}/g" "$path_unit" > "$drill_path"
-  # The shipped ExecStart points at the real bin; count starts instead.
-  sed -i "s|^ExecStart=.*|ExecStart=${drill_start}|" "$drill_svc"
-  cleanup_drill() {
-    systemctl --user stop "${drill_unit}.service" "${drill_unit}.path" 2>/dev/null || true
-    systemctl --user reset-failed "${drill_unit}.service" "${drill_unit}.path" 2>/dev/null || true
-    rm -f "$drill_svc" "$drill_path"
-    rm -rf "$drill_root"
-    systemctl --user daemon-reload 2>/dev/null || true
-  }
-  count_starts() {
-    [[ -f "$drill_log" ]] || { echo 0; return 0; }
-    wc -l < "$drill_log"
-  }
-  trap cleanup_drill EXIT INT TERM
-  systemctl --user daemon-reload
-  systemctl --user reset-failed "${drill_unit}.service" "${drill_unit}.path" 2>/dev/null || true
-  systemctl --user stop "${drill_unit}.service" "${drill_unit}.path" 2>/dev/null || true
-  systemctl --user start "${drill_unit}.path" 2>/dev/null || fail "could not start drill .path"
-  # Sanity: the copy is watching the scratch sentinel, not the live ledger.
-  grep -qF "PathChanged=${drill_root}/.no-usable-seat" "$drill_path" \
-    || fail "drill .path did not pick up the scratch sentinel path"
-  # 100 ordinary seat-json writes in the SAME directory as the sentinel.
-  for i in $(seq 1 100); do
-    printf '{"seat":%s}\n' "$i" > "$drill_root/seat-${i}.json"
-  done
-  sleep 1.5
-  n1=$(count_starts)
-  [[ "$n1" == "0" ]] \
-    || fail "100 seat-json writes must start the oneshot 0 times, got $n1 (directory still watched?)"
-  ok "live drill: 100 seat-json writes -> 0 fleet-seat-recovery starts"
-  # One sentinel touch -> exactly one start.
-  : > "$drill_root/.no-usable-seat"
-  sleep 1.5
-  n2=$(count_starts)
-  [[ "$n2" == "1" ]] \
-    || fail "one sentinel touch must start the oneshot exactly once, got $n2"
-  ok "live drill: 1 sentinel touch -> exactly 1 fleet-seat-recovery start"
-  # A second verdict-edge write fires again (the sentinel is a wake-up, not a
-  # one-shot), and the watcher stays healthy.
-  printf 'no-usable\n' > "$drill_root/.no-usable-seat"
-  sleep 1.5
-  n3=$(count_starts)
-  [[ "$n3" == "2" ]] \
-    || fail "a second sentinel write must start the oneshot once more, got $n3"
-  st=$(systemctl --user show -p ActiveState -p Result "${drill_unit}.path" 2>/dev/null)
-  echo "$st" | grep -q 'ActiveState=active' \
-    || fail "drill .path not active after the sentinel drill: $st"
-  echo "$st" | grep -q 'Result=success' \
-    || fail "drill .path Result not success: $st"
-  ok "live drill: second sentinel write -> 1 more start, watcher stays active/success"
-  cleanup_drill
-  trap - EXIT INT TERM
-else
-  echo "SKIP: live sentinel drill (no user systemd session)"
-fi
+# --- 4b. the live sentinel drill lives in the resilience drill --------------
+# fleet-ops#5106: the live proof (install a name-swapped stub pair, 100
+# seat-json writes -> 0 starts, one sentinel touch -> 1 start, second write
+# -> 1 more, watcher stays active/success) moved to the seat_sentinel plane
+# of bin/fleet-resilience-drill. A drill is a periodic assurance check: it
+# runs on the drill's daily timer, not once per test-suite run (the inner-
+# loop churn that made this change: 247 stub starts/h on 2026-09-11).
+# This gate keeps the move honest: a regression that drops the plane (or its
+# offline skip) red-fails HERE instead of silently retiring the assurance.
+drill_bin="$repo_root/bin/fleet-resilience-drill"
+[[ -f "$drill_bin" ]] || fail "missing: $drill_bin"
+grep -q '^plane_seat_sentinel()' "$drill_bin" \
+  || fail "bin/fleet-resilience-drill must carry the seat_sentinel plane (the live sentinel proof, fleet-ops#5106)"
+grep -q 'plane_seat_sentinel || rc=1' "$drill_bin" \
+  || fail "run_drill must invoke plane_seat_sentinel (fleet-ops#5106)"
+grep -q 'resilience-drill-stub-seat-sentinel' "$drill_bin" \
+  || fail "seat_sentinel plane must drive the resilience-drill-stub-seat-sentinel stub (fleet-ops#5106)"
+ok "live sentinel drill: seat_sentinel plane present in bin/fleet-resilience-drill (daily timer cadence, fleet-ops#5106)"
+
+# --- 4c. the same plane carries the negative control ----------------------
+# fleet-ops#5096: the armed-not-decorative proof moved with the drill — the
+# seat_sentinel plane also runs the same sentinel storm against a burst=5
+# stub (resilience-drill-stub-seat-sentinel-tiny) and asserts it wedges the
+# watcher. Pin it here so the control cannot be silently dropped.
+grep -q 'resilience-drill-stub-seat-sentinel-tiny' "$drill_bin" \
+  || fail "seat_sentinel plane must carry the burst=5 negative-control stub (fleet-ops#5096)"
+grep -q 'StartLimitBurst=5' "$drill_bin" \
+  || fail "seat_sentinel plane must drive the negative-control stub at StartLimitBurst=5 (fleet-ops#5096)"
+ok "negative control: seat_sentinel plane wedges a burst=5 stub on the same storm (fleet-ops#5096)"
 
 # --- 5. the sentinel latch is written by bin/pi-issue-run, edge-only ---------
 # fleet-ops#5093: nothing else in the repo observes BOTH seat verdicts, so
@@ -337,4 +293,4 @@ JSON
 ) || fail "sentinel latch end-to-end run failed (see above)"
 ok "sentinel latch: no-usable + usable edges written, unchanged verdict writes nothing"
 
-echo "OK: fleet-seat-recovery-units: StartLimit guard + verify + sentinel trigger + latch"
+echo "OK: fleet-seat-recovery-units: bounded StartLimit guard (armed, proven by a negative control) + verify + sentinel trigger + latch"

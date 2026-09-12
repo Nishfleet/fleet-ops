@@ -730,6 +730,82 @@ p4=$(pick3690)
 [[ "$p4" == devin* ]] || fail "#3690: after reset, 1st pick must route to devin again (got '$p4')"
 ok "#3690: reset_tick_spawn_counts clears the counter; devin picks resume next tick"
 
+# --- fleet-ops#4723: sole usable provider rides the AIMD ceiling ----------
+# The #3690 cap stays at 2 when a fallback exists (invariant above). When
+# devin is the ONLY usable provider, AIMD has admitted a probe raise, and
+# there is no recent rc=143/124 death, the per-tick cap equals the live
+# AIMD ceiling so one tick can fill the remaining slots. A fast death
+# inside 60s keeps the fixed cap of 2.
+caps4723="$scratch/seat-caps-4723.json"
+state4723="$scratch/state-4723"
+learned4723="$scratch/learned-caps-4723.json"
+counts4723="$scratch/tick-spawn-counts-4723.json"
+mkdir -p "$state4723/active-seats" "$scratch/ledger-4723"
+cat >"$scratch/models-4723.json" <<'JSON'
+{
+  "providers": {
+    "devin": { "models": [ { "id": "glm-5-2", "cost": { "input": 0 } } ] }
+  }
+}
+JSON
+cat >"$caps4723" <<'JSON'
+{
+  "ram_gb_per_worker": 0.5,
+  "prepaid_providers_in_order": ["devin"],
+  "providers": {
+    "devin": { "cap": 4, "class": "prepaid-quota", "max_probe_ceiling": 4, "tick_spawn_cap": 2, "models": { "glm-5-2": { "cap": 4, "max_probe_ceiling": 4 } } }
+  }
+}
+JSON
+now4723=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+jq -n --arg t "$now4723" '{providers:{devin:{learned_cap:3,last_result:"probe",ramp:true,bench_until:null,last_at:$t}}}' >"$learned4723"
+echo '{}' >"$counts4723"
+: >"$state4723/watch.log"
+pick4723() {
+    SEAT_CAPS_JSON="$caps4723" \
+    LEARNED_CAPS_JSON="$learned4723" \
+    PI_PACKET_STATE="$state4723" \
+    PI_SEAT_HEALTH_LEDGER_DIR="$scratch/ledger-4723" \
+    PI_MODELS_JSON="$scratch/models-4723.json" \
+    SEAT_TICK_SPAWN_COUNTS_JSON="$counts4723" \
+    SEAT_LOG_FILE="$state4723/watch.log" \
+    PI_SEAT_LIB_CHECK_SYSTEMD=0 PI_SEAT_CREDENTIAL_PRECHECK=0 SEAT_MIN_FREE_RAM_MB=0 \
+    bash -c 'source "$0" 2>/dev/null; pick_seat "" "" 0 "" light 2>/dev/null' "$lib"
+}
+p4723_1=$(pick4723)
+p4723_2=$(pick4723)
+p4723_3=$(pick4723 || true)
+p4723_4=$(pick4723 || true)
+[[ "$p4723_1" == devin* ]] || fail "#4723: 1st pick must route to sole healthy AIMD provider (got '$p4723_1')"
+[[ "$p4723_2" == devin* ]] || fail "#4723: 2nd pick must route to sole healthy AIMD provider (got '$p4723_2')"
+[[ "$p4723_3" == devin* ]] || fail "#4723: 3rd pick must ride AIMD ceiling 3, not tick_spawn_cap 2 (got '$p4723_3')"
+[[ -z "$p4723_4" ]] || fail "#4723: 4th pick must stop at AIMD ceiling 3 (got '$p4723_4')"
+ok "#4723: sole-usable-provider + healthy AIMD => per-tick cap equals AIMD ceiling 3"
+
+# Same map, fresh ramp seed at floor/2 with last_result=ramp: keep cap 2.
+echo '{}' >"$counts4723"
+now4723=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+jq -n --arg t "$now4723" '{providers:{devin:{learned_cap:2,last_result:"ramp",ramp:true,bench_until:null,last_at:$t}}}' >"$learned4723"
+: >"$state4723/watch.log"
+r1=$(pick4723)
+r4723_2=$(pick4723)
+r4723_3=$(pick4723 || true)
+[[ "$r1" == devin* && "$r4723_2" == devin* ]] || fail "#4723: ramp seed still gets 2 picks (got '$r1' '$r4723_2')"
+[[ -z "$r4723_3" ]] || fail "#4723: ramp seed must keep tick_spawn_cap 2 (got '$r4723_3')"
+ok "#4723: fresh AIMD ramp seed (no probe raise) keeps the fixed tick_spawn_cap"
+
+# Same map as the probe-raise case, plus a rc=143 in the last 60s: stay at 2.
+echo '{}' >"$counts4723"
+now4723=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+jq -n --arg t "$now4723" '{providers:{devin:{learned_cap:3,last_result:"probe",ramp:true,bench_until:null,last_at:$t}}}' >"$learned4723"
+printf '[%s] pi-issue-run: fleet-ops-1 running on devin/glm-5-2 rc=143\n' "$now4723" >"$state4723/watch.log"
+d1=$(pick4723)
+d4723_2=$(pick4723)
+d4723_3=$(pick4723 || true)
+[[ "$d1" == devin* && "$d4723_2" == devin* ]] || fail "#4723: fast-death case still gets 2 picks (got '$d1' '$d4723_2')"
+[[ -z "$d4723_3" ]] || fail "#4723: recent rc=143 must keep tick_spawn_cap 2 (got '$d4723_3')"
+ok "#4723: recent fast death (rc=143 inside 60s) keeps the fixed tick_spawn_cap"
+
 # Full suite includes the convergence replay as a final invariant.
 run_empty_run_convergence
 ok "fleet-ops#3760: empty-run convergence replay passed (production default EMPTY_RUN_FAILURE_CEILING=3)"

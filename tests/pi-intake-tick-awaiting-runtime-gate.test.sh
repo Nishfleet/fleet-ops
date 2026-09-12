@@ -50,7 +50,7 @@ grep -qF 'skipped-awaiting-runtime-gate' "$tick" \
 grep -qF 'index("awaiting-runtime-gate") != null' "$tick" \
     || fail "awaiting-runtime-gate label check not found"
 label_line=$(grep -n 'index("awaiting-runtime-gate") != null' "$tick" | head -1 | cut -d: -f1)
-body_line=$(grep -n '_body_json=$(gh issue view "$N" -R "$FULL" --json body,author' "$tick" | head -1 | cut -d: -f1)
+body_line=$(grep -n '_body_json=$(_gh_read issue view "$N" -R "$FULL" --json body,author' "$tick" | head -1 | cut -d: -f1)
 [[ -n "$label_line" && -n "$body_line" ]] || fail "label check or body fetch line not found"
 (( label_line < body_line )) \
     || fail "awaiting-runtime-gate label skip (line $label_line) must precede the body fetch (line $body_line) — parked issues must cost zero network"

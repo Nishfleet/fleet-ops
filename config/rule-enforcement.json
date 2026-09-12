@@ -196,8 +196,8 @@
     {
       "id": "sr-prepaid-max-util",
       "source": "global-standing-rules.md: Prepaid subs run at max utilization (Nish, 2026-08-20)",
-      "mechanism": "Heartbeat prepaid-util canary: fail-loud ladder gate (every cap>0 prepaid-quota provider with models must be in prepaid_providers_in_order) plus an observe-to-open expiry-waste detector that auto-files when a wired prepaid seat has 0 picks this ISO week in the last 24h of the week while ready work exists and the seat is not quota-benched. One PREPAID-UTIL heartbeat line per prepaid seat per tick.",
-      "proof": "bin/fleet-prepaid-util-canary; tests/fleet-prepaid-util-canary.test.sh; fleet-heartbeat-tier1 block 38; fleet-ops#531",
+      "mechanism": "Heartbeat prepaid-util canary: fail-loud ladder gate (every cap>0 prepaid-quota provider with models must be in prepaid_providers_in_order) plus an observe-to-open expiry-waste detector that auto-files when a wired prepaid seat has 0 picks this ISO week in the last 24h of the week while ready work exists and the seat is not quota-benched. One PREPAID-UTIL heartbeat line per prepaid seat per tick. fleet-ops#5022 (2026-09-10): the same canary reads OpenCode Go's own usage endpoint (GET opencode.ai/zen/go/v1/usage) and emits fleet_prepaid_usage_pct{provider=\"opencode-go\",window=\"5h|weekly|monthly\"} + reset timestamps + fleet_prepaid_paced_cap into prepaid-usage.prom; config/fleet_rules.yml group fleet_opencode_go_prepaid_pacing (FleetOpenCodeGoPaceExceeded / FleetOpenCodeGoUsageReaderAbsent) paces the declared cap to the remaining weekly pool and fail-louds a dead reader, and lib/seat-lib.sh provider_live_reset_s benches a quota 429 to the live 5h reset when that window is >= 95% used.",
+      "proof": "bin/fleet-prepaid-util-canary; tests/fleet-prepaid-util-canary.test.sh; tests/seat-lib.test.sh 9f-prepaid; fleet-heartbeat-tier1 block 38; config/fleet_rules.yml fleet_opencode_go_prepaid_pacing; fleet-ops#531; fleet-ops#5022",
       "status": "enforced"
     },
     {
@@ -644,8 +644,8 @@
     {
       "id": "led-escalation-matrix-fixes",
       "source": "decisions-ledger.md: 2026-08-27 | escalation matrix FIXES, not just routes",
-      "mechanism": "Escalation completion invariant: every failure chain terminates in a verified fix; stalled chains climb the ladder; only detector-green or Nish-reserved wall are terminal",
-      "proof": "fleet-ops #468 / #480; enforced by bin/fleet-escalation-completion (per-chain stall budget + fail-loud ladder, wired into fleet-heartbeat-tier1); tests/fleet-escalation-completion.test.sh nested from tests/escalation-coverage-canary.test.sh",
+      "mechanism": "Escalation completion invariant: every failure chain terminates in a verified fix; stalled chains climb the ladder; only detector-green or Nish-reserved wall are terminal. Stale trips climb the same ladder: LOUD + re-fire stop-escalation.service on a bounded cadence (fleet-ops#5190 — re-fail-per-tick could not summon an auditor; unit-escalation same-unit dedupe swallowed it), and the reconciler's close-grace keeps the filed alarm open across hold ticks so it cannot flap-close while the chain is still open",
+      "proof": "fleet-ops #468 / #480 / #5187 / #5190; enforced by bin/fleet-escalation-completion (per-chain stall budget + stale-trip re-fire ladder + fail-loud bound, wired into fleet-heartbeat-tier1) and lib/detector-queue-reconciler.py close-grace; tests/fleet-escalation-completion.test.sh nested from tests/escalation-coverage-canary.test.sh",
       "status": "enforced"
     },
     {
@@ -900,6 +900,14 @@
       "proof": "fleet-ops#4263; fleet-ops#4422 (delete pick_seat, pending CI re-run, stale-red PR-checks from 2026-09-08T02:08Z, body fixed 02:21Z); config/pi-models.json litellm provider; lib/seat-lib.sh litellm_pick_seat + litellm_source (PI_SEAT_SOURCE); config/litellm-proxy.yaml; tests/pi-seat-source-litellm.test.sh; fleet-ops#4219 (P3a, merged); fleet-ops#4404 (402 cooldown/fallback, closed). 2026-09-08 DECISION on #4422 (do NOT re-run CI): the prerequisite, landed by the led-2026-09-08-litellm-p3b mechanism ticket #4425, is the config/seat-caps.json providers.litellm block (5 model groups at cap 0, intentional_cap_zero=p3b_pending) so the proxy is present, not absent, in the seat map before P3b switches callers to PI_SEAT_SOURCE=litellm; status stays queued(#4263) until #4422 merges and seat-lib.sh is deleted.",
       "status": "queued(#4263)",
       "queued_since": "2026-09-08"
+    },
+    {
+      "id": "sr-nothing-on-the-vps-fails-silently-everything-resumes-nothing",
+      "source": "global-standing-rules.md: Nothing on the VPS fails silently, everything resumes, nothing is duct tape (Nish, 2026-09-11 — NON-NEGOTIABLE, forever)",
+      "mechanism": "queued(#5456): the universal resume-then-dispatch chain (every unit death or missing deliverable relaunches hop+1 plus auto-files the finding, with the pi-detached-deadman dead-man + OnFailure escalation + deliverable check as the shipped slice) is owned by fleet-ops#5456 and not yet fully landed — #5456 is parked awaiting its runtime gate. This row is queued on #5456 so the join is green while the rollout lands; flips to enforced when #5456 completes.",
+      "proof": "fleet-ops#5456 (owner of the rollout; parked with awaiting-runtime-gate); bin/pi-detached-deadman; lib/pi-intake-tick.sh StartLimitTracking (claim-branch release on StartLimitBurst); tests/pi-detached-deadman* in pipeline; fleet-ops#383 coverage canary (this row closes its LOUD, fleet-ops#5604)",
+      "status": "queued(#5456)",
+      "queued_since": "2026-09-11"
     }
   ]
 }

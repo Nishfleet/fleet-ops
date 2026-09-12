@@ -16,6 +16,11 @@ here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 repo_root="$(cd "$here/.." && pwd)"
 bin="$repo_root/bin/fleet-blind-audit"
 
+# Pin the seam lens to the repo copy under test; otherwise the harness picks
+# up the installed ~/.local/lib/pi-packet copy, which lags the repo's CLI
+# (fleet-ops#5477 added --closed-issues).
+export AUDIT_SEAM_LIB="$repo_root/lib/manual-seam-lens.py"
+
 fail() { echo "FAIL: $*" >&2; exit 1; }
 ok()   { echo "OK: $*"; }
 
@@ -51,14 +56,13 @@ grep -E '"\$ISSUE_FILE" file .*--label agent-ready' "$bin" \
 # through a declared stub gh. The mint block must also not put the canonical
 # bin dir ahead of an inherited stub: that reorder is how a drill run with no
 # GH_TOKEN resolved the real gh and filed the fixture as live issue #5037.
-grep -q 'command -v gh >/dev/null 2>&1 || export PATH="/home/nish/.local/bin' "$bin" \
+grep -q 'command -v gh >/dev/null 2>&1 || export PATH=/home/nish/.local/bin' "$bin" \
     || fail "fleet-blind-audit must extend PATH only when gh is already missing (fleet-ops#5037)"
 grep -q 'AUDIT_DRILL_GH_STUB_DIR' "$bin" \
     || fail "fleet-blind-audit must gate drill filing on a declared stub gh dir (fleet-ops#5037)"
 
 scratch=$(mktemp -d -t fleet-blind-audit.XXXXXX)
 trap 'rm -rf "$scratch"' EXIT INT TERM
-
 # Custom deliberate-states: one active, one expired (for the loud finding).
 cat > "$scratch/deliberate-states.md" <<'EOF'
 # Deliberate-states registry
@@ -322,6 +326,7 @@ refuse_rc=0
 PATH="$scratch/fakebin:$PATH" \
   GH_CREATE_LOG="$refuse_log" \
   AUDIT_REPO="Nishfleet/fleet-ops" \
+  AUDIT_ALLOW_NONCANONICAL=1 \
   AUDIT_REPO_ROOT="$repo_root" \
   AUDIT_STATE_DIR="$refuse_state" \
   AUDIT_DELIBERATE_STATES="$scratch/deliberate-states.md" \
@@ -353,6 +358,7 @@ shadow_rc=0
 PATH="$scratch/fakebin:$PATH" \
   GH_CREATE_LOG="$shadow_log" \
   AUDIT_REPO="Nishfleet/fleet-ops" \
+  AUDIT_ALLOW_NONCANONICAL=1 \
   AUDIT_REPO_ROOT="$repo_root" \
   AUDIT_STATE_DIR="$shadow_state" \
   AUDIT_DELIBERATE_STATES="$scratch/deliberate-states.md" \
@@ -708,3 +714,8 @@ ok "panel #3680 gate: rejects bare find -mtime freshness findings, passes named-
 
 echo "OK: fleet-blind-audit.test.sh"
 
+
+# fleet-ops#5101: the class fix for the shared App-token mint header PATH
+# guard is exercised by its own drill; hosted here because workers cannot
+# push .github/workflows/** (P14 listing gate).
+bash "$here/app-token-mint-stub-respect.test.sh"

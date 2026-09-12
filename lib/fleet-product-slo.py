@@ -1085,7 +1085,7 @@ def _is_d1_id(value: str) -> bool:
 _D1_QUERIES = {
     "signups_24h": (
         "SELECT COUNT(*) AS n FROM user "
-        "WHERE createdAt >= datetime('now','-1 day');"
+        "WHERE julianday(createdAt) >= julianday('now','-1 day');"
     ),
     # Signups in the trailing 24h whose first SENT brief arrived within 5
     # minutes of signup (the activation definition, fleet-ops#4456 BET 7).
@@ -1093,7 +1093,7 @@ _D1_QUERIES = {
         "SELECT COUNT(*) AS n FROM ("
         "SELECT u.id FROM user u "
         "JOIN delivery_attempt da ON da.user_id = u.id "
-        "WHERE u.createdAt >= datetime('now','-1 day') "
+        "WHERE julianday(u.createdAt) >= julianday('now','-1 day') "
         "AND da.status='sent' "
         "AND (julianday(da.sent_at)-julianday(u.createdAt))*1440.0 <= 5.0 "
         "GROUP BY u.id);"
@@ -1104,7 +1104,7 @@ _D1_QUERIES = {
     ),
     "briefs_delivered_24h": (
         "SELECT COUNT(*) AS n FROM delivery_attempt "
-        "WHERE status='sent' AND sent_at >= datetime('now','-1 day');"
+        "WHERE status='sent' AND julianday(sent_at) >= julianday('now','-1 day');"
     ),
     # fleet-ops#5000 business-table census. One compound select, one row, so
     # the census costs ONE extra Cloudflare API call, not one per table; the

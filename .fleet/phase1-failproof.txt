@@ -1,0 +1,9 @@
+# phase1 failproof — tests/detached-deliverable-preflight.test.sh vs UNMODIFIED libexec/alert-repair-dispatch
+# run: bash tests/detached-deliverable-preflight.test.sh (expected non-zero pre-change)
+
+FAIL: (a) delivered packet must NOT spawn a relaunch; spawn argv: --unit alert-repair-DetachedJobDied-20260911T043513Z --stdin /tmp/detached-deliverable-preflight.Vq9OCH/packets/packet-DetachedJobDied-20260911T043513Z.md --deadline 60 -- pi --print --provider minimax --model MiniMax-M3
+
+# cases (b)+(c) run alone against the same unmodified dispatcher (same harness, case (a) block removed):
+OK: (b) deliverable unset + OPEN unarmed PR: exactly 1 spawn
+OK: (c) gh timeout: fail-open, exactly 1 spawn
+OK: fleet-ops#5142 deliverable pre-flight passes

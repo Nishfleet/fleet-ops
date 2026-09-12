@@ -12,8 +12,9 @@
 #
 # Proven here:
 #   1. Shape: pi-scout-run exits the reserved SKIP code (75, EX_TEMPFAIL) on
-#      the no-seat path, and pi-scout@.service marks 75 a success so the unit
-#      stays green and OnFailure never fires.
+#      the no-seat path, and both pi-scout@.service and its repair twin mark 75
+#      a success so the units stay green and OnFailure / the unit-escalation
+#      drop-in never fire (fleet-ops#5071).
 #   2. The dry trap: SuccessExitStatus=75 makes SERVICE_RESULT="success", so a
 #      naive resolve_exit would read the SKIP as a GREEN run that filed
 #      nothing and burn consecutive_dry until SCOUT-FUTILITY parked a healthy
@@ -35,6 +36,7 @@ repo_root="$(cd "$here/.." && pwd)"
 bin="$repo_root/bin/scout-futility-check"
 scout_run="$repo_root/bin/pi-scout-run"
 unit="$repo_root/systemd/pi-scout@.service"
+repair_unit="$repo_root/systemd/pi-scout-repair@.service"
 
 fail() { echo "FAIL: $*" >&2; exit 1; }
 ok()   { echo "OK: $*"; }
@@ -58,14 +60,21 @@ grep -qE '^SuccessExitStatus=75$' "$unit" \
   || fail "pi-scout@.service must mark 75 a success so OnFailure does not fire"
 grep -q 'OnFailure=pi-scout-repair@%i.service' "$unit" \
   || fail "pi-scout@.service must keep OnFailure for REAL failures"
+# fleet-ops#5071: the repair twin runs the same wrapper through the same
+# no-seat SKIP, so it needs the same line — a saturated pool must not record
+# the repair unit FAILED and fire the unit-escalation@%n drop-in.
+grep -qE '^SuccessExitStatus=75$' "$repair_unit" \
+  || fail "pi-scout-repair@.service must mark 75 a success (same SKIP contract as the scout)"
+[[ "$(grep -cE '^SuccessExitStatus=' "$repair_unit")" == "1" ]] \
+  || fail "pi-scout-repair@.service must carry exactly one SuccessExitStatus (the reserved SKIP code only)"
 grep -q 'SEAT_SKIP_EXIT=75' "$bin" \
   || fail "scout-futility-check must share the reserved SKIP code"
 ok "shape: no-seat exits 75, unit treats 75 as success, OnFailure kept for real faults"
 
 if command -v systemd-analyze >/dev/null 2>&1; then
-  systemd-analyze verify --man=no "$unit" >/dev/null 2>&1 \
-    || fail "systemd-analyze verify failed for pi-scout@.service"
-  ok "systemd-analyze verify accepts pi-scout@.service with SuccessExitStatus=75"
+  systemd-analyze verify --man=no "$unit" "$repair_unit" >/dev/null 2>&1 \
+    || fail "systemd-analyze verify failed for pi-scout units"
+  ok "systemd-analyze verify accepts pi-scout units with SuccessExitStatus=75"
 else
   echo "SKIP: systemd-analyze not on PATH"
 fi

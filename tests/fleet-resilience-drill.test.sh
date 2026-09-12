@@ -33,6 +33,10 @@
 #      the last-green timestamp is NOT updated, so the alert in
 #      config/fleet_rules.yml (ResilienceDrillAbsent / stale) fires
 #      the moment the drill stays red.
+#  13. fleet-ops#5106: the seat-recovery fast-path proof (the live sentinel
+#      drill moved out of tests/fleet-seat-recovery-units.test.sh) is the
+#      seat_sentinel plane: SKIP+LOUD under test/offline, runs live on the
+#      daily 05:47 timer.
 set -euo pipefail
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 repo_root="$(cd "$here/.." && pwd)"
@@ -474,11 +478,16 @@ names = {r["name"] for r in data["results"]}
 required = {"supervision_resurrection", "access_policy", "access_runbook",
             "state_restore", "compute_breakglass", "keystone_deadman",
             "queue_freeze", "pipeline_red", "boundary_delivery",
-            "band_floor", "event_trigger_spot"}
+            "band_floor", "event_trigger_spot", "seat_sentinel"}
 missing = required - names
 assert not missing, f"missing planes: {missing}"
+statuses = {r["name"]: r["status"] for r in data["results"]}
+# fleet-ops#5106: the offline run must NOT fire the live sentinel proof —
+# it would reinstall the stub unit churn the plane exists to retire.
+assert statuses.get("seat_sentinel") == "skip", \
+    f"seat_sentinel offline status -> {statuses.get('seat_sentinel')} (want skip)"
 PY
-ok "green offline run exits 0 and writes all_pass=true (11 planes)"
+ok "green offline run exits 0 and writes all_pass=true (12 planes)"
 
 # --- #1463: per-plane green + metric + auto-file-disabled --------------------
 reset_all
@@ -489,10 +498,10 @@ import json, sys
 data = json.load(open(sys.argv[1], encoding="utf-8"))
 statuses = {r["name"]: r["status"] for r in data["results"]}
 for plane in ("queue_freeze", "pipeline_red", "boundary_delivery",
-              "band_floor", "event_trigger_spot"):
+              "band_floor", "event_trigger_spot", "seat_sentinel"):
     assert statuses.get(plane) in ("pass", "skip"), f"{plane} -> {statuses.get(plane)}"
 PY
-ok "#1463 green: every failure-class plane passed (or SKIP+LOUD)"
+ok "#1463+#5106 green: every failure-class plane passed (or SKIP+LOUD)"
 
 # Metrics: green run must update last_green_seconds and per-plane pass.
 prom="$state/fleet-resilience-drill/resilience-drill.prom"

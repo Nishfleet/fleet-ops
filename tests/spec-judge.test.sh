@@ -123,7 +123,28 @@ relaunched=$(jq -r '.relaunched' "$SPEC_JUDGE_STATE_DIR/inflight-fleet-ops.json"
 spec_judge_failure_fallback "fleet-ops" "Nishfleet/fleet-ops"
 [[ -f "$SPEC_JUDGE_STATE_DIR/inflight-fleet-ops.json" ]] \
     && fail "Test 7: second failure must clear the in-flight marker"
+[[ -s "$SPEC_JUDGE_STATE_DIR/unavailable-fleet-ops-abc123.json" ]] \
+    || fail "Test 7: second failure must leave a durable unavailable-<repo>-<sha>.json record"
+jq -e '.batch == [1,2] and .newest_issue == 2 and .unit == "spec-judge-fleet-ops-abc123"' \
+    "$SPEC_JUDGE_STATE_DIR/unavailable-fleet-ops-abc123.json" >/dev/null 2>&1 \
+    || fail "Test 7: unavailable record must carry repo/sha/unit/batch/newest_issue"
 ok "Test 7: failure fallback relaunches once, then clears on second failure"
+
+# --- Test 7b: a dropped fallback comment is LOUD, and the durable record ---
+# still lands (fleet-ops#5438 — no silent drop).
+sj_fail_gh() { return 1; }
+GH=sj_fail_gh
+rm -f "$SPEC_JUDGE_STATE_DIR"/unavailable-*.json
+echo '{"repo":"fleet-ops","batch":[5,9],"sha":"feedface","unit":"spec-judge-fleet-ops-feedface","launched_at":"x","relaunched":true}' \
+    > "$SPEC_JUDGE_STATE_DIR/inflight-fleet-ops.json"
+t7b_err=$(spec_judge_failure_fallback "fleet-ops" "Nishfleet/fleet-ops" 2>&1)
+printf '%s' "$t7b_err" | grep -q 'ALERT spec-judge: gh issue comment' \
+    || fail "Test 7b: dropped fallback comment must emit an ALERT line, got: $t7b_err"
+[[ -s "$SPEC_JUDGE_STATE_DIR/unavailable-fleet-ops-feedface.json" ]] \
+    || fail "Test 7b: durable record must exist even when the comment fails"
+unset -f sj_fail_gh
+GH=/bin/echo
+ok "Test 7b: dropped failure-fallback comment is ALERT-loud + durable record survives"
 
 # --- Test 8: in-flight marker + member skip --------------------------------
 echo '{"repo":"fleet-ops","batch":[1,2],"sha":"abc123","unit":"spec-judge-fleet-ops-abc123","launched_at":"x","relaunched":false}' \
@@ -252,6 +273,178 @@ newbody=$(cat "$SPEC_JUDGE_STATE_DIR/edit-body.txt" 2>/dev/null || true)
 ok "Test 15: depends-on: none rewritten to landing-order predecessor"
 rm -f "$vf"
 
+# --- Test 15b (fleet-ops#5107): binding bullet `depends-on: #N` -> structured
+# line updated. The #2352 shape: the judge expresses a NEW dependency in a
+# non-Replace bullet, which lands in the binding section; the structured
+# `depends-on: none` line must carry the number afterwards. Never overwrite
+# a real value (the conservative rule). Judge-explicit dep wins over the
+# landing-order predecessor (specific beats inferred).
+cat >"$GH" <<'FAKE'
+#!/usr/bin/env bash
+case "$1" in
+  issue)
+    case "$2" in
+      view) printf '%s' '{"body":"files: a.ts\ndepends-on: none\n\nStep 3 says one POST here."}' ;;
+      edit)
+        while [[ $# -gt 0 ]]; do
+          [[ "$1" == "--body-file" ]] && { cp "$2" "$SPEC_JUDGE_STATE_DIR/edit-body.txt"; }
+          shift
+        done ;;
+      comment) ;;
+    esac ;;
+esac
+FAKE
+chmod +x "$GH"
+vf=$(mktemp)
+cat >"$vf" <<'EOF'
+## #2352 - VERDICT: EDIT
+
+- If #2359 lands first, use its shared helper; add `depends-on: #2359`.
+EOF
+spec_judge_apply "fleet-ops" "Nishfleet/fleet-ops" "shaD1" "$vf"
+newbody=$(cat "$SPEC_JUDGE_STATE_DIR/edit-body.txt" 2>/dev/null || true)
+[[ "$newbody" == *"depends-on: #2359"* ]] || fail "Test 15b: structured line not updated from binding bullet, got: $newbody"
+[[ "$newbody" != *"depends-on: none"* ]] || fail "Test 15b: depends-on: none still present"
+[[ "$newbody" == *"## Judge edits (binding)"* ]] || fail "Test 15b: binding section missing"
+ok "Test 15b: binding bullet depends-on: #N -> structured line updated"
+rm -f "$vf"
+
+# --- Test 15c (fleet-ops#5107): never overwrite a real depends-on value ---
+cat >"$GH" <<'FAKE'
+#!/usr/bin/env bash
+case "$1" in
+  issue)
+    case "$2" in
+      view) printf '%s' '{"body":"files: a.ts\ndepends-on: #2373\n"}' ;;
+      edit)
+        while [[ $# -gt 0 ]]; do
+          [[ "$1" == "--body-file" ]] && { cp "$2" "$SPEC_JUDGE_STATE_DIR/edit-body.txt"; }
+          shift
+        done ;;
+      comment) ;;
+    esac ;;
+esac
+FAKE
+chmod +x "$GH"
+vf=$(mktemp)
+cat >"$vf" <<'EOF'
+## #2352 - VERDICT: EDIT
+
+- If #2359 lands first, use its shared helper; add `depends-on: #2359`.
+EOF
+spec_judge_apply "fleet-ops" "Nishfleet/fleet-ops" "shaD2" "$vf"
+newbody=$(cat "$SPEC_JUDGE_STATE_DIR/edit-body.txt" 2>/dev/null || true)
+structured=$(printf '%s\n' "$newbody" | grep -E '^depends-on:' || true)
+[[ "$structured" == "depends-on: #2373" ]] || fail "Test 15c: real depends-on value must survive, got: $structured"
+ok "Test 15c: real depends-on value never overwritten by the binding-bullet scan"
+rm -f "$vf"
+
+# --- Test 15d (fleet-ops#5107): binding dep with NO #<n> parks the ticket -
+# The #2394 shape: `depends-on: the R1 ticket...` names no issue number.
+# The ticket parks on blocked-on: orchestrator + agent-blocked +
+# needs-orchestrator labels instead of being claimed.
+cat >"$GH" <<'FAKE'
+#!/usr/bin/env bash
+STATE="$SPEC_JUDGE_STATE_DIR"
+case "$1" in
+  issue)
+    case "$2" in
+      view) printf '%s' '{"body":"files: a.ts\ndepends-on: none\n"}' ;;
+      edit)
+        while [[ $# -gt 0 ]]; do
+          [[ "$1" == "--body-file" ]] && { cp "$2" "$STATE/edit-body.txt"; }
+          [[ "$1" == "--remove-label" || "$1" == "--add-label" ]] && { printf '%s %s\n' "$1" "$2" >> "$STATE/edit-labels.txt"; }
+          shift
+        done ;;
+      comment) ;;
+    esac ;;
+esac
+FAKE
+chmod +x "$GH"
+vf=$(mktemp)
+cat >"$vf" <<'EOF'
+## #2394 - VERDICT: EDIT
+
+- Replace `depends-on: none` with `depends-on: the R1 ticket for the cache-HIT claim; this ticket's only deliverable is the doc`.
+EOF
+spec_judge_apply "fleet-ops" "Nishfleet/fleet-ops" "shaD3" "$vf"
+newbody=$(cat "$SPEC_JUDGE_STATE_DIR/edit-body.txt" 2>/dev/null || true)
+[[ "$newbody" == *"blocked-on: orchestrator"* ]] || fail "Test 15d: blocked-on: orchestrator missing from body, got: $newbody"
+labels=$(cat "$SPEC_JUDGE_STATE_DIR/edit-labels.txt" 2>/dev/null || true)
+[[ "$labels" == *"--remove-label agent-ready"* ]] || fail "Test 15d: agent-ready not removed, got: $labels"
+[[ "$labels" == *"--add-label agent-blocked"* ]] || fail "Test 15d: agent-blocked not added, got: $labels"
+[[ "$labels" == *"--add-label needs-orchestrator"* ]] || fail "Test 15d: needs-orchestrator not added, got: $labels"
+ok "Test 15d: no-number binding dep parks the ticket (blocked-on: orchestrator + labels)"
+rm -f "$vf"
+rm -f "$SPEC_JUDGE_STATE_DIR/edit-labels.txt"
+
+# --- Test 15e (fleet-ops#5107): judge-explicit dep wins over the predecessor
+cat >"$GH" <<'FAKE'
+#!/usr/bin/env bash
+case "$1" in
+  issue)
+    case "$2" in
+      view) printf '%s' '{"body":"files: a.ts\ndepends-on: none\n"}' ;;
+      edit)
+        while [[ $# -gt 0 ]]; do
+          [[ "$1" == "--body-file" ]] && { cp "$2" "$SPEC_JUDGE_STATE_DIR/edit-body.txt"; }
+          shift
+        done ;;
+      comment) ;;
+    esac ;;
+esac
+FAKE
+chmod +x "$GH"
+vf=$(mktemp)
+cat >"$vf" <<'EOF'
+## #2352 - VERDICT: EDIT
+
+- If #2359 lands first, use its shared helper; add `depends-on: #2359`.
+
+## Cross-ticket
+
+- **Landing order (strictly sequential):** #2181 -> #2352.
+EOF
+spec_judge_apply "fleet-ops" "Nishfleet/fleet-ops" "shaD4" "$vf"
+newbody=$(cat "$SPEC_JUDGE_STATE_DIR/edit-body.txt" 2>/dev/null || true)
+structured=$(printf '%s\n' "$newbody" | grep -E '^depends-on:' || true)
+[[ "$structured" == "depends-on: #2359" ]] || fail "Test 15e: judge-explicit dep must win over the inferred predecessor, got: $structured"
+ok "Test 15e: judge-explicit dep wins over landing-order predecessor"
+rm -f "$vf"
+
+# --- Test 15f (fleet-ops#5107): binding bullet with `depends-on: none` mention
+# only (no live dep) must NOT park the ticket: the last token's value governs.
+cat >"$GH" <<'FAKE'
+#!/usr/bin/env bash
+case "$1" in
+  issue)
+    case "$2" in
+      view) printf '%s' '{"body":"files: a.ts\ndepends-on: none\n"}' ;;
+      edit)
+        while [[ $# -gt 0 ]]; do
+          [[ "$1" == "--body-file" ]] && { cp "$2" "$SPEC_JUDGE_STATE_DIR/edit-body.txt"; }
+          [[ "$1" == "--remove-label" || "$1" == "--add-label" ]] && { printf '%s %s\n' "$1" "$2" >> "$SPEC_JUDGE_STATE_DIR/edit-labels.txt"; }
+          shift
+        done ;;
+      comment) ;;
+    esac ;;
+esac
+FAKE
+chmod +x "$GH"
+vf=$(mktemp)
+cat >"$vf" <<'EOF'
+## #2401 - VERDICT: EDIT
+
+- Landing is clear now; keep `depends-on: none` until the batch closes.
+EOF
+spec_judge_apply "fleet-ops" "Nishfleet/fleet-ops" "shaD5" "$vf"
+newbody=$(cat "$SPEC_JUDGE_STATE_DIR/edit-body.txt" 2>/dev/null || true)
+[[ "$newbody" != *"blocked-on: orchestrator"* ]] || fail "Test 15f: keep-none bullet must not park, got: $newbody"
+[[ ! -s "$SPEC_JUDGE_STATE_DIR/edit-labels.txt" ]] || fail "Test 15f: labels must not change, got: $(cat "$SPEC_JUDGE_STATE_DIR/edit-labels.txt")"
+ok "Test 15f: a depends-on: none mention in a binding bullet does not park"
+rm -f "$vf"
+rm -f "$SPEC_JUDGE_STATE_DIR/edit-labels.txt"
+
 # --- Test 16: BLOCK apply — reason comment + nish-decision for money -------
 # Fake gh captures the comment body for the BLOCK issue.
 cat >"$GH" <<'FAKE'
@@ -298,5 +491,154 @@ rm -f "$vf"
 # cleanup fake gh
 rm -f "$GH"
 
+# ---------------------------------------------------------------------------
+# fleet-ops#5131: `Absorbs #N` in a binding judge edit parks the absorbed
+# ticket (0509#2387 was claimed 4m24s after the absorbing PR merged).
+# ---------------------------------------------------------------------------
+_sj_state18=$(mktemp -d); export SPEC_JUDGE_STATE_DIR="$_sj_state18"
+cat >"$here/fake-gh-absorb.sh" <<'FAKE'
+#!/usr/bin/env bash
+case "$1" in
+  issue)
+    case "$2" in
+      view)
+        if [[ "$*" == *"--json state,labels"* ]]; then
+          case "$3" in
+            2387) printf '%s' '{"state":"OPEN","labels":[{"name":"agent-ready"},{"name":"machinery"}]}' ;;
+            7)    printf '%s' '{"state":"CLOSED","labels":[{"name":"agent-blocked"}]}' ;;
+            2388) printf '%s' '{"state":"OPEN","labels":[{"name":"agent-in-progress"}]}' ;;
+            *)    printf '%s' '{"state":"OPEN","labels":[]}' ;;
+          esac
+        else
+          printf '%s' '{"body":"files: a.ts"}'
+        fi ;;
+      edit)
+        _line="$*"
+        while [[ $# -gt 0 ]]; do
+          [[ "$1" == "--body-file" ]] && cp "$2" "$SPEC_JUDGE_STATE_DIR/edit-body.txt" 2>/dev/null
+          shift
+        done
+        printf '%s\n' "$_line" >>"$SPEC_JUDGE_STATE_DIR/edit-calls.txt" ;;
+      comment)
+        _n="$3"
+        while [[ $# -gt 0 ]]; do
+          [[ "$1" == "--body" ]] && { printf '%s\n' "$2" >>"$SPEC_JUDGE_STATE_DIR/comment-${_n}.txt"; break; }
+          shift
+        done ;;
+    esac ;;
+esac
+FAKE
+chmod +x "$here/fake-gh-absorb.sh"
+export GH="$here/fake-gh-absorb.sh"
+
+# --- Test 18: binding `Absorbs #N` parks the absorbed ticket --------------
+vf=$(mktemp)
+cat >"$vf" <<'EOF'
+## #2379 - VERDICT: EDIT
+
+- Absorbs #2387.
+EOF
+spec_judge_apply "fleet-ops" "Nishfleet/fleet-ops" "shaAbs" "$vf"
+abody=$(cat "$SPEC_JUDGE_STATE_DIR/edit-body.txt" 2>/dev/null || true)
+[[ "$abody" == *"## Judge edits (binding)"* ]] \
+    || fail "Test 18: absorbing issue must carry the binding section"
+[[ "$abody" == *"Absorbs #2387"* ]] || fail "Test 18: binding bullet must be preserved"
+calls=$(cat "$SPEC_JUDGE_STATE_DIR/edit-calls.txt" 2>/dev/null || true)
+park_line=$(printf '%s\n' "$calls" | grep -F 'issue edit 2387 ' | head -1 || true)
+[[ -n "$park_line" ]] || fail "Test 18: absorbed ticket must be edited: [$calls]"
+[[ "$park_line" == *"--remove-label agent-ready"* ]] || fail "Test 18: agent-ready must be removed"
+[[ "$park_line" == *"--add-label agent-blocked"* ]] || fail "Test 18: agent-blocked must be added"
+[[ "$park_line" == *"--add-label needs-orchestrator"* ]] \
+    || fail "Test 18: needs-orchestrator must be added so the existing sweep closes it as subsumed"
+absorbed_comment=$(cat "$SPEC_JUDGE_STATE_DIR/comment-2387.txt" 2>/dev/null || true)
+[[ -n "$absorbed_comment" ]] || fail "Test 18: absorbed ticket must get an explanatory comment"
+[[ "$absorbed_comment" == *"blocked-on: orchestrator"* ]] \
+    || fail "Test 18: park must carry blocked-on: orchestrator (the only line that makes the park hold)"
+[[ "$absorbed_comment" != *"blocked-on: Nishfleet"* && "$absorbed_comment" != *"blocked-on: #"* ]] \
+    || fail "Test 18: park must NOT carry a ref to the absorbing issue (that ref requeues on close)"
+ok "Test 18: binding 'Absorbs #N' parks the absorbed ticket (agent-ready -> agent-blocked + needs-orchestrator)"
+rm -f "$vf"
+
+# --- Test 19: same-tick claim skip for the parked ticket ------------------
+# The intake tick fetches its agent-ready list BEFORE the verdict is applied,
+# so the label flip alone would let this tick claim the absorbed ticket.
+spec_judge_skip_member "fleet-ops" "2387" \
+    || fail "Test 19: parked absorbed ticket must be skipped by the claim loop"
+spec_judge_skip_member "fleet-ops" "2390" \
+    && fail "Test 19: an unrelated ticket must NOT be skipped"
+ok "Test 19: parked absorbed ticket is skipped in the same tick (stale ready list)"
+
+# --- Test 20: not-claimable and cross-repo refs touch nothing -------------
+vf=$(mktemp)
+cat >"$vf" <<'EOF'
+## #2379 - VERDICT: EDIT
+
+- Absorbs #7.
+- Absorbs #2388.
+- Absorbs Nishfleet/0509#99.
+EOF
+spec_judge_apply "fleet-ops" "Nishfleet/fleet-ops" "shaAbs2" "$vf"
+calls2=$(cat "$SPEC_JUDGE_STATE_DIR/edit-calls.txt" 2>/dev/null || true)
+for _n in 7 2388 99; do
+    [[ "$calls2" != *"issue edit $_n "* ]] \
+        || fail "Test 20: ref to $_n must not be parked (closed/in-progress/cross-repo)"
+    spec_judge_skip_member "fleet-ops" "$_n" \
+        && fail "Test 20: ref to $_n must not be in the park ledger"
+done
+ok "Test 20: closed, already-claimed and cross-repo refs are left untouched"
+rm -f "$vf"
+
+# --- Test 21: a parked ticket can never be requeued by blocked-reconcile --
+# blocked-reconcile forces all_cleared=0 whenever `.orchestrator` is true, so
+# the park's `blocked-on: orchestrator` line outranks a resolved ref to the
+# absorbing issue: even with the ref present and CLOSED+MERGED, the sweep can
+# never flip the ticket back to agent-ready. Proved end-to-end (with the real
+# sweep) by Case 4b in tests/blocked-reconcile.test.sh.
+_extract() {
+    printf '%s' "$1" | "$repo_root/bin/blocked-reconcile" --extract
+}
+# Live shape: the absorbing issue's ref is present in an older comment.
+parked_payload='{"repo":"Nishfleet/fleet-ops","number":2387,"title":"move the specs","body":"files: a.ts\n\n## Judge edits (binding)\n\n- Absorbs #2387.","comments":[{"body":"blocked: absorbed by Nishfleet/fleet-ops#2379.\n\nblocked-on: Nishfleet/fleet-ops#2379"},{"body":"spec-judge: absorbed by #2379.\n\nblocked-on: orchestrator"}]}'
+out21=$(_extract "$parked_payload")
+[[ "$(printf '%s' "$out21" | jq -r '.orchestrator')" == "true" ]] \
+    || fail "Test 21: parked ticket must carry the orchestrator block (forces all_cleared=0): $out21"
+[[ "$(printf '%s' "$out21" | jq -r '.nish')" == "false" ]] || fail "Test 21: parked ticket must not be nish-blocked"
+[[ "$(printf '%s' "$out21" | jq -r '.unknown_forms | length')" == "0" ]] \
+    || fail "Test 21: park must not read as an unknown-form block: $out21"
+# Contrast: the SAME body with no orchestrator line is a plain work-item whose
+# ref resolves the moment the absorbing issue closes — exactly the requeue the
+# park has to prevent.
+ref_payload='{"repo":"Nishfleet/fleet-ops","number":2387,"title":"x","body":"blocked-on: Nishfleet/fleet-ops#2379","comments":[]}'
+out21b=$(_extract "$ref_payload")
+[[ "$(printf '%s' "$out21b" | jq '.deps | length')" == "1" ]] \
+    || fail "Test 21: contrast payload must parse one dep: $out21b"
+[[ "$(printf '%s' "$out21b" | jq -r '.orchestrator')" == "false" ]] \
+    || fail "Test 21: contrast payload must not carry the orchestrator block"
+ok "Test 21: parked ticket parses to an orchestrator block, so a closed absorbing ref can never requeue it"
+
+# --- Test 22: absorbed-ref extraction is exact ----------------------------
+[[ "$(spec_judge_absorbed_refs '- Absorbs #2387.' 'Nishfleet/fleet-ops')" == "2387" ]] \
+    || fail "Test 22: bare Absorbs #N must extract"
+[[ "$(spec_judge_absorbed_refs '- Absorbed by #12.' 'Nishfleet/fleet-ops')" == "12" ]] \
+    || fail "Test 22: Absorbed by #N must extract"
+[[ "$(spec_judge_absorbed_refs '- absorbs Nishfleet/fleet-ops#4242' 'Nishfleet/fleet-ops')" == "4242" ]] \
+    || fail "Test 22: same-repo owner/repo#N must extract"
+[[ -z "$(spec_judge_absorbed_refs '- Absorbs Nishfleet/0509#99.' 'Nishfleet/fleet-ops')" ]] \
+    || fail "Test 22: cross-repo ref must NOT extract"
+[[ -z "$(spec_judge_absorbed_refs '- Absorbs the retry logic from #123.' 'Nishfleet/fleet-ops')" ]] \
+    || fail "Test 22: prose mentioning a #N must NOT extract"
+# The judge writes ref LISTS on 0509 (live: #2419 'Absorbs #2428 and #2429',
+# #2416 'Absorbs #2424, #2426, #2427'). Every ref must extract.
+[[ "$(spec_judge_absorbed_refs '- Absorbs #2428 and #2429 (empty-do subsets).' 'Nishfleet/fleet-ops' | tr '\n' ' ')" == "2428 2429 " ]] \
+    || fail "Test 22: 'and'-joined ref list must extract both"
+[[ "$(spec_judge_absorbed_refs '- Absorbs #2424, #2426, #2427 (their third file).' 'Nishfleet/fleet-ops' | tr '\n' ' ')" == "2424 2426 2427 " ]] \
+    || fail "Test 22: comma-joined ref list must extract all three"
+[[ "$(spec_judge_absorbed_refs '- Absorbs #2428 and #2429.' 'Nishfleet/fleet-ops' | wc -l)" == "2" ]] \
+    || fail "Test 22: a ref list must not become one ref"
+ok "Test 22: absorbed-ref extraction matches only Absorbs/Absorbed-by bullets to same-repo issues"
+
+# cleanup fake gh
+rm -f "$GH" "$here/fake-gh-absorb.sh"
+
 echo ""
-echo "ALL OK: spec-judge gate (fleet-ops#4801)"
+echo "ALL OK: spec-judge gate (fleet-ops#4801 / #5131)"

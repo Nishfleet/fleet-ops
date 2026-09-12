@@ -255,6 +255,7 @@ case "$1" in
       exit 0
     fi
     rel="${path#repos/}"
+    rel="${rel%%\?*}"
     f="$FAKE_DIR/api/${rel}.json"
     if [[ -f "$f" ]]; then
       cat "$f"
@@ -283,6 +284,10 @@ chmod +x "$scratch/bin/systemctl"
 
 export FAKE_DIR="$scratch"
 export PATH="$scratch/bin:$PATH"
+# fleet-ops#5101: point GH at the stub so the bin's App-token mint guard
+# ("${GH:-gh}" == "gh") skips the PATH prepend + live mint entirely — the
+# suite stays hermetic and can never touch the real tracker.
+export GH="$scratch/bin/gh"
 export BLOCKED_RECONCILE_LOCKDIR="$scratch/lock"
 export BLOCKED_RECONCILE_TRIAGE="$scratch/triage.md"
 export BLOCKED_RECONCILE_STATE="$scratch/state.json"
@@ -438,6 +443,28 @@ out=$("$bin" 2>"$scratch/err5.txt")
 grep -q 'requeued=0' <<<"$out" || fail "closed-unmerged PR must not requeue: $out"
 grep -q 'count=1' <<<"$out" || fail "closed-unmerged stays: $out"
 ok "closed-unmerged PR does not requeue"
+
+# Case 4b: fleet-ops#5131 — an absorbed ticket parked by the spec-judge must
+# never requeue when the absorbing issue closes. Live shape: 0509#2385 carries
+# a worker's `blocked-on: Nishfleet/0509#2381` comment (the absorption is the
+# reason), and the judge park adds a `blocked-on: orchestrator` line. That line
+# forces all_cleared=0 on every pass, so the resolved ref cannot flip the label
+# back to agent-ready (the fleet-ops#1083 requeue class).
+cat >"$scratch/list.json" <<'JSON'
+[{"number":2385,"title":"reccos: delete the two sneaker-resale canary tests","createdAt":"2026-08-25T06:00:00Z","labels":[{"name":"agent-blocked"},{"name":"needs-orchestrator"}]}]
+JSON
+cat >"$scratch/view-2385.json" <<'JSON'
+{"title":"reccos: delete the two sneaker-resale canary tests","body":"files: tests/a.test.ts","createdAt":"2026-08-25T06:00:00Z","comments":[{"body":"blocked: absorbed by Nishfleet/0509#2381 (binding judge edit: Absorbs #2385).\n\nblocked-on: Nishfleet/0509#2381"},{"body":"spec-judge: absorbed by #2381 - the binding judge edit on #2381 declares this ticket subsumed.\n\nblocked-on: orchestrator"}]}
+JSON
+echo '{"state":"closed"}' >"$scratch/api/Nishfleet/0509/issues/2381.json"
+: >"$scratch/edits.log"
+: >"$scratch/comments.log"
+
+out=$("$bin" 2>"$scratch/err4b.txt")
+grep -q 'requeued=0' <<<"$out" || fail "absorbed park must not requeue when the absorbing issue closes: $out"
+[[ -s "$scratch/edits.log" ]] && fail "absorbed park must not flip labels back: $(cat "$scratch/edits.log")"
+grep -q 'kind=orchestrator' "$scratch/comments.log" || fail "absorbed park should publish kind=orchestrator: $(cat "$scratch/comments.log")"
+ok "fleet-ops#5131: absorbed park stays parked when the absorbing issue closes (ref resolved, label untouched)"
 
 # Case 5: agent-in-progress skip
 cat >"$scratch/list.json" <<'JSON'
@@ -706,7 +733,45 @@ grep -q 'needs_orchestrator=0' <<<"$out" || fail "in-progress item must not coun
 [[ ! -s "$scratch/systemctl.log" ]] || fail "in-progress item must not trigger: $(cat "$scratch/systemctl.log")"
 ok "agent-in-progress needs-orchestrator item is skipped"
 
+# Case 11d: the p50 is time IN the needs-orchestrator class, not issue age.
+# A ticket created three weeks ago but parked 5 minutes ago is a fresh ask,
+# not a stalled drain: it must not trip FleetNeedsOrchestratorStale — and it
+# must not be a false-clear either (the age still reports the 5 minutes).
+mkdir -p "$scratch/api/Nishfleet/0509/issues/203"
+cat >"$scratch/api/Nishfleet/0509/issues/203/timeline.json" <<'JSON'
+[{"event":"labeled","label":{"name":"agent-ready"},"created_at":"2026-08-01T00:00:00Z"},
+ {"event":"unlabeled","label":{"name":"agent-ready"},"created_at":"2026-08-25T23:50:00Z"},
+ {"event":"labeled","label":{"name":"needs-orchestrator"},"created_at":"2026-08-25T23:55:00Z"}]
+JSON
+cat >"$scratch/list-orch.json" <<'JSON'
+[{"number":203,"createdAt":"2026-08-01T00:00:00Z","labels":[{"name":"needs-orchestrator"}]}]
+JSON
+: >"$scratch/systemctl.log"
+
+out=$("$bin" 2>"$scratch/err-orch-old-parks-new.txt")
+grep -q 'needs_orchestrator=1' <<<"$out" || fail "old-but-newly-parked item must count: $out"
+[[ "$(jq -r '.needs_orchestrator.p50_age_s' "$scratch/state.json")" == "300" ]] \
+    || fail "p50 must be time in class (300s), not issue age: $(cat "$scratch/state.json")"
+if grep -q 'start ' "$scratch/systemctl.log"; then
+    fail "a ticket parked 5 minutes ago must not start the sweep: $(cat "$scratch/systemctl.log")"
+fi
+ok "needs-orchestrator age is time in the class, not issue age"
+
+# Case 11e: the same ticket, parked for over 2h, still trips the detector.
+cat >"$scratch/api/Nishfleet/0509/issues/203/timeline.json" <<'JSON'
+[{"event":"labeled","label":{"name":"needs-orchestrator"},"created_at":"2026-08-25T21:00:00Z"}]
+JSON
+: >"$scratch/systemctl.log"
+
+out=$("$bin" 2>"$scratch/err-orch-genuine.txt")
+[[ "$(jq -r '.needs_orchestrator.p50_age_s' "$scratch/state.json")" == "10800" ]] \
+    || fail "a 3h-parked item must still report 3h: $(cat "$scratch/state.json")"
+grep -q 'start agent-cron-orchestrator-decision-sweep.service' "$scratch/systemctl.log" \
+    || fail "a 3h-parked item must start the sweep: $(cat "$scratch/systemctl.log")"
+ok "a genuinely parked needs-orchestrator item still starts the decision sweep"
+
 rm -f "$scratch/list-orch.json"
+rm -rf "$scratch/api/Nishfleet/0509/issues/203"
 
 # fleet-ops#4626 Case 12a: past date-gate + stub smoke rc=0 -> requeue (label flip).
 # NOW is 2026-08-26 (already past 2026-08-25T00:00:00Z). Smoke is a stub that

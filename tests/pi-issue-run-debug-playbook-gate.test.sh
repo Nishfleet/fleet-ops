@@ -61,7 +61,13 @@ if [[ -n "$session_dir" && -n "$session_id" && -n "${PI_STUB_SESSION_FILE:-}" ]]
   now=$(date -u +%Y%m%dT%H%M%SZ)
   cp "$PI_STUB_SESSION_FILE" "$session_dir/${now}_${session_id}.jsonl"
 fi
-printf 'OK https://github.com/Nishfleet/fleet-ops/pull/9999\n'
+# fleet-ops#4976: the PR-URL line is opt-in (PI_STUB_PR_URL=1) so the test can
+# run a blocked gate both with and without a shipped PR.
+if [[ "${PI_STUB_PR_URL:-0}" == "1" ]]; then
+  printf 'OK https://github.com/Nishfleet/fleet-ops/pull/9999\n'
+else
+  printf 'OK\n'
+fi
 printf 'The session completed and produced well over twenty bytes of output.\n'
 exit 0
 STUB
@@ -147,8 +153,9 @@ export FLEET_DEBUG_PLAYBOOK_BIN="$repo_root/bin/fleet-debug-playbook"
 export FLEET_HEARTBEAT_TRIAGE="$scratch/triage.md"
 
 # --- 1. missing playbook blocks the successful session close -----------------
-rm -f "$ISSUES_DIR/dp-gate.out" "$ISSUES_DIR/dp-gate.err" "$STATE_DIR/attempts/pi-issue-dp-gate.tried-seats"
+rm -f "$ISSUES_DIR/dp-gate.out" "$ISSUES_DIR/dp-gate.err" "$STATE_DIR/attempts/pi-issue-dp-gate.tried-seats" "$FLEET_HEARTBEAT_TRIAGE"
 export PI_STUB_SESSION_FILE="$bad_session"
+export PI_STUB_PR_URL=0
 set +e
 "$bin" dp-gate >"$scratch/out1" 2>"$scratch/err1"
 rc=$?
@@ -161,6 +168,7 @@ ok "pi-issue-run blocks a missing-playbook session from exiting 0"
 # --- 2. clean session (or <2 failures) passes the gate ----------------------
 rm -f "$ISSUES_DIR/dp-gate.out" "$ISSUES_DIR/dp-gate.err" "$STATE_DIR/attempts/pi-issue-dp-gate.tried-seats"
 export PI_STUB_SESSION_FILE="$good_session"
+export PI_STUB_PR_URL=0
 set +e
 "$bin" dp-gate >"$scratch/out2" 2>"$scratch/err2"
 rc=$?
@@ -170,4 +178,24 @@ grep -q 'DEBUG-PLAYBOOK-GATE-OK' "$scratch/err2" \
   || fail "expected DEBUG-PLAYBOOK-GATE-OK in stderr; got $(cat "$scratch/err2")"
 ok "pi-issue-run lets a clean session close"
 
-echo "OK: pi-issue-run debug-playbook gate (fleet-ops#2005)"
+# --- 3. fleet-ops#4976: blocked gate + shipped PR exits 0 --------------------
+# A bad session (gate blocks) that still shipped a PR must NOT exit 1 — the
+# deliverable exists, so Restart=on-failure re-dispatch would re-claim an
+# already-delivered issue. The gate's LOUD filing must still fire.
+rm -f "$ISSUES_DIR/dp-gate.out" "$ISSUES_DIR/dp-gate.err" "$STATE_DIR/attempts/pi-issue-dp-gate.tried-seats" "$FLEET_HEARTBEAT_TRIAGE"
+export PI_STUB_SESSION_FILE="$bad_session"
+export PI_STUB_PR_URL=1
+set +e
+"$bin" dp-gate >"$scratch/out3" 2>"$scratch/err3"
+rc=$?
+set -e
+[[ "$rc" -eq 0 ]] || fail "blocked gate with shipped PR must exit 0 (rc=$rc); err=$(cat "$scratch/err3")"
+grep -q 'debug-playbook-gate-block-pr-shipped' "$scratch/err3" \
+  || fail "expected debug-playbook-gate-block-pr-shipped in stderr; got $(cat "$scratch/err3")"
+grep -q 'DEBUG-PLAYBOOK-GATE-BLOCK' "$scratch/err3" \
+  || fail "gate block must still be LOUD on stderr; got $(cat "$scratch/err3")"
+grep -q 'DEBUG-PLAYBOOK-GATE-BLOCK' "$FLEET_HEARTBEAT_TRIAGE" \
+  || fail "gate block must still be LOUD-filed to triage; got $(cat "$FLEET_HEARTBEAT_TRIAGE" 2>/dev/null || echo '<missing>')"
+ok "pi-issue-run exits 0 on a blocked gate when the session shipped a PR"
+
+echo "OK: pi-issue-run debug-playbook gate (fleet-ops#2005, fleet-ops#4976)"

@@ -133,7 +133,7 @@
 set -Eeuo pipefail
 
 export HOME="${HOME:-/home/nish}"
-export PATH="/home/nish/.local/bin:/usr/local/bin:/usr/bin:/bin"
+command -v gh >/dev/null 2>&1 || export PATH=/home/nish/.local/bin:/usr/local/bin:/usr/bin:/bin
 export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
 
 SYSTEMCTL="${SYSTEMCTL:-systemctl}"
@@ -482,6 +482,213 @@ plane_keystone_hc() {
   fi
 
   record "$name" "pass" "HC_URL_INTAKE/SCOUT/RECONCILE/RESTORE all set and distinct from heartbeat"
+  return 0
+}
+
+# ----------------------------------------------------------------------------
+# fleet-ops#5106: the seat-recovery fast-path proof runs HERE, on the drill's
+# own timer cadence — not once per test-suite run.
+#
+# The live proof used to live in tests/fleet-seat-recovery-units.test.sh
+# (section 4b): every run of that suite installed a name-swapped
+# fleet-seat-recovery.{service,path} pair (resilience-drill-stub-seat-sentinel)
+# into the user systemd scope, fired it, and removed it again. A worker
+# re-running the suite in an inner loop (2026-09-11 02:51–03:20 IST) put the
+# stub at 247 starts/h — the box's top unit, over the 200/h hot-loop bar in
+# the fleet-landing-watch measure.sh unit-churn line. A drill is a periodic
+# assurance check: it belongs on the daily 05:47 timer next to the other
+# planes, not on the frequency of "somebody ran the tests".
+#
+# The proof itself is unchanged (the assurance bar is the same):
+#   - 100 ordinary seat-json writes next to the sentinel -> 0 oneshot starts
+#     (the watcher must watch ONE sentinel file, never the seats/ directory —
+#     fleet-ops#5093);
+#   - one sentinel touch -> exactly one start; a second verdict-edge write ->
+#     one more (the sentinel is a wake-up, not a one-shot);
+#   - the watcher stays active/success afterwards.
+# A broken NO-USABLE-SEAT -> usable fast path fails this plane loudly (prom
+# gauge + auto-filed issue), so the rot the suite used to catch is still
+# caught — daily, even when nobody runs the tests.
+plane_seat_sentinel() {
+  local name="seat_sentinel"
+  local svc_src="$FLEET_OPS_REPO/systemd/fleet-seat-recovery.service"
+  local path_src="$FLEET_OPS_REPO/systemd/fleet-seat-recovery.path"
+  if [[ "$OFFLINE" == "1" ]]; then
+    record "$name" "skip" "offline mode (tests) — live sentinel proof runs on the daily timer"
+    return 0
+  fi
+  if [[ ! -f "$svc_src" ]] || [[ ! -f "$path_src" ]]; then
+    loud "SEAT-SENTINEL-SKIP" "shipped fleet-seat-recovery units not found under $FLEET_OPS_REPO"
+    record "$name" "skip" "shipped fleet-seat-recovery units missing"
+    return 0
+  fi
+  # Live proof needs a real user-systemd session (hosted CI has none).
+  if [[ -z "${XDG_RUNTIME_DIR:-}" ]] || [[ ! -S "${XDG_RUNTIME_DIR}/systemd/private" ]] \
+     || [[ ! -d "$HOME/.config/systemd/user" ]]; then
+    loud "SEAT-SENTINEL-SKIP" "no user systemd session — live sentinel proof skipped"
+    record "$name" "skip" "no user systemd session (hosted CI)"
+    return 0
+  fi
+
+  # resilience-drill-stub* is on unit-escalation-write's exclusion list, so a
+  # throwaway drill failure cannot write a STOP-REASON for the stub.
+  local drill_unit="resilience-drill-stub-seat-sentinel"
+  local drill_svc="$HOME/.config/systemd/user/${drill_unit}.service"
+  local drill_path="$HOME/.config/systemd/user/${drill_unit}.path"
+  # fleet-ops#5096 negative control: a second stub pair identical to the
+  # shipped units except StartLimitBurst=5, driven by the same sentinel
+  # storm. It MUST wedge — that is the proof the shipped guard is armed,
+  # not decorative. The name stays under the resilience-drill-stub*
+  # exclusion in bin/unit-escalation-write so the deliberate wedge cannot
+  # summon an auditor.
+  local tiny_unit="resilience-drill-stub-seat-sentinel-tiny"
+  local tiny_svc="$HOME/.config/systemd/user/${tiny_unit}.service"
+  local tiny_path="$HOME/.config/systemd/user/${tiny_unit}.path"
+  local drill_root drill_log drill_start
+  drill_root="$(mktemp -d -t sr-sentinel-drill.XXXXXX)"
+  drill_log="$drill_root/starts.log"
+  drill_start="$drill_root/log-start.sh"
+  printf '#!/usr/bin/env bash\necho start >>"%s"\n' "$drill_log" > "$drill_start"
+  chmod +x "$drill_start"
+
+  # Name-swapped copies of the SHIPPED units with the seats dir redirected to
+  # the scratch root, so the drill exercises the real watched-path shape, not
+  # a hand-written stand-in. The shipped ExecStart points at the real bin;
+  # count starts instead.
+  sed "s/fleet-seat-recovery/${drill_unit}/g" "$svc_src" > "$drill_svc"
+  sed "s|/home/nish/workspaces/agent-state/lanes/seats|${drill_root}|g; s/fleet-seat-recovery/${drill_unit}/g" "$path_src" > "$drill_path"
+  sed -i "s|^ExecStart=.*|ExecStart=${drill_start}|" "$drill_svc"
+
+  cleanup_seat_sentinel_drill() {
+    "$SYSTEMCTL" --user stop "${drill_unit}.service" "${drill_unit}.path" "${tiny_unit}.service" "${tiny_unit}.path" 2>/dev/null || true
+    "$SYSTEMCTL" --user reset-failed "${drill_unit}.service" "${drill_unit}.path" "${tiny_unit}.service" "${tiny_unit}.path" 2>/dev/null || true
+    rm -f "$drill_svc" "$drill_path" "$tiny_svc" "$tiny_path"
+    rm -rf "$drill_root"
+    "$SYSTEMCTL" --user daemon-reload 2>/dev/null || true
+  }
+  # Fail path: LOUD + recorded + scratch gone, then a failed return. Called
+  # as `seat_sentinel_bail ... || return 1` (the plane runs with set -e
+  # suppressed from the `|| rc=1` in run_drill, so the explicit return is
+  # what actually propagates).
+  seat_sentinel_bail() {
+    loud "SEAT-SENTINEL-FAIL" "$1"
+    record "$name" "fail" "$2"
+    cleanup_seat_sentinel_drill
+    trap - EXIT INT TERM
+    return 1
+  }
+
+  trap cleanup_seat_sentinel_drill EXIT INT TERM
+
+  # reset-failed on a fresh (never-loaded) stub exits non-zero on systemd
+  # 255 ("Unit ... not loaded") even though there is nothing to clear —
+  # it is only here to un-wedge a stale failed stub from a crashed run, so
+  # it must be non-fatal like the cleanup copy, not part of the && gate
+  # (fleet-ops#5096 merge resolution).
+  "$SYSTEMCTL" --user reset-failed "${drill_unit}.service" "${drill_unit}.path" 2>/dev/null || true
+  if ! "$SYSTEMCTL" --user daemon-reload 2>/dev/null \
+     || ! "$SYSTEMCTL" --user start "${drill_unit}.path" 2>/dev/null; then
+    seat_sentinel_bail "could not install/start the drill .path" \
+      "could not start ${drill_unit}.path" || return 1
+    return 1
+  fi
+  # Sanity: the copy is watching the scratch sentinel, not the live ledger.
+  if ! grep -qF "PathChanged=${drill_root}/.no-usable-seat" "$drill_path"; then
+    seat_sentinel_bail "drill .path did not pick up the scratch sentinel path" \
+      "drill .path watches the wrong path" || return 1
+    return 1
+  fi
+
+  local n1 n2 n3 st i
+  count_starts() {
+    [[ -f "$drill_log" ]] || { echo 0; return 0; }
+    wc -l < "$drill_log"
+  }
+
+  # 100 ordinary seat-json writes in the SAME directory as the sentinel: none
+  # of them may start the oneshot (the watcher must see the file, not the dir).
+  for i in $(seq 1 100); do
+    printf '{"seat":%s}\n' "$i" > "$drill_root/seat-${i}.json"
+  done
+  sleep 1.5
+  n1="$(count_starts)"
+  if [[ "$n1" != "0" ]]; then
+    seat_sentinel_bail \
+      "100 seat-json writes started the oneshot $n1 times (directory-wide watch regression, fleet-ops#5093)" \
+      "100 seat-json writes -> $n1 starts (want 0)" || return 1
+    return 1
+  fi
+  # One sentinel touch -> exactly one start: the fast path fires.
+  : > "$drill_root/.no-usable-seat"
+  sleep 1.5
+  n2="$(count_starts)"
+  if [[ "$n2" != "1" ]]; then
+    seat_sentinel_bail \
+      "one sentinel touch started the oneshot $n2 times (want exactly 1) — fast path broken" \
+      "1 sentinel touch -> $n2 starts (want 1)" || return 1
+    return 1
+  fi
+  # A second verdict-edge write fires again: the sentinel is a wake-up, not a
+  # one-shot, and the watcher stays active/success.
+  printf 'no-usable\n' > "$drill_root/.no-usable-seat"
+  sleep 1.5
+  n3="$(count_starts)"
+  st="$("$SYSTEMCTL" --user show -p ActiveState -p Result "${drill_unit}.path" 2>/dev/null || true)"
+  if [[ "$n3" != "2" ]] || ! grep -q 'ActiveState=active' <<<"$st" || ! grep -q 'Result=success' <<<"$st"; then
+    seat_sentinel_bail \
+      "second sentinel write -> $n3 total starts (want 2); watcher: ${st//$'\n'/ }" \
+      "second write -> $n3 starts (want 2); watcher: ${st//$'\n'/ }" || return 1
+    return 1
+  fi
+
+  # fleet-ops#5096 negative control: same sentinel storm, deliberately tiny
+  # ceiling (burst=5). If this does NOT wedge the watcher then the pass
+  # above proves nothing — a StartLimit directive that never fires would
+  # pass just the same. Reproduces the fleet-ops#622 wedge on demand, once
+  # a day on the drill timer.
+  sed "s/fleet-seat-recovery/${tiny_unit}/g; s/^StartLimitBurst=.*/StartLimitBurst=5/" \
+    "$svc_src" > "$tiny_svc"
+  sed "s|/home/nish/workspaces/agent-state/lanes/seats|${drill_root}|g; s/fleet-seat-recovery/${tiny_unit}/g" \
+    "$path_src" > "$tiny_path"
+  sed -i "s|^ExecStart=.*|ExecStart=${drill_start}|" "$tiny_svc"
+  if ! grep -qE '^StartLimitBurst=5$' "$tiny_svc"; then
+    seat_sentinel_bail "negative-control stub did not get StartLimitBurst=5" \
+      "negative-control stub missing StartLimitBurst=5" || return 1
+    return 1
+  fi
+  "$SYSTEMCTL" --user daemon-reload 2>/dev/null || true
+  "$SYSTEMCTL" --user reset-failed "${tiny_unit}.service" "${tiny_unit}.path" 2>/dev/null || true
+  "$SYSTEMCTL" --user stop "${tiny_unit}.service" "${tiny_unit}.path" 2>/dev/null || true
+  if ! "$SYSTEMCTL" --user start "${tiny_unit}.path" 2>/dev/null; then
+    seat_sentinel_bail "could not start the negative-control .path" \
+      "could not start ${tiny_unit}.path" || return 1
+    return 1
+  fi
+  for _ in $(seq 1 60); do : > "$drill_root/.no-usable-seat"; sleep 0.05; done
+  sleep 1.5
+  local tiny_st
+  tiny_st="$("$SYSTEMCTL" --user show -p ActiveState -p Result "${tiny_unit}.path" 2>/dev/null || true)"
+  if grep -q 'ActiveState=active' <<<"$tiny_st"; then
+    seat_sentinel_bail \
+      "negative control did NOT wedge: a 60-trigger storm cleared burst=5 — the shipped StartLimit guard is decorative (${tiny_st})" \
+      "negative control did not wedge (${tiny_st})" || return 1
+    return 1
+  fi
+  # Positive half of the same storm: the shipped-ceiling stub (burst=200)
+  # must still be standing — a ceiling below real traffic would have wedged
+  # right alongside the control.
+  local main_st
+  main_st="$("$SYSTEMCTL" --user show -p ActiveState -p Result "${drill_unit}.path" 2>/dev/null || true)"
+  if ! grep -q 'ActiveState=active' <<<"$main_st"; then
+    seat_sentinel_bail \
+      "the 60-trigger storm that wedged burst=5 also wedged the shipped burst=200 stub — the ceiling sits below traffic (${main_st})" \
+      "shipped-ceiling stub wedged by the control storm (${main_st})" || return 1
+    return 1
+  fi
+
+  cleanup_seat_sentinel_drill
+  trap - EXIT INT TERM
+  record "$name" "pass" "100 seat-json writes -> 0 starts; sentinel touch -> 1 start; second write -> 1 more; watcher active/success; negative control (burst=5) wedged while shipped burst=200 held the same storm"
   return 0
 }
 
@@ -1062,7 +1269,7 @@ auto_file_failures() {
     title="[drill:${name}] resilience-drill plane failed — $(date -u +%Y-%m-%d)"
     body=$(printf 'fleet-ops#1463 resilience drill plane `%s` FAILED.\n\nProof (jq .name=%s.status):\n\n```\n%s\n```\n\nRun `bin/fleet-resilience-drill` against the live repo to reproduce. Each plane is sandboxed; live state was not mutated.\n\n<!-- %s -->\n' "$name" "$name" "$row" "$signal")
     set +e
-    created=$(GH="$GH" "$ISSUE_FILE_BIN" file -R "$issue_repo" \
+    created=$(GH="${GH:-gh}" "$ISSUE_FILE_BIN" file -R "$issue_repo" \
       --title "$title" --body "$body" \
       --label agent-ready --label "drill:${name}" 2>/tmp/.res-drill-file.err)
     file_rc=$?
@@ -1084,6 +1291,9 @@ run_drill() {
   plane_state || rc=1
   plane_compute || rc=1
   plane_keystone_hc || rc=1
+  # fleet-ops#5106: the seat-recovery fast-path proof, daily instead of once
+  # per test-suite run.
+  plane_seat_sentinel || rc=1
   # #1463 failure-class roster (extend, don't fork).
   plane_queue_freeze || rc=1
   plane_pipeline_red || rc=1
@@ -1100,8 +1310,8 @@ run_drill() {
   write_metrics "$all_pass"
   auto_file_failures
   if [[ "$all_pass" == "true" ]]; then
-    log "OK: fleet-ops#455+#1463 eleven-plane drill pass (see $RESULTS)"
-    printf 'OK: fleet-ops#455+#1463 eleven-plane drill pass\n'
+    log "OK: fleet-ops#455+#1463+#5106 twelve-plane drill pass (see $RESULTS)"
+    printf 'OK: fleet-ops#455+#1463+#5106 twelve-plane drill pass\n'
     exit 0
   fi
   log "FAIL: one or more planes failed (see LOUD lines and $RESULTS)"

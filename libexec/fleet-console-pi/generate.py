@@ -39,6 +39,12 @@ OUT_JSON = Path(
 CADENCE_MIN = 12
 PROM = "http://127.0.0.1:9090"
 PROM_STALE_S = 15 * 60          # exporter fires every 5 min; 2+ misses = stale
+# The exporter serves fleet_open_prs / fleet_main_ci_green from a cached org
+# GraphQL snapshot (fleet-metrics-export.py PR_CACHE_TTL = 30 min). A tile
+# rendered from those families is as old as that CACHE, not as old as the
+# export, so it keeps the cache window as its freshness gate — and stamps
+# fleet_gh_cache_timestamp_seconds as its observed_at (fleet-ops#5155).
+GH_CACHE_WINDOW_S = 30 * 60
 SEAT_STALE_S = 30 * 60
 PROC_STALE_S = 5 * 60
 # Questions tile (part 2 of the 2026-09-08 decision). Cadence is 12 min;
@@ -49,6 +55,15 @@ QUESTION_STALE_S = 30 * 60
 # dropped (its decision-resolved: comment is the answer; it re-queues via
 # blocked-reconcile). Older than this it must not render.
 ANSWERED_KEEP_S = 24 * 60 * 60
+# `gh search issues` defaults to --limit 30 and reports nothing when it
+# truncates (fleet-ops#5133), so a 31-question backlog silently lost row 31
+# and the tile's count/items were a capped window. Ask for GitHub's own search
+# ceiling explicitly — gh pages internally up to whatever --limit says — and
+# flag the tile when the result fills that window. Mirrored in verify.py
+# (same constant, same --limit) so the tile and its verifier see the SAME
+# window; a boundary population fetched by two different windows is the
+# false-DISPUTE class #5070 fixed for the 24h exclusion.
+QUESTION_SEARCH_LIMIT = 1000
 # Labels a question must carry for its ask to have passed the senior
 # conference gate (fleet-ops#4474): conference-approved or the older
 # nish-reserved both mean "worth bothering Nish".
@@ -61,6 +76,16 @@ SEAT_HEALTH = Path("/home/nish/workspaces/agent-state/lanes/pi-seat-health.json"
 # seat is <sanitised-provider>__<sanitised-model>.spawn-bench.json inside it
 # (lib/seat-lib.sh seat_spawn_bench_path).
 SEAT_LEDGER = Path("/home/nish/workspaces/agent-state/lanes/seats")
+# Canonical findings ledger (fleet-ops#5443, ported in fleet-ops#5476):
+# every finding queued and never dropped silently. The vault jsonl IS the
+# truth — the tile reads it directly, no second copy. Mirrored in
+# verify.py (same env override) so tile and verifier read the SAME file.
+FINDINGS_LEDGER = Path(os.environ.get(
+    "FINDINGS_LEDGER",
+    "/home/nish/workspaces/tooling/nish-vault/_system/shared-memory/findings-ledger.jsonl"))
+# The ledger is a local file re-read every cycle; 2.5 cycles is the same
+# generous fail-closed window the questions tile uses.
+FINDINGS_STALE_S = 30 * 60
 XDG = f"/run/user/{os.getuid()}"
 
 
@@ -194,6 +219,27 @@ def _cache_fresh(kind):
     """True when exporter emitted fleet_gh_cache_fresh{kind=...} = 1."""
     rows = _prom_query(f'fleet_gh_cache_fresh{{kind="{kind}"}}')
     return bool(rows) and any(r["value"] == 1 for r in rows)
+
+
+def _cache_data_time(kind, fallback):
+    """Epoch when the cached gh family's data was MEASURED, or `fallback`.
+
+    A tile fed by a cached family must stamp the measurement time, not the
+    export time: the exporter refreshes these caches at most every 30 min, so
+    stamping the export time shows a half-hour-old count as seconds-fresh
+    (fleet-ops#5155: ConsoleLying tile=open_prs, where the tile said 11
+    open PRs while 15 were open and the verify's live gh spot check read the
+    difference as a lie). Fail open to `fallback` when the gauge is absent.
+    """
+    try:
+        rows = _prom_query(
+            f'fleet_gh_cache_timestamp_seconds{{kind="{kind}"}}'
+        )
+    except PromError:
+        return fallback
+    if not rows:
+        return fallback
+    return float(rows[0]["value"])
 
 
 def _prom_or_stale(source, explain):
@@ -398,8 +444,9 @@ def collect_open_prs():
         if repo:
             items.append({"repo": repo, "count": n})
     items.sort(key=lambda x: (-x["count"], x["repo"]))
-    return _tile(src, PROM_STALE_S, True, mtime, count=total, items=items,
-                 explain=explain)
+    return _tile(src, GH_CACHE_WINDOW_S, True,
+                 _cache_data_time("repo_snapshot", mtime),
+                 count=total, items=items, explain=explain)
 
 
 def collect_main_ci():
@@ -431,8 +478,9 @@ def collect_main_ci():
         if green == 0:
             red += 1
     items.sort(key=lambda x: (x["green"], x["repo"]))
-    return _tile(src, PROM_STALE_S, True, mtime, red_count=red, items=items,
-                 explain=explain)
+    return _tile(src, GH_CACHE_WINDOW_S, True,
+                 _cache_data_time("repo_snapshot", mtime),
+                 red_count=red, items=items, explain=explain)
 
 
 def collect_firing_alerts():
@@ -885,21 +933,29 @@ def _classify_question(issue, comments):
 
 
 def _gh_questions():
-    """Return the classified list of open `question` issues across the org.
+    """Return (items, capped) for the open `question` issues across the org.
 
     One search for the current population, then one comment fetch per issue
     (to detect decision-resolved: answers and the conference reason). Raises
     on any gh failure so collect_questions fails closed — never an empty
     list when the source is unreachable.
+
+    The search carries an explicit --limit (QUESTION_SEARCH_LIMIT); `capped`
+    is True when the result filled that window, i.e. the population may
+    continue past it and the tile must say so instead of under-reporting
+    (fleet-ops#5133).
     """
     q = _gh_json([
         "search", "issues", "--owner", ORG, "--state", "open",
         "--label", "question",
+        "--limit", str(QUESTION_SEARCH_LIMIT),
         "--json", "number,title,url,createdAt,updatedAt,repository,labels,body",
     ])
+    rows = q or []
+    capped = len(rows) >= QUESTION_SEARCH_LIMIT
     items = []
     now = time.time()
-    for issue in (q or []):
+    for issue in rows:
         repo = (issue.get("repository") or {}).get("nameWithOwner") or ORG
         number = issue.get("number")
         # `gh issue view` takes exactly one positional (the issue number);
@@ -939,7 +995,7 @@ def _gh_questions():
             "conference_reason": reason,
         })
     items.sort(key=lambda x: x["age_h"], reverse=True)  # oldest ask first
-    return items
+    return items, capped
 
 
 def collect_questions():
@@ -957,12 +1013,13 @@ def collect_questions():
                "GitHub comments; blocked-reconcile re-queues the work. The tab has "
                "no write path.")
     try:
-        items = _gh_questions()
+        items, capped = _gh_questions()
     except Exception as e:
         return _unknown(src, QUESTION_STALE_S,
                         f"github query failed: {str(e)[:160]}", explain=explain)
     return _tile(src, QUESTION_STALE_S, True, time.time(),
-                 count=len(items), items=items, explain=explain)
+                 count=len(items), items=items, capped=capped,
+                 search_limit=QUESTION_SEARCH_LIMIT, explain=explain)
 
 
 def collect_fleet_state():
@@ -989,6 +1046,73 @@ def collect_fleet_state():
                  note=note, explain=explain)
 
 
+def collect_findings():
+    """Canonical findings ledger (fleet-ops#5443, Nish 2026-09-11): every
+    finding queued and never dropped silently, rendered live on
+    nish.sh/fleet. Reads the vault ledger; the jsonl IS the truth, no
+    second copy."""
+    src = "vault _system/shared-memory/findings-ledger.jsonl"
+    explain = ("Canonical findings ledger at nish-vault "
+               "_system/shared-memory/findings-ledger.jsonl: totals per "
+               "disposition plus the newest 50 rows. The red banner fires "
+               "when a carried-over finding is older than 24h or the "
+               "ledger has been silent 48h — a silent ledger is itself a "
+               "finding.")
+    try:
+        rows = [json.loads(x) for x in
+                FINDINGS_LEDGER.read_text().splitlines() if x.strip()]
+    except FileNotFoundError:
+        return _unknown(src, FINDINGS_STALE_S, "no findings ledger file",
+                        explain=explain)
+    except (json.JSONDecodeError, OSError) as e:
+        return _unknown(src, FINDINGS_STALE_S, f"unreadable: {e}",
+                        explain=explain)
+    now = time.time()
+
+    def _age(ts):
+        try:
+            dt = datetime.fromisoformat(str(ts).replace("Z", "+00:00"))
+            return max(0.0, now - dt.timestamp())
+        except Exception:
+            return 0.0
+
+    # A disposition the summary line does not name is still counted (never
+    # a KeyError that would freeze the whole doc).
+    counts = {"filed": 0, "carried_over": 0, "panel_fail": 0,
+              "by_design": 0, "duplicate_of": 0}
+    for r in rows:
+        d = r.get("disposition")
+        counts[d] = counts.get(d, 0) + 1
+    oldest_carry = max((_age(r.get("ts")) for r in rows
+                        if r.get("disposition") == "carried_over"),
+                       default=0.0)
+    last_append = max((_age(r.get("ts")) for r in rows), default=0.0)
+    alert = []
+    if oldest_carry > 24 * 3600:
+        alert.append("carried-over finding untouched for over 24h")
+    if last_append > 48 * 3600:
+        alert.append("ledger went 48h with no append — a silent ledger is "
+                     "itself a finding")
+    last = sorted(rows, key=lambda r: r.get("ts") or "")[-50:][::-1]
+    return _tile(src, FINDINGS_STALE_S, True, now,
+                 total=len(rows),
+                 dispositions=counts,
+                 oldest_carry_h=round(oldest_carry / 3600, 1),
+                 last_append_h=round(last_append / 3600, 1),
+                 alert="; ".join(alert),
+                 items=[
+                     {"finding_id": r.get("finding_id"),
+                      "severity": r.get("severity"),
+                      "title": r.get("title"),
+                      "disposition": r.get("disposition"),
+                      "ref": r.get("ref"),
+                      "reason": r.get("reason"),
+                      "ts": r.get("ts")}
+                     for r in last
+                 ],
+                 explain=explain)
+
+
 def generate():
     t0 = time.time()
     doc = {"generated_at": now_iso(), "generated_epoch": time.time(),
@@ -1001,6 +1125,7 @@ def generate():
     doc["tiles"]["repairs_inflight"] = collect_repairs_inflight()
     doc["tiles"]["running_pi"] = collect_running_pi()
     doc["tiles"]["fleet_state"] = collect_fleet_state()
+    doc["tiles"]["findings"] = collect_findings()
     # fleet-ops#4475: the questions tile is a full section, not a band cell.
     # It lives under tiles (freshness contract + independent verify) and is
     # ALSO surfaced top-level as `questions` for the shell to render first.

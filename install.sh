@@ -100,8 +100,31 @@ refuse_noncanonical_install() {
   esac
 }
 
+# fleet-ops#5459: --check never refuses (auditors need the DIFFs), but a
+# --check run from a non-canonical workspaces checkout must SAY its DIFFs are
+# measured against this tree — a stale clone's DIFF count reads exactly like
+# live drift and has been filed as a critical gap-audit finding.
+warn_noncanonical_check() {
+  [ "${FLEET_OPS_ALLOW_NONCANONICAL:-}" = 1 ] && return 0
+  local ws_root canon got want root
+  ws_root="${FLEET_OPS_WORKSPACES_ROOT:-/home/nish/workspaces}"
+  canon="${FLEET_OPS_CANONICAL_CHECKOUT:-$ws_root/tooling/fleet-ops-deploy-clone}"
+  got=$(readlink -f "$here")
+  want=$(readlink -f "$canon" 2>/dev/null || printf '%s\n' "$canon")
+  root=$(readlink -f "$ws_root" 2>/dev/null || printf '%s\n' "$ws_root")
+  [ "$got" = "$want" ] && return 0
+  case "$got" in
+    "$root"|"$root"/*)
+      echo "install.sh: NONCANONICAL-CHECKOUT: $got is not the live install source; DIFF lines compare installed files against THIS checkout, not live drift" >&2
+      echo "install.sh: canonical checkout is $want (fleet-ops#5459)" >&2
+      ;;
+  esac
+}
+
 if [ "$mode" != "--" ]; then
   refuse_noncanonical_install
+else
+  warn_noncanonical_check
 fi
 
 # Returns 0 if the destination is under /etc/, 1 otherwise. Used to route
@@ -405,6 +428,28 @@ remove_judge_budget_dropins() {
         if [ -e "$dropin" ] || [ -L "$dropin" ]; then
             rm -f "$dropin"
             echo "removed bridge judge-budget drop-in: $dropin (fleet-ops#4906)"
+            user_unit_changed=1
+        fi
+    done
+}
+
+# fleet-ops#5203: bridge drop-ins written by hand on 2026-09-11
+# (TimeoutStartSec=120 on the two network canaries) while #5200 was in
+# flight. The value now lives in the unit files; remove the bridge so the
+# repo unit is the only source (two sources for one value is the #5095
+# silent-contradiction bug). Remove only the 20-start-timeout.conf file,
+# never the whole dir: the repo-sourced 10-pg-socket.conf symlink in
+# fleet-litellm-health-canary.service.d must stay. Only touch it when this
+# MANIFEST installs into the live user unit dir.
+remove_canary_start_timeout_dropins() {
+    local user_systemd="${HOME}/.config/systemd/user"
+    local u dropin
+    grep -q " ${user_systemd}/" "$manifest" 2>/dev/null || return 0
+    for u in fleet-litellm-health-canary gh-webhook-canary; do
+        dropin="${user_systemd}/${u}.service.d/20-start-timeout.conf"
+        if [ -e "$dropin" ] || [ -L "$dropin" ]; then
+            rm -f "$dropin"
+            echo "removed bridge start-timeout drop-in: $dropin (fleet-ops#5203)"
             user_unit_changed=1
         fi
     done
@@ -826,6 +871,7 @@ check_comment_junk() {
 # fleet-ops#3273: config sprawl. A .bak next to a managed MANIFEST file is a
 # leftover copy, not loaded, and it confuses every grep. The manifest check
 # must fail if any such .bak (or .bak-*) exists in the same directory.
+# fleet-ops#5602: same class for .orig residue (editor/hot-patch leftover).
 check_bak_sprawl() {
   local src dest dir base entry
   while read -r src dest || [ -n "$src" ]; do
@@ -847,11 +893,17 @@ check_bak_sprawl() {
     fi
 
     # Look for any file or directory whose name starts with the managed
-    # file's basename followed by '.bak'. A glob that matches nothing still
-    # yields the literal pattern; the existence test filters it out.
-    for entry in "$dir/$base.bak"*; do
+    # file's basename followed by '.bak' or '.orig'. A glob that matches
+    # nothing still yields the literal pattern; the existence test filters
+    # it out.
+    for entry in "$dir/$base.bak"* "$dir/$base.orig"*; do
       if [ -e "$entry" ] || [ -L "$entry" ]; then
-        echo "DIFF: $entry (.bak next to managed MANIFEST file $dest)"
+        case "$entry" in
+          "$dir/$base.orig"*)
+            echo "DIFF: $entry (.orig next to managed MANIFEST file $dest)" ;;
+          *)
+            echo "DIFF: $entry (.bak next to managed MANIFEST file $dest)" ;;
+        esac
         rc=1
       fi
     done
@@ -1145,6 +1197,7 @@ if [ "$do_user_install" = 1 ]; then
   remove_papered_heartbeat_dropin
   remove_stale_scout_prom_mode_dropin
   remove_judge_budget_dropins
+  remove_canary_start_timeout_dropins
   remove_orphaned_fleet_auto_deploy_dropin
   remove_orphaned_fleet_auto_ship_dropin
   remove_orphaned_fleet_cheap_triage_dropin

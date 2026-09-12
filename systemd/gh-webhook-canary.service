@@ -26,4 +26,11 @@ EnvironmentFile=-%h/.config/fleet-ops/gh-webhook-hc.env
 # P14 systemd-analyze dodge: hosted runners lack ~/.local. The repo
 # install.sh symlinks the script to ~/.local/bin for the live box.
 ExecStart=/usr/bin/python3 %h/.local/bin/gh-webhook-canary
-TimeoutStartSec=30
+# Starvation headroom (senior auditor 2026-09-11). Same knife as
+# fleet-litellm-health-canary.service: 30s is the tightest start timeout of
+# any network canary here, and this unit produced the same blank trip in the
+# same memory-pressure class (SIGTERM at 30s, nothing printed, no prom file
+# written, so the dead-man series went dark and the trip carried no
+# diagnosis). Verdict latency is set by the 5-minute timer and the
+# FleetGhWebhookCanaryAbsent absent() window, NOT by this timeout.
+TimeoutStartSec=120

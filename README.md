@@ -380,6 +380,29 @@ dependency lands. A dependency cycle (A depends on B depends on A) skips both
 with `depends-on-cycle` instead of a misleading `skipped-depends-on:#n`.
 Resolution is memoised per tick (one gh call per referenced issue per tick).
 
+### `collision-gate:` in ticket bodies (fleet-ops#5165)
+
+The 0509 ticket format carries a `collision-gate:` line naming tickets that
+share a file with it — the later ticket must not be claimed while an earlier
+same-file ticket is still open, or its worker produces a PR racing the
+blocker's. The same gate also lives in Fable's judge packet and
+`agent-state/fleet-landing-watch/ticket-gates.json`, but the body line is the
+ticket's own declaration and intake honours it even when the gate file is
+stale or absent.
+
+The line may carry a parenthetical annotation before the colon:
+
+```
+collision-gate (Fable 2026-09-10 09:40 IST): shares app/lib/x.ts with #2350, #2356
+```
+
+Each named ticket is resolved to DONE with exactly the `depends-on:` rules
+above. If any is not DONE, intake skips the issue for that tick with
+`skipped-collision-gate:#<n>` (first unmet ref named) and leaves it
+`agent-ready`. An org-less `repo#<n>` token on the line — e.g. the
+`permanent fix fleet-ops#4808` trailer — is not a ref and is ignored.
+Collision gates are one-directional, so no cycle detection applies.
+
 ## Spec judge (fleet-ops#4801)
 
 Before a worker may claim an `agent-ready` ticket, the intake tick runs a

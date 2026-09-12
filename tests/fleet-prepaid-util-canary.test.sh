@@ -56,6 +56,12 @@ export PI_SEAT_HEALTH_LEDGER_DIR="$scratch/ledger"
 mkdir -p "$PI_PACKET_STATE/prepaid-usage" "$PI_PACKET_STATE/active-seats" \
     "$PI_SEAT_HEALTH_LEDGER_DIR"
 
+# fleet-ops#5022: the opencode-go reader must never reach the live endpoint or
+# write outside the scratch tree during tests (CI has no key; a dev box does).
+export OPENCODE_GO_ENV_FILE="$scratch/no-opencode-go.env"
+export OPENCODE_GO_AUTH_JSON="$scratch/no-auth.json"
+export FLEET_PREPAID_USAGE_PROM_PATH="$scratch/prepaid-usage.prom"
+
 gh_log="$scratch/gh.log"
 gh_fake="$scratch/gh"
 cat >"$gh_fake" <<'FAKE'
@@ -583,4 +589,196 @@ rm -f "$PI_SEAT_HEALTH_LEDGER_DIR/cursor__cursor-grok-4.6-high.json"
 unset FLEET_PREPAID_UTIL_FILE
 unset CURSOR_USAGE_URL FLEET_PREPAID_SPEND_DIR FLEET_PREPAID_PROM_PATH
 
-ok "fleet-prepaid-util-canary: ladder, expiry-waste, bench skip, dedup, cap, prod clean, cursor spend reader, ETIMEDOUT watch"
+# --- 20. fleet-ops#5022: opencode-go usage reader -> fleet_prepaid_usage_pct
+# The subscription's own endpoint carries the 5h/weekly/monthly percentages the
+# fleet was blind to (the 2026-09-10 incident: 80.1% of the weekly pool gone
+# with 3.3 days left while the cap sat at 10). Fixture-shaped like the cursor
+# reader; resets are computed from the real clock because the paced cap is
+# measured against "now".
+: >"$gh_log"; : >"$triage"
+base_entitled
+write_caps <<'JSON'
+{ "prepaid_providers_in_order": ["opencode-go"],
+  "providers": { "opencode-go": { "cap": 2, "class": "prepaid-quota", "quota_window": "weekly",
+                                  "models": { "deepseek-flash": 2 } } } }
+JSON
+export FLEET_PREPAID_UTIL_NOW="$MIDWEEK"
+export FLEET_PREPAID_UTIL_WORK=0
+export FLEET_PREPAID_UTIL_FILE=0
+og_now_s=$(date -u +%s)
+og_reset_5h=$((og_now_s + 3600))
+og_reset_week=$((og_now_s + 50 * 3600))
+og_reset_month=$((og_now_s + 30 * 86400))
+printf '%s\n' '{"week":"2026-W35","count":82,"usd_today":"0.000000","billing_lane":"keep-me"}' \
+  >"$PI_PACKET_STATE/prepaid-usage/opencode-go.json"
+python3 - "$scratch/og-usage.json" "$og_reset_5h" "$og_reset_week" "$og_reset_month" <<'PY'
+import json, sys
+from datetime import datetime, timezone
+path, r5, rw, rm = sys.argv[1], int(sys.argv[2]), int(sys.argv[3]), int(sys.argv[4])
+def iso(s):
+    return datetime.fromtimestamp(s, timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.000Z")
+out = {"usage": {"rolling": {"status": "ok", "percent": 15, "resetsAt": iso(r5)},
+                 "weekly": {"status": "ok", "percent": 90, "resetsAt": iso(rw)},
+                 "monthly": {"status": "ok", "percent": 43, "resetsAt": iso(rm)}}}
+open(path, "w").write(json.dumps(out))
+PY
+og_prom="$scratch/prepaid-usage.prom"
+rm -f "$og_prom"
+set +e
+og_out=$(
+  OPENCODE_GO_USAGE_URL="$scratch/og-usage.json" \
+  FLEET_PREPAID_USAGE_PROM_PATH="$og_prom" \
+  OPENCODE_GO_PACE_K=12.5 \
+  FLEET_ENTITLED_SEATS_JSON="$scratch/entitled-seats.json" \
+  SEAT_CAPS_JSON="$scratch/seat-caps.json" \
+  FLEET_OPS_REPO="$scratch" \
+  "$bin" 2>&1
+)
+og_rc=$?
+set -e
+[[ "$og_rc" == "0" ]] || fail "scenario20: expected rc=0, got $og_rc ($og_out)"
+[[ -f "$og_prom" ]] || fail "scenario20: prepaid-usage.prom not written"
+grep -q '^fleet_prepaid_usage_pct{provider="opencode-go",window="5h"} 15$' "$og_prom" \
+  || fail "scenario20: 5h usage pct must be 15, got: $(cat "$og_prom")"
+grep -q '^fleet_prepaid_usage_pct{provider="opencode-go",window="weekly"} 90$' "$og_prom" \
+  || fail "scenario20: weekly usage pct must be 90"
+grep -q '^fleet_prepaid_usage_pct{provider="opencode-go",window="monthly"} 43$' "$og_prom" \
+  || fail "scenario20: monthly usage pct must be 43"
+grep -q "^fleet_prepaid_window_reset_timestamp{provider=\"opencode-go\",window=\"weekly\"} $og_reset_week$" "$og_prom" \
+  || fail "scenario20: weekly reset timestamp must be $og_reset_week"
+# Paced cap: remaining 10% over 50h at K=12.5 -> floor(10/50*12.5) = 2, the declared cap.
+grep -q '^fleet_prepaid_paced_cap{provider="opencode-go"} 2$' "$og_prom" \
+  || fail "scenario20: paced cap must be 2 (10% left over 50h at K=12.5), got: $(grep paced_cap "$og_prom")"
+grep -q '^fleet_prepaid_declared_cap{provider="opencode-go"} 2$' "$og_prom" \
+  || fail "scenario20: declared cap must be 2"
+# State overlay: same numbers in the state file, pick count and unknown
+# fields preserved (this is a usage overlay, not a pick).
+og_state="$PI_PACKET_STATE/prepaid-usage/opencode-go.json"
+[[ "$(jq -r '.count' "$og_state")" == "82" ]] \
+  || fail "scenario20: pick count 82 must survive the overlay, got $(jq -r '.count' "$og_state")"
+[[ "$(jq -r '.week' "$og_state")" == "2026-W35" ]] \
+  || fail "scenario20: week must survive the overlay"
+[[ "$(jq -r '.billing_lane' "$og_state")" == "keep-me" ]] \
+  || fail "scenario20: unknown state fields must survive the overlay"
+[[ "$(jq -r '.usage.weekly.percent' "$og_state")" == "90" ]] \
+  || fail "scenario20: state must carry the weekly percent"
+[[ "$(jq -r '.usage.weekly.reset_epoch' "$og_state")" == "$og_reset_week" ]] \
+  || fail "scenario20: state must carry the weekly reset epoch"
+[[ "$(jq -r '.usage_source' "$og_state")" == "opencode-zen-go-usage-api" ]] \
+  || fail "scenario20: state must name the vendor endpoint"
+ok "scenario20: opencode-go reader emits fleet_prepaid_usage_pct + resets + paced cap and overlays the state"
+
+# --- 21. fleet-ops#5022: the paced cap MOVES with the read (the cap change)
+# Same declared cap 2, weekly 95% used with 48h to reset -> remaining 5% over
+# 48h is floor(5/48*12.5) = 1, so the pace says the declared cap is one too
+# high. FleetOpenCodeGoPaceExceeded (declared > paced) is the alert that files
+# the repair packet carrying this number.
+: >"$gh_log"; : >"$triage"
+og_reset_week2=$((og_now_s + 48 * 3600))
+python3 - "$scratch/og-usage-tight.json" "$og_reset_5h" "$og_reset_week2" "$og_reset_month" <<'PY'
+import json, sys
+from datetime import datetime, timezone
+path, r5, rw, rm = sys.argv[1], int(sys.argv[2]), int(sys.argv[3]), int(sys.argv[4])
+def iso(s):
+    return datetime.fromtimestamp(s, timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.000Z")
+out = {"usage": {"rolling": {"status": "ok", "percent": 15, "resetsAt": iso(r5)},
+                 "weekly": {"status": "ok", "percent": 95, "resetsAt": iso(rw)},
+                 "monthly": {"status": "ok", "percent": 43, "resetsAt": iso(rm)}}}
+open(path, "w").write(json.dumps(out))
+PY
+rm -f "$og_prom"
+set +e
+tight_out=$(
+  OPENCODE_GO_USAGE_URL="$scratch/og-usage-tight.json" \
+  FLEET_PREPAID_USAGE_PROM_PATH="$og_prom" \
+  FLEET_ENTITLED_SEATS_JSON="$scratch/entitled-seats.json" \
+  SEAT_CAPS_JSON="$scratch/seat-caps.json" \
+  FLEET_OPS_REPO="$scratch" \
+  "$bin" 2>&1
+)
+tight_rc=$?
+set -e
+[[ "$tight_rc" == "0" ]] || fail "scenario21: expected rc=0, got $tight_rc ($tight_out)"
+grep -q '^fleet_prepaid_paced_cap{provider="opencode-go"} 1$' "$og_prom" \
+  || fail "scenario21: paced cap must drop to 1 (5% left over 48h), got: $(grep paced_cap "$og_prom")"
+grep -q '^fleet_prepaid_declared_cap{provider="opencode-go"} 2$' "$og_prom" \
+  || fail "scenario21: declared cap stays 2 while the pace says 1"
+# floor 1: a nearly-spent pool is never paced to 0 (the seat must stay usable
+# until a real wall benches it).
+og_reset_week3=$((og_now_s + 72 * 3600))
+python3 - "$scratch/og-usage-empty.json" "$og_reset_5h" "$og_reset_week3" "$og_reset_month" <<'PY'
+import json, sys
+from datetime import datetime, timezone
+path, r5, rw, rm = sys.argv[1], int(sys.argv[2]), int(sys.argv[3]), int(sys.argv[4])
+def iso(s):
+    return datetime.fromtimestamp(s, timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.000Z")
+out = {"usage": {"rolling": {"status": "ok", "percent": 0, "resetsAt": iso(r5)},
+                 "weekly": {"status": "ok", "percent": 99, "resetsAt": iso(rw)},
+                 "monthly": {"status": "ok", "percent": 43, "resetsAt": iso(rm)}}}
+open(path, "w").write(json.dumps(out))
+PY
+rm -f "$og_prom"
+set +e
+empty_out=$(
+  OPENCODE_GO_USAGE_URL="$scratch/og-usage-empty.json" \
+  FLEET_PREPAID_USAGE_PROM_PATH="$og_prom" \
+  FLEET_ENTITLED_SEATS_JSON="$scratch/entitled-seats.json" \
+  SEAT_CAPS_JSON="$scratch/seat-caps.json" \
+  FLEET_OPS_REPO="$scratch" \
+  "$bin" 2>&1
+)
+empty_rc=$?
+set -e
+[[ "$empty_rc" == "0" ]] || fail "scenario21: expected rc=0, got $empty_rc ($empty_out)"
+grep -q '^fleet_prepaid_paced_cap{provider="opencode-go"} 1$' "$og_prom" \
+  || fail "scenario21: a spent pool must floor the paced cap at 1, never 0"
+ok "scenario21: paced cap follows the live read down (2 -> 1) and floors at 1"
+
+# --- 22. fleet-ops#5022: dead reader -> no metric, and the 5h wall is loud --
+: >"$gh_log"; : >"$triage"
+rm -f "$og_prom"
+set +e
+dead_out=$(
+  OPENCODE_GO_USAGE_URL="$scratch/nonexistent-og.json" \
+  FLEET_PREPAID_USAGE_PROM_PATH="$og_prom" \
+  FLEET_ENTITLED_SEATS_JSON="$scratch/entitled-seats.json" \
+  SEAT_CAPS_JSON="$scratch/seat-caps.json" \
+  FLEET_OPS_REPO="$scratch" \
+  "$bin" 2>&1
+)
+dead_rc=$?
+set -e
+[[ "$dead_rc" == "0" ]] || fail "scenario22: expected rc=0 (non-fatal), got $dead_rc"
+[[ ! -f "$og_prom" ]] || fail "scenario22: .prom must NOT be written on a dead reader"
+grep -q 'opencode-go usage reader: no data' <<<"$dead_out" \
+  || fail "scenario22: missing 'no data' log line"
+# 5h window at/above the wall threshold is named explicitly so a bench is
+# explained by the live figure rather than the flat default.
+python3 - "$scratch/og-usage-wall.json" "$og_reset_5h" "$og_reset_week" "$og_reset_month" <<'PY'
+import json, sys
+from datetime import datetime, timezone
+path, r5, rw, rm = sys.argv[1], int(sys.argv[2]), int(sys.argv[3]), int(sys.argv[4])
+def iso(s):
+    return datetime.fromtimestamp(s, timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.000Z")
+out = {"usage": {"rolling": {"status": "ok", "percent": 100.2, "resetsAt": iso(r5)},
+                 "weekly": {"status": "ok", "percent": 90, "resetsAt": iso(rw)},
+                 "monthly": {"status": "ok", "percent": 43, "resetsAt": iso(rm)}}}
+open(path, "w").write(json.dumps(out))
+PY
+: >"$triage"
+wall_out=$(
+  OPENCODE_GO_USAGE_URL="$scratch/og-usage-wall.json" \
+  FLEET_PREPAID_USAGE_PROM_PATH="$og_prom" \
+  FLEET_ENTITLED_SEATS_JSON="$scratch/entitled-seats.json" \
+  SEAT_CAPS_JSON="$scratch/seat-caps.json" \
+  FLEET_OPS_REPO="$scratch" \
+  "$bin" 2>&1
+)
+grep -q 'PREPAID-UTIL-OPENCODE-GO-5H-WALL' "$triage" \
+  || fail "scenario22: a 5h window at 100.2% must raise the wall line"
+grep -q '^fleet_prepaid_usage_pct{provider="opencode-go",window="5h"} 100.2$' "$og_prom" \
+  || fail "scenario22: a fractional 5h percentage must survive the reader"
+ok "scenario22: dead reader omits the metric; a walled 5h window is named loud"
+unset OPENCODE_GO_USAGE_URL
+
+ok "fleet-prepaid-util-canary: ladder, expiry-waste, bench skip, dedup, cap, prod clean, cursor spend reader, ETIMEDOUT watch, opencode-go usage reader"

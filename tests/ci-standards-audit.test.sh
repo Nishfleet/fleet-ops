@@ -218,6 +218,13 @@ bash "$here/issue-file.test.sh"
 # .github/workflows/**).
 bash "$here/same-repo-closes-gate.test.sh"
 
+# fleet-ops#5471: bench-truth path-unit storm drill. Landed in #5567 but was
+# not hosted by a listed test (workers cannot push .github/workflows/**),
+# so the p14-test-listing-gate red'd the P14 check. Hosted here so P14
+# runs it without a workflow-file edit; its live systemd layer self-skips
+# on hosted CI (no user units there).
+bash "$here/fleet-seat-bench-truth-path-storm-drill.test.sh"
+
 # fleet-ops#4468 dead-conflicting-PR detector
 bash "$here/fleet-dead-pr-detector.test.sh"
 
@@ -332,6 +339,11 @@ bash "$here/alert-repair-fleet-escalation-storm-skip.test.sh"
 # .github/workflows/**).
 bash "$here/alert-repair-outcome-metric.test.sh"
 
+# fleet-ops#5142: detached-deliverable preflight alert. Hosted here so P14
+# runs it without a workflow-file edit (the worker App cannot push
+# .github/workflows/**).
+bash "$here/detached-deliverable-preflight.test.sh"
+
 # fleet-ops#2768: one-shot dispatch-ledger fixture-row sweep. PR #2873
 # landed the test without a ci.yml listing or a host, so P14 ran red on
 # "1 test file(s) are neither in ci.yml, hosted by a listed test,
@@ -354,6 +366,14 @@ bash "$here/dispatch-ledger-fixture-sweep.test.sh"
 # drop of this host line fails by name.
 # Hermetic (pin fixtures, no gh/prometheus/systemd).
 bash "$here/fleet-deploy-quality.test.sh"
+
+# fleet-ops#5140: the 0509 product-repo deploy-quality test (red streak,
+# green-newest, unreadable-runs degradation, HELP/TYPE dedup). Hosted here
+# so P14 runs it without a workflow-file edit (the worker App cannot push
+# .github/workflows/**). The named pin in tests/p14-test-listing-gate.test.sh
+# is the class-prevention so a future drop of this host line fails by name.
+# Hermetic (file seams only, FLEET_DQ_GH=/nonexistent/gh, no network).
+bash "$here/fleet-product-deploy-0509.test.sh"
 
 # fleet-ops#2902 (PR #2900 follow-up): the close-duplicates drain test
 # landed on main without a ci.yml listing or a host (same 2-orphan FAIL as
@@ -382,6 +402,23 @@ bash "$here/fleet-issue-file-close-duplicates-regression-3161.test.sh"
 # class-prevention so a future drop of this host line fails by name.
 # Hermetic (fake gh, no network).
 bash "$here/fleet-issue-file-close-duplicates-idempotent.test.sh"
+
+# fleet-ops#5620: repo-scope of the filing-time dedupe corpus (a
+# same-titled open issue in another Nishfleet repo must never suppress a
+# filing). Hosted here so P14 runs it without a workflow edit (the worker
+# App cannot push .github/workflows/**). The named pin in
+# tests/p14-test-listing-gate.test.sh is the class-prevention so a future
+# drop of this host line fails by name. Hermetic (fake gh, no network).
+bash "$here/fleet-issue-file-dedupe-repo-scope.test.sh"
+
+# fleet-ops#5496: the file-time dedupe comment is idempotent — a re-run of
+# a dedupe-heavy batch adds 0 new comments to the canonical (the
+# blind-audit backfill piled 848+ identical comments on #5464). Hosted
+# here so P14 runs it without a workflow edit (the worker App cannot push
+# .github/workflows/**). The named pin in tests/p14-test-listing-gate.test.sh
+# is the class-prevention so a future drop of this host line fails by
+# name. Hermetic (fake gh, no network).
+bash "$here/fleet-issue-file-dedupe-comment-idempotent.test.sh"
 
 # fleet-ops#2902 (PR #2905 follow-up): the leaky-worktree containment
 # detector landed on main without a ci.yml listing or a host — and P14 was
@@ -427,6 +464,31 @@ bash "$here/seat-health-quarantine.test.sh"
 # writeSeatLedgerEntry. Hosted here so P14 runs it without a workflow-file
 # edit (the worker App cannot push .github/workflows/**).
 bash "$here/seat-health-seat-dead.test.sh"
+
+# fleet-ops#5096: closure condition for the seat-recovery hot loop's TRIGGER
+# fix. fleet-seat-recovery.path watches the ledger DIRECTORY, so every ledger
+# write forked the fleet-seat-recovery oneshot (~2500 starts/h live 2026-09-11)
+# while seat-lib only distrusts a record older than STALE_SECS=21600. The
+# test imports the live extension at $HOME/.pi/agent/extensions/seat-health.ts
+# (or FLEET_SEAT_HEALTH_TS) and asserts that an unchanged routing record is not
+# rewritten inside a documented refresh interval (>10x fewer writes), that no
+# routing-relevant change or near-STALE_SECS record is ever skipped, and that
+# seat_usable verdicts for healthy/rate_limited/quota_exhausted/corpse are
+# identical with the skip ON vs OFF. CI skips when the extension is missing;
+# on the VPS the test fails against the pre-fix extension and passes once
+# writeSeatLedgerEntry skips. Hosted here so P14 runs it without a
+# workflow-file edit (the worker App cannot push .github/workflows/**).
+bash "$here/seat-health-ledger-noop-write.test.sh"
+
+# fleet-ops#5430: closure condition for the sustained-503 Retry-After bench
+# floor. Imports the live extension and asserts that 3+ consecutive
+# overload failures with Retry-After: 30 get a bench >=
+# overload_bench_default_s (300s), single-shot 503s still honor
+# Retry-After, longer Retry-Afters are kept, and overload converges to a
+# corpse at the seat_dead threshold. Hosted here so P14 runs it without a
+# workflow-file edit (the worker App cannot push
+# .github/workflows/**).
+bash "$here/seat-health-overload-bench.test.sh"
 
 # fleet-ops#1464: GitHub push channel (webhook → Worker → tunnel → VPS).
 # The four tests are offline (DRY=1, ephemeral localhost ports, temp dirs):
@@ -689,6 +751,16 @@ bash "$here/curator-journal-cap.test.sh"
 # tests/p14-test-listing-gate.test.sh is the class-prevention so a
 # future drop of this host line fails by name.
 bash "$here/install-manifest-bak-sprawl.test.sh"
+
+# fleet-ops#5602: the drift-canary sprawl-quarantine drill — a .bak/.orig
+# sibling next to a MANIFEST-managed path is moved to the quarantine dir
+# and the writer named, so the merge-to-live gate is red at most one tick.
+# Hosted here so P14 runs it without a workflow-file edit (the worker App
+# cannot push .github/workflows/**). The named pin in
+# tests/p14-test-listing-gate.test.sh is the class-prevention so a future
+# drop of this host line fails by name.
+# Hermetic (stub gh + systemctl, overlay workspaces root).
+bash "$here/fleet-ops-drift-sprawl-quarantine.test.sh"
 
 # fleet-ops#4948: install.sh --check must accept a JSON copy-install config
 # file that differs from the repo copy only by serialization (escaping/key

@@ -3,7 +3,7 @@
  *
  * Registers `cursor` as a Pi provider. Routes through the Cursor CLI:
  *   cursor-agent --print --api-key "$CURSOR_API_KEY" --model <model>
- *                --auto-review --trust --workspace <workspace> -- <prompt>
+ *                --force --trust --workspace <workspace> -- <prompt>
  *
  * Credential: $CURSOR_API_KEY from ~/fleet2/etc/cursor.env
  * Models (NON-NEGOTIABLE LOCK, Nish 2026-08-22; kimi added 2026-09-08):
@@ -150,18 +150,38 @@ function streamCursor(
 				);
 			}
 
-			// Build the command — same flags as implementation-worker-cursor-sub
-			// cursor-agent --print --model <model> --auto-review --trust
-			//   --workspace <workspace> -- <prompt>
+			// Build the command
+			// cursor-agent --print --model <model> --force --trust
+			//   --workspace <workspace>  (prompt via stdin)
 			const workspace = process.cwd();
+
+			// 2026-09-12 (fleet-ops#5608 class): the prompt rides STDIN, not argv.
+			// spawnSync argv is capped at MAX_ARG_STRLEN (128KB) PER ARGUMENT by the
+			// kernel — the 2026-09-12T22:00Z fleet-blind-audit packet (248KB) died
+			// with spawnSync E2BIG before cursor-agent even started (PACKET-VERDICT
+			// tools=0 class=no-tools, unit exit 126). `cursor-agent --print` reads
+			// the prompt from stdin when no positional prompt is given (live-probed
+			// 2026-09-12: printf 'prompt' | cursor-agent --print ... → STDIN-OK).
 
 			// Push start event
 			stream.push({ type: "start", partial: output });
 
 			// Run cursor-agent and capture output
 			// Use spawnSync (not execSync) to avoid shell parsing of the prompt
-			const child = spawnSync(cursorBin, ["--print", "--api-key", apiKey, "--model", model.id, "--auto-review", "--trust", "--workspace", workspace, "--", prompt], {
+			// 2026-09-11 (fleet-ops#5174): `--auto-review` is a server classifier that auto-runs
+			// "safe" tool calls and prompts for the rest — under `--print` there is no approval
+			// UI, so every classified write is silently discarded (two consecutive
+			// orchestrator-decision-sweep runs on cursor-grok-4.6-high drafted verdicts and
+			// landed zero GitHub writes, parking every needs-orchestrator ticket).
+			// `--force` allows all commands unless explicitly denied (the
+			// ~/.cursor/cli-config.json permissions.deny list still applies) — the same
+			// write-autonomy class every other seat on this VPS already runs under
+			// (standing write autonomy, Nish 2026-08-05; devin half inverted identically
+			// by fleet-ops#4780). Live probe 2026-09-11: --print --force on
+			// cursor-grok-4.6-high accepted a `gh issue comment` write on fleet-ops#5174.
+			const child = spawnSync(cursorBin, ["--print", "--api-key", apiKey, "--model", model.id, "--force", "--trust", "--workspace", workspace], {
 				cwd: workspace,
+				input: prompt, // stdin transport (see E2BIG note above) — never argv
 				timeout: 2400000, // 40 min (2026-09-04 fleet-ops#3263: 30 min killed heavy packets at 1801s — same class as the devin-provider fix; pi hang watchdog is 2520s, provider must stay under it)
 				maxBuffer: 10 * 1024 * 1024, // 10MB
 			});

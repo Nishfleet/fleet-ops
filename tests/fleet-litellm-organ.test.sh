@@ -576,4 +576,19 @@ grep -q 'PYTHONPATH=/home/nish/.local/libexec/fleet-litellm-prisma-compat' "$pro
     || fail "16: proxy unit must set PYTHONPATH to the prisma compat hook"
 ok "16: canary authenticates /health; proxy loads prisma compat via PYTHONPATH"
 
+# --- 17: the canary unit carries starvation headroom, not a 30s knife
+# 2026-09-11: this unit was SIGTERMed at 30s during a memory-pressure stall
+# having printed nothing and written no prom file (3.277s CPU vs 0.18s for a
+# healthy run), so the trip carried no diagnosis and the organ heartbeat went
+# dark. Measured worst case for a complete run is 21s. Assert the PROPERTY
+# (generous headroom), not the exact number, so a later raise is not a red.
+ts=$(grep -E '^TimeoutStartSec=' "$canary_unit" | tail -1 | cut -d= -f2)
+case "$ts" in
+    *min) ts_s=$(( ${ts%min} * 60 ));;
+    *)    ts_s=${ts:-0};;
+esac
+[[ "$ts_s" -ge 90 ]] \
+    || fail "17: canary unit TimeoutStartSec=$ts is under 90s starvation headroom (2026-09-11 trip: SIGTERM at 30s, nothing printed, no prom write)"
+ok "17: canary unit carries >=90s starvation headroom (TimeoutStartSec=$ts)"
+
 echo "ALL OK: fleet-litellm-organ"

@@ -262,6 +262,10 @@ kill "$holder" 2>/dev/null || true
     || fail "scenario2: expected DEPLOY-BLOCKED (got: $out)"
 [[ "$out" == *"live process holds the clone as cwd"* ]] \
     || fail "scenario2: expected live-process reason (got: $out)"
+[[ "$out" == *"pid=$holder"* ]] \
+    || fail "scenario2: DEPLOY-BLOCKED must name holder pid=$holder (got: $out)"
+[[ "$out" == *"cmdline="* ]] \
+    || fail "scenario2: DEPLOY-BLOCKED must name holder cmdline (got: $out)"
 [ "$(git -C "$checkout" symbolic-ref --short HEAD)" = "auditor/live-hold" ] \
     || fail "scenario2: clone must stay on the named branch when a live process holds it"
 ok "scenario2: a live process holding the clone as cwd keeps the LOUD block"

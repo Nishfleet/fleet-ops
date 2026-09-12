@@ -162,6 +162,118 @@ assert m._within(47, 47, {"mode": "percent", "pct": 2}) is True   # exact
 assert m._within(47, 48, {"mode": "percent", "pct": 2}) is True   # abs<=2 floor
 print("OK: shipped_24h spot tolerance tightened to 2% or abs<=2")
 
+# --- open_prs spot is bounded by the tile's own cache window (fleet-ops#5155) ---
+# The tile's count is measured at tile.observed_at (the exporter's cache
+# timestamp), so a live gh recount can only be judged through a window: the
+# PRs opened since then may be legitimately absent, the PRs closed since may
+# still be present. The 2026-09-10 firing was exactly this: a faithful tile
+# (11) against a live count (15), 4 PRs opened in the 9 minutes since the
+# snapshot — outside the old ±2/15% band, inside the window.
+op_spec = m.SPECS["open_prs"]["spot"]
+assert op_spec["tolerance"]["mode"] == "window", op_spec["tolerance"]
+lag = {"mode": "window", "down": 4 + m.SEARCH_INDEX_FLOOR,
+       "up": 0 + m.SEARCH_INDEX_FLOOR}
+assert m._within(11, 15, lag) is True, "window's own churn is a lag, not a lie"
+# The old fixed band is what called it one (the false DISPUTE being repaired).
+assert m._within(11, 15, {"mode": "percent", "pct": 15}) is False
+# A gap the window cannot explain is still a DISPUTE.
+assert m._within(5, 15, lag) is False, "unexplained undercount must dispute"
+assert m._within(30, 15, lag) is False, "unexplained overcount must dispute"
+# A closed PR still in the tile is the mirror case and is also not a lie.
+assert m._within(11, 9, {"mode": "window", "down": 2, "up": 4}) is True
+# An exact live match stays green.
+assert m._within(15, 15, lag) is True
+
+# --- the runner builds that window from the TILE's observed_at ---
+class _FakeGhResult:
+    def __init__(self, out):
+        self.returncode, self.stdout, self.stderr = 0, out, ""
+
+seen_queries = []
+
+def _fake_gh_run(argv, **kw):
+    q = next(a for a in argv if a.startswith("q="))
+    seen_queries.append(q)
+    if "created:>=" in q:
+        return _FakeGhResult("4\n")
+    if "closed:>=" in q:
+        return _FakeGhResult("0\n")
+    return _FakeGhResult("15\n")
+
+_orig_run, _orig_skip = m.subprocess.run, m.SKIP_GH
+m.subprocess.run = _fake_gh_run
+m.SKIP_GH = False
+try:
+    live, displayed, repo, tol = m.run_open_prs_gh_spot(
+        {"observed_at": 1789076703.0,
+         "items": [{"repo": "Nishfleet/fleet-ops", "count": 11}]})
+finally:
+    m.subprocess.run, m.SKIP_GH = _orig_run, _orig_skip
+assert (live, displayed, repo) == (15, 11, "Nishfleet/fleet-ops"), (live, displayed)
+assert tol["mode"] == "window" and tol["down"] == 4 + m.SEARCH_INDEX_FLOOR
+assert tol["up"] == 0 + m.SEARCH_INDEX_FLOOR, tol
+assert m._within(displayed, live, tol) is True, "the 21:54Z firing must pass"
+assert all(
+    "2026-09-10T21:45:03+00:00" in q for q in seen_queries[1:]
+), seen_queries
+assert "created:>=" in seen_queries[1] and "closed:>=" in seen_queries[2], \
+    seen_queries
+print("OK: open_prs spot windowed on the tile's own cache timestamp")
+
+# --- fleet-ops#5148: the filing's own N+3 case, end-to-end through verify_tile ---
+# The filing: per-repo displayed 8 (the exporter's cached org snapshot) vs
+# live gh 11 — 3 PRs opened inside the 30-min cache window, a 37% miss
+# against the old fixed band. A faithful tile must stay green through the
+# REAL verify_tile path (primary Prom re-query agrees; the spot window
+# explains the +3), and a Prom gauge disagreeing with its OWN re-query
+# must still DISPUTE — the window must not have weakened the exact
+# primary check.
+op_tile = {"source": "test", "stale_after_s": 900, "ok": True,
+           "observed_at": now,
+           "count": 8, "items": [{"repo": "Nishfleet/fleet-ops", "count": 8}]}
+m.RUNNERS["open_prs_prom"] = lambda t: t["count"]  # primary re-query agrees
+_orig_run_5148, _orig_skip_5148 = m.subprocess.run, m.SKIP_GH
+
+def _gh_n3(argv, **kw):
+    q = next(a for a in argv if a.startswith("q="))
+    if "created:>=" in q:
+        return _FakeGhResult("3\n")   # 3 PRs opened since observed_at
+    if "closed:>=" in q:
+        return _FakeGhResult("0\n")
+    return _FakeGhResult("11\n")      # live count is N+3
+
+m.subprocess.run = _gh_n3
+m.SKIP_GH = False
+try:
+    op_mismatch = m.verify_tile("open_prs", op_tile)
+finally:
+    m.subprocess.run, m.SKIP_GH = _orig_run_5148, _orig_skip_5148
+assert op_mismatch == 0, op_mismatch
+assert op_tile["disputed"] is False, op_tile["verify"]
+assert op_tile["verify"]["match"] is True, op_tile["verify"]
+assert op_tile["verify"]["spot_match"] is True, op_tile["verify"]
+assert op_tile["verify"]["spot_observed"] == 11, op_tile["verify"]
+print("OK: #5148 — 8 vs 11 (+3 inside the window) is a lag, not a DISPUTE")
+
+# --- fleet-ops#5148: a Prom gauge disagreeing with its OWN re-query ---
+# The window tolerance repairs the gh spot only. The primary check (tile
+# count vs sum(fleet_open_prs) re-queried, exact) must still DISPUTE when
+# the gauge disagrees with its own re-query — a wrong family is still a
+# wrong family even with the spot green.
+bad_tile = {"source": "test", "stale_after_s": 900, "ok": True,
+            "observed_at": now,
+            "count": 8, "items": [{"repo": "Nishfleet/fleet-ops", "count": 8}]}
+m.RUNNERS["open_prs_prom"] = lambda t: 91  # own re-query disagrees
+m.SKIP_GH = True  # isolate: the DISPUTE must come from the primary check
+try:
+    bad_mismatch = m.verify_tile("open_prs", bad_tile)
+finally:
+    m.SKIP_GH = True
+assert bad_mismatch == 1, bad_mismatch
+assert bad_tile["disputed"] is True, bad_tile["verify"]
+assert bad_tile["verify"]["match"] is False, bad_tile["verify"]
+print("OK: #5148 — gauge vs own re-query disagreement still DISPUTEs")
+
 # --- attach_specs covers every tile ---
 empty = {"tiles": {k: {} for k in m.SPECS}}
 m.attach_specs(empty)
@@ -409,6 +521,94 @@ m._promql_sum_present = _orig_promql_sum_present
 m._prom_textfile_mtime = _orig_prom_mtime
 PY
 ok "verify.py match/mismatch/unknown/percent/inject"
+
+# =========================================================================
+# 5b. fleet-ops#5155: the console stamps a cached family with the CACHE's
+# measurement time, and the exporter publishes it.
+# =========================================================================
+# The tile's open_prs count is a cached org GraphQL snapshot (exporter
+# PR_CACHE_TTL = 30 min). Before this, generate.py stamped the EXPORT time,
+# so a 30-min-old count read as seconds-fresh on the page and the verify's
+# live gh spot check called the (faithful) tile a lie every cache window.
+# Lock both halves: the exporter's measurement-time gauge, and the tile's use
+# of it as observed_at (with the cache window as the freshness gate).
+_exporter="$repo_root/libexec/fleet-metrics-export.py"
+python3 - "$_exporter" "$gen" "$scratch" <<'PY' || fail "5155: cache measurement time not published/stamped"
+import importlib.util, json, sys, time
+from pathlib import Path
+
+exporter_path, gen_path, scratch = sys.argv[1], sys.argv[2], Path(sys.argv[3])
+spec = importlib.util.spec_from_file_location("fme5155", exporter_path)
+fme = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(fme)
+
+# --- exporter: a served cache reports the CACHE's write time, not now ---
+cache = scratch / "repo-snapshot-cache.json"
+measured = time.time() - 600.0
+cache.write_text(json.dumps({"ts": measured, "data": {"open_prs": {"R": 11}}}))
+fme._CACHE_TS_SERVED.clear()
+spec_obj = importlib.util.spec_from_file_location("g5155", gen_path)
+g = importlib.util.module_from_spec(spec_obj)
+spec_obj.loader.exec_module(g)
+served = fme._cached_json(cache, lambda: {"open_prs": {"R": 99}},
+                          "repo_snapshot")
+assert served == {"open_prs": {"R": 11}}, served
+stamp = fme._CACHE_TS_SERVED["repo_snapshot"]
+assert abs(stamp - measured) <= 2, (stamp, measured)
+assert abs(stamp - time.time()) > 60, "must be the cache time, not the run time"
+# A fresh fetch reports NOW.
+fme._CACHE_TS_SERVED.clear()
+fme.PR_CACHE_TTL = -1  # force the fetch path
+fetched = fme._cached_json(cache, lambda: {"open_prs": {"R": 15}},
+                           "repo_snapshot")
+assert fetched == {"open_prs": {"R": 15}}, fetched
+assert abs(fme._CACHE_TS_SERVED["repo_snapshot"] - time.time()) <= 2
+# The family is emitted (constants + the emission site).
+assert "fleet_gh_cache_timestamp_seconds" in fme.HELP_CTS
+assert "fleet_gh_cache_timestamp_seconds" in fme.TYPE_CTS
+src = Path(exporter_path).read_text(encoding="utf-8")
+assert 'fleet_gh_cache_timestamp_seconds{{kind=' in src, "metric never emitted"
+assert "_CACHE_TS_SERVED" in src, "measurement time never recorded"
+
+# --- generate.py: observed_at is that stamp, gate is the cache window ---
+TS = 1789076703.0
+
+
+def fake_prom(expr, timeout=5):
+    if "fleet_gh_cache_timestamp_seconds" in expr:
+        return [{"metric": {"kind": "repo_snapshot"}, "value": TS}]
+    if "fleet_gh_cache_fresh" in expr:
+        return [{"metric": {"kind": "repo_snapshot"}, "value": 1.0}]
+    if "fleet_open_prs" in expr:
+        return [{"metric": {"repo": "Nishfleet/fleet-ops"}, "value": 11.0}]
+    return []
+
+
+g._prom_query = fake_prom
+NOW = time.time()
+g._textfile_mtime = lambda: NOW  # exporter run time (separate from the cache)
+
+tile = g.collect_open_prs()
+assert tile["ok"] is True, tile
+assert tile["observed_at"] == TS, tile["observed_at"]
+assert TS != NOW, "fixture must separate cache time from export time"
+assert tile["stale_after_s"] == g.GH_CACHE_WINDOW_S == 1800, tile["stale_after_s"]
+assert tile["count"] == 11, tile["count"]
+# Fail open: no gauge (older exporter) -> the export time, as before.
+def no_gauge(expr, timeout=5):
+    if "fleet_gh_cache_timestamp_seconds" in expr:
+        return []  # older exporter: gauge absent -> fall back to the export time
+    if "fleet_open_prs" in expr:
+        return [{"metric": {"repo": "R"}, "value": 3.0}]
+    return [{"metric": {"kind": "repo_snapshot"}, "value": 1.0}]
+
+
+g._prom_query = no_gauge
+tile = g.collect_open_prs()
+assert tile["observed_at"] == NOW, tile["observed_at"]
+print("OK: exporter publishes the gh cache measurement time + tile stamps it")
+PY
+ok "fleet-ops#5155: console stamps cached gh families with the cache's measurement time"
 
 # =========================================================================
 # 6. shell.html DISPUTED + verify.cmd citation
@@ -1029,9 +1229,10 @@ print("OK: 5070 — aged answered question excluded (2 counted, raw search 3)")
 
 # --- the tile's own collector agrees on the same fixture (drift lock) ---
 G.subprocess = FakeGh(rows, comments)
-G_ITEMS = G._gh_questions()
+G_ITEMS, G_CAPPED = G._gh_questions()
 assert len(G_ITEMS) == counted == 2, (
     f"wheel drift: tile renders {len(G_ITEMS)}, verifier counts {counted}")
+assert G_CAPPED is False, "3 rows cannot fill the search window"
 print("OK: 5070 — tile collector and verifier count the same 2 on one fixture")
 
 # --- the verifier's own gh argv obeys the #4996 arity contract ----------
@@ -1092,6 +1293,157 @@ for kwargs in ({"search_rc": 1}, {"view_rc": 1},
 print("OK: 5070 — gh search/view failure and non-JSON still SKIP (VerifyError)")
 PY
 ok "fleet-ops#5070: questions verifier counts the tile's population (aged answered excluded)"
+
+# =========================================================================
+# 12f. fleet-ops#5133: both sides ask for the FULL open-question window.
+#
+# `gh search issues` takes `--limit` defaulting to 30 and reports NOTHING
+# when it truncates. Both the tile's search and the verifier's search left
+# the flag off, so past 30 open `question` issues the tile's count/items
+# were a silent 30-row window and the verifier fetched its OWN 30 rows
+# seconds later from GitHub's relevance ordering — a boundary population
+# then false-DISPUTEs a faithful tile, the #5070 class one qualifier over.
+#
+# The fixture reproduces gh's truncation: a fake gh that returns the first
+# 30 rows unless the caller passes `--limit`. 31 unfiltered-of-answers
+# questions must reach the tile AND the verifier.
+# =========================================================================
+python3 - "$gen" "$ver" <<'PY' || fail "5133: questions window failed"
+import importlib.util, json, subprocess, sys
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
+
+gen_path, ver_path = sys.argv[1], sys.argv[2]
+
+def load(name, path):
+    spec = importlib.util.spec_from_file_location(name, path)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+G = load("console_generate_5133", gen_path)
+V = load("console_verify_5133", ver_path)
+
+GH_DEFAULT_LIMIT = 30          # `gh search issues --help`, gh 2.93.0
+
+def iso(seconds_ago):
+    return (datetime.now(timezone.utc) - timedelta(seconds=seconds_ago)).strftime(
+        "%Y-%m-%dT%H:%M:%S+00:00")
+
+# --- the two sides must declare the SAME window (drift guard) -----------
+assert V.QUESTION_SEARCH_LIMIT == G.QUESTION_SEARCH_LIMIT, (
+    f"tile window {G.QUESTION_SEARCH_LIMIT} != verifier window "
+    f"{V.QUESTION_SEARCH_LIMIT}")
+assert G.QUESTION_SEARCH_LIMIT > GH_DEFAULT_LIMIT, (
+    "the window must clear gh's silent default, not restate it")
+
+# 31 open, unanswered questions — one row past gh's silent default cap.
+N = 31
+rows = [
+    {"number": 6000 + i, "title": f"q{i}", "url": f"u/{i}",
+     "createdAt": iso(3600 * (i + 1)),
+     "repository": {"nameWithOwner": "Nishfleet/fleet-ops"},
+     "labels": [{"name": "question"}], "body": f"question: pick {i}?"}
+    for i in range(N)
+]
+
+
+class WindowGh:
+    """Fake gh that honours gh's OWN truncation rule.
+
+    A search with no --limit returns the first 30 rows (the real default),
+    so a collector that forgets the flag loses row 31 here exactly as it
+    does against GitHub.
+    """
+
+    def __init__(self, rows):
+        self.rows = rows
+        self.calls = []
+
+    @staticmethod
+    def asked_limit(argv):
+        if "--limit" in argv:
+            i = argv.index("--limit")
+            if i + 1 < len(argv):
+                return int(argv[i + 1])
+        return GH_DEFAULT_LIMIT
+
+    def run(self, argv, **kwargs):
+        argv = list(argv)
+        self.calls.append(argv)
+        if argv[1:3] == ["search", "issues"]:
+            out = json.dumps(self.rows[:self.asked_limit(argv)])
+            return subprocess.CompletedProcess(argv, 0, out, "")
+        return subprocess.CompletedProcess(argv, 0, "[]", "")
+
+
+def searches(calls):
+    return [a for a in calls if a[1:3] == ["search", "issues"]]
+
+
+def assert_limit_carried(calls, want, side):
+    found = searches(calls)
+    assert len(found) == 1, f"{side}: expected one search, got {len(found)}"
+    argv = found[0]
+    assert "--limit" in argv, f"{side} search carries no --limit: {argv}"
+    i = argv.index("--limit")
+    assert i + 1 < len(argv) and argv[i + 1] == str(want), \
+        f"{side} --limit drifted: {argv}"
+
+
+# --- the fixture really does reproduce the 30-row truncation ------------
+# The argv the two sides shipped before this fix (no --limit). If this
+# returns 31, the fixture is not a regression test and the test is void.
+old_argv = ["gh", "search", "issues", "--owner", "Nishfleet",
+            "--state", "open", "--label", "question"]
+window = WindowGh(rows).run(old_argv)
+assert len(json.loads(window.stdout)) == GH_DEFAULT_LIMIT == 30, (
+    "fixture must truncate at gh's default for the regression to mean anything")
+
+# --- the tile renders all 31 --------------------------------------------
+tile_gh = WindowGh(rows)
+G.subprocess = tile_gh
+items, capped = G._gh_questions()
+assert len(items) == N, f"tile rendered {len(items)} of {N} open questions"
+assert capped is False, "31 rows cannot fill a 1000-row window"
+assert_limit_carried(tile_gh.calls, G.QUESTION_SEARCH_LIMIT, "tile")
+tile = G.collect_questions()
+assert tile["ok"] is True and tile["count"] == N, tile
+assert tile["capped"] is False, tile
+assert tile["search_limit"] == G.QUESTION_SEARCH_LIMIT, tile
+
+# --- the verifier counts the same 31 ------------------------------------
+ver_gh = WindowGh(rows)
+V.subprocess = ver_gh
+V.SKIP_GH = False
+counted = V.run_questions_gh({"count": N})
+assert counted == N, f"verifier counted {counted} of {N} open questions"
+assert_limit_carried(ver_gh.calls, V.QUESTION_SEARCH_LIMIT, "verifier")
+print(f"OK: 5133 — tile renders {N} and verifier counts {counted} on one fixture")
+
+# --- a window that FILLS is loud, never silent --------------------------
+# Shrink the ceiling to gh's default: 31 rows now saturate the window, the
+# tile must say so, and the shell must render that flag where Nish reads
+# the list. A capped population that renders as "no more questions" is the
+# hidden-decision failure the issue names.
+saved = G.QUESTION_SEARCH_LIMIT
+try:
+    G.QUESTION_SEARCH_LIMIT = GH_DEFAULT_LIMIT
+    G.subprocess = WindowGh(rows)
+    filled_items, filled_capped = G._gh_questions()
+    filled_tile = G.collect_questions()
+finally:
+    G.QUESTION_SEARCH_LIMIT = saved
+assert len(filled_items) == GH_DEFAULT_LIMIT and filled_capped is True, (
+    len(filled_items), filled_capped)
+assert filled_tile["capped"] is True, filled_tile
+assert filled_tile["search_limit"] == GH_DEFAULT_LIMIT, filled_tile
+shell = (Path(gen_path).parent / "shell.html").read_text()
+for needle in ("q-cap", "q.capped", "capped at"):
+    assert needle in shell, f"shell.html does not disclose a capped window: {needle}"
+print("OK: 5133 — a saturated window is disclosed (tile capped=true, shell says so)")
+PY
+ok "fleet-ops#5133: all 31 open questions reach the tile and its verifier"
 
 # =========================================================================
 # 13. drill --check

@@ -33,7 +33,7 @@ set -euo pipefail
 
 export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
 export HOME="${HOME:-/home/nish}"
-export PATH="/home/nish/.local/bin:/usr/local/bin:/usr/bin:/bin:${PATH}"
+command -v gh >/dev/null 2>&1 || export PATH=/home/nish/.local/bin:/usr/local/bin:/usr/bin:/bin:${PATH}
 
 # Use the nishfleet-worker App token for any GitHub write. Fail closed if
 # the App cannot mint and no token was inherited from a parent organ, so a
@@ -41,7 +41,7 @@ export PATH="/home/nish/.local/bin:/usr/local/bin:/usr/bin:/bin:${PATH}"
 # Human gh is read-only for organs; GH Actions (tests) has no App creds and
 # stubs gh as read-only, so skip minting there.
 if [[ -z "${GH_TOKEN:-}" && "${GITHUB_ACTIONS:-}" != "true" && "${GH:-gh}" == "gh" ]]; then
-    export PATH="/home/nish/.local/bin:/usr/local/bin:/usr/bin:/bin:${PATH:-}"
+    command -v gh >/dev/null 2>&1 || export PATH=/home/nish/.local/bin:/usr/local/bin:/usr/bin:/bin:${PATH:-}
     _wt="${NISHFLEET_WORKER_TOKEN_BIN:-${HOME:-/home/nish}/.local/bin/worker-token}"
     _minted="$("$_wt" --print)" || { echo "fleet-ops#3445: $_wt --print failed - refusing human-gh writes" >&2; exit 1; }
     eval "$_minted"
@@ -53,6 +53,21 @@ fi
 # until the 60s x attempt backoff expires instead of failing the tick.
 GH_SECONDARY_STATE_DIR="${PI_INTAKE_GH_SECONDARY_STATE_DIR:-/home/nish/workspaces/agent-state/pi-intake}"
 GH_SECONDARY_STATE="$GH_SECONDARY_STATE_DIR/gh-secondary-rate.json"
+
+# fleet-ops#5489: read-only gh seam. When the pre-check found the App
+# installation budget exhausted, READ-ONLY calls (issue list, issue view,
+# pr list, run list, gh api GET) take this wrapper and run WITHOUT the App
+# token — gh then uses the human identity, which the fleet contract allows
+# for organ READS only (fleet-ops#3445 "Human gh is read-only for organs").
+# A WRITE call must never use _gh_read: writes go through plain gh with the
+# App GH_TOKEN and are held by the mid-tick exhausted gate below.
+_gh_read() {
+    if [[ "${_gh_rl_pre_exhausted:-0}" == "1" ]]; then
+        ( unset GH_TOKEN GITHUB_TOKEN; gh "$@" )
+    else
+        gh "$@"
+    fi
+}
 
 _gh_secondary_read() {
     if [[ -f "$GH_SECONDARY_STATE" ]]; then
@@ -181,7 +196,11 @@ MAX_CLAIMS_IN_WINDOW="${PI_INTAKE_RECLAIM_MAX_CLAIMS:-4}"
 # line from the claims log; past it, a protected issue with a
 # termination clause and a merged claim-branch delivery PR is parked under
 # the awaiting-runtime-gate label until the named runtime event fires or
-# Nish closes the issue. No new timer — the label is the state. Overridable
+# Nish closes the issue. The same cap gates the two non-protected parks:
+# land-or-close (fleet-ops#4553: no merged claim-branch PR, termination:
+# names other PRs) and mention-strand (fleet-ops#5045: every merged
+# claim-branch PR is a Relates-to mention, never a delivery).
+# No new timer — the label is the state. Overridable
 # for tests.
 PARK_MAX_CLAIMS="${PI_INTAKE_PARK_MAX_CLAIMS:-3}"
 # fleet-ops#5082: lookback bound for the duplicate-of-merged-work probe —
@@ -347,7 +366,32 @@ fi
 # skipping one tick is safe; the next tick re-checks. Thresholds: skip when
 # remaining < 500 OR headroom < 10% (remaining/limit). A missing or stale
 # state file fails OPEN (the throttle is a soft gate, not a blocker).
+# fleet-ops#5489: when the App installation budget is EXHAUSTED, the tick no
+# longer skips the whole intake. READ-ONLY gh calls (issue/pr/run list,
+# gh api GET) fall back to the human _gh_read wrapper — "Human gh is read-only
+# for organs" is the fleet contract (fleet-ops#3445). WRITES (claims, labels,
+# comments, PR creation) stay on the App token and back off until the
+# x-ratelimit-reset time: the mid-tick gate reads the _gh_rl_pre_exhausted
+# flag and holds claims; _gh_read is used ONLY for reads, so a write can
+# never ride the human identity. A stale or exhausted state is never silent
+# either: ONE LOUD line per tick goes to the heartbeat triage file.
+_gh_app_loud() {
+    local triage="${FLEET_HEARTBEAT_TRIAGE:-/home/nish/workspaces/agent-state/FLEET-HEARTBEAT-TRIAGE.md}"
+    printf '[%s] LOUD [GH-APP-BUDGET] %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$*" \
+        >>"$triage" 2>/dev/null || true
+}
+
+_gh_rl_pre_reset_in() {
+    local reset now wait
+    reset=$(printf '%s' "${_gh_rl_pre_json:-}" | jq -r '.reset // 0' 2>/dev/null) || reset=0
+    now=$(date +%s)
+    wait=$(( reset - now )); (( wait < 0 )) && wait=0
+    echo "$wait"
+}
+
 gh_rl_pre_path="${PI_INTAKE_GH_RATE_LIMIT_STATE:-/home/nish/workspaces/agent-state/pi-intake/gh-rate-limit.json}"
+_gh_rl_pre_exhausted=0
+_gh_rl_pre_reads=app
 gh_rl_pre_max_age="${PI_INTAKE_GH_RATE_LIMIT_MAX_AGE:-120}"
 gh_rl_pre_skip_min="${PI_INTAKE_GH_RATE_LIMIT_SKIP_MIN:-500}"
 gh_rl_pre_skip_pct="${PI_INTAKE_GH_RATE_LIMIT_SKIP_PCT:-10}"
@@ -363,8 +407,11 @@ if [[ -r "$gh_rl_pre_path" ]]; then
         _gh_rl_pre_fetched=$(printf '%s' "$_gh_rl_pre_json" | jq -r '.fetched_at // 0' 2>/dev/null) || _gh_rl_pre_fetched=0
         _gh_rl_pre_now=$(date +%s)
         _gh_rl_pre_age=$(( _gh_rl_pre_now - ${_gh_rl_pre_fetched%.*} ))
+        _gh_rl_pre_reset_in=$(_gh_rl_pre_reset_in)
         if (( _gh_rl_pre_age > gh_rl_pre_max_age )); then
             echo "gh rate-limit pre-check state stale (age=${_gh_rl_pre_age}s > max=${gh_rl_pre_max_age}s); failing open — gate: gh_rate_limit pre-check stale"
+            # fleet-ops#5489: stale is fail-open, never silent.
+            _gh_app_loud "remaining=${_gh_rl_pre_remaining} reset_in=- reads=app state_stale_age=${_gh_rl_pre_age}s (fleet-ops#5489: stale fail-open not silent)"
         else
             _gh_rl_pre_headroom=0
             if (( _gh_rl_pre_limit > 0 )); then
@@ -397,8 +444,13 @@ if [[ -r "$gh_rl_pre_path" ]]; then
                 } > "$_rl_skip_prom.tmp" 2>/dev/null; then
                     mv "$_rl_skip_prom.tmp" "$_rl_skip_prom" 2>/dev/null || true
                 fi
-                echo "rate-limit headroom low, skipping intake tick (remaining=${_gh_rl_pre_remaining}/${_gh_rl_pre_limit}, headroom=${_gh_rl_pre_headroom}% < ${gh_rl_pre_skip_pct}% or < ${gh_rl_pre_skip_min}); skipped_total=$_rl_skip_new"
-                exit 0
+                # fleet-ops#5489: budget exhausted -> do NOT skip the tick.
+                # Reads fall back to the human identity; writes back off at the
+                # mid-tick gate until the x-ratelimit-reset time.
+                _gh_rl_pre_exhausted=1
+                _gh_rl_pre_reads=human
+                _gh_app_loud "remaining=${_gh_rl_pre_remaining} reset_in=${_gh_rl_pre_reset_in}s reads=human (fleet-ops#5489)"
+                echo "rate-limit headroom low, gliding intake tick onto human-gh reads, holding writes until reset (remaining=${_gh_rl_pre_remaining}/${_gh_rl_pre_limit}, headroom=${_gh_rl_pre_headroom}% < ${gh_rl_pre_skip_pct}% or < ${gh_rl_pre_skip_min}); skipped_total=$_rl_skip_new"
             fi
         fi
     else
@@ -417,7 +469,7 @@ fi
 # (all visible issues were non-leverage → skip-surge-leverage), causing
 # fleet starvation (222 ready, 0 running). 250 covers the observed ceiling
 # with headroom; the early surge skip below keeps the tick fast.
-issues_json=$(gh issue list -R "$FULL" -l agent-ready --state open --json number,title,labels --limit 250 2>&1) || {
+issues_json=$(_gh_read issue list -R "$FULL" -l agent-ready --state open --json number,title,labels --limit 250 2>&1) || {
     echo "gh issue list failed: $issues_json" >&2
     exit 1
 }
@@ -602,13 +654,13 @@ blocked_filter() {
         # Resolve the target's live state. A PR is checked via the pulls
         # endpoint so a merged PR counts as cleared.
         local state_json is_pr state merged
-        if ! state_json=$(gh api "repos/${owner}/${rname}/issues/${target_num}" 2>/dev/null); then
+        if ! state_json=$(_gh_read api "repos/${owner}/${rname}/issues/${target_num}" 2>/dev/null); then
             any_open=1
             continue
         fi
         is_pr=$(printf '%s' "$state_json" | jq -r 'if .pull_request then "yes" else "no" end' 2>/dev/null || echo no)
         if [ "$is_pr" = "yes" ]; then
-            if ! state_json=$(gh api "repos/${owner}/${rname}/pulls/${target_num}" 2>/dev/null); then
+            if ! state_json=$(_gh_read api "repos/${owner}/${rname}/pulls/${target_num}" 2>/dev/null); then
                 any_open=1
                 continue
             fi
@@ -633,77 +685,174 @@ blocked_filter() {
     return 0
 }
 
-# fleet-ops#4808: depends-on gate. An agent-ready issue can carry a body
-# `depends-on:` line naming issues/PRs that must be DONE before it is
-# claimable (e.g. a seam batch where #2218 must land before the six sources
-# that depend on it). Claiming such an issue spawns a worker that cannot
-# make progress — it would have to hand-gate by removing agent-ready. This
-# filter resolves each named dependency and skips the issue (stays
-# agent-ready, no de-label) until every dependency is DONE.
+# _depends_on_refs — read an issue body on stdin, print candidate
+# dependency refs (one per line) for the depends-on gate. Two forms count
+# (fleet-ops#5107):
+#   1. a line-start `depends-on:` line (the structured line) — refs from
+#      the whole line, the original gate behaviour, unchanged;
+#   2. a mid-line `depends-on:` token, but ONLY inside an appended
+#      `## ...edits (binding…)` section: a judge bullet like
+#      "add `depends-on: #2359`" never matched the line-start form, so the
+#      gate claimed those tickets anyway. Outside a binding section a
+#      mid-line token is prose ABOUT the gate (evidence lists like
+#      "`depends-on:` is still `none`: #2352, #2383"), and a bare mid-line
+#      match would misread those trailing issue numbers as live deps and
+#      park the ticket on its own evidence list. For a mid-line token,
+#      refs are read only from the text AFTER it, so a `#<n>` before the
+#      token is not misread.
+# Candidate refs are emitted in leftmost-longest order (owner/repo#n,
+# repo#n, #n) so an org-less `repo#<n>` token survives intact for the
+# caller's shape check to drop.
+_depends_on_refs() {
+    local in_binding=0 line frag
+    while IFS= read -r line; do
+        if [[ "$line" =~ ^##[[:space:]]+.*edits[[:space:]]+\(binding ]]; then
+            in_binding=1
+        elif [[ "$line" =~ ^##[[:space:]]+ ]]; then
+            in_binding=0
+        fi
+        if [[ "$line" =~ ^depends-on: ]]; then
+            frag="$line"
+        elif (( in_binding == 1 )) && [[ "$line" == *depends-on:* ]]; then
+            frag="${line#*depends-on:}"
+        else
+            continue
+        fi
+        printf '%s\n' "$frag" \
+            | grep -oE '[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+#[0-9]+|[A-Za-z0-9_.-]+#[0-9]+|#[0-9]+' || true
+    done
+}
+
+# fleet-ops#4808 + fleet-ops#5165: ticket-gate filter. An agent-ready issue
+# can carry body gate lines naming issues/PRs that must be DONE before it is
+# claimable:
+#   - `depends-on:` — ordering dependencies (e.g. a seam batch where #2218
+#     must land before the six sources that depend on it), and
+#   - `collision-gate:` — the 0509 ticket format's same-file blockers
+#     ("collision-gate (Fable <ts>): shares <file> with #a, #b"). The gate
+#     also lives in Fable's judge packet and ticket-gates.json, but the body
+#     line is the ticket's own declaration and is honoured even when the
+#     gate file is stale or absent. 0509#2408 was claimed past an open
+#     blocker because nothing parsed the line — one wasted worker slot, and
+#     a same-file PR racing the blocker on a worse day.
+# Claiming such an issue spawns a worker that cannot make progress — it
+# would have to hand-gate by removing agent-ready. This filter resolves
+# each named ticket and skips the issue (stays agent-ready, no de-label)
+# until every named ticket is DONE.
 #
-# A dependency is DONE when the referenced issue is:
+# A named ticket is DONE when the referenced issue is:
 #   - closed (state=closed), OR
 #   - has a merged PR whose branch is claim/issue-<n> or fable/issue-<n>, OR
 #   - has any merged PR linked via "closes #n" (a cross-referenced PR).
 #
 # Cycle: if A depends on B and B depends on A, neither can ever be DONE
 # while the other is open, so both are skipped with `depends-on-cycle`
-# instead of a misleading `skipped-depends-on:#n`.
+# instead of a misleading `skipped-depends-on:#n`. (depends-on only —
+# collision gates are one-directional: the later ticket names the earlier
+# blockers it must not race.)
+#
+# fleet-ops#5107: inside an appended `## *edits (binding…)` section the
+# depends-on: token also counts MID-LINE — a judge bullet like
+# "add `depends-on: #2359`" never matched `^depends-on:`, so the gate let
+# those tickets be claimed anyway. Outside binding sections only the
+# line-start form counts: issue prose discusses the gate itself
+# ("`depends-on:` is still `none`: #2352, #2383…"), and a bare mid-line
+# match would misread those trailing issue numbers as live deps and park
+# the ticket on its own evidence list. See _depends_on_refs above.
+#
+# Ref shapes: `#<n>` (same repo) and `owner/repo#<n>` (cross-repo). An
+# org-less `repo#<n>` token — e.g. the "permanent fix fleet-ops#4808"
+# trailer every 0509 collision-gate line carries — is NOT a ref and is
+# ignored; sliced to `#<n>` it would resolve in the wrong repo and wedge
+# the gate on a nonexistent same-repo issue.
 #
 # Caching: resolution is memoised per tick in the _dep_state_cache and
 # _dep_body_cache associative arrays (one gh call per referenced issue per
-# tick), so a dependency named by many issues costs one lookup.
+# tick), so a ticket named by many issues costs one lookup.
 #
 # Args: $1=body  $2=repo (Nishfleet/<repo>)  $3=issue number
-# Returns: 0 = claimable (no deps, or all deps DONE); 1 = skip. On skip,
-# prints the reason (skipped-depends-on:#n or depends-on-cycle) to stdout.
+# Returns: 0 = claimable (no gate refs, or all DONE); 1 = skip. On skip,
+# prints the reason (skipped-depends-on:#n, skipped-collision-gate:#n, or
+# depends-on-cycle) to stdout.
 depends_on_filter() {
     local body="$1" repo="$2" num="$3"
     local ref owner rname target_num dep_key dep_state dep_body
+    local gate_re skip_reason gi
     local -a deps=()
 
-    # Parse the depends-on: line(s). Extract every #<n> (same repo) and
-    # owner/repo#<n>; prose like "none" or "any of" yields no refs.
-    mapfile -t deps < <(printf '%s\n' "$body" \
-        | grep -E '^depends-on:' \
-        | grep -oE '#[0-9]+|[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+#[0-9]+' || true)
-    (( ${#deps[@]} == 0 )) && return 0
+    # Gate line regex -> skip reason. depends-on is checked first: when both
+    # lines name unmet tickets the ordering gate's reason is the more
+    # actionable one. The collision-gate line may carry a parenthetical
+    # annotation before the colon ("collision-gate (Fable <ts>):").
+    local -a _gate_res=(
+        '^depends-on:'
+        '^collision-gate([[:space:]]*\([^)]*\))?[[:space:]]*:'
+    )
+    local -a _gate_reasons=('skipped-depends-on' 'skipped-collision-gate')
 
-    for ref in "${deps[@]}"; do
-        if [[ "$ref" =~ ^#([0-9]+)$ ]]; then
-            owner="${repo%%/*}"; rname="${repo#*/}"; target_num="${BASH_REMATCH[1]}"
-        elif [[ "$ref" =~ ^([^/]+)/([^/]+)#([0-9]+)$ ]]; then
-            owner="${BASH_REMATCH[1]}"; rname="${BASH_REMATCH[2]}"; target_num="${BASH_REMATCH[3]}"
-        else
-            continue  # unparseable ref — ignore
-        fi
-        dep_key="${owner}/${rname}#${target_num}"
+    for gi in 0 1; do
+        gate_re="${_gate_res[$gi]}"
+        skip_reason="${_gate_reasons[$gi]}"
 
-        # Resolve the dependency's DONE state (memoised per tick).
-        if [[ -n "${_dep_state_cache[$dep_key]:-}" ]]; then
-            dep_state="${_dep_state_cache[$dep_key]}"
+        # Parse the gate line(s). Candidate refs are emitted in
+        # leftmost-longest order so an org-less `repo#<n>` token survives
+        # intact for the shape check below to drop — the bare-`#<n>`
+        # alternative alone would slice `#4808` out of `fleet-ops#4808` and
+        # resolve it in the wrong repo. Prose like "none" or "any of" yields
+        # no refs.
+        # fleet-ops#5107: for depends-on the parse is _depends_on_refs —
+        # line-start anywhere plus the mid-line token inside an appended
+        # `## ...edits (binding…)` section (a judge bullet like
+        # "add `depends-on: #2359`"). collision-gate stays line-start only.
+        if [[ "$skip_reason" == "skipped-depends-on" ]]; then
+            mapfile -t deps < <(printf '%s\n' "$body" | _depends_on_refs)
         else
-            dep_state="$(resolve_dep "$owner" "$rname" "$target_num")"
-            _dep_state_cache[$dep_key]="$dep_state"
+            mapfile -t deps < <(printf '%s\n' "$body" \
+                | grep -E "$gate_re" \
+                | grep -oE '[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+#[0-9]+|[A-Za-z0-9_.-]+#[0-9]+|#[0-9]+' || true)
         fi
-        if [[ "$dep_state" != "DONE" ]]; then
-            # Cycle detection: does the dependency itself depend on THIS
-            # issue? (A depends on B depends on A.) Fetch the dependency's
-            # body (memoised) and check its depends-on: line.
-            if [[ -n "${_dep_body_cache[$dep_key]:-}" ]]; then
-                dep_body="${_dep_body_cache[$dep_key]}"
+        (( ${#deps[@]} == 0 )) && continue
+
+        for ref in "${deps[@]}"; do
+            if [[ "$ref" =~ ^#([0-9]+)$ ]]; then
+                owner="${repo%%/*}"; rname="${repo#*/}"; target_num="${BASH_REMATCH[1]}"
+            elif [[ "$ref" =~ ^([^/]+)/([^/]+)#([0-9]+)$ ]]; then
+                owner="${BASH_REMATCH[1]}"; rname="${BASH_REMATCH[2]}"; target_num="${BASH_REMATCH[3]}"
             else
-                dep_body="$(gh issue view "$target_num" -R "${owner}/${rname}" --json body --jq '.body // ""' 2>/dev/null || true)"
-                _dep_body_cache[$dep_key]="$dep_body"
+                continue  # not a ref shape (org-less repo#n etc.) — ignore
             fi
-            if printf '%s\n' "$dep_body" | grep -E '^depends-on:' \
-                | grep -qE "#${num}\b|${repo}#${num}\b"; then
-                echo "depends-on-cycle"
+            dep_key="${owner}/${rname}#${target_num}"
+
+            # Resolve the named ticket's DONE state (memoised per tick).
+            if [[ -n "${_dep_state_cache[$dep_key]:-}" ]]; then
+                dep_state="${_dep_state_cache[$dep_key]}"
+            else
+                dep_state="$(resolve_dep "$owner" "$rname" "$target_num")"
+                _dep_state_cache[$dep_key]="$dep_state"
+            fi
+            if [[ "$dep_state" != "DONE" ]]; then
+                if [[ "$skip_reason" == "skipped-depends-on" ]]; then
+                    # Cycle detection: does the dependency itself depend on
+                    # THIS issue? (A depends on B depends on A.) Fetch the
+                    # dependency's body (memoised) and check its depends-on:
+                    # refs — the same parse as the dep side above, so a
+                    # binding-bullet back-reference counts (fleet-ops#5107).
+                    if [[ -n "${_dep_body_cache[$dep_key]:-}" ]]; then
+                        dep_body="${_dep_body_cache[$dep_key]}"
+                    else
+                        dep_body="$(_gh_read issue view "$target_num" -R "${owner}/${rname}" --json body --jq '.body // ""' 2>/dev/null || true)"
+                        _dep_body_cache[$dep_key]="$dep_body"
+                    fi
+                    if printf '%s\n' "$dep_body" | _depends_on_refs \
+                        | grep -qE "#${num}\b|${repo}#${num}\b"; then
+                        echo "depends-on-cycle"
+                        return 1
+                    fi
+                fi
+                echo "${skip_reason}:${ref}"
                 return 1
             fi
-            echo "skipped-depends-on:$ref"
-            return 1
-        fi
+        done
     done
     return 0
 }
@@ -716,22 +865,22 @@ depends_on_filter() {
 resolve_dep() {
     local owner="$1" rname="$2" num="$3"
     local state_json state
-    state_json=$(gh api "repos/${owner}/${rname}/issues/${num}" 2>/dev/null) || { echo "NOT_DONE"; return; }
+    state_json=$(_gh_read api "repos/${owner}/${rname}/issues/${num}" 2>/dev/null) || { echo "NOT_DONE"; return; }
     state=$(printf '%s' "$state_json" | jq -r '.state // "open"' 2>/dev/null || echo open)
     if [[ "$state" == "closed" ]]; then
         echo "DONE"; return
     fi
     # Merged PR with claim/issue-<n> or fable/issue-<n> branch.
-    if gh pr list -R "${owner}/${rname}" --head "claim/issue-${num}" --state merged --json number 2>/dev/null \
+    if _gh_read pr list -R "${owner}/${rname}" --head "claim/issue-${num}" --state merged --json number 2>/dev/null \
         | jq -e 'length > 0' >/dev/null 2>&1; then
         echo "DONE"; return
     fi
-    if gh pr list -R "${owner}/${rname}" --head "fable/issue-${num}" --state merged --json number 2>/dev/null \
+    if _gh_read pr list -R "${owner}/${rname}" --head "fable/issue-${num}" --state merged --json number 2>/dev/null \
         | jq -e 'length > 0' >/dev/null 2>&1; then
         echo "DONE"; return
     fi
     # Any PR linked via "closes #n" that is merged (cross-referenced PR).
-    if gh api "repos/${owner}/${rname}/issues/${num}/timeline" 2>/dev/null \
+    if _gh_read api "repos/${owner}/${rname}/issues/${num}/timeline" 2>/dev/null \
         | jq -e '[.[]? | select(.event == "cross-referenced") | .source.issue | select(.pull_request != null and .pull_request.merged_at != null)] | length > 0' >/dev/null 2>&1; then
         echo "DONE"; return
     fi
@@ -1463,6 +1612,15 @@ load_seat_caps || true
 # without preventing the first run after a fresh start.
 gh_rl_path="${PI_INTAKE_GH_RATE_LIMIT_STATE:-/home/nish/workspaces/agent-state/pi-intake/gh-rate-limit.json}"
 gh_rl_max_age="${PI_INTAKE_GH_RATE_LIMIT_MAX_AGE:-120}"
+# fleet-ops#5489: the pre-check already classified the App budget as
+# exhausted this tick (and the issue list happened before this gate). WRITES (claims, labels, comments, PR creation) back off until the
+# App x-ratelimit-reset instead of failing open or burning App calls. This
+# hold runs BEFORE the exporter-based gate so the exhausted hold applies
+# even if the side-car exporter flags disagree.
+if (( ${_gh_rl_pre_exhausted:-0} == 1 )); then
+    echo "gh_app budget exhausted (remaining=${_gh_rl_pre_remaining:-unknown}, resets in ${_gh_rl_pre_reset_in:-0}s); reads ran on human gh, holding claims this tick until reset — gate: gh_app_budget exhausted (fleet-ops#5489)"
+    exit 0
+fi
 if [[ -r "$gh_rl_path" ]]; then
     _gh_rl_json=$(cat "$gh_rl_path" 2>/dev/null) || _gh_rl_json=
     if [[ -n "$_gh_rl_json" ]]; then
@@ -1729,7 +1887,15 @@ elif (( ${_repair_rung_product_reserve:-0} == 1 )) && [[ -n "${_rung_clear_seat:
 elif (( usable_light_slots <= 0 )) && [[ -n "$heavy_seat" || -n "${_rung_clear_seat:-}" ]]; then
     slots=1
 elif (( usable_light_slots < slots )); then
-    echo "usable seat slots $usable_light_slots < capacity slots $slots; claiming at most $usable_light_slots this tick (fleet-ops#3732)"
+    # fleet-ops#4723: same line as the #3732 clamp, plus which seats are
+    # walled and until when, so the next run does not re-derive a census.
+    # seat_walled_breakdown is fail-open (empty) when the helper is absent.
+    _walled=$(seat_walled_breakdown 2>/dev/null || true)
+    if [[ -n "$_walled" ]]; then
+        echo "usable seat slots $usable_light_slots < capacity slots $slots; claiming at most $usable_light_slots this tick (fleet-ops#3732); walled: $_walled"
+    else
+        echo "usable seat slots $usable_light_slots < capacity slots $slots; claiming at most $usable_light_slots this tick (fleet-ops#3732)"
+    fi
     slots=$usable_light_slots
 fi
 
@@ -2102,7 +2268,7 @@ blocked-on: infra" 2>/dev/null || true
         fi
         # No live worker. Is there an open PR from this branch? If so, the
         # work is done and in review — skip (do not re-claim finished work).
-        _claim_prs=$(gh api "repos/$FULL/pulls?state=open&head=${FULL%%/*}:claim/issue-$N&per_page=1" 2>/dev/null || true)
+        _claim_prs=$(_gh_read api "repos/$FULL/pulls?state=open&head=${FULL%%/*}:claim/issue-$N&per_page=1" 2>/dev/null || true)
         _claim_pr_count=$(printf '%s' "$_claim_prs" | jq 'length // 0' 2>/dev/null || echo 0)
         if (( _claim_pr_count > 0 )); then
             echo "issue $N ($title): skipped-claim-pr-open (open PR from claim/issue-$N)"
@@ -2184,20 +2350,23 @@ blocked-on: orchestrator" 2>/dev/null || true
     # from the initial issue list. A failed view is fail-closed: skip
     # this issue this tick rather than claim a possibly-blocked or
     # out-of-band issue. The next tick retries.
-    _body_json=$(gh issue view "$N" -R "$FULL" --json body,author 2>/dev/null) || {
+    _body_json=$(_gh_read issue view "$N" -R "$FULL" --json body,author 2>/dev/null) || {
         echo "issue $N ($title): skipped-body-unreadable"
         continue
     }
     body=$(printf '%s' "$_body_json" | jq -r '.body // ""')
     _issue_author=$(printf '%s' "$_body_json" | jq -r '.author.login // ""')
 
-    # fleet-ops#4540: park detector — protected merged issue, slow-spaced
+    # fleet-ops#4540/#4553/#5048: park detector — high-claim slow-spaced
     # reclaim spin. Cumulative (all-time) claim count from the claims-log
-    # snapshot; a protected issue with a `termination:` clause and a merged
-    # claim-branch delivery PR past PARK_MAX_CLAIMS is parked under the
-    # awaiting-runtime-gate label. The gh pr list probe only runs when the
-    # cheap preconditions (claim volume + protection + termination clause)
-    # hold, so an ordinary issue costs nothing extra.
+    # snapshot; past PARK_MAX_CLAIMS, an issue whose remaining work is already
+    # delivered is parked under the awaiting-runtime-gate label:
+    #   - #4540: protected + termination: + merged claim-branch delivery PR
+    #   - #4553: non-protected + termination: + gh pr view + no merged claim-branch
+    #   - #5048: protected + no termination: + no merged claim-branch + either
+    #     an active user .timer/.service or merged PR(s) on a non-claim branch.
+    # The gh pr list probe runs only when the cheap preconditions
+    # (claim volume + protection) hold, so an ordinary issue costs nothing extra.
     _park_claims=0
     if [[ -n "$_claims_log_snapshot" ]]; then
         _park_claims=$(awk -v n="$N" -v repo="$REPO" '$3 == "line=" n && $4 == "repo=" repo { c++ } END { print c+0 }' <<<"$_claims_log_snapshot" 2>/dev/null || echo 0)
@@ -2212,9 +2381,20 @@ blocked-on: orchestrator" 2>/dev/null || true
             _park_protected=1
         fi
         [[ "$_issue_author" == "nish3451" ]] && _park_protected=1
+
+        # Probe for a merged claim-branch PR once, reused by all three park
+        # branches. The body rides along: the #5045 mention classification
+        # (the #3231/#1138 relates_to_issue Relates-to trailer) needs it.
+        _park_merged=$(_gh_read pr list -R "$FULL" --head "claim/issue-$N" --state merged --json number,url,mergedAt,body 2>/dev/null || echo "[]")
+        _park_merged_count=0
+        if printf '%s' "$_park_merged" | jq -e 'length > 0' >/dev/null 2>&1; then
+            _park_merged_count=$(printf '%s' "$_park_merged" | jq 'length' 2>/dev/null || echo 0)
+        fi
+
         if (( _park_protected == 1 )) && printf '%s' "$body" | grep -qi 'termination:'; then
-            _park_merged=$(gh pr list -R "$FULL" --head "claim/issue-$N" --state merged --json number,url,mergedAt 2>/dev/null || echo "[]")
-            if printf '%s' "$_park_merged" | jq -e 'length > 0' >/dev/null 2>&1; then
+            # fleet-ops#4540: protected issue with a termination clause and a
+            # merged claim-branch delivery PR.
+            if (( _park_merged_count > 0 )); then
                 _park_pr=$(printf '%s' "$_park_merged" | jq -r '.[0].number')
                 echo "issue $N ($title): skipped-parked-protected-merged ($_park_claims cumulative claims > cap $PARK_MAX_CLAIMS; merged PR #$_park_pr delivered it; awaiting runtime gate)" >&2
                 # fleet-ops#4540: gh issue edit --add-label does NOT auto-create a
@@ -2227,24 +2407,137 @@ blocked-on: orchestrator" 2>/dev/null || true
                 gh issue comment "$N" -R "$FULL" --body "fleet-ops#4540: issue $N is protected (owner-authored or critical-path) with a merged delivery PR (claim/issue-$N, PR #$_park_pr) and a \`termination:\` clause naming a future runtime event. observe-to-close stays comment-only on protected issues (fleet-ops#1435), so the issue stays OPEN by design — but it has been re-claimed ${_park_claims} times since the merge on a slow spin every anti-loop gate misses (#2462 counter resets on non-empty output; #2772 window sees only ~3 claims per 2h at the 15-min cooldown spacing). Parking it: labelled \`awaiting-runtime-gate\`, removed from agent-ready; the intake will not re-claim it until the named runtime event fires (clear the label then) or Nish closes the issue. No new timer." 2>/dev/null || true
                 continue
             fi
-        elif (( _park_protected == 0 )) && printf '%s' "$body" | grep -qi 'termination:' && printf '%s' "$body" | grep -qi 'gh pr view'; then
-            # fleet-ops#4553: land-or-close spin. A NON-protected (bot-authored,
-            # no critical-path) OPEN issue whose \`termination:\` clause NAMES
-            # OTHER PRs via \`gh pr view\` — the land-or-close shape. Acceptance
-            # is met by driving other PRs to merge (#1992, #4070), the worker
-            # cannot \`gh issue close\` (land-or-close issues are closed by Nish),
-            # and there is NO claim-branch delivery PR, so the #4540 detector
-            # (which requires protection + a merged claim-branch PR) and the
-            # reset (#2462) / window (#2772) gates all miss the same slow-spaced
-            # spin. Probe merged claim-branch PRs and park when absent.
-            _park_merged=$(gh pr list -R "$FULL" --head "claim/issue-$N" --state merged --json number,url,mergedAt 2>/dev/null || echo "[]")
-            if ! printf '%s' "$_park_merged" | jq -e 'length > 0' >/dev/null 2>&1; then
+        elif (( _park_protected == 0 )); then
+            # fleet-ops#4553 + fleet-ops#5045: the two NON-protected park
+            # shapes share the hoisted merged claim-branch PR probe (body
+            # included — the #5045 mention classification needs the trailer).
+            if (( _park_merged_count == 0 )) \
+                && printf '%s' "$body" | grep -qi 'termination:' \
+                && printf '%s' "$body" | grep -qi 'gh pr view'; then
+                # fleet-ops#4553: land-or-close spin. A NON-protected
+                # (bot-authored, no critical-path) OPEN issue whose
+                # \`termination:\` clause NAMES OTHER PRs via \`gh pr view\` —
+                # the land-or-close shape. Acceptance is met by driving other
+                # PRs to merge (#1992, #4070), the worker cannot
+                # \`gh issue close\` (land-or-close issues are closed by Nish),
+                # and there is NO claim-branch delivery PR, so the #4540
+                # detector (which requires protection + a merged claim-branch
+                # PR) and the reset (#2462) / window (#2772) gates all miss the
+                # same slow-spaced spin. Park when no merged claim-branch PR.
                 echo "issue $N ($title): skipped-parked-land-or-close ($_park_claims cumulative claims > cap $PARK_MAX_CLAIMS; termination: names other PRs; no claim-branch delivery PR; awaiting Nish to close)" >&2
                 gh label create awaiting-runtime-gate -R "$FULL" --color D4C5F9 \
                     --description "Parked: land-or-close issue whose termination: met by other PRs; do not claim (fleet-ops#4553)" --force >/dev/null 2>&1 || true
                 gh issue edit "$N" -R "$FULL" --add-label awaiting-runtime-gate --remove-label agent-ready 2>/dev/null || true
                 gh issue comment "$N" -R "$FULL" --body "fleet-ops#4553: issue $N is a land-or-close ticket — its \`termination:\` clause names OTHER PRs (\`gh pr view\`) and it has no merged claim-branch delivery PR, so acceptance is met without opening its own PR. Land-or-close issues stay OPEN by design (the worker cannot \`gh issue close\`), and the reset (#2462) and window (#2772) gates miss the slow-spaced spin, so this issue has been re-claimed ${_park_claims} times since its PRs landed. Parking it: labelled \`awaiting-runtime-gate\`, removed from agent-ready; the intake will not re-claim it until Nish closes the issue or the label is cleared." 2>/dev/null || true
                 continue
+            elif printf '%s' "$_park_merged" | jq -e 'length > 0' >/dev/null 2>&1; then
+                # fleet-ops#5045: mention-strand spin — the middle shape both
+                # parks missed. A NON-protected OPEN issue whose merged
+                # claim-branch PRs are ALL mention-classified (\`Relates to
+                # #N\` trailer — the same relates_to_issue classification
+                # fleet-merged-pr-close applies, fleet-ops#3231/#1138) is
+                # delivered-but-stranded: observe-to-close posts comment-only
+                # and never closes (a mention is not a fix), the #4540 park
+                # needs protected, and the #4553 park needs NO merged
+                # claim-branch PR, so every gate misses the re-claim spin
+                # (live: #4980 re-claimed 4x in ~3h after PR #4993 merged with
+                # a Relates-to trailer; 2 of those died in StartLimitBurst
+                # crash loops). Park when every merged claim-branch PR is a
+                # mention; a real delivery PR (no Relates-to trailer) means
+                # observe-to-close owns the close and this issue is not the
+                # strand shape.
+                _park_all_mention=1
+                _park_pr=""
+                while IFS=$'\t' read -r _pn _pb64; do
+                    [ -z "$_pn" ] && continue
+                    [ -z "$_park_pr" ] && _park_pr="$_pn"
+                    # The body travels base64 so its real newlines survive —
+                    # relates_to_issue needs the `Relates` trailer preceded by
+                    # a line break (a @tsv-escaped \n would leave `n` before
+                    # it and the (non-alnum) bound would never match).
+                    _pb=$(printf '%s' "$_pb64" | base64 -d 2>/dev/null || printf '')
+                    if ! printf '%s' "$_pb" | grep -Eiq "(^|[^0-9A-Za-z])Relat(es|ed)[[:space:]]+to[[:space:]]+#${N}([^0-9A-Za-z]|$)"; then
+                        _park_all_mention=0
+                        break
+                    fi
+                done < <(printf '%s' "$_park_merged" | jq -r '.[] | [.number, ((.body // "") | @base64)] | @tsv' 2>/dev/null)
+                if (( _park_all_mention == 1 )); then
+                    echo "issue $N ($title): skipped-parked-mention-strand ($_park_claims cumulative claims > cap $PARK_MAX_CLAIMS; merged claim-branch PR #$_park_pr is mention-classified (Relates-to), not a delivery; awaiting Nish to close)" >&2
+                    gh label create awaiting-runtime-gate -R "$FULL" --color D4C5F9 \
+                        --description "Parked: non-protected issue whose merged claim-branch PR is a Relates-to mention, not a delivery; do not claim (fleet-ops#5045)" --force >/dev/null 2>&1 || true
+                    gh issue edit "$N" -R "$FULL" --add-label awaiting-runtime-gate --remove-label agent-ready 2>/dev/null || true
+                    gh issue comment "$N" -R "$FULL" --body "fleet-ops#5045: issue $N is non-protected with a merged claim-branch PR (claim/issue-$N, PR #$_park_pr) that carries a \`Relates to\` trailer — a MENTION under the fleet-ops#3231 delivery rules, so observe-to-close posts comment-only and never closes. The delivery already landed, but every anti-loop gate misses this middle shape (#4540 needs protected; #4553 needs no merged claim-branch PR), so the issue has been re-claimed ${_park_claims} times since the merge. Parking it: labelled \`awaiting-runtime-gate\`, removed from agent-ready; the intake will not re-claim it. Nish closes the issue (delivery landed) or clears the label to release it." 2>/dev/null || true
+                    continue
+                fi
+            fi
+        elif (( _park_protected == 1 )) && ! printf '%s' "$body" | grep -qi 'termination:'; then
+            # fleet-ops#5048: protected issue with NO termination clause and NO
+            # merged claim-branch delivery PR. If the remaining work was already
+            # delivered by merged PR(s) on a non-claim branch, or is delegated
+            # to an active user .timer/.service, the slow-spaced reclaim spin
+            # is the same as #4540 — park it.
+            if (( _park_merged_count == 0 )); then
+                _park_text=""
+                _park_comments=""
+                _park_cjson=$(gh issue view "$N" -R "$FULL" --json comments 2>/dev/null) || _park_cjson='{"comments":[]}'
+                _park_comments=$(printf '%s' "$_park_cjson" | jq -r '[.comments[]?.body // empty] | join("\n")' 2>/dev/null || true)
+                _park_text="${body}"$'\n'"${_park_comments}"
+
+                _park_runtime_unit=""
+                if [[ -n "$_park_text" ]]; then
+                    while IFS= read -r _park_unit; do
+                        [[ -z "$_park_unit" ]] && continue
+                        if XDG_RUNTIME_DIR="/run/user/$(id -u)" systemctl --user is-active "$_park_unit" >/dev/null 2>&1; then
+                            _park_runtime_unit="$_park_unit"
+                            break
+                        fi
+                    done <<<"$(printf '%s' "$_park_text" | grep -oE '[A-Za-z0-9_.@:-]+\.(timer|service)' | sort -u || true)"
+                fi
+
+                _park_nonclaim_merged=0
+                _park_delivered_pr=""
+                if [[ -z "$_park_runtime_unit" ]]; then
+                    _park_refs=""
+                    if [[ -n "$_park_text" ]]; then
+                        _park_refs=$(printf '%s' "$_park_text" | grep -oE '[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+#[0-9]+|[A-Za-z0-9_.-]+#[0-9]+|#[0-9]+' | sed 's/^#//' | sort -u) || true
+                    fi
+                    if [[ -n "$_park_refs" ]]; then
+                        while IFS= read -r _park_ref; do
+                            if [[ "$_park_ref" =~ ^[0-9]+$ ]]; then
+                                _park_ref_full="$FULL"
+                            elif [[ "$_park_ref" == */* ]]; then
+                                _park_ref_owner="${_park_ref%%/*}"
+                                _park_ref_rest="${_park_ref#*/}"
+                                _park_ref_repo="${_park_ref_rest%%#*}"
+                                _park_ref_full="${_park_ref_owner}/${_park_ref_repo}"
+                            else
+                                _park_ref_repo="${_park_ref%#*}"
+                                _park_ref_full="Nishfleet/${_park_ref_repo}"
+                            fi
+                            _park_ref_num="${_park_ref##*#}"
+                            _park_pr_info=$(_gh_read pr view "$_park_ref_num" -R "$_park_ref_full" --json state,headRefName 2>/dev/null || true)
+                            if [[ -n "$_park_pr_info" ]] && printf '%s' "$_park_pr_info" | jq -e '.state == "MERGED" and .headRefName != "claim/issue-'"$N"'"' >/dev/null 2>&1; then
+                                _park_nonclaim_merged=1
+                                _park_delivered_pr="$_park_ref_num"
+                                break
+                            fi
+                        done <<<"$_park_refs"
+                    fi
+                fi
+
+                if [[ -n "$_park_runtime_unit" || $_park_nonclaim_merged -eq 1 ]]; then
+                    if [[ -n "$_park_runtime_unit" ]]; then
+                        _park_reason="active user unit $_park_runtime_unit"
+                    else
+                        _park_reason="merged non-claim PR #$_park_delivered_pr delivered it"
+                    fi
+                    echo "issue $N ($title): skipped-parked-protected-delivered ($_park_claims cumulative claims > cap $PARK_MAX_CLAIMS; $_park_reason; awaiting runtime gate, fleet-ops#5048)" >&2
+                    gh label create awaiting-runtime-gate -R "$FULL" --color D4C5F9 \
+                        --description "Parked: protected issue + delivered work awaiting a runtime gate; do not claim (fleet-ops#5048)" --force >/dev/null 2>&1 || true
+                    gh issue edit "$N" -R "$FULL" --add-label awaiting-runtime-gate --remove-label agent-ready 2>/dev/null || true
+                    gh issue comment "$N" -R "$FULL" --body "fleet-ops#5048: issue $N is protected (owner-authored or critical-path) with no merged claim-branch delivery PR, but its remaining work is already delivered on a non-claim branch or delegated to an active runtime unit (${_park_reason}). It has been re-claimed ${_park_claims} times while the runtime gate is not yet met. Parking it: labelled \`awaiting-runtime-gate\`, removed from agent-ready; the intake will not re-claim it until the runtime event fires (clear the label then) or Nish closes the issue. No new timer." 2>/dev/null || true
+                    continue
+                fi
             fi
         fi
         # fleet-ops#5082: duplicate-of-merged-work branch — the probe itself
@@ -2478,7 +2771,7 @@ blocked-on: orchestrator" 2>/dev/null || true
                 exit 0
                 ;;
         esac
-        labels_json=$(gh issue view "$N" -R "$FULL" --json labels --jq '.labels | map(.name)' 2>/dev/null || true)
+        labels_json=$(_gh_read issue view "$N" -R "$FULL" --json labels --jq '.labels | map(.name)' 2>/dev/null || true)
         if echo "$labels_json" | grep -q '"agent-in-progress"' && ! echo "$labels_json" | grep -q '"agent-ready"'; then
             echo "issue $N: labels already in target state (agent-in-progress set, agent-ready removed) — idempotent skip"
         else

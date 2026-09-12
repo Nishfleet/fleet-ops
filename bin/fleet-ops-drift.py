@@ -36,6 +36,13 @@ main). DRIFT-CHECKOUT auto-files that class (deduped).
 the canary so fleet-ops-deploy can file when it blocks before the canary
 runs.
 
+fleet-ops#5602: a stray sibling artifact (*.bak* / *.orig next to a
+MANIFEST-managed path) no longer holds merge-to-live red until a judge
+hand-archives it. DRIFT-QUARANTINE moves the artifact to
+agent-state/backups/manifest-sprawl/, names the writer in QUARANTINE.log,
+auto-files the class once (deduped), and re-runs install.sh --check — the
+gate is red at most the tick that found the sprawl.
+
 Environment seams (overridden by tests):
   FLEET_OPS_CHECKOUT              path to the fleet-ops deploy checkout
   FLEET_OPS_AUDIT_LOG             drift audit log (default: ~/.local/state/fleet-ops/drift-audit.log)
@@ -45,11 +52,15 @@ Environment seams (overridden by tests):
   FLEET_OPS_WORKSPACES_ROOT       default /home/nish/workspaces
   FLEET_OPS_CANONICAL_CHECKOUT    default <workspaces>/tooling/fleet-ops-deploy-clone
   FLEET_OPS_ALLOW_NONCANONICAL    set to 1 to skip the source-path gate
-  FLEET_OPS_DRIFT_FILE            1 (default) auto-file DRIFT-SOURCE, DRIFT-MISSING-EXEC, DRIFT-PAPER-OVER, DRIFT-PRODUCTS-SYMLINK, DRIFT-OFF-MAIN, DRIFT-DEPLOY-BLOCKED-MAIN, DRIFT-VOLATILE, DRIFT-METRICS-DROPIN; 0 skip gh
+  FLEET_OPS_DRIFT_FILE            1 (default) auto-file DRIFT-SOURCE, DRIFT-MISSING-EXEC, DRIFT-PAPER-OVER, DRIFT-PRODUCTS-SYMLINK, DRIFT-OFF-MAIN, DRIFT-DEPLOY-BLOCKED-MAIN, DRIFT-VOLATILE, DRIFT-METRICS-DROPIN, DRIFT-QUARANTINE; 0 skip gh
   FLEET_OPS_DRIFT_CLOSE           1 (default) close a drift issue on a later green tick once it carries `resolved-at:`; 0 only comment (fleet-ops#1156)
   FLEET_OPS_DRIFT_REPO            default Nishfleet/fleet-ops
   FLEET_OPS_RETARGET_BIN          fleet-ops-retarget-products (default: next to this file)
   FLEET_OPS_PRODUCTS_LINK         products/fleet-ops symlink (default: <workspaces>/products/fleet-ops)
+  FLEET_OPS_QUARANTINE_DIR        sprawl quarantine dir (default:
+                                  <workspaces>/agent-state/backups/manifest-sprawl; fleet-ops#5602)
+  FLEET_OPS_ACTIONS_LOG           console actions.log read for sprawl writer
+                                  attribution (default: <workspaces>/agent-state/actions.log)
   GH                              gh binary (tests stub this)
 """
 
@@ -58,7 +69,9 @@ from __future__ import annotations
 import datetime
 import json
 import os
+import pwd
 import re
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -132,6 +145,26 @@ CANONICAL_CHECKOUT = Path(
         str(WORKSPACES_ROOT / "tooling" / "fleet-ops-deploy-clone"),
     )
 )
+# fleet-ops#5602: a stray sibling artifact (*.bak* / *.orig next to a
+# MANIFEST-managed path) used to hold the merge-to-live gate red until a
+# judge hand-archived it. The canary now quarantines the artifact under
+# agent-state/backups/manifest-sprawl/ — the same backups root the
+# 2026-09-11T23:43Z hand-repair used — records who wrote it in
+# QUARANTINE.log, and auto-files the class once (deduped).
+QUARANTINE_DIR = Path(
+    os.environ.get(
+        "FLEET_OPS_QUARANTINE_DIR",
+        str(WORKSPACES_ROOT / "agent-state" / "backups" / "manifest-sprawl"),
+    )
+)
+# Writer attribution reads the fleet console log for lines naming the
+# artifact or its managed file (fleet-ops#5602).
+ACTIONS_LOG = Path(
+    os.environ.get(
+        "FLEET_OPS_ACTIONS_LOG",
+        str(WORKSPACES_ROOT / "agent-state" / "actions.log"),
+    )
+)
 SOURCE_MARKER = "canonical-checkout-drift: fleet-ops#176"
 ORPHAN_EXEC_MARKER = "orphan-execstart: fleet-ops#285"
 PAPER_OVER_MARKER = "paper-over-dropin: fleet-ops#370"
@@ -156,6 +189,11 @@ DEPLOY_BLOCKED_MAIN_MARKER = "deploy-blocked-on-main: fleet-ops#2725"
 # organs' drop-ins never reach live and the dark-organ symptom is invisible.
 # This marker gives the class its own auto-file + observe-to-close wiring.
 METRICS_DROPIN_MARKER = "metrics-export-dropin-missing: fleet-ops#2920"
+# fleet-ops#5602: stray sibling artifact quarantined out of the managed
+# tree. The filed issue names the writer + quarantine path; the class is
+# green again the same tick, so observe-to-close lands `resolved-at:` on
+# the next green tick and closes on the one after.
+SPRAWL_MARKER = "manifest-sprawl-quarantine: fleet-ops#5602"
 
 DRIFT_MARKERS = (
     SOURCE_MARKER,
@@ -167,6 +205,7 @@ DRIFT_MARKERS = (
     VOLATILE_MARKER,
     DEPLOY_BLOCKED_MAIN_MARKER,
     METRICS_DROPIN_MARKER,
+    SPRAWL_MARKER,
 )
 
 PAPER_OVER_DROPIN = (
@@ -491,6 +530,7 @@ def observe_close_drift_issues(
         HOTPATCH_MARKER: "hot-patch",
         DEPLOY_BLOCKED_MAIN_MARKER: "deploy-blocked on main",
         METRICS_DROPIN_MARKER: "metrics-export drop-in missing",
+        SPRAWL_MARKER: "manifest-sprawl quarantine",
     }
 
     markers = (only_marker,) if only_marker else DRIFT_MARKERS
@@ -846,6 +886,41 @@ def live_file_bytes(dest: Path) -> bytes | None:
     return None
 
 
+def canonical_json(blob: bytes) -> str | None:
+    """Canonical (sorted-key, fixed-separator) text for a JSON document.
+
+    Returns None when the bytes are not a decodable JSON document. Used to
+    compare a copy-install JSON config dest to its origin/main blob: those
+    files are deliberately re-serialized on the live box (install.sh's
+    seat_caps_merge_unknown_providers merge, fleet-ops#4205; an external
+    writer per fleet-ops#4894), so byte equality is unachievable by design
+    and a byte-only compare reports drift forever on a semantically
+    identical config. install.sh --check already accepts that class
+    (fleet-ops#4948); this mirrors the same rule for the drift canary.
+    """
+    try:
+        value = json.loads(blob.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        return None
+    return json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+
+
+def ordered_json(blob: bytes) -> str | None:
+    """Canonical (fixed-separator, document-order) text for a JSON document.
+
+    Returns None when the bytes are not a decodable JSON document. Unlike
+    canonical_json the keys are NOT sorted: for a plain .json dest a
+    reordered file is drift and only whitespace is exempt (fleet-ops#5201).
+    The copy-install names keep the sorted canonical because the live merge
+    can legitimately reorder or collapse keys (fleet-ops#5161).
+    """
+    try:
+        value = json.loads(blob.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        return None
+    return json.dumps(value, separators=(",", ":"), ensure_ascii=False)
+
+
 def is_volatile_outside_checkout(resolved: Path, checkout: Path) -> bool:
     """True if resolved lives under /tmp, /run, or agent-worktrees, and is not the checkout.
 
@@ -989,6 +1064,37 @@ def check_live_matches_origin_main(checkout: Path) -> None:
             findings.append(f"{dest}: missing (want origin/main:{src})")
             continue
         if actual != expected:
+            # fleet-ops#4948 parity: a copy-install JSON config (seat-caps.json,
+            # pi-models.json, model-candidates.json) is legitimately
+            # re-serialized live, so compare it semantically. A real
+            # structural change, unparseable JSON, or any non-copy-install
+            # dest still fails byte-strict. Duplicate object keys collapse the
+            # same way every JSON parser collapses them (last wins), and a
+            # duplicate key produces exactly this class (fleet-ops#5161).
+            if Path(src).name in COPY_INSTALLED_SRC_NAMES:
+                want_json = canonical_json(expected)
+                got_json = canonical_json(actual)
+                if want_json is not None and want_json == got_json:
+                    log(
+                        f"{dest}: bytes differ from origin/main:{src} but the "
+                        "JSON is equivalent (copy-install re-serialization)"
+                    )
+                    continue
+            elif dest_path.suffix == ".json":
+                # fleet-ops#5201: any other .json dest can also be
+                # re-serialized live at a different indent width — the exact
+                # seat-caps.json shape that kept DEPLOY-CHECK red. Compare
+                # the parsed documents with document order preserved: a
+                # whitespace-only rewrite is reformatted-not-drifted; a
+                # reordered or changed file still fails.
+                want_json = ordered_json(expected)
+                got_json = ordered_json(actual)
+                if want_json is not None and want_json == got_json:
+                    log(
+                        f"{dest}: bytes differ from origin/main:{src} but the "
+                        "JSON is equivalent (reformatted, not drifted)"
+                    )
+                    continue
             findings.append(f"{dest} does not match origin/main:{src}")
 
     if findings:
@@ -1178,12 +1284,169 @@ def check_checkout(checkout: Path) -> None:
     log(f"checkout {checkout} is at origin/main ({head[:12]}) and clean")
 
 
+# install.sh --check sprawl lines, e.g.
+#   DIFF: /path/foo.bak-tag-20260911 (.bak next to managed MANIFEST file /path/foo)
+# The parenthetical kind is fixed text (.bak / .orig), not the artifact's
+# own suffix.
+SPRAWL_DIFF_RE = re.compile(
+    r"^DIFF: (.+?) \((\.bak|\.orig) next to managed MANIFEST file (.+?)\)\s*$",
+    re.MULTILINE,
+)
+
+
+def last_log_hit(needle: str) -> str | None:
+    """Last actions.log / drift-audit line naming `needle` (bounded tail read)."""
+    if not needle:
+        return None
+    for logf in (ACTIONS_LOG, AUDIT_LOG):
+        try:
+            if not logf.is_file():
+                continue
+            size = logf.stat().st_size
+            with logf.open("r", encoding="utf-8", errors="replace") as f:
+                if size > 512 * 1024:
+                    f.seek(size - 512 * 1024)
+                    f.readline()  # discard a partial first line
+                lines = f.read().splitlines()
+        except OSError:
+            continue
+        for line in reversed(lines):
+            if needle in line:
+                text = line.strip()
+                if len(text) > 200:
+                    text = text[:200] + "..."
+                return f"{logf.name}:{text}"
+    return None
+
+
+def sprawl_writer(artifact: Path, managed: str) -> str:
+    """Best-effort attribution for a stray sibling artifact (fleet-ops#5602).
+
+    Three signals: the fleet's naming convention
+    (<managed-base>.bak-<tag>-<date> — the tag names the writer, e.g.
+    .bak-onefleet-5588-20260911), the artifact's owner+mtime, and the last
+    actions.log / drift-audit line naming the artifact or its managed file.
+    """
+    parts: list[str] = []
+    base = Path(managed).name
+    name = artifact.name
+    tag = name[len(base) + 1:] if name.startswith(base + ".") else name
+    parts.append(f"nametag={tag}")
+    try:
+        st = artifact.lstat()
+        try:
+            owner = pwd.getpwuid(st.st_uid).pw_name
+        except (KeyError, OSError):
+            owner = str(st.st_uid)
+        mtime = datetime.datetime.fromtimestamp(
+            st.st_mtime, datetime.timezone.utc
+        ).strftime("%Y-%m-%dT%H:%M:%SZ")
+        parts.append(f"owner={owner} mtime={mtime}")
+    except OSError:
+        parts.append("stat=unreadable")
+    hit = last_log_hit(name) or (last_log_hit(base) if base != name else None)
+    if hit:
+        parts.append(f"log={hit}")
+    return " ".join(parts)
+
+
+def unique_quarantine_path(name: str) -> Path:
+    """A collision-free destination inside the quarantine dir."""
+    cand = QUARANTINE_DIR / name
+    if not cand.exists() and not cand.is_symlink():
+        return cand
+    stamp = now_iso().replace("-", "").replace(":", "")
+    cand = QUARANTINE_DIR / f"{name}.q-{stamp}"
+    i = 1
+    while cand.exists() or cand.is_symlink():
+        i += 1
+        cand = QUARANTINE_DIR / f"{name}.q-{stamp}-{i}"
+    return cand
+
+
+def auto_file_sprawl(msg: str) -> None:
+    """File one issue when stray sibling artifacts were quarantined."""
+    extra = (
+        "A .bak/.orig sibling next to a MANIFEST-managed path used to hold "
+        "the merge-to-live gate red until a judge hand-archived it "
+        "(fleet-ops#5602). The canary now quarantines the artifact under "
+        "agent-state/backups/manifest-sprawl/ and names the writer above. "
+        "Backups belong outside the managed tree — the writer should park "
+        "them there in the first place."
+    )
+    auto_file_drift(
+        SPRAWL_MARKER,
+        "Stray sibling artifact quarantined beside MANIFEST-managed path",
+        extra,
+        msg,
+    )
+
+
+def quarantine_sprawl_diffs(diffs: str) -> bool:
+    """Move sprawl artifacts flagged by install.sh --check out of the managed
+    tree, name the writer, and report. Returns True if >=1 was quarantined.
+
+    fleet-ops#5602: a .bak/.orig sibling next to a MANIFEST-managed path
+    held the whole merge-to-live gate red until a judge noticed by hand
+    (4th recurrence 2026-09-11T23:42Z: global-standing-rules.canonical.md
+    .bak-onefleet-5588-20260911 held DEPLOY-CHECK red while install.sh
+    itself ran clean). Quarantine instead of refuse: the artifact is moved
+    (never deleted), the writer is named in QUARANTINE.log and the LOUD
+    line, and the caller re-checks — so the gate is red at most the tick
+    that found the sprawl.
+    """
+    moved: list[str] = []
+    for m in SPRAWL_DIFF_RE.finditer(diffs):
+        artifact = Path(m.group(1).strip())
+        managed = m.group(3).strip()
+        writer = sprawl_writer(artifact, managed)
+        try:
+            QUARANTINE_DIR.mkdir(parents=True, exist_ok=True)
+            dest = unique_quarantine_path(artifact.name)
+            shutil.move(str(artifact), str(dest))
+        except OSError as e:
+            loud("DRIFT-QUARANTINE", f"could not quarantine {artifact}: {e} — left in place")
+            audit("fleet-ops", "sprawl-quarantine-failed", f"{artifact} writer={writer} err={e}")
+            continue
+        try:
+            with (QUARANTINE_DIR / "QUARANTINE.log").open("a", encoding="utf-8") as f:
+                f.write(
+                    f"{now_iso()} artifact={artifact} managed={managed} "
+                    f"moved_to={dest} writer={writer}\n"
+                )
+        except OSError as e:
+            log(f"WARN: could not append to quarantine ledger {QUARANTINE_DIR}/QUARANTINE.log: {e}")
+        audit("fleet-ops", "sprawl-quarantine", f"{artifact} -> {dest} writer={writer}")
+        moved.append(f"{artifact} -> {dest} (managed: {managed}; writer: {writer})")
+    if not moved:
+        return False
+    msg = (
+        "stray sibling artifact(s) quarantined out of the managed tree "
+        "(fleet-ops#5602; backups belong outside MANIFEST dirs):\n"
+        + "\n".join(moved)
+    )
+    loud("DRIFT-QUARANTINE", msg)
+    auto_file_sprawl(msg)
+    return True
+
+
 def check_manifest_install(checkout: Path) -> None:
     rc, out, err = run([str(checkout / "install.sh"), "--check"], cwd=checkout, check=False)
     if rc == 2:
         fail_loud("DRIFT-INSTALL", f"install.sh --check usage error: {out}{err}")
     if rc != 0:
         diffs = (out + err).strip()
+        # fleet-ops#5602: quarantine stray .bak/.orig siblings, then re-check.
+        # If the sprawl was the whole drift the gate never goes red; residual
+        # diffs still fail loud below.
+        if quarantine_sprawl_diffs(diffs):
+            rc, out, err = run([str(checkout / "install.sh"), "--check"], cwd=checkout, check=False)
+            if rc == 2:
+                fail_loud("DRIFT-INSTALL", f"install.sh --check usage error: {out}{err}")
+            if rc == 0:
+                log("install.sh --check: clean after sprawl quarantine")
+                return
+            diffs = (out + err).strip()
         fail_loud("DRIFT-INSTALL", f"MANIFEST install drift:\n{diffs}")
     log("install.sh --check: clean")
 

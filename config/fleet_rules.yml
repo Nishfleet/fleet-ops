@@ -203,6 +203,25 @@ groups:
           summary: "seat never released — comeback-release prober keeps failing on the same seat"
           description: "One or more seats have been probed >=10 times by the comeback-release organ without recovery (fleet-ops#2638). The bin's corpse path (SEAT_DEAD_CONSECUTIVE_THRESHOLD, default 25) should terminate these on the next sweep; sustained > 0 here for 1h+ means the corpse write is not landing. The per-seat fleet_seat_comeback_never_released series names the stuck seat. Repair worker: inspect /home/nish/workspaces/agent-state/lanes/seats/<seat>.json (consecutive_failure_count must be climbing), journalctl --user -u fleet-seat-comeback-release.service, and the provider's reachability."
 
+      # fleet-ops#5285: benches lie. fleet_seat_bench_lied_total{provider,model}
+      # increments every time the bench-truth PONG probe clears a bench — the
+      # ledger benched a seat the provider would actually serve (the lived
+      # Devin phantom benches: swe-1-7 benched 6 DAYS on a minutes-scale 429
+      # while a live probe answered PONG first try; the highest-yield lane
+      # idled up to 45 min per phantom bench). >3 cleared benches in 6h for
+      # one provider means the bench WRITER for that provider is lying
+      # systematically — repair, never page Nish: the alert-repair
+      # dispatcher owns the repair packet.
+      - alert: FleetSeatBenchLied
+        expr: increase(fleet_seat_bench_lied_total[6h]) > 3
+        for: 5m
+        labels:
+          severity: warning
+          service: fleet
+        annotations:
+          summary: "bench lie — {{ $labels.provider }} benches cleared by live probe >3x in 6h"
+          description: "fleet-ops#5285: the bench-truth PONG probe (fleet-seat-comeback-release --false-wall-only, 15-min cadence) has cleared more than 3 benches on provider {{ $labels.provider }} in 6h — benches on this provider are systematically phantom (the ledger benches seats the provider would serve; the lived Devin swe-2 class). Repair worker: identify the writer (journalctl --user -u fleet-seat-comeback-release.service SEAT-WALL-FALSE lines name the writer field), check the provider's parsed reset windows against its real 429 text, and inspect /home/nish/workspaces/agent-state/lanes/seats/<seat>.json source=bench_truth_probe records. Do NOT silence the probe; the probe IS the un-bench primitive."
+
       # fleet-ops#2712: provider-level (account-level) quota exhaustion.
       # A provider with >=2 quota_exhausted seats observed within 1h
       # (HTTP 402 + health_class=quota_exhausted) is a billing-wall pattern,
@@ -661,8 +680,23 @@ groups:
       # (tests/packet-layout.test.sh) and the provider's cache TTL window
       # (config/seat-caps.json _comment_4643_cache_ttl) — same-type packets
       # must land inside the TTL window.
+      # fleet-ops#4643 follow-up (2026-09-11): the expr MUST scope to real
+      # packet lanes, i.e. exclude packet_type=~"interactive|probe". Both are
+      # structurally incapable of a prefix cache hit regardless of packet
+      # layout: an interactive `pi` session has a human typing a different
+      # prompt each turn, and a probe's whole prompt is a one-word sentinel
+      # ('Reply OK' / 'PONG') with nothing to reuse. Measuring them against a
+      # packet-layout target is a category error. Before this scoping the
+      # selector matched them: on 2026-09-11 litellm/other (0.27) and
+      # paretoinference/other (0.81) fired for 6h+ while every session
+      # driving both lanes had cwd=/home/nish and the litellm prompts were
+      # literally 'Reply OK' (17 seat probes in one rebase worktree) — and the
+      # real packet lanes were above target (paretoinference/worker 0.906).
+      # The alert asks whether the PACKET layout keeps a stable prefix; only
+      # packet lanes can answer it. packet_type="other" stays IN scope: it is
+      # the bucket for genuine packets matching no named lane.
       - alert: FleetPromptCacheHitLow
-        expr: fleet_prompt_cache_hit_ratio{class="metered"} < 0.85
+        expr: fleet_prompt_cache_hit_ratio{class="metered",packet_type!~"interactive|probe"} < 0.85
         for: 6h
         labels:
           severity: warning
@@ -1424,6 +1458,25 @@ groups:
         annotations:
           summary: "fleet-ops deploy blocked for 15+ minutes (fleet-ops#2725 pattern)"
           description: "fleet_deploy_blocked_duration_seconds{repo=\"fleet-ops\"} exceeded 900s (15 min): the fleet-ops deploy clone is stuck DEPLOY-BLOCKED. 2026-09-02 live case: >1h blocked on dirty tracked files with zero mechanized alert (fleet-ops#2725). Merge-to-live is halted; clear the dirty state on /home/nish/workspaces/tooling/fleet-ops-deploy-clone or root-cause the block. Check journalctl --user -u fleet-deploy-check.service."
+      # fleet-ops#5140: a product repo's production deploy has been non-green
+      # for over an hour — the 2026-09-10 stall class where 131 merged product
+      # PRs sat undelivered for 28h while every dashboard read green.
+      # Deliberately severity=warning, NOT critical: a stalled product deploy
+      # stalls customer-facing work, it does not page Nish. fleet-ops keeps
+      # its own DeployBlockedStuck (>900s, critical) above. The newest red
+      # run's URL is pulled from the fleet_product_deploy_last_red_run_info
+      # info series via the query template function — a url label on the
+      # duration series itself would mint a new series per run and restart
+      # this rule's for: timer forever.
+      - alert: ProductDeployStalled
+        expr: fleet_deploy_blocked_duration_seconds{repo!="fleet-ops"} > 3600
+        for: 15m
+        labels:
+          severity: warning
+          service: fleet
+        annotations:
+          summary: "{{ $labels.repo }} production deploy stalled: {{ $labels.workflow }} non-green for {{ $value | humanizeDuration }}"
+          description: "fleet_deploy_blocked_duration_seconds{repo=\"{{ $labels.repo }}\",workflow=\"{{ $labels.workflow }}\"} exceeded 3600s for 15+ minutes: {{ $labels.repo }}'s production deploy has been non-green for {{ $value | humanizeDuration }} (an in-flight run counts as non-green). Newest red run: {{ with query (printf \"fleet_product_deploy_last_red_run_info{repo='%s',workflow='%s'}\" $labels.repo $labels.workflow) }}{{ . | first | label \"url\" }}{{ else }}unknown — fleet_product_deploy_last_red_run_info absent{{ end }}. fleet-ops#5140: 2026-09-10, 131 merged product PRs sat undelivered for 28h while every dashboard read green. Repair: open the newest red run, read its failure, then fix or re-run the {{ $labels.workflow }} workflow on Nishfleet/{{ $labels.repo }}."
       - alert: DeploymentQualityStale
         expr: absent(fleet_deployment_quality_up{repo="fleet-ops"}) or fleet_deployment_quality_up{repo="fleet-ops"} == 0
         for: 15m
@@ -1433,6 +1486,24 @@ groups:
         annotations:
           summary: "deployment-quality metrics computation failed or vanished"
           description: "fleet_deployment_quality_up is absent or 0 for 15+ minutes — lib/fleet-deploy-quality.py failed (the gauges are NaN so threshold rules are silent; THIS alert is the only loud signal). The exporter logs 'deploy-quality: ...' to stderr; check journalctl --user -u fleet-metrics-export.service and /home/nish/.local/lib/pi-packet/fleet-deploy-quality.py. fleet-ops#2758."
+      # fleet-ops#5250: a product repo whose deploy-quality computation failed
+      # emits fleet_deployment_quality_up{repo="<r>"} 0 (missing
+      # PRODUCT_DEPLOY_WORKFLOWS entry, unreadable runs source, gh outage) and
+      # its gauges go NaN — ProductDeployStalled is blind for it.
+      # DeploymentQualityStale above is repo="fleet-ops" scoped, so without
+      # this rule an unmeasurable product repo emits up=0 forever unnoticed —
+      # the same silent-absence shape #5140 fixed for the happy path. The 30m
+      # fuse is longer than ProductDeployStalled's: a single bad scrape must
+      # not fire.
+      - alert: ProductDeployUnmeasurable
+        expr: fleet_deployment_quality_up{repo!="fleet-ops"} == 0
+        for: 30m
+        labels:
+          severity: warning
+          service: fleet
+        annotations:
+          summary: "{{ $labels.repo }} deployment-quality unmeasurable: fleet_deployment_quality_up 0 for 30m+"
+          description: "fleet_deployment_quality_up{repo=\"{{ $labels.repo }}\"} has been 0 for 30+ minutes — lib/fleet-deploy-quality.py could not measure {{ $labels.repo }} (missing PRODUCT_DEPLOY_WORKFLOWS entry, unreadable runs source, or gh outage) and its deploy-quality gauges are NaN, so ProductDeployStalled is blind for it. The exporter logs 'deploy-quality: ...' to stderr; check journalctl --user -u fleet-metrics-export.service and /home/nish/.local/lib/pi-packet/fleet-deploy-quality.py. fleet-ops#5250."
       - alert: FleetCloseDuplicatesWrongClose
         expr: fleet_close_duplicates_closes_total{cross_repo="true"} > 0 or fleet_close_duplicates_closes_total{protected="true"} > 0
         for: 1m
@@ -1592,3 +1663,64 @@ groups:
         annotations:
           summary: "cursor $400 prepaid pool burn pacing low — trailing-24h burn below pool/remaining-days for 2h"
           description: "fleet-ops#4206: the Cursor 'API Usage' on-demand pool is being spent too slowly to exhaust by the billing-cycle reset. Repair worker — increase the share of senior-review/keystone work landing on cursor/cursor-grok-4.6-high: for each waiting heavy fleet-ops/0509 issue (open, agent-ready or unclaimed, difficulty: heavy or keystone), prepend 'difficulty: senior-review' to the top of the issue body (gh issue edit --body) so pick_seat routes it to the senior ladder (senior_seats_in_order starts with cursor/cursor-grok-4.6-high). Cap stays 2 (ETIMEDOUT above that); pacing comes from hours, not concurrency. Do NOT raise the cap above 2. Do NOT touch worker-tier models. The judge's Telegram line should quote fleet_prepaid_spend_usd{provider=cursor} and the remaining pool."
+
+  # fleet-ops#5022: OpenCode Go weekly-pool pacing. bin/fleet-prepaid-util-canary
+  # reads the subscription's own usage endpoint (GET
+  # https://opencode.ai/zen/go/v1/usage) and writes
+  # fleet_prepaid_usage_pct{provider="opencode-go",window=...},
+  # fleet_prepaid_window_reset_seconds / _timestamp and
+  # fleet_prepaid_paced_cap into
+  # /var/lib/prometheus/node-exporter/prepaid-usage.prom. Same shape as
+  # fleet_cursor_prepaid_pacing above: the existing canary tick + the
+  # node_exporter textfile collector feed the rules, no new exporter and no new
+  # scheduler. The paced cap is floor(remaining_weekly_pct / hours_to_reset *
+  # K), floor 1, ceiling the declared cap; when the declared cap outruns the
+  # pace the pool will not be exhausted by its reset, so a repair packet lowers
+  # config/seat-caps.json .providers."opencode-go".cap to the paced number.
+  - name: fleet_opencode_go_prepaid_pacing
+    rules:
+      # fleet_prepaid_remaining_weekly_pct: how much of the weekly pool is
+      # left to spend before its reset.
+      - record: fleet_prepaid_remaining_weekly_pct
+        expr: 100 - fleet_prepaid_usage_pct{provider="opencode-go",window="weekly"}
+
+      # fleet_prepaid_remaining_weekly_hours: hours until the weekly pool
+      # resets. Floored at 0 so a passed reset does not produce a nonsense
+      # pacing target.
+      - record: fleet_prepaid_remaining_weekly_hours
+        expr: clamp_min(fleet_prepaid_window_reset_seconds{provider="opencode-go",window="weekly"} / 3600, 0)
+
+      # FleetOpenCodeGoUsageReaderAbsent: the usage reader is dead or the
+      # canary tick stopped writing the textfile. severity=warning so
+      # alert-repair-dispatch spawns a worker; the absence is the fault, not
+      # the pool state.
+      - alert: FleetOpenCodeGoUsageReaderAbsent
+        expr: absent(fleet_prepaid_usage_pct{provider="opencode-go",window="weekly"})
+        for: 30m
+        labels:
+          severity: warning
+          service: fleet
+          repo: Nishfleet/fleet-ops
+        annotations:
+          summary: "opencode-go usage reader absent — fleet_prepaid_usage_pct{provider=\"opencode-go\"} missing for 30+ minutes"
+          description: "fleet-ops#5022: bin/fleet-prepaid-util-canary is not writing /var/lib/prometheus/node-exporter/prepaid-usage.prom or its GET https://opencode.ai/zen/go/v1/usage call is failing (key missing, API unreachable, response shape changed). Without this metric the weekly pool is a blind spot again — the 2026-09-10 incident was 80.1% of the weekly pool gone with 3.3 days left while the cap sat at 10. Repair worker — check (1) the canary tick log for 'opencode-go usage reader: no data'; (2) the key source resolves (OPENCODE_GO_ENV_FILE /home/nish/fleet2/etc/opencode-go.env OPENCODE_GO_API_KEY, else ~/.local/share/opencode/auth.json .\"opencode-go\".key — do NOT print the key); (3) curl -s -H 'Authorization: Bearer <key>' https://opencode.ai/zen/go/v1/usage returns {\"usage\":{\"rolling\":...}}; (4) prepaid-usage.prom is 0644 in the node_exporter textfile dir. Do NOT emit a fake zero — the absent() rule is the correct fail-loud."
+
+      # FleetOpenCodeGoPaceExceeded: the declared cap is above what the
+      # remaining weekly pool supports to its reset, so the pool runs out
+      # before the window rolls over and the seat walls early. The repair
+      # packet lowers the declared cap to the paced number.
+      - alert: FleetOpenCodeGoPaceExceeded
+        expr: |
+          fleet_prepaid_declared_cap{provider="opencode-go"} > fleet_prepaid_paced_cap{provider="opencode-go"}
+            and fleet_prepaid_paced_cap{provider="opencode-go"} > 0
+            and fleet_prepaid_remaining_weekly_hours > 0
+            and fleet_prepaid_remaining_weekly_pct > 0
+        for: 2h
+        labels:
+          severity: warning
+          service: fleet
+          repo: Nishfleet/fleet-ops
+        annotations:
+          summary: "opencode-go cap above pace — the remaining weekly pool will not last to its reset"
+          description: "fleet-ops#5022: fleet_prepaid_declared_cap{provider=\"opencode-go\"} is above fleet_prepaid_paced_cap for 2h. The paced cap is floor(remaining_weekly_pct / hours_to_reset * K), floor 1, ceiling the declared cap, with K measured 2026-09-10 (80% of the weekly pool over ~4 days at cap 10 => 0.8%/h per 10 cap units => K=12.5); it is how much concurrency spends exactly the remaining pool by the reset. Repair worker — set config/seat-caps.json .providers.\"opencode-go\".cap to the current fleet_prepaid_paced_cap and lower the deepseek-flash model cap with it (keep 1 as the floor), carrying a dated reason that quotes fleet_prepaid_usage_pct{provider=\"opencode-go\",window=\"weekly\"} and the reset; then PR it. Do NOT edit the live ~/.local/state/pi-packet/seat-caps.json — deploy install.sh overwrites it and it shows as MANIFEST drift. Do NOT touch other providers."
+

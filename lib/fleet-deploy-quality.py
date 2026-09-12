@@ -40,6 +40,17 @@ measures the deployment pipeline from the sources that actually record it:
       between), 0 when the pipeline is not blocked. Catches the #2725
       pattern: 2026-09-02 the VPS sat DEPLOY-BLOCKED on dirty tracked
       files for 30+ minutes with no mechanized alert.
+  (f) product repos (fleet-ops#5140): every repo in config/intake-repos.json
+      with product: true (fleet-ops itself excluded) gets its own deploy
+      SLOs from its production-deploy workflow runs (0509: "Deploy
+      production"). green = the newest run concluded success; blocked =
+      age of the trailing run of consecutive non-green runs (an in-flight
+      run is non-green — fail closed), 0 when the newest run is green;
+      latency = mergedAt -> first green run. A product repo that cannot be
+      measured emits NaN gauges plus fleet_deployment_quality_up{repo} 0 —
+      never a silent absence. That is the signal that turns a 28h stall
+      (2026-09-10: 131 merged product PRs that never reached a customer,
+      invisible because every dashboard said green) into a metric.
 
 Wiring: loaded lazily by libexec/fleet-metrics-export.py on the existing
 5-min fleet-metrics-export tick (no new timer, no service change — the
@@ -49,12 +60,23 @@ DeploymentQualityStale rule screams instead of silently serving frozen or
 zero values (a zero blocked-duration during a real 40-min block is exactly
 the silent-drift the rule family exists to kill).
 
-gh budget: at most ONE gh subprocess per scrape (merged fetch preferred,
-revert count serves its longer-TTL cache), mirroring the exporter's
-_GH_FETCHED_THIS_RUN discipline so the 5-min oneshot stays well under 60s.
-Cached to the same 30min/2h TTL/stale envelope; a failing call serves the
-stale cache and only goes NaN after 2h. Local sources (journal, actions
-log) are cached for 60s so an idle scrape is a cheap read.
+gh budget: at most ONE gh subprocess per scrape for the fleet-ops family
+(merged fetch preferred, revert count serves its longer-TTL cache),
+mirroring the exporter's _GH_FETCHED_THIS_RUN discipline so the 5-min
+oneshot stays well under 60s. Cached to the same 30min/2h TTL/stale
+envelope; a failing call serves the stale cache and only goes NaN after 2h.
+Local sources (journal, actions log) are cached for 60s so an idle scrape is
+a cheap read.
+
+The product family (fleet-ops#5140) has a SEPARATE, hard-capped budget:
+MAX_PRODUCT_FETCHES_PER_SCRAPE = 2 gh calls per scrape, counted in
+_PRODUCT_FETCHES_THIS_RUN so _GH_FETCHED_THIS_RUN and the fleet-ops numbers
+are untouched. The product compute path fetches runs first, merges second.
+Runs use RUNS_TTL = 120s (shorter than the 5-min tick, so a NEW stall is
+visible on the very next tick) / RUNS_STALE = 3600s; merges reuse the
+fleet-ops GH_TTL/GH_STALE envelope. PRODUCT_GH_TIMEOUT = 15 caps one product
+call, so the worst added wall time is 30s — inside systemd's default 90s
+TimeoutStartSec, which systemd/fleet-metrics-export.service does not set.
 
 Environment seams (tests):
   FLEET_DQ_NOW              ISO/epoch override for deterministic tests
@@ -65,6 +87,17 @@ Environment seams (tests):
   FLEET_DQ_CRITICAL_ALERTS  comma-separated critical alert names (tests)
   FLEET_DQ_CACHE_DIR        cache dir (default: $AGENT_STATE/fleet-metrics)
   FLEET_DQ_GH               gh binary (default: gh)
+  FLEET_DQ_REPOS_JSON       path to an intake-repos.json-shaped
+                            {"repos": [{"name": ..., "product": true}]}
+                            fixture; highest-priority product-repo source,
+                            a missing file falls through to the in-repo list
+  FLEET_DQ_DEPLOY_WORKFLOWS path to a JSON {"<repo>": "<workflow name>"}
+                            object merged over PRODUCT_DEPLOY_WORKFLOWS
+  FLEET_DQ_DEPLOY_RUNS      path to a JSON {"<repo>": [run, ...]} object of
+                            production-deploy workflow runs, newest first
+                            (skips gh for that repo)
+  FLEET_DQ_PRODUCT_MERGED   path to a JSON {"<repo>": [{"mergedAt": ...}]}
+                            object (skips gh for that repo's merges)
   AGENT_STATE               default: ~/workspaces/agent-state
 """
 from __future__ import annotations
@@ -149,25 +182,110 @@ CRITICAL_DEPLOY_ALERTS = frozenset({
 # so DeploymentTimeToDetectHigh stays silent until the ledger has depth.
 TTD_MIN_SAMPLES = 5
 
+# --- product repos (fleet-ops#5140) ----------------------------------------
+# Deliberately shorter than the 5-min export tick: a 30-min cache would make
+# a new stall invisible for up to 30 minutes, and the issue's floor is
+# visibility within 15. RUNS_STALE keeps a gh outage from NaN-ing the family
+# for an hour.
+RUNS_TTL = 120
+RUNS_STALE = 3600
+# Hard cap on product-repo gh calls per scrape. Kept separate from
+# _GH_FETCHED_THIS_RUN so this family can neither spend nor block the
+# fleet-ops single-call budget. Two covers the one declared product repo
+# (runs + merges). A SECOND product repo goes up=0 with a stderr line until
+# this cap is raised on purpose — that is the tripwire, not a bug, same class
+# as a repo missing from PRODUCT_DEPLOY_WORKFLOWS.
+MAX_PRODUCT_FETCHES_PER_SCRAPE = 2
+PRODUCT_GH_TIMEOUT = 15
+_PRODUCT_FETCHES_THIS_RUN = 0
+# Only conclusion == "success" is green. cancelled / failure / timed_out /
+# startup_failure / skipped / neutral and "" (in-flight) are all non-green:
+# an in-flight deploy is not a shipped deploy, so fail closed. Live 0509
+# shape 2026-09-10: pending / cancelled / in_progress / failure.
+GREEN_CONCLUSION = "success"
+# Repos whose production gate is a GitHub Actions workflow. The value is the
+# workflow name `gh run list --workflow` expects (the workflow's `name:`).
+# A product repo absent from this table cannot be measured and is reported as
+# up=0 rather than silently skipped (fleet-ops#5140 accept 1). env seam:
+# FLEET_DQ_DEPLOY_WORKFLOWS = path to a JSON object merged over this table.
+PRODUCT_DEPLOY_WORKFLOWS = {"0509": "Deploy production"}
+# Product repo names become cache filenames (deploy-quality-runs-<repo>.json);
+# anything outside this set is dropped and reported, never written to disk.
+REPO_NAME_RE = re.compile(r"^[A-Za-z0-9._-]+$")
+
 METRIC_DEFS = (
-    # (name, help)
+    # (name, help). Ordered: within each metric the fleet-ops row is emitted
+    # before any product row, and # HELP/# TYPE appear exactly once per name.
     ("fleet_deployment_latency_seconds",
-     "p95 merge-to-live latency for fleet-ops (mergedAt -> first green fleet-deploy-check cycle), trailing window."),
+     "p95 merge-to-live latency per measured repo: fleet-ops = mergedAt -> first green "
+     "fleet-deploy-check cycle; a product repo = mergedAt -> first green production-deploy "
+     "run; trailing window. fleet-ops#2758, fleet-ops#5140."),
     ("fleet_deployment_rollback_rate",
-     "auto-revert events / merged deployments for fleet-ops, trailing 30 days."),
+     "auto-revert events / merged deployments for fleet-ops, trailing 30 days. fleet-ops only: "
+     "auto-revert is fleet-ops machinery, so no series is emitted for a product repo "
+     "(fleet-ops#5140)."),
     ("fleet_deployment_time_to_detect_seconds",
-     "p95 time from fleet-ops deploy to first critical alert dispatch, trailing window."),
+     "p95 time from fleet-ops deploy to first critical alert dispatch, trailing window. "
+     "fleet-ops only: it reads fleet-ops' alert-repair actions.log, so no series is emitted "
+     "for a product repo (fleet-ops#5140)."),
     ("fleet_deployment_success_rate",
-     "fleet-ops deployments with zero critical alerts in the 1h after merge / total deployments, trailing window."),
+     "fleet-ops deployments with zero critical alerts in the 1h after merge / total "
+     "deployments, trailing window. fleet-ops only: it reads fleet-ops' alert-repair "
+     "actions.log, so no series is emitted for a product repo (fleet-ops#5140)."),
     ("fleet_deploy_blocked_duration_seconds",
-     "age in seconds of the current DEPLOY-BLOCKED episode on the fleet-ops deploy clone; 0 when not blocked (fleet-ops#2725 pattern)."),
+     "Age in seconds of the current non-green deploy episode per measured repo: fleet-ops = "
+     "run of consecutive DEPLOY-BLOCKED fleet-deploy-check cycles; a GitHub-deployed product "
+     "repo = age of the current run of consecutive non-green production-deploy runs (an "
+     "in-flight run counts as non-green), 0 when the newest run is green, NaN when the repo "
+     "could not be measured this scrape. fleet-ops#2725, fleet-ops#5140."),
     ("fleet_deployment_quality_up",
-     "1 when the deploy-quality computation succeeded this scrape, 0 when it failed (values are NaN)."),
+     "1 when the deploy-quality computation succeeded for this repo this scrape, 0 when it "
+     "failed (that repo's gauges are NaN). fleet-ops#2758, fleet-ops#5140."),
     ("fleet_deployment_total",
-     "total fleet-ops merged deployments in the trailing window (denominator)."),
+     "total fleet-ops merged deployments in the trailing window (denominator). fleet-ops "
+     "only: shared with the three metrics above, no series for a product repo "
+     "(fleet-ops#5140)."),
     ("fleet_deployment_revert_total",
-     "auto-revert events (revert: auto-restore green main PRs) in the trailing window (numerator)."),
+     "auto-revert events (revert: auto-restore green main PRs) in the trailing window "
+     "(numerator). fleet-ops only: no series for a product repo (fleet-ops#5140)."),
+    ("fleet_product_deploy_green",
+     "1 when the newest run of this repo's production-deploy workflow concluded success, 0 "
+     "when it did not, NaN when the repo could not be measured this scrape. Deploy greenness "
+     "lives here; fleet_main_ci_green tracks only the workflow literally named \"CI\". "
+     "fleet-ops#5140."),
+    ("fleet_product_deploy_last_red_run_info",
+     "1 on the newest non-green run of a product repo's production-deploy workflow, carrying "
+     "that run's url so ProductDeployStalled can name it; absent when the newest run is green "
+     "or the repo could not be measured this scrape. fleet-ops#5140."),
 )
+
+# Payload keys per metric name. Keys must cover every METRIC_DEFS name that
+# is not in _PRODUCT_ONLY_METRICS; the family tests pin each fleet-ops value.
+_FLEET_VALUE_KEYS = {
+    "fleet_deployment_latency_seconds": "latency_p95",
+    "fleet_deployment_rollback_rate": "rollback_rate",
+    "fleet_deployment_time_to_detect_seconds": "time_to_detect_p95",
+    "fleet_deployment_success_rate": "success_rate",
+    "fleet_deploy_blocked_duration_seconds": "blocked_duration",
+    "fleet_deployment_quality_up": "up",
+    "fleet_deployment_total": "total",
+    "fleet_deployment_revert_total": "revert_total",
+}
+# Metrics a product repo emits. Deliberately absent from this map: rollback
+# rate, time-to-detect, success rate, and the two totals — those read
+# fleet-ops machinery (auto-revert PRs, actions.log), so absence is the
+# honest answer for a product repo, not a NaN row.
+_PRODUCT_VALUE_KEYS = {
+    "fleet_deployment_latency_seconds": "latency_p95",
+    "fleet_deploy_blocked_duration_seconds": "blocked_duration",
+    "fleet_deployment_quality_up": "up",
+    "fleet_product_deploy_green": "green",
+}
+# Product-only metrics: no fleet-ops series at all.
+_PRODUCT_ONLY_METRICS = frozenset({
+    "fleet_product_deploy_green",
+    "fleet_product_deploy_last_red_run_info",
+})
 
 
 def _now(env):
@@ -218,6 +336,8 @@ def _cache_paths(env):
 def _read_cache(path):
     try:
         c = json.loads(path.read_text())
+        if not isinstance(c, dict):
+            return None, None
         data, ts = c.get("data"), c.get("ts")
         if isinstance(ts, (int, float)):
             return data, time_now() - ts
@@ -237,9 +357,22 @@ def _write_cache(path, data):
 
 
 def _run(cmd, env, timeout=GH_TIMEOUT):
-    """Run a command, return subprocess result or None on failure."""
-    r = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout,
-                       env={**os.environ, **env})
+    """Run a command, return subprocess result or None on failure.
+
+    A missing binary (bad FLEET_DQ_GH, no gh on PATH) is an OSError, not a
+    crash: prom_lines() must never raise, and a FileNotFoundError escaping
+    here would take the whole family down instead of degrading one repo
+    (fleet-ops#5140). A timeout raises subprocess.TimeoutExpired — a
+    SubprocessError, not an OSError; catching it here keeps a slow fetch on
+    the ordinary stale-cache path instead of failing the whole repo
+    (fleet-ops#5140 phase-1 review).
+    """
+    try:
+        r = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout,
+                           env={**os.environ, **env})
+    except (OSError, subprocess.SubprocessError) as exc:
+        print(f"deploy-quality: cannot run {cmd[0]}: {exc}", file=sys.stderr)
+        return None
     if r.returncode != 0:
         print(f"deploy-quality gh rc={r.returncode}: {r.stderr.strip()[:300]}",
               file=sys.stderr)
@@ -247,8 +380,8 @@ def _run(cmd, env, timeout=GH_TIMEOUT):
     return r
 
 
-def _gh_json(cmd, env):
-    r = _run(cmd, env)
+def _gh_json(cmd, env, timeout=GH_TIMEOUT):
+    r = _run(cmd, env, timeout=timeout)
     if r is None:
         return None
     try:
@@ -737,6 +870,426 @@ def compute(env=None):
     }
 
 
+# --- product repos (fleet-ops#5140) ----------------------------------------
+
+
+_FLEET_FAILED_KEYS = (
+    "latency_p95", "rollback_rate", "time_to_detect_p95", "success_rate",
+    "blocked_duration", "total", "revert_total",
+)
+
+
+def _failed_payload():
+    """All-NaN fleet-ops payload with up=0 (the family's loud failure)."""
+    payload = {k: None for k in _FLEET_FAILED_KEYS}
+    payload["up"] = 0
+    return payload
+
+
+def _failed_product(repo, workflow):
+    """All-NaN payload with up=0 for ONE product repo."""
+    return {
+        "repo": repo,
+        "workflow": workflow,
+        "up": 0,
+        "latency_p95": None,
+        "latency_samples": 0,
+        "blocked_duration": None,
+        "blocked_run_start": None,
+        "blocked_lower_bound": False,
+        "green": None,
+        "last_red_url": None,
+    }
+
+
+def _first_existing(paths):
+    """First path in `paths` that is an existing file, else None.
+
+    Same helper as lib/fleet-product-slo.py's _first_existing: one candidate
+    list resolves intake-repos.json in-repo (tests), in the live tooling
+    clones, and from an env seam, without inventing a new mechanism.
+    """
+    for p in paths:
+        if not p:
+            continue
+        path = Path(p)
+        try:
+            if path.is_file():
+                return path
+        except OSError:
+            continue
+    return None
+
+
+def _intake_candidates(env):
+    """intake-repos.json candidates, highest priority first.
+
+    The env seam is first so a test can pin the product set; a seam pointing
+    at a missing file falls through to the in-repo copy, exactly as
+    lib/fleet-product-slo.py behaves.
+    """
+    e = env or os.environ
+    return [
+        e.get("FLEET_DQ_REPOS_JSON") or "",
+        str(Path(__file__).resolve().parents[1] / "config" / "intake-repos.json"),
+        f"{HOME}/workspaces/tooling/fleet-ops-deploy-clone/config/intake-repos.json",
+        f"{HOME}/workspaces/tooling/fleet-ops/config/intake-repos.json",
+        f"{HOME}/.local/share/fleet-ops/config/intake-repos.json",
+    ]
+
+
+def product_repos(env=None):
+    """Sorted names of intake repos[] entries with product: true.
+
+    fleet-ops itself is excluded (it is measured by compute(), not by the
+    product path). Names are sanitised against REPO_NAME_RE because they
+    become cache filenames. A missing/unparseable file returns [] plus one
+    stderr line — fleet-ops only, never a guess and never "all repos".
+    Never raises.
+    """
+    path = _first_existing(_intake_candidates(env or os.environ))
+    if path is None:
+        print("deploy-quality: intake-repos.json not found (fleet-ops only this scrape)",
+              file=sys.stderr)
+        return []
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError, UnicodeDecodeError) as exc:
+        print(f"deploy-quality: intake-repos.json unreadable: {exc} (fleet-ops only this scrape)",
+              file=sys.stderr)
+        return []
+    rows = data.get("repos") if isinstance(data, dict) else None
+    names = set()
+    for row in rows or []:
+        # `product` must be literally true: absent/false means not-product
+        # (fail closed, the same rule seat-lib.sh repo_is_product reads).
+        if not isinstance(row, dict) or row.get("product") is not True:
+            continue
+        name = str(row.get("name") or "").strip()
+        if not name or name == REPO:
+            continue
+        if not REPO_NAME_RE.match(name):
+            print(f"deploy-quality: intake repo name {name!r} is not a safe cache "
+                  "filename — skipped", file=sys.stderr)
+            continue
+        names.add(name)
+    return sorted(names)
+
+
+def product_workflows(env=None):
+    """repo -> production-deploy workflow name (declared table + env seam)."""
+    table = dict(PRODUCT_DEPLOY_WORKFLOWS)
+    seam = (env or os.environ).get("FLEET_DQ_DEPLOY_WORKFLOWS")
+    if not seam:
+        return table
+    try:
+        override = json.loads(Path(seam).read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError, UnicodeDecodeError) as exc:
+        print(f"deploy-quality: deploy-workflow override unreadable: {exc}", file=sys.stderr)
+        return table
+    if not isinstance(override, dict):
+        print("deploy-quality: deploy-workflow override is not a JSON object — ignored",
+              file=sys.stderr)
+        return table
+    for repo, workflow in override.items():
+        table[str(repo)] = str(workflow)
+    return table
+
+
+def _product_cache_paths(env, repo):
+    """(runs_cache, merged_cache) for one product repo.
+
+    repo is sanitised by product_repos() before it gets here, so the
+    filename cannot escape the cache directory.
+    """
+    cache_dir = _cache_paths(env)[0].parent
+    return (
+        cache_dir / f"deploy-quality-runs-{repo}.json",
+        cache_dir / f"deploy-quality-merged-{repo}.json",
+    )
+
+
+def _cached_product(cache_path, ttl, stale, fetcher, env):
+    """TTL/stale envelope for the CAPPED product-repo gh budget.
+
+    Same body as _cached(), but it consults _PRODUCT_FETCHES_THIS_RUN against
+    MAX_PRODUCT_FETCHES_PER_SCRAPE instead of the exporter-wide
+    _GH_FETCHED_THIS_RUN boolean, so the product family can neither spend nor
+    block the fleet-ops single-gh-call budget. The counter increments whether
+    the fetch succeeds or fails, matching the legacy flag's intent: once the
+    cap is reached a later miss serves the stale cache (up to `stale`) or
+    returns None — never a third gh call.
+    """
+    global _PRODUCT_FETCHES_THIS_RUN
+    data, age = _read_cache(cache_path)
+    if age is not None and age <= ttl and data is not None:
+        return data
+    if _PRODUCT_FETCHES_THIS_RUN >= MAX_PRODUCT_FETCHES_PER_SCRAPE:
+        if data is not None and age is not None and age <= stale:
+            print(f"deploy-quality: product gh budget spent "
+                  f"({MAX_PRODUCT_FETCHES_PER_SCRAPE}/scrape), serving stale cache "
+                  f"(age={int(age)}s)", file=sys.stderr)
+            return data
+        print(f"deploy-quality: product gh budget spent "
+              f"({MAX_PRODUCT_FETCHES_PER_SCRAPE}/scrape), no cache to serve",
+              file=sys.stderr)
+        return None
+    fresh = fetcher()
+    _PRODUCT_FETCHES_THIS_RUN += 1
+    if fresh is not None:
+        _write_cache(cache_path, fresh)
+        return fresh
+    if data is not None and age is not None and age <= stale:
+        print(f"deploy-quality product gh failed, serving stale cache (age={int(age)}s)",
+              file=sys.stderr)
+        return data
+    return None
+
+
+def _sort_runs(rows):
+    """Newest-first production-deploy runs, non-object rows dropped.
+
+    gh returns newest-first and the seam documents it; sorting here makes the
+    contract explicit instead of trusting the source. The sort is stable, so
+    runs sharing a createdAt keep their input order.
+    """
+    runs = [r for r in rows if isinstance(r, dict)]
+    runs.sort(
+        key=lambda r: (
+            _parse_iso_utc(r.get("createdAt") or "")
+            or _parse_iso_utc(r.get("updatedAt") or "")
+            or 0.0
+        ),
+        reverse=True,
+    )
+    return runs
+
+
+def _product_runs(repo, workflow, env):
+    """Newest-first production-deploy runs for one repo, or None.
+
+    Seam FLEET_DQ_DEPLOY_RUNS = path to a JSON object {repo: [run, ...]}; a
+    missing key means "not measurable" (None), not "no runs". The live path
+    caches to deploy-quality-runs-<repo>.json with RUNS_TTL/RUNS_STALE.
+
+    An EMPTY run list is unmeasurable too, deliberately: `gh run list
+    --workflow <wrong name>` returns [] rather than an error, and reporting
+    that as "not green, blocked 0s" would hide the mistake. NaN gauges +
+    up=0 + a stderr line is the tripwire.
+    """
+    seam = (env or os.environ).get("FLEET_DQ_DEPLOY_RUNS")
+    if seam:
+        try:
+            blob = json.loads(Path(seam).read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError, UnicodeDecodeError) as exc:
+            print(f"deploy-quality: FLEET_DQ_DEPLOY_RUNS unreadable: {exc}", file=sys.stderr)
+            return None
+        rows = blob.get(repo) if isinstance(blob, dict) else None
+        if not isinstance(rows, list):
+            print(f"deploy-quality: FLEET_DQ_DEPLOY_RUNS has no entry for {repo}",
+                  file=sys.stderr)
+            return None
+        return _sort_runs(rows)
+    gh = (env or os.environ).get("FLEET_DQ_GH") or "gh"
+    runs_cache, _ = _product_cache_paths(env, repo)
+
+    def fetch():
+        return _gh_json([
+            gh, "run", "list", "--repo", f"Nishfleet/{repo}",
+            "--workflow", workflow, "--limit", "30",
+            "--json", "databaseId,status,conclusion,createdAt,updatedAt,url",
+        ], env, timeout=PRODUCT_GH_TIMEOUT)
+
+    rows = _cached_product(runs_cache, RUNS_TTL, RUNS_STALE, fetch, env)
+    if not isinstance(rows, list):
+        return None
+    return _sort_runs(rows)
+
+
+def _merged_epochs(rows):
+    """[{mergedAt}] rows -> sorted epochs (unparseable rows dropped)."""
+    out = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        ep = _parse_iso_utc(row.get("mergedAt") or "")
+        if ep is not None:
+            out.append(ep)
+    return out
+
+
+def _product_merged_epochs(repo, env):
+    """Merged-at epochs in the trailing window for one repo, or None.
+
+    Seam FLEET_DQ_PRODUCT_MERGED = path to a JSON object
+    {repo: [{mergedAt}]}. The live path mirrors _merged_records (day-granular
+    lower bound in the search, python filters the upper edge) but per repo
+    and through the capped product budget.
+    """
+    seam = (env or os.environ).get("FLEET_DQ_PRODUCT_MERGED")
+    if seam:
+        try:
+            blob = json.loads(Path(seam).read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError, UnicodeDecodeError) as exc:
+            print(f"deploy-quality: FLEET_DQ_PRODUCT_MERGED unreadable: {exc}", file=sys.stderr)
+            return None
+        rows = blob.get(repo) if isinstance(blob, dict) else None
+        if not isinstance(rows, list):
+            print(f"deploy-quality: FLEET_DQ_PRODUCT_MERGED has no entry for {repo}",
+                  file=sys.stderr)
+            return None
+        return _merged_epochs(rows)
+    now = _now(env)
+    cutoff_iso = _iso(now - WINDOW_DAYS * 86400)[:10]
+    gh = (env or os.environ).get("FLEET_DQ_GH") or "gh"
+    _, merged_cache = _product_cache_paths(env, repo)
+
+    def fetch():
+        return _gh_json([
+            gh, "pr", "list", "--repo", f"Nishfleet/{repo}",
+            "--state", "merged", "--limit", "5000",
+            "--search", f"merged:>={cutoff_iso} base:main",
+            "--json", "number,mergedAt",
+        ], env, timeout=PRODUCT_GH_TIMEOUT)
+
+    rows = _cached_product(merged_cache, GH_TTL, GH_STALE, fetch, env)
+    if not isinstance(rows, list):
+        return None
+    return _merged_epochs(rows)
+
+
+def _run_completion(run):
+    """(createdAt, completion) epochs for one run; completion falls back to
+    createdAt when updatedAt is missing."""
+    created = _parse_iso_utc(run.get("createdAt") or "")
+    return created, (
+        _parse_iso_utc(run.get("updatedAt") or "") or created
+    )
+
+
+def _product_greens(runs):
+    """Sorted completion epochs of the runs that concluded success."""
+    greens = []
+    for run in runs:
+        if run.get("conclusion") != GREEN_CONCLUSION:
+            continue
+        _created, completion = _run_completion(run)
+        if completion is not None:
+            greens.append(completion)
+    greens.sort()
+    return greens
+
+
+def _product_blocked(runs, now):
+    """(duration, run_start, lower_bound) of the trailing non-green streak.
+
+    Only GREEN_CONCLUSION ("success") is green. Walk newest -> oldest while
+    non-green; the streak's OLDEST createdAt is the episode start. 0.0 when
+    the newest run is green. When the streak reaches the end of the fetched
+    (limit-30) list the true start may be older, so the value is a LOWER
+    BOUND: the caller logs one stderr line and never clamps to 0.
+    """
+    if not runs:
+        return None, None, False
+    if runs[0].get("conclusion") == GREEN_CONCLUSION:
+        return 0.0, None, False
+    start = None
+    lower_bound = True
+    for run in runs:
+        if run.get("conclusion") == GREEN_CONCLUSION:
+            lower_bound = False
+            break
+        created, _completion = _run_completion(run)
+        if created is not None:
+            start = created
+    if start is None:
+        return None, None, lower_bound
+    return max(0.0, now - start), start, lower_bound
+
+
+def compute_product(repo, workflow, env=None):
+    """Measure one product repo's production-deploy SLOs (fleet-ops#5140).
+
+    Returns a payload dict. Raises ValueError when the repo cannot be
+    measured at all this scrape (no runs for the declared workflow) —
+    prom_lines turns that into NaN gauges + fleet_deployment_quality_up 0 for
+    THIS repo only, never a silent absence and never a sibling's failure.
+
+    A merges outage is narrower on purpose: the latency gauge goes NaN with a
+    stderr line while green/blocked still report, because the stall signal is
+    the one that must survive a gh hiccup. This mirrors compute(), where a
+    dead journal NaNs blocked_duration but leaves up=1.
+
+    Latency: for each merge, the first green run whose completion (updatedAt
+    else createdAt) >= the merge gives one sample. Merges older than the
+    oldest fetched run are excluded as unmeasurable — the m < journal_start
+    lesson from fleet-ops#3136.
+    """
+    env = env or {}
+    now = _now(env)
+    runs = _product_runs(repo, workflow, env)
+    if not runs:
+        raise ValueError(
+            f"no runs for workflow {workflow!r} (misnamed workflow, empty run list, "
+            "or the fetch failed)"
+        )
+
+    coverage_start = None
+    for run in runs:
+        created, _completion = _run_completion(run)
+        if created is not None and (coverage_start is None or created < coverage_start):
+            coverage_start = created
+
+    latency_p95 = None
+    latency_samples = 0
+    merged = _product_merged_epochs(repo, env)
+    if merged is None:
+        print(f"deploy-quality: {repo} merged PRs unavailable — latency NaN this scrape",
+              file=sys.stderr)
+    else:
+        samples = []
+        greens = _product_greens(runs)
+        for m in merged:
+            if m > now:
+                continue
+            if coverage_start is None or m < coverage_start:
+                continue  # predates the run list — its wait is unmeasurable
+            for g in greens:
+                if g >= m:
+                    samples.append(g - m)
+                    break
+        latency_p95 = _p95(samples)
+        latency_samples = len(samples)
+
+    blocked_duration, run_start, lower_bound = _product_blocked(runs, now)
+    if lower_bound:
+        print(f"deploy-quality: {repo} non-green streak reaches the end of the fetched "
+              "run list — blocked duration is a LOWER BOUND", file=sys.stderr)
+
+    newest = runs[0]
+    green = 1 if newest.get("conclusion") == GREEN_CONCLUSION else 0
+    last_red_url = None
+    if not green:
+        last_red_url = str(newest.get("url") or "").strip() or None
+        if last_red_url is None:
+            print(f"deploy-quality: {repo} newest run is non-green but carries no url",
+                  file=sys.stderr)
+
+    return {
+        "repo": repo,
+        "workflow": workflow,
+        "now": now,
+        "up": 1,
+        "latency_p95": latency_p95,
+        "latency_samples": latency_samples,
+        "blocked_duration": blocked_duration,
+        "blocked_run_start": run_start,
+        "blocked_lower_bound": lower_bound,
+        "green": green,
+        "last_red_url": last_red_url,
+    }
+
+
 def _fmt(v):
     if v is None:
         return "NaN"
@@ -745,36 +1298,101 @@ def _fmt(v):
     return str(v)
 
 
+def _prom_quote(value):
+    """Escape a Prometheus label value (backslash, double quote, newline)."""
+    return str(value).replace("\\", "\\\\").replace('"', '\\"').replace("\n", "\\n")
+
+
+def _product_row(name, payload):
+    """(labels, formatted value) for one product row, or None for no row.
+
+    Only the blocked-duration series carries the workflow label. A url label
+    is never placed on it: a URL that changes on every new run creates a new
+    series, a new series restarts the rule's `for: 15m` timer, and the alert
+    would never leave `pending` — that is the 28h-invisible stall this issue
+    exists to kill. The URL rides on fleet_product_deploy_last_red_run_info
+    instead.
+    """
+    repo = _prom_quote(payload.get("repo") or "")
+    workflow = _prom_quote(payload.get("workflow") or "")
+    key = _PRODUCT_VALUE_KEYS.get(name)
+    if key is not None:
+        if name == "fleet_deploy_blocked_duration_seconds":
+            labels = f'repo="{repo}",workflow="{workflow}"'
+        else:
+            labels = f'repo="{repo}"'
+        return labels, _fmt(payload.get(key))
+    if name == "fleet_product_deploy_last_red_run_info":
+        url = payload.get("last_red_url")
+        if not url:
+            return None
+        return f'repo="{repo}",workflow="{workflow}",url="{_prom_quote(url)}"', "1"
+    return None
+
+
+def _emit_family(fleet_payload, products):
+    """Group the family by metric name: HELP/TYPE once, fleet-ops first.
+
+    Iterating metric names (not payloads) is what keeps # HELP/# TYPE at
+    exactly one per name across the whole output; emitting the fleet-ops row
+    before the product rows is what keeps the existing
+    `line.startswith(name + " ")` + break assertions reading the fleet-ops
+    value.
+    """
+    out = [""]
+    fleet_label = f'repo="{REPO}"'
+    for name, help_text in METRIC_DEFS:
+        rows = []
+        if name not in _PRODUCT_ONLY_METRICS:
+            rows.append((fleet_label, _fmt(fleet_payload.get(_FLEET_VALUE_KEYS.get(name)))))
+        for payload in products:
+            row = _product_row(name, payload)
+            if row is not None:
+                rows.append(row)
+        if not rows:
+            continue
+        out.append(f"# HELP {name} {help_text}")
+        out.append(f"# TYPE {name} gauge")
+        for labels, value in rows:
+            out.append(f"{name}{{{labels}}} {value}")
+    return out
+
+
 def prom_lines(env=None):
     """Return the Prometheus text lines for the deploy-quality family.
 
-    Raises ValueError on hard failure (caller emits NaN + up 0); the
-    per-gauge values carry their own NaN when a sub-metric had no samples.
+    Single entry point, and it NEVER raises (fleet-ops#5140): a fleet-ops
+    failure degrades to all-NaN + up 0, and each product repo degrades on its
+    own — one repo's exception must never NaN its siblings. The exporter's
+    own fallback is now only for a module LOAD failure; a second HELP/TYPE
+    block for the same metric name breaks the one-HELP-per-name discipline
+    the textfile collector needs.
     """
-    p = compute(env)
-    label = f'repo="{REPO}"'
-    out = [""]
-    for name, help in METRIC_DEFS:
-        if name == "fleet_deployment_latency_seconds":
-            v = p["latency_p95"]
-        elif name == "fleet_deployment_rollback_rate":
-            v = p["rollback_rate"]
-        elif name == "fleet_deployment_time_to_detect_seconds":
-            v = p["time_to_detect_p95"]
-        elif name == "fleet_deployment_success_rate":
-            v = p["success_rate"]
-        elif name == "fleet_deploy_blocked_duration_seconds":
-            v = p["blocked_duration"]
-        elif name == "fleet_deployment_quality_up":
-            v = 1
-        elif name == "fleet_deployment_total":
-            v = p["total"]
-        else:  # fleet_deployment_revert_total
-            v = p["revert_total"]
-        out.append(f"# HELP {name} {help}")
-        out.append(f"# TYPE {name} gauge")
-        out.append(f"{name}{{{label}}} {_fmt(v)}")
-    return out
+    e = env if env is not None else os.environ
+    try:
+        fleet_payload = compute(env)
+    except Exception as exc:  # noqa: BLE001 - prom_lines must never raise
+        print(f"deploy-quality: fleet-ops computation failed: {exc}", file=sys.stderr)
+        fleet_payload = _failed_payload()
+    try:
+        repos = product_repos(e)
+        workflows = product_workflows(e)
+    except Exception as exc:  # noqa: BLE001 - prom_lines must never raise
+        print(f"deploy-quality: product repo resolution failed: {exc}", file=sys.stderr)
+        repos, workflows = [], {}
+    products = []
+    for repo in repos:
+        workflow = str(workflows.get(repo) or "")
+        try:
+            if not workflow:
+                raise ValueError("no production-deploy workflow declared in "
+                                 "PRODUCT_DEPLOY_WORKFLOWS")
+            products.append(compute_product(repo, workflow, e))
+        except Exception as exc:  # noqa: BLE001 - degrade this repo only
+            print(f"deploy-quality: product repo {repo} unmeasurable: {exc} "
+                  "(NaN gauges, up 0)", file=sys.stderr)
+            products.append(_failed_product(repo, workflow))
+    return _emit_family(fleet_payload, products)
 
 
 def _fmt_json(p):

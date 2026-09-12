@@ -6,7 +6,11 @@
 # Human gh is read-only for organs; GH Actions (tests) has no App creds and
 # stubs gh as read-only, so skip minting there.
 if [[ -z "${GH_TOKEN:-}" && "${GITHUB_ACTIONS:-}" != "true" && "${GH:-gh}" == "gh" ]]; then
-    export PATH="/home/nish/.local/bin:/usr/local/bin:/usr/bin:/bin:${PATH:-}"
+    # fleet-ops#5037: only extend PATH when gh is missing. Prepending
+    # unconditionally put /home/nish/.local/bin AHEAD of an inherited stub
+    # gh, so a drill run from a shell with no GH_TOKEN resolved the real gh
+    # and filed its synthetic fixture into the live tracker.
+    command -v gh >/dev/null 2>&1 || export PATH=/home/nish/.local/bin:/usr/local/bin:/usr/bin:/bin:${PATH:-}
     _wt="${NISHFLEET_WORKER_TOKEN_BIN:-${HOME:-/home/nish}/.local/bin/worker-token}"
     _minted="$("$_wt" --print)" || { echo "fleet-ops#3445: $_wt --print failed - refusing human-gh writes" >&2; exit 1; }
     eval "$_minted"
@@ -678,6 +682,19 @@ ensure_orchestrator_label() {
     gh issue edit "$num" -R "$repo" --add-label needs-orchestrator >/dev/null
 }
 
+# orch_label_added_s — epoch seconds of the LAST needs-orchestrator label add
+# on an issue, or non-zero if the timeline is unavailable (caller falls back
+# to createdAt). The add event, not the removal, is the entry into the class:
+# the issue is open and carries the label right now.
+orch_label_added_s() {
+    local repo="$1" num="$2" iso=""
+    iso=$(gh api "repos/${repo}/issues/${num}/timeline?per_page=100" --paginate 2>/dev/null \
+        | jq -r '.[]? | select(.event == "labeled" and .label.name == "needs-orchestrator") | .created_at' 2>/dev/null \
+        | tail -n1) || true
+    [ -n "$iso" ] || return 1
+    date -u -d "$iso" +%s 2>/dev/null || return 1
+}
+
 rewrite_triage() {
     local snapshot="$1"
     python3 - "$TRIAGE" "$snapshot" <<'PY'
@@ -1312,6 +1329,22 @@ while IFS= read -r repo; do
         if [ "$ocreated_s" -gt 0 ]; then
             oage_s=$((NOW_S - ocreated_s))
         fi
+        # The age that the FleetNeedsOrchestratorStale drain-detector needs is
+        # time WAITING ON THE ORCHESTRATOR, not issue age. Ageing from
+        # createdAt meant parking any ticket older than 2h reported a p50 over
+        # the 2h threshold on the very tick it was parked (2026-09-10T21:21Z
+        # alert-repair: 0509#2375/#2383 created 03:14Z, parked in the class
+        # 20:17Z/20:44Z, answered by the drain 20:56Z — p50 read 17.6h and
+        # dispatched a repair worker for a drain that was running fine).
+        # Prefer the last label add; fall back to createdAt when the timeline
+        # is unavailable so a gh fault degrades to the old behaviour, not 0.
+        oentry_s=$(orch_label_added_s "$repo" "$onum" || true)
+        if [ -n "$oentry_s" ] && [ "$oentry_s" -gt 0 ] 2>/dev/null; then
+            oage_s=$((NOW_S - oentry_s))
+            if [ "$oage_s" -lt 0 ]; then
+                oage_s=0
+            fi
+        fi
         jq -nc --arg ref "${repo}#${onum}" --argjson age "$oage_s" \
             '{ref:$ref, age_s:$age}' >>"$orch_file"
         printf '%s\n' "$oage_s" >>"$orch_ages_file"
@@ -1342,7 +1375,8 @@ fi
 orch_items_json=$(if [ -s "$orch_file" ]; then jq -s '.' "$orch_file"; else echo '[]'; fi)
 orch_count=$(printf '%s' "$orch_items_json" | jq 'length')
 orch_oldest_s=$(printf '%s' "$orch_items_json" | jq -r 'if length==0 then 0 else max_by(.age_s).age_s end')
-# p50 (median) of the needs-orchestrator ages — the alert source for
+# p50 (median) of the needs-orchestrator ages (time in the class, see
+# orch_label_added_s) — the alert source for
 # fleet_blocked_issue_age_seconds{kind="needs-orchestrator",quantile="0.5"}.
 orch_p50_s=$(python3 - "$orch_ages_file" <<'PY'
 import sys

@@ -1,0 +1,32 @@
+#!/usr/bin/env bash
+# fleet-gate-arm-guard — auto-merge arm criterion for fleet-ops#5238.
+#
+# Pure evaluator. No dispatch, no retry, no GitHub writes. A PR whose
+# diff touches gate-owned paths must not be auto-merge-armed while its
+# `gate-integrity` check is not green (PR #5207 merged past a FAILURE
+# because the advisory check is not a required context). Refusal is
+# non-sticky: a green verdict re-arms on the next pull_request event or
+# the hourly tier1 queue pass.
+#
+# Usage:
+#   fleet-gate-arm-guard evaluate --input fixture.json
+#   fleet-gate-arm-guard evaluate --repo OWNER/NAME --pr N \
+#       [--globs-json '[".github/workflows/**", ...]'] [--wait-seconds 90]
+#
+# --globs-json omitted uses the same defaults as lib/gate-integrity-config.sh
+# (the reusable arm workflow always passes the repo's resolved set). Callers
+# disarm on refuse; this binary does not write.
+#
+# Exit codes: 0 arm, 1 refuse, 2 helper error (callers fail OPEN on 2 —
+# the same posture as the arm workflow's freeze/quality gates).
+#
+# The implementation lives in lib/gate-arm-guard.py.
+
+set -euo pipefail
+
+here="$(cd "$(dirname "$(readlink -f "$0")")" && pwd)"
+lib="${GATE_ARM_GUARD_LIB:-$here/../lib/pi-packet/gate-arm-guard.py}"
+[ -f "$lib" ] || lib="$here/../lib/gate-arm-guard.py"
+[ -f "$lib" ] || { echo "fleet-gate-arm-guard: library missing: $lib" >&2; exit 2; }
+
+exec python3 "$lib" "$@"

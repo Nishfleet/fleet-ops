@@ -72,7 +72,7 @@
 set -Eeuo pipefail
 
 export HOME="${HOME:-/home/nish}"
-export PATH="/home/nish/.local/bin:/usr/local/bin:/usr/bin:/bin"
+command -v gh >/dev/null 2>&1 || export PATH=/home/nish/.local/bin:/usr/local/bin:/usr/bin:/bin
 
 GH="${GH:-gh}"
 ISSUE_FILE="${FLEET_ISSUE_FILE:-$(cd "$(dirname "$(readlink -f "$0")")" && pwd)/fleet-issue-file}"
@@ -120,6 +120,33 @@ PREPAID_SPEND_DIR="${FLEET_PREPAID_SPEND_DIR:-$STATE_DIR/prepaid-spend}"
 PREPAID_PROM_PATH="${FLEET_PREPAID_PROM_PATH:-/var/lib/prometheus/node-exporter/prepaid-spend.prom}"
 ETIMEDOUT_HORIZON_H="${FLEET_PREPAID_ETIMEDOUT_HORIZON_H:-24}"
 CURL="${CURL:-curl}"
+
+# --- OpenCode Go subscription usage reader (fleet-ops#5022) ---
+# OpenCode Go is a $10/mo prepaid subscription whose limits are 5-hour (20%
+# of the monthly allowance), weekly (50%) and monthly (100%) percentages. The
+# fleet could not see any of them: prepaid-usage/opencode-go.json carried a
+# session count only, usd_today 0, so weekly_budget pacing was a no-op and the
+# weekly pool reached 80.1% with 3.3 days left while the cap sat at 10 — a
+# human read the console. The subscription's own endpoint
+# GET https://opencode.ai/zen/go/v1/usage (same key Pi already sends to
+# /zen/go/v1, so no console session token and no new credential) answers
+# {"usage":{"rolling":{"percent":N,"resetsAt":ISO},...}}. This reader is the
+# meter that closes that blind spot; fleet_seat_quota_* is untouched (that
+# family belongs to fleet-metrics-export.py / fleet.prom), so this writes its
+# own prepaid-usage.prom next to the cursor spend textfile.
+OPENCODE_GO_AUTH_JSON="${OPENCODE_GO_AUTH_JSON:-$HOME/.local/share/opencode/auth.json}"
+OPENCODE_GO_ENV_FILE="${OPENCODE_GO_ENV_FILE:-/home/nish/fleet2/etc/opencode-go.env}"
+OPENCODE_GO_USAGE_ENDPOINT="${OPENCODE_GO_USAGE_ENDPOINT:-https://opencode.ai/zen/go/v1/usage}"
+OPENCODE_GO_USAGE_URL="${OPENCODE_GO_USAGE_URL:-}"  # test fixture: path or URL
+PREPAID_USAGE_PROM_PATH="${FLEET_PREPAID_USAGE_PROM_PATH:-/var/lib/prometheus/node-exporter/prepaid-usage.prom}"
+# Cap per unit of burn rate. Measured 2026-09-10: 80% of the weekly pool over
+# ~4 days is ~0.8%/h while the fleet cap was 10, so one cap unit buys
+# 0.8/10 = 0.08%/h and K = 10 / 0.8 = 12.5 cap-units per (%/h). The paced cap
+# is floor(remaining_weekly_pct / hours_to_reset * K): how much concurrency
+# spends exactly the remaining pool by the reset.
+OPENCODE_GO_PACE_K="${OPENCODE_GO_PACE_K:-12.5}"
+# 5h window at/above this used-percent counts as walled (issue: >= 95%).
+OPENCODE_GO_ROLLING_WALL_PCT="${OPENCODE_GO_ROLLING_WALL_PCT:-95}"
 
 # fleet-ops#4621: shared 24h API-bucket figure so usd_today is the vendor
 # number, not the token-derived 0.000000. Source from the repo next to this
@@ -429,6 +456,174 @@ write_cursor_usd_today() {
     log "cursor spend reader: usd_today=$figure cursor_api_cycle_usd=$cycle -> $f"
 }
 
+# --- OpenCode Go usage reader + pacing (fleet-ops#5022) --------------------
+# Key source, in order: the env file Pi's models.json already reads
+# (/home/nish/fleet2/etc/opencode-go.env, `OPENCODE_GO_API_KEY=...`), else the
+# opencode CLI auth store (~/.local/share/opencode/auth.json, ."opencode-go").key).
+# The value is sent ONLY to opencode.ai over HTTPS and is never logged.
+opencode_go_key() {
+    local key=""
+    if [[ -r "$OPENCODE_GO_ENV_FILE" ]]; then
+        key=$(sed -n 's/^OPENCODE_GO_API_KEY=//p' "$OPENCODE_GO_ENV_FILE" 2>/dev/null | head -n1 || true)
+    fi
+    if [[ -z "$key" && -r "$OPENCODE_GO_AUTH_JSON" ]]; then
+        key=$(jq -r '."opencode-go".key // empty' "$OPENCODE_GO_AUTH_JSON" 2>/dev/null || true)
+    fi
+    printf '%s' "$key"
+}
+
+# Echoes one tab-separated row per window (5h, weekly, monthly):
+#   window<TAB>used_percent<TAB>reset_epoch
+# Empty on any failure (no metric emitted; the absent() rule fires).
+opencode_go_measured_usage() {
+    local resp key epoch
+    if [[ -n "$OPENCODE_GO_USAGE_URL" ]]; then
+        if [[ -f "$OPENCODE_GO_USAGE_URL" ]]; then
+            resp=$(cat "$OPENCODE_GO_USAGE_URL" 2>/dev/null || true)
+        else
+            resp=$("$CURL" -s -m 15 "$OPENCODE_GO_USAGE_URL" 2>/dev/null || true)
+        fi
+    else
+        key=$(opencode_go_key)
+        [[ -n "$key" ]] || { echo ""; return; }
+        resp=$("$CURL" -s -m 15 -H "Authorization: Bearer $key" \
+            "$OPENCODE_GO_USAGE_ENDPOINT" 2>/dev/null || true)
+    fi
+    [[ -n "$resp" ]] || { echo ""; return; }
+    if ! jq -e '.usage.rolling.percent // .usage.weekly.percent' >/dev/null 2>&1 <<<"$resp"; then
+        echo ""; return
+    fi
+    while IFS=$'\t' read -r win pct iso; do
+        [[ -n "$win" ]] || continue
+        [[ "$pct" =~ ^[0-9]+(\.[0-9]+)?$ ]] || pct=0
+        epoch=$(date -u -d "$iso" +%s 2>/dev/null || echo 0)
+        [[ "$epoch" =~ ^[0-9]+$ ]] || epoch=0
+        printf '%s\t%s\t%s\n' "$win" "$pct" "$epoch"
+    done < <(jq -r '
+        .usage as $u
+        | [["5h", ($u.rolling.percent // 0), ($u.rolling.resetsAt // "")],
+           ["weekly", ($u.weekly.percent // 0), ($u.weekly.resetsAt // "")],
+           ["monthly", ($u.monthly.percent // 0), ($u.monthly.resetsAt // "")]]
+        | .[] | @tsv' <<<"$resp" 2>/dev/null || true)
+}
+
+# Paced cap: floor(remaining_weekly_pct / hours_to_reset * K), floor 1,
+# ceiling the declared cap. Echoes the integer, or empty when the inputs are
+# unusable (no weekly reset, reset already passed, declared cap 0).
+opencode_go_paced_cap() {
+    local remaining_pct="$1" reset_epoch="$2" declared="$3"
+    local now_s hours
+    [[ "$declared" =~ ^[1-9][0-9]*$ ]] || { echo ""; return; }
+    now_s=$(date -u +%s)
+    [[ "$reset_epoch" =~ ^[0-9]+$ ]] || { echo ""; return; }
+    (( reset_epoch > now_s )) || { echo ""; return; }
+    hours=$(awk -v a="$reset_epoch" -v b="$now_s" 'BEGIN{printf "%.4f", (a-b)/3600}')
+    awk -v rem="$remaining_pct" -v h="$hours" -v k="$OPENCODE_GO_PACE_K" -v cap="$declared" '
+        BEGIN {
+            if (h <= 0 || k <= 0) { print ""; exit }
+            c = int((rem / h) * k)
+            if (c < 1) c = 1
+            if (c > cap) c = cap
+            print c
+        }'
+}
+
+# Write the OpenCode Go usage state + node_exporter textfile. State file:
+# $STATE_DIR/prepaid-usage/opencode-go.json — the pick counter seat-lib owns
+# (week, count) and the 429/200 flags are preserved; this is a usage overlay,
+# not a pick. Textfile: its own file (the cursor writer owns prepaid-spend.prom
+# outright and truncates it), so a dead reader leaves the metric absent and the
+# FleetOpenCodeGoUsageReaderAbsent rule fires instead of silently freezing 0.
+emit_opencode_go_prepaid_usage() {
+    local rows found=0 win pct reset_epoch
+    local weekly_pct="" weekly_reset=0 rolling_pct="" rolling_reset=0 monthly_pct="" monthly_reset=0
+    rows=$(opencode_go_measured_usage) || rows=""
+    if [[ -z "$rows" ]]; then
+        log "opencode-go usage reader: no data (key missing or API unreachable) — metric omitted, absent() rule will fire"
+        return 0
+    fi
+    while IFS=$'\t' read -r win pct reset_epoch; do
+        [[ -n "$win" ]] || continue
+        found=1
+        case "$win" in
+            5h) rolling_pct="$pct"; rolling_reset="$reset_epoch" ;;
+            weekly) weekly_pct="$pct"; weekly_reset="$reset_epoch" ;;
+            monthly) monthly_pct="$pct"; monthly_reset="$reset_epoch" ;;
+        esac
+    done <<<"$rows"
+    (( found == 1 )) || return 0
+
+    local declared paced="" observed_s remaining_pct=0
+    declared=$(jq -r '.providers."opencode-go".cap // 0' "$SEAT_CAPS_JSON" 2>/dev/null || echo 0)
+    [[ "$declared" =~ ^[0-9]+$ ]] || declared=0
+    if [[ -n "$weekly_pct" ]]; then
+        remaining_pct=$(awk -v p="$weekly_pct" 'BEGIN{r=100-p; if (r<0) r=0; printf "%.4f", r}')
+        paced=$(opencode_go_paced_cap "$remaining_pct" "$weekly_reset" "$declared" || true)
+    fi
+    observed_s=$(date -u +%s)
+
+    mkdir -p "$PREPAID_SPEND_DIR" 2>/dev/null || true
+    local state="$STATE_DIR/prepaid-usage/opencode-go.json"
+    mkdir -p "$STATE_DIR/prepaid-usage" 2>/dev/null || true
+    local tmp="$state.tmp.$$" existing="{}"
+    [[ -f "$state" ]] && existing=$(cat "$state" 2>/dev/null || echo '{}')
+    jq -e . >/dev/null 2>&1 <<<"$existing" || existing='{}'
+    jq -nc --argjson base "$existing" \
+        --argjson rp "${rolling_pct:-0}" --argjson rr "${rolling_reset:-0}" \
+        --argjson wp "${weekly_pct:-0}" --argjson wr "${weekly_reset:-0}" \
+        --argjson mp "${monthly_pct:-0}" --argjson mr "${monthly_reset:-0}" \
+        --argjson obs "$observed_s" --arg paced "${paced:-}" --argjson declared "$declared" \
+        '$base + {
+          usage:{rolling:{percent:$rp,reset_epoch:$rr},weekly:{percent:$wp,reset_epoch:$wr},monthly:{percent:$mp,reset_epoch:$mr}},
+          usage_observed_epoch:$obs,usage_paced_cap:(if $paced == "" then null else ($paced|tonumber) end),
+          usage_declared_cap:$declared,
+          usage_source:"opencode-zen-go-usage-api"}' >"$tmp" 2>/dev/null || {
+        rm -f "$tmp"
+        log "WARN: could not write opencode-go usage state $state"
+        return 0
+    }
+    mv -f "$tmp" "$state" 2>/dev/null || { rm -f "$tmp"; return 0; }
+
+    local prom_tmp="${PREPAID_USAGE_PROM_PATH}.$$"
+    {
+        printf '# HELP fleet_prepaid_usage_pct Used percent of a prepaid subscription window, from the vendor usage API (fleet-ops#5022).\n'
+        printf '# TYPE fleet_prepaid_usage_pct gauge\n'
+        printf 'fleet_prepaid_usage_pct{provider="opencode-go",window="5h"} %s\n' "${rolling_pct:-0}"
+        printf 'fleet_prepaid_usage_pct{provider="opencode-go",window="weekly"} %s\n' "${weekly_pct:-0}"
+        printf 'fleet_prepaid_usage_pct{provider="opencode-go",window="monthly"} %s\n' "${monthly_pct:-0}"
+        printf '# HELP fleet_prepaid_window_reset_seconds Seconds until a prepaid subscription window resets (fleet-ops#5022).\n'
+        printf '# TYPE fleet_prepaid_window_reset_seconds gauge\n'
+        printf 'fleet_prepaid_window_reset_seconds{provider="opencode-go",window="5h"} %s\n' "$(awk -v r="$rolling_reset" -v n="$observed_s" 'BEGIN{s=r-n; if (s<0) s=0; printf "%.0f", s}')"
+        printf 'fleet_prepaid_window_reset_seconds{provider="opencode-go",window="weekly"} %s\n' "$(awk -v r="$weekly_reset" -v n="$observed_s" 'BEGIN{s=r-n; if (s<0) s=0; printf "%.0f", s}')"
+        printf 'fleet_prepaid_window_reset_seconds{provider="opencode-go",window="monthly"} %s\n' "$(awk -v r="$monthly_reset" -v n="$observed_s" 'BEGIN{s=r-n; if (s<0) s=0; printf "%.0f", s}')"
+        printf '# HELP fleet_prepaid_window_reset_timestamp Unix seconds at which a prepaid subscription window resets (fleet-ops#5022).\n'
+        printf '# TYPE fleet_prepaid_window_reset_timestamp gauge\n'
+        printf 'fleet_prepaid_window_reset_timestamp{provider="opencode-go",window="5h"} %s\n' "${rolling_reset:-0}"
+        printf 'fleet_prepaid_window_reset_timestamp{provider="opencode-go",window="weekly"} %s\n' "${weekly_reset:-0}"
+        printf 'fleet_prepaid_window_reset_timestamp{provider="opencode-go",window="monthly"} %s\n' "${monthly_reset:-0}"
+        printf '# HELP fleet_prepaid_paced_cap Concurrency the remaining prepaid pool supports to the reset, floor(remaining_pct/hours_to_reset*K) (fleet-ops#5022).\n'
+        printf '# TYPE fleet_prepaid_paced_cap gauge\n'
+        printf 'fleet_prepaid_paced_cap{provider="opencode-go"} %s\n' "${paced:-0}"
+        printf '# HELP fleet_prepaid_declared_cap Declared provider cap in seat-caps.json, the pacing ceiling (fleet-ops#5022).\n'
+        printf '# TYPE fleet_prepaid_declared_cap gauge\n'
+        printf 'fleet_prepaid_declared_cap{provider="opencode-go"} %s\n' "$declared"
+        printf '# HELP fleet_prepaid_usage_observed_timestamp Unix seconds at which the prepaid usage reader last succeeded (fleet-ops#5022).\n'
+        printf '# TYPE fleet_prepaid_usage_observed_timestamp gauge\n'
+        printf 'fleet_prepaid_usage_observed_timestamp{provider="opencode-go"} %s\n' "$observed_s"
+    } >"$prom_tmp" 2>/dev/null
+    if chmod 0644 "$prom_tmp" 2>/dev/null && mv -f "$prom_tmp" "$PREPAID_USAGE_PROM_PATH" 2>/dev/null; then
+        :
+    else
+        rm -f "$prom_tmp" 2>/dev/null
+        log "WARN: could not write prepaid-usage.prom $PREPAID_USAGE_PROM_PATH"
+    fi
+    log "opencode-go usage reader: 5h=${rolling_pct:-?}% weekly=${weekly_pct:-?}% monthly=${monthly_pct:-?}% paced_cap=${paced:-?} declared_cap=$declared -> $PREPAID_USAGE_PROM_PATH"
+    if [[ -n "${rolling_pct:-}" ]] && awk -v p="$rolling_pct" -v w="$OPENCODE_GO_ROLLING_WALL_PCT" 'BEGIN{exit !(p+0 >= w+0)}'; then
+        loud "PREPAID-UTIL-OPENCODE-GO-5H-WALL" \
+            "opencode-go 5h window at ${rolling_pct}% (>= ${OPENCODE_GO_ROLLING_WALL_PCT}%), resets in $(( rolling_reset > observed_s ? rolling_reset - observed_s : 0 ))s — a quota wall now benches the seat to that live reset, not the flat quota_bench_default_s"
+    fi
+}
+
 # --- ETIMEDOUT watch at cap 2 (fleet-ops#4206) ----------------------------
 # cursor/cursor-grok-4.6-high was raised 1->2 to spend the $400 pool. The
 # safety revert: if a cli_timeout (spawnSync ETIMEDOUT) lands in the cursor
@@ -614,6 +809,14 @@ fi
 # the DashboardService API. Non-fatal: a missing/unreachable reader leaves
 # the metric absent (the FleetCursorPrepaidSpendReaderAbsent rule fires).
 emit_cursor_prepaid_spend
+
+# ---- OpenCode Go usage + pacing (fleet-ops#5022) -------------------------
+# Emit fleet_prepaid_usage_pct{provider="opencode-go",window="5h|weekly|monthly"}
+# + reset timestamps + fleet_prepaid_paced_cap from the subscription's own
+# usage endpoint, and overlay them into prepaid-usage/opencode-go.json.
+# Non-fatal: a dead reader leaves the series absent so
+# FleetOpenCodeGoUsageReaderAbsent fires instead of a frozen 0.
+emit_opencode_go_prepaid_usage
 
 # ---- ETIMEDOUT watch at cap 2 (fleet-ops#4206) ---------------------------
 # If the cursor seat ledger carries a fresh cli_timeout while cap >= 2,

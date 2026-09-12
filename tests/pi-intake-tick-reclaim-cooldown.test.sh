@@ -141,4 +141,12 @@ bash "$here/fleet-ops-4273-escalation-never-nish-decision.test.sh" || fail "flee
 # #2772/#4273 hosts above.
 bash "$here/pi-intake-tick-awaiting-runtime-gate.test.sh" || fail "fleet-ops-4540 awaiting-runtime-gate park detector tests failed"
 
+# fleet-ops#5045: the mention-strand slow-spaced reclaim spin — a
+# NON-protected issue whose merged claim-branch PRs are all Relates-to
+# mentions (never a delivery) stranded in re-claim (live: #4980). Hosted
+# here from pi-intake-tick-mention-strand-park.test.sh (the worker App
+# cannot push .github/workflows/**). Same intake dispatch family as the
+# #2772/#4273/#4540 hosts above.
+bash "$here/pi-intake-tick-mention-strand-park.test.sh" || fail "fleet-ops-5045 mention-strand park detector tests failed"
+
 echo "ALL OK: intake-tick reclaim cooldown + stale-claim release (fleet-ops#2133)"

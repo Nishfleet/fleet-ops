@@ -12,7 +12,10 @@
 #   - any DetachedJobDied with an empty cmdline (unlaunchable)
 # while still dispatching a real detached job like pi-fleetops-pr4422-rebase.
 #
-# Hermetic: no live 9090, no real systemd, no real dead-man textfile.
+# Hermetic: no live 9090, no real systemd, no real dead-man textfile, no
+# real journalctl/gh — the fleet-ops#5142 deliverable pre-flight seams
+# (JOURNALCTL_BIN, GH, FLEET_DISPATCH_LEDGER/AGENT_STATE, PI_SYSTEMD_RUN_BIN)
+# all point into scratch.
 
 set -euo pipefail
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -27,7 +30,8 @@ python3 -m py_compile "$dispatch_bin" || fail "py_compile failed"
 
 scratch="$(mktemp -d -t alert-repair-recursion.XXXXXX)"
 trap 'rm -rf "$scratch"' EXIT INT TERM
-mkdir -p "$scratch/packets" "$scratch/seats" "$scratch/mock-bin"
+mkdir -p "$scratch/packets" "$scratch/seats" "$scratch/mock-bin" \
+         "$scratch/agent-state"
 
 NOW=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 
@@ -56,6 +60,40 @@ exit 0
 MOCK
 chmod +x "$MOCK_CLAIM"
 
+# Mock journalctl (JOURNALCTL_BIN seam): records argv, prints nothing — no
+# `died:` line ever matches, so the pre-flight's journal leg returns ''.
+MOCK_JOURNALCTL="$scratch/mock-bin/journalctl"
+cat >"$MOCK_JOURNALCTL" <<'MOCK'
+#!/usr/bin/env bash
+echo "journalctl $*" >> "${MOCK_JOURNAL_LOG:-/dev/null}"
+exit 0
+MOCK
+chmod +x "$MOCK_JOURNALCTL"
+
+# Mock gh (GH seam): records argv and exits 1. Fail-closed stub — if the
+# pre-flight ever reaches it, gh failing must still leave the dispatch
+# fail-open (which is exactly what the NO-SPAWN assertions check). With an
+# empty AGENT_STATE there is no dispatch-ledger.jsonl, so the ledger leg
+# finds nothing and gh is never reached anyway.
+MOCK_GH="$scratch/mock-bin/gh"
+cat >"$MOCK_GH" <<'MOCK'
+#!/usr/bin/env bash
+echo "gh $*" >> "${MOCK_GH_LOG:-/dev/null}"
+exit 1
+MOCK
+chmod +x "$MOCK_GH"
+
+# Mock spawn helper (PI_SYSTEMD_RUN_BIN seam): records argv and exits 0.
+# ALERT_REPAIR_NO_SPAWN already suppresses the spawn path; the seam still
+# points into scratch so a real pi-systemd-run is unreachable.
+MOCK_SPAWN="$scratch/mock-bin/pi-systemd-run"
+cat >"$MOCK_SPAWN" <<'MOCK'
+#!/usr/bin/env bash
+echo "pi-systemd-run $*" >> "${MOCK_SPAWN_LOG:-/dev/null}"
+exit 0
+MOCK
+chmod +x "$MOCK_SPAWN"
+
 # Base environment for every dispatch.
 export PACKET_DIR="$scratch/packets"
 export ALERT_REPAIR_PACKET_DIR="$scratch/packets"
@@ -64,8 +102,16 @@ export SEAT_LEDGER_DIR="$scratch/seats"
 export ALERT_REPAIR_CLAIM_BIN="$MOCK_CLAIM"
 export PI_DEADMAN_BIN="$MOCK_DEADMAN"
 export PI_DEADMAN_TEXTFILE="$scratch/fleet-detached.prom"
+export JOURNALCTL_BIN="$MOCK_JOURNALCTL"
+export GH="$MOCK_GH"
+export PI_SYSTEMD_RUN_BIN="$MOCK_SPAWN"
+export AGENT_STATE="$scratch/agent-state"
+export FLEET_DISPATCH_LEDGER="$scratch/agent-state/dispatch-ledger.jsonl"
 export ALERT_REPAIR_NO_SPAWN=1
 export MOCK_DEADMAN_LOG="$scratch/mock-deadman.log"
+export MOCK_JOURNAL_LOG="$scratch/mock-journal.log"
+export MOCK_GH_LOG="$scratch/mock-gh.log"
+export MOCK_SPAWN_LOG="$scratch/mock-spawn.log"
 export AMX_STATUS=firing
 export AMX_RECEIVER=repair-dispatch
 export AMX_LABEL_service=fleet
@@ -79,8 +125,16 @@ run_dispatch() {
         export ALERT_REPAIR_CLAIM_BIN="$MOCK_CLAIM"
         export PI_DEADMAN_BIN="$MOCK_DEADMAN"
         export PI_DEADMAN_TEXTFILE="$scratch/fleet-detached.prom"
+        export JOURNALCTL_BIN="$MOCK_JOURNALCTL"
+        export GH="$MOCK_GH"
+        export PI_SYSTEMD_RUN_BIN="$MOCK_SPAWN"
+        export AGENT_STATE="$scratch/agent-state"
+        export FLEET_DISPATCH_LEDGER="$scratch/agent-state/dispatch-ledger.jsonl"
         export ALERT_REPAIR_NO_SPAWN=1
         export MOCK_DEADMAN_LOG="$scratch/mock-deadman.log"
+        export MOCK_JOURNAL_LOG="$scratch/mock-journal.log"
+        export MOCK_GH_LOG="$scratch/mock-gh.log"
+        export MOCK_SPAWN_LOG="$scratch/mock-spawn.log"
         export AMX_STATUS=firing
         export AMX_RECEIVER=repair-dispatch
         export AMX_LABEL_service=fleet

@@ -46,6 +46,14 @@ PAUSED_MARKER = Path(
         "/home/nish/workspaces/agent-state/FLEET-PAUSED",
     )
 )
+# Must equal generate.py's FINDINGS_LEDGER (fleet-ops#5476): the tile and
+# its verifier count the SAME canonical vault file.
+FINDINGS_LEDGER = Path(
+    os.environ.get(
+        "FINDINGS_LEDGER",
+        "/home/nish/workspaces/tooling/nish-vault/_system/shared-memory/findings-ledger.jsonl",
+    )
+)
 GH = os.environ.get("GH", "gh")
 SYSTEMCTL = os.environ.get("SYSTEMCTL", "systemctl")
 SKIP_GH = os.environ.get("CONSOLE_SKIP_GH", "") == "1"
@@ -61,6 +69,13 @@ PROM_STALE_S = 15 * 60
 # that counts the raw open-question population false-DISPUTEs a faithful
 # tile the moment one answered question ages out (fleet-ops#5070).
 ANSWERED_KEEP_S = 24 * 60 * 60
+# Must equal generate.py's QUESTION_SEARCH_LIMIT (fleet-ops#5133): both sides
+# pass it as `gh search issues --limit`. Without it gh caps the search at its
+# default 30 and says nothing, so the verifier's window and the tile's window
+# are two independent 30-row slices of the same population — a boundary
+# population then false-DISPUTEs a faithful tile, and rows past 30 reach
+# neither side.
+QUESTION_SEARCH_LIMIT = 1000
 
 HELP_MISMATCH = (
     "# HELP fleet_console_tile_mismatch 1 if this console tile failed its "
@@ -90,15 +105,22 @@ SPECS = {
         "cmd": (
             "PromQL sum(fleet_open_prs) @ 127.0.0.1:9090 "
             "(exact vs tile count) AND gh search prs "
-            "'repo:<spot-repo> is:open type:pr' (percent vs that repo's "
-            "item; cached family, 15% or abs<=2)"
+            "'repo:<spot-repo> is:open type:pr' (vs that repo's item, "
+            "bounded by the tile's own window: live minus the PRs opened "
+            "since tile.observed_at <= displayed <= live plus the PRs "
+            "closed since then; cached family — a lag the cache explains "
+            "is not a lie, fleet-ops#5155)"
         ),
         "field": "count",
         "tolerance": {"mode": "exact"},
         "runner": "open_prs_prom",
         "spot": {
-            "cmd": "gh api search/issues -f q='repo:<spot-repo> is:open type:pr' --jq .total_count",
-            "tolerance": {"mode": "percent", "pct": 15},
+            "cmd": (
+                "gh api search/issues -f q='repo:<spot-repo> is:open "
+                "type:pr' --jq .total_count, plus the created/closed "
+                "window counts for the same repo"
+            ),
+            "tolerance": {"mode": "window"},
             "runner": "open_prs_gh_spot",
         },
     },
@@ -168,10 +190,11 @@ SPECS = {
     },
     "questions": {
         "cmd": (
-            "gh search issues --owner Nishfleet --state open --label question, "
-            "each row's comments classified through the tile's own 24h "
-            "answered-exclusion (generate.py ANSWERED_KEEP_S) — the remaining "
-            "count == tile count (fleet-ops#5070)"
+            f"gh search issues --owner Nishfleet --state open --label question "
+            f"--limit {QUESTION_SEARCH_LIMIT} (the tile's own search window), "
+            f"each row's comments classified through the tile's own 24h "
+            f"answered-exclusion (generate.py ANSWERED_KEEP_S) — the remaining "
+            f"count == tile count (fleet-ops#5070, window pinned in #5133)"
         ),
         "field": "count",
         "tolerance": {"mode": "exact"},
@@ -188,6 +211,17 @@ SPECS = {
         "field": "signups_24h",
         "tolerance": {"mode": "exact"},
         "runner": "outcome_prom",
+    },
+    "findings": {
+        "cmd": (
+            "count of non-empty rows in the canonical vault "
+            "findings-ledger.jsonl (exact vs tile total; every "
+            "disposition tally compared too). A ledger append between "
+            "generate and verify is a race SKIP, not a lie."
+        ),
+        "field": "total",
+        "tolerance": {"mode": "exact"},
+        "runner": "findings_ledger",
     },
 }
 
@@ -646,6 +680,54 @@ def run_fleet_paused(tile):
     return 1 if PAUSED_MARKER.exists() else 0
 
 
+def run_findings_ledger(tile):
+    """Recount the canonical findings ledger, all tallies compared.
+
+    Same-source check (fleet-ops#5476): the tile counts rows of the vault
+    findings-ledger.jsonl at generate time; this re-reads the SAME file
+    ~2s later. An append in that window makes the counts legitimately
+    differ — the mtime-past-observed_at gate is the #2690 race pattern:
+    SKIP, not DISPUTED. When the file is unchanged the total AND every
+    disposition tally must match, or the tile is lying (the run_outcome_prom
+    all-fields pattern — a partly-lying ledger view must not slip through
+    on the headline count).
+    """
+    try:
+        mtime = FINDINGS_LEDGER.stat().st_mtime
+    except OSError as e:
+        raise VerifyError(f"findings ledger stat: {e}") from e
+    if mtime > (tile.get("observed_at") or 0):
+        raise VerifyError(
+            "findings ledger mtime advanced past tile.observed_at — race, "
+            "an append landed between generate and verify"
+        )
+    try:
+        counts = {}
+        n = 0
+        for ln in FINDINGS_LEDGER.read_text().splitlines():
+            if not ln.strip():
+                continue
+            n += 1
+            try:
+                d = json.loads(ln).get("disposition")
+            except (json.JSONDecodeError, AttributeError):
+                d = None
+            counts[d] = counts.get(d, 0) + 1
+    except OSError as e:
+        raise VerifyError(f"findings ledger read: {e}") from e
+    displayed = tile.get("dispositions") or {}
+    diffs = []
+    for k in set(counts) | set(displayed):
+        if counts.get(k, 0) != displayed.get(k, 0):
+            diffs.append(
+                f"dispositions[{k}] displayed {displayed.get(k, 0)} "
+                f"vs verify {counts.get(k, 0)}"
+            )
+    if diffs:
+        raise VerifyError("; ".join(diffs))
+    return n
+
+
 def _question_answer_epoch(comments):
     """Epoch of the newest `decision-resolved:` comment, or None.
 
@@ -674,13 +756,15 @@ def _question_answer_epoch(comments):
 def _questions_open_issues():
     """The open `question` population org-wide, one gh search.
 
-    Same store, same qualifiers as generate.py's `_gh_questions` search
-    (fleet-ops#1157 same-source pattern). Labels ride along so a debugger
-    can see the row's shape; the 24h exclusion below is what matters.
+    Same store, same qualifiers AND same explicit --limit as generate.py's
+    `_gh_questions` search (fleet-ops#1157 same-source pattern, #5133 same
+    window). Labels ride along so a debugger can see the row's shape; the
+    24h exclusion below is what matters.
     """
     out = subprocess.run(
         [GH, "search", "issues", "--owner", ORG, "--state", "open",
-         "--label", "question", "--json", "number,repository,labels"],
+         "--label", "question", "--limit", str(QUESTION_SEARCH_LIMIT),
+         "--json", "number,repository,labels"],
         capture_output=True, text=True, timeout=VERIFY_TIMEOUT,
     )
     if out.returncode != 0:
@@ -743,12 +827,38 @@ def run_questions_gh(tile):
 
 
 def run_open_prs_gh_spot(tile):
+    """Live open-PR cross-check that is sound against the cache, not just fresh.
+
+    The tile's number was measured at the tile's own `observed_at` (the
+    exporter publishes the cache's measurement time — fleet-ops#5155), so the
+    only honest way to judge it against GitHub NOW is a window: every PR
+    opened since that instant may be legitimately missing from the tile, and
+    every PR closed since may still be in it. A gap inside that window is a
+    cache lag; a gap outside it is a real error. A fixed ±2/15% band cannot
+    express that — a repo opening 4 PRs in 9 minutes drifts 4 past the floor,
+    which is how ConsoleLying tile=open_prs false-fired every cache window
+    (11 vs 15 on 2026-09-10T21:54Z, tile faithful to a 9-minute-old snapshot).
+    """
     repo = _spot_repo(tile)
     displayed = _item_count_for_repo(tile, repo)
     if displayed is None:
         raise VerifyError(f"no items entry for {repo}")
-    n = _gh_search_count(f"repo:{repo} is:open")
-    return n, displayed, repo
+    at = tile.get("observed_at")
+    if not isinstance(at, (int, float)):
+        raise VerifyError("tile has no observed_at; cannot bound the window")
+    since = datetime.fromtimestamp(float(at), timezone.utc).strftime(
+        "%Y-%m-%dT%H:%M:%S+00:00"
+    )
+    live = _gh_search_count(f"repo:{repo} is:open")
+    opened = _gh_search_count(f"repo:{repo} is:open created:>={since}")
+    closed = _gh_search_count(
+        f"repo:{repo} is:closed created:<{since} closed:>={since}"
+    )
+    return live, displayed, repo, {
+        "mode": "window",
+        "down": opened + SEARCH_INDEX_FLOOR,
+        "up": closed + SEARCH_INDEX_FLOOR,
+    }
 
 
 def run_shipped_gh_spot(tile):
@@ -778,6 +888,7 @@ RUNNERS = {
     "repairs_units": run_repairs_units,
     "running_pi_execstart": run_running_pi_execstart,
     "fleet_paused": run_fleet_paused,
+    "findings_ledger": run_findings_ledger,
     "questions_gh": run_questions_gh,
     "open_prs_gh_spot": run_open_prs_gh_spot,
     "shipped_gh_spot": run_shipped_gh_spot,
@@ -809,7 +920,23 @@ def _within(displayed, observed, tolerance):
             return True
         denom = max(abs(displayed), abs(observed), 1.0)
         return delta / denom * 100.0 <= pct
+    if mode == "window":
+        # fleet-ops#5155: a cached level has no single truth to compare
+        # against at verify time. `displayed` was measured earlier, so it may
+        # trail the live count by everything opened since then (`down`) and
+        # may exceed it by everything closed since then (`up`). Inside that
+        # window the tile is consistent with its own source; outside it, it
+        # is wrong by more than the cache can explain.
+        return (observed - float(tolerance.get("down", 0))
+                <= displayed
+                <= observed + float(tolerance.get("up", 0)))
     raise VerifyError(f"unknown tolerance mode {mode}")
+
+
+# The gh search index trails the live API by seconds-to-minutes, and the tile
+# and the verifier read the clock on either side of a push cycle. Both are
+# noise around a window bound, never evidence of a lie (fleet-ops#5155).
+SEARCH_INDEX_FLOOR = 2
 
 
 def _inject(doc, specs):
@@ -900,12 +1027,14 @@ def verify_tile(name, tile):
     spot = spec.get("spot")
     if spot and not SKIP_GH:
         try:
-            observed, spot_displayed, repo = RUNNERS[spot["runner"]](tile)
+            result = RUNNERS[spot["runner"]](tile)
+            observed, spot_displayed, repo = result[:3]
+            tolerance = result[3] if len(result) > 3 else spot["tolerance"]
             verify["spot_repo"] = repo
             verify["spot_displayed"] = spot_displayed
             verify["spot_observed"] = float(observed)
             if not _within(float(spot_displayed), float(observed),
-                           spot["tolerance"]):
+                           tolerance):
                 mismatch = 1
                 reasons.append(
                     f"spot {repo} displayed {spot_displayed} vs gh {observed}"

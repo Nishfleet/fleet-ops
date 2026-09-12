@@ -1,0 +1,27 @@
+# fleet-seat-bench-truth.service — event-driven bench-truth PONG sweep
+# (fleet-ops#5285). Triggered by fleet-seat-bench-truth.path on any write to
+# the seats ledger dir; runs the same bin's --false-wall-only mode: every
+# non-money future wall longer than 15 min on a cap>0 seat is PONG-probed at
+# min(advertised reset, 15 min) and released with source=bench_truth_probe
+# on success (a bench lie, counted in fleet_seat_bench_lied_total). The
+# bin's own per-seat 15-min probe interval and 60s sweep debounce are the
+# rate limiters; StartLimitIntervalSec=0 keeps the no-op trigger storm from
+# wedging the unit (the #5093 wedge class). A no-op sweep exits 0.
+
+[Unit]
+Description=Bench-truth PONG sweep on seats-ledger writes (fleet-ops#5285)
+Documentation=https://github.com/Nishfleet/fleet-ops/issues/5285
+# Same convention as fleet-seat-recovery.service (fleet-ops#622): the
+# StartLimit must tolerate the write storm; the bin debounces the side
+# effects. StartLimit* must live in [Unit], not [Service].
+StartLimitIntervalSec=0
+
+[Service]
+Type=oneshot
+ExecStart=/bin/bash -c 'exec /home/nish/.local/bin/fleet-seat-comeback-release --false-wall-only'
+Environment=HOME=/home/nish
+Environment=PATH=/home/nish/.local/bin:/usr/local/bin:/usr/bin:/bin
+Environment=XDG_RUNTIME_DIR=/run/user/1000
+StandardOutput=journal
+StandardError=journal
+TimeoutStartSec=5min

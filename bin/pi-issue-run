@@ -612,6 +612,10 @@ fi
 # hang_timeout_s; seat_hang_timeout_s reads it and falls back to 2520.
 # An env-set PI_HANG_TIMEOUT_S (tests) wins over the config override.
 PI_HANG_TIMEOUT_S="${PI_HANG_TIMEOUT_S:-$(seat_hang_timeout_s "$np" "$nm")}"
+# Exported so the devin-provider extension can bound its in-session
+# rate-limit resume (template/extensions/devin-provider/rate-limit.ts) by the
+# same watchdog that will kill this pi process.
+export PI_HANG_TIMEOUT_S
 # fleet-ops#2133: minimum elapsed seconds before the long-hang-then-ETIMEDOUT
 # and Ready-for-input stall detectors fire. A genuine long hang is >> 5 min;
 # lowering it (e.g. PI_HANG_BENCH_MIN_S=1 in tests) does NOT change production
@@ -1172,6 +1176,31 @@ if [[ "$DEBUG_PLAYBOOK_GATE" != "0" ]]; then
             gate_rc=$?
             set -e
             if [[ "$gate_rc" -ne 0 ]]; then
+                # fleet-ops#4976: the shipped-PR bypass covers the success path
+                # too. A unit whose session already produced a PR (URL in
+                # .out/.err/session jsonl, or an open PR on the claim branch)
+                # must exit 0 — exit 1 re-dispatches a delivered issue through
+                # Restart=on-failure + OnFailure (4949/4946 re-claimed ~4 min
+                # after their PRs were armed). The missing playbook is still
+                # surfaced: the gate's own LOUD line fired above and
+                # fleet-heartbeat-tier1 step 18 re-files it every tick — this
+                # exit code only decides whether systemd re-spawns the unit.
+                _gate_shipped=no
+                if has_session_pr_url "$out_file" "$err_file" "$session_dir"; then
+                    _gate_shipped=yes
+                else
+                    _gate_issue="${inst##*-}"
+                    _gate_open_pr=$(gh api "repos/Nishfleet/${pkt_repo}/pulls?state=open&head=Nishfleet:claim/issue-${_gate_issue}&per_page=1" 2>/dev/null || true)
+                    if printf '%s' "$_gate_open_pr" | jq -e 'length > 0' >/dev/null 2>&1; then
+                        _gate_shipped=yes
+                    fi
+                fi
+                if [[ "$_gate_shipped" == "yes" ]]; then
+                    seat_log "pi-issue-run: $inst DEBUG-PLAYBOOK-GATE-BLOCK $session_file (rc=$gate_rc) but session shipped a PR — exit 0, no re-dispatch (fleet-ops#4976)"
+                    echo "pi-issue-run: $inst debug-playbook-gate-block-pr-shipped $session_file (rc=$gate_rc) — PR exists; missing playbook still LOUD-filed" >&2
+                    _exit_reason="debug-playbook-gate-block-pr-shipped"
+                    exit 0
+                fi
                 seat_log "pi-issue-run: $inst DEBUG-PLAYBOOK-GATE-BLOCK $session_file (rc=$gate_rc) — a multi-attempt debug closed without a vault playbook note"
                 _exit_reason="debug-playbook-gate-block"
                 exit 1

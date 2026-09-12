@@ -34,7 +34,7 @@ set -euo pipefail
 
 export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
 export HOME="${HOME:-/home/nish}"
-export PATH="/home/nish/.local/bin:/usr/local/bin:/usr/bin:/bin"
+command -v gh >/dev/null 2>&1 || export PATH=/home/nish/.local/bin:/usr/local/bin:/usr/bin:/bin
 
 SYSTEMCTL="${SYSTEMCTL:-systemctl}"
 RAM_STATE_DIR="${RAM_STATE_DIR:-$HOME/.local/state/ram-measurement}"

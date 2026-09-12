@@ -60,6 +60,15 @@ command -v jq >/dev/null 2>&1 || fail "jq required"
 scratch="$(mktemp -d -t fme-test.XXXXXX)"
 trap 'rm -rf "$scratch"' EXIT INT TERM
 
+# fleet-ops#5140: prom_lines() resolves product repos from intake-repos.json,
+# which would let the m.main() heredocs below spend real gh calls and write
+# deploy-quality-*-<product>.json into the production cache dir. Pin the
+# fleet-ops-only set for the whole file.
+cat >"$scratch/intake-fleet-ops-only.json" <<'JSON'
+{ "repos": [{ "name": "fleet-ops" }] }
+JSON
+export FLEET_DQ_REPOS_JSON="$scratch/intake-fleet-ops-only.json"
+
 # =========================================================================
 # 1-5. Classifier + self-maintenance/quality derivation (pure python)
 # =========================================================================
@@ -1689,6 +1698,12 @@ bash "$here/measure-cursor-today.test.sh" || fail "measure-cursor-today tests fa
 # decision-resolved after 24h fails loud and auto-files once, deduped).
 # Hosted here so P14 runs it without a workflow-file edit. Hermetic (fake gh).
 bash "$here/fleet-questions-stale.test.sh" || fail "fleet-questions-stale tests failed"
+
+# fleet-ops#5417: the outside-in `visitor:` probe (https redirect, edge
+# cache, manifest, duplicate routes, public-repo leaks) the judges read
+# right after product:. Hosted here for the same P14 reason as
+# fleet-usd-spend above (no workflow-scope edit; stubbed curl/gh).
+bash "$here/fleet-visitor-probe.test.sh" || fail "fleet-visitor-probe tests failed"
 
 # =========================================================================
 # 15. fleet-ops#2493: held wrapper spawn-bench outranks a later healthy
@@ -4357,6 +4372,76 @@ assert m._fetch_signups_7d() is None
 print("OK: no sanctioned token -> None (family omitted)")
 PY
 ok "fleet-ops#4582: signups_7d gauge present for mocked D1 0 and 3, omitted on unreachable"
+
+# =========================================================================
+# 16d-bis. fleet-ops#5001 (accept #4): the trailing-7-day signup window must
+# parse BOTH sides. `user.createdAt` is ISO-8601 TEXT ('...T...Z') while
+# datetime('now','-7 days') renders 'YYYY-MM-DD HH:MM:SS' — with no 'T' and
+# no 'Z'. SQLite compares those as TEXT, so every row sitting on the cutoff
+# CALENDAR DAY — including ones older than the cutoff — read as inside the
+# window. The shipped `_S7_SQL` literal is executed here against a real
+# in-memory sqlite3 DB, so this pins the SQL text itself, not a mock value:
+#   fixture: 8d old -> EXCLUDED, 6d23h old -> INCLUDED -> exactly 1 row;
+#   guard:   the pre-#5001 TEXT predicate counts 2 on that same DB (it drags
+#            in a row on the cutoff calendar day that is older than the
+#            cutoff), so the boundary above is proved to be doing work.
+# =========================================================================
+python3 - "$exporter" <<'PY' || fail "fleet-ops#5001: signups_7d window boundary failed"
+import importlib.util, sqlite3, sys
+from datetime import datetime, timedelta, timezone
+
+spec = importlib.util.spec_from_file_location("fme", sys.argv[1])
+m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
+
+con = sqlite3.connect(":memory:")
+con.execute("CREATE TABLE user (id TEXT, createdAt TEXT NOT NULL);")
+# The cutoff's own calendar day, read from the same clock the SQL uses.
+cutoff_day = con.execute("SELECT date('now','-7 days')").fetchone()[0]
+now = datetime.now(timezone.utc)
+
+def iso(delta):
+    return (now - delta).strftime("%Y-%m-%dT%H:%M:%S.000Z")
+
+con.executemany(
+    "INSERT INTO user (id, createdAt) VALUES (?, ?);",
+    [
+        ("u_8d", iso(timedelta(days=8))),               # 8 days old: OUTSIDE
+        ("u_6d23h", iso(timedelta(days=6, hours=23))),  # 6d23h old: INSIDE
+        # Older than the cutoff, but on the cutoff calendar day: the row the
+        # TEXT comparison wrongly swallows.
+        ("u_stale_cutoff_day", cutoff_day + "T00:00:00.000Z"),
+    ],
+)
+
+# (a) the SHIPPED literal counts exactly the 6d23h row.
+sql = m._S7_SQL
+got = con.execute(sql).fetchone()[0]
+assert got == 1, (
+    f"_S7_SQL must count only the 6d23h row (8d excluded), got {got} "
+    f"from {sql!r}"
+)
+
+# (b) guard: the pre-#5001 TEXT predicate is wrong on this same fixture, so
+# (a) cannot be green for the wrong reason (e.g. a fixture that never
+# exercises the boundary at all).
+old = (
+    "SELECT COUNT(*) AS n FROM user "
+    "WHERE createdAt >= datetime('now','-7 days');"
+)
+wrong = con.execute(old).fetchone()[0]
+assert wrong == 2, (
+    "the old TEXT predicate must wrongly count 2 rows (6d23h + the older "
+    f"cutoff-day row), got {wrong}"
+)
+
+# (c) the committed literal itself is the parse-both-sides form, so a
+# regression in the SQL text is caught directly.
+assert "julianday(createdAt)" in sql, f"column must be parsed as a date: {sql!r}"
+assert "julianday('now','-7 days')" in sql, f"cutoff must be parsed: {sql!r}"
+assert "datetime('now','-7 days')" not in sql, f"TEXT cutoff regressed: {sql!r}"
+print("OK: _S7_SQL counts 1 (8d excluded, 6d23h included); TEXT predicate counts 2")
+PY
+ok "fleet-ops#5001: signups_7d trailing-7d SQL parses both sides (8d row excluded, 6d23h included)"
 
 # =========================================================================
 # fleet-ops#4481: a worker-token mint failure degrades the tick to READ-ONLY.

@@ -24,6 +24,10 @@
 #       with the D1 counts (fleet-ops#5000)
 #   (q) a failed census read omits the family, never a fabricated 0
 #   (r) ProductDataCensusDropped rule contract + promtool fire/silent pair
+#   (s) fleet-ops#5001: the 24h outcome windows are TRUE trailing windows. A
+#       25h-old row (previous calendar day) is excluded from signups /
+#       activated / briefs, and a 23h-old row is counted. The captured real SQL
+#       runs against an in-memory sqlite3 fixture pinned to a fixed clock.
 
 set -euo pipefail
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -303,6 +307,173 @@ assert "fleet_product_briefs_delivered_24h 12" in body, body
 print("OK: failed census read omits the family (no fabricated 0)")
 PY
 ok "(q) failed census read omits fleet_product_table_rows instead of zeroing it"
+
+# =========================================================================
+# (s) fleet-ops#5001 boundary: the trailing 24h window must be a TRAILING
+#     window, not "everything on the cutoff's calendar day".
+#
+#     Fixture rows are dated 25h / 23h / 8d / 6d23h before a PINNED clock. The
+#     25h row sits on the previous CALENDAR day, which is the exact shape the
+#     pre-fix TEXT comparison (`createdAt >= datetime('now','-1 day')`, whose
+#     right side is a space-separated no-Z string) counted as "inside 24h".
+#
+#     No network: the helper's real `_D1_QUERIES` literals are captured off the
+#     outgoing Request and executed against an in-memory sqlite3 DB, so this is
+#     the shipped SQL, not a copy of it. The only substitution is SQLite's
+#     clock literal 'now' -> the pinned timestamp (the seam that makes the
+#     boundary deterministic); comparators, columns and window arithmetic are
+#     untouched.
+# =========================================================================
+printf 'CLOUDFLARE_API_TOKEN=fake-token-not-used\n' >"$scratch/boundary-cf.env"
+export FLEET_PRODUCT_SLO_OUT="$scratch/boundary.prom"
+python3 - "$helper" "$scratch/boundary-cf.env" <<'PY' || fail "24h boundary regression failed (fleet-ops#5001)"
+import importlib.util, json, os, sqlite3, sys
+from datetime import datetime, timedelta, timezone
+
+# Deterministic D1 config: the shipped defaults are valid 32-hex IDs, but the
+# environment could override them, so pin both segments here.
+os.environ["FLEET_PRODUCT_D1_ACCOUNT"] = "f670a698e17bf160c8e4679823e68916"
+os.environ["FLEET_PRODUCT_D1_DATABASE"] = "746c6e3d-782e-443a-82d6-28ca93a16294"
+# _read_cf_token()'s first candidate is FLEET_PRODUCT_CF_FILE, so a fake token
+# file keeps the real D1 code path AND keeps the host's real token out of the
+# test. urlopen is replaced below, so the fake token is never sent anywhere.
+os.environ["FLEET_PRODUCT_CF_FILE"] = sys.argv[2]
+# Falsy -> OUTCOME_SKIP is falsy, so _product_outcome runs instead of returning
+# None immediately. Must be set BEFORE the import (read at module scope).
+os.environ["FLEET_PRODUCT_OUTCOME"] = ""
+
+spec = importlib.util.spec_from_file_location("ps", sys.argv[1])
+m = importlib.util.module_from_spec(spec)
+sys.modules["ps"] = m
+spec.loader.exec_module(m)
+assert not m.OUTCOME_SKIP, "FLEET_PRODUCT_OUTCOME must be falsy for this scenario"
+
+# Pinned clock. 2026-09-02T12:00:00Z -> the SQLite cutoff for '-1 day' is the
+# text '2026-09-01 12:00:00'.
+PINNED = "2026-09-02T12:00:00Z"
+
+
+def ago(hours, minutes=0):
+    base = datetime.fromisoformat(PINNED.replace("Z", "+00:00"))
+    d = base - timedelta(hours=hours, minutes=minutes)
+    return d.strftime("%Y-%m-%dT%H:%M:%S.000Z")
+
+
+# The four fixture ages, in the real stored ISO-8601 shape (T + Z + millis).
+T25, T23 = ago(25), ago(23)
+T8D, T6D23 = ago(8 * 24), ago(6 * 24 + 23)
+assert T25 == "2026-09-01T11:00:00.000Z", T25
+assert T23 == "2026-09-01T13:00:00.000Z", T23
+assert T8D == "2026-08-25T12:00:00.000Z", T8D
+assert T6D23 == "2026-08-26T13:00:00.000Z", T6D23
+
+U25, U23, U8D, U6D23 = "u-25h", "u-23h", "u-8d", "u-6d23h"
+
+conn = sqlite3.connect(":memory:")
+conn.executescript(
+    "CREATE TABLE user (id TEXT, createdAt TEXT NOT NULL);"
+    "CREATE TABLE user_plan (user_id TEXT, plan TEXT);"
+    "CREATE TABLE delivery_attempt (user_id TEXT, status TEXT, sent_at TEXT);"
+    "CREATE TABLE watchlist (user_id TEXT);"
+    "CREATE TABLE proof_capture (id TEXT);"
+    "CREATE TABLE session (id TEXT);"
+)
+conn.executemany(
+    "INSERT INTO user (id, createdAt) VALUES (?, ?)",
+    [(U25, T25), (U23, T23), (U8D, T8D), (U6D23, T6D23)],
+)
+conn.executemany(
+    "INSERT INTO user_plan (user_id, plan) VALUES (?, ?)",
+    [(U23, "pro"), (U8D, "free")],
+)
+conn.executemany(
+    "INSERT INTO delivery_attempt (user_id, status, sent_at) VALUES (?, ?, ?)",
+    [
+        # First SENT brief 2 min after signup (activation) at 23h and 25h.
+        (U23, "sent", ago(23, 2)),
+        (U25, "sent", ago(25, 2)),
+        # Outside every 24h window, whatever the comparison does.
+        (U8D, "sent", ago(8 * 24, 2)),
+        (U6D23, "sent", ago(6 * 24 + 23, 2)),
+        # Status control: a non-'sent' row is never counted.
+        (U23, "queued", ago(23, 3)),
+    ],
+)
+
+# Guard the premise of the scenario: with the PRE-FIX TEXT comparison these
+# two rows textually sort as "inside the window" (they share the cutoff's
+# date, and 'T' > ' '). If this ever stops holding, the scenario has stopped
+# exercising the bug and the test is worthless — so assert it here.
+cutoff_text = conn.execute("SELECT datetime(?, '-1 day')", (PINNED,)).fetchone()[0]
+assert cutoff_text == "2026-09-01 12:00:00", cutoff_text
+assert T25 >= cutoff_text, (T25, cutoff_text)
+assert T23 >= cutoff_text, (T23, cutoff_text)
+
+captured = []
+
+
+class _FakeResp:
+    def __init__(self, payload):
+        self._payload = payload
+
+    def read(self):
+        return self._payload
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+
+def fake_urlopen(req, timeout=None):
+    """Run the captured real SQL against the fixture DB instead of D1."""
+    captured.append(req)
+    sql = json.loads(req.data.decode("utf-8"))["sql"]
+    # Pin SQLite's clock. 'now' is the only thing rewritten.
+    run_sql = sql.replace("'now'", "'%s'" % PINNED)
+    cur = conn.execute(run_sql)
+    cols = [d[0] for d in cur.description]
+    row = dict(zip(cols, cur.fetchone()))
+    payload = json.dumps(
+        {"success": True, "result": [{"results": [row]}]}
+    ).encode("utf-8")
+    return _FakeResp(payload)
+
+
+m.urlopen = fake_urlopen
+
+out = m._product_outcome()
+assert out is not None, "_product_outcome returned None: D1 seam unusable"
+assert len(captured) == len(m._D1_QUERIES), (
+    f"expected {len(m._D1_QUERIES)} D1 queries, captured {len(captured)}"
+)
+window_sqls = [json.loads(r.data.decode("utf-8"))["sql"] for r in captured]
+assert sum("'now'" in s for s in window_sqls) == 3, window_sqls
+
+# The 25h row must NOT be counted anywhere. Pre-fix it was counted in all
+# three windows (the value would be 2).
+assert out["signups_24h"] == 1, f"signups_24h={out['signups_24h']} (25h row counted?)"
+assert out["activated_24h"] == 1, f"activated_24h={out['activated_24h']} (25h row counted?)"
+assert out["briefs_delivered_24h"] == 1, (
+    f"briefs_delivered_24h={out['briefs_delivered_24h']} (25h row counted?)"
+)
+# Control: no window comparison anywhere in paying_customers.
+assert out["paying_customers"] == 1, out["paying_customers"]
+
+# And the same values must reach the emitted gauge lines.
+now = datetime(2026, 9, 2, 12, 0, 0, tzinfo=timezone.utc)
+body = m.export_prom([m.RepoSLO(repo="0509")], now=now)
+for line in (
+    "fleet_product_signups_24h 1",
+    "fleet_product_activated_24h 1",
+    "fleet_product_briefs_delivered_24h 1",
+    "fleet_product_paying_customers_total 1",
+):
+    assert line in body, (line, body)
+print("OK: 24h boundary (25h excluded, 23h included)")
+PY
+ok "(s) 24h boundary: 25h-ago row excluded from signups/activated/briefs, 23h counted"
 
 # =========================================================================
 # (f) main() end-to-end via fixture

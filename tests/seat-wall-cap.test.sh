@@ -139,8 +139,12 @@ rm -f "$lf"
 mark_seat_quota_bench "$p" "$m" "INFERENCE_CAP_ERROR: weekly Clinepass limit." >/dev/null 2>&1 \
     || fail "b2: cline quota_bench_default_s write failed"
 bw=$(jq -r '.bench_window_s' "$lf")
-[[ "$bw" == "604800" ]] || fail "b2: cline bench_window_s expected 604800, got $bw"
-ok "b2: cline weekly pin 604800 survives the 6h clamp"
+# fleet-ops#5285 (2026-09-11): the weekly pin is a static default, i.e. a guess,
+# not an advertised reset — the writer caps it at 900s so the bench-truth PONG
+# re-checks the seat at 15 min (a real weekly 402 fails the probe and stays).
+# Parsed windows, live quota resets, money walls and ceiling parks keep theirs.
+[[ "$bw" == "900" ]] || fail "b2: cline bench_window_s expected 900 (static weekly default capped by the bench-truth contract, fleet-ops#5285), got $bw"
+ok "b2: cline weekly static default is capped at 900 for the bench-truth probe (fleet-ops#5285)"
 
 # --- c) 401 -> 1h credentials_bad; corpse only after 24 --------------------
 p="devin"; m="glm-5-2"

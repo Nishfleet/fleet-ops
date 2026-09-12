@@ -822,13 +822,14 @@
         {
           "id": "deepseek-flash",
           "name": "DeepSeek V4.1 Flash (direct, last-resort)",
+          "_comment_source": "Pricing pinned against DeepSeek published pricing, https://api-docs.deepseek.com/quick_start/pricing (retrieved 2026-09-12): PEAK rates for deepseek-flash are 1M input (cache miss) $0.30, 1M output $1.20, 1M input (cache hit) $0.006 — these values are the peak column; off-peak rates are half (input $0.15 / cache-hit $0.003 / output $0.60; peak hours 01:00-04:00 + 06:00-10:00 UTC Mon-Fri, all other hours off-peak). Values match the hot-patched numbers from fleet-ops#4712/#5601. The sibling deepseek-v4-pro pricing (1.32/3.96/0.044) also matches the same page's peak column, noted here for the next divergence check.",
           "contextWindow": 1000000,
           "maxTokens": 32768,
           "reasoning": false,
           "cost": {
-            "input": 0.44,
-            "output": 1.32,
-            "cacheRead": 0.014,
+            "input": 0.3,
+            "output": 1.2,
+            "cacheRead": 0.006,
             "cacheWrite": 0
           },
           "samplingParams": {
@@ -858,6 +859,58 @@
       "compat": {
         "supportsReasoningEffort": true
       }
+    },
+    "synthetic": {
+      "name": "Synthetic (flat $30/mo prepaid sub)",
+      "baseUrl": "https://api.synthetic.new/openai/v1",
+      "api": "openai-completions",
+      "apiKey": "!cut -d= -f2 /home/nish/.config/fleet-ops/seats/synthetic.env",
+      "models": [
+        {
+          "id": "hf:zai-org/GLM-5.3-Flash",
+          "name": "GLM 5.3 Flash via Synthetic (prepaid sub)",
+          "reasoning": true,
+          "input": [
+            "text",
+            "image"
+          ],
+          "contextWindow": 524288,
+          "maxTokens": 65536
+        }
+      ],
+      "compat": {
+        "supportsReasoningEffort": true
+      },
+      "_comment_synthetic": "2026-09-11 seat wire-up: synthetic.new flat $30/mo prepaid subscription, OpenAI-compatible (verified /models + /chat/completions HTTP 200). Quota 500 req/5h shared across the account, 1 concurrent request per model (cap 1 in seat-caps.json). EXACTLY ONE wired id per Nish 2026-09-11 ('glm 5.3 flash or ds4.1 flash whichever's cheaper' \u2014 Synthetic has no DeepSeek, so GLM-5.3-Flash); Kimi K3, GLM-5.2, Qwen, gpt-oss deliberately NOT wired. hf:zai-org/GLM-5.3-Flash returns reasoning_content -> reasoning:true; live /v1/models probe: context_length 524288, max_output_length 65536, input text+image, reasoning efforts [low,high,max]. No cost field: flat sub, zero marginal per-token price (opencode-go/devin shape). deepseek-v4-flash banned fleet-wide (Nish 2026-09-10) \u2014 no such id exists on this provider anyway."
+    },
+    "llmgateway-devpass": {
+      "name": "LLM Gateway DevPass ($29/mo = $87/mo metered credits)",
+      "baseUrl": "https://api.llmgateway.io/v1",
+      "api": "openai-completions",
+      "apiKey": "!cut -d= -f2 /home/nish/.config/fleet-ops/seats/llmgateway-devpass.env",
+      "models": [
+        {
+          "id": "glm-5.3-flash",
+          "name": "GLM 5.3 Flash via LLM Gateway DevPass (metered credits)",
+          "reasoning": true,
+          "input": [
+            "text",
+            "image"
+          ],
+          "contextWindow": 1048576,
+          "maxTokens": 131072,
+          "cost": {
+            "input": 0.088,
+            "output": 0.25,
+            "cacheRead": 0.025,
+            "cacheWrite": 0
+          }
+        }
+      ],
+      "compat": {
+        "supportsReasoningEffort": true
+      },
+      "_comment_devpass": "2026-09-11 seat wire-up: llmgateway.io DevPass $29/mo subscription that mints $87/mo of METERED credits \u2014 a fixed credit pool that runs out (no open-ended billing), so class=prepaid-quota in seat-caps.json and max concurrency 1 everywhere (paid lanes trickle, never flood). EXACTLY ONE wired id per Nish 2026-09-11: glm-5.3-flash, the cheapest compliant flash on DevPass; kimi-k3, glm-5.2, minimax-m3 deliberately NOT wired. The catalog also lists deepseek-v4-flash \u2014 BANNED fleet-wide (Nish 2026-09-10), deliberately not wired. Live /v1/models probe 2026-09-11: context_length 1048576, max_output 131072, text+image, reasoning+reasoning_efforts supported; headline pricing $0.088/M in / $0.25/M out / $0.025/M cache-read (cheapest upstream scx-ai-gp; modal upstream zai/novita $0.15/$0.50/$0.03)."
     }
   }
 }

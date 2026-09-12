@@ -6,7 +6,7 @@
 # Human gh is read-only for organs; GH Actions (tests) has no App creds and
 # stubs gh as read-only, so skip minting there.
 if [[ -z "${GH_TOKEN:-}" && "${GITHUB_ACTIONS:-}" != "true" && "${GH:-gh}" == "gh" ]]; then
-    export PATH="/home/nish/.local/bin:/usr/local/bin:/usr/bin:/bin:${PATH:-}"
+    command -v gh >/dev/null 2>&1 || export PATH=/home/nish/.local/bin:/usr/local/bin:/usr/bin:/bin:${PATH:-}
     _wt="${NISHFLEET_WORKER_TOKEN_BIN:-${HOME:-/home/nish}/.local/bin/worker-token}"
     _minted="$("$_wt" --print)" || { echo "fleet-ops#3445: $_wt --print failed - refusing human-gh writes" >&2; exit 1; }
     eval "$_minted"
@@ -157,7 +157,7 @@ fi
 set -euo pipefail
 
 export HOME="${HOME:-/home/nish}"
-export PATH="/home/nish/.local/bin:/usr/local/bin:/usr/bin:/bin"
+command -v gh >/dev/null 2>&1 || export PATH=/home/nish/.local/bin:/usr/local/bin:/usr/bin:/bin
 export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
 
 PLAN_FILE="${FLEET_PLAN_FILE:-/home/nish/workspaces/agent-state/fleet-restoration-2026-08-25.md}"
@@ -640,6 +640,39 @@ while IFS= read -r repo; do
             fi
             skipped=$((skipped+1))
             continue
+        fi
+
+        # fleet-ops#5238: gate-integrity is advisory, not a required
+        # context, so `gh pr merge --auto` will merge a gate-path PR the
+        # moment P14 + arm pass even if the gate row is FAILURE (#5207).
+        # Refuse (and disarm) here even when other checks are still
+        # pending, otherwise a worker arm in the first seconds of the PR
+        # survives until GitHub merges. Fail-open on a missing/broken
+        # helper — same posture as merge-trample / verify-cue. The
+        # evaluator is pure; disarm is this caller's write.
+        gate_arm="${FLEET_GATE_ARM_GUARD:-/home/nish/.local/bin/fleet-gate-arm-guard}"
+        if [ ! -x "$gate_arm" ]; then
+            repo_copy="$(cd "$(dirname "$0")" && pwd)/fleet-gate-arm-guard"
+            if [ -x "$repo_copy" ]; then
+                gate_arm="$repo_copy"
+            else
+                gate_arm=""
+            fi
+        fi
+        if [ -x "$gate_arm" ]; then
+            gate_rc=0
+            "$gate_arm" evaluate --repo "$repo" --pr "$pr_num" --wait-seconds 0 \
+                >/dev/null 2>&1 || gate_rc=$?
+            if [ "$gate_rc" -eq 1 ]; then
+                log "2.  - $repo#$pr_num ($pr_head): GATE-INTEGRITY not green on gate-path — disarm + skip arm (fleet-ops#5238)"
+                gh pr merge "$pr_num" -R "$repo" --disable-auto >/dev/null 2>&1 || true
+                skipped=$((skipped+1))
+                continue
+            elif [ "$gate_rc" -ne 0 ]; then
+                log "2.  - $repo#$pr_num ($pr_head): gate-arm-guard rc=$gate_rc — fail-open arm"
+            fi
+        else
+            log "2.  - $repo#$pr_num ($pr_head): gate-arm-guard missing — fail-open arm"
         fi
 
         # Check the status: count checks; all must be SUCCESS (no FAILURE,
@@ -1805,7 +1838,10 @@ fi
 # or a Nish-reserved wall, within a cycle budget. Stalled chains climb the
 # ladder (re-fire -> fail-loud -> unit-escalation). A green detector with an
 # IDLE pipeline and a non-terminal STOP-REASON is a stale trip (closeout
-# skipped) — fail loud.
+# skipped) — the enforcer re-fires the auditor pipeline and holds (exit 0)
+# on a bounded cadence, and fails loud only once the re-fire bound is spent
+# (fleet-ops#5190 — re-fail-per-tick was deduped by unit-escalation and
+# could not summon an auditor).
 ESCALATION_COMPLETION_BIN="${FLEET_ESCALATION_COMPLETION:-/home/nish/.local/bin/fleet-escalation-completion}"
 escalation_completion_rc=0
 if [ -x "$ESCALATION_COMPLETION_BIN" ]; then
@@ -2800,6 +2836,38 @@ else
 fi
 
 # ============================================================================
+# 48. MONEY-BOUNDARY GUARD (fleet-ops#5204)
+# ============================================================================
+# bin/money-boundary-raise --check was on no rail: comments only, no
+# caller. A year-wall without a MONEY-BOUNDARY ledger line is the #4477
+# silent-ask defect. Call it here (existing heartbeat, no new unit).
+# rc=1 = unpaged live wall (FAIL-LOUD already printed) — do not fail the
+# unit (fleet-ops#1116). rc>=2 = helper crash, propagate.
+MONEY_BOUNDARY_RAISE_BIN="${FLEET_MONEY_BOUNDARY_RAISE:-/home/nish/.local/bin/money-boundary-raise}"
+money_boundary_check_rc=0
+if require_manifest_helper "$MONEY_BOUNDARY_RAISE_BIN"; then
+    log "48. money-boundary --check starting"
+    if "$MONEY_BOUNDARY_RAISE_BIN" --check; then
+        log "48. money-boundary --check clean"
+    else
+        money_boundary_check_rc=$?
+        if [ "$money_boundary_check_rc" -eq 1 ]; then
+            log "48. money-boundary --check: unpaged far-future money wall (rc=1) — FAIL-LOUD already emitted; not propagated (fleet-ops#1116)"
+        else
+            log "48. money-boundary --check FAILED (rc=$money_boundary_check_rc) — helper crash; unit will land in --state=failed"
+        fi
+    fi
+else
+    _req=$?
+    if [ "$_req" -eq 1 ]; then
+        loud "HELPER-MISSING" "money-boundary-raise missing at $MONEY_BOUNDARY_RAISE_BIN — MANIFEST dest; silent skip disabled the money-wall ledger guard (fleet-ops#5204)"
+        money_boundary_check_rc=1
+    else
+        log "48. money-boundary --check missing at $MONEY_BOUNDARY_RAISE_BIN — skip (not installed)"
+    fi
+fi
+
+# ============================================================================
 # 38. DETECTOR→QUEUE RECONCILER (fleet-ops#362)
 # ============================================================================
 # After every canary has emitted its LOUD lines, reconcile them against open
@@ -2834,7 +2902,7 @@ fi
 # ============================================================================
 # done
 # ============================================================================
-log "tier 1 complete: queued=$queued orphan_released=$released failed_seen=$seen failed_repaired=$repaired failed_requeued=$requeued failed_still_failed=$still_failed failed_exhausted=$exhausted failed_escalated=$escd timers_verified=$verified timers_re_enabled=$re_enabled degraded=$degraded undersat_rc=$undersat_rc blocked_rc=${blocked_rc:-0} stale_revert_rc=${stale_revert_rc:-0} claim_reconcile_rc=${claim_reconcile_rc:-0} lifecycle_rc=${lifecycle_rc:-0} low_water_rc=$low_water_rc auditor_rc=${auditor_rc:-0} audit_started=$audit_started audit_canary=$audit_canary_status relabeled=$relabeled deploy_rc=$deploy_rc redpr_rc=$redpr_rc ram_measure_rc=${ram_measure_rc:-0} canary_rc=$canary_rc entitled_canary_rc=$entitled_canary_rc worker_app_canary_rc=$worker_app_canary_rc opencode_m3_canary_rc=$opencode_m3_canary_rc paid_flash_canary_rc=$paid_flash_canary_rc role_gate_rc=${role_gate_rc:-0} researcher_dispatch_rc=$researcher_dispatch_rc quality_slo_rc=${quality_slo_rc:-0} findings_queued_rc=${findings_queued_rc:-0} decisions_ledger_rc=${decisions_ledger_rc:-0} failed_command_rc=${failed_command_rc:-0} debug_playbook_rc=${debug_playbook_rc:-0} interventions_eliminated_rc=${interventions_eliminated_rc:-0} unjustified_rc=${unjustified_rc:-0} max_speed_rc=${max_speed_rc:-0} escalation_completion_rc=${escalation_completion_rc:-0} free_roster_canary_rc=${free_roster_canary_rc:-0} pi_extensions_canary_rc=${pi_extensions_canary_rc:-0} cline_glm53_canary_rc=${cline_glm53_canary_rc:-0} repo_visibility_canary_rc=${repo_visibility_canary_rc:-0} exec_review_canary_rc=${exec_review_canary_rc:-0} work_supply_canary_rc=${work_supply_canary_rc:-0} tailscale_acl_canary_rc=${tailscale_acl_canary_rc:-0} verify_harness_canary_rc=${verify_harness_canary_rc:-0} seat_live_validate_rc=${seat_live_validate_rc:-0} cred_expiry_canary_rc=${cred_expiry_canary_rc:-0} cf_token_canary_rc=${cf_token_canary_rc:-0} geo_aeo_canary_rc=${geo_aeo_canary_rc:-0} quality_ratchet_canary_rc=${quality_ratchet_canary_rc:-0} precedence_band_canary_rc=${precedence_band_canary_rc:-0} product_ratio_cache_rc=${product_ratio_cache_rc:-0} gap_loop_rc=${gap_loop_rc:-0} aimd_canary_rc=${aimd_canary_rc:-0} prepaid_util_canary_rc=${prepaid_util_canary_rc:-0} rulebook_canary=${rulebook_canary_status:-unset} vibes_canary_rc=${vibes_canary_rc:-0} skills_symlink_canary_rc=${skills_symlink_canary_rc:-0} tailscale_localapi_canary_rc=${tailscale_localapi_canary_rc:-0} loose_ends_canary_rc=${loose_ends_canary_rc:-0} empty_burst_canary_rc=${empty_burst_canary_rc:-0} scout_leak_canary_rc=${scout_leak_canary_rc:-0} research_sweep_canary_rc=${research_sweep_canary_rc:-0} timer_manifest_drift_rc=${timer_manifest_drift_rc:-0} reconcile_rc=${reconcile_rc:-0}"
+log "tier 1 complete: queued=$queued orphan_released=$released failed_seen=$seen failed_repaired=$repaired failed_requeued=$requeued failed_still_failed=$still_failed failed_exhausted=$exhausted failed_escalated=$escd timers_verified=$verified timers_re_enabled=$re_enabled degraded=$degraded undersat_rc=$undersat_rc blocked_rc=${blocked_rc:-0} stale_revert_rc=${stale_revert_rc:-0} claim_reconcile_rc=${claim_reconcile_rc:-0} lifecycle_rc=${lifecycle_rc:-0} low_water_rc=$low_water_rc auditor_rc=${auditor_rc:-0} audit_started=$audit_started audit_canary=$audit_canary_status relabeled=$relabeled deploy_rc=$deploy_rc redpr_rc=$redpr_rc ram_measure_rc=${ram_measure_rc:-0} canary_rc=$canary_rc entitled_canary_rc=$entitled_canary_rc worker_app_canary_rc=$worker_app_canary_rc opencode_m3_canary_rc=$opencode_m3_canary_rc paid_flash_canary_rc=$paid_flash_canary_rc role_gate_rc=${role_gate_rc:-0} researcher_dispatch_rc=$researcher_dispatch_rc quality_slo_rc=${quality_slo_rc:-0} findings_queued_rc=${findings_queued_rc:-0} decisions_ledger_rc=${decisions_ledger_rc:-0} failed_command_rc=${failed_command_rc:-0} debug_playbook_rc=${debug_playbook_rc:-0} interventions_eliminated_rc=${interventions_eliminated_rc:-0} unjustified_rc=${unjustified_rc:-0} max_speed_rc=${max_speed_rc:-0} escalation_completion_rc=${escalation_completion_rc:-0} free_roster_canary_rc=${free_roster_canary_rc:-0} pi_extensions_canary_rc=${pi_extensions_canary_rc:-0} cline_glm53_canary_rc=${cline_glm53_canary_rc:-0} repo_visibility_canary_rc=${repo_visibility_canary_rc:-0} exec_review_canary_rc=${exec_review_canary_rc:-0} work_supply_canary_rc=${work_supply_canary_rc:-0} tailscale_acl_canary_rc=${tailscale_acl_canary_rc:-0} verify_harness_canary_rc=${verify_harness_canary_rc:-0} seat_live_validate_rc=${seat_live_validate_rc:-0} cred_expiry_canary_rc=${cred_expiry_canary_rc:-0} cf_token_canary_rc=${cf_token_canary_rc:-0} geo_aeo_canary_rc=${geo_aeo_canary_rc:-0} quality_ratchet_canary_rc=${quality_ratchet_canary_rc:-0} precedence_band_canary_rc=${precedence_band_canary_rc:-0} product_ratio_cache_rc=${product_ratio_cache_rc:-0} gap_loop_rc=${gap_loop_rc:-0} aimd_canary_rc=${aimd_canary_rc:-0} prepaid_util_canary_rc=${prepaid_util_canary_rc:-0} rulebook_canary=${rulebook_canary_status:-unset} vibes_canary_rc=${vibes_canary_rc:-0} skills_symlink_canary_rc=${skills_symlink_canary_rc:-0} tailscale_localapi_canary_rc=${tailscale_localapi_canary_rc:-0} loose_ends_canary_rc=${loose_ends_canary_rc:-0} empty_burst_canary_rc=${empty_burst_canary_rc:-0} scout_leak_canary_rc=${scout_leak_canary_rc:-0} research_sweep_canary_rc=${research_sweep_canary_rc:-0} timer_manifest_drift_rc=${timer_manifest_drift_rc:-0} money_boundary_check_rc=${money_boundary_check_rc:-0} reconcile_rc=${reconcile_rc:-0}"
 # Propagate the first non-zero fail-loud exit. Deploy, missing MANIFEST
 # helpers, undersaturation, red-pr-repair, or a heartbeat canary may fail
 # loud; all route to the same escalation (fleet-heartbeat.service ->
@@ -3019,6 +3087,12 @@ fi
 # every tick for it is the trip-loop fleet-ops#1116 fixes (fleet-ops#4647).
 if [ "${timer_manifest_drift_rc:-0}" -ge 2 ]; then
     exit "$timer_manifest_drift_rc"
+fi
+# money-boundary --check: only propagate when the helper CRASHED (rc >= 2).
+# rc=1 is an unpaged far-future money wall — already FAIL-LOUD; landing
+# the unit in --state=failed every tick is the #1116 trip-loop.
+if [ "${money_boundary_check_rc:-0}" -ge 2 ]; then
+    exit "$money_boundary_check_rc"
 fi
 if [ "${gap_loop_rc:-0}" -ne 0 ]; then
     exit "$gap_loop_rc"

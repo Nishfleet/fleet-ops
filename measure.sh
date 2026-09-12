@@ -57,6 +57,21 @@ else
     echo "repair_rung=off ticks=${_rung_s}"
 fi
 
+# --- gh_app: nishfleet-worker App installation token budget ----------------
+# fleet-ops#5489: an idle fleet with a full queue because the App token's
+# 5000/hr core budget is exhausted is a NAMED fault, never a mystery. Reads
+# the same side-car state the exporter writes every 60s (the intake tick's
+# rate-limit state); missing/unreadable is UNAVAILABLE, never a fabricated 0.
+_gh_app_state="${GH_APP_RATE_LIMIT_STATE:-$HOME/workspaces/agent-state/pi-intake/gh-rate-limit.json}"
+_gh_app_remaining=$(jq -r '.resources.core.remaining // .remaining // 0' "$_gh_app_state" 2>/dev/null || true)
+if [[ "${_gh_app_remaining:-}" =~ ^[0-9]+$ ]]; then
+    _gh_app_reset=$(jq -r '.resources.core.reset // .reset // 0' "$_gh_app_state" 2>/dev/null || echo 0)
+    _gh_app_wait=$(( _gh_app_reset - $(date +%s) )); (( _gh_app_wait < 0 )) && _gh_app_wait=0
+    echo "gh_app: remaining=${_gh_app_remaining} reset_in=${_gh_app_wait}s"
+else
+    echo "gh_app: UNAVAILABLE:state-missing-or-unparseable"
+fi
+
 # Merged PRs across the fleet repos in the trailing 24h (gh is the live truth;
 # a gh failure makes the numerator unknown and is flagged, not silently zeroed).
 merged_24h=0
@@ -68,6 +83,82 @@ for repo in $repo_list; do
     merged_24h=$((merged_24h + (n + 0)))
   fi
 done
+
+# --- gate-escapes-24h -----------------------------------------------------
+# fleet-ops#5238: merged PRs in the window whose diff touched gate-owned
+# paths while the head's gate-integrity check was not green — the
+# advisory-gate escape class. Repos without a gate-integrity workflow
+# cannot produce one and are skipped. A gh failure flags the line
+# UNAVAILABLE, never a fabricated 0 (same posture as the merge count).
+gate_escapes=""
+if command -v gh >/dev/null 2>&1 && command -v python3 >/dev/null 2>&1; then
+  _ge_cfg="$repo_root/.fleet/gate-integrity.yml"
+  _ge_globs="$(bash "$repo_root/lib/gate-integrity-config.sh" "$_ge_cfg" 2>/dev/null \
+      | jq -c '.gate_globs' 2>/dev/null)"
+  if [ -z "$_ge_globs" ]; then
+    gate_escapes="UNAVAILABLE:gate-glob-resolution"
+  else
+    gate_escapes=0
+    _ge_fail=0
+    for repo in $repo_list; do
+      # No gate-integrity workflow on the repo -> no gate to escape.
+      if ! gh api "repos/$repo/contents/.github/workflows/gate-integrity.yml" \
+          --jq '.sha' >/dev/null 2>&1; then
+        continue
+      fi
+      _ge_prs_file=$(mktemp -t fleet-gate-escapes.XXXXXX 2>/dev/null) \
+        || { _ge_fail=1; continue; }
+      if ! gh pr list -R "$repo" --state merged --limit 200 \
+          --json number,mergedAt,headRefOid,files > "$_ge_prs_file" 2>/dev/null; then
+        rm -f "$_ge_prs_file"; _ge_fail=1; continue
+      fi
+      _ge_gate_prs=$(FLEET_GATE_GLOBS="$_ge_globs" \
+        MEASURE_CUTOFF="$(date -u -d '-24 hours' +%FT%TZ)" \
+        python3 - "$_ge_prs_file" <<'PY'
+import fnmatch, json, os, sys
+
+globs = json.loads(os.environ["FLEET_GATE_GLOBS"])
+cutoff = os.environ["MEASURE_CUTOFF"]
+try:
+    prs = json.load(open(sys.argv[1], encoding="utf-8"))
+except (OSError, json.JSONDecodeError):
+    sys.exit(0)
+
+def matches(path):
+    for p in globs:
+        if fnmatch.fnmatch(path, p):
+            return True
+        if p.endswith("/**") and path.startswith(p[:-2]):
+            return True
+    return False
+
+for pr in prs or []:
+    if (pr.get("mergedAt") or "") < cutoff:
+        continue
+    paths = [f.get("path", "") for f in pr.get("files") or []]
+    if any(matches(p) for p in paths):
+        print(f"{pr.get('number')}\t{pr.get('headRefOid')}")
+PY
+      ) || { _ge_fail=1; continue; }
+      while IFS=$'\t' read -r _pr_num _pr_sha; do
+        [ -n "$_pr_sha" ] || continue
+        _ge_verdict=$(gh api "repos/$repo/commits/$_pr_sha/check-runs" \
+            --paginate \
+            -q '.check_runs[] | select(.name == "gate-integrity" or (.name | endswith("/ gate-integrity"))) | [.id, (.conclusion // "pending")] | @tsv' \
+            2>/dev/null | sort -n | tail -1 | cut -f2) || { _ge_fail=1; continue; }
+        case "${_ge_verdict:-missing}" in
+          success) : ;;
+          *) gate_escapes=$((gate_escapes + 1)) ;;
+        esac
+      done <<< "$_ge_gate_prs"
+      rm -f "$_ge_prs_file"
+    done
+    [ "$_ge_fail" -eq 0 ] || gate_escapes="UNAVAILABLE:gh-error"
+  fi
+else
+  gate_escapes="UNAVAILABLE:no-gh"
+fi
+echo "gate-escapes-24h: ${gate_escapes}"
 
 # --- cursor_today: real Cursor-side API-bucket burn (fleet-ops#4566/#4621)
 # Shared helper: lib/cursor-api-bucket.sh (also sourced by the prepaid-util
@@ -157,3 +248,12 @@ if [ -f "$repo_root/lib/fleet-questions.sh" ]; then
     fleet_questions_line
 fi
 
+# --- findings ledger: every finding queued, never dropped silently ----------
+# fleet-ops#5443: the judges own carry-over ageing. One line, right after
+# visitor:, from the canonical findings ledger. Missing/unreadable ledger is
+# a real zero situation — but carried_over>0 is NEVER zeroed silently; the
+# green check below flags a ledger that has gone silent (no append in 48h).
+if [ -f "$repo_root/lib/findings_ledger.py" ]; then
+    python3 "$repo_root/lib/findings_ledger.py" measure \
+        || echo "findings: total=0 filed=0 carried_over=0 oldest_carry_h=0 panel_fail=0 UNAVAILABLE:measure-failed"
+fi

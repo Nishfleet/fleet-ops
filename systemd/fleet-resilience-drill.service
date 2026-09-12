@@ -1,5 +1,5 @@
 [Unit]
-Description=Fleet resilience drill — eleven planes (fleet-ops#455 + #1463)
+Description=Fleet resilience drill — twelve planes (fleet-ops#455 + #1463 + #5106)
 # Named reason for this schedule (vault: "a schedule needs a named reason"):
 # untested redundancy is false confidence. The original four planes (dead
 # heartbeat restart policy, public SSH, stale restore drill, missing

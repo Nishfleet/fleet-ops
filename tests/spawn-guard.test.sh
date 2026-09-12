@@ -21,6 +21,11 @@ here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 bash "$here/fleet-spawn-guard-stash-readonly.test.sh"
 bash "$here/fleet-spawn-guard-sudo-write.test.sh"
 bash "$here/fleet-spawn-guard-fs-sweep.test.sh"
+# fleet-ops#5589: `systemctl restart|stop` on a .slice is blocked
+# flags-tolerantly (the pre-#5589 rule missed `systemctl --user restart`
+# and all of `stop`), with a dated drasl-et-al allowlist; the fleet-unit
+# rule gets the same flags-gap fix.
+bash "$here/fleet-spawn-guard-slice-lifecycle.test.sh"
 # fleet-ops#3111 (part 5): the no-local-bin-clobber lint proves no test
 # writes into the real ~/.local/bin / ~/.local/lib/node_modules / ~/.pi
 # (the 2026-09-03 clobber shape). Hosted here with the other spawn-guard

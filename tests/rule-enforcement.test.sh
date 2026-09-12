@@ -1085,6 +1085,15 @@ ok "rule-enforcement: token economy canary drill"
 bash "$here/standing-rules-drift.test.sh" || fail "standing-rules drift drill failed"
 ok "rule-enforcement: standing-rules drift drill"
 
+# fleet-ops#5586: reserved-classes precedence gate. Nish's reserved-escalation
+# classes have ONE canonical list (vault global-standing-rules.md) and every
+# agent surface points at it; this drill proves the canonical sources carry
+# the union and the live renders match the repo canonical (fail-loud on
+# drift, fleet-ops#5586 first-round no-op render). Nested host so the worker
+# token does not need to edit .github/workflows/**.
+bash "$here/reserved-classes-precedence.test.sh" || fail "reserved-classes precedence drill failed"
+ok "rule-enforcement: reserved-classes precedence drill"
+
 # fleet-ops#1010: organ-heartbeat invariant. Every fleet organ ships an
 # absent() rule in the same PR; the registry enumerates the known organs and
 # the gate rejects a PR that touches an organ without its absent() rule.
@@ -1123,7 +1132,7 @@ ok "rule-enforcement: worker-memory drop-in drill"
 bash "$here/siterep-live-canary-pin.test.sh" || fail "siterep live canary pin drill failed"
 ok "rule-enforcement: siterep live canary pin drill"
 
-ok "rule-enforcement: matrix, join, stale queued, advisory, auto-file, observe-to-close, no-agent-names, vault-conflict, vault-lint, wipe-lessons, dirty-worktree-audit, spawn-guard, north-star-quality, cline-glm53, repo-visibility, exec-review, vault-knowledge-format, shared-file-collision, work-supply-24h, opencode-m3 catalog, quality-research-weekly, tailscale-acl, verify-harness, paid-flash, token-economy, geo-aeo, quality-ratchet, standing-rules-drift, aeo-probe, organ-heartbeat, asset-census, timer-manifest, agent-ready-spec-gate, gh-webhook-prom-quotes, worker-memory-dropin, and siterep-live-canary-pin drills (volume-lane-order retired in fleet-ops#3125)"
+ok "rule-enforcement: matrix, join, stale queued, advisory, auto-file, observe-to-close, no-agent-names, vault-conflict, vault-lint, wipe-lessons, dirty-worktree-audit, spawn-guard, north-star-quality, cline-glm53, repo-visibility, exec-review, vault-knowledge-format, shared-file-collision, work-supply-24h, opencode-m3 catalog, quality-research-weekly, tailscale-acl, verify-harness, paid-flash, token-economy, geo-aeo, quality-ratchet, standing-rules-drift, reserved-classes-precedence, aeo-probe, organ-heartbeat, asset-census, timer-manifest, agent-ready-spec-gate, gh-webhook-prom-quotes, worker-memory-dropin, and siterep-live-canary-pin drills (volume-lane-order retired in fleet-ops#3125)"
 
 # fleet-ops#2089: install.sh must self-heal enabled-but-inactive timers
 # (the staleness canary sat dead: enabled, NextElapse=infinity, never
@@ -1178,6 +1187,12 @@ ok "rule-enforcement: skills-symlink canary drill"
 # a workflow edit.
 bash "$here/fleet-bin-exclude-canary.test.sh" || fail "bin-exclude canary drill failed"
 ok "rule-enforcement: bin-exclude canary drill"
+
+# silent-drop sweep 2026-09-11: no findings-cap token or 'gh issue ... || true'
+# drop in bin/lib without allowlist + ledger row. Nested host so the worker
+# token does not need a workflow edit (fleet-ops#566).
+bash "$here/silent-drop-canary.test.sh" || fail "silent-drop canary drill failed"
+ok "rule-enforcement: silent-drop canary drill"
 
 # fleet-ops#1291: SLO error-budget system contract (lib/slo_budget.py,
 # config/slo-definitions.json, exporter _emit_slo_metrics, fleet_rules.yml
