@@ -1468,16 +1468,10 @@ groups:
       # info series via the query template function — a url label on the
       # duration series itself would mint a new series per run and restart
       # this rule's for: timer forever.
-      - alert: ProductDeployStalled
-        expr: fleet_deploy_blocked_duration_seconds{repo!="fleet-ops"} > 3600
-        for: 15m
-        labels:
-          severity: warning
-          service: fleet
-        annotations:
-          summary: "{{ $labels.repo }} production deploy stalled: {{ $labels.workflow }} non-green for {{ $value | humanizeDuration }}"
-          description: "fleet_deploy_blocked_duration_seconds{repo=\"{{ $labels.repo }}\",workflow=\"{{ $labels.workflow }}\"} exceeded 3600s for 15+ minutes: {{ $labels.repo }}'s production deploy has been non-green for {{ $value | humanizeDuration }} (an in-flight run counts as non-green). Newest red run: {{ with query (printf \"fleet_product_deploy_last_red_run_info{repo='%s',workflow='%s'}\" $labels.repo $labels.workflow) }}{{ . | first | label \"url\" }}{{ else }}unknown — fleet_product_deploy_last_red_run_info absent{{ end }}. fleet-ops#5140: 2026-09-10, 131 merged product PRs sat undelivered for 28h while every dashboard read green. Repair: open the newest red run, read its failure, then fix or re-run the {{ $labels.workflow }} workflow on Nishfleet/{{ $labels.repo }}."
-      # fleet-ops#5785: STALE PRODUCTION — the escalation rung above
+      # ProductDeployStalled (warning, cheap-seat dispatch) DELETED 2026-09-12: superseded by
+      # FleetProductionStale below (last-green age + undeployed merges, critical, flagship).
+      # One invariant, one alert, one repair path.
+      # fleet-ops#5785: STALE PRODUCTION — the replacement for the deleted (2026-09-12)
       # ProductDeployStalled. The trigger is the age of the LAST GREEN
       # production deploy, not the newest run's redness, so it also fires
       # on the shape Stalled is blind to: a newest-green-but-ancient run
