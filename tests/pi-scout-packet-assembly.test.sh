@@ -299,5 +299,6 @@ bash "$repo_root/tests/sr-token-efficiency-debt.test.sh"
 # ledger, `source: direction#4518`). Hosted here so P14 runs it without a
 # workflow-file edit. Hermetic (fixture ledger).
 bash "$repo_root/tests/packet-direction-block.test.sh"
+bash "$repo_root/tests/packet-direction-live-metric.test.sh"
 
 ok "0509 scout packet assembly: research-seeded, stale-fail-loud, pi-bound"
