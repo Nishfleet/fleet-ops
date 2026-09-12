@@ -765,6 +765,17 @@ systemd/escalation-daily-sweep.timer /home/nish/.config/systemd/user/escalation-
 bin/fleet-escalation-drain /home/nish/.local/bin/fleet-escalation-drain
 systemd/escalation-drain.service /home/nish/.config/systemd/user/escalation-drain.service
 systemd/escalation-drain.timer /home/nish/.config/systemd/user/escalation-drain.timer
+# fleet-ops#5854: the organ-death watcher. Every 5 min, watches the
+# anti-recursion-excluded escalation organs (stop-escalation.path,
+# unit-escalation@ template, parked stop-escalation-dispatch, daily-sweep
+# liveness marker) and fails loud on red. OnFailure= reset drop-in + write
+# name guard keep it out of the chain it watches; the out-of-band page is
+# the HC_URL_ORGANWATCH dead-man (same one-time provisioning as the other
+# keystone HC_URL_* checks) and the hourly tier1 failed-units sweep.
+bin/escalation-organ-watch /home/nish/.local/bin/escalation-organ-watch
+systemd/escalation-organ-watch.service /home/nish/.config/systemd/user/escalation-organ-watch.service
+systemd/escalation-organ-watch.service.d/no-self-escalate.conf /home/nish/.config/systemd/user/escalation-organ-watch.service.d/no-self-escalate.conf
+systemd/escalation-organ-watch.timer /home/nish/.config/systemd/user/escalation-organ-watch.timer
 prompts/heartbeat.md /home/nish/.pi/agent/prompts/heartbeat.md
 # P14: nishfleet-worker GitHub App identity for workers
 bin/worker-token /home/nish/.local/bin/worker-token

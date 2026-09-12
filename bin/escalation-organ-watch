@@ -1,0 +1,112 @@
+#!/usr/bin/env bash
+# escalation-organ-watch — the watcher for the escalation organs themselves
+# (fleet-ops#5854, follow-up to #5456).
+#
+# Why it exists: the escalation organs are deliberately EXCLUDED from the
+# chain they run (anti-recursion): unit-escalation@* resets its own
+# OnFailure= and unit-escalation-write refuses unit-escalation@*,
+# stop-escalation.*, and escalation-daily-sweep.* by name. So a dead
+# stop-escalation.path, a crash-loop-parked stop-escalation-dispatch, a
+# dodged daily-sweep, or a broken unit-escalation@ template produces NO
+# STOP-REASON — the previous coverage (hourly tier1 failed-units sweep +
+# hourly drill) detected organ death within ~60 min, not the 5-min contract.
+#
+# This watcher is NOT an escalation organ: it is an ordinary user service
+# on its own 5-minute timer (escalation-organ-watch.timer). Its red OUT:
+#   - it FAILS (exit 1) — systemd's failed state is the observable;
+#   - a per-unit drop-in resets OnFailure= so the watcher never routes its
+#     own red through STOP-REASON -> stop-escalation.path (the acceptance's
+#     no-recursion rule; the exclusion-by-name in bin/unit-escalation-write
+#     is defense in depth);
+#   - the OUT-OF-BAND page is the healthchecks.io dead-man: the service
+#     pings HC_URL_ORGANWATCH via bin/keystone-hc-ping on SUCCESS only
+#     (ExecStopPost in systemd/escalation-organ-watch.service), so a dead
+#     or red watcher misses pings and pages inside the check's grace
+#     period (5 min cadence). Provisioning the check is the same one-time
+#     machine step as the other keystone HC_URL_* checks: create it in the
+#     healthchecks.io UI, add HC_URL_ORGANWATCH with a 5-min deviation
+#     window to ~/.config/fleet-ops/keystone-hc.env, and keep it distinct
+#     from the other HC_URL_* values (the resilience drill enforces the
+#     distinctness).
+#   - the hourly fleet-heartbeat-tier1 failed-units sweep picks up the
+#     failed watcher unit for triage/repair.
+#
+# Checks (one per silent-death class from #5854):
+#   1. stop-escalation.path is active (the dispatch trigger lives).
+#   2. unit-escalation@.service template loads (writer instances can be
+#      instantiated; drop-in intact).
+#   3. stop-escalation-dispatch.service is not crash-loop-parked
+#      (StartLimitBurst parks it failed; further STOP-REASON rows would
+#      never dispatch).
+#   4. escalation-daily-sweep liveness marker is fresh (option-3 marker:
+#      bin/escalation-daily-sweep stamps it every sweep; a dead sweep
+#      leaves a stale marker).
+#
+# It never routes through the chain it watches: no STOP-REASON writes, no
+# dummy-unit escalation, no dependency on unit-escalation success.
+#
+# Env seams (tests):
+#   SYSTEMCTL                        default systemctl
+#   FLEET_ORGAN_WATCH_STATE          state dir (marker home; default
+#                                    /home/nish/workspaces/agent-state)
+#   FLEET_ORGAN_WATCH_SWEEP_MAX_AGE  sweep marker max age in seconds
+#                                    (default 90000 = 25h; the sweep is the
+#                                    24h dead-man floor with Persistent=true)
+#   FLEET_ORGAN_WATCH_TRIAGE         triage file to append red lines to
+set -Eeuo pipefail
+
+CURL="${CURL:-curl}" # kept for parity with the keystone pingers; unused here
+
+SYSTEMCTL="${SYSTEMCTL:-systemctl}"
+STATE="${FLEET_ORGAN_WATCH_STATE:-/home/nish/workspaces/agent-state}"
+MARKER="${FLEET_ORGAN_WATCH_MARKER:-$STATE/ESCALATION-DAILY-SWEEP-LIVENESS}"
+MAX_AGE="${FLEET_ORGAN_WATCH_SWEEP_MAX_AGE:-90000}"
+TRIAGE="${FLEET_ORGAN_WATCH_TRIAGE:-/home/nish/workspaces/agent-state/FLEET-HEARTBEAT-TRIAGE.md}"
+
+log() { printf '[%s] [escalation-organ-watch] %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$*" >&2; }
+
+red() {
+    log "RED $*"
+    {
+        printf '\n[%s] [escalation-organ-watch] RED %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$*"
+    } >> "$TRIAGE" 2>/dev/null || true
+}
+
+# 1. stop-escalation.path must be active — without it every STOP-REASON row
+#    (including the daily sweep's) sits undispatched.
+if ! "$SYSTEMCTL" --user is-active --quiet stop-escalation.path >/dev/null 2>&1; then
+    red "organ-watch: stop-escalation.path is not active — STOP-REASON rows cannot dispatch (fleet-ops#5854)"
+    exit 1
+fi
+
+# 2. unit-escalation@.service template must load — a destroyed/unloadable
+#    writer template means no future failure can be recorded.
+if ! "$SYSTEMCTL" --user cat unit-escalation@.service >/dev/null 2>&1; then
+    red "organ-watch: unit-escalation@.service template does not load (fleet-ops#5854)"
+    exit 1
+fi
+
+# 3. stop-escalation-dispatch.service must not be crash-loop-parked
+#    (StartLimitBurst state): parked ghosts STOP-REASON rows until the sweep.
+if [[ "$("$SYSTEMCTL" --user is-failed stop-escalation-dispatch.service 2>/dev/null || true)" == "failed" ]]; then
+    red "organ-watch: stop-escalation-dispatch.service is in failed state (StartLimitBurst-parked? fleet-ops#5854)"
+    exit 1
+fi
+
+# 4. escalation-daily-sweep must be demonstrably alive: it stamps the
+#    liveness marker each run; a stale/missing marker means the last-resort
+#    floor is dead.
+if [[ ! -f "$MARKER" ]]; then
+    red "organ-watch: escalation-daily-sweep liveness marker missing: $MARKER (fleet-ops#5854)"
+    exit 1
+fi
+now=$(date +%s)
+mtime=$(stat -c %Y "$MARKER" 2>/dev/null || echo 0)
+age=$(( now - mtime ))
+if (( age > MAX_AGE )); then
+    red "organ-watch: escalation-daily-sweep liveness marker stale (age=${age}s > ${MAX_AGE}s; fleet-ops#5854)"
+    exit 1
+fi
+
+log "GREEN: path active, template loads, dispatcher not parked, sweep marker fresh (${age}s old)"
+exit 0

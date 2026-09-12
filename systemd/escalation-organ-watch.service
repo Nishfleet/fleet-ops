@@ -1,0 +1,22 @@
+[Unit]
+Description=Escalation organ-death watcher (fleet-ops#5854)
+# Watches the escalation organs themselves (the anti-recursion-excluded
+# set): stop-escalation.path active, unit-escalation@ template loadable,
+# stop-escalation-dispatch not crash-loop-parked, escalation-daily-sweep
+# liveness marker fresh. On red it FAILS — see the OnFailure= reset
+# drop-in for why its red goes OUT-OF-BAND (dead-man page + tier1 failed
+# sweep), never through STOP-REASON -> stop-escalation.path.
+# Every 5 min: the organ-death detection contract from #5854.
+
+[Service]
+Type=oneshot
+ExecStart=/bin/bash -c 'exec /home/nish/.local/bin/escalation-organ-watch'
+TimeoutStartSec=1min
+Restart=no
+NoNewPrivileges=true
+PrivateTmp=true
+# fleet-ops#5854: ping the dead-man healthchecks.io check on success only.
+# A red/failed/dead watcher stops pinging and pages inside the 5-min grace
+# window; a failed tick must not keep the check alive (same pattern as the
+# keystone intake dead-man drop-in).
+ExecStopPost=/bin/bash -c 'if [ "${SERVICE_RESULT:-}" = success ]; then exec /home/nish/.local/bin/keystone-hc-ping organwatch; fi'

@@ -442,7 +442,7 @@ write_green_system() {
 LISTEN 0 128 100.108.184.97:22 0.0.0.0:*
 LISTEN 0 128 [fd7a:115c:a1e0::1]:22 [::]:*
 OUT
-  printf 'HC_URL_INTAKE=https://example.invalid/i\nHC_URL_SCOUT=https://example.invalid/s\nHC_URL_RECONCILE=https://example.invalid/r\nHC_URL_RESTORE=https://example.invalid/b\n' \
+  printf 'HC_URL_INTAKE=https://example.invalid/i\nHC_URL_SCOUT=https://example.invalid/s\nHC_URL_RECONCILE=https://example.invalid/r\nHC_URL_RESTORE=https://example.invalid/b\nHC_URL_ORGANWATCH=https://example.invalid/o\n' \
     >"$KEYSTONE_HC_ENV"
 }
 

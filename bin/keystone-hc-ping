@@ -36,7 +36,7 @@ log() {
 name="${1:-}"
 verb="${2:-start}"
 case "$name" in
-  intake|scout|reconcile|restore) ;; # verbs: bare URL (success ping)
+  intake|scout|reconcile|restore|organwatch) ;; # verbs: bare URL (success ping) — organwatch is the #5854 organ-death watcher dead-man
   detached) ;;                        # verbs: start|success|fail from $2
   *)
     log "usage: keystone-hc-ping <intake|scout|reconcile|restore|detached [start|success|fail]>"
@@ -45,7 +45,7 @@ case "$name" in
 esac
 
 case "$name:$verb" in
-  intake:*|scout:*|reconcile:*|restore:*) verb="success" ;;
+  intake:*|scout:*|reconcile:*|restore:*|organwatch:*) verb="success" ;;
   detached:start|detached:success|detached:fail) ;;
   *) log "usage: keystone-hc-ping detached <start|success|fail>"; exit 0 ;;
 esac
