@@ -298,10 +298,45 @@ jobs:
         if: steps.freeze.outputs.frozen == 'false' && steps.quality.outputs.breached == 'false' && steps.trample.outputs.trampled == 'false' && steps.gateint.outputs.gated == 'false'
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          FLEET_OPS_REF: ${{ github.workflow_sha }}
           PR: ${{ github.event.pull_request.number }}
+          PR_LABELS: ${{ join(github.event.pull_request.labels.*.name, ',') }}
         run: |
           if [ -z "$GH_TOKEN" ]; then
             echo "::error::nishfleet-worker App token is not configured — auto-merge not armed; this PR waits for a human"
             exit 1
+          fi
+          # fleet-ops#5810: a repair-labelled PR (e.g. `repair:main-red`, opened
+          # by the red-main/auto-revert repair path) must NOT sit at the END of
+          # a merge queue whose group builds fail on the bug it fixes — the
+          # #3191 self-deadlock. On merge-queue repos, arm via GraphQL
+          # dequeue-if-queued + enqueuePullRequest(jump:true) instead of plain
+          # auto-merge; the helper repositions the PR at the head but the
+          # group build and the ruleset's required checks still gate the
+          # merge (a jump NEVER bypasses required checks). It falls back to
+          # the plain path when the PR isn't repair-labelled or the repo has
+          # no merge queue; non-repair PRs never enter the helper.
+          if printf '%s\n' "$PR_LABELS" | grep -qE 'repair:'; then
+          if [ -n "$FLEET_OPS_REF" ]; then
+            # The checkout is the PR head, not fleet-ops — fetch the helper
+            # at the exact fleet-ops ref this workflow came from (the same
+            # fetch pattern the freeze/quality/trample gates use, so helper
+            # and workflow can never drift apart).
+            curl -fsSL --retry 2 -o /tmp/repair-queue-jump.mjs \
+              "https://raw.githubusercontent.com/Nishfleet/fleet-ops/${FLEET_OPS_REF}/.github/scripts/repair-queue-jump.mjs" \
+              || { echo "::error::repair-queue-jump helper fetch failed (fleet-ops#5810)"; exit 1; }
+          else
+            cp "$GITHUB_WORKSPACE/.github/scripts/repair-queue-jump.mjs" /tmp/repair-queue-jump.mjs
+          fi
+            set +e
+            node /tmp/repair-queue-jump.mjs enqueue \
+              --repo "${{ github.repository }}" --pr "$PR" --branch "${{ github.event.pull_request.base.ref }}"
+            rc=$?
+            set -e
+            case "$rc" in
+              0) exit 0 ;;
+              1|3|4) echo "repair-queue-jump fell back (rc=$rc); taking the plain auto-merge path" ;;
+              *) echo "::error::repair-queue-jump failed (rc=$rc) — plain auto-merge arm is deliberately NOT taken so the PR waits for a human instead of silently re-queueing at the tail"; exit 1 ;;
+            esac
           fi
           gh pr merge "$PR" --auto --squash --repo "${{ github.repository }}"

@@ -40,6 +40,7 @@ import { writeFileSync, mkdirSync } from "node:fs";
 import path from "node:path";
 
 import { isHandsOff } from "./repo-standards.lib.mjs";
+import { isRepairPr, selectRepairJumps, PR_AND_QUEUE_QUERY, REPAIR_JUMP_MUTATION } from "./repair-queue-jump.mjs";
 
 const FLEET_AUTHORS_DEFAULT = "nish3451,github-actions[bot],app/dependabot,fleet-ops[bot]";
 
@@ -131,6 +132,54 @@ function arm(repo, prNumber) {
   return gh(["pr", "merge", String(prNumber), "--auto", "--squash", "--repo", repo], { allowFail: true });
 }
 
+// fleet-ops#5810 safeguard: when the merge-queue HEAD has waited > 30 min
+// and a repair-labelled PR is queued behind it, jump the repair PR. This is
+// the backstop for the arm-time jump (workers who arm via `gh pr merge
+// --auto` still append to the END of the queue; the next backstop sweep
+// repositions them). One GraphQL read per repair-labelled PR + one mutation
+// per jumped PR; budget stays flat. dryRun respects --dry-run.
+function repairJumpPass(repo, prs, opts, out) {
+  const repairPrs = prs.filter((pr) => isRepairPr(pr.labels));
+  if (repairPrs.length === 0) return null; // budget: no repair PR in repo -> no queue query at all
+  if (!isRepairQueueRelevant(repo, repairPrs, out)) return null;
+  for (const pr of repairPrs) {
+    if (pr.state && pr.state !== "OPEN") continue;
+    try {
+      const [owner, name] = repo.split("/");
+      const raw = gh(["api", "graphql", "-f", `query=${PR_AND_QUEUE_QUERY}`, "-f", `owner=${owner}`, "-f", `repo=${name}`, "-f", "branch=main", "-F", `pr=${pr.number}`], { json: true, allowFail: true });
+      const data = raw && raw.data && raw.data.repository;
+      if (!data) { out.repairJumpRepos.push({ repo, pr: pr.number, status: "query-failed" }); continue; }
+      const snapshot = data.mergeQueue ? data.mergeQueue.entries : null;
+      if (!snapshot) { out.repairJumpRepos.push({ repo, pr: pr.number, note: "no-merge-queue" }); continue; }
+      const result = selectRepairJumps(snapshot, { nowMs: Date.now() });
+      const mine = (result.jumped || []).find((s) => s.number === pr.number);
+      if (!mine) { out.repairJumpRepos.push({ repo, pr: pr.number, reason: result.reason }); continue; }
+      if (opts.dryRun) {
+        out.repairJumpRepos.push({ repo, pr: pr.number, action: "jumped-dry-run" });
+      } else {
+        gh(["api", "graphql", "-f", `query=${REPAIR_JUMP_MUTATION}`, "-f", `prId=${mine.id}`], { allowFail: true });
+        out.repairJumpRepos.push({ repo, pr: pr.number, action: "jumped" });
+      }
+    } catch (e) {
+      out.repairJumpRepos.push({ repo, pr: pr.number, reason: `jump-failed: ${e.message}` });
+    }
+  }
+  return out.repairJumpRepos.length;
+}
+
+// Cheap pre-check so the safeguard only spends a GraphQL query on a repo
+// whose merge queue endpoint exists (non-queue repos return null).
+function isRepairQueueRelevant(repo, repairPrs, out) {
+  const mq = gh([
+    "api", "graphql", "--jq", '.data.repository.mergeQueue.entries.totalCount // 0',
+    "-f", "query=query($owner:String!,$repo:String!){repository(owner:$owner,name:$repo){mergeQueue(branch:\"main\"){entries(first:1){totalCount}}}}",
+    "-f", `owner=${repo.split("/")[0]}`,
+    "-f", `repo=${repo.split("/")[1]}`,
+  ], { allowFail: true });
+  if (mq === null) { out.repairJumpRepos.push({ repo, pr: repairPrs[0] && repairPrs[0].number, reason: "queue-probe-failed" }); return false; }
+  return mq !== "0";
+}
+
 function processRepo(repo, opts) {
   if (isHandsOff(repo)) {
     return { repo, status: "skipped", reason: "hands-off", armed: 0, alreadyQueued: 0, notGreen: 0, skipped: 0, enqueued: [] };
@@ -138,7 +187,8 @@ function processRepo(repo, opts) {
   const settings = gh(["api", `repos/${repo}`], { json: true, allowFail: true });
   if (!settings || settings.archived) return { repo, status: "skipped", reason: "archived", armed: 0, alreadyQueued: 0, notGreen: 0, skipped: 0, enqueued: [] };
   const prs = listOpenPrs(repo);
-  const out = { repo, status: "ok", armed: 0, alreadyQueued: 0, notGreen: 0, skipped: 0, enqueued: [], skippedList: [] };
+  const out = { repo, status: "ok", armed: 0, alreadyQueued: 0, notGreen: 0, skipped: 0, enqueued: [], skippedList: [], repairJumpRepos: [] };
+  repairJumpPass(repo, prs, opts, out);
   for (const pr of prs) {
     // Per-PR exclusions (match reusable-auto-enqueue.yml).
     if (pr.isDraft) { out.skipped += 1; out.skippedList.push({ pr: pr.number, reason: "draft" }); continue; }
@@ -192,8 +242,11 @@ function renderMarkdown(reports) {
   for (const r of reports.repos) {
     if (r.status === "skipped") { lines.push(`### ${r.repo} — SKIPPED (${r.reason})`); continue; }
     if ((r.armed || 0) === 0 && (r.skipped || 0) === 0) { continue; } // quiet when nothing to do
-    lines.push(`### ${r.repo}`);
+    lines.push("### " + r.repo);
     lines.push(`- armed: ${r.armed}`);
+    for (const j of r.repairJumpRepos || []) {
+      lines.push(`- repair-jump #${j.pr}: ${j.action || j.reason}`);
+    }
     lines.push(`- already queued: ${r.alreadyQueued}`);
     lines.push(`- not green (kept open): ${r.notGreen}`);
     lines.push(`- skipped (per-PR rule): ${r.skipped}`);
