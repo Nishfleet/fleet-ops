@@ -48,6 +48,7 @@ bin/fleet-heartbeat-tier1:4
 bin/fleet-restore-drill:1
 bin/fleet-vibes-canary:1
 bin/ram-measure:1
+lib/litellm-seat.sh:58
 tests/agent-cron-writes-refused.test.sh:1
 tests/blocked-reconcile.test.sh:1
 tests/devin-config-trust.test.sh:1
