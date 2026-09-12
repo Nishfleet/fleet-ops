@@ -1091,7 +1091,6 @@ grep -Eq '^[[:space:]]*bash[[:space:]]+"?\$here/console-truth-pytest\.test\.sh"?
   || fail "console-truth-pytest.test.sh must not be a known orphan (fleet-ops#5072)"
 ok "console-truth-pytest.test.sh host line in console-tile-verify.test.sh is pinned (fleet-ops#5072)"
 
-<<<<<<< HEAD
 # fleet-ops#5588: hard-pin the host line for one-fleet-rule-pointer.test.sh in
 # ci-standards-audit.test.sh (itself listed in ci.yml). The consolidation
 # detector guards the one-fleet title+pointer shape in canonical + rendered
@@ -1157,8 +1156,6 @@ grep -Eq '^[[:space:]]*bash[[:space:]]+"?\$here/pick-seat-freeze\.test\.sh"?' \
   || fail "pick-seat-freeze.test.sh must not be a known orphan (fleet-ops#4263)"
 ok "pick-seat-freeze.test.sh host line in ci-standards-audit.test.sh is pinned (fleet-ops#4263)"
 
-||||||| parent of 8f7e6adeb (test(ci): host install-seat-caps-stale-snapshot-refuse from ci-standards-audit (fleet-ops#5493))
-=======
 # fleet-ops#5493: hard-pin the host line for install-seat-caps-stale-
 # snapshot-refuse.test.sh in ci-standards-audit so a future refactor that
 # drops it is caught by name. Hosted from tests/ci-standards-audit.test.sh
@@ -1174,5 +1171,4 @@ grep -Eq '^[[:space:]]*bash[[:space:]]+"?\$here/install-seat-caps-stale-snapshot
   || fail "install-seat-caps-stale-snapshot-refuse.test.sh must not be a known orphan (fleet-ops#5493)"
 ok "install-seat-caps-stale-snapshot-refuse.test.sh host line in ci-standards-audit.test.sh is pinned (fleet-ops#5493)"
 
->>>>>>> 8f7e6adeb (test(ci): host install-seat-caps-stale-snapshot-refuse from ci-standards-audit (fleet-ops#5493))
 echo "OK: p14-test-listing-gate.test.sh: P14 test list is closed"

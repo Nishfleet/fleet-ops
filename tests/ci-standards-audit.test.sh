@@ -987,7 +987,6 @@ bash "$here/fleet-cpu-sampler-ready.test.sh"
 # drop of this host line fails by name. Hermetic (scratch MANIFEST + scratch
 # HOME + fake checkout, stubbed systemctl, no live install).
 bash "$here/helper-symlink-resolution.test.sh"
-<<<<<<< HEAD
 
 # fleet-ops#5588: the one-fleet-rule consolidation detector. Guards that the
 # canonical one-fleet section is title + archive pointer, the heading carries
@@ -1023,8 +1022,6 @@ bash "$here/live-state-doctrine-precedence.test.sh"
 # drop of this host line fails by name. Hermetic (scratch dir + stubbed gh,
 # no live network).
 bash "$here/measure-attest-waiting.test.sh"
-||||||| parent of 8f7e6adeb (test(ci): host install-seat-caps-stale-snapshot-refuse from ci-standards-audit (fleet-ops#5493))
-=======
 
 # fleet-ops#5493: behavioral regression for the pre-#331 stale seat-caps
 # snapshot (devin 4->0, ollama 4->2) being installed over live caps. The
@@ -1037,4 +1034,3 @@ bash "$here/measure-attest-waiting.test.sh"
 # drop of this host line fails by name. Hermetic (scratch MANIFEST + fake
 # HOME + stub systemctl, does NOT touch the real live state file).
 bash "$here/install-seat-caps-stale-snapshot-refuse.test.sh"
->>>>>>> 8f7e6adeb (test(ci): host install-seat-caps-stale-snapshot-refuse from ci-standards-audit (fleet-ops#5493))
