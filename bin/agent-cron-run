@@ -96,7 +96,7 @@ prompt_bytes=$(wc -c <"$PROMPT")
 trim_packet_sections() {
     # $1 = source packet, $2 = trimmed output, $3 = target bytes.
     # Prints one log line per dropped section ("trim: dropped ...").
-    local t_src="$1" t_dest="$2" t_t_target="$3"
+    local t_src="$1" t_dest="$2" t_target="$3"
     local -a sec_lines
     local total_lines i end_line head_text sec_bytes dropped_bytes=0 dropped_count=0
 
@@ -107,7 +107,7 @@ trim_packet_sections() {
 
     i=$(( ${#sec_lines[@]} - 1 ))
     while (( i >= 0 )); do
-        (( $(wc -c <"$t_dest") > target )) || break
+        (( $(wc -c <"$t_dest") > t_target )) || break
         # Line numbers stay valid as we delete ONLY later ranges first
         # (end-inward), so earlier sections keep their original numbering.
         head_line=${sec_lines[i]}
