@@ -287,6 +287,10 @@ chmod +x "$repo/bin/fleet-resilience-drill"
 cp "$repo_root/lib/precedence-band.sh" "$repo/lib/precedence-band.sh"
 cp "$repo_root/lib/vault-conflict-resolver.py" "$repo/lib/vault-conflict-resolver.py"
 chmod +x "$repo/lib/vault-conflict-resolver.py"
+# fleet-ops#5800: the salvage_orphan plane replays the ExecStopPost env
+# against bin/pi-salvage-worktree — ship it next to the drill.
+cp "$repo_root/bin/pi-salvage-worktree" "$repo/bin/pi-salvage-worktree"
+chmod +x "$repo/bin/pi-salvage-worktree"
 # Ship a stub fleet-issue-file so the auto-file step finds a binary.
 # Auto-file is then disabled via FLEET_RES_DRILL_AUTOFILE_DISABLE=1 in
 # the test env, so this stub never actually calls gh.
@@ -478,7 +482,8 @@ names = {r["name"] for r in data["results"]}
 required = {"supervision_resurrection", "access_policy", "access_runbook",
             "state_restore", "compute_breakglass", "keystone_deadman",
             "queue_freeze", "pipeline_red", "boundary_delivery",
-            "band_floor", "event_trigger_spot", "seat_sentinel"}
+            "band_floor", "event_trigger_spot", "seat_sentinel",
+            "salvage_orphan"}
 missing = required - names
 assert not missing, f"missing planes: {missing}"
 statuses = {r["name"]: r["status"] for r in data["results"]}
@@ -498,7 +503,8 @@ import json, sys
 data = json.load(open(sys.argv[1], encoding="utf-8"))
 statuses = {r["name"]: r["status"] for r in data["results"]}
 for plane in ("queue_freeze", "pipeline_red", "boundary_delivery",
-              "band_floor", "event_trigger_spot", "seat_sentinel"):
+              "band_floor", "event_trigger_spot", "seat_sentinel",
+              "salvage_orphan"):
     assert statuses.get(plane) in ("pass", "skip"), f"{plane} -> {statuses.get(plane)}"
 PY
 ok "#1463+#5106 green: every failure-class plane passed (or SKIP+LOUD)"
