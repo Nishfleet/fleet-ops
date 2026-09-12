@@ -67,40 +67,46 @@ UNSORTED_FIND_HEAD_RE = re.compile(
 CAT_PROMPT_RE = re.compile(r"\bcat\s+[\"']?\$\{?[^\s\"']*(?:prompt|PROMPT|prompt_file)")
 
 
-# Markers strong enough to classify a file as a prompt assembler on their own.
-# fleet-ops#5603: the bare words "prompt", "packet" and "messages" appear in
-# ordinary prose (e.g. lib/standing-rules/canonical.md) and misclassified such
-# documents as prompt templates, producing pre-existing REJECTs on every PR
-# that touched them. Weak word markers now only apply to non-markdown
-# assembler sources; markdown examples are treated as prompt templates only
-# when they live under prompts/ or carry a strong invocation marker.
-STRONG_ASSEMBLER_MARKERS = (
+# fleet-ops#5603: the word markers ("prompt", "packet", "pi --print",
+# "messages", "anthropic", ...) are ordinary prose vocabulary — docs like
+# lib/standing-rules/canonical.md mention them and were misclassified as
+# prompt templates, which saddled every PR touching them with an
+# un-clearable pre-existing REJECT (PR #5599 carry). They still classify
+# shell/python assembler sources; markdown is a prompt template only when
+# it lives under prompts/ or carries literal template-substitution code.
+ASSEMBLER_MARKERS = (
+    "packet",
+    "prompt",
     "pi --print",
     "pi -- ",
     "tpl.replace",
     ".replace('{{",
     '.replace("{{',
     "cache_control",
+    "messages",
     "anthropic",
     "claude-",
+)
+
+# Literal template-substitution code: the only markers that can make a
+# markdown file outside prompts/ a template.
+MD_TEMPLATE_MARKERS = (
+    "tpl.replace",
+    ".replace('{{",
+    '.replace("{{',
 )
 
 
 def _looks_like_assembler(path: Path, text: str) -> bool:
     """True if the file looks like a prompt assembler or prompt template."""
     low = text.lower()
-    if any(m in low for m in STRONG_ASSEMBLER_MARKERS):
-        return True
     # Markdown prompt templates live under prompts/. Elsewhere in the tree,
-    # markdown is prose — the weak word markers below must not classify it.
+    # markdown is prose — only literal substitution code marks it as one.
     if path.suffix == ".md":
-        return "prompts" in path.parts
-    assembler_markers = (
-        "packet",
-        "prompt",
-        "messages",
-    )
-    return any(m in low for m in assembler_markers)
+        return "prompts" in path.parts or any(
+            m in low for m in MD_TEMPLATE_MARKERS
+        )
+    return any(m in low for m in ASSEMBLER_MARKERS)
 
 
 def _strip_shell_comment(line: str) -> str:

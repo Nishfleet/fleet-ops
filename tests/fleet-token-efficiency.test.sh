@@ -197,33 +197,11 @@ ok "--all rejects untracked bad assemblers"
 
 # --- scenario 7: prose markdown outside prompts/ is not a prompt template ---
 # fleet-ops#5603: canonical prose (lib/standing-rules/canonical.md) uses the
-# word "prompt" and contains one {{...}} placeholder; it must not be classified
-# as a prompt assembler, or every PR touching it carries a pre-existing REJECT.
-mkdir -p "$scratch/repo/lib/standing-rules"
-cat >"$scratch/repo/lib/standing-rules/canonical.md" <<'EOF'
-# Standing rules: canonical
-
-The worker prompt contract says: {{SURFACE_PREIMPLEMENT_PHRASE}}
-
-In fleet-ops#4557 the worker prompt was audited. Syntax {{DATE//}}. good
-EOF
-mkdir -p "$scratch/repo/prompts"
-cat >"$scratch/repo/prompts/bad-scatter.md" <<'EOF'
-# bad template
-
-{{FIRST_PLACEHOLDER}} sits before most of the static body.
-
-$(date is fine here)
-
-Sed doc sed sed sed sed sed sed sed sed sed.
-EOF
-printf 'M\tlib/standing-rules/canonical.md\n' | "$bin" --name-status - --root "$scratch/repo" >"$out_file" 2>&1
-rc=$?
-[[ "$rc" == "0" ]] || fail "prose md outside prompts/ must pass (rc=$rc out=$(cat "$out_file"))"
+# words "prompt"/"packet"/"pi --print" and carries {{...}} placeholders; it
+# must not be classified as a prompt assembler, or every PR touching it
+# carries a pre-existing REJECT. Hosted drill holds the assertions.
+bash "$here/token-efficiency-canonical-not-assembler.test.sh" \
+    || fail "canonical-not-assembler regression drill failed (fleet-ops#5603)"
 ok "prose markdown outside prompts/ is not a prompt assembler (fleet-ops#5603)"
-printf 'M\tprompts/bad-scatter.md\n' | "$bin" --name-status - --root "$scratch/repo" >"$out_file" 2>&1
-rc=$?
-[[ "$rc" == "1" ]] || fail "prompt template under prompts/ must still be checked (rc=$rc out=$(cat "$out_file"))"
-ok "prompt templates under prompts/ are still scanned"
 
 ok "fleet-token-efficiency-check: PR gate, fixture drills, and self-skip pass"
