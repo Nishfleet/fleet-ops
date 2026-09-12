@@ -166,7 +166,7 @@ set -e
 out=$(cat "$PI_ISSUES_DIR/${inst}.out" 2>/dev/null || true)
 echo "$out" | grep -qF 'PACKET-VERDICT class=empty-success' \
   || fail "output must carry a PACKET-VERDICT class=empty-success line, got: $out"
-echo "$out" | grep -qF 'class=empty-success seat=devin/' \
+echo "$out" | grep -qF 'class=empty-success seat=litellm/' \
   || fail "empty-success line must name the seat, got: $out"
 echo "$out" | grep -qE 'class=empty-success seat=devin/[0-9A-Za-z.-]+ output_bytes=[0-9]+' \
   || fail "empty-success line must carry output_bytes, got: $out"

@@ -71,7 +71,6 @@ tests/pi-issue-run-defensive-mkdir.test.sh:1
 tests/pi-issue-run-empty-success.test.sh:1
 tests/pi-issue-run-fast-death-class.test.sh:1
 tests/pi-issue-run-hang-stall-bench.test.sh:1
-tests/pi-issue-run-hang-window-scale.test.sh:1
 tests/pi-issue-run-journal-instrumentation.test.sh:1
 tests/pi-issue-run-mid-session-bench.test.sh:1
 tests/pi-issue-run-noop-bench.test.sh:1

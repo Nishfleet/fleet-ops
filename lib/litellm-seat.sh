@@ -435,7 +435,17 @@ seat_worked_no_text_path() { echo ""; }
 # Local consecutive-count bench is gone. Wrappers still call this; false
 # means "not a remote agent classified here" so the loud-fail path runs.
 provider_remote_agent() { return 1; }
-session_tool_calls() { echo 0; }
+# Real counter, not a stub: pi-issue-run's provider-death resume (#5788) and
+# hang-watchdog slow-session gate (#3883) both key on it. A stub returning 0
+# silently disabled both after #4263 deleted the routing library.
+# arg: session jsonl -> number of toolResult messages (0 when missing).
+session_tool_calls() {
+    local f="${1:-}" n
+    [[ -n "$f" && -f "$f" ]] || { printf '0'; return 0; }
+    n=$(jq -r 'select(.message.role? == "toolResult") | .message.toolCallId // empty' "$f" 2>/dev/null | grep -c . 2>/dev/null || true)
+    [[ "$n" =~ ^[0-9]+$ ]] || n=0
+    printf '%s' "$n"
+}
 # Spawn-phase timeout / E2BIG (keep-list detector; routing stays in the proxy).
 # fleet-ops#5309: spawnSync E2BIG must classify so a missed pre-flight cap
 # benches instead of crash-looping the same seat to StartLimitBurst.
