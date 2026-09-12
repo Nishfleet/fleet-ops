@@ -871,6 +871,7 @@ check_comment_junk() {
 # fleet-ops#3273: config sprawl. A .bak next to a managed MANIFEST file is a
 # leftover copy, not loaded, and it confuses every grep. The manifest check
 # must fail if any such .bak (or .bak-*) exists in the same directory.
+# fleet-ops#5602: same class for .orig residue (editor/hot-patch leftover).
 check_bak_sprawl() {
   local src dest dir base entry
   while read -r src dest || [ -n "$src" ]; do
@@ -892,11 +893,17 @@ check_bak_sprawl() {
     fi
 
     # Look for any file or directory whose name starts with the managed
-    # file's basename followed by '.bak'. A glob that matches nothing still
-    # yields the literal pattern; the existence test filters it out.
-    for entry in "$dir/$base.bak"*; do
+    # file's basename followed by '.bak' or '.orig'. A glob that matches
+    # nothing still yields the literal pattern; the existence test filters
+    # it out.
+    for entry in "$dir/$base.bak"* "$dir/$base.orig"*; do
       if [ -e "$entry" ] || [ -L "$entry" ]; then
-        echo "DIFF: $entry (.bak next to managed MANIFEST file $dest)"
+        case "$entry" in
+          "$dir/$base.orig"*)
+            echo "DIFF: $entry (.orig next to managed MANIFEST file $dest)" ;;
+          *)
+            echo "DIFF: $entry (.bak next to managed MANIFEST file $dest)" ;;
+        esac
         rc=1
       fi
     done
