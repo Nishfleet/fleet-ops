@@ -1242,6 +1242,11 @@ echo "reconciler-caught: delta=$reconciler_caught total=$_reconciler_new_total r
 # fleet-issue-file filer and the existing yield ledger. Prepaid-quota
 # providers are never auditioned (defence in depth at read time).
 MODEL_CANDIDATES_JSON="${PI_MODEL_CANDIDATES_JSON:-$HOME/.local/state/pi-packet/model-candidates.json}"
+# HOTFIX 2026-09-12 (pi-intake@fleet-ops crash-loop, #6032): the audition
+# retire phase reads $SEAT_YIELD_JSON, but on this lineage the sourced
+# lib/litellm-seat.sh (pre-#4611-split) never defines it — unbound variable
+# under set -u killed every tick. Default mirrors canonical lib/seat-lib.sh.
+SEAT_YIELD_JSON="${SEAT_YIELD_JSON:-$HOME/.local/state/pi-packet/seat-yield.json}"
 AUDITION_DROPPED_JSON="${PI_AUDITION_DROPPED_JSON:-$HOME/.local/state/pi-packet/audition-dropped.json}"
 # fleet-ops#3811: seats the tick may NOT remove (config-declared provider-level
 # audition:true, e.g. xkiro) get their verdict filed once into this map so the
