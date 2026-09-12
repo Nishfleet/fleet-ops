@@ -745,6 +745,19 @@ while IFS= read -r repo; do
         # umbrella means "not claimable" regardless of any other topic label.
         if printf '%s' "$labels_json" | jq -e '.[] | select(.name=="umbrella")' >/dev/null 2>&1; then
             label="nish-reserved"
+        # fleet-ops#5861: an epic-labeled issue is a Nish-ratified direction
+        # (tracking parent), not claimable work — the panel judges its
+        # dependency slices, not the epic. Excluded from admission exactly
+        # like umbrella: the #4451 epic guard alone was not enough because a
+        # discard reversal (judge removes `discarded`) leaves the issue
+        # lifecycle-unlabeled, so the sweep re-promoted it to scout-candidate
+        # and the panel discarded it again, every tick (0509#3171: 6 discard
+        # cycles on 2026-09-12). nish-reserved is the terminal lifecycle
+        # label, so the reversal sticks. Runs before gap-audit, same reason
+        # as umbrella: the epic label means "not claimable" regardless of any
+        # other topic label.
+        elif printf '%s' "$labels_json" | jq -e '.[] | select(.name=="epic")' >/dev/null 2>&1; then
+            label="nish-reserved"
         # gap-audit leftovers already passed the blind-audit panel (#402).
         # That is a gate, so they become agent-ready rather than re-queued
         # for scout admission.

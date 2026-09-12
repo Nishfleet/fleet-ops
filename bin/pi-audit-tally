@@ -102,10 +102,23 @@ reason_has_evidence() {
 # and 09-07. A candidate that belongs to an epic is never discarded here.
 candidate_is_epic_linked() {
     local title="$1" body="$2"
-    grep -qE 'EPIC #[0-9]+' <<<"$title" && return 0
+    # fleet-ops#5861: Nish-ratified epic titles come in three shapes —
+    # "EPIC #123", "EPIC: ...", "EPIC (Nish): ..." — and all of them start
+    # with EPIC, so one ^EPIC test covers every shape. The #4451 pattern
+    # ("EPIC #<n>" only) missed 0509#3171, titled "EPIC: track self and
+    # competitors ... (Nish direction 2026-09-12)" — no number — and the
+    # panel discarded the umbrella (6 discard cycles on 2026-09-12).
+    grep -qE '^EPIC' <<<"$title" && return 0
     grep -qE 'EPIC #[0-9]+' <<<"$body" && return 0
     grep -qF 'docs/epics/' <<<"$body" && return 0
     grep -qE 'EPIC \(Nish\):' <<<"$body" && return 0
+    # fleet-ops#5861 (judge, 2026-09-12): a member of a split family cites
+    # its parent — a slice's title literally ends "(split of #2992)" — and
+    # must be treated as epic-linked, never discarded. The umbrella itself
+    # is caught by ^EPIC above; this catches the cited slices, which the
+    # #4451 guard also missed.
+    grep -qE 'split of #[0-9]+' <<<"$title" && return 0
+    grep -qE 'split of #[0-9]+' <<<"$body" && return 0
     return 1
 }
 
