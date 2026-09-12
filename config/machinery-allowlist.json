@@ -383,7 +383,9 @@
       "follow_up": "filed",
       "adjudicated": "MECHANICAL-INSTEAD",
       "verdict": "deleted; not fleet machinery \u2014 a stdio-ordering test fixture left installed as a user unit (ExecStart is `cat > /tmp/auditor-stdio-test.out`). No repo trace (no MANIFEST line, no timer-manifest.json entry, no systemd/ file, no organ). No live safety gate depends on it. Test fixtures do not belong in the user unit dir; the machinery-authorization-gate (fleet-ops#1548) is the mechanical prevention, this deletion closes the audit trail.",
-      "resolved_by": "#1492"
+      "resolved_by": "#1492",
+      "recurrence_issue": 5736,
+      "recurrence_note": "2026-09-12 gap-audit finding #5736: the deleted unit reappeared as a live file and the hunt re-flagged it with no pointer to the existing verdict; live file confirmed absent again 2026-09-12T08:2xZ. Verdict stands — hunt now surfaces prior adjudications on recurrent filings."
     },
     {
       "unit": "ready-work",
