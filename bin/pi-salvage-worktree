@@ -476,7 +476,19 @@ salvage_snapshot() {
         log "worktree clean unit=$unit workdir=$wd — no-op"
         return 0
     fi
-    local ref="wip/${unit}-${NOW}-snap" listf exclf tmpd tmpidx
+    # Skip trees that are not a worker's own branch, exactly like salvage_one.
+    local head base
+    head="$(git -C "$wd" rev-parse --abbrev-ref HEAD 2>/dev/null || echo HEAD)"
+    case "$head" in
+        main|master|HEAD|""|"(detached"*|"("*")")
+            log "skip workdir=$wd on=${head:-detached} — not a worker's own branch (mtime-only)"
+            return 0
+            ;;
+    esac
+    # One ref PER worktree: several mtime-only trees share a unit, and a shared
+    # ref name let the first push win and the rest fail (fleet-ops#5984 CI).
+    base="$(basename "$wd")"; base="${base//[^A-Za-z0-9._-]/_}"
+    local ref="wip/${unit}-${NOW}-snap-${base}" listf exclf tmpd tmpidx
     listf="$(mktemp)"; exclf="$(mktemp)"; tmpd="$(mktemp -d)"; tmpidx="$tmpd/index"
     log "snapshot-salvaging unit=$unit workdir=$wd (mtime-only match; worktree untouched) ref=$ref"
     if ! stage_dirty "$wd" "$listf" "$exclf"; then

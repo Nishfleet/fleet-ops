@@ -148,7 +148,7 @@ ok "PI_SALVAGE_NO_PUSH=1 banks locally, skips the push"
 # on the worker's branch, push it, and name the exclusions.
 # fleet-ops#5984: a sibling matched ONLY by post-start mtime is not proven to
 # be the unit's (a live session's tree matches too), so it is snapshotted to
-# wip/<unit>-<ts>-snap via a throwaway index — its branch, index and files are
+# wip/<unit>-<ts>-snap-<dir> via a throwaway index — its branch, index and files are
 # left exactly as they were, and its own branch is never pushed.
 wtroot="$scratch/wt-root"
 mkdir -p "$wtroot"
@@ -206,7 +206,7 @@ export SERVICE_RESULT=exit-code EXIT_CODE=exited EXIT_STATUS=1
 "$salvage" 2>"$scratch/orphan.log"
 
 # Sibling worktrees were banked on their own branches and pushed.
-snap=refs/heads/wip/unit-orphan-20260827T160400Z-snap
+snap=refs/heads/wip/unit-orphan-20260827T160400Z-snap-0509-9999-notes
 git -C "$scratch/orphan.git" show-ref --verify -q "$snap" \
     || fail "mtime-only sibling must be snapshotted to $snap: $(git -C "$scratch/orphan.git" for-each-ref)"
 git -C "$scratch/orphan.git" show-ref --verify -q refs/heads/fix/dead-worker \
@@ -263,7 +263,7 @@ grep -q 'secrets-looking paths excluded.*\.env' "$scratch/orphan.log" \
     || fail "log must name the excluded .env"
 grep -q '"salvaged_branch":"fix/dead-worker-2"' "$FLEET_DISPATCH_LEDGER" \
     || fail "ledger must name the pushed name-matched sibling branch"
-grep -q '"salvaged_branch":"wip/unit-orphan-20260827T160400Z-snap"' "$FLEET_DISPATCH_LEDGER" \
+grep -q '"salvaged_branch":"wip/unit-orphan-20260827T160400Z-snap-0509-9999-notes"' "$FLEET_DISPATCH_LEDGER" \
     || fail "ledger must name the mtime-only snapshot ref"
 grep -q 'fleet-ops#1204 salvage resume' "$PI_SALVAGE_PACKET" \
     || fail "packet must carry the resume stamp"
