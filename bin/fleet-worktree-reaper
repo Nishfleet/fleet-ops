@@ -216,6 +216,36 @@
 #                    The count fields in the summary carry the full totals
 #                    regardless; report_capped=1 marks a capped sample.
 #
+# MODE F — stale canonical-looking standalone checkout MARKING (fleet-ops#5837):
+#   Each dir directly under $STALE_ROOT whose basename matches the
+#   $STALE_GLOB pattern (default flags the ~/workspaces root: dirs like
+#   `fleet-ops-sync` or `fleet-ops-rg` look like canonical fleet-ops
+#   checkouts but sit on dead chore/fix branches days-to-weeks behind
+#   origin/main — workers that read from them ship wrong-code verdicts,
+#   the fleet-ops#1001/#1097/#1255 ENOENT class). Mode F MARKS, never
+#   deletes — renames are reversible, so the safety bar is low:
+#   1. MATCH:   basename matches $STALE_GLOB but does NOT already carry
+#               the STALE-do-not-read- prefix (idempotent re-runs).
+#   2. NOT-CANONICAL: the resolved path is not the canonical checkout
+#               ($FLEET_WORKTREE_REAPER_CANONICAL). Canonical is skipped
+#               even if it matches the glob.
+#   3. NOT-ROOT-ECHO: $STALE_ROOT may be the same as $ROOT; in that case
+#               Mode F evaluates nothing (Mode E already owns $ROOT).
+#   4. STALE:   dir mtime older than the Mode C --min-age-hours window
+#               (default 24h) — the freshness gate that protects a
+#               checkout someone created today.
+#   5. LIVE:    if the basename matches the pi-issue path shape, the
+#               matching pi-issue@ unit must not be active/activating.
+#   6. NOT-MAIN: for git dirs (.git file or directory), HEAD must be on
+#               a NAMED branch other than main/master. A checkout on
+#               main, or at a detached HEAD we cannot classify, is
+#               skipped — it may be canonical-shaped after all.
+#   Action is `mv` to STALE-do-not-read-<name> so the stale marker is
+#   IN THE NAME (the issue metric: no canonical-looking name can serve
+#   stale content) and every read of the old path ENOENTs loudly
+#   instead of silently reading weeks-old code. Dirty trees are
+#   allowed through (rename preserves content; the scratch stays).
+#
 # Environment seams (tests):
 #   SYSTEMCTL          systemctl binary
 #   GH                 gh binary
@@ -232,6 +262,12 @@
 #                       --root (default 450, 0 disables; fleet-ops#3995)
 #   PI_SALVAGE_BIN     pi-salvage-worktree binary for Mode D banking
 #                          (default: pi-salvage-worktree on PATH)
+#   FLEET_WORKTREE_REAPER_STALE_ROOT     Mode F flat dir root (default:
+#                       /home/nish/workspaces; empty disables Mode F)
+#   FLEET_WORKTREE_REAPER_STALE_GLOB     Mode F basename glob (default
+#                       fleet-ops-*)
+#   FLEET_WORKTREE_REAPER_CANONICAL      Mode F canonical-path exclusion
+#                       (default tooling/fleet-ops-deploy-clone path)
 #   FLEET_WORKTREE_REAPER_NOW_EPOCH      override epoch for age tests
 #   FLEET_WORKTREE_REAPER_SUMMARY_FILE   summary JSON path (default:
 #                       $AGENT_STATE/worktree-reaper-last-run.json; "" disables)
@@ -258,6 +294,12 @@ MAX_WORKTREES="${FLEET_WORKTREE_REAPER_MAX_WORKTREES:-450}"
 # duplicating the scan.
 SALVAGE_BIN="${PI_SALVAGE_BIN:-pi-salvage-worktree}"
 NOW_EPOCH="${FLEET_WORKTREE_REAPER_NOW_EPOCH:-}"
+# MODE F (fleet-ops#5837): stale canonical-looking standalone checkouts
+# under a flat workspaces root. Rename-to-mark, never delete.
+STALE_ROOT="${FLEET_WORKTREE_REAPER_STALE_ROOT:-/home/nish/workspaces}"
+STALE_GLOB="${FLEET_WORKTREE_REAPER_STALE_GLOB:-fleet-ops-*}"
+STALE_PREFIX="STALE-do-not-read-"
+CANONICAL="${FLEET_WORKTREE_REAPER_CANONICAL:-/home/nish/workspaces/tooling/fleet-ops-deploy-clone}"
 SYSTEMCTL="${SYSTEMCTL:-systemctl}"
 GH="${GH:-gh}"
 AGENT_STATE="${AGENT_STATE:-${HOME:-/home/nish}/workspaces/agent-state}"
@@ -429,6 +471,14 @@ skipped_e_live=0
 skipped_e_dirty=0
 skipped_e_notpushed=0
 mode_e_scanned=0
+# Mode F (fleet-ops#5837): stale standalone-checkout rename counters.
+mode_f_scanned=0
+reaped_f=0
+skipped_f_young=0
+skipped_f_live=0
+skipped_f_nobranch=0
+skipped_f_prefixed=0
+failed_f=0
 
 # is_live_worker <short> <issue_n>  — mirrors claim-reconcile.
 is_live_worker() {
@@ -1103,20 +1153,98 @@ while IFS= read -r d; do
     fi
 done < <(find "$ROOT" -mindepth 1 -maxdepth 1 -type d ! -name '.*' 2>/dev/null)
 
+# --- MODE F (fleet-ops#5837): stale canonical-looking standalone checkouts
+# Rename-to-mark pass. See the MODE F header block for the gate list.
+# These dirs live under $STALE_ROOT (default /home/nish/workspaces), NOT
+# under $ROOT (agent-worktrees), so they are invisible to every other
+# mode — the whole point of this extension.
+if [ -n "$STALE_ROOT" ] && [ -d "$STALE_ROOT" ] && [ "$STALE_ROOT" != "$ROOT" ]; then
+    log "mode-F: scanning $STALE_ROOT for stale $STALE_GLOB standalone checkouts"
+    while IFS= read -r f; do
+        [ -d "$f" ] || continue
+        base=${f##*/}
+        case "$base" in "$STALE_PREFIX"*) skipped_f_prefixed=$((skipped_f_prefixed + 1)); continue ;; esac
+        # NOT-CANONICAL gate: never touch the canonical checkout.
+        f_real=$(realpath "$f" 2>/dev/null || printf '%s' "$f")
+        c_real=$(realpath "$CANONICAL" 2>/dev/null || true)
+        [ -n "${c_real:-}" ] && [ "$f_real" = "$c_real" ] && continue
+        mode_f_scanned=$((mode_f_scanned + 1))
+        f_mtime=$(worktree_age_seconds "$f")
+        f_age=$(( $(now_epoch) - f_mtime ))
+        min_age_s=$(( MIN_AGE_HOURS * 3600 ))
+        if [ "$f_age" -lt "$min_age_s" ]; then
+            skipped_f_young=$((skipped_f_young + 1))
+            log "  $f: SKIP-F too-young (age=${f_age}s < ${min_age_s}s)"
+            report_row "$f" "" "" "F" "$f_age" skipped young
+            continue
+        fi
+        # LIVE gate — defense in depth for pi-issue-shaped paths.
+        f_pshort=""; f_pn=""
+        if parse_pi_issue_path "$f"; then
+            f_pshort="$PI_SHORT"; f_pn="$PI_N"
+            if is_live_worker "$f_pshort" "$f_pn"; then
+                skipped_f_live=$((skipped_f_live + 1))
+                log "  $f: SKIP-F live worker (unit=pi-issue-$f_pshort-$f_pn)"
+                report_row "$f" "" "" "F" "$f_age" skipped live
+                continue
+            fi
+        fi
+        # NOT-MAIN gate: only mark checkouts whose HEAD is a NAMED
+        # branch other than main/master. A checkout on main or at a
+        # detached HEAD may be canonical-shaped — leave it alone.
+        f_branch=""
+        if [ -e "$f/.git" ]; then
+            f_branch=$(git -C "$f" rev-parse --abbrev-ref HEAD 2>/dev/null || true)
+        fi
+        case "$f_branch" in ""|main|master|HEAD)
+            skipped_f_nobranch=$((skipped_f_nobranch + 1))
+            log "  $f: SKIP-F unclassifiable-or-main HEAD (branch='${f_branch:-none}')"
+            report_row "$f" "" "$f_branch" "F" "$f_age" skipped unclassifiable
+            continue ;;
+        esac
+        target="$STALE_ROOT/$STALE_PREFIX$base"
+        if [ -e "$target" ]; then
+            failed_f=$((failed_f + 1))
+            log "  $f: RENAME-F FAILED — target $target already exists, left in place"
+            report_row "$f" "" "$f_branch" "F" "$f_age" failed rename-fail
+            continue
+        fi
+        if [ "$DRY_RUN" = 1 ]; then
+            reaped_f=$((reaped_f + 1))
+            log "  $f: DRY-RENAME-F -> $target (branch=$f_branch, age=${f_age}s)"
+            report_row "$f" "" "$f_branch" "F" "$f_age" reaped renamed
+            continue
+        fi
+        if mv -- "$f" "$target" 2>/dev/null; then
+            reaped_f=$((reaped_f + 1))
+            log "  $f: RENAMED-F -> $target (branch=$f_branch, age=${f_age}s)"
+            report_row "$f" "" "$f_branch" "F" "$f_age" reaped renamed
+        else
+            failed_f=$((failed_f + 1))
+            log "  $f: RENAME-F FAILED — left in place"
+            report_row "$f" "" "$f_branch" "F" "$f_age" failed rename-fail
+        fi
+    done < <(find "$STALE_ROOT" -mindepth 1 -maxdepth 1 -type d -name "$STALE_GLOB" 2>/dev/null)
+else
+    log "mode-F: disabled (stale-root empty, missing, or equal to --root)"
+fi
+
 log "done: scanned=$total_scanned claim=$total_claim pi_path=$total_pi_path other=$total_other \
 reaped=$reaped (A=$reaped_a [closed=$reaped_a_closed] B=$reaped_b C=$reaped_c E=$reaped_e [clone=$reaped_e_clone plain=$reaped_e_plain]) \
 skipped_live=$skipped_live skipped_unmerged=$skipped_unmerged \
 skipped_dirty=$skipped_dirty skipped_notpushed=$skipped_notpushed \
 skipped_notterminal=$skipped_notterminal skipped_young=$skipped_young \
 salvaged=$salvaged salvage_attempts=$salvage_attempts salvage_candidates=$salvage_candidates nogit=$skipped_nogit failed=$failed \
-mode_e_scanned=$mode_e_scanned skipped_e_young=$skipped_e_young skipped_e_live=$skipped_e_live skipped_e_dirty=$skipped_e_dirty skipped_e_notpushed=$skipped_e_notpushed"
-printf 'fleet-worktree-reaper scanned=%s claim=%s pi_path=%s other=%s reaped=%s (A=%s [closed=%s] B=%s C=%s E=%s [clone=%s plain=%s]) live=%s unmerged=%s dirty=%s notpushed=%s notterminal=%s young=%s salvaged=%s salvage_attempts=%s salvage_candidates=%s nogit=%s failed=%s mode_e_scanned=%s skipped_e_young=%s skipped_e_live=%s skipped_e_dirty=%s skipped_e_notpushed=%s\n' \
+mode_e_scanned=$mode_e_scanned skipped_e_young=$skipped_e_young skipped_e_live=$skipped_e_live skipped_e_dirty=$skipped_e_dirty skipped_e_notpushed=$skipped_e_notpushed \
+mode_f_scanned=$mode_f_scanned reaped_f=$reaped_f skipped_f_young=$skipped_f_young skipped_f_live=$skipped_f_live skipped_f_main=$skipped_f_nobranch skipped_f_prefixed=$skipped_f_prefixed failed_f=$failed_f"
+printf 'fleet-worktree-reaper scanned=%s claim=%s pi_path=%s other=%s reaped=%s (A=%s [closed=%s] B=%s C=%s E=%s [clone=%s plain=%s] F=%s) live=%s unmerged=%s dirty=%s notpushed=%s notterminal=%s young=%s salvaged=%s salvage_attempts=%s salvage_candidates=%s nogit=%s failed=%s mode_e_scanned=%s skipped_e_young=%s skipped_e_live=%s skipped_e_dirty=%s skipped_e_notpushed=%s mode_f_scanned=%s reaped_f=%s skipped_f_young=%s skipped_f_live=%s skipped_f_main=%s skipped_f_prefixed=%s failed_f=%s\n' \
     "$total_scanned" "$total_claim" "$total_pi_path" "$total_other" \
-    "$reaped" "$reaped_a" "$reaped_a_closed" "$reaped_b" "$reaped_c" "$reaped_e" "$reaped_e_clone" "$reaped_e_plain" \
+    "$reaped" "$reaped_a" "$reaped_a_closed" "$reaped_b" "$reaped_c" "$reaped_e" "$reaped_e_clone" "$reaped_e_plain" "$reaped_f" \
     "$skipped_live" "$skipped_unmerged" "$skipped_dirty" \
     "$skipped_notpushed" "$skipped_notterminal" "$skipped_young" \
     "$salvaged" "$salvage_attempts" "$salvage_candidates" "$skipped_nogit" "$failed" \
-    "$mode_e_scanned" "$skipped_e_young" "$skipped_e_live" "$skipped_e_dirty" "$skipped_e_notpushed"
+    "$mode_e_scanned" "$skipped_e_young" "$skipped_e_live" "$skipped_e_dirty" "$skipped_e_notpushed" \
+    "$mode_f_scanned" "$reaped_f" "$skipped_f_young" "$skipped_f_live" "$skipped_f_nobranch" "$skipped_f_prefixed" "$failed_f"
 
 # --- post-pass: bound check (fleet-ops#3995) ------------------------------
 # Restore the configured salvage cap so the summary reports the real
@@ -1144,13 +1272,14 @@ fi
 # failure is logged, never fatal.
 if [ -n "$SUMMARY_FILE" ]; then
     run_ts="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-    summary_json=$(printf '{"script":"fleet-worktree-reaper","ts":"%s","dry_run":%s,"scanned":%s,"reaped":%s,"reaped_a":%s,"reaped_a_closed":%s,"reaped_b":%s,"reaped_c":%s,"reaped_e":%s,"reaped_e_clone":%s,"reaped_e_plain":%s,"skipped_live":%s,"skipped_unmerged":%s,"skipped_dirty":%s,"skipped_notpushed":%s,"skipped_notterminal":%s,"skipped_young":%s,"salvaged":%s,"salvage_attempts":%s,"salvage_candidates":%s,"skipped_nogit":%s,"failed":%s,"claim":%s,"pi_path":%s,"other":%s,"mode_e_scanned":%s,"skipped_e_young":%s,"skipped_e_live":%s,"skipped_e_dirty":%s,"skipped_e_notpushed":%s,"max_worktrees":%s,"pre_count":%s,"post_count":%s,"bound_breached":%s}' \
+    summary_json=$(printf '{"script":"fleet-worktree-reaper","ts":"%s","dry_run":%s,"scanned":%s,"reaped":%s,"reaped_a":%s,"reaped_a_closed":%s,"reaped_b":%s,"reaped_c":%s,"reaped_e":%s,"reaped_e_clone":%s,"reaped_e_plain":%s,"skipped_live":%s,"skipped_unmerged":%s,"skipped_dirty":%s,"skipped_notpushed":%s,"skipped_notterminal":%s,"skipped_young":%s,"salvaged":%s,"salvage_attempts":%s,"salvage_candidates":%s,"skipped_nogit":%s,"failed":%s,"claim":%s,"pi_path":%s,"other":%s,"mode_e_scanned":%s,"skipped_e_young":%s,"skipped_e_live":%s,"skipped_e_dirty":%s,"skipped_e_notpushed":%s,"mode_f_scanned":%s,"reaped_f":%s,"skipped_f_young":%s,"skipped_f_live":%s,"skipped_f_main":%s,"skipped_f_prefixed":%s,"failed_f":%s,"max_worktrees":%s,"pre_count":%s,"post_count":%s,"bound_breached":%s}' \
         "$run_ts" "$DRY_RUN" "$total_scanned" "$reaped" "$reaped_a" "$reaped_a_closed" "$reaped_b" "$reaped_c" "$reaped_e" "$reaped_e_clone" "$reaped_e_plain" \
         "$skipped_live" "$skipped_unmerged" "$skipped_dirty" "$skipped_notpushed" \
         "$skipped_notterminal" "$skipped_young" "$salvaged" "$salvage_attempts" "$salvage_candidates" \
         "$skipped_nogit" "$failed" \
         "$total_claim" "$total_pi_path" "$total_other" \
         "$mode_e_scanned" "$skipped_e_young" "$skipped_e_live" "$skipped_e_dirty" "$skipped_e_notpushed" \
+        "$mode_f_scanned" "$reaped_f" "$skipped_f_young" "$skipped_f_live" "$skipped_f_nobranch" "$skipped_f_prefixed" "$failed_f" \
         "$MAX_WORKTREES" "$pre_count" "$post_count" "$bound_breached")
     # Fold the per-worktree report (fleet-ops#4118) into the summary as a
     # `worktrees` array + report metadata. The TSV is parsed by jq; a

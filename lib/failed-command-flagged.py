@@ -73,7 +73,12 @@ GitHub-search-index-delay that produced #951 / #965 / #966, so the
 citation chain must carry it. fleet-ops#1001 is the same read-ENOENT shape as
 #958 / #972 / #967 / #977 but on a DIFFERENT session slug (the
 01a041a4 completion-canary build session, where the worker read
+`/home/nish/workspaces/STALE-do-not-read-fleet-ops-sync/bin/fleet-escalation-canary`
+(originally cited as
 `/home/nish/workspaces/fleet-ops-sync/bin/fleet-escalation-canary` —
+fleet-ops#5837 renamed the stale checkout to the
+STALE-do-not-read- prefix so the canonical-looking name can no longer
+serve stale content) —
 a stale, non-canonical checkout that does not carry the file —
 instead of the canonical
 `/home/nish/workspaces/tooling/fleet-ops-deploy-clone/bin/fleet-escalation-canary`,
@@ -105,7 +110,11 @@ tests/fleet-failed-command-read-enoent-archived-packet.test.sh pins
 that. #1255 (fleet-ops#1255) is the same read-ENOENT shape as #953 / #1001 / #1059 but
 on a DIFFERENT session slug (the 01a04402 salvage-scan session, where
 the worker `read`
-`/home/nish/workspaces/fleet-ops-rg/bin/salvage-secret-scan` — a stale,
+`/home/nish/workspaces/STALE-do-not-read-fleet-ops-rg/bin/salvage-secret-scan`
+(originally cited as `/home/nish/workspaces/fleet-ops-rg/bin/salvage-secret-scan` —
+fleet-ops#5837 renamed the stale checkout to the
+STALE-do-not-read- prefix, so the historical session path is now
+enoent-ed by name; both names appear in the fixture/tests) — a stale,
 non-canonical checkout that does not carry the file — got the live
 `ENOENT: no such file or directory, access '<path>'` shape, and walked
 past it with thinking-only cause-prose "The salvage-secret-scan is in
