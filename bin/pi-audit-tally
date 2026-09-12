@@ -100,12 +100,20 @@ reason_has_evidence() {
 # fails both by construction, which is how the panel discarded all six scoped
 # items of Nish-ratified EPIC Nishfleet/0509#1367 (#1382-#1387) between 09-05
 # and 09-07. A candidate that belongs to an epic is never discarded here.
+# fleet-ops#6151: 0509#3171 was discarded 2026-09-12 despite a PASS vote - its
+# title is the bare-`EPIC:` shape (colon, no #number) and its body carries none
+# of the four #4451 patterns, so the guard never fired. Two more links, read
+# from what the tally already holds: the title prefix `EPIC:`, and the issue's
+# `epic` label - labels are already fetched at the top of main for the
+# idempotence check and passed in here; no second API call.
 candidate_is_epic_linked() {
-    local title="$1" body="$2"
+    local title="$1" body="$2" labels="${3:-}"
     grep -qE 'EPIC #[0-9]+' <<<"$title" && return 0
+    grep -qE '^EPIC:' <<<"$title" && return 0
     grep -qE 'EPIC #[0-9]+' <<<"$body" && return 0
     grep -qF 'docs/epics/' <<<"$body" && return 0
     grep -qE 'EPIC \(Nish\):' <<<"$body" && return 0
+    case ",$labels," in *',epic,'*) return 0 ;; esac
     return 1
 }
 
@@ -481,7 +489,7 @@ main() {
         # a Nish-ratified epic. A FAIL majority on an epic child means the SPEC
         # is thin, not that the work is unwanted - so it gets spec-needed, keeps
         # scout-candidate, and stays in the queue for a re-spec.
-        if candidate_is_epic_linked "$issue_title" "$issue_body"; then
+        if candidate_is_epic_linked "$issue_title" "$issue_body" "$issue_labels"; then
             log "$repo/#$candidate EPIC-GUARD: 2-of-3 FAIL on an epic-linked candidate - spec-needed, NOT discarded (fleet-ops#4451)"
             if [ "$DRY_RUN" = "1" ]; then
                 log "DRY-RUN: would add spec-needed + keep scout-candidate + comment for $repo/#$candidate"
