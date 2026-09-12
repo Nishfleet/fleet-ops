@@ -3,14 +3,14 @@
 # Seat-rotation wrapper for pi-intake-repair units.
 #
 # Assembles the packet from ~/.pi/agent/prompts/intake-repair.md plus the
-# correct TARGET line, calls pick_seat from lib/seat-lib.sh, and runs
+# correct TARGET line, calls pick_seat from lib/litellm-seat.sh, and runs
 # pi --print --provider <provider> --model <model> on the assembled packet.
 #
 # Args:
 #   $1 = repo instance (e.g. fleet-ops)
 #
 # Environment:
-#   PI_PACKET_SEAT_LIB        path to seat-lib.sh
+#   PI_PACKET_SEAT_LIB        path to litellm-seat.sh
 #   INTAKE_REPAIR_PROMPT_DIR  prompt directory (default ~/.pi/agent/prompts)
 #   PI_BIN                    pi binary (default ~/.local/bin/pi)
 
@@ -19,8 +19,8 @@ set -euo pipefail
 export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
 export HOME="${HOME:-/home/nish}"
 
-SEAT_LIB="${PI_PACKET_SEAT_LIB:-$HOME/.local/lib/pi-packet/seat-lib.sh}"
-# shellcheck source=../lib/seat-lib.sh source-path=SCRIPTDIR
+SEAT_LIB="${PI_PACKET_SEAT_LIB:-$HOME/.local/lib/pi-packet/litellm-seat.sh}"
+# shellcheck source=../lib/litellm-seat.sh source-path=SCRIPTDIR
 source "$SEAT_LIB"
 
 PI_BIN="${PI_BIN:-$HOME/.local/bin/pi}"
@@ -58,7 +58,10 @@ seat_log "pi-intake-repair-run: $repo privacy=$repair_privacy"
 # repo carries the product flag in config/intake-repos.json.
 export PI_PACKET_REPO="$repo"
 
-seat=$(pick_seat "" "" "$need_capable" "" "$difficulty" "$repair_privacy" || true)
+_lit_group="worker-cheap"
+[[ "$need_capable" == "1" ]] && _lit_group="worker-capable"
+[[ "$repair_privacy" == "private" ]] && _lit_group="worker-private"
+seat=$(litellm_pick_seat "$_lit_group" || true)
 if [[ -z "$seat" ]]; then
     seat_log "pi-intake-repair-run: $repo no healthy seat available"
     echo "pi-intake-repair-run: $repo no healthy seat available" >&2

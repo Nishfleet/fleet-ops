@@ -105,8 +105,8 @@ fi
 
 # fleet-ops#1558: mirror intake's per-repo MemoryMax drop-in on re-dispatch
 # paths that bypass the intake tick (red-PR repair, StartLimitBurst reclaim).
-# Missing seat-lib or missing table row = keep the template defaults.
-SEAT_LIB="${SEAT_LIB:-$HOME/.local/lib/pi-packet/seat-lib.sh}"
+# Missing litellm-seat or missing table row = keep the template defaults.
+SEAT_LIB="${SEAT_LIB:-$HOME/.local/lib/pi-packet/litellm-seat.sh}"
 if [[ -f "$SEAT_LIB" ]]; then
     # shellcheck source=/dev/null
     . "$SEAT_LIB"

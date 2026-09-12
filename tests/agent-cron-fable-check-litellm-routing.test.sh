@@ -49,6 +49,7 @@ pick_seat() {
     printf 'cursor\tcursor-grok-4.6-high\n'
     return 0
 }
+litellm_pick_seat() { pick_seat; }
 EOF
 
 # Fake pi that records argv + stdin and prints a DIGEST line.

@@ -29,7 +29,7 @@ fi
 #
 # This is the ExecStart of fleet-blind-audit.service. It:
 #   1. Takes a non-blocking flock (one audit at a time).
-#   2. Picks a capable seat via seat-lib.sh.
+#   2. Picks a capable seat via litellm-seat.sh.
 #   3. Builds a sealed packet from prompts/blind-audit.md + live context.
 #   4. Dispatches a pi reviewer to produce findings.json and report.md.
 #   5. Runs each finding through the local panel (stub until #146).
@@ -59,7 +59,7 @@ fi
 #   AUDIT_PROMPT            prompt template (default: ~/.pi/agent/prompts/blind-audit.md)
 #   AUDIT_DELIBERATE_STATES docs/deliberate-states.md path
 #   AUDIT_PLAN_FILE         fleet plan file for stamps (default: .../fleet-restoration-2026-08-25.md)
-#   AUDIT_SEAT_LIB          seat-lib.sh path
+#   AUDIT_SEAT_LIB          litellm-seat.sh path
 #   AUDIT_PI_BIN            pi binary (default: ~/.local/bin/pi)
 #   AUDIT_PANEL_BIN         panel binary (default: ~/.local/bin/fleet-blind-audit-panel)
 #   AUDIT_MAX_FINDINGS      cap on filed issues per run (default: 8); unfiled
@@ -126,8 +126,8 @@ repo_fallback="$(cd "$here/.." && pwd)"
 ISSUE_FILE="${FLEET_ISSUE_FILE:-$here/fleet-issue-file}"
 [ -f "$PROMPT" ] || PROMPT="$repo_fallback/prompts/blind-audit.md"
 
-SEAT_LIB="${AUDIT_SEAT_LIB:-$HOME/.local/lib/pi-packet/seat-lib.sh}"
-[ -f "$SEAT_LIB" ] || SEAT_LIB="$repo_fallback/lib/seat-lib.sh"
+SEAT_LIB="${AUDIT_SEAT_LIB:-$HOME/.local/lib/pi-packet/litellm-seat.sh}"
+[ -f "$SEAT_LIB" ] || SEAT_LIB="$repo_fallback/lib/litellm-seat.sh"
 
 SEAM_LIB="${AUDIT_SEAM_LIB:-$HOME/.local/lib/pi-packet/manual-seam-lens.py}"
 [ -f "$SEAM_LIB" ] || SEAM_LIB="$repo_fallback/lib/manual-seam-lens.py"
@@ -890,7 +890,7 @@ command -v gh >/dev/null 2>&1 || { log "FATAL: gh missing"; exit 2; }
 if [ "$DRILL" != "1" ]; then
     [ -x "$PI_BIN" ] || { log "FATAL: pi binary not executable: $PI_BIN"; exit 2; }
     [ -f "$PROMPT" ] || { log "FATAL: prompt missing: $PROMPT"; exit 2; }
-    [ -f "$SEAT_LIB" ] || { log "FATAL: seat-lib missing: $SEAT_LIB"; exit 2; }
+    [ -f "$SEAT_LIB" ] || { log "FATAL: litellm-seat missing: $SEAT_LIB"; exit 2; }
     [ -f "$SEAM_LIB" ] || { log "FATAL: seam lens missing: $SEAM_LIB"; exit 2; }
     # Source the shared seat logic. This also sets XDG_RUNTIME_DIR, HOME, etc.
     # shellcheck source=/dev/null
@@ -947,11 +947,13 @@ else
 # senior seat is skipped, never a failure; fall back to any capable seat via
 # pick_seat so the reviews never NO-USABLE-SEAT for want of a special seat.
 seat=""
-if command -v find_senior_seat >/dev/null 2>&1; then
+if declare -F find_senior_seat >/dev/null 2>&1; then
     load_seat_caps >/dev/null 2>&1 || true
     seat=$(find_senior_seat || true)
 fi
-[ -n "$seat" ] || seat=$(pick_seat "" "" 1 "" || true)
+if [ -z "$seat" ] && declare -F litellm_pick_seat >/dev/null 2>&1; then
+    seat=$(litellm_pick_seat "worker-capable" || true)
+fi
 if [ -z "$seat" ]; then
     log "FATAL: no capable seat available"
     exit 1
