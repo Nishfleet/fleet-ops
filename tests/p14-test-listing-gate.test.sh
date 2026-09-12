@@ -1038,4 +1038,22 @@ grep -Eq '^[[:space:]]*bash[[:space:]]+"?\$here/one-fleet-rule-pointer\.test\.sh
   || fail "one-fleet-rule-pointer.test.sh must not be a known orphan (fleet-ops#5588)"
 ok "one-fleet-rule-pointer.test.sh host line in ci-standards-audit.test.sh is pinned (fleet-ops#5588)"
 
+# fleet-ops#5748: hard-pin the host line for live-state-doctrine-precedence
+# in ci-standards-audit so a future refactor that drops it is caught by name.
+# The test (PR #5755) landed without a ci.yml listing or a host and P14 ran
+# red on "1 test file(s) are neither in ci.yml, hosted by a listed test,
+# live/destructive, nor a known orphan: live-state-doctrine-precedence.test.sh"
+# (run 34670719563). The worker App cannot push .github/workflows/**, so the
+# host line is the only path. Parking it on known_orphans to silence the
+# generic $bad[] message must also fail by name here first, same shape as
+# every other hosted test.
+grep -Eq '^[[:space:]]*bash[[:space:]]+"?\$here/live-state-doctrine-precedence\.test\.sh"?' \
+  "$here/ci-standards-audit.test.sh" \
+  || fail "ci-standards-audit.test.sh must bash-invoke live-state-doctrine-precedence.test.sh (fleet-ops#5748)"
+[[ -n "${reachable[live-state-doctrine-precedence.test.sh]:-}" ]] \
+  || fail "live-state-doctrine-precedence.test.sh must be listed in ci.yml or hosted by a listed test (fleet-ops#5748)"
+[[ -z "${known_orphan_set[live-state-doctrine-precedence.test.sh]:-}" ]] \
+  || fail "live-state-doctrine-precedence.test.sh must not be a known orphan (fleet-ops#5748)"
+ok "live-state-doctrine-precedence.test.sh host line in ci-standards-audit.test.sh is pinned (fleet-ops#5748)"
+
 echo "OK: p14-test-listing-gate.test.sh: P14 test list is closed"
