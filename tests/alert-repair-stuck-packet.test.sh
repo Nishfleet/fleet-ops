@@ -11,7 +11,13 @@
 #   2. each disposed packet archived to archived/stuck/ with a DISPOSITION
 #      decision line in actions.log (terminal=escalated-filed, or
 #      terminal=reasoned-drop when an existing filing covers it),
-#   3. fail-open: when filing is unavailable, packets stay + LOUD (unchanged).
+#   3. fail-open: when filing is unavailable, packets stay + LOUD (unchanged),
+#   4. the disposed chain also gets a TERMINAL RECORD in
+#      chains.terminated.jsonl (terminal=escalated, start_ts = dispatch
+#      instant, end_ts = disposal instant) — the consumption proof the
+#      retired fleet-completion-canary stopped writing (fleet-ops#5869);
+#      the record absorbs later re-dispatches of the same episode so the
+#      stuck set returns to 0 instead of the backlog trending up.
 #
 # Hermetic: scratch ALERT dir, fake chains.terminated.jsonl, and a stub
 # fleet-issue-file. The real GitHub API and the live agent-state dir are
@@ -125,7 +131,17 @@ run_drain "$scratch/fleet-issue-file-stub"
 n_disposition_lines_pre="$(grep -c DISPOSITION "$AS/alert-repair/actions.log")"
 [[ "$n_disposition_lines_pre" -eq 1 ]] \
     || fail "scenario 2: re-run must not double-log dispositions (got $n_disposition_lines_pre)"
-ok "scenario 2: stuck packet archived + decision-logged + filed once; re-run silent"
+
+# fleet-ops#5869: the disposal appended exactly ONE terminal record for the
+# episode, carrying the legal terminal, the episode bounds and the receipt.
+n_fleetstuckone_records="$(jq -c 'select(.alertname == "FleetStuckOne")' "$AS/alert-repair/chains.terminated.jsonl" | wc -l)"
+[[ "$n_fleetstuckone_records" -eq 1 ]] \
+    || fail "scenario 2: disposal must append exactly one terminal record to chains.terminated.jsonl (got $n_fleetstuckone_records)"
+disp_iso="${ts_9h_ago:0:4}-${ts_9h_ago:4:2}-${ts_9h_ago:6:2}T${ts_9h_ago:9:2}:${ts_9h_ago:11:2}:${ts_9h_ago:13:2}Z"
+jq -e --arg d "$disp_iso" 'select(.alertname == "FleetStuckOne") | .terminal == "escalated" and .start_ts == $d and .end_ts >= $d and .issue == "999" and .unit == "escalation-drain"' \
+    "$AS/alert-repair/chains.terminated.jsonl" >/dev/null \
+    || fail "scenario 2: terminal record must be terminal=escalated with start_ts=dispatch, end_ts>=dispatch, issue receipt; ledger: $(cat "$AS/alert-repair/chains.terminated.jsonl")"
+ok "scenario 2: stuck packet archived + decision-logged + filed once + terminal record; re-run silent"
 
 # ---------------------------------------------------------------------------
 # Scenario 3: filing path unavailable -> fail-open (packet kept + LOUD),
@@ -169,6 +185,33 @@ run_drain "$scratch/fleet-issue-file-stub"
 [[ -f "$AS/alert-repair/archived/stuck/packet-FleetStuckFresh-${ts_7h_ago}.md" ]] \
     || fail "scenario 4b: new burst packet must be disposed; stderr: $(cat "$scratch/run.stderr")"
 ok "scenario 4: watermark dedupe — covered packets are reasoned drops, newer ones re-file"
+
+# ---------------------------------------------------------------------------
+# Scenario 5 (fleet-ops#5869): the terminal record CONSUMES the episode —
+# a same-alertname re-fire dispatched before the disposal instant is
+# absorbed under the terminal on the next run (deleted, no filing, no
+# LOUD), while a different alertname still in flight is kept. This is the
+# termination clause: the stuck set returns to 0 instead of the backlog
+# trending up.
+# ---------------------------------------------------------------------------
+ts_refire="$(date -u -d "@$(( $(date -u +%s) - 6 * 3600 - 1800 ))" +%Y%m%dT%H%M%SZ)"
+touch "$AS/alert-repair/packet-FleetStuckOne-${ts_refire}.md"
+: > "$STUB_LOG"
+rm -f "$scratch/run.stderr"
+run_drain "$scratch/fleet-issue-file-stub"
+[[ -s "$STUB_LOG" ]] \
+    && fail "scenario 5: an absorbed re-fire must NOT re-file (calls: $(cat "$STUB_LOG"))"
+[[ ! -f "$AS/alert-repair/packet-FleetStuckOne-${ts_refire}.md" ]] \
+    || fail "scenario 5: same-alertname re-fire dispatched before the terminal end_ts must be CONSUMED by the record; stderr: $(cat "$scratch/run.stderr")"
+n_fleetstuckone_records_after="$(jq -c 'select(.alertname == "FleetStuckOne")' "$AS/alert-repair/chains.terminated.jsonl" | wc -l)"
+[[ "$n_fleetstuckone_records_after" -eq "$n_fleetstuckone_records" ]] \
+    || fail "scenario 5: consuming a re-fire must not append another terminal record (got $n_fleetstuckone_records_after, want $n_fleetstuckone_records)"
+[[ -f "$AS/alert-repair/packet-FreshInFlight-${ts_1h_ago}.md" ]] \
+    || fail "scenario 5: a different alertname still in flight must be KEPT"
+if grep -q "STUCK-PACKET" "$scratch/run.stderr"; then
+    fail "scenario 5: absorbed episode must not re-LOUD; stderr: $(cat "$scratch/run.stderr")"
+fi
+ok "scenario 5: terminal record absorbs the episode's re-fire — stuck set returns to 0 (fleet-ops#5869)"
 
 echo
 echo "alert-repair-stuck-packet: all scenarios passed (fleet-ops#5622)"
