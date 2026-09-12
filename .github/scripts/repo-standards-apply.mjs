@@ -7,8 +7,14 @@
 //   - branch protection payload (enforce_admins, no force-push, no deletions,
 //     required contexts = standard gates + repo product checks; NEVER weakens
 //     a repo that requires MORE than the standard)
+//   - merge-queue ruleset ("main-merge-queue", non_fast_forward + deletion +
+//     merge_queue with HEADGREEN/max-5/min-2/wait-5min/6h-timeout + the
+//     required_status_checks union — fleet-ops#5787). Created or PUT-updated
+//     when drift is reported; never weakens a stronger existing shape; an
+//     "extra-preserved" diff is reported as drift-not-error so a repo with a
+//     stricter required context list is left alone (the next sweep merges it
+//     in as the new baseline).
 //   - CODEOWNERS on gate paths
-//   - merge_group triggers where the repo type has a merge queue
 //   - thin-caller workflows present and SHA-pinned to fleet-ops main tip
 //
 // DRIFT handling:
@@ -49,6 +55,8 @@ import {
   classifyRepo,
   isHandsOff,
   isLocalRicher,
+  MERGE_QUEUE_RULESET_NAME,
+  MERGE_QUEUE_RULESET_PARAMS,
 } from "./repo-standards.lib.mjs";
 import { ExceptionsFile, KNOWN_EXCEPTION_RULES } from "./standards-exceptions.mjs";
 
@@ -128,6 +136,24 @@ function listWorkflows(repo) {
   const obj = gh(["api", `repos/${repo}/contents/.github/workflows`], { json: true, allowFail: true });
   if (!Array.isArray(obj)) return [];
   return obj.map((f) => f.name);
+}
+
+// Fetch every ruleset on a repo. Returns an array of {id, name, enforcement,
+// conditions, rules} (one entry per ruleset) or [] if the API returns 403
+// (free-plan / App-token scope limits). The apply path is the only consumer
+// — a 403 means the rule is reported as "skipped-permission" so the drift
+// report still observes the situation rather than silent-passing.
+function listRulesets(repo) {
+  const obj = gh(["api", `repos/${repo}/rulesets`], { json: true, allowFail: true });
+  if (!Array.isArray(obj)) return [];
+  return obj;
+}
+
+// Fetch one ruleset by ID (the GET includes the rules array; the list call
+// does not — GitHub keeps rules off the list endpoint to keep the response
+// small).
+function getRuleset(repo, id) {
+  return gh(["api", `repos/${repo}/rulesets/${id}`], { json: true, allowFail: true });
 }
 
 // Resolve the fleet-ops main tip SHA to pin thin callers to.
@@ -262,28 +288,173 @@ function applyLabel(repo, lbl) {
   gh(["label", "create", lbl.name, "--repo", repo, "--color", lbl.color, "--description", lbl.description, "--force"], { allowFail: true });
 }
 
-function applyBranchProtection(repo, branch, repoType, existingCtxs) {
-  const std = REPO_TYPES[repoType];
-  const stdCtxs = standardRequiredContexts(repoType);
-  // Union: existing + standard. Never remove.
-  const union = Array.from(new Set([...(existingCtxs || []), ...stdCtxs]));
-  // PUT /repos/{owner}/{repo}/branches/{branch}/protection
-  const payload = {
-    required_status_checks: {
-      strict: false,
-      contexts: union,
-    },
-    enforce_admins: true,
-    required_pull_request_reviews: null,
-    restrictions: null,
-    required_linear_history: std.required_linear_history,
-    allow_force_pushes: false,
-    allow_deletions: false,
+// Build the canonical main-merge-queue ruleset payload. The required contexts
+// passed in are the union of: (a) the standard thin-caller contexts for the
+// repo type and (b) any contexts the repo's branch protection already
+// requires. Exported so tests can assert the shape and so future rules can
+// layer on without rewriting the wire format.
+//
+// The ruleset target is "~DEFAULT_BRANCH" (the GitHub ref_name condition
+// syntax for the repo's default branch, regardless of name — a repo whose
+// default is `master` or has been renamed is covered the same way).
+export function buildMergeQueueRuleset({ requiredContexts }) {
+  const params = MERGE_QUEUE_RULESET_PARAMS;
+  const required = Array.from(new Set(requiredContexts || []));
+  return {
+    name: MERGE_QUEUE_RULESET_NAME,
+    target: "branch",
+    enforcement: "active",
+    conditions: { ref_name: { include: ["~DEFAULT_BRANCH"], exclude: [] } },
+    rules: [
+      { type: "non_fast_forward" },
+      { type: "deletion" },
+      { type: "merge_queue", parameters: { ...params.merge_queue } },
+      {
+        type: "required_status_checks",
+        parameters: {
+          ...params.required_status_checks_envelope,
+          required_status_checks: required.map((c) => ({ context: c })),
+        },
+      },
+    ],
   };
-  gh(["api", "-X", "PUT", `repos/${repo}/branches/${branch}/protection`, "--input", "-"], {
-    allowFail: true,
-  });
-  // gh api --input - reads stdin; instead use a temp file to avoid stdin complexity.
+}
+
+// Compare a fetched ruleset against the canonical payload. Returns the list
+// of drift items (empty array = match). Strict on rule type / merge_queue
+// parameters / required contexts; lax on order (PUT replaces with whatever
+// we send). Exported so tests can lock the diff shape.
+//
+// merge_queue params are compared field-by-field — a repo that customised
+// max_entries_to_build without an exception is drift (the standard 5 / 2 /
+// 5 / 5 / HEADGREEN / 360 is what every queue repo shares).
+export function diffMergeQueueRuleset(fetched, canonical) {
+  const drift = [];
+  if (!fetched) return ["ruleset-missing"];
+  if (fetched.enforcement !== canonical.enforcement) {
+    drift.push(`enforcement:${fetched.enforcement}!=${canonical.enforcement}`);
+  }
+  const cond = canonical.conditions.ref_name.include;
+  const fetchedCond = ((fetched.conditions || {}).ref_name || {}).include || [];
+  if (JSON.stringify([...fetchedCond].sort()) !== JSON.stringify([...cond].sort())) {
+    drift.push(`conditions:${JSON.stringify(fetchedCond)}!=${JSON.stringify(cond)}`);
+  }
+  // Build a map of fetched rules by type for easy lookup.
+  const fetchedRules = new Map();
+  for (const r of fetched.rules || []) fetchedRules.set(r.type, r);
+  for (const want of canonical.rules) {
+    const got = fetchedRules.get(want.type);
+    if (!got) {
+      drift.push(`rule-missing:${want.type}`);
+      continue;
+    }
+    if (want.type === "merge_queue") {
+      const p = MERGE_QUEUE_RULESET_PARAMS.merge_queue;
+      for (const k of Object.keys(p)) {
+        if (JSON.stringify(got.parameters?.[k]) !== JSON.stringify(p[k])) {
+          drift.push(`merge-queue.${k}:${JSON.stringify(got.parameters?.[k])}!=${JSON.stringify(p[k])}`);
+        }
+      }
+    } else if (want.type === "required_status_checks") {
+      const wantContexts = new Set((want.parameters.required_status_checks || []).map((c) => c.context));
+      const gotContexts = new Set(((got.parameters || {}).required_status_checks || []).map((c) => c.context));
+      const missing = [...wantContexts].filter((c) => !gotContexts.has(c));
+      const extra = [...gotContexts].filter((c) => !wantContexts.has(c));
+      if (missing.length > 0) drift.push(`required-status-checks.missing:${missing.join(",")}`);
+      if (extra.length > 0) drift.push(`required-status-checks.extra-preserved:${extra.join(",")}`);
+    }
+  }
+  return drift;
+}
+
+// Compose the required-status-checks list for a repo: union of the standard
+// thin-caller contexts (same source as standardRequiredContexts) and the
+// repo's existing branch protection + the repo's existing ruleset
+// (preserves any context the repo already requires). The "never weaken" rule
+// from the standard carries here so a sync cannot drop a context the repo
+// was relying on.
+export function mergeQueueRequiredContexts(repoType, existingBranchProtectionContexts, existingRulesetContexts) {
+  const std = standardRequiredContexts(repoType);
+  return Array.from(new Set([...std, ...(existingBranchProtectionContexts || []), ...(existingRulesetContexts || [])]));
+}
+
+// Check shape: looks at the repo's rulesets, finds the named one, and
+// compares against the canonical payload. Findings mirror the BP shape: a
+// single "merge-queue-ruleset" rule, status drift / ok / excepted / skipped.
+function checkMergeQueueRuleset(repo, repoType, settings, exceptions, existingBranchProtectionContexts) {
+  const findings = [];
+  if (!REPO_TYPES[repoType].merge_queue) {
+    // Repo type without a merge queue (static_site, archive) does not need
+    // the ruleset; report skipped-type so a future type change to merge
+    // queue re-runs the check. Not drift.
+    findings.push({ rule: "merge-queue-ruleset", status: "ok-skip", detail: `repo type "${repoType}" has merge_queue: false` });
+    return findings;
+  }
+  if (exceptions.isExcepted("merge-queue-ruleset")) {
+    findings.push({ rule: "merge-queue-ruleset", status: "excepted", detail: "exception declared" });
+    return findings;
+  }
+  const list = listRulesets(repo);
+  if (list == null) {
+    findings.push({ rule: "merge-queue-ruleset", status: "skipped-permission", detail: "rulesets endpoint unreachable (App-token scope or free-plan org); manual verification required" });
+    return findings;
+  }
+  const named = list.find((r) => r.name === MERGE_QUEUE_RULESET_NAME);
+  if (!named) {
+    findings.push({ rule: "merge-queue-ruleset", status: "drift", detail: `ruleset "${MERGE_QUEUE_RULESET_NAME}" missing`, fix: "apply-api" });
+    return findings;
+  }
+  const fetched = getRuleset(repo, named.id);
+  // Compose required contexts from: standard + branch protection + fetched ruleset.
+  const fetchedRequired = (((fetched || {}).rules || []).find((r) => r.type === "required_status_checks") || {});
+  const existingRulesetContexts = ((fetchedRequired.parameters || {}).required_status_checks || []).map((c) => c.context);
+  const required = mergeQueueRequiredContexts(repoType, existingBranchProtectionContexts, existingRulesetContexts);
+  const canonical = buildMergeQueueRuleset({ requiredContexts: required });
+  const drift = diffMergeQueueRuleset(fetched, canonical);
+  if (drift.length === 0) {
+    findings.push({ rule: "merge-queue-ruleset", status: "ok", detail: `ruleset "${MERGE_QUEUE_RULESET_NAME}" active with ${required.length} required context(s)` });
+  } else {
+    findings.push({ rule: "merge-queue-ruleset", status: "drift", detail: `ruleset "${MERGE_QUEUE_RULESET_NAME}" drifted: ${drift.join("; ")}`, fix: "apply-api" });
+  }
+  return findings;
+}
+
+// Apply: POST a new ruleset if missing, PUT to update if drift. Uses --input
+// with a temp file (gh api's --input - stdin path was unreliable in earlier
+// fleet-ops scripts). Allow-fail: a transient API hiccup is reported but
+// does not crash the sweep; the next weekly run retries.
+function applyMergeQueueRuleset(repo, repoType, existingBranchProtectionContexts) {
+  const list = listRulesets(repo);
+  if (list == null) return false;
+  const named = list.find((r) => r.name === MERGE_QUEUE_RULESET_NAME);
+  // Compose required contexts the same way check did (so the PUT body
+  // matches the canonical the check would build).
+  let existingRulesetContexts = [];
+  if (named) {
+    const fetched = getRuleset(repo, named.id);
+    const rsc = (((fetched || {}).rules || []).find((r) => r.type === "required_status_checks") || {});
+    existingRulesetContexts = ((rsc.parameters || {}).required_status_checks || []).map((c) => c.context);
+  }
+  const required = mergeQueueRequiredContexts(repoType, existingBranchProtectionContexts, existingRulesetContexts);
+  const payload = buildMergeQueueRuleset({ requiredContexts: required });
+  const tmp = path.join("/tmp", `rs-${repo.replace("/", "-")}-${Date.now()}.json`);
+  writeFileSync(tmp, JSON.stringify(payload));
+  if (named) {
+    // PUT replaces; preserve the ID.
+    const out = gh(["api", "-X", "PUT", `repos/${repo}/rulesets/${named.id}`, "--input", tmp], { allowFail: true });
+    return out != null;
+  }
+  const out = gh(["api", "-X", "POST", `repos/${repo}/rulesets`, "--input", tmp], { allowFail: true });
+  return out != null;
+}
+
+function applyBranchProtection(repo, branch, repoType, existingCtxs) {
+  // Dead-code shape kept for backwards compatibility (no caller left after
+  // the apply path was rewritten to use applyBranchProtectionViaTemp). The
+  // apply path uses --input with a temp file (gh api's --input - stdin was
+  // unreliable). Leaving a thin wrapper so any future caller does not have
+  // to re-derive the payload shape.
+  return applyBranchProtectionViaTemp(repo, branch, repoType, existingCtxs);
 }
 
 function processRepo(repo, r, fleetOpsSha, opts) {
@@ -307,7 +478,14 @@ function processRepo(repo, r, fleetOpsSha, opts) {
   const workflows = listWorkflows(repo);
   const findings = [];
   findings.push(...checkLabels(repo, exceptions));
+  // Fetch branch protection once and reuse the contexts for both the BP
+  // check and the merge-queue ruleset check (the ruleset's required
+  // contexts are the union of standard + repo's branch protection).
+  const branch = settings.default_branch;
+  const bp = getBranchProtection(repo, branch);
+  const existingCtxs = (bp && bp.required_status_checks && bp.required_status_checks.contexts) || [];
   findings.push(...checkBranchProtection(repo, repoType, settings, exceptions));
+  findings.push(...checkMergeQueueRuleset(repo, repoType, settings, exceptions, existingCtxs));
   findings.push(...checkCodeowners(repo, exceptions));
   if (isLocalRicher(repo)) {
     findings.push({ rule: "thin-callers", status: "ok-local-richer", detail: "repo carries richer local gates; thin-caller migration skipped (filed as follow-up)" });
@@ -344,6 +522,16 @@ function processRepo(repo, r, fleetOpsSha, opts) {
         const bp = getBranchProtection(repo, branch);
         const existingCtxs = (bp && bp.required_status_checks && bp.required_status_checks.contexts) || [];
         applyBranchProtectionViaTemp(repo, branch, repoType, existingCtxs);
+      }
+      // Apply the merge-queue ruleset when drift is reported AND the repo
+      // type has a merge queue. skipped-permission (free-plan org, App
+      // token) is a no-op here — the drift report still flags the
+      // situation, so manual verification has teeth.
+      if (REPO_TYPES[repoType].merge_queue) {
+        const rsDrift = findings.some((f) => f.rule === "merge-queue-ruleset" && f.status === "drift");
+        if (rsDrift) {
+          applyMergeQueueRuleset(repo, repoType, existingCtxs);
+        }
       }
     }
   }

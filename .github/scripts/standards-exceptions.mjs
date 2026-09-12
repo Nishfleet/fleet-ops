@@ -109,6 +109,7 @@ export const KNOWN_EXCEPTION_RULES = [
   "branch-protection",
   "codeowners-gate-paths",
   "merge-group-triggers",
+  "merge-queue-ruleset",
   "thin-caller:secret-scan.yml",
   "thin-caller:semgrep.yml",
   "thin-caller:review-gate.yml",
