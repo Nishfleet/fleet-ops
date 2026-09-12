@@ -285,6 +285,48 @@ else
   ok "live vault not present (hosted CI) — skip exhaustiveness join"
 fi
 
+# fleet-ops#5746: vault→archive pointer integrity. Every
+# 'Full text: `standing-rules-archive.md` → `## X`' pointer in the standing
+# rules must resolve to a literal `## X` heading in the archive — a rule was
+# added to the short file + matrix but never archived (the 2026-09-11
+# fails-silently rule), and nothing guarded that invariant so it rotted
+# silently. Hosted CI (no vault files) skips, same as the live join above.
+if [[ -f "$vault_rules" ]]; then
+  vault_archive="$(dirname "$vault_rules")/standing-rules-archive.md"
+  [[ -f "$vault_archive" ]] || fail "vault archive missing next to standing rules: $vault_archive"
+  pointer_count=$(python3 - "$vault_rules" "$vault_archive" <<'PY'
+import re, sys
+
+def headings(path):
+    out = {}
+    with open(path, encoding="utf-8") as f:
+        for line in f:
+            m = re.match(r"^## (.+?)\s*$", line)
+            if m:
+                out.setdefault("## " + m.group(1), line.rstrip("\n"))
+    return out
+
+rules_text = open(sys.argv[1], encoding="utf-8").read()
+heads = headings(sys.argv[2])
+pointers = re.findall(
+    r"Full text:\s*`standing-rules-archive\.md`\s*→\s*`(## [^`]+)`", rules_text
+)
+assert pointers, "no archive pointers found in standing rules — extraction pattern broke"
+missing = [p for p in pointers if p not in heads]
+assert not missing, "GSR→archive pointer(s) 404: %r" % missing
+capture = (
+    "## Nothing on the VPS fails silently, everything resumes, "
+    "nothing is duct tape (Nish, 2026-09-11 — NON-NEGOTIABLE, forever)"
+)
+assert capture in heads, "the 2026-09-11 fails-silently rule is still not archived (fleet-ops#5746)"
+print(len(pointers))
+PY
+) || fail "vault→archive pointer integrity check failed (fleet-ops#5746)"
+  ok "vault→archive pointer integrity: every Full-text pointer resolves ($pointer_count pointers)"
+else
+  ok "live vault not present (hosted CI) — skip vault→archive pointer integrity"
+fi
+
 # --- parser unit: FLAG lines skipped, ### not counted, ## counted ------------
 scratch="$(mktemp -d -t rule-enf.XXXXXX)"
 trap 'rm -rf "$scratch"' EXIT INT TERM
