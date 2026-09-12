@@ -57,6 +57,12 @@ set -Eeuo pipefail
 
 CURL="${CURL:-curl}" # kept for parity with the keystone pingers; unused here
 
+# fleet-ops#534: no silent --help. One-screen usage, no execution.
+if [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then
+    sed -n '2,40p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
+    exit 0
+fi
+
 SYSTEMCTL="${SYSTEMCTL:-systemctl}"
 STATE="${FLEET_ORGAN_WATCH_STATE:-/home/nish/workspaces/agent-state}"
 MARKER="${FLEET_ORGAN_WATCH_MARKER:-$STATE/ESCALATION-DAILY-SWEEP-LIVENESS}"
