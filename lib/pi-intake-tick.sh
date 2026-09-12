@@ -2152,12 +2152,27 @@ for i in "${!numbers[@]}"; do
     # ls-remote so a cooldown'd issue costs zero network calls this tick.
     _cooldown_file="$ATTEMPTS_DIR/pi-issue-${REPO}-${N}.cooldown"
     if [[ -f "$_cooldown_file" ]]; then
-        _cd_ts=$(cat "$_cooldown_file" 2>/dev/null || true)
+        _cd_ts=$(head -n 1 "$_cooldown_file" 2>/dev/null || true)
         _cd_epoch=$(date -u -d "$_cd_ts" +%s 2>/dev/null) || _cd_epoch=0
         _now_epoch=$(date -u +%s)
         _cd_age=$(( _now_epoch - _cd_epoch ))
+        # fleet-ops#5743: bench-aware requeue. pi-issue-failed-reap may append
+        # an absolute `until: <UTC>` line when the last failure was a
+        # classified transient-overload (503) seat bench that outlives
+        # RECLAIM_COOLDOWN_S: the issue stays unclaimable until the bench
+        # itself expires, so the next worker does not re-hit the same dead
+        # seat — no hand-added READY-WORK `after:` row required.
+        _cd_until_ts=$(sed -n 's/^until: //p' "$_cooldown_file" 2>/dev/null | head -n 1)
+        _cd_until_epoch=0
+        if [[ -n "$_cd_until_ts" ]]; then
+            _cd_until_epoch=$(date -u -d "$_cd_until_ts" +%s 2>/dev/null) || _cd_until_epoch=0
+        fi
         if (( _cd_epoch > 0 && _cd_age < RECLAIM_COOLDOWN_S )); then
             echo "issue $N ($title): skipped-reclaim-cooldown (age=${_cd_age}s < ${RECLAIM_COOLDOWN_S}s)"
+            continue
+        fi
+        if (( _cd_until_epoch > _now_epoch )); then
+            echo "issue $N ($title): skipped-reclaim-cooldown-bench (until=$_cd_until_ts, $(( _cd_until_epoch - _now_epoch ))s left)"
             continue
         fi
         # Cooldown expired — clear the marker so the issue is claimable again.
