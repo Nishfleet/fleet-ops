@@ -9,7 +9,7 @@
 #   openai/z-ai/glm-5.3-flash @ api.cline.bot           : 500 ; openai/cline-pass/deepseek-v4.1-flash @ api.cline.bot : 429
 #   ollama.com deepseek-v4-pro:0813 / kimi-k2.7-code    : 429 weekly usage limit (nishant345)
 #   alibaba qwen3.8-max                                 : 429 until 2026-09-14 (seat ledger) ; opencode-go : 402 until 2026-09-12T14:05Z ; mergegateway : quota_bench
-# LIVE (probed 200 on 2026-09-12): paretoinference z-ai/glm-5.3 + glm-5.3-flash, synthetic hf:zai-org/GLM-5.3-Flash, llmgateway-devpass glm-5.3-flash, xkiro deepseek/deepseek-v4-pro, nebius zai-org/GLM-5.3-Flash.
+# LIVE (probed 200 on 2026-09-12): paretoinference z-ai/glm-5.3 + glm-5.3-flash, synthetic hf:zai-org/GLM-5.3-Flash, llmgateway-devpass glm-5.3-flash, nebius zai-org/GLM-5.3-Flash. xkiro deepseek/deepseek-v4-pro was 200 at 06:15Z (fleet-ops#5811) but 503s again by 15:47Z — benched, see the benched: block (fleet-ops#6054).
 # Router policy: a single deployment error must never reach the client while another deployment or fallback group is healthy.
 model_list:
 - model_name: worker-cheap
@@ -41,15 +41,6 @@ model_list:
     max_parallel_requests: 1
 - model_name: worker-cheap
   litellm_params:
-    model: openai/deepseek/deepseek-v4-pro
-    api_base: https://api.xkiro.com/v1
-    api_key: os.environ/XKIRO_API_KEY
-    tags:
-    - free
-    order: 2
-    max_parallel_requests: 1
-- model_name: worker-cheap
-  litellm_params:
     model: openai/zai-org/GLM-5.3-Flash
     api_base: https://api.tokenfactory.nebius.com/v1
     api_key: os.environ/NEBIUS_API_KEY
@@ -86,15 +77,6 @@ model_list:
     max_parallel_requests: 1
 - model_name: worker-capable
   litellm_params:
-    model: openai/deepseek/deepseek-v4-pro
-    api_base: https://api.xkiro.com/v1
-    api_key: os.environ/XKIRO_API_KEY
-    tags:
-    - free
-    order: 2
-    max_parallel_requests: 1
-- model_name: worker-capable
-  litellm_params:
     model: openai/zai-org/GLM-5.3-Flash
     api_base: https://api.tokenfactory.nebius.com/v1
     api_key: os.environ/NEBIUS_API_KEY
@@ -114,16 +96,6 @@ model_list:
     max_parallel_requests: 2
 - model_name: senior
   litellm_params:
-    model: openai/deepseek/deepseek-v4-pro
-    api_base: https://api.xkiro.com/v1
-    api_key: os.environ/XKIRO_API_KEY
-    tags:
-    - free
-    - senior
-    order: 1
-    max_parallel_requests: 1
-- model_name: senior
-  litellm_params:
     model: openai/hf:zai-org/GLM-5.3-Flash
     api_base: https://api.synthetic.new/openai/v1
     api_key: os.environ/SYNTHETIC_API_KEY
@@ -142,16 +114,6 @@ model_list:
     - judge
     order: 1
     max_parallel_requests: 2
-- model_name: judge
-  litellm_params:
-    model: openai/deepseek/deepseek-v4-pro
-    api_base: https://api.xkiro.com/v1
-    api_key: os.environ/XKIRO_API_KEY
-    tags:
-    - free
-    - judge
-    order: 1
-    max_parallel_requests: 1
 - model_name: worker-private
   litellm_params:
     model: openai/z-ai/glm-5.3
@@ -170,6 +132,25 @@ model_list:
     tags:
     - prepaid
     - private
+    order: 2
+    max_parallel_requests: 1
+# fleet-ops#6054 (2026-09-12): benched = NOT routed, NOT in model_list, and NOT
+# counted by the health canary's fleet_litellm_model_list_expected (only
+# "- model_name:" lines count). Inert to the loader: ProxyConfig reads known
+# keys via .get(), so this top-level key never reaches the router. Restore a
+# deployment ONLY with a green /health probe cited in the PR — while any
+# DEPLOYED census entry is unhealthy the health canary fails loud
+# (health-deployment-unhealthy; #5792 accept-line drill).
+benched:
+- benched_at: 2026-09-12
+  reason: "openai/deepseek/deepseek-v4-pro @ https://api.xkiro.com/v1 — 503 ServiceUnavailable 'A server error occurred' on /health and by direct probe by 15:47Z; dead-credit, fleet-ops#3284. #5811 wired it 06:15Z as the free rung of senior/judge (tags +senior/+judge, order:1) and worker-capable/worker-cheap (order:2); /health went unhealthy_count=4."
+  was: [senior, judge, worker-capable, worker-cheap]
+  litellm_params:
+    model: openai/deepseek/deepseek-v4-pro
+    api_base: https://api.xkiro.com/v1
+    api_key: os.environ/XKIRO_API_KEY
+    tags:
+    - free
     order: 2
     max_parallel_requests: 1
 router_settings:
