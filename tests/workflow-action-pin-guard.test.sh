@@ -43,6 +43,8 @@ actions/setup-python@42375524e23c412d93fb67b49958b491fce71c38
 actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
 actions/create-github-app-token@fee1f7d63c2ff003460e3d139729b119787bc349
 BetaHuhn/repo-file-sync-action@8b92be3375cf1d1b0cd579af488a9255572e4619
+Nishfleet/fleet-ops/.github/workflows/red-on-main-detector.yml@2970807d23df3578b5a76b40580e022084a7bffd
+Nishfleet/fleet-ops/.github/workflows/stop-the-line-detector.yml@2970807d23df3578b5a76b40580e022084a7bffd
 REG
 
 # --- Collect every pinned `uses:` in .github/workflows/** ------------------
