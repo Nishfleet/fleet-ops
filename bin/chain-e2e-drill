@@ -544,12 +544,12 @@ EOF
     chmod +x "$RESUME_DIR/fake-hermes"
     : > "$RESUME_DIR/hc.env"
 
+    # fleet-ops#5456: the relaunched packet must write its hop+1 ledger
+    # row into the SAME hermetic ledger the launch rows went to — without
+    # this, the relaunched pi-systemd-run falls back to its $AGENT_STATE
+    # default and the drill's ledger assertion misses the row.
     run_dispatch() {
         RESUME_DIR="$RESUME_DIR" \
-        # fleet-ops#5456: the relaunched packet must write its hop+1 ledger
-        # row into the SAME hermetic ledger the launch rows went to — without
-        # this, the relaunched pi-systemd-run falls back to its $AGENT_STATE
-        # default and the drill's ledger assertion misses the row.
         FLEET_DISPATCH_LEDGER="$RESUME_DIR/ledger.jsonl" \
         FLEET_DISPATCH_PACKET_DIR="$RESUME_DIR/packets" \
         STOP_ESCALATION_STOP_REASON="$RESUME_DIR/STOP-REASON.json" \
