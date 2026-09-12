@@ -117,7 +117,10 @@ Simple language is never baby talk and never condescending.
   `systemd-run --user --collect --no-block` wrapper; not a dispatcher).
   `--deadline` is the grace budget and `--deliverable` the artifact the run MUST
   produce; the wrapper adds the healthchecks dead-man and OnFailure escalation
-  (fleet-ops#4266). Canonical wording: fleet-ops README and
+  (fleet-ops#4266). Every detached launch carries `--deadline` AND
+  `--deliverable` — the wrapper installs the deliverable verdict only when the
+  flag is set, so a flag-less launch cannot fire the exit-0-no-deliverable
+  FAILURE (fleet-ops#5745). Canonical wording: fleet-ops README and
   `prompts/heartbeat.md`.
 
 ## Hard lines

@@ -112,6 +112,36 @@ else
   echo "SKIP: vault canonical repair ladder not present on this host (fleet-ops#5747)"
 fi
 
+# Stage 0d: fleet-ops#6147 — the #5745 flag-gating caveat ("every detached
+# launch carries --deadline AND --deliverable; the deliverable verdict only
+# installs when the flag is set") lived in GSR/CLAUDE.md/.codex/heartbeat.md
+# but was missing from the pi-agents-md seam: canonical.md ended its
+# pi-systemd-run bullet at #4266, so a Pi seat working only from AGENTS.md
+# could launch flag-less and lose the dead-man. Nothing byte-pins that
+# sentence, so this stage pins it: the citation AND the flag-gating clause
+# must survive in the canonical, and — when the rendered targets exist on
+# this host — in the rendered AGENTS.md too (catches "canonical patched,
+# never re-rendered"). Bare-CI: the target half skips (absent() rule); the
+# canonical half runs everywhere.
+pi_agents_canonical="$repo_root/lib/pi-agents-md/canonical.md"
+[[ -f "$pi_agents_canonical" ]] || fail "pi-agents-md canonical not found: $pi_agents_canonical"
+grep -q 'fleet-ops#5745' "$pi_agents_canonical" \
+  || fail "pi-agents-md canonical lost the #5745 citation (fleet-ops#6147)"
+# The caveat phrase wraps in the canonical source; match it flattened
+# (tr -s squeezes the newline+indent runs into single spaces).
+tr '\n' ' ' < "$pi_agents_canonical" | tr -s ' ' \
+  | grep -q 'deliverable verdict only when the flag is set' \
+  || fail "pi-agents-md canonical lost the #5745 flag-gating caveat (fleet-ops#6147)"
+for pi_agents_target in /home/nish/AGENTS.md /home/nish/.pi/agent/AGENTS.md; do
+  if [[ -f "$pi_agents_target" ]]; then
+    grep -q 'fleet-ops#5745' "$pi_agents_target" \
+      || fail "rendered $pi_agents_target drifted: #5745 caveat missing — run: bin/render-pi-agents-md.py --render (fleet-ops#6147)"
+  else
+    echo "SKIP: rendered target $pi_agents_target absent on this host (fleet-ops#6147)"
+  fi
+done
+echo "OK: pi-agents-md seam carries the #5745 flag-gating caveat (fleet-ops#6147)"
+
 work="$(mktemp -d -t standing-rules-drift-XXXXXX)"
 trap 'rm -rf "$work"' EXIT
 
