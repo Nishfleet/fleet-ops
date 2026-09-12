@@ -461,6 +461,75 @@ push_branch() {
     fi
 }
 
+# fleet-ops#5984: an mtime-only match proves nothing about ownership — a live
+# interactive session's worktree created after the unit started matches too
+# (2026-09-12: a salvage committed and pushed a session's mid-edit tree onto
+# its auto-merge PR branch). Bank such a tree WITHOUT touching it: stage into a
+# throwaway copy of the index, commit-tree onto HEAD, and push only that commit
+# to a fresh wip/ ref. The checked-out branch, its real index and its files are
+# never modified, so an owner's PR branch is never pushed to.
+salvage_snapshot() {
+    local wd="$1" unit="$2" reason="$3"
+    local porcelain
+    porcelain="$(git -C "$wd" status --porcelain 2>/dev/null || true)"
+    if [[ -z "$porcelain" ]]; then
+        log "worktree clean unit=$unit workdir=$wd — no-op"
+        return 0
+    fi
+    local ref="wip/${unit}-${NOW}-snap" listf exclf tmpd tmpidx real_idx
+    listf="$(mktemp)"; exclf="$(mktemp)"; tmpd="$(mktemp -d)"; tmpidx="$tmpd/index"
+    real_idx="$(git -C "$wd" rev-parse --path-format=absolute --git-path index 2>/dev/null || true)"
+    [[ -n "$real_idx" && -f "$real_idx" ]] && cp "$real_idx" "$tmpidx"
+    log "snapshot-salvaging unit=$unit workdir=$wd (mtime-only match; worktree untouched) ref=$ref"
+    if ! stage_dirty "$wd" "$listf" "$exclf"; then
+        log "LOUD: pathspec staging failed unit=$unit workdir=$wd"
+        rm -rf "$listf" "$exclf" "$tmpd"; return 1
+    fi
+    [[ -s "$exclf" ]] && log "secrets-looking paths excluded unit=$unit workdir=$wd: $(tr '\0' ' ' <"$exclf")"
+    local sha="" secret=0 salvage_status="local"
+    if ! (
+        export GIT_INDEX_FILE="$tmpidx" GIT_LITERAL_PATHSPECS=1
+        if [[ -s "$exclf" ]]; then
+            git -C "$wd" reset -q --pathspec-from-file="$exclf" --pathspec-file-nul 2>/dev/null || true
+        fi
+        if [[ -s "$listf" ]]; then
+            git -C "$wd" add --pathspec-from-file="$listf" --pathspec-file-nul || exit 3
+        fi
+        git -C "$wd" diff --cached --quiet && exit 4
+        if staged_has_secret "$wd" || ! run_extra_scan "$wd"; then echo SECRET >"$tmpd/secret"; fi
+        tree="$(git -C "$wd" write-tree)" || exit 3
+        git -C "$wd" -c user.email=fleet-salvage@localhost -c user.name=fleet-salvage \
+            commit-tree "$tree" -p HEAD -m "wip(salvage): ${unit} ${reason} (mtime-only snapshot; worktree untouched, fleet-ops#5984)" >"$tmpd/sha" || exit 3
+    ); then
+        local src=$?
+        rm -rf "$listf" "$exclf" "$tmpd"
+        if (( src == 4 )); then log "nothing staged after add unit=$unit workdir=$wd — no-op"; return 0; fi
+        log "LOUD: snapshot commit failed unit=$unit workdir=$wd"; return 1
+    fi
+    sha="$(cat "$tmpd/sha")"; [[ -f "$tmpd/secret" ]] && secret=1
+    rm -rf "$listf" "$exclf" "$tmpd"
+    # Keep the commit reachable locally under refs/salvage/ — NOT refs/heads/:
+    # linked worktrees share one ref store, so a local branch would surface in
+    # the owner's checkout (and in the shared checkout) as a stray wip branch.
+    git -C "$wd" update-ref "refs/salvage/${ref}" "$sha" "" 2>/dev/null || true
+    if (( secret )); then
+        salvage_status="quarantined"
+        log "secret/scan flag unit=$unit workdir=$wd — local-only snapshot ${ref}"
+    elif [[ "${PI_SALVAGE_NO_PUSH:-0}" == "1" ]]; then
+        log "push skipped unit=$unit ref=$ref — local-only bank requested"
+    elif git -C "$wd" remote get-url "$REMOTE" >/dev/null 2>&1; then
+        if GIT_TERMINAL_PROMPT=0 git -C "$wd" push --force-with-lease="refs/heads/${ref}:" "$REMOTE" "${sha}:refs/heads/${ref}" >/dev/null 2>&1; then
+            salvage_status="pushed"
+        else
+            log "push failed unit=$unit ref=$ref — snapshot banked locally"
+        fi
+    fi
+    append_ledger "$unit" "$ref" "$salvage_status" "$PACKET" "$wd"
+    log "snapshot ${salvage_status} unit=$unit workdir=$wd ref=$ref sha=${sha:0:12}"
+    SALVAGED_ROWS+=("${wd}|${ref}|${sha:0:12}|${salvage_status}")
+    return 0
+}
+
 # Candidate list built by enumerate_candidates: CAND_PATHS/CAND_WHY.
 CAND_PATHS=()
 CAND_WHY=()
@@ -779,7 +848,11 @@ cmd_salvage() {
     for i in "${!CAND_PATHS[@]}"; do
         local is_seed=0
         [[ "${CAND_WHY[$i]}" == "declared" ]] && is_seed=1
-        salvage_one "${CAND_PATHS[$i]}" "$is_seed" "$unit" "$reason" || rc=1
+        if [[ "${CAND_WHY[$i]}" == "mtime" ]]; then
+            salvage_snapshot "${CAND_PATHS[$i]}" "$unit" "$reason" || rc=1
+        else
+            salvage_one "${CAND_PATHS[$i]}" "$is_seed" "$unit" "$reason" || rc=1
+        fi
     done
 
     if (( ${#SALVAGED_ROWS[@]} > 0 )); then
