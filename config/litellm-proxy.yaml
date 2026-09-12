@@ -9,18 +9,15 @@
 #   openai/z-ai/glm-5.3-flash @ api.cline.bot           : 500 ; openai/cline-pass/deepseek-v4.1-flash @ api.cline.bot : 429
 #   ollama.com deepseek-v4-pro:0813 / kimi-k2.7-code    : 429 weekly usage limit (nishant345)
 #   alibaba qwen3.8-max                                 : 429 until 2026-09-14 (seat ledger) ; opencode-go : 402 until 2026-09-12T14:05Z ; mergegateway : quota_bench
+#   2026-09-13 (senior auditor, #6054 drill): openai/hf:zai-org/GLM-5.3-Flash @ api.synthetic.new : 429 subscription rate limits, ALL 4 deployments, 17:58Z→22:45Z+ (through the 03:32:59 IST reboot) — benched below.
 # LIVE (probed 200 on 2026-09-12): paretoinference z-ai/glm-5.3 + glm-5.3-flash, synthetic hf:zai-org/GLM-5.3-Flash, llmgateway-devpass glm-5.3-flash, nebius zai-org/GLM-5.3-Flash. xkiro deepseek/deepseek-v4-pro was 200 at 06:15Z (fleet-ops#5811) but 503s again by 15:47Z — benched, see the benched: block (fleet-ops#6054).
 # Router policy: a single deployment error must never reach the client while another deployment or fallback group is healthy.
 model_list:
-- model_name: worker-cheap
-  litellm_params:
-    model: openai/hf:zai-org/GLM-5.3-Flash
-    api_base: https://api.synthetic.new/openai/v1
-    api_key: os.environ/SYNTHETIC_API_KEY
-    tags:
-    - prepaid
-    order: 1
-    max_parallel_requests: 1
+# fleet-ops#4643 cache-affinity ladder (senior auditor 2026-09-12T20:32Z): distinct
+# order: values = sticky lowest-order selection (litellm router order-filters each
+# pick to the lowest order group) instead of a 3-account shuffle pool that cold-
+# starts the per-account prompt cache on every rotation (in-session hit collapsed
+# to 0.016 on pi-issue-fleet-ops-5721). Failover remains deterministic via cooldown.
 - model_name: worker-cheap
   litellm_params:
     model: openai/glm-5.3-flash
@@ -28,7 +25,7 @@ model_list:
     api_key: os.environ/LLMGATEWAY_DEVPASS_API_KEY
     tags:
     - prepaid
-    order: 1
+    order: 2
     max_parallel_requests: 1
 - model_name: worker-cheap
   litellm_params:
@@ -37,7 +34,7 @@ model_list:
     api_key: os.environ/PARETO_API_KEY
     tags:
     - prepaid
-    order: 1
+    order: 3
     max_parallel_requests: 1
 - model_name: worker-cheap
   litellm_params:
@@ -46,7 +43,7 @@ model_list:
     api_key: os.environ/NEBIUS_API_KEY
     tags:
     - metered
-    order: 3
+    order: 4
     max_parallel_requests: 1
 - model_name: worker-capable
   litellm_params:
@@ -57,15 +54,6 @@ model_list:
     - prepaid
     order: 1
     max_parallel_requests: 2
-- model_name: worker-capable
-  litellm_params:
-    model: openai/hf:zai-org/GLM-5.3-Flash
-    api_base: https://api.synthetic.new/openai/v1
-    api_key: os.environ/SYNTHETIC_API_KEY
-    tags:
-    - prepaid
-    order: 1
-    max_parallel_requests: 1
 - model_name: worker-capable
   litellm_params:
     model: openai/glm-5.3-flash
@@ -94,16 +82,6 @@ model_list:
     - senior
     order: 1
     max_parallel_requests: 2
-- model_name: senior
-  litellm_params:
-    model: openai/hf:zai-org/GLM-5.3-Flash
-    api_base: https://api.synthetic.new/openai/v1
-    api_key: os.environ/SYNTHETIC_API_KEY
-    tags:
-    - prepaid
-    - senior
-    order: 2
-    max_parallel_requests: 1
 - model_name: judge
   litellm_params:
     model: openai/z-ai/glm-5.3
@@ -124,16 +102,6 @@ model_list:
     - private
     order: 1
     max_parallel_requests: 1
-- model_name: worker-private
-  litellm_params:
-    model: openai/hf:zai-org/GLM-5.3-Flash
-    api_base: https://api.synthetic.new/openai/v1
-    api_key: os.environ/SYNTHETIC_API_KEY
-    tags:
-    - prepaid
-    - private
-    order: 2
-    max_parallel_requests: 1
 # fleet-ops#6054 (2026-09-12): benched = NOT routed, NOT in model_list, and NOT
 # counted by the health canary's fleet_litellm_model_list_expected (only
 # "- model_name:" lines count). Inert to the loader: ProxyConfig reads known
@@ -152,6 +120,17 @@ benched:
     tags:
     - free
     order: 2
+    max_parallel_requests: 1
+- benched_at: 2026-09-13
+  reason: "openai/hf:zai-org/GLM-5.3-Flash @ https://api.synthetic.new/openai/v1 — 429 'You've exceeded your subscription rate limits. Upgrade, or try again later.' on /health, ALL FOUR deployments (worker-cheap/worker-capable/senior/worker-private — one account, one key), persistent 17:58Z→22:45Z through the 03:32:59 IST reboot; the canary tripped health-deployment-unhealthy 04:05-04:09+ IST. #6054/#5792 accept-line drill. Restore a deployment ONLY with a green /health probe cited in the PR."
+  was: [worker-cheap, worker-capable, senior, worker-private]
+  litellm_params:
+    model: openai/hf:zai-org/GLM-5.3-Flash
+    api_base: https://api.synthetic.new/openai/v1
+    api_key: os.environ/SYNTHETIC_API_KEY
+    tags:
+    - prepaid
+    order: 1
     max_parallel_requests: 1
 router_settings:
   routing_strategy: simple-shuffle
