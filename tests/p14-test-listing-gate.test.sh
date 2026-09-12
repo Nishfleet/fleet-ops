@@ -1192,4 +1192,20 @@ grep -Eq '^[[:space:]]*bash[[:space:]]+"?\$here/fleet-token-economy\.test\.sh"?'
   || fail "fleet-token-economy.test.sh must not be a known orphan (fleet-ops#6020)"
 ok "fleet-token-economy.test.sh host line in rule-enforcement.test.sh is pinned (fleet-ops#6020)"
 
+||||||| parent of 8f7e6adeb (test(ci): host install-seat-caps-stale-snapshot-refuse from ci-standards-audit (fleet-ops#5493))
+# fleet-ops#5493: hard-pin the host line for install-seat-caps-stale-
+# snapshot-refuse.test.sh in ci-standards-audit so a future refactor that
+# drops it is caught by name. Hosted from tests/ci-standards-audit.test.sh
+# (already listed in ci.yml) because the worker App cannot push
+# .github/workflows/**. Parking it on known_orphans to silence the generic
+# message must also fail by name, same shape as every other hosted test.
+grep -Eq '^[[:space:]]*bash[[:space:]]+"?\$here/install-seat-caps-stale-snapshot-refuse\.test\.sh"?' \
+  "$here/ci-standards-audit.test.sh" \
+  || fail "ci-standards-audit.test.sh must bash-invoke install-seat-caps-stale-snapshot-refuse.test.sh (fleet-ops#5493)"
+[[ -n "${reachable[install-seat-caps-stale-snapshot-refuse.test.sh]:-}" ]] \
+  || fail "install-seat-caps-stale-snapshot-refuse.test.sh must be hosted by a listed test (fleet-ops#5493)"
+[[ -z "${known_orphan_set[install-seat-caps-stale-snapshot-refuse.test.sh]:-}" ]] \
+  || fail "install-seat-caps-stale-snapshot-refuse.test.sh must not be a known orphan (fleet-ops#5493)"
+ok "install-seat-caps-stale-snapshot-refuse.test.sh host line in ci-standards-audit.test.sh is pinned (fleet-ops#5493)"
+
 echo "OK: p14-test-listing-gate.test.sh: P14 test list is closed"

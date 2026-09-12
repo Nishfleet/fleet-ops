@@ -1034,3 +1034,16 @@ bash "$here/measure-attest-waiting.test.sh"
 # drop of this host line fails by name. Hermetic (fixtures + a throwaway
 # git repo in a scratch dir; the live diff runs only on pull_request).
 bash "$here/deleted-symbol-gate.test.sh"
+||||||| parent of 8f7e6adeb (test(ci): host install-seat-caps-stale-snapshot-refuse from ci-standards-audit (fleet-ops#5493))
+
+# fleet-ops#5493: behavioral regression for the pre-#331 stale seat-caps
+# snapshot (devin 4->0, ollama 4->2) being installed over live caps. The
+# repo-mtime refresh by git checkout defeats the plain mtime guard, so the
+# REFUSE must come from the seat_caps_would_downgrade cap-drop guard
+# (fleet-ops#371), with the operator override and origin-main-blob escape.
+# Hosted here (a listed test) so P14 runs it without a workflow-file edit;
+# the worker App cannot push .github/workflows/**. The named pin in
+# tests/p14-test-listing-gate.test.sh is the class-prevention so a future
+# drop of this host line fails by name. Hermetic (scratch MANIFEST + fake
+# HOME + stub systemctl, does NOT touch the real live state file).
+bash "$here/install-seat-caps-stale-snapshot-refuse.test.sh"
