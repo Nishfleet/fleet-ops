@@ -395,7 +395,7 @@ _gh_rl_pre_reads=app
 # permanently failing open. 360s = 300s period + 60s slack. The stale
 # branch stays reserved for a genuinely dead writer (~2 writer periods).
 gh_rl_pre_writer_period=300
-gh_rl_pre_max_age="${PI_INTAKE_GH_RATE_LIMIT_MAX_AGE:-360}"
+gh_rl_pre_max_age="${PI_INTAKE_GH_RATE_LIMIT_MAX_AGE:-$(( gh_rl_pre_writer_period + 60 ))}"
 gh_rl_pre_skip_min="${PI_INTAKE_GH_RATE_LIMIT_SKIP_MIN:-500}"
 gh_rl_pre_skip_pct="${PI_INTAKE_GH_RATE_LIMIT_SKIP_PCT:-10}"
 if [[ -r "$gh_rl_pre_path" ]]; then
