@@ -453,12 +453,11 @@ plane_e_litellm_pg() {
   # organ's dumps so a shared backups dir is never mistaken for rotation
   # residue.
   if [[ "$keep" =~ ^[0-9]+$ ]] && (( keep > 0 )); then
+    # shellcheck disable=SC2012 # the drill owns the dump filenames (litellm-<stamp>.sql.gz); mtime order is the rotation order
     while IFS= read -r old; do
       [[ -n "$old" ]] || continue
       rm -f "$old"
       log "E.2  - rotated out $(basename "$old") (keep $keep)"
-    # shellcheck disable=SC2012 — the drill owns the dump filenames
-    # (litellm-<stamp>.sql.gz); mtime order is the rotation order.
     done < <(ls -1t "$dump_dir"/litellm-*.sql.gz 2>/dev/null | tail -n +$((keep + 1)))
   fi
 
