@@ -20,7 +20,8 @@
 #   6. Public SSH (0.0.0.0:22) -> exit 1, LOUD.
 #   7. Tailscaled Restart=on-failure (not always) -> exit 1, LOUD.
 #   8. Missing blueprint heading -> exit 1, LOUD.
-#   9. Unconfigured keystone HC URLs are SKIP + LOUD, not a silent pass.
+#   9. Unconfigured keystone HC URLs are SKIP + LOUD, not a silent pass
+#      (fleet-ops#5886: the detached dead-man URL counts too).
 #  10. Shared keystone URLs (with each other or the heartbeat dead-man)
 #      are FAIL + LOUD.
 #  11. --check reports ready/missing without system calls.
@@ -464,7 +465,7 @@ write_green_system() {
 LISTEN 0 128 100.108.184.97:22 0.0.0.0:*
 LISTEN 0 128 [fd7a:115c:a1e0::1]:22 [::]:*
 OUT
-  printf 'HC_URL_INTAKE=https://example.invalid/i\nHC_URL_SCOUT=https://example.invalid/s\nHC_URL_RECONCILE=https://example.invalid/r\nHC_URL_RESTORE=https://example.invalid/b\n' \
+  printf 'HC_URL_INTAKE=https://example.invalid/i\nHC_URL_SCOUT=https://example.invalid/s\nHC_URL_RECONCILE=https://example.invalid/r\nHC_URL_RESTORE=https://example.invalid/b\nHC_URL_DETACHED=https://example.invalid/d\n' \
     >"$KEYSTONE_HC_ENV"
 }
 
@@ -735,9 +736,32 @@ assert skips, data
 PY
 ok "unconfigured keystone HC URLs are SKIP + LOUD, not a silent pass"
 
+# fleet-ops#5886: the detached per-dispatch dead-man URL is part of the
+# same keystone env contract. Four keystone URLs set but HC_URL_DETACHED
+# missing is SKIP + LOUD naming the key, not a silent pass — until it is
+# provisioned, pi-systemd-run's healthchecks rail is inert.
+reset_all
+printf 'HC_URL_INTAKE=https://example.invalid/i\nHC_URL_SCOUT=https://example.invalid/s\nHC_URL_RECONCILE=https://example.invalid/r\nHC_URL_RESTORE=https://example.invalid/b\n' \
+  >"$KEYSTONE_HC_ENV"
+run_drill
+[[ "$drill_rc" -eq 0 ]] || fail "detached-missing HC should SKIP not fail, rc=$drill_rc out=$drill_out"
+grep -q 'KEYSTONE-HC-UNCONFIGURED' "$triage" \
+  || fail "detached-missing must LOUD KEYSTONE-HC-UNCONFIGURED, triage=$(cat "$triage")"
+grep -q 'HC_URL_DETACHED' "$triage" \
+  || fail "LOUD must name the missing key HC_URL_DETACHED, triage=$(cat "$triage")"
+python3 - "$last" <<'PY' || fail "detached-missing HC must record skip naming the key"
+import json, sys
+data = json.load(open(sys.argv[1], encoding="utf-8"))
+assert data.get("all_pass") is True, data
+skips = [r for r in data["results"] if r.get("name") == "keystone_deadman" and r.get("status") == "skip"]
+assert skips, data
+assert "HC_URL_DETACHED" in skips[0]["proof"], skips[0]
+PY
+ok "missing HC_URL_DETACHED (detached dead-man) is SKIP + LOUD, not a silent pass"
+
 # Shared keystone URLs (two keystones, same check) are FAIL + LOUD.
 reset_all
-printf 'HC_URL_INTAKE=https://example.invalid/shared\nHC_URL_SCOUT=https://example.invalid/shared\nHC_URL_RECONCILE=https://example.invalid/r\nHC_URL_RESTORE=https://example.invalid/b\n' \
+printf 'HC_URL_INTAKE=https://example.invalid/shared\nHC_URL_SCOUT=https://example.invalid/shared\nHC_URL_RECONCILE=https://example.invalid/r\nHC_URL_RESTORE=https://example.invalid/b\nHC_URL_DETACHED=https://example.invalid/d\n' \
   >"$KEYSTONE_HC_ENV"
 run_drill
 [[ "$drill_rc" -eq 1 ]] || fail "shared keystone URL should fail, rc=$drill_rc out=$drill_out"
@@ -753,7 +777,7 @@ ok "shared keystone HC URLs are FAIL + LOUD"
 
 # Reusing the heartbeat dead-man URL is FAIL + LOUD.
 reset_all
-printf 'HC_URL_INTAKE=https://example.invalid/ping/heartbeat-uuid\nHC_URL_SCOUT=https://example.invalid/s\nHC_URL_RECONCILE=https://example.invalid/r\nHC_URL_RESTORE=https://example.invalid/b\n' \
+printf 'HC_URL_INTAKE=https://example.invalid/ping/heartbeat-uuid\nHC_URL_SCOUT=https://example.invalid/s\nHC_URL_RECONCILE=https://example.invalid/r\nHC_URL_RESTORE=https://example.invalid/b\nHC_URL_DETACHED=https://example.invalid/d\n' \
   >"$KEYSTONE_HC_ENV"
 run_drill
 [[ "$drill_rc" -eq 1 ]] || fail "heartbeat reuse should fail, rc=$drill_rc out=$drill_out"
