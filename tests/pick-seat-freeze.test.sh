@@ -18,6 +18,11 @@
 # The signature covers the names spec termination requires gone: pick_seat,
 # seat-lib, ram_governor_cap, active_ram_charge, ram_gb_per_worker.
 #
+# fleet-ops#6028: tests/p14-test-listing-gate.test.sh joins the manifest —
+# its #6037-survivor pins name the empty-success host file literally (grep
+# target + prose, 5 mentions). Count frozen here like every other prose
+# reference; a bump is a conscious manifest edit.
+#
 # This file must never match its own pattern, so the signature is written
 # with a bracket class (seat-li[b], pick_sea[t], ...) and this file is
 # excluded from the scan by name.
@@ -61,6 +66,7 @@ tests/fleet-seat-recovery-units.test.sh:4
 tests/fleet-vibes-canary.test.sh:14
 tests/fleet-work-slice-tasksmax.test.sh:7
 tests/keystone-routing.test.sh:1
+tests/p14-test-listing-gate.test.sh:5
 tests/pick-seat-freeze.test.sh:28
 tests/pi-issue-park-resurrection.test.sh:1
 tests/pi-issue-run-app-identity.test.sh:1
