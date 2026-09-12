@@ -1257,8 +1257,12 @@ escalate_stuck_packets() {
 
     # LOUD only names what a disposition run could NOT settle — when every
     # stuck packet was disposed the line goes silent and the signal has
-    # converged instead of repeating hourly forever.
-    if [ "$leftover" -gt 0 ]; then
+    # converged instead of repeating hourly forever. DRY mode settles
+    # nothing by definition, so it always reports the aggregate DRY line
+    # (the LOUD fail-open wording would be misleading for a dry run).
+    if [ "$DRY_RUN" = "1" ]; then
+        log "DRY: $n_stuck stuck packet(s) would be escalated + archived"
+    elif [ "$leftover" -gt 0 ]; then
         local s
         local head_line=""
         for s in "${stuck[@]:0:10}"; do
@@ -1267,8 +1271,6 @@ escalate_stuck_packets() {
         log "LOUD [STUCK-PACKET] $n_stuck webhook packet(s) older than ${STUCK_AGE_S}s have NO terminated chain in $TERMINATED — escalation filing unavailable, packets kept (never silently delete); left for the Prometheus/Alertmanager absent() pipeline to escalate:$head_line"
     elif [ -n "$issue_no" ]; then
         log "stuck-packet escalation: $n_stuck packet(s) disposed -> issue #$issue_no (archived under $STUCK_ARCH_DIR)"
-    elif [ "$DRY_RUN" = "1" ]; then
-        log "DRY: $n_stuck stuck packet(s) would be escalated + archived"
     fi
 }
 
