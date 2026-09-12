@@ -104,6 +104,9 @@ fi
 #
 # Modes:
 #   --classify TITLE   print the lifecycle label for TITLE (no network)
+#   --unpark REPO#NUM  un-park an awaiting-runtime-gate issue: drop the park
+#                      and restore agent-ready in ONE edit (no network read
+#                      beyond the parked-state pre-check)
 #   --drill            set LIFECYCLE_SWEEP_DRILL=1 then sweep
 #   (default)          sweep enrolled repos
 #
@@ -130,6 +133,7 @@ Usage: lifecycle-label-sweep [--help|-h]
 
 Modes:
   --classify TITLE   print the lifecycle label for TITLE (no network)
+  --unpark REPO#NUM  drop awaiting-runtime-gate + add agent-ready in one edit
   --drill            set LIFECYCLE_SWEEP_DRILL=1 then sweep
   (default)          sweep enrolled repos
 
@@ -430,6 +434,32 @@ ensure_label() {
     fi
     gh label create "$name" -R "$repo" --color "$color" --description "$desc" --force >/dev/null 2>&1 || true
 }
+
+# fleet-ops#5887: --unpark OWNER/NAME#NUM is the sanctioned un-park path.
+# The sweep itself never un-parks (the park is deliberate until the named
+# runtime event fires), so the restore lives behind this explicit mode:
+# one gh edit drops the park AND restores agent-ready, so the two labels can
+# never coexist. Refuses when the issue does not carry the park (fail-closed:
+# no speculative agent-ready).
+if [ "${1:-}" = "--unpark" ]; then
+    shift
+    _unpark_target="${1:-}"
+    [[ "$_unpark_target" =~ ^[^#]+#[0-9]+$ ]] \
+        || { echo "usage: lifecycle-label-sweep --unpark OWNER/NAME#NUM" >&2; exit 2; }
+    _unpark_repo="${_unpark_target%#*}"
+    _unpark_num="${_unpark_target##*#}"
+    _unpark_labels=$(gh api "repos/$_unpark_repo/issues/$_unpark_num" --jq '[.labels[].name]' 2>/dev/null) \
+        || { echo "unpark: cannot read $_unpark_target" >&2; exit 1; }
+    if ! printf '%s' "$_unpark_labels" | jq -e 'index("awaiting-runtime-gate") != null' >/dev/null; then
+        echo "unpark: $_unpark_target does not carry awaiting-runtime-gate — nothing to un-park" >&2
+        exit 1
+    fi
+    if unpark_runtime_gate "$_unpark_repo" "$_unpark_num"; then
+        echo "unpark: $_unpark_target un-parked (agent-ready restored in the same edit)"
+        exit 0
+    fi
+    exit 1
+fi
 
 spec_gate_py() {
     if [ -n "${AGENT_READY_SPEC_GATE:-}" ]; then

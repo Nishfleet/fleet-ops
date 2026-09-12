@@ -69,6 +69,11 @@ case "$1" in
   label)
     exit 0
     ;;
+  api)
+    # --unpark pre-check reads the issue's labels (fleet-ops#5887).
+    cat "$FAKE_DIR/api-issue.json"
+    exit 0
+    ;;
   pr)
     echo '[]'
     exit 0
@@ -290,5 +295,36 @@ while IFS= read -r line; do
     || fail "(j) every awaiting-runtime-gate remove must also add agent-ready: $line"
 done < <(grep -- '--remove-label awaiting-runtime-gate' "$bin" || true)
 ok "(j) un-park path is one edit: drop awaiting-runtime-gate + add agent-ready (fleet-ops#5887)"
+
+# --- Case (k): --unpark REPO#NUM is the sanctioned restore: one edit drops
+# the park and adds agent-ready; it refuses a non-parked issue.
+cat >"$scratch/api-issue.json" <<'JSON'
+["awaiting-runtime-gate"]
+JSON
+: >"$scratch/edits.log"
+: >"$scratch/comments.log"
+out=$("$bin" --unpark Nishfleet/0509#2213 2>"$scratch/errK.txt") \
+  || fail "(k) --unpark exit: $(cat "$scratch/errK.txt")"
+grep -q -- '--remove-label awaiting-runtime-gate --add-label agent-ready' "$scratch/edits.log" \
+  || fail "(k) --unpark must pair both flags in one edit: $(cat "$scratch/edits.log")"
+[ "$(grep -c 'issue edit' "$scratch/edits.log")" = "1" ] \
+  || fail "(k) --unpark must be exactly one edit: $(cat "$scratch/edits.log")"
+grep -q 'un-park awaiting-runtime-gate by fleet-heartbeat' "$scratch/comments.log" \
+  || fail "(k) --unpark must leave an audit comment: $(cat "$scratch/comments.log")"
+ok "(k) --unpark restores agent-ready in the same edit that drops the park (fleet-ops#5887)"
+
+# --- Case (l): --unpark refuses an issue that does not carry the park.
+cat >"$scratch/api-issue.json" <<'JSON'
+["agent-ready"]
+JSON
+: >"$scratch/edits.log"
+if "$bin" --unpark Nishfleet/0509#2213 >"$scratch/outL.txt" 2>&1; then
+  fail "(l) --unpark must refuse a non-parked issue: $(cat "$scratch/outL.txt")"
+fi
+grep -q 'nothing to un-park' "$scratch/outL.txt" \
+  || fail "(l) refusal must say why: $(cat "$scratch/outL.txt")"
+[ ! -s "$scratch/edits.log" ] \
+  || fail "(l) refusal must not edit: $(cat "$scratch/edits.log")"
+ok "(l) --unpark refuses a non-parked issue without editing (fleet-ops#5887)"
 
 echo "all lifecycle-label-sweep-admission cases passed"
