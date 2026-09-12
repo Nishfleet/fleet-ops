@@ -551,6 +551,91 @@ if grep -q "DEPLOY-CHECK-NONCANONICAL-UNITS" "$scratch/err.log"; then
 fi
 ok "foreign (non-systemd/) unit symlink is skipped"
 
+# --- 12f. in-flight worktree unit (fleet-ops#5998) -> stand down the LOUD --
+# The live 2026-09-12 case: a worker's unit (gh-runner@) existed ONLY in its
+# worktree. The canonical checkout had no MANIFEST row for it, so the repair
+# ran install.sh, rc=0'd, changed nothing, and the 2-min detect->LOUD->
+# retarget(no-op) loop repeated while the worktree was alive. A LIVE
+# workspaces target whose unit is not in $canon/systemd/ is the worker's
+# in-flight unit (its PR is open): it must NOT trip the gate, and it
+# self-heals once the unit lands in the canonical checkout.
+worktree_dir_inflight="$scratch/ws/issue-fleet-ops-5935"
+mkdir -p "$worktree_dir_inflight/systemd"
+cat >"$worktree_dir_inflight/systemd/gh-runner@.service" <<'UNIT'
+[Unit]
+Description=ephemeral GitHub Actions runner (fleet-ops#5935)
+UNIT
+ln -sfn "$worktree_dir_inflight/systemd/gh-runner@.service" \
+  "$unit_dir/gh-runner@.service"
+: > "$scratch/err.log"
+rc=$(FLEET_OPS_CHECKOUT="$canon_dir" \
+     FLEET_OPS_DEPLOY_BIN="$deploy_spy" \
+     FLEET_DEPLOY_CHECK_LOCK="$lock" \
+     FLEET_DEPLOY_CHECK_NO_DEPLOY=0 \
+     FLEET_DEPLOY_CHECK_UNIT_DIR="$unit_dir" \
+     FLEET_DEPLOY_CHECK_INSTALL_BIN="$canon_dir/install.sh" \
+     FLEET_OPS_CANONICAL_CHECKOUT="$canon_dir" \
+     FLEET_OPS_WORKSPACES_ROOT="$ws_root" \
+     FLEET_HEARTBEAT_TRIAGE="$triage" \
+     DEPLOY_SPY_LOG="$DEPLOY_SPY_LOG" \
+       "$bin" >/dev/null 2>"$scratch/err.log"; echo $?)
+[[ "$rc" == "0" ]] || fail "in-flight worktree unit should exit 0 (got $rc)"
+if grep -q "DEPLOY-CHECK-NONCANONICAL-UNITS" "$scratch/err.log"; then
+  fail "in-flight worktree unit (live target, not in canonical checkout) must not loud; got: $(cat "$scratch/err.log")"
+fi
+target=$(readlink "$unit_dir/gh-runner@.service")
+case "$target" in
+  "$worktree_dir_inflight"*) ;;
+  *) fail "stand-down must not touch the link; got $target" ;;
+esac
+ok "in-flight worktree unit stands down the NONCANONICAL-UNITS loud (fleet-ops#5998)"
+
+# --- 12g. dangling in-flight unit link (fleet-ops#5998) -> LOUD + removal --
+# Worktree died before its unit ever landed in the canonical checkout
+# (the #5935 reap while #6012 was open). install.sh cannot help: no
+# MANIFEST row, rc=0, link stayed, LOUD looped. The closer must remove the
+# dead link, say what it did, and the flap must end on the next tick.
+rm -rf "$worktree_dir_inflight"
+: > "$scratch/err.log"
+rc=$(FLEET_OPS_CHECKOUT="$canon_dir" \
+     FLEET_OPS_DEPLOY_BIN="$deploy_spy" \
+     FLEET_DEPLOY_CHECK_LOCK="$lock" \
+     FLEET_DEPLOY_CHECK_NO_DEPLOY=0 \
+     FLEET_DEPLOY_CHECK_UNIT_DIR="$unit_dir" \
+     FLEET_DEPLOY_CHECK_INSTALL_BIN="$canon_dir/install.sh" \
+     FLEET_OPS_CANONICAL_CHECKOUT="$canon_dir" \
+     FLEET_OPS_WORKSPACES_ROOT="$ws_root" \
+     FLEET_HEARTBEAT_TRIAGE="$triage" \
+     DEPLOY_SPY_LOG="$DEPLOY_SPY_LOG" \
+       "$bin" >/dev/null 2>"$scratch/err.log"; echo $?)
+[[ "$rc" == "0" ]] || fail "dangling in-flight unit link should exit 0 (got $rc)"
+grep -q "DEPLOY-CHECK-NONCANONICAL-UNITS" "$scratch/err.log" \
+  || fail "dangling in-flight unit link must still loud"
+grep -q "gh-runner@.service" "$scratch/err.log" \
+  || fail "LOUD must name the dead unit symlink"
+grep -q "1 dangling removed" "$scratch/err.log" \
+  || fail "repair log must report the dangling removal, got: $(cat "$scratch/err.log")"
+if [[ -L "$unit_dir/gh-runner@.service" ]] || [[ -e "$unit_dir/gh-runner@.service" ]]; then
+  fail "closer must remove a dangling link whose unit is not in the canonical checkout"
+fi
+: > "$scratch/err.log"
+rc=$(FLEET_OPS_CHECKOUT="$canon_dir" \
+     FLEET_OPS_DEPLOY_BIN="$deploy_spy" \
+     FLEET_DEPLOY_CHECK_LOCK="$lock" \
+     FLEET_DEPLOY_CHECK_NO_DEPLOY=0 \
+     FLEET_DEPLOY_CHECK_UNIT_DIR="$unit_dir" \
+     FLEET_DEPLOY_CHECK_INSTALL_BIN="$canon_dir/install.sh" \
+     FLEET_OPS_CANONICAL_CHECKOUT="$canon_dir" \
+     FLEET_OPS_WORKSPACES_ROOT="$ws_root" \
+     FLEET_HEARTBEAT_TRIAGE="$triage" \
+     DEPLOY_SPY_LOG="$DEPLOY_SPY_LOG" \
+       "$bin" >/dev/null 2>"$scratch/err.log"; echo $?)
+[[ "$rc" == "0" ]] || fail "post-removal tick should exit 0 (got $rc)"
+if grep -q "DEPLOY-CHECK-NONCANONICAL-UNITS" "$scratch/err.log"; then
+  fail "after the closer removes the dead link the flap must end (no repeat LOUD)"
+fi
+ok "dangling in-flight link louds once, closer removes it, flap ends (fleet-ops#5998)"
+
 # --- 13. install.sh repair exits non-zero but names the failing step (fleet-ops#4223)
 # When install.sh refuses a live config (non-fatal), it still retargets the
 # non-canonical unit symlinks. fleet-deploy-check must report which install
