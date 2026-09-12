@@ -179,6 +179,16 @@ NON_ROLE_UNIT_PREFIXES = (
     # the codex-launcher-retired pin test.
     "codex-sol",
     "codex-luna",
+    # fleet-ops#5935: gh-runner@ is GitHub's own actions/runner as an
+    # ephemeral launch template on this VPS — one job per activation, a
+    # fresh single-use JIT registration in ExecStartPre (fail-loud on an
+    # empty token or a 422), Restart=always, cohort-capped by
+    # fleet-ci.slice. It runs no model of its own, owns no judging prompt
+    # and produces no work items — launch plumbing, not a role. Its gate
+    # is the machinery-allowlist row (class (a), repo, endorsed by Nish
+    # 2026-09-12 "lets do all of those") + tests/manifest-shape.test.sh
+    # (MANIFEST install) + the unit's own StartLimit/ExecStartPre guards.
+    "gh-runner",
 )
 
 

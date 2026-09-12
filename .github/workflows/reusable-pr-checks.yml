@@ -80,10 +80,7 @@ permissions:
 jobs:
   pr-checks:
     name: PR checks
-    # fleet-ops#5935: heavy hosted job → owned runner on merge_group + push
-    # (0509#5935's box: 3× gh-runner@N, labels fleet-ci). PRs stay hosted so
-    # fork PRs never execute on the box. Documented expression form.
-    runs-on: ${{ (github.event_name == 'merge_group' || github.event_name == 'push') && 'fleet-ci' || 'ubuntu-latest' }}
+    runs-on: ubuntu-latest
     timeout-minutes: ${{ inputs.timeout-minutes }}
     steps:
       - name: Checkout
