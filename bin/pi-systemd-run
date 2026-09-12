@@ -444,7 +444,9 @@ if [[ "${PI_SALVAGE_DISABLE:-0}" != "1" ]]; then
     # Repeated --property=ExecStopPost= APPENDS (proven live 2026-09-07): a
     # `;`-joined value is NOT split by --property= and execs as one literal
     # path (203/EXEC). Two directives: salvage the worktree first, then the
-    # dead-man verdict. Both always exit 0.
+    # dead-man verdict. Salvage always exits 0; the dead-man exits nonzero
+    # on a `died` verdict so a clean stop still lands the unit failed
+    # (fleet-ops#5456 — that nonzero is the deliverable contract).
     cmd+=(--property="ExecStopPost=${salvage_bin}")
 fi
 cmd+=(--property="ExecStopPost=${deadman_bin}")
