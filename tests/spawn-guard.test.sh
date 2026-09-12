@@ -31,6 +31,11 @@ bash "$here/fleet-spawn-guard-slice-lifecycle.test.sh"
 # (the 2026-09-03 clobber shape). Hosted here with the other spawn-guard
 # drills so P14 runs it without a workflow-file edit.
 bash "$here/tests-no-local-bin-clobber.test.sh"
+# fleet-ops#5700: wrangler_deploy_0509 precision — quoted-string/heredoc
+# mentions do not block, --dry-run is allowed, all four entry points in
+# executable position stay blocked. Imports the repo template (the live
+# extension's source) with node --experimental-strip-types.
+bash "$here/spawn-guard-wrangler-precision.test.sh"
 
 # fleet-ops#3126 revert (2026-09-07): no provider shim may gate on prompt text.
 # PR #4356 added a pre-exec prompt scan (assertPromptSafe) to the devin and
