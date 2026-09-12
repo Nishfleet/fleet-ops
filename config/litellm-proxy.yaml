@@ -157,17 +157,12 @@ model_list:
 router_settings:
   routing_strategy: simple-shuffle
   fallbacks:
-  - worker-cheap:
-    - worker-capable
-    - senior
-  - worker-capable:
-    - senior
-  - senior:
-    - worker-capable
-  - judge:
-    - senior
-  - worker-private:
-    - worker-capable
+    # every group has a terminal healthy route; worker-capable must not dead-end (fleet-ops#4404)
+    - worker-cheap: [worker-capable, senior]
+    - worker-capable: [senior]
+    - senior: [worker-capable]
+    - judge: [senior]
+    - worker-private: [worker-capable]
   cooldown_time: 300
   allowed_fails: 1
   num_retries: 2
