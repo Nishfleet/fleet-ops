@@ -28,7 +28,7 @@ PACKET_GH="${PACKET_GH:-gh}"
 # measure feed uses (token from a deploy-ci.env-style file, D1 REST query).
 # A failed read prints `signups_<field>=UNAVAILABLE:<why>` — never a
 # fabricated 0, never a silent drop, never a scout-run failure.
-PACKET_PRODUCT_CF_FILE="${PACKET_PRODUCT_CF_FILE:-$PACKET_CF_FILE}"
+PACKET_PRODUCT_CF_FILE="${PACKET_PRODUCT_CF_FILE:-${PACKET_CF_FILE:-$HOME/.config/cloudflare/deploy-ci.env}}"
 PACKET_PRODUCT_D1_ACCOUNT="${PACKET_PRODUCT_D1_ACCOUNT:-f670a698e17bf160c8e4679823e68916}"
 PACKET_PRODUCT_D1_DATABASE="${PACKET_PRODUCT_D1_DATABASE:-746c6e3d-782e-443a-82d6-28ca93a16294}"
 PACKET_D1_TIMEOUT="${PACKET_D1_TIMEOUT:-15}"
