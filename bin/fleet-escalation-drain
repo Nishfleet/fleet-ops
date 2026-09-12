@@ -941,7 +941,7 @@ drain_nish_bound() {
         else
             ulen=$((${#body[@]} - u_start[i]))
         fi
-        u_digest[$i]=1
+        u_digest[i]=1
         remaining=$((remaining - ulen))
     done
 
@@ -984,15 +984,17 @@ drain_nish_bound() {
     local stamp_day digest_path
     stamp_day=$(date -u +%Y-%m-%d)
     digest_path="$DIGEST_DIR/digest-$stamp_day.md"
-    {
-        if [ ! -s "$digest_path" ]; then
+    if [ ! -s "$digest_path" ]; then
+        {
             printf '# NISH-ESCALATIONS bound-breach digest — %s (UTC)\n' "$stamp_day"
             printf '# Moved by fleet-escalation-drain bound-digest (fleet-ops#5624):\n'
             printf '# oldest live entries after the live file stayed > MAX_LINES for\n'
             printf '# >%ss. Disposition: digested — preserved here, off the live board.\n' "$OVER_BOUND_AGE_S"
             printf '# NEVER rotated; one file per UTC day.\n'
             printf '\n'
-        fi
+        } > "$digest_path"
+    fi
+    {
         for ln in "${digest_lines[@]}"; do
             printf '%s\n' "$ln"
         done
