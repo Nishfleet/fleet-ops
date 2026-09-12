@@ -34,7 +34,7 @@ mkdir -p "$ISSUES_DIR"
 export PI_PACKET_STATE="$STATE_DIR"
 export PI_SEAT_HEALTH_LEDGER_DIR="$LEDGER"
 export PI_ISSUES_DIR="$ISSUES_DIR"
-export PI_PACKET_SEAT_LIB="$repo_root/lib/seat-lib.sh"
+export PI_PACKET_SEAT_LIB="$repo_root/lib/litellm-seat.sh"
 
 stub_bin="$scratch/stub-bin"
 mkdir -p "$stub_bin"

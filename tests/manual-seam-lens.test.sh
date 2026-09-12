@@ -315,10 +315,13 @@ esac
 FAKE_GH
 chmod +x "$scratch/fakebin/gh"
 
-# Stub seat-lib so the test runs on hosted runners (fleet-ops#391 class).
-cat >"$scratch/seat-lib-fake.sh" <<'FAKE_SEAT_LIB'
+# Stub seatlib so the test runs on hosted runners (fleet-ops#391 class).
+cat >"$scratch/seatlib-fake.sh" <<'FAKE_SEAT_LIB'
 # shellcheck shell=bash
-pick_seat() {
+litellm_seat() {
+    printf 'fakeprovider\tfakemodel'
+}
+litellm_seat() {
     printf 'fakeprovider\tfakemodel'
 }
 FAKE_SEAT_LIB
@@ -357,7 +360,7 @@ PATH="$scratch/fakebin:$PATH" \
   AUDIT_PROMPT="$prompt" \
   AUDIT_DELIBERATE_STATES="$scratch/deliberate-states.md" \
   AUDIT_PANEL_BIN="$repo_root/bin/fleet-blind-audit-panel" \
-  AUDIT_SEAT_LIB="$scratch/seat-lib-fake.sh" \
+  AUDIT_SEAT_LIB="$scratch/seatlib-fake.sh" \
   AUDIT_PACKET_ASSEMBLY_LIB="$repo_root/lib/packet-assembly.sh" \
   AUDIT_PLAN_FILE="$scratch/plan.md" \
   AUDIT_FAKE_NOW="2026-08-26T16:00:00Z" \

@@ -2,7 +2,7 @@
 # tests/pi-scout-seat-rotation.test.sh
 #
 # Proves the scout and scout-repair systemd units no longer hard-code a
-# provider/model. The new wrapper (bin/pi-scout-run) calls pick_seat and
+# provider/model. The new wrapper (bin/pi-scout-run) calls pick-seat and
 # runs pi with the returned provider/model, exiting cleanly when a healthy
 # seat exists and failing loud when none are available.
 
@@ -19,8 +19,8 @@ ok()   { echo "OK: $*"; }
 scratch="$(mktemp -d -t pi-scout-seat.XXXXXX)"
 trap 'rm -rf "$scratch"' EXIT INT TERM
 
-# Stub seat-lib with a deterministic pick_seat and no-op seat_log.
-stub_lib="$scratch/seat-lib.sh"
+# Stub seatlib with a deterministic pick-seat and no-op seat_log.
+stub_lib="$scratch/seatlib.sh"
 cat >"$stub_lib" <<'EOF'
 export HOME="${HOME:-/home/nish}"
 export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/1000}"
@@ -28,14 +28,16 @@ export PI_BIN="${PI_BIN:-/home/nish/.local/bin/pi}"
 seat_log() { :; }
 task_weight() { echo "light"; }
 # fleet-ops#520: stub the privacy helpers the wrapper now calls. The stub
-# returns "public" so the test's deterministic pick_seat path is unchanged;
+# returns "public" so the test's deterministic pick-seat path is unchanged;
 # the privacy guard itself is drilled in tests/repo-privacy-guard.test.sh.
 repo_privacy() { echo "public"; }
 packet_repo() { echo ""; }
-pick_seat() {
+litellm_seat() {
     printf 'minimax\tMiniMax-M3\n'
     return 0
 }
+# fleet-ops#4263 P3b: wrappers call litellm_seat, not pick-seat.
+litellm_seat() { printf 'litellm\tworker-cheap\n'; return 0; }
 EOF
 
 # Fake pi that records args and stdin, then prints output.
@@ -64,10 +66,10 @@ out=$("$bin" fleet-ops scout)
 rc=$?
 set -e
 [[ "$rc" == "0" ]] || fail "scout wrapper must exit 0, got $rc"
-grep -q -- '--provider minimax' "$record_args" \
-  || fail "pi must be called with --provider minimax, got: $(cat "$record_args")"
-grep -q -- '--model MiniMax-M3' "$record_args" \
-  || fail "pi must be called with --model MiniMax-M3, got: $(cat "$record_args")"
+grep -q -- '--provider litellm' "$record_args" \
+  || fail "pi must be called with --provider litellm, got: $(cat "$record_args")"
+grep -q -- '--model worker-cheap' "$record_args" \
+  || fail "pi must be called with --model worker-cheap, got: $(cat "$record_args")"
 grep -q 'TARGET REPO: Nishfleet/fleet-ops' "$record_stdin" \
   || fail "packet must contain TARGET REPO line, got: $(head "$record_stdin")"
 grep -q 'label_budget = 8' "$record_stdin" \
@@ -82,10 +84,10 @@ out=$("$bin" 0509 scout-repair)
 rc=$?
 set -e
 [[ "$rc" == "0" ]] || fail "scout-repair wrapper must exit 0, got $rc"
-grep -q -- '--provider minimax' "$record_args" \
-  || fail "repair: pi must be called with --provider minimax, got: $(cat "$record_args")"
-grep -q -- '--model MiniMax-M3' "$record_args" \
-  || fail "repair: pi must be called with --model MiniMax-M3, got: $(cat "$record_args")"
+grep -q -- '--provider litellm' "$record_args" \
+  || fail "repair: pi must be called with --provider litellm, got: $(cat "$record_args")"
+grep -q -- '--model worker-cheap' "$record_args" \
+  || fail "repair: pi must be called with --model worker-cheap, got: $(cat "$record_args")"
 grep -q 'TARGET: scout unit pi-scout@0509.service, repo Nishfleet/0509' "$record_stdin" \
   || fail "repair packet must contain TARGET line, got: $(head "$record_stdin")"
 ok "scout-repair wrapper builds the correct target line"
@@ -98,11 +100,12 @@ export PI_BIN="${PI_BIN:-/home/nish/.local/bin/pi}"
 seat_log() { :; }
 task_weight() { echo "light"; }
 # fleet-ops#520: stub the privacy helpers the wrapper now calls. The stub
-# returns "public" so the test's deterministic pick_seat path is unchanged;
+# returns "public" so the test's deterministic pick-seat path is unchanged;
 # the privacy guard itself is drilled in tests/repo-privacy-guard.test.sh.
 repo_privacy() { echo "public"; }
 packet_repo() { echo ""; }
-pick_seat() { :; return 1; }
+litellm_seat() { :; return 1; }
+litellm_seat() { :; return 1; }
 EOF
 
 set +e

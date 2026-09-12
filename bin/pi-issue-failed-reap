@@ -336,7 +336,7 @@ if [[ "$issue_state" == "OPEN" ]]; then
     # --- reclaim cooldown (fleet-ops#2133, auditor 2026-08-30) -----------------
     # A failed worker's claim was just released back to agent-ready. Without a
     # cooldown, the next intake tick (every ~8min) re-claims the same issue,
-    # spawns a new worker, and pick_seat routes to another free seat that dies
+    # spawns a new worker, and pick-seat routes to another free seat that dies
     # the same way — a spawn-die-respawn loop that burned #2133 6x in one day
     # (05:52, 07:01, 08:26, 09:23 IST + 2 more). The cooldown marker tells
     # intake to skip this issue for PI_INTAKE_RECLAIM_COOLDOWN_S (default 900s
@@ -355,7 +355,8 @@ if [[ "$issue_state" == "OPEN" ]]; then
         # the requeue is minted here instead, on the existing issue-dispatch
         # entry point: the cooldown marker learns an absolute `until:` line.
         # Detection is NOT conflated with empty-run or real packet failures:
-        # the classification fires only when the LAST seat's ledger says
+        # the classification fires only when the LAST seat's leftover health
+        # file (litellm-seat keep-list; proxy owns routing cooldown) says
         # health_class=overload_bench / failure_mode=overload_503 AND its
         # bench_until is still in the future. Unit-escalation-write already
         # excludes pi-issue@* (its own OnFailure lives here), so this is the
@@ -363,7 +364,7 @@ if [[ "$issue_state" == "OPEN" ]]; then
         _ov_until=""
         _last_seat_ov=$(cat "$ATTEMPTS_DIR/pi-issue-${instance}.seat" 2>/dev/null || true)
         if [[ -n "$_last_seat_ov" && "$_last_seat_ov" == */* ]]; then
-            _seat_lib=${SEAT_LIB:-$HOME/.local/lib/pi-packet/seat-lib.sh}
+            _seat_lib=${SEAT_LIB:-$HOME/.local/lib/pi-packet/litellm-seat.sh}
             if [[ -f "$_seat_lib" ]]; then
                 # shellcheck disable=SC1090
                 source "$_seat_lib" 2>/dev/null || true
@@ -458,7 +459,7 @@ if [[ "$issue_state" == "OPEN" ]]; then
     _tried_file="$ATTEMPTS_DIR/pi-issue-${instance}.tried-seats"
     _systemic_file="$ATTEMPTS_DIR/pi-issue-${instance}.systemic"
     if [[ -f "$_tried_file" ]]; then
-        _seat_lib="${SEAT_LIB:-$HOME/.local/lib/pi-packet/seat-lib.sh}"
+        _seat_lib="${SEAT_LIB:-$HOME/.local/lib/pi-packet/litellm-seat.sh}"
         _src_seat_lib=""
         if [[ -f "$_seat_lib" ]]; then
             # shellcheck disable=SC1090
@@ -481,7 +482,7 @@ if [[ "$issue_state" == "OPEN" ]]; then
         done < "$_tried_file"
         # A systemic marker fires only when every tried seat is benched AND
         # we saw at least one seat (otherwise there is no exhaustion to signal).
-        # If seat-lib is absent (CI), we cannot evaluate seat_usable — skip
+        # If litellm-seat is absent (CI), we cannot evaluate seat_usable — skip
         # the marker (fail-open: re-claim normally).
         if (( _seat_scan_total > 0 && _seat_scan_total == _seat_scan_benched )); then
             if date -u +%Y-%m-%dT%H:%M:%SZ > "$_systemic_file" 2>/dev/null; then
@@ -525,7 +526,7 @@ fi
 # fleet-ops#516 (auditor 2026-08-27): the reap must NOT wipe the per-issue
 # tried-seats file when the last failure was a mid-session provider death on
 # a still-healthy seat. Without this, the intake re-claim starts from an
-# empty tried-seats list and pick_seat re-selects the SAME killing seat
+# empty tried-seats list and pick-seat re-selects the SAME killing seat
 # (0509-974 cursor-grok-4.6-high 143 x3). The seat-health ledger is the
 # DURABLE avoidance authority (pi-issue-run now benches mid-session deaths
 # there), but a seat that was killed ONCE should still be excluded until the
@@ -545,7 +546,7 @@ if [[ -n "$last_seat" ]]; then
     # Source the repo copy when present so CI does not leak the live VPS
     # seat ledger (a missing seat_usable there looks like "benched" and
     # keeps tried-seats, which is the opposite of the recover case).
-    _seat_lib="${SEAT_LIB:-$HOME/.local/lib/pi-packet/seat-lib.sh}"
+    _seat_lib="${SEAT_LIB:-$HOME/.local/lib/pi-packet/litellm-seat.sh}"
     if [[ -f "$_seat_lib" ]]; then
         # shellcheck disable=SC1090
         source "$_seat_lib" 2>/dev/null || true

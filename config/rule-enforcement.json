@@ -358,7 +358,7 @@
     {
       "id": "sr-never-vibes",
       "source": "global-standing-rules.md: Never decide by vibes — always measure (Nish, 2026-08-26)",
-      "mechanism": "Heartbeat vibes canary: ram_gb_per_worker (the rule's origin constant) must carry a top-level _comment_* citation with a date AND a bin/... measurement command (GATE, fail-loud); every other behaviour-driving constant in config/seat-caps.json (per-provider cap, quota_bench_default_s, cap=0 reason) either carries a dated measurement citation or has a filed ticket (DETECTOR, observe-to-open). A bare 'feels right' or a fleet-ops# ref alone is not a marker.",
+      "mechanism": "Heartbeat vibes canary: every behaviour-driving constant in config/seat-caps.json (per-provider cap, quota_bench_default_s, cap=0 reason) either carries a dated measurement citation or has a filed ticket (DETECTOR, observe-to-open). A bare 'feels right' or a fleet-ops# ref alone is not a marker. fleet-ops#4263 retired the ram_gb_per_worker GATE — the hand-tuned key is deleted; per-worker RAM is bounded by systemd MemoryMax + oomd.",
       "proof": "bin/fleet-vibes-canary; tests/fleet-vibes-canary.test.sh; fleet-heartbeat-tier1 block 40",
       "status": "enforced"
     },
@@ -897,10 +897,9 @@
     {
       "id": "led-2026-09-08-litellm-p3b",
       "source": "decisions-ledger.md: 2026-09-08 | LiteLLM P3b",
-      "mechanism": "queued(#4263): P3b deletes lib/seat-lib.sh and every caller's pick_seat routing so the six worker callers run `pi --print --provider litellm --model <group>` (worker-cheap, worker-capable, worker-private, senior, judge) and the LiteLLM proxy owns fallbacks, cooldown, and budgets. The enforcement is the deletion PR #4422 (claim/issue-4263, 61 files +991/-14600) — its code tests pass, but its P14/PR-checks step is stale-RED from a 2026-09-08T02:08 run against the pre-fix PR description (the required CI-unit-tests checkbox was left unchecked); the PR body has since been corrected to pass ci-checklist-gate but needs a CI re-run (Workflows permission, orchestrator) to go green. Not yet on origin/main (seat-lib still routes), pending P3b landing.",
-      "proof": "fleet-ops#4263; fleet-ops#4422 (delete pick_seat, pending CI re-run, stale-red PR-checks from 2026-09-08T02:08Z, body fixed 02:21Z); config/pi-models.json litellm provider; lib/seat-lib.sh litellm_pick_seat + litellm_source (PI_SEAT_SOURCE); config/litellm-proxy.yaml; tests/pi-seat-source-litellm.test.sh; fleet-ops#4219 (P3a, merged); fleet-ops#4404 (402 cooldown/fallback, closed). 2026-09-08 DECISION on #4422 (do NOT re-run CI): the prerequisite, landed by the led-2026-09-08-litellm-p3b mechanism ticket #4425, is the config/seat-caps.json providers.litellm block (5 model groups at cap 0, intentional_cap_zero=p3b_pending) so the proxy is present, not absent, in the seat map before P3b switches callers to PI_SEAT_SOURCE=litellm; status stays queued(#4263) until #4422 merges and seat-lib.sh is deleted.",
-      "status": "queued(#4263)",
-      "queued_since": "2026-09-08"
+      "mechanism": "P3b landed: lib/seat-lib.sh is gone; worker wrappers source lib/litellm-seat.sh and run `pi --print --provider litellm --model <group>` (worker-cheap, worker-capable, worker-private, senior, judge). The LiteLLM proxy owns fallbacks, cooldown, and budgets. Admission is systemd MemoryMax/oomd. Tombstone tests/pick-seat-freeze.test.sh asserts the library is absent and no pick_seat caller remains under bin/lib.",
+      "proof": "fleet-ops#4263; lib/litellm-seat.sh; tests/pick-seat-freeze.test.sh; tests/pi-seat-source-litellm.test.sh; config/litellm-proxy.yaml; fleet-ops#4219 (P3a); fleet-ops#4404; fleet-ops#5919 (freeze)",
+      "status": "enforced"
     },
     {
       "id": "sr-nothing-on-the-vps-fails-silently-everything-resumes-nothing",

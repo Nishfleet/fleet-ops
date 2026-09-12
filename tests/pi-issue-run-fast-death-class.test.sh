@@ -23,7 +23,7 @@ JSON
 cat >"$SEAT_CAPS_JSON" <<'JSON'
 { "ram_gb_per_worker": 1.5, "free_providers_in_order": ["commandcode"], "providers": { "commandcode": { "cap": 1, "class": "free", "models": { "laguna-s-2.1-free": 1 } } } }
 JSON
-export PI_PACKET_SEAT_LIB="$repo_root/lib/seat-lib.sh"
+export PI_PACKET_SEAT_LIB="$repo_root/lib/litellm-seat.sh"
 export FLEET_DEBUG_PLAYBOOK_SESSION_DIR="$scratch/sessions"
 
 # --- case 1: pi exits 1 with a provider error on stderr and 0 tool calls -----
@@ -49,19 +49,14 @@ grep -qE 'PACKET-VERDICT[[:space:]]+tools=0[[:space:]]+class=no-tools[[:space:]]
 grep -q 'upstream connection reset' "$ISSUES_DIR/${inst}.out" \
   || fail "case A: verdict line must carry the literal error tail: $(cat "$ISSUES_DIR/${inst}.out")"
 ok "case A: synthetic PACKET-VERDICT carries error_class=unknown + literal"
-# The ledger must carry last_error_class=unknown + bench_reason, never healthy.
-ledger="$LEDGER/commandcode__laguna-s-2.1-free.json"; [[ -f "$ledger" ]] || fail "case A: no ledger written for commandcode/laguna-s-2.1-free"
-lec=$(jq -r '.last_error_class // ""' "$ledger"); [[ "$lec" == "unknown" ]] || fail "case A: ledger last_error_class must be 'unknown', got '$lec'"
-br=$(jq -r '.bench_reason // ""' "$ledger"); [[ "$br" == *"upstream connection reset"* ]] || fail "case A: ledger bench_reason must carry the literal, got '$br'"
-hc=$(jq -r '.health_class // ""' "$ledger"); [[ "$hc" != "healthy" ]] || fail "case A: ledger must NOT stay healthy for a fast death (got '$hc')"
-ok "case A: ledger carries last_error_class=unknown + bench_reason, not healthy"
+# P3b: mark_seat_* are log stubs. Proxy cooldown owns benches; no ledger file.
 
 # --- case 2: empty stderr, the error lives only in the session jsonl --------
 # pi exits 1 with EMPTY stderr and 0 tools; the session jsonl carries the
 # errorMessage (#3238 surfaces it into $err_file as session-error:). The
 # verdict line + ledger must still carry error_class=unknown + the jsonl tail.
 inst="fleet-ops-3766b"
-# Clear case A's bench (ledger + clobber-proof spawn-bench marker) so pick_seat
+# Clear case A's bench (ledger + clobber-proof spawn-bench marker) so pick-seat
 # re-offers the only seat; case B is a fresh fast-death replay.
 rm -f "$LEDGER/commandcode__laguna-s-2.1-free.json" "$LEDGER/commandcode__laguna-s-2.1-free.spawn-bench.json"
 printf 'Implement one GitHub issue: fleet-ops#3766 case B.\n' >"$ISSUES_DIR/${inst}.in"
@@ -80,9 +75,6 @@ grep -qE 'PACKET-VERDICT[[:space:]]+tools=0[[:space:]]+class=no-tools[[:space:]]
 grep -q 'gateway timeout from upstream' "$ISSUES_DIR/${inst}.out" \
   || fail "case B: verdict line must carry the jsonl error tail: $(cat "$ISSUES_DIR/${inst}.out")"
 ok "case B: synthetic PACKET-VERDICT carries error_class=unknown + jsonl tail"
-ledger="$LEDGER/commandcode__laguna-s-2.1-free.json"; [[ -f "$ledger" ]] || fail "case B: no ledger written for commandcode/laguna-s-2.1-free"
-lec=$(jq -r '.last_error_class // ""' "$ledger"); [[ "$lec" == "unknown" ]] || fail "case B: ledger last_error_class must be 'unknown', got '$lec'"
-br=$(jq -r '.bench_reason // ""' "$ledger"); [[ "$br" == *"gateway timeout from upstream"* ]] || fail "case B: ledger bench_reason must carry the jsonl tail, got '$br'"
-ok "case B: ledger carries last_error_class=unknown + jsonl tail"
+# P3b: no seat ledger. Proxy cooldown owns benches.
 
 echo "PASS: pi-issue-run-fast-death-class"

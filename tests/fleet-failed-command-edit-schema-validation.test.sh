@@ -68,7 +68,7 @@
 #   6. lib/failed-command-flagged.py docstring cites fleet-ops#1286
 #      (detector-side lock, forbids a "schema validation is benign"
 #      exemption).
-#   7. seat-lib.test.sh hosts this file (CI cannot gain a P14 line).
+#   7. seat.lib.test.sh hosts this file (CI cannot gain a P14 line).
 #
 # fleet-ops#4991 is the SIBLING schema-validation shape on the SAME
 # edit tool: the `edits` argument was passed as a JSON-encoded STRING
@@ -147,9 +147,9 @@ run_scan() {
 # with no user-facing text. The intended file path is in the schema
 # validation's "Received arguments" block but the call never ran.
 write_session "edit-schema-missing-path" <<'JSONL'
-{"type":"message","message":{"role":"assistant","content":[{"type":"toolCall","id":"call_edit1","name":"edit","arguments":{"edits":[{"oldText":"weight=$(task_weight \"$PROMPT\")\nneed_capable=0\n[[ \"$weight\" == \"heavy\" ]] && need_capable=1\n\nseat=$(pick_seat \"\" \"\" \"$need_capable\" \"$tried_file\" || true)","newText":"diff=$(packet_difficulty \"$PROMPT\")\nneed_capable=0\n[[ \"$diff\" == \"heavy\" || \"$diff\" == \"keystone\" ]] && need_capable=1\n\nseat=$(pick_seat \"\" \"\" \"$need_capable\" \"$tried_file\" \"$diff\" || true)"}]}}]}}
-{"type":"message","message":{"role":"toolResult","toolCallId":"call_edit1","toolName":"edit","content":[{"type":"text","text":"Validation failed for tool \"edit\":\n  - path: must have required properties path\n\nReceived arguments:\n{\n  \"edits\": [\n    {\n      \"oldText\": \"weight=$(task_weight \\\"$PROMPT\\\")\\nneed_capable=0\\n[[ \\\"$weight\\\" == \\\"heavy\\\" ]] && need_capable=1\\n\\nseat=$(pick_seat \\\"\\\" \\\"\\\" \\\"$need_capable\\\" \\\"$tried_file\\\" || true)\",\n      \"newText\": \"diff=$(packet_difficulty \\\"$PROMPT\\\")\\nneed_capable=0\\n[[ \\\"$diff\\\" == \\\"heavy\\\" || \\\"$diff\\\" == \\\"keystone\\\" ]] && need_capable=1\\n\\nseat=$(pick_seat \\\"\\\" \\\"\\\" \\\"$need_capable\\\" \\\"$tried_file\\\" \\\"$diff\\\" || true)\"\n    }\n  ]\n}"}],"details":{},"isError":true}}
-{"type":"message","message":{"role":"assistant","content":[{"type":"toolCall","id":"call_sed1","name":"bash","arguments":{"command":"sed -i 's|weight=$(task_weight \"$PROMPT\")|diff=$(packet_difficulty \"$PROMPT\")|; s|[[ \"$weight\" == \"heavy\" ]] && need_capable=1|[[ \"$diff\" == \"heavy\" || \"$diff\" == \"keystone\" ]] && need_capable=1|; s|seat=$(pick_seat \"\" \"\" \"$need_capable\" \"$tried_file\" || true)|seat=$(pick_seat \"\" \"\" \"$need_capable\" \"$tried_file\" \"$diff\" || true)|' /tmp/fleet-ops/bin/agent-cron-run"}}]}}
+{"type":"message","message":{"role":"assistant","content":[{"type":"toolCall","id":"call_edit1","name":"edit","arguments":{"edits":[{"oldText":"weight=$(task_weight \"$PROMPT\")\nneed_capable=0\n[[ \"$weight\" == \"heavy\" ]] && need_capable=1\n\nseat=$(pick-seat \"\" \"\" \"$need_capable\" \"$tried_file\" || true)","newText":"diff=$(packet_difficulty \"$PROMPT\")\nneed_capable=0\n[[ \"$diff\" == \"heavy\" || \"$diff\" == \"keystone\" ]] && need_capable=1\n\nseat=$(pick-seat \"\" \"\" \"$need_capable\" \"$tried_file\" \"$diff\" || true)"}]}}]}}
+{"type":"message","message":{"role":"toolResult","toolCallId":"call_edit1","toolName":"edit","content":[{"type":"text","text":"Validation failed for tool \"edit\":\n  - path: must have required properties path\n\nReceived arguments:\n{\n  \"edits\": [\n    {\n      \"oldText\": \"weight=$(task_weight \\\"$PROMPT\\\")\\nneed_capable=0\\n[[ \\\"$weight\\\" == \\\"heavy\\\" ]] && need_capable=1\\n\\nseat=$(pick-seat \\\"\\\" \\\"\\\" \\\"$need_capable\\\" \\\"$tried_file\\\" || true)\",\n      \"newText\": \"diff=$(packet_difficulty \\\"$PROMPT\\\")\\nneed_capable=0\\n[[ \\\"$diff\\\" == \\\"heavy\\\" || \\\"$diff\\\" == \\\"keystone\\\" ]] && need_capable=1\\n\\nseat=$(pick-seat \\\"\\\" \\\"\\\" \\\"$need_capable\\\" \\\"$tried_file\\\" \\\"$diff\\\" || true)\"\n    }\n  ]\n}"}],"details":{},"isError":true}}
+{"type":"message","message":{"role":"assistant","content":[{"type":"toolCall","id":"call_sed1","name":"bash","arguments":{"command":"sed -i 's|weight=$(task_weight \"$PROMPT\")|diff=$(packet_difficulty \"$PROMPT\")|; s|[[ \"$weight\" == \"heavy\" ]] && need_capable=1|[[ \"$diff\" == \"heavy\" || \"$diff\" == \"keystone\" ]] && need_capable=1|; s|seat=$(pick-seat \"\" \"\" \"$need_capable\" \"$tried_file\" || true)|seat=$(pick-seat \"\" \"\" \"$need_capable\" \"$tried_file\" \"$diff\" || true)|' /tmp/fleet-ops/bin/agent-cron-run"}}]}}
 {"type":"message","message":{"role":"toolResult","toolCallId":"call_sed1","toolName":"bash","isError":false,"content":[{"type":"text","text":""}]}}
 JSONL
 
@@ -171,8 +171,8 @@ rm -f "$sessions/edit-schema-missing-path.jsonl"
 # `_text_chunks` change that starts collecting `thinking` fields still
 # cannot discharge this class unless FLAG_RE matches.
 write_session "edit-schema-thinking-only" <<'JSONL'
-{"type":"message","message":{"role":"assistant","content":[{"type":"toolCall","id":"call_edit2","name":"edit","arguments":{"edits":[{"oldText":"weight=$(task_weight \"$prompt_file\")\nneed_capable=0\n[[ \"$weight\" == \"heavy\" ]] && need_capable=1\n\nseat=$(pick_seat \"\" \"\" \"$need_capable\" || true)","newText":"diff=$(packet_difficulty \"$prompt_file\")\nneed_capable=0\n[[ \"$diff\" == \"heavy\" || \"$diff\" == \"keystone\" ]] && need_capable=1\n\nseat=$(pick_seat \"\" \"\" \"$need_capable\" \"\" \"$diff\" || true)"}]}}]}}
-{"type":"message","message":{"role":"toolResult","toolCallId":"call_edit2","toolName":"edit","content":[{"type":"text","text":"Validation failed for tool \"edit\":\n  - path: must have required properties path\n\nReceived arguments:\n{\n  \"edits\": [\n    {\n      \"oldText\": \"weight=$(task_weight \\\"$prompt_file\\\")\\nneed_capable=0\\n[[ \\\"$weight\\\" == \\\"heavy\\\" ]] && need_capable=1\\n\\nseat=$(pick_seat \\\"\\\" \\\"\\\" \\\"$need_capable\\\" || true)\",\n      \"newText\": \"diff=$(packet_difficulty \\\"$prompt_file\\\")\\nneed_capable=0\\n[[ \\\"$diff\\\" == \\\"heavy\\\" || \\\"$diff\\\" == \\\"keystone\\\" ]] && need_capable=1\\n\\nseat=$(pick_seat \\\"\\\" \\\"\\\" \\\"$need_capable\\\" \\\"\\\" \\\"$diff\\\" || true)\"\n    }\n  ]\n}"}],"details":{},"isError":true}}
+{"type":"message","message":{"role":"assistant","content":[{"type":"toolCall","id":"call_edit2","name":"edit","arguments":{"edits":[{"oldText":"weight=$(task_weight \"$prompt_file\")\nneed_capable=0\n[[ \"$weight\" == \"heavy\" ]] && need_capable=1\n\nseat=$(pick-seat \"\" \"\" \"$need_capable\" || true)","newText":"diff=$(packet_difficulty \"$prompt_file\")\nneed_capable=0\n[[ \"$diff\" == \"heavy\" || \"$diff\" == \"keystone\" ]] && need_capable=1\n\nseat=$(pick-seat \"\" \"\" \"$need_capable\" \"\" \"$diff\" || true)"}]}}]}}
+{"type":"message","message":{"role":"toolResult","toolCallId":"call_edit2","toolName":"edit","content":[{"type":"text","text":"Validation failed for tool \"edit\":\n  - path: must have required properties path\n\nReceived arguments:\n{\n  \"edits\": [\n    {\n      \"oldText\": \"weight=$(task_weight \\\"$prompt_file\\\")\\nneed_capable=0\\n[[ \\\"$weight\\\" == \\\"heavy\\\" ]] && need_capable=1\\n\\nseat=$(pick-seat \\\"\\\" \\\"\\\" \\\"$need_capable\\\" || true)\",\n      \"newText\": \"diff=$(packet_difficulty \\\"$prompt_file\\\")\\nneed_capable=0\\n[[ \\\"$diff\\\" == \\\"heavy\\\" || \\\"$diff\\\" == \\\"keystone\\\" ]] && need_capable=1\\n\\nseat=$(pick-seat \\\"\\\" \\\"\\\" \\\"$need_capable\\\" \\\"\\\" \\\"$diff\\\" || true)\"\n    }\n  ]\n}"}],"details":{},"isError":true}}
 {"type":"message","message":{"role":"assistant","content":[{"type":"thinking","thinking":"The edit tool requires the path field. I omitted it. Let me retry with the path included."},{"type":"toolCall","id":"call_read2","name":"read","arguments":{"path":"/tmp/fleet-ops/bin/pi-scout-run","offset":50,"limit":15}}]}}
 JSONL
 
@@ -244,11 +244,11 @@ grep -q 'Validation failed for tool' "$lib" \
   || fail "lib/failed-command-flagged.py docstring must name the live 'Validation failed for tool' heading"
 ok "lib/failed-command-flagged.py docstring cites fleet-ops#1286 and the schema-validation wording"
 
-# --- 7. seat-lib.test.sh hosts this file (CI cannot gain a P14 line) -------
+# --- 7. seat.lib.test.sh hosts this file (CI cannot gain a P14 line) -------
 grep -Fq 'bash "$here/fleet-failed-command-edit-schema-validation.test.sh"' \
-  "$here/seat-lib.test.sh" \
-  || fail "seat-lib.test.sh must nest this file (CI cannot gain a new workflow line)"
-ok "seat-lib.test.sh hosts this file"
+  "$here/seat.lib.test.sh" \
+  || fail "seat.lib.test.sh must nest this file (CI cannot gain a new workflow line)"
+ok "seat.lib.test.sh hosts this file"
 
 # --- 8. live #4991 shape: edits passed as a JSON-encoded string -----------
 # fleet-ops#4991: the worker called `edit` with the whole `edits` array

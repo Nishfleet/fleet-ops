@@ -119,7 +119,7 @@ work_supply_hours() {
 work_supply_label_budget() {
     local repo="$1" drain budget
     local cap=40 floor=8 mult=4
-    # repo_is_product is defined in lib/seat-lib.sh (sourced by pi-scout-run
+    # repo_is_product is defined in lib/litellm-seat.sh (sourced by pi-scout-run
     # and the intake tick). When it is absent (standalone work-supply use)
     # fail closed to the floor so a non-product budget is never inflated.
     if ! declare -F repo_is_product >/dev/null 2>&1; then

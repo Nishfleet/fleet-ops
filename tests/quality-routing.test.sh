@@ -5,15 +5,15 @@
 #   (b) fixture lane over the revert-rate cut is skipped for heavy work
 #       and still picked for light work
 #   (c) the same lane is restored for heavy work once metrics recover
-#   missing snapshot does not change pick_seat (do not brick the ladder)
-#   contracts: pick_seat hook + MANIFEST + nested CI host
+#   missing snapshot does not change pick-seat (do not brick the ladder)
+#   contracts: pick-seat hook + MANIFEST + nested CI host
 #
 # Offline. Uses a scratch models/caps map so live seat-caps cannot leak.
 
 set -euo pipefail
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 repo_root="$(cd "$here/.." && pwd)"
-lib="$repo_root/lib/seat-lib.sh"
+lib="$repo_root/lib/litellm-seat.sh"
 py="$repo_root/lib/quality-routing.py"
 thresholds="$repo_root/config/quality-routing.json"
 
@@ -68,7 +68,7 @@ pick() {
     export PI_PACKET_STATE="$scratch/state-$capable-$$"
     export PI_SEAT_HEALTH_LEDGER_DIR="$scratch/ledger"
     mkdir -p "$PI_PACKET_STATE" "$PI_SEAT_HEALTH_LEDGER_DIR"
-    bash -c 'source "$0"; load_seat_caps; pick_seat "" "" "'"$capable"'"' "$lib" 2>/dev/null
+    bash -c 'source "$0"; load_seat_caps; pick-seat "" "" "'"$capable"'"' "$lib" 2>/dev/null
 }
 
 # --- missing snapshot: no cuts ---------------------------------------------
@@ -139,13 +139,13 @@ ok "(c) recovery drill: cap/heavy routing restores on measured improvement"
 
 # --- contracts -------------------------------------------------------------
 grep -q 'QUALITY_HEAVY_BAN' "$lib" \
-  || fail "seat-lib.sh must honour QUALITY_HEAVY_BAN in pick_seat"
+  || fail "seatlib.sh must honour QUALITY_HEAVY_BAN in pick-seat"
 grep -q 'bin/fleet-role-gate-audit' "$repo_root/MANIFEST" \
   || fail "MANIFEST must install fleet-role-gate-audit"
 grep -q 'config/quality-routing.json' "$repo_root/MANIFEST" \
   || fail "MANIFEST must install quality-routing.json"
-grep -Fq 'bash "$here/quality-routing.test.sh"' "$here/seat-lib.test.sh" \
-  || fail "seat-lib.test.sh must nest this file (CI cannot gain a new workflow line)"
-ok "contracts: pick_seat hook, MANIFEST, nested CI host"
+grep -Fq 'bash "$here/quality-routing.test.sh"' "$here/seat.lib.test.sh" \
+  || fail "seat.lib.test.sh must nest this file (CI cannot gain a new workflow line)"
+ok "contracts: pick-seat hook, MANIFEST, nested CI host"
 
 ok "quality-routing: missing-snapshot, regression-cut, recovery"

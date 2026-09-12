@@ -16,7 +16,7 @@
 set -euo pipefail
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 repo_root="$(cd "$here/.." && pwd)"
-lib="$repo_root/lib/seat-lib.sh"
+lib="$repo_root/lib/litellm-seat.sh"
 
 fail() { echo "FAIL: $*" >&2; exit 1; }
 ok()   { echo "OK: $*"; }
@@ -120,17 +120,17 @@ set -e
 [[ "$rc" == "1" ]] || fail "scaled: seat_usable must rc=1 (unusable) while the scaled hang bench is fresh, got rc=$rc"
 ok "seat_usable rejects devin/glm-5-2 while the scaled bench holds"
 
-# --- case 3: pick_seat must not re-offer it -------------------------------
+# --- case 3: pick-seat must not re-offer it -------------------------------
 set +e
 picked=$(SEAT_CAPS_JSON="$scratch/seat-caps.json" \
     PI_SEAT_HEALTH_LEDGER_DIR="$ledger" \
     PI_PACKET_STATE="$scratch/state-pick" \
-    bash -c 'source "$0"; load_seat_caps; pick_seat "" "" 0' "$lib" 2>/dev/null)
+    bash -c 'source "$0"; load_seat_caps; pick-seat "" "" 0' "$lib" 2>/dev/null)
 set -e
 if [[ "$picked" == *"devin"* && "$picked" == *"glm-5-2"* ]]; then
-    fail "scaled: pick_seat re-offered the benched seat within its observed hang window (got '$picked') — this is the #4602 slot burn"
+    fail "scaled: pick-seat re-offered the benched seat within its observed hang window (got '$picked') — this is the #4602 slot burn"
 fi
-ok "pick_seat does not re-offer devin/glm-5-2 inside the scaled window"
+ok "pick-seat does not re-offer devin/glm-5-2 inside the scaled window"
 
 # --- case 4: no measurement -> flat 180s default preserved -----------------
 bench_call 0 "state-flat" || fail "flat: mark_seat_hang_bench rc!=0"

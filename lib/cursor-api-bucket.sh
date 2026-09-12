@@ -2,7 +2,7 @@
 # cursor-api-bucket.sh — Cursor Ultra included-API-bucket spend figure
 # (fleet-ops#4566 / #4621).
 #
-# Sourced by measure.sh, bin/fleet-prepaid-util-canary, and lib/seat-lib.sh
+# Sourced by measure.sh, bin/fleet-prepaid-util-canary, and lib/litellm-seat.sh
 # so the judge-facing `usd_today` / `cursor_today` number is the trailing-24h
 # delta of Cursor's own GetCurrentPeriodUsage included-API bucket — never the
 # token-derived 0.000000 that cursor-cli sessions write (no usage tokens, no
@@ -94,7 +94,7 @@ Usage:
   bash lib/cursor-api-bucket.sh --cycle   print cycle-to-date api_bucket_used_usd
   bash lib/cursor-api-bucket.sh --help
 
-Sourced by measure.sh, bin/fleet-prepaid-util-canary, and lib/seat-lib.sh.
+Sourced by measure.sh, bin/fleet-prepaid-util-canary, and the retired routing lib.
 The figure is Cursor GetCurrentPeriodUsage planUsage.apiPercentUsed x (limit/100),
 written by fleet-prepaid-util-canary into prepaid-spend/cursor.json. Token-derived
 usd_today for cursor is structurally 0 and must not be reported as fact

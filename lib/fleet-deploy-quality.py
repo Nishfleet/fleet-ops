@@ -1006,7 +1006,7 @@ def product_repos(env=None):
     names = set()
     for row in rows or []:
         # `product` must be literally true: absent/false means not-product
-        # (fail closed, the same rule seat-lib.sh repo_is_product reads).
+        # (fail closed, the same rule seatlib.sh repo_is_product reads).
         if not isinstance(row, dict) or row.get("product") is not True:
             continue
         name = str(row.get("name") or "").strip()

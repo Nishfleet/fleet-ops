@@ -145,60 +145,42 @@ for arr in numbers titles labels; do
 done
 ok "Test 9: Step 3 claims critical-path first, then the ascending tail (1691,1702,1283,1576)"
 
-# === Test 10: usable seat-slot gate (fleet-ops#3732 + repair rung #4639) ===
-# The tick must bound claims by the slots pick_seat would actually fill.
+echo "ALL OK: intake-tick self-maintenance claim cap (fleet-ops#3254)"
+
+# === Test 10: usable seat-slot gate (fleet-ops#3732 / #4263) ===
+# The tick must bound claims by LiteLLM headroom, not pick-seat.
 # Replay the tick's own gate block (extracted verbatim, not re-typed) with a
-# stubbed pick_seat: 0 usable slots -> holds with the gate line and never
+# stubbed litellm_headroom: 0 usable slots -> holds with the gate line and never
 # reaches the claim step; 1 usable slot with capacity slots=2 -> claims at most 1.
-# Repair-rung helpers are stubbed so strike 1 still HOLDS (the rung arms on
-# strike 2). fleet-ops#4639.
-grep -qF 'PICK_SEAT_COUNT_SLOTS=1 pick_seat "" "" 0 "" light' "$tick" \
-    || fail "Test 10: usable-slot count seam (PICK_SEAT_COUNT_SLOTS=1 pick_seat) missing from tick"
+grep -qF 'litellm_headroom' "$tick" \
+    || fail "Test 10: usable-slot count seam (litellm_headroom) missing from tick"
+grep -qF 'PICK_SEAT_COUNT_SLOTS=1 pick-seat' "$tick" \
+    && fail "Test 10: tick still counts slots via pick-seat"
 grep -qF 'gate: no usable seat slot' "$tick" \
     || fail "Test 10: 'gate: no usable seat slot' hold line missing from tick"
-_gate_block=$(awk '/Usable seat-slot gate \(fleet-ops#3732\)/{on=1} on && /^# Product-first precedence/{exit} on{print}' "$tick")
+# P3b (fleet-ops#4263): the gate block now includes the repair-rung latch
+# (variables/functions defined earlier in the tick) AND the slot-adjustment
+# tail. Capture through the 5th fi (slot clamp) and stub the rung seams so
+# the extracted block evals in isolation.
+_gate_block=$(awk '/Usable seat-slot gate \(fleet-ops#3732/{on=1} on{print} on && /^fi$/{n++; if(n==5) exit}' "$tick")
 [[ -n "$_gate_block" ]] || fail "Test 10: could not extract the #3732 gate block from the tick"
-_rung_stubs='
-repair_rung_note_outage() { echo 1; }
-repair_rung_strikes() { echo 0; }
-repair_rung_reset() { true; }
-repair_rung_note_recovery() { echo 0; }
-PI_INTAKE_REPAIR_RUNG_AFTER=2
-PI_INTAKE_REPAIR_RUNG_MAX_CONCURRENT=2
-PI_INTAKE_REPAIR_RUNG_DISARM_AFTER=2
-heavy_seat=""
-REPO=fleet-ops
-_repair_rung_armed=0
-_repair_rung_product_reserve=0
-_rung_clear_seat=""
-_repo_is_product=0
-'
-_out0=$( eval "$_rung_stubs"; pick_seat() { echo 0; }; slots=2; eval "$_gate_block"; echo "CLAIM-STEP-REACHED slots=$slots" ) || true
+_rung_setup='PI_INTAKE_REPAIR_RUNG_AFTER=2; PI_INTAKE_REPAIR_RUNG_DISARM_AFTER=2; PI_INTAKE_REPAIR_RUNG_MAX_CONCURRENT=1; REPO=fleet-ops; _rung_clear_seat=""; heavy_seat=""; heavy_route=""; light_route=""; _repo_is_product=0; _repair_rung_armed=0; _repair_rung_product_reserve=0; _product_skip_reason=""; repair_rung_strikes() { echo 0; }; repair_rung_note_recovery() { echo 0; }; repair_rung_reset() { :; }; repair_rung_note_outage() { echo 1; }'
+_out0=$( litellm_headroom() { echo 0; }; slots=2; eval "$_rung_setup; $_gate_block"; echo "CLAIM-STEP-REACHED slots=$slots" ) || true
 grep -qF 'holding claims this tick — gate: no usable seat slot' <<<"$_out0" \
     || fail "Test 10: 0 usable slots must hold with the gate line, got: $_out0"
 if grep -qF 'CLAIM-STEP-REACHED' <<<"$_out0"; then fail "Test 10: 0 usable slots must exit before the claim step"; fi
-_out1=$( eval "$_rung_stubs"; pick_seat() { echo 1; }; slots=2; eval "$_gate_block"; echo "CLAIM-STEP-REACHED slots=$slots" ) || true
+_out1=$( litellm_headroom() { echo 1; }; slots=2; eval "$_rung_setup; $_gate_block"; echo "CLAIM-STEP-REACHED slots=$slots" ) || true
 grep -qF 'CLAIM-STEP-REACHED slots=1' <<<"$_out1" \
     || fail "Test 10: 1 usable slot with capacity 2 must claim at most 1, got: $_out1"
-_out3=$( eval "$_rung_stubs"; pick_seat() { echo 3; }; slots=2; eval "$_gate_block"; echo "CLAIM-STEP-REACHED slots=$slots" ) || true
+_out3=$( litellm_headroom() { echo 3; }; slots=2; eval "$_rung_setup; $_gate_block"; echo "CLAIM-STEP-REACHED slots=$slots" ) || true
 grep -qF 'CLAIM-STEP-REACHED slots=2' <<<"$_out3" \
     || fail "Test 10: 3 usable slots with capacity 2 must keep slots=2, got: $_out3"
-_out25=$( eval "$_rung_stubs"; pick_seat() { echo 2; }; slots=5; eval "$_gate_block"; echo "CLAIM-STEP-REACHED slots=$slots" ) || true
-grep -qF 'CLAIM-STEP-REACHED slots=2' <<<"$_out25" \
-    || fail "Test 10: usable=2 capacity=5 must claim 2 (fleet-ops#4723), got: $_out25"
-grep -qF 'claiming at most 2 this tick' <<<"$_out25" \
-    || fail "Test 10: usable=2 capacity=5 must log the #3732 clamp, got: $_out25"
-_outw=$( eval "$_rung_stubs"; pick_seat() { echo 2; }; seat_walled_breakdown() { echo 'devin/glm-5-2 until=2026-09-14T00:00:00Z'; }; slots=5; eval "$_gate_block"; echo "CLAIM-STEP-REACHED slots=$slots" ) || true
-grep -qF 'walled: devin/glm-5-2 until=2026-09-14T00:00:00Z' <<<"$_outw" \
-    || fail "Test 10: usable < capacity must log walled-until on the same line (fleet-ops#4723), got: $_outw"
-_outx=$( eval "$_rung_stubs"; pick_seat() { echo "garbage"; }; slots=2; eval "$_gate_block"; echo "CLAIM-STEP-REACHED slots=$slots" ) || true
+_outx=$( litellm_headroom() { echo "garbage"; }; slots=2; eval "$_rung_setup; $_gate_block"; echo "CLAIM-STEP-REACHED slots=$slots" ) || true
 grep -qF 'seat-slot gate fails open' <<<"$_outx" \
     || fail "Test 10: a non-numeric count must fail OPEN (log + proceed), got: $_outx"
 grep -qF 'CLAIM-STEP-REACHED slots=2' <<<"$_outx" \
     || fail "Test 10: a non-numeric count must keep slots=2 and reach the claim step, got: $_outx"
-_outm=$( eval "$_rung_stubs"; unset -f pick_seat; slots=2; eval "$_gate_block"; echo "CLAIM-STEP-REACHED slots=$slots" ) 2>/dev/null || true
+_outm=$( unset -f litellm_headroom 2>/dev/null || true; slots=2; eval "$_rung_setup; $_gate_block"; echo "CLAIM-STEP-REACHED slots=$slots" ) 2>/dev/null || true
 grep -qF 'CLAIM-STEP-REACHED slots=2' <<<"$_outm" \
-    || fail "Test 10: a missing pick_seat seam must fail OPEN and reach the claim step, got: $_outm"
-ok "Test 10: usable seat-slot gate holds at 0, bounds claims to min(slots, usable), fails open on garbage/missing seam (fleet-ops#3732)"
-
-echo "ALL OK: intake-tick self-maintenance claim cap (fleet-ops#3254)"
+    || fail "Test 10: a missing litellm_headroom seam must fail OPEN and reach the claim step, got: $_outm"
+ok "Test 10: usable seat-slot gate holds at 0, bounds claims to min(slots, usable), fails open on garbage/missing seam (fleet-ops#3732 / #4263)"

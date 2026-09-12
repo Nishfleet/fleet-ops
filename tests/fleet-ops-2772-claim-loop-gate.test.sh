@@ -6,7 +6,7 @@
 #
 # Background (the incident this pins): fleet-ops issue #2672 was claimed 11
 # times in 12h (4x in the 2h to 2026-09-02T03:45Z) with dispatches_last_2h=0.
-# Root cause: a seat-selection storm made pick_seat return NO USABLE SEAT
+# Root cause: a seat-selection storm made pick-seat return NO USABLE SEAT
 # (worker exits 1 in seconds -> OnFailure reap -> re-claim), plus worker
 # sessions that exited 0 WITHOUT opening a PR. The #2462 reclaim-count cap
 # (MAX_RECLAIMS) never fired because pi-issue-run RESET the counter on any

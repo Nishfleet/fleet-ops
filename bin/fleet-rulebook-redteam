@@ -54,8 +54,8 @@ here="$(cd "$(dirname "$(readlink -f "$0")")" && pwd)"
 repo_fallback="$(cd "$here/.." && pwd)"
 [ -f "$PROMPT" ] || PROMPT="$repo_fallback/prompts/rulebook-redteam.md"
 
-SEAT_LIB="${RULEBOOK_SEAT_LIB:-$HOME/.local/lib/pi-packet/seat-lib.sh}"
-[ -f "$SEAT_LIB" ] || SEAT_LIB="$repo_fallback/lib/seat-lib.sh"
+SEAT_LIB="${RULEBOOK_SEAT_LIB:-$HOME/.local/lib/pi-packet/litellm-seat.sh}"
+[ -f "$SEAT_LIB" ] || SEAT_LIB="$repo_fallback/lib/litellm-seat.sh"
 
 log() {
     printf '[%s] [fleet-rulebook-redteam] %s\n' \
@@ -223,8 +223,8 @@ else
         source "$SEAT_LIB"
     fi
     seat=""
-    if command -v pick_seat >/dev/null 2>&1; then
-        seat=$(pick_seat "" "" 1 "" || true)
+    if declare -F litellm_seat >/dev/null 2>&1; then
+        seat=$(litellm_seat "senior" || true)
     fi
     if [ -z "${seat:-}" ]; then
         log "FATAL: no capable seat available"

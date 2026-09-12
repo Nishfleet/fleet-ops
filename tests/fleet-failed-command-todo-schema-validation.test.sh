@@ -62,7 +62,7 @@
 #   4. same shape plus a later user-facing flag -> clean.
 #   5. lib/failed-command-flagged.py cites fleet-ops#5011 and the
 #      todo schema-validation wording (detector-side lock).
-#   6. seat-lib.test.sh hosts this file (CI cannot gain a P14 line).
+#   6. seat.lib.test.sh hosts this file (CI cannot gain a P14 line).
 
 set -euo pipefail
 
@@ -182,10 +182,10 @@ grep -q 'Validation failed for tool "todo"' "$lib" \
   || fail "lib/failed-command-flagged.py must name the live 'Validation failed for tool \"todo\"' heading so workers flag it"
 ok "lib/failed-command-flagged.py cites fleet-ops#5011 and the todo schema-validation wording"
 
-# --- 6. seat-lib.test.sh hosts this file (CI cannot gain a P14 line) -------
+# --- 6. seat.lib.test.sh hosts this file (CI cannot gain a P14 line) -------
 grep -Fq 'bash "$here/fleet-failed-command-todo-schema-validation.test.sh"' \
-  "$here/seat-lib.test.sh" \
-  || fail "seat-lib.test.sh must nest this file (CI cannot gain a new workflow line)"
-ok "seat-lib.test.sh hosts this file"
+  "$here/seat.lib.test.sh" \
+  || fail "seat.lib.test.sh must nest this file (CI cannot gain a new workflow line)"
+ok "seat.lib.test.sh hosts this file"
 
 echo "OK: fleet-failed-command-todo-schema-validation: live #5011 todo schema-validation drills"

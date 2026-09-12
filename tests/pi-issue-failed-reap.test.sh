@@ -156,7 +156,7 @@ chmod +x "$gh_bin/gh"
 
 : >"$triage"
 write_fake inactive 0
-# fleet-ops#1227: isolate the seat ledger. The reaper sources seat-lib and
+# fleet-ops#1227: isolate the seat ledger. The reaper sources seatlib and
 # keeps tried-seats when seat_usable says the last seat is benched
 # (TRIED-SEATS-KEPT). Point SEAT_LIB at the repo copy and
 # PI_SEAT_HEALTH_LEDGER_DIR at an empty scratch ledger so a live VPS bench
@@ -168,7 +168,7 @@ mkdir -p "$ledger_reset"
 set +e
 out="$(PATH="$gh_bin:$PATH" SYSTEMCTL="$fake/systemctl" TRIAGE_FILE="$triage" \
     PI_PACKET_STATE="$state" \
-    SEAT_LIB="$repo_root/lib/seat-lib.sh" \
+    SEAT_LIB="$repo_root/lib/litellm-seat.sh" \
     PI_SEAT_HEALTH_LEDGER_DIR="$ledger_reset" \
     PI_SEAT_LIB_CHECK_SYSTEMD=0 \
     "$bin" fleet-ops-381 2>&1)"
@@ -199,7 +199,7 @@ write_fake inactive 0
 set +e
 out="$(PATH="$gh_bin:$PATH" SYSTEMCTL="$fake/systemctl" TRIAGE_FILE="$triage" \
     PI_PACKET_STATE="$state_keep" \
-    SEAT_LIB="$repo_root/lib/seat-lib.sh" \
+    SEAT_LIB="$repo_root/lib/litellm-seat.sh" \
     PI_SEAT_HEALTH_LEDGER_DIR="$ledger_keep" \
     PI_SEAT_LIB_CHECK_SYSTEMD=0 \
     "$bin" fleet-ops-516 2>&1)"
@@ -461,7 +461,7 @@ write_fake inactive 0
 set +e
 out="$(PATH="$gh_bin:$PATH" SYSTEMCTL="$fake/systemctl" TRIAGE_FILE="$triage" \
     PI_PACKET_STATE="$state_e" \
-    SEAT_LIB="$repo_root/lib/seat-lib.sh" \
+    SEAT_LIB="$repo_root/lib/litellm-seat.sh" \
     PI_SEAT_HEALTH_LEDGER_DIR="$ledger_e" \
     PI_SEAT_LIB_CHECK_SYSTEMD=0 \
     "$bin" fleet-ops-3254 2>&1)"
@@ -528,7 +528,7 @@ write_fake inactive 0
 set +e
 out="$(PATH="$gh_bin:$PATH" SYSTEMCTL="$fake/systemctl" TRIAGE_FILE="$triage" \
     PI_PACKET_STATE="$state_f" \
-    SEAT_LIB="$repo_root/lib/seat-lib.sh" \
+    SEAT_LIB="$repo_root/lib/litellm-seat.sh" \
     PI_SEAT_HEALTH_LEDGER_DIR="$ledger_f" \
     PI_SEAT_LIB_CHECK_SYSTEMD=0 \
     "$bin" fleet-ops-3763 2>&1)"
@@ -597,7 +597,7 @@ write_fake inactive 0
 set +e
 out="$(PATH="$gh_bin:$PATH" SYSTEMCTL="$fake/systemctl" TRIAGE_FILE="$triage" \
     PI_PACKET_STATE="$state_f2" \
-    SEAT_LIB="$repo_root/lib/seat-lib.sh" \
+    SEAT_LIB="$repo_root/lib/litellm-seat.sh" \
     PI_SEAT_HEALTH_LEDGER_DIR="$ledger_f2" \
     PI_SEAT_LIB_CHECK_SYSTEMD=0 \
     "$bin" fleet-ops-3764 2>&1)"
@@ -674,7 +674,7 @@ write_fake inactive 0
 set +e
 out="$(PATH="$gh_bin:$PATH" SYSTEMCTL="$fake/systemctl" TRIAGE_FILE="$triage" \
     PI_PACKET_STATE="$state_g" \
-    SEAT_LIB="$repo_root/lib/seat-lib.sh" \
+    SEAT_LIB="$repo_root/lib/litellm-seat.sh" \
     PI_SEAT_HEALTH_LEDGER_DIR="$ledger_g" \
     PI_SEAT_LIB_CHECK_SYSTEMD=0 \
     GH_WRITE_LOG="$write_log_g" \
@@ -749,7 +749,7 @@ write_fake inactive 0
 set +e
 out="$(PATH="$gh_bin:$PATH" SYSTEMCTL="$fake/systemctl" TRIAGE_FILE="$triage" \
     PI_PACKET_STATE="$state_h" \
-    SEAT_LIB="$repo_root/lib/seat-lib.sh" \
+    SEAT_LIB="$repo_root/lib/litellm-seat.sh" \
     PI_SEAT_HEALTH_LEDGER_DIR="$ledger_h" \
     PI_SEAT_LIB_CHECK_SYSTEMD=0 \
     "$bin" fleet-ops-7002 2>&1)"

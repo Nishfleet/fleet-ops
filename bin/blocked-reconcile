@@ -854,48 +854,21 @@ count_recent_infra_releases() {
     echo "$count"
 }
 
-# fleet-ops#3310/#3527: dry-run pick_seat with a temp state dir so no real
-# selection is recorded; verify the returned seat is actually healthy and
-# capable for the issue's difficulty. Prints "provider/model" and returns 0
-# if a healthy capable seat exists, 1 otherwise.
-# shellcheck disable=SC2030,SC2031
-# The two $(...) subshells below deliberately export PI_PACKET_STATE/HOME into
-# a throwaway scope so seat-lib writes land in a temp dir, never the live state.
+# fleet-ops#4263 P3b: proxy group selection. Heavy issues use worker-capable.
 healthy_capable_seat_for_issue() {
     local difficulty="$1"
-    local need_capable=0
-    [[ "$difficulty" == "heavy" || "$difficulty" == "keystone" ]] && need_capable=1
-    local _state _out _p _m _seat
-    _state=$(mktemp -d)
-    mkdir -p "$_state/active-seats"
-    # Re-use live active-seats so the cap check is realistic; all other writes
-    # (prepaid-usage, seat-selection.jsonl, keystone-events) stay in the temp.
-    if [[ -d "$PI_PACKET_STATE/active-seats" ]]; then
-        cp -R "$PI_PACKET_STATE/active-seats/"* "$_state/active-seats/" 2>/dev/null || true
-    fi
+    local group="worker-cheap"
+    [[ "$difficulty" == "heavy" || "$difficulty" == "keystone" ]] && group="worker-capable"
+    local _out _p _m
     _out=$(
-        export PI_PACKET_STATE="$_state"
-        export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
-        export HOME="${HOME:-/home/nish}"
-        source "$REPO_ROOT/lib/seat-lib.sh"
-        pick_seat "" "" "$need_capable" "" "$difficulty" public 2>/dev/null || true
+        source "$REPO_ROOT/lib/litellm-seat.sh"
+        litellm_seat "$group"
     )
-    rm -rf "$_state"
     [[ -n "$_out" ]] || return 1
     _p="${_out%%$'\t'*}"
     _m="${_out#*$'\t'}"
     [[ -n "$_p" && -n "$_m" ]] || return 1
-    _state=$(mktemp -d)
-    _seat=$(
-        export PI_PACKET_STATE="$_state"
-        source "$REPO_ROOT/lib/seat-lib.sh"
-        if seat_usable "$_p" "$_m" >/dev/null 2>&1; then
-            printf '%s/%s' "$_p" "$_m"
-        fi
-    )
-    rm -rf "$_state"
-    [[ -n "$_seat" ]] || return 1
-    printf '%s\n' "$_seat"
+    printf '%s/%s\n' "$_p" "$_m"
 }
 
 # fleet-ops#4626: named smokes for date-gate re-open-<ISO>[-<smoke-name>].
@@ -939,11 +912,11 @@ run_named_smoke() {
 # usable_at=<ISO> when the ledger has one so the caller can re-park.
 # shellcheck disable=SC2030,SC2031
 # The subshell below deliberately exports PI_PACKET_STATE/HOME into a
-# throwaway scope so seat-lib writes land in a temp dir, never the live state.
+# throwaway scope so seat-ledger writes land in a temp dir, never the live state.
 run_alibaba_smoke_ok() {
     local timeout_s
     timeout_s="${BLOCKED_RECONCILE_SMOKE_TIMEOUT_S:-60}"
-    # Subshell so sourcing seat-lib cannot leak into the sweep. No `local`
+    # Subshell so sourcing litellm-seat cannot leak into the sweep. No `local`
     # inside the subshell (bash rejects it).
     (
         p="alibaba-coding"
@@ -953,7 +926,7 @@ run_alibaba_smoke_ok() {
         export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
         export PI_PACKET_STATE="$_state"
         # shellcheck source=/dev/null
-        source "$REPO_ROOT/lib/seat-lib.sh"
+        source "$REPO_ROOT/lib/litellm-seat.sh"
         ledger=$(seat_ledger_path "$p" "$m")
         usable=""
         if [ -f "$ledger" ]; then

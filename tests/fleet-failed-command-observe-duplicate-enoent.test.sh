@@ -32,7 +32,7 @@
 # This file locks the leftover-duplicate DRAIN for the read-ENOENT pile
 # so a future observe-to-close refactor cannot resolve only issue 0 of
 # the 01a03e61 pile, and so the citation chain (worker.md + detector
-# docstring + seat-lib.test.sh host) for #972 and #967 is verified.
+# docstring + seat.lib.test.sh host) for #972 and #967 is verified.
 #
 # Live session: 2026-08-26T14-02-29-714Z_01a03e61-27d2-7c3f-9101-da19c90f6ba5.jsonl
 # Live signal:  failed-command-flagged/2026-08-26t14-02-29-714z-01a03e61-27d2-7c3f-9101-da19c90f6ba5
@@ -51,7 +51,7 @@
 #      and #977 (the 01a03e61 leftover-duplicate pile).
 #   5. detector-side citation lock: lib/failed-command-flagged.py
 #      docstring cites #972, #967 and #977.
-#   6. CI host: seat-lib.test.sh nests this file so the drain
+#   6. CI host: seat.lib.test.sh nests this file so the drain
 #      drill cannot be skipped by a fresh CI line.
 
 set -euo pipefail
@@ -358,14 +358,14 @@ grep -q '#967, #977' "$lib" \
   || fail "lib/failed-command-flagged.py docstring must cite #977 next to #967"
 ok "lib/failed-command-flagged.py docstring cites #977"
 
-# --- 6. CI host: seat-lib.test.sh nests this file -------------------------
+# --- 6. CI host: seat.lib.test.sh nests this file -------------------------
 # A fresh PR cannot add a workflow line on this repo (worker token has
 # no Workflows permission). The drain drill has to run through the
-# nested seat-lib host so removing the test file (or moving the
-# citation check out) is caught by the seat-lib listing test.
+# nested seatlib host so removing the test file (or moving the
+# citation check out) is caught by the seatlib listing test.
 grep -F -q 'fleet-failed-command-observe-duplicate-enoent.test.sh' \
-  "$here/seat-lib.test.sh" \
-  || fail "seat-lib.test.sh must nest this file (CI cannot gain a new workflow line)"
-ok "seat-lib.test.sh hosts this file"
+  "$here/seat.lib.test.sh" \
+  || fail "seat.lib.test.sh must nest this file (CI cannot gain a new workflow line)"
+ok "seat.lib.test.sh hosts this file"
 
 echo "OK: fleet-failed-command-observe-duplicate-enoent: live #972 / #967 / #977 leftover-duplicate drain"

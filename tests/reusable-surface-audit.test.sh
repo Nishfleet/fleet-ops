@@ -156,15 +156,15 @@ PY
 ok "example surface-audit.json validates against the schema"
 
 # CI host lock (fleet-ops#497). Worker must not add a verify-command line.
-# This test stays listed in ci.yml OR invoked from seat-lib.test.sh.
+# This test stays listed in ci.yml OR invoked from seat.lib.test.sh.
 ci_yml="$repo_root/.github/workflows/ci.yml"
 listed=0
 hosted=0
 grep -Fq 'bash tests/reusable-surface-audit.test.sh' "$ci_yml" && listed=1 || true
-grep -Fq 'bash "$here/reusable-surface-audit.test.sh"' "$here/seat-lib.test.sh" && hosted=1 || true
+grep -Fq 'bash "$here/reusable-surface-audit.test.sh"' "$here/seat.lib.test.sh" && hosted=1 || true
 if [[ "$listed" -eq 0 && "$hosted" -eq 0 ]]; then
-  fail "reusable-surface-audit.test.sh has no CI host (fleet-ops#497): list it in ci.yml or invoke it from seat-lib.test.sh"
+  fail "reusable-surface-audit.test.sh has no CI host (fleet-ops#497): list it in ci.yml or invoke it from seat.lib.test.sh"
 fi
-ok "CI host exists (ci.yml listed=$listed seat-lib hosted=$hosted)"
+ok "CI host exists (ci.yml listed=$listed seatlib hosted=$hosted)"
 
 echo "OK: reusable surface-audit workflow is shape-locked"

@@ -153,18 +153,20 @@ esac
 FAKE_GH
 chmod +x "$scratch/fakebin/gh"
 
-# Fake seat-lib: the real lib/seat-lib.sh reads ~/.pi/agent/models.json and
+# Fake seatlib: the real lib/litellm-seat.sh reads ~/.pi/agent/models.json and
 # ~/.local/state/pi-packet/seat-caps.json to pick a seat. Those exist on
 # Nish's VPS (so the test passed locally) but NOT on a GitHub Actions hosted
-# runner, where pick_seat returned empty and the bin exited 1 at the
+# runner, where pick-seat returned empty and the bin exited 1 at the
 # "no capable seat" guard — the fleet-ops#304 failure. Seat selection itself
-# is covered by seat-lib.test.sh; this test owns the audit harness mechanics
-# (panel, filing, dedupe, deliberate-state loud, stamp), so pick_seat is
+# is covered by seat.lib.test.sh; this test owns the audit harness mechanics
+# (panel, filing, dedupe, deliberate-state loud, stamp), so pick-seat is
 # stubbed to a deterministic seat, matching the fake-pi/fake-gh pattern.
-cat > "$scratch/seat-lib-fake.sh" <<'FAKE_SEAT_LIB'
+cat > "$scratch/seatlib-fake.sh" <<'FAKE_SEAT_LIB'
 # shellcheck shell=bash
-pick_seat() {
-    # Args: fail_p fail_m need_capable tried_file — all ignored for the stub.
+load_seat_caps() { return 0; }
+find_senior_seat() { printf 'fakeprovider\tfakemodel'; }
+litellm_seat() { printf 'fakeprovider\tfakemodel'; }
+litellm_seat() {
     printf 'fakeprovider\tfakemodel'
 }
 FAKE_SEAT_LIB
@@ -233,7 +235,7 @@ PATH="$scratch/fakebin:$PATH" \
   AUDIT_PROMPT="$repo_root/prompts/blind-audit.md" \
   AUDIT_DELIBERATE_STATES="$scratch/deliberate-states.md" \
   AUDIT_PANEL_BIN="$repo_root/bin/fleet-blind-audit-panel" \
-  AUDIT_SEAT_LIB="$scratch/seat-lib-fake.sh" \
+  AUDIT_SEAT_LIB="$scratch/seatlib-fake.sh" \
   AUDIT_PACKET_ASSEMBLY_LIB="$repo_root/lib/packet-assembly.sh" \
   AUDIT_PLAN_FILE="$plan" \
   AUDIT_FAKE_NOW="2026-08-26T06:20:00Z" \

@@ -6,7 +6,7 @@
 # is the issue's required new test: fails before the latch fix, passes after.
 #
 # Accept:
-#   1. Arm, then pick_seat returns a seat for 2 ticks (COUNT stays 0) ->
+#   1. Arm, then pick-seat returns a seat for 2 ticks (COUNT stays 0) ->
 #      REPAIR-RUNG disarmed and the next tick does not skip non-critical-path.
 #   2. Rung armed + product repo has agent-ready work -> product-reserve
 #      claim slot, or an explicit logged reason.
@@ -44,7 +44,7 @@ ok "pins: disarm log, product-reserve, measure.sh repair_rung line, worker.md ov
 scratch="$(mktemp -d -t repair-rung-disarm.XXXXXX)"
 trap 'rm -rf "$scratch"' EXIT INT TERM
 
-stubs="$scratch/seat-lib-stub.sh"
+stubs="$scratch/seatlib-stub.sh"
 cat >"$stubs" <<'SH'
 #!/usr/bin/env bash
 total_seat_cap() { echo 8; }
@@ -52,7 +52,7 @@ issue_seat_cap() { echo 5; }
 load_seat_caps() { return 0; }
 worker_memory_for_difficulty() { return 1; }
 worker_env_for_repo() { return 1; }
-pick_seat() {
+litellm_seat() {
     if [[ "${PICK_SEAT_COUNT_SLOTS:-0}" == "1" ]]; then
         echo "${STUB_LIGHT_SLOTS:-0}"
         return 0
@@ -159,7 +159,7 @@ run_tick() {
         bash "$tick" "$repo" 2>&1
 }
 
-# --- accept 1: COUNT stays 0, pick_seat returns a seat for 2 ticks -> disarm ---
+# --- accept 1: COUNT stays 0, pick-seat returns a seat for 2 ticks -> disarm ---
 state1="$scratch/repair-rung-state-latch"
 rm -f "$state1"
 export PI_INTAKE_REPAIR_RUNG_STATE="$state1"
@@ -176,7 +176,7 @@ echo "$out2" | grep -qF 'skipped-repair-rung (rung claims critical-path fleet-op
     || fail "latch tick 2 must skip ordinary-work, got: $out2"
 ok "latch tick 2: armed, ordinary-work skipped"
 
-# Live latch: COUNT stays 0, but pick_seat now returns a seat.
+# Live latch: COUNT stays 0, but pick-seat now returns a seat.
 out3="$(STUB_LIGHT_SLOTS=0 STUB_HEAVY=1 run_tick fleet-ops)" || true
 echo "$out3" | grep -qF 'REPAIR-RUNG recovery 1/2' \
     || fail "latch tick 3 COUNT=0 with a seat must be recovery 1/2, got: $out3"
@@ -212,7 +212,7 @@ echo "$out_p0" | grep -qF 'holding claims this tick' \
     && fail "armed product tick must not hold/exit, got: $out_p0"
 echo "$out_p0" | grep -qF 'REPAIR-RUNG product-reserve' \
     || fail "armed product tick must log product-reserve, got: $out_p0"
-echo "$out_p0" | grep -qF 'pick_seat returned empty' \
+echo "$out_p0" | grep -qF 'pick-seat returned empty' \
     || fail "no-seat product tick must log why, got: $out_p0"
 ok "product tick, no seat: explicit reason, not a hold"
 

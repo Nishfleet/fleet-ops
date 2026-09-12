@@ -116,7 +116,7 @@ ok "prompt names the ledger line, recos file, and DIGEST::"
 scratch=$(mktemp -d -t quality-research-weekly.XXXXXX)
 trap 'rm -rf "$scratch"' EXIT INT TERM
 
-stub_lib="$scratch/seat-lib.sh"
+stub_lib="$scratch/seatlib.sh"
 cat >"$stub_lib" <<'EOF'
 export HOME="${HOME:-/home/nish}"
 export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/1000}"
@@ -130,7 +130,7 @@ is_spawn_etimeout() { return 1; }
 is_quota_cap_error() { return 1; }
 mark_seat_spawn_fail() { return 0; }
 mark_seat_quota_bench() { return 0; }
-pick_seat() {
+litellm_seat() {
     printf 'devin\tglm-5-2\n'
     return 0
 }

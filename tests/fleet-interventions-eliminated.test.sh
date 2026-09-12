@@ -420,8 +420,8 @@ grep -q 'bin/fleet-interventions-eliminated' "$repo_root/MANIFEST" \
   || fail "MANIFEST must install bin/fleet-interventions-eliminated"
 grep -q 'lib/interventions-eliminated.py' "$repo_root/MANIFEST" \
   || fail "MANIFEST must install lib/interventions-eliminated.py"
-grep -Fq 'bash "$here/fleet-interventions-eliminated.test.sh"' "$here/seat-lib.test.sh" \
-  || fail "seat-lib.test.sh must nest this file (CI cannot gain a new workflow line)"
+grep -Fq 'bash "$here/fleet-interventions-eliminated.test.sh"' "$here/seat.lib.test.sh" \
+  || fail "seat.lib.test.sh must nest this file (CI cannot gain a new workflow line)"
 jq -e '.rules[] | select(.id == "sr-interventions-eliminated" and .status == "enforced")' \
   "$repo_root/config/rule-enforcement.json" >/dev/null \
   || fail "sr-interventions-eliminated must be status=enforced in the matrix"

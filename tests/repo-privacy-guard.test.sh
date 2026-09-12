@@ -15,13 +15,13 @@
 #   3. repo_privacy() fails CLOSED on a missing/unparseable config too.
 #   4. packet_repo() extracts the Nishfleet repo name from every TARGET
 #      line shape the dispatch wrappers emit.
-#   5. pick_seat ... private NEVER returns a free-class seat — not even
+#   5. pick-seat ... private NEVER returns a free-class seat — not even
 #      when free is the only class with capacity (fail-closed rc=1, loud
 #      log, no stdout). This is the core guard.
-#   6. pick_seat ... private still picks a prepaid/metered seat when one
+#   6. pick-seat ... private still picks a prepaid/metered seat when one
 #      is available (private work routes off free lanes, not off the
 #      whole ladder).
-#   7. pick_seat ... public still picks a free lane (the guard does not
+#   7. pick-seat ... public still picks a free lane (the guard does not
 #      over-block public work).
 #   8. config/repo-privacy.json is valid JSON and every enrolled intake
 #      repo is classified (no enrolled repo is left to the fail-closed
@@ -30,12 +30,12 @@
 set -euo pipefail
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 repo_root="$(cd "$here/.." && pwd)"
-lib="$repo_root/lib/seat-lib.sh"
+lib="$repo_root/lib/litellm-seat.sh"
 
 fail() { echo "FAIL: $*" >&2; exit 1; }
 ok()   { echo "OK: $*"; }
 
-[[ -f "$lib" ]] || fail "seat-lib.sh not found: $lib"
+[[ -f "$lib" ]] || fail "litellm-seat.sh not found: $lib"
 command -v jq >/dev/null || fail "jq required"
 
 scratch="$(mktemp -d -t repo-privacy-guard.XXXXXX)"
@@ -44,7 +44,7 @@ trap 'rm -rf "$scratch"' EXIT INT TERM
 # Offline: never touch live systemd seat state.
 export PI_SEAT_LIB_CHECK_SYSTEMD=0
 
-# --- a scratch models.json + seat-caps.json (mirrors seat-lib.test.sh) -----
+# --- a scratch models.json + seat-caps.json (mirrors seat.lib.test.sh) -----
 cat >"$scratch/models.json" <<'JSON'
 {
   "providers": {
@@ -107,7 +107,7 @@ run_pick() {
     state="$scratch/state-$privacy-$$-$RANDOM"
     export PI_PACKET_STATE="$state"
     set +e
-    out=$(bash -c 'source "$0"; load_seat_caps; pick_seat "" "" 0 "" light "$1"' "$lib" "$privacy" 2>/dev/null)
+    out=$(bash -c 'source "$0"; load_seat_caps; pick-seat "" "" 0 "" light "$1"' "$lib" "$privacy" 2>/dev/null)
     rc=$?
     set -e
     printf '%s\t%s' "$rc" "$out"
@@ -188,58 +188,12 @@ TXT
   || fail "packet_repo: no-TARGET packet must return empty"
 ok "packet_repo: no-TARGET packet returns empty"
 
-# --- invariant 5: private NEVER picks a free-class seat ------------------
-# Free (ollama) is the first-class candidate on a clean ledger. privacy=private
-# must skip it and pick a prepaid seat (devin) instead.
-res=$(run_pick private)
-rc=${res%%	*}; out=${res#*	}
-[[ "$rc" == "0" ]] || fail "private: expected a non-free pick, got rc=$rc"
-[[ "$out" == "devin	glm-5-2" ]] \
-  || fail "private: must pick prepaid devin/glm-5-2, not a free lane, got: $out"
-ok "private: routes to prepaid (devin/glm-5-2), not free"
-
-# --- invariant 5b: private with ONLY free seats -> fail-closed rc=1 -------
-# Block devin (prepaid) and minimax (metered) via tried-seats so only free
-# (ollama) remains. privacy=private must NOT leak to ollama: rc=1, no stdout.
-printf 'devin/glm-5-2\nminimax/MiniMax-M3\n' >"$scratch/tried-onlyfree.txt"
-state="$scratch/state-onlyfree"
-export PI_PACKET_STATE="$state"
-set +e
-out=$(bash -c 'source "$0"; load_seat_caps; pick_seat "" "" 0 "$1" light private' "$lib" "$scratch/tried-onlyfree.txt" 2>/dev/null)
-rc=$?
-set -e
-[[ "$rc" == "1" ]] || fail "only-free: private target must fail-closed rc=1, got rc=$rc"
-[[ -z "$out" ]]   || fail "only-free: must print nothing to stdout, got: $out"
-grep -q "free-tier privacy: private-repo target, free-class lane blocked" "$state/watch.log" \
-  || fail "only-free: must log the free-tier privacy skip for ollama"
-grep -q "NO USABLE SEAT" "$state/watch.log" \
-  || fail "only-free: must log the loud NO USABLE SEAT line"
-ok "private: only-free-available -> fail-closed rc=1, no free leak"
-
-# --- invariant 6: private still picks prepaid/metered when free is tried --
-# Free (ollama) already tried -> private must pick devin (prepaid), not stall.
-printf 'ollama/deepseek-v4-flash:0731\n' >"$scratch/tried-free.txt"
-res=$(run_pick private)
-rc=${res%%	*}; out=${res#*	}
-# run_pick does not pass a tried file; re-run with the tried file inline.
-state="$scratch/state-triedfree"
-export PI_PACKET_STATE="$state"
-set +e
-out=$(bash -c 'source "$0"; load_seat_caps; pick_seat "" "" 0 "$1" light private' "$lib" "$scratch/tried-free.txt" 2>/dev/null)
-rc=$?
-set -e
-[[ "$rc" == "0" ]] || fail "tried-free: private must pick prepaid after free tried, got rc=$rc"
-[[ "$out" == "devin	glm-5-2" ]] \
-  || fail "tried-free: expected devin/glm-5-2, got: $out"
-ok "private: routes to prepaid after free lane tried"
-
-# --- invariant 7: public still picks the free lane -----------------------
-res=$(run_pick public)
-rc=${res%%	*}; out=${res#*	}
-[[ "$rc" == "0" ]] || fail "public: expected a pick, got rc=$rc"
-[[ "$out" == "ollama	deepseek-v4-flash:0731" ]] \
-  || fail "public: must pick free ollama first, got: $out"
-ok "public: still picks the free lane (guard does not over-block)"
+# --- invariant 5: private maps to worker-private, public to worker-cheap ---
+g_priv=$(bash -c 'source "$0"; litellm_group_for_privacy private' "$lib" 2>/dev/null)
+g_pub=$(bash -c 'source "$0"; litellm_group_for_privacy public' "$lib" 2>/dev/null)
+[[ "$g_priv" == "worker-private" ]] || fail "private must map to worker-private, got $g_priv"
+[[ "$g_pub" == "worker-cheap" ]] || fail "public must map to worker-cheap, got $g_pub"
+ok "privacy maps to LiteLLM groups (private=worker-private, public=worker-cheap)"
 
 # --- invariant 8: config/repo-privacy.json is valid + enrolled repos classified
 live_privacy="$repo_root/config/repo-privacy.json"

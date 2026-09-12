@@ -60,7 +60,7 @@
 #      -> clean.
 #   4. lib/failed-command-flagged.py cites fleet-ops#1097 (detector-side lock: case list moved to lib, fleet-ops#3246).
 #   5. lib/failed-command-flagged.py docstring cites fleet-ops#1097.
-#   6. seat-lib.test.sh hosts this file (CI cannot gain a new workflow
+#   6. seat.lib.test.sh hosts this file (CI cannot gain a new workflow
 #      line — the worker token has no Workflows permission).
 
 set -euo pipefail
@@ -172,10 +172,10 @@ grep -q 'tooling/fleet-ops/bin/fleet-failed-command-flagged' "$lib" \
   || fail "lib/failed-command-flagged.py docstring must name the live #1097 stale path"
 ok "lib/failed-command-flagged.py docstring cites fleet-ops#1097 and the live stale path"
 
-# --- 6. seat-lib.test.sh hosts this file (CI cannot gain a P14 line) ---
+# --- 6. seat.lib.test.sh hosts this file (CI cannot gain a P14 line) ---
 grep -Fq 'bash "$here/fleet-failed-command-cat-stale-fleet-ops.test.sh"' \
-  "$here/seat-lib.test.sh" \
-  || fail "seat-lib.test.sh must nest this file (CI cannot gain a new workflow line)"
-ok "seat-lib.test.sh hosts this file"
+  "$here/seat.lib.test.sh" \
+  || fail "seat.lib.test.sh must nest this file (CI cannot gain a new workflow line)"
+ok "seat.lib.test.sh hosts this file"
 
 echo "OK: fleet-failed-command-cat-stale-fleet-ops: live #1097 / #1099 bare cat of stale tooling/fleet-ops walked-past drills"

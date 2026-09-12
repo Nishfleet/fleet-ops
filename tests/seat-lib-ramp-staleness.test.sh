@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# tests/seat-lib-ramp-staleness.test.sh
+# tests/seatlib-ramp-staleness.test.sh
 #
 # fleet-ops#4723: the AIMD ramp ratchet. A ramp=true entry bypasses the
 # declared floor clamp in effective_provider_cap and climbs only +1 per
@@ -24,7 +24,7 @@
 set -euo pipefail
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 repo_root="$(cd "$here/.." && pwd)"
-lib="$repo_root/lib/seat-lib.sh"
+lib="$repo_root/lib/litellm-seat.sh"
 
 fail() { echo "FAIL: $*" >&2; exit 1; }
 ok()   { echo "OK: $*"; }
@@ -94,4 +94,4 @@ got="$(eff_cap)"
 [[ "$got" == "2" ]] || fail "unparseable last_at must NOT graduate (fail closed); got '$got' want 2"
 ok "unparseable last_at fails closed (eff=2)"
 
-echo "PASS: tests/seat-lib-ramp-staleness.test.sh"
+echo "PASS: tests/seatlib-ramp-staleness.test.sh"

@@ -2,7 +2,7 @@
 # tests/agent-cron-seat-rotation.test.sh
 #
 # fleet-ops#143: proves agent-cron-run no longer gates on the single-snapshot
-# lanes/pi-seat-health.json. It now rotates seats via pick_seat, so a
+# lanes/pi-seat-health.json. It now rotates seats via pick-seat, so a
 # transient 429 on one seat (which would have stamped the snapshot unhealthy
 # for minutes) routes to a healthy alt instead of killing the daily cron.
 # When every allowlisted seat is walled, it fails loud as before.
@@ -39,11 +39,11 @@ ok()   { echo "OK: $*"; }
 scratch="$(mktemp -d -t agent-cron-seat.XXXXXX)"
 trap 'rm -rf "$scratch"' EXIT INT TERM
 
-# Stub seat-lib with a deterministic pick_seat and the helpers agent-cron-run
-# calls. The first scenario: pick_seat returns a healthy ALT seat even though
+# Stub seatlib with a deterministic pick-seat and the helpers agent-cron-run
+# calls. The first scenario: pick-seat returns a healthy ALT seat even though
 # the (now-irrelevant) snapshot would have been unhealthy — proving the gate
 # is gone and rotation works.
-stub_lib="$scratch/seat-lib.sh"
+stub_lib="$scratch/seatlib.sh"
 cat >"$stub_lib" <<'EOF'
 export HOME="${HOME:-/home/nish}"
 export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/1000}"
@@ -58,7 +58,7 @@ is_spawn_etimeout() { return 1; }
 is_quota_cap_error() { return 1; }
 mark_seat_spawn_fail() { return 0; }
 mark_seat_quota_bench() { return 0; }
-pick_seat() {
+litellm_seat() {
     printf 'cursor\tcomposer-2.5\n'
     return 0
 }
@@ -144,7 +144,8 @@ is_spawn_etimeout() { return 1; }
 is_quota_cap_error() { return 1; }
 mark_seat_spawn_fail() { return 0; }
 mark_seat_quota_bench() { return 0; }
-pick_seat() { :; return 1; }
+litellm_seat() { :; return 1; }
+litellm_seat() { :; return 1; }
 EOF
 rm -f "$record_args" "$record_stdin"
 
@@ -177,7 +178,7 @@ is_spawn_etimeout() { return 1; }
 is_quota_cap_error() { return 1; }
 mark_seat_spawn_fail() { return 0; }
 mark_seat_quota_bench() { return 0; }
-pick_seat() { printf 'devin\tglm-5-2\n'; return 0; }
+litellm_seat() { printf 'litellm\tworker-cheap\n'; return 0; }
 EOF
 cat >"$fake_pi" <<'EOF'
 #!/usr/bin/env bash
@@ -215,7 +216,7 @@ grep -q '^StartLimitBurst=3$' "$svc" \
 grep -q '^StartLimitIntervalSec=1h$' "$svc" \
   || fail "service must set StartLimitIntervalSec=1h"
 # The unit must NOT gate on the seat-health snapshot itself — the wrapper does
-# the gate via pick_seat. The SEAT_FILE env from the old unit must be gone.
+# the gate via pick-seat. The SEAT_FILE env from the old unit must be gone.
 if grep -q 'SEAT_FILE=' "$svc"; then
     fail "service must not carry the legacy SEAT_FILE env (the snapshot gate is gone)"
 fi
@@ -556,7 +557,7 @@ ok "class guard: every MANIFEST [Install] timer (${#class_timers[@]}) is enable 
 # fleet-ops#154 is the class lock: tests/p14-unstubbed-unit-verify.test.sh
 # fails if this P14 test (or any other) re-introduces a live verify call.
 
-ok "agent-cron seat rotation: gate replaced by pick_seat, transient 429 routes to alt, fully-walled fails loud"
+ok "agent-cron seat rotation: gate replaced by pick-seat, transient 429 routes to alt, fully-walled fails loud"
 
 # fleet-ops#366 / auditor-finding-B: the WORKDIR fail-closed guard test lives
 # in this file's P14 family (agent-cron-run). Same CI constraint as the

@@ -71,7 +71,7 @@
 #      `FLEET_FAILED_COMMAND_SESSIONS=/tmp` wording (detector-side lock: case list moved to lib, fleet-ops#3246).
 #   7. lib/failed-command-flagged.py docstring cites fleet-ops#1220
 #      (detector-side lock).
-#   8. seat-lib.test.sh hosts this file (CI cannot gain a P14 line).
+#   8. seat.lib.test.sh hosts this file (CI cannot gain a P14 line).
 
 set -euo pipefail
 
@@ -211,10 +211,10 @@ grep -q 'FLEET_FAILED_COMMAND_SESSIONS=/tmp' "$lib" \
   || fail "lib/failed-command-flagged.py docstring must name the live 'FLEET_FAILED_COMMAND_SESSIONS=/tmp' wording"
 ok "lib/failed-command-flagged.py docstring cites fleet-ops#1220 and the detector-bin shape"
 
-# --- 8. seat-lib.test.sh hosts this file (CI cannot gain a P14 line) -------
+# --- 8. seat.lib.test.sh hosts this file (CI cannot gain a P14 line) -------
 grep -Fq 'bash "$here/fleet-failed-command-detector-bin-exit.test.sh"' \
-  "$here/seat-lib.test.sh" \
-  || fail "seat-lib.test.sh must nest this file (CI cannot gain a new workflow line)"
-ok "seat-lib.test.sh hosts this file"
+  "$here/seat.lib.test.sh" \
+  || fail "seat.lib.test.sh must nest this file (CI cannot gain a new workflow line)"
+ok "seat.lib.test.sh hosts this file"
 
 echo "OK: fleet-failed-command-detector-bin-exit: live #1220 detector-bin exit-1 drills"

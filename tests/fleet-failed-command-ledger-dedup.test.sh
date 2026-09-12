@@ -363,10 +363,10 @@ grep -Fq 'FLEET_FAILED_COMMAND_LEDGER' "$repo_root/bin/fleet-failed-command-flag
   || fail "bin/fleet-failed-command-flagged must document FLEET_FAILED_COMMAND_LEDGER"
 ok "FLEET_FAILED_COMMAND_LEDGER env var is documented in the bin header"
 
-# Lock this test in the seat-lib.test.sh host so it runs on CI (worker
+# Lock this test in the seat.lib.test.sh host so it runs on CI (worker
 # token cannot add a new workflow line in ci.yml).
-grep -Fq 'fleet-failed-command-ledger-dedup.test.sh' "$repo_root/tests/seat-lib.test.sh" \
-  || fail "tests/seat-lib.test.sh must invoke fleet-failed-command-ledger-dedup.test.sh (fleet-ops#1071)"
-ok "seat-lib.test.sh hosts this file"
+grep -Fq 'fleet-failed-command-ledger-dedup.test.sh' "$repo_root/tests/seat.lib.test.sh" \
+  || fail "tests/seat.lib.test.sh must invoke fleet-failed-command-ledger-dedup.test.sh (fleet-ops#1071)"
+ok "seat.lib.test.sh hosts this file"
 
 echo "OK: fleet-failed-command-ledger-dedup: gh-broken deduplication survives 5-7 consecutive ticks (live #1071)"

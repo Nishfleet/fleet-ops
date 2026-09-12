@@ -24,9 +24,9 @@ state_dir="$scratch/state"
 mkdir -p "$prompts_dir" "$log_dir" "$state_dir" "$scratch/home" "$scratch/ledger"
 printf '# 0509 daily market signal prompt\nwrite the signal.\n' >"$prompts_dir/0509-daily-market-signal.md"
 
-# Stub seat-lib that uses the real seat_log (so it writes to stderr), but
-# forces pick_seat to return empty so we exercise the no-seat failure path.
-stub_lib="$scratch/seat-lib.sh"
+# Stub seatlib that uses the real seat_log (so it writes to stderr), but
+# forces litellm_seat to return empty so we exercise the no-seat path.
+stub_lib="$scratch/seatlib.sh"
 cat >"$stub_lib" <<EOF
 # shellcheck shell=bash
 export HOME="${scratch}/home"
@@ -34,10 +34,11 @@ export XDG_RUNTIME_DIR="${scratch}/xdg"
 export PI_PACKET_STATE="$state_dir"
 export PI_SEAT_HEALTH_LEDGER_DIR="${scratch}/ledger"
 mkdir -p "\$PI_PACKET_STATE" "\$XDG_RUNTIME_DIR"
-# shellcheck source=../lib/seat-lib.sh source-path=SCRIPTDIR
-source "$repo_root/lib/seat-lib.sh"
+# shellcheck source=../lib/litellm-seat.sh source-path=SCRIPTDIR
+source "$repo_root/lib/litellm-seat.sh"
 task_weight() { echo "light"; }
-pick_seat() { :; return 1; }
+litellm_seat() { :; return 1; }
+litellm_seat() { :; return 1; }
 register_active_seat() { :; }
 clear_active_seat() { :; }
 is_spawn_etimeout() { return 1; }

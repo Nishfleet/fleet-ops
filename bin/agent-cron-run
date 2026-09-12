@@ -11,7 +11,7 @@
 # 'FATAL: seat unhealthy' even though other providers were fine — and there
 # was no retry until tomorrow.
 #
-# Now uses pick_seat from lib/seat-lib.sh — the same rotation pi-issue-run
+# Now uses pick-seat from lib/litellm-seat.sh — the same rotation pi-issue-run
 # uses: honours the cap-map allowlist, tried-seats exclusion across systemd
 # Restart= retries, and the #90 quota-bench / spawn-fail markers. If every
 # allowlisted seat is genuinely walled, fail loud as before. systemd
@@ -37,9 +37,11 @@ export HOME="${HOME:-/home/nish}"
 # may override via PI_PACKET_SEAT_LIB. The directive points to the canonical
 # source file in the repo (the install symlinks this same file), so static
 # analysis can resolve the include.
-SEAT_LIB="${PI_PACKET_SEAT_LIB:-$HOME/.local/lib/pi-packet/seat-lib.sh}"
-# shellcheck source=../lib/seat-lib.sh source-path=SCRIPTDIR
+SEAT_LIB="${PI_PACKET_SEAT_LIB:-$HOME/.local/lib/pi-packet/litellm-seat.sh}"
+# shellcheck source=../lib/litellm-seat.sh source-path=SCRIPTDIR
 source "$SEAT_LIB"
+SPAWN_FAIL_MAX_S="${SPAWN_FAIL_MAX_S:-120}"
+SPAWN_FAIL_BACKOFF_S="${SPAWN_FAIL_BACKOFF_S:-300}"
 
 slug="${1:?agent-cron-run: need <slug>}"
 WORKDIR="${WORKDIR:-$HOME}"
@@ -157,33 +159,24 @@ if (( prompt_bytes > PROMPT_E2BIG_CAP_BYTES )); then
 fi
 
 # --- pick a healthy seat for THIS attempt (fleet-ops#143) -------------------
-# Cron prompts are light probes/answers (market signal, daily summary); they
-# do not edit code, so need_capable=0 unless task_weight says otherwise.
+# Cron prompts are light probes/answers (market signal, daily summary).
 weight=$(task_weight "$PROMPT")
 difficulty="$weight"
 if declare -F packet_difficulty >/dev/null 2>&1; then
     difficulty=$(packet_difficulty "$PROMPT")
 fi
-need_capable=0
-[[ "$difficulty" == "heavy" || "$difficulty" == "keystone" ]] && need_capable=1
 
-# fleet-ops#4181 P2: fable-check routes through the LiteLLM proxy to the
-# judge group (senior ladder with fallback) instead of seat-lib pick_seat.
-# The proxy owns the fallback chain per its router_settings.fallbacks;
-# seat-lib still owns every other caller until P3. AGENT_CRON_LITELLM_PROVIDER /
-# AGENT_CRON_LITELLM_MODEL let tests override without a live proxy.
-# fleet-ops#4219 P3a: PI_SEAT_SOURCE=litellm extends the same routing to
-# every slug (group=judge) while both paths stay live; default seat-lib.
+# fleet-ops#4263 P3b: every cron slug routes through LiteLLM.
+# fable-check uses judge; other slugs use worker-cheap.
+# AGENT_CRON_LITELLM_PROVIDER / AGENT_CRON_LITELLM_MODEL let tests override.
 if [[ "$slug" == "fable-check" ]] && [[ -z "${AGENT_CRON_SKIP_LITELLM:-}" ]]; then
     np="${AGENT_CRON_LITELLM_PROVIDER:-litellm}"
     nm="${AGENT_CRON_LITELLM_MODEL:-judge}"
     seat="$np	$nm"
     seat_log "agent-cron-run: $slug routed to LiteLLM proxy $np/$nm (fleet-ops#4181 P2)"
-elif [[ "${PI_SEAT_SOURCE:-seat-lib}" == "litellm" ]]; then
-    seat=$(printf 'litellm\tjudge\n')
-    seat_log "agent-cron-run: $slug PI_SEAT_SOURCE=litellm group=judge"
 else
-    seat=$(pick_seat "" "" "$need_capable" "$tried_file" "$difficulty" || true)
+    seat=$(litellm_seat "worker-cheap" || true)
+    seat_log "agent-cron-run: $slug group=worker-cheap"
 fi
 if [[ -z "$seat" ]]; then
     seat_log "agent-cron-run: $slug no healthy seat available (tried: $(tr '\n' ' ' <"$tried_file" 2>/dev/null))"
@@ -258,7 +251,7 @@ fi
 # --- P13-B spawn-fail marker ------------------------------------------------
 # A spawn-phase ETIMEDOUT (devin/cursor 503 signature) terminates pi before
 # any response hook runs, so the reactive ledger never records it and
-# pick_seat would keep routing to the dead seat. Mirror pi-issue-run: write
+# pick-seat would keep routing to the dead seat. Mirror pi-issue-run: write
 # the marker so the next Restart skips this seat via usable_at.
 spawn_fail_triggered=0
 if (( rc != 0 )) && (( spawn_elapsed_s < SPAWN_FAIL_MAX_S )); then
@@ -276,7 +269,7 @@ fi
 # --- fleet-ops#90: quota/cap wall bench -------------------------------------
 # A hard-capped seat (ClinePass weekly cap, devin 15-min 429) is a walled
 # seat, not a transient retry. Bench it until its advertised reset window (or
-# the provider default) so the next Restart's pick_seat skips it instead of
+# the provider default) so the next Restart's pick-seat skips it instead of
 # burning a StartLimitBurst attempt on a guaranteed failure. Skipped when the
 # spawn-fail path already handled this exit.
 if (( rc != 0 )) && (( ! spawn_fail_triggered )); then
@@ -318,7 +311,7 @@ if declare -F is_writes_refused >/dev/null 2>&1; then
             mark_seat_writes_refused_bench "$np" "$nm" "agent-cron:$slug" \
                 || seat_log "agent-cron-run: $slug WARN: writes-refused bench marker NOT written for $np/$nm"
         else
-            seat_log "agent-cron-run: $slug WARN: mark_seat_writes_refused_bench absent in seat-lib — relying on tried-seats exclusion"
+            seat_log "agent-cron-run: $slug WARN: mark_seat_writes_refused_bench absent in litellm-seat — relying on tried-seats exclusion"
         fi
         rm -f "$out" "$err"
         exit 1

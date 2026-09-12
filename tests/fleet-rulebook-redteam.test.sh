@@ -364,8 +364,8 @@ cat >"$scratch/fakebin/pi" <<'FAKE'
 exit 0
 FAKE
 chmod +x "$scratch/fakebin/pi"
-cat >"$scratch/seat-lib.sh" <<'FAKE'
-pick_seat() { printf 'devin swe-1-7\n'; }
+cat >"$scratch/seatlib.sh" <<'FAKE'
+litellm_seat() { printf 'litellm\tsenior\n'; }
 FAKE
 rm -rf "$scratch/state-packet"
 set +e
@@ -375,7 +375,7 @@ packet_out=$(RULEBOOK_DRY_RUN=1 \
   RULEBOOK_STANDING_RULES="$scratch/rules/standing.md" \
   RULEBOOK_RULE_FILES="$scratch/rules/standing.md
 $scratch/rules/does-not-exist.md" \
-  RULEBOOK_SEAT_LIB="$scratch/seat-lib.sh" \
+  RULEBOOK_SEAT_LIB="$scratch/seatlib.sh" \
   RULEBOOK_PI_BIN="$scratch/fakebin/pi" \
   RULEBOOK_FAKE_NOW="2026-08-27T04:15:00Z" \
   "$bin" 2>&1)

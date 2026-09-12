@@ -3,7 +3,7 @@
 # Seat-rotation wrapper for pi-scout and pi-scout-repair units.
 #
 # Assembles the packet from ~/.pi/agent/prompts/<prompt>.md plus the correct
-# TARGET line, calls pick_seat from lib/seat-lib.sh, and runs
+# TARGET line, calls pick-seat from lib/litellm-seat.sh, and runs
 # pi --print --provider <provider> --model <model> on the assembled packet.
 #
 # For the 0509 scout, the packet is research-seeded deterministically by
@@ -15,7 +15,7 @@
 #   $2 = prompt name (scout or scout-repair)
 #
 # Environment:
-#   PI_PACKET_SEAT_LIB      path to seat-lib.sh
+#   PI_PACKET_SEAT_LIB      path to litellm-seat.sh
 #   PI_PACKET_ASSEMBLY_LIB  path to packet-assembly.sh
 #   SCOUT_PROMPT_DIR        prompt directory (default ~/.pi/agent/prompts)
 #   PI_BIN                  pi binary (default ~/.local/bin/pi)
@@ -25,8 +25,8 @@ set -euo pipefail
 export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
 export HOME="${HOME:-/home/nish}"
 
-SEAT_LIB="${PI_PACKET_SEAT_LIB:-$HOME/.local/lib/pi-packet/seat-lib.sh}"
-# shellcheck source=../lib/seat-lib.sh source-path=SCRIPTDIR
+SEAT_LIB="${PI_PACKET_SEAT_LIB:-$HOME/.local/lib/pi-packet/litellm-seat.sh}"
+# shellcheck source=../lib/litellm-seat.sh source-path=SCRIPTDIR
 source "$SEAT_LIB"
 
 PACKET_ASM_LIB="${PI_PACKET_ASSEMBLY_LIB:-$HOME/.local/lib/pi-packet/packet-assembly.sh}"
@@ -59,41 +59,34 @@ prompt_file="$PROMPT_DIR/${prompt_name}.md"
 
 [[ -f "$prompt_file" ]] || { echo "pi-scout-run: prompt not found: $prompt_file" >&2; exit 1; }
 
-# Choose a healthy seat. Compute need_capable from the task weight so a
-# heavy repair prompt gets a capable seat, while the lighter scout prompt
-# can use any healthy seat.
+# Classify weight for logs. P3b: LiteLLM worker-cheap owns fallbacks.
 weight=$(task_weight "$prompt_file")
 difficulty="$weight"
 if declare -F packet_difficulty >/dev/null 2>&1; then
     difficulty=$(packet_difficulty "$prompt_file")
 fi
-need_capable=0
-[[ "$difficulty" == "heavy" || "$difficulty" == "keystone" ]] && need_capable=1
 
 # Free-tier privacy line (fleet-ops#520): a private-repo target never routes
 # to a free-class lane. Resolve visibility via config/repo-privacy.json
 # (fail-closed: an unclassified repo is treated as private).
 scout_privacy=$(repo_privacy "$repo")
 seat_log "pi-scout-run: $repo/$prompt_name privacy=$scout_privacy"
-# fleet-ops#3724: the packet repo also feeds pick_seat's product_only gate —
+# fleet-ops#3724: the packet repo also feeds the product_only gate —
 # a seat flagged product_only in seat-caps.json is offered only when this
 # repo carries the product flag in config/intake-repos.json.
 export PI_PACKET_REPO="$repo"
 
-# fleet-ops#4219 P3a: PI_SEAT_SOURCE switch.
-if [[ "${PI_SEAT_SOURCE:-seat-lib}" == "litellm" ]]; then
-    seat=$(litellm_pick_seat "worker-cheap")
-    seat_log "pi-scout-run: $repo/$prompt_name PI_SEAT_SOURCE=litellm group=worker-cheap"
-else
-    seat=$(pick_seat "" "" "$need_capable" "" "$difficulty" "$scout_privacy" || true)
-fi
+# fleet-ops#4263 P3b: always route through the LiteLLM worker-cheap group.
+seat=$(litellm_seat "worker-cheap" || true)
+seat_log "pi-scout-run: $repo/$prompt_name group=worker-cheap"
+
 # fleet-ops#2133-class: devin (and similar remote-agent CLIs) intermittently
 # hang for tens of minutes inside the pi session and then die with
 # "spawnSync <cli> ETIMEDOUT" (rc!=0, tools=0). The seat-health extension
 # only walls such a seat for 60s (cli_timeout default), so the hung seat is
 # re-offered almost immediately and burns the whole scout window again.
 # Mirror pi-issue-run's hang-bench: long run + ETIMEDOUT signature on stderr
-# => mark_seat_hang_bench so pick_seat skips the seat for the hang window.
+# => mark_seat_hang_bench so the seat is skipped for the hang window.
 # PI_HANG_BENCH_MIN_S is env-overridable for tests; production default 300s.
 readonly SCOUT_HANG_BENCH_MIN_S="${PI_HANG_BENCH_MIN_S:-300}"
 run_seated_pi() {

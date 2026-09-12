@@ -389,7 +389,7 @@ export FLEET_SEAT_COMEBACK_BIN="$comeback_fake"
 export WORK_READY="$scratch/work_ready"
 export WORK_INPROGRESS="$scratch/work_inprogress"
 # fleet-ops#1558: pin the admit floor so scenarios do not read live
-# MemAvailable / seat-lib. Override per-scenario when testing the floor.
+# MemAvailable / seatlib. Override per-scenario when testing the floor.
 export FLEET_UNDERSAT_ADMIT_CEILING=25
 # Stale-label reap scenarios: the actual issue numbers labelled agent-in-progress
 # (one per line), and the subset of those that have an open claim/issue-<N> PR.
@@ -540,7 +540,7 @@ ok "undersaturation: repair on first wedge, fail-loud on second, no-op when heal
 # ============================================================================
 # Scenario 4 (P15): in the REPAIR path (running=0), a unit stuck in
 # `activating` past the wedge-age bound is reaped; a fresh-activating unit
-# stays live. This mirrors seat-lib's probe; the inlined copy here is the
+# stays live. This mirrors seatlib's probe; the inlined copy here is the
 # heartbeat's repair path and must agree.
 # ============================================================================
 reset_state

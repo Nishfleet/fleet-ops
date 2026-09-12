@@ -686,7 +686,7 @@ printf '%s\n' '## Summary
 
 #### Test plan
 
-- [x] `bash tests/seat-lib-aimd.test.sh` — exit 0
+- [x] `bash tests/seatlib-aimd.test.sh` — exit 0
 - [x] `bash tests/fleet-token-economy.test.sh` — exit 0
 - [ ] CI green
 ' >"$scratch/body.md"

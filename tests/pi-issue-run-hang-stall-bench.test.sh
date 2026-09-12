@@ -3,7 +3,7 @@
 #
 # fleet-ops#2133: two detectors that previously existed only as a hot-patch on
 # the LIVE /home/nish/.local/bin/pi-issue-run (never landed on a PR) must fire
-# and bench the seat via mark_seat_hang_bench so pick_seat skips it on the next
+# and bench the seat via mark_seat_hang_bench so pick-seat skips it on the next
 # restart. Both gate on spawn_elapsed_s > PI_HANG_BENCH_MIN_S (default 300s).
 #
 #   (A) devin long-hang-then-ETIMEDOUT: rc=1, elapsed > 300s, stderr contains
@@ -19,7 +19,7 @@
 # fake pi, and PI_ISSUES_DIR redirected into scratch. PI_HANG_BENCH_MIN_S=1
 # and SPAWN_FAIL_MAX_S=1 collapse the 5-minute wall-clock gate to ~1s so the
 # test is fast without changing production defaults (the env vars default to
-# 300 and 120 respectively in lib/seat-lib.sh / bin/pi-issue-run).
+# 300 and 120 respectively in lib/litellm-seat.sh / bin/pi-issue-run).
 
 set -euo pipefail
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -118,9 +118,9 @@ JSON
 
 # Overlay: record mark_seat_hang_bench calls, then run the real function so
 # the per-seat ledger is actually written with health_class="hang_bench".
-cat >"$scratch/seat-lib.sh" <<EOF
+cat >"$scratch/seatlib.sh" <<EOF
 # shellcheck shell=bash
-source "$repo_root/lib/seat-lib.sh"
+source "$repo_root/lib/litellm-seat.sh"
 eval "\$(declare -f mark_seat_hang_bench | sed '1s/^mark_seat_hang_bench/orig_mark_seat_hang_bench/')"
 mark_seat_hang_bench() {
     printf '%s/%s %s\n' "\$1" "\$2" "\${3:-}" >>"$scratch/hang_calls"
@@ -132,13 +132,7 @@ mark_seat_spawn_fail() {
     orig_mark_seat_spawn_fail "\$@"
 }
 EOF
-export PI_PACKET_SEAT_LIB="$scratch/seat-lib.sh"
-
-ledger_file_for() {
-    local p="${1//[^A-Za-z0-9._-]/_}"
-    local m="${2//[^A-Za-z0-9._-]/_}"
-    printf '%s/%s__%s.json' "$LEDGER" "$p" "$m"
-}
+export PI_PACKET_SEAT_LIB="$scratch/seatlib.sh"
 
 run_scenario() {
     local label="$1" stderr_body="$2" expected_rc="$3"
@@ -179,28 +173,11 @@ STUB
       || fail "$label: mark_seat_hang_bench not called for $np/$nm; calls: $(cat "$scratch/hang_calls")"
     ok "$label: mark_seat_hang_bench called for $np/$nm"
 
-    lf="$(ledger_file_for "$np" "$nm")"
-    [[ -f "$lf" ]] || fail "$label: per-seat ledger missing at $lf"
-    hclass=$(jq -r '.health_class // empty' "$lf")
-    [[ "$hclass" == "hang_bench" ]] \
-      || fail "$label: ledger health_class=$hclass, expected hang_bench: $(cat "$lf")"
-    # mark_seat_hang_bench writes bench_until (not usable_at); seat_usable
-    # consults the same field when deciding to skip the seat.
-    bench_until=$(jq -r '.bench_until // empty' "$lf")
-    [[ -n "$bench_until" ]] || fail "$label: ledger has no bench_until: $(cat "$lf")"
-    bench_epoch=$(date -u -d "$bench_until" +%s)
-    now_epoch=$(date -u +%s)
-    (( bench_epoch > now_epoch )) \
-      || fail "$label: bench_until $bench_until is not in the future (now=$now_epoch bench=$bench_epoch)"
-    ok "$label: ledger health_class=hang_bench, bench_until=$bench_until in the future"
-
-    # seat_usable must reject the benched seat so pick_seat skips it on re-seat.
-    # shellcheck disable=SC1091
-    source "$repo_root/lib/seat-lib.sh"
-    if seat_usable "$np" "$nm"; then
-        fail "$label: seat_usable $np/$nm returned usable after hang-bench — pick_seat would re-select it"
-    fi
-    ok "$label: seat_usable rejects $np/$nm after hang-bench"
+    shopt -s nullglob
+    _hang_ledgers=("$LEDGER"/*.json)
+    (( ${#_hang_ledgers[@]} == 0 )) \
+      || fail "$label: P3b must not write local routing ledgers, got: ${_hang_ledgers[*]}"
+    ok "$label: no local hang_bench ledger (proxy cooldown owns routing)"
 }
 
 # (A) devin long-hang-then-ETIMEDOUT. The real signature from the field is a
@@ -281,7 +258,7 @@ STUB
     [[ "$cls" == "infra" ]] || fail "$label: last-death-class want infra got '$cls'"
 
     # shellcheck disable=SC1091
-    source "$repo_root/lib/seat-lib.sh"
+    source "$repo_root/lib/litellm-seat.sh"
     if [[ "$expect_bench" == "no" ]]; then
         [[ ! -f "$scratch/spawnfail_calls" ]] \
           || fail "$label: mark_seat_spawn_fail was called for a session with $ntools tool calls: $(cat "$scratch/spawnfail_calls")"
@@ -297,10 +274,11 @@ STUB
           || fail "$label: spawn-fail not marked for $np/$nm: $(cat "$scratch/spawnfail_calls")"
         grep -q 'mid-session-death:rc=124' "$scratch/spawnfail_calls" \
           || fail "$label: bench reason is not mid-session-death:rc=124: $(cat "$scratch/spawnfail_calls")"
-        if seat_usable "$np" "$nm"; then
-            fail "$label: seat_usable $np/$nm still usable after a 0-tool-call hang bench"
-        fi
-        ok "$label: rc=124 with 0 tool calls -> mark_seat_spawn_fail bench kept, seat $np/$nm unusable"
+        shopt -s nullglob
+        _wd_ledgers=("$LEDGER"/*.json)
+        (( ${#_wd_ledgers[@]} == 0 )) \
+          || fail "$label: P3b must not write local routing ledgers, got: ${_wd_ledgers[*]}"
+        ok "$label: rc=124 with 0 tool calls -> mark_seat_spawn_fail logged, no local ledger"
     fi
 }
 
