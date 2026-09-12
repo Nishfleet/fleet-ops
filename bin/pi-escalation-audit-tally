@@ -74,7 +74,36 @@ admit() {
     }
     title=$(printf '%s\n' "$issue_json" | jq -r '.title // "<no title>"')
     body=$(printf '%s\n' "$issue_json" | jq -r '.body // ""')
-    fix_body=$(printf 'Senior-auditor escalation panel admitted %s#%s (2-of-3 PASS).\n\n## Diagnosis\n\n%s\n\n## Original escalation\n\n%s\n\nSource: %s#%s\n' "$REPO_SLUG" "$candidate" "$reasons" "$body" "$REPO" "$candidate")
+    # fleet-ops#5890: the failing check name, derived from the escalation
+    # title ("[escalate-senior] <repo>: <workflow/job> failing repeatedly");
+    # a wrapper without the bracket+repo prefixes keeps its full title.
+    check_name="${title#*] }"
+    check_name="${check_name#"$REPO": }"
+    # fleet-ops#5890: the filed fix issue must be spec-gate-admissible
+    # (fleet-ops#543) — the four spec lines, derived from the failing check
+    # name and the repo, plus the fleet-ops moves: line (fleet-ops#3255).
+    # Without them a stripped label sends the issue back into the sweep's
+    # hourly SPEC-GATE-REFUSED comment storm (#4939: 45 identical comments).
+    fix_body="Senior-auditor escalation panel admitted $REPO_SLUG#$candidate (2-of-3 PASS).
+
+## Diagnosis
+
+$reasons
+
+## Spec
+
+- termination: failing check \`$check_name\` on $REPO runs green, or the panel verdict is a justified dismissal logged on $REPO_SLUG#$candidate; this fix issue closes on either.
+- accept: - the failing check \`$check_name\` is repaired and $REPO_SLUG#$candidate closes citing a green run, or the dismissal reason is logged there.
+- required: implement the admitted diagnosis for failing check \`$check_name\` ($REPO_SLUG#$candidate).
+- metric: occurrences of the failing check in the escalation detector's next 24h window after the verdict = 0.
+- moves: product_merges_per_day
+
+## Original escalation
+
+$body
+
+Source: $REPO#$candidate
+"
 
     if [ "$DRY_RUN" = "1" ]; then
         log "DRY-RUN: would file agent-ready fix issue for $repo_slug/#$candidate"

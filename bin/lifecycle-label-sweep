@@ -434,7 +434,6 @@ if [ -r "$SUMMARY_FILE" ]; then
         [ -n "$_rk" ] && REFUSAL_DIGEST["$_rk"]="$_rv"
     done < <(jq -r '.refusals // {} | to_entries[] | "\(.key)\t\(.value)"' "$SUMMARY_FILE" 2>/dev/null)
 fi
-unloaded_refusals=0
 
 # fleet-ops#4022: scout-candidate bounce cooldown. A spec-less scout-candidate
 # issue older than 72h gets ONE bounce comment; the comment marker is the
