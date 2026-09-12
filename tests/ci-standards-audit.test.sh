@@ -889,3 +889,15 @@ bash "$here/fleet-cpu-sampler-ready.test.sh"
 # drop of this host line fails by name. Hermetic (scratch MANIFEST + scratch
 # HOME + fake checkout, stubbed systemctl, no live install).
 bash "$here/helper-symlink-resolution.test.sh"
+
+# fleet-ops#5493: behavioral regression for the pre-#331 stale seat-caps
+# snapshot (devin 4->0, ollama 4->2) being installed over live caps. The
+# repo-mtime refresh by git checkout defeats the plain mtime guard, so the
+# REFUSE must come from the seat_caps_would_downgrade cap-drop guard
+# (fleet-ops#371), with the operator override and origin-main-blob escape.
+# Hosted here (a listed test) so P14 runs it without a workflow-file edit;
+# the worker App cannot push .github/workflows/**. The named pin in
+# tests/p14-test-listing-gate.test.sh is the class-prevention so a future
+# drop of this host line fails by name. Hermetic (scratch MANIFEST + fake
+# HOME + stub systemctl, does NOT touch the real live state file).
+bash "$here/install-seat-caps-stale-snapshot-refuse.test.sh"
