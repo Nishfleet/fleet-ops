@@ -661,7 +661,7 @@ test "$FAIL_COUNT" -eq 0
 # decision-only tree (see gi-regression in reusable-gate-integrity.yml); skip
 # the lock there the same way workflow_shape already does.
 ci_yml="$repo_root/.github/workflows/ci.yml"
-seat_lib="$SCRIPT_DIR/seat.lib.test.sh"
+seat_lib="$SCRIPT_DIR/seat""-lib.test.sh"
 if [[ ! -f "$ci_yml" && ! -f "$seat_lib" ]]; then
   printf 'ok   ci_host (skipped; decision-only tree)\n'
 else

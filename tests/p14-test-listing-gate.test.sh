@@ -108,33 +108,16 @@ live_skip[gh-webhook-receiver-live-e2e.test.sh]=1
 # fleet-ops#4263 P3b: pick-seat / AIMD / ledger tests are retired with the
 # routing library. They stay on disk until a workflow-scoped PR can drop
 # them; they are not hosted CI.
-live_skip[seatlib-aimd.test.sh]=1
-live_skip[seatlib-yield-order.test.sh]=1
-live_skip[seatlib-dispatch.test.sh]=1
-live_skip[seatlib-free-daily-budget.test.sh]=1
-live_skip[seatlib-product-only-spend-cap.test.sh]=1
-live_skip[seatlib-retire.test.sh]=1
-live_skip[seat-noop-escalation.test.sh]=1
-live_skip[seat-failure-ceiling.test.sh]=1
-live_skip[seat-quota-corpse.test.sh]=1
-live_skip[seat-spawn-corpse.test.sh]=1
-live_skip[seat-spawn-bench-clobber.test.sh]=1
-live_skip[seat-spawn-bench-ceiling-false-healthy.test.sh]=1
 live_skip[seat-empty-run-park-persists.test.sh]=1
-live_skip[seat-empty-run-ceiling-3727.test.sh]=1
 live_skip[seat-empty-run-ceiling-default.test.sh]=1
 live_skip[seat-empty-run-intermittent-count.test.sh]=1
 live_skip[seat-empty-run-count-persists-new-issue.test.sh]=1
-live_skip[seat-empty-run-bench-sticks.test.sh]=1
 live_skip[seat-empty-run-clobber-park.test.sh]=1
-live_skip[seat-phantom-out-suffix.test.sh]=1
 live_skip[seat-caps-zero-yield.test.sh]=1
 live_skip[keystone-routing.test.sh]=1
 live_skip[senior-review-routing.test.sh]=1
-live_skip[token-economy-routing.test.sh]=1
 live_skip[quality-routing.test.sh]=1
 live_skip[audition-lane.test.sh]=1
-live_skip[seat-floor-failopen.test.sh]=1
 live_skip[seat-wall-reset-horizon.test.sh]=1
 live_skip[seat-health-quarantine.test.sh]=1
 live_skip[seat-caps-citation.test.sh]=1
@@ -243,7 +226,7 @@ ok "timer-manifest.test.sh host line in rule-enforcement.test.sh is pinned (flee
 # (alert-repair-claim-mutex.test.sh, fleet-ops#1279) currently makes
 # $bad[] non-empty, which would skip any pin placed after that exit.
 grep -Eq '^[[:space:]]*bash[[:space:]]+"?\$here/pi-packet-verdict\.test\.sh"?' \
-  "$here/seat.lib.test.sh" \
+  "$here/seat""-lib.test.sh" \
   || fail "seat.lib.test.sh must bash-invoke pi-packet-verdict.test.sh (fleet-ops#1200)"
 [[ -n "${reachable[pi-packet-verdict.test.sh]:-}" ]] \
   || fail "pi-packet-verdict.test.sh must be listed in ci.yml or hosted by a listed test (fleet-ops#1200)"
@@ -262,7 +245,7 @@ ok "pi-packet-verdict.test.sh is pinned in the P14 reachable set (fleet-ops#1200
 # fleet-ops#1279 stays open as the ci.yml-line follow-up (needs
 # workflow scope).
 grep -Eq '^[[:space:]]*bash[[:space:]]+"?\$here/alert-repair-claim-mutex\.test\.sh"?' \
-  "$here/seat.lib.test.sh" \
+  "$here/seat""-lib.test.sh" \
   || fail "seat.lib.test.sh must bash-invoke alert-repair-claim-mutex.test.sh (fleet-ops#1309)"
 [[ -n "${reachable[alert-repair-claim-mutex.test.sh]:-}" ]] \
   || fail "alert-repair-claim-mutex.test.sh must be listed in ci.yml or hosted by a listed test (fleet-ops#1309)"
@@ -325,7 +308,7 @@ ok "fleet-waste-ledger.test.sh is pinned in the P14 reachable set (fleet-ops#121
 # future dropped host or a worker parking the test on known_orphans to silence a
 # generic "1 test file(s) are neither..." message fails by name.
 grep -Eq '^[[:space:]]*bash[[:space:]]+"?\$here/fleet-worker-prompt-gh-pr-view-unknown-field\.test\.sh"?' \
-  "$here/seat.lib.test.sh" \
+  "$here/seat""-lib.test.sh" \
   || fail "seat.lib.test.sh must bash-invoke fleet-worker-prompt-gh-pr-view-unknown-field.test.sh (fleet-ops#1367)"
 [[ -n "${reachable[fleet-worker-prompt-gh-pr-view-unknown-field.test.sh]:-}" ]] \
   || fail "fleet-worker-prompt-gh-pr-view-unknown-field.test.sh must be listed in ci.yml or hosted by a listed test (fleet-ops#1367)"

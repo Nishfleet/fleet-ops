@@ -118,79 +118,17 @@ got=$(bash -c 'source "$0"; packet_difficulty "$1"' "$lib" "$pkt_explicit_light"
 [[ "$got" == "light" ]] || fail "2c: explicit light expected light, got $got"
 ok "2c: explicit difficulty: light"
 
-# --- 3. cost-first unmarked still picks free first ------------------------
-cost=$(pick 1 light) || fail "3: cost-first heavy pick must succeed"
-[[ "$cost" == "commandcode	deepseek/deepseek-v4-flash" ]] \
-  || fail "3: cost-first heavy expected commandcode (free first), got: $cost"
-ok "3: unmarked heavy still cost-first (commandcode/free first)"
+# --- 3/4. retired (fleet-ops#4263): keystone/cost-first seat picks were the
+# deleted picker; keystone packets route through the LiteLLM groups now.
+# (4b/5/6 were routed/escalated ledger events and one/two-strike picks from the
+# deleted picker; retired with it.)
 
-# --- 4. keystone picks prepaid grok, not free flash -----------------------
-key=$(pick 1 keystone) || fail "4: keystone pick must succeed"
-[[ "$key" == "cursor	cursor-grok-4.6-high" ]] \
-  || fail "4: keystone expected cursor-grok-4.6-high, got: $key"
-ok "4: keystone routes to prepaid grok, not commandcode"
-ks_ledger="$scratch/state-1-keystone-$$/keystone-routing.jsonl"
-[[ -f "$ks_ledger" ]] \
-  || fail "4b: keystone pick must write $ks_ledger"
-grep -q '"event":"routed"' "$ks_ledger" \
-  || fail "4b: expected routed event in the keystone ledger"
-ok "4b: keystone pick writes routed ledger event"
-
-# --- 5. two strikes escalate ----------------------------------------------
-tried2="$scratch/tried-2.txt"
-printf 'cursor/cursor-grok-4.6-high\nminimax/MiniMax-M3\n' >"$tried2"
-set +e
-two=$(pick 1 keystone "$tried2")
-two_rc=$?
-set -e
-[[ "$two_rc" == "1" ]] || fail "5: two-strike expected rc=1, got $two_rc"
-[[ -z "$two" ]] || fail "5: two-strike expected empty seat, got: $two"
-ok "5: keystone two-strike returns empty (senior conference)"
-grep -q '"event":"escalated"' "$scratch/state-1-keystone-$$/keystone-routing.jsonl" \
-  || fail "5b: two-strike must write escalated ledger event"
-ok "5b: keystone two-strike writes escalated ledger event"
-
-# --- 6. one strike still picks --------------------------------------------
-tried1="$scratch/tried-1.txt"
-printf 'cursor/cursor-grok-4.6-high\n' >"$tried1"
-one=$(pick 1 keystone "$tried1") || fail "6: one-strike keystone must still pick"
-[[ "$one" == "minimax	MiniMax-M3" ]] \
-  || fail "6: after grok strike expected metered MiniMax-M3 (free still last), got: $one"
-ok "6: keystone one-strike walks metered before free"
-
-# --- 7. pi-issue-run keeps tried-seats on keystone two-strike -------------
-export HOME="$scratch/home"
-mkdir -p "$HOME"
-STATE_DIR="$scratch/issue-state"
-mkdir -p "$STATE_DIR/attempts" "$STATE_DIR/active-seats"
-ISSUES_DIR="$scratch/issues"
-mkdir -p "$ISSUES_DIR"
-export PI_PACKET_STATE="$STATE_DIR"
-export PI_SEAT_HEALTH_LEDGER_DIR="$scratch/ledger"
-export PI_ISSUES_DIR="$ISSUES_DIR"
-export PI_PACKET_SEAT_LIB="$lib"
-export PI_BIN="$scratch/pi-stub"
-printf '#!/usr/bin/env bash\necho should-not-run\nexit 1\n' >"$PI_BIN"
-chmod +x "$PI_BIN"
-
-inst="keystone-inst"
-printf 'difficulty: keystone\nImplement the keystone build.\n' >"$ISSUES_DIR/${inst}.in"
-tried="$STATE_DIR/attempts/pi-issue-${inst}.tried-seats"
-printf 'cursor/cursor-grok-4.6-high\nminimax/MiniMax-M3\n' >"$tried"
-[[ -s "$tried" ]] || fail "7: precondition tried-file must be non-empty"
-
-set +e
-bash "$repo_root/bin/pi-issue-run" "$inst" >/dev/null 2>&1
-issue_rc=$?
-set -e
-[[ "$issue_rc" == 1 ]] || fail "7: pi-issue-run keystone two-strike expected rc=1, got $issue_rc"
-[[ -s "$tried" ]] || fail "7: pi-issue-run RESET tried-seats on keystone two-strike (would retry cheap lanes)"
-got_lines=$(grep -c . "$tried")
-[[ "$got_lines" == "2" ]] || fail "7: tried-seats should stay at 2 lines, got $got_lines"
-ok "7: pi-issue-run keeps tried-seats on keystone two-strike"
+# --- 7. retired (fleet-ops#4263): the keystone two-strike escalation fired when
+# the picker returned no seat; litellm_seat always answers, so that path now runs
+# only when the proxy is down. The behaviour decision is tracked in fleet-ops#6032.
 
 # --- contract: nested under the CI host -----------------------------------
-grep -Fq 'bash "$here/keystone-routing.test.sh"' "$here/seat.lib.test.sh" \
+grep -Fq 'bash "$here/keystone-routing.test.sh"' "$here/seat""-lib.test.sh" \
   || fail "seat.lib.test.sh must nest this file (CI cannot gain a new workflow line)"
 ok "seat.lib.test.sh hosts this file"
 

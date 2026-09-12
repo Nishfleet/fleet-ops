@@ -595,6 +595,22 @@ main() {
         exit 2
     fi
 
+    # fleet-ops#4474: select this instance's audit kind + prompt. A candidate
+    # carrying the `question` label (not already reserved/conference-approved/
+    # discarded/agent-ready) is a Nish-question audit: the panel votes NISH vs
+    # MATRIX and the tally routes the MATRIX verdicts. Everything else stays a
+    # scout audit (PASS/FAIL). Restored after fleet-ops#4263 (#5993) deleted it
+    # along with the seat-source branch, so every question audit parsed PASS/FAIL.
+    if question_candidate_labels "$repo" "$candidate"; then
+        AUDIT_KIND="question"
+        PROMPT="$QUESTION_PROMPT"
+        log "$repo/#$candidate: question audit (fleet-ops#4474)"
+    fi
+    if [ ! -f "$PROMPT" ]; then
+        log "pi-audit-run: prompt missing: $PROMPT"
+        exit 2
+    fi
+
     local seat provider model group
     case "$role" in
         senior|straitly) group=senior ;;

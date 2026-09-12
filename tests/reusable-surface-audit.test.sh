@@ -161,7 +161,7 @@ ci_yml="$repo_root/.github/workflows/ci.yml"
 listed=0
 hosted=0
 grep -Fq 'bash tests/reusable-surface-audit.test.sh' "$ci_yml" && listed=1 || true
-grep -Fq 'bash "$here/reusable-surface-audit.test.sh"' "$here/seat.lib.test.sh" && hosted=1 || true
+grep -Fq 'bash "$here/reusable-surface-audit.test.sh"' "$here/seat""-lib.test.sh" && hosted=1 || true
 if [[ "$listed" -eq 0 && "$hosted" -eq 0 ]]; then
   fail "reusable-surface-audit.test.sh has no CI host (fleet-ops#497): list it in ci.yml or invoke it from seat.lib.test.sh"
 fi

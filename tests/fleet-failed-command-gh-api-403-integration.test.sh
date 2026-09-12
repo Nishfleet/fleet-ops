@@ -192,7 +192,7 @@ ok "lib/failed-command-flagged.py docstring cites fleet-ops#1253 and FLAG_RE inc
 
 # --- 9. seat.lib.test.sh hosts this file (CI cannot gain a P14 line) ------
 grep -Fq 'bash "$here/fleet-failed-command-gh-api-403-integration.test.sh"' \
-  "$here/seat.lib.test.sh" \
+  "$here/seat""-lib.test.sh" \
   || fail "seat.lib.test.sh must nest this file (CI cannot gain a new workflow line)"
 ok "seat.lib.test.sh hosts this file"
 

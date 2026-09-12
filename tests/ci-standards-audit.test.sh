@@ -651,7 +651,7 @@ bash "$here/sgscan.test.sh"
 bash "$here/pi-issue-run-hang-stall-bench.test.sh"
 # fleet-ops#4602 / PR #4638: hang-bench window scales to observed hang.
 # Hosted here so P14 runs it without a workflow-file edit (same #1622 path).
-bash "$here/pi-issue-run-hang-window-scale.test.sh"
+# pi-issue-run-hang-window-scale.test.sh deleted with the seat-bench window (fleet-ops#4263: the LiteLLM proxy owns cooldown).
 
 # fleet-ops#3709 (part 2/2 of #3264): reviewer-round fallback — when no
 # senior seat is usable, the product worker opens the PR WITHOUT the

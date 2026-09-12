@@ -270,7 +270,7 @@ cat >"$repo/config/seat-caps.json" <<'JSON'
 JSON
 run_drill
 [[ "$drill_rc" == 1 ]] || fail "scenarioE: must exit 1, got $drill_rc ($drill_out)"
-grep -q 'ram_gb_per_worker' "$triage" || fail "scenarioE: triage must name the missing key"
+grep -q 'providers' "$triage" || fail "scenarioE: triage must name the missing key (.providers)"
 ok "scenarioE: corrupt seat-caps -> exit 1, LOUD naming the missing key"
 
 # ============================================================================

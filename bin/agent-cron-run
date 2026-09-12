@@ -117,7 +117,7 @@ trim_packet_sections() {
         # Protected: STANDING orders and sections the packet pins with
         # "never delete this section". The preamble before the first
         # heading is never inside the drop window.
-        if printf '%s\n' "$head_text" | grep -qiE 'STANDING|never delete this section'; then
+        if grep -qiE 'STANDING|never delete this section' <<<"$head_text"; then
             (( i-- )); continue
         fi
         if (( i == ${#sec_lines[@]} - 1 )); then end_line=$(( total_lines + 1 )); else end_line=${sec_lines[i+1]}; fi
@@ -140,7 +140,7 @@ if (( prompt_bytes > PROMPT_E2BIG_CAP_BYTES )); then
     trim_log="$(trim_packet_sections "$PROMPT" "$trimmed_tmp" "$trim_target" || true)"
     trimmed_bytes=$(wc -c <"$trimmed_tmp")
     if [[ -n "$trim_log" ]] && (( trimmed_bytes <= trim_target )); then
-        printf '%s\n' "$trim_log" | grep -q '^trim: dropped' && {
+        grep -q '^trim: dropped' <<<\"$trim_log\" && {
             printf '%s\n' "$trim_log" | while IFS= read -r line; do
                 seat_log "agent-cron-run: $slug packet trim (fleet-ops#5739): $line"
             done
