@@ -592,4 +592,43 @@ esac
     || fail "17: canary unit TimeoutStartSec=$ts is under 90s starvation headroom (2026-09-11 trip: SIGTERM at 30s, nothing printed, no prom write)"
 ok "17: canary unit carries >=90s starvation headroom (TimeoutStartSec=$ts)"
 
+# --- 18: the loud deployment drill (fleet-ops#6054, #5792 accept line).
+# #5792: "re-adding a dead deployment fails the health canary loudly". A
+# populated census that still carries an UNHEALTHY deployment (the
+# 2026-09-12 fault: 4x xkiro deepseek-v4-pro 503s deployed in the active
+# groups, unhealthy_count=4, nobody noticed because organ liveness was
+# green) must exit 1 with a named verdict. After the deployment is benched
+# (census all-healthy) the same canary is a quiet 0.
+printf '{"healthy_endpoints":[{"model_info":{"model_name":"worker-cheap"}}],"unhealthy_endpoints":[{"model_info":{"model_name":"senior"},"error":"litellm.ServiceUnavailableError: OpenAIException - A server error occurred. Please try again."}]}' > "$scratch/census-dead.json"
+FLEET_LITELLM_PROM="$scratch/drill.prom" \
+FLEET_LITELLM_STATE="$scratch/drill.state.json" \
+FLEET_LITELLM_STUB="$scratch/ready-ok.json" \
+FLEET_LITELLM_STUB_HEALTH="$scratch/census-dead.json" \
+FLEET_LITELLM_CONFIG="$scratch/models.yaml" \
+FLEET_LITELLM_STUB_PG=1 \
+FLEET_LITELLM_STUB_REDIS=1 \
+FLEET_LITELLM_STUB_INSTALLED=1 \
+FLEET_LITELLM_NOW=1700000300 \
+python3 "$canary" >"$scratch/drill.out" 2>"$scratch/drill.err" \
+    && fail "18: a deployed dead deployment must fail the canary loudly (fleet-ops#6054 drill), got exit 0"
+grep -q 'health-deployment-unhealthy' "$scratch/drill.err" "$scratch/drill.out" \
+    || fail "18: drill verdict must log health-deployment-unhealthy, got: $(cat "$scratch/drill.err" "$scratch/drill.out")"
+grep -q 'fleet_litellm_proxy_unhealthy_deployments{group="senior"} 1' "$scratch/drill.prom" \
+    || fail "18: prom must keep the unhealthy-deployment gauge scrapeable through the drill exit"
+grep -q 'fleet_litellm_proxy_up{endpoint="readiness"} 1' "$scratch/drill.prom" \
+    || fail "18: drill must NOT conceal organ liveness (proxy_up=1 stays exported)"
+# 18b: the same deployment benched -> the census is all-healthy -> quiet 0.
+printf '{"healthy_endpoints":[{"model_info":{"model_name":"worker-cheap"}},{"model_info":{"model_name":"senior"}}],"unhealthy_endpoints":[]}' > "$scratch/census-benched.json"
+FLEET_LITELLM_PROM="$scratch/drill2.prom" \
+FLEET_LITELLM_STATE="$scratch/drill2.state.json" \
+FLEET_LITELLM_STUB="$scratch/ready-ok.json" \
+FLEET_LITELLM_STUB_HEALTH="$scratch/census-benched.json" \
+FLEET_LITELLM_CONFIG="$scratch/models.yaml" \
+FLEET_LITELLM_STUB_PG=1 \
+FLEET_LITELLM_STUB_REDIS=1 \
+FLEET_LITELLM_STUB_INSTALLED=1 \
+FLEET_LITELLM_NOW=1700000400 \
+python3 "$canary" --quiet || fail "18b: all-healthy census after benching must stay quiet (exit 0)"
+ok "18: deployed dead deployment fails the canary loudly (exit 1); benched, all-healthy census is a quiet 0"
+
 echo "ALL OK: fleet-litellm-organ"

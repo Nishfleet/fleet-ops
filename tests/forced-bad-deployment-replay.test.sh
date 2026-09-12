@@ -99,9 +99,11 @@ EOF
 ok "1-3. policy numbers + fallback-matrix assertions parsed out of config (python block above)"
 
 # Re-assert the group shape so the simulation below is honest.
+# fleet-ops#6054 (2026-09-12): the dead-credit xkiro deepseek-v4-pro rung
+# moved to the benched: block, so senior serves from 2 deployments.
 senior_count=$(python3 -c "import yaml; c=yaml.safe_load(open('$yaml_file')); print(sum(1 for d in c['model_list'] if d['model_name']=='senior'))")
-[[ "$senior_count" == "3" ]] || fail "expected 3 senior deployments, got $senior_count"
-ok "senior group has $senior_count deployments (pareto glm-5.3, xkiro deepseek-v4-pro, synthetic glm-5.3-flash)"
+[[ "$senior_count" == "2" ]] || fail "expected 2 senior deployments, got $senior_count"
+ok "senior group has $senior_count deployments (pareto glm-5.3, synthetic glm-5.3-flash)"
 
 # ---------- 4. forced-bad-deployment simulation on an in-memory copy ----------
 python3 - "$yaml_file" "$scratch" <<'EOF' || exit 1
@@ -149,14 +151,14 @@ assert rs["allowed_fails"] <= 1, "allowed_fails must bench on <=1 failure"
 assert rs["cooldown_time"] >= 300, "cooldown must be >=5min"
 assert rs["allowed_fails_policy"]["AuthenticationErrorAllowedFails"] == 0
 # Remaining healthy serving surface: the other 2 senior rungs + the
-# fallback group worker-capable (2 deployments of its own upstream).
-assert len(seni) == 4, "injected copy should have 4 senior deployments (3 live + 1 dead)"
+# fallback group worker-capable (its own healthy upstreams).
+assert len(seni) == 3, "injected copy should have 3 senior deployments (2 live + 1 dead)"
 live_rungs = [d for d in seni[1:] if "127.0.0.1" not in d["api_base"]]
-assert len(live_rungs) == 3, "expected 3 live rungs remaining"
+assert len(live_rungs) == 2, "expected 2 live rungs remaining"
 fb = {k: v for e in rs["fallbacks"] for k, v in e.items()}
 assert fb["senior"] == ["worker-capable"], "senior fallback must land on worker-capable"
 assert "worker-capable" in [d["model_name"] for d in w["model_list"]]
-print("OK: forced-bad-deployment simulation: 1st-pick dead rung benched by allowed_fails=1/cooldown=300/auth-threshold=0; 3 live rungs + worker-capable fallback keep serving")
+print("OK: forced-bad-deployment simulation: 1st-pick dead rung benched by allowed_fails=1/cooldown=300/auth-threshold=0; 2 live rungs + worker-capable fallback keep serving")
 EOF
 ok "4. in-memory injected-dead-deployment replay holds"
 
