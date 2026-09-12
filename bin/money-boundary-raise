@@ -181,6 +181,24 @@ fleet_starved() {
 # SINCE_HOURS. A guard that fails forever on historical snapshots is the
 # fleet-ops#1116 alarm-blindness class.
 
+# boundary_line_recorded <provider> — 0 when the provider's wall has an
+# audit record, in EITHER place the raise path can put it:
+#   - NISH-ESCALATIONS.md MONEY-BOUNDARY line (fleet was starved -> Nish paged)
+#   - money-boundary-pages.log 'suppressed provider=<p>' line (fleet-ops#4627:
+#     fleet not starved -> bench happens, page intentionally suppressed and
+#     recorded ONLY in the pages log)
+# fleet-ops#4627 benches a non-starved dry provider WITHOUT writing the
+# NISH-ESCALATIONS line, so a --check that demanded the ledger line alone
+# failed forever on every suppressed raise (lived 2026-09-12: openrouter,
+# xai-oauth, mergegateway walls all unpaged-by-design, heartbeat rc=1 every
+# run). The suppression is the decision; the pages-log line is its record.
+boundary_line_recorded() {
+    local p="$1"
+    grep -qE '^[0-9]{4}-[0-9]{2}-[0-9]{2}T.* MONEY-BOUNDARY provider='"$p"'([[:space:]]|$)' "$NISH" 2>/dev/null && return 0
+    grep -qE 'suppressed .* provider='"$p"'([[:space:]]|$)' "$PAGES_LOG" 2>/dev/null && return 0
+    return 1
+}
+
 # money_wall_row <file> — 0 if this JSON is a far-future money wall.
 money_wall_row() {
     local f="$1" src reason writer usable bench wall_iso usable_s remain
@@ -249,8 +267,8 @@ if [ "$CHECK_MODE" -eq 1 ]; then
             money_wall_row "$f" || continue
             p="$(jq -r '.provider // empty' "$f" 2>/dev/null || true)"
             [ -n "$p" ] || p="$(basename "$f" | cut -d_ -f1)"
-            if ! grep -qE '^[0-9]{4}-[0-9]{2}-[0-9]{2}T.* MONEY-BOUNDARY provider='"$p"'([[:space:]]|$)' "$NISH"; then
-                echo "FAIL-LOUD: seat $f is a far-future money wall for provider=<$p> but NISH-ESCALATIONS.md has no MONEY-BOUNDARY provider=<$p> line" >&2
+            if ! boundary_line_recorded "$p"; then
+                echo "FAIL-LOUD: seat $f is a far-future money wall for provider=<$p> but no MONEY-BOUNDARY ledger line (or suppressed-page record) exists" >&2
                 fail=1
             fi
         done < <(find "$SEAT_DIR" -type f -name '*.json' 2>/dev/null)
@@ -268,8 +286,8 @@ if [ "$CHECK_MODE" -eq 1 ]; then
                 money_wall_row "$f" || continue
                 p="$(jq -r '.provider // empty' "$f" 2>/dev/null || true)"
                 [ -n "$p" ] || continue
-                if ! grep -qE '^[0-9]{4}-[0-9]{2}-[0-9]{2}T.* MONEY-BOUNDARY provider='"$p"'([[:space:]]|$)' "$NISH"; then
-                    echo "FAIL-LOUD: prebench $f is a money wall for provider=<$p> but no MONEY-BOUNDARY provider=<$p> ledger line exists" >&2
+                if ! boundary_line_recorded "$p"; then
+                    echo "FAIL-LOUD: prebench $f is a money wall for provider=<$p> but no MONEY-BOUNDARY ledger line (or suppressed-page record) exists" >&2
                     fail=1
                 fi
             done < <(find "$d" -maxdepth 1 -type f -name '*.json' 2>/dev/null)
