@@ -28,6 +28,11 @@ PACKET_GH="${PACKET_GH:-gh}"
 # measure feed uses (token from a deploy-ci.env-style file, D1 REST query).
 # A failed read prints `signups_<field>=UNAVAILABLE:<why>` — never a
 # fabricated 0, never a silent drop, never a scout-run failure.
+#
+# ORDERING: PACKET_CF_FILE must be declared BEFORE the PACKET_PRODUCT_CF_FILE
+# default reads it under set -u (auditor 2026-09-12: pi-scout@fleet-ops
+# tripped `rule 31: PACKET_CF_FILE: unbound variable`, run died in 2s).
+PACKET_CF_FILE="${PACKET_CF_FILE:-$HOME/.config/cloudflare/deploy-ci.env}"
 PACKET_PRODUCT_CF_FILE="${PACKET_PRODUCT_CF_FILE:-$PACKET_CF_FILE}"
 PACKET_PRODUCT_D1_ACCOUNT="${PACKET_PRODUCT_D1_ACCOUNT:-f670a698e17bf160c8e4679823e68916}"
 PACKET_PRODUCT_D1_DATABASE="${PACKET_PRODUCT_D1_DATABASE:-746c6e3d-782e-443a-82d6-28ca93a16294}"
@@ -39,7 +44,6 @@ PACKET_JQ="${PACKET_JQ:-jq}"
 # source that is missing, unreachable, permission-denied, or empty is DROPPED
 # from the usage block with a visible marker, never failing the scout run.
 PACKET_0509_DIR="${PACKET_0509_DIR:-$HOME/workspaces/products/0509}"
-PACKET_CF_FILE="${PACKET_CF_FILE:-$HOME/.config/cloudflare/deploy-ci.env}"
 PACKET_ZONE_NAME="${PACKET_ZONE_NAME:-0509.io}"
 PACKET_CF_ZONE="${PACKET_CF_ZONE:-}"
 PACKET_USAGE_SOURCES="${PACKET_USAGE_SOURCES:-1}"
