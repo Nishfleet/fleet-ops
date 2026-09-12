@@ -149,12 +149,7 @@ has_marker() {
         || [[ "$s" == *"403"* ]]
 }
 
-# The gate marker is stricter: a real measurement command (bin/...). The
-# rule's origin constant must be backed by a runnable measurement, not just
-# any observed signal.
-has_gate_marker() {
-    [[ "${1,,}" == *"bin/"* ]]
-}
+# (has_gate_marker deleted with the retired gate layer, fleet-ops#4263 P3b.)
 
 # Concatenate every `_comment_*` / `_note` / `_hard_cap` string at the top
 # level of seat-caps.json (the file-scope citations).
