@@ -3244,6 +3244,15 @@ def _escalations_24h():
         "init.scope",
         "app-*.scope",
         "live-dummy*",
+        # fleet-ops#5456 (E/H kill-three-ways drill): the chain-e2e-drill
+        # spawns live-dummy-resume-drill-* units whose deliberate death is
+        # the drill asserting the resume+dispatch contract. unit-escalation-write
+        # refuses them under *resume-drill-* (belt-and-suspenders on top of
+        # live-dummy*); mirror the writer here so the drill never storms
+        # FleetEscalationStorm (the chain-e2e-drill live transcript asserts
+        # drill deaths are recorded against the drill sink, not counted as
+        # fleet escalation volume).
+        "*resume-drill-*",
         # Canaries / orchestrator organs: their deliberate fail-loud escalations
         # are expected, not a flapping worker.
         "fleet-heartbeat*",
