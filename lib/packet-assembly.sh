@@ -23,6 +23,18 @@ PACKET_DIRECTION_LEDGER_FILE="${PACKET_DIRECTION_LEDGER_FILE:-$HOME/workspaces/t
 PACKET_DIRECTION_SECTION="${PACKET_DIRECTION_SECTION:-2026-09-09 — 0509 direction}"
 PACKET_GH="${PACKET_GH:-gh}"
 
+# fleet-ops#5699: live 0509 signup metrics for the Direction block, read at
+# packet assembly from production D1 through the same sanctioned seam the
+# measure feed uses (token from a deploy-ci.env-style file, D1 REST query).
+# A failed read prints `signups_<field>=UNAVAILABLE:<why>` — never a
+# fabricated 0, never a silent drop, never a scout-run failure.
+PACKET_PRODUCT_CF_FILE="${PACKET_PRODUCT_CF_FILE:-$PACKET_CF_FILE}"
+PACKET_PRODUCT_D1_ACCOUNT="${PACKET_PRODUCT_D1_ACCOUNT:-f670a698e17bf160c8e4679823e68916}"
+PACKET_PRODUCT_D1_DATABASE="${PACKET_PRODUCT_D1_DATABASE:-746c6e3d-782e-443a-82d6-28ca93a16294}"
+PACKET_D1_TIMEOUT="${PACKET_D1_TIMEOUT:-15}"
+PACKET_CURL="${PACKET_CURL:-curl}"
+PACKET_JQ="${PACKET_JQ:-jq}"
+
 # 0509 usage-telemetry seams (fleet-ops#3149). Each source is best-effort: a
 # source that is missing, unreachable, permission-denied, or empty is DROPPED
 # from the usage block with a visible marker, never failing the scout run.
@@ -106,6 +118,56 @@ packet_north_star() {
     printf '\n'
 }
 
+# _packet_d1q <label> <sql>
+# fleet-ops#5699: one D1 REST query; echoes `label=<value|UNAVAILABLE:why>`.
+# Mirrors the measure-feed convention (agent-state/fleet-landing-watch/
+# measure.sh): a token-missing/file-missing/timeout/bad-response read is an
+# explicit UNAVAILABLE marker, never a fabricated 0.
+_packet_d1q() {
+    local label="$1" sql="$2"
+    local token=""
+    if [[ -f "$PACKET_PRODUCT_CF_FILE" ]]; then
+        token=$(awk -F= '/^CLOUDFLARE_API_TOKEN=/{print $2; exit}' "$PACKET_PRODUCT_CF_FILE" 2>/dev/null)
+    fi
+    if [[ -z "$token" ]]; then
+        if [[ ! -f "$PACKET_PRODUCT_CF_FILE" ]]; then
+            printf '%s=UNAVAILABLE:cf-token-file-missing(%s)\n' "$label" "$PACKET_PRODUCT_CF_FILE"
+        else
+            printf '%s=UNAVAILABLE:no-cf-token\n' "$label"
+        fi
+        return 0
+    fi
+    local body
+    body=$(printf '{"sql":%s}' "$(command "$PACKET_JQ" -nc --arg q "$sql" '$q' 2>/dev/null)" | \
+        command "$PACKET_CURL" -s -m "$PACKET_D1_TIMEOUT" -X POST \
+        -H "Authorization: Bearer $token" -H "Content-Type: application/json" \
+        "https://api.cloudflare.com/client/v4/accounts/$PACKET_PRODUCT_D1_ACCOUNT/d1/database/$PACKET_PRODUCT_D1_DATABASE/query" \
+        --data @- 2>/dev/null)
+    local n
+    n=$(printf '%s' "$body" | command "$PACKET_JQ" -r 'if .success==true then (.result[0].results[0].n) else empty end' 2>/dev/null)
+    if [[ -z "$n" || "$n" == "null" ]]; then
+        local why
+        why=$(printf '%s' "$body" | command "$PACKET_JQ" -r '.errors[0].message // "bad-response"' 2>/dev/null)
+        printf '%s=UNAVAILABLE:%s\n' "$label" "$(printf '%s' "$why" | cut -c1-120)"
+    else
+        printf '%s=%s\n' "$label" "$n"
+    fi
+}
+
+# packet_direction_live_metric
+# fleet-ops#5699: print the live-metric line for the Direction block.
+# Three production-D1 reads (signups_24h, signups_30d, last_signup) joined
+# onto one line. Every individual read failure degrades to
+# `UNAVAILABLE:<why>` on its own field — the line is still printed so the
+# scout always sees the machine-readable signal shape.
+packet_direction_live_metric() {
+    local s24 s30 last
+    s24=$(_packet_d1q signups_24h "SELECT COUNT(*) AS n FROM user WHERE createdAt >= datetime('now','-1 day');")
+    s30=$(_packet_d1q signups_30d "SELECT COUNT(*) AS n FROM user WHERE createdAt >= datetime('now','-30 day');")
+    last=$(_packet_d1q last_signup "SELECT MAX(createdAt) AS n FROM user;")
+    printf 'live metric (production D1, read at packet assembly): %s %s %s\n' "$s24" "$s30" "$last"
+}
+
 # packet_direction_block
 # fleet-ops#4562 (accept 4): the 0509 scout RESEARCH CONTEXT gains a
 # **Direction** block carrying the current product-direction decision fed
@@ -127,7 +189,9 @@ packet_direction_block() {
         if [[ -n "$frag" ]]; then
             printf '## Direction (current product direction — cite as `source: direction#4518`)\n\n'
             printf '%s\n\n' "$frag"
-            printf 'While this entry stands and the target metric has not moved, at least half of the 0509 candidates you file MUST cite the Direction block (`source: direction#4518`) — see scout prompt A.6/A.7.\n\n'
+            printf '> live: %s\n\n' "$(packet_direction_live_metric)"
+            printf 'Evaluate the A.7 direction half-cap and the A.8 acquisition-first condition (`signups-30d == 0`, fleet-ops#4518 + #4657) against the live `signups_30d=` value above, NOT against the ledger snapshot prose — the ledger entry may be frozen while the production metric has moved.\n\n'
+            printf 'While this entry stands, at least half of the 0509 candidates you file MUST cite the Direction block (`source: direction#4518`) — see scout prompt A.6/A.7.\n\n'
             printed=1
         fi
     fi
