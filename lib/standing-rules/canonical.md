@@ -33,19 +33,9 @@ it as "no news is good news".
 <!-- END SECTION: idle-fleet-alarm -->
 
 <!-- SECTION: one-fleet-rule -->
-## One fleet (Nish, 2026-08-21; machinery superseded 2026-08-23)
+## One fleet (Nish, 2026-08-21; machinery superseded 2026-08-23 — corrected 2026-08-25)
 
-**No second dispatcher, ever.** A second fleet spends its effort on itself
-(fleet2 hit 64% self-maintenance while fleet1 landed 452 product items in the
-same window). Success metric stays: merged product PRs/day (baseline 133 on
-2026-08-14).
-
-The fleet1 machinery this rule named — `agent-state/lanes` lane-manager, idle
-alarm, stall watchdogs, improvement loops — was DELETED on 2026-08-23 and
-replaced by Pi (see routing below). The principle stands; the implementation is
-gone. Do not rebuild a dispatcher. Full history: vault
-`_system/shared-memory/global-standing-rules.md` -> "One fleet" and
-"Everything runs through Pi".
+Full text: `/home/nish/workspaces/tooling/nish-vault/_system/shared-memory/standing-rules-archive.md` → `## One fleet (Nish, 2026-08-21; machinery superseded 2026-08-23 — corrected 2026-08-25)`. Enforced by the rule-enforcement matrix.
 <!-- END SECTION: one-fleet-rule -->
 
 <!-- SECTION: nish-preimplementation-contract -->
