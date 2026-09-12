@@ -333,7 +333,9 @@ grep -qE '^ExecStopPost=-?/home/nish/.local/bin/pi-salvage-worktree$' \
 ok "MANIFEST, weekly GC drop-in, and pi-issue@.service are wired"
 
 # --- 8. live SIGTERM drill -------------------------------------------------
-if ! systemctl --user is-system-running >/dev/null 2>&1 \
+if [[ "${GITHUB_ACTIONS:-}" == "true" ]]; then
+    echo "SKIP: GitHub Actions — live SIGTERM salvage drill needs pi-systemd-run + push credentials (hermetic scenarios above cover the logic)"
+elif ! systemctl --user is-system-running >/dev/null 2>&1 \
     && ! systemctl --user show -p Version >/dev/null 2>&1; then
     echo "SKIP: no user systemd — live SIGTERM salvage drill not run here"
     echo "ALL pi-salvage-worktree tests passed"
