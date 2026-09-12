@@ -172,6 +172,41 @@ grep -qE '^last-rulebook-redteam-run:' "$plan" \
   || fail "runner must store last-heading-count"
 ok "drill: sibling backups, gap-audit+agent-ready file, stamp"
 
+# --- 2c. in-checkout rule files back up to the report dir, never a sibling --
+# fleet-ops#5687: in production this script's checkout IS the deploy clone
+# (the installed symlink resolves there), so a sibling .pre-rulebook-redteam-*
+# next to <clone>/AGENTS.md dirties the live install source and trips
+# DEPLOY-CHECK-DIRTY-CLONE on every run (live dirt 2026-09-12). The backup
+# must land in the report dir instead.
+: >"$GH_CREATED"
+: >"$GH_CREATE_LOG"
+rm -rf "$scratch/state"
+mkdir -p "$scratch/state"
+set +e
+incheckout_out=$(
+  RULEBOOK_DRILL=1 \
+  RULEBOOK_DRILL_FINDINGS="$fixture" \
+  RULEBOOK_STATE_DIR="$scratch/state" \
+  RULEBOOK_PLAN_FILE="$plan" \
+  RULEBOOK_STANDING_RULES="$scratch/rules/standing.md" \
+  RULEBOOK_RULE_FILES="$repo_root/AGENTS.md" \
+  RULEBOOK_FAKE_NOW="2026-08-27T04:15:00Z" \
+    "$bin" 2>&1
+)
+incheckout_rc=$?
+set -e
+[[ "$incheckout_rc" == "0" ]] || fail "in-checkout drill should exit 0, got $incheckout_rc ($incheckout_out)"
+if compgen -G "$repo_root/AGENTS.md.pre-rulebook-redteam-*" >/dev/null; then
+  fail "in-checkout rule file must NOT get a sibling backup inside the checkout (dirties the deploy clone)"
+fi
+rep_backup="$scratch/state/reports/2026_08_27T04_15_00Z/AGENTS.md.pre-rulebook-redteam-20260827T041500Z"
+[[ -f "$rep_backup" ]] || fail "in-checkout backup must land in the report dir: $(find "$scratch/state" -name '*.pre-rulebook-redteam-*')"
+cmp -s "$repo_root/AGENTS.md" "$rep_backup" || fail "report-dir backup must be a full copy of the source"
+grep -q "undo: cp $rep_backup $repo_root/AGENTS.md" \
+  "$scratch/state/reports/2026_08_27T04_15_00Z/backups.txt" \
+  || fail "manifest must still carry the undo path for the redirected backup"
+ok "in-checkout rule file backs up to the report dir, no clone dirt (fleet-ops#5687)"
+
 # --- 2b. cap overflow: LOUD + durable, not a silent drop (fleet-ops#5441) --
 fixture_cap="$repo_root/tests/fixtures/rulebook-redteam-drill-findings-cap.json"
 [[ -f "$fixture_cap" ]] || fail "missing $fixture_cap"

@@ -179,7 +179,10 @@ evidence: journalctl --user -u fleet-deploy-check.service | grep DIRTY-CLONE
 accept: name the writer before touching anything (active pi-issue@* units, open PRs touching the named paths). Salvage-or-reconcile: discard an in-clone edit when an open PR already carries the identical change, else salvage it into the writer's claim worktree and PR it. Never commit on the clone. Done means git -C $CHECKOUT status --porcelain is empty."
     out_file="${DIRTY_STATE_DIR}/dirty-clone-filed.out"
     rc=0
-    "$ISSUE_FILE_BIN" file -R "$DIRTY_ISSUE_REPO" --title "$title" --body "$body" >"$out_file" 2>&1 || rc=$?
+    # --label agent-ready: the intake only claims issues carrying that label
+    # (`gh issue list -l agent-ready`); a label-less filing is never claimed —
+    # the same silent-drop class fleet-ops#5687 was reopened for.
+    "$ISSUE_FILE_BIN" file -R "$DIRTY_ISSUE_REPO" --title "$title" --body "$body" --label agent-ready >"$out_file" 2>&1 || rc=$?
     if (( rc == 0 )); then
         : >"$(dirty_filed_file)"
         log "DIRTY-CLONE auto-filed issue (${streak} consecutive ticks): $(head -1 "$out_file" 2>/dev/null || echo filed)"

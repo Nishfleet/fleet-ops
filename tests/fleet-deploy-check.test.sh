@@ -326,6 +326,8 @@ grep -q "ISSUE-FILE-INVOKED args=file -R Nishfleet/fleet-ops --title DEPLOY-CHEC
   || fail "must file via fleet-issue-file against Nishfleet/fleet-ops with a DIRTY-CLONE title"
 grep -q "signal: deploy-check/dirty-clone" "$ISSUE_FILE_SPY_LOG" \
   || fail "filed body must carry the signal: deploy-check/dirty-clone marker"
+grep -q -- "--label agent-ready" "$ISSUE_FILE_SPY_LOG" \
+  || fail "auto-filed issue must carry --label agent-ready — the intake only lists -l agent-ready, an unlabeled filing is never claimed (fleet-ops#5687)"
 : > "$ISSUE_FILE_SPY_LOG"
 rc=$(dirty_autofile_run)                    # 4th consecutive tick
 [[ "$rc" == "0" ]] || fail "dirty tick 4 should exit 0 (got $rc)"

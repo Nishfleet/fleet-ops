@@ -7,19 +7,22 @@
 # merged, and a stale-observation audit re-filed the same blocker as #5666
 # at 00:41Z (zero open issues named the PR, so nothing deduped it).
 #
-# The fix dedupe-checks filings against recently-closed canonicals, gated on
-# BOTH proofs of delivery: stateReason=COMPLETED and a non-empty
-# closedByPullRequestsReferences (a bare completed close is the
-# closed-but-undelivered class, fleet-ops#5479, and must never suppress).
+# fleet-ops#5687 (reopened): the #5666 fix suppressed the re-filing into a
+# COMMENT on the closed canonical — a silent drop, since nobody claims a
+# closed issue and the intake never sees it. A closed-delivered canonical
+# match now re-files as a NEW claimable issue that links the canonical
+# (recurrence marker), plus a best-effort link-back comment on the canonical.
 #
 # Proves, offline with a fake gh:
-#   1. A filing matching a closed-delivered canonical is commented on the
-#      canonical, not re-filed (action=commented, canonical_state=closed).
-#   2. A completed close with NO closing-PR reference does not suppress.
-#   3. A NOT_PLANNED close does not suppress (mass-close guard's fight).
-#   4. A delivered close older than the window does not suppress.
+#   1. A filing matching a closed-delivered canonical is re-FILED
+#      (action=filed-recurrence, canonical_state=closed, recurrence-of
+#      marker in the body, agent-ready defaulted when no labels passed)
+#      and the canonical gets a link-back comment.
+#   2. A completed close with NO closing-PR reference does not link.
+#   3. A NOT_PLANNED close does not link (mass-close guard's fight).
+#   4. A delivered close older than the window does not link.
 #   5. FLEET_ISSUE_FILE_CLOSED_HOURS=0 disables the closed corpus.
-#   6. The re-post guard still applies on the closed canonical.
+#   6. An OPEN duplicate still wins over a closed canonical (comment path).
 set -euo pipefail
 
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -52,7 +55,12 @@ if [[ "$1 $2" == "issue list" ]]; then
 elif [[ "$1 $2" == "issue comment" ]]; then
   echo "commented $3" >>"${GH_COMMENTED:-/dev/null}"
 elif [[ "$1 $2" == "issue create" ]]; then
-  echo "created" >>"${GH_CREATED:-/dev/null}"
+  echo "created args=$*" >>"${GH_CREATED:-/dev/null}"
+  prev=""; for a in "$@"; do
+    [[ "$prev" == "--body-file" ]] && cat "$a" >>"${GH_CREATE_BODY:-/dev/null}"
+    [[ "$prev" == "--body" ]] && printf '%s\n' "$a" >>"${GH_CREATE_BODY:-/dev/null}"
+    prev="$a"
+  done
   echo "https://github.com/Nishfleet/fleet-ops/issues/9999"
 elif [[ "$1 $2" == "issue view" ]]; then
   if [[ -f "${GH_COMMENT_FIXTURE:-/dev/null}" ]]; then cat "${GH_COMMENT_FIXTURE}"; else printf '{"comments":[]}\n'; fi
@@ -64,10 +72,12 @@ chmod +x "$scratch/fakebin/gh"
 export GH="$scratch/fakebin/gh"
 export GH_COMMENTED="$scratch/commented"
 export GH_CREATED="$scratch/created"
+export GH_CREATE_BODY="$scratch/create-body"
 export GH_OPEN_JSON="$scratch/gh-open.json"
 export GH_CLOSED_JSON="$scratch/gh-closed.json"
 : >"$GH_COMMENTED"
 : >"$GH_CREATED"
+: >"$GH_CREATE_BODY"
 printf '[]\n' >"$GH_OPEN_JSON"
 printf '{"comments":[]}\n' >"$scratch/comments-empty.json"
 export GH_COMMENT_FIXTURE="$scratch/comments-empty.json"
@@ -83,29 +93,39 @@ run_file() {
     >"$scratch/out.json" 2>"$scratch/err"
 }
 
-# --- 1. Closed-delivered canonical suppresses the re-filing ------------------
+# --- 1. Closed-delivered canonical re-files as a NEW claimable issue --------
+# fleet-ops#5687 (reopened): commenting on the closed ticket was a silent
+# drop — nobody claims a closed issue. The match must produce a NEW issue
+# that links the canonical, claimable by the intake (agent-ready by default).
 cat >"$GH_CLOSED_JSON" <<JSON
 [{"number":5652,"title":"$title","body":"$body","url":"https://github.com/Nishfleet/fleet-ops/issues/5652","labels":[],"closedAt":"$now_iso","stateReason":"COMPLETED","closedByPullRequestsReferences":[{"number":5544}]}]
 JSON
 run_file || fail "run 1 exited nonzero"
-python3 -c "import json;d=json.load(open('$scratch/out.json'));assert d['action']=='commented',d;assert d.get('canonical_state')=='closed',d;assert d['number']==5652,d" \
-  || fail "run 1 should comment on the closed canonical"
-[[ -s "$GH_COMMENTED" ]] || fail "expected the dedupe comment posted on the closed canonical"
-[[ ! -s "$GH_CREATED" ]] || fail "closed-canonical match must not create"
-grep -q "closed delivered canonical" "$scratch/err" || fail "missing closed-canonical note on stderr"
-ok "closed-delivered canonical suppresses re-filing, comments on canonical"
+python3 -c "import json;d=json.load(open('$scratch/out.json'));assert d['action']=='filed-recurrence',d;assert d.get('canonical_state')=='closed',d;assert d['number']==9999,d;assert d['existing']=='Nishfleet/fleet-ops#5652',d" \
+  || fail "run 1 should re-file a new issue linking the closed canonical"
+[[ -s "$GH_CREATED" ]] || fail "closed-canonical match must create a new issue"
+grep -q -- "--label agent-ready" "$GH_CREATED" \
+  || fail "unlabeled recurrence filing must default to agent-ready (claimable)"
+grep -q "recurrence-of: Nishfleet/fleet-ops#5652" "$GH_CREATE_BODY" \
+  || fail "filed body must carry the recurrence-of marker linking the canonical"
+[[ -s "$GH_COMMENTED" ]] || fail "expected the link-back comment on the closed canonical"
+grep -q "commented 5652" "$GH_COMMENTED" \
+  || fail "link-back comment must land on the closed canonical #5652"
+ok "closed-delivered canonical re-files as NEW agent-ready issue + link-back comment"
 
-# --- 6. Re-fire with the dedupe comment already present posts nothing --------
-cat >"$scratch/comments-dup.json" <<JSON
-{"comments":[{"body":"Same-problem duplicate suppressed by the fleet-ops#1212 filing gate (score=0.95).\n\nWould have filed in \`Nishfleet/fleet-ops\`:\n\n**$title**\n\nexcerpt"}]}
+# --- 6. Re-fire while the recurrence issue is open dedupes onto it ----------
+# The recurrence issue is OPEN, so the open corpus — not the closed corpus —
+# is the dedupe target: the second filing comments on the open issue.
+cat >"$GH_OPEN_JSON" <<JSON
+[{"number":9999,"title":"$title","body":"recurrence-of marker\n\n$body","url":"https://github.com/Nishfleet/fleet-ops/issues/9999","labels":[{"name":"agent-ready"}]}]
 JSON
-export GH_COMMENT_FIXTURE="$scratch/comments-dup.json"
-: >"$GH_COMMENTED"
-run_file || fail "run 2 (already-commented) exited nonzero"
-[[ ! -s "$GH_COMMENTED" ]] || fail "re-post must be suppressed on the closed canonical"
-grep -q "already commented" "$scratch/err" || fail "missing already-commented note"
-ok "idempotent re-post guard holds on the closed canonical"
-export GH_COMMENT_FIXTURE="$scratch/comments-empty.json"
+: >"$GH_CREATED"; : >"$GH_COMMENTED"; : >"$GH_CREATE_BODY"
+run_file || fail "run 2 (recurrence open) exited nonzero"
+python3 -c "import json;d=json.load(open('$scratch/out.json'));assert d['action']=='commented',d;assert d['number']==9999,d;assert 'canonical_state' not in d,d" \
+  || fail "re-fire while the recurrence issue is open must comment on it"
+[[ ! -s "$GH_CREATED" ]] || fail "open duplicate must not re-file"
+ok "re-fire while recurrence issue is open dedupes onto the open issue"
+printf '[]\n' >"$GH_OPEN_JSON"
 
 # --- 2. Completed close with no delivering PR must not suppress --------------
 cat >"$GH_CLOSED_JSON" <<JSON
