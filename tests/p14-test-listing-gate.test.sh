@@ -964,4 +964,16 @@ grep -Eq '^[[:space:]]*bash[[:space:]]+"?\$here/console-truth-pytest\.test\.sh"?
   || fail "console-truth-pytest.test.sh must not be a known orphan (fleet-ops#5072)"
 ok "console-truth-pytest.test.sh host line in console-tile-verify.test.sh is pinned (fleet-ops#5072)"
 
+# fleet-ops#5616: hard-pin the host line for the rate-limit pre-check cadence
+# test. Hosted by ci-standards-audit.test.sh (which ci.yml lists); the worker
+# App cannot push .github/workflows/**, so the host line is the only CI path.
+grep -Eq '^[[:space:]]*bash[[:space:]]+"?\$here/pi-intake-rate-limit-precheck-cadence\.test\.sh"?' \
+  "$here/ci-standards-audit.test.sh" \
+  || fail "ci-standards-audit.test.sh must bash-invoke pi-intake-rate-limit-precheck-cadence.test.sh (fleet-ops#5616)"
+[[ -n "${reachable[pi-intake-rate-limit-precheck-cadence.test.sh]:-}" ]] \
+  || fail "pi-intake-rate-limit-precheck-cadence.test.sh must be listed in ci.yml or hosted by a listed test (fleet-ops#5616)"
+[[ -z "${known_orphan_set[pi-intake-rate-limit-precheck-cadence.test.sh]:-}" ]] \
+  || fail "pi-intake-rate-limit-precheck-cadence.test.sh must not be a known orphan (fleet-ops#5616)"
+ok "pi-intake-rate-limit-precheck-cadence.test.sh host line in ci-standards-audit.test.sh is pinned (fleet-ops#5616)"
+
 echo "OK: p14-test-listing-gate.test.sh: P14 test list is closed"

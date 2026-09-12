@@ -845,3 +845,11 @@ bash "$here/fleet-cpu-sampler-ready.test.sh"
 # drop of this host line fails by name. Hermetic (scratch MANIFEST + scratch
 # HOME + fake checkout, stubbed systemctl, no live install).
 bash "$here/helper-symlink-resolution.test.sh"
+
+# fleet-ops#5616: rate-limit pre-check cadence alignment. Hosted here (a
+# listed test) so P14 runs it without a workflow-file edit; the worker App
+# cannot push .github/workflows/**. The named pin in
+# tests/p14-test-listing-gate.test.sh is the class-prevention so a future
+# drop of this host line fails by name. Hermetic (scratch state-file stubs,
+# no gh/network/systemd).
+bash "$here/pi-intake-rate-limit-precheck-cadence.test.sh"
