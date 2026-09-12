@@ -112,6 +112,11 @@
       "class": "prepaid-quota",
       "quota_window": "monthly",
       "note": "LLM Gateway DevPass (Nish 2026-09-11): $29/mo subscription minting $87/mo of metered credits — a fixed prepaid credit pool that runs out, not open-ended PAYG. Worker seat, exactly one model: glm-5.3-flash (cheapest compliant flash, $0.088/$0.25). cap 1 total; paid lanes trickle, never flood. Last in prepaid_providers_in_order, before metered openrouter/deepseek."
+    },
+    {
+      "id": "nebius",
+      "class": "metered",
+      "note": "Nebius Token Factory (Nish 2026-09-12): OpenAI-compatible PAYG at https://api.tokenfactory.nebius.com/v1, key via /home/nish/.config/fleet-ops/seats/nebius.env. Worker seat, exactly one model: zai-org/GLM-5.3-Flash ($0.15/M in / $0.50/M out, 524288 ctx, reasoning). cap 1 everywhere; paid lanes trickle, never flood. First in the metered bucket (enumerates ahead of openrouter), after the prepaid tail; deepseek direct stays last via last_resort."
     }
   ]
 }

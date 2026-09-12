@@ -1,6 +1,36 @@
 {
   "_comment": "fleet2 / PI TUNING PACKET (2026-08-18) \u00a75: register endpoints properly. MiniMax is a custom provider not in the built-in catalog \u2014 register it explicitly so the cache prefix metadata is right. Groq and OpenRouter are built into pi, but we model-override the gpt-oss-20b entry Groq runs so the cacheRead price and 131k context are correct. 2026-09-06 fleet-ops#3722: this file is now MANIFEST-managed (config/pi-models.json -> ~/.pi/agent/models.json, installed as a copy by install.sh). Edit the repo copy, never this live file by hand. The four openrouter :free seats (minimax-m3, glm-5.2, nemotron-3-ultra-550b, gemma-4-31b-it) are registered in modelOverrides with cost 0 so enumerate_seats emits them; caps live in config/seat-caps.json. openrouter/xkiro apiKeys were literal secrets in this file \u2014 they are now !command refs like every other provider (no secret in the repo).",
   "providers": {
+    "nebius": {
+      "name": "Nebius Token Factory (metered PAYG)",
+      "baseUrl": "https://api.tokenfactory.nebius.com/v1",
+      "api": "openai-completions",
+      "apiKey": "!cut -d= -f2 /home/nish/.config/fleet-ops/seats/nebius.env",
+      "models": [
+        {
+          "id": "zai-org/GLM-5.3-Flash",
+          "name": "GLM 5.3 Flash via Nebius Token Factory (metered)",
+          "reasoning": true,
+          "input": [
+            "text",
+            "image"
+          ],
+          "contextWindow": 524288,
+          "maxTokens": 65536,
+          "cost": {
+            "input": 0.15,
+            "output": 0.5,
+            "cacheRead": 0.15,
+            "cacheWrite": 0
+          }
+        }
+      ],
+      "compat": {
+        "supportsDeveloperRole": false,
+        "supportsReasoningEffort": true
+      },
+      "_comment_nebius": "2026-09-12 seat wire-up (Nish packet, mirror of #5435 synthetic/devpass): Nebius Token Factory OpenAI-compatible PAYG endpoint (verified live 2026-09-12: GET /models HTTP 200 n=24 ids incl. zai-org/GLM-5.3-Flash; POST /chat/completions HTTP 200 1.16s, content 'PONG', reasoning_content present, usage total 79 of which 57 reasoning). compat.supportsDeveloperRole=false REQUIRED: pi sends role=developer for the system prompt on reasoning models and this endpoint literal-errors it (422), same alibaba-coding fix. reasoning_effort accepts none|minimal|low|medium|high|xhigh|max. class=metered (open-ended per-token billing, no fixed pool); cap 1 everywhere (paid lanes trickle, never flood). EXACTLY ONE wired id per the packet: zai-org/GLM-5.3-Flash ($0.15/M in / $0.50/M out per https://tokenfactory.nebius.com/model-catalog.md retrieved 2026-09-12; catalog lists context 1024K image2text — contextWindow pinned to the synthetic entry's proven 524288/65536 per packet). No published cache-hit rate: cacheRead carried at full input $0.15/M so spend is never under-reported. The catalog's deepseek-ai/DeepSeek-V4-Flash-0731 is BANNED fleet-wide (Nish 2026-09-10), deliberately not wired; all other catalog ids not wired. Provider sits FIRST in providers{} so enumerate_seats emits it at the head of the metered bucket — drawn right after the prepaid tail (synthetic, llmgateway-devpass) and before openrouter; deepseek direct stays LAST via product_only+last_resort."
+    },
     "minimax": {
       "name": "MiniMax (fleet2)",
       "baseUrl": "https://api.minimax.io/anthropic",

@@ -264,14 +264,29 @@ cap_zero_is_intentional '.providers["opencode-anthropic"]' \
 ok "opencode-anthropic (Claude) is cap=0 intentional with a dated reason"
 
 # --- metered providers are the last bucket --------------------------------
-# fleet-ops#4887: straitly was wiped (Nish: 402 credit exhausted, seat retired),
-# so minimax is the sole metered lane the last-bucket assertion pins.
-for p in minimax; do
+# fleet-ops#4887: straitly was wiped (Nish: 402 credit exhausted, seat retired).
+# 2026-09-12: nebius Token Factory joins as a metered lane (cap 1, one model:
+# zai-org/GLM-5.3-Flash) — head of the metered bucket via providers{} position,
+# after the prepaid tail, before openrouter.
+for p in minimax nebius; do
   class=$(jq -r --arg p "$p" '.providers[$p].class // empty' "$caps")
   [[ "$class" == "metered" ]] || fail "$p class must be metered, got: $class"
 done
+# nebius cap pinned at 1 with its single model — paid lanes trickle, never flood.
+[[ "$(jq -r '.providers.nebius.cap' "$caps")" == "1" ]] \
+  || fail "nebius provider cap must be 1, got: $(jq -r '.providers.nebius.cap' "$caps")"
+[[ "$(jq -r '.providers.nebius.models | keys | join(" ")' "$caps")" == "zai-org/GLM-5.3-Flash" ]] \
+  || fail "nebius model allowlist must be exactly 'zai-org/GLM-5.3-Flash'"
+[[ "$(jq -r '.providers.nebius.models["zai-org/GLM-5.3-Flash"]' "$caps")" == "1" ]] \
+  || fail "nebius model cap must be 1"
+entry_has_dated_reason '.providers.nebius' \
+  || fail "nebius cap must carry a dated reason with a measurement (rule 1, fleet-ops#3504)"
+# nebius is metered — it must NOT sit in the prepaid ladder (that list orders
+# only the prepaid bucket); its metered order comes from models.json position.
+jq -e '.prepaid_providers_in_order | index("nebius") == null' "$caps" >/dev/null \
+  || fail "nebius must not appear in prepaid_providers_in_order (metered class)"
 
-ok "minimax is metered (last bucket); straitly retired (fleet-ops#4887)"
+ok "minimax + nebius are metered (last bucket); straitly retired (fleet-ops#4887); nebius cap 1, one model, not in prepaid order"
 
 # --- lib/seat-lib.sh enforces product value-order + class ladder ---------
 grep -q 'yield-order (product)' "$lib" \

@@ -222,6 +222,9 @@ source /home/nish/fleet2/etc/crof.env
 # (fleet-ops packet; env files mode 600 under ~/.config/fleet-ops/seats/).
 source /home/nish/.config/fleet-ops/seats/synthetic.env
 source /home/nish/.config/fleet-ops/seats/llmgateway-devpass.env
+# 2026-09-12 seat wire-up: nebius Token Factory metered worker seat (same packet
+# shape; NEBIUS_API_KEY, env file mode 600 under ~/.config/fleet-ops/seats/).
+source /home/nish/.config/fleet-ops/seats/nebius.env
 
 # --- straitly (lives in ~/.config/straitly/) ---
 source /home/nish/.config/straitly/straitly.env
