@@ -1022,3 +1022,15 @@ bash "$here/live-state-doctrine-precedence.test.sh"
 # drop of this host line fails by name. Hermetic (scratch dir + stubbed gh,
 # no live network).
 bash "$here/measure-attest-waiting.test.sh"
+
+# fleet-ops#5807: the ci-merge-queue detector drill — the existing 5-min
+# exporter (fleet-metrics-export.py) publishes ci_merge_queue_head_wait_seconds
+# / ci_merge_queue_entries / ci_hosted_runs_queued / ci_hosted_runs_in_progress
+# per enrolled repo, fleet_rules.yml gains CiMergeQueueHeadWaitHigh (critical)
+# + CiHostedQueueDepthHigh (warning) with absent() legs, and a synthetic 25-min
+# head wait dispatched through the REAL alert-repair-dispatch (mocked
+# pi-systemd-run) writes exactly one repair packet and clears. Hermetic (no
+# network, no gh, no Prometheus; promtool legs self-skip when promtool is
+# absent). Hosted here so P14 runs it without a workflow-file edit (the
+# worker App cannot push .github/workflows/**).
+bash "$here/ci-merge-queue-detector.test.sh"
