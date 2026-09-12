@@ -484,6 +484,23 @@ resume_wait_dead() {
     return 1
 }
 
+assert_landed_failed() {
+    # fleet-ops#5456: pi-systemd-run launches transients with --collect, so
+    # the failed state is garbage-collected within ~1s of ExecStopPost
+    # finishing. A single post-hoc is-failed read races the GC and loses
+    # (proven live 2026-09-12: is-failed=inactive at t+2s, yet the journal
+    # shows Failed with result 'exit-code' + OnFailure fired). Proof, in
+    # order: catch is-failed=failed in a tight 3s poll; if the GC wins, the
+    # durable journal line is the landing proof (same line OnFailure keys on).
+    local unit="$1" i st
+    for i in $(seq 1 30); do
+        st="$(systemctl --user is-failed "$unit" 2>/dev/null || true)"
+        [ "$st" = "failed" ] && return 0
+        sleep 0.1
+    done
+    journalctl --user -u "$unit" --no-pager -n 50 2>/dev/null | grep -q 'Failed with result'
+}
+
 resume_live_kills() {
     local ok="true" proof="" rc=0
     mkdir -p "$RESUME_DIR"
@@ -515,6 +532,12 @@ EOF
 
     run_dispatch() {
         RESUME_DIR="$RESUME_DIR" \
+        # fleet-ops#5456: the relaunched packet must write its hop+1 ledger
+        # row into the SAME hermetic ledger the launch rows went to — without
+        # this, the relaunched pi-systemd-run falls back to its $AGENT_STATE
+        # default and the drill's ledger assertion misses the row.
+        FLEET_DISPATCH_LEDGER="$RESUME_DIR/ledger.jsonl" \
+        FLEET_DISPATCH_PACKET_DIR="$RESUME_DIR/packets" \
         STOP_ESCALATION_STOP_REASON="$RESUME_DIR/STOP-REASON.json" \
         STOP_ESCALATION_RESUME_AS="$RESUME_DIR" \
         STOP_ESCALATION_RESUME_LEDGER="$RESUME_DIR/ledger.jsonl" \
@@ -553,7 +576,7 @@ EOF
     local crash_unit="resume-drill-crash-$RESUME_DRILL_TS"
     if launch_dummy "$crash_unit" 0 false \
         && resume_wait_dead "$crash_unit.service" \
-        && [ "$(systemctl --user is-failed "$crash_unit.service" 2>/dev/null || echo no)" = "failed" ]; then
+        && assert_landed_failed "$crash_unit.service"; then
         record "kill-crash-unit-failed" true "exit-1 crash landed the transient unit in failed (OnFailure rail armed)"
     else
         record "kill-crash-unit-failed" false "crash unit did not land failed"
@@ -575,7 +598,7 @@ EOF
     local nodeliv_unit="resume-drill-nodeliv-$RESUME_DRILL_TS"
     if launch_dummy "$nodeliv_unit" 0 true \
         && resume_wait_dead "$nodeliv_unit.service" \
-        && [ "$(systemctl --user is-failed "$nodeliv_unit.service" 2>/dev/null || echo no)" = "failed" ]; then
+        && assert_landed_failed "$nodeliv_unit.service"; then
         record "kill-nodeliv-deadman-fails-unit" true "exit-0 stop with missing --deliverable FAILED the unit (ExecStopPost verdict=no-deliverable) — the advisory-deliverable gap is closed"
     else
         record "kill-nodeliv-deadman-fails-unit" false "no-deliverable stop did not fail the unit — deliverable contract broken"
@@ -604,7 +627,7 @@ EOF
         # unit must die by the cap and land failed.
         if launch_dummy "$dl_unit" 2 sleep 400 \
             && resume_wait_dead "$dl_unit.service" \
-            && [ "$(systemctl --user is-failed "$dl_unit.service" 2>/dev/null || echo no)" = "failed" ]; then
+            && assert_landed_failed "$dl_unit.service"; then
             record "kill-deadline-live" true "RuntimeMaxSec killed the hung dummy at the cap; unit failed"
         else
             systemctl --user stop "$dl_unit.service" 2>/dev/null || true

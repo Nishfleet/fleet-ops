@@ -418,7 +418,8 @@ if [[ -n "$noresume_dir" ]]; then
     cmd+=(--setenv=PI_DEADMAN_DROPIN_DIR="$noresume_dir")
 fi
 for v in KEYSTONE_HC_ENV PI_DEADMAN_TEXTFILE PI_DEADMAN_DRYRUN \
-         PI_DEADMAN_ESCALATION_BIN PI_DEADMAN_WHOSTOPPED_BIN AGENT_STATE; do
+         PI_DEADMAN_ESCALATION_BIN PI_DEADMAN_WHOSTOPPED_BIN AGENT_STATE \
+         FLEET_DISPATCH_LEDGER; do
     if [[ -n "${!v:-}" ]]; then
         cmd+=(--setenv="$v")
     fi
