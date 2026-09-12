@@ -33,7 +33,7 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-CLI_PATH="${1:-/home/nish/.local/lib/node_modules/@earendil-works/pi-coding-agent/dist/cli.js}"
+CLI_PATH="${1:-/home/nish/.local/lib/node_modules/@earendil-works/pi-coding-agent/dist/bundle/cli.js}"
 if [[ $# -gt 0 ]]; then shift; fi
 PI_BIN="${1:-/home/nish/.local/bin/pi}"
 if [[ $# -gt 0 ]]; then shift; fi
