@@ -86,9 +86,9 @@ DRY=${STOP_ESCALATION_DRY_RUN:-0}
 # should finish well inside this window; runs that hang are the failure mode.
 AUDITOR_TIMEOUT_SEC=${STOP_ESCALATION_AUDITOR_TIMEOUT:-1380}
 
-# Seat ladder.  pi-packet/seat-lib.sh is the fleet's canonical seat picker.
-SEAT_LIB="${PI_PACKET_SEAT_LIB:-$HOME/.local/lib/pi-packet/seat-lib.sh}"
-# shellcheck source=../lib/seat-lib.sh source-path=SCRIPTDIR
+# Seat ladder.  pi-packet/litellm-seat.sh is the fleet's canonical seat picker.
+SEAT_LIB="${PI_PACKET_SEAT_LIB:-$HOME/.local/lib/pi-packet/litellm-seat.sh}"
+# shellcheck source=../lib/litellm-seat.sh source-path=SCRIPTDIR
 source "$SEAT_LIB"
 
 ts() { date -u +%FT%TZ; }
@@ -261,10 +261,9 @@ export FLEET_ESCALATION_WEDGE_CHECK=1
 pick_seat_with_retry() {
   local tried_file="$1"
   local seat
-  # need_capable=1: the SENIOR AUDITOR drives tools, so a tools=0 / flash /
-  # local seat is functionally dead for it and must never be selected
-  # (fleet-ops#1354).
-  seat=$(pick_seat "" "" 1 "$tried_file" 2>/dev/null || true)
+  # Senior auditor group. Tests may stub litellm_pick_seat to honour
+  # tried_file as a second argument.
+  seat=$(litellm_pick_seat "senior" "$tried_file" 2>/dev/null || true)
   printf '%s' "$seat"
 }
 

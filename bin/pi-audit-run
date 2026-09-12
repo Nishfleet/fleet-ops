@@ -42,7 +42,7 @@ export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
 
 GH="${AUDIT_GH:-gh}"
 PI_BIN="${PI_BIN:-$HOME/.local/bin/pi}"
-SEAT_LIB="${PI_PACKET_SEAT_LIB:-$HOME/.local/lib/pi-packet/seat-lib.sh}"
+SEAT_LIB="${PI_PACKET_SEAT_LIB:-$HOME/.local/lib/pi-packet/litellm-seat.sh}"
 PROMPT="${AUDIT_PROMPT:-$HOME/.pi/agent/prompts/auditor.md}"
 QUESTION_PROMPT="${AUDIT_QUESTION_PROMPT:-$HOME/.pi/agent/prompts/nish-question-auditor.md}"
 # fleet-ops#4474: this instance's audit KIND, selected per candidate label.
@@ -52,7 +52,7 @@ QUESTION_PROMPT="${AUDIT_QUESTION_PROMPT:-$HOME/.pi/agent/prompts/nish-question-
 AUDIT_KIND="scout"
 PLAN_FILE="${AUDIT_PLAN_FILE:-/home/nish/workspaces/agent-state/fleet-restoration-2026-08-25.md}"
 # fleet-ops#1011: vote path is intentionally VOTE_DIR, not STATE_DIR.
-# seat-lib.sh (the shared pick_seat provider) sets STATE_DIR=$HOME/.local/state/pi-packet
+# litellm-seat.sh (the shared pick_seat provider) sets STATE_DIR=$HOME/.local/state/pi-packet
 # for its OWN attempts/active-seats/round-robin ledger, and pi-audit-run
 # sources that library a few lines below. Without the rename, the source
 # silently overwrites STATE_DIR, every vote is written to pi-packet/, the
@@ -71,9 +71,9 @@ command -v jq >/dev/null 2>&1 || { echo "pi-audit-run: jq missing" >&2; exit 2; 
 if [ -f "$SEAT_LIB" ]; then
     # shellcheck source=/dev/null
     source "$SEAT_LIB"
-    # fleet-ops#1011: belt-and-suspenders. seat-lib.sh's own STATE_DIR is
+    # fleet-ops#1011: belt-and-suspenders. litellm-seat.sh's own STATE_DIR is
     # an unrelated $HOME/.local/state/pi-packet ledger; the audit vote
-    # path lives at $VOTE_DIR. If a future seat-lib.sh refactor adds a
+    # path lives at $VOTE_DIR. If a future litellm-seat.sh refactor adds a
     # conflicting export, the next line restores the audit default before
     # vote_path() is called.
     VOTE_DIR="${VOTE_DIR:-$HOME/.local/state/fleet-audit}"
@@ -270,8 +270,8 @@ resolve_senior_seat() {
         return 0
     fi
     local s
-    # Prefer the shared seat-lib ladder (first usable, any-capable fallback
-    # built in). Only inline when seat-lib is not available (tests, degraded).
+    # Prefer the shared litellm-seat ladder (first usable, any-capable fallback
+    # built in). Only inline when litellm-seat is not available (tests, degraded).
     if command -v find_senior_seat >/dev/null 2>&1; then
         if s=$(find_senior_seat); then
             printf '%s\n' "$s"
@@ -333,8 +333,8 @@ instance_to_parts() {
 vote_path() {
     local repo="$1" candidate="$2" role="$3"
     # fleet-ops#1011: vote path uses VOTE_DIR, not STATE_DIR. STATE_DIR is
-    # owned by seat-lib.sh (its own attempts/active-seats ledger) and gets
-    # clobbered when seat-lib.sh is sourced above. See the env-setup block
+    # owned by litellm-seat.sh (its own attempts/active-seats ledger) and gets
+    # clobbered when litellm-seat.sh is sourced above. See the env-setup block
     # for the full cause.
     printf '%s/%s/%s/%s.vote\n' "${VOTE_DIR:-$HOME/.local/state/fleet-audit}" "$repo" "$candidate" "$role"
 }
@@ -595,50 +595,21 @@ main() {
         exit 2
     fi
 
-    # fleet-ops#4474: select this instance's audit kind + prompt. A candidate
-    # carrying the `question` label (not already reserved/conference-approved/
-    # discarded/agent-ready) is a Nish-question audit: the panel votes NISH vs
-    # MATRIX and the tally routes the MATRIX verdicts. Everything else stays a
-    # scout audit (PASS/FAIL).
-    if question_candidate_labels "$repo" "$candidate"; then
-        AUDIT_KIND="question"
-        PROMPT="$QUESTION_PROMPT"
-        log "$repo/#$candidate: question audit (fleet-ops#4474)"
-    fi
-    if [ ! -f "$PROMPT" ]; then
-        log "pi-audit-run: prompt missing: $PROMPT"
-        exit 2
-    fi
-
-    local seat provider model
-    # fleet-ops#4219 P3a: PI_SEAT_SOURCE switch.
-    # When litellm, all auditor roles collapse to worker-cheap.
-    if [[ "${PI_SEAT_SOURCE:-seat-lib}" == "litellm" ]]; then
-        seat=$(printf 'litellm\tworker-cheap\n')
-        log "PI_SEAT_SOURCE=litellm: $role -> litellm/worker-cheap"
-    elif ! seat=$(resolve_seat "$role"); then
-        # fleet-ops#146 (binding addendum): an auditor seat wall is a LANE
-        # FAULT, not a runner failure. "Auditor seat walled/timeout = lane fault
-        # per the standing rule: bounded retry through the ladder, never charged
-        # to the candidate. If the panel cannot convene 2-of-3, the candidate
-        # stays PENDING — admission fails closed, never open."
-        #
-        # Exiting 1 here made every heartbeat tick that re-starts this unit
-        # (vote missing -> fleet-heartbeat-auditor start_audit/recover_failed)
-        # fail the unit -> OnFailure -> a NEW STOP-REASON hash -> a fresh
-        # auditor summon, while the seat stays walled (2026-08-29: 73 pi-audit
-        # straitly unit failures in one day, 228 journal lines on #1440 alone).
-        # Same NO-USABLE-SEAT escalation-loop class as free-glm-5-3 on 2026-08-27
-        # (0aa146c).
-        #
-        # Fix: exit 0 WITHOUT writing a vote. The vote stays missing, so the
-        # heartbeat-auditor re-starts this unit next tick; when the wall clears
-        # the seat resolves, a real PASS/FAIL vote lands, and the panel convenes.
-        # No unit failure -> no StartLimitBurst -> no escalation storm. The
-        # candidate stays PENDING (fails closed) until then.
-        log "no usable seat for role $role (lane fault: walled seat; no vote written, heartbeat retries next tick)"
+    local seat provider model group
+    case "$role" in
+        senior|straitly) group=senior ;;
+        free-glm-5-3|free|free-glm) group=worker-cheap ;;
+        *) group=worker-capable ;;
+    esac
+    if declare -F litellm_pick_seat >/dev/null 2>&1; then
+        seat=$(litellm_pick_seat "$group" || true)
+    elif seat=$(resolve_seat "$role"); then
+        :
+    else
+        log "no usable seat for role=$role (lane fault); skipping"
         exit 0
     fi
+    log "pi-audit-run: $role -> litellm/$group"
     provider=$(printf '%s\n' "$seat" | cut -f1)
     model=$(printf '%s\n' "$seat" | cut -f2)
 

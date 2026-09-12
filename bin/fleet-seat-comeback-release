@@ -3,7 +3,7 @@
 # (fleet-ops#2421).
 #
 # Problem: a seat whose wall clock (bench_until ?? usable_at) has passed is
-# FAIL-OPEN by the router (seat_usable in lib/seat-lib.sh), but nothing
+# FAIL-OPEN by the router (seat_usable in lib/litellm-seat.sh), but nothing
 # actively re-probes it. The wall clears only when a worker happens to
 # re-pick the seat and the out-of-repo seat-health extension records the
 # outcome. The 2026-08-30T18:30:09Z census showed straitly/gpt-5.6-sol
@@ -161,12 +161,12 @@ REBENCH_BACKOFF_S="${FLEET_SEAT_COMEBACK_REBENCH_BACKOFF_S:-900}"
 # expired and which is still the seat's latest evidence (no newer ledger
 # observed_at) owes a comeback probe before the seat is re-admitted —
 # seat_usable holds it meanwhile. Matches EMPTY_RUN_COUNT_WINDOW_S /
-# SEAT_PARK_WALL_S in lib/seat-lib.sh (24 h): older than that is
+# SEAT_PARK_WALL_S in lib/litellm-seat.sh (24 h): older than that is
 # archaeology and the marker no longer gates.
 SPAWN_BENCH_FRESH_S="${FLEET_SEAT_COMEBACK_SPAWN_BENCH_FRESH_S:-86400}"
 # fleet-ops#2638: corpse the seat when consecutive_failure_count crosses
 # the threshold after a probe failure. Matches SEAT_DEAD_CONSECUTIVE_THRESHOLD
-# in lib/seat-lib.sh (also default 25) so the comeback-release path agrees
+# in lib/litellm-seat.sh (also default 25) so the comeback-release path agrees
 # with the bash writer's corpse boundary on quota_cap (fleet-ops#2594) and
 # the seat-health.ts seat_dead_consecutive_threshold. Without this, a seat
 # that fails 25+ times under the prober (overload_bench, transient_fault,
@@ -182,7 +182,7 @@ SEAT_DEAD_CONSECUTIVE_THRESHOLD="${SEAT_DEAD_CONSECUTIVE_THRESHOLD:-25}"
 # (corpse-on-threshold, #2638), so it also owns the terminal step: a corpse
 # ledger whose observed_at has aged past CORPSE_GRACE_S is physically moved
 # into lanes/seats-corpse-retired-<UTC-ts>/. The grace window lets a fresh
-# corpse reclassification recover via a healthy observation (seat-lib
+# corpse reclassification recover via a healthy observation (litellm-seat
 # clears a corpse on a successful probe) before the ledger is retired.
 CORPSE_GRACE_S="${FLEET_SEAT_COMEBACK_CORPSE_GRACE_S:-21600}"
 # fleet-ops#3508: the bounded comeback window for a no-wall rate_limit corpse
@@ -231,17 +231,17 @@ CORPSE_RUNAWAY_MULT="${FLEET_SEAT_COMEBACK_CORPSE_RUNAWAY_MULT:-4}"
 PROVIDER_QUOTA_WINDOW_S="${FLEET_SEAT_COMEBACK_PQE_WINDOW_S:-3600}"
 NOW_ISO="${FLEET_SEAT_COMEBACK_NOW:-}"
 # fleet-ops#2661: the provider-wide overload wall reuses the learned-caps
-# mechanism a lib/seat-lib.sh provides (_record_learned_cap,_seat_now_epoch);
+# mechanism a lib/litellm-seat.sh provides (_record_learned_cap,_seat_now_epoch);
 # source it so the wall write lives in ONE canonical place, not a third copy.
 
-# Fleet adaptation:this bin keeps its OWN state file and log(); seat-lib's
+# Fleet adaptation:this bin keeps its OWN state file and log(); litellm-seat's
 # seat_log / state dirs are untouched by the sweep-operated code below.
 
-# fleet-ops#2661: seat-lib's freshness helpers must see the SAME frozen clock
+# fleet-ops#2661: litellm-seat's freshness helpers must see the SAME frozen clock
 # as the sweep's own now_iso/now_epoch in tests. Export the override so a
-# sourced seat-lib reads the test clock, not the host wall clock.
+# sourced litellm-seat reads the test clock, not the host wall clock.
 [[ -n "$NOW_ISO" ]] && export FLEET_SEAT_RECOVERY_NOW="$NOW_ISO"
-SEAT_LIB="${PI_PACKET_SEAT_LIB:-$HOME/.local/lib/pi-packet/seat-lib.sh}"
+SEAT_LIB="${PI_PACKET_SEAT_LIB:-$HOME/.local/lib/pi-packet/litellm-seat.sh}"
 if [[ -f "$SEAT_LIB" ]]; then source "$SEAT_LIB" || true; fi
 
 # fleet-ops#2661: consecutive-overload escalation. A probe failure on an
@@ -309,22 +309,9 @@ log() {
         "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$*" >&2
 }
 
-# fleet-ops#4819: append one auditable line to the alert-repair actions.log
-# (the same ledger the hand-release judges write to). A comeback-release
-# unwall is logged here so the automated release is visible next to the
-# hand-releases it replaces. Best-effort: a write failure must not fail the
-# sweep (the ledger/prom are the routing authority; this is the record).
-actions_log() {
-    [[ -n "$ACTIONS_LOG" ]] || return 0
-    local line
-    line="[$(date -u +%Y-%m-%dT%H:%M:%SZ)] COMEBACK-RELEASE $*"
-    mkdir -p "$(dirname "$ACTIONS_LOG")" 2>/dev/null || true
-    printf '%s\n' "$line" >> "$ACTIONS_LOG" 2>/dev/null || true
-}
-
-# fleet-ops#3661: phantom-key guard. Uses seat-lib's _seat_key_in_caps when
-# seat-lib is sourced; otherwise fail-open (no caps file / no seat-lib on
-# hosted CI -> treat every key as valid so a missing seat-lib never bricks
+# fleet-ops#3661: phantom-key guard. Uses litellm-seat's _seat_key_in_caps when
+# litellm-seat is sourced; otherwise fail-open (no caps file / no litellm-seat on
+# hosted CI -> treat every key as valid so a missing litellm-seat never bricks
 # the sweep).
 _seat_key_valid() {
     if declare -F _seat_key_in_caps >/dev/null 2>&1; then
@@ -959,7 +946,7 @@ rebench_wrapper_marker() {
     if (( merged >= ${SEAT_FAILURE_CEILING:-20} )); then
         # fleet-ops#3941: escalate the park wall with the count past the
         # ceiling (_park_wall_s, capped at SEAT_PARK_WALL_MAX_S) instead of a
-        # flat SEAT_PARK_WALL_S. The seat-lib source is conditional, so fall
+        # flat SEAT_PARK_WALL_S. The litellm-seat source is conditional, so fall
         # back to the flat 24h wall if the helper is unavailable.
         if declare -F _park_wall_s >/dev/null 2>&1; then
             backoff="$(_park_wall_s "$merged")"
@@ -1258,7 +1245,7 @@ reanchor_bounded_comeback() {
 # Grace: a corpse ledger is only retired once its observed_at has aged
 # past CORPSE_GRACE_S (default 6h). A fresh corpse reclassification
 # (e.g. a credentials_bad probe escalated to corpse by #2327) can still
-# recover via a healthy observation (seat-lib clears a corpse on a
+# recover via a healthy observation (litellm-seat clears a corpse on a
 # successful probe) — the grace window is that recovery chance.
 #
 # Defensive holds: a corpse ledger that still carries a FUTURE wall clock
@@ -1293,7 +1280,7 @@ retire_corpse() {
     [[ -n "$obs_e" ]] || return 1
     age=$(( now_e - obs_e ))
     # A corpse inside the grace window is still in its recovery window
-    # (a healthy observation clears the corpse, seat-lib) — held.
+    # (a healthy observation clears the corpse, litellm-seat) — held.
     # fleet-ops#3156: a failed no-wall re-probe forces immediate retirement.
     if (( ! force )); then
         (( age >= CORPSE_GRACE_S )) || return 1
@@ -1530,7 +1517,7 @@ main() {
             # (spawn_fail) leaves a healthy ledger entry while the bench
             # lives only in the clobber-proof marker. The router now holds
             # an expired marker until this organ probes the seat
-            # (lib/seat-lib.sh seat_usable, same issue): a fresh marker
+            # (lib/litellm-seat.sh seat_usable, same issue): a fresh marker
             # (written within SPAWN_BENCH_FRESH_S) whose usable_at has passed
             # and whose written_at is NOT superseded by a newer ledger
             # observed_at is the seat's latest evidence — it owes a comeback

@@ -6,7 +6,7 @@ fleet-ops#539. Canonical logic. The hook shim at
 bin/guard_shared_file_collision_hook.py is installed to
 ~/.claude/hooks/guard_shared_file_collision.py by MANIFEST.
 
-Shared files: fleet control plane, systemd units, lib/seat-lib.sh,
+Shared files: fleet control plane, systemd units, lib/litellm-seat.sh,
 config/seat-caps.json, hooks, global-standing-rules.md, decisions-ledger.md.
 
 Warn only, never block. The warning is emitted as a Claude hook
@@ -33,7 +33,7 @@ WATCHED = (
     ".claude/settings.json",
     "global-standing-rules.md",
     "decisions-ledger.md",
-    "seat-lib.sh",
+    "litellm-seat.sh",
     "seat-caps.json",
     "entitled-seats.json",
     "intake-repos.json",
@@ -60,7 +60,7 @@ REPO_FALLBACKS = (
     ("decisions-ledger.md", VAULT_REMOTE),
     ("seat-caps.json", FLEET_OPS_REMOTE),
     ("entitled-seats.json", FLEET_OPS_REMOTE),
-    ("seat-lib.sh", FLEET_OPS_REMOTE),
+    ("litellm-seat.sh", FLEET_OPS_REMOTE),
 )
 
 REMOTE_RE = re.compile(
@@ -303,7 +303,7 @@ def _warn(repo: str, target: str, prs: list[dict]) -> str:
         lines.append(f"  #{pr['number']} ({who}) {title}")
     lines.append(
         "Another agent may be mid-fix. Read those PRs before editing, "
-        "or you will duplicate the diff (this happened with #44/#48 on seat-lib.sh)."
+        "or you will duplicate the diff (this happened with #44/#48 on the routing library)."
     )
     return "\n".join(lines)
 

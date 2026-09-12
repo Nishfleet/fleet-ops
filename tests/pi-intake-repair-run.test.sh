@@ -37,6 +37,8 @@ pick_seat() {
     printf 'minimax\tMiniMax-M3\n'
     return 0
 }
+litellm_pick_seat() { pick_seat; }
+packet_difficulty() { echo "heavy"; }
 EOF
 
 # Fake pi that records args and stdin, then prints output.
@@ -86,6 +88,8 @@ task_weight() { echo "heavy"; }
 repo_privacy() { echo "public"; }
 packet_repo() { echo ""; }
 pick_seat() { :; return 1; }
+litellm_pick_seat() { :; return 1; }
+packet_difficulty() { echo "heavy"; }
 EOF
 
 set +e

@@ -318,6 +318,9 @@ chmod +x "$scratch/fakebin/gh"
 # Stub seat-lib so the test runs on hosted runners (fleet-ops#391 class).
 cat >"$scratch/seat-lib-fake.sh" <<'FAKE_SEAT_LIB'
 # shellcheck shell=bash
+litellm_pick_seat() {
+    printf 'fakeprovider\tfakemodel'
+}
 pick_seat() {
     printf 'fakeprovider\tfakemodel'
 }

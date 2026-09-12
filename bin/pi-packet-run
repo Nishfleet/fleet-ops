@@ -6,7 +6,7 @@
 # so this script does ONLY what systemd cannot:
 #
 #   1. Pick a DIFFERENT seat on each restart (systemd restarts the same
-#      ExecStart, so seat rotation is real added value — see seat-lib.sh).
+#      ExecStart, so seat rotation is real added value — see litellm-seat.sh).
 #   2. No-op detection: if pi exits 0 but produced no real output (< 256 bytes
 #      to stdout), exit non-zero so systemd's Restart= treats it as a failure
 #      and re-seats. This folds the old pi-packet-noop-detect script into the
@@ -47,8 +47,8 @@ export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
 export HOME="${HOME:-/home/nish}"
 
 # Source shared seat logic.
-SEAT_LIB="${PI_PACKET_SEAT_LIB:-$HOME/.local/lib/pi-packet/seat-lib.sh}"
-# shellcheck source=../lib/seat-lib.sh source-path=SCRIPTDIR
+SEAT_LIB="${PI_PACKET_SEAT_LIB:-$HOME/.local/lib/pi-packet/litellm-seat.sh}"
+# shellcheck source=../lib/litellm-seat.sh source-path=SCRIPTDIR
 source "$SEAT_LIB"
 
 # fleet-ops#3125: packet work is PRODUCT work — pick_seat orders candidates
@@ -77,8 +77,6 @@ difficulty="$weight"
 if declare -F packet_difficulty >/dev/null 2>&1; then
     difficulty=$(packet_difficulty "$pkt")
 fi
-need_capable=0
-[[ "$difficulty" == "heavy" || "$difficulty" == "keystone" ]] && need_capable=1
 
 # Free-tier privacy line (fleet-ops#520): a private-repo target never routes
 # to a free-class lane. Derive the repo from the packet's TARGET line and
@@ -94,15 +92,11 @@ seat_log "pi-packet-run: $pid target repo=${pkt_repo:-<none>} privacy=$pkt_priva
 # repo carries the product flag in config/intake-repos.json.
 export PI_PACKET_REPO="${pkt_repo:-}"
 
-# fleet-ops#4219 P3a: PI_SEAT_SOURCE switch.
-if [[ "${PI_SEAT_SOURCE:-seat-lib}" == "litellm" ]]; then
-    _lit_group="worker-cheap"
-    [[ "$pkt_privacy" == "private" ]] && _lit_group="worker-private"
-    seat=$(litellm_pick_seat "$_lit_group")
-    seat_log "pi-packet-run: $pid PI_SEAT_SOURCE=litellm group=$_lit_group (privacy=$pkt_privacy)"
-else
-    seat=$(pick_seat "$fail_p" "$fail_m" "$need_capable" "$tried_file" "$difficulty" "$pkt_privacy" || true)
-fi
+# fleet-ops#4263 P3b: always route through the LiteLLM proxy group.
+_lit_group="worker-cheap"
+[[ "$pkt_privacy" == "private" ]] && _lit_group="worker-private"
+seat=$(litellm_pick_seat "$_lit_group" || true)
+seat_log "pi-packet-run: $pid group=$_lit_group (privacy=$pkt_privacy)"
 if [[ -z "$seat" ]]; then
     if [[ "$difficulty" == "keystone" ]]; then
         seat_log "pi-packet-run: KEYSTONE ESCALATION for $pid (tried: $(tr '\n' ' ' < "$tried_file" 2>/dev/null || true)) — exiting 1 so OnFailure summons senior conference"

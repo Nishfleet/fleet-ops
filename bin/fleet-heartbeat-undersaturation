@@ -18,7 +18,7 @@
 #             worker the live set is exactly active+activating).
 #
 # Decision (fleet-ops#1558 extends the floor):
-#   admit = min(target_concurrent, ram_governor_cap) from seat-caps / seat-lib
+#   admit = min(target_concurrent, ram_governor_cap) from seat-caps / litellm-seat
 #          (override: FLEET_UNDERSAT_ADMIT_CEILING for tests).
 #   ready = open agent-ready across enrolled repos (supply side).
 #   work  = ready + agent-in-progress (legacy wedge counter).
@@ -62,9 +62,9 @@ INTAKE_JSON="${FLEET_INTAKE_REPOS_JSON:-/home/nish/workspaces/products/fleet-ops
 TRIAGE="${FLEET_HEARTBEAT_TRIAGE:-/home/nish/workspaces/agent-state/FLEET-HEARTBEAT-TRIAGE.md}"
 LOG_DIR="${FLEET_HEARTBEAT_LOG_DIR:-/home/nish/.local/state/fleet-heartbeat}"
 ACTIVE_SEATS_DIR="${PI_PACKET_STATE:-${HOME}/.local/state/pi-packet}/active-seats"
-SEAT_LIB_DEFAULT="${SEAT_LIB:-/home/nish/.local/lib/pi-packet/seat-lib.sh}"
-# fleet-ops#1558: test seam for the admit floor (avoids sourcing seat-lib + /proc).
-# Production leaves this unset and calls admit_ceiling() from seat-lib.
+SEAT_LIB_DEFAULT="${SEAT_LIB:-/home/nish/.local/lib/pi-packet/litellm-seat.sh}"
+# fleet-ops#1558: test seam for the admit floor (avoids sourcing litellm-seat + /proc).
+# Production leaves this unset and calls admit_ceiling() from litellm-seat.
 
 FLAG="$LOG_DIR/undersaturation.flag"
 THROUGHPUT_STATE="$LOG_DIR/throughput.last"
@@ -178,7 +178,7 @@ admit_floor() {
         admit_ceiling
         return 0
     fi
-    # seat-lib missing: fall back to the standing light-workload target.
+    # litellm-seat missing: fall back to the standing light-workload target.
     echo 25
 }
 
@@ -341,8 +341,9 @@ _undersat_activating_wedged() {
 }
 
 # Clear stale active-seats/ registrations per #72's liveness rule: a registry
-# file is stale when its unit is not active/activating. Inlines the liveness
-# probe so the script stays runnable without the deployed seat-lib.
+# file is stale when its unit is not active/activating. Mirrors litellm-seat's
+# _seat_registry_unit_live + _seat_reap_stale_registry (inlined here so the
+# helper stays self-contained and testable without sourcing litellm-seat).
 reap_stale_active_seats() {
     local f unit sysunit state n=0 base seat age_s
     # Phase 1: reap stale seat files. When a seat is reaped because its unit

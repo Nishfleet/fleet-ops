@@ -163,8 +163,10 @@ chmod +x "$scratch/fakebin/gh"
 # stubbed to a deterministic seat, matching the fake-pi/fake-gh pattern.
 cat > "$scratch/seat-lib-fake.sh" <<'FAKE_SEAT_LIB'
 # shellcheck shell=bash
+load_seat_caps() { return 0; }
+find_senior_seat() { printf 'fakeprovider\tfakemodel'; }
+litellm_pick_seat() { printf 'fakeprovider\tfakemodel'; }
 pick_seat() {
-    # Args: fail_p fail_m need_capable tried_file — all ignored for the stub.
     printf 'fakeprovider\tfakemodel'
 }
 FAKE_SEAT_LIB

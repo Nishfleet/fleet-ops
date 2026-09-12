@@ -6,7 +6,7 @@
 # so this script does ONLY what systemd cannot:
 #
 #   1. Pick a DIFFERENT seat on each restart. systemd restarts the same
-#      ExecStart, so seat rotation is real added value — see seat-lib.sh.
+#      ExecStart, so seat rotation is real added value — see litellm-seat.sh.
 #      This is the gap the legacy intake path had (hardcoded
 #      --provider devin --model swe-2-max in the systemd-run ExecStart);
 #      wiring this through is what point 4 of the P4-A packet required.
@@ -46,12 +46,12 @@
 #      seat/issue. The bench (#1416) + in-process re-seat (#1378) mechanism
 #      covers this window; pinned by tests/pi-issue-run-noop-bench.test.sh.
 #   3. Active-seat registration: writes the picked seat to the per-seat
-#      state dir so seat-lib.sh's cap accounting reflects the running
+#      state dir so litellm-seat.sh's cap accounting reflects the running
 #      worker. Cleared on exit via trap.
 #   4. P13-B spawn-phase failure marker: if pi dies in < SPAWN_FAIL_MAX_S
 #      (default 120s) AND the captured output contains an ETIMEDOUT pattern
 #      paired with a spawn/socket/connect/child/handshake neighbour, write
-#      a per-seat ledger entry via mark_seat_spawn_fail (seat-lib.sh).
+#      a per-seat ledger entry via mark_seat_spawn_fail (litellm-seat.sh).
 #   4b. fleet-ops#90 quota/cap wall bench: if pi exits non-zero with a
 #      quota/cap error carrying a reset window (ClinePass weekly cap,
 #      "retry after", 429 with retry_after), write health_class=quota_bench
@@ -110,7 +110,7 @@ export HOME="${HOME:-/home/nish}"
 # splices old+new bytes and dies with a random 'command not found' (proven
 # 2026-08-27: pi-issue@fleet-ops-458, exit 127, 'es: command not found').
 # Snapshot our own path to a private copy so a mid-run replace cannot corrupt
-# this execution; seat-lib is sourced from the same checkout and is covered by
+# this execution; litellm-seat is sourced from the same checkout and is covered by
 # the same race, so copy it too when it lives in this repo. Tests override via
 # PI_PACKET_SEAT_LIB / PI_ISSUE_RUN_SELF — never re-resolve a stale copy.
 _SELF="$(readlink -f "${BASH_SOURCE[0]:-}" 2>/dev/null || printf '%s' "${BASH_SOURCE[0]:-}")"
@@ -135,8 +135,8 @@ fi
 # may override via PI_PACKET_SEAT_LIB. The directive points to the canonical
 # source file in the repo (the install symlinks this same file), so static
 # analysis can resolve the include.
-SEAT_LIB="${PI_PACKET_SEAT_LIB:-$HOME/.local/lib/pi-packet/seat-lib.sh}"
-# shellcheck source=../lib/seat-lib.sh source-path=SCRIPTDIR
+SEAT_LIB="${PI_PACKET_SEAT_LIB:-$HOME/.local/lib/pi-packet/litellm-seat.sh}"
+# shellcheck source=../lib/litellm-seat.sh source-path=SCRIPTDIR
 source "$SEAT_LIB"
 
 # fleet-ops#4903: journal instrumentation. The unit's stdout/stderr go to
@@ -254,6 +254,8 @@ is_provider_work_death() {
     seat_unhealthy_since "$prov" "$model" "$since" && return 0
     return 1
 }
+SPAWN_FAIL_MAX_S="${SPAWN_FAIL_MAX_S:-120}"
+SPAWN_FAIL_BACKOFF_S="${SPAWN_FAIL_BACKOFF_S:-300}"
 
 # fleet-ops#2005: debug-playbook gate. A session with two or more real
 # failed attempts and no four-heading vault playbook is blocked from closing.
@@ -289,7 +291,7 @@ is_mid_session_death() {
 # ETIMEDOUT, a provider that dies at its own hard session bound) is NOT a real
 # work failure: it must increment the separate .infra-death counter, never the
 # .reclaim-count WORK cap that parks issues for a senior conference. Reuses
-# the detectors seat-lib.sh already has (is_spawn_etimeout, is_mid_session_death)
+# the detectors litellm-seat.sh already has (is_spawn_etimeout, is_mid_session_death)
 # plus the rc=124/143 paths. Callers pass $rc (pi's exit) and the globals
 # $spawn_elapsed_s / $PI_HANG_TIMEOUT_S / $out_file / $err_file must be set.
 is_infra_death() {
@@ -403,8 +405,6 @@ difficulty="$weight"
 if declare -F packet_difficulty >/dev/null 2>&1; then
     difficulty=$(packet_difficulty "$pkt")
 fi
-need_capable=0
-[[ "$difficulty" == "heavy" || "$difficulty" == "keystone" ]] && need_capable=1
 
 # fleet-ops#4639: intake stamps seat-rung: repair on critical-path claims
 # made while the reserved repair rung is armed. pick_seat then falls back
@@ -522,20 +522,13 @@ if [[ -f "$ATTEMPTS_DIR/pi-issue-${inst}.prefer-class" ]]; then
 fi
 export PI_PICK_PREFER_CLASS
 
-# fleet-ops#4219 P3a: PI_SEAT_SOURCE switch. When litellm, route to the
-# LiteLLM proxy group (worker-cheap for public, worker-private for private).
-# The proxy handles fallback, cooldown, and health checks internally.
-# Default stays seat-lib until the dual-run proves parity.
-if [[ "${PI_SEAT_SOURCE:-seat-lib}" == "litellm" && "${PI_REPAIR_RUNG:-0}" != "1" ]]; then
-    _lit_group="worker-cheap"
-    [[ "$pkt_privacy" == "private" ]] && _lit_group="worker-private"
-    seat=$(litellm_pick_seat "$_lit_group")
-    seat_log "pi-issue-run: $inst PI_SEAT_SOURCE=litellm group=$_lit_group (privacy=$pkt_privacy)"
-else
-    # First attempt: no exclusions. Subsequent attempts (after a restart) carry
-    # the previously-tried seats in $tried_file; pick_seat excludes them all.
-    seat=$(pick_seat "" "" "$need_capable" "$tried_file" "$difficulty" "$pkt_privacy" || true)
-fi
+# fleet-ops#4263 P3b: always route through the LiteLLM proxy group.
+# worker-cheap for public, worker-private for private. The proxy owns
+# fallback, cooldown, and health checks.
+_lit_group="worker-cheap"
+[[ "$pkt_privacy" == "private" ]] && _lit_group="worker-private"
+seat=$(litellm_pick_seat "$_lit_group" || true)
+seat_log "pi-issue-run: $inst group=$_lit_group (privacy=$pkt_privacy)"
 if [[ -z "$seat" ]]; then
     # The tried file does not exist on the first attempt; the `2>/dev/null`
     # on `tr` does not suppress a failed redirection, so test before reading.
@@ -932,7 +925,7 @@ if (( rc != 0 )); then
     # retirement rule classes rc=124 as infrastructure, never seat yield.
     # Only an rc=124 with 0 tool calls (a true hang) still benches.
     # Count from the session file pi-issue-run pinned (--session-dir), using
-    # both conventions in the tree: lib/seat-lib.sh session_tool_calls counts
+    # both conventions in the tree: lib/litellm-seat.sh session_tool_calls counts
     # toolResult messages; the in-process seam below counts "type":"toolCall".
     _wd_tools=0
     if (( rc == 124 )); then

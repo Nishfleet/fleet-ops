@@ -61,6 +61,11 @@ pick_seat() {
     printf 'devin\tglm-5-2\n'
   fi
 }
+litellm_pick_seat() {
+  pick_seat "" "" 0 "$ATTEMPTS_DIR/testpkt.tried-seats"
+}
+packet_difficulty() { echo "light"; }
+litellm_group_for_privacy() { echo "worker-cheap"; }
 
 seat_log() {
   true

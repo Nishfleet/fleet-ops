@@ -365,7 +365,7 @@ exit 0
 FAKE
 chmod +x "$scratch/fakebin/pi"
 cat >"$scratch/seat-lib.sh" <<'FAKE'
-pick_seat() { printf 'devin swe-1-7\n'; }
+litellm_pick_seat() { printf 'litellm\tsenior\n'; }
 FAKE
 rm -rf "$scratch/state-packet"
 set +e
