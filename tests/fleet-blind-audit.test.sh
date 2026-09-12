@@ -419,6 +419,74 @@ grep -F 'REFUSED' "$scratch/shadow.log" >/dev/null \
 ok "drill refuses to file when its declared stub gh is not the resolved gh (fleet-ops#5037)"
 
 # ============================================================================
+# fleet-ops#5611 wake (2026-09-12T03:19:31Z): a transient gh failure in the
+# titles pre-fetch (rate-limit wobble: nonzero exit, EMPTY stdout) must not
+# kill the run silently. Under `set -euo pipefail` the unguarded
+# issue_titles_norm assignment exited the whole script before any carry-over
+# entry or finding was processed — the live drain died 1s after
+# "findings count: 75" with zero diagnostics and a full 828-line ledger.
+# The run must survive with an empty title list: the title-signature
+# dup-check simply no-matches into re-panelling.
+# ============================================================================
+flaky_state="$scratch/flaky-state"
+flaky_plan="$scratch/flaky-plan.md"
+flaky_log="$scratch/flaky-create.log"
+mkdir -p "$flaky_state" "$scratch/flakybin"
+: > "$flaky_log"
+printf 'last-heartbeat: 2026-08-26T05:43:00Z\n' > "$flaky_plan"
+cat > "$scratch/flakybin/gh" <<'FLAKY_GH'
+#!/usr/bin/env bash
+# gh that rate-limit-wobbles: `issue list` and `pr list` exit 1 with EMPTY
+# stdout (the production signature), everything else behaves like the fake.
+subcmd="${1:-}"
+shift || true
+case "$subcmd" in
+  issue)
+    if [ "${1:-}" = "list" ]; then exit 1; fi
+    printf 'CREATE %s\n' "$*" >> "${GH_CREATE_LOG:-/dev/null}"
+    echo "https://github.com/Nishfleet/fleet-ops/issues/9998"
+    ;;
+  pr)
+    exit 1
+    ;;
+  *)
+    exit 0
+    ;;
+esac
+FLAKY_GH
+chmod +x "$scratch/flakybin/gh"
+
+flaky_rc=0
+PATH="$scratch/flakybin:$PATH" \
+  GH_CREATE_LOG="$flaky_log" \
+  GH_TOKEN="test-no-real-gh" \
+  AUDIT_REPO="Nishfleet/fleet-ops" \
+  AUDIT_ALLOW_NONCANONICAL=1 \
+  AUDIT_REPO_ROOT="$repo_root" \
+  AUDIT_STATE_DIR="$flaky_state" \
+  AUDIT_DELIBERATE_STATES="$scratch/deliberate-states.md" \
+  AUDIT_PANEL_BIN="$repo_root/bin/fleet-blind-audit-panel" \
+  AUDIT_PLAN_FILE="$flaky_plan" \
+  AUDIT_FAKE_NOW="2026-08-26T06:29:00Z" \
+  AUDIT_DRILL=1 \
+  AUDIT_DRILL_GH_STUB_DIR="$scratch/flakybin" \
+  AUDIT_DRILL_FINDINGS="$repo_root/tests/fixtures/blind-audit-drill-finding.json" \
+  AUDIT_MAX_FINDINGS="5" \
+  "$bin" >"$scratch/flaky-run.log" 2>&1 || flaky_rc=$?
+
+# Drill mode skips the reviewer branch (no "findings count" line); the
+# post-loop "audit complete" summary is the survival signal. The unguarded
+# binary dies rc=1 right after "DRILL: loaded findings" with zero signals
+# (proven against the 97fe66d75 checkout before this fix landed).
+grep -q 'audit complete:' "$scratch/flaky-run.log" \
+  || fail "run died at/before the titles pre-fetch on a gh wobble (rc=$flaky_rc): $(cat "$scratch/flaky-run.log")"
+flaky_report=$(find "$flaky_state/reports" -mindepth 1 -maxdepth 1 -type d | head -1)
+[[ -n "$flaky_report" ]] || fail "flaky-gh run produced no report directory"
+grep -q '## Filing results' "$flaky_report/report.md" \
+  || fail "run did not complete the filing loop after a gh wobble: $(tail -5 "$scratch/flaky-run.log")"
+ok "titles pre-fetch survives a transient gh failure (nonzero rc, empty stdout) — fleet-ops#5611 wake"
+
+# ============================================================================
 # The #5037 scenario end to end: a drill run from a shell with NO GH_TOKEN
 # mints a token, and the mint block must not reorder PATH ahead of the stub gh.
 # If it did, gh resolves to the real binary; the stub-dir guard is then the
