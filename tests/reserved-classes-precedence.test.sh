@@ -58,6 +58,14 @@ sed -n '/^## Hard lines/,/^## Where/p' "$pi_canonical" | grep -q "Never deploy w
 sed -n '/^## Hard lines/,/^## Where/p' "$pi_canonical" | grep -q "self-land" \
   || fail "pi canonical hard line lost the self-land precedence carve-out"
 
+# 1c. fleet-ops#6150: the deploy half of the #5715 fix must carry the recorded
+# siterep-public lift pointer — the bare 'Never deploy without Nish' absolute
+# is the regression; the recorded-lift carve-out pattern is required.
+sed -n '/^## Hard lines/,/^## Where/p' "$pi_canonical" | grep -q "Never deploy without Nish outside the recorded lift" \
+  || fail "pi canonical hard line lost the 'Never deploy without Nish outside the recorded lift' wording (fleet-ops#6150)"
+sed -n '/^## Hard lines/,/^## Where/p' "$pi_canonical" | grep -q "Merge and deploy gates LIFTED on the canonical fleet repo" \
+  || fail "pi canonical hard line lost the recorded deploy-gate lift pointer (fleet-ops#6150)"
+
 # 2. Claude standing-rules canonical points at the vault list.
 grep -q 'Reaches Nish and nothing else' "$sr_canonical" \
   || fail "standing-rules canonical lost the reaches-Nish line"

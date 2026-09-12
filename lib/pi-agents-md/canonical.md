@@ -132,10 +132,11 @@ Simple language is never baby talk and never condescending.
 - Never `git stash` in Nish's repos. The checkouts hold other agents' stashes.
 - `main`/`master` are protected. Branch or use a worktree.
 - Secrets never get printed, moved, rotated, or committed.
-- Products are PR-only. Never deploy without Nish; agent-authored PRs
-  self-land per `global-standing-rules.md` → "Agent-authored PRs land
-  themselves" (fleet-ops#5715: the bare "never merge" wording contradicted the
-  enforced self-land rule).
+- Products are PR-only. Never deploy without Nish outside the recorded lift
+  (`global-standing-rules.md` → "Merge and deploy gates LIFTED on the canonical fleet repo");
+  agent-authored PRs self-land per `global-standing-rules.md` → "Agent-authored
+  PRs land themselves" (fleet-ops#5715: the bare "never merge" wording
+  contradicted the enforced self-land rule).
 
 ## Where the real context lives
 
