@@ -1,0 +1,191 @@
+#!/usr/bin/env bash
+# fleet-workflow-registration-scan — orphan registration detector (fleet-ops#5692).
+#
+# GitHub keeps a workflow registration active even after its file is
+# deleted from the default branch. On private repos those ghosts still
+# bill minutes for schedule/push/workflow_dispatch triggers. The
+# orphan-workflow-detector workflow (fleet-ops#1161) covers OTHER
+# repos; this helper covers Nishfleet/fleet-ops itself.
+#
+# It lists ACTIVE workflow registrations via the Actions API and diffs
+# them against `.github/workflows/**` as they exist on the repo's
+# DEFAULT branch, fetched to a temporary ref inside the current clone.
+# The working tree may be dirty or on any branch; it is never touched.
+#
+# Usage:
+#   fleet-workflow-registration-scan [REPO] [--report]
+#   fleet-workflow-registration-scan --help
+#
+# Exit 0: no orphan registrations (or --report mode). Exit 1: at least
+# one orphan. Real command failures (gh missing, network down, no auth)
+# propagate non-zero in both modes — only --report always exits 0 after
+# the report is written.
+#
+# Environment seams:
+#   FLEET_REGISTRATION_SCAN_REPORT   report path (default
+#     /home/nish/workspaces/agent-state/FLEET-ORPHAN-WORKFLOW-REGISTRATIONS.md)
+#   GH                               gh binary (default gh)
+#   FLEET_REGISTRATION_SCAN_KEEP_TEMP_REF   1 leaves the temp ref after
+#     the run (default: delete it)
+
+set -euo pipefail
+
+GH="${GH:-gh}"
+REPORT_FILE="${FLEET_REGISTRATION_SCAN_REPORT:-/home/nish/workspaces/agent-state/FLEET-ORPHAN-WORKFLOW-REGISTRATIONS.md}"
+REPO="Nishfleet/fleet-ops"
+MODE_SCAN=1
+
+usage() {
+    cat <<'EOF'
+fleet-workflow-registration-scan — diff ACTIVE GitHub Actions registrations against the default branch.
+
+Usage: fleet-workflow-registration-scan [REPO] [--report]
+
+  REPO       owner/name to scan (default: Nishfleet/fleet-ops)
+  --report   write the report and exit 0, orphan or not
+  --help     this help
+
+Exit 1: at least one active registration whose file is missing from
+the default branch ("orphan"). Exit 0: clean, or --report mode.
+EOF
+}
+
+for arg in "$@"; do
+    case "$arg" in
+        --help|-h)
+            usage
+            exit 0
+            ;;
+        --report)
+            MODE_SCAN=0
+            ;;
+        -*)
+            printf 'unknown option: %s\n' "$arg" >&2
+            usage >&2
+            exit 2
+            ;;
+        *)
+            REPO="$arg"
+            ;;
+    esac
+done
+
+# Guard against paths like .github/workflows by requiring owner/name shape.
+[[ "$REPO" =~ ^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$ ]] || {
+    printf 'REPO must look like owner/name (got: %s)\n' "$REPO" >&2
+    exit 2
+}
+
+log() {
+    printf '[%s] [fleet-workflow-registration-scan] %s\n' \
+        "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$*" >&2
+}
+
+_repo_root=$(cd "$(dirname "$(readlink -f "$0")")/.." && pwd)
+TMP_REF=refs/tmp/fleet-workflow-registration-scan
+
+# --- fetch the default branch to a temp ref ------------------------------------
+default_branch=$("$GH" api "repos/$REPO" --jq .default_branch)
+[[ -n "$default_branch" && "$default_branch" != "null" ]] || {
+    log "no default branch reported for $REPO"
+    exit 1
+}
+default_sha=$("$GH" api "repos/$REPO/branches/$default_branch" --jq .commit.sha)
+
+# Never depend on the working tree being clean or on the right branch.
+git -C "$_repo_root" fetch --depth 1 "https://github.com/$REPO" "$default_sha:$TMP_REF" >/dev/null
+trap '[[ "${FLEET_REGISTRATION_SCAN_KEEP_TEMP_REF:-0}" == "1" ]] || git -C "$_repo_root" update-ref -d "$TMP_REF" 2>/dev/null || true' EXIT
+
+# YAML files on the default branch (not the working tree).
+default_files=$(git -C "$_repo_root" ls-tree -r --name-only "$TMP_REF" -- .github/workflows \
+    | grep -E '\.ya?ml$' || true)
+
+# --- list active registrations -------------------------------------------------
+# One per line: id|path. state==active only.
+registrations=$("$GH" api "repos/$REPO/actions/workflows" \
+    --jq '.workflows[] | select(.state=="active") | "\(.id)|\(.path)"')
+total_registered=0
+[[ -n "$registrations" ]] && total_registered=$(wc -l <<< "$registrations")
+
+# --- diff ----------------------------------------------------------------------
+orphans=""
+while IFS='|' read -r id path; do
+    [[ -n "$path" ]] || continue
+    grep -Fxq "$path" <<< "$default_files" || orphans+="$id|$path"$'\n'
+done <<< "$registrations"
+orphans=${orphans%$'\n'}
+
+orphan_count=0
+ids=()
+paths=()
+if [[ -n "$orphans" ]]; then
+    orphan_count=$(wc -l <<< "$orphans")
+    while IFS= read -r line; do
+        ids+=("${line%%|*}") paths+=("${line#*|}")
+    done <<< "$orphans"
+fi
+
+# informational: files on the default branch with NO active registration
+unregistered_files=""
+while IFS= read -r f; do
+    [[ -n "$f" ]] || continue
+    grep -Fq "|$f" <<< "$registrations" || unregistered_files+="$f"$'\n'
+done <<< "$default_files"
+unregistered_files=${unregistered_files%$'\n'}
+
+# --- observed runs context per orphan --------------------------------------------
+run_counts=()
+if [[ "$orphan_count" -gt 0 ]]; then
+    for id in "${ids[@]}"; do
+        run_counts+=("$("$GH" api "repos/$REPO/actions/workflows/$id/runs?per_page=1" \
+            --jq '"\(.total_count)|\(if .workflow_runs[0] then "\(.workflow_runs[0].created_at) \(.workflow_runs[0].conclusion // .workflow_runs[0].status)" else "no runs recorded" end)"')")
+    done
+fi
+
+# --- report ---------------------------------------------------------------------
+NOW_ISO=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+mkdir -p "$(dirname "$REPORT_FILE")"
+{
+    echo "# Fleet workflow registration scan — $REPO"
+    echo
+    echo "- Timestamp: $NOW_ISO"
+    echo "- Default branch: $default_branch (sha \`$default_sha\`, fetched as \`$TMP_REF\`)"
+    echo "- ACTIVE registrations on GitHub: $total_registered"
+    echo "- YAML workflows on \`$default_branch\`: $(grep -c . <<< "$default_files" || true)"
+    echo "- Orphans (registered but file gone from default branch): **$orphan_count**"
+    echo
+    if [[ "$orphan_count" -eq 0 ]]; then
+        echo "No ACTIVE registration lacks its file on \`$default_branch\`. Nothing to remediate."
+    else
+        echo "## Orphan registrations (remediation: \`gh api -X DELETE repos/$REPO/actions/workflows/<id>\`)"
+        echo
+        echo "Still billable on private repos for any trigger that fires. Deleting a"
+        echo "registration needs Admin scope and is irreversible — reserved to Nish."
+        echo
+        for i in "${!ids[@]}"; do
+            echo "- \`${paths[$i]}\` (workflow id ${ids[$i]}) — observed runs: ${run_counts[$i]}"
+        done
+    fi
+    if [[ -n "$unregistered_files" ]]; then
+        echo
+        echo "## Informational: YAML on default branch with no active registration"
+        echo
+        echo "(Reusable-called-only or default-disabled files can be normal.)"
+        echo
+        while IFS= read -r f; do
+            echo "- \`$f\`"
+        done <<< "$unregistered_files"
+    fi
+} > "$REPORT_FILE"
+
+# --- exit -----------------------------------------------------------------------
+if [[ "$MODE_SCAN" -eq 0 ]]; then
+    log "report written to $REPORT_FILE (--report: exit 0)"
+    exit 0
+fi
+if [[ "$orphan_count" -gt 0 ]]; then
+    log "$orphan_count orphan registration(s) on $REPO — see $REPORT_FILE"
+    exit 1
+fi
+log "clean: no orphan registrations on $REPO"
+exit 0
