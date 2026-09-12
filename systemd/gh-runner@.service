@@ -44,8 +44,8 @@
 Description=GitHub Actions ephemeral self-hosted runner %i — one job per activation (fleet-ops#5935)
 After=network-online.target
 Wants=network-online.target
-StartLimitIntervalSec=600
-StartLimitBurst=6
+StartLimitIntervalSec=120
+StartLimitBurst=4
 
 [Service]
 Type=simple
@@ -66,10 +66,10 @@ ExecStartPre=/bin/bash -c 'd=%h/.local/share/actions-runner/%i; mkdir -p "$d"; i
 # are public). The group route 404s on PUT, 200 on PATCH (proven 2026-09-12,
 # #5935). The runner name is unique per activation so a crashed
 # predecessor's still-registered ghost cannot collide.
-ExecStartPre=/bin/bash -c 'd=%h/.local/share/actions-runner/%i; cd "$d" && tok=$(gh api -X POST orgs/Nishfleet/actions/runners/generate-jitconfig -f name=gh-runner-%i-$(date +%s) -F runner_group_id=1 -f "labels[]=self-hosted" -f "labels[]=linux" -f "labels[]=x64" -f "labels[]=fleet-ci" --jq .data.encoded_jit_config) && ./config.sh --unattended --jitconfig "$tok"'
+ExecStartPre=/bin/bash -c 'd=%h/.local/share/actions-runner/%i; cd "$d" && ./config.sh remove --unattended >/dev/null 2>&1 || true; tok=$(gh api -X POST orgs/Nishfleet/actions/runners/generate-jitconfig -f name=gh-runner-%i-$(date +%%s) -F runner_group_id=1 -f "labels[]=self-hosted" -f "labels[]=linux" -f "labels[]=x64" -f "labels[]=fleet-ci" --jq .encoded_jit_config) && ./config.sh --unattended --jitconfig "$tok"'
 ExecStart=/bin/bash -c 'cd %h/.local/share/actions-runner/%i && exec ./run.sh'
 Restart=always
-RestartSec=30
+RestartSec=40
 # First activation on a cold instance dir downloads + verifies + extracts
 # the 226MB pinned tarball — far past the 90s default start timeout.
 TimeoutStartSec=600
