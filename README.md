@@ -91,7 +91,7 @@ The two system drop-ins repo-owned by `#71` are the fleet RAM governor
 themselves — see [docs/ram-governor-tree.md](docs/ram-governor-tree.md) for
 the full five-layer policy tree and what each layer does.
 
-## Dispatch a packet that outlives this session
+## systemd by default
 
 `nohup pi ... &` dies when the launching shell ends. The four `EXTLOAD-OK`
 lines it leaves behind look like a dead seat. Use the thin systemd wrapper:
