@@ -67,6 +67,14 @@ fi
 #   otherwise (product repos)
 #       → scout-candidate  (fleet-ops#457: admission, not blank approval)
 #
+# Park (fleet-ops#5887): awaiting-runtime-gate is a GATE label, not a
+# lifecycle label. The park is defined as gate ON, agent-ready OFF
+# (fleet-ops#4540). This sweep must never add agent-ready to an issue that
+# carries the park; promotion is deferred. unpark_runtime_gate is the only
+# restore — it removes the gate and adds agent-ready in one edit so the
+# two labels can never coexist. Dual-labeled leftovers (agent-ready +
+# awaiting-runtime-gate) are healed by dropping agent-ready.
+#
 # Class-lock reclassification (fleet-ops#1083): a `fix(failed-command):` or
 # `fix(decisions-ledger):` issue whose class-lock PR (the `claim/issue-<N>`
 # branch, merged with `Relates to #<N>` not `Closes #<N>`) has already
@@ -96,6 +104,9 @@ fi
 #
 # Modes:
 #   --classify TITLE   print the lifecycle label for TITLE (no network)
+#   --unpark REPO#NUM  un-park an awaiting-runtime-gate issue: drop the park
+#                      and restore agent-ready in ONE edit (no network read
+#                      beyond the parked-state pre-check)
 #   --drill            set LIFECYCLE_SWEEP_DRILL=1 then sweep
 #   (default)          sweep enrolled repos
 #
@@ -122,6 +133,7 @@ Usage: lifecycle-label-sweep [--help|-h]
 
 Modes:
   --classify TITLE   print the lifecycle label for TITLE (no network)
+  --unpark REPO#NUM  drop awaiting-runtime-gate + add agent-ready in one edit
   --drill            set LIFECYCLE_SWEEP_DRILL=1 then sweep
   (default)          sweep enrolled repos
 
@@ -311,6 +323,33 @@ issue_has_lifecycle() {
     return 1
 }
 
+# fleet-ops#5887: park label is not a lifecycle label (intake keys on
+# agent-ready; the park is a gate). True when the issue carries
+# awaiting-runtime-gate. The park wins over every promotion to agent-ready.
+issue_is_parked() {
+    local labels_json="$1"
+    printf '%s' "$labels_json" | jq -e '.[] | select(.name=="awaiting-runtime-gate")' >/dev/null 2>&1
+}
+
+# fleet-ops#5887: the ONLY restore of agent-ready on a parked issue.
+# One edit so the two labels never coexist.
+unpark_runtime_gate() {
+    local repo="$1" num="$2"
+    local body
+    body="lifecycle-label: un-park awaiting-runtime-gate by fleet-heartbeat at ${NOW_ISO} (restore agent-ready in the same edit; fleet-ops#5887)"
+    if [ "$DRY" = "1" ]; then
+        log "DRY $repo#$num: un-park awaiting-runtime-gate → agent-ready"
+        return 0
+    fi
+    ensure_label "$repo" "agent-ready"
+    if ! gh issue edit "$num" -R "$repo" --remove-label awaiting-runtime-gate --add-label agent-ready >/dev/null 2>&1; then
+        log "  $repo#$num: un-park awaiting-runtime-gate FAILED — retry next tick"
+        return 1
+    fi
+    comment_issue "$repo" "$num" "$body" "runtime-gate un-park"
+    return 0
+}
+
 # fleet-ops#1083: a class-lock issue is one auto-filed by
 # bin/fleet-failed-command-flagged or bin/fleet-decisions-ledger. Its
 # class-lock PR uses `Relates to #<N>` (not `Closes #<N>`) on branch
@@ -395,6 +434,32 @@ ensure_label() {
     fi
     gh label create "$name" -R "$repo" --color "$color" --description "$desc" --force >/dev/null 2>&1 || true
 }
+
+# fleet-ops#5887: --unpark OWNER/NAME#NUM is the sanctioned un-park path.
+# The sweep itself never un-parks (the park is deliberate until the named
+# runtime event fires), so the restore lives behind this explicit mode:
+# one gh edit drops the park AND restores agent-ready, so the two labels can
+# never coexist. Refuses when the issue does not carry the park (fail-closed:
+# no speculative agent-ready).
+if [ "${1:-}" = "--unpark" ]; then
+    shift
+    _unpark_target="${1:-}"
+    [[ "$_unpark_target" =~ ^[^#]+#[0-9]+$ ]] \
+        || { echo "usage: lifecycle-label-sweep --unpark OWNER/NAME#NUM" >&2; exit 2; }
+    _unpark_repo="${_unpark_target%#*}"
+    _unpark_num="${_unpark_target##*#}"
+    _unpark_labels=$(gh api "repos/$_unpark_repo/issues/$_unpark_num" --jq '[.labels[].name]' 2>/dev/null) \
+        || { echo "unpark: cannot read $_unpark_target" >&2; exit 1; }
+    if ! printf '%s' "$_unpark_labels" | jq -e 'index("awaiting-runtime-gate") != null' >/dev/null; then
+        echo "unpark: $_unpark_target does not carry awaiting-runtime-gate — nothing to un-park" >&2
+        exit 1
+    fi
+    if unpark_runtime_gate "$_unpark_repo" "$_unpark_num"; then
+        echo "unpark: $_unpark_target un-parked (agent-ready restored in the same edit)"
+        exit 0
+    fi
+    exit 1
+fi
 
 spec_gate_py() {
     if [ -n "${AGENT_READY_SPEC_GATE:-}" ]; then
@@ -657,6 +722,16 @@ while IFS= read -r repo; do
             continue
         fi
 
+        # fleet-ops#5887: park wins. A parked issue with no lifecycle label
+        # (agent-ready was stripped by the park or by the dual-label heal
+        # below) must not be promoted to agent-ready or scout-candidate —
+        # the next admit pass would otherwise re-create the phantom pool.
+        if issue_is_parked "$labels_json"; then
+            log "  $repo#$num: skip agent-ready (parked: awaiting-runtime-gate)"
+            skipped=$((skipped + 1))
+            continue
+        fi
+
         # fleet-ops#3295: umbrella-labeled issues are tracking parents, not
         # claimable work (label desc: "tracking parent; not claimable").
         # Exclude them from the agent-ready default AND from scout-candidate
@@ -733,6 +808,14 @@ while IFS= read -r repo; do
         if printf '%s' "$labels_json" | jq -e '.[] | select(.name=="discarded" or .name=="observe-to-close" or .name=="nish-reserved" or .name=="noise-class")' >/dev/null 2>&1; then
             continue
         fi
+        # fleet-ops#5887: park wins over spec-gate admission. The live
+        # 0509#2213 loop was this pass re-adding agent-ready after the park
+        # had stripped it. Log the skip so it is never silent.
+        if issue_is_parked "$labels_json"; then
+            log "  $repo#$num: skip agent-ready (parked: awaiting-runtime-gate)"
+            skipped=$((skipped + 1))
+            continue
+        fi
         if issue_passes_spec_gate "$issue_body" "$repo"; then
             log "  $repo#$num: scout-candidate passes spec gate → admit agent-ready ($title)"
             if admit_scout_candidate "$repo" "$num"; then
@@ -788,6 +871,42 @@ while IFS= read -r repo; do
                 healed=$((healed + 1))
             else
                 log "  $repo#$num: remove-label scout-candidate FAILED — retry next tick"
+                failed=$((failed + 1))
+            fi
+        fi
+    done < <(printf '%s' "$list_json" | jq -c '.[]')
+
+    # fleet-ops#5887: heal agent-ready + awaiting-runtime-gate leftovers.
+    # Park is defined as gate ON, ready OFF. The scout-candidate admit
+    # pass used to re-add agent-ready without checking the park, leaving a
+    # phantom ready pool (10 live on 0509 at filing). Drop agent-ready so
+    # the park is the only intake-visible state. This tick's 10 dual-labeled
+    # 0509 issues were each read against their park comment: none of the
+    # named runtime events have cleared, so all stay parked (strip ready,
+    # do not un-park). Un-park is unpark_runtime_gate, not this pass.
+    while IFS= read -r row; do
+        [ -z "$row" ] && continue
+        num=$(printf '%s' "$row" | jq -r '.number')
+        title=$(printf '%s' "$row" | jq -r '.title // ""')
+        labels_json=$(printf '%s' "$row" | jq -c '.labels // []')
+        has_ready=0
+        has_park=0
+        while IFS= read -r name; do
+            [ -z "$name" ] && continue
+            case "$name" in
+                agent-ready) has_ready=1 ;;
+                awaiting-runtime-gate) has_park=1 ;;
+            esac
+        done < <(printf '%s' "$labels_json" | jq -r '.[].name // empty')
+        if (( has_ready == 1 && has_park == 1 )); then
+            log "  $repo#$num: skip agent-ready (parked: awaiting-runtime-gate) — drop agent-ready ($title)"
+            if [ "$DRY" = "1" ]; then
+                log "DRY $repo#$num: remove-label agent-ready (heal park dual-label)"
+                healed=$((healed + 1))
+            elif gh issue edit "$num" -R "$repo" --remove-label agent-ready >/dev/null 2>&1; then
+                healed=$((healed + 1))
+            else
+                log "  $repo#$num: remove-label agent-ready FAILED — retry next tick"
                 failed=$((failed + 1))
             fi
         fi
