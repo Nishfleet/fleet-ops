@@ -787,7 +787,160 @@ rc=$(run_bin 1)
 grep -q "compare-only" "$scratch/err.log" || fail "correct origin URL must reach the compare-only path"
 ok "correct origin fetch URL -> unchanged behaviour"
 
-echo "OK: fleet-deploy-check: unchanged/moved/compare-only/deploy-fail/yield/lock/defaultBranch"
+# --- 14. deploy-clone drift gauge + LOUD line (fleet-ops#5786) ---------------
+# The 2026-09-12 false-LIVE incident: an alert-repair worker left the deploy
+# clone on its fix branch and reported the change "Live on this host" while
+# the PR was still open with auto-merge off. Every tick must now write the
+# fleet_deploy_clone_off_main{repo} gauge (1 = off main or dirty, 0 = clean
+# main) and LOUD DEPLOY-CHECK-OFF-MAIN whenever the clone is off main — and
+# DeployCloneOffMain pages the repair lane after 15 min of drift.
+clone_prom="$scratch/fleet-deploy-clone.prom"
+run_bin_prom() {
+  local no_deploy="${1:-0}"
+  set +e
+  FLEET_OPS_CHECKOUT="$checkout" \
+  FLEET_OPS_DEPLOY_BIN="$deploy_spy" \
+  FLEET_DEPLOY_CHECK_LOCK="$lock" \
+  FLEET_DEPLOY_CHECK_NO_DEPLOY="$no_deploy" \
+  FLEET_HEARTBEAT_TRIAGE="$triage" \
+  FLEET_DEPLOY_CLONE_PROM="$clone_prom" \
+  FLEET_DEPLOY_CLONE_REPO="fleet-ops" \
+  DEPLOY_SPY_LOG="$DEPLOY_SPY_LOG" \
+  DEPLOY_SPY_RC="${2:-0}" \
+    "$bin" >/dev/null 2>"$scratch/err-prom.log"
+  local rc=$?
+  set -e
+  echo "$rc"
+}
+
+# Drill: check the clone out on a branch -> gauge 1 + loud + deploy invoked.
+git -C "$checkout" checkout -q -b drift-drill
+: > "$DEPLOY_SPY_LOG"
+rc=$(run_bin_prom 0)
+[[ "$rc" == "0" ]] || fail "off-main drift tick must exit 0 (got $rc)"
+grep -q 'fleet_deploy_clone_off_main{repo="fleet-ops"} 1' "$clone_prom" \
+  || fail "off-main clone must write gauge 1: $(cat "$clone_prom")"
+grep -q "DEPLOY-CHECK-OFF-MAIN" "$scratch/err-prom.log" \
+  || fail "off-main clone must loud DEPLOY-CHECK-OFF-MAIN: $(cat "$scratch/err-prom.log")"
+grep -q "drift-drill" "$scratch/err-prom.log" \
+  || fail "OFF-MAIN loud must name the offending branch"
+grep -q "DEPLOY-INVOKED" "$DEPLOY_SPY_LOG" \
+  || fail "off-main drift must invoke the sanctioned deploy to converge"
+ok "drift drill: clone on a branch -> gauge 1 + DEPLOY-CHECK-OFF-MAIN + deploy invoked"
+
+# Detached HEAD is the same drift class — a clone parked detached cannot
+# converge cleanly either.
+git -C "$checkout" checkout -q --detach HEAD
+: > "$DEPLOY_SPY_LOG"
+rc=$(run_bin_prom 0)
+[[ "$rc" == "0" ]] || fail "detached drift tick must exit 0 (got $rc)"
+grep -q 'fleet_deploy_clone_off_main{repo="fleet-ops"} 1' "$clone_prom" \
+  || fail "detached clone must write gauge 1"
+grep -q "DEPLOY-CHECK-OFF-MAIN" "$scratch/err-prom.log" \
+  || fail "detached clone must loud DEPLOY-CHECK-OFF-MAIN"
+grep -q "branch=detached" "$scratch/err-prom.log" \
+  || fail "detached drift must say branch=detached"
+grep -q "DEPLOY-INVOKED" "$DEPLOY_SPY_LOG" \
+  || fail "detached drift must invoke the sanctioned deploy to converge"
+ok "detached HEAD counts as off-main drift (gauge 1 + loud + deploy)"
+
+# Back on clean main -> gauge clears to 0 on the next tick.
+git -C "$checkout" checkout -q main
+git -C "$checkout" reset -q --hard origin/main
+rc=$(run_bin_prom 0)
+[[ "$rc" == "0" ]] || fail "converged tick must exit 0 (got $rc)"
+grep -q 'fleet_deploy_clone_off_main{repo="fleet-ops"} 0' "$clone_prom" \
+  || fail "clean main must clear the gauge to 0: $(cat "$clone_prom")"
+if grep -q "DEPLOY-CHECK-OFF-MAIN" "$scratch/err-prom.log"; then
+  fail "converged clone must not loud DEPLOY-CHECK-OFF-MAIN"
+fi
+ok "back on clean main -> gauge clears to 0, no OFF-MAIN loud"
+
+# Dirty alone is drift too.
+printf 'drift-wip\n' >> "$checkout/f"
+rc=$(run_bin_prom 1)
+[[ "$rc" == "0" ]] || fail "dirty drift tick must exit 0 (got $rc)"
+grep -q 'fleet_deploy_clone_off_main{repo="fleet-ops"} 1' "$clone_prom" \
+  || fail "dirty clone must write gauge 1"
+git -C "$checkout" checkout -q -- f
+rc=$(run_bin_prom 1)
+grep -q 'fleet_deploy_clone_off_main{repo="fleet-ops"} 0' "$clone_prom" \
+  || fail "cleaned clone must clear the gauge to 0"
+ok "dirty clone -> gauge 1; cleaned -> gauge 0"
+
+# A missing checkout is the extreme drift — gauge 1 so the alert still fires.
+rm -f "$clone_prom"
+rc=$(FLEET_OPS_CHECKOUT="$scratch/nonexistent" \
+     FLEET_HEARTBEAT_TRIAGE="$triage" \
+     FLEET_DEPLOY_CLONE_PROM="$clone_prom" \
+     FLEET_DEPLOY_CLONE_REPO="fleet-ops" \
+     "$bin" >/dev/null 2>"$scratch/err-missing.log"; echo $?)
+[[ "$rc" == "0" ]] || fail "missing checkout must exit 0 (got $rc)"
+grep -q 'fleet_deploy_clone_off_main{repo="fleet-ops"} 1' "$clone_prom" \
+  || fail "missing checkout must write gauge 1"
+ok "missing checkout -> gauge 1 (extreme drift still pages)"
+
+# --- 14b. DeployCloneOffMain alert rule (fleet-ops#5786) ----------------------
+# promtool drill: the gauge at 1 fires after 15 min and clears at 0; the
+# repair lane must see severity=critical + service=fleet.
+if command -v promtool >/dev/null 2>&1; then
+  python3 - "$repo_root/config/fleet_rules.yml" <<'PY'
+import sys, yaml
+rules = yaml.safe_load(open(sys.argv[1]))
+alerts = {r["alert"]: r for g in rules["groups"] for r in g["rules"]
+          if "alert" in r}
+a = alerts.get("DeployCloneOffMain") or sys.exit(
+    "FAIL: DeployCloneOffMain missing from fleet_rules.yml")
+assert a["labels"]["severity"] == "critical", a["labels"]
+assert a["labels"]["service"] == "fleet", a["labels"]
+assert a.get("for") == "15m", a.get("for")
+assert "fleet_deploy_clone_off_main" in a["expr"], a["expr"]
+assert "fleet-ops#5786" in a["annotations"]["description"], a["annotations"]
+print("OK: DeployCloneOffMain rule shape — critical/fleet, 15m, cites #5786")
+PY
+  cat >"$scratch/offmain.test.yml" <<YQ
+rule_files:
+  - $repo_root/config/fleet_rules.yml
+evaluation_interval: 1m
+tests:
+  - interval: 1m
+    name: deploy clone on a worker branch — alert silent before 15m, fires after
+    input_series:
+      - series: 'fleet_deploy_clone_off_main{repo="fleet-ops"}'
+        values: '1x40'
+    alert_rule_test:
+      - eval_time: 10m
+        alertname: DeployCloneOffMain
+        exp_alerts: []
+      - eval_time: 20m
+        alertname: DeployCloneOffMain
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              service: fleet
+              repo: "fleet-ops"
+            exp_annotations:
+              summary: 'fleet-ops deploy clone off main or dirty for 15+ minutes (fleet-ops#5786)'
+              description: 'fleet_deploy_clone_off_main{repo="fleet-ops"} has been 1 for 15+ minutes: the deploy clone is on a non-main branch, detached, or dirty — the live install source is not clean origin/main, so ''LIVE on this host'' may be riding unmerged code. Repair: name the writer first (journalctl --user -u fleet-deploy-check.service for DEPLOY-CHECK-OFF-MAIN / DEPLOY-CHECK-DIRTY-CLONE; ls of /home/nish/workspaces/agent-worktrees for the branch owner). Salvage the branch''s diff into the writer''s claim worktree if it is not already in a PR, then converge the clone to clean origin/main (bin/fleet-ops-deploy, or `git -C /home/nish/workspaces/tooling/fleet-ops-deploy-clone checkout main && git reset --hard origin/main`). Done means the gauge reads 0 next tick. Never claim LIVE for a change still on a branch — the packet-verdict checker rejects the deliverable (fleet-ops#5786).'
+
+  - interval: 1m
+    name: clone back on clean main — alert stays silent
+    input_series:
+      - series: 'fleet_deploy_clone_off_main{repo="fleet-ops"}'
+        values: '0x40'
+    alert_rule_test:
+      - eval_time: 20m
+        alertname: DeployCloneOffMain
+        exp_alerts: []
+YQ
+  promtool test rules "$scratch/offmain.test.yml" >/dev/null \
+    || fail "promtool DeployCloneOffMain drill failed"
+  ok "promtool: DeployCloneOffMain fires on 15m drift, silent on clean main"
+else
+  echo "SKIP: promtool not installed — DeployCloneOffMain rule drill runs where promtool exists (VPS P14)"
+fi
+
+echo "OK: fleet-deploy-check: unchanged/moved/compare-only/deploy-fail/yield/lock/defaultBranch/drift-gauge"
 
 # PR #4856: host deploy-audit-log-outside-clone so P14 listing-gate
 # counts it (ci.yml edit needs workflow scope; host from this listed suite).

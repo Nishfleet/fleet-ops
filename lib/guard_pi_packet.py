@@ -14,6 +14,7 @@ failure mode:
 A fault exits 2 and writes a one-line reason to stderr.  Exits 0 otherwise.
 """
 
+import importlib.util
 import json
 import os
 import re
@@ -23,6 +24,32 @@ LANE_FAULT = re.compile(r"rate_limit|ETIMEDOUT|Token Plan|quota|insufficient", r
 VERDICT = re.compile(r"^(RESULT|DRILL|RESTORE-WAVE|SKIP|OK)\b", re.M)
 NOHUP = re.compile(r"\bnohup\b")
 REDIRECT = re.compile(r"pi --print[^>]*>\s*\"?([^\s\"&;|]+)")
+
+_VERDICT_LIB = None
+
+
+def _verdict_lib():
+    """Load the sibling pi-packet-verdict checker once (fleet-ops#5786).
+
+    The LIVE-claim gate lives in lib/pi-packet-verdict.py; the hook reuses it
+    verbatim so one grammar serves --body checks, the guard, and the dead-man.
+    Missing/unloadable checker = gate skipped (fail-open for availability)."""
+    global _VERDICT_LIB
+    if _VERDICT_LIB is not None:
+        return _VERDICT_LIB
+    path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                        "pi-packet-verdict.py")
+    if not os.path.isfile(path):
+        _VERDICT_LIB = False
+        return None
+    try:
+        spec = importlib.util.spec_from_file_location("pi_packet_verdict", path)
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        _VERDICT_LIB = mod
+    except Exception:
+        _VERDICT_LIB = False
+    return _VERDICT_LIB or None
 
 
 def _is_launcher_hint(command: str) -> bool:
@@ -36,7 +63,8 @@ def _is_launcher_hint(command: str) -> bool:
     return False
 
 
-def classify_packet_text(text: str, *, launcher_hint: bool = False, verdict_re=None) -> list[str]:
+def classify_packet_text(text: str, *, launcher_hint: bool = False, verdict_re=None,
+                         live_repo_dirs=None) -> list[str]:
     """Classify a run-output body against the canonical verdict-line grammar.
 
     The single canonical classifier for 'did this run actually do anything'.
@@ -47,6 +75,10 @@ def classify_packet_text(text: str, *, launcher_hint: bool = False, verdict_re=N
     verdict_re defaults to VERDICT (the pi lane terms). A different lane can
     pass its own machine-checkable verdict grammar (e.g. a packet-verdict line
     plus the same terms) without duplicating the decision logic.
+
+    live_repo_dirs: extra repo checkouts for the fleet-ops#5786 LIVE-claim
+    gate (e.g. the worker's own worktree); the checker's default clones are
+    always consulted too.
     """
     if verdict_re is None:
         verdict_re = VERDICT
@@ -70,6 +102,19 @@ def classify_packet_text(text: str, *, launcher_hint: bool = False, verdict_re=N
             problems.append(
                 f"suspiciously short output ({len(lines)} lines) with no verdict line — "
                 "likely a narrate-and-quit or dead-on-arrival run"
+            )
+
+    # fleet-ops#5786: a deliverable may not claim LIVE/DEPLOYED/live-on-host
+    # unless the same line cites a SHA already on origin/main — a fix still on
+    # a branch is a PR, not live state.
+    verdict_lib = _verdict_lib()
+    if verdict_lib is not None:
+        for v in verdict_lib.live_claim_violations(
+                text, verdict_lib._live_repo_dirs(live_repo_dirs)):
+            problems.append(
+                f"false LIVE/DEPLOYED claim (line {v['line']}): "
+                f"{v['text'][:160]!r} — cite a merged origin/main SHA on the "
+                "same line or drop the claim"
             )
     return problems
 
@@ -113,7 +158,12 @@ def main() -> int:
     except Exception:
         return 0
 
-    problems = classify_packet_text(text, launcher_hint=_is_launcher_hint(cmd))
+    cwd = payload.get("cwd") or ""
+    problems = classify_packet_text(
+        text,
+        launcher_hint=_is_launcher_hint(cmd),
+        live_repo_dirs=[cwd] if cwd else None,
+    )
 
     if problems:
         print(

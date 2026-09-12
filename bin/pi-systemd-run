@@ -389,6 +389,9 @@ cmd+=(--setenv=PI_DEADMAN_DISPATCH="$dispatch_id")
 cmd+=(--setenv=PI_DEADMAN_UNIT="$unit")
 cmd+=(--setenv=PI_DEADMAN_CMDLINE="$*")
 cmd+=(--setenv=PI_DEADMAN_DEADLINE="$deadline_min")
+# fleet-ops#5786: the dead-man's LIVE-claim gate verifies cited SHAs against
+# the unit's own repo too — pass the worktree through.
+cmd+=(--setenv=PI_DEADMAN_WORKDIR="$workdir")
 if [[ -n "$deliverable" ]]; then
     cmd+=(--setenv=PI_DEADMAN_DELIVERABLE="$deliverable")
 fi

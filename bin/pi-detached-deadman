@@ -209,7 +209,9 @@ fi
 service_result="${SERVICE_RESULT:-}"
 
 # Verdict: died = the unit's Result was not success, OR the promised
-# deliverable is missing at stop time (exit 0 included).
+# deliverable is missing at stop time (exit 0 included), OR the run claimed
+# LIVE/DEPLOYED/live-on-host without citing a merged origin/main SHA
+# (fleet-ops#5786 — the packet-verdict checker owns the claim grammar).
 died=0
 if [[ "$service_result" != "success" ]]; then
     died=1
@@ -217,6 +219,46 @@ fi
 if [[ -n "$deliverable" && ! -f "$deliverable" ]]; then
     died=1
 fi
+
+# --- false LIVE-claim gate (fleet-ops#5786) ----------------------------------
+# A deliverable — the promised file OR the run's own printed output — may not
+# claim LIVE/DEPLOYED/live-on-host unless the same line cites a SHA already
+# on origin/main of a known clone. The 2026-09-12 incident was an
+# alert-repair worker reporting "Live on this host" for a change still on a
+# branch while its PR sat open with auto-merge off. Rejection means the stop
+# becomes a death: DetachedJobDied fires and a repair packet lands.
+verdict_lib="${PI_DEADMAN_VERDICT_LIB:-$here/../lib/pi-packet-verdict.py}"
+# Installed layout puts lib/ files under ~/.local/lib/pi-packet/.
+if [[ ! -f "$verdict_lib" ]]; then
+    verdict_lib="$here/../lib/pi-packet/pi-packet-verdict.py"
+fi
+journalctl_bin="${PI_DEADMAN_JOURNALCTL:-journalctl}"
+false_live_claim=0
+claim_scan="$(mktemp 2>/dev/null || true)"
+if [[ -f "$verdict_lib" && -n "$claim_scan" ]]; then
+    {
+        if [[ -n "$deliverable" && -f "$deliverable" ]]; then
+            cat -- "$deliverable" 2>/dev/null || true
+        fi
+        "$journalctl_bin" --user -u "$unit" -o cat --no-pager 2>/dev/null \
+            | tail -n 2000 || true
+    } >"$claim_scan"
+    if [[ -s "$claim_scan" ]]; then
+        repo_args=()
+        if [[ -n "${PI_DEADMAN_WORKDIR:-}" ]]; then
+            repo_args+=(--repo-dir "$PI_DEADMAN_WORKDIR")
+        fi
+        if ! python3 "$verdict_lib" --live-claims "$claim_scan" \
+                ${repo_args[@]+"${repo_args[@]}"} >/dev/null 2>&1; then
+            false_live_claim=1
+            died=1
+            log "LOUD DEPLOY-CLAIM-FALSE unit=$unit — deliverable/journal claims LIVE/DEPLOYED without a merged origin/main SHA on the same line (fleet-ops#5786)"
+        fi
+    fi
+elif [[ ! -f "$verdict_lib" ]]; then
+    log "WARN: packet-verdict checker missing at $verdict_lib — LIVE-claim gate skipped (fleet-ops#5786)"
+fi
+[[ -n "$claim_scan" ]] && rm -f "$claim_scan"
 
 # --- who stopped it (audit trail, best-effort) ------------------------------
 stopper_line=""
@@ -244,7 +286,9 @@ if [[ "$died" == "1" ]]; then
     # distinct reason keeps one STOP-REASON per trip and one auditor.
     echo "$stopper_line" >&2   # lands in the unit journal -> STOP-REASON detail
     if [[ "$service_result" == "success" ]]; then
-        UNIT_ESCALATION_REASON="unit-stopped-without-deliverable" \
+        esc_reason="unit-stopped-without-deliverable"
+        [[ "$false_live_claim" == "1" ]] && esc_reason="unit-false-live-claim"
+        UNIT_ESCALATION_REASON="$esc_reason" \
         UNIT_ESCALATION_SOURCE="pi-detached-deadman" \
             "$escalation_bin" "$unit" >/dev/null 2>&1 || true
     fi

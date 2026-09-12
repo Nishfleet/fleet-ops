@@ -57,6 +57,12 @@
 #   FLEET_DEPLOY_CHECK_DIRTY_ISSUE_REPO filing repo (default Nishfleet/fleet-ops)
 #   FLEET_DEPLOY_CHECK_DIRTY_STREAK    consecutive-tick threshold (default 3)
 #   FLEET_ISSUE_FILE                   issue-file binary override (tests stub it)
+#   FLEET_DEPLOY_CLONE_PROM            node-exporter .prom for the
+#                                  fleet_deploy_clone_off_main{repo} drift
+#                                  gauge (fleet-ops#5786; default
+#                                  /var/lib/prometheus/node-exporter/fleet-deploy-clone.prom)
+#   FLEET_DEPLOY_CLONE_REPO            repo label on that gauge (default:
+#                                  basename of the expected origin URL)
 #
 # Exit: 0 always (a check that found nothing to do is not a failure).
 #       Non-zero only on a hard internal error (fetch failure is logged,
@@ -388,6 +394,29 @@ record_origin_repair_count() {
     fi
 }
 
+# fleet-ops#5786: fleet_deploy_clone_off_main{repo} gauge in the
+# node-exporter .prom, written on EVERY tick — 1 while the deploy clone is
+# off main or dirty, 0 once it is clean main again. Deploy-clone drift means
+# the live install source may be riding unmerged code (2026-09-12: an
+# alert-repair worker reported a change "Live on this host" by inspecting a
+# clone it had left on its fix branch). DeployCloneOffMain pages when the
+# gauge holds 1 for >15 min, and clears the first clean tick after the
+# converger restores main.
+record_clone_off_main() {
+    local want="$1"
+    local prom="${FLEET_DEPLOY_CLONE_PROM:-/var/lib/prometheus/node-exporter/fleet-deploy-clone.prom}"
+    local repo="${FLEET_DEPLOY_CLONE_REPO:-$(basename "${EXPECTED_ORIGIN_URL%.git}")}"
+    mkdir -p "$(dirname "$prom")" 2>/dev/null || true
+    if {
+        printf '# HELP fleet_deploy_clone_off_main Deploy clone off main or dirty (fleet-ops#5786).\n'
+        printf '# TYPE fleet_deploy_clone_off_main gauge\n'
+        printf 'fleet_deploy_clone_off_main{repo="%s"} %d\n' "$repo" "$want"
+    } >"$prom.tmp" 2>/dev/null; then
+        chmod 0644 "$prom.tmp" 2>/dev/null || true
+        mv "$prom.tmp" "$prom" 2>/dev/null || true
+    fi
+}
+
 # fleet-ops#5301 tripwire: diff the clone's remote config against the last
 # tick's snapshot; on a diff, log it plus any process whose cwd sits inside
 # the clone, so the next rewrite names its author. The duplicate-remote
@@ -452,8 +481,21 @@ main() {
     fi
 
     if [[ ! -d "$CHECKOUT/.git" ]] && [[ ! -f "$CHECKOUT/.git" ]]; then
+        record_clone_off_main 1
         loud "DEPLOY-CHECK-CHECKOUT-MISSING" "checkout $CHECKOUT is not a git worktree — nothing to watch"
         return 0
+    fi
+
+    # fleet-ops#5786: deploy-clone drift = off main OR dirty, computed BEFORE
+    # the fetch so the gauge and the LOUD line stay accurate even when the
+    # network is down. A named non-main branch and a detached HEAD both count
+    # as off-main: a clone parked detached can no more converge than one on a
+    # worker's branch.
+    local branch=""
+    branch=$(git -C "$CHECKOUT" symbolic-ref --short HEAD 2>/dev/null || true)
+    local off_main=0
+    if [[ "$branch" != "main" ]]; then
+        off_main=1
     fi
 
     # Read-only gate: flag a dirty deploy clone on every tick. Visibility
@@ -466,6 +508,19 @@ main() {
     # pre-#5687 behavior byte-identical.
     local dirty_list dirty_disp out
     dirty_list=$(deploy_clone_dirty)
+
+    # fleet-ops#5786: every tick writes the drift gauge — 1 while off-main or
+    # dirty, 0 on clean main — so DeployCloneOffMain pages on >15 min of drift
+    # and clears on the first converged tick.
+    if [[ "$off_main" == "1" || -n "$dirty_list" ]]; then
+        record_clone_off_main 1
+    else
+        record_clone_off_main 0
+    fi
+    if [[ "$off_main" == "1" ]]; then
+        loud "DEPLOY-CHECK-OFF-MAIN" \
+            "deploy clone $CHECKOUT is not on main (branch=${branch:-detached}) — merge-to-live may be riding unmerged code; converger resets it this tick (fleet-ops#5786)"
+    fi
     if [[ -n "$dirty_list" ]]; then
         clip_paths "$dirty_list"
         dirty_disp="$out"
@@ -492,13 +547,6 @@ main() {
     if [[ "$after" == "unknown" ]]; then
         log "no origin/main ref; HEAD=$before"
         return 0
-    fi
-
-    local branch=""
-    branch=$(git -C "$CHECKOUT" symbolic-ref --short HEAD 2>/dev/null || true)
-    local off_main=0
-    if [[ -n "$branch" && "$branch" != "main" ]]; then
-        off_main=1
     fi
 
     if [[ "$before" == "$after" && "$off_main" != 1 ]]; then
@@ -540,7 +588,9 @@ main() {
     local now now_branch
     now=$(git -C "$CHECKOUT" rev-parse HEAD 2>/dev/null || echo "unknown")
     now_branch=$(git -C "$CHECKOUT" symbolic-ref --short HEAD 2>/dev/null || true)
-    if [[ "$now" == "$after" && ( -z "$now_branch" || "$now_branch" == "main" ) ]]; then
+    # fleet-ops#5786: a detached HEAD at the same SHA is still off-main drift
+    # — only an on-main checkout at origin/main counts as converged.
+    if [[ "$now" == "$after" && "$now_branch" == "main" ]]; then
         log "already deployed between fetch and lock (HEAD=$now) — nothing to do"
         return 0
     fi
