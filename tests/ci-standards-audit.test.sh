@@ -430,6 +430,99 @@ bash "$here/fleet-issue-file-dedupe-comment-idempotent.test.sh"
 # name. Hermetic (fake gh, no network).
 bash "$here/fleet-issue-file-dedupe-closed-canonical.test.sh"
 
+# fleet-ops#5622: stuck webhook packets must reach a terminal disposition
+# (chain, issue, or reasoned drop) instead of sitting LOUD-listed forever.
+# Hosted here so P14 runs it without a workflow edit (the worker App cannot
+# push .github/workflows/**). The named pin in
+# tests/p14-test-listing-gate.test.sh is the class-prevention so a future
+# drop of this host line fails by name. Hermetic (fixture packets + fake
+# chains.terminated.jsonl + stubbed fleet-issue-file, no network).
+bash "$here/alert-repair-stuck-packet.test.sh"
+
+# fleet-ops#2902 (PR #2885 follow-up): the deploy-quality SLO test landed
+# on main without a ci.yml listing or a host, so P14 ran red on "2 test
+# file(s) are neither in ci.yml, hosted by a listed test, live/destructive,
+# nor a known orphan: fleet-deploy-quality.test.sh
+# fleet-issue-file-close-duplicates.test.sh" (reported in #2902). Hosted
+# here so P14 runs it without a workflow-file edit (the worker App cannot
+# push .github/workflows/**). The named pin in
+# tests/p14-test-listing-gate.test.sh is the class-prevention so a future
+# drop of this host line fails by name.
+# Hermetic (pin fixtures, no gh/prometheus/systemd).
+bash "$here/fleet-deploy-quality.test.sh"
+
+# fleet-ops#5140: the 0509 product-repo deploy-quality test (red streak,
+# green-newest, unreadable-runs degradation, HELP/TYPE dedup). Hosted here
+# so P14 runs it without a workflow-file edit (the worker App cannot push
+# .github/workflows/**). The named pin in tests/p14-test-listing-gate.test.sh
+# is the class-prevention so a future drop of this host line fails by name.
+# Hermetic (file seams only, FLEET_DQ_GH=/nonexistent/gh, no network).
+bash "$here/fleet-product-deploy-0509.test.sh"
+
+# fleet-ops#2902 (PR #2900 follow-up): the close-duplicates drain test
+# landed on main without a ci.yml listing or a host (same 2-orphan FAIL as
+# fleet-deploy-quality above, reported in #2902). Hosted here so P14 runs
+# it without a workflow-file edit (the worker App cannot push
+# .github/workflows/**). The named pin in
+# tests/p14-test-listing-gate.test.sh is the class-prevention so a future
+# drop of this host line fails by name.
+# Hermetic (fake gh, no gh/prometheus/systemd).
+bash "$here/fleet-issue-file-close-duplicates.test.sh"
+
+# fleet-ops#3161: regression test for the primary-signal floor + cross-repo
+# canonical bug that closed 18 issues incl. two Nish-endorsed critical-path
+# packets as score=1.00 dups of an unrelated 0509 CI issue. Hosted here
+# (same shape as the #2902 host above) so P14 runs it without a workflow
+# edit. The named pin in tests/p14-test-listing-gate.test.sh is the
+# class-prevention so a future drop of this host line fails by name.
+# Hermetic (fake gh, no network).
+bash "$here/fleet-issue-file-close-duplicates-regression-3161.test.sh"
+
+# fleet-ops#3728: hermetic test for the already-marked idempotency branch
+# (close-duplicates must not re-post a possible-duplicate marker the issue
+# already carries for the same canonical). Hosted here so P14 runs it
+# without a workflow edit (the worker App cannot push .github/workflows/**).
+# The named pin in tests/p14-test-listing-gate.test.sh is the
+# class-prevention so a future drop of this host line fails by name.
+# Hermetic (fake gh, no network).
+bash "$here/fleet-issue-file-close-duplicates-idempotent.test.sh"
+
+# fleet-ops#5620: repo-scope of the filing-time dedupe corpus (a
+# same-titled open issue in another Nishfleet repo must never suppress a
+# filing). Hosted here so P14 runs it without a workflow edit (the worker
+# App cannot push .github/workflows/**). The named pin in
+# tests/p14-test-listing-gate.test.sh is the class-prevention so a future
+# drop of this host line fails by name. Hermetic (fake gh, no network).
+bash "$here/fleet-issue-file-dedupe-repo-scope.test.sh"
+
+# fleet-ops#5496: the file-time dedupe comment is idempotent — a re-run of
+# a dedupe-heavy batch adds 0 new comments to the canonical (the
+# blind-audit backfill piled 848+ identical comments on #5464). Hosted
+# here so P14 runs it without a workflow edit (the worker App cannot push
+# .github/workflows/**). The named pin in tests/p14-test-listing-gate.test.sh
+# is the class-prevention so a future drop of this host line fails by
+# name. Hermetic (fake gh, no network).
+bash "$here/fleet-issue-file-dedupe-comment-idempotent.test.sh"
+
+# fleet-ops#5666: the file-time dedupe corpus is no longer open-only — a
+# detector re-firing on stale state must not re-file a blocker whose
+# canonical closed-as-delivered minutes earlier (#5652 -> #5666). Only a
+# COMPLETED close with a closing-PR reference counts as delivered. Hosted
+# here so P14 runs it without a workflow edit (the worker App cannot push
+# .github/workflows/**). The named pin in tests/p14-test-listing-gate.test.sh
+# is the class-prevention so a future drop of this host line fails by
+# name. Hermetic (fake gh, no network).
+bash "$here/fleet-issue-file-dedupe-closed-canonical.test.sh"
+
+# fleet-ops#5622: stuck webhook packets must reach a terminal disposition
+# (chain, issue, or reasoned drop) instead of sitting LOUD-listed forever.
+# Hosted here so P14 runs it without a workflow edit (the worker App cannot
+# push .github/workflows/**). The named pin in
+# tests/p14-test-listing-gate.test.sh is the class-prevention so a future
+# drop of this host line fails by name. Hermetic (fixture packets + fake
+bash "$here/alert-repair-stuck-packet.test.sh"
+
+# chains.terminated.jsonl + stubbed fleet-issue-file, no network).
 # fleet-ops#2902 (PR #2905 follow-up): the leaky-worktree containment
 # detector landed on main without a ci.yml listing or a host — and P14 was
 # already red on the two orphans above, so this leftover slipped in
@@ -900,3 +993,15 @@ bash "$here/helper-symlink-resolution.test.sh"
 # Hosted here (a listed test) so P14 runs it without a workflow-file edit
 # (the worker App cannot push .github/workflows/**).
 bash "$here/one-fleet-rule-pointer.test.sh"
+
+# fleet-ops#5748: the live-state doctrine precedence gate (2-step vs 5-step
+# divergence between the Pi canonical and the generated idle-fleet-alarm
+# block). The test landed on the claim branch without a ci.yml listing or a
+# host, so P14 ran red on "1 test file(s) are neither in ci.yml, hosted by a
+# listed test, live/destructive, nor a known orphan:
+# live-state-doctrine-precedence.test.sh" (run 34670719563). Hosted here so
+# P14 runs it without a workflow-file edit (the worker App cannot push
+# .github/workflows/**). The named pin in tests/p14-test-listing-gate.test.sh
+# is the class-prevention so a future drop of this host line fails by name.
+# Hermetic (repo-relative lib/ paths only, no gh/systemd/live surfaces).
+bash "$here/live-state-doctrine-precedence.test.sh"

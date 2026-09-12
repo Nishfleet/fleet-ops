@@ -2776,6 +2776,71 @@ PY
 ok "fleet-ops#3231: fleet_observe_to_close_total{reason} emitted (missing/legit/wrong/unparseable)"
 
 # =========================================================================
+# 18b. fleet-ops#5785: fleet_deploy_fault_* gauges
+# lifecycle-label-sweep.json feeds the closed-without-green tripwire (must
+# be 0) and the labeled count; merged-pr-close.json feeds gate_blocked.
+# Missing/unparseable files emit 0 — never crash, never false-fire.
+# =========================================================================
+python3 - "$exporter" <<'PY' || fail "deploy-fault metric emission failed"
+import importlib.util, json, sys, tempfile
+from pathlib import Path
+def load(p, name):
+    spec = importlib.util.spec_from_file_location(name, p)
+    m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
+    return m
+m = load(sys.argv[1], "fme")
+
+# 1. Missing files -> all three 0, HELP/TYPE once each.
+with tempfile.TemporaryDirectory() as td:
+    m.LIFECYCLE_SWEEP_JSON = Path(td) / "missing-sweep.json"
+    m.MERGED_PR_CLOSE_JSON = Path(td) / "missing-close.json"
+    lines = []
+    m._emit_deploy_fault_gate(lines)
+    out = "\n".join(lines)
+    for name in ("fleet_deploy_fault_closed_without_green",
+                 "fleet_deploy_fault_gate_blocked",
+                 "fleet_deploy_fault_labeled"):
+        assert out.count(f"# HELP {name}") == 1, out
+        assert out.count(f"# TYPE {name}") == 1, out
+        assert f"{name} 0" in out, out
+    print("OK: missing summaries -> all three gauges 0, HELP/TYPE once")
+
+# 2. Real counts land — including a nonzero tripwire (the 0509#2662 class:
+#    a deploy-fault issue the sweep found closed without a green run).
+with tempfile.TemporaryDirectory() as td:
+    sweep = Path(td) / "lifecycle-label-sweep.json"
+    sweep.write_text(json.dumps({
+        "deploy_fault_closed_without_green": 1,
+        "deploy_fault_labeled": 2,
+    }))
+    close = Path(td) / "merged-pr-close.json"
+    close.write_text(json.dumps({"deploy_fault_gate_blocked": 1}))
+    m.LIFECYCLE_SWEEP_JSON = sweep
+    m.MERGED_PR_CLOSE_JSON = close
+    lines = []
+    m._emit_deploy_fault_gate(lines)
+    out = "\n".join(lines)
+    assert "fleet_deploy_fault_closed_without_green 1" in out, out
+    assert "fleet_deploy_fault_labeled 2" in out, out
+    assert "fleet_deploy_fault_gate_blocked 1" in out, out
+    print("OK: nonzero tripwire + labeled + gate_blocked emitted faithfully")
+
+# 3. Unparseable file -> 0, no crash.
+with tempfile.TemporaryDirectory() as td:
+    bad = Path(td) / "bad.json"
+    bad.write_text("{not json")
+    m.LIFECYCLE_SWEEP_JSON = bad
+    m.MERGED_PR_CLOSE_JSON = bad
+    lines = []
+    m._emit_deploy_fault_gate(lines)
+    out = "\n".join(lines)
+    assert "fleet_deploy_fault_closed_without_green 0" in out, out
+    print("OK: unparseable summaries -> 0 (no crash)")
+PY
+
+ok "fleet-ops#5785: fleet_deploy_fault_* gauges emitted (missing/real/unparseable)"
+
+# =========================================================================
 # fleet-ops#3301: cap=0 credentials_bad corpses do not page as dead-cred.
 # Lived 2026-09-04T16:30Z: FleetDeadCredentialSeats fired on
 # opencode/hy3-free and opencode/x-preview-f-free (both already cap=0 in

@@ -27,7 +27,21 @@ whether the fleet is running.** The 2026-08-23 "fleet is PAUSED" text that
 used to live here went stale after the 2026-08-25/26 restoration and misled
 workers into wrong defaults (fleet-ops#180's claimant, blind-audit finding #8).
 
-**Authoritative check, in order:** (1) if `~/workspaces/agent-state/FLEET-PAUSED`
+**The 5-step fleet live-state check is canonical; the steps below are a quick
+minimum, never a complete procedure.** Where any live-state wording drifts,
+the generated `idle-fleet-alarm` block in `~/.claude/CLAUDE.md` (fleet-ops
+`lib/standing-rules/canonical.md`, SECTION: idle-fleet-alarm) WINS — it is
+the single edit point (fleet-ops#5748). Its steps 3–5 are findings-grade
+duties and must be performed, not skipped:
+
+3. `systemctl --user list-units --state=failed` — must be EMPTY (needs
+   `XDG_RUNTIME_DIR=/run/user/$(id -u)` set, or it silently returns nothing).
+4. `cat /home/nish/workspaces/agent-state/lanes/pi-seat-health.json` — check
+   `observed_at` is recent before believing it; a missing or unparseable
+   state file is itself a finding.
+5. `uptime` for load, and merged-PR counts per repo for actual throughput.
+
+**Quick minimum, in order:** (1) if `~/workspaces/agent-state/FLEET-PAUSED`
 exists, the fleet is deliberately down — respect it; (2) otherwise
 `XDG_RUNTIME_DIR=/run/user/$(id -u) systemctl --user list-timers` is the truth. Enrolment
 is declared in fleet-ops `config/intake-repos.json`, converged by the

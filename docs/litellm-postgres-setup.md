@@ -222,6 +222,9 @@ source /home/nish/fleet2/etc/crof.env
 # (fleet-ops packet; env files mode 600 under ~/.config/fleet-ops/seats/).
 source /home/nish/.config/fleet-ops/seats/synthetic.env
 source /home/nish/.config/fleet-ops/seats/llmgateway-devpass.env
+# 2026-09-12 seat wire-up: nebius Token Factory metered worker seat (same
+# packet; env file mode 600 under ~/.config/fleet-ops/seats/).
+source /home/nish/.config/fleet-ops/seats/nebius.env
 
 # --- straitly (lives in ~/.config/straitly/) ---
 source /home/nish/.config/straitly/straitly.env
@@ -239,6 +242,16 @@ try:
 except Exception:
     sys.stdout.write('')
 ")
+
+# --- MiniMax (fleet-ops#5788): the claude-minimax-key wrapper resolves
+# ~/.mmx/config.json into an access token, refreshing it transparently if
+# within 5 min of expiry. Captured once at proxy start; the
+# minimax-token-refresh timer compares the wrapper's fresh key to the
+# proxy's captured env var every 2h and bounces this unit on a mismatch
+# so a rotated token reaches the running proxy. Do not change this to a
+# file read — env var capture is intentional and the timer is the
+# healer (fleet-ops#5788 termination).
+export MINIMAX_API_KEY=$(/home/nish/.local/bin/claude-minimax-key)
 
 # --- the proxy's own admin key (virtual-key minting). Generated once,
 # stored in a mode-0600 env file owned by the operator, never in the repo.

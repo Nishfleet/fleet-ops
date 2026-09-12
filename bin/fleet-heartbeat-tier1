@@ -1510,9 +1510,13 @@ fi
 CADENCE_LIB="${FLEET_BLIND_AUDIT_CADENCE_LIB:-$HOME/.local/lib/pi-packet/blind-audit-cadence.sh}"
 audit_canary_status="ok"
 if [ -f "$CADENCE_LIB" ]; then
-    # shellcheck source=../lib/blind-audit-cadence.sh source-path=SCRIPTDIR
-    source "$CADENCE_LIB"
-    heartbeat_blind_audit_cadence_canary
+    # fleet-ops#5780: the live tick also guards on the SIGTERM-on-TimeoutStartSec
+    # class (status=15/TERM in the 24h journal window). Tests run the canary
+    # standalone without this override, so they stay hermetic.
+    FLEET_BLIND_AUDIT_JOURNAL_CMD="journalctl --user -u fleet-blind-audit.service --since -24h --no-pager" \
+        source "$CADENCE_LIB"
+    FLEET_BLIND_AUDIT_JOURNAL_CMD="journalctl --user -u fleet-blind-audit.service --since -24h --no-pager" \
+        heartbeat_blind_audit_cadence_canary
 else
     audit_canary_status="missing-lib"
     loud "BLIND-AUDIT-CADENCE-OVERDUE" \

@@ -494,6 +494,12 @@
       "cadence": "4h",
       "source": "repo"
     },
+    "minimax-token-refresh.timer": {
+      "reason": "Headless MiniMax OAuth rotation check — the fleet-litellm-proxy organ captures MINIMAX_API_KEY once at startup but the underlying ~/.mmx/config.json access token rotates silently every ~12h inside claude-minimax-key. A stale key 401s every anthropic/MiniMax-M3 deployment in the senior / judge / worker-cheap / worker-capable / worker-private groups and pi exits 1 on the failure (killing flagship workers). 2h cadence gives ~6x margin over the 12h rotation; the script compares the wrapper's fresh key to the proxy's captured env var and bounces the proxy on mismatch. Mirrors grok-token-refresh structure (fleet-ops#41). fleet-ops#5788.",
+      "classification": "scheduled",
+      "cadence": "2h",
+      "source": "repo"
+    },
     "fleet-seat-comeback-release.timer": {
       "reason": "15-min ACTIVE come-back release (fleet-ops#2421): a walled seat whose wall clock (bench_until ?? usable_at) has passed is re-probed with a 1-token reply-OK dispatch and a provably-usable seat is unwalled (healthy observation written to the ledger, priming fleet-seat-recovery). Loud stalled check: expired walls remain with zero releases -> exit 1 + fleet_seat_comeback_release_stalled=1",
       "classification": "scheduled",

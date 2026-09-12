@@ -620,6 +620,40 @@ def gh_list_recently_closed(repo: str, since_hours: int) -> list[dict]:
     return out
 
 
+def _load_closed_snapshot(path: str, repo: str, since_hours: int, now: datetime | None = None) -> list[dict]:
+    """Load a pre-fetched closed-issue corpus from a snapshot file.
+
+    fleet-ops#5780: the blind audit prefetched its open+closed gh lists once
+    per REPORT_DIR; passing them via --open-json / --closed-json replaces
+    the per-row `gh issue list` round-trips that made a 120+ finding dump
+    re-list GitHub once per finding. Filters mirror gh_list_recently_closed
+    (only COMPLETED closes backed by a closing-PR reference inside the
+    window count as delivered canonicals).
+    """
+    raw = json.loads(Path(path).read_text(encoding="utf-8"))
+    if isinstance(raw, dict):
+        raw = raw.get("issues") or raw.get("closed_issues") or []
+    if now is None:
+        now = datetime.now(timezone.utc)
+    cutoff = now - timedelta(hours=since_hours)
+    out = []
+    for item in raw:
+        if not isinstance(item, dict):
+            continue
+        if (item.get("stateReason") or "").upper() != "COMPLETED":
+            continue
+        if not item.get("closedByPullRequestsReferences"):
+            continue
+        closed_at = _parse_iso(item.get("closedAt") or "")
+        if closed_at is None or closed_at < cutoff:
+            continue
+        row = _issue_row(item, repo)
+        if row:
+            row["closed"] = True
+            out.append(row)
+    return out
+
+
 def collect_open(
     target_repo: str,
     from_json: str,
@@ -658,6 +692,116 @@ def best_match(title: str, body: str, issues: list[dict]) -> dict | None:
             best_score = detail["score"]
             best = {"issue": issue, **detail}
     return best
+
+
+def comment_batch_body(rows: list[dict], repo: str) -> str:
+    """One batched same-problem-gate comment carrying RANKED rows (fleet-ops#5780).
+    Preserves the `Would have filed in <repo>` + title lines so the
+    fleet-ops#5496 suppression matcher still recognises this comment class."""
+    n = len(rows)
+    head = (
+        f"{n} same-problem filing(s) suppressed by the fleet-ops#1212 filing gate, "
+        f"batched per fleet-ops#5780 (one comment per report instead of per row).\n\n"
+    )
+    parts = [head, "| Rank | Score | Title |\n|---|---|---|\n"]
+    for row in rows:
+        t = (row.get("title") or "").replace("\n", " ").strip()
+        score = float(row.get("score") or 0)
+        parts.append(f"| {row.get('rank') or ''} | {score:.2f} | **{t}** |\n")
+    parts.append(f"\nWould have filed in `{repo}` (all rows above):\n")
+    return "\n".join(parts)
+
+
+def issue_comment_bodies(repo: str, number: int) -> list[str]:
+    try:
+        proc = subprocess.run(
+            [gh_bin(), "issue", "view", str(number), "--repo", repo,
+             "--json", "comments"],
+            capture_output=True, text=True, check=False, timeout=30,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return []
+    if proc.returncode != 0:
+        return []
+    try:
+        data = json.loads(proc.stdout or "{}")
+    except json.JSONDecodeError:
+        return []
+    return [c.get("body") or "" for c in data.get("comments") or []
+            if isinstance(c, dict)]
+
+
+def cmd_comment_batch(args: argparse.Namespace) -> int:
+    """fleet-ops#5780: post ONE comment per target issue for a whole report's
+    dedupe rows, instead of one gh call per row.
+
+    Input file: JSON lines, each
+      {repo, number, rows: [{rank,title,severity,score}], finding, sig,
+       is_carryover}
+    Targets whose fleet-ops#5496-class filing comment already carries a row's
+    title are suppressed for those rows (fail-open as in issue_has_filing_comment).
+    Output (stdout, with --json): one object per target:
+      {repo, number, posted, status, rows, error}
+    """
+    entries: list[dict] = []
+    with open(args.from_json, encoding="utf-8") as fh:
+        for line in fh:
+            line = line.strip()
+            if not line:
+                continue
+            item = json.loads(line)
+            if isinstance(item, dict):
+                entries.append(item)
+
+    groups: dict[tuple[str, int], list[dict]] = {}
+    for entry in entries:
+        repo = entry.get("repo") or args.repo
+        number = int(entry.get("number") or 0)
+        rows = list(entry.get("rows") or [])
+        if not number or not rows:
+            continue
+        groups.setdefault((repo, number), []).append(entry)
+
+    results = []
+    any_failed = False
+    for (repo, number), members in groups.items():
+        rows: list[dict] = []
+        for entry in members:
+            rows.extend(entry.get("rows") or [])
+        # fleet-ops#5496/3728 suppression per target: ONE comments fetch per
+        # target (not per row) so a re-fire next run does not pile up
+        # duplicate batch comments.
+        bodies = issue_comment_bodies(repo, number)
+        kept = []
+        for row in rows:
+            needle = f"**{row.get('title') or ''}**"
+            if any(needle in body for body in bodies):
+                continue
+            kept.append(row)
+        result = {"repo": repo, "number": number, "rows": rows, "posted": 0,
+                  "status": "skipped", "error": ""}
+        if len(kept) != len(rows):
+            sys.stderr.write(
+                f"[issue-file] comment-batch suppressed {len(rows) - len(kept)} "
+                f"already-commented row(s) on {repo}#{number}\n"
+            )
+            rows = kept
+        if not rows:
+            result["status"] = "all-suppressed"
+        elif args.dry_run:
+            result["status"] = "dry-run"
+        else:
+            rc, out = gh_comment(repo, number, comment_batch_body(rows, repo))
+            if rc != 0:
+                result["status"] = "failed"
+                result["error"] = out[:500]
+                any_failed = True
+            else:
+                result["status"] = "posted"
+                result["posted"] = len(rows)
+        results.append(result)
+    print(json.dumps(results, sort_keys=True))
+    return 1 if any_failed else 0
 
 
 def comment_body(title: str, body: str, score: float, repo: str) -> str:
@@ -857,12 +1001,21 @@ def cmd_file(args: argparse.Namespace) -> int:
     # (--no-cross-repo / --search-repo remain accepted for compatibility
     # but no longer widen the `file` corpus.) The `sweep` subcommand keeps
     # its own cross-repo clustering behaviour.
-    issues = collect_open(
-        args.repo,
-        args.from_json,
-        cross_repo=False,
-        extra_repos=[],
-    )
+    # fleet-ops#5780: --open-json / --closed-json accept a prefetched corpus
+    # so a batch filer scores its whole report against ONE gh list set
+    # instead of one `gh issue list` per row.
+    if args.open_json:
+        issues = load_open_from_json(args.open_json)
+        if not any(i.get("repository") for i in issues):
+            for i in issues:
+                i["repository"] = args.repo
+    else:
+        issues = collect_open(
+            args.repo,
+            args.from_json,
+            cross_repo=False,
+            extra_repos=[],
+        )
     match = best_match(title, body, issues) if issues else None
     score = match["score"] if match else 0.0
     kind = classify(score) if match else "new"
@@ -883,7 +1036,10 @@ def cmd_file(args: argparse.Namespace) -> int:
     if kind != "duplicate" and not args.from_json:
         closed_hours = _closed_dedupe_hours()
         if closed_hours > 0:
-            closed = gh_list_recently_closed(args.repo, closed_hours)
+            if args.closed_json:
+                closed = _load_closed_snapshot(args.closed_json, args.repo, closed_hours)
+            else:
+                closed = gh_list_recently_closed(args.repo, closed_hours)
             cmatch = best_match(title, body, closed) if closed else None
             if cmatch and classify(cmatch["score"]) == "duplicate":
                 closed_match = cmatch
@@ -1403,6 +1559,9 @@ def build_parser() -> argparse.ArgumentParser:
     f.add_argument("--body-file", default="")
     f.add_argument("--label", action="append", default=[])
     f.add_argument("--from-json", default="")
+    # fleet-ops#5780: prefetched corpus snapshots (no per-row gh list).
+    f.add_argument("--open-json", default="")
+    f.add_argument("--closed-json", default="")
     f.add_argument("--search-repo", action="append", default=[])
     f.add_argument("--no-cross-repo", action="store_true")
     f.add_argument("--dry-run", action="store_true")
@@ -1431,6 +1590,16 @@ def build_parser() -> argparse.ArgumentParser:
     cd.add_argument("--cap", type=int, default=None)
     cd.add_argument("--dry-run", action="store_true")
     cd.set_defaults(func=cmd_close_duplicates)
+
+    cb = sub.add_parser(
+        "comment-batch",
+        help="file-ops#5780: post ONE same-problem-gate comment per target for a report's dedupe rows",
+    )
+    cb.add_argument("--from-json", required=True)
+    cb.add_argument("--repo", "-R", default="")
+    cb.add_argument("--dry-run", action="store_true")
+    cb.add_argument("--json", action="store_true")
+    cb.set_defaults(func=cmd_comment_batch)
     return p
 
 

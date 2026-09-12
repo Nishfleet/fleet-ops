@@ -197,6 +197,11 @@ lib/slo_budget.py /home/nish/.local/lib/pi-packet/slo_budget.py
 # the issue's rollback contract); the gauges land in fleet.prom on the
 # existing 5-min tick. Same install dir as the other lib modules.
 lib/fleet-deploy-quality.py /home/nish/.local/lib/pi-packet/fleet-deploy-quality.py
+# fleet-ops#5785: deploy-fault issue class + green-run production proof,
+# shared by bin/fleet-merged-pr-close (close gate) and
+# bin/lifecycle-label-sweep (deploy-fault labelling + reopen pass). A lib,
+# not an organ — no unit, no timer.
+lib/deploy-fault-gate.sh /home/nish/.local/lib/pi-packet/deploy-fault-gate.sh
 # fleet-ops#4459: rate-card USD math shared by measure.sh and the exporter's
 # fleet_usd_24h metric (like fleet-deploy-quality.py, lazy-loaded inside
 # libexec/fleet-metrics-export.py, no service change).
@@ -1135,6 +1140,21 @@ docs/escalation-matrix.md /home/nish/.local/share/fleet-ops/docs/escalation-matr
 bin/grok-token-refresh /home/nish/.local/bin/grok-token-refresh
 systemd/grok-token-refresh.service /home/nish/.config/systemd/user/grok-token-refresh.service
 systemd/grok-token-refresh.timer /home/nish/.config/systemd/user/grok-token-refresh.timer
+# fleet-ops#5788: headless MiniMax OAuth rotation check. The
+# fleet-litellm-proxy organ captures MINIMAX_API_KEY once at startup;
+# the underlying ~/.mmx/config.json access token rotates silently
+# inside claude-minimax-key every ~12h, leaving the running proxy with
+# a stale credential. A stale key 401s every anthropic/MiniMax-M3
+# deployment in the senior / judge / worker-cheap / worker-capable /
+# worker-private groups with MiniMax's "login fail: Please carry the
+# API secret key in the 'X-Api-Key' field" message; pi exits 1 on
+# the failure (killing flagship workers). 2h timer detects the
+# rotation by comparing the wrapper's fresh token to the proxy's
+# captured env var and bounces the proxy on a mismatch. Mirrors the
+# grok-token-refresh structure (fleet-ops#41). No seat-caps change.
+bin/minimax-token-refresh /home/nish/.local/bin/minimax-token-refresh
+systemd/minimax-token-refresh.service /home/nish/.config/systemd/user/minimax-token-refresh.service
+systemd/minimax-token-refresh.timer /home/nish/.config/systemd/user/minimax-token-refresh.timer
 # fleet-ops#516 sr-max-speed: hunt artificial limiters (not money/safety/hardware).
 # Wired into fleet-heartbeat-tier1; fail-loud on violation -> unit-escalation.
 bin/fleet-max-speed /home/nish/.local/bin/fleet-max-speed

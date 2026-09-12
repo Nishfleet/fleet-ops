@@ -76,6 +76,12 @@ jobs:
         bash tests/intake-repos-shape.test.sh
         bash tests/intake-repos-path-resolution.test.sh
         bash tests/worker-token-fail-closed.test.sh
+        bash tests/pi-issue-run-resume-on-provider-death.test.sh
+        bash tests/minimax-token-refresh.test.sh
+        bash tests/seat-credentials-bad-replay.test.sh
+        bash tests/alert-repair-flagship-seat.test.sh
+        bash tests/fleet-deploy-fault-gate.test.sh
+        bash tests/fleet-production-stale-alert.test.sh
         bash tests/semantic-conflict-detector.test.sh
         bash tests/repeat-deterministic-detector.test.sh
         bash tests/red-on-main-detector.test.sh

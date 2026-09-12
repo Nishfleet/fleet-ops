@@ -1285,6 +1285,23 @@ panel_input=$(mktemp)
 body_file=$(mktemp)
 trap 'rm -f "$panel_input" "$body_file"' EXIT
 
+# fleet-ops#5780: the filing path used to call fleet-issue-file once per
+# finding, and each call re-listed the open/closed corpora over gh — a
+# 120+ finding dump burned 400+ gh calls and SIGTERMed at TimeoutStartSec.
+# The corpus is now prefetched ONCE per report and handed to every filing
+# call as a snapshot (--open-json / --closed-json); #1212 same-problem
+# hits are batched into ONE comment per target by issue-file comment-batch.
+FILING_OPEN_SNAPSHOT="$REPORT_DIR/open-issues.json"
+[ -s "$FILING_OPEN_SNAPSHOT" ] || printf '%s\n' '[]' >"$FILING_OPEN_SNAPSHOT"
+FILING_CLOSED_SNAPSHOT="$REPORT_DIR/closed-filing-snapshot.json"
+gh issue list -R "$REPO" --state closed -L 200 \
+    --json number,title,body,url,labels,author,closedAt,stateReason,closedByPullRequestsReferences \
+    >"$FILING_CLOSED_SNAPSHOT" 2>/dev/null \
+    || printf '%s\n' '[]' >"$FILING_CLOSED_SNAPSHOT"
+[ -s "$FILING_CLOSED_SNAPSHOT" ] || printf '%s\n' '[]' >"$FILING_CLOSED_SNAPSHOT"
+DEDUPE_BATCH_FILE="$REPORT_DIR/dedupe-batch.jsonl"
+: >"$DEDUPE_BATCH_FILE"
+
 # Pre-fetch open gap-audit issues and recent merges once for the panel.
 # A gh failure that prints nothing still yields a valid '[]' for jq.
 open_gap_issues=$(gh issue list -R "$REPO" -l gap-audit --state open --json number,title -L 100 2>/dev/null || true)
@@ -1408,42 +1425,98 @@ process_one_finding() {
         } > "$body_file"
 
         set +e
-        new_issue=$("$ISSUE_FILE" file --json -R "$REPO" --title "[gap-audit] $title" --body-file "$body_file" --label gap-audit --label agent-ready 2>/dev/null)
-        new_rc=$?
+        # fleet-ops#5780: dry-run dedupe decision AGAINST THE SNAPSHOT
+        # CORPUS (no gh list, no gh write). A #1212 same-problem hit is
+        # queued for one batched comment per target instead of one gh
+        # comment call per row.
+        dedupe_decision=$("$ISSUE_FILE" file --json --dry-run -R "$REPO" --title "[gap-audit] $title" --body-file "$body_file" --label gap-audit --label agent-ready --open-json "$FILING_OPEN_SNAPSHOT" --closed-json "$FILING_CLOSED_SNAPSHOT" 2>/dev/null)
+        decide_rc=$?
         set -e
-        filed_action=$(printf '%s' "$new_issue" | jq -r '.action // "filed"' 2>/dev/null || echo "filed")
-        if [ "$new_rc" -eq 0 ] && [ -n "$new_issue" ]; then
-            issue_url=$(printf '%s' "$new_issue" | jq -r '.url // empty' 2>/dev/null)
-            if [ -z "$issue_url" ]; then
-                # Helper classified this as a duplicate and commented on the
-                # existing issue rather than filing. Carry the link so the
-                # verdict log still shows the dedupe.
-                issue_url=$(printf '%s' "$new_issue" | jq -r '.existing // empty' 2>/dev/null)
-            fi
-            if [ -n "$issue_url" ] && [[ "$issue_url" != http* ]]; then
-                issue_url="https://github.com/${issue_url#*github.com/}"
-            fi
-            if [ "$filed_action" = "commented" ]; then
-                # fleet-ops#1212 gate: an open issue already carries this
-                # same problem. The finding is resolved, not filed.
-                log "finding $rank: DEDUPED (gate commented on $issue_url)"
-                dedupe_dropped=$((dedupe_dropped + 1))
-                if [ "$is_carryover" = "1" ]; then
-                    carryover_resolve "$sig" "already carried by an open issue (#1212 gate)"
-                fi
-            else
-                log "finding $rank: FILED $issue_url"
-                filed=$((filed + 1))
-                if [ "$is_carryover" = "1" ]; then
-                    carryover_resolve "$sig" "filed"
-                fi
-            fi
-        else
-            reason="fleet-issue-file failed: $new_issue"
-            log "finding $rank: FAILED to file issue ($new_issue)"
+        dec_action=""
+        dec_url=""
+        dec_score="0"
+        dec_num="0"
+        dec_repo="$REPO"
+        filed_action=""
+        issue_url=""
+        if [ "$decide_rc" -eq 0 ] && [ -n "$dedupe_decision" ]; then
+            dec_action=$(printf '%s' "$dedupe_decision" | jq -r '.action // empty' 2>/dev/null || true)
+            dec_url=$(printf '%s' "$dedupe_decision" | jq -r '.url // empty' 2>/dev/null || true)
+            dec_score=$(printf '%s' "$dedupe_decision" | jq -r '.score // 0' 2>/dev/null || true)
+        fi
+        if [ "$decide_rc" -ne 0 ] || [ -z "$dec_action" ]; then
+            reason="fleet-issue-file (snapshot dedupe check) failed: $dedupe_decision"
+            log "finding $rank: FAILED to run the snapshot dedupe check ($dedupe_decision)"
             unfiled_pass=$((unfiled_pass + 1))
             if [ "$is_carryover" != "1" ]; then
                 carryover_append "$finding" "$sig" || true
+            fi
+        elif [ "$dec_action" = "commented" ]; then
+            # fleet-ops#5780: queue the row for ONE batched comment per
+            # target (flushed after the finding loop; one write per target
+            # per report instead of one call per row). The carry-over
+            # resolution is deferred to the batch flush.
+            dec_repo=$(printf '%s' "$dedupe_decision" | jq -r '.repo // empty' 2>/dev/null || true)
+            [ -n "$dec_repo" ] || dec_repo="$REPO"
+            dec_num=$(printf '%s' "$dedupe_decision" | jq -r '.number // 0' 2>/dev/null || echo 0)
+            issue_url="$dec_url"
+            [ -n "$issue_url" ] || issue_url="https://github.com/$dec_repo/issues/$dec_num"
+            jq -c -n \
+                --arg repo "$dec_repo" \
+                --argjson num "$dec_num" \
+                --arg url "$issue_url" \
+                --arg rank "$rank" \
+                --arg title "$title" \
+                --arg severity "${severity:-info}" \
+                --argjson score "${dec_score:-0}" \
+                --arg sig "$sig" \
+                --argjson is_co "${is_carryover:-0}" \
+                --argjson finding "$finding" \
+                '{repo:$repo, number:$num, url:$url, sig:$sig, is_carryover:$is_co, finding:$finding,
+                  rows:[{rank:$rank, title:$title, severity:$severity, score:$score}]}' \
+                >> "$DEDUPE_BATCH_FILE" || log "WARN: could not queue dedupe batch row for $rank"
+            filed_action="commented"
+            log "finding $rank: DEDUPED (gate batched comment queued on $issue_url)"
+            dedupe_dropped=$((dedupe_dropped + 1))
+        else
+            set +e
+            new_issue=$("$ISSUE_FILE" file --json -R "$REPO" --title "[gap-audit] $title" --body-file "$body_file" --label gap-audit --label agent-ready --open-json "$FILING_OPEN_SNAPSHOT" --closed-json "$FILING_CLOSED_SNAPSHOT" 2>/dev/null)
+            new_rc=$?
+            set -e
+            filed_action=$(printf '%s' "$new_issue" | jq -r '.action // "filed"' 2>/dev/null || echo "filed")
+            if [ "$new_rc" -eq 0 ] && [ -n "$new_issue" ]; then
+                issue_url=$(printf '%s' "$new_issue" | jq -r '.url // empty' 2>/dev/null)
+                if [ -z "$issue_url" ]; then
+                    # Helper classified this as a duplicate and commented on
+                    # the existing issue rather than filing. Carry the link
+                    # so the verdict log still shows the dedupe.
+                    issue_url=$(printf '%s' "$new_issue" | jq -r '.existing // empty' 2>/dev/null)
+                fi
+                if [ -n "$issue_url" ] && [[ "$issue_url" != http* ]]; then
+                    issue_url="https://github.com/${issue_url#*github.com/}"
+                fi
+                if [ "$filed_action" = "commented" ]; then
+                    # fleet-ops#1212 gate: an open issue already carries
+                    # this same problem. The finding is resolved, not filed.
+                    log "finding $rank: DEDUPED (gate commented on $issue_url)"
+                    dedupe_dropped=$((dedupe_dropped + 1))
+                    if [ "$is_carryover" = "1" ]; then
+                        carryover_resolve "$sig" "already carried by an open issue (#1212 gate)"
+                    fi
+                else
+                    log "finding $rank: FILED $issue_url"
+                    filed=$((filed + 1))
+                    if [ "$is_carryover" = "1" ]; then
+                        carryover_resolve "$sig" "filed"
+                    fi
+                fi
+            else
+                reason="fleet-issue-file failed: $new_issue"
+                log "finding $rank: FAILED to file issue ($new_issue)"
+                unfiled_pass=$((unfiled_pass + 1))
+                if [ "$is_carryover" != "1" ]; then
+                    carryover_append "$finding" "$sig" || true
+                fi
             fi
         fi
     fi
@@ -1538,6 +1611,41 @@ while IFS= read -r finding; do
     [ -n "$finding" ] || continue
     process_one_finding "$finding" "0"
 done < <(printf '%s\n' "$findings" | jq -c '.findings[]' 2>/dev/null)
+set +e
+flush_out=$("$ISSUE_FILE" comment-batch --json --from-json "$DEDUPE_BATCH_FILE" 2>/dev/null)
+flush_rc=$?
+set -e
+flush_out=${flush_out:-[]}
+if [ "$flush_rc" -ne 0 ]; then
+    log "LOUD [DEDUPE-BATCH-FAIL] dedupe comment-batch flush rc=$flush_rc; failed targets keep their carry-over entries"
+fi
+failed_keys=$(printf '%s' "$flush_out" | jq -r '.[]? | select(.status == "failed") | (.repo + "/" + (.number | tostring))' 2>/dev/null || true)
+flush_writes=$(printf '%s' "$flush_out" | jq '[.[]? | select(.status == "posted")] | length' 2>/dev/null || echo 0)
+batch_rows=0
+batch_writes=0
+while IFS= read -r entry; do
+    [ -n "$entry" ] || continue
+    batch_sig=$(printf '%s' "$entry" | jq -r '.sig // ""')
+    batch_key=$(printf '%s' "$entry" | jq -r '( .repo // "" ) + "/" + ((.number // 0) | tostring)')
+    batch_is_co=$(printf '%s' "$entry" | jq -r '.is_carryover // 0')
+    batch_finding=$(printf '%s' "$entry" | jq -c '.finding')
+    batch_rows=$((batch_rows + 1))
+    if [ -n "$failed_keys" ] && printf '%s\n' "$failed_keys" | grep -qxF "$batch_key"; then
+        log "finding batch: FAILED to comment on $batch_key - keeping (sig=$batch_sig)"
+        if grep -qF "$batch_sig" "$RESOLVED_SIGS" 2>/dev/null; then
+            grep -vF "$batch_sig" "$RESOLVED_SIGS" >"$RESOLVED_SIGS.tmp" 2>/dev/null \
+                && mv "$RESOLVED_SIGS.tmp" "$RESOLVED_SIGS"
+        fi
+        if [ "$batch_is_co" = "0" ]; then
+            carryover_append "$batch_finding" "$batch_sig" || true
+        fi
+    else
+        batch_writes=$((batch_writes + 1))
+        [ "$batch_is_co" = "1" ] && carryover_resolve "$batch_sig" "dedupe batch posted on $batch_key"
+    fi
+done < <([ -s "$DEDUPE_BATCH_FILE" ] && cat "$DEDUPE_BATCH_FILE" || true)
+log "dedupe batch: rows=$batch_rows targets-written=$batch_writes"
+
 
 # Rewrite the ledger: drop resolved signatures, keep the backlog (oldest
 # first). Signatures are sha256 lines, so a fixed-string grep is exact.
@@ -1562,6 +1670,10 @@ carryover_total=0
     fi
     printf 'Filed: %s (cap %s). Unfiled PASS findings: %s. Carry-over backlog: %s.\n' \
         "$filed" "$MAX_FINDINGS" "$unfiled_pass" "${carryover_total:-0}"
+    # fleet-ops#5780: the #1212 dedupe hits are batched into one comment
+    # per target for the whole report (not one gh call per row).
+    printf 'Dedupe comments batched: %s row(s) across %s target(s), %s write(s) (fleet-ops#5780).\n' \
+        "${batch_rows:-0}" "$( [ -s "$DEDUPE_BATCH_FILE" ] && jq -s 'map(.repo+"/"+((.number // 0)|tostring)) | unique | length' "$DEDUPE_BATCH_FILE" 2>/dev/null || echo 0)" "${flush_writes:-0}"
 } >> "$REPORT_MD"
 
 # fleet-ops#375: once per audit cycle, run the chain-e2e drill (whole-chain

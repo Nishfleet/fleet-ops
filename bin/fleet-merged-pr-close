@@ -125,6 +125,33 @@ INTAKE_JSON="${MERGED_PR_CLOSE_INTAKE_JSON:-/home/nish/workspaces/tooling/fleet-
 # pi-intake-tick.sh and pi-issue-failed-reap.
 ATTEMPTS_DIR="${ATTEMPTS_DIR:-${PI_PACKET_STATE:-$HOME/.local/state/pi-packet}/attempts}"
 
+# fleet-ops#5785: shared deploy-fault class detector + green-run proof. A
+# deploy-fault issue (deploy-fault label, or a body citing a failed
+# production-deploy run) may only be closed when a green `Deploy
+# production` run's SHA contains the delivery merge — the merged-PR green
+# check proves CI, not that production went live (0509#2662 closed on
+# PR #2949 while every deploy run kept failing Gate C). The library is
+# installed by MANIFEST to ~/.local/lib/pi-packet/; a missing lib is a
+# broken install — fail closed (exit 2), same as missing gh/jq.
+_DF_LIB="${DEPLOY_FAULT_GATE_LIB:-}"
+if [ -z "$_DF_LIB" ]; then
+    _df_here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+    if [ -f "$_df_here/../lib/deploy-fault-gate.sh" ]; then
+        _DF_LIB="$_df_here/../lib/deploy-fault-gate.sh"
+    else
+        _DF_LIB="${HOME}/.local/lib/pi-packet/deploy-fault-gate.sh"
+    fi
+fi
+if [ ! -f "$_DF_LIB" ]; then
+    printf '[%s] [fleet-merged-pr-close] LOUD [MERGED-PR-CLOSE-BROKEN] deploy-fault-gate lib missing at %s\n' \
+        "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$_DF_LIB" >&2
+    exit 2
+fi
+# shellcheck source=../lib/deploy-fault-gate.sh
+# shellcheck disable=SC1091  # sourced via $_DF_LIB (resolved at runtime: ../lib/deploy-fault-gate.sh)
+. "$_DF_LIB"
+unset _DF_LIB _df_here
+
 log() {
     printf '[%s] [fleet-merged-pr-close] %s\n' "$NOW_ISO" "$*" >&2
 }
@@ -285,6 +312,7 @@ skipped_ambiguous=0
 skipped_mention=0
 skipped_protected=0
 skipped_verdict_pending=0
+skipped_deploy_fault=0
 
 while IFS= read -r repo; do
     [ -z "$repo" ] && continue
@@ -581,10 +609,48 @@ while IFS= read -r repo; do
             continue
         fi
 
+        # fleet-ops#5785: deploy-fault gate. A deploy-fault-class issue may
+        # only be closed by a delivery whose fix is PROVEN live — a green
+        # `Deploy production` run whose head SHA contains the delivery merge
+        # (or, with no resolvable merge SHA, no close at all — this path knows
+        # a delivery exists, so an unresolvable SHA means unverifiable, not
+        # proven). Without proof the issue stays OPEN and a deduped note
+        # records the missing evidence; the same path closes it on the first
+        # tick after production goes green. The merged-PR green check is CI —
+        # it does not prove the release shipped (0509#2662/#2949).
+        issue_body=$(printf '%s' "$row" | jq -r '.body // ""')
+        df_proof_url=""
+        if deploy_fault_is_issue "$labels_json" "$issue_body"; then
+            df_rc=0
+            deploy_fault_has_proof "$repo" "$num" "" || df_rc=$?
+            if [ "$df_rc" = "2" ]; then
+                loud "MERGED-PR-CLOSE-GH" "$repo#$num: deploy-fault proof check failed (gh blip) — skip close this tick"
+                continue
+            fi
+            if [ "$df_rc" = "1" ]; then
+                skipped_deploy_fault=$((skipped_deploy_fault + 1))
+                df_note="${DEPLOY_FAULT_MARKER}: merged PR ${murl} (#${mnum}) delivered this deploy-fault issue, but no green \`Deploy production\` run's SHA contains the fix yet — the issue stays open until a green production run proves the fix live. Production proof, not CI green, is the close condition."
+                if existing_comment "$repo" "$num" "$DEPLOY_FAULT_MARKER"; then
+                    log "  $repo#$num: deploy-fault gate note already posted — still unproven, leave open"
+                elif ! "$GH" issue comment "$num" -R "$repo" --body "$df_note" >/dev/null 2>&1; then
+                    loud "MERGED-PR-CLOSE-ERE" "$repo#$num: deploy-fault gate comment failed — will retry next tick"
+                else
+                    log "  $repo#$num: DEPLOY-FAULT-GATE delivery merged but production not green — left open, note posted"
+                fi
+                continue
+            fi
+            # shellcheck disable=SC2153  # DF_PROOF_URL is exported by lib/deploy-fault-gate.sh (sourced above)
+            df_proof_url="$DF_PROOF_URL"
+            log "  $repo#$num: deploy-fault gate PASSED — green run ${df_proof_url} contains the fix"
+        fi
+
         if [ "$reason" = "claim-branch" ]; then
             comment="observe-to-close (fleet-ops#1435): merged PR ${murl} (#${mnum}) shipped this issue from the claim/issue-${num} branch. The work is delivered (the fleet merge queue only merges with every required check green — that is the verification) and no open PR, live worker, or claim branch remains for this issue, so the heartbeat closes it at ${ts}."
         else
             comment="observe-to-close (fleet-ops#1435): merged PR ${murl} (#${mnum}) ships this issue with an explicit \`Closes #${num}\` trailer. The work is delivered (the fleet merge queue only merges with every required check green — that is the verification) and no open PR, live worker, or claim branch remains for this issue, so the heartbeat closes it at ${ts}."
+        fi
+        if [ -n "$df_proof_url" ]; then
+            comment="${comment} ${DEPLOY_FAULT_MARKER}: production proof — green production-deploy run ${df_proof_url} whose SHA contains the delivery merge."
         fi
 
         if ! "$GH" issue close "$num" -R "$repo" --comment "$comment" >/dev/null 2>&1; then
@@ -616,11 +682,11 @@ done <<< "$repos"
 if [ -n "$SUMMARY_FILE" ] \
     && mkdir -p "$(dirname "$SUMMARY_FILE")" 2>/dev/null; then
     cat >"$SUMMARY_FILE" <<EOF
-{"_meta":{"ts":"$NOW_ISO","tool":"fleet-merged-pr-close"},"closed":$closed,"closes_by_reason":{"claim-branch":$closes_claim,"closes-trailer":$closes_trailer,"verdict-pass":$closes_verdict,"bare-mention":0,"protected":0}}
+{"_meta":{"ts":"$NOW_ISO","tool":"fleet-merged-pr-close"},"closed":$closed,"closes_by_reason":{"claim-branch":$closes_claim,"closes-trailer":$closes_trailer,"verdict-pass":$closes_verdict,"bare-mention":0,"protected":0},"deploy_fault_gate_blocked":$skipped_deploy_fault}
 EOF
 else
     log "WARN: could not write summary $SUMMARY_FILE"
 fi
 
-log "merged-pr observe-to-close done: scanned=$scanned candidates=$candidates closed=$closed(claim=$closes_claim,trailer=$closes_trailer,verdict=$closes_verdict) skipped_open_pr=$skipped_open_pr skipped_branch=$skipped_branch skipped_live=$skipped_live skipped_ambiguous=$skipped_ambiguous skipped_mention=$skipped_mention skipped_protected=$skipped_protected skipped_verdict_pending=$skipped_verdict_pending"
+log "merged-pr observe-to-close done: scanned=$scanned candidates=$candidates closed=$closed(claim=$closes_claim,trailer=$closes_trailer,verdict=$closes_verdict) skipped_open_pr=$skipped_open_pr skipped_branch=$skipped_branch skipped_live=$skipped_live skipped_ambiguous=$skipped_ambiguous skipped_mention=$skipped_mention skipped_protected=$skipped_protected skipped_verdict_pending=$skipped_verdict_pending skipped_deploy_fault=$skipped_deploy_fault"
 exit 0

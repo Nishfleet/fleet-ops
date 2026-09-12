@@ -75,6 +75,27 @@ whose class-lock PR on `claim/issue-<N>` has already merged back to
 it to `agent-ready` after StartLimitBurst and intake re-claims it every tick
 until the 24h observe-to-close window expires (fleet-ops#1083). Do not redo that sweep.
 
+The same sweep owns the deploy-fault class (fleet-ops#5785). An issue is
+deploy-fault when it carries the `deploy-fault` label or its body cites a
+failed `Deploy production` run; the sweep labels the latter automatically.
+A deploy-fault issue may only close with production proof — a green
+`Deploy production` run whose head SHA contains the delivery merge (the
+merged-PR green check is CI, not a shipped release: 0509#2662 closed the
+moment PR #2949 merged while every deploy run kept failing Gate C).
+`fleet-merged-pr-close` holds a close open until that green run exists and
+puts the run URL in the closing comment; the sweep's closed-issue pass
+reopens any deploy-fault issue that closed anyway (GitHub auto-close on a
+merged trailer, a human close) and still has no proof. The count is
+exported as `fleet_deploy_fault_closed_without_green` — it must stay 0.
+
+Stale production is its own alert, not a halt pile-up:
+`FleetProductionStale` (critical) fires when a product repo's last green
+`Deploy production` run is over 2h old while `main` carries a newer merge,
+and it dispatches a repair packet to a flagship seat through the existing
+alert-repair receiver (`repair_seat=flagship` walks
+`senior_seats_in_order` before the cheapest-healthy default). AUTO-REVERT
+HALT issues stay `noise-class` — they are not the escalation path.
+
 ---
 
 ## Step 1 — verify claimed work against real state
@@ -311,11 +332,17 @@ For the picked item:
 2. Spawn the worker with `pi-systemd-run` (never `nohup` or trailing `&` —
    those die with the launching session and look like a dead seat):
    - Quality/security/twice-failed:
-     `pi-systemd-run --unit <packet> --stdin /home/nish/.local/state/pi-packets/<packet>.md -- claude -p --model claude-opus-5`
+     `pi-systemd-run --unit <packet> --stdin /home/nish/.local/state/pi-packets/<packet>.md --deadline <min> --deliverable /home/nish/.local/state/pi-packets/<packet>-outcome.md -- claude -p --model claude-opus-5`
    - Devin heavy:
-     `pi-systemd-run --unit <packet> --stdin /home/nish/.local/state/pi-packets/<packet>.md -- pi --print --provider devin --model glm-5-2`
+     `pi-systemd-run --unit <packet> --stdin /home/nish/.local/state/pi-packets/<packet>.md --deadline <min> --deliverable /home/nish/.local/state/pi-packets/<packet>-outcome.md -- pi --print --provider devin --model glm-5-2`
    - Mechanical:
-     `pi-systemd-run --unit <packet> --stdin /home/nish/.local/state/pi-packets/<packet>.md -- pi --print --provider minimax --model MiniMax-M3`
+     `pi-systemd-run --unit <packet> --stdin /home/nish/.local/state/pi-packets/<packet>.md --deadline <min> --deliverable /home/nish/.local/state/pi-packets/<packet>-outcome.md -- pi --print --provider minimax --model MiniMax-M3`
+
+   Every launch carries `--deadline` and `--deliverable` (the canonical
+   copy-paste block lives in the fleet-ops README, "systemd by default"):
+   the wrapper installs the exit-0-no-deliverable FAILURE verdict only
+   when `--deliverable` is set, so a flag-less launch has no dead-man
+   teeth — exactly the silent stop fleet-ops#4266 exists to catch.
    Watch: `systemctl --user status <packet>.service`
    Logs:  `journalctl --user -u <packet>.service -f`
 3. Log to playbook under a fresh "Heartbeat HH:MM UTC" line: which item

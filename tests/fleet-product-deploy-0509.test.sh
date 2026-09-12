@@ -177,6 +177,18 @@ assert value('fleet_product_deploy_green{repo="0509"}') == "0"
 assert 'fleet_product_deploy_last_red_run_info{repo="0509",workflow="Deploy production",url="https://github.com/Nishfleet/0509/actions/runs/4"} 1' in lines
 print("OK: 0509 red streak -> blocked 14400s > 0, green 0, last-red-run info row present")
 
+# --- fleet-ops#5785 stale-production gauges -------------------------------
+# Last green = run 1 completion (updatedAt 12:10) -> stale = 18:00 - 12:10
+# = 5.833h. The 17:00 merge is newer than that green -> undeployed_merges 1.
+near(value('fleet_product_production_stale_hours{repo="0509",workflow="Deploy production"}'), 5.833)
+near(value('fleet_product_deploy_last_green_seconds{repo="0509",workflow="Deploy production"}'), 1788351000)
+near(value('fleet_product_main_last_merge_seconds{repo="0509"}'), 1788368400)
+assert value('fleet_product_undeployed_merges{repo="0509"}') == "1"
+# 0999 unmeasurable -> NaN on the new gauges too.
+assert value('fleet_product_production_stale_hours{repo="0999",workflow="Deploy production"}') == "NaN"
+assert value('fleet_product_undeployed_merges{repo="0999"}') == "NaN"
+print("OK: stale-hours 5.833 + last-green/merge epochs + undeployed_merges 1 (0509), NaN (0999)")
+
 # --- fleet-ops rows come BEFORE any 0509 row for the same metric name -----
 for name in ("fleet_deployment_latency_seconds",
              "fleet_deploy_blocked_duration_seconds",
@@ -264,6 +276,11 @@ assert not any(l.startswith('fleet_product_deploy_last_red_run_info{repo="0509"'
     "red-run info row must be absent when the newest run is green"
 # merge 17:00 -> first green completion 17:40 = 2400s latency sample.
 assert float(value('fleet_deployment_latency_seconds{repo="0509"}')) == 2400.0
+# fleet-ops#5785: green completion 17:40 -> stale 20m (0.333h); the 17:00
+# merge is OLDER than the green run -> undeployed_merges 0 (alert silent).
+assert abs(float(value('fleet_product_production_stale_hours{repo="0509",workflow="Deploy production"}')) - 0.333) < 1e-3
+assert abs(float(value('fleet_product_deploy_last_green_seconds{repo="0509",workflow="Deploy production"}')) - 1788370800) < 1e-3
+assert value('fleet_product_undeployed_merges{repo="0509"}') == "0"
 # fleet-ops payload still pinned.
 assert float(value('fleet_deployment_latency_seconds{repo="fleet-ops"}')) == 100.0
 assert float(value('fleet_deployment_quality_up{repo="fleet-ops"}')) == 1.0
