@@ -24,6 +24,14 @@
 #      entries (NOT in the seen set) stay so a not-yet-delivered page is
 #      never lost.
 #
+#   1b. alert-repair stuck-packet burst closure (fleet-ops#5647): after the
+#      LOUD STUCK-PACKET line is emitted, the same run ARCHIVES every stuck
+#      packet under $PACKET_DIR/archived/stuck/ (never silently deleted —
+#      the file moves and a DISPOSITION decision line lands in actions.log)
+#      so the hourly LOUD line cannot repeat forever for a settled burst.
+#      The absent()/filing pipeline files a fresh [stuck-packet] issue from
+#      the LOUD line; a NEW stuck packet after that starts a fresh filing.
+#
 #   2. alert-repair packets: delete packet-*.md files whose dispatch cycle
 #      TERMINATED. The termination proof is chains.terminated.jsonl — the
 #      ledger fleet-completion-canary appends to (with the mirror under
@@ -49,6 +57,17 @@
 #      webhook timestamp — they are owned by fleet-ops internals; draining
 #      them would break the chain the canary is proving.
 #
+#   4. Bound-breach second stage (fleet-ops#5624): when the live file stays
+#      over MAX_LINES for > FLEET_ESCALATION_DRAIN_OVER_BOUND_AGE_S
+#      (default 24h) — the state the unconditional + condition drains
+#      cannot converge — a LOUD [BOUND-BREACH] alert fires once per breach
+#      episode and the oldest live units (prose sections + delivered
+#      formal entries) are digested into
+#      $DIGEST_DIR/digest-YYYY-MM-DD.md until the file fits the bound.
+#      Active (never-delivered) boundary entries are never digest
+#      candidates; every removal is a logged disposition, never a silent
+#      drop.
+#
 # Anti-recursion: this drain is a maintenance script, NOT an organ (no
 # heartbeat metric). It does not create units, does not appear in
 # config/fleet-organs.json, and does not need an absent() rule. The
@@ -61,6 +80,9 @@
 #   FLEET_ESCALATION_DRAIN_MAX_LINES      default 50
 #   FLEET_ESCALATION_DRAIN_TERMINATED     ledger path (default $PACKET_DIR/chains.terminated.jsonl)
 #   FLEET_ESCALATION_DRAIN_STUCK_AGE_S     webhook packet age past which a no-terminal
+#                                          packet is LOUD-flagged then archived to
+#                                          $PACKET_DIR/archived/stuck/ with a DISPOSITION
+#                                          line in $PACKET_DIR/actions.log (fleet-ops#5647)
 #                                          packet is flagged LOUD (default 21600 = 6h,
 #                                          fleet-ops#2677: a packet older than ~6h
 #                                          must be either consumed (terminal record)
@@ -68,6 +90,11 @@
 #                                          chain cannot hide for a day)
 #   FLEET_ESCALATION_DRAIN_CLASSES        regex (must match nish-boundary-notify)
 #   FLEET_ESCALATION_DRAIN_DRY_RUN        1 = never modify files, only report
+#   FLEET_ESCALATION_DRAIN_OVER_BOUND_STAMP  breach stamp path
+#   FLEET_ESCALATION_DRAIN_OVER_BOUND_AGE_S  over-bound age before alert+digest
+#                                          (default 86400 = 24h)
+#   FLEET_ESCALATION_DRAIN_DIGEST_DIR     digest output dir (default $ARCHIVE_DIR)
+#   FLEET_ESCALATION_DRAIN_BOUND_DIGEST   0 = alert only, never digest
 #
 # Exit:
 #   0  drain complete (idempotent: re-runs do nothing once the file is bounded)
@@ -99,6 +126,13 @@ PROVIDER_NAMES="${FLEET_ESCALATION_DRAIN_PROVIDER_NAMES:-openrouter|straitly|com
 # Money-wall keywords that mark an entry as a provider money wall (not just
 # any entry that happens to mention a provider name).
 MONEY_KEYWORDS="${FLEET_ESCALATION_DRAIN_MONEY_KEYWORDS:-402|quota_exhausted|credits exhausted|credit balance|insufficient_user_quota|out of credits|billing wall|quota wall|payment wall}"
+# Bound-breach second stage (fleet-ops#5624). The stamp records when the
+# live file was FIRST seen over MAX_LINES; it is removed the moment the
+# file returns to bound, so only a persistent breach accumulates age.
+OVER_BOUND_STAMP="${FLEET_ESCALATION_DRAIN_OVER_BOUND_STAMP:-$AGENT_STATE/lanes/fleet-escalation-drain.over-bound}"
+OVER_BOUND_AGE_S="${FLEET_ESCALATION_DRAIN_OVER_BOUND_AGE_S:-86400}"
+DIGEST_DIR="${FLEET_ESCALATION_DRAIN_DIGEST_DIR:-$ARCHIVE_DIR}"
+BOUND_DIGEST="${FLEET_ESCALATION_DRAIN_BOUND_DIGEST:-1}"
 
 log() {
     printf '[%s] [fleet-escalation-drain] %s\n' \
@@ -133,8 +167,10 @@ nish_bounded=0
 nish_condition_resolved=0
 nish_condition_live=0
 nish_body_resolved=0
+nish_digested=0
 packet_deleted=0
 packet_skipped=0
+packet_archived=0
 
 # Body-level RESOLVED marker regex (fleet-ops#3996). Entries whose header class
 # is NOT literally RESOLVED/REVOKED-BY-PROBE can still carry a resolution marker
@@ -756,6 +792,252 @@ drain_nish_conditions() {
 }
 
 # ---------------------------------------------------------------------------
+# 1c. NISH-ESCALATIONS.md bound-breach second stage (fleet-ops#5624)
+# ---------------------------------------------------------------------------
+#
+# The unconditional + condition drains above converge the live file when
+# the content is resolvable. A file can still sit over MAX_LINES for days
+# on content with no drain path — undelivered prose sections, live
+# money-walls, Nish-decision backlog. Before this pass the drain printed
+# the same "still 114 lines" line every hour for days: the bound was
+# decorative and the breach itself was escalated nowhere — the permanent
+# LOUD / alarm-fatigue shape fleet-ops#5624 flags.
+#
+# This pass gives the over-bound state a converging path and makes the
+# breach a detected state:
+#
+#   1. Persist: $OVER_BOUND_STAMP records when the file was FIRST seen
+#      over MAX_LINES. It is removed the moment the file returns to
+#      bound, so a transient spike never accumulates age.
+#   2. Alert: when the stamp age exceeds OVER_BOUND_AGE_S (default 24h) a
+#      LOUD [BOUND-BREACH] line names the breach — a detected state, not
+#      the repeated generic "still N lines" log line. It re-fires each
+#      run while the breach persists (same convention as STUCK-PACKET).
+#   3. Converge: units (formal timestamp entries + `## ` prose sections,
+#      with their continuation lines) are moved OLDEST-FIRST into
+#      $DIGEST_DIR/digest-YYYY-MM-DD.md until the live file fits
+#      MAX_LINES. Every digested unit gets a logged `digested:` line —
+#      a logged disposition, never a silent drop. A `## DRAIN-DIGEST`
+#      pointer unit is appended to the live file so the board names
+#      where the stale items went.
+#   4. Never-lose invariant: an ACTIVE boundary entry (a formal class
+#      entry whose hash is NOT in the seen set — a page not yet
+#      delivered) is never a digest candidate. If only active entries
+#      remain over the bound, the file stays over and the LOUD line
+#      keeps firing: that is real backlog (the notifier is behind), not
+#      a decorative bound.
+#
+# Environment seams (tests):
+#   FLEET_ESCALATION_DRAIN_OVER_BOUND_STAMP  breach stamp path
+#   FLEET_ESCALATION_DRAIN_OVER_BOUND_AGE_S  breach age before alert+digest
+#   FLEET_ESCALATION_DRAIN_DIGEST_DIR        digest output dir
+#   FLEET_ESCALATION_DRAIN_BOUND_DIGEST      0 = alert only, never digest
+drain_nish_bound() {
+    if [ ! -f "$NISH" ]; then
+        return 0
+    fi
+
+    local total
+    total=$(wc -l < "$NISH")
+
+    # At/under bound: a converged file clears the breach stamp.
+    if [ "$total" -le "$MAX_LINES" ]; then
+        if [ -f "$OVER_BOUND_STAMP" ]; then
+            if [ "$DRY_RUN" != "1" ]; then
+                rm -f "$OVER_BOUND_STAMP"
+            fi
+            log "bound-breach cleared: live file $total lines (<= MAX_LINES=$MAX_LINES); stamp removed"
+        fi
+        return 0
+    fi
+
+    local now_epoch now_iso stamp_epoch="" stamp_iso=""
+    now_epoch=$(date -u +%s)
+    now_iso=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+    if [ -f "$OVER_BOUND_STAMP" ]; then
+        stamp_epoch=$(head -n1 "$OVER_BOUND_STAMP" | tr -cd '0-9')
+        stamp_iso=$(sed -n '2p' "$OVER_BOUND_STAMP" | tr -d '\n')
+    fi
+    if [ -z "$stamp_epoch" ]; then
+        # First observed over-bound — or an unreadable stamp, which the
+        # rewrite self-heals by restarting the clock.
+        if [ "$DRY_RUN" != "1" ]; then
+            mkdir -p "$(dirname "$OVER_BOUND_STAMP")"
+            { printf '%s\n' "$now_epoch"; printf '%s\n' "$now_iso"; } > "$OVER_BOUND_STAMP"
+        fi
+        log "live file $total lines (> MAX_LINES=$MAX_LINES) — bound-breach clock started $now_iso; digest fires at +${OVER_BOUND_AGE_S}s"
+        return 0
+    fi
+    [ -n "$stamp_iso" ] || stamp_iso="epoch=$stamp_epoch"
+
+    local breach_age=$((now_epoch - stamp_epoch))
+    if [ "$breach_age" -le "$OVER_BOUND_AGE_S" ]; then
+        log "live file $total lines (> MAX_LINES=$MAX_LINES) — over-bound since $stamp_iso (${breach_age}s <= ${OVER_BOUND_AGE_S}s); no digest yet"
+        return 0
+    fi
+
+    if [ "$BOUND_DIGEST" != "1" ]; then
+        log "LOUD [BOUND-BREACH] NISH-ESCALATIONS.md over MAX_LINES=$MAX_LINES for ${breach_age}s (> ${OVER_BOUND_AGE_S}s, since $stamp_iso) — bound-digest disabled (BOUND_DIGEST=0); file stays $total lines"
+        return 0
+    fi
+
+    # Load seen keys for the active-entry check (same ledger drain_nish
+    # uses: sha256 of the entry header line, first 32 hex).
+    declare -A seen_keys=()
+    if [ -f "$SEEN_FILE" ]; then
+        while IFS= read -r k; do
+            [ -n "$k" ] && seen_keys["$k"]=1
+        done < "$SEEN_FILE"
+    fi
+
+    # Parse into preamble + units. Preamble = the 6-line file-format
+    # header plus every line before the first unit (the format-
+    # documentation block). A unit starts at a formal timestamp entry or
+    # a `## ` prose header and runs to the next unit start or EOF;
+    # intervening lines are its continuation.
+    local -a preamble=() body=() u_start=() u_head=() u_active=()
+    local line_ind=0 seen_unit=0
+    local line
+    while IFS= read -r line || [ -n "$line" ]; do
+        line_ind=$((line_ind + 1))
+        if [ "$line_ind" -le 6 ]; then
+            preamble+=("$line")
+            continue
+        fi
+        if [[ "$line" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}(:[0-9]{2}){1,2}Z[[:space:]] ]] || \
+           [[ "$line" =~ ^##[[:space:]] ]]; then
+            seen_unit=1
+            u_start+=("${#body[@]}")
+            u_head+=("$line")
+            local act=0
+            if [[ "$line" =~ ^[0-9]{4}- ]]; then
+                local class key
+                class=$(printf '%s' "$line" | awk '{print $2}')
+                if printf '%s\n' "$CLASSES" | tr '|' '\n' | grep -qxF "$class"; then
+                    key=$(printf '%s' "$line" | sha256sum | cut -c1-32)
+                    if [ "${seen_keys[$key]:-0}" != "1" ]; then
+                        act=1
+                    fi
+                fi
+            fi
+            u_active+=("$act")
+            body+=("$line")
+            continue
+        fi
+        if [ "$seen_unit" = "0" ]; then
+            preamble+=("$line")
+        else
+            body+=("$line")
+        fi
+    done < "$NISH"
+
+    local n_units=${#u_start[@]}
+    local pre_n=${#preamble[@]}
+    # Lines available for kept units: MAX_LINES minus preamble, minus one
+    # line reserved for the DRAIN-DIGEST pointer appended on a digest run.
+    local budget=$((MAX_LINES - pre_n - 1))
+    [ "$budget" -lt 0 ] && budget=0
+
+    # Digest oldest-first until the surviving units fit the budget.
+    # Active (never-delivered) boundary entries are skipped — they stay
+    # on the board no matter how old.
+    local -a u_digest=()
+    local i ulen
+    for ((i = 0; i < n_units; i++)); do u_digest+=(0); done
+    local remaining=${#body[@]}
+    for ((i = 0; i < n_units; i++)); do
+        [ "$remaining" -le "$budget" ] && break
+        [ "${u_active[$i]}" = "1" ] && continue
+        if [ $((i + 1)) -lt "$n_units" ]; then
+            ulen=$((u_start[i + 1] - u_start[i]))
+        else
+            ulen=$((${#body[@]} - u_start[i]))
+        fi
+        u_digest[i]=1
+        remaining=$((remaining - ulen))
+    done
+
+    local n_digested=0
+    for ((i = 0; i < n_units; i++)); do
+        [ "${u_digest[$i]}" = "1" ] && n_digested=$((n_digested + 1))
+    done
+
+    local final_lines=$((pre_n + remaining + (n_digested > 0 ? 1 : 0)))
+    if [ "$n_digested" -eq 0 ]; then
+        log "LOUD [BOUND-BREACH] NISH-ESCALATIONS.md over MAX_LINES=$MAX_LINES for ${breach_age}s (> ${OVER_BOUND_AGE_S}s, since $stamp_iso) — cannot converge: only active (undelivered) boundary entries remain over the bound; file stays $total lines"
+        return 0
+    fi
+    log "LOUD [BOUND-BREACH] NISH-ESCALATIONS.md over MAX_LINES=$MAX_LINES for ${breach_age}s (> ${OVER_BOUND_AGE_S}s, since $stamp_iso) — digesting $n_digested oldest live entries; $total -> $final_lines lines"
+
+    if [ "$DRY_RUN" = "1" ]; then
+        for ((i = 0; i < n_units; i++)); do
+            [ "${u_digest[$i]}" = "1" ] && log "DRY: would digest: ${u_head[$i]}"
+        done
+        log "DRY: bound-digest would move $n_digested units to $DIGEST_DIR/digest-$(date -u +%Y-%m-%d).md and rewrite the live file at $final_lines lines"
+        return 0
+    fi
+
+    # Split body into digested / kept, preserving file order inside each.
+    local -a digest_lines=() kept_out=()
+    local s e j
+    for ((i = 0; i < n_units; i++)); do
+        s=${u_start[$i]}
+        if [ $((i + 1)) -lt "$n_units" ]; then e=${u_start[$((i + 1))]}; else e=${#body[@]}; fi
+        for ((j = s; j < e; j++)); do
+            if [ "${u_digest[$i]}" = "1" ]; then
+                digest_lines+=("${body[$j]}")
+            else
+                kept_out+=("${body[$j]}")
+            fi
+        done
+    done
+
+    mkdir -p "$DIGEST_DIR"
+    local stamp_day digest_path
+    stamp_day=$(date -u +%Y-%m-%d)
+    digest_path="$DIGEST_DIR/digest-$stamp_day.md"
+    if [ ! -s "$digest_path" ]; then
+        {
+            printf '# NISH-ESCALATIONS bound-breach digest — %s (UTC)\n' "$stamp_day"
+            printf '# Moved by fleet-escalation-drain bound-digest (fleet-ops#5624):\n'
+            printf '# oldest live entries after the live file stayed > MAX_LINES for\n'
+            printf '# >%ss. Disposition: digested — preserved here, off the live board.\n' "$OVER_BOUND_AGE_S"
+            printf '# NEVER rotated; one file per UTC day.\n'
+            printf '\n'
+        } > "$digest_path"
+    fi
+    {
+        for ln in "${digest_lines[@]}"; do
+            printf '%s\n' "$ln"
+        done
+    } >> "$digest_path"
+
+    local pointer="## DRAIN-DIGEST $now_iso — $n_digested stale entries moved to $digest_path (fleet-ops#5624 bound-breach)"
+    local tmp_nish
+    tmp_nish=$(mktemp -p "$AGENT_STATE" .nish-bound.XXXXXX)
+    {
+        for ln in "${preamble[@]}"; do printf '%s\n' "$ln"; done
+        for ln in "${kept_out[@]}"; do printf '%s\n' "$ln"; done
+        printf '%s\n' "$pointer"
+    } > "$tmp_nish"
+    mv "$tmp_nish" "$NISH"
+
+    for ((i = 0; i < n_units; i++)); do
+        [ "${u_digest[$i]}" = "1" ] && log "digested: ${u_head[$i]}"
+    done
+    nish_digested=$((nish_digested + n_digested))
+    if [ "$final_lines" -le "$MAX_LINES" ]; then
+        rm -f "$OVER_BOUND_STAMP"
+        log "bound-digest: moved $n_digested oldest entries to $digest_path; live_lines=$final_lines (was $total); breach stamp cleared"
+    else
+        # Active entries kept the file over bound — the breach persists,
+        # so the stamp (and the LOUD line) stays.
+        log "bound-digest: moved $n_digested oldest entries to $digest_path; live_lines=$final_lines (was $total) — STILL over MAX_LINES=$MAX_LINES on active entries; breach stamp kept"
+    fi
+    return 0
+}
+
+# ---------------------------------------------------------------------------
 # 2. alert-repair packet drain
 # ---------------------------------------------------------------------------
 #
@@ -859,13 +1141,39 @@ drain_packets() {
         for s in "${stuck[@]:0:10}"; do
             head_line="$head_line $s"
         done
-        log "LOUD [STUCK-PACKET] $n_stuck webhook packet(s) older than ${STUCK_AGE_S}s have NO terminated chain in $TERMINATED — drain leaves them (never silently delete); left for the Prometheus/Alertmanager absent() pipeline to escalate:$head_line"
+        log "LOUD [STUCK-PACKET] $n_stuck webhook packet(s) older than ${STUCK_AGE_S}s have NO terminated chain in $TERMINATED — left for the Prometheus/Alertmanager absent() pipeline to escalate (fresh filing per burst):$head_line"
+        # fleet-ops#366 / #5647: same-run disposition. The packets were
+        # already escalated loud in this run; leaving them live makes the
+        # hourly LOUD line repeat forever for a settled burst. Archive
+        # them (never silently delete: the file MOVES and a DISPOSITION
+        # decision line is written to actions.log) so the backlog trends
+        # to 0, not up.
+        local archive_dir="$PACKET_DIR/archived/stuck"
+        local alog="$PACKET_DIR/actions.log"
+        local stamp
+        stamp=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+        if [ "$DRY_RUN" = "1" ]; then
+            log "DRY: would archive ${n_stuck} stuck packet(s) to $archive_dir with DISPOSITION terminal=escalated-filed"
+        else
+            mkdir -p "$archive_dir"
+            for s in "${stuck[@]}"; do
+                s_name="${s%% (*}"
+                if mv -- "$PACKET_DIR/$s_name" "$archive_dir/$s_name" 2>/dev/null; then
+                    echo "[$stamp] DISPOSITION stuck-packet packet=$s_name terminal=escalated-filed issue=absent-pipeline-filer" >> "$alog"
+                    packet_archived=$((packet_archived + 1))
+                    log "archived $s_name terminal=escalated-filed issue=absent-pipeline-filer (actions.log)"
+                else
+                    log "WARN: failed to archive $s_name — leaving in place (loud line will re-flag it)"
+                fi
+            done
+        fi
     fi
 }
 
 drain_nish
 drain_nish_conditions
+drain_nish_bound
 drain_packets
 
-log "summary: nish_archived=$nish_archived nish_bounded=$nish_bounded nish_body_resolved=$nish_body_resolved nish_condition_resolved=$nish_condition_resolved nish_condition_live=$nish_condition_live packet_deleted=$packet_deleted packet_skipped=$packet_skipped dry_run=$DRY_RUN"
+log "summary: nish_archived=$nish_archived nish_bounded=$nish_bounded nish_body_resolved=$nish_body_resolved nish_condition_resolved=$nish_condition_resolved nish_condition_live=$nish_condition_live nish_digested=$nish_digested packet_deleted=$packet_deleted packet_skipped=$packet_skipped packet_archived=$packet_archived dry_run=$DRY_RUN"
 exit 0

@@ -1085,6 +1085,13 @@ ok "rule-enforcement: token economy canary drill"
 bash "$here/standing-rules-drift.test.sh" || fail "standing-rules drift drill failed"
 ok "rule-enforcement: standing-rules drift drill"
 
+# fleet-ops#5644: retired-host gate. The live rulebook surfaces must never
+# scope the VPS write-autonomy / credential-parity postures to the retired
+# 'hostinger-kvm4' host; nested host so the worker token does not need to
+# edit .github/workflows/** (same class-prevention as the drift gate above).
+bash "$here/rulebook-host-drift.test.sh" || fail "rulebook retired-host drill failed"
+ok "rule-enforcement: rulebook retired-host drill"
+
 # fleet-ops#5586: reserved-classes precedence gate. Nish's reserved-escalation
 # classes have ONE canonical list (vault global-standing-rules.md) and every
 # agent surface points at it; this drill proves the canonical sources carry

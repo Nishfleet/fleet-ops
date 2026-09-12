@@ -43,6 +43,33 @@ blocks = {t["sol_identity_block"] for t in m.DEFAULT_TARGETS}
 assert len(blocks) == 1, f"DEFAULT_TARGETS carry {len(blocks)} distinct sol_identity_block values"
 PY
 
+# Stage 0b: fleet-ops#5718 — no DEFAULT_TARGETS templating block may route
+# live work to retired seats. The claude failure_response_block named the
+# superseded DeepSeek/Grok/Sol repair ladder while the same file's routing
+# block retired Sol and the ladder; the render was "clean" against its own
+# stale source, so only a gate on the defaults catches it. The drift
+# fixtures pass sentinel text (FAILCLAUDE) on purpose and cannot catch it.
+# Retired-ladder clauses, not bare seat names: "DeepSeek" alone is legal
+# inside the codex old_launcher_block's SUPERSEDED note.
+RSR_PATH="$repo_root/bin/render-standing-rules.py" python3 - <<'PY' || fail "DEFAULT_TARGETS carry retired repair-ladder seat names (fleet-ops#5718)"
+import importlib.util, os
+spec = importlib.util.spec_from_file_location(
+    "rsr", os.environ["RSR_PATH"]
+)
+m = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(m)
+stale = ("DeepSeek for deeply-scoped", "Grok/Sol/Opus")
+for t in m.DEFAULT_TARGETS:
+    for key, val in t.items():
+        if not isinstance(val, str):
+            continue
+        for clause in stale:
+            assert clause not in val, (
+                f"{t['path'].name} {key} routes work to the retired "
+                f"ladder ({clause!r}) - pick seats via pi-seat-health.json"
+            )
+PY
+
 work="$(mktemp -d -t standing-rules-drift-XXXXXX)"
 trap 'rm -rf "$work"' EXIT
 
@@ -362,5 +389,22 @@ else
   echo "OK 11b: live CLAUDE.md/.codex AGENTS.md carry no retired-identity contradiction (fleet-ops#5642)"
 fi
 
+# --- Assertion 12 (fleet-ops#5717): the idle-fleet-alarm canonical section
+# must carry the FLEET-PAUSED sentinel as its FIRST ordered check, matching
+# the Pi surface canonical (lib/pi-agents-md/canonical.md: "Authoritative
+# check, in order: (1) if ~/workspaces/agent-state/FLEET-PAUSED exists ...").
+# Without it a Claude/Codex agent scopes and launches work while the fleet is
+# deliberately paused — the mirror image of the fleet-ops#180 stale-pause
+# failure the block was written to prevent.
+alarm_section="$(sed -n '/SECTION: idle-fleet-alarm/,/END SECTION: idle-fleet-alarm/p' "$canonical")"
+[[ -n "$alarm_section" ]] || fail "canonical has no idle-fleet-alarm section (gate cannot run)"
+grep -Fq "FLEET-PAUSED" <<<"$alarm_section" \
+  || fail "idle-fleet-alarm section must carry the FLEET-PAUSED sentinel check (fleet-ops#5717)"
+grep -Eq '^1\. .*FLEET-PAUSED' <<<"$alarm_section" \
+  || fail "FLEET-PAUSED must be the FIRST ordered check in idle-fleet-alarm (fleet-ops#5717)"
+grep -Fq "deliberately down" <<<"$alarm_section" \
+  || fail "idle-fleet-alarm FLEET-PAUSED check must state the fleet is deliberately down (fleet-ops#5717)"
+echo "OK 12: idle-fleet-alarm carries FLEET-PAUSED as check #1 (fleet-ops#5717)"
+
 echo ""
-echo "ALL OK: 11/11 assertions passed (drift, render, templating, markers, orphans, pi-count pin, governed-run pin, retired-identity)" | head
+echo "ALL OK: 12/12 assertions passed (drift, render, templating, markers, orphans, pi-count pin, governed-run pin, retired-identity, fleet-paused sentinel)" | head

@@ -246,7 +246,7 @@
     },
     {
       "id": "rulebook-redteam",
-      "gate": "sibling .bak-rulebook-redteam-YYYYMMDD backups are required before filing; monthly timer + heading-growth bonus; cadence-overdue screams",
+      "gate": "sibling <file>.pre-rulebook-redteam-<UTCts> backups are required before filing (fleet-ops#5682 — .bak* is the #3273 sprawl class); monthly timer + heading-growth bonus; cadence-overdue screams",
       "proof": [
         "prompts/rulebook-redteam.md",
         "bin/fleet-rulebook-redteam",

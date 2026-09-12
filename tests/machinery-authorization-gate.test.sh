@@ -136,6 +136,25 @@ jq -e '[.findings[].unit] | index("fleet-heartbeat") == null' <<<"$out" >/dev/nu
   || fail "hunt must NOT flag allowlisted/symlink fleet-heartbeat: $out"
 ok "hunt hits hand-placed units not on the allowlist"
 
+# --- recurrent finding names the prior adjudication (fleet-ops#5736) -----
+# A unit whose verdict is already recorded must carry that context so the
+# senior conference does not re-adjudicate a settled unit blind.
+out=$("$gate" hunt --input "$fixtures/hunt-recurrence.json")
+jq -e '.findings | length == 2' <<<"$out" >/dev/null || fail "hunt-recurrence must yield 2 findings: $out"
+rec=$(jq -c '.findings[] | select(.unit=="auditor-stdio-test")' <<<"$out")
+[[ -n "$rec" ]] || fail "hunt-recurrence must still flag auditor-stdio-test (recurrence stays flaggable): $out"
+grep -q 'PRIOR ADJUDICATION ON RECORD: MECHANICAL-INSTEAD' <<<"$rec" \
+  || fail "recurrent finding body must cite the prior verdict: $rec"
+grep -q '#1492' <<<"$rec" || fail "recurrent finding body must cite the prior issue #1492: $rec"
+grep -q '#5736' <<<"$rec" \
+  || fail "recurrent finding body must cite the logged recurrence issue: $rec"
+jq -e '.findings[] | select(.unit=="auditor-stdio-test") | .prior_verdict=="MECHANICAL-INSTEAD" and .prior_issue==1492' <<<"$out" >/dev/null \
+  || fail "finding must carry structured prior fields"
+# A genuinely new unit (no prior verdict) keeps the plain routing body.
+plain=$(jq -r '.findings[] | select(.unit=="some-new-thing") | .body' <<<"$out")
+grep -q 'PRIOR ADJUDICATION' <<<"$plain" && fail "plain finding must not claim a prior adjudication: $plain"
+ok "recurrent unit names prior adjudication; fresh unit does not"
+
 # --- hunt fixture hits real-file drop-ins even when parent is allowlisted
 # (fleet-ops#2924). Symlink drop-ins and ephemeral memory.conf stay silent.
 out=$("$gate" hunt --input "$fixtures/hunt-dropin-hit.json")

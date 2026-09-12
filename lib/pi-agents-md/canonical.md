@@ -29,8 +29,7 @@ workers into wrong defaults (fleet-ops#180's claimant, blind-audit finding #8).
 
 **Authoritative check, in order:** (1) if `~/workspaces/agent-state/FLEET-PAUSED`
 exists, the fleet is deliberately down — respect it; (2) otherwise
-`XDG_RUNTIME_DIR=/run/user/$(id -u) systemctl --user list-timers` is the truth.
-As of 2026-08-26 the fleet is RESTORED and running; enrolment
+`XDG_RUNTIME_DIR=/run/user/$(id -u) systemctl --user list-timers` is the truth. Enrolment
 is declared in fleet-ops `config/intake-repos.json`, converged by the
 reconciler (fleet-ops#32). Worktrees, recent commits,
 packet files and memories are artefacts of past work and prove nothing about now.
@@ -111,12 +110,18 @@ Simple language is never baby talk and never condescending.
 
 - **Money is Nish's alone.** No payments, cards, or paid trials, ever. Account
   signups and generated passwords are pre-approved; payment walls stop and ask.
+  Sole recorded exception: `bugbot-gate`-approved Bugbot spend — vault
+  `standing-rules-archive.md` → "Bugbot is the sole pre-authorized paid spend"
+  (fleet-ops#5645). The gate decides; do not widen it.
 - Zero revenue right now. No paid upgrades. Free fixes win.
 - Never `systemctl restart` a slice — it bounces every unit inside it.
 - Never `git stash` in Nish's repos. The checkouts hold other agents' stashes.
 - `main`/`master` are protected. Branch or use a worktree.
 - Secrets never get printed, moved, rotated, or committed.
-- Products are PR-only. Never merge, never deploy without Nish.
+- Products are PR-only. Never deploy without Nish; agent-authored PRs
+  self-land per `global-standing-rules.md` → "Agent-authored PRs land
+  themselves" (fleet-ops#5715: the bare "never merge" wording contradicted the
+  enforced self-land rule).
 
 ## Where the real context lives
 

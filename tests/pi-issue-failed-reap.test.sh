@@ -609,3 +609,8 @@ grep -q -- '--add-label agent-ready' "$edit_log_f2" \
 grep -q -- '--remove-label agent-in-progress' "$edit_log_f2" \
     || fail "normal reap must remove agent-in-progress: edit log: $(cat "$edit_log_f2")"
 ok "reaper still flips agent-in-progress -> agent-ready on an unblocked issue (no guard regression)"
+
+# fleet-ops#5092: park-resurrection regression — reaper fail-closed on
+# awaiting-runtime-gate, pi-issue-run exits 0 on a parked issue. Hosted here
+# because the worker App token has no Workflows scope to list it in ci.yml.
+bash "$here/pi-issue-park-resurrection.test.sh"

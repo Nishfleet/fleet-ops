@@ -420,6 +420,16 @@ bash "$here/fleet-issue-file-dedupe-repo-scope.test.sh"
 # name. Hermetic (fake gh, no network).
 bash "$here/fleet-issue-file-dedupe-comment-idempotent.test.sh"
 
+# fleet-ops#5666: the file-time dedupe corpus is no longer open-only — a
+# detector re-firing on stale state must not re-file a blocker whose
+# canonical closed-as-delivered minutes earlier (#5652 -> #5666). Only a
+# COMPLETED close with a closing-PR reference counts as delivered. Hosted
+# here so P14 runs it without a workflow edit (the worker App cannot push
+# .github/workflows/**). The named pin in tests/p14-test-listing-gate.test.sh
+# is the class-prevention so a future drop of this host line fails by
+# name. Hermetic (fake gh, no network).
+bash "$here/fleet-issue-file-dedupe-closed-canonical.test.sh"
+
 # fleet-ops#2902 (PR #2905 follow-up): the leaky-worktree containment
 # detector landed on main without a ci.yml listing or a host — and P14 was
 # already red on the two orphans above, so this leftover slipped in

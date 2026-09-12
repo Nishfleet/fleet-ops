@@ -105,6 +105,9 @@ FAKE_PI
 chmod +x "$scratch/fakebin/pi"
 
 # Fake gh: issue list returns pre-populated open issues so duplicate detection runs.
+# fleet-ops#5611: when BIG_ISSUES_FILE is set the list is padded past 128KB
+# (MAX_ARG_STRLEN) so the hunt exercises the file-based --slurpfile path; the
+# old --argjson invocation died 126 "Argument list too long" at that size.
 cat > "$scratch/fakebin/gh" <<'FAKE_GH'
 #!/usr/bin/env bash
 subcmd="${1:-}"
@@ -120,7 +123,15 @@ case "$subcmd" in
   issue)
     case "${1:-}" in
       list)
-        printf '%s\n' '[{"number":77,"title":"stale agent-state file","labels":[]}]'
+        # fleet-ops#5611: pad the BODY-carrying issue lists (--state
+        # open/closed, no -l filter) past 128KB; the -l gap-audit panel
+        # pre-fetch is number+title only and stays small in production.
+        if [ -n "${BIG_ISSUES_FILE:-}" ] && [ -f "$BIG_ISSUES_FILE" ] \
+            && [[ "$*" != *gap-audit* ]]; then
+          cat "$BIG_ISSUES_FILE"
+        else
+          printf '%s\n' '[{"number":77,"title":"stale agent-state file","labels":[]}]'
+        fi
         ;;
       create)
         printf 'CREATE %s\n' "$*" >> "${GH_CREATE_LOG:-/dev/null}"
@@ -176,6 +187,29 @@ EOF
 
 mkdir -p "$scratch/state"
 : > "$scratch/gh-create.log"
+
+# fleet-ops#5611: pad the issue list past the ~128KB MAX_ARG_STRLEN that
+# E2BIG'd the old --argjson hunt. 100 extra issues x 2KB body + issue 77.
+python3 - >"$scratch/big-issues.json" <<'PY'
+import json
+issues = [{"number": 77, "title": "stale agent-state file", "labels": []}]
+for i in range(100):
+    issues.append({"number": 1000 + i, "title": "pad finding %04d" % i,
+                   "labels": [], "body": "x" * 2000})
+print(json.dumps(issues))
+PY
+[[ $(wc -c <"$scratch/big-issues.json") -gt 131072 ]] || fail "padded issue list not past 128KB MAX_ARG_STRLEN"
+# fleet-ops#5654: assert the class, not just the size — replaying the old
+# argv pattern (jq --argjson closed <~206KB blob>) dies 126 "Argument list
+# too long" on this host, matching the 2026-09-12 03:30 IST unit signature.
+# The harness run below must fail before / pass after the --slurpfile class
+# of change; this replay proves the padding is big enough to have killed the
+# old code, so the regression test cannot pass vacuously.
+replay_rc=0
+jq -n --argjson closed "$(cat "$scratch/big-issues.json")" '.' >/dev/null 2>&1 \
+  || replay_rc=$?
+[[ $replay_rc == 126 ]] \
+  || fail "old --argjson replay must die 126 (E2BIG) on this host, got $replay_rc"
 # fleet-ops#377: feed an empty seam-evidence fixture so the harness does not
 # touch live memoryctl/actions-log sources, and prove the seam table still
 # appears in the report with no seams in the window.
@@ -207,6 +241,7 @@ PATH="$scratch/fakebin:$PATH" \
   AUDIT_SEAM_EVIDENCE="$scratch/empty-seams.json" \
   AUDIT_MECHANISM_GATE="$scratch/noop-gate.py" \
   AUDIT_MACHINERY_GATE="$scratch/noop-gate.py" \
+  BIG_ISSUES_FILE="$scratch/big-issues.json" \
   "$bin" >"$scratch/run.log" 2>&1 || rc=$?
 
 [[ $rc == 0 ]] || { cat "$scratch/run.log"; fail "fleet-blind-audit exited $rc"; }
@@ -265,6 +300,12 @@ grep -E 'CREATE .*--label gap-audit' "$scratch/gh-create.log" >/dev/null \
   || fail "gh issue create missing --label gap-audit: $(cat "$scratch/gh-create.log")"
 grep -E 'CREATE .*--label agent-ready' "$scratch/gh-create.log" >/dev/null \
   || fail "gh issue create missing --label agent-ready (fleet-ops#402): $(cat "$scratch/gh-create.log")"
+
+grep -q 'recurrence hunt merged' "$scratch/run.log" \
+  || fail "run.log missing 'recurrence hunt merged' — the hunt jq never ran"
+if grep -q 'Argument list too long' "$scratch/run.log"; then
+  fail "hunt jq still hit E2BIG: $(grep 'Argument list' "$scratch/run.log")"
+fi
 
 ok "fleet-blind-audit: panel, filing, dedupe, deliberate-state loud, stamp, report ledger"
 

@@ -161,7 +161,7 @@
     {
       "id": "sr-gap-rules-audit",
       "source": "global-standing-rules.md: Gap rules from the 2026-08-20 rulebook audit (Nish, 2026-08-20)",
-      "mechanism": "Monthly systemd timer (Persistent=true) plus heading-growth bonus on heartbeat-tier1 §39; sibling .bak-rulebook-redteam-YYYYMMDD backups are a hard gate before filing",
+      "mechanism": "Monthly systemd timer (Persistent=true) plus heading-growth bonus on heartbeat-tier1 §39; sibling <file>.pre-rulebook-redteam-<UTCts> backups are a hard gate before filing (fleet-ops#5682: the old .bak-* glob is the fleet-ops#3273/#5602 sprawl class next to MANIFEST-managed dests and is retired for audit backups)",
       "proof": "bin/fleet-rulebook-redteam; systemd/fleet-rulebook-redteam.timer; lib/rulebook-redteam-cadence.sh; tests/fleet-rulebook-redteam.test.sh",
       "status": "enforced"
     },

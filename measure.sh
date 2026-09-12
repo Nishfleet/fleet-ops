@@ -248,6 +248,40 @@ if [ -f "$repo_root/lib/fleet-questions.sh" ]; then
     fleet_questions_line
 fi
 
+# --- deploy: 0509 deploy-production freshness (0509#2975 item 4, fleet-ops#5514) ---
+# The detector lives in the 0509 repo (scripts/deploy-age.mjs); it reads the
+# offline deploy ledger without a token and the Actions runs API with one, and
+# always exits 0 with exactly one line:
+#   deploy: last_success_age_h=<n> merges_since=<m> last_failure=<reason>
+# This kills the two-days-of-red-deploys blind spot: a stale last success with
+# merges since it gets a LOUD line the judges cannot scroll past. A missing or
+# failing detector prints UNAVAILABLE:<why> — never a fabricated green, only
+# silence when there is genuinely nothing to say.
+_deploy_age="${FLEET_DEPLOY_AGE_SCRIPT:-/home/nish/workspaces/products/0509/scripts/deploy-age.mjs}"
+if ! command -v node >/dev/null 2>&1 || [ ! -f "$_deploy_age" ]; then
+    echo "deploy: UNAVAILABLE:detector-not-installed"
+else
+    # The offline ledger path resolves relative to the detector's repo (cwd of
+    # the 0509 clone), so run it FROM its own repo dir, not the caller's cwd.
+    _deploy_cwd=$(cd "$(dirname "$_deploy_age")/.." 2>/dev/null && pwd) || _deploy_cwd=""
+    _deploy_line=""
+    if [ -n "$_deploy_cwd" ]; then
+        _deploy_line=$(cd "$_deploy_cwd" && node "$_deploy_age" 2>/dev/null | grep -m1 '^deploy: ') || _deploy_line=""
+    fi
+    if [ -n "$_deploy_line" ]; then
+        printf '%s\n' "$_deploy_line"
+        _dh=$(printf '%s' "$_deploy_line" | grep -oE 'last_success_age_h=[0-9]+' | cut -d= -f2)
+        _dm=$(printf '%s' "$_deploy_line" | grep -oE 'merges_since=[0-9]+' | cut -d= -f2)
+        if [ -n "${_dh:-}" ] && [ -n "${_dm:-}" ] && [ "${_dm:-0}" -gt 0 ] && [ "${_dh:-0}" -ge 6 ]; then
+            echo "LOUD deploy-stale: last success ${_dh}h old with ${_dm} merges since — deploys are silently stalled (0509#2975 item 4); diagnose the deploy-production run, never re-deploy blind"
+        fi
+    else
+        echo "deploy: UNAVAILABLE:detector-failed"
+    fi
+    unset _deploy_cwd _deploy_line _dh _dm
+fi
+unset _deploy_age
+
 # --- findings ledger: every finding queued, never dropped silently ----------
 # fleet-ops#5443: the judges own carry-over ageing. One line, right after
 # visitor:, from the canonical findings ledger. Missing/unreadable ledger is

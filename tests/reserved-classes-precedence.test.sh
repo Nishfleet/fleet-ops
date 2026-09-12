@@ -48,6 +48,16 @@ grep -q "global-standing-rules.md" "$pi_canonical" \
 grep -q "in only for money, privacy, security, legal, product direction, or destructive" "$pi_canonical" \
   && fail "pi canonical still carries the old divergent inline escalation list"
 
+# 1b. fleet-ops#5715: the 'Hard lines' deploy line must NOT contradict the
+# enforced 'Agent-authored PRs land themselves' rule — the bare 'Never merge'
+# wording is the regression; the precedence carve-out pattern is required.
+sed -n '/^## Hard lines/,/^## Where/p' "$pi_canonical" | grep -q "Never merge, never deploy without Nish" \
+  && fail "pi canonical hard line still carries the bare 'Never merge' wording that contradicts the self-land rule (fleet-ops#5715)"
+sed -n '/^## Hard lines/,/^## Where/p' "$pi_canonical" | grep -q "Never deploy without Nish" \
+  || fail "pi canonical hard line lost the 'Never deploy without Nish' clause"
+sed -n '/^## Hard lines/,/^## Where/p' "$pi_canonical" | grep -q "self-land" \
+  || fail "pi canonical hard line lost the self-land precedence carve-out"
+
 # 2. Claude standing-rules canonical points at the vault list.
 grep -q 'Reaches Nish and nothing else' "$sr_canonical" \
   || fail "standing-rules canonical lost the reaches-Nish line"
@@ -107,4 +117,21 @@ if [[ -x "$repo_root/bin/render-pi-agents-md.py" ]]; then
   fi
 fi
 
-echo "OK fleet-ops#5586: reserved-classes precedence consolidated"
+# 5. Hand-written trailing prose on the live surfaces must not restate a
+#    reserved-classes list either (fleet-ops#5719: the CLAUDE.md 'broken
+#    means fix it' bullet quoted a 3-class list). A surface that mentions
+#    reserved classes must either point at global-standing-rules.md or not
+#    enumerate a divergent list. Live-target check: SKIPPED when absent.
+for t in /home/nish/.claude/CLAUDE.md /home/nish/.codex/AGENTS.md; do
+  [[ -f "$t" ]] || { echo "SKIP: reserved-classes surface-prose check ($t absent)"; continue; }
+  if grep -q "Only the reserved classes" "$t"; then
+    fail "live surface $t restates the old divergent reserved-classes list — point at global-standing-rules.md instead"
+  fi
+  # Any 'reserved classes' prose that enumerates without naming the vault source is drift.
+  if grep -i "reserved classes" "$t" | grep -qv "global-standing-rules.md"; then
+    fail "live surface $t names reserved classes without pointing at global-standing-rules.md"
+  fi
+  echo "OK: $t carries no divergent reserved-classes restatement"
+done
+
+echo "OK fleet-ops#5586: reserved-classes precedence consolidated (incl. fleet-ops#5719 surface-prose gate)"

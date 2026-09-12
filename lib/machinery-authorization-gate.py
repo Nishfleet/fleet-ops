@@ -157,6 +157,39 @@ def load_allowlist(path: str | None = None, data: dict[str, Any] | None = None) 
     return out
 
 
+def load_adjudication_index(path: str | None = None, data: dict[str, Any] | None = None) -> dict[str, dict[str, Any]]:
+    """Map unit -> its adjudication row (verdict recorded already), if any.
+
+    Reads `pending_adjudication_class_c` and `adjudicated` arrays so hunt can
+    tell the senior conference that a prior verdict exists on a recurrent
+    finding (fleet-ops#5736) instead of asking it to re-adjudicate blind.
+    """
+    if data is None:
+        if not path:
+            return {}
+        try:
+            with open(path, encoding="utf-8") as fh:
+                data = json.load(fh)
+        except (OSError, json.JSONDecodeError):
+            return {}
+    if not isinstance(data, dict):
+        return {}
+    index: dict[str, dict[str, Any]] = {}
+    for key in ("pending_adjudication_class_c", "adjudicated"):
+        rows = data.get(key)
+        if not isinstance(rows, list):
+            continue
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            unit = str(row.get("unit") or "").strip()
+            verdict = str(row.get("verdict") or row.get("adjudicated") or "").strip()
+            if not unit or not verdict:
+                continue
+            index.setdefault(unit, row)
+    return index
+
+
 def allowlisted(unit: str, allowed: set[str]) -> bool:
     if unit in allowed:
         return True
@@ -431,6 +464,44 @@ def _scan_live_unit_dir(unit_dir: Path) -> list[dict[str, Any]]:
     return rows
 
 
+def _unit_finding_body(unit: str, adj_index: dict[str, dict[str, Any]]) -> str:
+    """Finding body for a hand-placed unit; names a prior verdict when one exists.
+
+    fleet-ops#5736: the audit re-flagged auditor-stdio-test (adjudicated
+    MECHANICAL-INSTEAD in #1492) with no pointer to that verdict, so the
+    senior conference would re-adjudicate a settled unit blind. When the
+    allowlist already records a verdict for the unit, the body carries it
+    plus the prior issue number and any logged recurrence issue.
+    """
+    prior = adj_index.get(unit)
+    if not prior:
+        return (
+            "A non-transient user unit fragment is a real file under "
+            "~/.config/systemd/user/ and is not on "
+            "config/machinery-allowlist.json. Automatic blind-audit "
+            "finding (fleet-ops#1548). Route to senior conference: "
+            "MECHANICAL-INSTEAD / EXCEPTION-APPROVED / NISH-RESERVED."
+        )
+    verdict = str(prior.get("verdict") or prior.get("adjudicated") or "")
+    issue = prior.get("issue") or prior.get("resolved_by") or ""
+    issue = str(issue).replace("#", "").strip()
+    recurrence = prior.get("recurrence_issue")
+    line = (
+        "A non-transient user unit fragment is a real file under "
+        "~/.config/systemd/user/ and is not on "
+        "config/machinery-allowlist.json. Automatic blind-audit "
+        "finding (fleet-ops#1548)."
+    )
+    line += f" PRIOR ADJUDICATION ON RECORD: {verdict}"
+    if issue:
+        line += f" (#{issue}). Recurrence: confirm the verdict stands or re-adjudicate."
+    else:
+        line += ". Recurrence: confirm the verdict stands or re-adjudicate."
+    if recurrence:
+        line += f" Logged recurrence: #{recurrence}."
+    return line
+
+
 def hunt(payload: dict[str, Any]) -> dict[str, Any]:
     """Flag hand-placed (non-symlink) user units and drop-ins not on the allowlist.
 
@@ -453,10 +524,15 @@ def hunt(payload: dict[str, Any]) -> dict[str, Any]:
             path = allowlist_data
         allowed = load_allowlist(path=path)
 
+    raw_allowlist = allowlist_data if isinstance(allowlist_data, dict) else None
+    adj_index = load_adjudication_index(
+        path=None if raw_allowlist is not None else allowlist_path,
+        data=raw_allowlist,
+    )
+
     findings: list[dict[str, Any]] = []
     rank = 80
     seen: set[str] = set()
-
     unit_files = payload.get("unit_files") or payload.get("unit-files")
     if unit_files is None:
         unit_dir = Path(
@@ -545,24 +621,25 @@ def hunt(payload: dict[str, Any]) -> dict[str, Any]:
         if unit in seen:
             continue
         seen.add(unit)
-        findings.append(
-            {
+        prior = adj_index.get(unit)
+        finding = {
                 "rank": rank,
                 "title": f"hand-placed machinery not on allowlist: {unit}",
-                "body": (
-                    "A non-transient user unit fragment is a real file under "
-                    "~/.config/systemd/user/ and is not on "
-                    "config/machinery-allowlist.json. Automatic blind-audit "
-                    "finding (fleet-ops#1548). Route to senior conference: "
-                    "MECHANICAL-INSTEAD / EXCEPTION-APPROVED / NISH-RESERVED."
-                ),
+                "body": _unit_finding_body(unit, adj_index),
                 "severity": "high",
                 "evidence": f"unit={unit} path={path}",
                 "unit": unit,
                 "kind": "unit",
                 "path": path,
-            }
-        )
+                "prior_verdict": (
+                    str(prior.get("verdict") or prior.get("adjudicated") or "") if prior else None
+                ),
+                "prior_issue": (prior.get("issue") if prior else None),
+                "prior_recurrence_issue": (
+                    prior.get("recurrence_issue") if prior else None
+                ),
+        }
+        findings.append(finding)
         rank += 1
 
     return {"findings": findings}
