@@ -37,6 +37,12 @@
 #      401s the ledger flips seat_dead=true [fleet-ops#4640] and the
 #      bench window is preserved - proves the retry-then-corpse
 #      discipline is intact on the boundary.
+#
+# Hosts tests/forced-bad-deployment-replay.test.sh at the bottom -
+# sibling fleet-ops#5792 replay drill (deployment-config failure benches
+# the deployment, this file covers provider-key failure benches the seat).
+# Worker App token cannot push .github/workflows/**, so new tests must
+# be bash-invoked from an already-listed test file (fleet-ops#4396).
 
 set -euo pipefail
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -251,6 +257,14 @@ got_count=$(jq -r '.consecutive_failure_count' "$ledger")
 unset SEAT_CREDENTIALS_BAD_BENCH_S SEAT_CREDENTIALS_CORPSE_STRIKES
 ok "9. After $got_count consecutive 401s threshold=3, seat_dead=true: corpse; retry-then-corpse discipline intact"
 
+# --------- Sibling: fleet-ops#5792 senior-lane forced-bad-deployment replay ----------
+# Deployment-side replay (403 spending-limit / 402 insufficient-credits pins a
+# deployment via AuthenticationErrorAllowedFails=0 + cooldown 300). This file
+# already runs in P14; hosting forces the sibling into the reachable set
+# without a workflow-file edit (worker App cannot push .github/workflows/**).
+bash "$here/forced-bad-deployment-replay.test.sh" \
+  || fail "forced-bad-deployment replay tests failed"
+
 echo
-echo "ALL OK: 9/9 seat-credentials-bad-replay checks passed"
+echo "ALL OK: 9/9 seat-credentials-bad-replay + 11 sibling forced-bad-deployment checks passed"
 exit 0
