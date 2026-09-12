@@ -79,6 +79,17 @@ CD=${STOP_ESCALATION_COOLDOWN:-300}
 WALLED_CD=${STOP_ESCALATION_WALLED_CD:-1800}
 PI=${STOP_ESCALATION_PI_BIN:-/home/nish/.local/bin/pi}
 DRY=${STOP_ESCALATION_DRY_RUN:-0}
+# fleet-ops#5863: the live install source must stay clean origin/main
+# (fleet-ops#3758). Overridable so tests can point it at a scratch clone.
+DEPLOY_CLONE=${STOP_ESCALATION_DEPLOY_CLONE:-/home/nish/workspaces/tooling/fleet-ops-deploy-clone}
+# fleet-ops#5863: never hand the auditor session an inherited repo cwd (the
+# same anchor pi-issue-run applies, fleet-ops#5783): a unit replayed from
+# inside the deploy clone makes the clone the auditor's cwd and invites a
+# direct edit there. Anchor to the worktree parent, else HOME.
+AUDITOR_CWD=${STOP_ESCALATION_AUDITOR_CWD:-$HOME/workspaces/agent-worktrees}
+if [ ! -d "$AUDITOR_CWD" ]; then
+  AUDITOR_CWD=$HOME
+fi
 
 # Default internal timeout is 23 minutes.  The unit file's TimeoutStartSec is
 # 25 minutes, so this script catches the overrun and writes a loud timeout
@@ -322,6 +333,7 @@ EXECUTE-DONT-NARRATE. You are the SENIOR AUDITOR. A never-say-next circuit break
 6. RECENT peer session transcripts under /home/nish/.pi/agent/sessions/ — confer amongst agents: list newest-first, read the last few bounded to the same workspace, to see what peer agents actually recorded doing.
 DIAGNOSE the gap: stuck loop cause, wrong assumption, missing dependency, or lane fault.
 FIX it via worker-lane discipline (dispatch a sealed packet to a cheap lane; or fix directly if the change is small and obvious).
+DEPLOY-CLONE RULE (fleet-ops#5863, hard line — violated live 2026-09-12): NEVER create, edit, or delete ANY file inside /home/nish/workspaces/tooling/fleet-ops-deploy-clone. It is the live install source and must stay clean origin/main (fleet-ops#3758); a direct edit there trips DEPLOY-CHECK-DIRTY-CLONE and stalls merge-to-live. If a repair needs a change to a tracked repo file, create a worktree from origin/main (git -C <clone> fetch origin; git -C <clone> worktree add /home/nish/workspaces/agent-worktrees/repair-<slug> origin/main), edit THERE, push a claim/ branch, open a PR — the same discipline every worker follows. Reading files in the clone is fine; writing is not.
 CLEAR the cooldown marker only when the cause is fixed (the stop-judge cooldown is internal state — clearing means the root cause is resolved, not disabling the extension).
 RE-QUEUE the halted item in /home/nish/workspaces/agent-state/READY-WORK.md (a PAPER ledger: the hand-placed ready-work.path/service/recheck dispatcher trio was adjudicated MECHANICAL-INSTEAD and DELETED — fleet-ops#1493, pinned by tests/ready-work-deleted.test.sh — so nothing auto-dispatches from this file. Queue the row AND put the continuation on a live rail: the issue queue (pi-issue worker), pi-packet@ stock dispatch, or pi-systemd-run).
 APPEND your diagnosis + action to /home/nish/workspaces/agent-state/AUDITOR-LOG.md.
@@ -378,11 +390,17 @@ fi
 } >> "$LOG"
 
 # Dispatch with a hard internal timeout so we can write a timeout block
-# ourselves instead of systemd silently killing the service.
+# ourselves instead of systemd silently killing the service.  The auditor
+# session is anchored away from any inherited repo cwd (fleet-ops#5863):
+# the pi process below runs with AUDITOR_CWD, never the caller's cwd, so a
+# unit replayed from inside the deploy clone cannot make the clone the
+# session's default working directory.
 run_tmp=$(mktemp -d)
 trap 'rm -rf "$run_tmp"' EXIT INT TERM
 out="$run_tmp/auditor.out"
 err="$run_tmp/auditor.err"
+
+cd "$AUDITOR_CWD"
 
 pi_rc=0
 # timeout returns 124 if the command had to be killed.  We capture pi_rc BEFORE
@@ -496,6 +514,21 @@ fi
   printf '%s\n' "$combined"
   printf '%s dispatched auditor hash=%s count=%s provider=%s model=%s\n' "$(ts)" "$hash" "$((count+1))" "$PROVIDER" "$MODEL"
 } >> "$LOG"
+
+# fleet-ops#5863 mechanical gate: prove the auditor repair run left the
+# deploy clone clean.  A dirty clone here means the auditor edited the live
+# install source directly (the 2026-09-12 siterep-live-canary repair class);
+# record it LOUD in AUDITOR-LOG.md so the drift detector / daily digest
+# catches it, before any DEPLOY-CHECK tick has to.  Exit status is unchanged:
+# the diagnosis block stands; the dirt is a separate, named fault.
+if [ -d "$DEPLOY_CLONE/.git" ] || [ -f "$DEPLOY_CLONE/.git" ]; then
+  dirty=$(git -C "$DEPLOY_CLONE" status --porcelain 2>/dev/null || true)
+  if [ -n "$dirty" ]; then
+    printf '%s AUDITOR-DIRTY-CLONE hash=%s clone=%s left the deploy clone dirty (fleet-ops#3758 violation — repair in a worktree + PR, then git restore the clone):\n%s\n' \
+      "$(ts)" "$hash" "$DEPLOY_CLONE" "$dirty" >> "$LOG"
+    echo "STOP-ESCALATION-FAULT: auditor left the deploy clone dirty (fleet-ops#5863)" >&2
+  fi
+fi
 
 clear_kill_count "$hash"
 clear_walled_at "$hash"
