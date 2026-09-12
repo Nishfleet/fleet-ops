@@ -12,6 +12,8 @@ Fix: a dedicated, deliberately *non-organ* watcher — `escalation-organ-watch` 
 - Tests: `tests/fleet-ops-5854-organ-watch.test.sh` (222 lines: wiring, 5-min cadence, name-guard lockstep, marker, GREEN baseline + one RED-transition per silent-death class, success-only dead-man, systemd-analyze verify).
 - Test-ride fixes in `tests/fleet-resilience-drill.test.sh`: (a) the remapped-`HOME` salvage plane never had `worker-token`, so the `env -u GH_TOKEN` mint ENOENTed on the VPS (CI masked it via `GITHUB_ACTIONS=true`) — a stub is now shipped; (b) the shared-URL and heartbeat-reuse fixtures gained `HC_URL_ORGANWATCH` so they exercise KEYSTONE-HC-SHARED instead of skipping.
 
+Closes #5854
+
 net-positive-because: the watcher is one 112-line script + 3 small unit files + ~40 lines of wiring; it adds no new escalation mechanism — it reuses the failed-state observable, the tier1 sweep, and the dead-man pattern that already exist.
 
 ## Verification
@@ -22,10 +24,11 @@ net-positive-because: the watcher is one 112-line script + 3 small unit files + 
 - `bash tests/unit-escalation-write-retry-absorb.test.sh`, `tests/unit-escalation-write-scout-futility-dedupe.test.sh`, `tests/escalation-units-shape.test.sh` → all exit 0.
 - `./bin/escalation-organ-watch --help` → prints usage, exit 0. Live host run → RED `escalation-daily-sweep liveness marker missing` (correct: the sweep's marker line is not deployed yet) — the RED path is proven live, the GREEN path in the drill.
 - `sgscan` → No new security findings. `systemd-analyze verify` inside the test → clean.
+- Pickup re-verification (this session, branch rebased onto current main, same commands re-run on the exact merge tree): `bash tests/fleet-ops-5854-organ-watch.test.sh` → ALL PASS (exit 0); `bash tests/fleet-resilience-drill.test.sh` → exit 0; `bash tests/role-quality-gates.test.sh` → exit 0; `tests/unit-escalation-write-retry-absorb`, `tests/unit-escalation-write-scout-futility-dedupe`, `tests/escalation-units-shape` → all exit 0; `bash tests/escalation-coverage-canary.test.sh` (full umbrella) → exit 0, ends `fleet-ops#1135 bare-metal rebuild test pass`.
 
 ## run-proof
 
-units: pi-issue-fleet-ops-5854 (this run; resumed its own prior session's committed work on `claim/issue-5854`); drills: the watcher's RED/GREEN mechanics proven by `tests/fleet-ops-5854-organ-watch.test.sh` on this host; the timer+dead-man go live via the MANIFEST deploy on merge.
+units: pi-issue@fleet-ops-5854.service (this run — cgroup-verified `app-pi\x2dissue.slice/pi-issue@fleet-ops-5854.service`; resumed its own prior session's committed work on `claim/issue-5854`); timers: `escalation-organ-watch.timer` `OnCalendar=*:0/5` proven by test (cadence) + `systemd-analyze verify` (syntax); drills: the watcher's RED/GREEN mechanics proven by `tests/fleet-ops-5854-organ-watch.test.sh` on this host (one RED-transition per silent-death class, incl. a live-host RED run of the marker check); the timer+dead-man go live via the MANIFEST deploy on merge.
 
 ## Test plan
 
