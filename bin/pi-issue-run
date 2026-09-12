@@ -568,16 +568,15 @@ if [[ -z "$seat" ]]; then
         _exit_reason="mkdir-failed-no-seat"
         exit 1
     fi
-    # fleet-ops#1133: a keystone two-strike must NOT reset tried-seats.
-    # Clearing the list would let the next systemd Restart pick a cheap
-    # free lane. Keep the strikes so the LiteLLM proxy stays empty and OnFailure
-    # summons the senior auditor.
-    if [[ "$difficulty" == "keystone" ]]; then
-        seat_log "pi-issue-run: $inst KEYSTONE ESCALATION — keeping tried-seats so OnFailure summons senior conference"
-        write_death_class infra
-        _exit_reason="keystone-escalation"
-        exit 1
-    fi
+    # fleet-ops#1133 -> #6032: the keystone two-strike escalation that lived
+    # here is deleted. It existed because the deleted pick-seat consulted
+    # tried-seats and returned no seat on a second strike; litellm_seat always
+    # answers, so the branch only fired when the proxy itself was down. The
+    # proxy's senior-group fallback is the replacement (worker-* groups fall
+    # back into `senior` per request, config/litellm-proxy.yaml), the universal
+    # unit-escalation drop-in summons the senior auditor on every failed unit,
+    # and #2462 MAX_RECLAIMS parks a repeat WORK failure for the senior
+    # conference. Walled+keystone takes the same generic no-seat exit below.
     : >"$tried_file"
     write_death_class infra
     _exit_reason="no-seat"
