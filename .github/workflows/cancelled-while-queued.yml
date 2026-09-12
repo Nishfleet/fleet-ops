@@ -112,13 +112,26 @@ jobs:
       issues: write
     steps:
       - name: Checkout fleet-ops
-        uses: actions/checkout@3d3d42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
+      - name: Verify FLEET_SYNC_PAT
+        env:
+          PAT: ${{ secrets.FLEET_SYNC_PAT }}
+        run: |
+          if [ -z "$PAT" ]; then
+            echo "::error::FLEET_SYNC_PAT is not set. The sweep lists and cancels runs across enrolled repos — the job-scoped GITHUB_TOKEN cannot see past this repo and the worker App has Actions read-only (cancel returns 403; fleet-ops#5732). Add the secret and re-run."
+            exit 1
+          fi
+
       - name: Run cancelled-while-queued detector
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # FLEET_SYNC_PAT (classic PAT, repo+workflow across Nishfleet) —
+          # same cross-repo credential repo-standards-sync uses. GITHUB_TOKEN
+          # is scoped to this repo only; the worker App reads runs but its
+          # cancel call 403s (verified live on run 33104615884).
+          GH_TOKEN: ${{ secrets.FLEET_SYNC_PAT }}
           ESCALATION_REPO: Nishfleet/fleet-ops
           # Pass inputs through env so no ${{ inputs.* }} is interpolated
           # in the run: step (semgrep github-actions/injection — the

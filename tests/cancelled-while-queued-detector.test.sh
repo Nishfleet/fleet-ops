@@ -234,20 +234,20 @@ console.log("OK: observe-to-close closes the labelled issue when the run is no l
 ' || fail "observe-to-close replay failed"
 
 # --- workflow shape: reusable + schedule + issues:write + auto-discovery -----
-# The workflow file is parked under docs/pending-cancelled-while-queued/
-# because the nishfleet-worker App has no workflows permission
-# (nishfleet-worker CONTENTS / PULL_REQUESTS / ISSUES only). The PR
-# delivers the workflow content; Nish's own scope lands it under
-# .github/workflows/. Tests verify the parked copy has the right
-# shape so a future refactor cannot regress the workflow content.
-wf="$repo_root/docs/pending-cancelled-while-queued/cancelled-while-queued.yml"
-[[ -f "$wf" ]] || fail "cancelled-while-queued.yml not found in docs/pending-cancelled-while-queued/"
+# The workflow file lives at .github/workflows/cancelled-while-queued.yml
+# (landed by fleet-ops#5732 — worker-pushed branches already carry
+# .github/workflows/** edits, e.g. #5337). Tests verify the landed copy
+# has the right shape so a future refactor cannot regress the workflow
+# content.
+wf="$repo_root/.github/workflows/cancelled-while-queued.yml"
+[[ -f "$wf" ]] || fail "cancelled-while-queued.yml not found in .github/workflows/"
 grep -q 'workflow_call:' "$wf" || fail "cancelled-while-queued.yml must declare workflow_call"
 grep -q 'schedule:' "$wf" || fail "cancelled-while-queued.yml must run on schedule (central sweep per #185)"
 grep -q 'timeout-minutes:' "$wf" || fail "cancelled-while-queued.yml job must set timeout-minutes"
 grep -q 'issues: write' "$wf" || fail "workflow needs issues: write to file labelled issues"
 grep -q 'actions: read' "$wf" || fail "workflow needs actions: read to call the actions API"
 grep -q 'config/intake-repos.json' "$wf" || fail "sweep must enumerate enrolled repos from config/intake-repos.json (#185 auto-discovery)"
+grep -q 'secrets.FLEET_SYNC_PAT' "$wf" || fail "sweep must authenticate with FLEET_SYNC_PAT — GITHUB_TOKEN is repo-scoped and the worker App cannot cancel runs (fleet-ops#5732)"
 grep -q 'cancel' "$script" || fail "detector must call the cancel endpoint"
 grep -q "method.*POST\|POST" "$script" || fail "detector must POST to the cancel endpoint"
 ok "cancelled-while-queued.yml shape (workflow_call + schedule + issues:write + actions:read + auto-discovery + POST)"
