@@ -25,11 +25,10 @@ ok()   { echo "OK: $*"; }
 [[ -f "$tick" ]] || fail "tick script missing: $tick"
 
 # --- Grep guard 1: no max-age default below the 300s writer cadence. --------
-if grep -E 'PI_INTAKE_GH_RATE_LIMIT_MAX_AGE:-[0-9]+' "$tick" \
-    | grep -Ev 'PI_INTAKE_GH_RATE_LIMIT_MAX_AGE:-360' ; then
-    fail "reintroduced a max-age default below/other than the writer cadence (must be :-360, writer period 300s + slack): see grep output above"
+if grep -E 'PI_INTAKE_GH_RATE_LIMIT_MAX_AGE:-' "$tick" | grep -Ev 'PI_INTAKE_GH_RATE_LIMIT_MAX_AGE:-(360|\$\(\( gh_rl_pre_writer_period \+ 60 \)\))' ; then
+    fail "reintroduced a max-age default below the writer cadence (must be :-360 or writer period + 60s slack): see grep output above"
 fi
-ok "max-age default is 360s (writer period 300s + 60s slack)"
+ok "max-age default is 360s (writer period 300s + 60s slack, derived from the cadence constant)"
 
 # --- Grep guard 2: the writer-cadence constant exists and is actionable. ----
 grep -q 'gh_rl_pre_writer_period=300' "$tick" \
