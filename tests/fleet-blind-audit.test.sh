@@ -828,3 +828,8 @@ echo "OK: fleet-blind-audit.test.sh"
 # guard is exercised by its own drill; hosted here because workers cannot
 # push .github/workflows/** (P14 listing gate).
 bash "$here/app-token-mint-stub-respect.test.sh"
+
+# fleet-ops#5780: the 120+-finding filing-budget regression test replays a
+# 02:07Z-class dump and drills the status=15/TERM cadence guard; hosted
+# here because workers cannot push .github/workflows/** (P14 listing gate).
+bash "$here/fleet-blind-audit-filing-batch.test.sh"
