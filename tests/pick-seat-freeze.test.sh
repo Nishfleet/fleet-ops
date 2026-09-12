@@ -123,7 +123,7 @@ while IFS= read -r f; do
         echo "FAIL: new retired-routing match in $f — pick_seat caller set is frozen while fleet-ops#4263 deletion is open" >&2
         new_hits=1
     fi
-done < <(grep -rlE "$PAT" bin lib tests 2>/dev/null | sort)
+done < <(git grep -lE "$PAT" -- bin lib tests 2>/dev/null | sort)
 (( new_hits == 0 )) || fail "new retired-routing matches found (see above)"
 
 # fleet-ops#4263 accept: once the deletion lands, the retired routing
@@ -132,10 +132,10 @@ done < <(grep -rlE "$PAT" bin lib tests 2>/dev/null | sort)
 # other manifest entries are prose-only ram_gb_per_worker references.)
 [[ ! -f "$repo_root/lib/seat-lib.sh" ]] \
     || fail "lib/seat-lib.sh must be absent after the P3b deletion"
-if grep -rqE '\$\(pick_seat|(^|[[:space:]])pick_seat\(' bin lib 2>/dev/null; then
+if git grep -qE '\$\(pick_seat|(^|[[:space:]])pick_seat\(' -- bin lib 2>/dev/null; then
     fail "a pick_seat caller remains under bin/ or lib/"
 fi
-if grep -rqE 'ram_governor_cap|active_ram_charge' bin lib 2>/dev/null; then
+if git grep -qE 'ram_governor_cap|active_ram_charge' -- bin lib 2>/dev/null; then
     fail "a RAM-governor caller remains under bin/ or lib/"
 fi
 
