@@ -159,6 +159,12 @@ printf 'one\n' >"$sib_a/one.txt"
 printf 'two\n' >"$sib_a/two.txt"
 printf 'three\n' >"$sib_a/three.txt"
 a_head_before="$(git -C "$sib_a" rev-parse HEAD)"
+# fleet-ops#5984 acceptance: salvage runs while a LIVE process (cwd inside
+# the unowned sibling) holds the worktree — the incident was salvage
+# committing+pushing a live interactive session's mid-edit tree. The holder
+# must survive the sweep with the tree uncommitted and unpushed.
+( cd "$sib_a" && exec sleep 600 ) &
+live_holder=$!
 # Sibling B: found via name token (dir carries the unit name).
 sib_b="$wtroot/unit-orphan-extra"
 git -C "$clone" worktree add -q "$sib_b" -b fix/dead-worker-2
@@ -229,6 +235,10 @@ ls "$scratch"/salvage-unit-orphan-*.md >/dev/null 2>&1 \
     || fail "no linked issue -> salvage note must land next to the packet"
 grep -q 'fix/dead-worker' "$scratch"/salvage-unit-orphan-*.md \
     || fail "salvage note must name branch + commit"
+kill -0 "$live_holder" 2>/dev/null \
+    || fail "live cwd holder must survive the salvage run (fleet-ops#5984)"
+kill "$live_holder" 2>/dev/null || true
+wait "$live_holder" 2>/dev/null || true
 unset PI_SALVAGE_WORKTREE_ROOT PI_SALVAGE_PACKET
 ok "owned sibling banked+pushed; unowned sibling untouched (#5984); shared checkout untouched (#5800)"
 
