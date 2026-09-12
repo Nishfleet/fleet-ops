@@ -896,7 +896,7 @@ NOW="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 cat >"$res_seat_state/cline__z-ai_glm-5.3-flash.json" <<EOF
 {"provider":"cline","model":"z-ai/glm-5.3-flash","health_class":"healthy","seat_dead":false,"observed_at":"$NOW","source":"test"}
 EOF
-# fleet-ops#6074: pin the two seat-lib primitives the resolver depends on.
+# fleet-ops#6074: pin the two retired-library primitives the resolver depends on.
 # They were deleted with the routing library (fleet-ops#4263) while eight
 # callers survived; every caller swallows the error with `|| echo 0`, so the
 # loss was silent and only showed up as the wrong seat in the job below.

@@ -308,7 +308,7 @@ model_class_of() {
 MODELS_JSON="${PI_MODELS_JSON:-$HOME/.pi/agent/models.json}"
 
 # Wired-seat inventory: provider<TAB>model<TAB>zero_cost<TAB>capable.
-# Restored verbatim-equivalent from lib/seat-lib.sh@5411da097~1 (fleet-ops#6074);
+# Restored verbatim-equivalent from the pre-#4263 routing library @5411da097~1 (fleet-ops#6074);
 # deleted in fleet-ops#5993/#4263 while bin/pi-audit-run (x2) and
 # bin/fleet-gap-closure-conference (x2) still read from it, so both audit
 # panels enumerated nothing and fell back to their hardcoded ladder slugs.
