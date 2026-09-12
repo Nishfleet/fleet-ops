@@ -430,6 +430,24 @@ bash "$here/fleet-issue-file-dedupe-comment-idempotent.test.sh"
 # name. Hermetic (fake gh, no network).
 bash "$here/fleet-issue-file-dedupe-closed-canonical.test.sh"
 
+# fleet-ops#5622: stuck webhook packets must reach a terminal disposition
+# (chain, issue, or reasoned drop) instead of sitting LOUD-listed forever.
+# Hosted here so P14 runs it without a workflow edit (the worker App cannot
+# push .github/workflows/**). The named pin in
+# tests/p14-test-listing-gate.test.sh is the class-prevention so a future
+# drop of this host line fails by name. Hermetic (fixture packets + fake
+# chains.terminated.jsonl + stubbed fleet-issue-file, no network).
+bash "$here/alert-repair-stuck-packet.test.sh"
+
+# fleet-ops#5622: stuck webhook packets must reach a terminal disposition
+# (chain, issue, or reasoned drop) instead of sitting LOUD-listed forever.
+# Hosted here so P14 runs it without a workflow edit (the worker App cannot
+# push .github/workflows/**). The named pin in
+# tests/p14-test-listing-gate.test.sh is the class-prevention so a future
+# drop of this host line fails by name. Hermetic (fixture packets + fake
+# chains.terminated.jsonl + stubbed fleet-issue-file, no network).
+bash "$here/alert-repair-stuck-packet.test.sh"
+(fix(test-listing): host alert-repair-stuck-packet.test.sh from ci-standards-audit (fleet-ops#5622))
 # fleet-ops#2902 (PR #2905 follow-up): the leaky-worktree containment
 # detector landed on main without a ci.yml listing or a host — and P14 was
 # already red on the two orphans above, so this leftover slipped in
