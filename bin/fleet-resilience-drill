@@ -453,6 +453,17 @@ plane_keystone_hc() {
     printf '%s' "$val"
   }
 
+  # fleet-ops#5456 F: the heartbeat dead-man is the dead-man for the whole
+  # user manager — if hc.env is missing or HC_URL is unset, a stopped user
+  # manager alerts nobody (heartbeat-watchman logs "skip" and the chain is
+  # dead). Provisioned-or-loud: this is the one check whose absence means
+  # nothing else can page.
+  if ! hb="$(hc_env_value "$HEARTBEAT_HC_ENV" "HC_URL")"; then
+    loud "HEARTBEAT-HC-UNCONFIGURED" "$HEARTBEAT_HC_ENV missing or HC_URL unset — a stopped user manager alerts nobody (healthchecks.io dead-man unprovisioned)"
+    record "$name" "fail" "heartbeat dead-man HC_URL unprovisioned"
+    return 1
+  fi
+
   if [[ ! -f "$KEYSTONE_HC_ENV" ]]; then
     loud "KEYSTONE-HC-UNCONFIGURED" "missing $KEYSTONE_HC_ENV — create free healthchecks.io checks for intake/scout/reconcile/restore/detached and drop HC_URL_* there. Heartbeat already has its own check."
     record "$name" "skip" "env file missing"

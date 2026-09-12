@@ -387,6 +387,42 @@ resume_or_dispatch() {
 
   resume_log "resume-or-dispatch unit=$unit_sf reason=$reason_in"
 
+  # fleet-ops#5456 (the live pi-issue@fleet-ops-37 defect): a unit named
+  # pi-issue@<repo>-<N> ENCODES an issue. When that issue is CLOSED the death
+  # is moot — the work already landed; treating it as unit-death files a
+  # false issue / page (the 16:31Z page tried to act on merged #37). Treat
+  # it as the distinct named outcome derived-target-closed: a findings row,
+  # never a dispatch. OPEN (or unverifiable) falls through to the normal
+  # path — fail toward action, never toward silence.
+  local derived_repo="" derived_n=""
+  if [[ "$unit_no_sf" =~ ^pi-issue@([A-Za-z0-9_.-]+)-([0-9]+)$ ]]; then
+    derived_repo="${BASH_REMATCH[1]}"; derived_n="${BASH_REMATCH[2]}"
+  fi
+  if [ -n "$derived_n" ] && [ "$RESUME_DRYRUN" != "1" ] \
+      && [ "$unit_no_sf" != *resume-drill-* ]; then
+    local dstate=""
+    dstate=$("$RESUME_GH" issue view "$derived_n" -R "Nishfleet/$derived_repo" \
+        --json state --jq '.state' 2>/dev/null || true)
+    if [ "$dstate" = "CLOSED" ]; then
+      resume_log "derived issue Nishfleet/$derived_repo#$derived_n is CLOSED — moot death (derived-target-closed), no dispatch"
+      if [ -f "$RESUME_FINDINGS_BIN" ]; then
+        local -a _moot_args=(append
+          --source-organ stop-escalation-dispatch
+          --run-id "${unit_no_sf}-moot-$(ts)"
+          --severity info
+          --title "moot unit death: $unit_sf (derived issue $derived_repo#$derived_n already closed)"
+          --evidence-ref "$SR"
+          --disposition by_design
+          --ref "Nishfleet/$derived_repo#$derived_n"
+          --reason "derived-target-closed per fleet-ops#5456: pi-issue@ unit died after its issue closed — not a unit-death")
+        [ -n "$RESUME_FINDINGS_LEDGER" ] && _moot_args+=(--ledger "$RESUME_FINDINGS_LEDGER")
+        python3 "$RESUME_FINDINGS_BIN" "${_moot_args[@]}" \
+          >/dev/null 2>&1 || resume_log "WARN: findings-ledger append failed (non-fatal)"
+      fi
+      return 0
+    fi
+  fi
+
   local row
   if ! row=$(resume_last_launch_row "$unit_no_sf"); then
     resume_log "no dispatch-ledger launch row for $unit_no_sf — non-packet unit"
