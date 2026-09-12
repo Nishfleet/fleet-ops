@@ -1156,4 +1156,23 @@ grep -Eq '^[[:space:]]*bash[[:space:]]+"?\$here/pick-seat-freeze\.test\.sh"?' \
   || fail "pick-seat-freeze.test.sh must not be a known orphan (fleet-ops#4263)"
 ok "pick-seat-freeze.test.sh host line in ci-standards-audit.test.sh is pinned (fleet-ops#4263)"
 
+# fleet-ops#6020: hard-pin the fleet-ops#1176 nested-host line for
+# fleet-token-economy.test.sh in rule-enforcement.test.sh (itself listed in
+# ci.yml). The #6020 finding judged the suite "not in the P14 CI list" from a
+# grep of ci.yml alone — the exact fleet-ops#619 trap: it was already hosted
+# here since #1176. The red the finding cites (beda5a135, #3125 yield-order
+# assertion) was fixed by #6037 the same day. If this host line is ever
+# dropped, the suite silently leaves P14, so it is caught by name here —
+# the #4396-class "never silently rot again" teeth, without a redundant
+# standalone ci.yml line (nested host = the #660/#1176 pattern; worker
+# tokens cannot push .github/workflows/** edits).
+grep -Eq '^[[:space:]]*bash[[:space:]]+"?\$here/fleet-token-economy\.test\.sh"?' \
+  "$here/rule-enforcement.test.sh" \
+  || fail "rule-enforcement.test.sh must bash-invoke fleet-token-economy.test.sh (fleet-ops#6020)"
+[[ -n "${reachable[fleet-token-economy.test.sh]:-}" ]] \
+  || fail "fleet-token-economy.test.sh must be listed in ci.yml or hosted by a listed test (fleet-ops#6020)"
+[[ -z "${known_orphan_set[fleet-token-economy.test.sh]:-}" ]] \
+  || fail "fleet-token-economy.test.sh must not be a known orphan (fleet-ops#6020)"
+ok "fleet-token-economy.test.sh host line in rule-enforcement.test.sh is pinned (fleet-ops#6020)"
+
 echo "OK: p14-test-listing-gate.test.sh: P14 test list is closed"

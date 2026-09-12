@@ -274,9 +274,14 @@ done
 ok "minimax is metered (last bucket); straitly retired (fleet-ops#4887)"
 
 # --- product value-order / class ladder: retired with the seat picker (fleet-ops#4263) ---
+# Retirement adjudicated 2026-09-12 (fleet-ops#6020): #5993 (2026-09-12) deleted
+# the picker, and #6037 (merged 2026-09-12 14:59Z; main green from 2970807d2)
+# rewrote the #3125/#3323 logging assertions to this retired shape on purpose.
 # Ordering and the cheap -> capable -> senior ladder live in the LiteLLM proxy
 # (config/litellm-proxy.yaml order + router_settings.fallbacks); there is no
-# per-pick yield/value order left to assert in lib/litellm-seat.sh.
+# per-pick yield/value order left to assert in lib/litellm-seat.sh. The suite
+# stays in P14 via the fleet-ops#1176 nested host in rule-enforcement.test.sh
+# (host line pinned in tests/p14-test-listing-gate.test.sh, fleet-ops#6020).
 
 # --- fleet-ops#3930: worker_memory shape (no MemoryHigh throttle band) ------
 # MemoryHigh throttling is what made systemd-oomd pressure-kill a random
