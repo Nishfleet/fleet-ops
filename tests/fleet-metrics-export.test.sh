@@ -1401,6 +1401,7 @@ for prov in enrolled:
 m.SEAT_CAPS_DEFAULT = Path(seat_caps)
 m.SEAT_CAPS_FALLBACK = Path(seat_caps)
 m.SEAT_CAPS_LIVE = Path("/nonexistent/live-caps.json")  # hermetic: repo-checkouts path list only
+m.SEAT_CAPS_DEFAULT = _fixture_caps  # must follow the scenario's own path reset above
 base = m._healthy_enrolled_seat_count()
 assert base == len(enrolled), f"all-enrolled healthy base must be {len(enrolled)}, got {base}"
 # Replace the commandcode healthy fixture with the two overload_bench ledgers
