@@ -113,6 +113,11 @@ MAX_LINES="${FLEET_ESCALATION_DRAIN_MAX_LINES:-50}"
 STUCK_AGE_S="${FLEET_ESCALATION_DRAIN_STUCK_AGE_S:-21600}"
 CLASSES="${FLEET_ESCALATION_DRAIN_CLASSES:-MONEY-BOUNDARY|LEGAL-BOUNDARY|PRODUCT-DIRECTION|CUSTOMER-DATA|CREDENTIAL-BOUNDARY|ONE-SHOT-PUBLIC-ACTION}"
 DRY_RUN="${FLEET_ESCALATION_DRAIN_DRY_RUN:-0}"
+# fleet-ops 2026-09-12 (Nish: "fix EVERYTHING DURABLY"): a stuck packet is FILED as a real
+# agent-ready issue before it is archived — never "escalated-filed" to a filer that does not exist.
+ISSUE_FILER="${FLEET_ESCALATION_DRAIN_ISSUE_FILER:-$HOME/.local/bin/fleet-issue-file}"
+ISSUE_REPO="${FLEET_ESCALATION_DRAIN_ISSUE_REPO:-Nishfleet/fleet-ops}"
+filer_failed=0
 # Condition-resolution pass (fleet-ops#3996): ages out money-wall entries
 # whose underlying provider condition has resolved. A provider is "walled"
 # if ANY seat file under SEAT_DIR has http_status 402 or health_class
@@ -1158,10 +1163,36 @@ drain_packets() {
             mkdir -p "$archive_dir"
             for s in "${stuck[@]}"; do
                 s_name="${s%% (*}"
+                # File a REAL issue first (fleet-ops 2026-09-12): the packet is the
+                # evidence, the issue is the work item the intake can claim.
+                local s_alert="" s_iso=""
+                if [[ "$s_name" =~ ^packet-([A-Za-z0-9_]+)-([0-9]{8}T[0-9]{6}Z)\.md$ ]]; then
+                    s_alert="${BASH_REMATCH[1]}"; s_iso="${BASH_REMATCH[2]}"
+                fi
+                local body_file issue_url=""
+                body_file=$(mktemp)
+                {
+                    printf 'Stuck alert-repair packet: alert %s dispatched %s never reached a terminal state (no record in %s) and aged past %ss. Filed automatically by fleet-escalation-drain instead of being archived silently.\n\n' "$s_alert" "$s_iso" "$(basename "$TERMINATED")" "$STUCK_AGE_S"
+                    printf 'termination: the root cause of %s named in the packet below is fixed by a merged PR (or proven a false alarm with evidence), the alert is no longer firing, and the packet chain has a terminal record.\n' "$s_alert"
+                    printf 'accept: Prometheus shows %s inactive for 60 min after the fix; the PR cites this issue; %s carries a terminal record for the chain.\n' "$s_alert" "$(basename "$TERMINATED")"
+                    printf 'required: fix the class, not the instance; no alert silenced; no gate weakened.\n'
+                    printf 'metric: stuck packets per day for %s (target 0).\n\n---\n\n' "$s_alert"
+                    cat -- "$PACKET_DIR/$s_name" 2>/dev/null
+                } > "$body_file"
+                issue_url=$("$ISSUE_FILER" file --repo "$ISSUE_REPO" \
+                    --title "stuck repair packet: $s_alert dispatched $s_iso never terminated" \
+                    --body-file "$body_file" --label agent-ready --json 2>/dev/null \
+                    | jq -r '.url // empty' 2>/dev/null || true)
+                rm -f "$body_file"
+                if [ -z "$issue_url" ]; then
+                    filer_failed=1
+                    log "LOUD [FILER-FAILED] could not file an issue for $s_name via $ISSUE_FILER — packet LEFT IN PLACE (never archive without a real issue)"
+                    continue
+                fi
                 if mv -- "$PACKET_DIR/$s_name" "$archive_dir/$s_name" 2>/dev/null; then
-                    echo "[$stamp] DISPOSITION stuck-packet packet=$s_name terminal=escalated-filed issue=absent-pipeline-filer" >> "$alog"
+                    echo "[$stamp] DISPOSITION stuck-packet packet=$s_name terminal=escalated-filed issue=$issue_url" >> "$alog"
                     packet_archived=$((packet_archived + 1))
-                    log "archived $s_name terminal=escalated-filed issue=absent-pipeline-filer (actions.log)"
+                    log "archived $s_name terminal=escalated-filed issue=$issue_url (actions.log)"
                 else
                     log "WARN: failed to archive $s_name — leaving in place (loud line will re-flag it)"
                 fi
@@ -1176,4 +1207,8 @@ drain_nish_bound
 drain_packets
 
 log "summary: nish_archived=$nish_archived nish_bounded=$nish_bounded nish_body_resolved=$nish_body_resolved nish_condition_resolved=$nish_condition_resolved nish_condition_live=$nish_condition_live nish_digested=$nish_digested packet_deleted=$packet_deleted packet_skipped=$packet_skipped packet_archived=$packet_archived dry_run=$DRY_RUN"
+if [ "$filer_failed" = "1" ]; then
+    log "LOUD [FILER-FAILED] one or more stuck packets could not be filed as issues — exiting 1 so the unit fails loud"
+    exit 1
+fi
 exit 0

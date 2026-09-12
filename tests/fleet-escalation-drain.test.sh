@@ -73,7 +73,18 @@ key_of() {
     printf '  body: not delivered yet.\n'
 } > "$AS/NISH-ESCALATIONS.md"
 
+# Stub issue filer (fleet-ops 2026-09-12): records every call, returns a fixed URL.
+cat > "$scratch/stub-filer" <<'STUB'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "${STUB_CALLS:?}"
+if [ "${STUB_FAIL:-0}" = "1" ]; then exit 1; fi
+printf '{"url":"https://github.com/Nishfleet/fleet-ops/issues/999","number":999}\n'
+STUB
+chmod +x "$scratch/stub-filer"
+export STUB_CALLS="$scratch/filer.calls"
+
 run_drain() {
+    FLEET_ESCALATION_DRAIN_ISSUE_FILER="$scratch/stub-filer" \
     FLEET_ESCALATION_DRAIN_AGENT_STATE="$AS" \
     FLEET_ESCALATION_DRAIN_NISH="$AS/NISH-ESCALATIONS.md" \
     FLEET_ESCALATION_DRAIN_SEEN="$AS/lanes/nish-boundary-notify.seen" \
@@ -249,6 +260,16 @@ grep -q "archived packet-FleetStuck-20260820T000000Z.md terminal=escalated-filed
     || fail "scenario 3: drain must log fleet-ops#5647 same-run archive; stderr: $(cat "$scratch/run.stderr")"
 grep -q "DISPOSITION stuck-packet packet=packet-FleetStuck-20260820T000000Z.md terminal=escalated-filed" "$AS/alert-repair/actions.log" \
     || fail "scenario 3: actions.log must carry the DISPOSITION decision line; log: $(cat "$AS/alert-repair/actions.log")"
+# fleet-ops 2026-09-12: every archived stuck packet was FILED as a real issue first.
+grep -q "DISPOSITION stuck-packet packet=packet-FleetStuck-20260820T000000Z.md terminal=escalated-filed issue=https://github.com/Nishfleet/fleet-ops/issues/999" "$AS/alert-repair/actions.log" \
+    || fail "scenario 3: DISPOSITION line must carry the REAL issue url, never absent-pipeline-filer; log: $(cat "$AS/alert-repair/actions.log")"
+[[ "$(wc -l < "$STUB_CALLS")" -eq 3 ]] \
+    || fail "scenario 3: filer must be called once per archived stuck packet (3); calls: $(cat "$STUB_CALLS")"
+grep -q -- "--label agent-ready" "$STUB_CALLS" || fail "scenario 3: filed issues must be agent-ready"
+grep -q "stuck repair packet: FleetStuck dispatched 20260820T000000Z never terminated" "$STUB_CALLS" \
+    || fail "scenario 3: issue title must name alert + dispatch time; calls: $(cat "$STUB_CALLS")"
+! grep -q "absent-pipeline-filer" "$AS/alert-repair/actions.log" \
+    || fail "scenario 3: the absent-pipeline-filer lie must be gone"
 grep -q "packet_archived=3" "$scratch/run.stderr" \
     || fail "scenario 3: summary must report packet_archived=3; stderr: $(cat "$scratch/run.stderr")"
 [[ -f "$AS/alert-repair/packet-11-canary-scaffold.md" ]] \
@@ -715,3 +736,23 @@ echo
 # oldest-first digest): hosted subtest — workers cannot edit
 # .github/workflows/**, so this keeps the P14 reachable-set gate green.
 bash "$here/escalation-drain-bound.test.sh"
+
+# ---------------------------------------------------------------------------
+# Scenario 3b (fleet-ops 2026-09-12): when the filer FAILS, a stuck packet is
+# LEFT IN PLACE (never archived without a real issue) and the drain exits 1.
+# ---------------------------------------------------------------------------
+rm -rf "$AS/alert-repair"; mkdir -p "$AS/alert-repair"
+: > "$AS/alert-repair/chains.terminated.jsonl"
+touch "$AS/alert-repair/packet-FleetOrphan-20260820T000000Z.md"
+: > "$STUB_CALLS"
+set +e
+STUB_FAIL=1 run_drain
+rc3b=$?
+set -e
+[[ "$rc3b" -eq 1 ]] || fail "scenario 3b: drain must exit 1 when the filer fails (got $rc3b); stderr: $(cat "$scratch/run.stderr")"
+[[ -f "$AS/alert-repair/packet-FleetOrphan-20260820T000000Z.md" ]] \
+    || fail "scenario 3b: packet must stay in place when no issue could be filed"
+[[ ! -f "$AS/alert-repair/archived/stuck/packet-FleetOrphan-20260820T000000Z.md" ]] \
+    || fail "scenario 3b: packet must NOT be archived when filing failed"
+grep -q "FILER-FAILED" "$scratch/run.stderr" || fail "scenario 3b: drain must log LOUD FILER-FAILED; stderr: $(cat "$scratch/run.stderr")"
+ok "scenario 3b: filer failure leaves the packet in place and exits loud"
