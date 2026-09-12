@@ -184,8 +184,11 @@ def reject_nish_decisions(text):
     # fleet-ops#5870: an attest blocker is never a valid nish-decision, even
     # when its wording trips NISH_REASON (e.g. "an authority Nish explicitly
     # reserved"). Force the rewrite to orchestrator for those.
-    if not is_attest_blocker(text) and NISH_REASON.search(text):
-        return text, 0
+    if NISH_REASON.search(text):
+        if is_attest_blocker(text):
+            pass  # fall through to the rewrite path
+        else:
+            return text, 0
     count = 0
 
     def repl(m):
