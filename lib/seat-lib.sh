@@ -7468,11 +7468,24 @@ _parse_reset_window_s() {
 
 # True if the captured output is an HTTP 401 / dead-token credential failure
 # (fleet-ops#4640). One 401 is not a 10-year corpse: credentials rotate.
+#
+# fleet-ops#5788: the MiniMax provider returns 401 with the wording
+#   "login fail: Please carry the API secret key in the 'X-Api-Key'
+#    field of the request header"
+# which never contains the literal "401", "unauthorized", "invalid token",
+# "authentication failed", or "invalid api key". Without the
+# "login fail"/"carry the api secret key" patterns, the classifier
+# silently let the MiniMax 401 through and pi exited 1 on the failure
+# instead of benching the seat for a same-tick rotation (see the
+# issue's 2026-09-12 10:16 IST journal excerpt). The new patterns
+# match the exact MiniMax / Anthropic-format wording; the existing
+# five patterns still cover the OpenAI / Cursor / generic 401
+# surfaces.
 is_credentials_error() {
     local out="$1" err="$2"
     local combined="$out"$'\n'"$err"
     [[ -n "$combined" ]] || return 1
-    grep -qiE '\b401\b|invalid[[:space:]]+token|unauthorized|authentication[[:space:]]+failed|invalid[[:space:]]+api[[:space:]]+key' <<<"$combined"
+    grep -qiE '\b401\b|invalid[[:space:]]+token|unauthorized|authentication[[:space:]]+failed|authentication_error|invalid[[:space:]]+api[[:space:]]+key|invalid_api_key|(invalid|incorrect|missing|expired|revoked)[[:space:]]+(api|access)[[:space:]]+(key|token)|\blogin[[:space:]]+fail|carry[[:space:]]+the[[:space:]]+api[[:space:]]+secret[[:space:]]+key' <<<"$combined"
 }
 
 # fleet-ops#4640: 401 -> credentials_bad bench of 1h. Corpse only after

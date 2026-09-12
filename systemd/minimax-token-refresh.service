@@ -1,0 +1,44 @@
+[Unit]
+Description=Headless MiniMax OAuth refresh of fleet-litellm-proxy MINIMAX_API_KEY (fleet-ops#5788)
+# Named reason for this schedule (vault: "a schedule needs a named
+# reason"): the fleet-litellm-proxy organ captures MINIMAX_API_KEY from
+# ~/.local/bin/fleet-litellm-proxy-start once at startup. The underlying
+# ~/.mmx/config.json OAuth access token has a ~12h lifetime and rotates
+# silently inside claude-minimax-key. A stale key in the running proxy
+# 401s every anthropic/MiniMax-M3 deployment across the senior / judge /
+# worker-cheap / worker-capable / worker-private groups with the same
+# "login fail: Please carry the API secret key in the 'X-Api-Key' field"
+# error (MiniMax's wording for a rejected credential). Pi exits 1 on
+# the failure (killing flagship workers) because the seat-health retry
+# window is too long for a same-minute credential rotation. This unit is
+# the heal path: every 2h it calls claude-minimax-key, compares the freshly
+# issued token to the one captured by the running proxy, and bounces the
+# proxy on a mismatch. 2h cadence gives a ~6x margin over the ~12h
+# rotation; Persistent=true catches up after a sleeping box.
+#
+# OnFailure is wired by the global service.d/10-escalate.conf drop-in
+# (unit-escalation@minimax-token-refresh.service), so a failed refresh
+# joins the escalation matrix mechanically instead of burning the
+# anthropic/MiniMax-M3 group silently.
+#
+# fleet-ops#366: this unit is the prevention mechanism for the failure
+# class "stale MiniMax credential in the running proxy 401s every
+# anthropic/MiniMax-M3 deployment". The timer (minimax-token-refresh
+# .timer) is the trigger; the script is the fix. Mirrors the structure
+# of grok-token-refresh (fleet-ops#41).
+Documentation=file:/home/nish/.local/bin/minimax-token-refresh
+
+[Service]
+Type=oneshot
+Environment=HOME=/home/nish
+Environment=PATH=/home/nish/.local/bin:/usr/local/bin:/usr/bin:/bin
+Environment=XDG_RUNTIME_DIR=/run/user/1000
+WorkingDirectory=/home/nish
+ExecStart=/bin/bash -c 'exec /home/nish/.local/bin/minimax-token-refresh'
+# The wrapper call + /proc read + systemd bounce is bounded well under
+# a minute; 2 minutes leaves headroom for slow mmx auth refresh.
+TimeoutStartSec=2min
+# Never restart: the timer is the retry. A failed refresh escalates via
+# the global drop-in, not via Restart= (a stuck refresh must not loop
+# on a back-to-back retry).
+Restart=no
