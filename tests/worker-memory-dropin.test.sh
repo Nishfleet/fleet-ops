@@ -55,7 +55,7 @@ o5_high=$(jq -r '.worker_memory["0509"].MemoryHigh // empty' "$caps")
 tgt=$(jq -r '.target_concurrent // empty' "$caps")
 [[ "$tgt" == "25" ]] || fail "target_concurrent want 25 got '$tgt'"
 ram=$(jq -r '.ram_gb_per_worker // empty' "$caps")
-[[ "$ram" == "1.0" ]] || fail "ram_gb_per_worker want 1.0 got '$ram'"
+[[ "$ram" == "0.65" ]] || fail "ram_gb_per_worker want 0.65 got '$ram'"
 ok "1: seat-caps worker_memory + target_concurrent + ram_gb_per_worker"
 
 # --- 2. worker_memory_for_repo ---------------------------------------------
@@ -91,9 +91,9 @@ trap 'rm -rf "$scratch"' EXIT
 
 # --- 2c. RAM governor charges per-repo MemoryHigh / fallback (fleet-ops#3679) ------
 # active_ram_charge must sum each worker's repo MemoryHigh (GB) divided by
-# ram_gb_per_worker (1.0, fleet-ops#4164). fleet-ops#3930 removed the MemoryHigh
+# ram_gb_per_worker (0.65, fleet-ops#5955). fleet-ops#3930 removed the MemoryHigh
 # band, so a fleet-ops light worker has no row MemoryHigh and is charged the
-# fallback 1.0/1.0 = 1.0 unit. A heavy worker is charged 1.0/1.0 = 1.0 units.
+# fallback 0.65/0.65 = 1.0 unit. A heavy worker is charged 1.0/0.65 = 1.538 units.
 # Run in a subshell with a scratch PI_PACKET_STATE + PI_ISSUES_DIR so the
 # active-seats registry and packet are read from scratch, not the live host.
 (
@@ -113,9 +113,9 @@ trap 'rm -rf "$scratch"' EXIT
     charge=$(active_ram_charge)
     # 2 issue workers (1 heavy + 1 light fleet-ops): heavy is hardcoded 1.0 GB
     # (ram_charge_gb_for), fleet-ops light has no MemoryHigh so fallback
-    # ram_gb_per_worker=1.0. Units = GB / ram_gb_per_worker:
-    # heavy 1.0/1.0=1.0, fleet-ops 1.0/1.0=1.0, total 2.000 units.
-    [[ "$charge" == "2.000" ]] || fail "active_ram_charge want 2.000 (1.0 heavy + 1.0 fleet-ops) got '$charge'"
+    # ram_gb_per_worker=0.65. Units = GB / ram_gb_per_worker:
+    # heavy 1.0/0.65=1.538, fleet-ops 0.65/0.65=1.0, total 2.538 units.
+    [[ "$charge" == "2.538" ]] || fail "active_ram_charge want 2.538 (1.538 heavy + 1.0 fleet-ops) got '$charge'"
     ok "2c: active_ram_charge charges per-repo MemoryHigh / fallback"
 )
 
@@ -125,11 +125,16 @@ trap 'rm -rf "$scratch"' EXIT
 # Force a low MemAvailable by stubbing /proc/meminfo via a wrapper is hard;
 # instead pin SEAT_RAM_GB_PER_WORKER high enough that spare/per < 25, OR just
 # assert the function exists and returns a positive integer on the live host.
+# admit_ceiling re-reads live MemAvailable, so sample ram_governor_cap on both
+# sides and compare against the larger: at 0.65 GB/worker (fleet-ops#5955) a
+# ~0.65 GB swing between two reads moves the cap by one and flaked this check.
+ram_cap_before=$(ram_governor_cap)
 admit=$(admit_ceiling)
+ram_cap_after=$(ram_governor_cap)
+ram_cap=$(( ram_cap_before > ram_cap_after ? ram_cap_before : ram_cap_after ))
 [[ "$admit" =~ ^[0-9]+$ ]] || fail "admit_ceiling non-numeric: $admit"
 (( admit >= 1 )) || fail "admit_ceiling < 1: $admit"
 # On this 16GB box admit must be <= 25 (target) and <= ram_governor.
-ram_cap=$(ram_governor_cap)
 (( admit <= 25 )) || fail "admit_ceiling $admit > target 25"
 (( admit <= ram_cap )) || fail "admit_ceiling $admit > ram_governor $ram_cap"
 ok "3: admit_ceiling=$admit (target=25, ram_governor=$ram_cap)"
