@@ -16,10 +16,14 @@
 #   fleet-workflow-registration-scan [REPO] [--report]
 #   fleet-workflow-registration-scan --help
 #
-# Exit 0: no orphan registrations (or --report mode). Exit 1: at least
-# one orphan. Real command failures (gh missing, network down, no auth)
-# propagate non-zero in both modes — only --report always exits 0 after
-# the report is written.
+# Exit codes:
+#   0  no orphan registrations (or --report mode; --report always exits
+#      0 after the report is written)
+#   1  at least one orphan registration found
+#   2  usage / argument error
+#   3  real command failure (gh api error, missing default branch, git
+#      fetch failure) — reserved so a scan failure can never be mistaken
+#      for an orphan finding
 #
 # Environment seams:
 #   FLEET_REGISTRATION_SCAN_REPORT   report path (default
@@ -47,6 +51,8 @@ Usage: fleet-workflow-registration-scan [REPO] [--report]
 
 Exit 1: at least one active registration whose file is missing from
 the default branch ("orphan"). Exit 0: clean, or --report mode.
+Exit 3: real command failure (gh api error, missing default branch,
+git fetch failure) — never means an orphan. Exit 2: usage error.
 EOF
 }
 
@@ -87,13 +93,21 @@ TMP_REF=refs/tmp/fleet-workflow-registration-scan
 # --- fetch the default branch to a temp ref ------------------------------------
 default_branch=$("$GH" api "repos/$REPO" --jq .default_branch)
 [[ -n "$default_branch" && "$default_branch" != "null" ]] || {
-    log "no default branch reported for $REPO"
-    exit 1
+    log "no default branch reported for $REPO (rc=3 reserved: real failure)"
+    exit 3
 }
-default_sha=$("$GH" api "repos/$REPO/branches/$default_branch" --jq .commit.sha)
+default_sha=$("$GH" api "repos/$REPO/branches/$default_branch" --jq .commit.sha) || {
+    log "gh api branches/$default_branch failed for $REPO (rc=3 reserved: real failure)"
+    exit 3
+}
 
 # Never depend on the working tree being clean or on the right branch.
-git -C "$_repo_root" fetch --depth 1 "https://github.com/$REPO" "$default_sha:$TMP_REF" >/dev/null
+# Fetch by refs/heads/<default_branch>, not by raw SHA — GitHub rejects
+# SHA fetches by default; branch names are deterministic and allowed.
+if ! git -C "$_repo_root" fetch --depth 1 "https://github.com/$REPO" "refs/heads/$default_branch:$TMP_REF" >/dev/null; then
+    log "git fetch of $default_branch failed for $REPO (rc=3 reserved: real failure)"
+    exit 3
+fi
 trap '[[ "${FLEET_REGISTRATION_SCAN_KEEP_TEMP_REF:-0}" == "1" ]] || git -C "$_repo_root" update-ref -d "$TMP_REF" 2>/dev/null || true' EXIT
 
 # YAML files on the default branch (not the working tree).
@@ -103,7 +117,10 @@ default_files=$(git -C "$_repo_root" ls-tree -r --name-only "$TMP_REF" -- .githu
 # --- list active registrations -------------------------------------------------
 # One per line: id|path. state==active only.
 registrations=$("$GH" api "repos/$REPO/actions/workflows" \
-    --jq '.workflows[] | select(.state=="active") | "\(.id)|\(.path)"')
+    --jq '.workflows[] | select(.state=="active") | "\(.id)|\(.path)"') || {
+    log "gh api workflows listing failed for $REPO (rc=3 reserved: real failure)"
+    exit 3
+}
 total_registered=0
 [[ -n "$registrations" ]] && total_registered=$(wc -l <<< "$registrations")
 
@@ -126,10 +143,13 @@ if [[ -n "$orphans" ]]; then
 fi
 
 # informational: files on the default branch with NO active registration
+# (exact path match against the full id|path lines — no substring match,
+# so e.g. a.yml cannot be satisfied by ci.yml|a.yml.bak-style lines).
+registered_paths=$(cut -d'|' -f2- <<< "$registrations" | sort -u)
 unregistered_files=""
 while IFS= read -r f; do
     [[ -n "$f" ]] || continue
-    grep -Fq "|$f" <<< "$registrations" || unregistered_files+="$f"$'\n'
+    grep -Fxq "$f" <<< "$registered_paths" || unregistered_files+="$f"$'\n'
 done <<< "$default_files"
 unregistered_files=${unregistered_files%$'\n'}
 
@@ -137,8 +157,14 @@ unregistered_files=${unregistered_files%$'\n'}
 run_counts=()
 if [[ "$orphan_count" -gt 0 ]]; then
     for id in "${ids[@]}"; do
-        run_counts+=("$("$GH" api "repos/$REPO/actions/workflows/$id/runs?per_page=1" \
-            --jq '"\(.total_count)|\(if .workflow_runs[0] then "\(.workflow_runs[0].created_at) \(.workflow_runs[0].conclusion // .workflow_runs[0].status)" else "no runs recorded" end)"')")
+        rc_runs=0
+        runs=$($GH api "repos/$REPO/actions/workflows/$id/runs?per_page=1" \
+            --jq '"\(.total_count)|\(if .workflow_runs[0] then "\(.workflow_runs[0].created_at) \(.workflow_runs[0].conclusion // .workflow_runs[0].status)" else "no runs recorded" end)"') || rc_runs=$?
+        [[ $rc_runs -eq 0 ]] || {
+            log "gh api runs for workflow $id failed (rc=3 reserved: real failure)"
+            exit 3
+        }
+        run_counts+=("$runs")
     done
 fi
 

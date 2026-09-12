@@ -163,6 +163,10 @@ jobs:
         bash tests/codex-orphan-reap.test.sh
         # fleet-ops#1161: orphan-workflow detector (audit findings 3+4).
         bash tests/orphan-workflow-detector.test.sh
+        # fleet-ops#5692: diff ACTIVE Actions registrations against the
+        # default branch in this repo (offline mock of gh + the temp-ref
+        # fetch); --report must exit 0 even with an orphan.
+        bash tests/workflow-registration-inventory.test.sh
         bash tests/open-question-sweep-deleted.test.sh
         bash tests/escalation-coverage-canary.test.sh
         # fleet-ops#5443: canonical findings ledger — strict writer + judge line.

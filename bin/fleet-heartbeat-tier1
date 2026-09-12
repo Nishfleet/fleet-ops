@@ -2868,6 +2868,47 @@ else
 fi
 
 # ============================================================================
+# 49. WORKFLOW-REGISTRATION SCAN CANARY (fleet-ops#5692)
+# ============================================================================
+# GitHub keeps an Actions workflow registration active after its file is
+# deleted from the default branch; orphan registrations on private repos
+# still bill minutes for their schedule triggers. The #1161 orphan-
+# workflow-detector workflow covers other repos; this canary covers
+# fleet-ops itself by reusing bin/fleet-workflow-registration-scan
+# (fleet-ops#5692 phase 1) from this existing heartbeat — no new unit.
+# rc=1 = orphan registration found — the report at
+# agent-state/FLEET-ORPHAN-WORKFLOW-REGISTRATIONS.md is the artifact and
+# phase 4 of the plan files the remediation issue; landing the unit in
+# --state=failed every tick would be the #1116 trip-loop, so rc=1 is
+# logged and NOT propagated. rc>=2 = helper crash (gh missing, network
+# down, no auth) or a reserved real-failure exit (rc=3) — propagate so
+# the tick fails loud.
+REGISTRATION_SCAN_BIN="${FLEET_REGISTRATION_SCAN_CANARY:-/home/nish/.local/bin/fleet-workflow-registration-scan}"
+registration_scan_rc=0
+if require_manifest_helper "$REGISTRATION_SCAN_BIN"; then
+    log "49. workflow-registration scan canary starting"
+    if "$REGISTRATION_SCAN_BIN"; then
+        log "49. workflow-registration scan canary: inventory clean"
+    else
+        registration_scan_rc=$?
+        if [ "$registration_scan_rc" -eq 1 ]; then
+            log "49. workflow-registration scan canary: orphan registration found (rc=1) — report written to ${FLEET_REGISTRATION_SCAN_REPORT:-/home/nish/workspaces/agent-state/FLEET-ORPHAN-WORKFLOW-REGISTRATIONS.md}; not propagated (fleet-ops#1116)"
+            registration_scan_rc=0
+        else
+            log "49. workflow-registration scan canary FAILED (rc=$registration_scan_rc) — scanner crash; unit will land in --state=failed"
+        fi
+    fi
+else
+    _req=$?
+    if [ "$_req" -eq 1 ]; then
+        loud "HELPER-MISSING" "workflow-registration scan canary missing at $REGISTRATION_SCAN_BIN — MANIFEST dest; silent skip disabled the orphan-registration guard (fleet-ops#5692)"
+        registration_scan_rc=1
+    else
+        log "49. workflow-registration scan canary missing at $REGISTRATION_SCAN_BIN — skip (not installed)"
+    fi
+fi
+
+# ============================================================================
 # 38. DETECTOR→QUEUE RECONCILER (fleet-ops#362)
 # ============================================================================
 # After every canary has emitted its LOUD lines, reconcile them against open
@@ -2902,7 +2943,7 @@ fi
 # ============================================================================
 # done
 # ============================================================================
-log "tier 1 complete: queued=$queued orphan_released=$released failed_seen=$seen failed_repaired=$repaired failed_requeued=$requeued failed_still_failed=$still_failed failed_exhausted=$exhausted failed_escalated=$escd timers_verified=$verified timers_re_enabled=$re_enabled degraded=$degraded undersat_rc=$undersat_rc blocked_rc=${blocked_rc:-0} stale_revert_rc=${stale_revert_rc:-0} claim_reconcile_rc=${claim_reconcile_rc:-0} lifecycle_rc=${lifecycle_rc:-0} low_water_rc=$low_water_rc auditor_rc=${auditor_rc:-0} audit_started=$audit_started audit_canary=$audit_canary_status relabeled=$relabeled deploy_rc=$deploy_rc redpr_rc=$redpr_rc ram_measure_rc=${ram_measure_rc:-0} canary_rc=$canary_rc entitled_canary_rc=$entitled_canary_rc worker_app_canary_rc=$worker_app_canary_rc opencode_m3_canary_rc=$opencode_m3_canary_rc paid_flash_canary_rc=$paid_flash_canary_rc role_gate_rc=${role_gate_rc:-0} researcher_dispatch_rc=$researcher_dispatch_rc quality_slo_rc=${quality_slo_rc:-0} findings_queued_rc=${findings_queued_rc:-0} decisions_ledger_rc=${decisions_ledger_rc:-0} failed_command_rc=${failed_command_rc:-0} debug_playbook_rc=${debug_playbook_rc:-0} interventions_eliminated_rc=${interventions_eliminated_rc:-0} unjustified_rc=${unjustified_rc:-0} max_speed_rc=${max_speed_rc:-0} escalation_completion_rc=${escalation_completion_rc:-0} free_roster_canary_rc=${free_roster_canary_rc:-0} pi_extensions_canary_rc=${pi_extensions_canary_rc:-0} cline_glm53_canary_rc=${cline_glm53_canary_rc:-0} repo_visibility_canary_rc=${repo_visibility_canary_rc:-0} exec_review_canary_rc=${exec_review_canary_rc:-0} work_supply_canary_rc=${work_supply_canary_rc:-0} tailscale_acl_canary_rc=${tailscale_acl_canary_rc:-0} verify_harness_canary_rc=${verify_harness_canary_rc:-0} seat_live_validate_rc=${seat_live_validate_rc:-0} cred_expiry_canary_rc=${cred_expiry_canary_rc:-0} cf_token_canary_rc=${cf_token_canary_rc:-0} geo_aeo_canary_rc=${geo_aeo_canary_rc:-0} quality_ratchet_canary_rc=${quality_ratchet_canary_rc:-0} precedence_band_canary_rc=${precedence_band_canary_rc:-0} product_ratio_cache_rc=${product_ratio_cache_rc:-0} gap_loop_rc=${gap_loop_rc:-0} aimd_canary_rc=${aimd_canary_rc:-0} prepaid_util_canary_rc=${prepaid_util_canary_rc:-0} rulebook_canary=${rulebook_canary_status:-unset} vibes_canary_rc=${vibes_canary_rc:-0} skills_symlink_canary_rc=${skills_symlink_canary_rc:-0} tailscale_localapi_canary_rc=${tailscale_localapi_canary_rc:-0} loose_ends_canary_rc=${loose_ends_canary_rc:-0} empty_burst_canary_rc=${empty_burst_canary_rc:-0} scout_leak_canary_rc=${scout_leak_canary_rc:-0} research_sweep_canary_rc=${research_sweep_canary_rc:-0} timer_manifest_drift_rc=${timer_manifest_drift_rc:-0} money_boundary_check_rc=${money_boundary_check_rc:-0} reconcile_rc=${reconcile_rc:-0}"
+log "tier 1 complete: queued=$queued orphan_released=$released failed_seen=$seen failed_repaired=$repaired failed_requeued=$requeued failed_still_failed=$still_failed failed_exhausted=$exhausted failed_escalated=$escd timers_verified=$verified timers_re_enabled=$re_enabled degraded=$degraded undersat_rc=$undersat_rc blocked_rc=${blocked_rc:-0} stale_revert_rc=${stale_revert_rc:-0} claim_reconcile_rc=${claim_reconcile_rc:-0} lifecycle_rc=${lifecycle_rc:-0} low_water_rc=$low_water_rc auditor_rc=${auditor_rc:-0} audit_started=$audit_started audit_canary=$audit_canary_status relabeled=$relabeled deploy_rc=$deploy_rc redpr_rc=$redpr_rc ram_measure_rc=${ram_measure_rc:-0} canary_rc=$canary_rc entitled_canary_rc=$entitled_canary_rc worker_app_canary_rc=$worker_app_canary_rc opencode_m3_canary_rc=$opencode_m3_canary_rc paid_flash_canary_rc=$paid_flash_canary_rc role_gate_rc=${role_gate_rc:-0} researcher_dispatch_rc=$researcher_dispatch_rc quality_slo_rc=${quality_slo_rc:-0} findings_queued_rc=${findings_queued_rc:-0} decisions_ledger_rc=${decisions_ledger_rc:-0} failed_command_rc=${failed_command_rc:-0} debug_playbook_rc=${debug_playbook_rc:-0} interventions_eliminated_rc=${interventions_eliminated_rc:-0} unjustified_rc=${unjustified_rc:-0} max_speed_rc=${max_speed_rc:-0} escalation_completion_rc=${escalation_completion_rc:-0} free_roster_canary_rc=${free_roster_canary_rc:-0} pi_extensions_canary_rc=${pi_extensions_canary_rc:-0} cline_glm53_canary_rc=${cline_glm53_canary_rc:-0} repo_visibility_canary_rc=${repo_visibility_canary_rc:-0} exec_review_canary_rc=${exec_review_canary_rc:-0} work_supply_canary_rc=${work_supply_canary_rc:-0} tailscale_acl_canary_rc=${tailscale_acl_canary_rc:-0} verify_harness_canary_rc=${verify_harness_canary_rc:-0} seat_live_validate_rc=${seat_live_validate_rc:-0} cred_expiry_canary_rc=${cred_expiry_canary_rc:-0} cf_token_canary_rc=${cf_token_canary_rc:-0} geo_aeo_canary_rc=${geo_aeo_canary_rc:-0} quality_ratchet_canary_rc=${quality_ratchet_canary_rc:-0} precedence_band_canary_rc=${precedence_band_canary_rc:-0} product_ratio_cache_rc=${product_ratio_cache_rc:-0} gap_loop_rc=${gap_loop_rc:-0} aimd_canary_rc=${aimd_canary_rc:-0} prepaid_util_canary_rc=${prepaid_util_canary_rc:-0} rulebook_canary=${rulebook_canary_status:-unset} vibes_canary_rc=${vibes_canary_rc:-0} skills_symlink_canary_rc=${skills_symlink_canary_rc:-0} tailscale_localapi_canary_rc=${tailscale_localapi_canary_rc:-0} loose_ends_canary_rc=${loose_ends_canary_rc:-0} empty_burst_canary_rc=${empty_burst_canary_rc:-0} scout_leak_canary_rc=${scout_leak_canary_rc:-0} research_sweep_canary_rc=${research_sweep_canary_rc:-0} timer_manifest_drift_rc=${timer_manifest_drift_rc:-0} money_boundary_check_rc=${money_boundary_check_rc:-0} registration_scan_rc=${registration_scan_rc:-0} reconcile_rc=${reconcile_rc:-0}"
 # Propagate the first non-zero fail-loud exit. Deploy, missing MANIFEST
 # helpers, undersaturation, red-pr-repair, or a heartbeat canary may fail
 # loud; all route to the same escalation (fleet-heartbeat.service ->
@@ -3087,6 +3128,9 @@ fi
 # every tick for it is the trip-loop fleet-ops#1116 fixes (fleet-ops#4647).
 if [ "${timer_manifest_drift_rc:-0}" -ge 2 ]; then
     exit "$timer_manifest_drift_rc"
+fi
+if [ "${registration_scan_rc:-0}" -ge 2 ]; then
+    exit "$registration_scan_rc"
 fi
 # money-boundary --check: only propagate when the helper CRASHED (rc >= 2).
 # rc=1 is an unpaged far-future money wall — already FAIL-LOUD; landing

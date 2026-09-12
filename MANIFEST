@@ -448,11 +448,17 @@ libexec/alert-repair-dispatch /home/nish/.local/libexec/alert-repair-dispatch
 # reports/machinery-audit-2026-08-28.md). The daily-digest.{timer,service} user
 # units already symlink to this repo's systemd/ — only the script was missing.
 libexec/daily-digest /home/nish/.local/libexec/daily-digest
+bin/fleet-workflow-registration-scan /home/nish/.local/bin/fleet-workflow-registration-scan
 bin/fleet-heartbeat /home/nish/.local/bin/fleet-heartbeat
 bin/fleet-heartbeat-tier1 /home/nish/.local/bin/fleet-heartbeat-tier1
 bin/fleet-heartbeat-tier2 /home/nish/.local/bin/fleet-heartbeat-tier2
 bin/fleet-heartbeat-undersaturation /home/nish/.local/bin/fleet-heartbeat-undersaturation
 bin/fleet-heartbeat-low-water-mark /home/nish/.local/bin/fleet-heartbeat-low-water-mark
+# fleet-ops#5692: orphan Actions-registration scan canary. Called from
+# heartbeat-tier1 block 49 every tick; rc=1 (orphan found) is logged and
+# not propagated (the report at agent-state/FLEET-ORPHAN-WORKFLOW-
+# REGISTRATIONS.md feeds the #1161-format remediation issue); rc>=2
+# (scanner crash) fails the tick.
 # fleet-ops#414: senior-auditor admission panel (re-land of the #146 panel
 # that #229 delivered and #231 auto-reverted). Scout-candidate issues pass a
 # 3-seat panel (devin/glm-5-2, a free glm-5.3 seat, straitly/deepseek-v4-pro,
