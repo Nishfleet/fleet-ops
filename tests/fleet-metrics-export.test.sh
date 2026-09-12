@@ -1376,6 +1376,19 @@ print("OK: _read_never_released excludes phantom seat keys, keeps real engaged s
 # (RELEASED -> commandcode still counts) and minimax's with quota_exhausted
 # past-wall (NOT released -> minimax drops out).
 caps = json.loads(Path(seat_caps).read_text())
+# Hermetic premise (2026-09-12): the two fixture providers are ENROLLED for this
+# scenario regardless of live truth — commandcode and minimax were benched to
+# cap=0 in the real config that day (dead credits / dead token), which is not
+# what this rollup scenario is about. Force cap=1 in a scenario-local copy and
+# point the exporter at it, so the released-vs-quota arithmetic stays exact.
+for _p in ("commandcode", "minimax"):
+    _cfg = caps.setdefault("providers", {}).get(_p)
+    if not isinstance(_cfg, dict):
+        _cfg = {}; caps["providers"][_p] = _cfg
+    _cfg["cap"] = 1
+_fixture_caps = Path(seat_dir).parent / "rollup-fixture-caps.json"
+_fixture_caps.write_text(json.dumps(caps))
+m.SEAT_CAPS_DEFAULT = _fixture_caps
 enrolled = [p for p, cfg in caps.get("providers", {}).items()
             if isinstance(cfg, dict) and isinstance(cfg.get("cap"), (int, float))
             and cfg.get("cap") > 0]
