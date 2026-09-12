@@ -75,6 +75,31 @@ probes the plan on every live `ci-standards-audit` run, records the SKIP,
 and posts `decision-resolved:` on fleet-ops#219 the moment the plan is no
 longer free. Paid Team is Nish's call (fleet-ops#219).
 
+## Per-repo merge-queue ruleset (fleet-ops#5787)
+
+The free org plan does not stop us from creating **repository** rulesets
+on each repo (only the org-level sweep is blocked). Every repo whose type
+has `merge_queue: true` (today: `node_app`, `infra`) gets a ruleset named
+`main-merge-queue` on the default branch. It:
+
+- blocks force-pushes to the default branch (`non_fast_forward`),
+- blocks branch deletion from the default branch (`deletion`),
+- routes every PR through GitHub's merge queue with HEADGREEN grouping
+  (max 5 in-flight, group on 2 entries or 5 min wait, 6 h check timeout
+  per group) — matches 0509 verbatim so a queued PR that works there
+  works everywhere,
+- requires the union of the repo's existing branch-protection contexts
+  and the standard thin-caller contexts (never weakens an extra context
+  the repo was relying on).
+
+The apply lives in `repo-standards-apply.mjs`
+(`buildMergeQueueRuleset` / `applyMergeQueueRuleset`), runs weekly from
+`repo-standards-apply.yml`, and is the path the orchestrator's parallel-
+PR race (the evidence in #5787) takes. Five orchestrator packets running
+in parallel on one repo with file-ownership in packet prose is unsafe
+when main lacks a ruleset; the ruleset is GitHub-hosted serialisation,
+not a fleet-side serializer, and that is what #5787 ships.
+
 ## Required checks are pure
 
 A required status check must be a function of the PR's own diff.
