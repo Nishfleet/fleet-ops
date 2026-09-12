@@ -221,6 +221,39 @@ OUT_MIN="${PI_PACKET_RUN_OUT_MIN:-20}"
 # systemd Restart= count it toward StartLimitBurst. This keeps empty runs
 # from burning the item's dispatch budget.
 EMPTY_RUN_RETRY_MAX="${EMPTY_RUN_RETRY_MAX:-2}"
+# fleet-ops#5788 part 2 (Nish 2026-09-12: "a lot of packets seem to die ... shouldn't be
+# happening at all"): a WORK death (tools>0) whose cause is the provider/model mid-run is a
+# SEAT fault, not a work failure. Instead of exit 1 (context lost; systemd restarts the item
+# from zero on a new seat) the runner re-seats IN-PROCESS and RESUMES the same session file
+# on the new seat (`pi --session <file>`), bounded by RESUME_RETRY_MAX. The decision keys on
+# STRUCTURED signals only: the session's own last assistant record (stopReason "error" is
+# how pi marks a provider/model failure) and the seat-health ledger the pi extension writes
+# on the provider response — never on error wording.
+RESUME_RETRY_MAX="${PI_ISSUE_RESUME_RETRY_MAX:-2}"
+resume_attempt=0
+resume_session_file=""
+session_ended_in_provider_error() {
+    # arg: session jsonl -> 0 when the last assistant record carries stopReason "error"
+    local sess="${1:-}" last=""
+    [[ -n "$sess" && -f "$sess" ]] || return 1
+    last=$(jq -r 'select(.message.role? == "assistant") | .message.stopReason // "none"' "$sess" 2>/dev/null | tail -1 || true)
+    [[ "$last" == "error" ]]
+}
+seat_unhealthy_since() {
+    # args: provider model since_epoch -> 0 when the seat ledger recorded a non-healthy provider response after since_epoch
+    local prov="${1:-}" model="${2:-}" since="${3:-0}" f obs_epoch cls
+    f="$PI_SEAT_HEALTH_LEDGER_DIR/${prov}__${model//\//_}.json"
+    [[ -f "$f" ]] || return 1
+    cls=$(jq -r '.health_class // "healthy"' "$f" 2>/dev/null || echo healthy)
+    obs_epoch=$(date -u -d "$(jq -r '.observed_at // empty' "$f" 2>/dev/null)" +%s 2>/dev/null || echo 0)
+    [[ "$cls" != "healthy" ]] && (( obs_epoch >= since ))
+}
+is_provider_work_death() {
+    local sess="${1:-}" prov="${2:-}" model="${3:-}" since="${4:-0}"
+    session_ended_in_provider_error "$sess" && return 0
+    seat_unhealthy_since "$prov" "$model" "$since" && return 0
+    return 1
+}
 
 # fleet-ops#2005: debug-playbook gate. A session with two or more real
 # failed attempts and no four-heading vault playbook is blocked from closing.
@@ -672,11 +705,21 @@ session_id="${inst}-$(date -u +%s%N)"
 # discovery). --thinking low matches pi-models samplingParams.reasoning_effort
 # (output is 2x input; reasoning tokens bill as output).
 # https://docs.paretoinference.com/api-reference.md
-pi_argv=(--session-dir "$session_dir" --session-id "$session_id" --print --provider "$np" --model "$nm")
+pi_stdin="$pkt"
+if [[ -n "$resume_session_file" && -f "$resume_session_file" ]]; then
+    # fleet-ops#5788 part 2: resume the previous seat's session on this seat.
+    pi_argv=(--session-dir "$session_dir" --session "$resume_session_file" --print --provider "$np" --model "$nm")
+    pi_stdin="$ATTEMPTS_DIR/pi-issue-${inst}.resume-prompt"
+    printf 'RESUME (fleet-ops#5788): the previous seat died mid-run on a provider/model error after your last tool call. You are now on %s/%s with the SAME session and all prior context. Do not restart the task and do not re-read the packet from scratch: continue from your last completed step, finish the deliverable, and end with the required verdict lines.\n' "$np" "$nm" >"$pi_stdin"
+    seat_log "pi-issue-run: $inst resuming session $(basename "$resume_session_file") on $np/$nm (fleet-ops#5788)"
+    resume_session_file=""
+else
+    pi_argv=(--session-dir "$session_dir" --session-id "$session_id" --print --provider "$np" --model "$nm")
+fi
 if [[ "$np" == "paretoinference" ]]; then
     pi_argv+=(--no-context-files --thinking low)
 fi
-if timeout --kill-after=30s "${PI_HANG_TIMEOUT_S}s" "$PI_BIN" "${pi_argv[@]}" < "$pkt" >"$out_file" 2>"$err_file"; then
+if timeout --kill-after=30s "${PI_HANG_TIMEOUT_S}s" "$PI_BIN" "${pi_argv[@]}" < "$pi_stdin" >"$out_file" 2>"$err_file"; then
     rc=0
     pi_rc=0
 else
@@ -988,6 +1031,18 @@ if (( rc != 0 )); then
         seat_log "pi-issue-run: $inst pi exited $rc but session shipped a PR — treating as success (fleet-ops#4903)"
         _exit_reason="success-pr-shipped"
         exit 0
+    fi
+    # fleet-ops#5788 part 2: provider/model death mid-run with real work in the session ->
+    # re-seat in-process and resume the SAME session on the next seat (structured signals only).
+    if (( _tool_calls > 0 )) && [[ -n "$_sess_last" && -f "$_sess_last" ]] && is_provider_work_death "$_sess_last" "$np" "$nm" "$spawn_start_s"; then
+        resume_attempt=$((resume_attempt + 1))
+        if (( resume_attempt <= RESUME_RETRY_MAX )); then
+            resume_session_file="$_sess_last"
+            _seat_merge_error_class "$np" "$nm" "provider_work_death" "session stopReason=error after ${_tool_calls} tool call(s)" 2>/dev/null || true
+            seat_log "pi-issue-run: $inst provider/model death mid-run on $np/$nm after ${_tool_calls} tool call(s) (rc=$rc) — re-seating in-process and RESUMING session $(basename "$_sess_last") (attempt ${resume_attempt}/${RESUME_RETRY_MAX}) (fleet-ops#5788)"
+            continue
+        fi
+        seat_log "pi-issue-run: $inst provider/model death mid-run on $np/$nm — resume attempts exhausted (${RESUME_RETRY_MAX}); exiting 1 (fleet-ops#5788)"
     fi
     write_death_class work
     _exit_reason="pi-failed"
