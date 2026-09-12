@@ -1156,4 +1156,39 @@ grep -Eq '^[[:space:]]*bash[[:space:]]+"?\$here/pick-seat-freeze\.test\.sh"?' \
   || fail "pick-seat-freeze.test.sh must not be a known orphan (fleet-ops#4263)"
 ok "pick-seat-freeze.test.sh host line in ci-standards-audit.test.sh is pinned (fleet-ops#4263)"
 
+# fleet-ops#6028: hard-pin the host line for pi-issue-run-empty-success in
+# seat-lib. The #6037 red-main repair ported the test to the litellm-era
+# seat contract and hosted it from seat-lib.test.sh (already listed in
+# ci.yml) — the worker App cannot push .github/workflows/** so the host
+# line is the ci.yml wiring. This named pin is class-prevention so a
+# future drop of the host line cannot park the test on known_orphans or
+# let it silently ride the #5889 auto-host — it fails by name first, same
+# shape as every other hosted test.
+grep -Eq '^[[:space:]]*bash[[:space:]]+"?\$here/pi-issue-run-empty-success\.test\.sh"?' \
+  "$here/seat-lib.test.sh" \
+  || fail "seat-lib.test.sh must bash-invoke pi-issue-run-empty-success.test.sh (fleet-ops#6028)"
+[[ -n "${reachable[pi-issue-run-empty-success.test.sh]:-}" ]] \
+  || fail "pi-issue-run-empty-success.test.sh must be listed in ci.yml or hosted by a listed test (fleet-ops#6028)"
+[[ -z "${known_orphan_set[pi-issue-run-empty-success.test.sh]:-}" ]] \
+  || fail "pi-issue-run-empty-success.test.sh must not be a known orphan (fleet-ops#6028)"
+ok "pi-issue-run-empty-success.test.sh host line in seat-lib.test.sh is pinned (fleet-ops#6028)"
+
+# fleet-ops#6028: hard-pin the host line for pi-issue-run-hang-stall-bench
+# in ci-standards-audit. The litellm-era routing made mark_seat_hang_bench
+# a no-op stub (proxy cooldown owns routing), #6037 deleted the stale
+# hang-window-scale variant, and the surviving coverage is hosted from
+# ci-standards-audit.test.sh (already listed in ci.yml) — the worker App
+# cannot push .github/workflows/** so the host line is the ci.yml wiring.
+# This named pin is class-prevention so a future drop of the host line
+# cannot park the test on known_orphans — it fails by name first, same
+# shape as every other hosted test.
+grep -Eq '^[[:space:]]*bash[[:space:]]+"?\$here/pi-issue-run-hang-stall-bench\.test\.sh"?' \
+  "$here/ci-standards-audit.test.sh" \
+  || fail "ci-standards-audit.test.sh must bash-invoke pi-issue-run-hang-stall-bench.test.sh (fleet-ops#6028)"
+[[ -n "${reachable[pi-issue-run-hang-stall-bench.test.sh]:-}" ]] \
+  || fail "pi-issue-run-hang-stall-bench.test.sh must be listed in ci.yml or hosted by a listed test (fleet-ops#6028)"
+[[ -z "${known_orphan_set[pi-issue-run-hang-stall-bench.test.sh]:-}" ]] \
+  || fail "pi-issue-run-hang-stall-bench.test.sh must not be a known orphan (fleet-ops#6028)"
+ok "pi-issue-run-hang-stall-bench.test.sh host line in ci-standards-audit.test.sh is pinned (fleet-ops#6028)"
+
 echo "OK: p14-test-listing-gate.test.sh: P14 test list is closed"
