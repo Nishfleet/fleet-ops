@@ -989,7 +989,7 @@ systemctl_timers=$(systemctl --user list-timers --no-legend 2>/dev/null | awk '{
 # sanctioned on human gh: fleet-ops#3445 / #5489 _gh_read) and stamps which
 # credential served + remaining quota into GH_LIST_STAMPS for the packet.
 GH_LIST_STAMPS="$REPORT_DIR/gh-list-credentials.txt"
-PACKET_GH_STAMP_FILE="$GH_LIST_STAMPS"
+export PACKET_GH_STAMP_FILE="$GH_LIST_STAMPS"
 open_issues=$(packet_gh_read open-issues \
     "repos/$REPO/issues?state=open&per_page=50" \
     '[.[] | select(.pull_request == null) | {number,title,labels:[.labels[]?.name],body}]' \
