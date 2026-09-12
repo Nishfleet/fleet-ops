@@ -24,8 +24,8 @@ check() {
 
 [[ -f "$repo_root/lib/litellm-seat.sh" ]] || fail "missing lib/litellm-seat.sh"
 if [[ -f "$repo_root/lib/litellm-seat.sh" ]]; then
-    grep -q 'litellm_seat()' "$repo_root/lib/litellm-seat.sh" \
-      && fail "lib/litellm-seat.sh must not define pick-seat"
+    grep -qE '(litellm_)?pick_sea[t]\(\)' "$repo_root/lib/litellm-seat.sh" \
+      && fail "lib/litellm-seat.sh must not define the retired picker"
 fi
 
 scratch="$(mktemp -d -t seat-source.XXXXXX)"
