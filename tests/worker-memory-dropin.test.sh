@@ -213,5 +213,35 @@ grep -qE '^Environment=PLAYWRIGHT_WORKERS=1$' "$drop_dir/environment.conf" \
     || fail "written drop-in missing Environment=PLAYWRIGHT_WORKERS=1"
 ok "10: scratch environment.conf write produces correct Environment lines"
 
+# --- 11. CPU bound: admission is RAM-only, so CPU must be capped -----------
+# fleet-ops#4902 follow-up (SustainedLoadHigh 2026-09-11). The policy tree
+# bounds memory in six layers and CPU in none: admission is RAM-only
+# (ram_governor_cap = MemAvailable / ram_gb_per_worker) and the #4147 brake is
+# CPUWeight, which picks a winner for contended cores but cannot stop
+# oversubscription. On 2026-09-11 16 workers ran on 8 vCPUs (each ~94% of a
+# core) and node_load15 sat at 16-17 against the 12 threshold. CPUQuota is the
+# bound that makes the sum independent of how many workers RAM admits.
+grep -qE '^CPUAccounting=yes$' "$template" \
+    || fail "pi-issue@.service must set CPUAccounting=yes"
+grep -qE '^CPUQuota=25%$' "$template" \
+    || fail "pi-issue@.service must set CPUQuota=25%"
+# The arithmetic must hold at the DECLARED ceiling, not just today's count:
+# min(target_concurrent, ram_governor) workers x quota <= nproc, else the box
+# is still oversubscribed at full admission.
+nproc_live=$(nproc)
+tgt_live=$(jq -r '.target_concurrent // empty' "$caps")
+(( tgt_live * 25 <= nproc_live * 100 )) \
+    || fail "target_concurrent=$tgt_live x 25% exceeds $nproc_live cores"
+ok "11: pi-issue@ template caps CPU at 25% (fits $tgt_live workers in $nproc_live cores)"
+
+# --- 12. every detached unit is capped at the single dispatch choke point --
+# Repair workers are dispatched BECAUSE the box is loaded, so an uncapped one
+# adds to the condition it was sent to fix (#4902's own warning).
+grep -qF 'CPUQuota=' "$repo_root/bin/pi-systemd-run" \
+    || fail "pi-systemd-run must set CPUQuota on dispatched units"
+grep -qF 'CPUAccounting=yes' "$repo_root/bin/pi-systemd-run" \
+    || fail "pi-systemd-run must set CPUAccounting on dispatched units"
+ok "12: pi-systemd-run caps CPU on every dispatched unit"
+
 echo ""
 echo "ALL OK: worker-memory drop-in + admit ceiling (fleet-ops#1558)"

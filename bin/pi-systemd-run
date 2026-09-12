@@ -353,6 +353,17 @@ cmd=(
     --setenv=PATH
     --setenv=XDG_RUNTIME_DIR
 )
+
+# fleet-ops#4902 follow-up (SustainedLoadHigh 2026-09-11): one choke point for
+# every detached unit -- repair workers and fleet packets both land here -- and
+# nothing capped CPU. The SustainedLoadHigh repair worker is dispatched
+# BECAUSE the box is loaded, so an uncapped repair worker adds to the
+# condition it was sent to fix: exactly the loop #4902's description names
+# ("each one added load", 4 packets in 24h on 2026-09-10). Same sizing as
+# systemd/pi-issue@.service: 25 workers x 25% = 6.25 cores < 8 nproc at the
+# declared target_concurrent=25 ceiling. PI_CPU_QUOTA overrides for drills.
+cmd+=(--property="CPUAccounting=yes")
+cmd+=(--property="CPUQuota=${PI_CPU_QUOTA:-25%}")
 if [[ -n "${GH_TOKEN:-}" ]]; then
     cmd+=(--setenv=GH_TOKEN)
 fi
