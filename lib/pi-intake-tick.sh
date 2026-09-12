@@ -1248,6 +1248,11 @@ AUDITION_DROPPED_JSON="${PI_AUDITION_DROPPED_JSON:-$HOME/.local/state/pi-packet/
 # tick does not re-file the same verdict issue every tick while the seat waits
 # on its config/seat-caps.json PR.
 AUDITION_VERDICTED_JSON="${PI_AUDITION_VERDICTED_JSON:-$HOME/.local/state/pi-packet/audition-verdicted.json}"
+# Yield ledger for the audition retirement thresholds. The audition lane reads
+# it (fleet-ops#3322); the litellm-seat harness defines this only in tests, so
+# the runtime must define it here or set -u kills the tick (SEAT_YIELD_JSON:
+# unbound variable, intake crash-loop 2026-09-12).
+SEAT_YIELD_JSON="${PI_SEAT_YIELD_JSON:-$HOME/.local/state/pi-packet/seat-yield.json}"
 AUDITION_MAX_SESSIONS="${PI_AUDITION_MAX_SESSIONS:-10}"
 AUDITION_MAX_AGE_S="${PI_AUDITION_MAX_AGE_S:-604800}"   # 7 days
 AUDITION_MAX_COST_USD="${PI_AUDITION_MAX_COST_USD:-1}"
