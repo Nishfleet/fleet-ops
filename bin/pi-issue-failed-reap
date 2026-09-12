@@ -196,8 +196,6 @@ awaiting_gate=$(printf '%s' "$state_json" | jq -e '[.labels[]?.name] | any(. == 
 
 log "state=$issue_state in_progress=$in_progress agent_blocked=$agent_blocked parked_gate=$awaiting_gate for $repo_slug#$issue"
 
-log "state=$issue_state in_progress=$in_progress agent_blocked=$agent_blocked for $repo_slug#$issue"
-
 # --- branch cleanup: only if no open PR from this branch --------------------
 # Same REST-vs-GraphQL split: `gh pr list --json` is GraphQL; use `gh api` REST
 # with a head=<branch> filter and count the result.
