@@ -259,6 +259,13 @@ carryover_load() {
 # entry (filed, dedupe-hit, or panel-FAIL on re-panel) is removed; backlog
 # entries remain for the next run. Defined here because --backfill also
 # appends unfiled survivors to the ledger.
+# fleet-ops#5611 wake: $RESOLVED_SIGS is a persistent $STATE_DIR sidecar,
+# appended the moment a resolution happens. A run killed mid-loop
+# (TimeoutStartSec) used to lose every in-loop resolution because the
+# ledger rewrite only ran post-loop — an oversized backlog could then
+# never drain (every run re-processed the same entries and timed out
+# again). The startup recovery below prunes the ledger with the sidecar
+# left by a killed run before the loop reads it.
 carryover_append() { # $1 = finding json, $2 = signature
     # Skip if the signature is already pending; a sha256 string cannot
     # appear in an unrelated line, so a fixed-string grep is enough.
@@ -1306,7 +1313,19 @@ issue_titles_norm=$(
 # Carry-over bookkeeping. Resolved signatures are collected here and the
 # ledger is rewritten after the loop: a resolved entry (filed, dedupe-hit,
 # or panel-FAIL twice) is removed; backlog entries remain for the next run.
-RESOLVED_SIGS="$REPORT_DIR/carryover-resolved.txt"
+# fleet-ops#5611 wake: the sidecar lives in $STATE_DIR so resolutions are
+# durable immediately, and a prior killed run's resolutions are applied
+# (ledger pruned) before this run's loop starts.
+RESOLVED_SIGS="$STATE_DIR/carryover-resolved.txt"
+if [ -s "$RESOLVED_SIGS" ] && [ -s "$CARRYOVER_FILE" ]; then
+    co_before=$(grep -c . "$CARRYOVER_FILE")
+    jq -c . "$CARRYOVER_FILE" \
+        | grep -vF -f "$RESOLVED_SIGS" \
+        > "$CARRYOVER_FILE.tmp" || true
+    mv "$CARRYOVER_FILE.tmp" "$CARRYOVER_FILE"
+    co_after=$(grep -c . "$CARRYOVER_FILE" || true)
+    log "carry-over: crash-recovery prune applied ($co_before -> $co_after entries; prior run's resolutions kept)"
+fi
 : >"$RESOLVED_SIGS"
 
 # Process one finding: panel, then cap/dedupe/file. $1 = finding JSON,
@@ -1540,6 +1559,11 @@ if [ -s "$RESOLVED_SIGS" ] && [ -s "$CARRYOVER_FILE" ]; then
         > "$CARRYOVER_FILE.tmp" || true
     mv "$CARRYOVER_FILE.tmp" "$CARRYOVER_FILE"
 fi
+# fleet-ops#5611 wake: a completed run's resolutions are now pruned into
+# the ledger above, so reset the persistent sidecar for the next run and
+# leave a copy in the per-run report dir as evidence.
+cp -f "$RESOLVED_SIGS" "$REPORT_DIR/carryover-resolved.txt" 2>/dev/null || true
+: >"$RESOLVED_SIGS"
 carryover_total=0
 [ -s "$CARRYOVER_FILE" ] && carryover_total=$(grep -c . "$CARRYOVER_FILE")
 
