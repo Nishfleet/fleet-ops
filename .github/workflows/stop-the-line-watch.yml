@@ -40,7 +40,7 @@ concurrency:
 jobs:
   detect:
     name: Stop-the-line state-machine tick
-    uses: Nishfleet/fleet-ops/.github/workflows/stop-the-line-detector.yml@main
+    uses: Nishfleet/fleet-ops/.github/workflows/stop-the-line-detector.yml@2970807d23df3578b5a76b40580e022084a7bffd
     permissions:
       actions: read
       contents: read
