@@ -370,6 +370,18 @@
       "note": "per-role Codex launch template (fleet-ops#4148) shape-only; live PATH wrapper remains until wipe; identity pinned in ExecStart (gpt-5.6-luna, openai, effort=max)"
     },
     {
+      "unit": "gh-runner@",
+      "class": "a",
+      "source": "repo",
+      "note": "GitHub's own actions/runner as an owned ephemeral launch template (fleet-ops#5935, endorsed by Nish 2026-09-12 'lets do all of those'): single-use JIT registration per activation via the existing gh keyring (no PAT stored), actions/runner pinned + sha256 in ExecStartPre, Restart=always, cohort-capped by fleet-ci.slice; MANIFEST-installed, pull_request jobs stay hosted so fork PRs never execute on the box."
+    },
+    {
+      "unit": "fleet-ci",
+      "class": "a",
+      "source": "repo",
+      "note": "cohort slice for the #5935 owned ephemeral runners (gh-runner@{1..3}): MemoryHigh=7G MemoryMax=9G CPUWeight=80, deliberately below the Pi workers' CPU weight; the admission governor reads MemAvailable live so no cross-governor code. MANIFEST-installed."
+    },
+    {
       "unit": "memory-index-autocompact",
       "class": "b",
       "source": "repo",
