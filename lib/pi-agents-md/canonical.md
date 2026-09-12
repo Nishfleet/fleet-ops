@@ -110,6 +110,9 @@ Simple language is never baby talk and never condescending.
 
 - **Money is Nish's alone.** No payments, cards, or paid trials, ever. Account
   signups and generated passwords are pre-approved; payment walls stop and ask.
+  Sole recorded exception: `bugbot-gate`-approved Bugbot spend — vault
+  `standing-rules-archive.md` → "Bugbot is the sole pre-authorized paid spend"
+  (fleet-ops#5645). The gate decides; do not widen it.
 - Zero revenue right now. No paid upgrades. Free fixes win.
 - Never `systemctl restart` a slice — it bounces every unit inside it.
 - Never `git stash` in Nish's repos. The checkouts hold other agents' stashes.
