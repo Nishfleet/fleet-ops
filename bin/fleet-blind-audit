@@ -133,6 +133,12 @@ SEAM_LIB="${AUDIT_SEAM_LIB:-$HOME/.local/lib/pi-packet/manual-seam-lens.py}"
 [ -f "$SEAM_LIB" ] || SEAM_LIB="$repo_fallback/lib/manual-seam-lens.py"
 CYCLE_CRITERIA="${AUDIT_CYCLE_CRITERIA:-$repo_fallback/config/gap-closure-cycle-criteria.md}"
 
+# fleet-ops#5781: packet_gh_read (App-GraphQL -> user-REST list fallback with
+# credential/quota stamps) lives in the shared packet-assembly lib so the
+# context lists below survive an exhausted installation-GraphQL bucket.
+PACKET_ASM_LIB="${AUDIT_PACKET_ASSEMBLY_LIB:-$HOME/.local/lib/pi-packet/packet-assembly.sh}"
+[ -f "$PACKET_ASM_LIB" ] || PACKET_ASM_LIB="$repo_fallback/lib/packet-assembly.sh"
+
 # --- help ---------------------------------------------------------------
 # fleet-ops#1549: --help/-h must print usage and exit 0 without taking the
 # flock, calling pi, starting a unit, or writing a report directory.
@@ -895,6 +901,12 @@ if [ "$DRILL" != "1" ]; then
     # Source the shared seat logic. This also sets XDG_RUNTIME_DIR, HOME, etc.
     # shellcheck source=/dev/null
     source "$SEAT_LIB"
+    # fleet-ops#5781: source the shared packet-assembly lib for
+    # packet_gh_read. A stale installed copy (deploy-gap) simply lacks the
+    # function — the `|| echo '[]'` call sites then behave exactly as today.
+    [ -f "$PACKET_ASM_LIB" ] || { log "FATAL: packet-assembly lib missing: $PACKET_ASM_LIB"; exit 2; }
+    # shellcheck source=/dev/null
+    source "$PACKET_ASM_LIB"
 fi
 
 # Ensure the topic + lifecycle labels exist. Swallow "already exists".
@@ -969,13 +981,34 @@ log "seat selected: $provider/$model"
 repo_files=$(find "$REPO_ROOT" -type f -not -path '*/\.git/*' 2>/dev/null | sort)
 systemctl_failed=$(systemctl --user list-units --state=failed --no-legend --plain 2>/dev/null | awk '{print $1}' | grep -E '^(pi-|fleet-|siterep-)' || true)
 systemctl_timers=$(systemctl --user list-timers --no-legend 2>/dev/null | awk '{print $1, $3}' || true)
-open_issues=$(gh issue list -R "$REPO" --state open --json number,title,labels,body -L 50 2>/dev/null || echo '[]')
-closed_issues=$(gh issue list -R "$REPO" --state closed --json number,title,labels,closedAt,closedByPullRequestsReferences,body -L 100 2>/dev/null || echo '[]')
-recent_merges=$(gh pr list -R "$REPO" --state merged --json number,title,mergedAt -L 20 2>/dev/null || echo '[]')
+# fleet-ops#5781: the App installation's graphql bucket is independent of
+# the user credential's REST bucket — when `gh issue|pr list` errors
+# (live case 2026-09-12: "API rate limit already exceeded for
+# installation ID 156789042" while user core still held ~4984), packet_gh_read
+# retries the list via `gh api` on the user credential (organ reads are
+# sanctioned on human gh: fleet-ops#3445 / #5489 _gh_read) and stamps which
+# credential served + remaining quota into GH_LIST_STAMPS for the packet.
+GH_LIST_STAMPS="$REPORT_DIR/gh-list-credentials.txt"
+export PACKET_GH_STAMP_FILE="$GH_LIST_STAMPS"
+open_issues=$(packet_gh_read open-issues \
+    "repos/$REPO/issues?state=open&per_page=50" \
+    '[.[] | select(.pull_request == null) | {number,title,labels:[.labels[]?.name],body}]' \
+    -- issue list -R "$REPO" --state open --json number,title,labels,body -L 50 || echo '[]')
+closed_issues=$(packet_gh_read closed-issues \
+    "repos/$REPO/issues?state=closed&per_page=100" \
+    '[.[] | select(.pull_request == null) | {number,title,labels:[.labels[]?.name],closedAt:.closed_at,closedByPullRequestsReferences:[],body}]' \
+    -- issue list -R "$REPO" --state closed --json number,title,labels,closedAt,closedByPullRequestsReferences,body -L 100 || echo '[]')
+recent_merges=$(packet_gh_read recent-merges \
+    "repos/$REPO/pulls?state=closed&per_page=100" \
+    '[.[] | select(.merged_at != null)] | sort_by(.merged_at) | reverse | .[0:20] | map({number,title,mergedAt:.merged_at})' \
+    -- pr list -R "$REPO" --state merged --json number,title,mergedAt -L 20 || echo '[]')
 # Wide merged-PR set for the closed-but-undelivered hunt (fleet-ops#3683):
 # covers the referencing PRs of the last 100 closed issues. Not printed, so
 # the wider window costs no reviewer context.
-merged_prs=$(gh pr list -R "$REPO" --state merged --json number,mergedAt -L 200 2>/dev/null || echo '[]')
+merged_prs=$(packet_gh_read merged-prs-wide \
+    "repos/$REPO/pulls?state=closed&per_page=100" \
+    '[.[] | select(.merged_at != null)] | sort_by(.merged_at) | reverse | .[0:200] | map({number,mergedAt:.merged_at})' \
+    -- pr list -R "$REPO" --state merged --json number,mergedAt -L 200 || echo '[]')
 GATE_LIB="${AUDIT_MECHANISM_GATE:-$HOME/.local/lib/pi-packet/failure-mechanism-gate.py}"
 [ -f "$GATE_LIB" ] || GATE_LIB="$repo_fallback/lib/failure-mechanism-gate.py"
 MACHINERY_GATE_LIB="${AUDIT_MACHINERY_GATE:-$HOME/.local/lib/pi-packet/machinery-authorization-gate.py}"
@@ -1001,7 +1034,12 @@ else
         collect_args+=(--gh-events "$AUDIT_GH_SEAM_EVENTS")
     else
         gh_seam="$REPORT_DIR/gh-seam-events.json"
-        if gh issue list -R "$REPO" --state all --json number,title,body,createdAt -L 40 >"$REPORT_DIR/gh-seam-raw.json" 2>/dev/null; then
+        # fleet-ops#5781: same user-REST fallback as the packet lists.
+        if packet_gh_read gh-seam-events \
+            "repos/$REPO/issues?state=all&per_page=40" \
+            '[.[] | select(.pull_request == null) | {number,title,body,createdAt:.created_at}]' \
+            -- issue list -R "$REPO" --state all --json number,title,body,createdAt -L 40 \
+            >"$REPORT_DIR/gh-seam-raw.json" 2>/dev/null; then
             jq '[.[] | {kind:"issue", number, title, body, created_at:.createdAt}]' \
                 "$REPORT_DIR/gh-seam-raw.json" >"$gh_seam" 2>/dev/null \
                 || printf '%s\n' '[]' >"$gh_seam"
@@ -1039,6 +1077,13 @@ pkt="$REPORT_DIR/packet.md"
     printf -- '- Deliberate-states JSON: `%s`\n' "${deliberate_json:-[]}"
     printf -- '- Open issues in this repo: `%s`\n' "${open_issues:-[]}"
     printf -- '- Recently merged PRs in this repo: `%s`\n' "${recent_merges:-[]}"
+    # fleet-ops#5781: which credential served each list + remaining quota —
+    # a fallback read is legible in the packet, never a silent empty list.
+    if [[ -s "$GH_LIST_STAMPS" ]]; then
+        while IFS= read -r _credline; do
+            printf -- '- %s\n' "$_credline"
+        done < "$GH_LIST_STAMPS"
+    fi
     printf -- '- Repo file list: `%s`\n' "${repo_files:-}"
     printf -- '- Failed user systemd units: `%s`\n' "${systemctl_failed:-}"
     printf -- '- User systemd timers: `%s`\n' "${systemctl_timers:-}"

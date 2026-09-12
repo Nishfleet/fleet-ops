@@ -358,6 +358,7 @@ PATH="$scratch/fakebin:$PATH" \
   AUDIT_DELIBERATE_STATES="$scratch/deliberate-states.md" \
   AUDIT_PANEL_BIN="$repo_root/bin/fleet-blind-audit-panel" \
   AUDIT_SEAT_LIB="$scratch/seat-lib-fake.sh" \
+  AUDIT_PACKET_ASSEMBLY_LIB="$repo_root/lib/packet-assembly.sh" \
   AUDIT_PLAN_FILE="$scratch/plan.md" \
   AUDIT_FAKE_NOW="2026-08-26T16:00:00Z" \
   AUDIT_PI_BIN="$scratch/fakebin/pi" \
