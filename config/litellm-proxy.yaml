@@ -21,6 +21,11 @@ model_list:
     - prepaid
     order: 1
     max_parallel_requests: 1
+# fleet-ops#4643 cache-affinity ladder (senior auditor 2026-09-12T20:32Z): distinct
+# order: values = sticky lowest-order selection (litellm router order-filters each
+# pick to the lowest order group) instead of a 3-account shuffle pool that cold-
+# starts the per-account prompt cache on every rotation (in-session hit collapsed
+# to 0.016 on pi-issue-fleet-ops-5721). Failover remains deterministic via cooldown.
 - model_name: worker-cheap
   litellm_params:
     model: openai/glm-5.3-flash
@@ -28,7 +33,7 @@ model_list:
     api_key: os.environ/LLMGATEWAY_DEVPASS_API_KEY
     tags:
     - prepaid
-    order: 1
+    order: 2
     max_parallel_requests: 1
 - model_name: worker-cheap
   litellm_params:
@@ -37,7 +42,7 @@ model_list:
     api_key: os.environ/PARETO_API_KEY
     tags:
     - prepaid
-    order: 1
+    order: 3
     max_parallel_requests: 1
 - model_name: worker-cheap
   litellm_params:
@@ -46,7 +51,7 @@ model_list:
     api_key: os.environ/NEBIUS_API_KEY
     tags:
     - metered
-    order: 3
+    order: 4
     max_parallel_requests: 1
 - model_name: worker-capable
   litellm_params:
@@ -151,6 +156,21 @@ benched:
     api_key: os.environ/XKIRO_API_KEY
     tags:
     - free
+    order: 2
+    max_parallel_requests: 1
+# #6133 (2026-09-13): the usable devin seats, benched until a wire exists. Was-never-deployed
+# shape: the deployment the #6133 ask wants in worker-cheap/worker-capable, inert exactly like
+# the #6054 benched: block (no model_name key, not counted by the health canary's
+# fleet_litellm_model_list_expected; never reaches the router via .get()).
+- benched_at: 2026-09-13
+  reason: "openai/glm-5-2 + openai/swe-2-max @ Devin/Windsurf — NO ROUTER WIRE: litellm->openai/* 404 on all four candidate bases (api.devin.ai/v1, api.devin.ai, server.codeium.com, windsurf.com/api/v1; live-proxied via a throwaway port-4321 litellm 2026-09-13) and Windsurf/Exafunction inference is devin-CLI-only (signed Cascade client, pi ACP extension); litellm 1.98.0 and current upstream ship no windsurf/devin/codeium adapter (docs sitemap, 167 providers) — the #4263 verdict ('Cursor (api2.cursor.sh) and Devin (api.devin.ai) use proprietary protocols and do not expose /v1/chat/completions'). Seats themselves healthy via the devin CLI (cli_spawn ledger: devin/glm-5-2 200; swe-2-max bench expired 18:31Z at filing). mechanism-impossible, #6133; unlock = a litellm-side Windsurf/Devin adapter (own issue). NEVER swe-1-7 (retired, cap 0) or swe-2-high (parked to 2036)."
+  was: [worker-cheap, worker-capable]
+  litellm_params:
+    model: openai/glm-5-2
+    api_base: https://api.devin.ai/v1
+    api_key: os.environ/DEVIN_API_KEY
+    tags:
+    - prepaid
     order: 2
     max_parallel_requests: 1
 router_settings:
