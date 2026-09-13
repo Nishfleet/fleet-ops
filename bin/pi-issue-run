@@ -527,6 +527,16 @@ export PI_PICK_PREFER_CLASS
 # fallback, cooldown, and health checks.
 _lit_group="worker-cheap"
 [[ "$pkt_privacy" == "private" ]] && _lit_group="worker-private"
+# fleet-ops#6393: a public difficulty: senior-review packet rides the senior
+# ladder — the prepaid glm-5.3 group — never the cheap flash pool. When no
+# senior deployment is free the PROXY's own fallback (senior -> worker-
+# capable) holds it above the cheap deployments, and when the proxy itself is
+# down the #6315 direct prepaid lane answers, so the packet never downgrades
+# to worker-cheap. Private repos already reach that same prepaid glm-5.3
+# class via worker-private (the #520 free-tier privacy line), so only the
+# public case moves. #4639's armed repair reservation still wins below
+# (judge -> senior: the senior ladder either way).
+[[ "$pkt_privacy" == "public" && "$difficulty" == "senior-review" ]] && _lit_group="senior"
 # fleet-ops#4639: repair-rung packets route to the reserved judge group.
 [[ "${PI_REPAIR_RUNG:-0}" == "1" ]] && _lit_group="judge"
 # fleet-ops#5093 on the proxy: a proxy that is not ready IS the walled fleet.
