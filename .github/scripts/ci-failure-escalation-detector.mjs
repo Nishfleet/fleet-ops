@@ -448,6 +448,20 @@ export function renderIssueBody(e) {
   lines.push(
     "GitHub-plane failure escalation (fleet-ops#221). This check failed repeatedly and is NOT owned by auto-revert (main CI) or the #124 red-PR repair (claim/* worker PRs). Route to the senior-auditor panel per #146.",
   );
+  // fleet-ops#5890: the escalation body must be spec-gate-admissible
+  // (fleet-ops#543) — the four spec lines, derived from the failing check
+  // (workflow/job) and the repo, plus the fleet-ops moves: line
+  // (fleet-ops#3255). Without them an escalation whose label-add failed is
+  // refused by the lifecycle sweep hourly (0509 ... #4939: 45 identical
+  // comments) and never becomes workable.
+  const checkName = e.workflow + "/" + (e.job || e.step || "(unknown job)");
+  lines.push("");
+  lines.push("## Spec");
+  lines.push("- termination: `" + checkName + "` runs green on `" + e.repo + "`, or the senior panel logs a justified dismissal; this escalation closes on either.");
+  lines.push("- accept: - the failing check `" + checkName + "` is diagnosed by the senior panel (fleet-ops#146, 2-of-3); - the verdict (fix issue filed or dismissal reason logged) lands on this issue.");
+  lines.push("- required: a senior-auditor panel verdict for this failing check (" + e.repo + ").");
+  lines.push("- metric: occurrences of the failing check in the escalation detector's next 24h window after the verdict = 0.");
+  lines.push("- moves: product_merges_per_day");
   lines.push("");
   lines.push("## Failure context");
   lines.push("- **Repo:** `" + e.repo + "`");
