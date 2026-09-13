@@ -73,6 +73,11 @@ Environment seams (tests):
   FLEET_LITELLM_STUB        path to a stub JSON response (tests; used for both
                             /health/readiness and /health unless STUB_HEALTH is set)
   FLEET_LITELLM_STUB_HEALTH path to a stub JSON /health census (tests)
+  FLEET_LITELLM_STUB_COMPLETIONS  path to a stub (any file) making the 1-token
+                            /chat/completions hang-probe answer 200 (tests; #6315)
+  FLEET_LITELLM_COMPLETIONS_MODEL model id for the hang-probe completion
+                            (default: first - model_name: in FLEET_LITELLM_CONFIG,
+                            else worker-cheap)
   FLEET_LITELLM_MASTER_KEY  proxy master key for GET /health (never logged)
   FLEET_LITELLM_MASTER_KEY_FILE path to KEY=value env file carrying the master key
   FLEET_LITELLM_CONFIG      live yaml (model_list expected count)
@@ -285,6 +290,62 @@ def _parse_census(body: str) -> tuple[dict[str, dict[str, int]], int]:
     return out, len(healthy_eps) + len(unhealthy_eps)
 
 
+def _first_model_name(path: str) -> str:
+    """First `- model_name:` entry in the live yaml, or '' (none)."""
+    try:
+        text = Path(path).read_text(encoding="utf-8")
+    except OSError:
+        return ""
+    for line in text.splitlines():
+        if line.lstrip().startswith("- model_name:"):
+            return line.split("model_name:", 1)[1].strip()
+    return ""
+
+
+def _probe_completion(proxy_url: str, timeout: float) -> int:
+    """HTTP status of one 1-token /chat/completions, 0 when unanswered.
+
+    fleet-ops#6315: the 2026-09-13 incident had /health/readiness 0-byte
+    timing out 20s+ under the 40-worker load while POST /chat/completions
+    returned 200 -- the /health fan-out wedges the event loop, the product
+    path does not. A hung readiness therefore proves nothing on its own;
+    one completion proves the daemon alive. Model resolution:
+    FLEET_LITELLM_COMPLETIONS_MODEL, else the first - model_name: in the
+    live config, else the literal worker-cheap. The completion costs 1
+    token and never logs its (secret-free) reply; the master key is read,
+    never printed.
+    """
+    stub = os.environ.get("FLEET_LITELLM_STUB_COMPLETIONS")
+    if stub:
+        if not Path(stub).is_file():
+            return 0
+        return 200
+    model = (
+        os.environ.get("FLEET_LITELLM_COMPLETIONS_MODEL", "")
+        or _first_model_name(os.environ.get("FLEET_LITELLM_CONFIG", DEFAULT_CONFIG))
+        or "worker-cheap"
+    )
+    headers = {"Content-Type": "application/json", "Accept": "application/json"}
+    if not _health_fetch_is_stubbed():
+        master_key = _load_master_key()
+        if master_key:
+            headers["Authorization"] = "Bearer " + master_key
+    try:
+        req = urllib.request.Request(
+            proxy_url.rstrip("/") + "/chat/completions",
+            data=json.dumps(
+                {"model": model, "messages": [{"role": "user", "content": "ping"}], "max_tokens": 1}
+            ).encode("utf-8"),
+            headers=headers,
+            method="POST",
+        )
+        with urllib.request.urlopen(req, timeout=timeout) as resp:  # nosem: dynamic-urllib-use-detected
+            resp.read()
+            return int(resp.status)
+    except (urllib.error.HTTPError, urllib.error.URLError, TimeoutError, ConnectionError, OSError):
+        return 0
+
+
 def _count_model_list(path: str) -> int:
     """Count `- model_name:` entries in the live yaml. Stdlib only."""
     try:
@@ -461,11 +522,53 @@ def main(argv: list[str] | None = None) -> int:
     redis_up = _probe_redis(DEFAULT_REDIS_HOST, DEFAULT_REDIS_PORT)
 
     if status == 0:
-        # Organ unreachable — connection refused. Hold through a single-tick
-        # restart window (dead_since persisted in the state file), and only
-        # fail loud once continuously unreachable for --dead-tolerance
-        # seconds. The prom file is still written proxy_up=0 immediately so
-        # the freshness/absent rules surface real death even mid-window.
+        # Organ unanswered. fleet-ops#6315: a health-only hang is not organ
+        # death — the 2026-09-13 incident had readiness+health 0-byte
+        # timing out for 120s+ while completions 200'd. One 1-token
+        # completion answering 200 proves the daemon alive: hold, prom
+        # written proxy_up=0 (readiness did not answer — honest), NO dead
+        # latch, exit 0, for as long as the product path answers. The
+        # /health census question stays unasked during the hang (it is
+        # exactly what wedged); it resumes on the next 200-tick, with a
+        # fresh empty-census hold, same as any post-restart window. When
+        # the completion ALSO fails (true death / restart window — a
+        # connection-refused organ cannot answer), the existing
+        # dead-tolerance latch below applies unchanged.
+        c_status = _probe_completion(args.proxy_url, args.timeout)
+        if c_status == 200:
+            _atomic_write(Path(args.prom), render_prom(now, 0, {}, pg_up, redis_up, 1))
+            _atomic_write(
+                Path(args.state),
+                json.dumps(
+                    {
+                        "now": int(now),
+                        "proxy_up": 0,
+                        "status": 0,
+                        "completions_status": 200,
+                        "completions_ok": True,
+                        "groups": {},
+                        "postgres_up": pg_up,
+                        "redis_up": redis_up,
+                        "dead_since": None,
+                        "empty_since": None,
+                    },
+                    indent=2,
+                    sort_keys=True,
+                ),
+            )
+            if not args.quiet:
+                print(
+                    f"fleet-litellm-health-canary: health-hang readiness unanswered at {url} "
+                    f"but completions 200 — organ alive, not a death; holding (fail-open, fleet-ops#6315)",
+                    file=sys.stderr,
+                )
+            return 0
+        # Existing path: connection refused / fully starved. Hold through a
+        # single-tick restart window (dead_since persisted in the state
+        # file), and only fail loud once continuously unreachable for
+        # --dead-tolerance seconds. The prom file is still written
+        # proxy_up=0 immediately so the freshness/absent rules surface real
+        # death even mid-window.
         state = _load_state(args.state)
         dead_since = state.get("dead_since")
         if not isinstance(dead_since, (int, float)):
@@ -477,6 +580,8 @@ def main(argv: list[str] | None = None) -> int:
                 "now": int(now),
                 "proxy_up": 0,
                 "status": 0,
+                "completions_status": c_status,
+                "completions_ok": False,
                 "groups": {},
                 "postgres_up": pg_up,
                 "redis_up": redis_up,

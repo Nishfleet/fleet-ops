@@ -537,7 +537,24 @@ if litellm_ready; then
     seat=$(litellm_seat "$_lit_group" || true)
 else
     seat=""
-    seat_log "pi-issue-run: $inst LiteLLM proxy not ready ($LITELLM_HEALTH_URL) — treating the fleet as walled"
+    # fleet-ops#6315: #5093's walled exit stranded the prepaid NON-proxy
+    # lane (Devin occupancy 0/4 while pi-issue@ units walled on a starved
+    # /health, 2026-09-13). Claim the direct fallback seat when it is not
+    # benched — the 429 -> 900s quota bench stays the rate brake. Only
+    # BOTH-dead (proxy starved AND fallback benched/retired) keeps the
+    # #5093 no-usable verdict, so the sentinel/escalation contract is
+    # untouched when nothing at all can run.
+    if _dfp=$(direct_fallback_seat); then
+        # read splits provider<TAB>model on the default IFS.
+        read -r _dfp_p _dfp_m <<< "$_dfp"
+        if _SEAT_USABLE_SILENT=1 seat_usable "$_dfp_p" "$_dfp_m"; then
+            seat="$_dfp"
+            seat_log "pi-issue-run: $inst proxy not ready ($LITELLM_HEALTH_URL) — direct prepaid lane $_dfp_p/$_dfp_m (never touches the proxy; fleet-ops#6315)"
+        fi
+    fi
+    if [[ -z "$seat" ]]; then
+        seat_log "pi-issue-run: $inst LiteLLM proxy not ready ($LITELLM_HEALTH_URL) and no usable direct fallback — treating the fleet as walled"
+    fi
 fi
 seat_log "pi-issue-run: $inst group=$_lit_group (privacy=$pkt_privacy)"
 if [[ -z "$seat" ]]; then
