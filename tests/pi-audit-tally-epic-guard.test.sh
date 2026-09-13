@@ -84,10 +84,20 @@ ok "already-agent-ready candidate: no re-tally write"
 # =============================================================================
 # 2. epic guard: 2-of-3 FAIL on an epic child -> spec-needed, NOT discarded
 # =============================================================================
+# fleet-ops#5861: each TITLE shape must independently pass the guard — every
+# new fixture below carries a body that matches NONE of the guard's patterns
+# and no `epic` label, so only the title (or, for the split fixture, the
+# (split of #n) citation) can fire. These two shapes are exactly what #6151's
+# bare-`EPIC:`-prefix guard still misses: `EPIC (Nish):` (colon not right
+# after EPIC) and a `(split of #<n>)`-cited slice.
+#   - "(split of #2992)" is 0509#3195's title, verbatim: a slice of the
+#     #2992 split family. A slice is judged on its epic, not standalone.
 for fixture in \
   '{"title":"EPIC #1367 Q1: evals harness","body":"scoped item","labels":[{"name":"scout-candidate"}]}' \
   '{"title":"Q2 wiring","body":"Part of the chain in docs/epics/full-site-watch.md","labels":[{"name":"scout-candidate"}]}' \
-  '{"title":"Q3 UI","body":"serves EPIC (Nish): full-site watch","labels":[{"name":"scout-candidate"}]}'
+  '{"title":"Q3 UI","body":"serves EPIC (Nish): full-site watch","labels":[{"name":"scout-candidate"}]}' \
+  '{"title":"EPIC (Nish): full-site watch","body":"the full-site-watch epic tracking issue","labels":[{"name":"scout-candidate"}]}' \
+  '{"title":"feat(sources): TikTok ad coverage via the public TikTok Commercial Content Library / Creative Center (split of #2992)","body":"dependency item of the media-mentions epic","labels":[{"name":"scout-candidate"}]}'
 do
     log2="$scratch/gh2.log"; : >"$log2"
     printf '%s\n' "$fixture" >"$scratch/issue2.json"
@@ -102,7 +112,7 @@ do
     grep -q 'add-label spec-needed' "$log2" || fail "epic guard: did not mark spec-needed ($fixture)"
     grep -q 'issue comment' "$log2" || fail "epic guard: did not name the failing bar ($fixture)"
 done
-ok "epic-linked candidates (title EPIC #n / docs/epics/ / EPIC (Nish):) never discarded, marked spec-needed"
+ok "epic-linked candidates (title EPIC #n / EPIC: / EPIC (Nish): / (split of #n); body docs/epics/ / EPIC (Nish):; epic label) never discarded, marked spec-needed (fleet-ops#5861: 0509#3171)"
 
 # a NON-epic candidate with the same votes is still discarded (guard is narrow)
 log3="$scratch/gh3.log"; : >"$log3"
