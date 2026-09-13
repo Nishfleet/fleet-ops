@@ -68,13 +68,18 @@
 # Dead-man (fleet-ops#4266): every real launch arms three rails so a
 # detached job that ENDS without its deliverable fails loudly instead of
 # silently going away:
-#   1. --property=OnFailure=unit-escalation@${unit}.service.service — the
-#      SAME shape the global drop-in service.d/10-escalate.conf produces via
-#      %%n (template instance = full unit name INCLUDING .service). Explicit
-#      here because systemd-run rejects %%n itself in --property values, and
-#      because a fresh manager may not yet have loaded the drop-in (proven
-#      live 2026-09-07: transients came up with empty OnFailure until
-#      daemon-reload). Belt alongside the drop-in's braces.
+#   1. --property=OnFailure=unit-escalation@${unit}.service.service
+#      pi-packet-failed@${unit}.service.service — the SAME shape the global
+#      drop-in service.d/10-escalate.conf produces via %%n (template
+#      instance = full unit name INCLUDING .service). Explicit here because
+#      systemd-run rejects %%n itself in --property values, and because a
+#      fresh manager may not yet have loaded the drop-in (proven live
+#      2026-09-07: transients came up with empty OnFailure until
+#      daemon-reload). Belt alongside the drop-in's braces. The
+#      pi-packet-failed@ entry (fleet-ops#5444) writes the triage +
+#      findings-ledger record and re-queues --deliverable packets as
+#      agent-ready issues; unit-escalation@ owns the STOP-REASON auditor
+#      rail.
 #   2. ExecStartPost keystone-hc-ping detached start — /start ping with the
 #      per-run rid on the dedicated HC_URL_DETACHED check (silent skip when
 #      the URL is not provisioned yet).
@@ -404,7 +409,11 @@ for v in KEYSTONE_HC_ENV PI_DEADMAN_TEXTFILE PI_DEADMAN_DRYRUN \
 # values, and the escalation must not depend on a manager that has not yet
 # loaded the drop-in (proven live 2026-09-07: transients had empty OnFailure
 # until daemon-reload). Belt alongside the drop-in's braces.
-cmd+=(--property="OnFailure=unit-escalation@${unit}.service.service")
+# fleet-ops#5444: pi-packet-failed@ rides the same OnFailure so a dead packet
+# also lands in the heartbeat triage file + findings ledger, and a
+# --deliverable packet re-enters the queue as an agent-ready issue. The
+# instance is the full unit name incl. .service (unit-escalation convention).
+cmd+=(--property="OnFailure=unit-escalation@${unit}.service.service pi-packet-failed@${unit}.service.service")
 cmd+=(--property="ExecStartPost=${ping_bin} detached start")
 if [[ "${PI_SALVAGE_DISABLE:-0}" != "1" ]]; then
     # Repeated --property=ExecStopPost= APPENDS (proven live 2026-09-07): a
@@ -505,12 +514,14 @@ entry = {
     "deadline_min": int(sys.argv[9]),
     "deadline_ts": sys.argv[10],
     "cmdline": sys.argv[11],
+    "deliverable": sys.argv[12],
     "status": "open",
     "retries": int(sys.argv[3]),
 }
 sys.stdout.write(json.dumps(entry, separators=(",", ":")) + "\n")
 ' "$dispatch_id" "$chain_id" "$hop" "$dispatch_ts" "$unit" "$packet_path" \
-      "$provider" "$model" "$deadline_min" "$deadline_ts" "$*" >> "$LEDGER"
+      "$provider" "$model" "$deadline_min" "$deadline_ts" "$*" \
+      "${deliverable:-}" >> "$LEDGER"
     echo "pi-systemd-run: ledger entry id=$dispatch_id chain=$chain_id hop=$hop unit=$unit"
 fi
 
