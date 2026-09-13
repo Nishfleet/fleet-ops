@@ -13,6 +13,13 @@
 #              cursor_api_cycle_usd is the cycle-to-date cumulative.
 #   usd_per_merged_pr: <n>
 #   repair_rung=armed|off ticks=<n>   (fleet-ops#4820; latched rung visibility)
+#   p14-main(main=<12hex>): ok suites=<n>[ missing=<t,...>]
+#   p14-main(main=<12hex>): red suites=<t,...>[ missing=<t,...>] detail=<path>
+#     (fleet-ops#6159: the ci.yml P14 shape — shellcheck / semgrep /
+#     systemd-analyze + the exact suite list — RUN against a throwaway
+#     worktree of origin/main, not trusted from any check-run; verdict
+#     cached by main sha so the judge pays once per main-advance,
+#     UNAVAILABLE decays after 1h, never a fabricated ok)
 #
 #   metered    = marginal USD from tracked-metered seats over the trailing 24h
 #                (rate card in config/seat-caps.json x session usage tokens)
@@ -189,7 +196,11 @@ fi
 source "$repo_root/lib/cursor-api-bucket.sh"
 CURSOR_TODAY_FIGURE="$(cursor_today_figure)"
 export CURSOR_TODAY_FIGURE
-export CURSOR_API_CYCLE_USD="$(cursor_api_cycle_usd)"
+# SC2155: the helper's rc is masked exactly as the inline export-assign did
+# (|| true preserves today's behaviour: its printed UNAVAILABLE:... strings
+# are the signal, its rc never killed the header).
+CURSOR_API_CYCLE_USD="$(cursor_api_cycle_usd)" || true
+export CURSOR_API_CYCLE_USD
 
 # Compute the USD numbers via the shared helper (kept in lock-step with the
 # fleet_usd_24h prom exporter).
@@ -310,4 +321,17 @@ unset _deploy_age
 if [ -f "$repo_root/lib/findings_ledger.py" ]; then
     python3 "$repo_root/lib/findings_ledger.py" measure \
         || echo "findings: total=0 filed=0 carried_over=0 oldest_carry_h=0 panel_fail=0 UNAVAILABLE:measure-failed"
+fi
+
+# --- p14-main: is origin/main's P14 suite actually green? (fleet-ops#6159) ---
+# 4th caught-by-hand sighting: the P14 suites run as PR checks only, so the
+# check-run view of main is structurally blind to a suite red on main. This
+# detector RUNS the ci.yml shape (shellcheck / semgrep / systemd-analyze + the
+# exact suite list) against a throwaway worktree of origin/main, verdict
+# cached by main sha so the judge pays once per main-advance. Sourced (not
+# run) from lib/measure-p14-main.sh; one line, never a fabricated ok.
+if [ -f "$repo_root/lib/measure-p14-main.sh" ]; then
+    # shellcheck disable=SC1090,SC1091
+    source "$repo_root/lib/measure-p14-main.sh"
+    fleet_p14_main_line "$repo_root" || echo "p14-main: UNAVAILABLE:detector-failed"
 fi
