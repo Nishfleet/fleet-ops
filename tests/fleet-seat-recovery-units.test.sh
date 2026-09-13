@@ -358,6 +358,11 @@ JSON
   inst="fleet-ops-6315e"
   printf 'Implement one GitHub issue: fleet-ops#6315.\nTARGET: repo Nishfleet/fleet-ops issue 6315 unit pi-issue-%s\n' "$inst" > "$PI_ISSUES_DIR/${inst}.in"
   sentinel="$PI_SEAT_HEALTH_LEDGER_DIR/.no-usable-seat"
+  # #5093 edges: the sentinel must START at no-usable (an earlier walled tick
+  # wrote it) so the (e) run proves the RECOVERY edge — the direct lane picks
+  # and the sentinel flips to usable. An absent sentinel writes nothing
+  # (absent = healthy, #5093), which would prove less.
+  printf 'no-usable\n' > "$sentinel"
   set +e
   bash "$repo_root/bin/pi-issue-run" "$inst" > "$scratch/run.out" 2> "$scratch/run.err"
   rc=$?
@@ -368,8 +373,10 @@ JSON
   seatpick=$(cat "$PI_PACKET_STATE/attempts/pi-issue-${inst}.seat" 2>/dev/null || true)
   [[ "$seatpick" == "devin/swe-2-max" ]] \
     || fail "#6315(e): picked '$seatpick', expected the direct prepaid lane devin/swe-2-max"
-  grep -q 'devin/swe-2-max' "$PI_PACKET_STATE/attempts/pi-issue-${inst}.tried-seats" \
-    || fail "#6315(e): tried-seats must record the direct lane"
+  grep -q 'running on devin/swe-2-max' "$scratch/run.err" \
+    || fail "#6315(e): run must LOG the direct-lane seat (running on devin/swe-2-max); err: $(tr '\n' ' ' < "$scratch/run.err" | tail -c 200)"
+  # (tried-seats proves nothing here: the #1133 SUCCESS reset at the end of the
+  # run wipes it — the running-on log line + .seat file are the durable proof.)
   ok "#6315(e): walled proxy + capable direct seat => pi-issue-run claims devin/swe-2-max (sentinel usable)"
 
   # (f) walled + the direct seat benched (provider 429 -> quota bench) =>
