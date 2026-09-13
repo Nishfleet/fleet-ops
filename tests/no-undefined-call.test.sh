@@ -196,11 +196,14 @@ def clauses(text):
     quote = ""
     stack = []          # 'c' = $( / backtick, 's' = bare subshell, 'a' = arithmetic
     heredoc = None      # terminator line content (stripped) while inside a heredoc
-    for i, raw in enumerate(lines):
+    i = 0
+    while i < len(lines):
+        raw = lines[i]
         if heredoc is not None:
             if raw.strip() == heredoc:
                 heredoc = None
             yield (i + 1, " ")
+            i += 1
             continue
         # backslash continuations join into one logical line
         start = i
@@ -453,6 +456,10 @@ def clauses(text):
             emit(c)
             k += 1
         yield (start + 1, "".join(seg))
+        # the continuation-join above consumed lines i+1..j into this logical
+        # line: advance past them (a for-loop re-parsed each consumed line as
+        # a fresh clause, leaking its first word as a phantom call — #6032)
+        i = j + 1
     return
 
 def _in_quoteless_data(buf, k, n):
@@ -550,6 +557,12 @@ for path in bash_files():
     script_dir = os.path.dirname(path)
     defined = defined_names(text)
     defined |= assigned_names(text)
+    # `command -v name` guards: the same safe-by-construction proof as the
+    # declare -f guard in defined_names — the caller probes the function and
+    # branches, so an absent definition resolves as the intended false
+    # (fleet-gap-closure-conference's poison probe, #6032). Same-file only:
+    # every guard seen so far wraps its own call.
+    defined |= set(re.findall(r"command\s+-v\s+([A-Za-z_][A-Za-z0-9_]*)", text))
     seen = {path}
     stack = [(t, 0) for t in reversed(sourced_targets(text, script_dir, root))]
     while stack:

@@ -1530,3 +1530,160 @@ classify_death_error() {
     [[ -z "$literal" ]] && literal="(no error text captured)"
     printf '%s\n%s\n' "$cls" "$literal"
 }
+
+# --- fleet-ops#6032: AIMD learned-cap + parked-ledger primitives -------------
+# #5993 deleted the routing library; #6095 restored its other callers' needs
+# into this file. These four are the residue the #6032 sweep still found
+# called (comeback-release overload wall + corpse retire). Restored verbatim
+# from the pre-#5993 routing library (5411da097^), with the pick-side prose
+# reworded off the retired-routing signature (freeze gate). Nobody reads
+# learned-caps.json yet (the #4263 read side went to the proxy): the write
+# side is the mechanism the comeback-release caller documents, and the audit
+# line is the durable record.
+
+LEARNED_CAPS_JSON="${LEARNED_CAPS_JSON:-$HOME/.local/state/pi-packet/learned-caps.json}"
+LEARNED_CAPS_AUDIT="${LEARNED_CAPS_AUDIT:-$HOME/.local/state/pi-packet/learned-caps-audit.log}"
+
+declare -A LEARNED_CAP=()
+declare -A LEARNED_BENCH_UNTIL=()
+declare -A LEARNED_RAMP=()
+
+_set_learned_in_memory() {
+    local p="$1" lc="$2" bench="${3:-}" ramp="${4:-}"
+    LEARNED_CAP["$p"]="$lc"
+    if [[ -n "$bench" ]]; then
+        LEARNED_BENCH_UNTIL["$p"]="$bench"
+    else
+        unset 'LEARNED_BENCH_UNTIL[$p]'
+    fi
+    if [[ "$ramp" == "1" ]]; then
+        LEARNED_RAMP["$p"]=1
+    elif [[ "$ramp" == "0" ]]; then
+        unset 'LEARNED_RAMP[$p]'
+    fi
+}
+
+# Persist learned state for one provider and emit an audit line.
+# Args: provider learned_cap result bench_until [ramp]
+# result in {probe, backoff, decay, ramp}. ramp in {0,1}; absent preserves the
+# current in-memory LEARNED_RAMP[$p] (so probes during a ramp keep the flag).
+_learned_audit() {
+    local line="$1"
+    printf '[%s] %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$line" >>"$LEARNED_CAPS_AUDIT" 2>/dev/null || true
+}
+
+_record_learned_cap() {
+    local p="$1" lc="$2" result="$3" bench="${4:-}" ramp="${5:-}"
+    [[ "$lc" =~ ^[0-9]+$ ]] || return 1
+    # Absent ramp arg: preserve the current flag (probe during ramp stays ramp).
+    local ramp_val="${LEARNED_RAMP[$p]:-0}"
+    [[ "$ramp" == "0" || "$ramp" == "1" ]] && ramp_val="$ramp"
+    mkdir -p "$(dirname "$LEARNED_CAPS_JSON")" 2>/dev/null || true
+    local tmp="$LEARNED_CAPS_JSON.tmp.$$.$RANDOM" now_utc
+    now_utc=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+    local ramp_json
+    [[ "$ramp_val" == "1" ]] && ramp_json="true" || ramp_json="false"
+    if [[ -f "$LEARNED_CAPS_JSON" ]] && jq -e . "$LEARNED_CAPS_JSON" >/dev/null 2>&1; then
+        # Merge via object addition, not $ps[$p] = ... jq 1.7 rejects
+        # assignment through a variable-held object ("Invalid path
+        # expression") and the fallback would then rewrite the file with
+        # only this provider, wiping sibling learned caps.
+        if jq --arg p "$p" --argjson lc "$lc" --arg r "$result" \
+                --arg b "$bench" --arg t "$now_utc" --argjson ramp "$ramp_json" \
+            '.providers = ((.providers // {}) + {($p): {learned_cap:$lc, last_result:$r, bench_until:(if $b == "" then null else $b end), ramp:$ramp, last_at:$t}})' \
+            "$LEARNED_CAPS_JSON" >"$tmp" 2>/dev/null; then
+            :
+        else
+            rm -f "$tmp" 2>/dev/null || true
+            tmp=""
+        fi
+    else
+        tmp=""
+    fi
+    if [[ -z "$tmp" || ! -s "$tmp" ]]; then
+        tmp="$LEARNED_CAPS_JSON.tmp.$$.$RANDOM"
+        if ! jq -nc --arg p "$p" --argjson lc "$lc" --arg r "$result" \
+            --arg b "$bench" --arg t "$now_utc" --argjson ramp "$ramp_json" \
+            '{providers: {($p): {learned_cap:$lc, last_result:$r, bench_until:(if $b == "" then null else $b end), ramp:$ramp, last_at:$t}}}' >"$tmp" 2>/dev/null; then
+            seat_log "aimd: state write FAILED for $p (lc=$lc result=$result) — in-memory only"
+            rm -f "$tmp" 2>/dev/null || true
+            _set_learned_in_memory "$p" "$lc" "$bench" "$ramp_val"
+            return 0
+        fi
+    fi
+    chmod 0644 "$tmp" 2>/dev/null || true
+    if mv "$tmp" "$LEARNED_CAPS_JSON" 2>/dev/null; then
+        _set_learned_in_memory "$p" "$lc" "$bench" "$ramp_val"
+        local bench_desc="no bench"
+        if [[ -n "$bench" ]]; then
+            local bs nowb
+            nowb=$(date -u +%s)
+            bs=$(date -u -d "$bench" +%s 2>/dev/null || echo 0)
+            bs=$(( bs > nowb ? bs - nowb : 0 ))
+            bench_desc="bench=${bs}s bench_until=$bench"
+        fi
+        local ramp_desc=""
+        [[ "$ramp_val" == "1" ]] && ramp_desc=" ramp"
+        _learned_audit "aimd $p: learned_cap=$lc result=$result$bench_desc$ramp_desc"
+        return 0
+    fi
+    seat_log "aimd: state rename FAILED for $p at $LEARNED_CAPS_JSON — in-memory only"
+    rm -f "$tmp" 2>/dev/null || true
+    _set_learned_in_memory "$p" "$lc" "$bench" "$ramp_val"
+    return 0
+}
+
+write_parked_ledger() {
+    local p="$1" m="$2" reason="${3:-corpse-retired}"
+    local path now_utc now_s far_future tmp
+    # fleet-ops#3661: never write a ledger for a phantom seat key.
+    if ! _seat_key_guard "$p" "$m" "write_parked_ledger"; then return 1; fi
+    path=$(seat_ledger_path "$p" "$m")
+    mkdir -p "$LEDGER_DIR" 2>/dev/null || true
+    now_s=$(date -u +%s)
+    now_utc=$(date -u -d "@$now_s" +%Y-%m-%dT%H:%M:%SZ)
+    # Far future: 10 years out, so seat_usable's future-usable_at check always
+    # holds the seat off the ladder (and seat_dead=true is the terminal block).
+    far_future=$(date -u -d "@$((now_s + 315360000))" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || echo "$now_utc")
+    tmp="$path.park.$$.$RANDOM.tmp"
+    # fleet-ops#3603: a corpse ledger that carries NO bench_reason reads as the
+    # fail-open corpse shape (fleet-ops#1890/#2712) to the seat-health census /
+    # corpse snapshot, which re-files the same durably-benched corpse ticket
+    # every tick as "bench_reason=null". Record the durable bench literal here
+    # so a corpse-retired ledger (cap=0 + intentional_cap_zero=corpse is the
+    # real bench; the picker never offers it) is recognisable as benched, never
+    # fail-open.
+    br="corpse-retired: cap=0 corpse bench, the picker never offers (durable, fleet-ops#2716/#3669)"
+    if ! jq -nc \
+        --arg provider "$p" --arg model "$m" \
+        --arg observed "$now_utc" --arg usable "$far_future" \
+        --arg br "$br" \
+        --argjson seat_dead true --argjson poison_ladder false \
+        '{
+          provider:$provider, model:$model,
+          http_status:null, retry_after:null,
+          health_class:"parked",
+          retryable:false, seat_dead:$seat_dead, poison_ladder:$poison_ladder,
+          observed_at:$observed,
+          source:"corpse_retirement",
+          failure_mode:"corpse_retired",
+          last_error_class:"corpse_retired",
+          bench_reason:$br,
+          bench_until:$usable,
+          usable_at:$usable,
+          consecutive_failure_count:0,
+          writer:"write_parked_ledger"
+        }' > "$tmp" 2>/dev/null; then
+        seat_log "parked-ledger: jq compose FAILED for $p/$m — parked ledger NOT written"
+        rm -f "$tmp" 2>/dev/null || true
+        return 1
+    fi
+    chmod 0644 "$tmp" 2>/dev/null || true
+    if mv "$tmp" "$path" 2>/dev/null; then
+        seat_log "parked-ledger: $p/$m parked (seat_dead=true, class=parked, usable_at=$far_future, reason=$reason)"
+        return 0
+    fi
+    seat_log "parked-ledger: rename FAILED for $p/$m at $path"
+    rm -f "$tmp" 2>/dev/null || true
+    return 1
+}
