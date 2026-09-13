@@ -59,7 +59,6 @@ clear_active_seat() { :; }
 is_spawn_etimeout() { return 1; }
 is_quota_cap_error() { return 1; }
 mark_seat_spawn_fail() { echo "spawn_fail $*" >>"${SEAT_CALLS:?}"; return 0; }
-mark_seat_quota_bench() { echo "quota_bench $*" >>"${SEAT_CALLS:?}"; return 0; }
 litellm_seat() { echo "pick-seat $*" >>"${SEAT_CALLS:?}"; printf 'cursor\tcomposer-2.5\n'; return 0; }
 EOF
 
@@ -108,7 +107,7 @@ grep -q 'fleet-ops#5307' "$scratch/run1.err" \
 if grep -q 'pick-seat' "$seat_calls"; then
     fail "scenario 1: pick-seat must NOT run when the prompt is oversized: $(cat "$seat_calls")"
 fi
-if grep -qE 'spawn_fail|quota_bench' "$seat_calls"; then
+if grep -qE 'spawn_fail' "$seat_calls"; then
     fail "scenario 1: no seat bench may be written — the seat is healthy: $(cat "$seat_calls")"
 fi
 [[ ! -s "$ATTEMPTS_DIR/agent-cron-huge.tried-seats" ]] \

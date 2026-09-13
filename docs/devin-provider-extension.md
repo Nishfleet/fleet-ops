@@ -30,12 +30,13 @@ write autonomy (Nish, 2026-08-05).
 
 ## Safety net
 
-`lib/seat-lib.sh` classifies the `rejected a tool call that requires
+`lib/litellm-seat.sh` classifies the `rejected a tool call that requires
 confirmation` literal as `devin-writes-rejected` (matcher
-`is_devin_writes_rejected`, writer `mark_seat_devin_writes_rejected_bench`).
-If a future Devin CLI update restores writable sandboxing, re-probe with the
-two commands in the issue before restoring `--sandbox`; until then it stays
-off. The classifier benches the seat with a named reason instead of a day of
+`is_devin_writes_rejected`; the per-class bench writer was a log-only stub,
+deleted in fleet-ops#6032 — the LiteLLM proxy cooldown owns the cross-run
+skip). If a future Devin CLI update restores writable sandboxing, re-probe
+with the two commands in the issue before restoring `--sandbox`; until then
+it stays off. The classifier names the fault class instead of a day of
 empty runs, and never retires it (a CLI/flag config fault is infrastructure,
 not seat yield).
 

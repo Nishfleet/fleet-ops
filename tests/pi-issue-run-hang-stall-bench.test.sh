@@ -3,8 +3,9 @@
 #
 # fleet-ops#2133: two detectors that previously existed only as a hot-patch on
 # the LIVE /home/nish/.local/bin/pi-issue-run (never landed on a PR) must fire
-# and bench the seat via mark_seat_hang_bench so pick-seat skips it on the next
-# restart. Both gate on spawn_elapsed_s > PI_HANG_BENCH_MIN_S (default 300s).
+# and log the hang class — fleet-ops#6032 deleted the log-only hang bench
+# writer stub; the LiteLLM proxy cooldown owns the cross-run
+# skip. Both gate on spawn_elapsed_s > PI_HANG_BENCH_MIN_S (default 300s).
 #
 #   (A) devin long-hang-then-ETIMEDOUT: rc=1, elapsed > 300s, stderr contains
 #       "spawnSync ... ETIMEDOUT". NOT a spawn-phase failure (elapsed >
@@ -127,16 +128,11 @@ cat >"$SEAT_CAPS_JSON" <<'JSON'
 }
 JSON
 
-# Overlay: record mark_seat_hang_bench calls, then run the real function so
-# the per-seat ledger is actually written with health_class="hang_bench".
+# Overlay: record mark_seat_spawn_fail calls (the surviving real marker
+# writer), then run the real function so the marker is actually written.
 cat >"$scratch/seatlib.sh" <<EOF
 # shellcheck shell=bash
 source "$repo_root/lib/litellm-seat.sh"
-eval "\$(declare -f mark_seat_hang_bench | sed '1s/^mark_seat_hang_bench/orig_mark_seat_hang_bench/')"
-mark_seat_hang_bench() {
-    printf '%s/%s %s\n' "\$1" "\$2" "\${3:-}" >>"$scratch/hang_calls"
-    orig_mark_seat_hang_bench "\$@"
-}
 eval "\$(declare -f mark_seat_spawn_fail | sed '1s/^mark_seat_spawn_fail/orig_mark_seat_spawn_fail/')"
 mark_seat_spawn_fail() {
     printf '%s/%s %s\n' "\$1" "\$2" "\${3:-}" >>"$scratch/spawnfail_calls"
@@ -146,9 +142,8 @@ EOF
 export PI_PACKET_SEAT_LIB="$scratch/seatlib.sh"
 
 run_scenario() {
-    local label="$1" stderr_body="$2" expected_rc="$3"
+    local label="$1" stderr_body="$2" expected_rc="$3" expected_log="$4"
     local inst="$label"
-    rm -f "$scratch/hang_calls"
     rm -rf "$LEDGER"; mkdir -p "$LEDGER"
     rm -rf "$STATE_DIR"; mkdir -p "$STATE_DIR/attempts" "$STATE_DIR/active-seats"
 
@@ -178,11 +173,11 @@ STUB
     np="${seat_line%%/*}"
     nm="${seat_line#*/}"
 
-    [[ -f "$scratch/hang_calls" ]] \
-      || fail "$label: mark_seat_hang_bench was never called (detector did not fire)"
-    grep -qF "$np/$nm" "$scratch/hang_calls" \
-      || fail "$label: mark_seat_hang_bench not called for $np/$nm; calls: $(cat "$scratch/hang_calls")"
-    ok "$label: mark_seat_hang_bench called for $np/$nm"
+    grep -qF "$expected_log" "$scratch/run.err" \
+      || fail "$label: hang detector did not log its class line (want '$expected_log'): $(tail -n 15 "$scratch/run.err")"
+    grep -qF "$np/$nm" "$scratch/run.err" \
+      || fail "$label: run.err does not name the seat $np/$nm: $(tail -n 15 "$scratch/run.err")"
+    ok "$label: hang detector logged the class line for $np/$nm"
 
     shopt -s nullglob
     _hang_ledgers=("$LEDGER"/*.json)
@@ -196,7 +191,7 @@ STUB
 etimedout_body='Error: spawnSync /home/nish/.local/bin/pi ETIMEDOUT
     at Object.spawnSync (node:internal/child_process:1111:20)
 spawnSync ETIMEDOUT'
-run_scenario "etimedout-2133" "$etimedout_body" 1
+run_scenario "etimedout-2133" "$etimedout_body" 1 "DEVIN LONG HANG ETIMEDOUT"
 
 # (B) Ready-for-input stall. >5 "Ready for input" lines, rc=1 (not 124, which
 # is the hang-watchdog kill handled by mid-session-death).
@@ -205,7 +200,7 @@ for _ in 1 2 3 4 5 6 7 8 9 10; do
     rfi_body+='Ready for input
 '
 done
-run_scenario "rfi-stall-2133" "$rfi_body" 1
+run_scenario "rfi-stall-2133" "$rfi_body" 1 "READY-FOR-INPUT STALL"
 
 
 # (C)/(D) fleet-ops#3883: the hang watchdog (rc=124, a real `timeout` kill of
@@ -219,7 +214,7 @@ run_scenario "rfi-stall-2133" "$rfi_body" 1
 run_watchdog_scenario() {
     local label="$1" ntools="$2" expect_bench="$3"
     local inst="$label"
-    rm -f "$scratch/hang_calls" "$scratch/spawnfail_calls"
+    rm -f "$scratch/spawnfail_calls"
     rm -rf "$LEDGER"; mkdir -p "$LEDGER"
     rm -rf "$STATE_DIR"; mkdir -p "$STATE_DIR/attempts" "$STATE_DIR/active-seats"
 
@@ -296,4 +291,4 @@ STUB
 run_watchdog_scenario "wd-slow-3883" 7 no
 run_watchdog_scenario "wd-hang-3883" 0 yes
 
-ok "pi-issue-run #2133 hang/stall detectors fire and bench the seat via mark_seat_hang_bench"
+ok "pi-issue-run #2133 hang/stall detectors fire and log the hang class (proxy cooldown owns the skip)"

@@ -1210,8 +1210,9 @@ grep -Eq '^[[:space:]]*bash[[:space:]]+"?\$here/pi-issue-run-empty-success\.test
 ok "pi-issue-run-empty-success.test.sh host line in seat-lib.test.sh is pinned (fleet-ops#6028)"
 
 # fleet-ops#6028: hard-pin the host line for pi-issue-run-hang-stall-bench
-# in ci-standards-audit. The litellm-era routing made mark_seat_hang_bench
-# a no-op stub (proxy cooldown owns routing), #6037 deleted the stale
+# in ci-standards-audit. The litellm-era routing made the hang bench writer
+# a no-op stub (proxy cooldown owns routing; deleted fleet-ops#6032), #6037
+# deleted the stale
 # hang-window-scale variant, and the surviving coverage is hosted from
 # ci-standards-audit.test.sh (already listed in ci.yml) — the worker App
 # cannot push .github/workflows/** so the host line is the ci.yml wiring.

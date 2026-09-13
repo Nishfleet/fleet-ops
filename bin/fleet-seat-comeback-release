@@ -1132,8 +1132,8 @@ _backfill_corpse_bench_reason() {
 }
 
 # fleet-ops#2638: corpse a seat whose consecutive_failure_count has crossed
-# the threshold after a probe failure. The bash writer (mark_seat_quota_bench,
-# fleet-ops#2594) corpsed quota_cap at the same threshold but the prober's
+# the threshold after a probe failure. The retired bash quota-bench writer
+# (fleet-ops#2594) corpsed quota_cap at the same threshold but the prober's
 # path (overload_bench / transient_fault / rate_limited) had no corpse step —
 # a chronically-failing seat re-benched every 15 min forever, count climbing,
 # router never freeing the seat. Write seat_dead=true with cleared wall

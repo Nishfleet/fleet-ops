@@ -443,40 +443,25 @@ if [ "$pi_rc" -ne 0 ] || [ "$has_block" -eq 0 ]; then
     # "Insufficient funds" (pi_rc=1): the #1354 fix only benched rc=0 seats,
     # so a 402/429/5xx seat was never benched, pick-seat re-offered it every
     # trip, and the unit tight-looped (6 failures / 2 min, each spawning a
-    # fresh pi process).  Mirror the pi-issue-run ladder: a quota/cap wall
-    # gets a long bench (mark_seat_quota_bench), a 503/overload wall gets an
-    # overload bench, and EVERYTHING ELSE (rc=0 no-block, rc=1 billing/402,
-    # mid-session death, generic non-zero) gets a short spawn-fail bench so
-    # pick-seat rotates to the next capable seat on the next trip.  A long
-    # bench that fails open (no reset window AND no provider default) falls
-    # through to the spawn-fail bench so the seat still rotates.  Best-effort:
-    # a write failure must not block the DISPATCH-NO-BLOCK record or the
-    # exit-0 quiet contract.
-    benched=0; bench_reason="no-block"
-    if [ "$benched" -eq 0 ] && is_credentials_error "$combined" "" 2>/dev/null; then
+    # fresh pi process).  Classify the wall for the log line, then write the
+    # short spawn-fail marker for every class so pick-seat rotates to the
+    # next capable seat on the next trip (fleet-ops#6032: the named per-class
+    # bench writers were log-only stubs that never wrote; the spawn-fail
+    # marker is the real bench).  Best-effort: a write failure must not block
+    # the DISPATCH-NO-BLOCK record or the exit-0 quiet contract.
+    bench_reason="no-block"
+    if is_credentials_error "$combined" "" 2>/dev/null; then
       bench_reason="credentials_bad"
-      if mark_seat_credentials_bad "$PROVIDER" "$MODEL" "$combined" 2>/dev/null; then
-        benched=1
-      fi
-    fi
-    if [ "$benched" -eq 0 ] && is_quota_cap_error "$combined" "" 2>/dev/null; then
+    elif is_quota_cap_error "$combined" "" 2>/dev/null; then
       bench_reason="quota_cap"
-      if mark_seat_quota_bench "$PROVIDER" "$MODEL" "$combined" 2>/dev/null; then
-        benched=1
-      fi
-    fi
-    if [ "$benched" -eq 0 ] && is_overload_error "$combined" "" 2>/dev/null; then
+    elif is_overload_error "$combined" "" 2>/dev/null; then
       bench_reason="overload_503"
-      if mark_seat_overload_bench "$PROVIDER" "$MODEL" "$combined" 2>/dev/null; then
-        benched=1
-      fi
-    fi
-    if [ "$benched" -eq 0 ]; then
+    else
       bench_reason="no_block:rc=$pi_rc"
-      # fleet-ops#4640: a wrapper exit with no provider HTTP status is a
-      # LANE-FAULT. Do not touch the seat ledger.
-      mark_seat_spawn_fail "$PROVIDER" "$MODEL" "$bench_reason" 2>/dev/null || true
     fi
+    # fleet-ops#4640: a wrapper exit with no provider HTTP status is a
+    # LANE-FAULT. Do not touch the seat ledger.
+    mark_seat_spawn_fail "$PROVIDER" "$MODEL" "$bench_reason" 2>/dev/null || true
     printf '%s DISPATCH-NO-BLOCK hash=%s provider=%s model=%s pi_rc=%s bench=%s (no diagnosis block; will retry on next trip)\n' "$(ts)" "$hash" "$PROVIDER" "$MODEL" "$pi_rc" "$bench_reason" >> "$LOG"
     if [ -n "$combined" ]; then
       {

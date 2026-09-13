@@ -323,17 +323,17 @@ PROM="$TMPD/release.prom"
 cat > "$TMPD/seat-caps.json" <<'CAPS'
 {
   "providers": {
-    "bai": {"models": {"deepseek-v4-flash": 1}},
-    "cline": {"models": {"z-ai/glm-5.3-flash": 1}},
-    "commandcode": {"models": {"poolside/laguna-s-2.1-free": 1, "minimax/minimax-m3-free": 0}},
-    "devin": {"models": {"glm-5-2": 1}},
-    "hetzner": {"models": {"Qwen/Qwen3.6-35B-A3B-FP8": 0}},
-    "minimax": {"models": {"m3-free": 1}},
-    "ollama": {"models": {"deepseek-v4-flash:0731": 1}},
-    "opencode": {"models": {"hy3-free": 1, "mimo-v-2.5-free": 1, "mimo-v2.5-free": 1, "nemotron-3-ultra-free": 1}},
-    "straitly": {"models": {"deepseek/deepseek-v4-pro": 1, "deepseek-v4-pro": 1, "gpt-5.6-sol": 1}},
-    "test": {"models": {"test": 1}},
-    "xkiro": {"models": {"deepseek/deepseek-v4-pro": 1, "minimax/minimax-m3:free": 1}}
+    "bai": {"cap": 4, "models": {"deepseek-v4-flash": 1}},
+    "cline": {"cap": 4, "models": {"z-ai/glm-5.3-flash": 1}},
+    "commandcode": {"cap": 4, "models": {"poolside/laguna-s-2.1-free": 1, "minimax/minimax-m3-free": 0}},
+    "devin": {"cap": 4, "models": {"glm-5-2": 1}},
+    "hetzner": {"cap": 4, "models": {"Qwen/Qwen3.6-35B-A3B-FP8": 0}},
+    "minimax": {"cap": 4, "models": {"m3-free": 1}},
+    "ollama": {"cap": 4, "models": {"deepseek-v4-flash:0731": 1}},
+    "opencode": {"cap": 4, "models": {"hy3-free": 1, "mimo-v-2.5-free": 1, "mimo-v2.5-free": 1, "nemotron-3-ultra-free": 1}},
+    "straitly": {"cap": 4, "models": {"deepseek/deepseek-v4-pro": 1, "deepseek-v4-pro": 1, "gpt-5.6-sol": 1}},
+    "test": {"cap": 4, "models": {"test": 1}},
+    "xkiro": {"cap": 4, "models": {"deepseek/deepseek-v4-pro": 1, "minimax/minimax-m3:free": 1}}
   }
 }
 CAPS
@@ -2168,7 +2168,7 @@ mkdir -p "$SEATD22"
 cat > "$TMPD/seat-caps22.json" <<'CAPS'
 {
   "providers": {
-    "straitly": {"models": {"deepseek/deepseek-v4-pro": 1}}
+    "straitly": {"cap": 4, "models": {"deepseek/deepseek-v4-pro": 1}}
   }
 }
 CAPS
@@ -2272,10 +2272,10 @@ cat > "$TMPD/seat-caps23.json" <<'CAPS'
 CAPS
 # NOW_ISO=2026-08-30T12:00:00Z; wall +24h.
 cat > "$SEATD23/devin__glm-5-2.json" <<'EOF'
-{"provider":"devin","model":"glm-5-2","http_status":429,"retry_after":null,"health_class":"rate_limited","retryable":true,"seat_dead":false,"poison_ladder":false,"observed_at":"2026-08-30T11:00:00Z","source":"after_provider_response","failure_mode":"rate_limit","usable_at":"2026-08-31T12:00:00Z","bench_until":"2026-08-31T12:00:00Z","consecutive_failure_count":2,"writer":"mark_seat_quota_bench"}
+{"provider":"devin","model":"glm-5-2","http_status":429,"retry_after":null,"health_class":"rate_limited","retryable":true,"seat_dead":false,"poison_ladder":false,"observed_at":"2026-08-30T11:00:00Z","source":"after_provider_response","failure_mode":"rate_limit","usable_at":"2026-08-31T12:00:00Z","bench_until":"2026-08-31T12:00:00Z","consecutive_failure_count":2,"writer":"seat-health"}
 EOF
 cat > "$SEATD23/devin__glm-5-2.spawn-bench.json" <<'EOF'
-{"provider":"devin","model":"glm-5-2","usable_at":"2026-08-31T12:00:00Z","reason":"test:false-wall","written_at":"2026-08-30T11:00:00Z","backoff_s":86400,"failure_mode":"rate_limit","consecutive_failure_count":2,"writer":"mark_seat_quota_bench"}
+{"provider":"devin","model":"glm-5-2","usable_at":"2026-08-31T12:00:00Z","reason":"test:false-wall","written_at":"2026-08-30T11:00:00Z","backoff_s":86400,"failure_mode":"rate_limit","consecutive_failure_count":2,"writer":"seat-health"}
 EOF
 cat > "$TMPD/pi-pong" <<'EOF'
 #!/usr/bin/env bash
@@ -2298,7 +2298,7 @@ set -e
 [[ "$rc" == "0" ]] || fail "23: non-money 24h wall PONG must exit 0, got $rc ($(cat "$TMPD/run23.err"))"
 grep -q "SEAT-WALL-FALSE" "$TMPD/run23.err" \
   || fail "23: must log SEAT-WALL-FALSE: $(cat "$TMPD/run23.err")"
-grep -q "writer=mark_seat_quota_bench" "$TMPD/run23.err" \
+grep -q "writer=seat-health" "$TMPD/run23.err" \
   || fail "23: SEAT-WALL-FALSE must name the writer: $(cat "$TMPD/run23.err")"
 hc=$(jq -r '.health_class' "$SEATD23/devin__glm-5-2.json")
 [[ "$hc" == "healthy" ]] || fail "23: PONG must unwall the seat, got $hc"
@@ -2348,7 +2348,7 @@ cat > "$TMPD/seat-caps24.json" <<'CAPS'
 }
 CAPS
 cat > "$SEATD24/devin__swe-2-max.json" <<'SEAT'
-{"provider":"devin","model":"swe-2-max","http_status":429,"retry_after":null,"health_class":"quota_bench","retryable":true,"seat_dead":false,"poison_ladder":false,"observed_at":"2026-08-30T11:00:00Z","source":"provider_quota_window","failure_mode":"quota_cap","bench_until":"2026-09-05T11:00:00Z","usable_at":"2026-09-05T11:00:00Z","bench_window_s":518400,"consecutive_failure_count":25,"writer":"mark_seat_quota_bench"}
+{"provider":"devin","model":"swe-2-max","http_status":429,"retry_after":null,"health_class":"quota_bench","retryable":true,"seat_dead":false,"poison_ladder":false,"observed_at":"2026-08-30T11:00:00Z","source":"provider_quota_window","failure_mode":"quota_cap","bench_until":"2026-09-05T11:00:00Z","usable_at":"2026-09-05T11:00:00Z","bench_window_s":518400,"consecutive_failure_count":25,"writer":"seat-health"}
 SEAT
 cat > "$TMPD/pi-pong-true" <<'STUB'
 #!/usr/bin/env bash
@@ -2366,7 +2366,7 @@ PI_SEAT_HEALTH_LEDGER_DIR="$SEATD24" SEAT_CAPS_JSON="$TMPD/seat-caps24.json" \
 rc=$?
 set -e
 [[ "$rc" == "0" ]] || fail "24: bench-truth sweep must exit 0, got $rc ($(cat "$TMPD/run24.err"))"
-grep -q "SEAT-WALL-FALSE devin/swe-2-max writer=mark_seat_quota_bench" "$TMPD/run24.err" \
+grep -q "SEAT-WALL-FALSE devin/swe-2-max writer=seat-health" "$TMPD/run24.err" \
   || fail "24: must log SEAT-WALL-FALSE naming the writer: $(cat "$TMPD/run24.err")"
 jq -e '.health_class == "healthy" and .source == "bench_truth_probe" and .bench_until == null' "$SEATD24/devin__swe-2-max.json" >/dev/null \
   || fail "24: PONG must clear the bench with source=bench_truth_probe: $(cat "$SEATD24/devin__swe-2-max.json")"
@@ -2380,7 +2380,7 @@ ok "24: a benched seat that answers PONG is a bench lie -> cleared (source=bench
 SEATD25="$TMPD/seats25"
 mkdir -p "$SEATD25"
 cat > "$SEATD25/devin__swe-2-max.json" <<'SEAT'
-{"provider":"devin","model":"swe-2-max","http_status":429,"retry_after":null,"health_class":"quota_bench","retryable":true,"seat_dead":false,"poison_ladder":false,"observed_at":"2026-08-30T11:00:00Z","source":"provider_quota_window","failure_mode":"quota_cap","bench_until":"2026-09-05T11:00:00Z","usable_at":"2026-09-05T11:00:00Z","bench_window_s":518400,"consecutive_failure_count":25,"writer":"mark_seat_quota_bench"}
+{"provider":"devin","model":"swe-2-max","http_status":429,"retry_after":null,"health_class":"quota_bench","retryable":true,"seat_dead":false,"poison_ladder":false,"observed_at":"2026-08-30T11:00:00Z","source":"provider_quota_window","failure_mode":"quota_cap","bench_until":"2026-09-05T11:00:00Z","usable_at":"2026-09-05T11:00:00Z","bench_window_s":518400,"consecutive_failure_count":25,"writer":"seat-health"}
 SEAT
 ST25="$TMPD/state25.json"; PROM25="$TMPD/release25.prom"
 set +e
@@ -2405,7 +2405,7 @@ ok "25: a benched seat that fails its PONG stays benched; nothing counted (fleet
 SEATD26="$TMPD/seats26"
 mkdir -p "$SEATD26"
 cat > "$SEATD26/devin__swe-2-max.json" <<'SEAT'
-{"provider":"devin","model":"swe-2-max","http_status":429,"retry_after":null,"health_class":"quota_bench","retryable":true,"seat_dead":false,"poison_ladder":false,"observed_at":"2026-08-30T12:00:00Z","source":"provider_quota_window","failure_mode":"quota_cap","bench_until":"2026-09-05T11:00:00Z","usable_at":"2026-09-05T11:00:00Z","bench_window_s":518400,"consecutive_failure_count":25,"writer":"mark_seat_quota_bench"}
+{"provider":"devin","model":"swe-2-max","http_status":429,"retry_after":null,"health_class":"quota_bench","retryable":true,"seat_dead":false,"poison_ladder":false,"observed_at":"2026-08-30T12:00:00Z","source":"provider_quota_window","failure_mode":"quota_cap","bench_until":"2026-09-05T11:00:00Z","usable_at":"2026-09-05T11:00:00Z","bench_window_s":518400,"consecutive_failure_count":25,"writer":"seat-health"}
 SEAT
 ST26="$TMPD/state26.json"; PROM26="$TMPD/release26.prom"
 set +e
