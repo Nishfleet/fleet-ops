@@ -1679,15 +1679,9 @@ ok "scenario33b: rule past review-by -> PENDING for the WFR ratchet, canary stay
 
 ok "escalation-coverage-canary: sunset convention ratchet (fleet-ops#5749) covered"
 
-# fleet-ops#387: entitled-vs-wired is a sibling heartbeat canary. Invoked from
-# this CI-listed file so hosted runners run it without a workflow edit
-# (worker tokens cannot push .github/workflows/**).
-bash "$here/entitled-wired-canary.test.sh"
-
-# fleet-ops#424: leftover AIMD meter canary. Invoked from this CI-listed
-# file so hosted runners run it without a workflow edit (worker tokens
-# cannot push .github/workflows/**).
-bash "$here/aimd-meter-canary.test.sh"
+# fleet-ops#6115: the #387 entitled-vs-wired and #424 AIMD meter test hosts
+# retired with their canaries (entitlement = the proxy model_list; AIMD =
+# the router's cooldown). Their bins, tests, and MANIFEST rows are gone.
 
 # fleet-ops#388: restore drill. Invoked from this CI-listed file so hosted
 # runners run it without a workflow edit (worker tokens cannot push
@@ -1743,16 +1737,15 @@ bash "$here/fleet-prepaid-util-canary.test.sh"
 # CI host line, so hosted runners never ran the drill.
 bash "$here/paid-flash-canary.test.sh"
 
-# fleet-ops#917: SuperGrok live-validate canary. Invoked from this CI-listed
-# file so hosted runners run it without a workflow edit (worker tokens cannot
-# push .github/workflows/**).
-bash "$here/fleet-seat-live-validate.test.sh"
+# fleet-ops#6115: the #917 SuperGrok live-validate test host retired with
+# its canary (/health census is the authority).
 
 # fleet-ops#41: headless OAuth refresh of ~/.pi/agent/auth.json["xai-oauth"].
 # Invoked from this CI-listed file so hosted runners run it without a
 # workflow edit (worker tokens cannot push .github/workflows/**). The
-# script is the prevent side of #41; the live-validate canary above
-# catches the dead case, this one keeps the credential alive.
+# script is the prevent side of #41; the litellm health canary catches
+# the dead case since the #6115 cull retired the #917 live-validate
+# canary, this one keeps the credential alive.
 bash "$here/grok-token-refresh.test.sh"
 
 # fleet-ops#938: vacation-window credential expiry canary. Invoked from this

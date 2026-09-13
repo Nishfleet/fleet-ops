@@ -155,13 +155,12 @@ set -eo pipefail
 # that the `tier 1 complete: ...` line is reached (i.e., the propagation
 # block made it past every rc guard without early-exiting).
 log() { printf '%s\n' "$*"; }
-# Default the three rc vars that the production script reads WITHOUT a
+# Default the two rc vars that the production script reads WITHOUT a
 # ${X_rc:-0} default. The `:="${var:=0}"` form leaves any caller-supplied
 # env value intact (it only assigns when the var is unset/empty), so the
 # harness can still drive scenarios by exporting deploy_rc=7 etc.
 : "${undersat_rc:=0}"
 : "${low_water_rc:=0}"
-: "${entitled_canary_rc:=0}"
 """
 
 # Append the propagation block itself.

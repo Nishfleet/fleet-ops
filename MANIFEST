@@ -522,15 +522,10 @@ bin/fleet-escalation-canary /home/nish/.local/bin/fleet-escalation-canary
 # hop clocks + stall ladder + detector-red terminal. 15-min systemd timer.
 # fleet-ops#468: alert-repair COMPLETION service. oneshot, fail-loud, no restart.
 # fleet-ops#468: alert-repair COMPLETION timer. 15-min OnCalendar.
-# fleet-ops#387: entitled-vs-wired canary. Run by heartbeat-tier1 block 15.
-# Diffs entitled-seats.json against seat-caps.json every tick; missing row,
-# cap=0 without a dated reason, or a prepaid seat labelled free goes LOUD
-# and auto-files. No new scheduler.
-bin/fleet-entitled-wired-canary /home/nish/.local/bin/fleet-entitled-wired-canary
-# fleet-ops#424: leftover AIMD meter canary. Run by heartbeat-tier1 block 37.
-# AIMD symbols missing from seat-lib.sh while learned-caps-audit.log remains
-# goes LOUD and auto-files. No new scheduler.
-bin/fleet-aimd-meter-canary /home/nish/.local/bin/fleet-aimd-meter-canary
+# fleet-ops#6115: the #387 entitled-vs-wired and #424 AIMD meter canaries
+# are retired (entitlement = the proxy model_list — the litellm health
+# canary's census-shortfall verdict; AIMD = the router's cooldown). Their
+# MANIFEST rows, bins, and test hosts are gone; see #6115's PR.
 # fleet-ops#435 / #545: OpenCode + CommandCode MiniMax M3 catalog canary.
 # Run by heartbeat-tier1. Billing slug in seat-caps fails the tick. A
 # free-form slug whose models.json cost is non-zero also fails. A new
@@ -932,11 +927,9 @@ bin/fleet-timer-manifest-drift-canary /home/nish/.local/bin/fleet-timer-manifest
 # Deferred products auto-file. Heartbeat-tier1 block 29.
 bin/fleet-verify-harness-canary /home/nish/.local/bin/fleet-verify-harness-canary
 config/verify-harness.json /home/nish/.local/state/pi-packet/verify-harness.json
-# fleet-ops#917: SuperGrok live-validate canary. Runs `grok models` (CLI
-# silent refresh) every heartbeat tick; writes credentials_bad when the
-# live CLI is unauthenticated; auto-files `grok login --device-auth` when
-# refresh is impossible. Heartbeat-tier1 block 30.
-bin/fleet-seat-live-validate /home/nish/.local/bin/fleet-seat-live-validate
+# fleet-ops#6115: the #917 SuperGrok live-validate canary is retired
+# (/health census is the authority — the litellm health canary owns the
+# dead-deployment verdict). MANIFEST row, bin, and test host gone.
 # fleet-ops#938: credential/token expiry coverage through 2026-09-08.
 # GET /app App-JWT liveness (GitHub App keys do not expire) plus
 # FLEET_SYNC_PAT GitHub-Authentication-Token-Expiration horizon.
@@ -1160,8 +1153,9 @@ docs/escalation-matrix.md /home/nish/.local/share/fleet-ops/docs/escalation-matr
 
 # fleet-ops#41: headless OAuth refresh of the live SuperGrok seat
 # (~/.pi/agent/auth.json["xai-oauth"]). 4h timer keeps the prepaid
-# credential from aging into a 401; fleet-seat-live-validate catches
-# the dead case but does not heal it. Cap on the legacy `grok` entry
+# credential from aging into a 401; the litellm health canary catches
+# the dead case (fleet-ops#6115 retired the #917 live-validate canary)
+# but does not heal it. Cap on the legacy `grok` entry
 # stays 0 — the live seat is xai-oauth (fleet-ops#1163).
 bin/grok-token-refresh /home/nish/.local/bin/grok-token-refresh
 systemd/grok-token-refresh.service /home/nish/.config/systemd/user/grok-token-refresh.service

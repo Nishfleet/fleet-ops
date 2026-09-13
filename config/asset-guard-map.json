@@ -65,12 +65,12 @@
       "proof": "bin/fleet-asset-census; config/hc.env, config/cloudflare; bin/fleet-cf-token-canary; tests/fleet-asset-census.test.sh"
     },
     "pi-seat": {
-      "guard": "config/seat-caps.json + config/entitled-seats.json + bin/fleet-entitled-wired-canary",
-      "proof": "config/seat-caps.json; config/entitled-seats.json; bin/fleet-entitled-wired-canary; tests/fleet-entitled-wired.test.sh"
+      "guard": "config/seat-caps.json + config/entitled-seats.json + the litellm proxy census (entitlement = the model_list; #6115 folded the entitled-vs-wired verdict into libexec/fleet-litellm-health-canary.py)",
+      "proof": "config/seat-caps.json; config/entitled-seats.json; libexec/fleet-litellm-health-canary.py; tests/fleet-litellm-organ.test.sh"
     },
     "pi-provider": {
-      "guard": "config/seat-caps.json + config/entitled-seats.json + bin/fleet-entitled-wired-canary",
-      "proof": "config/seat-caps.json; config/entitled-seats.json; bin/fleet-entitled-wired-canary"
+      "guard": "config/seat-caps.json + config/entitled-seats.json + the litellm proxy census (entitlement = the model_list; #6115)",
+      "proof": "config/seat-caps.json; config/entitled-seats.json; libexec/fleet-litellm-health-canary.py"
     },
     "storage-rclone": {
       "guard": "rclone.conf versioned or backed by restic-r2-backup; restoration drill",
