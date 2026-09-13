@@ -9,9 +9,10 @@
 #   4. Keystone picks the strongest class first (prepaid, not commandcode).
 #   5. Two strikes on a keystone packet return empty (senior conference).
 #   6. One strike still returns a different capable seat.
-#   7. pi-issue-run does not reset tried-seats on a keystone two-strike.
+#   7. (retired, fleet-ops#4263; decision resolved by #6032: the no-seat
+#      escalation branch is deleted — the proxy's senior-group fallback answers).
 #
-# Hosted by tests/seat.lib.test.sh (workers cannot add a ci.yml line).
+# Hosted by tests/seat-lib.test.sh (workers cannot add a ci.yml line).
 # Offline. Scratch models/caps so live seat-caps cannot leak.
 
 set -euo pipefail
@@ -129,8 +130,8 @@ ok "2c: explicit difficulty: light"
 
 # --- contract: nested under the CI host -----------------------------------
 grep -Fq 'bash "$here/keystone-routing.test.sh"' "$here/seat-lib.test.sh" \
-  || fail "seat.lib.test.sh must nest this file (CI cannot gain a new workflow line)"
-ok "seat.lib.test.sh hosts this file"
+  || fail "seat-lib.test.sh must nest this file (CI cannot gain a new workflow line)"
+ok "seat-lib.test.sh hosts this file"
 
 grep -Fq "cat /home/nish/.pi/agent/prompts/worker.md" "$repo_root/prompts/intake.md" \
   || fail "prompts/intake.md must write worker.md first (fleet-ops#4643 stable prefix)"
