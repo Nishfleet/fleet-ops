@@ -18,6 +18,10 @@
 #      retired fleet-completion-canary stopped writing (fleet-ops#5869);
 #      the record absorbs later re-dispatches of the same episode so the
 #      stuck set returns to 0 instead of the backlog trending up.
+#   5. fleet-ops#6430: a stuck-scanned packet already gone at disposal
+#      time still gets its DISPOSITION (terminal per the mv-path rule),
+#      logged and counted. Never a silent bare continue: #6430's issue
+#      names a disposal no production surface proves.
 #
 # Hermetic: scratch ALERT dir, fake chains.terminated.jsonl, and a stub
 # fleet-issue-file. The real GitHub API and the live agent-state dir are
@@ -259,6 +263,41 @@ if grep -q "STUCK-PACKET" "$scratch/run.stderr"; then
     fail "scenario 6: fully disposed burst must NOT re-LOUD; stderr: $(cat "$scratch/run.stderr")"
 fi
 ok "scenario 6: newest-packet watermark = MAX dispatch instant, not the lexically-last stuck packet (fleet-ops#6345)"
+
+# ---------------------------------------------------------------------------
+# Scenario 7 (fleet-ops#6430): the vanish gap. A stuck-scanned packet that
+# is already gone at disposal time must still get its TERMINAL DISPOSITION:
+# a vanished: journal line, a DISPOSITION decision in actions.log, counted,
+# never silently dropped. #6430 lived it: the 14:15:47Z run filed its
+# escalation, then lost the packet between scan and disposal, and no
+# production surface recorded either fact.
+#
+# Black-box recipe, no race: a stuck-listed "packet" that is a DIRECTORY.
+# It globs, its name matches the webhook pattern, the stuck list carries
+# it, but [ -f ] fails at disposal. Fresh state (removed here) so the
+# burst takes the escalated-filed path, proving the vanished: branch emits
+# the same terminal a successful mv would have.
+# ---------------------------------------------------------------------------
+rm -f "$AS/alert-repair/stuck-escalation-state.json"
+mkdir -p "$AS/alert-repair/packet-FleetGhost-${ts_8h_ago}.md"
+: > "$STUB_LOG"
+rm -f "$scratch/run.stderr"
+run_drain "$scratch/fleet-issue-file-stub"
+[[ "$(grep -c "^stub-call " "$STUB_LOG" 2>/dev/null || true)" -eq 1 ]] \
+    || fail "scenario 7: the vanished packet's burst must still file exactly once; calls: $(grep -c "^stub-call " "$STUB_LOG" 2>/dev/null || true)"
+grep -F "vanished: packet-FleetGhost-${ts_8h_ago}.md" "$scratch/run.stderr" >/dev/null \
+    || fail "scenario 7: the vanished packet must be named in the journal; stderr: $(cat "$scratch/run.stderr")"
+grep -F "DISPOSITION stuck-packet packet=packet-FleetGhost-${ts_8h_ago}.md terminal=escalated-filed issue=999" \
+    "$AS/alert-repair/actions.log" >/dev/null \
+    || fail "scenario 7: the vanished packet must still get its DISPOSITION decision line; log: $(tail -3 "$AS/alert-repair/actions.log" 2>/dev/null || true)"
+[[ -d "$AS/alert-repair/packet-FleetGhost-${ts_8h_ago}.md" ]] \
+    || fail "scenario 7: the vanished packet's witness must survive (the drain did not move it)"
+[[ ! -f "$AS/alert-repair/archived/stuck/packet-FleetGhost-${ts_8h_ago}.md" ]] \
+    || fail "scenario 7: a vanished (non-file) unit cannot be archived; it must not pretend it was"
+if grep -q "STUCK-PACKET" "$scratch/run.stderr"; then
+    fail "scenario 7: a vanished-and-dispositioned burst is settled, must NOT re-LOUD; stderr: $(cat "$scratch/run.stderr")"
+fi
+ok "scenario 7: vanished-at-disposal packet decision-logged, counted, never silent (fleet-ops#6430)"
 
 echo
 echo "alert-repair-stuck-packet: all scenarios passed (fleet-ops#5622)"
