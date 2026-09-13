@@ -19,9 +19,11 @@
 #   4. state_restore            — fleet-restore-drill timer armed + last Result
 #   5. compute_breakglass       — CI workflows run on GitHub-hosted runners
 #   6. keystone_deadman         — HC_URL_* for intake/scout/reconcile/restore
-#                                 (unset = SKIP + LOUD, not a silent pass;
-#                                 a URL shared with another keystone or the
-#                                 heartbeat dead-man is FAIL + LOUD)
+#                                 plus the detached per-dispatch dead-man
+#                                 (fleet-ops#5886; unset = SKIP + LOUD, not a
+#                                 silent pass; a URL shared with another
+#                                 keystone or the heartbeat dead-man is
+#                                 FAIL + LOUD)
 #   7. queue_freeze             — fleet-ops#1453 narrow direct-dispatch lever:
 #                                 replay the live #1453 frozen-queue snapshot
 #                                 (dispatches_last_2h<=1 AND ready_work>50) and
@@ -454,11 +456,11 @@ plane_keystone_hc() {
   }
 
   if [[ ! -f "$KEYSTONE_HC_ENV" ]]; then
-    loud "KEYSTONE-HC-UNCONFIGURED" "missing $KEYSTONE_HC_ENV — create free healthchecks.io checks for intake/scout/reconcile/restore and drop HC_URL_* there. Heartbeat already has its own check."
+    loud "KEYSTONE-HC-UNCONFIGURED" "missing $KEYSTONE_HC_ENV — create free healthchecks.io checks for intake/scout/reconcile/restore/detached and drop HC_URL_* there. Heartbeat already has its own check."
     record "$name" "skip" "env file missing"
     return 0
   fi
-  for key in HC_URL_INTAKE HC_URL_SCOUT HC_URL_RECONCILE HC_URL_RESTORE; do
+  for key in HC_URL_INTAKE HC_URL_SCOUT HC_URL_RECONCILE HC_URL_RESTORE HC_URL_DETACHED; do
     if ! url="$(hc_env_value "$KEYSTONE_HC_ENV" "$key")"; then
       missing+=("$key")
     else
@@ -490,7 +492,7 @@ plane_keystone_hc() {
     fi
   fi
 
-  record "$name" "pass" "HC_URL_INTAKE/SCOUT/RECONCILE/RESTORE all set and distinct from heartbeat"
+  record "$name" "pass" "HC_URL_INTAKE/SCOUT/RECONCILE/RESTORE/DETACHED all set and distinct from heartbeat"
   return 0
 }
 
@@ -697,7 +699,35 @@ plane_seat_sentinel() {
 
   cleanup_seat_sentinel_drill
   trap - EXIT INT TERM
-  record "$name" "pass" "100 seat-json writes -> 0 starts; sentinel touch -> 1 start; second write -> 1 more; watcher active/success; negative control (burst=5) wedged while shipped burst=200 held the same storm"
+  # fleet-ops#5782: the teardown must leave ZERO leftover units from this
+  # run. A leaked .path watcher burns wakeups forever and keeps the
+  # machinery-authorization hunt noisy, so the plane itself proves the
+  # cleanup on both planes of the leak: nothing still loaded in the manager
+  # (the 2026-09-12 symptom: a still-active .path after its issue closed)
+  # and no unit file left behind on disk (the -tlimit-probe symptom).
+  local leftover_units leftover_files usuf lstate
+  leftover_units=""
+  leftover_files=""
+  for usuf in "$drill_unit.service" "$drill_unit.path" "$tiny_unit.service" "$tiny_unit.path"; do
+    lstate="$("$SYSTEMCTL" --user show -p LoadState "$usuf" 2>/dev/null || true)"
+    if [[ "$lstate" != "LoadState=not-found" ]]; then
+      leftover_units="$leftover_units$usuf(loaded) "
+    fi
+  done
+  # This second pass catches a unit whose file survived the cleanup (on-disk
+  # leak, the -tlimit-probe symptom) even when the manager already dropped it.
+  for usuf in "$drill_svc" "$drill_path" "$tiny_svc" "$tiny_path"; do
+    if [[ -e "$usuf" ]]; then
+      leftover_files="$leftover_files$(basename "$usuf") "
+    fi
+  done
+  if [[ -n "$leftover_units" ]] || [[ -n "$leftover_files" ]]; then
+    seat_sentinel_bail \
+      "teardown left leftovers: units=[$leftover_units] files=[$leftover_files] (fleet-ops#5782)" \
+      "teardown leftovers: units=[$leftover_units] files=[$leftover_files]" || return 1
+    return 1
+  fi
+  record "$name" "pass" "100 seat-json writes -> 0 starts; sentinel touch -> 1 start; second write -> 1 more; watcher active/success; negative control (burst=5) wedged while shipped burst=200 held the same storm; teardown left 0 leftover units (fleet-ops#5782)"
   return 0
 }
 
@@ -1438,7 +1468,20 @@ run_drill() {
 
 case "${1:-}" in
   --check) check_env ;;
+  # fleet-ops#5782: run ONE plane by name (fleet-resilience-drill --plane
+  # seat_sentinel) so a test can drive the representative live drill run and
+  # assert its teardown without dragging every plane along. Same env, same
+  # OFFLINE guard, same record/loud plumbing; the verdict is the exit code
+  # plus the RESULTS_LOG line.
+  --plane) shift
+           plane="${1:-}"
+           [[ -n "$plane" ]] || { log "usage: fleet-resilience-drill --plane <name>"; exit 2; }
+           declare -F "plane_${plane}" >/dev/null \
+             || { log "unknown plane: $plane"; exit 2; }
+           command -v jq >/dev/null 2>&1 || { log "jq missing"; exit 1; }
+           "plane_${plane}" || exit 1
+           ;;
   "")      command -v jq >/dev/null 2>&1 || { log "jq missing"; exit 1; }
            run_drill ;;
-  *)       log "usage: fleet-resilience-drill [--check]"; exit 2 ;;
+  *)       log "usage: fleet-resilience-drill [--check] [--plane <name>]"; exit 2 ;;
 esac

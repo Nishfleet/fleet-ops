@@ -58,7 +58,7 @@ describe what was true when each was written — many say the fleet is live and
 busy. They are now out of date on that point. Check the actual system before
 acting on anything a memory tells you about current state.
 
-Conserve Claude usage: it is low. Claude is for judgement and alarms, never
+Conserve Claude usage: Claude is for judgement and alarms, never
 legwork. The free and prepaid seats do the work.
 
 
