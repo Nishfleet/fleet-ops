@@ -85,7 +85,7 @@ skip: duplicate rc=3, finding_id MATCH 512330abbc246382); ci.yml green on base
 
 research: official docs checked (systemd.unit OnFailure/StartLimitBurst man pages + the shipped lib/findings_ledger.py contract); alternatives compared and decided — retrier-in-unit rejected (Nish 2026-08-24: "No hand-built orchestration. Ever."), heartbeat-side journal tailing rejected (the triage file is already the judges' read), adopted the record-only handler reusing the existing findings-ledger helper and the existing fleet-issue-file queue path.
 
-help-first: --help read before use (the new handler's usage; sgscan --help; prove-one-run-check usage) — existing tools insufficient: unit-escalation@/stop-escalation@ only escalate, pi-detached-deadman owns the clean-stop-no-deliverable verdict, and nothing records the exhausted-StartLimitBurst terminal state (the #5442 sweep explicitly skipped systemd/).
+help-first: --help read before use (the new handler's usage; sgscan --help; prove-one-run-check usage) — existing tools do not already do this: unit-escalation@/stop-escalation@ only escalate, pi-detached-deadman owns the clean-stop-no-deliverable verdict, and nothing records the exhausted-StartLimitBurst terminal state (the #5442 sweep explicitly skipped systemd/).
 
 organ-heartbeat: systemd/pi-packet-failed@.service not-an-organ: OnFailure
 one-shot recorder, no timer or heartbeat loop.
