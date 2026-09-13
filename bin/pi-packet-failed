@@ -260,7 +260,7 @@ for k in ("source_organ", "run_id", "title", "severity", "evidence_ref",
     # is SUCCESS for this recorder, not a rejection. Only a genuine failure
     # (any other rc) falls back to the direct append; the helper's own
     # message is logged either way so the rejection is never silent.
-    call_helper=(); do_call() {
+    do_call() {
         if [[ -x "$helper" ]]; then
             "$helper" append --ledger "$LEDGER" \
                 --source-organ "${hargs[0]}" --run-id "${hargs[1]}" \
