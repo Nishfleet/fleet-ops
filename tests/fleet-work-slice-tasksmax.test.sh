@@ -3,9 +3,9 @@
 #
 # fleet-ops#3280: raise fleet-work.slice TasksMax to 8000 and the spawn-guard
 # soft/hard pair to 7500/8000. The measured reason is 11 threads per idle pi
-# (2026-09-04 07:50Z). RAM governor (MemAvailable, ram_gb_per_worker) stays the
-# admission authority — this lock proves the ceiling moved and admission did
-# not.
+# (2026-09-04 07:50Z). Worker-RAM admission: per-unit systemd MemoryMax + oomd
+# (fleet-ops#4263 retired the ram_gb_per_worker seat-caps charge) — this lock
+# proves the ceiling moved and admission did not.
 #
 # Battle-tested tool: systemd TasksMax= (man systemd.resource-control). The
 # drop-in already existed live at ~/.config/systemd/user/fleet-work.slice.d/
@@ -19,9 +19,8 @@
 #      FLEET_SPAWN_SOFT_CEILING=7500; bash-spawn-hook interpolates those
 #      constants (no hardcoded 2800/3000).
 #   4. MANIFEST installs drop-in + both extension files.
-#   5. seat-caps.json ram_gb_per_worker is the interim admission charge (1.5;
-#      fleet-ops#4896 after #4893 dropped in-worker coverage/tsc; remeasure-4891
-#      replaces this with measured p95 on 2026-09-11).
+#   5. seat-caps.json no longer carries ram_gb_per_worker (fleet-ops#4263
+#      retired the RAM-charge; the jq lock below proves the absence).
 #
 # Lock-and-leave. Offline. Hosted from tests/system-dropins-shape.test.sh
 # so P14 runs it without a workflow-file edit.
@@ -60,11 +59,11 @@ ok "drop-in: [Slice] TasksMax=8000, no CPUQuota"
 # --- 2. measured 11-threads-per-pi reason + RAM stays admission --------------
 grep -q '11 thread' "$dropin" \
   || fail "10-tasksmax.conf comment must name the measured 11-threads-per-pi reason"
-grep -qi 'ram_gb_per_worker' "$dropin" \
-  || fail "10-tasksmax.conf comment must name ram_gb_per_worker as admission authority"
-grep -qi 'MemAvailable' "$dropin" \
-  || fail "10-tasksmax.conf comment must name MemAvailable as admission authority"
-ok "drop-in comment: 11 threads/pi; RAM remains admission"
+grep -qi 'MemoryMax' "$dropin" \
+  || fail "10-tasksmax.conf comment must name MemoryMax+oomd as the worker-RAM bound (fleet-ops#4263)"
+grep -qi 'target_concurrent' "$dropin" \
+  || fail "10-tasksmax.conf comment must name the admit ceiling (min(target_concurrent, declared cap sum)) as the worker-count authority"
+ok "drop-in comment: 11 threads/pi; #4263 admission (MemoryMax+oomd, caps ceiling)"
 
 # --- 3. spawn-guard constants + EXTLOAD interpolates them -------------------
 grep -q '^export const FLEET_SLICE_TASKS_MAX = 8000;$' "$core" \
