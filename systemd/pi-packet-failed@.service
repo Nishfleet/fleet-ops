@@ -6,27 +6,19 @@ Type=oneshot
 Environment=HOME=/home/nish
 Environment=PATH=/home/nish/.local/bin:/usr/local/bin:/usr/bin:/bin
 WorkingDirectory=/home/nish
-# fleet-ops#5444 -> folded into the escalation dispatcher path (fleet-ops#5456):
-# a packet that exhausted StartLimitBurst no longer stops at a logger line.
-# unit-escalation-write records a structured STOP-REASON (reason=
-# packet-exhausted, source=pi-packet-failed) so stop-escalation.path fires and
-# stop-escalation-dispatch TERMINATES in an action: the agent-ready issue +
-# findings-ledger row + LOUD triage line (pi-packet@ has no dispatch-ledger
-# launch row, so the dispatcher takes the dispatch branch, not a relaunch).
-# Retry, backoff and give-up already happened in pi-packet@.service's own
-# policy — this only makes the give-up LOUD and actionable instead of silent.
-# The logger line stays: it is the human-readable journal breadcrumb.
-#
-# %i has TWO conventions (same as unit-escalation@): a bare pi-packet
-# instance (pi-packet@<i>.service died) OR the full failed unit name when it
-# already carries a unit suffix (pi-systemd-run transients list
-# pi-packet-failed@<unit>.service in their OnFailure). The case below maps
-# both to the REAL failed unit so the dispatcher's dedupe-by-title and the
-# relaunch target see the same name the unit-failure STOP-REASON wrote —
-# prefixing pi-packet@ onto a full unit name would file a second,
-# differently-titled issue and aim the relaunch at a bogus unit.
+# Deliberately a recorder, never a retrier. Retry, backoff and give-up already
+# happened in pi-packet@.service's own policy — anything more would be
+# re-growing the thing Nish forbade on 2026-08-24 ("No hand-built
+# orchestration. Ever."). But "record" is not a syslog line nobody reads
+# (fleet-ops#5444): the handler writes the heartbeat triage file, the
+# findings ledger, and an agent-ready re-queue issue for --deliverable
+# packets. %i is the pi-packet instance, or the full failed unit name when it
+# carries a unit suffix (pi-systemd-run transient path — same convention as
+# unit-escalation@).
 # /bin/bash -c 'exec …' is the repo's runner-safe ExecStart shape for a VPS
-# path (stop-escalation.service precedent; fleet-ops#154 class lock).
-ExecStart=/bin/bash -c 'u="%i"; case "$u" in *.service|*.timer|*.path|*.scope|*.socket|*.slice) : ;; *) u="pi-packet@${u}.service";; esac; UNIT_ESCALATION_REASON=packet-exhausted UNIT_ESCALATION_SOURCE=pi-packet-failed exec /home/nish/.local/bin/unit-escalation-write "$u"'
-ExecStartPost=/usr/bin/logger -t pi-packet-failed -p user.err "packet %i exhausted StartLimitBurst - escalated to the dispatcher (issue + triage), not just a log"
+# path (stop-escalation.service precedent; fleet-ops#154 class lock): hosted
+# CI can syntax-verify the unit without stubbing the VPS bin, `exec` replaces
+# the shell so signals/timeout hit the handler itself, and %i expands before
+# bash parses the line.
+ExecStart=/bin/bash -c 'exec /home/nish/.local/bin/pi-packet-failed %i'
 TimeoutStartSec=120
