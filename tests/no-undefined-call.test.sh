@@ -58,6 +58,10 @@ BUILTINS |= {"to_entries", "from_entries", "group_by", "sort_by", "ascii_downcas
              "rand", "srand", "compl", "lshift", "rshift", "xor", "strtonum",
              "todate", "strftime", "systime", "mktime", "reset"}
 BUILTINS |= {"[", "]]", "coproc", "function", "select"}
+# External host binaries the fleet scripts shell out to (snake_case names, so
+# they would otherwise read as undefined fleet functions). Each verified as a
+# real executable on the host (fleet-restore-drill:403).
+EXTERNAL = {"pg_config"}
 
 def bash_files():
     out = []
@@ -83,14 +87,15 @@ def defined_names(text):
     # `name() {` / `function name()` / 0-arg python `def f():` — the extra
     # accepted forms only ever remove noise; the planted fixture (a bare
     # call of a name defined nowhere) still goes red, which is the acceptance.
-    return set(re.findall(r"(?m)^\s*(?:(?:function|def)\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*\(\s*\)", text))
+    names = set(re.findall(r"(?m)^\s*(?:(?:function|def)\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*\(\s*\)", text))
+    # `declare -f name` guards: the caller proves the function may not exist
+    # and branches on that, so the guarded call is safe by construction.
+    names |= set(re.findall(r"declare\s+-f\s+([A-Za-z_][A-Za-z0-9_]*)", text))
+    return names
 
 # variable/assignment targets: `local -a arr`, `local a b=2 c`, `x=1`, so a
 # variable used at clause-head (arithmetic, ${x} word) is not flagged.Vars are
 # not functions, but adding them only masks noise; the fixture stays red.
-ASSIGN = re.compile(r"(?m)^\s*(?:local|declare|export|readonly|printf[ \t]+-v[ \t]+|read[ \t]+-r?[ \t]+)?"
-                    r"([A-Za-z_][A-Za-z0-9_]*)([+]?=|\s|$)")
-
 def assigned_names(text):
     out = set()
     for line in text.splitlines():
@@ -112,6 +117,19 @@ SH = re.compile(r"([A-Za-z0-9._-]+\.sh)")
 
 def sourced_targets(text, script_dir, root):
     targets = []
+    # shellcheck source hints: `# shellcheck source=../lib/x.sh` — the fleet
+    # convention for runtime-resolved sources (stop-escalation-dispatch:91).
+    for m in re.finditer(r"(?m)^\s*#\s*shellcheck\s+.*?\bsource=([^\s]+)", text):
+        arg = m.group(1)
+        if arg == "/dev/null":
+            continue
+        if "$" not in arg:
+            targets.append(os.path.normpath(os.path.join(script_dir, arg.strip("\"'"))))
+        for name in SH.findall(arg):
+            for base in ("lib", "bin"):
+                cand = os.path.join(root, base, name)
+                if os.path.isfile(cand):
+                    targets.append(cand)
     for line in text.splitlines():
         s = line.strip()
         if s.startswith("#"):
@@ -130,17 +148,12 @@ def sourced_targets(text, script_dir, root):
                 targets.append(os.path.join(root, "lib", repofb.group(1)))
             if "$" not in arg:
                 targets.append(os.path.normpath(os.path.join(script_dir, arg.strip("\"'"))))
-            # Bare-variable form (source "$SEAT_LIB"): the variable is assigned
-            # in the same file, typically SEAT_LIB="${PI_PACKET_SEAT_LIB:-$HOME
-            # /.local/lib/pi-packet/litellm-seat.sh}". Take every *.sh token of
-            # that assignment's value (the ${DEFAULT:-...} fallback carries the
-            # real name) and resolve it against the repo's own lib/ and bin/.
-            # The #5993 caller class sources exactly this way; without this
-            # resolution its closure is empty and every helper reads undefined.
+            # Bare-variable form (source "$SEAT_LIB"): EVERY assignment of that
+            # variable is a candidate (the first may be the empty default,
+            # the second the real repo path — fleet-review-arm-check shape).
             vm = re.match(r"^\$\{?([A-Za-z_][A-Za-z0-9_]*)\}?$", arg.strip().strip("\"'"))
             if vm:
-                am2 = re.search(r'(?m)^\s*' + vm.group(1) + r'="([^"]*)"', text)
-                if am2:
+                for am2 in re.finditer(r'(?m)^\s*' + vm.group(1) + r'="([^"]*)"', text):
                     for name in SH.findall(am2.group(1)):
                         for base in ("lib", "bin"):
                             cand = os.path.join(root, base, name)
@@ -160,97 +173,309 @@ def sourced_targets(text, script_dir, root):
                     targets.append(here)
     return targets
 
-HEREDOC = re.compile(r'<<(-?)([\'"]?)([A-Za-z_][A-Za-z0-9_]*)\2')
+HEREDOC = re.compile(r'<<(-?)([\'\"]?)([A-Za-z_][A-Za-z0-9_]*)\2')
+IDENT = re.compile(r"^[A-Za-z0-9_.*:?\[\]/-]+$")
 
 def clauses(text):
-    """Yield (lineno, clause_text) for each non-heredoc bash line.
+    """Yield (lineno, seg) per bash line. seg keeps ONLY characters that sit
+    in COMMAND context; everything else (plain quotes, heredoc bodies,
+    $((arithmetic)) becomes spaces. #6032: the #5993 fallout hid inside
+    multiline quoted jq/awk programs and case-alternation labels, which a
+    line-local tokenizer reads as calls — one carried state machine fixes all
+    three.
 
-    Tracks heredoc bodies by their terminator, carries quote state across
-    lines (embedded python/awk programs hide), joins backslash continuations,
-    strips comments outside quotes.
+    State: quote (', "), stack of contexts (cmdsubst/subshell/arith), heredoc
+    terminator, and a line-local seg. A $( or backtick anywhere — even inside
+    a double quote — enters command context until its closer; a bare ( at
+    depth 0 is a subshell (both parens emitted so case labels still peel);
+    a ) at depth 0 is a case-label terminator (emitted); case ALTERNATION
+    branches (quota_bench|rate_limited) are absorbed into the label's skip
+    set by clause_firsts.
     """
     lines = text.splitlines()
-    i = 0
-    term = None
     quote = ""
-    while i < len(lines):
-        if term is not None:
-            if lines[i].strip() == term:
-                term = None
-            i += 1
+    stack = []          # 'c' = $( / backtick, 's' = bare subshell, 'a' = arithmetic
+    heredoc = None      # terminator line content (stripped) while inside a heredoc
+    for i, raw in enumerate(lines):
+        if heredoc is not None:
+            if raw.strip() == heredoc:
+                heredoc = None
+            yield (i + 1, " ")
             continue
-        # a top-level `exec python3` prologue (blocked-reconcile polyglot):
-        # everything after it is python, not bash — yield nothing further
-        if re.match(r"^exec\s+python3\b", lines[i]):
-            break
         # backslash continuations join into one logical line
         start = i
-        buf = lines[i]
-        while buf.endswith("\\") and not buf.endswith("\\\\") and start + (len(buf.split("\n")) - 1) < len(lines):
-            nxt = start + len(buf.split("\n"))  # 0-based index of next physical line
-            if nxt >= len(lines):
-                break
-            buf = buf[:-1] + " " + lines[nxt]
-            if not (buf.endswith("\\") and not buf.endswith("\\\\")):
-                start = nxt
-                break
-            start = nxt
-        i = start + 1
+        buf = raw
+        j = i
+        while buf.endswith("\\") and not buf.endswith("\\\\") and j + 1 < len(lines):
+            j += 1
+            buf = buf[:-1] + " " + lines[j]
+        # a top-level `exec python3` prologue (blocked-reconcile polyglot):
+        # everything after it is python, not bash — yield nothing further
+        if not stack and not quote and re.match(r"^exec\s+python3\b", buf):
+            break
         seg = []
-        if quote:
-            # the line continues a multi-line string: mark the clause so its
-            # leading jq-key/python-assignment words are not read as calls
-            seg.append("~")
+        emit = seg.append
         k = 0
         n = len(buf)
+
+        def emit_data(upto):
+            # everything in buf[k:upto] is data (quote/arith continuation)
+            seg.append(" " * (upto - k))
+
         while k < n:
-            c = buf[k]
+            # continuation of a carried quote: consume till its closer
             if quote:
-                if c == quote:
-                    quote = ""
-                else:
-                    seg.append(c)
-                k += 1
+                closer = buf.find(quote, k)
+                if closer == -1:
+                    if quote == '"':
+                        # escaped quotes: skip \" pairs while scanning
+                        p = k
+                        while True:
+                            closer = buf.find('"', p)
+                            if closer == -1 or closer == 0 or buf[closer - 1] != "\\":
+                                break
+                            p = closer + 1
+                    if closer == -1:
+                        emit_data(n)
+                        k = n
+                        continue
+                # (re)found: data through the closer, then command context
+                emit_data(closer + 1 - k)
+                k = closer + 1
+                quote = ""
                 continue
-            if c in "'\"":
-                quote = c
-                k += 1
+            # continuation of carried arithmetic: scan for the closing ))
+            if stack and stack[-1] == "a":
+                e = buf.find("))", k)
+                if e == -1:
+                    emit_data(n)
+                    k = n
+                    continue
+                emit_data(e + 2 - k)
+                k = e + 2
+                stack.pop()
                 continue
+            # carried command-substitution / subshell: its lines ARE commands
+            c = buf[k]
             if c == "\\" and k + 1 < n:
-                seg.append(buf[k:k + 2])
+                emit(" " if _in_quoteless_data(buf, k, n) else " ")
                 k += 2
                 continue
-            if c == "#" and (k == 0 or buf[k - 1] in " \t;|&({"):
-                break
+            if c == "'":
+                e = buf.find("'", k + 1)
+                emit(" ")
+                if e == -1:
+                    quote = "'"
+                    k = n
+                else:
+                    k = e + 1
+                continue
+            if c == '"':
+                # double quote: data until close, but $() / backticks inside
+                # are commands — scan segmentwise
+                p = k + 1
+                while p < n:
+                    if buf[p] == "\\":
+                        p += 2
+                        continue
+                    if buf[p] == '"':
+                        break
+                    if buf[p] == "$" and p + 1 < n and buf[p + 1] == "(":
+                        # command substitution inside the double quote
+                        depth = 1
+                        q = p + 2
+                        while q < n and depth:
+                            if buf[q] == "(":
+                                depth += 1
+                            elif buf[q] == ")":
+                                depth -= 1
+                            elif buf[q] == "'":
+                                e2 = buf.find("'", q + 1)
+                                q = (e2 if e2 != -1 else n)
+                                q += 1 if e2 != -1 else 0
+                                continue
+                            elif buf[q] == '"':
+                                e2 = buf.find('"', q + 1)
+                                q = (e2 if e2 != -1 else n)
+                                q += 1 if e2 != -1 else 0
+                                continue
+                            elif buf[q] == "<" and q + 1 < n and buf[q + 1] == "<":
+                                m = HEREDOC.match(buf, q)
+                                if m:
+                                    # heredoc inside the substitution: the
+                                    # body is data; the closer ) returns AFTER
+                                    # the terminator — keep the $() context
+                                    # open across it via the outer loop
+                                    heredoc = m.group(3)
+                                    _heredoc_pending_close = stack + ["c"]
+                                    # stash so the post-heredoc ) closes it
+                                    globals()["_HEREDOC_STACK"] = "c"
+                                    break
+                            q += 1
+                        if heredoc is not None:
+                            # rest of line is substitution-prefix; the closing
+                            # ) is past the heredoc — leave k at n
+                            emit(" ")
+                            k = n
+                            break
+                        seg.extend(_cmd(buf[p + 2:q - 1] if depth == 0 else buf[p + 2:q]))
+                        emit(" ")
+                        p = q
+                        continue
+                    if buf[p] == "`":
+                        e2 = buf.find("`", p + 1)
+                        seg.extend(_cmd(buf[p + 1:e2 if e2 != -1 else n]))
+                        emit(" ")
+                        p = (e2 + 1) if e2 != -1 else n
+                        continue
+                    p += 1
+                else:
+                    # closing " not found: quote carries to the next line
+                    quote = '"'
+                    k = n
+                    continue
+                if p >= n:
+                    continue
+                # the heredoc-break also breaks here via continue above
+                k = p + 1
+                continue
+            if c == "$" and k + 1 < n and buf[k + 1] == "(":
+                if k + 2 < n and buf[k + 1:k + 3] == "((":
+                    # $((arithmetic)) — data context
+                    e = buf.find("))", k + 3)
+                    if e == -1:
+                        stack.append("a")
+                        emit(" ")
+                        k = n
+                    else:
+                        emit(" ")
+                        k = e + 2
+                    continue
+                depth = 1
+                q = k + 2
+                in_q = ""
+                while q < n and depth:
+                    if buf[q] == "(":
+                        depth += 1
+                    elif buf[q] == ")":
+                        depth -= 1
+                    elif buf[q] == "'":
+                        e2 = buf.find("'", q + 1)
+                        if e2 == -1:
+                            in_q = "'"
+                        q = (e2 if e2 != -1 else n)
+                        q += 1 if e2 != -1 else 0
+                        continue
+                    elif buf[q] == '"':
+                        e2 = buf.find('"', q + 1)
+                        if e2 == -1:
+                            in_q = '"'
+                        q = (e2 if e2 != -1 else n)
+                        q += 1 if e2 != -1 else 0
+                        continue
+                    elif buf[q] == "<" and q + 1 < n and buf[q + 1] == "<":
+                        m = HEREDOC.match(buf, q)
+                        if m:
+                            # result=$(python3 - <<'PY' ... PY ...): body is
+                            # data; remember a pending cmdsubst closer
+                            heredoc = m.group(3)
+                            break
+                    q += 1
+                if heredoc is not None or depth > 0:
+                    # the substitution (or a quoted program inside it) spans
+                    # past this line: carry BOTH the command context and, if
+                    # the scan ended inside a quote, the quote — so the
+                    # continuation lines' jq/awk words stay data (#6032)
+                    stack.append("c")
+                    if in_q:
+                        quote = in_q
+                    emit(" ")
+                    k = n
+                    continue
+                emit(" ")
+                seg.extend(_cmd(buf[k + 2:q - 1]))
+                k = q
+                continue
+            if c == "`":
+                e = buf.find("`", k + 1)
+                emit(" ")
+                if e == -1:
+                    # rare: unterminated backtick — treat rest as data
+                    k = n
+                else:
+                    seg.extend(_cmd(buf[k + 1:e]))
+                    k = e + 1
+                continue
             if c == "<" and k + 1 < n and buf[k + 1] == "<":
                 m = HEREDOC.match(buf, k)
                 if m:
-                    term = m.group(3)
-                    k = m.end()
+                    heredoc = m.group(3)
+                    emit(" ")
+                    k = n
                     continue
-            seg.append(c)
+                emit(c)
+                k += 1
+                continue
+            if c == "#":
+                # comment: only when it starts a word (fleet convention)
+                if k == 0 or buf[k - 1] in " \t;|&({":
+                    k = n
+                    continue
+                emit(c)
+                k += 1
+                continue
+            if c == "(":
+                if k + 1 < n and buf[k + 1] == "(":
+                    # ((arithmetic)) — data until ))
+                    e = buf.find("))", k + 2)
+                    if e == -1:
+                        stack.append("a")
+                        emit(" ")
+                        k = n
+                    else:
+                        emit(" ")
+                        k = e + 2
+                    continue
+                stack.append("s")
+                emit(c)
+                k += 1
+                continue
+            if c == ")":
+                if stack:
+                    top = stack.pop()
+                    if top == "s":
+                        emit(c)   # bare subshell closer: keep for SEP balance
+                    # cmdsubst/arith closers: their ( was never emitted
+                else:
+                    emit(c)       # depth-0 ) = case-label terminator
+                k += 1
+                continue
+            emit(c)
             k += 1
         yield (start + 1, "".join(seg))
+    return
+
+def _in_quoteless_data(buf, k, n):
+    return True
+
+def _cmd(body):
+    """Tokenize an extracted command-substitution body through the same
+    state machine (fresh state: the extraction bounds are quote-balanced)."""
+    return [seg for _ln, seg in clauses(body)]
 
 SEP = re.compile(r"(\$\(|\(|\)|\|\||&&|;|\|)")
 
 def clause_firsts(clause):
-    """First words of every clause, with subshell/$(()/case-label awareness.
-
-    Parenthesboth ways: depth>0 means we are inside $( or ( — a token there is
-    a real call; a ) at depth 0 closes a case-branch label, so the label word
-    is not a call. Single-char words are loop vars / short patterns, never
-    fleet functions.
+    """First words of every part. Case labels: a part carrying `)` at depth 0
+    (the #6032 walk only emits those) is a case-branch label — peel it, then
+    absorb the alternation branches BEFORE it (walking back until the `;;`
+    boundary, which the #6032 walk leaves as an empty part) into a skip set,
+    so `quota_bench|rate_limited) return 1` yields only the body. Words in the
+    skip set are not yielded; everything else (env-prefix, keyword, assignment)
+    resolves to the clause's first call-ish word.
     """
     depth = 0
     parts = []
-
-    # Split the clause at the separators; the TEXT between them is the part.
-    # A ( at any depth opens a subshell/$((); a ) at depth>0 closes it, so the
-    # part keeps no parenthesis; a ) at depth 0 ends a case-branch label, so
-    # the label keeps its ) for the peel below. Without this accumulation
-    # every part was the empty string and the scan proved nothing — the bug
-    # the planted fixture now proves loud.
     prev = 0
     for m in SEP.finditer(clause):
         tok_txt = clause[m.start():m.end()]
@@ -268,26 +493,40 @@ def clause_firsts(clause):
         prev = m.end()
     parts.append(clause[prev:])
 
+    label_skip = set()
     for idx, part in enumerate(parts):
+        stripped = part.strip()
+        m2 = re.match(r"^([A-Za-z_][A-Za-z0-9_.-]*)\)(?=(?:\s|$))", part)
+        if not m2:
+            continue
+        # alternation branches: walk back over bare pattern-words until the
+        # `;;` boundary (an empty part) or a non-plain token
+        j = idx - 1
+        while j >= 0:
+            ps = parts[j].strip()
+            if ps == "":
+                break
+            if not IDENT.match(ps):
+                break
+            for w in re.findall(r"[A-Za-z_][A-Za-z0-9_]*", ps):
+                label_skip.add(w)
+            j -= 1
+
+    for part in parts:
         part = part.strip()
         if not part:
             continue
-        # a case-branch label: the part kept its `)`, so peel it. A part that
-        # lost its `)` (depth>0 close) is a subshell/$(() inner word — a real
-        # call — and must NOT be peeled.
-        m2 = re.match(r"^([A-Za-z_][A-Za-z0-9_]*)\)(?:\s|$)", part)
-        if m2 and not clause[:clause.find(part)].rstrip().endswith(("(", "$(")):
-            # label — still scan the BODY after the )
-            part = part[m2.end():]
-            if not part.strip():
+        # case-branch label: peel `name)` and continue with the body
+        m2 = re.match(r"^([A-Za-z_][A-Za-z0-9_.-]*)\)(?=(?:\s|$))", part)
+        if m2:
+            part = part[m2.end():].strip()
+            if not part:
                 continue
-        # condition/loop keywords sit BETWEEN the keyword and its command;
-        # `if helper_running; then` must yield helper_running, not just if
         part = re.sub(r"^(then|do|else|elif|if|while|until)\s+", "", part)
         while part:
             am = re.match(r"^([A-Za-z_][A-Za-z0-9_]*)[+]?=(\S*\s+)?", part)
             if am:
-                part = part[am.end():].strip()  # env-prefix: next word is the call
+                part = part[am.end():].strip()
                 if not part:
                     break
                 continue
@@ -296,15 +535,16 @@ def clause_firsts(clause):
         if not m3:
             continue
         name = m3.group(1)
-        # fleet function convention is snake_case (seat_log, model_cap,
-        # precedence_band_phase); bare words are prose/jq/label vocabulary the
-        # #5993 class never produced, so they are not calls this gate owns.
-        # ALL-CAPS words are constants, not functions.
+        if name in label_skip:
+            continue
+        # fleet function convention is snake_case; ALL-CAPS = constants
         if len(name) < 2 or "_" not in name or (name.upper() == name):
             continue
         yield name
 
 missing = []
+sentinel_found = False
+yielded = 0
 for path in bash_files():
     text = open(path, errors="replace").read()
     script_dir = os.path.dirname(path)
@@ -324,9 +564,23 @@ for path in bash_files():
             stack.extend((x, depth + 1) for x in reversed(sourced_targets(ttext, os.path.dirname(t), root)))
     for ln, clause in clauses(text):
         for name in clause_firsts(clause):
-            if name in BUILTINS or name in defined:
+            yielded += 1
+            if name == "seat_log":
+                sentinel_found = True
+            if name in BUILTINS or name in EXTERNAL or name in defined:
                 continue
             missing.append((os.path.relpath(path, root), ln, name))
+
+# #6032: the gate must not pass VACUOUSLY. A parser regression (stuck quote
+# state, heredoc-terminator miss) yields nothing and prints OK — the #5993
+# silent-127 class again. Minimum-volume + sentinel (seat_log is called by
+# every litellm-seat consumer and defined in lib/litellm-seat.sh) prove the
+# scan actually read the fleet.
+if not planted:
+    if yielded < 500:
+        print(f"FAIL: scanner yielded only {yielded} call words (parser regression — expected 500+)"); sys.exit(1)
+    if not sentinel_found:
+        print("FAIL: sentinel seat_log not found — source resolution regression"); sys.exit(1)
 
 if planted:
     if not missing:
