@@ -39,12 +39,22 @@ only sustained connection-refused (organ dead) exits 1.
 
 Deployment drill (fleet-ops#6054, #5792 accept line: "re-adding a dead deployment
 fails the health canary loudly"): a POPULATED census that still carries an
-unhealthy deployment also exits 1, naming the affected groups
-(health-deployment-unhealthy). Organ-up is not fleet-green: the 2026-09-12
-unhealthy_count=4 (dead-credit xkiro deepseek-v4-pro deployed in the active
-groups) starved the box while every organ heartbeat stayed 1. The prom and
-state writes still land before the exit so the affected group gauge stays
-scrapeable through the failure.
+unhealthy deployment exits 1, naming the affected groups
+(health-deployment-unhealthy) — but only once the verdict has held
+FLEET_LITELLM_UNHEALTHY_TOLERANCE_S (default 300s = five 60s ticks) of
+CONTINUOUSLY-unhealthy same-group deployments (fleet-ops#6427). The
+2026-09-13 prepaid/metered Z.AI 429 bursts each self-healed within 2-3 ticks,
+yet each one previously priced a senior-auditor summon. The hold-clock
+(unhealthy_since, per group) persists in the state json, mirroring
+dead_since — populated ticks continue it for still-unhealthy groups and
+drop healed ones; any tick without a populated census (hang, 5xx, 401,
+empty, connection-refused) resets it. Sustained starvation (2026-09-12:
+dead-credit deployments for HOURS) still exits 1, as does every
+populated-unhealthy tick after the tolerance. Organ-up is not fleet-green:
+the 2026-09-12 unhealthy_count=4 (dead-credit xkiro deepseek-v4-pro deployed
+in the active groups) starved the box while every organ heartbeat stayed 1.
+The prom and state writes still land before the exit so the affected group
+gauge stays scrapeable through the hold and the failure.
 
 Empty-census fail-loud (fleet-ops#4628): GET /health with background_health_checks
 returns the in-memory cache, which starts as {}. After a Prisma reconnect crash
@@ -82,6 +92,8 @@ Environment seams (tests):
   FLEET_LITELLM_MASTER_KEY_FILE path to KEY=value env file carrying the master key
   FLEET_LITELLM_CONFIG      live yaml (model_list expected count)
   FLEET_LITELLM_EMPTY_CENSUS_TOLERANCE_S  hold window for empty /health (default 120)
+  FLEET_LITELLM_UNHEALTHY_TOLERANCE_S     hold window for deployment-unhealthy
+                            (default 300; fleet-ops#6427)
   FLEET_LITELLM_PG_ISREADY  pg_isready binary (default searched on PATH)
   FLEET_LITELLM_REDIS_CLI   redis-cli binary (default searched on PATH)
   FLEET_LITELLM_PG_HOST     postgres host or socket dir (default the
@@ -149,6 +161,13 @@ DEFAULT_DEAD_TOLERANCE_S = float(os.environ.get("FLEET_LITELLM_DEAD_TOLERANCE_S"
 # can finish its first background cycle before the empty-census fail-loud.
 DEFAULT_EMPTY_CENSUS_TOLERANCE_S = float(
     os.environ.get("FLEET_LITELLM_EMPTY_CENSUS_TOLERANCE_S", "120")
+)
+# Fail-loud only after the deployment-unhealthy verdict has held this long
+# of CONTINUOUSLY-unhealthy same-group deployments (fleet-ops#6427). Five
+# 60s ticks: the 2026-09-13 prepaid/metered Z.AI 429 bursts each self-healed
+# within 2-3 ticks, and each one previously priced a senior-auditor summon.
+DEFAULT_UNHEALTHY_TOLERANCE_S = float(
+    os.environ.get("FLEET_LITELLM_UNHEALTHY_TOLERANCE_S", "300")
 )
 DEFAULT_MASTER_KEY_FILE = os.environ.get(
     "FLEET_LITELLM_MASTER_KEY_FILE",
@@ -497,6 +516,11 @@ def main(argv: list[str] | None = None) -> int:
         type=float,
         default=DEFAULT_EMPTY_CENSUS_TOLERANCE_S,
     )
+    p.add_argument(
+        "--unhealthy-tolerance",
+        type=float,
+        default=DEFAULT_UNHEALTHY_TOLERANCE_S,
+    )
     p.add_argument("--venv", default=DEFAULT_VENV)
     p.add_argument("--quiet", action="store_true")
     args = p.parse_args(argv)
@@ -560,6 +584,7 @@ def main(argv: list[str] | None = None) -> int:
                         "redis_up": redis_up,
                         "dead_since": None,
                         "empty_since": None,
+                        "unhealthy_since": None,
                     },
                     indent=2,
                     sort_keys=True,
@@ -595,6 +620,7 @@ def main(argv: list[str] | None = None) -> int:
                 "postgres_up": pg_up,
                 "redis_up": redis_up,
                 "dead_since": int(dead_since),
+                "unhealthy_since": None,
             }
         )
         _atomic_write(Path(args.state), json.dumps(state, indent=2, sort_keys=True))
@@ -653,6 +679,7 @@ def main(argv: list[str] | None = None) -> int:
                 "redis_up": redis_up,
                 "dead_since": None,
                 "empty_since": None,
+                "unhealthy_since": None,
             }
             _atomic_write(Path(args.state), json.dumps(state, indent=2, sort_keys=True))
             print(
@@ -685,6 +712,7 @@ def main(argv: list[str] | None = None) -> int:
                     "redis_up": redis_up,
                     "dead_since": None,
                     "empty_since": int(empty_since),
+                    "unhealthy_since": None,
                 }
             )
             _atomic_write(Path(args.state), json.dumps(state, indent=2, sort_keys=True))
@@ -705,6 +733,33 @@ def main(argv: list[str] | None = None) -> int:
         render_prom(now, proxy_up, groups, pg_up, redis_up, 1, census_n, expected_n),
     )
 
+    # Deployment drill (fleet-ops#6054, #5792 accept line): a populated census
+    # with ANY unhealthy deployment fails loud — but only once the verdict has
+    # held --unhealthy-tolerance (fleet-ops#6427) of CONTINUOUSLY-unhealthy
+    # same-group deployments, mirroring dead_since: the hold-clock
+    # (unhealthy_since, per group) persists in the state json; a populated
+    # tick continues it for still-unhealthy groups and drops healed ones
+    # (any tick without a populated census resets it, above). The 2026-09-13
+    # prepaid Z.AI 429 bursts each self-healed within 2-3 ticks yet each
+    # priced a senior-auditor summon; sustained starvation (2026-09-12:
+    # HOURS) still exits 1. prom + state are already written, so the affected
+    # group gauge (fleet_litellm_proxy_unhealthy_deployments) is scrapeable
+    # through the hold AND the failure. The connection-refused / 401 /
+    # empty-census exits returned above; this is the remaining verdict of a
+    # fully-fetched, populated census.
+    prev_unhealthy_since = _load_state(args.state).get("unhealthy_since")
+    prev_unhealthy_since = (
+        prev_unhealthy_since if isinstance(prev_unhealthy_since, dict) else {}
+    )
+    unhealthy_groups = sorted(
+        name for name, counts in groups.items() if counts.get("unhealthy", 0)
+    )
+    unhealthy_since: dict[str, int] = {}
+    for gname in unhealthy_groups:
+        held_ts = prev_unhealthy_since.get(gname)
+        unhealthy_since[gname] = (
+            int(held_ts) if isinstance(held_ts, (int, float)) else int(now)
+        )
     state = {
         "now": int(now),
         "proxy_up": proxy_up,
@@ -717,28 +772,31 @@ def main(argv: list[str] | None = None) -> int:
         "redis_up": redis_up,
         "dead_since": None,
         "empty_since": None,
+        "unhealthy_since": unhealthy_since,
     }
     _atomic_write(Path(args.state), json.dumps(state, indent=2, sort_keys=True))
-
-    # Deployment drill (fleet-ops#6054, #5792 accept line): a populated census
-    # with ANY unhealthy deployment fails loud — organ-up is not fleet-green.
-    # prom + state are already written, so the affected group gauge
-    # (fleet_litellm_proxy_unhealthy_deployments) is scrapeable through the
-    # failure. The connection-refused / 401 / empty-census exits returned
-    # above; this is the remaining verdict of a fully-fetched, populated
-    # census.
-    unhealthy_groups = sorted(
-        name for name, counts in groups.items() if counts.get("unhealthy", 0)
-    )
     if unhealthy_groups:
-        print(
-            "fleet-litellm-health-canary: health-deployment-unhealthy "
-            + ",".join(unhealthy_groups)
-            + " — deployment(s) failing /health still deployed in the active"
-            " groups; bench them (fleet-ops#6054 drill, #5792 accept line)",
-            file=sys.stderr,
-        )
-        return 1
+        held = now - min(unhealthy_since.values())
+        if held >= args.unhealthy_tolerance:
+            print(
+                "fleet-litellm-health-canary: health-deployment-unhealthy "
+                + ",".join(unhealthy_groups)
+                + f" — deployment(s) continuously unhealthy for {int(held)}s >= "
+                f"{int(args.unhealthy_tolerance)}s; bench them (fleet-ops#6054"
+                " drill, #5792 accept line, #6427 hold)",
+                file=sys.stderr,
+            )
+            return 1
+        if not args.quiet:
+            print(
+                "fleet-litellm-health-canary: health-deployment-unhealthy-hold "
+                + ",".join(unhealthy_groups)
+                + f" — deployment(s) unhealthy {int(held)}s < "
+                f"{int(args.unhealthy_tolerance)}s tolerance; transient 429"
+                " bursts self-heal, holding (fleet-ops#6427)",
+                file=sys.stderr,
+            )
+            return 0
 
     if not args.quiet:
         print(
