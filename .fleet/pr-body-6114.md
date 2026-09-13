@@ -4,7 +4,7 @@ Closes #6114
 
 ## Why
 
-#6037 marked both 2026-08-27 Cursor $400 ledger rows `advisory-RETIRED` ("no worker routes to Cursor"). #5993 had retired the prepaid-spend reader to a 9-line no-op, which froze `prepaid-spend.prom`, so the pacing rules read 0/0 while the real $235.70 of $400 sat in the #4566 field names; the senior role meanwhile rode the #5993 LiteLLM proxy (GLM/DeepSeek) instead of the $400 bucket. Nish: Grok 4.6 and the Kimi K3 judge are part of the escalation matrix through the Cursor API, and Cursor spend is live. This restores the rows, the reader, and the ladder.
+#6037 marked both 2026-08-27 Cursor $400 ledger rows `advisory-RETIRED` ("no worker routes to Cursor"). #5993 had retired the prepaid-spend reader to a 9-line no-op, which froze `prepaid-spend.prom`, so the pacing rules read 0/0 while the real $235.70 of $400 sat in the #4566 field names; the senior role meanwhile rode the #5993 LiteLLM proxy (GLM/DeepSeek) instead of the $400 bucket. Nish: Grok 4.6 and the Kimi K3 judge are part of the escalation matrix over the Cursor API, and Cursor spend is live. This restores the rows, the reader, and the ladder.
 
 ## Scope
 
