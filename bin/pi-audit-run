@@ -294,29 +294,6 @@ resolve_senior_seat() {
     return 1
 }
 
-resolve_seat() {
-    local role="$1"
-    case "$role" in
-        devin)
-            if [ -n "${AUDIT_DEVIN_SEAT:-}" ]; then
-                printf '%s\t%s\n' "${AUDIT_DEVIN_SEAT%%:*}" "${AUDIT_DEVIN_SEAT#*:}"
-            else
-                printf 'devin\tswe-2-max\n'
-            fi
-            ;;
-        free-glm-5-3|free|free-glm)
-            resolve_free_glm
-            ;;
-        senior|straitly)
-            resolve_senior_seat
-            ;;
-        *)
-            log "unknown auditor role: $role"
-            return 1
-            ;;
-    esac
-}
-
 # --- helpers -----------------------------------------------------------------
 instance_to_parts() {
     local inst="$1"
