@@ -92,6 +92,10 @@ load_seat_caps() { :; }
 enumerate_seats() { printf '%s\t%s\t-\t1\n' devin glm-5-2; }
 class_of() { printf 'prepaid-quota\n'; }
 model_cap() { printf '1\n'; }
+# fleet-ops#6101: every non-senior role takes its seat ONLY from the lib's
+# litellm_seat (the resolve_seat fallback — and with it the AUDIT_DEVIN_SEAT
+# override — is deleted), so the minimal stub provides it.
+litellm_seat() { printf 'litellm\t%s\n' "${1:-worker-capable}"; }
 seat_usable() { return 0; }
 seat_ledger_path() { printf '/dev/null\n'; }
 LIB
@@ -111,7 +115,8 @@ export PI_PACKET_SEAT_LIB="$seat_lib"
 export AUDIT_PROMPT="$prompt"
 export AUDIT_PLAN_FILE="$plan"
 export AUDIT_STATE_DIR="$state_dir"
-export AUDIT_DEVIN_SEAT='devin:glm-5-2'
+# (fleet-ops#6101: AUDIT_DEVIN_SEAT went with the deleted resolve_seat
+# fallback — the devin role now seats strictly via the lib's litellm_seat.)
 
 packet="$scratch/packet.md"
 
