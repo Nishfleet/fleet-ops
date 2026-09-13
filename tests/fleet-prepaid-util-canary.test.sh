@@ -18,6 +18,9 @@
 #      fleet_prepaid_pool_usd 400.000000, both NON-ZERO — and append a FRESH
 #      history sample (updated_s == the state's, never the stale 1788894598
 #      replication the issue caught).
+#   2b. stale-append regression: a FROZEN state (dead reader) must never
+#       re-append its stale sample — the issue's "same stale sample" line —
+#       while a refreshed state appends exactly once.
 #   3. 24h delta: usd_today = vendor 24h delta of the bucket, count preserved
 #      (spend overlay, not a pick), never the token-derived 0.000000 (#4621).
 #   4. Warming history: usd_today = UNAVAILABLE:cursor-history-warming, never
@@ -105,6 +108,38 @@ h1_s=$(jq -r '.updated_s' "$hist"); h1_u=$(jq -r '.api_bucket_used_usd' "$hist")
 [[ "$(printf '%.3f' "$h1_u")" == "235.704" ]] \
   || fail "scenario2: history sample must carry the 235.704 bucket spend, got $h1_u"
 ok "scenario2: #4206 metric names carry the 235.704/400.000 Included-API-bucket figures; history sample is fresh"
+
+# --- 2b. stale-append regression: a FROZEN state must never re-append -------
+# The issue's live evidence: prepaid-spend/cursor-history.jsonl kept
+# appending the same stale sample (updated_s=1788894598, bucket 11.36).
+# The dedup was 300s-pacing only, so every cursor_today_figure caller
+# (judge measure.sh, fable-check) between dead-reader canary ticks
+# re-appended the frozen sample forever. fleet-ops#6114: append only a
+# sample STRICTLY newer than the last history line.
+frozen_s=$(( $(date -u +%s) - 2 * 3600 ))
+printf '%s\n' "{\"updated_s\":$frozen_s,\"api_bucket_used_usd\":235.704000}" >"$spend_state/cursor.json"
+printf '%s\n' "{\"updated_s\":$((frozen_s - 23 * 3600)),\"api_bucket_used_usd\":5.0}" \
+  "{\"updated_s\":$frozen_s,\"api_bucket_used_usd\":235.704000}" >"$hist"
+# shellcheck disable=SC1091
+source "$repo_root/lib/cursor-api-bucket.sh"
+fig=$(FLEET_PREPAID_SPEND_DIR="$spend_state" cursor_today_figure)
+[[ "$fig" == "230.7040" ]] \
+  || fail "scenario2b: frozen state still yields the 24h delta figure 230.7040, got '$fig'"
+(( $(wc -l <"$hist") == 2 )) \
+  || fail "scenario2b: a FROZEN state (updated_s == last history sample) must NOT append a duplicate stale sample — the exact #6114 symptom; got $(wc -l <"$hist") lines"
+# A refreshed state (a successful canary fetch bumped updated_s >300s later)
+# appends exactly once.
+refresh_s=$(( $(date -u +%s) - 400 ))
+printf '%s\n' "{\"updated_s\":$refresh_s,\"api_bucket_used_usd\":236.5}" >"$spend_state/cursor.json"
+fig2=$(FLEET_PREPAID_SPEND_DIR="$spend_state" cursor_today_figure)
+[[ "$fig2" == "231.5000" ]] \
+  || fail "scenario2b: refreshed state yields the 24h delta 231.5000, got '$fig2'"
+(( $(wc -l <"$hist") == 3 )) \
+  || fail "scenario2b: a strictly-newer state sample must append exactly one history line, got $(wc -l <"$hist")"
+h_last=$(tail -n1 "$hist" | jq -r '.updated_s')
+[[ "$h_last" == "$refresh_s" ]] \
+  || fail "scenario2b: appended line must carry the fresh updated_s $refresh_s, got $h_last"
+ok "scenario2b: frozen state never re-appends the stale sample; refreshed state appends exactly once (fleet-ops#6114)"
 
 # --- 3. 24h delta: usd_today is the vendor 24h delta, count preserved -------
 now_s=$(date -u +%s); old_s=$((now_s - 25 * 3600))
