@@ -14,6 +14,7 @@ manifest="$repo_root/MANIFEST"
 service="$repo_root/systemd/vault-conflict-resolver.service"
 timer="$repo_root/systemd/vault-conflict-resolver.timer"
 vault_rules="/home/nish/workspaces/tooling/nish-vault/_system/shared-memory/global-standing-rules.md"
+vault_root="${FLEET_VAULT:-/home/nish/workspaces/tooling/nish-vault}"
 
 fail() { echo "FAIL: $*" >&2; exit 1; }
 ok()   { echo "OK: $*"; }
@@ -147,6 +148,24 @@ if [[ -f "$vault_rules" ]]; then
   ok "live timer is active and last Result=success"
 else
   ok "hosted CI: skip live timer (vault not present)"
+fi
+
+# --- 9. live vault: the loose stop-gate glob is clean (fleet-ops#6449) ------
+# The contract gate ("stop all vault writes on any *sync-conflict-* match") is
+# checked by agents with a LOOSE find; memoryctl, memory-ledger-supersede and
+# the resolver all key on the dotted true Syncthing pattern. Topic-named
+# outcome records (e.g. an issue titled about sync conflicts) match the loose
+# glob forever — three sat 18 days while every gate stayed green. Assert the
+# live tree has none. Exclusions mirror memoryctl's assert_vault semantics:
+# .stversions is Syncthing's version archive (parked, never freezing) and
+# _system/conflict-quarantine is the resolver's own non-freezing parking.
+if [[ -d "$vault_root" ]]; then
+  loose_live=$(find "$vault_root" -name '*sync-conflict-*' -type f \
+    ! -path '*/.stversions/*' ! -path '*/_system/conflict-quarantine/*' | wc -l)
+  [[ "$loose_live" -eq 0 ]] || fail "live vault still has $loose_live unfrozen *sync-conflict-* file(s) (fleet-ops#6449): topic-named outcome records are not conflicts — quarantine them under agent-state (fleet-ops#6449)"
+  ok "live vault: zero non-quarantined *sync-conflict-* files (fleet-ops#6449)"
+else
+  ok "hosted CI: skip live-vault glob (vault not present)"
 fi
 
 echo "OK: vault-conflict-resolver four classes + quarantine + live timer"
