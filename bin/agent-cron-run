@@ -140,7 +140,7 @@ if (( prompt_bytes > PROMPT_E2BIG_CAP_BYTES )); then
     trim_log="$(trim_packet_sections "$PROMPT" "$trimmed_tmp" "$trim_target" || true)"
     trimmed_bytes=$(wc -c <"$trimmed_tmp")
     if [[ -n "$trim_log" ]] && (( trimmed_bytes <= trim_target )); then
-        grep -q '^trim: dropped' <<<\"$trim_log\" && {
+        grep -q '^trim: dropped' <<<"$trim_log" && {
             printf '%s\n' "$trim_log" | while IFS= read -r line; do
                 seat_log "agent-cron-run: $slug packet trim (fleet-ops#5739): $line"
             done

@@ -100,12 +100,29 @@ reason_has_evidence() {
 # fails both by construction, which is how the panel discarded all six scoped
 # items of Nish-ratified EPIC Nishfleet/0509#1367 (#1382-#1387) between 09-05
 # and 09-07. A candidate that belongs to an epic is never discarded here.
+# fleet-ops#6151: 0509#3171 was discarded 2026-09-12 despite a PASS vote - its
+# title is the bare-`EPIC:` shape (colon, no #number) and its body carries none
+# of the four #4451 patterns, so the guard never fired. Two more links, read
+# from what the tally already holds: the title prefix, and the issue's
+# `epic` label - labels are already fetched at the top of main for the
+# idempotence check and passed in here; no second API call.
+# fleet-ops#5861: Nish-ratified epic titles come in three shapes -
+# "EPIC #123", "EPIC: ...", "EPIC (Nish): ..." - and all of them start with
+# EPIC, so one ^EPIC test covers every shape (it subsumes #6151's bare-`EPIC:`
+# prefix, which missed the `EPIC (Nish):`-title shape). It also adds the
+# split-family citation: a slice's title literally ends "(split of #2992)"
+# (0509#3195) and must be judged on its epic, never discarded standalone. The
+# umbrella itself is caught by ^EPIC above; this catches the cited slices,
+# which the #4451 guard also missed.
 candidate_is_epic_linked() {
-    local title="$1" body="$2"
-    grep -qE 'EPIC #[0-9]+' <<<"$title" && return 0
+    local title="$1" body="$2" labels="${3:-}"
+    grep -qE '^EPIC' <<<"$title" && return 0
     grep -qE 'EPIC #[0-9]+' <<<"$body" && return 0
     grep -qF 'docs/epics/' <<<"$body" && return 0
     grep -qE 'EPIC \(Nish\):' <<<"$body" && return 0
+    case ",$labels," in *',epic,'*) return 0 ;; esac
+    grep -qE 'split of #[0-9]+' <<<"$title" && return 0
+    grep -qE 'split of #[0-9]+' <<<"$body" && return 0
     return 1
 }
 
@@ -481,7 +498,7 @@ main() {
         # a Nish-ratified epic. A FAIL majority on an epic child means the SPEC
         # is thin, not that the work is unwanted - so it gets spec-needed, keeps
         # scout-candidate, and stays in the queue for a re-spec.
-        if candidate_is_epic_linked "$issue_title" "$issue_body"; then
+        if candidate_is_epic_linked "$issue_title" "$issue_body" "$issue_labels"; then
             log "$repo/#$candidate EPIC-GUARD: 2-of-3 FAIL on an epic-linked candidate - spec-needed, NOT discarded (fleet-ops#4451)"
             if [ "$DRY_RUN" = "1" ]; then
                 log "DRY-RUN: would add spec-needed + keep scout-candidate + comment for $repo/#$candidate"
