@@ -11,13 +11,11 @@
 #   1. The seatlib detector is_devin_writes_rejected matches the literal
 #      "rejected a tool call that requires confirmation".
 #   2. classify_death_error classifies the literal as `devin-writes-rejected`,
-#      not `unknown` (so the fast-death fallthrough does not re-bench it as an
-#      ordinary failure).
-#   3. mark_seat_devin_writes_rejected_bench writes a config_fault ledger entry
-#      that is NEVER retired (seat_dead=false), proving a CLI/flag config fault
-#      is infrastructure, not seat yield.
-#   4. pi-issue-run's write-rejection detection block benches via
-#      mark_seat_devin_writes_rejected_bench (grep the block exists).
+#      not `unknown` (so the fast-death fallthrough classifies it, not a
+#      generic failure).
+#   3. pi-issue-run's write-rejection detection block still keys off the
+#      matcher (fleet-ops#4263 cleanup retired the bench side effect; the
+#      classification and its PACKET-VERDICT line remain).
 #
 # Runs entirely offline: stubbed seat-caps.json, ledger dir, no systemd.
 
@@ -156,18 +154,16 @@ ok "classify_death_error: quota error -> quota_cap (not devin-writes-rejected)"
 
 # ============================================================================
 # 3. retired (fleet-ops#4263): the config_fault bench ledger lived in the
-# deleted routing library; the LiteLLM proxy owns cooldown and the bench
-# marker is a logging stub. Matcher (1) and classifier (2) stay.
+# deleted routing library; the LiteLLM proxy owns cooldown. Matcher (1) and
+# classifier (2) stay.
 
-# 4. pi-issue-run detection block exists and calls the writer
+# 4. pi-issue-run detection block still classifies the write-reject class
 # ============================================================================
 run_src="$repo_root/bin/pi-issue-run"
 [[ -f "$run_src" ]] || fail "bin/pi-issue-run not found: $run_src"
 grep -q 'is_devin_writes_rejected' "$run_src" \
-    || fail "pi-issue-run must call is_devin_writes_rejected to bench the write-reject class"
-grep -q 'mark_seat_devin_writes_rejected_bench' "$run_src" \
-    || fail "pi-issue-run must call mark_seat_devin_writes_rejected_bench"
-ok "pi-issue-run: write-rejection detection block calls is_devin_writes_rejected + mark_seat_devin_writes_rejected_bench"
+    || fail "pi-issue-run must call is_devin_writes_rejected to classify the write-reject class"
+ok "pi-issue-run: write-rejection detection block calls is_devin_writes_rejected"
 
 # ============================================================================
 # 5. Regression pin: the classifier literal is present in seatlib.sh

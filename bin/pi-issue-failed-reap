@@ -340,58 +340,14 @@ if [[ "$issue_state" == "OPEN" ]]; then
     # the same way — a spawn-die-respawn loop that burned #2133 6x in one day
     # (05:52, 07:01, 08:26, 09:23 IST + 2 more). The cooldown marker tells
     # intake to skip this issue for PI_INTAKE_RECLAIM_COOLDOWN_S (default 900s
-    # = 15min), giving the seat-health ledger time to bench the killing seat
-    # and breaking the tight loop. Only written when the branch was actually
-    # deleted (the reclaim path); the open-PR shortcut exits before here.
+    # = 15min), breaking the tight loop. Only written when the branch was
+    # actually deleted (the reclaim path); the open-PR shortcut exits before
+    # here. Seat health itself is owned by the LiteLLM proxy cooldown
+    # (cleanup #4263 removed the per-seat bench ledger and its readers).
     if [[ "$branch_deleted" == "yes" ]]; then
         cooldown_file="$ATTEMPTS_DIR/pi-issue-${instance}.cooldown"
-        # fleet-ops#5743: bench-aware transient-overload requeue. The hand
-        # path (audit 2026-09-12, unit pi-issue@fleet-ops-2073) manually added
-        # a READY-WORK.md row with an `after:` gate on the overloaded seat's
-        # bench expiry, because the fixed cooldown below outlives nothing:
-        # a 503 overload bench is geometrically escalated (600s base up to 6h,
-        # mark_seat_overload_bench) and can outlast RECLAIM_COOLDOWN_S. The
-        # READY-WORK ledger is paper (fleet-ops#1493) with no live rail, so
-        # the requeue is minted here instead, on the existing issue-dispatch
-        # entry point: the cooldown marker learns an absolute `until:` line.
-        # Detection is NOT conflated with empty-run or real packet failures:
-        # the classification fires only when the LAST seat's leftover health
-        # file (litellm-seat keep-list; proxy owns routing cooldown) says
-        # health_class=overload_bench / failure_mode=overload_503 AND its
-        # bench_until is still in the future. Unit-escalation-write already
-        # excludes pi-issue@* (its own OnFailure lives here), so this is the
-        # single writer for the requeue.
-        _ov_until=""
-        _last_seat_ov=$(cat "$ATTEMPTS_DIR/pi-issue-${instance}.seat" 2>/dev/null || true)
-        if [[ -n "$_last_seat_ov" && "$_last_seat_ov" == */* ]]; then
-            _seat_lib=${SEAT_LIB:-$HOME/.local/lib/pi-packet/litellm-seat.sh}
-            if [[ -f "$_seat_lib" ]]; then
-                # shellcheck disable=SC1090
-                source "$_seat_lib" 2>/dev/null || true
-            fi
-            if declare -F seat_ledger_path >/dev/null 2>&1; then
-                _ov_ledger=$(seat_ledger_path "${_last_seat_ov%%/*}" "${_last_seat_ov#*/}" 2>/dev/null || true)
-                if [[ -n "$_ov_ledger" && -f "$_ov_ledger" ]]; then
-                    IFS=$'\x1f' read -r _ov_hc _ov_fm _ov_bu <<<"$(jq -r '[.health_class//"",.failure_mode//"",.bench_until//""] | join("\u001f")' "$_ov_ledger" 2>/dev/null)"
-                    if [[ "${_ov_hc:-}" == "overload_bench" && "${_ov_fm:-}" == "overload_503" && -n "${_ov_bu:-}" ]]; then
-                        _ov_bu_epoch=$(date -u -d "$_ov_bu" +%s 2>/dev/null) || _ov_bu_epoch=0
-                        _cd_bound_epoch=$(( $(date -u +%s) + RECLAIM_COOLDOWN_S ))
-                        if (( _ov_bu_epoch > _cd_bound_epoch )); then
-                            _ov_until="$_ov_bu"
-                        fi
-                    fi
-                fi
-            fi
-        fi
         if date -u +%Y-%m-%dT%H:%M:%SZ >"$cooldown_file" 2>/dev/null; then
-            if [[ -n "$_ov_until" ]]; then
-                printf 'until: %s\n' "$_ov_until" >>"$cooldown_file" 2>/dev/null || true
-                log "TRANSIENT-OVERLOAD classified for $instance: seat $_last_seat_ov benched until $_ov_until — requeue gated past bench expiry (no hand READY-WORK row)"
-                log "wrote reclaim cooldown marker for $instance with until: $_ov_until (branch deleted, OPEN issue re-queued bench-aware)"
-                log_to_triage "TRANSIENT-OVERLOAD-REQUEUE" "instance=$instance repo=$repo_slug issue=$issue until=$_ov_until seat=$_last_seat_ov"
-            else
-                log "wrote reclaim cooldown marker for $instance (branch deleted, OPEN issue re-queued with backoff)"
-            fi
+            log "wrote reclaim cooldown marker for $instance (branch deleted, OPEN issue re-queued with backoff)"
         else
             log "WARN: could not write cooldown marker $cooldown_file"
         fi
@@ -447,50 +403,6 @@ if [[ "$issue_state" == "OPEN" ]]; then
         fi
     fi
 
-    # fleet-ops#2462: systemic-failure detection. When the issue has failed
-    # on every seat in the tried-seats list AND all those seats are now
-    # benched (seat-health ledger says unusable), the failure is systemic —
-    # a provider-wide outage (503/429/500 storm), not per-seat faults.
-    # Write a .systemic marker so the next intake tick skips re-claiming
-    # until the seat pool recovers, instead of spawning another worker
-    # into a dead provider. The tried-seats list is the evidence: one entry
-    # per failed attempt; if every entry is benched, the issue has exhausted
-    # every available seat.
-    _tried_file="$ATTEMPTS_DIR/pi-issue-${instance}.tried-seats"
-    _systemic_file="$ATTEMPTS_DIR/pi-issue-${instance}.systemic"
-    if [[ -f "$_tried_file" ]]; then
-        _seat_lib="${SEAT_LIB:-$HOME/.local/lib/pi-packet/litellm-seat.sh}"
-        _src_seat_lib=""
-        if [[ -f "$_seat_lib" ]]; then
-            # shellcheck disable=SC1090
-            _src_seat_lib=$(source "$_seat_lib" 2>/dev/null && echo yes || echo no)
-        fi
-        _all_benched=1
-        _seat_scan_total=0
-        _seat_scan_benched=0
-        while IFS= read -r _ts_line; do
-            [[ -z "$_ts_line" ]] && continue
-            _ts_provider="${_ts_line%%/*}"
-            _ts_model="${_ts_line#*/}"
-            [[ -n "$_ts_provider" && -n "$_ts_model" ]] || continue
-            _seat_scan_total=$(( _seat_scan_total + 1 ))
-            if [[ "$_src_seat_lib" == "yes" ]] && declare -F seat_usable >/dev/null 2>&1; then
-                if ! seat_usable "$_ts_provider" "$_ts_model" 2>/dev/null; then
-                    _seat_scan_benched=$(( _seat_scan_benched + 1 ))
-                fi
-            fi
-        done < "$_tried_file"
-        # A systemic marker fires only when every tried seat is benched AND
-        # we saw at least one seat (otherwise there is no exhaustion to signal).
-        # If litellm-seat is absent (CI), we cannot evaluate seat_usable — skip
-        # the marker (fail-open: re-claim normally).
-        if (( _seat_scan_total > 0 && _seat_scan_total == _seat_scan_benched )); then
-            if date -u +%Y-%m-%dT%H:%M:%SZ > "$_systemic_file" 2>/dev/null; then
-                log "SYSTEMIC-FAILURE detected for $instance: all $_seat_scan_total tried seats are benched — writing .systemic marker (intake will skip re-claim until recovery)"
-                log_to_triage "SYSTEMIC-FAILURE-DETECTED" "instance=$instance seats_tried=$_seat_scan_total seats_benched=$_seat_scan_benched"
-            fi
-        fi
-    fi
 elif [[ "$issue_state" == "CLOSED" ]]; then
     label_ok=no
     if [[ "$in_progress" == "yes" ]]; then
@@ -522,47 +434,12 @@ else
     log_to_triage "CLAIM-REAP-UNKNOWN-STATE" "instance=$instance state=$issue_state"
 fi
 
-# --- preserve per-seat avoidance across the claim reset ----------------------
-# fleet-ops#516 (auditor 2026-08-27): the reap must NOT wipe the per-issue
-# tried-seats file when the last failure was a mid-session provider death on
-# a still-healthy seat. Without this, the intake re-claim starts from an
-# empty tried-seats list and pick-seat re-selects the SAME killing seat
-# (0509-974 cursor-grok-4.6-high 143 x3). The seat-health ledger is the
-# DURABLE avoidance authority (pi-issue-run now benches mid-session deaths
-# there), but a seat that was killed ONCE should still be excluded until the
-# next restart would anyway move on; an empty list also throws away the rest
-# of the burst's rotation history. Only clear when every seat in the list is
-# already benched in the ledger (seat_usable=no) — the next claim then picks
-# a healthy seat from the full pool, which is exactly the recover case the
-# reset exists for (fleet-ops-32).
-last_seat=""
-last_seat_file="$ATTEMPTS_DIR/pi-issue-${instance}.seat"
-if [[ -f "$last_seat_file" ]]; then
-    last_seat=$(cat "$last_seat_file" 2>/dev/null || true)
-fi
-mid_session_bench=0
-if [[ -n "$last_seat" ]]; then
-    # shellcheck disable=SC1091
-    # Source the repo copy when present so CI does not leak the live VPS
-    # seat ledger (a missing seat_usable there looks like "benched" and
-    # keeps tried-seats, which is the opposite of the recover case).
-    _seat_lib="${SEAT_LIB:-$HOME/.local/lib/pi-packet/litellm-seat.sh}"
-    if [[ -f "$_seat_lib" ]]; then
-        # shellcheck disable=SC1090
-        source "$_seat_lib" 2>/dev/null || true
-    fi
-    if declare -F seat_usable >/dev/null 2>&1; then
-        if ! seat_usable "${last_seat%%/*}" "${last_seat#*/}" 2>/dev/null; then
-            mid_session_bench=1
-        fi
-    fi
-fi
-
+# --- reset the tried-seats list across the claim reset -----------------------
+# The LiteLLM proxy cooldown owns seat health (cleanup #4263): with the
+# per-seat bench ledger gone there is no bench state to consult, so the
+# re-claim starts from a clean seat rotation every time.
 tried_file="$ATTEMPTS_DIR/pi-issue-${instance}.tried-seats"
-if [[ -f "$tried_file" && "$mid_session_bench" == "1" ]]; then
-    log "keeping tried-seats file for $instance (last seat $last_seat is benched in the seat ledger — the re-claim must pick a different seat)"
-    log_to_triage "TRIED-SEATS-KEPT" "instance=$instance last_seat=$last_seat"
-elif [[ -f "$tried_file" ]]; then
+if [[ -f "$tried_file" ]]; then
     : >"$tried_file"
     log "reset tried-seats file for $instance"
     log_to_triage "TRIED-SEATS-RESET" "instance=$instance file=$tried_file"
