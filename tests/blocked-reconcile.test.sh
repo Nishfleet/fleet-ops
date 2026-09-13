@@ -284,6 +284,10 @@ chmod +x "$scratch/bin/systemctl"
 
 export FAKE_DIR="$scratch"
 export PATH="$scratch/bin:$PATH"
+# fleet-ops#5101: point GH at the stub so the bin's App-token mint guard
+# ("${GH:-gh}" == "gh") skips the PATH prepend + live mint entirely — the
+# suite stays hermetic and can never touch the real tracker.
+export GH="$scratch/bin/gh"
 export BLOCKED_RECONCILE_LOCKDIR="$scratch/lock"
 export BLOCKED_RECONCILE_TRIAGE="$scratch/triage.md"
 export BLOCKED_RECONCILE_STATE="$scratch/state.json"
@@ -306,8 +310,8 @@ else
     live_queue_before=""
 fi
 
-# fleet-ops#3310/#3527: provide the seat-lib data the infra auto-release path
-# needs for a dry-run pick_seat. A real run uses the fleet's live state.
+# fleet-ops#3310/#3527: provide the seatlib data the infra auto-release path
+# needs for a dry-run pick-seat. A real run uses the fleet's live state.
 mkdir -p "$scratch/pi-packet/attempts" "$scratch/pi-packet/active-seats" "$scratch/pi-packet/ledger"
 cat >"$scratch/models.json" <<'JSON'
 {
@@ -333,7 +337,7 @@ export PI_PACKET_STATE="$scratch/pi-packet"
 export PI_MODELS_JSON="$scratch/models.json"
 export SEAT_CAPS_JSON="$scratch/seat-caps.json"
 # fleet-ops#4395: isolate the seat-health ledger so the infra-block re-queue
-# drill (Case 8a) is hermetic. seat-lib reads LEDGER_DIR from
+# drill (Case 8a) is hermetic. seatlib reads LEDGER_DIR from
 # PI_SEAT_HEALTH_LEDGER_DIR at source time; without this the drill reads the
 # LIVE fleet ledger and the result depends on production seat state (e.g.
 # opencode rate_limited in prod makes the test fail). An empty ledger dir
@@ -853,6 +857,29 @@ grep -q 're-open-2026-09-15T03:51:36Z-alibaba-smoke-ok' "$scratch/comments.log" 
 ok "failed smoke re-parks with blocked-on: re-open-<usable_at>-<smoke>"
 
 unset BLOCKED_RECONCILE_SMOKE_DIR
+
+# --- fleet-ops#5870: attest blockers are orchestrator-attest, never nish ---
+# Replay of the three live instances (0509#3068, 0509#3144, fleet-ops#5760):
+# each parked as kind=nish-decision at 07:45-07:57Z on 2026-09-12; all three
+# must classify as orchestrator-attest, zero as nish-decision.
+epy() { printf '%s' "$1" | "$bin" --extract; }
+out1=$(epy '{"repo":"Nishfleet/0509","number":3068,"title":"delete uptime-health.yml","body":"blocked-on: nish-decision\nDeleting the workflow needs a gate-integrity-attest from a repository admin; workers may not self-attest.\n","comments":[]}')
+[[ "$(printf '%s' "$out1" | jq -r '.kind')" == "orchestrator-attest" ]] || fail "#3068 replay must be orchestrator-attest: $out1"
+out2=$(epy '{"repo":"Nishfleet/0509","number":3144,"title":"ads-prog-seo prose","body":"needs an admin gate-integrity-attest on the PR; I cannot post it\n","comments":[]}')
+[[ "$(printf '%s' "$out2" | jq -r '.kind')" == "orchestrator-attest" ]] || fail "#3144 replay must be orchestrator-attest: $out2"
+out3=$(epy '{"repo":"Nishfleet/fleet-ops","number":5760,"title":"x","body":"blocked-on: nish-decision\nverifier-attest requires an admin identity; waiting.\n","comments":[]}')
+[[ "$(printf '%s' "$out3" | jq -r '.kind')" == "orchestrator-attest" ]] || fail "#5760 replay must be orchestrator-attest: $out3"
+ok "three #5870 replay instances classify orchestrator-attest, zero nish-decision"
+
+# The pin: a blocker body containing gate-integrity-attest NEVER yields
+# kind=nish-decision, even when the wording trips the Nish-reserved vocabulary.
+got=$(epy '{"repo":"Nishfleet/0509","number":50,"title":"x","body":"blocked-on: nish-decision\nLikely needs a gate-integrity-attest from an admin (an authority reserved to staff).\n","comments":[]}')
+[[ "$(printf '%s' "$got" | jq -r '.kind')" != "nish-decision" ]] || fail "gate-integrity-attest blocker must never be nish-decision: $got"
+[[ "$(printf '%s' "$got" | jq -r '.kind')" == "orchestrator-attest" ]] || fail "attest pin kind: $got"
+ok "a blocker body containing gate-integrity-attest never yields kind=nish-decision"
+
+# Clean up the helper so later cases do not see it.
+unset -f epy
 
 # Case 9: overlapping flock no-op
 export BLOCKED_RECONCILE_LOCKDIR="$scratch/lock-overlap"

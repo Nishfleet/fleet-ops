@@ -111,8 +111,8 @@ cat >"$SEAT_CAPS_JSON" <<'JSON'
 }
 JSON
 
-# Use the real seat-lib so pick_seat / mark_seat_spawn_fail work.
-export PI_PACKET_SEAT_LIB="$repo_root/lib/seat-lib.sh"
+# Use the real seatlib so pick-seat / mark_seat_spawn_fail work.
+export PI_PACKET_SEAT_LIB="$repo_root/lib/litellm-seat.sh"
 export FLEET_DEBUG_PLAYBOOK_GATE=0
 export FLEET_DEBUG_PLAYBOOK_SESSION_DIR="$scratch/sessions"
 
@@ -158,7 +158,7 @@ ok "case A: mid-session infra death exits 0 with journal phase=start/exit rc=0 r
 
 # --- case 2: PR shipped + pi exit non-zero -> exit 0 (success) ----------------
 inst="0509-4903b"
-# Clear case A's bench so pick_seat re-offers the seat.
+# Clear case A's bench so pick-seat re-offers the seat.
 rm -f "$LEDGER"/*.json "$LEDGER"/*.spawn-bench.json 2>/dev/null || true
 {
   printf 'Implement one GitHub issue: Nishfleet/0509#4903 case B.\n'

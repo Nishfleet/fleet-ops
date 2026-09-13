@@ -1,0 +1,25 @@
+{
+  "findings": [
+    {
+      "rank": 1,
+      "title": "drill fixture: cap-overflow finding one",
+      "body": "Synthetic finding one for the cap-overflow drill (fleet-ops#5441). Not a live fleet gap.",
+      "severity": "medium",
+      "evidence": "tests/fixtures/rulebook-redteam-drill-findings-cap.json"
+    },
+    {
+      "rank": 2,
+      "title": "drill fixture: cap-overflow finding two",
+      "body": "Synthetic finding two for the cap-overflow drill (fleet-ops#5441). Not a live fleet gap.",
+      "severity": "medium",
+      "evidence": "tests/fixtures/rulebook-redteam-drill-findings-cap.json"
+    },
+    {
+      "rank": 3,
+      "title": "drill fixture: cap-overflow finding three",
+      "body": "Synthetic finding three for the cap-overflow drill (fleet-ops#5441). Not a live fleet gap.",
+      "severity": "medium",
+      "evidence": "tests/fixtures/rulebook-redteam-drill-findings-cap.json"
+    }
+  ]
+}

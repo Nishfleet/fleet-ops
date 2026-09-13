@@ -27,6 +27,91 @@ fail() { echo "FAIL: $*" >&2; exit 1; }
 [[ -f "$canonical" ]] || fail "canonical not found: $canonical"
 command -v python3 >/dev/null 2>&1 || fail "python3 required"
 
+# Stage 0a: fleet-ops#5536 — the generator's default targets must carry
+# ONE identical sol_identity_block. A per-surface split fed Claude
+# "Sol still orchestrates" while Codex got "Sol is retired"; the drift
+# fixtures pass per-surface Sol text on purpose and therefore cannot
+# catch it, so the gate on the defaults themselves is the detector.
+RSR_PATH="$repo_root/bin/render-standing-rules.py" python3 - <<'PY' || fail "contradictory default sol_identity_block values"
+import importlib.util, os
+spec = importlib.util.spec_from_file_location(
+    "rsr", os.environ["RSR_PATH"]
+)
+m = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(m)
+blocks = {t["sol_identity_block"] for t in m.DEFAULT_TARGETS}
+assert len(blocks) == 1, f"DEFAULT_TARGETS carry {len(blocks)} distinct sol_identity_block values"
+PY
+
+# Stage 0b: fleet-ops#5718 — no DEFAULT_TARGETS templating block may route
+# live work to retired seats. The claude failure_response_block named the
+# superseded DeepSeek/Grok/Sol repair ladder while the same file's routing
+# block retired Sol and the ladder; the render was "clean" against its own
+# stale source, so only a gate on the defaults catches it. The drift
+# fixtures pass sentinel text (FAILCLAUDE) on purpose and cannot catch it.
+# Retired-ladder clauses, not bare seat names: "DeepSeek" alone is legal
+# inside the codex old_launcher_block's SUPERSEDED note.
+RSR_PATH="$repo_root/bin/render-standing-rules.py" python3 - <<'PY' || fail "DEFAULT_TARGETS carry retired repair-ladder seat names (fleet-ops#5718)"
+import importlib.util, os
+spec = importlib.util.spec_from_file_location(
+    "rsr", os.environ["RSR_PATH"]
+)
+m = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(m)
+stale = ("DeepSeek for deeply-scoped", "Grok/Sol/Opus")
+for t in m.DEFAULT_TARGETS:
+    for key, val in t.items():
+        if not isinstance(val, str):
+            continue
+        for clause in stale:
+            assert clause not in val, (
+                f"{t['path'].name} {key} routes work to the retired "
+                f"ladder ({clause!r}) - pick seats via pi-seat-health.json"
+            )
+PY
+
+# Stage 0c: fleet-ops#5747 — the failure-response bullet names the vault
+# memory `failure-response-standing-order` as its canonical text, and that
+# memory is compiled OUTSIDE this repo, so Stage 0b's gate on the generator
+# defaults cannot see it drift again (exactly what happened: #5729 fixed the
+# rendered surfaces while the compiled memory still route-repaired to the
+# retired DeepSeek/Grok/Sol ladder). When the vault is present on the host
+# (worker/self-host runs), gate it live; on bare CI, skip — absent() rule.
+REPAIR_LADDER_MEMORY=${REPAIR_LADDER_MEMORY:-/home/nish/workspaces/tooling/nish-vault/03 Knowledge/compiled/shared-memory/global/failure-response-standing-order.md}
+if [[ -f "$REPAIR_LADDER_MEMORY" ]]; then
+  python3 - "$REPAIR_LADDER_MEMORY" <<'PY' || fail "vault canonical repair ladder routes to retired seats (fleet-ops#5747)"
+import re, sys
+path = sys.argv[1]
+text = open(path).read()
+# Live-routing clauses of the retired ladder: the DeepSeek lane assignment
+# and the Grok/Sol/Opus flagship roster. A SUPERSEDED/retired annotation is
+# legal (the fixed memory names the old ladder only to retire it), so the
+# gate fails on the bare live-assignment phrasings, not on any mention.
+retired = (
+    r"DeepSeek lane for deeply-scoped",
+    r"\(Grok 4\.5 High / Sol / Opus\)",
+    r"Grok/Sol/Opus flagships[^\n]*?for anything broad|flagship lanes[^\n]*?Sol[^\n]*?Opus",
+)
+for clause in retired:
+    # A line that explicitly invalidates the routing is not live routing.
+    hit = next(
+        (
+            m.group(0)
+            for c in clause.split("|")
+            if (m := re.search(r"[^\n]*" + c + r"[^\n]*", text))
+        ),
+        None,
+    )
+    if hit and not re.search(r"RETIRED ROUTING|superseded|do not launch", hit, re.I):
+        raise SystemExit(
+            f"{path} still routes the failure-repair ladder to retired seats: {hit.strip()!r}"
+        )
+PY
+  echo "OK: vault canonical repair ladder carries the post-#5561 routing (fleet-ops#5747)"
+else
+  echo "SKIP: vault canonical repair ladder not present on this host (fleet-ops#5747)"
+fi
+
 work="$(mktemp -d -t standing-rules-drift-XXXXXX)"
 trap 'rm -rf "$work"' EXIT
 
@@ -267,5 +352,101 @@ else
   echo "OK 9b: no Pi install present (skipping reality check; structural pin only, CI)"
 fi
 
+# --- Assertion 10 (fleet-ops#5537): governed-run status is reality-anchored.
+# The rulebook-redteam audit found the canonical claiming "`governed-run` and
+# `~/.local/share/implementation-worker-routing/` are gone with them" while
+# /home/nish/.local/bin/governed-run still exists and ~/.codex/AGENTS.md still
+# sanctions it for non-Pi ad-hoc commands. The canonical must never claim a
+# deletion that reality contradicts: file-existence claims are pinned to a
+# dated, runnable check command, and the surviving non-Pi sanction is stated.
+
+canonical_routing="$(sed -n '/SECTION: shared-fleet-routing/,/END SECTION: shared-fleet-routing/p' "$canonical")"
+[[ -n "$canonical_routing" ]] || fail "canonical has no shared-fleet-routing section (gate cannot run)"
+
+if grep -Fq "are gone with them" <<<"$canonical_routing"; then
+  fail "canonical claims governed-run is 'gone with them' (fleet-ops#5537) - verify reality first: test -x ~/.local/bin/governed-run; ls ~/.local/share/implementation-worker-routing/; if retired-but-alive, say 'retired for Pi dispatch' with a dated check command instead of claiming deletion"
+fi
+
+grep -Fq "retired for Pi dispatch" <<<"$canonical_routing" \
+  || fail "canonical shared-fleet-routing must state how governed-run was retired ('retired for Pi dispatch') rather than silently omitting it (fleet-ops#5537)"
+
+grep -Fq "sanctioned for non-Pi ad-hoc commands" <<<"$canonical_routing" \
+  || fail "canonical must state the surviving non-Pi sanction for governed-run (fleet-ops#5537)"
+
+# Reality check: if the wrapper is present on this host, the canonical must NOT
+# claim its deletion and must name the surviving sanction.
+if [[ -x "$HOME/.local/bin/governed-run" ]] && ! grep -Fq "NOT deleted" <<<"$canonical_routing"; then
+  fail "~/.local/bin/governed-run exists but canonical does not pin 'NOT deleted' for it (fleet-ops#5537)"
+fi
+
+grep -Fq "test -x ~/.local/bin/governed-run" <<<"$canonical_routing" \
+  || fail "canonical governed-run status must carry the dated test -x check command (fleet-ops#5537)"
+echo "OK 10: governed-run status is reality-anchored (fleet-ops#5537)"
+
+# Retired-identity contradiction gate (fleet-ops#5642) and its fixture
+# drill. A generated region states "Sol is retired"; a hand-written tail
+# that still assigns Sol live work (handoff inspection, final integration
+# and verification) is a live contradiction the generator cannot see —
+# it never edits hand-written prose, so this grep gate is the detector.
+retired_identity_clauses=(
+  "Sol inspects every handoff"
+  "Sol still orchestrates"
+  "Sol owns final integration"
+)
+# Returns non-zero (silent) when the surface carries the retirement note
+# and still assigns Sol live work.
+retired_identity_contradiction() {
+  local f="$1" clause
+  grep -Fq "Sol is retired" "$f" || return 1
+  for clause in "${retired_identity_clauses[@]}"; do
+    grep -Fq "$clause" "$f" && return 0
+  done
+  return 1
+}
+# Fixture drill (runs on every host, including bare CI): the check must
+# catch the stale clause on a surface that carries the retirement note,
+# and pass the fixed reassignment.
+fixt="$work/retired-identity-fixture.md"
+printf '# Tail\n\nSol is retired (Nish 2026-09-07, fleet-ops#4148).\n\n- Sol inspects every handoff and owns final integration and verification.\n' >"$fixt"
+if retired_identity_contradiction "$fixt"; then
+  :
+else
+  fail "retired-identity gate missed the stale clause on the fixture (fleet-ops#5642)"
+fi
+printf '# Tail\n\nSol is retired (Nish 2026-09-07, fleet-ops#4148).\n\n- Pi stock reviewer subagent inspects every handoff and owns final integration and verification.\n' >"$fixt"
+if retired_identity_contradiction "$fixt"; then
+  fail "retired-identity gate false-positive on the fixed fixture (fleet-ops#5642)"
+fi
+echo "OK 11a: retired-identity gate catches the stale clause and passes the fixed text (fixture drill)"
+# Live render targets, when present on this host (bare CI hosts SKIP).
+live_targets_missing=0
+for t in /home/nish/.claude/CLAUDE.md /home/nish/.codex/AGENTS.md; do
+  [[ -f "$t" ]] || live_targets_missing=1
+done
+if [[ "$live_targets_missing" == 1 ]]; then
+  echo "OK 11b: live render targets absent on this host (SKIP live gate)"
+elif retired_identity_contradiction /home/nish/.claude/CLAUDE.md \|\| retired_identity_contradiction /home/nish/.codex/AGENTS.md; then
+  fail "a live rendered surface assigns retired Sol live verification work (fleet-ops#5642) - reassign it to Pi's stock reviewer subagent"
+else
+  echo "OK 11b: live CLAUDE.md/.codex AGENTS.md carry no retired-identity contradiction (fleet-ops#5642)"
+fi
+
+# --- Assertion 12 (fleet-ops#5717): the idle-fleet-alarm canonical section
+# must carry the FLEET-PAUSED sentinel as its FIRST ordered check, matching
+# the Pi surface canonical (lib/pi-agents-md/canonical.md: "Authoritative
+# check, in order: (1) if ~/workspaces/agent-state/FLEET-PAUSED exists ...").
+# Without it a Claude/Codex agent scopes and launches work while the fleet is
+# deliberately paused — the mirror image of the fleet-ops#180 stale-pause
+# failure the block was written to prevent.
+alarm_section="$(sed -n '/SECTION: idle-fleet-alarm/,/END SECTION: idle-fleet-alarm/p' "$canonical")"
+[[ -n "$alarm_section" ]] || fail "canonical has no idle-fleet-alarm section (gate cannot run)"
+grep -Fq "FLEET-PAUSED" <<<"$alarm_section" \
+  || fail "idle-fleet-alarm section must carry the FLEET-PAUSED sentinel check (fleet-ops#5717)"
+grep -Eq '^1\. .*FLEET-PAUSED' <<<"$alarm_section" \
+  || fail "FLEET-PAUSED must be the FIRST ordered check in idle-fleet-alarm (fleet-ops#5717)"
+grep -Fq "deliberately down" <<<"$alarm_section" \
+  || fail "idle-fleet-alarm FLEET-PAUSED check must state the fleet is deliberately down (fleet-ops#5717)"
+echo "OK 12: idle-fleet-alarm carries FLEET-PAUSED as check #1 (fleet-ops#5717)"
+
 echo ""
-echo "ALL OK: 9/9 assertions passed (drift, render, templating, markers, orphans, pi-count pin)"
+echo "ALL OK: 12/12 assertions passed (drift, render, templating, markers, orphans, pi-count pin, governed-run pin, retired-identity, fleet-paused sentinel)" | head

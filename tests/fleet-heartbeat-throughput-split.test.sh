@@ -121,8 +121,8 @@ export WORK_INPROGRESS="$scratch/work_inprogress"
 export RUNNING_UNITS="$scratch/running_units"
 export LIVE_SEAT_UNITS="$scratch/live_seat_units"
 # fleet-ops#1558: pin the admit floor so the tick does not read live
-# seat-lib / MemAvailable on hosts where /home/nish/.local/lib/pi-packet/
-# seat-lib.sh exists (same pin as tests/fleet-heartbeat-undersaturation.test.sh).
+# seatlib / MemAvailable on hosts where /home/nish/.local/lib/pi-packet/
+# seatlib.sh exists (same pin as tests/fleet-heartbeat-undersaturation.test.sh).
 export FLEET_UNDERSAT_ADMIT_CEILING=25
 
 printf '1\n' >"$WORK_READY"

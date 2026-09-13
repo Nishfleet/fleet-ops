@@ -19,8 +19,11 @@ Environment=PATH=/home/nish/.local/bin:/usr/local/bin:/usr/bin:/bin
 Environment=XDG_RUNTIME_DIR=/run/user/1000
 WorkingDirectory=/home/nish
 ExecStart=/bin/bash -c 'exec /home/nish/.local/bin/fleet-restore-drill'
-# The drill is local file + systemctl reads; bounded well under a minute.
-TimeoutStartSec=2min
+# Planes A-D are local reads, but plane E (fleet-ops#4264) adds the litellm
+# control-plane pg_dump + a bounded scratch-restore (default 180s), so the
+# bounded worst case exceeds the old 2min window. 5min = restore bound +
+# initdb/start/rotation headroom; the timer cadence dwarfs it.
+TimeoutStartSec=5min
 # Never restart: the timer is the retry. A failed drill escalates via the
 # global drop-in, not via Restart=.
 Restart=no

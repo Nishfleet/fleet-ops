@@ -1,0 +1,34 @@
+# gate(#6052): deleted-symbol P14 gate — a PR deleting a lib/ bin/ symbol cannot merge while tests/ still reference it
+
+## Fix
+
+#5993 merged while the P14 suite still asserted the deleted contract; main then went red three times, one cause at a time (resume tool-count, `is_credentials_error`/`mark_seat_credentials_bad`, `_pick_repair_rung_seat`), each found by a P14 run on the NEXT PR, never on #5993 itself. This ships the issue's smallest thing: a P14 step, not a new organ.
+
+- `tests/deleted-symbol-gate.test.sh` (new) IS the gate. It takes the PR's deleted definitions on `lib/`/`bin/` from a `-U0` diff (`name() {`, `name=`, `export name=`, python `def`/`class`), drops names still defined in the head tree (the #6037 re-host path), and fails when `tests/` still word-matches a name — so ci.yml-listed, bash-hosted (#4396) and orphan tests all count. On `pull_request` events the same test diffs `origin/main...HEAD` (checkout has `fetch-depth: 0`) and fails P14, which branch protection requires — the PR cannot merge until the test is ported or the symbol re-hosted.
+- Hosted by `tests/ci-standards-audit.test.sh` (already ci.yml:219): the worker App has no Workflows scope, so the #5748 hosting shape applies — no `.github/workflows/**` edit, which is why the diff adds no workflow. Named pin added in `tests/p14-test-listing-gate.test.sh` so the host line cannot later be parked as a known orphan.
+- `tests/pick-seat-freeze.test.sh`: +1 manifest line. The new test's two history-comment `seat-lib` mentions are prose, not callers, but the #4263 tombstone's freeze (a) fails any NEW matching file; prose-only residuals are its own sanctioned category ("files whose only remaining mentions are prose/fixture references"), so the entry is absorbed, exactly like the 46 existing prose entries.
+
+Acceptance drill (inside the new test, hermetic — no network, no writes outside a scratch dir): a throwaway git repo takes a REAL `git diff -U0` deletion; with the test unported the gate fails (RED), with the test ported it passes (GREEN). Fixtures also cover the comment-only vacuous case, bash assignment/export forms, python def/class, and the re-host-keeps-green case. Every later deletion PR is itself the live drill — the first one that deletes a symbol exercises the gate in CI.
+
+## Verification
+
+- `bash tests/deleted-symbol-gate.test.sh` → exit 0, 11 checks: `OK: 1. RED: deletion + test still asserting it fails the gate (drill_dummy_6052)` through `OK: 7b. DRILL GREEN: the same deletion with the test ported goes green`. First run of 6a also caught one real flaw: shellcheck SC2015 (info) on the `A && B || C` at line 205 — converted to an explicit `if`, re-run green, `shellcheck` exit 0.
+- `GITHUB_EVENT_NAME=pull_request bash tests/deleted-symbol-gate.test.sh` → exit 0: `OK: gate: 0 deleted lib/ bin/ definition(s) — vacuous` + `OK: live gate: no deleted lib/ bin/ symbol in this PR is still referenced by tests/`. That is the exact CI path (real `origin/main...HEAD` diff), proven on this branch before CI sees it.
+- `bash tests/p14-test-listing-gate.test.sh` → exit 0, 81 OKs, including the new `OK: deleted-symbol-gate.test.sh is pinned in the P14 reachable set (fleet-ops#6052)` (proves the ci.yml:219 → ci-standards-audit → this-gate chain mechanically).
+- `bash tests/pick-seat-freeze.test.sh` → exit 0, `OK: pick_seat caller set frozen: 47 files, no new matches, no growth`.
+- `bash tests/ci-standards-audit.test.sh` (the ci.yml:219 host) → run 1 FAILED (exit 1): `FAIL: new retired-routing match in tests/deleted-symbol-gate.test.sh — pick_seat caller set is frozen while fleet-ops#4263 deletion is open` — the freeze caught its own new prose matches, which is the gate working; fixed with the +1 manifest line. Run 2: 853 OKs, then ONE failure, `FAIL: glm-5-3 must resolve to the live wired free seat, got {"provider":"zenmux","model":"z-ai/glm-5.3-free"}` (tests/fleet-gap-closure-loop.test.sh:919). PROVEN PRE-EXISTING: a clean origin/main worktree (2970807d2, this diff absent) fails the SAME test with the IDENTICAL message, exit 1. That fallout is #6095's — its open diff already touches exactly that test (+20) and `lib/litellm-seat.sh` (+885). Not this diff's debt; not fixed here (scope).
+- Failed commands this session, named and re-run: (1) first `ci-standards-audit` run, exit 1 — the retired-routing FAIL above, fixed and re-run green; (2) `gh pr view 6092 --json stateLockReason` → `Unknown JSON field: "stateLockReason"` — the #1244 field-class trap, #6092's own PR introduced it to me; switched to the documented fields/`--jq`; (3) a `gh pr view 6095 | python3 -c` one-liner died with a bash quoting syntax error (exit 2) — rewritten with `--jq`; (4) one `tail /tmp/pick-seat-freeze.out` ENOENT — I had saved that output as `/tmp/psf.out` (my own naming slip; the test itself had exit 0), #1097's cat-ENOENT class, re-read with the correct name.
+- `sgscan` → `No new security findings.`, exit 0.
+- `crgate` → exit 3, `CodeRabbit is not signed in on this machine`; same standing state #6092 recorded — login is Nish's.
+
+run-proof: the P14 `tests / PR checks` workflow IS the run — ci.yml:219 executes `tests/ci-standards-audit.test.sh`, which hosts the gate, on every pull_request/merge_group/push (verified: my tests/*.sh diff does not hit the reusable's docs-only fast path, `.sh` is not in the excluded set, so the full 107-test list runs). Locally the same invocation was proven twice: exit 0 hermetic, and exit 0 with `GITHUB_EVENT_NAME=pull_request` exercising the real `git diff -U0 origin/main...HEAD` path. No new unit/timer/workflow: the #5748 hosting line and the #4396 published-pin test (81 OKs) are the mechanism.
+
+organ-heartbeat: tests/deleted-symbol-gate.test.sh not-an-organ: a P14 test script, no systemd unit/timer/path-unit or workflow path touched; its runner is the existing ci.yml PR-checks workflow.
+
+organ-heartbeat: tests/ci-standards-audit.test.sh tests/p14-test-listing-gate.test.sh tests/pick-seat-freeze.test.sh not-an-organ: edits to existing P14 test hosts (one hosted invocation, one named pin, one manifest data line) — no unit/timer/path-unit/workflow path touched.
+
+loose-ends: crgate skipped — CodeRabbit not signed in on this machine (exit 3; `coderabbit auth login` is Nish's, same as #6092). No others: the gate, its hosting, its pin and the freeze absorption are complete in this diff; the #5993-family glm-5-3 red rides #6095.
+
+Test plan: 3 added/edited test scripts + 1 manifest data line, no production code. The new gate self-tests (offline fixtures + a throwaway git repo, no network, no writes outside the scratch dir); the acceptance drill RED/GREEN is in the test's own 7a/7b; P14's own gitleaks/semgrep/shellcheck jobs cover the new `.sh` (shellcheck exit 0 proven locally); the next deletion-PR through this repo is the standing live drill.
+
+Closes #6052

@@ -349,6 +349,49 @@ assert not sc.LEGACY_STALENESS_PROM.exists()
 print("OK: second run is a no-op when legacy file is absent")
 PYEOF
 
+# Test 13: Bare relative path claims resolve against the vault shared-memory dir
+# (fleet-ops#5763). Standing-rule docs cite bare vault filenames such as
+# `codex-model-routing.md`, which live in
+# ~/workspaces/tooling/nish-vault/_system/shared-memory/. Before this fallback the
+# checker resolved them only under $HOME and $HOME/workspaces/tooling/fleet-ops,
+# reported "path not found", and the fix was hot-patched onto the live host — which
+# made install.sh refuse to overwrite it and held the merge-to-live gate red from
+# 2026-09-12T03:50Z. Pin the fallback so the repo copy stays authoritative.
+# HOME is monkeypatched to a scratch tree so the test is hermetic (no real vault on CI).
+echo "[13] Bare relative path claims fall back to the vault shared-memory dir (fleet-ops#5763)"
+SCRATCH_VAULT="$(mktemp -d -t stale-vault.XXXXXX)"
+trap 'rm -rf "$SCRATCH_STALE" "$SCRATCH_VAULT"' EXIT INT TERM
+mkdir -p "$SCRATCH_VAULT/workspaces/tooling/nish-vault/_system/shared-memory"
+echo "# a standing rule" \
+  > "$SCRATCH_VAULT/workspaces/tooling/nish-vault/_system/shared-memory/fake-standing-rule.md"
+if python3 - "$SCRATCH_VAULT" <<PYEOF
+import importlib.util, sys
+from pathlib import Path
+spec = importlib.util.spec_from_file_location("sc", "libexec/staleness-checker.py")
+sc = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(sc)
+
+sc.HOME = Path(sys.argv[1])
+
+def claim(value):
+    return {"type": "path", "value": value, "source": "test", "raw": value}
+
+# The vault fallback resolves a bare filename that exists nowhere else.
+res = sc._claim_result(claim("fake-standing-rule.md"))
+assert res["status"] == "ok", f"vault fallback did not resolve: {res}"
+assert "nish-vault" in res["detail"], f"resolved outside the vault: {res}"
+
+# Negative control: the fallback must not make every bare filename pass.
+res = sc._claim_result(claim("definitely-not-a-real-doc.md"))
+assert res["status"] == "mismatch", f"missing path wrongly reported ok: {res}"
+print("OK: vault fallback resolves, missing paths still mismatch")
+PYEOF
+then
+  pass "bare vault filenames resolve via the shared-memory fallback"
+else
+  fail "bare vault filenames do not resolve via the shared-memory fallback"
+fi
+
 # Summary
 echo ""
 echo "=== Results: $PASS passed, $FAIL failed ==="

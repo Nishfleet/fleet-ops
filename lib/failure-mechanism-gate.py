@@ -153,6 +153,21 @@ def signal_key(title: str) -> str:
     return text
 
 
+# fleet-ops#5478: detector auto-filed issues carry a `signal: <kind>/<id>`
+# token in their body. When a closed failure-fix and a live open issue share
+# the SAME signal token, the open issue is the same underlying ticket still
+# being tracked (the detector's dedupe keeps exactly one open issue per
+# signal) — not a recurrence after the fix. Reporting it is an infinite
+# issue factory: each closed observe-to-close duplicate + the still-open
+# original re-filed the class every audit tick.
+def _body_signal(issue: dict[str, Any]) -> str:
+    body = str(issue.get("body") or "")
+    if "signal:" not in body:
+        return ""
+    m = re.search(r"signal:\s*[^\s`/]*/([^\s`]+)", body)
+    return m.group(1) if m else ""
+
+
 def keys_match(a: str, b: str) -> bool:
     if not a or not b:
         return False
@@ -190,6 +205,7 @@ def _collect_signals(payload: dict[str, Any]) -> list[dict[str, str]]:
                     "kind": "open-issue",
                     "key": key,
                     "evidence": f"#{issue.get('number', '?')}: {title}",
+                    "body_signal": _body_signal(issue),
                 }
             )
     return signals
@@ -234,10 +250,15 @@ def hunt(payload: dict[str, Any]) -> dict[str, Any]:
             continue
         closed_num = str(issue.get("number") or "")
         closed_key = signal_key(str(issue.get("title") or ""))
-        if not closed_key:
+        closed_token = _body_signal(issue)
+        if not closed_key and not closed_token:
             continue
         for sig in signals:
             evidence = str(sig.get("evidence") or "")
+            # Same signal token tracked by an already-open issue: the class
+            # never went away, its ticket is still live (fleet-ops#5478).
+            if closed_token and closed_token == str(sig.get("body_signal") or ""):
+                continue
             # Fixtures may echo the same issue as closed and open; real GitHub
             # cannot. Skip same-number pairs.
             if closed_num and f"#{closed_num}:" in evidence:

@@ -257,6 +257,7 @@ reset_world() {
     rm -rf "$scratch/checkout_root"/*
     mkdir -p "$scratch/checkout_root"
     rm -rf "$(dirname "$audit_log")/transient-fail"
+    rm -rf "$(dirname "$audit_log")/perm-excluded-seen"
 }
 
 export CALLS GH_CALLS GH_FAIL GH_AUTH_FAIL UNIT_FILES UNIT_ACTIVE LABEL_FILE
@@ -755,6 +756,87 @@ grep -q 'precondition-fail:repo-label-check-error' "$audit_log" \
 grep -q 'INTAKE-PRECOND-FAIL' "$triage" \
     || fail "scenario14: triage must record PRECOND-FAIL: $(cat "$triage")"
 ok "scenario14: non-retryable auth error disables immediately"
+
+# ============================================================================
+# Scenario 15 (fleet-ops#5623): INTAKE-PERM-EXCLUDED fires on the transition
+# into excluded-permanent only. A second consecutive run over the same
+# declared set emits ZERO loud lines; leaving the declaration re-arms.
+# ============================================================================
+reset_world
+cat >"$intake_json" <<JSON
+{
+  "checkout_root": "$CHECKOUT_ROOT",
+  "required_labels": ["agent-ready","agent-in-progress","agent-blocked"],
+  "repos": [{ "name": "demo" }],
+  "excluded": [{ "name": "fleet2", "permanent": true, "reason": "no second dispatcher" }],
+  "deferred": []
+}
+JSON
+mkdir -p "$scratch/checkout_root/demo"
+printf 'agent-ready\nagent-in-progress\nagent-blocked\n' >"$LABEL_FILE"
+printf 'pi-intake@fleet2.timer enabled\n' >"$UNIT_FILES"
+
+# Tick 1: first-seen → LOUD once + marker written.
+run_reconcile "$intake_json"
+[[ "$env_rc" == 0 ]] || fail "scenario15 tick1: must exit 0, got $env_rc ($env_out)"
+grep -q 'INTAKE-PERM-EXCLUDED' "$triage" \
+    || fail "scenario15 tick1: first-seen must LOUD INTAKE-PERM-EXCLUDED: $(cat "$triage")"
+[[ -f "$(dirname "$audit_log")/perm-excluded-seen/fleet2" ]] \
+    || fail "scenario15 tick1: announced marker missing"
+
+# Tick 2: same declared set → zero LOUD lines (journal + triage).
+: >"$triage"
+run_reconcile "$intake_json"
+[[ "$env_rc" == 0 ]] || fail "scenario15 tick2: must exit 0, got $env_rc ($env_out)"
+printf '%s\n' "$env_out" | grep -q 'LOUD' \
+    && fail "scenario15 tick2: steady-state tick must emit zero LOUD lines: $env_out"
+grep -q 'INTAKE-' "$triage" \
+    && fail "scenario15 tick2: triage must stay empty: $(cat "$triage")"
+printf '%s\n' "$env_out" | grep -q 'announced already' \
+    || fail "scenario15 tick2: expected a quiet info line: $env_out"
+ok "scenario15 tick2: second run over the same excluded-permanent set → zero LOUD"
+
+# Masked sub-state is part of the announced condition: an operator masking
+# the unit is a NEW transition → one INTAKE-MASKED, then quiet again.
+printf 'pi-intake@fleet2.timer masked\n' >"$UNIT_FILES"
+: >"$triage"
+run_reconcile "$intake_json"
+grep -q 'INTAKE-MASKED' "$triage" \
+    || fail "scenario15 masked tick: masking must announce INTAKE-MASKED once: $(cat "$triage")"
+: >"$triage"
+run_reconcile "$intake_json"
+printf '%s\n' "$env_out" | grep -q 'LOUD' \
+    && fail "scenario15 masked tick2: masked steady-state must emit zero LOUD: $env_out"
+ok "scenario15 masked: mask transition LOUDs once, then quiet"
+
+# Re-arm: fleet2 leaves the declaration (marker swept); re-declaring LOUDs
+# as a fresh transition.
+cat >"$intake_json" <<JSON
+{
+  "checkout_root": "$CHECKOUT_ROOT",
+  "required_labels": ["agent-ready","agent-in-progress","agent-blocked"],
+  "repos": [{ "name": "demo" }],
+  "excluded": [],
+  "deferred": []
+}
+JSON
+run_reconcile "$intake_json"
+[[ ! -e "$(dirname "$audit_log")/perm-excluded-seen/fleet2" ]] \
+    || fail "scenario15 re-arm: marker must be swept when repo leaves the declaration"
+cat >"$intake_json" <<JSON
+{
+  "checkout_root": "$CHECKOUT_ROOT",
+  "required_labels": ["agent-ready","agent-in-progress","agent-blocked"],
+  "repos": [{ "name": "demo" }],
+  "excluded": [{ "name": "fleet2", "permanent": true, "reason": "no second dispatcher" }],
+  "deferred": []
+}
+JSON
+: >"$triage"
+run_reconcile "$intake_json"
+grep -q 'INTAKE-PERM-EXCLUDED\|INTAKE-MASKED' "$triage" \
+    || fail "scenario15 re-arm: re-declared repo must LOUD as a fresh transition: $(cat "$triage")"
+ok "scenario15 re-arm: leaving the declaration re-arms the alert"
 
 echo "OK: intake-reconcile converges declared set → systemd, drift surfaces loud"
 exit 0

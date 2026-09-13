@@ -1,0 +1,27 @@
+{
+  "allowlist": {
+    "authorized": [
+      {"unit": "fleet-heartbeat", "class": "a"}
+    ],
+    "pending_adjudication_class_c": [
+      {
+        "unit": "auditor-stdio-test",
+        "adjudicated": "MECHANICAL-INSTEAD",
+        "issue": 1492,
+        "recurrence_issue": 5736
+      }
+    ]
+  },
+  "unit_files": [
+    {
+      "unit": "auditor-stdio-test",
+      "path": "/home/nish/.config/systemd/user/auditor-stdio-test.service",
+      "symlink": false
+    },
+    {
+      "unit": "some-new-thing",
+      "path": "/home/nish/.config/systemd/user/some-new-thing.service",
+      "symlink": false
+    }
+  ]
+}

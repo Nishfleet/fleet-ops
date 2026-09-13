@@ -68,17 +68,17 @@ set -euo pipefail
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 repo_root="$(cd "$here/.." && pwd)"
 BIN="$repo_root/bin/fleet-seat-comeback-release"
-# fleet-ops#2661: bin/fleet-seat-comeback-release sources seat-lib.sh
+# fleet-ops#2661: bin/fleet-seat-comeback-release sources seatlib.sh
 # (seat_ledger_path + _record_learned_cap) for the overload-strike +
 # provider-wide wall. The bin's `[[ -f "$SEAT_LIB" ]]` guard makes the
-# source OPTIONAL — on hosted CI $HOME/.local/lib/pi-packet/seat-lib.sh
-# is absent, seat-lib never loads, seat_is_overload_bench returns 1,
+# source OPTIONAL — on hosted CI $HOME/.local/lib/pi-packet/seatlib.sh
+# is absent, seatlib never loads, seat_is_overload_bench returns 1,
 # register_overload_strike is never called, and the pong-ok test sees
 # `got 0` strikes (PR #2685/#2687 P14 red). Point the bin at the in-repo
-# seat-lib explicitly so the contract is "tests provide seat-lib", matching
-# every other fleet-ops seat-lib test (pi-scout-seat-rotation,
+# seatlib explicitly so the contract is "tests provide seatlib", matching
+# every other fleet-ops seatlib test (pi-scout-seat-rotation,
 # keystone-routing, pi-issue-run-*).
-export PI_PACKET_SEAT_LIB="$repo_root/lib/seat-lib.sh"
+export PI_PACKET_SEAT_LIB="$repo_root/lib/litellm-seat.sh"
 
 fail() { echo "FAIL: $*" >&2; exit 1; }
 ok()   { echo "OK: $*"; }
@@ -125,7 +125,7 @@ cleanup() { rm -rf "$TMPD"; }
 trap cleanup EXIT INT TERM
 
 # fleet-ops#3928: every `bash "$BIN"` below inherits this. The bin sources
-# seat-lib, and its retire path (write_parked_ledger -> seat_log) must never
+# seatlib, and its retire path (write_parked_ledger -> seat_log) must never
 # append to the live watch.log — pin the audit line to the harness scratch
 # instead of the production ~/.local/state/pi-packet/watch.log.
 export SEAT_LOG_FILE="$TMPD/watch.log"
@@ -420,7 +420,7 @@ grep -qE "^fleet_seat_comeback_release_last_green_seconds [0-9]+$" "$PROM" \
 # seats-corpse-retired-<ts>/ audit dir, retired_total=1 in prom and state.
 # fleet-ops#3669: retirement must leave the seat UNPICKABLE — a seat_dead=true
 # / health_class=parked parked ledger is written back into the live roster so
-# pick_seat refuses the seat instead of re-picking it via the no-ledger
+# pick-seat refuses the seat instead of re-picking it via the no-ledger
 # fail-open.
 [[ -f "$SEATDIR/devin__glm-5-2.json" ]] \
   || fail "corpse retirement must leave a parked ledger in the live roster (fleet-ops#3669)"
@@ -1082,7 +1082,7 @@ set -e
 # fleet-ops#3669: retirement must leave the seat UNPICKABLE. The corpse ledger
 # is moved into the dated audit dir AND a seat_dead=true / health_class=parked
 # parked ledger is written back into the live roster (the shared writer in
-# lib/seat-lib.sh), so pick_seat refuses the seat instead of re-picking it
+# lib/litellm-seat.sh), so pick-seat refuses the seat instead of re-picking it
 # via the "NO HEALTH DATA (no ledger file) — assuming usable" fail-open.
 [[ -f "$RETSEAT/devin__glm-5-2.json" ]] \
   || fail "13b: a parked ledger must be left in the live roster after retirement (fleet-ops#3669): $(ls "$RETSEAT")"
@@ -2051,17 +2051,17 @@ grep -q "RETIRED PHANTOM devin/swe-1-7-.out" "$TMPD/phantom.err" \
 ok "20: phantom seat key retired out of roster by comeback-release, never probed (fleet-ops#3661/#3993)"
 
 # Writer call with a phantom model: mark_seat_spawn_fail must write nothing
-# and log LOUD. Source seat-lib with a scratch ledger + caps fixture.
+# and log LOUD. Source seatlib with a scratch ledger + caps fixture.
 PHANT_LEDGER="$TMPD/ledger-writer"
 mkdir -p "$PHANT_LEDGER"
-PHANT_LOG="$TMPD/seat-lib-writer.log"
+PHANT_LOG="$TMPD/seatlib-writer.log"
 : >"$PHANT_LOG"
 set +e
 out=$(PI_SEAT_LIB_CHECK_TRANSPORT=0 \
     PI_SEAT_HEALTH_LEDGER_DIR="$PHANT_LEDGER" \
     SEAT_CAPS_JSON="$TMPD/seat-caps.json" \
     PI_PACKET_STATE="$TMPD/pi-packet-state" \
-    bash -c 'source "$0"; mark_seat_spawn_fail devin "swe-1-7-.out"' "$repo_root/lib/seat-lib.sh" 2>&1)
+    bash -c 'source "$0"; mark_seat_spawn_fail devin "swe-1-7-.out"' "$repo_root/lib/litellm-seat.sh" 2>&1)
 rc=$?
 set -e
 [[ "$rc" == "1" ]] || fail "20: writer must reject the phantom key (rc=1), got rc=$rc: $out"
@@ -2149,7 +2149,7 @@ ok "21: devin phantom retired + real orcarouter re-probed/re-benched -> comeback
 # ---------------------------------------------------------------------------
 # 22. fleet-ops#4659: comeback-release must honour a FUTURE spawn-bench
 # marker the same way seat_usable does. Lived 2026-09-09: the router's
-# pick_seat held straitly/deepseek-v4-pro (spawn-bench until 2026-09-12)
+# pick-seat held straitly/deepseek-v4-pro (spawn-bench until 2026-09-12)
 # while comeback-release probed because the ledger usable_at (#3176 1h
 # PQE hold) had aged out. A probe on a 402 account wall re-anchors
 # observed_at and retriggers FleetProviderQuotaExhausted.

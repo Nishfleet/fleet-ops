@@ -11,7 +11,7 @@
 # named product repo's open issues/PRs/merged PRs to the auditor packet so a
 # duplicate owner is visible and the panel can FAIL the duplicate.
 #
-# This test stubs gh, pi, and seat-lib, dumps the assembled packet via the
+# This test stubs gh, pi, and seatlib, dumps the assembled packet via the
 # PI_DUMP_PACKET seam, and asserts:
 #   - the product repo's reality section is present when the body names one,
 #   - it is NOT present when the body names no product repo (regression guard),
@@ -85,8 +85,8 @@ printf 'PASS\nNo duplicate; durable fix advances the north star.\n'
 FAKE
 chmod +x "$pi_fake"
 
-# --- fake seat-lib: minimal, one usable seat --------------------------------
-seat_lib="$scratch/seat-lib.sh"
+# --- fake seatlib: minimal, one usable seat --------------------------------
+seat_lib="$scratch/seatlib.sh"
 cat >"$seat_lib" <<'LIB'
 load_seat_caps() { :; }
 enumerate_seats() { printf '%s\t%s\t-\t1\n' devin glm-5-2; }

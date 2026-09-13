@@ -30,8 +30,17 @@ file and the live packet disagree, this file wins on the standing rules.
   `new_measures_7d >= caught_by_hand_7d` — every caught-by-hand item gets a
   measure line that same run. A caught-by-hand item with no measure line is a
   fault.
+- **Visitor line (fleet-ops#5417).** `measure.sh` prints `visitor:` right
+  after `product:` — the outside-in read (https redirect, edge cache,
+  manifest, duplicate routes, public-repo leaks). Any `https_redirect=NONE`,
+  `home_edge=NONE`, `manifest` other than 200, `dup_routes` or
+  `public_repo_leaks` above 0, or a TTFB jump vs the previous run's
+  `visitor:` line is filed `agent-ready` on Nishfleet/0509 the SAME hour —
+  never a page. An `ERR`/`UNAVAILABLE` field is a probe fault: fix the probe
+  (or file on fleet-ops), never a fabricated 0509 filing.
 - **Header order from now on:** `product:` (signups/activated/paying, #4456)
-  → `waste:` (empty-success, treadmill, #4457) → `usd_24h:` (fleet-ops#4459)
+  → `visitor:` (outside-in probe, #5417) → `waste:` (empty-success,
+  treadmill, #4457) → `usd_24h:` (fleet-ops#4459)
   → `new_measures_7d:` / `caught_by_hand_7d:` → shipped/24h →
   workers/ready. Merges are the fourth number, not the first.
 

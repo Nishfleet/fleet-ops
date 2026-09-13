@@ -195,4 +195,13 @@ set -e
 [[ "$rc" == "1" ]] || fail "--all must reject untracked bad files (rc=$rc out=$(cat "$out_file"))"
 ok "--all rejects untracked bad assemblers"
 
+# --- scenario 7: prose markdown outside prompts/ is not a prompt template ---
+# fleet-ops#5603: canonical prose (lib/standing-rules/canonical.md) uses the
+# words "prompt"/"packet"/"pi --print" and carries {{...}} placeholders; it
+# must not be classified as a prompt assembler, or every PR touching it
+# carries a pre-existing REJECT. Hosted drill holds the assertions.
+bash "$here/token-efficiency-canonical-not-assembler.test.sh" \
+    || fail "canonical-not-assembler regression drill failed (fleet-ops#5603)"
+ok "prose markdown outside prompts/ is not a prompt assembler (fleet-ops#5603)"
+
 ok "fleet-token-efficiency-check: PR gate, fixture drills, and self-skip pass"

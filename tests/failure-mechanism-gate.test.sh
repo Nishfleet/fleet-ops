@@ -81,6 +81,20 @@ out=$("$gate" hunt --input "$fixtures/hunt-miss.json")
 jq -e '.findings | length == 0' <<<"$out" >/dev/null || fail "hunt-miss must yield 0 findings: $out"
 ok "hunt stays quiet when the closed issue is not a failure-fix"
 
+# --- fleet-ops#5478: same signal token tracked by an OPEN issue is the
+# --- still-live ticket, not a recurrence — hunt must stay quiet on it.
+out=$("$gate" hunt --input "$fixtures/hunt-same-signal-suppressed.json")
+jq -e '.findings | length == 0' <<<"$out" >/dev/null \
+  || fail "same-signal-token pair (closed dup + still-open original) must NOT be a recurrence: $out"
+ok "hunt suppresses recurrence when the open issue carries the same signal token"
+
+# --- fleet-ops#5478: a DIFFERENT signal token under the same title-key class
+# --- is still a genuine recurrence — hunt must keep firing on it.
+out=$("$gate" hunt --input "$fixtures/hunt-different-signal-still-fires.json")
+jq -e '.findings | length == 1' <<<"$out" >/dev/null \
+  || fail "different signal token must still be reported as recurrence: $out"
+ok "hunt still fires when the open issue carries a different signal token"
+
 # --- auditor packet carries the ledger line verbatim -----------------------
 # shellcheck source=/dev/null
 source "$repo_root/lib/packet-assembly.sh"

@@ -118,7 +118,7 @@ signal available is merged-PR counts for the same 4.95h window 7 days earlier
 now). That is not an apples-to-apples CPU control; it only shows the fleet was
 far less active then.
 
-## Verdict: the decision rule cannot be scored — trial NOT authorized
+## Interim verdict (4.95h window): the decision rule cannot be scored
 
 - Conjunct 1 (vitest+workerd+tsc >= 50%): **MET** (88.83%).
 - Conjunct 2 (saturated-with-backlog >= 6 of 24h): **CANNOT BE SCORED**, for
@@ -129,9 +129,55 @@ far less active then.
      the condition was never measured at all.
 
 Per the issue's step 4 and the orchestrator decision, the `vitest related` +
-CI-offload trial stays **unauthorized** until the rule is scored against a real
-24h window with a working `ready` measurement. No worker prompt, CI workflow,
-or gate is changed.
+CI-offload trial stayed **unauthorized** until the rule was scored against a
+real 24h window with a working `ready` measurement. No worker prompt, CI
+workflow, or gate was changed.
+
+## Final verdict (24h window, fleet-ops#4959): conjunct 2 NOT MET — trial NOT authorized
+
+The re-created sampler (fleet-ops#4956) completed a full window:
+`fleet-cpu-sampler-4956.service` ran 2026-09-10T13:45:48Z →
+2026-09-11T13:45:50Z (window_s=86287, ~24h), 1,436 samples,
+`ready_nodata_samples=0`, clean stop (`Result=success`, "sampler done" in the
+unit journal). `ready` was real data all window: min 35, max 176, mean ~102,
+source `queue-composition-cache.json`.
+
+The four numbers (`python3 libexec/fleet-cpu-analysis.py
+agent-state/fleet-metrics/cpu-sampler-4956-24h.jsonl`, exit 0):
+
+| metric | value |
+|---|---|
+| CPU share by class | vitest+workerd 47.47%, tsc 11.59%, other 39.03%, wrangler/esbuild 1.64%, pi/cursor-agent 0.15%, node build 0.06%, gh 0.05%, git 0.02% |
+| CPU-seconds per merged PR | 90.71 (25,944 CPU-s / 286 merges; merge count re-verified live via `gh pr list`: 103 fleet-ops + 183 0509) |
+| saturated_with_backlog_hours | **1.13h** (load1 > 16 = 2x8 cores AND ready > 20) |
+| control | no control |
+
+- Conjunct 1 (tsc + vitest+workerd >= 50%): **MET** — 59.06%.
+- Conjunct 2 (saturated-with-backlog >= 6 of 24h): **NOT MET** — 1.13h of a
+  full ~24h window. No scaling needed; the window is complete.
+
+The decision rule fails, so the `vitest related <changed>` + CI-offload trial
+is **not authorized**. No worker prompt, CI workflow, or gate changes.
+
+Why it fails: the backlog leg held for the entire window — `ready > 20` was
+true in all samples (never below 35) — but the load leg held only ~1.1h. The
+box was >50% idle for ~11.9h of the 24h while 35-176 ready items sat queued.
+Work was waiting and CPU was not the thing stopping it.
+
+**Next route: seat-side capacity removal.** The study's other named candidate,
+claim-loop empty-success churn (fleet-ops#4457), already landed (CLOSED). The
+live signature matches seat walls: `ready >= 35` all day on an idle box means
+ready work was not being converted into running workers. In-window evidence:
+`seats-retired-ds4flash` at 2026-09-10T17:25Z and 18:55Z, six
+`seats-corpse-retired` events, `pi-seat-health.json` showing a 429
+`rate_limited` seat. Open work on this route: fleet-ops#5272
+(seat-availability SLO slow burn), #5096 (seat-recovery trigger storms), #5141
+(registry reaping live workers), #5326 (senior ladder walled).
+
+Per the study's delete-the-sampler discipline, `agent-state/cpu-sampler-4956/`
+and the 24h JSONL were deleted after the verdict; the numbers above are
+reproducible by re-running `libexec/fleet-cpu-analysis.py` on any future
+sampler JSONL.
 
 ## Next suspect
 
@@ -201,4 +247,8 @@ timestamps come from `gh pr list --state merged --search "merged:>=.. merged:<=.
 - [x] Sampler deleted after the study
 - [x] `ready`-field bug fixed and sampler re-created (fleet-ops#4956,
       2026-09-10): real backlog read, freshness guard, ready_source
-- [ ] Decision rule conjunct 2 scored from a fresh sampler window (fleet-ops#4956)
+- [x] Decision rule conjunct 2 scored from a completed 24h sampler window
+      (fleet-ops#4959, 2026-09-11): NOT MET — 1.13h < 6h; trial not authorized;
+      next route = seat rate-limit walls
+- [x] Sampler artifacts deleted after the verdict
+      (`agent-state/cpu-sampler-4956/` + 24h JSONL)

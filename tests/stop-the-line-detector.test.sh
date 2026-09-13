@@ -93,6 +93,10 @@ import {
   greenRunForWorkflow,
   clampLookbackMinutes,
   MIN_LOOKBACK_MINUTES,
+  newestRunByWorkflow,
+  cancelledRunIsVerdict,
+  runStartedJobs,
+  runHaltDisposition,
 } from "./.github/scripts/stop-the-line-detector.mjs";
 
 // classifyHalt: red-green-red -> no halt and no unfreeze (no consecutive reds).
@@ -159,12 +163,111 @@ if (!r7.halt) throw new Error("failure + cancelled must halt (fail-closed, fleet
 if (r7.halted_workflow !== "CI") throw new Error("failure+cancelled halt workflow must be CI");
 if (r7.halted_runs.length !== 2) throw new Error("failure+cancelled must carry both runs in history");
 
-// cancelled + cancelled = halt (two unknowns = red pipeline).
+// cancelled(superseded while queued) + cancelled(newest) = NO halt
+// (fleet-ops#5731 narrows #2911): the older cancel was replaced by a newer
+// run before any job started -> never evaluated -> no verdict, its SHA is
+// skipped. Only the newest cancel lands red (tip status unknown ->
+// fail-closed). One red is not a halt.
 const r8 = classifyHalt([
   { id: 30, name: "CI", conclusion: "cancelled", head_branch: "main", head_sha: "a", created_at: "2026-08-28T00:00:00Z", html_url: "u30" },
   { id: 31, name: "CI", conclusion: "cancelled", head_branch: "main", head_sha: "b", created_at: "2026-08-28T00:01:00Z", html_url: "u31" },
 ]);
-if (!r8.halt) throw new Error("cancelled + cancelled must halt (two unknowns = red, fleet-ops#2911)");
+if (r8.halt) throw new Error("superseded-queued cancel + newest cancel must NOT halt (single verdict, fleet-ops#5731)");
+
+// failure + cancelled(superseded while queued) = NO halt — the superseded
+// cancel contributes nothing, leaving one red verdict.
+const r8b = classifyHalt([
+  { id: 32, name: "CI", conclusion: "failure", head_branch: "main", head_sha: "a", created_at: "2026-08-28T00:00:00Z", html_url: "u32" },
+  { id: 33, name: "CI", conclusion: "cancelled", head_branch: "main", head_sha: "b", created_at: "2026-08-28T00:01:00Z", html_url: "u33" },
+  { id: 34, name: "CI", conclusion: "success", head_branch: "main", head_sha: "c", created_at: "2026-08-28T00:02:00Z", html_url: "u34" },
+]);
+if (r8b.halt) throw new Error("failure + superseded-queued cancel + green must NOT halt (fleet-ops#5731)");
+
+// failure + cancelled(newest) = halt — the tip cancel keeps the #2911
+// fail-closed posture (no newer run exists to judge the tip).
+const r8c = classifyHalt([
+  { id: 35, name: "CI", conclusion: "failure", head_branch: "main", head_sha: "a", created_at: "2026-08-28T00:00:00Z", html_url: "u35" },
+  { id: 36, name: "CI", conclusion: "cancelled", head_branch: "main", head_sha: "b", created_at: "2026-08-28T00:01:00Z", html_url: "u36" },
+]);
+if (!r8c.halt) throw new Error("failure + newest cancelled must still halt (tip status unknown, fleet-ops#2911)");
+if (r8c.halted_runs.length !== 2) throw new Error("failure + newest cancelled must carry both verdict runs");
+
+// cancelled-after-start still counts red even when superseded by a newer
+// run: a run that had jobs started was killed in-flight -> genuine unknown
+// for that SHA (fleet-ops#5731 accept #1 second clause).
+const r8d = classifyHalt([
+  { id: 37, name: "CI", conclusion: "cancelled", jobs_started: true, head_branch: "main", head_sha: "a", created_at: "2026-08-28T00:00:00Z", html_url: "u37" },
+  { id: 38, name: "CI", conclusion: "cancelled", jobs_started: true, head_branch: "main", head_sha: "b", created_at: "2026-08-28T00:01:00Z", html_url: "u38" },
+  { id: 39, name: "CI", conclusion: "cancelled", head_branch: "main", head_sha: "c", created_at: "2026-08-28T00:02:00Z", html_url: "u39" },
+]);
+if (!r8d.halt) throw new Error("cancelled-after-start runs MUST still halt even when superseded (fleet-ops#5731)");
+if (!Array.isArray(r8d.discounted_runs) || r8d.discounted_runs.length !== 0) throw new Error("no superseded-queued cancels in r8d -> discounted_runs must be empty");
+
+// A `jobs` array also proves started (fixture shape without jobs_started).
+const r8e = classifyHalt([
+  { id: 40, name: "CI", conclusion: "cancelled", jobs: [{ name: "build" }], head_branch: "main", head_sha: "a", created_at: "2026-08-28T00:00:00Z", html_url: "u40" },
+  { id: 41, name: "CI", conclusion: "failure", head_branch: "main", head_sha: "b", created_at: "2026-08-28T00:01:00Z", html_url: "u41" },
+]);
+if (!r8e.halt) throw new Error("cancelled with jobs[] + failure must halt (jobs array proves started)");
+
+// Live-incident shape (fleet-ops#5731): green, then three consecutive
+// cancelled-never-started runs superseded while queued, then an unresolved
+// (in_progress, conclusion null) head run -> NO halt, and the three cancels
+// are named as discounted. The head run is what actually superseded the
+// third cancel — without it the tip cancel still lands red but alone.
+const incident = [
+  { id: 34665807792, name: "CI", conclusion: "success", head_branch: "main", head_sha: "ed146df8", created_at: "2026-09-12T01:46:38Z", html_url: "u-green" },
+  { id: 34666055083, name: "CI", conclusion: "cancelled", head_branch: "main", head_sha: "4b3912fe", created_at: "2026-09-12T01:51:53Z", html_url: "u-c1" },
+  { id: 34666440082, name: "CI", conclusion: "cancelled", head_branch: "main", head_sha: "3a61e983", created_at: "2026-09-12T02:00:17Z", html_url: "u-c2" },
+  { id: 34666533981, name: "CI", conclusion: "cancelled", head_branch: "main", head_sha: "cff75a96", created_at: "2026-09-12T02:02:10Z", html_url: "u-c3" },
+  { id: 34666637952, name: "CI", status: "in_progress", conclusion: null, head_branch: "main", head_sha: "d908f1cc", created_at: "2026-09-12T02:04:22Z", html_url: "u-head" },
+];
+const rInc = classifyHalt(incident);
+if (rInc.halt) throw new Error("live-incident replay must NOT halt: 3 superseded-queued cancels carry no verdict (fleet-ops#5731)");
+
+// Same shape WITHOUT the unresolved head run (what the completed-only live
+// fetch sees): the third cancel is the newest sampled run -> red, but alone
+// -> still no halt.
+const rIncNoHead = classifyHalt(incident.slice(0, 4));
+if (rIncNoHead.halt) throw new Error("3 superseded-queued cancels (tip cancel is newest) must NOT halt — single verdict");
+
+// newestRunByWorkflow / cancelledRunIsVerdict / runStartedJobs units.
+const newestCI = newestRunByWorkflow(incident, "main").get("CI");
+if (!newestCI || newestCI.id !== 34666637952) throw new Error("newestRunByWorkflow must pick the in_progress head run as newest for CI");
+if (cancelledRunIsVerdict(incident[4], newestRunByWorkflow(incident))) throw new Error("in_progress head run is not cancelled -> never a verdict");
+if (cancelledRunIsVerdict(incident[1], newestRunByWorkflow(incident))) throw new Error("superseded-queued cancel must NOT be a verdict");
+if (!cancelledRunIsVerdict(incident[3], newestRunByWorkflow(incident.slice(0, 4)))) throw new Error("newest cancelled run MUST be a verdict (fail-closed tip)");
+if (runStartedJobs({ conclusion: "cancelled" })) throw new Error("no jobs signal -> not started");
+if (!runStartedJobs({ jobs_started: true })) throw new Error("jobs_started=true -> started");
+if (!runStartedJobs({ jobs: [{ name: "x" }] })) throw new Error("jobs array -> started");
+if (!runStartedJobs({ jobs_total: 2 })) throw new Error("jobs_total>0 -> started");
+if (runStartedJobs({ jobs_started: null })) throw new Error("jobs_started=null (probe failed) -> not started");
+
+// runHaltDisposition labels (accept #3).
+if (runHaltDisposition({ conclusion: "failure" }) !== "failed") throw new Error("failure -> failed");
+if (runHaltDisposition({ conclusion: "cancelled", jobs_started: true }) !== "cancelled in-flight (jobs had started)") throw new Error("started cancel -> cancelled in-flight");
+if (!runHaltDisposition({ conclusion: "cancelled" }).includes("cancelled while queued")) throw new Error("tip queued cancel -> cancelled while queued");
+
+// issueBody carries per-run dispositions + the discounted section.
+const dHaltWithDiscounted = buildDecision({
+  verdict: classifyHalt([
+    { id: 50, name: "CI", conclusion: "cancelled", jobs_started: true, head_branch: "main", head_sha: "aaaaaaa", created_at: "2026-08-28T00:00:00Z", html_url: "u50" },
+    { id: 51, name: "CI", conclusion: "failure", head_branch: "main", head_sha: "bbbbbbb", created_at: "2026-08-28T00:01:00Z", html_url: "u51" },
+    { id: 52, name: "CI", conclusion: "cancelled", head_branch: "main", head_sha: "ccccccc", created_at: "2026-08-28T00:02:00Z", html_url: "u52" },
+    { id: 53, name: "CI", conclusion: "cancelled", head_branch: "main", head_sha: "ddddddd", created_at: "2026-08-28T00:03:00Z", html_url: "u53" },
+  ]),
+  repository: "Nishfleet/fleet-ops",
+  existingIssueNumber: null,
+});
+// a=cancelled-in-flight (started -> verdict), b=failure (verdict),
+// c=superseded-queued (no verdict), d=newest cancel (verdict) -> halt.
+if (dHaltWithDiscounted.action !== "open") throw new Error("mixed verdicts must still open a freeze");
+const dispBody = issueBody(dHaltWithDiscounted);
+if (!dispBody.includes("cancelled in-flight (jobs had started)")) throw new Error("body must label the in-flight cancel");
+if (!dispBody.includes("— failed")) throw new Error("body must label the failed run");
+if (!dispBody.includes("cancelled while queued")) throw new Error("body must label the newest queued cancel");
+if (!dispBody.includes("superseded while queued")) throw new Error("body must name the discounted superseded-queued run");
+if (!dispBody.includes("ccccccc".slice(0, 7))) throw new Error("body must name the discounted run sha");
 
 // green clears a cancelled run (a green run for the same SHA wins).
 const r9 = classifyHalt([
@@ -181,6 +284,17 @@ const gr = greenRunForWorkflow([
   { id: 52, name: "CI", conclusion: "cancelled", head_branch: "main", head_sha: "c", created_at: "2026-08-28T00:02:00Z", html_url: "u52" },
 ], "CI");
 if (gr !== null) throw new Error("greenRunForWorkflow must NOT unfreeze when a cancelled run follows the last green (fleet-ops#2911)");
+
+// ...but a cancelled run superseded while queued does NOT block the
+// unfreeze (fleet-ops#5731): it never evaluated a verdict. Here the newer
+// head run is still in_progress (conclusion null) — it supersedes the
+// queued cancel, so the last green stands.
+const grQueued = greenRunForWorkflow([
+  { id: 50, name: "CI", conclusion: "success", head_branch: "main", head_sha: "b", created_at: "2026-08-28T00:01:00Z", html_url: "u51" },
+  { id: 52, name: "CI", conclusion: "cancelled", head_branch: "main", head_sha: "c", created_at: "2026-08-28T00:02:00Z", html_url: "u52" },
+  { id: 53, name: "CI", status: "in_progress", conclusion: null, head_branch: "main", head_sha: "d", created_at: "2026-08-28T00:03:00Z", html_url: "u53" },
+], "CI");
+if (!grQueued || grQueued.id !== 50) throw new Error("greenRunForWorkflow must unfreeze when the only cancel after green was superseded while queued (fleet-ops#5731)");
 
 // isSkippedWorkflow semantics.
 if (isSkippedWorkflow("Auto revert") !== true) throw new Error("Auto revert must skip");
@@ -460,6 +574,36 @@ if (r.decision.workflow !== "CI") throw new Error(`cancelled-masks-red workflow 
 if (r.decision.red_runs.length < 2) throw new Error(`cancelled-masks-red must carry the failure + first cancelled as the red pair, got ${r.decision.red_runs.length}`);
 console.log("OK: cancelled-runs-mask-red -> open (failure + cancelled = halt, fleet-ops#2911)");
 ' || fail "cancelled-masks-red replay failed"
+
+# --- replay: superseded-while-queued cancels -> noop (fleet-ops#5731) -------
+# Live replay of the 2026-09-12 freeze: 3 consecutive main SHAs each got a
+# CI run cancelled while still QUEUED (replaced by the next push's run in
+# the same concurrency group; ci.yml sets cancel-in-progress=false for
+# push), plus a later unresolved head run. None contributed a verdict ->
+# no halt. This is the exact shape that opened fleet-ops#5714.
+node "$script" --from-json "$fixtures/superseded-queued-cancels.json" --format json --output-json /tmp/stl-superseded.json >/dev/null
+node --input-type=module -e '
+import { readFileSync } from "node:fs";
+const r = JSON.parse(readFileSync("/tmp/stl-superseded.json", "utf8"));
+if (r.decision.action !== "noop") throw new Error(`superseded-queued cancels must action=noop, got ${r.decision.action} (fleet-ops#5731: this shape opened the false #5714 freeze)`);
+console.log("OK: superseded-while-queued cancels + unresolved head -> noop (no verdicts, fleet-ops#5731)");
+' || fail "superseded-queued replay failed"
+
+# --- replay: cancelled-after-start -> open (fleet-ops#5731) ------------------
+# The same incident shape but the cancelled runs HAD started jobs — killed
+# in-flight means the SHA's status is genuinely unknown -> still red. Also
+# proves the freeze body names each run's disposition.
+node "$script" --from-json "$fixtures/cancelled-after-start.json" --format json --output-json /tmp/stl-after-start.json >/dev/null
+node --input-type=module -e '
+import { readFileSync } from "node:fs";
+const r = JSON.parse(readFileSync("/tmp/stl-after-start.json", "utf8"));
+if (r.decision.action !== "open") throw new Error(`cancelled-after-start must action=open, got ${r.decision.action} (fleet-ops#5731)`);
+if (r.decision.red_runs.length < 2) throw new Error(`cancelled-after-start must carry the red runs, got ${r.decision.red_runs.length}`);
+const disps = (r.decision.red_runs || []).map((x) => x.disposition || "");
+if (!disps.some((d) => d.includes("cancelled in-flight"))) throw new Error(`red_runs must label cancelled in-flight runs, got ${JSON.stringify(disps)}`);
+if (!disps.some((d) => d.includes("cancelled while queued"))) throw new Error(`red_runs must label the newest queued cancel, got ${JSON.stringify(disps)}`);
+console.log("OK: cancelled-after-start -> open with per-run dispositions (fleet-ops#5731)");
+' || fail "cancelled-after-start replay failed"
 
 # --- workflow shape: stop-the-line-detector.yml -----------------------------
 grep -q 'workflow_call:' "$repo_root/.github/workflows/stop-the-line-detector.yml" \

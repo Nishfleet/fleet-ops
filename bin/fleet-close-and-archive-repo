@@ -45,7 +45,7 @@
 set -Eeuo pipefail
 
 export HOME="${HOME:-/home/nish}"
-export PATH="/home/nish/.local/bin:/usr/local/bin:/usr/bin:/bin"
+command -v gh >/dev/null 2>&1 || export PATH=/home/nish/.local/bin:/usr/local/bin:/usr/bin:/bin
 
 GH="${FLEET_CAA_GH:-gh}"
 REPO="${FLEET_CAA_REPO:-Nishfleet/fleet2}"

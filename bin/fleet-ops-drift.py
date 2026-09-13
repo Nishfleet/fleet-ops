@@ -36,6 +36,19 @@ main). DRIFT-CHECKOUT auto-files that class (deduped).
 the canary so fleet-ops-deploy can file when it blocks before the canary
 runs.
 
+fleet-ops#5602: a stray sibling artifact (*.bak* / *.orig next to a
+MANIFEST-managed path) no longer holds merge-to-live red until a judge
+hand-archives it. DRIFT-QUARANTINE moves the artifact to
+agent-state/backups/manifest-sprawl/, names the writer in QUARANTINE.log,
+auto-files the class once (deduped), and re-runs install.sh --check — the
+gate is red at most the tick that found the sprawl.
+
+fleet-ops#5663: `--file-install-refuse` also reconciles the divergence
+itself — pushes the live content onto a machine-owned reconcile/<src>
+branch, opens (or refreshes) a PR, and arms auto-merge — and names the
+hot-patch writer from its dated .pre-* sibling + actions.log line + the
+journald unit window (UNATTRIBUTED with candidates when none exist).
+
 Environment seams (overridden by tests):
   FLEET_OPS_CHECKOUT              path to the fleet-ops deploy checkout
   FLEET_OPS_AUDIT_LOG             drift audit log (default: ~/.local/state/fleet-ops/drift-audit.log)
@@ -45,11 +58,20 @@ Environment seams (overridden by tests):
   FLEET_OPS_WORKSPACES_ROOT       default /home/nish/workspaces
   FLEET_OPS_CANONICAL_CHECKOUT    default <workspaces>/tooling/fleet-ops-deploy-clone
   FLEET_OPS_ALLOW_NONCANONICAL    set to 1 to skip the source-path gate
-  FLEET_OPS_DRIFT_FILE            1 (default) auto-file DRIFT-SOURCE, DRIFT-MISSING-EXEC, DRIFT-PAPER-OVER, DRIFT-PRODUCTS-SYMLINK, DRIFT-OFF-MAIN, DRIFT-DEPLOY-BLOCKED-MAIN, DRIFT-VOLATILE, DRIFT-METRICS-DROPIN; 0 skip gh
+  FLEET_OPS_DRIFT_FILE            1 (default) auto-file DRIFT-SOURCE, DRIFT-MISSING-EXEC, DRIFT-PAPER-OVER, DRIFT-PRODUCTS-SYMLINK, DRIFT-OFF-MAIN, DRIFT-DEPLOY-BLOCKED-MAIN, DRIFT-VOLATILE, DRIFT-METRICS-DROPIN, DRIFT-QUARANTINE; 0 skip gh
   FLEET_OPS_DRIFT_CLOSE           1 (default) close a drift issue on a later green tick once it carries `resolved-at:`; 0 only comment (fleet-ops#1156)
   FLEET_OPS_DRIFT_REPO            default Nishfleet/fleet-ops
+  FLEET_OPS_DRIFT_RECONCILE       1 (default) open/refresh a reconcile/<src> PR on
+                                  --file-install-refuse (fleet-ops#5663); 0 skip
+  FLEET_OPS_ACTIONS_LOGS          ':'-separated actions.log paths the hot-patch
+                                  attribution reads (fleet-ops#5663)
+  FLEET_OPS_JOURNALCTL            journalctl binary for the unit-window fallback
   FLEET_OPS_RETARGET_BIN          fleet-ops-retarget-products (default: next to this file)
   FLEET_OPS_PRODUCTS_LINK         products/fleet-ops symlink (default: <workspaces>/products/fleet-ops)
+  FLEET_OPS_QUARANTINE_DIR        sprawl quarantine dir (default:
+                                  <workspaces>/agent-state/backups/manifest-sprawl; fleet-ops#5602)
+  FLEET_OPS_ACTIONS_LOG           console actions.log read for sprawl writer
+                                  attribution (default: <workspaces>/agent-state/actions.log)
   GH                              gh binary (tests stub this)
 """
 
@@ -58,10 +80,14 @@ from __future__ import annotations
 import datetime
 import json
 import os
+import pwd
 import re
+import shutil
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
+from typing import Any
 
 
 def _ensure_worker_token() -> None:
@@ -124,12 +150,46 @@ def issue_file_py() -> str:
     return str(cand)
 DRIFT_FILE = os.environ.get("FLEET_OPS_DRIFT_FILE", "1") == "1"
 DRIFT_CLOSE = os.environ.get("FLEET_OPS_DRIFT_CLOSE", "1") == "1"
+# fleet-ops#5663: a NONFATAL REFUSE on a live-newer file auto-opens a
+# reconciliation PR (live content -> repo file, auto-merge armed) instead of
+# waiting on a judge hand-carry. 0 disables the reconcile (issue still filed).
+DRIFT_RECONCILE = os.environ.get("FLEET_OPS_DRIFT_RECONCILE", "1") == "1"
+# Writer attribution for the hot-patch issue/PR (fleet-ops#5663): a conforming
+# writer leaves a dated .pre-* sibling plus an actions.log line naming the file;
+# the detector also lists journald user units active around the write so an
+# unattributed patch still names its candidates. Colon-separated log paths.
+ACTIONS_LOGS = os.environ.get(
+    "FLEET_OPS_ACTIONS_LOGS",
+    "/home/nish/workspaces/agent-state/actions.log:"
+    + str(HOME / ".local" / "state" / "pi-packet" / "actions.log"),
+).split(":")
+JOURNALCTL = os.environ.get("FLEET_OPS_JOURNALCTL", "journalctl")
 ALLOW_NONCANONICAL = os.environ.get("FLEET_OPS_ALLOW_NONCANONICAL", "") == "1"
 WORKSPACES_ROOT = Path(os.environ.get("FLEET_OPS_WORKSPACES_ROOT", "/home/nish/workspaces"))
 CANONICAL_CHECKOUT = Path(
     os.environ.get(
         "FLEET_OPS_CANONICAL_CHECKOUT",
         str(WORKSPACES_ROOT / "tooling" / "fleet-ops-deploy-clone"),
+    )
+)
+# fleet-ops#5602: a stray sibling artifact (*.bak* / *.orig next to a
+# MANIFEST-managed path) used to hold the merge-to-live gate red until a
+# judge hand-archived it. The canary now quarantines the artifact under
+# agent-state/backups/manifest-sprawl/ — the same backups root the
+# 2026-09-11T23:43Z hand-repair used — records who wrote it in
+# QUARANTINE.log, and auto-files the class once (deduped).
+QUARANTINE_DIR = Path(
+    os.environ.get(
+        "FLEET_OPS_QUARANTINE_DIR",
+        str(WORKSPACES_ROOT / "agent-state" / "backups" / "manifest-sprawl"),
+    )
+)
+# Writer attribution reads the fleet console log for lines naming the
+# artifact or its managed file (fleet-ops#5602).
+ACTIONS_LOG = Path(
+    os.environ.get(
+        "FLEET_OPS_ACTIONS_LOG",
+        str(WORKSPACES_ROOT / "agent-state" / "actions.log"),
     )
 )
 SOURCE_MARKER = "canonical-checkout-drift: fleet-ops#176"
@@ -156,6 +216,11 @@ DEPLOY_BLOCKED_MAIN_MARKER = "deploy-blocked-on-main: fleet-ops#2725"
 # organs' drop-ins never reach live and the dark-organ symptom is invisible.
 # This marker gives the class its own auto-file + observe-to-close wiring.
 METRICS_DROPIN_MARKER = "metrics-export-dropin-missing: fleet-ops#2920"
+# fleet-ops#5602: stray sibling artifact quarantined out of the managed
+# tree. The filed issue names the writer + quarantine path; the class is
+# green again the same tick, so observe-to-close lands `resolved-at:` on
+# the next green tick and closes on the one after.
+SPRAWL_MARKER = "manifest-sprawl-quarantine: fleet-ops#5602"
 
 DRIFT_MARKERS = (
     SOURCE_MARKER,
@@ -167,6 +232,7 @@ DRIFT_MARKERS = (
     VOLATILE_MARKER,
     DEPLOY_BLOCKED_MAIN_MARKER,
     METRICS_DROPIN_MARKER,
+    SPRAWL_MARKER,
 )
 
 PAPER_OVER_DROPIN = (
@@ -239,11 +305,15 @@ def is_under(path: Path, root: Path) -> bool:
     return path_s == root_s or path_s.startswith(root_s + os.sep)
 
 
-def auto_file_drift(marker: str, title: str, extra: str, msg: str) -> None:
-    """File one issue for a drift class. Dedup on marker in open issue bodies."""
+def auto_file_drift(marker: str, title: str, extra: str, msg: str) -> tuple[int | None, str]:
+    """File one issue for a drift class. Dedup on marker in open issue bodies.
+
+    Returns (number, body) of an already-open issue carrying the marker, or
+    (None, "") when a new issue was filed / filing was skipped or failed.
+    """
     if not DRIFT_FILE:
         log(f"file skipped (FLEET_OPS_DRIFT_FILE!=1) marker={marker}")
-        return
+        return None, ""
     try:
         proc = subprocess.run(
             [GH, "issue", "list", "-R", DRIFT_REPO, "--state", "open", "--limit", "50", "--json", "number,body"],
@@ -255,8 +325,9 @@ def auto_file_drift(marker: str, title: str, extra: str, msg: str) -> None:
             for item in json.loads(proc.stdout):
                 body = item.get("body") or ""
                 if marker in body:
-                    log(f"dedup: open {DRIFT_REPO}#{item.get('number')} already carries {marker}")
-                    return
+                    number = item.get("number")
+                    log(f"dedup: open {DRIFT_REPO}#{number} already carries {marker}")
+                    return (number if isinstance(number, int) else None), body
     except (OSError, json.JSONDecodeError) as e:
         log(f"WARN: gh issue list failed for {marker}: {e}")
 
@@ -277,6 +348,7 @@ def auto_file_drift(marker: str, title: str, extra: str, msg: str) -> None:
             log(f"WARN: gh issue create failed for {marker}: {proc.stderr.strip()}")
     except OSError as e:
         log(f"WARN: gh issue create failed for {marker}: {e}")
+    return None, ""
 
 
 def auto_file_source_drift(msg: str) -> None:
@@ -491,6 +563,7 @@ def observe_close_drift_issues(
         HOTPATCH_MARKER: "hot-patch",
         DEPLOY_BLOCKED_MAIN_MARKER: "deploy-blocked on main",
         METRICS_DROPIN_MARKER: "metrics-export drop-in missing",
+        SPRAWL_MARKER: "manifest-sprawl quarantine",
     }
 
     markers = (only_marker,) if only_marker else DRIFT_MARKERS
@@ -567,17 +640,460 @@ def observe_close_drift_issues(
             break
 
 
-def auto_file_install_refuse(dest: str, repo: str, diff: str) -> None:
-    """File one issue for a live file that is newer and differs from the repo copy."""
+def _journal_units_at(epoch: float, window_s: int = 600) -> list[str]:
+    """User units that logged in a +/-window around a timestamp.
+
+    fleet-ops#5663: fallback writer attribution — when a hot-patch leaves no
+    .pre-* sibling and no actions.log line, the units alive at the write are
+    the candidate writers. Best-effort: journalctl missing/failing/empty all
+    degrade to [].
+    """
+    units: list[str] = []
+    fmt = "%Y-%m-%d %H:%M:%S UTC"
+    since = datetime.datetime.fromtimestamp(epoch - window_s, datetime.timezone.utc).strftime(fmt)
+    until = datetime.datetime.fromtimestamp(epoch + window_s, datetime.timezone.utc).strftime(fmt)
+    try:
+        proc = subprocess.run(
+            [JOURNALCTL, "--user", "--since", since, "--until", until, "-o", "json", "--no-pager"],
+            capture_output=True,
+            text=True,
+            timeout=15,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return []
+    if proc.returncode != 0:
+        return []
+    seen: set[str] = set()
+    for line in proc.stdout.splitlines():
+        try:
+            rec = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(rec, dict):
+            continue
+        unit = rec.get("_SYSTEMD_USER_UNIT") or rec.get("USER_UNIT") or rec.get("UNIT") or ""
+        if isinstance(unit, str) and unit and unit not in seen:
+            seen.add(unit)
+            units.append(unit)
+    return sorted(units)[:8]
+
+
+# actions.log stamps are bracketed (`[2026-09-11T22:09:11Z]`, also HH:MM-only
+# `[2026-09-11T23:09Z]`), but some lines carry a bare leading ISO ts or a
+# bracketed ts at the END — try the bracket anywhere, then a leading bare ts.
+_ACTIONS_TS_BRACKET = re.compile(r"\[(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2})?Z?)\]")
+_ACTIONS_TS_LEAD = re.compile(r"^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2})?Z?)\b")
+
+
+def _actions_log_hits(name: str, mtime: float) -> list[str]:
+    """actions.log lines naming `name` within 24h before / 15min after mtime."""
+    hits: list[str] = []
+    for logpath in ACTIONS_LOGS:
+        lp = Path(logpath)
+        if not lp.is_file():
+            continue
+        try:
+            lines = lp.read_text(encoding="utf-8", errors="replace").splitlines()
+        except OSError:
+            continue
+        for line in lines:
+            if name not in line:
+                continue
+            stripped = line.strip()
+            m = _ACTIONS_TS_BRACKET.search(stripped) or _ACTIONS_TS_LEAD.match(stripped)
+            if not m:
+                continue
+            raw = m.group(1)
+            for fmt in ("%Y-%m-%dT%H:%M:%SZ", "%Y-%m-%dT%H:%MZ", "%Y-%m-%dT%H:%M:%S"):
+                try:
+                    ts = datetime.datetime.strptime(raw, fmt).replace(tzinfo=datetime.timezone.utc).timestamp()
+                    break
+                except ValueError:
+                    ts = -1
+            if ts < 0:
+                continue
+            if mtime - 86400 <= ts <= mtime + 900:
+                hits.append(f"{lp.name}: {line.strip()}")
+    return hits[-3:]
+
+
+def hotpatch_attribution(dest: str) -> str:
+    """Best-effort name of the writer that hot-patched a live file.
+
+    fleet-ops#5663: the 2026-09-11T21:31Z models.json hot-patch left no dated
+    backup and no actions.log line, so it was unattributable and recovery
+    needed a judge hand-carry. A conforming writer leaves a dated `.pre-*`
+    sibling plus an actions.log line (`.bak*` is banned next to MANIFEST dests
+    — fleet-ops#3273 sprawl); this reads those artifacts and the journald unit
+    window around the file mtime, so a conforming writer is named and a
+    non-conforming one is reported UNATTRIBUTED with candidate units.
+    """
+    live = Path(os.path.realpath(dest))
+    if not live.exists():
+        return f"writer: unknown (live file {live} missing at detect time)"
+    mtime = live.stat().st_mtime
+    mtime_iso = datetime.datetime.fromtimestamp(mtime, datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+    parts: list[str] = []
+
+    # (a) dated backup siblings the writer left — the sanctioned name is
+    # <name>.pre-<why>-<ts> (`.bak*` trips the #3273 sprawl check); detection
+    # accepts any <name>.* sibling so a stray still counts as evidence.
+    backups: list[tuple[float, str]] = []
+    try:
+        for sib in live.parent.iterdir():
+            if not sib.name.startswith(live.name + "."):
+                continue
+            try:
+                backups.append((sib.stat().st_mtime, sib.name))
+            except OSError:
+                continue
+    except OSError:
+        pass
+    backups.sort(reverse=True)
+    for bak_m, bak_name in backups:
+        if bak_m <= mtime + 60:
+            when = datetime.datetime.fromtimestamp(bak_m, datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+            parts.append(f"backup sibling {bak_name} (mtime {when})")
+            break
+
+    # (b) actions.log lines naming the file around the write.
+    hits = _actions_log_hits(live.name, mtime)
+    if hits:
+        parts.append("actions.log: " + " | ".join(hits))
+
+    # (c) journald user units alive at the write window — always gathered so
+    # an unattributed patch still names its candidates.
+    units = _journal_units_at(mtime)
+
+    if parts:
+        out = "writer: " + "; ".join(parts)
+        if units:
+            out += "; units active at write window: " + ", ".join(units)
+        return out
+    if units:
+        return (
+            f"writer: UNATTRIBUTED — no dated .pre-* sibling of {live.name} and no "
+            f"actions.log line names it (mtime {mtime_iso}); units active at "
+            "write window: " + ", ".join(units)
+        )
+    return (
+        f"writer: UNATTRIBUTED — no dated .pre-* sibling of {live.name}, no "
+        f"actions.log line names it, no journald units found (mtime {mtime_iso})"
+    )
+
+
+def auto_file_install_refuse(dest: str, repo: str, diff: str, attribution: str = "") -> None:
+    """File one issue for a live file that is newer and differs from the repo copy.
+
+    fleet-ops#5663: the body carries the writer attribution, and dedup is
+    per-dest (marker + dest=...) so a second file's hot-patch is not
+    suppressed by an unrelated open hot-patch issue. On a dedup hit the new
+    attribution lands as a comment so the open issue always names the latest
+    writer.
+    """
     extra = (
         "install.sh refused to overwrite a live file whose mtime is newer "
         "than the repo copy because the content differs. A hot-patch is in "
-        "place. Resolve by merging the change through the normal PR path or "
-        "restore the live file to the repo copy, then re-run the heartbeat."
+        "place. A reconcile/<path> PR carrying the live content is opened "
+        "(auto-merge armed) by this canary (fleet-ops#5663); merging it or "
+        "restoring the live file to the repo copy resolves this."
     )
     title = f"Live fleet-ops file hot-patched: {Path(dest).name}"
-    body = f"Live file `{dest}` is newer and differs from repo `{repo}`:\n\n```diff\n{diff}\n```"
-    auto_file_drift(HOTPATCH_MARKER, title, extra, body)
+    body = f"Live file `{dest}` is newer and differs from repo `{repo}`:\n\n{attribution}\n\n```diff\n{diff}\n```"
+    marker = f"{HOTPATCH_MARKER} dest={dest}"
+    existing, existing_body = auto_file_drift(marker, title, extra, body)
+    # Dedup hit: comment only when the writer evidence is NEW — a re-detected
+    # patch of the same write yields the same attribution, and a comment per
+    # deploy-check tick until the reconcile PR merges would be spam.
+    if existing and attribution and attribution not in existing_body:
+        try:
+            subprocess.run(
+                [GH, "issue", "comment", str(existing), "-R", DRIFT_REPO, "--body",
+                 f"recurred at {now_iso()} with new writer evidence\n{attribution}"],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+        except OSError:
+            pass
+
+
+# Credential-looking JSON fields. Live models.json carries apiKey values as
+# `!`-command / `$`-env references by convention — a NEW literal value in the
+# live file is a secret a hand hot-patch could have dropped, and the reconcile
+# must never auto-commit one (fleet-ops#5663; hard line: secrets never get
+# committed).
+_SECRETISH_KEY = re.compile(
+    r'"(?:apiKey|api_key|token|secret|password|privateKey|accessKey)"\s*:\s*"([^"]+)"'
+)
+
+
+def _new_literal_secrets(live_b: bytes, repo_b: bytes) -> list[str]:
+    """Credential values present in live but not the repo copy, not a reference."""
+    live_v = set(_SECRETISH_KEY.findall(live_b.decode("utf-8", "replace")))
+    repo_v = set(_SECRETISH_KEY.findall(repo_b.decode("utf-8", "replace")))
+    return sorted(
+        v for v in live_v - repo_v
+        if v and not v.startswith(("!", "$")) and "${" not in v
+    )
+
+
+def _redact_literal_secrets(text: str) -> str:
+    """Replace literal credential values with ***REDACTED***; !/$ refs stay."""
+    def _sub(m: re.Match) -> str:
+        v = m.group(1)
+        if v.startswith(("!", "$")) or "${" in v:
+            return m.group(0)
+        return m.group(0).replace(v, "***REDACTED***")
+
+    return _SECRETISH_KEY.sub(_sub, text)
+
+
+def reconcile_install_refuse(dest: str, repo: str, diff: str, attribution: str) -> None:
+    """Open (or refresh) a PR carrying the live hot-patched file into the repo.
+
+    fleet-ops#5663: a NONFATAL REFUSE means live is deliberately newer and
+    different — the durable fix is repo <- live, not live <- repo. Before this,
+    every recurrence (models.json 2026-09-07 / 09-11 14:48Z / 09-11 21:31Z;
+    seat-caps fleet-ops#5493) waited on a judge hand-carrying the delta while
+    every fleet-ops merge failed DEPLOY-INSTALL. This pushes the live content
+    onto a machine-owned `reconcile/<src>` branch (one open PR per file,
+    updated in place on each new refuse) and arms auto-merge so the normal
+    gates land it.
+
+    Only the live_newer_than_repo refuse reconciles: the seat-caps cap-
+    DOWNGRADE refuse is a stale-checkout guard and must never push live caps
+    back over a deliberate merged drop — that path never reaches here.
+
+    Best-effort: every failure logs WARN and returns — the refuse path must
+    never fail harder than it already did.
+    """
+    if not DRIFT_RECONCILE:
+        log("reconcile skipped (FLEET_OPS_DRIFT_RECONCILE!=1)")
+        return
+    live = Path(os.path.realpath(dest))
+    if not live.is_file():
+        log(f"reconcile skipped: live file {live} missing")
+        return
+    repo_path = Path(repo)
+    if not repo_path.is_file():
+        log(f"reconcile skipped: repo copy {repo} missing")
+        return
+
+    rc, out, _ = run(
+        ["git", "-C", str(repo_path.parent), "rev-parse", "--show-toplevel"],
+        check=False,
+    )
+    if rc != 0 or not out.strip():
+        log(f"reconcile skipped: {repo} is not inside a git checkout")
+        return
+    top_r = resolved(Path(out.strip()))
+
+    # Same guard as refuse_noncanonical_install: a checkout under the
+    # workspaces root that is not the canonical deploy clone must never push
+    # reconcile PRs off its own tree.
+    if is_under(top_r, resolved(WORKSPACES_ROOT)) and top_r != resolved(CANONICAL_CHECKOUT):
+        log(f"reconcile skipped: checkout {top_r} is non-canonical (want {resolved(CANONICAL_CHECKOUT)})")
+        return
+
+    src_rel = os.path.relpath(str(resolved(repo_path)), str(top_r))
+    if src_rel.startswith("..") or os.path.isabs(src_rel):
+        log(f"reconcile skipped: {repo} not under checkout {top_r}")
+        return
+    branch = f"reconcile/{src_rel}"
+    try:
+        live_bytes = live.read_bytes()
+        repo_bytes = repo_path.read_bytes()
+    except OSError as e:
+        log(f"WARN: reconcile could not read {live} or {repo}: {e}")
+        return
+
+    new_secrets = _new_literal_secrets(live_bytes, repo_bytes)
+    if new_secrets:
+        log(
+            f"WARN: reconcile skipped: live {live.name} adds {len(new_secrets)} "
+            "literal credential value(s) not in the repo copy — secrets never get "
+            "auto-committed; the drift issue stays open for a human carry (fleet-ops#5663)"
+        )
+        return
+
+    run(["git", "-C", str(top_r), "fetch", "-q", "origin"], check=False)
+
+    # origin/main already carries the live bytes (a fix merged between the
+    # refuse and this run): nothing to reconcile.
+    if git_show_bytes(top_r, f"origin/main:{src_rel}") == live_bytes:
+        log(f"reconcile skipped: origin/main:{src_rel} already matches live")
+        return
+
+    rc, ls_out, _ = run(
+        ["git", "-C", str(top_r), "ls-remote", "--heads", "origin", f"refs/heads/{branch}"],
+        check=False,
+    )
+    if rc != 0:
+        log(f"WARN: reconcile ls-remote failed for {branch} — skipping (offline?)")
+        return
+    remote_branch = bool(ls_out.strip())
+
+    open_pr = ""
+    proc = subprocess.run(
+        [GH, "pr", "list", "-R", DRIFT_REPO, "--state", "open", "--head", branch,
+         "--json", "number"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if proc.returncode == 0 and proc.stdout.strip():
+        try:
+            rows = json.loads(proc.stdout)
+            if rows and isinstance(rows[0], dict):
+                open_pr = str(rows[0].get("number") or "")
+        except (json.JSONDecodeError, IndexError, AttributeError):
+            open_pr = ""
+
+    base = "origin/main"
+    if remote_branch and open_pr:
+        # Refresh in place: build on the PR branch tip so the push is a plain
+        # fast-forward — never a force-push.
+        run(
+            ["git", "-C", str(top_r), "fetch", "-q", "origin",
+             f"+refs/heads/{branch}:refs/remotes/origin/{branch}"],
+            check=False,
+        )
+        base = f"origin/{branch}"
+    elif remote_branch:
+        # Stale machine branch whose PR merged or closed: delete so the fresh
+        # push is a clean create (the PR retains its commits on GitHub).
+        run(["git", "-C", str(top_r), "push", "origin", "--delete", branch], check=False)
+
+    tmp = Path(tempfile.mkdtemp(prefix="fleet-ops-reconcile-"))
+    pushed_sha = ""
+    try:
+        rc, wout, werr = run(
+            ["git", "-C", str(top_r), "worktree", "add", "--detach", str(tmp), base],
+            check=False,
+        )
+        if rc != 0:
+            log(f"WARN: reconcile worktree add failed: {(werr or wout).strip()}")
+            return
+        target = tmp / src_rel
+        try:
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(live_bytes)
+        except OSError as e:
+            log(f"WARN: reconcile could not write {target}: {e}")
+            return
+        run(["git", "-C", str(tmp), "add", "--", src_rel], check=False)
+        rc, _, _ = run(["git", "-C", str(tmp), "diff", "--cached", "--quiet"], check=False)
+        if rc == 0:
+            log(f"reconcile: {branch} already carries live content")
+        else:
+            rc, cout, cerr = run(
+                ["git", "-C", str(tmp),
+                 "-c", "user.name=nishfleet-worker[bot]",
+                 "-c", "user.email=321485391+nishfleet-worker[bot]@users.noreply.github.com",
+                 "commit", "-q", "-m",
+                 f"reconcile(deploy): carry live {live.name} into {src_rel} (fleet-ops#5663)"],
+                check=False,
+            )
+            if rc != 0:
+                log(f"WARN: reconcile commit failed: {(cerr or cout).strip()}")
+                return
+            rc, pout, perr = run(
+                ["git", "-C", str(tmp), "push", "origin", f"HEAD:refs/heads/{branch}"],
+                check=False,
+            )
+            if rc != 0:
+                log(f"WARN: reconcile push of {branch} failed: {(perr or pout).strip()}")
+                return
+            _, pushed_sha, _ = run(["git", "-C", str(tmp), "rev-parse", "HEAD"], check=False)
+            pushed_sha = pushed_sha.strip()
+            log(f"reconcile: pushed {pushed_sha[:12]} to {branch}")
+    finally:
+        run(["git", "-C", str(top_r), "worktree", "remove", "--force", str(tmp)], check=False)
+        if tmp.exists():
+            shutil.rmtree(tmp, ignore_errors=True)
+        run(["git", "-C", str(top_r), "worktree", "prune"], check=False)
+
+    if open_pr:
+        # Comment only when a new commit actually landed — a re-detected patch
+        # of the same write pushes nothing, and a comment per deploy-check
+        # tick until merge would be spam. The arm stays every-tick
+        # (gh pr merge --auto is idempotent and silent).
+        if pushed_sha:
+            subprocess.run(
+                [GH, "pr", "comment", open_pr, "-R", DRIFT_REPO, "--body",
+                 f"reconcile refreshed at {now_iso()} — live `{live.name}` re-pushed to `{branch}`"
+                 f" ({pushed_sha[:12]})\n{attribution}\n(fleet-ops#5663)"],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+        arm = subprocess.run(
+            [GH, "pr", "merge", open_pr, "-R", DRIFT_REPO, "--auto", "--squash"],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if arm.returncode == 0:
+            log(f"reconcile: refreshed open PR #{open_pr} for {branch} (auto-merge armed)")
+        else:
+            log(f"WARN: reconcile re-arm of PR #{open_pr} failed: {arm.stderr.strip()[:200]}")
+        return
+
+    body = (
+        f"install.sh REFUSEd to overwrite live `{dest}` (mtime newer than the repo copy, "
+        f"content differs) — a hot-patch is in place and every fleet-ops merge is failing "
+        f"DEPLOY-INSTALL until the repo catches up. This PR carries the live content into "
+        f"`{src_rel}` so merge-to-live unblocks without a judge hand-carry "
+        f"(fleet-ops#5663; class marker fleet-ops#463).\n\n"
+        f"{attribution}\n\n"
+        f"```diff\n{diff}\n```\n\n"
+        f"Verification: after merge, install.sh sees live == repo for `{src_rel}`; accept probe "
+        f"`journalctl --user -u fleet-deploy-check --since -24h -o cat | grep -c \"install.sh failed\"` "
+        f"-> 0 sustained across two consecutive ticks (fleet-ops#5663).\n"
+        f"run-proof: fleet-ops-drift.py --file-install-refuse pushed reconcile branch `{branch}`"
+        + (f" at {pushed_sha[:12]}" if pushed_sha else "")
+        + f" on {now_iso()}\n"
+        f"net-positive-because: machine reconcile — carries live bytes verbatim, no hand edit\n"
+        f"{HOTPATCH_MARKER} dest={dest}\n"
+        "reconcile-auto: fleet-ops#5663\n"
+    )
+    _fd, _body_path = tempfile.mkstemp(prefix="fleet-ops-reconcile-body-", suffix=".md")
+    os.close(_fd)
+    body_file = Path(_body_path)
+    try:
+        body_file.write_text(body, encoding="utf-8")
+        create = subprocess.run(
+            [GH, "pr", "create", "-R", DRIFT_REPO, "--head", branch, "--base", "main",
+             "--title", f"reconcile(deploy): carry live {live.name} into {src_rel} (fleet-ops#5663)",
+             "--body-file", str(body_file)],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if create.returncode != 0:
+            log(f"WARN: reconcile pr create failed for {branch}: {create.stderr.strip()[:200]}")
+            return
+        pr_url = create.stdout.strip().splitlines()[-1] if create.stdout.strip() else ""
+        arm = subprocess.run(
+            [GH, "pr", "merge", pr_url or branch, "-R", DRIFT_REPO, "--auto", "--squash"],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if arm.returncode == 0:
+            log(f"reconcile: opened {pr_url or 'PR'} for {branch} (auto-merge armed)")
+        else:
+            # A transient arm failure is not fatal: the heartbeat-tier1 queue
+            # pass re-arms green reconcile/ PRs (fleet-ops#5663).
+            log(f"WARN: reconcile opened {pr_url or 'PR'} but arm failed: {arm.stderr.strip()[:200]}")
+    finally:
+        try:
+            body_file.unlink()
+        except OSError:
+            pass
 
 
 def retarget_products_bin() -> Path:
@@ -1244,12 +1760,169 @@ def check_checkout(checkout: Path) -> None:
     log(f"checkout {checkout} is at origin/main ({head[:12]}) and clean")
 
 
+# install.sh --check sprawl lines, e.g.
+#   DIFF: /path/foo.bak-tag-20260911 (.bak next to managed MANIFEST file /path/foo)
+# The parenthetical kind is fixed text (.bak / .orig), not the artifact's
+# own suffix.
+SPRAWL_DIFF_RE = re.compile(
+    r"^DIFF: (.+?) \((\.bak|\.orig) next to managed MANIFEST file (.+?)\)\s*$",
+    re.MULTILINE,
+)
+
+
+def last_log_hit(needle: str) -> str | None:
+    """Last actions.log / drift-audit line naming `needle` (bounded tail read)."""
+    if not needle:
+        return None
+    for logf in (ACTIONS_LOG, AUDIT_LOG):
+        try:
+            if not logf.is_file():
+                continue
+            size = logf.stat().st_size
+            with logf.open("r", encoding="utf-8", errors="replace") as f:
+                if size > 512 * 1024:
+                    f.seek(size - 512 * 1024)
+                    f.readline()  # discard a partial first line
+                lines = f.read().splitlines()
+        except OSError:
+            continue
+        for line in reversed(lines):
+            if needle in line:
+                text = line.strip()
+                if len(text) > 200:
+                    text = text[:200] + "..."
+                return f"{logf.name}:{text}"
+    return None
+
+
+def sprawl_writer(artifact: Path, managed: str) -> str:
+    """Best-effort attribution for a stray sibling artifact (fleet-ops#5602).
+
+    Three signals: the fleet's naming convention
+    (<managed-base>.bak-<tag>-<date> — the tag names the writer, e.g.
+    .bak-onefleet-5588-20260911), the artifact's owner+mtime, and the last
+    actions.log / drift-audit line naming the artifact or its managed file.
+    """
+    parts: list[str] = []
+    base = Path(managed).name
+    name = artifact.name
+    tag = name[len(base) + 1:] if name.startswith(base + ".") else name
+    parts.append(f"nametag={tag}")
+    try:
+        st = artifact.lstat()
+        try:
+            owner = pwd.getpwuid(st.st_uid).pw_name
+        except (KeyError, OSError):
+            owner = str(st.st_uid)
+        mtime = datetime.datetime.fromtimestamp(
+            st.st_mtime, datetime.timezone.utc
+        ).strftime("%Y-%m-%dT%H:%M:%SZ")
+        parts.append(f"owner={owner} mtime={mtime}")
+    except OSError:
+        parts.append("stat=unreadable")
+    hit = last_log_hit(name) or (last_log_hit(base) if base != name else None)
+    if hit:
+        parts.append(f"log={hit}")
+    return " ".join(parts)
+
+
+def unique_quarantine_path(name: str) -> Path:
+    """A collision-free destination inside the quarantine dir."""
+    cand = QUARANTINE_DIR / name
+    if not cand.exists() and not cand.is_symlink():
+        return cand
+    stamp = now_iso().replace("-", "").replace(":", "")
+    cand = QUARANTINE_DIR / f"{name}.q-{stamp}"
+    i = 1
+    while cand.exists() or cand.is_symlink():
+        i += 1
+        cand = QUARANTINE_DIR / f"{name}.q-{stamp}-{i}"
+    return cand
+
+
+def auto_file_sprawl(msg: str) -> None:
+    """File one issue when stray sibling artifacts were quarantined."""
+    extra = (
+        "A .bak/.orig sibling next to a MANIFEST-managed path used to hold "
+        "the merge-to-live gate red until a judge hand-archived it "
+        "(fleet-ops#5602). The canary now quarantines the artifact under "
+        "agent-state/backups/manifest-sprawl/ and names the writer above. "
+        "Backups belong outside the managed tree — the writer should park "
+        "them there in the first place."
+    )
+    auto_file_drift(
+        SPRAWL_MARKER,
+        "Stray sibling artifact quarantined beside MANIFEST-managed path",
+        extra,
+        msg,
+    )
+
+
+def quarantine_sprawl_diffs(diffs: str) -> bool:
+    """Move sprawl artifacts flagged by install.sh --check out of the managed
+    tree, name the writer, and report. Returns True if >=1 was quarantined.
+
+    fleet-ops#5602: a .bak/.orig sibling next to a MANIFEST-managed path
+    held the whole merge-to-live gate red until a judge noticed by hand
+    (4th recurrence 2026-09-11T23:42Z: global-standing-rules.canonical.md
+    .bak-onefleet-5588-20260911 held DEPLOY-CHECK red while install.sh
+    itself ran clean). Quarantine instead of refuse: the artifact is moved
+    (never deleted), the writer is named in QUARANTINE.log and the LOUD
+    line, and the caller re-checks — so the gate is red at most the tick
+    that found the sprawl.
+    """
+    moved: list[str] = []
+    for m in SPRAWL_DIFF_RE.finditer(diffs):
+        artifact = Path(m.group(1).strip())
+        managed = m.group(3).strip()
+        writer = sprawl_writer(artifact, managed)
+        try:
+            QUARANTINE_DIR.mkdir(parents=True, exist_ok=True)
+            dest = unique_quarantine_path(artifact.name)
+            shutil.move(str(artifact), str(dest))
+        except OSError as e:
+            loud("DRIFT-QUARANTINE", f"could not quarantine {artifact}: {e} — left in place")
+            audit("fleet-ops", "sprawl-quarantine-failed", f"{artifact} writer={writer} err={e}")
+            continue
+        try:
+            with (QUARANTINE_DIR / "QUARANTINE.log").open("a", encoding="utf-8") as f:
+                f.write(
+                    f"{now_iso()} artifact={artifact} managed={managed} "
+                    f"moved_to={dest} writer={writer}\n"
+                )
+        except OSError as e:
+            log(f"WARN: could not append to quarantine ledger {QUARANTINE_DIR}/QUARANTINE.log: {e}")
+        audit("fleet-ops", "sprawl-quarantine", f"{artifact} -> {dest} writer={writer}")
+        moved.append(f"{artifact} -> {dest} (managed: {managed}; writer: {writer})")
+    if not moved:
+        return False
+    msg = (
+        "stray sibling artifact(s) quarantined out of the managed tree "
+        "(fleet-ops#5602; backups belong outside MANIFEST dirs):\n"
+        + "\n".join(moved)
+    )
+    loud("DRIFT-QUARANTINE", msg)
+    auto_file_sprawl(msg)
+    return True
+
+
 def check_manifest_install(checkout: Path) -> None:
     rc, out, err = run([str(checkout / "install.sh"), "--check"], cwd=checkout, check=False)
     if rc == 2:
         fail_loud("DRIFT-INSTALL", f"install.sh --check usage error: {out}{err}")
     if rc != 0:
         diffs = (out + err).strip()
+        # fleet-ops#5602: quarantine stray .bak/.orig siblings, then re-check.
+        # If the sprawl was the whole drift the gate never goes red; residual
+        # diffs still fail loud below.
+        if quarantine_sprawl_diffs(diffs):
+            rc, out, err = run([str(checkout / "install.sh"), "--check"], cwd=checkout, check=False)
+            if rc == 2:
+                fail_loud("DRIFT-INSTALL", f"install.sh --check usage error: {out}{err}")
+            if rc == 0:
+                log("install.sh --check: clean after sprawl quarantine")
+                return
+            diffs = (out + err).strip()
         fail_loud("DRIFT-INSTALL", f"MANIFEST install drift:\n{diffs}")
     log("install.sh --check: clean")
 
@@ -1435,7 +2108,13 @@ def main(argv: list[str] | None = None) -> None:
             sys.exit(2)
         dest, repo, diff_path = args[1], args[2], Path(args[3])
         diff = diff_path.read_text(encoding="utf-8", errors="replace") if diff_path.is_file() else ""
-        auto_file_install_refuse(dest, repo, diff)
+        # The diff lands in a public issue/PR body — never post a literal
+        # credential a hand hot-patch could have dropped (fleet-ops#5663).
+        diff = _redact_literal_secrets(diff)
+        attribution = hotpatch_attribution(dest)
+        log(f"hot-patch attribution: {attribution}")
+        auto_file_install_refuse(dest, repo, diff, attribution)
+        reconcile_install_refuse(dest, repo, diff, attribution)
         sys.exit(0)
 
     if args[:1] == ["--file-off-main"]:

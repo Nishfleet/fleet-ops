@@ -11,4 +11,11 @@ WorkingDirectory=/home/nish
 # is walled. Do not pin --provider here — a hardcoded repair seat is how
 # this unit sat activating on quota_exhausted glm-5-2 (fleet-ops#130).
 ExecStart=/bin/bash -c 'exec /home/nish/.local/bin/pi-scout-run %i scout-repair'
+# 75 = pi-scout-run's "no usable seat" SKIP (saturated pool), same reserved
+# code pi-scout@.service already carries. Without this the repair unit was
+# marked FAILED for a non-fault and the unit-escalation@%n drop-in wrote a
+# STOP-REASON per SKIP, which invited another retry into the same saturated
+# pool (fleet-ops#5071). Only this one reserved code — real failures still
+# escalate.
+SuccessExitStatus=75
 TimeoutStartSec=3600

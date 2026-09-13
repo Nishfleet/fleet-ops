@@ -101,6 +101,17 @@
       "class": "prepaid-quota",
       "quota_window": "monthly",
       "note": "OpenCode Go subscription (Nish 2026-09-10): DeepSeek V4.1 Flash as deepseek-flash, first in order until 2026-09-14."
+    },
+    {
+      "id": "synthetic",
+      "class": "prepaid-quota",
+      "note": "Synthetic flat $30/mo prepaid subscription (Nish 2026-09-11). Worker seat, exactly one model: hf:zai-org/GLM-5.3-Flash. Quota 500 req/5h account-wide, 1 concurrent request per model (cap 1 everywhere)."
+    },
+    {
+      "id": "llmgateway-devpass",
+      "class": "prepaid-quota",
+      "quota_window": "monthly",
+      "note": "LLM Gateway DevPass (Nish 2026-09-11): $29/mo subscription minting $87/mo of metered credits — a fixed prepaid credit pool that runs out, not open-ended PAYG. Worker seat, exactly one model: glm-5.3-flash (cheapest compliant flash, $0.088/$0.25). cap 1 total; paid lanes trickle, never flood. Last in prepaid_providers_in_order, before metered openrouter/deepseek."
     }
   ]
 }

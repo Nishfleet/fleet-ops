@@ -1,0 +1,26 @@
+[Unit]
+Description=Headless MiniMax OAuth refresh of fleet-litellm-proxy MINIMAX_API_KEY — 2h cycle (fleet-ops#5788)
+# Named reason: the proxy captures MINIMAX_API_KEY from the start wrapper
+# once at startup. The underlying mmx OAuth access token rotates every
+# ~12h, silently inside claude-minimax-key. A stale token makes every
+# anthropic/MiniMax-M3 deployment in the senior / judge / worker-cheap /
+# worker-capable / worker-private groups 401 "login fail: Please carry
+# the API secret key in the 'X-Api-Key' field" (MiniMax's wording for a
+# rejected credential), and pi exits 1 on the failure, killing flagship
+# workers (reproduction in issue body). 2h cadence gives a ~6x safety
+# margin over the 12h rotation; matches grok-token-refresh's "tighten
+# cadence to fit the killing class" precedent. Persistent=true so a
+# sleeping box catches up on resume; the script is idempotent
+# (skip-if-unchanged) so a tick that races the previous run is a no-op,
+# not a duplicate bounce.
+# OnFailure on the .service is wired by the global
+# service.d/10-escalate.conf drop-in.
+
+[Timer]
+OnCalendar=*-*-* 00/2:00:00
+RandomizedDelaySec=10min
+Persistent=true
+AccuracySec=10min
+
+[Install]
+WantedBy=timers.target

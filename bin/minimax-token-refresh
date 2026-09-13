@@ -1,0 +1,333 @@
+#!/usr/bin/env bash
+# minimax-token-refresh — keep the LiteLLM proxy's MINIMAX_API_KEY in sync
+# with the live MiniMax OAuth credential cached in ~/.mmx/config.json
+# (claude-minimax-key is the resolver; it already calls `mmx auth refresh`
+# when the access token is within 5 min of expiry).
+#
+# Class this prevents (fleet-ops#5788): the proxy captures MINIMAX_API_KEY
+# from the start wrapper once at startup. When the underlying mmx OAuth
+# access token rotates (12 h lifetime observed; refresh_token is silent
+# inside the wrapper), the proxy keeps serving the OLD key until restart.
+# MiniMax rejects the stale key with HTTP 401 "login fail: Please carry
+# the API secret key in the 'X-Api-Key' field of the request header" and
+# every `anthropic/MiniMax-M3` deployment in the senior / judge / worker-
+# cheap / worker-capable / worker-private groups 401s. Pi then exits 1 on
+# the failure (killing flagship workers) because the seat-health retry
+# window is too long for a same-minute credential rotation.
+#
+# Why this file, not just rely on claude-minimax-key being called per
+# request?
+#   claude-minimax-key refreshes transparently when invoked, but the
+#   proxy only invokes it through its start wrapper at boot. The 401
+#   observed fleet-wide on 2026-09-12 10:16 IST is exactly this stale-
+#   at-start half of the same family that #4629 closed for grok-4.6
+#   (xai-oauth). This timer is the OUT-OF-BAND heal: every 2 h it calls
+#   the wrapper, compares the freshly-issued token to the one captured
+#   by the live fleet-litellm-proxy.service, and bounces the proxy on a
+#   mismatch. The wrapper itself is the credential authority; this
+#   script only signals that the captured value needs refresh.
+#
+# Why 2 h cadence?
+#   The mmx OAuth response carries an expires_at (~12 h observed). A 2 h
+#   cycle leaves a 6x safety margin so the proxy is never more than ~2 h
+#   out of date, matching the fleet-ops#41 cadence discipline (4 h for a
+#   6 h token = 1.5x margin; we run tighter because the stale-401 was a
+#   killing class). Persistent=true so a sleeping box catches up on
+#   resume; the script is idempotent (skip-if-unchanged).
+#
+# Skip / REJECT discipline (matches grok-token-refresh, fleet-ops#41):
+#   0  SKIP (no work): the wrapper is missing, ~/.mmx/config.json is
+#                     missing, or the freshly-issued key equals the one
+#                     captured by the running proxy. Exit 0 so a
+#                     healthy system is silent. last_success advances on
+#                     every SKIP — a SKIP is a successful run (the
+#                     script ran, found the credential fresh, and chose
+#                     not to bounce the proxy). fleet-ops#2817 rule
+#                     (SKIP advances last_success) carries.
+#   1  REJECT:        the wrapper is unreadable / not executable, the
+#                     live proxy PID is gone, /proc lookup fails, or
+#                     try-reload-or-restart returns non-zero. Exits 1,
+#                     last_success preserved (a failed run is not a
+#                     healthy run).
+#   2  usage error.
+#
+# Side effects on detect-and-rotate:
+#   - fleet-litellm-proxy.service is bounced via try-reload-or-restart so
+#     the start wrapper (`~/.local/bin/fleet-litellm-proxy-start`) re-
+#     exports MINIMAX_API_KEY from a fresh claude-minimax-key call. The
+#     resulting proxy process reads the new token from its environment.
+#   - /var/lib/prometheus/node-exporter/fleet-minimax-token-refresh.prom
+#     is updated (textfile collector) with:
+#       fleet_minimax_token_refresh_last_success_seconds <epoch>
+#       fleet_minimax_token_refresh_outcome{outcome="success|skipped|reject"} <1>
+#       fleet_minimax_token_refresh_rotations_total <cumulative counter>
+#     Metrics never carry credential contents.
+#
+# Idempotency: re-running within the 2 h cadence is a SKIP until the
+# mmx-cached token rotates; rotations are counted, not silently absorbed.
+#
+# Security:
+#   - No token value is ever printed. The script logs only key length,
+#     first 4 chars, last 4 chars, and a SHA-256 prefix of the freshly
+#     issued value for cross-run correlation. (Same discipline as
+#     grok-token-refresh's "access_sha256_prefix=$prefix".)
+#   - The wrapper output is consumed into a tmp file mode 0600 and the
+#     comparison runs from disk so the live value never lands in shell
+#     history or this process's argv-visible state.
+#   - Locked via mkdir(1) on a fleet-owned lock dir so two parallel
+#     timer ticks cannot bounce the proxy twice in flight.
+#
+# Environment seams (tests):
+#   MINIMAX_TOKEN_REFRESH_KEY_BIN     override the wrapper path
+#                                      (default ~/.local/bin/claude-minimax-key)
+#   MINIMAX_TOKEN_REFRESH_TEXTFILE    override the prom textfile path
+#   MINIMAX_TOKEN_REFRESH_LOCK_DIR    override the lock dir
+#   MINIMAX_TOKEN_REFRESH_PROXY_UNIT  override the systemd unit
+#                                      (default fleet-litellm-proxy.service)
+#   MINIMAX_TOKEN_REFRESH_TIMEOUT     seconds to wait for the wrapper
+#                                      (default 20)
+#   MINIMAX_TOKEN_REFRESH_SKIP_PROXY  if "1", skip the proxy-bounce step
+#                                      (tests stub this so they never
+#                                      bounce the live organ)
+#   MINIMAX_TOKEN_REFRESH_TRIAGE      triage file (heartbeat)
+
+set -Eeuo pipefail
+
+export HOME="${HOME:-/home/nish}"
+command -v gh >/dev/null 2>&1 || export PATH=/home/nish/.local/bin:/usr/local/bin:/usr/bin:/bin
+
+KEY_BIN="${MINIMAX_TOKEN_REFRESH_KEY_BIN:-$HOME/.local/bin/claude-minimax-key}"
+TEXTFILE="${MINIMAX_TOKEN_REFRESH_TEXTFILE:-/var/lib/prometheus/node-exporter/fleet-minimax-token-refresh.prom}"
+LOCK_DIR="${MINIMAX_TOKEN_REFRESH_LOCK_DIR:-$HOME/.cache/fleet-minimax-token-refresh.lock.d}"
+PROXY_UNIT="${MINIMAX_TOKEN_REFRESH_PROXY_UNIT:-fleet-litellm-proxy.service}"
+TIMEOUT="${MINIMAX_TOKEN_REFRESH_TIMEOUT:-20}"
+SKIP_PROXY="${MINIMAX_TOKEN_REFRESH_SKIP_PROXY:-0}"
+TRIAGE="${MINIMAX_TOKEN_REFRESH_TRIAGE:-/home/nish/workspaces/agent-state/FLEET-HEARTBEAT-TRIAGE.md}"
+# Where to read the live proxy's environ from. Defaults to /proc. Tests
+# override this to point at a scratch tree where a fake
+# <pid>/environ carries a controlled MINIMAX_API_KEY. The override is
+# never used in production.
+PROC_ROOT="${MINIMAX_TOKEN_REFRESH_PROC_ROOT:-/proc}"
+# Path to systemctl. Tests override this to a stub that records the
+# invocation instead of bouncing the live organ. Production uses the
+# hard path /usr/bin/systemctl — the default.
+SYSTEMCTL_BIN="${MINIMAX_TOKEN_REFRESH_SYSTEMCTL_BIN:-/usr/bin/systemctl}"
+
+log() {
+    printf '[%s] [minimax-token-refresh] %s\n' \
+        "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$*" >&2
+}
+
+loud() {
+    local tag="$1"; shift
+    local msg="$*"
+    log "LOUD [$tag] $msg"
+    {
+        printf '\n[%s] [%s] %s\n' \
+            "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$tag" "$msg"
+    } >>"$TRIAGE" 2>/dev/null || log "WARN: could not append to triage $TRIAGE"
+}
+
+usage() {
+    cat <<'EOF'
+Usage: minimax-token-refresh [--help]
+  Refresh the fleet-litellm-proxy MINIMAX_API_KEY when the underlying
+  ~/.mmx/config.json OAuth access token rotates. Bounces the proxy
+  through try-reload-or-restart so the start wrapper re-exports the
+  freshly-issued token. Safe to run from a systemd timer (SKIP when
+  unchanged). See header for skip/reject discipline.
+EOF
+}
+
+for arg in "$@"; do
+    case "$arg" in
+        -h|--help) usage; exit 0 ;;
+        *) printf 'minimax-token-refresh: unknown argument: %s\n' "$arg" >&2; exit 2 ;;
+    esac
+done
+
+# --- helpers ---
+
+# Read prior last_success so REJECT never zeros the organ heartbeat.
+read_prior_success() {
+    if [[ -f "$TEXTFILE" ]]; then
+        awk '/^fleet_minimax_token_refresh_last_success_seconds / {print $2; found=1} END{if(!found) print 0}' "$TEXTFILE" 2>/dev/null || echo 0
+    else
+        echo 0
+    fi
+}
+
+# Cumulative rotation counter — appended to (counter type) so each rotate
+# increments rather than resets.
+read_rotation_count() {
+    if [[ -f "$TEXTFILE" ]]; then
+        awk '/^fleet_minimax_token_refresh_rotations_total / {print $2; found=1} END{if(!found) print 0}' "$TEXTFILE" 2>/dev/null || echo 0
+    else
+        echo 0
+    fi
+}
+
+write_metric() {
+    local outcome="$1" success_epoch="$2" rotations="$3"
+    local dir tmp
+    dir="$(dirname "$TEXTFILE")"
+    if [[ ! -d "$dir" ]]; then
+        return 0
+    fi
+    tmp="${TEXTFILE}.$$.tmp"
+    {
+        printf '# HELP fleet_minimax_token_refresh_last_success_seconds Unix epoch of the last successful minimax-token-refresh run, or 0.\n'
+        printf '# TYPE fleet_minimax_token_refresh_last_success_seconds gauge\n'
+        printf 'fleet_minimax_token_refresh_last_success_seconds %s\n' "$success_epoch"
+        printf '# HELP fleet_minimax_token_refresh_outcome 1 for the most recent run, labelled by outcome.\n'
+        printf '# TYPE fleet_minimax_token_refresh_outcome gauge\n'
+        printf 'fleet_minimax_token_refresh_outcome{outcome="success"} %s\n' "$([[ "$outcome" == "success" ]] && echo 1 || echo 0)"
+        printf 'fleet_minimax_token_refresh_outcome{outcome="skipped"} %s\n' "$([[ "$outcome" == "skipped" ]] && echo 1 || echo 0)"
+        printf 'fleet_minimax_token_refresh_outcome{outcome="reject"} %s\n' "$([[ "$outcome" == "reject" ]] && echo 1 || echo 0)"
+        printf '# HELP fleet_minimax_token_refresh_rotations_total Cumulative count of fleet-litellm-proxy bounces triggered by a detected credential rotation (fleet-ops#5788).\n'
+        printf '# TYPE fleet_minimax_token_refresh_rotations_total counter\n'
+        printf 'fleet_minimax_token_refresh_rotations_total %s\n' "$rotations"
+    } >"$tmp"
+    mv -f "$tmp" "$TEXTFILE" 2>/dev/null || true
+}
+
+# Wait briefly for the lock; mkdir(1) is atomic across shells.
+acquire_lock() {
+    local waited=0
+    while ! mkdir "$LOCK_DIR" 2>/dev/null; do
+        if (( waited >= 30 )); then
+            return 1
+        fi
+        sleep 1
+        waited=$((waited + 1))
+    done
+    trap 'rmdir "$LOCK_DIR" 2>/dev/null || true' EXIT INT TERM
+    return 0
+}
+
+# Look up the live proxy's captured MINIMAX_API_KEY by reading /proc.
+# Returns 0 on hit (prints the key); 1 on miss. Honours
+# MINIMAX_TOKEN_REFRESH_PROC_ROOT so tests can point at a fake tree.
+# The proxy pid comes from the unit's MainPID, never a substring cmdline
+# match (fleet-wipe lesson: pgrep -f can pin the wrong process).
+read_proxy_key() {
+    local pid
+    pid=$("$SYSTEMCTL_BIN" --user show -p MainPID --value "$PROXY_UNIT" 2>/dev/null || true)
+    if [[ -z "$pid" || "$pid" == "0" ]]; then
+        return 1
+    fi
+    local key
+    key=$(tr '\0' '\n' < "$PROC_ROOT/$pid/environ" 2>/dev/null \
+        | awk -F= '$1 == "MINIMAX_API_KEY" {sub(/^MINIMAX_API_KEY=/, ""); print; exit}')
+    if [[ -z "$key" ]]; then
+        return 1
+    fi
+    printf '%s' "$key"
+    return 0
+}
+
+# Print a SHA-256 prefix of $1 (used for cross-run correlation, NEVER the
+# key value).
+sha_prefix() {
+    printf '%s' "$1" | sha256sum | awk '{print substr($1, 1, 16)}'
+}
+
+# --- preflight ---
+
+if [[ ! -x "$KEY_BIN" ]]; then
+    loud "MINIMAX-TOKEN-REFRESH-WATCHER-BROKEN" "wrapper not executable: $KEY_BIN"
+    exit 1
+fi
+
+if [[ ! -d "$HOME/.mmx" ]]; then
+    log "SKIP: ~/.mmx not present — no MiniMax OAuth credential to watch"
+    write_metric "skipped" "$(date -u +%s)" "$(read_rotation_count)"
+    exit 0
+fi
+
+PRIOR_SUCCESS="$(read_prior_success)"
+now_epoch="$(date -u +%s)"
+
+if [[ ! -x "$SYSTEMCTL_BIN" ]]; then
+    loud "MINIMAX-TOKEN-REFRESH-WATCHER-BROKEN" "systemctl missing: $SYSTEMCTL_BIN"
+    exit 1
+fi
+
+# --- read the live key the proxy captured ---
+
+if ! proxy_key=$(read_proxy_key); then
+    # No live proxy process — nothing to keep in sync. SKIP rather than
+    # REJECT: the timer predates the proxy organ and must not fail on a
+    # host that has not installed fleet-litellm-proxy yet.
+    log "SKIP: no live fleet-litellm-proxy process to inspect"
+    write_metric "skipped" "$now_epoch" "$(read_rotation_count)"
+    exit 0
+fi
+
+# --- ask the wrapper for the current key, into a tmp file ---
+
+tmp_key="$(mktemp -t minimax-key.XXXXXX)"
+chmod 600 "$tmp_key" 2>/dev/null || true
+trap 'rm -f "$tmp_key" "${tmp_key}.code" "$tmp_key".live 2>/dev/null || true; rmdir "$LOCK_DIR" 2>/dev/null || true' EXIT INT TERM
+
+set +e
+timeout "$TIMEOUT" "$KEY_BIN" >"$tmp_key" 2>/dev/null
+key_rc=$?
+set -e
+
+if (( key_rc != 0 )) || [[ ! -s "$tmp_key" ]]; then
+    loud "MINIMAX-TOKEN-REFRESH-REJECT" "wrapper exit=$key_rc empty=$([ -s "$tmp_key" ] && echo no || echo yes)"
+    rm -f "$tmp_key" 2>/dev/null || true
+    exit 1
+fi
+
+fresh_key=$(cat "$tmp_key")
+rm -f "$tmp_key" 2>/dev/null || true
+
+if [[ -z "$fresh_key" ]]; then
+    loud "MINIMAX-TOKEN-REFRESH-REJECT" "wrapper produced empty key"
+    exit 1
+fi
+
+# --- compare and act ---
+
+if [[ "$fresh_key" == "$proxy_key" ]]; then
+    log "SKIP: proxy key matches fresh wrapper key (len=${#fresh_key}, sha_prefix=$(sha_prefix "$fresh_key")) — no rotation needed"
+    write_metric "skipped" "$now_epoch" "$(read_rotation_count)"
+    exit 0
+fi
+
+log "rotation detected: proxy_len=${#proxy_key} fresh_len=${#fresh_key} sha_prefix=$(sha_prefix "$fresh_key")"
+
+# --- acquire lock and bounce ---
+
+if [[ "$SKIP_PROXY" == "1" ]]; then
+    log "SKIP_PROXY=1 set — would have bounced $PROXY_UNIT, skipping (test mode)"
+    write_metric "success" "$now_epoch" "$(( $(read_rotation_count) + 1 ))"
+    exit 0
+fi
+
+if ! acquire_lock; then
+    loud "MINIMAX-TOKEN-REFRESH-LOCK-BUSY" "could not acquire $LOCK_DIR within 30s"
+    write_metric "reject" "$PRIOR_SUCCESS" "$(read_rotation_count)"
+    exit 1
+fi
+
+# Re-check inside the lock — another tick may have already rotated.
+proxy_key2=$(read_proxy_key || true)
+if [[ "$proxy_key2" == "$fresh_key" ]]; then
+    log "SKIP (inside lock): another tick already rotated — fresh key matches"
+    write_metric "skipped" "$now_epoch" "$(read_rotation_count)"
+    exit 0
+fi
+
+if ! "$SYSTEMCTL_BIN" --user try-reload-or-restart "$PROXY_UNIT"; then
+    loud "MINIMAX-TOKEN-REFRESH-RELOAD-FAILED" "$PROXY_UNIT reload/restart failed after rotation detected"
+    write_metric "reject" "$PRIOR_SUCCESS" "$(read_rotation_count)"
+    exit 1
+fi
+
+new_count=$(( $(read_rotation_count) + 1 ))
+log "OK rotated: $PROXY_UNIT reloaded, fresh sha_prefix=$(sha_prefix "$fresh_key"), rotations_total=$new_count"
+write_metric "success" "$now_epoch" "$new_count"
+exit 0

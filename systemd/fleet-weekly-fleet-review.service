@@ -16,13 +16,21 @@ Type=oneshot
 Environment=HOME=/home/nish
 Environment=PATH=/home/nish/.local/bin:/usr/local/bin:/usr/bin:/bin
 Environment=XDG_RUNTIME_DIR=/run/user/1000
-Environment=WORKDIR=/home/nish/workspaces/tooling/fleet-ops-deploy-clone
+# fleet-ops#6252: cron jobs must never run against a deploy checkout — a run
+# dirties tracked files and fleet-deploy-check blocks merge-to-live for the
+# whole run (live DEPLOY-BLOCKED 2026-09-13T01:40Z). Scratch dir under
+# agent-state; model discovery writes config/model-candidates.json HERE, not
+# into the clone. WorkingDirectory keeps the '-' non-fatal prefix so the unit
+# starts before the ExecStartPre mkdir provisions the dir on a fresh host.
+Environment=WORKDIR=/home/nish/workspaces/agent-state/weekly-fleet-review
+WorkingDirectory=-/home/nish/workspaces/agent-state/weekly-fleet-review
 Environment=LOG_DIR=/home/nish/workspaces/agent-state/cron-output
 Environment=PROMPTS_DIR=/home/nish/.pi/agent/prompts
 Environment=PI_BIN=/home/nish/.local/bin/pi
 # fleet-ops#3321: model discovery pre-pass — runs last30days, fetches
 # models.dev + OpenRouter, writes config/model-candidates.json. No model is
 # auditioned or routed here; the list is consumed by the seat-routing layer.
+ExecStartPre=/usr/bin/mkdir -p /home/nish/workspaces/agent-state/weekly-fleet-review
 ExecStartPre=/usr/bin/python3 /home/nish/workspaces/tooling/fleet-ops-deploy-clone/lib/weekly-fleet-review-model-discovery.py
 ExecStart=/home/nish/.local/bin/agent-cron-run weekly-fleet-review
 Restart=on-failure

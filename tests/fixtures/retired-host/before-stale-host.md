@@ -1,0 +1,2 @@
+- **Unattended write-autonomy on the VPS (Nish, 2026-08-05):** on `hostinger-kvm4`, ALL unattended agents have full write/exec autonomy - the same as interactive sessions.
+- **Full credential parity on the VPS (Nish, 2026-08-05):** on `hostinger-kvm4`, agents may use all provider credentials and authed CLIs.

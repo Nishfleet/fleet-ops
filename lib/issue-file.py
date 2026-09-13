@@ -25,12 +25,23 @@ import os
 import re
 import subprocess
 import sys
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 DUP_THRESHOLD = 0.65
 BORDERLINE_THRESHOLD = 0.40
 KEY_BONUS = 0.10
 LIST_LIMIT = 200
+# fleet-ops#5666: `file` dedupes against recently-CLOSED issues too — but only
+# a canonical whose close is backed by a closing-PR reference counts as
+# delivered (a bare COMPLETED close is the closed-but-undelivered class,
+# fleet-ops#5479). Default window covers several scout/audit re-fire cycles;
+# 0 disables the closed corpus. fleet-ops#5687 (reopened): a closed-canonical
+# match re-files as a NEW claimable issue linking the canonical — commenting
+# on a closed ticket is a silent drop (nobody claims it, intake never sees
+# it).
+CLOSED_DEDUPE_HOURS_ENV = "FLEET_ISSUE_FILE_CLOSED_HOURS"
+CLOSED_DEDUPE_HOURS_DEFAULT = 72
 
 # close-duplicates: only `agent-ready` issues (unclaimed) are safe to close —
 # agent-in-progress has a live worker, agent-blocked is Nish-gated, red-on-main
@@ -121,6 +132,26 @@ def _generic_key(key: str) -> bool:
     return bool(RATE_LEAF_RE.match(leaf)) or leaf in GENERIC_DIR_LEAFS
 
 
+# fleet-ops#5058: packet spec-schema field labels (metric:/observed:/
+# evidence:/accept:/verify:/rollback:/dedupe:/impact:/product_surface:/
+# termination:/source:) are shared boilerplate — every well-formed candidate
+# carries them, so two different-problem schema bodies start with label
+# overlap before any content is compared. Strip the labels before tokenising
+# so only field VALUES count as overlap evidence.
+SPEC_FIELD_LABEL_RE = re.compile(
+    r"(?im)^[ \t]*(?:metric|observed|evidence|accept|verify|rollback|dedupe"
+    r"|impact|product_surface|termination|source|signal)[ \t]*:"
+)
+# fleet-ops#5058: a seat-crisis state word only counts when it sits in the
+# same breath as the seat word (<=60 chars, same line). "burn a seat on an
+# empty deliverable" paragraphs away from "the unit is dead" is incidental,
+# not the #2899 seat-corpse/walled cluster — the loose any-where match let
+# the PRIMARY_SIGNAL_FLOOR collapse unrelated problems onto #4959 at 0.70.
+SEAT_STATE_NEAR_RE = re.compile(
+    r"(?:\bseats?\b[^\n]{0,60}?\b(?:dead|down|comeback)\b)"
+    r"|(?:\b(?:dead|down|comeback)\b[^\n]{0,60}?\bseats?\b)",
+    re.IGNORECASE,
+)
 UNIT_RE = re.compile(
     r"\b[A-Za-z0-9_@.:-]+\.(?:service|timer|socket|target|path|slice)\b"
 )
@@ -199,6 +230,7 @@ def norm(text: str) -> str:
 
 
 def tokens(text: str) -> set[str]:
+    text = SPEC_FIELD_LABEL_RE.sub(" ", text or "")
     out: set[str] = set()
     for raw in norm(text).split():
         if len(raw) < 2 or raw in STOPWORDS:
@@ -227,6 +259,13 @@ def _has_seat_crisis(text: str) -> bool:
 
     Requires both a seat context and a failure state/cause.  This is intentionally
     specific: a generic "seat cap" or "healthy seats" mention must not trigger.
+    fleet-ops#5058: a bare "dead"/"comeback" anywhere in the text counted as a
+    cause, so incidental mentions ("burn a seat", "the unit is dead",
+    "dead-man") fired the signal and PRIMARY_SIGNAL_FLOOR collapsed three
+    different-problem candidates onto #4959. Causes are now seat-health
+    markers (corpse/walled/credentials_bad/quota_exhausted/seat_dead/
+    health_class=corpse/manual_repair_corpse) or a seat state word adjacent
+    to the seat word (SEAT_STATE_NEAR_RE).
     """
     low = (text or "").lower()
     seat = bool(
@@ -236,18 +275,19 @@ def _has_seat_crisis(text: str) -> bool:
         or "manual_repair_corpse" in low
         or "seat_dead" in low
     )
-    cause = bool(
+    if not seat:
+        return False
+    return bool(
         "corpse" in low
-        or "dead" in low
         or "walled" in low
-        or "comeback" in low
+        or "quota_exhausted" in low
         or "credentials_bad" in low
         or "credentials bad" in low
         or "manual_repair_corpse" in low
         or "health_class=corpse" in low
         or "seat_dead" in low
+        or SEAT_STATE_NEAR_RE.search(text or "")
     )
-    return seat and cause
 
 
 def signal_keys(text: str) -> set[str]:
@@ -451,6 +491,27 @@ def _author_login(author) -> str:
     return str(author).strip()
 
 
+def _issue_row(item: dict, repo: str) -> dict | None:
+    number = item.get("number")
+    if not isinstance(number, int):
+        return None
+    labels = []
+    for lab in item.get("labels") or []:
+        if isinstance(lab, dict) and lab.get("name"):
+            labels.append(lab["name"])
+        elif isinstance(lab, str):
+            labels.append(lab)
+    return {
+        "number": number,
+        "title": item.get("title") or "",
+        "body": item.get("body") or "",
+        "url": item.get("url") or "",
+        "repository": repo,
+        "labels": labels,
+        "author": _author_login(item.get("author")),
+    }
+
+
 def gh_list_open(repo: str) -> list[dict]:
     proc = subprocess.run(
         [
@@ -478,28 +539,118 @@ def gh_list_open(repo: str) -> list[dict]:
         return []
     out = []
     for item in rows if isinstance(rows, list) else []:
+        if isinstance(item, dict):
+            row = _issue_row(item, repo)
+            if row:
+                out.append(row)
+    return out
+
+
+def _parse_iso(ts: str) -> datetime | None:
+    try:
+        return datetime.fromisoformat((ts or "").replace("Z", "+00:00"))
+    except ValueError:
+        return None
+
+
+def _closed_dedupe_hours() -> int:
+    raw = os.environ.get(CLOSED_DEDUPE_HOURS_ENV, "")
+    if not raw:
+        return CLOSED_DEDUPE_HOURS_DEFAULT
+    try:
+        return int(raw)
+    except ValueError:
+        return CLOSED_DEDUPE_HOURS_DEFAULT
+
+
+def gh_list_recently_closed(repo: str, since_hours: int) -> list[dict]:
+    """Issues in `repo` closed within `since_hours` whose close is backed by a
+    closing-PR reference (fleet-ops#5666).
+
+    The open-only dedupe corpus cannot see a canonical that closed minutes
+    before a detector re-fires on stale state — land-or-close #5652 closed
+    at 00:16Z the moment PR #5544 merged, and a stale-observation audit
+    re-filed the same resolved blocker as #5666 at 00:41Z. Two proofs are
+    required before a closed issue may suppress a filing:
+    stateReason=COMPLETED AND a non-empty closedByPullRequestsReferences —
+    a completed close with no delivering PR is the closed-but-undelivered
+    class (fleet-ops#5479) and must never hide a re-filing.
+    """
+    proc = subprocess.run(
+        [
+            gh_bin(),
+            "issue",
+            "list",
+            "-R",
+            repo,
+            "--state",
+            "closed",
+            "--limit",
+            str(LIST_LIMIT),
+            "--json",
+            "number,title,body,url,labels,author,closedAt,stateReason,"
+            "closedByPullRequestsReferences",
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if proc.returncode != 0 or not (proc.stdout or "").strip():
+        return []
+    try:
+        rows = json.loads(proc.stdout)
+    except json.JSONDecodeError:
+        return []
+    cutoff = datetime.now(timezone.utc) - timedelta(hours=since_hours)
+    out = []
+    for item in rows if isinstance(rows, list) else []:
         if not isinstance(item, dict):
             continue
-        number = item.get("number")
-        if not isinstance(number, int):
+        if (item.get("stateReason") or "").upper() != "COMPLETED":
             continue
-        labels = []
-        for lab in item.get("labels") or []:
-            if isinstance(lab, dict) and lab.get("name"):
-                labels.append(lab["name"])
-            elif isinstance(lab, str):
-                labels.append(lab)
-        out.append(
-            {
-                "number": number,
-                "title": item.get("title") or "",
-                "body": item.get("body") or "",
-                "url": item.get("url") or "",
-                "repository": repo,
-                "labels": labels,
-                "author": _author_login(item.get("author")),
-            }
-        )
+        if not item.get("closedByPullRequestsReferences"):
+            continue
+        closed_at = _parse_iso(item.get("closedAt") or "")
+        if closed_at is None or closed_at < cutoff:
+            continue
+        row = _issue_row(item, repo)
+        if row:
+            row["closed"] = True
+            out.append(row)
+    return out
+
+
+def _load_closed_snapshot(path: str, repo: str, since_hours: int, now: datetime | None = None) -> list[dict]:
+    """Load a pre-fetched closed-issue corpus from a snapshot file.
+
+    fleet-ops#5780: the blind audit prefetched its open+closed gh lists once
+    per REPORT_DIR; passing them via --open-json / --closed-json replaces
+    the per-row `gh issue list` round-trips that made a 120+ finding dump
+    re-list GitHub once per finding. Filters mirror gh_list_recently_closed
+    (only COMPLETED closes backed by a closing-PR reference inside the
+    window count as delivered canonicals).
+    """
+    raw = json.loads(Path(path).read_text(encoding="utf-8"))
+    if isinstance(raw, dict):
+        raw = raw.get("issues") or raw.get("closed_issues") or []
+    if now is None:
+        now = datetime.now(timezone.utc)
+    cutoff = now - timedelta(hours=since_hours)
+    out = []
+    for item in raw:
+        if not isinstance(item, dict):
+            continue
+        if (item.get("stateReason") or "").upper() != "COMPLETED":
+            continue
+        if not item.get("closedByPullRequestsReferences"):
+            continue
+        closed_at = _parse_iso(item.get("closedAt") or "")
+        if closed_at is None or closed_at < cutoff:
+            continue
+        row = _issue_row(item, repo)
+        if row:
+            row["closed"] = True
+            out.append(row)
     return out
 
 
@@ -543,6 +694,116 @@ def best_match(title: str, body: str, issues: list[dict]) -> dict | None:
     return best
 
 
+def comment_batch_body(rows: list[dict], repo: str) -> str:
+    """One batched same-problem-gate comment carrying RANKED rows (fleet-ops#5780).
+    Preserves the `Would have filed in <repo>` + title lines so the
+    fleet-ops#5496 suppression matcher still recognises this comment class."""
+    n = len(rows)
+    head = (
+        f"{n} same-problem filing(s) suppressed by the fleet-ops#1212 filing gate, "
+        f"batched per fleet-ops#5780 (one comment per report instead of per row).\n\n"
+    )
+    parts = [head, "| Rank | Score | Title |\n|---|---|---|\n"]
+    for row in rows:
+        t = (row.get("title") or "").replace("\n", " ").strip()
+        score = float(row.get("score") or 0)
+        parts.append(f"| {row.get('rank') or ''} | {score:.2f} | **{t}** |\n")
+    parts.append(f"\nWould have filed in `{repo}` (all rows above):\n")
+    return "\n".join(parts)
+
+
+def issue_comment_bodies(repo: str, number: int) -> list[str]:
+    try:
+        proc = subprocess.run(
+            [gh_bin(), "issue", "view", str(number), "--repo", repo,
+             "--json", "comments"],
+            capture_output=True, text=True, check=False, timeout=30,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return []
+    if proc.returncode != 0:
+        return []
+    try:
+        data = json.loads(proc.stdout or "{}")
+    except json.JSONDecodeError:
+        return []
+    return [c.get("body") or "" for c in data.get("comments") or []
+            if isinstance(c, dict)]
+
+
+def cmd_comment_batch(args: argparse.Namespace) -> int:
+    """fleet-ops#5780: post ONE comment per target issue for a whole report's
+    dedupe rows, instead of one gh call per row.
+
+    Input file: JSON lines, each
+      {repo, number, rows: [{rank,title,severity,score}], finding, sig,
+       is_carryover}
+    Targets whose fleet-ops#5496-class filing comment already carries a row's
+    title are suppressed for those rows (fail-open as in issue_has_filing_comment).
+    Output (stdout, with --json): one object per target:
+      {repo, number, posted, status, rows, error}
+    """
+    entries: list[dict] = []
+    with open(args.from_json, encoding="utf-8") as fh:
+        for line in fh:
+            line = line.strip()
+            if not line:
+                continue
+            item = json.loads(line)
+            if isinstance(item, dict):
+                entries.append(item)
+
+    groups: dict[tuple[str, int], list[dict]] = {}
+    for entry in entries:
+        repo = entry.get("repo") or args.repo
+        number = int(entry.get("number") or 0)
+        rows = list(entry.get("rows") or [])
+        if not number or not rows:
+            continue
+        groups.setdefault((repo, number), []).append(entry)
+
+    results = []
+    any_failed = False
+    for (repo, number), members in groups.items():
+        rows: list[dict] = []
+        for entry in members:
+            rows.extend(entry.get("rows") or [])
+        # fleet-ops#5496/3728 suppression per target: ONE comments fetch per
+        # target (not per row) so a re-fire next run does not pile up
+        # duplicate batch comments.
+        bodies = issue_comment_bodies(repo, number)
+        kept = []
+        for row in rows:
+            needle = f"**{row.get('title') or ''}**"
+            if any(needle in body for body in bodies):
+                continue
+            kept.append(row)
+        result = {"repo": repo, "number": number, "rows": rows, "posted": 0,
+                  "status": "skipped", "error": ""}
+        if len(kept) != len(rows):
+            sys.stderr.write(
+                f"[issue-file] comment-batch suppressed {len(rows) - len(kept)} "
+                f"already-commented row(s) on {repo}#{number}\n"
+            )
+            rows = kept
+        if not rows:
+            result["status"] = "all-suppressed"
+        elif args.dry_run:
+            result["status"] = "dry-run"
+        else:
+            rc, out = gh_comment(repo, number, comment_batch_body(rows, repo))
+            if rc != 0:
+                result["status"] = "failed"
+                result["error"] = out[:500]
+                any_failed = True
+            else:
+                result["status"] = "posted"
+                result["posted"] = len(rows)
+        results.append(result)
+    print(json.dumps(results, sort_keys=True))
+    return 1 if any_failed else 0
+
+
 def comment_body(title: str, body: str, score: float, repo: str) -> str:
     excerpt = (body or "").strip()
     if len(excerpt) > 1200:
@@ -553,6 +814,18 @@ def comment_body(title: str, body: str, score: float, repo: str) -> str:
         f"Would have filed in `{repo}`:\n\n"
         f"**{title}**\n\n"
         f"{excerpt}\n"
+    )
+
+
+def recurrence_marker(ref: str, score: float) -> str:
+    """Body prefix for a filing whose only dedupe hit is a CLOSED delivered
+    canonical (fleet-ops#5687): the match is evidence of recurrence, not a
+    reason to suppress — a comment on a closed issue is never claimed."""
+    return (
+        f"<!-- recurrence-of: {ref} score={score:.2f} -->\n"
+        f"Recurrence of {ref} — that canonical is CLOSED with a delivering PR; "
+        f"a matching signal re-fired, so this is filed as a NEW claimable "
+        f"issue rather than a comment on a closed ticket (fleet-ops#5687).\n\n"
     )
 
 
@@ -608,6 +881,45 @@ def issue_has_dup_marker(repo: str, number: int, canon_ref: str) -> bool:
     needle = f"possible-duplicate-of: {canon_ref}"
     for c in data.get("comments") or []:
         if isinstance(c, dict) and needle in (c.get("body") or ""):
+            return True
+    return False
+
+
+def issue_has_filing_comment(repo: str, number: int, src_repo: str, title: str) -> bool:
+    """True if the issue already carries an issue-file dedupe comment covering
+    this (source repo, title) filing (fleet-ops#5496).
+
+    The file-time duplicate branch posted comment_body() on EVERY dedupe hit
+    with no memory of prior comments; the blind-audit backfill piled 675+
+    identical dedupe comments on one canonical issue. Same class as
+    fleet-ops#3728 (issue_has_dup_marker) but for the filing-gate comment
+    path. Matches both new (marker-carrying) and legacy comment bodies via
+    the human-visible `Would have filed in <repo>` + title lines.
+
+    Fail-open: on gh error returns False so the comment is still posted.
+    """
+    try:
+        proc = subprocess.run(
+            [gh_bin(), "issue", "view", str(number), "--repo", repo,
+             "--json", "comments"],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=30,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    if proc.returncode != 0:
+        return False
+    try:
+        data = json.loads(proc.stdout or "{}")
+    except json.JSONDecodeError:
+        return False
+    filed_line = f"Would have filed in `{src_repo}`:"
+    title_line = f"**{title}**"
+    for c in data.get("comments") or []:
+        body = (c.get("body") or "") if isinstance(c, dict) else ""
+        if filed_line in body and title_line in body:
             return True
     return False
 
@@ -680,16 +992,57 @@ def cmd_file(args: argparse.Namespace) -> int:
     else:
         body = args.body or ""
     labels = list(args.label or [])
-    issues = collect_open(
-        args.repo,
-        args.from_json,
-        cross_repo=not args.no_cross_repo,
-        extra_repos=args.search_repo or [],
-    )
+    # fleet-ops#5620: the `file` dedupe corpus is scoped to the repo passed
+    # via --repo. A same-problem open issue in a DIFFERENT Nishfleet repo
+    # must never suppress or redirect a filing — the auto-revert halt
+    # channel previously delivered fleet-ops filings as comments on
+    # noise-class issues in other repos (0509#2923). Cross-repo hits may
+    # be noted as "related" in the body, never used as the dedupe target.
+    # (--no-cross-repo / --search-repo remain accepted for compatibility
+    # but no longer widen the `file` corpus.) The `sweep` subcommand keeps
+    # its own cross-repo clustering behaviour.
+    # fleet-ops#5780: --open-json / --closed-json accept a prefetched corpus
+    # so a batch filer scores its whole report against ONE gh list set
+    # instead of one `gh issue list` per row.
+    if args.open_json:
+        issues = load_open_from_json(args.open_json)
+        if not any(i.get("repository") for i in issues):
+            for i in issues:
+                i["repository"] = args.repo
+    else:
+        issues = collect_open(
+            args.repo,
+            args.from_json,
+            cross_repo=False,
+            extra_repos=[],
+        )
     match = best_match(title, body, issues) if issues else None
     score = match["score"] if match else 0.0
     kind = classify(score) if match else "new"
     existing = match["issue"] if match else None
+
+    # fleet-ops#5666: a detector re-firing on stale state re-files a blocker
+    # whose canonical already closed-as-delivered (land-or-close #5652 closed
+    # at 00:16Z when PR #5544 merged; the re-file landed as #5666 at 00:41Z
+    # because the corpus is open-only). Dedupe-check the filing against
+    # recently-closed delivered canonicals too. fleet-ops#5687 (reopened):
+    # the closed match must NOT collapse the filing into a comment on the
+    # closed ticket — nobody claims a closed issue, so the recurrence is
+    # dropped silently. It re-files as a NEW issue that links the canonical
+    # (a recurrence marker, not a duplicate marker). Runs only when the open
+    # corpus produced no duplicate, and skipped for --from-json corpora (an
+    # explicit corpus is the whole corpus).
+    closed_match = None
+    if kind != "duplicate" and not args.from_json:
+        closed_hours = _closed_dedupe_hours()
+        if closed_hours > 0:
+            if args.closed_json:
+                closed = _load_closed_snapshot(args.closed_json, args.repo, closed_hours)
+            else:
+                closed = gh_list_recently_closed(args.repo, closed_hours)
+            cmatch = best_match(title, body, closed) if closed else None
+            if cmatch and classify(cmatch["score"]) == "duplicate":
+                closed_match = cmatch
 
     payload = {
         "action": "filed",
@@ -711,7 +1064,17 @@ def cmd_file(args: argparse.Namespace) -> int:
             print(f"[issue-file] dry-run comment {payload['existing']} score={score:.2f}", file=sys.stderr)
             emit(payload, args.json, payload["url"])
             return 0
-        rc, out = gh_comment(repo, number, comment_body(title, body, score, args.repo))
+        if issue_has_filing_comment(repo, number, args.repo, title):
+            print(
+                f"[issue-file] already commented on {payload['existing']} "
+                f"for this filing (score={score:.2f}), suppressing re-post",
+                file=sys.stderr,
+            )
+            emit(payload, args.json, payload["url"])
+            return 0
+        rc, out = gh_comment(
+            repo, number, comment_body(title, body, score, args.repo)
+        )
         if rc != 0:
             print(f"[issue-file] comment failed on {payload['existing']}: {out}", file=sys.stderr)
             return 1
@@ -720,18 +1083,32 @@ def cmd_file(args: argparse.Namespace) -> int:
         return 0
 
     file_body = body
-    if kind == "borderline" and existing:
+    if closed_match is not None:
+        canon_ref = issue_ref(closed_match["issue"])
+        payload["action"] = "filed-recurrence"
+        payload["score"] = closed_match["score"]
+        payload["existing"] = canon_ref
+        payload["canonical_state"] = "closed"
+        file_body = recurrence_marker(canon_ref, closed_match["score"]) + body
+        # A recurrence filing exists to be claimed; an unlabeled issue never
+        # reaches the intake (-l agent-ready listing), so a caller that passed
+        # no labels still produces a claimable issue. Explicit labels (e.g.
+        # observe-to-close routing) are respected as passed.
+        if not labels:
+            labels = ["agent-ready"]
+    elif kind == "borderline" and existing:
         payload["action"] = "filed-borderline"
         file_body = duplicate_marker(issue_ref(existing), score) + body
 
     if args.dry_run:
-        print(f"[issue-file] dry-run {payload['action']} score={score:.2f}", file=sys.stderr)
+        print(f"[issue-file] dry-run {payload['action']} score={payload['score']:.2f}", file=sys.stderr)
         emit(payload, args.json, "")
         return 0
 
     body_file = args.body_file
     tmp_path = None
-    if kind == "borderline" and existing:
+    file_body_arg = file_body
+    if file_body != body:
         import tempfile
 
         tmp = tempfile.NamedTemporaryFile("w", encoding="utf-8", delete=False, suffix=".md")
@@ -739,9 +1116,6 @@ def cmd_file(args: argparse.Namespace) -> int:
         tmp.close()
         tmp_path = tmp.name
         body_file = tmp_path
-        file_body_arg = file_body
-    else:
-        file_body_arg = file_body
 
     try:
         rc, out = gh_create(
@@ -764,7 +1138,21 @@ def cmd_file(args: argparse.Namespace) -> int:
     url, number = parse_created_url(out)
     payload["url"] = url
     payload["number"] = number
-    print(f"[issue-file] {payload['action']} {url or out} score={score:.2f}", file=sys.stderr)
+    print(f"[issue-file] {payload['action']} {url or out} score={payload['score']:.2f}", file=sys.stderr)
+    if closed_match is not None:
+        crepo = closed_match["issue"].get("repository") or args.repo
+        cnum = closed_match["issue"]["number"]
+        note = (
+            f"Recurrence re-fired (score={closed_match['score']:.2f}): re-filed as "
+            f"{url or 'a new issue'} — a comment-only path on this closed ticket "
+            f"is a silent drop (fleet-ops#5687)."
+        )
+        crc, cout = gh_comment(crepo, cnum, note)
+        if crc != 0:
+            print(
+                f"[issue-file] link-back comment failed on {payload['existing']}: {cout}",
+                file=sys.stderr,
+            )
     emit(payload, args.json, url or out)
     return 0
 
@@ -1171,6 +1559,9 @@ def build_parser() -> argparse.ArgumentParser:
     f.add_argument("--body-file", default="")
     f.add_argument("--label", action="append", default=[])
     f.add_argument("--from-json", default="")
+    # fleet-ops#5780: prefetched corpus snapshots (no per-row gh list).
+    f.add_argument("--open-json", default="")
+    f.add_argument("--closed-json", default="")
     f.add_argument("--search-repo", action="append", default=[])
     f.add_argument("--no-cross-repo", action="store_true")
     f.add_argument("--dry-run", action="store_true")
@@ -1199,6 +1590,16 @@ def build_parser() -> argparse.ArgumentParser:
     cd.add_argument("--cap", type=int, default=None)
     cd.add_argument("--dry-run", action="store_true")
     cd.set_defaults(func=cmd_close_duplicates)
+
+    cb = sub.add_parser(
+        "comment-batch",
+        help="file-ops#5780: post ONE same-problem-gate comment per target for a report's dedupe rows",
+    )
+    cb.add_argument("--from-json", required=True)
+    cb.add_argument("--repo", "-R", default="")
+    cb.add_argument("--dry-run", action="store_true")
+    cb.add_argument("--json", action="store_true")
+    cb.set_defaults(func=cmd_comment_batch)
     return p
 
 

@@ -56,6 +56,12 @@
       "cadence": "hourly",
       "source": "repo"
     },
+    "escalation-organ-watch.timer": {
+      "reason": "5-min organ-death watcher for the anti-recursion-excluded escalation organs (fleet-ops#5854) — those organs are excluded from their own STOP-REASON chain, so their death is otherwise silent until the next hourly tier1 failed-units sweep; this timer bounds detection to the 5-min contract",
+      "classification": "scheduled",
+      "cadence": "5min",
+      "source": "repo"
+    },
     "fleet-aeo-probe.timer": {
       "reason": "Weekly AEO visibility probe — measurement window is weekly; must land before Weekly Fleet Review (Sun 04:30 IST)",
       "classification": "scheduled",
@@ -492,6 +498,12 @@
       "reason": "Headless OAuth refresh of SuperGrok xai-oauth seat — access token lifetime is 6h; 4h cadence keeps ~/.pi/agent/auth.json fresh so an idle prepaid seat does not wake into a 401 (fleet-ops#41).",
       "classification": "scheduled",
       "cadence": "4h",
+      "source": "repo"
+    },
+    "minimax-token-refresh.timer": {
+      "reason": "Headless MiniMax OAuth rotation check — the fleet-litellm-proxy organ captures MINIMAX_API_KEY once at startup but the underlying ~/.mmx/config.json access token rotates silently every ~12h inside claude-minimax-key. A stale key 401s every anthropic/MiniMax-M3 deployment in the senior / judge / worker-cheap / worker-capable / worker-private groups and pi exits 1 on the failure (killing flagship workers). 2h cadence gives ~6x margin over the 12h rotation; the script compares the wrapper's fresh key to the proxy's captured env var and bounces the proxy on mismatch. Mirrors grok-token-refresh structure (fleet-ops#41). fleet-ops#5788.",
+      "classification": "scheduled",
+      "cadence": "2h",
       "source": "repo"
     },
     "fleet-seat-comeback-release.timer": {

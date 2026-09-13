@@ -296,16 +296,26 @@ fq_unfiled_count() {
         if grep -qxF "$key" "$state" 2>/dev/null; then
             continue
         fi
-        printf '%s\n' "$key" >> "$state"
-        new=$((new + 1))
         if [ "$autofile" = "1" ]; then
             title="Unfiled question (fleet-ops#4476): $(printf '%s' "$line" | head -c 90)"
             bodyf="$tmp/body.$$"
             { printf 'Question for Nish found OUTSIDE the question store (fleet-ops#4476 unfiled detector).\n\nsource: %s\n\n> %s\n' "$ff" "$line"; } \
-                > "$bodyf" 2>/dev/null || continue
-            "$(fq_gh)" issue create -R "Nishfleet/$filerepo" --label question \
-                --title "$title" --body-file "$bodyf" >/dev/null 2>&1 || true
+                > "$bodyf" 2>/dev/null || { echo "fq_unfiled_count: WARN could not build label body for $ff" >&2; continue; }
+            # Silent-drop sweep 2026-09-11: the key used to be recorded BEFORE
+            # the create and a failed create vanished into `|| true`, so the
+            # question was never retried. Record the key only on success and
+            # fail LOUD on failure so the next run retries.
+            if "$(fq_gh)" issue create -R "Nishfleet/$filerepo" --label question \
+                --title "$title" --body-file "$bodyf" >/dev/null 2>&1; then
+                printf '%s\n' "$key" >> "$state"
+            else
+                echo "fq_unfiled_count: ALERT issue create FAILED for $ff — question NOT filed and NOT marked seen; will retry next run (Nish 2026-09-11: no silent drops)" >&2
+                return 1
+            fi
+        else
+            printf '%s\n' "$key" >> "$state"
         fi
+        new=$((new + 1))
     done < <(fq_unfiled_lines)
     rm -rf "$tmp" 2>/dev/null || true
     printf '%s' "${new:-0}"

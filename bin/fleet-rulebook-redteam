@@ -5,8 +5,12 @@
 # ExecStart of fleet-rulebook-redteam.service. This is the mechanical
 # rung for "Gap rules from the 2026-08-20 rulebook audit":
 #   1. Timestamped sibling backups of every rule file in scope
-#      (`<name>.bak-rulebook-redteam-<YYYYMMDD>`) BEFORE any other work.
-#      Filing without those backups is a hard failure — rollback is no
+#      (`<name>.pre-rulebook-redteam-<UTCts>`) BEFORE any other work.
+#      The .pre-<why>-<UTCts> suffix is the MANIFEST-approved pattern
+#      (fleet-ops#5682): the old .bak-* glob is banned next to
+#      MANIFEST-managed dests (fleet-ops#3273/#5602 sprawl), so it must not
+#      carry mandatory audit backups either. Filing without those backups is
+#      a hard failure — rollback is no
 #      longer a convention.
 #   2. Dispatch a pi reviewer (prompts/rulebook-redteam.md) for the
 #      semantic half (duplication, contradictions, dead rules,
@@ -26,7 +30,10 @@
 #   RULEBOOK_PI_BIN RULEBOOK_MAX_FINDINGS RULEBOOK_DRY_RUN
 #   RULEBOOK_DRILL RULEBOOK_DRILL_FINDINGS RULEBOOK_FAKE_NOW
 #   RULEBOOK_SKIP_BACKUP (test-only: force the backup gate to fire)
-#   GH SYSTEMCTL
+#   GH SYSTEMCTL RULEBOOK_PI_TIMEOUT_S
+#   (fleet-ops#6173 note: default 2400s = measured healthy senior-route
+#   red-team run 2026-09-13T00:30→01:01Z (31m23s); headroom over it while
+#   staying under the unit's 45min TimeoutStartSec)
 
 set -euo pipefail
 
@@ -50,8 +57,8 @@ here="$(cd "$(dirname "$(readlink -f "$0")")" && pwd)"
 repo_fallback="$(cd "$here/.." && pwd)"
 [ -f "$PROMPT" ] || PROMPT="$repo_fallback/prompts/rulebook-redteam.md"
 
-SEAT_LIB="${RULEBOOK_SEAT_LIB:-$HOME/.local/lib/pi-packet/seat-lib.sh}"
-[ -f "$SEAT_LIB" ] || SEAT_LIB="$repo_fallback/lib/seat-lib.sh"
+SEAT_LIB="${RULEBOOK_SEAT_LIB:-$HOME/.local/lib/pi-packet/litellm-seat.sh}"
+[ -f "$SEAT_LIB" ] || SEAT_LIB="$repo_fallback/lib/litellm-seat.sh"
 
 log() {
     printf '[%s] [fleet-rulebook-redteam] %s\n' \
@@ -71,7 +78,7 @@ else
     NOW_ISO="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 fi
 NOW_DIR="${NOW_ISO//[^A-Za-z0-9]/_}"
-DATE_STAMP="$(printf '%s' "$NOW_ISO" | cut -c1-10 | tr -d '-')"
+UTC_STAMP="$(printf '%s' "$NOW_ISO" | tr -d ':-')"
 REPORT_DIR="$STATE_DIR/reports/$NOW_DIR"
 mkdir -p "$REPORT_DIR"
 FINDINGS_JSON="$REPORT_DIR/findings.json"
@@ -128,7 +135,10 @@ list_rule_files() {
     default_rule_files
 }
 
-# --- backups: sibling .bak-rulebook-redteam-YYYYMMDD, then refuse to
+# --- backups: sibling .pre-rulebook-redteam-<UTCts> — the MANIFEST-approved
+# rollback suffix (fleet-ops#5682); .bak* trips the fleet-ops#3273/#5602
+# sprawl glob in install.sh check_bak_sprawl next to MANIFEST-managed dests.
+# Then refuse to
 # continue if none were written. RULEBOOK_SKIP_BACKUP=1 is the drill
 # that proves the gate fires (fleet-ops#366).
 backup_rule_files() {
@@ -142,7 +152,20 @@ backup_rule_files() {
         [ -n "$src" ] || continue
         [ -f "$src" ] || { log "skip missing rule file: $src"; continue; }
         base="$(basename "$src")"
-        dest="$(dirname "$src")/${base}.bak-rulebook-redteam-${DATE_STAMP}"
+        dest="$(dirname "$src")/${base}.pre-rulebook-redteam-${UTC_STAMP}"
+        # fleet-ops#5687: a sibling backup next to a rule file inside this
+        # checkout lands in the DEPLOY CLONE in production (the installed
+        # symlink resolves here) — live install source must stay clean
+        # (fleet-ops#3758) and every redteam run otherwise trips
+        # DEPLOY-CHECK-DIRTY-CLONE (live dirt 2026-09-12:
+        # AGENTS.md.pre-rulebook-redteam-20260912T040016Z). Backups for
+        # in-checkout files go to the report dir — same manifest, same
+        # rollback path, no clone dirt.
+        case "$src" in
+            "$repo_fallback"/*)
+                dest="$REPORT_DIR/${base}.pre-rulebook-redteam-${UTC_STAMP}"
+                ;;
+        esac
         cp -a "$src" "$dest"
         printf '%s\t%s\tundo: cp %s %s\n' "$src" "$dest" "$dest" "$src" \
             >>"$BACKUP_MANIFEST"
@@ -203,8 +226,8 @@ else
         source "$SEAT_LIB"
     fi
     seat=""
-    if command -v pick_seat >/dev/null 2>&1; then
-        seat=$(pick_seat "" "" 1 "" || true)
+    if declare -F litellm_seat >/dev/null 2>&1; then
+        seat=$(litellm_seat "senior" || true)
     fi
     if [ -z "${seat:-}" ]; then
         log "FATAL: no capable seat available"
@@ -256,11 +279,29 @@ PY
         update_plan_stamp "last-rulebook-redteam-run" "$NOW_ISO (dry-run)"
         exit 0
     fi
+    # fleet-ops#6173: a drained LiteLLM route (every deployment 429-cooled,
+    # "No deployment available ... try again in 300 seconds") makes the pi
+    # client retry indefinitely — the 2026-09-12T22:58Z senior-route drain
+    # wedged the run for the full 45min TimeoutStartSec until systemd
+    # SIGTERMed it (unit-failure trip, 1393 completion attempts, zero
+    # output). Bound the reviewer call here: a timed-out pi (rc=124) takes
+    # the ordinary failed-pi path (filed=0, unit completes 0) and the
+    # heading-growth bonus re-dispatches. Default 2400s is the measured
+    # healthy senior-route run (31m23s, 2026-09-13T00:30Z) + headroom,
+    # under the unit's 45min TimeoutStartSec so the script, not systemd,
+    # owns the timeout and can still file/stamp/exit cleanly. The 45min
+    # bound has killed two healthy-or-drained runs today (04:28, 06:29 IST
+    # starts) — never let the systemd bound be the first line of defense.
+    RULEBOOK_PI_TIMEOUT_S="${RULEBOOK_PI_TIMEOUT_S:-2400}"
     set +e
-    "$PI_BIN" --print --provider "$provider" --model "$model" \
+    timeout -k 30 "$RULEBOOK_PI_TIMEOUT_S" \
+        "$PI_BIN" --print --provider "$provider" --model "$model" \
         <"$pkt" >"$PI_STDOUT" 2>"$PI_STDERR"
     rc=$?
     set -e
+    if [ "$rc" -eq 124 ]; then
+        log "pi red-team TIMED OUT after ${RULEBOOK_PI_TIMEOUT_S}s — bounded; filing proceeds on whatever stdout captured"
+    fi
     log "pi red-team exited rc=$rc"
     if [ ! -f "$FINDINGS_JSON" ] || [ ! -s "$FINDINGS_JSON" ]; then
         python3 - "$PI_STDOUT" "$FINDINGS_JSON" <<'PY'
@@ -312,6 +353,7 @@ fi
 
 filed=0
 unfiled=0
+capped=0
 body_file=$(mktemp)
 trap 'rm -f "$body_file"' EXIT
 
@@ -327,13 +369,20 @@ while IFS= read -r finding; do
     severity=$(printf '%s' "$finding" | jq -r '.severity // ""')
     rank=$(printf '%s' "$finding" | jq -r '.rank // "?"')
     [ -n "$title" ] || continue
-    [ "$filed" -lt "$MAX_FINDINGS" ] || break
     slug=$(slug_of "$title")
     signal="signal: rulebook-redteam/${slug}"
     if printf '%s' "$open_json" | jq -e --arg s "$signal" \
         '[.[] | select((.body // "") | contains($s))] | length > 0' \
         >/dev/null 2>&1; then
         log "finding $rank: deduped ($signal)"
+        continue
+    fi
+    # fleet-ops#5441: the cap is a rate limit, not a shredder. Findings
+    # beyond it are counted and logged per-finding, then surfaced LOUD at
+    # the end; next run re-derives them and dedup drains the backlog.
+    if [ "$filed" -ge "$MAX_FINDINGS" ]; then
+        capped=$((capped + 1))
+        log "finding $rank: SKIP (cap $MAX_FINDINGS reached) — unfiled"
         continue
     fi
     {
@@ -364,6 +413,12 @@ while IFS= read -r finding; do
     fi
 done < <(jq -c '.findings[]' "$FINDINGS_JSON")
 
+if [ "$capped" -gt 0 ]; then
+    log "LOUD: $capped finding(s) unfiled (cap $MAX_FINDINGS) — see $REPORT_MD; re-derived next run"
+    printf -- '- LOUD: %s finding(s) unfiled (cap %s) — listed in this report; re-derived next run\n' \
+        "$capped" "$MAX_FINDINGS" >>"$REPORT_MD"
+fi
+
 update_heading_count
 if [ "$unfiled" -gt 0 ]; then
     update_plan_stamp "last-rulebook-redteam-run" \
@@ -371,6 +426,7 @@ if [ "$unfiled" -gt 0 ]; then
     log "FAILED: unfiled=$unfiled filed=$filed"
     exit 1
 fi
-update_plan_stamp "last-rulebook-redteam-run" "$NOW_ISO (completed, filed=$filed)"
-log "completed filed=$filed"
+update_plan_stamp "last-rulebook-redteam-run" \
+    "$NOW_ISO (completed, filed=$filed capped=$capped)"
+log "completed filed=$filed capped=$capped"
 exit 0

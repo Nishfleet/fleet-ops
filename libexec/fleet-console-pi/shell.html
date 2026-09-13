@@ -180,6 +180,7 @@ a:focus-visible,summary:focus-visible,button:focus-visible{outline:2px solid var
   <section class="prod" id="section-outcome"><div class="ph"><h2>Product outcome</h2><span class="tag" id="outcome-src"></span><div class="state"><span class="led" id="outcome-led"></span></div></div><div id="outcome-body"></div></section>
   <section class="prod" id="section-ci"><div class="ph"><h2>MAIN RED</h2><span class="tag" id="ci-src"></span><div class="state"><span class="led" id="ci-led"></span></div></div><div id="ci-body"></div></section>
   <section class="prod" id="section-alerts"><div class="ph"><h2>Firing alerts</h2><span class="tag" id="alerts-src"></span><div class="state"><span class="led" id="alerts-led"></span></div></div><div id="alerts-body"></div></section>
+  <section class="prod" id="section-findings"><div class="ph"><h2>Findings ledger</h2><span class="tag" id="findings-src"></span><div class="state"><span class="led" id="findings-led"></span></div></div><div id="findings-banner" class="q-72h" hidden></div><div id="findings-summary"></div><div id="findings-body"></div></section>
   <section class="prod" id="section-repairs"><div class="ph"><h2>Repairs in flight</h2><span class="tag" id="repairs-src"></span><div class="state"><span class="led" id="repairs-led"></span></div></div><div id="repairs-body"></div></section>
   <section class="prod" id="section-pi"><div class="ph"><h2>Running Pi work</h2><span class="tag" id="pi-src"></span><div class="state"><span class="led" id="pi-led"></span></div></div><div id="pi-body"></div></section>
   <footer id="foot"></footer>
@@ -358,6 +359,7 @@ function render(d){
   const al = t.firing_alerts || {};
   const rp = t.repairs_inflight || {};
   const oc = t.outcome || {};
+  const fg = t.findings || {};
 
   // ---- Header
   document.getElementById("scope").textContent = (d.org || "org") + " · " + (d.repos ? d.repos.length : 0) + " repos";
@@ -417,6 +419,16 @@ function render(d){
     <button class="${cellCls("cell", p)}" aria-expanded="false"><div class="k">PI WORK</div>${piVal}${piSub ? `<div class="s">${esc(piSub)}</div>` : ""}${explainToggleHTML(p, "Running user units whose ExecStart contains pi --print (never a unit-name pattern).")}</button>
     <button class="${cellCls("cell", al)}" aria-expanded="false"><div class="k">ALERTS</div>${alVal}${alSub ? `<div class="s">${esc(alSub)}</div>` : ""}${explainToggleHTML(al, "Prometheus /api/v1/alerts, currently firing, Watchdog excluded.")}</button>
     <button class="${cellCls("cell", rp)}" aria-expanded="false"><div class="k">REPAIRS</div>${rpVal}${rpSub ? `<div class="s">${esc(rpSub)}</div>` : ""}${explainToggleHTML(rp, "Running alert-repair-* transient units; subtitle is fleet_repair_dispatch_24h.")}</button>`;
+
+  // ---- Findings red banner (a silent ledger is itself a finding)
+  const fgBannerEl = document.getElementById("findings-banner");
+  const fgLive0 = freshness(fg);
+  if (fgLive0.state === "ok" && fg.alert){
+    fgBannerEl.hidden = false;
+    fgBannerEl.textContent = "FINDINGS BACKLOG — " + fg.alert + " (carried_over oldest " + fg.oldest_carry_h + "h; ledger last appended " + fg.last_append_h + "h ago)";
+  } else {
+    fgBannerEl.hidden = true;
+  }
 
   // ---- Sections
 
@@ -495,6 +507,26 @@ function render(d){
         <p class="t">${esc(a.alertname)}</p>
         <span class="pill">${esc(a.severity || "")}</span></div></div>`
     ).join("");
+  }
+
+  const [fgLive, fgFr] = freshState(fg);
+  document.getElementById("findings-src").textContent = fg.source || "";
+  document.getElementById("findings-led").className = "led" + (fgLive ? " on" : "");
+  const fgBody = document.getElementById("findings-body");
+  const fgSum = document.getElementById("findings-summary");
+  if (!fgLive){
+    fgBody.innerHTML = `<p class="empty">${esc(fgFr.reason || "source unavailable")}</p>`;
+    fgSum.innerHTML = "";
+  } else {
+    const dn = fg.dispositions || {};
+    fgSum.innerHTML = `<p class="empty">total <b>${fg.total}</b> · filed <b>${dn.filed ?? 0}</b> · carried_over <b>${dn.carried_over ?? 0}</b> · panel_fail <b>${dn.panel_fail ?? 0}</b> · by_design <b>${dn.by_design ?? 0}</b> · duplicate_of <b>${dn.duplicate_of ?? 0}</b> · oldest carry <b>${fg.oldest_carry_h}h</b> · last append <b>${fg.last_append_h}h</b> ago</p>`;
+    const rows = (fg.items || []);
+    fgBody.innerHTML = rows.length ? rows.map(r =>
+      `<div class="d"><div class="body">
+        <p class="t">${esc((r.title || "").slice(0, 140))}</p>
+        <span class="pill ${r.disposition === "filed" ? "up" : ""}">${esc(r.disposition || "")}</span>
+        ${r.ref ? `<p class="s">${esc(r.ref)}</p>` : ""}</div></div>`
+    ).join("") : `<p class="empty">no rows</p>`;
   }
 
   const [rpLive, rpFr] = freshState(rp);

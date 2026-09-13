@@ -57,6 +57,21 @@ else
     echo "repair_rung=off ticks=${_rung_s}"
 fi
 
+# --- gh_app: nishfleet-worker App installation token budget ----------------
+# fleet-ops#5489: an idle fleet with a full queue because the App token's
+# 5000/hr core budget is exhausted is a NAMED fault, never a mystery. Reads
+# the same side-car state the exporter writes every 60s (the intake tick's
+# rate-limit state); missing/unreadable is UNAVAILABLE, never a fabricated 0.
+_gh_app_state="${GH_APP_RATE_LIMIT_STATE:-$HOME/workspaces/agent-state/pi-intake/gh-rate-limit.json}"
+_gh_app_remaining=$(jq -r '.resources.core.remaining // .remaining // 0' "$_gh_app_state" 2>/dev/null || true)
+if [[ "${_gh_app_remaining:-}" =~ ^[0-9]+$ ]]; then
+    _gh_app_reset=$(jq -r '.resources.core.reset // .reset // 0' "$_gh_app_state" 2>/dev/null || echo 0)
+    _gh_app_wait=$(( _gh_app_reset - $(date +%s) )); (( _gh_app_wait < 0 )) && _gh_app_wait=0
+    echo "gh_app: remaining=${_gh_app_remaining} reset_in=${_gh_app_wait}s"
+else
+    echo "gh_app: UNAVAILABLE:state-missing-or-unparseable"
+fi
+
 # Merged PRs across the fleet repos in the trailing 24h (gh is the live truth;
 # a gh failure makes the numerator unknown and is flagged, not silently zeroed).
 merged_24h=0
@@ -144,6 +159,26 @@ else
   gate_escapes="UNAVAILABLE:no-gh"
 fi
 echo "gate-escapes-24h: ${gate_escapes}"
+
+# --- attest-waiting -------------------------------------------------------
+# fleet-ops#5870: judge-header blind-spot detector. An agent-ready/agent-blocked
+# issue whose latest blocked-status comment mentions an attestation and that has
+# had no orchestrator comment for >2h is a stalled gate handoff (0509#3068 sat
+# 8h as a fake nish-decision). The detector lives in lib/attest-waiting.sh and
+# this line is the new-measure: for fleet-ops#4460. Zero is the normal value;
+# a gh failure is UNAVAILABLE, never a fabricated 0.
+# shellcheck disable=SC1090,SC1091
+if [ -f "$repo_root/lib/attest-waiting.sh" ]; then
+    attrepos=()
+    for _r in $repo_list; do attrepos+=("$_r"); done
+    unset _r
+    if ((${#attrepos[@]} > 0)); then
+        source "$repo_root/lib/attest-waiting.sh"
+        attest_waiting_line "${attrepos[@]}" || echo "attest-waiting: UNAVAILABLE:detector-failed"
+        unset -f attest_waiting_line
+    fi
+    unset attrepos
+fi
 
 # --- cursor_today: real Cursor-side API-bucket burn (fleet-ops#4566/#4621)
 # Shared helper: lib/cursor-api-bucket.sh (also sourced by the prepaid-util
@@ -233,3 +268,46 @@ if [ -f "$repo_root/lib/fleet-questions.sh" ]; then
     fleet_questions_line
 fi
 
+# --- deploy: 0509 deploy-production freshness (0509#2975 item 4, fleet-ops#5514) ---
+# The detector lives in the 0509 repo (scripts/deploy-age.mjs); it reads the
+# offline deploy ledger without a token and the Actions runs API with one, and
+# always exits 0 with exactly one line:
+#   deploy: last_success_age_h=<n> merges_since=<m> last_failure=<reason>
+# This kills the two-days-of-red-deploys blind spot: a stale last success with
+# merges since it gets a LOUD line the judges cannot scroll past. A missing or
+# failing detector prints UNAVAILABLE:<why> — never a fabricated green, only
+# silence when there is genuinely nothing to say.
+_deploy_age="${FLEET_DEPLOY_AGE_SCRIPT:-/home/nish/workspaces/products/0509/scripts/deploy-age.mjs}"
+if ! command -v node >/dev/null 2>&1 || [ ! -f "$_deploy_age" ]; then
+    echo "deploy: UNAVAILABLE:detector-not-installed"
+else
+    # The offline ledger path resolves relative to the detector's repo (cwd of
+    # the 0509 clone), so run it FROM its own repo dir, not the caller's cwd.
+    _deploy_cwd=$(cd "$(dirname "$_deploy_age")/.." 2>/dev/null && pwd) || _deploy_cwd=""
+    _deploy_line=""
+    if [ -n "$_deploy_cwd" ]; then
+        _deploy_line=$(cd "$_deploy_cwd" && node "$_deploy_age" 2>/dev/null | grep -m1 '^deploy: ') || _deploy_line=""
+    fi
+    if [ -n "$_deploy_line" ]; then
+        printf '%s\n' "$_deploy_line"
+        _dh=$(printf '%s' "$_deploy_line" | grep -oE 'last_success_age_h=[0-9]+' | cut -d= -f2)
+        _dm=$(printf '%s' "$_deploy_line" | grep -oE 'merges_since=[0-9]+' | cut -d= -f2)
+        if [ -n "${_dh:-}" ] && [ -n "${_dm:-}" ] && [ "${_dm:-0}" -gt 0 ] && [ "${_dh:-0}" -ge 6 ]; then
+            echo "LOUD deploy-stale: last success ${_dh}h old with ${_dm} merges since — deploys are silently stalled (0509#2975 item 4); diagnose the deploy-production run, never re-deploy blind"
+        fi
+    else
+        echo "deploy: UNAVAILABLE:detector-failed"
+    fi
+    unset _deploy_cwd _deploy_line _dh _dm
+fi
+unset _deploy_age
+
+# --- findings ledger: every finding queued, never dropped silently ----------
+# fleet-ops#5443: the judges own carry-over ageing. One line, right after
+# visitor:, from the canonical findings ledger. Missing/unreadable ledger is
+# a real zero situation — but carried_over>0 is NEVER zeroed silently; the
+# green check below flags a ledger that has gone silent (no append in 48h).
+if [ -f "$repo_root/lib/findings_ledger.py" ]; then
+    python3 "$repo_root/lib/findings_ledger.py" measure \
+        || echo "findings: total=0 filed=0 carried_over=0 oldest_carry_h=0 panel_fail=0 UNAVAILABLE:measure-failed"
+fi

@@ -152,8 +152,16 @@ function streamCursor(
 
 			// Build the command
 			// cursor-agent --print --model <model> --force --trust
-			//   --workspace <workspace> -- <prompt>
+			//   --workspace <workspace>  (prompt via stdin)
 			const workspace = process.cwd();
+
+			// 2026-09-12 (fleet-ops#5608 class): the prompt rides STDIN, not argv.
+			// spawnSync argv is capped at MAX_ARG_STRLEN (128KB) PER ARGUMENT by the
+			// kernel — the 2026-09-12T22:00Z fleet-blind-audit packet (248KB) died
+			// with spawnSync E2BIG before cursor-agent even started (PACKET-VERDICT
+			// tools=0 class=no-tools, unit exit 126). `cursor-agent --print` reads
+			// the prompt from stdin when no positional prompt is given (live-probed
+			// 2026-09-12: printf 'prompt' | cursor-agent --print ... → STDIN-OK).
 
 			// Push start event
 			stream.push({ type: "start", partial: output });
@@ -171,8 +179,9 @@ function streamCursor(
 			// (standing write autonomy, Nish 2026-08-05; devin half inverted identically
 			// by fleet-ops#4780). Live probe 2026-09-11: --print --force on
 			// cursor-grok-4.6-high accepted a `gh issue comment` write on fleet-ops#5174.
-			const child = spawnSync(cursorBin, ["--print", "--api-key", apiKey, "--model", model.id, "--force", "--trust", "--workspace", workspace, "--", prompt], {
+			const child = spawnSync(cursorBin, ["--print", "--api-key", apiKey, "--model", model.id, "--force", "--trust", "--workspace", workspace], {
 				cwd: workspace,
+				input: prompt, // stdin transport (see E2BIG note above) — never argv
 				timeout: 2400000, // 40 min (2026-09-04 fleet-ops#3263: 30 min killed heavy packets at 1801s — same class as the devin-provider fix; pi hang watchdog is 2520s, provider must stay under it)
 				maxBuffer: 10 * 1024 * 1024, // 10MB
 			});

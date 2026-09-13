@@ -14,8 +14,14 @@
 #
 # fleet-ops#5093: the storm is gone — the .path watches ONE sentinel file that
 # bin/pi-issue-run writes only on a seat verdict EDGE, instead of the seats/
-# directory. The StartLimit guard below is kept (and must not be lowered) as
-# the loud tripwire if a future edit reintroduces a directory-wide trigger.
+# directory.
+#
+# fleet-ops#5096: the ledger rewrite rate itself is fixed too (the seat-health
+# extension no longer rewrites an unchanged routing record), which is what made
+# a small BOUNDED StartLimit correct rather than an accommodation. With an
+# edge-only sentinel trigger AND a write-suppressed ledger, activations are ~0
+# in normal operation, so StartLimitBurst=200 is never reached by traffic and
+# can only fire on a churn regression — loudly.
 #
 # This test is split from tests/fleet-seat-recovery.test.sh (which exercises
 # the bin's transition/cooldown logic) so the unit-shape + live trigger
@@ -24,10 +30,9 @@
 # invoked from a listed test).
 #
 # What we prove:
-#   1. fleet-seat-recovery.service carries a storm-tolerant StartLimit guard
-#      in [Unit] (StartLimitIntervalSec=1h, StartLimitBurst>1800). fleet-ops#5093
-#      moved the trigger to the sentinel, so this guard is a tripwire now, not
-#      an accommodation — lowering it re-creates the #617 wedge.
+#   1. fleet-seat-recovery.service carries a BOUNDED StartLimit guard in [Unit]
+#      (StartLimitIntervalSec=1h, StartLimitBurst=200 — the ceiling
+#      fleet-ops#5024 asked for, made safe by fleet-ops#5096's trigger fix).
 #   2. StartLimit* does NOT leak into [Service] (systemd rejects it there).
 #   3. systemd-analyze verify accepts both unit files (syntax + directives).
 #   4. The trigger is the sentinel file only: no seats/ directory watch, no
@@ -39,6 +44,10 @@
 #      worker re-running this suite in an inner loop put the drill stub at
 #      247 starts/h (2026-09-11), the box's top unit. This test only gates
 #      that the plane exists, so the assurance cannot be silently dropped.
+#   4c. NEGATIVE CONTROL, same plane: the seat_sentinel drill also drives the
+#      same sentinel storm against a burst=5 stub and asserts it DOES wedge
+#      the watcher — the shipped guard is armed, not decorative
+#      (fleet-ops#5096). Pinned here the same way as 4b.
 #   5. bin/pi-issue-run writes the sentinel on both verdict edges (no-usable,
 #      usable) and writes NOTHING when the verdict is unchanged — driven
 #      end-to-end against a scratch ledger/cap map (offline).
@@ -61,10 +70,9 @@ path_unit="$repo_root/systemd/fleet-seat-recovery.path"
 [[ -f "$svc_unit" ]] || fail "missing: $svc_unit"
 [[ -f "$path_unit" ]] || fail "missing: $path_unit"
 
-# --- 1. StartLimit guard in [Unit] -------------------------------------------
+# --- 1. Bounded StartLimit guard in [Unit] -----------------------------------
 # StartLimit* must live in [Unit] (systemd rejects them in [Service]).
-# Extract the [Unit] section and assert both directives are present and high
-# enough to survive a sustained ledger-write storm.
+# Extract the [Unit] section and assert the ceiling is present and BOUNDED.
 unit_section=$(awk '/^\[Unit\]/{f=1} /^\[/{if(f&&$0!~/^\[Unit\]/)f=0} f' "$svc_unit")
 [[ -n "$unit_section" ]] || fail "no [Unit] section in $svc_unit"
 echo "$unit_section" | grep -qE '^StartLimitIntervalSec=1h$' \
@@ -73,14 +81,18 @@ echo "$unit_section" | grep -qE '^StartLimitBurst=[0-9]+$' \
   || fail "StartLimitBurst missing from [Unit] in $svc_unit"
 burst=$(echo "$unit_section" | sed -nE 's/^StartLimitBurst=([0-9]+)$/\1/p')
 [[ -n "$burst" ]] || fail "could not parse StartLimitBurst"
-# 30 triggers/min * 60min = 1800/hr worst case for a DIRECTORY trigger; the
-# guard must clear that with headroom so a healthy fleet cannot wedge its own
-# fast path. fleet-ops#5093 moved the trigger to the sentinel, so this is a
-# tripwire against a directory-watch regression now. Burst=200 would re-wedge
-# the path unit (#617).
-(( burst > 1800 )) \
-  || fail "StartLimitBurst=$burst too low for ~1800/hr trigger storm (need >1800)"
-ok "fleet-seat-recovery.service carries a storm-tolerant StartLimit guard in [Unit] (burst=$burst)"
+# Exactly 200: the ceiling fleet-ops#5024 asked for, made safe by the two
+# trigger fixes (fleet-ops#5093's edge-only sentinel, fleet-ops#5096's
+# no-op-write suppression). Asserted EXACTLY (not just bounded) because the
+# whole point is that this number is meaningless without those fixes and must
+# not silently drift back above the storm it is supposed to catch. The old
+# #622 accommodation (StartLimitBurst=2000) was sized from a ~1800/h ESTIMATE
+# of a write rate nothing bounded; live 2026-09-11 it was 2471-2536/h and blew
+# the burst, wedging the fast path. A ceiling must sit ABOVE steady state and
+# BELOW the storm — it cannot do both against an unbounded trigger rate.
+[[ "$burst" == "200" ]] \
+  || fail "StartLimitBurst=$burst, expected 200 (fleet-ops#5024's ceiling, safe because the trigger rate is bounded by #5093 + #5096)"
+ok "fleet-seat-recovery.service carries a bounded StartLimit guard in [Unit] (interval=1h burst=$burst)"
 
 # --- 2. StartLimit* must not leak into [Service] -----------------------------
 svc_section=$(awk '/^\[Service\]/{f=1} /^\[/{if(f&&$0!~/^\[Service\]/)f=0} f' "$svc_unit")
@@ -169,9 +181,20 @@ grep -q 'resilience-drill-stub-seat-sentinel' "$drill_bin" \
   || fail "seat_sentinel plane must drive the resilience-drill-stub-seat-sentinel stub (fleet-ops#5106)"
 ok "live sentinel drill: seat_sentinel plane present in bin/fleet-resilience-drill (daily timer cadence, fleet-ops#5106)"
 
+# --- 4c. the same plane carries the negative control ----------------------
+# fleet-ops#5096: the armed-not-decorative proof moved with the drill — the
+# seat_sentinel plane also runs the same sentinel storm against a burst=5
+# stub (resilience-drill-stub-seat-sentinel-tiny) and asserts it wedges the
+# watcher. Pin it here so the control cannot be silently dropped.
+grep -q 'resilience-drill-stub-seat-sentinel-tiny' "$drill_bin" \
+  || fail "seat_sentinel plane must carry the burst=5 negative-control stub (fleet-ops#5096)"
+grep -q 'StartLimitBurst=5' "$drill_bin" \
+  || fail "seat_sentinel plane must drive the negative-control stub at StartLimitBurst=5 (fleet-ops#5096)"
+ok "negative control: seat_sentinel plane wedges a burst=5 stub on the same storm (fleet-ops#5096)"
+
 # --- 5. the sentinel latch is written by bin/pi-issue-run, edge-only ---------
 # fleet-ops#5093: nothing else in the repo observes BOTH seat verdicts, so
-# bin/pi-issue-run writes the sentinel: `no-usable` when pick_seat returns
+# bin/pi-issue-run writes the sentinel: `no-usable` when pick-seat returns
 # nothing, `usable` when a pick succeeds while the sentinel said no-usable
 # (the recovery edge the fast path exists to fire on). An unchanged verdict
 # writes NOTHING — that is what takes the fast path from ~2500 starts/h to
@@ -199,7 +222,7 @@ ok "live sentinel drill: seat_sentinel plane present in bin/fleet-resilience-dri
   export XDG_RUNTIME_DIR="$scratch/xdg"
   mkdir -p "$XDG_RUNTIME_DIR"
   export PI_SEAT_LIB_CHECK_SYSTEMD=0
-  export PI_PACKET_SEAT_LIB="$repo_root/lib/seat-lib.sh"
+  export PI_PACKET_SEAT_LIB="$repo_root/lib/litellm-seat.sh"
   export PI_SEAT_NOUSABLE_COOLDOWN_S=0
   export EMPTY_RUN_RETRY_MAX=0
   export FLEET_DEBUG_PLAYBOOK_GATE=0
@@ -209,10 +232,17 @@ ok "live sentinel drill: seat_sentinel plane present in bin/fleet-resilience-dri
   printf '#!/usr/bin/env bash\nif [[ "$*" == *"--jq"* ]]; then printf "open\\n"; fi\nprintf "[]\\n"\nexit 0\n' > "$stub_bin/gh"
   printf '#!/usr/bin/env bash\nprintf "export GH_TOKEN=fake-test-token-cccccccccccccccc\\n"\nexit 0\n' > "$stub_bin/worker-token"
   printf '#!/usr/bin/env bash\nexit 0\n' > "$stub_bin/systemctl"
+  # fleet-ops#4263: the walled/recovered edge is the proxy readiness probe now.
+  cat > "$stub_bin/curl" <<CURL
+#!/usr/bin/env bash
+[[ -f "$scratch/proxy-up" ]] && { printf '{"status":"healthy"}'; exit 0; }
+exit 7
+CURL
   chmod +x "$stub_bin"/*
   export PATH="$stub_bin:/usr/local/bin:/usr/bin:/bin"
   export PI_BIN="$stub_bin/pi"
   export WORKER_TOKEN_BIN="$stub_bin/worker-token"
+  export LITELLM_REQUIRE_LIVE=1 LITELLM_HEALTH_URL="http://127.0.0.1:9/health/readiness"
   cat > "$PI_MODELS_JSON" <<'JSON'
 { "providers": { "devin": { "models": [ { "id": "glm-5-2", "cost": { "input": 0 } } ] } } }
 JSON
@@ -234,6 +264,7 @@ JSON
   cat > "$SEAT_CAPS_JSON" <<'JSON'
 { "ram_gb_per_worker": 1.5, "free_providers_in_order": [], "providers": {} }
 JSON
+  rm -f "$scratch/proxy-up"
   run_issue_run
   got=$(cat "$sentinel" 2>/dev/null || true)
   [[ "$got" == "no-usable" ]] \
@@ -246,6 +277,7 @@ JSON
   reset_tried
   mtime_before=$(stat -c '%Y.%i' "$sentinel")
   sleep 1.1
+  touch "$scratch/proxy-up"
   run_issue_run
   got=$(cat "$sentinel" 2>/dev/null || true)
   [[ "$got" == "usable" ]] \
@@ -263,6 +295,7 @@ JSON
 { "ram_gb_per_worker": 1.5, "free_providers_in_order": [], "providers": {} }
 JSON
   reset_tried
+  rm -f "$scratch/proxy-up"
   run_issue_run
   got=$(cat "$sentinel" 2>/dev/null || true)
   [[ "$got" == "no-usable" ]] \
@@ -270,4 +303,98 @@ JSON
 ) || fail "sentinel latch end-to-end run failed (see above)"
 ok "sentinel latch: no-usable + usable edges written, unchanged verdict writes nothing"
 
-echo "OK: fleet-seat-recovery-units: StartLimit guard + verify + sentinel trigger + latch"
+# --- fleet-ops#6315: the #5093 walled exit must not strand the prepaid
+# NON-proxy lane. (e) walled proxy + capable direct seat => the run PICKS the
+# direct lane (devin/swe-2-max — never touches 127.0.0.1:4000) and the
+# sentinel flips to usable; (f) walled + the direct seat benched in the
+# ledger (the 429 -> 900s quota brake) => the #5093 no-usable verdict, exit 1,
+# unchanged. Both driven end-to-end through bin/pi-issue-run, offline.
+(
+  set -euo pipefail
+  scratch="$(mktemp -d -t sr-df6315.XXXXXX)"
+  trap 'rm -rf "$scratch"' EXIT INT TERM
+  export HOME="$scratch/home"
+  mkdir -p "$HOME/.config/fleet-worker"
+  : > "$HOME/.config/fleet-worker/nishfleet-worker.env"
+  chmod 600 "$HOME/.config/fleet-worker/nishfleet-worker.env"
+  export PI_PACKET_STATE="$scratch/state"
+  mkdir -p "$PI_PACKET_STATE/attempts" "$PI_PACKET_STATE/active-seats"
+  export PI_ISSUES_DIR="$scratch/issues"
+  mkdir -p "$PI_ISSUES_DIR"
+  export PI_SEAT_HEALTH_LEDGER_DIR="$scratch/ledger"
+  mkdir -p "$PI_SEAT_HEALTH_LEDGER_DIR"
+  export PI_SEAT_HEALTH_SIDECAR="$scratch/pi-seat-health.json"
+  export PI_MODELS_JSON="$scratch/models.json"
+  export SEAT_CAPS_JSON="$scratch/seat-caps.json"
+  export XDG_RUNTIME_DIR="$scratch/xdg"
+  mkdir -p "$XDG_RUNTIME_DIR"
+  export PI_SEAT_LIB_CHECK_SYSTEMD=0
+  export PI_PACKET_SEAT_LIB="$repo_root/lib/litellm-seat.sh"
+  export PI_SEAT_NOUSABLE_COOLDOWN_S=0
+  export EMPTY_RUN_RETRY_MAX=0
+  export FLEET_DEBUG_PLAYBOOK_GATE=0
+  stub_bin="$scratch/stub-bin"
+  mkdir -p "$stub_bin"
+  printf '#!/usr/bin/env bash\nprintf "stub output stub output stub output stub output stub output\\n"\nexit 0\n' > "$stub_bin/pi"
+  printf '#!/usr/bin/env bash\nif [[ "$*" == *"--jq"* ]]; then printf "open\\n"; fi\nprintf "[]\\n"\nexit 0\n' > "$stub_bin/gh"
+  printf '#!/usr/bin/env bash\nprintf "export GH_TOKEN=fake-test-token-cccccccccccccccc\\n"\nexit 0\n' > "$stub_bin/worker-token"
+  printf '#!/usr/bin/env bash\nexit 0\n' > "$stub_bin/systemctl"
+  # #6315: the PROXY is walled — readiness AND the #6315 completion OR-probe
+  # both fail, so the direct lane is what carries the pick.
+  printf '#!/usr/bin/env bash\nexit 7\n' > "$stub_bin/curl"
+  chmod +x "$stub_bin"/*
+  export PATH="$stub_bin:/usr/local/bin:/usr/bin:/bin"
+  export PI_BIN="$stub_bin/pi"
+  export WORKER_TOKEN_BIN="$stub_bin/worker-token"
+  export LITELLM_REQUIRE_LIVE=1 LITELLM_HEALTH_URL="http://127.0.0.1:9/health/readiness"
+  # Production-shape caps (object-form models, the seat-caps.json convention).
+  # models.json carries the same lane for the inventory readers.
+  cat > "$SEAT_CAPS_JSON" <<'JSON'
+{ "providers": { "devin": { "cap": 4, "class": "prepaid-quota", "remote_agent": true, "models": { "swe-2-max": { "cap": 4 } } } } }
+JSON
+  cat > "$PI_MODELS_JSON" <<'JSON'
+{ "providers": { "devin": { "models": [ { "id": "swe-2-max", "cost": { "input": 0 } } ] } } }
+JSON
+  inst="fleet-ops-6315e"
+  printf 'Implement one GitHub issue: fleet-ops#6315.\nTARGET: repo Nishfleet/fleet-ops issue 6315 unit pi-issue-%s\n' "$inst" > "$PI_ISSUES_DIR/${inst}.in"
+  sentinel="$PI_SEAT_HEALTH_LEDGER_DIR/.no-usable-seat"
+  # #5093 edges: the sentinel must START at no-usable (an earlier walled tick
+  # wrote it) so the (e) run proves the RECOVERY edge — the direct lane picks
+  # and the sentinel flips to usable. An absent sentinel writes nothing
+  # (absent = healthy, #5093), which would prove less.
+  printf 'no-usable\n' > "$sentinel"
+  set +e
+  bash "$repo_root/bin/pi-issue-run" "$inst" > "$scratch/run.out" 2> "$scratch/run.err"
+  rc=$?
+  set -e
+  got=$(cat "$sentinel" 2>/dev/null || true)
+  [[ "$got" == "usable" ]] \
+    || fail "#6315(e): walled+direct-capable must pick the direct lane, sentinel got '${got:-ABSENT}' (rc=$rc, err: $(tr '\n' ' ' < "$scratch/run.err" | tail -c 200))"
+  seatpick=$(cat "$PI_PACKET_STATE/attempts/pi-issue-${inst}.seat" 2>/dev/null || true)
+  [[ "$seatpick" == "devin/swe-2-max" ]] \
+    || fail "#6315(e): picked '$seatpick', expected the direct prepaid lane devin/swe-2-max"
+  grep -q 'running on devin/swe-2-max' "$scratch/run.err" \
+    || fail "#6315(e): run must LOG the direct-lane seat (running on devin/swe-2-max); err: $(tr '\n' ' ' < "$scratch/run.err" | tail -c 200)"
+  # (tried-seats proves nothing here: the #1133 SUCCESS reset at the end of the
+  # run wipes it — the running-on log line + .seat file are the durable proof.)
+  ok "#6315(e): walled proxy + capable direct seat => pi-issue-run claims devin/swe-2-max (sentinel usable)"
+
+  # (f) walled + the direct seat benched (provider 429 -> quota bench) =>
+  # the #5093 no-usable verdict, exit 1 — nothing at all can run.
+  printf '%s' '{"provider":"devin","model":"swe-2-max","http_status":429,"health_class":"quota_bench","retryable":true,"seat_dead":false,"poison_ladder":false,"observed_at":"2026-09-13T06:00:00Z","source":"after_provider_response","failure_mode":"provider_429","usable_at":"2036-01-01T00:00:00Z","consecutive_failure_count":1}' \
+    > "$PI_SEAT_HEALTH_LEDGER_DIR/devin__swe-2-max.json"
+  rm -f "$PI_PACKET_STATE/attempts/pi-issue-${inst}.tried-seats"
+  inst="fleet-ops-6315f"
+  printf 'Implement one GitHub issue: fleet-ops#6315.\nTARGET: repo Nishfleet/fleet-ops issue 6315 unit pi-issue-%s\n' "$inst" > "$PI_ISSUES_DIR/${inst}.in"
+  set +e
+  bash "$repo_root/bin/pi-issue-run" "$inst" > "$scratch/run2.out" 2> "$scratch/run2.err"
+  rc2=$?
+  set -e
+  got2=$(cat "$sentinel" 2>/dev/null || true)
+  [[ $rc2 -eq 1 && "$got2" == "no-usable" ]] \
+    || fail "#6315(f): walled+benched direct seat must keep the #5093 verdict (rc=$rc2, sentinel='${got2:-ABSENT}', err: $(tr '\n' ' ' < "$scratch/run2.err" | tail -c 200))"
+  ok "#6315(f): walled + benched direct seat => #5093 no-usable, exit 1 (unchanged)"
+) || fail "#6315 direct-lane end-to-end run failed (see above)"
+ok "#6315: direct-lane rescue (e) + both-dead #5093 verdict (f), end-to-end"
+
+echo "OK: fleet-seat-recovery-units: bounded StartLimit guard (armed, proven by a negative control) + verify + sentinel trigger + latch"

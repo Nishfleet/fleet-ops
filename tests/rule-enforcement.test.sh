@@ -51,10 +51,10 @@ jq -e '.rules[] | select(.id == "led-2026-08-27-worker-lane-order-nish-emphatic-
   || fail "led-2026-08-27-worker-lane-order must be status=advisory(RETIRED by fleet-ops#3125) not enforced (fleet-ops#1178 retired 2026-09-04)"
 ok "matrix row led-2026-08-27-worker-lane-order is retired-advisory (volume order replaced by yield)"
 
-jq -e '.rules[] | select(.id == "led-2026-08-27-cursor-400-sequencing-model-nish" and .status == "enforced")' \
+jq -e '.rules[] | select(.id == "led-2026-08-27-cursor-400-sequencing-model-nish" and (.status | startswith("advisory(senior: RETIRED by fleet-ops#4263")))' \
   "$matrix" >/dev/null \
-  || fail "led-2026-08-27-cursor-400-sequencing-model-nish must be status=enforced (fleet-ops#1179)"
-ok "matrix row led-2026-08-27-cursor-400-sequencing-model-nish is enforced"
+  || fail "led-2026-08-27-cursor-400-sequencing-model-nish must be RETIRED by fleet-ops#4263 (seat picker deleted; the proxy routes no cursor deployment)"
+ok "matrix row led-2026-08-27-cursor-400-sequencing-model-nish is retired by fleet-ops#4263"
 
 jq -e '.rules[] | select(.id == "sr-verify-harness" and .status == "enforced")' \
   "$matrix" >/dev/null \
@@ -242,8 +242,12 @@ if [[ -f "$vault_rules" && -f "$vault_ledger" ]]; then
   jq -e --arg src 'decisions-ledger.md: 2026-08-27 | Worker lane order (Nish, emphatic: "can'"'"'t stress enough")' \
     '.rules[] | select(.source == $src and (.status | startswith("advisory")) and (.mechanism | contains("RETIRED")))' "$matrix" >/dev/null \
     || fail "matrix must mark worker lane order as advisory-RETIRED (fleet-ops#1178 retired 2026-09-04 by fleet-ops#3125)"
-  jq -e '.covered_rows[] | select(.source == "decisions-ledger.md: 2026-08-27 | Cursor $400 sequencing + model (Nish)" and .status == "enforced")' <<<"$live" >/dev/null \
-    || fail "live join must report cursor \$400 sequencing as enforced covered_rows (fleet-ops#1179): $(jq -c '.covered_rows' <<<"$live")"
+  # fleet-ops#4263: cursor $400 sequencing is RETIRED with the seat picker (the proxy
+  # routes no cursor deployment); like the lane-order row above, assert the
+  # matrix row carries advisory-RETIRED instead of an enforced covered_row.
+  jq -e --arg src 'decisions-ledger.md: 2026-08-27 | Cursor $400 sequencing + model (Nish)' \
+    '.rules[] | select(.source == $src and (.status | startswith("advisory")) and (.mechanism | contains("RETIRED")))' "$matrix" >/dev/null \
+    || fail "matrix must mark cursor \$400 sequencing as advisory-RETIRED (fleet-ops#4263)"
   jq -e --arg src 'decisions-ledger.md: 2026-08-27 | GEO/AEO: fleet executes measurement + owned-content tactics; community/PR parked for Nish' \
     '.covered_rows[] | select(.source == $src and .status == "enforced")' <<<"$live" >/dev/null \
     || fail "live join must report GEO/AEO parked tactics as enforced covered_rows (fleet-ops#1245): $(jq -c '.covered_rows' <<<"$live")"
@@ -274,7 +278,7 @@ if [[ -f "$vault_rules" && -f "$vault_ledger" ]]; then
   ok "live join: work supply 24h source is enforced (observe-to-close for #540)"
   ok "live join: worker-lane refresh source is enforced (observe-to-close for #545)"
   ok "live join: worker lane order source is enforced (observe-to-close for #1178)"
-  ok "live join: cursor \$400 sequencing source is enforced (observe-to-close for #1179)"
+  ok "live join: cursor \$400 sequencing row is advisory-RETIRED (fleet-ops#4263)"
   ok "live join: GEO/AEO parked tactics source is enforced (observe-to-close for #1245)"
   ok "live join: Quality ratchet source is enforced (observe-to-close for #1222)"
   ok "live join: continuous research source is enforced (observe-to-close for #541)"
@@ -283,6 +287,48 @@ if [[ -f "$vault_rules" && -f "$vault_ledger" ]]; then
   ok "live join: work-supply agent-ready source is enforced (observe-to-close for #543)"
 else
   ok "live vault not present (hosted CI) — skip exhaustiveness join"
+fi
+
+# fleet-ops#5746: vault→archive pointer integrity. Every
+# 'Full text: `standing-rules-archive.md` → `## X`' pointer in the standing
+# rules must resolve to a literal `## X` heading in the archive — a rule was
+# added to the short file + matrix but never archived (the 2026-09-11
+# fails-silently rule), and nothing guarded that invariant so it rotted
+# silently. Hosted CI (no vault files) skips, same as the live join above.
+if [[ -f "$vault_rules" ]]; then
+  vault_archive="$(dirname "$vault_rules")/standing-rules-archive.md"
+  [[ -f "$vault_archive" ]] || fail "vault archive missing next to standing rules: $vault_archive"
+  pointer_count=$(python3 - "$vault_rules" "$vault_archive" <<'PY'
+import re, sys
+
+def headings(path):
+    out = {}
+    with open(path, encoding="utf-8") as f:
+        for line in f:
+            m = re.match(r"^## (.+?)\s*$", line)
+            if m:
+                out.setdefault("## " + m.group(1), line.rstrip("\n"))
+    return out
+
+rules_text = open(sys.argv[1], encoding="utf-8").read()
+heads = headings(sys.argv[2])
+pointers = re.findall(
+    r"Full text:\s*`standing-rules-archive\.md`\s*→\s*`(## [^`]+)`", rules_text
+)
+assert pointers, "no archive pointers found in standing rules — extraction pattern broke"
+missing = [p for p in pointers if p not in heads]
+assert not missing, "GSR→archive pointer(s) 404: %r" % missing
+capture = (
+    "## Nothing on the VPS fails silently, everything resumes, "
+    "nothing is duct tape (Nish, 2026-09-11 — NON-NEGOTIABLE, forever)"
+)
+assert capture in heads, "the 2026-09-11 fails-silently rule is still not archived (fleet-ops#5746)"
+print(len(pointers))
+PY
+) || fail "vault→archive pointer integrity check failed (fleet-ops#5746)"
+  ok "vault→archive pointer integrity: every Full-text pointer resolves ($pointer_count pointers)"
+else
+  ok "live vault not present (hosted CI) — skip vault→archive pointer integrity"
 fi
 
 # --- parser unit: FLAG lines skipped, ### not counted, ## counted ------------
@@ -443,6 +489,111 @@ python3 "$lib" join --rules "$scratch/covered-rules.md" --ledger "$scratch/cover
 jq -e '.violations == 0 and .uncovered == []' "$scratch/covered.json" >/dev/null \
   || fail "complete fixture must have zero violations: $(cat "$scratch/covered.json")"
 ok "join: complete fixture is green"
+
+# --- sunset convention ratchet (fleet-ops#5749) -------------------------------
+# The convention binds only NEW rules, so the gate is a ratchet: unmarked
+# `## ` sections must not outnumber matrix.sunset_unmarked_baseline. Markers:
+# `review-by:YYYY-MM-DD` or an "absorbed into <mechanism>" exit anywhere in
+# the section. Rules past review-by land on .sunset.due for the Weekly Fleet
+# Review's quality ratchet.
+cat >"$scratch/sunset-rules.md" <<'EOF'
+## Marked by review date (Nish, 2026-08-26)
+Sunset: review-by 2030-01-01.
+## Marked absorbed (Nish, 2026-08-26)
+This rule is absorbed into the example mechanism.
+## Due for review (Nish, 2026-08-26)
+Sunset: review-by: 2026-08-01.
+## Old unmarked rule (Nish, 2026-08-26)
+body
+## New unmarked rule (Nish, 2026-08-26)
+body
+## Bogus date rule (Nish, 2026-08-26)
+Sunset: review-by: 2026-13-45.
+EOF
+cat >"$scratch/sunset-matrix.json" <<'EOF'
+{
+  "queued_stale_days": 7,
+  "auto_file_cap_per_tick": 5,
+  "sunset_unmarked_baseline": 1,
+  "rules": [
+    {"id":"sr-marked-review","source":"global-standing-rules.md: Marked by review date (Nish, 2026-08-26)","mechanism":"test gate","proof":"tests/rule-enforcement.test.sh","status":"enforced"},
+    {"id":"sr-marked-absorbed","source":"global-standing-rules.md: Marked absorbed (Nish, 2026-08-26)","mechanism":"test gate","proof":"tests/rule-enforcement.test.sh","status":"enforced"},
+    {"id":"sr-due-review","source":"global-standing-rules.md: Due for review (Nish, 2026-08-26)","mechanism":"test gate","proof":"tests/rule-enforcement.test.sh","status":"enforced"},
+    {"id":"sr-old-unmarked","source":"global-standing-rules.md: Old unmarked rule (Nish, 2026-08-26)","mechanism":"test gate","proof":"tests/rule-enforcement.test.sh","status":"enforced"},
+    {"id":"sr-new-unmarked","source":"global-standing-rules.md: New unmarked rule (Nish, 2026-08-26)","mechanism":"test gate","proof":"tests/rule-enforcement.test.sh","status":"enforced"},
+    {"id":"sr-bogus-date","source":"global-standing-rules.md: Bogus date rule (Nish, 2026-08-26)","mechanism":"test gate","proof":"tests/rule-enforcement.test.sh","status":"enforced"}
+  ]
+}
+EOF
+: >"$scratch/empty-ledger.md"
+python3 "$lib" join --rules "$scratch/sunset-rules.md" --ledger "$scratch/empty-ledger.md" \
+  --matrix "$scratch/sunset-matrix.json" --now "2026-08-26T12:00:00Z" >"$scratch/sunset.json"
+jq -e '.violations == 0' "$scratch/sunset.json" >/dev/null \
+  || fail "sunset over-baseline must not fold into violations (the canary owns the LOUD): $(cat "$scratch/sunset.json")"
+jq -e '.sunset.marked == 3 and .sunset.unmarked == 3 and .sunset.baseline == 1' \
+  "$scratch/sunset.json" >/dev/null \
+  || fail "sunset block must count marked/unmarked against the baseline (a malformed review-by is unmarked): $(jq -c '.sunset' "$scratch/sunset.json")"
+jq -e '.sunset.over_baseline | length == 2' "$scratch/sunset.json" >/dev/null \
+  || fail "baseline 1 over 3 unmarked must flag exactly two: $(jq -c '.sunset' "$scratch/sunset.json")"
+jq -e '.sunset.over_baseline[0].id == "sunset-sr-new-unmarked"
+       and (.sunset.over_baseline[0].source | contains("New unmarked rule"))
+       and (.sunset.over_baseline[0].reason | contains("sunset convention"))' \
+  "$scratch/sunset.json" >/dev/null \
+  || fail "over-baseline item must carry the sunset- id namespace + reason: $(jq -c '.sunset.over_baseline' "$scratch/sunset.json")"
+jq -e '(.sunset.due | length) == 1 and .sunset.due[0].review_by == "2026-08-01"
+       and (.sunset.due[0].source | contains("Due for review"))' \
+  "$scratch/sunset.json" >/dev/null \
+  || fail "a rule past review-by must land on sunset.due: $(jq -c '.sunset' "$scratch/sunset.json")"
+ok "join: sunset ratchet flags only unmarked rules beyond baseline; due rules listed"
+
+# Baseline at the current unmarked count -> ratchet green.
+jq '.sunset_unmarked_baseline = 3' "$scratch/sunset-matrix.json" >"$scratch/sunset-matrix-2.json"
+python3 "$lib" join --rules "$scratch/sunset-rules.md" --ledger "$scratch/empty-ledger.md" \
+  --matrix "$scratch/sunset-matrix-2.json" --now "2026-08-26T12:00:00Z" >"$scratch/sunset2.json"
+jq -e '.sunset.over_baseline == []' "$scratch/sunset2.json" >/dev/null \
+  || fail "unmarked == baseline must be green: $(jq -c '.sunset' "$scratch/sunset2.json")"
+ok "join: sunset ratchet is green at the baseline"
+
+# No baseline in the matrix -> gate off, no over_baseline items.
+jq -e '.sunset.baseline == null and .sunset.over_baseline == []' \
+  "$scratch/covered.json" >/dev/null \
+  || fail "a matrix without the baseline must report gate-off, not violations: $(jq -c '.sunset' "$scratch/covered.json")"
+ok "join: missing sunset baseline disables the gate (no violations)"
+
+# A non-integer baseline fails validate-matrix.
+cat >"$scratch/bad-baseline.json" <<'EOF'
+{
+  "queued_stale_days": 7,
+  "auto_file_cap_per_tick": 5,
+  "sunset_unmarked_baseline": "soon",
+  "rules": [
+    {"id":"sr-x","source":"global-standing-rules.md: X","mechanism":"m","proof":"p","status":"enforced"}
+  ]
+}
+EOF
+set +e
+python3 "$lib" validate-matrix --matrix "$scratch/bad-baseline.json" >/dev/null 2>"$scratch/bad-baseline.err"
+bb_rc=$?
+set -e
+[[ "$bb_rc" == "1" ]] || fail "non-integer baseline must fail validate, got rc=$bb_rc"
+grep -q 'sunset_unmarked_baseline' "$scratch/bad-baseline.err" \
+  || fail "baseline error must name the field: $(cat "$scratch/bad-baseline.err")"
+ok "validate-matrix: non-integer sunset baseline is rejected"
+
+# The committed matrix pins the live unmarked count as the baseline.
+jq -e '.sunset_unmarked_baseline == 56' "$matrix" >/dev/null \
+  || fail "committed matrix must carry sunset_unmarked_baseline=56 (live unmarked ## count at fleet-ops#5749)"
+ok "committed matrix carries the sunset ratchet baseline"
+
+# The sunset-filed issue keeps the sunset- id namespace in title + signal.
+sunset_item=$(jq -c '.sunset.over_baseline[0]' "$scratch/sunset.json")
+title_out=$(python3 "$lib" issue-title --json "$sunset_item")
+[[ "$title_out" == fix\(sunset\):* ]] \
+  || fail "sunset item must render a fix(sunset): title, got: $title_out"
+body_out=$(python3 "$lib" issue-body --json "$sunset_item")
+grep -q 'signal: rule-enforcement/sunset-sr-new-unmarked' <<<"$body_out" \
+  || fail "sunset issue body must carry the sunset- signal: $body_out"
+ok "issue-title/issue-body: sunset items file under the sunset- id namespace"
 
 # fleet-ops#548: CI-visible guard for the VPS-only miss. A ledger with the
 # two 2026-08-27 titles must be covered by the committed rows, and omitting
@@ -1085,6 +1236,22 @@ ok "rule-enforcement: token economy canary drill"
 bash "$here/standing-rules-drift.test.sh" || fail "standing-rules drift drill failed"
 ok "rule-enforcement: standing-rules drift drill"
 
+# fleet-ops#5644: retired-host gate. The live rulebook surfaces must never
+# scope the VPS write-autonomy / credential-parity postures to the retired
+# 'hostinger-kvm4' host; nested host so the worker token does not need to
+# edit .github/workflows/** (same class-prevention as the drift gate above).
+bash "$here/rulebook-host-drift.test.sh" || fail "rulebook retired-host drill failed"
+ok "rule-enforcement: rulebook retired-host drill"
+
+# fleet-ops#5586: reserved-classes precedence gate. Nish's reserved-escalation
+# classes have ONE canonical list (vault global-standing-rules.md) and every
+# agent surface points at it; this drill proves the canonical sources carry
+# the union and the live renders match the repo canonical (fail-loud on
+# drift, fleet-ops#5586 first-round no-op render). Nested host so the worker
+# token does not need to edit .github/workflows/**.
+bash "$here/reserved-classes-precedence.test.sh" || fail "reserved-classes precedence drill failed"
+ok "rule-enforcement: reserved-classes precedence drill"
+
 # fleet-ops#1010: organ-heartbeat invariant. Every fleet organ ships an
 # absent() rule in the same PR; the registry enumerates the known organs and
 # the gate rejects a PR that touches an organ without its absent() rule.
@@ -1123,7 +1290,7 @@ ok "rule-enforcement: worker-memory drop-in drill"
 bash "$here/siterep-live-canary-pin.test.sh" || fail "siterep live canary pin drill failed"
 ok "rule-enforcement: siterep live canary pin drill"
 
-ok "rule-enforcement: matrix, join, stale queued, advisory, auto-file, observe-to-close, no-agent-names, vault-conflict, vault-lint, wipe-lessons, dirty-worktree-audit, spawn-guard, north-star-quality, cline-glm53, repo-visibility, exec-review, vault-knowledge-format, shared-file-collision, work-supply-24h, opencode-m3 catalog, quality-research-weekly, tailscale-acl, verify-harness, paid-flash, token-economy, geo-aeo, quality-ratchet, standing-rules-drift, aeo-probe, organ-heartbeat, asset-census, timer-manifest, agent-ready-spec-gate, gh-webhook-prom-quotes, worker-memory-dropin, and siterep-live-canary-pin drills (volume-lane-order retired in fleet-ops#3125)"
+ok "rule-enforcement: matrix, join, stale queued, advisory, auto-file, observe-to-close, no-agent-names, vault-conflict, vault-lint, wipe-lessons, dirty-worktree-audit, spawn-guard, north-star-quality, cline-glm53, repo-visibility, exec-review, vault-knowledge-format, shared-file-collision, work-supply-24h, opencode-m3 catalog, quality-research-weekly, tailscale-acl, verify-harness, paid-flash, token-economy, geo-aeo, quality-ratchet, standing-rules-drift, reserved-classes-precedence, aeo-probe, organ-heartbeat, asset-census, timer-manifest, agent-ready-spec-gate, gh-webhook-prom-quotes, worker-memory-dropin, and siterep-live-canary-pin drills (volume-lane-order retired in fleet-ops#3125)"
 
 # fleet-ops#2089: install.sh must self-heal enabled-but-inactive timers
 # (the staleness canary sat dead: enabled, NextElapse=infinity, never
@@ -1178,6 +1345,12 @@ ok "rule-enforcement: skills-symlink canary drill"
 # a workflow edit.
 bash "$here/fleet-bin-exclude-canary.test.sh" || fail "bin-exclude canary drill failed"
 ok "rule-enforcement: bin-exclude canary drill"
+
+# silent-drop sweep 2026-09-11: no findings-cap token or 'gh issue ... || true'
+# drop in bin/lib without allowlist + ledger row. Nested host so the worker
+# token does not need a workflow edit (fleet-ops#566).
+bash "$here/silent-drop-canary.test.sh" || fail "silent-drop canary drill failed"
+ok "rule-enforcement: silent-drop canary drill"
 
 # fleet-ops#1291: SLO error-budget system contract (lib/slo_budget.py,
 # config/slo-definitions.json, exporter _emit_slo_metrics, fleet_rules.yml

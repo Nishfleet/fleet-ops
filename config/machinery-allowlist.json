@@ -233,6 +233,18 @@
       "source": "repo"
     },
     {
+      "unit": "resilience-drill-stub-seat-sentinel",
+      "class": "b",
+      "source": "repo",
+      "endorsement": "fleet-ops#5106: throwaway name-swapped proof unit the seat_sentinel plane writes into ~/.config/systemd/user at drill time and stops+removes in its own teardown (fleet-ops#5782 leaves-zero-leftover proof). Lives only for the seconds of the daily 05:47 drill run; register-while-live so the machinery-authorization hunt stays silent for it."
+    },
+    {
+      "unit": "resilience-drill-stub-seat-sentinel-tiny",
+      "class": "b",
+      "source": "repo",
+      "endorsement": "fleet-ops#5106/#5096: negative-control twin of resilience-drill-stub-seat-sentinel (StartLimitBurst=5, deliberately wedged by the storm). Same drill-time write + teardown + register-while-live rule (fleet-ops#5782)."
+    },
+    {
       "unit": "fable-fleet-check",
       "class": "a",
       "source": "repo",
@@ -370,6 +382,18 @@
       "note": "per-role Codex launch template (fleet-ops#4148) shape-only; live PATH wrapper remains until wipe; identity pinned in ExecStart (gpt-5.6-luna, openai, effort=max)"
     },
     {
+      "unit": "gh-runner@",
+      "class": "a",
+      "source": "repo",
+      "note": "GitHub's own actions/runner as an owned ephemeral launch template (fleet-ops#5935, endorsed by Nish 2026-09-12 'lets do all of those'): single-use JIT registration per activation via the existing gh keyring (no PAT stored), actions/runner pinned + sha256 in ExecStartPre, Restart=always, cohort-capped by fleet-ci.slice; MANIFEST-installed, pull_request jobs stay hosted so fork PRs never execute on the box."
+    },
+    {
+      "unit": "fleet-ci",
+      "class": "a",
+      "source": "repo",
+      "note": "cohort slice for the #5935 owned ephemeral runners (gh-runner@{1..3}): MemoryHigh=7G MemoryMax=9G CPUWeight=80, deliberately below the Pi workers' CPU weight; the admission governor reads MemAvailable live so no cross-governor code. MANIFEST-installed."
+    },
+    {
       "unit": "memory-index-autocompact",
       "class": "b",
       "source": "repo",
@@ -383,7 +407,9 @@
       "follow_up": "filed",
       "adjudicated": "MECHANICAL-INSTEAD",
       "verdict": "deleted; not fleet machinery \u2014 a stdio-ordering test fixture left installed as a user unit (ExecStart is `cat > /tmp/auditor-stdio-test.out`). No repo trace (no MANIFEST line, no timer-manifest.json entry, no systemd/ file, no organ). No live safety gate depends on it. Test fixtures do not belong in the user unit dir; the machinery-authorization-gate (fleet-ops#1548) is the mechanical prevention, this deletion closes the audit trail.",
-      "resolved_by": "#1492"
+      "resolved_by": "#1492",
+      "recurrence_issue": 5736,
+      "recurrence_note": "2026-09-12 gap-audit finding #5736: the deleted unit reappeared as a live file and the hunt re-flagged it with no pointer to the existing verdict; live file confirmed absent again 2026-09-12T08:2xZ. Verdict stands — hunt now surfaces prior adjudications on recurrent filings."
     },
     {
       "unit": "ready-work",

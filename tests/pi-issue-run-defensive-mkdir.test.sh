@@ -46,7 +46,7 @@ mkdir -p "$ISSUES_DIR"
 export PI_PACKET_STATE="$STATE_DIR"
 export PI_SEAT_HEALTH_LEDGER_DIR="$LEDGER"
 export PI_ISSUES_DIR="$ISSUES_DIR"
-export PI_PACKET_SEAT_LIB="$repo_root/lib/seat-lib.sh"
+export PI_PACKET_SEAT_LIB="$repo_root/lib/litellm-seat.sh"
 export PI_SEAT_LIB_CHECK_SYSTEMD=0
 export XDG_RUNTIME_DIR="$scratch/xdg"
 mkdir -p "$XDG_RUNTIME_DIR"
@@ -86,7 +86,7 @@ STUB
 chmod +x "$stub_bin/worker-token"
 export WORKER_TOKEN_BIN="$stub_bin/worker-token"
 
-# Poisoned systemctl: if pick_seat still lists live units, this reports the
+# Poisoned systemctl: if pick-seat still lists live units, this reports the
 # test seat as fully occupied (cap=1 below) and the run fails with an empty
 # pick. That is the fleet-ops#142 class, caught here instead of on a busy host.
 cat >"$stub_bin/systemctl" <<'STUB'
@@ -149,12 +149,12 @@ bleed=$(
   exec 2>"$scratch/lock.err"
   export PI_SEAT_LIB_CHECK_SYSTEMD=1
   # shellcheck disable=SC1091
-  source "$repo_root/lib/seat-lib.sh"
-  pick_seat "" "" 0 "" || true
+  source "$repo_root/lib/litellm-seat.sh"
+  litellm_seat worker-cheap || true
 )
-[[ -z "$bleed" ]] \
-  || fail "poison stub did not fill the cap under PI_SEAT_LIB_CHECK_SYSTEMD=1 (got '$bleed'); the #142 lock is inert"
-ok "poison stub fills cap when systemd listing is on (fleet-ops#142 lock is live)"
+[[ -n "$bleed" ]] \
+  || fail "litellm_seat must still return a group when systemd listing is poisoned (P3b: proxy owns routing, got '$bleed')"
+ok "litellm_seat ignores systemd listing poison (fleet-ops#4263 P3b; #142 lock retired)"
 
 # --- Case 1: normal run — tries file is written, attempts dir survives -----
 set +e
@@ -202,7 +202,7 @@ ok "inline defensive mkdir is wired between seat pick and tried-seats append"
 # freed. This is the fleet-ops#83 wedge: pi does tool work then hangs in
 # ep_poll; previously the wrapper waited forever and the unit sat in
 # `activating` until TimeoutStartSec (45 min), holding its seat and
-# starving pick_seat. The wrapper must bound the run itself.
+# starving pick-seat. The wrapper must bound the run itself.
 # fleet-ops#4903: rc=124 is an infra death — pi-issue-run exits 0 so
 # Restart= does NOT re-spawn the same unit; ExecStopPost re-queues via
 # intake. The watchdog marker is still written to the err file.
@@ -216,11 +216,11 @@ STUB
 chmod +x "$stub_hang/pi"
 
 # A tiny timeout so the test doesn't wait 42 minutes. The err file must
-# carry the watchdog marker so seat-health/pick_seat can distinguish a
+# carry the watchdog marker so seat-health/pick-seat can distinguish a
 # hang from a spawn ETIMEDOUT.
 export PI_HANG_TIMEOUT_S=2
 export PI_BIN="$stub_hang/pi"
-# Fresh instance so pick_seat still has a seat to route to (the tried-seats
+# Fresh instance so pick-seat still has a seat to route to (the tried-seats
 # file from cases 1-3 already excluded devin/swe-1-7).
 HANG_INST="pi-issue-mkdir-hang"
 echo noop > "$ISSUES_DIR/$HANG_INST.in"
@@ -230,7 +230,7 @@ rc=$?
 set -e
 [[ "$rc" == "0" ]] || fail "P15: hung pi infra death should exit 0 (re-queue via intake), got rc=$rc"
 # The marker lands in the unit err file (the wrapper appends it there for
-# seat-health/pick_seat to distinguish a hang from a spawn ETIMEDOUT).
+# seat-health/pick-seat to distinguish a hang from a spawn ETIMEDOUT).
 HANG_ERR="$ISSUES_DIR/$HANG_INST.err"
 grep -q "PI HANG WATCHDOG" "$HANG_ERR" || fail "P15: unit err file missing PI HANG WATCHDOG marker: $(cat "$HANG_ERR")"
 ok "P15: hung pi killed by wrapper watchdog (PI_HANG_TIMEOUT_S), marker written, exit 0 (infra-death re-queue)"

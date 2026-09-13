@@ -9,7 +9,7 @@
 # Two fixes this test pins:
 #
 # 1. Per-seat hang_timeout_s override (acceptance point a):
-#    seat-caps.json declares a provider-level hang_timeout_s; seat-lib.sh
+#    seat-caps.json declares a provider-level hang_timeout_s; seatlib.sh
 #    seat_hang_timeout_s reads it and falls back to the global default
 #    (2520). pi-issue-run uses the per-seat value when PI_HANG_TIMEOUT_S
 #    is NOT set in the env (tests that set it win).
@@ -29,13 +29,13 @@
 set -euo pipefail
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 repo_root="$(cd "$here/.." && pwd)"
-lib="$repo_root/lib/seat-lib.sh"
+lib="$repo_root/lib/litellm-seat.sh"
 bin="$repo_root/bin/pi-issue-run"
 
 fail() { echo "FAIL: $*" >&2; exit 1; }
 ok()   { echo "OK: $*"; }
 
-[[ -f "$lib" ]] || fail "seat-lib.sh not found: $lib"
+[[ -f "$lib" ]] || fail "seatlib.sh not found: $lib"
 [[ -x "$bin" ]] || fail "pi-issue-run not executable: $bin"
 command -v jq >/dev/null || fail "jq required"
 
@@ -47,7 +47,7 @@ mkdir -p "$HOME"
 
 # P14 / fleet-ops#568 class lock: pi-issue-run tests must carry the
 # App-identity stub markers so the #568 lock in pi-issue-run-failure-
-# reason.test.sh does not reject this file. This test sources seat-lib.sh
+# reason.test.sh does not reject this file. This test sources seatlib.sh
 # directly (unit-level, no pi invocation), but the suite-wide lock requires
 # the markers regardless.
 mkdir -p "$HOME/.config/fleet-worker"
@@ -64,7 +64,7 @@ chmod +x "$stub_token_bin/worker-token"
 export WORKER_TOKEN_BIN="$stub_token_bin/worker-token"
 
 # --- 1. seat_hang_timeout_s: per-seat override + fallback ----------------
-# Source seat-lib with a scratch seat-caps.json that gives ollama a 2640s
+# Source seatlib with a scratch seat-caps.json that gives ollama a 2640s
 # override and leaves devin without one (must fall back to 2520).
 export PI_SEAT_LIB_CHECK_SYSTEMD=0
 export PI_PACKET_STATE="$scratch/state"
@@ -86,7 +86,10 @@ cat >"$SEAT_CAPS_JSON" <<'JSON'
   "ram_gb_per_worker": 1.5,
   "providers": {
     "ollama": { "cap": 8, "class": "prepaid-quota", "hang_timeout_s": 2640, "models": { "deepseek-v4-flash:0731": 8 } },
-    "devin":  { "cap": 4, "class": "subscription", "models": { "glm-5-2": 4 } }
+    "devin":  { "cap": 4, "class": "subscription", "models": { "glm-5-2": 4 } },
+    "litellm": { "cap": 6, "class": "proxy", "hang_timeout_s": 2400,
+                 "models": { "worker-cheap": { "cap": 6, "hang_timeout_s": 2640 },
+                             "worker-capable": { "cap": 3 } } }
   }
 }
 JSON
@@ -103,6 +106,24 @@ ok "seat_hang_timeout_s: ollama override = 2640s"
 v=$(seat_hang_timeout_s "devin" "glm-5-2")
 [[ "$v" == "2520" ]] || fail "seat_hang_timeout_s devin: expected 2520 (default), got $v"
 ok "seat_hang_timeout_s: devin fallback = 2520s"
+
+# fleet-ops#6154: a per-MODEL override must win over the provider value.
+# Before the fix seat_hang_timeout_s ignored $2 entirely, so this returned the
+# provider-level 2400 and every per-group value in seat-caps.json was dead
+# config — the litellm worker groups kept being rc=124 killed mid-session.
+v=$(seat_hang_timeout_s "litellm" "worker-cheap")
+[[ "$v" == "2640" ]] || fail "seat_hang_timeout_s litellm/worker-cheap: expected 2640 (per-model override), got $v"
+ok "seat_hang_timeout_s: per-model override wins over provider (2640s)"
+
+# A model with no override under a provider that has one -> provider value.
+v=$(seat_hang_timeout_s "litellm" "worker-capable")
+[[ "$v" == "2400" ]] || fail "seat_hang_timeout_s litellm/worker-capable: expected 2400 (provider fallback), got $v"
+ok "seat_hang_timeout_s: model without override falls back to provider (2400s)"
+
+# An unknown model under a provider with no override -> global default.
+v=$(seat_hang_timeout_s "devin" "no-such-model")
+[[ "$v" == "2520" ]] || fail "seat_hang_timeout_s devin/no-such-model: expected 2520 (global default), got $v"
+ok "seat_hang_timeout_s: unknown model -> global default 2520s"
 
 # An unknown provider -> default 2520
 v=$(seat_hang_timeout_s "unknown" "unknown-model")

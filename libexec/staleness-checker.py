@@ -335,10 +335,14 @@ def _claim_result(claim):
         if raw.startswith("/") or raw.startswith("~/"):
             resolved = _resolve_path(raw)
         else:
-            # Relative path — try relative to HOME first, then fleet-ops
+            # Relative path — try relative to HOME first, then fleet-ops,
+            # then the vault shared-memory dir (bare vault .md filenames like
+            # `codex-model-routing.md` live there — fleet-ops#4149 follow-up).
             resolved = (HOME / raw).resolve()
             if not resolved.exists():
                 resolved = (HOME / "workspaces" / "tooling" / "fleet-ops" / raw).resolve()
+            if not resolved.exists():
+                resolved = (HOME / "workspaces" / "tooling" / "nish-vault" / "_system" / "shared-memory" / raw).resolve()
 
         if not resolved.exists():
             return {

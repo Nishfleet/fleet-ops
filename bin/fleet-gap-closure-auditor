@@ -197,8 +197,56 @@ if [ "$rc" -ne 0 ]; then
 fi
 
 if ! jq -e . "$stdout" >/dev/null 2>&1; then
-    raw="$(head -c 2000 "$stdout")"
-    jq -c -n --arg raw "$raw" \
-        '{vote:"NOT-DONE", reason:"pi output was not valid JSON", raw:$raw}' >"$stdout"
+    # fleet-ops#5399: pi --print output routinely prepends the model's
+    # narration to the verdict object ("Verifying live state ...{...}"), so a
+    # whole-file jq parse fails and a real vote was filed as the mechanical
+    # "pi output was not valid JSON" dissent — the cycle-15 termination
+    # conference filed #5399 off embedded verdicts it discarded. Recover the
+    # last embedded JSON object with the verdict shape for this mode before
+    # falling back to the generic refusal.
+    if extracted="$(python3 - "$stdout" "$(jq -r '.mode // "termination"' "$job")" <<'PY'
+import json
+import sys
+
+path, mode = sys.argv[1], sys.argv[2]
+try:
+    with open(path, encoding="utf-8", errors="replace") as fh:
+        raw = fh.read()
+except OSError:
+    sys.exit(1)
+
+dec = json.JSONDecoder()
+best = None
+i = 0
+while True:
+    i = raw.find("{", i)
+    if i < 0:
+        break
+    try:
+        obj, end = dec.raw_decode(raw, i)
+    except json.JSONDecodeError:
+        i += 1
+        continue
+    if isinstance(obj, dict):
+        if mode == "research":
+            ok = isinstance(obj.get("adopted"), list) or isinstance(obj.get("deltas"), list)
+        else:
+            ok = obj.get("vote") in ("DONE", "NOT-DONE")
+        if ok:
+            best = obj
+    i += end
+
+if best is None:
+    sys.exit(1)
+best["_extracted"] = True
+sys.stdout.write(json.dumps(best) + "\n")
+PY
+)" && [ -n "$extracted" ]; then
+        printf '%s\n' "$extracted" >"$stdout"
+    else
+        raw_excerpt="$(head -c 2000 "$stdout")"
+        jq -c -n --arg raw "$raw_excerpt" \
+            '{vote:"NOT-DONE", reason:"pi output was not valid JSON", raw:$raw}' >"$stdout"
+    fi
 fi
 exit 0

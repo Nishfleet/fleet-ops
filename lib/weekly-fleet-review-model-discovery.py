@@ -26,7 +26,10 @@ OPENROUTER_URL = "https://openrouter.ai/api/v1/models"
 CURL_TIMEOUT = 120
 USER_AGENT = "fleet-weekly-review/1.0 (model-discovery; fleet-ops#3321)"
 
-WORKDIR = Path(os.environ.get("WORKDIR", "/home/nish/workspaces/tooling/fleet-ops-deploy-clone"))
+# fleet-ops#6252: never default into the deploy clone — a write there dirties
+# tracked files and fleet-deploy-check blocks merge-to-live. Default to the
+# job's scratch dir (the unit sets WORKDIR explicitly anyway).
+WORKDIR = Path(os.environ.get("WORKDIR", "/home/nish/workspaces/agent-state/weekly-fleet-review"))
 OUT = WORKDIR / "config" / "model-candidates.json"
 TMP_DIR = Path("/tmp/weekly-fleet-review-model-discovery")
 

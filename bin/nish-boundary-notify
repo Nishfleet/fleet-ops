@@ -264,7 +264,9 @@ notify_digest() {
     local msg="Unanswered questions for Nish (6h digest):"
     local l
     for l in "${lines[@]:-}"; do msg="$msg\n$l"; done
-    printf '%s' "$msg" | "$HERMES_BIN" send -t telegram --class MONEY-BOUNDARY </dev/null >/dev/null 2>&1 && {
+    # The body rides as an argument (like the urgent path above): the old pipe fed a
+    # hermes whose stdin was </dev/null, so the digest body never reached it.
+    "$HERMES_BIN" send -t telegram --class MONEY-BOUNDARY "$(printf '%b' "$msg")" </dev/null >/dev/null 2>&1 && {
         printf '%s\n' "$now" > "$marker"
         echo "digest: delivered ${#lines[@]} unanswered confirmed question(s)"
     } || echo "digest: DELIVERY FAILED"

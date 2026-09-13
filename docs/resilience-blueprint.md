@@ -107,7 +107,11 @@ escalation canary -> blind audit -> gap-closure loop. healthchecks.io
 dead-man on the heartbeat (already).
 
 Add: `bin/keystone-hc-ping` plus drop-ins on intake, scout, reconcile,
-restore. Separate `HC_URL_*` in `~/.config/fleet-ops/keystone-hc.env`.
+restore, and the detached per-dispatch dead-man (`HC_URL_DETACHED`,
+fleet-ops#4266). Separate `HC_URL_*` in `~/.config/fleet-ops/keystone-hc.env`.
+The resilience drill treats all five as required: an unset URL is
+SKIP + LOUD (`KEYSTONE-HC-UNCONFIGURED`), so an inert rail cannot go
+unnoticed (fleet-ops#5886).
 Resurrection drill: isolated `Restart=always` stub, SIGKILL, new MainPID.
 
 Detection: failed unit, dead-man miss, drill FAIL.

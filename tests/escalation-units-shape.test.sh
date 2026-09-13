@@ -134,11 +134,21 @@ ok "service.d/path.d/timer.d 10-escalate.conf shape"
 # 7b. fleet-seat-recovery.service must not StartLimit-wedge the path unit.
 # systemd.path: a StartLimit hit on the triggered oneshot is propagated to
 # the path unit and takes the watcher down (fleet-ops#617).
+# fleet-ops#5096: the ceiling is BOUNDED again (StartLimitIntervalSec=1h,
+# StartLimitBurst=200 — the #5024 number), made safe by the verdict-edge
+# sentinel trigger (#5093) and the no-op ledger write skip (#5096), so ~0
+# activations/h in normal operation means the bound only trips on a churn
+# regression — loudly. The phase-1 escape (StartLimitIntervalSec=0) is
+# retired: what must never come back is the systemd DEFAULT (5/10s), which
+# wedges the watcher under any real write rate.
 seat_svc="$repo_root/systemd/fleet-seat-recovery.service"
 [[ -f "$seat_svc" ]] || fail "missing: $seat_svc"
-grep -q '^StartLimitIntervalSec=0$' "$seat_svc" \
-  || fail "fleet-seat-recovery.service: StartLimitIntervalSec=0 (default 5/10s wedges the path unit)"
-ok "fleet-seat-recovery.service StartLimitIntervalSec=0"
+seat_unit_section=$(awk '/^\[Unit\]/{f=1} /^\[/{if(f&&$0!~/^\[Unit\]/)f=0} f' "$seat_svc")
+echo "$seat_unit_section" | grep -q '^StartLimitIntervalSec=1h$' \
+  || fail "fleet-seat-recovery.service: [Unit] must carry StartLimitIntervalSec=1h (bounded #5096 ceiling; the systemd default 5/10s wedges the path unit)"
+echo "$seat_unit_section" | grep -q '^StartLimitBurst=200$' \
+  || fail "fleet-seat-recovery.service: [Unit] must carry StartLimitBurst=200 (bounded #5096 ceiling)"
+ok "fleet-seat-recovery.service carries the bounded StartLimit ceiling (1h/200)"
 
 # 8. unit-escalation@.service.d/no-self-escalate.conf shape (recursion guard).
 grep -q '^\[Unit\]$' "$tmpl_dropin" || fail "no-self-escalate.conf: missing [Unit]"

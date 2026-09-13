@@ -80,9 +80,13 @@ bash "$here/pstack-worker-prompt.test.sh" || fail "pstack worker prompt contract
 bash "$here/worker-prompt-systemd-run.test.sh" || fail "worker-prompt-systemd-run tests failed"
 # fleet-ops#3274 (child of #3140): heavy|keystone packets run the worker as
 # MANAGER (plan phases, delegate to fresh stock worker/reviewer subagents,
-# tick .fleet/plan.md). Hosted here so CI fails if someone deletes the
+# tick .fleet/plan-<issue-N>.md). Hosted here so CI fails if someone deletes the
 # manager-mode section from worker.md without a workflow edit (fleet-ops#82).
 bash "$here/worker-prompt-manager-mode.test.sh" || fail "worker-prompt-manager-mode tests failed"
+# fleet-ops#5526: manager-mode plan paths are issue-unique (.fleet/plan-<issue-N>.md),
+# never the shared .fleet/plan.md — two parallel lanes must not conflict. Hosted
+# here for the same CI-host reason (workers have no Workflows permission).
+bash "$here/manager-plan-path-unique.test.sh" || fail "manager-plan-path-unique tests failed"
 # fleet-ops#3708: one reviewer round before the auto-merge arm on product
 # PRs, adjudicated in the PR body. Hosted here for the same CI-host reason
 # (workers have no Workflows permission).

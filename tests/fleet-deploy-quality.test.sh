@@ -446,47 +446,6 @@ tests:
               summary: "deployment-quality metrics computation failed or vanished"
               description: "fleet_deployment_quality_up is absent or 0 for 15+ minutes — lib/fleet-deploy-quality.py failed (the gauges are NaN so threshold rules are silent; THIS alert is the only loud signal). The exporter logs 'deploy-quality: ...' to stderr; check journalctl --user -u fleet-metrics-export.service and /home/nish/.local/lib/pi-packet/fleet-deploy-quality.py. fleet-ops#2758."
   - interval: 1m
-    name: ProductDeployStalled fires when a product repo deploy is non-green > 3600s for 15m (fleet-ops#5140)
-    input_series:
-      - series: 'fleet_deploy_blocked_duration_seconds{repo="0509",workflow="Deploy production"}'
-        values: '7200x40'
-      - series: 'fleet_product_deploy_last_red_run_info{repo="0509",workflow="Deploy production",url="https://github.com/Nishfleet/0509/actions/runs/424242"}'
-        values: '1x40'
-    alert_rule_test:
-      - eval_time: 10m
-        alertname: ProductDeployStalled
-        exp_alerts: []
-      - eval_time: 16m
-        alertname: ProductDeployStalled
-        exp_alerts:
-          - exp_labels:
-              alertname: ProductDeployStalled
-              repo: "0509"
-              workflow: Deploy production
-              severity: warning
-              service: fleet
-            exp_annotations:
-              summary: "0509 production deploy stalled: Deploy production non-green for 2h 0m 0s"
-              description: "fleet_deploy_blocked_duration_seconds{repo=\"0509\",workflow=\"Deploy production\"} exceeded 3600s for 15+ minutes: 0509's production deploy has been non-green for 2h 0m 0s (an in-flight run counts as non-green). Newest red run: https://github.com/Nishfleet/0509/actions/runs/424242. fleet-ops#5140: 2026-09-10, 131 merged product PRs sat undelivered for 28h while every dashboard read green. Repair: open the newest red run, read its failure, then fix or re-run the Deploy production workflow on Nishfleet/0509."
-  - interval: 1m
-    name: ProductDeployStalled silent when the newest run is green (blocked = 0)
-    input_series:
-      - series: 'fleet_deploy_blocked_duration_seconds{repo="0509",workflow="Deploy production"}'
-        values: '0x40'
-    alert_rule_test:
-      - eval_time: 16m
-        alertname: ProductDeployStalled
-        exp_alerts: []
-  - interval: 1m
-    name: ProductDeployStalled never fires for the fleet-ops repo itself (DeployBlockedStuck owns that)
-    input_series:
-      - series: 'fleet_deploy_blocked_duration_seconds{repo="fleet-ops"}'
-        values: '7200x40'
-    alert_rule_test:
-      - eval_time: 16m
-        alertname: ProductDeployStalled
-        exp_alerts: []
-  - interval: 1m
     name: ProductDeployUnmeasurable fires when a product repo emits up=0 for 30m+ (fleet-ops#5250)
     input_series:
       - series: 'fleet_deployment_quality_up{repo="0509"}'

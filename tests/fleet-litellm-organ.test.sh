@@ -254,6 +254,68 @@ FLEET_LITELLM_STUB_INSTALLED=1 \
 python3 "$canary" --quiet && fail "5f: dead past tolerance must exit 1"
 ok "5f: sustained dead past the tolerance exits 1 (fail-loud preserved)"
 
+# --- 5g (fleet-ops#6315): a HEALTH-ONLY hang is not organ death. The
+# 2026-09-13 incident: readiness+health 0-byte timeouts 120s+ while
+# /chat/completions answered 200. Readiness unanswered + one 1-token
+# completion answering => hold, exit 0, prom proxy_up=0 (honest — readiness
+# did NOT answer), NO dead latch, NO exit 1. The hang listener accepts and
+# never responds (a real event-loop wedge, not a refusal).
+python3 - <<'PY' &
+import socket, time
+s = socket.socket()
+s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+s.bind(("127.0.0.1", 44971)); s.listen(8)
+c, _ = s.accept(); time.sleep(20)
+PY
+HUNG6315=$!
+sleep 0.6
+: > "$scratch/hang-completions.ok"
+FLEET_LITELLM_PROM="$scratch/hang6315.prom" \
+FLEET_LITELLM_STATE="$scratch/hang6315.json" \
+FLEET_LITELLM_PROXY_URL=http://127.0.0.1:44971 \
+FLEET_LITELLM_TIMEOUT_S=2 \
+FLEET_LITELLM_STUB_COMPLETIONS="$scratch/hang-completions.ok" \
+FLEET_LITELLM_STUB_PG=1 FLEET_LITELLM_STUB_REDIS=1 FLEET_LITELLM_STUB_INSTALLED=1 \
+FLEET_LITELLM_NOW=1757743200 \
+python3 "$canary" --quiet || fail "5g: hang+completions-200 must hold (exit 0)"
+grep -q 'fleet_litellm_proxy_up{endpoint="readiness"} 0' "$scratch/hang6315.prom" \
+    || fail "5g: hang prom must keep proxy_up=0 (readiness did not answer)"
+SCRATCH6315="$scratch" python3 -c "
+import json, os
+d = json.load(open(os.environ['SCRATCH6315'] + '/hang6315.json'))
+assert d['completions_ok'] is True, d
+assert d['completions_status'] == 200, d
+assert d['dead_since'] is None, d
+assert d['empty_since'] is None, d
+assert d['proxy_up'] == 0, d
+"
+kill "$HUNG6315" 2>/dev/null; wait "$HUNG6315" 2>/dev/null || true
+ok "5g: #6315 health-only hang holds (exit 0, completions_ok, no dead latch)"
+
+# --- 5h (fleet-ops#6315): readiness hung AND the completion unanswered =>
+# the existing #4130 dead-tolerance latch, exit 1 — unchanged.
+python3 - <<'PY' &
+import socket, time
+s = socket.socket()
+s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+s.bind(("127.0.0.1", 44972)); s.listen(8)
+c, _ = s.accept(); time.sleep(20)
+PY
+HUNG2_6315=$!
+sleep 0.6
+FLEET_LITELLM_PROM="$scratch/full6315.prom" \
+FLEET_LITELLM_STATE="$scratch/full6315.json" \
+FLEET_LITELLM_PROXY_URL=http://127.0.0.1:44972 \
+FLEET_LITELLM_TIMEOUT_S=2 \
+FLEET_LITELLM_DEAD_TOLERANCE_S=0 \
+FLEET_LITELLM_STUB_PG=1 FLEET_LITELLM_STUB_REDIS=1 FLEET_LITELLM_STUB_INSTALLED=1 \
+FLEET_LITELLM_NOW=1757743200 \
+python3 "$canary" --quiet && fail "5h: hung readiness + unanswered completion must exit 1"
+grep -q '"dead_since": 1757743200' "$scratch/full6315.json" \
+    || fail "5h: fully-starved must still latch dead_since"
+kill "$HUNG2_6315" 2>/dev/null; wait "$HUNG2_6315" 2>/dev/null || true
+ok "5h: #6315 fully-starved (readiness+completion dead) keeps the #4130 fail-loud"
+
 # --- 5b: organ-not-installed path (Nish-gated live install not yet done) -> exit 0, no fail-loud
 FLEET_LITELLM_PROM="$scratch/notinst.prom" \
 FLEET_LITELLM_STATE="$scratch/notinst.json" \
@@ -436,8 +498,9 @@ for d in cfg["model_list"]:
     ua = headers.get("User-Agent") or headers.get("user-agent") or ""
     assert ua, f"{d.get('model_name')} extra_headers missing User-Agent"
     assert ver in ua, f"{d.get('model_name')} User-Agent {ua!r} must carry version {ver}"
-assert found, "no grok-4.6 / xai-oauth deployment found in model_list"
-print(f"grok identity headers OK on {len(found)} deployment(s)")
+# 2026-09-12: presence is a routing decision (grok was benched 403 / out of credits);
+# the class this check pins (#4629) is header stamping WHEN a grok deployment is wired.
+print(f"grok identity headers OK on {len(found)} deployment(s)" if found else "no grok deployment wired (benched) — header rule vacuously satisfied")
 PY
 ok "10: grok-4.6 / xai-oauth deployments stamp cli-chat-proxy identity extra_headers (fleet-ops#4629)"
 
@@ -580,8 +643,10 @@ ok "16: canary authenticates /health; proxy loads prisma compat via PYTHONPATH"
 # 2026-09-11: this unit was SIGTERMed at 30s during a memory-pressure stall
 # having printed nothing and written no prom file (3.277s CPU vs 0.18s for a
 # healthy run), so the trip carried no diagnosis and the organ heartbeat went
-# dark. Measured worst case for a complete run is 21s. Assert the PROPERTY
-# (generous headroom), not the exact number, so a later raise is not a red.
+# dark. Measured worst case for a complete run is 70s (readiness 60s + pg 5s
+# + redis 5s; readiness raised 10s->60s 2026-09-13, see the canary source).
+# Assert the PROPERTY (generous headroom), not the exact number, so a later
+# raise is not a red.
 ts=$(grep -E '^TimeoutStartSec=' "$canary_unit" | tail -1 | cut -d= -f2)
 case "$ts" in
     *min) ts_s=$(( ${ts%min} * 60 ));;
@@ -590,5 +655,44 @@ esac
 [[ "$ts_s" -ge 90 ]] \
     || fail "17: canary unit TimeoutStartSec=$ts is under 90s starvation headroom (2026-09-11 trip: SIGTERM at 30s, nothing printed, no prom write)"
 ok "17: canary unit carries >=90s starvation headroom (TimeoutStartSec=$ts)"
+
+# --- 18: the loud deployment drill (fleet-ops#6054, #5792 accept line).
+# #5792: "re-adding a dead deployment fails the health canary loudly". A
+# populated census that still carries an UNHEALTHY deployment (the
+# 2026-09-12 fault: 4x xkiro deepseek-v4-pro 503s deployed in the active
+# groups, unhealthy_count=4, nobody noticed because organ liveness was
+# green) must exit 1 with a named verdict. After the deployment is benched
+# (census all-healthy) the same canary is a quiet 0.
+printf '{"healthy_endpoints":[{"model_info":{"model_name":"worker-cheap"}}],"unhealthy_endpoints":[{"model_info":{"model_name":"senior"},"error":"litellm.ServiceUnavailableError: OpenAIException - A server error occurred. Please try again."}]}' > "$scratch/census-dead.json"
+FLEET_LITELLM_PROM="$scratch/drill.prom" \
+FLEET_LITELLM_STATE="$scratch/drill.state.json" \
+FLEET_LITELLM_STUB="$scratch/ready-ok.json" \
+FLEET_LITELLM_STUB_HEALTH="$scratch/census-dead.json" \
+FLEET_LITELLM_CONFIG="$scratch/models.yaml" \
+FLEET_LITELLM_STUB_PG=1 \
+FLEET_LITELLM_STUB_REDIS=1 \
+FLEET_LITELLM_STUB_INSTALLED=1 \
+FLEET_LITELLM_NOW=1700000300 \
+python3 "$canary" >"$scratch/drill.out" 2>"$scratch/drill.err" \
+    && fail "18: a deployed dead deployment must fail the canary loudly (fleet-ops#6054 drill), got exit 0"
+grep -q 'health-deployment-unhealthy' "$scratch/drill.err" "$scratch/drill.out" \
+    || fail "18: drill verdict must log health-deployment-unhealthy, got: $(cat "$scratch/drill.err" "$scratch/drill.out")"
+grep -q 'fleet_litellm_proxy_unhealthy_deployments{group="senior"} 1' "$scratch/drill.prom" \
+    || fail "18: prom must keep the unhealthy-deployment gauge scrapeable through the drill exit"
+grep -q 'fleet_litellm_proxy_up{endpoint="readiness"} 1' "$scratch/drill.prom" \
+    || fail "18: drill must NOT conceal organ liveness (proxy_up=1 stays exported)"
+# 18b: the same deployment benched -> the census is all-healthy -> quiet 0.
+printf '{"healthy_endpoints":[{"model_info":{"model_name":"worker-cheap"}},{"model_info":{"model_name":"senior"}}],"unhealthy_endpoints":[]}' > "$scratch/census-benched.json"
+FLEET_LITELLM_PROM="$scratch/drill2.prom" \
+FLEET_LITELLM_STATE="$scratch/drill2.state.json" \
+FLEET_LITELLM_STUB="$scratch/ready-ok.json" \
+FLEET_LITELLM_STUB_HEALTH="$scratch/census-benched.json" \
+FLEET_LITELLM_CONFIG="$scratch/models.yaml" \
+FLEET_LITELLM_STUB_PG=1 \
+FLEET_LITELLM_STUB_REDIS=1 \
+FLEET_LITELLM_STUB_INSTALLED=1 \
+FLEET_LITELLM_NOW=1700000400 \
+python3 "$canary" --quiet || fail "18b: all-healthy census after benching must stay quiet (exit 0)"
+ok "18: deployed dead deployment fails the canary loudly (exit 1); benched, all-healthy census is a quiet 0"
 
 echo "ALL OK: fleet-litellm-organ"

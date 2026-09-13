@@ -5,7 +5,7 @@
 # `difficulty: heavy` or `difficulty: keystone` (written by the intake tick
 # from the issue's labels/body), the pi-issue worker runs as MANAGER — it
 # plans phases, delegates each to a fresh stock `worker` subagent, reviews
-# each phase diff with the stock `reviewer`, ticks `.fleet/plan.md`, and
+# each phase diff with the stock `reviewer`, ticks `.fleet/plan-<issue-N>.md`, and
 # ships the PR. Light issues stay flat.
 #
 # This is a prompt-only change (no new bin/ file — the issue forbids that by
@@ -48,14 +48,19 @@ grep -qF 'Light issues' "$prompt" \
   || fail "worker.md must keep light issues flat (skip manager mode)"
 ok "light issues stay flat"
 
-# (1) plan into .fleet/plan.md
-grep -qF '.fleet/plan.md' "$prompt" \
-  || fail "worker.md must write the phased checklist to .fleet/plan.md"
+# (1) plan into an issue-unique plan path (fleet-ops#5526: the shared
+# .fleet/plan.md path made two concurrent manager lanes conflict).
+grep -qF '.fleet/plan-<issue-N>.md' "$prompt" \
+  || fail "worker.md must write the phased checklist to issue-unique .fleet/plan-<issue-N>.md"
+grep -F '.fleet/plan.md' "$prompt" >/dev/null \
+  && fail "worker.md must not write the plan to the shared .fleet/plan.md path (fleet-ops#5526)"
+grep -qF 'TARGET line' "$prompt" \
+  || fail "worker.md must say where <issue-N> comes from (the packet TARGET line)"
 grep -qF 'Use planner' "$prompt" \
   || fail "worker.md must Use planner to write the plan"
 grep -qF '<= 6 phases' "$prompt" \
   || fail "worker.md must cap the plan at <= 6 phases"
-ok "(1) plan into .fleet/plan.md with planner, <= 6 phases"
+ok "(1) plan into issue-unique .fleet/plan-<issue-N>.md with planner, <= 6 phases"
 
 # (2) fresh worker per phase with handoff
 grep -qF 'FRESH `worker` subagent' "$prompt" \
@@ -75,7 +80,7 @@ ok "(3) reviewer on phase diff, one retry"
 
 # (4) tick + commit per phase
 grep -qF '`- [x]`' "$prompt" \
-  || fail "worker.md must tick boxes (- [x]) in plan.md"
+  || fail "worker.md must tick boxes (- [x]) in the issue-unique plan file"
 grep -qF 'commit after each phase' "$prompt" \
   || fail "worker.md must commit after each phase"
 ok "(4) tick boxes and commit per phase"

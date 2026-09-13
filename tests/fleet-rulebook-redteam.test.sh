@@ -108,13 +108,14 @@ printf 'last-heartbeat: 2026-08-27T00:00:00Z\n' >"$plan"
 
 run_drill() {
   RULEBOOK_DRILL=1 \
-  RULEBOOK_DRILL_FINDINGS="$fixture" \
-  RULEBOOK_STATE_DIR="$scratch/state" \
+  RULEBOOK_DRILL_FINDINGS="${RULEBOOK_DRILL_FINDINGS:-$fixture}" \
+  RULEBOOK_STATE_DIR="${RULEBOOK_STATE_DIR:-$scratch/state}" \
   RULEBOOK_PLAN_FILE="$plan" \
   RULEBOOK_STANDING_RULES="$scratch/rules/standing.md" \
   RULEBOOK_RULE_FILES="$scratch/rules/standing.md
 $scratch/rules/AGENTS.md" \
   RULEBOOK_FAKE_NOW="2026-08-27T04:15:00Z" \
+  RULEBOOK_MAX_FINDINGS="${RULEBOOK_MAX_FINDINGS:-5}" \
   RULEBOOK_SKIP_BACKUP="${RULEBOOK_SKIP_BACKUP:-0}" \
     "$bin"
 }
@@ -144,10 +145,20 @@ drill_out=$(run_drill 2>&1)
 drill_rc=$?
 set -e
 [[ "$drill_rc" == "0" ]] || fail "drill should exit 0, got $drill_rc ($drill_out)"
-[[ -f "$scratch/rules/standing.md.bak-rulebook-redteam-20260827" ]] \
+[[ -f "$scratch/rules/standing.md.pre-rulebook-redteam-20260827T041500Z" ]] \
   || fail "missing sibling backup of standing.md"
-[[ -f "$scratch/rules/AGENTS.md.bak-rulebook-redteam-20260827" ]] \
+[[ -f "$scratch/rules/AGENTS.md.pre-rulebook-redteam-20260827T041500Z" ]] \
   || fail "missing sibling backup of AGENTS.md"
+
+    # fleet-ops#5682: the backup suffix must stay disjoint from the
+    # fleet-ops#3273/#5602 sprawl glob (.bak* next to MANIFEST-managed dests).
+    if compgen -G "$scratch/rules/*.bak*" >/dev/null; then
+      fail "rulebook backups must never carry .bak* — sprawl canary flags them (fleet-ops#5682)"
+    fi
+    for b in "$scratch"/rules/*.pre-rulebook-redteam-*; do
+      [[ "$b" == *".pre-rulebook-redteam-"*T*Z ]] \
+        || fail "backup suffix must be <file>.pre-rulebook-redteam-<UTCts>: $b"
+    done
 grep -q create "$GH_CREATED" || fail "drill must file: $(cat "$GH_LOG")"
 grep -E 'CREATE .*--label gap-audit' "$GH_CREATE_LOG" >/dev/null \
   || fail "filed issue must carry gap-audit: $(cat "$GH_CREATE_LOG")"
@@ -160,6 +171,69 @@ grep -qE '^last-rulebook-redteam-run:' "$plan" \
 [[ -f "$scratch/state/last-heading-count" ]] \
   || fail "runner must store last-heading-count"
 ok "drill: sibling backups, gap-audit+agent-ready file, stamp"
+
+# --- 2c. in-checkout rule files back up to the report dir, never a sibling --
+# fleet-ops#5687: in production this script's checkout IS the deploy clone
+# (the installed symlink resolves there), so a sibling .pre-rulebook-redteam-*
+# next to <clone>/AGENTS.md dirties the live install source and trips
+# DEPLOY-CHECK-DIRTY-CLONE on every run (live dirt 2026-09-12). The backup
+# must land in the report dir instead.
+: >"$GH_CREATED"
+: >"$GH_CREATE_LOG"
+rm -rf "$scratch/state"
+mkdir -p "$scratch/state"
+set +e
+incheckout_out=$(
+  RULEBOOK_DRILL=1 \
+  RULEBOOK_DRILL_FINDINGS="$fixture" \
+  RULEBOOK_STATE_DIR="$scratch/state" \
+  RULEBOOK_PLAN_FILE="$plan" \
+  RULEBOOK_STANDING_RULES="$scratch/rules/standing.md" \
+  RULEBOOK_RULE_FILES="$repo_root/AGENTS.md" \
+  RULEBOOK_FAKE_NOW="2026-08-27T04:15:00Z" \
+    "$bin" 2>&1
+)
+incheckout_rc=$?
+set -e
+[[ "$incheckout_rc" == "0" ]] || fail "in-checkout drill should exit 0, got $incheckout_rc ($incheckout_out)"
+if compgen -G "$repo_root/AGENTS.md.pre-rulebook-redteam-*" >/dev/null; then
+  fail "in-checkout rule file must NOT get a sibling backup inside the checkout (dirties the deploy clone)"
+fi
+rep_backup="$scratch/state/reports/2026_08_27T04_15_00Z/AGENTS.md.pre-rulebook-redteam-20260827T041500Z"
+[[ -f "$rep_backup" ]] || fail "in-checkout backup must land in the report dir: $(find "$scratch/state" -name '*.pre-rulebook-redteam-*')"
+cmp -s "$repo_root/AGENTS.md" "$rep_backup" || fail "report-dir backup must be a full copy of the source"
+grep -q "undo: cp $rep_backup $repo_root/AGENTS.md" \
+  "$scratch/state/reports/2026_08_27T04_15_00Z/backups.txt" \
+  || fail "manifest must still carry the undo path for the redirected backup"
+ok "in-checkout rule file backs up to the report dir, no clone dirt (fleet-ops#5687)"
+
+# --- 2b. cap overflow: LOUD + durable, not a silent drop (fleet-ops#5441) --
+fixture_cap="$repo_root/tests/fixtures/rulebook-redteam-drill-findings-cap.json"
+[[ -f "$fixture_cap" ]] || fail "missing $fixture_cap"
+: >"$GH_CREATED"
+: >"$GH_CREATE_LOG"
+rm -rf "$scratch/state-cap"
+printf 'last-heartbeat: 2026-08-27T00:00:00Z\n' >"$plan"
+set +e
+cap_out=$(RULEBOOK_DRILL_FINDINGS="$fixture_cap" \
+  RULEBOOK_STATE_DIR="$scratch/state-cap" \
+  RULEBOOK_MAX_FINDINGS=2 run_drill 2>&1)
+cap_rc=$?
+set -e
+[[ "$cap_rc" == "0" ]] || fail "cap overflow is LOUD, not fatal — rc must be 0, got $cap_rc ($cap_out)"
+[[ "$(grep -c . "$GH_CREATED")" == "2" ]] \
+  || fail "cap 2 over 3 findings must file exactly 2: $(cat "$GH_CREATED")"
+grep -q 'SKIP (cap 2 reached)' <<<"$cap_out" \
+  || fail "capped finding must log a per-finding SKIP: $cap_out"
+grep -q 'LOUD: 1 finding(s) unfiled (cap 2)' <<<"$cap_out" \
+  || fail "cap overflow must print the LOUD unfiled count: $cap_out"
+cap_report=$(find "$scratch/state-cap" -name report.md -print | sort | head -1)
+[[ -n "$cap_report" ]] || fail "cap drill wrote no report.md under $scratch/state-cap"
+grep -q 'unfiled (cap 2)' "$cap_report" \
+  || fail "report.md must carry the unfiled-overflow row: $cap_report"
+grep -qE '^last-rulebook-redteam-run: .*capped=1' "$plan" \
+  || fail "plan stamp must carry capped=1: $(grep last-rulebook-redteam-run "$plan")"
+ok "cap overflow: 2 filed, 1 capped — per-finding SKIP, LOUD count, report row, stamp"
 
 # --- 3. timer shape --------------------------------------------------------
 grep -qE '^OnCalendar=\*-\*-\*01 04:15:00$' "$timer" \
@@ -290,8 +364,8 @@ cat >"$scratch/fakebin/pi" <<'FAKE'
 exit 0
 FAKE
 chmod +x "$scratch/fakebin/pi"
-cat >"$scratch/seat-lib.sh" <<'FAKE'
-pick_seat() { printf 'devin swe-1-7\n'; }
+cat >"$scratch/seatlib.sh" <<'FAKE'
+litellm_seat() { printf 'litellm\tsenior\n'; }
 FAKE
 rm -rf "$scratch/state-packet"
 set +e
@@ -301,7 +375,7 @@ packet_out=$(RULEBOOK_DRY_RUN=1 \
   RULEBOOK_STANDING_RULES="$scratch/rules/standing.md" \
   RULEBOOK_RULE_FILES="$scratch/rules/standing.md
 $scratch/rules/does-not-exist.md" \
-  RULEBOOK_SEAT_LIB="$scratch/seat-lib.sh" \
+  RULEBOOK_SEAT_LIB="$scratch/seatlib.sh" \
   RULEBOOK_PI_BIN="$scratch/fakebin/pi" \
   RULEBOOK_FAKE_NOW="2026-08-27T04:15:00Z" \
   "$bin" 2>&1)
@@ -325,5 +399,62 @@ total=$(wc -l <"$pkt_file")
 [[ "$static_first" -gt $((total * 7 / 10)) ]] \
   || fail "Run context must sit in the last 30% (line $static_first of $total)"
 ok "packet assembly: missing last rule file is a SKIP, run context is last"
+
+# --- 8. a hung pi is bounded by RULEBOOK_PI_TIMEOUT_S (fleet-ops#6173) ----
+# 2026-09-12T22:58Z: a drained senior route (every deployment 429-cooled, the
+# proxy answering "No deployment available, try again in 300 seconds") made
+# the pi client retry for the FULL 45min TimeoutStartSec — systemd SIGTERMed
+# the run (unit-failure trip, zero output). The reviewer call must be
+# time-bounded by the script: a timed-out pi takes the ordinary failed-pi
+# path (filed=0, unit exits 0) and the heading-growth bonus re-dispatches.
+cat >"$scratch/fakebin/pi" <<'FAKE'
+#!/usr/bin/env bash
+sleep 5
+exit 0
+FAKE
+chmod +x "$scratch/fakebin/pi"
+printf 'litellm_seat() { printf "litellm\tsenior\n"; }' >"$scratch/litellm-seat.sh"
+rm -rf "$scratch/state-timeout"
+set +e
+to_out=$(RULEBOOK_STATE_DIR="$scratch/state-timeout" \
+  RULEBOOK_PLAN_FILE="$plan" \
+  RULEBOOK_STANDING_RULES="$scratch/rules/standing.md" \
+  RULEBOOK_SEAT_LIB="$scratch/litellm-seat.sh" \
+  RULEBOOK_PI_BIN="$scratch/fakebin/pi" \
+  RULEBOOK_PI_TIMEOUT_S=1 \
+  RULEBOOK_FAKE_NOW="2026-09-13T00:30:00Z" \
+  "$bin" 2>&1)
+to_rc=$?
+set -e
+[[ "$to_rc" == "0" ]] \
+  || fail "timed-out pi must take the ordinary failed-pi path, rc=0 (got $to_rc): $to_out"
+grep -q 'TIMED OUT after 1s' <<<"$to_out" \
+  || fail "expected the bounded-TIMEOUT log line: $to_out"
+grep -q 'pi red-team exited rc=124' <<<"$to_out" \
+  || fail "expected rc=124 from the killed pi: $to_out"
+# ...and a FAST pi still completes green through the same timeout(1) wrapper
+cat >"$scratch/fakebin/pi" <<'FAKE'
+#!/usr/bin/env bash
+exit 0
+FAKE
+chmod +x "$scratch/fakebin/pi"
+rm -rf "$scratch/state-fast"
+set +e
+fast_out=$(RULEBOOK_STATE_DIR="$scratch/state-fast" \
+  RULEBOOK_PLAN_FILE="$plan" \
+  RULEBOOK_STANDING_RULES="$scratch/rules/standing.md" \
+  RULEBOOK_SEAT_LIB="$scratch/litellm-seat.sh" \
+  RULEBOOK_PI_BIN="$scratch/fakebin/pi" \
+  RULEBOOK_PI_TIMEOUT_S=1800 \
+  RULEBOOK_FAKE_NOW="2026-09-13T00:31:00Z" \
+  "$bin" 2>&1)
+fast_rc=$?
+set -e
+[[ "$fast_rc" == "0" ]] \
+  || fail "fast pi under the timeout wrapper must still complete (got $fast_rc): $fast_out"
+if grep -q 'TIMED OUT' <<<"$fast_out"; then
+  fail "fast pi must not log TIMED OUT: $fast_out"
+fi
+ok "pi reviewer call is bounded: hung pi -> rc=124 -> completed filed=0; fast pi unaffected"
 
 ok "fleet-ops#527 rulebook red-team: backups, drill, timer, cadence, heading bonus"

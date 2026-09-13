@@ -6,7 +6,7 @@
 # Human gh is read-only for organs; GH Actions (tests) has no App creds and
 # stubs gh as read-only, so skip minting there.
 if [[ -z "${GH_TOKEN:-}" && "${GITHUB_ACTIONS:-}" != "true" && "${GH:-gh}" == "gh" ]]; then
-    export PATH="/home/nish/.local/bin:/usr/local/bin:/usr/bin:/bin:${PATH:-}"
+    command -v gh >/dev/null 2>&1 || export PATH=/home/nish/.local/bin:/usr/local/bin:/usr/bin:/bin:${PATH:-}
     _wt="${NISHFLEET_WORKER_TOKEN_BIN:-${HOME:-/home/nish}/.local/bin/worker-token}"
     _minted="$("$_wt" --print)" || { echo "fleet-ops#3445: $_wt --print failed - refusing human-gh writes" >&2; exit 1; }
     eval "$_minted"
@@ -72,6 +72,11 @@ set -uo pipefail
 TRIAGE_FILE="${TRIAGE_FILE:-/home/nish/workspaces/agent-state/FLEET-HEARTBEAT-TRIAGE.md}"
 SYSTEMCTL="${SYSTEMCTL:-systemctl}"
 STATE_DIR="${PI_PACKET_STATE:-$HOME/.local/state/pi-packet}"
+# fleet-ops#2133: per-failed-claim reclaim cooldown, mirrored from the intake
+# side (lib/pi-intake-tick.sh RECLAIM_COOLDOWN_S). fleet-ops#5743: also the
+# floor the bench-aware requeue compares the overloaded seat's bench_until
+# against — the until: line is only added when the bench outlives this floor.
+RECLAIM_COOLDOWN_S="${PI_INTAKE_RECLAIM_COOLDOWN_S:-900}"
 ATTEMPTS_DIR="$STATE_DIR/attempts"
 ISSUES_DIR="${PI_ISSUES_DIR:-$HOME/.local/state/pi-issues}"
 
@@ -99,6 +104,45 @@ log_to_triage() {
     {
         printf '\n[%s] [%s] %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$tag" "$msg"
     } >> "$TRIAGE_FILE" 2>/dev/null || log "WARN: could not append to triage $TRIAGE_FILE"
+}
+
+# --- fleet-ops#5781: App-GraphQL write failure -> App-REST retry -> LOUD -----
+# `gh issue edit` / `gh issue comment` are GraphQL calls on the App
+# installation's graphql bucket. When that bucket is exhausted (live case
+# 2026-09-12T03:06Z on #5734: "label flip failed" + "comment post failed"
+# while installation 156789042 was rate-limited) the write retries once
+# through the matching REST endpoint on the SAME App credential — the core
+# bucket is independent of the graphql bucket. Writes NEVER drop to the
+# human identity (fleet-ops#3445). A double failure emits one LOUD line —
+# journal AND the heartbeat triage the judges read — so the inconsistent
+# issue state is a named fault, not a silent WARN.
+
+# reap_labels_rest_retry <add-ready:yes|no>
+# PUT the full desired label set in one atomic call: the pre-flip labels
+# from $state_json minus agent-in-progress, plus agent-ready when $1=yes.
+reap_labels_rest_retry() {
+    local add_ready="$1" desired
+    desired=$(printf '%s' "$state_json" | jq -c --arg ar "$add_ready" '
+        ([.labels[]?.name | select(. != "agent-in-progress")]
+         + (if $ar == "yes" then ["agent-ready"] else [] end)) | unique' 2>/dev/null) || return 1
+    [[ -n "$desired" ]] || return 1
+    printf '{"labels":%s}' "$desired" \
+        | gh api "repos/$repo_slug/issues/$issue/labels" -X PUT --input - >/dev/null 2>&1
+}
+
+# reap_comment_rest_retry <body>
+reap_comment_rest_retry() {
+    gh api "repos/$repo_slug/issues/$issue/comments" -X POST -f body="$1" >/dev/null 2>&1
+}
+
+# reap_write_fail <tag> <detail...>
+# One LOUD line to the journal and one [TAG] line to the judges' triage —
+# the #5489 visibility rule: an issue left inconsistent by a dead write is
+# a named fault, not a mystery.
+reap_write_fail() {
+    local tag="$1"; shift
+    log "LOUD [$tag] $* (instance=$instance)"
+    log_to_triage "$tag" "LOUD instance=$instance — $* (failed on App GraphQL AND App REST retry; issue state left inconsistent)"
 }
 
 [[ $# -ge 1 ]] || { log "usage: $0 [--dry-run] <repo>-<issue>"; exit 1; }
@@ -185,8 +229,16 @@ in_progress=$(printf '%s' "$state_json" | jq -e '[.labels[]?.name] | any(. == "a
 # re-arms the spawn churn the block was meant to stop. blocked-reconcile owns
 # the unblock; the reaper only clears the stale agent-in-progress tag here.
 agent_blocked=$(printf '%s' "$state_json" | jq -e '[.labels[]?.name] | any(. == "agent-blocked")' >/dev/null 2>&1 && echo yes || echo no)
+# fleet-ops#5092: a parked issue (awaiting-runtime-gate, the #4540 park) must
+# stay parked — the failed-unit reaper is the exact path that silently
+# un-parked 0509#2213 (restart at 20:04:41Z, four minutes after the park):
+# StartLimitBurst tripped, the reaper restored agent-ready, and the claim-spin
+# the park exists to kill restarted. Fail-closed: the reaper clears
+# stale agent-in-progress only and NEVER re-adds agent-ready on a parked
+# issue. Park un-parking belongs to blocked-reconcile / the scheduler.
+awaiting_gate=$(printf '%s' "$state_json" | jq -e '[.labels[]?.name] | any(. == "awaiting-runtime-gate")' >/dev/null 2>&1 && echo yes || echo no)
 
-log "state=$issue_state in_progress=$in_progress agent_blocked=$agent_blocked for $repo_slug#$issue"
+log "state=$issue_state in_progress=$in_progress agent_blocked=$agent_blocked parked_gate=$awaiting_gate for $repo_slug#$issue"
 
 # --- branch cleanup: only if no open PR from this branch --------------------
 # Same REST-vs-GraphQL split: `gh pr list --json` is GraphQL; use `gh api` REST
@@ -244,31 +296,47 @@ if [[ "$issue_state" == "OPEN" ]]; then
     # posts the same blocked-on:, and dies again (the #3763 loop: 4 claims
     # in 40 min, StartLimitBurst). blocked-reconcile flips agent-blocked ->
     # agent-ready once the blocker resolves.
-    if [[ "$agent_blocked" == "yes" ]]; then
+    if [[ "$agent_blocked" == "yes" || "$awaiting_gate" == "yes" ]]; then
         if gh issue edit "$issue" -R "$repo_slug" --remove-label agent-in-progress 2>/dev/null; then
             label_ok=yes
-            log "issue $repo_slug#$issue is agent-blocked; cleared agent-in-progress only (left agent-blocked for blocked-reconcile)"
+            if [[ "$awaiting_gate" == "yes" ]]; then
+                log "issue $repo_slug#$issue is parked (awaiting-runtime-gate); cleared agent-in-progress only, agent-ready NOT restored (fleet-ops#5092 fail-closed)"
+            else
+                log "issue $repo_slug#$issue is agent-blocked; cleared agent-in-progress only (left agent-blocked for blocked-reconcile)"
+            fi
+        elif reap_labels_rest_retry no; then
+            label_ok=yes
+            if [[ "$awaiting_gate" == "yes" ]]; then
+                log "issue $repo_slug#$issue is parked (awaiting-runtime-gate); cleared agent-in-progress only via App REST retry, agent-ready NOT restored (fleet-ops#5092 fail-closed)"
+            else
+                log "issue $repo_slug#$issue is agent-blocked; cleared agent-in-progress only via App REST retry (left agent-blocked for blocked-reconcile)"
+            fi
         else
-            log "label flip (remove in-progress only, agent-blocked held) failed on $repo_slug#$issue"
-            log_to_triage "CLAIM-REAP-LABEL-FAIL" "instance=$instance step=open_labels_blocked"
+            reap_write_fail CLAIM-REAP-LABEL-FAIL "label flip (remove in-progress only, agent-blocked held) failed on $repo_slug#$issue"
         fi
     elif gh issue edit "$issue" -R "$repo_slug" --remove-label agent-in-progress --add-label agent-ready 2>/dev/null; then
         label_ok=yes
+    elif reap_labels_rest_retry yes; then
+        label_ok=yes
+        log "label flip (remove in-progress / add ready) on $repo_slug#$issue succeeded via App REST retry after GraphQL failure"
     else
-        log "label flip (remove in-progress / add ready) failed on $repo_slug#$issue"
-        log_to_triage "CLAIM-REAP-LABEL-FAIL" "instance=$instance step=open_labels"
+        reap_write_fail CLAIM-REAP-LABEL-FAIL "label flip (remove in-progress / add ready) failed on $repo_slug#$issue"
     fi
     comment_ok=no
-    if gh issue comment "$issue" -R "$repo_slug" --body "claim branch released after pi-issue-$instance reached StartLimitBurst at $(date -u +%FT%TZ)" 2>/dev/null; then
+    comment_body="claim branch released after pi-issue-$instance reached StartLimitBurst at $(date -u +%FT%TZ)"
+    if gh issue comment "$issue" -R "$repo_slug" --body "$comment_body" 2>/dev/null; then
         comment_ok=yes
+    elif reap_comment_rest_retry "$comment_body"; then
+        comment_ok=yes
+        log "comment post on $repo_slug#$issue succeeded via App REST retry after GraphQL failure"
     else
-        log "comment post failed on $repo_slug#$issue (label flip already attempted)"
+        reap_write_fail CLAIM-REAP-COMMENT-FAIL "comment post failed on $repo_slug#$issue (label flip already attempted)"
     fi
     log_to_triage "CLAIM-RELEASED" "instance=$instance repo=$repo_slug branch=$branch_name branch_deleted=$branch_deleted label_flipped=$label_ok comment_posted=$comment_ok"
     # --- reclaim cooldown (fleet-ops#2133, auditor 2026-08-30) -----------------
     # A failed worker's claim was just released back to agent-ready. Without a
     # cooldown, the next intake tick (every ~8min) re-claims the same issue,
-    # spawns a new worker, and pick_seat routes to another free seat that dies
+    # spawns a new worker, and pick-seat routes to another free seat that dies
     # the same way — a spawn-die-respawn loop that burned #2133 6x in one day
     # (05:52, 07:01, 08:26, 09:23 IST + 2 more). The cooldown marker tells
     # intake to skip this issue for PI_INTAKE_RECLAIM_COOLDOWN_S (default 900s
@@ -277,8 +345,53 @@ if [[ "$issue_state" == "OPEN" ]]; then
     # deleted (the reclaim path); the open-PR shortcut exits before here.
     if [[ "$branch_deleted" == "yes" ]]; then
         cooldown_file="$ATTEMPTS_DIR/pi-issue-${instance}.cooldown"
+        # fleet-ops#5743: bench-aware transient-overload requeue. The hand
+        # path (audit 2026-09-12, unit pi-issue@fleet-ops-2073) manually added
+        # a READY-WORK.md row with an `after:` gate on the overloaded seat's
+        # bench expiry, because the fixed cooldown below outlives nothing:
+        # a 503 overload bench is geometrically escalated (600s base up to 6h,
+        # mark_seat_overload_bench) and can outlast RECLAIM_COOLDOWN_S. The
+        # READY-WORK ledger is paper (fleet-ops#1493) with no live rail, so
+        # the requeue is minted here instead, on the existing issue-dispatch
+        # entry point: the cooldown marker learns an absolute `until:` line.
+        # Detection is NOT conflated with empty-run or real packet failures:
+        # the classification fires only when the LAST seat's leftover health
+        # file (litellm-seat keep-list; proxy owns routing cooldown) says
+        # health_class=overload_bench / failure_mode=overload_503 AND its
+        # bench_until is still in the future. Unit-escalation-write already
+        # excludes pi-issue@* (its own OnFailure lives here), so this is the
+        # single writer for the requeue.
+        _ov_until=""
+        _last_seat_ov=$(cat "$ATTEMPTS_DIR/pi-issue-${instance}.seat" 2>/dev/null || true)
+        if [[ -n "$_last_seat_ov" && "$_last_seat_ov" == */* ]]; then
+            _seat_lib=${SEAT_LIB:-$HOME/.local/lib/pi-packet/litellm-seat.sh}
+            if [[ -f "$_seat_lib" ]]; then
+                # shellcheck disable=SC1090
+                source "$_seat_lib" 2>/dev/null || true
+            fi
+            if declare -F seat_ledger_path >/dev/null 2>&1; then
+                _ov_ledger=$(seat_ledger_path "${_last_seat_ov%%/*}" "${_last_seat_ov#*/}" 2>/dev/null || true)
+                if [[ -n "$_ov_ledger" && -f "$_ov_ledger" ]]; then
+                    IFS=$'\x1f' read -r _ov_hc _ov_fm _ov_bu <<<"$(jq -r '[.health_class//"",.failure_mode//"",.bench_until//""] | join("\u001f")' "$_ov_ledger" 2>/dev/null)"
+                    if [[ "${_ov_hc:-}" == "overload_bench" && "${_ov_fm:-}" == "overload_503" && -n "${_ov_bu:-}" ]]; then
+                        _ov_bu_epoch=$(date -u -d "$_ov_bu" +%s 2>/dev/null) || _ov_bu_epoch=0
+                        _cd_bound_epoch=$(( $(date -u +%s) + RECLAIM_COOLDOWN_S ))
+                        if (( _ov_bu_epoch > _cd_bound_epoch )); then
+                            _ov_until="$_ov_bu"
+                        fi
+                    fi
+                fi
+            fi
+        fi
         if date -u +%Y-%m-%dT%H:%M:%SZ >"$cooldown_file" 2>/dev/null; then
-            log "wrote reclaim cooldown marker for $instance (branch deleted, OPEN issue re-queued with backoff)"
+            if [[ -n "$_ov_until" ]]; then
+                printf 'until: %s\n' "$_ov_until" >>"$cooldown_file" 2>/dev/null || true
+                log "TRANSIENT-OVERLOAD classified for $instance: seat $_last_seat_ov benched until $_ov_until — requeue gated past bench expiry (no hand READY-WORK row)"
+                log "wrote reclaim cooldown marker for $instance with until: $_ov_until (branch deleted, OPEN issue re-queued bench-aware)"
+                log_to_triage "TRANSIENT-OVERLOAD-REQUEUE" "instance=$instance repo=$repo_slug issue=$issue until=$_ov_until seat=$_last_seat_ov"
+            else
+                log "wrote reclaim cooldown marker for $instance (branch deleted, OPEN issue re-queued with backoff)"
+            fi
         else
             log "WARN: could not write cooldown marker $cooldown_file"
         fi
@@ -346,7 +459,7 @@ if [[ "$issue_state" == "OPEN" ]]; then
     _tried_file="$ATTEMPTS_DIR/pi-issue-${instance}.tried-seats"
     _systemic_file="$ATTEMPTS_DIR/pi-issue-${instance}.systemic"
     if [[ -f "$_tried_file" ]]; then
-        _seat_lib="${SEAT_LIB:-$HOME/.local/lib/pi-packet/seat-lib.sh}"
+        _seat_lib="${SEAT_LIB:-$HOME/.local/lib/pi-packet/litellm-seat.sh}"
         _src_seat_lib=""
         if [[ -f "$_seat_lib" ]]; then
             # shellcheck disable=SC1090
@@ -369,7 +482,7 @@ if [[ "$issue_state" == "OPEN" ]]; then
         done < "$_tried_file"
         # A systemic marker fires only when every tried seat is benched AND
         # we saw at least one seat (otherwise there is no exhaustion to signal).
-        # If seat-lib is absent (CI), we cannot evaluate seat_usable — skip
+        # If litellm-seat is absent (CI), we cannot evaluate seat_usable — skip
         # the marker (fail-open: re-claim normally).
         if (( _seat_scan_total > 0 && _seat_scan_total == _seat_scan_benched )); then
             if date -u +%Y-%m-%dT%H:%M:%SZ > "$_systemic_file" 2>/dev/null; then
@@ -383,9 +496,11 @@ elif [[ "$issue_state" == "CLOSED" ]]; then
     if [[ "$in_progress" == "yes" ]]; then
         if gh issue edit "$issue" -R "$repo_slug" --remove-label agent-in-progress 2>/dev/null; then
             label_ok=yes
+        elif reap_labels_rest_retry no; then
+            label_ok=yes
+            log "label remove (in-progress) on closed $repo_slug#$issue succeeded via App REST retry after GraphQL failure"
         else
-            log "label remove (in-progress) failed on closed $repo_slug#$issue"
-            log_to_triage "CLAIM-REAP-LABEL-FAIL" "instance=$instance step=closed_labels"
+            reap_write_fail CLAIM-REAP-LABEL-FAIL "label remove (in-progress) failed on closed $repo_slug#$issue"
         fi
     fi
     should_archive_packets=1
@@ -411,7 +526,7 @@ fi
 # fleet-ops#516 (auditor 2026-08-27): the reap must NOT wipe the per-issue
 # tried-seats file when the last failure was a mid-session provider death on
 # a still-healthy seat. Without this, the intake re-claim starts from an
-# empty tried-seats list and pick_seat re-selects the SAME killing seat
+# empty tried-seats list and pick-seat re-selects the SAME killing seat
 # (0509-974 cursor-grok-4.6-high 143 x3). The seat-health ledger is the
 # DURABLE avoidance authority (pi-issue-run now benches mid-session deaths
 # there), but a seat that was killed ONCE should still be excluded until the
@@ -431,7 +546,7 @@ if [[ -n "$last_seat" ]]; then
     # Source the repo copy when present so CI does not leak the live VPS
     # seat ledger (a missing seat_usable there looks like "benched" and
     # keeps tried-seats, which is the opposite of the recover case).
-    _seat_lib="${SEAT_LIB:-$HOME/.local/lib/pi-packet/seat-lib.sh}"
+    _seat_lib="${SEAT_LIB:-$HOME/.local/lib/pi-packet/litellm-seat.sh}"
     if [[ -f "$_seat_lib" ]]; then
         # shellcheck disable=SC1090
         source "$_seat_lib" 2>/dev/null || true

@@ -40,6 +40,33 @@ _cadence_loud() {
     } >> "$triage" 2>/dev/null || _cadence_log "WARN: could not append to triage $triage"
 }
 
+_cadence_timeout_guard() {
+    # fleet-ops#5780: report a fleet-blind-audit run that SIGTERMed on its
+    # TimeoutStartSec in the last 24h (ExecMainStatus=15/TERM). The tier1
+    # cadence canary stays the detector; this drills the guard so an audit
+    # killed mid-filing cannot pass silently. Tests replay a fixture via
+    # FLEET_BLIND_AUDIT_JOURNAL_CMD. The live tick (fleet-heartbeat-tier1
+    # section 11) exports that override; standalone callers (tests) must
+    # provide it too, or the guard stays silent rather than depending on a
+    # live journalctl on every host.
+    audit_canary_timeout="unchecked"
+    [ "${AUDIT_CADENCE_TIMEOUT_DISABLE:-0}" = "1" ] && return 0
+    if [ -z "${FLEET_BLIND_AUDIT_JOURNAL_CMD:-}" ]; then
+        return 0
+    fi
+    local cmd="${FLEET_BLIND_AUDIT_JOURNAL_CMD:-journalctl --user -u fleet-blind-audit.service --since -24h --no-pager}"
+    local journal_out
+    journal_out=$(bash -c "$cmd" 2>/dev/null || true)
+    audit_canary_timeout="none"
+    [ -n "$journal_out" ] || return 0
+    if printf '%s\n' "$journal_out" | grep -q 'status=15/TERM'; then
+        audit_canary_timeout="term-timeout"
+        audit_canary_status="timeout-term"
+        _cadence_loud "BLIND-AUDIT-TIMEOUT-TERM" \
+            "fleet-blind-audit terminated with status=15/TERM (TimeoutStartSec) in the last 24h — findings went unfiled; filing budget must be fixed (fleet-ops#5780)"
+    fi
+}
+
 heartbeat_blind_audit_cadence_canary() {
     audit_canary_status="ok"
     audit_canary_age_s="-"
@@ -93,6 +120,10 @@ heartbeat_blind_audit_cadence_canary() {
             "audit last ran ${age_h}h ago (limit ${limit_h}h, stamp='$audit_stamp') — daily floor is not firing; §10 dispatch or systemd timer is broken; manual systemctl --user start fleet-blind-audit.service required"
     fi
     _cadence_log "11. blind-audit cadence canary: status=$audit_canary_status age=${audit_canary_age_s}s limit=${max_age_s}s"
+    _cadence_timeout_guard
+    if [ -n "${audit_canary_timeout:-}" ]; then
+        _cadence_log "11. blind-audit timeout guard: ${audit_canary_timeout}"
+    fi
     return 0
 }
 

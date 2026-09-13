@@ -34,7 +34,7 @@ now_iso() {
 command -v jq >/dev/null 2>&1 || { echo '{"green":false,"error":"jq missing"}'; exit 2; }
 
 if [ "$DISABLE" = "1" ]; then
-    jq -c -n '{green:true, snapshot:{}, note:"disabled"}'
+    jq -c -n '{green:true, unmeasured:[], snapshot:{}, note:"disabled"}'
     exit 0
 fi
 
@@ -72,21 +72,39 @@ if command -v "$GH" >/dev/null 2>&1; then
         --json number --jq length 2>/dev/null || echo "null")"
 fi
 
+# fleet-ops#5400: the old `--search "-blocked-on:nish-decision"` returned 0 on
+# every repo — GitHub cannot negate a free-text phrase with a bare `-` — so
+# pct_auto_repaired read a permanent 0.0 (the cycle-15 senior dissent named
+# exactly that line). Count client-side instead: a closed gap-audit issue that
+# never carried the agent-blocked label was repaired without escalation.
+# --limit: the gh default (30) already truncates the closed board today.
 pct_auto_repaired="null"
 if command -v "$GH" >/dev/null 2>&1; then
-    closed="$("$GH" issue list -R "$REPO" -l gap-audit --state closed \
-        --json number --jq length 2>/dev/null || echo "0")"
-    if [ "${closed:-0}" -gt 0 ] 2>/dev/null; then
-        auto="$("$GH" issue list -R "$REPO" -l gap-audit --state closed \
-            --search "-blocked-on:nish-decision" --json number --jq length 2>/dev/null || echo "0")"
-        pct_auto_repaired="$(python3 -c "print(round(100*${auto:-0}/${closed},1))" 2>/dev/null || echo "null")"
-    fi
+    closed_json="$("$GH" issue list -R "$REPO" -l gap-audit --state closed \
+        --limit 500 --json labels 2>/dev/null || echo '[]')"
+    pct_auto_repaired="$(printf '%s' "$closed_json" | jq -r '
+        if (type != "array") or (length == 0) then null
+        else (([.[] | select([.labels[].name] | index("agent-blocked") | not)]
+               | length) * 1000 / length | round / 10)
+        end' 2>/dev/null || echo "null")"
 fi
 
 starvation_min="null"
-starve_state="${HOME}/.local/state/fleet-heartbeat/queue-starvation.json"
+starve_state="${GAP_LOOP_STARVATION_JSON:-${HOME}/.local/state/fleet-heartbeat/queue-starvation.json}"
 if [ -f "$starve_state" ]; then
     starvation_min="$(jq -r '.starvation_minutes_24h // null' "$starve_state" 2>/dev/null || echo "null")"
+    # A present-but-non-numeric read is unmeasured, not 0.
+    case "$starvation_min" in ''|*[!0-9.]*) starvation_min="null" ;; esac
+fi
+
+# time_to_repair_per_class has no instrumented producer yet (the cycle-15
+# senior dissent, fleet-ops#5400, names exactly this hole). Read a producer
+# file when one exists; an absent or empty object is UNMEASURED and counts as
+# budget exhausted below — never as a pass (fail closed, fleet-ops#4297).
+ttr='{}'
+TTR_JSON="${GAP_LOOP_TTR_JSON:-$STATE_DIR/time-to-repair.json}"
+if [ -f "$TTR_JSON" ]; then
+    ttr="$(jq -c 'if type == "object" then . else {} end' "$TTR_JSON" 2>/dev/null || echo '{}')"
 fi
 
 # Fill from #153's last THROUGHPUT line when present; otherwise the declared placeholder.
@@ -126,14 +144,42 @@ if [ -f "$QUALITY_JSON" ]; then
     fi
 fi
 
+# fleet-ops#5400 / #4297: green is EARNED, not defaulted. Every required input
+# must be measured AND passing; an unmeasured required field (null, empty, or
+# unparseable) is budget-exhausted, never a pass. Before this, nulls fell
+# through the checks untouched and green stayed true while
+# queue_starvation_minutes was null and time_to_repair_per_class was {} — the
+# fail-open the cycle-15 senior dissent refused to stake the audit floor on.
+unmeasured='[]'
+add_unmeasured() { unmeasured="$(printf '%s' "$unmeasured" | jq -c --arg f "$1" '. + [$f]')"; }
+
 green="true"
 if [ "$drill_pass_rate" != "null" ]; then
     awk_ok="$(awk -v d="$drill_pass_rate" 'BEGIN { print (d+0 >= 1) ? "true" : "false" }')"
-    green="$awk_ok"
+    [ "$awk_ok" = "true" ] || green="false"
+else
+    add_unmeasured detector_drill_pass_rate; green="false"
 fi
 if [ "$chain_e2e_drill_pass_rate" != "null" ]; then
     awk_chain="$(awk -v d="$chain_e2e_drill_pass_rate" 'BEGIN { print (d+0 >= 1) ? "true" : "false" }')"
     [ "$awk_chain" = "true" ] || green="false"
+else
+    add_unmeasured chain_e2e_drill_pass_rate; green="false"
+fi
+# queue_starvation_minutes and time_to_repair_per_class carry no numeric pass
+# bar anywhere in the specs or config — measured is the bar until the
+# burn-math follow-up (#5125) defines remaining-budget thresholds.
+if [ "$starvation_min" = "null" ]; then
+    add_unmeasured queue_starvation_minutes; green="false"
+fi
+if [ "$(printf '%s' "$ttr" | jq 'length' 2>/dev/null || echo 0)" = "0" ]; then
+    add_unmeasured time_to_repair_per_class; green="false"
+fi
+if [ "$pct_auto_repaired" = "null" ]; then
+    add_unmeasured pct_auto_repaired; green="false"
+elif [ "$(awk -v p="$pct_auto_repaired" 'BEGIN { print (p+0 > 0) ? "true" : "false" }')" != "true" ]; then
+    # A measured 0% auto-repair rate is a failing self-repair SLO, not a pass.
+    green="false"
 fi
 if [ "$quality_green" != "true" ]; then
     green="false"
@@ -141,16 +187,18 @@ fi
 
 jq -c -n \
     --argjson green "$green" \
+    --argjson unmeasured "$unmeasured" \
     --argjson drill_pass_rate "$drill_pass_rate" \
     --argjson chain_e2e_drill_pass_rate "$chain_e2e_drill_pass_rate" \
     --argjson escalations_to_nish "$esc_to_nish" \
     --argjson pct_auto_repaired "$pct_auto_repaired" \
     --argjson starvation_minutes "$starvation_min" \
+    --argjson ttr "$ttr" \
     --argjson ratio "$ratio" \
     --argjson quality "$quality" \
     --arg now "$(now_iso)" \
-    '{green:$green, snapshot:{
-        time_to_repair_per_class:{},
+    '{green:$green, unmeasured:$unmeasured, snapshot:{
+        time_to_repair_per_class:$ttr,
         pct_auto_repaired:$pct_auto_repaired,
         queue_starvation_minutes:$starvation_minutes,
         detector_drill_pass_rate:$drill_pass_rate,

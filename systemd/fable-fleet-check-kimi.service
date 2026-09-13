@@ -4,9 +4,10 @@ StartLimitIntervalSec=1h
 StartLimitBurst=3
 
 [Service]
-Environment=WORKDIR=/home/nish/workspaces/tooling/fleet-ops-deploy
+# fleet-ops#6252: scratch cwd under agent-state, never a deploy checkout.
+Environment=WORKDIR=/home/nish/workspaces/agent-state/fable-check
 Environment=LOG_DIR=/home/nish/workspaces/agent-state/cron-output
-WorkingDirectory=/home/nish/workspaces/tooling/fleet-ops-deploy
+WorkingDirectory=-/home/nish/workspaces/agent-state/fable-check
 Type=oneshot
 Environment=HOME=/home/nish
 Environment=PATH=/home/nish/.local/bin:/usr/local/bin:/usr/bin:/bin
@@ -19,6 +20,7 @@ Environment=HERMES_OUTBOUND_CLASSES=MONEY-BOUNDARY|LEGAL-BOUNDARY|PRODUCT-DIRECT
 # landing-watch measure.sh digest parser counts it. seat= is stamped AFTER the
 # prompt body so prompt-cache hits survive across ticks. rc=124 is timeout's
 # own hang-watchdog exit (pi wedged) — it still records the report.
+ExecStartPre=/usr/bin/mkdir -p /home/nish/workspaces/agent-state/fable-check
 ExecStart=/bin/bash -c 'ts=$(date -u +%Y-%m-%dT%H-%M-%SZ); d=/home/nish/workspaces/agent-state/cron-output; o="$d/fable-fleet-check-kimi-$(date -u +%Y-%m-%d).md"; out=$(mktemp); err=$(mktemp); { printf "\n---\nrun_ts=%s seat=cursor/kimi-k3-max provider=cursor model=kimi-k3-max\n" "$ts"; cat /home/nish/workspaces/agent-state/fleet-landing-watch/fable-check.md; } | /home/nish/.local/bin/pi --print --provider cursor --model kimi-k3-max >"$out" 2>"$err" || { echo "fable-fleet-check-kimi: pi exit $? on cursor/kimi-k3-max (124=hang watchdog); report still recorded" >>"$err"; }; { printf "# fable-fleet-check-kimi %s\nseat=cursor/kimi-k3-max workdir=%s\n" "$ts" "$WORKDIR"; cat "$out"; printf "\n"; } >>"$o"; cat "$err" >&2; rm -f "$out" "$err"'
 Restart=on-failure
 RestartSec=900

@@ -88,6 +88,18 @@ for browser in chromium firefox; do
   # pattern - it tells you something is wrong and nothing about what (2026-08-24).
   if smoke_out=$(npm run smoke:public-layout 2>&1); then
     printf '[siterep-live-canary] %s smoke passed\n' "$browser"
+  elif printf '%s' "$smoke_out" | grep -q "Executable doesn't exist"; then
+    # Self-heal only for the missing-browser-binary case (playwright version
+    # drift outran the cached install). Anything else still fails loud.
+    printf '[siterep-live-canary] %s smoke: browser binary missing - installing and retrying once\n' "$browser" >&2
+    npx playwright install "$browser" >>/tmp/siterep-canary-pw-install.log 2>&1 || true
+    if smoke_out=$(npm run smoke:public-layout 2>&1); then
+      printf '[siterep-live-canary] %s smoke passed after browser install\n' "$browser"
+    else
+      printf '[siterep-live-canary] %s smoke FAILED after retry - failing loud. Output follows:\n' "$browser" >&2
+      printf '%s\n' "$smoke_out" | tail -40 >&2
+      rc=1
+    fi
   else
     printf '[siterep-live-canary] %s smoke FAILED - failing loud. Output follows:\n' "$browser" >&2
     printf '%s\n' "$smoke_out" | tail -40 >&2

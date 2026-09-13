@@ -136,6 +136,25 @@ jq -e '[.findings[].unit] | index("fleet-heartbeat") == null' <<<"$out" >/dev/nu
   || fail "hunt must NOT flag allowlisted/symlink fleet-heartbeat: $out"
 ok "hunt hits hand-placed units not on the allowlist"
 
+# --- recurrent finding names the prior adjudication (fleet-ops#5736) -----
+# A unit whose verdict is already recorded must carry that context so the
+# senior conference does not re-adjudicate a settled unit blind.
+out=$("$gate" hunt --input "$fixtures/hunt-recurrence.json")
+jq -e '.findings | length == 2' <<<"$out" >/dev/null || fail "hunt-recurrence must yield 2 findings: $out"
+rec=$(jq -c '.findings[] | select(.unit=="auditor-stdio-test")' <<<"$out")
+[[ -n "$rec" ]] || fail "hunt-recurrence must still flag auditor-stdio-test (recurrence stays flaggable): $out"
+grep -q 'PRIOR ADJUDICATION ON RECORD: MECHANICAL-INSTEAD' <<<"$rec" \
+  || fail "recurrent finding body must cite the prior verdict: $rec"
+grep -q '#1492' <<<"$rec" || fail "recurrent finding body must cite the prior issue #1492: $rec"
+grep -q '#5736' <<<"$rec" \
+  || fail "recurrent finding body must cite the logged recurrence issue: $rec"
+jq -e '.findings[] | select(.unit=="auditor-stdio-test") | .prior_verdict=="MECHANICAL-INSTEAD" and .prior_issue==1492' <<<"$out" >/dev/null \
+  || fail "finding must carry structured prior fields"
+# A genuinely new unit (no prior verdict) keeps the plain routing body.
+plain=$(jq -r '.findings[] | select(.unit=="some-new-thing") | .body' <<<"$out")
+grep -q 'PRIOR ADJUDICATION' <<<"$plain" && fail "plain finding must not claim a prior adjudication: $plain"
+ok "recurrent unit names prior adjudication; fresh unit does not"
+
 # --- hunt fixture hits real-file drop-ins even when parent is allowlisted
 # (fleet-ops#2924). Symlink drop-ins and ephemeral memory.conf stay silent.
 out=$("$gate" hunt --input "$fixtures/hunt-dropin-hit.json")
@@ -262,3 +281,77 @@ PY
 ok "rule-enforcement.json registers deletion-first + no-new-machinery with this gate"
 
 echo "OK: machinery-authorization-gate drill: reject unallowlisted add, pass deletion, live hunt"
+
+# --- fleet-ops#5779: stale surge precedence band hunt findings -----------
+# A surge band whose cutoff_utc is >24h past while machinery_max_pct>30, or
+# whose revert-condition issues are CLOSED for >48h, must be a hunt hit.
+band_paid=$(mktemp -d)
+trap 'rm -rf "$band_paid"' EXIT
+
+write_j() { jq -cn --argjson c "$2" '{band_files:[{path:$p,data:$c}]}' --arg p "$1"; }
+
+cut="2026-08-28T02:30:00Z"
+cut_fresh="2026-09-12T04:00:00Z"
+time_now="2026-09-12T06:00:00Z"
+closes='{"4130":"2026-09-07T21:15:06Z","4140":"2026-09-07T07:05:32Z"}'
+
+surge_band=$(jq -cn --arg cut "$cut" '{cutoff_utc:$cut,machinery_max_pct:100,surge_note:"REVERT when #4130 and #4140 close."}')
+stand_band=$(jq -cn --arg cut "$cut" '{cutoff_utc:$cut,machinery_max_pct:30}')
+
+# (i) fresh surge band (cutoff recent; revert issues <48h closed) → clean hunt
+surge_fresh=$(jq -cn --arg cut "$cut_fresh" '{cutoff_utc:$cut,machinery_max_pct:100,surge_note:"REVERT when #4130 and #4140 close."}')
+payload=$(write_j "precedence-band.surge-x.json" "$surge_fresh" | jq --arg c "$closes" --arg t "$time_now" '.issues_closed=$c|.now=$t')
+out=$("$gate" hunt --unit-dir /nonexistent --band-dir /nonexistent --input <(echo "$payload"))
+[[ $(jq '[.findings[] | select(.kind=="precedence-band" and (.title|startswith("stale surge precedence band")))] | length' <<<"$out") -eq 0 ]] || fail "fresh surge band must not be a stale-band hit: $out"
+ok "fresh surge band stays clean"
+
+# (ii) stale surge band: cutoff >24h past + machinery_max_pct>30 → hit
+payload=$(write_j "precedence-band.surge-2026-09-07.json" "$surge_band" | jq --arg c "$closes" --arg t "$time_now" '.issues_closed=$c|.now=$t')
+out=$("$gate" hunt --unit-dir /nonexistent --band-dir /nonexistent --input <(echo "$payload"))
+[[ $(jq '[.findings[] | select(.kind=="precedence-band" and (.title|startswith("stale surge precedence band")))] | length' <<<"$out") -eq 1 ]] || fail "stale surge band must be a hunt hit: $out"
+jq -e '[.findings[] | select(.kind=="precedence-band")][0].evidence.revert_issue_refs | index(4130) != null' <<<"$out" >/dev/null || fail "hit must cite revert refs #4130: $out"
+ok "stale surge band (cutoff past + issues closed >48h) is a hunt hit with refs"
+
+# (iii) canonical band missing while surge bands exist → second finding
+[[ $(jq '[.findings[] | select(.kind=="precedence-band" and (.title|contains("canonical")))] | length' <<<"$out") -eq 1 ]] || fail "missing canonical band must be a hunt hit: $out"
+ok "canonical precedence-band.json missing while surge bands exist"
+
+# (iv) canonical-only repo → clean (no surge rows → no findings at all)
+payload=$(write_j "precedence-band.json" "$stand_band" | jq --arg t "$time_now" '.now=$t')
+out=$("$gate" hunt --unit-dir /nonexistent --band-dir /nonexistent --input <(echo "$payload"))
+[[ "$(echo "$out" | jq ".findings | length")" -eq 0 ]] || fail "canonical-only band dir must yield no findings: $out"
+ok "canonical band only → clean hunt"
+
+# (v) live band-dir scan (default ~/workspaces/agent-state) — current state clean
+if [[ -d "$HOME/workspaces/agent-state" ]]; then
+  out=$("$gate" hunt --unit-dir /nonexistent --band-dir "$HOME/workspaces/agent-state")
+  [[ "$(jq '.findings | length' <<<"$out")" -eq 0 ]] || fail "live agent-state band dir must be clean post-revert: $out"
+  ok "live band-dir scan clean (surge reverted, canonical present)"
+fi
+
+# --- fleet-ops#5782: real-file .path units are classified (2026-09-12 pin)
+# The 2026-09-12 drill leak shipped throwaway .path watchers (btdrill-5471
+# and three resilience-drill-stub-*-probe copies) that stayed loaded after
+# their issues closed. Pin BOTH sides of the fix: a real-file .path whose
+# stem is NOT on the allowlist is a hunt hit (kind=unit, evidence names the
+# .path file), and the SAME shape whose stem IS registered register-while-
+# live (the seat_sentinel proof stubs, #5106) stays silent — exactly the
+# machinery live during the daily drill's seconds. --unit-dir drives the
+# real scanner; --band-dir /nonexistent keeps the #5779 band scan out.
+path_ud="$(mktemp -d)"
+printf '[Path]\nPathChanged=/tmp/btdrill-watch/sentinel\nUnit=btdrill-5471.service\n' \
+  >"$path_ud/btdrill-5471.path"
+printf '[Path]\nPathChanged=/tmp/sr-sentinel-scratch/.no-usable-seat\n' \
+  >"$path_ud/resilience-drill-stub-seat-sentinel.path"
+out=$("$gate" hunt --allowlist "$allowlist" --unit-dir "$path_ud" --band-dir /nonexistent)
+rm "$path_ud"/*.path
+rmdir "$path_ud"
+jq -e '[.findings[] | select(.kind=="unit" and .unit=="btdrill-5471")] | length == 1' <<<"$out" >/dev/null \
+  || fail "hunt must classify the real-file btdrill-5471.path as an unregistered unit: $out"
+jq -e '[.findings[] | select(.unit=="btdrill-5471")][0].evidence | test("btdrill-5471[.]path$")' <<<"$out" >/dev/null \
+  || fail "finding evidence must name the .path file itself: $out"
+jq -e '[.findings[].unit] | index("resilience-drill-stub-seat-sentinel") == null' <<<"$out" >/dev/null \
+  || fail "registered register-while-live drill stub .path must stay silent: $out"
+ok "hunt classifies unregistered real-file .path units, registered ones stay silent (fleet-ops#5782)"
+
+echo "OK: machinery-authorization-gate #5779 regression: stale surge precedence bands are hunt hits"

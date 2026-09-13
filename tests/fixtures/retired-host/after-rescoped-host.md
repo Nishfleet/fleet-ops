@@ -1,0 +1,2 @@
+- **Unattended write-autonomy on the VPS (Nish, 2026-08-05):** on this VPS (currently `netcup-rs2000`; migrated from the retired hostinger KVM 4 on 2026-08-10, vault decision), ALL unattended agents have full write/exec autonomy - the same as interactive sessions.
+- **Full credential parity on the VPS (Nish, 2026-08-05):** on this VPS, agents may use all provider credentials and authed CLIs.

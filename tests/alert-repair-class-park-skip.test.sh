@@ -31,7 +31,7 @@
 #   2. State file with decision_class_until in the future -> SKIP
 #      `reason=class-park` written to actions.log; EXIT 0; no
 #      packet written; no seat selection invoked (the SKIP comes before
-#      _pick_seat and _acquire_alert_repair_claim).
+#      _pick-seat and _acquire_alert_repair_claim).
 #   3. State file with an EXPIRED decision_class_until -> dispatch
 #      proceeds (park is over; the parker will re-park on next
 #      escalation if needed).

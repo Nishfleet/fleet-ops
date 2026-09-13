@@ -59,9 +59,19 @@ chmod +x "$scratch/whostopped"
 envfile="$scratch/hc.env"
 : >"$envfile"
 
+# Stub journalctl: cases feed the unit journal via JOURNAL_STUB_TEXT.
+cat >"$scratch/journalctl-stub" <<'EOF'
+#!/usr/bin/env bash
+printf '%s' "${JOURNAL_STUB_TEXT:-}"
+exit 0
+EOF
+chmod +x "$scratch/journalctl-stub"
+
 common=(PI_DEADMAN_TEXTFILE="$tf"
         PI_DEADMAN_ESCALATION_BIN="$scratch/unit-esc"
         PI_DEADMAN_WHOSTOPPED_BIN="$scratch/whostopped"
+        PI_DEADMAN_JOURNALCTL="$scratch/journalctl-stub"
+        PI_VERDICT_LIVE_FETCH=0
         KEYSTONE_HC_ENV="$envfile")
 
 # --- 1. not armed ------------------------------------------------------------
@@ -211,4 +221,78 @@ env --unset=SERVICE_RESULT "${common[@]}" PI_DEADMAN_DISPATCH=dcli2 PI_DEADMAN_U
 [[ ! -s "$tf" ]] || fail "bare CLI call (SERVICE_RESULT unset) must not write a death metric"
 ok "bare CLI call with SERVICE_RESULT unset is not a death (fleet-ops#4675)"
 
-echo "PASS: pi-detached-deadman verdict matrix (12 cases)"
+# --- 9. false LIVE-claim gate (fleet-ops#5786) --------------------------------
+# The 2026-09-12 incident: an alert-repair unit exited 0 after reporting the
+# GraphQL-drain gate "LIVE on this host" while its PR was still open with
+# auto-merge off — the deploy clone was checked out on the fix branch, so the
+# claim was false. The dead-man must turn that clean stop into a death:
+# died series + STOP-REASON reason=unit-false-live-claim. Fixture repo:
+# main_sha is merged (origin/main); branch_sha is still on the branch.
+claim_repo="$scratch/claim-repo"
+git init -q -b main "$claim_repo"
+git -C "$claim_repo" config user.email t@t
+git -C "$claim_repo" config user.name t
+git -C "$claim_repo" commit -qm init --allow-empty
+main_sha=$(git -C "$claim_repo" rev-parse HEAD)
+git -C "$claim_repo" remote add origin "$claim_repo"
+git -C "$claim_repo" fetch -q origin
+git -C "$claim_repo" checkout -qb fix/issue-x
+git -C "$claim_repo" commit -qm wip --allow-empty
+branch_sha=$(git -C "$claim_repo" rev-parse HEAD)
+git -C "$claim_repo" checkout -q main
+
+# 9a. The verbatim incident deliverable text in the promised file.
+printf '%s\n' "fix landed as PR https://github.com/Nishfleet/fleet-ops/pull/5762 (branch fix/issue-file-gh-rate-limit-gate) and LIVE on this host (deploy-clone checked out on the branch); after merge, return deploy-clone to main." \
+    >"$scratch/false-claim.md"
+: >"$esc_log"
+out="$(env "${common[@]}" PI_DEADMAN_DISPATCH=77777777-7777-7777-7777-777777777777 \
+    PI_DEADMAN_UNIT=u-falseclaim PI_DEADMAN_CMDLINE="pi --print" \
+    PI_DEADMAN_WORKDIR="$claim_repo" \
+    PI_DEADMAN_DELIVERABLE="$scratch/false-claim.md" SERVICE_RESULT=success \
+    "$deadman" 2>&1)" || fail "false-claim verdict must exit 0"
+grep -q 'unit="u-falseclaim"' "$tf" \
+    || fail "a false LIVE claim must write the died series: $(cat "$tf")"
+grep -q 'reason=unit-false-live-claim source=pi-detached-deadman' "$esc_log" \
+    || fail "false claim must write STOP-REASON unit-false-live-claim: $(cat "$esc_log")"
+printf '%s\n' "$out" | grep -q 'DEPLOY-CLAIM-FALSE' \
+    || fail "false claim must loud DEPLOY-CLAIM-FALSE: $out"
+ok "deliverable claiming LIVE without a merged SHA -> died + unit-false-live-claim (the 2026-09-12 incident)"
+
+# 9b. Same claim in the unit journal (not the deliverable file) still dies.
+printf 'deliverable written\n' >"$scratch/clean.md"
+env "${common[@]}" PI_DEADMAN_DISPATCH=88888888-8888-8888-8888-888888888888 \
+    PI_DEADMAN_UNIT=u-journalclaim PI_DEADMAN_CMDLINE="pi --print" \
+    PI_DEADMAN_WORKDIR="$claim_repo" \
+    PI_DEADMAN_DELIVERABLE="$scratch/clean.md" SERVICE_RESULT=success \
+    JOURNAL_STUB_TEXT="- **Live on this host immediately**: deploy-clone is checked out on the fix branch" \
+    "$deadman" 2>/dev/null || fail "journal-claim verdict must exit 0"
+grep -q 'unit="u-journalclaim"' "$tf" \
+    || fail "a journal-side false LIVE claim must write the died series"
+ok "unit journal claiming live-on-host without a merged SHA -> died"
+
+# 9c. A claim that cites the merged SHA on the same line is clean.
+printf 'gate is LIVE on this host: %s is on origin/main\n' "$main_sha" \
+    >"$scratch/true-claim.md"
+env "${common[@]}" PI_DEADMAN_DISPATCH=99999999-9999-9999-9999-999999999999 \
+    PI_DEADMAN_UNIT=u-trueclaim PI_DEADMAN_CMDLINE="pi --print" \
+    PI_DEADMAN_WORKDIR="$claim_repo" \
+    PI_DEADMAN_DELIVERABLE="$scratch/true-claim.md" SERVICE_RESULT=success \
+    "$deadman" 2>/dev/null || fail "true-claim verdict must exit 0"
+if grep -q 'unit="u-trueclaim"' "$tf"; then
+    fail "a LIVE claim citing a merged origin/main SHA must not die"
+fi
+ok "LIVE claim citing a merged origin/main SHA -> success (gate is not a blanket ban)"
+
+# 9d. A claim citing the unmerged branch SHA still dies — the incident shape.
+printf 'fix is DEPLOYED to production: %s\n' "$branch_sha" \
+    >"$scratch/branch-claim.md"
+env "${common[@]}" PI_DEADMAN_DISPATCH=abababab-abab-abab-abab-abababababab \
+    PI_DEADMAN_UNIT=u-branchclaim PI_DEADMAN_CMDLINE="pi --print" \
+    PI_DEADMAN_WORKDIR="$claim_repo" \
+    PI_DEADMAN_DELIVERABLE="$scratch/branch-claim.md" SERVICE_RESULT=success \
+    "$deadman" 2>/dev/null || fail "branch-claim verdict must exit 0"
+grep -q 'unit="u-branchclaim"' "$tf" \
+    || fail "a LIVE claim citing an unmerged branch SHA must die"
+ok "LIVE claim citing an unmerged branch SHA -> died (PR open, not live)"
+
+echo "PASS: pi-detached-deadman verdict matrix (16 cases)"

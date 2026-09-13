@@ -76,6 +76,16 @@ SEAT_HEALTH = Path("/home/nish/workspaces/agent-state/lanes/pi-seat-health.json"
 # seat is <sanitised-provider>__<sanitised-model>.spawn-bench.json inside it
 # (lib/seat-lib.sh seat_spawn_bench_path).
 SEAT_LEDGER = Path("/home/nish/workspaces/agent-state/lanes/seats")
+# Canonical findings ledger (fleet-ops#5443, ported in fleet-ops#5476):
+# every finding queued and never dropped silently. The vault jsonl IS the
+# truth — the tile reads it directly, no second copy. Mirrored in
+# verify.py (same env override) so tile and verifier read the SAME file.
+FINDINGS_LEDGER = Path(os.environ.get(
+    "FINDINGS_LEDGER",
+    "/home/nish/workspaces/tooling/nish-vault/_system/shared-memory/findings-ledger.jsonl"))
+# The ledger is a local file re-read every cycle; 2.5 cycles is the same
+# generous fail-closed window the questions tile uses.
+FINDINGS_STALE_S = 30 * 60
 XDG = f"/run/user/{os.getuid()}"
 
 
@@ -1036,6 +1046,73 @@ def collect_fleet_state():
                  note=note, explain=explain)
 
 
+def collect_findings():
+    """Canonical findings ledger (fleet-ops#5443, Nish 2026-09-11): every
+    finding queued and never dropped silently, rendered live on
+    nish.sh/fleet. Reads the vault ledger; the jsonl IS the truth, no
+    second copy."""
+    src = "vault _system/shared-memory/findings-ledger.jsonl"
+    explain = ("Canonical findings ledger at nish-vault "
+               "_system/shared-memory/findings-ledger.jsonl: totals per "
+               "disposition plus the newest 50 rows. The red banner fires "
+               "when a carried-over finding is older than 24h or the "
+               "ledger has been silent 48h — a silent ledger is itself a "
+               "finding.")
+    try:
+        rows = [json.loads(x) for x in
+                FINDINGS_LEDGER.read_text().splitlines() if x.strip()]
+    except FileNotFoundError:
+        return _unknown(src, FINDINGS_STALE_S, "no findings ledger file",
+                        explain=explain)
+    except (json.JSONDecodeError, OSError) as e:
+        return _unknown(src, FINDINGS_STALE_S, f"unreadable: {e}",
+                        explain=explain)
+    now = time.time()
+
+    def _age(ts):
+        try:
+            dt = datetime.fromisoformat(str(ts).replace("Z", "+00:00"))
+            return max(0.0, now - dt.timestamp())
+        except Exception:
+            return 0.0
+
+    # A disposition the summary line does not name is still counted (never
+    # a KeyError that would freeze the whole doc).
+    counts = {"filed": 0, "carried_over": 0, "panel_fail": 0,
+              "by_design": 0, "duplicate_of": 0}
+    for r in rows:
+        d = r.get("disposition")
+        counts[d] = counts.get(d, 0) + 1
+    oldest_carry = max((_age(r.get("ts")) for r in rows
+                        if r.get("disposition") == "carried_over"),
+                       default=0.0)
+    last_append = max((_age(r.get("ts")) for r in rows), default=0.0)
+    alert = []
+    if oldest_carry > 24 * 3600:
+        alert.append("carried-over finding untouched for over 24h")
+    if last_append > 48 * 3600:
+        alert.append("ledger went 48h with no append — a silent ledger is "
+                     "itself a finding")
+    last = sorted(rows, key=lambda r: r.get("ts") or "")[-50:][::-1]
+    return _tile(src, FINDINGS_STALE_S, True, now,
+                 total=len(rows),
+                 dispositions=counts,
+                 oldest_carry_h=round(oldest_carry / 3600, 1),
+                 last_append_h=round(last_append / 3600, 1),
+                 alert="; ".join(alert),
+                 items=[
+                     {"finding_id": r.get("finding_id"),
+                      "severity": r.get("severity"),
+                      "title": r.get("title"),
+                      "disposition": r.get("disposition"),
+                      "ref": r.get("ref"),
+                      "reason": r.get("reason"),
+                      "ts": r.get("ts")}
+                     for r in last
+                 ],
+                 explain=explain)
+
+
 def generate():
     t0 = time.time()
     doc = {"generated_at": now_iso(), "generated_epoch": time.time(),
@@ -1048,6 +1125,7 @@ def generate():
     doc["tiles"]["repairs_inflight"] = collect_repairs_inflight()
     doc["tiles"]["running_pi"] = collect_running_pi()
     doc["tiles"]["fleet_state"] = collect_fleet_state()
+    doc["tiles"]["findings"] = collect_findings()
     # fleet-ops#4475: the questions tile is a full section, not a band cell.
     # It lives under tiles (freshness contract + independent verify) and is
     # ALSO surfaced top-level as `questions` for the shell to render first.

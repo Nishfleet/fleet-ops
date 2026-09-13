@@ -100,8 +100,31 @@ refuse_noncanonical_install() {
   esac
 }
 
+# fleet-ops#5459: --check never refuses (auditors need the DIFFs), but a
+# --check run from a non-canonical workspaces checkout must SAY its DIFFs are
+# measured against this tree — a stale clone's DIFF count reads exactly like
+# live drift and has been filed as a critical gap-audit finding.
+warn_noncanonical_check() {
+  [ "${FLEET_OPS_ALLOW_NONCANONICAL:-}" = 1 ] && return 0
+  local ws_root canon got want root
+  ws_root="${FLEET_OPS_WORKSPACES_ROOT:-/home/nish/workspaces}"
+  canon="${FLEET_OPS_CANONICAL_CHECKOUT:-$ws_root/tooling/fleet-ops-deploy-clone}"
+  got=$(readlink -f "$here")
+  want=$(readlink -f "$canon" 2>/dev/null || printf '%s\n' "$canon")
+  root=$(readlink -f "$ws_root" 2>/dev/null || printf '%s\n' "$ws_root")
+  [ "$got" = "$want" ] && return 0
+  case "$got" in
+    "$root"|"$root"/*)
+      echo "install.sh: NONCANONICAL-CHECKOUT: $got is not the live install source; DIFF lines compare installed files against THIS checkout, not live drift" >&2
+      echo "install.sh: canonical checkout is $want (fleet-ops#5459)" >&2
+      ;;
+  esac
+}
+
 if [ "$mode" != "--" ]; then
   refuse_noncanonical_install
+else
+  warn_noncanonical_check
 fi
 
 # Returns 0 if the destination is under /etc/, 1 otherwise. Used to route
@@ -848,6 +871,7 @@ check_comment_junk() {
 # fleet-ops#3273: config sprawl. A .bak next to a managed MANIFEST file is a
 # leftover copy, not loaded, and it confuses every grep. The manifest check
 # must fail if any such .bak (or .bak-*) exists in the same directory.
+# fleet-ops#5602: same class for .orig residue (editor/hot-patch leftover).
 check_bak_sprawl() {
   local src dest dir base entry
   while read -r src dest || [ -n "$src" ]; do
@@ -869,11 +893,17 @@ check_bak_sprawl() {
     fi
 
     # Look for any file or directory whose name starts with the managed
-    # file's basename followed by '.bak'. A glob that matches nothing still
-    # yields the literal pattern; the existence test filters it out.
-    for entry in "$dir/$base.bak"*; do
+    # file's basename followed by '.bak' or '.orig'. A glob that matches
+    # nothing still yields the literal pattern; the existence test filters
+    # it out.
+    for entry in "$dir/$base.bak"* "$dir/$base.orig"*; do
       if [ -e "$entry" ] || [ -L "$entry" ]; then
-        echo "DIFF: $entry (.bak next to managed MANIFEST file $dest)"
+        case "$entry" in
+          "$dir/$base.orig"*)
+            echo "DIFF: $entry (.orig next to managed MANIFEST file $dest)" ;;
+          *)
+            echo "DIFF: $entry (.bak next to managed MANIFEST file $dest)" ;;
+        esac
         rc=1
       fi
     done
@@ -1096,16 +1126,13 @@ process_entry() {
         if [[ "$src" == config/seat-caps.json && -f "$dest" ]] && ! cmp -s "$dest" "$repo"; then
             learned="$HOME/.local/state/pi-packet/learned-caps.json"
             if [[ -f "$learned" ]]; then
-                if [[ -f "$here/lib/seat-lib.sh" ]] && command -v jq >/dev/null 2>&1; then
-                    # shellcheck source=lib/seat-lib.sh
-                    source "$here/lib/seat-lib.sh" 2>/dev/null || true
-                    reset_learned_caps_on_provider_change "$dest" "$repo" "$learned" || true
+                if [[ -f "$here/lib/litellm-seat.sh" ]] && command -v jq >/dev/null 2>&1; then
+                    # AIMD learned-cap reset retired with pick_seat (fleet-ops#4263).
+                    mv -f "$learned" "$learned.bak-$(date -u +%Y%m%dT%H%M%SZ)" 2>/dev/null || true
+                    echo "archived learned-caps.json (seat-caps.json changed; AIMD retired)"
                 else
-                    # seat-lib.sh or jq unavailable: fall back to the legacy
-                    # whole-file reset so a stale learned cap never pins a
-                    # raised floor (the pre-#3690 behaviour).
                     mv -f "$learned" "$learned.bak-$(date -u +%Y%m%dT%H%M%SZ)"
-                    echo "reset learned-caps.json (seat-caps.json changed; seat-lib.sh unavailable for per-provider reset)"
+                    echo "reset learned-caps.json (seat-caps.json changed; routing helper unavailable for per-provider reset)"
                 fi
             fi
         fi
@@ -1164,6 +1191,8 @@ if [ "$mode" = "--" ]; then
 fi
 
 if [ "$do_user_install" = 1 ]; then
+  # fleet-ops#4263 P3b: routing library dest is gone; remove leftover install.
+  rm -f "$HOME/.local/lib/pi-packet/seat-lib.sh"
   remove_papered_heartbeat_dropin
   remove_stale_scout_prom_mode_dropin
   remove_judge_budget_dropins

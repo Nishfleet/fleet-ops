@@ -7,8 +7,8 @@ deliberate-states registry listed in Context below.
 
 ## What to look for
 
-Read the repo and the live state, then rank the top N real, actionable gaps
-(N is the max-findings value in Context below). Look especially for:
+Read the repo and the live state, then list every real, actionable gap you
+can back with evidence, ranked worst-first. Look especially for:
 
 1. **Unwatched failure paths** — services/timers that can fail silently or have
    no `OnFailure=` escalation.
@@ -116,9 +116,11 @@ gaps. An entry whose expiry has passed IS a loud gap — file it as a finding.
 
 ## Constraints
 
-- Return AT MOST the max-findings count listed in Context below. If nothing
-  real is broken, return an empty `findings` array and explain why in the
-  report.
+- Return every finding you are confident is real, each with evidence. Do not
+  self-censor to a count: the caller's panel and filing cap decide what gets
+  filed this run, and anything deferred is carried to the next run — never
+  lost. If nothing real is broken, return an empty `findings` array and
+  explain why in the report.
 - Titles must be concrete and specific, not generic warnings.
 - Do NOT create GitHub issues yourself. The caller files them.
 - Do NOT write that issues were or were not filed. The caller appends
@@ -146,7 +148,6 @@ gaps. An entry whose expiry has passed IS a loud gap — file it as a finding.
 - Deliberate-states file: `{{DELIBERATE_STATES_PATH}}`
 - Where to save findings JSON: `{{FINDINGS_JSON}}`
 - Where to save the full report: `{{REPORT_MD}}`
-- Max findings to return: `{{MAX_FINDINGS}}`
 - Audit run timestamp: `{{NOW_ISO}}`
 - Deliberate-states JSON:
 ```json

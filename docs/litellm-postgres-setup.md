@@ -150,6 +150,16 @@ cp config/litellm-proxy.yaml ~/.config/fleet-ops/litellm-proxy.yaml
 #   4. mint the sk-fleet-worker / sk-fleet-senior / sk-fleet-private
 #      virtual keys via the proxy's /key/generate admin API (LiteLLM
 #      virtual_keys docs), pinning each key's model allowlist to a group.
+#   5. keep `disable_prisma_schema_update: true` under general_settings
+#      (fleet-ops#4832): without it, startup `prisma migrate deploy`
+#      retries 20250416115320_add_tag_table_to_db, whose redundant
+#      single-column unique index LiteLLM_DailyTagSpend_tag_key cannot
+#      build on a table that holds several rows per tag (they differ on
+#      the composite key — legitimate rows, not duplicates). The retry
+#      loop stalls every restart ~10min on P3018. Upstream's own
+#      20250416151339_drop_tag_uniqueness_requirement drops that index;
+#      the composite unique index is the real constraint. Re-enable the
+#      flag only to apply migrations from a LiteLLM bump, then re-disable.
 # If a live config already exists, edit it in place instead of copying.
 ```
 
@@ -189,20 +199,34 @@ set -euo pipefail
 set -a
 
 # --- env-file providers (KEY=value format, safe to source) ---
-# Source exactly the seats the live router config declares. Only
-# OpenAI-compatible providers belong here; Cursor/Devin speak proprietary
-# protocols and are reached through their own harnesses, not the proxy.
 source /home/nish/fleet2/etc/opencode.env
 source /home/nish/fleet2/etc/commandcode.env
 source /home/nish/fleet2/etc/hetzner.env
 source /home/nish/fleet2/etc/devin.env
 source /home/nish/fleet2/etc/cursor.env
 source /home/nish/fleet2/etc/openrouter.env
+# fleet-ops#4219: P3a dual-run found the original pool walled/dead in seat-lib
+# (opencode-zen balance, commandcode model unsupported, hetzner corpse, straitly
+# credits exhausted, grok cli-chat-proxy 426). Source the credential env files of
+# the seats that are actually usable and OpenAI-compatible.
 source /home/nish/fleet2/etc/alibaba-coding.env
 source /home/nish/fleet2/etc/groq.env
 source /home/nish/fleet2/etc/ollama.env
+source /home/nish/fleet2/etc/cline.env
+source /home/nish/fleet2/etc/paretoinference.env
+source /home/nish/.config/xkiro/.env
+source /home/nish/fleet2/etc/runinfra.env
 source /home/nish/fleet2/etc/entrim.env
 source /home/nish/fleet2/etc/crof.env
+# 2026-09-11 seat wire-up: synthetic + llmgateway-devpass prepaid worker seats
+# (fleet-ops packet; env files mode 600 under ~/.config/fleet-ops/seats/).
+source /home/nish/.config/fleet-ops/seats/synthetic.env
+source /home/nish/.config/fleet-ops/seats/llmgateway-devpass.env
+# 2026-09-12 seat wire-up: nebius Token Factory metered worker seat (same
+# packet; env file mode 600 under ~/.config/fleet-ops/seats/).
+source /home/nish/.config/fleet-ops/seats/nebius.env
+
+# --- straitly (lives in ~/.config/straitly/) ---
 source /home/nish/.config/straitly/straitly.env
 
 # --- xai-oauth: OAuth access token from auth.json (refreshed every 4h by
@@ -218,6 +242,16 @@ try:
 except Exception:
     sys.stdout.write('')
 ")
+
+# --- MiniMax (fleet-ops#5788): the claude-minimax-key wrapper resolves
+# ~/.mmx/config.json into an access token, refreshing it transparently if
+# within 5 min of expiry. Captured once at proxy start; the
+# minimax-token-refresh timer compares the wrapper's fresh key to the
+# proxy's captured env var every 2h and bounces this unit on a mismatch
+# so a rotated token reaches the running proxy. Do not change this to a
+# file read — env var capture is intentional and the timer is the
+# healer (fleet-ops#5788 termination).
+export MINIMAX_API_KEY=$(/home/nish/.local/bin/claude-minimax-key)
 
 # --- the proxy's own admin key (virtual-key minting). Generated once,
 # stored in a mode-0600 env file owned by the operator, never in the repo.

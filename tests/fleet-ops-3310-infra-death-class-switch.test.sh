@@ -14,11 +14,11 @@
 #
 # Required scope (Nish 2026-09-04, battle-tested only): no new ledger, no new
 # unit. Retry stays systemd's Restart=/StartLimitBurst. The infra-death
-# classification reuses seat-lib's detectors (is_spawn_etimeout,
+# classification reuses seatlib's detectors (is_spawn_etimeout,
 # is_mid_session_death, the 124/143 rc paths); the class switch reuses
-# pick_seat's existing class ordering (prepaid/metered/free + the #3121 senior
+# pick-seat's existing class ordering (prepaid/metered/free + the #3121 senior
 # ladder). The only change is WHICH counter a death increments and which class
-# the next pick_seat call is told to prefer.
+# the next pick-seat call is told to prefer.
 #
 # Tests 1-11 pin the code shape statically; Tests 12-17 are a REPLAY DRILL that
 # RUNS the real bin/pi-issue-run and bin/pi-issue-failed-reap against scratch
@@ -35,7 +35,7 @@ repo_root="$(cd "$here/.." && pwd)"
 run="$repo_root/bin/pi-issue-run"
 reap="$repo_root/bin/pi-issue-failed-reap"
 tick="$repo_root/lib/pi-intake-tick.sh"
-seatlib="$repo_root/lib/seat-lib.sh"
+seatlib="$repo_root/lib/litellm-seat.sh"
 
 fail() { echo "FAIL: $*" >&2; exit 1; }
 ok()   { echo "OK: $*"; }
@@ -78,8 +78,8 @@ ok "Test 2: pi-issue-run writes .last-death-class (infra on hang/no-seat, work e
 grep -qF 'pi-issue-${inst}.prefer-class' "$run" \
     || fail "pi-issue-run does not read the .prefer-class marker"
 grep -qF 'export PI_PICK_PREFER_CLASS' "$run" \
-    || fail "pi-issue-run does not export PI_PICK_PREFER_CLASS for pick_seat"
-ok "Test 3: pi-issue-run reads .prefer-class and exports it for pick_seat"
+    || fail "pi-issue-run does not export PI_PICK_PREFER_CLASS for pick-seat"
+ok "Test 3: pi-issue-run reads .prefer-class and exports it for pick-seat"
 
 # --- Test 4: pi-issue-run clears ladder/infra markers on shipped success -----
 grep -qF 'pi-issue-${inst}.prefer-class' "$run" || true
@@ -124,17 +124,13 @@ grep -qF 'senior)    _next_pref="block"' "$tick" \
     || fail "the ladder must end at senior -> block"
 ok "Test 7: intake WORK-cap hit advances prepaid->metered->senior; blocks (blocked-on: infra) only at exhaustion"
 
-# --- Test 8: pick_seat honors PI_PICK_PREFER_CLASS ---------------------------
-grep -qF 'PI_PICK_PREFER_CLASS' "$seatlib" \
-    || fail "pick_seat does not reference PI_PICK_PREFER_CLASS"
-grep -qF 'prefer-class=' "$seatlib" \
-    || fail "pick_seat lacks the prefer-class routing log"
-grep -q 'find_senior_seat 2>/dev/null' "$seatlib" \
-    || fail "prefer-class=senior does not route via find_senior_seat (#3121 ladder)"
-ok "Test 8: pick_seat honors PI_PICK_PREFER_CLASS incl. the #3121 senior ladder"
+# --- Test 8: retired with the seat picker (fleet-ops#4263) ---------------------------
+# The #3121 class ladder (cheap -> capable -> senior) is no longer a
+# PI_PICK_PREFER_CLASS branch in the retired picker: it is the LiteLLM proxy's
+# router_settings.fallbacks in config/litellm-proxy.yaml.
 
 # --- Test 9: shellcheck -------------------------------------------------------
-# seat-lib.sh is excluded: it carries a large pre-existing SC2034 warning flood
+# seatlib.sh is excluded: it carries a large pre-existing SC2034 warning flood
 # (SEAT_CURSOR_DAILY_TARGET_USD, SEAT_COMEBACK_*, …), none from this change.
 # Its prefer-class change is verified at runtime by Test 15 and by bash -n in
 # the 2462 gate.
@@ -145,8 +141,8 @@ for f in "$run" "$reap" "$tick"; do
         }
     fi
 done
-bash -n "$seatlib" || fail "seat-lib.sh syntax check failed"
-ok "Test 9: shellcheck clean on run/reap/tick; seat-lib syntax-checked"
+bash -n "$seatlib" || fail "seatlib.sh syntax check failed"
+ok "Test 9: shellcheck clean on run/reap/tick; seatlib syntax-checked"
 
 # ============================================================================
 # Replay drill — real bin/pi-issue-run and bin/pi-issue-failed-reap
@@ -184,6 +180,11 @@ exit 0
 STUB
 chmod +x "$stub/worker-token"
 export WORKER_TOKEN_BIN="$stub/worker-token"
+# fleet-ops#5978: bin/pi-issue-failed-reap mints through the shared header,
+# which reads NISHFLEET_WORKER_TOKEN_BIN (default $HOME/.local/bin/worker-token
+# under the scratch HOME) unless GH_TOKEN or GITHUB_ACTIONS is set. Pin both
+# names to the stub so the result never depends on the caller's shell.
+export NISHFLEET_WORKER_TOKEN_BIN="$stub/worker-token"
 
 cat >"$stub/gh" <<'STUB'
 #!/usr/bin/env bash
@@ -224,7 +225,7 @@ cat >"$scratch/seat-caps.json" <<'JSON'
 JSON
 export PI_MODELS_JSON="$scratch/models.json"
 export SEAT_CAPS_JSON="$scratch/seat-caps.json"
-# Point seat-lib at the repo copy (offline; never the live VPS ledger).
+# Point seatlib at the repo copy (offline; never the live VPS ledger).
 export PI_PACKET_SEAT_LIB="$seatlib"
 
 ATT="$STATEDIR/attempts"
@@ -360,31 +361,9 @@ set -e
 [[ ! -f "$ATT/pi-issue-${closed_inst}.reclaim-count" ]]  || fail "CLOSED reap must clear .reclaim-count"
 ok "Test 14 (replay): real pi-issue-failed-reap clears ladder/infra markers on a CLOSED reap"
 
-# --- Test 15: replay — pick_seat honors PI_PICK_PREFER_CLASS ------------------
-# Source the repo seat-lib against a CLEAN ledger: the earlier replay tests
-# benched devin in the shared scratch, so a clean seat pool is needed to prove
-# the prefer-class routing (benched seats correctly fall through to free).
-clean="$scratch/clean"
-mkdir -p "$clean/state/attempts" "$clean/active-seats" "$clean/ledger"
-export PI_PACKET_STATE="$clean/state"
-export PI_SEAT_HEALTH_LEDGER_DIR="$clean/ledger"
-export SEAT_CAPS_JSON="$scratch/seat-caps.json"
-export PI_MODELS_JSON="$scratch/models.json"
-# shellcheck disable=SC1091
-source "$seatlib"
-export PI_PICK_ROLE=scout
-# prefer=metered/prepaid with no such seats => falls through (never stalls).
-export PI_PICK_PREFER_CLASS=""
-_p=$(PI_PICK_PREFER_CLASS="" pick_seat "" "" 0 "" light 2>/dev/null || true)
-[[ -n "$_p" ]] || fail "baseline pick_seat returned empty"
-export PI_PICK_PREFER_CLASS="prepaid"
-_pref=$(PI_PICK_PREFER_CLASS=prepaid pick_seat "" "" 0 "" light 2>/dev/null || true)
-[[ -n "$_pref" ]] || fail "prefer-class=prepaid must still pick a seat (fall-through)"
-_pref_cls=$(model_class_of "${_pref%%$'\t'*}" "${_pref#*$'\t'}")
-[[ "$_pref_cls" == "prepaid-quota" ]] \
-    || fail "prefer-class=prepaid must route to a prepaid-quota seat, got class=$_pref_cls ($_pref)"
-export PI_PICK_PREFER_CLASS=""
-ok "Test 15 (replay): pick_seat routes to the preferred class (prepaid) with fall-through"
+# --- Test 15: retired with the seat picker (fleet-ops#4263) --------------------------
+# The prefer-class replay exercised the retired picker; the class
+# ladder is the LiteLLM proxy fallbacks (config/litellm-proxy.yaml).
 
 # --- Test 16: replay — WORK cap ladder (tick) advances one rung at a time -----
 # Drive the tick's reclaim-cap branch directly by simulating the marker sequence

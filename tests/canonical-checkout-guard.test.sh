@@ -5,7 +5,10 @@
 # never a hotfix / issue worktree / worktree-parent. Proves, offline:
 #   1. install.sh refuses a workspaces hotfix tree.
 #   2. install.sh refuses an issue worktree.
-#   3. install.sh --check from a hotfix still runs (auditors need DIFF).
+#   3. install.sh --check from a hotfix still runs (auditors need DIFF) but
+#      names itself NONCANONICAL-CHECKOUT so the DIFFs are not read as live
+#      drift (fleet-ops#5459).
+#   3b. install.sh --check from the canonical checkout stays quiet.
 #   4. install.sh from the canonical overlay path succeeds.
 #   5. FLEET_OPS_ALLOW_NONCANONICAL=1 overrides the refuse.
 #   5b. install.sh retargets a hijacked worktree dest (fleet-ops#1189) —
@@ -32,6 +35,8 @@ grep -q 'refuse_noncanonical_install' "$repo_root/install.sh" \
     || fail "install.sh must define refuse_noncanonical_install"
 grep -q 'live_target_is_noncanonical' "$repo_root/install.sh" \
     || fail "install.sh must define live_target_is_noncanonical (fleet-ops#1189)"
+grep -q 'NONCANONICAL-CHECKOUT' "$repo_root/install.sh" \
+    || fail "install.sh --check must emit NONCANONICAL-CHECKOUT (fleet-ops#5459)"
 grep -q 'DEPLOY-NONCANONICAL' "$repo_root/bin/fleet-ops-deploy" \
     || fail "fleet-ops-deploy must emit DEPLOY-NONCANONICAL"
 grep -q 'DRIFT-SOURCE' "$repo_root/bin/fleet-ops-drift.py" \
@@ -117,7 +122,21 @@ set -e
 [[ "$chk_out" != *"REFUSE:"* ]] || fail "scenario3: --check must not refuse, got: $chk_out"
 [[ "$chk_rc" -eq 1 ]] || fail "scenario3: --check should report missing dest (rc=1), got $chk_rc out=$chk_out"
 [[ "$chk_out" == *"DIFF:"* ]] || fail "scenario3: --check should emit DIFF, got: $chk_out"
-ok "scenario3: install.sh --check from a hotfix still reports DIFF"
+[[ "$chk_out" == *"NONCANONICAL-CHECKOUT:"* ]] \
+    || fail "scenario3: --check from a hotfix must warn NONCANONICAL-CHECKOUT, got: $chk_out"
+[[ "$chk_out" == *"canonical checkout is $canon"* ]] \
+    || fail "scenario3: warning must name the canonical checkout, got: $chk_out"
+ok "scenario3: install.sh --check from a hotfix still reports DIFF and warns NONCANONICAL-CHECKOUT"
+
+# --- 3b. --check from the canonical checkout stays quiet ---------------------
+set +e
+chk_canon_out=$(SYSTEMCTL="$systemctl_fake" "$canon/install.sh" --check 2>&1)
+chk_canon_rc=$?
+set -e
+[[ "$chk_canon_out" != *"NONCANONICAL-CHECKOUT"* ]] \
+    || fail "scenario3b: canonical --check must not warn, got: $chk_canon_out"
+[[ "$chk_canon_out" == *"DIFF:"* ]] || fail "scenario3b: canonical --check should emit DIFF, got: $chk_canon_out"
+ok "scenario3b: install.sh --check from the canonical checkout stays quiet"
 
 # --- 4. canonical overlay install succeeds ----------------------------------
 SYSTEMCTL="$systemctl_fake" "$canon/install.sh" >/dev/null 2>&1 \

@@ -6,7 +6,7 @@
 #
 # Background (the incident this pins): fleet-ops issue #2672 was claimed 11
 # times in 12h (4x in the 2h to 2026-09-02T03:45Z) with dispatches_last_2h=0.
-# Root cause: a seat-selection storm made pick_seat return NO USABLE SEAT
+# Root cause: a seat-selection storm made pick-seat return NO USABLE SEAT
 # (worker exits 1 in seconds -> OnFailure reap -> re-claim), plus worker
 # sessions that exited 0 WITHOUT opening a PR. The #2462 reclaim-count cap
 # (MAX_RECLAIMS) never fired because pi-issue-run RESET the counter on any
@@ -94,7 +94,7 @@ _live_line=$(grep -n 'skipped-claim-live' "$tick" | head -1 | cut -d: -f1)
 _pr_line=$(grep -n 'skipped-claim-pr-open' "$tick" | head -1 | cut -d: -f1)
 _stale_line=$(grep -n 'released-stale-claim' "$tick" | head -1 | cut -d: -f1)
 _gate_line=$(grep -n '_cl_window_claims >= MAX_CLAIMS_IN_WINDOW' "$tick" | head -1 | cut -d: -f1)
-_body_line=$(grep -n '_body_json=$(gh issue view "$N" -R "$FULL"' "$tick" | head -1 | cut -d: -f1) # fleet-ops#4540: body fetch renamed to _body_json (body,author)
+_body_line=$(grep -n '_body_json=$(_gh_read issue view "$N" -R "$FULL"' "$tick" | head -1 | cut -d: -f1) # fleet-ops#4540: body fetch renamed to _body_json (body,author); fleet-ops#5489: reads ride the _gh_read seam
 [[ -n "$_live_line" && -n "$_pr_line" && -n "$_stale_line" && -n "$_gate_line" && -n "$_body_line" ]] \
     || fail "one or more anchor lines missing in tick"
 (( _gate_line > _live_line )) \

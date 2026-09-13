@@ -12,8 +12,8 @@
 #   4. scout already active/activating           -> NO dispatch.
 #   5. gh failure on the ready query             -> NO dispatch (skip on bad
 #      data; never spam scouts on a transient gh outage).
-#   6. seat-lib integration: with FLEET_LOW_WATER_LANE_CEILING unset, the
-#      helper sources lib/seat-lib.sh and computes lane_ceiling =
+#   6. seatlib integration: with FLEET_LOW_WATER_LANE_CEILING unset, the
+#      helper sources lib/litellm-seat.sh and computes lane_ceiling =
 #      min(sum_provider_caps, ram_governor) from a fixture seat-caps.json,
 #      and dispatches iff ready < that real ceiling.
 #
@@ -273,9 +273,9 @@ fi
 ok "scenario5: gh failure -> skip (no dispatch on bad data)"
 
 # ============================================================================
-# Scenario 6: seat-lib integration — real lane_ceiling = min(caps, ram)
+# Scenario 6: seatlib integration — real lane_ceiling = min(caps, ram)
 # ============================================================================
-# Unset FLEET_LOW_WATER_LANE_CEILING so the helper sources lib/seat-lib.sh.
+# Unset FLEET_LOW_WATER_LANE_CEILING so the helper sources lib/litellm-seat.sh.
 # Fixture seat-caps.json: provider caps sum to 6; ram_governor floors at
 # floor(MemAvailable_GB / ram_gb_per_worker). We assert the helper dispatches
 # when ready < that real ceiling and not when ready >= it. We do NOT assert
@@ -301,7 +301,7 @@ JSON
 # below any positive ceiling) and confirm a dispatch, then derive the ceiling
 # from the triage line's lanes= field.
 printf '0\n' >"$scratch/work_ready"
-run_helper SEAT_CAPS_JSON="$seat_caps" PI_PACKET_SEAT_LIB="$repo_root/lib/seat-lib.sh"
+run_helper SEAT_CAPS_JSON="$seat_caps" PI_PACKET_SEAT_LIB="$repo_root/lib/litellm-seat.sh"
 [[ "$env_rc" == 0 ]] || fail "scenario6: probe must exit 0, got $env_rc ($env_out)"
 grep -qx 'start pi-scout@demo.service' "$calls" \
     || fail "scenario6: ready=0 must dispatch under the real ceiling ($(cat "$calls"))"
@@ -314,12 +314,12 @@ reset_state
 printf '%s\n' "$real_lanes" >"$scratch/work_ready"
 : >"$SCOUT_ACTIVE_UNITS"
 date -u -d '60 seconds ago' +%Y-%m-%dT%H:%M:%SZ > "$stamp_dir/demo.stamp"
-run_helper SEAT_CAPS_JSON="$seat_caps" PI_PACKET_SEAT_LIB="$repo_root/lib/seat-lib.sh"
+run_helper SEAT_CAPS_JSON="$seat_caps" PI_PACKET_SEAT_LIB="$repo_root/lib/litellm-seat.sh"
 [[ "$env_rc" == 0 ]] || fail "scenario6: ready=ceiling must exit 0, got $env_rc ($env_out)"
 if grep -qE '^start ' "$calls"; then
     fail "scenario6: ready=ceiling ($real_lanes) must not dispatch, but calls=($(cat "$calls"))"
 fi
-ok "scenario6: seat-lib lane_ceiling=$real_lanes drives the decision (ready<ceiling dispatches, ready=ceiling does not)"
+ok "scenario6: seatlib lane_ceiling=$real_lanes drives the decision (ready<ceiling dispatches, ready=ceiling does not)"
 
 # ============================================================================
 # Scenario 7: hours < 12 (go-ham) dispatches even when ready >= lanes

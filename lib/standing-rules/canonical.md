@@ -14,32 +14,33 @@ not trust any stale copy you find: `agent-state/lanes/` now holds only
 
 Check live state directly instead, in this order:
 
-1. `systemctl --user list-units --state=failed` — must be EMPTY. Anything failed
+1. If `~/workspaces/agent-state/FLEET-PAUSED` exists, the fleet is
+   deliberately down — respect it. Stop; do not scope or launch work.
+2. `XDG_RUNTIME_DIR=/run/user/$(id -u) systemctl --user list-timers` is the
+   truth on whether fleet timers are armed. Enrolment is declared in
+   fleet-ops `config/intake-repos.json`, converged by the reconciler
+   (fleet-ops#32).
+3. `systemctl --user list-units --state=failed` — must be EMPTY. Anything failed
    is a fault you own repairing in this turn. (Needs
    `XDG_RUNTIME_DIR=/run/user/$(id -u)` set, or it silently returns nothing.)
-2. `cat /home/nish/workspaces/agent-state/lanes/pi-seat-health.json` — the Pi
+4. `cat /home/nish/workspaces/agent-state/lanes/pi-seat-health.json` — the Pi
    seat's last observed provider/model, HTTP status and `health_class`. Check
    `observed_at` is recent before believing it.
-3. `uptime` for load, and merged-PR counts per repo for actual throughput.
+5. `uptime` for load, and merged-PR counts per repo for actual throughput.
 
 A missing or unparseable state file is itself a finding — report it, never treat
 it as "no news is good news".
+
+**Precedence (fleet-ops#5748):** this 5-step block is the single canonical
+fleet live-state check. Shorter summaries on other surfaces (e.g. the Pi
+`AGENTS.md` quick minimum) defer to it; edit THIS section, re-render, and any
+divergence is resolved in this block's favour.
 <!-- END SECTION: idle-fleet-alarm -->
 
 <!-- SECTION: one-fleet-rule -->
-## One fleet (Nish, 2026-08-21; machinery superseded 2026-08-23)
+## One fleet (Nish, 2026-08-21; machinery superseded 2026-08-23 — corrected 2026-08-25)
 
-**No second dispatcher, ever.** A second fleet spends its effort on itself
-(fleet2 hit 64% self-maintenance while fleet1 landed 452 product items in the
-same window). Success metric stays: merged product PRs/day (baseline 133 on
-2026-08-14).
-
-The fleet1 machinery this rule named — `agent-state/lanes` lane-manager, idle
-alarm, stall watchdogs, improvement loops — was DELETED on 2026-08-23 and
-replaced by Pi (see routing below). The principle stands; the implementation is
-gone. Do not rebuild a dispatcher. Full history: vault
-`_system/shared-memory/global-standing-rules.md` -> "One fleet" and
-"Everything runs through Pi".
+Full text: `/home/nish/workspaces/tooling/nish-vault/_system/shared-memory/standing-rules-archive.md` → `## One fleet (Nish, 2026-08-21; machinery superseded 2026-08-23 — corrected 2026-08-25)`. Enforced by the rule-enforcement matrix.
 <!-- END SECTION: one-fleet-rule -->
 
 <!-- SECTION: nish-preimplementation-contract -->
@@ -49,7 +50,7 @@ Before implementation work, automatically read and follow `/home/nish/workspaces
 <!-- END SECTION: nish-preimplementation-contract -->
 
 <!-- SECTION: shared-fleet-routing -->
-**Everything runs through Pi, directly. No launchers.** (Nish, 2026-08-23 — vault `_system/shared-memory/global-standing-rules.md`.) The fleet control plane AND the `implementation-worker-*` launcher layer are both DELETED. There is no dispatch wrapper. `governed-run` and `~/.local/share/implementation-worker-routing/` are gone with them; the old `codex-model-routing.md` ladder is superseded.
+**Everything runs through Pi, directly. No launchers.** (Nish, 2026-08-23 — vault `_system/shared-memory/global-standing-rules.md`.) The fleet control plane AND the `implementation-worker-*` launcher layer are both DELETED. There is no dispatch wrapper for Pi work. `governed-run` and `~/.local/share/implementation-worker-routing/` are retired for Pi dispatch, NOT deleted (verified 2026-09-11: `test -x ~/.local/bin/governed-run && echo still-present`); `governed-run` remains sanctioned for non-Pi ad-hoc commands (sanction lives in `~/.codex/AGENTS.md`). The old `codex-model-routing.md` ladder at `~/workspaces/tooling/nish-vault/_system/shared-memory/codex-model-routing.md` is superseded.
 
 Call `pi` directly, prompt on **stdin** (Pi rejects a `--` end-of-options flag):
 
@@ -57,7 +58,7 @@ Call `pi` directly, prompt on **stdin** (Pi rejects a `--` end-of-options flag):
 pi --print --provider <provider> --model <model>
 ```
 
-For work that must outlive this session, use `pi-systemd-run`, never `nohup pi ... &` — the launching shell reaps a nohup'd child and leaves dead-seat EXTLOAD lines. `pi-systemd-run --unit <name> --stdin <packet.md> -- pi --print --provider <provider> --model <model>` (a thin `systemd-run --user --collect --no-block` wrapper; not a dispatcher — no retry, no queue). Canonical wording: fleet-ops README and `prompts/heartbeat.md`.
+For work that must outlive this session, use `pi-systemd-run`, never `nohup pi ... &` — the launching shell reaps a nohup'd child and leaves dead-seat EXTLOAD lines. `pi-systemd-run --unit <name> --stdin <packet.md> --deadline <min> --deliverable <path> -- <cmd>` (a thin `systemd-run --user --collect --no-block` wrapper; not a dispatcher — no retry, no queue). Canonical copy-paste block: fleet-ops README (README.md "systemd by default"). Every detached launch carries `--deadline` and `--deliverable`: the wrapper installs the deliverable verdict ONLY when `--deliverable` is set, so a flag-less invocation could stop clean at exit 0 with no artifact and the exit-0-no-deliverable FAILURE verdict (fleet-ops#4266) could never fire.
 
 For delegated work use Pi's stock `subagent` extension (`scout`, `planner`, `worker`, `reviewer`; `/implement`, `/scout-and-plan`, `/implement-and-review`):
 
@@ -89,10 +90,13 @@ Find it, fix it, verify it, log it - then report the result.
 - If a later shift could do it, this shift could have done it.
 - Close with a result, never an offer.
 
-Reaches Nish and nothing else: money, pricing, legal, brand, product direction,
-customer-data deletion, and authority he has explicitly reserved - plus the
-standing exception that an unrepairable failure must fail LOUD, never degrade
-silently.
+Reaches Nish and nothing else: **the canonical reserved-classes list** in the
+vault (`nish-vault/_system/shared-memory/global-standing-rules.md` → "Only
+the un-fixable reaches Nish" → "Canonical reserved-classes list") wins over
+any shorter surface list — that vault block is the single source of truth;
+this bullet is a pointer, not a restatement (fleet-ops#5586, fleet-ops#5685).
+Plus the standing exception unrelated to those classes: an unrepairable
+failure must fail LOUD, never degrade silently.
 
 Corollary: **if a human had to notice it by hand, that blind spot is the real
 bug.** Fix the instance AND the detector. Canonical text:

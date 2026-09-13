@@ -81,6 +81,9 @@ export PATH="$scratch/bin:$PATH"
 # Extract the blocked_filter function body from the tick (the tick runs
 # top-level, so it cannot be sourced directly).
 awk '/^blocked_filter\(\)/,/^}/' "$tick" >"$scratch/blocked_filter.sh"
+# fleet-ops#5489: blocked_filter reads via the _gh_read seam; give the sourced
+# extract a matching passthrough (the stub gh above answers for both).
+_gh_read() { gh "$@"; }
 source "$scratch/blocked_filter.sh"
 
 # 2a. no blocked-on -> claimable

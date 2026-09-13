@@ -239,22 +239,46 @@ def packet_type_from_path(path):
     if "probe" in blob:
         return "probe"
     # Interactive / ad-hoc `pi` sessions: Pi encodes the cwd as a `--a-b-c--`
-    # directory name. A bare home or /tmp cwd is interactive typing, not a
-    # dispatched packet.
+    # directory name. Dispatched packets run through lane-named dirs
+    # (pi-issue-*, scout, audit, ... — all matched above), so any encoded-cwd
+    # session that reached this line is ad-hoc work, not a dispatched packet:
+    # a bare home cwd, /tmp scratch (incl. the /tmp/seat-proof-* audition
+    # one-shots), or a one-off ops run in a state directory. Exactly one
+    # unnamed fallthrough — before 2026-09-11 only --home-nish--/--tmp-- were
+    # folded here, so every other encoded-cwd stray (seat-proof proofs, ops
+    # runs in agent-state) polluted the "other" packet lane and drove a false
+    # FleetPromptCacheHitLow on lanes whose ratio is structurally uncapped
+    # (fleet-ops#4643, 2026-09-11 20:57Z repair: llmgateway-devpass/other
+    # 0.72 was 45% proof one-shots + one ops run, synthetic/other 0.55 was
+    # 100% proof one-shots).
     if parent.startswith("--") and parent.endswith("--"):
-        if parent.startswith("--home-nish--") or parent == "--tmp--":
-            return "interactive"
+        return "interactive"
     return "other"
 
 
-def _provider_metric_class(rate_card, provider):
+def _provider_metric_class(rate_card, provider, model=None):
     """Map seat-caps class onto the issue's metered/free vocabulary.
 
     prepaid-quota seats (crof, pareto, runinfra) bill uncached input the same
     way metered seats do, so they count as class=metered for the cache-hit
     ratio and FleetPromptCacheHitLow (fleet-ops#4643).
+
+    When the seat-caps row declares a PER-MODEL class (free-class models wired
+    on a metered provider — e.g. openrouter/nvidia/nemotron-3-ultra-550b:free,
+    whose input/cacheRead price is 0), the model class wins: a $0 lane has no
+    metered spend to protect, so its cache-hit ratio must not be scored
+    against the metered money target (fleet-ops#4643, 2026-09-11).
     """
     row = (rate_card or {}).get(provider) or {}
+    raw_row = row.get("raw") or {}
+    if model:
+        mrow = (raw_row.get("models") or {}).get(model)
+        mrow = mrow if isinstance(mrow, dict) else {}
+        mclass = (mrow.get("class") or "").strip().lower()
+        if mclass in ("metered", "prepaid-quota", "prepaid", "subscription"):
+            return "metered"
+        if mclass in ("free",):
+            return "free"
     raw = (row.get("class") or "").strip().lower()
     if raw in ("metered", "prepaid-quota", "prepaid", "subscription"):
         return "metered"
@@ -303,6 +327,7 @@ def session_cache_tokens(path, today_epoch=None, day_seconds=86400.0):
     """
     counts = {}
     provider = None
+    model = None
     first_user_text = None
     try:
         with open(path, "r", encoding="utf-8", errors="replace") as f:
@@ -319,6 +344,8 @@ def session_cache_tokens(path, today_epoch=None, day_seconds=86400.0):
                 t = data.get("type")
                 if t == "model_change":
                     provider = data.get("provider")
+                    if data.get("modelId"):
+                        model = data.get("modelId")
                     continue
                 if t != "message":
                     continue
@@ -350,9 +377,12 @@ def session_cache_tokens(path, today_epoch=None, day_seconds=86400.0):
                 cache_tok = int(usage.get("cacheRead") or 0)
                 if in_tok == 0 and cache_tok == 0:
                     continue
-                slot = counts.setdefault(provider, {"input": 0, "cacheRead": 0})
+                slot = counts.setdefault(
+                    provider, {"input": 0, "cacheRead": 0, "model": model}
+                )
                 slot["input"] += in_tok
                 slot["cacheRead"] += cache_tok
+                slot["model"] = model
     except OSError:
         return None
     if _is_probe_prompt(first_user_text):
@@ -404,9 +434,11 @@ def compute_cache_hit_24h(sessions_dir, rate_card, now_epoch=None, day_seconds=8
         ptype = packet_type_from_path(path)
         for prov, slot in counts.items():
             key = (prov, ptype)
-            cur = agg.setdefault(key, {"input": 0, "cacheRead": 0})
+            cur = agg.setdefault(key, {"input": 0, "cacheRead": 0, "model": None})
             cur["input"] += int(slot.get("input") or 0)
             cur["cacheRead"] += int(slot.get("cacheRead") or 0)
+            if slot.get("model"):
+                cur["model"] = slot.get("model")
     rows = []
     for (prov, ptype), slot in sorted(agg.items()):
         ins = int(slot["input"])
@@ -417,7 +449,7 @@ def compute_cache_hit_24h(sessions_dir, rate_card, now_epoch=None, day_seconds=8
         rows.append({
             "provider": prov,
             "packet_type": ptype,
-            "class": _provider_metric_class(rate_card, prov),
+            "class": _provider_metric_class(rate_card, prov, slot.get("model")),
             "input": ins,
             "cacheRead": crs,
             "ratio": crs / denom,

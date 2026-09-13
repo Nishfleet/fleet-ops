@@ -31,6 +31,11 @@ HEADING_RE = re.compile(r"^## (.+)$", re.M)
 LEDGER_RE = re.compile(
     r"^- (\d{4}-\d{2}-\d{2}) \| ([^|]+) \| (.+)$", re.M
 )
+# Sunset convention (global-standing-rules.md "Conventions", fleet-ops#5749):
+# every NEW standing rule carries a `review-by:YYYY-MM-DD` date or an
+# "absorbed into <mechanism>" exit condition anywhere in its `## ` section.
+SUNSET_REVIEW_BY_RE = re.compile(r"review-by[:\s]+(\d{4}-\d{2}-\d{2})")
+SUNSET_ABSORBED_RE = re.compile(r"absorbed\s+into\s+\S", re.I)
 # FLAG lines in the open-questions section are not standing rules.
 FLAG_BODY_RE = re.compile(r"^FLAG\b", re.I)
 # REVERSAL lines void prior decisions; Clarification lines are meta-notes, not standalone rules.
@@ -40,17 +45,35 @@ SIGNAL_FMT = "signal: rule-enforcement/{id}"
 
 
 def parse_standing_rules(text: str) -> list[dict[str, str]]:
-    """Every `## ` heading is a standing rule. `###` children are not."""
+    """Every `## ` heading is a standing rule. `###` children are not.
+
+    Each row also carries `sunset`: the section's exit-condition marker —
+    "review-by:YYYY-MM-DD", "absorbed", or None (fleet-ops#5749).
+    """
+    matches = list(HEADING_RE.finditer(text))
     rules = []
-    for match in HEADING_RE.finditer(text):
+    for i, match in enumerate(matches):
         heading = match.group(1).strip()
         if not heading:
             continue
+        end = matches[i + 1].start() if i + 1 < len(matches) else len(text)
+        section = text[match.start() : end]
+        review_by = SUNSET_REVIEW_BY_RE.search(section)
+        sunset = None
+        if review_by:
+            try:
+                datetime.strptime(review_by.group(1), "%Y-%m-%d")
+                sunset = f"review-by:{review_by.group(1)}"
+            except ValueError:
+                pass  # unparseable date is not a valid marker
+        if sunset is None and SUNSET_ABSORBED_RE.search(section):
+            sunset = "absorbed"
         rules.append(
             {
                 "kind": "standing",
                 "key": heading,
                 "source": STANDING_PREFIX + heading,
+                "sunset": sunset,
             }
         )
     return rules
@@ -118,6 +141,9 @@ def validate_matrix(data: dict[str, Any]) -> list[str]:
     cap = data.get("auto_file_cap_per_tick")
     if not isinstance(cap, int) or cap < 1:
         errors.append("auto_file_cap_per_tick must be a positive integer")
+    baseline = data.get("sunset_unmarked_baseline")
+    if baseline is not None and (not isinstance(baseline, int) or baseline < 0):
+        errors.append("sunset_unmarked_baseline must be a non-negative integer")
     ids: set[str] = set()
     sources: set[str] = set()
     for i, rule in enumerate(data.get("rules") or []):
@@ -311,6 +337,62 @@ def join(
                 }
             )
 
+    # Sunset convention ratchet (fleet-ops#5749): the convention binds only
+    # NEW rules, so the gate is a ratchet — the count of `## ` sections with
+    # no review-by/absorbed-into marker must not exceed
+    # matrix.sunset_unmarked_baseline. Sections past their review-by date are
+    # due for the Weekly Fleet Review's quality ratchet.
+    def _sunset_id(row: dict[str, str]) -> str:
+        entry = matrix_by_source.get(row["source"])
+        return str((entry or {}).get("id") or _fallback_id(row))
+
+    sunset_baseline = matrix.get("sunset_unmarked_baseline")
+    if not isinstance(sunset_baseline, int) or sunset_baseline < 0:
+        sunset_baseline = None
+    sunset_unmarked = [
+        r
+        for r in vault
+        if r["kind"] == "standing" and not r.get("sunset")
+    ]
+    sunset_due = []
+    for row in vault:
+        marker = str(row.get("sunset") or "")
+        if not marker.startswith("review-by:"):
+            continue
+        due_dt = datetime.strptime(
+            marker[len("review-by:") :], "%Y-%m-%d"
+        ).replace(tzinfo=timezone.utc)
+        if due_dt <= now_dt:
+            sunset_due.append(
+                {
+                    "id": _sunset_id(row),
+                    "source": row["source"],
+                    "review_by": marker[len("review-by:") :],
+                }
+            )
+    sunset_over = (
+        sunset_unmarked[sunset_baseline:] if sunset_baseline is not None else []
+    )
+    sunset = {
+        "baseline": sunset_baseline,
+        "marked": sum(
+            1 for r in vault if r["kind"] == "standing" and r.get("sunset")
+        ),
+        "unmarked": len(sunset_unmarked),
+        "over_baseline": [
+            {
+                "id": f"sunset-{_sunset_id(r)}",
+                "source": r["source"],
+                "reason": (
+                    "sunset convention: standing rule carries no review-by "
+                    "date or absorbed-into exit condition (fleet-ops#5749)"
+                ),
+            }
+            for r in sunset_over
+        ],
+        "due": sunset_due,
+    }
+
     violations = len(uncovered) + len(stale_queued) + len(malformed)
     return {
         "vault_rule_count": len(vault),
@@ -325,6 +407,7 @@ def join(
         "malformed": malformed,
         "extra_matrix": extra,
         "covered_rows": covered_rows,
+        "sunset": sunset,
         "auto_file_cap_per_tick": int(matrix.get("auto_file_cap_per_tick") or 5),
     }
 
@@ -557,6 +640,8 @@ def issue_title(item: dict[str, Any]) -> str:
     if len(short) > 80:
         short = short[:77] + "..."
     rid = item.get("id") or "unknown"
+    if str(item.get("reason") or "").startswith("sunset convention"):
+        return f"fix(sunset): exit marker for {rid} — {short}"
     return f"feat(enforcement): mechanism for {rid} — {short}"
 
 

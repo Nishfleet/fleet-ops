@@ -18,7 +18,9 @@
 #          `pull request(s) #N`, `pull-request(s) #N` (any case; a PR
 #          reference is never an issue parent)
 #   1. explicit delivery trailer — `Closes|Fixes|Resolves #N`, `Closed
-#      #N`, with an optional `<repo>#N` / `<owner>/<repo>#N` prefix
+#      #N`, the house `Moves|Moved #N` delivery trailer (#6046), with an
+#      optional `<repo>#N` / `<owner>/<repo>#N` prefix and an optional
+#      colon between verb and ref (`moves: #N`, `Fixes: #N`)
 #   2. `Relates to #N` in the body
 #   3. head branch `claim/issue-<N>`
 #   4. first bounded `#N` reference in the body
@@ -542,6 +544,94 @@ date -u -d "$(cat "$scratch/state/fleet-ops-4830.first-seen")" +%s >/dev/null 2>
   || fail "case25: corrupt marker must be reset to a parseable timestamp"
 grep -q '^stale_conflicting_prs=0$' "$scratch/stdout.log" || fail "case25: corrupt marker resets inside bound: $(cat "$scratch/stdout.log")"
 ok "case25: corrupt marker -> LOUD + self-heal reset, never a guessed flag"
+
+# --- Case 26 (fleet-ops#6046, live replay of PR #6027): the body's first
+# `#N` mention is an unrelated CLOSED issue while the house `moves:`
+# delivery trailer names the real parent. Without the Mov verb in
+# TRAILER_RE the parenthetical closed #3322 wins via priority 4 and a
+# LIVE fix PR reads dead on the wrong parent. The trailer keeps its repo
+# qualifier (#6027's exact form) and colon. ---
+set_fixtures \
+  '[{"number":6027,"title":"orch: seat-yield JSON parity","headRefName":"orch/5997-seat-yield-json","mergeable":"CONFLICTING","body":"The audition phase of the litellm-era tick (#3322 retirement thresholds) now runs per tick.\n\nmoves: fleet-ops#5997"}]' \
+  3322:CLOSED 5997:MERGED
+rc=$(run)
+grep -q '^rc=1$' <<<"$rc" || fail "case26: moves-trailer + MERGED parent must exit 1: $rc"
+grep -q 'parent=5997 parent-state=MERGED' "$scratch/stdout.log" \
+  || fail "case26: evidence line must name parent=5997 MERGED: $(cat "$scratch/stdout.log")"
+grep -q 'issue view 5997' "$scratch/gh.log" || fail "case26: must query issue 5997: $(cat "$scratch/gh.log")"
+grep -q 'issue view 3322' "$scratch/gh.log" \
+  && fail "case26: the wrong parent #3322 must never be queried: $(cat "$scratch/gh.log")"
+ok "case26: unrelated-CLOSED-first-mention + 'moves: fleet-ops#5997' -> parent=5997, never 3322"
+
+# --- Case 27 (fleet-ops#6046): the colon and past-tense forms pin left
+# and right — bare `moves: #M`, colon-less `Moved #M`, and the existing
+# verb family in GitHub's own `Fixes: #N` colon form all resolve as
+# delivery trailers. ---
+set_fixtures \
+  '[{"number":701,"title":"chore: bloom a","headRefName":"fix/a","mergeable":"CONFLICTING","body":"Poll grid.\n\nmoves: #1941"},{"number":702,"title":"chore: spawn b","headRefName":"fix/b","mergeable":"CONFLICTING","body":"The flow moved #2133 upstream."},{"number":703,"title":"chore: spawn c","headRefName":"fix/c","mergeable":"CONFLICTING","body":"Retry windows.\n\nFixes: #595"}]' \
+  1941:MERGED 2133:CLOSED 595:CLOSED
+rc=$(run)
+grep -q '^rc=1$' <<<"$rc" || fail "case27: three delivery-trailer forms must exit 1: $rc"
+[ "$(last_measure)" = "dead_conflicting_prs=3" ] \
+  || fail "case27: all three trailer forms must dead-flag: $(last_measure)"
+grep -q 'parent=1941' "$scratch/stdout.log" || fail "case27: moves: #1941 must resolve: $(cat "$scratch/stdout.log")"
+grep -q 'parent=2133' "$scratch/stdout.log" || fail "case27: Moved #2133 must resolve: $(cat "$scratch/stdout.log")"
+grep -q 'parent=595' "$scratch/stdout.log" || fail "case27: Fixes: #595 colon form must resolve: $(cat "$scratch/stdout.log")"
+ok "case27: 'moves: #1941', 'Moved #2133', 'Fixes: #595' all resolve as delivery trailers"
+
+# --- Case 28 (fleet-ops#6046, never-guess intact): `moved` as ordinary
+# prose with no issue ref beside it must NOT hijack priority 1 — the body
+# still falls through to the first bounded mention unchanged. ---
+set_fixtures \
+  '[{"number":703,"title":"docs: picker note","headRefName":"docs/pick","mergeable":"CONFLICTING","body":"The picker moved gatekeeping into the repo tests; tracked at #777"}]' \
+  777:OPEN
+rc=$(run)
+grep -q '^rc=0$' <<<"$rc" || fail "case28: prose 'moved' must fall through to priority 4, not hijack: $rc"
+[ "$(last_measure)" = "dead_conflicting_prs=0" ] || fail "case28: measure must be 0: $(last_measure)"
+grep -q 'issue view 777' "$scratch/gh.log" || fail "case28: first bounded mention must still resolve: $(cat "$scratch/gh.log")"
+ok "case28: prose 'moved' with no adjacent ref still falls through to first-bounded #N (priority 4)"
+
+# --- Case 29 (fleet-ops#6421, hermetic replay of PR #5834): the CLOSE
+# exit from the stale-conflicting class. Land-or-close (b) — the tracker
+# PR #5834 was CLOSED (not merged) at 2026-09-13T13:32:03Z after 25h+ of
+# CONFLICTING — must clear on the NEXT scan: the PR vanishes from the
+# open list, the GC pass prunes its first-seen marker, the flagged list
+# rewrites empty, and the sweep exits 0 so the fleet-merged-pr-close
+# ExecStartPre->ExecStart rail unwedges. Two runs, ONE state dir, the
+# #5834 lifecycle end to end (body carries its real first-mention #5792).
+set_fixtures \
+  '[{"number":5834,"title":"config(seat-caps): dead-credit and dead-token providers get cap=0 with dated reasons — enrolment must tell the truth","headRefName":"fix/seat-caps-dead-seats-cap0","mergeable":"CONFLICTING","body":"Part of #5792 (route-around) and the seat_availability SLO burn"}]' \
+  5792:OPEN
+printf '%s\n' "$(date -u -d '25 hours ago' +%Y-%m-%dT%H:%M:%SZ)" \
+  >"$scratch/state/fleet-ops-5834.first-seen"
+rc=$(run)
+grep -q '^rc=1$' <<<"$rc" || fail "case29: stale-CONFLICTING must flag while the PR is OPEN: $rc"
+grep -q '^stale_conflicting_prs=1$' "$scratch/stdout.log" \
+  || fail "case29: stale measure must be 1 while the PR is OPEN: $(cat "$scratch/stdout.log")"
+grep -qx 'Nishfleet/fleet-ops 5834 5792' "$scratch/state/stale-conflicting.list" \
+  || fail "case29: PR 5834 must sit on the flagged list while OPEN: $(cat "$scratch/state/stale-conflicting.list")"
+[ -f "$scratch/state/fleet-ops-5834.first-seen" ] \
+  || fail "case29: marker must be kept while the PR stays in class"
+# The close: #5834 -> CLOSED 2026-09-13T13:32:03Z, so it vanishes from the
+# OPEN pr list. SAME state dir, next tick: wedge cleared, rc 0. Only the
+# prlist fixture is swapped — set_fixtures would wipe the very state
+# (marker + flagged list) this case is here to prove gets cleared.
+printf '%s' '[]' >"$scratch/prlist.json"
+rc=$(run)
+grep -q '^rc=0$' <<<"$rc" || fail "case29: after the CLOSE the sweep must exit 0: $rc"
+grep -q '^stale_conflicting_prs=0$' "$scratch/stdout.log" \
+  || fail "case29: stale measure must be 0 after the close: $(cat "$scratch/stdout.log")"
+[ "$(last_measure)" = "dead_conflicting_prs=0" ] \
+  || fail "case29: last measure must still be dead_conflicting_prs=0: $(last_measure)"
+[ ! -f "$scratch/state/fleet-ops-5834.first-seen" ] \
+  || fail "case29: GC must prune the 5834 marker once the PR vanishes from the open list"
+[[ -f "$scratch/state/stale-conflicting.list" && ! -s "$scratch/state/stale-conflicting.list" ]] \
+  || fail "case29: flagged list must rewrite empty after the close"
+grep -q 'GC: dropped first-seen marker fleet-ops-5834.first-seen' "$scratch/stderr.log" \
+  || fail "case29: the GC drop of the 5834 marker must be logged: $(cat "$scratch/stderr.log")"
+grep -q 'scan done: conflicting=0 unknown-mergeable=0 dead=0 stale-conflicting=0' "$scratch/stderr.log" \
+  || fail "case29: scan-done must read all-zero after the close: $(cat "$scratch/stderr.log")"
+ok "case29: stale-flagged CLOSE exit -> marker GC'd, flagged list empty, wedge exits 0 (fleet-ops#6421 / #5834)"
 
 # --- No agent names anywhere in detector output ---
 grep -qiE '(^|[[:space:]])(by|with|via|from|using|through|used)[[:space:]]+(the[[:space:]]+)?(claude|codex|devin|cursor|grok|openai|anthropic|deepseek|minimax|copilot|gemini|opus|chatgpt|fable|luna|sol)([^a-z]|$)' \

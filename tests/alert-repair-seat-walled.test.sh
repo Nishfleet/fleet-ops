@@ -6,7 +6,7 @@
 # health class) and must re-select rather than park on a walled seat.
 #
 # Live class: the verify hop redispatched onto devin/glm-5-2 (rate_limited,
-# usable_at in the future, consecutive_failure_count=20) because _pick_seat
+# usable_at in the future, consecutive_failure_count=20) because _pick-seat
 # only checked WALLED_PROVIDERS, not the per-seat ledger. The chain parked
 # on an unusable seat and FleetGhWebhookReceiverAbsent stayed firing for 3h.
 #

@@ -103,7 +103,7 @@ config/model-candidates.json /home/nish/.local/state/pi-packet/model-candidates.
 config/repo-privacy.json /home/nish/.local/state/pi-packet/repo-privacy.json
 config/entitled-seats.json /home/nish/.local/state/pi-packet/entitled-seats.json
 config/logrotate.conf /home/nish/.config/logrotate.conf
-lib/seat-lib.sh /home/nish/.local/lib/pi-packet/seat-lib.sh
+lib/litellm-seat.sh /home/nish/.local/lib/pi-packet/litellm-seat.sh
 lib/heartbeat-watchman.sh /home/nish/.local/lib/pi-packet/heartbeat-watchman.sh
 # fleet-ops#1399: rate-limit the OnFailure Telegram page so it only fires
 # after N consecutive failures of the same unit (per-unit state in
@@ -131,6 +131,9 @@ bin/fleet-no-agent-names-check /home/nish/.local/bin/fleet-no-agent-names-check
 lib/fleet-wipe-lessons.py /home/nish/.local/lib/pi-packet/fleet-wipe-lessons.py
 bin/fleet-wipe-lessons-check /home/nish/.local/bin/fleet-wipe-lessons-check
 lib/guard_pi_packet.py /home/nish/.local/lib/pi-packet/guard_pi_packet.py
+# fleet-ops#5786: the LIVE-claim gate — the pi-packet hook, the detached
+# dead-man, and --body checks all load this sibling checker.
+lib/pi-packet-verdict.py /home/nish/.local/lib/pi-packet/pi-packet-verdict.py
 # fleet-ops#539: shared-file collision PreToolUse guard for the "check other
 # agents before touching shared files" standing rule.
 lib/guard_shared_file_collision.py /home/nish/.local/lib/pi-packet/guard_shared_file_collision.py
@@ -197,6 +200,11 @@ lib/slo_budget.py /home/nish/.local/lib/pi-packet/slo_budget.py
 # the issue's rollback contract); the gauges land in fleet.prom on the
 # existing 5-min tick. Same install dir as the other lib modules.
 lib/fleet-deploy-quality.py /home/nish/.local/lib/pi-packet/fleet-deploy-quality.py
+# fleet-ops#5785: deploy-fault issue class + green-run production proof,
+# shared by bin/fleet-merged-pr-close (close gate) and
+# bin/lifecycle-label-sweep (deploy-fault labelling + reopen pass). A lib,
+# not an organ — no unit, no timer.
+lib/deploy-fault-gate.sh /home/nish/.local/lib/pi-packet/deploy-fault-gate.sh
 # fleet-ops#4459: rate-card USD math shared by measure.sh and the exporter's
 # fleet_usd_24h metric (like fleet-deploy-quality.py, lazy-loaded inside
 # libexec/fleet-metrics-export.py, no service change).
@@ -238,6 +246,14 @@ bin/pi-transport-check /home/nish/.local/bin/pi-transport-check
 bin/pi-issue-run /home/nish/.local/bin/pi-issue-run
 bin/pi-issue-failed-reap /home/nish/.local/bin/pi-issue-failed-reap
 bin/pi-systemd-run /home/nish/.local/bin/pi-systemd-run
+# fleet-ops#5444: OnFailure handler for retry-exhausted packets — triage +
+# findings-ledger + agent-ready re-queue for --deliverable runs.
+bin/pi-packet-failed /home/nish/.local/bin/pi-packet-failed
+# fleet-ops#5444: the handler's findings-ledger write must go through the
+# shared single-writer helper (fleet-ops#5443), auto-detected at
+# ~/.local/lib/pi-packet/findings_ledger.py — without this install line the
+# runtime handler silently falls back to direct append.
+lib/findings_ledger.py /home/nish/.local/lib/pi-packet/findings_ledger.py
 # fleet-ops#4266: ExecStopPost dead-man — the verdict hook that turns "the
 # unit ended" into success ping / STOP-REASON + /fail ping + died gauge.
 bin/pi-detached-deadman /home/nish/.local/bin/pi-detached-deadman
@@ -448,11 +464,17 @@ libexec/alert-repair-dispatch /home/nish/.local/libexec/alert-repair-dispatch
 # reports/machinery-audit-2026-08-28.md). The daily-digest.{timer,service} user
 # units already symlink to this repo's systemd/ — only the script was missing.
 libexec/daily-digest /home/nish/.local/libexec/daily-digest
+bin/fleet-workflow-registration-scan /home/nish/.local/bin/fleet-workflow-registration-scan
 bin/fleet-heartbeat /home/nish/.local/bin/fleet-heartbeat
 bin/fleet-heartbeat-tier1 /home/nish/.local/bin/fleet-heartbeat-tier1
 bin/fleet-heartbeat-tier2 /home/nish/.local/bin/fleet-heartbeat-tier2
 bin/fleet-heartbeat-undersaturation /home/nish/.local/bin/fleet-heartbeat-undersaturation
 bin/fleet-heartbeat-low-water-mark /home/nish/.local/bin/fleet-heartbeat-low-water-mark
+# fleet-ops#5692: orphan Actions-registration scan canary. Called from
+# heartbeat-tier1 block 49 every tick; rc=1 (orphan found) is logged and
+# not propagated (the report at agent-state/FLEET-ORPHAN-WORKFLOW-
+# REGISTRATIONS.md feeds the #1161-format remediation issue); rc>=2
+# (scanner crash) fails the tick.
 # fleet-ops#414: senior-auditor admission panel (re-land of the #146 panel
 # that #229 delivered and #231 auto-reverted). Scout-candidate issues pass a
 # 3-seat panel (devin/glm-5-2, a free glm-5.3 seat, straitly/deepseek-v4-pro,
@@ -751,6 +773,17 @@ systemd/escalation-daily-sweep.timer /home/nish/.config/systemd/user/escalation-
 bin/fleet-escalation-drain /home/nish/.local/bin/fleet-escalation-drain
 systemd/escalation-drain.service /home/nish/.config/systemd/user/escalation-drain.service
 systemd/escalation-drain.timer /home/nish/.config/systemd/user/escalation-drain.timer
+# fleet-ops#5854: the organ-death watcher. Every 5 min, watches the
+# anti-recursion-excluded escalation organs (stop-escalation.path,
+# unit-escalation@ template, parked stop-escalation-dispatch, daily-sweep
+# liveness marker) and fails loud on red. OnFailure= reset drop-in + write
+# name guard keep it out of the chain it watches; the out-of-band page is
+# the HC_URL_ORGANWATCH dead-man (same one-time provisioning as the other
+# keystone HC_URL_* checks) and the hourly tier1 failed-units sweep.
+bin/escalation-organ-watch /home/nish/.local/bin/escalation-organ-watch
+systemd/escalation-organ-watch.service /home/nish/.config/systemd/user/escalation-organ-watch.service
+systemd/escalation-organ-watch.service.d/no-self-escalate.conf /home/nish/.config/systemd/user/escalation-organ-watch.service.d/no-self-escalate.conf
+systemd/escalation-organ-watch.timer /home/nish/.config/systemd/user/escalation-organ-watch.timer
 prompts/heartbeat.md /home/nish/.pi/agent/prompts/heartbeat.md
 # P14: nishfleet-worker GitHub App identity for workers
 bin/worker-token /home/nish/.local/bin/worker-token
@@ -1129,6 +1162,21 @@ docs/escalation-matrix.md /home/nish/.local/share/fleet-ops/docs/escalation-matr
 bin/grok-token-refresh /home/nish/.local/bin/grok-token-refresh
 systemd/grok-token-refresh.service /home/nish/.config/systemd/user/grok-token-refresh.service
 systemd/grok-token-refresh.timer /home/nish/.config/systemd/user/grok-token-refresh.timer
+# fleet-ops#5788: headless MiniMax OAuth rotation check. The
+# fleet-litellm-proxy organ captures MINIMAX_API_KEY once at startup;
+# the underlying ~/.mmx/config.json access token rotates silently
+# inside claude-minimax-key every ~12h, leaving the running proxy with
+# a stale credential. A stale key 401s every anthropic/MiniMax-M3
+# deployment in the senior / judge / worker-cheap / worker-capable /
+# worker-private groups with MiniMax's "login fail: Please carry the
+# API secret key in the 'X-Api-Key' field" message; pi exits 1 on
+# the failure (killing flagship workers). 2h timer detects the
+# rotation by comparing the wrapper's fresh token to the proxy's
+# captured env var and bounces the proxy on a mismatch. Mirrors the
+# grok-token-refresh structure (fleet-ops#41). No seat-caps change.
+bin/minimax-token-refresh /home/nish/.local/bin/minimax-token-refresh
+systemd/minimax-token-refresh.service /home/nish/.config/systemd/user/minimax-token-refresh.service
+systemd/minimax-token-refresh.timer /home/nish/.config/systemd/user/minimax-token-refresh.timer
 # fleet-ops#516 sr-max-speed: hunt artificial limiters (not money/safety/hardware).
 # Wired into fleet-heartbeat-tier1; fail-loud on violation -> unit-escalation.
 bin/fleet-max-speed /home/nish/.local/bin/fleet-max-speed
@@ -1211,3 +1259,13 @@ systemd/fleet-litellm-health-canary.timer /home/nish/.config/systemd/user/fleet-
 # symlinks it; pure Environment override pointing the postgres probe at the
 # user-level socket dir, not new machinery. fleet-ops#4130.
 systemd/fleet-litellm-health-canary.service.d/10-pg-socket.conf /home/nish/.config/systemd/user/fleet-litellm-health-canary.service.d/10-pg-socket.conf
+# fleet-ops#5935: 3 owned ephemeral GitHub Actions runners (gh-runner@{1..3})
+# inside fleet-ci.slice — merge_group + push heavy jobs off the 20-job
+# hosted concurrent cap; pull_request jobs stay hosted so fork PRs never
+# execute on the box (org fork-PR approval = all_external_contributors).
+# Registration is a fresh single-use JIT config per activation via the
+# existing `gh` keyring auth — no PAT stored. Enable (templates are not
+# auto-enabled by install.sh by design):
+#   systemctl --user enable --now gh-runner@{1..3}
+systemd/fleet-ci.slice /home/nish/.config/systemd/user/fleet-ci.slice
+systemd/gh-runner@.service /home/nish/.config/systemd/user/gh-runner@.service

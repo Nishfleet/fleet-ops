@@ -27,10 +27,23 @@ whether the fleet is running.** The 2026-08-23 "fleet is PAUSED" text that
 used to live here went stale after the 2026-08-25/26 restoration and misled
 workers into wrong defaults (fleet-ops#180's claimant, blind-audit finding #8).
 
-**Authoritative check, in order:** (1) if `~/workspaces/agent-state/FLEET-PAUSED`
+**The 5-step fleet live-state check is canonical; the steps below are a quick
+minimum, never a complete procedure.** Where any live-state wording drifts,
+the generated `idle-fleet-alarm` block in `~/.claude/CLAUDE.md` (fleet-ops
+`lib/standing-rules/canonical.md`, SECTION: idle-fleet-alarm) WINS — it is
+the single edit point (fleet-ops#5748). Its steps 3–5 are findings-grade
+duties and must be performed, not skipped:
+
+3. `systemctl --user list-units --state=failed` — must be EMPTY (needs
+   `XDG_RUNTIME_DIR=/run/user/$(id -u)` set, or it silently returns nothing).
+4. `cat /home/nish/workspaces/agent-state/lanes/pi-seat-health.json` — check
+   `observed_at` is recent before believing it; a missing or unparseable
+   state file is itself a finding.
+5. `uptime` for load, and merged-PR counts per repo for actual throughput.
+
+**Quick minimum, in order:** (1) if `~/workspaces/agent-state/FLEET-PAUSED`
 exists, the fleet is deliberately down — respect it; (2) otherwise
-`XDG_RUNTIME_DIR=/run/user/$(id -u) systemctl --user list-timers` is the truth.
-As of 2026-08-26 the fleet is RESTORED and running (~26 user timers); enrolment
+`XDG_RUNTIME_DIR=/run/user/$(id -u) systemctl --user list-timers` is the truth. Enrolment
 is declared in fleet-ops `config/intake-repos.json`, converged by the
 reconciler (fleet-ops#32). Worktrees, recent commits,
 packet files and memories are artefacts of past work and prove nothing about now.
@@ -45,7 +58,7 @@ describe what was true when each was written — many say the fleet is live and
 busy. They are now out of date on that point. Check the actual system before
 acting on anything a memory tells you about current state.
 
-Conserve Claude usage: it is low. Claude is for judgement and alarms, never
+Conserve Claude usage: Claude is for judgement and alarms, never
 legwork. The free and prepaid seats do the work.
 
 
@@ -86,28 +99,50 @@ Simple language is never baby talk and never condescending.
 - **Switched on and proven, or it is not done.** Never report "armed" or "ready"
   as if it were "running". One proven end-to-end run.
 - **Act, don't ask.** Do reversible work autonomously. "Say the word and I'll dig
-  in" is the failure mode. Bring Nish in only for money, privacy, security,
-  legal, product direction, or destructive/irreversible steps.
+  in" is the failure mode. Bring Nish in only for the canonical reserved
+  classes: money/pricing, privacy, security, legal, brand, product direction,
+  customer-data deletion, destructive/irreversible steps, and authority he has
+  explicitly reserved. That is the single source of truth — it lives in the
+  vault (`global-standing-rules.md` → "Only the un-fixable reaches Nish" →
+  "Canonical reserved-classes list"), older or shorter surface lists fold into
+  it, and a surface is a pointer, not a second source (fleet-ops#5586).
 - **Verify live truth.** Nothing assumed. Official docs over local folklore. Say
   when something is an inference.
 - **Queue every finding.** A fix only mentioned in chat is lost. Queue it.
 - **Session-outliving work uses `pi-systemd-run`, never `nohup`.** A
   `nohup pi ... &` dies when the launching shell ends and leaves dead-seat
-  EXTLOAD lines. `pi-systemd-run --unit <name> --stdin <packet.md> -- pi
+  EXTLOAD lines. `pi-systemd-run --unit <name> --stdin <packet.md>
+  --deadline <min> --deliverable <path> -- pi
   --print --provider <provider> --model <model>` (a thin
   `systemd-run --user --collect --no-block` wrapper; not a dispatcher).
-  Canonical wording: fleet-ops README and `prompts/heartbeat.md`.
+  `--deadline` is the grace budget and `--deliverable` the artifact the run MUST
+  produce; the wrapper adds the healthchecks dead-man and OnFailure escalation
+  (fleet-ops#4266). Canonical wording: fleet-ops README and
+  `prompts/heartbeat.md`.
 
 ## Hard lines
 
 - **Money is Nish's alone.** No payments, cards, or paid trials, ever. Account
   signups and generated passwords are pre-approved; payment walls stop and ask.
+  Sole recorded exception: `bugbot-gate`-approved Bugbot spend — vault
+  `standing-rules-archive.md` → "Bugbot is the sole pre-authorized paid spend"
+  (fleet-ops#5645). The gate decides; do not widen it.
 - Zero revenue right now. No paid upgrades. Free fixes win.
 - Never `systemctl restart` a slice — it bounces every unit inside it.
 - Never `git stash` in Nish's repos. The checkouts hold other agents' stashes.
 - `main`/`master` are protected. Branch or use a worktree.
 - Secrets never get printed, moved, rotated, or committed.
-- Products are PR-only. Never merge, never deploy without Nish.
+- Products are PR-only. Never deploy without Nish; agent-authored PRs
+  self-land per `global-standing-rules.md` → "Agent-authored PRs land
+  themselves" (fleet-ops#5715: the bare "never merge" wording contradicted the
+  enforced self-land rule).
+- **Any writer of a MANIFEST-managed live file** (`~/.pi/agent/models.json`,
+  seat-caps, model-candidates — anything install.sh copy-installs) **must leave
+  a dated backup sibling** `<file>.pre-<why>-<UTCts>` (never `.bak*` —
+  fleet-ops#3273 flags those as sprawl) **and a dated actions.log line naming
+  the file**. An unattributed live write is a fleet-ops#5663 incident:
+  install.sh REFUSEs, and the drift canary opens a reconcile PR that names the
+  writer — or reports it UNATTRIBUTED.
 
 ## Where the real context lives
 
@@ -118,7 +153,7 @@ Read these rather than guessing. They are canonical and they change.
 | Standing rules, all machines | `~/workspaces/tooling/nish-vault/_system/shared-memory/global-standing-rules.md` |
 | Vault contract — read before writing | `~/workspaces/tooling/nish-vault/_system/shared-memory/agent-contract.md` |
 | Vault governance | `~/workspaces/tooling/nish-vault/_system/governance.md` |
-| Model/lane routing policy | `~/workspaces/tooling/nish-vault/_system/shared-memory/codex-model-routing.md` |
+| Model/lane routing — `pi --print --provider <provider> --model <model>` direct; old `codex-model-routing.md` ladder is history only | `~/workspaces/agent-state/lanes/pi-seat-health.json` |
 | Pre-implementation contract | `~/workspaces/tooling/nish-vault/_system/shared-memory/pre-implementation-contract.md` |
 | House method skills | `~/workspaces/tooling/nish-vault/_system/shared-memory/skills-library/` |
 | Durable memories (index first) | `~/.claude/projects/-home-nish/memory/MEMORY.md` |

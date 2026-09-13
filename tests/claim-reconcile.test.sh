@@ -165,6 +165,10 @@ FAKE
 chmod +x "$scratch/bin/systemctl"
 
 export PATH="$scratch/bin:$PATH"
+# fleet-ops#5101: point GH at the stub so the bin's App-token mint guard
+# ("${GH:-gh}" == "gh") skips the PATH prepend + live mint entirely — the
+# suite stays hermetic and can never touch the real tracker.
+export GH="$scratch/bin/gh"
 export SYSTEMCTL="$scratch/bin/systemctl"
 export FAKE_DIR="$scratch"
 export CLAIM_RECONCILE_REPOS="Nishfleet/fleet-ops"

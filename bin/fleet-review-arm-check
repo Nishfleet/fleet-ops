@@ -13,7 +13,7 @@
 # Exit 1: no entry of senior_seats_in_order is usable — open the PR
 #         without the arm and add the body line above.
 #
-# Reuses lib/seat-lib.sh (the routing authority) — no new mechanism, no
+# Reuses lib/litellm-seat.sh (the routing authority) — no new mechanism, no
 # new organ. Not a scheduled unit; a worker-facing gate only.
 
 set -euo pipefail
@@ -36,20 +36,19 @@ if [[ "${1:-}" == "--help" || "${1:-}" == "-h" ]]; then
     usage
 fi
 
-# Resolve the seat-lib the same way the fleet does: the installed copy
-# first (the live routing authority), then the repo copy.
+# Resolve the LiteLLM helper the same way the fleet does: installed copy
+# first, then the repo copy.
 SEAT_LIB="${PI_PACKET_SEAT_LIB:-}"
 if [[ -z "$SEAT_LIB" || ! -f "$SEAT_LIB" ]]; then
-    SEAT_LIB="$here/../lib/seat-lib.sh"
+    SEAT_LIB="$here/../lib/litellm-seat.sh"
 fi
 if [[ ! -f "$SEAT_LIB" ]]; then
-    echo "fleet-review-arm-check: seat-lib missing at $SEAT_LIB" >&2
+    echo "fleet-review-arm-check: litellm-seat missing at $SEAT_LIB" >&2
     exit 2
 fi
 
 # shellcheck source=/dev/null
 source "$SEAT_LIB"
-load_seat_caps >/dev/null 2>&1 || true
 
 if senior_seat_available; then
     exit 0

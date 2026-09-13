@@ -59,7 +59,7 @@ printf '%s' "${PI_RESPONSE:-}"
 FAKE
 chmod +x "$pi_fake"
 
-seat_lib="$scratch/seat-lib.sh"
+seat_lib="$scratch/seatlib.sh"
 cat >"$seat_lib" <<'LIB'
 enumerate_seats() { printf '%s\t%s\t-\t1\n' devin glm-5-2; }
 class_of() { printf 'prepaid-quota\n'; }

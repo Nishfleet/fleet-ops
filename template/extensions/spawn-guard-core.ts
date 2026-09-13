@@ -9,7 +9,7 @@
  */
 
 import { execSync } from "node:child_process";
-import { appendFileSync } from "node:fs";
+import { appendFileSync, readFileSync } from "node:fs";
 
 export const FLEET_SPEC_MAX_DEPTH = 1;
 /** systemd TasksMax on fleet-work.slice — hard silent kill. Must match systemd/fleet-work.slice.d/10-tasksmax.conf (fleet-ops#3280: 11 threads/pi). */
@@ -47,14 +47,39 @@ const DANGEROUS_RULES: Array<{ id: string; pattern: RegExp }> = [
 	// drop, clear, branch, create, store). The standing rule is about not
 	// popping another agent's stash; listing/showing does not touch it.
 	{ id: "git_stash_forbidden", pattern: /\bgit\s+stash\b(?!\s+(?:list|show)\b)/i },
+	// fleet-ops#5589 (rulebook redteam 2026-09-11): the AGENTS.md hard line
+	// "Never `systemctl restart` a slice — it bounces every unit inside it"
+	// had no mechanical guard that actually fired. The pre-#5589 rule
+	// (systemctl_restart_slice) required `restart` to sit directly after
+	// `systemctl`, so `systemctl --user restart user-1000.slice` — the exact
+	// shape the finding names; user-1000.slice carries ~54 live timers/units —
+	// slipped through, and `stop` was not covered at all.
+	//
+	// Blocks `systemctl [flags] restart|stop ... <target>.slice` for any
+	// target EXCEPT the dated allowlist documented below. Mixed targets are
+	// blocked conservatively: one non-allowlisted slice anywhere in the
+	// argument span blocks the whole command. (try-restart / kill / freeze
+	// remain out of scope — the issue's contract is restart|stop.)
+	//
+	// Dated allowlist escape (drasl et al): single-purpose slices whose
+	// restart/stop cannot bounce unrelated units. Every entry is an
+	// exception to the hard line and needs a date + reason. Entries for
+	// slices that do not exist on a machine are inert.
+	//   - drasl.slice — 2026-09-11, fleet-ops#5589 (drasl et al.)
 	{
-		id: "systemctl_restart_slice",
-		pattern: /\bsystemctl\s+restart\s+[^\n;|&]*\.slice\b/i,
+		id: "systemctl_slice_lifecycle",
+		pattern:
+			/\bsystemctl\s+(?:[^\s;|&]+\s+)*?\b(?:restart|stop)\s+(?=[^\n;|&]*(?<![\w.\/-])(?!drasl\.slice\b)[^\s;|&]*\.slice\b)/i,
 	},
+	// Same flags-gap fix: `systemctl --user restart fleet-heartbeat.service`
+	// defeated the pre-#5589 shape the same way. Verb set extended to stop
+	// for fleet units too (fleet-ops#5605): a worker stopping a fleet unit
+	// is the same class of self-harm — it kills the dead-man and the
+	// in-flight work with no escalation.
 	{
 		id: "systemctl_restart_fleet_unit",
 		pattern:
-			/\bsystemctl\s+restart\s+[^\n;|&]*(?:fleet-|implementation-worker-)/i,
+			/\bsystemctl\s+(?:[^\s;|&]+\s+)*?\b(?:restart|stop)\s+[^\n;|&]*(?:fleet-|implementation-worker-)/i,
 	},
 	{
 		id: "credential_path_write",
@@ -108,6 +133,126 @@ const DANGEROUS_RULES: Array<{ id: string; pattern: RegExp }> = [
  */
 const WRANGLER_DEPLOY_0509 =
 	/\b(?:wrangler\s+(?:deploy|versions\s+upload)|npm\s+run\s+deploy|node\s+scripts\/deploy-production\.mjs)\b/;
+
+/**
+ * fleet-ops#5902: the worker memory-budget rule (prompts/worker.md, fleet-ops#4891/#4893)
+ * — never `tsc -b`, `vitest --coverage`, `npm run typecheck` / `test:coverage` inside a
+ * worker — was prose only. On 2026-09-12 pi-issue@0509-3014 ran
+ * `NODE_OPTIONS=--max-old-space-size=3072 npx tsc -b` (node RSS 1.77 GB) and #4838 had
+ * already shown the box's RAM goes to these toolchains, not to seat count. This is the
+ * mechanical guard. Worker context = the session's cgroup is a pi-issue@ unit;
+ * FLEET_WORKER_CONTEXT=1|0 overrides for tests. Quoted mentions are stripped first so a
+ * worker can still grep for or write about the banned commands.
+ */
+export const WORKER_TOOLCHAIN_RULE =
+	/\b(?:(?:npx\s+)?tsc\s+(?:-b|--build)\b|vitest\b[^\n;|&]*--coverage\b|npm\s+(?:run\s+)?(?:typecheck|test:coverage)\b|npm\s+test\b[^\n;|&]*--coverage\b)/i;
+
+export function isWorkerSession(env: NodeJS.ProcessEnv): boolean {
+	if (env.FLEET_WORKER_CONTEXT === "1") return true;
+	if (env.FLEET_WORKER_CONTEXT === "0") return false;
+	try {
+		return readFileSync("/proc/self/cgroup", "utf8").includes("pi-issue@");
+	} catch {
+		return false;
+	}
+}
+
+export function workerToolchainBlock(ctx: SpawnContext): string | null {
+	if (!isWorkerSession(ctx.env)) return null;
+	const m = WORKER_TOOLCHAIN_RULE.exec(stripQuotedShellText(ctx.command));
+	return m ? `worker_toolchain_ban cmd=${m[0].trim()}` : null;
+}
+
+/**
+ * fleet-ops#5700: the raw WRANGLER_DEPLOY_0509 regex is tested against the
+ * FULL command text, so read-only commands that merely MENTION a deploy
+ * phrase inside a quoted string or a heredoc body were blocked — 98 blocks,
+ * majority false positives (a worker cannot grep for wrangler, write a PR
+ * body via `cat <<EOF`, or even file this issue without tripping the gate;
+ * the scout that filed #5700 was SPAWN_BLOCKED three times while filing it).
+ *
+ * stripQuotedShellText returns the command with heredoc bodies dropped and
+ * quoted spans replaced by NUL separators, so only executable-position text
+ * remains. Quoted content is prose — grep patterns, PR bodies, issue text.
+ * Defensive edge: `sh -c 'wrangler deploy'` hides the deploy inside a quote
+ * while still EXECUTING it, so when a `sh|bash -c` wrapper appears in the
+ * stripped text and the raw text matches, the guard falls back to blocking
+ * (conservative — the gate's teeth are kept at the cost of over-matching a
+ * rare `grep 'sh -c'` shape). See fleet-spawn-guard-stash-readonly.test.sh
+ * for the same principle (read-only mention ≠ execution).
+ */
+export function stripQuotedShellText(command: string): string {
+	// 1. Drop heredoc bodies (everything up to the terminator line). A
+	// heredoc body is prose — PR bodies, issue filings — never executable.
+	const lines = command.split("\n");
+	const kept: string[] = [];
+	let terminator: string | null = null;
+	for (const line of lines) {
+		if (terminator !== null) {
+			if (line.trim() === terminator) {
+				terminator = null;
+				kept.push("");
+			}
+			continue;
+		}
+		kept.push(line);
+		const m = line.match(/<<(-?)\s*(['\"`]?)([A-Za-z_][A-Za-z0-9_-]*)\2/);
+		if (m) terminator = m[3];
+	}
+	const noHeredocs = kept.join("\n");
+	// 2. Blank out quoted spans with NUL separators: the tokens inside a
+	// quote can neither match nor splice together around the quote bounds.
+	let out = "";
+	let quote: string | null = null;
+	for (const ch of noHeredocs) {
+		if (quote === null) {
+			if (ch === "'" || ch === '"') {
+				quote = ch;
+				out += "\x00";
+			} else {
+				out += ch;
+			}
+		} else if (ch === quote) {
+			quote = null;
+			out += "\x00";
+		}
+	}
+	return out;
+}
+
+/**
+ * fleet-ops#5700 dry-run precision: a wrangler deploy/versions upload
+ * invocation that carries --dry-run deploys NOTHING (it only bundles), and
+ * it is the one legitimate local pre-push verification for a wrangler
+ * change. It is exempt — but any OTHER deploy entry point appearing in a
+ * command separator-sibling segment (`&&`, `;`, `|`, `\n`) still blocks:
+ * `wrangler deploy --dry-run && npm run deploy` is a deploy.
+ */
+export function wranglerDeployExecutableEntry(
+	command: string,
+): string | null {
+	const stripped = stripQuotedShellText(command);
+	const segments = stripped.split(/&&|\|\||[;|\n]/);
+	for (const seg of segments) {
+		if (!WRANGLER_DEPLOY_0509.test(seg)) continue;
+		const isWranglerDryRunOnly =
+			/\bwrangler\s+(?:deploy|versions\s+upload)\b/.test(seg) &&
+			/--dry-run/.test(seg) &&
+			!/\bnpm\s+run\s+deploy\b|\bnode\s+scripts\/deploy-production\.mjs\b/.test(
+				seg,
+			);
+		if (isWranglerDryRunOnly) continue;
+		return seg.trim();
+	}
+	// `sh -c` conservative fallback: see stripQuotedShellText.
+	if (
+		/(?:^|[;&|("\s])(?:sudo\s+)?(?:sh|bash)\s+-c\b/.test(stripped) &&
+		WRANGLER_DEPLOY_0509.test(command)
+	) {
+		return command;
+	}
+	return null;
+}
 
 function parseDepth(env: NodeJS.ProcessEnv): number {
 	const raw = env.FLEET_SPEC_DEPTH ?? env.FLEET_SPAWN_DEPTH ?? "0";
@@ -170,8 +315,8 @@ function logBlock(reason: string, ctx: SpawnContext): void {
  * `cd /path/to/0509 && wrangler deploy` sets cwd inside the shell, so we must
  * check both the spawn cwd and the command string for 0509 path references.
  */
-function wranglerDeployBlock(ctx: SpawnContext): string | null {
-	if (!WRANGLER_DEPLOY_0509.test(ctx.command)) return null;
+export function wranglerDeployBlock(ctx: SpawnContext): string | null {
+	if (!wranglerDeployExecutableEntry(ctx.command)) return null;
 	if (ctx.env[BREAKGLASS_DEPLOY_0509] === "1") return null;
 	if (!/0509/.test(ctx.cwd) && !/0509/.test(ctx.command)) return null;
 	return "wrangler_deploy_0509";
@@ -247,6 +392,18 @@ export function evaluateBashToolCall(ctx: SpawnContext): BlockVerdict | null {
 		return { reason: blockReasonText(danger) };
 	}
 
+	const toolchainBlock = workerToolchainBlock(ctx);
+
+	if (toolchainBlock) {
+
+		logBlock(toolchainBlock, ctx);
+
+		process.stderr.write(`SPAWN_BLOCKED reason=${toolchainBlock}\n`);
+
+		return { reason: blockReasonText(toolchainBlock) };
+
+	}
+
 	const wranglerBlock = wranglerDeployBlock(ctx);
 	if (wranglerBlock) {
 		logBlock(wranglerBlock, ctx);
@@ -288,14 +445,16 @@ function blockReasonText(reason: string): string {
 			"Recursive delete under /home/nish or workspaces/ is forbidden. Delete the exact paths you created, by name.",
 		credential_path_write:
 			"Writing to a credential path is forbidden. Never write secrets into repos, notes, or env files from a worker session.",
-		systemctl_restart_slice:
-			"Restarting a systemd slice is forbidden: it kills every unrelated agent sharing it.",
+		systemctl_slice_lifecycle:
+			"Restarting or stopping a systemd slice bounces every unit inside it (user-1000.slice alone carries ~54 live timers/units). Only the dated allowlist in spawn-guard-core.ts (drasl et al) is exempt. Restart or stop the individual unit instead: `systemctl --user restart <unit>.service`.",
 		systemctl_restart_fleet_unit:
-			"Restarting fleet units from inside a worker session is forbidden.",
+			"Restarting (or stopping) fleet units from inside a worker session is forbidden.",
 		sudo_write_protected_path:
 			"Writing root-owned files into the pi transport paths (~/.local/bin, ~/.local/lib/node_modules, ~/.pi, /etc/systemd) is forbidden from a worker session. The 2026-09-03 incident clobbered ~/.local/bin/pi this way and starved the fleet for 33h. If a test needs a stub binary, use a tmp PATH dir under /tmp, never the real ~/.local/bin.",
 		sudo_devnull_into_home:
 			"Using /dev/null as a source into /home/nish under sudo is forbidden — it creates a 0-byte file that clobbers a real binary (the 2026-09-03 pi clobber was exactly this). Stub binaries in a tmp PATH dir under /tmp instead.",
+		worker_toolchain_ban:
+			"CI owns coverage and typecheck (prompts/worker.md memory-budget rule, fleet-ops#4891/#5902). Never run `tsc -b`, `vitest --coverage`, `npm run typecheck` or `npm run test:coverage` inside a worker: each costs 1-3 GB and starves the whole fleet. Run the targeted, coverage-free test for the files you touched and let the PR checks do the rest.",
 		wrangler_deploy_0509:
 			"Local production deploys of 0509 are forbidden: the CI pipeline is the only sanctioned deploy path, and deploying from here skips every merge gate. Land the change through a PR. If CI is genuinely down, the documented break-glass is FLEET_BREAKGLASS_DEPLOY_0509=1, which is Nish's call, not yours.",
 		process_ceiling:

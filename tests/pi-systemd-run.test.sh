@@ -397,3 +397,9 @@ grep -qF 'write your final deliverable/verdict to the file: /tmp/injtest-verdict
 [[ "$(grep -cF 'DELIVERABLE (required)' "$pkt")" == "0" ]] \
   || fail "original stdin file must NOT be mutated"
 ok "--deliverable injects instruction into packet copy, original untouched (auditor 2026-09-11 review-issue-2446b)"
+
+# fleet-ops#5444: nested so hosted CI runs the pi-packet-failed handler tests
+# without a workflow edit (nishfleet-worker cannot push .github/workflows/**).
+# Hermetic phases (fake systemctl/journalctl/logger/fleet-issue-file) run
+# everywhere; the stub-unit drill phase self-skips without systemd --user.
+bash "$here/pi-packet-failed.test.sh" || fail "pi-packet-failed tests failed"

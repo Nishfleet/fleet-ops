@@ -40,6 +40,12 @@
 #      cap drop (fleet-ops-deploy path).
 #  12e. a green-exit install.sh from a checkout that does not ship
 #      intake-reconcile units must not fail enable (fleet-ops#559).
+#  12i/12j. a REFUSE on a newer differing live file reconciles the divergence
+#      itself: pushes the live bytes to reconcile/config/pi-models.json, opens
+#      one PR with auto-merge armed, names the writer (.pre-* sibling +
+#      actions.log + journald unit window), and a second tick refreshes the
+#      same PR without a duplicate issue, duplicate PR, per-tick comment
+#      spam, or force-push (fleet-ops#5663).
 #  13. A leftover .service whose ExecStart binary is missing fails
 #      DRIFT-MISSING-EXEC and auto-files (fleet-ops#285).
 #  14. The paper-over heartbeat drop-in fails DRIFT-PAPER-OVER and auto-files
@@ -1425,6 +1431,179 @@ set -e
 grep -q 'issue create' "$hot_gh_log" \
     || fail "scenario12g: hot-patch must auto-file (log=$(cat "$hot_gh_log"))"
 ok "scenario12g: newer differing live file is refused and auto-files"
+
+# --- scenario 12i: REFUSE reconciles live -> repo as a PR (fleet-ops#5663) ---
+# The 2026-09-11T21:31Z models.json hot-patch left no .bak and no actions.log
+# line, so it was unattributable and recovery needed a judge hand-carry while
+# every merge failed DEPLOY-INSTALL. Now the canary's --file-install-refuse
+# path pushes the live bytes onto reconcile/<src>, opens (or refreshes) one
+# PR per file with auto-merge armed, and names the writer from its .pre-*
+# sibling + actions.log line + the journald unit window at the write.
+# The fake workspaces root holds only the "canonical" repo; the live dest
+# stays outside it so live_target_is_noncanonical does not treat the live
+# file as a hijacked symlink (fleet-ops#1189) and skip the refuse.
+rec_ws="$scratch/ws"
+rec_repo="$rec_ws/reconcile-repo"
+rec_origin="$scratch/reconcile-origin.git"
+mkdir -p "$rec_repo/bin" "$rec_repo/config"
+cp "$repo_root/install.sh" "$rec_repo/install.sh"
+cp "$repo_root/bin/fleet-ops-drift.py" "$rec_repo/bin/fleet-ops-drift.py"
+chmod +x "$rec_repo/install.sh" "$rec_repo/bin/fleet-ops-drift.py"
+cat >"$rec_repo/config/pi-models.json" <<'JSON'
+{"providers":{"deepseek":{"models":{"deepseek-flash":{"price":1}}}}
+JSON
+rec_live_dir="$scratch/pi-agent"
+mkdir -p "$rec_live_dir"
+rec_dest="$rec_live_dir/models.json"
+cat >"$rec_dest" <<'JSON'
+{"providers":{"deepseek":{"models":{"deepseek-flash":{"price":2}}}}
+JSON
+cat >"$rec_repo/MANIFEST" <<MANIFEST
+config/pi-models.json $rec_dest
+MANIFEST
+git -c init.defaultBranch=main init --bare -q "$rec_origin"
+git -C "$rec_repo" init -q -b main
+git -C "$rec_repo" config user.email "test@example.com"
+git -C "$rec_repo" config user.name "Test"
+git -C "$rec_repo" add .
+git -C "$rec_repo" commit -q -m "init"
+git -C "$rec_repo" remote add origin "$rec_origin"
+git -C "$rec_repo" push -q origin HEAD:main
+# live newer than the repo copy -> the #372 guard REFUSEs
+touch -d '2020-01-01T00:00:00 UTC' "$rec_repo/config/pi-models.json"
+touch -d '2026-09-11T21:31:00 UTC' "$rec_dest"
+# writer evidence the attribution must pick up: a dated .pre-* sibling and an
+# actions.log line naming the file at the write window.
+printf 'old\n' > "$rec_live_dir/models.json.pre-test-hotpatch-20260911T213000Z"
+touch -d '2026-09-11T21:30:50 UTC' "$rec_live_dir/models.json.pre-test-hotpatch-20260911T213000Z"
+rec_actions="$scratch/rec-actions.log"
+printf '[2026-09-11T21:30:55Z] [pi-worker-test] hot-patched models.json seat price\n' >"$rec_actions"
+rec_journalctl="$scratch/journalctl-fake"
+cat >"$rec_journalctl" <<'FAKE'
+#!/usr/bin/env bash
+printf '%s\n' '{"_SYSTEMD_USER_UNIT":"pi-worker-test.service"}' '{"_SYSTEMD_USER_UNIT":"fleet-deploy-check.service"}'
+FAKE
+chmod +x "$rec_journalctl"
+# stateful fake gh: issues.json is fed back to `issue list` so the dedup path
+# is real; pr-open/pr-armed flags prove create + auto-merge arm.
+rec_gh_state="$scratch/gh-reconcile-state"
+mkdir -p "$rec_gh_state"
+rec_gh_log="$scratch/gh-reconcile.log"
+rec_gh="$scratch/gh-reconcile"
+: >"$rec_gh_log"
+cat >"$rec_gh" <<'FAKE'
+#!/usr/bin/env bash
+set -u
+state="${GH_STATE:?}"
+printf '%s\n' "$*" >>"${GH_LOG:-/dev/null}"
+case "$*" in
+  *"issue list"*)
+    cat "$state/issues.json" 2>/dev/null || echo '[]'
+    exit 0 ;;
+  *"issue create"*)
+    body=""; prev=""
+    for a in "$@"; do
+      [ "$prev" = "--body" ] && body="$a"
+      prev="$a"
+    done
+    printf '%s\n---\n' "$body" >>"$state/issue-bodies.txt"
+    n=$(( $(cat "$state/issue-n" 2>/dev/null || echo 0) + 1 ))
+    echo "$n" >"$state/issue-n"
+    jq -n --argjson n "$n" --arg b "$body" '[{number: $n, body: $b}]' >"$state/issues.json"
+    echo "https://github.com/Nishfleet/fleet-ops/issues/90$n"
+    exit 0 ;;
+  *"issue comment"*) exit 0 ;;
+  *"pr list"*)
+    if [ -f "$state/pr-open" ]; then echo '[{"number":77}]'; else echo '[]'; fi
+    exit 0 ;;
+  *"pr create"*)
+    prev=""
+    for a in "$@"; do
+      [ "$prev" = "--body-file" ] && cp "$a" "$state/pr-body.txt"
+      prev="$a"
+    done
+    touch "$state/pr-open"
+    echo "https://github.com/Nishfleet/fleet-ops/pull/77"
+    exit 0 ;;
+  *"pr merge"*)
+    case "$*" in *"--auto"*) touch "$state/pr-armed";; esac
+    exit 0 ;;
+  *"pr comment"*) touch "$state/pr-commented"; exit 0 ;;
+esac
+exit 0
+FAKE
+chmod +x "$rec_gh"
+rec_env() {
+  PATH="$scratch:$PATH" \
+  GH="$rec_gh" GH_LOG="$rec_gh_log" GH_STATE="$rec_gh_state" \
+  FLEET_OPS_DRIFT_FILE=1 FLEET_OPS_DRIFT_REPO="Nishfleet/fleet-ops" \
+  FLEET_ISSUE_FILE_LIB="$repo_root/lib/issue-file.py" \
+  FLEET_OPS_ACTIONS_LOGS="$rec_actions" \
+  FLEET_OPS_JOURNALCTL="$rec_journalctl" \
+  FLEET_OPS_WORKSPACES_ROOT="$rec_ws" \
+  FLEET_OPS_CANONICAL_CHECKOUT="$rec_repo" \
+  "$rec_repo/install.sh"
+}
+set +e
+rec_out=$(rec_env 2>&1)
+rec_rc=$?
+set -e
+[[ "$rec_rc" -eq 1 ]] \
+    || fail "scenario12i: hot-patched live file should refuse (rc=1), got rc=$rec_rc out=$rec_out"
+[[ "$rec_out" == *"REFUSE:"* ]] || fail "scenario12i: expected REFUSE, got: $rec_out"
+[[ "$(cat "$rec_dest")" == *'"price":2'* ]] \
+    || fail "scenario12i: live file was overwritten by the repo copy"
+rec_branch="reconcile/config/pi-models.json"
+git --git-dir="$rec_origin" rev-parse --verify --quiet "refs/heads/$rec_branch" >/dev/null \
+    || fail "scenario12i: reconcile branch $rec_branch was not pushed (out=$rec_out)"
+[[ "$(git --git-dir="$rec_origin" show "$rec_branch:config/pi-models.json")" == *'"price":2'* ]] \
+    || fail "scenario12i: reconcile branch does not carry the live bytes"
+[[ -f "$rec_gh_state/pr-open" ]] \
+    || fail "scenario12i: no reconcile PR opened (gh log: $(cat "$rec_gh_log"))"
+[[ -f "$rec_gh_state/pr-armed" ]] \
+    || fail "scenario12i: auto-merge not armed (gh log: $(cat "$rec_gh_log"))"
+grep -q 'issue create' "$rec_gh_log" \
+    || fail "scenario12i: hot-patch issue was not filed (gh log: $(cat "$rec_gh_log"))"
+grep -q 'backup sibling models.json.pre-test-hotpatch' "$rec_gh_state/pr-body.txt" \
+    || fail "scenario12i: PR body must name the writer's .pre-* sibling (body: $(cat "$rec_gh_state/pr-body.txt"))"
+grep -q 'actions.log' "$rec_gh_state/pr-body.txt" \
+    || fail "scenario12i: PR body must carry the actions.log writer line (body: $(cat "$rec_gh_state/pr-body.txt"))"
+grep -q 'pi-worker-test.service' "$rec_gh_state/pr-body.txt" \
+    || fail "scenario12i: PR body must name the journald unit window (body: $(cat "$rec_gh_state/pr-body.txt"))"
+grep -q 'fleet-ops#5663' "$rec_gh_state/pr-body.txt" \
+    || fail "scenario12i: PR body must name fleet-ops#5663"
+grep -q "dest=$rec_dest" "$rec_gh_state/pr-body.txt" \
+    || fail "scenario12i: PR body must carry the per-dest dedup marker"
+grep -q 'run-proof:' "$rec_gh_state/pr-body.txt" \
+    || fail "scenario12i: PR body must carry a run-proof receipt (queue-pass verify-cue gate)"
+ok "scenario12i: REFUSE reconciles live->repo via reconcile/ PR, auto-merge armed, writer named"
+
+# Tick 2 with the same divergence: refresh the same PR, never a duplicate.
+rec_head_before="$(git --git-dir="$rec_origin" rev-parse "refs/heads/$rec_branch")"
+: >"$rec_gh_log"
+set +e
+rec_out2=$(rec_env 2>&1)
+rec_rc2=$?
+set -e
+[[ "$rec_rc2" -eq 1 ]] \
+    || fail "scenario12j: second tick should still refuse (rc=1), got rc=$rec_rc2 out=$rec_out2"
+[[ "$(git --git-dir="$rec_origin" rev-parse "refs/heads/$rec_branch")" = "$rec_head_before" ]] \
+    || fail "scenario12j: second tick must not rewrite the reconcile branch (no force-push)"
+[[ "$(grep -c 'pr create' "$rec_gh_log")" -eq 0 ]] \
+    || fail "scenario12j: second tick opened a duplicate PR (gh log: $(cat "$rec_gh_log"))"
+[[ "$(grep -c 'pr comment' "$rec_gh_log")" -eq 0 ]] \
+    || fail "scenario12j: no new push -> no per-tick PR comment spam (gh log: $(cat "$rec_gh_log"))"
+grep -q 'pr merge' "$rec_gh_log" \
+    || fail "scenario12j: second tick must re-arm auto-merge (gh log: $(cat "$rec_gh_log"))"
+[[ "$(grep -c 'issue create' "$rec_gh_log")" -eq 0 ]] \
+    || fail "scenario12j: second tick filed a duplicate issue (gh log: $(cat "$rec_gh_log"))"
+# Same write re-detected -> identical attribution -> no per-tick comment spam.
+# A NEW hot-patch would carry different evidence and land a comment.
+[[ "$(grep -c 'issue comment' "$rec_gh_log")" -eq 0 ]] \
+    || fail "scenario12j: identical attribution must not re-comment every tick (gh log: $(cat "$rec_gh_log"))"
+[[ "$rec_out2" == *"dedup:"* ]] \
+    || fail "scenario12j: expected the marker dedup to fire (out: $rec_out2)"
+ok "scenario12j: second refuse tick refreshes the same PR — no duplicate issue, PR, or comment spam"
 
 # --- scenario 13: leftover unit whose ExecStart binary is missing (fleet-ops#285)
 # The GitHub-hosted replacement left .service/.timer files on disk after the

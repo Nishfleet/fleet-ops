@@ -136,7 +136,37 @@ AUDIT_GH="$scratch/gh" "$tally" fleet-ops 456 >/dev/null 2>&1
 grep -q 'issue create' "$scratch/gh2.log" || fail "scenario2: admit must file a fix issue: $(cat "$scratch/gh2.log")"
 grep -q 'issue close 456' "$scratch/gh2.log" || fail "scenario2: admit must close the wrapper: $(cat "$scratch/gh2.log")"
 grep -q 'agent-ready' "$scratch/gh2.log" || fail "scenario2: fix issue must carry agent-ready"
+# fleet-ops#6097: the admitted fix body must carry the #543 spec clauses and
+# the #3255 moves: line — the clauses are what the intake's spec-gate reads.
+grep -q '^accept: ' "$scratch/gh2.log" || fail "scenario2: fix body must carry the #543 accept: clause: $(cat "$scratch/gh2.log")"
+grep -q '^metric: ' "$scratch/gh2.log" || fail "scenario2: fix body must carry the #543 metric: clause: $(cat "$scratch/gh2.log")"
+grep -q '^moves: product_merges_per_day' "$scratch/gh2.log" || fail "scenario2: fix body must carry the #3255 moves: line: $(cat "$scratch/gh2.log")"
 ok "scenario2: 2-of-3 PASS files an agent-ready fix issue and closes the wrapper"
+
+# =============================================================================
+# Scenario 2b: the spec gate refuses the composed body -> the fix issue is
+# still filed but WITHOUT agent-ready (fail-closed), LOUD (fleet-ops#6097).
+# =============================================================================
+rm -rf "$AUDIT_STATE_DIR/fleet-ops/456"; rm -f "$scratch/gh2b.log" "$scratch/tally2b.err"
+cat >"$scratch/refusing-gate" <<'EOF'
+#!/usr/bin/env bash
+echo "SPEC-GATE: refused (test stub)" >&2
+exit 1
+EOF
+chmod +x "$scratch/refusing-gate"
+mk_gh "$scratch/gh2b.log"
+write_vote fleet-ops 456 devin PASS "no duplicate; durable mechanism fix needed"
+write_vote fleet-ops 456 free-glm PASS "no duplicate; durable regression"
+write_vote fleet-ops 456 senior PASS "no duplicate; fix the red check"
+AUDIT_GH="$scratch/gh" AUDIT_SPEC_GATE="$scratch/refusing-gate" "$tally" fleet-ops 456 \
+    2>"$scratch/tally2b.err" >/dev/null
+grep -q 'issue create' "$scratch/gh2b.log" \
+    || fail "scenario2b: gate refusal must still file the fix issue: $(cat "$scratch/gh2b.log")"
+grep -q -- '--label agent-ready' "$scratch/gh2b.log" \
+    && fail "scenario2b: refused body must file WITHOUT agent-ready: $(cat "$scratch/gh2b.log")"
+grep -q 'LOUD \[SPEC-GATE\]' "$scratch/tally2b.err" \
+    || fail "scenario2b: refusal must be LOUD on stderr: $(cat "$scratch/tally2b.err")"
+ok "scenario2b: spec-gate refusal files the fix issue WITHOUT agent-ready (fail-closed, LOUD)"
 
 # =============================================================================
 # Scenario 3: tally — 2-of-3 FAIL dismisses: comments reasons and closes, no fix issue.

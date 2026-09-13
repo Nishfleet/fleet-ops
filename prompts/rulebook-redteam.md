@@ -7,7 +7,7 @@ duplication, contradictions, dead/stale rules, and unenforced prose that
 should climb the enforcement ladder — then proposed consolidations, with
 backups made first. This prompt is the semantic half of that cadence. The
 harness has ALREADY written timestamped sibling backups
-(`<name>.bak-rulebook-redteam-<YYYYMMDD>`) of every file in scope and will
+(`<name>.pre-rulebook-redteam-<UTCts>`) of every file in scope and will
 file your findings. You must not edit the rule files and you must not file
 issues.
 

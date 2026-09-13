@@ -16,6 +16,11 @@ here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 repo_root="$(cd "$here/.." && pwd)"
 bin="$repo_root/bin/fleet-blind-audit"
 
+# Pin the seam lens to the repo copy under test; otherwise the harness picks
+# up the installed ~/.local/lib/pi-packet copy, which lags the repo's CLI
+# (fleet-ops#5477 added --closed-issues).
+export AUDIT_SEAM_LIB="$repo_root/lib/manual-seam-lens.py"
+
 fail() { echo "FAIL: $*" >&2; exit 1; }
 ok()   { echo "OK: $*"; }
 
@@ -51,14 +56,13 @@ grep -E '"\$ISSUE_FILE" file .*--label agent-ready' "$bin" \
 # through a declared stub gh. The mint block must also not put the canonical
 # bin dir ahead of an inherited stub: that reorder is how a drill run with no
 # GH_TOKEN resolved the real gh and filed the fixture as live issue #5037.
-grep -q 'command -v gh >/dev/null 2>&1 || export PATH="/home/nish/.local/bin' "$bin" \
+grep -q 'command -v gh >/dev/null 2>&1 || export PATH=/home/nish/.local/bin' "$bin" \
     || fail "fleet-blind-audit must extend PATH only when gh is already missing (fleet-ops#5037)"
 grep -q 'AUDIT_DRILL_GH_STUB_DIR' "$bin" \
     || fail "fleet-blind-audit must gate drill filing on a declared stub gh dir (fleet-ops#5037)"
 
 scratch=$(mktemp -d -t fleet-blind-audit.XXXXXX)
 trap 'rm -rf "$scratch"' EXIT INT TERM
-
 # Custom deliberate-states: one active, one expired (for the loud finding).
 cat > "$scratch/deliberate-states.md" <<'EOF'
 # Deliberate-states registry
@@ -101,6 +105,9 @@ FAKE_PI
 chmod +x "$scratch/fakebin/pi"
 
 # Fake gh: issue list returns pre-populated open issues so duplicate detection runs.
+# fleet-ops#5611: when BIG_ISSUES_FILE is set the list is padded past 128KB
+# (MAX_ARG_STRLEN) so the hunt exercises the file-based --slurpfile path; the
+# old --argjson invocation died 126 "Argument list too long" at that size.
 cat > "$scratch/fakebin/gh" <<'FAKE_GH'
 #!/usr/bin/env bash
 subcmd="${1:-}"
@@ -116,7 +123,15 @@ case "$subcmd" in
   issue)
     case "${1:-}" in
       list)
-        printf '%s\n' '[{"number":77,"title":"stale agent-state file","labels":[]}]'
+        # fleet-ops#5611: pad the BODY-carrying issue lists (--state
+        # open/closed, no -l filter) past 128KB; the -l gap-audit panel
+        # pre-fetch is number+title only and stays small in production.
+        if [ -n "${BIG_ISSUES_FILE:-}" ] && [ -f "$BIG_ISSUES_FILE" ] \
+            && [[ "$*" != *gap-audit* ]]; then
+          cat "$BIG_ISSUES_FILE"
+        else
+          printf '%s\n' '[{"number":77,"title":"stale agent-state file","labels":[]}]'
+        fi
         ;;
       create)
         printf 'CREATE %s\n' "$*" >> "${GH_CREATE_LOG:-/dev/null}"
@@ -138,18 +153,20 @@ esac
 FAKE_GH
 chmod +x "$scratch/fakebin/gh"
 
-# Fake seat-lib: the real lib/seat-lib.sh reads ~/.pi/agent/models.json and
+# Fake seatlib: the real lib/litellm-seat.sh reads ~/.pi/agent/models.json and
 # ~/.local/state/pi-packet/seat-caps.json to pick a seat. Those exist on
 # Nish's VPS (so the test passed locally) but NOT on a GitHub Actions hosted
-# runner, where pick_seat returned empty and the bin exited 1 at the
+# runner, where pick-seat returned empty and the bin exited 1 at the
 # "no capable seat" guard — the fleet-ops#304 failure. Seat selection itself
-# is covered by seat-lib.test.sh; this test owns the audit harness mechanics
-# (panel, filing, dedupe, deliberate-state loud, stamp), so pick_seat is
+# is covered by seat.lib.test.sh; this test owns the audit harness mechanics
+# (panel, filing, dedupe, deliberate-state loud, stamp), so pick-seat is
 # stubbed to a deterministic seat, matching the fake-pi/fake-gh pattern.
-cat > "$scratch/seat-lib-fake.sh" <<'FAKE_SEAT_LIB'
+cat > "$scratch/seatlib-fake.sh" <<'FAKE_SEAT_LIB'
 # shellcheck shell=bash
-pick_seat() {
-    # Args: fail_p fail_m need_capable tried_file — all ignored for the stub.
+load_seat_caps() { return 0; }
+find_senior_seat() { printf 'fakeprovider\tfakemodel'; }
+litellm_seat() { printf 'fakeprovider\tfakemodel'; }
+litellm_seat() {
     printf 'fakeprovider\tfakemodel'
 }
 FAKE_SEAT_LIB
@@ -172,6 +189,29 @@ EOF
 
 mkdir -p "$scratch/state"
 : > "$scratch/gh-create.log"
+
+# fleet-ops#5611: pad the issue list past the ~128KB MAX_ARG_STRLEN that
+# E2BIG'd the old --argjson hunt. 100 extra issues x 2KB body + issue 77.
+python3 - >"$scratch/big-issues.json" <<'PY'
+import json
+issues = [{"number": 77, "title": "stale agent-state file", "labels": []}]
+for i in range(100):
+    issues.append({"number": 1000 + i, "title": "pad finding %04d" % i,
+                   "labels": [], "body": "x" * 2000})
+print(json.dumps(issues))
+PY
+[[ $(wc -c <"$scratch/big-issues.json") -gt 131072 ]] || fail "padded issue list not past 128KB MAX_ARG_STRLEN"
+# fleet-ops#5654: assert the class, not just the size — replaying the old
+# argv pattern (jq --argjson closed <~206KB blob>) dies 126 "Argument list
+# too long" on this host, matching the 2026-09-12 03:30 IST unit signature.
+# The harness run below must fail before / pass after the --slurpfile class
+# of change; this replay proves the padding is big enough to have killed the
+# old code, so the regression test cannot pass vacuously.
+replay_rc=0
+jq -n --argjson closed "$(cat "$scratch/big-issues.json")" '.' >/dev/null 2>&1 \
+  || replay_rc=$?
+[[ $replay_rc == 126 ]] \
+  || fail "old --argjson replay must die 126 (E2BIG) on this host, got $replay_rc"
 # fleet-ops#377: feed an empty seam-evidence fixture so the harness does not
 # touch live memoryctl/actions-log sources, and prove the seam table still
 # appears in the report with no seams in the window.
@@ -195,7 +235,8 @@ PATH="$scratch/fakebin:$PATH" \
   AUDIT_PROMPT="$repo_root/prompts/blind-audit.md" \
   AUDIT_DELIBERATE_STATES="$scratch/deliberate-states.md" \
   AUDIT_PANEL_BIN="$repo_root/bin/fleet-blind-audit-panel" \
-  AUDIT_SEAT_LIB="$scratch/seat-lib-fake.sh" \
+  AUDIT_SEAT_LIB="$scratch/seatlib-fake.sh" \
+  AUDIT_PACKET_ASSEMBLY_LIB="$repo_root/lib/packet-assembly.sh" \
   AUDIT_PLAN_FILE="$plan" \
   AUDIT_FAKE_NOW="2026-08-26T06:20:00Z" \
   AUDIT_PI_BIN="$scratch/fakebin/pi" \
@@ -203,6 +244,7 @@ PATH="$scratch/fakebin:$PATH" \
   AUDIT_SEAM_EVIDENCE="$scratch/empty-seams.json" \
   AUDIT_MECHANISM_GATE="$scratch/noop-gate.py" \
   AUDIT_MACHINERY_GATE="$scratch/noop-gate.py" \
+  BIG_ISSUES_FILE="$scratch/big-issues.json" \
   "$bin" >"$scratch/run.log" 2>&1 || rc=$?
 
 [[ $rc == 0 ]] || { cat "$scratch/run.log"; fail "fleet-blind-audit exited $rc"; }
@@ -261,6 +303,12 @@ grep -E 'CREATE .*--label gap-audit' "$scratch/gh-create.log" >/dev/null \
   || fail "gh issue create missing --label gap-audit: $(cat "$scratch/gh-create.log")"
 grep -E 'CREATE .*--label agent-ready' "$scratch/gh-create.log" >/dev/null \
   || fail "gh issue create missing --label agent-ready (fleet-ops#402): $(cat "$scratch/gh-create.log")"
+
+grep -q 'recurrence hunt merged' "$scratch/run.log" \
+  || fail "run.log missing 'recurrence hunt merged' — the hunt jq never ran"
+if grep -q 'Argument list too long' "$scratch/run.log"; then
+  fail "hunt jq still hit E2BIG: $(grep 'Argument list' "$scratch/run.log")"
+fi
 
 ok "fleet-blind-audit: panel, filing, dedupe, deliberate-state loud, stamp, report ledger"
 
@@ -322,6 +370,7 @@ refuse_rc=0
 PATH="$scratch/fakebin:$PATH" \
   GH_CREATE_LOG="$refuse_log" \
   AUDIT_REPO="Nishfleet/fleet-ops" \
+  AUDIT_ALLOW_NONCANONICAL=1 \
   AUDIT_REPO_ROOT="$repo_root" \
   AUDIT_STATE_DIR="$refuse_state" \
   AUDIT_DELIBERATE_STATES="$scratch/deliberate-states.md" \
@@ -353,6 +402,7 @@ shadow_rc=0
 PATH="$scratch/fakebin:$PATH" \
   GH_CREATE_LOG="$shadow_log" \
   AUDIT_REPO="Nishfleet/fleet-ops" \
+  AUDIT_ALLOW_NONCANONICAL=1 \
   AUDIT_REPO_ROOT="$repo_root" \
   AUDIT_STATE_DIR="$shadow_state" \
   AUDIT_DELIBERATE_STATES="$scratch/deliberate-states.md" \
@@ -370,6 +420,74 @@ grep -F 'REFUSED' "$scratch/shadow.log" >/dev/null \
 [[ ! -s "$shadow_log" ]] \
   || fail "drill filed while its stub gh was shadowed: $(cat "$shadow_log")"
 ok "drill refuses to file when its declared stub gh is not the resolved gh (fleet-ops#5037)"
+
+# ============================================================================
+# fleet-ops#5611 wake (2026-09-12T03:19:31Z): a transient gh failure in the
+# titles pre-fetch (rate-limit wobble: nonzero exit, EMPTY stdout) must not
+# kill the run silently. Under `set -euo pipefail` the unguarded
+# issue_titles_norm assignment exited the whole script before any carry-over
+# entry or finding was processed — the live drain died 1s after
+# "findings count: 75" with zero diagnostics and a full 828-line ledger.
+# The run must survive with an empty title list: the title-signature
+# dup-check simply no-matches into re-panelling.
+# ============================================================================
+flaky_state="$scratch/flaky-state"
+flaky_plan="$scratch/flaky-plan.md"
+flaky_log="$scratch/flaky-create.log"
+mkdir -p "$flaky_state" "$scratch/flakybin"
+: > "$flaky_log"
+printf 'last-heartbeat: 2026-08-26T05:43:00Z\n' > "$flaky_plan"
+cat > "$scratch/flakybin/gh" <<'FLAKY_GH'
+#!/usr/bin/env bash
+# gh that rate-limit-wobbles: `issue list` and `pr list` exit 1 with EMPTY
+# stdout (the production signature), everything else behaves like the fake.
+subcmd="${1:-}"
+shift || true
+case "$subcmd" in
+  issue)
+    if [ "${1:-}" = "list" ]; then exit 1; fi
+    printf 'CREATE %s\n' "$*" >> "${GH_CREATE_LOG:-/dev/null}"
+    echo "https://github.com/Nishfleet/fleet-ops/issues/9998"
+    ;;
+  pr)
+    exit 1
+    ;;
+  *)
+    exit 0
+    ;;
+esac
+FLAKY_GH
+chmod +x "$scratch/flakybin/gh"
+
+flaky_rc=0
+PATH="$scratch/flakybin:$PATH" \
+  GH_CREATE_LOG="$flaky_log" \
+  GH_TOKEN="test-no-real-gh" \
+  AUDIT_REPO="Nishfleet/fleet-ops" \
+  AUDIT_ALLOW_NONCANONICAL=1 \
+  AUDIT_REPO_ROOT="$repo_root" \
+  AUDIT_STATE_DIR="$flaky_state" \
+  AUDIT_DELIBERATE_STATES="$scratch/deliberate-states.md" \
+  AUDIT_PANEL_BIN="$repo_root/bin/fleet-blind-audit-panel" \
+  AUDIT_PLAN_FILE="$flaky_plan" \
+  AUDIT_FAKE_NOW="2026-08-26T06:29:00Z" \
+  AUDIT_DRILL=1 \
+  AUDIT_DRILL_GH_STUB_DIR="$scratch/flakybin" \
+  AUDIT_DRILL_FINDINGS="$repo_root/tests/fixtures/blind-audit-drill-finding.json" \
+  AUDIT_MAX_FINDINGS="5" \
+  "$bin" >"$scratch/flaky-run.log" 2>&1 || flaky_rc=$?
+
+# Drill mode skips the reviewer branch (no "findings count" line); the
+# post-loop "audit complete" summary is the survival signal. The unguarded
+# binary dies rc=1 right after "DRILL: loaded findings" with zero signals
+# (proven against the 97fe66d75 checkout before this fix landed).
+grep -q 'audit complete:' "$scratch/flaky-run.log" \
+  || fail "run died at/before the titles pre-fetch on a gh wobble (rc=$flaky_rc): $(cat "$scratch/flaky-run.log")"
+flaky_report=$(find "$flaky_state/reports" -mindepth 1 -maxdepth 1 -type d | head -1)
+[[ -n "$flaky_report" ]] || fail "flaky-gh run produced no report directory"
+grep -q '## Filing results' "$flaky_report/report.md" \
+  || fail "run did not complete the filing loop after a gh wobble: $(tail -5 "$scratch/flaky-run.log")"
+ok "titles pre-fetch survives a transient gh failure (nonzero rc, empty stdout) — fleet-ops#5611 wake"
 
 # ============================================================================
 # The #5037 scenario end to end: a drill run from a shell with NO GH_TOKEN
@@ -708,3 +826,13 @@ ok "panel #3680 gate: rejects bare find -mtime freshness findings, passes named-
 
 echo "OK: fleet-blind-audit.test.sh"
 
+
+# fleet-ops#5101: the class fix for the shared App-token mint header PATH
+# guard is exercised by its own drill; hosted here because workers cannot
+# push .github/workflows/** (P14 listing gate).
+bash "$here/app-token-mint-stub-respect.test.sh"
+
+# fleet-ops#5780: the 120+-finding filing-budget regression test replays a
+# 02:07Z-class dump and drills the status=15/TERM cadence guard; hosted
+# here because workers cannot push .github/workflows/** (P14 listing gate).
+bash "$here/fleet-blind-audit-filing-batch.test.sh"

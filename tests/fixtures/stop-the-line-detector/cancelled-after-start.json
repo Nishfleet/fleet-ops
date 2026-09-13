@@ -1,0 +1,44 @@
+{
+  "repository": "Nishfleet/fleet-ops",
+  "branch": "main",
+  "existing_issue_number": null,
+  "comment": "fleet-ops#5731 accept #2 counterpart: cancelled runs that ACTUALLY STARTED jobs must still count red even when a newer run exists — a run killed in-flight means that SHA's pipeline status is genuinely unknown. Here runs 7001 and 7002 each started jobs (jobs_started=true) and were cancelled; run 7003 is the newest tip cancel (no jobs, but newest -> fail-closed red). Three red verdicts -> halt -> open.",
+  "runs": [
+    {
+      "id": 7001,
+      "name": "CI",
+      "workflow_id": 1,
+      "event": "push",
+      "conclusion": "cancelled",
+      "jobs_started": true,
+      "head_branch": "main",
+      "head_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "created_at": "2026-09-12T01:51:53Z",
+      "html_url": "https://github.com/Nishfleet/fleet-ops/actions/runs/7001"
+    },
+    {
+      "id": 7002,
+      "name": "CI",
+      "workflow_id": 1,
+      "event": "push",
+      "conclusion": "cancelled",
+      "jobs_started": true,
+      "head_branch": "main",
+      "head_sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "created_at": "2026-09-12T02:00:17Z",
+      "html_url": "https://github.com/Nishfleet/fleet-ops/actions/runs/7002"
+    },
+    {
+      "id": 7003,
+      "name": "CI",
+      "workflow_id": 1,
+      "event": "push",
+      "conclusion": "cancelled",
+      "jobs_started": false,
+      "head_branch": "main",
+      "head_sha": "cccccccccccccccccccccccccccccccccccccccc",
+      "created_at": "2026-09-12T02:02:10Z",
+      "html_url": "https://github.com/Nishfleet/fleet-ops/actions/runs/7003"
+    }
+  ]
+}

@@ -110,6 +110,12 @@ bash "$here/pi-intake-tick-spawn-postcondition.test.sh"
 # tests/pi-intake-gh-rate-limit.test.sh locks the side-car throttle in
 # lib/pi-intake-tick.sh. ci.yml lists this file, so the drill runs here.
 bash "$here/pi-intake-gh-rate-limit.test.sh"
+# --- 7b. fleet-ops#5489 gh App-budget glide gate (CI hook) -----------------
+# tests/pi-intake-app-budget.test.sh locks the App-budget-exhausted glide
+# (reads to human identity, writes held until reset) and the LOUD triage
+# line. Workers cannot edit ci.yml, so it runs from this listed file
+# (fleet-ops#566: new tests must be hosted by an already-listed test).
+bash "$here/pi-intake-app-budget.test.sh"
 # --- 8. fleet-ops#1455 claims-index write (CI hook) -----------------------
 # tests/pi-intake-tick-claims-log.test.sh locks the append to
 # ready-work-claims.log on each successful claim+spawn. Without it the
@@ -194,3 +200,13 @@ bash "$here/pi-intake-tick-blocked-filter-stale.test.sh"
 # intakes. ci.yml lists this file, so the drill runs here instead of a
 # new workflow line (workers cannot edit .github/workflows/ci.yml).
 bash "$here/pi-intake-trigger-no-block.test.sh"
+
+# --- 19. fleet-ops#5385 trigger honours enrolment (CI hook) ------------
+# tests/pi-intake-trigger-enrolment.test.sh locks the intake-config gate
+# in bin/pi-intake-trigger: a trigger file for a repo absent from
+# .repos[].name of the live intake-repos.json must be skipped (fail-closed
+# when the config is unreadable), so a queued trigger cannot restart a
+# deferred repo during the 0509 rewrite window. ci.yml lists this file, so
+# the drill runs here instead of a new workflow line (workers cannot edit
+# .github/workflows/ci.yml).
+bash "$here/pi-intake-trigger-enrolment.test.sh"
