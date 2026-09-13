@@ -1,0 +1,58 @@
+#!/usr/bin/env bash
+# pi-packet-failed — OnFailure translator for a pi packet whose retries are
+# exhausted. Triggered by pi-packet-failed@.service, the OnFailure= target of
+# pi-packet@.service (StartLimitBurst) and of pi-systemd-run transient
+# packets (listed alongside unit-escalation@).
+#
+# fleet-ops#5444 made this unit a recorder (triage + findings-ledger +
+# re-queue issue). fleet-ops#5456 folds it into the escalation chain: this
+# script now writes a structured STOP-REASON (reason=packet-exhausted,
+# source=pi-packet-failed) via unit-escalation-write so
+# stop-escalation.path -> stop-escalation-dispatch TERMINATES in an action —
+# hop+1 relaunch for a packet under the hop cap, or the agent-ready
+# [unit-death] issue + findings-ledger carried_over row + LOUD triage line.
+# The dispatcher owns dedupe (exact issue title) with the parallel
+# unit-failure STOP-REASON the global drop-in writes, so one packet death
+# produces one issue, never two.
+#
+# %i has TWO conventions (same as unit-escalation@): a bare pi-packet
+# instance (pi-packet@<i>.service died) OR the FULL failed unit name when it
+# already carries a unit suffix (pi-systemd-run transients list
+# pi-packet-failed@<unit>.service in their OnFailure). The case below maps
+# both to the REAL failed unit so the dispatcher's dedupe-by-title and the
+# relaunch target see the same name — prefixing pi-packet@ onto a full unit
+# name would file a second, differently-titled issue and aim the relaunch at
+# a bogus unit.
+#
+# Retry, backoff and give-up already happened in pi-packet@.service's own
+# policy — this is the fold into resume-or-dispatch, never a retrier of its
+# own ("No hand-built orchestration. Ever.", 2026-08-24).
+#
+# Environment seams (tests override):
+#   UNIT_ESCALATION_WRITE_BIN   unit-escalation-write path (default: sibling)
+#   LOGGER                      logger binary (default: logger)
+set -euo pipefail
+
+export HOME="${HOME:-/home/nish}"
+
+inst="${1:-}"
+if [[ -z "$inst" || "$inst" == "-h" || "$inst" == "--help" ]]; then
+    echo "usage: pi-packet-failed <instance-or-unit>" >&2
+    echo "  OnFailure translator: writes a packet-exhausted STOP-REASON for the" >&2
+    echo "  real failed unit so the dispatcher resumes or dispatches it." >&2
+    [[ -n "$inst" ]] && exit 0 || exit 2
+fi
+
+case "$inst" in
+    *.service|*.timer|*.path|*.scope|*.socket|*.slice) unit="$inst" ;;
+    *) unit="pi-packet@${inst}.service" ;;
+esac
+
+"${LOGGER:-logger}" -t pi-packet-failed -p user.err \
+    "packet $inst exhausted retries — escalated to the dispatcher (reason=packet-exhausted), not just a log" || true
+
+here="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
+writer="${UNIT_ESCALATION_WRITE_BIN:-$here/unit-escalation-write}"
+
+exec env UNIT_ESCALATION_REASON=packet-exhausted UNIT_ESCALATION_SOURCE=pi-packet-failed \
+    "$writer" "$unit"
