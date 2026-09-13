@@ -55,6 +55,17 @@ if [[ "$WORKDIR" == "$HOME" ]] && [[ "${AGENT_CRON_ALLOW_HOME_WORKDIR:-}" != "1"
     exit 1
 fi
 [[ -d "$WORKDIR" ]] || { echo "FATAL: agent-cron-run: $slug WORKDIR does not exist: $WORKDIR" >&2; exit 1; }
+# fleet-ops#6252: a fleet-ops deploy checkout is NEVER a valid cron WORKDIR.
+# The weekly fleet review pointed WORKDIR at fleet-ops-deploy-clone; the run
+# wrote into the live checkout, fleet-deploy-check went DEPLOY-BLOCKED
+# (fail-closed, #366) and merge-to-live was blocked for the whole review.
+# Fail loud before any pi spawn — same fail-closed stance as the $HOME guard
+# above. Matches the checkout itself or anything nested inside it; lookalike
+# names (e.g. fleet-ops-deploy-mirror) are deliberately NOT matched.
+if [[ "$WORKDIR" =~ (^|/)fleet-ops-deploy(-clone)?(/|$) ]]; then
+    echo "FATAL: agent-cron-run: $slug WORKDIR is inside a fleet-ops deploy checkout: $WORKDIR (fleet-ops#6252) — use a scratch dir under ~/workspaces/agent-state/<job>/ or a git worktree off origin/main, never the deploy clone" >&2
+    exit 1
+fi
 LOG_DIR="${LOG_DIR:-$HOME/workspaces/agent-state/cron-output}"
 PROMPTS_DIR="${PROMPTS_DIR:-$HOME/workspaces/agent-state/cron-prompts}"
 PI_BIN="${PI_BIN:-$HOME/.local/bin/pi}"
