@@ -85,8 +85,8 @@ seat_log "pi-scout-run: $repo/$prompt_name group=worker-cheap"
 # "spawnSync <cli> ETIMEDOUT" (rc!=0, tools=0). The seat-health extension
 # only walls such a seat for 60s (cli_timeout default), so the hung seat is
 # re-offered almost immediately and burns the whole scout window again.
-# Mirror pi-issue-run's hang-bench: long run + ETIMEDOUT signature on stderr
-# => mark_seat_hang_bench so the seat is skipped for the hang window.
+# Mirror pi-issue-run's hang detection: long run + ETIMEDOUT signature on
+# stderr => log the hang class; the proxy cooldown owns the cross-run skip.
 # PI_HANG_BENCH_MIN_S is env-overridable for tests; production default 300s.
 readonly SCOUT_HANG_BENCH_MIN_S="${PI_HANG_BENCH_MIN_S:-300}"
 run_seated_pi() {
@@ -101,10 +101,7 @@ run_seated_pi() {
     elapsed=$((end_s - start_s))
     if (( rc != 0 )) && (( elapsed > SCOUT_HANG_BENCH_MIN_S )) \
         && grep -qiE 'spawnSync.*ETIMEDOUT|ETIMEDOUT.*spawnSync' "$err_tmp" 2>/dev/null; then
-        seat_log "pi-scout-run: $repo/$prompt_name LONG HANG spawnSync ETIMEDOUT on $np/$nm after ${elapsed}s (rc=$rc) — benching seat (hang_bench, fleet-ops#2133 class)"
-        if ! mark_seat_hang_bench "$np" "$nm" "$(cat "$err_tmp" 2>/dev/null || true)"; then
-            seat_log "pi-scout-run: WARN hang-bench marker NOT written for $np/$nm — relying on reactive ledger"
-        fi
+        seat_log "pi-scout-run: $repo/$prompt_name LONG HANG spawnSync ETIMEDOUT on $np/$nm after ${elapsed}s (rc=$rc) — hang-like failure; proxy cooldown owns the skip (fleet-ops#2133 class)"
     fi
     if (( rc != 0 )) && [[ -s "$err_tmp" ]]; then
         # Emit the crash signature into the unit journal. scout-futility-check

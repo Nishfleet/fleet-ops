@@ -57,7 +57,6 @@ clear_active_seat() { :; }
 is_spawn_etimeout() { return 1; }
 is_quota_cap_error() { return 1; }
 mark_seat_spawn_fail() { return 0; }
-mark_seat_quota_bench() { return 0; }
 litellm_seat() {
     printf 'cursor\tcomposer-2.5\n'
     return 0
@@ -143,7 +142,6 @@ clear_active_seat() { :; }
 is_spawn_etimeout() { return 1; }
 is_quota_cap_error() { return 1; }
 mark_seat_spawn_fail() { return 0; }
-mark_seat_quota_bench() { return 0; }
 litellm_seat() { :; return 1; }
 litellm_seat() { :; return 1; }
 EOF
@@ -177,7 +175,6 @@ clear_active_seat() { :; }
 is_spawn_etimeout() { return 1; }
 is_quota_cap_error() { return 1; }
 mark_seat_spawn_fail() { return 0; }
-mark_seat_quota_bench() { return 0; }
 litellm_seat() { printf 'litellm\tworker-cheap\n'; return 0; }
 EOF
 cat >"$fake_pi" <<'EOF'

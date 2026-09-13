@@ -1001,7 +1001,7 @@ now_ts=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 printf '%s claimed line=4640 repo=fleet-ops\n' "$now_ts" >"$claims_log"
 cat >"$comeback_fake" <<'FAKE'
 #!/usr/bin/env bash
-echo "SEAT-WALL-FALSE devin/glm-5-2 writer=mark_seat_quota_bench PONG — released despite future wall (fleet-ops#4640)" >&2
+echo "SEAT-WALL-FALSE devin/glm-5-2 writer=seat-health PONG — released despite future wall (fleet-ops#4640)" >&2
 exit 0
 FAKE
 chmod +x "$comeback_fake"

@@ -17,22 +17,9 @@
 #      [Anthropic, OpenAI, and bare 401].
 #   3. is_credentials_error returns 1 on transient errors that look
 #      LIKE auth errors but are not [e.g. a quota wall, a 503].
-#   4. mark_seat_credentials_bad writes the ledger with
-#      health_class=credentials_bad, retryable=true, seat_dead=false
-#      on the first strike - fleet-ops#4640 rule: a single 401 is a
-#      rotated key, not a decade of death.
-#   5. The written ledger carries a finite bench_until [the next ~1h
-#      probed wall - fleet-ops#4640], so a follow-up worker that
-#      picks the seat before the wall finds usable_at > now and is
-#      excluded.
-#   6. The bench_until is finite [NOT the legacy 10y corpse wall].
-#   7. Replay test: feeding the issue body excerpt through the
-#      classifier end-to-end [is_credentials_error ->
-#      mark_seat_credentials_bad] classifies it as a
-#      seat-fault-retryable credential problem with a finite bench,
-#      not an exit-1 kill.
-#   8. The credentials_bad bench window honours the
-#      SEAT_CREDENTIALS_BAD_BENCH_S env override [default 3600].
+#   4-8. Retired: the local credentials_bad bench ledger is gone — the
+#      LiteLLM proxy cooldown owns a bad key now, and the log-only
+#      writer was deleted in fleet-ops#6032.
 #   9. After SEAT_CREDENTIALS_CORPSE_STRIKES [default 24] consecutive
 #      401s the ledger flips seat_dead=true [fleet-ops#4640] and the
 #      bench window is preserved - proves the retry-then-corpse
@@ -56,8 +43,8 @@ ok()   { echo "OK: $*"; }
 command -v jq >/dev/null 2>&1 || fail "jq missing"
 
 # Build a clean env to source seatlib.sh into. seatlib.sh pulls in
-# many variables [LEDGER_DIR, etc.]; we set the minimum needed for
-# mark_seat_credentials_bad to write to a scratch ledger.
+# many variables [LEDGER_DIR, etc.]; we set the minimum needed for the
+# classifier checks that remain after the bench writer was retired.
 scratch="$(mktemp -d -t seat-cred-bad-replay.XXXXXX)"
 trap 'rm -rf "$scratch"' EXIT INT TERM
 
@@ -67,8 +54,8 @@ export LEDGER_DIR
 export SEAT_HEALTH_SIDECAR="$scratch/pi-seat-health.json"
 
 # Stub functions seatlib.sh expects so a clean source does not blow
-# up. We only exercise is_credentials_error + mark_seat_credentials_bad,
-# which have small transitive deps.
+# up. We only exercise is_credentials_error, which has small transitive
+# deps.
 log()  { :; }
 warn() { :; }
 err()  { :; }
@@ -86,7 +73,7 @@ _seat_wall_source_justified() { return 1; }
 _seat_write_parked_ledger() { return 0; }
 _seat_log() { :; }
 _seat_log_noop() { :; }
-seat_log() { :; }   # mark_seat_credentials_bad logs via seat_log directly
+seat_log() { :; }
 _seat_co_write_sidecar_to_legacy() { return 0; }
 # Stub of seat_ledger_path - constructs the per-seat ledger path the
 # same way lib/litellm-seat.sh does (sanitise provider/model, prepend
@@ -168,11 +155,11 @@ if is_credentials_error "" ""; then
 fi
 ok "3. is_credentials_error rejects quota walls / 503 / cli_timeout / empty input"
 
-# --------- 4-9: retired (fleet-ops#4263) ----------
+# --------- 4-9: retired (fleet-ops#4263; stub deleted fleet-ops#6032) --
 # The credentials_bad bench ledger (window, usable_at, strikes -> corpse) was
 # written by the deleted routing library. The LiteLLM proxy cooldown owns a bad
-# key now; mark_seat_credentials_bad is a logging stub. Classification (1-3)
-# stays because pi-issue-run and stop-escalation-dispatch still branch on it.
+# key now. Classification (1-3) stays because pi-issue-run and
+# stop-escalation-dispatch still branch on it.
 
 # --------- Sibling: fleet-ops#5792 senior-lane forced-bad-deployment replay ----------
 # Deployment-side replay (403 spending-limit / 402 insufficient-credits pins a

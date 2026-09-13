@@ -349,8 +349,8 @@ if [[ "$issue_state" == "OPEN" ]]; then
         # path (audit 2026-09-12, unit pi-issue@fleet-ops-2073) manually added
         # a READY-WORK.md row with an `after:` gate on the overloaded seat's
         # bench expiry, because the fixed cooldown below outlives nothing:
-        # a 503 overload bench is geometrically escalated (600s base up to 6h,
-        # mark_seat_overload_bench) and can outlast RECLAIM_COOLDOWN_S. The
+        # a 503 overload bench is geometrically escalated (600s base up to 6h —
+        # the retired mark_seat_* writers) and can outlast RECLAIM_COOLDOWN_S. The
         # READY-WORK ledger is paper (fleet-ops#1493) with no live rail, so
         # the requeue is minted here instead, on the existing issue-dispatch
         # entry point: the cooldown marker learns an absolute `until:` line.

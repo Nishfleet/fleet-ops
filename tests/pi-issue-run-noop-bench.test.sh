@@ -537,16 +537,13 @@ ok "fleet-ops#3714/#3810: worked-no-text is not a provider no-op; no-PR fails lo
 # ollama/deepseek-v4-flash:0731 produced 0B final text on 5/5 runs in 2h
 # (fleet-ops-3714, 0509-1731, fleet-ops-3727, fleet-ops-3322, fleet-ops-3730;
 # 197 tool calls, zero deliverables), each classified worked-no-text and never
-# benched. Once a seat hits WORKED_NO_TEXT_THRESHOLD consecutive 0B-stdout
-# worked-no-text runs, it is benched via mark_seat_empty_run and re-seated.
+# benched. fleet-ops#6032 deleted the worked-no-text counter and bench stubs
+# — the LiteLLM proxy cooldown owns the cross-run skip.
 #
 # NOTE (fleet-ops#3810, merged on main): a worked-no-text run with NO PR
-# shipped now exits 1 loudly regardless of threshold. So every run below
-# exits 1 (loud fail) AND must NOT bench; the bench fires only at the
-# threshold. The exit code is therefore not the discriminator — the bench
-# (mark_seat_empty_run) and the counter are.
+# shipped now exits 1 loudly. So every run below exits 1 (loud fail) AND
+# must NOT write a local bench marker or ledger.
 # =============================================================================
-export WORKED_NO_TEXT_THRESHOLD=3
 rm -f "$scratch/mark_calls" "$scratch/mark_empty_calls" 2>/dev/null || true
 rm -f "$LEDGER"/*.worked-no-text.json 2>/dev/null || true
 cat >"$stub_bin/pi" <<'STUB'

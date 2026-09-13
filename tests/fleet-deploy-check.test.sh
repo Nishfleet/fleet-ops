@@ -80,6 +80,32 @@ DEPLOY_SPY_LOG="$scratch/deploy-spy.log"
 lock="$scratch/lock"
 triage="$scratch/triage.md"
 
+# Hermetic seams (fleet-ops#6032): on the live box this bin scans the REAL
+# process table (deploy_in_flight -> argv-running fleet-ops-deploy, and a real
+# deploy tick fires every 2 min), reads the real unit-symlink dir, writes the
+# live agent-state tripwire snapshot and the live node-exporter drift gauge.
+# That is both a flake source (a real deploy in flight makes any
+# deploy-expected scenario yield instead of invoking) and live-state
+# pollution. Point every seam at scratch. The in-flight check rides a test
+# marker through the FLEET_WIPE_LESSONS_LIB seam — argv[0]/argv[1] identity
+# matching itself is covered by tests/fleet-wipe-lessons.test.sh.
+export AGENT_STATE="$scratch/agent-state"
+export FLEET_DEPLOY_CLONE_PROM="$scratch/fleet-deploy-clone.prom"
+export FLEET_DEPLOY_CHECK_UNIT_DIR="$scratch/unit-dir"
+export FLEET_DEPLOY_CHECK_DIRTY_STATE_DIR="$scratch/deploy-check-state"
+export FLEET_DEPLOY_ORIGIN_REPAIR_LOG="$scratch/origin-repairs.log"
+export FLEET_DEPLOY_ORIGIN_REPAIR_PROM="$scratch/origin-repair.prom"
+export DEPLOY_CHECK_INFLIGHT_MARKER="$scratch/deploy-in-flight.marker"
+mkdir -p "$AGENT_STATE" "$FLEET_DEPLOY_CHECK_UNIT_DIR"
+
+cat >"$scratch/fleet-wipe-lessons.py" <<'PY'
+import os, sys
+if len(sys.argv) > 1 and sys.argv[1] == "argv-running":
+    sys.exit(0 if os.path.exists(os.environ["DEPLOY_CHECK_INFLIGHT_MARKER"]) else 1)
+sys.exit(1)
+PY
+export FLEET_WIPE_LESSONS_LIB="$scratch/fleet-wipe-lessons.py"
+
 run_bin() {
   local no_deploy="${1:-0}"
   set +e
@@ -171,38 +197,32 @@ ok "deploy failure louds DEPLOY-CHECK-FAILED, exit 0 (soft, was: hard-fail-tripp
 # --- 6. deploy already in flight -> yields -----------------------------------
 advance_origin "remote-five"
 n_before=$(grep -c "DEPLOY-INVOKED" "$DEPLOY_SPY_LOG" || true)
-# Simulate an in-flight deploy: argv[0] basename fleet-ops-deploy
-# (fleet-ops#533: match argv[0]/argv[1], never pgrep -f).
-mkdir -p "$scratch/inflight/bin"
-cp /bin/sleep "$scratch/inflight/bin/fleet-ops-deploy"
-"$scratch/inflight/bin/fleet-ops-deploy" 30 &
-inflight_pid=$!
-sleep 0.3
+# Simulate an in-flight deploy via the marker the stubbed argv-running
+# consults (fleet-ops#533 argv[0]/argv[1] matching itself is covered by
+# tests/fleet-wipe-lessons.test.sh — here only the yield contract matters).
+: >"$DEPLOY_CHECK_INFLIGHT_MARKER"
 rc=$(run_bin 0)
-kill "$inflight_pid" 2>/dev/null || true
-wait "$inflight_pid" 2>/dev/null || true
+rm -f "$DEPLOY_CHECK_INFLIGHT_MARKER"
 [[ "$rc" == "0" ]] || fail "yield on in-flight deploy should exit 0 (got $rc)"
 grep -q "yielding this tick" "$scratch/err.log" || fail "missing yield log"
 n_after=$(grep -c "DEPLOY-INVOKED" "$DEPLOY_SPY_LOG" || true)
 [[ "$n_after" == "$n_before" ]] || fail "deploy must not be invoked when in-flight"
 ok "in-flight deploy -> yields, no deploy"
 
-# --- 6b. a later argument that merely carries the path must NOT yield ------
+# --- 6b. no in-flight deploy -> must NOT yield -------------------------------
+# (The argv[1]-argument discrimination this scenario used to simulate lives
+# in tests/fleet-wipe-lessons.test.sh; with the marker absent the check is
+# false and the bin must deploy.)
 advance_origin "remote-five-b"
 n_before=$(grep -c "DEPLOY-INVOKED" "$DEPLOY_SPY_LOG" || true)
-python3 -c 'import time,sys; time.sleep(20)' bin/fleet-ops-deploy &
-arg_pid=$!
-sleep 0.3
 rc=$(run_bin 0)
-kill "$arg_pid" 2>/dev/null || true
-wait "$arg_pid" 2>/dev/null || true
-[[ "$rc" == "0" ]] || fail "argument-only match should exit 0 (got $rc)"
+[[ "$rc" == "0" ]] || fail "no in-flight deploy should exit 0 (got $rc)"
 if grep -q "yielding this tick" "$scratch/err.log"; then
-  fail "argument-only bin/fleet-ops-deploy must not look in-flight"
+  fail "marker-absent must not look in-flight"
 fi
 n_after=$(grep -c "DEPLOY-INVOKED" "$DEPLOY_SPY_LOG" || true)
-[[ "$n_after" -gt "$n_before" ]] || fail "argument-only match must still invoke deploy"
-ok "argument-only cmdline match is not in-flight"
+[[ "$n_after" -gt "$n_before" ]] || fail "no in-flight deploy must still invoke deploy"
+ok "no in-flight deploy -> no yield, deploy invoked"
 
 # --- 7. already deployed between fetch and lock -------------------------------
 advance_origin "remote-six"
