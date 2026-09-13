@@ -2064,6 +2064,12 @@ DEVIN_GET_USER_STATUS_URL = (
     "https://server.codeium.com/exa.seat_management_pb.SeatManagementService/GetUserStatus"
 )
 CLAUDE_QUOTA_CACHE = PR_CACHE_DIR / "claude-quota-cache.json"
+# 2026-09-13: 429/403 denial sidecar — written when the usage endpoint answers
+# 403 oauth_not_allowed_for_organization (cancelled subscription -> claude_free
+# denies ALL OAuth; effectively permanent) or 429 (transient; honours
+# Retry-After). While live the poller sends NO request at all, so a dark
+# meter costs 4 requests/day instead of 288.
+CLAUDE_QUOTA_BACKOFF = PR_CACHE_DIR / "claude-quota-backoff.json"
 CODEX_QUOTA_CACHE = PR_CACHE_DIR / "codex-quota-cache.json"
 OPENROUTER_KEY_CACHE = PR_CACHE_DIR / "openrouter-key-cache.json"
 CURSOR_QUOTA_CACHE = PR_CACHE_DIR / "cursor-quota-cache.json"
@@ -2307,7 +2313,28 @@ def _fetch_claude_usage():
     fleet-ops#4670: a 401 means the file access token died. Force one refresh
     of the file login (not CLAUDE_CODE_OAUTH_TOKEN) and retry once. A 429 is
     not a credential fault; leave it to the stale-cache / fail-loud path.
+
+    2026-09-13 denial incident (#4611 lineage): the org's Max subscription was
+    cancelled, so the org flipped to claude_free and denied ALL OAuth —
+    /api/oauth/usage AND /v1/messages both 403 oauth_not_allowed_for_organization
+    (proven live 09:47Z; the profile endpoint still 200s, so the token itself
+    is alive). The 5-min poller answered 80+ consecutive 429/403s over 6.7h.
+    While the CLAUDE_QUOTA_BACKOFF sidecar is live this poller sends NO request
+    at all: 403 -> kind=denied, 6h recheck; 429 -> kind=rate honouring
+    Retry-After. A success clears the sidecar (self-heal when the
+    subscription returns — no human un-gating step).
+    To force-verify a re-subscribed org, delete the sidecar; the next 5-min
+    run fetches for real.
     """
+    backoff = _claude_quota_backoff()
+    if backoff:
+        print(
+            f"claude usage skipped: {backoff.get('kind') or '?'} backoff, "
+            f"{int(float(backoff.get('until') or 0) - time.time())}s left "
+            "(claude-usage 429/403 denial 2026-09-13; #4611 lineage)",
+            file=sys.stderr,
+        )
+        return None
     token = _claude_access_token()
     if not token:
         return None
@@ -2325,6 +2352,19 @@ def _fetch_claude_usage():
             except (OSError, urllib.error.URLError, json.JSONDecodeError, ValueError) as retry_exc:
                 print(f"claude usage fetch failed: {retry_exc}", file=sys.stderr)
                 return None
+        elif exc.code in (403, 429):
+            # 2026-09-13: 403 permission_error oauth_not_allowed_for_organization
+            # (cancelled subscription -> claude_free) repeats forever; 429 is
+            # their generic denial bucket, Retry-After ~56min. Back off instead
+            # of hammering at 12 polls/hour (80+ consecutive failures, 6.7h).
+            # Note: the 401->forced-refresh->retry path below swallows a retry
+            # 403/429 as a generic failure without stamping the sidecar; the
+            # next 5-min run then stamps it via this elif. Accepted: that
+            # combination (dead token AND denied org) is rare and costs one
+            # extra poll.
+            _claude_quota_backoff_write(exc)
+            print(f"claude usage fetch failed: {exc}", file=sys.stderr)
+            return None
         else:
             print(f"claude usage fetch failed: {exc}", file=sys.stderr)
             return None
@@ -2333,6 +2373,13 @@ def _fetch_claude_usage():
         return None
     if not isinstance(payload, dict):
         return None
+    # Success (fresh or via the 401 -> forced-refresh -> retry path) clears the
+    # backoff: the org allows OAuth again, the meter resumes, and the #4221-style
+    # rule gate lifts itself. No human un-gating step.
+    try:
+        CLAUDE_QUOTA_BACKOFF.unlink()
+    except OSError:
+        pass
     rows = []
     for key, window in (("five_hour", "session"), ("seven_day", "weekly")):
         entry = payload.get(key)
@@ -2680,6 +2727,68 @@ def _claude_observed_anchor():
     return time.time()
 
 
+def _claude_quota_backoff():
+    """Live claude usage backoff sidecar, or None. (2026-09-13, #4611 lineage)
+
+    Written by _claude_quota_backoff_write when /api/oauth/usage answers
+    403 oauth_not_allowed_for_organization (kind=denied — the org's
+    subscription is cancelled, claude_free denies OAuth outright; effectively
+    permanent) or 429 (kind=rate — transient, Retry-After honoured). While the
+    sidecar is live the poller sends NO request at all. The metric side reads
+    kind=denied to flip the fail-loud gauge to source=denied, which the
+    FleetClaudeQuotaStale rule's #4221-style unless-gate consumes so a
+    deliberately-dark cancelled subscription does not page the fleet.
+    """
+    try:
+        doc = json.loads(CLAUDE_QUOTA_BACKOFF.read_text())
+    except (OSError, json.JSONDecodeError, ValueError):
+        return None
+    until = doc.get("until") if isinstance(doc, dict) else None
+    if not isinstance(until, (int, float)) or until <= time.time():
+        return None
+    return doc
+
+
+def _claude_quota_backoff_write(exc):
+    """Persist the claude usage backoff decision. (2026-09-13, #4611 lineage)
+
+    403 permission_error oauth_not_allowed_for_organization -> kind=denied,
+    6h lease: the org (claude_free after cancellation) denies OAuth at the
+    account level, so the denial repeats until the subscription returns and
+    retrying sooner just feeds the 429 bucket. 429 -> kind=rate, Retry-After
+    honoured, clamped 1m..2h (default 15m when the header is absent or
+    unparsable — their 429s carried Retry-After ~56min live). ts continuity: a
+    repeated denied 403 keeps the FIRST denial's ts so the source=denied
+    gauge's denial AGE grows across 6h renewals instead of resetting.
+    To force-verify a re-subscribed org, delete the sidecar; the next 5-min
+    run fetches for real and the 200-path clears it anyway.
+    """
+    now = time.time()
+    if getattr(exc, "code", None) == 429:
+        kind, lease = "rate", 900
+        try:
+            lease = min(max(int(float(exc.headers.get("Retry-After") or 900)), 60), 7200)
+        except (TypeError, ValueError, AttributeError):
+            pass
+    else:
+        kind, lease = "denied", 6 * 3600
+    prev = _claude_quota_backoff()
+    ts = now
+    if (
+        kind == "denied"
+        and prev
+        and prev.get("kind") == "denied"
+        and isinstance(prev.get("ts"), (int, float))
+    ):
+        ts = prev["ts"]
+    try:
+        PR_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+        CLAUDE_QUOTA_BACKOFF.write_text(json.dumps(
+            {"kind": kind, "until": now + lease, "lease_s": lease, "ts": ts}))
+    except OSError:
+        pass
+
+
 def _emit_seat_quota(lines, provider, rows, source, observed_at):
     """Append fleet_seat_quota_* rows for one provider.
 
@@ -2724,12 +2833,30 @@ def _emit_seat_quota_fail_loud(lines, provider, observed_at):
     observed_seconds gauge with source="stale" keeps the meter loud: the value
     crosses QUOTA_STALE_S and the FleetClaudeQuotaStale / FleetSeatQuotaStale
     rule fires instead of a dark money meter being invisible.
+
+    2026-09-13: when the 403/429 denial sidecar is live with kind=denied (the
+    org's subscription is cancelled, claude_free denies ALL OAuth), the source
+    flips to "denied" and the anchor becomes the FIRST-403 ts, so the gauge
+    reports the denial AGE ("deliberately unpaid-dark for N hours") instead of
+    a stale-data age. The FleetClaudeQuotaStale rule's #4221-style unless-gate
+    consumes that source=denied series: cancelled-subscription silence is
+    deliberate, not a lost meter, and the gate lifts itself when the
+    subscription returns and a fetch succeeds again.
     """
     now = time.time()
-    observed_s = max(0.0, now - observed_at) if observed_at else QUOTA_STALE_S + 1
+    source = "stale"
+    anchor = observed_at
+    if provider == "claude":
+        backoff = _claude_quota_backoff()
+        if backoff and backoff.get("kind") == "denied":
+            source = "denied"
+            denied_ts = backoff.get("ts")
+            if isinstance(denied_ts, (int, float)):
+                anchor = denied_ts
+    observed_s = max(0.0, now - anchor) if anchor else QUOTA_STALE_S + 1
     lines.append(
         f'fleet_seat_quota_observed_seconds{{provider="{_prom_label(provider)}",'
-        f'source="stale"}} {observed_s:.4f}'
+        f'source="{_prom_label(source)}"}} {observed_s:.4f}'
     )
 
 
