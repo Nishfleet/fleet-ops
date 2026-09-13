@@ -152,4 +152,10 @@ bash "$here/cancelled-while-queued-detector.test.sh" || fail "cancelled-while-qu
 bash "$here/bulk-close-pr-landings.test.sh" || fail "bulk-close-pr-landings tests failed"
 bash "$here/pi-intake-repair-run.test.sh" || fail "pi-intake-repair-run tests failed"
 
+# fleet-ops#5810: a red-main repair PR must enter a merge queue at the head
+# (jump:true), never tail-append behind entries whose group builds fail on
+# the bug it fixes. Workers cannot add a P14 line in .github/workflows/ci.yml;
+# this file is the listed CI host for the new repair-queue-jump test.
+bash "$here/repair-queue-jump.test.sh" || fail "repair-queue-jump tests failed"
+
 ok "P3b host complete"
