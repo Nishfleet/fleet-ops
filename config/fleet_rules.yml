@@ -512,6 +512,39 @@ groups:
         annotations:
           summary: "main branch CI red on {{ $labels.repo }} for 30+ minutes"
           description: "Trunk is broken; merges/deploys unsafe. The alert-repair-dispatch mutex guarantees exactly one repair worker spawns per (alert, repo) pair."
+
+      # fleet-ops#5807: merge-queue head wait + hosted-CI queue depth were
+      # blind. 2026-09-12 10:50 IST: the 0509 head #3054 sat AWAITING_CHECKS
+      # 2h20m with 14 queued entries and 58 queued + 11 in-progress hosted
+      # runs, 0 merges in the last hour — and NO alert (only the unrelated
+      # FleetMainRed); a human noticed by hand. The metrics come from the
+      # EXISTING 5-min exporter (fleet-metrics-export.py — no new unit, no
+      # new timer, no faster polling). The read is skipped while the
+      # #1350/#5762 20% rate-limit throttle is breached, and a failed read
+      # serves its cache 2h, then the family omits — these absent() legs
+      # (fleet-ops#1010: every organ ships its absence alarm) own a dead read
+      # path while FleetMetricsExportStale still sees a live textfile. Both
+      # severities route to repair-dispatch (config/alertmanager.yml) —
+      # neither is a Nish page.
+      - alert: CiMergeQueueHeadWaitHigh
+        expr: ci_merge_queue_head_wait_seconds > 1200 or absent(ci_merge_queue_head_wait_seconds)
+        for: 10m
+        labels:
+          severity: critical
+          service: fleet
+        annotations:
+          summary: "merge-queue head wait >20 min on {{ $labels.repo }} (or family absent)"
+          description: "fleet-ops#5807: the {{ $labels.repo }} merge-queue head (ci_merge_queue_head_wait_seconds, target <20 min) has exceeded 1200s for 10+ min — its checks are not converging while the entries behind it pile up. Repair worker: (1) name the top slot consumers — get the head PR's waiting checks (`gh pr checks <head-number> -R <repo>`), then group the repo's currently queued+in-progress hosted runs by workflow with count and median duration: `gh run list -R <repo> --limit 200 --json workflowName,status,createdAt,updatedAt --jq 'group_by(.workflowName) | map({workflow: .[0].workflowName, queued: (map(select(.status==\"queued\"))|length), inprogress: (map(select(.status==\"in_progress\"))|length)}) | sort_by(-.queued) | .[:10]'`; (2) consolidate the repeat offenders per 0509#3069, 0509#3068 and 0509#3070 (never a new workflow — PR-only); (3) the alert clears when the head merges or leaves the queue (watch ci_merge_queue_head_wait_seconds fall back under 1200)."
+
+      - alert: CiHostedQueueDepthHigh
+        expr: ci_hosted_runs_queued > 30 or absent(ci_hosted_runs_queued)
+        for: 15m
+        labels:
+          severity: warning
+          service: fleet
+        annotations:
+          summary: ">30 hosted runs queued on {{ $labels.repo }} (or family absent)"
+          description: "fleet-ops#5807: ci_hosted_runs_queued > 30 for 15+ min on {{ $labels.repo }} — the org's ~20-concurrent hosted-jobs plan limit is saturated (58 queued + 11 in-progress at the 2026-09-12 10:50 IST incident), so every further PR waits and the merge-queue head wait (CiMergeQueueHeadWaitHigh) follows. Repair worker: name the top slot consumers — `gh run list -R <repo> --limit 200 --json workflowName,status,createdAt,updatedAt --jq 'group_by(.workflowName) | map({workflow: .[0].workflowName, queued: (map(select(.status==\"queued\"))|length), inprogress: (map(select(.status==\"in_progress\"))|length)}) | sort_by(-.queued) | .[:10]'` — and consolidate the repeat offenders per 0509#3069, 0509#3068 and 0509#3070 (never a new workflow — PR-only)."
   - name: fleet_undersaturation_guard
     rules:
       - alert: FleetUndersaturated
