@@ -31,6 +31,9 @@
 #   RULEBOOK_DRILL RULEBOOK_DRILL_FINDINGS RULEBOOK_FAKE_NOW
 #   RULEBOOK_SKIP_BACKUP (test-only: force the backup gate to fire)
 #   GH SYSTEMCTL RULEBOOK_PI_TIMEOUT_S
+#   (fleet-ops#6173 note: default 2400s = measured healthy senior-route
+#   red-team run 2026-09-13T00:30→01:01Z (31m23s); headroom over it while
+#   staying under the unit's 45min TimeoutStartSec)
 
 set -euo pipefail
 
@@ -281,12 +284,15 @@ PY
     # client retry indefinitely — the 2026-09-12T22:58Z senior-route drain
     # wedged the run for the full 45min TimeoutStartSec until systemd
     # SIGTERMed it (unit-failure trip, 1393 completion attempts, zero
-    # output). Bound the reviewer call here: a timed-out pi takes the
-    # ordinary failed-pi path (filed=0, unit completes 0) and the
-    # heading-growth bonus re-dispatches. 30min default sits under the
-    # unit's 45min TimeoutStartSec so the script, not systemd, owns the
-    # timeout and can still file/stamp/exit cleanly.
-    RULEBOOK_PI_TIMEOUT_S="${RULEBOOK_PI_TIMEOUT_S:-1800}"
+    # output). Bound the reviewer call here: a timed-out pi (rc=124) takes
+    # the ordinary failed-pi path (filed=0, unit completes 0) and the
+    # heading-growth bonus re-dispatches. Default 2400s is the measured
+    # healthy senior-route run (31m23s, 2026-09-13T00:30Z) + headroom,
+    # under the unit's 45min TimeoutStartSec so the script, not systemd,
+    # owns the timeout and can still file/stamp/exit cleanly. The 45min
+    # bound has killed two healthy-or-drained runs today (04:28, 06:29 IST
+    # starts) — never let the systemd bound be the first line of defense.
+    RULEBOOK_PI_TIMEOUT_S="${RULEBOOK_PI_TIMEOUT_S:-2400}"
     set +e
     timeout -k 30 "$RULEBOOK_PI_TIMEOUT_S" \
         "$PI_BIN" --print --provider "$provider" --model "$model" \
