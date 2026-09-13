@@ -303,4 +303,91 @@ JSON
 ) || fail "sentinel latch end-to-end run failed (see above)"
 ok "sentinel latch: no-usable + usable edges written, unchanged verdict writes nothing"
 
+# --- fleet-ops#6315: the #5093 walled exit must not strand the prepaid
+# NON-proxy lane. (e) walled proxy + capable direct seat => the run PICKS the
+# direct lane (devin/swe-2-max — never touches 127.0.0.1:4000) and the
+# sentinel flips to usable; (f) walled + the direct seat benched in the
+# ledger (the 429 -> 900s quota brake) => the #5093 no-usable verdict, exit 1,
+# unchanged. Both driven end-to-end through bin/pi-issue-run, offline.
+(
+  set -euo pipefail
+  scratch="$(mktemp -d -t sr-df6315.XXXXXX)"
+  trap 'rm -rf "$scratch"' EXIT INT TERM
+  export HOME="$scratch/home"
+  mkdir -p "$HOME/.config/fleet-worker"
+  : > "$HOME/.config/fleet-worker/nishfleet-worker.env"
+  chmod 600 "$HOME/.config/fleet-worker/nishfleet-worker.env"
+  export PI_PACKET_STATE="$scratch/state"
+  mkdir -p "$PI_PACKET_STATE/attempts" "$PI_PACKET_STATE/active-seats"
+  export PI_ISSUES_DIR="$scratch/issues"
+  mkdir -p "$PI_ISSUES_DIR"
+  export PI_SEAT_HEALTH_LEDGER_DIR="$scratch/ledger"
+  mkdir -p "$PI_SEAT_HEALTH_LEDGER_DIR"
+  export PI_SEAT_HEALTH_SIDECAR="$scratch/pi-seat-health.json"
+  export PI_MODELS_JSON="$scratch/models.json"
+  export SEAT_CAPS_JSON="$scratch/seat-caps.json"
+  export XDG_RUNTIME_DIR="$scratch/xdg"
+  mkdir -p "$XDG_RUNTIME_DIR"
+  export PI_SEAT_LIB_CHECK_SYSTEMD=0
+  export PI_PACKET_SEAT_LIB="$repo_root/lib/litellm-seat.sh"
+  export PI_SEAT_NOUSABLE_COOLDOWN_S=0
+  export EMPTY_RUN_RETRY_MAX=0
+  export FLEET_DEBUG_PLAYBOOK_GATE=0
+  stub_bin="$scratch/stub-bin"
+  mkdir -p "$stub_bin"
+  printf '#!/usr/bin/env bash\nprintf "stub output stub output stub output stub output stub output\\n"\nexit 0\n' > "$stub_bin/pi"
+  printf '#!/usr/bin/env bash\nif [[ "$*" == *"--jq"* ]]; then printf "open\\n"; fi\nprintf "[]\\n"\nexit 0\n' > "$stub_bin/gh"
+  printf '#!/usr/bin/env bash\nprintf "export GH_TOKEN=fake-test-token-cccccccccccccccc\\n"\nexit 0\n' > "$stub_bin/worker-token"
+  printf '#!/usr/bin/env bash\nexit 0\n' > "$stub_bin/systemctl"
+  # #6315: the PROXY is walled — readiness AND the #6315 completion OR-probe
+  # both fail, so the direct lane is what carries the pick.
+  printf '#!/usr/bin/env bash\nexit 7\n' > "$stub_bin/curl"
+  chmod +x "$stub_bin"/*
+  export PATH="$stub_bin:/usr/local/bin:/usr/bin:/bin"
+  export PI_BIN="$stub_bin/pi"
+  export WORKER_TOKEN_BIN="$stub_bin/worker-token"
+  export LITELLM_REQUIRE_LIVE=1 LITELLM_HEALTH_URL="http://127.0.0.1:9/health/readiness"
+  # Production-shape caps (object-form models, the seat-caps.json convention).
+  # models.json carries the same lane for the inventory readers.
+  cat > "$SEAT_CAPS_JSON" <<'JSON'
+{ "providers": { "devin": { "cap": 4, "class": "prepaid-quota", "remote_agent": true, "models": { "swe-2-max": { "cap": 4 } } } } }
+JSON
+  cat > "$PI_MODELS_JSON" <<'JSON'
+{ "providers": { "devin": { "models": [ { "id": "swe-2-max", "cost": { "input": 0 } } ] } } }
+JSON
+  inst="fleet-ops-6315e"
+  printf 'Implement one GitHub issue: fleet-ops#6315.\nTARGET: repo Nishfleet/fleet-ops issue 6315 unit pi-issue-%s\n' "$inst" > "$PI_ISSUES_DIR/${inst}.in"
+  sentinel="$PI_SEAT_HEALTH_LEDGER_DIR/.no-usable-seat"
+  set +e
+  bash "$repo_root/bin/pi-issue-run" "$inst" > "$scratch/run.out" 2> "$scratch/run.err"
+  rc=$?
+  set -e
+  got=$(cat "$sentinel" 2>/dev/null || true)
+  [[ "$got" == "usable" ]] \
+    || fail "#6315(e): walled+direct-capable must pick the direct lane, sentinel got '${got:-ABSENT}' (rc=$rc, err: $(tr '\n' ' ' < "$scratch/run.err" | tail -c 200))"
+  seatpick=$(cat "$PI_PACKET_STATE/attempts/pi-issue-${inst}.seat" 2>/dev/null || true)
+  [[ "$seatpick" == "devin/swe-2-max" ]] \
+    || fail "#6315(e): picked '$seatpick', expected the direct prepaid lane devin/swe-2-max"
+  grep -q 'devin/swe-2-max' "$PI_PACKET_STATE/attempts/pi-issue-${inst}.tried-seats" \
+    || fail "#6315(e): tried-seats must record the direct lane"
+  ok "#6315(e): walled proxy + capable direct seat => pi-issue-run claims devin/swe-2-max (sentinel usable)"
+
+  # (f) walled + the direct seat benched (provider 429 -> quota bench) =>
+  # the #5093 no-usable verdict, exit 1 — nothing at all can run.
+  printf '%s' '{"provider":"devin","model":"swe-2-max","http_status":429,"health_class":"quota_bench","retryable":true,"seat_dead":false,"poison_ladder":false,"observed_at":"2026-09-13T06:00:00Z","source":"after_provider_response","failure_mode":"provider_429","usable_at":"2036-01-01T00:00:00Z","consecutive_failure_count":1}' \
+    > "$PI_SEAT_HEALTH_LEDGER_DIR/devin__swe-2-max.json"
+  rm -f "$PI_PACKET_STATE/attempts/pi-issue-${inst}.tried-seats"
+  inst="fleet-ops-6315f"
+  printf 'Implement one GitHub issue: fleet-ops#6315.\nTARGET: repo Nishfleet/fleet-ops issue 6315 unit pi-issue-%s\n' "$inst" > "$PI_ISSUES_DIR/${inst}.in"
+  set +e
+  bash "$repo_root/bin/pi-issue-run" "$inst" > "$scratch/run2.out" 2> "$scratch/run2.err"
+  rc2=$?
+  set -e
+  got2=$(cat "$sentinel" 2>/dev/null || true)
+  [[ $rc2 -eq 1 && "$got2" == "no-usable" ]] \
+    || fail "#6315(f): walled+benched direct seat must keep the #5093 verdict (rc=$rc2, sentinel='${got2:-ABSENT}', err: $(tr '\n' ' ' < "$scratch/run2.err" | tail -c 200))"
+  ok "#6315(f): walled + benched direct seat => #5093 no-usable, exit 1 (unchanged)"
+) || fail "#6315 direct-lane end-to-end run failed (see above)"
+ok "#6315: direct-lane rescue (e) + both-dead #5093 verdict (f), end-to-end"
+
 echo "OK: fleet-seat-recovery-units: bounded StartLimit guard (armed, proven by a negative control) + verify + sentinel trigger + latch"
