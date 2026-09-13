@@ -56,6 +56,12 @@
       "cadence": "hourly",
       "source": "repo"
     },
+    "escalation-organ-watch.timer": {
+      "reason": "5-min organ-death watcher for the anti-recursion-excluded escalation organs (fleet-ops#5854) — those organs are excluded from their own STOP-REASON chain, so their death is otherwise silent until the next hourly tier1 failed-units sweep; this timer bounds detection to the 5-min contract",
+      "classification": "scheduled",
+      "cadence": "5min",
+      "source": "repo"
+    },
     "fleet-aeo-probe.timer": {
       "reason": "Weekly AEO visibility probe — measurement window is weekly; must land before Weekly Fleet Review (Sun 04:30 IST)",
       "classification": "scheduled",

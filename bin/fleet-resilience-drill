@@ -471,11 +471,14 @@ plane_keystone_hc() {
   }
 
   if [[ ! -f "$KEYSTONE_HC_ENV" ]]; then
-    loud "KEYSTONE-HC-UNCONFIGURED" "missing $KEYSTONE_HC_ENV — create free healthchecks.io checks for intake/scout/reconcile/restore/detached and drop HC_URL_* there. Heartbeat already has its own check."
+    loud "KEYSTONE-HC-UNCONFIGURED" "missing $KEYSTONE_HC_ENV — create free healthchecks.io checks for intake/scout/reconcile/restore/detached/organwatch and drop HC_URL_* there. Heartbeat already has its own check."
     record "$name" "skip" "env file missing"
     return 0
   fi
-  for key in HC_URL_INTAKE HC_URL_SCOUT HC_URL_RECONCILE HC_URL_RESTORE HC_URL_DETACHED; do
+  # HC_URL_ORGANWATCH is the #5854 organ-death watcher's dead-man; included
+  # in the same distinctness sweep so a shared URL cannot mask it.
+  # HC_URL_DETACHED (fleet-ops#5886) is the detached per-dispatch dead-man.
+  for key in HC_URL_INTAKE HC_URL_SCOUT HC_URL_RECONCILE HC_URL_RESTORE HC_URL_DETACHED HC_URL_ORGANWATCH; do
     if ! url="$(hc_env_value "$KEYSTONE_HC_ENV" "$key")"; then
       missing+=("$key")
     else
@@ -507,7 +510,7 @@ plane_keystone_hc() {
     fi
   fi
 
-  record "$name" "pass" "HC_URL_INTAKE/SCOUT/RECONCILE/RESTORE/DETACHED all set and distinct from heartbeat"
+  record "$name" "pass" "HC_URL_INTAKE/SCOUT/RECONCILE/RESTORE/DETACHED/ORGANWATCH all set and distinct from heartbeat"
   return 0
 }
 
