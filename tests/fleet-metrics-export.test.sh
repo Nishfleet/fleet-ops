@@ -4694,3 +4694,273 @@ ok "fleet-ops#4643: packet-layout determinism green on P14 path"
 # fleet-ops#4643: FleetPromptCacheHitLow alert + seat-caps TTL comment.
 bash "$here/fleet-prompt-cache-hit-alert.test.sh" || fail "fleet-prompt-cache-hit-alert tests failed"
 ok "fleet-ops#4643: fleet-prompt-cache-hit-alert green on P14 path"
+
+# --- fleet-ops#5807: merge-queue + hosted-CI queue depth --------------------
+# (15) EMISSIONS: the 10:50 IST 2026-09-12 0509-jam snapshot (head #3054
+#      waited 2h20m = 8400s, 14 entries, 58 queued + 11 in-progress hosted
+#      runs) served through the REAL _cached_json fresh-cache leg emits all
+#      four ci_* series, exactly one # HELP + one # TYPE each (the #1844
+#      class-proof), with the fresh/CTS stamps for kind="merge_queue" that
+#      the console tile stamps its observed_at from (#5155) — and an
+#      empty-queue repo answers head_wait 0 while a no-queue repo omits.
+# (16) The #5762 budget gate: a tracked-low deferral returns None with ZERO
+#      gh spend; the head-wait derivation is ASC/DESC-agnostic (min of the
+#      head+tail enqueuedAt) and pins 8400s = the issue's 2h20m.
+# (17) PROMTOOL: on the 10:50 IST snapshot BOTH alerts fire (critical at
+#      +10m, warning at +15m, neither at +5m); the 25-min drill (1500s for
+#      25m, then 60s) fires (its repair-dispatch packet = the rule's
+#      annotations; the severity->receiver leg is owned by
+#      tests/alertmanager-routing-matrix.test.sh — a pointer, not a second
+#      source, fleet-ops#5586) and then CLEARS once the wait drops.
+#      The required-lines are pinned where they live: ONE _cached_json call
+#      site on the 30-min/2h rotation (never faster than the exporter, no
+#      new timer — MANIFEST still lists no merge-queue unit).
+echo "=== 15. fleet-ops#5807: 10:50-IST-snapshot emissions (cache-serve leg) ==="
+MQ_OUT="$scratch/mq-out.prom"
+python3 - "$exporter" "$MQ_OUT" "$scratch" <<'PY' || fail "#5807 emissions failed"
+import importlib.util, json, os, sys, time
+from pathlib import Path
+exporter, out_path, scratch = sys.argv[1:4]
+spec = importlib.util.spec_from_file_location("fme5807", exporter)
+m = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(m)
+
+m.OUT = Path(out_path)
+m.SELF_MAINT_JSON_DEFAULT = Path("/nonexistent/sm.json")
+m.SELF_MAINT_JSON_FALLBACK = Path("/nonexistent/fb.json")
+m.SEAT_HEALTH = Path("/nonexistent/seat.json")
+m.SEAT_LEDGER = Path("/nonexistent/ledger.json")
+m.SEAT_CAPS_DEFAULT = Path("/nonexistent/seat-caps.json")
+m.SEAT_CAPS_FALLBACK = Path("/nonexistent/seat-caps-fb.json")
+m.SEAT_CAPS_LIVE = Path("/nonexistent/live-caps.json")
+m.HC_URL_FILE = Path("/nonexistent/hc.url")
+m.ACTIONS_LOG = Path("/nonexistent/actions.log")
+m.MAINTENANCE_FLAG = Path("/nonexistent/maint.json")
+m.INTAKE_JSON_DEFAULT = Path("/nonexistent/intake.json")
+m.INTAKE_JSON_FALLBACK = Path("/nonexistent/intake2.json")
+m.KEYSTONE_LEDGER = Path("/nonexistent/keystone.jsonl")
+m.WORKTREE_REAPER_SUMMARY = Path("/nonexistent/reaper.json")
+m.STALENESS_CACHE = Path("/nonexistent/stale.json")
+m.PR_CACHE_DIR = Path(scratch)
+m.DETAIL_CACHE = Path(scratch) / "detail.cache.json"
+m.SNAPSHOT_CACHE = Path(scratch) / "repo-snapshot-cache.json"
+m.MERGE_QUEUE_CACHE = Path(scratch) / "merge-queue-cache.json"
+
+def _stub_timers():
+    return [{"unit": "fleet-metrics-export.timer", "last_usec": 0}]
+m._list_timers = _stub_timers
+m._timer_active = lambda unit: 1
+m._read_seat = lambda: (1, 0)
+m._merged_prs_detail = lambda: []
+m._repo_snapshot = lambda: None
+m._queue_composition = lambda: {
+    "ready-work": {"total": 0, "self": 0},
+    "agent-ready": {"total": 0, "self": 0},
+}
+m._escalations_24h = lambda: {}
+m._oomd_kills_6h = lambda: {}
+m._repair_log_counts_24h = lambda: (0, 0)
+m._worker_units = lambda: []
+m._standalone_pi_print_count = lambda u: 0
+m._maintenance_quiescing = lambda: 0
+m._keystone_routing_counts = lambda: (0, 0, None)
+m._ping_healthcheck = lambda: None
+for _n in ("_fetch_openrouter_credits", "_fetch_xkiro_usage", "_fetch_openrouter_key",
+           "_fetch_claude_usage", "_fetch_codex_usage", "_fetch_cursor_usage",
+           "_fetch_devin_usage", "_fetch_xkiro_quota", "_fetch_signups_7d"):
+    setattr(m, _n, lambda: None)
+m._GH_FETCHED_THIS_RUN = False
+
+# The 10:50 IST 2026-09-12 0509-jam snapshot, pre-seeded 60s old so the REAL
+# _cached_json serves it fresh: the no-gh-derivation leg, which IS the
+# cadence proof — fresh cache answers, zero gh spend. 0509 jammed
+# (8400s/14/58/11); fleet-ops' queue is empty (wait 0, not a fabrication)
+# with 3+1 hosted runs still counted.
+snap = {"repos": {
+    "Nishfleet/0509": {"head_wait_s": 8400, "entries": 14,
+                        "queued": 58, "in_progress": 11},
+    "Nishfleet/fleet-ops": {"head_wait_s": 0, "entries": 0,
+                             "queued": 3, "in_progress": 1},
+}}
+m.MERGE_QUEUE_CACHE.write_text(json.dumps({"ts": time.time() - 60, "data": snap}))
+rc = m.main()
+assert rc == 0, f"main rc={rc}"
+body = Path(out_path).read_text()
+
+for _name in ("ci_merge_queue_head_wait_seconds", "ci_merge_queue_entries",
+              "ci_hosted_runs_queued", "ci_hosted_runs_in_progress"):
+    assert body.count(f"# HELP {_name} ") == 1, f"duplicate/missing HELP: {_name}"
+    assert body.count(f"# TYPE {_name} gauge") == 1, f"duplicate/missing TYPE: {_name}"
+assert 'ci_merge_queue_head_wait_seconds{repo="Nishfleet/0509"} 8400' in body, body[-2000:]
+assert 'ci_merge_queue_head_wait_seconds{repo="Nishfleet/fleet-ops"} 0' in body
+assert 'ci_merge_queue_entries{repo="Nishfleet/0509"} 14' in body
+assert 'ci_merge_queue_entries{repo="Nishfleet/fleet-ops"} 0' in body
+assert 'ci_hosted_runs_queued{repo="Nishfleet/0509"} 58' in body
+assert 'ci_hosted_runs_queued{repo="Nishfleet/fleet-ops"} 3' in body
+assert 'ci_hosted_runs_in_progress{repo="Nishfleet/0509"} 11' in body
+assert 'ci_hosted_runs_in_progress{repo="Nishfleet/fleet-ops"} 1' in body
+# Exactly ONE fresh+CTS sample for the kind — the freshness pair the
+# console's ci_merge_queue tile stamps observed_at from (fleet-ops#5155).
+assert body.count('fleet_gh_cache_fresh{kind="merge_queue"} 1') == 1
+assert body.count('fleet_gh_cache_timestamp_seconds{kind="merge_queue"}') == 1
+
+# Required-lines, pinned at their one home: the family derives through
+# exactly ONE _cached_json call site on the shared 30-min/2h rotation (no
+# polling faster than the exporter, no new timer — MANIFEST lists no
+# merge-queue unit of its own).
+src = Path(exporter).read_text()
+assert src.count('_cached_json(MERGE_QUEUE_CACHE, _gh_merge_queue, "merge_queue")') == 1, \
+    "the merge-queue family must derive through exactly one _cached_json call site"
+assert 'MERGE_QUEUE_CACHE = PR_CACHE_DIR / "merge-queue-cache.json"' in src
+assert int(m.PR_CACHE_TTL) == 1800 and int(m.PR_CACHE_STALE) == 7200
+print("OK: #5807 10:50-IST-snapshot emissions, #1844 uniqueness, cadence pins")
+PY
+[[ "$(grep -c 'merge-queue' "$manifest" || true)" -eq 0 ]] || fail "#5807: MANIFEST gained a merge-queue row (new organ/timer — the issue forbids it)"
+ok "fleet-ops#5807: 10:50-IST-snapshot emissions green (cache-serve leg, no new timer)"
+
+echo "=== 16. fleet-ops#5807: #5762 deferral + ASC/DESC-agnostic head wait ==="
+python3 - "$exporter" <<'PY' || fail "#5807 #5762/derivation failed"
+import importlib.util, sys
+from datetime import datetime, timezone
+exporter = sys.argv[1]
+spec = importlib.util.spec_from_file_location("fme5807b", exporter)
+m = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(m)
+m._enrolled_repos = lambda: ["Nishfleet/0509"]
+
+# (a) #5762 budget gate: tracked-rl LOW defers — the fetch never happens.
+spend = []
+m._gh_rate_limit = lambda: {"core": {"low": True}}
+def _bomb():
+    raise AssertionError("gh spend while the #5762 deferral was active")
+m._gh_graphql = lambda q: _bomb()
+m._gh_actions_runs_total = lambda repo, status: _bomb()
+assert m._gh_merge_queue(now=1) is None
+assert spend == []
+
+# (b) head-wait derivation: whichever of head/tail carries the earlier
+# enqueuedAt, min() wins — 8400s = the issue's 2h20m (head #3054, enqueued
+# 03:28Z; the 10:50 IST notice records the 2h20m wait).
+t0328 = datetime(2026, 9, 12, 3, 28, tzinfo=timezone.utc).timestamp()
+now = t0328 + 8400
+def _mk(head_iso, tail_iso):
+    return {"data": {"r0": {"mergeQueue": {
+        "head": {"totalCount": 14, "nodes": [{"enqueuedAt": head_iso}]},
+        "tail": {"nodes": [{"enqueuedAt": tail_iso}]}}}}}
+m._gh_rate_limit = lambda: None  # undecided -> fail-open, spend the query
+m._gh_actions_runs_total = lambda repo, status: {"queued": 58, "in_progress": 11}[status]
+m._gh_graphql = lambda q: _mk("2026-09-12T03:28:00Z", "2026-09-12T05:00:00Z")
+row = m._gh_merge_queue(now=now)["repos"]["Nishfleet/0509"]
+assert row["entries"] == 14 and row["head_wait_s"] == 8400, row
+assert (row["queued"], row["in_progress"]) == (58, 11), row
+m._gh_graphql = lambda q: _mk("2026-09-12T05:00:00Z", "2026-09-12T03:28:00Z")
+row2 = m._gh_merge_queue(now=now)["repos"]["Nishfleet/0509"]
+assert row2["head_wait_s"] == 8400, row2
+
+# (c) no merge queue on the tracked branch -> the ci_* keys are honestly
+# omitted (never a fabricated 0) while the hosted legs still answer.
+m._gh_graphql = lambda q: {"data": {"r0": {"mergeQueue": None}}}
+row3 = m._gh_merge_queue(now=now)["repos"]["Nishfleet/0509"]
+assert "entries" not in row3 and "head_wait_s" not in row3, row3
+assert (row3["queued"], row3["in_progress"]) == (58, 11), row3
+# (d) EMPTY queue -> head_wait 0, which is the truth, not an omission.
+m._gh_graphql = lambda q: {"data": {"r0": {"mergeQueue": {
+    "head": {"totalCount": 0, "nodes": []}, "tail": {"nodes": []}}}}}
+row4 = m._gh_merge_queue(now=now)["repos"]["Nishfleet/0509"]
+assert row4["entries"] == 0 and row4["head_wait_s"] == 0, row4
+print("OK: #5807 #5762 deferral, ASC/DESC-agnostic derivation, honest omission")
+PY
+ok "fleet-ops#5807: #5762 budget gate + head-wait derivation green"
+
+echo "=== 17. fleet-ops#5807: rules documentation-lock + promtool firing/clearing ==="
+python3 - "$rules" <<'PY' || fail "#5807 rules documentation-lock failed"
+import sys, yaml
+rules = yaml.safe_load(open(sys.argv[1]))
+def _find(name):
+    for g in rules.get("groups", []):
+        for r in g.get("rules", []):
+            if r.get("alert") == name:
+                return r
+    return None
+
+def _packet(r):
+    # The repair-dispatch packet IS the rule's annotations (the am-executor
+    # forwards them); the #5807 packet must name the top-slot enumeration
+    # and the standing consolidation issues — 0509#3069/#3068/#3070.
+    d = (r.get("annotations") or {}).get("description", "")
+    for needle in ("workflowName x count x median run duration",
+                   "0509#3069", "0509#3068", "0509#3070"):
+        assert needle in d, (r["alert"], needle, d[:200])
+
+h = _find("CiMergeQueueHeadWaitHigh")
+assert h, "CiMergeQueueHeadWaitHigh missing"
+assert h["expr"] == "ci_merge_queue_head_wait_seconds > 1200", h["expr"]
+assert h["for"] == "10m", h["for"]
+assert h["labels"]["severity"] == "critical" and h["labels"]["service"] == "fleet"
+_packet(h)
+q = _find("CiHostedQueueDepthHigh")
+assert q, "CiHostedQueueDepthHigh missing"
+assert q["expr"] == "ci_hosted_runs_queued > 30", q["expr"]
+assert q["for"] == "15m", q["for"]
+assert q["labels"]["severity"] == "warning" and q["labels"]["service"] == "fleet"
+_packet(q)
+print("OK: #5807 rule shapes + repair-packet naming locked; severity->repair-dispatch")
+print("    leg is owned by tests/alertmanager-routing-matrix.test.sh (pointer, #5586)")
+PY
+PROMTEST="$scratch/5807-rules.test.yml"
+cat >"$PROMTEST" <<YAML
+rule_files:
+  - $rules
+evaluation_interval: 1m
+tests:
+  # A. the 10:50 IST 2026-09-12 0509-jam snapshot: BOTH alerts fire (the
+  #    critical after its 10m for, the warning after 15m; both still pending
+  #    at 5m — the for-windows are not decorative).
+  - interval: 1m
+    input_series:
+      - series: 'ci_merge_queue_head_wait_seconds{repo="Nishfleet/0509"}'
+        values: '8400+0x30'
+      - series: 'ci_merge_queue_entries{repo="Nishfleet/0509"}'
+        values: '14+0x30'
+      - series: 'ci_hosted_runs_queued{repo="Nishfleet/0509"}'
+        values: '58+0x30'
+      - series: 'ci_hosted_runs_in_progress{repo="Nishfleet/0509"}'
+        values: '11+0x30'
+    promql_expr_test:
+      - expr: 'ALERTS{alertname="CiMergeQueueHeadWaitHigh",alertstate="firing",repo="Nishfleet/0509",service="fleet",severity="critical"}'
+        eval_time: 16m
+        exp_samples:
+          - labels: 'ALERTS{alertname="CiMergeQueueHeadWaitHigh",alertstate="firing",repo="Nishfleet/0509",service="fleet",severity="critical"}'
+            value: 1
+      - expr: 'ALERTS{alertname="CiHostedQueueDepthHigh",alertstate="firing",repo="Nishfleet/0509",service="fleet",severity="warning"}'
+        eval_time: 16m
+        exp_samples:
+          - labels: 'ALERTS{alertname="CiHostedQueueDepthHigh",alertstate="firing",repo="Nishfleet/0509",service="fleet",severity="warning"}'
+            value: 1
+      - expr: 'ALERTS{alertname="CiMergeQueueHeadWaitHigh",alertstate="firing"}'
+        eval_time: 5m
+        exp_samples: []
+      - expr: 'ALERTS{alertname="CiHostedQueueDepthHigh",alertstate="firing"}'
+        eval_time: 5m
+        exp_samples: []
+  # B. the drill: a synthetic 25-min head wait (1500s through minute 24)
+  #    fires the critical — its packet (the annotations) dispatches via the
+  #    repair-dispatch severity route — then the repair lands (60s at 25m)
+  #    and the firing series clears.
+  - interval: 1m
+    input_series:
+      - series: 'ci_merge_queue_head_wait_seconds{repo="Nishfleet/0509"}'
+        values: '1500+0x24 60+0x25'
+    promql_expr_test:
+      - expr: 'ALERTS{alertname="CiMergeQueueHeadWaitHigh",alertstate="firing"}'
+        eval_time: 24m
+        exp_samples:
+          - labels: 'ALERTS{alertname="CiMergeQueueHeadWaitHigh",alertstate="firing",repo="Nishfleet/0509",service="fleet",severity="critical"}'
+            value: 1
+      - expr: 'ALERTS{alertname="CiMergeQueueHeadWaitHigh",alertstate="firing"}'
+        eval_time: 45m
+        exp_samples: []
+YAML
+promtool test rules "$PROMTEST" >"$scratch/5807-promtool.out" 2>&1 \
+  || { sed -n 1,40p "$scratch/5807-promtool.out" >&2; fail "#5807 promtool firing/clearing failed"; }
+ok "fleet-ops#5807: 10:50-IST snapshot fires BOTH; 25-min drill dispatches and clears (promtool)"
