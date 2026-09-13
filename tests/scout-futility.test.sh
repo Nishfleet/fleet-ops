@@ -980,13 +980,23 @@ body_file="${JOURNALCTL_BODY_FILE:-/dev/null}"
 n=10
 prev=""
 since=0
+unit=""
 for arg in "$@"; do
     if [[ "$prev" == "-n" ]]; then
         case "$arg" in ''|*[!0-9]*) ;; *) n="$arg" ;; esac
     fi
     if [[ "$arg" == "--since" ]]; then since=1; fi
+    if [[ "$prev" == "-u" ]]; then unit="$arg"; fi
     prev="$arg"
 done
+# Unit-aware: the OnFailure -repair lane's crash evidence is injected via its
+# own body file so scenarios can prove the classifier unions BOTH units
+# (pi-scout@<repo> + pi-scout-repair@<repo>). Without the var the repair -u
+# call reads the main body — duplicated, idempotent under the
+# found_wall/first-demote semantics.
+if [[ "$unit" == *scout-repair* && -n "${JOURNALCTL_REPAIR_BODY_FILE:-}" && -f "$JOURNALCTL_REPAIR_BODY_FILE" ]]; then
+    body_file="$JOURNALCTL_REPAIR_BODY_FILE"
+fi
 if [[ -f "$body_file" ]]; then
     if [[ "$since" == "1" ]] && grep -q '^---SINCE---$' "$body_file"; then
         body=$(awk 'f; /^---SINCE---$/ {f=1; next}' "$body_file")
@@ -1229,6 +1239,89 @@ rm -f "$state/0509.state"
 [[ "$(state_field consecutive_wall 0509)" == "1" ]] \
   || fail "scenario17r: runinfra 402 insufficient_credits must be wall-class, got consecutive_wall='$(state_field consecutive_wall 0509)'"
 ok "scenario17r: runinfra 402 insufficient_credits ('Out of credits') is wall-class"
+
+# Scenario 17s: pi's bare-`Connection error.` crash wall-classes (auditor
+# 2026-09-13). The 12:01:17 IST pi-scout-repair@fleet-ops trip printed ONLY
+# `[pi-seated-err] Connection error.` (GLM-429 credit window, tools=0,
+# 15s) — `Connection error` was NOT in PROVIDER_WALL_PATTERNS, so
+# consecutive_wall stayed 0 and the #2351/#2468 dedupe gate never engaged;
+# every Connection-error crash re-summoned a fresh SENIOR AUDITOR. Pin the
+# real production-mixed block.
+write_journalctl_stub_since
+JOURNALCTL="$scratch/bin/journalctl"
+export JOURNALCTL
+{
+    printf '[pi-seated-err] EXTLOAD-OK extension=seat-health source=after_provider_response\n'
+    printf '[pi-seated-err] EXTLOAD-OK extension=stop-judge mode=print-safe\n'
+    printf '[pi-seated-err] EXTLOAD-OK extension=subagent mode=print-safe\n'
+    printf '[pi-seated-err] Connection error.\n'
+    printf '[pi-seated-err] PACKET-VERDICT tools=0 class=no-tools\n'
+    printf 'pi-scout@0509.service: Main process exited, code=exited, status=1/FAILURE\n'
+} >"$scratch/journalctl-body.txt"
+rm -f "$state/0509.state"
+"$bin" begin 0509 >/dev/null
+"$bin" end 0509 1 >/dev/null
+[[ "$(state_field consecutive_wall 0509)" == "1" ]] \
+  || fail "scenario17s: bare 'Connection error.' crash must be wall-class, got consecutive_wall='$(state_field consecutive_wall 0509)'"
+ok "scenario17s: pi 'Connection error.' (12:01:17 IST scout-repair trip) is wall-class"
+
+# Scenario 17t: the -repair lane's OWN journal evidence must reach the
+# classifier. detect_provider_wall only grepped pi-scout@<repo>, so the
+# OnFailure hop pi-scout-repair@<repo> — whose ExecStopPost runs the SAME
+# `end` — had its crash evidence (12:01:17 IST [pi-seated-err] Connection
+# error.) INVISIBLE: every -repair crash stayed "not provider-wall". Also
+# proves the -repair block's SPAWN_BLOCKED line and the plain unit's wedge
+# residue (start operation timed out) are pi-machinery, not work faults:
+# neither may demote a wall. Main body = wedge residue (all benign); repair
+# body = the real double-crash. EXPECTS wall — fails under the old
+# single-journal scan.
+write_journalctl_stub_since
+JOURNALCTL="$scratch/bin/journalctl"
+export JOURNALCTL
+{
+    printf 'pi-scout@0509.service: start operation timed out. Terminating.\n'
+    printf 'pi-scout@0509.service: Main process exited, code=killed, status=15/TERM\n'
+    printf 'pi-scout@0509.service: Failed with result %s.\n' "'timeout'"
+} >"$scratch/journalctl-body.txt"
+export JOURNALCTL_BODY_FILE="$scratch/journalctl-body.txt"
+{
+    printf '[pi-seated-err] EXTLOAD-OK extension=stop-judge mode=print-safe\n'
+    printf '[pi-seated-err] SPAWN_BLOCKED reason=systemctl_restart_fleet_unit\n'
+    printf '[pi-seated-err] Connection error.\n'
+    printf '[pi-seated-err] PACKET-VERDICT tools=19 class=worked\n'
+    printf '[pi-seated-err] Connection error.\n'
+    printf '[pi-seated-err] PACKET-VERDICT tools=0 class=no-tools\n'
+} >"$scratch/journalctl-repair-body.txt"
+export JOURNALCTL_REPAIR_BODY_FILE="$scratch/journalctl-repair-body.txt"
+rm -f "$state/0509.state"
+"$bin" begin 0509 >/dev/null
+"$bin" end 0509 1 >/dev/null
+[[ "$(state_field consecutive_wall 0509)" == "1" ]] \
+  || fail "scenario17t: -repair-journal Connection error. must be wall-class (union scan), got consecutive_wall='$(state_field consecutive_wall 0509)'"
+ok "scenario17t: pi-scout-repair@<repo> journal evidence reaches the classifier (union + SPAWN_BLOCKED/wedge benign)"
+unset JOURNALCTL_REPAIR_BODY_FILE
+rm -f "$scratch/journalctl-repair-body.txt"
+
+# Scenario 17u: the 2026-09-10T11:50Z paretoinference stream-failed token,
+# hot-patched live that day and WIPED by a deploy-clone reset before its
+# promised durable test landed (the 4555-row precedent). PRODUCER banked:
+# z-ai/glm-5.3-flash transient stream failure. Restore + pin BOTH the
+# pattern token and this regression scenario so the next deploy-clone
+# reset cannot silently lose it again.
+write_journalctl_stub_since
+JOURNALCTL="$scratch/bin/journalctl"
+export JOURNALCTL
+{
+    printf '[pi-seated-err] EXTLOAD-OK extension=packet-verdict mode=print-safe\n'
+    printf '[pi-seated-err] The model stream failed. Please retry the request.\n'
+    printf '[pi-seated-err] PACKET-VERDICT tools=0 class=no-tools\n'
+} >"$scratch/journalctl-body.txt"
+rm -f "$state/0509.state"
+"$bin" begin 0509 >/dev/null
+"$bin" end 0509 1 >/dev/null
+[[ "$(state_field consecutive_wall 0509)" == "1" ]] \
+  || fail "scenario17u: 'model stream failed. Please retry' must be wall-class, got consecutive_wall='$(state_field consecutive_wall 0509)'"
+ok "scenario17u: paretoinference stream-failed token (09-10 precedent, wiped+restored) is wall-class"
 
 # --- 18. filed count comes from the scout's own supply verdict line ---------
 # fleet-ops#4560: the gh issue-count fallback was inflated by OTHER agents'
