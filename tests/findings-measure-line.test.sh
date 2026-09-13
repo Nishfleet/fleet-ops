@@ -3,9 +3,15 @@
 # ledger line (fleet-ops#5443) and fails closed (never a fabricated green).
 # Hermetic: FINDINGS_LEDGER_TEST points at a fake ledger.
 set -uo pipefail
+# Issue #6102: the ledger + probes used fixed shared /tmp paths that 5
+# parallel copies (xargs -P 8) appended to concurrently; this copy's
+# private dir removes the collision.
+TD="$(mktemp -d)"
+trap 'rm -rf "$TD"' EXIT INT TERM
+export TD
 HERE="$(cd "$(dirname "$0")/.." && pwd)"
 fail=0
-LED=/tmp/findings-measure-line.test.jsonl
+LED="$TD/findings-measure-line.jsonl"
 rm -f "$LED"
 
 # 1. with a ledger containing carried_over: the line reports it, not zeros
@@ -19,7 +25,7 @@ echo "$out" | grep -Eq '^findings: total=[0-9]+ filed=[0-9]+ carried_over=1 olde
 [ "$?" = 0 ] || { echo "FAIL: measure over carried_over ledger"; fail=1; }
 
 # 2. empty/missing ledger: real zeros, still the exact line format
-python3 "$HERE/lib/findings_ledger.py" measure --ledger /tmp/fl-missing.jsonl \
+python3 "$HERE/lib/findings_ledger.py" measure --ledger "$TD/fl-missing.jsonl" \
   | grep -Eq '^findings: total=0 filed=0 carried_over=0 oldest_carry_h=0 panel_fail=0$'
 [ "$?" = 0 ] || { echo "FAIL: missing-ledger zeros"; fail=1; }
 
@@ -29,5 +35,5 @@ bf=$(FINDINGS_LEDGER_TEST=1 bash "$HERE/measure.sh" 2>/dev/null | grep -c '^find
 # (test 3 runs against the LIVE canonical ledger — a carry-over backlog in the
 # fleet makes this non-zero by design; we only assert the LINE exists.)
 
-rm -f "$LED" /tmp/fl-measure-line-real.jsonl
+rm -f "$LED" "$TD/fl-measure-line-real.jsonl"
 exit "$fail"

@@ -19,6 +19,12 @@
 #   6. Workflow shape: workflow_call + schedule + issues:write.
 
 set -euo pipefail
+# Issue #6102: the replay outputs used fixed shared /tmp paths that 5
+# parallel copies (xargs -P 8) truncated mid-read; every artifact now
+# lives in this copy's private dir.
+TD="$(mktemp -d)"
+trap 'rm -rf "$TD"' EXIT INT TERM
+export TD
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 repo_root="$(cd "$here/.." && pwd)"
 script="$repo_root/.github/scripts/cancelled-while-queued-detector.mjs"
@@ -153,14 +159,14 @@ console.log("OK: pure function tests (minutesBetween, isQueuedStatus, signature,
 # past the 30-min threshold.
 node "$script" \
   --from-json "$fixtures/stale-queued.json" \
-  --output-json /tmp/cwq-stale.json \
+  --output-json "$TD/cwq-stale.json" \
   --queued-threshold-minutes 30 \
   --lookback-hours 24 \
   --now 2026-08-23T11:32:00Z \
   --dry-run >/dev/null
 node --input-type=module -e '
 import { readFileSync } from "node:fs";
-const r = JSON.parse(readFileSync("/tmp/cwq-stale.json", "utf8"));
+const r = JSON.parse(readFileSync(process.env.TD + "/cwq-stale.json", "utf8"));
 const t = r.targets[0];
 if (t.repo !== "Nishfleet/0509") throw new Error(`stale replay repo mismatch, got ${t.repo}`);
 if (t.detected.length !== 1) throw new Error(`stale replay must detect 1, got ${t.detected.length}`);
@@ -181,14 +187,14 @@ console.log("OK: stale-queued run -> detected + cancelled + filed (no dedup, no 
 # under the 30-min threshold.
 node "$script" \
   --from-json "$fixtures/fresh-queued.json" \
-  --output-json /tmp/cwq-fresh.json \
+  --output-json "$TD/cwq-fresh.json" \
   --queued-threshold-minutes 30 \
   --lookback-hours 24 \
   --now 2026-08-23T11:32:00Z \
   --dry-run >/dev/null
 node --input-type=module -e '
 import { readFileSync } from "node:fs";
-const r = JSON.parse(readFileSync("/tmp/cwq-fresh.json", "utf8"));
+const r = JSON.parse(readFileSync(process.env.TD + "/cwq-fresh.json", "utf8"));
 const t = r.targets[0];
 if (t.detected.length !== 0) throw new Error(`fresh-queued must yield 0 detected, got ${t.detected.length}`);
 if (t.cancelled.length !== 0) throw new Error("fresh-queued must yield 0 cancelled");
@@ -200,14 +206,14 @@ console.log("OK: fresh-queued run (<30 min) -> quiet (no detect, no file)");
 # --- replay: deduped against open issue -> no new filing ---------------------
 node "$script" \
   --from-json "$fixtures/deduped.json" \
-  --output-json /tmp/cwq-dedup.json \
+  --output-json "$TD/cwq-dedup.json" \
   --queued-threshold-minutes 30 \
   --lookback-hours 24 \
   --now 2026-08-23T11:32:00Z \
   --dry-run >/dev/null
 node --input-type=module -e '
 import { readFileSync } from "node:fs";
-const r = JSON.parse(readFileSync("/tmp/cwq-dedup.json", "utf8"));
+const r = JSON.parse(readFileSync(process.env.TD + "/cwq-dedup.json", "utf8"));
 const t = r.targets[0];
 if (t.detected.length !== 1) throw new Error(`dedup fixture still detects the run, got ${t.detected.length}`);
 if (t.filed.length !== 1) throw new Error("dedup fixture must report the filing decision");
@@ -218,14 +224,14 @@ console.log("OK: signature bound — open issue with hash marker dedupes (no dup
 # --- replay: observe-to-close (no current detection, open issue closes) -----
 node "$script" \
   --from-json "$fixtures/observe-to-close.json" \
-  --output-json /tmp/cwq-otc.json \
+  --output-json "$TD/cwq-otc.json" \
   --queued-threshold-minutes 30 \
   --lookback-hours 24 \
   --now 2026-08-23T11:32:00Z \
   --dry-run >/dev/null
 node --input-type=module -e '
 import { readFileSync } from "node:fs";
-const r = JSON.parse(readFileSync("/tmp/cwq-otc.json", "utf8"));
+const r = JSON.parse(readFileSync(process.env.TD + "/cwq-otc.json", "utf8"));
 const t = r.targets[0];
 if (t.detected.length !== 0) throw new Error(`observe-to-close fixture: 0 detected (the run is in_progress now, not queued), got ${t.detected.length}`);
 if (t.closed.length !== 1) throw new Error(`observe-to-close fixture must close 1 stale issue, got ${t.closed.length}`);

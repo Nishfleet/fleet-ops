@@ -122,7 +122,7 @@ JSON
 
 # 1. Clean -> exit 0, no filing.
 : >"$gh_creates"
-SEAT_CAPS_JSON="$clean_caps" FLEET_VIBES_CANARY_FILE=1 "$bin" >/tmp/vibes1.log 2>&1 \
+SEAT_CAPS_JSON="$clean_caps" FLEET_VIBES_CANARY_FILE=1 "$bin" >"$scratch/vibes1.log" 2>&1 \
   || fail "clean fixture must exit 0 (rc=$?)"
 [[ -s "$gh_creates" ]] && fail "clean fixture must not file (filed=$(cat "$gh_creates"))"
 ok "1. clean fixture: detectors clean, exit 0, no filing"
@@ -137,9 +137,9 @@ uncited_cap="$scratch/uncited_cap.json"
 jq '.providers.orcarouter = {"cap": 1, "class": "free", "models": {"orcarouter/free": 1}}' \
   "$clean_caps" >"$uncited_cap"
 : >"$gh_creates"
-SEAT_CAPS_JSON="$uncited_cap" FLEET_VIBES_CANARY_FILE=1 "$bin" >/tmp/vibes5.log 2>&1 \
+SEAT_CAPS_JSON="$uncited_cap" FLEET_VIBES_CANARY_FILE=1 "$bin" >"$scratch/vibes5.log" 2>&1 \
   || fail "uncited cap detector must exit 0 (rc=$?)"
-grep -q "orcarouter cap=1 has no measurement citation" /tmp/vibes5.log \
+grep -q "orcarouter cap=1 has no measurement citation" "$scratch/vibes5.log" \
   || fail "detector must log the uncited cap"
 grep -qi "vibes: orcarouter cap=1 has no measurement citation" "$gh_creates" \
   || fail "detector must file the uncited cap (creates=$(cat "$gh_creates"))"
@@ -151,7 +151,7 @@ topcited="$scratch/topcited.json"
 jq '.providers.zenmux = {"cap": 2, "class": "metered"} | ._comment_zenmux = "Nish 2026-08-25: zenmux probed live and answering (HTTP 200)."' \
   "$clean_caps" >"$topcited"
 : >"$gh_creates"
-SEAT_CAPS_JSON="$topcited" FLEET_VIBES_CANARY_FILE=1 "$bin" >/tmp/vibes6.log 2>&1 \
+SEAT_CAPS_JSON="$topcited" FLEET_VIBES_CANARY_FILE=1 "$bin" >"$scratch/vibes6.log" 2>&1 \
   || fail "top-level-cited cap must exit 0 (rc=$?)"
 [[ -s "$gh_creates" ]] && fail "top-level-cited cap must not file (filed=$(cat "$gh_creates"))"
 ok "6. detector: cap cited by a top-level _comment_* naming the provider -> no file"
@@ -161,7 +161,7 @@ noname="$scratch/noname.json"
 jq '.providers.zenmux = {"cap": 2, "class": "metered"} | ._comment_other = "Nish 2026-08-25: devin probed live and answering (HTTP 200)."' \
   "$clean_caps" >"$noname"
 : >"$gh_creates"
-SEAT_CAPS_JSON="$noname" FLEET_VIBES_CANARY_FILE=1 "$bin" >/tmp/vibes7.log 2>&1 \
+SEAT_CAPS_JSON="$noname" FLEET_VIBES_CANARY_FILE=1 "$bin" >"$scratch/vibes7.log" 2>&1 \
   || fail "non-name top-level citation must exit 0 (rc=$?)"
 grep -qi "vibes: zenmux cap=2 has no measurement citation" "$gh_creates" \
   || fail "detector must file zenmux (creates=$(cat "$gh_creates"))"
@@ -172,7 +172,7 @@ cap0_noreason="$scratch/cap0_noreason.json"
 jq '.providers.inferx = {"cap": 0, "class": "free", "reason": "unproven promo, no packet carried."}' \
   "$clean_caps" >"$cap0_noreason"
 : >"$gh_creates"
-SEAT_CAPS_JSON="$cap0_noreason" FLEET_VIBES_CANARY_FILE=1 "$bin" >/tmp/vibes8.log 2>&1 \
+SEAT_CAPS_JSON="$cap0_noreason" FLEET_VIBES_CANARY_FILE=1 "$bin" >"$scratch/vibes8.log" 2>&1 \
   || fail "cap0 no-reason detector must exit 0 (rc=$?)"
 grep -qi "vibes: inferx cap=0 has no dated reason" "$gh_creates" \
   || fail "detector must file inferx cap0 (creates=$(cat "$gh_creates"))"
@@ -180,7 +180,7 @@ ok "8. detector: cap=0 with no dated reason -> files"
 
 # 9. Detector: cap=0 with a dated reason -> no file. (groq in clean fixture)
 : >"$gh_creates"
-SEAT_CAPS_JSON="$clean_caps" FLEET_VIBES_CANARY_FILE=1 "$bin" >/tmp/vibes9.log 2>&1 \
+SEAT_CAPS_JSON="$clean_caps" FLEET_VIBES_CANARY_FILE=1 "$bin" >"$scratch/vibes9.log" 2>&1 \
   || fail "dated-reason cap0 must exit 0 (rc=$?)"
 grep -qi "groq" "$gh_creates" && fail "dated-reason cap0 must not file"
 ok "9. detector: cap=0 with a dated reason -> no file"
@@ -193,11 +193,11 @@ cap0_nomarker="$scratch/cap0_nomarker.json"
 jq '.providers.grokmock = {"cap": 0, "class": "free", "reason": "2026-08-26 money-adjacent; Nish only. Not a free lane."}' \
   "$clean_caps" >"$cap0_nomarker"
 : >"$gh_creates"
-SEAT_CAPS_JSON="$cap0_nomarker" FLEET_VIBES_CANARY_FILE=1 "$bin" >/tmp/vibes10a.log 2>&1 \
+SEAT_CAPS_JSON="$cap0_nomarker" FLEET_VIBES_CANARY_FILE=1 "$bin" >"$scratch/vibes10a.log" 2>&1 \
   || fail "cap0-no-marker detector must exit 0 (rc=$?)"
 grep -qi "vibes: grokmock cap=0 dated reason has no measurement marker" "$gh_creates" \
   || fail "detector must file cap0-no-measurement (creates=$(cat "$gh_creates"))"
-grep -q "cap0-no-measurement" /tmp/vibes10a.log \
+grep -q "cap0-no-measurement" "$scratch/vibes10a.log" \
   || fail "detector must log cap0-no-measurement for the dated-but-unmarked reason"
 ok "10. detector: cap=0 dated reason but no measurement marker -> files"
 
@@ -206,7 +206,7 @@ feels="$scratch/feels.json"
 jq '.providers.feelsprov = {"cap": 1, "class": "free", "models": {"x": 1}, "_note": "2026-08-26: cap=1 feels right for this provider."}' \
   "$clean_caps" >"$feels"
 : >"$gh_creates"
-SEAT_CAPS_JSON="$feels" FLEET_VIBES_CANARY_FILE=1 "$bin" >/tmp/vibes14.log 2>&1 \
+SEAT_CAPS_JSON="$feels" FLEET_VIBES_CANARY_FILE=1 "$bin" >"$scratch/vibes14.log" 2>&1 \
   || fail "feels-right detector must exit 0 (rc=$?)"
 grep -qi "vibes: feelsprov cap=1 has no measurement citation" "$gh_creates" \
   || fail "feels-right must file (creates=$(cat "$gh_creates"))"
@@ -217,7 +217,7 @@ refonly="$scratch/refonly.json"
 jq '.providers.refprov = {"cap": 1, "class": "free", "models": {"x": 1}, "_note": "2026-08-26: see fleet-ops#999 for context."}' \
   "$clean_caps" >"$refonly"
 : >"$gh_creates"
-SEAT_CAPS_JSON="$refonly" FLEET_VIBES_CANARY_FILE=1 "$bin" >/tmp/vibes17.log 2>&1 \
+SEAT_CAPS_JSON="$refonly" FLEET_VIBES_CANARY_FILE=1 "$bin" >"$scratch/vibes17.log" 2>&1 \
   || fail "ref-only detector must exit 0 (rc=$?)"
 grep -qi "vibes: refprov cap=1 has no measurement citation" "$gh_creates" \
   || fail "ref-only must file (creates=$(cat "$gh_creates"))"
@@ -226,11 +226,11 @@ ok "12. detector: a fleet-ops# ref alone is not a marker -> files"
 # 13. Dedup: an open issue carrying the marker -> no second create.
 : >"$gh_creates"
 echo '[{"number": 777, "body": "vibes-canary: refprov cap-no-measurement\nmore text"}]' >"$gh_open"
-SEAT_CAPS_JSON="$refonly" FLEET_VIBES_CANARY_FILE=1 "$bin" >/tmp/vibes14.log 2>&1 \
+SEAT_CAPS_JSON="$refonly" FLEET_VIBES_CANARY_FILE=1 "$bin" >"$scratch/vibes14.log" 2>&1 \
   || fail "dedup must exit 0 (rc=$?)"
 grep -qi "vibes: refprov cap=1 has no measurement citation" "$gh_creates" \
   && fail "dedup must not file a second time (creates=$(cat "$gh_creates"))"
-grep -q "dedup: open Nishfleet/fleet-ops#777" /tmp/vibes14.log \
+grep -q "dedup: open Nishfleet/fleet-ops#777" "$scratch/vibes14.log" \
   || fail "dedup must log the existing issue"
 ok "13. dedup: open issue with the marker -> no second create"
 
@@ -245,22 +245,22 @@ for p in p1 p2 p3 p4 p5 p6; do
 done
 printf '%s' "$base" >"$many"
 : >"$gh_creates"
-SEAT_CAPS_JSON="$many" FLEET_VIBES_CANARY_FILE=1 FLEET_VIBES_CANARY_CAP=2 "$bin" >/tmp/vibes17.log 2>&1 \
+SEAT_CAPS_JSON="$many" FLEET_VIBES_CANARY_FILE=1 FLEET_VIBES_CANARY_CAP=2 "$bin" >"$scratch/vibes17.log" 2>&1 \
   || fail "file-cap must exit 0 (rc=$?)"
 filed=$(wc -l <"$gh_creates")
 (( filed == 2 )) || fail "file cap=2 must file exactly 2 (filed=$filed)"
-grep -q "file cap reached" /tmp/vibes17.log || fail "must log cap reached"
+grep -q "file cap reached" "$scratch/vibes17.log" || fail "must log cap reached"
 ok "14. file cap: excess findings deferred to next tick (filed=$filed cap=2)"
 
 # 15. Broken: seat-caps missing / unparseable -> exit 1.
 : >"$triage"
-SEAT_CAPS_JSON="$scratch/nope.json" FLEET_VIBES_CANARY_FILE=0 "$bin" >/tmp/vibes16a.log 2>&1 \
+SEAT_CAPS_JSON="$scratch/nope.json" FLEET_VIBES_CANARY_FILE=0 "$bin" >"$scratch/vibes16a.log" 2>&1 \
   && fail "missing seat-caps must exit 1"
 grep -q "VIBES-CANARY-BROKEN" "$triage" || fail "missing seat-caps must be LOUD"
 bad_json="$scratch/bad.json"
 printf '{ not json' >"$bad_json"
 : >"$triage"
-SEAT_CAPS_JSON="$bad_json" FLEET_VIBES_CANARY_FILE=0 "$bin" >/tmp/vibes16b.log 2>&1 \
+SEAT_CAPS_JSON="$bad_json" FLEET_VIBES_CANARY_FILE=0 "$bin" >"$scratch/vibes16b.log" 2>&1 \
   && fail "unparseable seat-caps must exit 1"
 grep -q "VIBES-CANARY-BROKEN" "$triage" || fail "unparseable seat-caps must be LOUD"
 ok "15. broken: missing / unparseable seat-caps -> exit 1, LOUD"
@@ -273,9 +273,9 @@ prod_caps="$repo_root/config/seat-caps.json"
 if [[ -f "$prod_caps" ]]; then
   : >"$gh_creates"
   echo '[]' >"$gh_open"
-  SEAT_CAPS_JSON="$prod_caps" FLEET_VIBES_CANARY_FILE=1 "$bin" >/tmp/vibes17.log 2>&1 \
+  SEAT_CAPS_JSON="$prod_caps" FLEET_VIBES_CANARY_FILE=1 "$bin" >"$scratch/vibes17.log" 2>&1 \
     || fail "production seat-caps must exit 0 (rc=$?) — detectors clean"
-  grep -q "DETECTOR: clean" /tmp/vibes17.log \
+  grep -q "DETECTOR: clean" "$scratch/vibes17.log" \
     || fail "production detector must be clean (every behaviour-driving constant cited)"
   [[ -s "$gh_creates" ]] && fail "production seat-caps must not file (filed=$(cat "$gh_creates"))"
   ok "16. production seat-caps: detectors clean, exit 0, no filing"
