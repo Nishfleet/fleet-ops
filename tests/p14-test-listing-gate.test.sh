@@ -1227,4 +1227,17 @@ grep -Eq '^[[:space:]]*bash[[:space:]]+"?\$here/pi-issue-run-hang-stall-bench\.t
   || fail "pi-issue-run-hang-stall-bench.test.sh must not be a known orphan (fleet-ops#6028)"
 ok "pi-issue-run-hang-stall-bench.test.sh host line in ci-standards-audit.test.sh is pinned (fleet-ops#6028)"
 
+# fleet-ops#5807: hard-pin the host line for ci-merge-queue-detector in
+# ci-standards-audit so a future refactor that drops it is caught by name,
+# same shape as every other hosted test (the #5870 lesson). The worker App
+# cannot push .github/workflows/**, so the host line is the only path.
+grep -Eq '^[[:space:]]*bash[[:space:]]+"?\$here/ci-merge-queue-detector\.test\.sh"?' \
+  "$here/ci-standards-audit.test.sh" \
+  || fail "ci-standards-audit.test.sh must bash-invoke ci-merge-queue-detector.test.sh (fleet-ops#5807)"
+[[ -n "${reachable[ci-merge-queue-detector.test.sh]:-}" ]] \
+  || fail "ci-merge-queue-detector.test.sh must be listed in ci.yml or hosted by a listed test (fleet-ops#5807)"
+[[ -z "${known_orphan_set[ci-merge-queue-detector.test.sh]:-}" ]] \
+  || fail "ci-merge-queue-detector.test.sh must not be a known orphan (fleet-ops#5807)"
+ok "ci-merge-queue-detector.test.sh host line in ci-standards-audit.test.sh is pinned (fleet-ops#5807)"
+
 echo "OK: p14-test-listing-gate.test.sh: P14 test list is closed"

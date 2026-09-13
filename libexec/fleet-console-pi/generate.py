@@ -469,12 +469,39 @@ def collect_main_ci():
                         explain=explain)
     items = []
     red = 0
+    # fleet-ops#5807: overlay the merge-queue + hosted-run slot gauges onto
+    # each repo's row, in ONE round-trip (a single __name__-regex instant
+    # query returns all four families; the metric name rides the response).
+    # Fail-open: a missing/failed ci_merge_queue family never blanks the MAIN
+    # RED tile — the extra fields are simply omitted from the affected rows.
+    try:
+        mq = {}
+        for r in _prom_query(
+                'ci_merge_queue_head_wait_seconds or ci_merge_queue_entries '
+                'or ci_hosted_runs_queued or ci_hosted_runs_in_progress'):
+            name = (r.get("metric") or {}).get("__name__") or ""
+            repo = (r.get("metric") or {}).get("repo") or ""
+            key = {"ci_merge_queue_head_wait_seconds": "head_wait_s",
+                   "ci_merge_queue_entries": "queue_entries",
+                   "ci_hosted_runs_queued": "runs_queued",
+                   "ci_hosted_runs_in_progress": "runs_in_progress"}.get(name)
+            if not repo or not key:
+                continue
+            try:
+                mq.setdefault(repo, {})[key] = int(float(r["value"]))
+            except (KeyError, TypeError, ValueError):
+                continue
+    except PromError:
+        mq = {}
     for r in rows:
         repo = r["metric"].get("repo") or ""
         green = int(r["value"])
         if not repo:
             continue
-        items.append({"repo": repo, "green": green})
+        item = {"repo": repo, "green": green}
+        if repo in mq:
+            item.update(mq[repo])
+        items.append(item)
         if green == 0:
             red += 1
     items.sort(key=lambda x: (x["green"], x["repo"]))
