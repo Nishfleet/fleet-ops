@@ -3201,6 +3201,12 @@ def _escalations_24h():
         "ready-work.service",
         "escalation-daily-sweep.service",
         "escalation-daily-sweep.timer",
+        # fleet-ops#5854: escalation-organ-watch is the organ-death watcher;
+        # its OnFailure= drop-in resets self-escalation and the writer refuses
+        # it by name, so a template start would be churn, not escalation
+        # volume. Mirrored here so the drift-lock keeps the lists in step.
+        "escalation-organ-watch.service",
+        "escalation-organ-watch.timer",
         "resilience-drill-stub*",
         # fleet-ops#180 (PR #4437): the gap-closure drill stubs.
         # fleet-gap-closure-drill's drill_unit_escalation / drill_timer_mask
