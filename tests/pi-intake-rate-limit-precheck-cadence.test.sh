@@ -66,7 +66,41 @@ git() {
 systemctl() { echo "inactive"; return 0; }
 export -f gh git systemctl
 
-mkdir -p "$scratch/run"
+# Seat/precedence function stubs, sourced by the tick. The tick's
+# `. "$SEAT_LIB"` is unguarded: on hosted CI there is no
+# /home/nish/.local/lib/pi-packet/litellm-seat.sh, the source returns 1
+# under set -euo pipefail, the tick exits 1 BEFORE the pre-check, and the
+# `out="$(run_tick ...)"` assignment dies silently (observed: P14 run
+# 34763747591 exited 1 right after this test's second OK). Same
+# proven-CI-green shape as tests/pi-intake-gh-rate-limit.test.sh, which
+# passed in that very run with these stubs.
+stubs="$scratch/seatlib-stub.sh"
+cat >"$stubs" <<'SH'
+#!/usr/bin/env bash
+total_seat_cap() { echo 8; }
+seat_max_concurrent() { echo 8; }
+issue_seat_cap() { echo 5; }
+litellm_seat() { echo "commandcode	deepseek/deepseek-v4-flash		0"; return 0; }
+precedence_band_phase() { echo "band"; }
+precedence_band_pending_clear() { true; }
+precedence_band_pending_starvation_clear() { true; }
+precedence_band_is_leverage_issue() { return 1; }
+precedence_band_allow_claim() { return 0; }
+# fleet-ops#2519: product-first precedence gate (sourced from the same
+# PRECEDENCE_BAND_LIB). This test exercises the gh rate-limit hold path,
+# not the product-first hold, so stub the gate to never hold: export is a
+# no-op, the repo is not self-maintenance here, and hold returns 1 (ADMIT).
+product_first_export_product_ratio() { return 0; }
+product_first_is_self_maintenance() { return 1; }
+product_first_ratio() { return 1; }
+product_first_hold() { return 1; }
+SH
+chmod +x "$stubs"
+
+# GITHUB_ACTIONS=true keeps the tick off the live VPS secondary-limit
+# state and the worker-token mint (fleet-ops#3445, same as the #5489 test);
+# the scratch secondary dir isolates GH_SECONDARY_STATE_DIR.
+mkdir -p "$scratch/run" "$scratch/secondary"
 # PRIOR_ART_BIN override (fleet-ops#1250): the tick hard-requires the binary
 # by line 241; tests stub it.
 cat >"$scratch/prior-art-claim-check-stub" <<'SH'
@@ -99,13 +133,19 @@ run_tick() {
     fi
     write_state "$age"
     env \
+        GITHUB_ACTIONS=true \
+        PATH="$stubs:${PATH}" \
         HOME="$scratch" \
         XDG_RUNTIME_DIR="$scratch/run" \
         PI_INTAKE_LOCKDIR="$scratch" \
+        PI_INTAKE_DEBOUNCE_SEC=0 \
         PI_INTAKE_RECONCILER_PROM="$scratch/reconciler" \
         PI_INTAKE_GH_RATE_LIMIT_STATE="$scratch/gh-rate-limit.json" \
+        PI_INTAKE_GH_SECONDARY_STATE_DIR="$scratch/secondary" \
         PI_INTAKE_ISSUE_STATE_DIR="$scratch/pi-issues" \
         PRIOR_ART_CLAIM_CHECK="$scratch/prior-art-claim-check-stub" \
+        SEAT_LIB="$stubs" \
+        PRECEDENCE_BAND_LIB="$stubs" \
         "${env_extra[@]+"${env_extra[@]}"}" \
         FLEET_ISSUE_REPO="Nishfleet/fleet-ops" \
         bash "$tick" fleet-ops 2>&1
@@ -113,8 +153,11 @@ run_tick() {
 
 # Test 2 (acceptance pin): default max-age, age = one writer period + slack
 # (350s) must NOT fire the stale branch.
-out="$(run_tick 350)"
-rc=$?
+# `out=... || rc=$?` keeps a non-zero tick exit diagnosable: under set -e a
+# bare assignment kills the test silently with the tick's rc (the CI symptom
+# this test fixed); this way the FAIL below prints the captured output.
+rc=0
+out="$(run_tick 350)" || rc=$?
 [[ "$rc" == "0" ]] || fail "age=350 default tick must exit 0, got rc=$rc"
 echo "$out" | grep -qF 'pre-check state stale' \
     && fail "age=350 (one writer period + slack) must NOT be stale under default max-age: $out" \
@@ -122,8 +165,8 @@ echo "$out" | grep -qF 'pre-check state stale' \
 ok "age=350s (< 360s default) does not fire stale branch"
 
 # Test 3: age = ~2 writer periods (610s) fires the stale branch.
-out="$(run_tick 610)"
-rc=$?
+rc=0
+out="$(run_tick 610)" || rc=$?
 [[ "$rc" == "0" ]] || fail "age=610 tick must exit 0 (fail-open), got rc=$rc"
 echo "$out" | grep -qF 'pre-check state stale' \
     || fail "age=610 (~2 writer periods) must fire stale branch: $out"
