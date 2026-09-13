@@ -20,7 +20,8 @@
 #   6. Public SSH (0.0.0.0:22) -> exit 1, LOUD.
 #   7. Tailscaled Restart=on-failure (not always) -> exit 1, LOUD.
 #   8. Missing blueprint heading -> exit 1, LOUD.
-#   9. Unconfigured keystone HC URLs are SKIP + LOUD, not a silent pass.
+#   9. Unconfigured keystone HC URLs are SKIP + LOUD, not a silent pass
+#      (fleet-ops#5886: the detached dead-man URL counts too).
 #  10. Shared keystone URLs (with each other or the heartbeat dead-man)
 #      are FAIL + LOUD.
 #  11. --check reports ready/missing without system calls.
@@ -271,18 +272,28 @@ ok "detached ping failure is best-effort (exit 0)"
 # ============================================================================
 # Drill behavioural tests
 # ============================================================================
+# fleet-ops#5782: the live representative-drill section at the bottom of this
+# file runs the REAL plane against the REAL user manager, so it needs the
+# manager's own HOME — the unit dir systemd --user actually searches. The
+# intervening sections stay redirected into the scratch HOME; the live block
+# restores $real_home.
+real_home="$HOME"
 export HOME="$scratch/home"
 mkdir -p "$HOME"
-# The salvage_orphan plane runs bin/pi-salvage-worktree with env -u GH_TOKEN,
-# so the hook mints via ${HOME}/.local/bin/worker-token (fleet-ops#3445).
-# Ship a stub whose --print output evals cleanly; without it the mint ENOENTs
-# under this remapped HOME and the plane fails on the VPS (CI skips minting
-# via GITHUB_ACTIONS=true, which is why this only failed here).
+# fleet-ops#5782 — inner-loop repair of a pre-existing main red: the #5800
+# salvage_orphan plane replays pi-salvage-worktree with GH_TOKEN stripped
+# (env -u GH_TOKEN), so on a bare box the hook mints via
+# ${HOME}/.local/bin/worker-token (fleet-ops#3445). The mocked home never
+# shipped one, so the mocked green run failed with
+# "worker-token: No such file or directory" and killed the whole file
+# before later sections ran. GitHub-hosted runners stayed green only
+# because GITHUB_ACTIONS=true skips the mint. Stub it like the other fakes:
+# --print must yield an env assignment the hook can eval.
 mkdir -p "$HOME/.local/bin"
-cat >"$HOME/.local/bin/worker-token" <<'STUB'
+cat >"$HOME/.local/bin/worker-token" <<'WT'
 #!/usr/bin/env bash
-echo 'GH_TOKEN=stub-worker-token-0000000000000000000000000000'
-STUB
+printf 'GITHUB_TOKEN=test-wt-token-never-used-for-writes\n'
+WT
 chmod +x "$HOME/.local/bin/worker-token"
 
 repo="$scratch/repo"
@@ -453,7 +464,7 @@ write_green_system() {
 LISTEN 0 128 100.108.184.97:22 0.0.0.0:*
 LISTEN 0 128 [fd7a:115c:a1e0::1]:22 [::]:*
 OUT
-  printf 'HC_URL_INTAKE=https://example.invalid/i\nHC_URL_SCOUT=https://example.invalid/s\nHC_URL_RECONCILE=https://example.invalid/r\nHC_URL_RESTORE=https://example.invalid/b\nHC_URL_ORGANWATCH=https://example.invalid/o\n' \
+  printf 'HC_URL_INTAKE=https://example.invalid/i\nHC_URL_SCOUT=https://example.invalid/s\nHC_URL_RECONCILE=https://example.invalid/r\nHC_URL_RESTORE=https://example.invalid/b\nHC_URL_DETACHED=https://example.invalid/d\nHC_URL_ORGANWATCH=https://example.invalid/o\n' \
     >"$KEYSTONE_HC_ENV"
 }
 
@@ -724,9 +735,32 @@ assert skips, data
 PY
 ok "unconfigured keystone HC URLs are SKIP + LOUD, not a silent pass"
 
+# fleet-ops#5886: the detached per-dispatch dead-man URL is part of the
+# same keystone env contract. Four keystone URLs set but HC_URL_DETACHED
+# missing is SKIP + LOUD naming the key, not a silent pass — until it is
+# provisioned, pi-systemd-run's healthchecks rail is inert.
+reset_all
+printf 'HC_URL_INTAKE=https://example.invalid/i\nHC_URL_SCOUT=https://example.invalid/s\nHC_URL_RECONCILE=https://example.invalid/r\nHC_URL_RESTORE=https://example.invalid/b\n' \
+  >"$KEYSTONE_HC_ENV"
+run_drill
+[[ "$drill_rc" -eq 0 ]] || fail "detached-missing HC should SKIP not fail, rc=$drill_rc out=$drill_out"
+grep -q 'KEYSTONE-HC-UNCONFIGURED' "$triage" \
+  || fail "detached-missing must LOUD KEYSTONE-HC-UNCONFIGURED, triage=$(cat "$triage")"
+grep -q 'HC_URL_DETACHED' "$triage" \
+  || fail "LOUD must name the missing key HC_URL_DETACHED, triage=$(cat "$triage")"
+python3 - "$last" <<'PY' || fail "detached-missing HC must record skip naming the key"
+import json, sys
+data = json.load(open(sys.argv[1], encoding="utf-8"))
+assert data.get("all_pass") is True, data
+skips = [r for r in data["results"] if r.get("name") == "keystone_deadman" and r.get("status") == "skip"]
+assert skips, data
+assert "HC_URL_DETACHED" in skips[0]["proof"], skips[0]
+PY
+ok "missing HC_URL_DETACHED (detached dead-man) is SKIP + LOUD, not a silent pass"
+
 # Shared keystone URLs (two keystones, same check) are FAIL + LOUD.
 reset_all
-printf 'HC_URL_INTAKE=https://example.invalid/shared\nHC_URL_SCOUT=https://example.invalid/shared\nHC_URL_RECONCILE=https://example.invalid/r\nHC_URL_RESTORE=https://example.invalid/b\nHC_URL_ORGANWATCH=https://example.invalid/o\n' \
+printf 'HC_URL_INTAKE=https://example.invalid/shared\nHC_URL_SCOUT=https://example.invalid/shared\nHC_URL_RECONCILE=https://example.invalid/r\nHC_URL_RESTORE=https://example.invalid/b\nHC_URL_DETACHED=https://example.invalid/d\nHC_URL_ORGANWATCH=https://example.invalid/o\n' \
   >"$KEYSTONE_HC_ENV"
 run_drill
 [[ "$drill_rc" -eq 1 ]] || fail "shared keystone URL should fail, rc=$drill_rc out=$drill_out"
@@ -742,7 +776,7 @@ ok "shared keystone HC URLs are FAIL + LOUD"
 
 # Reusing the heartbeat dead-man URL is FAIL + LOUD.
 reset_all
-printf 'HC_URL_INTAKE=https://example.invalid/ping/heartbeat-uuid\nHC_URL_SCOUT=https://example.invalid/s\nHC_URL_RECONCILE=https://example.invalid/r\nHC_URL_RESTORE=https://example.invalid/b\nHC_URL_ORGANWATCH=https://example.invalid/o\n' \
+printf 'HC_URL_INTAKE=https://example.invalid/ping/heartbeat-uuid\nHC_URL_SCOUT=https://example.invalid/s\nHC_URL_RECONCILE=https://example.invalid/r\nHC_URL_RESTORE=https://example.invalid/b\nHC_URL_DETACHED=https://example.invalid/d\nHC_URL_ORGANWATCH=https://example.invalid/o\n' \
   >"$KEYSTONE_HC_ENV"
 run_drill
 [[ "$drill_rc" -eq 1 ]] || fail "heartbeat reuse should fail, rc=$drill_rc out=$drill_out"
@@ -767,3 +801,78 @@ echo "$check_out" | grep -q 'ready' || fail "--check must report ready, got: $ch
 ok "--check reports ready without system calls"
 
 echo "OK: fleet-ops#455 resilience drill acceptance pass"
+
+# --- fleet-ops#5782: drill throwaway units leave ZERO leftovers ----------
+# The 2026-09-12 blind audit found four drill-throwaway systemd user units
+# still alive after their issues closed (btdrill-5471, three
+# resilience-drill-stub-*-probe .path watchers) — leaked because the
+# creating session died before any teardown, and none was registered, so
+# the machinery-authorization hunt burned a finding on each. Two guards:
+# (a) the seat_sentinel proof units are REGISTERED in the machinery
+#     allowlist while they are live (register-while-live); and
+# (b) a representative drill run (--plane seat_sentinel) installs REAL
+#     throwaway .path/.service units, fires them, tears them down, and
+#     (since #5782) the plane itself asserts the teardown left zero
+#     leftovers — nothing still loaded, no unit file on disk.
+for stub_u in resilience-drill-stub-seat-sentinel resilience-drill-stub-seat-sentinel-tiny; do
+  if ! jq -e --arg u "$stub_u" '.authorized[] | select(.unit==$u)' \
+       "$repo_root/config/machinery-allowlist.json" >/dev/null; then
+    fail "machinery-allowlist.json must register $stub_u (fleet-ops#5782 register-while-live)"
+  fi
+done
+ok "machinery-allowlist registers the seat_sentinel proof units (register-while-live)"
+
+# Needs a live user-systemd session — the SAME guard the plane itself uses;
+# sessionless runners SKIP+LOUD here (repo convention, #5106: the proof runs
+# for real on the daily 05:47 timer). NOT the mocked-OFFLINE harness above:
+# this runs the REAL drill so the teardown proof exercises real systemd.
+if [[ -n "${XDG_RUNTIME_DIR:-}" ]] && [[ -S "${XDG_RUNTIME_DIR}/systemd/private" ]] \
+   && [[ -d "$real_home/.config/systemd/user" ]]; then
+  live_scratch="$(mktemp -d)"
+  # AGENT_STATE + TRIAGE redirected: the live run never touches the daily
+  # drill's results.jsonl / the heartbeat triage. PROM untouched (--plane
+  # skips write_metrics). FLEET_OPS_REPO defaults to this worktree's tree,
+  # whose systemd/fleet-seat-recovery.{service,path} the plane copies.
+  # FLEET_OPS_REPO is overridden to the real tree: the mocked scratch $repo
+  # above doesn't ship systemd/fleet-seat-recovery.{service,path}, which the
+  # plane's sed-copies need.
+  set +e
+  # HOME restored to the manager's home: the plane writes its throwaway unit
+  # files to $HOME/.config/systemd/user, and only the manager's own unit dir
+  # is in the manager's search path — a scratch HOME would make every
+  # daemon-reload/start fail with "not found" (fleet-ops#5782 live proof).
+  live_out=$(SYSTEMCTL=systemctl HOME="$real_home" AGENT_STATE="$live_scratch" \
+    FLEET_OPS_REPO="$repo_root" \
+    FLEET_HEARTBEAT_TRIAGE="$live_scratch/triage.md" \
+    FLEET_RESILIENCE_DRILL_OFFLINE=0 \
+    "$repo_root/bin/fleet-resilience-drill" --plane seat_sentinel 2>&1)
+  live_rc=$?
+  set -e
+  [[ "$live_rc" -eq 0 ]] || fail "live --plane seat_sentinel must pass, rc=$live_rc out=$live_out"
+  if ! grep -q '"name":"seat_sentinel","status":"pass"' \
+       "$live_scratch/fleet-resilience-drill/results.jsonl"; then
+    fail "results.jsonl must record seat_sentinel pass, got: $(cat "$live_scratch/fleet-resilience-drill/results.jsonl" 2>/dev/null) — out: $live_out"
+  fi
+  grep -q 'fleet-ops#5782' "$live_scratch/fleet-resilience-drill/results.jsonl" \
+    || fail "pass proof must cite the #5782 zero-leftover proof"
+  # Zero leftovers, observed OUTSIDE the plane's own assert: no unit file
+  # left in the user unit dir and nothing still loaded in the manager.
+  leftovers=$(XDG_RUNTIME_DIR="$XDG_RUNTIME_DIR" systemctl --user list-unit-files --no-legend 2>/dev/null \
+    | grep -E '^resilience-drill-stub-seat-sentinel' || true)
+  if [[ -n "$leftovers" ]]; then
+    fail "teardown must leave zero leftover unit files, got: $leftovers"
+  fi
+  for stub_u in resilience-drill-stub-seat-sentinel{.service,.path} \
+                resilience-drill-stub-seat-sentinel-tiny{.service,.path}; do
+    if [[ -e "$real_home/.config/systemd/user/$stub_u" ]]; then
+      fail "leftover unit file $stub_u survived teardown"
+    fi
+    if ! [[ "$(systemctl --user show -p LoadState "$stub_u" 2>/dev/null)" == "LoadState=not-found" ]]; then
+      fail "leftover $stub_u still loaded in the manager ($(systemctl --user show -p LoadState "$stub_u" 2>/dev/null))"
+    fi
+  done
+  rm -rf "$live_scratch"
+  ok "live representative drill run: seat_sentinel pass, teardown left 0 leftover units (fleet-ops#5782)"
+else
+  echo "SKIP: live representative drill run (no user systemd session — #5106 daily timer owns the proof)"
+fi

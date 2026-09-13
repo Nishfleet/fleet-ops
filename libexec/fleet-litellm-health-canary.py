@@ -37,6 +37,15 @@ window that gaps one 60s tick does not false-trip. A single 5xx is recorded as
 proxy_up=0 but does NOT exit 1 (transient — the router's own cooldown handles it);
 only sustained connection-refused (organ dead) exits 1.
 
+Deployment drill (fleet-ops#6054, #5792 accept line: "re-adding a dead deployment
+fails the health canary loudly"): a POPULATED census that still carries an
+unhealthy deployment also exits 1, naming the affected groups
+(health-deployment-unhealthy). Organ-up is not fleet-green: the 2026-09-12
+unhealthy_count=4 (dead-credit xkiro deepseek-v4-pro deployed in the active
+groups) starved the box while every organ heartbeat stayed 1. The prom and
+state writes still land before the exit so the affected group gauge stays
+scrapeable through the failure.
+
 Empty-census fail-loud (fleet-ops#4628): GET /health with background_health_checks
 returns the in-memory cache, which starts as {}. After a Prisma reconnect crash
 (engine_process_death / '_Prisma__engine) the cache stays empty even while
@@ -597,6 +606,26 @@ def main(argv: list[str] | None = None) -> int:
     }
     _atomic_write(Path(args.state), json.dumps(state, indent=2, sort_keys=True))
 
+    # Deployment drill (fleet-ops#6054, #5792 accept line): a populated census
+    # with ANY unhealthy deployment fails loud — organ-up is not fleet-green.
+    # prom + state are already written, so the affected group gauge
+    # (fleet_litellm_proxy_unhealthy_deployments) is scrapeable through the
+    # failure. The connection-refused / 401 / empty-census exits returned
+    # above; this is the remaining verdict of a fully-fetched, populated
+    # census.
+    unhealthy_groups = sorted(
+        name for name, counts in groups.items() if counts.get("unhealthy", 0)
+    )
+    if unhealthy_groups:
+        print(
+            "fleet-litellm-health-canary: health-deployment-unhealthy "
+            + ",".join(unhealthy_groups)
+            + " — deployment(s) failing /health still deployed in the active"
+            " groups; bench them (fleet-ops#6054 drill, #5792 accept line)",
+            file=sys.stderr,
+        )
+        return 1
+
     if not args.quiet:
         print(
             f"fleet-litellm-health-canary: proxy_up={proxy_up} status={status} "
@@ -604,8 +633,8 @@ def main(argv: list[str] | None = None) -> int:
             f"pg_up={pg_up} redis_up={redis_up}"
         )
     # A 5xx on readiness is transient (router cooldown handles it); do not exit 1.
-    # Only connection-refused (status==0), /health 401, or a sustained empty
-    # census exits 1, handled above.
+    # Connection-refused (status==0), /health 401, a sustained empty census, and
+    # (above) any unhealthy deployment in a populated census exit 1.
     return 0
 
 

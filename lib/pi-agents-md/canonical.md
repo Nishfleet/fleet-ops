@@ -58,7 +58,7 @@ describe what was true when each was written — many say the fleet is live and
 busy. They are now out of date on that point. Check the actual system before
 acting on anything a memory tells you about current state.
 
-Conserve Claude usage: it is low. Claude is for judgement and alarms, never
+Conserve Claude usage: Claude is for judgement and alarms, never
 legwork. The free and prepaid seats do the work.
 
 
@@ -136,6 +136,13 @@ Simple language is never baby talk and never condescending.
   self-land per `global-standing-rules.md` → "Agent-authored PRs land
   themselves" (fleet-ops#5715: the bare "never merge" wording contradicted the
   enforced self-land rule).
+- **Any writer of a MANIFEST-managed live file** (`~/.pi/agent/models.json`,
+  seat-caps, model-candidates — anything install.sh copy-installs) **must leave
+  a dated backup sibling** `<file>.pre-<why>-<UTCts>` (never `.bak*` —
+  fleet-ops#3273 flags those as sprawl) **and a dated actions.log line naming
+  the file**. An unattributed live write is a fleet-ops#5663 incident:
+  install.sh REFUSEs, and the drift canary opens a reconcile PR that names the
+  writer — or reports it UNATTRIBUTED.
 
 ## Where the real context lives
 

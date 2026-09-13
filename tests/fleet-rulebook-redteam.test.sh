@@ -400,4 +400,61 @@ total=$(wc -l <"$pkt_file")
   || fail "Run context must sit in the last 30% (line $static_first of $total)"
 ok "packet assembly: missing last rule file is a SKIP, run context is last"
 
+# --- 8. a hung pi is bounded by RULEBOOK_PI_TIMEOUT_S (fleet-ops#6173) ----
+# 2026-09-12T22:58Z: a drained senior route (every deployment 429-cooled, the
+# proxy answering "No deployment available, try again in 300 seconds") made
+# the pi client retry for the FULL 45min TimeoutStartSec — systemd SIGTERMed
+# the run (unit-failure trip, zero output). The reviewer call must be
+# time-bounded by the script: a timed-out pi takes the ordinary failed-pi
+# path (filed=0, unit exits 0) and the heading-growth bonus re-dispatches.
+cat >"$scratch/fakebin/pi" <<'FAKE'
+#!/usr/bin/env bash
+sleep 5
+exit 0
+FAKE
+chmod +x "$scratch/fakebin/pi"
+printf 'litellm_seat() { printf "litellm\tsenior\n"; }' >"$scratch/litellm-seat.sh"
+rm -rf "$scratch/state-timeout"
+set +e
+to_out=$(RULEBOOK_STATE_DIR="$scratch/state-timeout" \
+  RULEBOOK_PLAN_FILE="$plan" \
+  RULEBOOK_STANDING_RULES="$scratch/rules/standing.md" \
+  RULEBOOK_SEAT_LIB="$scratch/litellm-seat.sh" \
+  RULEBOOK_PI_BIN="$scratch/fakebin/pi" \
+  RULEBOOK_PI_TIMEOUT_S=1 \
+  RULEBOOK_FAKE_NOW="2026-09-13T00:30:00Z" \
+  "$bin" 2>&1)
+to_rc=$?
+set -e
+[[ "$to_rc" == "0" ]] \
+  || fail "timed-out pi must take the ordinary failed-pi path, rc=0 (got $to_rc): $to_out"
+grep -q 'TIMED OUT after 1s' <<<"$to_out" \
+  || fail "expected the bounded-TIMEOUT log line: $to_out"
+grep -q 'pi red-team exited rc=124' <<<"$to_out" \
+  || fail "expected rc=124 from the killed pi: $to_out"
+# ...and a FAST pi still completes green through the same timeout(1) wrapper
+cat >"$scratch/fakebin/pi" <<'FAKE'
+#!/usr/bin/env bash
+exit 0
+FAKE
+chmod +x "$scratch/fakebin/pi"
+rm -rf "$scratch/state-fast"
+set +e
+fast_out=$(RULEBOOK_STATE_DIR="$scratch/state-fast" \
+  RULEBOOK_PLAN_FILE="$plan" \
+  RULEBOOK_STANDING_RULES="$scratch/rules/standing.md" \
+  RULEBOOK_SEAT_LIB="$scratch/litellm-seat.sh" \
+  RULEBOOK_PI_BIN="$scratch/fakebin/pi" \
+  RULEBOOK_PI_TIMEOUT_S=1800 \
+  RULEBOOK_FAKE_NOW="2026-09-13T00:31:00Z" \
+  "$bin" 2>&1)
+fast_rc=$?
+set -e
+[[ "$fast_rc" == "0" ]] \
+  || fail "fast pi under the timeout wrapper must still complete (got $fast_rc): $fast_out"
+if grep -q 'TIMED OUT' <<<"$fast_out"; then
+  fail "fast pi must not log TIMED OUT: $fast_out"
+fi
+ok "pi reviewer call is bounded: hung pi -> rc=124 -> completed filed=0; fast pi unaffected"
+
 ok "fleet-ops#527 rulebook red-team: backups, drill, timer, cadence, heading bonus"

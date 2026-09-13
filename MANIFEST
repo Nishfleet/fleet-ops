@@ -1251,3 +1251,13 @@ systemd/fleet-litellm-health-canary.timer /home/nish/.config/systemd/user/fleet-
 # symlinks it; pure Environment override pointing the postgres probe at the
 # user-level socket dir, not new machinery. fleet-ops#4130.
 systemd/fleet-litellm-health-canary.service.d/10-pg-socket.conf /home/nish/.config/systemd/user/fleet-litellm-health-canary.service.d/10-pg-socket.conf
+# fleet-ops#5935: 3 owned ephemeral GitHub Actions runners (gh-runner@{1..3})
+# inside fleet-ci.slice — merge_group + push heavy jobs off the 20-job
+# hosted concurrent cap; pull_request jobs stay hosted so fork PRs never
+# execute on the box (org fork-PR approval = all_external_contributors).
+# Registration is a fresh single-use JIT config per activation via the
+# existing `gh` keyring auth — no PAT stored. Enable (templates are not
+# auto-enabled by install.sh by design):
+#   systemctl --user enable --now gh-runner@{1..3}
+systemd/fleet-ci.slice /home/nish/.config/systemd/user/fleet-ci.slice
+systemd/gh-runner@.service /home/nish/.config/systemd/user/gh-runner@.service

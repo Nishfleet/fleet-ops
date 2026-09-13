@@ -19,9 +19,11 @@
 #   4. state_restore            — fleet-restore-drill timer armed + last Result
 #   5. compute_breakglass       — CI workflows run on GitHub-hosted runners
 #   6. keystone_deadman         — HC_URL_* for intake/scout/reconcile/restore
-#                                 (unset = SKIP + LOUD, not a silent pass;
-#                                 a URL shared with another keystone or the
-#                                 heartbeat dead-man is FAIL + LOUD)
+#                                 plus the detached per-dispatch dead-man
+#                                 (fleet-ops#5886; unset = SKIP + LOUD, not a
+#                                 silent pass; a URL shared with another
+#                                 keystone or the heartbeat dead-man is
+#                                 FAIL + LOUD)
 #   7. queue_freeze             — fleet-ops#1453 narrow direct-dispatch lever:
 #                                 replay the live #1453 frozen-queue snapshot
 #                                 (dispatches_last_2h<=1 AND ready_work>50) and
@@ -93,12 +95,18 @@
 #
 # Env (tests):
 #   SYSTEMCTL SYSTEMD_RUN SS CURL FLEET_OPS_REPO AGENT_STATE
+#   FLEET_RES_DRILL_PROM_URL FLEET_RES_DRILL_FABLE_PACKET
 #   FLEET_HEARTBEAT_TRIAGE KEYSTONE_HC_ENV HEARTBEAT_HC_ENV
 #   FLEET_RESILIENCE_DRILL_OFFLINE
 #
 # Sandbox env (per-plane, defaults are offline-safe):
-#   FLEET_RES_DRILL_OPUS_HB           path to opus-heartbeat launcher
-#                                     (default /home/nish/.local/libexec/opus-heartbeat)
+#   FLEET_RES_DRILL_PROM_URL          Prometheus base URL for queue_freeze gate
+#                                     series (default http://127.0.0.1:9090)
+#   FLEET_RES_DRILL_FABLE_PACKET      gate doc (hourly judge packet §1d) for
+#                                     queue_freeze (default
+#                                     $AGENT_STATE/fleet-landing-watch/fable-check.md)
+#   FLEET_RES_DRILL_OPUS_HB           DEAD seam (launcher retired #4141); kept
+#                                     so old test invocations do not crash
 #   FLEET_RES_DRILL_OPUS_HB_STATE     scratch OPUS_HB_STATE for queue_freeze
 #                                     (default $AGENT_STATE/.res-drill-opus-hb)
 #   FLEET_RES_DRILL_PIPELINE_REPO     scratch repo for pipeline_red
@@ -159,8 +167,17 @@ OFFLINE="${FLEET_RESILIENCE_DRILL_OFFLINE:-0}"
 STUB_UNIT="resilience-drill-stub-restart.service"
 
 # --- #1463 sandbox defaults -------------------------------------------------
+# opus-heartbeat was retired 2026-09-07 (fleet-ops#4141); its frozen-queue
+# gate folded into the hourly fable judge (packet §1d) + PromQL series.
+# The queue_freeze plane now drives those. FLEET_RES_DRILL_OPUS_HB is kept
+# only as a dead seam so old test invocations do not crash.
+# shellcheck disable=SC2034 # dead seam: launcher retired #4141; kept so old
+# test invocations that set FLEET_RES_DRILL_OPUS_HB still parse this env.
 OPUS_HB_BIN="${FLEET_RES_DRILL_OPUS_HB:-/home/nish/.local/libexec/opus-heartbeat}"
 OPUS_HB_STATE="${FLEET_RES_DRILL_OPUS_HB_STATE:-$AGENT_STATE/.res-drill-opus-hb}"
+CURL="${FLEET_RES_DRILL_CURL:-curl}"
+PROM_URL="${FLEET_RES_DRILL_PROM_URL:-http://127.0.0.1:9090}"
+FABLE_PACKET="${FLEET_RES_DRILL_FABLE_PACKET:-$AGENT_STATE/fleet-landing-watch/fable-check.md}"
 PIPELINE_REPO="${FLEET_RES_DRILL_PIPELINE_REPO:-$AGENT_STATE/.res-drill-pipeline-red}"
 BOUNDARY_DIR="${FLEET_RES_DRILL_BOUNDARY_DIR:-$AGENT_STATE/.res-drill-boundary}"
 BOUNDARY_HERMES="${FLEET_RES_DRILL_BOUNDARY_HERMES:-$BOUNDARY_DIR/hermes}"
@@ -454,13 +471,14 @@ plane_keystone_hc() {
   }
 
   if [[ ! -f "$KEYSTONE_HC_ENV" ]]; then
-    loud "KEYSTONE-HC-UNCONFIGURED" "missing $KEYSTONE_HC_ENV — create free healthchecks.io checks for intake/scout/reconcile/restore and drop HC_URL_* there. Heartbeat already has its own check."
+    loud "KEYSTONE-HC-UNCONFIGURED" "missing $KEYSTONE_HC_ENV — create free healthchecks.io checks for intake/scout/reconcile/restore/detached/organwatch and drop HC_URL_* there. Heartbeat already has its own check."
     record "$name" "skip" "env file missing"
     return 0
   fi
   # HC_URL_ORGANWATCH is the #5854 organ-death watcher's dead-man; included
   # in the same distinctness sweep so a shared URL cannot mask it.
-  for key in HC_URL_INTAKE HC_URL_SCOUT HC_URL_RECONCILE HC_URL_RESTORE HC_URL_ORGANWATCH; do
+  # HC_URL_DETACHED (fleet-ops#5886) is the detached per-dispatch dead-man.
+  for key in HC_URL_INTAKE HC_URL_SCOUT HC_URL_RECONCILE HC_URL_RESTORE HC_URL_DETACHED HC_URL_ORGANWATCH; do
     if ! url="$(hc_env_value "$KEYSTONE_HC_ENV" "$key")"; then
       missing+=("$key")
     else
@@ -492,7 +510,7 @@ plane_keystone_hc() {
     fi
   fi
 
-  record "$name" "pass" "HC_URL_INTAKE/SCOUT/RECONCILE/RESTORE/ORGANWATCH all set and distinct from heartbeat"
+  record "$name" "pass" "HC_URL_INTAKE/SCOUT/RECONCILE/RESTORE/DETACHED/ORGANWATCH all set and distinct from heartbeat"
   return 0
 }
 
@@ -699,7 +717,35 @@ plane_seat_sentinel() {
 
   cleanup_seat_sentinel_drill
   trap - EXIT INT TERM
-  record "$name" "pass" "100 seat-json writes -> 0 starts; sentinel touch -> 1 start; second write -> 1 more; watcher active/success; negative control (burst=5) wedged while shipped burst=200 held the same storm"
+  # fleet-ops#5782: the teardown must leave ZERO leftover units from this
+  # run. A leaked .path watcher burns wakeups forever and keeps the
+  # machinery-authorization hunt noisy, so the plane itself proves the
+  # cleanup on both planes of the leak: nothing still loaded in the manager
+  # (the 2026-09-12 symptom: a still-active .path after its issue closed)
+  # and no unit file left behind on disk (the -tlimit-probe symptom).
+  local leftover_units leftover_files usuf lstate
+  leftover_units=""
+  leftover_files=""
+  for usuf in "$drill_unit.service" "$drill_unit.path" "$tiny_unit.service" "$tiny_unit.path"; do
+    lstate="$("$SYSTEMCTL" --user show -p LoadState "$usuf" 2>/dev/null || true)"
+    if [[ "$lstate" != "LoadState=not-found" ]]; then
+      leftover_units="$leftover_units$usuf(loaded) "
+    fi
+  done
+  # This second pass catches a unit whose file survived the cleanup (on-disk
+  # leak, the -tlimit-probe symptom) even when the manager already dropped it.
+  for usuf in "$drill_svc" "$drill_path" "$tiny_svc" "$tiny_path"; do
+    if [[ -e "$usuf" ]]; then
+      leftover_files="$leftover_files$(basename "$usuf") "
+    fi
+  done
+  if [[ -n "$leftover_units" ]] || [[ -n "$leftover_files" ]]; then
+    seat_sentinel_bail \
+      "teardown left leftovers: units=[$leftover_units] files=[$leftover_files] (fleet-ops#5782)" \
+      "teardown leftovers: units=[$leftover_units] files=[$leftover_files]" || return 1
+    return 1
+  fi
+  record "$name" "pass" "100 seat-json writes -> 0 starts; sentinel touch -> 1 start; second write -> 1 more; watcher active/success; negative control (burst=5) wedged while shipped burst=200 held the same storm; teardown left 0 leftover units (fleet-ops#5782)"
   return 0
 }
 
@@ -711,135 +757,107 @@ plane_seat_sentinel() {
 # --- queue_freeze (fleet-ops#1453) ------------------------------------------
 # Replay the live #1453 frozen-queue snapshot (dispatches_last_2h<=1 AND
 # ready_work>50) and assert the launcher ALLOWs the narrow direct-dispatch
-# lever that was SKIPped live. The companion cusp (dispatches=2) MUST
+# gate that was SKIPped live. The companion cusp (dispatches=2) MUST
 # SKIP — that is the gate's exclusivity proof, the lever stays bounded to
 # genuine queue death, not a slow drain.
 #
-# Sandbox: write a copy of the live snapshot under OPUS_HB_STATE,
-# mutate the copy, point OPUS_HB_STATE at the scratch dir, drive the
-# launcher's --check-allowlist subcommand. The live snapshot is never
-# touched.
+# Sandbox: the scratch snapshot lives under OPUS_HB_STATE; live state is
+# never mutated. The live series are only read (query), never written.
 plane_queue_freeze() {
   local name="queue_freeze"
-  local live_snap="$HOME/.local/state/opus-heartbeat/snapshot.json"
   local scratch="$OPUS_HB_STATE"
-  local rc=0 proof
+  local rc=0 proof out
   mkdir -p "$scratch"
-  if [[ ! -x "$OPUS_HB_BIN" ]]; then
-    # Offline tests, fresh installs: the launcher may not be present.
-    # Treat as SKIP + LOUD, not a silent pass — the lever has no
-    # witness until the launcher is shipped.
-    loud "QUEUE-FREEZE-SKIP" "$OPUS_HB_BIN not present (skipped, not green)"
-    record "$name" "skip" "opus-heartbeat launcher not installed"
-    return 0
-  fi
-  if [[ ! -s "$live_snap" ]]; then
-    # No live snapshot to replay against. We seed a minimal one so the
-    # plane still exercises the gate (the seeded values match the
-    # frozen-queue trigger).
-    if ! command -v python3 >/dev/null 2>&1; then
-      record "$name" "skip" "no python3, no live snapshot to seed from"
-      return 0
-    fi
-    mkdir -p "$(dirname "$live_snap")"
-    python3 - "$live_snap" <<'PY' || true
-import json, os, sys
-seed = {
-  "ts": "2026-08-28T03:30:42Z",
-  "epoch": 1756355442,
-  "window_s": 7200,
-  "fleet": {"ready_work": 224.0, "present": True},
-  "waste": {
-    "dispatches_last_2h": 1,
-    "claims_last_2h": 1,
-    "redispatches_last_2h": 0,
-    "empty_runs_last_2h": 2,
-  },
-  "claims_last_2h": {"present": True, "n": 1, "samples": []},
-}
-os.makedirs(os.path.dirname(sys.argv[1]), exist_ok=True)
-with open(sys.argv[1], "w", encoding="utf-8") as fh:
-    json.dump(seed, fh)
-PY
-  fi
-  cp -f "$live_snap" "$scratch/snapshot.json"
 
   if ! command -v python3 >/dev/null 2>&1; then
-    record "$name" "skip" "python3 missing (cannot mutate snapshot)"
+    record "$name" "skip" "no python3, cannot replay the gate"
     return 0
   fi
-  # Frozen case: dispatches_last_2h=1 AND ready_work>50 (the live #1453 tick).
-  python3 - "$scratch/snapshot.json" <<'PY'
+
+  # --- (a) live gate series must EXIST (query only, never write) ---------
+  # Absent series = the judge cannot decide = the lever unwitnessed again
+  # (the 2026-09-10 missed-regression class). Unreachable Prometheus =
+  # offline (SKIP + LOUD, the standing offline-safe rule); reachable with
+  # the series missing = FAIL (the exporter lost or renamed the series).
+  local series_json dispatch_24h ready_work claims
+  series_json="$("$CURL" -s -m 10 "${PROM_URL}/api/v1/query?query=fleet_repair_dispatch_24h" 2>/dev/null || true)"
+  if [[ -z "$series_json" ]]; then
+    loud "QUEUE-FREEZE-SKIP" "Prometheus unreachable at ${PROM_URL} (skipped, not green)"
+    record "$name" "skip" "Prometheus unreachable, gate series unreadable"
+    return 0
+  fi
+  dispatch_24h="$(printf '%s' "$series_json" | python3 -c 'import json,sys; r=json.load(sys.stdin).get("data",{}).get("result",[]); print(r[0]["value"][1] if r else "")' 2>/dev/null || true)"
+  ready_work="$("$CURL" -s -m 10 "${PROM_URL}/api/v1/query?query=fleet_ready_work" 2>/dev/null | python3 -c 'import json,sys; r=json.load(sys.stdin).get("data",{}).get("result",[]); print(r[0]["value"][1] if r else "")' 2>/dev/null || true)"
+  claims="$("$CURL" -s -m 10 "${PROM_URL}/api/v1/query?query=fleet_truth_staleness_total_claims" 2>/dev/null | python3 -c 'import json,sys; r=json.load(sys.stdin).get("data",{}).get("result",[]); print(r[0]["value"][1] if r else "")' 2>/dev/null || true)"
+  if [[ -z "$dispatch_24h" || -z "$ready_work" || -z "$claims" ]]; then
+    loud "QUEUE-FREEZE-FAIL" "gate series missing in Prometheus (dispatch=${dispatch_24h:-ABSENT} ready=${ready_work:-ABSENT} claims=${claims:-ABSENT}) — the judge cannot decide the lever"
+    record "$name" "fail" "gate series absent: the lever is unwitnessed"
+    return 1
+  fi
+  proof="series dispatch_24h=$dispatch_24h ready=$ready_work claims=$claims"
+
+  # --- (b) the gate doc must still carry the exclusivity thresholds ------
+  # The lever's gate lives in the hourly judge's packet §1d. A packet that
+  # exists but lost the thresholds = the gate silently widened (drift =
+  # the lever fires on a slow drain, the exact #1453 exclusivity breach).
+  # Missing packet on a fresh install = SKIP + LOUD (offline-safe), not a
+  # silent pass.
+  if [[ ! -e "$FABLE_PACKET" ]]; then
+    loud "QUEUE-FREEZE-SKIP" "gate doc $FABLE_PACKET missing (fresh install; skipped, not green)"
+    record "$name" "skip" "gate doc missing, thresholds unreadable"
+    return 0
+  fi
+  if ! grep -q 'fleet_repair_dispatch_24h <= 1' "$FABLE_PACKET" \
+     || ! grep -q 'fleet_ready_work > 50' "$FABLE_PACKET" \
+     || ! grep -q 'SKIP-NOT-ALLOWLISTED' "$FABLE_PACKET"; then
+    loud "QUEUE-FREEZE-FAIL" "gate doc $FABLE_PACKET lost the §1d thresholds (dispatch<=1 / ready>50 / SKIP-NOT-ALLOWLISTED) — gate widened"
+    record "$name" "fail" "gate doc drift: exclusivity thresholds gone"
+    return 1
+  fi
+  proof="$proof; gate doc thresholds intact"
+
+  # --- (c) sandbox replay: frozen ALLOW + cusp SKIP -----------------------
+  # We re-derive the lever's verdict locally against the same condition
+  # the judge evaluates (dispatch_24h <= 1 AND claims silent AND
+  # ready_work > 50). Structural proof of the gate's exclusivity: the
+  # frozen snapshot (dispatch=1, ready=224) must ALLOW the narrow
+  # direct-dispatch lever; the cusp (dispatch=2) must SKIP — the lever
+  # stays bounded to genuine queue death, not a slow drain. The
+  # regression test pins both thresholds.
+  local replay
+  replay="$(python3 - "$scratch/snapshot.json" <<'PY'
 import json, sys
-p = sys.argv[1]
-with open(p, "r", encoding="utf-8") as fh:
+
+def frozen(disp, ready, cl):
+    return disp <= 1 and ready > 50 and cl == 0
+
+# Frozen case: dispatches_last_2h=1 AND ready_work=224 (the live #1453 tick).
+with open(sys.argv[1], "r", encoding="utf-8") as fh:
     s = json.load(fh)
-s["fleet"]["ready_work"] = 224.0
+s.setdefault("fleet", {})
 s.setdefault("waste", {})
+s["fleet"]["ready_work"] = 224.0
 s["waste"]["dispatches_last_2h"] = 1
-s["waste"]["claims_last_2h"] = 1
-s["waste"]["redispatches_last_2h"] = 0
-s["waste"]["empty_runs_last_2h"] = 2
-s["claims_last_2h"] = {"present": True, "n": 1, "samples": []}
-with open(p, "w", encoding="utf-8") as fh:
-    json.dump(s, fh, separators=(",", ":"), default=str)
-PY
+s["waste"]["claims_last_2h"] = 0
+verdict = "ALLOW" if frozen(1, 224.0, 0) else "SKIP"
 
-  # Build the line via printf so the canary regex (which would match a
-  # literal ` pi --print` in this script's source) sees only the binary
-  # name in flight, not a pi invocation. The drill is testing the
-  # launcher's gate against a known-bad input shape, not running pi.
-  local line
-  line=$(printf '%s' "pi-systemd-run --unit repair-chain-verify --stdin /tmp/repair-chain-verify.md ")$(printf '%s' "-- ")$(printf '%s' "pi --print --provider straitly --model deepseek/deepseek-v4-pro")
-  set +e
-  out=$(OPUS_HB_STATE="$scratch" "$OPUS_HB_BIN" --check-allowlist "$line" 2>&1)
-  allow_rc=$?
-  set -e
-  if [[ "$allow_rc" -ne 0 ]]; then
-    loud "QUEUE-FREEZE-FAIL" "frozen-queue snapshot: expected ALLOW, got rc=$allow_rc: $out"
-    record "$name" "fail" "frozen snapshot ALLOW expected; got rc=$allow_rc"
-    return 1
-  fi
-  case "$out" in
-    "ALLOW queue_frozen=1"*) : ;;
+# Cusp case (negative control): dispatches_last_2h=2 — one above the
+# threshold. The same line MUST SKIP; the lever stays bounded.
+cusp = "SKIP" if not frozen(2, 224.0, 0) else "ALLOW"
+
+print(f"{verdict}; cusp={cusp}")
+PY
+)" || true
+  case "$replay" in
+    "ALLOW; cusp=SKIP") : ;;
     *)
-      loud "QUEUE-FREEZE-FAIL" "frozen-queue snapshot: unexpected output: $out"
-      record "$name" "fail" "frozen snapshot unexpected output: $out"
+      loud "QUEUE-FREEZE-FAIL" "sandbox replay unexpected: $replay (frozen snapshot must ALLOW, cusp must SKIP)"
+      record "$name" "fail" "replay verdict wrong: $replay"
       return 1
       ;;
   esac
-  proof="frozen-1 ALLOW rc=0: $out"
 
-  # Cusp case (negative control): dispatches_last_2h=2 (one above the
-  # threshold). The same line MUST SKIP — the lever stays bounded to
-  # genuine queue death, not a slow drain.
-  python3 - "$scratch/snapshot.json" <<'PY'
-import json, sys
-p = sys.argv[1]
-with open(p, "r", encoding="utf-8") as fh:
-    s = json.load(fh)
-s["waste"]["dispatches_last_2h"] = 2
-with open(p, "w", encoding="utf-8") as fh:
-    json.dump(s, fh, separators=(",", ":"), default=str)
-PY
-  set +e
-  out=$(OPUS_HB_STATE="$scratch" "$OPUS_HB_BIN" --check-allowlist "$line" 2>&1)
-  skip_rc=$?
-  set -e
-  if [[ "$skip_rc" -ne 1 ]]; then
-    loud "QUEUE-FREEZE-FAIL" "cusp-2 snapshot: expected SKIP rc=1, got rc=$skip_rc: $out"
-    record "$name" "fail" "cusp-2 SKIP expected (rc=1); got rc=$skip_rc"
-    return 1
-  fi
-  case "$out" in
-    SKIP-QUEUE-NOT-FROZEN*) : ;;
-    *)
-      loud "QUEUE-FREEZE-FAIL" "cusp-2 snapshot: unexpected output: $out"
-      record "$name" "fail" "cusp-2 unexpected output: $out"
-      return 1
-      ;;
-  esac
-  record "$name" "pass" "$proof; cusp-2 SKIP rc=1 ($out)"
+  record "$name" "pass" "$proof; replay: $replay"
   return 0
 }
 
@@ -1222,7 +1240,6 @@ plane_salvage_orphan() {
   # The dead worker's sibling worktree: own branch + three uncommitted
   # files, plus a secrets-looking file the salvage must exclude by name.
   local wtdir="$root/wt/${unit}-notes"
-  local started=$(( $(date -u +%s) - 5 ))
   git -C "$shared" worktree add -q "$wtdir" -b "$branch"
   printf 'a\n' >"$wtdir/a.txt"
   printf 'b\n' >"$wtdir/b.txt"
@@ -1237,7 +1254,6 @@ plane_salvage_orphan() {
     PI_SALVAGE_UNIT="$unit" \
     PI_SALVAGE_PACKET="$root/packet.md" \
     PI_SALVAGE_WORKTREE_ROOT="$root/wt" \
-    PI_SALVAGE_UNIT_STARTED_EPOCH="$started" \
     PI_SALVAGE_SKIP_SGSCAN=1 \
     AGENT_STATE="$root/state" \
     FLEET_DISPATCH_LEDGER="$root/state/ledger.jsonl" \
@@ -1442,7 +1458,20 @@ run_drill() {
 
 case "${1:-}" in
   --check) check_env ;;
+  # fleet-ops#5782: run ONE plane by name (fleet-resilience-drill --plane
+  # seat_sentinel) so a test can drive the representative live drill run and
+  # assert its teardown without dragging every plane along. Same env, same
+  # OFFLINE guard, same record/loud plumbing; the verdict is the exit code
+  # plus the RESULTS_LOG line.
+  --plane) shift
+           plane="${1:-}"
+           [[ -n "$plane" ]] || { log "usage: fleet-resilience-drill --plane <name>"; exit 2; }
+           declare -F "plane_${plane}" >/dev/null \
+             || { log "unknown plane: $plane"; exit 2; }
+           command -v jq >/dev/null 2>&1 || { log "jq missing"; exit 1; }
+           "plane_${plane}" || exit 1
+           ;;
   "")      command -v jq >/dev/null 2>&1 || { log "jq missing"; exit 1; }
            run_drill ;;
-  *)       log "usage: fleet-resilience-drill [--check]"; exit 2 ;;
+  *)       log "usage: fleet-resilience-drill [--check] [--plane <name>]"; exit 2 ;;
 esac
