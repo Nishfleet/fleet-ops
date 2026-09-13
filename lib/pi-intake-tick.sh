@@ -1770,8 +1770,26 @@ repair_rung_concurrent() {
 # litellm_ready is unavailable (tests stub the helper).
 if declare -F litellm_ready >/dev/null 2>&1; then
     if ! litellm_ready; then
-        echo "no usable LiteLLM proxy (slots=$slots); holding claims this tick — gate: litellm_ready"
-        exit 0
+        # fleet-ops#6315: a starved /health while /chat/completions still
+        # answers 200 is already READY (the OR-probe lives inside
+        # litellm_ready). When the proxy itself starves, the prepaid
+        # NON-proxy direct lane keeps the fleet claiming — Devin occupancy
+        # must not zero while agent-ready supply waits. Hold only when BOTH
+        # lanes are unusable (the #5093 walled verdict, unchanged).
+        _dfd=0
+        if _dfp=$(direct_fallback_seat 2>/dev/null); then
+            _dfp_p="${_dfp%%$'\t'*}"
+            _dfp_m="${_dfp#*$'\t'}"
+            if _SEAT_USABLE_SILENT=1 seat_usable "$_dfp_p" "$_dfp_m" 2>/dev/null; then
+                _dfd=1
+            fi
+        fi
+        if (( _dfd == 1 )); then
+            echo "LiteLLM proxy unusable; direct prepaid lane $_dfp_p/$_dfp_m carries claims this tick (fleet-ops#6315)"
+        else
+            echo "no usable LiteLLM proxy (slots=$slots) and no usable direct seat; holding claims this tick — gate: litellm_ready"
+            exit 0
+        fi
     fi
 else
     echo "litellm_ready unavailable; seat-slot gate fails open, keeping slots=$slots (fleet-ops#4263)"

@@ -254,6 +254,68 @@ FLEET_LITELLM_STUB_INSTALLED=1 \
 python3 "$canary" --quiet && fail "5f: dead past tolerance must exit 1"
 ok "5f: sustained dead past the tolerance exits 1 (fail-loud preserved)"
 
+# --- 5g (fleet-ops#6315): a HEALTH-ONLY hang is not organ death. The
+# 2026-09-13 incident: readiness+health 0-byte timeouts 120s+ while
+# /chat/completions answered 200. Readiness unanswered + one 1-token
+# completion answering => hold, exit 0, prom proxy_up=0 (honest — readiness
+# did NOT answer), NO dead latch, NO exit 1. The hang listener accepts and
+# never responds (a real event-loop wedge, not a refusal).
+python3 - <<'PY' &
+import socket, time
+s = socket.socket()
+s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+s.bind(("127.0.0.1", 44971)); s.listen(8)
+c, _ = s.accept(); time.sleep(20)
+PY
+HUNG6315=$!
+sleep 0.6
+: > "$scratch/hang-completions.ok"
+FLEET_LITELLM_PROM="$scratch/hang6315.prom" \
+FLEET_LITELLM_STATE="$scratch/hang6315.json" \
+FLEET_LITELLM_PROXY_URL=http://127.0.0.1:44971 \
+FLEET_LITELLM_TIMEOUT_S=2 \
+FLEET_LITELLM_STUB_COMPLETIONS="$scratch/hang-completions.ok" \
+FLEET_LITELLM_STUB_PG=1 FLEET_LITELLM_STUB_REDIS=1 FLEET_LITELLM_STUB_INSTALLED=1 \
+FLEET_LITELLM_NOW=1757743200 \
+python3 "$canary" --quiet || fail "5g: hang+completions-200 must hold (exit 0)"
+grep -q 'fleet_litellm_proxy_up{endpoint="readiness"} 0' "$scratch/hang6315.prom" \
+    || fail "5g: hang prom must keep proxy_up=0 (readiness did not answer)"
+SCRATCH6315="$scratch" python3 -c "
+import json, os
+d = json.load(open(os.environ['SCRATCH6315'] + '/hang6315.json'))
+assert d['completions_ok'] is True, d
+assert d['completions_status'] == 200, d
+assert d['dead_since'] is None, d
+assert d['empty_since'] is None, d
+assert d['proxy_up'] == 0, d
+"
+kill "$HUNG6315" 2>/dev/null; wait "$HUNG6315" 2>/dev/null || true
+ok "5g: #6315 health-only hang holds (exit 0, completions_ok, no dead latch)"
+
+# --- 5h (fleet-ops#6315): readiness hung AND the completion unanswered =>
+# the existing #4130 dead-tolerance latch, exit 1 — unchanged.
+python3 - <<'PY' &
+import socket, time
+s = socket.socket()
+s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+s.bind(("127.0.0.1", 44972)); s.listen(8)
+c, _ = s.accept(); time.sleep(20)
+PY
+HUNG2_6315=$!
+sleep 0.6
+FLEET_LITELLM_PROM="$scratch/full6315.prom" \
+FLEET_LITELLM_STATE="$scratch/full6315.json" \
+FLEET_LITELLM_PROXY_URL=http://127.0.0.1:44972 \
+FLEET_LITELLM_TIMEOUT_S=2 \
+FLEET_LITELLM_DEAD_TOLERANCE_S=0 \
+FLEET_LITELLM_STUB_PG=1 FLEET_LITELLM_STUB_REDIS=1 FLEET_LITELLM_STUB_INSTALLED=1 \
+FLEET_LITELLM_NOW=1757743200 \
+python3 "$canary" --quiet && fail "5h: hung readiness + unanswered completion must exit 1"
+grep -q '"dead_since": 1757743200' "$scratch/full6315.json" \
+    || fail "5h: fully-starved must still latch dead_since"
+kill "$HUNG2_6315" 2>/dev/null; wait "$HUNG2_6315" 2>/dev/null || true
+ok "5h: #6315 fully-starved (readiness+completion dead) keeps the #4130 fail-loud"
+
 # --- 5b: organ-not-installed path (Nish-gated live install not yet done) -> exit 0, no fail-loud
 FLEET_LITELLM_PROM="$scratch/notinst.prom" \
 FLEET_LITELLM_STATE="$scratch/notinst.json" \

@@ -24,6 +24,17 @@ SEAT_CAPS_JSON="${SEAT_CAPS_JSON:-$HOME/.local/state/pi-packet/seat-caps.json}"
 LEDGER_DIR="${PI_SEAT_HEALTH_LEDGER_DIR:-$STATE_DIR/seat-health}"
 HEAVY_PKT_BYTES="${PI_PACKET_HEAVY_BYTES:-8192}"
 LITELLM_HEALTH_URL="${LITELLM_HEALTH_URL:-http://127.0.0.1:4000/health/readiness}"
+# fleet-ops#6315: the completions OR-probe. Derived from the readiness origin
+# when unset, so a test that overrides LITELLM_HEALTH_URL stays hermetic (a
+# dead readiness origin means a dead completions origin — unchanged verdicts).
+LITELLM_COMPLETIONS_URL="${LITELLM_COMPLETIONS_URL:-$(printf '%s' "$LITELLM_HEALTH_URL" | sed -E 's#(/health/readiness|/health)/?$##')/chat/completions}"
+LITELLM_COMPLETIONS_TIMEOUT_S="${LITELLM_COMPLETIONS_TIMEOUT_S:-30}"
+# 30s, measured 2026-09-13: the product path's own tail under the 40-worker
+# load was 9.7s (readiness 2.5s healthy, incident readiness 20s+ hung) — a 6s
+# budget missed the 200 it exists to catch. Only runs after readiness misses
+# its 3s fast-fail, so the healthy path stays 3s.
+LITELLM_COMPLETIONS_MODEL="${LITELLM_COMPLETIONS_MODEL:-worker-cheap}"
+LITELLM_COMPLETIONS_KEY_FILE="${LITELLM_COMPLETIONS_KEY_FILE:-$HOME/.config/fleet-ops/litellm-master-key.env}"
 
 mkdir -p "$ATTEMPTS_DIR" "$ACTIVE_SEATS_DIR"
 
@@ -75,13 +86,58 @@ litellm_group_for_privacy() {
     fi
 }
 
-# True when the proxy answers /health/readiness with status=healthy.
+# Master key for the completions OR-probe. Read, never printed (fleet-ops
+# secrets rule: no secret echoes); the health canary parses the same file
+# (fleet-ops#4628 401 lesson). Env vars win over the key file, same precedence
+# the canary uses.
+_litellm_master_key() {
+    local k="${FLEET_LITELLM_MASTER_KEY:-${LITELLM_MASTER_KEY:-}}"
+    if [[ -z "$k" && -r "$LITELLM_COMPLETIONS_KEY_FILE" ]]; then
+        while IFS= read -r line; do
+            line="${line%%#*}"
+            case "$line" in *LITELLM_MASTER_KEY=*) k="${line#*=}" ;; esac
+        done < "$LITELLM_COMPLETIONS_KEY_FILE"
+        k="${k//\"/}"
+        k="$(printf '%s' "$k" | tr -d '[:space:]')"
+    fi
+    printf '%s' "$k"
+}
+
+# One 1-token completion is the cheapest proof the proxy's PRODUCT path
+# answers. Verdict is the HTTP code only; the reply body is discarded.
+# A 401/5xx/timeout prints its code via -w and exits non-(-f) — either way
+# anything that is not 200 fails the probe, exactly the #6315 incident's
+# 20s-curl-vs-200 asymmetry.
+_litellm_completions_ok() {
+    local code hdr=()
+    hdr+=(-H 'Content-Type: application/json')
+    local k
+    k=$(_litellm_master_key)
+    [[ -n "$k" ]] && hdr+=(-H "Authorization: Bearer $k")
+    code=$(curl -fsS -m "$LITELLM_COMPLETIONS_TIMEOUT_S" -o /dev/null -w '%{http_code}' \
+        -X POST "$LITELLM_COMPLETIONS_URL" "${hdr[@]}" \
+        -d "{\"model\":\"$LITELLM_COMPLETIONS_MODEL\",\"messages\":[{\"role\":\"user\",\"content\":\"ping\"}],\"max_completion_tokens\":1}" \
+        2>/dev/null) || true
+    [[ "$code" == "200" ]]
+}
+
+# True when the proxy answers /health/readiness with status=healthy, OR —
+# fleet-ops#6315 — when readiness hangs but a 1-token /chat/completions
+# still answers 200. Under 40-worker load the /health fan-out wedges the
+# event loop (readiness 0-byte timeouts, 120s+ on 2026-09-13) while
+# completions 200; a hung health endpoint must not read as "no usable seat".
 # Fail-open for tests (no proxy): return 0 unless LITELLM_REQUIRE_LIVE=1.
 litellm_ready() {
     local body status
     body=$(curl -fsS -m 3 "$LITELLM_HEALTH_URL" 2>/dev/null || true)
     status=$(printf '%s' "$body" | jq -r '.status // empty' 2>/dev/null || true)
     if [[ "$status" == "healthy" ]]; then
+        return 0
+    fi
+    # #6315: readiness is not the only proof of a usable proxy. The
+    # completion call needs no lockfile, costs 1 token, and is what intake
+    # actually waits on — 200 there means claims can proceed.
+    if _litellm_completions_ok; then
         return 0
     fi
     if [[ "${LITELLM_REQUIRE_LIVE:-0}" == "1" ]]; then
@@ -433,6 +489,31 @@ count_active_workers() {
         n=${n//[^0-9]/}
     fi
     echo "${n:-0}"
+}
+
+# --- direct (non-proxy) fallback lane (fleet-ops#6315) -----------------------
+# The #4263 P3b cut made the LiteLLM proxy the ONLY seat source, so when the
+# proxy starved, the prepaid NON-proxy seats sat idle (Devin occupancy 0/4
+# while pi-issue@ units walled, 2026-09-13). This is ONE declared lane, not
+# the retired #4263 picker: provider/model, cap-checked so a silent
+# retirement (cap 0) self-ends the lane; seat_usable runs at the call sites
+# so the 429 -> 900s quota bench stays the brake. P4 drill precedent (2026-09-12):
+# the direct seat answers while 127.0.0.1:4000 is down — workers never need
+# the proxy.
+FLEET_DIRECT_FALLBACK_SEAT="${FLEET_DIRECT_FALLBACK_SEAT:-devin/swe-2-max}"
+
+# Prints provider<TAB>model when the declared direct lane is not retired.
+direct_fallback_seat() {
+    local seat="${FLEET_DIRECT_FALLBACK_SEAT:-devin/swe-2-max}" p m
+    p="${seat%%/*}"
+    m="${seat#*/}"
+    [[ -n "$p" && -n "$m" && "$p" != "$seat" ]] || return 1
+    # A retired (cap 0) model self-ends the lane — no dead config. No caps
+    # file: fail-open, the literal is the declaration.
+    if [[ -f "$SEAT_CAPS_JSON" ]]; then
+        (( $(model_cap "$p" "$m") > 0 )) || return 1
+    fi
+    printf '%s\t%s\n' "$p" "$m"
 }
 
 task_weight() {
