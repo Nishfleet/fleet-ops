@@ -250,9 +250,13 @@ bin/pi-transport-check /home/nish/.local/bin/pi-transport-check
 bin/pi-issue-run /home/nish/.local/bin/pi-issue-run
 bin/pi-issue-failed-reap /home/nish/.local/bin/pi-issue-failed-reap
 bin/pi-systemd-run /home/nish/.local/bin/pi-systemd-run
-# fleet-ops#5444: the dispatcher's findings-ledger write (and the retired
-# pi-packet-failed handler's) must go through the shared single-writer
-# helper (fleet-ops#5443), auto-detected at
+# fleet-ops#5444: OnFailure handler for retry-exhausted packets — triage +
+# findings-ledger + agent-ready re-queue for --deliverable runs.
+# fleet-ops#5456 folds the handler into the STOP-REASON chain; it still
+# must be installed or deploy drops the binary.
+bin/pi-packet-failed /home/nish/.local/bin/pi-packet-failed
+# fleet-ops#5444: the handler's findings-ledger write must go through the
+# shared single-writer helper (fleet-ops#5443), auto-detected at
 # ~/.local/lib/pi-packet/findings_ledger.py — without this install line the
 # runtime handler silently falls back to direct append.
 lib/findings_ledger.py /home/nish/.local/lib/pi-packet/findings_ledger.py
