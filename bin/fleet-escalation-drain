@@ -1249,6 +1249,42 @@ escalate_stuck_packets() {
             # live-unclaimed metric (find packet-*.md -mmin +360) cannot
             # count a disposed packet as unclaimed forever.
             touch "$STUCK_ARCH_DIR/$name" 2>/dev/null || true
+            # fleet-ops#5869: the dispositioned chain also needs a TERMINAL
+            # record in chains.terminated.jsonl — the ledger the retired
+            # fleet-completion-canary mirror used to append. Without it no
+            # packet is ever consumed (drain_packets' consumed-rule) and
+            # every new dispatch ages into a fresh stuck burst. The disposal
+            # IS the escalation, so record the episode exactly as the canary
+            # would have: start_ts = the packet's dispatch instant, end_ts =
+            # the disposal instant, terminal=escalated (the legal terminal
+            # this chain reached), the closing actor in unit, and the filing
+            # receipt in issue. Intermediate re-dispatches of the same
+            # alertname dispatched before this end_ts are then absorbed
+            # under the terminal on the next run — the stuck set returns to
+            # 0 instead of the backlog trending up. Same record shape the
+            # canary wrote (alertname/cycle_seconds/end_ts/start_ts/terminal/
+            # unit) plus the issue receipt; consumers select only
+            # alertname+end_ts, so the extra key is additive.
+            local s_iso="${pkt##*packet=}"
+            s_iso="${s_iso%\)}"
+            local s_end
+            s_end="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+            if [[ "$name" =~ ^packet-([A-Za-z0-9_]+)-[0-9]{8}T([0-9]{6}|[0-9]{4})Z\.md$ ]]; then
+                local s_start_epoch s_end_epoch s_cycle=0
+                s_start_epoch="$(date -u -d "$s_iso" +%s 2>/dev/null || echo 0)"
+                s_end_epoch="$(date -u -d "$s_end" +%s 2>/dev/null || echo 0)"
+                s_cycle=$((s_end_epoch - s_start_epoch))
+                [ "$s_cycle" -lt 0 ] && s_cycle=0
+                if printf '{"alertname": "%s", "cycle_seconds": %d, "end_ts": "%s", "start_ts": "%s", "terminal": "escalated", "unit": "escalation-drain", "issue": "%s"}\n' \
+                    "${BASH_REMATCH[1]}" "$s_cycle" "$s_end" "$s_iso" "$issue_no" \
+                    >> "$TERMINATED" 2>/dev/null; then
+                    log "terminal record: $name -> $TERMINATED (alert=${BASH_REMATCH[1]} start=$s_iso end=$s_end terminal=escalated issue=$issue_no)"
+                else
+                    log "WARN: failed to append terminal record for $name to $TERMINATED — the episode may re-flag next run"
+                fi
+            else
+                log "WARN: cannot parse $name as packet-<alert>-<ts>.md — no terminal record appended"
+            fi
         else
             log "WARN: failed to archive $name — leaving in place (loud line will re-flag it)"
             leftover=$((leftover + 1))
