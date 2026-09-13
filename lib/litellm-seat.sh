@@ -2021,26 +2021,6 @@ _order_seats_by() {
     fi
 }
 
-_park_wall_s() {
-    local count="${1:-0}" ceil_override="${2:-}"
-    [[ "$count" =~ ^[0-9]+$ ]] || count=0
-    local ceil="${SEAT_FAILURE_CEILING:-20}"
-    [[ -n "$ceil_override" ]] && ceil="$ceil_override"
-    [[ "$ceil" =~ ^[0-9]+$ ]] || ceil=20
-    local park="${SEAT_PARK_WALL_S:-86400}"
-    [[ "$park" =~ ^[0-9]+$ ]] || park=86400
-    local max="${SEAT_PARK_WALL_MAX_S:-604800}"
-    [[ "$max" =~ ^[0-9]+$ ]] || max=604800
-    if (( count < ceil )); then
-        printf '0'
-        return 0
-    fi
-    local extra=$(( count - ceil + 1 ))
-    local wall=$(( park * extra ))
-    (( wall > max )) && wall="$max"
-    printf '%s' "$wall"
-}
-
 _parse_exec_provider_model() {
     _exec_p=""; _exec_m=""
     local line="$1"
@@ -2142,7 +2122,6 @@ _prepaid_elapsed_fraction() {
 }
 
 _prepaid_iso_week() { date -u +%G-W%V; }
-
 
 _prepaid_paced() {
     local p="$1"
@@ -2562,38 +2541,6 @@ _sanitise_seat() {
     printf '__dead__/%s/%s\n' "$ps" "$ms"
 }
 
-_seat_co_write_sidecar() {
-    local p="$1" m="$2" mode="$3" usable="$4" observed="$5"
-    local http_status retryable source
-    [[ -n "$SEAT_HEALTH_SIDECAR" ]] || return 0
-    case "$mode" in
-        empty_run)  http_status=200; source="cli_spawn" ;;
-        spawn_fail) http_status=0;   source="cli_timeout" ;;
-        *)          http_status=0;   source="cli_timeout" ;;
-    esac
-    retryable=true
-    local tmp="$SEAT_HEALTH_SIDECAR.$$.$RANDOM.tmp"
-    mkdir -p "$(dirname "$SEAT_HEALTH_SIDECAR")" 2>/dev/null || return 1
-    if jq -nc \
-        --arg provider "$p" --arg model "$m" \
-        --argjson http_status "$http_status" --argjson retry_after_null null \
-        --arg health_class "transient_fault" --argjson retryable "$retryable" \
-        --argjson seat_dead false --argjson poison_ladder false \
-        --arg observed "$observed" --arg source "$source" --arg mode "$mode" \
-        --arg usable "$usable" \
-        '{provider:$provider, model:$model, http_status:$http_status,
-          retry_after:$retry_after_null, health_class:$health_class,
-          retryable:$retryable, seat_dead:$seat_dead, poison_ladder:$poison_ladder,
-          observed_at:$observed, source:$source, failure_mode:$mode, usable_at:$usable}' \
-        > "$tmp" 2>/dev/null; then
-        chmod 0644 "$tmp" 2>/dev/null || true
-        mv -f "$tmp" "$SEAT_HEALTH_SIDECAR" 2>/dev/null || { rm -f "$tmp" 2>/dev/null || true; return 1; }
-        return 0
-    fi
-    rm -f "$tmp" 2>/dev/null || true
-    return 1
-}
-
 _seat_daily_spend_cap_reached() {
     local p="$1" m="$2"
     local cap="${SEAT_DAILY_SPEND_CAP_USD[$p/$m]:-0}"
@@ -2816,24 +2763,6 @@ _seat_is_dead() {
     [[ -n "${_EXCLUDED_REASON[$k]:-}" ]]
 }
 
-_seat_key_guard() {
-    local p="$1" m="$2" writer="$3"
-    if _seat_key_in_caps "$p" "$m"; then
-        return 0
-    fi
-    seat_log "LOUD SEAT-KEY-INVALID $p/$m writer=$writer"
-    return 1
-}
-
-_seat_key_in_caps() {
-    local p="$1" m="$2"
-    # Never a real model id — reject regardless of the caps fail-open.
-    [[ "$m" != *.out ]] || return 1
-    [[ -f "$SEAT_CAPS_JSON" ]] || return 0
-    jq -e --arg p "$p" --arg m "$m" \
-        '.providers[$p].models[$m] != null' "$SEAT_CAPS_JSON" >/dev/null 2>&1
-}
-
 _seat_list_org_unit() {
     _seat_list_pi_exec
 }
@@ -2883,23 +2812,6 @@ _seat_liveness_bound_s() {
         echo "$parsed"; return 0
     fi
     echo "${PI_SEAT_ACTIVATING_MAX_S:-3300}"
-}
-
-_seat_now_epoch() {
-    if [[ -n "${FLEET_SEAT_RECOVERY_NOW:-}" ]]; then
-        date -u -d "$FLEET_SEAT_RECOVERY_NOW" +%s 2>/dev/null || date -u +%s
-        return
-    fi
-    date -u +%s
-}
-
-_seat_parked_by_ceiling() {
-    local count="${1:-0}" ceil_override="${2:-}"
-    [[ "$count" =~ ^[0-9]+$ ]] || count=0
-    local ceil="${SEAT_FAILURE_CEILING:-20}"
-    [[ -n "$ceil_override" ]] && ceil="$ceil_override"
-    [[ "$ceil" =~ ^[0-9]+$ ]] || ceil=20
-    (( count >= ceil ))
 }
 
 _seat_rate_limit_fresh() {
@@ -3062,25 +2974,6 @@ _tick_spawn_ride_aimd() {
     _aimd_has_admitted_raise "$p"
 }
 
-_transport_is_down() {
-    (( ${PI_SEAT_LIB_CHECK_TRANSPORT:-1} )) || return 1
-    local probe="${PI_TRANSPORT_CHECK:-/home/nish/.local/bin/pi-transport-check}"
-    if [[ -x "$probe" ]]; then
-        "$probe" >/dev/null 2>&1 || return 0
-        return 1
-    fi
-    # Fleet-ops#3111 contract: "benching is not suppressed on a box without
-    # the probe." Probe ABSENT -> health is undeterminable, not down —
-    # fail-open, unconditionally. The old `pi --version` fallback here broke
-    # that contract: every P14 test stubs PI_BIN with a fake pi whose
-    # --version is not semver, so CI judged the transport DOWN and every
-    # bench writer went silent (red on main from #3235 through #3335, run
-    # 33901937578: pi-issue-run-noop-bench "per-seat ledger missing"). The
-    # probe is what protects real boxes (it detects a clobbered cli.js — the
-    # #3238 incident); a box without the probe has no gate and no lie.
-    return 1
-}
-
 active_ram_charge() {
     if (( ! _seat_caps_loaded )); then load_seat_caps || true; fi
     local total=0 f unit inst pkt repo diff gb fallback
@@ -3115,14 +3008,6 @@ active_ram_charge() {
     (( org > reserve )) && org=$reserve
     total=$(awk -v t="$total" -v o="$org" 'BEGIN{ printf "%.3f", t + o }')
     echo "$total"
-}
-
-class_of() {
-    local p="$1" c
-    if (( ! _seat_caps_loaded )); then load_seat_caps || true; fi
-    c="${SEAT_PROVIDER_CLASS[$p]:-free}"
-    [[ "$c" == "subscription" ]] && c="prepaid-quota"
-    echo "$c"
 }
 
 count_active_issue() {
@@ -3388,32 +3273,6 @@ effective_provider_cap() {
     echo "$eff"
 }
 
-enumerate_seats() {
-    jq -r '
-      .providers | to_entries[] | .key as $p |
-      (
-        (.value.models // [])[] |
-        [ $p, .id,
-          (if ((.cost.input // 1) == 0) then "1" else "0" end),
-          (if ( ((.reasoning // false) == true)
-                or (((.contextWindow // 0) >= 200000) and (($p != "cursor") or (.id == "cursor-grok-4.6-high")))
-                or ($p | IN("devin","opencode-anthropic")) )
-           then "1" else "0" end)
-        ]
-      ),
-      (
-        (.value.modelOverrides // {}) | to_entries[] |
-        [ $p, .key, "0",
-          (if ( ((.value.reasoning // false) == true)
-                or (((.value.contextWindow // 0) >= 200000) and (($p != "cursor") or (.key == "cursor-grok-4.6-high")))
-                or ($p | IN("devin","opencode-anthropic")) )
-           then "1" else "0" end)
-        ]
-      )
-      | @tsv
-    ' "$MODELS_JSON" 2>/dev/null || true
-}
-
 export_seat_selection_prom() {
     local ledger="${SEAT_SELECTION_LEDGER:-$STATE_DIR/seat-selection.jsonl}"
     local out="${SEAT_SELECTION_PROM:-$STATE_DIR/fleet-seat-selection.prom}"
@@ -3521,23 +3380,6 @@ max_probe_ceiling() {
     fi
     declared=$(provider_cap "$p")
     echo "$declared"
-}
-
-model_cap() {
-    local p="$1" m="$2"
-    if (( ! _seat_caps_loaded )); then load_seat_caps || true; fi
-    echo "${SEAT_MODEL_CAP[$p/$m]:-0}"
-}
-
-model_class_of() {
-    local p="$1" m="$2" c
-    if (( ! _seat_caps_loaded )); then load_seat_caps || true; fi
-    c="${SEAT_MODEL_CLASS[$p/$m]:-}"
-    if [[ -z "$c" ]]; then
-        c=$(class_of "$p")
-    fi
-    [[ "$c" == "subscription" ]] && c="prepaid-quota"
-    echo "$c"
 }
 
 now_s() { date -u +%s; }
@@ -4765,13 +4607,6 @@ seat_is_reprobe_light_only() {
     [[ -n "$p" && -n "$m" ]] || return 1
     if (( ! _seat_caps_loaded )); then load_seat_caps || true; fi
     [[ -n "${SEAT_REPROBE_LIGHT_ONLY[$p]:-}" || -n "${SEAT_REPROBE_LIGHT_ONLY[$p/$m]:-}" ]]
-}
-
-seat_spawn_bench_path() {
-    local p="$1" m="$2" ps ms
-    ps="${p//[^A-Za-z0-9._-]/_}"
-    ms="${m//[^A-Za-z0-9._-]/_}"
-    printf '%s/%s__%s.spawn-bench.json\n' "$LEDGER_DIR" "$ps" "$ms"
 }
 
 seat_yield_for() {
