@@ -514,15 +514,19 @@ trips.
 
 ## Worker RAM measurement — `ram-measure` (issue #45)
 
-`ram_gb_per_worker` in `config/seat-caps.json` is the governor budget the
-RAM governor divides `MemAvailable` by. It is sized on typical-worker
-cgroup `memory.current` (0.6 GiB, fleet-ops#1168) with the tail bounded
-three ways (per-worker `MemoryHigh=3G` throttle, `MemoryMax=6G` hard stop,
-and `TimeoutStartSec=45min` to kill a wedge). Known repos override the
-caps via intake-written per-instance drop-ins: fleet-ops#3930 set
+Admission carries no RAM charge: the concurrency bound is
+`min(target_concurrent, Σ declared provider caps)` — `seat_max_concurrent()`/
+`admit_ceiling()` in `lib/litellm-seat.sh` read the provider-level `cap`
+fields of the cap map (fleet-ops#4263 deleted the hand-tuned
+`ram_gb_per_worker` charge together with `lib/seat-lib.sh`; the model rows
+of the map are the per-model lanes, not this bound) — and RAM safety is
+per-unit `MemoryMax` + systemd-oomd, not a governor division. Known repos
+override the per-unit limits via intake-written drop-ins: fleet-ops#3930 set
 `MemoryMax=4G` with **no `MemoryHigh`** for fleet-ops + 0509 (the throttle
 band is what makes oomd pressure-kill a random sibling, so it was removed;
-4G is now the hard stop with a clean local OOM at the cap). A re-derive is
+4G is now the hard stop with a clean local OOM at the cap), while the heavy
+class of #3281 writes 3G/2G for heavy|keystone packets — this proof's own
+unit (fleet-ops#5806) ran that heavy drop-in. A re-derive is
 one command:
 
 ```
@@ -542,10 +546,10 @@ an escalation, never an edit to the cap map.
 `bin/ram-metric-compare` (fleet-ops#202) samples live `pi-issue@` units for
 both cgroup `memory.current` and process VmRSS. The 35 MB figure in older
 comments is VmRSS, not cgroup cost. Live 2026-08-26: `memory.current` p95
-was 822.6 MB. The compare command records both every tick. fleet-ops#489
-decided to keep `memory.current` for admission. fleet-ops#1168 then set
-`ram_gb_per_worker` to 0.6 GiB from the live typical-worker measurement
-(the 1.5 GiB figure was the p95*3 clamp).
+was 822.6 MB. The compare command records both every tick. Until
+fleet-ops#4263 the comparison sized the admission RAM charge
+(`ram_gb_per_worker`; #489, #1168); the charge is gone — the compare now
+informs per-unit `MemoryMax` sizing only.
 
 ## Gap-closure loop (issue #180)
 
