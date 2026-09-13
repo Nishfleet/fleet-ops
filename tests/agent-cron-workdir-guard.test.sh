@@ -47,6 +47,7 @@ EOF
 fake_pi="$scratch/pi"
 cat >"$fake_pi" <<'EOF'
 #!/usr/bin/env bash
+cat >/dev/null
 echo "$*" > "$PI_RECORD_ARGS"
 printf 'ran\nDIGEST:: workdir-guard\n'
 EOF
