@@ -45,7 +45,9 @@ cursor_api_cycle_usd() {
 
 # Trailing-24h delta of the cycle-to-date figure, or UNAVAILABLE:<why>.
 # Never prints a fabricated 0.000000: a missing / warming / reset window is
-# a label, not a number. Appends one history sample per call (deduped at 300s).
+# a label, not a number. Appends one history sample per call, deduped at
+# 300s AND strictly-newer-than-last (fleet-ops#6114: a frozen state must
+# never re-append the same stale sample the issue's live evidence shows).
 cursor_today_figure() {
     local spend_dir hist now_s latest_usd latest_s line ts used base_ts base_usd last_ts
     local state_json min_age_s cycle_end_s
@@ -56,11 +58,22 @@ cursor_today_figure() {
     latest_usd=$(jq -r '.api_bucket_used_usd // empty' "$state_json" 2>/dev/null || true)
     latest_s=$(jq -r '.updated_s // empty' "$state_json" 2>/dev/null || true)
     [[ -n "$latest_usd" && -n "$latest_s" ]] || { echo "UNAVAILABLE:no-api-bucket-field"; return 0; }
+    # A non-numeric updated_s (corrupt state) must not reach the arithmetic
+    # below: sourced under the canary's set -Eeuo pipefail, a failed (( ))
+    # would kill the heartbeat-tier1 block-38 tick. A corrupt stamp appends
+    # nothing and reports nothing new (fleet-ops#6114).
+    [[ "$latest_s" =~ ^[0-9]+$ ]] || { echo "UNAVAILABLE:bad-updated-s"; return 0; }
     now_s=$(date -u +%s)
     mkdir -p "$spend_dir" 2>/dev/null || true
     last_ts=0
     [[ -f "$hist" ]] && last_ts=$(tail -n 1 "$hist" 2>/dev/null | jq -r '.updated_s // 0' 2>/dev/null || echo 0)
-    if (( now_s - last_ts >= 300 )); then
+    # fleet-ops#6114: dedup is NEWER-THAN-LAST, not just 300s pacing. The
+    # issue's live evidence: a frozen state (dead reader) re-appended the
+    # same stale sample (updated_s=1788894598, api_bucket_used_usd=11.36)
+    # on every judge call — each one passed the 300s time check. Append
+    # only when the state's sample is strictly newer than the last history
+    # line; while the state is frozen, callers just read the latest sample.
+    if (( now_s - last_ts >= 300 && latest_s > last_ts )); then
         printf '{"updated_s":%s,"api_bucket_used_usd":%s}\n' "$latest_s" "$latest_usd" >> "$hist" 2>/dev/null || true
     fi
     min_age_s=$(( ${CURSOR_TODAY_MIN_H:-24} * 3600 ))

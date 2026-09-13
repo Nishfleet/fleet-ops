@@ -357,11 +357,19 @@ model_cap() {
     local p="${1:-}" m="${2:-}" cap
     if (( ! _seat_caps_loaded )); then load_seat_caps || true; fi
     [[ -f "$SEAT_CAPS_JSON" ]] || { echo 0; return; }
+    # fleet-ops#6114: model caps come in BOTH shapes — a bare int (cursor:
+    # "cursor-grok-4.6-high": 2, the #1167 $400 overage model; also xai, bai,
+    # minimax, cline, commandcode, opencode) and the object-with-.cap form.
+    # `2 | .cap` is null, so every int-capped model read as 0 and every
+    # model_cap > 0 gate — pi-audit-run's senior ladder head, the
+    # gap-closure conference resolver, comeback-release — silently skipped
+    # the int-capped rungs while the stubbed tests (model_cap -> 1) stayed
+    # green. Read both shapes; unlisted model stays 0.
     cap=$(jq -r --arg p "$p" --arg m "$m" '
         .providers[$p] as $prov
         | if $prov == null then 0
           elif (($prov.cap // 0) == 0) then 0
-          elif (($prov.models | type) == "object") then ($prov.models[$m].cap // 0)
+          elif (($prov.models | type) == "object") then (($prov.models[$m] | if type == "object" then (.cap // 0) else $prov.models[$m] end) // 0)
           else ($prov.cap // 0) end' "$SEAT_CAPS_JSON" 2>/dev/null || echo 0)
     [[ "$cap" =~ ^[0-9]+$ ]] || cap=0
     echo "$cap"
