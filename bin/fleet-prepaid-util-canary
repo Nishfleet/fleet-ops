@@ -1,9 +1,262 @@
 #!/usr/bin/env bash
-# fleet-prepaid-util-canary — retired with P3b (fleet-ops#4263).
-# Prepaid pick counters lived in the deleted routing library. LiteLLM
-# /spend is the meter now. This wrapper stays so heartbeat-tier1 block 38
-# does not page; P4 deletes the redundant canary.
-set -euo pipefail
-printf '[%s] [fleet-prepaid-util-canary] retired: LiteLLM /spend owns prepaid util (fleet-ops#4263)\n' \
-    "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >&2
+# fleet-prepaid-util-canary — the Cursor $400 prepaid-spend reader.
+#
+# fleet-ops#6114: #5993 retired this canary to a 9-line no-op ("LiteLLM /spend
+# is the meter now"), which froze /var/lib/prometheus/node-exporter/
+# prepaid-spend.prom at its last sample — spend/pool read 0.000000 while the
+# REAL expiring $400 (Cursor Ultra Included API bucket, $235.704 of $400.000
+# at 2026-09-12T12:59Z) sat in the #4566 field names the pacing rules never
+# read. This restores the reader half of the pre-#5993 canary (the pick
+# counters stayed retired with the #4263 routing library and are NOT revived —
+# they read state #5993 stopped writing) and fixes the reader at the root:
+# when the #4206 SpendLimitUsage path parses 0 (the documented steady state —
+# Nish keeps the on-demand overage limit at 0), the Included-API-bucket
+# figures (planUsage.apiPercentUsed x planUsage.limit) are exported under the
+# #4206 metric names, so fleet_cursor_prepaid_remaining_usd /
+# FleetCursorPrepaidBurnPacingLow in config/fleet_rules.yml pace the real
+# $235.70/$400.00 instead of a frozen 0/0. A non-zero SpendLimitUsage limit
+# (raised after included exhausts) still wins — it is the more precise #4206
+# meter.
+#
+# Runs inside the existing heartbeat-tier1 block-38 slot; exits 0 even when
+# the API is unreachable (the metric is omitted, the absent() rule fires) so
+# a vendor hiccup never pages the tier1 gate.
+#
+# Environment seams (tests):
+#   CURSOR_USAGE_URL         fixture: path or URL replaces the live API call
+#   CURSOR_AUTH_JSON         default ~/.config/cursor/auth.json (accessToken)
+#   CURSOR_USAGE_ENDPOINT    default GetCurrentPeriodUsage
+#   FLEET_PREPAID_SPEND_DIR  default $PI_PACKET_STATE/prepaid-spend
+#   FLEET_PREPAID_PROM_PATH  default /var/lib/prometheus/node-exporter/prepaid-spend.prom
+#   PI_PACKET_STATE          prepaid-usage/cursor.json (usd_today overlay) root
+#   PI_AUDIT... none. This file reads no seats.
+
+set -Eeuo pipefail
+
+export HOME="${HOME:-/home/nish}"
+command -v jq >/dev/null 2>&1 || { echo "fleet-prepaid-util-canary: jq missing" >&2; exit 2; }
+
+_canon_script=$(readlink -f "$0" 2>/dev/null || echo "$0")
+_canon_repo=$(cd "$(dirname "$_canon_script")/.." && pwd)
+
+# fleet-ops#4621: shared 24h API-bucket figure so the judge's usd_today and
+# this history are the vendor number, never the token-derived 0.000000.
+# shellcheck disable=SC1091
+if [[ -f "$_canon_repo/lib/cursor-api-bucket.sh" ]]; then
+    source "$_canon_repo/lib/cursor-api-bucket.sh"
+fi
+
+log() {
+    printf '[%s] [fleet-prepaid-util-canary] %s\n' \
+        "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$*" >&2
+}
+
+STATE_DIR="${PI_PACKET_STATE:-$HOME/.local/state/pi-packet}"
+CURSOR_AUTH_JSON="${CURSOR_AUTH_JSON:-$HOME/.config/cursor/auth.json}"
+CURSOR_USAGE_ENDPOINT="${CURSOR_USAGE_ENDPOINT:-https://api2.cursor.sh/aiserver.v1.DashboardService/GetCurrentPeriodUsage}"
+CURSOR_USAGE_URL="${CURSOR_USAGE_URL:-}"  # test fixture: file:// or path to a JSON response
+PREPAID_SPEND_DIR="${FLEET_PREPAID_SPEND_DIR:-$STATE_DIR/prepaid-spend}"
+PREPAID_PROM_PATH="${FLEET_PREPAID_PROM_PATH:-/var/lib/prometheus/node-exporter/prepaid-spend.prom}"
+CURL="${CURL:-curl}"
+
+iso_week() {
+    date -u -d "${FLEET_PREPAID_UTIL_NOW:-$(date -u +%Y-%m-%dT%H:%M:%SZ)}" +%G-W%V 2>/dev/null \
+        || date -u +%G-W%V
+}
+
+# --- Cursor $400 'API Usage' measured spend reader (fleet-ops#4206/#4566) ---
+# GetCurrentPeriodUsage answers BOTH billing lanes: spendLimitUsage (the
+# on-demand spend-limit pool, in cents — 0/0 while Nish keeps the overage
+# limit at 0) and planUsage (the Included API bucket: apiPercentUsed x limit
+# IS the expiring $400, dashboard "API usage: N% used"). included_exhausted
+# is computed from totalPercentUsed >= 100 — the old includedSpend >= limit
+# compare misfired (planUsage.includedSpend equals the limit on a
+# bonus-exhausted account while apiPercentUsed is still low) (#4566).
+# Returns a tab-separated row on stdout:
+#   spend_usd<TAB>pool_usd<TAB>cycle_end_s<TAB>included_exhausted<TAB>updated_s<TAB>api_used_usd<TAB>api_remaining_usd<TAB>api_limit_usd<TAB>total_pct
+# or empty on any failure (no metric emitted; the absent() rule fires).
+cursor_measured_spend() {
+    local token resp cycle_end_ms spend_limit spend_remaining
+    local api_pct api_limit_cents api_used_usd api_remaining_usd api_limit_usd total_pct
+    local spend_usd pool_usd cycle_end_s inc_ex
+    # Test seam: a fixture file/URL replaces the live API call.
+    if [[ -n "$CURSOR_USAGE_URL" ]]; then
+        if [[ -f "$CURSOR_USAGE_URL" ]]; then
+            resp=$(cat "$CURSOR_USAGE_URL" 2>/dev/null || true)
+        else
+            resp=$("$CURL" -s -m 15 "$CURSOR_USAGE_URL" 2>/dev/null || true)
+        fi
+    else
+        [[ -f "$CURSOR_AUTH_JSON" ]] || { echo ""; return; }
+        token=$(jq -r '.accessToken // empty' "$CURSOR_AUTH_JSON" 2>/dev/null || true)
+        [[ -n "$token" ]] || { echo ""; return; }
+        resp=$("$CURL" -s -m 15 -X POST \
+            -H "Authorization: Bearer $token" \
+            -H "Content-Type: application/json" \
+            -d '{}' "$CURSOR_USAGE_ENDPOINT" 2>/dev/null || true)
+    fi
+    [[ -n "$resp" ]] || { echo ""; return; }
+    if ! echo "$resp" | jq -e '.spendLimitUsage' >/dev/null 2>&1; then
+        echo ""; return
+    fi
+    cycle_end_ms=$(echo "$resp" | jq -r '.billingCycleEnd // 0' 2>/dev/null || echo 0)
+    spend_limit=$(echo "$resp" | jq -r '.spendLimitUsage.individualLimit // .spendLimitUsage.pooledLimit // 0' 2>/dev/null || echo 0)
+    spend_remaining=$(echo "$resp" | jq -r '.spendLimitUsage.individualRemaining // .spendLimitUsage.pooledRemaining // 0' 2>/dev/null || echo 0)
+    api_pct=$(echo "$resp" | jq -r '.planUsage.apiPercentUsed // 0' 2>/dev/null || echo 0)
+    api_limit_cents=$(echo "$resp" | jq -r '.planUsage.limit // 0' 2>/dev/null || echo 0)
+    total_pct=$(echo "$resp" | jq -r '.planUsage.totalPercentUsed // 0' 2>/dev/null || echo 0)
+    [[ "$cycle_end_ms" =~ ^[0-9]+$ ]] || cycle_end_ms=0
+    [[ "$spend_limit" =~ ^[0-9]+$ ]] || spend_limit=0
+    [[ "$spend_remaining" =~ ^[0-9]+$ ]] || spend_remaining=0
+    [[ "$api_pct" =~ ^[0-9]+(\.[0-9]+)?$ ]] || api_pct=0
+    [[ "$api_limit_cents" =~ ^[0-9]+$ ]] || api_limit_cents=0
+    [[ "$total_pct" =~ ^[0-9]+(\.[0-9]+)?$ ]] || total_pct=0
+    # cents -> USD. spend = pool limit - remaining (the on-demand pool used;
+    # both are 0 while the on-demand overage limit stays 0 — fleet-ops#4566).
+    pool_usd=$(awk -v l="$spend_limit" 'BEGIN{printf "%.6f", l/100}')
+    spend_usd=$(awk -v l="$spend_limit" -v r="$spend_remaining" 'BEGIN{printf "%.6f", (l-r)/100}')
+    # Included API bucket: apiPercentUsed x limit (both from planUsage).
+    api_limit_usd=$(awk -v l="$api_limit_cents" 'BEGIN{printf "%.6f", l/100}')
+    api_used_usd=$(awk -v p="$api_pct" -v l="$api_limit_usd" 'BEGIN{printf "%.6f", p/100*l}')
+    api_remaining_usd=$(awk -v u="$api_used_usd" -v l="$api_limit_usd" 'BEGIN{printf "%.6f", (l>u)?l-u:0}')
+    cycle_end_s=$(( cycle_end_ms / 1000 ))
+    # Included plan exhausted = the whole included+bonus allowance spent out
+    # (totalPercentUsed >= 100), not the old includedSpend>=limit misparse.
+    if awk -v t="$total_pct" 'BEGIN{exit !(t+0 >= 100)}'; then
+        inc_ex=1
+    else
+        inc_ex=0
+    fi
+    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+        "$spend_usd" "$pool_usd" "$cycle_end_s" "$inc_ex" "$(date -u +%s)" \
+        "$api_used_usd" "$api_remaining_usd" "$api_limit_usd" "$total_pct"
+}
+
+# Write the prepaid-spend state file + node_exporter textfile for cursor.
+# State file: $PREPAID_SPEND_DIR/cursor.json (consumed by the judge + the
+# 24h-delta history). Textfile: $PREPAID_PROM_PATH (node_exporter reads ALL
+# .prom in the dir; this file owns ONLY fleet_prepaid_* — no shadowing of
+# fleet.prom, which does not emit these families).
+emit_cursor_prepaid_spend() {
+    local row spend_usd pool_usd cycle_end_s inc_ex updated_s api_used_usd api_remaining_usd api_limit_usd total_pct
+    row=$(cursor_measured_spend) || row=""
+    [[ -n "$row" ]] || { log "cursor spend reader: no data (auth missing or API unreachable) — metric omitted, absent() rule will fire"; return; }
+    IFS=$'\t' read -r spend_usd pool_usd cycle_end_s inc_ex updated_s api_used_usd api_remaining_usd api_limit_usd total_pct <<<"$row"
+    # fleet-ops#6114: the pacing rules (config/fleet_rules.yml,
+    # fleet_cursor_prepaid_pacing) read THESE two names —
+    # fleet_cursor_prepaid_remaining_usd = fleet_prepaid_pool_usd -
+    # fleet_prepaid_spend_usd — but the #4206 SpendLimitUsage path parses
+    # 0 forever while the on-demand overage limit stays 0 (#4566). When the
+    # pool reads 0, the Included-API-bucket figures (planUsage.apiPercentUsed
+    # x planUsage.limit) ARE the expiring $400 — export them under the #4206
+    # names so FleetCursorPrepaidBurnPacingLow paces the real $, not a frozen
+    # 0/0. A non-zero SpendLimitUsage limit still wins (the more precise
+    # #4206 meter once Nish raises the overage after included exhausts).
+    if ! awk -v p="$pool_usd" 'BEGIN{exit !(p+0 > 0)}'; then
+        spend_usd="$api_used_usd"
+        pool_usd="$api_limit_usd"
+    fi
+    mkdir -p "$PREPAID_SPEND_DIR" 2>/dev/null || true
+    local state="$PREPAID_SPEND_DIR/cursor.json"
+    cat >"$state" 2>/dev/null <<JSON || log "WARN: could not write cursor spend state $state"
+{
+  "provider": "cursor",
+  "spend_usd": $spend_usd,
+  "pool_usd": $pool_usd,
+  "cycle_end_s": $cycle_end_s,
+  "included_exhausted": $inc_ex,
+  "api_bucket_used_usd": $api_used_usd,
+  "api_bucket_remaining_usd": $api_remaining_usd,
+  "api_bucket_limit_usd": $api_limit_usd,
+  "total_percent_used": $total_pct,
+  "updated_s": $updated_s,
+  "observed_at": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
+  "source": "cursor-dashboard-getcurrentperiodusage"
+}
+JSON
+    # node_exporter textfile (atomic write; 0644 so node_exporter uid can read).
+    local tmp="${PREPAID_PROM_PATH}.$$"
+    {
+        printf '# HELP fleet_prepaid_spend_usd Spend of the prepaid pool in USD for prepaid providers, from the vendor dashboard API. #4206; #6114: carries the Included-API-bucket spend when the on-demand SpendLimitUsage pool reads 0 (Nish keeps the overage limit 0).\n'
+        printf '# TYPE fleet_prepaid_spend_usd gauge\n'
+        printf 'fleet_prepaid_spend_usd{provider="cursor"} %s\n' "$spend_usd"
+        printf '# HELP fleet_prepaid_pool_usd Prepaid pool limit in USD for prepaid providers. #4206; #6114: carries the Included-API-bucket limit ($400) when the on-demand SpendLimitUsage pool reads 0.\n'
+        printf '# TYPE fleet_prepaid_pool_usd gauge\n'
+        printf 'fleet_prepaid_pool_usd{provider="cursor"} %s\n' "$pool_usd"
+        printf '# HELP fleet_prepaid_cycle_end_timestamp Unix seconds at which the prepaid billing cycle resets (fleet-ops#4206).\n'
+        printf '# TYPE fleet_prepaid_cycle_end_timestamp gauge\n'
+        printf 'fleet_prepaid_cycle_end_timestamp{provider="cursor"} %s\n' "$cycle_end_s"
+        printf '# HELP fleet_prepaid_spend_updated_timestamp Unix seconds at which the spend reader last succeeded (fleet-ops#4206).\n'
+        printf '# TYPE fleet_prepaid_spend_updated_timestamp gauge\n'
+        printf 'fleet_prepaid_spend_updated_timestamp{provider="cursor"} %s\n' "$updated_s"
+        printf '# HELP fleet_prepaid_included_exhausted 1 when the included plan usage is exhausted (the on-demand pool is open), 0 otherwise (fleet-ops#4206).\n'
+        printf '# TYPE fleet_prepaid_included_exhausted gauge\n'
+        printf 'fleet_prepaid_included_exhausted{provider="cursor"} %s\n' "$inc_ex"
+        printf '# HELP fleet_cursor_api_bucket_used_usd Cursor Ultra INCLUDED API bucket used, apiPercentUsed x limit, from GetCurrentPeriodUsage (fleet-ops#4566).\n'
+        printf '# TYPE fleet_cursor_api_bucket_used_usd gauge\n'
+        printf 'fleet_cursor_api_bucket_used_usd{provider="cursor"} %s\n' "$api_used_usd"
+        printf '# HELP fleet_cursor_api_bucket_remaining_usd Cursor Ultra INCLUDED API bucket remaining before cycle reset (fleet-ops#4566).\n'
+        printf '# TYPE fleet_cursor_api_bucket_remaining_usd gauge\n'
+        printf 'fleet_cursor_api_bucket_remaining_usd{provider="cursor"} %s\n' "$api_remaining_usd"
+    } >"$tmp" 2>/dev/null
+    if chmod 0644 "$tmp" 2>/dev/null && mv -f "$tmp" "$PREPAID_PROM_PATH" 2>/dev/null; then
+        :
+    else
+        rm -f "$tmp" 2>/dev/null
+        log "WARN: could not write prepaid-spend.prom $PREPAID_PROM_PATH"
+    fi
+    log "cursor spend reader: spend_usd=$spend_usd pool_usd=$pool_usd cycle_end_s=$cycle_end_s included_exhausted=$inc_ex api_used_usd=$api_used_usd api_remaining_usd=$api_remaining_usd -> $PREPAID_PROM_PATH"
+    write_cursor_usd_today
+}
+
+# fleet-ops#4621: the judge's landing-watch measure.sh and fable-check both
+# read prepaid-usage/cursor.json usd_today. That field was the token-derived
+# 0.000000 (cursor-cli records 0 usage tokens). Overwrite it with the trailing
+# 24h API-bucket delta (or UNAVAILABLE:<why> — never a fabricated 0). The
+# delta needs FRESH history: cursor_today_figure appends one deduped sample
+# per success (the #6114 stale-sample symptom — a frozen updated_s replicated
+# into every history line — dies here, because each successful fetch writes a
+# fresh updated_s into the state this reads). Count and the 429/200 flags are
+# preserved — this is a spend overlay, not a pick.
+write_cursor_usd_today() {
+    command -v cursor_today_figure >/dev/null 2>&1 || return 0
+    local figure cycle f tmp week count flags429 flags200 f9date f2date
+    export FLEET_PREPAID_SPEND_DIR="$PREPAID_SPEND_DIR"
+    figure=$(cursor_today_figure)
+    cycle=$(cursor_api_cycle_usd)
+    [[ -n "$figure" ]] || return 0
+    mkdir -p "$STATE_DIR/prepaid-usage" 2>/dev/null || true
+    f="$STATE_DIR/prepaid-usage/cursor.json"
+    tmp="$f.tmp.$$"
+    week=$(iso_week)
+    count=0
+    flags429="false"; flags200="false"; f9date=""; f2date=""
+    if [[ -f "$f" ]]; then
+        week=$(jq -r '.week // empty' "$f" 2>/dev/null || true)
+        [[ -n "$week" ]] || week=$(iso_week)
+        count=$(jq -r '.count // 0' "$f" 2>/dev/null || echo 0)
+        [[ "$count" =~ ^[0-9]+$ ]] || count=0
+        flags429=$(jq -r '.provider_daily_logged_429 // false' "$f" 2>/dev/null || echo false)
+        flags200=$(jq -r '.provider_daily_logged_200 // false' "$f" 2>/dev/null || echo false)
+        f9date=$(jq -r '.provider_daily_logged_429_date // ""' "$f" 2>/dev/null || true)
+        f2date=$(jq -r '.provider_daily_logged_200_date // ""' "$f" 2>/dev/null || true)
+    fi
+    jq -nc --arg w "$week" --argjson c "$count" --arg ud "$figure" --arg cy "$cycle" \
+        --argjson f9 "$([[ "$flags429" == "true" ]] && echo true || echo false)" \
+        --argjson f2 "$([[ "$flags200" == "true" ]] && echo true || echo false)" \
+        --arg d9 "${f9date:-}" --arg d2 "${f2date:-}" \
+        '{week:$w,count:$c,usd_today:$ud,cursor_api_cycle_usd:$cy,
+          usd_today_source:"cursor-dashboard-getcurrentperiodusage",
+          billing_lane:"ultra-included-api-bucket",
+          provider_daily_logged_429:$f9,provider_daily_logged_429_date:$d9,
+          provider_daily_logged_200:$f2,provider_daily_logged_200_date:$d2}' >"$tmp" 2>/dev/null || {
+        rm -f "$tmp"
+        log "WARN: could not write cursor usd_today $f"
+        return 0
+    }
+    mv -f "$tmp" "$f" 2>/dev/null || { rm -f "$tmp"; return 0; }
+    log "cursor spend reader: usd_today=$figure cursor_api_cycle_usd=$cycle -> $f"
+}
+
+emit_cursor_prepaid_spend
 exit 0

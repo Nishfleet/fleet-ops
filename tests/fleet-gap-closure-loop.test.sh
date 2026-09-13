@@ -890,7 +890,7 @@ res_seat_state="$state_dir/resolve-seats"
 res_caps="$state_dir/resolve-caps"
 mkdir -p "$res_seat_state" "$res_caps" "$res_caps/pp"
 cat >"$res_caps/seat-caps.json" <<'CAPS'
-{"providers":{"cline":{"cap":2,"class":"prepaid-quota","models":{"z-ai/glm-5.3-flash":{"cap":1,"class":"free"}}},"devin":{"cap":2,"class":"prepaid-quota","models":{"glm-5-2":{"cap":1}}}},"senior_seats_in_order":[]}
+{"providers":{"cline":{"cap":2,"class":"prepaid-quota","models":{"z-ai/glm-5.3-flash":{"cap":1,"class":"free"}}},"devin":{"cap":2,"class":"prepaid-quota","models":{"glm-5-2":{"cap":1}}},"cursor":{"cap":2,"class":"prepaid-quota","models":{"cursor-grok-4.6-high":2,"kimi-k3-max":{"cap":4,"class":"prepaid-quota"}}}},"senior_seats_in_order":[]}
 CAPS
 NOW="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 cat >"$res_seat_state/cline__z-ai_glm-5.3-flash.json" <<EOF
@@ -911,6 +911,24 @@ EOF
     || fail "model_cap must read the wired model cap, got $(model_cap cline z-ai/glm-5.3-flash)"
   [[ "$(model_cap zenmux z-ai/glm-5.3-free)" == "0" ]] \
     || fail "model_cap must report an unwired provider as 0"
+  # fleet-ops#6114: the senior ladder's cap gate (> 0) rides these reads, and
+  # model caps come in TWO shapes. The bare-int shape (cursor:
+  # "cursor-grok-4.6-high": 2 — the #1167 $400 overage model) used to read as
+  # 0 (`2 | .cap` is null), so EVERY int-capped rung — including the ladder
+  # head — was skipped and senior audits rode the #5993 proxy fallback in
+  # production while the stubbed tests (model_cap -> 1) stayed green.
+  [[ "$(model_cap cursor cursor-grok-4.6-high)" == "2" ]] \
+    || fail "model_cap must read INTEGER model caps — the #1167 $400 overage model is 2, got $(model_cap cursor cursor-grok-4.6-high) (fleet-ops#6114)"
+  [[ "$(model_cap cursor kimi-k3-max)" == "4" ]] \
+    || fail "model_cap must still read the object-with-.cap shape, got $(model_cap cursor kimi-k3-max) (fleet-ops#6114)"
+  [[ "$(model_cap cursor not-a-model)" == "0" ]] \
+    || fail "model_cap must report an unlisted model as 0, got $(model_cap cursor not-a-model) (fleet-ops#6114)"
+  # And the LIVE #1167 mechanism, from the repo's own config: the ladder head
+  # the senior audits resolve. If either the read or the config entry drifts,
+  # the #6114 termination (senior audits invoke cursor/cursor-grok-4.6-high)
+  # dies here and not silently in production.
+  ([[ "$(SEAT_CAPS_JSON="$repo_root/config/seat-caps.json" _seat_caps_loaded=0 model_cap cursor cursor-grok-4.6-high)" == "2" ]] \
+    || fail "model_cap(cursor, cursor-grok-4.6-high) must be 2 against config/seat-caps.json — the #1167 $400 overage model the senior ladder heads with (fleet-ops#6114)")
   [[ "$(model_class_of cline z-ai/glm-5.3-flash)" == "free" ]] \
     || fail "model_class_of must read the model class, got $(model_class_of cline z-ai/glm-5.3-flash)"
 ) || exit 1
