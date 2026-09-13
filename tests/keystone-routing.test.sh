@@ -128,7 +128,7 @@ ok "2c: explicit difficulty: light"
 # only when the proxy is down. The behaviour decision is tracked in fleet-ops#6032.
 
 # --- contract: nested under the CI host -----------------------------------
-grep -Fq 'bash "$here/keystone-routing.test.sh"' "$here/seat""-lib.test.sh" \
+grep -Fq 'bash "$here/keystone-routing.test.sh"' "$here/seat-lib.test.sh" \
   || fail "seat.lib.test.sh must nest this file (CI cannot gain a new workflow line)"
 ok "seat.lib.test.sh hosts this file"
 

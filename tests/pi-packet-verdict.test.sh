@@ -237,7 +237,7 @@ fi
 # line. This file must stay invoked from seat.lib.test.sh (already
 # listed in ci.yml). Dropping the host is the class this issue exists
 # to prevent. A filename mention in a comment is not an invoke.
-host="$ROOT/tests/seat""-lib.test.sh"
+host="$ROOT/tests/seat-lib.test.sh"
 if [ ! -f "$host" ]; then
     echo "FAIL 18. CI host missing: $host"
     FAIL=$((FAIL + 1))

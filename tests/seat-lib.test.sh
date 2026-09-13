@@ -18,7 +18,7 @@ ok "lib/litellm-seat.sh present"
 
 # The retired routing library must be absent. The path is built in two
 # pieces so this file stays outside the retired-name scan (fleet-ops#4263).
-retired_lib="$repo_root/lib/seat""-lib.sh"
+retired_lib="$repo_root/lib/seat-lib.sh"
 [[ ! -f "$retired_lib" ]] \
   || fail "retired routing lib must be absent after P3b (found $retired_lib)"
 ok "retired routing lib is absent"

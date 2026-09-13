@@ -226,7 +226,7 @@ ok "timer-manifest.test.sh host line in rule-enforcement.test.sh is pinned (flee
 # (alert-repair-claim-mutex.test.sh, fleet-ops#1279) currently makes
 # $bad[] non-empty, which would skip any pin placed after that exit.
 grep -Eq '^[[:space:]]*bash[[:space:]]+"?\$here/pi-packet-verdict\.test\.sh"?' \
-  "$here/seat""-lib.test.sh" \
+  "$here/seat-lib.test.sh" \
   || fail "seat.lib.test.sh must bash-invoke pi-packet-verdict.test.sh (fleet-ops#1200)"
 [[ -n "${reachable[pi-packet-verdict.test.sh]:-}" ]] \
   || fail "pi-packet-verdict.test.sh must be listed in ci.yml or hosted by a listed test (fleet-ops#1200)"
@@ -245,7 +245,7 @@ ok "pi-packet-verdict.test.sh is pinned in the P14 reachable set (fleet-ops#1200
 # fleet-ops#1279 stays open as the ci.yml-line follow-up (needs
 # workflow scope).
 grep -Eq '^[[:space:]]*bash[[:space:]]+"?\$here/alert-repair-claim-mutex\.test\.sh"?' \
-  "$here/seat""-lib.test.sh" \
+  "$here/seat-lib.test.sh" \
   || fail "seat.lib.test.sh must bash-invoke alert-repair-claim-mutex.test.sh (fleet-ops#1309)"
 [[ -n "${reachable[alert-repair-claim-mutex.test.sh]:-}" ]] \
   || fail "alert-repair-claim-mutex.test.sh must be listed in ci.yml or hosted by a listed test (fleet-ops#1309)"
@@ -308,7 +308,7 @@ ok "fleet-waste-ledger.test.sh is pinned in the P14 reachable set (fleet-ops#121
 # future dropped host or a worker parking the test on known_orphans to silence a
 # generic "1 test file(s) are neither..." message fails by name.
 grep -Eq '^[[:space:]]*bash[[:space:]]+"?\$here/fleet-worker-prompt-gh-pr-view-unknown-field\.test\.sh"?' \
-  "$here/seat""-lib.test.sh" \
+  "$here/seat-lib.test.sh" \
   || fail "seat.lib.test.sh must bash-invoke fleet-worker-prompt-gh-pr-view-unknown-field.test.sh (fleet-ops#1367)"
 [[ -n "${reachable[fleet-worker-prompt-gh-pr-view-unknown-field.test.sh]:-}" ]] \
   || fail "fleet-worker-prompt-gh-pr-view-unknown-field.test.sh must be listed in ci.yml or hosted by a listed test (fleet-ops#1367)"
@@ -1174,20 +1174,6 @@ grep -Eq '^[[:space:]]*bash[[:space:]]+"?\$here/measure-p14-main\.test\.sh"?' \
 [[ -z "${known_orphan_set[measure-p14-main.test.sh]:-}" ]] \
   || fail "measure-p14-main.test.sh must not be a known orphan (fleet-ops#6159)"
 ok "measure-p14-main.test.sh host line in ci-standards-audit.test.sh is pinned (fleet-ops#6159)"
-
-# fleet-ops#4263: hard-pin the host line for pick-seat-freeze in
-# ci-standards-audit.test.sh. The caller-set freeze rides on that listed
-# test (the worker App cannot push .github/workflows/**); the pin is
-# class-prevention so a dropped host line cannot park the freeze on
-# known_orphans — it fails by name first, same shape as the other pins.
-grep -Eq '^[[:space:]]*bash[[:space:]]+"?\$here/pick-seat-freeze\.test\.sh"?' \
-  "$here/ci-standards-audit.test.sh" \
-  || fail "ci-standards-audit.test.sh must bash-invoke pick-seat-freeze.test.sh (fleet-ops#4263)"
-[[ -n "${reachable[pick-seat-freeze.test.sh]:-}" ]] \
-  || fail "pick-seat-freeze.test.sh must be hosted by a listed test (fleet-ops#4263)"
-[[ -z "${known_orphan_set[pick-seat-freeze.test.sh]:-}" ]] \
-  || fail "pick-seat-freeze.test.sh must not be a known orphan (fleet-ops#4263)"
-ok "pick-seat-freeze.test.sh host line in ci-standards-audit.test.sh is pinned (fleet-ops#4263)"
 
 # fleet-ops#6020: hard-pin the fleet-ops#1176 nested-host line for
 # fleet-token-economy.test.sh in rule-enforcement.test.sh (itself listed in

@@ -12,8 +12,10 @@
 # gate must exit 1 and name the planted function.
 #
 # Hosted by tests/p14-test-listing-gate.test.sh (the #5889 auto-host), so it
-# runs in P14 without a workflow-file edit. Keep this file free of the
-# retired-routing signature words (see tests/pick-seat-freeze.test.sh).
+# runs in P14 without a workflow-file edit. (The #4263 retired-routing
+# freeze — tests/pick-seat-freeze.test.sh — was retired 2026-09-13, #6032;
+# this file was kept free of the retired-routing signature words while it
+# stood.)
 
 set -euo pipefail
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
