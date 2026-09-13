@@ -166,10 +166,15 @@ scratch="$(mktemp -d)"
 trap 'rm -rf "$scratch"' EXIT
 stub="$scratch/stub.json"
 printf '{"healthy_endpoints":[{"model_info":{"model_name":"worker-cheap"}}],"unhealthy_endpoints":[]}' > "$stub"
+# #6115: the shortfall verdict compares the census against the configured
+# model_list, so the happy-path invocation must point at a 1-entry config
+# that matches its 1-endpoint census stub (9>1 short-fall would exit 1).
+printf 'model_list:\n  - model_name: worker-cheap\n' > "$scratch/one-model.yaml"
 # proxy_up=1 path: exit 0, prom written with the heartbeat metric
 FLEET_LITELLM_PROM="$scratch/up.prom" \
 FLEET_LITELLM_STATE="$scratch/up.json" \
 FLEET_LITELLM_STUB="$stub" \
+FLEET_LITELLM_CONFIG="$scratch/one-model.yaml" \
 FLEET_LITELLM_STUB_PG=1 \
 FLEET_LITELLM_STUB_REDIS=1 \
 FLEET_LITELLM_STUB_INSTALLED=1 \
@@ -694,5 +699,27 @@ FLEET_LITELLM_STUB_INSTALLED=1 \
 FLEET_LITELLM_NOW=1700000400 \
 python3 "$canary" --quiet || fail "18b: all-healthy census after benching must stay quiet (exit 0)"
 ok "18: deployed dead deployment fails the canary loudly (exit 1); benched, all-healthy census is a quiet 0"
+
+# --- 18c (fleet-ops#6115): populated-but-short census = entitled-but-unwired.
+# The retired tier1 block-15 entitled-vs-wired canary's question, now owned by
+# this verdict: the yaml configures 2 deployments, /health answers only 1,
+# neither unhealthy -> the proxy never loaded it -> exit 1, loudly. The prom
+# and state writes still land before the exit (same #6054 contract).
+printf '{"healthy_endpoints":[{"model_info":{"model_name":"worker-cheap"}}],"unhealthy_endpoints":[]}' > "$scratch/census-shortfall.json"
+FLEET_LITELLM_PROM="$scratch/shortfall.prom" \
+FLEET_LITELLM_STATE="$scratch/shortfall.state.json" \
+FLEET_LITELLM_STUB="$scratch/ready-ok.json" \
+FLEET_LITELLM_STUB_HEALTH="$scratch/census-shortfall.json" \
+FLEET_LITELLM_CONFIG="$scratch/models.yaml" \
+FLEET_LITELLM_STUB_PG=1 \
+FLEET_LITELLM_STUB_REDIS=1 \
+FLEET_LITELLM_STUB_INSTALLED=1 \
+FLEET_LITELLM_NOW=1700000450 \
+python3 "$canary" --quiet 2>"$scratch/shortfall.err" && fail "18c: census short of model_list must exit 1 (entitled-but-unwired)"
+grep -q 'health-census-shortfall' "$scratch/shortfall.err" \
+    || fail "18c: shortfall exit must name itself (health-census-shortfall) on stderr"
+grep -q 'fleet_litellm_health_census 1' "$scratch/shortfall.prom" \
+    || fail "18c: shortfall exit must still leave the prom written (scrapeable through the failure)"
+ok "18c: populated-but-short census exits 1 (entitlement = the model_list, #6115)"
 
 echo "ALL OK: fleet-litellm-organ"

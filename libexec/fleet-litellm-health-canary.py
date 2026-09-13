@@ -46,6 +46,13 @@ groups) starved the box while every organ heartbeat stayed 1. The prom and
 state writes still land before the exit so the affected group gauge stays
 scrapeable through the failure.
 
+Entitled-but-unwired (fleet-ops#6115): the model_list in the live yaml IS the
+entitlement. A populated census that counts FEWER deployments than the yaml
+configures (health-census-shortfall) exits 1 — the retired heartbeat-tier1
+block-15 entitled-vs-wired canary's question, now owned by this census:
+#6054 catches a deployment that answers badly, this one catches a deployment
+that is never loaded at all.
+
 Empty-census fail-loud (fleet-ops#4628): GET /health with background_health_checks
 returns the in-memory cache, which starts as {}. After a Prisma reconnect crash
 (engine_process_death / '_Prisma__engine) the cache stays empty even while
@@ -736,6 +743,24 @@ def main(argv: list[str] | None = None) -> int:
             + ",".join(unhealthy_groups)
             + " — deployment(s) failing /health still deployed in the active"
             " groups; bench them (fleet-ops#6054 drill, #5792 accept line)",
+            file=sys.stderr,
+        )
+        return 1
+
+    # Entitlement = the proxy model_list (fleet-ops#6115, design
+    # docs/design/litellm-vs-seat-lib.md §6): every deployment configured in
+    # the live yaml must appear in the /health census. A deployment the proxy
+    # never loaded answers neither healthy nor unhealthy — the retired
+    # heartbeat-tier1 block-15 entitled-vs-wired canary's question, now owned
+    # here. #6054's unhealthy exit above catches a deployment that answers
+    # badly; this catches one that does not answer at all. prom + state are
+    # already written, so the shortfall stays scrapeable through the failure.
+    if census_n < expected_n:
+        print(
+            "fleet-litellm-health-canary: health-census-shortfall "
+            f"census={census_n} expected={expected_n} — configured"
+            " deployment(s) missing from /health: entitled-but-unwired"
+            " (fleet-ops#6115)",
             file=sys.stderr,
         )
         return 1

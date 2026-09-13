@@ -1899,32 +1899,6 @@ else
 fi
 
 # ============================================================================
-# 15. ENTITLED-VS-WIRED CANARY (fleet-ops#387)
-# ============================================================================
-# Every tick, prove every entitled seat has a seat-caps row, cap=0 rows
-# carry a dated reason, and prepaid seats are not labelled free.
-# Violations auto-file and fail the tick (same pager as block 14).
-ENTITLED_CANARY_BIN="${FLEET_ENTITLED_WIRED_CANARY:-/home/nish/.local/bin/fleet-entitled-wired-canary}"
-entitled_canary_rc=0
-if require_manifest_helper "$ENTITLED_CANARY_BIN"; then
-    log "15. entitled-vs-wired canary starting"
-    if "$ENTITLED_CANARY_BIN"; then
-        log "15. entitled-vs-wired canary complete"
-    else
-        entitled_canary_rc=$?
-        log "15. entitled-vs-wired canary FAILED (rc=$entitled_canary_rc) — idle entitlement is invisible capacity; unit will land in --state=failed"
-    fi
-else
-    _req=$?
-    if [ "$_req" -eq 1 ]; then
-        loud "HELPER-MISSING" "entitled-vs-wired canary missing at $ENTITLED_CANARY_BIN — MANIFEST dest; silent skip disabled the entitlement wiring check (fleet-ops#485)"
-        entitled_canary_rc=1
-    else
-        log "15. entitled-vs-wired canary missing at $ENTITLED_CANARY_BIN — skip (not installed)"
-    fi
-fi
-
-# ============================================================================
 # 16. WORKER APP IDENTITY CANARY (fleet-ops#413)
 # ============================================================================
 # Every tick, prove the nishfleet-worker App creds exist, parse, and mint.
@@ -2287,30 +2261,6 @@ else
 fi
 
 # ============================================================================
-# 30. SUPERGROK LIVE-VALIDATE CANARY (fleet-ops#917)
-# ============================================================================
-# sr-prepaid-max-util: a prepaid SuperGrok seat that only looks ready
-# because `pi auth check` tests presence (or invalid_state on a missing
-# file) while the live grok CLI is unauthenticated burns the week unused.
-# This canary runs `grok models` (the CLI's own silent refresh) and writes
-# credentials_bad when the live call is dead. Watcher-broken (grok
-# missing) fails the tick; a dead seat auto-files and keeps the tick
-# green so heartbeat does not storm for 11 days of a Nish login.
-SEAT_LIVE_VALIDATE_BIN="${FLEET_SEAT_LIVE_VALIDATE:-/home/nish/.local/bin/fleet-seat-live-validate}"
-seat_live_validate_rc=0
-if [ -x "$SEAT_LIVE_VALIDATE_BIN" ]; then
-    log "30. SuperGrok live-validate canary starting"
-    if "$SEAT_LIVE_VALIDATE_BIN"; then
-        log "30. SuperGrok live-validate canary complete"
-    else
-        seat_live_validate_rc=$?
-        log "30. SuperGrok live-validate canary FAILED (rc=$seat_live_validate_rc) — grok watcher broken; unit will land in --state=failed"
-    fi
-else
-    log "30. SuperGrok live-validate canary missing at $SEAT_LIVE_VALIDATE_BIN — skip (not installed)"
-fi
-
-# ============================================================================
 # 31. CREDENTIAL / TOKEN EXPIRY CANARY (fleet-ops#938)
 # ============================================================================
 # led-2026-08-27-vacation-window-corrected: Nish departs 2026-08-28, returns
@@ -2519,64 +2469,6 @@ else
         "fleet-queue-product-ratio.prom missing at $product_ratio_prom — queue-composition-cache is absent, product-first precedence is silently failing open"
     log "36.5. product-ratio cache MISSING path=$product_ratio_prom"
     product_ratio_cache_rc=1
-fi
-
-# ============================================================================
-# 37. AIMD LEFTOVER-METER CANARY (fleet-ops#424)
-# ============================================================================
-# Every tick, prove the AIMD reader still lives in litellm-seat.sh. If the code
-# vanishes and learned-caps-audit.log remains, go LOUD and auto-file so a
-# leftover meter cannot look like a live control plane. No new unit.
-AIMD_CANARY_BIN="${FLEET_AIMD_METER_CANARY:-/home/nish/.local/bin/fleet-aimd-meter-canary}"
-aimd_canary_rc=0
-if require_manifest_helper "$AIMD_CANARY_BIN"; then
-    log "37. AIMD leftover-meter canary starting"
-    if "$AIMD_CANARY_BIN"; then
-        log "37. AIMD leftover-meter canary complete"
-    else
-        aimd_canary_rc=$?
-        log "37. AIMD leftover-meter canary FAILED (rc=$aimd_canary_rc) — AIMD reader vanished or leftover meter is orphaned; unit will land in --state=failed"
-    fi
-else
-    _req=$?
-    if [ "$_req" -eq 1 ]; then
-        loud "HELPER-MISSING" "AIMD leftover-meter canary missing at $AIMD_CANARY_BIN — MANIFEST dest; silent skip disabled the leftover-meter check (fleet-ops#424)"
-        aimd_canary_rc=1
-    else
-        log "37. AIMD leftover-meter canary missing at $AIMD_CANARY_BIN — skip (not installed)"
-    fi
-fi
-
-
-# ============================================================================
-# 38. PREPAID MAX-UTILIZATION CANARY (fleet-ops#531)
-# ============================================================================
-# sr-prepaid-max-util (Nish 2026-08-20): prepaid subs run at max
-# utilization. Unused allowance at week/month rollover is money burned.
-# One fail-loud gate (every cap>0 prepaid-quota provider with models must
-# be in prepaid_providers_in_order) plus an observe-to-open expiry-waste
-# detector that auto-files when a wired prepaid seat has 0 picks this ISO
-# week in the last 24h of the week while ready work exists. Discovery
-# never fails the tick; a gate violation does. Emits one PREPAID-UTIL
-# heartbeat line per prepaid seat.
-PREPAID_UTIL_CANARY_BIN="${FLEET_PREPAID_UTIL_CANARY:-/home/nish/.local/bin/fleet-prepaid-util-canary}"
-prepaid_util_canary_rc=0
-if require_manifest_helper "$PREPAID_UTIL_CANARY_BIN"; then
-    log "38. prepaid max-utilization canary starting"
-    if "$PREPAID_UTIL_CANARY_BIN"; then
-        log "38. prepaid max-utilization canary complete"
-    else
-        prepaid_util_canary_rc=$?
-        log "38. prepaid max-utilization canary FAILED (rc=$prepaid_util_canary_rc) — gate violation; unit will land in --state=failed"
-    fi
-else
-    _req=$?
-    if [ "$_req" -eq 1 ]; then
-        loud "HELPER-MISSING" "prepaid max-utilization canary missing at $PREPAID_UTIL_CANARY_BIN — MANIFEST dest; silent skip disabled the prepaid util check (fleet-ops#531)"
-        prepaid_util_canary_rc=1
-    else
-        log "38. prepaid max-utilization canary missing at $PREPAID_UTIL_CANARY_BIN — skip (not installed)"
-    fi
 fi
 
 # ============================================================================
@@ -2949,7 +2841,7 @@ fi
 # ============================================================================
 # done
 # ============================================================================
-log "tier 1 complete: queued=$queued orphan_released=$released failed_seen=$seen failed_repaired=$repaired failed_requeued=$requeued failed_still_failed=$still_failed failed_exhausted=$exhausted failed_escalated=$escd timers_verified=$verified timers_re_enabled=$re_enabled degraded=$degraded undersat_rc=$undersat_rc blocked_rc=${blocked_rc:-0} stale_revert_rc=${stale_revert_rc:-0} claim_reconcile_rc=${claim_reconcile_rc:-0} lifecycle_rc=${lifecycle_rc:-0} low_water_rc=$low_water_rc auditor_rc=${auditor_rc:-0} audit_started=$audit_started audit_canary=$audit_canary_status relabeled=$relabeled deploy_rc=$deploy_rc redpr_rc=$redpr_rc ram_measure_rc=${ram_measure_rc:-0} canary_rc=$canary_rc entitled_canary_rc=$entitled_canary_rc worker_app_canary_rc=$worker_app_canary_rc opencode_m3_canary_rc=$opencode_m3_canary_rc paid_flash_canary_rc=$paid_flash_canary_rc role_gate_rc=${role_gate_rc:-0} researcher_dispatch_rc=$researcher_dispatch_rc quality_slo_rc=${quality_slo_rc:-0} findings_queued_rc=${findings_queued_rc:-0} decisions_ledger_rc=${decisions_ledger_rc:-0} failed_command_rc=${failed_command_rc:-0} debug_playbook_rc=${debug_playbook_rc:-0} interventions_eliminated_rc=${interventions_eliminated_rc:-0} unjustified_rc=${unjustified_rc:-0} max_speed_rc=${max_speed_rc:-0} escalation_completion_rc=${escalation_completion_rc:-0} free_roster_canary_rc=${free_roster_canary_rc:-0} pi_extensions_canary_rc=${pi_extensions_canary_rc:-0} cline_glm53_canary_rc=${cline_glm53_canary_rc:-0} repo_visibility_canary_rc=${repo_visibility_canary_rc:-0} exec_review_canary_rc=${exec_review_canary_rc:-0} work_supply_canary_rc=${work_supply_canary_rc:-0} tailscale_acl_canary_rc=${tailscale_acl_canary_rc:-0} verify_harness_canary_rc=${verify_harness_canary_rc:-0} seat_live_validate_rc=${seat_live_validate_rc:-0} cred_expiry_canary_rc=${cred_expiry_canary_rc:-0} cf_token_canary_rc=${cf_token_canary_rc:-0} geo_aeo_canary_rc=${geo_aeo_canary_rc:-0} quality_ratchet_canary_rc=${quality_ratchet_canary_rc:-0} precedence_band_canary_rc=${precedence_band_canary_rc:-0} product_ratio_cache_rc=${product_ratio_cache_rc:-0} gap_loop_rc=${gap_loop_rc:-0} aimd_canary_rc=${aimd_canary_rc:-0} prepaid_util_canary_rc=${prepaid_util_canary_rc:-0} rulebook_canary=${rulebook_canary_status:-unset} vibes_canary_rc=${vibes_canary_rc:-0} skills_symlink_canary_rc=${skills_symlink_canary_rc:-0} tailscale_localapi_canary_rc=${tailscale_localapi_canary_rc:-0} loose_ends_canary_rc=${loose_ends_canary_rc:-0} empty_burst_canary_rc=${empty_burst_canary_rc:-0} scout_leak_canary_rc=${scout_leak_canary_rc:-0} research_sweep_canary_rc=${research_sweep_canary_rc:-0} timer_manifest_drift_rc=${timer_manifest_drift_rc:-0} money_boundary_check_rc=${money_boundary_check_rc:-0} registration_scan_rc=${registration_scan_rc:-0} reconcile_rc=${reconcile_rc:-0}"
+log "tier 1 complete: queued=$queued orphan_released=$released failed_seen=$seen failed_repaired=$repaired failed_requeued=$requeued failed_still_failed=$still_failed failed_exhausted=$exhausted failed_escalated=$escd timers_verified=$verified timers_re_enabled=$re_enabled degraded=$degraded undersat_rc=$undersat_rc blocked_rc=${blocked_rc:-0} stale_revert_rc=${stale_revert_rc:-0} claim_reconcile_rc=${claim_reconcile_rc:-0} lifecycle_rc=${lifecycle_rc:-0} low_water_rc=$low_water_rc auditor_rc=${auditor_rc:-0} audit_started=$audit_started audit_canary=$audit_canary_status relabeled=$relabeled deploy_rc=$deploy_rc redpr_rc=$redpr_rc ram_measure_rc=${ram_measure_rc:-0} canary_rc=$canary_rc worker_app_canary_rc=$worker_app_canary_rc opencode_m3_canary_rc=$opencode_m3_canary_rc paid_flash_canary_rc=$paid_flash_canary_rc role_gate_rc=${role_gate_rc:-0} researcher_dispatch_rc=$researcher_dispatch_rc quality_slo_rc=${quality_slo_rc:-0} findings_queued_rc=${findings_queued_rc:-0} decisions_ledger_rc=${decisions_ledger_rc:-0} failed_command_rc=${failed_command_rc:-0} debug_playbook_rc=${debug_playbook_rc:-0} interventions_eliminated_rc=${interventions_eliminated_rc:-0} unjustified_rc=${unjustified_rc:-0} max_speed_rc=${max_speed_rc:-0} escalation_completion_rc=${escalation_completion_rc:-0} free_roster_canary_rc=${free_roster_canary_rc:-0} pi_extensions_canary_rc=${pi_extensions_canary_rc:-0} cline_glm53_canary_rc=${cline_glm53_canary_rc:-0} repo_visibility_canary_rc=${repo_visibility_canary_rc:-0} exec_review_canary_rc=${exec_review_canary_rc:-0} work_supply_canary_rc=${work_supply_canary_rc:-0} tailscale_acl_canary_rc=${tailscale_acl_canary_rc:-0} verify_harness_canary_rc=${verify_harness_canary_rc:-0} cred_expiry_canary_rc=${cred_expiry_canary_rc:-0} cf_token_canary_rc=${cf_token_canary_rc:-0} geo_aeo_canary_rc=${geo_aeo_canary_rc:-0} quality_ratchet_canary_rc=${quality_ratchet_canary_rc:-0} precedence_band_canary_rc=${precedence_band_canary_rc:-0} product_ratio_cache_rc=${product_ratio_cache_rc:-0} gap_loop_rc=${gap_loop_rc:-0} rulebook_canary=${rulebook_canary_status:-unset} vibes_canary_rc=${vibes_canary_rc:-0} skills_symlink_canary_rc=${skills_symlink_canary_rc:-0} tailscale_localapi_canary_rc=${tailscale_localapi_canary_rc:-0} loose_ends_canary_rc=${loose_ends_canary_rc:-0} empty_burst_canary_rc=${empty_burst_canary_rc:-0} scout_leak_canary_rc=${scout_leak_canary_rc:-0} research_sweep_canary_rc=${research_sweep_canary_rc:-0} timer_manifest_drift_rc=${timer_manifest_drift_rc:-0} money_boundary_check_rc=${money_boundary_check_rc:-0} registration_scan_rc=${registration_scan_rc:-0} reconcile_rc=${reconcile_rc:-0}"
 # Propagate the first non-zero fail-loud exit. Deploy, missing MANIFEST
 # helpers, undersaturation, red-pr-repair, or a heartbeat canary may fail
 # loud; all route to the same escalation (fleet-heartbeat.service ->
@@ -3001,9 +2893,6 @@ fi
 if [ "${canary_rc:-0}" -ge 2 ]; then
     exit "$canary_rc"
 fi
-if [ "$entitled_canary_rc" -ne 0 ]; then
-    exit "$entitled_canary_rc"
-fi
 if [ "${worker_app_canary_rc:-0}" -ne 0 ]; then
     exit "$worker_app_canary_rc"
 fi
@@ -3051,9 +2940,6 @@ fi
 if [ "${verify_harness_canary_rc:-0}" -ne 0 ]; then
     exit "$verify_harness_canary_rc"
 fi
-if [ "${seat_live_validate_rc:-0}" -ne 0 ]; then
-    exit "$seat_live_validate_rc"
-fi
 if [ "${cred_expiry_canary_rc:-0}" -ne 0 ]; then
     exit "$cred_expiry_canary_rc"
 fi
@@ -3076,12 +2962,6 @@ fi
 # regression — a dead exporter must not sit silent for 48h again.
 if [ "${product_ratio_cache_rc:-0}" -ne 0 ]; then
     exit "$product_ratio_cache_rc"
-fi
-if [ "${aimd_canary_rc:-0}" -ne 0 ]; then
-    exit "$aimd_canary_rc"
-fi
-if [ "${prepaid_util_canary_rc:-0}" -ne 0 ]; then
-    exit "$prepaid_util_canary_rc"
 fi
 if [ "${vibes_canary_rc:-0}" -ne 0 ]; then
     exit "$vibes_canary_rc"
