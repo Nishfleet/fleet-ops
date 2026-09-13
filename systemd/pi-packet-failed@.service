@@ -3,7 +3,22 @@ Description=Record that pi packet %i exhausted its retry policy
 
 [Service]
 Type=oneshot
-# Deliberately does nothing but record. Retry, backoff and give-up already happened
-# in pi-packet@.service's own policy. Anything more would be re-growing the thing
-# Nish forbade on 2026-08-24 ("No hand-built orchestration. Ever.").
-ExecStart=/usr/bin/logger -t pi-packet-failed -p user.err "packet %i exhausted StartLimitBurst - needs a human or a council, not another retry"
+Environment=HOME=/home/nish
+Environment=PATH=/home/nish/.local/bin:/usr/local/bin:/usr/bin:/bin
+WorkingDirectory=/home/nish
+# Deliberately a recorder, never a retrier. Retry, backoff and give-up already
+# happened in pi-packet@.service's own policy — anything more would be
+# re-growing the thing Nish forbade on 2026-08-24 ("No hand-built
+# orchestration. Ever."). But "record" is not a syslog line nobody reads
+# (fleet-ops#5444): the handler writes the heartbeat triage file, the
+# findings ledger, and an agent-ready re-queue issue for --deliverable
+# packets. %i is the pi-packet instance, or the full failed unit name when it
+# carries a unit suffix (pi-systemd-run transient path — same convention as
+# unit-escalation@).
+# /bin/bash -c 'exec …' is the repo's runner-safe ExecStart shape for a VPS
+# path (stop-escalation.service precedent; fleet-ops#154 class lock): hosted
+# CI can syntax-verify the unit without stubbing the VPS bin, `exec` replaces
+# the shell so signals/timeout hit the handler itself, and %i expands before
+# bash parses the line.
+ExecStart=/bin/bash -c 'exec /home/nish/.local/bin/pi-packet-failed %i'
+TimeoutStartSec=120

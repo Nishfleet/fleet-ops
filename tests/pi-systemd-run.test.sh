@@ -377,3 +377,9 @@ set -e
 [[ ! -f "$LEDGER" ]] || fail "FLEET_DISPATCH_LEDGER_NO_WRITE must suppress ledger"
 
 ok "FLEET_DISPATCH_LEDGER_NO_WRITE suppresses ledger append (fleet-ops#1009)"
+
+# fleet-ops#5444: nested so hosted CI runs the pi-packet-failed handler tests
+# without a workflow edit (nishfleet-worker cannot push .github/workflows/**).
+# Hermetic phases (fake systemctl/journalctl/logger/fleet-issue-file) run
+# everywhere; the stub-unit drill phase self-skips without systemd --user.
+bash "$here/pi-packet-failed.test.sh" || fail "pi-packet-failed tests failed"
