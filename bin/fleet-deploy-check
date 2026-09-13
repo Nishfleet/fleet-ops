@@ -215,8 +215,37 @@ accept: name the writer before touching anything (active pi-issue@* units, open 
 # checkout) or dangling (target vanished), and retarget it to canonical via
 # the sanctioned install.sh, so a worktree removal can never blind the
 # fleet. The repair is the same install.sh the heartbeat runs; it retargets
-# non-canonical symlinks to canonical (fleet-ops#1189) and daemon-reloads.
+# non-canonical symlinks to canonical (fleet-ops#1189) and daemon-reloads,
+# then closes what install.sh structurally cannot (fleet-ops#5998):
+# install.sh only touches MANIFEST rows, so a flagged unit absent from the
+# canonical checkout made it exit rc=0 without changing the link and the
+# detect->retarget(no-op) loop repeated every 2 min (live 2026-09-12:
+# gh-runner@ from the #5935 worktree). The gate now stands the LOUD down
+# while a live workspaces target's unit is not in the canonical checkout
+# (a worker's in-flight unit — its PR is open), and the repair retargets
+# the leftover directly at the canonical unit file whenever one exists —
+# for a live target or a dangling one (removing a dangling link whose unit
+# already landed canonically would strand the unit until the next
+# unconditional install) — or removes a dangling link whose unit is gone
+# entirely (its own install recreates the link when its PR lands and
+# deploys). The unit-file name resolves through the instance->template
+# convention: gh-runner@1.service is served by the gh-runner@.service
+# TEMPLATE — canon never carries per-instance copies, so checking the bare
+# basename would miss exactly the units that instantiate.
 # Compare-only mode (FLEET_DEPLOY_CHECK_NO_DEPLOY=1) detects+LOUDs only.
+
+# fleet-ops#5998: the unit-file name for a unit-dir symlink. An instantiated
+# unit (gh-runner@1.service) is served by its TEMPLATE unit file
+# (gh-runner@.service); a plain unit name is its own unit file. canon never
+# carries per-instance copies.
+unit_template_of() {
+    local b="$1"
+    case "$b" in
+        *@*) printf '%s\n' "${b%@*}@.${b##*.}" ;;
+        *)   printf '%s\n' "$b" ;;
+    esac
+}
+
 noncanonical_unit_symlinks() {
     local unit_dir="${FLEET_DEPLOY_CHECK_UNIT_DIR:-$HOME/.config/systemd/user}"
     local canon ws_root f link target
@@ -233,7 +262,25 @@ noncanonical_unit_symlinks() {
         if target=$(readlink -f "$f" 2>/dev/null) && [[ -n "$target" ]]; then
             case "$target" in
                 "$canon"|"$canon"/*) continue ;;
-                "$ws_root"|"$ws_root"/*) printf '%s\n' "$f" ;;
+                "$ws_root"|"$ws_root"/*)
+                    # fleet-ops#5998: a LIVE workspaces target whose unit
+                    # file does not exist in the canonical checkout is a
+                    # worker's in-flight unit — its PR is open and its own
+                    # install.sh pointed the symlink there on purpose. The
+                    # canonical install.sh has no MANIFEST row for it, so
+                    # its repair is a no-op and the 2-min LOUD would loop
+                    # until the worktree dies. Stand the LOUD down while
+                    # the target is live; it self-heals — once the unit
+                    # lands in $canon/systemd/ (PR merged) this symlink
+                    # becomes repairable and the next tick retargets it.
+                    # The existence check is on the TEMPLATE name (see
+                    # unit_template_of): the live #5935 symlink was the
+                    # INSTANCE gh-runner@1.service, and canon only ever
+                    # holds the gh-runner@.service template.
+                    if [[ -e "$canon/systemd/$(unit_template_of "$(basename "$f")")" ]]; then
+                        printf '%s\n' "$f"
+                    fi
+                    ;;
             esac
         else
             # Dangling symlink (target vanished) — the exact condition that
@@ -268,7 +315,59 @@ repair_noncanonical_units() {
             loud "DEPLOY-CHECK-NONCANONICAL-UNITS" \
                 "install.sh repair exited rc=$rc (retry next tick)"
         fi
-    else
+    fi
+    # Close what install.sh structurally cannot (fleet-ops#5998): install.sh
+    # only touches MANIFEST rows, so a flagged unit missing from the
+    # canonical checkout made it exit rc=0 without changing the link and the
+    # detect->retarget(no-op) loop repeated every 2 min. Re-detect AFTER
+    # install.sh and repair the leftovers directly: retarget to the canonical
+    # unit file whenever one exists (fleet-ops#1189 semantics) — the name
+    # resolves instance->template (gh-runner@1.service lands on
+    # gh-runner@.service) — for a dangling target too; otherwise remove a
+    # dangling link whose unit is gone entirely (nothing to point at; the
+    # unit's own install recreates the link when its PR lands and deploys).
+    local canon2 closer_list f b uf target2 n_fixed=0 n_dangling=0
+    canon2=$(readlink -f "${FLEET_OPS_CANONICAL_CHECKOUT:-$CHECKOUT}" 2>/dev/null || printf '%s\n' "$CHECKOUT")
+    closer_list=$(noncanonical_unit_symlinks)
+    if [[ -n "$closer_list" ]]; then
+        while IFS= read -r f; do
+            [[ -n "$f" ]] || continue
+            [[ -L "$f" ]] || continue
+            b=$(basename "$f")
+            uf=$(unit_template_of "$b")
+            # Retarget whenever the canonical unit file exists — live or
+            # dangling target alike (fleet-ops#5998): canon can serve the
+            # unit, so rm would strand it until the next unconditional
+            # install. Only a dangling link with NO canonical unit file is
+            # removed.
+            if [[ -e "$canon2/systemd/$uf" ]]; then
+                if ln -sfn "$canon2/systemd/$uf" "$f"; then
+                    n_fixed=$((n_fixed + 1))
+                else
+                    log "WARN: ln -sfn $f -> $canon2/systemd/$uf failed — left for the next tick"
+                fi
+            elif target2=$(readlink -f "$f" 2>/dev/null) && [[ -n "$target2" ]]; then
+                # Live target, no canonical unit file — the detector stood
+                # it down as in-flight; leave the link alone.
+                :
+            elif rm -f "$f"; then
+                n_dangling=$((n_dangling + 1))
+            else
+                log "WARN: rm -f $f failed — dead link left for the next tick"
+            fi
+        done <<<"$closer_list"
+        if (( n_fixed + n_dangling > 0 )); then
+            if ! systemctl --user daemon-reload 2>/dev/null; then
+                log "WARN: systemctl --user daemon-reload failed — systemd may keep stale unit state"
+            fi
+        fi
+    fi
+    # The success line reports what actually changed (fleet-ops#5998): a
+    # blanket "retargeted to canonical (rc=0)" after a no-op repair masked
+    # the loop the LOUD kept firing about.
+    if (( n_fixed > 0 || n_dangling > 0 )); then
+        log "non-canonical unit symlinks repaired: $n_fixed retargeted to canonical, $n_dangling dangling removed (install.sh rc=$rc)"
+    elif [[ "$rc" -eq 0 ]]; then
         log "non-canonical unit symlinks retargeted to canonical (rc=0)"
     fi
 }

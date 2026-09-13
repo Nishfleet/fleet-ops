@@ -139,6 +139,15 @@ PROM_FILE="${FLEET_SEAT_COMEBACK_PROM:-/var/lib/prometheus/node-exporter/fleet-s
 # auditable and the "one actions.log line per release" contract holds. Defaults
 # to the alert-repair packet dir actions.log; tests override it.
 ACTIONS_LOG="${FLEET_SEAT_COMEBACK_ACTIONS_LOG:-$AS/alert-repair/actions.log}"
+# hand-releases it replaces. Best-effort: a write failure must not fail the
+# sweep (the ledger/prom are the routing authority; this is the record).
+actions_log() {
+    [[ -n "$ACTIONS_LOG" ]] || return 0
+    local line
+    line="[$(date -u +%Y-%m-%dT%H:%M:%SZ)] COMEBACK-RELEASE $*"
+    mkdir -p "$(dirname "$ACTIONS_LOG")" 2>/dev/null || true
+    printf '%s\n' "$line" >> "$ACTIONS_LOG" 2>/dev/null || true
+}
 MIN_INTERVAL="${FLEET_SEAT_COMEBACK_MIN_INTERVAL_S:-900}"
 PROBE_TIMEOUT="${FLEET_SEAT_COMEBACK_TIMEOUT_S:-45}"
 # fleet-ops#2493: when a probe fails, the seat-health extension can only

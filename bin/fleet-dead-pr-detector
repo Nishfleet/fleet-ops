@@ -36,8 +36,10 @@ fi
 #      #36" thus leaves no refs and resolves no bogus fleet-ops parent #36
 # Then, first match wins on the SCRUBBED body:
 #   1. explicit delivery trailer in the body — `Closes|Fixes|Resolves
-#      #N`, `Closed #N`, with an optional `<repo>#N` /
-#      `<owner>/<repo>#N` prefix
+#      #N`, `Closed #N`, the house `Moves|Moved #N` delivery trailer
+#      (#6046), with an optional `<repo>#N` / `<owner>/<repo>#N` prefix
+#      and an optional colon between verb and ref (`moves: #N`,
+#      `Fixes: #N`)
 #   2. `Relates to #N` in the body
 #   3. head branch `claim/issue-<N>`
 #   4. first bounded `#N` reference in the body (word-boundary, N >= 1,
@@ -151,8 +153,10 @@ marker_file() { printf '%s/%s-%s.first-seen' "$STATE_DIR" "$repo_short" "$1"; }
 # Delivery/related/reference patterns, exact-number bounded with an optional
 # repo prefix — mirrors fleet-merged-pr-close (#1135 must never match
 # #11352; the closing keyword family and `Relates to` forms are as GitHub
-# accepts them).
-TRAILER_RE='(^|[^0-9A-Za-z])(Clos(es?|ed)|Fix(es|ed)?|Resolv(es?|ed))[[:space:]]+([A-Za-z0-9_.-]+(/[A-Za-z0-9_.-]+)?)?#[1-9][0-9]*([^0-9A-Za-z]|$)'
+# accepts them). TRAILER_RE also carries the house `Moves|Moved` delivery
+# verb (#6046: a PR's `moves:` trailer is a closing signal, not prose) and
+# an optional colon between verb and ref (`moves: #N`, `Fixes: #N`).
+TRAILER_RE='(^|[^0-9A-Za-z])((Clos(es?|ed)|Fix(es|ed)?|Resolv(es?|ed)|Mov(es|ed))):?[[:space:]]+([A-Za-z0-9_.-]+(/[A-Za-z0-9_.-]+)?)?#[1-9][0-9]*([^0-9A-Za-z]|$)'
 RELATES_RE='(^|[^0-9A-Za-z])Relat(es|ed)[[:space:]]+to[[:space:]]+#[1-9][0-9]*([^0-9A-Za-z]|$)'
 REF_RE='(^|[^0-9A-Za-z])([A-Za-z0-9_.-]+(/[A-Za-z0-9_.-]+)?)?#[1-9][0-9]*([^0-9A-Za-z]|$)'
 

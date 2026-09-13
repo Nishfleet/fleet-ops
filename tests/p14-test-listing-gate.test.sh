@@ -742,6 +742,23 @@ grep -Eq '^[[:space:]]*bash[[:space:]]+"?\$here/pi-intake-tick-mention-strand-pa
   || fail "pi-intake-tick-mention-strand-park.test.sh must not be a known orphan (fleet-ops#5045)"
 ok "pi-intake-tick-mention-strand-park.test.sh is pinned in the P14 reachable set (fleet-ops#5045)"
 
+# fleet-ops#6052: hard-pin the host line for the deleted-symbol gate. It is
+# hosted from ci-standards-audit.test.sh (already in ci.yml) because the
+# worker App has no Workflows scope to add a ci.yml line — the #5748 hosting
+# shape. The gate itself is a P14 step: on pull_request events it fails P14
+# when the PR deletes a lib/ or bin/ definition that tests/ still reference
+# (#5993 went red three times, one symbol at a time). Named pin so a future
+# drop of the host line cannot park the test on known_orphans to silence the
+# generic $bad[] message — it fails by name here first.
+grep -Eq '^[[:space:]]*bash[[:space:]]+"?\$here/deleted-symbol-gate\.test\.sh"?' \
+  "$here/ci-standards-audit.test.sh" \
+  || fail "ci-standards-audit.test.sh must bash-invoke deleted-symbol-gate.test.sh (fleet-ops#6052)"
+[[ -n "${reachable[deleted-symbol-gate.test.sh]:-}" ]] \
+  || fail "deleted-symbol-gate.test.sh must be listed in ci.yml or hosted by a listed test (fleet-ops#6052)"
+[[ -z "${known_orphan_set[deleted-symbol-gate.test.sh]:-}" ]] \
+  || fail "deleted-symbol-gate.test.sh must not be a known orphan (fleet-ops#6052)"
+ok "deleted-symbol-gate.test.sh is pinned in the P14 reachable set (fleet-ops#6052)"
+
 shopt -s nullglob
 all_tests=("$here"/*.test.sh)
 shopt -u nullglob
@@ -1155,5 +1172,24 @@ grep -Eq '^[[:space:]]*bash[[:space:]]+"?\$here/pick-seat-freeze\.test\.sh"?' \
 [[ -z "${known_orphan_set[pick-seat-freeze.test.sh]:-}" ]] \
   || fail "pick-seat-freeze.test.sh must not be a known orphan (fleet-ops#4263)"
 ok "pick-seat-freeze.test.sh host line in ci-standards-audit.test.sh is pinned (fleet-ops#4263)"
+
+# fleet-ops#6020: hard-pin the fleet-ops#1176 nested-host line for
+# fleet-token-economy.test.sh in rule-enforcement.test.sh (itself listed in
+# ci.yml). The #6020 finding judged the suite "not in the P14 CI list" from a
+# grep of ci.yml alone — the exact fleet-ops#619 trap: it was already hosted
+# here since #1176. The red the finding cites (beda5a135, #3125 yield-order
+# assertion) was fixed by #6037 the same day. If this host line is ever
+# dropped, the suite silently leaves P14, so it is caught by name here —
+# the #4396-class "never silently rot again" teeth, without a redundant
+# standalone ci.yml line (nested host = the #660/#1176 pattern; worker
+# tokens cannot push .github/workflows/** edits).
+grep -Eq '^[[:space:]]*bash[[:space:]]+"?\$here/fleet-token-economy\.test\.sh"?' \
+  "$here/rule-enforcement.test.sh" \
+  || fail "rule-enforcement.test.sh must bash-invoke fleet-token-economy.test.sh (fleet-ops#6020)"
+[[ -n "${reachable[fleet-token-economy.test.sh]:-}" ]] \
+  || fail "fleet-token-economy.test.sh must be listed in ci.yml or hosted by a listed test (fleet-ops#6020)"
+[[ -z "${known_orphan_set[fleet-token-economy.test.sh]:-}" ]] \
+  || fail "fleet-token-economy.test.sh must not be a known orphan (fleet-ops#6020)"
+ok "fleet-token-economy.test.sh host line in rule-enforcement.test.sh is pinned (fleet-ops#6020)"
 
 echo "OK: p14-test-listing-gate.test.sh: P14 test list is closed"

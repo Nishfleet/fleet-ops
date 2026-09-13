@@ -86,7 +86,10 @@ cat >"$SEAT_CAPS_JSON" <<'JSON'
   "ram_gb_per_worker": 1.5,
   "providers": {
     "ollama": { "cap": 8, "class": "prepaid-quota", "hang_timeout_s": 2640, "models": { "deepseek-v4-flash:0731": 8 } },
-    "devin":  { "cap": 4, "class": "subscription", "models": { "glm-5-2": 4 } }
+    "devin":  { "cap": 4, "class": "subscription", "models": { "glm-5-2": 4 } },
+    "litellm": { "cap": 6, "class": "proxy", "hang_timeout_s": 2400,
+                 "models": { "worker-cheap": { "cap": 6, "hang_timeout_s": 2640 },
+                             "worker-capable": { "cap": 3 } } }
   }
 }
 JSON
@@ -103,6 +106,24 @@ ok "seat_hang_timeout_s: ollama override = 2640s"
 v=$(seat_hang_timeout_s "devin" "glm-5-2")
 [[ "$v" == "2520" ]] || fail "seat_hang_timeout_s devin: expected 2520 (default), got $v"
 ok "seat_hang_timeout_s: devin fallback = 2520s"
+
+# fleet-ops#6154: a per-MODEL override must win over the provider value.
+# Before the fix seat_hang_timeout_s ignored $2 entirely, so this returned the
+# provider-level 2400 and every per-group value in seat-caps.json was dead
+# config — the litellm worker groups kept being rc=124 killed mid-session.
+v=$(seat_hang_timeout_s "litellm" "worker-cheap")
+[[ "$v" == "2640" ]] || fail "seat_hang_timeout_s litellm/worker-cheap: expected 2640 (per-model override), got $v"
+ok "seat_hang_timeout_s: per-model override wins over provider (2640s)"
+
+# A model with no override under a provider that has one -> provider value.
+v=$(seat_hang_timeout_s "litellm" "worker-capable")
+[[ "$v" == "2400" ]] || fail "seat_hang_timeout_s litellm/worker-capable: expected 2400 (provider fallback), got $v"
+ok "seat_hang_timeout_s: model without override falls back to provider (2400s)"
+
+# An unknown model under a provider with no override -> global default.
+v=$(seat_hang_timeout_s "devin" "no-such-model")
+[[ "$v" == "2520" ]] || fail "seat_hang_timeout_s devin/no-such-model: expected 2520 (global default), got $v"
+ok "seat_hang_timeout_s: unknown model -> global default 2520s"
 
 # An unknown provider -> default 2520
 v=$(seat_hang_timeout_s "unknown" "unknown-model")

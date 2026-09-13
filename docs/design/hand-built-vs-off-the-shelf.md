@@ -344,3 +344,5 @@ Row 11 classify rows are filed as classify issues.
 | 10 issue-close-duplicates + merged-pr-close -> Actions | #4161 |
 | 11 oracle-* classify | #4162 |
 | 11 memory-index-dedupe + hermes-staff + 0509-surface-probe classify | #4150 |
+
+Spec-gate note (2026-09-12, #6021): every #4140-row issue body above now carries the line-anchored `accept:`/`moves:` tokens — all 20 pass `lib/agent-ready-spec-gate.py check-body --repo fleet-ops`; the hourly refuse loop (>120 comments on #4160 alone) is closed. The ten bodies still refusing on 2026-09-12 (#4142, #4144, #4145, #4146, #4149, #4153, #4154, #4155, #4158, #4159) were appended in place, two lines each, prose verbatim; no machinery touched.
