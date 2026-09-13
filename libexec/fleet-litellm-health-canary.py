@@ -334,7 +334,7 @@ def _probe_completion(proxy_url: str, timeout: float) -> int:
         req = urllib.request.Request(
             proxy_url.rstrip("/") + "/chat/completions",
             data=json.dumps(
-                {"model": model, "messages": [{"role": "user", "content": "ping"}], "max_tokens": 1}
+                {"model": model, "messages": [{"role": "user", "content": "ping"}], "max_completion_tokens": 1}
             ).encode("utf-8"),
             headers=headers,
             method="POST",

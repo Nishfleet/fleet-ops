@@ -28,7 +28,11 @@ LITELLM_HEALTH_URL="${LITELLM_HEALTH_URL:-http://127.0.0.1:4000/health/readiness
 # when unset, so a test that overrides LITELLM_HEALTH_URL stays hermetic (a
 # dead readiness origin means a dead completions origin — unchanged verdicts).
 LITELLM_COMPLETIONS_URL="${LITELLM_COMPLETIONS_URL:-$(printf '%s' "$LITELLM_HEALTH_URL" | sed -E 's#(/health/readiness|/health)/?$##')/chat/completions}"
-LITELLM_COMPLETIONS_TIMEOUT_S="${LITELLM_COMPLETIONS_TIMEOUT_S:-6}"
+LITELLM_COMPLETIONS_TIMEOUT_S="${LITELLM_COMPLETIONS_TIMEOUT_S:-30}"
+# 30s, measured 2026-09-13: the product path's own tail under the 40-worker
+# load was 9.7s (readiness 2.5s healthy, incident readiness 20s+ hung) — a 6s
+# budget missed the 200 it exists to catch. Only runs after readiness misses
+# its 3s fast-fail, so the healthy path stays 3s.
 LITELLM_COMPLETIONS_MODEL="${LITELLM_COMPLETIONS_MODEL:-worker-cheap}"
 LITELLM_COMPLETIONS_KEY_FILE="${LITELLM_COMPLETIONS_KEY_FILE:-$HOME/.config/fleet-ops/litellm-master-key.env}"
 
@@ -112,7 +116,7 @@ _litellm_completions_ok() {
     [[ -n "$k" ]] && hdr+=(-H "Authorization: Bearer $k")
     code=$(curl -fsS -m "$LITELLM_COMPLETIONS_TIMEOUT_S" -o /dev/null -w '%{http_code}' \
         -X POST "$LITELLM_COMPLETIONS_URL" "${hdr[@]}" \
-        -d "{\"model\":\"$LITELLM_COMPLETIONS_MODEL\",\"messages\":[{\"role\":\"user\",\"content\":\"ping\"}],\"max_tokens\":1}" \
+        -d "{\"model\":\"$LITELLM_COMPLETIONS_MODEL\",\"messages\":[{\"role\":\"user\",\"content\":\"ping\"}],\"max_completion_tokens\":1}" \
         2>/dev/null) || true
     [[ "$code" == "200" ]]
 }
