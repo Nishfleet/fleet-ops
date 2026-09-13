@@ -177,3 +177,36 @@ run_invariant \
     "non-healthy direction (sandbox localhost class, not empty-success/healthy)"
 
 ok "fleet-ops#4690: classifyCliOutput matches error connecting to localhost on exit 0 as transient_fault, not healthy"
+
+# 2026-09-11 FleetMainRed (unit alert-repair-FleetMainRed-20260911T135207Z):
+# a cli_timeout is a FULL-BUDGET hang — the devin lane's spawnSync transport
+# cap is 2400s and that run died at exactly the cap with tools=0 (zero work).
+# The old getDefaultBackoffSeconds("cli_timeout") hardcode of 60s re-armed the
+# same 40-min bomb one minute later: pick_seat re-offered the wedged seat to
+# the next dispatch (devin was on the alert-repair FALLBACK_LADDER, reason=
+# fallback). Fix: bench cli_timeout at walled_comeback.min_probe_interval_s
+# (default 900s, same as empty_run — the other no-work class) so the comeback
+# real-work probe re-admits the seat instead of a live dispatch. Repeat hangs
+# still converge to seat_dead via the corpse threshold (fleet-ops#2145 lists
+# cli_timeout among the transient classes).
+last=$(node --experimental-strip-types --no-warnings=ExperimentalWarning \
+    --input-type=module -e "
+import { computeUsableAt, failureModeForStatus } from ${EXT_PATH@Q};
+const now = Date.now();
+const ua = computeUsableAt('cli_timeout', null, now, 0, 'devin');
+const backoff = ua === null ? -1 : (new Date(ua).getTime() - now) / 1000;
+const modeOk = failureModeForStatus(0, true) === 'cli_timeout';
+console.log('RESULT_JSON:' + JSON.stringify({ backoff, modeOk }));
+" 2>&1 | tail -n1)
+if [[ "$last" != RESULT_JSON:* ]]; then
+    fail "inv7: node output did not contain a RESULT_JSON line (got: $last)"
+fi
+backoff=$(node -e "const p=JSON.parse(process.argv[1]); console.log(p.backoff)" "${last#RESULT_JSON:}" 2>/dev/null || echo "?")
+mode_ok=$(node -e "const p=JSON.parse(process.argv[1]); console.log(p.modeOk)" "${last#RESULT_JSON:}" 2>/dev/null || echo "no")
+if [[ "$mode_ok" != "true" ]]; then
+    fail "inv7: failureModeForStatus(0, true) must stay cli_timeout (got $mode_ok)"
+fi
+if ! [[ "$backoff" =~ ^[0-9]+$ ]] || [[ "$backoff" -lt 900 ]]; then
+    fail "inv7: cli_timeout backoff regressed to ${backoff}s (<900) — the 60s default re-arms a full-budget hang (devin spawnSync cap 2400s, tools=0) one minute after each 40-min zero-work burn"
+fi
+ok "inv7: cli_timeout full-budget hang benches >= 900s (got ${backoff}s), not 60s"
