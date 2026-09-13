@@ -1303,6 +1303,21 @@ fixtures = {
         "http_status": 429, "health_class": "rate_limited", "seat_dead": False,
         "usable_at": PAST, "bench_until": None, "consecutive_failure_count": 15,
     },
+    # 10. fleet-ops#3891: the LIVED phantom key, exercised directly —
+    #     openrouter/deepseek/deepseek-v4-pro-0813 (provider=openrouter,
+    #     model=deepseek/deepseek-v4-pro-0813) past-wall + quota_exhausted.
+    #     It was retired 2026-09-06 via alert-repair and was NEVER a
+    #     seat-caps.json models key, so the #3661 guard must exclude it the
+    #     same way it excludes the synthetic phantom above; the 3 real
+    #     past-wall seats (cb_n==3) must still count with this fixture
+    #     present. No consecutive_failure_count: it stays outside the
+    #     [10, 25) never-released window, so nr_n==1 below also proves the
+    #     lived phantom does not leak into that collector either.
+    "openrouter__deepseek_deepseek-v4-pro-0813.json": {
+        "provider": "openrouter", "model": "deepseek/deepseek-v4-pro-0813",
+        "http_status": 402, "health_class": "quota_exhausted", "seat_dead": False,
+        "usable_at": PAST, "bench_until": None,
+    },
 }
 for name, body in fixtures.items():
     (Path(seat_dir) / name).write_text(json.dumps(body))
@@ -1350,7 +1365,15 @@ assert not any("muse-spark" in i for i in ids), "corpse leaked into comeback"
 # its wall is expired (fleet-ops#3661 SEAT-KEY-INVALID consistency).
 assert not any("phantom-gone-free" in i for i in ids), \
     "phantom seat key leaked into comeback-overdue"
+# fleet-ops#3891: the LIVED phantom — provider=openrouter,
+# model=deepseek/deepseek-v4-pro-0813 (past-wall, quota_exhausted; retired
+# 2026-09-06 and never a seat-caps.json models key) — is excluded by the
+# same #3661 guard, while the 3 real past-wall seats still count (cb_n==3
+# above stays 3 with this fixture present).
+assert "openrouter__deepseek/deepseek-v4-pro-0813" not in ids, \
+    f"lived phantom key (fleet-ops#3891) leaked into comeback-overdue: {ids}"
 print("OK: _read_comeback_overdue counts past-wall seats, excludes bench/test/corpse/mid-cycle + phantom keys")
+print("OK: lived phantom openrouter/deepseek/deepseek-v4-pro-0813 excluded, 3 real past-wall seats still count (fleet-ops#3891)")
 
 # --- _read_never_released over the scratch ledger ---
 # The phantom fixture has cfc=15 (inside the [10, 25) never-released window) as

@@ -157,6 +157,14 @@ grep -q "STUCK-PACKET.*packet-FleetStuckFail-${ts_8h_ago}.md" "$scratch/run.stde
     && fail "scenario 3: failed-filing packet must NOT be archived" || true
 ok "scenario 3: filing failure keeps the packet + LOUD (fail open)"
 
+# fleet-ops#6345: the fail-open leftover's duty (kept + LOUD) ends here.
+# Remove it so scenario 4a's burst is exactly the covered-older packet and
+# the true-MAX watermark (not this older prop) decides fresh-vs-covered:
+# with the prop kept, the 4a burst's newest (8h-ago) exceeds the state
+# watermark (9h-ago) and legitimately re-opens the burst with a fresh
+# filing instead of taking the reasoned-drop path 4a exists to prove.
+rm -f "$AS/alert-repair/packet-FleetStuckFail-${ts_8h_ago}.md"
+
 # ---------------------------------------------------------------------------
 # Scenario 4: state watermark dedupe — an OLDER- THAN-watermark stuck packet
 # arriving after a settled burst is a reasoned drop under the EXISTING filing
@@ -212,6 +220,45 @@ if grep -q "STUCK-PACKET" "$scratch/run.stderr"; then
     fail "scenario 5: absorbed episode must not re-LOUD; stderr: $(cat "$scratch/run.stderr")"
 fi
 ok "scenario 5: terminal record absorbs the episode's re-fire — stuck set returns to 0 (fleet-ops#5869)"
+
+# ---------------------------------------------------------------------------
+# Scenario 6 (fleet-ops#6345): the newest-packet watermark takes the MAX
+# dispatch instant across the burst, not the lexically-last stuck packet.
+# Glob order is (alertname, ts) lexicographic, NOT dispatch order, so a
+# burst mixing alertnames puts its newest dispatch anywhere in the list.
+# Observed 2026-09-13T11:43:48Z: the issue evidence reported "newest
+# dispatch instant 04:44:52Z" while FleetLitellmProxyAbsent-053252Z
+# (dispatched 05:32:52Z) was in that very burst — the recorded watermark
+# understated the newest covered packet, which decides fresh-filing vs
+# reasoned-drop for the NEXT burst.
+#
+# FleetAlpha (7h ago) is the true newest; FleetZulu (9h ago) sorts LAST in
+# glob order. The legacy last-entry read reports 9h-ago; the fixed read
+# must report 7h-ago in BOTH the filing evidence and the state watermark.
+# ---------------------------------------------------------------------------
+rm -f "$AS/alert-repair/stuck-escalation-state.json"
+touch "$AS/alert-repair/packet-FleetAlpha-${ts_7h_ago}.md"
+touch "$AS/alert-repair/packet-FleetZulu-${ts_9h_ago}.md"
+: > "$STUB_LOG"
+rm -f "$scratch/run.stderr"
+run_drain "$scratch/fleet-issue-file-stub"
+[[ "$(grep -c "^stub-call " "$STUB_LOG" 2>/dev/null || true)" -eq 1 ]] \
+    || fail "scenario 6: exactly one filing expected for the fresh burst; calls: $(grep -c "^stub-call " "$STUB_LOG" 2>/dev/null || true)"
+alpha_iso="${ts_7h_ago:0:4}-${ts_7h_ago:4:2}-${ts_7h_ago:6:2}T${ts_7h_ago:9:2}:${ts_7h_ago:11:2}:${ts_7h_ago:13:2}Z"
+grep -F "newest dispatch instant $alpha_iso" "$STUB_LOG" >/dev/null \
+    || fail "scenario 6: filing evidence must report the TRUE newest dispatch instant ($alpha_iso), not the lexically-last packet's (${ts_9h_ago}Z); stub: $(cat "$STUB_LOG")"
+jq -e --arg a "$alpha_iso" '.newest_packet_iso == $a' "$AS/alert-repair/stuck-escalation-state.json" >/dev/null \
+    || fail "scenario 6: state watermark must be the true newest dispatch instant ($alpha_iso); state: $(cat "$AS/alert-repair/stuck-escalation-state.json" 2>/dev/null || true)"
+grep -F "DISPOSITION stuck-packet packet=packet-FleetAlpha-${ts_7h_ago}.md terminal=escalated-filed issue=999" \
+    "$AS/alert-repair/actions.log" >/dev/null \
+    || fail "scenario 6: FleetAlpha (true newest) must be disposed; log: $(tail -4 "$AS/alert-repair/actions.log")"
+grep -F "DISPOSITION stuck-packet packet=packet-FleetZulu-${ts_9h_ago}.md terminal=escalated-filed issue=999" \
+    "$AS/alert-repair/actions.log" >/dev/null \
+    || fail "scenario 6: FleetZulu (lexically last) must be disposed; log: $(tail -4 "$AS/alert-repair/actions.log")"
+if grep -q "STUCK-PACKET" "$scratch/run.stderr"; then
+    fail "scenario 6: fully disposed burst must NOT re-LOUD; stderr: $(cat "$scratch/run.stderr")"
+fi
+ok "scenario 6: newest-packet watermark = MAX dispatch instant, not the lexically-last stuck packet (fleet-ops#6345)"
 
 echo
 echo "alert-repair-stuck-packet: all scenarios passed (fleet-ops#5622)"
