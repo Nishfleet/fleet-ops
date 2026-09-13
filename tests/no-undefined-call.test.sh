@@ -310,14 +310,27 @@ def clauses(text):
                                     # the terminator — keep the $() context
                                     # open across it via the outer loop
                                     heredoc = m.group(3)
-                                    _heredoc_pending_close = stack + ["c"]
-                                    # stash so the post-heredoc ) closes it
-                                    globals()["_HEREDOC_STACK"] = "c"
                                     break
                             q += 1
                         if heredoc is not None:
-                            # rest of line is substitution-prefix; the closing
-                            # ) is past the heredoc — leave k at n
+                            # heredoc inside "$(... <<'EOS' ... EOS)": BOTH the
+                            # closing ) and the closing " of this double quote
+                            # sit AFTER the terminator. Skip the rest of the
+                            # line as data and carry the open quote: the outer
+                            # heredoc branch skips the body, then the `)"`
+                            # terminator line closes quote-then-nothing. Without
+                            # the carried quote the `"` later reads as an
+                            # OPENING one — the phantom then rides every
+                            # following line (unquoted words become blanks, $vars
+                            # survive, the NEXT <<'EOS' marker dies unseen
+                            # inside it) — exactly the #6032 cutoff_utc*
+                            # six-phantom-UNDEFINED class. (fleet-ops#6032)
+                            # NOTE: k = n AND p = n, so the post-break
+                            # `k = p + 1` rewinds INTO the consumed `$(...`
+                            # head and would re-scan it (double push + the
+                            # heredoc-again), which is what stranded the state.
+                            quote = '"'
+                            p = n
                             emit(" ")
                             k = n
                             break
