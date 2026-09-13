@@ -7,9 +7,9 @@
 # because ~/.pi/agent/auth.json is non-empty and `pi auth check` only
 # tests presence / invalid_state, while the stored access token has
 # silently expired. The seat then 401s the moment a worker picks it.
-# fleet-seat-live-validate (fleet-ops#917 / #1450) catches the dead
-# case every heartbeat tick but does not HEAL it; this script is the
-# heal path that runs on a 4 h timer.
+# The litellm health canary catches the dead case every canary tick but
+# does not HEAL it (fleet-ops#6115 retired the #917/#1450 seat-live
+# validate canary); this script is the heal path that runs on a 4 h timer.
 #
 # Why this file, not ~/.grok/auth.json?
 #   The live SuperGrok seat is `xai-oauth` (stnly/pi-grok, fleet-ops#1163).

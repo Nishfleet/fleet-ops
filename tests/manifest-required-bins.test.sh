@@ -43,7 +43,6 @@ required=(
   "bin/fleet-heartbeat-red-pr-repair /home/nish/.local/bin/fleet-heartbeat-red-pr-repair"
   "bin/ram-measure /home/nish/.local/bin/ram-measure"
   "bin/fleet-escalation-canary /home/nish/.local/bin/fleet-escalation-canary"
-  "bin/fleet-entitled-wired-canary /home/nish/.local/bin/fleet-entitled-wired-canary"
   "bin/worker-app-canary /home/nish/.local/bin/worker-app-canary"
   "bin/fleet-credential-expiry-canary /home/nish/.local/bin/fleet-credential-expiry-canary"
   "lib/credential-expiry-canary.py /home/nish/.local/lib/pi-packet/credential-expiry-canary.py"
@@ -76,7 +75,11 @@ helpers = {
     "REDPR_BIN=": "red-pr-repair",
     "RAM_BIN=": "ram-measure",
     "CANARY_BIN=": "escalation-coverage canary",
-    "ENTITLED_CANARY_BIN=": "entitled-vs-wired canary",
+    # fleet-ops#6115: the #387 entitled-vs-wired canary retired with its
+    # tier1 block (entitlement = the proxy model_list; the litellm health
+    # canary's census-shortfall verdict owns the question). The #6114
+    # prepaid $400 spend reader keeps the MANIFEST-helper contract.
+    "PREPAID_UTIL_CANARY_BIN=": "prepaid $400 spend-reader canary",
     "WORKER_APP_CANARY_BIN=": "worker-app identity canary",
     "CRED_EXPIRY_CANARY_BIN=": "credential-expiry canary",
     "CF_TOKEN_CANARY_BIN=": "cf-token liveness canary",
@@ -101,7 +104,7 @@ PY
 wiring_rc=$?
 set -e
 [[ "$wiring_rc" -eq 0 ]] || fail "one or more heartbeat helpers do not call require_manifest_helper or loud HELPER-MISSING"
-ok "all thirteen MANIFEST heartbeat helpers call require_manifest_helper and loud HELPER-MISSING"
+ok "every MANIFEST heartbeat helper calls require_manifest_helper and louds HELPER-MISSING"
 
 # --- 3-5. extract the real function and prove the three outcomes -----------
 extract_fn() {

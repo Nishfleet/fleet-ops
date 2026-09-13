@@ -1,9 +1,0 @@
-#!/usr/bin/env bash
-# fleet-aimd-meter-canary — retired with P3b (fleet-ops#4263).
-# AIMD cap probing lived in the deleted routing library. LiteLLM router
-# cooldown owns backoff now. This wrapper stays so heartbeat-tier1 block 37
-# does not page; P4 deletes the unit.
-set -euo pipefail
-printf '[%s] [fleet-aimd-meter-canary] retired: router cooldown owns cap/backoff (fleet-ops#4263)\n' \
-    "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >&2
-exit 0
