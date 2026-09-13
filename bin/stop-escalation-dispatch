@@ -201,7 +201,9 @@ finish_kill_retry() {
 # fleet-ops#5456 resume-or-dispatch (the chain's terminal ACTION)
 #
 # STOP-REASON (reason=unit-failure / unit-stopped-without-deliverable /
-# packet-exhausted) -> this dispatcher either:
+# packet-exhausted / unit-false-live-claim — the last added post-rebase when
+# fleet-ops#5786 taught the dead-man the false-LIVE-claim verdict) -> this
+# dispatcher either:
 #   (i)   RELAUNCHES a dead pi-systemd-run packet: hop<2 -> same packet,
 #         next healthy seat, --chain-id carried, --hop+1. The ledger row
 #         (workdir/deliverable/cmdline recorded at launch by pi-systemd-run)
@@ -521,7 +523,7 @@ reason=$(python3 -c 'import sys,json;print(json.load(sys.stdin).get("reason","")
 # unknown reasons escalate.
 case "$reason" in
   boundary:*|cooldown_active|auditor-resolved) exit 0 ;;
-  unit-failure|unit-stopped-without-deliverable|packet-exhausted)
+  unit-failure|unit-stopped-without-deliverable|packet-exhausted|unit-false-live-claim)
     # fleet-ops#5456: unit deaths take the resume-or-dispatch path, not the
     # auditor summon. The auditor path stays for circuit-breaker trips.
     resume_unit=$(python3 -c 'import sys,json;d=json.load(sys.stdin).get("detail") or {};print(d.get("unit",""))' < "$SR" 2>/dev/null || true)

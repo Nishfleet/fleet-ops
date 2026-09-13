@@ -797,6 +797,20 @@ grep -q -- '--provider devin' "$STOP_ESCALATION_TEST_PIRUN_LOG" && grep -q -- '-
 [[ -s "$STOP_ESCALATION_NISH" ]] && fail "resume relaunch: must never page Nish"
 ok "resume: dead packet at hop 0 relaunched at hop 1 on the next healthy seat (chain-id carried)"
 
+# --- resume: the #5786 reason also takes the resume path ---------------------
+# fleet-ops#5786 landed AFTER this branch forked and taught the dead-man a
+# fourth death reason (unit-false-live-claim: deliverable claims LIVE without
+# a merged origin/main SHA). The dispatcher's case must know it, or that
+# death silently falls through to the circuit-breaker/auditor path with no
+# hop+1. Same ledger row as the test above (still hop 0, pi-run stubbed).
+: > "$STOP_ESCALATION_TEST_PIRUN_LOG"; : > "$STOP_ESCALATION_TEST_GH_LOG"
+resume_sr "resume-test-pkt.service" "unit-false-live-claim"
+set +e; "$dispatch"; rc=$?; set -e
+[[ $rc -eq 0 ]] || fail "resume false-live-claim: expected exit 0, got $rc"
+grep -q -- '--hop 1' "$STOP_ESCALATION_TEST_PIRUN_LOG" || fail "resume false-live-claim: reason must reach the resume path (no --hop 1): $(cat "$STOP_ESCALATION_TEST_PIRUN_LOG")"
+[[ -s "$STOP_ESCALATION_TEST_GH_LOG" ]] && fail "resume false-live-claim: a hop<2 packet death must relaunch, not issue-create"
+ok "resume: unit-false-live-claim (fleet-ops#5786 reason) also relaunches at hop+1"
+
 # --- resume: hop>=2 -> dispatch (issue + triage + findings), no relaunch ----
 : > "$STOP_ESCALATION_RESUME_LEDGER"; : > "$STOP_ESCALATION_TEST_GH_LOG"
 : > "$STOP_ESCALATION_RESUME_TRIAGE"; : > "$STOP_ESCALATION_TEST_FINDINGS_LOG"; : > "$STOP_ESCALATION_TEST_PIRUN_LOG"

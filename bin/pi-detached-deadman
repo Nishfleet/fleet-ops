@@ -57,6 +57,12 @@ export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
 
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 whostopped_bin="${PI_DEADMAN_WHOSTOPPED_BIN:-$here/fleet-who-stopped}"
+# fleet-ops#5456 rebase: #5786's clean-stop escalation hook (below) uses this
+# seam; the definition is restored here (main carries it at its own defaults
+# block) — without it the #5786 reason never reaches STOP-REASON (unbound
+# variable under set -u) and the #5786 test's esc_log stays empty.
+#   PI_DEADMAN_ESCALATION_BIN unit-escalation-write path (default: sibling)
+escalation_bin="${PI_DEADMAN_ESCALATION_BIN:-$here/unit-escalation-write}"
 textfile="${PI_DEADMAN_TEXTFILE:-/var/lib/prometheus/node-exporter/fleet-detached.prom}"
 
 log() { printf '[%s] [pi-detached-deadman] %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$*" >&2; }
