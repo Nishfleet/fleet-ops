@@ -472,10 +472,10 @@ EOF
 # wins over its benign prefix (the notify+503 combo), so wall is checked
 # first; a line is only demoted when it carries neither wall evidence nor
 # benign machinery text.
-PROVIDER_WALL_PATTERNS='overloaded_error|FreeUsageLimitError|quota_cap|INFERENCE_CAP_ERROR|out-of-credits|insufficient_user_quota|insufficient credits|purchase more credits|credit insufficient balance|insufficient_credits|out of credits|balance exhausted|quota_exhausted|Provider returned error|Upstream model provider is temporarily unavailable|resource_exhausted|Quota exceeded|Devin exited|overall message rate limit|will reset in [0-9]+ minute|[Nn][Oo] [Uu]sable seat|NO USABLE SEAT|no healthy seat available|spawnSync.*ETIMEDOUT'
+PROVIDER_WALL_PATTERNS='overloaded_error|FreeUsageLimitError|quota_cap|INFERENCE_CAP_ERROR|out-of-credits|insufficient_user_quota|insufficient credits|purchase more credits|credit insufficient balance|insufficient_credits|out of credits|balance exhausted|quota_exhausted|Provider returned error|Upstream model provider is temporarily unavailable|resource_exhausted|Quota exceeded|Devin exited|overall message rate limit|will reset in [0-9]+ minute|[Nn][Oo] [Uu]sable seat|NO USABLE SEAT|no healthy seat available|spawnSync.*ETIMEDOUT|Connection error|stream failed|model stream failed. Please retry'
 # Benign pi-machinery / systemd lifecycle lines that always accompany a scout
 # run in the unit journal. Not fault evidence; must not demote a wall crash.
-BENIGN_JOURNAL_PATTERNS='^\[[0-9]{4}-[0-9]{2}-[0-9]{2}T|EXTLOAD-OK|PACKET-VERDICT|Ready for input|Main process exited|Failed with result|Failed to start|Triggering OnFailure|Consumed .*CPU time|Starting pi-'
+BENIGN_JOURNAL_PATTERNS='^\[[0-9]{4}-[0-9]{2}-[0-9]{2}T|EXTLOAD-OK|PACKET-VERDICT|Ready for input|Main process exited|Failed with result|Failed to start|Triggering OnFailure|Consumed .*CPU time|Starting pi-|SPAWN_BLOCKED reason=|start operation timed out'
 
 # A structural residue line of a multi-line JSON error body (Devin's
 # `cognition.ai/errorKind` dump, curl/API responses): a bare brace/bracket or
@@ -522,6 +522,24 @@ detect_provider_wall() {
     # info priority, not err. The error may be far back if the run was long.
     # Use -o cat to avoid timestamp/host wrappers confusing the pattern match.
     jlines=$("$JOURNALCTL" --user -u "$unit" -n 50 --no-pager -o cat "${since_args[@]}" 2>/dev/null || true)
+    # The OnFailure repair hop (pi-scout-repair@<repo>) runs its own
+    # ExecStopPost futility-`end` — but this function only grepped the PLAIN
+    # scout's journal, so the -repair unit's OWN crash evidence (e.g. the
+    # 2026-09-13T12:01:17 IST `[pi-seated-err] Connection error.` lines, the
+    # summoned trip) never reached the classifier and every -repair crash
+    # stayed "not green, not provider-wall" -> fresh STOP-REASON + auditor
+    # summon per crash. Union the -repair unit's journal into the SAME
+    # since-window: empty when the unit never ran; duplicate bodies are
+    # idempotent under the found_wall/first-demote semantics below.
+    local rlines
+    rlines=$("$JOURNALCTL" --user -u "pi-scout-repair@${repo}.service" -n 50 --no-pager -o cat "${since_args[@]}" 2>/dev/null || true)
+    if [[ -n "$rlines" ]]; then
+        if [[ -n "$jlines" ]]; then
+            jlines+=$'\n'"$rlines"
+        else
+            jlines="$rlines"
+        fi
+    fi
     [[ -n "$jlines" ]] || return 1
     while IFS= read -r line; do
         line="${line#"${line%%[![:space:]]*}"}"  # ltrim
