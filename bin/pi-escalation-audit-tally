@@ -22,6 +22,14 @@
 #   AUDIT_GH               gh override
 #   AUDIT_DRY_RUN          1 = log, do not mutate GitHub
 #   AUDIT_ADMIT_LABEL      label on the fix issue (default agent-ready)
+#   AUDIT_SPEC_GATE        agent-ready-spec-gate.py override (tests)
+#
+# fleet-ops#543 / #6097: the filed fix body carries the machine-checkable
+# spec clauses (accept:/metric:/moves:) and is run through the agent-ready
+# spec gate BEFORE agent-ready is applied. A refused body files WITHOUT the
+# label (fail-closed) so the intake can never claim a spec-less admission —
+# the defect that stranded #6097 through five crashed claims and forced a
+# judge onto #5815.
 
 set -euo pipefail
 
@@ -35,6 +43,7 @@ REPO_SLUG="${REPO#Nishfleet/}"
 STATE_DIR="${AUDIT_STATE_DIR:-$HOME/.local/state/fleet-audit}"
 DRY_RUN="${AUDIT_DRY_RUN:-0}"
 ADMIT_LABEL="${AUDIT_ADMIT_LABEL:-agent-ready}"
+SPEC_GATE_BIN="${AUDIT_SPEC_GATE:-}"
 
 log() { printf '[%s] [pi-escalation-audit-tally] %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$*" >&2; }
 
@@ -66,6 +75,18 @@ issue_is_open() {
     [ "$state" = "OPEN" ]
 }
 
+# Resolve the spec gate the same way the auditor does: repo-adjacent copy
+# first, then the installed pi-packet copy (MANIFEST installs it there).
+spec_gate_py() {
+    local here
+    here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+    if [ -f "$here/../lib/agent-ready-spec-gate.py" ]; then
+        printf '%s\n' "$here/../lib/agent-ready-spec-gate.py"
+        return 0
+    fi
+    printf '%s\n' "/home/nish/.local/lib/pi-packet/agent-ready-spec-gate.py"
+}
+
 admit() {
     local reasons="$1" issue_json title body fix_body fix_num
     issue_json=$("$GH" issue view "$candidate" -R "$REPO" --json title,body 2>/dev/null) || {
@@ -74,13 +95,23 @@ admit() {
     }
     title=$(printf '%s\n' "$issue_json" | jq -r '.title // "<no title>"')
     body=$(printf '%s\n' "$issue_json" | jq -r '.body // ""')
-    fix_body=$(printf 'Senior-auditor escalation panel admitted %s#%s (2-of-3 PASS).\n\n## Diagnosis\n\n%s\n\n## Original escalation\n\n%s\n\nSource: %s#%s\n' "$REPO_SLUG" "$candidate" "$reasons" "$body" "$REPO" "$candidate")
+    fix_body=$(printf 'Senior-auditor escalation panel admitted %s#%s (2-of-3 PASS).\n\n## Spec (fleet-ops#543)\n\naccept: the durable work named by the 2-of-3 panel verdict is shipped or justifiably dismissed with the reason logged on this issue, and the escalated check runs green on a fresh post-repair run — not a re-run inside the failure window\nmetric: zero occurrences of the failure signature of the escalated check after the repair merges — the failure window ends at the merge time of the repair\nmoves: product_merges_per_day\n\n## Diagnosis\n\n%s\n\n## Original escalation\n\n%s\n\nSource: %s#%s\n' "$REPO_SLUG" "$candidate" "$reasons" "$body" "$REPO" "$candidate")
+
+    # fleet-ops#543: agent-ready only when the composed body passes the spec
+    # gate. A refused body files WITHOUT the label (fail-closed, LOUD).
+    local gate_bin label_args=()
+    gate_bin="${SPEC_GATE_BIN:-$(spec_gate_py)}"
+    if python3 "$gate_bin" check-body --repo "$REPO_SLUG" --body-text "$fix_body" >/dev/null 2>&1; then
+        label_args=(--label "$ADMIT_LABEL")
+    else
+        log "LOUD [SPEC-GATE] fix body for $repo_slug/#$candidate refused the agent-ready spec gate — filing WITHOUT $ADMIT_LABEL"
+    fi
 
     if [ "$DRY_RUN" = "1" ]; then
         log "DRY-RUN: would file agent-ready fix issue for $repo_slug/#$candidate"
         return 0
     fi
-    fix_num=$("$GH" issue create -R "$REPO" --title "$title" --body "$fix_body" --label "$ADMIT_LABEL" 2>/dev/null) || {
+    fix_num=$("$GH" issue create -R "$REPO" --title "$title" --body "$fix_body" "${label_args[@]}" 2>/dev/null) || {
         log "$repo_slug/#$candidate: issue create FAILED (admit)"
         return 1
     }
