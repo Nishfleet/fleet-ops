@@ -920,11 +920,9 @@ bin/fleet-timer-manifest-drift-canary /home/nish/.local/bin/fleet-timer-manifest
 # Deferred products auto-file. Heartbeat-tier1 block 29.
 bin/fleet-verify-harness-canary /home/nish/.local/bin/fleet-verify-harness-canary
 config/verify-harness.json /home/nish/.local/state/pi-packet/verify-harness.json
-# fleet-ops#917: SuperGrok live-validate canary. Runs `grok models` (CLI
-# silent refresh) every heartbeat tick; writes credentials_bad when the
-# live CLI is unauthenticated; auto-files `grok login --device-auth` when
-# refresh is impossible. Heartbeat-tier1 block 30.
-bin/fleet-seat-live-validate /home/nish/.local/bin/fleet-seat-live-validate
+# fleet-ops#917: SuperGrok live-validate canary — bin, test and the tier1
+# block-30 wiring retired by fleet-ops#6101 (per-seat benches/parks are the
+# LiteLLM proxy's job: cooldown, /health, fallbacks).
 # fleet-ops#938: credential/token expiry coverage through 2026-09-08.
 # GET /app App-JWT liveness (GitHub App keys do not expire) plus
 # FLEET_SYNC_PAT GitHub-Authentication-Token-Expiration horizon.
@@ -1148,9 +1146,10 @@ docs/escalation-matrix.md /home/nish/.local/share/fleet-ops/docs/escalation-matr
 
 # fleet-ops#41: headless OAuth refresh of the live SuperGrok seat
 # (~/.pi/agent/auth.json["xai-oauth"]). 4h timer keeps the prepaid
-# credential from aging into a 401; fleet-seat-live-validate catches
-# the dead case but does not heal it. Cap on the legacy `grok` entry
-# stays 0 — the live seat is xai-oauth (fleet-ops#1163).
+# credential from aging into a 401. (The #917 SuperGrok live-validate
+# canary, the dead-case detector, retired by #6101 — a dead credential
+# now fails at spawn as the credentials_bad class.) Cap on the legacy
+# `grok` entry stays 0 — the live seat is xai-oauth (fleet-ops#1163).
 bin/grok-token-refresh /home/nish/.local/bin/grok-token-refresh
 systemd/grok-token-refresh.service /home/nish/.config/systemd/user/grok-token-refresh.service
 systemd/grok-token-refresh.timer /home/nish/.config/systemd/user/grok-token-refresh.timer
