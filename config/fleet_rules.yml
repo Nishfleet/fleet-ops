@@ -512,6 +512,38 @@ groups:
         annotations:
           summary: "main branch CI red on {{ $labels.repo }} for 30+ minutes"
           description: "Trunk is broken; merges/deploys unsafe. The alert-repair-dispatch mutex guarantees exactly one repair worker spawns per (alert, repo) pair."
+
+      # fleet-ops#5807: the 2026-09-12 10:50 IST 0509 jam (merge-queue head
+      # #3054 AWAITING_CHECKS for 2h20m, 14 entries, 58 queued + 11
+      # in-progress hosted runs, 0 merges that hour) had no exporter series
+      # and no alert — a human noticed by hand. Both alerts read the
+      # merge_queue family of libexec/fleet-metrics-export.py, which measures
+      # at most every 30 min (the #1136 30-min _cached_json rotation — no
+      # faster polling, no new timer, no new unit) and defers its GraphQL+REST
+      # spend while the #5762 tracked rate limit says low. A repair therefore
+      # clears the ALERT only after the next exporter refresh: the metric's
+      # fleet_gh_cache_timestamp_seconds{kind="merge_queue"} is the truth
+      # timestamp, and a predicted clear inside ~30m must finish the turn, not
+      # loop (the #2672 exit contract). Termination: AMX_STATUS=resolved.
+      - alert: CiMergeQueueHeadWaitHigh
+        expr: ci_merge_queue_head_wait_seconds > 1200
+        for: 10m
+        labels:
+          severity: critical
+          service: fleet
+        annotations:
+          summary: "merge-queue head in {{ $labels.repo }} waited 20+ minutes"
+          description: "The oldest (head) entry of {{ $labels.repo }}'s main-branch merge queue has waited over 20 min (target: head wait p50 < 20m) — the head slot is stuck while the org-wide 20-concurrent hosted-CI budget starves (fleet-ops#5807: head #3054 waited 2h20m unnoticed). Repair worker: (1) name the top slot consumers — `gh api repos/{{ $labels.repo }}/actions/runs?status=queued&per_page=100` and `...status=in_progress...`, group by workflowName x count x median run duration, then cancel stale superseded duplicate runs if that frees the head (each PR spawns 20 checks); (2) if the jam survives one consolidation cycle, work the standing consolidation issues Nishfleet/0509#3069, Nishfleet/0509#3068, Nishfleet/0509#3070 — do NOT file a new one; (3) the metric refreshes at most every 30 min (fleet_gh_cache_timestamp_seconds{kind=\"merge_queue\"} stamps its measurement time), so a just-repaired queue can legitimately hold this alert ~30m — if the predicted clear is inside that window, record it and finish the turn; never loop on the 30-min cache."
+      - alert: CiHostedQueueDepthHigh
+        expr: ci_hosted_runs_queued > 30
+        for: 15m
+        labels:
+          severity: warning
+          service: fleet
+        annotations:
+          summary: "hosted-CI backlog in {{ $labels.repo }}: 30+ queued runs"
+          description: "More than 30 GitHub-Actions runs QUEUED in {{ $labels.repo }} for 15+ min — hosted CI is saturated (fleet-ops#5807: 58 queued + 11 in-progress, 0 merges that hour). Repair worker: (1) name the top slot consumers — `gh api repos/{{ $labels.repo }}/actions/runs?status=queued&per_page=100` and `...status=in_progress...`, grouped by workflowName x count x median run duration, and cancel stale superseded duplicates; (2) the standing consolidation issues are Nishfleet/0509#3069, Nishfleet/0509#3068, Nishfleet/0509#3070 — work those, do NOT file a new one; (3) the exporter measures at most every 30 min, so a just-drained backlog can legitimately hold this alert ~30m — record the predicted clear time and finish the turn (fleet-ops#2672), never loop on the 30-min cache."
+
   - name: fleet_undersaturation_guard
     rules:
       - alert: FleetUndersaturated

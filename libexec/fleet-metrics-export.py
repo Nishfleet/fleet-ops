@@ -200,6 +200,23 @@ TYPE_FRESH = "# TYPE fleet_gh_cache_fresh gauge"
 HELP_CTS = "# HELP fleet_gh_cache_timestamp_seconds Epoch seconds at which the served data for this gh-derived family was MEASURED. Equals the cache write time when the cache was served, and the export time when gh was just fetched. A consumer of a cached family (the console tiles) must stamp this, not its own run time: stamping the export time on a <=30 min old count reads as seconds-fresh (fleet-ops#5155, ConsoleLying tile=open_prs)."
 TYPE_CTS = "# TYPE fleet_gh_cache_timestamp_seconds gauge"
 
+# Merge-queue + hosted-CI queue depth (fleet-ops#5807). The 2026-09-12 10:50
+# IST 0509 jam (head #3054 AWAITING_CHECKS 2h20m, 14 entries, 58 queued + 11
+# in-progress hosted runs, 0 merges that hour) had no exporter and no alert —
+# a human noticed by hand. Four gauges per ENROLLED repo (intake-repos.json),
+# riding the existing 5-min exporter (no new unit, no new timer) at the shared
+# 30-min _cached_json cadence — never polls faster than the exporter. The
+# GraphQL+REST spend is budgeted through the #5762 tracked rate limit (defer
+# while low; cache serves 2h, then the family omits — never a frozen value).
+HELP_MQW = "# HELP ci_merge_queue_head_wait_seconds Seconds since the head (oldest) entry of the repo's default-branch (main) merge queue was enqueued; 0 when the queue is empty, series omitted when the repo has no merge queue on that branch. Measured at fetch time: the 30-min cache means the gauge under-reports extra waiting by up to the cache age (fleet-ops#5807)."
+TYPE_MQW = "# TYPE ci_merge_queue_head_wait_seconds gauge"
+HELP_MQE = "# HELP ci_merge_queue_entries Entries currently in the repo's default-branch (main) merge queue (GraphQL totalCount, independent of the head/tail slice)."
+TYPE_MQE = "# TYPE ci_merge_queue_entries gauge"
+HELP_MQQ = "# HELP ci_hosted_runs_queued GitHub-Actions (hosted) workflow runs currently QUEUED in the repo — the slot consumers crowding the 20-concurrent hosted budget (fleet-ops#5807)."
+TYPE_MQQ = "# TYPE ci_hosted_runs_queued gauge"
+HELP_MQP = "# HELP ci_hosted_runs_in_progress GitHub-Actions (hosted) workflow runs currently IN_PROGRESS in the repo."
+TYPE_MQP = "# TYPE ci_hosted_runs_in_progress gauge"
+
 # Undersaturation-guard metrics (2026-08-27, fleet-ops UNDERSATURATED — the
 # deleted fleet1 watchdog's Pi-era reincarnation on stock machinery).
 # `fleet_pi_workers_active{kind="unit"|"process"|"sum"}` — live pi work.
@@ -389,6 +406,11 @@ PR_CACHE = PR_CACHE_DIR / "merged-prs-cache.json"
 # cache file from PR_CACHE so the old {repo:count} shape is not misread.
 DETAIL_CACHE = PR_CACHE_DIR / "merged-prs-detail-cache.json"
 SNAPSHOT_CACHE = PR_CACHE_DIR / "repo-snapshot-cache.json"
+# fleet-ops#5807: separate cache (not SNAPSHOT_CACHE) so a mergeQueue GraphQL
+# shape change can never take the open_prs / fleet_main_ci_green families
+# down with it — the families share the 30-min cadence, not the failure blast
+# radius. Also keeps this family's data distinguishable in _CACHE_TS_SERVED.
+MERGE_QUEUE_CACHE = PR_CACHE_DIR / "merge-queue-cache.json"
 PR_CACHE_TTL = 1800      # 30 min — refresh gh at most this often
 PR_CACHE_STALE = 7200    # 2 h — beyond this, omit the metric family
 GH_OWNER = "Nishfleet"
@@ -3083,6 +3105,137 @@ def _write_gh_rate_limit_state(rl):
         os.chmod(GH_RATE_LIMIT_STATE, 0o644)
     except OSError as exc:
         print(f"gh_rate_limit state write: {exc}", file=sys.stderr)
+
+
+# --- Merge-queue + hosted-CI queue depth (fleet-ops#5807) ------------------
+# ONE aliased GraphQL call (no pagination — the enrolled set is a handful of
+# repos) + one exact REST total per (repo, status). All of it sits inside the
+# #1136 30-min _cached_json rotation (TTL 30 min, stale 2h, at most one gh
+# derivation per 5-min run), so the effective GraphQL cadence is ~20-30 min —
+# slower than the exporter, never faster (the #5807 required-lines). The
+# #5762 budget gate: when the tracked rate limit says low, the fetch is
+# DEFERRED and the cache answers for up to 2h; beyond that the family omits.
+MERGE_QUEUE_BRANCH = "main"  # both enrolled repos' default branch (verified 2026-09-13: Nishfleet/0509 and Nishfleet/fleet-ops); the branch whose queue the #3054 evidence waited in
+
+
+def _merge_queue_query(repos):
+    """Aliased one-shot GraphQL: head + tail slice per enrolled repo.
+
+    Connection ordering is not guaranteed by the schema, so BOTH ends are
+    fetched in the same request and the caller min()s enqueuedAt — ASC or
+    DESC, the minimum is the head. totalCount does not depend on the slice.
+    """
+    lines = ["query {"]
+    for i, repo in enumerate(repos):
+        name = repo.split("/", 1)[1]
+        lines.append(f'  r{i}: repository(owner: "{GH_OWNER}", name: "{name}") {{')
+        lines.append(f'    mergeQueue(branch: "{MERGE_QUEUE_BRANCH}") {{')
+        lines.append('      head: entries(first: 1) { totalCount nodes { enqueuedAt } }')
+        lines.append('      tail: entries(last: 1) { nodes { enqueuedAt } }')
+        lines.append('    }')
+        lines.append('  }')
+    lines.append("}")
+    return "\n".join(lines)
+
+
+def _gh_actions_runs_total(repo_full, status):
+    """Exact count of Actions runs in `status` (queued|in_progress), or None.
+
+    GET /repos/<repo>/actions/runs?status=<status>&per_page=1 — total_count
+    is the true total regardless of the page size, so this is ONE request
+    per (repo, status); no pagination, no `created` filter (a jam is what
+    we are counting, history is the signal, fleet-ops#5807).
+    """
+    try:
+        r = subprocess.run(
+            ["gh", "api",
+             f"repos/{repo_full}/actions/runs?status={status}&per_page=1"],
+            capture_output=True, text=True, timeout=GH_TIMEOUT,
+            env={**os.environ, "GH": "/usr/bin/gh"},
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        print(f"gh actions runs ({status}) failed: {exc}", file=sys.stderr)
+        return None
+    if r.returncode != 0:
+        print(f"gh actions runs ({status}) rc={r.returncode}: "
+              f"{r.stderr.strip()[:200]}", file=sys.stderr)
+        return None
+    try:
+        return int((json.loads(r.stdout or "{}")).get("total_count"))
+    except (json.JSONDecodeError, TypeError, ValueError) as exc:
+        print(f"gh actions runs ({status}) json: {exc}", file=sys.stderr)
+        return None
+
+
+def _gh_merge_queue(now=None):
+    """Per ENROLLED repo: head wait, queue depth, hosted runs. Or None.
+
+    Returns {"repos": {repo: {"head_wait_s": int|None, "entries": int|None,
+                               "queued": int|None, "in_progress": int|None}}}
+    — a repo with no merge queue on the tracked branch (or a gone/renamed
+    repo) simply misses the head_wait_s/entries keys; the ci_merge_queue_*
+    samples then omit for that repo while ci_hosted_runs_* still answer.
+    Every omission is honest: never a frozen or fabricated 0.
+
+    #5762 budget gate: the tracked limit (same 20%-of-remaining flag the
+    fleet_gh_rate_limit_low gauge emits — one source of truth) decides.
+    `_gh_rate_limit()` is the 60s-TTL in-run view, so on this 5-min oneshot
+    it is a memory read (the #1350 family already fetched it earlier in
+    main). rl=None (fetch failed) = undecided → fail-open, spend the query.
+    `now` is injectable so tests can pin the #5807 evidence wait exactly.
+    """
+    repos = _enrolled_repos()
+    if not repos:
+        return None
+    rl = _gh_rate_limit()
+    if rl is not None and any(
+        (rl.get(r) or {}).get("low") for r in ("core", "graphql")
+    ):
+        print("merge_queue: tracked rate limit low — deferring fetch "
+              "(fleet-ops#5762 gate; the cache answers, 2h then omit)",
+              file=sys.stderr)
+        return None
+    if now is None:
+        now = time.time()
+    payload = _gh_graphql(_merge_queue_query(repos))
+    if not isinstance(payload, dict) or payload.get("errors") or not payload.get("data"):
+        errs = payload.get("errors") if isinstance(payload, dict) else None
+        print(f"merge_queue graphql failed: {str(errs)[:200] if errs else 'no data'}",
+              file=sys.stderr)
+        return None
+    data = payload.get("data") or {}
+    repos_out = {}
+    for i, repo in enumerate(repos):
+        row = {}
+        node = data.get(f"r{i}")
+        if isinstance(node, dict):
+            entries = node.get("mergeQueue")
+            if isinstance(entries, dict):
+                head = entries.get("head") or {}
+                tail = entries.get("tail") or {}
+                total = head.get("totalCount")
+                if isinstance(total, int):
+                    row["entries"] = total
+                    stamps = []
+                    for n in ((head.get("nodes") or [])
+                              + (tail.get("nodes") or [])):
+                        if isinstance(n, dict):
+                            ts = _parse_iso_utc(n.get("enqueuedAt"))
+                            if ts is not None:
+                                stamps.append(ts)
+                    if total == 0:
+                        row["head_wait_s"] = 0
+                    elif stamps:
+                        row["head_wait_s"] = max(0, int(now - min(stamps)))
+                    # else: totalCount>0 but no readable enqueuedAt — omit
+                    # the wait rather than print a lying 0.
+        # Hosted slot pressure: 2 exact REST totals per repo. A failure in
+        # one leg loses that leg only (fail-soft per repo, never the family).
+        for key, status in (("queued", "queued"),
+                            ("in_progress", "in_progress")):
+            row[key] = _gh_actions_runs_total(repo, status)
+        repos_out[repo] = row
+    return {"repos": repos_out}
 
 
 def _gh_latest_ci_verdict(repo_full, branch):
@@ -6247,6 +6400,36 @@ def main():
                 f'fleet_main_ci_green{{repo="{_prom_label(repo)}"}} {main_ci[repo]}'
             )
         fresh_kinds.append("repo_snapshot")
+
+    # --- Merge-queue + hosted-CI queue depth (fleet-ops#5807) ---
+    # #1844 lesson: HELP/TYPE exactly once per metric name, OUTSIDE the
+    # per-repo loop — a duplicate pair makes node_exporter reject the whole
+    # textfile and blanks every fleet gauge at once. A missing key (no merge
+    # queue on the tracked branch / a failed REST leg) omits that series —
+    # the never-frozen rule; it never prints a fabricated 0.
+    mq = _cached_json(MERGE_QUEUE_CACHE, _gh_merge_queue, "merge_queue")
+    mq_rows = (mq or {}).get("repos") or {}
+    if any(mq_rows.values()):
+        for key, series, help_text, type_text in (
+            ("head_wait_s", "ci_merge_queue_head_wait_seconds",
+             HELP_MQW, TYPE_MQW),
+            ("entries", "ci_merge_queue_entries", HELP_MQE, TYPE_MQE),
+            ("queued", "ci_hosted_runs_queued", HELP_MQQ, TYPE_MQQ),
+            ("in_progress", "ci_hosted_runs_in_progress", HELP_MQP, TYPE_MQP),
+        ):
+            samples = []
+            for repo in sorted(mq_rows):
+                val = (mq_rows[repo] or {}).get(key)
+                if val is not None:
+                    samples.append(
+                        f'{series}{{repo="{_prom_label(repo)}"}} {val}'
+                    )
+            if samples:
+                lines.append("")
+                lines.append(help_text)
+                lines.append(type_text)
+                lines.extend(samples)
+        fresh_kinds.append("merge_queue")
 
     # --- Ready work + queue composition (fleet-ops#1136, #1772) ---
     # Both share one cached gh call. If we cannot determine the open
