@@ -1,0 +1,15 @@
+tests/findings-ledger.test.sh: line 20: /tmp/findings-ledger.test.jsonl: No such file or directory
+ok
+ok
+ok
+ok
+ok
+ok
+ok
+ok
+ok
+ok
+import_rows=1 appended=0 duplicates=1
+ok
+FAIL: check
+FAIL

@@ -1,0 +1,42 @@
+OK: missing checkout louds and exits 0
+OK: unchanged origin/main -> nothing to do, no deploy
+OK: off-main same SHA -> invoke deploy (fleet-ops#5222)
+OK: moved origin/main + compare-only -> no deploy, exit 0
+OK: moved origin/main -> deploy invoked, exit 0
+OK: deploy failure louds DEPLOY-CHECK-FAILED, exit 0 (soft, was: hard-fail-tripped auditor)
+OK: in-flight deploy -> yields, no deploy
+OK: argument-only cmdline match is not in-flight
+OK: lock held -> yields, no deploy
+OK: dirty tracked edit louds DIRTY-CLONE on an unchanged tick, no deploy
+OK: untracked file louds DIRTY-CLONE and names the path
+OK: clean clone produces no DIRTY-CLONE loud
+OK: DIRTY-CLONE auto-file default OFF: LOUD only, no state, no filing
+OK: auto-file ON: 3rd consecutive dirty tick files once per episode
+OK: clean tick resets the episode; a new episode files again on its 3rd tick
+OK: failed filing logs WARN, stays non-fatal, retries next tick
+OK: non-canonical unit symlink louds + repairs to canonical (fleet-ops#4166)
+OK: dangling unit symlink (vanished target) louds + repairs (fleet-ops#4166)
+OK: compare-only mode louds but does not repair (fleet-ops#4166)
+OK: canonical unit symlink produces no NONCANONICAL-UNITS loud
+OK: foreign (non-systemd/) unit symlink is skipped
+OK: in-flight worktree unit stands down the NONCANONICAL-UNITS loud (fleet-ops#5998)
+OK: dangling in-flight link louds once, closer removes it, flap ends (fleet-ops#5998)
+OK: fleet-deploy-check reports the install.sh step that failed (fleet-ops#4223)
+OK: unpinned defaultBranch=master + clone + push origin main fails as on CI
+OK: symbolic-ref HEAD refs/heads/main makes clone + push origin main work
+OK: every tests/ git init --bare pins init.defaultBranch
+OK: class gate rejects unpinned git init --bare
+OK: foreign origin fetch URL -> repaired in the same tick, extra remote dropped, counter incremented, tick proceeds (fleet-ops#5301)
+OK: >2 origin repairs in 24h trips the alert while the tick still proceeds (fleet-ops#5301)
+OK: tripwire diffs remote config across ticks and the repair drops the duplicate remote (fleet-ops#5301)
+OK: correct origin fetch URL -> unchanged behaviour
+OK: drift drill: clone on a branch -> gauge 1 + DEPLOY-CHECK-OFF-MAIN + deploy invoked
+OK: detached HEAD counts as off-main drift (gauge 1 + loud + deploy)
+OK: back on clean main -> gauge clears to 0, no OFF-MAIN loud
+OK: dirty clone -> gauge 1; cleaned -> gauge 0
+OK: missing checkout -> gauge 1 (extreme drift still pages)
+OK: DeployCloneOffMain rule shape — critical/fleet, 15m, cites #5786
+OK: promtool: DeployCloneOffMain fires on 15m drift, silent on clean main
+OK: fleet-deploy-check: unchanged/moved/compare-only/deploy-fail/yield/lock/defaultBranch/drift-gauge
+PASS: deploy audit log stays outside the deploy clone
+PASS

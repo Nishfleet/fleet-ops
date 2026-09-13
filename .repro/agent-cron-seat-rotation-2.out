@@ -1,0 +1,33 @@
+OK: scenario 1: unhealthy snapshot + healthy alt -> run succeeds on the alt (cursor/composer-2.5), recorded + delivered
+OK: scenario 2: every seat walled -> FATAL, exit 1, pi never invoked
+OK: scenario 3: pi failure -> exit 1 (systemd Restart= re-seats on next try)
+OK: service unit: Restart=on-failure RestartSec=900 StartLimitBurst=3, no legacy SEAT_FILE, managed PROMPTS_DIR
+OK: MANIFEST entries present for runner + service + timer + prompt
+OK: prompt last30days query names the market, not 0509; Strongest-changes rule present
+OK: timer has [Install] and install.sh enables it
+OK: SKIP: live install invariants (set NISHFLEET_LIVE_INSTALL_TEST=1)
+OK: missing-unit checkout SKIPs instead of failing (fleet-ops#264)
+install.sh: devin config overlay missing: /tmp/agent-cron-seat.wgNSRb/class-root/template/devin-config.json
+OK: class guard: every MANIFEST [Install] timer (39) is enable --now'd by the generic loop
+OK: agent-cron seat rotation: gate replaced by pick-seat, transient 429 routes to alt, fully-walled fails loud
+OK: scenario 1: WORKDIR unset -> FATAL exit 1, slug named, pi never invoked
+OK: scenario 2: WORKDIR=$HOME -> FATAL exit 1
+OK: scenario 3: real WORKDIR -> runs, pi invoked
+OK: scenario 4: AGENT_CRON_ALLOW_HOME_WORKDIR=1 escape hatch runs
+OK: agent-cron WORKDIR guard: fail-closed on missing/\$HOME workdir, named slug, escape hatch
+OK: scenario 1: fable-check -> litellm/judge, litellm_seat bypassed
+OK: scenario 2: non-fable slug -> litellm_seat worker-cheap
+OK: scenario 3: AGENT_CRON_SKIP_LITELLM=1 -> worker-cheap group (seatlib hatch deleted)
+OK: fable-check-litellm-routing: fable-check routes to litellm/judge, non-fable uses worker-cheap, skip hatch degrades to worker-cheap
+OK: scenario 1: 80KB prompt -> PROMPT TOO LARGE exit 1, pi never spawned, no seat picked or benched
+OK: scenario 2: prompt under cap -> runs, pi invoked on picked seat
+OK: scenario 3: PROMPT_E2BIG_CAP_BYTES override trips the guard
+OK: scenario 4: is_spawn_etimeout benches spawnSync E2BIG, ignores spawn-free E2BIG and plain errors
+OK: class lock: all repo prompts/*.md under the 75000B spawn-arg cap
+OK: agent-cron prompt-E2BIG guard: oversized prompt fails loud pre-spawn, no seat consumed, env-tunable, E2BIG classified
+OK: scenario 1: 75495B packet trimmed under cap, run proceeded, sections named in the log
+OK: scenario 2: 149000B fixture (2x cap) trimmed to a fitting packet — unbounded-growth proof
+OK: scenario 3: non-trimmable overflow still fails loud with PROMPT TOO LARGE (fleet-ops#5309 kept)
+OK: scenario 4: PROMPT_E2BIG_CAP_BYTES=75000 cap unchanged
+OK: agent-cron packet size trim: over-cap packet trims under cap deterministically, 2x-cap fixture fits, non-trimmable overflow still fails loud, cap unchanged
+PASS

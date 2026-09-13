@@ -1,0 +1,7 @@
+OK: missing checkout louds and exits 0
+OK: unchanged origin/main -> nothing to do, no deploy
+OK: off-main same SHA -> invoke deploy (fleet-ops#5222)
+OK: moved origin/main + compare-only -> no deploy, exit 0
+OK: moved origin/main -> deploy invoked, exit 0
+FAIL: missing DEPLOY-CHECK-FAILED loud line
+FAIL
