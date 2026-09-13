@@ -58,6 +58,17 @@ export SEAT_CAPS_JSON="$scratch/seat-caps.json"
 export XDG_RUNTIME_DIR="$scratch/xdg"
 mkdir -p "$XDG_RUNTIME_DIR"
 
+# Hermetic readiness (fleet-ops#6032): this test ran the real pi-issue-run
+# against the LIVE proxy's /health/readiness (curl -m 3). During the
+# 2026-09-13 #6054/#6450 degradation the endpoint hung >3s twice — solo
+# runs of this test flipped pass/fail (21:05Z/21:10Z) on nothing but the
+# proxy's mood (body="" + GITHUB_ACTIONS unset -> litellm_ready fails
+# closed on a VPS, walls the pick, truncates tried-seats). The #6315
+# design keeps tests hermetic by overriding LITELLM_HEALTH_URL; file://
+# serves {"status":"healthy"} with zero network and zero ports.
+printf '{"status":"healthy"}\n' >"$scratch/ready.json"
+export LITELLM_HEALTH_URL="file://$scratch/ready.json"
+
 # Collapse the elapsed gates: #2133 detectors need elapsed > PI_HANG_BENCH_MIN_S
 # AND (to avoid the spawn-fail block setting spawn_fail_triggered) elapsed >
 # SPAWN_FAIL_MAX_S. A ~1.2s sleep clears both when each threshold is 1.
