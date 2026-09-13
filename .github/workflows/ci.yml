@@ -77,6 +77,7 @@ jobs:
         bash tests/intake-repos-path-resolution.test.sh
         bash tests/worker-token-fail-closed.test.sh
         bash tests/pi-issue-run-resume-on-provider-death.test.sh
+        bash tests/pi-transport-check.test.sh
         bash tests/minimax-token-refresh.test.sh
         bash tests/seat-credentials-bad-replay.test.sh
         bash tests/alert-repair-flagship-seat.test.sh

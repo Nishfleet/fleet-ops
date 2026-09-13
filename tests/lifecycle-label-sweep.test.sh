@@ -568,6 +568,26 @@ out=$("$bin" 2>"$scratch/err15d.txt")
 grep -q -- '--add-label agent-ready' "$scratch/edits.log" \
   || fail "non-umbrella fleet-ops issue must still get agent-ready: $(cat "$scratch/edits.log")"
 ok "non-umbrella unlabeled fleet-ops issue still → agent-ready (guard does not break default)"
+
+# Case 15e (fleet-ops#5861): an epic-labeled issue with no lifecycle label →
+# nish-reserved, NOT scout-candidate. This is the 0509#3171 recurrence shape:
+# the judge removed `discarded`, leaving the epic lifecycle-unlabeled; the
+# old sweep re-promoted it to scout-candidate, the panel discarded it again —
+# six discard cycles on 2026-09-12. nish-reserved is terminal, so the
+# reversal sticks. Labels are #3171's own (epic + enhancement, no lifecycle).
+export LIFECYCLE_SWEEP_REPOS="Nishfleet/0509"
+cat >"$scratch/list.json" <<'JSON'
+[{"number":3171,"title":"EPIC: track self and competitors across the internet — media mentions + blogging/social platforms (Nish direction 2026-09-12)","labels":[{"name":"epic"},{"name":"enhancement"}]}]
+JSON
+: >"$scratch/edits.log"
+out=$("$bin" 2>"$scratch/err15e.txt")
+grep -q 'relabeled=1' <<<"$out" || fail "epic relabeled: $out"
+grep -q -- '--add-label nish-reserved' "$scratch/edits.log" \
+  || fail "epic must get nish-reserved: $(cat "$scratch/edits.log")"
+if grep -q -- '--add-label scout-candidate' "$scratch/edits.log"; then
+  fail "epic must NOT get scout-candidate: $(cat "$scratch/edits.log")"
+fi
+ok "epic-labeled unlabeled issue → nish-reserved (not scout-candidate) (fleet-ops#5861)"
 export LIFECYCLE_SWEEP_REPOS="Nishfleet/0509"
 
 # Case 16 (fleet-ops#4091): the bulk `gh issue list` call must NOT request

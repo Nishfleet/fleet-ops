@@ -111,25 +111,20 @@ seed_healthy() {
     mv "$tmp" "$lf" 2>/dev/null || { rm -f "$tmp"; return 1; }
 }
 
-# Run pick-seat for a FRESH issue id (empty tried-seats = the intake
-# re-spawn / new-claim path that re-picked the no-op'ing seat). Asserts the
-# benched seat is never returned.
+# Assert the benched seat is never re-offered to a FRESH issue (the intake
+# re-spawn / new-claim path that re-picked the no-op'ing seat).
+# fleet-ops#4263: the retired local picker is gone — routing lives in the
+# LiteLLM proxy, and the LOCAL contract owner is seat_usable (the read the
+# comeback organ and canaries gate on). The pin is unchanged: the benched
+# seat must read UNUSABLE while the healthy reroute seat reads usable.
 assert_fresh_pick_skips_benched() {
     local label="$1" bench_p="$2" bench_m="$3" other_p="$4" other_m="$5"
-    local i picked picked_p picked_m
-    for i in 1 2 3 4 5; do
-        : >"$STATE_DIR/attempts/pi-issue-fleet-ops-3730.tried-seats" 2>/dev/null || true
-        picked=$(pick-seat "" "" 0 "" "light" "public" || true)
-        [[ -n "$picked" ]] || fail "$label: pick-seat returned empty (iteration $i)"
-        picked_p=$(printf '%s' "$picked" | cut -f1)
-        picked_m=$(printf '%s' "$picked" | cut -f2)
-        if [[ "$picked_p/$picked_m" == "$bench_p/$bench_m" ]]; then
-            fail "$label: pick-seat re-offered the benched seat $bench_p/$bench_m to a fresh issue on iteration $i (fleet-ops#3730)"
-        fi
-        [[ "$picked_p/$picked_m" == "$other_p/$other_m" ]] \
-          || fail "$label: pick-seat rerouted to $picked_p/$picked_m, expected $other_p/$other_m (iteration $i)"
-    done
-    ok "$label: pick-seat never re-offered the benched seat across 5 fresh-issue re-seats"
+    if seat_usable "$bench_p" "$bench_m"; then
+        fail "$label: seat_usable re-offered the benched seat $bench_p/$bench_m to a fresh issue (fleet-ops#3730)"
+    fi
+    seat_usable "$other_p" "$other_m" \
+      || fail "$label: seat_usable refused the healthy reroute seat $other_p/$other_m — the fleet would stall with nowhere to go"
+    ok "$label: the benched seat is held UNUSABLE and the healthy reroute seat stays usable"
 }
 
 bench_p="ollama"

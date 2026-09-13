@@ -83,18 +83,9 @@ state="$STATE_DIR/state.json"
 command -v jq >/dev/null 2>&1 || { log "FATAL: jq missing"; exit 2; }
 python3 "$LIB" init --state "$state" >/dev/null
 
-# --- pick a cheap/free seat, or load a drill fixture -----------------------
-pick_researcher_seat() {
-    if [ -f "$SEAT_LIB" ]; then
-        # shellcheck source=/dev/null
-        source "$SEAT_LIB"
-    fi
-    if declare -F litellm_seat >/dev/null 2>&1; then
-        litellm_seat "worker-cheap"
-        return 0
-    fi
-    printf 'litellm\tworker-cheap\n'
-}
+# --- seat pick + drill fixture ----------------------------------------------
+# (pick_researcher_seat deleted with the seat governor, fleet-ops#4263 P3b:
+# workers run on LiteLLM groups; nothing invoked it.)
 
 if [ "$DRILL" = "1" ]; then
     drill_src="${RESEARCHER_DRILL_DELTAS:-}"

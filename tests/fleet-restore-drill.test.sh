@@ -26,6 +26,10 @@
 #      artifact-stale; the marker is refreshed on the rebuild-green run.
 #  13. A green run emits a dated marker at the alert-repair path the
 #      heartbeat stats (backup_freshness.newest_backup_marker).
+#  14. Plane E (fleet-ops#4264): absent litellm cluster -> SKIP, drill green.
+#  15. Plane E green: pg_dump produced in the dump dir, scratch-restore
+#      proven, marker cites litellm-pg, rotation keeps the newest KEEP dumps.
+#  16. Plane E pg_dump failure -> exit 1, LOUD, no dangling dump.
 set -euo pipefail
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 repo_root="$(cd "$here/.." && pwd)"
@@ -48,7 +52,7 @@ grep -q '^Type=oneshot$' "$svc" || fail "service: Type=oneshot"
 grep -q "^ExecStart=/bin/bash -c 'exec /home/nish/.local/bin/fleet-restore-drill'\$" "$svc" \
   || fail "service: ExecStart must exec the drill (bash -c wrapper dodges CI verify for unstubbed binaries)"
 grep -q '^Restart=no$' "$svc" || fail "service: Restart=no (timer is the retry)"
-grep -q '^TimeoutStartSec=2min$' "$svc" || fail "service: TimeoutStartSec=2min"
+grep -q '^TimeoutStartSec=5min$' "$svc" || fail "service: TimeoutStartSec=5min (plane E's bounded restore exceeds the old 2min)"
 ok "service: oneshot, bounded, no restart, execs drill"
 
 # 2. Timer: 6h cycle, persistent, no [Install] escape hatch beyond timers.target.
@@ -153,6 +157,11 @@ export SYS_STATE_DIR="$sys_state"
 # all scratch paths are covered.
 export FLEET_RESTORE_DRILL_BACKUP_ROOTS="$scratch"
 
+# Plane E (fleet-ops#4264): keep scenarios A-K hermetic — no pg cluster in
+# the scratch HOME, so plane E skips. Scenarios L-N override this and the
+# pg binary seams with fakes.
+export FLEET_LITELLM_PGDATA="$scratch/no-such-pgdata"
+
 # --- helpers ----------------------------------------------------------------
 write_green_system() {
   local last
@@ -206,6 +215,9 @@ reset_all() {
   rm -f "$triage"; : >"$triage"
   rm -rf "$sys_state"; mkdir -p "$sys_state"
   rm -rf "$state/alert-repair"
+  # The dump dir is scenario state too: L's rotation survivors must not
+  # satisfy M's no-lingering-dump assertion.
+  rm -rf "$state/backups"; mkdir -p "$state/backups"
   write_green_system
   write_seat_caps
   write_claims
@@ -357,4 +369,99 @@ run_drill
 [[ "$drill_rc" == 0 ]] || fail "scenarioK: second run must be green (self-heal), got $drill_rc ($drill_out)"
 ok "scenarioK: stale marker -> exit 1 LOUD, marker refreshed, next run green"
 
-ok "fleet-restore-drill: four planes (incl. artifact marker) + --check + skip flag covered (fleet-ops#388)"
+# ============================================================================
+# Scenario L: plane E green — dump produced, scratch-restore proven, marker
+# cites it, rotation keeps the newest KEEP dumps (fleet-ops#4264).
+# ============================================================================
+reset_all
+pgfake="$scratch/pgfake"
+pgdata="$scratch/pgdata"
+mkdir -p "$pgfake" "$pgdata"
+touch "$pgdata/PG_VERSION"
+cat >"$pgfake/pg_isready" <<'FAKE'
+#!/usr/bin/env bash
+exit 0
+FAKE
+cat >"$pgfake/pg_dump" <<'FAKE'
+#!/usr/bin/env bash
+# tiny but real: two control-plane tables so the restore proof has content
+cat <<'SQL'
+CREATE TABLE LiteLLM_BudgetTable (id int);
+CREATE TABLE LiteLLM_SpendLogs (id int);
+INSERT INTO LiteLLM_BudgetTable VALUES (1);
+SQL
+FAKE
+cat >"$pgfake/initdb" <<'FAKE'
+#!/usr/bin/env bash
+while [[ $# -gt 0 ]]; do case "$1" in -D) "$_dir_set"="$2"; scdata="$2";; esac; shift; done
+mkdir -p "${scdata:?}" "$scdata/../sock"
+FAKE
+cat >"$pgfake/pg_ctl" <<'FAKE'
+#!/usr/bin/env bash
+exit 0
+FAKE
+cat >"$pgfake/psql" <<'FAKE'
+#!/usr/bin/env bash
+if [[ "$*" == *-Atc* ]]; then printf '3\n'; else cat >/dev/null; fi
+exit 0
+FAKE
+chmod +x "$pgfake"/*
+export FLEET_LITELLM_PGDATA="$pgdata"
+export FLEET_LITELLM_PG_BINDIR="$pgfake"
+export FLEET_LITELLM_DUMP_DIR="$state/backups"
+run_drill
+[[ "$drill_rc" == 0 ]] || fail "scenarioL: must exit 0 with plane E green, got $drill_rc ($drill_out)"
+grep -q 'E.  - OK' <<<"$drill_out" || fail "scenarioL: drill must log plane E OK"
+dumpfile="$(ls -1t "$state"/backups/"litellm-"*.sql.gz 2>/dev/null | head -n 1)"
+[[ -n "$dumpfile" && -s "$dumpfile" ]] || fail "scenarioL: pg_dump must land in the dump dir"
+grep -q 'scratch-restore proven' <<<"$drill_out" || fail "scenarioL: drill must prove the scratch restore"
+grep -q 'litellm-pg dump+scratch-restore proven' "$state/alert-repair/fleet-restore-drill-marker" \
+  || fail "scenarioL: marker must cite the litellm-pg proof"
+# Rotation: seed 16 older dumps (16 + the fresh dump = 17) -> keep-14 must
+# rotate out the 3 oldest BY MTIME. The touch arithmetic puts 000014Z
+# uniquely at 2 days ago (the oldest seeded mtime -> rotated out) and
+# 000025..000029 one day in the future (the newest seeded mtimes -> all
+# survive); the shared-second groups (15..19, 20..24) tie inside ls -t and
+# are NOT name-assertable — only the unique mtime boundaries are.
+for i in $(seq 14 29); do
+  printf '%02d' "$i" >"$state/backups/litellm-20260101T0000${i}Z.sql.gz"
+  touch -d "$((4 - i / 5)) days ago" "$state/backups/litellm-20260101T0000${i}Z.sql.gz" 2>/dev/null \
+    || touch -d '4 days ago' "$state/backups/litellm-20260101T0000${i}Z.sql.gz"
+done
+run_drill
+count=$(find "$state/backups" -maxdepth 1 -name 'litellm-*.sql.gz' | wc -l)
+[[ "$count" -le 14 ]] || fail "scenarioL: rotation must keep <= 14 dumps, got $count"
+[[ -f "$state/backups/litellm-20260101T000029Z.sql.gz" ]] \
+  || fail "scenarioL: the newest of the seeded old dumps must survive rotation"
+[[ ! -f "$state/backups/litellm-20260101T000014Z.sql.gz" ]] \
+  || fail "scenarioL: the oldest seeded dump must be rotated out"
+ok "scenarioL: plane E green — dump + scratch-restore proof + marker cite + rotation"
+
+# ============================================================================
+# Scenario M: plane E pg_dump failure -> exit 1, LOUD, no dangling dump
+# ============================================================================
+reset_all
+cat >"$pgfake/pg_dump" <<'FAKE'
+#!/usr/bin/env bash
+echo "boom" >&2
+exit 1
+FAKE
+chmod +x "$pgfake/pg_dump"
+run_drill
+[[ "$drill_rc" == 1 ]] || fail "scenarioM: must exit 1 (pg_dump failed), got $drill_rc ($drill_out)"
+grep -q 'litellm pg_dump failed' "$triage" || fail "scenarioM: triage must name the pg_dump failure"
+[[ -z "$(find "$state/backups" -maxdepth 1 -name 'litellm-*.sql.gz' 2>/dev/null)" ]] \
+  || fail "scenarioM: a failed dump must not linger as a stale artifact"
+ok "scenarioM: plane E pg_dump failure -> exit 1, LOUD"
+
+# ============================================================================
+# Scenario N: plane E skips when the litellm cluster is absent
+# ============================================================================
+reset_all
+export FLEET_LITELLM_PGDATA="$scratch/no-such-pgdata"
+run_drill
+[[ "$drill_rc" == 0 ]] || fail "scenarioN: absent organ must SKIP and stay green, got $drill_rc ($drill_out)"
+grep -q 'E.  - SKIP: no litellm cluster' <<<"$drill_out" || fail "scenarioN: drill must log the plane E SKIP"
+ok "scenarioN: absent litellm cluster -> plane E SKIP, drill green"
+
+ok "fleet-restore-drill: four planes + plane E (fleet-ops#4264) + --check + skip flag covered (fleet-ops#388)"
