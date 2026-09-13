@@ -111,8 +111,8 @@
 #   SYSTEMD_RUN, SYSTEMCTL, PI_SALVAGE_BIN, PI_SALVAGE_DISABLE, AGENT_STATE,
 #   FLEET_DISPATCH_LEDGER, FLEET_DISPATCH_PACKET_DIR,
 #   FLEET_DISPATCH_LEDGER_NO_WRITE (1 = skip the append, for tests that
-#   only want the systemd-run shape). Salvage seams: PI_SALVAGE_WORKTREE_ROOT,
-#   PI_SALVAGE_UNIT_STARTED_EPOCH (fleet-ops#5800 sibling sweep). Dead-man
+#   only want the systemd-run shape). Salvage seams: PI_SALVAGE_WORKTREE_ROOT
+#   (fleet-ops#5800 sibling sweep). Dead-man
 #   seams: PI_DEADMAN_BIN, PI_DEADMAN_TEXTFILE, PI_DEADMAN_DRYRUN,
 #   KEYSTONE_HC_ENV,
 #
@@ -363,14 +363,11 @@ if [[ "${PI_SALVAGE_DISABLE:-0}" != "1" ]]; then
     # the 90s user default.
     cmd+=(--setenv=PI_SALVAGE_WORKDIR="$workdir")
     cmd+=(--setenv=PI_SALVAGE_UNIT="$unit")
-    # Dispatch time bounds the hook's "worktree created after the unit
-    # started" mtime match (fleet-ops#5800) when the unit record is gone.
-    cmd+=(--setenv=PI_SALVAGE_LAUNCHED_EPOCH="$(date -u +%s)")
     # Inherit test/runtime overrides so ExecStopPost writes the same ledger
     # and scans the same worktree root (fleet-ops#5800 sibling sweep).
     for v in AGENT_STATE FLEET_DISPATCH_LEDGER PI_SALVAGE_SKIP_SGSCAN \
              PI_SALVAGE_NOW PI_SALVAGE_REMOTE PI_SALVAGE_SCAN \
-             PI_SALVAGE_WORKTREE_ROOT PI_SALVAGE_UNIT_STARTED_EPOCH \
+             PI_SALVAGE_WORKTREE_ROOT \
              SYSTEMCTL; do
         if [[ -n "${!v:-}" ]]; then
             cmd+=(--setenv="$v")
