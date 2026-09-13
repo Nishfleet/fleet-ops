@@ -194,13 +194,12 @@ fallbacks). The benched seats are still in the ledger; every tick:
    `echo 'Reply with exactly the word PONG' | pi --print --provider <p>
    --model <m>'` — success is the literal `PONG` in stdout (exit 0 alone is
    not proof).
-3. A seat that answers PONG while benched is a bench lie — a fault you
-   repair now: run `fleet-seat-comeback-release --false-wall-only` (it
-   unwalls the seat with `source=bench_truth_probe` and increments
-   `fleet_seat_bench_lied_total`), then report it as a bench lie in your
-   heartbeat block: seat, writer that benched it, and the advertised window
-   it claimed. Do not hand-edit the ledger — the probe's unwall write is
-   the audit trail.
+3. A seat that answers PONG while benched is a bench lie — report it as a
+   bench lie in your heartbeat block: seat, writer that benched it, and the
+   advertised window it claimed. There is no releaser to call (retired
+   #6101): the seat unwalls itself when the benched window passes or the
+   LiteLLM proxy's /health clears it, and the next litellm-seat ledger
+   write is the audit trail. Do not hand-edit the ledger.
 4. A probe that FAILS leaves the seat benched; that is the system working,
    not a fault. Only a live seat that is benched is a lie.
 

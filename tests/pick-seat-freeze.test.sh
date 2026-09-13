@@ -12,8 +12,10 @@
 #   * any manifest file whose match count grows past its frozen value fails;
 #   * deletions are allowed — the deletion PR shrinks this manifest to the
 #     post-deletion residual set (done: the 248-entry pre-deletion caller map
-#     is now the 67-entry list of files whose only remaining mentions are
-#     prose/fixture ram_gb_per_worker references, plus this tombstone).
+#     is now the 50-entry list of files whose only remaining mentions are
+#     prose/fixture ram_gb_per_worker references, plus this tombstone;
+#     fleet-ops#6101 added bin/fleet-heartbeat-undersaturation's
+#     retired-#5993 explanatory comment).
 #
 # The signature covers the names spec termination requires gone: pick_seat,
 # seat-lib, ram_governor_cap, active_ram_charge, ram_gb_per_worker.
@@ -50,6 +52,7 @@ while IFS=: read -r f c; do
     frozen["$f"]="$c"
 done <<'MANIFEST'
 bin/fleet-heartbeat-tier1:4
+bin/fleet-heartbeat-undersaturation:1
 bin/fleet-restore-drill:1
 bin/fleet-vibes-canary:1
 bin/ram-measure:1
