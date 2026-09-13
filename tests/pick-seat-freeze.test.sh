@@ -52,6 +52,7 @@ done <<'MANIFEST'
 bin/fleet-heartbeat-tier1:4
 bin/fleet-restore-drill:1
 bin/fleet-vibes-canary:1
+bin/pi-audit-run:3
 bin/ram-measure:1
 tests/agent-cron-writes-refused.test.sh:1
 tests/blocked-reconcile.test.sh:1
@@ -89,6 +90,7 @@ tests/quality-routing.test.sh:1
 tests/ram-metric-compare.test.sh:18
 tests/repair-rung.test.sh:1
 tests/repo-privacy-guard.test.sh:1
+tests/rule-enforcement.test.sh:1
 tests/seat-empty-run-ceiling-default.test.sh:1
 tests/seat-empty-run-clobber-park.test.sh:1
 tests/seat-empty-run-count-persists-new-issue.test.sh:1
