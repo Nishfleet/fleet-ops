@@ -4964,3 +4964,125 @@ YAML
 promtool test rules "$PROMTEST" >"$scratch/5807-promtool.out" 2>&1 \
   || { sed -n 1,40p "$scratch/5807-promtool.out" >&2; fail "#5807 promtool firing/clearing failed"; }
 ok "fleet-ops#5807: 10:50-IST snapshot fires BOTH; 25-min drill dispatches and clears (promtool)"
+
+echo "=== 18. fleet-ops#5807: the 25-min drill drives the REAL repair dispatch ==="
+# Leg 17 proved fire+clear at the RULE level (promtool). This leg proves the
+# acceptance's other half: the firing CiMergeQueueHeadWaitHigh actually
+# dispatches a repair packet through the REAL libexec/alert-repair-dispatch —
+# the packet carries the LIVE rule annotations (the top-slot enumeration and
+# 0509#3069/#3068/#3070), exactly one DISPATCH, exactly one pi-systemd-run
+# spawn, and the resolved notification dispatches NOTHING (the #5272 skip) —
+# the packet cleared. Severity->receiver is owned by
+# tests/alertmanager-routing-matrix.test.sh (pointer, #5586). Spawn-mock
+# note (#2495): the dispatcher prepends $HOME/.local/bin, so a PATH stub
+# loses — the stub is passed as an ABSOLUTE PI_SYSTEMD_RUN_BIN.
+DISPATCH_BIN_5807="$here/../libexec/alert-repair-dispatch"
+[[ -x "$DISPATCH_BIN_5807" ]] || fail "not executable: $DISPATCH_BIN_5807"
+python3 -m py_compile "$DISPATCH_BIN_5807" || fail "#5807 drill: py_compile failed"
+DRILL="$scratch/5807-drill"
+mkdir -p "$DRILL/packets" "$DRILL/park" "$DRILL/bin" "$DRILL/seats"
+SPAWN_LOG="$DRILL/spawn.log"
+cat >"$DRILL/bin/fake-pi-systemd-run" <<SH
+#!/bin/sh
+echo "SPAWNED \$*" >> "$SPAWN_LOG"
+exit 0
+SH
+chmod +x "$DRILL/bin/fake-pi-systemd-run"
+START25="$(date -u -d '25 minutes ago' +%Y-%m-%dT%H:%M:%SZ)"
+[[ -n "$START25" ]] || fail "#5807 drill: could not derive the 25-min-ago START"
+MQ_NOTES="$(python3 - "$rules" <<'PY'
+import sys, yaml
+rules = yaml.safe_load(open(sys.argv[1]))
+for g in rules.get("groups", []):
+    for r in g.get("rules", []):
+        if r.get("alert") == "CiMergeQueueHeadWaitHigh":
+            a = r.get("annotations") or {}
+            print((a.get("summary") or "") + " " + (a.get("description") or ""))
+PY
+)"
+grep -q "0509#3069" <<<"$MQ_NOTES" \
+  || fail "#5807 drill: the LIVE rule text lost the consolidation issues"
+grep -q "workflowName x count x median run duration" <<<"$MQ_NOTES" \
+  || fail "#5807 drill: the LIVE rule text lost the top-slot enumeration"
+# The seat fixtures are the class-park precedent (a healthy lane; the
+# dispatcher must not wall or wedge on them). CLASS_PARK_DIR absent = the
+# proven fail-open posture; CLAIM_BIN=/nonexistent = claim fails, dispatch
+# proceeds; both DISPATCH surfaces redirected so the leg is hermetic.
+NOW_5807="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+cat >"$DRILL/seat-health.json" <<EOF
+{"provider":"minimax","model":"MiniMax-M3","health_class":"healthy","observed_at":"$NOW_5807"}
+EOF
+cat >"$DRILL/seats/minimax__MiniMax-M3.json" <<EOF
+{"provider":"minimax","model":"MiniMax-M3","health_class":"healthy","observed_at":"$NOW_5807","usable_at":null}
+EOF
+: >"$DRILL/dispatch-ledger.jsonl"
+AMX_STATUS=firing \
+AMX_RECEIVER=repair-dispatch \
+AMX_ALERT_1_LABEL_alertname=CiMergeQueueHeadWaitHigh \
+AMX_LABEL_severity=critical \
+AMX_LABEL_service=fleet \
+AMX_LABEL_repo="Nishfleet/0509" \
+AMX_ANNOTATION_summary="merge-queue head in Nishfleet/0509 waited 20+ minutes" \
+AMX_ANNOTATION_description="$MQ_NOTES" \
+AMX_ALERT_1_STATUS=firing \
+AMX_ALERT_1_START="$START25" \
+AMX_ALERT_1_END=0 \
+ALERT_REPAIR_PACKET_DIR="$DRILL/packets" \
+CLASS_PARK_DIR="$DRILL/park" \
+SEAT_HEALTH_FILE="$DRILL/seat-health.json" \
+SEAT_LEDGER_DIR="$DRILL/seats" \
+ALERT_REPAIR_CLAIM_BIN=/nonexistent \
+FLEET_DISPATCH_LEDGER="$DRILL/dispatch-ledger.jsonl" \
+PI_SYSTEMD_RUN_BIN="$DRILL/bin/fake-pi-systemd-run" \
+ALERT_REPAIR_NO_SPAWN= \
+"$DISPATCH_BIN_5807" >"$DRILL/out.firing" 2>"$DRILL/err.firing" \
+  || { sed -n 1,25p "$DRILL/err.firing" >&2; fail "#5807 drill: firing dispatch exited non-zero"; }
+grep -q "DISPATCH alertname=CiMergeQueueHeadWaitHigh" "$DRILL/packets/actions.log" \
+  || fail "#5807 drill: no DISPATCH for CiMergeQueueHeadWaitHigh (err: $(tail -3 "$DRILL/err.firing" | tr '\n' ' '))"
+[[ "$(grep -c "DISPATCH alertname=CiMergeQueueHeadWaitHigh" "$DRILL/packets/actions.log")" -eq 1 ]] \
+  || fail "#5807 drill: DISPATCH multiplicity — exactly one repair worker per firing"
+[[ "$(grep -c SPAWNED "$SPAWN_LOG")" -eq 1 ]] \
+  || fail "#5807 drill: expected exactly 1 pi-systemd-run spawn"
+grep -q "CiMergeQueueHeadWaitHigh" "$SPAWN_LOG" \
+  || fail "#5807 drill: the spawned unit lost the alertname"
+N_PACKETS_5807="$(find "$DRILL/packets" -maxdepth 1 -name 'packet-*.md' | wc -l)"
+[[ "$N_PACKETS_5807" -eq 1 ]] \
+  || fail "#5807 drill: expected exactly 1 repair packet, got $N_PACKETS_5807"
+PACKET_5807="$(find "$DRILL/packets" -maxdepth 1 -name 'packet-*.md' | head -1)"
+for needle_5807 in "CiMergeQueueHeadWaitHigh" \
+                   "workflowName x count x median run duration" \
+                   "0509#3069" "0509#3068" "0509#3070" \
+                   "BUDGET RULE"; do
+  grep -q -- "$needle_5807" "$PACKET_5807" \
+    || fail "#5807 drill: the repair packet lost '$needle_5807'"
+done
+AMX_STATUS=resolved \
+AMX_RECEIVER=repair-dispatch \
+AMX_ALERT_1_LABEL_alertname=CiMergeQueueHeadWaitHigh \
+AMX_LABEL_severity=critical \
+AMX_LABEL_service=fleet \
+AMX_LABEL_repo="Nishfleet/0509" \
+AMX_ANNOTATION_summary="merge-queue head in Nishfleet/0509 waited 20+ minutes" \
+AMX_ANNOTATION_description="$MQ_NOTES" \
+AMX_ALERT_1_STATUS=resolved \
+AMX_ALERT_1_START="$START25" \
+AMX_ALERT_1_END="$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+ALERT_REPAIR_PACKET_DIR="$DRILL/packets" \
+CLASS_PARK_DIR="$DRILL/park" \
+SEAT_HEALTH_FILE="$DRILL/seat-health.json" \
+SEAT_LEDGER_DIR="$DRILL/seats" \
+ALERT_REPAIR_CLAIM_BIN=/nonexistent \
+FLEET_DISPATCH_LEDGER="$DRILL/dispatch-ledger.jsonl" \
+PI_SYSTEMD_RUN_BIN="$DRILL/bin/fake-pi-systemd-run" \
+ALERT_REPAIR_NO_SPAWN= \
+"$DISPATCH_BIN_5807" >"$DRILL/out.resolved" 2>"$DRILL/err.resolved" \
+  || { sed -n 1,25p "$DRILL/err.resolved" >&2; fail "#5807 drill: resolved notification exited non-zero"; }
+grep -q "SKIP resolved (receiver=repair-dispatch)" "$DRILL/err.resolved" \
+  || fail "#5807 drill: the resolved notification did not SKIP (the #5272 contract)"
+[[ "$(grep -c "DISPATCH alertname=CiMergeQueueHeadWaitHigh" "$DRILL/packets/actions.log")" -eq 1 ]] \
+  || fail "#5807 drill: the resolved notification dispatched again — the packet did not CLEAR"
+[[ "$(find "$DRILL/packets" -maxdepth 1 -name 'packet-*.md' | wc -l)" -eq 1 ]] \
+  || fail "#5807 drill: the resolved notification wrote a second packet"
+[[ "$(grep -c SPAWNED "$SPAWN_LOG")" -eq 1 ]] \
+  || fail "#5807 drill: the resolved notification spawned a worker"
+ok "fleet-ops#5807: 25-min head wait dispatched exactly 1 packet + 1 DISPATCH + 1 spawn; resolved cleared it"
