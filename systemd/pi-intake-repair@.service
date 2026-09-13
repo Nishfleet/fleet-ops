@@ -12,4 +12,4 @@ WorkingDirectory=/home/nish
 # /bin/bash -c exec keeps systemd-analyze verify from needing a new CI stub
 # (same shape as pi-scout@.service / pi-scout-repair@.service).
 ExecStart=/bin/bash -c 'exec /home/nish/.local/bin/pi-intake-repair-run %i'
-TimeoutStartSec=1800
+TimeoutStartSec=2700
