@@ -117,7 +117,7 @@ git -C "$checkout" checkout -q -b throwaway-guard-test
 rc=$(run_bin 0)
 [[ "$rc" == "0" ]] || fail "off-main same-SHA should exit 0 (got $rc)"
 grep -q "DEPLOY-INVOKED" "$DEPLOY_SPY_LOG" \
-    || fail "off-main must invoke deploy even when HEAD SHA == origin/main"
+    || fail "off-main must invoke deploy even when HEAD SHA == origin/main (tick log: $(tr '\n' '|' < "$scratch/err.log"))"
 grep -q "not main" "$scratch/err.log" \
     || fail "off-main must log the not-main reason: $(cat "$scratch/err.log")"
 git -C "$checkout" checkout -q main
@@ -165,7 +165,8 @@ ok "moved origin/main -> deploy invoked, exit 0"
 advance_origin "remote-four"
 rc=$(run_bin 0 1)
 [[ "$rc" == "0" ]] || fail "deploy rc=1 should be soft (exit 0), got $rc"
-grep -q "DEPLOY-CHECK-FAILED" "$scratch/err.log" || fail "missing DEPLOY-CHECK-FAILED loud line"
+grep -q "DEPLOY-CHECK-FAILED" "$scratch/err.log" \
+  || fail "missing DEPLOY-CHECK-FAILED loud line (tick log: $(tr '\n' '|' < "$scratch/err.log"))"
 ok "deploy failure louds DEPLOY-CHECK-FAILED, exit 0 (soft, was: hard-fail-tripped auditor)"
 
 # --- 6. deploy already in flight -> yields -----------------------------------
@@ -910,7 +911,7 @@ grep -q "DEPLOY-CHECK-OFF-MAIN" "$scratch/err-prom.log" \
 grep -q "drift-drill" "$scratch/err-prom.log" \
   || fail "OFF-MAIN loud must name the offending branch"
 grep -q "DEPLOY-INVOKED" "$DEPLOY_SPY_LOG" \
-  || fail "off-main drift must invoke the sanctioned deploy to converge"
+  || fail "off-main drift must invoke the sanctioned deploy to converge (tick log: $(tr '\n' '|' < "$scratch/err-prom.log"))"
 ok "drift drill: clone on a branch -> gauge 1 + DEPLOY-CHECK-OFF-MAIN + deploy invoked"
 
 # Detached HEAD is the same drift class — a clone parked detached cannot
