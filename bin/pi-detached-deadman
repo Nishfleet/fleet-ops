@@ -216,8 +216,13 @@ died=0
 if [[ "$service_result" != "success" ]]; then
     died=1
 fi
-if [[ -n "$deliverable" && ! -f "$deliverable" ]]; then
+# #5456 (B): the promise is the FILE WITH CONTENT. A 0-byte deliverable at
+# stop is a missing deliverable (the run exited 0, wrote nothing) — the same
+# silent-success class #4266 Closed for the file-absent case.
+nodeliv=0
+if [[ -n "$deliverable" && ( ! -f "$deliverable" || ! -s "$deliverable" ) ]]; then
     died=1
+    nodeliv=1
 fi
 
 # --- false LIVE-claim gate (fleet-ops#5786) ----------------------------------
@@ -291,6 +296,33 @@ if [[ "$died" == "1" ]]; then
         UNIT_ESCALATION_REASON="$esc_reason" \
         UNIT_ESCALATION_SOURCE="pi-detached-deadman" \
             "$escalation_bin" "$unit" >/dev/null 2>&1 || true
+    fi
+    # #5456 (B): record verdict=no-deliverable in the dispatch ledger. The
+    # closing line carries NO hop key (deliberately): the #5456 relay in
+    # stop-escalation-dispatch scans the ledger for the last row WITH a hop
+    # (the launch row), so this close must never shadow the launch's promise.
+    # fleet-completion-canary's last-line-per-id rule reads the new status
+    # (the binary is referenced-but-unlanded — #5456 PR lists it); additive
+    # JSONL keys keep every existing reader intact.
+    if [[ "$nodeliv" == "1" && -n "${PI_DEADMAN_DISPATCH:-}" ]]; then
+        DISPATCH_LEDGER_PATH="${PI_DEADMAN_DISPATCH_LEDGER:-${AGENT_STATE:-$HOME/workspaces/agent-state}/dispatch-ledger.jsonl}" \
+        DEADMAN_DISPATCH_ID="$PI_DEADMAN_DISPATCH" DEADMAN_UNIT="$unit" \
+        python3 - <<'PY' 2>/dev/null || true
+import json, os
+from datetime import datetime, timezone
+try:
+    with open(os.environ["DISPATCH_LEDGER_PATH"], "a") as fh:
+        fh.write(json.dumps({
+            "ts": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+            "id": os.environ["DEADMAN_DISPATCH_ID"],
+            "unit": os.environ["DEADMAN_UNIT"],
+            "status": "no-deliverable",
+            "verdict": "no-deliverable",
+            "reason": "promised deliverable missing/empty at stop (fleet-ops#5456 B)",
+        }, separators=(",", ":")) + "\n")
+except OSError:
+    pass
+PY
     fi
     _textfile_set 1
     log "died: unit=$unit result=$service_result deliverable=${deliverable:-unset} — dead-man tripped"

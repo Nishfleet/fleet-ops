@@ -121,8 +121,13 @@ case "$failed_unit" in
     pi-packet-failed@*|unit-escalation@*|stop-escalation.*) self_trigger=1 ;;
 esac
 
-# --- evidence: last 5 journal lines + unit Environment -----------------------
-journal_tail="$("$JOURNALCTL" --user -u "$failed_unit" -n 5 --no-pager -o cat 2>/dev/null | tail -5 || true)"
+# --- evidence: journal tail + unit Environment ------------------------------
+# #5456 (ii): the dispatcher's calls owe the issue the last 20 journal lines
+# (PI_PACKET_FAILED_JOURNAL_LINES); the #5444 OnFailure path keeps its tight
+# 5 (the triage/ledger evidence truncates either way — bounded writes).
+JL="${PI_PACKET_FAILED_JOURNAL_LINES:-5}"
+case "$JL" in ''|*[!0-9]*) JL=5 ;; esac
+journal_tail="$("$JOURNALCTL" --user -u "$failed_unit" -n "$JL" --no-pager -o cat 2>/dev/null | tail -"$JL" || true)"
 unit_env="$("$SYSTEMCTL" --user show "$failed_unit" -p Environment --value 2>/dev/null || true)"
 deliverable="$(printf '%s' "$unit_env" | tr ' ' '\n' | sed -n 's/^PI_DEADMAN_DELIVERABLE=//p' | head -1)"
 # Drill seam: a runner's user manager may not surface a dead transient's
@@ -304,8 +309,15 @@ if [[ "$dry_run" != "1" && "$self_trigger" != "1" && "$ledger_rc" != "0" ]]; the
 fi
 
 # --- 4. deliverable packet -> re-queue as an agent-ready issue ---------------
-if [[ -n "$deliverable" && "$self_trigger" != "1" ]]; then
-    title="packet $failed_unit exhausted retries — deliverable never landed"
+# #5456 (ii): PI_PACKET_FAILED_FORCE_ISSUE=1 (set by the dispatcher) files the
+# issue even without a deliverable promise — non-packet units (pi-intake@fleet-ops
+# and friends) must also land an agent-ready issue, not only packets.
+if [[ -n "$deliverable" || -n "${PI_PACKET_FAILED_FORCE_ISSUE:-}" ]] && [[ "$self_trigger" != "1" ]]; then
+    if [[ -n "$deliverable" ]]; then
+        title="packet $failed_unit exhausted retries — deliverable never landed"
+    else
+        title="unit $failed_unit died without dispatch — #5456 relay records"
+    fi
     body="$(printf 'A pi packet died for good and its promised deliverable never appeared (fleet-ops#5444).\n\n- unit: `%s`\n- deliverable: `%s`\n- packet: `%s`\n- cmdline: `%s`\n\nLast journal lines:\n```\n%s\n```\n\nRe-queued by pi-packet-failed@ so the packet returns as agent-ready work instead of dying.\n\nsignal: pi-packet-exhausted/%s\n' \
         "$failed_unit" "$deliverable" "${packet_path:-unknown}" "${deadman_cmd:-unknown}" "$journal_tail" "$failed_unit")"
     if [[ "$dry_run" == "1" ]]; then
@@ -318,10 +330,11 @@ if [[ -n "$deliverable" && "$self_trigger" != "1" ]]; then
             if _minted="$("$_wt" --print 2>/dev/null)"; then eval "$_minted"; else
                 log "ALERT: worker-token mint failed — cannot file the re-queue issue"; hard_fail=1
                 deliverable=""  # skip the filing block below
+                PI_PACKET_FAILED_FORCE_ISSUE=""
             fi
             unset _wt _minted 2>/dev/null || true
         fi
-        if [[ -n "$deliverable" ]]; then
+        if [[ -n "$deliverable" || -n "${PI_PACKET_FAILED_FORCE_ISSUE:-}" ]]; then
             if [[ ! -x "$ISSUE_FILE" ]]; then
                 log "ALERT: fleet-issue-file missing at $ISSUE_FILE — re-queue issue NOT filed"; hard_fail=1
             elif ! "$ISSUE_FILE" file -R "$ISSUE_REPO" --title "$title" --body "$body" \

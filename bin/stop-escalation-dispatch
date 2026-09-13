@@ -93,6 +93,153 @@ source "$SEAT_LIB"
 
 ts() { date -u +%FT%TZ; }
 
+# --- #5456 relay seams -------------------------------------------------------
+# The relay re-uses EXISTING organs only: pi-systemd-run (the launcher, which
+# owns the dispatch ledger) and pi-packet-failed (the #5444 recorder). No new
+# organ, no new timer. Every path here is a seam so tests can point the relay
+# at a sandbox.
+here_ddsptr="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PSR_BIN="${STOP_ESCALATION_PSR_BIN:-$here_ddsptr/pi-systemd-run}"
+[ -x "$PSR_BIN" ] || PSR_BIN="$HOME/.local/bin/pi-systemd-run"
+PPF_BIN="${STOP_ESCALATION_PACKET_FAILED_BIN:-$here_ddsptr/pi-packet-failed}"
+[ -x "$PPF_BIN" ] || PPF_BIN="$HOME/.local/bin/pi-packet-failed"
+RELAY_SEEN="${STOP_ESCALATION_RELAY_SEEN:-$AS/stop-escalation-relay-seen.txt}"
+DISPATCH_LEDGER="${STOP_ESCALATION_DISPATCH_LEDGER:-$AS/dispatch-ledger.jsonl}"
+TRIAGE_FILE="${FLEET_HEARTBEAT_TRIAGE:-$AS/FLEET-HEARTBEAT-TRIAGE.md}"
+SYSTEMCTL_BIN="${STOP_ESCALATION_SYSTEMCTL:-systemctl}"
+
+# relay_triage <one-line result> — the LOUD line the hourly judges read.
+# Best-effort: a triage write failure must not lose the relay's action
+# (the ledger + journal lines below still carry the proof).
+relay_triage() {
+  printf '\n[%s] [STOP-ESCALATION-RELAY] %s\n' "$(ts)" "$1" >> "$TRIAGE_FILE" 2>/dev/null || true
+}
+
+# relay_mark_seen <sha> — one relay action per distinct STOP-REASON.json
+# (the writer timestamps every row, so the file sha256 is the death's
+# identity; PathChanged re-fires and manager reloads must not double-hop).
+relay_mark_seen() {
+  grep -vF "$1" "$RELAY_SEEN" 2>/dev/null > "$RELAY_SEEN.tmp" || true
+  printf '%s %s\n' "$1" "$(date +%s)" >> "$RELAY_SEEN.tmp"
+  mv "$RELAY_SEEN.tmp" "$RELAY_SEEN"
+}
+
+# #5456 relay: the ACTION half of the chain. Runs INSTEAD of the SENIOR
+# AUDITOR for the two unit-death reasons (the auditor stays behind for
+# circuit/walled reasons, where it is the only judgement step; a unit death
+# needs mechanics, not another pi call):
+#   (i)  reason=unit-failure|unit-stopped-without-deliverable AND the unit has
+#        an OPEN dispatch-ledger row (a pi-systemd-run packet) with hop<2 AND
+#        the unit is not active: reset-failed + relaunch the RECORDED command
+#        and packet via pi-systemd-run --chain-id --hop+1. A LiteLLM packet
+#        re-enters its group, where the proxy picks the next healthy seat; a
+#        direct-provider packet replays its recorded lane (its #5444 OnFailure
+#        belt already recorded the death, so a repeat death just advances the
+#        hop — the ladder is bounded at hop 2).
+#   (ii) no ledger row (non-packet unit) OR hop>=2 OR the relaunch failed:
+#        delegate to pi-packet-failed with FORCE_ISSUE=1 + JOURNAL_LINES=20 —
+#        ONE recorder: LOUD triage line, findings-ledger carried_over row, and
+#        the agent-ready fleet-ops issue titled after the unit (last 20
+#        journal lines). On the FAILED path #5444's own OnFailure target
+#        already ran these writes; the relay then guarantees the CLEAN
+#        (no-OnFailure) deaths — unit-stopped-without-deliverable — and
+#        non-packet units reach the same records through the FORCE seams.
+# Either way the relay writes ONE triage line and exits 0: the chain
+# terminates in an ACTION, never in a log (Nish, 2026-09-11: "TO RESUME!").
+stop_escalation_relay() {
+  case "$reason" in
+    unit-failure|unit-stopped-without-deliverable) ;;
+    *) return 1 ;;
+  esac
+  local sr_sha unit hop2
+  sr_sha=$(sha256sum "$SR" | awk '{print $1}')
+  if [ -f "$RELAY_SEEN" ] && grep -qF "$sr_sha" "$RELAY_SEEN" 2>/dev/null; then
+    # Already relayed; the proof lives in the seen-file, not the triage —
+    # the judges need signal, not echoes.
+    return 0
+  fi
+  unit=$(python3 -c 'import sys,json;d=json.load(open(sys.argv[1]));print((d.get("detail") or {}).get("unit",""))' "$SR" 2>/dev/null || true)
+  if [ -z "$unit" ]; then
+    # No unit in the STOP-REASON detail: fall through to the auditor, which
+    # reads the whole reason+detail itself. Never wedge the older rail.
+    return 1
+  fi
+  if [ "$DRY" = 1 ]; then
+    echo "relay-dry: STOP-REASON $sr_sha unit=$unit reason=$reason (ledger $DISPATCH_LEDGER)" >&2
+    return 0
+  fi
+  # Last OPEN ledger row for this unit = the packet's promise (packet copy,
+  # recorded cmdline, deliverable, chain, hop). Empty when the unit is not a
+  # pi-systemd-run packet.
+  local l_id="" l_chain="" l_hop="" l_path="" l_deliv="" l_cmd="" l_dlmin=""
+  IFS=$'\t' read -r l_id l_chain l_hop l_path l_deliv l_cmd l_dlmin <<<"$(python3 - "$DISPATCH_LEDGER" "$unit" <<'PY' 2>/dev/null || true
+import json, sys
+row = ""
+try:
+    for line in open(sys.argv[1]):
+        try: e = json.loads(line)
+        except Exception: continue
+        # #5456: the DEADMAN's closing line (status=no-deliverable) carries
+        # NO hop key by design, so "hop in e" keeps the LAUNCH row (the
+        # promise) even after theExecStopPost close appended beneath it.
+        if e.get("unit") == sys.argv[2] and "hop" in e:
+            row = e
+except OSError:
+    pass
+print("\t".join([str(row.get(k) or "") for k in ("id", "chain_id", "hop", "packet_path", "deliverable", "cmdline", "deadline_min")]))
+PY
+)" || true
+  relay_mark_seen "$sr_sha"
+  # (i) hop+1 relaunch — only when the death was a promised packet, the ladder
+  # is below its cap, and the unit really is down (is-active is a probe: its
+  # non-zero exit here is the yes-answer, not a failed command).
+  if [ -n "$l_id" ] && [ "${l_hop:-0}" -lt 2 ] 2>/dev/null \
+     && ! "$SYSTEMCTL_BIN" --user is-active --quiet "$unit" 2>/dev/null; then
+    "$SYSTEMCTL_BIN" --user reset-failed "$unit" 2>/dev/null || true
+    hop2=$(( l_hop + 1 ))
+    local -a relay_args=(--unit "$unit" --chain-id "$l_chain" --hop "$hop2")
+    [ -n "$l_path" ] && relay_args+=(--stdin "$l_path")
+    case "$l_dlmin" in ''|*[!0-9]*) : ;; *) relay_args+=(--deadline "$l_dlmin");; esac
+    [ -n "$l_deliv" ] && relay_args+=(--deliverable "$l_deliv")
+    # Recorded command ("cmdline" = space-joined $* at launch). shlex, never
+    # eval: a path with spaces must survive (0-delimited, bash-defensive).
+    local -a relay_cmd=()
+    [ -n "$l_cmd" ] && mapfile -t -d '' relay_cmd < <(python3 -c '
+import shlex, sys
+try:
+    for a in shlex.split(sys.argv[1]):
+        sys.stdout.write(a + "\0")
+except ValueError:
+    pass
+' "$l_cmd" 2>/dev/null || true)
+    if [ ${#relay_cmd[@]} -gt 0 ] && [ -n "${relay_cmd[0]:-}" ]; then
+      relay_args+=("${relay_cmd[@]}")
+      local relay_rc=0
+      "$PSR_BIN" "${relay_args[@]}" >/dev/null 2>&1 || relay_rc=$?
+      if [ "$relay_rc" -eq 0 ]; then
+        relay_triage "relaunched $unit hop=$hop2 (chain $l_chain, packet $l_path, deliverable ${l_deliv:-none})"
+        return 0
+      fi
+      relay_triage "relaunch failed for $unit (rc=$relay_rc, hop=$hop2) — falling to #5444 records"
+    else
+      relay_triage "no usable cmdline in ledger for $unit — falling to #5444 records"
+    fi
+  fi
+  # (ii) hop>=2 / non-packet / failed relaunch / clean-stop records: ONE
+  # recorder, #5444's pi-packet-failed. Its FAILED-path twin (the OnFailure
+  # target) dedupes against these writes in the findings-ledger (finding_id)
+  # and in fleet-issue-file (filing-time dedupe); the triage gains one extra
+  # LOUD line, which is the desired signal, not noise.
+  PI_PACKET_FAILED_SOURCE_UNIT="$unit" \
+  PI_PACKET_FAILED_FORCE_ISSUE=1 \
+  PI_PACKET_FAILED_JOURNAL_LINES=20 \
+  PI_PACKET_FAILED_DELIVERABLE="${l_deliv:-}" \
+    "$PPF_BIN" "$unit" >/dev/null 2>&1 || \
+    relay_triage "pi-packet-failed records FAILED for $unit — check ALERT lines in its journal"
+  relay_triage "recorded $unit (reason=$reason, hop=${l_hop:-none}, ledger=${l_id:-no-row}) — issue+ledger+triage via #5444 recorder"
+  return 0
+}
+
 # Consecutive KILL-RETRY count per STOP-REASON hash (fleet-ops#444).
 # 124 = GNU timeout, 137 = SIGKILL, 143 = SIGTERM. After 2 consecutive kills
 # we escalate loud and stop burning seats on this hash.
@@ -201,6 +348,12 @@ reason=$(python3 -c 'import sys,json;print(json.load(sys.stdin).get("reason","")
 case "$reason" in
   boundary:*|cooldown_active|auditor-resolved) exit 0 ;;
 esac
+
+# #5456 relay FIRST: the unit-death ACTION (hop+1 relaunch or #5444 records).
+# Exits 0 when it acted; returns 1 (and the AUDITOR below proceeds) for the
+# circuit/walled reasons the SENIOR AUDITOR owns, and for a STOP-REASON with
+# no detail.unit.
+stop_escalation_relay && exit 0
 
 hash=$(sha256sum "$SR" | awk '{print $1}')
 now=$(date +%s)
