@@ -87,6 +87,7 @@ jobs:
         bash tests/repeat-deterministic-detector.test.sh
         bash tests/red-on-main-detector.test.sh
         bash tests/ci-failure-escalation-detector.test.sh
+        bash tests/unit-escalation-write-help-guard.test.sh
         bash tests/staleness-checker.test.sh
         bash tests/required-check-purity.test.sh
         bash tests/ci-checklist-gate.test.sh
