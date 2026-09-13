@@ -27,10 +27,12 @@ ExecStart=/usr/bin/python3 /home/nish/.local/libexec/fleet-litellm-health-canary
 # written NO prom file (3.277s CPU against 0.18s for a healthy run, i.e.
 # starved, not slow), so the trip carried no diagnosis and the organ
 # heartbeat metric went dark for the window. Measured worst case for a
-# complete run is 21s (readiness 10s + pg 5s + redis 5s, proven against a
-# black-hole listener), so 120s is ~6x headroom. Verdict latency is set by
-# the 60s timer + the script's own 60s dead-tolerance (tick count), NOT by
-# this timeout, so the extra headroom delays no detection and stops a starved
-# run from being killed before it can report.
-TimeoutStartSec=120
+# complete run is 70s (readiness 60s + pg 5s + redis 5s, proven against a
+# black-hole listener; readiness 60s = 2026-09-13, see the canary source —
+# Prisma-connection stalls made /health/readiness hang 38s-6min), so 150s is
+# ~2.1x headroom. Verdict latency is set by the 60s timer + the script's own
+# 60s dead-tolerance (tick count), NOT by this timeout, so the extra headroom
+# delays no detection and stops a starved run from being killed before it
+# can report.
+TimeoutStartSec=150
 Restart=no

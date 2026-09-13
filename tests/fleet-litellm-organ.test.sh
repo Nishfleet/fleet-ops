@@ -581,8 +581,10 @@ ok "16: canary authenticates /health; proxy loads prisma compat via PYTHONPATH"
 # 2026-09-11: this unit was SIGTERMed at 30s during a memory-pressure stall
 # having printed nothing and written no prom file (3.277s CPU vs 0.18s for a
 # healthy run), so the trip carried no diagnosis and the organ heartbeat went
-# dark. Measured worst case for a complete run is 21s. Assert the PROPERTY
-# (generous headroom), not the exact number, so a later raise is not a red.
+# dark. Measured worst case for a complete run is 70s (readiness 60s + pg 5s
+# + redis 5s; readiness raised 10s->60s 2026-09-13, see the canary source).
+# Assert the PROPERTY (generous headroom), not the exact number, so a later
+# raise is not a red.
 ts=$(grep -E '^TimeoutStartSec=' "$canary_unit" | tail -1 | cut -d= -f2)
 case "$ts" in
     *min) ts_s=$(( ${ts%min} * 60 ));;

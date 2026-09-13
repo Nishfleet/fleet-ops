@@ -122,7 +122,16 @@ DEFAULT_PROM = Path(
 DEFAULT_STATE = Path(
     os.environ.get("FLEET_LITELLM_STATE", "/home/nish/workspaces/agent-state/litellm/health.json")
 )
-DEFAULT_TIMEOUT_S = float(os.environ.get("FLEET_LITELLM_TIMEOUT_S", "10"))
+# 2026-09-13 (live, 13:32-13:48 IST): /health/readiness does a real Prisma DB
+# check; during Prisma stalls (db_health_watchdog_connection_error, reconnect
+# 13:37:41-13:37:47) it hung 38s-6min while /metrics and /chat/completions kept
+# 200ing. A 10s budget read slow-alive as dead (proxy_up=0) and flapped
+# FleetLitellmProxyAbsent. 60s covers the measured stalls; the worst-case run
+# (readiness 60s + pg 5s + redis 5s = 70s) stays under the unit's
+# TimeoutStartSec (150s) and roughly one 60s timer tick, so verdict
+# granularity during a hang-burst stays ~1min and the '<2min' organ-death
+# promise still holds (2x 60s ticks).
+DEFAULT_TIMEOUT_S = float(os.environ.get("FLEET_LITELLM_TIMEOUT_S", "60"))
 # Fail-loud only after the proxy has been continuously unreachable this long.
 # A single connection-refused tick can hit a legitimate restart window (the
 # proxy organ is a live daemon whose install/restart gaps ~one 60s tick, e.g.
