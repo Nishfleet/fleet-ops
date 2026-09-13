@@ -1,6 +1,7 @@
 ---
 name: reviewer
 description: Code review specialist for quality and security analysis
+model: nebius/zai-org/GLM-5.3-Flash
 tools: read, grep, find, ls, bash
 ---
 
