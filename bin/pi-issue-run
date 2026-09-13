@@ -11,30 +11,13 @@
 #      --provider devin --model swe-2-max in the systemd-run ExecStart);
 #      wiring this through is what point 4 of the P4-A packet required.
 #   2. No-op detection: if pi exits 0 but produced no real output (< 20 B
-#      to stdout), re-seat in-process via continue (fleet-ops#1378) AND
-#      bench the seat via mark_seat_empty_run so the LiteLLM proxy skips it on the
-#      next intake re-spawn and reroutes to a healthy seat (fleet-ops#1298).
+#      to stdout), re-seat in-process via continue (fleet-ops#1378).
 #      A provider no-op (pi ran, exited 0, produced < 20 B) is a SEAT
 #      FAULT — same class as a verdict-based empty run (tools=0, no final
-#      text, fleet-ops#902) — so both are benched via mark_seat_empty_run
-#      before re-seating in-process. The bench is a FLAT cooldown
-#      (mark_seat_empty_run, EMPTY_RUN_BACKOFF_S = 15 min) — a provider
-#      no-op is NOT a wall, so the fleet-ops#1408 count ladder does NOT
-#      apply (fleet-ops#2343: the old ladder churned healthy seats); only
-#      the fleet-ops#1362 60-failure ceiling park (24h wall) lengthens it.
-#      seat-health.ts resets the count on a healthy observation so a
-#      recovered seat is re-tried after the flat cooldown. The in-process
-#      retry loop avoids burning the item's StartLimitBurst dispatch budget
-#      (only exits 1 after EMPTY_RUN_RETRY_MAX consecutive empty runs).
-#      History: fleet-ops#1416 treated a provider no-op as a LANE fault
-#      (no bench) on the theory that a single 0B stdout was a provider
-#      hiccup on a healthy seat. fleet-ops#1298 reversed that: without a
-#      bench, an intake re-spawn (fresh claim, empty tried-seats) re-picked
-#      the same no-op'ing seat and burned 8 runs/2h on
-#      straitly/deepseek-v4-pro. The flat cooldown breaks the loop
-#      without walling a recovered seat (fail-open after usable_at) and
-#      without over-punishing a healthy provider that no-ops occasionally
-#      (fleet-ops#2343).
+#      text, fleet-ops#902). The LiteLLM proxy cooldown owns cross-unit
+#      seat health (fleet-ops#4263); this wrapper's job is only the
+#      in-process retry: re-seat up to EMPTY_RUN_RETRY_MAX times, then
+#      exit 1 and let systemd Restart= count it toward StartLimitBurst.
 #      fleet-ops#1873 determination (window 2026-08-29T02:30-04:30Z: 14
 #      empty runs vs 3 dispatches, ready_work=119, samples fleet-ops-1360/
 #      -628/-1350/-1390 on straitly/deepseek-v4-pro, openrouter/deepseek-
@@ -48,16 +31,16 @@
 #   3. Active-seat registration: writes the picked seat to the per-seat
 #      state dir so litellm-seat.sh's cap accounting reflects the running
 #      worker. Cleared on exit via trap.
-#   4. P13-B spawn-phase failure marker: if pi dies in < SPAWN_FAIL_MAX_S
+#   4. P13-B spawn-phase failure classification: if pi dies in < SPAWN_FAIL_MAX_S
 #      (default 120s) AND the captured output contains an ETIMEDOUT pattern
-#      paired with a spawn/socket/connect/child/handshake neighbour, write
-#      a per-seat ledger entry via mark_seat_spawn_fail (litellm-seat.sh).
-#   4b. fleet-ops#90 quota/cap wall bench: if pi exits non-zero with a
+#      paired with a spawn/socket/connect/child/handshake neighbour, log the
+#      SPAWN-TIMEOUT class (litellm-seat.sh). The LiteLLM proxy cooldown owns
+#      skipping the seat on the next pick.
+#   4b. fleet-ops#90 quota/cap wall classification: if pi exits non-zero with a
 #      quota/cap error carrying a reset window (ClinePass weekly cap,
-#      "retry after", 429 with retry_after), write health_class=quota_bench
-#      and bench_until so the LiteLLM proxy skips the seat until then (or the
-#      provider default in seat-caps.json). A walled seat is a lane fault,
-#      never charged to the work item.
+#      "retry after", 429 with retry_after), log the QUOTA/CAP WALL class.
+#      The LiteLLM proxy cooldown owns skipping the walled seat. A walled
+#      seat is a lane fault, never charged to the work item.
 #   6. Defensive mkdir for $ATTEMPTS_DIR: fleet-ops#63 observed the dir
 #      vanish between startup and the tried-seats append, stranding workers
 #      in crash-loop on a benign filesystem-cleanup race. The startup
@@ -215,8 +198,8 @@ OUT_MIN="${PI_PACKET_RUN_OUT_MIN:-20}"
 # fleet-ops#1378: no-op in-process retry limit. A provider no-op (pi exits 0
 # with < OUT_MIN stdout) and a verdict-based empty run (tools=0, no final
 # text) are both SEAT FAULTS (fleet-ops#1298 reversed the #1416 lane-fault
-# split for the provider no-op). Both are benched via mark_seat_empty_run
-# (escalating backoff, fleet-ops#1408) and re-seated in-process up to
+# split for the provider no-op). The LiteLLM proxy cooldown owns cross-unit
+# seat health (fleet-ops#4263); this wrapper re-seats in-process up to
 # EMPTY_RUN_RETRY_MAX times (default 2) before exiting 1 and letting
 # systemd Restart= count it toward StartLimitBurst. This keeps empty runs
 # from burning the item's dispatch budget.
@@ -227,8 +210,8 @@ EMPTY_RUN_RETRY_MAX="${EMPTY_RUN_RETRY_MAX:-2}"
 # from zero on a new seat) the runner re-seats IN-PROCESS and RESUMES the same session file
 # on the new seat (`pi --session <file>`), bounded by RESUME_RETRY_MAX. The decision keys on
 # STRUCTURED signals only: the session's own last assistant record (stopReason "error" is
-# how pi marks a provider/model failure) and the seat-health ledger the pi extension writes
-# on the provider response — never on error wording.
+# how pi marks a provider/model failure) and the session's tool-call count —
+# never on error wording.
 RESUME_RETRY_MAX="${PI_ISSUE_RESUME_RETRY_MAX:-2}"
 resume_attempt=0
 resume_session_file=""
@@ -549,18 +532,16 @@ else
     seat=""
     # fleet-ops#6315: #5093's walled exit stranded the prepaid NON-proxy
     # lane (Devin occupancy 0/4 while pi-issue@ units walled on a starved
-    # /health, 2026-09-13). Claim the direct fallback seat when it is not
-    # benched — the 429 -> 900s quota bench stays the rate brake. Only
-    # BOTH-dead (proxy starved AND fallback benched/retired) keeps the
+    # /health, 2026-09-13). Claim the direct fallback seat — direct_fallback_seat
+    # is cap-checked, so a silent retirement (cap 0) self-ends the lane. Only
+    # BOTH-dead (proxy starved AND fallback retired) keeps the
     # #5093 no-usable verdict, so the sentinel/escalation contract is
     # untouched when nothing at all can run.
     if _dfp=$(direct_fallback_seat); then
         # read splits provider<TAB>model on the default IFS.
         read -r _dfp_p _dfp_m <<< "$_dfp"
-        if _SEAT_USABLE_SILENT=1 seat_usable "$_dfp_p" "$_dfp_m"; then
-            seat="$_dfp"
-            seat_log "pi-issue-run: $inst proxy not ready ($LITELLM_HEALTH_URL) — direct prepaid lane $_dfp_p/$_dfp_m (never touches the proxy; fleet-ops#6315)"
-        fi
+        seat="$_dfp"
+        seat_log "pi-issue-run: $inst proxy not ready ($LITELLM_HEALTH_URL) — direct prepaid lane $_dfp_p/$_dfp_m (never touches the proxy; fleet-ops#6315)"
     fi
     if [[ -z "$seat" ]]; then
         seat_log "pi-issue-run: $inst LiteLLM proxy not ready ($LITELLM_HEALTH_URL) and no usable direct fallback — treating the fleet as walled"
@@ -789,14 +770,12 @@ if (( rc != 0 )); then
     fi
 fi
 
-# --- P13-B spawn-fail marker (P13 visibility gap fix) ----------------------
-# seat-health.ts writes its ledger ONLY via after_provider_response and
-# cli_* — neither fires if pi dies at spawn (e.g. devin / cursor spawnSync
-# ETIMEDOUT). Without this fix, the LiteLLM proxy keeps routing work to a seat
-# whose every spawn is timing out. We catch the trigger condition here,
-# write the marker into the per-seat ledger, and continue with the normal
-# non-zero exit so systemd restart picks a different seat. The marker
-# sets usable_at = now + 5 min, so the OUTBOUND retry also skips it.
+# --- P13-B spawn-fail classification (P13 visibility gap fix) --------------
+# seat-health observation hooks never fire if pi dies at spawn (e.g. devin /
+# cursor spawnSync ETIMEDOUT). We catch the trigger condition here and log
+# the SPAWN-TIMEOUT class; the LiteLLM proxy cooldown owns skipping the seat
+# on the next pick. The normal non-zero exit continues so systemd restart
+# picks a different seat.
 spawn_fail_triggered=0
 if (( rc != 0 )) && (( spawn_elapsed_s < SPAWN_FAIL_MAX_S )); then
     out_for_scan=""
@@ -805,24 +784,15 @@ if (( rc != 0 )) && (( spawn_elapsed_s < SPAWN_FAIL_MAX_S )); then
     [[ -f "$err_file" ]] && err_for_scan=$(cat "$err_file" 2>/dev/null || true)
     if is_spawn_etimeout "$out_for_scan" "$err_for_scan"; then
         spawn_fail_triggered=1
-        # Make sure seat-log is loud even if the marker write itself fails.
-        seat_log "pi-issue-run: $inst SPAWN-TIMEOUT on $np/$nm at ${spawn_elapsed_s}s (rc=$rc) — marking seat unusable for ${SPAWN_FAIL_BACKOFF_S}s"
-        if mark_seat_spawn_fail "$np" "$nm" "pi-issue:$inst:rc=$rc"; then
-            seat_log "pi-issue-run: $inst seat $np/$nm marked; next systemd Restart will pick a different seat via the LiteLLM proxy cooldown (excluded by usable_at in the future)"
-        else
-            seat_log "pi-issue-run: $inst WARN: spawn-fail marker write FAILED for $np/$nm — relying on systemd Restart alone to dodge the dead seat"
-        fi
+        seat_log "pi-issue-run: $inst SPAWN-TIMEOUT on $np/$nm at ${spawn_elapsed_s}s (rc=$rc) — next pick skips this seat via the LiteLLM proxy cooldown"
     fi
 fi
 
-# --- fleet-ops#90: quota/cap wall bench ------------------------------------
+# --- fleet-ops#90: quota/cap wall classification ---------------------------
 # A hard-capped seat (ClinePass weekly cap, devin 15-min 429) is a walled
-# seat, not a transient retry. Without this marker, the LiteLLM proxy re-offers the
-# same seat to the next systemd Restart, burning a StartLimitBurst attempt on
-# a guaranteed failure. Detect a quota/cap wall in the captured output and
-# bench the seat until its advertised reset window (or the provider default
-# from seat-caps.json); seat_usable then skips it until bench_until and
-# fail-opens after. Skipped when the spawn-fail path already handled this
+# seat, not a transient retry. Detect a quota/cap wall in the captured
+# output and log the class; the LiteLLM proxy cooldown owns skipping the
+# walled seat. Skipped when the spawn-fail path already handled this
 # exit (a spawn ETIMEDOUT is not a quota wall). A walled seat is a lane
 # fault, never charged to the work item.
 if (( rc != 0 )) && (( ! spawn_fail_triggered )); then
@@ -831,68 +801,38 @@ if (( rc != 0 )) && (( ! spawn_fail_triggered )); then
     [[ -f "$out_file" ]] && out_for_scan=$(cat "$out_file" 2>/dev/null || true)
     [[ -f "$err_file" ]] && err_for_scan=$(cat "$err_file" 2>/dev/null || true)
     # fleet-ops#4825: the Devin CLI "Refusing to run in an untrusted workspace"
-    # is a CONFIG/TRUST fault, not a seat yield. Bench via
-    # mark_seat_config_fault_bench (short window, NEVER retired) so the LiteLLM proxy
-    # dodges the seat this cycle without walling it out of the fleet. The real
+    # is a CONFIG/TRUST fault, not a seat yield. The real
     # fix is the managed config key `skip_workspace_trust: true` (pinned by
     # install.sh); this detector is the safety net. A config/trust fault is
     # infrastructure, never charged to the work item.
     if is_workspace_trust_error "$out_for_scan" "$err_for_scan"; then
-        seat_log "pi-issue-run: $inst CONFIG/TRUST WALL on $np/$nm (rc=$rc) — benching seat ${SEAT_CONFIG_FAULT_BENCH_S:-60}s (fleet-ops#4825)"
-        if mark_seat_config_fault_bench "$np" "$nm" "$out_for_scan"$'\n'"$err_for_scan"; then
-            seat_log "pi-issue-run: $inst seat $np/$nm benched (config_fault); next systemd Restart will skip it via the LiteLLM proxy cooldown"
-        else
-            seat_log "pi-issue-run: $inst WARN: config-fault-bench marker NOT written for $np/$nm — relying on reactive ledger + systemd Restart"
-        fi
+        seat_log "pi-issue-run: $inst CONFIG/TRUST WALL on $np/$nm (rc=$rc) — config fault class logged (fleet-ops#4825)"
     elif is_devin_writes_rejected "$out_for_scan" "$err_for_scan"; then
         # fleet-ops#4780: the Devin CLI under `--sandbox` rejects every file
         # write non-interactively ("rejected a tool call that requires
         # confirmation"), so every run ends empty at the first edit. This is a
-        # CLI/flag CONFIG fault, not a seat yield. Bench via
-        # mark_seat_devin_writes_rejected_bench (short window, NEVER retired)
-        # so the LiteLLM proxy dodges the seat this cycle without walling it out of
-        # the fleet. The real fix is dropping `--sandbox` (the provider now
-        # runs `--permission-mode dangerous` unsandboxed); this detector is
-        # the safety net for a future vendor change that re-breaks the flag.
-        seat_log "pi-issue-run: $inst DEVIN WRITES REJECTED on $np/$nm (rc=$rc) — benching seat ${SEAT_DEVIN_WRITES_REJECTED_BENCH_S:-60}s (fleet-ops#4780)"
-        if mark_seat_devin_writes_rejected_bench "$np" "$nm" "$out_for_scan"$'\n'"$err_for_scan"; then
-            seat_log "pi-issue-run: $inst seat $np/$nm benched (devin-writes-rejected); next systemd Restart will skip it via the LiteLLM proxy cooldown"
-        else
-            seat_log "pi-issue-run: $inst WARN: devin-writes-rejected-bench marker NOT written for $np/$nm — relying on reactive ledger + systemd Restart"
-        fi
+        # CLI/flag CONFIG fault, not a seat yield. The real fix is dropping
+        # `--sandbox` (the provider now runs `--permission-mode dangerous`
+        # unsandboxed); this detector is the safety net for a future vendor
+        # change that re-breaks the flag.
+        seat_log "pi-issue-run: $inst DEVIN WRITES REJECTED on $np/$nm (rc=$rc) — config fault class logged (fleet-ops#4780)"
     elif is_credentials_error "$out_for_scan" "$err_for_scan"; then
-        seat_log "pi-issue-run: $inst CREDENTIALS 401 on $np/$nm (rc=$rc) — 1h credentials_bad bench, corpse only after 24 strikes (fleet-ops#4640)"
-        if mark_seat_credentials_bad "$np" "$nm" "$out_for_scan"$'\n'"$err_for_scan"; then
-            seat_log "pi-issue-run: $inst seat $np/$nm credentials-bad benched; next Restart skips via usable_at"
-        fi
+        seat_log "pi-issue-run: $inst CREDENTIALS 401 on $np/$nm (rc=$rc) — credentials_bad class logged (fleet-ops#4640)"
     elif is_quota_cap_error "$out_for_scan" "$err_for_scan"; then
-        seat_log "pi-issue-run: $inst QUOTA/CAP WALL on $np/$nm (rc=$rc) — benching seat for its reset window"
-        if mark_seat_quota_bench "$np" "$nm" "$out_for_scan"$'\n'"$err_for_scan"; then
-            seat_log "pi-issue-run: $inst seat $np/$nm benched; next systemd Restart will skip it via the LiteLLM proxy cooldown (excluded by bench_until)"
-        else
-            seat_log "pi-issue-run: $inst WARN: quota-bench marker NOT written for $np/$nm (no window and no provider default) — relying on reactive ledger + systemd Restart"
-        fi
+        seat_log "pi-issue-run: $inst QUOTA/CAP WALL on $np/$nm (rc=$rc) — walled-seat class logged; the LiteLLM proxy cooldown owns the skip"
     fi
 fi
 
-# --- fleet-ops#2133: devin long-hang-then-ETIMEDOUT bench ------------------
+# --- fleet-ops#2133: devin long-hang-then-ETIMEDOUT classification ---------
 # devin/glm-5-2 intermittently hangs for ~30 min then exits with rc=1 and
 # "spawnSync ETIMEDOUT" in stderr. This is NOT a spawn-phase failure
 # (elapsed >> SPAWN_FAIL_MAX_S), NOT caught by the hang watchdog (exits
-# before PI_HANG_TIMEOUT_S), and NOT a mid-session signal death. Without
-# this detector, the seat stays pickable and burns every retry. Detect:
+# before PI_HANG_TIMEOUT_S), and NOT a mid-session signal death. Detect:
 # elapsed > 300s (5 min) AND stderr contains the devin spawnSync ETIMEDOUT
-# signature. Bench via mark_seat_hang_bench so the seat is skipped.
+# signature; log the hang class (the LiteLLM proxy cooldown owns the skip).
 if (( rc != 0 )) && (( ! spawn_fail_triggered )) && (( spawn_elapsed_s > PI_HANG_BENCH_MIN_S )); then
-    err_for_scan=""
-    [[ -f "$err_file" ]] && err_for_scan=$(cat "$err_file" 2>/dev/null || true)
     if grep -qiE 'spawnSync.*ETIMEDOUT|ETIMEDOUT.*spawnSync' "$err_file" 2>/dev/null; then
-        seat_log "pi-issue-run: $inst DEVIN LONG HANG ETIMEDOUT on $np/$nm after ${spawn_elapsed_s}s (rc=$rc) — benching seat as hang-like failure"
-        if mark_seat_hang_bench "$np" "$nm" "$err_for_scan" "$spawn_elapsed_s"; then
-            seat_log "pi-issue-run: $inst seat $np/$nm benched (hang_bench); next systemd Restart will skip it via the LiteLLM proxy cooldown (excluded by bench_until)"
-        else
-            seat_log "pi-issue-run: $inst WARN: hang-bench marker NOT written for $np/$nm — relying on tried-seats exclusion"
-        fi
+        seat_log "pi-issue-run: $inst DEVIN LONG HANG ETIMEDOUT on $np/$nm after ${spawn_elapsed_s}s (rc=$rc) — hang class logged; next pick skips via the LiteLLM proxy cooldown"
     fi
 fi
 
@@ -901,32 +841,23 @@ fi
 # provider repeatedly prompts but never advances. This emits many
 # "Ready for input" lines to stderr without producing final output.
 # Detect: elapsed > 300s (5 min) AND >5 occurrences, rc != 124 (hang
-# watchdog kills are handled by mid-session-death). Bench via mark_seat_hang_bench.
+# watchdog kills are handled by mid-session-death); log the stall class.
 if (( rc != 0 )) && (( rc != 124 )) && (( ! spawn_fail_triggered )) && (( spawn_elapsed_s > PI_HANG_BENCH_MIN_S )); then
     rfi_count=0
     [[ -f "$err_file" ]] && rfi_count=$(grep -o "Ready for input" "$err_file" 2>/dev/null | wc -l)
     if (( rfi_count > 5 )); then
-        seat_log "pi-issue-run: $inst READY-FOR-INPUT STALL on $np/$nm after ${spawn_elapsed_s}s (rfi_count=$rfi_count, rc=$rc) — benching seat"
-        if mark_seat_hang_bench "$np" "$nm" "$(cat "$err_file" 2>/dev/null)" "$spawn_elapsed_s"; then
-            seat_log "pi-issue-run: $inst seat $np/$nm benched (hang_bench rfi); next restart will skip"
-        else
-            seat_log "pi-issue-run: $inst WARN: hang-bench marker NOT written for $np/$nm"
-        fi
+        seat_log "pi-issue-run: $inst READY-FOR-INPUT STALL on $np/$nm after ${spawn_elapsed_s}s (rfi_count=$rfi_count, rc=$rc) — stall class logged"
     fi
 fi
 
-# --- fleet-ops #652 hot-patch: 503 / upstream-overload bench ---------------
+# --- fleet-ops #652 hot-patch: 503 / upstream-overload classification ------
 # A seat returning 503 "Upstream model provider is temporarily unavailable" is
 # NOT a quota wall (is_quota_cap_error does not match) and NOT a spawn-time
 # ETIMEDOUT (is_spawn_etimeout does not match). Live failure mode observed in
 # fleet-ops#652: commandcode/minimax-m3-free returned 35 of 200+ tool calls as
 # 503 in the first 20 minutes of a worker run, destabilising the model for the
-# rest of the session. Without this marker, the LiteLLM proxy re-offers the same seat
-# to the next systemd Restart and the next worker hits the same 503 storm.
-# Bench the seat until the Retry-After (or the provider's 503_bench_default_s,
-# default 600s = 10 min). Distinct health_class="overload_bench" /
-# failure_mode="overload_503" so post-mortem tooling can tell overload benches
-# from quota/cap benches. Skipped when a previous block already handled this
+# rest of the session. Log the overload class; the LiteLLM proxy cooldown owns
+# skipping the seat. Skipped when a previous block already handled this
 # exit (spawn-fail / quota-cap). Overload is a lane fault, never charged to
 # the work item.
 if (( rc != 0 )) && (( ! spawn_fail_triggered )); then
@@ -935,36 +866,19 @@ if (( rc != 0 )) && (( ! spawn_fail_triggered )); then
     [[ -f "$out_file" ]] && out_for_scan=$(cat "$out_file" 2>/dev/null || true)
     [[ -f "$err_file" ]] && err_for_scan=$(cat "$err_file" 2>/dev/null || true)
     if is_overload_error "$out_for_scan" "$err_for_scan"; then
-        seat_log "pi-issue-run: $inst 503/OVERLOAD WALL on $np/$nm (rc=$rc) — benching seat for its backoff window"
-        if mark_seat_overload_bench "$np" "$nm" "$out_for_scan"$'\n'"$err_for_scan"; then
-            seat_log "pi-issue-run: $inst seat $np/$nm benched (overload_bench); next systemd Restart will skip it via the LiteLLM proxy cooldown (excluded by bench_until)"
-        else
-            seat_log "pi-issue-run: $inst WARN: overload-bench marker NOT written for $np/$nm (no Retry-After and no provider default) — relying on reactive ledger + systemd Restart"
-        fi
+        seat_log "pi-issue-run: $inst 503/OVERLOAD WALL on $np/$nm (rc=$rc) — overload class logged; the LiteLLM proxy cooldown owns the skip"
     fi
 fi
 
 if (( rc != 0 )); then
-    # Mid-session provider deaths that are NOT spawn-time and NOT a quota
-    # wall still deserve a short bench. Without it, the tried-seats exclusion
-    # is the ONLY thing keeping the next restart off the killing seat — and
-    # the reaper (pi-issue-failed-reap) wipes tried-seats on every reap, so
-    # the intake re-claim starts from an empty list and the LiteLLM proxy re-selects
-    # the same killing seat (0509-974 cursor-grok-4.6-high 143 x3, 2026-08-26).
-    # Bench it exactly like the no-op path: mark_seat_spawn_fail writes a
-    # transient_fault ledger with usable_at = now + SPAWN_FAIL_BACKOFF_S, which
-    # survives the reap (the ledger is the DURABLE avoidance authority).
     # fleet-ops#3883: a hang-watchdog kill (rc=124) of a session that made
-    # tool calls is a SLOW session, not a seat fault. The wrapper itself
-    # appends "killed" to $err_file on rc=124, so is_mid_session_death
-    # matched every watchdog kill and the escalating spawn-fail bench emptied
-    # the pool (ollama count=5 -> 3600s bench, usable_light_slots=0,
-    # 2026-09-06; the killed #3322 session had 155 tool calls). The seat
-    # retirement rule classes rc=124 as infrastructure, never seat yield.
-    # Only an rc=124 with 0 tool calls (a true hang) still benches.
-    # Count from the session file pi-issue-run pinned (--session-dir), using
-    # both conventions in the tree: lib/litellm-seat.sh session_tool_calls counts
-    # toolResult messages; the in-process seam below counts "type":"toolCall".
+    # tool calls is a SLOW session, not a seat fault — log it as such. The
+    # seat retirement rule classes rc=124 as infrastructure, never seat
+    # yield. Only an rc=124 with 0 tool calls (a true hang) logs the hang
+    # class. Count from the session file pi-issue-run pinned (--session-dir),
+    # using both conventions in the tree: lib/litellm-seat.sh
+    # session_tool_calls counts toolResult messages; the in-process seam
+    # below counts "type":"toolCall".
     _wd_tools=0
     if (( rc == 124 )); then
         _wd_sess=$(find "$session_dir" -maxdepth 1 -name '*.jsonl' -type f -printf '%T@ %p\n' 2>/dev/null | sort -n | tail -1 | cut -d' ' -f2-)
@@ -977,28 +891,20 @@ if (( rc != 0 )); then
         fi
     fi
     if (( rc == 124 )) && (( _wd_tools > 0 )); then
-        seat_log "pi-issue-run: $inst HANG WATCHDOG kill after ${_wd_tools} tool calls on $np/$nm (${spawn_elapsed_s}s) — slow session, not a seat fault; no bench (fleet-ops#3883)"
+        seat_log "pi-issue-run: $inst HANG WATCHDOG kill after ${_wd_tools} tool calls on $np/$nm (${spawn_elapsed_s}s) — slow session, not a seat fault (fleet-ops#3883)"
     elif (( ! spawn_fail_triggered )) && ! is_quota_cap_error "$out_file" "$err_file" && is_mid_session_death "$err_file"; then
-        seat_log "pi-issue-run: $inst mid-session provider death (rc=$rc) on $np/$nm after ${spawn_elapsed_s}s — benching seat ${SPAWN_FAIL_BACKOFF_S}s"
-        if mark_seat_spawn_fail "$np" "$nm" "pi-issue:$inst:mid-session-death:rc=$rc"; then
-            seat_log "pi-issue-run: $inst seat $np/$nm marked; next restart or intake re-claim will skip it via the LiteLLM proxy cooldown"
-        else
-            seat_log "pi-issue-run: $inst WARN: mid-session bench marker write FAILED for $np/$nm"
-        fi
+        seat_log "pi-issue-run: $inst mid-session provider death (rc=$rc) on $np/$nm after ${spawn_elapsed_s}s — mid-session class logged; next pick skips via the LiteLLM proxy cooldown"
     fi
     seat_log "pi-issue-run: $inst pi exited $rc on $np/$nm (${spawn_elapsed_s}s, spawn_fail=$spawn_fail_triggered) — systemd will restart with a new seat"
     # fleet-ops#3766: fast-death error classification. A fast death (rc!=0,
     # 0 tool calls) with NO error text flaps the seat between probe-healthy
     # and run-dead — the seat retirement rule needs an ERROR CLASS before any
-    # cap change, and with no classifiable literal the seat can neither be
-    # benched honestly nor cleared. Capture the last provider/transport error
+    # cap change. Capture the last provider/transport error
     # line (pi stderr tail + the session jsonl's last error/message field,
     # already surfaced into $err_file by the #3238 block above) into a
-    # synthetic PACKET-VERDICT line and into the seat ledger's
-    # last_error_class/bench_reason so every fast death carries a classifiable
-    # literal. An unclassifiable death is error_class=unknown with the raw
-    # tail, never healthy. If no detector above benched (error_class=unknown),
-    # bench via mark_seat_spawn_fail so the seat stops flapping.
+    # synthetic PACKET-VERDICT line so every fast death carries a
+    # classifiable literal. An unclassifiable death is error_class=unknown
+    # with the raw tail, never healthy.
     _sess_last=$(find "$session_dir" -maxdepth 1 -name '*.jsonl' -type f -printf '%T@ %p\n' 2>/dev/null | sort -n | tail -1 | cut -d' ' -f2-)
     _tool_calls=0
     [[ -n "$_sess_last" && -f "$_sess_last" ]] && _tool_calls=$(session_tool_calls "$_sess_last")
@@ -1012,26 +918,6 @@ if (( rc != 0 )); then
         # Only if the agent did not already write a PACKET-VERDICT line.
         if ! grep -qE 'PACKET-VERDICT[[:space:]]+tools=' "$out_file" 2>/dev/null; then
             printf 'PACKET-VERDICT tools=0 class=no-tools error_class=%s error_tail=%s\n' "$_dec_cls" "$_dec_lit" >>"$out_file" 2>/dev/null || true
-        fi
-        # Merge last_error_class + bench_reason into the seat ledger (best-effort).
-        _seat_merge_error_class "$np" "$nm" "$_dec_cls" "$_dec_lit" 2>/dev/null || true
-        # Fallthrough bench: if no detector above benched (error_class=unknown)
-        # AND the seat is not already benched by a prior detector (hang_bench /
-        # quota / overload / mid-session), bench via mark_seat_spawn_fail so the
-        # seat stops flapping. Re-merge the error_class onto the freshly-written
-        # ledger afterward.
-        if [[ "$_dec_cls" == "unknown" && "$spawn_fail_triggered" == "0" ]] \
-            && ! is_quota_cap_error "$out_file" "$err_file" \
-            && ! is_overload_error "$out_file" "$err_file" \
-            && ! is_mid_session_death "$err_file" \
-            && ! _seat_is_benched "$np" "$nm"; then
-            seat_log "pi-issue-run: $inst FAST DEATH error_class=unknown on $np/$nm (rc=$rc, 0 tools, ${spawn_elapsed_s}s) — benching seat ${SPAWN_FAIL_BACKOFF_S}s (no detector matched; raw tail: ${_dec_lit:0:120})"
-            if mark_seat_spawn_fail "$np" "$nm" "pi-issue:$inst:fast-death:error_class=unknown:rc=$rc"; then
-                seat_log "pi-issue-run: $inst seat $np/$nm benched (fast-death unknown); next restart will skip via the LiteLLM proxy cooldown"
-                _seat_merge_error_class "$np" "$nm" "$_dec_cls" "$_dec_lit" 2>/dev/null || true
-            else
-                seat_log "pi-issue-run: $inst WARN: fast-death bench marker write FAILED for $np/$nm — relying on tried-seats exclusion"
-            fi
         fi
         seat_log "pi-issue-run: $inst fast-death classified error_class=$_dec_cls on $np/$nm (0 tools, rc=$rc) — tail: ${_dec_lit:0:120}"
     fi
@@ -1048,8 +934,8 @@ if (( rc != 0 )); then
         # activations (OnFailure + unit-escalation + ExecStopPost intake).
         # ExecStopPost already starts pi-intake@ which re-queues through
         # intake with a fresh seat pick from the full pool. The dead seat is
-        # already benched above (mark_seat_spawn_fail / mark_seat_hang_bench /
-        # mark_seat_quota_bench / mark_seat_overload_bench).
+        # already re-queued through intake with a fresh seat pick from the full
+        # pool (the LiteLLM proxy cooldown owns skipping the dead seat).
         seat_log "pi-issue-run: $inst infra death (rc=$rc) on $np/$nm — exit 0 to re-queue via intake, not Restart= (fleet-ops#4903)"
         _exit_reason="infra-death-requeue"
         exit 0
@@ -1069,7 +955,6 @@ if (( rc != 0 )); then
         resume_attempt=$((resume_attempt + 1))
         if (( resume_attempt <= RESUME_RETRY_MAX )); then
             resume_session_file="$_sess_last"
-            _seat_merge_error_class "$np" "$nm" "provider_work_death" "session stopReason=error after ${_tool_calls} tool call(s)" 2>/dev/null || true
             seat_log "pi-issue-run: $inst provider/model death mid-run on $np/$nm after ${_tool_calls} tool call(s) (rc=$rc) — re-seating in-process and RESUMING session $(basename "$_sess_last") (attempt ${resume_attempt}/${RESUME_RETRY_MAX}) (fleet-ops#5788)"
             continue
         fi
@@ -1136,70 +1021,34 @@ run_tool_calls() {
 # sandbox-localhost class (missing 127.0.0.1 in /etc/hosts), not an
 # empty-run 900s bench and not an empty-success. A shipped PR still wins.
 if is_sandbox_localhost_error "$(cat "$out_file" 2>/dev/null || true)" "$(cat "$err_file" 2>/dev/null || true)"; then
-    if provider_remote_agent "$np" && has_session_pr_url "$out_file" "$err_file" "$session_dir"; then
-        seat_log "pi-issue-run: $inst sandbox-localhost signature present but remote session shipped a PR URL — treating as success"
-    else
-        seat_log "pi-issue-run: $inst class=sandbox-localhost-unresolvable on $np/$nm (error connecting to localhost) — not empty-run 900s, not empty-success; /etc/hosts IPv4 localhost is the class"
-        write_death_class infra
-        _exit_reason="sandbox-localhost"
-        exit 1
-    fi
+    seat_log "pi-issue-run: $inst class=sandbox-localhost-unresolvable on $np/$nm (error connecting to localhost) — not empty-run 900s, not empty-success; /etc/hosts IPv4 localhost is the class"
+    write_death_class infra
+    _exit_reason="sandbox-localhost"
+    exit 1
 fi
 
 if (( out_bytes < OUT_MIN )); then
     # fleet-ops#1298: a provider no-op (pi ran, exited 0, stdout < OUT_MIN)
     # is a SEAT FAULT, same class as the verdict tools=0 empty-run
-    # (fleet-ops#902). Bench it via mark_seat_empty_run so the LiteLLM proxy skips
-    # it on the next intake re-spawn (fresh claim, empty tried-seats) and
-    # reroutes to a healthy seat. The bench escalates geometrically by
-    # consecutive_failure_count (fleet-ops#3531) so a repeat offender
-    # stays benched longer each cycle, capped at 6 h (1800 s for remote
-    # agents), and seat-health.ts resets the count on a healthy observation
-    # so a recovered seat is re-tried at the base backoff. The tried-seats
-    # file still records this seat for THIS unit so the next in-process
-    # iteration picks a different seat immediately.
+    # (fleet-ops#902). The LiteLLM proxy cooldown owns cross-unit seat
+    # health (fleet-ops#4263). The tried-seats file still records this seat
+    # for THIS unit so the next in-process iteration picks a different seat
+    # immediately.
     # fleet-ops#1378: re-seat in-process (continue) instead of exit 1 so
     # provider no-ops don't burn the item's StartLimitBurst dispatch budget.
-    # History: fleet-ops#1416 made this a lane fault (no bench) on the
-    # theory a single 0B stdout was a provider hiccup on a healthy seat;
-    # without the bench an intake re-spawn re-picked the same no-op'ing
-    # seat and burned 8 runs/2h on straitly/deepseek-v4-pro (#1298).
-    # fleet-ops#3531: remote agents are judged by session outcome, not local
-    # tool count. A remote session with a pull/<n> URL is a success.
-    if provider_remote_agent "$np" && has_session_pr_url "$out_file" "$err_file" "$session_dir"; then
-        seat_log "pi-issue-run: $inst remote session on $np/$nm produced a PR URL (stdout=${out_bytes}B) — treating as success"
-    elif tool_calls=$(run_tool_calls "$out_file" "$err_file" "$session_dir") && (( tool_calls > 0 )); then
-        # fleet-ops#3714: worked-no-text. The seat functioned (tools>0); the
-        # model just ended on a tool call. Not a provider no-op: no bench.
-        # fleet-ops#3810: but a worked-no-text session that did NOT ship a
-        # PR is a BURNED CLAIM, not a success. Exit 0 left the issue
-        # unresolved with no re-queue (16 empty runs in 2h on
-        # ollama/<retired-V4-flash>, each burning a claim silently).
-        # Fail the claim loudly (exit 1, death_class=work) so systemd
-        # Restart re-queues the issue on a different seat. The seat is NOT
-        # benched (not a seat fault — the seat functioned, tools>0);
-        # tried-seats exclusion keeps the next pick off this seat for the
-        # rest of the burst. A session that DID ship (PR open or issue
-        # closed) falls through to the success path as a real success.
-        # fleet-ops#3847: a SINGLE 0B-stdout run is not proof of a broken seat,
-        # but N consecutive ones is (live: <retired-V4-flash>, 5/5 runs in
-        # 2h, 197 tool calls, zero deliverables, each classified worked-no-text
-        # and never benched). Count consecutive worked-no-text runs per seat;
-        # once the count reaches WORKED_NO_TEXT_THRESHOLD, bench the seat via
-        # mark_seat_empty_run and re-seat in-process instead of falling through
-        # to the loud-fail path.
-        if mark_seat_worked_no_text "$np" "$nm" "pi-issue:$inst:worked-no-text:tools=${tool_calls}"; then
-            seat_log "pi-issue-run: $inst $np/$nm benched after ${WORKED_NO_TEXT_THRESHOLD:-5} consecutive worked-no-text runs — re-seating in-process (fleet-ops#3847)"
-            empty_run_attempt=$((empty_run_attempt + 1))
-            if (( empty_run_attempt > EMPTY_RUN_RETRY_MAX )); then
-                seat_log "pi-issue-run: $inst in-process retries exhausted (${empty_run_attempt} attempts, limit=${EMPTY_RUN_RETRY_MAX}) — exiting 1 so systemd Restart fires"
-                write_death_class work
-                _exit_reason="worked-no-text-exhausted"
-                exit 1
-            fi
-            continue
-        fi
-        seat_log "pi-issue-run: $inst session on $np/$nm made ${tool_calls} tool calls but printed no final text (out=${out_bytes}B) — worked-no-text; seat not benched (fleet-ops#3714)"
+    # fleet-ops#3714: worked-no-text. The seat functioned (tools>0); the
+    # model just ended on a tool call. Not a provider no-op.
+    # fleet-ops#3810: a worked-no-text session that did NOT ship a
+    # PR is a BURNED CLAIM, not a success. Exit 0 left the issue
+    # unresolved with no re-queue (16 empty runs in 2h on
+    # ollama/<retired-V4-flash>, each burning a claim silently).
+    # Fail the claim loudly (exit 1, death_class=work) so systemd
+    # Restart re-queues the issue on a different seat; tried-seats
+    # exclusion keeps the next pick off this seat for the rest of the
+    # burst. A session that DID ship (PR open or issue closed) falls
+    # through to the success path as a real success.
+    if tool_calls=$(run_tool_calls "$out_file" "$err_file" "$session_dir") && (( tool_calls > 0 )); then
+        seat_log "pi-issue-run: $inst session on $np/$nm made ${tool_calls} tool calls but printed no final text (out=${out_bytes}B) — worked-no-text (fleet-ops#3714)"
         _wnt_issue="${inst##*-}"
         _wnt_shipped=no
         if [[ -n "$pkt_repo" ]]; then
@@ -1220,12 +1069,7 @@ if (( out_bytes < OUT_MIN )); then
             exit 1
         fi
     else
-        seat_log "pi-issue-run: $inst pi exited 0 but stdout=${out_bytes}B (< ${OUT_MIN}B) — provider no-op, benching seat (empty_run, geometric cooldown) and re-seating in-process"
-        if mark_seat_empty_run "$np" "$nm" "pi-issue:$inst:provider-no-op:stdout=${out_bytes}B"; then
-            seat_log "pi-issue-run: $inst seat $np/$nm marked (empty_run); will skip on next in-process re-seat and on intake re-spawn"
-        else
-            seat_log "pi-issue-run: $inst WARN: mark_seat_empty_run marker write FAILED for $np/$nm — relying on tried-seats exclusion for next re-seat"
-        fi
+        seat_log "pi-issue-run: $inst pi exited 0 but stdout=${out_bytes}B (< ${OUT_MIN}B) — provider no-op; re-seating in-process"
         empty_run_attempt=$((empty_run_attempt + 1))
         if (( empty_run_attempt > EMPTY_RUN_RETRY_MAX )); then
             seat_log "pi-issue-run: $inst in-process retries exhausted (${empty_run_attempt} attempts, limit=${EMPTY_RUN_RETRY_MAX}) — exiting 1 so systemd Restart fires"
@@ -1239,35 +1083,21 @@ if (( out_bytes < OUT_MIN )); then
     fi
 fi
 if is_empty_run "$out_file"; then
-    # fleet-ops#3531: for remote agents, a tools=0 verdict with no final
-    # text is only an empty run when the session carries no PR URL. A remote
-    # agent may finish a real session with tools=0 and the PR URL elsewhere
-    # in the session jsonl.
-    if provider_remote_agent "$np" && has_session_pr_url "$out_file" "$err_file" "$session_dir"; then
-        seat_log "pi-issue-run: $inst remote session on $np/$nm produced a PR URL despite tools=0 verdict — treating as success"
-    else
-        noop_reason="empty-run:tools=0 verdict with no final text (stdout=${out_bytes}B)"
-        # fleet-ops#902: an empty-run (verdict tools=0, no final text) is a SEAT
-        # FAULT; bench it via mark_seat_empty_run (15 min base, geometric, capped
-        # at 6 h / 1800 s remote) before re-seating in-process. fleet-ops#1378:
-        # the in-process continue still avoids consuming a systemd
-        # StartLimitBurst slot for the first empty run.
-        if mark_seat_empty_run "$np" "$nm" "pi-issue:$inst:no-op:${noop_reason}"; then
-            seat_log "pi-issue-run: $inst seat $np/$nm marked (empty_run); will skip on next in-process re-seat"
-        else
-            seat_log "pi-issue-run: $inst WARN: mark_seat_empty_run marker write FAILED for $np/$nm — relying on tried-seats exclusion for next re-seat"
-        fi
-        empty_run_attempt=$((empty_run_attempt + 1))
-        if (( empty_run_attempt > EMPTY_RUN_RETRY_MAX )); then
-            seat_log "pi-issue-run: $inst in-process retries exhausted (${empty_run_attempt} attempts, limit=${EMPTY_RUN_RETRY_MAX}) — exiting 1 so systemd Restart fires"
-            # fleet-ops#3310: retries exhausted after empty runs = the worker shipped nothing — a WORK death, not infrastructure.
-            write_death_class work
-            _exit_reason="empty-run-exhausted"
-            exit 1
-        fi
-        seat_log "pi-issue-run: $inst empty run #${empty_run_attempt}/${EMPTY_RUN_RETRY_MAX} (empty-run, ${noop_reason}) — re-seating in-process on a different seat"
-        continue
+    noop_reason="empty-run:tools=0 verdict with no final text (stdout=${out_bytes}B)"
+    # fleet-ops#902: an empty-run (verdict tools=0, no final text) is a SEAT
+    # FAULT. The LiteLLM proxy cooldown owns cross-unit seat health
+    # (fleet-ops#4263); the in-process continue (fleet-ops#1378) still avoids
+    # consuming a systemd StartLimitBurst slot for the first empty run.
+    empty_run_attempt=$((empty_run_attempt + 1))
+    if (( empty_run_attempt > EMPTY_RUN_RETRY_MAX )); then
+        seat_log "pi-issue-run: $inst in-process retries exhausted (${empty_run_attempt} attempts, limit=${EMPTY_RUN_RETRY_MAX}) — exiting 1 so systemd Restart fires"
+        # fleet-ops#3310: retries exhausted after empty runs = the worker shipped nothing — a WORK death, not infrastructure.
+        write_death_class work
+        _exit_reason="empty-run-exhausted"
+        exit 1
     fi
+    seat_log "pi-issue-run: $inst empty run #${empty_run_attempt}/${EMPTY_RUN_RETRY_MAX} (empty-run, ${noop_reason}) — re-seating in-process on a different seat"
+    continue
 fi
 
 # Success: the no-op check above did not continue, so this seat produced real
@@ -1277,14 +1107,6 @@ done  # fleet-ops#1378 empty-run retry while loop
 
 # --- success path (reached via break above) ---
 seat_log "pi-issue-run: $inst SUCCESS on $np/$nm (${out_bytes}B output)"
-# fleet-ops#3847: a REAL-output run (out_bytes >= OUT_MIN) proves the seat
-# recovered — reset the per-seat consecutive worked-no-text counter so a later
-# 0B run starts fresh. A worked-no-text run below threshold also falls through
-# to this path but is still 0B, so it must NOT reset the counter (that would
-# defeat the consecutive count).
-if (( out_bytes >= OUT_MIN )); then
-    reset_seat_worked_no_text "$np" "$nm"
-fi
 
 # fleet-ops#2005: session-close gate. A multi-attempt debug without a
 # four-heading vault playbook is not allowed to close successfully.
@@ -1397,7 +1219,6 @@ else
     if ! grep -qE 'PACKET-VERDICT[[:space:]]+class=empty-success' "$out_file" 2>/dev/null; then
         printf 'PACKET-VERDICT class=empty-success seat=%s/%s output_bytes=%s\n' "$np" "$nm" "$out_bytes" >>"$out_file" 2>/dev/null || true
     fi
-    mark_seat_empty_success "$np" "$nm" "$out_bytes" "pi-issue:$inst:no-PR:$issue_num" || true
     seat_log "pi-issue-run: $inst SUCCESS class=empty-success on $np/$nm (output=${out_bytes}B, no PR open from claim/issue-${issue_num}, issue ${_cl_issue_state:-unknown}) — reclaim-count NOT reset (claim-loop cap stays tall)"
 fi
 
