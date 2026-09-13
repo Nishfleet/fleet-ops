@@ -140,7 +140,7 @@ echo "PR https://example.com/pr/1 — worked"
 SH
 chmod +x "$PI_BIN"
 
-write_ledger() {
+stub_write_ledger() {
   local p="$1" m="$2" hc="$3" usable="$4" observed="$5"
   local f
   f=$(printf '%s/%s__%s.json\n' "$LEDGER" "${p//[^A-Za-z0-9._-]/_}" "${m//[^A-Za-z0-9._-]/_}")

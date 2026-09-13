@@ -374,7 +374,7 @@ enumerate_seats() {
 class_of()   { printf 'prepaid-quota\n'; }
 model_cap()  { printf '1\n'; }
 # fleet-ops#6101: non-senior roles take their seat ONLY from the lib's
-# litellm_seat (the resolve_seat fallback is deleted), so the #1011 clobber
+# litellm_seat (the resolve-seat fallback is deleted), so the #1011 clobber
 # stub mirrors the real lib's litellm_seat too — without it the role would
 # be a no-seat lane fault and the vote would never be written to clobber.
 litellm_seat() { printf 'litellm\t%s\n' "${1:-worker-capable}"; }
@@ -408,7 +408,7 @@ ok "scenario7: seatlib STATE_DIR clobber contained — vote lands in AUDIT_STATE
 # Scenario 8: fully-walled auditor lane -> exit 0, NO vote written, no pi call.
 # fleet-ops#146 addendum: an auditor seat wall is a LANE FAULT (bounded retry
 # through the ladder, never charged to the candidate; candidate stays PENDING).
-# Before the fix, resolve_seat failure exited 1, which failed the unit, burned
+# Before the fix, resolve-seat failure exited 1, which failed the unit, burned
 # StartLimitBurst, and the heartbeat's re-start of the failed unit tripped a
 # NEW STOP-REASON + auditor summon EVERY tick while the seat stayed walled
 # (2026-08-29: 73 straitly-audit unit failures in a day, 228 journal lines on
@@ -456,7 +456,7 @@ ok "scenario8: fully-walled lane exits 0, writes NO vote, calls no pi (candidate
 # Two straitly 402s with usable_at in the past. Since fleet-ops#3121 (#3387)
 # the straitly role resolves through the senior ladder (AUDIT_SENIOR_ORDER,
 # first usable seat wins, cursor by default), so the ladder is pinned to the
-# two straitly seats this scenario writes ledgers for: resolve_seat picks
+# two straitly seats this scenario writes ledgers for: resolve-seat picks
 # deepseek, seat_health_ok_for_call reads the ledger and writes SKIP, and pi
 # is never invoked.
 # -----------------------------------------------------------------------------

@@ -120,7 +120,7 @@ cat >"$scratch/packet-a.md" <<'EOF'
 - write the billing export to the promised deliverable path
 EOF
 
-write_ledger() {  # $1=dispatch uuid (alert `dispatch` label), $2=unit, $3=packet_path
+stub_write_ledger() {  # $1=dispatch uuid (alert `dispatch` label), $2=unit, $3=packet_path
     cat >"$scratch/agent-state/dispatch-ledger.jsonl" <<EOF
 {"id":"$1","chain_id":"$1","hop":0,"ts":"$NOW","unit":"$2","packet_path":"$3","provider":"devin","model":"glm-5-2","deadline_min":90,"deadline_ts":"$NOW","cmdline":"pi --print --provider devin --model glm-5-2","status":"open","retries":0}
 EOF
@@ -186,7 +186,7 @@ journal_died() {  # $1=unit $2=deliverable-path-or-unset $3=out-file
 UNIT_A="pi-fleetops-gate-c-billing"
 echo "gate-c billing export: 4021 rows" >"$scratch/deliverable-a.out"
 journal_died "$UNIT_A" "$scratch/deliverable-a.out" "$scratch/journal-a.txt"
-write_ledger "$UUID_A" "$UNIT_A" "$scratch/packet-a.md"
+stub_write_ledger "$UUID_A" "$UNIT_A" "$scratch/packet-a.md"
 reset_logs
 alert_env "$UNIT_A" "$UUID_A" 1 "$scratch/journal-a.txt" open
 rc=$?
@@ -202,7 +202,7 @@ ok '(a) deliverable file present: 0 spawns, RESOLVED-DELIVERED, dead-man cleared
 # --- (b) deliverable unset + OPEN unarmed PR -> exactly 1 spawn ----------
 UNIT_B="gate-c-billing-failed"
 journal_died "$UNIT_B" unset "$scratch/journal-b.txt"
-write_ledger "$UUID_B" "$UNIT_B" "$scratch/packet-pr-candidate.md"
+stub_write_ledger "$UUID_B" "$UNIT_B" "$scratch/packet-pr-candidate.md"
 reset_logs
 alert_env "$UNIT_B" "$UUID_B" 0 "$scratch/journal-b.txt" open
 rc=$?
@@ -220,7 +220,7 @@ ok '(b) deliverable unset + OPEN unarmed PR: exactly 1 spawn'
 # --- (c) gh times out -> fail-open, exactly 1 spawn ----------------------
 UNIT_C="pi-fleetops-pr5301-verify"
 journal_died "$UNIT_C" unset "$scratch/journal-c.txt"
-write_ledger "$UUID_C" "$UNIT_C" "$scratch/packet-pr-candidate.md"
+stub_write_ledger "$UUID_C" "$UNIT_C" "$scratch/packet-pr-candidate.md"
 reset_logs
 alert_env "$UNIT_C" "$UUID_C" 0 "$scratch/journal-c.txt" sleep
 rc=$?

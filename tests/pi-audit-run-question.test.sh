@@ -65,7 +65,7 @@ enumerate_seats() { printf '%s\t%s\t-\t1\n' devin glm-5-2; }
 class_of() { printf 'prepaid-quota\n'; }
 model_cap() { printf '1\n'; }
 # fleet-ops#6101: non-senior roles seat strictly via the lib's litellm_seat
-# (resolve_seat fallback deleted); the stub mirrors that definer.
+# (resolve-seat fallback deleted); the stub mirrors that definer.
 litellm_seat() { printf 'litellm\t%s\n' "${1:-worker-capable}"; }
 seat_usable() { return 0; }
 seat_ledger_path() { printf '/dev/null/%s__%s.json\n' "$1" "$2"; }

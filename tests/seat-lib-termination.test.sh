@@ -74,7 +74,7 @@ FUNC_NAMES=(
   record_seat_selection register_active_seat _repair_rung_offer
   repo_is_product repo_privacy reset_learned_caps_on_provider_change
   reset_seat_worked_no_text reset_tick_spawn_counts _rr_pick
-  sandbox_localhost_resolves _sanitise_seat _seat_clamp_non_money_window_s
+  _sanitise_seat _seat_clamp_non_money_window_s
   seat_cost_for _seat_co_write_sidecar _seat_daily_spend_cap_reached
   _seat_daily_spend_usd _seat_dead_by_threshold _seat_duration_to_s
   seat_empty_success_path _seat_floor_is_failopen_class _seat_floor_is_money_wall

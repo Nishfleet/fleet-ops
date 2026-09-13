@@ -114,7 +114,15 @@ set -Eeuo pipefail
 export HOME="${HOME:-/home/nish}"
 command -v gh >/dev/null 2>&1 || export PATH=/home/nish/.local/bin:/usr/local/bin:/usr/bin:/bin
 
-AUTH_JSON="${PI_AGENT_AUTH_JSON:-$HOME/.pi/agent/auth.json}"
+# fleet-ops#6101: PI_AGENT_AUTH_JSON and GROK are the two overrides that
+# previously lived ONLY in the retired #917/#1450 dead-case catcher
+# (bin/fleet-seat-live-validate); #6052/#6037 keeps ONE definition of each
+# here, at the surviving SuperGrok-credential organ. PI_AGENT_AUTH_JSON
+# still overrides the auth.json path (below); GROK/FLEET_GROK_BIN still
+# resolve the grok-CLI binary for any future probe.
+PI_AGENT_AUTH_JSON="${PI_AGENT_AUTH_JSON:-$HOME/.pi/agent/auth.json}"
+GROK="${FLEET_GROK_BIN:-${GROK:-grok}}"
+AUTH_JSON="${PI_AGENT_AUTH_JSON}"
 PROVIDER="${GROK_TOKEN_REFRESH_PROVIDER:-xai-oauth}"
 # Fleet-owned lock dir — must NOT be `$AUTH_JSON.lock` (that is pi's
 # proper-lockfile path). Colliding would deadlock against live pi seats.
