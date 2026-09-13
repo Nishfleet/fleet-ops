@@ -657,8 +657,6 @@ ok "scenario2g: socket coverage source-locked (fleet-ops#5855)"
 # Scenario 2e (fleet-ops#4266): block 14 detached-work lint — empty audit
 # trail is clean (exit 0, no DETACHED-RAW-UNIT).
 # ============================================================================
-# trail is clean (exit 0, no DETACHED-RAW-UNIT).
-# ============================================================================
 reset_state
 cover "good-worker.service"
 exclude "unit-escalation@foo.service"
