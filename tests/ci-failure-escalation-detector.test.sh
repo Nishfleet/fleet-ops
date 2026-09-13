@@ -150,7 +150,9 @@ if (!isDuplicated([{ number: 1, body: `<!-- escalate-sig: ${hash} -->\nbody` }],
 if (isDuplicated([{ number: 1, body: null }], hash)) throw new Error("null body must not dedup");
 
 // renderIssueTitle / renderIssueBody: name repo + workflow + job, carry the
-// hash marker, name the exclusion owners, surface last-green.
+// hash marker, name the exclusion owners, surface last-green, and (fleet-ops
+// #5890) carry the spec-gate lines so the escalation is admitted on the
+// first sweep instead of being re-refused hourly.
 const esc = fire[0];
 const title = renderIssueTitle(esc);
 if (!title.includes("[escalate-senior]")) throw new Error("title must carry the label tag");
@@ -161,6 +163,11 @@ if (!body.includes(`<!-- escalate-sig: ${esc.hash} -->`)) throw new Error("body 
 if (!body.includes("auto-revert")) throw new Error("body must name auto-revert as an excluded owner");
 if (!body.includes("#124")) throw new Error("body must name #124 as an excluded owner");
 if (!body.includes("Last green")) throw new Error("body must surface last green");
+if (!body.includes("- termination:")) throw new Error("body must carry the spec-gate termination: line (fleet-ops#5890)");
+if (!body.includes("- accept:")) throw new Error("body must carry the spec-gate accept: line (fleet-ops#5890)");
+if (!body.includes("- required:")) throw new Error("body must carry the spec-gate required: line (fleet-ops#5890)");
+if (!body.includes("- metric:")) throw new Error("body must carry the spec-gate metric: line (fleet-ops#5890)");
+if (!body.includes("- moves:")) throw new Error("body must carry the moves: line naming a product metric (fleet-ops#3255)");
 
 // parseEnrolledRepos: reads intake-repos.json, excludes permanent exclusions.
 const enrolled = parseEnrolledRepos(_readFileSync("config/intake-repos.json", "utf8"));
