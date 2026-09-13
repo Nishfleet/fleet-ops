@@ -742,6 +742,23 @@ grep -Eq '^[[:space:]]*bash[[:space:]]+"?\$here/pi-intake-tick-mention-strand-pa
   || fail "pi-intake-tick-mention-strand-park.test.sh must not be a known orphan (fleet-ops#5045)"
 ok "pi-intake-tick-mention-strand-park.test.sh is pinned in the P14 reachable set (fleet-ops#5045)"
 
+# fleet-ops#6052: hard-pin the host line for the deleted-symbol gate. It is
+# hosted from ci-standards-audit.test.sh (already in ci.yml) because the
+# worker App has no Workflows scope to add a ci.yml line — the #5748 hosting
+# shape. The gate itself is a P14 step: on pull_request events it fails P14
+# when the PR deletes a lib/ or bin/ definition that tests/ still reference
+# (#5993 went red three times, one symbol at a time). Named pin so a future
+# drop of the host line cannot park the test on known_orphans to silence the
+# generic $bad[] message — it fails by name here first.
+grep -Eq '^[[:space:]]*bash[[:space:]]+"?\$here/deleted-symbol-gate\.test\.sh"?' \
+  "$here/ci-standards-audit.test.sh" \
+  || fail "ci-standards-audit.test.sh must bash-invoke deleted-symbol-gate.test.sh (fleet-ops#6052)"
+[[ -n "${reachable[deleted-symbol-gate.test.sh]:-}" ]] \
+  || fail "deleted-symbol-gate.test.sh must be listed in ci.yml or hosted by a listed test (fleet-ops#6052)"
+[[ -z "${known_orphan_set[deleted-symbol-gate.test.sh]:-}" ]] \
+  || fail "deleted-symbol-gate.test.sh must not be a known orphan (fleet-ops#6052)"
+ok "deleted-symbol-gate.test.sh is pinned in the P14 reachable set (fleet-ops#6052)"
+
 shopt -s nullglob
 all_tests=("$here"/*.test.sh)
 shopt -u nullglob
