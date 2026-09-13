@@ -27,10 +27,4 @@ ExecStart=/bin/bash -c 'exec /home/nish/.local/bin/pi-scout-run %i scout'
 # SuccessExitStatus fudge of real errors: only this one reserved code.
 SuccessExitStatus=75
 ExecStopPost=-/bin/bash -c 'exec /home/nish/.local/bin/scout-futility-check end %i'
-# 2026-09-13: the 08:02 and 09:10 ticks were I/O-throttled (pi spent ~25s CPU
-# of 3600s; SPAWN_BLOCKED home_wide_filesystem_sweep during the 282GB-home
-# sweep; go-ham had 3 issue workers + 2 repairs + judges on 8 vCPU) and both
-# died at exactly 3600s — the 09:10 pi was mid-final-verdict (PACKET-VERDICT
-# class=worked, tools=12). 90 min covers the observed ~75 min need under
-# contention; hung-pi watchdog semantics unchanged (OnFailure repair still fires).
-TimeoutStartSec=5400
+TimeoutStartSec=3600

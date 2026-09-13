@@ -1,6 +1,7 @@
 ---
 name: reviewer
 description: Code review specialist for quality and security analysis
+model: senior
 tools: read, grep, find, ls, bash
 ---
 
