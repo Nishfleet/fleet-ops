@@ -217,6 +217,11 @@ bash "$here/git-mirror-update.test.sh" || fail "git-mirror-update tests failed"
 # scratch textfile, unset-URL HC env.
 bash "$here/pi-detached-deadman.test.sh" || fail "pi-detached-deadman tests failed"
 
+# fleet-ops#5799: nested so hosted CI runs the fleet-who-stopped ausearch
+# resolution + usage tests without a workflow edit. Hermetic: the note-branch
+# case self-selects by whether an sbin ausearch exists on the runner.
+bash "$here/fleet-who-stopped.test.sh" || fail "fleet-who-stopped tests failed"
+
 # ============================================================================
 # Dispatch ledger (fleet-ops#1009)
 # ============================================================================

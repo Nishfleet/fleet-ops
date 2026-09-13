@@ -295,4 +295,117 @@ grep -q 'unit="u-branchclaim"' "$tf" \
     || fail "a LIVE claim citing an unmerged branch SHA must die"
 ok "LIVE claim citing an unmerged branch SHA -> died (PR open, not live)"
 
-echo "PASS: pi-detached-deadman verdict matrix (16 cases)"
+# --- 10. bounce attribution: error class + owning unit (fleet-ops#5799) -------
+# The 2026-09-12 incident: a deliberate stop+start of fleet-litellm-proxy (the
+# shared text-lane organ) killed two in-flight runs with a bare
+# "Connection error." and the dead-man recorded only the VICTIM — the
+# DetachedJobDied repair packet blamed the worker, and a salvage note even
+# inherited a wrong 401 root cause. The dead-man must classify the provider
+# error class from the journal it ALREADY reads and, for connection-class
+# deaths, attribute the cause when the proxy organ completed a stop+start
+# inside the victim's window. Both ride the EXISTING gauge series as extra
+# labels and the STOP-REASON rail carries a bounce: line. Hermetic: the
+# journalctl stub answers BOTH the unit-journal and the proxy-journal reads
+# with the same canned text — which is exactly what makes the attribution
+# provable: the canned systemd lines are both the victim's start-timestamp
+# source and the proxy's Stopping/Started evidence.
+FIX10='2026-09-13T10:29:46+0530: Stopping fleet-litellm-proxy.service
+2026-09-13T10:29:49+0530: Started fleet-litellm-proxy.service
+2026-09-13T10:30:15+0530: pi[2299775]: Connection error.'
+
+# 10a. Dry-run first: the verdict prints WITH the attribution, writes nothing.
+out="$(env "${common[@]}" PI_DEADMAN_DRYRUN=1 PI_DEADMAN_DISPATCH=10101010-1010-1010-1010-101010101010 \
+    PI_DEADMAN_UNIT=u-bounce PI_DEADMAN_CMDLINE="pi --print" SERVICE_RESULT=success \
+    PI_DEADMAN_DELIVERABLE="$scratch/missing-bounce.md" JOURNAL_STUB_TEXT="$FIX10" \
+    "$deadman" 2>&1)"
+printf '%s\n' "$out" | grep -q 'verdict=died unit=u-bounce' \
+    || fail "dry-run must still print the verdict: $out"
+printf '%s\n' "$out" | grep -q 'bounce: error_class=connection cause_unit=fleet-litellm-proxy (fleet-ops#5799)' \
+    || fail "dry-run must print the bounce attribution: $out"
+grep -q 'u-bounce' "$tf" && fail "dry-run must not write the attribution series: $(cat "$tf")"
+ok "dry-run: connection-class death prints error_class + cause_unit, writes nothing"
+
+# 10b. Real died path: the gauge series carries both labels and the bounce:
+# line reaches stderr (the journal -> STOP-REASON detail -> repair-packet
+# rail), while the #4266 STOP-REASON reason is untouched.
+: >"$esc_log"
+out="$(env "${common[@]}" PI_DEADMAN_DISPATCH=10101010-1010-1010-1010-101010101010 \
+    PI_DEADMAN_UNIT=u-bounce PI_DEADMAN_CMDLINE="pi --print" SERVICE_RESULT=success \
+    PI_DEADMAN_DELIVERABLE="$scratch/missing-bounce.md" JOURNAL_STUB_TEXT="$FIX10" \
+    "$deadman" 2>&1)" || fail "bounce-attribution death must exit 0"
+grep -q 'error_class="connection",cause_unit="fleet-litellm-proxy"' "$tf" \
+    || fail "connection+bounce death must carry BOTH attribution labels: $(cat "$tf")"
+printf '%s\n' "$out" | grep -q 'bounce: error_class=connection cause_unit=fleet-litellm-proxy (fleet-ops#5799)' \
+    || fail "the died path must send the bounce: line to stderr (STOP-REASON rail): $out"
+grep -q 'reason=unit-stopped-without-deliverable source=pi-detached-deadman' "$esc_log" \
+    || fail "attribution must not disturb the #4266 STOP-REASON: $(cat "$esc_log")"
+ok "connection-class death + proxy stop+start: gauge labels + bounce: line, #4266 reason untouched"
+
+# 10c. Connection-class death WITHOUT a proxy stop+start in the window:
+# error_class=connection, cause_unit stays EMPTY (honest attribution — the
+# organ is only named when its own journal shows the bounce).
+out="$(env "${common[@]}" PI_DEADMAN_DISPATCH=10101010-1010-1010-1010-101010101011 \
+    PI_DEADMAN_UNIT=u-nobounce PI_DEADMAN_CMDLINE="pi --print" SERVICE_RESULT=exit-code \
+    JOURNAL_STUB_TEXT='2026-09-13T10:30:15+0530: pi[2299775]: Connection error.' \
+    "$deadman" 2>/dev/null)" || fail "connection-without-bounce death must exit 0"
+grep -q 'error_class="connection",cause_unit=""' "$tf" \
+    || fail "connection without a proxy stop+start must leave cause_unit empty: $(cat "$tf")"
+ok "connection-class death WITHOUT a proxy bounce: cause_unit stays empty"
+
+# 10d. 401-class death (the #5788 missing-key class the salvage notes wrongly
+# blamed for the 2026-09-12 incident): classified, NO cause attribution.
+out="$(env "${common[@]}" PI_DEADMAN_DISPATCH=10101010-1010-1010-1010-101010101012 \
+    PI_DEADMAN_UNIT=u-401 PI_DEADMAN_CMDLINE="pi --print" SERVICE_RESULT=exit-code \
+    JOURNAL_STUB_TEXT='2026-09-13T11:00:01+0530: pi[1]: litellm 401.' \
+    "$deadman" 2>/dev/null)" || fail "401-class death must exit 0"
+grep -q 'error_class="401",cause_unit=""' "$tf" \
+    || fail "401-class death must classify: $(cat "$tf")"
+ok "401-class death (the #5788 class) classifies without a bounce claim"
+
+# 10e. No provider error found: BOTH labels empty — an honest miss, never a
+# suppressed death (the verdict and the series are unchanged).
+out="$(env "${common[@]}" PI_DEADMAN_DISPATCH=10101010-1010-1010-1010-101010101013 \
+    PI_DEADMAN_UNIT=u-noclass PI_DEADMAN_CMDLINE="pi --print" SERVICE_RESULT=exit-code \
+    JOURNAL_STUB_TEXT='2026-09-13T11:00:01+0530: pi[1]: some other provider note.' \
+    "$deadman" 2>/dev/null)" || fail "no-class death must exit 0"
+grep -q 'error_class="",cause_unit=""' "$tf" \
+    || fail "no-provider-error death must leave both labels empty: $(cat "$tf")"
+ok "no provider error in journal: both labels empty (honest miss, death still recorded)"
+
+# 10f. The helper's honest STDERR answer must survive: fleet-who-stopped
+# prints its failure notes ("no audit records naming <unit>") to stderr, so
+# the stdout-only capture discarded them and the blanket "auditd not
+# installed?" fallback overwrote a real answer (fleet-ops#5799: auditd was
+# installed and running, the trail had actually been queried).
+cat >"$scratch/whostopped-stderr" <<'EOF'
+#!/usr/bin/env bash
+echo "fleet-who-stopped: no audit records naming $1 in the last 24h (key=fleet-unit-stop, all systemctl/kill execve)" >&2
+exit 0
+EOF
+chmod +x "$scratch/whostopped-stderr"
+out="$(env "${common[@]}" PI_DEADMAN_WHOSTOPPED_BIN="$scratch/whostopped-stderr" \
+    PI_DEADMAN_DISPATCH=10101010-1010-1010-1010-101010101014 \
+    PI_DEADMAN_UNIT=u-stderr PI_DEADMAN_CMDLINE="pi --print" SERVICE_RESULT=exit-code \
+    "$deadman" 2>&1)" || fail "stderr-answer death must exit 0"
+printf '%s\n' "$out" | grep -q 'fleet-who-stopped: no audit records naming u-stderr' \
+    || fail "the helper's honest stderr answer must reach the STOP-REASON rail: $out"
+printf '%s\n' "$out" | grep -q 'auditd not installed' \
+    && fail "the false 'auditd not installed?' fallback must not overwrite a real answer: $out"
+ok "helper's honest stderr answer replaces the false 'auditd not installed?' fallback"
+
+# 10g. A helper that prints NOTHING still gets the fallback — its remaining
+# domain is a missing/silent helper, not an answered query.
+cat >"$scratch/whostopped-silent" <<'EOF'
+#!/usr/bin/env bash
+exit 0
+EOF
+chmod +x "$scratch/whostopped-silent"
+out="$(env "${common[@]}" PI_DEADMAN_WHOSTOPPED_BIN="$scratch/whostopped-silent" \
+    PI_DEADMAN_DISPATCH=10101010-1010-1010-1010-101010101015 \
+    PI_DEADMAN_UNIT=u-silent PI_DEADMAN_CMDLINE="pi --print" SERVICE_RESULT=exit-code \
+    "$deadman" 2>&1)" || fail "silent-helper death must exit 0"
+printf '%s\n' "$out" | grep -q 'who-stopped: no audit trail (auditd not installed?)' \
+    || fail "a silent helper must still fall back to the no-trail note: $out"
+ok "silent helper still gets the no-audit-trail fallback"
+
+echo "PASS: pi-detached-deadman verdict matrix (23 cases)"
