@@ -3596,6 +3596,12 @@ if mode == "denied":
     # THROUGH the module's own constant (not the setattr-underscore loop), so
     # reader, writer and test agree on the one real hyphenated filename.
     m.CLAUDE_QUOTA_BACKOFF = Path(cache_dir) / "claude-quota-backoff.json"
+    # The sidecar is written BEFORE main() runs, so nothing has created the
+    # cache dir yet (the 200/fail modes only write via main(), which mkdirs).
+    # CI: FileNotFoundError on /tmp/fme-test.*/cl-denied-cache/... at 10:23Z
+    # 2026-09-13 — the denial-lease case red'd the whole P14 suite and parked
+    # PR #6371 for 5.5h. Match the production writer's mkdir contract.
+    Path(cache_dir).mkdir(parents=True, exist_ok=True)
     m.CLAUDE_QUOTA_BACKOFF.write_text(json.dumps(
         {"kind": "denied", "until": time.time() + 3600,
          "lease_s": 21600, "ts": time.time() - 7200}))
@@ -3640,6 +3646,11 @@ python3 "$scratch/claude-quota-4611.test.py" "$exporter" "$CL_DEN" "$scratch/cl-
 # (self-healing, not a lost meter)
 grep -q 'unless on() (fleet_seat_quota_observed_seconds{provider="claude",source="denied"} > 0)' "$rules" \
   || fail "FleetClaudeQuotaStale missing the #4221-style denial unless-gate"
+# 2026-09-13 (FleetSeatQuotaStale repair): the GENERIC stale rule must gate the
+# deliberately-dark claude denial the same way, but matched on(provider) so the
+# other providers' staleness and the whole-family absent() leg stay loud.
+grep -q 'unless on(provider) (fleet_seat_quota_observed_seconds{provider="claude",source="denied"} > 0)' "$rules" \
+  || fail "FleetSeatQuotaStale missing the #4221-style claude-denial unless-gate (on(provider))"
 # rule presence (acceptance #2/#3: the alert fires when the claude gauge is
 # absent/stale > threshold)
 grep -q "alert: FleetClaudeQuotaStale" "$rules" \
