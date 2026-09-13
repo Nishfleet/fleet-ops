@@ -3540,8 +3540,9 @@ ok "fleet-ops#4217: live seat quota metric family + VPS-native reads (OpenRouter
 # =========================================================================
 CL_200="$scratch/claude-200.prom"
 CL_FAIL="$scratch/claude-fail.prom"
+CL_DEN="$scratch/claude-denied.prom"
 cat >"$scratch/claude-quota-4611.test.py" <<'PY'
-import importlib.util, json, os, sys, time
+import importlib.util, json, os, re, sys, time
 from pathlib import Path
 exporter, out_path, cache_dir, mode = sys.argv[1:5]
 spec = importlib.util.spec_from_file_location("fme", exporter)
@@ -3606,6 +3607,28 @@ if mode == "200":
 else:
     m._fetch_claude_usage = lambda: None
 
+if mode == "denied":
+    # 2026-09-13: cancelled subscription -> claude_free denies ALL OAuth
+    # (403 oauth_not_allowed_for_organization on /api/oauth/usage AND
+    # /v1/messages). The fail-loud gauge must flip to source="denied" with
+    # the FIRST-403 anchor (ts=now-7200 -> observed ~7200, NOT the
+    # stale-cache anchor) so the #4221-style `unless` gate in
+    # FleetClaudeQuotaStale can silence the deliberately-dark case while the
+    # denial AGE stays visible. No remaining_pct may be emitted: a denied
+    # meter has no honest quota number to report. The sidecar is written
+    # THROUGH the module's own constant (not the setattr-underscore loop), so
+    # reader, writer and test agree on the one real hyphenated filename.
+    m.CLAUDE_QUOTA_BACKOFF = Path(cache_dir) / "claude-quota-backoff.json"
+    # The sidecar is written BEFORE main() runs, so nothing has created the
+    # cache dir yet (the 200/fail modes only write via main(), which mkdirs).
+    # CI: FileNotFoundError on /tmp/fme-test.*/cl-denied-cache/... at 10:23Z
+    # 2026-09-13 — the denial-lease case red'd the whole P14 suite and parked
+    # PR #6371 for 5.5h. Match the production writer's mkdir contract.
+    Path(cache_dir).mkdir(parents=True, exist_ok=True)
+    m.CLAUDE_QUOTA_BACKOFF.write_text(json.dumps(
+        {"kind": "denied", "until": time.time() + 3600,
+         "lease_s": 21600, "ts": time.time() - 7200}))
+
 rc = m.main()
 assert rc == 0, f"main rc={rc}"
 body = Path(out_path).read_text()
@@ -3617,16 +3640,40 @@ if mode == "200":
     assert 'fleet_seat_quota_observed_seconds{provider="claude",source="api"}' in body, body
     print("OK: claude 200-path emits remaining_pct/reset/observed (source=api)")
 else:
-    assert 'fleet_seat_quota_remaining_pct{provider="claude"' not in body, \
-        "dead fetch must not emit a claude remaining_pct: " + body
-    assert 'fleet_seat_quota_observed_seconds{provider="claude",source="stale"}' in body, \
-        "dead claude fetch must emit growing observed_seconds (source=stale), not go silent: " + body
-    print("OK: claude dead fetch fails loud via observed_seconds{source=stale}")
+    if mode == "denied":
+        assert 'fleet_seat_quota_remaining_pct{provider="claude"' not in body, \
+            "denied meter must not emit a (fabricated) claude remaining_pct: " + body
+        _match = re.search(
+            r'fleet_seat_quota_observed_seconds\{provider="claude",source="denied"\} ([0-9.]+)',
+            body)
+        assert _match, "denied sidecar must flip the fail-loud gauge to source=denied: " + body
+        _age = float(_match.group(1))
+        assert 7100.0 <= _age <= 7300.0, \
+            f"denied age must count from the FIRST-403 anchor (ts=now-7200), got {_age}"
+        print(f"OK: claude denied-lease gauge source=denied age={_age:.0f}s (no fabricated remaining_pct)")
+    else:
+        assert 'fleet_seat_quota_remaining_pct{provider="claude"' not in body, \
+            "dead fetch must not emit a claude remaining_pct: " + body
+        assert 'fleet_seat_quota_observed_seconds{provider="claude",source="stale"}' in body, \
+            "dead claude fetch must emit growing observed_seconds (source=stale), not go silent: " + body
+        print("OK: claude dead fetch fails loud via observed_seconds{source=stale}")
 PY
 python3 "$scratch/claude-quota-4611.test.py" "$exporter" "$CL_200" "$scratch/cl-200-cache" "200" \
   || fail "claude 200-path emission failed"
 python3 "$scratch/claude-quota-4611.test.py" "$exporter" "$CL_FAIL" "$scratch/cl-fail-cache" "fail" \
   || fail "claude fail-loud emission failed"
+python3 "$scratch/claude-quota-4611.test.py" "$exporter" "$CL_DEN" "$scratch/cl-denied-cache" "denied" \
+  || fail "claude denied-gate emission failed"
+# 2026-09-13: the FleetClaudeQuotaStale expr must carry the #4221-style denial
+# unless-gate, so a cancelled-subscription (claude_free) silence is deliberate
+# (self-healing, not a lost meter)
+grep -q 'unless on() (fleet_seat_quota_observed_seconds{provider="claude",source="denied"} > 0)' "$rules" \
+  || fail "FleetClaudeQuotaStale missing the #4221-style denial unless-gate"
+# 2026-09-13 (FleetSeatQuotaStale repair): the GENERIC stale rule must gate the
+# deliberately-dark claude denial the same way, but matched on(provider) so the
+# other providers' staleness and the whole-family absent() leg stay loud.
+grep -q 'unless on(provider) (fleet_seat_quota_observed_seconds{provider="claude",source="denied"} > 0)' "$rules" \
+  || fail "FleetSeatQuotaStale missing the #4221-style claude-denial unless-gate (on(provider))"
 # rule presence (acceptance #2/#3: the alert fires when the claude gauge is
 # absent/stale > threshold)
 grep -q "alert: FleetClaudeQuotaStale" "$rules" \
