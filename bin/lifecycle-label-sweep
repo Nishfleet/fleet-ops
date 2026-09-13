@@ -67,6 +67,14 @@ fi
 #   otherwise (product repos)
 #       → scout-candidate  (fleet-ops#457: admission, not blank approval)
 #
+# Park (fleet-ops#5887): awaiting-runtime-gate is a GATE label, not a
+# lifecycle label. The park is defined as gate ON, agent-ready OFF
+# (fleet-ops#4540). This sweep must never add agent-ready to an issue that
+# carries the park; promotion is deferred. unpark_runtime_gate is the only
+# restore — it removes the gate and adds agent-ready in one edit so the
+# two labels can never coexist. Dual-labeled leftovers (agent-ready +
+# awaiting-runtime-gate) are healed by dropping agent-ready.
+#
 # Class-lock reclassification (fleet-ops#1083): a `fix(failed-command):` or
 # `fix(decisions-ledger):` issue whose class-lock PR (the `claim/issue-<N>`
 # branch, merged with `Relates to #<N>` not `Closes #<N>`) has already
@@ -96,6 +104,9 @@ fi
 #
 # Modes:
 #   --classify TITLE   print the lifecycle label for TITLE (no network)
+#   --unpark REPO#NUM  un-park an awaiting-runtime-gate issue: drop the park
+#                      and restore agent-ready in ONE edit (no network read
+#                      beyond the parked-state pre-check)
 #   --drill            set LIFECYCLE_SWEEP_DRILL=1 then sweep
 #   (default)          sweep enrolled repos
 #
@@ -122,6 +133,7 @@ Usage: lifecycle-label-sweep [--help|-h]
 
 Modes:
   --classify TITLE   print the lifecycle label for TITLE (no network)
+  --unpark REPO#NUM  drop awaiting-runtime-gate + add agent-ready in one edit
   --drill            set LIFECYCLE_SWEEP_DRILL=1 then sweep
   (default)          sweep enrolled repos
 
@@ -201,6 +213,39 @@ INTAKE_JSON="${LIFECYCLE_SWEEP_INTAKE_JSON:-/home/nish/workspaces/products/fleet
 LOCKDIR="${LIFECYCLE_SWEEP_LOCKDIR:-${XDG_RUNTIME_DIR}/lifecycle-label-sweep}"
 DRY="${LIFECYCLE_SWEEP_DRY_RUN:-0}"
 DRILL="${LIFECYCLE_SWEEP_DRILL:-0}"
+# fleet-ops#5785: per-tick summary consumed by libexec/fleet-metrics-export.py
+# -> the fleet_deploy_fault_* gauges (the issue's "deploy-fault issues closed
+# without a green run (must be 0)" metric).
+SUMMARY_FILE="${LIFECYCLE_SWEEP_SUMMARY:-/home/nish/.local/state/fleet-heartbeat/lifecycle-label-sweep.json}"
+# How far back the deploy-fault reopen pass scans closed issues.
+DEPLOY_FAULT_CLOSED_DAYS="${DEPLOY_FAULT_CLOSED_DAYS:-30}"
+
+# fleet-ops#5785: shared deploy-fault class detector + green-run proof. A
+# deploy-fault issue (deploy-fault label, or a body citing a failed
+# production-deploy run) may not STAY closed without a green `Deploy
+# production` run proving the fix live — GitHub's own auto-close (merged
+# `Closes #N` trailer) and human closes bypass observe-to-close's gate, so
+# this sweep owns the repair pass: reopen the violation with the evidence
+# requirement named. The library ships via MANIFEST; a missing lib is a
+# broken install — fail closed (exit 2), same as missing gh/jq below.
+_DF_LIB="${DEPLOY_FAULT_GATE_LIB:-}"
+if [ -z "$_DF_LIB" ]; then
+    _df_here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+    if [ -f "$_df_here/../lib/deploy-fault-gate.sh" ]; then
+        _DF_LIB="$_df_here/../lib/deploy-fault-gate.sh"
+    else
+        _DF_LIB="${HOME}/.local/lib/pi-packet/deploy-fault-gate.sh"
+    fi
+fi
+if [ ! -f "$_DF_LIB" ]; then
+    printf '[%s] [lifecycle-label-sweep] FATAL: deploy-fault-gate lib missing at %s\n' \
+        "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$_DF_LIB" >&2
+    exit 2
+fi
+# shellcheck source=../lib/deploy-fault-gate.sh
+# shellcheck disable=SC1091  # sourced via $_DF_LIB (resolved at runtime: ../lib/deploy-fault-gate.sh)
+. "$_DF_LIB"
+unset _DF_LIB _df_here
 
 log() {
     printf '[%s] [lifecycle-label-sweep] %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$*" >&2
@@ -278,6 +323,33 @@ issue_has_lifecycle() {
     return 1
 }
 
+# fleet-ops#5887: park label is not a lifecycle label (intake keys on
+# agent-ready; the park is a gate). True when the issue carries
+# awaiting-runtime-gate. The park wins over every promotion to agent-ready.
+issue_is_parked() {
+    local labels_json="$1"
+    printf '%s' "$labels_json" | jq -e '.[] | select(.name=="awaiting-runtime-gate")' >/dev/null 2>&1
+}
+
+# fleet-ops#5887: the ONLY restore of agent-ready on a parked issue.
+# One edit so the two labels never coexist.
+unpark_runtime_gate() {
+    local repo="$1" num="$2"
+    local body
+    body="lifecycle-label: un-park awaiting-runtime-gate by fleet-heartbeat at ${NOW_ISO} (restore agent-ready in the same edit; fleet-ops#5887)"
+    if [ "$DRY" = "1" ]; then
+        log "DRY $repo#$num: un-park awaiting-runtime-gate → agent-ready"
+        return 0
+    fi
+    ensure_label "$repo" "agent-ready"
+    if ! gh issue edit "$num" -R "$repo" --remove-label awaiting-runtime-gate --add-label agent-ready >/dev/null 2>&1; then
+        log "  $repo#$num: un-park awaiting-runtime-gate FAILED — retry next tick"
+        return 1
+    fi
+    comment_issue "$repo" "$num" "$body" "runtime-gate un-park"
+    return 0
+}
+
 # fleet-ops#1083: a class-lock issue is one auto-filed by
 # bin/fleet-failed-command-flagged or bin/fleet-decisions-ledger. Its
 # class-lock PR uses `Relates to #<N>` (not `Closes #<N>`) on branch
@@ -338,6 +410,9 @@ healed=0
 admitted=0
 bounced=0
 decided_healed=0
+deploy_fault_labeled=0
+deploy_fault_reopened=0
+deploy_fault_check_failed=0
 drill_repo=""
 drill_num=""
 
@@ -359,6 +434,32 @@ ensure_label() {
     fi
     gh label create "$name" -R "$repo" --color "$color" --description "$desc" --force >/dev/null 2>&1 || true
 }
+
+# fleet-ops#5887: --unpark OWNER/NAME#NUM is the sanctioned un-park path.
+# The sweep itself never un-parks (the park is deliberate until the named
+# runtime event fires), so the restore lives behind this explicit mode:
+# one gh edit drops the park AND restores agent-ready, so the two labels can
+# never coexist. Refuses when the issue does not carry the park (fail-closed:
+# no speculative agent-ready).
+if [ "${1:-}" = "--unpark" ]; then
+    shift
+    _unpark_target="${1:-}"
+    [[ "$_unpark_target" =~ ^[^#]+#[0-9]+$ ]] \
+        || { echo "usage: lifecycle-label-sweep --unpark OWNER/NAME#NUM" >&2; exit 2; }
+    _unpark_repo="${_unpark_target%#*}"
+    _unpark_num="${_unpark_target##*#}"
+    _unpark_labels=$(gh api "repos/$_unpark_repo/issues/$_unpark_num" --jq '[.labels[].name]' 2>/dev/null) \
+        || { echo "unpark: cannot read $_unpark_target" >&2; exit 1; }
+    if ! printf '%s' "$_unpark_labels" | jq -e 'index("awaiting-runtime-gate") != null' >/dev/null; then
+        echo "unpark: $_unpark_target does not carry awaiting-runtime-gate — nothing to un-park" >&2
+        exit 1
+    fi
+    if unpark_runtime_gate "$_unpark_repo" "$_unpark_num"; then
+        echo "unpark: $_unpark_target un-parked (agent-ready restored in the same edit)"
+        exit 0
+    fi
+    exit 1
+fi
 
 spec_gate_py() {
     if [ -n "${AGENT_READY_SPEC_GATE:-}" ]; then
@@ -621,6 +722,16 @@ while IFS= read -r repo; do
             continue
         fi
 
+        # fleet-ops#5887: park wins. A parked issue with no lifecycle label
+        # (agent-ready was stripped by the park or by the dual-label heal
+        # below) must not be promoted to agent-ready or scout-candidate —
+        # the next admit pass would otherwise re-create the phantom pool.
+        if issue_is_parked "$labels_json"; then
+            log "  $repo#$num: skip agent-ready (parked: awaiting-runtime-gate)"
+            skipped=$((skipped + 1))
+            continue
+        fi
+
         # fleet-ops#3295: umbrella-labeled issues are tracking parents, not
         # claimable work (label desc: "tracking parent; not claimable").
         # Exclude them from the agent-ready default AND from scout-candidate
@@ -633,6 +744,19 @@ while IFS= read -r repo; do
         # umbrella label's semantics. The guard runs before gap-audit because
         # umbrella means "not claimable" regardless of any other topic label.
         if printf '%s' "$labels_json" | jq -e '.[] | select(.name=="umbrella")' >/dev/null 2>&1; then
+            label="nish-reserved"
+        # fleet-ops#5861: an epic-labeled issue is a Nish-ratified direction
+        # (tracking parent), not claimable work — the panel judges its
+        # dependency slices, not the epic. Excluded from admission exactly
+        # like umbrella: the #4451 epic guard alone was not enough because a
+        # discard reversal (judge removes `discarded`) leaves the issue
+        # lifecycle-unlabeled, so the sweep re-promoted it to scout-candidate
+        # and the panel discarded it again, every tick (0509#3171: 6 discard
+        # cycles on 2026-09-12). nish-reserved is the terminal lifecycle
+        # label, so the reversal sticks. Runs before gap-audit, same reason
+        # as umbrella: the epic label means "not claimable" regardless of any
+        # other topic label.
+        elif printf '%s' "$labels_json" | jq -e '.[] | select(.name=="epic")' >/dev/null 2>&1; then
             label="nish-reserved"
         # gap-audit leftovers already passed the blind-audit panel (#402).
         # That is a gate, so they become agent-ready rather than re-queued
@@ -697,6 +821,14 @@ while IFS= read -r repo; do
         if printf '%s' "$labels_json" | jq -e '.[] | select(.name=="discarded" or .name=="observe-to-close" or .name=="nish-reserved" or .name=="noise-class")' >/dev/null 2>&1; then
             continue
         fi
+        # fleet-ops#5887: park wins over spec-gate admission. The live
+        # 0509#2213 loop was this pass re-adding agent-ready after the park
+        # had stripped it. Log the skip so it is never silent.
+        if issue_is_parked "$labels_json"; then
+            log "  $repo#$num: skip agent-ready (parked: awaiting-runtime-gate)"
+            skipped=$((skipped + 1))
+            continue
+        fi
         if issue_passes_spec_gate "$issue_body" "$repo"; then
             log "  $repo#$num: scout-candidate passes spec gate → admit agent-ready ($title)"
             if admit_scout_candidate "$repo" "$num"; then
@@ -752,6 +884,42 @@ while IFS= read -r repo; do
                 healed=$((healed + 1))
             else
                 log "  $repo#$num: remove-label scout-candidate FAILED — retry next tick"
+                failed=$((failed + 1))
+            fi
+        fi
+    done < <(printf '%s' "$list_json" | jq -c '.[]')
+
+    # fleet-ops#5887: heal agent-ready + awaiting-runtime-gate leftovers.
+    # Park is defined as gate ON, ready OFF. The scout-candidate admit
+    # pass used to re-add agent-ready without checking the park, leaving a
+    # phantom ready pool (10 live on 0509 at filing). Drop agent-ready so
+    # the park is the only intake-visible state. This tick's 10 dual-labeled
+    # 0509 issues were each read against their park comment: none of the
+    # named runtime events have cleared, so all stay parked (strip ready,
+    # do not un-park). Un-park is unpark_runtime_gate, not this pass.
+    while IFS= read -r row; do
+        [ -z "$row" ] && continue
+        num=$(printf '%s' "$row" | jq -r '.number')
+        title=$(printf '%s' "$row" | jq -r '.title // ""')
+        labels_json=$(printf '%s' "$row" | jq -c '.labels // []')
+        has_ready=0
+        has_park=0
+        while IFS= read -r name; do
+            [ -z "$name" ] && continue
+            case "$name" in
+                agent-ready) has_ready=1 ;;
+                awaiting-runtime-gate) has_park=1 ;;
+            esac
+        done < <(printf '%s' "$labels_json" | jq -r '.[].name // empty')
+        if (( has_ready == 1 && has_park == 1 )); then
+            log "  $repo#$num: skip agent-ready (parked: awaiting-runtime-gate) — drop agent-ready ($title)"
+            if [ "$DRY" = "1" ]; then
+                log "DRY $repo#$num: remove-label agent-ready (heal park dual-label)"
+                healed=$((healed + 1))
+            elif gh issue edit "$num" -R "$repo" --remove-label agent-ready >/dev/null 2>&1; then
+                healed=$((healed + 1))
+            else
+                log "  $repo#$num: remove-label agent-ready FAILED — retry next tick"
                 failed=$((failed + 1))
             fi
         fi
@@ -814,11 +982,121 @@ while IFS= read -r repo; do
             fi
         fi
     done < <(printf '%s' "$list_json" | jq -c '.[]')
+
+    # fleet-ops#5785: deploy-fault class label pass. An open issue whose
+    # body cites a failed `Deploy production` run is in the deploy-fault
+    # class even when nobody applied the label — the close gate and the
+    # reopen pass key off the class, and the label makes the class legible
+    # to humans, intake and the auditor. Orthogonal to lifecycle labels:
+    # runs on every open issue, labelled or not. Idempotent (issues
+    # already carrying deploy-fault are skipped by the label check).
+    while IFS= read -r row; do
+        [ -z "$row" ] && continue
+        num=$(printf '%s' "$row" | jq -r '.number')
+        title=$(printf '%s' "$row" | jq -r '.title // ""')
+        labels_json=$(printf '%s' "$row" | jq -c '.labels // []')
+        issue_body=$(printf '%s' "$row" | jq -r '.body // ""')
+        printf '%s' "$labels_json" | jq -e '.[] | select(.name=="deploy-fault")' >/dev/null 2>&1 && continue
+        deploy_fault_body_cites_failed_run "$issue_body" || continue
+        if [ "$DRY" = "1" ]; then
+            log "DRY $repo#$num: add-label deploy-fault ($title)"
+            deploy_fault_labeled=$((deploy_fault_labeled + 1))
+            continue
+        fi
+        gh label create deploy-fault -R "$repo" --color B60205 \
+            --description "Production deploy fault — may only close with a green Deploy production run containing the fix (fleet-ops#5785)" \
+            --force >/dev/null 2>&1 || true
+        if gh issue edit "$num" -R "$repo" --add-label deploy-fault >/dev/null 2>&1; then
+            deploy_fault_labeled=$((deploy_fault_labeled + 1))
+            log "  $repo#$num: +deploy-fault (body cites failed production run; fleet-ops#5785)"
+        else
+            log "  $repo#$num: add-label deploy-fault FAILED — retry next tick"
+            failed=$((failed + 1))
+        fi
+    done < <(printf '%s' "$list_json" | jq -c '.[]')
+
+    # fleet-ops#5785: deploy-fault reopen pass. GitHub auto-close (a merged
+    # `Closes #N` trailer) and human closes bypass observe-to-close's
+    # deploy-fault gate — 0509#2662 closed the moment PR #2949 merged while
+    # every `Deploy production` run was still failing Gate C. A closed
+    # deploy-fault issue with no green run proving the fix is REOPENED
+    # here with the evidence requirement named; the reopen comment tells
+    # the next closer exactly what a legal close needs. Guards:
+    #   - stateReason NOT_PLANNED → deliberate non-fix, never reopened
+    #   - nish3451-authored → owner-authored issues are never re-opened by
+    #     a sweep (same rule observe-to-close follows)
+    #   - proof-check failure (gh blip) → skip, retry next tick
+    #   - a qualifying green run (comment-cited or self-verified) → proven,
+    #     leave closed
+    closed_since=$(date -u -d "$NOW_ISO - $DEPLOY_FAULT_CLOSED_DAYS days" +%Y-%m-%d 2>/dev/null) \
+        || closed_since=""
+    if [ -n "$closed_since" ]; then
+        if ! closed_json=$(gh issue list -R "$repo" --state closed --limit 200 \
+            --search "closed:>=${closed_since}" \
+            --json number,title,labels,body,author,closedAt,stateReason 2>/dev/null); then
+            log "  $repo: gh issue list --state closed FAILED — deploy-fault reopen pass skipped this tick"
+            deploy_fault_check_failed=$((deploy_fault_check_failed + 1))
+        else
+            while IFS= read -r row; do
+                [ -z "$row" ] && continue
+                num=$(printf '%s' "$row" | jq -r '.number')
+                title=$(printf '%s' "$row" | jq -r '.title // ""')
+                labels_json=$(printf '%s' "$row" | jq -c '.labels // []')
+                issue_body=$(printf '%s' "$row" | jq -r '.body // ""')
+                state_reason=$(printf '%s' "$row" | jq -r '.stateReason // ""')
+                closed_at=$(printf '%s' "$row" | jq -r '.closedAt // ""')
+                author=$(printf '%s' "$row" | jq -r '.author.login // ""')
+                [ "$state_reason" = "NOT_PLANNED" ] && continue
+                [ "$author" = "nish3451" ] && continue
+                deploy_fault_is_issue "$labels_json" "$issue_body" || continue
+                df_rc=0
+                deploy_fault_has_proof "$repo" "$num" "$closed_at" || df_rc=$?
+                if [ "$df_rc" = "0" ]; then
+                    continue
+                elif [ "$df_rc" = "2" ]; then
+                    log "  $repo#$num: deploy-fault proof check failed (gh blip) — skip reopen this tick"
+                    deploy_fault_check_failed=$((deploy_fault_check_failed + 1))
+                    continue
+                fi
+                log "  $repo#$num: CLOSED-WITHOUT-GREEN deploy-fault issue, no green production run contains the fix — reopening ($title)"
+                df_body="${DEPLOY_FAULT_MARKER}: this deploy-fault issue was closed (at ${closed_at:-unknown}) without production proof — no green \`Deploy production\` run whose SHA contains the fix exists. Reopened. A legal close needs a closing comment citing the green run URL (the sweep's run-list check also accepts a green run containing the delivery merge even when no comment cites it). If this is genuinely wontfix, close with reason=not-planned."
+                if [ "$DRY" = "1" ]; then
+                    log "DRY $repo#$num: reopen + comment + ensure deploy-fault label"
+                    deploy_fault_reopened=$((deploy_fault_reopened + 1))
+                    continue
+                fi
+                gh label create deploy-fault -R "$repo" --color B60205 \
+                    --description "Production deploy fault — may only close with a green Deploy production run containing the fix (fleet-ops#5785)" \
+                    --force >/dev/null 2>&1 || true
+                if ! gh issue reopen "$num" -R "$repo" --comment "$df_body" >/dev/null 2>&1; then
+                    log "  $repo#$num: gh issue reopen FAILED — retry next tick"
+                    failed=$((failed + 1))
+                    continue
+                fi
+                gh issue edit "$num" -R "$repo" --add-label deploy-fault >/dev/null 2>&1 || true
+                deploy_fault_reopened=$((deploy_fault_reopened + 1))
+            done < <(printf '%s' "$closed_json" | jq -c '.[]')
+        fi
+    fi
 done <<< "$repos"
 
-log "sweep done: relabeled=$relabeled skipped=$skipped failed=$failed reclassified=$reclassified healed=$healed admitted=$admitted bounced=$bounced decided_healed=$decided_healed"
-printf 'lifecycle-label-sweep relabeled=%s skipped=%s failed=%s reclassified=%s healed=%s admitted=%s bounced=%s decided_healed=%s\n' \
-    "$relabeled" "$skipped" "$failed" "$reclassified" "$healed" "$admitted" "$bounced" "$decided_healed"
+log "sweep done: relabeled=$relabeled skipped=$skipped failed=$failed reclassified=$reclassified healed=$healed admitted=$admitted bounced=$bounced decided_healed=$decided_healed deploy_fault_labeled=$deploy_fault_labeled deploy_fault_reopened=$deploy_fault_reopened deploy_fault_check_failed=$deploy_fault_check_failed"
+printf 'lifecycle-label-sweep relabeled=%s skipped=%s failed=%s reclassified=%s healed=%s admitted=%s bounced=%s decided_healed=%s deploy_fault_labeled=%s deploy_fault_reopened=%s deploy_fault_check_failed=%s\n' \
+    "$relabeled" "$skipped" "$failed" "$reclassified" "$healed" "$admitted" "$bounced" "$decided_healed" \
+    "$deploy_fault_labeled" "$deploy_fault_reopened" "$deploy_fault_check_failed"
+
+# fleet-ops#5785: per-tick summary for the exporter. deploy_fault_reopened
+# IS the "deploy-fault issues closed without a green run" count — each
+# reopen means a violation was found this tick. Written every sweep so the
+# gauge returns to 0 once the class is clean.
+if [ -n "$SUMMARY_FILE" ] \
+    && mkdir -p "$(dirname "$SUMMARY_FILE")" 2>/dev/null; then
+    cat >"$SUMMARY_FILE" <<EOF
+{"_meta":{"ts":"$NOW_ISO","tool":"lifecycle-label-sweep"},"deploy_fault_labeled":$deploy_fault_labeled,"deploy_fault_closed_without_green":$deploy_fault_reopened,"deploy_fault_check_failed":$deploy_fault_check_failed}
+EOF
+else
+    log "WARN: could not write summary $SUMMARY_FILE"
+fi
 
 if [ "$DRILL" = "1" ]; then
     if [ "$DRY" = "1" ]; then

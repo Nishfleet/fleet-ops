@@ -7,12 +7,12 @@
 set -euo pipefail
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 repo_root="$(cd "$here/.." && pwd)"
-lib="$repo_root/lib/seat-lib.sh"
+lib="$repo_root/lib/litellm-seat.sh"
 
 fail() { echo "FAIL: $*" >&2; exit 1; }
 ok()   { echo "OK: $*"; }
 
-[[ -f "$lib" ]] || fail "seat-lib.sh not found: $lib"
+[[ -f "$lib" ]] || fail "seatlib.sh not found: $lib"
 command -v jq >/dev/null || fail "jq required"
 
 scratch="$(mktemp -d -t watch-log-rotation.XXXXXX)"
@@ -59,7 +59,7 @@ mkdir -p "$scratch/state-with-rotate"
 : > "$scratch/logrotate.conf-present"
 export SEAT_LOGROTATE_CONF="$scratch/logrotate.conf-present"
 export PI_PACKET_STATE="$scratch/state-with-rotate"
-# shellcheck source=../lib/seat-lib.sh
+# shellcheck source=../lib/litellm-seat.sh
 source "$lib"
 seat_log "file-with-rotate test"
 grep -q "file-with-rotate test" "$scratch/state-with-rotate/watch.log" \
@@ -85,7 +85,7 @@ unset PI_PACKET_STATE
 # Force a missing logrotate conf so this run exercises the journal fallback.
 export SEAT_LOGROTATE_CONF="$scratch/no-such-logrotate.conf"
 
-# shellcheck source=../lib/seat-lib.sh
+# shellcheck source=../lib/litellm-seat.sh
 source "$lib"
 seat_log "journal-fallback test"
 grep -q "journal-fallback test" "$scratch/journal-out" \
@@ -104,7 +104,7 @@ ok "seat_log writes to journal when no logrotate conf and prod path"
 mkdir -p "$scratch/state-scratch"
 export PI_PACKET_STATE="$scratch/state-scratch"
 unset SEAT_LOGROTATE_CONF
-# shellcheck source=../lib/seat-lib.sh
+# shellcheck source=../lib/litellm-seat.sh
 source "$lib"
 seat_log "scratch-no-rotate test"
 grep -q "scratch-no-rotate test" "$scratch/state-scratch/watch.log" \

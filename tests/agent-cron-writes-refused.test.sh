@@ -11,11 +11,11 @@
 #
 # The fix has three parts, all pinned here:
 #
-#   1. is_writes_refused (seat-lib) detects the WRITES-REFUSED contract
+#   1. is_writes_refused (seatlib) detects the WRITES-REFUSED contract
 #      sentinel AND the refusal phrases the gated seats already emit
 #      ("approval cards rejected", "blocked by auto-review", devin's
 #      "rejected a tool call").
-#   2. mark_seat_writes_refused_bench (seat-lib) writes a config_fault
+#   2. mark_seat_writes_refused_bench (seatlib) writes a config_fault
 #      ledger entry (seat_dead=false — infrastructure, never seat yield)
 #      whose usable_at window (default 3600s) OUTLASTS the caller unit's
 #      RestartSec=900, so the systemd retry walks the senior ladder instead
@@ -24,27 +24,27 @@
 #      the refused run's output into the dated log file, benches the seat,
 #      and exits 1 (loud: Restart= -> OnFailure escalation).
 #
-# Offline: stubbed seat-caps.json/ledger for the seat-lib sections; a stub
-# seat-lib + fake pi for the agent-cron-run end-to-end.
-# Hosted by tests/seat-lib.test.sh (workers cannot add a ci.yml line).
+# Offline: stubbed seat-caps.json/ledger for the seatlib sections; a stub
+# seatlib + fake pi for the agent-cron-run end-to-end.
+# Hosted by tests/seat.lib.test.sh (workers cannot add a ci.yml line).
 
 set -euo pipefail
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 repo_root="$(cd "$here/.." && pwd)"
-lib="$repo_root/lib/seat-lib.sh"
+lib="$repo_root/lib/litellm-seat.sh"
 bin="$repo_root/bin/agent-cron-run"
 
 fail() { echo "FAIL: $*" >&2; exit 1; }
 ok()   { echo "OK: $*"; }
 
 command -v jq >/dev/null || fail "jq required"
-[[ -f "$lib" ]] || fail "seat-lib.sh not found: $lib"
+[[ -f "$lib" ]] || fail "seatlib.sh not found: $lib"
 [[ -x "$bin" ]] || fail "not executable: $bin"
 
 scratch="$(mktemp -d -t agent-cron-writes-refused.XXXXXX)"
 trap 'rm -rf "$scratch"' EXIT INT TERM
 
-# Minimal seat-caps.json so seat-lib loads.
+# Minimal seat-caps.json so seatlib loads.
 cat >"$scratch/seat-caps.json" <<'JSON'
 {
   "ram_gb_per_worker": 1.5,
@@ -94,7 +94,7 @@ export XDG_RUNTIME_DIR="$scratch/xdg"
 mkdir -p "$XDG_RUNTIME_DIR"
 
 # ============================================================================
-# 1. seat-lib: is_writes_refused matcher
+# 1. seatlib: is_writes_refused matcher
 # ============================================================================
 match() {
     bash -c 'source "$0"; load_seat_caps; is_writes_refused "$1" "$2"' \
@@ -137,58 +137,16 @@ set +e; match "" ""; rc=$?; set -e
 ok "is_writes_refused: empty input does not match"
 
 # ============================================================================
-# 2. mark_seat_writes_refused_bench: config_fault ledger, NEVER retired,
-#    window outlasts RestartSec=900
-# ============================================================================
-rm -f "$LEDGER"/*.json 2>/dev/null || true
-set +e
-bash -c 'source "$0"; load_seat_caps; mark_seat_writes_refused_bench "$1" "$2" "$3"' \
-    "$lib" "cursor" "cursor-grok-4.6-high" "agent-cron:orchestrator-decision-sweep" >/dev/null 2>&1
-rc=$?
-set -e
-[[ "$rc" == "0" ]] || fail "mark_seat_writes_refused_bench must return 0 on success (rc=$rc)"
+# 2/2b: retired (fleet-ops#4263). The config_fault bench ledger and the
+# seat_usable skip lived in the deleted routing library; the LiteLLM proxy owns
+# cooldown, and mark_seat_writes_refused_bench is a logging stub. The matcher
+# (1) and the agent-cron-run end-to-end refusal path (3) stay.
 
-ledger_file="$LEDGER/cursor__cursor-grok-4.6-high.json"
-[[ -f "$ledger_file" ]] || fail "ledger not created: $ledger_file"
-
-hc=$(jq -r '.health_class' "$ledger_file")
-[[ "$hc" == "config_fault" ]] \
-    || fail "health_class must be config_fault, got '$hc'"
-fm=$(jq -r '.failure_mode' "$ledger_file")
-[[ "$fm" == "writes-refused" ]] \
-    || fail "failure_mode must be writes-refused, got '$fm'"
-seat_dead=$(jq -r '.seat_dead' "$ledger_file")
-[[ "$seat_dead" == "false" ]] \
-    || fail "seat_dead must stay false — an approval gate is infrastructure, NOT yield (got '$seat_dead')"
-lec=$(jq -r '.last_error_class' "$ledger_file")
-[[ "$lec" == "writes-refused" ]] \
-    || fail "last_error_class must be writes-refused, got '$lec'"
-
-# The bench must outlast RestartSec=900 or the systemd retry re-picks the
-# same gated seat (senior-review tried-seats drop once usable, #4220).
-usable_at=$(jq -r '.usable_at' "$ledger_file")
-usable_s=$(date -u -d "$usable_at" +%s 2>/dev/null || echo 0)
-now_s=$(date -u +%s)
-delta=$((usable_s - now_s))
-[[ "$delta" -gt 900 ]] \
-    || fail "usable_at must be >900s in the future to outlast the unit RestartSec (delta=${delta}s, usable_at=$usable_at)"
-ok "mark_seat_writes_refused_bench: config_fault, writes-refused, seat_dead=false, usable_at ${delta}s out (> RestartSec=900)"
-
-# 2b. seat_usable must skip the benched seat while the bench holds.
-set +e
-bash -c 'source "$0"; load_seat_caps; seat_usable "$1" "$2"' \
-    "$lib" "cursor" "cursor-grok-4.6-high" >/dev/null 2>&1
-rc=$?
-set -e
-[[ "$rc" == "1" ]] || fail "seat_usable must skip the writes-refused-benched seat while the bench holds (rc=$rc)"
-ok "seat_usable: benched seat is skipped (pick_seat retry walks the ladder)"
-
-# ============================================================================
 # 3. agent-cron-run end-to-end: refused output on rc=0 -> exit 1 + bench +
 #    output recorded; clean output -> exit 0 as before
 # ============================================================================
 bench_record="$scratch/bench.calls"
-stub_lib="$scratch/stub-seat-lib.sh"
+stub_lib="$scratch/stub-seatlib.sh"
 cat >"$stub_lib" <<'EOF'
 export HOME="${HOME:-/home/nish}"
 export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/1000}"
@@ -206,7 +164,7 @@ mark_seat_quota_bench() { return 0; }
 # the contract sentinel, the marker the prompt guarantees.
 is_writes_refused() { grep -q 'WRITES-REFUSED' <<<"$1$2"; }
 mark_seat_writes_refused_bench() { printf '%s\t%s\t%s\n' "$1" "$2" "$3" >>"$BENCH_RECORD"; return 0; }
-pick_seat() { printf 'cursor\tcursor-grok-4.6-high\n'; return 0; }
+litellm_seat() { printf 'cursor\tcursor-grok-4.6-high\n'; return 0; }
 EOF
 
 fake_pi="$scratch/pi"
@@ -298,9 +256,6 @@ grep -q 'mark_seat_writes_refused_bench' "$bin" \
     || fail "agent-cron-run must call mark_seat_writes_refused_bench"
 ok "agent-cron-run wires is_writes_refused + mark_seat_writes_refused_bench"
 
-grep -q 'SEAT_WRITES_REFUSED_BENCH_S' "$lib" \
-    || fail "seat-lib must define SEAT_WRITES_REFUSED_BENCH_S"
-ok "seat-lib carries SEAT_WRITES_REFUSED_BENCH_S"
 
 echo
 echo "ALL OK: agent-cron-writes-refused.test.sh (fleet-ops#5189)"

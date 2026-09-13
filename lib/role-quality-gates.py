@@ -45,6 +45,10 @@ NON_ROLE_UNIT_PREFIXES = (
     # of-class lines, deletes ledger-terminated packets). Runs no model,
     # owns no prompt, produces no work items — plumbing, not a role.
     "escalation-drain",
+    # fleet-ops#5854: escalation-organ-watch is the deterministic organ-death
+    # watcher for the escalation organs (5-min timer, no model, owns no
+    # prompt, produces no work items — plumbing, same class as escalation-drain).
+    "escalation-organ-watch",
     "intake-reconcile",
     "fleet-restore",
     "fleet-resilience",
@@ -179,6 +183,17 @@ NON_ROLE_UNIT_PREFIXES = (
     # the codex-launcher-retired pin test.
     "codex-sol",
     "codex-luna",
+    # fleet-ops#5935: gh-runner@ is GitHub's own actions/runner as an
+    # ephemeral launch template on this VPS — each activation registers a
+    # fresh single-use JIT token (fail-loud on an empty token or a 422),
+    # serves that one job, then systemd reaps the process; Restart=always
+    # and cohort-capped by fleet-ci.slice. It runs no model of its own,
+    # owns no judging prompt and produces no work items — launch plumbing,
+    # not a role. Its gate is the machinery-allowlist row (class (a),
+    # repo, endorsed by Nish 2026-09-12 "lets do all of those") +
+    # tests/manifest-shape.test.sh (MANIFEST install) + the unit's own
+    # StartLimit/ExecStartPre guards.
+    "gh-runner",
 )
 
 

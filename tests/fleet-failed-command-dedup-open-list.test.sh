@@ -16,7 +16,7 @@
 # dedup against the open list and NOT file a duplicate.
 #
 # Same CI constraint as the other failed-command tests (worker token
-# cannot add a P14 line in ci.yml): nested in tests/seat-lib.test.sh.
+# cannot add a P14 line in ci.yml): nested in tests/seat.lib.test.sh.
 
 set -euo pipefail
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"

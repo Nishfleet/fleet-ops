@@ -619,7 +619,7 @@ printf 'worker prompt body\n\nTARGET: repo Nishfleet/demo issue 55 unit pi-issue
 g_start=$(date +%s.%N)
 set +e
 g_out=$(SYSTEMCTL="$systemctl_noblock" START_LOG="$start_log" \
-        PI_ISSUES_DIR="$pi_issues_dir" SEAT_LIB="/nonexistent/seat-lib.sh" \
+        PI_ISSUES_DIR="$pi_issues_dir" SEAT_LIB="/nonexistent/seatlib.sh" \
         "$pi_issue_start_real" demo-55 2>&1)
 g_rc=$?
 set -e

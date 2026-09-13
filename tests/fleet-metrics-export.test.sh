@@ -1206,7 +1206,7 @@ PY
 # 14. fleet-ops#2407: seat release-at-usable_at + comeback-overdue metric
 # =========================================================================
 # A walled seat whose usable_at/bench_until has passed is RELEASED by the
-# router (lib/seat-lib.sh seat_usable fail-opens it) but stays classed
+# router (lib/litellm-seat.sh seat_usable fail-opens it) but stays classed
 # non-healthy in the ledger until the next observation reclassifies it.
 # The availability rollup must count released seats (so a past-wall seat
 # does not silently depress seat_availability), the comeback-overdue gauge
@@ -1303,6 +1303,21 @@ fixtures = {
         "http_status": 429, "health_class": "rate_limited", "seat_dead": False,
         "usable_at": PAST, "bench_until": None, "consecutive_failure_count": 15,
     },
+    # 10. fleet-ops#3891: the LIVED phantom key, exercised directly —
+    #     openrouter/deepseek/deepseek-v4-pro-0813 (provider=openrouter,
+    #     model=deepseek/deepseek-v4-pro-0813) past-wall + quota_exhausted.
+    #     It was retired 2026-09-06 via alert-repair and was NEVER a
+    #     seat-caps.json models key, so the #3661 guard must exclude it the
+    #     same way it excludes the synthetic phantom above; the 3 real
+    #     past-wall seats (cb_n==3) must still count with this fixture
+    #     present. No consecutive_failure_count: it stays outside the
+    #     [10, 25) never-released window, so nr_n==1 below also proves the
+    #     lived phantom does not leak into that collector either.
+    "openrouter__deepseek_deepseek-v4-pro-0813.json": {
+        "provider": "openrouter", "model": "deepseek/deepseek-v4-pro-0813",
+        "http_status": 402, "health_class": "quota_exhausted", "seat_dead": False,
+        "usable_at": PAST, "bench_until": None,
+    },
 }
 for name, body in fixtures.items():
     (Path(seat_dir) / name).write_text(json.dumps(body))
@@ -1350,7 +1365,15 @@ assert not any("muse-spark" in i for i in ids), "corpse leaked into comeback"
 # its wall is expired (fleet-ops#3661 SEAT-KEY-INVALID consistency).
 assert not any("phantom-gone-free" in i for i in ids), \
     "phantom seat key leaked into comeback-overdue"
+# fleet-ops#3891: the LIVED phantom — provider=openrouter,
+# model=deepseek/deepseek-v4-pro-0813 (past-wall, quota_exhausted; retired
+# 2026-09-06 and never a seat-caps.json models key) — is excluded by the
+# same #3661 guard, while the 3 real past-wall seats still count (cb_n==3
+# above stays 3 with this fixture present).
+assert "openrouter__deepseek/deepseek-v4-pro-0813" not in ids, \
+    f"lived phantom key (fleet-ops#3891) leaked into comeback-overdue: {ids}"
 print("OK: _read_comeback_overdue counts past-wall seats, excludes bench/test/corpse/mid-cycle + phantom keys")
+print("OK: lived phantom openrouter/deepseek/deepseek-v4-pro-0813 excluded, 3 real past-wall seats still count (fleet-ops#3891)")
 
 # --- _read_never_released over the scratch ledger ---
 # The phantom fixture has cfc=15 (inside the [10, 25) never-released window) as
@@ -1414,7 +1437,7 @@ PY
 # 16. fleet-ops#2738: healthy-but-parked seat visibility metric.
 #     A seat whose ledger is healthy (health_class=healthy, seat_dead=false)
 #     but whose model cap in seat-caps.json is 0 is silently costing
-#     throughput — pick_seat skips it every tick while the seat-availability
+#     throughput — pick-seat skips it every tick while the seat-availability
 #     SLO burns. The devin/glm-5-2 restore lapsed this way (ledger healthy,
 #     cap 0 for 3+ days, no metric surfaced it). _read_healthy_cap0 must
 #     count exactly those seats: a healthy ledger + cap-0 config -> 1;
@@ -1515,7 +1538,7 @@ caps = m._seat_caps_model_cap_map()
 assert caps["devin/glm-5-2"] == 0, caps
 assert caps["devin/swe-1-7"] == 0, caps
 assert caps["ollama/deepseek-v4-flash:0731"] == 2, caps
-# Unlisted model defaults to 0 (mirrors seat-lib model_cap).
+# Unlisted model defaults to 0 (mirrors seatlib model_cap).
 assert caps.get("devin/unlisted-model", 0) == 0, caps
 print("OK: _seat_caps_model_cap_map parses int + object + unlisted->0")
 PY
@@ -1718,7 +1741,7 @@ bash "$here/fleet-visitor-probe.test.sh" || fail "fleet-visitor-probe tests fail
 #     re-writes the ledger as health_class=healthy on a 200 OK, but the
 #     wrapper's spawn-bench marker (written for an empty run / no-op /
 #     spawn-fail) persists in the same directory. The census said
-#     "healthy" while pick_seat said "no usable seat" — fleet-ops#2493
+#     "healthy" while pick-seat said "no usable seat" — fleet-ops#2493
 #     closed that gap. The seat MUST drop out of the availability rollup
 #     while the bench is in the future, and return when the bench expires.
 # =========================================================================
@@ -1828,7 +1851,7 @@ print("OK: malformed / garbage spawn-bench does not gate the rollup")
 # healthy the moment the seat-health extension wrote a NEWER false-healthy
 # 200 to the ledger (after_provider_response carries status+headers only,
 # never the rc — an rc=1 spawn failure reads as a healthy 200). The bench
-# overlay held it out of pick_seat, but the ledger "re-offered" it on the
+# overlay held it out of pick-seat, but the ledger "re-offered" it on the
 # count/availability side. Both fences now demote the effective ledger class.
 #
 # Scenario E — corpse fence: marker seat_dead=true (chronic spawn_fail,
@@ -2515,7 +2538,7 @@ assert j["devin/glm-5-2"]["cost_per_session"] == 0.10
 # opencode/mimo-v2.5-free: 10 of 20 sessions at 0.20 -> 0.10.
 assert abs(result["opencode/mimo-v2.5-free"]["cost_per_session"] - 0.10) < 1e-9
 # devin/swe-1-7 sessions carry no usage.cost -> 0.0 (the value floor
-# 0.001 is applied in pick_seat, not in the ledger).
+# 0.001 is applied in pick-seat, not in the ledger).
 assert result["devin/swe-1-7"]["cost_per_session"] == 0.0
 assert result["opencode/nemotron-3.5-lightning-free"]["cost_per_session"] == 0.0
 print("OK: seat-yield ledger carries rolling cost_per_session (fleet-ops#3323)")
@@ -2760,6 +2783,71 @@ with tempfile.TemporaryDirectory() as td:
 PY
 
 ok "fleet-ops#3231: fleet_observe_to_close_total{reason} emitted (missing/legit/wrong/unparseable)"
+
+# =========================================================================
+# 18b. fleet-ops#5785: fleet_deploy_fault_* gauges
+# lifecycle-label-sweep.json feeds the closed-without-green tripwire (must
+# be 0) and the labeled count; merged-pr-close.json feeds gate_blocked.
+# Missing/unparseable files emit 0 — never crash, never false-fire.
+# =========================================================================
+python3 - "$exporter" <<'PY' || fail "deploy-fault metric emission failed"
+import importlib.util, json, sys, tempfile
+from pathlib import Path
+def load(p, name):
+    spec = importlib.util.spec_from_file_location(name, p)
+    m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
+    return m
+m = load(sys.argv[1], "fme")
+
+# 1. Missing files -> all three 0, HELP/TYPE once each.
+with tempfile.TemporaryDirectory() as td:
+    m.LIFECYCLE_SWEEP_JSON = Path(td) / "missing-sweep.json"
+    m.MERGED_PR_CLOSE_JSON = Path(td) / "missing-close.json"
+    lines = []
+    m._emit_deploy_fault_gate(lines)
+    out = "\n".join(lines)
+    for name in ("fleet_deploy_fault_closed_without_green",
+                 "fleet_deploy_fault_gate_blocked",
+                 "fleet_deploy_fault_labeled"):
+        assert out.count(f"# HELP {name}") == 1, out
+        assert out.count(f"# TYPE {name}") == 1, out
+        assert f"{name} 0" in out, out
+    print("OK: missing summaries -> all three gauges 0, HELP/TYPE once")
+
+# 2. Real counts land — including a nonzero tripwire (the 0509#2662 class:
+#    a deploy-fault issue the sweep found closed without a green run).
+with tempfile.TemporaryDirectory() as td:
+    sweep = Path(td) / "lifecycle-label-sweep.json"
+    sweep.write_text(json.dumps({
+        "deploy_fault_closed_without_green": 1,
+        "deploy_fault_labeled": 2,
+    }))
+    close = Path(td) / "merged-pr-close.json"
+    close.write_text(json.dumps({"deploy_fault_gate_blocked": 1}))
+    m.LIFECYCLE_SWEEP_JSON = sweep
+    m.MERGED_PR_CLOSE_JSON = close
+    lines = []
+    m._emit_deploy_fault_gate(lines)
+    out = "\n".join(lines)
+    assert "fleet_deploy_fault_closed_without_green 1" in out, out
+    assert "fleet_deploy_fault_labeled 2" in out, out
+    assert "fleet_deploy_fault_gate_blocked 1" in out, out
+    print("OK: nonzero tripwire + labeled + gate_blocked emitted faithfully")
+
+# 3. Unparseable file -> 0, no crash.
+with tempfile.TemporaryDirectory() as td:
+    bad = Path(td) / "bad.json"
+    bad.write_text("{not json")
+    m.LIFECYCLE_SWEEP_JSON = bad
+    m.MERGED_PR_CLOSE_JSON = bad
+    lines = []
+    m._emit_deploy_fault_gate(lines)
+    out = "\n".join(lines)
+    assert "fleet_deploy_fault_closed_without_green 0" in out, out
+    print("OK: unparseable summaries -> 0 (no crash)")
+PY
+
+ok "fleet-ops#5785: fleet_deploy_fault_* gauges emitted (missing/real/unparseable)"
 
 # =========================================================================
 # fleet-ops#3301: cap=0 credentials_bad corpses do not page as dead-cred.
@@ -4039,15 +4127,15 @@ grep -q "severity: critical" <<<"$oomd_block" \
   || fail "FleetOomdKillsHigh must be severity=critical (repair-dispatch route, not phone page)"
 grep -q "service: fleet" <<<"$oomd_block" \
   || fail "FleetOomdKillsHigh must carry service=fleet"
-grep -q "ram_gb_per_worker" <<<"$oomd_block" \
-  || fail "FleetOomdKillsHigh description must name ram_gb_per_worker (the live charge to raise)"
-grep -q "2.0" <<<"$oomd_block" \
-  || fail "FleetOomdKillsHigh description must name the 2.0 raise target"
+grep -q "fleet-ops#4891" <<<"$oomd_block" \
+  || fail "FleetOomdKillsHigh description must name the per-worker memory follow-through (fleet-ops#4891)"
+grep -q "MemoryMax" <<<"$oomd_block" \
+  || fail "FleetOomdKillsHigh description must name the per-unit MemoryMax lever"
 # Must NOT be severity=page (only RepairDispatchDown pages).
 if grep -q "severity: page" <<<"$oomd_block"; then
   fail "FleetOomdKillsHigh must NOT be severity=page (only RepairDispatchDown pages)"
 fi
-ok "fleet-ops#4164: FleetOomdKillsHigh rule shape (expr, severity=critical, names ram_gb_per_worker 2.0 raise)"
+ok "fleet-ops#4164: FleetOomdKillsHigh rule shape (expr, severity=critical, names MemoryMax + the #4891 per-worker memory follow-through, fleet-ops#4263)"
 
 # =========================================================================
 # fleet-ops#4118: worktree reaper gauge family. The reaper

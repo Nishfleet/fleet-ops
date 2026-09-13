@@ -4,16 +4,21 @@ StartLimitIntervalSec=1h
 StartLimitBurst=3
 
 [Service]
-Environment=WORKDIR=/home/nish/workspaces/tooling/fleet-ops-deploy
+# fleet-ops#6252: judge packets are read from agent-state and reports are
+# written to cron-output — no repo is needed, so the cwd is the job's scratch
+# dir, never a deploy checkout (a run there dirties tracked files and blocks
+# merge-to-live). '-' prefix + ExecStartPre mkdir = self-provisioning.
+Environment=WORKDIR=/home/nish/workspaces/agent-state/fable-check
 Environment=LOG_DIR=/home/nish/workspaces/agent-state/cron-output
 Environment=PROMPTS_DIR=/home/nish/workspaces/agent-state/fleet-landing-watch
 Environment=PI_BIN=/home/nish/.local/bin/pi
-WorkingDirectory=/home/nish/workspaces/tooling/fleet-ops-deploy
+WorkingDirectory=-/home/nish/workspaces/agent-state/fable-check
 Type=oneshot
 Environment=HOME=/home/nish
 Environment=PATH=/home/nish/.local/bin:/usr/local/bin:/usr/bin:/bin
 Environment=XDG_RUNTIME_DIR=/run/user/1000
 Environment=HERMES_OUTBOUND_CLASSES=MONEY-BOUNDARY|LEGAL-BOUNDARY|PRODUCT-DIRECTION|CUSTOMER-DATA|CREDENTIAL-BOUNDARY|ONE-SHOT-PUBLIC-ACTION|daily-digest|weekly-digest|evening-highlights-digest|fable-check|fleet-landing-watch
+ExecStartPre=/usr/bin/mkdir -p /home/nish/workspaces/agent-state/fable-check
 ExecStart=/home/nish/.local/bin/agent-cron-run fable-check
 Restart=on-failure
 RestartSec=900

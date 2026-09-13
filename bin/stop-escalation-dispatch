@@ -6,7 +6,7 @@
 # the daily-sweep will re-trigger it.  What it does do is:
 #
 #   1. Pick a healthy, non-rate-limited, CAPABLE seat from the ladder via
-#      pick_seat (need_capable=1).  The SENIOR AUDITOR drives tools (reads
+#      pick-seat (need_capable=1).  The SENIOR AUDITOR drives tools (reads
 #      files, runs commands, dispatches packets), so a tools=0 / flash /
 #      local seat is functionally dead for it and must never be selected
 #      (fleet-ops#1354).  A rate_limited / retryable=true / dead=false seat
@@ -21,7 +21,7 @@
 #      exits 0 so the unit stays active-and-quiet; the next STOP-REASON change
 #      or daily sweep still retries.  A rc=0/no-block dispatch
 #      (HTTP-200 with empty body — the tools=0 dead-seat class) ALSO benches
-#      the seat via mark_seat_spawn_fail so pick_seat rotates to the next
+#      the seat via mark_seat_spawn_fail so pick-seat rotates to the next
 #      capable seat on the next trip/sweep, instead of re-picking the same
 #      dead seat forever (fleet-ops#1354).  SIGTERM (143) / SIGKILL
 #      (137) / GNU timeout (124) are KILL-RETRY, not DISPATCH-NO-BLOCK. After
@@ -86,9 +86,9 @@ DRY=${STOP_ESCALATION_DRY_RUN:-0}
 # should finish well inside this window; runs that hang are the failure mode.
 AUDITOR_TIMEOUT_SEC=${STOP_ESCALATION_AUDITOR_TIMEOUT:-1380}
 
-# Seat ladder.  pi-packet/seat-lib.sh is the fleet's canonical seat picker.
-SEAT_LIB="${PI_PACKET_SEAT_LIB:-$HOME/.local/lib/pi-packet/seat-lib.sh}"
-# shellcheck source=../lib/seat-lib.sh source-path=SCRIPTDIR
+# Seat ladder.  pi-packet/litellm-seat.sh is the fleet's canonical seat picker.
+SEAT_LIB="${PI_PACKET_SEAT_LIB:-$HOME/.local/lib/pi-packet/litellm-seat.sh}"
+# shellcheck source=../lib/litellm-seat.sh source-path=SCRIPTDIR
 source "$SEAT_LIB"
 
 ts() { date -u +%FT%TZ; }
@@ -249,22 +249,21 @@ fi
 # ---------------------------------------------------------------------------
 # Seat selection.  Defect #2 from fleet-ops#34: a rate_limited / retryable=true
 # / dead=false seat is a lane fault, not a Nish escalation.  Use the same
-# pick_seat ladder the workers use.  Only when every usable seat is walled does
+# pick-seat ladder the workers use.  Only when every usable seat is walled does
 # the ladder return empty -- that is the real "fully walled ladder" signal.
-# fleet-ops#2661: escalate-lane 503-storm isolation.  pick_seat skips a
+# fleet-ops#2661: escalate-lane 503-storm isolation.  pick-seat skips a
 # provider with >=2 seats recently in overload_bench ONLY when
 # FLEET_ESCALATION_WEDGE_CHECK=1 -- the AUDITOR must never be dispatched into
 # the storm that just killed the workers.  Workers (unset) keep per-seat
-# routing only.  The gate env is exported here so the same pick_seat ladder
+# routing only.  The gate env is exported here so the same group route
 # serves both classes without changing worker behaviour.
 export FLEET_ESCALATION_WEDGE_CHECK=1
-pick_seat_with_retry() {
+senior_seat_with_retry() {
   local tried_file="$1"
   local seat
-  # need_capable=1: the SENIOR AUDITOR drives tools, so a tools=0 / flash /
-  # local seat is functionally dead for it and must never be selected
-  # (fleet-ops#1354).
-  seat=$(pick_seat "" "" 1 "$tried_file" 2>/dev/null || true)
+  # Senior auditor group. Tests may stub litellm_seat to honour
+  # tried_file as a second argument.
+  seat=$(litellm_seat "senior" "$tried_file" 2>/dev/null || true)
   printf '%s' "$seat"
 }
 
@@ -273,7 +272,7 @@ mkdir -p "$TRIED_DIR"
 TRIED_FILE="$TRIED_DIR/$hash"
 : > "$TRIED_FILE"  # fresh hash -> fresh tried set
 
-seat=$(pick_seat_with_retry "$TRIED_FILE")
+seat=$(senior_seat_with_retry "$TRIED_FILE")
 if [ -z "$seat" ]; then
   # fleet-ops#623: a fully-walled ladder is a money/billing escalation
   # (Nish's alone), not a unit failure.  Exit 0 so the unit is
@@ -442,13 +441,13 @@ if [ "$pi_rc" -ne 0 ] || [ "$has_block" -eq 0 ]; then
     # fleet-ops#623: bench the seat on EVERY failed dispatch, not only the
     # rc=0/no-block class.  The live failure was a seat returning HTTP 402
     # "Insufficient funds" (pi_rc=1): the #1354 fix only benched rc=0 seats,
-    # so a 402/429/5xx seat was never benched, pick_seat re-offered it every
+    # so a 402/429/5xx seat was never benched, pick-seat re-offered it every
     # trip, and the unit tight-looped (6 failures / 2 min, each spawning a
     # fresh pi process).  Mirror the pi-issue-run ladder: a quota/cap wall
     # gets a long bench (mark_seat_quota_bench), a 503/overload wall gets an
     # overload bench, and EVERYTHING ELSE (rc=0 no-block, rc=1 billing/402,
     # mid-session death, generic non-zero) gets a short spawn-fail bench so
-    # pick_seat rotates to the next capable seat on the next trip.  A long
+    # pick-seat rotates to the next capable seat on the next trip.  A long
     # bench that fails open (no reset window AND no provider default) falls
     # through to the spawn-fail bench so the seat still rotates.  Best-effort:
     # a write failure must not block the DISPATCH-NO-BLOCK record or the

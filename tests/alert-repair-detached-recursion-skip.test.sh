@@ -35,7 +35,7 @@ mkdir -p "$scratch/packets" "$scratch/seats" "$scratch/mock-bin" \
 
 NOW=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 
-# Healthy fake seat so _pick_seat has something to offer the real alert.
+# Healthy fake seat so _pick-seat has something to offer the real alert.
 cat >"$scratch/pi-seat-health.json" <<EOF
 {"provider":"minimax","model":"MiniMax-M3","health_class":"healthy","observed_at":"$NOW"}
 EOF

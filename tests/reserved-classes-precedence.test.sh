@@ -128,7 +128,24 @@ for t in /home/nish/.claude/CLAUDE.md /home/nish/.codex/AGENTS.md; do
     fail "live surface $t restates the old divergent reserved-classes list — point at global-standing-rules.md instead"
   fi
   # Any 'reserved classes' prose that enumerates without naming the vault source is drift.
-  if grep -i "reserved classes" "$t" | grep -qv "global-standing-rules.md"; then
+  # Wrap-aware (fleet-ops#6031): a mention and its vault pointer may wrap
+  # across the bullet's indented continuation lines (the house wrap
+  # convention in the live targets), so each mention is judged joined with
+  # its wrapped lines — a pointer on the next wrapped line satisfies the
+  # check; a mention with no pointer in its own bullet is still drift.
+  if ! awk '
+    function flush() {
+      if (logical != "" \
+          && tolower(logical) ~ /reserved classes/ \
+          && logical !~ /global-standing-rules\.md/) {
+        drift = 1
+      }
+      logical = ""
+    }
+    /^[ \t]/ && logical != "" { logical = logical " " $0; next }
+    { flush(); logical = $0 }
+    END { flush(); exit drift + 0 }
+  ' "$t"; then
     fail "live surface $t names reserved classes without pointing at global-standing-rules.md"
   fi
   echo "OK: $t carries no divergent reserved-classes restatement"

@@ -329,4 +329,29 @@ if [[ -d "$HOME/workspaces/agent-state" ]]; then
   ok "live band-dir scan clean (surge reverted, canonical present)"
 fi
 
+# --- fleet-ops#5782: real-file .path units are classified (2026-09-12 pin)
+# The 2026-09-12 drill leak shipped throwaway .path watchers (btdrill-5471
+# and three resilience-drill-stub-*-probe copies) that stayed loaded after
+# their issues closed. Pin BOTH sides of the fix: a real-file .path whose
+# stem is NOT on the allowlist is a hunt hit (kind=unit, evidence names the
+# .path file), and the SAME shape whose stem IS registered register-while-
+# live (the seat_sentinel proof stubs, #5106) stays silent — exactly the
+# machinery live during the daily drill's seconds. --unit-dir drives the
+# real scanner; --band-dir /nonexistent keeps the #5779 band scan out.
+path_ud="$(mktemp -d)"
+printf '[Path]\nPathChanged=/tmp/btdrill-watch/sentinel\nUnit=btdrill-5471.service\n' \
+  >"$path_ud/btdrill-5471.path"
+printf '[Path]\nPathChanged=/tmp/sr-sentinel-scratch/.no-usable-seat\n' \
+  >"$path_ud/resilience-drill-stub-seat-sentinel.path"
+out=$("$gate" hunt --allowlist "$allowlist" --unit-dir "$path_ud" --band-dir /nonexistent)
+rm "$path_ud"/*.path
+rmdir "$path_ud"
+jq -e '[.findings[] | select(.kind=="unit" and .unit=="btdrill-5471")] | length == 1' <<<"$out" >/dev/null \
+  || fail "hunt must classify the real-file btdrill-5471.path as an unregistered unit: $out"
+jq -e '[.findings[] | select(.unit=="btdrill-5471")][0].evidence | test("btdrill-5471[.]path$")' <<<"$out" >/dev/null \
+  || fail "finding evidence must name the .path file itself: $out"
+jq -e '[.findings[].unit] | index("resilience-drill-stub-seat-sentinel") == null' <<<"$out" >/dev/null \
+  || fail "registered register-while-live drill stub .path must stay silent: $out"
+ok "hunt classifies unregistered real-file .path units, registered ones stay silent (fleet-ops#5782)"
+
 echo "OK: machinery-authorization-gate #5779 regression: stale surge precedence bands are hunt hits"

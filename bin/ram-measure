@@ -23,7 +23,7 @@
 # Per-task-weight cap: NOT implemented. The single 4.8 GB peak was a
 # failure signature (the unit's exit recorded that peak), not a class of
 # task. n=14: median 1.28, p95 4.4, max 4.8 GB — the tail is one data
-# point, not a population. task_weight() in seat-lib.sh distinguishes
+# point, not a population. task_weight() in litellm-seat.sh distinguishes
 # heavy vs light packets, but the heavy class has not demonstrated a
 # need for a higher cap (live heavy workers measure 0.8 GB). Revisit if
 # the rolling distribution ever shows heavy-class p95 > 3 GB sustained.

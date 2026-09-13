@@ -56,9 +56,9 @@ EOF
 chmod +x "$scratch/bin/worker-token"
 export WORKER_TOKEN_BIN="$scratch/bin/worker-token"
 
-# Stub seat-lib that uses the real seat_log (so it writes to stderr), forces
+# Stub seatlib that uses the real seat_log (so it writes to stderr), forces
 # a specific seat, and avoids systemd/ledger dependencies.
-stub_lib="$scratch/seat-lib.sh"
+stub_lib="$scratch/seatlib.sh"
 cat >"$stub_lib" <<EOF
 # shellcheck shell=bash
 export HOME="$scratch/home"
@@ -66,10 +66,11 @@ export XDG_RUNTIME_DIR="$scratch/xdg"
 export PI_PACKET_STATE="$state_dir"
 export PI_SEAT_HEALTH_LEDGER_DIR="$ledger_dir"
 mkdir -p "\$PI_PACKET_STATE" "\$XDG_RUNTIME_DIR"
-# shellcheck source=../lib/seat-lib.sh source-path=SCRIPTDIR
-source "$repo_root/lib/seat-lib.sh"
+# shellcheck source=../lib/litellm-seat.sh source-path=SCRIPTDIR
+source "$repo_root/lib/litellm-seat.sh"
 task_weight() { echo "light"; }
-pick_seat() { printf 'devin\tglm-5-2\n'; return 0; }
+litellm_seat() { printf 'devin\tglm-5-2\n'; return 0; }
+litellm_seat() { printf 'litellm\tworker-cheap\n'; return 0; }
 register_active_seat() { :; }
 clear_active_seat() { :; }
 is_spawn_etimeout() { return 1; }

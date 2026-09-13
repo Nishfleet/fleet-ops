@@ -3,14 +3,11 @@
 #
 # Proves the "never decide by vibes — always measure" canary (fleet-ops#538)
 # offline:
-#   1. Clean: ram_gb_per_worker cited with a dated bin/... measurement and
-#      every provider cap carries a dated measurement citation -> exit 0,
-#      no filing.
-#   2. Gate: ram_gb_per_worker missing -> exit 1, LOUD.
-#   3. Gate: ram_gb_per_worker cited with a date but NO bin/ measurement
-#      command (only a vibe phrase) -> exit 1, LOUD.
-#   4. Gate: ram_gb_per_worker citation has a bin/ command but no date ->
-#      exit 1, LOUD.
+#   1. Clean: every provider cap carries a dated measurement citation ->
+#      exit 0, no filing.
+#   (fleet-ops#4263 P3b retired the ram_gb_per_worker GATE — the key and its
+#    hand-tuned governor are deleted; per-worker RAM is bounded by systemd
+#    MemoryMax + oomd. Old cases 2-4 removed; numbering continues at 5.)
 #   5. Detector: a provider cap>0 with no citation -> exit 0, files a
 #      ticket (observe-to-open), tick stays green.
 #   6. Detector: a provider cap>0 cited only by a top-level _comment_*
@@ -128,35 +125,12 @@ JSON
 SEAT_CAPS_JSON="$clean_caps" FLEET_VIBES_CANARY_FILE=1 "$bin" >/tmp/vibes1.log 2>&1 \
   || fail "clean fixture must exit 0 (rc=$?)"
 [[ -s "$gh_creates" ]] && fail "clean fixture must not file (filed=$(cat "$gh_creates"))"
-ok "1. clean fixture: gate + detectors clean, exit 0, no filing"
+ok "1. clean fixture: detectors clean, exit 0, no filing"
 
-# 2. Gate: ram_gb_per_worker missing -> exit 1.
-no_ram="$scratch/no_ram.json"
-jq 'del(.ram_gb_per_worker)' "$clean_caps" >"$no_ram"
-SEAT_CAPS_JSON="$no_ram" FLEET_VIBES_CANARY_FILE=0 "$bin" >/tmp/vibes2.log 2>&1 \
-  && fail "missing ram_gb_per_worker must exit 1"
-grep -q "VIBES-GATE-VIOLATION" "$triage" || fail "missing ram must be LOUD in triage"
-ok "2. gate: missing ram_gb_per_worker -> exit 1, LOUD"
-
-# 3. Gate: ram citation has a date but NO bin/ measurement command -> exit 1.
-vibe_ram="$scratch/vibe_ram.json"
-jq '._comment_ram_governor = "ram_gb_per_worker=1.5 (2026-08-26). Feels right for a typical worker."' \
-  "$clean_caps" >"$vibe_ram"
-: >"$triage"
-SEAT_CAPS_JSON="$vibe_ram" FLEET_VIBES_CANARY_FILE=0 "$bin" >/tmp/vibes3.log 2>&1 \
-  && fail "vibe-only ram citation must exit 1"
-grep -q "VIBES-GATE-VIOLATION" "$triage" || fail "vibe ram must be LOUD"
-ok "3. gate: ram citation with date but no bin/ command -> exit 1 (a vibe is not a measurement)"
-
-# 4. Gate: ram citation has bin/ command but no date -> exit 1.
-nodate_ram="$scratch/nodate_ram.json"
-jq '._comment_ram_governor = "ram_gb_per_worker=1.5. Re-measure with bin/ram-measure (n=14, p95 4.4 GB)."' \
-  "$clean_caps" >"$nodate_ram"
-: >"$triage"
-SEAT_CAPS_JSON="$nodate_ram" FLEET_VIBES_CANARY_FILE=0 "$bin" >/tmp/vibes4.log 2>&1 \
-  && fail "undated ram citation must exit 1"
-grep -q "VIBES-GATE-VIOLATION" "$triage" || fail "undated ram must be LOUD"
-ok "4. gate: ram citation with bin/ command but no date -> exit 1"
+# (Retired with P3b fleet-ops#4263: the old cases 2-4 gated on
+#  ram_gb_per_worker — a missing key or an uncited/vibe value used to
+#  exit 1 LOUD. The hand-tuned RAM charge is deleted; admission is
+#  MemoryMax + oomd, so there is no key left to gate on.)
 
 # 5. Detector: provider cap>0 with no citation -> exit 0, files.
 uncited_cap="$scratch/uncited_cap.json"
@@ -291,7 +265,7 @@ SEAT_CAPS_JSON="$bad_json" FLEET_VIBES_CANARY_FILE=0 "$bin" >/tmp/vibes16b.log 2
 grep -q "VIBES-CANARY-BROKEN" "$triage" || fail "unparseable seat-caps must be LOUD"
 ok "15. broken: missing / unparseable seat-caps -> exit 1, LOUD"
 
-# 16. Production seat-caps: gate + detectors both clean (exit 0, no filing).
+# 16. Production seat-caps: detectors clean (exit 0, no filing).
 #     orcarouter was the known uncited cap when this drill was authored
 #     (PR #704, 2026-08-27); it now carries a dated cap=0 reason
 #     (fleet-ops#1456 / #880) so production is fully cited.
@@ -300,13 +274,11 @@ if [[ -f "$prod_caps" ]]; then
   : >"$gh_creates"
   echo '[]' >"$gh_open"
   SEAT_CAPS_JSON="$prod_caps" FLEET_VIBES_CANARY_FILE=1 "$bin" >/tmp/vibes17.log 2>&1 \
-    || fail "production seat-caps must exit 0 (rc=$?) — gate + detectors clean"
-  grep -q "GATE: ram_gb_per_worker" /tmp/vibes17.log \
-    || fail "production gate must pass (ram_gb_per_worker measured)"
+    || fail "production seat-caps must exit 0 (rc=$?) — detectors clean"
   grep -q "DETECTOR: clean" /tmp/vibes17.log \
     || fail "production detector must be clean (every behaviour-driving constant cited)"
   [[ -s "$gh_creates" ]] && fail "production seat-caps must not file (filed=$(cat "$gh_creates"))"
-  ok "16. production seat-caps: gate + detectors clean, exit 0, no filing"
+  ok "16. production seat-caps: detectors clean, exit 0, no filing"
 else
   ok "16. production seat-caps not present (hosted CI) — skip"
 fi
@@ -321,4 +293,4 @@ grep -q 'vibes_canary_rc' "$tier1" && \
   || fail "heartbeat-tier1 must propagate vibes_canary_rc to exit"
 ok "17. heartbeat-tier1 wires the canary and propagates fail-loud"
 
-echo "OK: fleet-vibes-canary: gate, detector, dedup, cap0-no-marker, cap, broken, production, heartbeat wiring"
+echo "OK: fleet-vibes-canary: detector, dedup, cap0-no-marker, cap, broken, production, heartbeat wiring"

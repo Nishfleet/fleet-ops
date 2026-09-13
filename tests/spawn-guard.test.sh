@@ -26,6 +26,9 @@ bash "$here/fleet-spawn-guard-fs-sweep.test.sh"
 # and all of `stop`), with a dated drasl-et-al allowlist; the fleet-unit
 # rule gets the same flags-gap fix.
 bash "$here/fleet-spawn-guard-slice-lifecycle.test.sh"
+# fleet-ops#5902: worker toolchain ban (tsc -b / vitest --coverage / npm run
+# typecheck|test:coverage) is mechanical, gated on the pi-issue@ cgroup.
+bash "$here/spawn-guard-worker-toolchain.test.sh"
 # fleet-ops#3111 (part 5): the no-local-bin-clobber lint proves no test
 # writes into the real ~/.local/bin / ~/.local/lib/node_modules / ~/.pi
 # (the 2026-09-03 clobber shape). Hosted here with the other spawn-guard

@@ -274,7 +274,7 @@ while IFS=$'\t' read -r pid pclass pcap mcount; do
             "penny-for-speed: free provider $pid (cap=$pcap, $mcount model(s)) missing from free_providers_in_order"
         file_finding "$pid" "missing-from-free-order" \
             "penny-for-speed: $pid missing from free_providers_in_order" \
-            "config/seat-caps.json lists \`${pid}\` as free, cap=${pcap}, with ${mcount} allowlisted model(s), but it is not in \`free_providers_in_order\`. The standing rule (Nish 2026-08-18) puts free lanes at the front of every ladder and paid lanes as small-cap spillover behind them (penny-for-speed). Add \`${pid}\` to free_providers_in_order so pick_seat tries it before any metered lane."
+            "config/seat-caps.json lists \`${pid}\` as free, cap=${pcap}, with ${mcount} allowlisted model(s), but it is not in \`free_providers_in_order\`. The standing rule (Nish 2026-08-18) puts free lanes at the front of every ladder and paid lanes as small-cap spillover behind them (penny-for-speed). Add \`${pid}\` to free_providers_in_order so the router tried it before any metered lane."
         violations=$((violations + 1))
     fi
 done < <(jq -r '

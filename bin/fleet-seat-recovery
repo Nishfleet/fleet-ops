@@ -13,7 +13,7 @@
 #   A systemd .path unit is event-driven: any write to the seats/ dir
 #   (a seat-health ledger update) wakes the service. The bin then:
 #     1. Snapshot the current "no usable seat" verdict from the ledger
-#        (seat-lib.sh seat_usable, the same authority pick_seat uses).
+#        (litellm-seat.sh seat_usable, the same authority pick-seat uses).
 #     2. Compare with the last persisted verdict (state file).
 #     3. On the NO-USABLE-SEAT -> seat-available transition, start
 #        pi-intake@<repo>.timer / pi-intake@<repo>.service for every
@@ -21,7 +21,7 @@
 #
 # Time-based expiry (a bench_until that passes while nobody writes a new
 # ledger file) is handled by the HEARTBEAT'S OWN block: the fleet-heartbeat
-# tick already runs seat_usable pick_seat paths every 30 min, and this
+# tick already runs the usable-seat paths every 30 min, and this
 # detector also re-arms itself on every service start. The .path watcher
 # is the fast path for the common case (a seat-health write marks the
 # seat usable); the heartbeat is the slow-path floor.
@@ -44,7 +44,7 @@
 #   FLEET_SEAT_RECOVERY_DRY_RUN  1 = print the systemctl argv, don't run
 #   FLEET_SEAT_RECOVERY_SYSTEMCTL systemctl path (tests)
 #   FLEET_SEAT_RECOVERY_NOW      ISO timestamp override (tests)
-#   PI_SEAT_HEALTH_LEDGER_DIR    passed through to seat-lib.sh
+#   PI_SEAT_HEALTH_LEDGER_DIR    passed through to litellm-seat.sh
 #
 # Exit: 0 always (a path trigger that finds no transition is not a failure;
 #       the unit is oneshot, failure only on internal error).
@@ -66,17 +66,17 @@ DRY="${FLEET_SEAT_RECOVERY_DRY_RUN:-0}"
 SYSTEMCTL="${FLEET_SEAT_RECOVERY_SYSTEMCTL:-systemctl}"
 NOW_ISO="${FLEET_SEAT_RECOVERY_NOW:-}"
 
-# Seat-lib (the routing authority). Same pick_seat/seat_usable the workers
+# The routing helpers (litellm-seat). Same usable-seat verdict the workers
 # use, so this detector's verdict is exactly what a worker would conclude.
-SEAT_LIB="${PI_PACKET_SEAT_LIB:-$HOME/.local/lib/pi-packet/seat-lib.sh}"
-# shellcheck source=../lib/seat-lib.sh source-path=SCRIPTDIR
+SEAT_LIB="${PI_PACKET_SEAT_LIB:-$HOME/.local/lib/pi-packet/litellm-seat.sh}"
+# shellcheck source=../lib/litellm-seat.sh source-path=SCRIPTDIR
 if [[ -f "$SEAT_LIB" ]]; then
     # shellcheck disable=SC1090
     source "$SEAT_LIB"
 else
     # Repo copy fallback (tests / fresh checkout).
     # shellcheck disable=SC1090
-    source "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/lib/seat-lib.sh"
+    source "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/lib/litellm-seat.sh"
 fi
 
 log() {
@@ -95,37 +95,24 @@ now_epoch() {
 # Does ANY cap-map-allowlisted seat currently rate as usable per the ledger?
 # Returns 0 (usable exists) / 1 (no usable seat).
 #
-# fleet-ops#837: this MUST use seat_usable (the ledger verdict), NOT pick_seat.
-# pick_seat adds an active-capacity check (count_active_on_provider /
+# fleet-ops#837: this MUST use the ledger verdict, not a capacity pick.
+# the old picker added an active-capacity check (count_active_on_provider /
 # count_active_on_seat) that reads the real host's active-seats state. A
 # healthy-but-busy seat then reads as "no usable seat", so the
 # no-usable -> usable transition never fires and seat recovery stays dead.
 # The detector's question is "is the fleet alive per the ledger", not "is
 # there free capacity right now" — a busy seat frees when its worker exits,
 # and intake firing on a healthy fleet is the intended fast path. The
-# allowlist + cap=0 + keystone-only filters mirror pick_seat's volume walk
-# (pick_seat "" "" 0, difficulty=light) so the verdict matches what a
+# allowlist + cap=0 + keystone-only filters mirror the old volume walk
+# (the retired light pick) so the verdict matches what a
 # volume worker would be offered; only the active-capacity check is dropped.
 any_seat_usable() {
-    local key p m p_cap m_cap
-    # Force the cap map load (seat-lib lazy-loads on first pick_seat; we
-    # bypass pick_seat so trigger it explicitly).
-    load_seat_caps 2>/dev/null || true
-    for key in "${!SEAT_MODEL_CAP[@]}"; do
-        p="${key%%/*}"
-        m="${key#*/}"
-        p_cap="${SEAT_PROVIDER_CAP[$p]:-0}"
-        (( p_cap > 0 )) || continue
-        m_cap="${SEAT_MODEL_CAP[$key]:-0}"
-        (( m_cap > 0 )) || continue
-        # Keystone-only providers (cursor) serve keystone/senior-review work
-        # only; the recovery detector fires volume intake, so skip them —
-        # same filter pick_seat applies for difficulty=light.
-        _provider_is_keystone_only "$p" && continue
-        if seat_usable "$p" "$m"; then
-            return 0
-        fi
-    done
+    # P3b: the proxy health endpoint is the alive/dead signal. Ledger
+    # walk / seat_usable retired with the routing library.
+    if declare -F litellm_ready >/dev/null 2>&1; then
+        litellm_ready
+        return
+    fi
     return 1
 }
 

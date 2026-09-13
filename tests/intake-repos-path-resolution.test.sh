@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # tests/intake-repos-path-resolution.test.sh
 #
-# Locks the RESOLUTION ORDER of _intake_repos_path() in lib/seat-lib.sh.
+# Locks the RESOLUTION ORDER of _intake_repos_path() in lib/litellm-seat.sh.
 #
 # The 2026-09-08 fault this pins (fleet-ops#4450 follow-up): the resolver
 # probed "$HOME/workspaces/products/fleet-ops/config/intake-repos.json"
@@ -19,14 +19,18 @@
 # The invariant: a stale sibling checkout can never shadow the config that
 # ships beside the running code, or the checkout the deploy lane maintains.
 #
-# Set SEAT_LIB_UNDER_TEST to point at another copy of seat-lib.sh (used to
+# Set SEAT_LIB_UNDER_TEST to point at another copy of seatlib.sh (used to
 # demonstrate the pre-fix failure).
 
 set -euo pipefail
 
 repo_root=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)
-seat_lib="${SEAT_LIB_UNDER_TEST:-$repo_root/lib/seat-lib.sh}"
-[[ -f "$seat_lib" ]] || { echo "FAIL: seat-lib not found: $seat_lib"; exit 1; }
+seat_lib="${SEAT_LIB_UNDER_TEST:-$repo_root/lib/litellm-seat.sh}"
+[[ -f "$seat_lib" ]] || { echo "FAIL: seatlib not found: $seat_lib"; exit 1; }
+# P3b (fleet-ops#4263): seatlib.sh is now a forwarder that sources
+# litellm-seat.sh from its own directory. Copy both so the forwarder resolves.
+litellm_seat_lib="$(dirname "$seat_lib")/litellm-seat.sh"
+[[ -f "$litellm_seat_lib" ]] || { echo "FAIL: litellm-seat.sh not found: $litellm_seat_lib"; exit 1; }
 
 fails=0
 ok()   { printf 'ok: %s\n' "$1"; }
@@ -69,9 +73,10 @@ probe() {
 
 # --- case 1: installed lib (no co-located config) must reach the deploy
 # checkout, not the stale sibling mirror. This is the live topology:
-# ~/.local/lib/pi-packet/seat-lib.sh has no ../config.
-cp "$seat_lib" "$home/.local/lib/pi-packet/seat-lib.sh"
-out=$(probe "$home/.local/lib/pi-packet/seat-lib.sh" \
+# ~/.local/lib/pi-packet/seatlib.sh has no ../config.
+cp "$seat_lib" "$home/.local/lib/pi-packet/seatlib.sh"
+cp "$litellm_seat_lib" "$home/.local/lib/pi-packet/litellm-seat.sh"
+out=$(probe "$home/.local/lib/pi-packet/seatlib.sh" \
         HOME="$home" FLEET_OPS_CHECKOUT="$home/deploy-clone" FLEET_INTAKE_REPOS_JSON=)
 case "$out" in
   "$home/deploy-clone/config/intake-repos.json|PRODUCT")
@@ -84,9 +89,10 @@ esac
 
 # --- case 2: a lib inside a checkout must read that checkout's own config,
 # even when a stale sibling mirror exists and no FLEET_OPS_CHECKOUT is set.
-cp "$seat_lib" "$tmp/checkout/lib/seat-lib.sh"
+cp "$seat_lib" "$tmp/checkout/lib/litellm-seat.sh"
+cp "$litellm_seat_lib" "$tmp/checkout/lib/litellm-seat.sh"
 printf '%s' "$fresh" > "$tmp/checkout/config/intake-repos.json"
-out=$(probe "$tmp/checkout/lib/seat-lib.sh" HOME="$home" FLEET_INTAKE_REPOS_JSON=)
+out=$(probe "$tmp/checkout/lib/litellm-seat.sh" HOME="$home" FLEET_INTAKE_REPOS_JSON=)
 case "$out" in
   *"$tmp/checkout/"*"|PRODUCT")
     ok "co-located config wins over a stale sibling mirror" ;;
@@ -96,7 +102,7 @@ esac
 
 # --- case 3: the explicit override still beats everything (regression guard).
 printf '%s' "$fresh" > "$tmp/override.json"
-out=$(probe "$home/.local/lib/pi-packet/seat-lib.sh" \
+out=$(probe "$home/.local/lib/pi-packet/seatlib.sh" \
         HOME="$home" FLEET_INTAKE_REPOS_JSON="$tmp/override.json")
 case "$out" in
   "$tmp/override.json|PRODUCT") ok "FLEET_INTAKE_REPOS_JSON override still wins" ;;
@@ -107,7 +113,7 @@ esac
 out=$(env HOME="$home" FLEET_INTAKE_REPOS_JSON="$tmp/override.json" bash -c '
   source "$1" >/dev/null 2>&1 || exit 9
   if repo_is_product fleet-ops 2>/dev/null; then echo PRODUCT; else echo not-product; fi
-  ' _ "$home/.local/lib/pi-packet/seat-lib.sh")
+  ' _ "$home/.local/lib/pi-packet/seatlib.sh")
 [[ "$out" == "not-product" ]] \
   && ok "fleet-ops (no product flag) stays not-product" \
   || fail "fleet-ops must never be a product repo (got: $out)"

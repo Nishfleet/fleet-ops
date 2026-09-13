@@ -146,7 +146,7 @@ fi
 #      Loud + tier-1 fail when stale, so the silent-fail-open regression
 #      can never burn 48h of alert cycles again.
 #  37. AIMD leftover-meter canary (fleet-ops#424). Every tick, prove the
-#      AIMD reader still lives in seat-lib.sh. If the code vanishes and
+#      AIMD reader still lives in litellm-seat.sh. If the code vanishes and
 #      learned-caps-audit.log remains, go LOUD and auto-file so a leftover
 #      meter cannot look like a live control plane. No new unit.
 #
@@ -566,11 +566,13 @@ fi
 #   p<N>/*           -> packet branches
 #   lane*/           -> lane worker branches
 #   revert/          -> auto-revert worker
+#   reconcile/       -> drift-canary hot-patch reconcile PR (fleet-ops#5663);
+#                       keeps auto-merge armed if the canary's own arm failed
 #   dependabot/      -> leave to dependabot policy; we skip
 #
 # We only queue PRs whose headRef starts with claim/issue- or p<digit>/
-# or lane<digit>- or revert/. The full gate proof is `gh pr checks` returning
-# all PASS.
+# or lane<digit>- or revert/ or reconcile/. The full gate proof is
+# `gh pr checks` returning all PASS.
 queued=0
 skipped=0
 log "2. queue pass starting"
@@ -585,7 +587,7 @@ while IFS= read -r repo; do
     # dependabot (handled by its own policy).
     prs_json=$(gh pr list -R "$repo" --state open \
         --json number,headRefName,isDraft,mergeable,title,labels \
-        --jq '[.[] | select((.headRefName | startswith("claim/issue-")) or (.headRefName | test("^(p[0-9]+|lane[0-9]+|revert)/")))]' \
+        --jq '[.[] | select((.headRefName | startswith("claim/issue-")) or (.headRefName | test("^(p[0-9]+|lane[0-9]+|revert|reconcile)/")))]' \
         2>/dev/null) || {
             log "2.  - $repo: gh pr list FAILED — skipping (auth/network?)"
             continue
@@ -1415,7 +1417,7 @@ fi
 #
 # This is a best-effort supply nudge, NOT a fail-loud alarm (that is block
 # 8). The helper exits 2 only on a CONFIG error (missing intake-repos.json
-# / jq / seat-lib); we log its rc and let the helper write its own LOUD
+# / jq / litellm-seat); we log its rc and let the helper write its own LOUD
 # triage line, but we do NOT propagate — a broken refill nudge must not
 # stop PR queuing, orphan reclaim, or the wedge alarm. undersaturation's
 # fail-loud still wins the unit's exit code.
@@ -1510,9 +1512,13 @@ fi
 CADENCE_LIB="${FLEET_BLIND_AUDIT_CADENCE_LIB:-$HOME/.local/lib/pi-packet/blind-audit-cadence.sh}"
 audit_canary_status="ok"
 if [ -f "$CADENCE_LIB" ]; then
-    # shellcheck source=../lib/blind-audit-cadence.sh source-path=SCRIPTDIR
-    source "$CADENCE_LIB"
-    heartbeat_blind_audit_cadence_canary
+    # fleet-ops#5780: the live tick also guards on the SIGTERM-on-TimeoutStartSec
+    # class (status=15/TERM in the 24h journal window). Tests run the canary
+    # standalone without this override, so they stay hermetic.
+    FLEET_BLIND_AUDIT_JOURNAL_CMD="journalctl --user -u fleet-blind-audit.service --since -24h --no-pager" \
+        source "$CADENCE_LIB"
+    FLEET_BLIND_AUDIT_JOURNAL_CMD="journalctl --user -u fleet-blind-audit.service --since -24h --no-pager" \
+        heartbeat_blind_audit_cadence_canary
 else
     audit_canary_status="missing-lib"
     loud "BLIND-AUDIT-CADENCE-OVERDUE" \
@@ -2518,7 +2524,7 @@ fi
 # ============================================================================
 # 37. AIMD LEFTOVER-METER CANARY (fleet-ops#424)
 # ============================================================================
-# Every tick, prove the AIMD reader still lives in seat-lib.sh. If the code
+# Every tick, prove the AIMD reader still lives in litellm-seat.sh. If the code
 # vanishes and learned-caps-audit.log remains, go LOUD and auto-file so a
 # leftover meter cannot look like a live control plane. No new unit.
 AIMD_CANARY_BIN="${FLEET_AIMD_METER_CANARY:-/home/nish/.local/bin/fleet-aimd-meter-canary}"
@@ -2613,7 +2619,7 @@ if require_manifest_helper "$VIBES_CANARY_BIN"; then
         log "40. vibes canary complete"
     else
         vibes_canary_rc=$?
-        log "40. vibes canary FAILED (rc=$vibes_canary_rc) — ram_gb_per_worker is unmeasured or seat-caps is broken; unit will land in --state=failed"
+        log "40. vibes canary FAILED (rc=$vibes_canary_rc) — seat-caps is broken or uncited; unit will land in --state=failed"
     fi
 else
     _req=$?

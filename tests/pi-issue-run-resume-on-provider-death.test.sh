@@ -24,7 +24,7 @@ JSON
 cat >"$SEAT_CAPS_JSON" <<'JSON'
 { "ram_gb_per_worker": 1.5, "free_providers_in_order": ["commandcode", "xkiro"], "providers": { "commandcode": { "cap": 1, "class": "free", "models": { "laguna-s-2.1-free": 1 } }, "xkiro": { "cap": 1, "class": "free", "models": { "deepseek/deepseek-v4-pro": 1 } } } }
 JSON
-export PI_PACKET_SEAT_LIB="$repo_root/lib/seat-lib.sh"
+export PI_PACKET_SEAT_LIB="$repo_root/lib/litellm-seat.sh"
 export FLEET_DEBUG_PLAYBOOK_SESSION_DIR="$scratch/sessions"; mkdir -p "$FLEET_DEBUG_PLAYBOOK_SESSION_DIR"
 CALLS="$scratch/pi.calls"; : >"$CALLS"; export CALLS
 # Stub pi: call 1 = real work (3 tool results in the session) then a mid-run model error, exit 1.
@@ -52,14 +52,14 @@ chmod +x "$stub_bin/pi"; export PI_BIN="$stub_bin/pi"
 inst="fleet-ops-5788r"
 printf 'Implement one GitHub issue: fleet-ops#5788 resume drill.\n' >"$ISSUES_DIR/${inst}.in"
 set +e; bash "$bin" "$inst" >"$scratch/run.out" 2>"$scratch/run.err"; rc=$?; set -e
-[[ "$rc" == "0" ]] || fail "runner must exit 0 after resuming on a second seat (got $rc): $(tail -6 "$scratch/run.err")"
+[[ "$rc" == "0" ]] || fail "runner must exit 0 after resuming the session (got $rc): $(tail -6 "$scratch/run.err")"
 [[ "$(wc -l < "$CALLS")" == "2" ]] || fail "pi must be invoked exactly twice (die, then resume): $(cat "$CALLS")"
 grep -qE '^call=2 .*session=.*first\.jsonl' "$CALLS" || fail "second invocation must pass --session <first session file>: $(cat "$CALLS")"
 grep -qE '^call=2 .*stdin=RESUME' "$CALLS" || fail "second invocation must receive the RESUME prompt on stdin, not the packet: $(cat "$CALLS")"
 p1=$(sed -n '1p' "$CALLS" | grep -oE 'provider=[^ ]+'); p2=$(sed -n '2p' "$CALLS" | grep -oE 'provider=[^ ]+')
-[[ "$p1" != "$p2" ]] || fail "resume must land on a DIFFERENT seat (tried-seats exclusion): $p1 == $p2"
+[[ "$p2" == "provider=litellm" ]] || fail "resume must stay on the LiteLLM proxy (it picks a different deployment via cooldown/fallbacks, fleet-ops#4263): $p1 -> $p2"
 grep -q 'RESUMING session' "$scratch/run.err" || fail "runner must log the in-process resume: $(tail -5 "$scratch/run.err")"
-ok "provider/model mid-run death: session resumed in-process on a different seat, exit 0 (fleet-ops#5788 part 2)"
+ok "provider/model mid-run death: session resumed in-process through the LiteLLM proxy, exit 0 (fleet-ops#5788 part 2)"
 # --- exhaustion: every seat dies the same way -> bounded, then exit 1 (never an unbounded loop)
 : >"$CALLS"; rm -rf "$STATE_DIR/attempts"/* "$FLEET_DEBUG_PLAYBOOK_SESSION_DIR"/* 2>/dev/null || true
 cat >"$stub_bin/pi" <<'STUB'

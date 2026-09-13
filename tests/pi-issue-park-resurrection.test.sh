@@ -159,7 +159,7 @@ mkdir -p "$run_state/attempts" "$run_issues"
 export PI_PACKET_STATE="$run_state"
 export PI_SEAT_HEALTH_LEDGER_DIR="$scratch/ledger"
 export PI_ISSUES_DIR="$run_issues"
-export PI_PACKET_SEAT_LIB="$repo_root/lib/seat-lib.sh"
+export PI_PACKET_SEAT_LIB="$repo_root/lib/litellm-seat.sh"
 export SEAT_CAPS_JSON="$scratch/seat-caps.json"
 export PI_MODELS_JSON="$scratch/models.json"
 

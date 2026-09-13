@@ -1126,16 +1126,13 @@ process_entry() {
         if [[ "$src" == config/seat-caps.json && -f "$dest" ]] && ! cmp -s "$dest" "$repo"; then
             learned="$HOME/.local/state/pi-packet/learned-caps.json"
             if [[ -f "$learned" ]]; then
-                if [[ -f "$here/lib/seat-lib.sh" ]] && command -v jq >/dev/null 2>&1; then
-                    # shellcheck source=lib/seat-lib.sh
-                    source "$here/lib/seat-lib.sh" 2>/dev/null || true
-                    reset_learned_caps_on_provider_change "$dest" "$repo" "$learned" || true
+                if [[ -f "$here/lib/litellm-seat.sh" ]] && command -v jq >/dev/null 2>&1; then
+                    # AIMD learned-cap reset retired with pick_seat (fleet-ops#4263).
+                    mv -f "$learned" "$learned.bak-$(date -u +%Y%m%dT%H%M%SZ)" 2>/dev/null || true
+                    echo "archived learned-caps.json (seat-caps.json changed; AIMD retired)"
                 else
-                    # seat-lib.sh or jq unavailable: fall back to the legacy
-                    # whole-file reset so a stale learned cap never pins a
-                    # raised floor (the pre-#3690 behaviour).
                     mv -f "$learned" "$learned.bak-$(date -u +%Y%m%dT%H%M%SZ)"
-                    echo "reset learned-caps.json (seat-caps.json changed; seat-lib.sh unavailable for per-provider reset)"
+                    echo "reset learned-caps.json (seat-caps.json changed; routing helper unavailable for per-provider reset)"
                 fi
             fi
         fi
@@ -1194,6 +1191,8 @@ if [ "$mode" = "--" ]; then
 fi
 
 if [ "$do_user_install" = 1 ]; then
+  # fleet-ops#4263 P3b: routing library dest is gone; remove leftover install.
+  rm -f "$HOME/.local/lib/pi-packet/seat-lib.sh"
   remove_papered_heartbeat_dropin
   remove_stale_scout_prom_mode_dropin
   remove_judge_budget_dropins

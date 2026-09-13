@@ -23,7 +23,7 @@
 set -euo pipefail
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 repo_root="$(cd "$here/.." && pwd)"
-lib="$repo_root/lib/seat-lib.sh"
+lib="$repo_root/lib/litellm-seat.sh"
 arm_check="$repo_root/bin/fleet-review-arm-check"
 worker="$repo_root/prompts/worker.md"
 

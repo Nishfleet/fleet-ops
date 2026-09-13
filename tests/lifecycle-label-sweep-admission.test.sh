@@ -13,6 +13,10 @@
 #   (b) a spec-less one gets exactly one bounce comment and NO relabel on
 #       a second sweep run
 # Plus the cooldown re-apply guard (scope point 3).
+#
+# fleet-ops#5887: park (awaiting-runtime-gate) wins over scout-candidate
+# admission. A parked spec-passing scout-candidate is NOT admitted; a
+# dual-labeled leftover drops agent-ready; un-park is one edit.
 set -euo pipefail
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 repo_root="$(cd "$here/.." && pwd)"
@@ -63,6 +67,11 @@ case "$1" in
     esac
     ;;
   label)
+    exit 0
+    ;;
+  api)
+    # --unpark pre-check reads the issue's labels (fleet-ops#5887).
+    cat "$FAKE_DIR/api-issue.json"
     exit 0
     ;;
   pr)
@@ -218,5 +227,104 @@ if grep -q -- '--add-label agent-ready' "$scratch/edits.log"; then
   fail "(f) discarded+scout-candidate must not be admitted: $(cat "$scratch/edits.log")"
 fi
 ok "(f) discarded+scout-candidate is a terminal state — not admitted"
+
+# --- Case (g): fleet-ops#5887 — parked scout-candidate that PASSES the spec
+# gate must NOT be admitted. Park (awaiting-runtime-gate) wins; promotion
+# is deferred. The skip line names the issue and the park label.
+cat >"$scratch/list.json" <<JSON
+[{"number":2213,"title":"route diet phase 1: logged-in app goes from 26 routes to 8 screens","body":"Reproduces on every deploy since 2026-08-26.\n\n- required: a test that seeds a Gate-B failure and asserts the deploy halts.\n- accept: deploys halt on Gate-B failure.\n- termination: bash tests/gate-b.test.sh exits 0.\n","labels":[{"name":"scout-candidate"},{"name":"awaiting-runtime-gate"}],"createdAt":"$OLD_CREATED","comments":[]}]
+JSON
+: >"$scratch/edits.log"
+: >"$scratch/comments.log"
+
+out=$("$bin" 2>"$scratch/errG.txt")
+grep -q 'admitted=0' <<<"$out" || fail "(g) parked scout-candidate must not be admitted: $out"
+if grep -q -- '--add-label agent-ready' "$scratch/edits.log"; then
+  fail "(g) parked issue must NOT gain agent-ready: $(cat "$scratch/edits.log")"
+fi
+grep -q '2213: skip agent-ready (parked: awaiting-runtime-gate)' "$scratch/errG.txt" \
+  || fail "(g) skip line must name the issue and park label: $(cat "$scratch/errG.txt")"
+ok "(g) parked scout-candidate passing spec gate → NOT admitted; skip line logged (fleet-ops#5887)"
+
+# --- Case (h): parked unlabeled issue must not gain scout-candidate or
+# agent-ready (the unlabeled pass would otherwise queue it for admit).
+cat >"$scratch/list.json" <<JSON
+[{"number":2208,"title":"fix(analysis): inferDestinationType classifies apps.apple.com as app destinations","body":"Reproduces on every deploy.\n\n- required: a named gate\n- accept: gate passes\n- termination: bash tests/x.test.sh exits 0.\n","labels":[{"name":"awaiting-runtime-gate"}],"createdAt":"$OLD_CREATED","comments":[]}]
+JSON
+: >"$scratch/edits.log"
+: >"$scratch/comments.log"
+
+out=$("$bin" 2>"$scratch/errH.txt")
+if grep -q -- '--add-label agent-ready' "$scratch/edits.log"; then
+  fail "(h) parked unlabeled must NOT gain agent-ready: $(cat "$scratch/edits.log")"
+fi
+if grep -q -- '--add-label scout-candidate' "$scratch/edits.log"; then
+  fail "(h) parked unlabeled must NOT gain scout-candidate: $(cat "$scratch/edits.log")"
+fi
+grep -q '2208: skip agent-ready (parked: awaiting-runtime-gate)' "$scratch/errH.txt" \
+  || fail "(h) unlabeled park skip must be logged: $(cat "$scratch/errH.txt")"
+ok "(h) parked unlabeled issue is left parked — no scout-candidate, no agent-ready (fleet-ops#5887)"
+
+# --- Case (i): dual-labeled leftover agent-ready + awaiting-runtime-gate
+# is healed by dropping agent-ready. Park stays on. No un-park.
+cat >"$scratch/list.json" <<JSON
+[{"number":2213,"title":"route diet phase 1: logged-in app goes from 26 routes to 8 screens","body":"Reproduces on every deploy.\n\n- required: a named gate\n- accept: gate passes\n- termination: bash tests/x.test.sh exits 0.\n","labels":[{"name":"agent-ready"},{"name":"awaiting-runtime-gate"}],"createdAt":"$OLD_CREATED","comments":[]}]
+JSON
+: >"$scratch/edits.log"
+: >"$scratch/comments.log"
+
+out=$("$bin" 2>"$scratch/errI.txt")
+grep -q 'healed=1' <<<"$out" || fail "(i) dual-label heal count: $out"
+grep -q -- '--remove-label agent-ready' "$scratch/edits.log" \
+  || fail "(i) dual-label must drop agent-ready: $(cat "$scratch/edits.log")"
+if grep -q -- '--remove-label awaiting-runtime-gate' "$scratch/edits.log"; then
+  fail "(i) dual-label heal must NOT un-park: $(cat "$scratch/edits.log")"
+fi
+if grep -q -- '--add-label' "$scratch/edits.log"; then
+  fail "(i) dual-label heal must not add any label: $(cat "$scratch/edits.log")"
+fi
+ok "(i) agent-ready + awaiting-runtime-gate leftover → drop agent-ready, park stays (fleet-ops#5887)"
+
+# --- Case (j): un-park is one edit that drops the gate AND adds agent-ready.
+# Nothing else in this file may remove awaiting-runtime-gate without adding
+# agent-ready on the same line.
+grep -q -- '--remove-label awaiting-runtime-gate --add-label agent-ready' "$bin" \
+  || fail "(j) unpark_runtime_gate must pair both flags on one gh issue edit"
+while IFS= read -r line; do
+  printf '%s' "$line" | grep -q -- '--add-label agent-ready' \
+    || fail "(j) every awaiting-runtime-gate remove must also add agent-ready: $line"
+done < <(grep -- '--remove-label awaiting-runtime-gate' "$bin" || true)
+ok "(j) un-park path is one edit: drop awaiting-runtime-gate + add agent-ready (fleet-ops#5887)"
+
+# --- Case (k): --unpark REPO#NUM is the sanctioned restore: one edit drops
+# the park and adds agent-ready; it refuses a non-parked issue.
+cat >"$scratch/api-issue.json" <<'JSON'
+["awaiting-runtime-gate"]
+JSON
+: >"$scratch/edits.log"
+: >"$scratch/comments.log"
+out=$("$bin" --unpark Nishfleet/0509#2213 2>"$scratch/errK.txt") \
+  || fail "(k) --unpark exit: $(cat "$scratch/errK.txt")"
+grep -q -- '--remove-label awaiting-runtime-gate --add-label agent-ready' "$scratch/edits.log" \
+  || fail "(k) --unpark must pair both flags in one edit: $(cat "$scratch/edits.log")"
+[ "$(grep -c 'issue edit' "$scratch/edits.log")" = "1" ] \
+  || fail "(k) --unpark must be exactly one edit: $(cat "$scratch/edits.log")"
+grep -q 'un-park awaiting-runtime-gate by fleet-heartbeat' "$scratch/comments.log" \
+  || fail "(k) --unpark must leave an audit comment: $(cat "$scratch/comments.log")"
+ok "(k) --unpark restores agent-ready in the same edit that drops the park (fleet-ops#5887)"
+
+# --- Case (l): --unpark refuses an issue that does not carry the park.
+cat >"$scratch/api-issue.json" <<'JSON'
+["agent-ready"]
+JSON
+: >"$scratch/edits.log"
+if "$bin" --unpark Nishfleet/0509#2213 >"$scratch/outL.txt" 2>&1; then
+  fail "(l) --unpark must refuse a non-parked issue: $(cat "$scratch/outL.txt")"
+fi
+grep -q 'nothing to un-park' "$scratch/outL.txt" \
+  || fail "(l) refusal must say why: $(cat "$scratch/outL.txt")"
+[ ! -s "$scratch/edits.log" ] \
+  || fail "(l) refusal must not edit: $(cat "$scratch/edits.log")"
+ok "(l) --unpark refuses a non-parked issue without editing (fleet-ops#5887)"
 
 echo "all lifecycle-label-sweep-admission cases passed"

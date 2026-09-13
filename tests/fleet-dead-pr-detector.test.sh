@@ -18,7 +18,9 @@
 #          `pull request(s) #N`, `pull-request(s) #N` (any case; a PR
 #          reference is never an issue parent)
 #   1. explicit delivery trailer — `Closes|Fixes|Resolves #N`, `Closed
-#      #N`, with an optional `<repo>#N` / `<owner>/<repo>#N` prefix
+#      #N`, the house `Moves|Moved #N` delivery trailer (#6046), with an
+#      optional `<repo>#N` / `<owner>/<repo>#N` prefix and an optional
+#      colon between verb and ref (`moves: #N`, `Fixes: #N`)
 #   2. `Relates to #N` in the body
 #   3. head branch `claim/issue-<N>`
 #   4. first bounded `#N` reference in the body
@@ -542,6 +544,52 @@ date -u -d "$(cat "$scratch/state/fleet-ops-4830.first-seen")" +%s >/dev/null 2>
   || fail "case25: corrupt marker must be reset to a parseable timestamp"
 grep -q '^stale_conflicting_prs=0$' "$scratch/stdout.log" || fail "case25: corrupt marker resets inside bound: $(cat "$scratch/stdout.log")"
 ok "case25: corrupt marker -> LOUD + self-heal reset, never a guessed flag"
+
+# --- Case 26 (fleet-ops#6046, live replay of PR #6027): the body's first
+# `#N` mention is an unrelated CLOSED issue while the house `moves:`
+# delivery trailer names the real parent. Without the Mov verb in
+# TRAILER_RE the parenthetical closed #3322 wins via priority 4 and a
+# LIVE fix PR reads dead on the wrong parent. The trailer keeps its repo
+# qualifier (#6027's exact form) and colon. ---
+set_fixtures \
+  '[{"number":6027,"title":"orch: seat-yield JSON parity","headRefName":"orch/5997-seat-yield-json","mergeable":"CONFLICTING","body":"The audition phase of the litellm-era tick (#3322 retirement thresholds) now runs per tick.\n\nmoves: fleet-ops#5997"}]' \
+  3322:CLOSED 5997:MERGED
+rc=$(run)
+grep -q '^rc=1$' <<<"$rc" || fail "case26: moves-trailer + MERGED parent must exit 1: $rc"
+grep -q 'parent=5997 parent-state=MERGED' "$scratch/stdout.log" \
+  || fail "case26: evidence line must name parent=5997 MERGED: $(cat "$scratch/stdout.log")"
+grep -q 'issue view 5997' "$scratch/gh.log" || fail "case26: must query issue 5997: $(cat "$scratch/gh.log")"
+grep -q 'issue view 3322' "$scratch/gh.log" \
+  && fail "case26: the wrong parent #3322 must never be queried: $(cat "$scratch/gh.log")"
+ok "case26: unrelated-CLOSED-first-mention + 'moves: fleet-ops#5997' -> parent=5997, never 3322"
+
+# --- Case 27 (fleet-ops#6046): the colon and past-tense forms pin left
+# and right — bare `moves: #M`, colon-less `Moved #M`, and the existing
+# verb family in GitHub's own `Fixes: #N` colon form all resolve as
+# delivery trailers. ---
+set_fixtures \
+  '[{"number":701,"title":"chore: bloom a","headRefName":"fix/a","mergeable":"CONFLICTING","body":"Poll grid.\n\nmoves: #1941"},{"number":702,"title":"chore: spawn b","headRefName":"fix/b","mergeable":"CONFLICTING","body":"The flow moved #2133 upstream."},{"number":703,"title":"chore: spawn c","headRefName":"fix/c","mergeable":"CONFLICTING","body":"Retry windows.\n\nFixes: #595"}]' \
+  1941:MERGED 2133:CLOSED 595:CLOSED
+rc=$(run)
+grep -q '^rc=1$' <<<"$rc" || fail "case27: three delivery-trailer forms must exit 1: $rc"
+[ "$(last_measure)" = "dead_conflicting_prs=3" ] \
+  || fail "case27: all three trailer forms must dead-flag: $(last_measure)"
+grep -q 'parent=1941' "$scratch/stdout.log" || fail "case27: moves: #1941 must resolve: $(cat "$scratch/stdout.log")"
+grep -q 'parent=2133' "$scratch/stdout.log" || fail "case27: Moved #2133 must resolve: $(cat "$scratch/stdout.log")"
+grep -q 'parent=595' "$scratch/stdout.log" || fail "case27: Fixes: #595 colon form must resolve: $(cat "$scratch/stdout.log")"
+ok "case27: 'moves: #1941', 'Moved #2133', 'Fixes: #595' all resolve as delivery trailers"
+
+# --- Case 28 (fleet-ops#6046, never-guess intact): `moved` as ordinary
+# prose with no issue ref beside it must NOT hijack priority 1 — the body
+# still falls through to the first bounded mention unchanged. ---
+set_fixtures \
+  '[{"number":703,"title":"docs: picker note","headRefName":"docs/pick","mergeable":"CONFLICTING","body":"The picker moved gatekeeping into the repo tests; tracked at #777"}]' \
+  777:OPEN
+rc=$(run)
+grep -q '^rc=0$' <<<"$rc" || fail "case28: prose 'moved' must fall through to priority 4, not hijack: $rc"
+[ "$(last_measure)" = "dead_conflicting_prs=0" ] || fail "case28: measure must be 0: $(last_measure)"
+grep -q 'issue view 777' "$scratch/gh.log" || fail "case28: first bounded mention must still resolve: $(cat "$scratch/gh.log")"
+ok "case28: prose 'moved' with no adjacent ref still falls through to first-bounded #N (priority 4)"
 
 # --- No agent names anywhere in detector output ---
 grep -qiE '(^|[[:space:]])(by|with|via|from|using|through|used)[[:space:]]+(the[[:space:]]+)?(claude|codex|devin|cursor|grok|openai|anthropic|deepseek|minimax|copilot|gemini|opus|chatgpt|fable|luna|sol)([^a-z]|$)' \

@@ -25,15 +25,16 @@ ok()   { echo "OK: $*"; }
 scratch="$(mktemp -d -t pi-app-budget.XXXXXX)"
 trap 'rm -rf "$scratch"' EXIT INT TERM
 
-stubs="$scratch/seat-lib-stub.sh"
+stubs="$scratch/seatlib-stub.sh"
 cat >"$stubs" <<'SH'
 #!/usr/bin/env bash
 total_seat_cap() { echo 8; }
+seat_max_concurrent() { echo 8; }
 issue_seat_cap() { echo 5; }
 worker_memory_for_difficulty() { return 1; }
 worker_env_for_repo() { return 1; }
 load_seat_caps() { return 0; }
-pick_seat() {
+litellm_seat() {
     if [[ "${PICK_SEAT_COUNT_SLOTS:-0}" == "1" ]]; then
         echo 1
         return 0

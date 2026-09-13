@@ -4,13 +4,15 @@ StartLimitIntervalSec=1h
 StartLimitBurst=3
 
 [Service]
-Environment=WORKDIR=/home/nish/workspaces/tooling/fleet-ops-deploy
-WorkingDirectory=/home/nish/workspaces/tooling/fleet-ops-deploy
+# fleet-ops#6252: scratch cwd under agent-state, never a deploy checkout.
+Environment=WORKDIR=/home/nish/workspaces/agent-state/fable-check
+WorkingDirectory=-/home/nish/workspaces/agent-state/fable-check
 Type=oneshot
 Environment=HOME=/home/nish
 Environment=PATH=/home/nish/.local/bin:/usr/local/bin:/usr/bin:/bin
 Environment=XDG_RUNTIME_DIR=/run/user/1000
 Environment=HERMES_OUTBOUND_CLASSES=MONEY-BOUNDARY|LEGAL-BOUNDARY|PRODUCT-DIRECTION|CUSTOMER-DATA|CREDENTIAL-BOUNDARY|ONE-SHOT-PUBLIC-ACTION|daily-digest|weekly-digest|evening-highlights-digest|fable-check|fleet-landing-watch
+ExecStartPre=/usr/bin/mkdir -p /home/nish/workspaces/agent-state/fable-check
 ExecStart=/bin/bash -c '/home/nish/.local/bin/claude -p --model claude-opus-5 --effort xhigh --dangerously-skip-permissions "$(cat /home/nish/workspaces/agent-state/fleet-landing-watch/fable-check.md)"'
 Restart=on-failure
 RestartSec=900

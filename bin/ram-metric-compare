@@ -10,7 +10,7 @@
 # least RAM_COMPARE_RATIO_MIN times VmRSS p95 (default 4). The 2026-08-26
 # live sample was 822.6 MB vs 35 MB (~23x); that class must stay visible.
 #
-# Pure observability. Never edits ram_gb_per_worker, never fails the
+# Pure observability. Never edits seat-caps, never fails the
 # heartbeat tick, never escalates. A later ticket decides which metric
 # admission should use; this command only records both.
 #

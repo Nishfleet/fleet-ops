@@ -44,7 +44,7 @@ mkdir -p "$scratch/packets" "$scratch/seats" "$scratch/mock-bin" \
 
 NOW=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 
-# Healthy fake seat so _pick_seat reaches the spawn path.
+# Healthy fake seat so _pick-seat reaches the spawn path.
 cat >"$scratch/pi-seat-health.json" <<EOF
 {"provider":"minimax","model":"MiniMax-M3","health_class":"healthy","observed_at":"$NOW"}
 EOF

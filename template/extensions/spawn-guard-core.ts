@@ -9,7 +9,7 @@
  */
 
 import { execSync } from "node:child_process";
-import { appendFileSync } from "node:fs";
+import { appendFileSync, readFileSync } from "node:fs";
 
 export const FLEET_SPEC_MAX_DEPTH = 1;
 /** systemd TasksMax on fleet-work.slice — hard silent kill. Must match systemd/fleet-work.slice.d/10-tasksmax.conf (fleet-ops#3280: 11 threads/pi). */
@@ -133,6 +133,35 @@ const DANGEROUS_RULES: Array<{ id: string; pattern: RegExp }> = [
  */
 const WRANGLER_DEPLOY_0509 =
 	/\b(?:wrangler\s+(?:deploy|versions\s+upload)|npm\s+run\s+deploy|node\s+scripts\/deploy-production\.mjs)\b/;
+
+/**
+ * fleet-ops#5902: the worker memory-budget rule (prompts/worker.md, fleet-ops#4891/#4893)
+ * — never `tsc -b`, `vitest --coverage`, `npm run typecheck` / `test:coverage` inside a
+ * worker — was prose only. On 2026-09-12 pi-issue@0509-3014 ran
+ * `NODE_OPTIONS=--max-old-space-size=3072 npx tsc -b` (node RSS 1.77 GB) and #4838 had
+ * already shown the box's RAM goes to these toolchains, not to seat count. This is the
+ * mechanical guard. Worker context = the session's cgroup is a pi-issue@ unit;
+ * FLEET_WORKER_CONTEXT=1|0 overrides for tests. Quoted mentions are stripped first so a
+ * worker can still grep for or write about the banned commands.
+ */
+export const WORKER_TOOLCHAIN_RULE =
+	/\b(?:(?:npx\s+)?tsc\s+(?:-b|--build)\b|vitest\b[^\n;|&]*--coverage\b|npm\s+(?:run\s+)?(?:typecheck|test:coverage)\b|npm\s+test\b[^\n;|&]*--coverage\b)/i;
+
+export function isWorkerSession(env: NodeJS.ProcessEnv): boolean {
+	if (env.FLEET_WORKER_CONTEXT === "1") return true;
+	if (env.FLEET_WORKER_CONTEXT === "0") return false;
+	try {
+		return readFileSync("/proc/self/cgroup", "utf8").includes("pi-issue@");
+	} catch {
+		return false;
+	}
+}
+
+export function workerToolchainBlock(ctx: SpawnContext): string | null {
+	if (!isWorkerSession(ctx.env)) return null;
+	const m = WORKER_TOOLCHAIN_RULE.exec(stripQuotedShellText(ctx.command));
+	return m ? `worker_toolchain_ban cmd=${m[0].trim()}` : null;
+}
 
 /**
  * fleet-ops#5700: the raw WRANGLER_DEPLOY_0509 regex is tested against the
@@ -363,6 +392,18 @@ export function evaluateBashToolCall(ctx: SpawnContext): BlockVerdict | null {
 		return { reason: blockReasonText(danger) };
 	}
 
+	const toolchainBlock = workerToolchainBlock(ctx);
+
+	if (toolchainBlock) {
+
+		logBlock(toolchainBlock, ctx);
+
+		process.stderr.write(`SPAWN_BLOCKED reason=${toolchainBlock}\n`);
+
+		return { reason: blockReasonText(toolchainBlock) };
+
+	}
+
 	const wranglerBlock = wranglerDeployBlock(ctx);
 	if (wranglerBlock) {
 		logBlock(wranglerBlock, ctx);
@@ -412,6 +453,8 @@ function blockReasonText(reason: string): string {
 			"Writing root-owned files into the pi transport paths (~/.local/bin, ~/.local/lib/node_modules, ~/.pi, /etc/systemd) is forbidden from a worker session. The 2026-09-03 incident clobbered ~/.local/bin/pi this way and starved the fleet for 33h. If a test needs a stub binary, use a tmp PATH dir under /tmp, never the real ~/.local/bin.",
 		sudo_devnull_into_home:
 			"Using /dev/null as a source into /home/nish under sudo is forbidden — it creates a 0-byte file that clobbers a real binary (the 2026-09-03 pi clobber was exactly this). Stub binaries in a tmp PATH dir under /tmp instead.",
+		worker_toolchain_ban:
+			"CI owns coverage and typecheck (prompts/worker.md memory-budget rule, fleet-ops#4891/#5902). Never run `tsc -b`, `vitest --coverage`, `npm run typecheck` or `npm run test:coverage` inside a worker: each costs 1-3 GB and starves the whole fleet. Run the targeted, coverage-free test for the files you touched and let the PR checks do the rest.",
 		wrangler_deploy_0509:
 			"Local production deploys of 0509 are forbidden: the CI pipeline is the only sanctioned deploy path, and deploying from here skips every merge gate. Land the change through a PR. If CI is genuinely down, the documented break-glass is FLEET_BREAKGLASS_DEPLOY_0509=1, which is Nish's call, not yours.",
 		process_ceiling:

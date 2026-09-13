@@ -77,8 +77,12 @@ jobs:
         bash tests/intake-repos-path-resolution.test.sh
         bash tests/worker-token-fail-closed.test.sh
         bash tests/pi-issue-run-resume-on-provider-death.test.sh
+        bash tests/pi-transport-check.test.sh
         bash tests/minimax-token-refresh.test.sh
         bash tests/seat-credentials-bad-replay.test.sh
+        bash tests/alert-repair-flagship-seat.test.sh
+        bash tests/fleet-deploy-fault-gate.test.sh
+        bash tests/fleet-production-stale-alert.test.sh
         bash tests/semantic-conflict-detector.test.sh
         bash tests/repeat-deterministic-detector.test.sh
         bash tests/red-on-main-detector.test.sh
@@ -134,6 +138,10 @@ jobs:
         bash tests/alert-repair-detached-recursion-skip.test.sh
         bash tests/fleet-claim.test.sh
         bash tests/agent-cron-seat-rotation.test.sh
+        # fleet-ops#6252: cron units must never point a workdir at a fleet-ops
+        # deploy checkout, and agent-cron-run must refuse one before any pi
+        # spawn (live DEPLOY-BLOCKED class, 2026-09-13).
+        bash tests/agent-cron-deploy-workdir-guard.test.sh
         bash tests/seat-lib.test.sh
         bash tests/seat-lib-degraded.test.sh
         bash tests/seat-lib-org-reserve.test.sh

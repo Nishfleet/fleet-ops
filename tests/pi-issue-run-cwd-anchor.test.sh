@@ -136,7 +136,7 @@ cat >"$SEAT_CAPS_JSON" <<'JSON'
 }
 JSON
 
-export PI_PACKET_SEAT_LIB="$repo_root/lib/seat-lib.sh"
+export PI_PACKET_SEAT_LIB="$repo_root/lib/litellm-seat.sh"
 
 inst="fleet-ops-5687"
 printf 'Implement one GitHub issue: fleet-ops#5687.\n' >"$ISSUES_DIR/${inst}.in"

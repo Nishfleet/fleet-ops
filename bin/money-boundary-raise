@@ -140,7 +140,7 @@ class_gate_ok() {
 #
 # A seat is "healthy prepaid/free" when its provider's class in seat-caps
 # is prepaid-quota / subscription / free (subscription is the pre-#387 name
-# for prepaid-quota; mirror lib/seat-lib.sh), the provider cap is > 0, AND
+# for prepaid-quota; mirror lib/litellm-seat.sh), the provider cap is > 0, AND
 # its per-seat ledger reports health_class=healthy with seat_dead != true.
 # spawn-bench / empty-success sibling markers are not seat ledgers.
 fleet_starved() {
@@ -378,7 +378,7 @@ bench_until="$(date -u -d "+${BENCH_DAYS} days" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null 
 written=0
 if [ -f "$CAPS" ] && command -v jq >/dev/null 2>&1; then
     # Roster select must treat a bare-int model cap as the cap, matching
-    # lib/seat-lib.sh's normalisation `if ($v|type)=="number" then $v else
+    # lib/litellm-seat.sh's normalisation `if ($v|type)=="number" then $v else
     # ($v.cap // 0) end`. A bare-int cap (e.g. "deepseek/deepseek-v4-pro": 2)
     # makes `.value.cap` null under the old `select(.value.cap > 0)`, dropping
     # the row and benching 0 seats — the parser bug fleet-ops#4658. The

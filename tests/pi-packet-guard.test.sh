@@ -111,7 +111,59 @@ run_guard "{\"tool_input\":{\"command\":\"nohup pi --print --provider devin --mo
 [[ "$rc" == 0 ]] || fail "nohup run that produced a verdict must exit 0, got $rc ($out)"
 ok "nohup run with a verdict is not blocked"
 
-ok "pi-packet-guard distinguishes launcher faults from lane faults"
+# --- 10-12. false LIVE-claim gate (fleet-ops#5786) --------------------------------
+# The hook reuses lib/pi-packet-verdict.py's LIVE-claim gate: a packet log
+# claiming LIVE/DEPLOYED/live-on-host without a same-line merged origin/main
+# SHA is a fault — exit 2, do not report the packet as working. Fixture repo:
+# main_sha is merged; branch_sha is still on the worker's branch.
+claim_repo="$scratch/claim-repo"
+git init -q -b main "$claim_repo"
+git -C "$claim_repo" config user.email t@t
+git -C "$claim_repo" config user.name t
+git -C "$claim_repo" commit -qm init --allow-empty
+main_sha=$(git -C "$claim_repo" rev-parse HEAD)
+git -C "$claim_repo" remote add origin "$claim_repo"
+git -C "$claim_repo" fetch -q origin
+git -C "$claim_repo" checkout -qb fix/issue-x
+git -C "$claim_repo" commit -qm wip --allow-empty
+branch_sha=$(git -C "$claim_repo" rev-parse HEAD)
+git -C "$claim_repo" checkout -q main
+export PI_VERDICT_LIVE_REPO_DIRS="$claim_repo"
+export PI_VERDICT_LIVE_FETCH=0
+
+log="$scratch/false-claim.log"
+{
+    printf 'EXTLOAD-OK\nEXTLOAD-OK\nEXTLOAD-OK\nEXTLOAD-OK\n'
+    printf 'fix landed as PR #5762 and is LIVE on this host (deploy-clone on the branch)\n'
+    printf 'RESULT: reported the repair\n'
+} >"$log"
+run_guard "{\"tool_input\":{\"command\":\"pi --print --provider devin --model glm-5-2 < packet.md > $log\"}}"
+[[ "$rc" == 2 ]] || fail "a false LIVE claim must exit 2, got $rc ($out)"
+printf '%s\n' "$out" | grep -qi 'LIVE/DEPLOYED claim' \
+    || fail "stderr must name the false-claim fault: $out"
+ok "packet log claiming LIVE without a merged SHA -> exit 2 (fleet-ops#5786)"
+
+log="$scratch/true-claim.log"
+{
+    printf 'EXTLOAD-OK\nEXTLOAD-OK\nEXTLOAD-OK\nEXTLOAD-OK\n'
+    printf 'gate is LIVE on this host: %s is on origin/main\n' "$main_sha"
+    printf 'RESULT: reported the repair\n'
+} >"$log"
+run_guard "{\"tool_input\":{\"command\":\"pi --print --provider devin --model glm-5-2 < packet.md > $log\"}}"
+[[ "$rc" == 0 ]] || fail "a LIVE claim citing a merged origin/main SHA must pass, got $rc ($out)"
+ok "LIVE claim citing a merged origin/main SHA -> allowed"
+
+log="$scratch/branch-claim.log"
+{
+    printf 'EXTLOAD-OK\nEXTLOAD-OK\nEXTLOAD-OK\nEXTLOAD-OK\n'
+    printf 'fix is DEPLOYED to production: %s\n' "$branch_sha"
+    printf 'RESULT: reported the repair\n'
+} >"$log"
+run_guard "{\"tool_input\":{\"command\":\"pi --print --provider devin --model glm-5-2 < packet.md > $log\"}}"
+[[ "$rc" == 2 ]] || fail "a claim citing an unmerged branch SHA must exit 2, got $rc ($out)"
+ok "DEPLOYED claim citing an unmerged branch SHA -> exit 2"
+
+ok "pi-packet-guard distinguishes launcher faults, lane faults, and false LIVE claims"
 
 # fleet-ops#1545: cursor keystone lane output wrapper reuses this guard's
 # verdict grammar verbatim. Hosted here (not a new ci.yml line — workers

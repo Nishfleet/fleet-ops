@@ -84,7 +84,7 @@ ESCALATION_LOG_RE = re.compile(
     r"|Read the alert, identified"
     r"|escalated via OnFailure="
     r"|cline/cline-pass/"
-    r"|pick_seat "
+    r"|litellm_seat "
     r"|Seat pool:"
     r"|Non-heavy seats:"
     r"|Heavy seats "

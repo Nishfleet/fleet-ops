@@ -41,7 +41,7 @@ ok()   { echo "OK: $*"; }
 scratch="$(mktemp -d -t agent-cron-trim.XXXXXX)"
 trap 'rm -rf "$scratch"' EXIT INT TERM
 
-stub_lib="$scratch/seat-lib.sh"
+stub_lib="$scratch/seatlib.sh"
 cat >"$stub_lib" <<'EOF'
 export HOME="${HOME:-/home/nish}"
 export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/1000}"
@@ -56,7 +56,7 @@ is_spawn_etimeout() { return 1; }
 is_quota_cap_error() { return 1; }
 mark_seat_spawn_fail() { return 0; }
 mark_seat_quota_bench() { return 0; }
-pick_seat() { printf 'cursor\tcursor-grok-4.6-high\n'; return 0; }
+litellm_seat() { printf 'cursor\tcursor-grok-4.6-high\n'; return 0; }
 EOF
 
 # Fake pi: records the byte count of the stdin packet it receives.

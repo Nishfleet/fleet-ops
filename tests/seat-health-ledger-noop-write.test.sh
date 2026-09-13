@@ -8,7 +8,7 @@
 # ledger write starts the fleet-seat-recovery oneshot. Live 2026-09-11 that
 # was 2471-2536 activations/h sustained (23 writes/30s, ~20 of them on one
 # HEALTHY seat rewritten once per provider round-trip across ~32 workers),
-# while seat-lib.sh only distrusts a record once observed_at is older than
+# while seatlib.sh only distrusts a record once observed_at is older than
 # STALE_SECS=21600 (6h). The write rate asked systemd to fork/exec ~2500x/h
 # to refresh a timestamp no reader consults inside a 6h window.
 #
@@ -422,14 +422,14 @@ if (( h_skip * 10 > 50 )); then
     fail "N5: healthy seat wrote $h_skip times with the skip ON vs $h_write with it OFF — need a >10x drop"
 fi
 
-# Source lib/seat-lib.sh against the same scratch ledger dirs so the ROUTER
+# Source lib/litellm-seat.sh against the same scratch ledger dirs so the ROUTER
 # (seat_usable) is the judge of "indistinguishable", not this test's own
 # reading of the JSON.
 router() {
     # $1 = ledger dir, $2 = model
     PI_SEAT_HEALTH_LEDGER_DIR="$1" PI_SEAT_CAPS_JSON="$caps" \
     _SEAT_USABLE_SILENT=1 bash -c '
-        source "$1/lib/seat-lib.sh" >/dev/null 2>&1 || true
+        source "$1/lib/litellm-seat.sh" >/dev/null 2>&1 || true
         if seat_usable bench "$2"; then echo usable; else echo unusable; fi
     ' _ "$repo_root" "$2"
 }
