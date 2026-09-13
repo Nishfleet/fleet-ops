@@ -259,11 +259,10 @@ if (( rc == 124 )); then
     seat_log "agent-cron-run: $slug PI HANG WATCHDOG on $np/$nm after ${PI_HANG_TIMEOUT_S}s — killed and re-seating"
 fi
 
-# --- P13-B spawn-fail marker ------------------------------------------------
+# --- P13-B spawn-fail classification ----------------------------------------
 # A spawn-phase ETIMEDOUT (devin/cursor 503 signature) terminates pi before
-# any response hook runs, so the reactive ledger never records it and
-# pick-seat would keep routing to the dead seat. Mirror pi-issue-run: write
-# the marker so the next Restart skips this seat via usable_at.
+# any response hook runs. Mirror pi-issue-run: log the SPAWN-TIMEOUT class;
+# the LiteLLM proxy cooldown owns skipping the seat on the next pick.
 spawn_fail_triggered=0
 if (( rc != 0 )) && (( spawn_elapsed_s < SPAWN_FAIL_MAX_S )); then
     out_for_scan=""; err_for_scan=""
@@ -271,26 +270,21 @@ if (( rc != 0 )) && (( spawn_elapsed_s < SPAWN_FAIL_MAX_S )); then
     [[ -f "$err" ]] && err_for_scan=$(cat "$err" 2>/dev/null || true)
     if is_spawn_etimeout "$out_for_scan" "$err_for_scan"; then
         spawn_fail_triggered=1
-        seat_log "agent-cron-run: $slug SPAWN-TIMEOUT on $np/$nm at ${spawn_elapsed_s}s (rc=$rc) — marking seat unusable for ${SPAWN_FAIL_BACKOFF_S}s"
-        mark_seat_spawn_fail "$np" "$nm" "agent-cron:$slug:rc=$rc" \
-            || seat_log "agent-cron-run: $slug WARN: spawn-fail marker write FAILED for $np/$nm"
+        seat_log "agent-cron-run: $slug SPAWN-TIMEOUT on $np/$nm at ${spawn_elapsed_s}s (rc=$rc) — next pick skips this seat via the LiteLLM proxy cooldown"
     fi
 fi
 
-# --- fleet-ops#90: quota/cap wall bench -------------------------------------
+# --- fleet-ops#90: quota/cap wall classification ----------------------------
 # A hard-capped seat (ClinePass weekly cap, devin 15-min 429) is a walled
-# seat, not a transient retry. Bench it until its advertised reset window (or
-# the provider default) so the next Restart's pick-seat skips it instead of
-# burning a StartLimitBurst attempt on a guaranteed failure. Skipped when the
+# seat, not a transient retry. Log the QUOTA/CAP WALL class; the LiteLLM
+# proxy cooldown owns skipping the walled seat. Skipped when the
 # spawn-fail path already handled this exit.
 if (( rc != 0 )) && (( ! spawn_fail_triggered )); then
     out_for_scan=""; err_for_scan=""
     [[ -f "$out" ]] && out_for_scan=$(cat "$out" 2>/dev/null || true)
     [[ -f "$err" ]] && err_for_scan=$(cat "$err" 2>/dev/null || true)
     if is_quota_cap_error "$out_for_scan" "$err_for_scan"; then
-        seat_log "agent-cron-run: $slug QUOTA/CAP WALL on $np/$nm (rc=$rc) — benching seat for its reset window"
-        mark_seat_quota_bench "$np" "$nm" "$out_for_scan"$'\n'"$err_for_scan" \
-            || seat_log "agent-cron-run: $slug WARN: quota-bench marker NOT written for $np/$nm (no window and no provider default)"
+        seat_log "agent-cron-run: $slug QUOTA/CAP WALL on $np/$nm (rc=$rc) — walled-seat class logged; the LiteLLM proxy cooldown owns the skip"
     fi
 fi
 
@@ -313,17 +307,11 @@ if declare -F is_writes_refused >/dev/null 2>&1; then
     [[ -f "$out" ]] && out_for_scan=$(cat "$out" 2>/dev/null || true)
     [[ -f "$err" ]] && err_for_scan=$(cat "$err" 2>/dev/null || true)
     if is_writes_refused "$out_for_scan" "$err_for_scan"; then
-        seat_log "agent-cron-run: $slug WRITES REFUSED on $np/$nm (rc=$rc) — the seat's approval gate blocked the run's writes; benching ${SEAT_WRITES_REFUSED_BENCH_S:-3600}s and failing loud (fleet-ops#5189)"
+        seat_log "agent-cron-run: $slug WRITES REFUSED on $np/$nm (rc=$rc) — the seat's approval gate blocked the run's writes; failing loud (fleet-ops#5189)"
         {
             printf '# %s %s WRITES-REFUSED\nseat=%s/%s workdir=%s\n' "$slug" "$TS" "$np" "$nm" "$WORKDIR"
             cat "$out"
         } >>"$OUT"
-        if declare -F mark_seat_writes_refused_bench >/dev/null 2>&1; then
-            mark_seat_writes_refused_bench "$np" "$nm" "agent-cron:$slug" \
-                || seat_log "agent-cron-run: $slug WARN: writes-refused bench marker NOT written for $np/$nm"
-        else
-            seat_log "agent-cron-run: $slug WARN: mark_seat_writes_refused_bench absent in litellm-seat — relying on tried-seats exclusion"
-        fi
         rm -f "$out" "$err"
         exit 1
     fi

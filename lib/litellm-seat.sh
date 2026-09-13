@@ -18,10 +18,10 @@ STATE_DIR="${PI_PACKET_STATE:-$HOME/.local/state/pi-packet}"
 ATTEMPTS_DIR="$STATE_DIR/attempts"
 ACTIVE_SEATS_DIR="$STATE_DIR/active-seats"
 LOG_FILE="${SEAT_LOG_FILE:-$STATE_DIR/watch.log}"
+
 PI_ISSUES_DIR="${PI_ISSUES_DIR:-$HOME/.local/state/pi-issues}"
 PI_BIN="${PI_BIN:-$HOME/.local/bin/pi}"
 SEAT_CAPS_JSON="${SEAT_CAPS_JSON:-$HOME/.local/state/pi-packet/seat-caps.json}"
-LEDGER_DIR="${PI_SEAT_HEALTH_LEDGER_DIR:-$STATE_DIR/seat-health}"
 HEAVY_PKT_BYTES="${PI_PACKET_HEAVY_BYTES:-8192}"
 LITELLM_HEALTH_URL="${LITELLM_HEALTH_URL:-http://127.0.0.1:4000/health/readiness}"
 # fleet-ops#6315: the completions OR-probe. Derived from the readiness origin
@@ -175,28 +175,16 @@ find_senior_seat() {
 }
 
 senior_seat_available() {
-    # fleet-ops#3709: a senior seat is available when an entry of
-    # senior_seats_in_order is not benched in the seat-health ledger. The
-    # real enumeration lived in the routing library deleted by #4263; what
-    # replaced it (`litellm_ready || GITHUB_ACTIONS == true`) is always true
-    # under CI, so the reviewer-round fallback gate could never fire there
-    # and tests/fleet-review-arm-check.test.sh case 1 failed on main.
-    local seats seat p m
-    if (( ! _seat_caps_loaded )); then load_seat_caps || true; fi
-    [[ -f "$SEAT_CAPS_JSON" ]] || { litellm_ready; return $?; }
-    seats=$(jq -r '.senior_seats_in_order[]? // empty' "$SEAT_CAPS_JSON" 2>/dev/null || true)
-    # No senior list configured: fall back to proxy reachability.
-    [[ -n "$seats" ]] || { litellm_ready; return $?; }
-    while IFS= read -r seat; do
-        [[ -n "$seat" ]] || continue
-        p="${seat%%/*}"
-        m="${seat#*/}"
-        [[ -n "$p" && -n "$m" && "$p" != "$seat" ]] || continue
-        if seat_usable "$p" "$m"; then
-            return 0
-        fi
-    done <<<"$seats"
-    return 1
+    # Seat health is owned by the LiteLLM proxy cooldown (fleet-ops#4263):
+    # a senior seat is available exactly when the proxy answers. The
+    # per-seat bench-ledger walk this function used to do is deleted with
+    # the ledgers. CI hosts have no proxy, so keep the fail-open there
+    # (fleet-ops#3709: the reviewer-round fallback gate can never fire on a
+    # hosted runner — that is the intended fail-open, not a regression).
+    if litellm_ready; then
+        return 0
+    fi
+    [[ "${GITHUB_ACTIONS:-}" == "true" ]]
 }
 
 # --- repo privacy (free-tier privacy line, vault 2026-08-18) ----------------
@@ -504,8 +492,9 @@ count_active_workers() {
 # proxy starved, the prepaid NON-proxy seats sat idle (Devin occupancy 0/4
 # while pi-issue@ units walled, 2026-09-13). This is ONE declared lane, not
 # the retired #4263 picker: provider/model, cap-checked so a silent
-# retirement (cap 0) self-ends the lane; seat_usable runs at the call sites
-# so the 429 -> 900s quota bench stays the brake. P4 drill precedent (2026-09-12):
+# retirement (cap 0) self-ends the lane. The per-seat bench ledger it used
+# to consult at the call sites is deleted — the provider's own 429s and
+# the proxy cooldown own seat health now. P4 drill precedent (2026-09-12):
 # the direct seat answers while 127.0.0.1:4000 is down — workers never need
 # the proxy.
 FLEET_DIRECT_FALLBACK_SEAT="${FLEET_DIRECT_FALLBACK_SEAT:-devin/swe-2-max}"
