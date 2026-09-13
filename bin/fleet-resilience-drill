@@ -171,6 +171,8 @@ STUB_UNIT="resilience-drill-stub-restart.service"
 # gate folded into the hourly fable judge (packet §1d) + PromQL series.
 # The queue_freeze plane now drives those. FLEET_RES_DRILL_OPUS_HB is kept
 # only as a dead seam so old test invocations do not crash.
+# shellcheck disable=SC2034 # dead seam: launcher retired #4141; kept so old
+# test invocations that set FLEET_RES_DRILL_OPUS_HB still parse this env.
 OPUS_HB_BIN="${FLEET_RES_DRILL_OPUS_HB:-/home/nish/.local/libexec/opus-heartbeat}"
 OPUS_HB_STATE="${FLEET_RES_DRILL_OPUS_HB_STATE:-$AGENT_STATE/.res-drill-opus-hb}"
 CURL="${FLEET_RES_DRILL_CURL:-curl}"
