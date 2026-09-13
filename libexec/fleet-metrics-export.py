@@ -195,6 +195,35 @@ HELP_OPEN = "# HELP fleet_open_prs Open pull-request count per repo from a cache
 TYPE_OPEN = "# TYPE fleet_open_prs gauge"
 HELP_CI = "# HELP fleet_main_ci_green 1 if default-branch CI is green, 0 if red. PENDING rollup resolved from latest completed CI run; repos with no CI omitted. Tracks only the workflow literally named \"CI\" — a repo's production-deploy greenness is fleet_product_deploy_green (fleet-ops#5140)."
 TYPE_CI = "# TYPE fleet_main_ci_green gauge"
+# --- CI merge-queue + hosted-CI slot blindness (fleet-ops#5807) --------------
+# 2026-09-12 10:50 IST evidence: the 0509 merge-queue head #3054 sat
+# AWAITING_CHECKS for 2h20m with 14 queued entries and 58 queued + 11
+# in-progress hosted runs — no alert, no console gauge; a human noticed by
+# hand. This family publishes, PER ENROLLED repo (intake-repos.json):
+#   ci_merge_queue_head_wait_seconds — seconds since the queue's head (the
+#     lowest-position, currently-merging) entry was enqueued; what the PR
+#     now at the head has spent waiting. 0 when the queue is empty.
+#   ci_merge_queue_entries         — total entries in the queue (all states).
+#   ci_hosted_runs_queued          — GitHub Actions runs queued (total_count).
+#   ci_hosted_runs_in_progress     — GitHub Actions runs in_progress.
+# One ALIASED GraphQL call covers every enrolled repo's mergeQueue (never one
+# call per repo); the hosted-run counts are two tiny REST total_count reads
+# per repo. Budget (fleet-ops#5762): ~5 calls / 5-min tick = ~60/hr against
+# the 5000/hr shared App-install window (~1.2%); the fetch is SKIPPED while
+# the 20% throttle threshold (fleet_gh_rate_limit_low, #1350) is breached and
+# the stale cache served instead — the detectors never cost the fleet its
+# rate-limit headroom. A failing read serves the cache up to 2h (the shared
+# PR_CACHE_STALE envelope), then the family is OMITTED (never a frozen
+# value) so the alerts' absent() legs speak for a dead read path.
+HELP_CMQH = "# HELP ci_merge_queue_head_wait_seconds Seconds since the head (lowest-position) entry of the repo's GitHub merge queue was enqueued — the time the head PR has spent waiting to merge. 0 when the queue is empty. Target < 20 min (fleet-ops#5807). Omitted when the read fails (never a frozen value)."
+TYPE_CMQH = "# TYPE ci_merge_queue_head_wait_seconds gauge"
+HELP_CMQE = "# HELP ci_merge_queue_entries Total entries (all states) in the repo's GitHub merge queue."
+TYPE_CMQE = "# TYPE ci_merge_queue_entries gauge"
+HELP_CQR = "# HELP ci_hosted_runs_queued GitHub Actions (hosted) runs currently queued for the repo."
+TYPE_CQR = "# TYPE ci_hosted_runs_queued gauge"
+HELP_CQI = "# HELP ci_hosted_runs_in_progress GitHub Actions (hosted) runs currently in_progress for the repo."
+TYPE_CQI = "# TYPE ci_hosted_runs_in_progress gauge"
+
 HELP_FRESH = "# HELP fleet_gh_cache_fresh 1 if this gh-derived family is served from a cache younger than 2h."
 TYPE_FRESH = "# TYPE fleet_gh_cache_fresh gauge"
 HELP_CTS = "# HELP fleet_gh_cache_timestamp_seconds Epoch seconds at which the served data for this gh-derived family was MEASURED. Equals the cache write time when the cache was served, and the export time when gh was just fetched. A consumer of a cached family (the console tiles) must stamp this, not its own run time: stamping the export time on a <=30 min old count reads as seconds-fresh (fleet-ops#5155, ConsoleLying tile=open_prs)."
@@ -389,6 +418,15 @@ PR_CACHE = PR_CACHE_DIR / "merged-prs-cache.json"
 # cache file from PR_CACHE so the old {repo:count} shape is not misread.
 DETAIL_CACHE = PR_CACHE_DIR / "merged-prs-detail-cache.json"
 SNAPSHOT_CACHE = PR_CACHE_DIR / "repo-snapshot-cache.json"
+# fleet-ops#5807: the ci_merge_queue_* / ci_hosted_runs_* family. TTL 240s
+# (< the 5-min tick) so every tick is eligible to refresh; STALE mirrors the
+# shared 2h envelope. NOT a slot in the shared _GH_FETCHED_THIS_RUN gate —
+# same justification as _gh_rate_limit: it is a cheap bounded read (~5
+# sub-45s-busy calls), not the multi-second paginated GraphQL search, and a
+# stuck shared-slot handoff must not blind the queue detectors.
+MERGE_QUEUE_CACHE = PR_CACHE_DIR / "ci-merge-queue-cache.json"
+MERGE_QUEUE_TTL = 240
+MERGE_QUEUE_STALE = 7200
 PR_CACHE_TTL = 1800      # 30 min — refresh gh at most this often
 PR_CACHE_STALE = 7200    # 2 h — beyond this, omit the metric family
 GH_OWNER = "Nishfleet"
@@ -2745,6 +2783,9 @@ def _emit_seat_quota_headers(lines):
 
 
 _GH_FETCHED_THIS_RUN = False
+# fleet-ops#5807: the cheap ci-merge-queue read's own once-per-run guard
+# (parallel to _GH_FETCHED_THIS_RUN — see MERGE_QUEUE_CACHE comment).
+_MQ_FETCHED_THIS_RUN = False
 
 # Measurement time (epoch seconds) of the data _cached_json actually served,
 # per family. See HELP_CTS: a cached family's number was measured when the
@@ -3181,6 +3222,274 @@ def _gh_repo_snapshot():
 def _repo_snapshot():
     """Cached org snapshot or None to omit both open_prs and main_ci families."""
     return _cached_json(SNAPSHOT_CACHE, _gh_repo_snapshot, "repo_snapshot")
+
+
+# --- CI merge-queue + hosted-CI slots (fleet-ops#5807) ----------------------
+
+def _ci_merge_queue_graphql_query(repos):
+    """ONE aliased GraphQL query covering every enrolled repo's mergeQueue.
+
+    Aliases (r0, r1, ...) keep it a single round-trip regardless of how many
+    repos enrol (fleet-ops#5807) — the #5762 budget is flat, not per-repo.
+    Names/owners come from config/intake-repos.json (trusted); they are still
+    quote-escaped so a stray quote cannot break the call. Empty repos -> None
+    (no call, no spend).
+    """
+    if not repos:
+        return None
+
+    def _q(s):
+        return str(s).replace("\\", "\\\\").replace('"', '\\"')
+
+    aliases = []
+    for i, repo in enumerate(repos):
+        owner, _, name = repo.partition("/")
+        if not owner or not name:
+            continue
+        aliases.append(
+            f'  r{i}: repository(owner: "{_q(owner)}", name: "{_q(name)}") {{\n'
+            '    mergeQueue {\n'
+            '      entries(first: 100) {\n'
+            '        totalCount\n'
+            '        nodes { position state enqueuedAt }\n'
+            '      }\n'
+            '    }\n'
+            '  }'
+        )
+    if not aliases:
+        return None
+    return "query {\n" + "\n".join(aliases) + "\n}"
+
+
+def _gh_hosted_runs_count(repo_full, status):
+    """Cheap REST total_count read: Actions runs in `status` (queued /
+    in_progress) for repo. None on any failure (the caller omits that one
+    series — never a frozen value). One call per (repo, status); there is no
+    cheaper GraphQL surface (Repository has no actionRuns field, verified
+    against the live schema 2026-09-12).
+    """
+    try:
+        r = subprocess.run(
+            ["gh", "api",
+             f"repos/{repo_full}/actions/runs?status={status}&per_page=1"],
+            capture_output=True, text=True, timeout=GH_TIMEOUT,
+            env={**os.environ, "GH": "/usr/bin/gh"},
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        print(f"gh actions runs ({repo_full} {status}) failed: {exc}",
+              file=sys.stderr)
+        return None
+    if r.returncode != 0:
+        print(f"gh actions runs ({repo_full} {status}) rc={r.returncode}: "
+              f"{r.stderr.strip()[:200]}", file=sys.stderr)
+        return None
+    try:
+        return int((json.loads(r.stdout or "{}") or {}).get("total_count"))
+    except (json.JSONDecodeError, TypeError, ValueError) as exc:
+        print(f"gh actions runs ({repo_full} {status}) json: {exc}",
+              file=sys.stderr)
+        return None
+
+
+def _parse_ci_merge_queue(payload, repos, hosted, now):
+    """Project the aliased-GraphQL + hosted-run payloads to the STORED shape.
+
+    Pure (unit-tested, #5807). Stored shape (head wait ages with the clock at
+    SERVE time, so a <=10-min-old cache still emits a current wait):
+      {repo: {"head_enqueued_at": epoch|None,   # None = no queue / unreadable
+              "entries": int|None,              # totalCount, all states
+              "runs_queued": int|None,          # from `hosted`, None = failed
+              "runs_in_progress": int|None}}
+    A repo whose alias is absent (renamed/archived) gets no head/entries row
+    at all; a repo whose mergeQueue is null (queue not enabled) gets a real
+    entries=0 + head_enqueued_at=None (wait 0) — an ANSWERED zero, not a
+    fabricated one. The head is the lowest-`position` entry (any state; a
+    QUEUED head is the transitional just-promoted case, still waiting).
+    """
+    out = {}
+    data = (payload or {}).get("data") or {}
+    for i, repo in enumerate(repos):
+        node = data.get(f"r{i}")
+        if node is None:
+            # alias unanswered (rate-limit partial, renamed, #5762 skip) —
+            # only the hosted half (if it answered) is emitted for this repo.
+            if repo in (hosted or {}):
+                out[repo] = {"head_enqueued_at": None, "entries": None,
+                             "runs_queued": (hosted[repo] or {}).get("queued"),
+                             "runs_in_progress": (hosted[repo] or {}).get("in_progress")}
+            continue
+        entries = ((node.get("mergeQueue") or {}).get("entries") or {})
+        total = entries.get("totalCount") if node.get("mergeQueue") is not None else 0
+        head = None
+        for n in entries.get("nodes") or []:
+            if not isinstance(n, dict):
+                continue
+            if head is None or (n.get("position") or 10**9) < (head.get("position") or 10**9):
+                head = n
+        head_enq = None
+        if head is not None:
+            head_enq = _parse_iso_utc(head.get("enqueuedAt"))
+        out[repo] = {
+            "head_enqueued_at": head_enq,
+            # totalCount=None (GitHub answered, field missing) stays None —
+            # never read as a 0-queue. total=0 (queue empty) is a real 0.
+            "entries": total if isinstance(total, int) else None,
+            "runs_queued": (hosted.get(repo) or {}).get("queued"),
+            "runs_in_progress": (hosted.get(repo) or {}).get("in_progress"),
+        }
+    # Also keep hosted-only answers for repos whose GraphQL alias outran the
+    # repos list (defensive; aliases are generated FROM repos so this is
+    # always the same set today).
+    for repo, h in (hosted or {}).items():
+        if repo not in out:
+            out[repo] = {"head_enqueued_at": None, "entries": None,
+                         "runs_queued": (h or {}).get("queued"),
+                         "runs_in_progress": (h or {}).get("in_progress")}
+    del now  # reserved: the stored shape is clock-free; see _shape_ci_merge_queue
+    return out
+
+
+def _shape_ci_merge_queue(stored, now):
+    """Stored shape -> emitted shape, deriving head_wait_s against `now`.
+
+    head_wait_s = now - head_enqueued_at; head_enqueued_at None -> None
+    (unreadable), EXCEPT entries == 0 (a real answered no-queue) -> 0. A
+    missing hosted count stays None so its series is omitted, not zeroed.
+    """
+    shaped = {}
+    for repo, row in (stored or {}).items():
+        head_enq = (row or {}).get("head_enqueued_at")
+        if head_enq is None:
+            wait = 0 if (row or {}).get("entries") == 0 else None
+        else:
+            wait = max(0, int(now) - int(head_enq))
+        shaped[repo] = {
+            "head_wait_s": wait,
+            "entries": (row or {}).get("entries"),
+            "runs_queued": (row or {}).get("runs_queued"),
+            "runs_in_progress": (row or {}).get("runs_in_progress"),
+        }
+    return shaped
+
+
+def _gh_ci_merge_queue(repos, now):
+    """LIVE read (fleet-ops#5807): 1 aliased GraphQL + 2 REST reads per
+    enrolled repo -> stored shape, or None when the GraphQL anchor failed.
+    Each hosted count is independent: one failed REST read yields None for
+    that series only.
+    """
+    if not repos:
+        return {}
+    query = _ci_merge_queue_graphql_query(repos)
+    if query is None:
+        return {}
+    payload = _gh_graphql(query)
+    if payload is None:
+        print("ci_merge_queue: graphql failed; family serves stale / omits",
+              file=sys.stderr)
+        return None
+    if payload.get("errors"):
+        print(f"ci_merge_queue graphql errors: {str(payload['errors'])[:200]}",
+              file=sys.stderr)
+        return None
+    hosted = {}
+    for repo in repos:
+        hosted[repo] = {
+            "queued": _gh_hosted_runs_count(repo, "queued"),
+            "in_progress": _gh_hosted_runs_count(repo, "in_progress"),
+        }
+    return _parse_ci_merge_queue(payload, repos, hosted, now)
+
+
+def _ci_merge_queue(now=None):
+    """Caller-facing: cached/stale- served ci-merge-queue family in EMITTED
+    shape ({repo: {head_wait_s, entries, runs_queued, runs_in_progress}}), or
+    None to omit the family.
+
+    NOT a slot in the shared _GH_FETCHED_THIS_RUN gate (cheap bounded read —
+    see MERGE_QUEUE_CACHE); its own _MQ_FETCHED_THIS_RUN keeps it to one read
+    per run. Budget gate (fleet-ops#5762): when the #1350 20% throttle
+    threshold is breached (core or graphql low), the read is SKIPPED and the
+    stale cache serves — the detectors never spend the fleet's headroom. A
+    failed read serves the cache up to MERGE_QUEUE_STALE (2h), then the
+    family omits (never a frozen value) and the alerts' absent() legs speak.
+    """
+    global _MQ_FETCHED_THIS_RUN
+    if now is None:
+        now = time.time()
+    cached, cache_age = _read_cache(MERGE_QUEUE_CACHE)
+    if (cached is not None and cache_age is not None
+            and cache_age <= MERGE_QUEUE_TTL):
+        _CACHE_TS_SERVED["ci_merge_queue"] = now - cache_age
+        return _shape_ci_merge_queue(cached, now)
+    if _MQ_FETCHED_THIS_RUN:
+        if (cached is not None and cache_age is not None
+                and cache_age <= MERGE_QUEUE_STALE):
+            print(f"ci_merge_queue: already read this run; serving stale "
+                  f"cache (age={int(cache_age)}s)", file=sys.stderr)
+            _CACHE_TS_SERVED["ci_merge_queue"] = now - cache_age
+            return _shape_ci_merge_queue(cached, now)
+        return None
+    _MQ_FETCHED_THIS_RUN = True
+    # #5762/#1350 budget gate: skip the gh reads while throttled (the #1350
+    # throttle decides from the SAME _gh_rate_limit() cached read main() used
+    # for the fleet_gh_rate_limit_low family — no extra gh call; the 60s-TTL
+    # cache answers). Undecided (None) reads proceed — fail-open, like the
+    # intake-tick gate.
+    rl = _gh_rate_limit()
+    throttled = False
+    if rl:
+        for resource in ("core", "graphql"):
+            if (rl.get(resource) or {}).get("low"):
+                throttled = True
+    if throttled:
+        print("ci_merge_queue: gh rate limit under the 20% throttle "
+              "threshold; skipping the read (fleet-ops#5762 budget)",
+              file=sys.stderr)
+    repos = _enrolled_repos()
+    stored = None
+    if not throttled:
+        stored = _gh_ci_merge_queue(repos, now)
+    if stored is not None:
+        _write_cache(MERGE_QUEUE_CACHE, stored)
+        _CACHE_TS_SERVED["ci_merge_queue"] = now
+        return _shape_ci_merge_queue(stored, now)
+    if (cached is not None and cache_age is not None
+            and cache_age <= MERGE_QUEUE_STALE):
+        print(f"ci_merge_queue read failed; serving stale cache "
+              f"(age={int(cache_age)}s)", file=sys.stderr)
+        _CACHE_TS_SERVED["ci_merge_queue"] = now - cache_age
+        return _shape_ci_merge_queue(cached, now)
+    return None
+
+
+def _emit_ci_merge_queue(lines, shaped):
+    """Append the four #5807 families. Each HELP/TYPE once; a series is
+    emitted only when its value is known (None -> omitted, never 0). A family
+    with no known values for ANY repo is omitted entirely so its absent()
+    leg can speak.
+    """
+    if not shaped:
+        return
+    families = (
+        ("head_wait_s", HELP_CMQH, TYPE_CMQH),
+        ("entries", HELP_CMQE, TYPE_CMQE),
+        ("runs_queued", HELP_CQR, TYPE_CQR),
+        ("runs_in_progress", HELP_CQI, TYPE_CQI),
+    )
+    for key, help_line, type_line in families:
+        metric = help_line.split(" ")[2]  # 3rd HELP token = the metric name
+        known = [(repo, row[key]) for repo, row in sorted(shaped.items())
+                 if row.get(key) is not None]
+        if not known:
+            continue
+        lines.append("")
+        lines.append(help_line)
+        lines.append(type_line)
+        for repo, value in known:
+            lines.append(
+                f'{metric}{{repo="{_prom_label(repo)}"}} {int(value)}'
+            )
 
 
 def _escalations_24h():
@@ -6241,6 +6550,17 @@ def main():
                 f'fleet_main_ci_green{{repo="{_prom_label(repo)}"}} {main_ci[repo]}'
             )
         fresh_kinds.append("repo_snapshot")
+
+    # --- CI merge-queue + hosted-CI slots (fleet-ops#5807) ---
+    # Cheap bounded read, own once-per-run guard, #5762 rate-limit budget
+    # gate, 2h stale-serve then omit (see _ci_merge_queue). The families ride
+    # the same fleet.prom textfile; their absent() legs own a dead read path.
+    # Called AFTER the rate-limit family above so the #1350 throttle decision
+    # reuses that cached read (no extra gh call).
+    _mq = _ci_merge_queue()
+    if _mq:
+        _emit_ci_merge_queue(lines, _mq)
+        fresh_kinds.append("ci_merge_queue")
 
     # --- Ready work + queue composition (fleet-ops#1136, #1772) ---
     # Both share one cached gh call. If we cannot determine the open

@@ -484,11 +484,23 @@ function render(d){
     if (!rows.length){
       ciBody.innerHTML = `<p class="empty" style="color:var(--ok)">no default-branch CI samples (pending omitted)</p>`;
     } else {
+      // fleet-ops#5807: each row may also carry the merge-queue/hosted-slot
+      // gauges (head_wait_s / queue_entries / runs_queued / runs_in_progress).
+      // They are overlay-only: a repo without them renders exactly as before.
+      const fw = s => s >= 3600
+        ? Math.floor(s/3600) + "h" + Math.round((s%3600)/60) + "m"
+        : s >= 60 ? Math.round(s/60) + "m" : s + "s";
       ciBody.innerHTML = rows.map(r => {
         const red = r.green === 0;
+        const bits = [];
+        if (r.head_wait_s != null) bits.push("head wait " + fw(r.head_wait_s));
+        if (r.queue_entries != null) bits.push("queue " + r.queue_entries);
+        if (r.runs_queued != null) bits.push(r.runs_queued + " runs queued");
+        if (r.runs_in_progress != null) bits.push(r.runs_in_progress + " in flight");
         return `<div class="d"><div class="body">
           <p class="t">${esc(r.repo)}</p>
-          <span class="pill ${red ? "" : "up"}" style="${red ? "border-color:var(--risk);color:var(--risk)" : ""}">${red ? "MAIN RED" : "green"}</span></div></div>`;
+          <span class="pill ${red ? "" : "up"}" style="${red ? "border-color:var(--risk);color:var(--risk)" : ""}">${red ? "MAIN RED" : "green"}</span>
+          ${bits.length ? `<p class="s">${esc(bits.join(" · "))}</p>` : ""}</div></div>`;
       }).join("");
     }
   }
