@@ -27,4 +27,12 @@ ExecStart=/bin/bash -c 'exec /home/nish/.local/bin/pi-scout-run %i scout'
 # SuccessExitStatus fudge of real errors: only this one reserved code.
 SuccessExitStatus=75
 ExecStopPost=-/bin/bash -c 'exec /home/nish/.local/bin/scout-futility-check end %i'
-TimeoutStartSec=3600
+# 5400 = 6 turns x 15min (fleet-ops#4450 raised the workload: label_budget 8->40,
+# so a scout session no longer fits 3600s — ZERO success exits in 8+ days of
+# journal, every tick dying 143/'timeout' at exactly 1h mid-turn; the 09-13
+# wedge made it loud: 5 consecutive 0509 timeouts 10:10-14:15 IST).
+# Scaled from the pi-scout-repair@0509 2026-09-13T08:45Z verdict; its
+# 20-lane-slow-timeout.conf bridge is deleted once this lands (fleet-ops#5200
+# bridge-then-durable pattern). See also #5668 (bench the wedged seat on
+# TimeoutStartSec kills).
+TimeoutStartSec=5400
