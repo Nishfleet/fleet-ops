@@ -1159,6 +1159,22 @@ grep -Eq '^[[:space:]]*bash[[:space:]]+"?\$here/measure-attest-waiting\.test\.sh
   || fail "measure-attest-waiting.test.sh must not be a known orphan (fleet-ops#5870)"
 ok "measure-attest-waiting.test.sh host line in ci-standards-audit.test.sh is pinned (fleet-ops#5870)"
 
+# fleet-ops#6159: hard-pin the host line for measure-p14-main in
+# ci-standards-audit so a future refactor that drops it is caught by name.
+# The detector landed on the claim branch hosted from
+# tests/ci-standards-audit.test.sh because the worker App cannot push
+# .github/workflows/**. Parking it on known_orphans to silence the generic
+# $bad[] message must also fail by name here first, same shape as every
+# other hosted test.
+grep -Eq '^[[:space:]]*bash[[:space:]]+"?\$here/measure-p14-main\.test\.sh"?' \
+  "$here/ci-standards-audit.test.sh" \
+  || fail "ci-standards-audit.test.sh must bash-invoke measure-p14-main.test.sh (fleet-ops#6159)"
+[[ -n "${reachable[measure-p14-main.test.sh]:-}" ]] \
+  || fail "measure-p14-main.test.sh must be listed in ci.yml or hosted by a listed test (fleet-ops#6159)"
+[[ -z "${known_orphan_set[measure-p14-main.test.sh]:-}" ]] \
+  || fail "measure-p14-main.test.sh must not be a known orphan (fleet-ops#6159)"
+ok "measure-p14-main.test.sh host line in ci-standards-audit.test.sh is pinned (fleet-ops#6159)"
+
 # fleet-ops#4263: hard-pin the host line for pick-seat-freeze in
 # ci-standards-audit.test.sh. The caller-set freeze rides on that listed
 # test (the worker App cannot push .github/workflows/**); the pin is

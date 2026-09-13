@@ -1023,6 +1023,18 @@ bash "$here/live-state-doctrine-precedence.test.sh"
 # no live network).
 bash "$here/measure-attest-waiting.test.sh"
 
+# fleet-ops#6159: the judge-header measure line `p14-main(main=<12hex>): ...`
+# (lib/measure-p14-main.sh, wired into measure.sh) RUNS the ci.yml P14 shape —
+# shellcheck / semgrep / systemd-analyze + the exact suite list — against a
+# throwaway worktree of origin/main and prints red suites by name; ok on a
+# green main; verdict cached by main sha; UNAVAILABLE decays after 1h; never
+# a fabricated ok. Hosted here so P14 runs it without a workflow-file edit
+# (the worker App cannot push .github/workflows/**). The named pin in
+# tests/p14-test-listing-gate.test.sh is the class-prevention so a future
+# drop of this host line fails by name. Hermetic (fixture trees + a
+# throwaway fixture GIT repo, no network, no full-suite execution).
+bash "$here/measure-p14-main.test.sh"
+
 # fleet-ops#6052: the deleted-symbol gate — a PR that deletes a lib/ or bin/
 # definition cannot merge while tests/ still reference it (#5993 went red
 # three times, one symbol at a time, each found on the NEXT PR). On

@@ -32,11 +32,44 @@
 #      MEASURE_P14_MAIN_SHA=<sha>       measure this sha instead of origin/main
 #      MEASURE_P14_MAIN_STATE=<dir>     cache dir (default
 #                                      ~/workspaces/agent-state/measure/p14-main)
-#      MEASURE_P14_MAIN_TIMEOUT_S       whole-verification budget (default 1200)
-#      MEASURE_P14_MAIN_SUITE_TIMEOUT_S per-suite/step cap (default 120)
+#      MEASURE_P14_MAIN_TIMEOUT_S       whole-verification budget (default 2100:
+#                                      the honest 109-suite pass extrapolates to
+#                                      ~34min on the reference VPS — the measured
+#                                      22-suite prefix took 8min — and the
+#                                      judge's 42-min cliff (fleet-ops#4891)
+#                                      leaves the headroom; a clipped pass
+#                                      decays after 1h and retries)
+#      MEASURE_P14_MAIN_SUITE_TIMEOUT_S per-suite/step cap (default 300:
+#                                      ci-standards-audit, the heaviest legit
+#                                      suite, exceeded 120s on the reference
+#                                      VPS — the #6159 rc=124 sighting — 300
+#                                      is headroom, still bounded; every
+#                                      timeout carries -k 30 so a TERM-ignoring
+#                                      suite dies, the #3969 hang-kill class)
+#      GITHUB_ACTIONS (Actions)         the detector short-circuits to
+#                                      UNAVAILABLE:ci-context — the Actions P14
+#                                      job already covers this exact commit and
+#                                      a 109-suite pass inside the 3
+#                                      measure.sh-executor tests would blow its
+#                                      30-min budget. Drills disarm it by
+#                                      prefixing GITHUB_ACTIONS= (empty).
 #      MEASURE_P14_MAIN=0               skip entirely, stay silent (the suite
 #                                      loop exports it so suites that
 #                                      re-execute measure.sh terminate)
+
+# Pure-bash comma-join. No IFS assignment, no subprocess — sgscan's
+# ifs-tampering WARNING (the only 2 findings on the #6159 diff) adjudicated
+# Act-on: the corpus keeps IFS=, out of lib/ and this deletes both
+# occurrences. $1.. = the items; callers guard non-empty (set -u: $1). Part
+# names are CI-derived identifiers (no commas), so the join is lossless.
+_fleet_p14_main_join() {
+    local out="$1" part
+    shift
+    for part in "$@"; do
+        out="$out,$part"
+    done
+    printf '%s' "$out"
+}
 
 _fleet_p14_main_state() {
     printf '%s' "${MEASURE_P14_MAIN_STATE:-$HOME/workspaces/agent-state/measure/p14-main}"
@@ -50,8 +83,8 @@ _fleet_p14_main_compute() {
     local tree="$1" main_sha="$2" state="$3"
     local t0
     t0=$(date +%s)
-    local budget="${MEASURE_P14_MAIN_TIMEOUT_S:-1200}"
-    local stepcap="${MEASURE_P14_MAIN_SUITE_TIMEOUT_S:-120}"
+    local budget="${MEASURE_P14_MAIN_TIMEOUT_S:-2100}"
+    local stepcap="${MEASURE_P14_MAIN_SUITE_TIMEOUT_S:-300}"
 
     cd "$tree" 2>/dev/null || { echo "p14-main: UNAVAILABLE:tree-cd-failed"; return 0; }
 
@@ -64,6 +97,7 @@ _fleet_p14_main_compute() {
     grep -oE 'bash tests/[a-zA-Z0-9._-]+\.test\.sh' .github/workflows/ci.yml 2>/dev/null \
         | sed -E 's|bash tests/||; s|\.test\.sh$||' | sort -u > "$list" 2>/dev/null || true
     if [ ! -s "$list" ]; then
+        rm -f "$list" 2>/dev/null || true
         echo "p14-main: UNAVAILABLE:p14-list-unreadable"
         return 0
     fi
@@ -91,7 +125,7 @@ _fleet_p14_main_compute() {
         done
         if [ "${#scfiles[@]}" -gt 0 ]; then
             rc=0
-            timeout "$stepcap" shellcheck -x "${scfiles[@]}" >"$detail.out" 2>&1 || rc=$?
+            timeout -k 30 "$stepcap" shellcheck -x "${scfiles[@]}" >"$detail.out" 2>&1 || rc=$?
             if [ "$rc" -ne 0 ]; then
                 reds+=("shellcheck")
                 { echo "--- shellcheck (rc=$rc)"; tail -5 "$detail.out" 2>/dev/null; } >> "$detail" 2>/dev/null || true
@@ -104,7 +138,7 @@ _fleet_p14_main_compute() {
     # 2. semgrep — the exact ci.yml invocation (registry ruleset, --error).
     if command -v semgrep >/dev/null 2>&1; then
         src=0
-        timeout "$stepcap" semgrep --config p/default --error . >"$detail.out" 2>&1 || src=$?
+        timeout -k 30 "$stepcap" semgrep --config p/default --error . >"$detail.out" 2>&1 || src=$?
         if [ "$src" -ne 0 ]; then
             reds+=("semgrep")
             { echo "--- semgrep (rc=$src)"; tail -5 "$detail.out" 2>/dev/null; } >> "$detail" 2>/dev/null || true
@@ -125,11 +159,11 @@ _fleet_p14_main_compute() {
                     "${main_sha:0:12}" "$detail"
                 return 0
             fi
-            timeout "$stepcap" systemd-analyze verify --man=no "$unit" >/dev/null 2>&1 \
+            timeout -k 30 "$stepcap" systemd-analyze verify --man=no "$unit" >/dev/null 2>&1 \
                 || { reds+=("systemd-analyze"); break; }
         done
         for unit in systemd/*.slice; do
-            timeout "$stepcap" systemd-analyze verify --man=no --recursive-errors=no "$unit" >/dev/null 2>&1 \
+            timeout -k 30 "$stepcap" systemd-analyze verify --man=no --recursive-errors=no "$unit" >/dev/null 2>&1 \
                 || { reds+=("systemd-analyze"); break; }
         done
         shopt -u nullglob
@@ -148,6 +182,7 @@ _fleet_p14_main_compute() {
         if [ "$(date +%s)" -ge $((t0 + budget)) ]; then
             printf 'p14-main(main=%s): UNAVAILABLE:timeout(after=%d/%d suites) detail=%s\n' \
                 "${main_sha:0:12}" "$suites" "$(wc -l < "$list")" "$detail"
+            rm -f "$list" 2>/dev/null || true
             return 0
         fi
         if [ ! -f "tests/$name.test.sh" ]; then
@@ -156,7 +191,11 @@ _fleet_p14_main_compute() {
         fi
         out=$(mktemp -t p14-suite.XXXXXX) 2>/dev/null || break
         rc=0
-        timeout "$stepcap" bash "tests/$name.test.sh" > "$out" 2>&1 || rc=$?
+        # </dev/null: a suite that reads stdin (the #6159 live sighting — the
+        # #22 fleet-blind-audit) would otherwise drain $list through its
+        # inherited fd and silently truncate the pass to the suites before it
+        # (22 of 109). -k 30: the #3969 hang-kill teeth.
+        timeout -k 30 "$stepcap" bash "tests/$name.test.sh" > "$out" 2>&1 < /dev/null || rc=$?
         if [ "$rc" -ne 0 ]; then
             reds+=("$name")
             { echo "--- $name (rc=$rc)"; tail -5 "$out" 2>/dev/null; } >> "$detail" 2>/dev/null || true
@@ -164,17 +203,18 @@ _fleet_p14_main_compute() {
         rm -f "$out" 2>/dev/null || true
         suites=$((suites + 1))
     done < "$list"
+    rm -f "$list" 2>/dev/null || true
 
     # --- assemble the one line
     local joined bodies=""
     if [ "${#reds[@]}" -gt 0 ]; then
-        joined=$(IFS=,; printf '%s' "${reds[*]}")
+        joined=$(_fleet_p14_main_join "${reds[@]}")
         bodies="red suites=$joined"
     else
         bodies="ok"
     fi
     if [ "${#missing[@]}" -gt 0 ]; then
-        joined=$(IFS=,; printf '%s' "${missing[*]}")
+        joined=$(_fleet_p14_main_join "${missing[@]}")
         bodies="$bodies missing=$joined"
     fi
     if [ "${#reds[@]}" -gt 0 ]; then
@@ -211,6 +251,17 @@ fleet_p14_main_line() {
             return 0
         fi
     else
+        # Actions runners already own the P14 verdict for this exact commit —
+        # the very checks this line re-derives. A 109-suite pass here, inside
+        # the 3 measure.sh-executor suites, blew the 30-min P14 job budget
+        # (the #6159 courtship: 22-suite prefix = 8min alone). The judge's
+        # VPS keeps the real, sha-cached verdict. Drills disarm with an
+        # EMPTY GITHUB_ACTIONS (the #9/-#10-#6-8 fixture tests do exactly
+        # that) — an unset-or-empty value means not-Actions.
+        if [ -n "${GITHUB_ACTIONS:-}" ]; then
+            echo "p14-main: UNAVAILABLE:ci-context(the-Actions-P14-job-covers-this-commit)"
+            return 0
+        fi
         if ! command -v git >/dev/null 2>&1; then
             echo "p14-main: UNAVAILABLE:git-missing"
             return 0
@@ -263,15 +314,27 @@ fleet_p14_main_line() {
     fi
 
     # --- compute, isolated: any crash inside cost one UNAVAILABLE line, never
-    # the header, and the worktree always dies with the subshell.
+    # the header, and the worktree always dies with the subshell. Cleanup runs
+    # AFTER compute inside the same subshell: the earlier order rm -rf'd the
+    # tree before compute could cd into it, so every production (non-TREE) run
+    # printed UNAVAILABLE:tree-cd-failed while the TREE-mode tests stayed
+    # green (fleet-ops#6159, caught by the fixture-GIT-repo drill). rm -rf +
+    # worktree prune (not worktree remove): once the dir is gone the
+    # administrative state is exactly what prune exists to clean.
     local line
     line=$(
-        # cleanup only what we created: TREE-mode fixtures belong to the caller
-        [ "$created" -eq 1 ] && { rm -rf "$tree" 2>/dev/null; git -C "$repo_root" worktree remove --force "$tree" >/dev/null 2>&1; } || true
         _fleet_p14_main_compute "$tree" "$main_sha" "$state"
+        # cleanup only what we created: TREE-mode fixtures belong to the caller
+        if [ "$created" -eq 1 ]; then
+            rm -rf "$tree" 2>/dev/null || true
+            git -C "$repo_root" worktree prune >/dev/null 2>&1 || true
+        fi
     ) 2>/dev/null
     if [ -z "$line" ]; then
-        [ "$created" -eq 1 ] && rm -rf "$tree" 2>/dev/null || true
+        if [ "$created" -eq 1 ]; then
+            rm -rf "$tree" 2>/dev/null || true
+            git -C "$repo_root" worktree prune >/dev/null 2>&1 || true
+        fi
         echo "p14-main: UNAVAILABLE:compute-failed"
         return 0
     fi

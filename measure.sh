@@ -13,6 +13,13 @@
 #              cursor_api_cycle_usd is the cycle-to-date cumulative.
 #   usd_per_merged_pr: <n>
 #   repair_rung=armed|off ticks=<n>   (fleet-ops#4820; latched rung visibility)
+#   p14-main(main=<12hex>): ok suites=<n>[ missing=<t,...>]
+#   p14-main(main=<12hex>): red suites=<t,...>[ missing=<t,...>] detail=<path>
+#     (fleet-ops#6159: the ci.yml P14 shape — shellcheck / semgrep /
+#     systemd-analyze + the exact suite list — RUN against a throwaway
+#     worktree of origin/main, not trusted from any check-run; verdict
+#     cached by main sha so the judge pays once per main-advance,
+#     UNAVAILABLE decays after 1h, never a fabricated ok)
 #
 #   metered    = marginal USD from tracked-metered seats over the trailing 24h
 #                (rate card in config/seat-caps.json x session usage tokens)
