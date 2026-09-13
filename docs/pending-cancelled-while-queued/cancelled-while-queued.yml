@@ -1,0 +1,143 @@
+name: cancelled-while-queued detector
+
+# Cancels workflow runs that have been queued for too long and files a
+# labelled issue per run, so the senior-auditor escalation matrix can
+# see queue pressure before it becomes a billing bomb
+# (fleet-ops#819).
+#
+# Why this exists (Nish, 2026-08-24 audit of p42-public-audit session):
+#   - Some runs sat 1,200+ minutes as `cancelled-while-queued` —
+#     queued for a runner, never picked up, eventually cancelled.
+#   - GitHub bills only the time a runner is executing a job (see the
+#     "How use of GitHub Actions is measured" doc), so the queued time
+#     is NOT billable. The audit confirmed this — `.billable.UBUNTU
+#     .total_ms` returned 0 for those runs.
+#   - GitHub's own "Workflow continuity" rule discards a queued run
+#     after 45 minutes of no runner pickup (GitHub-hosted runners doc).
+#   - The real risk is queue pressure (every queued run blocks the
+#     next one) and the worst-case scenario where a long-queued run
+#     is picked up and bills from pickup to completion with the
+#     queue time already lost. Cancelling at 30 minutes by default
+#     (15 minutes before the silent discard) caps both risks.
+#
+# What this is NOT:
+#   - It is NOT a billing-detector: GitHub's billing surface returns 0
+#     for cancelled-while-queued runs. The pre-emptive cancel is the
+#     safe cap on the worst-case scenario.
+#   - It is NOT a required check. A stuck queue delays merges but
+#     cannot break them. The detector is an alert and a cap, not a
+#     gate.
+#
+# Two trigger shapes, both GitHub-hosted (per #185: GitHub-hosted >
+# systemd for what GitHub can host; no VPS control plane for this):
+#   1. workflow_call — any repo can call this reusable workflow.
+#   2. schedule + workflow_dispatch — a sweep IN fleet-ops that
+#      enumerates enrolled repos from config/intake-repos.json.
+#
+# The `cancelled-while-queued` label is the queue-pressure signal
+# routed to the senior-auditor matrix. Observe-to-close (fleet-ops#725
+# family) closes the issue on a later tick when the run is no longer
+# reported as queued.
+#
+# GitHub Actions minutes: public repos only, free. Surface: gh CLI +
+# GitHub REST API only; no paid services. Do not make this a required
+# check — it is an alert and a cap, not a gate.
+
+on:
+  workflow_call:
+    inputs:
+      target-repo:
+        description: "Repository to scan (owner/name). Defaults to the calling repository."
+        required: false
+        type: string
+      queued-threshold-minutes:
+        description: "Auto-cancel runs queued for at least N minutes (default 30, below GitHub's 45-min discard)."
+        default: 30
+        type: number
+      lookback-hours:
+        description: "Hours of in-flight runs to scan."
+        default: 24
+        type: number
+      dry-run:
+        description: "Detect only; do not cancel or file."
+        default: false
+        type: boolean
+  workflow_dispatch:
+    inputs:
+      target-repo:
+        description: "One repo to scan (owner/name). Empty = sweep all enrolled repos."
+        required: false
+        type: string
+      queued-threshold-minutes:
+        description: "Auto-cancel runs queued for at least N minutes."
+        default: "30"
+        type: string
+      lookback-hours:
+        description: "Hours of in-flight runs to scan."
+        default: "24"
+        type: string
+      dry-run:
+        description: "Detect only; do not cancel or file."
+        default: false
+        type: boolean
+  schedule:
+    # Every 30 minutes. Named reason (per the compute rule):
+    # GitHub offers no event for "a run has been queued for >30
+    # minutes" — the closest is `workflow_run` which fires when a
+    # run COMPLETES (queued-too-long is exactly the case that never
+    # completes on its own, so workflow_run never fires). A bounded
+    # 30-min periodic sweep is the cheapest mechanical form that
+    # still lands inside GitHub's own 45-min discard. The detector
+    # itself is stateless beyond the open labelled issues, so a
+    # missed sweep costs nothing.
+    - cron: "*/30 * * * *"
+
+permissions:
+  actions: read
+  contents: read
+  issues: write
+
+concurrency:
+  group: cancelled-while-queued-${{ github.repository }}-${{ inputs.target-repo || 'sweep' }}
+  cancel-in-progress: false
+
+jobs:
+  cancel-stale-queued:
+    name: Auto-cancel stale-queued runs and file issues
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      actions: read
+      contents: read
+      issues: write
+    steps:
+      - name: Checkout fleet-ops
+        uses: actions/checkout@3d3d42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Run cancelled-while-queued detector
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          ESCALATION_REPO: Nishfleet/fleet-ops
+          # Pass inputs through env so no ${{ inputs.* }} is interpolated
+          # in the run: step (semgrep github-actions/injection — the
+          # same discipline ci-failure-escalation.yml uses).
+          TARGET_REPO: ${{ inputs.target-repo }}
+          QUEUED_THRESHOLD_MINUTES: ${{ inputs.queued-threshold-minutes || 30 }}
+          LOOKBACK_HOURS: ${{ inputs.lookback-hours || 24 }}
+          DRY_RUN: ${{ inputs.dry-run }}
+        run: |
+          set -euo pipefail
+          args=(--escalation-repo "$ESCALATION_REPO")
+          if [ -n "$TARGET_REPO" ]; then
+            args+=(--target-repo "$TARGET_REPO")
+          else
+            args+=(--targets-from config/intake-repos.json)
+          fi
+          args+=(--queued-threshold-minutes "$QUEUED_THRESHOLD_MINUTES")
+          args+=(--lookback-hours "$LOOKBACK_HOURS")
+          if [ "$DRY_RUN" = "true" ]; then
+            args+=(--dry-run)
+          fi
+          node .github/scripts/cancelled-while-queued-detector.mjs "${args[@]}"

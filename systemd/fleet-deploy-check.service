@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 [Unit]
 Description=Fleet merge-to-live deploy check (tight cadence, fleet-ops#468)
 # fleet-ops#1460/#2123: the .path unit was removed — it self-retriggered
@@ -29,3 +30,32 @@ TimeoutStartSec=300
 
 [Install]
 WantedBy=default.target
+||||||| (empty tree)
+=======
+[Unit]
+Description=Fleet merge-to-live deploy check (tight cadence, fleet-ops#468)
+# fleet-ops#1460/#2123: the .path unit was removed — it self-retriggered
+# because git updates refs via replace-by-rename, generating multiple
+# inotify events per fetch (same wedge as fleet-seat-recovery #617). The
+# 2-min timer carries the cadence. StartLimitBurst stays as a safety margin
+# for repeated service failures; StartLimit* must live in [Unit].
+StartLimitIntervalSec=1h
+StartLimitBurst=100
+
+# Named reason (decisions-ledger 2026-08-27 TOP GEAR): merged-but-not-live
+# latency. Every 2 minutes: git fetch + rev compare (seconds). Invokes the
+# sanctioned bin/fleet-ops-deploy when origin/main moved, OR when the clone
+# is on a named non-main branch (fleet-ops#5222: recover if that commit is
+# already on a remote; refuse if it is not). Cadence stays 2 min.
+# No new dispatcher, no polling for work — event-driven on the merge event
+# and on off-main checkout.
+
+[Service]
+Type=oneshot
+ExecStart=/home/nish/.local/bin/fleet-deploy-check
+# A fetch/rev-compare is cheap; give a deploy plenty of room to finish.
+TimeoutStartSec=300
+
+[Install]
+WantedBy=default.target
+>>>>>>> 6088e2712 (fix(spawn-guard): cover stop of fleet units in systemctl_restart_fleet_unit (Relates to #5605) (#5658))

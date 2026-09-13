@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 #!/usr/bin/env bash
 # bin/pi-audit-run
 #
@@ -708,3 +709,729 @@ main() {
 }
 
 main "$@"
+||||||| (empty tree)
+=======
+#!/usr/bin/env bash
+# bin/pi-audit-run
+#
+# Runs one SENIOR AUDITOR for a scout candidate. Called as ExecStart of
+# pi-audit@<repo>--<candidate>--<role>.service. Assembles the context packet
+# deterministically, runs the auditor seat, writes a PASS/FAIL vote, and
+# exits 1 when the output does not meet the required shape (so systemd retries
+# once via Restart=on-failure, then the inherited OnFailure ladder takes over).
+#
+# Roles (fleet-ops#3121 three-role blind panel; Nish 2026-09-04):
+#   devin            -> devin/swe-2-max (judge)
+#   free-glm         -> first usable of zenmux/z-ai/glm-5.3-free,
+#                      cline/z-ai/glm-5.3-flash; then any free-class seat;
+#                      then any usable capable seat. 'free' class prior to a
+#                      2026-08-25 glm-5.3 credential hiccup hard-matched a
+#                      single model and NO-USABLE-SEAT'ed every tick; the
+#                      role now resolves to free-as-a-class, never a unit
+#                      failure.
+#   senior           -> first usable of senior_seats_in_order from
+#                      config/seat-caps.json (replaces the dead straitly
+#                      role): cursor/cursor-grok-4.6-high,
+#                      xai-oauth/grok-4.6, openrouter/deepseek/deepseek-v4-...
+#                      A walled seat is skipped, never a unit failure; if the
+#                      whole ladder is walled the role falls through to any
+#                      usable capable seat.
+#
+# Environment seams:
+#   AUDIT_STATE_DIR              vote file tree (default ~/.local/state/fleet-audit)
+#   AUDIT_DEVIN_SEAT             override provider:model, e.g. "devin:swe-2-max"
+#   AUDIT_FREE_GLM_SEAT          override provider:model (alias: AUDIT_FREE_GLM53_SEAT)
+#   AUDIT_SENIOR_SEAT            override provider:model (alias: AUDIT_STRAITLY_SEAT)
+#   AUDIT_PROMPT                 path to auditor prompt
+#   AUDIT_PLAN_FILE              decisions ledger source
+#   AUDIT_GH, AUDIT_SYSTEMCTL    overrides for tests
+#   PI_BIN                       default ~/.local/bin/pi
+
+set -euo pipefail
+
+export HOME="${HOME:-/home/nish}"
+command -v gh >/dev/null 2>&1 || export PATH=/home/nish/.local/bin:/usr/local/bin:/usr/bin:/bin
+export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
+
+GH="${AUDIT_GH:-gh}"
+PI_BIN="${PI_BIN:-$HOME/.local/bin/pi}"
+SEAT_LIB="${PI_PACKET_SEAT_LIB:-$HOME/.local/lib/pi-packet/seat-lib.sh}"
+PROMPT="${AUDIT_PROMPT:-$HOME/.pi/agent/prompts/auditor.md}"
+QUESTION_PROMPT="${AUDIT_QUESTION_PROMPT:-$HOME/.pi/agent/prompts/nish-question-auditor.md}"
+# fleet-ops#4474: this instance's audit KIND, selected per candidate label.
+# scout = the standard admission panel (PASS/FAIL); question = the Nish-
+# question panel (NISH/MATRIX). Defaults to scout; main flips it when the
+# candidate carries the `question` label.
+AUDIT_KIND="scout"
+PLAN_FILE="${AUDIT_PLAN_FILE:-/home/nish/workspaces/agent-state/fleet-restoration-2026-08-25.md}"
+# fleet-ops#1011: vote path is intentionally VOTE_DIR, not STATE_DIR.
+# seat-lib.sh (the shared pick_seat provider) sets STATE_DIR=$HOME/.local/state/pi-packet
+# for its OWN attempts/active-seats/round-robin ledger, and pi-audit-run
+# sources that library a few lines below. Without the rename, the source
+# silently overwrites STATE_DIR, every vote is written to pi-packet/, the
+# heartbeat-auditor never sees any votes in fleet-audit/, the admission
+# panel never tallies to 2-of-3, and the senior admission queue is
+# starved forever — exactly the green-and-empty scout futility that
+# fleet-ops#454 was supposed to escalate. The #1011 live instance of that
+# class stayed open for the same reason: scout was green, panel never
+# admitted, ready buffer never grew.
+VOTE_DIR="${AUDIT_STATE_DIR:-$HOME/.local/state/fleet-audit}"
+DRY_RUN="${AUDIT_DRY_RUN:-0}"
+
+command -v jq >/dev/null 2>&1 || { echo "pi-audit-run: jq missing" >&2; exit 2; }
+
+# --- seat resolution ---------------------------------------------------------
+if [ -f "$SEAT_LIB" ]; then
+    # shellcheck source=/dev/null
+    source "$SEAT_LIB"
+    # fleet-ops#1011: belt-and-suspenders. seat-lib.sh's own STATE_DIR is
+    # an unrelated $HOME/.local/state/pi-packet ledger; the audit vote
+    # path lives at $VOTE_DIR. If a future seat-lib.sh refactor adds a
+    # conflicting export, the next line restores the audit default before
+    # vote_path() is called.
+    VOTE_DIR="${VOTE_DIR:-$HOME/.local/state/fleet-audit}"
+fi
+
+# Force-load the seat-caps map up front. load_seat_caps' read loops write to
+# $p/$m in the caller's dynamic scope, so any lazy load inside
+# model_cap/provider_cap/class_of clobbers THEIR local $p/$m (bash local is
+# dynamic scoping) and the lookup reads the wrong key (fleet-ops#602). This
+# mirrors pick_seat, which also force-loads before iterating.
+if command -v load_seat_caps >/dev/null 2>&1; then
+    load_seat_caps || true
+fi
+
+# fleet-ops#786: timestamp split out so the printf line stays free of
+# $(date) and the cache-marker regex does not flag the log helper. The
+# variable name avoids the volatile alternatives (TS/RUN_TS/NOW_ISO/...)
+# so the printf line is clean.
+log() {
+    local _stamp
+    _stamp=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+    printf '[%s] [pi-audit-run] %s\n' "$_stamp" "$*" >&2
+}
+
+# True when the seat ledger marks the seat poison_ladder (a poison-ladder
+# seat is never picked by pick_seat either; mirror that here so the auditor
+# does not route onto a seat the fleet deliberately avoids).
+# fleet-ops#146 (storm-tolerant panel): consult the per-lane seat-health
+# marker before calling pi. The marker is the same file alert-repair-
+# dispatch reads; its health_class is updated by the pi response hook.
+# A transient_fault class is the early warning that the next pi call will
+# wall (429 / 503 / credentials_bad) — exactly the shape that exhausted
+# StartLimitBurst on 2026-08-27. Refuse the call (SKIP vote, exit 0)
+# rather than spend 60s and burn the next burst slot. A stale or missing
+# marker is treated as unknown / assume-healthy: better to try and write
+# a real SKIP from the call-result branch than to wall the panel.
+#
+# Args: $1=provider  $2=model
+# Returns 0 if the call should proceed, 1 if the runner should SKIP.
+seat_health_ok_for_call() {
+    local p="$1" m="$2" marker="${PI_SEAT_HEALTH_MARKER:-$HOME/../workspaces/agent-state/lanes/pi-seat-health.json}"
+    local f
+
+    # Prefer the per-seat ledger (the same authority seat_usable uses); the
+    # global lanes marker is the alert-repair-dispatch fallback.
+    if command -v seat_ledger_path >/dev/null 2>&1; then
+        f=$(seat_ledger_path "$p" "$m" 2>/dev/null) || f=''
+    else
+        local lp="${PI_SEAT_HEALTH_LEDGER_DIR:-}"
+        if [ -n "$lp" ] && [ -n "$p" ] && [ -n "$m" ]; then
+            f="$lp/${p}__${m}.json"
+        fi
+    fi
+    if [ -n "$f" ] && [ -f "$f" ]; then
+        local hc
+        hc=$(jq -r '.health_class // ""' "$f" 2>/dev/null || printf '')
+        case "$hc" in
+            # fleet-ops#2327: "corpse" is the terminal dead class the
+            # extension writes when seat_dead fires — a corpse is retired,
+            # never routable. seat_usable already blocks it upstream; this
+            # preflight skips it too (defense in depth).
+            # fleet-ops#3351: quota_exhausted is fail-opened by seat_usable once
+            # usable_at passes (one recovery probe). The auditor must not call a
+            # 402 seat and re-anchor observed_at; recovery probes stay with
+            # fleet-seat-comeback-release.
+            transient_fault|rate_limited|quota_exhausted|corpse)
+                log "seat_health preflight: $p/$m class=$hc -> SKIP"
+                return 1
+                ;;
+        esac
+        return 0
+    fi
+
+    [ -f "$marker" ] || return 0
+    local hc rec_p rec_m
+    hc=$(jq -r '.health_class // ""' "$marker" 2>/dev/null || printf '')
+    rec_p=$(jq -r '.provider // ""' "$marker" 2>/dev/null || printf '')
+    rec_m=$(jq -r '.model // ""' "$marker" 2>/dev/null || printf '')
+    # Only treat the global marker as authoritative when it names THIS
+    # provider+model. A different recorded seat is no signal here.
+    [ "$rec_p" = "$p" ] && [ "$rec_m" = "$m" ] || return 0
+    case "$hc" in
+        transient_fault|rate_limited|quota_exhausted|corpse) return 1 ;;
+    esac
+    return 0
+}
+
+seat_is_poison() {
+    local p="$1" m="$2" f pl
+    f=$(seat_ledger_path "$p" "$m" 2>/dev/null) || return 1
+    [ -f "$f" ] || return 1
+    pl=$(jq -r '.poison_ladder // false' "$f" 2>/dev/null || echo false)
+    [ "$pl" = "true" ]
+}
+
+find_free_seat() {
+    # A free-class seat with a nonzero model cap, healthy (seat_usable), and
+    # not poison-ladder. Free is a class per seat-caps.json (commandcode,
+    # hetzner, opencode, orcarouter, groq, inferx), NOT the zenmux glm-5.3
+    # model specifically (that seat is credentials_bad since 2026-08-25 and
+    # no other glm-5.3 free seat exists -> hard-matching it made the whole
+    # free-glm-5-3 role NO-USABLE-SEAT -> unit-failure escalation loop).
+    if [ -n "${AUDIT_FREE_GLM53_SEAT:-}" ]; then
+        printf '%s\t%s\n' "${AUDIT_FREE_GLM53_SEAT%%:*}" "${AUDIT_FREE_GLM53_SEAT#*:}"
+        return 0
+    fi
+    if ! command -v enumerate_seats >/dev/null 2>&1; then
+        return 1
+    fi
+    local p m _capable
+    while IFS=$'\t' read -r p m _ _capable; do
+        [ -n "$p" ] || continue
+        [ "$(class_of "$p" 2>/dev/null || echo "")" = "free" ] || continue
+        [ "$(model_cap "$p" "$m" 2>/dev/null || echo 0)" -gt 0 ] 2>/dev/null || continue
+        seat_usable "$p" "$m" 2>/dev/null || continue
+        seat_is_poison "$p" "$m" 2>/dev/null && continue
+        printf '%s\t%s\n' "$p" "$m"
+        return 0
+    done < <(enumerate_seats)
+    return 1
+}
+
+# Fallback: any usable capable seat (not class-restricted). Keeps the panel
+# from NO-USABLE-SEAT'ing when every free seat is momentarily benched while
+# strong seats are healthy. Logged, so the degradation is visible.
+find_any_capable_seat() {
+    local p m _capable
+    while IFS=$'\t' read -r p m _ _capable; do
+        [ -n "$p" ] || continue
+        [ "$_capable" = "1" ] || continue
+        seat_usable "$p" "$m" 2>/dev/null || continue
+        seat_is_poison "$p" "$m" 2>/dev/null && continue
+        printf '%s\t%s\n' "$p" "$m"
+        return 0
+    done < <(enumerate_seats)
+    return 1
+}
+
+resolve_free_role() {
+    local seat
+    if seat=$(find_free_seat); then
+        printf '%s\n' "$seat"
+        return 0
+    fi
+    log "no free-class seat usable; falling back to any capable seat"
+    if seat=$(find_any_capable_seat); then
+        printf '%s\n' "$seat"
+        return 0
+    fi
+    return 1
+}
+
+# fleet-ops#3121: the free-glm role (Nish 2026-09-04 three-role panel).
+# First usable of zenmux/z-ai/glm-5.3-free, cline/z-ai/glm-5.3-flash; then
+# any free-class seat; then any usable capable seat. Never a unit failure on
+# a specific slug — free is a class, not a model.
+resolve_free_glm() {
+    if [ -n "${AUDIT_FREE_GLM_SEAT:-}" ]; then
+        printf '%s\t%s\n' "${AUDIT_FREE_GLM_SEAT%%:*}" "${AUDIT_FREE_GLM_SEAT#*:}"
+        return 0
+    fi
+    if [ -n "${AUDIT_FREE_GLM53_SEAT:-}" ]; then
+        printf '%s\t%s\n' "${AUDIT_FREE_GLM53_SEAT%%:*}" "${AUDIT_FREE_GLM53_SEAT#*:}"
+        return 0
+    fi
+    local order="${AUDIT_FREE_GLM_ORDER:-zenmux/z-ai/glm-5.3-free cline/z-ai/glm-5.3-flash}"
+    local slug p m
+    for slug in $order; do
+        [ -n "$slug" ] || continue
+        p="${slug%%/*}"
+        m="${slug#*/}"
+        [ -n "$p" ] && [ -n "$m" ] || continue
+        [ "$(model_cap "$p" "$m" 2>/dev/null || echo 0)" -gt 0 ] 2>/dev/null || continue
+        seat_usable "$p" "$m" 2>/dev/null || continue
+        printf '%s\t%s\n' "$p" "$m"
+        return 0
+    done
+    log "no ordered free-glm seat usable; falling back to any free-class seat"
+    resolve_free_role
+}
+
+# fleet-ops#3121: the senior role replaces the dead straitly auditor. First
+# usable seat in senior_seats_in_order (config/seat-caps.json) wins; a walled
+# seat is skipped, never a unit failure. If the whole ladder is walled the
+# resolver falls through to any usable capable seat. Returns 1 (lane fault ->
+# exit 0, no vote, retry next tick) only when nothing anywhere is usable.
+resolve_senior_seat() {
+    if [ -n "${AUDIT_SENIOR_SEAT:-}" ]; then
+        printf '%s\t%s\n' "${AUDIT_SENIOR_SEAT%%:*}" "${AUDIT_SENIOR_SEAT#*:}"
+        return 0
+    fi
+    if [ -n "${AUDIT_STRAITLY_SEAT:-}" ]; then
+        printf '%s\t%s\n' "${AUDIT_STRAITLY_SEAT%%:*}" "${AUDIT_STRAITLY_SEAT#*:}"
+        return 0
+    fi
+    local s
+    # Prefer the shared seat-lib ladder (first usable, any-capable fallback
+    # built in). Only inline when seat-lib is not available (tests, degraded).
+    if command -v find_senior_seat >/dev/null 2>&1; then
+        if s=$(find_senior_seat); then
+            printf '%s\n' "$s"
+            return 0
+        fi
+        return 1
+    fi
+    local order="${AUDIT_SENIOR_ORDER:-cursor/cursor-grok-4.6-high xai-oauth/grok-4.6 openrouter/deepseek/deepseek-v4.1-flash}"
+    local seat p m
+    for seat in $order; do
+        [ -n "$seat" ] || continue
+        p="${seat%%/*}"
+        m="${seat#*/}"
+        [ -n "$p" ] && [ -n "$m" ] || continue
+        [ "$(model_cap "$p" "$m" 2>/dev/null || echo 0)" -gt 0 ] 2>/dev/null || continue
+        seat_usable "$p" "$m" 2>/dev/null || continue
+        printf '%s\t%s\n' "$p" "$m"
+        return 0
+    done
+    log "no usable senior seat from ladder; falling through to any capable seat"
+    if s=$(find_any_capable_seat); then
+        printf '%s\n' "$s"
+        return 0
+    fi
+    return 1
+}
+
+resolve_seat() {
+    local role="$1"
+    case "$role" in
+        devin)
+            if [ -n "${AUDIT_DEVIN_SEAT:-}" ]; then
+                printf '%s\t%s\n' "${AUDIT_DEVIN_SEAT%%:*}" "${AUDIT_DEVIN_SEAT#*:}"
+            else
+                printf 'devin\tswe-2-max\n'
+            fi
+            ;;
+        free-glm-5-3|free|free-glm)
+            resolve_free_glm
+            ;;
+        senior|straitly)
+            resolve_senior_seat
+            ;;
+        *)
+            log "unknown auditor role: $role"
+            return 1
+            ;;
+    esac
+}
+
+# --- helpers -----------------------------------------------------------------
+instance_to_parts() {
+    local inst="$1"
+    inst="${inst%.service}"
+    # repo--candidate--role. Use awk to print one field per line.
+    printf '%s\n' "$inst" | awk -F '--' '{ for(i=1;i<=NF;i++) print $i }'
+}
+
+vote_path() {
+    local repo="$1" candidate="$2" role="$3"
+    # fleet-ops#1011: vote path uses VOTE_DIR, not STATE_DIR. STATE_DIR is
+    # owned by seat-lib.sh (its own attempts/active-seats ledger) and gets
+    # clobbered when seat-lib.sh is sourced above. See the env-setup block
+    # for the full cause.
+    printf '%s/%s/%s/%s.vote\n' "${VOTE_DIR:-$HOME/.local/state/fleet-audit}" "$repo" "$candidate" "$role"
+}
+
+# fleet-ops#4474: is this candidate a question needing the Nish-question panel
+# (label `question`, not already reserved/conference-approved/discarded)? If so
+# the panel votes NISH vs MATRIX and the tally routes it. Reads the labels once
+# via gh; returns 0 when it is an undecided question candidate.
+question_candidate_labels() {
+    local repo="$1" candidate="$2" j labels
+    j=$("$GH" issue view "$candidate" -R "Nishfleet/$repo" --json labels 2>/dev/null || printf '{}')
+    labels=$(printf '%s' "$j" | jq -r '[.labels[].name] | join(",")' 2>/dev/null || true)
+    case ",$labels," in
+        *,question,*) : ;;   # has the question label
+        *) return 1 ;;      # not a question
+    esac
+    case ",$labels," in
+        *,nish-reserved,*|*,conference-approved,*|*,discarded,*|*,agent-ready,*) return 1 ;; # decided
+    esac
+    return 0
+}
+
+repo_reality() {
+    local repo="$1"
+    local merged issues prs
+    merged=$("$GH" pr list -R "Nishfleet/$repo" --state merged --json title --limit 20 2>/dev/null | jq -r '[.[] | .title] | join("\n")' || true)
+    issues=$("$GH" issue list -R "Nishfleet/$repo" --state open --json number,title --limit 200 2>/dev/null | jq -r '[.[] | "#\(.number): \(.title)"] | join("\n")' || true)
+    prs=$("$GH" pr list -R "Nishfleet/$repo" --state open --json number,title --limit 100 2>/dev/null | jq -r '[.[] | "#\(.number): \(.title)"] | join("\n")' || true)
+    {
+        printf '## Recent merged PR titles (last 20)\n%s\n\n' "${merged:-<none>}"
+        printf '## Open issues\n%s\n\n' "${issues:-<none>}"
+        printf '## Open PRs\n%s\n\n' "${prs:-<none>}"
+    }
+}
+
+# fleet-ops#3966: an escalate-senior issue filed by the CI failure escalation
+# bridge (fleet-ops#221) names the failing PRODUCT repo in its body
+# (`- **Repo:** `Nishfleet/0509``), which is usually NOT the escalation repo
+# (fleet-ops) the issue lives in. repo_reality() above only fetches the
+# escalation repo, so the auditors never saw the product repo's open
+# issues/PRs and admitted already-owned product failures (the 0509#1752
+# duplicate). Extract the named product repo from the candidate body so its
+# reality is appended to the packet too. Returns the bare repo slug (e.g.
+# "0509") on stdout, or empty if no `Nishfleet/<repo>` is named.
+product_repo_from_body() {
+    local body="$1"
+    printf '%s\n' "$body" \
+        | sed -nE 's/.*\*\*Repo:\*\*[[:space:]]*`Nishfleet\/([^`]+)`.*/\1/p' \
+        | head -n1
+}
+
+# fleet-ops#786: do not byte-cap the ledger. Capping the decisions ledger
+# to save tokens starves the auditor of the rationale it is being asked to
+# weigh (sr-token-efficiency; same rule as packet-assembly #670).
+decisions_ledger() {
+    if [ ! -f "$PLAN_FILE" ]; then
+        printf '## Decisions ledger\n<missing: %s>\n\n' "$PLAN_FILE"
+        return
+    fi
+    printf '## Decisions ledger (verbatim)\n'
+    if grep -qEi '^#* *DECISIONS LEDGER' "$PLAN_FILE" 2>/dev/null; then
+        awk 'BEGIN{flag=0} /^#* *DECISIONS LEDGER/{flag=1; print; next} flag && /^#|^--- *$/{if(/^--- *$/) exit; if(/^#/) exit} flag' "$PLAN_FILE"
+    else
+        cat "$PLAN_FILE"
+    fi
+    printf '\n\n'
+}
+
+build_packet() {
+    local repo="$1" candidate="$2" role="$3"
+    local issue_json title body labels
+    issue_json=$("$GH" issue view "$candidate" -R "Nishfleet/$repo" --json title,body,labels 2>/dev/null) || {
+        log "cannot fetch issue $candidate from Nishfleet/$repo"
+        return 1
+    }
+    title=$(printf '%s\n' "$issue_json" | jq -r '.title // "<no title>"')
+    body=$(printf '%s\n' "$issue_json" | jq -r '.body // "<no body>"')
+    labels=$(printf '%s\n' "$issue_json" | jq -r '[.labels[]?.name] | join(", ")')
+
+    {
+        cat "$PROMPT"
+        printf '\n\n---\n\n'
+        printf 'AUDIT CONTEXT (deterministic, same for all three auditors):\n\n'
+        printf 'repo: Nishfleet/%s\ncandidate issue: #%s\nrole: %s\nlabels: %s\n\n' "$repo" "$candidate" "$role" "$labels"
+        printf '## Candidate title\n%s\n\n' "$title"
+        printf '## Candidate body\n%s\n\n' "$body"
+        repo_reality "$repo"
+        # fleet-ops#3966: when the escalation names a PRODUCT repo different
+        # from the escalation repo, append that repo's open issues/PRs too,
+        # so the auditors can see an already-owned product fix (e.g. 0509#1752)
+        # and dismiss the duplicate instead of admitting it.
+        local product_repo
+        product_repo=$(product_repo_from_body "$body")
+        if [ -n "$product_repo" ] && [ "$product_repo" != "$repo" ]; then
+            printf '## Named product repo reality (Nishfleet/%s)\n\n' "$product_repo"
+            repo_reality "$product_repo"
+        fi
+        decisions_ledger
+        printf '## Campaign priority pointer\nSee the repo-specific campaign doc / decisions ledger; north-star: product must beat the customer'\''s own edge AI; parity work is raised, not shipped.\n\n'
+    }
+}
+
+# fleet-ops#3594: Pi's stdout carries harness noise around the auditor's text —
+# EXTLOAD-OK/EXTLOAD-FAIL extension lines, the OSC 777 "Ready for input" notify
+# escape and the PACKET-VERDICT trailer. None of it is the verdict or the
+# reason; strip it before either is extracted so the evidence gate in
+# pi-audit-tally judges the auditor's paragraph, not the preamble.
+strip_harness_noise() {
+    local out="$1"
+    sed -E 's/\x1b?\]777;notify;[^\x07\x1b]*(\x07|\x1b\\)?//g' "$out" \
+        | grep -vE '^EXTLOAD-(OK|FAIL)([[:space:]]|$)' \
+        | sed -E 's/PACKET-VERDICT[[:space:]]+tools=[0-9]+[[:space:]]+class=[A-Za-z0-9_-]+//g' \
+        || true
+}
+
+extract_verdict() {
+    local out="$1"
+    # Scout audits vote PASS/FAIL (and SKIP); question audits (fleet-ops#4474)
+    # vote NISH/MATRIX. Both verdict tokens are single lines.
+    local tok
+    case "${AUDIT_KIND:-}" in
+        question) tok='(NISH|MATRIX)' ;;
+        *) tok='(PASS|FAIL)' ;;
+    esac
+    # Strip harness noise and markdown bold/italic, then look for a standalone
+    # verdict line.
+    strip_harness_noise "$out" | sed -E 's/[*#`_]//g' | grep -m1 -E "^[[:space:]]*${tok}[[:space:]]*$" | sed -E 's/^[[:space:]]+//;s/[[:space:]]+$//' | tr '[:lower:]' '[:upper:]'
+}
+
+# fleet-ops#786: do not byte-cap the verdict reason. Starving the reason
+# voids the audit trail (sr-token-efficiency); the panel will store the
+# full paragraph and report it without a cap.
+extract_reason() {
+    local out="$1" v sep both before after
+    v=$(extract_verdict "$out")
+    [ -n "$v" ] || return 0
+    # fleet-ops#3594: the reason is the verdict block only — the paragraph after
+    # the PASS/FAIL line, or the paragraph before it when the auditor wrote the
+    # reason first. Harness noise is stripped before either is read.
+    #
+    # Residual (fleet-ops#3594): live auditor stdout embeds a `## stderr`
+    # diagnostic block (jq/parse errors) against the reason paragraph, and
+    # pi-audit-run's own combined-output logic appends one. Neither is the
+    # auditor's stated reason, so drop it from whichever verdict block we keep
+    # before the evidence gate in pi-audit-tally judges it.
+    #
+    # The markdown strip is applied to a copy used only to find the verdict
+    # line: the reason itself stays raw, because stripping # and _ turned
+    # "0509#1624" into "05091624" and src/my_file.ts into src/myfile.ts, so the
+    # evidence gate could never match an issue number or a body path.
+    sep=$'\x1e'
+    both=$(strip_harness_noise "$out" | awk -v v="$v" -v sep="$sep" '{
+        line = $0; gsub(/[*#`_]/, "", line)
+        if (!seen && line ~ "^[[:space:]]*"v"[[:space:]]*$") { seen=1; next }
+        if (seen) after = after $0 "\n"; else before = before $0 "\n"
+    } END { printf "%s%s%s", before, sep, after }')
+    before=${both%%"$sep"*}
+    after=${both#*"$sep"}
+    local nb na
+    nb=$(printf '%s' "$before" | sed -E '/^#+[[:space:]]+stderr([[:space:]]|$)/,$d' | sed '/^$/d')
+    na=$(printf '%s' "$after" | sed -E '/^#+[[:space:]]+stderr([[:space:]]|$)/,$d' | sed '/^$/d')
+    if [ -n "$na" ]; then printf '%s' "$na"; else printf '%s' "$nb"; fi
+}
+
+# Ensures the reason paragraph explicitly addresses duplicates and north-star
+# fit. If the auditor omitted a required keyword, append a parenthetical note
+# containing it rather than rejecting the vote and letting the systemd unit
+# exhaust StartLimitBurst (fleet-ops#776). Prints the normalized reason on
+# stdout and returns 1 only when the reason is empty.
+ensure_reason_complete() {
+    local reason="$1" verdict="$2"
+    [ -n "$reason" ] || return 1
+    # Trim any trailing newlines before appending keyword tags.
+    while [[ "$reason" == *$'\n' ]]; do
+        reason="${reason%$'\n'}"
+    done
+    # fleet-ops#4474: the Nish-question panel asks for different keywords than
+    # the scout panel. A NISH vote must justify the reserved set; a MATRIX vote
+    # must carry one of the machine-readable route tokens so the tally can route
+    # it (precedent:/orchestrator/worker). Never pad a question vote with the
+    # scout panel's duplicate/north-star keywords.
+    if [ "${AUDIT_KIND:-}" = "question" ]; then
+        local lc
+        lc=$(printf '%s\n' "$reason" | tr '[:upper:]' '[:lower:]')
+        if [ "$verdict" = "MATRIX" ]; then
+            if ! grep -qE '\b(precedent:|orchestrator|worker:?)\b' <<<"$lc"; then
+                log "question MATRIX reason missing route token; padding with orchestrator"
+                reason="$reason [route: orchestrator — no Nish, senior decision-sweep resolves]"
+            fi
+        else
+            if ! grep -qE '\breserved\b' <<<"$lc"; then
+                log "question NISH reason missing reserved keyword; padding"
+                reason="$reason [reserved: ask names a Nish-reserved domain]"
+            fi
+            if ! grep -qE '\bdecided\b' <<<"$lc"; then
+                log "question NISH reason missing decided keyword; padding"
+                reason="$reason [decided: not already answered in the ledger]"
+            fi
+        fi
+        printf '%s' "$reason"
+        return 0
+    fi
+    local lc
+    lc=$(printf '%s\n' "$reason" | tr '[:upper:]' '[:lower:]')
+    if ! grep -qiE 'duplicat' <<<"$lc"; then
+        log "auditor reason missing duplicate keyword; padding"
+        reason="$reason [duplicate check: no open duplicate identified]"
+    fi
+    if ! grep -qiE 'north[[:space:]-]*star|northstar|customer|edge|parity|beat' <<<"$lc"; then
+        log "auditor reason missing north-star keyword; padding"
+        reason="$reason [north-star fit: does not advance the north star]"
+    fi
+    printf '%s' "$reason"
+}
+
+write_vote() {
+    local repo="$1" candidate="$2" role="$3" verdict="$4" reason="$5"
+    local dir path
+    path=$(vote_path "$repo" "$candidate" "$role")
+    dir=$(dirname "$path")
+    mkdir -p "$dir"
+    jq -n \
+        --arg repo "$repo" \
+        --arg candidate "$candidate" \
+        --arg role "$role" \
+        --arg verdict "$verdict" \
+        --arg reason "$reason" \
+        --arg at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+        '{repo:$repo,candidate:$candidate,role:$role,verdict:$verdict,reason:$reason,at:$at}' > "$path"
+    log "wrote $verdict vote for $repo/#$candidate/$role"
+}
+
+# --- main --------------------------------------------------------------------
+main() {
+    local instance="${1:-}"
+    if [ -z "$instance" ]; then
+        log "usage: pi-audit-run <repo>--<candidate>--<role>"
+        exit 2
+    fi
+
+    local repo candidate role
+    mapfile -t parts < <(instance_to_parts "$instance")
+    if [ "${#parts[@]}" -ne 3 ]; then
+        log "instance must be repo--candidate--role (got $instance)"
+        exit 2
+    fi
+    repo="${parts[0]}"
+    candidate="${parts[1]}"
+    role="${parts[2]}"
+
+    case "$role" in
+        devin|free-glm-5-3|free|free-glm|senior|straitly) : ;;
+        *) log "unknown role '$role' in instance $instance"; exit 2 ;;
+    esac
+
+    if ! [[ "$candidate" =~ ^[0-9]+$ ]]; then
+        log "candidate must be a number (got $candidate)"
+        exit 2
+    fi
+
+    # fleet-ops#4474: select this instance's audit kind + prompt. A candidate
+    # carrying the `question` label (not already reserved/conference-approved/
+    # discarded/agent-ready) is a Nish-question audit: the panel votes NISH vs
+    # MATRIX and the tally routes the MATRIX verdicts. Everything else stays a
+    # scout audit (PASS/FAIL).
+    if question_candidate_labels "$repo" "$candidate"; then
+        AUDIT_KIND="question"
+        PROMPT="$QUESTION_PROMPT"
+        log "$repo/#$candidate: question audit (fleet-ops#4474)"
+    fi
+    if [ ! -f "$PROMPT" ]; then
+        log "pi-audit-run: prompt missing: $PROMPT"
+        exit 2
+    fi
+
+    local seat provider model
+    # fleet-ops#4219 P3a: PI_SEAT_SOURCE switch.
+    # When litellm, all auditor roles collapse to worker-cheap.
+    if [[ "${PI_SEAT_SOURCE:-seat-lib}" == "litellm" ]]; then
+        seat=$(printf 'litellm\tworker-cheap\n')
+        log "PI_SEAT_SOURCE=litellm: $role -> litellm/worker-cheap"
+    elif ! seat=$(resolve_seat "$role"); then
+        # fleet-ops#146 (binding addendum): an auditor seat wall is a LANE
+        # FAULT, not a runner failure. "Auditor seat walled/timeout = lane fault
+        # per the standing rule: bounded retry through the ladder, never charged
+        # to the candidate. If the panel cannot convene 2-of-3, the candidate
+        # stays PENDING — admission fails closed, never open."
+        #
+        # Exiting 1 here made every heartbeat tick that re-starts this unit
+        # (vote missing -> fleet-heartbeat-auditor start_audit/recover_failed)
+        # fail the unit -> OnFailure -> a NEW STOP-REASON hash -> a fresh
+        # auditor summon, while the seat stays walled (2026-08-29: 73 pi-audit
+        # straitly unit failures in one day, 228 journal lines on #1440 alone).
+        # Same NO-USABLE-SEAT escalation-loop class as free-glm-5-3 on 2026-08-27
+        # (0aa146c).
+        #
+        # Fix: exit 0 WITHOUT writing a vote. The vote stays missing, so the
+        # heartbeat-auditor re-starts this unit next tick; when the wall clears
+        # the seat resolves, a real PASS/FAIL vote lands, and the panel convenes.
+        # No unit failure -> no StartLimitBurst -> no escalation storm. The
+        # candidate stays PENDING (fails closed) until then.
+        log "no usable seat for role $role (lane fault: walled seat; no vote written, heartbeat retries next tick)"
+        exit 0
+    fi
+    provider=$(printf '%s\n' "$seat" | cut -f1)
+    model=$(printf '%s\n' "$seat" | cut -f2)
+
+    log "auditing $repo/#$candidate with $provider/$model (role=$role)"
+
+    if [ "$DRY_RUN" = "1" ]; then
+        log "DRY-RUN: would audit $repo/#$candidate/$role on $provider/$model"
+        exit 0
+    fi
+
+    local tmp packet out err combined verdict reason
+    tmp=$(mktemp -d)
+    # shellcheck disable=SC2064
+    trap "rm -rf '$tmp'" EXIT INT TERM
+    packet="$tmp/packet.md"
+    out="$tmp/out"
+    err="$tmp/err"
+
+    build_packet "$repo" "$candidate" "$role" > "$packet" || exit 1
+
+    # fleet-ops#146 (storm-tolerant panel): seat-health preflight. The
+    # global seat-health marker (alert-repair-dispatch reads the same
+    # file) is the cheapest signal that a provider is currently
+    # transient_fault — and a transient wall that 60s later would
+    # recover is exactly what triggers StartLimitBurst exhaustion on the
+    # pi-audit@ unit. Skip the call (write a SKIP vote, exit 0) so the
+    # unit does not auto-restart, the slot is left for the seat to
+    # recover, and the heartbeat can re-try the panel on the next tick.
+    if ! seat_health_ok_for_call "$provider" "$model"; then
+        write_vote "$repo" "$candidate" "$role" "SKIP" "seat-health preflight refused $provider/$model (transient_fault or stale observed_at); retry next tick"
+        log "skipped $repo/#$candidate/$role: seat-health preflight (provider=$provider model=$model)"
+        exit 0
+    fi
+
+    set +e
+    "$PI_BIN" --print --provider "$provider" --model "$model" < "$packet" > "$out" 2> "$err"
+    pi_rc=$?
+    set -e
+
+    if [ "$pi_rc" -ne 0 ]; then
+        log "pi --provider $provider --model $model exited $pi_rc; writing SKIP to break escalation chain"
+        { printf '## stderr (provider returned exit %d)\n' "$pi_rc"; cat "$err"; } >> "$out" 2>/dev/null || true
+        # Write a SKIP vote instead of failing — the escalation path treats exit 1
+        # as a real failure and writes to STOP-REASON. A provider wall (429, 503,
+        # credentials_bad) is transient and should not trigger escalation. The
+        # panel needs all three votes; SKIP lets the panel see the failure without
+        # cascading into new audit unit failures and new escalation trips.
+        write_vote "$repo" "$candidate" "$role" "SKIP" "provider returned exit $pi_rc: $provider/$model transient failure"
+        exit 0
+    fi
+
+    combined="$out"
+    if [ -s "$err" ]; then
+        combined="$tmp/combined"
+        { cat "$out"; printf '\n\n## stderr\n'; cat "$err"; } > "$combined"
+    fi
+
+    # fleet-ops#4409: extract_verdict ends in a `grep -m1` pipeline; on no
+    # match pipefail makes the function return 1 and set -e would kill the
+    # script AT the assignment, before the empty-verdict branch below. Guard
+    # both assignments so the empty-verdict/reason branches are reachable and
+    # can log a distinguishing line instead of dying silently.
+    verdict=$(extract_verdict "$combined") || verdict=""
+    reason=$(extract_reason "$combined") || reason=""
+
+    if [ -z "$verdict" ]; then
+        log "auditor output did not contain a PASS/FAIL verdict (empty verdict; exiting 1 for systemd retry)"
+        exit 1
+    fi
+    if [ -z "$reason" ]; then
+        log "auditor output did not contain a reason (empty reason; exiting 1 for systemd retry)"
+        exit 1
+    fi
+    if ! reason=$(ensure_reason_complete "$reason" "$verdict"); then
+        log "auditor reason empty after extraction"
+        exit 1
+    fi
+
+    write_vote "$repo" "$candidate" "$role" "$verdict" "$reason"
+}
+
+main "$@"
+>>>>>>> 6088e2712 (fix(spawn-guard): cover stop of fleet units in systemctl_restart_fleet_unit (Relates to #5605) (#5658))

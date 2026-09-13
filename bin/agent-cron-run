@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 #!/usr/bin/env bash
 # bin/agent-cron-run — seat-rotation runner for cron-prompts/<slug>.md.
 # Used by agent-cron-<slug>.service; agent logic lives in the prompt, not here.
@@ -382,3 +383,286 @@ seat_log "agent-cron-run: $slug SUCCESS on $np/$nm (${spawn_elapsed_s}s)"
 # failed before the one that worked.
 : >"$tried_file"
 exit 0
+||||||| (empty tree)
+=======
+#!/usr/bin/env bash
+# bin/agent-cron-run — seat-rotation runner for cron-prompts/<slug>.md.
+# Used by agent-cron-<slug>.service; agent logic lives in the prompt, not here.
+# Seat rotation -> pipe prompt into pi -> hermes send (or file fallback).
+#
+# fleet-ops#143: replaced the single-snapshot seat-health gate. The old gate
+# read lanes/pi-seat-health.json, a last-write-wins snapshot rewritten by
+# EVERY pi call's after_provider_response hook. During heavy fleet churn any
+# transient 429 (minimax token wall, devin cooldown) stamped it unhealthy for
+# minutes, so a daily cron firing in that window died with
+# 'FATAL: seat unhealthy' even though other providers were fine — and there
+# was no retry until tomorrow.
+#
+# Now uses pick_seat from lib/seat-lib.sh — the same rotation pi-issue-run
+# uses: honours the cap-map allowlist, tried-seats exclusion across systemd
+# Restart= retries, and the #90 quota-bench / spawn-fail markers. If every
+# allowlisted seat is genuinely walled, fail loud as before. systemd
+# Restart=on-failure (RestartSec=15min, StartLimitBurst) on the cron unit
+# re-runs this script, which picks a DIFFERENT seat — a transient wall
+# delays the daily job instead of killing it for the day.
+#
+# Args: $1 = slug (matches cron-prompts/<slug>.md and the service instance)
+# Env:  WORKDIR, LOG_DIR, PROMPTS_DIR, PI_BIN, PI_PACKET_SEAT_LIB
+#
+# Exit codes:
+#   0 = pi ran and the run was recorded (success — systemd will not restart)
+#   1 = no seat available, OR pi failed — systemd Restart= re-runs with a
+#       new seat; after StartLimitBurst the unit goes to failed until the
+#       next timer trigger.
+
+set -euo pipefail
+
+export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
+export HOME="${HOME:-/home/nish}"
+
+# Source shared seat logic. SEAT_LIB defaults to the install symlink; tests
+# may override via PI_PACKET_SEAT_LIB. The directive points to the canonical
+# source file in the repo (the install symlinks this same file), so static
+# analysis can resolve the include.
+SEAT_LIB="${PI_PACKET_SEAT_LIB:-$HOME/.local/lib/pi-packet/seat-lib.sh}"
+# shellcheck source=../lib/seat-lib.sh source-path=SCRIPTDIR
+source "$SEAT_LIB"
+
+slug="${1:?agent-cron-run: need <slug>}"
+WORKDIR="${WORKDIR:-$HOME}"
+# fleet-ops#366 auditor-finding-B (2026-08-26T02:57Z): a product cron must
+# never run against $HOME. The unit sets WORKDIR explicitly; a manual
+# invocation that inherits $HOME is a misconfiguration, not a silent default.
+# Fail loud with the named slug so the fault is visible, unless an operator
+# explicitly allows HOME-based workdirs (AGENT_CRON_ALLOW_HOME_WORKDIR=1).
+if [[ "$WORKDIR" == "$HOME" ]] && [[ "${AGENT_CRON_ALLOW_HOME_WORKDIR:-}" != "1" ]]; then
+    echo "FATAL: agent-cron-run: $slug has no explicit WORKDIR (would run against \$HOME) — set Environment=WORKDIR in the unit or AGENT_CRON_ALLOW_HOME_WORKDIR=1 to allow" >&2
+    exit 1
+fi
+[[ -d "$WORKDIR" ]] || { echo "FATAL: agent-cron-run: $slug WORKDIR does not exist: $WORKDIR" >&2; exit 1; }
+LOG_DIR="${LOG_DIR:-$HOME/workspaces/agent-state/cron-output}"
+PROMPTS_DIR="${PROMPTS_DIR:-$HOME/workspaces/agent-state/cron-prompts}"
+PI_BIN="${PI_BIN:-$HOME/.local/bin/pi}"
+PROMPT="$PROMPTS_DIR/$slug.md"
+OUT="$LOG_DIR/$slug-$(date -u +%Y-%m-%d).md"
+TS="$(date -u +%Y-%m-%dT%H-%M-%SZ)"
+tried_file="$ATTEMPTS_DIR/agent-cron-${slug}.tried-seats"
+
+mkdir -p "$LOG_DIR" "$ATTEMPTS_DIR"
+export AGENT_CRON_SLUG="$slug" WORKDIR AGENT_CRON_RUN_TS="$TS"
+
+test -f "$PROMPT" || { echo "FATAL: prompt missing: $PROMPT" >&2; exit 1; }
+
+# --- fleet-ops#5309: prompt-E2BIG pre-flight guard --------------------------
+# The cursor provider passes the whole composed prompt to cursor-agent as a
+# spawn ARGUMENT, and the kernel's per-arg limit is ~82KB here. A prompt that
+# grew past the cap makes pi exit 1 in ~1s with `spawnSync ... E2BIG` and NO
+# classifiable marker (spawn_fail=0), so tried-seats is the only guard and
+# systemd Restart re-picks the SAME seat until StartLimitBurst trips the unit.
+# The seat is healthy — the prompt is the fault. Check the composed size
+# BEFORE picking/spawning and fail loud without benching anything. The stamp
+# block appended below is ~200 bytes; 75000 leaves headroom under 82KB.
+PROMPT_E2BIG_CAP_BYTES="${PROMPT_E2BIG_CAP_BYTES:-75000}"
+prompt_bytes=$(wc -c <"$PROMPT")
+if (( prompt_bytes > PROMPT_E2BIG_CAP_BYTES )); then
+    echo "PROMPT TOO LARGE ${prompt_bytes} for cursor spawn-arg limit (fleet-ops#5307)" >&2
+    seat_log "agent-cron-run: $slug PROMPT TOO LARGE ${prompt_bytes} > cap ${PROMPT_E2BIG_CAP_BYTES} — not spawning, not benching seat (fleet-ops#5309)"
+    exit 1
+fi
+
+# --- pick a healthy seat for THIS attempt (fleet-ops#143) -------------------
+# Cron prompts are light probes/answers (market signal, daily summary); they
+# do not edit code, so need_capable=0 unless task_weight says otherwise.
+weight=$(task_weight "$PROMPT")
+difficulty="$weight"
+if declare -F packet_difficulty >/dev/null 2>&1; then
+    difficulty=$(packet_difficulty "$PROMPT")
+fi
+need_capable=0
+[[ "$difficulty" == "heavy" || "$difficulty" == "keystone" ]] && need_capable=1
+
+# fleet-ops#4181 P2: fable-check routes through the LiteLLM proxy to the
+# judge group (senior ladder with fallback) instead of seat-lib pick_seat.
+# The proxy owns the fallback chain per its router_settings.fallbacks;
+# seat-lib still owns every other caller until P3. AGENT_CRON_LITELLM_PROVIDER /
+# AGENT_CRON_LITELLM_MODEL let tests override without a live proxy.
+# fleet-ops#4219 P3a: PI_SEAT_SOURCE=litellm extends the same routing to
+# every slug (group=judge) while both paths stay live; default seat-lib.
+if [[ "$slug" == "fable-check" ]] && [[ -z "${AGENT_CRON_SKIP_LITELLM:-}" ]]; then
+    np="${AGENT_CRON_LITELLM_PROVIDER:-litellm}"
+    nm="${AGENT_CRON_LITELLM_MODEL:-judge}"
+    seat="$np	$nm"
+    seat_log "agent-cron-run: $slug routed to LiteLLM proxy $np/$nm (fleet-ops#4181 P2)"
+elif [[ "${PI_SEAT_SOURCE:-seat-lib}" == "litellm" ]]; then
+    seat=$(printf 'litellm\tjudge\n')
+    seat_log "agent-cron-run: $slug PI_SEAT_SOURCE=litellm group=judge"
+else
+    seat=$(pick_seat "" "" "$need_capable" "$tried_file" "$difficulty" || true)
+fi
+if [[ -z "$seat" ]]; then
+    seat_log "agent-cron-run: $slug no healthy seat available (tried: $(tr '\n' ' ' <"$tried_file" 2>/dev/null))"
+    echo "FATAL: agent-cron-run: $slug no healthy seat available — every allowlisted seat is walled" >&2
+    if [[ "$difficulty" == "keystone" ]]; then
+        seat_log "agent-cron-run: $slug KEYSTONE ESCALATION — keeping tried-seats so OnFailure summons senior conference"
+        exit 1
+    fi
+    # Reset tried-seats: every allowlisted seat has been tried and failed.
+    # The seat-health ledger (usable_at/bench_until) is the durable avoidance
+    # authority; clearing tried_file lets the next restart retry seats that
+    # have RECOVERED instead of looping on an exhausted list.
+    : >"$tried_file"
+    exit 1
+fi
+
+np=$(printf '%s' "$seat" | cut -f1)
+nm=$(printf '%s' "$seat" | cut -f2)
+
+# Defensive recreate (fleet-ops#63): $ATTEMPTS_DIR can vanish mid-run.
+mkdir -p "$ATTEMPTS_DIR" 2>/dev/null || {
+    seat_log "agent-cron-run: $slug FAILED to recreate $ATTEMPTS_DIR — exiting 1"
+    exit 1
+}
+# Record this seat as tried BEFORE running, so a concurrent restart cannot
+# pick the same one.
+printf '%s/%s\n' "$np" "$nm" >>"$tried_file"
+
+# Register the seat so cap accounting reflects this worker. Cleared on exit.
+register_active_seat "agent-cron-${slug}" "$np" "$nm"
+trap 'clear_active_seat "agent-cron-${slug}"' EXIT INT TERM
+
+seat_log "agent-cron-run: $slug running on $np/$nm (weight=$difficulty, tried: $(wc -l <"$tried_file") seat(s))"
+
+# --- run pi, capture stdout/stderr ------------------------------------------
+# P15 hang watchdog: pi intermittently never finalizes in --print mode (does
+# real tool work then hangs in ep_poll). Bounding the run SHORTER than the
+# unit's TimeoutStartSec (45min) makes a wedge a fast, loud, seat-cleaned
+# failure so the active-seat registration does not starve cap accounting for
+# 45 minutes. timeout(1) sends SIGTERM at the limit; the clear_active_seat
+# trap fires on the SIGTERM path.
+PI_HANG_TIMEOUT_S="${PI_HANG_TIMEOUT_S:-2520}"  # 42 min < unit TimeoutStartSec=45min
+out=$(mktemp); err=$(mktemp)
+spawn_start_s=$(date -u +%s)
+rc=0
+# fleet-ops#786: the static prompt body must be the prefix so prompt-cache
+# hits survive across ticks. Volatile seat/slug/timestamp stamps live AFTER
+# the cat, not before.
+if {
+        cat "$PROMPT"
+        printf '\n---\nAGENT_CRON_SLUG=%s\nWORKDIR=%s\nPROVIDER=%s\nMODEL=%s\nRUN_TS=%s\n' "$slug" "$WORKDIR" "$np" "$nm" "$TS"
+    } | (cd "$WORKDIR" && timeout --kill-after=30s "${PI_HANG_TIMEOUT_S}s" "$PI_BIN" --print --provider "$np" --model "$nm") >"$out" 2>"$err"; then
+    rc=0
+else
+    rc=$?
+fi
+spawn_end_s=$(date -u +%s)
+spawn_elapsed_s=$((spawn_end_s - spawn_start_s))
+
+# rc=124 is timeout(1)'s own exit when it killed pi (the hang watchdog).
+if (( rc == 124 )); then
+    session_tail=$(tail -c 400 "$err" 2>/dev/null | tr '\n' ' ' | tail -c 300)
+    {
+        echo "agent-cron-run: PI HANG WATCHDOG — pi on $np/$nm did not finalize within ${PI_HANG_TIMEOUT_S}s ($(date -u +%FT%TZ)); killed."
+        echo "agent-cron-run: session tail: $session_tail"
+    } >>"$err"
+    seat_log "agent-cron-run: $slug PI HANG WATCHDOG on $np/$nm after ${PI_HANG_TIMEOUT_S}s — killed and re-seating"
+fi
+
+# --- P13-B spawn-fail marker ------------------------------------------------
+# A spawn-phase ETIMEDOUT (devin/cursor 503 signature) terminates pi before
+# any response hook runs, so the reactive ledger never records it and
+# pick_seat would keep routing to the dead seat. Mirror pi-issue-run: write
+# the marker so the next Restart skips this seat via usable_at.
+spawn_fail_triggered=0
+if (( rc != 0 )) && (( spawn_elapsed_s < SPAWN_FAIL_MAX_S )); then
+    out_for_scan=""; err_for_scan=""
+    [[ -f "$out" ]] && out_for_scan=$(cat "$out" 2>/dev/null || true)
+    [[ -f "$err" ]] && err_for_scan=$(cat "$err" 2>/dev/null || true)
+    if is_spawn_etimeout "$out_for_scan" "$err_for_scan"; then
+        spawn_fail_triggered=1
+        seat_log "agent-cron-run: $slug SPAWN-TIMEOUT on $np/$nm at ${spawn_elapsed_s}s (rc=$rc) — marking seat unusable for ${SPAWN_FAIL_BACKOFF_S}s"
+        mark_seat_spawn_fail "$np" "$nm" "agent-cron:$slug:rc=$rc" \
+            || seat_log "agent-cron-run: $slug WARN: spawn-fail marker write FAILED for $np/$nm"
+    fi
+fi
+
+# --- fleet-ops#90: quota/cap wall bench -------------------------------------
+# A hard-capped seat (ClinePass weekly cap, devin 15-min 429) is a walled
+# seat, not a transient retry. Bench it until its advertised reset window (or
+# the provider default) so the next Restart's pick_seat skips it instead of
+# burning a StartLimitBurst attempt on a guaranteed failure. Skipped when the
+# spawn-fail path already handled this exit.
+if (( rc != 0 )) && (( ! spawn_fail_triggered )); then
+    out_for_scan=""; err_for_scan=""
+    [[ -f "$out" ]] && out_for_scan=$(cat "$out" 2>/dev/null || true)
+    [[ -f "$err" ]] && err_for_scan=$(cat "$err" 2>/dev/null || true)
+    if is_quota_cap_error "$out_for_scan" "$err_for_scan"; then
+        seat_log "agent-cron-run: $slug QUOTA/CAP WALL on $np/$nm (rc=$rc) — benching seat for its reset window"
+        mark_seat_quota_bench "$np" "$nm" "$out_for_scan"$'\n'"$err_for_scan" \
+            || seat_log "agent-cron-run: $slug WARN: quota-bench marker NOT written for $np/$nm (no window and no provider default)"
+    fi
+fi
+
+# --- fleet-ops#5189: writes refused (the rc=0 silent stall) -----------------
+# A seat behind a tool-approval gate (cursor's --auto-review classifier,
+# devin's --sandbox permission mode) can end rc=0 while every write the
+# agent attempted was refused — the run "succeeds", the report says the
+# verdicts did not post, and nothing escalates. On the 2026-09-10
+# orchestrator-decision-sweep that meant 10+ drafted verdicts and a parked
+# needs-orchestrator queue that never drained across five exit-0 sweeps.
+# A refused run is a FAILED run: record the output (the drafted work is the
+# evidence the retry and the senior auditor need), bench the seat past this
+# unit's RestartSec so the systemd retry walks the seat ladder to a seat
+# whose writes land, and exit 1 — loud through the normal failure path
+# (Restart= -> OnFailure escalation). Detection is the prompt contract
+# sentinel (WRITES-REFUSED) plus the observed refusal phrases; runs on both
+# rc=0 and otherwise-unclassified rc!=0 exits.
+if declare -F is_writes_refused >/dev/null 2>&1; then
+    out_for_scan=""; err_for_scan=""
+    [[ -f "$out" ]] && out_for_scan=$(cat "$out" 2>/dev/null || true)
+    [[ -f "$err" ]] && err_for_scan=$(cat "$err" 2>/dev/null || true)
+    if is_writes_refused "$out_for_scan" "$err_for_scan"; then
+        seat_log "agent-cron-run: $slug WRITES REFUSED on $np/$nm (rc=$rc) — the seat's approval gate blocked the run's writes; benching ${SEAT_WRITES_REFUSED_BENCH_S:-3600}s and failing loud (fleet-ops#5189)"
+        {
+            printf '# %s %s WRITES-REFUSED\nseat=%s/%s workdir=%s\n' "$slug" "$TS" "$np" "$nm" "$WORKDIR"
+            cat "$out"
+        } >>"$OUT"
+        if declare -F mark_seat_writes_refused_bench >/dev/null 2>&1; then
+            mark_seat_writes_refused_bench "$np" "$nm" "agent-cron:$slug" \
+                || seat_log "agent-cron-run: $slug WARN: writes-refused bench marker NOT written for $np/$nm"
+        else
+            seat_log "agent-cron-run: $slug WARN: mark_seat_writes_refused_bench absent in seat-lib — relying on tried-seats exclusion"
+        fi
+        rm -f "$out" "$err"
+        exit 1
+    fi
+fi
+
+if (( rc != 0 )); then
+    seat_log "agent-cron-run: $slug pi exited $rc on $np/$nm (${spawn_elapsed_s}s, spawn_fail=$spawn_fail_triggered) — systemd will restart with a new seat"
+    rm -f "$out" "$err"
+    exit 1
+fi
+
+# --- success: record the run, deliver the digest ----------------------------
+# `grep` returns 1 when no DIGEST line exists; under `set -o pipefail` that
+# would abort the script BEFORE the output file is written. The `|| true`
+# neutralises the no-match exit so the report always lands on disk.
+digest=$(grep -m1 '^DIGEST:: ' "$out" | sed 's/^DIGEST:: //' || true)
+if [ -n "$digest" ] && hermes send --to telegram "$digest" >/dev/null 2>&1; then
+    echo "agent-cron-run: $slug delivered via hermes ($TS)" >&2
+else
+    echo "agent-cron-run: $slug delivery fell back to $OUT" >&2
+fi
+{
+    printf '# %s %s\nseat=%s/%s workdir=%s\n' "$slug" "$TS" "$np" "$nm" "$WORKDIR"
+    cat "$out"
+} >>"$OUT"
+rm -f "$out" "$err"
+
+seat_log "agent-cron-run: $slug SUCCESS on $np/$nm (${spawn_elapsed_s}s)"
+# Reset the tried-seats file: this run succeeded, so a future trigger of the
+# same slug starts with the full seat pool, not the stale list of seats that
+# failed before the one that worked.
+: >"$tried_file"
+exit 0
+>>>>>>> 6088e2712 (fix(spawn-guard): cover stop of fleet units in systemctl_restart_fleet_unit (Relates to #5605) (#5658))

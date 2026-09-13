@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 #!/usr/bin/env bash
 # bin/pi-scout-run
 # Seat-rotation wrapper for pi-scout and pi-scout-repair units.
@@ -195,3 +196,210 @@ case "$prompt_name" in
         exit 1
         ;;
 esac
+||||||| (empty tree)
+=======
+#!/usr/bin/env bash
+# bin/pi-scout-run
+# Seat-rotation wrapper for pi-scout and pi-scout-repair units.
+#
+# Assembles the packet from ~/.pi/agent/prompts/<prompt>.md plus the correct
+# TARGET line, calls pick_seat from lib/seat-lib.sh, and runs
+# pi --print --provider <provider> --model <model> on the assembled packet.
+#
+# For the 0509 scout, the packet is research-seeded deterministically by
+# lib/packet-assembly.sh (market signal, category research, north-star rule,
+# repo reality). The scout fails loud if the market signal is stale or missing.
+#
+# Args:
+#   $1 = repo instance (e.g. fleet-ops)
+#   $2 = prompt name (scout or scout-repair)
+#
+# Environment:
+#   PI_PACKET_SEAT_LIB      path to seat-lib.sh
+#   PI_PACKET_ASSEMBLY_LIB  path to packet-assembly.sh
+#   SCOUT_PROMPT_DIR        prompt directory (default ~/.pi/agent/prompts)
+#   PI_BIN                  pi binary (default ~/.local/bin/pi)
+
+set -euo pipefail
+
+export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
+export HOME="${HOME:-/home/nish}"
+
+SEAT_LIB="${PI_PACKET_SEAT_LIB:-$HOME/.local/lib/pi-packet/seat-lib.sh}"
+# shellcheck source=../lib/seat-lib.sh source-path=SCRIPTDIR
+source "$SEAT_LIB"
+
+PACKET_ASM_LIB="${PI_PACKET_ASSEMBLY_LIB:-$HOME/.local/lib/pi-packet/packet-assembly.sh}"
+# shellcheck source=../lib/packet-assembly.sh source-path=SCRIPTDIR
+source "$PACKET_ASM_LIB"
+
+# fleet-ops#4450 item 3: per-run scout label_budget from the drain rate.
+# Best-effort source of lib/work-supply.sh: when it is absent the budget
+# falls back to the 8 floor (the scout prompt's default), so a missing lib
+# never breaks the scout.
+# shellcheck disable=SC1091
+WS_LIB="${PI_PACKET_WS_LIB:-$HOME/.local/lib/pi-packet/work-supply.sh}"
+if [[ -f "$WS_LIB" ]]; then
+    # shellcheck disable=SC1091
+    source "$WS_LIB"
+fi
+
+PI_BIN="${PI_BIN:-$HOME/.local/bin/pi}"
+PROMPT_DIR="${SCOUT_PROMPT_DIR:-$HOME/.pi/agent/prompts}"
+
+usage() {
+    echo "usage: pi-scout-run <repo> <prompt-name>" >&2
+    exit 1
+}
+[[ $# -ge 2 ]] || usage
+
+repo="$1"
+prompt_name="$2"
+prompt_file="$PROMPT_DIR/${prompt_name}.md"
+
+[[ -f "$prompt_file" ]] || { echo "pi-scout-run: prompt not found: $prompt_file" >&2; exit 1; }
+
+# Choose a healthy seat. Compute need_capable from the task weight so a
+# heavy repair prompt gets a capable seat, while the lighter scout prompt
+# can use any healthy seat.
+weight=$(task_weight "$prompt_file")
+difficulty="$weight"
+if declare -F packet_difficulty >/dev/null 2>&1; then
+    difficulty=$(packet_difficulty "$prompt_file")
+fi
+need_capable=0
+[[ "$difficulty" == "heavy" || "$difficulty" == "keystone" ]] && need_capable=1
+
+# Free-tier privacy line (fleet-ops#520): a private-repo target never routes
+# to a free-class lane. Resolve visibility via config/repo-privacy.json
+# (fail-closed: an unclassified repo is treated as private).
+scout_privacy=$(repo_privacy "$repo")
+seat_log "pi-scout-run: $repo/$prompt_name privacy=$scout_privacy"
+# fleet-ops#3724: the packet repo also feeds pick_seat's product_only gate —
+# a seat flagged product_only in seat-caps.json is offered only when this
+# repo carries the product flag in config/intake-repos.json.
+export PI_PACKET_REPO="$repo"
+
+# fleet-ops#4219 P3a: PI_SEAT_SOURCE switch.
+if [[ "${PI_SEAT_SOURCE:-seat-lib}" == "litellm" ]]; then
+    seat=$(litellm_pick_seat "worker-cheap")
+    seat_log "pi-scout-run: $repo/$prompt_name PI_SEAT_SOURCE=litellm group=worker-cheap"
+else
+    seat=$(pick_seat "" "" "$need_capable" "" "$difficulty" "$scout_privacy" || true)
+fi
+# fleet-ops#2133-class: devin (and similar remote-agent CLIs) intermittently
+# hang for tens of minutes inside the pi session and then die with
+# "spawnSync <cli> ETIMEDOUT" (rc!=0, tools=0). The seat-health extension
+# only walls such a seat for 60s (cli_timeout default), so the hung seat is
+# re-offered almost immediately and burns the whole scout window again.
+# Mirror pi-issue-run's hang-bench: long run + ETIMEDOUT signature on stderr
+# => mark_seat_hang_bench so pick_seat skips the seat for the hang window.
+# PI_HANG_BENCH_MIN_S is env-overridable for tests; production default 300s.
+readonly SCOUT_HANG_BENCH_MIN_S="${PI_HANG_BENCH_MIN_S:-300}"
+run_seated_pi() {
+    local rc start_s end_s elapsed err_tmp
+    err_tmp=$(mktemp)
+    start_s=$(date +%s)
+    set +e
+    "$PI_BIN" --print --provider "$np" --model "$nm" 2> "$err_tmp"
+    rc=$?
+    set -e
+    end_s=$(date +%s)
+    elapsed=$((end_s - start_s))
+    if (( rc != 0 )) && (( elapsed > SCOUT_HANG_BENCH_MIN_S )) \
+        && grep -qiE 'spawnSync.*ETIMEDOUT|ETIMEDOUT.*spawnSync' "$err_tmp" 2>/dev/null; then
+        seat_log "pi-scout-run: $repo/$prompt_name LONG HANG spawnSync ETIMEDOUT on $np/$nm after ${elapsed}s (rc=$rc) — benching seat (hang_bench, fleet-ops#2133 class)"
+        if ! mark_seat_hang_bench "$np" "$nm" "$(cat "$err_tmp" 2>/dev/null || true)"; then
+            seat_log "pi-scout-run: WARN hang-bench marker NOT written for $np/$nm — relying on reactive ledger"
+        fi
+    fi
+    if (( rc != 0 )) && [[ -s "$err_tmp" ]]; then
+        # Emit the crash signature into the unit journal. scout-futility-check
+        # classifies provider walls by grepping the JOURNAL (jlines) — pi's
+        # stderr previously went to a mktemp file that was rm'd here, so wall
+        # evidence (e.g. Devin 429 "Reached overall message rate limit")
+        # never reached the classifier and such crashes were misread as
+        # "not green, not provider-wall" -> fresh auditor summon per crash.
+        tail -n 5 "$err_tmp" | sed 's/^/[pi-seated-err] /'
+    fi
+    rm -f "$err_tmp"
+    return "$rc"
+}
+
+# A saturated seat pool is INFRASTRUCTURE, not a scout failure: the claim
+# workers won the seat race (intake bursts and the #4450 low-water trigger
+# fire on the same tick). Exiting 1 made systemd mark pi-scout@%i FAILED and
+# fired OnFailure=pi-scout-repair@%i, which then failed the same way — a
+# repair hop for a non-fault, plus a failed unit on every guardrail sweep.
+# 75 (EX_TEMPFAIL) is a clean SKIP: SuccessExitStatus=75 in pi-scout@.service
+# keeps the unit green, and scout-futility-check treats 75 as neither dry nor
+# wall. The next intake tick retries once a seat frees.
+readonly SEAT_SKIP_EXIT=75
+if [[ -z "$seat" ]]; then
+    seat_log "pi-scout-run: $repo/$prompt_name SKIP — no healthy seat available (saturated pool; exit ${SEAT_SKIP_EXIT})"
+    echo "pi-scout-run: $repo/$prompt_name no healthy seat available — skipping (exit ${SEAT_SKIP_EXIT})" >&2
+    exit "$SEAT_SKIP_EXIT"
+fi
+
+np=$(printf '%s' "$seat" | cut -f1)
+nm=$(printf '%s' "$seat" | cut -f2)
+
+seat_log "pi-scout-run: $repo/$prompt_name running on $np/$nm (weight=$difficulty)"
+
+# fleet-ops#4450 item 3: per-run scout label_budget from the drain rate (product
+# repos only: max(8, ceil(drain*4)) capped 40; control-plane stays at 8).
+# The concrete number is injected into the packet as a run-specific
+# `label_budget = <N>` line that overrides the prompt's default 8, so the
+# model obeys the derived budget without any per-repo prompt edit. Passed
+# through the SCOUT_LABEL_BUDGET env var for tests to pin/prove.
+label_budget=8
+if declare -F work_supply_label_budget >/dev/null 2>&1; then
+    label_budget=$(work_supply_label_budget "$repo" 2>/dev/null || printf '8\n')
+    case "$label_budget" in
+        ''|*[!0-9]*) label_budget=8 ;;
+    esac
+fi
+label_budget="${SCOUT_LABEL_BUDGET:-$label_budget}"
+export SCOUT_LABEL_BUDGET="$label_budget"
+seat_log "pi-scout-run: $repo/$prompt_name label_budget=$label_budget (fleet-ops#4450)"
+
+# Build the packet.
+# - 0509 scout: use the shared packet-assembly library (research-seeded).
+# - Everything else: prompt + TARGET line (legacy shape).
+case "$prompt_name" in
+    scout)
+        if [[ "$repo" == "0509" ]]; then
+            packet=$(mktemp)
+            # shellcheck disable=SC2064
+            trap "rm -f '$packet'" EXIT INT TERM
+            if ! packet_assemble_0509_scout "$prompt_file" "$repo" "$packet"; then
+                seat_log "pi-scout-run: $repo/$prompt_name ABORT — market signal stale/missing"
+                echo "pi-scout-run: $repo/$prompt_name market signal stale or missing — aborting" >&2
+                exit 1
+            fi
+            seat_log "pi-scout-run: $repo/$prompt_name research-seeded packet assembled"
+            printf '\nlabel_budget = %s (fleet-ops#4450: derived from the drain rate; overrides the default above)\n' "$label_budget" >> "$packet"
+            run_seated_pi < "$packet"
+        else
+            {
+                cat "$prompt_file"
+                echo
+                echo "TARGET REPO: Nishfleet/${repo}"
+                echo
+                printf 'label_budget = %s (fleet-ops#4450: derived from the drain rate; overrides the default above)\n' "$label_budget"
+            } | run_seated_pi
+        fi
+        ;;
+    scout-repair)
+        {
+            cat "$prompt_file"
+            echo
+            echo "TARGET: scout unit pi-scout@${repo}.service, repo Nishfleet/${repo}"
+        } | run_seated_pi
+        ;;
+    *)
+        echo "pi-scout-run: unknown prompt name: $prompt_name" >&2
+        exit 1
+        ;;
+esac
+>>>>>>> 6088e2712 (fix(spawn-guard): cover stop of fleet units in systemctl_restart_fleet_unit (Relates to #5605) (#5658))

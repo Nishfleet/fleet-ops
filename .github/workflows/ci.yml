@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 name: CI
 
 on:
@@ -358,3 +359,351 @@ jobs:
         done
         set -e
         exit "$rc"
+||||||| (empty tree)
+=======
+name: CI
+
+on:
+  pull_request:
+  merge_group:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  # Cancel superseded runs on PRs only. On main every merge used to cancel the
+  # previous main run, and with merges landing faster than P14 finishes the
+  # deploy-on-green gate saw 'cancelled' forever (19 straight red deploys,
+  # 2026-09-07 evening). Main runs now complete; they queue instead.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  ci-checklist-gate:
+    name: CI checklist gate
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Verify required checkboxes
+        if: github.event_name == 'pull_request'
+        env:
+          PR_BODY: ${{ github.event.pull_request.body }}
+        run: |
+          set -euo pipefail
+          node .github/scripts/ci-checklist-gate.mjs --body-env PR_BODY
+      - name: Report skipped on non-PR event
+        if: github.event_name != 'pull_request'
+        run: echo 'No PR body on ${{ github.event_name }}; checklist gate skipped.'
+
+  tests:
+    # fleet-ops#70: the four expand/contract local jobs (Gitleaks, Semgrep,
+    # Shellcheck, systemd-analyze) now live in this batched caller. A `uses:`
+    # job reports as "P14 tests / PR checks". Branch protection must list
+    # that nested name, and must not list the old four names, before this
+    # workflow lands — otherwise every PR waits forever.
+    name: P14 tests
+    uses: ./.github/workflows/reusable-pr-checks.yml
+    permissions:
+      contents: read
+      pull-requests: read
+    with:
+      node-version: ""
+      install-command: ""
+      scan-secrets: true
+      timeout-minutes: 30
+      verify-command: |
+        set -euo pipefail
+        # fleet-ops#3235 part six (the follow-up its own commit message planned:
+        # "CI workflow change in a follow-up commit — GitHub App cannot push
+        # workflow files"). GitHub runners have neither pi-transport-check nor
+        # pi, so the #3235 transport gate read every bench writer as
+        # transport-down and red'd the suite at the first ledger assertion
+        # (seat-lib.test.sh run 33888017048, then pi-issue-run-noop-bench). The
+        # suite runs transport-offline by declaration; the gate itself stays ON
+        # in live operation where the real probe/bin exist.
+        export PI_SEAT_LIB_CHECK_TRANSPORT=0
+        for t in jq openssl curl python3 node git flock; do
+          command -v "$t" >/dev/null 2>&1 || {
+            echo "missing tool: $t" >&2
+            exit 1
+          }
+        done
+        bash tests/manifest-shape.test.sh
+        bash tests/intake-repos-shape.test.sh
+        bash tests/intake-repos-path-resolution.test.sh
+        bash tests/worker-token-fail-closed.test.sh
+        bash tests/semantic-conflict-detector.test.sh
+        bash tests/repeat-deterministic-detector.test.sh
+        bash tests/red-on-main-detector.test.sh
+        bash tests/ci-failure-escalation-detector.test.sh
+        bash tests/staleness-checker.test.sh
+        bash tests/required-check-purity.test.sh
+        bash tests/ci-checklist-gate.test.sh
+        bash tests/pi-packet-guard.test.sh
+        bash tests/fleet-work-supply-canary.test.sh
+        bash tests/scout-futility.test.sh
+        bash tests/pi-systemd-run.test.sh
+        bash tests/pi-intake-run.test.sh
+        bash tests/pi-issue-start.test.sh
+        bash tests/pi-issue-start-packet-regen.test.sh
+        bash tests/worker-prompt-size-ceiling.test.sh
+        bash tests/pi-issue-failed-reap.test.sh
+        # fleet-ops#2133: reclaim cooldown + stale-claim release break the
+        # spawn-die-respawn wedge (reaper writes cooldown marker, intake
+        # skips for 15min, stale claims with no live worker/PR are released).
+        bash tests/pi-issue-failed-reap-cooldown.test.sh
+        bash tests/pi-intake-tick-reclaim-cooldown.test.sh
+        bash tests/claim-pr-head-owner.test.sh
+        bash tests/pi-intake-tick-difficulty-from-issue.test.sh
+        # fleet-ops#4808: intake honors a `depends-on:` line in a ticket body
+        # and never claims a ticket whose named dependencies are not
+        # merged/closed (the 0509 seam batch had to be hand-gated).
+        bash tests/pi-intake-tick-depends-on.test.sh
+        # fleet-ops#5165: intake also honors the ticket's own
+        # `collision-gate:` line — never claim a ticket whose named
+        # same-file blockers are still open.
+        bash tests/pi-intake-tick-collision-gate.test.sh
+        # fleet-ops#5238: the auto-merge arm refuses gate-path PRs whose
+        # advisory gate-integrity check is not green (#5207 escaped this
+        # way).
+        bash tests/gate-arm-guard.test.sh
+        bash tests/pi-intake-topup.test.sh
+        bash tests/pi-intake-tick-scout-on-empty.test.sh
+        bash tests/blocked-reconcile-large-issue-json.test.sh
+        bash tests/pi-intake-tick-land-or-close-park.test.sh
+        # fleet-ops#5048: park the protected + no-termination + no-claim-PR
+        # cell when a named user timer/service is active or a merged
+        # non-claim-branch PR delivered the work (live case #4891).
+        bash tests/pi-intake-tick-protected-delivered-park.test.sh
+        bash tests/fleet-console-pi-utc.test.sh
+        bash tests/pi-issue-run-session-error-feed.test.sh
+        # Devin message rate limit = pause + in-session resume, never a worker
+        # death (114 deaths/24h on that one message, 2026-09-11).
+        bash tests/devin-provider-rate-limit-retry.test.sh
+        bash tests/repair-rotation.test.sh
+        bash tests/alert-repair-seat-walled.test.sh
+        bash tests/alert-repair-class-park-skip.test.sh
+        bash tests/alert-repair-detached-recursion-skip.test.sh
+        bash tests/fleet-claim.test.sh
+        bash tests/agent-cron-seat-rotation.test.sh
+        bash tests/seat-lib.test.sh
+        bash tests/seat-lib-degraded.test.sh
+        bash tests/seat-lib-org-reserve.test.sh
+        bash tests/seat-lib-product-only-spend-cap.test.sh
+        # fleet-ops#2563: cap quota_bench walls at the provider's declared
+        # reset horizon (quota_window) so a vendor-claimed 19-day Retry-After
+        # cannot freeze a weekly-resetting seat for three cycles.
+        bash tests/seat-wall-reset-horizon.test.sh
+        bash tests/stop-escalation-dispatch.test.sh
+        bash tests/escalation-units-shape.test.sh
+        # fleet-ops#1164: persist nish-boundary-notify CLASSES in git + lint.
+        bash tests/nish-boundary-notify-classes.test.sh
+        bash tests/system-dropins-shape.test.sh
+        bash tests/fleet-ops-deploy.test.sh
+        # fleet-ops#3634: self-rescue a deploy clone left on a named branch or
+        # dirty instead of blocking every merge (2 incidents 2026-09-05).
+        bash tests/fleet-ops-deploy-rescue.test.sh
+        bash tests/fleet-heartbeat-undersaturation.test.sh
+        # fleet-ops#153: lock the product-vs-control-plane throughput split.
+        bash tests/fleet-heartbeat-throughput-split.test.sh
+        # fleet-ops#153: lock the 0509 scout packet-assembly contract.
+        bash tests/pi-scout-packet-assembly.test.sh
+        bash tests/fleet-heartbeat-low-water-mark.test.sh
+        bash tests/fleet-blind-audit.test.sh
+        # fleet-ops#5475: new blind-audit test files must run in P14 (orphan
+        # tests fail the workflow check otherwise).
+        bash tests/fleet-blind-audit-carryover.test.sh
+        bash tests/fleet-blind-audit-backfill.test.sh
+        bash tests/fleet-heartbeat-blind-audit-trigger.test.sh
+        bash tests/mass-close-guard.test.sh
+        bash tests/codex-orphan-reap.test.sh
+        # fleet-ops#1161: orphan-workflow detector (audit findings 3+4).
+        bash tests/orphan-workflow-detector.test.sh
+        bash tests/open-question-sweep-deleted.test.sh
+        bash tests/escalation-coverage-canary.test.sh
+        # fleet-ops#5443: canonical findings ledger — strict writer + judge line.
+        bash tests/findings-ledger.test.sh
+        bash tests/findings-measure-line.test.sh
+        bash tests/fleet-unjustified-wait.test.sh
+        bash tests/fleet-deploy-check.test.sh
+        bash tests/fleet-seat-recovery.test.sh
+        bash tests/fleet-escalation-completion.test.sh
+        bash tests/rule-enforcement.test.sh
+        bash tests/reusable-workflows.test.sh
+        # fleet-ops#1296: reject typo'd/unregistered action@<sha> pins in
+        # .github/workflows/** before a scheduled workflow fails to resolve
+        # its checkout and drags main's statusCheckRollup red.
+        bash tests/workflow-action-pin-guard.test.sh
+        # fleet-ops#359: lock the auto-revert gate and the reopen-on-revert
+        # behavior so a reverted merge can no longer leave its issues closed.
+        bash tests/auto-revert-required-check-gate.test.sh
+        bash tests/reopen-reverted-issues.test.sh
+        # fleet-ops#4396 (closes #3647 #3648 #3649 #3654): four suites that
+        # already existed and passed on main but were never in the P14
+        # verify-command list, so a regression in any of them could land
+        # unseen. They sat blocked only because the worker App token cannot
+        # push .github/workflows/**; this is an admin-lane push, not a Nish
+        # decision. All four verified rc=0 on origin/main 46cd075 before add.
+        bash tests/heartbeat-watchman.test.sh
+        bash tests/pi-packet-run.test.sh
+        bash tests/intake-reconcile.test.sh
+        bash tests/exec-review-prompt.test.sh
+        # fleet-ops#407: prove a real end-to-end run before shipping new
+        # units/timers/workflows. The drill (test) always runs; the live
+        # PR-body check only runs for pull_request events and exits 0/SKIP
+        # when the diff adds no machinery.
+        bash tests/prove-one-run-check.test.sh
+        if [ "$GITHUB_EVENT_NAME" = "pull_request" ]; then
+          body_file="$(mktemp)"
+          status_file="$(mktemp)"
+          jq -r '.pull_request.body // ""' "$GITHUB_EVENT_PATH" > "$body_file"
+          git diff --name-status origin/main...HEAD > "$status_file"
+          bin/prove-one-run-check --body "$body_file" --name-status "$status_file"
+        fi
+        # The CI-standards audit parses workflow YAML with PyYAML.
+        python3 -m pip install --no-input "pyyaml==6.0.1"
+        bash tests/ci-standards-audit.test.sh
+        # fleet-ops#828: lock the gate-integrity decision script's
+        # line-anchored attestation extraction (multi-line attest comments).
+        bash tests/gate-integrity.test.sh
+        bash tests/gate-integrity-config.test.sh
+        # fleet-ops#1136: pin the self-maintenance ratio, upgrade/repair/churn
+        # classification, queue composition, and verified-merges numerator
+        # (non-null diff AND delivery evidence) in the metrics exporter, plus
+        # the absent/trend alert rules and the self-maintenance config shape.
+        bash tests/fleet-metrics-export.test.sh
+        # fleet-ops#1235: lock the /etc/default/prometheus retention
+        # override (40d) and the deploy restart-vs-reload + headroom guard.
+        bash tests/prometheus-retention-40d.test.sh
+        # fleet-ops#1460: lock the timer manifest shape (every user timer
+        # has a manifest entry with a named reason — schedule-needs-reason).
+        bash tests/timer-manifest.test.sh
+        # fleet-ops#1534: single chokepoint for messages to Nish's phone.
+        # hermes outbound class-gate (--urgent requires sanctioned --class),
+        # alertmanager routing matrix (only severity=page -> telegram),
+        # RepairDispatchDown is the only severity=page alert, writer class-gate
+        # in stop-escalation-dispatch (CAP-REACHED/KILL-ESCALATION -> auditor
+        # path, LADDER-WALLED -> MONEY-BOUNDARY), and the integration test
+        # proving the two gates together form one phone chokepoint.
+        bash tests/hermes-outbound-class-gate.test.sh
+        bash tests/alertmanager-routing-matrix.test.sh
+        bash tests/fleet-rules-severity-page.test.sh
+        bash tests/stop-escalation-writer-class-gate.test.sh
+        # fleet-ops#754: lock spawn-guard stash readonly enforcement.
+        bash tests/fleet-spawn-guard-stash-readonly.test.sh
+        bash tests/phone-chokepoint.test.sh
+        bash tests/scout-effectiveness-multirepo.test.sh
+        # fleet-ops#3740 landed tests/fleet-close-and-archive-repo.test.sh without a
+        # ci.yml entry, so the P14 listing gate went red on main and blocked every
+        # PR (orchestrator fix, 2026-09-06). Drill: 5 scenarios, stubbed gh.
+        bash tests/fleet-close-and-archive-repo.test.sh
+        # fleet-ops#3322 audition lane: candidate seats get cap 1 on light issues for
+        # 10 sessions, judged by the yield ledger. Offline drill (stubbed gh/caps);
+        # listed here by the orchestrator because the worker token lacks workflow scope.
+        bash tests/audition-lane.test.sh
+        bash tests/pi-audit-tally-epic-guard.test.sh
+        bash tests/pi-audit-tally-skip-exhausted.test.sh
+        # A saturated seat pool is infrastructure, not a scout outcome: the
+        # no-seat path exits the reserved SKIP code 75 so pi-scout@%i stays
+        # green instead of failing and summoning pi-scout-repair@%i for a
+        # non-fault. Drills the dry-burn trap (SuccessExitStatus makes
+        # SERVICE_RESULT "success") and the wall-streak masking, plus both
+        # control paths. Offline (stubbed gh, real helper).
+        bash tests/pi-scout-seat-skip.test.sh
+        # fleet-ops#5385 live-run fixes: enforce_admins=false in the relax window
+        # (+ restore verify), snapshot refresh, refs/pull-aware ancestor check,
+        # and stage5 rename-back eventual-consistency polling. Offline drills
+        # (stubbed gh/sleep, local mirror fixture).
+        bash tests/rewrite-0509-author-live-fixes.test.sh
+        # fleet-ops#70: former required jobs, now inside the batched caller.
+        # TODO(fleet-ops): add the fleet's orchestration rules config from
+        # Nishfleet/siterep-public .semgrep/no-hand-built-orchestration.yml at an
+        # exact commit SHA, once packet p56 merges it. Until then, p/default only.
+        SEMGREP_VERSION="1.170.0"
+        python3 -m pip install --no-input "semgrep==${SEMGREP_VERSION}"
+        semgrep --config p/default --error .
+        SHELLCHECK_VERSION="v0.11.0"
+        SHELLCHECK_SHA256="8c3be12b05d5c177a04c29e3c78ce89ac86f1595681cab149b65b97c4e227198"
+        ARCHIVE="shellcheck-v0.11.0.linux.x86_64.tar.xz"
+        URL="https://github.com/koalaman/shellcheck/releases/download/${SHELLCHECK_VERSION}/${ARCHIVE}"
+        curl -fsSL -o "${ARCHIVE}" "${URL}"
+        echo "${SHELLCHECK_SHA256}  ${ARCHIVE}" | sha256sum -c -
+        install -d "${HOME}/.local/bin"
+        tar -xJf "${ARCHIVE}" -C "${HOME}/.local/bin" --strip-components=1 "shellcheck-v0.11.0/shellcheck"
+        chmod +x "${HOME}/.local/bin/shellcheck"
+        export PATH="${HOME}/.local/bin:${PATH}"
+        # shellcheck -x follows `source` calls: bin/pi-issue-run sources
+        # lib/seat-lib.sh through a variable, and without -x shellcheck emits
+        # SC1091. bin/* is filtered to skip non-shell files (Python/TS emit
+        # SC1071 and exit nonzero, which is wrong for this layout).
+        # Keep only regular files: semgrep (run above) leaves bin/__pycache__,
+        # and shellcheck cannot read a directory (openBinaryFile: is a dir).
+        shopt -s extglob
+        files=()
+        for f in bin/!(*.py|*.ts); do
+          [[ -f "$f" ]] && files+=("$f")
+        done
+        files+=(.github/scripts/gate-integrity.sh install.sh)
+        shellcheck -x "${files[@]}"
+        # `systemd-analyze verify` checks ExecStart paths exist; the units
+        # reference VPS paths a hosted runner lacks, so create empty stubs
+        # (hosted runners are user 'runner', not 'nish' — hence sudo) and
+        # verify unit-file SYNTAX only. Collect all failures, then exit.
+        for p in \
+          /home/nish/.local/bin/pi \
+          /home/nish/.local/bin/pi-issue-run \
+          /home/nish/.local/bin/pi-packet-run \
+          /home/nish/.local/bin/pi-intake-run \
+          /home/nish/.local/bin/agent-cron-run \
+          /home/nish/.local/bin/intake-reconcile \
+          /home/nish/.local/bin/pi-issue-failed-reap \
+          /home/nish/.local/bin/siterep-deploy \
+          /home/nish/.local/bin/siterep-deploy-verify \
+          /home/nish/.local/bin/siterep-deploy-rollback \
+          /home/nish/.local/bin/siterep-live-canary \
+          /home/nish/.local/bin/siterep-uptime \
+          /home/nish/.local/bin/fleet-heartbeat \
+          /home/nish/.local/bin/fleet-heartbeat-tier1 \
+          /home/nish/.local/bin/fleet-heartbeat-tier2 \
+          /home/nish/.local/bin/fleet-blind-audit \
+          /home/nish/.local/bin/fleet-blind-audit-panel \
+          /home/nish/.local/bin/fleet-deploy-check \
+          /home/nish/.local/bin/fleet-seat-recovery \
+          /home/nish/.local/bin/fleet-unjustified-wait \
+          /home/nish/.local/bin/fleet-escalation-completion \
+          /home/nish/.local/bin/fleet-asset-census \
+          /home/nish/.local/bin/agent-scheduler-drift-check \
+          /home/nish/.local/bin/memory-index-autocompact \
+          /usr/bin/redis-server \
+          /home/nish/workspaces/tooling/fleet-console-pi/push.sh
+        do
+          sudo install -D -m 0755 /dev/null "$p"
+        done
+        systemd-analyze --version
+        shopt -s nullglob
+        rc=0
+        set +e
+        for f in systemd/*.service systemd/*.timer; do
+          if ! systemd-analyze verify --man=no "$f"; then
+            rc=1
+          fi
+        done
+        # Slices get --recursive-errors=no: plain verify exits 0 on unknown
+        # keys / bad sections (fleet-ops#92), so a malformed slice would
+        # otherwise slip through. Services/timers keep plain verify so a
+        # pre-existing service key quirk does not regress CI (fleet-ops#4174).
+        for f in systemd/*.slice; do
+          if ! systemd-analyze verify --man=no --recursive-errors=no "$f"; then
+            rc=1
+          fi
+        done
+        set -e
+        exit "$rc"
+>>>>>>> 6088e2712 (fix(spawn-guard): cover stop of fleet units in systemctl_restart_fleet_unit (Relates to #5605) (#5658))

@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 #!/usr/bin/env bash
 # tests/fleet-ops-deploy.test.sh
 #
@@ -2575,3 +2576,2404 @@ bash "$here/manifest-required-bins.test.sh"
 
 # fleet-ops#410: same CI-list constraint; products-symlink retarget rides along.
 bash "$here/fleet-ops-retarget-products.test.sh"
+||||||| (empty tree)
+=======
+#!/usr/bin/env bash
+# tests/fleet-ops-deploy.test.sh
+#
+# fleet-ops#149: merge-to-live deploy step + drift canary.
+#
+# Proves, entirely offline with mocked systemctl and a local git remote:
+#   1. install.sh installs+enables MANIFEST bins and units; canary is clean.
+#   2. A missing symlink fails the canary (DRIFT-INSTALL).
+#   3. A dirty tracked file fails the canary (DRIFT-CHECKOUT).
+#   4. A stale checkout (HEAD behind origin/main) fails the canary.
+#   5. An extra enabled fleet unit fails the canary (DRIFT-UNITS).
+#   6. A hand-installed extra symlink fails the canary (DRIFT-EXTRAS).
+#   7. origin/main ahead + clean checkout: fleet-ops-deploy fast-forwards,
+#      installs the newly merged bin+unit, enables them, canary passes.
+#   8. Dirty checkout: fleet-ops-deploy blocks, does not merge, does not reset.
+#   9. Linked worktree (.git FILE) is accepted by fleet-ops-deploy (re-land #313).
+#  10. Live dest matching the checkout working tree is not enough: origin/main
+#      blob compare fails if dest bytes differ from origin/main (self-compare
+#      of checkout-vs-itself is impossible).
+#  10b. A copy-install JSON config (seat-caps.json / pi-models.json /
+#      model-candidates.json) that is byte-different but JSON-equivalent to
+#      its origin/main blob (the install.sh merge re-serializes it, and
+#      collapses a duplicate object key) is not DRIFT-ORIGIN; a real
+#      structural change or unparseable JSON still is (fleet-ops#5161,
+#      mirroring install.sh --check content_equivalent, fleet-ops#4948).
+#  10c. Any MANIFEST .json dest compares parsed documents with document
+#      order preserved: a whitespace-only rewrite is reformatted-not-drifted;
+#      a changed value or reordered key still fails DRIFT-ORIGIN
+#      (fleet-ops#5201).
+#  11. Enable-link into a volatile path (/tmp outside the checkout) fails
+#      DRIFT-VOLATILE.
+#  11b. A MANIFEST unit's wants-link hijacked to /tmp (fragment symlink still
+#      correct, so install.sh --check is clean) fails DRIFT-VOLATILE and
+#      auto-files a deduped issue — the exact fleet-ops#369 shape.
+#  12. install.sh refuses to overwrite a live file newer than the repo copy,
+#      and removes the paper-over heartbeat drop-in.
+#  12c. install.sh refuses a seat-caps cap drop even when the repo file has
+#      a newer mtime (git checkout refreshes mtime; fleet-ops#371).
+#  12d. origin/main blob matching the repo file is allowed to land a merged
+#      cap drop (fleet-ops-deploy path).
+#  12e. a green-exit install.sh from a checkout that does not ship
+#      intake-reconcile units must not fail enable (fleet-ops#559).
+#  13. A leftover .service whose ExecStart binary is missing fails
+#      DRIFT-MISSING-EXEC and auto-files (fleet-ops#285).
+#  14. The paper-over heartbeat drop-in fails DRIFT-PAPER-OVER and auto-files
+#      (fleet-ops#370). A second tick with the marker open does not re-file.
+#  15. FLEET_OPS_DRIFT_BIN under agent-worktrees fails DEPLOY-DRIFT-BIN-VOLATILE.
+#  16. fleet-ops-deploy removes the paper-over drop-in even when merge is blocked.
+#  17. A named non-main branch whose HEAD is already on a remote (ancestor
+#      of an origin ref) is recovered onto main even if a process holds the
+#      clone (fleet-ops#5222). --dry-run recovers throwaway-guard-test and
+#      exits 0; an unpushed commit is refused and left in place. The canary
+#      still emits DRIFT-OFF-MAIN and dedups. An auditor branch that is an
+#      ancestor of origin/main is recovered by checking out main, not by
+#      fast-forwarding the auditor pointer.
+#  17f. The off-main observe-to-close (fleet-ops#620) fires as soon as
+#      check_checkout passes, even when a later check (e.g. DRIFT-MISSING-EXEC
+#      from a leftover service) is still red (fleet-ops#774). The class is
+#      binary — branch is main or not — so the `resolved-at:` comment must
+#      not wait for the whole canary to be green.
+#  20. The deploy-clone on main but dirty (uncommitted tracked changes) or
+#      diverged (HEAD not an ancestor of origin/main) blocks merge-to-live
+#      with the same DEPLOY-BLOCKED line as off-main, but the off-main
+#      auto-file does not fire (the branch IS main). Both fleet-ops-deploy
+#      and the drift canary auto-file the distinct deploy-blocked-on-main
+#      class (fleet-ops#2725) so the block does not sit silent for 30+ min
+#      until the blind-audit catches it. Dedup and observe-to-close (#620)
+#      mirror the off-main class.
+#  18. fleet-ops-deploy invokes install.sh --system after the user-scope
+#      install (fleet-ops#1247). A --system failure fails the deploy.
+#  19. The drift canary rc is captured explicitly, not inverted: a canary
+#      that exits nonzero with success-looking output fails the deploy with
+#      the rc logged; a canary that exits 0 passes (fleet-ops#463).
+#
+# The real bin/fleet-ops-drift.py and bin/fleet-ops-deploy are exercised.
+
+set -euo pipefail
+here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+repo_root="$(cd "$here/.." && pwd)"
+
+fail() { echo "FAIL: $*" >&2; exit 1; }
+ok()   { echo "OK: $*"; }
+
+command -v jq >/dev/null 2>&1 || fail "jq missing"
+[[ -x "$repo_root/bin/fleet-ops-deploy" ]] || fail "missing bin/fleet-ops-deploy"
+[[ -f "$repo_root/bin/fleet-ops-drift.py" ]] || fail "missing bin/fleet-ops-drift.py"
+grep -q 'fleet-ops-deploy' "$repo_root/bin/fleet-heartbeat-tier1" \
+    || fail "fleet-heartbeat-tier1 must invoke fleet-ops-deploy"
+grep -q 'deploy_rc' "$repo_root/bin/fleet-heartbeat-tier1" \
+    || fail "fleet-heartbeat-tier1 must propagate deploy_rc"
+grep -q 'rev-parse --git-dir' "$repo_root/bin/fleet-ops-deploy" \
+    || fail "fleet-ops-deploy must use rev-parse --git-dir (worktree-safe), not [ -d .git ]"
+if grep -Fq '[ ! -d "$DEPLOY_CHECKOUT/.git" ]' "$repo_root/bin/fleet-ops-deploy"; then
+    fail "fleet-ops-deploy still uses [ ! -d .git ] which false-negatives on linked worktrees"
+fi
+grep -q 'FLEET_OPS_CHECKOUT=/home/nish/workspaces/tooling/fleet-ops-deploy-clone' \
+    "$repo_root/systemd/fleet-heartbeat.service" \
+    || fail "fleet-heartbeat.service must pin the canonical deploy-clone checkout"
+grep -q 'AUDIT_REPO_ROOT=/home/nish/workspaces/tooling/fleet-ops-deploy-clone' \
+    "$repo_root/systemd/fleet-blind-audit.service" \
+    || fail "fleet-blind-audit.service must pin AUDIT_REPO_ROOT to the canonical deploy-clone"
+grep -q 'check_live_matches_origin_main' "$repo_root/bin/fleet-ops-drift.py" \
+    || fail "drift canary must compare live dests to origin/main blobs"
+grep -q 'DRIFT-VOLATILE' "$repo_root/bin/fleet-ops-drift.py" \
+    || fail "drift canary must flag volatile unit/enable-link paths"
+grep -q 'live_newer_than_repo' "$repo_root/install.sh" \
+    || fail "install.sh must refuse to overwrite a newer live config"
+grep -q 'seat_caps_would_downgrade' "$repo_root/install.sh" \
+    || fail "install.sh must refuse a seat-caps cap drop even when mtime is newer (fleet-ops#371)"
+grep -q 'fleet-ops#371' "$repo_root/install.sh" \
+    || fail "install.sh cap-drop refuse must name fleet-ops#371"
+grep -q 'remove_papered_heartbeat_dropin' "$repo_root/install.sh" \
+    || fail "install.sh must remove the paper-over heartbeat drop-in"
+grep -q 'remove_stale_scout_prom_mode_dropin' "$repo_root/install.sh" \
+    || fail "install.sh must remove the stale scout 20-prom-mode drop-in (fleet-ops#2924)"
+grep -q 'remove_orphaned_fleet_auto_deploy_dropin' "$repo_root/install.sh" \
+    || fail "install.sh must remove the orphaned fleet-auto-deploy.timer.d drop-in (fleet-ops#4112)"
+grep -q 'remove_orphaned_fleet_auto_ship_dropin' "$repo_root/install.sh" \
+    || fail "install.sh must remove the orphaned fleet-auto-ship.service.d drop-in (fleet-ops#4114)"
+grep -q 'remove_orphaned_fleet_cheap_triage_dropin' "$repo_root/install.sh" \
+    || fail "install.sh must remove the orphaned fleet-cheap-triage.service.d drop-in (fleet-ops#4126)"
+grep -q 'remove_orphaned_fleet_e2e_heartbeat_dropin' "$repo_root/install.sh" \
+    || fail "install.sh must remove the orphaned fleet-e2e-heartbeat.service.d drop-in (fleet-ops#4151)"
+grep -q 'remove_orphaned_fleet_hourly_audit_dropin' "$repo_root/install.sh" \
+    || fail "install.sh must remove the orphaned fleet-hourly-audit.service.d drop-in (fleet-ops#4430)"
+grep -q 'remove_orphaned_fleet_idea_intake_dropin' "$repo_root/install.sh" \
+    || fail "install.sh must remove the orphaned fleet-idea-intake.service.d drop-in (fleet-ops#4435)"
+grep -q 'remove_orphaned_fleet_loop_dropin' "$repo_root/install.sh" \
+    || fail "install.sh must remove the orphaned fleet-loop@.service.d drop-in (fleet-ops#4502)"
+grep -q 'remove_canary_start_timeout_dropins' "$repo_root/install.sh" \
+    || fail "install.sh must remove the bridge start-timeout drop-ins (fleet-ops#5203)"
+grep -q 'pi-scout@.service.d/20-prom-mode.conf' "$repo_root/bin/fleet-ops-deploy" \
+    || fail "fleet-ops-deploy must remove the stale scout 20-prom-mode drop-in (fleet-ops#2924)"
+grep -q 'fleet-auto-deploy.timer.d' "$repo_root/bin/fleet-ops-deploy" \
+    || fail "fleet-ops-deploy must remove the orphaned fleet-auto-deploy.timer.d drop-in (fleet-ops#4112)"
+grep -q 'fleet-auto-ship.service.d' "$repo_root/bin/fleet-ops-deploy" \
+    || fail "fleet-ops-deploy must remove the orphaned fleet-auto-ship.service.d drop-in (fleet-ops#4114)"
+grep -q 'fleet-cheap-triage.service.d' "$repo_root/bin/fleet-ops-deploy" \
+    || fail "fleet-ops-deploy must remove the orphaned fleet-cheap-triage.service.d drop-in (fleet-ops#4126)"
+grep -q 'fleet-e2e-heartbeat.service.d' "$repo_root/bin/fleet-ops-deploy" \
+    || fail "fleet-ops-deploy must remove the orphaned fleet-e2e-heartbeat.service.d drop-in (fleet-ops#4151)"
+grep -q 'fleet-hourly-audit.service.d' "$repo_root/bin/fleet-ops-deploy" \
+    || fail "fleet-ops-deploy must remove the orphaned fleet-hourly-audit.service.d drop-in (fleet-ops#4430)"
+grep -q 'fleet-idea-intake.service.d' "$repo_root/bin/fleet-ops-deploy" \
+    || fail "fleet-ops-deploy must remove the orphaned fleet-idea-intake.service.d drop-in (fleet-ops#4435)"
+grep -q 'fleet-loop@.service.d' "$repo_root/bin/fleet-ops-deploy" \
+    || fail "fleet-ops-deploy must remove the orphaned fleet-loop@.service.d drop-in (fleet-ops#4502)"
+grep -q '20-start-timeout.conf' "$repo_root/bin/fleet-ops-deploy" \
+    || fail "fleet-ops-deploy must remove the bridge start-timeout drop-ins (fleet-ops#5203)"
+grep -q 'systemd/pi-intake@.service.d/10-use-tick.conf' "$repo_root/MANIFEST" \
+    || fail "MANIFEST must list 10-use-tick.conf (fleet-ops#2924 absorb)"
+[[ -f "$repo_root/systemd/pi-intake@.service.d/10-use-tick.conf" ]] \
+    || fail "repo must ship systemd/pi-intake@.service.d/10-use-tick.conf"
+grep -q 'pi-intake-tick.sh' "$repo_root/systemd/pi-intake@.service.d/10-use-tick.conf" \
+    || fail "10-use-tick.conf must ExecStart the deterministic tick"
+grep -q 'refuse_noncanonical_install' "$repo_root/install.sh" \
+    || fail "install.sh must refuse to install from a non-canonical workspaces checkout"
+grep -q 'DEPLOY-NONCANONICAL' "$repo_root/bin/fleet-ops-deploy" \
+    || fail "fleet-ops-deploy must refuse a non-canonical FLEET_OPS_CHECKOUT"
+grep -q 'DRIFT-SOURCE' "$repo_root/bin/fleet-ops-drift.py" \
+    || fail "drift canary must flag live dests that point outside the canonical checkout"
+grep -q 'canonical_json' "$repo_root/bin/fleet-ops-drift.py" \
+    || fail "drift canary must compare copy-install JSON configs semantically (fleet-ops#5161)"
+grep -q 'issue-file.py' "$repo_root/bin/fleet-ops-drift.py" \
+    || fail "drift canary must auto-file a canonical-checkout drift issue"
+grep -q 'DRIFT-MISSING-EXEC' "$repo_root/bin/fleet-ops-drift.py" \
+    || fail "drift canary must flag user units whose ExecStart binary is missing"
+grep -q 'orphan-execstart: fleet-ops#285' "$repo_root/bin/fleet-ops-drift.py" \
+    || fail "drift canary must auto-file missing-ExecStart leftovers with the #285 marker"
+grep -q 'DRIFT-PAPER-OVER' "$repo_root/bin/fleet-ops-drift.py" \
+    || fail "drift canary must flag the paper-over heartbeat drop-in (fleet-ops#370)"
+grep -q 'paper-over-dropin: fleet-ops#370' "$repo_root/bin/fleet-ops-drift.py" \
+    || fail "drift canary must auto-file the paper-over drop-in with the #370 marker"
+grep -q 'DEPLOY-DRIFT-BIN-VOLATILE' "$repo_root/bin/fleet-ops-deploy" \
+    || fail "fleet-ops-deploy must refuse FLEET_OPS_DRIFT_BIN under agent-worktrees"
+grep -q 'fleet-heartbeat.service.d/10-deploy-checkout.conf' "$repo_root/bin/fleet-ops-deploy" \
+    || fail "fleet-ops-deploy must remove the paper-over heartbeat drop-in"
+if grep -q 'FLEET_OPS_DRIFT_BIN=' "$repo_root/systemd/fleet-heartbeat.service"; then
+    fail "fleet-heartbeat.service must not pin FLEET_OPS_DRIFT_BIN (that was the paper-over)"
+fi
+[[ ! -e "$repo_root/systemd/fleet-heartbeat.service.d/10-deploy-checkout.conf" ]] \
+    || fail "repo must not ship the paper-over heartbeat drop-in"
+grep -q 'check_products_symlink' "$repo_root/bin/fleet-ops-drift.py" \
+    || fail "drift canary must retarget products/fleet-ops when worktrees can move (fleet-ops#410)"
+grep -q 'products-symlink-stale: fleet-ops#410' "$repo_root/bin/fleet-ops-drift.py" \
+    || fail "drift canary must auto-file a stuck products/fleet-ops symlink (fleet-ops#410)"
+grep -q 'DRIFT-OFF-MAIN' "$repo_root/bin/fleet-ops-drift.py" \
+    || fail "drift canary must flag a named non-main branch on the deploy checkout (fleet-ops#477)"
+grep -q 'deploy-clone-off-main: fleet-ops#477' "$repo_root/bin/fleet-ops-drift.py" \
+    || fail "drift canary must auto-file off-main checkout with the #477 marker"
+grep -q 'not main (fleet-ops#477)' "$repo_root/bin/fleet-ops-deploy" \
+    || fail "fleet-ops-deploy must name a named non-main branch (fleet-ops#477)"
+grep -q -- '--file-off-main' "$repo_root/bin/fleet-ops-deploy" \
+    || fail "fleet-ops-deploy must auto-file off-main via the canary --file-off-main flag"
+grep -q 'fleet-ops#5222' "$repo_root/bin/fleet-ops-deploy" \
+    || fail "fleet-ops-deploy must recover a fully-pushed off-main clone (fleet-ops#5222)"
+grep -q -- '--dry-run' "$repo_root/bin/fleet-ops-deploy" \
+    || fail "fleet-ops-deploy must accept --dry-run (fleet-ops#5222 termination)"
+grep -q 'head_is_on_remote' "$repo_root/bin/fleet-ops-deploy" \
+    || fail "fleet-ops-deploy must test whether HEAD is an ancestor of an origin ref"
+grep -q 'pid=$CLONE_HOLDER_PID' "$repo_root/bin/fleet-ops-deploy" \
+    || fail "DEPLOY-BLOCKED must name the holder pid (fleet-ops#5222)"
+grep -q 'deploy-blocked-on-main: fleet-ops#2725' "$repo_root/bin/fleet-ops-drift.py" \
+    || fail "drift canary must auto-file deploy-blocked-on-main with the #2725 marker"
+grep -q -- '--file-deploy-blocked-main' "$repo_root/bin/fleet-ops-deploy" \
+    || fail "fleet-ops-deploy must auto-file deploy-blocked-on-main via the canary --file-deploy-blocked-main flag"
+grep -q 'auto_file_deploy_blocked_main' "$repo_root/bin/fleet-ops-deploy" \
+    || fail "fleet-ops-deploy must wire the deploy-blocked-on-main auto-file (fleet-ops#2725)"
+grep -q 'fleet-ops#477' "$repo_root/prompts/worker.md" \
+    || fail "worker.md must tell workers not to check out branches on the deploy-clone (fleet-ops#477)"
+# fleet-ops#559: the historical intake-reconcile enable safety net must not
+# run when the unit file is absent from this checkout. Match the 0509 timer
+# guard so a minimal MANIFEST cannot fail `systemctl enable` on hosted CI.
+grep -A3 'if \[ -f "$here/systemd/intake-reconcile.path" \]' "$repo_root/install.sh" \
+    | grep -q 'enable --now intake-reconcile.path' \
+    || fail "install.sh must enable intake-reconcile.path only when the unit file exists in the checkout (fleet-ops#559)"
+grep -A3 'if \[ -f "$here/systemd/intake-reconcile.timer" \]' "$repo_root/install.sh" \
+    | grep -q 'enable --now intake-reconcile.timer' \
+    || fail "install.sh must enable intake-reconcile.timer only when the unit file exists in the checkout (fleet-ops#559)"
+grep -q 'run_install "install.sh --system" --system' "$repo_root/bin/fleet-ops-deploy" \
+    || fail "fleet-ops-deploy must run install.sh --system (fleet-ops#1247)"
+grep -q 'sudo -n systemctl reload prometheus' "$repo_root/bin/fleet-ops-deploy" \
+    || fail "fleet-ops-deploy must HUP prometheus after --system so fleet_rules.yml loads (fleet-ops#1247)"
+
+# --- scratch environment -----------------------------------------------------
+scratch="$(mktemp -d -t fleet-ops-deploy.XXXXXX)"
+trap 'release_clone; rm -rf "$scratch"' EXIT INT TERM
+
+export HOME="$scratch/home"
+# fleet-ops#410: do not let the canary --apply the live products/fleet-ops
+# symlink while this scratch checkout is under test.
+export FLEET_OPS_PRODUCTS_LINK="$scratch/products-fleet-ops-absent"
+mkdir -p "$HOME/.local/bin" \
+         "$HOME/.config/systemd/user" \
+         "$HOME/.pi/agent/prompts" \
+         "$HOME/.local/state/fleet-ops"
+
+checkout="$scratch/fleet-ops-checkout"
+install="$checkout/install.sh"
+canary="$HOME/.local/bin/fleet-ops-drift"
+deploy="$checkout/bin/fleet-ops-deploy"
+
+# --- build a minimal deploy checkout -----------------------------------------
+mkdir -p "$checkout/bin" "$checkout/systemd" "$checkout/config"
+cp "$repo_root/install.sh" "$install"
+cp "$repo_root/bin/fleet-ops-drift.py" "$checkout/bin/fleet-ops-drift.py"
+cp "$repo_root/bin/fleet-ops-deploy" "$deploy"
+chmod +x "$install" "$checkout/bin/fleet-ops-drift.py" "$deploy"
+
+cat >"$checkout/config/intake-repos.json" <<'JSON'
+{
+  "repos": [{ "name": "demo" }],
+  "excluded": [],
+  "deferred": []
+}
+JSON
+
+cat >"$checkout/MANIFEST" <<MANIFEST
+systemd/demo.timer $HOME/.config/systemd/user/demo.timer
+bin/demo-script $HOME/.local/bin/demo-script
+bin/fleet-ops-drift.py $HOME/.local/bin/fleet-ops-drift
+bin/intake-reconcile $HOME/.local/bin/intake-reconcile
+systemd/intake-reconcile.path $HOME/.config/systemd/user/intake-reconcile.path
+systemd/intake-reconcile.timer $HOME/.config/systemd/user/intake-reconcile.timer
+MANIFEST
+
+cat >"$checkout/systemd/demo.timer" <<'UNIT'
+[Unit]
+Description=Demo timer
+
+[Timer]
+OnCalendar=*:00/30
+Persistent=true
+
+[Install]
+WantedBy=timers.target
+UNIT
+
+cat >"$checkout/systemd/intake-reconcile.path" <<'UNIT'
+[Unit]
+Description=Reconcile path
+
+[Path]
+PathChanged=/tmp/intake-repos.json
+Unit=intake-reconcile.service
+
+[Install]
+WantedBy=default.target
+UNIT
+
+cat >"$checkout/systemd/intake-reconcile.timer" <<'UNIT'
+[Unit]
+Description=Reconcile timer
+
+[Timer]
+OnCalendar=*:00/30
+
+[Install]
+WantedBy=timers.target
+UNIT
+
+# Templates fleet-ops actually ships — the drift canary matches rogue
+# instances (pi-intake@rogue.timer) against these by template prefix, so
+# they must exist in the test checkout for scenario 5 to exercise that path.
+cat >"$checkout/systemd/pi-intake@.timer" <<'UNIT'
+[Unit]
+Description=Pi intake timer for %i
+
+[Timer]
+OnCalendar=*:00/30
+
+[Install]
+WantedBy=timers.target
+UNIT
+cat >"$checkout/systemd/pi-scout@.timer" <<'UNIT'
+[Unit]
+Description=Pi scout timer for %i
+
+[Timer]
+OnCalendar=*:00/30
+
+[Install]
+WantedBy=timers.target
+UNIT
+
+cat >"$checkout/bin/demo-script" <<'BIN'
+#!/usr/bin/env bash
+echo demo
+BIN
+chmod +x "$checkout/bin/demo-script"
+
+cat >"$checkout/bin/intake-reconcile" <<'BIN'
+#!/usr/bin/env bash
+set -euo pipefail
+here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+json="$here/../config/intake-repos.json"
+for repo in $(jq -r '.repos[].name' "$json"); do
+  systemctl --user enable --now "pi-intake@$repo.timer" >/dev/null 2>&1 || true
+  systemctl --user enable --now "pi-scout@$repo.timer" >/dev/null 2>&1 || true
+done
+BIN
+chmod +x "$checkout/bin/intake-reconcile"
+
+# --- local git repo with a real origin ---------------------------------------
+origin_bare="$scratch/origin.git"
+git -c init.defaultBranch=main init --bare -q "$origin_bare"
+git -C "$checkout" init -q -b main
+git -C "$checkout" config user.email "test@example.com"
+git -C "$checkout" config user.name "Test"
+git -C "$checkout" add .
+git -C "$checkout" commit -q -m "initial"
+git -C "$checkout" remote add origin "$origin_bare"
+git -C "$checkout" push -q origin HEAD:main
+git -C "$checkout" fetch -q origin
+git -C "$checkout" branch -q --set-upstream-to=origin/main main
+
+# fleet-ops#5016: this fixture's origin is a local bare path, so point the
+# origin-fetch-URL guard's expectation at it. Production sets no seam and so
+# demands the fleet-ops GitHub URL. Exported: every inline invocation below
+# inherits it.
+export FLEET_OPS_EXPECTED_ORIGIN_URL="$origin_bare"
+
+# --- fake systemctl ----------------------------------------------------------
+systemctl_fake="$scratch/systemctl"
+cat >"$systemctl_fake" <<'FAKE'
+#!/usr/bin/env bash
+enabled_file="${FLEET_OPS_FAKE_ENABLED:-/dev/null}"
+mkdir -p "$(dirname "$enabled_file")" 2>/dev/null || true
+
+if [ "${1:-}" = "--user" ]; then
+  shift
+fi
+cmd="${1:-}"
+if [ "$#" -gt 0 ]; then
+  shift
+fi
+
+case "$cmd" in
+  is-enabled)
+    [ -f "$enabled_file" ] && grep -qxF "$1" "$enabled_file" && exit 0
+    exit 1
+    ;;
+  list-unit-files)
+    if [ -f "$enabled_file" ]; then
+      while IFS= read -r u; do
+        [ -n "$u" ] && printf '%s enabled enabled\n' "$u"
+      done < "$enabled_file"
+    fi
+    exit 0
+    ;;
+  daemon-reload)
+    exit 0
+    ;;
+  enable)
+    for u in "$@"; do
+      [ -n "$u" ] || continue
+      case "$u" in
+        --now) ;;
+        *) printf '%s\n' "$u" >> "$enabled_file" ;;
+      esac
+    done
+    exit 0
+    ;;
+  start)
+    exit 0
+    ;;
+  is-active)
+    # Deploy probes prometheus before HUPing it. Tests have no prometheus.
+    printf 'inactive\n'
+    exit 3
+    ;;
+  *)
+    printf 'unexpected systemctl call: %s %s\n' "$cmd" "$*" >&2
+    exit 1
+    ;;
+esac
+FAKE
+chmod +x "$systemctl_fake"
+
+# --- fake gh ----------------------------------------------------------------
+# The drift canary mints worker-token unless GH points at a non-default fake
+# (fleet-ops#3576). Give it a fake gh so the mint is skipped and any gh call
+# the canary makes is captured, not a real human-gh write.
+gh_fake="$scratch/gh"
+gh_log="$scratch/gh.log"
+: >"$gh_log"
+cat >"$gh_fake" <<'FAKE'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >>"${GH_LOG:-/dev/null}"
+exit 0
+FAKE
+chmod +x "$gh_fake"
+
+enabled_units="$scratch/enabled_units"
+: >"$enabled_units"
+export FLEET_OPS_FAKE_ENABLED="$enabled_units"
+
+export GH_LOG="$gh_log"
+
+run_canary() {
+  GH="${GH:-$gh_fake}" \
+  FLEET_OPS_CHECKOUT="$checkout" \
+  FLEET_OPS_SYSTEMCTL="$systemctl_fake" \
+  FLEET_OPS_AUDIT_LOG="$HOME/.local/state/fleet-ops/drift-audit.log" \
+  FLEET_OPS_TRIAGE="$scratch/triage.md" \
+  FLEET_OPS_SKIP_FETCH=1 \
+    "$canary" 2>&1
+}
+
+run_deploy() {
+  GH="${GH:-$gh_fake}" \
+  PATH="$scratch:$PATH" \
+  FLEET_OPS_CHECKOUT="$checkout" \
+  FLEET_OPS_DRIFT_BIN="$canary" \
+  FLEET_OPS_SYSTEMCTL="$systemctl_fake" \
+  FLEET_OPS_DEPLOY_AUDIT_LOG="$scratch/deploy-audit.log" \
+  FLEET_OPS_TRIAGE="$scratch/triage.md" \
+    "$deploy" "$@" 2>&1
+}
+
+# fleet-ops#3634: a live process holding the clone as its cwd keeps the LOUD
+# block (the deploy must not reset the clone out from under an active worker).
+# These helpers simulate that process so the block path stays covered now that
+# an abandoned clone is self-rescued instead.
+HOLDER=""
+hold_clone() {
+  ( cd "$checkout" && exec sleep 60 ) &
+  HOLDER=$!
+}
+release_clone() {
+  [ -n "${HOLDER:-}" ] && kill "$HOLDER" 2>/dev/null || true
+  HOLDER=""
+}
+
+# --- scenario 1: install+enable, canary is clean -----------------------------
+PATH="$scratch:$PATH" "$install" >/tmp/install.out 2>&1 || {
+    cat /tmp/install.out
+    fail "scenario1: install.sh failed"
+}
+PATH="$scratch:$PATH" "$checkout/bin/intake-reconcile" >/dev/null 2>&1 || true
+for u in demo.timer intake-reconcile.path intake-reconcile.timer; do
+  grep -qxF "$u" "$enabled_units" \
+      || fail "scenario1: $u was not enabled (enabled=$(cat "$enabled_units"))"
+done
+for u in pi-intake@demo.timer pi-scout@demo.timer; do
+  grep -qxF "$u" "$enabled_units" \
+      || fail "scenario1: $u was not enabled by intake-reconcile (enabled=$(cat "$enabled_units"))"
+done
+[ -L "$HOME/.config/systemd/user/demo.timer" ] \
+    || fail "scenario1: demo.timer not installed as a symlink"
+[ -L "$HOME/.local/bin/demo-script" ] \
+    || fail "scenario1: demo-script not installed as a symlink"
+[ -L "$canary" ] || fail "scenario1: drift canary not installed as a symlink"
+
+if ! out=$(run_canary); then
+    fail "scenario1: canary should be clean after install, got: $out"
+fi
+ok "scenario1: install+enable and canary pass"
+
+# --- scenario 2: missing symlink is caught -----------------------------------
+rm -f "$HOME/.config/systemd/user/demo.timer"
+if out=$(run_canary); then
+    fail "scenario2: canary should fail after deleting demo.timer, got: $out"
+fi
+[[ "$out" == *"DRIFT-INSTALL"* ]] || fail "scenario2: missing symlink did not produce DRIFT-INSTALL (got: $out)"
+PATH="$scratch:$PATH" "$install" >/dev/null 2>&1 || true
+
+# --- scenario 3: dirty tracked file ------------------------------------------
+echo '# dirty' >> "$checkout/MANIFEST"
+if out=$(run_canary); then
+    fail "scenario3: canary should fail on dirty checkout, got: $out"
+fi
+[[ "$out" == *"DRIFT-CHECKOUT"* ]] || fail "scenario3: dirty checkout did not produce DRIFT-CHECKOUT (got: $out)"
+git -C "$checkout" checkout -- MANIFEST
+
+# --- scenario 4: stale checkout (HEAD behind origin/main) --------------------
+old_head=$(git -C "$checkout" rev-parse HEAD)
+git -C "$checkout" checkout -q -b next-main
+printf '\n# comment\n' >> "$checkout/systemd/demo.timer"
+git -C "$checkout" add -A
+git -C "$checkout" commit -q -m "new main"
+git -C "$checkout" push -q origin HEAD:main
+new_head=$(git -C "$checkout" rev-parse HEAD)
+git -C "$checkout" checkout -q "$old_head"
+if out=$(run_canary); then
+    fail "scenario4: canary should fail on stale checkout, got: $out"
+fi
+[[ "$out" == *"DRIFT-CHECKOUT"* ]] || fail "scenario4: stale checkout did not produce DRIFT-CHECKOUT (got: $out)"
+git -C "$checkout" checkout -q "$new_head"
+git -C "$checkout" merge --ff-only -q origin/main
+
+# --- scenario 5: extra enabled fleet unit ------------------------------------
+expected_units=(
+  demo.timer
+  intake-reconcile.path
+  intake-reconcile.timer
+  pi-intake@demo.timer
+  pi-scout@demo.timer
+)
+: >"$enabled_units"
+printf '%s\n' "${expected_units[@]}" > "$enabled_units"
+printf 'pi-intake@rogue.timer\n' >> "$enabled_units"
+if out=$(run_canary); then
+    fail "scenario5: canary should fail on extra enabled unit, got: $out"
+fi
+[[ "$out" == *"DRIFT-UNITS"* ]] || fail "scenario5: extra enabled unit did not produce DRIFT-UNITS (got: $out)"
+
+# --- scenario 5b: externally-managed unit (fleet-prefixed, no source) ignored
+# A unit with a fleet-y name prefix but NO source file in this checkout is
+# owned by another system (codex-remote-control.service, pi-transport-check.*)
+# and must NOT be flagged as drift — the old prefix-only check false-positived
+# on these and turned every heartbeat tick red.
+: >"$enabled_units"
+printf '%s\n' "${expected_units[@]}" > "$enabled_units"
+printf 'codex-remote-control.service\n' >> "$enabled_units"
+printf 'pi-transport-check.timer\n' >> "$enabled_units"
+if ! out=$(run_canary); then
+    fail "scenario5b: canary should pass (externally-managed units ignored), got: $out"
+fi
+[[ "$out" == *"DRIFT-UNITS"* ]] \
+    && fail "scenario5b: externally-managed units were flagged as DRIFT-UNITS (got: $out)"
+ok "scenario5b: externally-managed (no-source) units ignored, not flagged as drift"
+
+# --- scenario 5c: masked unit + template-instance symlinks ignored -----------
+# intake-reconcile masks disabled units via a /dev/null symlink, and enabled
+# template instances (pi-intake@<repo>.timer) symlink to the shipped template.
+# Both are legit fleet state, not drift — the old check_extra_symlinks flagged
+# them because it didn't understand template instances or the /dev/null mask.
+: >"$enabled_units"
+printf '%s\n' "${expected_units[@]}" > "$enabled_units"
+# masked (disabled) unit: symlink to /dev/null
+ln -sf /dev/null "$HOME/.config/systemd/user/pi-intake@rogue.timer"
+# enabled template instance: symlink to the shipped template in the checkout
+ln -sf "$checkout/systemd/pi-intake@.timer" "$HOME/.config/systemd/user/pi-intake@extra.timer"
+if ! out=$(run_canary); then
+    fail "scenario5c: canary should pass (masked + template-instance symlinks are legit), got: $out"
+fi
+[[ "$out" == *"DRIFT-EXTRAS"* ]] \
+    && fail "scenario5c: masked/template-instance symlinks were flagged as DRIFT-EXTRAS (got: $out)"
+ok "scenario5c: masked (/dev/null) and template-instance symlinks ignored, not flagged as drift"
+rm -f "$HOME/.config/systemd/user/pi-intake@rogue.timer" "$HOME/.config/systemd/user/pi-intake@extra.timer"
+
+# --- scenario 6: hand-installed extra symlink --------------------------------
+: >"$enabled_units"
+printf '%s\n' "${expected_units[@]}" > "$enabled_units"
+mkdir -p "$scratch/fleet-ops-stale/bin"
+echo '# stale' > "$scratch/fleet-ops-stale/bin/extra"
+ln -sf "$scratch/fleet-ops-stale/bin/extra" "$HOME/.local/bin/extra"
+if out=$(run_canary); then
+    fail "scenario6: canary should fail on extra symlink, got: $out"
+fi
+[[ "$out" == *"DRIFT-EXTRAS"* ]] || fail "scenario6: extra symlink did not produce DRIFT-EXTRAS (got: $out)"
+rm -f "$HOME/.local/bin/extra"
+
+# --- scenario 7: origin/main ahead — deploy merges and installs the new unit -
+: >"$enabled_units"
+behind_head=$(git -C "$checkout" rev-parse HEAD)
+git -C "$checkout" checkout -q -b add-merged
+cat >"$checkout/bin/merged-script" <<'BIN'
+#!/usr/bin/env bash
+echo merged
+BIN
+chmod +x "$checkout/bin/merged-script"
+cat >"$checkout/systemd/merged.timer" <<'UNIT'
+[Unit]
+Description=Merged timer
+
+[Timer]
+OnCalendar=*:00/30
+
+[Install]
+WantedBy=timers.target
+UNIT
+cat >>"$checkout/MANIFEST" <<MANIFEST
+bin/merged-script $HOME/.local/bin/merged-script
+systemd/merged.timer $HOME/.config/systemd/user/merged.timer
+MANIFEST
+git -C "$checkout" add -A
+git -C "$checkout" commit -q -m "add merged bin+unit"
+git -C "$checkout" push -q origin HEAD:main
+merged_head=$(git -C "$checkout" rev-parse HEAD)
+git -C "$checkout" checkout -q "$behind_head"
+[ "$(git -C "$checkout" rev-parse HEAD)" != "$merged_head" ] \
+    || fail "scenario7: setup did not leave checkout behind origin/main"
+
+if ! out=$(run_deploy); then
+    fail "scenario7: deploy should merge a clean behind checkout, got: $out"
+fi
+[ "$(git -C "$checkout" rev-parse HEAD)" = "$merged_head" ] \
+    || fail "scenario7: checkout was not fast-forwarded to origin/main"
+[ -L "$HOME/.local/bin/merged-script" ] \
+    || fail "scenario7: merged-script was not installed"
+[ -L "$HOME/.config/systemd/user/merged.timer" ] \
+    || fail "scenario7: merged.timer was not installed"
+grep -qxF "merged.timer" "$enabled_units" \
+    || fail "scenario7: merged.timer was not enabled (enabled=$(cat "$enabled_units"))"
+ok "scenario7: origin/main ahead merges, installs, and enables the new unit"
+
+# --- scenario 8: dirty checkout blocks, no merge, no reset -------------------
+: >"$enabled_units"
+block_head=$(git -C "$checkout" rev-parse HEAD)
+git -C "$checkout" checkout -q -b ahead-dirty
+echo '# next' >> "$checkout/bin/demo-script"
+git -C "$checkout" add -A
+git -C "$checkout" commit -q -m "ahead"
+git -C "$checkout" push -q origin HEAD:main
+git -C "$checkout" checkout -q "$block_head"
+echo '# hot patch' >> "$checkout/bin/demo-script"
+hold_clone
+if out=$(run_deploy); then
+    release_clone
+    fail "scenario8: deploy should block on dirty tracked files, got: $out"
+fi
+release_clone
+[[ "$out" == *"DEPLOY-BLOCKED"* ]] || fail "scenario8: dirty checkout did not produce DEPLOY-BLOCKED (got: $out)"
+[ "$(git -C "$checkout" rev-parse HEAD)" = "$block_head" ] \
+    || fail "scenario8: dirty checkout was mutated (HEAD moved)"
+git -C "$checkout" diff --quiet -- bin/demo-script \
+    && fail "scenario8: dirty tracked file was reset or discarded"
+[[ "$out" != *"stash"* ]] || fail "scenario8: deploy mentioned stash"
+ok "scenario8: dirty checkout blocks with no merge and no reset"
+
+# --- scenario 9: linked worktree (.git is a FILE) is a valid checkout --------
+: >"$enabled_units"
+git -C "$checkout" reset --hard -q origin/main
+git -C "$checkout" worktree add --detach -q "$scratch/linked-wt"
+[[ -f "$scratch/linked-wt/.git" ]] \
+    || fail "scenario9: setup expected .git to be a file on the linked worktree"
+[[ ! -d "$scratch/linked-wt/.git" ]] \
+    || fail "scenario9: setup expected .git NOT to be a directory on the linked worktree"
+if ! out=$(
+  GH="${GH:-$gh_fake}" \
+  PATH="$scratch:$PATH" \
+  FLEET_OPS_CHECKOUT="$scratch/linked-wt" \
+  FLEET_OPS_DRIFT_BIN="$canary" \
+  FLEET_OPS_SYSTEMCTL="$systemctl_fake" \
+  FLEET_OPS_DEPLOY_AUDIT_LOG="$scratch/deploy-audit.log" \
+  FLEET_OPS_TRIAGE="$scratch/triage.md" \
+    "$deploy" 2>&1
+); then
+    [[ "$out" != *"DEPLOY-CHECKOUT-MISSING"* ]] \
+        || fail "scenario9: linked worktree was rejected as missing checkout: $out"
+    fail "scenario9: deploy on a linked worktree failed: $out"
+fi
+[[ "$out" != *"DEPLOY-CHECKOUT-MISSING"* ]] \
+    || fail "scenario9: linked worktree was rejected as missing checkout: $out"
+ok "scenario9: linked worktree (.git file) is accepted"
+git -C "$checkout" worktree remove "$scratch/linked-wt"
+PATH="$scratch:$PATH" "$install" >/dev/null 2>&1 || true
+
+# --- scenario 10: origin/main blob compare cannot self-compare ----------------
+# dest is a symlink into the checkout (the production self-compare shape).
+# Mutate the working tree (dest follows). origin/main blobs are unchanged.
+# Calling check_live_matches_origin_main alone must FAIL with DRIFT-ORIGIN.
+# A self-comparison of dest vs working tree would PASS.
+: >"$enabled_units"
+printf '%s\n' "${expected_units[@]}" > "$enabled_units"
+git -C "$checkout" checkout -q -- systemd/demo.timer
+if ! pyout=$(
+  FLEET_OPS_AUDIT_LOG="$HOME/.local/state/fleet-ops/drift-audit.log" \
+  FLEET_OPS_TRIAGE="$scratch/triage.md" \
+  HOME="$HOME" \
+  python3 - "$checkout" <<'PY' 2>&1
+import importlib.util
+import sys
+from pathlib import Path
+
+checkout = Path(sys.argv[1])
+spec = importlib.util.spec_from_file_location(
+    "fleet_ops_drift", checkout / "bin" / "fleet-ops-drift.py"
+)
+mod = importlib.util.module_from_spec(spec)
+assert spec.loader is not None
+spec.loader.exec_module(mod)
+(checkout / "systemd" / "demo.timer").write_text("# mutated working tree\n", encoding="utf-8")
+try:
+    mod.check_live_matches_origin_main(checkout)
+except SystemExit as e:
+    sys.exit(e.code if e.code is not None else 1)
+sys.exit(0)
+PY
+); then
+    [[ "$pyout" == *"DRIFT-ORIGIN"* ]] \
+        || fail "scenario10: expected DRIFT-ORIGIN when dest matches dirty worktree but not origin/main, got: $pyout"
+    ok "scenario10: origin/main blob compare fails when dest matches the working tree only"
+else
+    fail "scenario10: origin/main blob compare passed (self-comparison is possible): $pyout"
+fi
+git -C "$checkout" checkout -q -- systemd/demo.timer
+
+# --- scenario 10b: copy-install JSON config compares semantically ------------
+# fleet-ops#5161: the live seat-caps.json (and pi-models.json /
+# model-candidates.json) is re-serialized by install.sh's
+# seat_caps_merge_unknown_providers merge, so its bytes diverge from the
+# origin/main blob on the next deploy even when the config is identical
+# (fleet-ops#4205/#4894). A duplicate object key in config/seat-caps.json
+# (fleet-ops#5025 landed one) made that divergence permanent: the merge
+# collapses the duplicate, so the live file could never be byte-equal again
+# and the heartbeat went LOUD DRIFT-ORIGIN on every tick. The origin/main
+# blob compare must accept a byte-different but JSON-equivalent copy-install
+# config (install.sh --check already does, fleet-ops#4948) and must still
+# fail a real structural change and unparseable JSON.
+json_co="$scratch/json-checkout"
+json_live="$HOME/.local/state/pi-packet/seat-caps.json"
+mkdir -p "$json_co/bin" "$json_co/config" "$(dirname "$json_live")"
+cp "$repo_root/bin/fleet-ops-drift.py" "$json_co/bin/fleet-ops-drift.py"
+cat >"$json_co/MANIFEST" <<MANIFEST
+config/seat-caps.json $json_live
+MANIFEST
+# The repo copy carries a duplicate opencode-go key: the first is the stale
+# row, the last is the live one (every JSON parser keeps the last).
+cat >"$json_co/config/seat-caps.json" <<'JSON'
+{
+  "providers": {
+    "opencode-go": { "cap": 0, "class": "prepaid-quota" },
+    "opencode-go": { "cap": 2, "class": "prepaid-quota", "models": { "deepseek-flash": 2 } }
+  }
+}
+JSON
+json_origin="$scratch/json-origin.git"
+git -c init.defaultBranch=main init --bare -q "$json_origin"
+git -C "$json_co" init -q -b main
+git -C "$json_co" config user.email "test@example.com"
+git -C "$json_co" config user.name "Test"
+git -C "$json_co" add -A
+git -C "$json_co" commit -q -m "initial"
+git -C "$json_co" remote add origin "$json_origin"
+git -C "$json_co" push -q origin HEAD:main
+git -C "$json_co" fetch -q origin
+
+run_origin_blob_check() {
+  FLEET_OPS_AUDIT_LOG="$HOME/.local/state/fleet-ops/drift-audit.log" \
+  FLEET_OPS_TRIAGE="$scratch/triage.md" \
+  HOME="$HOME" \
+  python3 - "$json_co" <<'PY' 2>&1
+import importlib.util
+import sys
+from pathlib import Path
+
+checkout = Path(sys.argv[1])
+spec = importlib.util.spec_from_file_location(
+    "fleet_ops_drift", checkout / "bin" / "fleet-ops-drift.py"
+)
+mod = importlib.util.module_from_spec(spec)
+assert spec.loader is not None
+spec.loader.exec_module(mod)
+try:
+    mod.check_live_matches_origin_main(checkout)
+except SystemExit as e:
+    sys.exit(e.code if e.code is not None else 1)
+sys.exit(0)
+PY
+}
+
+# 10b-i: duplicate key collapsed by the merge -> byte-different, JSON-equal.
+printf '%s\n' '{"providers":{"opencode-go":{"cap":2,"class":"prepaid-quota","models":{"deepseek-flash":2}}}}' >"$json_live"
+if ! pyout=$(run_origin_blob_check); then
+    fail "scenario10b: JSON-equivalent copy-install config must not be DRIFT-ORIGIN, got: $pyout"
+fi
+ok "scenario10b: byte-different but JSON-equivalent copy-install config passes"
+
+# 10b-ii: a real structural change still fails byte-strict.
+printf '%s\n' '{"providers":{"opencode-go":{"cap":5,"class":"prepaid-quota","models":{"deepseek-flash":2}}}}' >"$json_live"
+if pyout=$(run_origin_blob_check); then
+    fail "scenario10b: a real seat-caps cap change must fail DRIFT-ORIGIN: $pyout"
+fi
+[[ "$pyout" == *"DRIFT-ORIGIN"* ]] \
+    || fail "scenario10b: structural cap change did not produce DRIFT-ORIGIN (got: $pyout)"
+ok "scenario10b: a real structural cap change still fails DRIFT-ORIGIN"
+
+# 10b-iii: unparseable live JSON is not JSON-equivalent — it is drift.
+printf '{ not json\n' >"$json_live"
+if pyout=$(run_origin_blob_check); then
+    fail "scenario10b: unparseable live JSON must fail DRIFT-ORIGIN: $pyout"
+fi
+[[ "$pyout" == *"DRIFT-ORIGIN"* ]] \
+    || fail "scenario10b: unparseable live JSON did not produce DRIFT-ORIGIN (got: $pyout)"
+ok "scenario10b: unparseable live JSON still fails DRIFT-ORIGIN"
+
+# --- scenario 10c: any .json dest compares parsed, document order kept ------
+# fleet-ops#5201: the copy-install exemption covers only seat-caps.json /
+# pi-models.json / model-candidates.json. Every other MANIFEST .json dest
+# (fleet-organs.json, quality-*.json, ...) still byte-compares, so a runtime
+# writer that re-serializes one at a different indent width re-creates the
+# permanent DRIFT-ORIGIN the judge caught on seat-caps.json. A .json dest now
+# compares the parsed documents with document order preserved: a
+# whitespace-only rewrite is reformatted-not-drifted; a changed value or a
+# reordered key still fails byte-strict.
+# Restore the seat-caps dest first — 10b-iii left it unparseable.
+printf '%s\n' '{"providers":{"opencode-go":{"cap":2,"class":"prepaid-quota","models":{"deepseek-flash":2}}}}' >"$json_live"
+organs_live="$HOME/.local/state/pi-packet/fleet-organs.json"
+mkdir -p "$(dirname "$organs_live")"
+cat >"$json_co/config/fleet-organs.json" <<'JSON'
+{"organs":{"alpha":{"beats":1},"beta":{"beats":2}}}
+JSON
+printf 'config/fleet-organs.json %s\n' "$organs_live" >>"$json_co/MANIFEST"
+git -C "$json_co" add -A
+git -C "$json_co" commit -q -m "add fleet-organs.json dest"
+git -C "$json_co" push -q origin HEAD:main
+git -C "$json_co" fetch -q origin
+
+# 10c-i: the same document at a different indent width -> byte-different but
+# reformatted-not-drifted. The raw byte compare fails; the JSON compare passes.
+cat >"$organs_live" <<'JSON'
+{
+  "organs": {
+    "alpha": { "beats": 1 },
+    "beta": { "beats": 2 }
+  }
+}
+JSON
+if ! pyout=$(run_origin_blob_check); then
+    fail "scenario10c: whitespace-only .json rewrite must not be DRIFT-ORIGIN, got: $pyout"
+fi
+[[ "$pyout" == *"reformatted, not drifted"* ]] \
+    || fail "scenario10c: expected a reformatted-not-drifted log line (got: $pyout)"
+ok "scenario10c: whitespace-only .json rewrite passes with a reformatted log line"
+
+# 10c-ii: one changed value -> both compares fail -> DRIFT-ORIGIN.
+cat >"$organs_live" <<'JSON'
+{
+  "organs": {
+    "alpha": { "beats": 1 },
+    "beta": { "beats": 3 }
+  }
+}
+JSON
+if pyout=$(run_origin_blob_check); then
+    fail "scenario10c: a changed .json value must fail DRIFT-ORIGIN: $pyout"
+fi
+[[ "$pyout" == *"DRIFT-ORIGIN"* ]] \
+    || fail "scenario10c: changed value did not produce DRIFT-ORIGIN (got: $pyout)"
+ok "scenario10c: a changed .json value still fails DRIFT-ORIGIN"
+
+# 10c-iii: reordered keys are drift — only whitespace is exempt.
+cat >"$organs_live" <<'JSON'
+{
+  "organs": {
+    "beta": { "beats": 2 },
+    "alpha": { "beats": 1 }
+  }
+}
+JSON
+if pyout=$(run_origin_blob_check); then
+    fail "scenario10c: a reordered .json must fail DRIFT-ORIGIN: $pyout"
+fi
+[[ "$pyout" == *"DRIFT-ORIGIN"* ]] \
+    || fail "scenario10c: reordered keys did not produce DRIFT-ORIGIN (got: $pyout)"
+ok "scenario10c: reordered .json keys still fail DRIFT-ORIGIN"
+
+# --- scenario 11: enable-link into a volatile path outside the checkout ------
+: >"$enabled_units"
+printf '%s\n' "${expected_units[@]}" merged.timer > "$enabled_units"
+mkdir -p "$HOME/.config/systemd/user/timers.target.wants" "$scratch/volatile-outside"
+printf '[Timer]\nOnCalendar=*:00/30\n' > "$scratch/volatile-outside/rogue.timer"
+ln -sfn "$scratch/volatile-outside/rogue.timer" \
+    "$HOME/.config/systemd/user/timers.target.wants/rogue.timer"
+if out=$(run_canary); then
+    fail "scenario11: canary should fail on a wants-link into a volatile path, got: $out"
+fi
+[[ "$out" == *"DRIFT-VOLATILE"* ]] \
+    || fail "scenario11: volatile enable-link did not produce DRIFT-VOLATILE (got: $out)"
+ok "scenario11: enable-link into a volatile path fails DRIFT-VOLATILE"
+rm -f "$HOME/.config/systemd/user/timers.target.wants/rogue.timer"
+
+# --- scenario 11b: MANIFEST unit's wants-link hijacked to /tmp (fleet-ops#369)
+# The exact #369 shape: the fragment symlink is correct (points at the
+# checkout, so install.sh --check is clean), but the wants-link systemctl
+# enable created resolves into /tmp — one tmpfiles-clean from dangling.
+# install.sh --check only verifies MANIFEST fragment dests, not wants-links,
+# so the drift canary is the only guard. Prove it catches the class AND
+# auto-files a deduped issue (parity with every other DRIFT-* class).
+: >"$enabled_units"
+printf '%s\n' "${expected_units[@]}" merged.timer > "$enabled_units"
+mkdir -p "$HOME/.config/systemd/user/timers.target.wants" "$scratch/volatile-p13"
+printf '[Timer]\nOnCalendar=*:17\n' > "$scratch/volatile-p13/demo.timer"
+# Fragment symlink stays correct (install.sh --check would pass this).
+# Wants-link is the hijacked one — the #369 bug.
+ln -sfn "$scratch/volatile-p13/demo.timer" \
+    "$HOME/.config/systemd/user/timers.target.wants/demo.timer"
+vol_gh_log="$scratch/gh-volatile.log"
+vol_gh="$scratch/gh-volatile"
+: >"$vol_gh_log"
+echo '[]' >"$scratch/open-volatile.json"
+cat >"$vol_gh" <<'FAKE'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >>"${GH_LOG:-/dev/null}"
+case "$*" in
+  *"issue list"*)
+    cat "${GH_OPEN_ISSUES:-/dev/null}"
+    exit 0
+    ;;
+  *"issue create"*)
+    echo "https://github.com/Nishfleet/fleet-ops/issues/3690"
+    exit 0
+    ;;
+esac
+exit 0
+FAKE
+chmod +x "$vol_gh"
+run_volatile_canary() {
+  GH="$vol_gh" \
+  GH_LOG="$vol_gh_log" \
+  GH_OPEN_ISSUES="$scratch/open-volatile.json" \
+  FLEET_OPS_DRIFT_FILE=1 \
+  FLEET_OPS_DRIFT_REPO="Nishfleet/fleet-ops" \
+  FLEET_ISSUE_FILE_LIB="$repo_root/lib/issue-file.py" \
+    run_canary
+}
+if out=$(run_volatile_canary); then
+    fail "scenario11b: canary should fail on a MANIFEST unit's hijacked wants-link, got: $out"
+fi
+[[ "$out" == *"DRIFT-VOLATILE"* ]] \
+    || fail "scenario11b: hijacked wants-link did not produce DRIFT-VOLATILE (got: $out)"
+[[ "$out" == *"timers.target.wants/demo.timer"* ]] \
+    || fail "scenario11b: must name the hijacked wants-link (got: $out)"
+grep -q 'issue create' "$vol_gh_log" \
+    || fail "scenario11b: must auto-file (log=$(cat "$vol_gh_log"))"
+ok "scenario11b: MANIFEST unit wants-link into /tmp fails DRIFT-VOLATILE and auto-files (fleet-ops#369)"
+
+# Dedup: an open issue carrying the marker must not be filed twice.
+: >"$vol_gh_log"
+jq -n --arg b $'body\nvolatile-unit-path: fleet-ops#369\n' \
+  '[{number: 369, body: $b}]' >"$scratch/open-volatile.json"
+if out=$(
+  GH="$vol_gh" \
+  GH_LOG="$vol_gh_log" \
+  GH_OPEN_ISSUES="$scratch/open-volatile.json" \
+  FLEET_OPS_DRIFT_FILE=1 \
+  FLEET_OPS_DRIFT_REPO="Nishfleet/fleet-ops" \
+    run_canary
+); then
+    fail "scenario11b-dedup: canary should still fail after dedup, got: $out"
+fi
+grep -q 'issue create' "$vol_gh_log" \
+    && fail "scenario11b-dedup: must not file a duplicate (log=$(cat "$vol_gh_log"))"
+[[ "$out" == *"dedup:"* ]] || fail "scenario11b-dedup: expected dedup log, got: $out"
+ok "scenario11b-dedup: open issue with the marker is not filed twice"
+rm -f "$HOME/.config/systemd/user/timers.target.wants/demo.timer"
+
+# --- scenario 12: install.sh refuses newer live config; removes paper-over ---
+stale="$scratch/stale-repo"
+mkdir -p "$stale/config"
+cp "$repo_root/install.sh" "$stale/install.sh"
+chmod +x "$stale/install.sh"
+printf 'stale-caps\n' > "$stale/config/seat-caps.json"
+printf 'live-caps\n' > "$scratch/live-caps.json"
+touch -d '2020-01-01T00:00:00' "$stale/config/seat-caps.json"
+touch -d '2026-08-26T00:00:00' "$scratch/live-caps.json"
+caps_dest="$scratch/caps-dest"
+ln -sfn "$scratch/live-caps.json" "$caps_dest"
+cat >"$stale/MANIFEST" <<MANIFEST
+config/seat-caps.json $caps_dest
+MANIFEST
+set +e
+refuse_out=$("$stale/install.sh" 2>&1)
+refuse_rc=$?
+set -e
+[[ "$refuse_rc" -eq 1 ]] || fail "scenario12: install.sh from a stale repo should refuse (rc=1), got rc=$refuse_rc out=$refuse_out"
+[[ "$refuse_out" == *"REFUSE:"* ]] \
+    || fail "scenario12: expected REFUSE line, got: $refuse_out"
+[[ "$(readlink -f "$caps_dest")" = "$(readlink -f "$scratch/live-caps.json")" ]] \
+    || fail "scenario12: live dest was overwritten by the stale repo"
+[[ "$(cat "$caps_dest")" = "live-caps" ]] \
+    || fail "scenario12: live caps content was changed"
+ok "scenario12: install.sh refuses to overwrite a newer live config"
+
+dropin="$HOME/.config/systemd/user/fleet-heartbeat.service.d/10-deploy-checkout.conf"
+mkdir -p "$(dirname "$dropin")"
+printf 'Environment=FLEET_OPS_DRIFT_BIN=/tmp/gc-able-worktree/fleet-ops-drift.py\n' > "$dropin"
+PATH="$scratch:$PATH" "$install" >/dev/null 2>&1 || true
+[[ ! -e "$dropin" ]] || fail "scenario12: paper-over heartbeat drop-in was not removed"
+ok "scenario12b: install.sh removes the paper-over heartbeat drop-in"
+
+# fleet-ops#4112: orphaned drop-in dir for the deleted fleet-auto-deploy unit.
+# install.sh must remove the whole dir on a user-scope install, even though
+# the unit itself no longer exists (so a unit-name-only hunt cannot see it).
+orphan_dir="$HOME/.config/systemd/user/fleet-auto-deploy.timer.d"
+mkdir -p "$orphan_dir"
+printf '[Timer]\nOnCalendar=\nOnCalendar=*-*-* *:23:00\n' > "$orphan_dir/override.conf"
+PATH="$scratch:$PATH" "$install" >/dev/null 2>&1 || true
+[[ ! -d "$orphan_dir" ]] || fail "scenario12b-orphan: orphaned fleet-auto-deploy.timer.d drop-in dir was not removed"
+ok "scenario12b-orphan: install.sh removes the orphaned fleet-auto-deploy.timer.d drop-in dir (fleet-ops#4112)"
+
+# fleet-ops#4114: orphaned drop-in dir for the deleted fleet-auto-ship unit.
+# install.sh must remove the whole dir on a user-scope install, even though
+# the unit itself no longer exists (so a unit-name-only hunt cannot see it).
+# The dir also carries .bak files — rm -rf must clear them too.
+orphan_ship_dir="$HOME/.config/systemd/user/fleet-auto-ship.service.d"
+mkdir -p "$orphan_ship_dir"
+printf '[Service]\nExecStart=\nExecStart=/bin/true\n' > "$orphan_ship_dir/override.conf"
+printf '[Service]\nExecStart=\nExecStart=/bin/false\n' > "$orphan_ship_dir/zz-gate-retry.conf"
+printf 'bak\n' > "$orphan_ship_dir/override.conf.bak-audit-timeout-20260811"
+PATH="$scratch:$PATH" "$install" >/dev/null 2>&1 || true
+[[ ! -d "$orphan_ship_dir" ]] || fail "scenario12b-orphan-ship: orphaned fleet-auto-ship.service.d drop-in dir was not removed"
+ok "scenario12b-orphan-ship: install.sh removes the orphaned fleet-auto-ship.service.d drop-in dir (fleet-ops#4114)"
+
+# fleet-ops#4126: orphaned drop-in dir for the deleted fleet-cheap-triage unit
+# (control plane deleted 2026-08-23). install.sh must remove the whole dir on
+# a user-scope install, even though the unit itself no longer exists (so a
+# unit-name-only hunt cannot see it). The dir also carries .bak files — rm -rf
+# must clear them too.
+orphan_triage_dir="$HOME/.config/systemd/user/fleet-cheap-triage.service.d"
+mkdir -p "$orphan_triage_dir"
+printf '[Service]\nExecStart=\nExecStart=/bin/true\n' > "$orphan_triage_dir/override.conf"
+printf 'bak\n' > "$orphan_triage_dir/override.conf.bak-pulse-c51af7b13e-20260811"
+printf 'bak\n' > "$orphan_triage_dir/override.conf.bak-time-audit-20260812"
+PATH="$scratch:$PATH" "$install" >/dev/null 2>&1 || true
+[[ ! -d "$orphan_triage_dir" ]] || fail "scenario12b-orphan-triage: orphaned fleet-cheap-triage.service.d drop-in dir was not removed"
+ok "scenario12b-orphan-triage: install.sh removes the orphaned fleet-cheap-triage.service.d drop-in dir (fleet-ops#4126)"
+
+# fleet-ops#4151: orphaned drop-in dir for the deleted fleet-e2e-heartbeat
+# unit (control-plane lane deleted). install.sh must remove the whole dir on
+# a user-scope install, even though the unit itself no longer exists (so a
+# unit-name-only hunt cannot see it). The dir also carries .bak files — rm -rf
+# must clear them too.
+orphan_e2e_dir="$HOME/.config/systemd/user/fleet-e2e-heartbeat.service.d"
+mkdir -p "$orphan_e2e_dir"
+printf '[Service]\nExecStart=\nExecStart=/bin/true\n' > "$orphan_e2e_dir/override.conf"
+printf 'bak\n' > "$orphan_e2e_dir/override.conf.bak-pulse-a69537d453-20260811"
+printf 'bak\n' > "$orphan_e2e_dir/override.conf.bak-time-audit-20260812"
+printf 'bak\n' > "$orphan_e2e_dir/override.conf.bak-unit-fix-20260811T130719Z"
+PATH="$scratch:$PATH" "$install" >/dev/null 2>&1 || true
+[[ ! -d "$orphan_e2e_dir" ]] || fail "scenario12b-orphan-e2e: orphaned fleet-e2e-heartbeat.service.d drop-in dir was not removed"
+ok "scenario12b-orphan-e2e: install.sh removes the orphaned fleet-e2e-heartbeat.service.d drop-in dir (fleet-ops#4151)"
+
+# fleet-ops#4430: orphaned drop-in dir for the deleted fleet-hourly-audit
+# unit (control-plane machinery deleted 2026-08-23; the unit file, timer,
+# hourly-audit.py lane, gate/fleet-gate and gate-retry.sh it referenced are
+# all gone). The drop-in dir carries the ExecStart/ExecStartPre override plus
+# .bak files; systemd cannot resolve the unit so nothing source-checks it —
+# only a live install can clear it.
+orphan_hourly_dir="$HOME/.config/systemd/user/fleet-hourly-audit.service.d"
+mkdir -p "$orphan_hourly_dir"
+printf '# fleet-gate wrapper (sealed packet 2026-08-11)\n[Service]\nTimeoutStartSec=3h 30min\nExecStart=\nExecStart=/home/nish/workspaces/agent-state/gate/fleet-gate run --label fleet-hourly-audit -- /usr/bin/python3 /home/nish/workspaces/agent-state/lanes/hourly-audit.py\nSuccessExitStatus=75\n' > "$orphan_hourly_dir/override.conf"
+printf 'bak\n' > "$orphan_hourly_dir/override.conf.bak-timer-sweep-20260811"
+printf 'gate-retry\n' > "$orphan_hourly_dir/zz-gate-retry.conf"
+printf 'bak\n' > "$orphan_hourly_dir/zz-gate-retry.conf.bak-time-audit-20260812"
+PATH="$scratch:$PATH" "$install" >/dev/null 2>&1 || true
+[[ ! -d "$orphan_hourly_dir" ]] || fail "scenario12b-orphan-hourly: orphaned fleet-hourly-audit.service.d drop-in dir was not removed"
+ok "scenario12b-orphan-hourly: install.sh removes the orphaned fleet-hourly-audit.service.d drop-in dir (fleet-ops#4430)"
+
+# fleet-ops#4435: orphaned drop-in dir for the deleted fleet-idea-intake
+# unit (hand-placed control-plane machinery; the unit file, timer, the
+# idea-intake/run-intake.py + run-bootstrap.py lanes, campaigns/campaignlib.py,
+# gate/fleet-gate and gate-retry.sh it referenced are all gone). The drop-in
+# dir carries the ExecStart/ExecStartPre override plus .bak files; systemd
+# cannot resolve the unit so nothing source-checks it — only a live install
+# can clear it.
+orphan_idea_dir="$HOME/.config/systemd/user/fleet-idea-intake.service.d"
+mkdir -p "$orphan_idea_dir"
+printf '# fleet-gate wrapper (sealed packet 2026-08-11)\n[Service]\nExecStart=\nExecStart=/home/nish/workspaces/agent-state/gate/fleet-gate run --label fleet-idea-intake -- /usr/bin/python3 /home/nish/workspaces/agent-state/idea-intake/run-intake.py\nExecStart=/home/nish/workspaces/agent-state/gate/fleet-gate run --label fleet-idea-intake -- /usr/bin/python3 /home/nish/workspaces/agent-state/idea-intake/run-bootstrap.py\nExecStart=/home/nish/workspaces/agent-state/gate/fleet-gate run --label fleet-idea-intake -- /usr/bin/python3 /home/nish/workspaces/agent-state/campaigns/campaignlib.py\nTimeoutStartSec=10h 30min\nSuccessExitStatus=75\n' > "$orphan_idea_dir/override.conf"
+printf 'bak\n' > "$orphan_idea_dir/override.conf.bak-audit-timeout-20260811"
+printf 'bak\n' > "$orphan_idea_dir/override.conf.bak-timer-sweep-20260811"
+printf 'gate-retry\n' > "$orphan_idea_dir/zz-gate-retry.conf"
+printf 'bak\n' > "$orphan_idea_dir/zz-gate-retry.conf.bak-time-audit-20260812"
+PATH="$scratch:$PATH" "$install" >/dev/null 2>&1 || true
+[[ ! -d "$orphan_idea_dir" ]] || fail "scenario12b-orphan-idea: orphaned fleet-idea-intake.service.d drop-in dir was not removed"
+ok "scenario12b-orphan-idea: install.sh removes the orphaned fleet-idea-intake.service.d drop-in dir (fleet-ops#4435)"
+
+# fleet-ops#4502: orphaned drop-in dir for the deleted fleet-loop@ unit
+# (hand-placed control-plane machinery; the unit file, any timer, and the
+# gate/fleet-gate + fleet-scout-run + gate-retry.sh it referenced are all
+# gone). The drop-in dir carries the ExecStart/TimeoutStartSec/
+# SuccessExitStatus override plus .bak files; systemd cannot resolve the
+# unit so nothing source-checks it — only a live install can clear it.
+orphan_loop_dir="$HOME/.config/systemd/user/fleet-loop@.service.d"
+mkdir -p "$orphan_loop_dir"
+printf '%s' '# fleet-gate wrapper (sealed packet 2026-08-11)\n[Service]\nTimeoutStartSec=4h 45min\nSuccessExitStatus=75\nExecStart=\nExecStart=/home/nish/workspaces/agent-state/gate/fleet-gate run --label fleet-loop@%i -- /home/nish/.local/bin/fleet-scout-run %i --kind loop\n' > "$orphan_loop_dir/override.conf"
+printf 'bak\n' > "$orphan_loop_dir/override.conf.bak-pulse-9e531dac8c-20260811"
+printf 'bak\n' > "$orphan_loop_dir/override.conf.bak-scouts-loops-pass3-20260811"
+printf 'bak\n' > "$orphan_loop_dir/override.conf.bak-loop-scout-backstop-gate-retry-composition-20260813"
+printf 'gate-retry\n' > "$orphan_loop_dir/zz-gate-retry.conf"
+printf 'bak\n' > "$orphan_loop_dir/zz-gate-retry.conf.bak-time-audit-20260812"
+PATH="$scratch:$PATH" "$install" >/dev/null 2>&1 || true
+[[ ! -d "$orphan_loop_dir" ]] || fail "scenario12b-orphan-loop: orphaned fleet-loop@.service.d drop-in dir was not removed"
+ok "scenario12b-orphan-loop: install.sh removes the orphaned fleet-loop@.service.d drop-in dir (fleet-ops#4502)"
+
+# fleet-ops#5203: bridge start-timeout drop-ins for the two network canaries
+# (hand-placed 2026-09-11 while #5200 was in flight; the units still exist and
+# now carry TimeoutStartSec=120 themselves). install.sh must remove only the
+# 20-start-timeout.conf file — the repo-sourced 10-pg-socket.conf symlink in
+# fleet-litellm-health-canary.service.d must survive.
+mkdir -p "$checkout/systemd/fleet-litellm-health-canary.service.d"
+printf '[Service]\nEnvironment=PGSOCKET=/tmp\n' \
+    > "$checkout/systemd/fleet-litellm-health-canary.service.d/10-pg-socket.conf"
+pg_socket="$HOME/.config/systemd/user/fleet-litellm-health-canary.service.d/10-pg-socket.conf"
+for u in fleet-litellm-health-canary gh-webhook-canary; do
+    bridge_dir="$HOME/.config/systemd/user/${u}.service.d"
+    mkdir -p "$bridge_dir"
+    printf '[Service]\nTimeoutStartSec=120\n' > "$bridge_dir/20-start-timeout.conf"
+done
+ln -sfn "$checkout/systemd/fleet-litellm-health-canary.service.d/10-pg-socket.conf" "$pg_socket"
+PATH="$scratch:$PATH" "$install" >/dev/null 2>&1 || true
+for u in fleet-litellm-health-canary gh-webhook-canary; do
+    [[ ! -e "$HOME/.config/systemd/user/${u}.service.d/20-start-timeout.conf" ]] \
+        || fail "scenario12b-canary-timeout: bridge start-timeout drop-in for $u was not removed"
+done
+[[ -L "$pg_socket" ]] \
+    || fail "scenario12b-canary-timeout: repo-sourced 10-pg-socket.conf symlink was removed"
+ok "scenario12b-canary-timeout: install.sh removes the bridge 20-start-timeout.conf drop-ins, keeps 10-pg-socket.conf (fleet-ops#5203)"
+
+# --- scenario 12c: cap drop with NEWER repo mtime (fleet-ops#371) ------------
+# git checkout of a stale commit stamps the working tree now, so the #372
+# mtime guard would allow the overwrite. Live is the post-#331 snapshot
+# (devin 4 / ollama 4); repo is the pre-#331 snapshot (devin 0 / ollama 2).
+stale371="$scratch/stale-caps-mtime-hole"
+mkdir -p "$stale371/config"
+cp "$repo_root/install.sh" "$stale371/install.sh"
+chmod +x "$stale371/install.sh"
+cat >"$stale371/config/seat-caps.json" <<'JSON'
+{"providers":{"devin":{"cap":0},"ollama":{"cap":2,"models":{"deepseek-v4-flash:0731":2}}}}
+JSON
+cat >"$scratch/live-caps-371.json" <<'JSON'
+{"providers":{"devin":{"cap":4,"quota_bench_default_s":900},"ollama":{"cap":4,"models":{"deepseek-v4-flash:0731":4}}}}
+JSON
+touch -d '2020-01-01T00:00:00' "$scratch/live-caps-371.json"
+touch -d '2026-08-26T20:35:00' "$stale371/config/seat-caps.json"
+caps_dest371="$scratch/caps-dest-371"
+ln -sfn "$scratch/live-caps-371.json" "$caps_dest371"
+cat >"$stale371/MANIFEST" <<MANIFEST
+config/seat-caps.json $caps_dest371
+MANIFEST
+set +e
+refuse371_out=$("$stale371/install.sh" 2>&1)
+refuse371_rc=$?
+set -e
+[[ "$refuse371_rc" -eq 1 ]] || fail "scenario12c: cap drop with newer repo mtime should refuse (rc=1), got rc=$refuse371_rc out=$refuse371_out"
+[[ "$refuse371_out" == *"fleet-ops#371"* ]] \
+    || fail "scenario12c: expected fleet-ops#371 REFUSE, got: $refuse371_out"
+[[ "$refuse371_out" == *"devin:4->0"* ]] \
+    || fail "scenario12c: REFUSE must name the devin 4->0 drop, got: $refuse371_out"
+[[ "$(readlink -f "$caps_dest371")" = "$(readlink -f "$scratch/live-caps-371.json")" ]] \
+    || fail "scenario12c: live dest was overwritten by the stale repo"
+[[ "$(jq -r '.providers.devin.cap' "$caps_dest371")" = "4" ]] \
+    || fail "scenario12c: live devin cap was changed"
+ok "scenario12c: install.sh refuses a seat-caps cap drop even when repo mtime is newer"
+
+# --- scenario 12d: origin/main blob may land a merged cap drop --------------
+canon371="$scratch/canon-seat-caps"
+mkdir -p "$canon371/config"
+cp "$repo_root/install.sh" "$canon371/install.sh"
+chmod +x "$canon371/install.sh"
+cat >"$canon371/config/seat-caps.json" <<'JSON'
+{"providers":{"devin":{"cap":3}}}
+JSON
+cat >"$scratch/live-caps-ff.json" <<'JSON'
+{"providers":{"devin":{"cap":4}}}
+JSON
+touch -d '2026-08-26T20:35:00' "$scratch/live-caps-ff.json"
+touch -d '2020-01-01T00:00:00' "$canon371/config/seat-caps.json"
+caps_dest_ff="$scratch/caps-dest-ff"
+ln -sfn "$scratch/live-caps-ff.json" "$caps_dest_ff"
+cat >"$canon371/MANIFEST" <<MANIFEST
+config/seat-caps.json $caps_dest_ff
+MANIFEST
+git -C "$canon371" init -q -b main
+git -C "$canon371" config user.email "test@example.com"
+git -C "$canon371" config user.name "Test"
+git -C "$canon371" add config/seat-caps.json MANIFEST install.sh
+git -C "$canon371" commit -q -m "merged cap drop"
+git -C "$canon371" update-ref refs/remotes/origin/main HEAD
+# fleet-ops#404: this scenario runs install.sh to a green exit (rc=0), so it
+# reaches the unconditional `enable --now intake-reconcile.path/.timer` safety
+# net. On the VPS those units are already enabled (is_unit_enabled short-
+# circuits); on a CI runner the unit files do not exist and `systemctl enable`
+# exits 1 under `set -e`, turning a green seat-caps landing red. Put the fake
+# systemctl on PATH so the enable block is hermetic — same pattern as
+# scenario1. scenario12c survives without it only because it expects rc=1.
+set +e
+ff_out=$(PATH="$scratch:$PATH" "$canon371/install.sh" 2>&1)
+ff_rc=$?
+set -e
+[[ "$ff_rc" -eq 0 ]] || fail "scenario12d: origin/main blob should be allowed to land, got rc=$ff_rc out=$ff_out"
+# fleet-ops#2910: seat-caps.json is now a regular file COPY, not a symlink.
+# A symlink into the deploy-clone working tree meant every `git reset --hard`
+# silently rewrote the live config. The copy decouples them.
+[[ -f "$caps_dest_ff" && ! -L "$caps_dest_ff" ]] \
+    || fail "scenario12d: dest must be a regular file copy, not a symlink (fleet-ops#2910)"
+[[ "$(jq -r '.providers.devin.cap' "$caps_dest_ff")" = "3" ]] \
+    || fail "scenario12d: dest did not pick up the merged cap"
+ok "scenario12d: origin/main seat-caps blob lands as a regular file copy (merged cap drop)"
+
+# --- scenario 12h: install.sh MERGES unknown provider rows from the live ---
+# state file instead of dropping them (fleet-ops#4205). The live seat-caps
+# copy is a regular file (fleet-ops#2910) that install.sh overwrites from
+# config/seat-caps.json on every deploy; a hand-added provider row (e.g. a
+# newly wired seat like runinfra/deepseek-v4-flash) was silently dropped by
+# that overwrite. Prove the merge preserves a provider the repo does NOT
+# declare, while a provider the repo DOES declare keeps the repo's version.
+merge_repo="$scratch/merge-seat-caps"
+mkdir -p "$merge_repo/config"
+cp "$repo_root/install.sh" "$merge_repo/install.sh"
+chmod +x "$merge_repo/install.sh"
+cat >"$merge_repo/config/seat-caps.json" <<'JSON'
+{"providers":{"devin":{"cap":4}}}
+JSON
+cat >"$scratch/live-caps-merge.json" <<'JSON'
+{"providers":{"devin":{"cap":4},"runinfra":{"cap":4,"class":"prepaid-quota","models":{"deepseek-v4-flash":4}}}}
+JSON
+touch -d '2020-01-01T00:00:00' "$merge_repo/config/seat-caps.json"
+touch -d '2026-08-26T20:35:00' "$scratch/live-caps-merge.json"
+caps_dest_merge="$scratch/caps-dest-merge"
+ln -sfn "$scratch/live-caps-merge.json" "$caps_dest_merge"
+cat >"$merge_repo/MANIFEST" <<MANIFEST
+config/seat-caps.json $caps_dest_merge
+MANIFEST
+git -C "$merge_repo" init -q -b main
+git -C "$merge_repo" config user.email "test@example.com"
+git -C "$merge_repo" config user.name "Test"
+git -C "$merge_repo" add config/seat-caps.json MANIFEST install.sh
+git -C "$merge_repo" commit -q -m "seat-caps without runinfra"
+git -C "$merge_repo" update-ref refs/remotes/origin/main HEAD
+set +e
+merge_out=$(PATH="$scratch:$PATH" "$merge_repo/install.sh" 2>&1)
+merge_rc=$?
+set -e
+[[ "$merge_rc" -eq 0 ]] || fail "scenario12h: install.sh should succeed, got rc=$merge_rc out=$merge_out"
+[[ -f "$caps_dest_merge" && ! -L "$caps_dest_merge" ]] \
+    || fail "scenario12h: dest must be a regular file copy after install"
+# The unknown provider (runinfra) must survive the deploy.
+[[ "$(jq -r '.providers.runinfra.cap' "$caps_dest_merge")" = "4" ]] \
+    || fail "scenario12h: unknown provider runinfra was dropped by the deploy (fleet-ops#4205)"
+[[ "$(jq -r '.providers.runinfra.class' "$caps_dest_merge")" = "prepaid-quota" ]] \
+    || fail "scenario12h: runinfra class was not preserved"
+# A provider the repo DOES declare keeps the repo's version (source of truth).
+[[ "$(jq -r '.providers.devin.cap' "$caps_dest_merge")" = "4" ]] \
+    || fail "scenario12h: repo-declared provider devin must keep the repo version"
+ok "scenario12h: install.sh merges unknown provider rows from the live state file (fleet-ops#4205)"
+
+# --- scenario 12f: git reset --hard must NOT wipe the live seat-caps copy ----
+# fleet-ops#2910: the live seat-caps.json used to be a symlink into the
+# deploy-clone working tree, so `git reset --hard origin/main` silently
+# reverted live caps. Now it is a regular file copy — a reset only rewrites
+# the working tree, not the live copy. Prove it: install cap=3, then simulate
+# a reset by rewriting the repo file to cap=0, and assert the live copy
+# still holds cap=3 (the reset cannot touch it). A subsequent install.sh
+# must also REFUSE the cap drop (the existing #371 guard).
+reset_repo="$scratch/reset-seat-caps"
+mkdir -p "$reset_repo/config"
+cp "$repo_root/install.sh" "$reset_repo/install.sh"
+chmod +x "$reset_repo/install.sh"
+cat >"$reset_repo/config/seat-caps.json" <<'JSON'
+{"providers":{"devin":{"cap":3,"models":{"glm-5-2":3}}}}
+JSON
+caps_dest_reset="$scratch/caps-dest-reset"
+cat >"$reset_repo/MANIFEST" <<MANIFEST
+config/seat-caps.json $caps_dest_reset
+MANIFEST
+git -C "$reset_repo" init -q -b main
+git -C "$reset_repo" config user.email "test@example.com"
+git -C "$reset_repo" config user.name "Test"
+git -C "$reset_repo" add config/seat-caps.json MANIFEST install.sh
+git -C "$reset_repo" commit -q -m "initial cap=3"
+git -C "$reset_repo" update-ref refs/remotes/origin/main HEAD
+# First install: creates a regular file copy with cap=3.
+set +e
+r1_out=$(PATH="$scratch:$PATH" "$reset_repo/install.sh" 2>&1)
+r1_rc=$?
+set -e
+[[ "$r1_rc" -eq 0 ]] || fail "scenario12f: first install should succeed, got rc=$r1_rc out=$r1_out"
+[[ -f "$caps_dest_reset" && ! -L "$caps_dest_reset" ]] \
+    || fail "scenario12f: live dest must be a regular file copy after install"
+[[ "$(jq -r '.providers.devin.cap' "$caps_dest_reset")" = "3" ]] \
+    || fail "scenario12f: live copy must hold cap=3 after first install"
+# Simulate `git reset --hard origin/main` that reverts the repo file to cap=0.
+# The live copy must NOT change — it is a separate inode now.
+cat >"$reset_repo/config/seat-caps.json" <<'JSON'
+{"providers":{"devin":{"cap":0,"models":{"glm-5-2":0}}}}
+JSON
+[[ "$(jq -r '.providers.devin.cap' "$caps_dest_reset")" = "3" ]] \
+    || fail "scenario12f: live copy was wiped by the repo file change (reset simulation) — the copy must be decoupled (fleet-ops#2910)"
+# A subsequent install.sh must REFUSE the cap drop (the #371 guard still fires).
+set +e
+r2_out=$(PATH="$scratch:$PATH" "$reset_repo/install.sh" 2>&1)
+r2_rc=$?
+set -e
+[[ "$r2_rc" -eq 1 ]] || fail "scenario12f: install.sh must refuse the cap drop after reset, got rc=$r2_rc out=$r2_out"
+[[ "$r2_out" == *"fleet-ops#371"* ]] \
+    || fail "scenario12f: REFUSE must cite fleet-ops#371, got: $r2_out"
+[[ "$(jq -r '.providers.devin.cap' "$caps_dest_reset")" = "3" ]] \
+    || fail "scenario12f: live copy must still hold cap=3 after refused install"
+ok "scenario12f: git reset does not wipe the live seat-caps copy; install.sh refuses the cap drop"
+
+# --- scenario 12e: missing intake-reconcile units must not fail install -----
+# fleet-ops#559: a minimal checkout (no unit files, MANIFEST has only
+# seat-caps) used to die at the unconditional `enable --now
+# intake-reconcile.path` safety net on hosted runners. The enable is now
+# gated on the unit file existing in the checkout. Prove a CI-like
+# systemctl that would fail enable still lets a green-exit install finish.
+ci_systemctl="$scratch/ci-systemctl"
+cat >"$ci_systemctl" <<'CI_SYS'
+#!/usr/bin/env bash
+# Mimic a GitHub Actions runner: no user units are installed.
+[ "${1:-}" = "--user" ] && shift
+cmd="${1:-}"; [ "$#" -gt 0 ] && shift
+case "$cmd" in
+  is-enabled) echo "not-found"; exit 1 ;;
+  daemon-reload) exit 0 ;;
+  enable)
+    for u in "$@"; do
+      case "$u" in --now) ;; *) echo "Failed to enable unit: Unit file $u does not exist." >&2; exit 1 ;; esac
+    done
+    ;;
+  *) exit 0 ;;
+esac
+CI_SYS
+chmod +x "$ci_systemctl"
+# Reuse the canon371 tree (origin/main blob, merged cap drop, no unit files).
+set +e
+ci_out=$(SYSTEMCTL="$ci_systemctl" "$canon371/install.sh" 2>&1)
+ci_rc=$?
+set -e
+[[ "$ci_rc" -eq 0 ]] \
+    || fail "scenario12e: CI-like systemctl must not fail a green install when intake-reconcile units are absent, got rc=$ci_rc out=$ci_out"
+[[ "$ci_out" != *"does not exist"* ]] \
+    || fail "scenario12e: enable of a missing unit leaked through, got: $ci_out"
+ok "scenario12e: missing intake-reconcile units are skipped (fleet-ops#559)"
+
+# --- scenario 12f: newer live file that is byte-identical is not refused ---
+# The mtime guard must compare content, not just mtime; a newer regular
+# file that matches the repo copy should be replaced by the canonical
+# symlink and exit cleanly (fleet-ops#463).
+ident_repo="$scratch/ident-mtime-repo"
+mkdir -p "$ident_repo/bin" "$ident_repo/config"
+cp "$repo_root/install.sh" "$ident_repo/install.sh"
+cp "$repo_root/bin/fleet-ops-drift.py" "$ident_repo/bin/fleet-ops-drift.py"
+chmod +x "$ident_repo/install.sh"
+ident_dest="$scratch/ident-dest"
+printf 'same-content\n' > "$scratch/ident-live.conf"
+printf 'same-content\n' > "$ident_repo/config/demo.conf"
+touch -d '2020-01-01T00:00:00' "$ident_repo/config/demo.conf"
+touch -d '2026-08-26T00:00:00' "$scratch/ident-live.conf"
+cat > "$ident_repo/MANIFEST" <<MANIFEST
+config/demo.conf $ident_dest
+MANIFEST
+ln -sfn "$scratch/ident-live.conf" "$ident_dest"
+set +e
+ident_out=$(PATH="$scratch:$PATH" "$ident_repo/install.sh" 2>&1)
+ident_rc=$?
+set -e
+[[ "$ident_rc" -eq 0 ]] || fail "scenario12f: byte-identical newer live file should not refuse (rc=0), got rc=$ident_rc out=$ident_out"
+[[ "$ident_out" != *"REFUSE:"* ]] || fail "scenario12f: byte-identical file must not produce REFUSE (got: $ident_out)"
+[[ -L "$ident_dest" ]] || fail "scenario12f: dest is not a symlink after install"
+[[ "$(readlink -f "$ident_dest")" = "$(readlink -f "$ident_repo/config/demo.conf")" ]] \
+    || fail "scenario12f: dest points at $(readlink -f "$ident_dest"), want $(readlink -f "$ident_repo/config/demo.conf")"
+ok "scenario12f: byte-identical newer live file is not refused and is re-symlinked"
+
+# --- scenario 12g: newer live file with different content refuses and auto-files ---
+hot_repo="$scratch/hot-patch-repo"
+mkdir -p "$hot_repo/bin" "$hot_repo/config"
+cp "$repo_root/install.sh" "$hot_repo/install.sh"
+cp "$repo_root/bin/fleet-ops-drift.py" "$hot_repo/bin/fleet-ops-drift.py"
+chmod +x "$hot_repo/install.sh"
+hot_dest="$scratch/hot-dest"
+printf 'hot-patched-content\n' > "$scratch/hot-live.conf"
+printf 'repo-content\n' > "$hot_repo/config/demo.conf"
+touch -d '2020-01-01T00:00:00' "$hot_repo/config/demo.conf"
+touch -d '2026-08-26T00:00:00' "$scratch/hot-live.conf"
+cat > "$hot_repo/MANIFEST" <<MANIFEST
+config/demo.conf $hot_dest
+MANIFEST
+ln -sfn "$scratch/hot-live.conf" "$hot_dest"
+hot_gh_log="$scratch/gh-hot.log"
+hot_gh="$scratch/gh-hot"
+: >"$hot_gh_log"
+cat >"$hot_gh" <<'FAKE'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >>"${GH_LOG:-/dev/null}"
+case "$*" in
+  *"issue list"*) echo '[]'; exit 0 ;;
+  *"issue create"*) echo "https://github.com/Nishfleet/fleet-ops/issues/4630"; exit 0 ;;
+esac
+exit 0
+FAKE
+chmod +x "$hot_gh"
+set +e
+hot_out=$(PATH="$scratch:$PATH" GH="$hot_gh" GH_LOG="$hot_gh_log" FLEET_OPS_DRIFT_FILE=1 FLEET_OPS_DRIFT_REPO="Nishfleet/fleet-ops" FLEET_ISSUE_FILE_LIB="$repo_root/lib/issue-file.py" "$hot_repo/install.sh" 2>&1)
+hot_rc=$?
+set -e
+[[ "$hot_rc" -eq 1 ]] || fail "scenario12g: hot-patched newer live file should refuse (rc=1), got rc=$hot_rc out=$hot_out"
+[[ "$hot_out" == *"REFUSE:"* ]] || fail "scenario12g: expected REFUSE, got: $hot_out"
+[[ "$(readlink -f "$hot_dest")" = "$(readlink -f "$scratch/hot-live.conf")" ]] \
+    || fail "scenario12g: live dest was overwritten by the repo"
+grep -q 'issue create' "$hot_gh_log" \
+    || fail "scenario12g: hot-patch must auto-file (log=$(cat "$hot_gh_log"))"
+ok "scenario12g: newer differing live file is refused and auto-files"
+
+# --- scenario 13: leftover unit whose ExecStart binary is missing (fleet-ops#285)
+# The GitHub-hosted replacement left .service/.timer files on disk after the
+# VPS binary was renamed to .bak. Extra-symlink and extra-enabled checks miss
+# this class: the files are regular (not symlinks) and the timer is disabled.
+: >"$enabled_units"
+printf '%s\n' "${expected_units[@]}" merged.timer > "$enabled_units"
+gh_log="$scratch/gh-orphan.log"
+gh_fake="$scratch/gh-orphan"
+: >"$gh_log"
+cat >"$gh_fake" <<'FAKE'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >>"${GH_LOG:-/dev/null}"
+case "$*" in
+  *"issue list"*)
+    cat "${GH_OPEN_ISSUES:-/dev/null}"
+    exit 0
+    ;;
+  *"issue create"*)
+    echo "https://github.com/Nishfleet/fleet-ops/issues/2850"
+    exit 0
+    ;;
+esac
+exit 0
+FAKE
+chmod +x "$gh_fake"
+: >"$scratch/open-orphan.json"
+echo '[]' >"$scratch/open-orphan.json"
+cat >"$HOME/.config/systemd/user/repo-standards-reconcile.service" <<UNIT
+[Unit]
+Description=Leftover reconcile
+
+[Service]
+Type=oneshot
+ExecStart=$HOME/.local/bin/repo-standards-reconcile
+UNIT
+cat >"$HOME/.config/systemd/user/repo-standards-reconcile.timer" <<'UNIT'
+[Unit]
+Description=Leftover reconcile timer
+
+[Timer]
+OnCalendar=*-*-* 03:30:00
+
+[Install]
+WantedBy=timers.target
+UNIT
+[[ ! -e "$HOME/.local/bin/repo-standards-reconcile" ]] \
+    || fail "scenario13: setup expected the ExecStart binary to be missing"
+run_orphan_canary() {
+  GH="$gh_fake" \
+  GH_LOG="$gh_log" \
+  GH_OPEN_ISSUES="$scratch/open-orphan.json" \
+  FLEET_OPS_DRIFT_FILE=1 \
+  FLEET_OPS_DRIFT_REPO="Nishfleet/fleet-ops" \
+  FLEET_ISSUE_FILE_LIB="$repo_root/lib/issue-file.py" \
+    run_canary
+}
+if out=$(run_orphan_canary); then
+    fail "scenario13: canary should fail on a leftover unit with a missing ExecStart, got: $out"
+fi
+[[ "$out" == *"DRIFT-MISSING-EXEC"* ]] \
+    || fail "scenario13: expected DRIFT-MISSING-EXEC (got: $out)"
+[[ "$out" == *"repo-standards-reconcile.service"* ]] \
+    || fail "scenario13: must name the leftover service (got: $out)"
+[[ "$out" == *"repo-standards-reconcile.timer"* ]] \
+    || fail "scenario13: must name the sibling leftover timer (got: $out)"
+grep -q 'issue create' "$gh_log" \
+    || fail "scenario13: must auto-file (log=$(cat "$gh_log"))"
+ok "scenario13: leftover unit with missing ExecStart fails DRIFT-MISSING-EXEC and auto-files"
+
+: >"$gh_log"
+jq -n --arg b $'body\norphan-execstart: fleet-ops#285\n' \
+  '[{number: 285, body: $b}]' >"$scratch/open-orphan.json"
+if out=$(
+  GH="$gh_fake" \
+  GH_LOG="$gh_log" \
+  GH_OPEN_ISSUES="$scratch/open-orphan.json" \
+  FLEET_OPS_DRIFT_FILE=1 \
+  FLEET_OPS_DRIFT_REPO="Nishfleet/fleet-ops" \
+    run_canary
+); then
+    fail "scenario13b: canary should still fail on leftover after dedup, got: $out"
+fi
+grep -q 'issue create' "$gh_log" \
+    && fail "scenario13b: must not file a duplicate (log=$(cat "$gh_log"))"
+[[ "$out" == *"dedup:"* ]] || fail "scenario13b: expected dedup log, got: $out"
+ok "scenario13b: open issue with the marker is not filed twice"
+
+rm -f "$HOME/.config/systemd/user/repo-standards-reconcile.service" \
+      "$HOME/.config/systemd/user/repo-standards-reconcile.timer"
+if ! out=$(run_canary); then
+    fail "scenario13c: canary should be clean after leftover units are removed, got: $out"
+fi
+ok "scenario13c: removing the leftover units clears DRIFT-MISSING-EXEC"
+
+# --- scenario 14: paper-over heartbeat drop-in fails and auto-files (#370) ---
+: >"$enabled_units"
+printf '%s\n' "${expected_units[@]}" merged.timer > "$enabled_units"
+git -C "$checkout" checkout -q -- systemd/demo.timer bin/demo-script MANIFEST 2>/dev/null || true
+paper_gh_log="$scratch/gh-paper.log"
+paper_gh="$scratch/gh-paper"
+: >"$paper_gh_log"
+echo '[]' >"$scratch/open-paper.json"
+cat >"$paper_gh" <<'FAKE'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >>"${GH_LOG:-/dev/null}"
+case "$*" in
+  *"issue list"*)
+    cat "${GH_OPEN_ISSUES:-/dev/null}"
+    exit 0
+    ;;
+  *"issue create"*)
+    echo "https://github.com/Nishfleet/fleet-ops/issues/3700"
+    exit 0
+    ;;
+esac
+exit 0
+FAKE
+chmod +x "$paper_gh"
+dropin="$HOME/.config/systemd/user/fleet-heartbeat.service.d/10-deploy-checkout.conf"
+mkdir -p "$(dirname "$dropin")"
+printf 'Environment=FLEET_OPS_DRIFT_BIN=/tmp/agent-worktrees/fix-drift-canary/bin/fleet-ops-drift.py\n' > "$dropin"
+run_paper_canary() {
+  GH="$paper_gh" \
+  GH_LOG="$paper_gh_log" \
+  GH_OPEN_ISSUES="$scratch/open-paper.json" \
+  FLEET_OPS_DRIFT_FILE=1 \
+  FLEET_OPS_DRIFT_REPO="Nishfleet/fleet-ops" \
+  FLEET_ISSUE_FILE_LIB="$repo_root/lib/issue-file.py" \
+    run_canary
+}
+if out=$(run_paper_canary); then
+    fail "scenario14: canary should fail on the paper-over drop-in, got: $out"
+fi
+[[ "$out" == *"DRIFT-PAPER-OVER"* ]] \
+    || fail "scenario14: expected DRIFT-PAPER-OVER (got: $out)"
+grep -q 'issue create' "$paper_gh_log" \
+    || fail "scenario14: must auto-file (log=$(cat "$paper_gh_log"))"
+ok "scenario14: paper-over drop-in fails DRIFT-PAPER-OVER and auto-files"
+
+: >"$paper_gh_log"
+jq -n --arg b $'body\npaper-over-dropin: fleet-ops#370\n' \
+  '[{number: 370, body: $b}]' >"$scratch/open-paper.json"
+if out=$(
+  GH="$paper_gh" \
+  GH_LOG="$paper_gh_log" \
+  GH_OPEN_ISSUES="$scratch/open-paper.json" \
+  FLEET_OPS_DRIFT_FILE=1 \
+  FLEET_OPS_DRIFT_REPO="Nishfleet/fleet-ops" \
+  FLEET_ISSUE_FILE_LIB="$repo_root/lib/issue-file.py" \
+    run_canary
+); then
+    fail "scenario14b: canary should still fail on drop-in after dedup, got: $out"
+fi
+grep -q 'issue create' "$paper_gh_log" \
+    && fail "scenario14b: must not file a duplicate (log=$(cat "$paper_gh_log"))"
+[[ "$out" == *"dedup:"* ]] || fail "scenario14b: expected dedup log, got: $out"
+ok "scenario14b: open issue with the #370 marker is not filed twice"
+rm -f "$dropin"
+
+# --- scenario 15: FLEET_OPS_DRIFT_BIN under agent-worktrees is refused ------
+wt_canary="$scratch/agent-worktrees/fix-drift-canary-external-units/bin/fleet-ops-drift.py"
+mkdir -p "$(dirname "$wt_canary")"
+printf '#!/usr/bin/env python3\nraise SystemExit("volatile canary must not run")\n' > "$wt_canary"
+chmod +x "$wt_canary"
+if out=$(
+  PATH="$scratch:$PATH" \
+  FLEET_OPS_CHECKOUT="$checkout" \
+  FLEET_OPS_DRIFT_BIN="$wt_canary" \
+  FLEET_OPS_SYSTEMCTL="$systemctl_fake" \
+  FLEET_OPS_DEPLOY_AUDIT_LOG="$scratch/deploy-audit.log" \
+  FLEET_OPS_TRIAGE="$scratch/triage.md" \
+    "$deploy" 2>&1
+); then
+    fail "scenario15: deploy should refuse a worktree FLEET_OPS_DRIFT_BIN, got: $out"
+fi
+[[ "$out" == *"DEPLOY-DRIFT-BIN-VOLATILE"* ]] \
+    || fail "scenario15: expected DEPLOY-DRIFT-BIN-VOLATILE (got: $out)"
+ok "scenario15: FLEET_OPS_DRIFT_BIN under agent-worktrees is refused"
+
+if out=$(
+  FLEET_OPS_DRIFT_BIN="$wt_canary" \
+  GH="$paper_gh" \
+  GH_LOG="$paper_gh_log" \
+  GH_OPEN_ISSUES="$scratch/open-paper.json" \
+  FLEET_OPS_DRIFT_FILE=1 \
+  FLEET_OPS_DRIFT_REPO="Nishfleet/fleet-ops" \
+    run_canary
+); then
+    fail "scenario15b: canary should fail when FLEET_OPS_DRIFT_BIN is a worktree, got: $out"
+fi
+[[ "$out" == *"DRIFT-PAPER-OVER"* ]] \
+    || fail "scenario15b: expected DRIFT-PAPER-OVER for worktree FLEET_OPS_DRIFT_BIN (got: $out)"
+ok "scenario15b: canary flags FLEET_OPS_DRIFT_BIN under agent-worktrees"
+
+# --- scenario 16: deploy removes the drop-in even when merge is blocked ------
+: >"$enabled_units"
+block_head=$(git -C "$checkout" rev-parse HEAD)
+echo '# paper-over-block' >> "$checkout/bin/demo-script"
+mkdir -p "$(dirname "$dropin")"
+printf 'Environment=FLEET_OPS_DRIFT_BIN=/tmp/agent-worktrees/x.py\n' > "$dropin"
+hold_clone
+if out=$(run_deploy); then
+    release_clone
+    fail "scenario16: deploy should block on dirty tracked files, got: $out"
+fi
+release_clone
+[[ "$out" == *"DEPLOY-BLOCKED"* ]] || fail "scenario16: expected DEPLOY-BLOCKED (got: $out)"
+[[ ! -e "$dropin" ]] || fail "scenario16: paper-over drop-in survived a blocked deploy"
+ok "scenario16: blocked deploy still removes the paper-over drop-in"
+git -C "$checkout" checkout -q -- bin/demo-script
+[ "$(git -C "$checkout" rev-parse HEAD)" = "$block_head" ] \
+    || fail "scenario16: blocked deploy mutated HEAD"
+
+# --- scenario 17: named non-main branch on the deploy checkout (fleet-ops#477)
+git -C "$checkout" reset --hard -q origin/main
+git -C "$checkout" clean -fdq
+git -C "$checkout" checkout -q -B main origin/main
+git -C "$checkout" checkout -q -b auditor/off-main-477
+[ "$(git -C "$checkout" symbolic-ref --short HEAD)" = "auditor/off-main-477" ] \
+    || fail "scenario17: setup expected named auditor branch"
+[ "$(git -C "$checkout" rev-parse HEAD)" = "$(git -C "$checkout" rev-parse origin/main)" ] \
+    || fail "scenario17: setup expected HEAD to match origin/main"
+: >"$enabled_units"
+printf '%s\n' "${expected_units[@]}" > "$enabled_units"
+off_gh_log="$scratch/gh-off-main.log"
+off_gh="$scratch/gh-off-main"
+: >"$off_gh_log"
+echo '[]' >"$scratch/open-off-main.json"
+cat >"$off_gh" <<'FAKE'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >>"${GH_LOG:-/dev/null}"
+case "$*" in
+  *"issue list"*)
+    cat "${GH_OPEN_ISSUES:-/dev/null}"
+    exit 0
+    ;;
+  *"issue create"*)
+    echo "https://github.com/Nishfleet/fleet-ops/issues/4770"
+    exit 0
+    ;;
+  *"issue comment"*)
+    if [ -n "${GH_COMMENTED:-}" ]; then
+      printf '%s\n' "$3" >>"$GH_COMMENTED"
+    fi
+    exit 0
+    ;;
+  *"issue close"*)
+    if [ -n "${GH_CLOSED:-}" ]; then
+      printf '%s\n' "$3" >>"$GH_CLOSED"
+    fi
+    exit 0
+    ;;
+esac
+exit 0
+FAKE
+chmod +x "$off_gh"
+hold_clone
+if ! out=$(
+  GH="$off_gh" \
+  GH_LOG="$off_gh_log" \
+  GH_OPEN_ISSUES="$scratch/open-off-main.json" \
+  FLEET_OPS_DRIFT_FILE=1 \
+  FLEET_OPS_DRIFT_REPO="Nishfleet/fleet-ops" \
+  FLEET_ISSUE_FILE_LIB="$repo_root/lib/issue-file.py" \
+    run_deploy
+); then
+    release_clone
+    fail "scenario17: deploy should recover a fully-pushed off-main clone even when held, got: $out"
+fi
+release_clone
+[[ "$out" == *"recovered deploy clone"* ]] \
+    || fail "scenario17: expected recovered deploy clone (got: $out)"
+[[ "$out" == *"fleet-ops#5222"* ]] \
+    || fail "scenario17: expected fleet-ops#5222 (got: $out)"
+[[ "$out" != *"DEPLOY-BLOCKED"* ]] \
+    || fail "scenario17: fully-pushed off-main must not DEPLOY-BLOCK (got: $out)"
+grep -q 'issue create' "$off_gh_log" \
+    && fail "scenario17: recovered clone must not auto-file (log=$(cat "$off_gh_log"))"
+[ "$(git -C "$checkout" symbolic-ref --short HEAD)" = "main" ] \
+    || fail "scenario17: deploy must be on main after recovery"
+[ "$(git -C "$checkout" rev-parse HEAD)" = "$(git -C "$checkout" rev-parse origin/main)" ] \
+    || fail "scenario17: deploy HEAD must match origin/main"
+git -C "$checkout" rev-parse -q --verify auditor/off-main-477 >/dev/null \
+    || fail "scenario17: recovery must leave the auditor branch ref in place"
+ok "scenario17: fully-pushed off-main recovers to main even when held (fleet-ops#5222)"
+
+# Canary still fails loud on off-main (drift check is not weakened).
+git -C "$checkout" checkout -q auditor/off-main-477
+: >"$off_gh_log"
+if out=$(
+  GH="$off_gh" \
+  GH_LOG="$off_gh_log" \
+  GH_OPEN_ISSUES="$scratch/open-off-main.json" \
+  FLEET_OPS_DRIFT_FILE=1 \
+  FLEET_OPS_DRIFT_REPO="Nishfleet/fleet-ops" \
+  FLEET_ISSUE_FILE_LIB="$repo_root/lib/issue-file.py" \
+    run_canary
+); then
+    fail "scenario17b: canary should fail on a named non-main branch, got: $out"
+fi
+[[ "$out" == *"DRIFT-OFF-MAIN"* ]] \
+    || fail "scenario17b: expected DRIFT-OFF-MAIN (got: $out)"
+grep -q 'issue create' "$off_gh_log" \
+    || fail "scenario17b: canary must auto-file (log=$(cat "$off_gh_log"))"
+ok "scenario17b: canary DRIFT-OFF-MAIN auto-files when checkout is not on main"
+
+: >"$off_gh_log"
+jq -n --arg b $'body\ndeploy-clone-off-main: fleet-ops#477\n' \
+  '[{number: 477, body: $b}]' >"$scratch/open-off-main.json"
+if out=$(
+  GH="$off_gh" \
+  GH_LOG="$off_gh_log" \
+  GH_OPEN_ISSUES="$scratch/open-off-main.json" \
+  FLEET_OPS_DRIFT_FILE=1 \
+  FLEET_OPS_DRIFT_REPO="Nishfleet/fleet-ops" \
+    run_canary
+); then
+    fail "scenario17c: canary should still fail after dedup, got: $out"
+fi
+grep -q 'issue create' "$off_gh_log" \
+    && fail "scenario17c: must not file a duplicate (log=$(cat "$off_gh_log"))"
+[[ "$out" == *"dedup:"* ]] || fail "scenario17c: expected dedup log, got: $out"
+ok "scenario17c: open issue with the #477 marker is not filed twice"
+
+behind_on_auditor=$(git -C "$checkout" rev-parse HEAD)
+git -C "$checkout" checkout -q -B tmp-advance-main origin/main
+printf '\n# 477-advance\n' >> "$checkout/systemd/demo.timer"
+git -C "$checkout" add -A
+git -C "$checkout" commit -q -m "advance main past auditor"
+git -C "$checkout" push -q origin HEAD:main
+git -C "$checkout" checkout -q auditor/off-main-477
+[ "$(git -C "$checkout" rev-parse HEAD)" = "$behind_on_auditor" ] \
+    || fail "scenario17d: setup did not leave auditor behind origin/main"
+git -C "$checkout" merge-base --is-ancestor HEAD origin/main \
+    || fail "scenario17d: setup expected auditor HEAD to be an ancestor of origin/main"
+: >"$off_gh_log"
+echo '[]' >"$scratch/open-off-main.json"
+hold_clone
+if ! out=$(
+  GH="$off_gh" \
+  GH_LOG="$off_gh_log" \
+  GH_OPEN_ISSUES="$scratch/open-off-main.json" \
+  FLEET_OPS_DRIFT_FILE=1 \
+  FLEET_OPS_DRIFT_REPO="Nishfleet/fleet-ops" \
+    run_deploy
+); then
+    release_clone
+    fail "scenario17d: ancestor off-main should recover onto main, got: $out"
+fi
+release_clone
+[[ "$out" == *"recovered deploy clone"* ]] \
+    || fail "scenario17d: expected recovered deploy clone (got: $out)"
+[ "$(git -C "$checkout" symbolic-ref --short HEAD)" = "main" ] \
+    || fail "scenario17d: clone must be on main after recovery"
+[ "$(git -C "$checkout" rev-parse HEAD)" = "$(git -C "$checkout" rev-parse origin/main)" ] \
+    || fail "scenario17d: clone HEAD must equal origin/main after recovery"
+[ "$(git -C "$checkout" rev-parse auditor/off-main-477)" = "$behind_on_auditor" ] \
+    || fail "scenario17d: recovery must not fast-forward the auditor branch pointer"
+ok "scenario17d: ancestor auditor branch is recovered by checking out main, not by moving the auditor pointer"
+git -C "$checkout" checkout -q -B main origin/main
+
+# --- scenario 17g: throwaway-guard-test + --dry-run recovers (fleet-ops#5222)
+git -C "$checkout" checkout -q -B main origin/main
+git -C "$checkout" clean -fdq
+git -C "$checkout" checkout -q -b throwaway-guard-test
+pre_throwaway=$(git -C "$checkout" rev-parse HEAD)
+if ! out=$(run_deploy --dry-run); then
+    fail "scenario17g: --dry-run must recover throwaway-guard-test and exit 0, got: $out"
+fi
+[ "$(git -C "$checkout" symbolic-ref --short HEAD)" = "main" ] \
+    || fail "scenario17g: --dry-run must leave the clone on main"
+[ "$(git -C "$checkout" rev-parse HEAD)" = "$pre_throwaway" ] \
+    || fail "scenario17g: --dry-run must not move HEAD off the already-pushed commit"
+[[ "$out" == *"recovered deploy clone"* ]] \
+    || fail "scenario17g: expected recovered deploy clone (got: $out)"
+[[ "$out" == *"dry-run"* ]] \
+    || fail "scenario17g: expected dry-run skip-install (got: $out)"
+[[ "$out" != *"reset --hard"* ]] \
+    || fail "scenario17g: recovery must not reset --hard (got: $out)"
+ok "scenario17g: throwaway-guard-test --dry-run recovers to main and exits 0"
+
+# --- scenario 17h: unpushed commit is refused and not discarded
+git -C "$checkout" checkout -q -B main origin/main
+git -C "$checkout" clean -fdq
+git -C "$checkout" checkout -q -b throwaway-unpushed-5222
+printf '\n# unpushed-5222\n' >> "$checkout/systemd/demo.timer"
+git -C "$checkout" add -A
+git -C "$checkout" commit -q -m "unpushed commit for 5222"
+unpushed=$(git -C "$checkout" rev-parse HEAD)
+if out=$(run_deploy --dry-run); then
+    fail "scenario17h: --dry-run must refuse an unpushed commit, got: $out"
+fi
+[[ "$out" == *"DEPLOY-BLOCKED"* ]] \
+    || fail "scenario17h: expected DEPLOY-BLOCKED (got: $out)"
+[[ "$out" == *"unpushed"* ]] \
+    || fail "scenario17h: expected unpushed reason (got: $out)"
+[ "$(git -C "$checkout" symbolic-ref --short HEAD)" = "throwaway-unpushed-5222" ] \
+    || fail "scenario17h: must stay on the unpushed branch"
+[ "$(git -C "$checkout" rev-parse HEAD)" = "$unpushed" ] \
+    || fail "scenario17h: must not discard the unpushed commit"
+ok "scenario17h: unpushed commit is refused and left in place"
+git -C "$checkout" checkout -q -B main origin/main
+
+# --- scenario 17e: green canary observes-to-close an open off-main issue (#620)
+: >"$enabled_units"
+printf '%s\n' "${expected_units[@]}" merged.timer > "$enabled_units"
+off_comment_log="$scratch/gh-off-main-commented.log"
+off_closed_log="$scratch/gh-off-main-closed.log"
+: >"$off_comment_log"
+: >"$off_closed_log"
+: >"$off_gh_log"
+jq -n --arg b $'body\ndeploy-clone-off-main: fleet-ops#477\n' \
+  '[{number: 477, body: $b, comments: []}]' >"$scratch/open-off-main.json"
+if out=$(
+  GH="$off_gh" \
+  GH_LOG="$off_gh_log" \
+  GH_OPEN_ISSUES="$scratch/open-off-main.json" \
+  GH_COMMENTED="$off_comment_log" \
+  GH_CLOSED="$off_closed_log" \
+  FLEET_OPS_DRIFT_FILE=1 \
+  FLEET_OPS_DRIFT_CLOSE=1 \
+  FLEET_OPS_DRIFT_REPO="Nishfleet/fleet-ops" \
+    run_canary
+); then
+  : pass
+else
+  fail "scenario17e: canary should pass on main (got: $out)"
+fi
+[[ "$out" == *"OBSERVED-RESOLVED"* ]] \
+  || fail "scenario17e: expected OBSERVED-RESOLVED (got: $out)"
+[[ "$out" == *"off-main deploy-clone"* ]] \
+  || fail "scenario17e: expected off-main deploy-clone in log (got: $out)"
+grep -q 'issue comment' "$off_gh_log" \
+  || fail "scenario17e: must call gh issue comment (log=$(cat "$off_gh_log"))"
+grep -q '^477$' "$off_comment_log" \
+  || fail "scenario17e: must comment on #477 (commented=$(cat "$off_comment_log"))"
+# First green tick posts resolved-at but must NOT close same tick (fleet-ops#1156).
+grep -q 'issue close' "$off_gh_log" \
+  && fail "scenario17e: must not close on the same tick as the comment (log=$(cat "$off_gh_log"))"
+[[ ! -s "$off_closed_log" ]] \
+  || fail "scenario17e: must not close same tick (closed=$(cat "$off_closed_log"))"
+ok "scenario17e: green canary observes-to-close on open off-main issue (fleet-ops#620)"
+
+# Replay: a later green tick. The open issue now carries the resolved-at
+# comment, so the canary CLOSES it (two-tick close, fleet-ops#1156) instead
+# of re-posting.
+: >"$off_gh_log"
+: >"$off_comment_log"
+: >"$off_closed_log"
+jq -n --arg b $'body\ndeploy-clone-off-main: fleet-ops#477\n' --arg c $'resolved-at: deploy-clone-off-main: fleet-ops#477\n' \
+  '[{number: 477, body: $b, comments: [{body: $c}]}]' >"$scratch/open-off-main.json"
+if out=$(
+  GH="$off_gh" \
+  GH_LOG="$off_gh_log" \
+  GH_OPEN_ISSUES="$scratch/open-off-main.json" \
+  GH_COMMENTED="$off_comment_log" \
+  GH_CLOSED="$off_closed_log" \
+  FLEET_OPS_DRIFT_FILE=1 \
+  FLEET_OPS_DRIFT_CLOSE=1 \
+  FLEET_OPS_DRIFT_REPO="Nishfleet/fleet-ops" \
+    run_canary
+); then
+  : pass
+else
+  fail "scenario17e replay: canary should pass on main (got: $out)"
+fi
+[[ "$out" == *"OBSERVE-CLOSED"* ]] \
+  || fail "scenario17e replay: expected OBSERVE-CLOSED (got: $out)"
+grep -q 'issue close' "$off_gh_log" \
+  || fail "scenario17e replay: must call gh issue close (log=$(cat "$off_gh_log"))"
+grep -q '^477$' "$off_closed_log" \
+  || fail "scenario17e replay: must close #477 (closed=$(cat "$off_closed_log"))"
+grep -q 'issue comment' "$off_gh_log" \
+  && fail "scenario17e replay: must not call gh issue comment again (log=$(cat "$off_gh_log"))"
+[[ ! -s "$off_comment_log" ]] \
+  || fail "scenario17e replay: must not record a second comment (commented=$(cat "$off_comment_log"))"
+ok "scenario17e replay: later green tick closes the resolved off-main issue (fleet-ops#1156)"
+
+# Replay with FLEET_OPS_DRIFT_CLOSE=0: comment-only mode must NOT close, only
+# dedup. This is the path tests and one-off runs take when closing is opted
+# out (mirrors fleet-exec-review-canary CLOSE_ISSUES=0).
+: >"$off_gh_log"
+: >"$off_comment_log"
+: >"$off_closed_log"
+jq -n --arg b $'body\ndeploy-clone-off-main: fleet-ops#477\n' --arg c $'resolved-at: deploy-clone-off-main: fleet-ops#477\n' \
+  '[{number: 477, body: $b, comments: [{body: $c}]}]' >"$scratch/open-off-main.json"
+if out=$(
+  GH="$off_gh" \
+  GH_LOG="$off_gh_log" \
+  GH_OPEN_ISSUES="$scratch/open-off-main.json" \
+  GH_COMMENTED="$off_comment_log" \
+  GH_CLOSED="$off_closed_log" \
+  FLEET_OPS_DRIFT_FILE=1 \
+  FLEET_OPS_DRIFT_CLOSE=0 \
+  FLEET_OPS_DRIFT_REPO="Nishfleet/fleet-ops" \
+    run_canary
+); then
+  : pass
+else
+  fail "scenario17e close=0: canary should pass on main (got: $out)"
+fi
+[[ "$out" == *"dedup observe"* ]] \
+  || fail "scenario17e close=0: expected dedup observe (got: $out)"
+grep -q 'issue close' "$off_gh_log" \
+  && fail "scenario17e close=0: must not call gh issue close (log=$(cat "$off_gh_log"))"
+[[ ! -s "$off_closed_log" ]] \
+  || fail "scenario17e close=0: must not close (closed=$(cat "$off_closed_log"))"
+ok "scenario17e close=0: comment-only mode dedups without closing (fleet-ops#1156)"
+
+# --- scenario 17f: off-main observe-to-close fires even when a later check
+# is red (fleet-ops#774). The canary is on main and clean, but a leftover
+# service with a missing ExecStart makes check_missing_execstarts fail. The
+# off-main class is binary (branch is main or not), so the `resolved-at:`
+# comment must still land on the open off-main issue. The end-of-canary
+# observe_close_drift_issues is held back by DRIFT-MISSING-EXEC, so the only
+# path is the per-check call inside check_checkout.
+mkdir -p "$HOME/.config/systemd/user"
+cat >"$HOME/.config/systemd/user/leftover-774.service" <<'UNIT'
+[Unit]
+Description=Leftover service for the #774 observe-to-close drill
+
+[Service]
+ExecStart=/nonexistent/leftover-774-bin
+UNIT
+: >"$off_gh_log"
+: >"$off_comment_log"
+jq -n --arg b $'body\ndeploy-clone-off-main: fleet-ops#477\n' \
+  '[{number: 774, body: $b, comments: []}]' >"$scratch/open-off-main.json"
+if out=$(
+  GH="$off_gh" \
+  GH_LOG="$off_gh_log" \
+  GH_OPEN_ISSUES="$scratch/open-off-main.json" \
+  GH_COMMENTED="$off_comment_log" \
+  FLEET_OPS_DRIFT_FILE=1 \
+  FLEET_OPS_DRIFT_REPO="Nishfleet/fleet-ops" \
+    run_canary
+); then
+  fail "scenario17f: canary should still fail on DRIFT-MISSING-EXEC, got: $out"
+fi
+[[ "$out" == *"DRIFT-MISSING-EXEC"* ]] \
+  || fail "scenario17f: expected DRIFT-MISSING-EXEC (got: $out)"
+[[ "$out" == *"OBSERVED-RESOLVED"* ]] \
+  || fail "scenario17f: off-main observe-to-close must fire even when a later check is red (got: $out)"
+grep -q 'issue comment' "$off_gh_log" \
+  || fail "scenario17f: must call gh issue comment for #774 (log=$(cat "$off_gh_log"))"
+grep -q '^774$' "$off_comment_log" \
+  || fail "scenario17f: must comment on #774 (commented=$(cat "$off_comment_log"))"
+ok "scenario17f: off-main observe-to-close fires despite a later red check (fleet-ops#774)"
+rm -f "$HOME/.config/systemd/user/leftover-774.service"
+
+# --- scenario 19: deploy drift canary rc is captured, not inverted (#463) ----
+# The 2026-08-26 regression: the drift canary step logged "drift canary
+# failed" while its own output said the checkout was clean — an inverted
+# `if canary_out=$(...)` capture swallowed the real rc. Pin the explicit
+# canary_rc=$? path: a canary that exits nonzero with success-looking text
+# must fail the deploy with the rc logged, and a canary that exits 0 must
+# pass with its output on the success line.
+git -C "$checkout" reset --hard -q origin/main
+git -C "$checkout" checkout -q -B main origin/main
+: >"$enabled_units"
+printf '%s\n' "${expected_units[@]}" merged.timer > "$enabled_units"
+
+# 19a: canary exits 1 while printing a clean-checkout message.
+stub_canary_fail="$scratch/stub-canary-fail.sh"
+cat >"$stub_canary_fail" <<'STUB'
+#!/usr/bin/env bash
+echo "[fleet-ops-drift] checkout is at origin/main and clean"
+exit 1
+STUB
+chmod +x "$stub_canary_fail"
+if out=$(
+  PATH="$scratch:$PATH" \
+  FLEET_OPS_CHECKOUT="$checkout" \
+  FLEET_OPS_DRIFT_BIN="$stub_canary_fail" \
+  FLEET_OPS_SYSTEMCTL="$systemctl_fake" \
+  FLEET_OPS_DEPLOY_AUDIT_LOG="$scratch/deploy-audit.log" \
+  FLEET_OPS_TRIAGE="$scratch/triage.md" \
+    "$deploy" 2>&1
+); then
+    fail "scenario19a: deploy must fail when the canary exits nonzero, got: $out"
+fi
+[[ "$out" == *"drift canary failed (rc=1)"* ]] \
+    || fail "scenario19a: expected 'drift canary failed (rc=1)' (got: $out)"
+# The inverted-capture bug logged the canary output on the SUCCESS line even
+# on failure. The fix must not: a failing canary's text rides the failed line.
+[[ "$out" != *"drift canary output:"* ]] \
+    || fail "scenario19a: failing canary must not hit the success 'drift canary output:' line (got: $out)"
+ok "scenario19a: canary exiting nonzero fails deploy with rc captured (fleet-ops#463)"
+
+# 19b: canary exits 0 with output → deploy succeeds, output on the success line.
+stub_canary_ok="$scratch/stub-canary-ok.sh"
+cat >"$stub_canary_ok" <<'STUB'
+#!/usr/bin/env bash
+echo "[fleet-ops-drift] checkout is at origin/main and clean"
+exit 0
+STUB
+chmod +x "$stub_canary_ok"
+if ! out=$(
+  PATH="$scratch:$PATH" \
+  FLEET_OPS_CHECKOUT="$checkout" \
+  FLEET_OPS_DRIFT_BIN="$stub_canary_ok" \
+  FLEET_OPS_SYSTEMCTL="$systemctl_fake" \
+  FLEET_OPS_DEPLOY_AUDIT_LOG="$scratch/deploy-audit.log" \
+  FLEET_OPS_TRIAGE="$scratch/triage.md" \
+    "$deploy" 2>&1
+); then
+    fail "scenario19b: deploy should succeed when the canary exits 0, got: $out"
+fi
+[[ "$out" == *"drift canary output:"* ]] \
+    || fail "scenario19b: expected 'drift canary output:' on success (got: $out)"
+[[ "$out" != *"drift canary failed"* ]] \
+    || fail "scenario19b: passing canary must not log 'drift canary failed' (got: $out)"
+ok "scenario19b: canary exiting 0 passes deploy and logs output (fleet-ops#463)"
+
+# --- scenario 18: deploy runs install.sh --system (fleet-ops#1247) ----------
+# Do not rewrite checkout/install.sh here: that dirties a tracked file and
+# DEPLOY-BLOCKs before either install runs. The deploy log names both.
+git -C "$checkout" reset --hard -q origin/main
+git -C "$checkout" checkout -q -B main origin/main
+: >"$enabled_units"
+printf '%s\n' "${expected_units[@]}" merged.timer > "$enabled_units"
+if ! out=$(run_deploy); then
+    fail "scenario18: deploy should succeed and run --system, got: $out"
+fi
+[[ "$out" == *"ran install.sh (rc=0)"* ]] \
+    || fail "scenario18: expected user-scope install.sh (got: $out)"
+[[ "$out" == *"ran install.sh --system (rc=0)"* ]] \
+    || fail "scenario18: expected install.sh --system (got: $out)"
+ok "scenario18: deploy invokes install.sh then install.sh --system"
+
+# --- scenario 18b: --system failure fails the deploy -----------------------
+# Push the stub to origin/main and leave the checkout behind so deploy
+# fast-forwards onto it. Rewriting install.sh in place would DEPLOY-BLOCK.
+behind18=$(git -C "$checkout" rev-parse HEAD)
+git -C "$checkout" checkout -q -b fail-system-1247
+cat >"$install" <<'STUB'
+#!/usr/bin/env bash
+if [ "${1:-}" = "--system" ]; then
+  echo "simulated --system failure" >&2
+  exit 1
+fi
+exit 0
+STUB
+chmod +x "$install"
+git -C "$checkout" add install.sh
+git -C "$checkout" commit -q -m "stub install.sh --system failure"
+git -C "$checkout" push -q origin HEAD:main
+git -C "$checkout" checkout -q "$behind18"
+if out=$(run_deploy); then
+    fail "scenario18b: deploy should fail when install.sh --system fails, got: $out"
+fi
+[[ "$out" == *"DEPLOY-INSTALL"* ]] \
+    || fail "scenario18b: expected DEPLOY-INSTALL (got: $out)"
+[[ "$out" == *"install.sh --system failed"* ]] \
+    || fail "scenario18b: expected --system in the LOUD line (got: $out)"
+ok "scenario18b: install.sh --system failure fails deploy"
+
+# --- scenario 20: deploy-clone on main but dirty/diverged auto-files the
+# deploy-blocked-on-main class (fleet-ops#2725). The off-main auto-file does
+# NOT fire (the branch IS main), so without this auto-file the block sat
+# silent for 30+ min until the blind-audit caught it. Both fleet-ops-deploy
+# and the drift canary must file the class from whichever runs first.
+git -C "$checkout" reset --hard -q origin/main
+git -C "$checkout" checkout -q -B main origin/main
+: >"$enabled_units"
+printf '%s\n' "${expected_units[@]}" merged.timer > "$enabled_units"
+dbm_gh="$scratch/gh-deploy-blocked-main"
+dbm_gh_log="$scratch/gh-deploy-blocked-main.log"
+: >"$dbm_gh_log"
+echo '[]' >"$scratch/open-dbm.json"
+cat >"$dbm_gh" <<'FAKE'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >>"${GH_LOG:-/dev/null}"
+case "$*" in
+  *"issue list"*)
+    cat "${GH_OPEN_ISSUES:-/dev/null}"
+    exit 0
+    ;;
+  *"issue create"*)
+    echo "https://github.com/Nishfleet/fleet-ops/issues/27250"
+    exit 0
+    ;;
+  *"issue comment"*)
+    if [ -n "${GH_COMMENTED:-}" ]; then
+      printf '%s\n' "$3" >>"$GH_COMMENTED"
+    fi
+    exit 0
+    ;;
+  *"issue close"*)
+    if [ -n "${GH_CLOSED:-}" ]; then
+      printf '%s\n' "$3" >>"$GH_CLOSED"
+    fi
+    exit 0
+    ;;
+esac
+exit 0
+FAKE
+chmod +x "$dbm_gh"
+
+# 20a: dirty working tree on main -> DEPLOY-BLOCK + auto-file the #2725 class.
+echo '# hot patch on main' >> "$checkout/bin/demo-script"
+hold_clone
+if out=$(
+  GH="$dbm_gh" \
+  GH_LOG="$dbm_gh_log" \
+  GH_OPEN_ISSUES="$scratch/open-dbm.json" \
+  FLEET_OPS_DRIFT_FILE=1 \
+  FLEET_OPS_DRIFT_REPO="Nishfleet/fleet-ops" \
+  FLEET_ISSUE_FILE_LIB="$repo_root/lib/issue-file.py" \
+    run_deploy
+); then
+    release_clone
+    fail "scenario20a: deploy should block on dirty tracked files on main, got: $out"
+fi
+release_clone
+[[ "$out" == *"DEPLOY-BLOCKED"* ]] || fail "scenario20a: expected DEPLOY-BLOCKED (got: $out)"
+[[ "$out" == *"dirty tracked files"* ]] || fail "scenario20a: expected dirty reason (got: $out)"
+grep -q 'issue create' "$dbm_gh_log" \
+    || fail "scenario20a: must auto-file deploy-blocked-on-main (log=$(cat "$dbm_gh_log"))"
+ok "scenario20a: dirty-on-main DEPLOY-BLOCKs and auto-files the #2725 class"
+
+# 20b: the drift canary also auto-files the same class from check_checkout.
+: >"$dbm_gh_log"
+if out=$(
+  GH="$dbm_gh" \
+  GH_LOG="$dbm_gh_log" \
+  GH_OPEN_ISSUES="$scratch/open-dbm.json" \
+  FLEET_OPS_DRIFT_FILE=1 \
+  FLEET_OPS_DRIFT_REPO="Nishfleet/fleet-ops" \
+  FLEET_ISSUE_FILE_LIB="$repo_root/lib/issue-file.py" \
+    run_canary
+); then
+    fail "scenario20b: canary should fail on dirty tracked files on main, got: $out"
+fi
+[[ "$out" == *"DRIFT-CHECKOUT"* ]] || fail "scenario20b: expected DRIFT-CHECKOUT (got: $out)"
+grep -q 'issue create' "$dbm_gh_log" \
+    || fail "scenario20b: canary must auto-file deploy-blocked-on-main (log=$(cat "$dbm_gh_log"))"
+ok "scenario20b: canary DRIFT-CHECKOUT auto-files the #2725 class on dirty main"
+
+# 20c: dedup — an open issue carrying the marker is not filed twice.
+: >"$dbm_gh_log"
+jq -n --arg b $'body\ndeploy-blocked-on-main: fleet-ops#2725\n' \
+  '[{number: 2725, body: $b}]' >"$scratch/open-dbm.json"
+if out=$(
+  GH="$dbm_gh" \
+  GH_LOG="$dbm_gh_log" \
+  GH_OPEN_ISSUES="$scratch/open-dbm.json" \
+  FLEET_OPS_DRIFT_FILE=1 \
+  FLEET_OPS_DRIFT_REPO="Nishfleet/fleet-ops" \
+  FLEET_ISSUE_FILE_LIB="$repo_root/lib/issue-file.py" \
+    run_canary
+); then
+    fail "scenario20c: canary should still fail after dedup, got: $out"
+fi
+grep -q 'issue create' "$dbm_gh_log" \
+    && fail "scenario20c: must not file a duplicate (log=$(cat "$dbm_gh_log"))"
+[[ "$out" == *"dedup:"* ]] || fail "scenario20c: expected dedup log (got: $out)"
+ok "scenario20c: open issue with the #2725 marker is not filed twice"
+
+# 20d: diverged HEAD on main (local commit not on origin/main) -> DEPLOY-BLOCK
+# + auto-file the #2725 class. Distinct from plain stale-behind (HEAD is an
+# ancestor, just behind) which deploy fast-forwards and does not auto-file.
+git -C "$checkout" checkout -q -- bin/demo-script
+git -C "$checkout" reset --hard -q origin/main
+diverge_base=$(git -C "$checkout" rev-parse HEAD)
+printf '\n# diverged hot-patch\n' >> "$checkout/systemd/demo.timer"
+git -C "$checkout" add -A
+git -C "$checkout" commit -q -m "diverged hot-patch on main"
+# origin/main stays at diverge_base; HEAD is now ahead+diverged.
+: >"$dbm_gh_log"
+echo '[]' >"$scratch/open-dbm.json"
+hold_clone
+if out=$(
+  GH="$dbm_gh" \
+  GH_LOG="$dbm_gh_log" \
+  GH_OPEN_ISSUES="$scratch/open-dbm.json" \
+  FLEET_OPS_DRIFT_FILE=1 \
+  FLEET_OPS_DRIFT_REPO="Nishfleet/fleet-ops" \
+  FLEET_ISSUE_FILE_LIB="$repo_root/lib/issue-file.py" \
+    run_deploy
+); then
+    release_clone
+    fail "scenario20d: deploy should block on a diverged HEAD on main, got: $out"
+fi
+release_clone
+[[ "$out" == *"DEPLOY-BLOCKED"* ]] || fail "scenario20d: expected DEPLOY-BLOCKED (got: $out)"
+[[ "$out" == *"not an ancestor of origin/main"* ]] \
+    || fail "scenario20d: expected non-ancestor reason (got: $out)"
+grep -q 'issue create' "$dbm_gh_log" \
+    || fail "scenario20d: must auto-file deploy-blocked-on-main (log=$(cat "$dbm_gh_log"))"
+ok "scenario20d: diverged-on-main DEPLOY-BLOCKs and auto-files the #2725 class"
+
+# 20e: green canary observes-to-close an open deploy-blocked-on-main issue
+# (fleet-ops#620). Once the checkout is clean and at origin/main, the
+# observe-to-close fires the same tick.
+git -C "$checkout" reset --hard -q origin/main
+git -C "$checkout" checkout -q -B main origin/main
+: >"$enabled_units"
+printf '%s\n' "${expected_units[@]}" merged.timer > "$enabled_units"
+dbm_comment_log="$scratch/gh-dbm-commented.log"
+dbm_closed_log="$scratch/gh-dbm-closed.log"
+: >"$dbm_gh_log"
+: >"$dbm_comment_log"
+: >"$dbm_closed_log"
+jq -n --arg b $'body\ndeploy-blocked-on-main: fleet-ops#2725\n' \
+  '[{number: 2725, body: $b, comments: []}]' >"$scratch/open-dbm.json"
+if out=$(
+  GH="$dbm_gh" \
+  GH_LOG="$dbm_gh_log" \
+  GH_OPEN_ISSUES="$scratch/open-dbm.json" \
+  GH_COMMENTED="$dbm_comment_log" \
+  GH_CLOSED="$dbm_closed_log" \
+  FLEET_OPS_DRIFT_FILE=1 \
+  FLEET_OPS_DRIFT_CLOSE=1 \
+  FLEET_OPS_DRIFT_REPO="Nishfleet/fleet-ops" \
+  FLEET_ISSUE_FILE_LIB="$repo_root/lib/issue-file.py" \
+    run_canary
+); then
+  : pass
+else
+  fail "scenario20e: canary should pass on clean main (got: $out)"
+fi
+[[ "$out" == *"OBSERVED-RESOLVED"* ]] \
+  || fail "scenario20e: expected OBSERVED-RESOLVED (got: $out)"
+[[ "$out" == *"deploy-blocked on main"* ]] \
+  || fail "scenario20e: expected deploy-blocked on main in log (got: $out)"
+grep -q 'issue comment' "$dbm_gh_log" \
+  || fail "scenario20e: must call gh issue comment (log=$(cat "$dbm_gh_log"))"
+grep -q '^2725$' "$dbm_comment_log" \
+  || fail "scenario20e: must comment on #2725 (commented=$(cat "$dbm_comment_log"))"
+grep -q 'issue close' "$dbm_gh_log" \
+  && fail "scenario20e: must not close on the same tick as the comment (log=$(cat "$dbm_gh_log"))"
+ok "scenario20e: green canary observes-to-close on open deploy-blocked-on-main issue (fleet-ops#620)"
+
+ok "fleet-ops deploy step: install, drift detection, merge, and canary pass offline"
+
+# --- scenario 21: foreign origin fetch URL repaired before fetch/reset/install
+# fleet-ops#5016 -> fleet-ops#5301: live 2026-09-11T10:21Z the deploy clone's
+# origin FETCH URL was https://github.com/Nishfleet/0509.git plus a second
+# remote `real` carrying the fleet-ops URL, and the old #5016 gate refused on
+# every tick for 10 minutes (nothing reached live). The URL is a constant and
+# the clone is disposable, so the tick now repairs (set-url back, drop the
+# duplicate remote) and proceeds in the SAME tick.
+: >"$enabled_units"
+git -C "$checkout" reset --hard -q origin/main
+git -C "$checkout" checkout -q main
+foreign_head="$(git -C "$checkout" rev-parse HEAD)"
+# Scenario 18b left a failing install.sh stub on origin/main; the old #5016
+# gate refused before any install, but the repaired tick now proceeds, so
+# restore a passing stub first (same as scenario21c below).
+cat >"$install" <<'STUB'
+#!/usr/bin/env bash
+exit 0
+STUB
+chmod +x "$install"
+git -C "$checkout" add install.sh
+git -C "$checkout" commit -q -m "restore passing install.sh stub before scenario21 repair tick"
+git -C "$checkout" push -q origin HEAD:main
+git -C "$checkout" fetch -q origin
+git -C "$checkout" reset -q --hard origin/main
+# A dirty working tree would otherwise route into the rescue-and-reset branch.
+echo "worker wip" >"$checkout/demo-wip.txt"
+# The repaired tick runs the full deploy; repopulate the enabled units so the
+# drift canary (which checks live unit state) passes as in scenario21c.
+printf '%s\n' "${expected_units[@]}" merged.timer > "$enabled_units"
+
+run_foreign_deploy() {
+  local url="$1"
+  git -C "$checkout" remote set-url origin "$url"
+  set +e
+  out=$(
+    env GH="${GH:-$gh_fake}" \
+    PATH="$scratch:$PATH" \
+    FLEET_OPS_CHECKOUT="$checkout" \
+    FLEET_OPS_EXPECTED_ORIGIN_URL="$origin_bare" \
+    FLEET_OPS_DRIFT_BIN="$canary" \
+    FLEET_OPS_SYSTEMCTL="$systemctl_fake" \
+    FLEET_OPS_DEPLOY_AUDIT_LOG="$scratch/deploy-audit.log" \
+    FLEET_OPS_TRIAGE="$scratch/triage.md" \
+    FLEET_DEPLOY_ORIGIN_REPAIR_PROM="$scratch/repair-prom" \
+    FLEET_DEPLOY_ORIGIN_REPAIR_LOG="$scratch/repair.hist" \
+      "$deploy" 2>&1
+  )
+  rc=$?
+  set -e
+}
+
+run_foreign_deploy "https://github.com/Nishfleet/0509.git"
+[[ "$rc" -eq 0 ]] || fail "scenario21: foreign origin must be repaired and the deploy must proceed (got $rc: $out)"
+[[ "$out" == *"DEPLOY-ORIGIN-REMOTE"* ]] \
+    || fail "scenario21: expected DEPLOY-ORIGIN-REMOTE (got: $out)"
+[[ "$out" == *"repaired"* ]] \
+    || fail "scenario21: the loud line must say repaired, not refusing (got: $out)"
+[[ "$out" == *"https://github.com/Nishfleet/0509.git"* ]] \
+    || fail "scenario21: repair must name the offending URL (got: $out)"
+[[ "$out" == *"fleet-ops#5301"* ]] \
+    || fail "scenario21: repair must name fleet-ops#5301 (got: $out)"
+[[ "$(git -C "$checkout" remote get-url origin)" == "$origin_bare" ]] \
+    || fail "scenario21: origin fetch URL must be set back to the expected URL"
+grep -q 'origin-remote-repaired' "$scratch/deploy-audit.log" \
+    || fail "scenario21: repair must land in the deploy audit log"
+grep -q 'fleet_deploy_origin_remote_repaired_total 1' "$scratch/repair-prom" \
+    || fail "scenario21: repair counter must be written to the .prom"
+ok "scenario21: foreign origin fetch URL (0509) repaired in the same tick, deploy proceeds (fleet-ops#5301)"
+
+# A near-miss owner/repo is repaired too (exact path match, not a substring):
+# anything that is not the expected URL is rewritten back to the constant.
+run_foreign_deploy "https://github.com/Nishfleet/fleet-ops-extra.git"
+[[ "$rc" -eq 0 ]] || fail "scenario21b: fleet-ops-extra must be repaired and proceed (got $rc: $out)"
+[[ "$out" == *"DEPLOY-ORIGIN-REMOTE"* ]] \
+    || fail "scenario21b: expected DEPLOY-ORIGIN-REMOTE (got: $out)"
+[[ "$(git -C "$checkout" remote get-url origin)" == "$origin_bare" ]] \
+    || fail "scenario21b: origin must be repaired back to the expected URL"
+ok "scenario21b: a near-miss repo name is repaired (exact match, no substring pass)"
+
+# The repair also drops an extra remote carrying the expected URL under
+# another name (the observed 2026-09-11 rewrite: origin=0509 + real=fleet-ops).
+git -C "$checkout" remote add real "$origin_bare"
+run_foreign_deploy "https://github.com/Nishfleet/0509.git"
+[[ "$rc" -eq 0 ]] || fail "scenario21d: repair tick must proceed (got $rc: $out)"
+[[ -z "$(git -C "$checkout" remote | grep -x real)" ]] \
+    || fail "scenario21d: the extra remote carrying the expected URL must be removed"
+ok "scenario21d: repair drops the duplicate fleet-ops remote (fleet-ops#5301)"
+
+# A >2-repairs-in-24h history trips the alert while the tick proceeds.
+now_s=$(date -u +%s)
+printf '%s\n%s\n%s\n%s\n' "$((now_s - 3600))" "$((now_s - 7200))" "$((now_s - 10800))" "$now_s" >"$scratch/repair.hist"
+run_foreign_deploy "https://github.com/Nishfleet/0509.git"
+[[ "$rc" -eq 0 ]] || fail "scenario21e: alert tick must proceed (got $rc: $out)"
+[[ "$out" == *"repaired 5x in 24h"* ]] \
+    || fail "scenario21e: >2 repairs in 24h must trip the alert (got: $out)"
+ok "scenario21e: >2 origin repairs in 24h trips the alert (fleet-ops#5301)"
+
+# Correct URL + the seam pointing at it: unchanged behaviour. Scenario 18b
+# left a failing `install.sh --system` stub on origin/main; restore a passing
+# stub first so this case proves the guard passes (it fires strictly before
+# any install) instead of re-proving 18b.
+git -C "$checkout" remote set-url origin "$origin_bare"
+git -C "$checkout" checkout -q -B main origin/main
+git -C "$checkout" reset --hard -q origin/main
+git -C "$checkout" clean -fdq
+: >"$enabled_units"
+printf '%s\n' "${expected_units[@]}" merged.timer > "$enabled_units"
+cat >"$install" <<'STUB'
+#!/usr/bin/env bash
+exit 0
+STUB
+chmod +x "$install"
+git -C "$checkout" add install.sh
+# --allow-empty: scenario21 setup already restored an identical passing stub,
+# so this commit may be a no-op (a plain commit exits 1 under set -e).
+git -C "$checkout" commit -q --allow-empty -m "restore passing install.sh stub after scenario18b"
+git -C "$checkout" push -q origin HEAD:main
+git -C "$checkout" fetch -q origin
+if ! out=$(run_deploy); then
+    fail "scenario21c: correct origin fetch URL must behave as before (got: $out)"
+fi
+[[ "$out" != *"DEPLOY-ORIGIN-REMOTE"* ]] \
+    || fail "scenario21c: correct URL must not trip the origin guard (got: $out)"
+ok "scenario21c: correct origin fetch URL -> unchanged behaviour"
+
+# fleet-ops#176: CI lists THIS file explicitly; the worker GitHub App cannot
+# add a workflow step, so the canonical-checkout drill rides along.
+bash "$here/canonical-checkout-guard.test.sh"
+
+# fleet-ops#175: same CI-list constraint; required-bins drill rides along.
+bash "$here/manifest-required-bins.test.sh"
+
+# fleet-ops#410: same CI-list constraint; products-symlink retarget rides along.
+bash "$here/fleet-ops-retarget-products.test.sh"
+>>>>>>> 6088e2712 (fix(spawn-guard): cover stop of fleet units in systemctl_restart_fleet_unit (Relates to #5605) (#5658))

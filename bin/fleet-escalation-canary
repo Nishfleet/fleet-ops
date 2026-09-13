@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 #!/usr/bin/env bash
 # fleet-escalation-canary — coverage canary for the escalation matrix
 # (fleet-ops#152).
@@ -1255,3 +1256,1234 @@ fi
 
 loud "ESCALATION-CANARY-OK" "two-plane invariant holds: VPS services/paths/timers + pi runners covered; GitHub coverage layers wired; pending=$pending"
 exit 0
+||||||| (empty tree)
+=======
+#!/usr/bin/env bash
+# fleet-escalation-canary — coverage canary for the escalation matrix
+# (fleet-ops#152).
+#
+# Proves the invariant "every failure path lands in the escalation matrix,
+# mechanically" on TWO planes, every heartbeat tick:
+#
+#   VPS plane (blocks 1-5):
+#     1. Every loaded user .service, .path, and .timer is covered by the
+#        matching type drop-in (service.d / path.d / timer.d —
+#        OnFailure contains unit-escalation@<unit>.service) OR appears on
+#        the explicit anti-recursion exclusion list. service.d does not
+#        apply to path or timer units (fleet-ops#618).
+#     2. No fleet execution path exists outside a systemd unit: only the
+#        sanctioned bin wrappers invoke `pi --print --provider` directly.
+#     3. Terminal delivery (#76/#428): dead-man ping (healthchecks.io on a
+#        successful heartbeat tick), failed-unit triage (no hermes page after
+#        a failed repair), and seat-health freshness (observed_at < 90min,
+#        else trigger pi-transport-check). Wired when lib/heartbeat-watchman.sh
+#        defines the three functions AND bin/fleet-heartbeat + tier1 wire them
+#        AND the service loads hc.env via EnvironmentFile. A marker file still
+#        suppresses the finding; missing wiring = standing loud PENDING.
+#     4. Red-CI-on-ownerless-PR coverage (#124). The redispatch is delivered
+#        as heartbeat block 12 (bin/fleet-heartbeat-red-pr-repair, invoked by
+#        fleet-heartbeat-tier1). The canary observes that wiring directly so
+#        step 4 agrees with step 7 (which checks the claim_repos the helper
+#        scans). The marker override is still honored for tests / manual
+#        suppression. Missing wiring = standing loud PENDING finding.
+#     5. system-scope fleet artifacts are documented as kernel/oomd-supervised
+#        exclusions (no user-manager OnFailure by design).
+#
+#   GitHub plane (blocks 6-8) — scope addition 2026-08-26: the invariant is
+#   TWO planes, not one. A red check on a repo with no coverage path is a
+#   loud canary finding.
+#     6. auto-revert / red-on-main coverage: fleet-ops ships auto-revert.yml
+#        (self-coverage for main-push red) and the reusable
+#        red-on-main-detector.yml (other repos wire it). Missing = VIOLATION.
+#     7. #124 redispatch coverage: every intake-enrolled repo that can produce
+#        claim PRs must be in fleet-repos.json claim_repos (or on the GitHub-
+#        plane exclusion list). A repo whose red claim PRs are not scanned by
+#        fleet-heartbeat-red-pr-repair = VIOLATION.
+#     8. red-check -> senior-auditor bridge: the path for a red check on a PR
+#        whose worker is still live (so #124 does not fire) and not on main
+#        (so auto-revert does not fire). Wired when the bridge workflow and
+#        detector script are present in the repo; the marker override is still
+#        honored so tests and manual suppression keep working.
+#     9. Rule-enforcement coverage (fleet-ops#383): every vault standing rule
+#        and ledger decision names a live enforcer in
+#        config/rule-enforcement.json. Missing or stale queued = VIOLATION;
+#        uncovered rules and stale queued rows (age > queued_stale_days)
+#        auto-file a distinct mechanism issue, deduped by signal key, cap per tick.
+#        When a previously auto-filed source is now `enforced`, the canary
+#        comments `canary-covered:` on the open issue (observe-to-close).
+#    10. Backup staleness (fleet-ops#388): restic-r2-backup.timer active and
+#        fresh (body of the canary, after the GitHub plane).
+#    11. Vault sync-conflict handler (fleet-ops#529): vault-conflict-resolver
+#        timer is active, last Result=success, and a fixture *.sync-conflict-*
+#        file is planted and must clear. Missing handler = the 2026-08-23 wipe.
+#    12. Free-tier privacy guard (fleet-ops#520): config/repo-privacy.json
+#        ships and is valid (default_policy=private), and a live scratch drill
+#        proves pick_seat privacy=private never returns a free-class seat and
+#        fails closed when only free seats remain. LOUD the same tick a
+#        regression re-opens the leak.
+#    13. Detached-work lint (fleet-ops#4266): no raw `systemd-run` transient
+#        user unit in the last 24h WITHOUT OnFailure. Reads the audit trail
+#        (ausearch -k fleet-unit-run) when auditd is installed: every
+#        systemd-run execve by auid=1000 must carry
+#        --property=OnFailure=unit-escalation@... (pi-systemd-run always
+#        adds it) or the unit is named as a VIOLATION — a clean stop of a
+#        raw unit is exactly the silent death the dead-man exists to catch.
+#        No auditd = PENDING (loud, not fail): the rules + auditd install
+#        are shipped via install.sh --system / bare-metal manifest.
+#
+# Required-check enumeration note: authoritatively listing each repo's
+# required_status_checks needs branch-protection read (Administration scope),
+# which the worker GH_TOKEN deliberately lacks. So the GitHub plane verifies
+# the coverage LAYERS are wired per repo rather than enumerating checks: with
+# auto-revert (main-push red) + #124 (orphaned red PRs) + the bridge
+# (live-worker red PRs) all wired, no red-check path can escape the matrix.
+# That is the structurally complete proof the canary makes.
+#
+# The canary is run by fleet-heartbeat-tier1 on every tick. It fails loud
+# (exit 1) on real violations, exits 0 when the only findings are the
+# documented pending holes (#76 delivery, #152 bridge), and logs
+# every check to stderr + the heartbeat triage file.
+#
+# Anti-recursion: the canary runs inside fleet-heartbeat.service, which is
+# itself covered by the global unit-escalation drop-in. The canary never
+# creates its own unit or OnFailure path, so it cannot feed its own failure
+# back into itself.
+#
+# Environment seams (tests):
+#   SYSTEMCTL                         default systemctl
+#   GH                                default gh
+#   FLEET_OPS_REPO                    path to fleet-ops checkout
+#   FLEET_HEARTBEAT_TRIAGE            heartbeat triage file
+#   AGENT_STATE                       /home/nish/workspaces/agent-state
+#   FLEET_INTAKE_REPOS_JSON           config/intake-repos.json source
+#   FLEET_REDPR_REPOS_JSON            fleet-repos.json (claim_repos) source
+#   FLEET_ESCALATION_CANARY_DELIVERY  marker file for #76 delivery
+#   FLEET_ESCALATION_CANARY_REDCI     marker file for #124 guard
+#   FLEET_ESCALATION_CANARY_BRIDGE    marker file for the #152 bridge
+#   FLEET_STANDING_RULES              vault global-standing-rules.md
+#   FLEET_DECISIONS_LEDGER            vault decisions-ledger.md
+#   FLEET_RULE_ENFORCEMENT_JSON       config/rule-enforcement.json
+#   FLEET_RULE_ENFORCEMENT_LIB        lib/rule-enforcement.py
+#   FLEET_RULE_ENFORCEMENT_FILE_ISSUES  1 (default) auto-file uncovered rules; 0 skips
+#   FLEET_RULE_ENFORCEMENT_CLOSE_ISSUES 1 (default) close mechanism issues once the
+#                                       canary has reported them covered (observe-
+#                                       to-close); 0 skips the close step.
+#   FLEET_RULE_ENFORCEMENT_ISSUE_REPO   Nishfleet/fleet-ops
+#   FLEET_RULE_ENFORCEMENT_NOW          ISO timestamp for queued-age checks (tests)
+#   FLEET_ESCALATION_CANARY_SKIP_VAULT_CONFLICT  1 skips block 11 (offline tests)
+#   FLEET_VAULT_CONFLICT_TIMER          default vault-conflict-resolver.timer
+#   FLEET_VAULT_CONFLICT_SERVICE        default vault-conflict-resolver.service
+#   FLEET_VAULT_CONFLICT_RESOLVER       path to lib/vault-conflict-resolver.py
+#   FLEET_VAULT_CONFLICT_STALE_HOURS    default 1 (timer fires every 10 min)
+#   FLEET_REPO_PRIVACY_JSON             config/repo-privacy.json source (block 12)
+#   FLEET_ESCALATION_CANARY_SKIP_PRIVACY_GUARD  1 skips block 12 (offline tests)
+#   FLEET_ESCALATION_CANARY_SKIP_STANDARDS_DRIFT  1 skips block 13 (offline tests)
+#   FLEET_STANDARDS_DRIFT_ISSUE_REPO   repo that receives standards-drift issues (default Nishfleet/fleet-ops)
+#   FLEET_STANDARDS_DRIFT_FILE_ISSUES  1 (default) auto-file drift issues; 0 skips
+#   FLEET_STANDARDS_DRIFT_MECHANISMS   space-separated thin-caller workflow filenames (tests override)
+#   AUSEARCH                            default ausearch (block 14, tests stub it)
+#   AUSEARCH_SBIN_PATHS                 colon-separated /usr/sbin fallback paths for
+#                                       ausearch (default /usr/sbin/ausearch:/sbin/ausearch;
+#                                       fleet-ops#4733: ausearch ships in /usr/sbin, outside
+#                                       the heartbeat PATH; tests point this at a scratch dir)
+#   AUDITCTL                            default auditctl (block 14 rule-loaded guard, tests stub it)
+#   AUDITCTL_SBIN_PATHS                 colon-separated /usr/sbin fallback paths for auditctl
+#                                       (default /usr/sbin/auditctl:/sbin/auditctl; fleet-ops#4733)
+#   FLEET_ESCALATION_CANARY_SKIP_DETACHED  1 skips block 14 (offline tests)
+
+set -Eeuo pipefail
+
+export HOME="${HOME:-/home/nish}"
+command -v gh >/dev/null 2>&1 || export PATH=/home/nish/.local/bin:/usr/local/bin:/usr/bin:/bin
+
+SYSTEMCTL="${SYSTEMCTL:-systemctl}"
+GH="${GH:-gh}"
+ISSUE_FILE="${FLEET_ISSUE_FILE:-$(cd "$(dirname "$(readlink -f "$0")")" && pwd)/fleet-issue-file}"
+
+# Resolve the repo root from this script's canonical path. When installed as a
+# symlink (the normal case) this follows the link to the active checkout.
+_canon_script=$(readlink -f "$0")
+_canon_repo=$(cd "$(dirname "$_canon_script")/.." && pwd)
+FLEET_OPS_REPO="${FLEET_OPS_REPO:-$_canon_repo}"
+
+AGENT_STATE="${AGENT_STATE:-/home/nish/workspaces/agent-state}"
+TRIAGE="${FLEET_HEARTBEAT_TRIAGE:-$AGENT_STATE/FLEET-HEARTBEAT-TRIAGE.md}"
+DELIVERY_MARKER="${FLEET_ESCALATION_CANARY_DELIVERY:-$AGENT_STATE/.escalation-delivery}"
+REDCI_MARKER="${FLEET_ESCALATION_CANARY_REDCI:-$AGENT_STATE/.red-ci-ownerless-guard}"
+BRIDGE_MARKER="${FLEET_ESCALATION_CANARY_BRIDGE:-$AGENT_STATE/.red-check-senior-auditor-bridge}"
+
+INTAKE_REPOS_JSON="${FLEET_INTAKE_REPOS_JSON:-$FLEET_OPS_REPO/config/intake-repos.json}"
+REDPR_REPOS_JSON="${FLEET_REDPR_REPOS_JSON:-/home/nish/.local/state/fleet-heartbeat/fleet-repos.json}"
+
+STANDING_RULES="${FLEET_STANDING_RULES:-/home/nish/workspaces/tooling/nish-vault/_system/shared-memory/global-standing-rules.md}"
+DECISIONS_LEDGER="${FLEET_DECISIONS_LEDGER:-/home/nish/workspaces/tooling/nish-vault/_system/shared-memory/decisions-ledger.md}"
+RULE_MATRIX="${FLEET_RULE_ENFORCEMENT_JSON:-$FLEET_OPS_REPO/config/rule-enforcement.json}"
+RULE_LIB="${FLEET_RULE_ENFORCEMENT_LIB:-$FLEET_OPS_REPO/lib/rule-enforcement.py}"
+if [[ ! -f "$RULE_LIB" && -f "${HOME}/.local/lib/pi-packet/rule-enforcement.py" ]]; then
+    RULE_LIB="${HOME}/.local/lib/pi-packet/rule-enforcement.py"
+fi
+FILE_RULE_ISSUES="${FLEET_RULE_ENFORCEMENT_FILE_ISSUES:-1}"
+CLOSE_RULE_ISSUES="${FLEET_RULE_ENFORCEMENT_CLOSE_ISSUES:-1}"
+RULE_ISSUE_REPO="${FLEET_RULE_ENFORCEMENT_ISSUE_REPO:-Nishfleet/fleet-ops}"
+RULE_NOW="${FLEET_RULE_ENFORCEMENT_NOW:-}"
+
+# Backup-staleness canary (fleet-ops#388). The system restic units are
+# readable via `systemctl show` (no sudo); a stale or failed backup is LOUD
+# here so it joins the escalation matrix every heartbeat tick. The deeper
+# restore drill (bin/fleet-restore-drill) runs on its own 6h timer; this is
+# the cheap every-tick freshness signal.
+RESTIC_BACKUP_TIMER="${FLEET_RESTIC_BACKUP_TIMER:-restic-r2-backup.timer}"
+RESTIC_BACKUP_SERVICE="${FLEET_RESTIC_BACKUP_SERVICE:-restic-r2-backup.service}"
+RESTIC_STALENESS_HOURS_DEFAULT=30
+RESTIC_STALENESS_HOURS="${FLEET_RESTIC_STALENESS_HOURS:-$RESTIC_STALENESS_HOURS_DEFAULT}"
+if ! [[ "$RESTIC_STALENESS_HOURS" =~ ^[0-9]+$ ]]; then
+    RESTIC_STALENESS_HOURS="$RESTIC_STALENESS_HOURS_DEFAULT"
+fi
+readonly RESTIC_STALENESS_HOURS
+
+VAULT_CONFLICT_TIMER="${FLEET_VAULT_CONFLICT_TIMER:-vault-conflict-resolver.timer}"
+VAULT_CONFLICT_SERVICE="${FLEET_VAULT_CONFLICT_SERVICE:-vault-conflict-resolver.service}"
+VAULT_CONFLICT_STALE_HOURS_DEFAULT=1
+VAULT_CONFLICT_STALE_HOURS="${FLEET_VAULT_CONFLICT_STALE_HOURS:-$VAULT_CONFLICT_STALE_HOURS_DEFAULT}"
+if ! [[ "$VAULT_CONFLICT_STALE_HOURS" =~ ^[0-9]+$ ]]; then
+    VAULT_CONFLICT_STALE_HOURS="$VAULT_CONFLICT_STALE_HOURS_DEFAULT"
+fi
+readonly VAULT_CONFLICT_STALE_HOURS
+
+log() {
+    printf '[%s] [fleet-escalation-canary] %s\n' \
+        "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$*" >&2
+}
+
+# Loud lines go to BOTH stderr and the triage file (single page for humans +
+# other agents). Format matches fleet-heartbeat-tier1's loud() helper.
+loud() {
+    local tag="$1"; shift
+    local msg="$*"
+    log "LOUD [$tag] $msg"
+    {
+        printf '\n[%s] [%s] %s\n' \
+            "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$tag" "$msg"
+    } >> "$TRIAGE" 2>/dev/null || log "WARN: could not append to triage $TRIAGE"
+}
+
+# Resolve an auditd-side binary (ausearch/auditctl) that may live in /usr/sbin,
+# which is NOT in the heartbeat service PATH
+# (/home/nish/.local/bin:/usr/local/bin:/usr/bin:/bin). Order: explicit env
+# override > PATH lookup > /usr/sbin and /sbin fallback. Prints the resolved
+# binary (a name on PATH, or an absolute path) on stdout, or nothing when not
+# found. (fleet-ops#4733: ausearch/auditctl ship in /usr/sbin, so
+# `command -v ausearch` failed on a host where auditd is installed and active,
+# firing a false "ausearch not installed" PENDING every heartbeat.)
+resolve_audit_bin() {
+    local env_val="$1" bin_name="$2" sbin_paths="$3"
+    if [[ -n "$env_val" ]]; then
+        printf '%s\n' "$env_val"
+        return 0
+    fi
+    if command -v "$bin_name" >/dev/null 2>&1; then
+        printf '%s\n' "$bin_name"
+        return 0
+    fi
+    local -a _paths
+    IFS=':' read -r -a _paths <<<"$sbin_paths"
+    local _p
+    for _p in "${_paths[@]}"; do
+        [[ -x "$_p" ]] || continue
+        printf '%s\n' "$_p"
+        return 0
+    done
+}
+
+# Anti-recursion exclusion list for services. These are part of the escalation
+# pipeline itself and must not trigger their own escalation.
+#
+# resilience-drill-stub*.service: the #455 resurrection plane's throwaway
+# test stubs. The drill DELIBERATELY SIGKILLs the stub to prove
+# Restart=always brings it back; that intentional kill marks the unit
+# Result=signal and fires the global OnFailure=unit-escalation@%n.service
+# drop-in. The kill is the drill WORKING, not a real fault — a real
+# escalation would be the drill itself failing (exit 1), which still
+# escalates normally.
+is_escalation_excluded() {
+    case "$1" in
+        unit-escalation@*)         return 0 ;;
+        stop-escalation.*)         return 0 ;;
+        ready-work*)               return 0 ;;
+        escalation-daily-sweep.*)  return 0 ;;
+        resilience-drill-stub*)    return 0 ;;
+        # fleet-ops#375: chain-e2e drill fixture. Its intentional 1-fault is
+        # the drill RUNNING, not a real fault; a real escalation would be the
+        # drill itself failing (exit 1), which still escalates normally. The
+        # fixture's LOUD line is still routed to the escalate-senior panel
+        # intake by the reconciler, but never to a real senior page.
+        chain-e2e-drill-fixture*)  return 0 ;;
+        # scope.d anti-recursion (fleet-ops#4266): systemd's own per-manager
+        # scope + Chromium/flatpak app sandbox scopes must not summon the
+        # SENIOR AUDITOR on tab churn. Keep in lockstep with the script
+        # guard in unit-escalation-write.
+        init.scope)                return 0 ;;
+        app-*.scope)               return 0 ;;
+    esac
+    return 1
+}
+
+# Sanctioned bin wrappers that are allowed to invoke the pi binary directly.
+# New runners must be added here AND wired to a systemd unit template.
+SANCTIONED_PI_RUNNERS=(
+    agent-cron-run
+    blocked-reconcile
+    fleet-blind-audit
+    fleet-console-tile-truth-drill
+    fleet-gap-closure-auditor
+    fleet-heartbeat-tier2
+    fleet-researcher-run
+    fleet-rulebook-redteam
+    pi-audit-run
+    pi-intake-run
+    pi-intake-repair-run
+    pi-issue-run
+    pi-packet-run
+    pi-scout-run
+    fleet-seat-comeback-release
+    stop-escalation-dispatch
+)
+
+is_sanctioned_pi_runner() {
+    local name="$1"
+    local r
+    for r in "${SANCTIONED_PI_RUNNERS[@]}"; do
+        if [[ "$r" == "$name" ]]; then
+            return 0
+        fi
+    done
+    return 1
+}
+
+# GitHub-plane exclusion list: intake-enrolled repos that are deliberately NOT
+# in claim_repos (so #124 does not scan their claim PRs). Each MUST carry a
+# reason or the canary treats it as an uncovered violation.
+#
+# Format: "<repo-slug>|<reason>" — kept inline so the exclusion is legible at
+# the point of enforcement, the same discipline as the VPS anti-recursion set.
+GITHUB_PLANE_EXCLUDED_REPOS=(
+    # (none today — every intake repo that can produce a claim PR must be
+    #  covered by #124. Add a line here only with a named reason.)
+)
+
+is_github_plane_excluded() {
+    local repo="$1"
+    local entry
+    for entry in "${GITHUB_PLANE_EXCLUDED_REPOS[@]}"; do
+        local slug="${entry%%|*}"
+        if [[ "$slug" == "$repo" ]]; then
+            return 0
+        fi
+    done
+    return 1
+}
+
+# The canary scans bin/ for direct pi invocations. It must not scan itself,
+# because its own source contains the regex pattern and diagnostic messages.
+self_name=$(basename "$0")
+
+# ============================================================================
+# main
+# ============================================================================
+violations=0
+pending=0
+
+log "escalation coverage canary starting (repo=$FLEET_OPS_REPO)"
+
+# ---------------------------------------------------------------------------
+# 0. repo paths exist
+# ---------------------------------------------------------------------------
+if [[ ! -d "$FLEET_OPS_REPO/bin" ]]; then
+    log "FATAL: bin dir missing in fleet-ops repo: $FLEET_OPS_REPO/bin"
+    exit 2
+fi
+
+# ---------------------------------------------------------------------------
+# 1. loaded user service/path/timer escalation coverage (fleet-ops#618)
+# ---------------------------------------------------------------------------
+# A service-only type filter is the class that missed fleet-seat-recovery.path
+# (unit-start-limit-hit, OnFailure empty). path.d/ and timer.d/ are the
+# matching type drop-ins; this block must enumerate all three types.
+log "1. checking escalation coverage for loaded user services, paths, timers, and scopes"
+mapfile -t loaded_units < <(
+    "$SYSTEMCTL" --user list-units --type=service,path,timer,scope --no-legend --plain 2>/dev/null \
+        | awk '{print $1}' \
+        | grep -E '\.(service|path|timer|scope)$' \
+        || true
+)
+
+for unit in "${loaded_units[@]}"; do
+    [[ -n "$unit" ]] || continue
+
+    if is_escalation_excluded "$unit"; then
+        log "1.  - $unit: excluded (anti-recursion)"
+        continue
+    fi
+
+    onf=$("$SYSTEMCTL" --user show "$unit" --property=OnFailure --value 2>/dev/null || true)
+    expected="unit-escalation@${unit}.service"
+
+    if [[ -n "$onf" ]] && grep -qF "$expected" <<< "$onf"; then
+        log "1.  - $unit: covered ($onf)"
+    else
+        loud "ESCALATION-CANARY-VIOLATION" "unit=$unit missing escalation drop-in (OnFailure='$onf', expected='$expected')"
+        violations=$((violations + 1))
+    fi
+done
+
+# ---------------------------------------------------------------------------
+# 2. no unwrapped pi invocations in bin/
+# ---------------------------------------------------------------------------
+log "2. checking bin/ for unwrapped pi invocations"
+# Match a literal `pi` binary or the $PI / $PI_BIN variables followed by
+# `--print`. This deliberately skips comment lines and the canary's own source.
+# The `\bpi\b` alternative is for bare `pi` in command position; we filter out
+# lines where `pi` appears inside a double-quoted string literal (e.g. a case
+# pattern like `*"pi --print"*)` that COUNTS units mentioning pi rather than
+# INVOKING pi — fleet-ops#1443 false positive on fleet-heartbeat-undersaturation).
+mapfile -t pi_matching < <(
+    grep -R --exclude="$self_name" \
+        -E '^[^#]*(\bpi\b|"\$PI(_BIN)?")[[:space:]]+--print' \
+        "$FLEET_OPS_REPO/bin" 2>/dev/null \
+        | grep -vE '^[^:]+:[^#]*".*\bpi\b.*--print' \
+        | cut -d: -f1 \
+        | sort -u \
+        || true
+)
+
+for f in "${pi_matching[@]}"; do
+    [[ -f "$f" ]] || continue
+    name=$(basename "$f")
+    if is_sanctioned_pi_runner "$name"; then
+        log "2.  - $name: sanctioned pi wrapper"
+    else
+        loud "ESCALATION-CANARY-VIOLATION" "bin/$name invokes the pi binary directly but is not a sanctioned unit wrapper"
+        violations=$((violations + 1))
+    fi
+done
+
+# ---------------------------------------------------------------------------
+# 3. terminal delivery path (#76): dead-man ping + failed-unit pager + seat-health
+# ---------------------------------------------------------------------------
+# Observes the REAL wiring in the fleet-ops repo, not just a marker. The
+# delivery is wired when ALL of these hold:
+#   - lib/heartbeat-watchman.sh defines the three delivery functions
+#     (heartbeat_ping_deadman, heartbeat_page_units, heartbeat_seat_health_check)
+#   - bin/fleet-heartbeat wires the dead-man ping (healthchecks.io on success)
+#   - bin/fleet-heartbeat-tier1 wires the failed-unit pager (heartbeat_page_units)
+#     + seat-health freshness (heartbeat_seat_health_check)
+#   - systemd/fleet-heartbeat.service loads hc.env (HC_URL) via EnvironmentFile
+# A marker file still suppresses the finding (escape hatch for environments
+# where the wiring lives outside the repo). Missing wiring = loud PENDING,
+# matching the bridge block's contract.
+log "3. checking terminal delivery path (#76)"
+watchman_lib="$FLEET_OPS_REPO/lib/heartbeat-watchman.sh"
+heartbeat_bin="$FLEET_OPS_REPO/bin/fleet-heartbeat"
+tier1_bin="$FLEET_OPS_REPO/bin/fleet-heartbeat-tier1"
+heartbeat_svc="$FLEET_OPS_REPO/systemd/fleet-heartbeat.service"
+if [[ -f "$DELIVERY_MARKER" ]]; then
+    log "3.  - delivery marker present: $DELIVERY_MARKER"
+elif [[ -f "$watchman_lib" ]] \
+    && grep -q 'heartbeat_ping_deadman' "$watchman_lib" 2>/dev/null \
+    && grep -q 'heartbeat_page_units' "$watchman_lib" 2>/dev/null \
+    && grep -q 'heartbeat_seat_health_check' "$watchman_lib" 2>/dev/null \
+    && [[ -f "$heartbeat_bin" ]] \
+    && grep -q 'heartbeat_ping_deadman' "$heartbeat_bin" 2>/dev/null \
+    && [[ -f "$tier1_bin" ]] \
+    && grep -q 'heartbeat_page_units' "$tier1_bin" 2>/dev/null \
+    && grep -q 'heartbeat_seat_health_check' "$tier1_bin" 2>/dev/null \
+    && [[ -f "$heartbeat_svc" ]] \
+    && grep -qi 'EnvironmentFile=.*hc\.env' "$heartbeat_svc" 2>/dev/null; then
+    log "3.  - delivery wired: watchman lib + heartbeat dead-man + tier1 pager/seat-health + hc.env EnvironmentFile"
+else
+    loud "ESCALATION-CANARY-PENDING" "terminal delivery not wired (#76) — dead-man ping, failed-unit pager, or seat-health freshness wiring missing in fleet-ops (marker, watchman lib, heartbeat/tier1 wiring, or hc.env EnvironmentFile absent)"
+    pending=$((pending + 1))
+fi
+
+# ---------------------------------------------------------------------------
+# 4. red-CI-on-ownerless-PR coverage (#124)
+# ---------------------------------------------------------------------------
+# The redispatch is delivered as heartbeat block 12:
+# bin/fleet-heartbeat-red-pr-repair is invoked by fleet-heartbeat-tier1 on
+# every tick and scans the claim_repos step 7 verifies. Observe the wiring
+# directly so step 4 agrees with step 7: the helper binary present AND
+# referenced by the tier1 heartbeat. The marker override is still honored
+# (tests / manual suppression), mirroring block 3 and block 8.
+log "4. checking red-CI ownerless-PR coverage"
+redpr_helper="$FLEET_OPS_REPO/bin/fleet-heartbeat-red-pr-repair"
+redpr_tier1="$FLEET_OPS_REPO/bin/fleet-heartbeat-tier1"
+redpr_wired=0
+# Executable helper + a non-comment invocation in tier1. A header comment
+# naming the helper is not wiring; heartbeat itself skips a non-executable
+# helper ("not installed"), so -x matches that skip.
+if [[ -x "$redpr_helper" ]] && grep -qE '^[^#]*fleet-heartbeat-red-pr-repair' "$redpr_tier1" 2>/dev/null; then
+    redpr_wired=1
+fi
+if [[ -f "$REDCI_MARKER" ]]; then
+    log "4.  - red-CI ownerless guard marker present: $REDCI_MARKER"
+elif [[ "$redpr_wired" == "1" ]]; then
+    log "4.  - red-CI ownerless-PR coverage wired: fleet-heartbeat-red-pr-repair invoked by fleet-heartbeat-tier1 (block 12) — agrees with step 7 claim_repos scan"
+else
+    loud "ESCALATION-CANARY-PENDING" "red-CI-on-ownerless-PR coverage pending (#124) — fleet-heartbeat-red-pr-repair not wired into the heartbeat (helper missing or not invoked by fleet-heartbeat-tier1)"
+    pending=$((pending + 1))
+fi
+
+# ---------------------------------------------------------------------------
+# 5. system-scope fleet artifacts — documented as kernel/oomd-supervised
+# ---------------------------------------------------------------------------
+log "5. documenting system-scope exclusions (kernel/oomd-supervised)"
+loud "ESCALATION-CANARY-EXCLUDED" "system-scope fleet artifacts are kernel/oomd-supervised, not user-manager OnFailure: user-1000.slice (50-ram-governor), user@1000.service (50-no-distro-oomd-kill)"
+
+# ---------------------------------------------------------------------------
+# 6. GitHub plane — auto-revert / red-on-main coverage (main-push red)
+# ---------------------------------------------------------------------------
+log "6. checking GitHub plane: auto-revert / red-on-main coverage"
+auto_revert_wf="$FLEET_OPS_REPO/.github/workflows/auto-revert.yml"
+red_main_wf="$FLEET_OPS_REPO/.github/workflows/red-on-main-detector.yml"
+if [[ -f "$auto_revert_wf" ]] && grep -q 'workflow_run:' "$auto_revert_wf" 2>/dev/null; then
+    log "6.  - auto-revert.yml present and wired to workflow_run (fleet-ops self-coverage for main-push red)"
+else
+    loud "ESCALATION-CANARY-VIOLATION" "GitHub plane: auto-revert.yml missing or not wired to workflow_run — main-push red on fleet-ops has no automatic revert"
+    violations=$((violations + 1))
+fi
+if [[ -f "$red_main_wf" ]] && grep -q 'workflow_call:' "$red_main_wf" 2>/dev/null; then
+    log "6.  - red-on-main-detector.yml present as a reusable workflow (other repos wire it for first-run-red alerts)"
+else
+    loud "ESCALATION-CANARY-VIOLATION" "GitHub plane: red-on-main-detector.yml missing or not a reusable workflow — other repos cannot wire first-run-red alerts"
+    violations=$((violations + 1))
+fi
+
+# ---------------------------------------------------------------------------
+# 7. GitHub plane — #124 redispatch covers every intake-enrolled repo
+# ---------------------------------------------------------------------------
+log "7. checking GitHub plane: #124 redispatch covers every intake repo"
+if [[ ! -f "$INTAKE_REPOS_JSON" ]]; then
+    loud "ESCALATION-CANARY-VIOLATION" "GitHub plane: intake-repos.json missing at $INTAKE_REPOS_JSON — cannot verify #124 coverage of enrolled repos"
+    violations=$((violations + 1))
+else
+    if ! command -v jq >/dev/null 2>&1; then
+        loud "ESCALATION-CANARY-VIOLATION" "GitHub plane: jq missing — cannot parse intake-repos.json / fleet-repos.json"
+        violations=$((violations + 1))
+    else
+        # intake-enrolled repo slugs (Nishfleet/<name>).
+        mapfile -t intake_repos < <(
+            jq -r '.repos[]? | "Nishfleet/\(.name)"' "$INTAKE_REPOS_JSON" 2>/dev/null || true
+        )
+        # claim_repos that #124 actually scans. If the state file is missing
+        # the coverage set is unreadable — report PENDING and SKIP the per-repo
+        # check rather than flagging every repo as uncovered (a missing state
+        # file is a heartbeat-not-yet-run condition, not a coverage gap).
+        if [[ ! -f "$REDPR_REPOS_JSON" ]]; then
+            loud "ESCALATION-CANARY-PENDING" "GitHub plane: fleet-repos.json missing at $REDPR_REPOS_JSON — #124 coverage set unreadable (heartbeat has not written it yet)"
+            pending=$((pending + 1))
+        else
+            declare -A claim_set=()
+            while IFS= read -r cr; do
+                [[ -n "$cr" ]] && claim_set["$cr"]=1
+            done < <(jq -r '.claim_repos[]?' "$REDPR_REPOS_JSON" 2>/dev/null || true)
+
+            for repo in "${intake_repos[@]}"; do
+                [[ -n "$repo" ]] || continue
+                if is_github_plane_excluded "$repo"; then
+                    log "7.  - $repo: excluded from #124 (deliberate, see list)"
+                    continue
+                fi
+                if [[ "${claim_set[$repo]:-0}" == "1" ]]; then
+                    log "7.  - $repo: covered by #124 redispatch (in claim_repos)"
+                else
+                    loud "ESCALATION-CANARY-VIOLATION" "GitHub plane: $repo is intake-enrolled (can produce claim PRs) but NOT in fleet-repos.json claim_repos — its orphaned red PRs escape #124 redispatch"
+                    violations=$((violations + 1))
+                fi
+            done
+        fi
+    fi
+fi
+
+# ---------------------------------------------------------------------------
+# 8. GitHub plane — red-check -> senior-auditor bridge (live-worker red PRs)
+# ---------------------------------------------------------------------------
+log "8. checking GitHub plane: red-check -> senior-auditor bridge"
+bridge_wf="$FLEET_OPS_REPO/.github/workflows/ci-failure-escalation.yml"
+bridge_script="$FLEET_OPS_REPO/.github/scripts/ci-failure-escalation-detector.mjs"
+if [[ -f "$BRIDGE_MARKER" ]]; then
+    log "8.  - bridge marker present: $BRIDGE_MARKER"
+elif [[ -f "$bridge_wf" ]] && [[ -f "$bridge_script" ]]; then
+    log "8.  - bridge wired: $bridge_wf + $bridge_script"
+else
+    loud "ESCALATION-CANARY-PENDING" "red-check -> senior-auditor bridge not wired (#152 scope addition) — a red check on a PR whose worker is still live (so #124 does not fire) and not on main (so auto-revert does not fire) has no automatic path to a senior auditor yet"
+    pending=$((pending + 1))
+fi
+
+# ---------------------------------------------------------------------------
+# 9. Rule-enforcement coverage (fleet-ops#383)
+# ---------------------------------------------------------------------------
+# Parse vault `## ` headings + ledger dated decisions, join against
+# config/rule-enforcement.json. Any rule with no entry, an invalid row, or
+# queued(#N) older than queued_stale_days is a LOUD violation. Uncovered
+# rules and stale queued rows (age > queued_stale_days) auto-file a mechanism
+# issue (deduped by signal key), cap per tick. Enforced rows with an open
+# mechanism issue get a `canary-covered:` comment (observe-to-close;
+# fleet-ops#479).
+log "9. checking rule-enforcement coverage against vault standing rules + ledger"
+if [[ ! -f "$RULE_MATRIX" ]]; then
+    loud "ESCALATION-CANARY-VIOLATION" "rule-enforcement: matrix missing at $RULE_MATRIX — no standing rule can name its enforcer"
+    violations=$((violations + 1))
+elif [[ ! -f "$RULE_LIB" ]]; then
+    loud "ESCALATION-CANARY-VIOLATION" "rule-enforcement: join helper missing at $RULE_LIB"
+    violations=$((violations + 1))
+elif [[ ! -f "$STANDING_RULES" ]] || [[ ! -f "$DECISIONS_LEDGER" ]]; then
+    loud "ESCALATION-CANARY-VIOLATION" "rule-enforcement: vault files missing (rules=$STANDING_RULES ledger=$DECISIONS_LEDGER) — coverage cannot be proven"
+    violations=$((violations + 1))
+elif ! command -v python3 >/dev/null 2>&1; then
+    loud "ESCALATION-CANARY-VIOLATION" "rule-enforcement: python3 missing — cannot join vault rules against the matrix"
+    violations=$((violations + 1))
+else
+    join_args=(join --rules "$STANDING_RULES" --ledger "$DECISIONS_LEDGER" --matrix "$RULE_MATRIX")
+    if [[ -n "$RULE_NOW" ]]; then
+        join_args+=(--now "$RULE_NOW")
+    fi
+    set +e
+    rule_report=$(python3 "$RULE_LIB" "${join_args[@]}" 2>/tmp/rule-enforcement-join.err)
+    join_rc=$?
+    set -e
+    if [[ -z "$rule_report" ]] || ! jq -e . >/dev/null 2>&1 <<<"$rule_report"; then
+        loud "ESCALATION-CANARY-VIOLATION" "rule-enforcement: join helper produced no JSON (rc=$join_rc) $(tr '\n' ' ' </tmp/rule-enforcement-join.err 2>/dev/null)"
+        violations=$((violations + 1))
+    else
+        uncovered_n=$(jq '.uncovered | length' <<<"$rule_report")
+        queued_n=$(jq '.queued | length' <<<"$rule_report")
+        stale_n=$(jq '.stale_queued | length' <<<"$rule_report")
+        malformed_n=$(jq '.malformed | length' <<<"$rule_report")
+        extra_n=$(jq '.extra_matrix | length' <<<"$rule_report")
+        covered_n=$(jq '.covered' <<<"$rule_report")
+        vault_n=$(jq '.vault_rule_count' <<<"$rule_report")
+
+        while IFS= read -r src; do
+            [[ -n "$src" ]] || continue
+            loud "ESCALATION-CANARY-VIOLATION" "rule-enforcement: uncovered rule has no matrix entry: $src"
+            violations=$((violations + 1))
+        done < <(jq -r '.uncovered[].source' <<<"$rule_report")
+
+        while IFS= read -r line; do
+            [[ -n "$line" ]] || continue
+            loud "ESCALATION-CANARY-VIOLATION" "rule-enforcement: queued row older than stale window: $line"
+            violations=$((violations + 1))
+        done < <(jq -r '.stale_queued[] | "\(.id) issue=#\(.issue) queued_since=\(.queued_since) age_days=\(.age_days)"' <<<"$rule_report")
+
+        while IFS= read -r line; do
+            [[ -n "$line" ]] || continue
+            loud "ESCALATION-CANARY-VIOLATION" "rule-enforcement: malformed matrix row: $line"
+            violations=$((violations + 1))
+        done < <(jq -r '.malformed[] | "\(.id // "unknown") \(.reason)"' <<<"$rule_report")
+
+        while IFS= read -r src; do
+            [[ -n "$src" ]] || continue
+            loud "ESCALATION-CANARY-PENDING" "rule-enforcement: matrix entry has no matching vault rule (rename or delete it): $src"
+            pending=$((pending + 1))
+        done < <(jq -r '.extra_matrix[].source' <<<"$rule_report")
+
+        # Auto-file uncovered/stale-queued issues, then observe-to-close
+        # enforced rows (fleet-ops#479). Listing runs even when uncovered_n=0
+        # so a green join can still comment on leftover mechanism tickets.
+        if [[ "$FILE_RULE_ISSUES" == "1" ]]; then
+            cap=$(jq '.auto_file_cap_per_tick' <<<"$rule_report")
+            filed=0
+            skipped_dup=0
+            skipped_cap=0
+            open_json="[]"
+            if command -v "$GH" >/dev/null 2>&1; then
+                set +e
+                open_json=$("$GH" issue list -R "$RULE_ISSUE_REPO" --state open --limit 200 --json number,body,title 2>/dev/null)
+                gh_list_rc=$?
+                set -e
+                if [[ "$gh_list_rc" -ne 0 ]] || [[ -z "$open_json" ]]; then
+                    open_json="[]"
+                    log "9.  WARN: could not list open issues for dedupe (gh rc=$gh_list_rc)"
+                fi
+            else
+                log "9.  WARN: gh missing — cannot auto-file or observe-to-close mechanism issues"
+            fi
+
+            if [[ "$uncovered_n" -gt 0 ]] || [[ "$stale_n" -gt 0 ]]; then
+
+            file_item() {
+                local item="$1"
+                local context="$2"
+                local rid signal title body created create_rc
+                rid=$(jq -r '.id' <<<"$item")
+                signal="signal: rule-enforcement/${rid}"
+                if jq -e --arg s "$signal" '[.[] | select((.body // "") | contains($s))] | length > 0' <<<"$open_json" >/dev/null 2>&1; then
+                    skipped_dup=$((skipped_dup + 1))
+                    log "9.  - $rid: already has an open mechanism issue (deduped)"
+                    return 0
+                fi
+                if [[ "$filed" -ge "$cap" ]]; then
+                    skipped_cap=$((skipped_cap + 1))
+                    return 0
+                fi
+                title=$(python3 "$RULE_LIB" issue-title --json "$item")
+                body=$(python3 "$RULE_LIB" issue-body --json "$item")
+                if command -v "$GH" >/dev/null 2>&1; then
+                    set +e
+                    created=$("$ISSUE_FILE" file -R "$RULE_ISSUE_REPO" --title "$title" --body "$body" 2>/tmp/rule-enforcement-create.err)
+                    create_rc=$?
+                    set -e
+                    if [[ "$create_rc" -eq 0 ]]; then
+                        filed=$((filed + 1))
+                        log "9.  FILED $context/$rid -> $created"
+                    else
+                        log "9.  WARN: failed to file $context/$rid (rc=$create_rc) $(tr '\n' ' ' </tmp/rule-enforcement-create.err 2>/dev/null)"
+                    fi
+                fi
+            }
+
+            while IFS= read -r item; do
+                [[ -n "$item" ]] || continue
+                file_item "$item" "uncovered"
+            done < <(jq -c '.uncovered[]' <<<"$rule_report")
+
+            # Auto-file mechanism issues for stale queued rows (age >
+            # queued_stale_days) regardless of umbrella ownership. This
+            # ensures the "enforcement is mechanical" contract holds even
+            # when umbrella issues are closed (fleet-ops#3139).
+            while IFS= read -r item; do
+                [[ -n "$item" ]] || continue
+                file_item "$item" "stale-queued"
+            done < <(jq -c '.stale_queued[]' <<<"$rule_report")
+
+            if [[ "$skipped_cap" -gt 0 ]]; then
+                loud "ESCALATION-CANARY-PENDING" "rule-enforcement: auto-file cap reached (filed=$filed cap=$cap remaining=$skipped_cap) — next tick continues"
+                pending=$((pending + 1))
+            fi
+            log "9.  auto-file: filed=$filed deduped=$skipped_dup cap-skipped=$skipped_cap"
+            fi
+
+            observed=0
+            skipped_obs=0
+            if command -v "$GH" >/dev/null 2>&1 && command -v python3 >/dev/null 2>&1; then
+                _rep="/tmp/rule-enforcement-report.$$.json"
+                _iss="/tmp/rule-enforcement-open.$$.json"
+                printf '%s\n' "$rule_report" >"$_rep"
+                printf '%s\n' "$open_json" >"$_iss"
+                set +e
+                targets=$(python3 "$RULE_LIB" observe-targets --report "$_rep" --issues "$_iss")
+                obs_rc=$?
+                set -e
+                rm -f "$_rep" "$_iss"
+                if [[ "$obs_rc" -eq 0 ]] && jq -e . >/dev/null 2>&1 <<<"${targets:-}"; then
+                    while IFS= read -r target; do
+                        [[ -n "$target" ]] || continue
+                        obs_num=$(jq -r '.number' <<<"$target")
+                        obs_id=$(jq -r '.id' <<<"$target")
+                        obs_marker=$(jq -r '.marker' <<<"$target")
+                        obs_body=$(jq -r '.body' <<<"$target")
+                        [[ -n "$obs_num" && "$obs_num" != "null" ]] || continue
+                        set +e
+                        view_json=$("$GH" issue view "$obs_num" -R "$RULE_ISSUE_REPO" --json comments 2>/dev/null)
+                        view_rc=$?
+                        set -e
+                        if [[ "$view_rc" -eq 0 ]] && jq -e --arg m "$obs_marker" '[.comments[]?.body // empty | select(contains($m))] | length > 0' <<<"$view_json" >/dev/null 2>&1; then
+                            skipped_obs=$((skipped_obs + 1))
+                            log "9.  - #$obs_num: already has canary-covered comment (deduped)"
+                            continue
+                        fi
+                        set +e
+                        "$GH" issue comment "$obs_num" -R "$RULE_ISSUE_REPO" --body "$obs_body" >/tmp/rule-enforcement-comment.err 2>&1
+                        comment_rc=$?
+                        set -e
+                        if [[ "$comment_rc" -eq 0 ]]; then
+                            observed=$((observed + 1))
+                            log "9.  OBSERVED-COVERED $obs_id -> #$obs_num"
+                        else
+                            log "9.  WARN: failed to comment #$obs_num (rc=$comment_rc) $(tr '\n' ' ' </tmp/rule-enforcement-comment.err 2>/dev/null)"
+                        fi
+                    done < <(jq -c '.[]' <<<"$targets")
+                fi
+            fi
+            log "9.  observe-to-close: commented=$observed already-observed=$skipped_obs"
+
+            # Observe-to-close close step (fleet-ops#362/#521): once a
+            # mechanism issue carries the `canary-covered:` marker from a
+            # prior tick AND its rule is `enforced`, close it as completed.
+            # The marker-from-a-prior-tick requirement makes the close
+            # evidence-backed — the canary reported green on a real tick, and
+            # this observing tick closes. Without this, a mechanism PR whose
+            # body missed `Closes #N` leaves a covered issue stuck open
+            # forever (the #521 gap).
+            closed=0
+            close_skipped=0
+            if [[ "$CLOSE_RULE_ISSUES" == "1" ]] && command -v "$GH" >/dev/null 2>&1 && command -v python3 >/dev/null 2>&1; then
+                _crep="/tmp/rule-enforcement-report-close.$$.json"
+                _ciss="/tmp/rule-enforcement-open-close.$$.json"
+                printf '%s\n' "$rule_report" >"$_crep"
+                set +e
+                # `comments` is a supported gh issue list field; one call
+                # carries both body (for the signal match) and comments
+                # (for the canary-covered marker).
+                close_json=$("$GH" issue list -R "$RULE_ISSUE_REPO" --state open --limit 200 --json number,body,title,comments 2>/dev/null)
+                close_list_rc=$?
+                set -e
+                if [[ "$close_list_rc" -ne 0 ]] || [[ -z "$close_json" ]]; then
+                    close_json="[]"
+                    log "9.  WARN: could not list open issues for close (gh rc=$close_list_rc)"
+                fi
+                printf '%s\n' "$close_json" >"$_ciss"
+                set +e
+                close_targets=$(python3 "$RULE_LIB" close-targets --report "$_crep" --issues "$_ciss")
+                close_rc=$?
+                set -e
+                rm -f "$_crep" "$_ciss"
+                if [[ "$close_rc" -eq 0 ]] && jq -e . >/dev/null 2>&1 <<<"${close_targets:-}"; then
+                    while IFS= read -r ct; do
+                        [[ -n "$ct" ]] || continue
+                        ct_num=$(jq -r '.number' <<<"$ct")
+                        ct_id=$(jq -r '.id' <<<"$ct")
+                        [[ -n "$ct_num" && "$ct_num" != "null" ]] || continue
+                        set +e
+                        "$GH" issue close "$ct_num" -R "$RULE_ISSUE_REPO" --reason completed >/tmp/rule-enforcement-close.err 2>&1
+                        close_issue_rc=$?
+                        set -e
+                        if [[ "$close_issue_rc" -eq 0 ]]; then
+                            closed=$((closed + 1))
+                            log "9.  OBSERVE-CLOSED $ct_id -> #$ct_num (canary-covered + enforced)"
+                        else
+                            close_skipped=$((close_skipped + 1))
+                            log "9.  WARN: failed to close #$ct_num (rc=$close_issue_rc) $(tr '\n' ' ' </tmp/rule-enforcement-close.err 2>/dev/null)"
+                        fi
+                    done < <(jq -c '.[]' <<<"$close_targets")
+                fi
+            fi
+            log "9.  observe-to-close: closed=$closed skipped=$close_skipped"
+        fi
+
+        log "9.  - covered=$covered_n / vault=$vault_n uncovered=$uncovered_n queued=$queued_n stale_queued=$stale_n malformed=$malformed_n extra=$extra_n"
+    fi
+fi
+
+# ---------------------------------------------------------------------------
+# 10. Backup staleness — fleet-ops#388
+# ---------------------------------------------------------------------------
+# The fleet control plane lives in non-git state (agent-state, pi-packet,
+# user-unit install set). Restic backs it up (system unit, sources /home/nish),
+# but an unproven backup is decorative (#378). A stale or failed backup is
+# LOUD here so it joins the escalation matrix every heartbeat tick. The
+# deeper restore drill (bin/fleet-restore-drill, 6h timer) proves the full
+# rebuild story; this is the cheap every-tick freshness signal.
+#
+# FLEET_ESCALATION_CANARY_SKIP_BACKUP=1 skips this block (offline tests).
+log "10. checking backup staleness (restic-r2-backup)"
+if [[ "${FLEET_ESCALATION_CANARY_SKIP_BACKUP:-0}" == "1" ]]; then
+    log "10.  - SKIP (FLEET_ESCALATION_CANARY_SKIP_BACKUP=1)"
+else
+    _timer_active=$("$SYSTEMCTL" show "$RESTIC_BACKUP_TIMER" --property=ActiveState --value 2>/dev/null || true)
+    _timer_last=$("$SYSTEMCTL" show "$RESTIC_BACKUP_TIMER" --property=LastTriggerUSec --value 2>/dev/null || true)
+    _backup_result=$("$SYSTEMCTL" show "$RESTIC_BACKUP_SERVICE" --property=Result --value 2>/dev/null || true)
+    log "10.  - $RESTIC_BACKUP_TIMER ActiveState=$_timer_active LastTriggerUSec=$_timer_last"
+    log "10.  - $RESTIC_BACKUP_SERVICE Result=$_backup_result"
+    if [[ "$_timer_active" != "active" ]]; then
+        loud "ESCALATION-CANARY-VIOLATION" "backup staleness: $RESTIC_BACKUP_TIMER is not active (state=$_timer_active) — the daily backup is not scheduled, control plane is not being captured"
+        violations=$((violations + 1))
+    elif [[ -z "$_timer_last" ]] || [[ "$_timer_last" == "0" ]]; then
+        loud "ESCALATION-CANARY-VIOLATION" "backup staleness: $RESTIC_BACKUP_TIMER has never fired — no backup has run"
+        violations=$((violations + 1))
+    else
+        _last_epoch="$(date -d "$_timer_last" +%s 2>/dev/null || true)"
+        if [[ -z "$_last_epoch" ]]; then
+            loud "ESCALATION-CANARY-VIOLATION" "backup staleness: $RESTIC_BACKUP_TIMER LastTriggerUSec unparseable: '$_timer_last'"
+            violations=$((violations + 1))
+        else
+            _age_h=$(( ( $(date +%s) - _last_epoch ) / 3600 ))
+            if (( _age_h > RESTIC_STALENESS_HOURS )); then
+                loud "ESCALATION-CANARY-VIOLATION" "backup staleness: $RESTIC_BACKUP_TIMER last fired ${_age_h}h ago — older than ${RESTIC_STALENESS_HOURS}h threshold. The control-plane backup is stale."
+                violations=$((violations + 1))
+            else
+                log "10.  - last backup ${_age_h}h ago (within ${RESTIC_STALENESS_HOURS}h threshold)"
+            fi
+        fi
+    fi
+    if [[ "$_backup_result" != "success" ]]; then
+        loud "ESCALATION-CANARY-VIOLATION" "backup staleness: $RESTIC_BACKUP_SERVICE last Result=$_backup_result (not success) — the last backup run failed"
+        violations=$((violations + 1))
+    fi
+fi
+
+# ---------------------------------------------------------------------------
+# 11. Vault sync-conflict handler — fleet-ops#529
+# ---------------------------------------------------------------------------
+# Freeze-on-conflict is self-clearing only while vault-conflict-resolver.timer
+# fires. The 2026-08-23 wipe deleted the timer and the freeze sat until a
+# human noticed. This block is the cheap every-tick signal: timer active,
+# last Result=success, and a fixture *.sync-conflict-* file must clear.
+#
+# FLEET_ESCALATION_CANARY_SKIP_VAULT_CONFLICT=1 skips this block (offline tests).
+log "11. checking vault-conflict-resolver (sr-vault-sync-conflicts)"
+if [[ "${FLEET_ESCALATION_CANARY_SKIP_VAULT_CONFLICT:-0}" == "1" ]]; then
+    log "11.  - SKIP (FLEET_ESCALATION_CANARY_SKIP_VAULT_CONFLICT=1)"
+else
+    _vc_active=$("$SYSTEMCTL" --user show "$VAULT_CONFLICT_TIMER" --property=ActiveState --value 2>/dev/null || true)
+    _vc_last=$("$SYSTEMCTL" --user show "$VAULT_CONFLICT_TIMER" --property=LastTriggerUSec --value 2>/dev/null || true)
+    _vc_result=$("$SYSTEMCTL" --user show "$VAULT_CONFLICT_SERVICE" --property=Result --value 2>/dev/null || true)
+    log "11.  - $VAULT_CONFLICT_TIMER ActiveState=$_vc_active LastTriggerUSec=$_vc_last"
+    log "11.  - $VAULT_CONFLICT_SERVICE Result=$_vc_result"
+    if [[ "$_vc_active" != "active" ]]; then
+        loud "ESCALATION-CANARY-VIOLATION" "vault-conflict: $VAULT_CONFLICT_TIMER is not active (state=$_vc_active) — *.sync-conflict-* files will freeze the vault with no self-clear"
+        violations=$((violations + 1))
+    elif [[ -z "$_vc_last" ]] || [[ "$_vc_last" == "0" ]]; then
+        loud "ESCALATION-CANARY-VIOLATION" "vault-conflict: $VAULT_CONFLICT_TIMER has never fired — the handler has not run"
+        violations=$((violations + 1))
+    else
+        _vc_epoch="$(date -d "$_vc_last" +%s 2>/dev/null || true)"
+        if [[ -z "$_vc_epoch" ]]; then
+            loud "ESCALATION-CANARY-VIOLATION" "vault-conflict: $VAULT_CONFLICT_TIMER LastTriggerUSec unparseable: '$_vc_last'"
+            violations=$((violations + 1))
+        else
+            _vc_age_h=$(( ( $(date +%s) - _vc_epoch ) / 3600 ))
+            if (( _vc_age_h > VAULT_CONFLICT_STALE_HOURS )); then
+                loud "ESCALATION-CANARY-VIOLATION" "vault-conflict: $VAULT_CONFLICT_TIMER last fired ${_vc_age_h}h ago — older than ${VAULT_CONFLICT_STALE_HOURS}h threshold. The Syncthing conflict handler is not firing."
+                violations=$((violations + 1))
+            else
+                log "11.  - last run ${_vc_age_h}h ago (within ${VAULT_CONFLICT_STALE_HOURS}h threshold)"
+            fi
+        fi
+    fi
+    if [[ "$_vc_result" != "success" ]]; then
+        loud "ESCALATION-CANARY-VIOLATION" "vault-conflict: $VAULT_CONFLICT_SERVICE last Result=$_vc_result (not success) — the last resolver run failed"
+        violations=$((violations + 1))
+    fi
+    _vc_resolver="${FLEET_VAULT_CONFLICT_RESOLVER:-}"
+    if [[ -z "$_vc_resolver" ]]; then
+        if [[ -f "$FLEET_OPS_REPO/lib/vault-conflict-resolver.py" ]]; then
+            _vc_resolver="$FLEET_OPS_REPO/lib/vault-conflict-resolver.py"
+        elif [[ -x "${HOME}/.local/bin/vault-conflict-resolver" ]]; then
+            _vc_resolver="${HOME}/.local/bin/vault-conflict-resolver"
+        fi
+    fi
+    if [[ -z "$_vc_resolver" || ! -f "$_vc_resolver" ]]; then
+        loud "ESCALATION-CANARY-VIOLATION" "vault-conflict: resolver missing (looked in $FLEET_OPS_REPO/lib/vault-conflict-resolver.py and ${HOME}/.local/bin/vault-conflict-resolver) — the 2026-08-23 wipe class is back"
+        violations=$((violations + 1))
+    elif ! command -v python3 >/dev/null 2>&1; then
+        loud "ESCALATION-CANARY-VIOLATION" "vault-conflict: python3 missing — cannot run the *.sync-conflict-* fixture canary"
+        violations=$((violations + 1))
+    else
+        _vc_fix=$(mktemp -d -t vault-conflict-canary.XXXXXX)
+        _vc_base="$_vc_fix/canary.md"
+        _vc_copy="$_vc_fix/canary.sync-conflict-20260827-000000-CANARY.md"
+        printf 'same-bytes\n' >"$_vc_base"
+        printf 'same-bytes\n' >"$_vc_copy"
+        if ! env FLEET_VAULT="$_vc_fix" \
+            FLEET_VAULT_CONFLICT_LOG="$_vc_fix/resolver.log" \
+            FLEET_VAULT_CONFLICT_DISPATCH="/bin/true" \
+            python3 "$_vc_resolver" >/dev/null 2>&1; then
+            loud "ESCALATION-CANARY-VIOLATION" "vault-conflict: fixture resolver exited non-zero"
+            violations=$((violations + 1))
+        elif [[ -e "$_vc_copy" ]]; then
+            loud "ESCALATION-CANARY-VIOLATION" "vault-conflict: fixture *.sync-conflict-* still present after resolver — handler did not fire"
+            violations=$((violations + 1))
+        else
+            log "11.  - fixture *.sync-conflict-* cleared"
+        fi
+        rm -rf "$_vc_fix"
+    fi
+fi
+
+# ---------------------------------------------------------------------------
+# 12. Free-tier privacy guard (fleet-ops#520)
+# ---------------------------------------------------------------------------
+# Vault "Free-tier privacy line" (2026-08-18): no-card free LLM tiers train on
+# prompts, so free-class seats may only process PUBLIC-repo work. The guard
+# lives in lib/seat-lib.sh pick_seat (privacy=private skips every free-class
+# seat, fail-closed rc=1 when only free seats remain). This block drills it
+# every heartbeat tick on a fully scratch config (never touches live seat
+# state) so a regression that re-opens the leak is LOUD the same tick, not at
+# the next CI run. It also asserts config/repo-privacy.json ships and is valid
+# so a deleted/broken privacy map cannot silently revert every repo to the
+# fail-closed default (or, worse, widen it).
+#
+# FLEET_ESCALATION_CANARY_SKIP_PRIVACY_GUARD=1 skips this block (offline tests).
+log "12. checking free-tier privacy guard (fleet-ops#520)"
+if [[ "${FLEET_ESCALATION_CANARY_SKIP_PRIVACY_GUARD:-0}" == "1" ]]; then
+    log "12.  - SKIP (FLEET_ESCALATION_CANARY_SKIP_PRIVACY_GUARD=1)"
+else
+    _privacy_json="${FLEET_REPO_PRIVACY_JSON:-$FLEET_OPS_REPO/config/repo-privacy.json}"
+    _seat_lib_privacy="${FLEET_OPS_REPO}/lib/seat-lib.sh"
+    if [[ ! -f "$_privacy_json" ]]; then
+        loud "ESCALATION-CANARY-VIOLATION" "privacy guard: config/repo-privacy.json missing at $_privacy_json — the free-tier privacy map is gone, every repo falls to the fail-closed default"
+        violations=$((violations + 1))
+    elif ! jq -e . "$_privacy_json" >/dev/null 2>&1; then
+        loud "ESCALATION-CANARY-VIOLATION" "privacy guard: config/repo-privacy.json unparseable — the free-tier privacy map is broken"
+        violations=$((violations + 1))
+    elif [[ "$(jq -r '.default_policy // "private"' "$_privacy_json")" != "private" ]]; then
+        loud "ESCALATION-CANARY-VIOLATION" "privacy guard: config/repo-privacy.json default_policy is not 'private' — the fail-closed default was widened; an unclassified private repo could leak to a free lane"
+        violations=$((violations + 1))
+    elif [[ ! -f "$_seat_lib_privacy" ]]; then
+        loud "ESCALATION-CANARY-VIOLATION" "privacy guard: lib/seat-lib.sh missing — cannot drill the pick_seat privacy guard"
+        violations=$((violations + 1))
+    elif ! command -v jq >/dev/null 2>&1; then
+        loud "ESCALATION-CANARY-PENDING" "privacy guard: jq missing — cannot validate config or run the drill"
+        pending=$((pending + 1))
+    else
+        # Live drill on a scratch config: a private target with a free seat
+        # AND a prepaid seat available must pick the prepaid seat, never the
+        # free one. A private target with ONLY a free seat must fail-closed
+        # rc=1 (no stdout). Both runs use isolated state dirs + ledger so
+        # live seat state is untouched. difficulty stays "light" (5th arg);
+        # privacy is the 6th arg.
+        _drill="$(mktemp -d -t privacy-guard-drill.XXXXXX)"
+        cat >"$_drill/models.json" <<'JSON'
+{"providers":{"ollama":{"models":[{"id":"kimi-k3","cost":{"input":0}}]},"devin":{"models":[{"id":"glm-5-2","cost":{"input":0}}]}}}
+JSON
+        cat >"$_drill/seat-caps.json" <<'JSON'
+{"ram_gb_per_worker":1.5,"free_providers_in_order":["ollama"],"providers":{"ollama":{"cap":2,"class":"free","models":{"kimi-k3":2}},"devin":{"cap":4,"class":"prepaid-quota","models":{"glm-5-2":4}}}}
+JSON
+        cat >"$_drill/repo-privacy.json" <<'JSON'
+{"default_policy":"private","public":["0509"],"private":["0509-telemetry"]}
+JSON
+        mkdir -p "$_drill/ledger"
+        _drill_rc=0
+        set +e
+        _out1=$(PI_SEAT_LIB_CHECK_SYSTEMD=0 \
+                PI_MODELS_JSON="$_drill/models.json" \
+                SEAT_CAPS_JSON="$_drill/seat-caps.json" \
+                REPO_PRIVACY_JSON="$_drill/repo-privacy.json" \
+                QUALITY_SCOREBOARD_JSON="$_drill/no-sb" \
+                QUALITY_ROUTING_JSON="$_drill/no-qr" \
+                PI_SEAT_HEALTH_LEDGER_DIR="$_drill/ledger" \
+                PI_PACKET_STATE="$_drill/state-private" \
+                bash -c 'source "$0"; load_seat_caps; pick_seat "" "" 0 "" light private' "$_seat_lib_privacy" 2>/dev/null)
+        _rc1=$?
+        # Only-free-available: block devin via tried-seats so just free remains.
+        printf 'devin/glm-5-2\n' >"$_drill/tried-onlyfree"
+        _out2=$(PI_SEAT_LIB_CHECK_SYSTEMD=0 \
+                PI_MODELS_JSON="$_drill/models.json" \
+                SEAT_CAPS_JSON="$_drill/seat-caps.json" \
+                REPO_PRIVACY_JSON="$_drill/repo-privacy.json" \
+                QUALITY_SCOREBOARD_JSON="$_drill/no-sb" \
+                QUALITY_ROUTING_JSON="$_drill/no-qr" \
+                PI_SEAT_HEALTH_LEDGER_DIR="$_drill/ledger" \
+                PI_PACKET_STATE="$_drill/state-onlyfree" \
+                bash -c 'source "$0"; load_seat_caps; pick_seat "" "" 0 "$1" light private' "$_seat_lib_privacy" "$_drill/tried-onlyfree" 2>/dev/null)
+        _rc2=$?
+        set -e
+        rm -rf "$_drill"
+        if [[ "$_rc1" -ne 0 ]] || [[ "$_out1" != "devin	glm-5-2" ]]; then
+            loud "ESCALATION-CANARY-VIOLATION" "privacy guard: private target picked '$_out1' (rc=$_rc1) — expected prepaid devin/glm-5-2, never a free lane. The free-tier privacy guard is broken."
+            violations=$((violations + 1))
+            _drill_rc=1
+        elif [[ "$_rc2" -ne 1 ]] || [[ -n "$_out2" ]]; then
+            loud "ESCALATION-CANARY-VIOLATION" "privacy guard: private target with only a free seat returned '$_out2' (rc=$_rc2) — expected fail-closed rc=1 with no stdout. The free-tier privacy guard leaks to a free lane."
+            violations=$((violations + 1))
+            _drill_rc=1
+        else
+            log "12.  - drill: private target -> prepaid (devin/glm-5-2); only-free -> fail-closed rc=1 (no leak)"
+        fi
+        if [[ "$_drill_rc" -eq 0 ]]; then
+            log "12.  - config/repo-privacy.json valid, default_policy=private, guard fires"
+        fi
+    fi
+fi
+
+# ---------------------------------------------------------------------------
+# 13. Standards-drift prevention (portable standards, P11-B)
+# ---------------------------------------------------------------------------
+# Every intake-enrolled repo must carry the standard thin-caller workflows
+# (the portable-standard gates: Gitleaks, semgrep, review-gate, auto-enqueue).
+# A repo that loses a gate drifts from the standard silently — this block
+# asserts the gates are present (contents read, available to the worker
+# token) and auto-files a "standards drift" issue per repo per missing
+# mechanism (deduped by signal key). Local-richer repos (0509, fleet-ops)
+# carry richer local gates and are skipped for the thin-caller check, matching
+# repo-standards-apply.mjs. fleet-ops runs Gitleaks+Semgrep folded into the
+# batched "P14 tests" job in ci.yml, so treating it as a thin-caller peer
+# would demand four new runner files where the gates already run natively
+# (fleet-ops#4590 judge ruling 2026-09-09: no new organs; retarget canary).
+#
+# FLEET_ESCALATION_CANARY_SKIP_STANDARDS_DRIFT=1 skips this block (offline
+# tests). FLEET_STANDARDS_DRIFT_FILE_ISSUES=0 disables auto-file (drift is
+# still LOUD).
+log "13. checking standards drift across intake-enrolled repos"
+if [[ "${FLEET_ESCALATION_CANARY_SKIP_STANDARDS_DRIFT:-0}" == "1" ]]; then
+    log "13.  - SKIP (FLEET_ESCALATION_CANARY_SKIP_STANDARDS_DRIFT=1)"
+else
+    _sd_issue_repo="${FLEET_STANDARDS_DRIFT_ISSUE_REPO:-Nishfleet/fleet-ops}"
+    _sd_file_issues="${FLEET_STANDARDS_DRIFT_FILE_ISSUES:-1}"
+    # The standard thin-caller workflows every enrolled repo must carry
+    # (mirrors THIN_CALLERS in .github/scripts/repo-standards.lib.mjs).
+    # Tests override via FLEET_STANDARDS_DRIFT_MECHANISMS.
+    read -r -a _sd_mechanisms <<<"${FLEET_STANDARDS_DRIFT_MECHANISMS:-secret-scan.yml semgrep.yml review-gate.yml auto-enqueue.yml}"
+    # Local-richer repos carry richer local gates and are skipped for the
+    # thin-caller check (mirrors LOCAL_RICHER in repo-standards.lib.mjs).
+    read -r -a _sd_local_richer <<<"${FLEET_STANDARDS_DRIFT_LOCAL_RICHER:-Nishfleet/0509 Nishfleet/fleet-ops}"
+
+    if [[ ! -f "$INTAKE_REPOS_JSON" ]]; then
+        loud "ESCALATION-CANARY-VIOLATION" "standards drift: intake-repos.json missing at $INTAKE_REPOS_JSON — cannot enumerate enrolled repos"
+        violations=$((violations + 1))
+    elif ! command -v jq >/dev/null 2>&1; then
+        loud "ESCALATION-CANARY-PENDING" "standards drift: jq missing — cannot parse intake-repos.json"
+        pending=$((pending + 1))
+    elif ! command -v "$GH" >/dev/null 2>&1; then
+        loud "ESCALATION-CANARY-PENDING" "standards drift: gh missing — cannot read enrolled repo workflows"
+        pending=$((pending + 1))
+    else
+        mapfile -t _sd_repos < <(
+            jq -r '.repos[]? | "Nishfleet/\(.name)"' "$INTAKE_REPOS_JSON" 2>/dev/null || true
+        )
+        if [[ "${#_sd_repos[@]}" -eq 0 ]]; then
+            log "13.  - no intake-enrolled repos to check"
+        else
+            _sd_open_json="[]"
+            if [[ "$_sd_file_issues" == "1" ]]; then
+                set +e
+                _sd_open_json=$("$GH" issue list -R "$_sd_issue_repo" --state open --limit 200 --json number,body,title 2>/dev/null)
+                _sd_list_rc=$?
+                set -e
+                if [[ "$_sd_list_rc" -ne 0 ]] || [[ -z "$_sd_open_json" ]]; then
+                    _sd_open_json="[]"
+                    log "13.  WARN: could not list open issues for dedupe (gh rc=$_sd_list_rc)"
+                fi
+            fi
+            _sd_filed=0
+            _sd_dup=0
+            for _sd_repo in "${_sd_repos[@]}"; do
+                [[ -n "$_sd_repo" ]] || continue
+                _sd_is_local_richer=0
+                for _lr in "${_sd_local_richer[@]}"; do
+                    [[ "$_lr" == "$_sd_repo" ]] && _sd_is_local_richer=1
+                done
+                if [[ "$_sd_is_local_richer" -eq 1 ]]; then
+                    log "13.  - $_sd_repo: local-richer (richer local gates) — thin-caller check skipped"
+                    continue
+                fi
+                for _sd_m in "${_sd_mechanisms[@]}"; do
+                    [[ -n "$_sd_m" ]] || continue
+                    set +e
+                    _sd_have=$("$GH" api "repos/$_sd_repo/contents/.github/workflows/$_sd_m" --jq '.name' 2>/dev/null)
+                    _sd_api_rc=$?
+                    set -e
+                    if [[ "$_sd_api_rc" -eq 0 ]] && [[ -n "$_sd_have" ]]; then
+                        log "13.  - $_sd_repo: $_sd_m present"
+                    else
+                        loud "ESCALATION-CANARY-VIOLATION" "standards drift: $_sd_repo missing standard gate $_sd_m — the portable standard is not applied"
+                        violations=$((violations + 1))
+                        if [[ "$_sd_file_issues" == "1" ]]; then
+                            _sd_signal="signal: standards-drift/$_sd_repo/$_sd_m"
+                            if jq -e --arg s "$_sd_signal" '[.[] | select((.body // "") | contains($s))] | length > 0' <<<"$_sd_open_json" >/dev/null 2>&1; then
+                                _sd_dup=$((_sd_dup + 1))
+                                log "13.  - $_sd_repo/$_sd_m: already has an open standards-drift issue (deduped)"
+                            else
+                                _sd_title="standards drift: $_sd_repo missing $_sd_m"
+                                _sd_body="$_sd_signal
+
+Repo $_sd_repo is intake-enrolled but missing the standard gate workflow \`$_sd_m\`.
+The portable standard (P11-B) requires every enrolled repo to carry the
+standard thin-caller workflows. This issue was auto-filed by the
+fleet-escalation-canary standards-drift block.
+
+Fix: add the thin-caller workflow (or apply the standard via
+repo-standards-apply.mjs)."
+                                set +e
+                                _sd_created=$("$ISSUE_FILE" file -R "$_sd_issue_repo" --title "$_sd_title" --body "$_sd_body" 2>/tmp/standards-drift-create.err)
+                                _sd_create_rc=$?
+                                set -e
+                                if [[ "$_sd_create_rc" -eq 0 ]]; then
+                                    _sd_filed=$((_sd_filed + 1))
+                                    log "13.  FILED standards-drift $_sd_repo/$_sd_m -> $_sd_created"
+                                else
+                                    log "13.  WARN: failed to file standards-drift $_sd_repo/$_sd_m (rc=$_sd_create_rc) $(tr '\n' ' ' </tmp/standards-drift-create.err 2>/dev/null)"
+                                fi
+                            fi
+                        fi
+                    fi
+                done
+            done
+            log "13.  auto-file: filed=$_sd_filed deduped=$_sd_dup"
+        fi
+    fi
+fi
+
+# ---------------------------------------------------------------------------
+
+# 14. detached-work lint: raw systemd-run transients without OnFailure
+#     (fleet-ops#4266)
+# ---------------------------------------------------------------------------
+# A `systemd-run --user` that is NOT pi-systemd-run has no OnFailure
+# property (until a manager that loaded scope.d/service.d assigns the
+# drop-in) and no dead-man. The audit trail of systemd-run execve by
+# auid=1000 is the 24h window on that class. Every execve must carry the
+# --property=OnFailure flag; .scope-run raw units are caught the same way
+# once systemd-run execves with --scope. auditd absent = PENDING, because
+# the install ships the rule file but the package is deployed separately.
+log "14. checking for raw systemd-run transients without OnFailure (audit trail)"
+if [[ "${FLEET_ESCALATION_CANARY_SKIP_DETACHED:-0}" == "1" ]]; then
+    log "14.  - skipped (FLEET_ESCALATION_CANARY_SKIP_DETACHED)"
+else
+    # Resolve ausearch with a /usr/sbin fallback (fleet-ops#4733): ausearch
+    # ships in /usr/sbin, which is NOT in the heartbeat service PATH, so a
+    # bare `command -v ausearch` fails on a host where auditd is installed
+    # and active. The fallback finds the real binary instead of firing a
+    # false "ausearch not installed" PENDING. The genuinely-absent path
+    # (no env, not on PATH, no executable sbin fallback) still fires PENDING.
+    ausearch_bin="$(resolve_audit_bin "${AUSEARCH:-}" ausearch "${AUSEARCH_SBIN_PATHS:-/usr/sbin/ausearch:/sbin/ausearch}")"
+    if [[ -z "$ausearch_bin" ]]; then
+        loud "ESCALATION-CANARY-PENDING" "detached-work lint: ausearch not installed ($(date -u +%Y-%m-%dT%H:%M:%SZ)) — install auditd (install.sh --system ships config/audit/rules.d/30-fleet-unit-stop.rules; apt-get -y install auditd or wait for vps-weekly-update)"
+        pending=$((pending + 1))
+    else
+    # False-clean guard: an empty ausearch result is only trustworthy if the
+    # fleet-unit-run rule is actually loaded in the RUNNING auditd. auditd
+    # installed but rules not yet applied (install.sh --system copies the
+    # rules.d file; augenrules --load applies it) would otherwise report
+    # "clean" while raw systemd-run goes uncaught. auditctl -l lists the
+    # live rules; absent auditctl or no fleet-unit-run line = PENDING (loud,
+    # not fail), matching the ausearch-not-installed handling. auditctl is
+    # resolved with the same /usr/sbin fallback (fleet-ops#4733).
+    rule_loaded=0
+    auditctl_bin="$(resolve_audit_bin "${AUDITCTL:-}" auditctl "${AUDITCTL_SBIN_PATHS:-/usr/sbin/auditctl:/sbin/auditctl}")"
+    if [[ -n "$auditctl_bin" ]] && command -v "$auditctl_bin" >/dev/null 2>&1; then
+        if sudo -n "$auditctl_bin" -l 2>/dev/null | grep -q 'fleet-unit-run'; then
+            rule_loaded=1
+        fi
+    fi
+    if [[ "$rule_loaded" != "1" ]]; then
+        loud "ESCALATION-CANARY-PENDING" "detached-work lint: auditd present but fleet-unit-run rule not loaded in the running daemon ($(date -u +%Y-%m-%dT%H:%M:%SZ)) — run 'sudo augenrules --load' (install.sh --system does this on a rules change)"
+        pending=$((pending + 1))
+    else
+    raw="$("$ausearch_bin" -k fleet-unit-run -ts yesterday -i 2>/dev/null || true)"
+    if [[ -z "$raw" ]]; then
+        log "14.  - no systemd-run execve in the last 24h (key=fleet-unit-run) — clean"
+    else
+        # One ausearch -i EXECVE record is one (long) line: all aN= args.
+        # A raw launch = systemd-run whose args lack --property=OnFailure.
+        raw_bad=0
+        while IFS= read -r rec; do
+            [[ "$rec" == *"systemd-run"* ]] || continue
+            [[ "$rec" != *"--property=OnFailure"* ]] || continue
+            unit_name="$(sed -n 's/.*a[0-9]*="--unit=\([^"]*\)".*/\1/p' <<<"$rec" | head -n 1)"
+            [[ -n "$unit_name" ]] || unit_name="$(sed -n 's/.*a[0-9]*=--unit=\([^ "\/"]*\) .*/\1/p' <<<"$rec" | head -n 1)"
+            loud "DETACHED-RAW-UNIT" "unit=${unit_name:-<unnamed>} — raw systemd-run without --property=OnFailure (fleet-ops#4266: a clean stop of this unit dies silently; relaunch via pi-systemd-run which adds the dead-man)"
+            raw_bad=$((raw_bad + 1))
+        done <<<"$raw"
+        if [[ "$raw_bad" -gt 0 ]]; then
+            violations=$((violations + 1))
+        else
+            log "14.  - all plausible systemd-run execve records carry OnFailure — only pi-systemd-run transients in the last 24h"
+        fi
+    fi
+    fi
+    fi
+fi
+
+# ---------------------------------------------------------------------------
+# done
+# ---------------------------------------------------------------------------
+if [[ "$violations" -gt 0 ]]; then
+    loud "ESCALATION-CANARY-FAIL" "violations=$violations pending=$pending — escalation matrix is not fully covered (two-plane invariant)"
+    exit 1
+fi
+
+loud "ESCALATION-CANARY-OK" "two-plane invariant holds: VPS services/paths/timers + pi runners covered; GitHub coverage layers wired; pending=$pending"
+exit 0
+>>>>>>> 6088e2712 (fix(spawn-guard): cover stop of fleet units in systemctl_restart_fleet_unit (Relates to #5605) (#5658))

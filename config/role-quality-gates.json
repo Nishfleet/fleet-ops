@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 {
   "_comment": "fleet-ops#457: every fleet role names a quality gate its output cannot bypass. The heartbeat role-gate auditor re-runs this catalog every tick. A prompt or unit with no row is a finding, auto-filed.",
   "issue_repo": "Nishfleet/fleet-ops",
@@ -312,3 +313,320 @@
     }
   ]
 }
+||||||| (empty tree)
+=======
+{
+  "_comment": "fleet-ops#457: every fleet role names a quality gate its output cannot bypass. The heartbeat role-gate auditor re-runs this catalog every tick. A prompt or unit with no row is a finding, auto-filed.",
+  "issue_repo": "Nishfleet/fleet-ops",
+  "auto_file_cap_per_tick": 5,
+  "control_plane_repos": [
+    "fleet-ops"
+  ],
+  "roles": [
+    {
+      "id": "scout",
+      "gate": "senior admission panel (scout-candidate -> 2-of-3 PASS -> agent-ready)",
+      "proof": [
+        "prompts/scout.md",
+        "prompts/auditor.md",
+        "bin/fleet-heartbeat-auditor",
+        "bin/pi-audit-tally",
+        "lib/agent-ready-spec-gate.py",
+        "systemd/pi-audit@.service"
+      ],
+      "units": [
+        "pi-scout@.service",
+        "pi-scout-repair@.service"
+      ],
+      "prompts": [
+        "scout.md",
+        "scout-repair.md"
+      ],
+      "bypass_checks": [
+        "scout_agent_ready_product",
+        "sweep_blank_approval",
+        "agent_ready_spec_gate"
+      ]
+    },
+    {
+      "id": "planner",
+      "gate": "intake only lists agent-ready (post-admission); cannot claim unlabeled or scout-candidate",
+      "proof": [
+        "prompts/intake.md",
+        "bin/pi-intake-run",
+        "lib/intake-priority.sh"
+      ],
+      "units": [
+        "pi-intake@.service",
+        "pi-intake-repair@.service"
+      ],
+      "prompts": [
+        "intake.md",
+        "intake-repair.md"
+      ],
+      "bypass_checks": [
+        "intake_lists_agent_ready_only"
+      ]
+    },
+    {
+      "id": "builder",
+      "gate": "CI required checks + auto-revert + review pipeline; conference queued(#223)",
+      "proof": [
+        ".github/workflows/ci.yml",
+        ".github/workflows/auto-revert.yml",
+        "prompts/worker.md"
+      ],
+      "units": [
+        "pi-issue@.service",
+        "pi-packet@.service"
+      ],
+      "prompts": [
+        "worker.md"
+      ],
+      "bypass_checks": [
+        "builder_ci_and_auto_revert"
+      ]
+    },
+    {
+      "id": "reviewer",
+      "gate": "overturn-rate on the quality scoreboard; identity-separated attestation (fleet-ops#413)",
+      "proof": [
+        "lib/attest-identity-gate.py",
+        "bin/attest-identity-gate"
+      ],
+      "units": [],
+      "prompts": [],
+      "bypass_checks": [
+        "reviewer_attestation_gate"
+      ]
+    },
+    {
+      "id": "senior-auditor",
+      "gate": "overturn-rate on the scoreboard; panel is 2-of-3 and cannot self-admit",
+      "proof": [
+        "prompts/auditor.md",
+        "prompts/escalation-auditor.md",
+        "prompts/senior-conference.md",
+        "prompts/nish-question-auditor.md",
+        "bin/pi-audit-tally",
+        "bin/pi-escalation-audit",
+        "bin/pi-escalation-audit-tally"
+      ],
+      "units": [
+        "pi-audit@.service",
+        "pi-escalation-audit.service",
+        "pi-escalation-audit@.service",
+        "fleet-gap-closure-auditor@.service",
+        "fleet-gap-closure-conference.service"
+      ],
+      "prompts": [
+        "auditor.md",
+        "escalation-auditor.md",
+        "senior-conference.md",
+        "nish-question-auditor.md",
+        "gap-closure-conference.md",
+        "gap-closure-conference-round2.md",
+        "gap-closure-research.md",
+        "gap-closure-research-round2.md"
+      ],
+      "bypass_checks": [
+        "senior_cannot_self_admit"
+      ]
+    },
+    {
+      "id": "orchestrator",
+      "gate": "verdict-line discipline (guard_pi_packet) on every packet",
+      "proof": [
+        "lib/guard_pi_packet.py",
+        "bin/pi-packet-guard",
+        "prompts/heartbeat.md"
+      ],
+      "units": [
+        "fleet-heartbeat.service",
+        "pi-packet@.service",
+        "pi-packet-logrotate.service",
+        "memory-index-autocompact.service",
+        "fable-fleet-check-kimi.service"
+      ],
+      "prompts": [
+        "heartbeat.md",
+        "orchestrator-decision-sweep.md"
+      ],
+      "bypass_checks": [
+        "orchestrator_verdict_guard"
+      ]
+    },
+    {
+      "id": "audit",
+      "gate": "blind-audit panel PASS before filing; this mechanical role-gate audit covers the auditor itself",
+      "proof": [
+        "prompts/blind-audit.md",
+        "lib/blind-audit-panel.py",
+        "bin/fleet-blind-audit",
+        "bin/fleet-role-gate-audit"
+      ],
+      "units": [
+        "fleet-blind-audit.service"
+      ],
+      "prompts": [
+        "blind-audit.md"
+      ],
+      "bypass_checks": [
+        "audit_has_panel"
+      ]
+    },
+    {
+      "id": "truth-staleness",
+      "gate": "checker cross-checks standing docs against live state; TruthStalenessMismatch alerts on mismatches (timer + issue filing retired in fleet-ops#4149)",
+      "proof": [
+        "libexec/staleness-checker.py",
+        "tests/staleness-checker.test.sh",
+        "config/fleet_rules.yml",
+        "systemd/fleet-metrics-export.service.d/staleness-checker.conf"
+      ],
+      "units": [],
+      "prompts": [],
+      "bypass_checks": []
+    },
+    {
+      "id": "researcher",
+      "gate": "adopted-delta rate on the quality scoreboard; frontier deltas enter through the admission pipeline, paired with auditors",
+      "proof": [
+        "prompts/researcher.md",
+        "bin/fleet-researcher-run",
+        "systemd/fleet-researcher.service",
+        "prompts/quality-research-weekly.md",
+        "systemd/quality-research-weekly.service"
+      ],
+      "units": [
+        "fleet-researcher.service",
+        "quality-research-weekly.service"
+      ],
+      "prompts": [
+        "researcher.md",
+        "quality-research-weekly.md"
+      ],
+      "bypass_checks": [
+        "researcher_delta_contract"
+      ]
+    },
+    {
+      "id": "weekly-fleet-review",
+      "gate": "blind 6-lens research + senior conference (throughput, output-quality, machinery, truth, outside-world, SECURITY), output capped at 5 specced actions or ledger discards, self-scoring against the rolling 4-week ratio, output = claimed work only (no Nish report) \u2014 fleet-ops#1146, ledger 2026-08-27 Weekly Fleet Review approved",
+      "proof": [
+        "prompts/weekly-fleet-review.md",
+        "systemd/fleet-weekly-fleet-review.service",
+        "systemd/fleet-weekly-fleet-review.timer",
+        "bin/agent-cron-run",
+        "config/rule-enforcement.json"
+      ],
+      "units": [
+        "fleet-weekly-fleet-review.service"
+      ],
+      "prompts": [
+        "weekly-fleet-review.md"
+      ],
+      "bypass_checks": [
+        "weekly_fleet_review_output_contract",
+        "quality_ratchet_contract"
+      ]
+    },
+    {
+      "id": "judge",
+      "gate": "hourly fable-check judge: every reported number is a verbatim measure.sh line, and the blind-spot invariant holds \u2014 new_measures_7d >= caught_by_hand_7d (fleet-ops#4460) \u2014 every caught-by-hand item gets a measure.sh line the same run or it is a fault",
+      "proof": [
+        "prompts/fable-check.md",
+        "libexec/fleet-blindspot-count.py",
+        "prompts/weekly-fleet-review.md",
+        "systemd/fable-fleet-check.service.d/20-oom-avoid.conf",
+        "systemd/fable-fleet-check.service.d/30-skip-litellm-drained.conf"
+      ],
+      "units": [],
+      "prompts": [
+        "fable-check.md"
+      ],
+      "bypass_checks": []
+    },
+    {
+      "id": "spec-judge",
+      "gate": "Kimi K3 Max (cursor/kimi-k3-max, judge-only) reviews every batch of >= 2 agent-ready tickets that share files BEFORE a worker may claim a member; verdict applied mechanically (READY/EDIT/BLOCK), never implemented by the judge (fleet-ops#4801)",
+      "proof": [
+        "prompts/spec-judge.md",
+        "lib/spec-judge.sh",
+        "lib/pi-intake-tick.sh"
+      ],
+      "units": [],
+      "prompts": [
+        "spec-judge.md"
+      ],
+      "bypass_checks": []
+    },
+    {
+      "id": "rulebook-redteam",
+      "gate": "sibling .bak-rulebook-redteam-YYYYMMDD backups are required before filing; monthly timer + heading-growth bonus; cadence-overdue screams",
+      "proof": [
+        "prompts/rulebook-redteam.md",
+        "bin/fleet-rulebook-redteam",
+        "lib/rulebook-redteam-cadence.sh",
+        "systemd/fleet-rulebook-redteam.service",
+        "systemd/fleet-rulebook-redteam.timer"
+      ],
+      "units": [
+        "fleet-rulebook-redteam.service"
+      ],
+      "prompts": [
+        "rulebook-redteam.md"
+      ],
+      "bypass_checks": [
+        "rulebook_redteam_backups"
+      ]
+    },
+    {
+      "id": "litellm-proxy",
+      "gate": "P1 paper organ \u2014 proxy + Postgres + Redis + /health canary; live install is Nish-gated (docs/litellm-postgres-setup.md); organ-heartbeat invariant + absent() rules enforce observability",
+      "proof": [
+        "systemd/fleet-litellm-proxy.service",
+        "systemd/fleet-litellm-postgres.service",
+        "systemd/fleet-litellm-redis.service",
+        "systemd/fleet-litellm-health-canary.service",
+        "systemd/fleet-litellm-health-canary.timer",
+        "libexec/fleet-litellm-health-canary.py",
+        "libexec/fleet-litellm-prisma-compat/sitecustomize.py",
+        "config/litellm-proxy.yaml",
+        "config/fleet-organs.json",
+        "config/fleet_rules.yml",
+        "tests/fleet-litellm-organ.test.sh",
+        "docs/litellm-postgres-setup.md"
+      ],
+      "units": [
+        "fleet-litellm-proxy.service",
+        "fleet-litellm-postgres.service",
+        "fleet-litellm-redis.service",
+        "fleet-litellm-health-canary.service"
+      ],
+      "prompts": [],
+      "bypass_checks": []
+    },
+    {
+      "id": "judge",
+      "gate": "hourly senior judges run under the packet contract with a machine-checked verdict line every run; unit guards (20-min offsets, oneshot caps, no overlap) pinned by fleet-ops#4906",
+      "proof": [
+        "systemd/fable-fleet-check.service",
+        "systemd/fable-fleet-check.timer",
+        "systemd/fable-fleet-check-opus.service",
+        "systemd/fable-fleet-check-opus.timer",
+        "systemd/fable-fleet-check-kimi.service",
+        "systemd/fable-fleet-check-kimi.timer",
+        "lib/guard_pi_packet.py"
+      ],
+      "units": [
+        "fable-fleet-check.service",
+        "fable-fleet-check-opus.service",
+        "fable-fleet-check-kimi.service"
+      ],
+      "prompts": [],
+      "bypass_checks": []
+    }
+  ]
+}
+>>>>>>> 6088e2712 (fix(spawn-guard): cover stop of fleet units in systemctl_restart_fleet_unit (Relates to #5605) (#5658))
