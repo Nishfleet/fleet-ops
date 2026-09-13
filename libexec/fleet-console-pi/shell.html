@@ -179,6 +179,7 @@ a:focus-visible,summary:focus-visible,button:focus-visible{outline:2px solid var
   <section class="prod" id="section-shipped"><div class="ph"><h2>Shipped in the last 24h</h2><span class="tag" id="shipped-src"></span><div class="state"><span class="led" id="shipped-led"></span></div></div><div id="shipped-body"></div></section>
   <section class="prod" id="section-outcome"><div class="ph"><h2>Product outcome</h2><span class="tag" id="outcome-src"></span><div class="state"><span class="led" id="outcome-led"></span></div></div><div id="outcome-body"></div></section>
   <section class="prod" id="section-ci"><div class="ph"><h2>MAIN RED</h2><span class="tag" id="ci-src"></span><div class="state"><span class="led" id="ci-led"></span></div></div><div id="ci-body"></div></section>
+  <section class="prod" id="section-cmq"><div class="ph"><h2>CI queue</h2><span class="tag" id="cmq-src"></span><div class="state"><span class="led" id="cmq-led"></span></div></div><div id="cmq-body"></div></section>
   <section class="prod" id="section-alerts"><div class="ph"><h2>Firing alerts</h2><span class="tag" id="alerts-src"></span><div class="state"><span class="led" id="alerts-led"></span></div></div><div id="alerts-body"></div></section>
   <section class="prod" id="section-findings"><div class="ph"><h2>Findings ledger</h2><span class="tag" id="findings-src"></span><div class="state"><span class="led" id="findings-led"></span></div></div><div id="findings-banner" class="q-72h" hidden></div><div id="findings-summary"></div><div id="findings-body"></div></section>
   <section class="prod" id="section-repairs"><div class="ph"><h2>Repairs in flight</h2><span class="tag" id="repairs-src"></span><div class="state"><span class="led" id="repairs-led"></span></div></div><div id="repairs-body"></div></section>
@@ -490,6 +491,39 @@ function render(d){
           <p class="t">${esc(r.repo)}</p>
           <span class="pill ${red ? "" : "up"}" style="${red ? "border-color:var(--risk);color:var(--risk)" : ""}">${red ? "MAIN RED" : "green"}</span></div></div>`;
       }).join("");
+    }
+  }
+
+  // ---- CI queue (fleet-ops#5807): merge-queue + hosted-CI gauges, per
+  // enrolled repo. Section-only tile (the #5003 outcome precedent). Not-live
+  // writes the reason only — never a frozen number.
+  const cq = t.ci_merge_queue || {};
+  const [cqLive, cqFr] = freshState(cq);
+  document.getElementById("cmq-src").textContent = cq.source || "";
+  document.getElementById("cmq-led").className = "led" + (cqLive ? " on" : "");
+  const cqBody = document.getElementById("cmq-body");
+  if (!cqLive){
+    cqBody.innerHTML = `<p class="empty">${esc(cqFr.reason || "source unavailable")}</p>`;
+  } else {
+    const rows = (cq.items || []);
+    if (!rows.length){
+      cqBody.innerHTML = `<p class="empty" style="color:var(--ok)">no enrolled-repo queue samples (exporter omits stale caches)</p>`;
+    } else {
+      const hh = s => (s >= 3600
+        ? (Math.floor(s/3600) + "h" + (Math.round((s%3600)/60) ? " " + Math.round((s%3600)/60) + "m" : ""))
+        : (Math.round(s/60) + "m"));
+      cqBody.innerHTML = rows.map(r => {
+        const jam = (r.head_wait_s == null ? -1 : r.head_wait_s) > 1200;
+        const w = r.head_wait_s == null ? "no merge queue on main" : (hh(r.head_wait_s) + " head wait");
+        return `<div class="d"><div class="body">
+          <p class="t">${esc(r.repo)}</p>
+          <span class="pill ${jam ? "" : "up"}" style="${jam ? "border-color:var(--risk);color:var(--risk)" : ""}">${esc(w)}</span>
+          <span class="pill">${r.entries == null ? "—" : r.entries} in queue</span>
+          <span class="pill">${r.queued == null ? "—" : r.queued} hosted queued</span>
+          <span class="pill">${r.in_progress == null ? "—" : r.in_progress} running</span></div></div>`;
+      }).join("");
+      cqBody.insertAdjacentHTML("beforeend",
+        `<p class="empty">jam: <b>${cq.jam_count}</b> repo(s) · hosted queued: <b>${cq.queued_total}</b> · consolidation: Nishfleet/0509#3069 #3068 #3070 (fleet-ops#5807)</p>`);
     }
   }
 

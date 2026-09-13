@@ -483,6 +483,62 @@ def collect_main_ci():
                  red_count=red, items=items, explain=explain)
 
 
+def collect_ci_merge_queue():
+    # fleet-ops#5807: the four merge-queue / hosted-CI gauges, per enrolled
+    # repo. Section-only tile (the #5003 outcome precedent: a rich
+    # multi-number tile does not need a band cell). jam_count is the
+    # SPEC-verified headline — exactly the CiMergeQueueHeadWaitHigh firing
+    # condition, so the verifier and the alert cannot drift apart.
+    src = "prometheus:ci_merge_queue_head_wait_seconds"
+    explain = ("Prometheus ci_merge_queue_head_wait_seconds / "
+               "ci_merge_queue_entries / ci_hosted_runs_queued / "
+               "ci_hosted_runs_in_progress, per enrolled repo from a cached "
+               "GraphQL+REST snapshot <=30 min; cache older than 2h omits "
+               "the family (never a frozen value).")
+    mtime, err = _prom_or_stale(src, explain)
+    if err:
+        return err
+    try:
+        fresh = _cache_fresh("merge_queue")
+        by = {}
+        for metric, key in (
+            ("ci_merge_queue_head_wait_seconds", "head_wait_s"),
+            ("ci_merge_queue_entries", "entries"),
+            ("ci_hosted_runs_queued", "queued"),
+            ("ci_hosted_runs_in_progress", "in_progress"),
+        ):
+            for r in _prom_query(metric):
+                repo = r["metric"].get("repo") or ""
+                if not repo:
+                    continue
+                by.setdefault(repo, {})[key] = int(r["value"])
+    except PromError as e:
+        return _unknown(src, PROM_STALE_S, f"query failed: {e}",
+                        explain=explain)
+    if not fresh:
+        return _unknown(src, PROM_STALE_S,
+                        "metric family absent (exporter omitted stale cache)",
+                        explain=explain)
+    items = []
+    jam = 0
+    queued_total = 0
+    for repo, row in by.items():
+        wait = row.get("head_wait_s")
+        if wait is not None and wait > 1200:
+            jam += 1
+        q = row.get("queued")
+        if q is not None:
+            queued_total += q
+        items.append({"repo": repo, **row})
+    # Jamming repos lead (the story), then the deepest hosted backlog.
+    items.sort(key=lambda x: (-(x.get("head_wait_s") or 0),
+                              -(x.get("queued") or 0), x["repo"]))
+    return _tile(src, GH_CACHE_WINDOW_S, True,
+                 _cache_data_time("merge_queue", mtime),
+                 jam_count=jam, queued_total=queued_total, items=items,
+                 explain=explain)
+
+
 def collect_firing_alerts():
     src = "prometheus:/api/v1/alerts"
     explain = ("Prometheus HTTP API /api/v1/alerts, currently firing, "
@@ -1121,6 +1177,7 @@ def generate():
     doc["tiles"]["shipped_24h"] = collect_shipped()
     doc["tiles"]["outcome"] = collect_outcome()
     doc["tiles"]["main_ci"] = collect_main_ci()
+    doc["tiles"]["ci_merge_queue"] = collect_ci_merge_queue()
     doc["tiles"]["firing_alerts"] = collect_firing_alerts()
     doc["tiles"]["repairs_inflight"] = collect_repairs_inflight()
     doc["tiles"]["running_pi"] = collect_running_pi()
