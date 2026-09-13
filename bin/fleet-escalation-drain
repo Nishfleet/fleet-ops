@@ -1191,11 +1191,22 @@ escalate_stuck_packets() {
     local -a stuck=("$@")
     local n_stuck=${#stuck[@]}
 
-    # Stuck packets arrive in glob (oldest-first) order; the LAST entry
-    # carries the newest dispatch instant.
-    local newest_iso=""
-    newest_iso="${stuck[$((n_stuck - 1))]##*packet=}"
-    newest_iso="${newest_iso%\)}"
+    # fleet-ops#6345: glob order is (alertname, dispatch-ts) lexicographic,
+    # NOT dispatch order — a burst mixing alertnames puts the newest
+    # dispatch anywhere in the list (observed 2026-09-13T11:43:48Z: the
+    # issue evidence reported 04:44:52Z while FleetLitellmProxyAbsent-053252Z,
+    # dispatched 05:32:52Z, sat in the same burst, so the recorded watermark
+    # understated the newest covered packet). Take the MAX dispatch instant
+    # across the burst; ISO-8601Z compares correctly as a string, the same
+    # assumption every other comparison in this file makes.
+    local newest_iso="" s_newest_iso
+    for s_newest_iso in "${stuck[@]}"; do
+        s_newest_iso="${s_newest_iso##*packet=}"
+        s_newest_iso="${s_newest_iso%\)}"
+        if [[ -z "$newest_iso" || "$s_newest_iso" > "$newest_iso" ]]; then
+            newest_iso="$s_newest_iso"
+        fi
+    done
 
     local filed_issue=""
     if [ -f "$STATE_FILE" ] && command -v jq >/dev/null 2>&1; then
