@@ -113,7 +113,13 @@ set -Eeuo pipefail
 export HOME="${HOME:-/home/nish}"
 command -v gh >/dev/null 2>&1 || export PATH=/home/nish/.local/bin:/usr/local/bin:/usr/bin:/bin
 
-AUTH_JSON="${PI_AGENT_AUTH_JSON:-$HOME/.pi/agent/auth.json}"
+# Re-homed from the culled seat-live-validate (fleet-ops#6115): this unit is
+# the surviving owner of the grok seat-identity — PI_AGENT_AUTH_JSON names
+# the auth.json it refreshes; GROK names the credential's CLI (no probing
+# consumer since the cull; the FLEET_GROK_BIN override died with it).
+PI_AGENT_AUTH_JSON="${PI_AGENT_AUTH_JSON:-$HOME/.pi/agent/auth.json}"
+GROK="${GROK:-grok}"
+AUTH_JSON="$PI_AGENT_AUTH_JSON"
 PROVIDER="${GROK_TOKEN_REFRESH_PROVIDER:-xai-oauth}"
 # Fleet-owned lock dir — must NOT be `$AUTH_JSON.lock` (that is pi's
 # proper-lockfile path). Colliding would deadlock against live pi seats.

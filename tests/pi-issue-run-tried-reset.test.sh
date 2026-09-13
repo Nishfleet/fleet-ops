@@ -140,17 +140,6 @@ echo "PR https://example.com/pr/1 — worked"
 SH
 chmod +x "$PI_BIN"
 
-write_ledger() {
-  local p="$1" m="$2" hc="$3" usable="$4" observed="$5"
-  local f
-  f=$(printf '%s/%s__%s.json\n' "$LEDGER" "${p//[^A-Za-z0-9._-]/_}" "${m//[^A-Za-z0-9._-]/_}")
-  jq -n \
-    --arg p "$p" --arg m "$m" --arg hc "$hc" --arg usable "$usable" --arg observed "$observed" \
-    '{provider:$p, model:$m, http_status:429, retry_after:null,
-      health_class:$hc, retryable:true, seat_dead:false, poison_ladder:false,
-      observed_at:$observed, source:"provider_fetch", usable_at:$usable}' >"$f"
-}
-
 now_iso()    { date -u +%Y-%m-%dT%H:%M:%S.000Z; }
 future_iso() { date -u -d "+1 hour" +%Y-%m-%dT%H:%M:%S.000Z; }
 
