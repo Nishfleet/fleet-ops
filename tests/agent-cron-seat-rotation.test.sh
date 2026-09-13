@@ -182,6 +182,7 @@ litellm_seat() { printf 'litellm\tworker-cheap\n'; return 0; }
 EOF
 cat >"$fake_pi" <<'EOF'
 #!/usr/bin/env bash
+cat >/dev/null
 echo 'pi: simulated 429' >&2
 exit 1
 EOF
@@ -438,9 +439,9 @@ if [[ -z "${AGENT_CRON_SKIP_DRILL:-}" ]]; then
     skip_rc=$?
     set -e
     [[ "$skip_rc" == "0" ]] || fail "missing-unit skip must exit 0, got $skip_rc: $skip_out"
-    printf '%s\n' "$skip_out" | grep -q '^SKIP: agent-cron-0509 unit files not in this checkout' \
+    grep -q '^SKIP: agent-cron-0509 unit files not in this checkout' <<<"$skip_out" \
       || fail "missing-unit skip must print SKIP, got: $skip_out"
-    if printf '%s\n' "$skip_out" | grep -q 'service unit not found'; then
+    if grep -q 'service unit not found' <<<"$skip_out"; then
       fail "missing-unit skip must not FAIL with service unit not found, got: $skip_out"
     fi
     ok "missing-unit checkout SKIPs instead of failing (fleet-ops#264)"

@@ -164,7 +164,6 @@ ok "scenario 2: 149000B fixture (2x cap) trimmed to a fitting packet — unbound
 head -c 80000 /dev/zero | tr '\0' 'x' | sed 's/x/prose line of the flat packet without any markdown sections.\\n/g' >"$scratch/flat_raw"
 head -c 80000 /dev/zero | tr '\0' 'p' | fold -w 78 | sed 's/^p*$/flat line of the packet without any markdown sections/' >"$prompts_dir/flat.md"
 # Build deterministically: 1100 lines of ~76 bytes = ~83KB.
-printf 'flat packet line without markdown sections, repeated to exceed the cap. 00000\n' | head -c 0 >/dev/null
 : >"$prompts_dir/flat.md"
 for i in $(seq 1 1100); do printf 'flat packet line %04d without markdown sections, just prose filler text here.\n' "$i"; done >>"$prompts_dir/flat.md"
 rm -f "$stdin_bytes"
