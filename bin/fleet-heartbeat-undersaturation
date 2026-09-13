@@ -79,10 +79,10 @@ THROUGHPUT_STATE="$LOG_DIR/throughput.last"
 # without ever naming the cause). Probe pi once at the repair path; a broken
 # binary is a named, instant fail-loud, not a 27h mystery.
 PI_BIN="${PI_BIN:-/home/nish/.local/bin/pi}"
-# fleet-ops#4640: probe long non-money walls through the existing
-# comeback-release organ (flag, not a new unit). Tests pin
-# FLEET_SEAT_COMEBACK_BIN at a stub so this never touches the live ledger.
-COMEBACK_BIN="${FLEET_SEAT_COMEBACK_BIN:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/fleet-seat-comeback-release}"
+# fleet-ops#6101: the #4640 come-back-release false-wall probe sub-step is
+# gone with the deleted bin; wall truth is the LiteLLM proxy's job
+# (cooldown, /health, fallbacks). A zero-running fleet with ready work goes
+# straight to the repair/fail-loud ladder below.
 pi_binary_broken() {
     if "$PI_BIN" --version >/dev/null 2>&1; then
         return 1   # executable
@@ -285,12 +285,10 @@ _undersat_duration_to_s() {
 
 # Liveness bound for an activating oneshot unit: the unit's own TimeoutStartSec
 # when systemd reports a finite one, else the PI_SEAT_ACTIVATING_MAX_S fallback.
-# Delegates to _seat_liveness_bound_s once the lib helper is available.
+# fleet-ops#6101: the dead _seat_liveness_bound_s delegation (the function
+# died with lib/seat-lib.sh, so the declare -F guard never fired) is gone —
+# the direct implementation is the only path.
 _undersat_liveness_bound_s() {
-    if declare -f _seat_liveness_bound_s >/dev/null 2>&1; then
-        _seat_liveness_bound_s "$1"
-        return
-    fi
     local sysunit="$1" raw parsed
     raw=$("$SYSTEMCTL" --user show "$sysunit" --property=TimeoutStartUSec --value 2>/dev/null || true)
     parsed=$(_undersat_duration_to_s "$raw" 2>/dev/null || true)
@@ -571,22 +569,10 @@ if [ "$undersat" -eq 1 ]; then
         rm -f "$FLAG"
         exit 1
     fi
-    # fleet-ops#4640: ready>0 AND running==0 is never "not a wedge". Probe
-    # benched non-money seats; a PONG means the wall was a lane lie — release
-    # and fail loud. Do not take FILTER-LIMITED on a zero-running fleet.
-    if [ "$running" -eq 0 ] && [ "$ready" -gt 0 ] 2>/dev/null; then
-        _fw_out=""
-        if [ -x "$COMEBACK_BIN" ]; then
-            set +e
-            _fw_out=$("$COMEBACK_BIN" --false-wall-only 2>&1)
-            set -e
-        fi
-        if grep -q 'SEAT-WALL-FALSE' <<<"$_fw_out"; then
-            loud "UNDERSAT-FALSE-WALL" "work=$work ready=$ready running=$running admit=$admit — benched non-money seat PONGed; released a false wall (fleet-ops#4640)"
-            rm -f "$FLAG"
-            exit 1
-        fi
-    fi
+    # fleet-ops#4640: ready>0 AND running==0 is never "not a wedge".
+    # (The #4640 come-back false-wall probe sub-step retired with the
+    # deleted fleet-seat-comeback-release bin, fleet-ops#6101.)
+    # Do not take FILTER-LIMITED on a zero-running fleet.
     # fleet-ops#3218: count_ready() counts ALL agent-ready issues, but intake's
     # filter chain (blocked-on, verifier-vacation, precedence-band / product-
     # first hold, reclaim-cooldown) deliberately skips most. If intake IS
