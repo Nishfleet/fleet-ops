@@ -55,10 +55,12 @@ if (( DO_CLI )); then
     fail "first line was '$first_line' (expected exactly '#!/usr/bin/env node')"
   fi
 
-  # 3. Size >= 300 bytes (real loader ~710; incident stub was 76)
+  # 3. Size >= 120 bytes (incident stub was 76; pi 0.85.1 ships a slim
+  #    169-byte ESM loader — the old 300 floor was calibrated to the ~710
+  #    pre-0.85 loader and false-positive-looped the self-heal)
   size="$(stat -c %s -- "$resolved")"
-  if (( size < 300 )); then
-    fail "size $size bytes < 300 minimum"
+  if (( size < 120 )); then
+    fail "size $size bytes < 120 minimum"
   fi
 
   # 4. timeout 30 "$PI_BIN" --version produces a bare semver on first line
