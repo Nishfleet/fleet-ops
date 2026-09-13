@@ -251,6 +251,9 @@ is_escalation_excluded() {
         stop-escalation.*)         return 0 ;;
         ready-work*)               return 0 ;;
         escalation-daily-sweep.*)  return 0 ;;
+        # fleet-ops#5854: the organ-death watcher is deliberately outside the
+        # chain it watches (OnFailure= reset drop-in + HOST-write name guard).
+        escalation-organ-watch*)   return 0 ;;
         resilience-drill-stub*)    return 0 ;;
         # fleet-ops#375: chain-e2e drill fixture. Its intentional 1-fault is
         # the drill RUNNING, not a real fault; a real escalation would be the
