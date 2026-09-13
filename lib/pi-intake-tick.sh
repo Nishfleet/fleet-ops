@@ -1170,6 +1170,9 @@ fi
 
 if [[ -z "$issues_json" ]] || [[ "$issues_json" == "[]" ]]; then
     echo "no ready issues"
+    # fleet-ops#6274: the counts line still emits on an empty ready pool so
+    # every scanning tick journals the hold-population shape.
+    echo "intake: ready=0 claimable=0 held=0 reasons=none"
     scout_on_empty
     exit 0
 fi
@@ -2040,12 +2043,31 @@ if [[ -f "$SPEC_JUDGE_LIB" && -f "$SPEC_JUDGE_PROMPT" ]]; then
     fi
 fi
 
+# fleet-ops#6274: per-issue hold reporter. Every non-claim outcome in the
+# claim loop prints through hold(): the journal line stays byte-identical to
+# the old inline echo (the per-issue hold reason), and the reason head is
+# tallied so the closing counts line exposes the hold population instead of
+# it being re-derived by hand every judge run. All call sites run in this
+# (parent) shell, so the tally persists across the loop.
+declare -A _hold_counts=()
+hold() {
+    # $1 = the reason, exactly as the old inline echo printed it. The counts
+    # key is the reason head: up to the first space (detail parens) and then
+    # the first colon (skipped-depends-on:#n), so variant details collapse to
+    # one reason. Note skipped-awaiting-runtime-gate (parked: ...) has its
+    # first colon INSIDE the detail, safely behind the space cut.
+    echo "issue $N ($title): $1"
+    _hold_key="${1%% *}"
+    _hold_key="${_hold_key%%:*}"
+    _hold_counts["$_hold_key"]=$(( ${_hold_counts["$_hold_key"]:-0} + 1 ))
+}
+
 for i in "${!numbers[@]}"; do
     N="${numbers[$i]}"
     title="${titles[$i]}"
 
     if (( slots <= 0 )); then
-        echo "issue $N ($title): skipped-capacity"
+        hold "skipped-capacity"
         continue
     fi
 
@@ -2061,7 +2083,7 @@ for i in "${!numbers[@]}"; do
             '[.[]?.name // empty] | index($cp) != null' >/dev/null 2>&1; then
             : # exempt — claim even past the cap
         else
-            echo "issue $N ($title): skipped-self-maintenance-cap (claimed $_self_maint_claims >= cap $_self_maint_cap)"
+            hold "skipped-self-maintenance-cap (claimed $_self_maint_claims >= cap $_self_maint_cap)"
             continue
         fi
     fi
@@ -2076,11 +2098,11 @@ for i in "${!numbers[@]}"; do
             '[.[]?.name // empty] | index($cp) != null' >/dev/null 2>&1; then
             _rung_live=$(repair_rung_concurrent)
             if (( _rung_live >= PI_INTAKE_REPAIR_RUNG_MAX_CONCURRENT )); then
-                echo "issue $N ($title): skipped-repair-rung-cap ($_rung_live live rung workers >= cap $PI_INTAKE_REPAIR_RUNG_MAX_CONCURRENT, fleet-ops#4639)"
+                hold "skipped-repair-rung-cap ($_rung_live live rung workers >= cap $PI_INTAKE_REPAIR_RUNG_MAX_CONCURRENT, fleet-ops#4639)"
                 continue
             fi
         else
-            echo "issue $N ($title): skipped-repair-rung (rung claims critical-path fleet-ops only, fleet-ops#4639)"
+            hold "skipped-repair-rung (rung claims critical-path fleet-ops only, fleet-ops#4639)"
             continue
         fi
     fi
@@ -2093,7 +2115,7 @@ for i in "${!numbers[@]}"; do
     # from the initial issue list, no network) and precedes the body fetch
     # so a parked issue costs zero per-issue network calls.
     if printf '%s' "${labels[$i]:-}" | jq -e 'map(.name // empty) | index("awaiting-runtime-gate") != null' >/dev/null 2>&1; then
-        echo "issue $N ($title): skipped-awaiting-runtime-gate (parked: merged delivery PR + future runtime gate, fleet-ops#4540)"
+        hold "skipped-awaiting-runtime-gate (parked: merged delivery PR + future runtime gate, fleet-ops#4540)"
         continue
     fi
 
@@ -2117,7 +2139,7 @@ for i in "${!numbers[@]}"; do
         if [[ "$_repair_rung_armed" == "1" ]]; then
             :
         elif ! precedence_band_is_leverage_issue "$N" 2>/dev/null; then
-            echo "issue $N ($title): skipped-precedence-band (skip-surge-leverage)"
+            hold "skipped-precedence-band (skip-surge-leverage)"
             continue
         fi
     fi
@@ -2146,11 +2168,11 @@ for i in "${!numbers[@]}"; do
             _cd_until_epoch=$(date -u -d "$_cd_until_ts" +%s 2>/dev/null) || _cd_until_epoch=0
         fi
         if (( _cd_epoch > 0 && _cd_age < RECLAIM_COOLDOWN_S )); then
-            echo "issue $N ($title): skipped-reclaim-cooldown (age=${_cd_age}s < ${RECLAIM_COOLDOWN_S}s)"
+            hold "skipped-reclaim-cooldown (age=${_cd_age}s < ${RECLAIM_COOLDOWN_S}s)"
             continue
         fi
         if (( _cd_until_epoch > _now_epoch )); then
-            echo "issue $N ($title): skipped-reclaim-cooldown-bench (until=$_cd_until_ts, $(( _cd_until_epoch - _now_epoch ))s left)"
+            hold "skipped-reclaim-cooldown-bench (until=$_cd_until_ts, $(( _cd_until_epoch - _now_epoch ))s left)"
             continue
         fi
         # Cooldown expired — clear the marker so the issue is claimable again.
@@ -2203,10 +2225,10 @@ for i in "${!numbers[@]}"; do
             printf '%s' "$_next_pref" > "$_pref_file" 2>/dev/null || true
             # Fresh class budget: the new class starts at 1, not at the cap.
             printf '1' > "$_reclaim_count_file" 2>/dev/null || true
-            echo "issue $N ($title): skipped-max-reclaims (work-cap=$_rc_current) - advancing seat class to $_next_pref (fresh claim budget)" >&2
+            hold "skipped-max-reclaims (work-cap=$_rc_current) - advancing seat class to $_next_pref (fresh claim budget)" >&2
             continue
         fi
-        echo "issue $N ($title): skipped-max-reclaims (count=$_rc_current) - every seat class (prepaid/metered/senior) exhausted, escalating to agent-blocked" >&2
+        hold "skipped-max-reclaims (count=$_rc_current) - every seat class (prepaid/metered/senior) exhausted, escalating to agent-blocked" >&2
         gh issue edit "$N" -R "$FULL" --add-label agent-blocked --remove-label agent-ready 2>/dev/null || true
         gh issue comment "$N" -R "$FULL" --body "fleet-ops#3310: issue $N has been re-claimed $_rc_current times (work-cap=$MAX_RECLAIMS) across every seat class (prepaid/metered/senior). Real work failures have exhausted the seat pool; re-queuing is the orchestrator's decision, not a senior conference that never runs.
 
@@ -2228,7 +2250,7 @@ blocked-on: infra" 2>/dev/null || true
             _sys_epoch=$(date -u -d "$_sys_ts" +%s 2>/dev/null) || _sys_epoch=0
             _sys_age=$(( _rc_now_epoch - _sys_epoch ))
             if (( _sys_epoch > 0 && _sys_age < RECLAIM_COOLDOWN_S )); then
-                echo "issue $N ($title): skipped-systemic-failure (seeded $_sys_age ago, all seats failed - waiting for provider recovery)"
+                hold "skipped-systemic-failure (seeded $_sys_age ago, all seats failed - waiting for provider recovery)"
                 continue
             fi
             rm -f "$_systemic_file" 2>/dev/null || true
@@ -2257,7 +2279,7 @@ blocked-on: infra" 2>/dev/null || true
         _claim_unit="pi-issue@${REPO}-${N}.service"
         _claim_state=$("$SYSTEMCTL" --user is-active "$_claim_unit" 2>/dev/null || true)
         if [[ "$_claim_state" == "active" || "$_claim_state" == "activating" ]]; then
-            echo "issue $N ($title): skipped-claim-live (worker $_claim_unit $_claim_state)"
+            hold "skipped-claim-live (worker $_claim_unit $_claim_state)"
             continue
         fi
         # No live worker. Is there an open PR from this branch? If so, the
@@ -2265,7 +2287,7 @@ blocked-on: infra" 2>/dev/null || true
         _claim_prs=$(_gh_read api "repos/$FULL/pulls?state=open&head=${FULL%%/*}:claim/issue-$N&per_page=1" 2>/dev/null || true)
         _claim_pr_count=$(printf '%s' "$_claim_prs" | jq 'length // 0' 2>/dev/null || echo 0)
         if (( _claim_pr_count > 0 )); then
-            echo "issue $N ($title): skipped-claim-pr-open (open PR from claim/issue-$N)"
+            hold "skipped-claim-pr-open (open PR from claim/issue-$N)"
             continue
         fi
         # Stale claim: no live worker, no open PR. The worker died without
@@ -2274,7 +2296,7 @@ blocked-on: infra" 2>/dev/null || true
         if git -C "$REPO_DIR" push origin ":refs/heads/claim/issue-$N" >/dev/null 2>&1; then
             echo "issue $N ($title): released-stale-claim (no live worker, no open PR — branch deleted, re-claiming)"
         else
-            echo "issue $N ($title): skipped-claim-lost (stale branch delete failed; will retry next tick)"
+            hold "skipped-claim-lost (stale branch delete failed; will retry next tick)"
             continue
         fi
     fi
@@ -2323,14 +2345,14 @@ blocked-on: infra" 2>/dev/null || true
                 _cl_decided=1
             fi
             if (( _cl_decided == 1 )); then
-                echo "issue $N ($title): skipped-claim-loop (claimed ${_cl_window_claims}x in ${RECLAIM_WINDOW_S}s window, cap=$MAX_CLAIMS_IN_WINDOW) - already decided (decision-resolved:), escalating seat fault, not re-parking to orchestrator" >&2
+                hold "skipped-claim-loop (claimed ${_cl_window_claims}x in ${RECLAIM_WINDOW_S}s window, cap=$MAX_CLAIMS_IN_WINDOW) - already decided (decision-resolved:), escalating seat fault, not re-parking to orchestrator" >&2
                 gh issue edit "$N" -R "$FULL" --add-label agent-blocked --remove-label agent-ready 2>/dev/null || true
                 gh issue comment "$N" -R "$FULL" --body "fleet-ops#4848: issue $N has been claimed ${_cl_window_claims} times in the last ${RECLAIM_WINDOW_S}s (cap=$MAX_CLAIMS_IN_WINDOW) with no open PR, but the orchestrator sweep already posted a \`decision-resolved:\` verdict — the decision is settled, so re-parking to needs-orchestrator would only re-ask it. Keeping agent-blocked and escalating the seat fault instead (fleet-ops#3310/#3527): the claim path is spinning dead workers into the seat pool. The seat-fault escalator owns this until a healthy seat can run it.
 
 blocked-on: infra" 2>/dev/null || true
                 continue
             fi
-            echo "issue $N ($title): skipped-claim-loop (claimed ${_cl_window_claims}x in ${RECLAIM_WINDOW_S}s window, cap=$MAX_CLAIMS_IN_WINDOW) - escalating to agent-blocked" >&2
+            hold "skipped-claim-loop (claimed ${_cl_window_claims}x in ${RECLAIM_WINDOW_S}s window, cap=$MAX_CLAIMS_IN_WINDOW) - escalating to agent-blocked" >&2
             gh issue edit "$N" -R "$FULL" --add-label agent-blocked --add-label needs-orchestrator --remove-label agent-ready 2>/dev/null || true
             gh issue comment "$N" -R "$FULL" --body "fleet-ops#2772: issue $N has been claimed ${_cl_window_claims} times in the last ${RECLAIM_WINDOW_S}s (cap=$MAX_CLAIMS_IN_WINDOW) with no open PR — the claim path is spinning dead workers into the seat pool instead of completing. Routing to the orchestrator decision sweep (fleet-ops#4260), not Nish: a claim-loop break is not a money/legal/product-direction/customer-data question.
 
@@ -2345,7 +2367,7 @@ blocked-on: orchestrator" 2>/dev/null || true
     # this issue this tick rather than claim a possibly-blocked or
     # out-of-band issue. The next tick retries.
     _body_json=$(_gh_read issue view "$N" -R "$FULL" --json body,author 2>/dev/null) || {
-        echo "issue $N ($title): skipped-body-unreadable"
+        hold "skipped-body-unreadable"
         continue
     }
     body=$(printf '%s' "$_body_json" | jq -r '.body // ""')
@@ -2396,7 +2418,7 @@ blocked-on: orchestrator" 2>/dev/null || true
             # provider, delivered via merged non-claim PR #5081, claim branch
             # closed conflicting, ~15 re-claims since 2026-09-10).
             _park_pr=$(printf '%s' "$_park_merged" | jq -r '.[0].number')
-            echo "issue $N ($title): skipped-parked-protected-merged ($_park_claims cumulative claims > cap $PARK_MAX_CLAIMS; merged PR #$_park_pr delivered it; awaiting runtime gate)" >&2
+            hold "skipped-parked-protected-merged ($_park_claims cumulative claims > cap $PARK_MAX_CLAIMS; merged PR #$_park_pr delivered it; awaiting runtime gate)" >&2
             # fleet-ops#4540: gh issue edit --add-label does NOT auto-create a
             # missing label (it fails \"<name> not found\"), so ensure the park
             # label exists first (idempotent --force). Without this the add
@@ -2428,7 +2450,7 @@ blocked-on: orchestrator" 2>/dev/null || true
                 # detector (which requires protection + a merged claim-branch
                 # PR) and the reset (#2462) / window (#2772) gates all miss the
                 # same slow-spaced spin. Park when no merged claim-branch PR.
-                echo "issue $N ($title): skipped-parked-land-or-close ($_park_claims cumulative claims > cap $PARK_MAX_CLAIMS; termination: names other PRs; no claim-branch delivery PR; awaiting Nish to close)" >&2
+                hold "skipped-parked-land-or-close ($_park_claims cumulative claims > cap $PARK_MAX_CLAIMS; termination: names other PRs; no claim-branch delivery PR; awaiting Nish to close)" >&2
                 gh label create awaiting-runtime-gate -R "$FULL" --color D4C5F9 \
                     --description "Parked: land-or-close issue whose termination: met by other PRs; do not claim (fleet-ops#4553)" --force >/dev/null 2>&1 || true
                 gh issue edit "$N" -R "$FULL" --add-label awaiting-runtime-gate --remove-label agent-ready 2>/dev/null || true
@@ -2466,7 +2488,7 @@ blocked-on: orchestrator" 2>/dev/null || true
                     fi
                 done < <(printf '%s' "$_park_merged" | jq -r '.[] | [.number, ((.body // "") | @base64)] | @tsv' 2>/dev/null)
                 if (( _park_all_mention == 1 )); then
-                    echo "issue $N ($title): skipped-parked-mention-strand ($_park_claims cumulative claims > cap $PARK_MAX_CLAIMS; merged claim-branch PR #$_park_pr is mention-classified (Relates-to), not a delivery; awaiting Nish to close)" >&2
+                    hold "skipped-parked-mention-strand ($_park_claims cumulative claims > cap $PARK_MAX_CLAIMS; merged claim-branch PR #$_park_pr is mention-classified (Relates-to), not a delivery; awaiting Nish to close)" >&2
                     gh label create awaiting-runtime-gate -R "$FULL" --color D4C5F9 \
                         --description "Parked: non-protected issue whose merged claim-branch PR is a Relates-to mention, not a delivery; do not claim (fleet-ops#5045)" --force >/dev/null 2>&1 || true
                     gh issue edit "$N" -R "$FULL" --add-label awaiting-runtime-gate --remove-label agent-ready 2>/dev/null || true
@@ -2548,7 +2570,7 @@ blocked-on: orchestrator" 2>/dev/null || true
                 else
                     _park_reason="merged non-claim PR #$_park_delivered_pr delivered it"
                 fi
-                echo "issue $N ($title): skipped-parked-protected-delivered ($_park_claims cumulative claims > cap $PARK_MAX_CLAIMS; $_park_reason; awaiting runtime gate, fleet-ops#5048)" >&2
+                hold "skipped-parked-protected-delivered ($_park_claims cumulative claims > cap $PARK_MAX_CLAIMS; $_park_reason; awaiting runtime gate, fleet-ops#5048)" >&2
                 gh label create awaiting-runtime-gate -R "$FULL" --color D4C5F9 \
                     --description "Parked: protected issue + delivered work awaiting a runtime gate; do not claim (fleet-ops#5048)" --force >/dev/null 2>&1 || true
                 gh issue edit "$N" -R "$FULL" --add-label awaiting-runtime-gate --remove-label agent-ready 2>/dev/null || true
@@ -2570,7 +2592,7 @@ blocked-on: orchestrator" 2>/dev/null || true
             if ! printf '%s' "$_park_merged" | jq -e 'length > 0' >/dev/null 2>&1; then
                 _park_dup=$(park_duplicate_delivery "$FULL" "$N" "$body")
                 if [[ -n "$_park_dup" ]]; then
-                    echo "issue $N ($title): skipped-parked-protected-duplicate ($_park_claims cumulative claims > cap $PARK_MAX_CLAIMS; no merged claim/issue-$N PR; merged PR #$_park_dup delivered the files: work; awaiting runtime gate)" >&2
+                    hold "skipped-parked-protected-duplicate ($_park_claims cumulative claims > cap $PARK_MAX_CLAIMS; no merged claim/issue-$N PR; merged PR #$_park_dup delivered the files: work; awaiting runtime gate)" >&2
                     gh label create awaiting-runtime-gate -R "$FULL" --color D4C5F9 \
                         --description "Parked: protected issue already delivered by another issue's merged PR; do not claim (fleet-ops#5082)" --force >/dev/null 2>&1 || true
                     gh issue edit "$N" -R "$FULL" --add-label awaiting-runtime-gate --remove-label agent-ready 2>/dev/null || true
@@ -2593,7 +2615,7 @@ blocked-on: orchestrator" 2>/dev/null || true
     # The bounce protocol writes blocked-on on the comment that *is* latest
     # at bounce time, so comments[-1] still catches a live bounce.
     _cjson=$(gh issue view "$N" -R "$FULL" --json comments 2>/dev/null) || {
-        echo "issue $N ($title): skipped-comments-unreadable"
+        hold "skipped-comments-unreadable"
         continue
     }
     comments=$(printf '%s' "$_cjson" | jq -r '[.comments[]?.body // empty] | join("\n")')
@@ -2606,7 +2628,7 @@ blocked-on: orchestrator" 2>/dev/null || true
     # filter must scan that comment too. Audit finding 2026-08-26: fleet-ops#87
     # looped exactly this way.
     if blocked_filter "$body" "$FULL" "$N" "$last_comment"; then
-        echo "issue $N ($title): skipped-blocked-on"
+        hold "skipped-blocked-on"
         continue
     fi
 
@@ -2614,7 +2636,7 @@ blocked-on: orchestrator" 2>/dev/null || true
     # The in-flight marker lists the batch; while the judge runs, intake does
     # not claim any member so the verdict lands before a worker touches them.
     if [[ -f "$SPEC_JUDGE_LIB" ]] && spec_judge_skip_member "$REPO" "$N"; then
-        echo "issue $N ($title): skipped-spec-judge (member of a batch being judged)"
+        hold "skipped-spec-judge (member of a batch being judged)"
         continue
     fi
 
@@ -2632,7 +2654,7 @@ blocked-on: orchestrator" 2>/dev/null || true
     if ! depends_on_filter "$body" "$FULL" "$N" >"$_dep_reason_file"; then
         _dep_reason="$(cat "$_dep_reason_file")"
         rm -f "$_dep_reason_file"
-        echo "issue $N ($title): $_dep_reason"
+        hold "$_dep_reason"
         continue
     fi
     rm -f "$_dep_reason_file"
@@ -2649,7 +2671,7 @@ blocked-on: orchestrator" 2>/dev/null || true
     set -e
     rm -rf "$_size_dir"
     if (( size_rc == 1 )); then
-        echo "issue $N ($title): skipped-oversized"
+        hold "skipped-oversized"
         gh issue edit "$N" -R "$FULL" --remove-label agent-ready --add-label agent-blocked 2>/dev/null || true
         gh issue comment "$N" -R "$FULL" --body "$size_out" 2>/dev/null || true
         continue
@@ -2667,7 +2689,7 @@ blocked-on: orchestrator" 2>/dev/null || true
     bounce_rc=$?
     set -e
     if (( bounce_rc == 1 )); then
-        echo "issue $N ($title): skipped-spec-incomplete"
+        hold "skipped-spec-incomplete"
         continue
     fi
     if (( bounce_rc != 0 )); then
@@ -2682,7 +2704,7 @@ blocked-on: orchestrator" 2>/dev/null || true
     # sit red until Nish returns. The issue stays agent-ready and becomes
     # claimable again after the window; the gate is unchanged.
     if protected_verifier_vacation_filter "$body"; then
-        echo "issue $N ($title): skipped-protected-verifier-vacation"
+        hold "skipped-protected-verifier-vacation"
         continue
     fi
 
@@ -2694,7 +2716,7 @@ blocked-on: orchestrator" 2>/dev/null || true
     # does NOT apply — the rung is the reserved exemption.
     difficulty="$(issue_difficulty "${labels[$i]}" "$title" "$body")"
     if [[ "$_light_only_claims" == "1" && "$_repair_rung_armed" == "0" && "$difficulty" != "light" ]]; then
-        echo "issue $N ($title): skipped-heavy-no-heavy-seat (light-only tick — no usable heavy-capable seat, fleet-ops#4639)"
+        hold "skipped-heavy-no-heavy-seat (light-only tick — no usable heavy-capable seat, fleet-ops#4639)"
         continue
     fi
 
@@ -2713,7 +2735,7 @@ blocked-on: orchestrator" 2>/dev/null || true
         band_reason="allow-repair-rung"
     else
         band_reason=$(precedence_band_allow_claim "$REPO" "$N" "${labels[$i]}" "$body" "$title") || {
-            echo "issue $N ($title): skipped-precedence-band ($band_reason)"
+            hold "skipped-precedence-band ($band_reason)"
             continue
         }
     fi
@@ -2735,7 +2757,7 @@ blocked-on: orchestrator" 2>/dev/null || true
                 echo "issue $N ($title): held-in-buffer floor lane ($band_reason) — one claim, queue not hard-stalled"
                 ;;
             *)
-                echo "issue $N ($title): skipped-product-first-held ($band_reason)"
+                hold "skipped-product-first-held ($band_reason)"
                 continue
                 ;;
         esac
@@ -2746,7 +2768,7 @@ blocked-on: orchestrator" 2>/dev/null || true
     push_out=$(git -C "$REPO_DIR" push --force-with-lease="refs/heads/claim/issue-$N:" origin "origin/main:refs/heads/claim/issue-$N" 2>&1) || status=$?
     if (( status != 0 )); then
         if [[ "$push_out" == *"stale info"* ]] || [[ "$push_out" == *"rejected"* ]]; then
-            echo "issue $N ($title): skipped-claim-lost"
+            hold "skipped-claim-lost"
             continue
         fi
         echo "git push failed for issue $N: $push_out" >&2
@@ -2876,7 +2898,7 @@ blocked-on: orchestrator" 2>/dev/null || true
     unit="pi-issue@${REPO}-${N}.service"
     pre_state=$("$SYSTEMCTL" --user is-active "$unit" 2>/dev/null || true)
     if [[ "$pre_state" == "active" || "$pre_state" == "activating" ]]; then
-        echo "issue $N ($title): skipped-already-live"
+        hold "skipped-already-live"
         continue
     fi
 
@@ -2966,7 +2988,7 @@ blocked-on: orchestrator" 2>/dev/null || true
     start_status=0
     start_out=$("$SYSTEMCTL" --user start --no-block "$unit" 2>&1) || start_status=$?
     if (( start_status != 0 )); then
-        echo "issue $N ($title): spawn failed for ${REPO}-${N}: $start_status; output: $start_out"
+        hold "spawn failed for ${REPO}-${N}: $start_status; output: $start_out"
         continue
     fi
 
@@ -2985,18 +3007,18 @@ blocked-on: orchestrator" 2>/dev/null || true
     # mean branch + packet + unit all exist, not that start --no-block
     # returned 0. A unit that is not active/activating did not spawn.
     if [[ "$post_state" != "active" && "$post_state" != "activating" ]]; then
-        echo "issue $N ($title): spawn failed (start-limit lockout, unit=$post_state) for ${REPO}-${N}"
+        hold "spawn failed (start-limit lockout, unit=$post_state) for ${REPO}-${N}"
         continue
     fi
     [[ -f "$packet_path" ]] || {
-        echo "issue $N ($title): spawn failed (packet missing after write) for ${REPO}-${N}"
+        hold "spawn failed (packet missing after write) for ${REPO}-${N}"
         continue
     }
     # Verify the claim branch survived on the remote (post-condition, not
     # intention). A missing branch means the push was rolled back or lost.
     branch_check=$(git -C "$REPO_DIR" ls-remote origin "refs/heads/claim/issue-$N" 2>/dev/null || true)
     if [[ -z "$branch_check" ]]; then
-        echo "issue $N ($title): spawn failed (claim branch missing post-spawn) for ${REPO}-${N}"
+        hold "spawn failed (claim branch missing post-spawn) for ${REPO}-${N}"
         continue
     fi
 
@@ -3053,6 +3075,29 @@ blocked-on: orchestrator" 2>/dev/null || true
     fi
     slots=$(( slots - 1 ))
 done
+
+# fleet-ops#6274: the hold-population counts line. ready = the
+# post-exclusion dispatchable pool this tick scanned (umbrella/escalate-senior
+# are de-labelled by their exclusion filters, so they belong to the
+# agent-blocked population, not here); held = issues that printed a
+# skipped-* reason above; claimable = issues that passed every gate and
+# reached the claim attempt (ready - held: each scanned issue has exactly one
+# outcome). reasons= aggregates the hold reasons, count desc then key, so
+# the binding constraint (capacity, precedence band, parks, collision /
+# blocker gates) is named by the tick output itself.
+_held_count=0
+_intake_reasons=""
+if (( ${#_hold_counts[@]} > 0 )); then
+    while IFS= read -r _hold_key; do
+        [[ -z "$_hold_key" ]] && continue
+        _held_count=$(( _held_count + _hold_counts["$_hold_key"] ))
+        _intake_reasons="$_intake_reasons,$_hold_key:${_hold_counts["$_hold_key"]}"
+    done < <(for _hold_key in "${!_hold_counts[@]}"; do
+                printf '%d\t%s\n' "${_hold_counts["$_hold_key"]}" "$_hold_key"
+            done | sort -k1,1nr -k2,2 | cut -f2)
+    _intake_reasons="${_intake_reasons#,}"
+fi
+echo "intake: ready=$ready_count claimable=$(( ready_count - _held_count )) held=$_held_count reasons=${_intake_reasons:-none}"
 
 # fleet-ops#4450 item 2: LOW-WATER supply trigger at the end of the tick.
 # ready_after = the agent-ready pool left after this tick's claims. When it
