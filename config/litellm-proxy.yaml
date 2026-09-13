@@ -122,7 +122,7 @@ benched:
     order: 2
     max_parallel_requests: 1
 - benched_at: 2026-09-13
-  reason: "openai/hf:zai-org/GLM-5.3-Flash @ https://api.synthetic.new/openai/v1 — 429 'You've exceeded your subscription rate limits. Upgrade, or try again later.' on /health, ALL FOUR deployments (worker-cheap/worker-capable/senior/worker-private — one account, one key), persistent 17:58Z→22:45Z through the 03:32:59 IST reboot; the canary tripped health-deployment-unhealthy 04:05-04:09+ IST. #6054/#5792 accept-line drill. Restore a deployment ONLY with a green /health probe cited in the PR."
+  reason: "openai/hf:zai-org/GLM-5.3-Flash @ https://api.synthetic.new/openai/v1 — 429 'You've exceeded your subscription rate limits. Upgrade, or try again later.' on /health, ALL FOUR deployments (worker-cheap/worker-capable/senior/worker-private — one account, one key), persistent 17:58Z→22:45Z through the 03:32:59 IST reboot; the canary tripped health-deployment-unhealthy 04:05-04:09+ IST. #6054/#5792 accept-line drill, closed by #6210: benched state verified live 2026-09-13 06:21-06:25 IST — canary Finished x5 (proxy_up=1, census=9, expected=9, 4 groups), /health healthy=9 unhealthy=0, LIVE yaml == this file via the #5811 deploy path, no hand edit. Restore a deployment ONLY with a green /health probe cited in the PR."
   was: [worker-cheap, worker-capable, senior, worker-private]
   litellm_params:
     model: openai/hf:zai-org/GLM-5.3-Flash
