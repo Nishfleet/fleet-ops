@@ -270,15 +270,10 @@ resolve_senior_seat() {
         return 0
     fi
     local s
-    # Prefer the shared litellm-seat ladder (first usable, any-capable fallback
-    # built in). Only inline when litellm-seat is not available (tests, degraded).
-    if command -v find_senior_seat >/dev/null 2>&1; then
-        if s=$(find_senior_seat); then
-            printf '%s\n' "$s"
-            return 0
-        fi
-        return 1
-    fi
+    # fleet-ops#6101: the find_senior_seat preference (which printed
+    # litellm/senior — a reroute through the LiteLLM proxy) is gone. The
+    # senior path is the AUDIT_SENIOR_ORDER ladder below, cursor first —
+    # the escalation matrix (Nish 2026-09-12), never the proxy.
     local order="${AUDIT_SENIOR_ORDER:-cursor/cursor-grok-4.6-high xai-oauth/grok-4.6 openrouter/deepseek/deepseek-v4.1-flash}"
     local seat p m
     for seat in $order; do
@@ -617,13 +612,23 @@ main() {
         free-glm-5-3|free|free-glm) group=worker-cheap ;;
         *) group=worker-capable ;;
     esac
-    if declare -F litellm_seat >/dev/null 2>&1; then
-        seat=$(litellm_seat "$group" || true)
-    elif seat=$(resolve_seat "$role"); then
-        :
+    # fleet-ops#6101: the senior role keeps the AUDIT_SENIOR_ORDER ladder
+    # (ESCALATION MATRIX, cursor/cursor-grok-4.6-high first — never rerouted
+    # to the LiteLLM proxy); every other role goes straight through its
+    # proxy group. The non-litellm resolve_seat fallback is deleted.
+    if [ "$group" = "senior" ]; then
+        if ! seat=$(resolve_senior_seat); then
+            log "no usable seat for role=$role (lane fault); skipping"
+            exit 0
+        fi
     else
-        log "no usable seat for role=$role (lane fault); skipping"
-        exit 0
+        if declare -F litellm_seat >/dev/null 2>&1; then
+            seat=$(litellm_seat "$group" || true)
+        fi
+        if [ -z "${seat:-}" ]; then
+            log "no usable seat for role=$role (lane fault); skipping"
+            exit 0
+        fi
     fi
     log "pi-audit-run: $role -> litellm/$group"
     provider=$(printf '%s\n' "$seat" | cut -f1)
