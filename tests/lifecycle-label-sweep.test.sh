@@ -158,6 +158,9 @@ export PATH="$scratch/bin:$PATH"
 # the token-minting block is skipped and the fake gh on PATH is used.
 export GH_TOKEN="test-stub"
 export LIFECYCLE_SWEEP_LOCKDIR="$scratch/lock"
+# fleet-ops#5890: the refusal-dedup state now lives in the sweep summary —
+# point it at the scratch, or the test reads+writes the production state file.
+export LIFECYCLE_SWEEP_SUMMARY="$scratch/summary.json"
 export LIFECYCLE_SWEEP_REPOS="Nishfleet/0509"
 export LIFECYCLE_SWEEP_NOW="2026-08-26T16:00:00Z"
 unset LIFECYCLE_SWEEP_DRILL || true

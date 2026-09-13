@@ -87,6 +87,9 @@ export PATH="$scratch/bin:$PATH"
 export LIFECYCLE_SWEEP_LOCKDIR="$scratch/lock"
 export LIFECYCLE_SWEEP_REPOS="Nishfleet/0509"
 export LIFECYCLE_SWEEP_NOW="2026-09-06T17:00:00Z"
+# fleet-ops#5890: the refusal-dedup state now lives in the sweep summary —
+# point it at the scratch, or the test reads+writes the production state file.
+export LIFECYCLE_SWEEP_SUMMARY="$scratch/summary.json"
 # fleet-ops#3445: the sweep re-PATHs to /home/nish/.local/bin first and mints
 # a real App token when GH_TOKEN is unset, bypassing the fake gh. Set a stub.
 export GH_TOKEN="test-stub"
