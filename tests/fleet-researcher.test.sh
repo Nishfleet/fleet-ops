@@ -10,7 +10,7 @@
 #   4. Active unit -> no start. Cadence-cut (zero adoption) -> no start.
 #   5. Drill run: a valid delta is filed scout-candidate+research-delta.
 #   6. Drill run: generic advice is logged, not filed; replay is skipped.
-#   7. Heartbeat-tier1 wires block 20 and propagates a broken dispatch.
+#   7. Heartbeat-tier1 wires block 21 and propagates a broken dispatch.
 #   8. MANIFEST installs the role files.
 #
 # Live pi / systemctl start are the outermost edges and are stubbed.
@@ -197,7 +197,8 @@ calls="$scratch/calls.log"
 sys_fake="$scratch/systemctl"
 cat >"$sys_fake" <<'FAKE'
 #!/usr/bin/env bash
-: "${CALLS:=/tmp/calls.log}"
+#6102: per-invocation private fallback (never a fixed shared path).
+: "${CALLS:=$(mktemp -t researcher-calls.XXXXXX)}"
 printf '%s\n' "$*" >>"$CALLS"
 if [[ "${1:-}" == "--user" && "${2:-}" == "is-active" ]]; then
   unit="${3:-}"
@@ -397,8 +398,8 @@ export RESEARCHER_DRILL_DELTAS="$scratch/good.json"
 ok "run: rejected/filed fingerprints are not re-litigated"
 
 # --- 7. heartbeat wiring ---------------------------------------------------
-grep -F '20. researcher dispatch starting' "$tier1" >/dev/null \
-  || fail "tier1 must log researcher dispatch as block 20"
+grep -F '21. researcher dispatch starting' "$tier1" >/dev/null \
+  || fail "tier1 must log researcher dispatch as block 21"
 grep -F 'researcher_dispatch_rc' "$tier1" >/dev/null \
   || fail "tier1 must capture researcher_dispatch_rc"
 grep -F -- 'exit "$researcher_dispatch_rc"' "$tier1" >/dev/null \

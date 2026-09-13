@@ -330,7 +330,7 @@ trap 'rm -rf "$scratch" "$stub_dir"' EXIT INT TERM
 cat >"$stub_dir/gh" <<'STUB'
 #!/usr/bin/env bash
 # Record every call; dispatch on subcommand.
-cmd_log="${FLEET_CRED_EXPIRY_STUB_LOG:-/tmp/cred-expiry-gh-calls.log}"
+cmd_log="${FLEET_CRED_EXPIRY_STUB_LOG:-$(mktemp -t cred-expiry-gh-calls.XXXXXX)}" #6102: private fallback, never a fixed shared path
 printf 'gh %s\n' "$*" >>"$cmd_log"
 case "$1" in
     issue)
@@ -372,7 +372,7 @@ chmod +x "$stub_dir/gh"
 cat >"$stub_dir/fleet-issue-file" <<'STUB'
 #!/usr/bin/env bash
 # Record the file call; print a fake issue URL.
-cmd_log="${FLEET_CRED_EXPIRY_STUB_LOG:-/tmp/cred-expiry-gh-calls.log}"
+cmd_log="${FLEET_CRED_EXPIRY_STUB_LOG:-$(mktemp -t cred-expiry-gh-calls.XXXXXX)}" #6102: private fallback, never a fixed shared path
 printf 'fleet-issue-file file %s\n' "$*" >>"$cmd_log"
 echo "https://github.com/Nishfleet/fleet-ops/issues/9999"
 exit 0
@@ -630,7 +630,7 @@ export FLEET_CRED_EXPIRY_STUB_VIEW_TITLES="$view_titles"
 # fleet-issue-file returns the WRONG issue (the live 02:54Z bug).
 cat >"$stub_dir/fleet-issue-file" <<'STUB'
 #!/usr/bin/env bash
-cmd_log="${FLEET_CRED_EXPIRY_STUB_LOG:-/tmp/cred-expiry-gh-calls.log}"
+cmd_log="${FLEET_CRED_EXPIRY_STUB_LOG:-$(mktemp -t cred-expiry-gh-calls.XXXXXX)}" #6102: private fallback, never a fixed shared path
 printf 'fleet-issue-file file %s\n' "$*" >>"$cmd_log"
 echo "https://github.com/Nishfleet/fleet-ops/issues/4611"
 exit 0
@@ -656,7 +656,7 @@ ok "FILED pointer to unrelated #4611 -> FILED-LINK-MISMATCH + fresh gh issue cre
 # --- 27b. matching title is accepted (no mismatch, no extra create) --------
 cat >"$stub_dir/fleet-issue-file" <<'STUB'
 #!/usr/bin/env bash
-cmd_log="${FLEET_CRED_EXPIRY_STUB_LOG:-/tmp/cred-expiry-gh-calls.log}"
+cmd_log="${FLEET_CRED_EXPIRY_STUB_LOG:-$(mktemp -t cred-expiry-gh-calls.XXXXXX)}" #6102: private fallback, never a fixed shared path
 printf 'fleet-issue-file file %s\n' "$*" >>"$cmd_log"
 echo "https://github.com/Nishfleet/fleet-ops/issues/9999"
 exit 0
