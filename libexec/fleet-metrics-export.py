@@ -5461,123 +5461,15 @@ def _emit_blocked_reconcile(lines):
     )
 
 
-# --- close-duplicates close guard (fleet-ops#3161) ------------------------
-# The heartbeat writes lib/issue-file.py close-duplicates summary to
-# $FLEET_HEARTBEAT_LOG_DIR/close-duplicates.json every tick. We emit the
-# per-tick close count by label so an alert can fire the instant a
-# cross-repo or protected (critical-path / owner-authored) issue is closed.
-# Both labelled series must stay 0; only cross_repo=false,protected=false
-# may increment. The family is always emitted (zeros when the file is
-# missing) so FleetCloseDuplicatesClosesAbsent never false-fires on a
-# skipped tick.
-CLOSE_DUP_JSON = Path(
-    os.environ.get(
-        "FLEET_CLOSE_DUPLICATES_JSON",
-        "/home/nish/.local/state/fleet-heartbeat/close-duplicates.json",
-    )
-)
-HELP_CD = (
-    "# HELP fleet_close_duplicates_closes_total Duplicate issues auto-closed "
-    "by fleet-issue-file close-duplicates in the last run, by label "
-    "(fleet-ops#3161). cross_repo and protected must always be 0; an alert "
-    "on either > 0 catches a wrong close of a cross-repo or protected issue."
-)
-TYPE_CD = "# TYPE fleet_close_duplicates_closes_total gauge"
-_CLOSE_DUP_LABELS = (
-    ("false", "false"),
-    ("false", "true"),
-    ("true", "false"),
-    ("true", "true"),
-)
 
-
-def _emit_close_duplicates(lines):
-    """Append fleet_close_duplicates_closes_total{cross_repo,protected}.
-
-    Reads the last close-duplicates summary's closes_by_label map. Never
-    raises: a missing/unparseable file emits all four series as 0 so the
-    family is always present and the absent rule stays quiet.
-    """
-    counts = {f"cross_repo={cr},protected={pr}": 0 for cr, pr in _CLOSE_DUP_LABELS}
-    try:
-        data = json.loads(CLOSE_DUP_JSON.read_text(encoding="utf-8"))
-        raw = data.get("closes_by_label") or {}
-        if isinstance(raw, dict):
-            for k, v in raw.items():
-                if k in counts and isinstance(v, (int, float)):
-                    counts[k] = int(v)
-    except (OSError, json.JSONDecodeError):
-        pass
-    lines.append("")
-    lines.append(HELP_CD)
-    lines.append(TYPE_CD)
-    for cr, pr in _CLOSE_DUP_LABELS:
-        lines.append(
-            f'fleet_close_duplicates_closes_total{{cross_repo="{cr}",protected="{pr}"}} '
-            f"{counts[f'cross_repo={cr},protected={pr}']}"
-        )
-
-
-# --- observe-to-close close guard (fleet-ops#3231) ---------------------
-# The heartbeat writes bin/fleet-merged-pr-close's per-tick summary to
-# $FLEET_HEARTBEAT_LOG_DIR/merged-pr-close.json every tick. We emit the
-# close count by reason so an alert can fire the instant a close happens on
-# a bare mention or on a protected (critical-path / owner-authored) issue —
-# the PR #3205 regression that wrongly closed #3140/#3146. Both labelled
-# series must stay 0; only claim-branch and closes-trailer may increment.
-# The family is always emitted (zeros when the file is missing) so the
-# absent rule never false-fires on a skipped tick.
-MERGED_PR_CLOSE_JSON = Path(
-    os.environ.get(
-        "FLEET_MERGED_PR_CLOSE_JSON",
-        "/home/nish/.local/state/fleet-heartbeat/merged-pr-close.json",
-    )
-)
-HELP_MPC = (
-    "# HELP fleet_observe_to_close_total Issues auto-closed by observe-to-close "
-    "in the last heartbeat tick, by reason (fleet-ops#3231). Legal close "
-    "reasons are claim-branch (delivery PR head), closes-trailer (explicit "
-    "Closes/Fixes/Resolves trailer), and verdict-pass (verification-only "
-    "issue with a worker VERDICT: PASS comment; fleet-ops#4274). "
-    "bare-mention and protected must always be 0; an alert on either > 0 "
-    "catches a wrong close of a mentioned or critical-path/owner-authored issue."
-)
-TYPE_MPC = "# TYPE fleet_observe_to_close_total gauge"
-_MPC_REASONS = ("claim-branch", "closes-trailer", "verdict-pass", "bare-mention", "protected")
-
-
-def _emit_observe_to_close(lines):
-    """Append fleet_observe_to_close_total{reason}.
-
-    Reads the last observe-to-close summary's closes_by_reason map. Never
-    raises: a missing/unparseable file emits all four series as 0 so the
-    family is always present and the absent rule stays quiet.
-    """
-    counts = {r: 0 for r in _MPC_REASONS}
-    try:
-        data = json.loads(MERGED_PR_CLOSE_JSON.read_text(encoding="utf-8"))
-        raw = data.get("closes_by_reason") or {}
-        if isinstance(raw, dict):
-            for k, v in raw.items():
-                if k in counts and isinstance(v, (int, float)):
-                    counts[k] = int(v)
-    except (OSError, json.JSONDecodeError):
-        pass
-    lines.append("")
-    lines.append(HELP_MPC)
-    lines.append(TYPE_MPC)
-    for reason in _MPC_REASONS:
-        lines.append(f'fleet_observe_to_close_total{{reason="{reason}"}} {counts[reason]}')
-
-
-# fleet-ops#5785: deploy-fault close gate gauges. Two sources, both written
-# by existing sweeps:
+# fleet-ops#5785: deploy-fault close gate gauge, written by the existing
+# lifecycle sweep:
 #   - lifecycle-label-sweep.json: deploy_fault_closed_without_green is the
 #     issue's "must be 0" metric — every unit is a deploy-fault issue the
 #     sweep found CLOSED without a green production run and reopened.
-#   - merged-pr-close.json: deploy_fault_gate_blocked counts deliveries
-#     observe-to-close refused to close this tick because production is
-#     not green yet (the gate holding, not a violation).
+#   fleet-ops#4161: the merged-pr-close.json source (deploy_fault_gate_
+#   blocked) retired with the observe-to-close units — the close runs in
+#   Actions now, where no host exporter can see it.
 LIFECYCLE_SWEEP_JSON = Path(
     os.environ.get(
         "FLEET_LIFECYCLE_SWEEP_JSON",
@@ -5590,12 +5482,6 @@ HELP_DFG = (
     "lifecycle-label-sweep tick (each was reopened; fleet-ops#5785). Must be 0."
 )
 TYPE_DFG = "# TYPE fleet_deploy_fault_closed_without_green gauge"
-HELP_DFG_BLOCKED = (
-    "# HELP fleet_deploy_fault_gate_blocked Deliveries observe-to-close refused "
-    "to close this tick because the deploy-fault issue has no green "
-    "production-deploy run containing the fix yet (fleet-ops#5785)."
-)
-TYPE_DFG_BLOCKED = "# TYPE fleet_deploy_fault_gate_blocked gauge"
 HELP_DFG_LABELED = (
     "# HELP fleet_deploy_fault_labeled Open issues the lifecycle sweep labelled "
     "deploy-fault this tick because the body cites a failed production-deploy "
@@ -5617,20 +5503,10 @@ def _emit_deploy_fault_gate(lines):
             labeled = int(data["deploy_fault_labeled"])
     except (OSError, json.JSONDecodeError):
         pass
-    blocked = 0
-    try:
-        data = json.loads(MERGED_PR_CLOSE_JSON.read_text(encoding="utf-8"))
-        if isinstance(data.get("deploy_fault_gate_blocked"), (int, float)):
-            blocked = int(data["deploy_fault_gate_blocked"])
-    except (OSError, json.JSONDecodeError):
-        pass
     lines.append("")
     lines.append(HELP_DFG)
     lines.append(TYPE_DFG)
     lines.append(f"fleet_deploy_fault_closed_without_green {violations}")
-    lines.append(HELP_DFG_BLOCKED)
-    lines.append(TYPE_DFG_BLOCKED)
-    lines.append(f"fleet_deploy_fault_gate_blocked {blocked}")
     lines.append(HELP_DFG_LABELED)
     lines.append(TYPE_DFG_LABELED)
     lines.append(f"fleet_deploy_fault_labeled {labeled}")
@@ -6867,13 +6743,9 @@ def main():
     # Per-sweep count of rejected `blocked-on: nish-decision` lines.
     _emit_blocked_reconcile(lines)
 
-    # --- close-duplicates close guard (fleet-ops#3161) ---
-    # Per-tick close count by label; cross_repo and protected must stay 0.
-    _emit_close_duplicates(lines)
-
-    # --- observe-to-close close guard (fleet-ops#3231) ---
-    # Per-tick close count by reason; bare-mention and protected must stay 0.
-    _emit_observe_to_close(lines)
+    # --- deploy-fault close gate gauges (fleet-ops#5785) ---
+    # lifecycle-label-sweep.json feeds closed_without_green + labeled;
+    # the merged-pr-close.json source retired with the units (fleet-ops#4161).
     _emit_deploy_fault_gate(lines)
 
     # --- Week-later revert check (fleet-ops#3124 part 4/4) ---

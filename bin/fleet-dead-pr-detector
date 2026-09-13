@@ -88,10 +88,11 @@ fi
 # over PRs is serial — so the invoking unit's start timeout stays the outer
 # bound on a tick and the sweep is never silently truncated.
 #
-# Runs as ExecStartPre of the fleet-merged-pr-close unit (same rail, no new
-# timer). A found dead PR exits 1 so the unit fails and the existing
-# OnFailure escalation pages instead of the branch lingering until a manual
-# sweep.
+# Runs as step 1 of the scheduled .github/workflows/fleet-drain-backstop.yml
+# (fleet-ops#4161 — formerly ExecStartPre of the retired
+# fleet-merged-pr-close unit, same fail-loud rail). A found dead PR exits 1
+# so the workflow job fails and the existing ci-failure-escalation sweep
+# pages instead of the branch lingering until a manual sweep.
 #
 # Output: one `dead-pr:` evidence line + one human line per dead PR, one
 # `stale-conflicting-pr:` evidence line + one human line per

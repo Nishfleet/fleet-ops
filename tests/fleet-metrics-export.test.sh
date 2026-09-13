@@ -2230,71 +2230,27 @@ PY
 ok "fleet-ops#2712 + #2752: provider-level 402 collapse and never-released skips future-walled seats"
 
 # =========================================================================
-# fleet-ops#3161: fleet_close_duplicates_closes_total{cross_repo,protected}
-# The exporter reads the last close-duplicates summary's closes_by_label and
-# emits four labelled series. cross_repo and protected must stay 0; only
-# cross_repo=false,protected=false may increment. Missing/unparseable file
-# emits all four as 0 (family always present, absent rule stays quiet).
+# fleet-ops#4161: fleet_close_duplicates_closes_total RETIRED with the
+# close-duplicates unit + timer — the drain runs in Actions now, where no
+# host exporter can see its summary. The family, its emitter and its
+# wrong-close alert are gone; the close rules stay enforced by
+# tests/fleet-merged-pr-close.test.sh + the helper's own close gate.
 # =========================================================================
-python3 - "$exporter" <<'PY' || fail "close-duplicates metric emission failed"
-import importlib.util, json, os, sys, tempfile
-from pathlib import Path
+python3 - "$exporter" <<'PY' || fail "close-duplicates metric retirement failed"
+import importlib.util, sys
 def load(p, name):
     spec = importlib.util.spec_from_file_location(name, p)
     m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
     return m
 m = load(sys.argv[1], "fme")
-
-# 1. Missing file -> all four series 0, family present.
-with tempfile.TemporaryDirectory() as td:
-    m.CLOSE_DUP_JSON = Path(td) / "missing.json"
-    lines = []
-    m._emit_close_duplicates(lines)
-    out = "\n".join(lines)
-    assert "fleet_close_duplicates_closes_total" in out, out
-    assert out.count("# HELP fleet_close_duplicates_closes_total") == 1, out
-    assert out.count("# TYPE fleet_close_duplicates_closes_total") == 1, out
-    for cr, pr in [("false","false"),("false","true"),("true","false"),("true","true")]:
-        assert f'fleet_close_duplicates_closes_total{{cross_repo="{cr}",protected="{pr}"}} 0' in out, out
-    print("OK: missing file -> 4 series all 0, HELP/TYPE once")
-
-# 2. A summary with a legit same-repo close (cross_repo=false,protected=false=1)
-#    and a WRONG cross-repo close (cross_repo=true,protected=false=1) is
-#    emitted faithfully so the alert can fire on the wrong close.
-with tempfile.TemporaryDirectory() as td:
-    p = Path(td) / "close-duplicates.json"
-    p.write_text(json.dumps({
-        "closed": 2,
-        "closes_by_label": {
-            "cross_repo=false,protected=false": 1,
-            "cross_repo=false,protected=true": 0,
-            "cross_repo=true,protected=false": 1,
-            "cross_repo=true,protected=true": 0,
-        },
-    }))
-    m.CLOSE_DUP_JSON = p
-    lines = []
-    m._emit_close_duplicates(lines)
-    out = "\n".join(lines)
-    assert 'cross_repo="false",protected="false"} 1' in out, out
-    assert 'cross_repo="true",protected="false"} 1' in out, out
-    assert 'cross_repo="false",protected="true"} 0' in out, out
-    assert 'cross_repo="true",protected="true"} 0' in out, out
-    print("OK: summary with a wrong cross-repo close is emitted faithfully (alert can fire)")
-
-# 3. Unparseable file -> all four 0 (no crash).
-with tempfile.TemporaryDirectory() as td:
-    p = Path(td) / "bad.json"
-    p.write_text("{not json")
-    m.CLOSE_DUP_JSON = p
-    lines = []
-    m._emit_close_duplicates(lines)
-    out = "\n".join(lines)
-    assert 'cross_repo="false",protected="false"} 0' in out, out
-    print("OK: unparseable file -> 4 series all 0 (no crash)")
+assert not hasattr(m, "_emit_close_duplicates"), "retired emitter still present"
+assert not hasattr(m, "CLOSE_DUP_JSON"), "retired summary source still present"
+lines = []
+m.build_prom(lines) if hasattr(m, "build_prom") else None
+print("OK: close-duplicates family retired (no emitter, no source)")
 PY
 
-ok "fleet-ops#3161: fleet_close_duplicates_closes_total{cross_repo,protected} emitted (missing/legit/wrong/unparseable)"
+ok "fleet-ops#4161: fleet_close_duplicates_closes_total retired with the unit (fleet-ops#4140 row 10)"
 
 # =========================================================================
 # fleet-ops#3312: fleet_nish_decision_rejected_total
@@ -2716,78 +2672,31 @@ PY
 ok "fleet-ops#3250/#3310: infra deaths never count as seat yield"
 
 # =========================================================================
-# 18. fleet-ops#3231: fleet_observe_to_close_total{reason}
-# The exporter reads the last observe-to-close summary's closes_by_reason
-# and emits four labelled series. only claim-branch and closes-trailer may
-# increment; bare-mention and protected must stay 0 (an alert fires on
-# either > 0 — the PR #3205 regression class that closed #3140/#3146 by a
-# bare mention). Missing/unparseable file emits all four as 0.
+# 18. fleet-ops#4161: fleet_observe_to_close_total RETIRED with the
+# merged-pr-close unit + timer (fleet-ops#4140 row 10) — the observe-to-
+# close runs in Actions now, where no host exporter can see its summary.
+# The family, its emitter, its absent rule and its wrong-close alert are
+# gone; the close rules stay enforced by tests/fleet-merged-pr-close.test.sh.
 # =========================================================================
-python3 - "$exporter" <<'PY' || fail "observe-to-close metric emission failed"
-import importlib.util, json, sys, tempfile
-from pathlib import Path
+python3 - "$exporter" <<'PY' || fail "observe-to-close metric retirement failed"
+import importlib.util, sys
 def load(p, name):
     spec = importlib.util.spec_from_file_location(name, p)
     m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
     return m
 m = load(sys.argv[1], "fme")
-
-# 1. Missing file -> all five series 0, family present with HELP/TYPE once.
-with tempfile.TemporaryDirectory() as td:
-    m.MERGED_PR_CLOSE_JSON = Path(td) / "missing.json"
-    lines = []
-    m._emit_observe_to_close(lines)
-    out = "\n".join(lines)
-    assert "fleet_observe_to_close_total" in out, out
-    assert out.count("# HELP fleet_observe_to_close_total") == 1, out
-    assert out.count("# TYPE fleet_observe_to_close_total") == 1, out
-    for r in ["claim-branch","closes-trailer","verdict-pass","bare-mention","protected"]:
-        assert f'fleet_observe_to_close_total{{reason="{r}"}} 0' in out, out
-    print("OK: missing file -> 5 series all 0, HELP/TYPE once")
-
-# 2. Legal closes (claim-branch + closes-trailer + verdict-pass) are emitted
-#    faithfully; a WRONG bare-mention close is emitted too so the alert fires.
-with tempfile.TemporaryDirectory() as td:
-    p = Path(td) / "merged-pr-close.json"
-    p.write_text(json.dumps({
-        "closed": 3,
-        "closes_by_reason": {
-            "claim-branch": 1,
-            "closes-trailer": 1,
-            "verdict-pass": 1,
-            "bare-mention": 1,
-            "protected": 0,
-        },
-    }))
-    m.MERGED_PR_CLOSE_JSON = p
-    lines = []
-    m._emit_observe_to_close(lines)
-    out = "\n".join(lines)
-    assert 'reason="claim-branch"} 1' in out, out
-    assert 'reason="closes-trailer"} 1' in out, out
-    assert 'reason="verdict-pass"} 1' in out, out
-    assert 'reason="bare-mention"} 1' in out, out
-    assert 'reason="protected"} 0' in out, out
-    print("OK: summary with legal closes + a wrong bare-mention close is emitted faithfully (alert can fire)")
-
-# 3. Unparseable file -> all five 0 (no crash).
-with tempfile.TemporaryDirectory() as td:
-    p = Path(td) / "bad.json"
-    p.write_text("{not json")
-    m.MERGED_PR_CLOSE_JSON = p
-    lines = []
-    m._emit_observe_to_close(lines)
-    out = "\n".join(lines)
-    assert 'reason="claim-branch"} 0' in out, out
-    print("OK: unparseable file -> 5 series all 0 (no crash)")
+assert not hasattr(m, "_emit_observe_to_close"), "retired emitter still present"
+assert not hasattr(m, "MERGED_PR_CLOSE_JSON"), "retired summary source still present"
+print("OK: observe-to-close family retired (no emitter, no source)")
 PY
 
-ok "fleet-ops#3231: fleet_observe_to_close_total{reason} emitted (missing/legit/wrong/unparseable)"
+ok "fleet-ops#4161: fleet_observe_to_close_total retired with the unit (fleet-ops#4140 row 10)"
 
 # =========================================================================
 # 18b. fleet-ops#5785: fleet_deploy_fault_* gauges
 # lifecycle-label-sweep.json feeds the closed-without-green tripwire (must
-# be 0) and the labeled count; merged-pr-close.json feeds gate_blocked.
+# be 0) and the labeled count. fleet-ops#4161: the merged-pr-close.json
+# source (gate_blocked) retired with the observe-to-close units.
 # Missing/unparseable files emit 0 — never crash, never false-fire.
 # =========================================================================
 python3 - "$exporter" <<'PY' || fail "deploy-fault metric emission failed"
@@ -2799,20 +2708,19 @@ def load(p, name):
     return m
 m = load(sys.argv[1], "fme")
 
-# 1. Missing files -> all three 0, HELP/TYPE once each.
+# 1. Missing file -> both gauges 0, HELP/TYPE once each.
 with tempfile.TemporaryDirectory() as td:
     m.LIFECYCLE_SWEEP_JSON = Path(td) / "missing-sweep.json"
-    m.MERGED_PR_CLOSE_JSON = Path(td) / "missing-close.json"
     lines = []
     m._emit_deploy_fault_gate(lines)
     out = "\n".join(lines)
     for name in ("fleet_deploy_fault_closed_without_green",
-                 "fleet_deploy_fault_gate_blocked",
                  "fleet_deploy_fault_labeled"):
         assert out.count(f"# HELP {name}") == 1, out
         assert out.count(f"# TYPE {name}") == 1, out
         assert f"{name} 0" in out, out
-    print("OK: missing summaries -> all three gauges 0, HELP/TYPE once")
+    assert "fleet_deploy_fault_gate_blocked" not in out, "retired gauge still emitted"
+    print("OK: missing summary -> both gauges 0, HELP/TYPE once; gate_blocked gone")
 
 # 2. Real counts land — including a nonzero tripwire (the 0509#2662 class:
 #    a deploy-fault issue the sweep found closed without a green run).
@@ -2822,24 +2730,20 @@ with tempfile.TemporaryDirectory() as td:
         "deploy_fault_closed_without_green": 1,
         "deploy_fault_labeled": 2,
     }))
-    close = Path(td) / "merged-pr-close.json"
-    close.write_text(json.dumps({"deploy_fault_gate_blocked": 1}))
     m.LIFECYCLE_SWEEP_JSON = sweep
-    m.MERGED_PR_CLOSE_JSON = close
     lines = []
     m._emit_deploy_fault_gate(lines)
     out = "\n".join(lines)
     assert "fleet_deploy_fault_closed_without_green 1" in out, out
     assert "fleet_deploy_fault_labeled 2" in out, out
-    assert "fleet_deploy_fault_gate_blocked 1" in out, out
-    print("OK: nonzero tripwire + labeled + gate_blocked emitted faithfully")
+    assert "fleet_deploy_fault_gate_blocked" not in out, out
+    print("OK: nonzero tripwire + labeled emitted faithfully")
 
 # 3. Unparseable file -> 0, no crash.
 with tempfile.TemporaryDirectory() as td:
     bad = Path(td) / "bad.json"
     bad.write_text("{not json")
     m.LIFECYCLE_SWEEP_JSON = bad
-    m.MERGED_PR_CLOSE_JSON = bad
     lines = []
     m._emit_deploy_fault_gate(lines)
     out = "\n".join(lines)

@@ -744,9 +744,11 @@ remove_retired_staleness_timer() {
 # symlinks (fleet-ops#4199 — a symlink to a unit file deleted from the
 # deploy clone fails -f), and the timers.target.wants link is rm'd
 # explicitly because disable cannot resolve a unit whose fragment is gone.
-# The MANIFEST-mandated dated receipts
-# (~/.config/systemd/user/*.pre-issue-4161-*) deliberately stay: they are
-# the fleet-ops#5663 attribution record, not parked copies.
+# The MANIFEST-mandated dated receipts are NOT kept here: the units were
+# retired without any live write (their content is byte-identical in git
+# history), so the .pre-issue-4161-* copies parked in the user systemd dir
+# are parked copies, not attribution records — the issue's acceptance is
+# all files WIPED (fleet-ops#5663 receipts only apply to real live writes).
 remove_retired_drain_timers() {
     local unit p
     for unit in \
@@ -771,6 +773,13 @@ remove_retired_drain_timers() {
             echo "retired wants symlink removed: $unit (fleet-ops#4161)"
             user_unit_changed=1
         fi
+        # Parked pre-delete copies of the retired units (no .bak, no parking).
+        for p in "${HOME}/.config/systemd/user/${unit}.pre-issue-4161-"*; do
+            if [ -e "$p" ] || [ -L "$p" ]; then
+                rm -f "$p"
+                echo "retired parked copy removed: $p (fleet-ops#4161)"
+            fi
+        done
     done
 }
 

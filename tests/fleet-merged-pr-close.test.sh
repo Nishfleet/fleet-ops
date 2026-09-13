@@ -33,10 +33,11 @@
 #   - reference matcher is exact-number: #11352 / claim/issue-1135 do not
 #     match issue 1135
 #   - mention notes are deduped per (issue, PR) across ticks
-#   - per-tick closes_by_reason summary JSON is written for the
-#     fleet_observe_to_close_total{reason} metric (bare-mention/protected 0)
+#   - per-tick closes_by_reason summary JSON is written (the host
+#     fleet_observe_to_close_total metric retired with the units,
+#     fleet-ops#4161 — the summary still feeds the Actions run log)
 #   - crash paths (gh missing, invalid intake JSON, bad window) -> rc 2
-#   - contracts: tier1 call + MANIFEST entry
+#   - contracts: Actions drain workflow + MANIFEST entry
 set -euo pipefail
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 repo_root="$(cd "$here/.." && pwd)"
@@ -625,17 +626,22 @@ out=$(env GH="$scratch/bin/gh" PATH="$scratch/bin:$PATH" MERGED_PR_CLOSE_REPOS="
 grep -q 'rc=2' <<<"$out" || fail "invalid WINDOW_DAYS must exit rc 2: $out"
 ok "crash: invalid WINDOW_DAYS -> rc 2"
 
-# --- Case 13: contracts — .service unit call + MANIFEST entry ---
-# fleet-ops#3270: merged-pr-close moved from heartbeat tier1 §19 to
-# fleet-merged-pr-close.service (webhook-triggered). The contract now
-# checks the .service unit, not tier1.
-grep -q 'fleet-merged-pr-close' "$repo_root/systemd/fleet-merged-pr-close.service" \
-  || fail "fleet-merged-pr-close.service must call fleet-merged-pr-close"
-grep -q 'FLEET_MERGED_PR_CLOSE_OK=1' "$repo_root/systemd/fleet-merged-pr-close.service" \
-  || fail "fleet-merged-pr-close.service must set FLEET_MERGED_PR_CLOSE_OK=1"
+# --- Case 13: contracts — Actions drain workflow + MANIFEST entry ---
+# fleet-ops#3270 moved the close behind the webhook-dispatch unit;
+# fleet-ops#4161 retired that unit and its timer — the observe-to-close
+# runs solely via the scheduled .github/workflows/fleet-drain-backstop.yml.
+# The contract now checks the workflow, not the unit.
+[ ! -e "$repo_root/systemd/fleet-merged-pr-close.service" ] \
+  || fail "fleet-merged-pr-close.service must be retired (fleet-ops#4161)"
+[ ! -e "$repo_root/systemd/fleet-merged-pr-close.timer" ] \
+  || fail "fleet-merged-pr-close.timer must be retired (fleet-ops#4161)"
+grep -q 'bin/fleet-merged-pr-close' "$repo_root/.github/workflows/fleet-drain-backstop.yml" \
+  || fail "fleet-drain-backstop.yml must call bin/fleet-merged-pr-close"
+grep -q "FLEET_MERGED_PR_CLOSE_OK: '1'" "$repo_root/.github/workflows/fleet-drain-backstop.yml" \
+  || fail "fleet-drain-backstop.yml must set FLEET_MERGED_PR_CLOSE_OK=1"
 grep -q 'bin/fleet-merged-pr-close' "$repo_root/MANIFEST" \
   || fail "MANIFEST must install bin/fleet-merged-pr-close"
-ok "contracts: .service unit call + close gate + MANIFEST entry present"
+ok "contracts: Actions drain workflow + close gate + MANIFEST entry present"
 
 # --- Case 14: tick-log fd 3 must be APPEND mode (fleet-ops#2080) ---
 # tier1 opens `exec 3>>"$TICK_LOG"` and invokes the helper with `2>>"$TICK_LOG"`.
