@@ -99,11 +99,16 @@ EOF
 ok "1-3. policy numbers + fallback-matrix assertions parsed out of config (python block above)"
 
 # Re-assert the group shape so the simulation below is honest.
-# fleet-ops#6054 (2026-09-12): the dead-credit xkiro deepseek-v4-pro rung
-# moved to the benched: block, so senior serves from 2 deployments.
+# fleet-ops#6193 (2026-09-13): the count was previously pinned to the
+# post-#6096 calibration of the day (senior == 2) and broke the instant the
+# #6054 bench drill legitimately benched the 429'd synthetic rung (senior
+# became 1). Benching/restoring rungs is the drill's designed mutation; the
+# pinned invariant is that senior is NON-EMPTY (a serving group with rungs
+# to keep serving after one benches), and the simulation below derives its
+# live-rung arithmetic from the config instead of a hard-coded count.
 senior_count=$(python3 -c "import yaml; c=yaml.safe_load(open('$yaml_file')); print(sum(1 for d in c['model_list'] if d['model_name']=='senior'))")
-[[ "$senior_count" == "2" ]] || fail "expected 2 senior deployments, got $senior_count"
-ok "senior group has $senior_count deployments (pareto glm-5.3, synthetic glm-5.3-flash)"
+[[ "$senior_count" -ge 1 ]] || fail "senior group must have >=1 deployment, got $senior_count"
+ok "senior group has $senior_count deployment(s) (bench drill may change the count; >=1 is the invariant)"
 
 # ---------- 4. forced-bad-deployment simulation on an in-memory copy ----------
 python3 - "$yaml_file" "$scratch" <<'EOF' || exit 1
@@ -126,6 +131,7 @@ dead = {
     },
 }
 idx = next(i for i, d in enumerate(cfg["model_list"]) if d["model_name"] == "senior")
+live_before = sum(1 for d in cfg["model_list"] if d["model_name"] == "senior")
 cfg["model_list"].insert(idx, dead)
 yaml.safe_dump(cfg, open(f"{scratch}/with-dead.yaml", "w"))
 
@@ -145,20 +151,22 @@ assert first_pick["order"] == 1, "dead rung must be order:1"
 # for 5 minutes. AuthenticationErrorAllowedFails == 0 means the bench
 # is instant for auth-class errors (403/402). The benched deployment
 # is excluded from picks during cooldown; serving continues on the
-# remaining order-1 rung (pareto), the order-2 rung (synthetic), and
-# the fallback chain senior -> worker-capable.
+# remaining senior rungs and the fallback chain senior -> worker-capable.
 assert rs["allowed_fails"] <= 1, "allowed_fails must bench on <=1 failure"
 assert rs["cooldown_time"] >= 300, "cooldown must be >=5min"
 assert rs["allowed_fails_policy"]["AuthenticationErrorAllowedFails"] == 0
-# Remaining healthy serving surface: the other 2 senior rungs + the
-# fallback group worker-capable (its own healthy upstreams).
-assert len(seni) == 3, "injected copy should have 3 senior deployments (2 live + 1 dead)"
+# Remaining healthy serving surface: the other senior rungs (count
+# derived from the config, fleet-ops#6193: the bench drill changes rung
+# counts; the invariant is live_before rungs remain) + the fallback group
+# worker-capable (its own healthy upstreams).
+assert len(seni) == live_before + 1, f"injected copy should have {live_before + 1} senior deployments ({live_before} live + 1 dead)"
 live_rungs = [d for d in seni[1:] if "127.0.0.1" not in d["api_base"]]
-assert len(live_rungs) == 2, "expected 2 live rungs remaining"
+assert len(live_rungs) == live_before, f"expected {live_before} live rungs remaining"
 fb = {k: v for e in rs["fallbacks"] for k, v in e.items()}
 assert fb["senior"] == ["worker-capable"], "senior fallback must land on worker-capable"
 assert "worker-capable" in [d["model_name"] for d in w["model_list"]]
-print("OK: forced-bad-deployment simulation: 1st-pick dead rung benched by allowed_fails=1/cooldown=300/auth-threshold=0; 2 live rungs + worker-capable fallback keep serving")
+assert live_before >= 1, "senior must keep >=1 live rung after the dead one benches"
+print(f"OK: forced-bad-deployment simulation: 1st-pick dead rung benched by allowed_fails=1/cooldown=300/auth-threshold=0; {live_before} live rungs + worker-capable fallback keep serving")
 EOF
 ok "4. in-memory injected-dead-deployment replay holds"
 
