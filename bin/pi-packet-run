@@ -60,8 +60,9 @@ OUT_MIN="${PI_PACKET_RUN_OUT_MIN:-256}"
 [[ $# -ge 4 ]] || { echo "pi-packet-run: need 4 args: packet workdir fail_prov fail_model" >&2; exit 1; }
 pkt="$1"
 wd="$2"
-fail_p="$3"
-fail_m="$4"
+# argv 3-4 (fail_prov fail_model) stay accepted for unit-file/pi-intake-run
+# compat but are unused: seat rotation is systemd retry + LiteLLM groups
+# (fleet-ops#4263). Do not reintroduce named vars for them (SC2034).
 
 [[ -f "$pkt" ]] || { echo "pi-packet-run: packet not found: $pkt" >&2; exit 1; }
 [[ -d "$wd" ]] || wd="$HOME"

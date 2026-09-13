@@ -84,10 +84,20 @@ ok "already-agent-ready candidate: no re-tally write"
 # =============================================================================
 # 2. epic guard: 2-of-3 FAIL on an epic child -> spec-needed, NOT discarded
 # =============================================================================
+# fleet-ops#5861: each TITLE shape must independently pass the guard — every
+# new fixture below carries a body that matches NONE of the guard's patterns
+# and no `epic` label, so only the title (or, for the split fixture, the
+# (split of #n) citation) can fire. These two shapes are exactly what #6151's
+# bare-`EPIC:`-prefix guard still misses: `EPIC (Nish):` (colon not right
+# after EPIC) and a `(split of #<n>)`-cited slice.
+#   - "(split of #2992)" is 0509#3195's title, verbatim: a slice of the
+#     #2992 split family. A slice is judged on its epic, not standalone.
 for fixture in \
   '{"title":"EPIC #1367 Q1: evals harness","body":"scoped item","labels":[{"name":"scout-candidate"}]}' \
   '{"title":"Q2 wiring","body":"Part of the chain in docs/epics/full-site-watch.md","labels":[{"name":"scout-candidate"}]}' \
-  '{"title":"Q3 UI","body":"serves EPIC (Nish): full-site watch","labels":[{"name":"scout-candidate"}]}'
+  '{"title":"Q3 UI","body":"serves EPIC (Nish): full-site watch","labels":[{"name":"scout-candidate"}]}' \
+  '{"title":"EPIC (Nish): full-site watch","body":"the full-site-watch epic tracking issue","labels":[{"name":"scout-candidate"}]}' \
+  '{"title":"feat(sources): TikTok ad coverage via the public TikTok Commercial Content Library / Creative Center (split of #2992)","body":"dependency item of the media-mentions epic","labels":[{"name":"scout-candidate"}]}'
 do
     log2="$scratch/gh2.log"; : >"$log2"
     printf '%s\n' "$fixture" >"$scratch/issue2.json"
@@ -102,7 +112,7 @@ do
     grep -q 'add-label spec-needed' "$log2" || fail "epic guard: did not mark spec-needed ($fixture)"
     grep -q 'issue comment' "$log2" || fail "epic guard: did not name the failing bar ($fixture)"
 done
-ok "epic-linked candidates (title EPIC #n / docs/epics/ / EPIC (Nish):) never discarded, marked spec-needed"
+ok "epic-linked candidates (title EPIC #n / EPIC: / EPIC (Nish): / (split of #n); body docs/epics/ / EPIC (Nish):; epic label) never discarded, marked spec-needed (fleet-ops#5861: 0509#3171)"
 
 # a NON-epic candidate with the same votes is still discarded (guard is narrow)
 log3="$scratch/gh3.log"; : >"$log3"
@@ -117,6 +127,44 @@ write_vote "$d" senior FAIL "duplicate of nothing, no north-star"
 run_tally 0509 1400
 grep -q 'add-label discarded' "$log3" || fail "narrowness: a non-epic 2-of-3 FAIL must still be discarded"
 ok "non-epic candidate with 2-of-3 FAIL still discarded (guard does not leak)"
+
+# =============================================================================
+# 2b. epic guard, #6151 shapes: the bare "EPIC:" title (colon, no #number) and
+#     the `epic` label. 0509#3171 sailed through all four #4451 patterns and
+#     was discarded 2026-09-12 despite a senior PASS vote.
+# =============================================================================
+# case A: the 0509#3171 replay - title starts "EPIC: ", plain body, no epic
+# label. The title shape alone must save it.
+log8="$scratch/gh8.log"; : >"$log8"
+cat >"$scratch/issue8.json" <<'J'
+{"title":"EPIC: track self and competitors across the internet - media mentions + blogging/social platforms (Nish direction 2026-09-12)","body":"plain body, no epic markers, no docs/epics/ path","labels":[{"name":"scout-candidate"}]}
+J
+mk_gh "$log8" "$scratch/issue8.json"
+d4="$AUDIT_STATE_DIR/0509/3171"; rm -rf "$d4"
+write_vote "$d4" devin FAIL "no direct user-facing product impact, not a duplicate"
+write_vote "$d4" free-glm FAIL "not the smallest durable fix, no duplicate"
+write_vote "$d4" senior PASS "see #3171 and app/lib/x.ts, no duplicate, customer edge"
+run_tally 0509 3171
+grep -q 'add-label discarded' "$log8" && fail "epic guard #6151: discarded a bare 'EPIC:'-title candidate (0509#3171 replay)"
+grep -q 'remove-label scout-candidate' "$log8" && fail "epic guard #6151: dropped scout-candidate on a bare 'EPIC:'-title candidate"
+grep -q 'add-label spec-needed' "$log8" || fail "epic guard #6151: did not mark spec-needed on a bare 'EPIC:'-title candidate"
+ok "0509#3171 replay: bare 'EPIC:'-title candidate never discarded, marked spec-needed"
+
+# case B: the `epic` label alone (plain title, plain body) must also save it.
+log9="$scratch/gh9.log"; : >"$log9"
+cat >"$scratch/issue9.json" <<'J'
+{"title":"competitor watch tactics","body":"plain body, no epic markers, no docs/epics/ path","labels":[{"name":"scout-candidate"},{"name":"epic"}]}
+J
+mk_gh "$log9" "$scratch/issue9.json"
+d5="$AUDIT_STATE_DIR/0509/3172"; rm -rf "$d5"
+write_vote "$d5" devin FAIL "no direct user-facing product impact, not a duplicate"
+write_vote "$d5" free-glm FAIL "not the smallest durable fix, no duplicate"
+write_vote "$d5" senior PASS "see #3172 and app/lib/x.ts, no duplicate, customer edge"
+run_tally 0509 3172
+grep -q 'add-label discarded' "$log9" && fail "epic guard #6151: discarded an epic-labelled candidate"
+grep -q 'remove-label scout-candidate' "$log9" && fail "epic guard #6151: dropped scout-candidate on an epic-labelled candidate"
+grep -q 'add-label spec-needed' "$log9" || fail "epic guard #6151: did not mark spec-needed on an epic-labelled candidate"
+ok "epic-labelled candidate (plain title, plain body) never discarded, marked spec-needed"
 
 # =============================================================================
 # 3. SKIP arithmetic: 2 FAIL + 1 SKIP is PENDING, never a 2-of-2 discard

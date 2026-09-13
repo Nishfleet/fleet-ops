@@ -1022,3 +1022,15 @@ bash "$here/live-state-doctrine-precedence.test.sh"
 # drop of this host line fails by name. Hermetic (scratch dir + stubbed gh,
 # no live network).
 bash "$here/measure-attest-waiting.test.sh"
+
+# fleet-ops#6052: the deleted-symbol gate — a PR that deletes a lib/ or bin/
+# definition cannot merge while tests/ still reference it (#5993 went red
+# three times, one symbol at a time, each found on the NEXT PR). On
+# pull_request events the gate itself diffs origin/main...HEAD and fails P14;
+# here it also runs the offline fixtures and the end-to-end git drill.
+# Hosted here so P14 runs it without a workflow-file edit (the worker App
+# cannot push .github/workflows/**). The named pin in
+# tests/p14-test-listing-gate.test.sh is the class-prevention so a future
+# drop of this host line fails by name. Hermetic (fixtures + a throwaway
+# git repo in a scratch dir; the live diff runs only on pull_request).
+bash "$here/deleted-symbol-gate.test.sh"

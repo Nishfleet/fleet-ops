@@ -1,0 +1,24 @@
+# fleet-ops#5935: memory/CPU panel for the 3 owned ephemeral GitHub Actions
+# runners (gh-runner@{1..3}) on this box. GitHub's concurrent-job cap (Free:
+# 20) applies to GitHub-hosted runners only; self-hosted are uncapped, so
+# merge_group + push heavy jobs (0509 codex-node-checks shards, preview-assert;
+# fleet-ops P14) move off the hosted cap onto this slice.
+#
+# Sizing: 12 GB MemAvailable with 15 Pi workers. The panel caps the whole
+# cohort at MemoryHigh=7G / MemoryMax=9G, below what a 3x3G-peak burst can
+# reach, so one cohort can never starve the workers. CPUWeight=80 puts CI
+# below the Pi workers' share under contention. No cross-governor code: the
+# worker admission governor reads MemAvailable live, so it backs off on its
+# own when CI is busy — this slice is the SECOND guard, not a coordinator.
+#
+# Ephemeral by construction: each gh-runner@N activation runs exactly one
+# job, deregisters, and systemd restarts it with a fresh JIT registration.
+# There is no runner pool manager, no autoscaler, no ARC — Restart=always on
+# the template unit is the whole mechanism (fleet-ops#5935).
+#
+# Drop-in-removable: delete this file + the gh-runner@.service unit and
+# daemon-reload to revert. The MANIFEST lines keep the install idempotent.
+[Slice]
+MemoryHigh=7G
+MemoryMax=9G
+CPUWeight=80
