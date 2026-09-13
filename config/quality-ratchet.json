@@ -16,7 +16,7 @@
       "direction": "down",
       "notch": 0.02,
       "stop_at": 0.29,
-      "cut": 0.40
+      "cut": 0.4
     },
     "overturn_rate_cut": {
       "file": "config/quality-routing.json",
@@ -27,7 +27,7 @@
       "cut": 0.25
     }
   },
-  "_comment_ceilings": "fleet-ops#3519: per-repo, per-metric quality ceilings. The Sunday fleet-weekly-review ratchets each ceiling to min(current, observed p50 x 1.1) — it never loosens; loosening needs a PR with a dated reason and Nish's word. Seeds are the measured 2026-09-05 baseline for 0509 (reverts 4.5/100, red-on-main ~6h=360min, sessions-to-PR 33%); metrics without a measured baseline (defects, rework, act-on) seed conservatively-loose so the first ratchet week sets real values. Metrics whose computation is deferred (rework_rate_pct, red_on_main_minutes, review_act_on_rate) carry their seeds now so the shape is complete; separate issues wire their exporters. '_default' covers product repos without their own row until the ratchet gives them one. 2026-09-09 seed correction (repair-dispatch, QualitySessionsPrCeiling firing 60m+): the 33 seed was never a measurement of the shipped sessions/merges gauge — that gauge read ~220 on the 2026-09-05 seed date (77 session dirs / 35 merges in the trailing 7d), so the ceiling was breached from the moment it was committed. The gauge's structural floor is ~100 (one claim session per landed PR is the optimum, not churn). Corrected to observed x 1.1 per this file's own min(current, p50 x 1.1) ratchet formula — a mis-seed fix, not a ratchet loosening; live 2026-09-09 value is 103.7, under half the seed-date reading.",
+  "_comment_ceilings": "fleet-ops#3519: per-repo, per-metric quality ceilings. The Sunday fleet-weekly-review ratchets each ceiling to min(current, observed p50 x 1.1) \u2014 it never loosens; loosening needs a PR with a dated reason and Nish's word. Seeds are the measured 2026-09-05 baseline for 0509 (reverts 4.5/100, red-on-main ~6h=360min, sessions-to-PR 33%); metrics without a measured baseline (defects, rework, act-on) seed conservatively-loose so the first ratchet week sets real values. Metrics whose computation is deferred (rework_rate_pct, red_on_main_minutes, review_act_on_rate) carry their seeds now so the shape is complete; separate issues wire their exporters. '_default' covers product repos without their own row until the ratchet gives them one. 2026-09-09 seed correction (repair-dispatch, QualitySessionsPrCeiling firing 60m+): the 33 seed was never a measurement of the shipped sessions/merges gauge \u2014 that gauge read ~220 on the 2026-09-05 seed date (77 session dirs / 35 merges in the trailing 7d), so the ceiling was breached from the moment it was committed. The gauge's structural floor is ~100 (one claim session per landed PR is the optimum, not churn). Corrected to observed x 1.1 per this file's own min(current, p50 x 1.1) ratchet formula \u2014 a mis-seed fix, not a ratchet loosening; live 2026-09-09 value is 103.7, under half the seed-date reading.",
   "ceilings": {
     "_default": {
       "reverts_per_100_merges": 4.5,
@@ -38,8 +38,8 @@
       "review_act_on_rate": 100.0
     },
     "0509": {
-      "reverts_per_100_merges": 4.5,
-      "post_merge_defects_per_100": 40.0,
+      "reverts_per_100_merges": 3.326613,
+      "post_merge_defects_per_100": 0.0,
       "sessions_to_pr_pct": 115.0,
       "rework_rate_pct": 20.0,
       "red_on_main_minutes": 360.0,
