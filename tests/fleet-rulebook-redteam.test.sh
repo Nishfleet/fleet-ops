@@ -413,14 +413,13 @@ sleep 5
 exit 0
 FAKE
 chmod +x "$scratch/fakebin/pi"
-printf 'pick_seat() { printf "litellm\tsenior\n"; }
-litellm_seat() { printf "litellm\tsenior\n"; }' >"$scratch/seat-lib.sh"
+printf 'litellm_seat() { printf "litellm\tsenior\n"; }' >"$scratch/litellm-seat.sh"
 rm -rf "$scratch/state-timeout"
 set +e
 to_out=$(RULEBOOK_STATE_DIR="$scratch/state-timeout" \
   RULEBOOK_PLAN_FILE="$plan" \
   RULEBOOK_STANDING_RULES="$scratch/rules/standing.md" \
-  RULEBOOK_SEAT_LIB="$scratch/seat-lib.sh" \
+  RULEBOOK_SEAT_LIB="$scratch/litellm-seat.sh" \
   RULEBOOK_PI_BIN="$scratch/fakebin/pi" \
   RULEBOOK_PI_TIMEOUT_S=1 \
   RULEBOOK_FAKE_NOW="2026-09-13T00:30:00Z" \
@@ -444,7 +443,7 @@ set +e
 fast_out=$(RULEBOOK_STATE_DIR="$scratch/state-fast" \
   RULEBOOK_PLAN_FILE="$plan" \
   RULEBOOK_STANDING_RULES="$scratch/rules/standing.md" \
-  RULEBOOK_SEAT_LIB="$scratch/seat-lib.sh" \
+  RULEBOOK_SEAT_LIB="$scratch/litellm-seat.sh" \
   RULEBOOK_PI_BIN="$scratch/fakebin/pi" \
   RULEBOOK_PI_TIMEOUT_S=1800 \
   RULEBOOK_FAKE_NOW="2026-09-13T00:31:00Z" \
