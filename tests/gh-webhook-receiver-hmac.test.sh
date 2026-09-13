@@ -69,12 +69,13 @@ bad = hmac.new(b"other", body, hashlib.sha256).hexdigest()
 assert mod.verify_hmac(secret, body, "sha256=" + bad) is False
 
 # dispatch table (no dry — but we want the unit name, not the fire call).
-# fleet-ops#3270: dispatch now returns a list of (unit, reason) pairs;
-# most events fan out to a single unit, but pull_request/closed fans
-# out to two (reaper + merged-pr-close) and issues/opened/labeled fans
-# out to two (lifecycle-sweep + the repo-specific dispatch). The
-# first_non_ignored helper returns the FIRST fireable unit, matching
-# the original test's expectations for the single-dispatch events.
+# dispatch returns a list of (unit, reason) pairs; issues/opened/labeled
+# fans out to two (lifecycle-sweep + the repo-specific dispatch).
+# fleet-ops#4161: pull_request/closed fans out to the reaper ONLY — the
+# retired merged-pr-close unit's observe-to-close runs via the scheduled
+# .github/workflows/fleet-drain-backstop.yml. The first_fireable helper
+# returns the FIRST fireable unit, matching the original test's
+# expectations for the single-dispatch events.
 def first_fireable(pairs):
     for u, r in pairs:
         if u:
@@ -104,22 +105,21 @@ unit, reason = first_fireable(mod.dispatch("workflow_run", "completed", "", "fle
 assert unit == "fleet-deploy-check.service", unit
 
 # pull_request/closed (merged) → fleet-worktree-reaper (fleet-ops#3269)
-# AND fleet-merged-pr-close (fleet-ops#3270) — two-unit fan-out.
+# ONLY — the retired merged-pr-close unit's observe-to-close runs via the
+# scheduled .github/workflows/fleet-drain-backstop.yml (fleet-ops#4161).
 pairs = mod.dispatch("pull_request", "closed", "", "fleet-ops",
                      "", dry=False, pr_merged="true")
 fireable = [u for u, _ in pairs if u]
-assert "fleet-worktree-reaper.service" in fireable, fireable
-assert "fleet-merged-pr-close.service" in fireable, fireable
+assert fireable == ["fleet-worktree-reaper.service"], fireable
 assert any("pull_request/closed" in r for _, r in pairs), pairs
 
-# pull_request/closed (not merged) → fleet-worktree-reaper + merged-pr-close
-# (both terminal states leave a claim worktree AND need a close trailer
-# check; fleet-ops#3023 + #3270).
+# pull_request/closed (not merged) → fleet-worktree-reaper (the close
+# trailer check moved to the Actions drain, fleet-ops#4161; both terminal
+# states still leave a claim worktree — fleet-ops#3023).
 pairs = mod.dispatch("pull_request", "closed", "", "fleet-ops",
                      "", dry=False, pr_merged="false")
 fireable = [u for u, _ in pairs if u]
-assert "fleet-worktree-reaper.service" in fireable, fireable
-assert "fleet-merged-pr-close.service" in fireable, fireable
+assert fireable == ["fleet-worktree-reaper.service"], fireable
 
 # pull_request/opened → ignored (fleet-ops#4146: the loose-ends canary
 # was retired; the >24h-without-merge class is GitHub actions/stale).
@@ -163,10 +163,11 @@ pairs = mod.dispatch("issues", "opened", "", "fleet-ops", "", dry=False)
 fireable = [u for u, _ in pairs if u]
 assert "lifecycle-label-sweep.service" in fireable, fireable
 
-# issues/closed → close-duplicates (fleet-ops#3270).
+# issues/closed → ignored: the retired close-duplicates unit's drain runs
+# via the scheduled .github/workflows/fleet-drain-backstop.yml (fleet-ops#4161).
 pairs = mod.dispatch("issues", "closed", "", "fleet-ops", "", dry=False)
 fireable = [u for u, _ in pairs if u]
-assert "fleet-issue-close-duplicates.service" in fireable, fireable
+assert fireable == [], fireable
 
 # issues/labeled (any label, not agent-ready/pipeline-red) → lifecycle-sweep
 # only (no intake/deploy dispatch).

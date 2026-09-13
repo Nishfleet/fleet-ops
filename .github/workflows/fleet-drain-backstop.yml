@@ -1,0 +1,67 @@
+name: Fleet drain backstop
+
+# Hourly Actions backstop for the two drains whose #3270 webhook-dispatch
+# units + timers were retired (fleet-ops#4140 row 10, #4161): merged-PR
+# observe-to-close and the duplicate-issue drain. Runs the SAME repo helpers
+# the retired units ExecStarted, so tests/fleet-merged-pr-close.test.sh
+# stays the behavioral gate.
+#
+# Writes ride the FLEET_SYNC_PAT inherited-organ token (fleet-ops#3445's
+# "token inherited from a parent organ" clause; precedent:
+# repo-standards-sync, cancelled-while-queued) — not the human gh identity.
+#
+# Cadence: hourly at :23 — the retired fleet-merged-pr-close.timer's minute.
+# The retired duplicates cadence was daily ONLY because the webhook was the
+# primary trigger; with the units retired, this workflow is the sole
+# trigger, so both drains converge hourly (a duplicate is waste, not
+# breakage — the retired unit's own reason says so).
+#
+# OnFailure: the retired units escalated via the global unit-escalation
+# drop-in; here the existing ci-failure-escalation.yml sweep is the alarm
+# (it samples recent failed runs and escalates persistent signatures). A
+# fleet-dead-pr-detector failure (exit 1 = a wedged CONFLICTING PR) fails
+# the job on purpose — same fail-loud semantics as the retired
+# ExecStartPre, which deliberately carried no `-` prefix.
+
+on:
+  schedule:
+    - cron: '23 * * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+  pull-requests: read
+
+concurrency:
+  group: fleet-drain-backstop
+  cancel-in-progress: true
+
+jobs:
+  drain:
+    runs-on: ubuntu-latest
+    # The retired units ran with TimeoutStartSec=10min; 15 = that budget
+    # plus headroom, and bounds the billed minutes.
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 1
+
+      - name: dead-PR detect + merged-PR observe-to-close + duplicate-issue drain
+        env:
+          GH_TOKEN: ${{ secrets.FLEET_SYNC_PAT }}
+          FLEET_MERGED_PR_CLOSE_OK: '1'
+          FLEET_CLOSE_DUPLICATES_OK: '1'
+          MERGED_PR_CLOSE_INTAKE_JSON: ${{ github.workspace }}/config/intake-repos.json
+          MERGED_PR_CLOSE_SUMMARY: ${{ github.workspace }}/.fleet/merged-pr-close.json
+          MERGED_PR_CLOSE_TRIAGE: ${{ github.workspace }}/.fleet/FLEET-HEARTBEAT-TRIAGE.md
+          FLEET_CLOSE_DUPLICATES_REVIEW_LOG: ${{ github.workspace }}/.fleet/close-duplicates.review.log
+          DEAD_PR_STATE_DIR: ${{ github.workspace }}/.fleet/dead-pr-state
+          ATTEMPTS_DIR: ${{ github.workspace }}/.fleet/attempts
+        run: |
+          mkdir -p .fleet/attempts .fleet/dead-pr-state
+          touch .fleet/FLEET-HEARTBEAT-TRIAGE.md
+          bin/fleet-dead-pr-detector
+          bin/fleet-merged-pr-close
+          bin/fleet-issue-file close-duplicates

@@ -735,6 +735,45 @@ remove_retired_staleness_timer() {
     rm -f "${HOME}"/.config/systemd/user/*.bak* "${HOME}"/.config/systemd/user/*.retired*
 }
 
+# fleet-ops#4161: retire the duplicate-issue drain + merged-PR
+# observe-to-close unit/timer pairs (fleet-ops#4140 GO row 10). Their
+# #3270 webhook-dispatch units are gone from MANIFEST; the sole trigger
+# for both drains is the scheduled
+# .github/workflows/fleet-drain-backstop.yml (hourly, Actions). Same idiom
+# as the #4146/#4149 retires: -e||-L catches real files AND dangling
+# symlinks (fleet-ops#4199 — a symlink to a unit file deleted from the
+# deploy clone fails -f), and the timers.target.wants link is rm'd
+# explicitly because disable cannot resolve a unit whose fragment is gone.
+# The MANIFEST-mandated dated receipts
+# (~/.config/systemd/user/*.pre-issue-4161-*) deliberately stay: they are
+# the fleet-ops#5663 attribution record, not parked copies.
+remove_retired_drain_timers() {
+    local unit p
+    for unit in \
+        fleet-merged-pr-close.service fleet-merged-pr-close.timer \
+        fleet-issue-close-duplicates.service fleet-issue-close-duplicates.timer
+    do
+        p="${HOME}/.config/systemd/user/$unit"
+        # -e || -L catches real files AND dangling symlinks (fleet-ops#4199).
+        if [ -e "$p" ] || [ -L "$p" ]; then
+            "$SYSTEMCTL" --user stop "$unit" 2>/dev/null || true
+            "$SYSTEMCTL" --user disable "$unit" 2>/dev/null || true
+            rm -f "$p"
+            echo "retired unit removed: $unit (fleet-ops#4161)"
+            user_unit_changed=1
+        fi
+        # `systemctl --user disable` cannot resolve a dangling unit, so it
+        # leaves the timers.target.wants symlink behind. Remove it explicitly
+        # so the timer-manifest live check stops seeing the retired timer.
+        p="${HOME}/.config/systemd/user/timers.target.wants/$unit"
+        if [ -e "$p" ] || [ -L "$p" ]; then
+            rm -f "$p"
+            echo "retired wants symlink removed: $unit (fleet-ops#4161)"
+            user_unit_changed=1
+        fi
+    done
+}
+
 # fleet-ops#3126 revert: the provider-shim prompt scan landed by #4356 is
 # retired. template/extensions/** install as COPIES (fleet-ops#3263) and this
 # installer has no generic prune for a copy dropped from MANIFEST, so the live
@@ -1207,6 +1246,7 @@ if [ "$do_user_install" = 1 ]; then
   remove_superseded_litellm_proxy_override_dropin
   remove_retired_canaries
   remove_retired_staleness_timer
+  remove_retired_drain_timers
   remove_retired_provider_spawn_guard
   remove_dangling_helper_symlinks
   ensure_devin_config_trust

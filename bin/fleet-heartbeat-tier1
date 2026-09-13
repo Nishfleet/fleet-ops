@@ -1737,13 +1737,12 @@ fi
 # ============================================================================
 # 19. MERGED-PR OBSERVE-TO-CLOSE (fleet-ops#1435)
 # ============================================================================
-# fleet-ops#3270: MOVED behind webhook triggers. The close now runs as
-# fleet-merged-pr-close.service, dispatched by gh-webhook-receiver on
-# pull_request/closed (merged OR closed) so a merged PR triggers the
-# close check in seconds. The companion fleet-merged-pr-close.timer is
-# the hourly backstop for webhooks that never arrive. The heartbeat
-# timer (now 60 min) keeps only host-local sections. Variable retained
-# as 0 for the tier 1 complete log line + exit-code propagation.
+# fleet-ops#4161: MOVED OFF this host — the #3270 webhook-dispatch unit +
+# hourly timer are wiped; the observe-to-close runs solely via the
+# scheduled .github/workflows/fleet-drain-backstop.yml (hourly, Actions).
+# The heartbeat timer (now 60 min) keeps only host-local sections.
+# Variable retained as 0 for the tier 1 complete log line + exit-code
+# propagation.
 merged_pr_close_rc=0
 
 # ============================================================================
@@ -1772,15 +1771,13 @@ fi
 # ============================================================================
 # 21. DUPLICATE-ISSUE DRAIN (fleet-ops#2762)
 # ============================================================================
-# fleet-ops#3270: MOVED behind webhook triggers. The drain now runs as
-# fleet-issue-close-duplicates.service, dispatched by gh-webhook-receiver
-# on issues/closed so closing one duplicate triggers a re-drain of the
-# remaining cohort. The companion fleet-issue-close-duplicates.timer is
-# the daily backstop for webhooks that never arrive (a duplicate is
-# waste but not breakage — the canonical issue still gets dispatched).
-# The heartbeat timer (now 60 min) keeps only host-local sections.
-# Variable retained as 0 for the tier 1 complete log line + exit-code
-# propagation.
+# fleet-ops#4161: MOVED OFF this host — the #3270 webhook-dispatch unit +
+# daily timer are wiped; the drain runs solely via the scheduled
+# .github/workflows/fleet-drain-backstop.yml (hourly, Actions — a
+# duplicate is waste but not breakage, so hourly convergence is
+# proportionate). The heartbeat timer (now 60 min) keeps only host-local
+# sections. Variable retained as 0 for the tier 1 complete log line +
+# exit-code propagation.
 close_duplicates_rc=0
 
 # ============================================================================

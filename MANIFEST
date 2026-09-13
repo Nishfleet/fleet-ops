@@ -175,7 +175,8 @@ bin/fleet-debug-playbook /home/nish/.local/bin/fleet-debug-playbook
 bin/fleet-merged-pr-close /home/nish/.local/bin/fleet-merged-pr-close
 # fleet-ops#4468: dead-conflicting-PR detector — flag CONFLICTING open PRs
 # whose parent issue is MERGED/CLOSED (fail-loud exit 1). Runs as
-# ExecStartPre of the fleet-merged-pr-close unit; no new timer.
+# ExecStartPre of the retired unit; now step 1 of the scheduled Actions
+drain workflow .github/workflows/fleet-drain-backstop.yml (fleet-ops#4161).
 bin/fleet-dead-pr-detector /home/nish/.local/bin/fleet-dead-pr-detector
 # fleet-ops#526: session-close lint for "interventions get eliminated,
 # not repeated". Heartbeat-tier1 block 20; fail-loud + auto-file on a
@@ -640,15 +641,13 @@ systemd/fleet-restore-drill.service.d/10-keystone-hc.conf /home/nish/.config/sys
 bin/fleet-worktree-reaper /home/nish/.local/bin/fleet-worktree-reaper
 systemd/fleet-worktree-reaper.service /home/nish/.config/systemd/user/fleet-worktree-reaper.service
 systemd/fleet-worktree-reaper.timer /home/nish/.config/systemd/user/fleet-worktree-reaper.timer
-# fleet-ops#3270: four GitHub-reading heartbeat sections moved behind
-# webhook triggers (gh-webhook-receiver dispatches to these .service
-# units). Each has a backstop .timer for webhooks that never arrive.
+# fleet-ops#3270: GitHub-reading heartbeat sections moved behind webhook
+# triggers. #4161: merged-pr-close + close-duplicates retired — their sole
+# trigger is the scheduled .github/workflows/fleet-drain-backstop.yml
+# (hourly, Actions); lifecycle-label-sweep keeps its receiver dispatch and
+# its backstop .timer for webhooks that never arrive.
 systemd/lifecycle-label-sweep.service /home/nish/.config/systemd/user/lifecycle-label-sweep.service
 systemd/lifecycle-label-sweep.timer /home/nish/.config/systemd/user/lifecycle-label-sweep.timer
-systemd/fleet-merged-pr-close.service /home/nish/.config/systemd/user/fleet-merged-pr-close.service
-systemd/fleet-merged-pr-close.timer /home/nish/.config/systemd/user/fleet-merged-pr-close.timer
-systemd/fleet-issue-close-duplicates.service /home/nish/.config/systemd/user/fleet-issue-close-duplicates.service
-systemd/fleet-issue-close-duplicates.timer /home/nish/.config/systemd/user/fleet-issue-close-duplicates.timer
 # fleet-ops#455 + #1463: eleven-plane resilience drill + keystone dead-man
 # pings + tailscaled Restart=always. The five #1463 failure-class planes
 # (queue_freeze, pipeline_red, boundary_delivery, band_floor,

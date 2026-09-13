@@ -229,14 +229,13 @@ webhooks that never arrive:
 | Event | Dispatch | Backstop timer | Was heartbeat § |
 |---|---|---|---|
 | `issues/opened` + `issues/labeled` | `lifecycle-label-sweep.service` | `lifecycle-label-sweep.timer` (hourly) | §6b |
-| `pull_request/closed` | `fleet-merged-pr-close.service` | `fleet-merged-pr-close.timer` (hourly) | §19 |
-| `issues/closed` | `fleet-issue-close-duplicates.service` | `fleet-issue-close-duplicates.timer` (daily) | §21 |
+| `pull_request/closed` | (retired, #4161) | `.github/workflows/fleet-drain-backstop.yml` (hourly) | §19 |
+| `issues/closed` | (retired, #4161) | `.github/workflows/fleet-drain-backstop.yml` (hourly) | §21 |
 
-`pull_request/closed` is a multi-fan-out: it fires BOTH
-`fleet-worktree-reaper.service` (fleet-ops#3269) AND
-`fleet-merged-pr-close.service` (fleet-ops#3270). systemd's oneshot
-semantics guarantee a re-dispatch of an already-active unit is a no-op,
-so the webhook fast-path and the backstop timer do not fight.
+`pull_request/closed` still fires `fleet-worktree-reaper.service`
+(fleet-ops#3269). The merged-PR close-trailer check and the duplicate-
+issue drain moved off the receiver to the scheduled Actions drain
+workflow (fleet-ops#4161).
 
 **Why 20-min cadence (and not 15 or 30)?**
 

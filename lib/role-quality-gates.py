@@ -76,8 +76,10 @@ NON_ROLE_UNIT_PREFIXES = (
     "fleet-worktree-reaper",
     # fleet-ops#3270: the three heartbeat sections that only read GitHub
     # state (lifecycle-label-sweep, merged-pr observe-to-close,
-    # close-duplicates) moved behind webhook triggers.
-    # Each is a webhook-triggered oneshot that wraps an existing helper
+    # close-duplicates) moved off the 15-min tick. #4161: lifecycle-
+    # label-sweep stays webhook-dispatched; merged-pr-close and
+    # close-duplicates run via the scheduled .github/workflows/
+    # fleet-drain-backstop.yml. Each wraps an existing helper
     # (lifecycle-label-sweep, fleet-merged-pr-close,
     # fleet-issue-file close-duplicates); they
     # run no model, own no prompt and produce no work items — same

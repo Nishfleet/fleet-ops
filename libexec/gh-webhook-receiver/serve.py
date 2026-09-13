@@ -35,20 +35,18 @@ issues, action=labeled, label=pipeline-red
         → start fleet-deploy-check.service
 issues, action=opened, label=agent-ready
         → start pi-intake@<repo>.service   (race-safe: the tick will dedupe)
-issues, action=closed
-        → start fleet-issue-close-duplicates.service
 workflow_run, action=completed, conclusion=success
         → start fleet-deploy-check.service
 pull_request, action=closed (merged OR closed)
         → start fleet-worktree-reaper.service  (fleet-ops#3269)
-        + start fleet-merged-pr-close.service  (fleet-ops#3270)
 ping    → no-op (200)
 
-The three sections that previously ran only on the
-fleet-heartbeat.timer (lifecycle-label-sweep, merged-pr-close,
-close-duplicates) now also fire on the matching
-GitHub event via this receiver. The heartbeat tick (now 60 min) is
-the level-triggered backstop for webhooks that never arrive.
+lifecycle-label-sweep still fires on its matching GitHub events via this
+receiver. merged-pr-close and close-duplicates were retired from the
+receiver in #4161: their sole trigger is the scheduled Actions workflow
+.github/workflows/fleet-drain-backstop.yml, which runs the same helpers.
+The heartbeat tick (now 60 min) is the level-triggered backstop for
+webhooks that never arrive.
 
 Anything else → 200 + "ignored: <reason>" (the worker must always see 200;
 we never bounce, we log + skip).
@@ -106,7 +104,7 @@ import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-VERSION = "0.2.0"
+VERSION = "0.2.1"
 SECRET_FILE = os.environ.get(
     "GH_WEBHOOK_SECRET_FILE",
     str(Path.home() / ".config" / "fleet-ops" / "gh-webhook.secret"),
@@ -227,15 +225,12 @@ def dispatch(event: str, action: str, label: str, repo: str, conclusion: str,
             # CLOSED after the age gate (fleet-ops#3023), so both terminal
             # states must trigger it. systemctl start on an already-active
             # oneshot is a no-op, so a burst of closes dedupes naturally.
-            # fleet-ops#3270: also fire merged-pr-close — a merged PR
-            # with a forgotten `Closes #<N>` trailer is the second
-            # terminal-state side effect, and the helper is cheap
-            # (one `gh issue list` + one `gh pr list` per enrolled repo).
+            # fleet-ops#4161: merged-pr-close moved off the receiver — the
+            # retired unit's observe-to-close now runs solely via the
+            # scheduled .github/workflows/fleet-drain-backstop.yml.
             return [
                 ("fleet-worktree-reaper.service",
                  f"pull_request/{action}/merged={pr_merged} → fleet-worktree-reaper"),
-                ("fleet-merged-pr-close.service",
-                 f"pull_request/{action}/merged={pr_merged} → fleet-merged-pr-close"),
             ]
         if action == "labeled" and label == "blocked-by-judge":
             # fleet-ops#4557: a judge block must have teeth within seconds,
@@ -267,13 +262,10 @@ def dispatch(event: str, action: str, label: str, repo: str, conclusion: str,
         # the no-op fast path internally.
         if action in ("labeled", "opened", "reopened", "closed"):
             units: list[tuple[str, str]] = []
-            if action == "closed":
-                # fleet-ops#3270: when an issue closes, the dup
-                # cohort may now be orphan — close the canonical survivor
-                # + comment-only the rest (fleet-issue-file close-duplicates
-                # is the helper; the .service is the systemd wrapper).
-                units.append(("fleet-issue-close-duplicates.service",
-                              f"issues/{action} → fleet-issue-close-duplicates"))
+            # fleet-ops#4161: the closed → close-duplicates dispatch is
+            # retired; the drain runs via the scheduled
+            # .github/workflows/fleet-drain-backstop.yml. issues/closed
+            # falls through to the generic ignored-200 return below.
             if action in ("labeled", "opened", "reopened") and label != "pipeline-red":
                 # Lifecycle-label sweep runs on every open + label event
                 # except pipeline-red (a deploy signal, not a lifecycle

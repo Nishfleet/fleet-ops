@@ -248,11 +248,11 @@ in #4149; the finding details live in the JSON cache
 `fleet-loose-ends-canary` (row 7) are retired; the deadman metric + chain prom
 files are gone from the repo and the live box.
 
-**GitHub Actions scheduled-workflow candidates — KEEP (2), pending #4161:**
-`fleet-issue-close-duplicates`, `fleet-merged-pr-close` are webhook-triggered
-with a timer fallback. They cannot move to Actions yet: the worker token has
-NO Workflows permission and cannot write `.github/workflows/**` (fleet-ops#3735).
-Tracked in #4161; re-audit when the token is upgraded.
+**GitHub Actions scheduled-workflow candidates — DONE (2), #4161 (2026-09-13):**
+`fleet-issue-close-duplicates`, `fleet-merged-pr-close` moved to
+`.github/workflows/fleet-drain-backstop.yml` (hourly); the #3270
+webhook-dispatch units + timers are retired. The #3735 no-Workflows-token
+blocker had already cleared — the #6258 worker PR edited `.github/workflows/ci.yml`.
 
 **LiteLLM — PENDING (1):** `fleet-seat-comeback-release` (row 6, #4130). The
 LiteLLM proxy organ is in flight (#4178 P1); the comeback-release timer retires
