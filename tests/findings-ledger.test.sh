@@ -2,12 +2,16 @@
 # findings-ledger.test.sh — the canonical findings ledger writer is strict.
 # The rule it enforces: EVERY finding row carries a disposition AND a ref.
 # A row without one is a silent drop and this writer refuses to make one.
-# Hermetic: FLEET_FINDINGS_LEDGER points at a temp file; no gh calls when
-# gh_issue_map is None (no-issues backfill mode).
+# Hermetic: every scratch path lives under a private mktemp dir so two
+# concurrent workers cannot collide on the fixed /tmp names (fleet-ops#6012
+# failure class); no gh calls when gh_issue_map is None (no-issues backfill
+# mode).
 set -uo pipefail
 HERE="$(cd "$(dirname "$0")/.." && pwd)"
 PY="$HERE/lib/findings_ledger.py"
-LEDGER="${FINDINGS_LEDGER_TEST:-/tmp/findings-ledger.test.jsonl}"
+SCRATCH="$(mktemp -d -t findings-ledger.test.XXXXXX)"
+trap 'rm -rf "$SCRATCH"' EXIT INT TERM
+LEDGER="${FINDINGS_LEDGER_TEST:-$SCRATCH/findings-ledger.jsonl}"
 rm -f "$LEDGER"
 fail=0
 t() { if [ "$1" = 0 ]; then echo ok; else echo "FAIL: ${2:-check}"; fail=1; fi }
@@ -54,7 +58,7 @@ last=$(tail -1 "$LEDGER")
 echo "$last" | python3 -c "import json,sys; d=json.load(sys.stdin); assert len(d['finding_id'])==16, d"
 
 # 6b. same organ+run+title -> same finding_id, idempotent row (fresh ledger)
-L6=/tmp/fl-6.jsonl; rm -f "$L6"
+L6=$SCRATCH/fl-6.jsonl; rm -f "$L6"
 python3 "$PY" append --ledger "$L6" --source-organ t --run-id s1 \
   --title "Same finding" --evidence-ref e --disposition carried_over --ref x 2>/dev/null
 python3 "$PY" append --ledger "$L6" --source-organ t --run-id s1 \
@@ -69,7 +73,7 @@ python3 "$PY" append --ledger "$L6" --source-organ t --run-id s1 \
 [ "$(wc -l < "$L6")" = 3 ]; t $?
 
 # 7. backfill from a synthetic reports dir (no gh set: issues match off)
-D=/tmp/fl-reports; rm -rf "$D"; mkdir -p "$D/20260901T000000Z"
+D=$SCRATCH/fl-reports; rm -rf "$D"; mkdir -p "$D/20260901T000000Z"
 printf '%s\n' '{"timestamp":"t","rank":"1","title":"Big Leak","verdict":"PASS","reason":"skipped: max findings 1 reached","issue":""}' > "$D/20260901T000000Z/verdicts.jsonl"
 printf '%s\n' '{"timestamp":"t","rank":"2","title":"Filing cap drops evidence","verdict":"PASS","reason":"skipped: max findings 1 reached"}' >> "$D/20260901T000000Z/verdicts.jsonl"
 printf '%s\n' '{"timestamp":"t","rank":"2","title":"Filed thing","verdict":"PASS","reason":"ok","issue":"https://github.com/Nishfleet/fleet-ops/issues/1"}' >> "$D/20260901T000000Z/verdicts.jsonl"
@@ -87,16 +91,16 @@ python3 "$PY" measure --ledger "$LEDGER" | grep -Eq \
 t $?
 
 # 10. import-md minimal shape
-P=/tmp/fl-import.md
+P=$SCRATCH/fl-import.md
 printf '| high | Outer-in red | 0509#2962 |\n' > "$P"
-python3 "$PY" import-md --ledger /tmp/fl-imp.jsonl --source-organ outside-in-audit --file "$P" >/dev/null
-grep -q '"disposition": "filed"' /tmp/fl-imp.jsonl && grep -q "0509#2962" /tmp/fl-imp.jsonl
+python3 "$PY" import-md --ledger $SCRATCH/fl-imp.jsonl --source-organ outside-in-audit --file "$P" >/dev/null
+grep -q '"disposition": "filed"' $SCRATCH/fl-imp.jsonl && grep -q "0509#2962" $SCRATCH/fl-imp.jsonl
 t $?
 
 # 11. corrupt JSONL row refuses validate
-printf 'not-json\n' >> /tmp/fl-bad.jsonl
-python3 "$PY" validate --ledger /tmp/fl-bad.jsonl >/dev/null 2>&1
+printf 'not-json\n' >> $SCRATCH/fl-bad.jsonl
+python3 "$PY" validate --ledger $SCRATCH/fl-bad.jsonl >/dev/null 2>&1
 [ "$?" -ne 0 ]; t $?
 
-rm -f "$LEDGER" /tmp/fl-bf.jsonl /tmp/fl-imp.jsonl /tmp/fl-bad.jsonl /tmp/fl-reports.jsonl
+rm -f "$LEDGER" $SCRATCH/fl-bf.jsonl $SCRATCH/fl-imp.jsonl $SCRATCH/fl-bad.jsonl $SCRATCH/fl-reports.jsonl
 exit "$fail"
