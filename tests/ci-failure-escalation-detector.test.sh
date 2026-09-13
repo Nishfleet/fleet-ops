@@ -21,6 +21,11 @@
 # Fixture mode makes NO gh calls, so the inner loop runs anywhere.
 
 set -euo pipefail
+# Issue #6102: replay outputs moved from fixed shared /tmp paths into this
+# copy's private dir (5 parallel copies truncated each other's mid-read).
+TD="$(mktemp -d)"
+trap 'rm -rf "$TD"' EXIT INT TERM
+export TD
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 repo_root="$(cd "$here/.." && pwd)"
 script="$repo_root/.github/scripts/ci-failure-escalation-detector.mjs"
@@ -174,10 +179,10 @@ console.log("OK: pure function tests (normalize, signature, exclusions, detect, 
 ' || fail "pure function tests failed"
 
 # --- replay: drill branch twice -> one escalation filed ----------------------
-drill_json="$(node "$script" --from-json "$fixtures/drill-branch-twice.json" --output-json /tmp/esc-drill.json)"
+drill_json="$(node "$script" --from-json "$fixtures/drill-branch-twice.json" --output-json "$TD/esc-drill.json")"
 echo "$drill_json" | node --input-type=module -e '
 import { readFileSync } from "node:fs";
-const r = JSON.parse(readFileSync("/tmp/esc-drill.json", "utf8"));
+const r = JSON.parse(readFileSync(process.env.TD + "/esc-drill.json", "utf8"));
 const t = r.targets[0];
 if (t.escalations.length !== 1) throw new Error(`drill twice must yield 1 escalation, got ${t.escalations.length}`);
 if (t.filed.length !== 1) throw new Error(`drill twice must file 1, got ${t.filed.length}`);
@@ -192,10 +197,10 @@ console.log("OK: drill-branch twice -> one escalation with context + last green"
 ' || fail "drill-branch replay failed"
 
 # --- replay: auto-revert-handled -> NO escalation ----------------------------
-node "$script" --from-json "$fixtures/auto-revert-handled.json" --output-json /tmp/esc-ar.json >/dev/null
+node "$script" --from-json "$fixtures/auto-revert-handled.json" --output-json "$TD/esc-ar.json" >/dev/null
 node --input-type=module -e '
 import { readFileSync } from "node:fs";
-const r = JSON.parse(readFileSync("/tmp/esc-ar.json", "utf8"));
+const r = JSON.parse(readFileSync(process.env.TD + "/esc-ar.json", "utf8"));
 const t = r.targets[0];
 if (t.escalations.length !== 0) throw new Error(`auto-revert-handled main CI must NOT escalate, got ${t.escalations.length}`);
 if (t.filed.length !== 0) throw new Error("auto-revert-handled must file nothing");
@@ -203,20 +208,20 @@ console.log("OK: auto-revert-handled main CI -> no escalation (no duplicate)");
 ' || fail "auto-revert replay failed"
 
 # --- replay: #124 claim-branch-handled -> NO escalation ----------------------
-node "$script" --from-json "$fixtures/claim-branch-handled.json" --output-json /tmp/esc-claim.json >/dev/null
+node "$script" --from-json "$fixtures/claim-branch-handled.json" --output-json "$TD/esc-claim.json" >/dev/null
 node --input-type=module -e '
 import { readFileSync } from "node:fs";
-const r = JSON.parse(readFileSync("/tmp/esc-claim.json", "utf8"));
+const r = JSON.parse(readFileSync(process.env.TD + "/esc-claim.json", "utf8"));
 const t = r.targets[0];
 if (t.escalations.length !== 0) throw new Error(`#124-handled claim/* must NOT escalate, got ${t.escalations.length}`);
 console.log("OK: #124-handled claim/* -> no escalation (no duplicate)");
 ' || fail "claim-branch replay failed"
 
 # --- replay: deduped against open issue -> NO new filing ---------------------
-node "$script" --from-json "$fixtures/deduped.json" --output-json /tmp/esc-dedup.json >/dev/null
+node "$script" --from-json "$fixtures/deduped.json" --output-json "$TD/esc-dedup.json" >/dev/null
 node --input-type=module -e '
 import { readFileSync } from "node:fs";
-const r = JSON.parse(readFileSync("/tmp/esc-dedup.json", "utf8"));
+const r = JSON.parse(readFileSync(process.env.TD + "/esc-dedup.json", "utf8"));
 const t = r.targets[0];
 if (t.escalations.length !== 1) throw new Error("dedup fixture still detects the signature");
 if (t.filed.length !== 1) throw new Error("dedup fixture must report the filing decision");
@@ -225,20 +230,20 @@ console.log("OK: signature bound — open issue with hash marker dedupes (no dup
 ' || fail "dedup replay failed"
 
 # --- replay: below threshold -> quiet ---------------------------------------
-node "$script" --from-json "$fixtures/below-threshold.json" --output-json /tmp/esc-quiet.json >/dev/null
+node "$script" --from-json "$fixtures/below-threshold.json" --output-json "$TD/esc-quiet.json" >/dev/null
 node --input-type=module -e '
 import { readFileSync } from "node:fs";
-const r = JSON.parse(readFileSync("/tmp/esc-quiet.json", "utf8"));
+const r = JSON.parse(readFileSync(process.env.TD + "/esc-quiet.json", "utf8"));
 const t = r.targets[0];
 if (t.escalations.length !== 0) throw new Error(`single transient red must stay quiet, got ${t.escalations.length}`);
 console.log("OK: below threshold -> quiet");
 ' || fail "below-threshold replay failed"
 
 # --- replay: window span >6h -> quiet ---------------------------------------
-node "$script" --from-json "$fixtures/window-span.json" --output-json /tmp/esc-span.json >/dev/null
+node "$script" --from-json "$fixtures/window-span.json" --output-json "$TD/esc-span.json" >/dev/null
 node --input-type=module -e '
 import { readFileSync } from "node:fs";
-const r = JSON.parse(readFileSync("/tmp/esc-span.json", "utf8"));
+const r = JSON.parse(readFileSync(process.env.TD + "/esc-span.json", "utf8"));
 const t = r.targets[0];
 if (t.escalations.length !== 0) throw new Error(`2 failures spanning >6h must stay quiet, got ${t.escalations.length}`);
 console.log("OK: window span >6h -> quiet (6h bound respected)");

@@ -30,6 +30,11 @@
 # bash + node + jq + git.
 
 set -euo pipefail
+# Issue #6102: clamp/drill reports moved from fixed shared /tmp paths into
+# this copy's private dir (5 parallel copies truncated each other's mid-read).
+TD="$(mktemp -d)"
+trap 'rm -rf "$TD"' EXIT INT TERM
+export TD
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 repo_root="$(cd "$here/.." && pwd)"
 script="$repo_root/.github/scripts/stop-the-line-detector.mjs"
@@ -54,26 +59,26 @@ cd "$repo_root"
 clamp_report() {
   local label="$1"; shift
   node "$script" --from-json "$fixtures/quiet-runs.json" --format json \
-    --output-json "/tmp/stl-clamp-${label}.json" "$@" >/dev/null 2>/tmp/stl-clamp-stderr
+    --output-json "$TD/stl-clamp-${label}.json" "$@" >/dev/null 2>"$TD/stl-clamp-stderr"
 }
 
 # env surface: STOP_THE_LINE_LOOKBACK_MINUTES=15 must resolve to 30.
 STOP_THE_LINE_LOOKBACK_MINUTES=15 clamp_report env
-[[ -s /tmp/stl-clamp-env.json ]] || fail "env clamp run wrote no report"
+[[ -s "$TD/stl-clamp-env.json" ]] || fail "env clamp run wrote no report"
 node -e '
-  const r = JSON.parse(require("fs").readFileSync("/tmp/stl-clamp-env.json", "utf8"));
+  const r = JSON.parse(require("fs").readFileSync(process.env.TD + "/stl-clamp-env.json", "utf8"));
   if (r.lookback_minutes !== 30) {
     throw new Error(`env clamp: STOP_THE_LINE_LOOKBACK_MINUTES=15 must resolve lookback_minutes=30, got ${r.lookback_minutes} (fleet-ops#4588)`);
   }
 ' || fail "env clamp guard failed"
-grep -q "clamped to floor 30" /tmp/stl-clamp-stderr \
-  || fail "env clamp must emit a stderr notice (got: $(cat /tmp/stl-clamp-stderr))"
+grep -q "clamped to floor 30" "$TD/stl-clamp-stderr" \
+  || fail "env clamp must emit a stderr notice (got: $(cat "$TD/stl-clamp-stderr"))"
 ok "env clamp: STOP_THE_LINE_LOOKBACK_MINUTES=15 -> lookback_minutes=30 + stderr notice"
 
 # CLI surface: --lookback-minutes 15 must resolve to 30.
 clamp_report cli --lookback-minutes 15
 node -e '
-  const r = JSON.parse(require("fs").readFileSync("/tmp/stl-clamp-cli.json", "utf8"));
+  const r = JSON.parse(require("fs").readFileSync(process.env.TD + "/stl-clamp-cli.json", "utf8"));
   if (r.lookback_minutes !== 30) {
     throw new Error(`CLI clamp: --lookback-minutes 15 must resolve lookback_minutes=30, got ${r.lookback_minutes} (fleet-ops#4588)`);
   }
@@ -479,10 +484,10 @@ console.log("OK: lookback-amnesia helpers + buildDecision (fleet-ops#1489)");
 ' || fail "pure function tests failed"
 
 # --- replay: red-red -> open decision ---------------------------------------
-node "$script" --from-json "$fixtures/red-red.json" --format json --output-json /tmp/stl-redred.json >/dev/null
+node "$script" --from-json "$fixtures/red-red.json" --format json --output-json "$TD/stl-redred.json" >/dev/null
 node --input-type=module -e '
 import { readFileSync } from "node:fs";
-const r = JSON.parse(readFileSync("/tmp/stl-redred.json", "utf8"));
+const r = JSON.parse(readFileSync(process.env.TD + "/stl-redred.json", "utf8"));
 if (r.decision.action !== "open") throw new Error(`red-red must action=open, got ${r.decision.action}`);
 if (r.decision.workflow !== "CI") throw new Error(`halted workflow must be CI, got ${r.decision.workflow}`);
 if (r.decision.red_runs.length !== 2) throw new Error(`red_runs must carry 2 runs, got ${r.decision.red_runs.length}`);
@@ -491,20 +496,20 @@ console.log("OK: red-red -> open stop-the-line (CI, two consecutive reds)");
 ' || fail "red-red replay failed"
 
 # --- replay: red-red-red -> still open, more red runs in history -----------
-node "$script" --from-json "$fixtures/red-red-red.json" --format json --output-json /tmp/stl-redredred.json >/dev/null
+node "$script" --from-json "$fixtures/red-red-red.json" --format json --output-json "$TD/stl-redredred.json" >/dev/null
 node --input-type=module -e '
 import { readFileSync } from "node:fs";
-const r = JSON.parse(readFileSync("/tmp/stl-redredred.json", "utf8"));
+const r = JSON.parse(readFileSync(process.env.TD + "/stl-redredred.json", "utf8"));
 if (r.decision.action !== "open") throw new Error("red-red-red must still action=open");
 if (r.decision.red_runs.length !== 3) throw new Error(`red-red-red history must carry all three red runs, got ${r.decision.red_runs.length}`);
 console.log("OK: red-red-red -> open with full history");
 ' || fail "red-red-red replay failed"
 
 # --- replay: red-red-green -> close (unfreeze) -----------------------------
-node "$script" --from-json "$fixtures/unfreeze.json" --format json --output-json /tmp/stl-unfreeze.json >/dev/null
+node "$script" --from-json "$fixtures/unfreeze.json" --format json --output-json "$TD/stl-unfreeze.json" >/dev/null
 node --input-type=module -e '
 import { readFileSync } from "node:fs";
-const r = JSON.parse(readFileSync("/tmp/stl-unfreeze.json", "utf8"));
+const r = JSON.parse(readFileSync(process.env.TD + "/stl-unfreeze.json", "utf8"));
 if (r.decision.action !== "close") throw new Error(`unfreeze fixture must action=close (existing #777), got ${r.decision.action}`);
 if (r.decision.workflow !== "CI") throw new Error(`unfreeze workflow must be CI, got ${r.decision.workflow}`);
 if (!r.decision.unfreeze_run || r.decision.unfreeze_run.run_id !== 3003) throw new Error("unfreeze_run must point at run 3003");
@@ -516,10 +521,10 @@ console.log("OK: red-red-green + open issue -> close (auto-unfreeze, no human st
 # lookback; only green CI runs remain in-window. An open freeze issue names
 # CI. The detector must STILL close the issue using the open issue as the
 # memory of the halt — the regression that kept #1478 open after green CI.
-node "$script" --from-json "$fixtures/unfreeze-amnesia.json" --format json --output-json /tmp/stl-amnesia.json >/dev/null
+node "$script" --from-json "$fixtures/unfreeze-amnesia.json" --format json --output-json "$TD/stl-amnesia.json" >/dev/null
 node --input-type=module -e '
 import { readFileSync } from "node:fs";
-const r = JSON.parse(readFileSync("/tmp/stl-amnesia.json", "utf8"));
+const r = JSON.parse(readFileSync(process.env.TD + "/stl-amnesia.json", "utf8"));
 if (r.decision.action !== "close") throw new Error(`amnesia fixture must action=close (existing #1478, CI green), got ${r.decision.action}`);
 if (r.decision.workflow !== "CI") throw new Error(`amnesia workflow must be CI, got ${r.decision.workflow}`);
 if (!r.decision.unfreeze_run || r.decision.unfreeze_run.run_id !== 33145362942) throw new Error("amnesia unfreeze_run must point at the green run 33145362942");
@@ -530,28 +535,28 @@ console.log("OK: lookback-amnesia + open issue -> close (red runs aged out, CI g
 # --- replay: lookback-amnesia still red -> noop (issue stays open) ----------
 # Open freeze issue names CI, but the lookback only shows a red CI run (no
 # green). The detector must NOT close — it cannot confirm the freeze lifted.
-node "$script" --from-json "$fixtures/unfreeze-amnesia-still-red.json" --format json --output-json /tmp/stl-amnesia-red.json >/dev/null
+node "$script" --from-json "$fixtures/unfreeze-amnesia-still-red.json" --format json --output-json "$TD/stl-amnesia-red.json" >/dev/null
 node --input-type=module -e '
 import { readFileSync } from "node:fs";
-const r = JSON.parse(readFileSync("/tmp/stl-amnesia-red.json", "utf8"));
+const r = JSON.parse(readFileSync(process.env.TD + "/stl-amnesia-red.json", "utf8"));
 if (r.decision.action !== "noop") throw new Error(`amnesia-still-red must action=noop (issue stays open), got ${r.decision.action}`);
 console.log("OK: lookback-amnesia still-red -> noop (freeze stays until a green is observed)");
 ' || fail "amnesia-still-red replay failed"
 
 # --- replay: quiet (no consecutive red pairs) -> noop -----------------------
-node "$script" --from-json "$fixtures/quiet-runs.json" --format json --output-json /tmp/stl-quiet.json >/dev/null
+node "$script" --from-json "$fixtures/quiet-runs.json" --format json --output-json "$TD/stl-quiet.json" >/dev/null
 node --input-type=module -e '
 import { readFileSync } from "node:fs";
-const r = JSON.parse(readFileSync("/tmp/stl-quiet.json", "utf8"));
+const r = JSON.parse(readFileSync(process.env.TD + "/stl-quiet.json", "utf8"));
 if (r.decision.action !== "noop") throw new Error(`all-green must action=noop, got ${r.decision.action}`);
 console.log("OK: all-green runs -> noop (no halt signal, no unfreeze signal)");
 ' || fail "quiet replay failed"
 
 # --- replay: red-green (no consecutive pair) -> noop ------------------------
-node "$script" --from-json "$fixtures/no-consecutive.json" --format json --output-json /tmp/stl-no-consec.json >/dev/null
+node "$script" --from-json "$fixtures/no-consecutive.json" --format json --output-json "$TD/stl-no-consec.json" >/dev/null
 node --input-type=module -e '
 import { readFileSync } from "node:fs";
-const r = JSON.parse(readFileSync("/tmp/stl-no-consec.json", "utf8"));
+const r = JSON.parse(readFileSync(process.env.TD + "/stl-no-consec.json", "utf8"));
 if (r.decision.action !== "noop") throw new Error(`red-green (no consecutive reds) must action=noop, got ${r.decision.action}`);
 console.log("OK: red-green (no consecutive reds) -> noop (single transient red is not a halt)");
 ' || fail "no-consecutive replay failed"
@@ -565,10 +570,10 @@ console.log("OK: red-green (no consecutive reds) -> noop (single transient red i
 # A cancelled CI run on main means the pipeline status is UNKNOWN —
 # fail-closed red (trunk stays green). The failure + first cancelled pair
 # must trigger the halt.
-node "$script" --from-json "$fixtures/cancelled-masks-red.json" --format json --output-json /tmp/stl-cancel.json >/dev/null
+node "$script" --from-json "$fixtures/cancelled-masks-red.json" --format json --output-json "$TD/stl-cancel.json" >/dev/null
 node --input-type=module -e '
 import { readFileSync } from "node:fs";
-const r = JSON.parse(readFileSync("/tmp/stl-cancel.json", "utf8"));
+const r = JSON.parse(readFileSync(process.env.TD + "/stl-cancel.json", "utf8"));
 if (r.decision.action !== "open") throw new Error(`cancelled-masks-red must action=open, got ${r.decision.action}`);
 if (r.decision.workflow !== "CI") throw new Error(`cancelled-masks-red workflow must be CI, got ${r.decision.workflow}`);
 if (r.decision.red_runs.length < 2) throw new Error(`cancelled-masks-red must carry the failure + first cancelled as the red pair, got ${r.decision.red_runs.length}`);
@@ -581,10 +586,10 @@ console.log("OK: cancelled-runs-mask-red -> open (failure + cancelled = halt, fl
 # the same concurrency group; ci.yml sets cancel-in-progress=false for
 # push), plus a later unresolved head run. None contributed a verdict ->
 # no halt. This is the exact shape that opened fleet-ops#5714.
-node "$script" --from-json "$fixtures/superseded-queued-cancels.json" --format json --output-json /tmp/stl-superseded.json >/dev/null
+node "$script" --from-json "$fixtures/superseded-queued-cancels.json" --format json --output-json "$TD/stl-superseded.json" >/dev/null
 node --input-type=module -e '
 import { readFileSync } from "node:fs";
-const r = JSON.parse(readFileSync("/tmp/stl-superseded.json", "utf8"));
+const r = JSON.parse(readFileSync(process.env.TD + "/stl-superseded.json", "utf8"));
 if (r.decision.action !== "noop") throw new Error(`superseded-queued cancels must action=noop, got ${r.decision.action} (fleet-ops#5731: this shape opened the false #5714 freeze)`);
 console.log("OK: superseded-while-queued cancels + unresolved head -> noop (no verdicts, fleet-ops#5731)");
 ' || fail "superseded-queued replay failed"
@@ -593,10 +598,10 @@ console.log("OK: superseded-while-queued cancels + unresolved head -> noop (no v
 # The same incident shape but the cancelled runs HAD started jobs — killed
 # in-flight means the SHA's status is genuinely unknown -> still red. Also
 # proves the freeze body names each run's disposition.
-node "$script" --from-json "$fixtures/cancelled-after-start.json" --format json --output-json /tmp/stl-after-start.json >/dev/null
+node "$script" --from-json "$fixtures/cancelled-after-start.json" --format json --output-json "$TD/stl-after-start.json" >/dev/null
 node --input-type=module -e '
 import { readFileSync } from "node:fs";
-const r = JSON.parse(readFileSync("/tmp/stl-after-start.json", "utf8"));
+const r = JSON.parse(readFileSync(process.env.TD + "/stl-after-start.json", "utf8"));
 if (r.decision.action !== "open") throw new Error(`cancelled-after-start must action=open, got ${r.decision.action} (fleet-ops#5731)`);
 if (r.decision.red_runs.length < 2) throw new Error(`cancelled-after-start must carry the red runs, got ${r.decision.red_runs.length}`);
 const disps = (r.decision.red_runs || []).map((x) => x.disposition || "");
