@@ -146,3 +146,47 @@ against main. The signal opens (or reuses) an issue. It does not revert.
 `.github/workflows/red-on-main-watch.yml` is the 15-minute sweep other
 Nishfleet repos get via repo-standards-sync. Do not make either a
 required check.
+
+## Repair PRs jump the merge queue (fleet-ops#5810)
+
+A red-main repair PR cannot wait its turn. On 2026-09-12 FleetMainRed fired
+at 04:07Z; the repair lane opened 0509#3191 green and mergeable at 04:58Z,
+armed auto-merge, and landed at the TAIL of a 14-entry merge queue whose
+every group build failed on the very bug #3191 fixed. It sat 57 minutes
+until a human ran dequeue + `enqueuePullRequest(jump:true)` by hand.
+
+The mechanism has three parts, all gated on one label family:
+
+- **The `repair:` label is the only ticket.** `isRepairPr` in
+  `.github/scripts/repair-queue-jump.mjs` matches exactly the `repair:`
+  prefix (`repair:main-red`, `repair:alert`). `blocked-by-judge`,
+  `no-auto-merge`, and `[no-merge]` titles refuse the jump even on a
+  repair-labelled PR. Repair producers apply the label: `auto-revert.sh`
+  labels its `revert/*` PRs, the alert-repair packet instructs workers to
+  label their fix PRs, and the heartbeat queue pass labels any `revert/*`
+  head it sees.
+- **Entry jump.** `repair-queue-jump.mjs enqueue --repo O/N --pr N`
+  resolves the PR + queue in one GraphQL read and enqueues with
+  `jump:true` — dequeueing first when the PR is already queued mid-queue.
+  Auto-revert.sh and the heartbeat's arm path call it right after
+  `gh pr merge --auto`. On a repo with no merge queue (or a non-repair PR)
+  it exits with a fallback code and the plain arm is the whole path.
+- **Sweep safeguard.** `fleet-heartbeat-tier1` block 2b runs
+  `repair-queue-jump.mjs sweep` per enrolled repo per tick: when the queue
+  HEAD has waited > 30 minutes and a repair-labelled PR is queued behind
+  it, the repair PR is jumped; a green repair PR that never reached the
+  queue is enqueued at the head directly. One `gh pr list` per repo, one
+  queue snapshot only when a repair PR exists — the App budget bullet.
+
+`jump:true` never bypasses required checks. It only re-positions the PR at
+the head of the queue; the group build and the branch ruleset still gate
+the merge. There is no `--admin`, no force-merge, no check skipping.
+
+Manual use is the same CLI a repair worker runs:
+
+```
+node .github/scripts/repair-queue-jump.mjs enqueue --repo Nishfleet/0509 --pr 3191
+```
+
+`tests/repair-queue-jump.test.sh` replays the 2026-09-12 snapshot (it
+selects #3191) and drills the mutations against a stubbed `gh`.
