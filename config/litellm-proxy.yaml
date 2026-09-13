@@ -34,7 +34,7 @@ model_list:
     api_key: os.environ/PARETO_API_KEY
     tags:
     - prepaid
-    order: 3
+    order: 4
     max_parallel_requests: 1
 - model_name: worker-cheap
   litellm_params:
@@ -43,7 +43,7 @@ model_list:
     api_key: os.environ/NEBIUS_API_KEY
     tags:
     - metered
-    order: 4
+    order: 3
     max_parallel_requests: 1
 - model_name: worker-capable
   litellm_params:
