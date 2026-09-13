@@ -250,11 +250,9 @@ bin/pi-transport-check /home/nish/.local/bin/pi-transport-check
 bin/pi-issue-run /home/nish/.local/bin/pi-issue-run
 bin/pi-issue-failed-reap /home/nish/.local/bin/pi-issue-failed-reap
 bin/pi-systemd-run /home/nish/.local/bin/pi-systemd-run
-# fleet-ops#5444: OnFailure handler for retry-exhausted packets — triage +
-# findings-ledger + agent-ready re-queue for --deliverable runs.
-bin/pi-packet-failed /home/nish/.local/bin/pi-packet-failed
-# fleet-ops#5444: the handler's findings-ledger write must go through the
-# shared single-writer helper (fleet-ops#5443), auto-detected at
+# fleet-ops#5444: the dispatcher's findings-ledger write (and the retired
+# pi-packet-failed handler's) must go through the shared single-writer
+# helper (fleet-ops#5443), auto-detected at
 # ~/.local/lib/pi-packet/findings_ledger.py — without this install line the
 # runtime handler silently falls back to direct append.
 lib/findings_ledger.py /home/nish/.local/lib/pi-packet/findings_ledger.py
@@ -707,6 +705,16 @@ systemd/stop-escalation.service /home/nish/.config/systemd/user/stop-escalation.
 systemd/unit-escalation@.service /home/nish/.config/systemd/user/unit-escalation@.service
 systemd/unit-escalation@.service.d/no-self-escalate.conf /home/nish/.config/systemd/user/unit-escalation@.service.d/no-self-escalate.conf
 systemd/service.d/10-escalate.conf /home/nish/.config/systemd/user/service.d/10-escalate.conf
+# fleet-ops#5456: the RESUME POLICY declaration (allowlist, deliberately no
+# global Restart= — see the file). Hash-asserted by fleet-escalation-canary
+# block 1b every tick.
+systemd/service.d/20-resume.conf /home/nish/.config/systemd/user/service.d/20-resume.conf
+# fleet-ops#5456 E/H: the kill-three-ways chain drill + its isolated fixture
+# (throwaway resume-drill-* dummies; runs from fleet-heartbeat-tier1 5b, no
+# new timer).
+bin/chain-e2e-drill /home/nish/.local/bin/chain-e2e-drill
+systemd/chain-e2e-drill-fixture.service /home/nish/.config/systemd/user/chain-e2e-drill-fixture.service
+systemd/chain-e2e-drill.slice /home/nish/.config/systemd/user/chain-e2e-drill.slice
 # fleet-ops#618: .path and .timer units do not inherit service.d/.
 systemd/path.d/10-escalate.conf /home/nish/.config/systemd/user/path.d/10-escalate.conf
 systemd/timer.d/10-escalate.conf /home/nish/.config/systemd/user/timer.d/10-escalate.conf

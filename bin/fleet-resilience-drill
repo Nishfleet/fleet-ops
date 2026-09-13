@@ -470,14 +470,29 @@ plane_keystone_hc() {
     printf '%s' "$val"
   }
 
+  # fleet-ops#5456 F: the heartbeat dead-man is the dead-man for the whole
+  # user manager — if hc.env is missing or HC_URL is unset, a stopped user
+  # manager alerts nobody (heartbeat-watchman logs "skip" and the chain is
+  # dead). Provisioned-or-loud: this is the one check whose absence means
+  # nothing else can page.
+  if ! hb="$(hc_env_value "$HEARTBEAT_HC_ENV" "HC_URL")"; then
+    loud "HEARTBEAT-HC-UNCONFIGURED" "$HEARTBEAT_HC_ENV missing or HC_URL unset — a stopped user manager alerts nobody (healthchecks.io dead-man unprovisioned)"
+    record "$name" "fail" "heartbeat dead-man HC_URL unprovisioned"
+    return 1
+  fi
+
   if [[ ! -f "$KEYSTONE_HC_ENV" ]]; then
     loud "KEYSTONE-HC-UNCONFIGURED" "missing $KEYSTONE_HC_ENV — create free healthchecks.io checks for intake/scout/reconcile/restore/detached/organwatch and drop HC_URL_* there. Heartbeat already has its own check."
     record "$name" "skip" "env file missing"
     return 0
   fi
+  # fleet-ops#5456 F: HC_URL_DETACHED is the dead-man for the packet chain
+  # this issue builds — pi-detached-deadman pings it start/success/fail per
+  # run id, and keystone-hc-ping SKIPS SILENTLY when it is unset, which is
+  # exactly the silent-death class. Unset stays LOUD here until provisioned
+  # (one healthchecks.io check, then HC_URL_DETACHED=<url> in the env file).
   # HC_URL_ORGANWATCH is the #5854 organ-death watcher's dead-man; included
   # in the same distinctness sweep so a shared URL cannot mask it.
-  # HC_URL_DETACHED (fleet-ops#5886) is the detached per-dispatch dead-man.
   for key in HC_URL_INTAKE HC_URL_SCOUT HC_URL_RECONCILE HC_URL_RESTORE HC_URL_DETACHED HC_URL_ORGANWATCH; do
     if ! url="$(hc_env_value "$KEYSTONE_HC_ENV" "$key")"; then
       missing+=("$key")
