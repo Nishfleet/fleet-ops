@@ -25,6 +25,13 @@
 //      `gh pr merge --auto` by hand, a label that landed after queueing).
 //      The same sweep directly enqueues a green repair PR that is not yet
 //      in the queue (the issue's primary path, reconciler-side).
+//      Live-lesson #2768 (2026-09-13): a repair PR can be check-bucket
+//      green while the queue still expects an unreported required check —
+//      `gh pr checks` passes, yet the enqueue is refused ("6 of 6 required
+//      status checks are expected"). The sweep therefore reads
+//      mergeStateStatus on the SAME `gh pr view` read it already did and
+//      skips BLOCKED/DIRTY/DRAFT PRs instead of burning 1-2 refused
+//      mutations per PR per hour, forever.
 //
 // Hard guarantees (the issue's `required:` bullets):
 //   - ONLY repair-labelled PRs may jump. `isRepairPr` matches exactly the
@@ -338,7 +345,31 @@ export function sweepRepairQueue(opts) {
   for (const entry of snapshot.entries && snapshot.entries.nodes ? snapshot.entries.nodes : []) {
     if (entry && entry.pullRequest && entry.pullRequest.id) byPrId.set(entry.pullRequest.id, entry);
   }
+  // One `gh pr view` per repair PR (same read the enqueue-green path below
+  // already did — now issued ONCE, up front) enriches both the jump loop
+  // and the enqueue loop with state + mergeStateStatus. mergeStateStatus is
+  // GitHub's own readiness verdict: BLOCKED means a required check or merge
+  // condition is unmet, so enqueuePullRequest would be refused — skip
+  // BEFORE spending any mutation. #2768 lesson: its `gh pr checks` are all
+  // bucket-pass yet the queue expects a 6th, never-reported required check
+  // on its stale head — it would have burned 2 refused mutations every
+  // hour otherwise.
+  const details = new Map();
+  for (const pr of repairPrs) {
+    const detail = ghJson(["pr", "view", String(pr.number), "--repo", opts.repo, "--json", "id,state,mergeStateStatus"]);
+    if (detail && detail.id) details.set(pr.number, detail);
+  }
+  const NOT_READY = new Set(["BLOCKED", "DIRTY", "DRAFT"]);
+  const notReadyStatus = (number) => {
+    const d = details.get(number);
+    return d && NOT_READY.has(d.mergeStateStatus) ? d.mergeStateStatus : null;
+  };
   for (const j of result.jumped || []) {
+    const st = notReadyStatus(j.number);
+    if (st) {
+      report.skipped.push({ pr: j.number, reason: `blocked: ${st} (mergeStateStatus) — enqueue would be refused, mutation saved` });
+      continue;
+    }
     try {
       const r = jumpPr(opts.repo, j, byPrId.get(j.id) || { state: j.state }, opts);
       report.jumped.push({ pr: j.number, action: r.action });
@@ -351,8 +382,13 @@ export function sweepRepairQueue(opts) {
   const queuedIds = new Set((snapshot.entries && snapshot.entries.nodes ? snapshot.entries.nodes : [])
     .map((n) => n && n.pullRequest && n.pullRequest.id).filter(Boolean));
   for (const pr of repairPrs) {
-    const detail = ghJson(["pr", "view", String(pr.number), "--repo", opts.repo, "--json", "id,state"]);
+    const detail = details.get(pr.number);
     if (!detail || !detail.id || detail.state !== "OPEN") continue;
+    const st = notReadyStatus(pr.number);
+    if (st) {
+      report.skipped.push({ pr: pr.number, reason: `blocked: ${st} (mergeStateStatus) — enqueue would be refused, mutation saved` });
+      continue;
+    }
     if (queuedIds.has(detail.id)) {
       if (!(result.jumped || []).some((j) => j.number === pr.number)) {
         report.skipped.push({ pr: pr.number, reason: result.reason });

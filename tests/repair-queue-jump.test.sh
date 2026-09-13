@@ -22,6 +22,10 @@
 #      repair PR dequeues then re-enqueues with jump:true and exits 0;
 #      `enqueue` on a non-repair PR exits 3 and mutates nothing; `sweep`
 #      on a green-but-unqueued repair PR enqueues it with jump:true.
+#   6. mergeStateStatus skip (#2768 lesson, 2026-09-13): a repair PR that
+#      is check-bucket green but BLOCKED at the queue (a required check
+#      never reported on its stale head) is skipped WITHOUT any mutation;
+#      a CLEAN one jumps.
 #   6. Heartbeat wiring shape: bin/fleet-heartbeat-tier1 block 2 labels
 #      revert/* heads, entry-jumps repair-labelled arms, and block 2b runs
 #      the sweep.
@@ -221,7 +225,7 @@ cat >"$scratch/list.json" <<'EOF'
     "labels": [{ "name": "repair:main-red" }] } ]
 EOF
 cat >"$scratch/view.json" <<'EOF'
-{ "id": "PR_42", "state": "OPEN" }
+{ "id": "PR_42", "state": "OPEN", "mergeStateStatus": "CLEAN" }
 EOF
 cat >"$scratch/checks.json" <<'EOF'
 [ { "name": "ci", "bucket": "pass", "state": "SUCCESS" } ]
@@ -280,6 +284,25 @@ if grep -q 'api graphql' "$GH_CALL_LOG"; then
   fail "sweep with no repair PRs must not touch the queue endpoint"
 fi
 ok "drill: no repair PRs -> no merge-queue API spend"
+
+# Drill 6: `sweep` — the #2768 lesson: buckets-green but BLOCKED at the
+# queue (its 6th required check never reported on the stale head) -> the
+# sweep skips it with zero mutations instead of burning 1-2 refused
+# mutations every hour forever.
+cat >"$scratch/view-blocked.json" <<'EOF'
+{ "id": "PR_42", "state": "OPEN", "mergeStateStatus": "BLOCKED" }
+EOF
+export GH_PR_LIST_FIXTURE="$scratch/list.json"
+export GH_PR_VIEW_FIXTURE="$scratch/view-blocked.json"
+export GH_QUEUE_FIXTURE="$scratch/queue-queued.json"
+: >"$GH_MUTATION_LOG"
+rj6_out="$(node "$script" sweep --repo Nishfleet/drill --apply 2>/dev/null)" \
+  || fail "sweep on BLOCKED repair PR must exit 0"
+[ ! -s "$GH_MUTATION_LOG" ] \
+  || fail "BLOCKED repair PR must not consume a mutation"
+printf '%s' "$rj6_out" | grep -q 'blocked: BLOCKED (mergeStateStatus)' \
+  || fail "BLOCKED skip must be named in the report"
+ok "drill: BLOCKED repair PR skipped, zero mutations (#2768 lesson)"
 
 # --- 6. heartbeat wiring shape ------------------------------------------------
 hb="$repo_root/bin/fleet-heartbeat-tier1"
