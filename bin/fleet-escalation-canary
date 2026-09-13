@@ -6,11 +6,14 @@
 # mechanically" on TWO planes, every heartbeat tick:
 #
 #   VPS plane (blocks 1-5):
-#     1. Every loaded user .service, .path, and .timer is covered by the
-#        matching type drop-in (service.d / path.d / timer.d —
+#     1. Every loaded user .service, .path, .timer, and .socket is covered by
+#        the matching type drop-in (service.d / path.d / timer.d / socket.d —
 #        OnFailure contains unit-escalation@<unit>.service) OR appears on
 #        the explicit anti-recursion exclusion list. service.d does not
-#        apply to path or timer units (fleet-ops#618).
+#        apply to path or timer units (fleet-ops#618), nor to socket units
+#        (fleet-ops#5855 — sockets additionally carry a known-vendor coverage
+#        allowlist, so the check is fail-closed for a NEWLY LOADED socket
+#        while the shipped vendor set never red-grounds the tick).
 #     2. No fleet execution path exists outside a systemd unit: only the
 #        sanctioned bin wrappers invoke `pi --print --provider` directly.
 #     3. Terminal delivery (#76/#428): dead-man ping (healthchecks.io on a
@@ -268,6 +271,42 @@ is_escalation_excluded() {
     return 1
 }
 
+# fleet-ops#5855: known-vendor SOCKET coverage allowlist. These are the
+# loaded user sockets on this host (census 2026-09-13: 8 loaded — dbus,
+# dirmngr, the gpg-agent* family, keyboxd, pk-debconf-helper — plus
+# snapd.session-agent.socket, loaded on 2026-09-12 when the issue counted
+# 9; it is an elastic vendor unit that comes and goes). They are named here
+# so the check is FAIL-CLOSED: a NEWLY loaded socket that the deployed
+# socket.d/10-escalate.conf drop-in has not covered yet (no OnFailure, no
+# daemon-reload since it appeared) is a VIOLATION, while these never
+# red-ground the tick. pk-debconf-helper and snapd.session-agent are
+# elastic (load on demand, unload when idle) — without the allowlist they
+# would flap the canary. Once the drop-in is deployed and a daemon-reload
+# has run, these units are COVERED via their OnFailure= and the allowlist
+# entries go inert; the allowlist keeps the interim and the churn quiet.
+# Kept inline at the point of enforcement, the same discipline as the
+# VPS anti-recursion set above.
+is_socket_coverage_allowlisted() {
+    case "$1" in
+        dbus.socket)                    return 0 ;;
+        dirmngr.socket)                 return 0 ;;
+        gpg-agent*.socket)              return 0 ;;
+        keyboxd.socket)                 return 0 ;;
+        pk-debconf-helper.socket)       return 0 ;;
+        snapd.session-agent.socket)     return 0 ;;
+    esac
+    return 1
+}
+
+# mount/automount/swap: deliberately NOT enumerated (fleet-ops#5855
+# decision, recorded at the point of enforcement). The live user-manager
+# set (2026-09-13) is 100% vendor — 11 .mount + 1 .swap, 0 .automount —
+# none carries an OnFailure (no mount.d/swap.d/automount.d drop-in ships),
+# so enumerating them would trade 12 permanent-allowlist entries for zero
+# signal. The hourly failed-units sweep stays their backstop. Enumerate a
+# new unit type ONLY with a named reason and a seeded allowlist, exactly as
+# .socket was added here.
+
 # Sanctioned bin wrappers that are allowed to invoke the pi binary directly.
 # New runners must be added here AND wired to a systemd unit template.
 SANCTIONED_PI_RUNNERS=(
@@ -345,16 +384,20 @@ if [[ ! -d "$FLEET_OPS_REPO/bin" ]]; then
 fi
 
 # ---------------------------------------------------------------------------
-# 1. loaded user service/path/timer escalation coverage (fleet-ops#618)
+# 1. loaded user service/path/timer/socket escalation coverage
+# (fleet-ops#618 + #5855)
 # ---------------------------------------------------------------------------
 # A service-only type filter is the class that missed fleet-seat-recovery.path
 # (unit-start-limit-hit, OnFailure empty). path.d/ and timer.d/ are the
-# matching type drop-ins; this block must enumerate all three types.
-log "1. checking escalation coverage for loaded user services, paths, timers, and scopes"
+# matching type drop-ins; this block must enumerate all four types. Socket
+# units are additionally screened through is_socket_coverage_allowlisted
+# (above) so the known-vendor set never red-grounds the tick while any
+# unexpected loaded socket still fails loudly.
+log "1. checking escalation coverage for loaded user services, paths, timers, scopes, and sockets"
 mapfile -t loaded_units < <(
-    "$SYSTEMCTL" --user list-units --type=service,path,timer,scope --no-legend --plain 2>/dev/null \
+    "$SYSTEMCTL" --user list-units --type=service,path,timer,scope,socket --no-legend --plain 2>/dev/null \
         | awk '{print $1}' \
-        | grep -E '\.(service|path|timer|scope)$' \
+        | grep -E '\.(service|path|timer|scope|socket)$' \
         || true
 )
 
@@ -371,6 +414,12 @@ for unit in "${loaded_units[@]}"; do
 
     if [[ -n "$onf" ]] && grep -qF "$expected" <<< "$onf"; then
         log "1.  - $unit: covered ($onf)"
+    elif is_socket_coverage_allowlisted "$unit"; then
+        # fleet-ops#5855: known-vendor socket, uncovered until the deployed
+        # socket.d/10-escalate.conf drop-in takes effect via daemon-reload.
+        # A NEW loaded socket that is neither covered nor allowlisted still
+        # falls through to the VIOLATION below — fail-closed by construction.
+        log "1.  - $unit: allowed uncovered (vendor socket coverage allowlist, fleet-ops#5855)"
     else
         loud "ESCALATION-CANARY-VIOLATION" "unit=$unit missing escalation drop-in (OnFailure='$onf', expected='$expected')"
         violations=$((violations + 1))
