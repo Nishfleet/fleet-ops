@@ -226,6 +226,12 @@ bash "$here/same-repo-closes-gate.test.sh"
 # (fleet-ops#5471: the bench-truth path-unit storm drill test was retired
 # with the #6101 seat-era demolition — its entry here went with it.)
 
+# fleet-ops#6101: the demolition's termination clause as a gate — every
+# pre-#5993 lib/seat-lib.sh reference in bin/+lib must resolve (define-or-127
+# invariant). Hosted here so P14 runs it without a workflow-file edit
+# (the #5471 way; the #917/#5471 slot above retired into this one).
+bash "$here/seat-lib-termination.test.sh"
+
 # fleet-ops#4468 dead-conflicting-PR detector
 bash "$here/fleet-dead-pr-detector.test.sh"
 
