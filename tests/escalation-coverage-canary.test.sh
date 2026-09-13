@@ -599,7 +599,64 @@ grep -E "grep '\\\\.service\\\$'" "$canary_src" >/dev/null \
   && fail "scenario2d: canary still filters loaded units to .service only (fleet-ops#618)" || true
 ok "scenario2d: canary source enumerates service, path, timer, and scope (fleet-ops#618/#4266 class lock)"
 # ============================================================================
+# Scenario 2g (fleet-ops#5855): the #618/#4266 lock above enumerated
+# service/path/timer/scope only — 9 loaded vendor user .socket units had no
+# OnFailure and no enumerating check (socket.d/ did not even exist). Locked
+# BOTH ways here:
+#   behavior: a covered socket passes; an UNCOVERED allowlisted vendor
+#             socket is absorbed (no VIOLATION); a NEWLY loaded socket that
+#             is neither covered nor allowlisted fails LOUD (VIOLATION, rc 1).
+#   source:   a future edit that drops ,socket / the allowlist / the
+#             MANIFEST row reopens the #5855 hole — same lock discipline as
+#             the #618 service-only regression 2d guards.
+# ============================================================================
+reset_state
+cover "good-worker.service"
+cover "dbus.socket"
+exclude "dirmngr.socket"
+exclude "gpg-agent-ssh.socket"
+exclude "unit-escalation@foo.service"
+exclude "stop-escalation.service"
+exclude "stop-escalation.path"
+exclude "ready-work.service"
+exclude "escalation-daily-sweep.service"
+exclude "escalation-daily-sweep.timer"
+exclude "resilience-drill-stub-restart.service"
+sanctioned_wrapper "pi-issue-run"
+sanctioned_wrapper "pi-packet-run"
+write_intake "0509" "fleet-ops" "siterep-public"
+write_claim_repos "Nishfleet/0509" "Nishfleet/fleet-ops" "Nishfleet/siterep-public"
+printf '%s\n' "newcomer-5855-test.socket" >>"$loaded"
+
+run_canary
+
+[[ "$env_rc" == 1 ]] || fail "scenario2g: uncovered newcomer-5855-test.socket must VIOLATE (rc=1, got $env_rc)"
+grep -q 'unit=newcomer-5855-test.socket missing escalation drop-in' <<<"$env_out" \
+  || fail "scenario2g: VIOLATION must name the uncovered newcomer socket ($env_out)"
+grep -q 'dbus.socket: covered (unit-escalation@dbus.socket.service' <<<"$env_out" \
+  || fail "scenario2g: covered socket must pass the OnFailure check ($env_out)"
+grep -q 'dirmngr.socket: allowed uncovered (vendor socket coverage allowlist' <<<"$env_out" \
+  || fail "scenario2g: uncovered allowlisted vendor socket must be absorbed, not red ($env_out)"
+grep -q 'gpg-agent-ssh.socket: allowed uncovered (vendor socket coverage allowlist' <<<"$env_out" \
+  || fail "scenario2g: the gpg-agent* allowlist glob must absorb the family ($env_out)"
+! grep -q 'unit=dbus.socket missing' <<<"$env_out" || fail "scenario2g: covered dbus.socket must not violate"
+! grep -q 'unit=dirmngr.socket missing' <<<"$env_out" || fail "scenario2g: allowlisted dirmngr.socket must not violate"
+! grep -q 'unit=gpg-agent-ssh.socket missing' <<<"$env_out" || fail "scenario2g: allowlisted gpg-agent-ssh.socket must not violate"
+ok "scenario2g: socket coverage — fail-closed for uncovered newcomer, vendor allowlist absorbed (fleet-ops#5855)"
+
+grep -F -- '--type=service,path,timer,scope,socket' "$repo_root/bin/fleet-escalation-canary" >/dev/null \
+  || fail "scenario2g: canary must list-units --type=service,path,timer,scope,socket (fleet-ops#5855)"
+grep -qF 'is_socket_coverage_allowlisted' "$repo_root/bin/fleet-escalation-canary" \
+  || fail "scenario2g: canary must keep the vendor-socket coverage allowlist (fleet-ops#5855)"
+grep -qF 'systemd/socket.d/10-escalate.conf' "$repo_root/MANIFEST" \
+  || fail "scenario2g: MANIFEST must ship systemd/socket.d/10-escalate.conf (fleet-ops#5855)"
+grep -qF 'OnFailure=unit-escalation@%n.service' "$repo_root/systemd/socket.d/10-escalate.conf" \
+  || fail "scenario2g: socket.d/10-escalate.conf must wire OnFailure=unit-escalation@%n.service (fleet-ops#5855)"
+ok "scenario2g: socket coverage source-locked (fleet-ops#5855)"
+# ============================================================================
 # Scenario 2e (fleet-ops#4266): block 14 detached-work lint — empty audit
+# trail is clean (exit 0, no DETACHED-RAW-UNIT).
+# ============================================================================
 # trail is clean (exit 0, no DETACHED-RAW-UNIT).
 # ============================================================================
 reset_state
