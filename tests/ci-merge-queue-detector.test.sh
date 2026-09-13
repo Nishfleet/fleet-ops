@@ -500,6 +500,11 @@ def _no_gh(q, cursor=None):
     raise AssertionError("throttled run must not read gh (fleet-ops#5762)")
 m._gh_graphql = _no_gh
 m._gh_rate_limit = lambda: {"core": {"remaining": 100, "limit": 5000, "reset": now + 3600, "low": 1}, "graphql": {"remaining": 90, "limit": 5000, "reset": now + 3600, "low": 1}}
+# The #1136 week-later revert check rides its own once-per-PR ledger, not the
+# #5762 throttle gate, so it legitimately reads gh even in a throttled tick —
+# same seam the #4481/#1844 harnesses stub. Silence it here so
+# calls["graphql"] == 0 measures exactly the #5807 family's budget promise.
+m._week_later_prs = lambda: []
 rc = m.main()
 assert rc == 0 and calls["graphql"] == 0, (rc, calls)
 body = out.read_text()
