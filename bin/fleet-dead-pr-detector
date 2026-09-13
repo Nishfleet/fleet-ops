@@ -93,6 +93,16 @@ fi
 # OnFailure escalation pages instead of the branch lingering until a manual
 # sweep.
 #
+# The DEAD-CONFLICTING class unwedges itself (fleet-ops#6467): the detector
+# holds both proofs (parent state MERGED/CLOSED, and CONFLICTING), so it
+# closes each dead-CONFLICTING PR right after flagging it, its dead-pr-human
+# text being the close note. The close's gh output is discarded so stdout
+# stays machine-readable; a failed close is logged, the wedge stands, and the
+# next tick retries it. The finding still fails the unit — exit 1
+# (fleet-ops#4468) — so the NEXT invocation reads clean and the ExecStart
+# observe-to-close sweep proceeds. The still-undecided exit-2 path stays
+# close-less: there the CONFLICTING proof is missing, never guessed.
+#
 # Output: one `dead-pr:` evidence line + one human line per dead PR, one
 # `stale-conflicting-pr:` evidence line + one human line per
 # stale-conflicting PR, then the `stale_conflicting_prs=<n>` measure line,
@@ -364,8 +374,19 @@ while IFS= read -r pr; do
         url="https://github.com/${REPO}/issues/${parent}"
         printf 'dead-pr: %s %s parent=%s parent-state=%s %s\n' \
             "$num" "$title" "$parent" "$state" "$url"
-        printf 'dead-pr-human: PR #%s is a dead conflicting branch — parent issue #%s is %s (%s); the fix already shipped, the branch cannot merge.\n' \
-            "$num" "$parent" "$state" "$url"
+        dead_human="$(printf 'PR #%s is a dead conflicting branch — parent issue #%s is %s (%s); the fix already shipped, the branch cannot merge.' \
+            "$num" "$parent" "$state" "$url")"
+        printf 'dead-pr-human: %s\n' "$dead_human"
+        # The rail unwedges the DEAD-CONFLICTING class itself (fleet-ops#6467):
+        # the detector already holds both proofs (parent state, CONFLICTING), so
+        # it closes the branch here, its dead-pr-human text being the close note.
+        # The close's gh output is discarded so stdout stays machine-readable;
+        # a failed close is logged, the wedge stands, and the next tick retries.
+        if "$GH" pr close "$num" -R "$REPO" --comment "$dead_human" >/dev/null 2>&1; then
+            log "PR #$num: closed — the dead conflicting branch cannot merge, the fix already shipped (parent issue #$parent is $state)"
+        else
+            loud "DEAD-PR-CLOSE" "$REPO: gh pr close #$num failed — the wedge stands, the next tick retries"
+        fi
     elif [ "$state" = "OPEN" ]; then
         # Stale-conflicting class (fleet-ops#5205): the parent is alive so
         # the PR is not dead, but a conflict that has stood past
