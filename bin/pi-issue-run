@@ -595,16 +595,11 @@ if [[ -z "$seat" ]]; then
         _exit_reason="mkdir-failed-no-seat"
         exit 1
     fi
-    # fleet-ops#1133: a keystone two-strike must NOT reset tried-seats.
-    # Clearing the list would let the next systemd Restart pick a cheap
-    # free lane. Keep the strikes so the LiteLLM proxy stays empty and OnFailure
-    # summons the senior auditor.
-    if [[ "$difficulty" == "keystone" ]]; then
-        seat_log "pi-issue-run: $inst KEYSTONE ESCALATION — keeping tried-seats so OnFailure summons senior conference"
-        write_death_class infra
-        _exit_reason="keystone-escalation"
-        exit 1
-    fi
+    # fleet-ops#6032: the #1133 keystone no-seat escalation is retired —
+    # post-#5993 the picker answers through the proxy's senior-group fallback,
+    # so the no-seat path here fires only when the proxy itself is down, where
+    # a kept tried-seats list changes nothing. The senior routing now happens
+    # at pick time (difficulty=keystone rides the senior ladder, #6426).
     : >"$tried_file"
     write_death_class infra
     _exit_reason="no-seat"
