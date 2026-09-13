@@ -7,8 +7,9 @@
 # because ~/.pi/agent/auth.json is non-empty and `pi auth check` only
 # tests presence / invalid_state, while the stored access token has
 # silently expired. The seat then 401s the moment a worker picks it.
-# fleet-seat-live-validate (fleet-ops#917 / #1450) catches the dead
-# case every heartbeat tick but does not HEAL it; this script is the
+# (The #917/#1450 tick-side dead-case catcher, bin/fleet-seat-live-
+# validate, was retired by #6101; a dead credential now fails at spawn
+# as the credentials_bad class.) This script is the
 # heal path that runs on a 4 h timer.
 #
 # Why this file, not ~/.grok/auth.json?

@@ -12,8 +12,12 @@
 #   * any manifest file whose match count grows past its frozen value fails;
 #   * deletions are allowed — the deletion PR shrinks this manifest to the
 #     post-deletion residual set (done: the 248-entry pre-deletion caller map
-#     is now the 67-entry list of files whose only remaining mentions are
-#     prose/fixture ram_gb_per_worker references, plus this tombstone).
+#     is now the 50-entry list of files whose only remaining mentions are
+#     prose/fixture ram_gb_per_worker references, plus this tombstone;
+#     fleet-ops#6101 added bin/fleet-heartbeat-undersaturation's
+#     retired-#5993 explanatory comment; this same #6101 PR adds
+#     tests/ci-standards-audit.test.sh:2 (the #6101 termination-gate host
+#     line) and tests/seat-lib-termination.test.sh:10 (the gate itself).
 #
 # The signature covers the names spec termination requires gone: pick_seat,
 # seat-lib, ram_governor_cap, active_ram_charge, ram_gb_per_worker.
@@ -50,11 +54,13 @@ while IFS=: read -r f c; do
     frozen["$f"]="$c"
 done <<'MANIFEST'
 bin/fleet-heartbeat-tier1:4
+bin/fleet-heartbeat-undersaturation:1
 bin/fleet-restore-drill:1
 bin/fleet-vibes-canary:1
 bin/ram-measure:1
 tests/agent-cron-writes-refused.test.sh:1
 tests/blocked-reconcile.test.sh:1
+tests/ci-standards-audit.test.sh:2
 tests/deleted-symbol-gate.test.sh:2
 tests/devin-config-trust.test.sh:1
 tests/devin-writes-rejected.test.sh:1
@@ -95,6 +101,7 @@ tests/seat-empty-run-count-persists-new-issue.test.sh:1
 tests/seat-empty-run-intermittent-count.test.sh:1
 tests/seat-empty-run-park-persists.test.sh:1
 tests/seat-lib-product-only-spend-cap.test.sh:1
+tests/seat-lib-termination.test.sh:10
 tests/senior-review-routing.test.sh:1
 tests/worker-memory-dropin.test.sh:15
 MANIFEST

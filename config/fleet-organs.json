@@ -189,17 +189,6 @@
       ]
     },
     {
-      "name": "seat-comeback-release",
-      "kind": "canary",
-      "heartbeat_metric": "fleet_seat_comeback_release_last_green_seconds",
-      "absent_alert": "FleetSeatComebackReleaseAbsent",
-      "files": [
-        "bin/fleet-seat-comeback-release",
-        "systemd/fleet-seat-comeback-release.service",
-        "systemd/fleet-seat-comeback-release.timer"
-      ]
-    },
-    {
       "name": "fleet-aeo-probe",
       "kind": "canary",
       "heartbeat_metric": "fleet_aeo_probe_last_run_seconds",

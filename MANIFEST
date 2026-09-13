@@ -928,11 +928,9 @@ bin/fleet-timer-manifest-drift-canary /home/nish/.local/bin/fleet-timer-manifest
 # Deferred products auto-file. Heartbeat-tier1 block 29.
 bin/fleet-verify-harness-canary /home/nish/.local/bin/fleet-verify-harness-canary
 config/verify-harness.json /home/nish/.local/state/pi-packet/verify-harness.json
-# fleet-ops#917: SuperGrok live-validate canary. Runs `grok models` (CLI
-# silent refresh) every heartbeat tick; writes credentials_bad when the
-# live CLI is unauthenticated; auto-files `grok login --device-auth` when
-# refresh is impossible. Heartbeat-tier1 block 30.
-bin/fleet-seat-live-validate /home/nish/.local/bin/fleet-seat-live-validate
+# fleet-ops#917: SuperGrok live-validate canary — bin, test and the tier1
+# block-30 wiring retired by fleet-ops#6101 (per-seat benches/parks are the
+# LiteLLM proxy's job: cooldown, /health, fallbacks).
 # fleet-ops#938: credential/token expiry coverage through 2026-09-08.
 # GET /app App-JWT liveness (GitHub App keys do not expire) plus
 # FLEET_SYNC_PAT GitHub-Authentication-Token-Expiration horizon.
@@ -1156,9 +1154,10 @@ docs/escalation-matrix.md /home/nish/.local/share/fleet-ops/docs/escalation-matr
 
 # fleet-ops#41: headless OAuth refresh of the live SuperGrok seat
 # (~/.pi/agent/auth.json["xai-oauth"]). 4h timer keeps the prepaid
-# credential from aging into a 401; fleet-seat-live-validate catches
-# the dead case but does not heal it. Cap on the legacy `grok` entry
-# stays 0 — the live seat is xai-oauth (fleet-ops#1163).
+# credential from aging into a 401. (The #917 SuperGrok live-validate
+# canary, the dead-case detector, retired by #6101 — a dead credential
+# now fails at spawn as the credentials_bad class.) Cap on the legacy
+# `grok` entry stays 0 — the live seat is xai-oauth (fleet-ops#1163).
 bin/grok-token-refresh /home/nish/.local/bin/grok-token-refresh
 systemd/grok-token-refresh.service /home/nish/.config/systemd/user/grok-token-refresh.service
 systemd/grok-token-refresh.timer /home/nish/.config/systemd/user/grok-token-refresh.timer
@@ -1180,27 +1179,11 @@ systemd/minimax-token-refresh.timer /home/nish/.config/systemd/user/minimax-toke
 # fleet-ops#516 sr-max-speed: hunt artificial limiters (not money/safety/hardware).
 # Wired into fleet-heartbeat-tier1; fail-loud on violation -> unit-escalation.
 bin/fleet-max-speed /home/nish/.local/bin/fleet-max-speed
-
-# fleet-ops#1348 REMOVED (fleet-ops#2394 deletion review): seat-walled-probe
-# (probe bin + service + timer) deleted — 14-day 100% fail (Unknown provider
-# "test" on stale ledger fixtures), zero issues filed, seat-transition duty
-# overlaps fleet-seat-recovery + seat-lib comeback clocks. Its successor
-# (fleet-ops#2421) is fleet-seat-comeback-release below: the ACTIVE release
-# path that re-probes a seat whose wall clock has passed and unwalls a
-# provably-usable seat; it excludes test__/.spawn-bench pseudo-seats and
-# corpses (the predecessor-killers) and renders the stalled loud check.
-bin/fleet-seat-comeback-release /home/nish/.local/bin/fleet-seat-comeback-release
-systemd/fleet-seat-comeback-release.service /home/nish/.config/systemd/user/fleet-seat-comeback-release.service
-systemd/fleet-seat-comeback-release.timer /home/nish/.config/systemd/user/fleet-seat-comeback-release.timer
-
-# fleet-ops#5285: bench-truth probe — event-driven half of the 15-min
-# bench-verification cadence (DECISION 2026-09-11: 15-min sweep timer + a
-# path unit on the seats dir so a fresh bench is probed at min(advertised
-# reset, 15 min)). Runs the same bin's --false-wall-only mode; the bin's
-# per-seat 15-min probe interval and 60s sweep debounce are the rate
-# limiters (the #5093 dir-watcher storm class, StartLimitIntervalSec=0).
-systemd/fleet-seat-bench-truth.path /home/nish/.config/systemd/user/fleet-seat-bench-truth.path
-systemd/fleet-seat-bench-truth.service /home/nish/.config/systemd/user/fleet-seat-bench-truth.service
+# fleet-ops#6101: fleet-seat-comeback-release (+ its --false-wall-only
+# wrapper units fleet-seat-bench-truth.path/.service) deleted — per-seat
+# benches/parks/comebacks are the LiteLLM proxy's job (cooldown, /health,
+# fallbacks). Its ledger metrics in libexec/fleet-metrics-export.py read the
+# seat ledger directly and stay.
 
 # fleet-ops#1151: week-over-week MAD strangeness pre-pass for the Weekly
 # Fleet Review. Deterministic stdlib Python; writes the WFR input dir

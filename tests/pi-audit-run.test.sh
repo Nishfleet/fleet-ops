@@ -168,9 +168,11 @@ export AUDIT_STATE_DIR="$state_dir"
 export PI_CALLS="$calls"
 
 # -----------------------------------------------------------------------------
-# Scenario 1: the senior role routes to LiteLLM group `senior`
-# (tab-separated provider/model). The old per-seat cursor -> xai-oauth
-# ladder is gone (fleet-ops#4263 P3b).
+# Scenario 1: the senior role takes the AUDIT_SENIOR_ORDER escalation-matrix
+# ladder (cursor first, never the LiteLLM proxy — fleet-ops#6101). The stub
+# walls the first entry (cursor) so the ladder falls through to
+# xai-oauth/grok-4.6, proving both the walled-entry fall-through and the
+# real tab-separated provider/model pair.
 # -----------------------------------------------------------------------------
 reset_state() { rm -rf "$state_dir"; mkdir -p "$state_dir"; rm -f "$calls"; }
 
@@ -188,11 +190,11 @@ PI_RESPONSE=$'FAIL\nThe candidate is not a duplicate and advances the north star
 call_line=$(head -n1 "$calls")
 call_prov=$(printf '%s\n' "$call_line" | cut -f1)
 call_mod=$(printf '%s\n' "$call_line" | cut -f2)
-[[ "$call_prov" == "litellm" ]] \
-  || fail "scenario1: provider was '$call_prov' (expected 'litellm'); call_line='$call_line'"
-[[ "$call_mod" == "senior" ]] \
-  || fail "scenario1: model was '$call_mod' (expected 'senior'); call_line='$call_line'"
-ok "scenario1: senior role uses litellm/senior with a real tab"
+[[ "$call_prov" == "xai-oauth" ]] \
+  || fail "scenario1: provider was '$call_prov' (expected 'xai-oauth'); call_line='$call_line'"
+[[ "$call_mod" == "grok-4.6" ]] \
+  || fail "scenario1: model was '$call_mod' (expected 'grok-4.6'); call_line='$call_line'"
+ok "scenario1: senior role walks the #6101 AUDIT_SENIOR_ORDER ladder (walled cursor falls through to xai-oauth/grok-4.6) with a real tab"
 
 # -----------------------------------------------------------------------------
 # Scenario 2: free-glm-5-3 auditor returns FAIL with an incomplete reason;
@@ -371,6 +373,11 @@ enumerate_seats() {
 
 class_of()   { printf 'prepaid-quota\n'; }
 model_cap()  { printf '1\n'; }
+# fleet-ops#6101: non-senior roles take their seat ONLY from the lib's
+# litellm_seat (the resolve_seat fallback is deleted), so the #1011 clobber
+# stub mirrors the real lib's litellm_seat too — without it the role would
+# be a no-seat lane fault and the vote would never be written to clobber.
+litellm_seat() { printf 'litellm\t%s\n' "${1:-worker-capable}"; }
 seat_usable(){ return 0; }
 seat_ledger_path() { printf '%s/%s__%s.json\n' "/dev/null" "$1" "$2"; }
 LIB

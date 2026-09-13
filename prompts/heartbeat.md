@@ -178,17 +178,14 @@ the former leaves a per-tick log at
 `~/.local/state/fleet-heartbeat/tier1-<UTC>.log` with `failed_seen=0`; the
 latter leaves nothing and the unit is still failed.
 
-### Step 2b — bench-lie check (fleet-ops#5285)
+### Step 2b — bench-visibility check (fleet-ops#5285, retired #6101)
 
-Benches lie: a ledger bench claims the provider is walled; a live probe is
-the only truth. Every tick:
+The #5285 bench-truth PONG probe and its `fleet_seat_bench_lied_total`
+counter retired with fleet-seat-comeback-release (per-seat
+benches/parks/comebacks are the LiteLLM proxy's job: cooldown, /health,
+fallbacks). The benched seats are still in the ledger; every tick:
 
-1. Read the bench-lie counter and the bench list:
-   - `curl -s localhost:9100/metrics | grep fleet_seat_bench_lied_total`
-     (per-seat counters; `increase(...[6h]) > 3` for one provider is the
-     `FleetSeatBenchLied` alert threshold — if it is near or past it, name
-     the provider and the writer in your report).
-   - List the benched seats:
+1. List the benched seats:
      `jq -r 'select(.bench_until != null and .seat_dead != true) | [.provider,.model,.bench_until,.source] | @tsv'`
      over `/home/nish/workspaces/agent-state/lanes/seats/`*.json (skip
      `*.spawn-bench.json`, `seat_dead=true`, money/policy walls and cap 0
@@ -197,13 +194,12 @@ the only truth. Every tick:
    `echo 'Reply with exactly the word PONG' | pi --print --provider <p>
    --model <m>'` — success is the literal `PONG` in stdout (exit 0 alone is
    not proof).
-3. A seat that answers PONG while benched is a bench lie — a fault you
-   repair now: run `fleet-seat-comeback-release --false-wall-only` (it
-   unwalls the seat with `source=bench_truth_probe` and increments
-   `fleet_seat_bench_lied_total`), then report it as a bench lie in your
-   heartbeat block: seat, writer that benched it, and the advertised window
-   it claimed. Do not hand-edit the ledger — the probe's unwall write is
-   the audit trail.
+3. A seat that answers PONG while benched is a bench lie — report it as a
+   bench lie in your heartbeat block: seat, writer that benched it, and the
+   advertised window it claimed. There is no releaser to call (retired
+   #6101): the seat unwalls itself when the benched window passes or the
+   LiteLLM proxy's /health clears it, and the next litellm-seat ledger
+   write is the audit trail. Do not hand-edit the ledger.
 4. A probe that FAILS leaves the seat benched; that is the system working,
    not a fault. Only a live seat that is benched is a lie.
 
