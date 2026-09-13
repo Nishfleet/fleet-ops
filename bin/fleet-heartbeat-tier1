@@ -575,6 +575,10 @@ fi
 # `gh pr checks` returning all PASS.
 queued=0
 skipped=0
+# fleet-ops#5810: repair-jump helper. The installed unit resolves this via
+# the deploy checkout; a worktree copy resolves via its own root. Missing
+# file degrades to a logged skip — the arm path still works.
+REPAIR_JUMP_MJS="${FLEET_REPAIR_QUEUE_JUMP:-$(cd "$(dirname "$(readlink -f "$0")")/.." 2>/dev/null && pwd)/.github/scripts/repair-queue-jump.mjs}"
 log "2. queue pass starting"
 while IFS= read -r repo; do
     [ -z "$repo" ] && continue
@@ -613,6 +617,31 @@ while IFS= read -r repo; do
         # additional gate without re-parsing the row.
         pr_mergeable=$(printf '%s' "$row" | jq -r '.mergeable')
         : "${pr_mergeable:=UNKNOWN}"
+
+        # fleet-ops#5810: a revert/* head IS the auto-revert repair path —
+        # ensure it carries repair:main-red so the entry-jump below and the
+        # 2b sweep can recognise it. The label is created idempotently;
+        # failures log and never block the arm path.
+        pr_is_repair=0
+        case "$pr_head" in
+            revert/*)
+                if ! printf '%s' "$row" | jq -e 'any(.labels[]?.name; . == "repair:main-red")' >/dev/null 2>&1; then
+                    gh label create repair:main-red -R "$repo" --color B60205 \
+                        --description "red-main/auto-revert repair PR — may jump the merge queue (fleet-ops#5810)" \
+                        --force >/dev/null 2>&1 || true
+                    gh pr edit "$pr_num" -R "$repo" --add-label repair:main-red >/dev/null 2>&1 \
+                        && log "2.  - $repo#$pr_num ($pr_head): labelled repair:main-red (fleet-ops#5810)" \
+                        || log "2.  - $repo#$pr_num ($pr_head): repair:main-red apply FAILED — repair-jump cannot see it"
+                fi
+                pr_is_repair=1
+                ;;
+            *)
+                # set -e safe: a non-repair label set must not abort the pass.
+                if printf '%s' "$row" | jq -e 'any(.labels[]?.name; startswith("repair:"))' >/dev/null 2>&1; then
+                    pr_is_repair=1
+                fi
+                ;;
+        esac
 
         if [ "$pr_draft" = "true" ]; then
             log "2.  - $repo#$pr_num ($pr_head): DRAFT — skip"
@@ -783,6 +812,20 @@ while IFS= read -r repo; do
         if gh pr merge "$pr_num" -R "$repo" --auto --squash >/dev/null 2>&1; then
             log "2.  - $repo#$pr_num ($pr_head): AUTO-MERGE armed"
             queued=$((queued+1))
+            # fleet-ops#5810: a repair PR must not tail-append behind the
+            # queue entries whose group builds fail on the bug it fixes —
+            # reposition it at the head with enqueuePullRequest(jump:true).
+            # Required checks still gate the merge; a refused jump degrades
+            # to the armed tail-append and the 2b sweep retries next tick.
+            if [ "$pr_is_repair" = "1" ] && [ -f "$REPAIR_JUMP_MJS" ]; then
+                rj_rc=0
+                node "$REPAIR_JUMP_MJS" enqueue --repo "$repo" --pr "$pr_num" >/dev/null 2>&1 || rj_rc=$?
+                if [ "$rj_rc" -eq 0 ]; then
+                    log "2.  - $repo#$pr_num ($pr_head): REPAIR-JUMP at head (jump:true)"
+                else
+                    log "2.  - $repo#$pr_num ($pr_head): repair-jump rc=$rj_rc — armed; 2b sweep retries"
+                fi
+            fi
         else
             log "2.  - $repo#$pr_num ($pr_head): gh pr merge --auto FAILED — skip"
             skipped=$((skipped+1))
@@ -790,6 +833,46 @@ while IFS= read -r repo; do
     done < <(printf '%s' "$prs_json" | jq -c '.[]')
 done <<< "$queue_repos"
 log "2. queue pass complete: queued=$queued skipped=$skipped"
+
+# ============================================================================
+# 2b. REPAIR QUEUE JUMP (fleet-ops#5810)
+# ============================================================================
+# Second safeguard: when a merge-queue HEAD entry has waited > 30 min and a
+# repair-labelled PR is queued behind it, jump the repair PR to the head
+# (dequeue + enqueuePullRequest jump:true). The same pass directly enqueues
+# a green repair-labelled PR that never reached the queue — the issue's
+# primary path. Covers arm paths this heartbeat cannot interpose on (lean
+# inlined auto-merge-arm.yml copies on consumer repos, manual gh pr merge
+# --auto, a label applied after queueing).
+#
+# Budget: one `gh pr list` per repo; the merge-queue GraphQL read only runs
+# when a repair-labelled open PR exists. A helper fault is logged per repo
+# and the tick continues — the sweep is additive, never an arm blocker.
+log "2b. repair-queue-jump sweep starting"
+repair_jumped=0
+if [ -f "$REPAIR_JUMP_MJS" ]; then
+    while IFS= read -r repo; do
+        [ -z "$repo" ] && continue
+        if is_hands_off "$repo"; then
+            continue
+        fi
+        rj_out="$(node "$REPAIR_JUMP_MJS" sweep --repo "$repo" --apply 2>&1)" || {
+            log "2b.  - $repo: repair-queue sweep FAILED: $(printf '%s' "$rj_out" | tail -1)"
+            continue
+        }
+        while IFS= read -r rj_line; do
+            [ -z "$rj_line" ] && continue
+            log "2b.  - $repo: $rj_line"
+        done <<< "$rj_out"
+        rj_n=$(printf '%s\n' "$rj_out" | tail -1 | jq -r '(.jumped // []) | length' 2>/dev/null || echo 0)
+        if [ "$rj_n" -gt 0 ] 2>/dev/null; then
+            repair_jumped=$((repair_jumped + rj_n))
+        fi
+    done <<< "$queue_repos"
+else
+    log "2b. repair-queue-jump helper missing ($REPAIR_JUMP_MJS) — skip"
+fi
+log "2b. repair-queue-jump sweep done: jumped=$repair_jumped"
 
 # ============================================================================
 # 3. RELEASE ORPHANED CLAIMS
