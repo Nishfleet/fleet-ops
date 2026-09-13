@@ -55,10 +55,13 @@ if (( DO_CLI )); then
     fail "first line was '$first_line' (expected exactly '#!/usr/bin/env node')"
   fi
 
-  # 3. Size >= 300 bytes (real loader ~710; incident stub was 76)
+  # 3. Size >= 100 bytes (floor 2026-09-13, fleet-ops#4260 sweep: 0.85.1 ships
+  # cli.js as a 169-byte launcher shim - shebang + setupCli()/main() - while the
+  # old inline loader was ~710 and the incident stub was 76; the --version probe
+  # below remains the true integration guard)
   size="$(stat -c %s -- "$resolved")"
-  if (( size < 300 )); then
-    fail "size $size bytes < 300 minimum"
+  if (( size < 100 )); then
+    fail "size $size bytes < 100 minimum"
   fi
 
   # 4. timeout 30 "$PI_BIN" --version produces a bare semver on first line
