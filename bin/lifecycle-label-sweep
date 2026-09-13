@@ -1003,8 +1003,11 @@ while IFS= read -r repo; do
             deploy_fault_labeled=$((deploy_fault_labeled + 1))
             continue
         fi
+        # Description ≤100 chars — GitHub rejects longer with HTTP 422, and
+        # the swallowed failure made every add-label fail as 'not found'
+        # (live 2026-09-14: failed=113/tick across 0509 + fleet-ops).
         gh label create deploy-fault -R "$repo" --color B60205 \
-            --description "Production deploy fault — may only close with a green Deploy production run containing the fix (fleet-ops#5785)" \
+            --description "Production deploy fault — closes only on a green Deploy production run containing the fix (#5785)" \
             --force >/dev/null 2>&1 || true
         if gh issue edit "$num" -R "$repo" --add-label deploy-fault >/dev/null 2>&1; then
             deploy_fault_labeled=$((deploy_fault_labeled + 1))
@@ -1066,7 +1069,7 @@ while IFS= read -r repo; do
                     continue
                 fi
                 gh label create deploy-fault -R "$repo" --color B60205 \
-                    --description "Production deploy fault — may only close with a green Deploy production run containing the fix (fleet-ops#5785)" \
+                    --description "Production deploy fault — closes only on a green Deploy production run containing the fix (#5785)" \
                     --force >/dev/null 2>&1 || true
                 if ! gh issue reopen "$num" -R "$repo" --comment "$df_body" >/dev/null 2>&1; then
                     log "  $repo#$num: gh issue reopen FAILED — retry next tick"
