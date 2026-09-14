@@ -9,8 +9,11 @@
 The old `.idle-fleet-alarm.json` banner is GONE. It lived in the fleet control
 plane, which was deleted on 2026-08-23 ("Everything runs through Pi, directly.
 No launchers." — vault `global-standing-rules.md`). Do not look for it, and do
-not trust any stale copy you find: `agent-state/lanes/` now holds only
-`pi-seat-health.json`.
+not trust any stale copy you find: the canonical live file is
+`agent-state/lanes/pi-seat-health.json`. The `lanes/` directory also holds
+operational artefacts — seats/, reports/, outbound-gate/, `.seen` markers,
+logs, timestamped seats-quarantine/corpse dirs — none of which this check
+reads (fleet-ops#6613).
 
 Check live state directly instead, in this order:
 
