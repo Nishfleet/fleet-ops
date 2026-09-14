@@ -105,7 +105,10 @@ Simple language is never baby talk and never condescending.
   explicitly reserved. That is the single source of truth — it lives in the
   vault (`global-standing-rules.md` → "Only the un-fixable reaches Nish" →
   "Canonical reserved-classes list"), older or shorter surface lists fold into
-  it, and a surface is a pointer, not a second source (fleet-ops#5586).
+  it, and a surface is a pointer, not a second source (fleet-ops#5586). The
+  pre-implementation contract's stop-for-approval gate carries this exact
+  scope: stop only for reserved-class or irreversible work — present the plan
+  and begin everything else (fleet-ops#6610).
 - **Verify live truth.** Nothing assumed. Official docs over local folklore. Say
   when something is an inference.
 - **Queue every finding.** A fix only mentioned in chat is lost. Queue it.
