@@ -136,7 +136,13 @@ log() {
 # Returns 0 if the call should proceed, 1 if the runner should SKIP.
 seat_health_ok_for_call() {
     local p="$1" m="$2" marker="${PI_SEAT_HEALTH_MARKER:-$HOME/../workspaces/agent-state/lanes/pi-seat-health.json}"
-    local f
+    # fleet-ops#6357: initialize f. Declared-but-unset explodes under set -u
+    # ("f: unbound variable") on the no-seat-lib path — when litellm-seat.sh
+    # is missing, seat_ledger_path is undefined, the else branch leaves f
+    # unset when PI_SEAT_HEALTH_LEDGER_DIR is empty, and the [ -n "$f" ] below
+    # killed the whole run before the model call. Masked in production only
+    # because the seat lib always exists on a healthy install.
+    local f=''
 
     # Prefer the per-seat ledger (the same authority seat_usable uses); the
     # global lanes marker is the alert-repair-dispatch fallback.
@@ -595,6 +601,91 @@ ensure_reason_complete() {
     printf '%s' "$reason"
 }
 
+# --- malformed-output strike ledger (fleet-ops#6357) --------------------------
+# When the model call itself succeeds (exit 0) but the output fails shape
+# validation (no PASS/FAIL|NISH/MATRIX verdict line, or a verdict with no
+# reason paragraph), the pre-#6357 code exited 1 and the EXIT trap deleted
+# the combined output — and the unit's PrivateTmp namespace dies with the
+# unit anyway, so dropping the trap would not help either — leaving a 3x-
+# empty vote (fleet-ops#6236 chain ae0681d0c947: three consecutive empty
+# verdicts, StartLimitBurst exhausted, chain stalled) undiagnosable post-hoc.
+# Two changes, both inside this runner, no new organ:
+#   1. Every strike's combined output is copied to
+#      <candidate dir>/<role>.strike-logs/<UTCts>-strike<N>.log (bounded to
+#      the newest STRIKE_LOGS_KEEP) and the journal line names the path.
+#   2. Consecutive strikes are counted per repo/candidate/role in
+#      <role>.strikes. The 3rd CONSECUTIVE strike writes the storm-tolerant
+#      SKIP vote (same semantics as the provider-wall exit!=0 path,
+#      fleet-ops#146) and exits 0, so the fleet-ops#616 heartbeat recover
+#      path (reset-failed + start — the 3rd run after the burst burns)
+#      resolves into a recorded SKIP instead of a third unit failure; the
+#      fleet-ops#3962 SKIP-recast ladder then owns recovery and the tally's
+#      exhausted-SKIP gate lets the arrived real votes decide. A real vote
+#      resets the streak. Strikes 1-2 still exit 1 — the unit's designed
+#      retry-once contract (Restart=on-failure) is unchanged.
+# The state files deliberately avoid every existing glob in the vote tree:
+# votes_json matches *.vote, recast_count matches <role>.vote.skip-*, and
+# <role>.skip-exhausted / .pending are unrelated names.
+STRIKE_SKIP_AFTER=3
+STRIKE_LOGS_KEEP=5
+
+strike_counter_path() {
+    local repo="$1" candidate="$2" role="$3"
+    printf '%s/%s/%s/%s.strikes\n' "${VOTE_DIR:-$HOME/.local/state/fleet-audit}" "$repo" "$candidate" "$role"
+}
+
+strike_log_dir() {
+    local repo="$1" candidate="$2" role="$3"
+    printf '%s/%s/%s/%s.strike-logs\n' "${VOTE_DIR:-$HOME/.local/state/fleet-audit}" "$repo" "$candidate" "$role"
+}
+
+reset_strikes() {
+    local cpath
+    cpath=$(strike_counter_path "$1" "$2" "$3")
+    rm -f "$cpath" 2>/dev/null || true
+}
+
+prune_strike_logs() {
+    local log_dir="$1" f
+    [ -d "$log_dir" ] || return 0
+    while IFS= read -r f; do
+        rm -f "$f" 2>/dev/null || true
+    done < <(ls -1t "$log_dir"/*.log 2>/dev/null | tail -n +$((STRIKE_LOGS_KEEP + 1)))
+    return 0
+}
+
+# Records one malformed-output strike: preserves the combined output for
+# post-hoc diagnosis, then either consumes the run (3rd consecutive strike:
+# SKIP vote, exit 0) or leaves the exit-1 retry to systemd. Returns 0 when
+# the caller must exit 0 (SKIP written), 1 when it must exit 1.
+handle_malformed_output() {
+    local repo="$1" candidate="$2" role="$3" combined="$4" what="$5"
+    local cpath log_dir log_file strikes=0
+    cpath=$(strike_counter_path "$repo" "$candidate" "$role")
+    if [ -f "$cpath" ]; then
+        strikes=$(cat "$cpath" 2>/dev/null || printf '0')
+        case "$strikes" in (''|*[!0-9]*) strikes=0 ;; esac
+    fi
+    strikes=$((strikes + 1))
+
+    log_dir=$(strike_log_dir "$repo" "$candidate" "$role")
+    mkdir -p "$log_dir" 2>/dev/null || true
+    log_file="$log_dir/$(date -u +%Y%m%dT%H%M%SZ)-strike${strikes}.log"
+    { printf 'strike %s (%s)\n--- combined auditor output ---\n' "$strikes" "$what"; cat "$combined" 2>/dev/null; } > "$log_file" 2>/dev/null || true
+    prune_strike_logs "$log_dir"
+
+    if [ "$strikes" -ge "$STRIKE_SKIP_AFTER" ]; then
+        write_vote "$repo" "$candidate" "$role" "SKIP" \
+            "${STRIKE_SKIP_AFTER} consecutive malformed auditor outputs (${what}); storm-tolerant SKIP per fleet-ops#6357, evidence ${log_file}"
+        reset_strikes "$repo" "$candidate" "$role"
+        log "$repo/#$candidate/$role: strike ${strikes} — SKIP vote written, unit exits 0 (SKIP-recast ladder owns recovery)"
+        return 0
+    fi
+    printf '%s\n' "$strikes" > "$cpath" 2>/dev/null || true
+    log "$repo/#$candidate/$role: strike ${strikes}/${STRIKE_SKIP_AFTER} (${what}) — output kept at ${log_file}; exiting 1 for systemd retry"
+    return 1
+}
+
 write_vote() {
     local repo="$1" candidate="$2" role="$3" verdict="$4" reason="$5"
     local dir path
@@ -743,12 +834,18 @@ main() {
     reason=$(extract_reason "$combined") || reason=""
 
     if [ -z "$verdict" ]; then
-        log "auditor output did not contain a PASS/FAIL verdict (empty verdict; exiting 1 for systemd retry)"
-        exit 1
+        log "auditor output did not contain a PASS/FAIL verdict (empty verdict)"
+        if ! handle_malformed_output "$repo" "$candidate" "$role" "$combined" "empty verdict"; then
+            exit 1
+        fi
+        exit 0
     fi
     if [ -z "$reason" ]; then
-        log "auditor output did not contain a reason (empty reason; exiting 1 for systemd retry)"
-        exit 1
+        log "auditor output did not contain a reason (empty reason)"
+        if ! handle_malformed_output "$repo" "$candidate" "$role" "$combined" "empty reason"; then
+            exit 1
+        fi
+        exit 0
     fi
     if ! reason=$(ensure_reason_complete "$reason" "$verdict"); then
         log "auditor reason empty after extraction"
@@ -756,6 +853,9 @@ main() {
     fi
 
     write_vote "$repo" "$candidate" "$role" "$verdict" "$reason"
+    # fleet-ops#6357: a real vote landed — the consecutive-malformed streak is
+    # over, so the next malformed run counts from 1 again.
+    reset_strikes "$repo" "$candidate" "$role"
 }
 
 main "$@"
