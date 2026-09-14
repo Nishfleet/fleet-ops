@@ -1694,7 +1694,7 @@ _seat_is_benched() { return 1; }
 # _seat_merge_error_class <provider> <model> <class> <reason>
 # Field-merge last_error_class + bench_reason into the existing seat ledger,
 # preserving every other field (health_class / failure_mode / seat_dead).
-# fleet-ops#6032: restored from seat-lib — a `return 0` stub made callers
+# fleet-ops#6032: restored from the pre-#5993 routing library — a `return 0` stub made callers
 # (pi-issue-run observability stamps, the fleet-ops#3947 corpse bench_reason
 # backfill) believe the merge landed when nothing was written.
 _seat_merge_error_class() {
