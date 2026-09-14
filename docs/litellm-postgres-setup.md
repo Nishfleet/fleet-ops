@@ -306,6 +306,52 @@ curl -s http://127.0.0.1:4000/health/readiness | jq .
 # the Prisma layer reached the fleet-owned cluster, not just that uvicorn bound.
 ```
 
+### 3c. Devin/Windsurf CustomLLM adapter (fleet-ops#6228)
+
+The funded Devin seats speak the proprietary Windsurf/Exafunction protocol
+and expose no OpenAI-compatible endpoint (fleet-ops#4263 — every candidate
+`api_base` 404'd on 2026-09-13). The route into them is the headless
+`devin --print` CLI, bridged by a LiteLLM `CustomLLM` handler.
+
+The handler source is `libexec/fleet-litellm-devin-adapter/fleet_devin_adapter.py`
+(MANIFEST-installed). LiteLLM 1.98 resolves `custom_provider_map` handler
+modules relative to the config file, so the deployed copy MUST sit as a
+sibling of the live config:
+
+```sh
+# MANIFEST already maps the repo file to that path — after deploy, verify:
+ls -l ~/.config/fleet-ops/fleet_devin_adapter.py
+```
+
+Register it in the live `~/.config/fleet-ops/litellm-proxy.yaml` (edit in
+place — never overwrite with the repo shape, fleet-ops#4174):
+
+```yaml
+litellm_settings:
+  custom_provider_map:
+    - provider: devin
+      custom_handler: fleet_devin_adapter.devin_windsurf_llm
+```
+
+Deployments then use `model: devin/<slug>` with no `api_base`, and each
+needs `model_info.mode: chat` (a custom provider is absent from LiteLLM's
+model map, so health-check mode resolution would otherwise raise) plus a
+unique `model_info.id` (lets `model: <id>` pin the deployment for
+deterministic proof calls). See `config/litellm-proxy.yaml` for the exact
+deployment shape. Model policy is enforced in the adapter allowlist:
+`glm-5-2` and `swe-2-max` only — `swe-1-7` is retired (cap 0) and
+`swe-2-high` is parked to 2036; neither may ever be wired.
+
+The §3a wrapper already sources `~/fleet2/etc/devin.env`, so
+`DEVIN_API_KEY` is in the proxy environment — no env work needed. Tunables
+(env, all optional): `FLEET_DEVIN_BIN`, `FLEET_DEVIN_ALLOWED_MODELS`,
+`FLEET_DEVIN_BRIDGE_TIMEOUT_S` (default 1500, below router timeout 1800),
+`FLEET_DEVIN_BRIDGE_RATE_WAIT_S` (default 90 — short devin rate-limit
+windows are waited out once in-process; longer raises `RateLimitError` so
+the router cools the deployment and fails over), `FLEET_DEVIN_PROBE_TIMEOUT_S`
+(default 60 — `/health` probes run `devin models list`, an authenticated
+upstream check that does not burn a message slot).
+
 ## 4. /health canary + prom scrape
 
 ```sh

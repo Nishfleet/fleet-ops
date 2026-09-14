@@ -239,7 +239,8 @@
         "systemd/fleet-litellm-proxy.service",
         "systemd/app-litellm.slice",
         "config/litellm-proxy.yaml",
-        "libexec/fleet-litellm-prisma-compat/sitecustomize.py"
+        "libexec/fleet-litellm-prisma-compat/sitecustomize.py",
+        "libexec/fleet-litellm-devin-adapter/fleet_devin_adapter.py"
       ]
     },
     {
