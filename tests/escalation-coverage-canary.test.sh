@@ -755,9 +755,9 @@ assert isinstance(detail["journal_errors"], list), detail
 assert detail["result"] == "exit-code", detail
 PY
 
-    # Hop 2 (-> dispatch): the REAL dispatcher consumes the SAME STOP-REASON
-    # the hop-1 writer just produced — the #34/#444 redirects, healthy seat,
-    # instant fake pi, no cooldown.
+    # Hop 2 (-> dispatch): fleet-ops#5456 routes unit-failure through
+    # resume-or-dispatch (issue rail), not the auditor summon. DRYRUN keeps
+    # that hop hermetic — no GitHub, no hermes, no host worker-token.
     export HOME="$h_scratch/home"
     export STOP_ESCALATION_AS="$h_scratch/agent-state"
     export STOP_ESCALATION_STOP_REASON="$h_sr"
@@ -767,6 +767,7 @@ PY
     export STOP_ESCALATION_NISH="$h_scratch/agent-state/NISH-ESCALATIONS.md"
     export STOP_ESCALATION_AUDITOR_LOG="$h_scratch/agent-state/AUDITOR-LOG.md"
     export STOP_ESCALATION_PI_BIN="$h_scratch/pi"
+    export STOP_ESCALATION_RESUME_DRYRUN=1
     export PI_PACKET_SEAT_LIB="$h_scratch/seatlib-stub.sh"
     export STOP_ESCALATION_AUDITOR_TIMEOUT=2
     export STOP_ESCALATION_COOLDOWN=0
@@ -804,19 +805,14 @@ STUB
     chmod +x "$h_scratch/seatlib-stub.sh" "$h_scratch/pi"
 
     h_rc=0
-    "$repo_root/bin/stop-escalation-dispatch" || h_rc=$?
+    h_disp=$("$repo_root/bin/stop-escalation-dispatch" 2>&1) || h_rc=$?
     [[ "$h_rc" -eq 0 ]] \
       || fail "scenario2h: dispatcher must exit 0 on the .socket STOP-REASON (got $h_rc)"
-    grep -q 'dispatched auditor' "$STOP_ESCALATION_AUDITOR_LOG" \
-      || fail "scenario2h: .socket trip must be dispatched (AUDITOR-LOG: $(cat "$STOP_ESCALATION_AUDITOR_LOG" 2>/dev/null || echo EMPTY))"
-    grep -q 'SENIOR AUDITOR' "$STOP_ESCALATION_AUDITOR_LOG" \
-      || fail "scenario2h: dispatched .socket trip must carry the diagnosis block"
+    grep -q 'DRYRUN dispatch' <<<"$h_disp" \
+      || fail "scenario2h: .socket trip must take the #5456 resume-or-dispatch rail (got: $h_disp)"
     [[ ! -s "$STOP_ESCALATION_NISH" ]] \
       || fail "scenario2h: unit-failure on a healthy ladder must not page Nish"
-    h_count="$(awk -v h="$(sha256sum "$h_sr" | awk '{print $1}')" '$1==h{print $2}' "$STOP_ESCALATION_SEEN")"
-    [[ "$h_count" == "1" ]] \
-      || fail "scenario2h: the .socket trip must consume exactly one dispatch budget (got '$h_count')"
-    ok "scenario2h: .socket kill drill — writer STOP-REASON -> dispatched + budget=1, Nish untouched (fleet-ops#5855)"
+    ok "scenario2h: .socket kill drill — writer STOP-REASON -> #5456 DRYRUN dispatch, Nish untouched (fleet-ops#5456/#5855)"
 )
 # ============================================================================
 # Scenario 2e (fleet-ops#4266): block 14 detached-work lint — empty audit
