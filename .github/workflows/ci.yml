@@ -191,6 +191,8 @@ jobs:
         bash tests/fleet-escalation-completion.test.sh
         bash tests/rule-enforcement.test.sh
         bash tests/reusable-workflows.test.sh
+        # fleet-ops#5787: merge-queue ruleset drill (offline, deterministic).
+        bash tests/repo-standards-merge-queue.test.sh
         # fleet-ops#1296: reject typo'd/unregistered action@<sha> pins in
         # .github/workflows/** before a scheduled workflow fails to resolve
         # its checkout and drags main's statusCheckRollup red.

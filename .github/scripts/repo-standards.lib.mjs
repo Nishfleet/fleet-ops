@@ -76,6 +76,61 @@ export const THIN_CALLERS = [
   },
 ];
 
+// Merge-queue ruleset shape applied to every enrolled repo whose repo type
+// has `merge_queue: true` and that does NOT already carry an equivalent ruleset
+// (fleet-ops#5787). The 0509 ruleset (id 21391031, "main-merge-queue") is the
+// shape every other repo gets — GitHub serialises PRs into merge_group runs
+// against latest main + queued entries, the same defence the orchestrator
+// packet prose was trying to provide. Five rules in order:
+//
+//   1. non_fast_forward: no force-push to main (matches the legacy branch-
+//      protection `allow_force_pushes.enabled=false`)
+//   2. deletion: no branch deletion from main
+//   3. merge_queue: HEADGREEN grouping, max 5 in-flight, group on 2 or 5 min
+//      wait, 6h check timeout. Matches 0509 verbatim so a queue PR that works
+//      there works everywhere.
+//   4. required_status_checks: the union of the standard gates for the repo
+//      type + whatever the repo's branch protection already required (NEVER
+//      weakens — a repo that requires MORE contexts keeps them). Populated
+//      at apply time; this constant only carries the envelope so tests can
+//      assert the shape.
+//
+// The ruleset target is `~DEFAULT_BRANCH` (enforced via GitHub's ref_name
+// condition, not `main`, so a repo whose default is `master` or has been
+// renamed is covered). `enforcement: active` so the ruleset binds.
+//
+// Rule name (`main-merge-queue`) and the existence of this ruleset on every
+// enrolled repo with merge_queue: true is what the acceptance check
+// `gh api repos/Nishfleet/<repo>/rulesets` reports. The apply logic creates
+// or updates (PUT, never DELETEs a stronger shape) and reports drift on:
+//   - missing ruleset
+//   - wrong enforcement (e.g. disabled)
+//   - missing rules
+//   - wrong required_status_checks (missing context, removed context)
+//   - any rule field deviating from MERGE_QUEUE_RULESET_PARAMS
+//
+// .fleet/standards-exceptions.yml may except a single repo with rule:
+// `merge-queue-ruleset` (decided_by: nish). The exception rule ships in
+// KNOWN_EXCEPTION_RULES below so the exceptions parser recognises it.
+export const MERGE_QUEUE_RULESET_NAME = "main-merge-queue";
+export const MERGE_QUEUE_RULESET_PARAMS = {
+  merge_queue: {
+    merge_method: "MERGE",
+    max_entries_to_build: 5,
+    min_entries_to_merge: 2,
+    max_entries_to_merge: 5,
+    min_entries_to_merge_wait_minutes: 5,
+    grouping_strategy: "HEADGREEN",
+    check_response_timeout_minutes: 360,
+  },
+  non_fast_forward: null,
+  deletion: null,
+  required_status_checks_envelope: {
+    strict_required_status_checks_policy: false,
+    do_not_enforce_on_create: false,
+  },
+};
+
 // Branch-protection payload per repo type. `required_contexts` is the union of
 // the repo's own product checks (passed in) plus the standard gates. The sync
 // NEVER weakens: if a repo's live protection requires MORE contexts than the
