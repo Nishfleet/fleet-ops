@@ -27,4 +27,10 @@ ExecStart=/bin/bash -c 'exec /home/nish/.local/bin/pi-scout-run %i scout'
 # SuccessExitStatus fudge of real errors: only this one reserved code.
 SuccessExitStatus=75
 ExecStopPost=-/bin/bash -c 'exec /home/nish/.local/bin/scout-futility-check end %i'
-TimeoutStartSec=3600
+# 10800s (3h): #4450 raised scout workload 5x (label_budget 8->40) but this
+# budget stayed 3600 — every tick died 143/'timeout' at 1h mid-turn for 8+
+# days (2026-09-13 wedge: 2x-slow lane, turns 13-22min). A 5400 bridge was
+# PROVEN insufficient (run H died AT 5400s mid-turn, no PACKET-VERDICT);
+# repair's numbers: 60-110min need, 8 turns = 176min. 10800 = 1.6x worst-need,
+# fits the 4h OnCalendar cadence; retires the hand-placed .d bridge (#4547 class).
+TimeoutStartSec=10800
