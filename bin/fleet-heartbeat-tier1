@@ -2286,6 +2286,14 @@ else
 fi
 
 # ============================================================================
+# 30. (retired) SUPERGROK LIVE-VALIDATE CANARY (fleet-ops#917)
+# ============================================================================
+# fleet-ops#6101: the #917 live-validate bin, its test and this wiring went
+# with the seat-era demolition. sr-prepaid-max-util's credentials_bad
+# verdict now comes from litellm-seat + the LiteLLM proxy /health; a dead
+# grok credential fails at spawn as the credentials_bad class.
+
+# ============================================================================
 # 31. CREDENTIAL / TOKEN EXPIRY CANARY (fleet-ops#938)
 # ============================================================================
 # led-2026-08-27-vacation-window-corrected: Nish departs 2026-08-28, returns

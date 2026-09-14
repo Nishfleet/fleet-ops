@@ -328,7 +328,6 @@ SANCTIONED_PI_RUNNERS=(
     pi-issue-run
     pi-packet-run
     pi-scout-run
-    fleet-seat-comeback-release
     stop-escalation-dispatch
 )
 

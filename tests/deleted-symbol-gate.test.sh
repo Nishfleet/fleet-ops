@@ -49,7 +49,10 @@ ok()   { echo "OK: $*"; }
 #               (empty file = no deletions = vacuous pass)
 #   TESTS_DIR   directory whose files count as "tests still referencing"
 #   SCAN_DIR..  head-tree dirs where a surviving definition keeps the
-#               contract alive (live: lib/ and bin/ of the repo)
+#               contract alive (live: lib/, bin/ and libexec/ of the repo —
+#               #6101: production defines these symbols in libexec/ too:
+#               write_prom (gh-webhook-receiver/serve.py, console-pi/verify.py),
+#               XDG_RUNTIME_DIR (alert-repair-claim), actions_log (daily-digest))
 #
 # Exit 0 when every deleted definition is either still defined in a scan dir
 # or unreferenced by TESTS_DIR; exit 1 when a deleted definition still has a
@@ -82,7 +85,7 @@ deleted_symbol_gate() {
         [[ -n "$name" ]] || continue
         # A surviving definition (re-hosted or re-added in the same PR) keeps
         # the contract alive — #6037 re-hosted #5993's symbols this way.
-        re="^${name}[[:space:]]*[=(]|^[[:space:]]*(def|class)[[:space:]]+${name}([^A-Za-z0-9_]|$)"
+        re="^(export[[:space:]]+)?${name}[[:space:]]*[=(]|^[[:space:]]*(def|class)[[:space:]]+${name}([^A-Za-z0-9_]|$)"
         for d in ${scan_dirs[@]+"${scan_dirs[@]}"}; do
             if grep -rqE -- "$re" "$d" 2>/dev/null; then
                 ok "gate: deleted '$name' is still defined in the head tree (re-hosted/re-added)"
@@ -187,6 +190,32 @@ out="$(deleted_symbol_gate "$tmp/flag-deleted.patch" "$tmp/tests-flag" "$tmp/sca
     || fail "5b. expected GREEN while the flag is still defined; got: $out"
 ok "5b. GREEN: deleted assignment still defined elsewhere passes"
 
+# 5c/5d (fleet-ops#6101): the deleted-EXTRACT side always knew the export
+# form (pattern 3), but the SURVIVOR-regex only knew plain `name=`/`name(`.
+# A definition surviving ONLY as `export name=` was invisible, so a retired
+# organ's export (XDG_RUNTIME_DIR et al) false-FAILed the gate. 5c: no
+# survivor at all -> RED; 5d: the definition survives ONLY in export form.
+cat >"$tmp/flag2-deleted.patch" <<'PATCH'
+diff --git a/bin/dummy-bin-6052b b/bin/dummy-bin-6052b
+--- a/bin/dummy-bin-6052b
++++ /dev/null
+@@ -1,2 +0,0 @@
+-#!/usr/bin/env bash
+-export DRILL_FLAG2_6052=1
+PATCH
+mkdir -p "$tmp/tests-flag2"
+printf '# reads DRILL_FLAG2_6052 for the replay\n' >"$tmp/tests-flag2/flag2.test.sh"
+out="$(deleted_symbol_gate "$tmp/flag2-deleted.patch" "$tmp/tests-flag2" "$tmp/empty-scan" 2>&1)" \
+    && fail "5c. expected RED for the deleted export-assignment still referenced by tests; got: $out"
+ok "5c. RED: deleted export-assignment still referenced by tests fails the gate"
+
+mkdir -p "$tmp/scan3/bin"
+printf 'export DRILL_FLAG2_6052=1\n' >"$tmp/scan3/bin/elsewhere-6052"
+out="$(deleted_symbol_gate "$tmp/flag2-deleted.patch" "$tmp/tests-flag2" "$tmp/scan3/bin" 2>&1)" \
+    || fail "5d. expected GREEN while the flag survives as an export; got: $out"
+grep -q "still defined" <<<"$out" || fail "5d. GREEN must come from the export-form survivor, not the -w fallthrough; got: $out"
+ok "5d. GREEN: deleted export-assignment still defined (export-form) elsewhere passes"
+
 # 6. PYTHON forms: def/class deletions in lib/*.py count too.
 cat >"$tmp/py-deleted.patch" <<'PATCH'
 diff --git a/lib/dummy-py-6052.py b/lib/dummy-py-6052.py
@@ -263,7 +292,7 @@ if [ "${GITHUB_EVENT_NAME:-}" = "pull_request" ]; then
     git -C "$repo_root" rev-parse --verify -q origin/main >/dev/null \
         || fail "live gate: origin/main missing on a pull_request event (fetch-depth: 0 broken?)"
     git -C "$repo_root" diff -U0 origin/main...HEAD -- lib/ bin/ >"$live_patch"
-    if ! deleted_symbol_gate "$live_patch" "$repo_root/tests" "$repo_root/lib" "$repo_root/bin"; then
+    if ! deleted_symbol_gate "$live_patch" "$repo_root/tests" "$repo_root/lib" "$repo_root/bin" "$repo_root/libexec"; then
         fail "live gate (fleet-ops#6052): this PR deletes lib/ or bin/ definition(s) that tests/ still reference — port the test(s) or re-host the symbol(s), then re-push"
     fi
     ok "live gate: no deleted lib/ bin/ symbol in this PR is still referenced by tests/"

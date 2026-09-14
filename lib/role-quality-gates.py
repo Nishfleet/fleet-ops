@@ -96,20 +96,10 @@ NON_ROLE_UNIT_PREFIXES = (
     # no work items. Its gate is tests/fleet-judge-block-gate.test.sh.
     "fleet-judge-block-disarm",
     "fleet-issue-close-duplicates",
-    # fleet-ops#2421: fleet-seat-comeback-release is plumbing (re-probes a
-    # walled seat whose wall clock has passed and unwalls a provably-usable
-    # one), not a work-producing role — it runs no model of its own, owns no
-    # judging prompt and produces no work items. Its gate is
-    # tests/fleet-seat-comeback-release.test.sh plus the absent()/stalled
-    # rules on its heartbeat metric.
-    "fleet-seat-comeback-release",
-    # fleet-ops#5285: fleet-seat-bench-truth is the event-driven half of the
-    # same organ — a path unit on the seats ledger dir that runs
-    # fleet-seat-comeback-release --false-wall-only (a 1-turn PONG, no
-    # judging prompt, no work items). Same class as the line above; its
-    # gate is tests/fleet-seat-comeback-release.test.sh scenarios 24-26 plus
-    # the FleetSeatBenchLied rule.
-    "fleet-seat-bench-truth",
+    # fleet-ops#6101: fleet-seat-comeback-release and its --false-wall-only
+    # wrapper fleet-seat-bench-truth were deleted (per-seat benches/parks/
+    # comebacks are the LiteLLM proxy's job); their no-role-gate entries
+    # went with them.
     # fleet-ops#1152: standing-rules-render is a file-render maintenance
     # unit (canonical -> marked regions of CLAUDE.md/AGENTS.md). It runs
     # no model, owns no prompt and produces no work items, so it has no
