@@ -46,7 +46,7 @@ Full text: `/home/nish/workspaces/tooling/nish-vault/_system/shared-memory/stand
 <!-- SECTION: nish-preimplementation-contract -->
 ## Mandatory pre-implementation contract
 
-Before implementation work, automatically read and follow `/home/nish/workspaces/tooling/nish-vault/_system/shared-memory/pre-implementation-contract.md`. This is non-negotiable for {{SURFACE_PREIMPLEMENT_PHRASE}}. For non-trivial work, investigate first, present Goal, Blocking questions, Assumptions, and Plan, then stop for Nish's approval. Only the contract's tiny obvious-change proportionality exception permits immediate implementation.
+Before implementation work, automatically read and follow `/home/nish/workspaces/tooling/nish-vault/_system/shared-memory/pre-implementation-contract.md`. This is non-negotiable for {{SURFACE_PREIMPLEMENT_PHRASE}}. For non-trivial work, investigate first, present Goal, Blocking questions, Assumptions, and Plan. Then stop for Nish's approval only when the work touches a canonical reserved class (vault `global-standing-rules.md` → "Canonical reserved-classes list") or is irreversible. Everything else begins once the plan is on the record — "Engineer reversibility, don't gate" (Nish, 2026-08-24): make it revertible in under two minutes and stop asking (fleet-ops#6610).
 <!-- END SECTION: nish-preimplementation-contract -->
 
 <!-- SECTION: shared-fleet-routing -->
