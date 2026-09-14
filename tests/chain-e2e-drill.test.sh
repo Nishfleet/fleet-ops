@@ -111,4 +111,25 @@ grep -qF 'chain-e2e-drill-fixture' "$canary" \
   || fail "fleet-escalation-canary must exclude chain-e2e-drill-fixture from escalation"
 ok "escalation canary excludes the fixture (no real senior page)"
 
+# --- hop 1 lockstep: unit-escalation-write must exclude the fixture too -----
+# fleet-ops#6734: the canary listed the fixture but the write-script guard
+# did not — the live drill fault wrote a real STOP-REASON and the
+# dispatcher filed a real agent-ready [unit-death] issue, burning a worker
+# seat every heartbeat block-5b spin. The script guard is the designed
+# chokepoint: the generic service.d drop-in applies after any per-unit
+# drop-in, so a per-unit OnFailure= reset cannot win.
+grep -qF 'chain-e2e-drill-fixture*' "$repo_root/bin/unit-escalation-write" \
+  || fail "unit-escalation-write must exclude chain-e2e-drill-fixture* (lockstep with the canary)"
+ok "unit-escalation-write excludes the fixture (no STOP-REASON, no dispatch)"
+
+# --- the fixture LOUD line must survive systemd specifier expansion ---------
+# fleet-ops#6734: a bare % in ExecStart is a systemd specifier — the live
+# line opened "[/usr/bin/zsh]" (%s -> user shell) and failed the
+# reconciler's [ISO-ts] [TAG] TRIAGE_RE, so the fixture ticket could never
+# file on the real path. Every % bash must see is written %%.
+if grep '^ExecStart=' "$fixture_unit" | sed 's/%%//g' | grep -q '%'; then
+  fail "fixture ExecStart carries an unescaped % (systemd specifier footgun — write %%)"
+fi
+ok "fixture ExecStart has no unescaped % specifier"
+
 echo "OK: chain-e2e drill — all hops pass in DRY_RUN, wiring locked"

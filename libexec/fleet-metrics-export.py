@@ -3386,6 +3386,15 @@ def _escalations_24h():
         # drill deaths are recorded against the drill sink, not counted as
         # fleet escalation volume).
         "*resume-drill-*",
+        # fleet-ops#6734: the chain-e2e drill's throwaway fixture exits 1 ON
+        # PURPOSE (fleet-ops#375) — the fault IS the drill working. The writer
+        # now refuses chain-e2e-drill-fixture* (lockstep with
+        # fleet-escalation-canary's is_escalation_excluded), so its
+        # unit-escalation@ template START is refused churn, not escalation
+        # volume. Mirror the writer here so the hourly heartbeat block-5b
+        # drill spin cannot storm FleetEscalationStorm, and so the
+        # drift-lock test cannot drift.
+        "chain-e2e-drill-fixture*",
         # Canaries / orchestrator organs: their deliberate fail-loud escalations
         # are expected, not a flapping worker.
         "fleet-heartbeat*",
