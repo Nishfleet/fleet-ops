@@ -138,9 +138,11 @@ grep -q 'issue close 456' "$scratch/gh2.log" || fail "scenario2: admit must clos
 grep -q 'agent-ready' "$scratch/gh2.log" || fail "scenario2: fix issue must carry agent-ready"
 # fleet-ops#6097: the admitted fix body must carry the #543 spec clauses and
 # the #3255 moves: line — the clauses are what the intake's spec-gate reads.
-grep -q '^accept: ' "$scratch/gh2.log" || fail "scenario2: fix body must carry the #543 accept: clause: $(cat "$scratch/gh2.log")"
-grep -q '^metric: ' "$scratch/gh2.log" || fail "scenario2: fix body must carry the #543 metric: clause: $(cat "$scratch/gh2.log")"
-grep -q '^moves: product_merges_per_day' "$scratch/gh2.log" || fail "scenario2: fix body must carry the #3255 moves: line: $(cat "$scratch/gh2.log")"
+# fleet-ops#5890: the clauses are emitted as a dash-list ("- accept: ..."),
+# the shape tests/pi-escalation-audit-spec-compliant.test.sh asserts.
+grep -q '^- accept: ' "$scratch/gh2.log" || fail "scenario2: fix body must carry the #543 accept: clause: $(cat "$scratch/gh2.log")"
+grep -q '^- metric: ' "$scratch/gh2.log" || fail "scenario2: fix body must carry the #543 metric: clause: $(cat "$scratch/gh2.log")"
+grep -q '^- moves: product_merges_per_day' "$scratch/gh2.log" || fail "scenario2: fix body must carry the #3255 moves: line: $(cat "$scratch/gh2.log")"
 ok "scenario2: 2-of-3 PASS files an agent-ready fix issue and closes the wrapper"
 
 # =============================================================================
