@@ -4210,9 +4210,13 @@ print("OK: worktree reaper HELP/TYPE constants + _read_worktree_reaper helper pr
 PY
 
 # _read_worktree_reaper: present summary -> counts; missing/unparseable/stale -> present=False.
+# ts must be generated at run time: a hardcoded 2026-09-07 date became
+# summary-stale after WORKTREE_REAPER_STALE_S (7d) and red-mained P14
+# (run 34849034702, 2026-09-14T13:40Z).
 WT_SUMMARY="$scratch/reaper-summary.json"
-cat >"$WT_SUMMARY" <<'JSON'
-{"script":"fleet-worktree-reaper","ts":"2026-09-07T13:33:53Z","scanned":307,"reaped":14,"post_count":326,"pre_count":341,"bound_breached":0,"skipped_dirty":60,"skipped_notpushed":137,"skipped_live":9,"skipped_young":14,"skipped_unmerged":60,"skipped_notterminal":12,"salvaged":0,"failed":1}
+WT_TS=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+cat >"$WT_SUMMARY" <<JSON
+{"script":"fleet-worktree-reaper","ts":"$WT_TS","scanned":307,"reaped":14,"post_count":326,"pre_count":341,"bound_breached":0,"skipped_dirty":60,"skipped_notpushed":137,"skipped_live":9,"skipped_young":14,"skipped_unmerged":60,"skipped_notterminal":12,"salvaged":0,"failed":1}
 JSON
 python3 - "$exporter" "$WT_SUMMARY" <<'PY' || fail "_read_worktree_reaper parse/degrade failed"
 import importlib.util, json, os, sys, time
