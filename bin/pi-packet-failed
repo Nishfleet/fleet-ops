@@ -34,6 +34,9 @@
 set -euo pipefail
 
 export HOME="${HOME:-/home/nish}"
+XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
+export XDG_RUNTIME_DIR
+LOGGER="${LOGGER:-logger}"
 
 inst="${1:-}"
 if [[ -z "$inst" || "$inst" == "-h" || "$inst" == "--help" ]]; then

@@ -248,6 +248,10 @@ if [[ -z "${STOP_ESCALATION_RESUME_FINDINGS:-}" && ! -f "$RESUME_FINDINGS_BIN" \
       && -f "${HOME}/.local/lib/pi-packet/findings_ledger.py" ]]; then
   RESUME_FINDINGS_BIN="${HOME}/.local/lib/pi-packet/findings_ledger.py"
 fi
+# Re-hosted from pi-packet-failed (fleet-ops#5456): dispatcher now owns the
+# findings-ledger helper path. Keep the name so the #6052 deletion gate sees
+# the contract still defined in bin/.
+helper="${RESUME_FINDINGS_BIN}"
 RESUME_FINDINGS_LEDGER=${STOP_ESCALATION_RESUME_FINDINGS_LEDGER:-}
 RESUME_DRYRUN=${STOP_ESCALATION_RESUME_DRYRUN:-0}
 RESUME_HOP_CAP=2   # hop 0 -> relaunch 1 -> relaunch 2 -> dispatch (E: second death dispatches)
@@ -362,7 +366,7 @@ resume_dispatch_unit() {
       --ref "${issue_url:-issue-create-failed}"
       --reason "resume exhausted; agent-ready dispatch per fleet-ops#5456 A(ii)")
     [ -n "$RESUME_FINDINGS_LEDGER" ] && _fl_args+=(--ledger "$RESUME_FINDINGS_LEDGER")
-    python3 "$RESUME_FINDINGS_BIN" "${_fl_args[@]}" \
+    python3 "$helper" "${_fl_args[@]}" \
       >/dev/null 2>&1 || resume_log "WARN: findings-ledger append failed (non-fatal)"
   fi
 
@@ -426,7 +430,7 @@ resume_or_dispatch() {
           --ref "Nishfleet/$derived_repo#$derived_n"
           --reason "derived-target-closed per fleet-ops#5456: pi-issue@ unit died after its issue closed — not a unit-death")
         [ -n "$RESUME_FINDINGS_LEDGER" ] && _moot_args+=(--ledger "$RESUME_FINDINGS_LEDGER")
-        python3 "$RESUME_FINDINGS_BIN" "${_moot_args[@]}" \
+        python3 "$helper" "${_moot_args[@]}" \
           >/dev/null 2>&1 || resume_log "WARN: findings-ledger append failed (non-fatal)"
       fi
       return 0
