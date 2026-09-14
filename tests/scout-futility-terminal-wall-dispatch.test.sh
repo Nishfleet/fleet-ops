@@ -107,6 +107,30 @@ EOFSTUB
 chmod +x "$scratch/bin/journalctl"
 export JOURNALCTL="$scratch/bin/journalctl"
 
+# fleet-ops#6163: scout-futility-check's #3445 fail-closed mint header runs
+# BEFORE its always-exit-0 trap is armed. With no inherited GH_TOKEN it
+# execs $HOME/.local/bin/worker-token — a file the scratch HOME above can
+# never hold — so every bin call exited 1 in token-less contexts (the
+# 2026-09-14 orchestrator-sweep red on main: "worker-token: No such file or
+# directory" -> end-repair exit 1) while worker envs (GH_TOKEN set) skipped
+# the mint and passed. The header deliberately skips minting when GH names
+# a stub (its own comment: tests stub gh read-only), so export the
+# documented seam: every "$GH" call inside the bin is already `|| true`
+# guarded and the paths this test drives need no gh data — a dead-stub gh
+# keeps the sandbox fully off the network in every ambient env. Same shape
+# as tests/scout-futility.test.sh's $gh_fake for the same binary. The
+# reconciler calls below still pass GH=$gh_mock explicitly, overriding this
+# for the hops that need real issue/view + issue/comment behaviour.
+cat >"$scratch/bin/gh" <<'EOFSTUB'
+#!/usr/bin/env bash
+# fleet-ops#6163 hermetic gh: any call exits 0 with empty output. Every
+# "$GH" call site in scout-futility-check is `|| true`-guarded and treats
+# empty as unknown, so no exercised path can silently read live state.
+exit 0
+EOFSTUB
+chmod +x "$scratch/bin/gh"
+export GH="$scratch/bin/gh"
+
 # The live incident shapes (evidence lines quoted in issue #6577).
 repair_body="$scratch/repair-journal.txt"
 scout_body="$scratch/scout-journal.txt"
