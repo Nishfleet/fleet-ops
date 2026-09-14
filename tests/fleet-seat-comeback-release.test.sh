@@ -132,6 +132,11 @@ export SEAT_LOG_FILE="$TMPD/watch.log"
 # fleet-ops#4819: pin the actions.log to the harness scratch so a test release
 # never appends to the live alert-repair actions.log.
 export FLEET_SEAT_COMEBACK_ACTIONS_LOG="$TMPD/actions.log"
+# fleet-ops#6032's restore made _record_learned_cap real again: overload-strike
+# tests must never touch the live learned-caps sidecars. These are defaults —
+# per-test env overrides still win.
+export LEARNED_CAPS_JSON="$TMPD/learned-caps-default.json"
+export LEARNED_CAPS_AUDIT="$TMPD/learned-caps-default.audit"
 
 # --- stub pi: SUCCESS stub exits 0 with "OK", FAILURE stub exits 1 -------
 cat > "$TMPD/pi-tool-ok" <<'EOF'
@@ -323,17 +328,17 @@ PROM="$TMPD/release.prom"
 cat > "$TMPD/seat-caps.json" <<'CAPS'
 {
   "providers": {
-    "bai": {"models": {"deepseek-v4-flash": 1}},
-    "cline": {"models": {"z-ai/glm-5.3-flash": 1}},
-    "commandcode": {"models": {"poolside/laguna-s-2.1-free": 1, "minimax/minimax-m3-free": 0}},
-    "devin": {"models": {"glm-5-2": 1}},
-    "hetzner": {"models": {"Qwen/Qwen3.6-35B-A3B-FP8": 0}},
-    "minimax": {"models": {"m3-free": 1}},
-    "ollama": {"models": {"deepseek-v4-flash:0731": 1}},
-    "opencode": {"models": {"hy3-free": 1, "mimo-v-2.5-free": 1, "mimo-v2.5-free": 1, "nemotron-3-ultra-free": 1}},
-    "straitly": {"models": {"deepseek/deepseek-v4-pro": 1, "deepseek-v4-pro": 1, "gpt-5.6-sol": 1}},
-    "test": {"models": {"test": 1}},
-    "xkiro": {"models": {"deepseek/deepseek-v4-pro": 1, "minimax/minimax-m3:free": 1}}
+    "bai": {"cap": 4, "models": {"deepseek-v4-flash": 1}},
+    "cline": {"cap": 2, "models": {"z-ai/glm-5.3-flash": 1}},
+    "commandcode": {"cap": 4, "models": {"poolside/laguna-s-2.1-free": 1, "minimax/minimax-m3-free": 0}},
+    "devin": {"cap": 4, "models": {"glm-5-2": 1}},
+    "hetzner": {"cap": 1, "models": {"Qwen/Qwen3.6-35B-A3B-FP8": 0}},
+    "minimax": {"cap": 2, "models": {"m3-free": 1}},
+    "ollama": {"cap": 1, "models": {"deepseek-v4-flash:0731": 1}},
+    "opencode": {"cap": 3, "models": {"hy3-free": 1, "mimo-v-2.5-free": 1, "mimo-v2.5-free": 1, "nemotron-3-ultra-free": 1}},
+    "straitly": {"cap": 2, "models": {"deepseek/deepseek-v4-pro": 1, "deepseek-v4-pro": 1, "gpt-5.6-sol": 1}},
+    "test": {"cap": 1, "models": {"test": 1}},
+    "xkiro": {"cap": 2, "models": {"deepseek/deepseek-v4-pro": 1, "minimax/minimax-m3:free": 1}}
   }
 }
 CAPS
@@ -750,7 +755,7 @@ PI_SEAT_HEALTH_LEDGER_DIR="$SEATDIR" \
     FLEET_SEAT_COMEBACK_PROM="$PROM" \
     FLEET_SEAT_COMEBACK_NOW="$NOW_ISO" \
     PI_BIN="$TMPD/pi-pong-ok" \
-    LEARNED_CAPS_JSON="$LEARNED" \
+    LEARNED_CAPS_JSON="$LEARNED" LEARNED_CAPS_AUDIT="$LEARNED.audit" \
     bash "$BIN" >/dev/null 2>"$TMPD/pong.err"
 rc=$?
 set -e
@@ -800,7 +805,7 @@ for run in  1 2 3 4; do
       FLEET_SEAT_COMEBACK_NOW="$RUN_NOW" \
       FLEET_SEAT_COMEBACK_REBENCH_BACKOFF_S=60 \
       PI_BIN="$TMPD/pi-fail" \
-      LEARNED_CAPS_JSON="$LEARNED" \
+      LEARNED_CAPS_JSON="$LEARNED" LEARNED_CAPS_AUDIT="$LEARNED.audit" \
       bash "$BIN" >/dev/null 2>"$TMPD/wall.err.$run"
   rc=$?
   set -e
@@ -2521,4 +2526,105 @@ jq -e '.health_class == "healthy" and .consecutive_failure_count == 0' \
   || fail "29: remote_agent seat must unwall: $(cat "$SEATD29/devin__swe-2-max.json")"
 ok "29: remote_agent tools=0 with computed token releases (fleet-ops#3531/#6731)"
 
-echo "ALL OK: active come-back release path (fleet-ops#2421) + force-probe-on-overdue-usable_at + corpse-at-threshold + never-released metric (fleet-ops#2638) + own-streak corpse + interval-breach loud check (fleet-ops#2806) + no-wall corpse second-chance re-probe / explicit retire (fleet-ops#3156) + extension-reclassify race (fleet-ops#3179) + PQE 1h==1h deadlock fix (fleet-ops#3176) + skip-corpse-on-reanchored-wall (fleet-ops#3301) + phantom retirement + real-non-caps-seat re-probe (fleet-ops#3993) + spawn-bench-held 402 skip (fleet-ops#4659) + false-wall PONG release (fleet-ops#4640) + picker-ledger default (fleet-ops#6731)"
+# --- 30. fleet-ops#6731: marker-ONLY hold — no ledger file, sweep must probe --
+# The ledger loop iterates *__*.json; a seat whose ONLY evidence is a fresh
+# expired wrapper spawn-bench marker (no sibling ledger) was invisible to it
+# while seat_usable held the seat (the live 2026-09-14 workers=0 fault).
+# The sweep must select it; a successful tool-using probe writes
+# source=comeback_release and the marker hold lifts.
+SEATD30="$TMPD/seats30"
+mkdir -p "$SEATD30"
+cat > "$SEATD30/litellm__worker-solo.spawn-bench.json" <<'MK'
+{"provider":"litellm","model":"worker-solo","usable_at":"2026-08-30T11:05:00Z","reason":"pi-issue:fleet-ops-6731:fast-death:rc=1","written_at":"2026-08-30T11:00:00Z","backoff_s":300,"failure_mode":"spawn_fail","consecutive_failure_count":2,"seat_dead":false,"writer":"_seat_write_spawn_bench","release_requires":"real-work-probe","citation":"fleet-ops#3737"}
+MK
+# Negative control: a marker-only seat still inside its bench window is
+# never probed — the marker clock is the hold.
+cat > "$SEATD30/litellm__worker-window.spawn-bench.json" <<'MK'
+{"provider":"litellm","model":"worker-window","usable_at":"2026-08-30T23:05:00Z","reason":"pi-issue:fleet-ops-6731:fast-death:rc=1","written_at":"2026-08-30T11:00:00Z","backoff_s":300,"failure_mode":"spawn_fail","consecutive_failure_count":1,"seat_dead":false,"writer":"_seat_write_spawn_bench","release_requires":"real-work-probe","citation":"fleet-ops#3737"}
+MK
+cat > "$TMPD/seat-caps30.json" <<'CAPS'
+{"providers":{"litellm":{"models":{"worker-solo":1,"worker-window":1}}}}
+CAPS
+set +e
+PI_SEAT_HEALTH_LEDGER_DIR="$SEATD30" SEAT_CAPS_JSON="$TMPD/seat-caps30.json" \
+    FLEET_SEAT_COMEBACK_STATE="$TMPD/state30.json" \
+    FLEET_SEAT_COMEBACK_PROM="$TMPD/release30.prom" \
+    FLEET_SEAT_COMEBACK_NOW="$NOW_ISO" PI_BIN="$TMPD/pi-tool-ok" \
+    bash "$BIN" >"$TMPD/run30.out" 2>"$TMPD/run30.err"
+rc=$?
+set -e
+[[ "$rc" == "0" ]] || fail "30: marker-only hold sweep must exit 0, got $rc ($(cat "$TMPD/run30.err"))"
+grep -q "probe litellm/worker-solo: held ONLY by wrapper marker" "$TMPD/run30.err" \
+  || fail "30: marker-only seat must be probed via the marker pass: $(cat "$TMPD/run30.err")"
+jq -e '.source == "comeback_release" and .health_class == "healthy" and .consecutive_failure_count == 0' \
+    "$SEATD30/litellm__worker-solo.json" >/dev/null \
+  || fail "30: a successful probe must create the ledger row with source=comeback_release: $(cat "$SEATD30/litellm__worker-solo.json" 2>/dev/null)"
+grep -q "worker-window" "$TMPD/run30.err" \
+  && fail "30: a marker inside its bench window must not be probed: $(cat "$TMPD/run30.err")"
+grep -q "sweep complete: probed=1 released=1" "$TMPD/run30.err" \
+  || fail "30: exactly one marker-only probe + release expected: $(cat "$TMPD/run30.err")"
+ok "30: marker-only hold (no ledger file) is probed; success writes source=comeback_release and lifts the hold (fleet-ops#6731)"
+
+# --- 30b. marker-only hold + FAILED probe: marker re-benched, ledger created --
+SEATD30B="$TMPD/seats30b"
+mkdir -p "$SEATD30B"
+cat > "$SEATD30B/litellm__worker-dead.spawn-bench.json" <<'MK'
+{"provider":"litellm","model":"worker-dead","usable_at":"2026-08-30T11:05:00Z","reason":"pi-issue:fleet-ops-6731:fast-death:rc=1","written_at":"2026-08-30T11:00:00Z","backoff_s":300,"failure_mode":"spawn_fail","consecutive_failure_count":2,"seat_dead":false,"writer":"_seat_write_spawn_bench","release_requires":"real-work-probe","citation":"fleet-ops#3737"}
+MK
+cat > "$TMPD/seat-caps30b.json" <<'CAPS'
+{"providers":{"litellm":{"models":{"worker-dead":1}}}}
+CAPS
+set +e
+PI_SEAT_HEALTH_LEDGER_DIR="$SEATD30B" SEAT_CAPS_JSON="$TMPD/seat-caps30b.json" \
+    FLEET_SEAT_COMEBACK_STATE="$TMPD/state30b.json" \
+    FLEET_SEAT_COMEBACK_PROM="$TMPD/release30b.prom" \
+    FLEET_SEAT_COMEBACK_NOW="$NOW_ISO" PI_BIN="$TMPD/pi-fail" \
+    bash "$BIN" >"$TMPD/run30b.out" 2>"$TMPD/run30b.err"
+rc=$?
+set -e
+mk30b_written=$(jq -r '.written_at' "$SEATD30B/litellm__worker-dead.spawn-bench.json")
+[[ "$mk30b_written" == "$NOW_ISO" ]] \
+  || fail "30b: failed probe must re-bench the marker (written_at refreshed to $NOW_ISO), got $mk30b_written"
+mk30b_usable=$(jq -r '.usable_at' "$SEATD30B/litellm__worker-dead.spawn-bench.json")
+[[ "$mk30b_usable" > "$NOW_ISO" ]] \
+  || fail "30b: failed probe must push the marker bench into the future, got $mk30b_usable"
+jq -e '.source == "comeback_release_rebench" and .health_class == "transient_fault"' \
+    "$SEATD30B/litellm__worker-dead.json" >/dev/null \
+  || fail "30b: failed probe on a marker-only seat must create the rebench ledger row: $(cat "$SEATD30B/litellm__worker-dead.json" 2>/dev/null)"
+ok "30b: failed marker-only probe re-benches the marker and creates the rebench ledger row (fleet-ops#6731)"
+
+# --- 31. fleet-ops#6731/#3826: post-marker healthy write + count >= ceiling --
+# seat_usable's #3826 branch holds a seat whose marker count is past the
+# failure ceiling even when the ledger's healthy observation is NEWER than
+# the marker — that write is the false-healthy clobber, not recovery. The
+# ledger loop's #3737 branch requires observed_at <= written_at so it never
+# probes this shape; only source=comeback_release releases it and only this
+# organ writes that. The marker pass must probe.
+SEATD31="$TMPD/seats31"
+mkdir -p "$SEATD31"
+cat > "$SEATD31/litellm__worker-parked.json" <<'SEAT'
+{"provider":"litellm","model":"worker-parked","http_status":200,"retry_after":null,"health_class":"healthy","retryable":false,"seat_dead":false,"poison_ladder":false,"observed_at":"2026-08-30T11:30:00Z","source":"after_provider_response","failure_mode":"none","usable_at":null,"consecutive_failure_count":0,"writer":"seat-health.ts"}
+SEAT
+cat > "$SEATD31/litellm__worker-parked.spawn-bench.json" <<'MK'
+{"provider":"litellm","model":"worker-parked","usable_at":"2026-08-30T11:05:00Z","reason":"pi-issue:fleet-ops-4161:fast-death:error_class=unknown:rc=1","written_at":"2026-08-30T11:00:00Z","backoff_s":300,"failure_mode":"spawn_fail","consecutive_failure_count":21,"seat_dead":false,"writer":"_seat_write_spawn_bench","release_requires":"real-work-probe","citation":"fleet-ops#3737"}
+MK
+cat > "$TMPD/seat-caps31.json" <<'CAPS'
+{"providers":{"litellm":{"models":{"worker-parked":1}}}}
+CAPS
+set +e
+PI_SEAT_HEALTH_LEDGER_DIR="$SEATD31" SEAT_CAPS_JSON="$TMPD/seat-caps31.json" \
+    FLEET_SEAT_COMEBACK_STATE="$TMPD/state31.json" \
+    FLEET_SEAT_COMEBACK_PROM="$TMPD/release31.prom" \
+    FLEET_SEAT_COMEBACK_NOW="$NOW_ISO" PI_BIN="$TMPD/pi-tool-ok" \
+    bash "$BIN" >"$TMPD/run31.out" 2>"$TMPD/run31.err"
+rc=$?
+set -e
+[[ "$rc" == "0" ]] || fail "31: ceiling-parked marker hold sweep must exit 0, got $rc ($(cat "$TMPD/run31.err"))"
+grep -q "probe litellm/worker-parked: held ONLY by wrapper marker" "$TMPD/run31.err" \
+  || fail "31: ceiling-parked marker hold must be probed: $(cat "$TMPD/run31.err")"
+jq -e '.source == "comeback_release" and .health_class == "healthy"' \
+    "$SEATD31/litellm__worker-parked.json" >/dev/null \
+  || fail "31: probe success must re-mark the ledger source=comeback_release: $(cat "$SEATD31/litellm__worker-parked.json")"
+ok "31: #3826 ceiling-parked marker hold is probed and released (fleet-ops#6731)"
+
+echo "ALL OK: active come-back release path (fleet-ops#2421) + force-probe-on-overdue-usable_at + corpse-at-threshold + never-released metric (fleet-ops#2638) + own-streak corpse + interval-breach loud check (fleet-ops#2806) + no-wall corpse second-chance re-probe / explicit retire (fleet-ops#3156) + extension-reclassify race (fleet-ops#3179) + PQE 1h==1h deadlock fix (fleet-ops#3176) + skip-corpse-on-reanchored-wall (fleet-ops#3301) + phantom retirement + real-non-caps-seat re-probe (fleet-ops#3993) + spawn-bench-held 402 skip (fleet-ops#4659) + false-wall PONG release (fleet-ops#4640) + picker-ledger default + marker-only holds probed (fleet-ops#6731)"
