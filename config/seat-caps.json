@@ -696,11 +696,18 @@
       "trigger_order": 2,
       "description": "Hard cap / quota wall: weekly ClinePass, devin 15-min message rate limit, INFERENCE_CAP_ERROR. Bench until advertised reset window or provider default."
     },
+    "quota_no_deployments": {
+      "matcher": "is_no_deployments_error",
+      "writer": "mark_seat_no_deployments_bench",
+      "default_window_s_seconds": "quota_bench_default_s",
+      "trigger_order": 3,
+      "description": "fleet-ops#6781: LiteLLM 429 {\"message\":\"No deployments available for selected model, Try again in N seconds\"} — the group's upstreams are all down. Provider-capacity wall (source=provider_quota_window, not money_boundary): bench >=300s on the advertised retry window, health_class=quota_bench, and the death classifies infra — the claim re-queues via intake, never the StartLimitBurst loop."
+    },
     "overload_bench": {
       "matcher": "is_overload_error",
       "writer": "mark_seat_overload_bench",
       "default_window_s_seconds": "503_bench_default_s",
-      "trigger_order": 3,
+      "trigger_order": 4,
       "description": "503 / upstream-overload storm (commandcode minimax-m3-free, fleet-ops#652). Bench until Retry-After or provider overload default."
     }
   }

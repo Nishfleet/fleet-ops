@@ -300,13 +300,19 @@ is_infra_death() {
     [[ "$rc" == "124" ]] && return 0
     # provider signal death / OOM kill mid-session (rc=143 / SIGTERM / Killed).
     is_mid_session_death "$err_file" && return 0
-    # spawn-phase ETIMEDOUT (connect/socket/child timeout before the session
-    # was live) — a lane fault, never a work failure.
-    if (( rc != 0 )) && (( spawn_elapsed_s < SPAWN_FAIL_MAX_S )); then
+    if (( rc != 0 )); then
         local _io _ie
         _io=$(cat "$out_file" 2>/dev/null || true)
         _ie=$(cat "$err_file" 2>/dev/null || true)
-        if is_spawn_etimeout "$_io" "$_ie"; then return 0; fi
+        # fleet-ops#6781: a LiteLLM 429 "No deployments available for selected
+        # model" is a provider-capacity wall at ANY elapsed time — the work
+        # item never ran, so the death is a lane fault: re-queue via intake
+        # (exit 0), never burn the WORK reclaim cap or a StartLimitBurst
+        # restart on a dead group.
+        if is_no_deployments_error "$_io" "$_ie"; then return 0; fi
+        # spawn-phase ETIMEDOUT (connect/socket/child timeout before the
+        # session was live) — a lane fault, never a work failure.
+        if (( spawn_elapsed_s < SPAWN_FAIL_MAX_S )) && is_spawn_etimeout "$_io" "$_ie"; then return 0; fi
     fi
     # provider hard session bound: died at/near the run's hard timeout. A
     # seat that is killed by its provider at ~PI_HANG_TIMEOUT_S (or its own
@@ -913,6 +919,20 @@ if (( rc != 0 )) && (( ! spawn_fail_triggered )); then
             seat_log "pi-issue-run: $inst seat $np/$nm benched; next systemd Restart will skip it via the LiteLLM proxy cooldown (excluded by bench_until)"
         else
             seat_log "pi-issue-run: $inst WARN: quota-bench marker NOT written for $np/$nm (no window and no provider default) — relying on reactive ledger + systemd Restart"
+        fi
+    elif is_no_deployments_error "$out_for_scan" "$err_for_scan"; then
+        # fleet-ops#6781: LiteLLM 429 "No deployments available for selected
+        # model" — the group's upstreams are all down. Provider-capacity wall:
+        # bench the group for its advertised retry window (>=300s floor) so
+        # the next pick falls back (direct prepaid / sibling groups, the
+        # fleet-ops#6652 path) instead of re-dying on the same wall every
+        # StartLimitBurst. Classed quota-family: quota_bench ledger +
+        # error_class=quota_no_deployments.
+        seat_log "pi-issue-run: $inst NO-DEPLOYMENTS 429 on $np/$nm (rc=$rc) — benching seat for its advertised retry window (>=${SPAWN_FAIL_BACKOFF_S}s floor) (fleet-ops#6781)"
+        if mark_seat_no_deployments_bench "$np" "$nm" "$out_for_scan"$'\n'"$err_for_scan"; then
+            seat_log "pi-issue-run: $inst seat $np/$nm benched (quota_no_deployments); next pick skips it via the LiteLLM proxy cooldown (excluded by bench_until)"
+        else
+            seat_log "pi-issue-run: $inst WARN: no-deployments bench marker NOT written for $np/$nm — relying on reactive ledger + systemd Restart"
         fi
     fi
 fi

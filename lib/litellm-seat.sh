@@ -1512,6 +1512,91 @@ mark_seat_quota_bench() {
     seat_log "quota-bench: FAILED to write marker for $p/$m"
     return 1
 }
+# fleet-ops#6781: real writer (mirrors mark_seat_quota_bench) for the LiteLLM
+# 429 "No deployments available for selected model" wall — the proxy's model
+# group has zero healthy upstream deployments. Provider-capacity wall, NOT a
+# money wall: source="provider_quota_window" (a justified wall source, but
+# honest — nothing here is a money boundary), http_status=429, failure_mode=
+# quota_no_deployments so post-mortem tooling can tell a dead upstream group
+# from a budget-402 quota_bench. health_class stays quota_bench so
+# seat_usable's exclusion list and the comeback-probe contract treat it
+# exactly like a quota wall: probe-gated re-admission, never a clock-gated
+# re-offer onto a still-dead group. Window: the body's advertised "Try again
+# in N seconds" (the LiteLLM no-deployments hint), the provider's
+# quota_bench_default_s when larger, never under SPAWN_FAIL_BACKOFF_S (300s)
+# — the issue contract is 300s+.
+mark_seat_no_deployments_bench() {
+    local p="$1" m="$2" text="${3:-}"
+    if ! _seat_key_guard "$p" "$m" "mark_seat_no_deployments_bench"; then return 1; fi
+    if _transport_is_down; then _mark_transport_down "$p" "$m"; return 1; fi
+    local path
+    path=$(seat_ledger_path "$p" "$m")
+    mkdir -p "$LEDGER_DIR" 2>/dev/null || true
+    local now_utc
+    now_utc=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+
+    # Advertised retry window: "Try again in 300 seconds" (LiteLLM
+    # no-deployments body) or a Retry-After header value. 0 = not found.
+    local window=0
+    if [[ "$text" =~ [Tt]ry[[:space:]]+again[[:space:]]+in[[:space:]]+([0-9]+) ]]; then
+        window="${BASH_REMATCH[1]}"
+    elif [[ "$text" =~ retry[[:space:]_-]?after[[:space:]:]*[[:space:]]*([0-9]+) ]]; then
+        window="${BASH_REMATCH[1]}"
+    fi
+
+    # Provider default from seat-caps.json bounds a body with no (or a
+    # shorter) window — same max(parsed, declared) rule as mark_seat_quota_bench.
+    local declared=""
+    if [[ -f "$SEAT_CAPS_JSON" ]]; then
+        if (( ! _seat_caps_loaded )); then load_seat_caps || true; fi
+        declared=$(jq -r --arg p "$p" '.providers[$p].quota_bench_default_s // empty' "$SEAT_CAPS_JSON" 2>/dev/null || true)
+        if [[ "$declared" =~ ^[0-9]+$ ]] && (( declared > window )); then
+            window="$declared"
+        fi
+    fi
+    # Class floor: a no-deployments wall never benches under 300s.
+    if (( window < SPAWN_FAIL_BACKOFF_S )); then
+        window="$SPAWN_FAIL_BACKOFF_S"
+    fi
+
+    local source="provider_quota_window"
+    window=$(_seat_clamp_non_money_window_s "$window" "$source" "$declared")
+
+    local usable_at
+    usable_at=$(date -u -d "@$(($(date -u +%s) + window))" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || echo "$now_utc")
+
+    local tmp="$path.nodep.$$.$RANDOM.tmp"
+    if jq -nc \
+        --arg provider "$p" --arg model "$m" \
+        --arg observed "$now_utc" --arg usable "$usable_at" \
+        --argjson http_status 429 --argjson retry_after null \
+        --argjson retryable false --argjson seat_dead false --argjson poison_ladder false \
+        --arg writer "mark_seat_no_deployments_bench" \
+        '{
+          provider:$provider, model:$model,
+          http_status:$http_status, retry_after:$retry_after,
+          health_class:"quota_bench",
+          retryable:$retryable, seat_dead:$seat_dead, poison_ladder:$poison_ladder,
+          observed_at:$observed,
+          source:"provider_quota_window",
+          failure_mode:"quota_no_deployments",
+          usable_at:$usable,
+          consecutive_failure_count:1,
+          writer:$writer
+        }' > "$tmp" 2>/dev/null; then
+        chmod 0644 "$tmp" 2>/dev/null || true
+        if mv "$tmp" "$path" 2>/dev/null; then
+            seat_log "no-deployments-bench: marked $p/$m unusable until $usable_at (429 no-deployments, window=${window}s, source=$source)"
+            # Clobber-proof spawn-bench marker so seat_usable honours this
+            # bench even if seat-health.ts later writes a healthy observation.
+            _seat_write_spawn_bench "$p" "$m" "$usable_at" "quota_no_deployments" "$window" 1 "quota_no_deployments" false "$source" 2>/dev/null || true
+            return 0
+        fi
+    fi
+    rm -f "$tmp" 2>/dev/null || true
+    seat_log "no-deployments-bench: FAILED to write marker for $p/$m"
+    return 1
+}
 mark_seat_overload_bench() { seat_log "mark_seat_overload_bench: $* (proxy cooldown owns routing)"; return 0; }
 mark_seat_hang_bench() { seat_log "mark_seat_hang_bench: $* (proxy cooldown owns routing)"; return 0; }
 mark_seat_credentials_bad() { seat_log "mark_seat_credentials_bad: ${1:-}/${2:-} (proxy cooldown owns routing)"; return 0; }
@@ -1690,6 +1775,21 @@ is_quota_cap_error() {
     fi
     return 1
 }
+# fleet-ops#6781: LiteLLM proxy 429 {"message":"No deployments available for
+# selected model, Try again in 300 seconds. Passed model=<group>"} — the model
+# group has ZERO healthy upstream deployments. A provider-capacity wall, not a
+# lane fault and not a money wall: every pick of the group dies in <20s with
+# rc=1, and while it booked error_class=unknown the claim re-ran on the
+# StartLimitBurst restart loop (0509-2952 03:52Z + 04:52Z; fleet-ops#6731
+# 10:05Z re-died on the same wall after the judge cleared its reclaim 09:45Z).
+# The literal alone is the signal — the 429 prefix may or may not survive into
+# the captured text, so it is not required.
+is_no_deployments_error() {
+    local out="${1:-}" err="${2:-}"
+    local combined="$out"$'\n'"$err"
+    [[ -n "${out}${err}" ]] || return 1
+    grep -qiE 'no[[:space:]]+deployments[[:space:]]+available[[:space:]]+for[[:space:]]+selected[[:space:]]+model' <<<"$combined"
+}
 _seat_is_benched() { return 1; }
 # _seat_merge_error_class <provider> <model> <class> <reason>
 # Field-merge last_error_class + bench_reason into the existing seat ledger,
@@ -1726,6 +1826,8 @@ classify_death_error() {
     local cls="unknown"
     if is_quota_cap_error "$out_text" "$err_text"; then
         cls="quota_cap"
+    elif is_no_deployments_error "$out_text" "$err_text"; then
+        cls="quota_no_deployments"
     elif is_overload_error "$out_text" "$err_text"; then
         cls="overload_503"
     elif is_workspace_trust_error "$out_text" "$err_text"; then
