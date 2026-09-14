@@ -73,6 +73,26 @@ is held for FLEET_LITELLM_EMPTY_CENSUS_TOLERANCE_S seconds (default 120 = two
 health_check_intervals) so a restart that has not yet finished its first
 background cycle does not false-trip; after that window, exit 1.
 
+Restart-window hold (fleet-ops#6748): the 2026-09-14 13:55-13:57 IST
+unit-death dispatch was a planned double restart, not death — a repair
+worker restarted the proxy twice back-to-back (the second stop landed 36s
+after the first start), and the ~75s unanswered window spanned two 60s
+ticks, so the dead-tolerance latch priced a full unit-death dispatch for
+maintenance. When readiness AND the completion probe are both refused,
+the canary now asks systemd whether the proxy organ is mid-(re)start:
+ActiveState=activating, or the current main process is younger than
+FLEET_LITELLM_BOOT_HOLD_S (default 90s — Type=simple units read 'active'
+the instant the process forks, ~35s before uvicorn answers). In a boot
+window the tick holds (exit 0, prom still proxy_up=0) WITHOUT advancing
+the dead latch; a green tick clears it. A bounded hold —
+FLEET_LITELLM_RESTART_HOLD_CAP_S (default 300s of continuous boot-window
+holding with no green tick) — still exits 1, so a crash-loop or stuck
+boot surfaces. True death is unchanged: a dead-but-'active' (wedged) or
+'failed' unit is not a boot window, and the existing 60s latch applies
+as before, keeping the '<2 min' organ-death promise. Any systemctl
+failure (non-fleet host, no user manager, missing binary) also returns
+'not a boot window' — pre-existing behavior, unchanged.
+
 No new scheduler for the proxy_up heartbeat: this canary runs on a 60s
 timer (systemd/fleet-litellm-health-canary.timer) because the proxy is a
 daemon whose death must surface in <2 min, not on the 5-min
@@ -103,6 +123,13 @@ Environment seams (tests):
                             (default 300; fleet-ops#6427)
   FLEET_LITELLM_PG_ISREADY  pg_isready binary (default searched on PATH)
   FLEET_LITELLM_REDIS_CLI   redis-cli binary (default searched on PATH)
+  FLEET_LITELLM_SYSTEMCTL   systemctl binary (default searched on PATH)
+  FLEET_LITELLM_SYSTEMD_UNIT the proxy organ unit name
+                            (default fleet-litellm-proxy.service)
+  FLEET_LITELLM_BOOT_HOLD_S hold window for a young systemd main process
+                            (default 90; fleet-ops#6748)
+  FLEET_LITELLM_RESTART_HOLD_CAP_S cap on continuous boot-window holding
+                            (default 300; fleet-ops#6748)
   FLEET_LITELLM_PG_HOST     postgres host or socket dir (default the
                             fleet-owned cluster's own run dir;
                             pg_isready defaults to /var/run/postgresql,
@@ -175,6 +202,20 @@ DEFAULT_EMPTY_CENSUS_TOLERANCE_S = float(
 # within 2-3 ticks, and each one previously priced a senior-auditor summon.
 DEFAULT_UNHEALTHY_TOLERANCE_S = float(
     os.environ.get("FLEET_LITELLM_UNHEALTHY_TOLERANCE_S", "300")
+)
+# fleet-ops#6748: a systemd main process younger than this is a restart
+# window, not organ death (measured proxy boot is ~35-40s; the 2026-09-14
+# incident window was a double restart spanning ~75s). 90s is ~2.3x the
+# measured boot under this box's normal memory pressure.
+DEFAULT_BOOT_HOLD_S = float(os.environ.get("FLEET_LITELLM_BOOT_HOLD_S", "90"))
+# Bounded alarm latency for a stuck boot / crash-loop: continuous
+# boot-window holding without a green tick fails loud after this long.
+DEFAULT_RESTART_HOLD_CAP_S = float(
+    os.environ.get("FLEET_LITELLM_RESTART_HOLD_CAP_S", "300")
+)
+DEFAULT_SYSTEMCTL = os.environ.get("FLEET_LITELLM_SYSTEMCTL", "systemctl")
+DEFAULT_SYSTEMD_UNIT = os.environ.get(
+    "FLEET_LITELLM_SYSTEMD_UNIT", "fleet-litellm-proxy.service"
 )
 DEFAULT_MASTER_KEY_FILE = os.environ.get(
     "FLEET_LITELLM_MASTER_KEY_FILE",
@@ -466,6 +507,68 @@ def _probe_redis(host: str, port: str) -> int:
         return 0
 
 
+def _proxy_boot_window(boot_hold_s: float) -> tuple[bool, str]:
+    """(in_boot_window, detail) — is systemd mid-(re)start on the proxy organ?
+
+    fleet-ops#6748: a planned double restart left the proxy unanswered ~75s
+    (two 60s ticks), tripping the dead latch on maintenance. Ask systemd:
+    ActiveState=activating, or the current main process younger than
+    boot_hold_s (Type=simple units read 'active' the instant the process
+    forks, ~35s before uvicorn answers — so process AGE, not state, is the
+    signal). ExecMainStartTimestampMonotonic and time.monotonic_ns() share
+    the CLOCK_MONOTONIC boot epoch, so the age is a pure delta: no
+    wall-clock parsing, no locale dependence, immune to FLEET_LITELLM_NOW.
+    Any query failure (missing binary, no user manager, unknown unit,
+    systemd < 255 without the monotonic property) means 'not a boot
+    window' — pre-existing latch behavior, unchanged.
+    """
+    unit = os.environ.get("FLEET_LITELLM_SYSTEMD_UNIT", DEFAULT_SYSTEMD_UNIT)
+    systemctl = os.environ.get("FLEET_LITELLM_SYSTEMCTL", DEFAULT_SYSTEMCTL)
+    if "/" not in systemctl:
+        resolved = shutil.which(systemctl)
+        if not resolved:
+            return False, f"systemctl {systemctl!r} not found"
+        systemctl = resolved
+    try:
+        r = subprocess.run(
+            [
+                systemctl,
+                "--user",
+                "show",
+                unit,
+                "-p",
+                "ActiveState",
+                "-p",
+                "ExecMainStartTimestampMonotonic",
+            ],
+            capture_output=True,
+            timeout=5,
+            text=True,
+        )
+    except (subprocess.TimeoutExpired, OSError):
+        return False, "systemctl query failed"
+    if r.returncode != 0:
+        return False, f"systemctl rc={r.returncode}"
+    state = ""
+    start_us: float | None = None
+    for line in r.stdout.splitlines():
+        key, _, value = line.partition("=")
+        if key == "ActiveState":
+            state = value.strip()
+        elif key == "ExecMainStartTimestampMonotonic":
+            try:
+                start_us = float(value.strip())
+            except ValueError:
+                start_us = None
+    if state == "activating":
+        return True, f"{unit} activating"
+    if state == "active" and start_us is not None and start_us > 0:
+        age_s = (time.monotonic_ns() / 1000.0 - start_us) / 1e6
+        if 0 <= age_s < boot_hold_s:
+            return True, f"{unit} main process {int(age_s)}s old < {int(boot_hold_s)}s"
+    return False, f"{unit} {state or 'unknown'}"
+
+
 def render_prom(
     now: float,
     proxy_up: int,
@@ -527,6 +630,10 @@ def main(argv: list[str] | None = None) -> int:
         "--unhealthy-tolerance",
         type=float,
         default=DEFAULT_UNHEALTHY_TOLERANCE_S,
+    )
+    p.add_argument("--boot-hold", type=float, default=DEFAULT_BOOT_HOLD_S)
+    p.add_argument(
+        "--restart-hold-cap", type=float, default=DEFAULT_RESTART_HOLD_CAP_S
     )
     p.add_argument("--venv", default=DEFAULT_VENV)
     p.add_argument("--quiet", action="store_true")
@@ -591,6 +698,7 @@ def main(argv: list[str] | None = None) -> int:
                         "redis_up": redis_up,
                         "dead_since": None,
                         "empty_since": None,
+                        "restart_hold_since": None,
                         "unhealthy_since": None,
                     },
                     indent=2,
@@ -610,7 +718,54 @@ def main(argv: list[str] | None = None) -> int:
         # --dead-tolerance seconds. The prom file is still written
         # proxy_up=0 immediately so the freshness/absent rules surface real
         # death even mid-window.
+        # fleet-ops#6748: BEFORE latching, ask systemd whether the proxy
+        # organ is mid-(re)start. A planned restart left the proxy
+        # unanswered ~75s (two 60s ticks) on 2026-09-14 and priced a
+        # unit-death dispatch for maintenance. A boot window holds WITHOUT
+        # advancing the dead latch; the restart-hold cap keeps a stuck
+        # boot / crash-loop fail-loud. Query failure == not a boot window
+        # (pre-existing behavior, unchanged).
         state = _load_state(args.state)
+        boot, boot_detail = _proxy_boot_window(args.boot_hold)
+        if boot:
+            restart_hold_since = state.get("restart_hold_since")
+            if not isinstance(restart_hold_since, (int, float)):
+                restart_hold_since = now
+            hold_elapsed = now - float(restart_hold_since)
+            _atomic_write(Path(args.prom), render_prom(now, 0, {}, pg_up, redis_up, 1))
+            state.update(
+                {
+                    "now": int(now),
+                    "proxy_up": 0,
+                    "status": 0,
+                    "completions_status": c_status,
+                    "completions_ok": False,
+                    "groups": {},
+                    "postgres_up": pg_up,
+                    "redis_up": redis_up,
+                    "dead_since": None,
+                    "restart_hold_since": int(restart_hold_since),
+                    "unhealthy_since": None,
+                }
+            )
+            _atomic_write(Path(args.state), json.dumps(state, indent=2, sort_keys=True))
+            if hold_elapsed >= args.restart_hold_cap:
+                print(
+                    f"fleet-litellm-health-canary: proxy unreachable at {url} "
+                    f"but systemd says mid-start ({boot_detail}) for "
+                    f"{int(hold_elapsed)}s >= {int(args.restart_hold_cap)}s cap "
+                    "(stuck boot / crash-loop) — organ dead",
+                    file=sys.stderr,
+                )
+                return 1
+            if not args.quiet:
+                print(
+                    f"fleet-litellm-health-canary: proxy unreachable at {url} "
+                    f"but systemd says mid-start ({boot_detail}) — restart "
+                    "window, holding without dead-latch (fleet-ops#6748)",
+                    file=sys.stderr,
+                )
+            return 0
         dead_since = state.get("dead_since")
         if not isinstance(dead_since, (int, float)):
             dead_since = now
@@ -686,6 +841,7 @@ def main(argv: list[str] | None = None) -> int:
                 "redis_up": redis_up,
                 "dead_since": None,
                 "empty_since": None,
+                "restart_hold_since": None,
                 "unhealthy_since": None,
             }
             _atomic_write(Path(args.state), json.dumps(state, indent=2, sort_keys=True))
@@ -719,6 +875,7 @@ def main(argv: list[str] | None = None) -> int:
                     "redis_up": redis_up,
                     "dead_since": None,
                     "empty_since": int(empty_since),
+                    "restart_hold_since": None,
                     "unhealthy_since": None,
                 }
             )
@@ -779,6 +936,7 @@ def main(argv: list[str] | None = None) -> int:
         "redis_up": redis_up,
         "dead_since": None,
         "empty_since": None,
+        "restart_hold_since": None,
         "unhealthy_since": unhealthy_since,
     }
     _atomic_write(Path(args.state), json.dumps(state, indent=2, sort_keys=True))

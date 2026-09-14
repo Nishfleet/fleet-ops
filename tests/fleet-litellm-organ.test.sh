@@ -164,6 +164,20 @@ ok "4b: repo router config stays out of the install path; runbook covers the liv
 python3 -m py_compile "$canary" || fail "5: canary py_compile failed"
 scratch="$(mktemp -d)"
 trap 'rm -rf "$scratch"' EXIT
+# fleet-ops#6748: pin the systemd boot-window query with a fake systemctl so
+# the dead-latch tests below stay hermetic (no live user-manager dependency)
+# and prove the NOT-a-boot-window path explicitly (active + old main process).
+# FAKE_ACTIVE_STATE / FAKE_MAIN_AGE_S drive the simulated unit state.
+cat > "$scratch/fake-systemctl" <<'EOF'
+#!/usr/bin/env bash
+# Emulates: systemctl --user show <unit> -p ActiveState -p ExecMainStartTimestampMonotonic
+state="${FAKE_ACTIVE_STATE:-active}"
+age="${FAKE_MAIN_AGE_S:-99999}"
+up_us="$(( $(cut -d. -f1 /proc/uptime) * 1000000 ))"
+printf 'ActiveState=%s\n' "$state"
+printf 'ExecMainStartTimestampMonotonic=%s\n' "$(( up_us - age * 1000000 ))"
+EOF
+chmod +x "$scratch/fake-systemctl"
 stub="$scratch/stub.json"
 printf '{"healthy_endpoints":[{"model_info":{"model_name":"worker-cheap"}}],"unhealthy_endpoints":[]}' > "$stub"
 # #6115: the shortfall verdict compares the census against the configured
@@ -195,6 +209,7 @@ FLEET_LITELLM_PROM="$scratch/dead.prom" \
 FLEET_LITELLM_STATE="$scratch/dead.json" \
 FLEET_LITELLM_PROXY_URL=http://127.0.0.1:1 \
 FLEET_LITELLM_DEAD_TOLERANCE_S=0 \
+FLEET_LITELLM_SYSTEMCTL="$scratch/fake-systemctl" \
 FLEET_LITELLM_STUB_PG=1 \
 FLEET_LITELLM_STUB_REDIS=1 \
 FLEET_LITELLM_STUB_INSTALLED=1 \
@@ -235,6 +250,7 @@ FLEET_LITELLM_PROM="$scratch/hold.prom" \
 FLEET_LITELLM_STATE="$scratch/hold.json" \
 FLEET_LITELLM_PROXY_URL=http://127.0.0.1:1 \
 FLEET_LITELLM_DEAD_TOLERANCE_S=60 \
+FLEET_LITELLM_SYSTEMCTL="$scratch/fake-systemctl" \
 FLEET_LITELLM_NOW=1700000000 \
 FLEET_LITELLM_STUB_PG=1 \
 FLEET_LITELLM_STUB_REDIS=1 \
@@ -252,12 +268,76 @@ FLEET_LITELLM_PROM="$scratch/deadlong.prom" \
 FLEET_LITELLM_STATE="$scratch/deadlong.json" \
 FLEET_LITELLM_PROXY_URL=http://127.0.0.1:1 \
 FLEET_LITELLM_DEAD_TOLERANCE_S=60 \
+FLEET_LITELLM_SYSTEMCTL="$scratch/fake-systemctl" \
 FLEET_LITELLM_NOW=1700000000 \
 FLEET_LITELLM_STUB_PG=1 \
 FLEET_LITELLM_STUB_REDIS=1 \
 FLEET_LITELLM_STUB_INSTALLED=1 \
 python3 "$canary" --quiet && fail "5f: dead past tolerance must exit 1"
 ok "5f: sustained dead past the tolerance exits 1 (fail-loud preserved)"
+
+# --- 5i (fleet-ops#6748): systemd says the proxy organ is mid-restart
+# (ActiveState=activating) — the refused tick holds WITHOUT advancing the
+# dead latch: exit 0, prom still proxy_up=0, state carries restart_hold_since
+# and dead_since null. The 2026-09-14 incident: a planned double restart
+# left the proxy unanswered ~75s (two 60s ticks) and the latch priced a
+# full unit-death dispatch for maintenance.
+FAKE_ACTIVE_STATE=activating FAKE_MAIN_AGE_S=99999 \
+FLEET_LITELLM_PROM="$scratch/boot.prom" \
+FLEET_LITELLM_STATE="$scratch/boot.json" \
+FLEET_LITELLM_PROXY_URL=http://127.0.0.1:1 \
+FLEET_LITELLM_DEAD_TOLERANCE_S=60 \
+FLEET_LITELLM_NOW=1700000000 \
+FLEET_LITELLM_SYSTEMCTL="$scratch/fake-systemctl" \
+FLEET_LITELLM_STUB_PG=1 FLEET_LITELLM_STUB_REDIS=1 FLEET_LITELLM_STUB_INSTALLED=1 \
+python3 "$canary" --quiet || fail "5i: boot window (activating) must hold (exit 0)"
+grep -q 'fleet_litellm_proxy_up{endpoint="readiness"} 0' "$scratch/boot.prom" \
+    || fail "5i: boot-window prom missing proxy_up=0"
+BOOTSCRATCH="$scratch" python3 -c "
+import json, os
+d = json.load(open(os.environ['BOOTSCRATCH'] + '/boot.json'))
+assert d['dead_since'] is None, d
+assert d['restart_hold_since'] == 1700000000, d
+assert d['proxy_up'] == 0, d
+"
+ok "5i: #6748 boot window (activating) holds without dead-latch (exit 0)"
+
+# --- 5j (fleet-ops#6748): Type=simple units read 'active' the instant the
+# process forks (~35s before uvicorn answers). A main process younger than
+# FLEET_LITELLM_BOOT_HOLD_S is a restart window too — hold, no latch.
+FAKE_ACTIVE_STATE=active FAKE_MAIN_AGE_S=5 \
+FLEET_LITELLM_PROM="$scratch/young.prom" \
+FLEET_LITELLM_STATE="$scratch/young.json" \
+FLEET_LITELLM_PROXY_URL=http://127.0.0.1:1 \
+FLEET_LITELLM_DEAD_TOLERANCE_S=60 \
+FLEET_LITELLM_BOOT_HOLD_S=90 \
+FLEET_LITELLM_NOW=1700000000 \
+FLEET_LITELLM_SYSTEMCTL="$scratch/fake-systemctl" \
+FLEET_LITELLM_STUB_PG=1 FLEET_LITELLM_STUB_REDIS=1 FLEET_LITELLM_STUB_INSTALLED=1 \
+python3 "$canary" --quiet || fail "5j: young main process must hold (exit 0)"
+YOUNGSCRATCH="$scratch" python3 -c "
+import json, os
+d = json.load(open(os.environ['YOUNGSCRATCH'] + '/young.json'))
+assert d['dead_since'] is None, d
+assert d['restart_hold_since'] == 1700000000, d
+"
+ok "5j: #6748 young main process (5s < 90s boot-hold) holds (exit 0)"
+
+# --- 5k (fleet-ops#6748): the boot-window hold is bounded — a hold that has
+# run FLEET_LITELLM_RESTART_HOLD_CAP_S without a green tick (stuck boot /
+# crash-loop) still exits 1, so the organ never hides behind 'activating'.
+printf '{"restart_hold_since": 1699999600, "proxy_up": 0}' > "$scratch/bootcap.json"
+FAKE_ACTIVE_STATE=activating FAKE_MAIN_AGE_S=99999 \
+FLEET_LITELLM_PROM="$scratch/bootcap.prom" \
+FLEET_LITELLM_STATE="$scratch/bootcap.json" \
+FLEET_LITELLM_PROXY_URL=http://127.0.0.1:1 \
+FLEET_LITELLM_DEAD_TOLERANCE_S=60 \
+FLEET_LITELLM_RESTART_HOLD_CAP_S=300 \
+FLEET_LITELLM_NOW=1700000000 \
+FLEET_LITELLM_SYSTEMCTL="$scratch/fake-systemctl" \
+FLEET_LITELLM_STUB_PG=1 FLEET_LITELLM_STUB_REDIS=1 FLEET_LITELLM_STUB_INSTALLED=1 \
+python3 "$canary" --quiet && fail "5k: boot-window hold past cap must exit 1"
+ok "5k: #6748 restart-hold cap fails loud (stuck boot / crash-loop)"
 
 # --- 5g (fleet-ops#6315): a HEALTH-ONLY hang is not organ death. The
 # 2026-09-13 incident: readiness+health 0-byte timeouts 120s+ while
