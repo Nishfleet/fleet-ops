@@ -26,6 +26,13 @@
 #      closes it once a green run contains the merge SHA — with the run URL
 #      in the closing comment.
 #   7. A green run not containing the fix -> gate holds (no close).
+#   8. fleet-ops#6814 (live 0509#3412/#3413): a judge-handoff duplicate
+#      close delivers under ANOTHER issue's claim branch ("Duplicate of
+#      #3409 — fixed by #3420") — delivery named only in the issue's own
+#      comments. A green run containing the comment-named PR's merge ->
+#      close stands.
+#   9. Same shape, green run NOT containing it -> reopened (the comment
+#      refs are load-bearing, and the since-fallback still guards).
 
 set -euo pipefail
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -113,6 +120,13 @@ case "$1" in
           cat "$FAKE_DIR/merged.json" 2>/dev/null || echo '[]'
         fi
         exit 0
+        ;;
+      view)
+        # fleet-ops#6814: comment-named delivery refs are resolved with
+        # `gh pr view <num>`. A missing fixture = not a PR (like the real
+        # gh for an issue number) -> exit 1, the lib skips the ref.
+        f="$FAKE_DIR/prview-$3.json"
+        if [ -f "$f" ]; then cat "$f"; else echo "no pull requests for #$3" >&2; exit 1; fi
         ;;
       *) echo "unexpected gh pr $*" >&2; exit 1 ;;
     esac
@@ -410,6 +424,92 @@ grep -q 'close 4001' "$scratch/closes.log" \
 grep -q 'actions/runs/9999' "$scratch/closes.log" \
     || fail "gate: closing comment must cite the green run URL: $(cat "$scratch/closes.log")"
 ok "close gate: green run containing the fix -> closes with run URL in the comment"
+
+# =========================================================================
+# 8. fleet-ops#6814 REPLAY 0509#3412 — judge-handoff duplicate close: the
+#    delivery rode claim/issue-3409 (PR #3420, body "Closes #3409"), so no
+#    claim/issue-3412 PR and no trailer exist. The issue's comments name
+#    the delivery ("Duplicate of #3409 — fixed by #3420"). A green run
+#    whose headSha CONTAINS #3420's merge -> close stands.
+# =========================================================================
+reset_fake
+python3 - "$BODY_2662" <<'PY' >"$scratch/closed.json"
+import json, sys
+print(json.dumps([{
+    "number": 3412, "title": "no-time-bomb gate red at main", "state": "CLOSED",
+    "stateReason": "COMPLETED", "closedAt": "2026-09-14T10:57:38Z",
+    "author": {"login": "app/nishfleet-worker"},
+    "labels": [{"name": "deploy-fault"}],
+    "body": sys.argv[1],
+}]))
+PY
+echo '[]' >"$scratch/merged-head-3412.json"
+cat >"$scratch/comments-3412.json" <<'JSON'
+{"comments":[
+  {"body": "Duplicate of #3409 — fixed by #3420 (merged 22:20Z). Closing as dupe per judge handoff."},
+  {"body": "DECISION (orchestrator sweep 2026-09-14): CLOSED COMPLETED — Deploy production run 34828003346 (sha 507226eb, 09:26:54Z today) got past its Test step."}
+]}
+JSON
+cat >"$scratch/merged.json" <<'JSON'
+[{"number": 3420, "title": "fix no-time-bomb fixtures", "body": "Closes #3409",
+  "mergeCommit": {"oid": "16bb3165974915d61779a528e239abeb090e33ea"}}]
+JSON
+cat >"$scratch/prview-3420.json" <<'JSON'
+{"state": "MERGED", "mergeCommit": {"oid": "16bb3165974915d61779a528e239abeb090e33ea"}}
+JSON
+cat >"$scratch/runs-green.json" <<'JSON'
+[{"databaseId": 34828003346, "headSha": "507226eb49589470376d4786c88387426314d71f",
+  "createdAt": "2026-09-14T09:26:54Z",
+  "url": "https://github.com/Nishfleet/0509/actions/runs/34828003346"}]
+JSON
+echo "ahead" >"$scratch/compare-status"   # 16bb3165 is an ancestor of 507226eb
+
+out=$("$sweep" 2>"$scratch/err8.txt")
+grep -q 'deploy_fault_reopened=0' <<<"$out" \
+    || fail "dupe-handoff: comment-named delivery + green containing run must stand: $out"
+[ ! -s "$scratch/reopens.log" ] \
+    || fail "dupe-handoff: reopen must not fire: $(cat "$scratch/reopens.log")"
+ok "fleet-ops#6814: delivery named only in comments + green containing run -> close stands"
+
+# =========================================================================
+# 9. Same shape, green run NOT containing the comment-named delivery ->
+#    still reopened (the since-fallback is untouched and still guards).
+# =========================================================================
+reset_fake
+python3 - "$BODY_2662" <<'PY' >"$scratch/closed.json"
+import json, sys
+print(json.dumps([{
+    "number": 3412, "title": "no-time-bomb gate red at main", "state": "CLOSED",
+    "stateReason": "COMPLETED", "closedAt": "2026-09-14T10:57:38Z",
+    "author": {"login": "app/nishfleet-worker"},
+    "labels": [{"name": "deploy-fault"}],
+    "body": sys.argv[1],
+}]))
+PY
+echo '[]' >"$scratch/merged-head-3412.json"
+cat >"$scratch/comments-3412.json" <<'JSON'
+{"comments":[
+  {"body": "Duplicate of #3409 — fixed by #3420 (merged 22:20Z). Closing as dupe per judge handoff."}
+]}
+JSON
+cat >"$scratch/merged.json" <<'JSON'
+[{"number": 3420, "title": "fix no-time-bomb fixtures", "body": "Closes #3409",
+  "mergeCommit": {"oid": "16bb3165974915d61779a528e239abeb090e33ea"}}]
+JSON
+cat >"$scratch/prview-3420.json" <<'JSON'
+{"state": "MERGED", "mergeCommit": {"oid": "16bb3165974915d61779a528e239abeb090e33ea"}}
+JSON
+cat >"$scratch/runs-green.json" <<'JSON'
+[{"databaseId": 34828003346, "headSha": "507226eb49589470376d4786c88387426314d71f",
+  "createdAt": "2026-09-14T09:26:54Z",
+  "url": "https://github.com/Nishfleet/0509/actions/runs/34828003346"}]
+JSON
+echo "behind" >"$scratch/compare-status"   # the green run predates the delivery
+
+out=$("$sweep" 2>"$scratch/err9.txt")
+grep -q 'deploy_fault_reopened=1' <<<"$out" \
+    || fail "dupe-handoff: non-containing green run must still reopen: $out"
+ok "fleet-ops#6814: comment-named delivery NOT in the green run -> reopened"
 
 # =========================================================================
 # 8. TRAILER PATH: a merged PR whose multi-line body carries `Closes #N` on
