@@ -509,6 +509,8 @@ resume_or_dispatch() {
   [ -n "$deadline_min" ] && [[ "$deadline_min" =~ ^[0-9]+$ ]] && relaunch_args+=(--deadline "$deadline_min")
 
   resume_log "relaunching $unit_sf hop=$((hop+1)) provider=$PROVIDER model=$MODEL"
+  # new_cmdline is a rebuilt argv string; quoting it would pass one token.
+  # shellcheck disable=SC2086
   if ! "$RESUME_PI_RUN" "${relaunch_args[@]}" -- $new_cmdline >>"$RESUME_AS/resume-relaunch.log" 2>&1; then
     resume_log "relaunch failed — dispatching"
     resume_dispatch_unit "$unit_sf" "$unit_no_sf" "$hop" || return $?
