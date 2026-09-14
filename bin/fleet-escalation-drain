@@ -101,7 +101,12 @@
 #   FLEET_ESCALATION_DRAIN_ISSUE_FILE     fleet-issue-file binary used to file
 #                                         the stuck-packet escalation (default:
 #                                         sibling bin/fleet-issue-file of this
-#                                         script; test stub seam)
+#                                         script; test stub seam). A run with
+#                                         an overridden packet dir and NO
+#                                         explicit seam refuses to file — a
+#                                         non-production packet set must not
+#                                         write to the production tracker
+#                                         (fleet-ops#6536).
 #   FLEET_ESCALATION_DRAIN_ESCALATION_REPO  repo the escalation issue is filed
 #                                         to (default Nishfleet/fleet-ops)
 #
@@ -1351,6 +1356,26 @@ log_disposition() {
 file_stuck_escalation_issue() {
     local n_packets="$1"
     local newest_iso="$2"
+    # fleet-ops#6536: the filing seam is the drain's only write to the
+    # production tracker, so it must only fire for the production packet
+    # set. 6536's own thread carries the leak it guards: a dedup comment
+    # citing "drain run at 2026-09-13T20:48:42Z ... newest dispatch instant
+    # 2026-09-13T13:48:42Z" — a run present in no escalation-drain journal
+    # (the production timer fires at :43 and its every invocation is
+    # journaled) and a packet that never existed in the production packet
+    # dir. A drain aimed at an overridden packet dir (hermetic scratch,
+    # restored copy, second checkout) that forgets to stub the seam files
+    # its burst into the real repo: contained as a dedup comment when the
+    # #1212 gate scores 1.00, a GHOST issue when it scores borderline.
+    # Guard: an overridden packet dir without an explicit seam fails open
+    # exactly like an unavailable filing — packets kept, LOUD line, no
+    # network write. Production (no env overrides) is unaffected; every
+    # in-repo test harness stubs the seam explicitly, so none regress.
+    if [[ -n "${FLEET_ESCALATION_DRAIN_AGENT_STATE:-}" || -n "${FLEET_ESCALATION_DRAIN_PACKET_DIR:-}" ]] \
+        && [[ -z "${FLEET_ESCALATION_DRAIN_ISSUE_FILE:-}" ]]; then
+        log "WARN refusing stuck-packet filing: packet dir is overridden but the filing seam is not stubbed (set FLEET_ESCALATION_DRAIN_ISSUE_FILE for hermetic runs) — a non-production packet set must not file into $ESCALATION_REPO"
+        return 1
+    fi
     local issue_file="$ISSUE_FILE_BIN"
     if [ ! -x "$issue_file" ]; then
         log "WARN fleet-issue-file missing/not executable at $issue_file — cannot file stuck-packet escalation"
