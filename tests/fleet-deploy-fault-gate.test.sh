@@ -400,5 +400,54 @@ grep -q 'actions/runs/9999' "$scratch/closes.log" \
     || fail "gate: closing comment must cite the green run URL: $(cat "$scratch/closes.log")"
 ok "close gate: green run containing the fix -> closes with run URL in the comment"
 
+# =========================================================================
+# 8. TRAILER PATH: a merged PR whose multi-line body carries `Closes #N` on
+#    its own line resolves the fix SHA, so a green run containing that merge
+#    is proof and the close stands. Regression for the @tsv newline bug:
+#    jq @tsv escapes the body's newlines as literal `\n`, so the char before
+#    `Closes` is `n` (alphanumeric) and the regex anchor `(^|[^0-9A-Za-z])`
+#    fails under `printf '%s'`. The gate must unescape with `printf '%b'`
+#    before grepping, or every multi-line trailer is invisible and a proven
+#    close is falsely reopened (0509#3438, fleet-ops#5785).
+# =========================================================================
+reset_fake
+python3 - "$BODY_2662" <<'PY' >"$scratch/closed.json"
+import json, sys
+print(json.dumps([{
+    "number": 5001, "title": "deploy-fault fixed by a trailer PR",
+    "state": "CLOSED", "stateReason": "COMPLETED",
+    "closedAt": "2026-09-11T15:00:00Z",
+    "author": {"login": "app/nishfleet-worker"},
+    "labels": [{"name": "deploy-fault"}],
+    "body": sys.argv[1],
+}]))
+PY
+# No claim/issue-5001 delivery — the fix arrives via a Closes #5001 trailer
+# on a separately-merged PR whose body is multi-line (the real-world shape).
+echo '[]' >"$scratch/merged-head-5001.json"
+python3 - <<'PY' >"$scratch/merged.json"
+import json
+body = ("fix(d1): restore migration 0102\n\n"
+        "Deploy production run 34790254270 fails at the Test step.\n\n"
+        "Verification:\n- vitest 38 passed\n\n"
+        "Closes #5001 (deploy-fault: this restore is the fix).\n")
+print(json.dumps([{
+    "number": 7788, "mergeCommit": {"oid": "deadbeef02deadbeef02deadbeef02deadbeef02"},
+    "body": body,
+}]))
+PY
+cat >"$scratch/runs-green.json" <<'JSON'
+[{"databaseId": 7777, "headSha": "beef7777", "createdAt": "2026-09-11T14:00:00Z",
+  "url": "https://github.com/Nishfleet/0509/actions/runs/7777"}]
+JSON
+echo "ahead" >"$scratch/compare-status"   # deadbeef02 is an ancestor of beef7777
+
+out=$("$sweep" 2>"$scratch/err8.txt")
+grep -q 'deploy_fault_reopened=0' <<<"$out" \
+    || fail "trailer: multi-line Closes #N must resolve the fix SHA so a green run containing it is proof (no reopen): $out"
+[ ! -s "$scratch/reopens.log" ] \
+    || fail "trailer: must not reopen a close proven via a multi-line Closes #N trailer: $(cat "$scratch/reopens.log")"
+ok "trailer path: multi-line Closes #N body resolves the fix SHA (regression for the @tsv newline bug)"
+
 echo
 echo "all fleet-deploy-fault-gate tests passed"
