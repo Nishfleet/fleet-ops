@@ -25,6 +25,10 @@ ExecStart=/bin/bash -c 'exec /home/nish/.local/bin/fleet-seat-comeback-release'
 Environment=HOME=/home/nish
 Environment=PATH=/home/nish/.local/bin:/usr/local/bin:/usr/bin:/bin
 Environment=XDG_RUNTIME_DIR=/run/user/1000
+# Same dir the picker reads (lib/litellm-seat.sh). Do not point this at
+# lanes/seats — that sidecar can be healthy while seat-health still holds
+# the #3737 wrapper marker (fleet-ops#6731, workers=0).
+Environment=PI_SEAT_HEALTH_LEDGER_DIR=/home/nish/.local/state/pi-packet/seat-health
 StandardOutput=journal
 StandardError=journal
 TimeoutStartSec=10min
