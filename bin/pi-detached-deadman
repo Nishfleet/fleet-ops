@@ -278,6 +278,7 @@ if [[ -f "$verdict_lib" && -s "$claim_scan" ]]; then
             ${repo_args[@]+"${repo_args[@]}"} >/dev/null 2>&1; then
         false_live_claim=1
         died=1
+        verdict="false-live-claim"
         log "LOUD DEPLOY-CLAIM-FALSE unit=$unit — deliverable/journal claims LIVE/DEPLOYED without a merged origin/main SHA on the same line (fleet-ops#5786)"
     fi
 elif [[ ! -f "$verdict_lib" ]]; then
