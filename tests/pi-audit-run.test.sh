@@ -598,4 +598,123 @@ grep -q 'class=quota_exhausted' "$scratch/scenario9.err" \
   || fail "scenario9: preflight log should name quota_exhausted ($(cat "$scratch/scenario9.err"))"
 ok "scenario9: quota_exhausted preflight writes SKIP, skips pi, leaves observed_at untouched (fleet-ops#3351)"
 
-ok "pi-audit-run: straitly tab fallback fixed, incomplete reasons padded, missing verdict still fails, #1011 clobber contained, walled lane is a lane fault, quota_exhausted preflight closes #3351"
+# -----------------------------------------------------------------------------
+# Scenario 10: fleet-ops#6357 — three consecutive empty verdicts.
+#
+# The live incident (chain ae0681d0c947, issue #6236): the model call exits 0
+# but extract_verdict finds no PASS/FAIL token, pi-audit-run exits 1 three
+# times, the EXIT trap deletes the combined output (and the unit's PrivateTmp
+# dies with it), so the third strike was undiagnosable and the chain sat
+# stalled on a failed unit. Now: strikes 1-2 exit 1 (the unit's designed
+# retry-once contract) while keeping the raw output in <role>.strike-logs/;
+# the 3rd consecutive strike writes the storm-tolerant SKIP vote (same
+# semantics as the provider-wall path) and exits 0, so the heartbeat's
+# recover_failed_audit re-start resolves cleanly and the #3962 recast ladder
+# owns recovery.
+# -----------------------------------------------------------------------------
+reset_state
+demo_dir="$state_dir/demo/50"
+
+# Strike 1: exit 1, NO vote, evidence log kept, counter = 1.
+set +e
+PI_RESPONSE=$'some random text\nwith no verdict' \
+  bash "$bin" 'demo--50--devin' >"$scratch/s10a.out" 2>"$scratch/s10a.err"
+rc10a=$?
+set -e
+[[ "$rc10a" == "1" ]] || fail "scenario10a: strike 1 must exit 1 (retry contract), got $rc10a"
+[[ ! -f "$demo_dir/devin.vote" ]] \
+  || fail "scenario10a: strike 1 must not write a vote"
+[[ -f "$demo_dir/devin.strikes" ]] \
+  || fail "scenario10a: strike counter missing after strike 1"
+[[ "$(cat "$demo_dir/devin.strikes")" == "1" ]] \
+  || fail "scenario10a: counter should read 1, got $(cat "$demo_dir/devin.strikes")"
+strike_logs=("$demo_dir/devin.strike-logs"/*.log)
+[[ "${#strike_logs[@]}" == "1" ]] \
+  || fail "scenario10a: expected exactly 1 strike log, found ${#strike_logs[@]}"
+grep -q "with no verdict" "${strike_logs[0]}" \
+  || fail "scenario10a: strike log must contain the RAW model output (the post-hoc diagnosis this fix exists for)"
+grep -q "strike 1/3" "$scratch/s10a.err" \
+  || fail "scenario10a: journal line must name the strike count: $(cat "$scratch/s10a.err")"
+grep -q "output kept at" "$scratch/s10a.err" \
+  || fail "scenario10a: journal line must name the evidence path ($(cat "$scratch/s10a.err"))"
+ok "scenario10a: strike 1 exits 1, keeps the combined output in the strike log, counts the streak"
+
+# Strike 2: still exit 1, counter = 2, second evidence log.
+set +e
+PI_RESPONSE=$'still no verdict here' \
+  bash "$bin" 'demo--50--devin' >"$scratch/s10b.out" 2>"$scratch/s10b.err"
+rc10b=$?
+set -e
+[[ "$rc10b" == "1" ]] || fail "scenario10b: strike 2 must exit 1, got $rc10b"
+[[ ! -f "$demo_dir/devin.vote" ]] \
+  || fail "scenario10b: strike 2 must not write a vote"
+[[ "$(cat "$demo_dir/devin.strikes")" == "2" ]] \
+  || fail "scenario10b: counter should read 2, got $(cat "$demo_dir/devin.strikes")"
+strike_logs=("$demo_dir/devin.strike-logs"/*.log)
+[[ "${#strike_logs[@]}" == "2" ]] \
+  || fail "scenario10b: expected 2 strike logs, found ${#strike_logs[@]}"
+ok "scenario10b: strike 2 exits 1, counter carries the consecutive streak"
+
+# Strike 3: SKIP vote + exit 0 (no StartLimit burn on the heartbeat's
+# recover re-start), counter reset, evidence preserved.
+set +e
+PI_RESPONSE=$'third time, still nothing' \
+  bash "$bin" 'demo--50--devin' >"$scratch/s10c.out" 2>"$scratch/s10c.err"
+rc10c=$?
+set -e
+[[ "$rc10c" == "0" ]] \
+  || fail "scenario10c: strike 3 must exit 0 (SKIP consumes the run, unit goes green), got $rc10c"
+[[ -f "$demo_dir/devin.vote" ]] \
+  || fail "scenario10c: SKIP vote must be written on strike 3 ($(cat "$scratch/s10c.err"))"
+[[ $(jq -r '.verdict' "$demo_dir/devin.vote") == "SKIP" ]] \
+  || fail "scenario10c: verdict must be SKIP, got $(jq -r '.verdict' "$demo_dir/devin.vote")"
+[[ ! -f "$demo_dir/devin.strikes" ]] \
+  || fail "scenario10c: counter must be reset after the SKIP so the recast ladder gets a fresh streak"
+reason10=$(jq -r '.reason' "$demo_dir/devin.vote")
+[[ "$reason10" == *"consecutive malformed auditor outputs"* ]] \
+  || fail "scenario10c: SKIP reason must name the strike cause, got: $reason10"
+[[ "$reason10" == *"strike-logs"* ]] \
+  || fail "scenario10c: SKIP reason must point at the evidence dir, got: $reason10"
+strike_logs=("$demo_dir/devin.strike-logs"/*.log)
+[[ "${#strike_logs[@]}" == "3" ]] \
+  || fail "scenario10c: expected 3 strike logs (one per strike), found ${#strike_logs[@]}"
+ok "scenario10c: strike 3 writes the storm-tolerant SKIP, exits 0, resets the streak, evidence kept"
+
+# -----------------------------------------------------------------------------
+# Scenario 11: fleet-ops#6357 reset-on-success. A real vote ends the streak:
+# after a PASS lands, the next malformed run counts from 1 again — otherwise
+# one bad afternoon would permanently poison the role into instant SKIPs and
+# the panel would never get a real vote from this seat again.
+# -----------------------------------------------------------------------------
+reset_state
+demo_dir="$state_dir/demo/51"
+
+set +e
+PI_RESPONSE=$'garbage' \
+  bash "$bin" 'demo--51--devin' >/dev/null 2>"$scratch/s11a.err"
+rc11a=$?
+set -e
+[[ "$rc11a" == "1" ]] || fail "scenario11: malformed run must exit 1, got $rc11a"
+[[ "$(cat "$demo_dir/devin.strikes")" == "1" ]] \
+  || fail "scenario11: counter should read 1, got $(cat "$demo_dir/devin.strikes")"
+
+PI_RESPONSE=$'PASS\nNo duplicate; advances the north star.' \
+  bash "$bin" 'demo--51--devin' >"$scratch/s11b.out" 2>"$scratch/s11b.err"
+[[ -f "$demo_dir/devin.vote" ]] \
+  || fail "scenario11: good run must write a vote ($(cat "$scratch/s11b.err"))"
+[[ $(jq -r '.verdict' "$demo_dir/devin.vote") == "PASS" ]] \
+  || fail "scenario11: verdict should be PASS"
+[[ ! -f "$demo_dir/devin.strikes" ]] \
+  || fail "scenario11: a real vote must reset the streak (counter file still present)"
+
+set +e
+PI_RESPONSE=$'garbage again' \
+  bash "$bin" 'demo--51--devin' >/dev/null 2>"$scratch/s11c.err"
+rc11c=$?
+set -e
+[[ "$rc11c" == "1" ]] || fail "scenario11: post-reset malformed run must exit 1 (strike 1, not 2), got $rc11c"
+[[ "$(cat "$demo_dir/devin.strikes")" == "1" ]] \
+  || fail "scenario11: streak must restart from 1 after a real vote, got $(cat "$demo_dir/devin.strikes")"
+ok "scenario11: a real vote resets the consecutive-malformed streak"
+
+ok "pi-audit-run: straitly tab fallback fixed, incomplete reasons padded, missing verdict still fails, #1011 clobber contained, walled lane is a lane fault, quota_exhausted preflight closes #3351, 3x-empty vote is diagnosable and storm-tolerant (#6357)"
