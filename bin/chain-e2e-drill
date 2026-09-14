@@ -426,6 +426,7 @@ drill_slo_snapshot() {
 # --------------------------------------------------------------------------
 RESUME_DRILL_TS="$(date -u +%Y%m%dT%H%M%SZ)"
 RESUME_DIR="$STATE_DIR/resume-drill.$RESUME_DRILL_TS"
+export RESUME_DIR
 
 resume_wiring_ok() {
     local ok="true" proof=""
@@ -480,8 +481,8 @@ resume_wait_dead() {
     # wait until the unit leaves active/activating (died), bounded.
     # Second arg: wait budget in seconds (default 60). The live deadline
     # kill needs >deadline_min*60 — RuntimeMaxSec only fires at the cap.
-    local unit="$1" budget="${2:-60}" i
-    for i in $(seq 1 "$budget"); do
+    local unit="$1" budget="${2:-60}"
+    for _ in $(seq 1 "$budget"); do
         local st
         st="$(systemctl --user is-active "$unit" 2>/dev/null || echo inactive)"
         case "$st" in active|activating) sleep 1 ;; *) return 0 ;; esac
@@ -498,8 +499,8 @@ assert_landed_failed() {
     # that floods any -n window). The DURABLE proof is the journal's
     # 'Failed with result' line — the same line OnFailure keys on. Poll the
     # journal (the only wait is journald flush lag) for ~10s.
-    local unit="$1" i
-    for i in $(seq 1 100); do
+    local unit="$1"
+    for _ in $(seq 1 100); do
         journalctl --user -u "$unit" --no-pager 2>/dev/null \
             | grep -q 'Failed with result' && return 0
         sleep 0.1
@@ -557,7 +558,6 @@ EOF
     # this, the relaunched pi-systemd-run falls back to its $AGENT_STATE
     # default and the drill's ledger assertion misses the row.
     run_dispatch() {
-        RESUME_DIR="$RESUME_DIR" \
         FLEET_DISPATCH_LEDGER="$RESUME_DIR/ledger.jsonl" \
         FLEET_DISPATCH_PACKET_DIR="$RESUME_DIR/packets" \
         STOP_ESCALATION_STOP_REASON="$RESUME_DIR/STOP-REASON.json" \
@@ -631,9 +631,12 @@ EOF
         ok="false"
     fi
     if [ "$ok" = "true" ]; then
-        grep -q '"verdict":"no-deliverable"' "$RESUME_DIR/ledger.jsonl" \
-            && record "kill-nodeliv-verdict-row" true "dead-man recorded verdict=no-deliverable in the dispatch ledger" \
-            || { record "kill-nodeliv-verdict-row" false "no no-deliverable verdict row in ledger"; ok="false"; }
+        if grep -q '"verdict":"no-deliverable"' "$RESUME_DIR/ledger.jsonl"; then
+            record "kill-nodeliv-verdict-row" true "dead-man recorded verdict=no-deliverable in the dispatch ledger"
+        else
+            record "kill-nodeliv-verdict-row" false "no no-deliverable verdict row in ledger"
+            ok="false"
+        fi
     fi
 
     # --- kill 3: deadline (RuntimeMaxSec) ------------------------------------
