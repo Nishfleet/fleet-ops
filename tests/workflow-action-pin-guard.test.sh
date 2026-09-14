@@ -43,6 +43,10 @@ actions/setup-python@42375524e23c412d93fb67b49958b491fce71c38
 actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
 actions/create-github-app-token@fee1f7d63c2ff003460e3d139729b119787bc349
 BetaHuhn/repo-file-sync-action@8b92be3375cf1d1b0cd579af488a9255572e4619
+# Intra-repo reusable-workflow pin (fleet-ops#5932): red-on-main-watch.yml
+# calls this repo's red-on-main-detector.yml, pinned to the last commit that
+# touched the detector, so the SHA resolves its latest content on main.
+Nishfleet/fleet-ops/.github/workflows/red-on-main-detector.yml@0831790998395c4551de4313d0b7db69ab0f1154
 REG
 
 # --- Collect every pinned `uses:` in .github/workflows/** ------------------
