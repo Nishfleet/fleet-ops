@@ -230,6 +230,12 @@ bash "$here/same-repo-closes-gate.test.sh"
 # on hosted CI (no user units there).
 bash "$here/fleet-seat-bench-truth-path-storm-drill.test.sh"
 
+# fleet-ops#6101: the seat-era demolition's termination clause as a gate —
+# every pre-#5993 lib/seat-lib.sh reference in bin/+lib must resolve
+# (define-or-127 invariant). Hosted here so P14 runs it without a
+# workflow-file edit (the #5471 way).
+bash "$here/seat-lib-termination.test.sh"
+
 # fleet-ops#4468 dead-conflicting-PR detector
 bash "$here/fleet-dead-pr-detector.test.sh"
 

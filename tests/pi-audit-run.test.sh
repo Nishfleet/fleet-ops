@@ -282,7 +282,8 @@ ok "scenario1d: ladder head FOLLOWS .cursor_overage.overage_model from seat-caps
 # the runner pads the missing keywords and writes the vote instead of failing.
 # -----------------------------------------------------------------------------
 reset_state
-export AUDIT_FREE_GLM53_SEAT='commandcode:deepseek/deepseek-v4-flash'
+# fleet-ops#6101: the AUDIT_FREE_GLM53_SEAT override died with the
+# resolve-seat fallback; free-glm-5-3 seats via the stub's litellm_seat.
 PI_RESPONSE=$'FAIL\nThis is a vague idea without a concrete termination command.' \
   bash "$bin" 'demo--43--free-glm-5-3' >"$scratch/scenario2.out" 2>"$scratch/scenario2.err"
 
@@ -299,8 +300,6 @@ vote_reason=$(jq -r '.reason' "$state_dir/demo/43/free-glm-5-3.vote")
 [[ "${vote_reason,,}" == *"north star"* || "${vote_reason,,}" == *"north-star"* || "${vote_reason,,}" == *"northstar"* ]] \
   || fail "scenario2: padded reason missing north-star keyword: $vote_reason"
 ok "scenario2: incomplete reason is padded, vote written, exit 0"
-
-unset AUDIT_FREE_GLM53_SEAT
 
 # -----------------------------------------------------------------------------
 # Scenario 3: valid PASS with complete reason still writes cleanly.
@@ -454,6 +453,11 @@ enumerate_seats() {
 
 class_of()   { printf 'prepaid-quota\n'; }
 model_cap()  { printf '1\n'; }
+# fleet-ops#6101: non-senior roles take their seat ONLY from the lib's
+# litellm_seat (the resolve-seat fallback is deleted), so this clobber stub
+# mirrors the real lib's litellm_seat too — without it the role would be a
+# no-seat lane fault and the vote would never be written to clobber.
+litellm_seat() { printf 'litellm\t%s\n' "${1:-worker-capable}"; }
 seat_usable(){ return 0; }
 seat_ledger_path() { printf '%s/%s__%s.json\n' "/dev/null" "$1" "$2"; }
 LIB
@@ -484,7 +488,7 @@ ok "scenario7: seatlib STATE_DIR clobber contained — vote lands in AUDIT_STATE
 # Scenario 8: fully-walled auditor lane -> exit 0, NO vote written, no pi call.
 # fleet-ops#146 addendum: an auditor seat wall is a LANE FAULT (bounded retry
 # through the ladder, never charged to the candidate; candidate stays PENDING).
-# Before the fix, resolve_seat failure exited 1, which failed the unit, burned
+# Before the fix, resolve-seat failure exited 1, which failed the unit, burned
 # StartLimitBurst, and the heartbeat's re-start of the failed unit tripped a
 # NEW STOP-REASON + auditor summon EVERY tick while the seat stayed walled
 # (2026-08-29: 73 straitly-audit unit failures in a day, 228 journal lines on
@@ -532,7 +536,7 @@ ok "scenario8: fully-walled lane exits 0, writes NO vote, calls no pi (candidate
 # Two straitly 402s with usable_at in the past. Since fleet-ops#3121 (#3387)
 # the straitly role resolves through the senior ladder (AUDIT_SENIOR_ORDER,
 # first usable seat wins, cursor by default), so the ladder is pinned to the
-# two straitly seats this scenario writes ledgers for: resolve_seat picks
+# two straitly seats this scenario writes ledgers for: the ladder picks
 # deepseek, seat_health_ok_for_call reads the ledger and writes SKIP, and pi
 # is never invoked.
 # -----------------------------------------------------------------------------

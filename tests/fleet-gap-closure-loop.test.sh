@@ -984,8 +984,8 @@ gj2="$state_dir/pi-audit-jobs/${res_conf2}-r1-glm-5-3/job.json"
 ok "glm-5-3 keeps ladder slug when no free seat is usable (preflight surfaces wall)"
 
 # Scenario C: ladder + every free seat unusable, but a capable seat is live ->
-# glm-5-3 falls back to the first usable capable seat (pi-audit-run
-# resolve_free_role shape), so the loop can converge while free lanes are all
+# glm-5-3 falls back to the first usable capable seat (pi-audit-run's
+# free-role fallback shape), so the loop can converge while free lanes are all
 # benched.
 cat >"$res_caps/seat-caps.json" <<'CAPS'
 {"providers":{"cline":{"cap":2,"class":"prepaid-quota","models":{"z-ai/glm-5.3-flash":{"cap":1,"class":"free"}}},"cursor":{"cap":2,"class":"capable","models":{"cursor-grok-4.6-high":{"cap":1,"class":"capable"}}},"devin":{"cap":2,"class":"prepaid-quota","models":{"glm-5-2":{"cap":1}}}},"senior_seats_in_order":[]}
@@ -1145,8 +1145,8 @@ gj5="$state_dir/pi-audit-jobs/${res_conf5}-r1-glm-5-2/job.json"
 ok "glm-5-2 falls over to live devin/swe-1-7 when glm-5-2 is quota-benched"
 
 # Scenario C: the whole devin ladder unusable, but a capable seat is live ->
-# glm-5-2 falls back to the first usable capable seat (pi-audit-run
-# resolve_free_role shape), so the loop can converge while the devin lane is
+# glm-5-2 falls back to the first usable capable seat (pi-audit-run's
+# free-role fallback shape), so the loop can converge while the devin lane is
 # down.
 cat >"$res_caps2/seat-caps.json" <<'CAPS'
 {"providers":{"cursor":{"cap":2,"class":"capable","models":{"cursor-grok-4.6-high":{"cap":1,"class":"capable"}}},"devin":{"cap":2,"class":"prepaid-quota","models":{"glm-5-2":{"cap":1},"swe-1-7":{"cap":1}}}},"senior_seats_in_order":[]}

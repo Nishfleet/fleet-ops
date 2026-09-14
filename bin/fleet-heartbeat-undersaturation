@@ -285,12 +285,10 @@ _undersat_duration_to_s() {
 
 # Liveness bound for an activating oneshot unit: the unit's own TimeoutStartSec
 # when systemd reports a finite one, else the PI_SEAT_ACTIVATING_MAX_S fallback.
-# Delegates to _seat_liveness_bound_s once the lib helper is available.
+# fleet-ops#6101: the dead _seat_liveness_bound_s delegation (that function
+# died with lib/seat-lib.sh, so the declare -f guard never fired) is gone —
+# the direct implementation is the only path.
 _undersat_liveness_bound_s() {
-    if declare -f _seat_liveness_bound_s >/dev/null 2>&1; then
-        _seat_liveness_bound_s "$1"
-        return
-    fi
     local sysunit="$1" raw parsed
     raw=$("$SYSTEMCTL" --user show "$sysunit" --property=TimeoutStartUSec --value 2>/dev/null || true)
     parsed=$(_undersat_duration_to_s "$raw" 2>/dev/null || true)
