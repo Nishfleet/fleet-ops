@@ -2445,4 +2445,80 @@ grep -qE "PONG probe devin/swe-2-max|SEAT-WALL-FALSE" "$TMPD/run27.err" \
   && fail "27: a policy bench must not be PONG-probed at all: $(cat "$TMPD/run27.err")"
 ok "27: a policy bench (daily_spend_cap) is money — not probed, not cleared, not counted (fleet-ops#5285)"
 
-echo "ALL OK: active come-back release path (fleet-ops#2421) + force-probe-on-overdue-usable_at + corpse-at-threshold + never-released metric (fleet-ops#2638) + own-streak corpse + interval-breach loud check (fleet-ops#2806) + no-wall corpse second-chance re-probe / explicit retire (fleet-ops#3156) + extension-reclassify race (fleet-ops#3179) + PQE 1h==1h deadlock fix (fleet-ops#3176) + skip-corpse-on-reanchored-wall (fleet-ops#3301) + phantom retirement + real-non-caps-seat re-probe (fleet-ops#3993) + spawn-bench-held 402 skip (fleet-ops#4659) + false-wall PONG release (fleet-ops#4640)"
+# --- 28. fleet-ops#6731: organ default ledger == picker ledger (seat-health) --
+# Live 2026-09-14: workers=0 because the organ defaulted to lanes/seats
+# (census sidecar, swe-2-max healthy from a hand PONG) while seat_usable
+# held the same seats via #3737 markers in ~/.local/state/pi-packet/seat-health.
+# A transient_fault ledger + expired wrapper marker in the PICKER dir must
+# be selected; the two defaults must not diverge.
+grep -q 'LEDGER_DIR="${PI_SEAT_HEALTH_LEDGER_DIR:-$STATE_DIR/seat-health}"' \
+    "$repo_root/lib/litellm-seat.sh" \
+  || fail "28: picker LEDGER_DIR default must be \$STATE_DIR/seat-health"
+grep -q 'LEDGER="${PI_SEAT_HEALTH_LEDGER_DIR:-$STATE_DIR/seat-health}"' \
+    "$BIN" \
+  || fail "28: organ LEDGER default must match the picker (seat-health), not lanes/seats"
+grep -q 'LEDGER="${PI_SEAT_HEALTH_LEDGER_DIR:-$AS/lanes/seats}"' "$BIN" \
+  && fail "28: organ still defaults to lanes/seats — that is the 6731 split-brain"
+grep -q 'Environment=PI_SEAT_HEALTH_LEDGER_DIR=/home/nish/.local/state/pi-packet/seat-health' \
+    "$repo_root/systemd/fleet-seat-comeback-release.service" \
+  || fail "28: timer unit must pin the picker ledger so install.sh cannot silently revert to lanes/seats"
+SEATD28="$TMPD/seats28"
+mkdir -p "$SEATD28"
+# Live shape: expired usable_at, observed_at == marker written_at, not healthy.
+cat > "$SEATD28/litellm__worker-capable.json" <<'SEAT'
+{"provider":"litellm","model":"worker-capable","http_status":0,"retry_after":null,"health_class":"transient_fault","retryable":true,"seat_dead":false,"poison_ladder":false,"observed_at":"2026-08-30T11:00:00Z","source":"cli_timeout","failure_mode":"cli_timeout","usable_at":"2026-08-30T11:05:00Z","consecutive_failure_count":1,"writer":"mark_seat_spawn_fail"}
+SEAT
+cat > "$SEATD28/litellm__worker-capable.spawn-bench.json" <<'MK'
+{"provider":"litellm","model":"worker-capable","usable_at":"2026-08-30T11:05:00Z","reason":"pi-issue:fleet-ops-6731:fast-death:rc=1","written_at":"2026-08-30T11:00:00Z","backoff_s":300,"failure_mode":"spawn_fail","consecutive_failure_count":1,"writer":"_seat_write_spawn_bench","release_requires":"real-work-probe","citation":"fleet-ops#3737"}
+MK
+cat > "$TMPD/seat-caps28.json" <<'CAPS'
+{"providers":{"litellm":{"models":{"worker-capable":1}}}}
+CAPS
+out28=$(PI_SEAT_HEALTH_LEDGER_DIR="$SEATD28" SEAT_CAPS_JSON="$TMPD/seat-caps28.json" \
+    FLEET_SEAT_COMEBACK_STATE="$TMPD/state28.json" \
+    FLEET_SEAT_COMEBACK_PROM="$TMPD/release28.prom" \
+    FLEET_SEAT_COMEBACK_NOW="$NOW_ISO" PI_BIN="$TMPD/pi-tool-ok" \
+    bash "$BIN" --dry-run 2>&1)
+grep -q "would probe litellm/worker-capable" <<<"$out28" \
+  || fail "28: expired wrapper-marker hold on a transient_fault ledger must be probed (fleet-ops#6731): $out28"
+ok "28: picker and organ share seat-health; expired #3737 marker on a non-healthy ledger is probed (fleet-ops#6731)"
+
+# --- 29. fleet-ops#6731: remote_agent (Devin) releases on computed token even at tools=0 --
+# Live 2026-09-14T07:48Z: tool-using probe printed 42 at rc=0 with
+# PACKET-VERDICT tools=0; #4819 HOLD then rebenched swe-2-max 15 min.
+# remote_agent seats never record local tools (#3531). The token is the proof.
+cat > "$TMPD/pi-remote-ok" <<'EOF'
+#!/usr/bin/env bash
+echo '42'
+echo 'PACKET-VERDICT tools=0 class=no-tools'
+exit 0
+EOF
+chmod +x "$TMPD/pi-remote-ok"
+SEATD29="$TMPD/seats29"
+mkdir -p "$SEATD29"
+cat > "$SEATD29/devin__swe-2-max.json" <<'SEAT'
+{"provider":"devin","model":"swe-2-max","http_status":0,"retry_after":null,"health_class":"transient_fault","retryable":true,"seat_dead":false,"poison_ladder":false,"observed_at":"2026-08-30T11:00:00Z","source":"cli_timeout","failure_mode":"cli_timeout","usable_at":"2026-08-30T11:05:00Z","consecutive_failure_count":2,"writer":"mark_seat_spawn_fail"}
+SEAT
+cat > "$SEATD29/devin__swe-2-max.spawn-bench.json" <<'MK'
+{"provider":"devin","model":"swe-2-max","usable_at":"2026-08-30T11:05:00Z","reason":"pi-issue:0509-3406:mid-session-death:rc=143","written_at":"2026-08-30T11:00:00Z","backoff_s":600,"failure_mode":"spawn_fail","consecutive_failure_count":2,"writer":"_seat_write_spawn_bench","release_requires":"real-work-probe","citation":"fleet-ops#3737"}
+MK
+cat > "$TMPD/seat-caps29.json" <<'CAPS'
+{"providers":{"devin":{"remote_agent":true,"cap":4,"models":{"swe-2-max":4}}}}
+CAPS
+set +e
+PI_SEAT_HEALTH_LEDGER_DIR="$SEATD29" SEAT_CAPS_JSON="$TMPD/seat-caps29.json" \
+    FLEET_SEAT_COMEBACK_STATE="$TMPD/state29.json" \
+    FLEET_SEAT_COMEBACK_PROM="$TMPD/release29.prom" \
+    FLEET_SEAT_COMEBACK_NOW="$NOW_ISO" PI_BIN="$TMPD/pi-remote-ok" \
+    bash "$BIN" >/dev/null 2>"$TMPD/run29.err"
+rc=$?
+set -e
+[[ "$rc" == "0" ]] || fail "29: remote_agent token-present tools=0 must exit 0, got $rc ($(cat "$TMPD/run29.err"))"
+grep -q "remote_agent tools=0, computed token present" "$TMPD/run29.err" \
+  || fail "29: must log the remote_agent success path: $(cat "$TMPD/run29.err")"
+jq -e '.health_class == "healthy" and .consecutive_failure_count == 0' \
+    "$SEATD29/devin__swe-2-max.json" >/dev/null \
+  || fail "29: remote_agent seat must unwall: $(cat "$SEATD29/devin__swe-2-max.json")"
+ok "29: remote_agent tools=0 with computed token releases (fleet-ops#3531/#6731)"
+
+echo "ALL OK: active come-back release path (fleet-ops#2421) + force-probe-on-overdue-usable_at + corpse-at-threshold + never-released metric (fleet-ops#2638) + own-streak corpse + interval-breach loud check (fleet-ops#2806) + no-wall corpse second-chance re-probe / explicit retire (fleet-ops#3156) + extension-reclassify race (fleet-ops#3179) + PQE 1h==1h deadlock fix (fleet-ops#3176) + skip-corpse-on-reanchored-wall (fleet-ops#3301) + phantom retirement + real-non-caps-seat re-probe (fleet-ops#3993) + spawn-bench-held 402 skip (fleet-ops#4659) + false-wall PONG release (fleet-ops#4640) + picker-ledger default (fleet-ops#6731)"

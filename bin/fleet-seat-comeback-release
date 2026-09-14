@@ -104,7 +104,10 @@
 #
 # Env (tests):
 #   PI_SEAT_HEALTH_LEDGER_DIR   seat ledger dir (default
-#                               /home/nish/workspaces/agent-state/lanes/seats)
+#                               $PI_PACKET_STATE/seat-health — same as
+#                               lib/litellm-seat.sh. lanes/seats is the
+#                               census sidecar; picker holds live in
+#                               seat-health, fleet-ops#6731)
 #   PI_BIN                      pi binary (default /home/nish/.local/bin/pi)
 #   FLEET_SEAT_COMEBACK_STATE   state json (default
 #                               /home/nish/.local/state/fleet-seat-comeback-release.json)
@@ -130,7 +133,11 @@ export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
 command -v gh >/dev/null 2>&1 || export PATH=/home/nish/.local/bin:/usr/local/bin:/usr/bin:/bin
 
 AS="${AGENT_STATE:-/home/nish/workspaces/agent-state}"
-LEDGER="${PI_SEAT_HEALTH_LEDGER_DIR:-$AS/lanes/seats}"
+# Must match lib/litellm-seat.sh LEDGER_DIR. The picker (#3737 marker hold)
+# reads ~/.local/state/pi-packet/seat-health; lanes/seats is the census
+# sidecar and can read healthy while the picker is still held (fleet-ops#6731).
+STATE_DIR="${PI_PACKET_STATE:-$HOME/.local/state/pi-packet}"
+LEDGER="${PI_SEAT_HEALTH_LEDGER_DIR:-$STATE_DIR/seat-health}"
 PI_BIN="${PI_BIN:-/home/nish/.local/bin/pi}"
 STATE_FILE="${FLEET_SEAT_COMEBACK_STATE:-$HOME/.local/state/fleet-seat-comeback-release.json}"
 PROM_FILE="${FLEET_SEAT_COMEBACK_PROM:-/var/lib/prometheus/node-exporter/fleet-seat-comeback-release.prom}"
@@ -632,9 +639,19 @@ probe_seat() {
     # shape — it does not exercise the 200/stdout=0B empty-run mode and
     # must never release an empty-run bench. Release requires tools > 0
     # AND non-empty stdout (fleet-ops#4819).
+    #
+    # fleet-ops#6731 / #3531: a remote_agent seat (Devin) never records
+    # local tool calls. The 2026-09-14 live sweep printed the computed
+    # token (42) at rc=0 with tools=0, then HOLD-rebenched the only prepaid
+    # worker lane. For remote_agent, the computed token in stdout is the
+    # proof; requiring tools>0 idles the lane forever.
     tools=$(grep -aoE 'PACKET-VERDICT[[:space:]]+tools=[0-9]+' <<<"${out}"$'\n'"${err}" | tail -n1 | grep -oE '[0-9]+$' || echo 0)
     [[ "$tools" =~ ^[0-9]+$ ]] || tools=0
     if (( tools == 0 )); then
+        if seat_is_remote_agent "$p" && (( rc == 0 )) && [[ -n "$out" ]] && grep -qw "$PROBE_TOKEN" <<<"$out"; then
+            log "probe $p/$m SUCCEEDED (remote_agent tools=0, computed token present — fleet-ops#3531/#6731)"
+            return 0
+        fi
         log "probe $p/$m HOLD (tools=0 — standing-smoke/no-tools reply cannot release an empty-run bench, fleet-ops#4819)"
     fi
     # Success requires a real tool roundtrip: exit 0 + tools > 0 + non-empty
@@ -682,6 +699,16 @@ seat_cap_positive() {
         [[ "$c" =~ ^[0-9]+$ ]] && (( c > 0 )) && return 0
     fi
     return 1
+}
+
+# fleet-ops#3531 / #6731: Devin (and any remote_agent provider) completes
+# without local tool calls. seat_usable already judges those seats by
+# session outcome; the comeback probe must do the same or it HOLD-rebenches
+# a working prepaid lane (lived 2026-09-14T07:48Z, out=42 rc=0 tools=0).
+seat_is_remote_agent() {
+    local p="$1" caps="${SEAT_CAPS_JSON:-$HOME/.local/state/pi-packet/seat-caps.json}"
+    [[ -f "$caps" ]] || return 1
+    jq -e --arg p "$p" '.providers[$p].remote_agent == true' "$caps" >/dev/null 2>&1
 }
 
 release_false_wall() {
