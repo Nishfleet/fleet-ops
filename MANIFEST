@@ -1132,6 +1132,10 @@ systemd/fleet-bare-metal-rebuild-drill.timer /home/nish/.config/systemd/user/fle
 bin/fleet-asset-census /home/nish/.local/bin/fleet-asset-census
 lib/pi-packet/asset-census.py /home/nish/.local/lib/pi-packet/asset-census.py
 config/asset-guard-map.json /home/nish/.local/state/pi-packet/asset-guard-map.json
+# fleet-ops#5785: stranded recorded merge SHAs (main-history rewrites) ->
+# on-main replacements, consumed by lib/deploy-fault-gate.sh so the
+# deploy-fault containment proof survives a rewrite.
+config/deploy-fault-stranded-merges.json /home/nish/.local/state/pi-packet/deploy-fault-stranded-merges.json
 systemd/fleet-asset-census.service /home/nish/.config/systemd/user/fleet-asset-census.service
 systemd/fleet-asset-census.timer /home/nish/.config/systemd/user/fleet-asset-census.timer
 # fleet-ops#1460: event-driven sweep. Convert pollers to systemd .path triggers
