@@ -64,6 +64,28 @@ chmod +x "$scratch/fleet-issue-file-fail"
 # Empty terminal ledger: every older-than-cutoff webhook packet is "stuck".
 : > "$AS/alert-repair/chains.terminated.jsonl"
 
+# fleet-ops#6642 probe seam: a canned Prometheus /api/v1/alerts payload.
+# Every alertname this file's scenarios dispatch as a packet is marked
+# FIRING here — the drain's resolved-side probe must never eat them (the
+# drain on this box would otherwise see live Prometheus and consume them
+# all as resolved). Scenario 9 swaps the fixture to test the probe itself.
+FIRING_FIX="$scratch/firing-alerts.json"
+set_firing() {
+    {
+        printf '{"status":"success","data":{"alerts":['
+        local i=0 a
+        for a in "$@"; do
+            [ "$i" -gt 0 ] && printf ','
+            printf '{"state":"firing","labels":{"alertname":"%s"}}' "$a"
+            i=$((i+1))
+        done
+        printf ']}}'
+    } > "$FIRING_FIX"
+}
+set_firing FreshInFlight FleetStuckOne FleetStuckFail FleetStuckLate \
+    FleetStuckFresh FleetAlpha FleetZulu FleetGhost FleetPhantom \
+    FleetStillFiring
+
 ts_11h_ago="$(date -u -d '11 hours ago' +%Y%m%dT%H%M%SZ)"
 ts_9h_ago="$(date -u -d '9 hours ago' +%Y%m%dT%H%M%SZ)"
 ts_8h_ago="$(date -u -d '8 hours ago' +%Y%m%dT%H%M%SZ)"
@@ -71,11 +93,13 @@ ts_7h_ago="$(date -u -d '7 hours ago' +%Y%m%dT%H%M%SZ)"
 ts_1h_ago="$(date -u -d '1 hour ago' +%Y%m%dT%H%M%SZ)"
 
 run_drain() {
+    # run_drain <issue-file-stub> [firing-file]
     FLEET_ESCALATION_DRAIN_ISSUE_FILE="$1" \
     FLEET_ESCALATION_DRAIN_AGENT_STATE="$AS" \
     FLEET_ESCALATION_DRAIN_NISH="$AS/NISH-ESCALATIONS.md" \
     FLEET_ESCALATION_DRAIN_SEEN="$AS/lanes/nish-boundary-notify.seen" \
     FLEET_ESCALATION_DRAIN_PACKET_DIR="$AS/alert-repair" \
+    FLEET_ESCALATION_DRAIN_FIRING_FILE="${2:-$FIRING_FIX}" \
     FLEET_ESCALATION_DRAIN_MAX_LINES=50 \
         bash "$bin" 2>"$scratch/run.stderr"
 }
@@ -327,6 +351,7 @@ FLEET_ESCALATION_DRAIN_AGENT_STATE="$AS" \
 FLEET_ESCALATION_DRAIN_NISH="$AS/NISH-ESCALATIONS.md" \
 FLEET_ESCALATION_DRAIN_SEEN="$AS/lanes/nish-boundary-notify.seen" \
 FLEET_ESCALATION_DRAIN_PACKET_DIR="$AS/alert-repair" \
+FLEET_ESCALATION_DRAIN_FIRING_FILE="$FIRING_FIX" \
 FLEET_ESCALATION_DRAIN_MAX_LINES=50 \
     bash "$bin" 2>"$scratch/run.stderr" \
     || fail "scenario 8: a refused filing is fail-open, the drain must still exit 0; stderr: $(cat "$scratch/run.stderr")"
@@ -359,6 +384,91 @@ grep -F "DISPOSITION stuck-packet packet=packet-FleetPhantom-${ts_8h_ago}.md ter
 [[ -f "$AS/alert-repair/archived/stuck/packet-FleetPhantom-${ts_8h_ago}.md" ]] \
     || fail "scenario 8: stubbed re-run must archive the packet"
 ok "scenario 8: stubbed seam converges the same burst — the guard is the only delta"
+
+# ---------------------------------------------------------------------------
+# Scenario 9 (fleet-ops#6642): the resolved-side terminal producer. The AM
+# executor never runs the dispatch on status=resolved (the repair-dispatch
+# receiver sets send_resolved:false, and the executor itself only signals
+# in-flight commands on a resolve), and the retired completion-canary was
+# the only other ledger producer — so an alertname absent from Prometheus's
+# firing set is observed HERE. An unconsumed webhook packet for a
+# not-firing alert gets a terminal=resolved record appended to
+# chains.terminated.jsonl and is then consumed by the ordinary rule: no
+# filing, no LOUD, no archive.
+# ---------------------------------------------------------------------------
+rm -f "$AS/alert-repair/stuck-escalation-state.json"
+
+# 9a: a resolved alert's packet -> resolved record + consume.
+touch "$AS/alert-repair/packet-FleetResolvedA-${ts_8h_ago}.md"
+: > "$STUB_LOG"
+rm -f "$scratch/run.stderr"
+run_drain "$scratch/fleet-issue-file-stub"
+[[ -s "$STUB_LOG" ]] \
+    && fail "9a: a resolved packet must never reach the filing stub (calls: $(cat "$STUB_LOG"))"
+[[ ! -f "$AS/alert-repair/packet-FleetResolvedA-${ts_8h_ago}.md" ]] \
+    || fail "9a: a resolved packet must be consumed; stderr: $(cat "$scratch/run.stderr")"
+disp_iso="${ts_8h_ago:0:4}-${ts_8h_ago:4:2}-${ts_8h_ago:6:2}T${ts_8h_ago:9:2}:${ts_8h_ago:11:2}:${ts_8h_ago:13:2}Z"
+jq -e --arg d "$disp_iso" 'select(.alertname == "FleetResolvedA") | .terminal == "resolved" and .unit == "fleet-escalation-drain" and .start_ts == $d and .end_ts >= $d' \
+    "$AS/alert-repair/chains.terminated.jsonl" >/dev/null \
+    || fail "9a: ledger must carry terminal=resolved start_ts=dispatch unit=fleet-escalation-drain; ledger: $(cat "$AS/alert-repair/chains.terminated.jsonl")"
+[[ ! -f "$AS/alert-repair/stuck-escalation-state.json" ]] \
+    || fail "9a: a resolved consume is not a stuck burst — no state write"
+if grep -q "STUCK-PACKET" "$scratch/run.stderr"; then
+    fail "9a: a resolved packet must not LOUD-flag; stderr: $(cat "$scratch/run.stderr")"
+fi
+ok "9a: resolved alert's unconsumed packet -> terminal=resolved record, consumed, no filing"
+
+# 9b: the one record absorbs the episode — a second same-alert packet is
+# consumed under it with NO second record.
+touch "$AS/alert-repair/packet-FleetResolvedB-${ts_9h_ago}.md" \
+      "$AS/alert-repair/packet-FleetResolvedB-${ts_7h_ago}.md"
+: > "$STUB_LOG"
+rm -f "$scratch/run.stderr"
+run_drain "$scratch/fleet-issue-file-stub"
+[[ ! -f "$AS/alert-repair/packet-FleetResolvedB-${ts_9h_ago}.md" ]] \
+    || fail "9b: older resolved packet must be consumed"
+[[ ! -f "$AS/alert-repair/packet-FleetResolvedB-${ts_7h_ago}.md" ]] \
+    || fail "9b: newer resolved packet must be absorbed under the same record"
+n_resolved_b="$(jq -c 'select(.alertname == "FleetResolvedB")' "$AS/alert-repair/chains.terminated.jsonl" | wc -l)"
+[[ "$n_resolved_b" -eq 1 ]] \
+    || fail "9b: one resolved record must absorb the episode's packets (got $n_resolved_b)"
+[[ -s "$STUB_LOG" ]] \
+    && fail "9b: absorbed packets must not file (calls: $(cat "$STUB_LOG"))"
+ok "9b: one resolved terminal absorbs the episode's packets (episode-collapse)"
+
+# 9c: a still-FIRING alert's old packet is NOT resolved — it takes the
+# ordinary stuck path (filed + archived), and no resolved record exists.
+touch "$AS/alert-repair/packet-FleetStillFiring-${ts_8h_ago}.md"
+: > "$STUB_LOG"
+rm -f "$scratch/run.stderr"
+run_drain "$scratch/fleet-issue-file-stub"
+[[ "$(grep -c "^stub-call " "$STUB_LOG" 2>/dev/null || true)" -eq 1 ]] \
+    || fail "9c: a still-firing stuck packet must escalate via the filing path; calls: $(cat "$STUB_LOG" 2>/dev/null || true)"
+[[ -f "$AS/alert-repair/archived/stuck/packet-FleetStillFiring-${ts_8h_ago}.md" ]] \
+    || fail "9c: a still-firing stuck packet must be disposed, not resolved"
+n_resolved_firing="$(jq -c 'select(.alertname == "FleetStillFiring" and .terminal == "resolved")' "$AS/alert-repair/chains.terminated.jsonl" | wc -l)"
+[[ "$n_resolved_firing" -eq 0 ]] \
+    || fail "9c: a firing alert must never get a resolved record (got $n_resolved_firing)"
+ok "9c: still-firing alert's packet -> stuck escalation, never resolved-eaten"
+
+# 9d: probe DARK fails closed — an unreadable firing payload disables the
+# producer entirely; the same not-firing packet then takes the ordinary
+# stuck path.
+rm -f "$AS/alert-repair/stuck-escalation-state.json"
+touch "$AS/alert-repair/packet-FleetProbeDark-${ts_8h_ago}.md"
+: > "$STUB_LOG"
+rm -f "$scratch/run.stderr"
+run_drain "$scratch/fleet-issue-file-stub" "$scratch/firing-file-missing.json"
+grep -q "resolved-side probe unavailable" "$scratch/run.stderr" \
+    || fail "9d: a dark probe must be journaled; stderr: $(cat "$scratch/run.stderr")"
+[[ "$(grep -c "^stub-call " "$STUB_LOG" 2>/dev/null || true)" -eq 1 ]] \
+    || fail "9d: with the probe dark the stuck path must still file; calls: $(cat "$STUB_LOG" 2>/dev/null || true)"
+n_resolved_dark="$(jq -c 'select(.alertname == "FleetProbeDark" and .terminal == "resolved")' "$AS/alert-repair/chains.terminated.jsonl" | wc -l)"
+[[ "$n_resolved_dark" -eq 0 ]] \
+    || fail "9d: a dark probe must never write resolved records (got $n_resolved_dark)"
+ok "9d: probe dark -> fail-closed, ordinary stuck escalation, no resolved record"
+
+echo "OK: fleet-ops#6642 resolved-side terminal producer pass"
 
 echo
 echo "alert-repair-stuck-packet: all scenarios passed (fleet-ops#5622)"
