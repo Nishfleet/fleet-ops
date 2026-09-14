@@ -418,7 +418,7 @@ drill_slo_snapshot() {
 # deploys — a pre-merge drill run stays hermetic; post-merge the
 # *resume-drill-* infix exclusion covers them too. A drill death never
 # summons the live auditor. The dispatcher runs from the REPO checkout with
-# seams (ledger/triage/findings/gh/hermes/seat-lib under the drill state
+# seams (ledger/triage/findings/gh/hermes/seat-routing under the drill state
 # dir) — no repo junk, no real seat burned. DRY_RUN=1 asserts the wiring
 # only; DRY_RUN=0 additionally runs the live kills.
 # The result is ONE line the judges read (H): pass -> journal + results
@@ -526,7 +526,7 @@ resume_live_kills() {
     : >"$RESUME_DIR/triage.md"
     : >"$RESUME_DIR/findings.jsonl"
     printf 'packet for resume-drill (fleet-ops#5456 kill-three-ways)\n' > "$RESUME_DIR/packet.md"
-    cat > "$RESUME_DIR/stub-seat-lib.sh" <<'EOF'
+    cat > "$RESUME_DIR/stub-seat-routing.sh" <<'EOF'
 # Mirror of the pi-packet/litellm-seat.sh contract the dispatcher's resume
 # path uses (fleet-ops#5456): litellm_group_for_privacy resolves the group
 # (#520: the resume rail fails closed to the private group) and litellm_seat
@@ -570,7 +570,7 @@ EOF
         STOP_ESCALATION_RESUME_TRIAGE="$RESUME_DIR/triage.md" \
         STOP_ESCALATION_RESUME_FINDINGS="$ROOT/lib/findings_ledger.py" \
         STOP_ESCALATION_RESUME_FINDINGS_LEDGER="$RESUME_DIR/findings.jsonl" \
-        PI_PACKET_SEAT_LIB="$RESUME_DIR/stub-seat-lib.sh" \
+        PI_PACKET_SEAT_LIB="$RESUME_DIR/stub-seat-routing.sh" \
         PI_SALVAGE_DISABLE=1 \
         PI_SYSTEMD_RUN_NO_PACKET_FAILED=1 \
         PI_DEADMAN_TEXTFILE="$RESUME_DIR/fleet-detached.prom" \
