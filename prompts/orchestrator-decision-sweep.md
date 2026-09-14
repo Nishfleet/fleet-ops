@@ -40,13 +40,36 @@ B. DEP — genuinely waiting on an open PR/issue. Verify the dependency is
    not a decision, and it drains on its own when the dep lands.
 
 C. NISH — only the reserved classes above. Do BOTH:
-   1. Append ONE canonical entry line to
-      /home/nish/workspaces/agent-state/NISH-ESCALATIONS.md of the form
-      `<ISO-8601 UTC> <CLASS> issue-<repo>-<n> — <the exact question, ≤20 words> — recommended: <your recommended one-line answer>`
+   1. Append to /home/nish/workspaces/agent-state/NISH-ESCALATIONS.md in ONE
+      atomic write — a single heredoc carrying the `## <sweep ts> — canonical
+      entry lines` header AND every canonical line together. Never append the
+      header and the lines in separate writes: a run that dies between them
+      leaves the bare-header starvation shape of fleet-ops#6845, which the
+      header-only guard in nish-boundary-notify now fails loud on.
+      Line form: `<ISO-8601 UTC> <CLASS> issue-<repo>-<n> — <the exact
+      question, ≤20 words> — recommended: <your recommended one-line answer>`
       where <CLASS> is MONEY-BOUNDARY, LEGAL-BOUNDARY, PRODUCT-DIRECTION,
       CUSTOMER-DATA, CREDENTIAL-BOUNDARY, or ONE-SHOT-PUBLIC-ACTION — the
       SECOND whitespace field, which is what nish-boundary-notify delivers
       to Nish's phone and the daily digest quotes.
+      Prove the append landed: run `grep -cE '^[0-9]{4}-' <file>` BEFORE and
+      AFTER the write and quote BOTH counts in the run output as
+      `nish-escalations: grep-count before=<n> after=<m>` and in the report
+      row for each NISH issue. `after` must equal `before` + the number of
+      lines you wrote — if not, the write did not land: treat it as a
+      refused write (the WRITES-REFUSED path below). A claimed verification
+      without both counts is a failed run.
+      `before=0` is NOT proof that earlier writes were lost: the hourly
+      drain promotes DELIVERED lines to
+      `agent-state/nish-escalations-archive/YYYY-MM-DD.md` and strips the
+      emptied `## ` header — the healthy post-drain lifecycle
+      (fleet-ops#6845). Before appending for an issue, grep the archive for
+      its slug (`grep -l 'issue-<repo>-<n>'
+      agent-state/nish-escalations-archive/*.md`) and check
+      `journalctl --user -u nish-boundary-notify.service` for
+      `delivered (hermes`. A slug the archive already holds was already
+      delivered — do NOT re-append it: a re-append carries a fresh
+      timestamp and hash, so it re-pages Nish for the same wait.
    2. On the issue: comment `blocked-on: nish-decision` naming the reserved
       reason in the same comment (the word must appear — blocked-reconcile
       rewrites any nish-decision line whose text lacks it), and remove the
@@ -79,6 +102,7 @@ Deliver: append a report to
 $LOG_DIR/orchestrator-decision-sweep.report.md (LOG_DIR defaults to
 /home/nish/workspaces/agent-state/cron-output) with a table: issue, kind,
 action (DECIDED / DEP / NISH / CLOSED), one-line decision. Counts at the top.
+Every NISH row carries its `grep-count before=<n> after=<m>` pair.
 End your run output with one line:
 `orchestrator-decision-sweep: decided=<n> dep=<n> nish=<n> closed=<n> skipped=<n>`
 —and, only when writes were refused, the `WRITES-REFUSED:` line after it.

@@ -194,6 +194,7 @@ nish_condition_resolved=0
 nish_condition_live=0
 nish_body_resolved=0
 nish_digested=0
+nish_hdr_stripped=0
 packet_deleted=0
 packet_skipped=0
 packet_archived=0
@@ -463,14 +464,53 @@ drain_nish() {
         kept_count=${#kept_lines[@]}
     fi
 
-    if [ "$nish_archived" -eq 0 ] && [ "$nish_bounded" -eq 0 ]; then
+    # fleet-ops#6845: a `## ` prose header whose section holds only blank
+    # lines is a fossil — the notifier delivered the section's canonical
+    # entries and the archive passes above moved them out, leaving the
+    # header verbatim. ~14 such fossils made every later sweep misread the
+    # healthy post-drain file as "bare headers = writes lost" and re-page
+    # Nish. Strip an empty `## ` section (the header and its blank run); a
+    # section with ANY content line keeps its header. `## DRAIN-DIGEST`
+    # pointers are this drain's own bookkeeping — they stay.
+    local -a stripped_kept=()
+    local kidx knext kcontent
+    for ((kidx = 0; kidx < ${#kept_lines[@]}; kidx++)); do
+        local kl="${kept_lines[$kidx]}"
+        if [[ "$kl" =~ ^##[[:space:]] && ! "$kl" =~ ^##[[:space:]]*DRAIN-DIGEST ]]; then
+            kcontent=0
+            for ((knext = kidx + 1; knext < ${#kept_lines[@]}; knext++)); do
+                local nl="${kept_lines[$knext]}"
+                [[ "$nl" =~ ^##[[:space:]] ]] && break
+                [[ -n "${nl//[[:space:]]/}" ]] && { kcontent=1; break; }
+            done
+            if [ "$kcontent" -eq 0 ]; then
+                nish_hdr_stripped=$((nish_hdr_stripped + 1))
+                log "stripped empty prose header: $kl"
+                # Skip the header AND the blank run beneath it.
+                for ((knext = kidx + 1; knext < ${#kept_lines[@]}; knext++)); do
+                    local nl="${kept_lines[$knext]}"
+                    [[ "$nl" =~ ^##[[:space:]] ]] && break
+                    [[ -n "${nl//[[:space:]]/}" ]] && break
+                    kidx=$knext
+                done
+                continue
+            fi
+        fi
+        stripped_kept+=("$kl")
+    done
+    if [ "$nish_hdr_stripped" -gt 0 ]; then
+        kept_lines=("${stripped_kept[@]}")
+        kept_count=${#kept_lines[@]}
+    fi
+
+    if [ "$nish_archived" -eq 0 ] && [ "$nish_bounded" -eq 0 ] && [ "$nish_hdr_stripped" -eq 0 ]; then
         rm -f "$tmp_nish" "$tmp_archive"
         log "NISH-ESCALATIONS.md: nothing to archive (file=$kept_count lines, max=$MAX_LINES)"
         return 0
     fi
 
     if [ "$DRY_RUN" = "1" ]; then
-        log "DRY: would archive $nish_archived unconditional + $nish_bounded delivered-boundary entries; rewrite $kept_count-line live file (was $(wc -l < "$NISH"))"
+        log "DRY: would archive $nish_archived unconditional + $nish_bounded delivered-boundary entries, strip $nish_hdr_stripped empty prose headers; rewrite $kept_count-line live file (was $(wc -l < "$NISH"))"
         rm -f "$tmp_nish" "$tmp_archive"
         return 0
     fi
@@ -488,28 +528,33 @@ drain_nish() {
     mv "$tmp_nish" "$NISH"
 
     # Archive append: header if first-of-day, then this batch's lines.
-    {
-        if [ ! -s "$archive_path" ]; then
-            printf '# NISH-ESCALATIONS archive — %s (UTC)\n' "$stamp_day"
-            printf '# Archived by fleet-escalation-drain (fleet-ops#2677).\n'
-            printf '# Entries moved here are RESOLVED, REVOKED-BY-PROBE, non-class\n'
-            printf '# legacy noise, or delivered boundary entries past the live-file\n'
-            printf '# line cap. NEVER rotated; one file per UTC day.\n'
-            printf '\n'
-        fi
-        for ln in "${archive_lines[@]}"; do
-            printf '%s\n' "$ln"
-        done
-        for ln in "${bounded_archive[@]}"; do
-            printf '%s\n' "$ln"
-        done
-    } > "$tmp_archive"
-    cat "$tmp_archive" >> "$archive_path"
+    # Skipped when only empty prose headers were stripped (fleet-ops#6845) —
+    # a fossil header is bookkeeping noise, not an archived entry, and a
+    # header-strip-only run must not mint an empty archive file.
+    if [ "$nish_archived" -gt 0 ] || [ "$nish_bounded" -gt 0 ]; then
+        {
+            if [ ! -s "$archive_path" ]; then
+                printf '# NISH-ESCALATIONS archive — %s (UTC)\n' "$stamp_day"
+                printf '# Archived by fleet-escalation-drain (fleet-ops#2677).\n'
+                printf '# Entries moved here are RESOLVED, REVOKED-BY-PROBE, non-class\n'
+                printf '# legacy noise, or delivered boundary entries past the live-file\n'
+                printf '# line cap. NEVER rotated; one file per UTC day.\n'
+                printf '\n'
+            fi
+            for ln in "${archive_lines[@]}"; do
+                printf '%s\n' "$ln"
+            done
+            for ln in "${bounded_archive[@]}"; do
+                printf '%s\n' "$ln"
+            done
+        } > "$tmp_archive"
+        cat "$tmp_archive" >> "$archive_path"
+    fi
     rm -f "$tmp_archive"
 
     local new_lines
     new_lines=$(wc -l < "$NISH")
-    log "NISH-ESCALATIONS.md: archived=$nish_archived bounded=$nish_bounded live_lines=$new_lines (was $old_lines) archive=$archive_path"
+    log "NISH-ESCALATIONS.md: archived=$nish_archived bounded=$nish_bounded hdr_stripped=$nish_hdr_stripped live_lines=$new_lines (was $old_lines) archive=$archive_path"
     return 0
 }
 
@@ -1427,5 +1472,5 @@ drain_nish_conditions
 drain_nish_bound
 drain_packets
 
-log "summary: nish_archived=$nish_archived nish_bounded=$nish_bounded nish_body_resolved=$nish_body_resolved nish_condition_resolved=$nish_condition_resolved nish_condition_live=$nish_condition_live nish_digested=$nish_digested packet_deleted=$packet_deleted packet_skipped=$packet_skipped packet_archived=$packet_archived dry_run=$DRY_RUN"
+log "summary: nish_archived=$nish_archived nish_bounded=$nish_bounded nish_body_resolved=$nish_body_resolved nish_condition_resolved=$nish_condition_resolved nish_condition_live=$nish_condition_live nish_digested=$nish_digested nish_hdr_stripped=$nish_hdr_stripped packet_deleted=$packet_deleted packet_skipped=$packet_skipped packet_archived=$packet_archived dry_run=$DRY_RUN"
 exit 0
