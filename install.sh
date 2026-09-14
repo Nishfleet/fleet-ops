@@ -751,6 +751,45 @@ remove_retired_provider_spawn_guard() {
     fi
 }
 
+remove_retired_seat_era_units() {
+    local unit p
+    # fleet-ops#6101 (child of #4263): the seat-era demolition. Per-seat
+    # benches/parks/comebacks and the SuperGrok dead-credential tick check
+    # are the LiteLLM proxy's job (cooldown, /health, fallbacks) and the
+    # credentials_bad class at spawn. Deleted from the repo: the comeback
+    # releaser, its --false-wall-only wrapper units (fleet-ops#5285
+    # bench-truth) and the #917 live-validate canary. This installer has
+    # no generic prune for a MANIFEST copy, so remove the retired units
+    # and bins explicitly, same idiom as #4149.
+    for unit in fleet-seat-comeback-release.timer fleet-seat-comeback-release.service \
+                fleet-seat-bench-truth.path fleet-seat-bench-truth.service
+    do
+        p="${HOME}/.config/systemd/user/$unit"
+        # `-e || -L` catches real files AND dangling symlinks (fleet-ops#4199).
+        if [ -e "$p" ] || [ -L "$p" ]; then
+            "$SYSTEMCTL" --user stop "$unit" 2>/dev/null || true
+            "$SYSTEMCTL" --user disable "$unit" 2>/dev/null || true
+            rm -f "$p"
+            echo "retired unit removed: $unit (fleet-ops#6101)"
+            user_unit_changed=1
+        fi
+        p="${HOME}/.config/systemd/user/timers.target.wants/$unit"
+        if [ -e "$p" ] || [ -L "$p" ]; then
+            rm -f "$p"
+            echo "retired wants symlink removed: $unit (fleet-ops#6101)"
+            user_unit_changed=1
+        fi
+    done
+    for copy in "${HOME}/.local/bin/fleet-seat-comeback-release" \
+                "${HOME}/.local/bin/fleet-seat-live-validate"
+    do
+        if [ -e "$copy" ] || [ -L "$copy" ]; then
+            rm -f "$copy"
+            echo "retired MANIFEST copy removed: $copy (fleet-ops#6101)"
+        fi
+    done
+}
+
 # fleet-ops#4825: pin the Devin CLI workspace-trust key in the managed config.
 # The vendor error message tells you to set `respect_workspace_trust: false`,
 # but the CONFIG field the CLI actually reads is `skip_workspace_trust`. The
@@ -1208,6 +1247,7 @@ if [ "$do_user_install" = 1 ]; then
   remove_retired_canaries
   remove_retired_staleness_timer
   remove_retired_provider_spawn_guard
+  remove_retired_seat_era_units
   remove_dangling_helper_symlinks
   ensure_devin_config_trust
   # Only daemon-reload when a user-scope systemd unit/drop-in actually

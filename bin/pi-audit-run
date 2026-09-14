@@ -344,29 +344,6 @@ resolve_senior_seat() {
     return 1
 }
 
-resolve_seat() {
-    local role="$1"
-    case "$role" in
-        devin)
-            if [ -n "${AUDIT_DEVIN_SEAT:-}" ]; then
-                printf '%s\t%s\n' "${AUDIT_DEVIN_SEAT%%:*}" "${AUDIT_DEVIN_SEAT#*:}"
-            else
-                printf 'devin\tswe-2-max\n'
-            fi
-            ;;
-        free-glm-5-3|free|free-glm)
-            resolve_free_glm
-            ;;
-        senior|straitly)
-            resolve_senior_seat
-            ;;
-        *)
-            log "unknown auditor role: $role"
-            return 1
-            ;;
-    esac
-}
-
 # --- helpers -----------------------------------------------------------------
 instance_to_parts() {
     local inst="$1"
@@ -665,17 +642,22 @@ main() {
     # #6114: the senior role picks from its own ladder first (head = the
     # #1167 Cursor $400 overage model) and only reaches the #5993 LiteLLM
     # proxy group through resolve_senior_seat's fallback. Other roles stay
-    # on the proxy.
-    if [[ "$group" == "senior" ]] && seat=$(resolve_senior_seat); then
+    # on the proxy; #6101 deletes the non-litellm resolve_seat fallback —
+    # both lanes skip (exit 0) when nothing resolves.
+    if [ "$group" = "senior" ]; then
+        if ! seat=$(resolve_senior_seat); then
+            log "no usable seat for role=$role (lane fault); skipping"
+            exit 0
+        fi
         log "pi-audit-run: $role -> senior ladder ($seat)"
-    elif declare -F litellm_seat >/dev/null 2>&1; then
-        seat=$(litellm_seat "$group" || true)
-        log "pi-audit-run: $role -> litellm/$group"
-    elif seat=$(resolve_seat "$role"); then
-        :
     else
-        log "no usable seat for role=$role (lane fault); skipping"
-        exit 0
+        if declare -F litellm_seat >/dev/null 2>&1; then
+            seat=$(litellm_seat "$group" || true)
+        fi
+        if [ -z "${seat:-}" ]; then
+            log "no usable seat for role=$role (lane fault); skipping"
+            exit 0
+        fi
     fi
     provider=$(printf '%s\n' "$seat" | cut -f1)
     model=$(printf '%s\n' "$seat" | cut -f2)

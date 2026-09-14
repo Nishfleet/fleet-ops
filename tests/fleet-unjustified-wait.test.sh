@@ -273,7 +273,7 @@ ok "corpse seat_dead=true (transient_http failure_mode) is clean"
 
 # --- 5e. seat_dead=true with parked class — REGRESSION GUARD (fleet-ops#3706/#3669) -
 # The live evidence on 2026-09-06: commandcode/minimax/minimax-m3-free was
-# retired by retire_corpse + write_parked_ledger (fleet-ops#2716/#3669) after
+# retired by corpse-retire + write_parked_ledger (fleet-ops#2716/#3669) after
 # the provider permanently retired the free slug (HTTP 403, cap=0,
 # intentional_cap_zero=corpse). The parked ledger carries seat_dead=true,
 # health_class=parked, failure_mode=corpse_retired, a far-future usable_at —
