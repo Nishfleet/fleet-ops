@@ -288,6 +288,10 @@ grep -q 'reason=unit-false-live-claim source=pi-detached-deadman' "$esc_log" \
     || fail "false claim must write STOP-REASON unit-false-live-claim: $(cat "$esc_log")"
 printf '%s\n' "$out" | grep -q 'DEPLOY-CLAIM-FALSE' \
     || fail "false claim must loud DEPLOY-CLAIM-FALSE: $out"
+grep -q '"unit":"u-falseclaim".*"verdict":"false-live-claim"' "$ledger" \
+    || fail "false claim must write verdict=false-live-claim to the dispatch ledger (fleet-ops#6832: an empty verdict= hid the death class): $(cat "$ledger")"
+printf '%s\n' "$out" | grep -q 'verdict=false-live-claim' \
+    || fail "died log line must name the verdict kind: $out"
 ok "deliverable claiming LIVE without a merged SHA -> died + unit-false-live-claim (the 2026-09-12 incident)"
 
 # 9b. Same claim in the unit journal (not the deliverable file) still dies.
