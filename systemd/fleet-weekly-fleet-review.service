@@ -33,6 +33,17 @@ Environment=PI_BIN=/home/nish/.local/bin/pi
 ExecStartPre=/usr/bin/mkdir -p /home/nish/workspaces/agent-state/weekly-fleet-review
 ExecStartPre=/usr/bin/python3 /home/nish/workspaces/tooling/fleet-ops-deploy-clone/lib/weekly-fleet-review-model-discovery.py
 ExecStart=/home/nish/.local/bin/agent-cron-run weekly-fleet-review
+# fleet-ops#6744: a run may exit 0 without its Phase-3 records — 2026-09-13
+# filed all seven issues then the pi session ended mid-bookkeeping (cron
+# output ends "Writing the conference file and all records now"); the unit
+# reported SUCCESS and the stale last-ratchet.json tripped the quality-ratchet
+# canary 8 days later, killing every heartbeat tick. agent-cron-run is a
+# generic per-slug runner and cannot know this job's deliverables, so the
+# unit asserts them: every record the prompt mandates each week must be
+# fresh (<120min — TimeoutStartSec=90min bounds the run). Missing records
+# fail the unit so Restart=on-failure re-seats a new attempt instead of
+# letting a half-finished review read as success until the canary pages.
+ExecStartPost=/bin/sh -c 'miss=""; for f in /home/nish/workspaces/agent-state/WFR/conference.md /home/nish/workspaces/agent-state/WFR/last-ratchet.json /home/nish/workspaces/agent-state/WFR/last-slo-ratchet.json /home/nish/workspaces/agent-state/WFR/last-actions.json /home/nish/workspaces/agent-state/WFR/last-self-score.json /home/nish/workspaces/agent-state/scoreboard/wfr-ratio.json; do find "$f" -mmin -120 -print -quit 2>/dev/null | grep -q . || miss="$miss $f"; done; if [ -n "$miss" ]; then echo "WFR-RECORDS-MISSING:$miss — run exited 0 without refreshing mandated Phase-3 records; failing so Restart=on-failure re-seats (fleet-ops#6744)" >&2; exit 1; fi'
 Restart=on-failure
 RestartSec=900
 TimeoutStartSec=90min
