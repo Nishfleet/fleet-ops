@@ -276,6 +276,12 @@ class DevinWindsurfLLM(CustomLLM):
     def _chunk_from_response(self, resp: ModelResponse) -> GenericStreamingChunk:
         text = resp.choices[0].message.content or ""
         usage = getattr(resp, "usage", None)
+        # GenericStreamingChunk.usage is a ChatCompletionUsageBlock dict —
+        # LiteLLM's streaming_handler does Usage(**chunk["usage"]), so a
+        # Usage object here TypeErrors and 500s every stream (fleet-ops#6866).
+        if usage is not None and not isinstance(usage, dict):
+            dump = getattr(usage, "model_dump", None)
+            usage = dump() if callable(dump) else vars(usage)
         return GenericStreamingChunk(
             text=text,
             is_finished=True,

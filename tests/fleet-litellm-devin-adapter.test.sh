@@ -237,10 +237,18 @@ chunks = asyncio.run(drain())
 assert len(chunks) == 1 and chunks[0]["is_finished"] is True
 assert chunks[0]["finish_reason"] == "stop"
 assert "STUB-REPLY" in chunks[0]["text"]
+# fleet-ops#6866: GenericStreamingChunk.usage must be a dict —
+# LiteLLM streaming_handler does Usage(**chunk["usage"]) and a Usage
+# object there TypeError-500s every proxied stream.
+assert isinstance(chunks[0]["usage"], dict), \
+    f"chunk usage must be a ChatCompletionUsageBlock dict, got {type(chunks[0]['usage'])}"
+assert chunks[0]["usage"]["total_tokens"] > 0
 
 chunks = list(h.streaming(model="devin/glm-5-2", messages=msgs,
                           litellm_params={}))
 assert len(chunks) == 1 and chunks[0]["is_finished"] is True
+assert isinstance(chunks[0]["usage"], dict), \
+    "sync stream chunk usage must also be a dict"
 
 # _flatten: roles labelled, multimodal text extracted, empties dropped
 flat = mod._flatten([
