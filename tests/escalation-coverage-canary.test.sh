@@ -599,6 +599,195 @@ grep -E "grep '\\\\.service\\\$'" "$canary_src" >/dev/null \
   && fail "scenario2d: canary still filters loaded units to .service only (fleet-ops#618)" || true
 ok "scenario2d: canary source enumerates service, path, timer, and scope (fleet-ops#618/#4266 class lock)"
 # ============================================================================
+# Scenario 2g (fleet-ops#5855): the #618/#4266 lock above enumerated
+# service/path/timer/scope only — 9 loaded vendor user .socket units had no
+# OnFailure and no enumerating check (socket.d/ did not even exist). Locked
+# BOTH ways here:
+#   behavior: a covered socket passes; an UNCOVERED allowlisted vendor
+#             socket is absorbed (no VIOLATION); a NEWLY loaded socket that
+#             is neither covered nor allowlisted fails LOUD (VIOLATION, rc 1).
+#   source:   a future edit that drops ,socket / the allowlist / the
+#             MANIFEST row reopens the #5855 hole — same lock discipline as
+#             the #618 service-only regression 2d guards.
+# ============================================================================
+reset_state
+cover "good-worker.service"
+cover "dbus.socket"
+exclude "dirmngr.socket"
+exclude "gpg-agent-ssh.socket"
+exclude "unit-escalation@foo.service"
+exclude "stop-escalation.service"
+exclude "stop-escalation.path"
+exclude "ready-work.service"
+exclude "escalation-daily-sweep.service"
+exclude "escalation-daily-sweep.timer"
+exclude "resilience-drill-stub-restart.service"
+sanctioned_wrapper "pi-issue-run"
+sanctioned_wrapper "pi-packet-run"
+write_intake "0509" "fleet-ops" "siterep-public"
+write_claim_repos "Nishfleet/0509" "Nishfleet/fleet-ops" "Nishfleet/siterep-public"
+printf '%s\n' "newcomer-5855-test.socket" >>"$loaded"
+
+run_canary
+
+[[ "$env_rc" == 1 ]] || fail "scenario2g: uncovered newcomer-5855-test.socket must VIOLATE (rc=1, got $env_rc)"
+grep -q 'unit=newcomer-5855-test.socket missing escalation drop-in' <<<"$env_out" \
+  || fail "scenario2g: VIOLATION must name the uncovered newcomer socket ($env_out)"
+grep -q 'dbus.socket: covered (unit-escalation@dbus.socket.service' <<<"$env_out" \
+  || fail "scenario2g: covered socket must pass the OnFailure check ($env_out)"
+grep -q 'dirmngr.socket: allowed uncovered (vendor socket coverage allowlist' <<<"$env_out" \
+  || fail "scenario2g: uncovered allowlisted vendor socket must be absorbed, not red ($env_out)"
+grep -q 'gpg-agent-ssh.socket: allowed uncovered (vendor socket coverage allowlist' <<<"$env_out" \
+  || fail "scenario2g: the gpg-agent* allowlist glob must absorb the family ($env_out)"
+! grep -q 'unit=dbus.socket missing' <<<"$env_out" || fail "scenario2g: covered dbus.socket must not violate"
+! grep -q 'unit=dirmngr.socket missing' <<<"$env_out" || fail "scenario2g: allowlisted dirmngr.socket must not violate"
+! grep -q 'unit=gpg-agent-ssh.socket missing' <<<"$env_out" || fail "scenario2g: allowlisted gpg-agent-ssh.socket must not violate"
+ok "scenario2g: socket coverage — fail-closed for uncovered newcomer, vendor allowlist absorbed (fleet-ops#5855)"
+
+grep -F -- '--type=service,path,timer,scope,socket' "$repo_root/bin/fleet-escalation-canary" >/dev/null \
+  || fail "scenario2g: canary must list-units --type=service,path,timer,scope,socket (fleet-ops#5855)"
+grep -qF 'is_socket_coverage_allowlisted' "$repo_root/bin/fleet-escalation-canary" \
+  || fail "scenario2g: canary must keep the vendor-socket coverage allowlist (fleet-ops#5855)"
+grep -qF 'systemd/socket.d/10-escalate.conf' "$repo_root/MANIFEST" \
+  || fail "scenario2g: MANIFEST must ship systemd/socket.d/10-escalate.conf (fleet-ops#5855)"
+grep -qF 'OnFailure=unit-escalation@%n.service' "$repo_root/systemd/socket.d/10-escalate.conf" \
+  || fail "scenario2g: socket.d/10-escalate.conf must wire OnFailure=unit-escalation@%n.service (fleet-ops#5855)"
+ok "scenario2g: socket coverage source-locked (fleet-ops#5855)"
+# ============================================================================
+# Scenario 2h (fleet-ops#5855): acceptance 2 — a throwaway .socket unit
+# killed in a drill produces STOP-REASON -> dispatch. Locked through the
+# REAL writer and the REAL dispatcher, hermetically: stubbed
+# journalctl/systemctl on PATH (the #2392 journal-evidence harness shape),
+# then the #34/#444 dispatcher redirects (stubbed seatlib, fake pi). The
+# #1526 precedent governs: the live probe scaffolding is deleted, the
+# proof stays. Everything redirects into the scratch dirs — no real
+# auditor, no real host state.
+# ============================================================================
+(
+    h_scratch="$(mktemp -d -t escalate-5855h.XXXXXX)"
+    trap 'rm -rf "$h_scratch"' EXIT
+    mkdir -p "$h_scratch/bin" "$h_scratch/agent-state" "$h_scratch/home" "$h_scratch/fut"
+    export PATH="$h_scratch/bin:$PATH"
+    export UNIT_ESCALATION_AGENT_STATE="$h_scratch/agent-state"
+    export SCOUT_FUTILITY_STATE_DIR="$h_scratch/fut"
+
+    # journalctl stub: the writer's three call shapes against one fixture
+    # (2 info lines + 1 error line); the -u value is the .socket name.
+    cat > "$h_scratch/bin/journalctl" <<'STUB'
+#!/usr/bin/env bash
+p=""
+while [[ $# -gt 0 ]]; do
+  case "$1" in -p) p=1; shift 2 ;; -u) shift 2 ;; *) shift ;; esac
+done
+if [ -n "$p" ]; then
+  printf '%s\n' "2026-09-13T12:00:02.000000+00:00 netcup chain-e2e-5855-throwaway.socket[100]: error: bind failed"
+else
+  printf '%s\n' \
+    "2026-09-13T12:00:00.000000+00:00 netcup chain-e2e-5855-throwaway.socket[100]: listening" \
+    "2026-09-13T12:00:01.000000+00:00 netcup chain-e2e-5855-throwaway.socket[100]: info mid line" \
+    "2026-09-13T12:00:02.000000+00:00 netcup chain-e2e-5855-throwaway.socket[100]: error: bind failed"
+fi
+STUB
+    # systemctl stub: retry-absorb neutral + fixed fault details (#2392 verbatim).
+    cat > "$h_scratch/bin/systemctl" <<'STUB'
+#!/usr/bin/env bash
+case "$*" in
+  *"-p Restart"*) echo "no" ;;
+  *"-p NRestarts"*) echo "0" ;;
+  *"-p StartLimitBurst"*) echo "0" ;;
+  *"-p Result"*) echo "exit-code" ;;
+  *"-p ExecMainStatus"*) echo "1" ;;
+  *"-p MemoryPeak"*) echo "1024" ;;
+  *) exit 0 ;;
+esac
+STUB
+    chmod +x "$h_scratch/bin/journalctl" "$h_scratch/bin/systemctl"
+
+    # Hop 1: the killed .socket -> OnFailure=unit-escalation@%n.service ->
+    # the REAL writer with %i = the .socket name. detail.unit must BE it.
+    h_sr="$h_scratch/agent-state/STOP-REASON.json"
+    h_out=$("$repo_root/bin/unit-escalation-write" "chain-e2e-5855-throwaway.socket" 2>&1)
+    grep -q "wrote STOP-REASON" <<<"$h_out" \
+      || fail "scenario2h: writer must accept a .socket %i (got: $h_out)"
+    [[ -s "$h_sr" ]] || fail "scenario2h: STOP-REASON.json missing after the .socket trip"
+    python3 - "$h_sr" <<'PY' || fail "scenario2h: STOP-REASON.json must carry the .socket failure evidence"
+import json, sys
+with open(sys.argv[1], encoding="utf-8") as fh:
+    doc = json.load(fh)
+assert doc["reason"] == "unit-failure", doc
+detail = doc["detail"]
+assert detail["unit"] == "chain-e2e-5855-throwaway.socket", detail
+assert doc["extension"] == "unit-escalation", doc
+assert doc["source"] == "unit-escalation", doc
+assert isinstance(detail["journal"], list) and detail["journal"], detail
+assert isinstance(detail["journal_errors"], list), detail
+assert detail["result"] == "exit-code", detail
+PY
+
+    # Hop 2 (-> dispatch): the REAL dispatcher consumes the SAME STOP-REASON
+    # the hop-1 writer just produced — the #34/#444 redirects, healthy seat,
+    # instant fake pi, no cooldown.
+    export HOME="$h_scratch/home"
+    export STOP_ESCALATION_AS="$h_scratch/agent-state"
+    export STOP_ESCALATION_STOP_REASON="$h_sr"
+    export STOP_ESCALATION_SEEN="$h_scratch/agent-state/stop-escalation-seen.txt"
+    export STOP_ESCALATION_KILLS="$h_scratch/agent-state/stop-escalation-kills.txt"
+    export STOP_ESCALATION_WALLED="$h_scratch/agent-state/stop-escalation-walled.txt"
+    export STOP_ESCALATION_NISH="$h_scratch/agent-state/NISH-ESCALATIONS.md"
+    export STOP_ESCALATION_AUDITOR_LOG="$h_scratch/agent-state/AUDITOR-LOG.md"
+    export STOP_ESCALATION_PI_BIN="$h_scratch/pi"
+    export PI_PACKET_SEAT_LIB="$h_scratch/seatlib-stub.sh"
+    export STOP_ESCALATION_AUDITOR_TIMEOUT=2
+    export STOP_ESCALATION_COOLDOWN=0
+    export STOP_ESCALATION_WALLED_CD=0
+    export STOP_ESCALATION_TEST_BENCH_FILE="$h_scratch/benched.txt"
+    : > "$STOP_ESCALATION_TEST_BENCH_FILE"
+    export STOP_ESCALATION_TEST_SEAT_MODE=healthy
+    export STOP_ESCALATION_TEST_PI_MODE=block
+
+    # Healthy ladder stub; every helper the dispatcher can call is inert so
+    # the .socket hop cannot leak into the real seats (healthy -> no error
+    # classification, so the #623 mirror bodies are not needed here).
+    cat > "$h_scratch/seatlib-stub.sh" <<'STUB'
+#!/usr/bin/env bash
+litellm_seat() {
+    local tried_file="${2:-}"
+    local TAB=$'\t' p=devin m=glm-5-2
+    if [ -n "$tried_file" ] && [ -f "$tried_file" ] \
+       && grep -qxF "$p/$m" "$tried_file" 2>/dev/null; then return 1; fi
+    printf '%s%s%s\n' "$p" "$TAB" "$m"
+}
+mark_seat_spawn_fail() { :; }
+mark_seat_credentials_bad() { :; }
+mark_seat_quota_bench() { :; }
+mark_seat_overload_bench() { :; }
+seat_log() { :; }
+is_credentials_error() { return 1; }
+is_quota_cap_error() { return 1; }
+is_overload_error() { return 1; }
+STUB
+    cat > "$h_scratch/pi" <<'STUB'
+#!/usr/bin/env bash
+printf -- '---\n## 2026-09-13T12:00:00Z — SENIOR AUDITOR\n**Summoning trip:** 5855-socket-drill\n**Root cause:** drill\n**Action:** drill\n'
+STUB
+    chmod +x "$h_scratch/seatlib-stub.sh" "$h_scratch/pi"
+
+    h_rc=0
+    "$repo_root/bin/stop-escalation-dispatch" || h_rc=$?
+    [[ "$h_rc" -eq 0 ]] \
+      || fail "scenario2h: dispatcher must exit 0 on the .socket STOP-REASON (got $h_rc)"
+    grep -q 'dispatched auditor' "$STOP_ESCALATION_AUDITOR_LOG" \
+      || fail "scenario2h: .socket trip must be dispatched (AUDITOR-LOG: $(cat "$STOP_ESCALATION_AUDITOR_LOG" 2>/dev/null || echo EMPTY))"
+    grep -q 'SENIOR AUDITOR' "$STOP_ESCALATION_AUDITOR_LOG" \
+      || fail "scenario2h: dispatched .socket trip must carry the diagnosis block"
+    [[ ! -s "$STOP_ESCALATION_NISH" ]] \
+      || fail "scenario2h: unit-failure on a healthy ladder must not page Nish"
+    h_count="$(awk -v h="$(sha256sum "$h_sr" | awk '{print $1}')" '$1==h{print $2}' "$STOP_ESCALATION_SEEN")"
+    [[ "$h_count" == "1" ]] \
+      || fail "scenario2h: the .socket trip must consume exactly one dispatch budget (got '$h_count')"
+    ok "scenario2h: .socket kill drill — writer STOP-REASON -> dispatched + budget=1, Nish untouched (fleet-ops#5855)"
+)
+# ============================================================================
 # Scenario 2e (fleet-ops#4266): block 14 detached-work lint — empty audit
 # trail is clean (exit 0, no DETACHED-RAW-UNIT).
 # ============================================================================
