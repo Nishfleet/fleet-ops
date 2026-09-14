@@ -109,6 +109,14 @@
 #                                         (fleet-ops#6536).
 #   FLEET_ESCALATION_DRAIN_ESCALATION_REPO  repo the escalation issue is filed
 #                                         to (default Nishfleet/fleet-ops)
+#   FLEET_ESCALATION_DRAIN_PROM_URL       Prometheus base URL for the
+#                                         resolved-side firing probe
+#                                         (default http://127.0.0.1:9090,
+#                                         fleet-ops#6642)
+#   FLEET_ESCALATION_DRAIN_FIRING_FILE    test seam: path to a canned
+#                                         /api/v1/alerts payload; when set,
+#                                         read it instead of curling
+#                                         PROM_URL
 #
 # Exit:
 #   0  drain complete (idempotent: re-runs do nothing once the file is bounded)
@@ -123,6 +131,8 @@ ARCHIVE_DIR="${FLEET_ESCALATION_DRAIN_ARCHIVE_DIR:-$AGENT_STATE/nish-escalations
 SEEN_FILE="${FLEET_ESCALATION_DRAIN_SEEN:-$AGENT_STATE/lanes/nish-boundary-notify.seen}"
 PACKET_DIR="${FLEET_ESCALATION_DRAIN_PACKET_DIR:-$AGENT_STATE/alert-repair}"
 TERMINATED="${FLEET_ESCALATION_DRAIN_TERMINATED:-$PACKET_DIR/chains.terminated.jsonl}"
+PROM_URL="${FLEET_ESCALATION_DRAIN_PROM_URL:-http://127.0.0.1:9090}"
+FIRING_FILE="${FLEET_ESCALATION_DRAIN_FIRING_FILE:-}"
 MAX_LINES="${FLEET_ESCALATION_DRAIN_MAX_LINES:-50}"
 STUCK_AGE_S="${FLEET_ESCALATION_DRAIN_STUCK_AGE_S:-21600}"
 CLASSES="${FLEET_ESCALATION_DRAIN_CLASSES:-MONEY-BOUNDARY|LEGAL-BOUNDARY|PRODUCT-DIRECTION|CUSTOMER-DATA|CREDENTIAL-BOUNDARY|ONE-SHOT-PUBLIC-ACTION}"
@@ -1077,10 +1087,15 @@ drain_nish_bound() {
 #
 # Rule: packet packet-<alert>-<ts>.md is CONSUMED iff a terminal record
 # exists for <alert> with end_ts >= <ts>. (ISO strings compare
-# lexicographically.) A packet created after the latest terminal (a fresh
-# re-fire, chain still in flight) or for an alertname with NO terminal
-# record is left in place (never silently deleted). But a WEBHOOK packet
-# older than FLEET_ESCALATION_DRAIN_STUCK_AGE_S (default 6h, fleet-ops#2677)
+# lexicographically.) Since the canary retired, the drain itself appends a
+# terminal=resolved record when an unconsumed packet's alert is absent from
+# Prometheus's firing set — the only place the resolved transition is
+# observable (fleet-ops#6642; the AM executor never runs commands on
+# resolved, it only signals in-flight ones). A packet created after the
+# latest terminal (a fresh re-fire, chain still in flight) or for an
+# alertname that is still firing with no terminal record is left in place
+# (never silently deleted). But a WEBHOOK packet older than
+# FLEET_ESCALATION_DRAIN_STUCK_AGE_S (default 6h, fleet-ops#2677)
 # with no terminal record is a genuinely STUCK chain — the drain flags it
 # LOUD on stderr so the hourly journal (inherited by the escalation
 # ladder) makes the failure visible; the Prometheus/Alertmanager absent()
@@ -1112,11 +1127,45 @@ drain_packets() {
         fi
     done < <(jq -rc 'select((.alertname // "") != "" and (.end_ts // "") != "") | [.alertname, .end_ts] | @tsv' "$TERMINATED" 2>/dev/null || true)
 
+    # fleet-ops#6642 resolved-side terminal producer. The AM webhook
+    # executor never runs the dispatch on status=resolved (it only signals
+    # in-flight commands), the repair-dispatch receiver sets
+    # send_resolved:false, and the retired completion-canary was the only
+    # other ledger producer — so "the alert stopped firing" can only be
+    # OBSERVED here. Prometheus /api/v1/alerts is the truth a packet was
+    # dispatched against: an alertname absent from the firing set has ended
+    # its chain. Fail CLOSED end to end — any fetch/parse failure disables
+    # the probe for the run; a dark Prometheus must never consume packets.
+    local -a pkts=()
+    shopt -s nullglob
+    pkts=("$PACKET_DIR"/packet-*.md)
+    shopt -u nullglob
+
+    local probe_ok=0 firing_json=""
+    declare -A firing_alert=()
+    if [ "${#pkts[@]}" -gt 0 ]; then
+        if [ -n "$FIRING_FILE" ]; then
+            firing_json=$(cat "$FIRING_FILE" 2>/dev/null || true)
+        else
+            firing_json=$(curl -sS --max-time 5 "$PROM_URL/api/v1/alerts" 2>/dev/null || true)
+        fi
+        if printf '%s' "$firing_json" | jq -e '.status == "success"' >/dev/null 2>&1; then
+            probe_ok=1
+            local fa
+            while IFS= read -r fa; do
+                [ -n "$fa" ] && firing_alert["$fa"]=1
+            done < <(printf '%s' "$firing_json" | jq -r \
+                '.data.alerts[]? | select(.state == "firing") | .labels.alertname // empty' 2>/dev/null)
+        else
+            log "resolved-side probe unavailable (prom_url=$PROM_URL) — terminal records disabled this run"
+        fi
+    fi
+
     local pkt
     local -a stuck=()
     local stuck_cutoff
     stuck_cutoff=$(date -u -d "$STUCK_AGE_S seconds ago" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || true)
-    for pkt in "$PACKET_DIR"/packet-*.md; do
+    for pkt in "${pkts[@]}"; do
         [ -e "$pkt" ] || continue
         local name
         name=$(basename "$pkt")
@@ -1141,6 +1190,36 @@ drain_packets() {
         local consumed=0
         if [ -n "$latest" ] && { [[ "$iso" < "$latest" ]] || [[ "$iso" == "$latest" ]]; }; then
             consumed=1
+        fi
+        # fleet-ops#6642: no terminal record — but if the alert is not
+        # firing anywhere, the chain ended without one. Record the
+        # resolved terminal the retired canary used to write, then let the
+        # same consume block below delete the packet. Record BEFORE delete:
+        # a failed write leaves the packet for the next tick, and the
+        # in-memory terminated_end update absorbs every older packet of
+        # this alert under the one record (same episode-collapse the
+        # canary's terminal performed).
+        if [ "$consumed" = "0" ] && [ "$probe_ok" = "1" ] \
+            && [ -z "${firing_alert[$alert]:-}" ]; then
+            local rend rstart_epoch rend_epoch rcycle
+            rend=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+            rstart_epoch=$(date -u -d "$iso" +%s 2>/dev/null || echo 0)
+            rend_epoch=$(date -u -d "$rend" +%s 2>/dev/null || echo 0)
+            rcycle=$((rend_epoch - rstart_epoch))
+            [ "$rcycle" -lt 0 ] && rcycle=0
+            if [ "$DRY_RUN" = "1" ]; then
+                log "DRY: would record resolved terminal for $name (alert=$alert packet=$iso end=$rend)"
+            elif jq -nc --arg a "$alert" --argjson c "$rcycle" \
+                    --arg e "$rend" --arg s "$iso" \
+                    '{alertname:$a, cycle_seconds:$c, end_ts:$e, start_ts:$s, terminal:"resolved", unit:"fleet-escalation-drain"}' \
+                    >> "$TERMINATED"; then
+                log "recorded resolved terminal alert=$alert packet=$iso end_ts=$rend (alert not firing)"
+                terminated_end["$alert"]="$rend"
+                latest="$rend"
+                consumed=1
+            else
+                log "WARN: resolved-terminal ledger write failed for $name (continuing)"
+            fi
         fi
         if [ "$consumed" = "1" ]; then
             if [ "$DRY_RUN" = "1" ]; then
