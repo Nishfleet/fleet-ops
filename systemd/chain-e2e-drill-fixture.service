@@ -12,6 +12,10 @@ Slice=chain-e2e-drill.slice
 Environment=HOME=/home/nish
 Environment=CHAIN_E2E_TRIAGE=/home/nish/workspaces/agent-state/FLEET-HEARTBEAT-TRIAGE.md
 # Hint at the service a marker + signal so hop-1 wiring greps stay honest.
-ExecStart=/bin/bash -c 'printf "\n[%s] [DRILL-CHAIN-E2E-BROKEN] chain-e2e drill fixture faulted (synthetic; label drill:chain-e2e; do not page or revert) signal: chain-e2e-drill/fixture — [drill:chain-e2e]\n" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "${CHAIN_E2E_TRIAGE:-/home/nish/workspaces/agent-state/FLEET-HEARTBEAT-TRIAGE.md}" 2>/dev/null; exit 1'
+# Every % bash must see is written %% — systemd specifier expansion eats a
+# bare % (fleet-ops#6734: %s expanded to the user shell, so the live LOUD
+# line opened "[/usr/bin/zsh]" and failed the reconciler's
+# [ISO-ts] [TAG] TRIAGE_RE — the panel-intake ticket could never file).
+ExecStart=/bin/bash -c 'printf "\n[%%s] [DRILL-CHAIN-E2E-BROKEN] chain-e2e drill fixture faulted (synthetic; label drill:chain-e2e; do not page or revert) signal: chain-e2e-drill/fixture — [drill:chain-e2e]\n" "$(date -u +%%Y-%%m-%%dT%%H:%%M:%%SZ)" >> "${CHAIN_E2E_TRIAGE:-/home/nish/workspaces/agent-state/FLEET-HEARTBEAT-TRIAGE.md}" 2>/dev/null; exit 1'
 RuntimeMaxSec=60
 Restart=no
