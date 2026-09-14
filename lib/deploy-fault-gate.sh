@@ -102,9 +102,14 @@ deploy_fault_fix_shas() {
     prs=$(_df_gh pr list -R "$repo" --state merged --limit 300 \
         --json body,mergeCommit 2>/dev/null) || DF_CHECK_FAILED=1
     re=$(printf "$DF_TRAILER_RE" "$num")
+    # jq @tsv escapes newlines/tabs/backslashes in the body as literal \n/\t/\\,
+    # so the char before a `Closes #N` on its own line becomes `n` (alphanumeric)
+    # and the regex anchor `(^|[^0-9A-Za-z])` never matches under `printf '%s'`.
+    # `printf '%b'` unescapes them back to real control chars before grep, so a
+    # multi-line trailer is legible (0509#3438, fleet-ops#5785).
     while IFS=$'\t' read -r pbody psha; do
         [ -n "$psha" ] || continue
-        if printf '%s' "$pbody" | grep -Eiq "$re"; then
+        if printf '%b' "$pbody" | grep -Eiq "$re"; then
             DF_FIX_SHAS="${DF_FIX_SHAS}${DF_FIX_SHAS:+$'\n'}${psha}"
         fi
     done < <(printf '%s' "${prs:-[]}" \
