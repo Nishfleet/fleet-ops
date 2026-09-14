@@ -523,8 +523,10 @@ export PI_PICK_PREFER_CLASS
 # fleet-ops#4263 P3b: always route through the LiteLLM proxy group.
 # worker-cheap for public, worker-private for private. The proxy owns
 # fallback, cooldown, and health checks.
-_lit_group="worker-cheap"
-[[ "$pkt_privacy" == "private" ]] && _lit_group="worker-private"
+# fleet-ops#6032 review-6037 adjudication: route through the lib helper so
+# the privacy->group map has one source (the escalation canary drills the
+# lib copy; an inlined copy here could drift silently).
+_lit_group="$(litellm_group_for_privacy "$pkt_privacy")"
 # fleet-ops#6393: a public difficulty: senior-review packet rides the senior
 # ladder — the prepaid glm-5.3 group — never the cheap flash pool. When no
 # senior deployment is free the PROXY's own fallback (senior -> worker-
@@ -540,7 +542,8 @@ _lit_group="worker-cheap"
 # fleet-ops#5093 on the proxy: a proxy that is not ready IS the walled fleet.
 # litellm_seat always answers, so without this gate the no-usable edge below
 # (and fleet-seat-recovery.path behind it) could never fire. litellm_ready is
-# fail-open in CI/no-proxy hosts, so only a live proxy that is down walls.
+# fail-open in CI only (GITHUB_ACTIONS + empty body); on a non-CI host with no
+# live proxy it walls — the intended #5093 behaviour (review-6037 finding 2).
 if litellm_ready; then
     seat=$(litellm_seat "$_lit_group" || true)
     # fleet-ops#6652: a ready proxy can still route to a budget-walled group
