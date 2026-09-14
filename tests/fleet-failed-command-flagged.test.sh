@@ -633,9 +633,9 @@ rm -f "$sessions/gh-graphql-flagged.jsonl"
 # correctly flags this. Lock the shape so a future detector refactor
 # cannot accidentally drop the progress-output / partial-completion class.
 write_session "bash-progress-timedout" "$(cat <<'JSONL'
-{"type":"message","message":{"role":"assistant","content":[{"type":"toolCall","id":"call_probe","name":"bash","arguments":{"command":"for q in running_shoes wool_shoes sustainable_fashion note_taking_app productivity_app team_wiki smart_ring fitness_tracker sleep_tracker beauty_products indian_cosmetics skincare fitness_apparel athletic_wear gym_clothing crm_software marketing_automation; do\n  curl -sS -A 'Mozilla/5.0' \"https://0509.io/search?q=$q\" > /tmp/probe-$q.html\n  echo \"[$(date +%s)] $q done\"\n  sleep 35\ndone\n# 35 probes × 35s = ~21 min"}}]}}
+{"type":"message","message":{"role":"assistant","content":[{"type":"toolCall","id":"call_probe","name":"bash","arguments":{"command":"for q in running_shoes wool_shoes sustainable_fashion note_taking_app productivity_app team_wiki smart_ring fitness_tracker sleep_tracker beauty_products indian_cosmetics skincare fitness_apparel athletic_wear gym_clothing crm_software marketing_automation; do\n  curl -sS -A 'Mozilla/5.0' \"https://0509.io/search?q=$q\" > probe-$q.html\n  echo \"[$(date +%s)] $q done\"\n  sleep 35\ndone\n# 35 probes × 35s = ~21 min"}}]}}
 {"type":"message","message":{"role":"toolResult","toolCallId":"call_probe","toolName":"bash","isError":true,"content":[{"type":"text","text":"[1/35] running shoes done\n[2/35] wool shoes done\n[3/35] sustainable fashion done\n[4/35] note taking app done\n[5/35] productivity app done\n[6/35] team wiki done\n[7/35] smart ring done\n[8/35] fitness tracker done\n[9/35] sleep tracker done\n[10/35] beauty products done\n[11/35] indian cosmetics done\n[12/35] skincare done\n[13/35] fitness apparel done\n[14/35] athletic wear done\n[15/35] gym clothing done\n[16/35] crm software done\n[17/35] marketing automation done\n\n\nCommand timed out after 1500 seconds"}]}}
-{"type":"message","message":{"role":"assistant","content":[{"type":"toolCall","id":"call_check","name":"bash","arguments":{"command":"# Got 17/35 done. Let me check status and continue\ntail -50 /tmp/probe.log\necho '---'\ndate"}}]}}
+{"type":"message","message":{"role":"assistant","content":[{"type":"toolCall","id":"call_check","name":"bash","arguments":{"command":"# Got 17/35 done. Let me check status and continue\ntail -50 probe.log\necho '---'\ndate"}}]}}
 JSONL
 )"
 rc=$(run_bin 0)
@@ -654,9 +654,9 @@ rm -f "$sessions/bash-progress-timedout.jsonl"
 # progress-output class: a worker that names the gap in user-facing text
 # passes, a worker that only puts it in a toolCall comment (live #686) is filed.
 write_session "bash-progress-flagged" "$(cat <<'JSONL'
-{"type":"message","message":{"role":"assistant","content":[{"type":"toolCall","id":"call_probe2","name":"bash","arguments":{"command":"for q in running_shoes wool_shoes sustainable_fashion note_taking_app; do\n  curl -sS \"https://0509.io/search?q=$q\" > /tmp/probe-$q.html\n  echo \"[$q done]\"\n  sleep 35\ndone"}}]}}
+{"type":"message","message":{"role":"assistant","content":[{"type":"toolCall","id":"call_probe2","name":"bash","arguments":{"command":"for q in running_shoes wool_shoes sustainable_fashion note_taking_app; do\n  curl -sS \"https://0509.io/search?q=$q\" > probe-$q.html\n  echo \"[$q done]\"\n  sleep 35\ndone"}}]}}
 {"type":"message","message":{"role":"toolResult","toolCallId":"call_probe2","toolName":"bash","isError":true,"content":[{"type":"text","text":"[1/4] running shoes done\n[2/4] wool shoes done\n[3/4] sustainable fashion done\n[4/4] note taking app done\n\n\nCommand timed out after 1500 seconds"}]}}
-{"type":"message","message":{"role":"assistant","content":[{"type":"text","text":"the probe loop call failed with a timeout at 4/4, the rest is unverified."},{"type":"toolCall","id":"call_resume","name":"bash","arguments":{"command":"tail -50 /tmp/probe.log"}}]}}
+{"type":"message","message":{"role":"assistant","content":[{"type":"text","text":"the probe loop call failed with a timeout at 4/4, the rest is unverified."},{"type":"toolCall","id":"call_resume","name":"bash","arguments":{"command":"tail -50 probe.log"}}]}}
 JSONL
 )"
 rc=$(run_bin 0)

@@ -287,7 +287,7 @@ cat >"$checkout/systemd/intake-reconcile.path" <<'UNIT'
 Description=Reconcile path
 
 [Path]
-PathChanged=/tmp/intake-repos.json
+PathChanged=%h/workspaces/products/fleet-ops/config/intake-repos.json
 Unit=intake-reconcile.service
 
 [Install]

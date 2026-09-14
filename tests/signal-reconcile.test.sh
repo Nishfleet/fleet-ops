@@ -1148,9 +1148,9 @@ jq -e '.filed == 1 and .closed == 0' "$tmp/summary14a.json" >/dev/null \
     || fail "scenario 14a: DEGRADED-LANES must file one issue (got: $(cat "$tmp/summary14a.json"))"
 grep -q 'loud/degraded-lanes/0509-2189.service' "$tmp/filed.jsonl" \
     || fail "scenario 14a: DEGRADED-LANES signal key missing (filed: $(cat "$tmp/filed.jsonl"))"
-printf '%s' "$(cat "$tmp/filed.jsonl")" | grep -q '"labels": \["observe-to-close"\]' \
+grep -q '"labels": \["observe-to-close"\]' "$tmp/filed.jsonl" \
     || fail "scenario 14a: DEGRADED-LANES must file under observe-to-close, not agent-ready (filed: $(cat "$tmp/filed.jsonl"))"
-printf '%s' "$(cat "$tmp/filed.jsonl")" | grep -q '"agent-ready"' \
+grep -q '"agent-ready"' "$tmp/filed.jsonl" \
     && fail "scenario 14a: DEGRADED-LANES must NOT carry agent-ready (filed: $(cat "$tmp/filed.jsonl"))"
 ok "scenario 14a: DEGRADED-LANES filed under observe-to-close, not agent-ready"
 
@@ -1338,9 +1338,9 @@ jq -e '.filed == 1 and .closed == 0' "$tmp/summary16a.json" >/dev/null \
     || fail "scenario 16a: AUDITOR-PANEL-PENDING must file one issue (got: $(cat "$tmp/summary16a.json"))"
 grep -q 'loud/auditor-panel-pending/candidate-age_s-active-missing-failed' "$tmp/filed.jsonl" \
     || fail "scenario 16a: AUDITOR-PANEL-PENDING signal key missing (filed: $(cat "$tmp/filed.jsonl"))"
-printf '%s' "$(cat "$tmp/filed.jsonl")" | grep -q '"labels": \["observe-to-close"\]' \
+grep -q '"labels": \["observe-to-close"\]' "$tmp/filed.jsonl" \
     || fail "scenario 16a: must file under observe-to-close, not agent-ready (filed: $(cat "$tmp/filed.jsonl"))"
-printf '%s' "$(cat "$tmp/filed.jsonl")" | grep -q '"agent-ready"' \
+grep -q '"agent-ready"' "$tmp/filed.jsonl" \
     && fail "scenario 16a: must NOT carry agent-ready (filed: $(cat "$tmp/filed.jsonl"))"
 ok "scenario 16a: AUDITOR-PANEL-PENDING filed under observe-to-close, not agent-ready"
 
@@ -1411,9 +1411,9 @@ jq -e '.filed == 1 and .closed == 0' "$tmp/summary17a.json" >/dev/null \
     || fail "scenario 17a: FAILED-COMMAND-SWALLOWED must file one issue (got: $(cat "$tmp/summary17a.json"))"
 grep -q "loud/failed-command-swallowed/$swallowed_slug" "$tmp/filed.jsonl" \
     || fail "scenario 17a: FAILED-COMMAND-SWALLOWED signal key missing (filed: $(cat "$tmp/filed.jsonl"))"
-printf '%s' "$(cat "$tmp/filed.jsonl")" | grep -q '"labels": \["observe-to-close"\]' \
+grep -q '"labels": \["observe-to-close"\]' "$tmp/filed.jsonl" \
     || fail "scenario 17a: must file under observe-to-close, not agent-ready (filed: $(cat "$tmp/filed.jsonl"))"
-printf '%s' "$(cat "$tmp/filed.jsonl")" | grep -q '"agent-ready"' \
+grep -q '"agent-ready"' "$tmp/filed.jsonl" \
     && fail "scenario 17a: must NOT carry agent-ready (filed: $(cat "$tmp/filed.jsonl"))"
 ok "scenario 17a: FAILED-COMMAND-SWALLOWED filed under observe-to-close, not agent-ready"
 
@@ -1528,11 +1528,11 @@ true > "$tmp/gh.log"
 run "$tmp/empty14.json" "$tmp/triage19-on.md" > "$tmp/summary19a.json"
 jq -e '.filed == 1 and .closed == 0' "$tmp/summary19a.json" >/dev/null \
     || fail "scenario 19a: ESCALATION-PANEL-PENDING must file one issue (got: $(cat "$tmp/summary19a.json"))"
-printf '%s' "$(cat "$tmp/filed.jsonl")" | grep -q 'loud/escalation-panel-pending' \
+grep -q 'loud/escalation-panel-pending' "$tmp/filed.jsonl" \
     || fail "scenario 19a: ESCALATION-PANEL-PENDING signal key missing (filed: $(cat "$tmp/filed.jsonl"))"
-printf '%s' "$(cat "$tmp/filed.jsonl")" | grep -q '"labels": \["observe-to-close"\]' \
+grep -q '"labels": \["observe-to-close"\]' "$tmp/filed.jsonl" \
     || fail "scenario 19a: must file under observe-to-close, not agent-ready (filed: $(cat "$tmp/filed.jsonl"))"
-printf '%s' "$(cat "$tmp/filed.jsonl")" | grep -q '"agent-ready"' \
+grep -q '"agent-ready"' "$tmp/filed.jsonl" \
     && fail "scenario 19a: must NOT carry agent-ready (filed: $(cat "$tmp/filed.jsonl"))"
 ok "scenario 19a: ESCALATION-PANEL-PENDING filed under observe-to-close, not agent-ready"
 
