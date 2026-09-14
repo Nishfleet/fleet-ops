@@ -448,5 +448,16 @@ grep -Fq "deliberately down" <<<"$alarm_section" \
   || fail "idle-fleet-alarm FLEET-PAUSED check must state the fleet is deliberately down (fleet-ops#5717)"
 echo "OK 12: idle-fleet-alarm carries FLEET-PAUSED as check #1 (fleet-ops#5717)"
 
+# --- Assertion 13 (fleet-ops#6613): the idle-fleet-alarm section must not
+# claim agent-state/lanes/ "holds only" one file. The live directory holds
+# seats/, reports/, quarantine dirs, .seen markers and logs alongside
+# pi-seat-health.json; a canonical claim that reality contradicts trains
+# agents to distrust the check itself (the 2026-08-23 stale-PAUSED failure
+# mode). Name the canonical live file without the 'only' claim.
+if grep -Fq "holds only" <<<"$alarm_section"; then
+  fail "idle-fleet-alarm claims lanes/ 'holds only' one file (fleet-ops#6613) - state the canonical live file (pi-seat-health.json) without the 'only' claim; the live directory holds operational artefacts alongside it"
+fi
+echo "OK 13: idle-fleet-alarm makes no 'holds only' claim about lanes/ (fleet-ops#6613)"
+
 echo ""
-echo "ALL OK: 12/12 assertions passed (drift, render, templating, markers, orphans, pi-count pin, governed-run pin, retired-identity, fleet-paused sentinel)" | head
+echo "ALL OK: 13/13 assertions passed (drift, render, templating, markers, orphans, pi-count pin, governed-run pin, retired-identity, fleet-paused sentinel, lanes-only claim)" | head
