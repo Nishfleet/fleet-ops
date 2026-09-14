@@ -65,6 +65,10 @@ fi
 #   CLAIM_RECONCILE_LOCKDIR   flock directory
 #   CLAIM_RECONCILE_DRY_RUN   if 1, print actions and mutate nothing
 #   CLAIM_RECONCILE_NOW       ISO-8601 UTC clock (for comment timestamps)
+#   CLAIM_RECONCILE_RULES_YML  alert-name source for the ghost-claim scope
+#                            allowlist (default config/fleet_rules.yml next
+#                            to this script)
+#   CLAIM_RECONCILE_GHOST_SEEN_DIR  first-seen marker dir for ghost claims
 #   SYSTEMCTL                 systemctl binary (test seam)
 #
 # Exit 0 on a clean sweep or overlapping no-op. Non-zero only on unexpected
@@ -87,10 +91,20 @@ SYSTEMCTL="${SYSTEMCTL:-systemctl}"
 # that (alert, repo) with `skipped-claimed` (live: claim/fleet-main-red-
 # fleet-ops sat 2 days and starved FleetMainRed redispatches — repair
 # diagnosis 2026-08-30 07:14Z). State files written by alert-repair-claim
-# under ALERT_STATE_DIR are the discriminator: a claim/foo-<repo> branch
-# without one (auditor/scout branches) is never touched here.
+# under ALERT_STATE_DIR are the primary discriminator. A claim/foo-<repo>
+# branch whose scope is not alert-derived (auditor/scout branches) is
+# never touched here — but a state-file-less branch IS no longer
+# automatically safe (fleet-ops#6642): alert-repair-claim pushes the
+# create-only branch BEFORE writing its state file, so a kill or
+# state-dir loss in between leaves a remote mutex this sweep used to be
+# blind to. The ghost pass below reaps alert-scoped claim branches that
+# have no valid state file, no live alert-repair worker and no open PR
+# after a one-tick first-seen grace.
 ALERT_STATE_DIR="${CLAIM_RECONCILE_ALERT_STATE_DIR:-/home/nish/.local/state/fleet-alert-repair}"
 ALERT_MAX_AGE="${CLAIM_RECONCILE_ALERT_MAX_AGE:-7200}"
+GHOST_SEEN_DIR="${CLAIM_RECONCILE_GHOST_SEEN_DIR:-/home/nish/.local/state/claim-reconcile/ghost-seen}"
+_SELF_DIR=$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]:-$0}")")" && pwd)
+RULES_YML="${CLAIM_RECONCILE_RULES_YML:-$_SELF_DIR/../config/fleet_rules.yml}"
 
 log() {
     printf '[%s] [claim-reconcile] %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$*" >&2
@@ -104,7 +118,7 @@ now_iso() {
     fi
 }
 
-mkdir -p "$LOCKDIR"
+mkdir -p "$LOCKDIR" "$GHOST_SEEN_DIR"
 exec 9>"$LOCKDIR/sweep.lock"
 if ! flock -n 9; then
     log "sweep already running (no-op)"
@@ -132,10 +146,36 @@ released_b=0
 released_orphan=0
 released_c=0
 released_alert=0
+released_ghost=0
+ghost_seen=0
 skipped_live=0
 skipped_pr=0
 skipped_progress=0
 failed=0
+
+# sanitize_alert — mirror of libexec/alert-repair-claim's sanitizer: the
+# branch scope is claim/<sanitize(alertname)>-<repo>, so sanitizing every
+# alert name in fleet_rules.yml yields the allowlist of scopes the ghost
+# pass may treat as alert-repair claims. Keep the two copies in lockstep.
+sanitize_alert() {
+    local s="$1"
+    s=$(printf '%s' "$s" | sed -E 's/([a-z0-9])([A-Z])/\1-\2/g; s/([A-Z]+)([A-Z][a-z])/\1-\2/g')
+    s=$(printf '%s' "$s" | tr '[:upper:]' '[:lower:]')
+    s="${s//[^a-z0-9._-]/_}"
+    s=$(printf '%s\n' "$s" | sed -E 's/_+/_/g; s/^_+//; s/_+$//')
+    printf '%s' "$s"
+}
+
+# Alert-scope allowlist for the ghost pass. Missing/unreadable rules file
+# -> empty map -> the ghost pass reaps nothing (fail-closed: never guess
+# that a branch is an alert-repair claim).
+declare -A alert_scope=()
+if [ -f "$RULES_YML" ]; then
+    while IFS= read -r _an; do
+        _s=$(sanitize_alert "$_an")
+        [ -n "$_s" ] && alert_scope["$_s"]=1
+    done < <(grep -oE 'alert: [A-Za-z0-9_]+' "$RULES_YML" | awk '{print $2}' | sort -u)
+fi
 
 # is_live_worker <short> <issue_n>
 # Mirrors tier 1 §3 exactly: active,activating both count as live; the
@@ -237,6 +277,9 @@ while IFS= read -r repo; do
     [ -z "$repo" ] && continue
     short="${repo#*/}"
     log "repo $repo"
+    # Remote branches the alert-claim state-file pass has authority over
+    # this tick — the ghost pass below must not double-process them.
+    declare -A registered=()
 
     # List claim branches. per_page=100 is plenty — claim branches are few
     # and short-lived (a worker releases its own on success); a repo with
@@ -354,6 +397,7 @@ while IFS= read -r repo; do
                 claim/*-"$short") ;;
                 *) continue ;;
             esac
+            registered["$branch"]=1
             # Worker live -> claim in use, hold (brief deferral; workers die).
             if is_live_alert_worker; then
                 log "  $repo: $branch — alert-repair worker live — hold"
@@ -381,9 +425,89 @@ while IFS= read -r repo; do
             fi
         done < <(find "$ALERT_STATE_DIR" -maxdepth 1 -name '*.json' -type f | sort)
     fi
+
+    # --- ghost alert-repair claims (fleet-ops#6642) ----------------------
+    # The state-file pass above is blind to a claim branch whose local
+    # state never landed: alert-repair-claim pushes the create-only branch
+    # FIRST and writes ALERT_STATE_DIR/<repo>-<scope>.json SECOND, so a
+    # kill or state-dir loss between the two (or an empty/corrupt state
+    # file jq cannot parse) leaves a remote mutex nothing re-examines —
+    # every future dispatch of that (alert, repo) exits skipped-claimed
+    # and its packets age into stuck-packet bursts (live: claim/fleet-main-
+    # red-0509, no state file, no PR, starved every FleetMainRed->0509
+    # dispatch 2026-09-13/14; claim/deploy-blocked-stuck-fleet-ops hid
+    # behind a zero-byte state file). Enumerate the REMOTE claim/*-<short>
+    # branches from the same branches_json: an alert-scoped one no valid
+    # state file registered is a ghost candidate. It still earns the same
+    # holds (live worker, open PR head) plus a one-tick first-seen grace —
+    # the acquire->state-write window is small but real, and a claim seen
+    # twice with no worker/PR/state is orphaned, not fresh. Auditor/scout
+    # claim branches stay untouched: they never carry an alert-derived
+    # scope.
+    ghost_branch_names=$(printf '%s' "$branches_json" \
+        | jq -r '.[] | select(.name | startswith("claim/")) | .name' 2>/dev/null || true)
+    if [ -n "$ghost_branch_names" ] && [ "${#alert_scope[@]}" -eq 0 ]; then
+        log "  $repo: alert-scope map empty (rules yml $RULES_YML) — ghost pass skipped (fail-closed)"
+    fi
+    while IFS= read -r gbranch; do
+        [ -n "$gbranch" ] || continue
+        case "$gbranch" in
+            claim/issue-*) continue ;;
+            claim/*-"$short") ;;
+            *) continue ;;
+        esac
+        gscope="${gbranch#claim/}"
+        gscope="${gscope%-"$short"}"
+        # Not alert-scoped -> auditor/scout/etc claim: never ours to reap.
+        [ -n "${alert_scope[$gscope]:-}" ] || continue
+        gmarker="$GHOST_SEEN_DIR/${short}--${gscope}"
+        # A valid state file already decided this branch above.
+        if [ -n "${registered[$gbranch]:-}" ]; then
+            [ "$DRY" != "1" ] && rm -f "$gmarker"
+            continue
+        fi
+        if is_live_alert_worker; then
+            log "  $repo: $gbranch — ghost alert-repair claim, worker live — hold"
+            skipped_live=$((skipped_live + 1))
+            continue
+        fi
+        if has_open_pr_head "$repo" "$gbranch"; then
+            log "  $repo: $gbranch — ghost alert-repair claim, open PR references it — hold"
+            skipped_pr=$((skipped_pr + 1))
+            continue
+        fi
+        if [ ! -f "$gmarker" ]; then
+            if [ "$DRY" = "1" ]; then
+                log "DRY ghost mark $repo ref $gbranch"
+            else
+                printf '%s\n' "$NOW_ISO" >"$gmarker"
+            fi
+            log "  $repo: $gbranch — ghost alert-repair claim (no state file/worker/PR) — first seen, reaps next tick"
+            ghost_seen=$((ghost_seen + 1))
+            continue
+        fi
+        log "  $repo: $gbranch — ghost alert-repair claim (no state file/worker/PR since $(cat "$gmarker" 2>/dev/null || echo '?')) — delete branch + marker"
+        if delete_branch "$repo" "$gbranch"; then
+            rm -f "$gmarker" "$ALERT_STATE_DIR/${short}-${gscope}.json"
+            released_ghost=$((released_ghost + 1))
+        else
+            failed=$((failed + 1))
+        fi
+    done <<< "$ghost_branch_names"
+
+    # Marker GC: drop this repo's first-seen markers whose branch vanished
+    # (released elsewhere) so a future claim starts a fresh grace.
+    while IFS= read -r mf; do
+        [ -n "$mf" ] || continue
+        mscope="${mf##*/}"
+        mscope="${mscope#"$short"--}"
+        if ! printf '%s\n' "$ghost_branch_names" | grep -qx "claim/${mscope}-${short}"; then
+            [ "$DRY" != "1" ] && rm -f "$mf"
+        fi
+    done < <(find "$GHOST_SEEN_DIR" -maxdepth 1 -type f -name "${short}--*" | sort)
 done <<< "$repos"
 
-log "sweep done: B=$released_b orphan=$released_orphan C=$released_c alert=$released_alert skipped_live=$skipped_live skipped_pr=$skipped_pr skipped_progress=$skipped_progress failed=$failed"
-printf 'claim-reconcile B=%s orphan=%s C=%s alert=%s skipped_live=%s skipped_pr=%s skipped_progress=%s failed=%s\n' \
-    "$released_b" "$released_orphan" "$released_c" "$released_alert" "$skipped_live" "$skipped_pr" "$skipped_progress" "$failed"
+log "sweep done: B=$released_b orphan=$released_orphan C=$released_c alert=$released_alert ghost=$released_ghost ghost_seen=$ghost_seen skipped_live=$skipped_live skipped_pr=$skipped_pr skipped_progress=$skipped_progress failed=$failed"
+printf 'claim-reconcile B=%s orphan=%s C=%s alert=%s ghost=%s ghost_seen=%s skipped_live=%s skipped_pr=%s skipped_progress=%s failed=%s\n' \
+    "$released_b" "$released_orphan" "$released_c" "$released_alert" "$released_ghost" "$ghost_seen" "$skipped_live" "$skipped_pr" "$skipped_progress" "$failed"
 exit 0
