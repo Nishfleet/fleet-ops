@@ -116,7 +116,7 @@ loud() {
 }
 
 usage() {
-    echo "usage: scout-futility-check begin <repo> | end <repo> [exit_code]" >&2
+    echo "usage: scout-futility-check begin <repo> | end <repo> [exit_code] | end-repair <repo> [exit_code]" >&2
 }
 
 # Fail-open: never take the scout down with us.
@@ -493,6 +493,48 @@ is_json_continuation() {
     esac
 }
 
+# Shared per-line classifier: return 0 iff at least one line carries
+# provider-wall evidence and no line is a non-benign, non-wall work fault.
+# Used by detect_provider_wall (scout hop, scout+repair journals unioned)
+# and by cmd_end_repair (chain-terminal repair hop, own journal only — the
+# scout's lines must not vote on the repair hop's own exit class,
+# fleet-ops#6577).
+# Usage: _wall_classify_lines   (journal lines on stdin, one per line)
+_wall_classify_lines() {
+    local line found_wall=0 wall_block=0
+    while IFS= read -r line; do
+        line="${line#"${line%%[![:space:]]*}"}"  # ltrim
+        line="${line%"${line##*[![:space:]]}"}"  # rtrim
+        [[ -z "$line" ]] && continue
+        # Wall evidence first: production glues the fatal 503/429 onto the
+        # trailing notify;Pi escape line, so the line is both benign-prefixed
+        # AND wall evidence. A lack of a match here falls through to the
+        # benign skip / work-fault demote below.
+        if grep -qE "$PROVIDER_WALL_PATTERNS" <<<"$line"; then
+            found_wall=1
+            wall_block=1
+            continue
+        fi
+        grep -qE "$BENIGN_JOURNAL_PATTERNS" <<<"$line" && { wall_block=0; continue; }
+        # JSON continuation of the SAME wall message (fleet-ops#2922): the
+        # live 2026-09-02T19:31Z Devin crash printed `Devin exited ... : {`,
+        # `  "cognition.ai/errorKind": "resource_exhausted",`,
+        # `  "cognition.ai/retryable": true`, `}` as one multi-line provider
+        # error. Lines 3-4 are structural JSON residue of that wall message;
+        # demoting them flipped a pure provider-wall crash to "not
+        # provider-wall" and kept consecutive_wall at 0 even after
+        # resource_exhausted joined the patterns. Only a fragment attached to
+        # wall evidence is forgiven — a standalone one still demotes.
+        if [[ "$wall_block" == "1" ]] && is_json_continuation "$line"; then
+            continue
+        fi
+        # Non-benign, non-wall line = a real work fault. Demote.
+        wall_block=0
+        return 1
+    done
+    [[ "$found_wall" == "1" ]]
+}
+
 # Return 0 if the crash was a provider wall: at least one line carries wall
 # evidence and none is a non-benign, non-wall work fault. Return 1
 # otherwise, including when the journal is unreadable (the safer default —
@@ -501,7 +543,7 @@ is_json_continuation() {
 detect_provider_wall() {
     local repo="$1"
     local jlines unit="pi-scout@${repo}.service"
-    local line found_wall=0 begin_at since_args=() wall_block=0
+    local begin_at since_args=()
     if ! command -v "$JOURNALCTL" >/dev/null 2>&1 && [[ ! -x "$JOURNALCTL" ]]; then
         return 1
     fi
@@ -541,37 +583,43 @@ detect_provider_wall() {
         fi
     fi
     [[ -n "$jlines" ]] || return 1
-    while IFS= read -r line; do
-        line="${line#"${line%%[![:space:]]*}"}"  # ltrim
-        line="${line%"${line##*[![:space:]]}"}"  # rtrim
-        [[ -z "$line" ]] && continue
-        # Wall evidence first: production glues the fatal 503/429 onto the
-        # trailing notify;Pi escape line, so the line is both benign-prefixed
-        # AND wall evidence. A lack of a match here falls through to the
-        # benign skip / work-fault demote below.
-        if grep -qE "$PROVIDER_WALL_PATTERNS" <<<"$line"; then
-            found_wall=1
-            wall_block=1
-            continue
-        fi
-        grep -qE "$BENIGN_JOURNAL_PATTERNS" <<<"$line" && { wall_block=0; continue; }
-        # JSON continuation of the SAME wall message (fleet-ops#2922): the
-        # live 2026-09-02T19:31Z Devin crash printed `Devin exited ... : {`,
-        # `  "cognition.ai/errorKind": "resource_exhausted",`,
-        # `  "cognition.ai/retryable": true`, `}` as one multi-line provider
-        # error. Lines 3-4 are structural JSON residue of that wall message;
-        # demoting them flipped a pure provider-wall crash to "not
-        # provider-wall" and kept consecutive_wall at 0 even after
-        # resource_exhausted joined the patterns. Only a fragment attached to
-        # wall evidence is forgiven — a standalone one still demotes.
-        if [[ "$wall_block" == "1" ]] && is_json_continuation "$line"; then
-            continue
-        fi
-        # Non-benign, non-wall line = a real work fault. Demote.
-        wall_block=0
-        return 1
-    done <<<"$jlines"
-    [[ "$found_wall" == "1" ]]
+    _wall_classify_lines <<<"$jlines"
+}
+
+# Read one unit's journal lines within the current scout cycle: since the
+# scout's begin epoch (state last_run_epoch — written by cmd_begin and
+# preserved by cmd_end) when known, else the last 50 lines (the same
+# fallback detect_provider_wall uses when begin_at is missing). The window
+# keeps a PREVIOUS storm's repair lines out of THIS repair death's
+# classification. Empty output when the journal is unreadable or the unit
+# never ran.
+# Usage: read_unit_journal <unit-name> <repo>
+read_unit_journal() {
+    local unit="$1" repo="$2"
+    local -a since_args=()
+    local begin_epoch since
+    if ! command -v "$JOURNALCTL" >/dev/null 2>&1 && [[ ! -x "$JOURNALCTL" ]]; then
+        return 0
+    fi
+    begin_epoch=$(read_field "$(state_path "$repo")" last_run_epoch)
+    if is_uint "$begin_epoch" && [[ "$begin_epoch" -gt 0 ]]; then
+        since=$(date -u -d "@${begin_epoch}" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || true)
+        [[ -n "$since" ]] && since_args=(--since "$since")
+    fi
+    "$JOURNALCTL" --user -u "$unit" -n 50 --no-pager -o cat "${since_args[@]}" 2>/dev/null || true
+}
+
+# Up to the last 4 wall/verdict journal lines of the given block, joined
+# " | " on one line — the evidence payload the LOUD line carries (the
+# reconciler embeds it verbatim in the filed issue body, so the
+# SCOUT-WALL-CHAIN-DEAD ticket carries BOTH hops' journal lines).
+evidence_lines() {
+    local ev
+    ev=$(grep -E "$PROVIDER_WALL_PATTERNS|PACKET-VERDICT" <<<"$1" 2>/dev/null | tail -n 4 || true)
+    [[ -n "$ev" ]] || ev=$(grep -v '^[[:space:]]*$' <<<"$1" 2>/dev/null | tail -n 2 || true)
+    [[ -n "$ev" ]] || return 0
+    printf '%s\n' "$ev" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//' \
+        | awk 'NF { printf "%s%s", (n++ ? " | " : ""), $0 } END { print "" }'
 }
 
 # File an escalate-senior ticket under the same signal key as the green-and-
@@ -932,10 +980,63 @@ cmd_end() {
     export_last_run
 }
 
+# --- chain-terminal repair wall (fleet-ops#6577) ---
+# The repair hop is the chain terminal: pi-scout@'s OnFailure summons
+# pi-scout-repair@ AFTER the scout's own ExecStopPost futility-end has run,
+# so a provider wall that killed BOTH hops used to end with two failed
+# units, a counted wall-crash #1, and no dispatch until the next ~4h timer
+# re-fire (live 2026-09-14T04:15Z: both units died on `Connection error.`
+# 11s apart; the repair hop's own exit was observed by nothing — the repair
+# template carried no ExecStopPost at all).
+#
+# cmd_end_repair (wired as pi-scout-repair@.service ExecStopPost)
+# classifies THIS unit's own journal since the scout begin epoch. A
+# terminal wall-class exit (pi exit!=0 with provider-wall journal — the
+# live shape: `[pi-seated-err] Connection error.` + `PACKET-VERDICT
+# tools=0 class=no-tools`) emits ONE LOUD SCOUT-WALL-CHAIN-DEAD triage
+# line carrying both hops' journal lines and unit names. The existing
+# detector->queue reconciler (fleet-ops#362 — the rail that auto-filed
+# alarms #6555–#6559) turns that line into exactly one
+# `alarm: SCOUT-WALL-CHAIN-DEAD` issue, deduped per wall-storm by the
+# signal key `scout-wall-chain-dead/<repo>`: while the alarm for the repo
+# is open, subsequent terminal walls are re-observed (heartbeat comment)
+# instead of filed again. The scout hop's own wall does NOT emit this
+# signal — only the chain-terminal repair exit does, so one crash cannot
+# double-alarm. Exit 0 / seat-skip 75 never alarm (the chain completed or
+# never started). No new unit, no new timer: same ExecStopPost rail, same
+# reconciler, same triage file.
+#
+# Always exits 0 (safe_exit trap): a broken detector must never mark the
+# repair unit further than systemd already did.
+cmd_end_repair() {
+    local repo="$1"
+    valid_repo "$repo" || { log "end-repair: invalid repo '$repo'"; return 0; }
+    local exit_code
+    exit_code=$(resolve_exit "${2:-}")
+    is_uint "$exit_code" || exit_code=1
+    if [[ "$exit_code" == "0" || "$exit_code" == "$SEAT_SKIP_EXIT" ]]; then
+        log "end-repair: $repo exit=$exit_code — chain completed or seat-skip, no chain-terminal alarm"
+        return 0
+    fi
+    local rlines slines r_ev s_ev
+    rlines=$(read_unit_journal "pi-scout-repair@${repo}.service" "$repo")
+    if [[ -z "$rlines" ]] || ! _wall_classify_lines <<<"$rlines"; then
+        log "end-repair: $repo exit=$exit_code not wall-class (or journal unreadable) — leave to the OnFailure escalation rails"
+        return 0
+    fi
+    slines=$(read_unit_journal "pi-scout@${repo}.service" "$repo")
+    r_ev=$(evidence_lines "$rlines")
+    s_ev=$(evidence_lines "$slines")
+    loud "SCOUT-WALL-CHAIN-DEAD" \
+        "repo=Nishfleet/${repo} wall-chain dead: scout hop pi-scout@${repo}.service + repair hop pi-scout-repair@${repo}.service both died on provider wall (chain terminal) — scout journal: ${s_ev:-<no scout journal lines in window>} | repair journal: ${r_ev:-<no repair journal lines in window>} — signal: scout-wall-chain-dead/${repo}"
+    log "end-repair: $repo exit=$exit_code terminal wall — LOUD SCOUT-WALL-CHAIN-DEAD emitted; detector->queue reconciler files alarm: SCOUT-WALL-CHAIN-DEAD (deduped per wall-storm, fleet-ops#6577)"
+}
+
 [[ $# -ge 2 ]] || { usage; safe_exit; }
 
 case "$1" in
     begin) cmd_begin "$2" ;;
     end)   cmd_end "$2" "${3:-}" ;;
+    end-repair) cmd_end_repair "$2" "${3:-}" ;;
     *)     usage ;;
 esac
