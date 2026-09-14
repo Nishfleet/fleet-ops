@@ -167,7 +167,25 @@ litellm_headroom() {
 }
 
 find_senior_seat() {
-    if litellm_ready || [[ "${GITHUB_ACTIONS:-}" == "true" ]]; then
+    if [[ "${GITHUB_ACTIONS:-}" == "true" ]]; then
+        printf 'litellm\tsenior\n'
+        return 0
+    fi
+    # fleet-ops#4425: only offer litellm/senior when cap>0 (the P3b
+    # PI_SEAT_SOURCE=litellm switchover is done) AND the seat is usable. cap 0
+    # (intentional_cap_zero=p3b_pending) has no working upstream yet and returns
+    # HTTP 500 — routing senior/judge/reviewer traffic to it climbs
+    # consecutive_failure_count into the comeback-release never-released window
+    # (FleetSeatComebackNeverReleased, fleet-ops#2638) and the prober cannot
+    # reset it: each fresh 500 re-anchors usable_at ~30s into the future, so the
+    # prober hits the future_held path and try_false_wall_release's cap>0 gate
+    # silently skips it. The seat-caps reason already states "cap 0 so
+    # find_senior_seat never offers it before the #4422 P3b switchover"; this
+    # gate enforces that intent — the stub left after the routing library was
+    # deleted in #4263 forgot the cap check.
+    if litellm_ready \
+        && (( $(model_cap litellm senior) > 0 )) \
+        && seat_usable litellm senior; then
         printf 'litellm\tsenior\n'
         return 0
     fi
