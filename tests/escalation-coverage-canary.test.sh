@@ -45,6 +45,22 @@ trap 'rm -rf "$scratch"' EXIT INT TERM
 export HOME="$scratch/home"
 mkdir -p "$HOME"
 
+# fleet-ops#6093: the #3445 gate mints via ${HOME}/.local/bin/worker-token
+# whenever GH_TOKEN is stripped and GITHUB_ACTIONS is unset — the bare-box
+# shape of every local run of this canary. A scratch HOME without the
+# binary turned the 09-12 rescue plane (pi-salvage-worktree:11) and the
+# 09-13 credential-expiry leg (fleet-credential-expiry-canary:78) into
+# false reds on a pristine checkout. Provision the same stub the #6152
+# drill harness uses so every scratch-HOME leg stays green while the
+# fail-closed gate itself stays untouched. scratch-home-worker-token.test.sh
+# (invoked below) fails the canary the moment this provisioning regresses.
+mkdir -p "$HOME/.local/bin"
+cat >"$HOME/.local/bin/worker-token" <<'WT'
+#!/usr/bin/env bash
+printf 'GITHUB_TOKEN=test-wt-token-never-used-for-writes\n'
+WT
+chmod +x "$HOME/.local/bin/worker-token"
+
 # A scratch fleet-ops repo with the workflow files the GitHub plane checks.
 repo="$scratch/repo"
 mkdir -p "$repo/bin" "$repo/.github/workflows" "$repo/config"
@@ -1747,6 +1763,12 @@ bash "$here/paid-flash-canary.test.sh"
 # the dead case since the #6115 cull retired the #917 live-validate
 # canary, this one keeps the credential alive.
 bash "$here/grok-token-refresh.test.sh"
+
+# fleet-ops#6093: scratch-HOME worker-token provisioning pin. Invoked from
+# this CI-listed file so hosted runners run it without a workflow edit.
+# Fails the canary the moment the #6152-style stub provisioning above
+# regresses — without it the #3445 gate turns every bare-box leg red.
+bash "$here/scratch-home-worker-token.test.sh"
 
 # fleet-ops#938: vacation-window credential expiry canary. Invoked from this
 # CI-listed file so hosted runners run it without a workflow edit
