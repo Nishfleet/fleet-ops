@@ -41,6 +41,55 @@ LIST_LIMIT = 200
 # on a closed ticket is a silent drop (nobody claims it, intake never sees
 # it).
 CLOSED_DEDUPE_HOURS_ENV = "FLEET_ISSUE_FILE_CLOSED_HOURS"
+
+# GitHub rate-limit filing gate (sibling of the pi-intake-tick.sh claims
+# gate, fleet-ops#1350). Every `file` invocation pays LIST_LIMIT/30 ≈ 7
+# GraphQL pages per corpus list (open + recently-closed ⇒ ~14 per filing,
+# more with re-panels), and EVERY auto-filer routes through here — so a
+# batch night (blind-audit marathon, scout corpus sweep, detector re-fires)
+# can drain the shared installation graphql bucket (5000/hr) to 0, which is
+# what burned the gh_rate_limit_headroom SLO and held the intake gate for
+# 30m+ on 2026-09-12 (alert-repair FleetSloGhRateLimitHeadroomLow). While
+# the exporter's side-car says ANY consumed resource is below the 20%
+# throttle threshold, defer the filing (exit 3): blind-audit routes the
+# finding to the carry-over ledger and scouts log the deferral — the
+# designed retry paths — instead of burning the last headroom on a dedupe
+# lookup. Fail-open on missing/stale/unparseable state (same canon as the
+# intake gate: a dead exporter must not freeze filing; the
+# FleetGhRateLimitAbsent alert catches the dead exporter). Max age is 360s:
+# the exporter rewrites the side-car on its 5-min cadence (fleet-ops#5616
+# aligned the intake gate's max-age to the same writer cadence).
+GH_RL_STATE_ENV = "FLEET_ISSUE_FILE_GH_RATE_LIMIT_STATE"
+GH_RL_STATE_DEFAULT = "/home/nish/workspaces/agent-state/pi-intake/gh-rate-limit.json"
+GH_RL_MAX_AGE_S = 360
+
+
+def gh_rate_limit_hold() -> str:
+    # Human defer reason, or empty string when filing may proceed.
+    path = Path(os.environ.get(GH_RL_STATE_ENV) or GH_RL_STATE_DEFAULT)
+    try:
+        raw = path.read_text(encoding="utf-8")
+        state = json.loads(raw)
+    except (OSError, ValueError):
+        return ""  # fail open: missing/unreadable side-car
+    if not isinstance(state, dict) or not state.get("low"):
+        return ""
+    fetched = state.get("fetched_at") or 0
+    try:
+        age = datetime.now(timezone.utc).timestamp() - float(fetched)
+    except (TypeError, ValueError):
+        return ""
+    if age > GH_RL_MAX_AGE_S or age < -GH_RL_MAX_AGE_S:
+        return ""  # stale — fail open, the absent() rule owns a dead exporter
+    remaining = state.get("remaining", 0)
+    limit = state.get("limit", 0)
+    reset = state.get("reset", 0)
+    wait = max(0, int(reset - datetime.now(timezone.utc).timestamp()))
+    return (
+        f"gh rate-limit low (remaining={remaining}/{limit}, resets in {wait}s); "
+        "deferring filing to the retry/carry-over path "
+        "(gate: gh_rate_limit low, fleet-ops#1350 canon)"
+    )
 CLOSED_DEDUPE_HOURS_DEFAULT = 72
 
 # close-duplicates: only `agent-ready` issues (unclaimed) are safe to close —
@@ -986,6 +1035,11 @@ def cmd_score(args: argparse.Namespace) -> int:
 
 
 def cmd_file(args: argparse.Namespace) -> int:
+    # Rate-limit gate BEFORE the first gh corpus list (see gh_rate_limit_hold).
+    hold = gh_rate_limit_hold()
+    if hold:
+        print(f"fleet-issue-file: {hold}", file=sys.stderr)
+        return 3
     title = args.title
     if args.body_file:
         body = Path(args.body_file).read_text(encoding="utf-8")
