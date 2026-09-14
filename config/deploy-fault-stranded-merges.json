@@ -1,0 +1,6 @@
+{
+  "_comment": "fleet-ops#5785 stranded-merge map: recorded PR merge SHAs that a main-history rewrite stranded off the repo, mapped to the on-main replacement commit (same content, rebuilt SHA). Live case: 2026-09-11 force-push rebuilt 0509 main; PRs merged ~10:01-14:49 UTC that day (#2838-#2949) have mergeCommit.oid values GitHub can never place relative to a deploy run head (compare reports 'diverged'), so the deploy-fault containment proof could never pass for issues they delivered (0509#2944 reopened on every close; 0509#3460 flagged the same tick). Add an entry per stranded recorded merge when the gate hits it; the replacement must itself be an ancestor of the green production run's head.",
+  "0509": {
+    "9cc3f3babe829d04e2b4f92e04fea41cbff91168": "c26c55ce9011e23877b185d368d6ef57065ae9cf"
+  }
+}
