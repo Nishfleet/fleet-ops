@@ -151,6 +151,19 @@ SPECS = {
         "tolerance": {"mode": "exact"},
         "runner": "main_ci_prom",
     },
+    # fleet-ops#5807: the jam headline is verified against exactly the
+    # CiMergeQueueHeadWaitHigh firing condition, so the tile's number and
+    # the alert's threshold cannot drift apart.
+    "ci_merge_queue": {
+        "cmd": (
+            "PromQL count(ci_merge_queue_head_wait_seconds > 1200) "
+            "@ 127.0.0.1:9090 (exact vs the tile's jam_count; the same "
+            "threshold as the CiMergeQueueHeadWaitHigh rule, fleet-ops#5807)"
+        ),
+        "field": "jam_count",
+        "tolerance": {"mode": "exact"},
+        "runner": "ci_merge_queue_prom",
+    },
     "firing_alerts": {
         "cmd": (
             "Prometheus GET /api/v1/alerts, state=firing, Watchdog excluded "
@@ -591,6 +604,11 @@ def run_main_ci_prom(tile):
     return int(_promql_sum("count(fleet_main_ci_green == 0)"))
 
 
+def run_ci_merge_queue_prom(tile):
+    # Same count(...)-empty-is-0.0 semantics run_main_ci_prom relies on.
+    return int(_promql_sum("count(ci_merge_queue_head_wait_seconds > 1200)"))
+
+
 def run_alerts_prom(tile):
     """Live Prometheus /api/v1/alerts firing count, Watchdog excluded.
 
@@ -884,6 +902,7 @@ RUNNERS = {
     "shipped_prom": run_shipped_prom,
     "outcome_prom": run_outcome_prom,
     "main_ci_prom": run_main_ci_prom,
+    "ci_merge_queue_prom": run_ci_merge_queue_prom,
     "alerts_prom": run_alerts_prom,
     "repairs_units": run_repairs_units,
     "running_pi_execstart": run_running_pi_execstart,
