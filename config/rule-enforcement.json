@@ -897,8 +897,8 @@
     {
       "id": "led-2026-09-08-litellm-p3b",
       "source": "decisions-ledger.md: 2026-09-08 | LiteLLM P3b",
-      "mechanism": "P3b landed: lib/seat-lib.sh is gone; worker wrappers source lib/litellm-seat.sh and run `pi --print --provider litellm --model <group>` (worker-cheap, worker-capable, worker-private, senior, judge). The LiteLLM proxy owns fallbacks, cooldown, and budgets. Admission is systemd MemoryMax/oomd. Tombstone tests/pick-seat-freeze.test.sh asserts the library is absent and no pick_seat caller remains under bin/lib.",
-      "proof": "fleet-ops#4263; lib/litellm-seat.sh; tests/pick-seat-freeze.test.sh; tests/pi-seat-source-litellm.test.sh; config/litellm-proxy.yaml; fleet-ops#4219 (P3a); fleet-ops#4404; fleet-ops#5919 (freeze)",
+      "mechanism": "P3b landed: lib/seat-lib.sh is gone; worker wrappers source lib/litellm-seat.sh and run `pi --print --provider litellm --model <group>` (worker-cheap, worker-capable, worker-private, senior, judge). The LiteLLM proxy owns fallbacks, cooldown, and budgets. Admission is systemd MemoryMax/oomd. tests/no-undefined-call.test.sh (P14) fails when any bin/ or lib/ bash script calls a function nothing it sources defines; tests/deleted-symbol-gate.test.sh (P14, #6052) fails a PR whose deleted definitions still have tests/ references.",
+      "proof": "fleet-ops#4263; lib/litellm-seat.sh; tests/no-undefined-call.test.sh; tests/deleted-symbol-gate.test.sh; tests/pi-seat-source-litellm.test.sh; config/litellm-proxy.yaml; fleet-ops#4219 (P3a); fleet-ops#4404; fleet-ops#5919 (freeze); fleet-ops#6032 (freeze tombstone retired)",
       "status": "enforced"
     },
     {

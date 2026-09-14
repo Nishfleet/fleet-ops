@@ -47,7 +47,6 @@ clear_active_seat() { :; }
 is_spawn_etimeout() { return 1; }
 is_quota_cap_error() { return 1; }
 mark_seat_spawn_fail() { return 0; }
-mark_seat_quota_bench() { return 0; }
 litellm_seat() { printf 'cursor\tcursor-grok-4.6-high\n'; return 0; }
 EOF
 

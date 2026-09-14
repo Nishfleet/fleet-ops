@@ -236,14 +236,20 @@ rc=0
 # fleet-ops#786: the static prompt body must be the prefix so prompt-cache
 # hits survive across ticks. Volatile seat/slug/timestamp stamps live AFTER
 # the cat, not before.
-if {
-        cat "$PROMPT_USE"
-        printf '\n---\nAGENT_CRON_SLUG=%s\nWORKDIR=%s\nPROVIDER=%s\nMODEL=%s\nRUN_TS=%s\n' "$slug" "$WORKDIR" "$np" "$nm" "$TS"
-    } | (cd "$WORKDIR" && timeout --kill-after=30s "${PI_HANG_TIMEOUT_S}s" "$PI_BIN" --print --provider "$np" --model "$nm") >"$out" 2>"$err"; then
+# fleet-ops#6032: feed pi via a file redirect, not a writer subshell — a pi
+# that exits without reading stdin SIGPIPEs the writer and prints
+# "cat: write error: Broken pipe" to the unit's stderr.
+pkt=$(mktemp)
+{
+    cat "$PROMPT_USE"
+    printf '\n---\nAGENT_CRON_SLUG=%s\nWORKDIR=%s\nPROVIDER=%s\nMODEL=%s\nRUN_TS=%s\n' "$slug" "$WORKDIR" "$np" "$nm" "$TS"
+} >"$pkt"
+if (cd "$WORKDIR" && timeout --kill-after=30s "${PI_HANG_TIMEOUT_S}s" "$PI_BIN" --print --provider "$np" --model "$nm" <"$pkt") >"$out" 2>"$err"; then
     rc=0
 else
     rc=$?
 fi
+rm -f "$pkt"
 spawn_end_s=$(date -u +%s)
 spawn_elapsed_s=$((spawn_end_s - spawn_start_s))
 # fleet-ops#5739: the trimmed packet temp file was consumed by the pipe.
@@ -278,10 +284,12 @@ if (( rc != 0 )) && (( spawn_elapsed_s < SPAWN_FAIL_MAX_S )); then
 fi
 
 # --- fleet-ops#90: quota/cap wall bench -------------------------------------
-# A hard-capped seat (ClinePass weekly cap, devin 15-min 429) is a walled
-# seat, not a transient retry. Bench it until its advertised reset window (or
-# the provider default) so the next Restart's pick-seat skips it instead of
-# burning a StartLimitBurst attempt on a guaranteed failure. Skipped when the
+# A hard-capped seat (ClinePass weekly cap, devin 15-min 429, a provider 402
+# budget wall) is a walled seat, not a transient retry. Bench it until its
+# advertised reset window (or the provider default) so the next Restart's
+# pick-seat skips it instead of burning a StartLimitBurst attempt on a
+# guaranteed failure — mark_seat_quota_bench is a real writer again
+# (fleet-ops#6652 money-wall ledger + spawn-bench marker). Skipped when the
 # spawn-fail path already handled this exit.
 if (( rc != 0 )) && (( ! spawn_fail_triggered )); then
     out_for_scan=""; err_for_scan=""
@@ -302,28 +310,22 @@ fi
 # orchestrator-decision-sweep that meant 10+ drafted verdicts and a parked
 # needs-orchestrator queue that never drained across five exit-0 sweeps.
 # A refused run is a FAILED run: record the output (the drafted work is the
-# evidence the retry and the senior auditor need), bench the seat past this
-# unit's RestartSec so the systemd retry walks the seat ladder to a seat
-# whose writes land, and exit 1 — loud through the normal failure path
-# (Restart= -> OnFailure escalation). Detection is the prompt contract
-# sentinel (WRITES-REFUSED) plus the observed refusal phrases; runs on both
-# rc=0 and otherwise-unclassified rc!=0 exits.
+# evidence the retry and the senior auditor need) and exit 1 — loud through
+# the normal failure path (Restart= -> OnFailure escalation); the proxy
+# cooldown owns the cross-run seat skip (fleet-ops#6032: the local bench
+# writer was a log-only stub). Detection is the prompt contract sentinel
+# (WRITES-REFUSED) plus the observed refusal phrases; runs on both rc=0 and
+# otherwise-unclassified rc!=0 exits.
 if declare -F is_writes_refused >/dev/null 2>&1; then
     out_for_scan=""; err_for_scan=""
     [[ -f "$out" ]] && out_for_scan=$(cat "$out" 2>/dev/null || true)
     [[ -f "$err" ]] && err_for_scan=$(cat "$err" 2>/dev/null || true)
     if is_writes_refused "$out_for_scan" "$err_for_scan"; then
-        seat_log "agent-cron-run: $slug WRITES REFUSED on $np/$nm (rc=$rc) — the seat's approval gate blocked the run's writes; benching ${SEAT_WRITES_REFUSED_BENCH_S:-3600}s and failing loud (fleet-ops#5189)"
+        seat_log "agent-cron-run: $slug WRITES REFUSED on $np/$nm (rc=$rc) — the seat's approval gate blocked the run's writes; failing loud (fleet-ops#5189)"
         {
             printf '# %s %s WRITES-REFUSED\nseat=%s/%s workdir=%s\n' "$slug" "$TS" "$np" "$nm" "$WORKDIR"
             cat "$out"
         } >>"$OUT"
-        if declare -F mark_seat_writes_refused_bench >/dev/null 2>&1; then
-            mark_seat_writes_refused_bench "$np" "$nm" "agent-cron:$slug" \
-                || seat_log "agent-cron-run: $slug WARN: writes-refused bench marker NOT written for $np/$nm"
-        else
-            seat_log "agent-cron-run: $slug WARN: mark_seat_writes_refused_bench absent in litellm-seat — relying on tried-seats exclusion"
-        fi
         rm -f "$out" "$err"
         exit 1
     fi

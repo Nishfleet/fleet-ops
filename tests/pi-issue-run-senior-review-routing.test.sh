@@ -136,6 +136,17 @@ issues_dir="$scratch/issues"
 mkdir -p "$issues_dir"
 export PI_ISSUES_DIR="$issues_dir"
 
+# Hermetic readiness: the fixture sources the REAL litellm_seat, so it must
+# not depend on this VPS's live 127.0.0.1:4000 (the 2026-09-13T18:2xZ flake
+# class: a transient readiness miss fails the pick open to the #6315 direct
+# prepaid lane and the litellm/senior assertion dies). Point the probe at a
+# dead port — connection-refused is instant — and let the #6315/#5889
+# test fail-open answer READY, exactly as CI does. The completion probe
+# derives its URL from LITELLM_HEALTH_URL, so both misses are deterministic;
+# GITHUB_ACTIONS has no other effect in the exercised paths (lib only).
+export LITELLM_HEALTH_URL="http://127.0.0.1:1/health/readiness"
+export GITHUB_ACTIONS=true
+
 write_pkt() {
     # write_pkt <inst> <target-repo> [extra marker lines...]
     local inst="$1" repo="$2" extra; shift 2

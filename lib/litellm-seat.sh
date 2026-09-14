@@ -1512,15 +1512,25 @@ mark_seat_quota_bench() {
     seat_log "quota-bench: FAILED to write marker for $p/$m"
     return 1
 }
-mark_seat_overload_bench() { seat_log "mark_seat_overload_bench: $* (proxy cooldown owns routing)"; return 0; }
-mark_seat_hang_bench() { seat_log "mark_seat_hang_bench: $* (proxy cooldown owns routing)"; return 0; }
-mark_seat_credentials_bad() { seat_log "mark_seat_credentials_bad: ${1:-}/${2:-} (proxy cooldown owns routing)"; return 0; }
-mark_seat_worked_no_text() { return 1; }
-reset_seat_worked_no_text() { return 0; }
-seat_worked_no_text_path() { echo ""; }
-# Local consecutive-count bench is gone. Wrappers still call this; false
-# means "not a remote agent classified here" so the loud-fail path runs.
-provider_remote_agent() { return 1; }
+# fleet-ops#6032: the named per-class bench writers (overload/hang/
+# credentials/config-fault/writes-refused/devin-writes-rejected/empty-success)
+# and the worked-no-text counter were log-only stubs that let callers report
+# "seat benched" while nothing was benched — deleted; the LiteLLM proxy
+# cooldown owns cross-run seat skipping. mark_seat_spawn_fail,
+# mark_seat_empty_run and mark_seat_quota_bench (the #6652 money-wall bench)
+# above are the real marker writers.
+# fleet-ops#6032: restored real implementation — the `return 1` stub made
+# every remote-agent check silently false, so a devin run that shipped a PR
+# with stdout < OUT_MIN was classified a provider no-op and benched via
+# mark_seat_empty_run (also skipping the 1800 s remote-agent cap at line
+# ~1332). Reads providers[<p>].remote_agent from the caps file, same style
+# as model_cap/model_class_of (fleet-ops#3531).
+provider_remote_agent() {
+    local p="${1:-}"
+    if (( ! _seat_caps_loaded )); then load_seat_caps || true; fi
+    [[ -f "$SEAT_CAPS_JSON" ]] || return 1
+    [[ "$(jq -r --arg p "$p" '.providers[$p].remote_agent // false' "$SEAT_CAPS_JSON" 2>/dev/null)" == "true" ]]
+}
 # Real counter, not a stub: pi-issue-run's provider-death resume (#5788) and
 # hang-watchdog slow-session gate (#3883) both key on it. A stub returning 0
 # silently disabled both after #4263 deleted the routing library.
@@ -1550,7 +1560,16 @@ is_spawn_etimeout() {
     fi
     return 1
 }
-is_mid_session_death() { return 1; }
+# fleet-ops#6032: restored real matcher — the `return 1` stub made the
+# mid_session_death branch of classify_death_error unreachable for any
+# consumer that doesn't define its own copy (pi-issue-run carried a shadow
+# def, now deduped into this lib canonical). Detects rc=143/SIGTERM/OOM-kill
+# stderr signatures (cursor-grok heavy-packet deaths, fleet-ops#3310).
+is_mid_session_death() {
+    local err="${1:-}"
+    [[ -f "$err" ]] || return 1
+    grep -qiE 'exited with code 143|code 143|SIGTERM|terminated|Killed' "$err" 2>/dev/null
+}
 # Restored pure matchers (fleet-ops#4263 fallout): pi-issue-run still branches
 # on these; their deletion made every call return 127 (= silently false).
 is_devin_writes_rejected() {
@@ -1570,10 +1589,8 @@ is_workspace_trust_error() {
     grep -qiF 'Refusing to run in an untrusted workspace' <<<"$combined"
 }
 # Bench/usage markers still called by keep-list wrappers; the proxy owns cooldown and /spend.
-mark_seat_writes_refused_bench() { seat_log "mark_seat_writes_refused_bench: $* (proxy owns cooldown/spend)"; return 0; }
-mark_seat_config_fault_bench() { seat_log "mark_seat_config_fault_bench: $* (proxy owns cooldown/spend)"; return 0; }
-mark_seat_devin_writes_rejected_bench() { seat_log "mark_seat_devin_writes_rejected_bench: $* (proxy owns cooldown/spend)"; return 0; }
-mark_seat_empty_success() { seat_log "mark_seat_empty_success: $* (proxy owns cooldown/spend)"; return 0; }
+# (fleet-ops#6032: the remaining log-only stubs were deleted — see the note
+# above mark_seat_spawn_fail.)
 # Real matcher (restored, fleet-ops#4263 fallout): agent-cron-run classifies an
 # approval-gate refusal with it behind `declare -F`, so its deletion silently
 # disabled WRITES-REFUSED detection instead of failing.
@@ -1629,7 +1646,6 @@ is_overload_error() {
     fi
     return 1
 }
-is_quota_error() { return 1; }
 # Restored real matcher (fleet-ops#4263 fallout): classify_death_error names the class.
 is_quota_cap_error() {
     local out="$1" err="$2"
@@ -1690,11 +1706,43 @@ is_quota_cap_error() {
     fi
     return 1
 }
-_seat_is_benched() { return 1; }
+# _seat_is_benched <provider> <model>
+# Returns 0 if the seat ledger already shows an active bench (a non-healthy
+# health_class, a future bench_until/usable_at, or an unexpired spawn-bench
+# marker), 1 otherwise. Used by the fast-death fallthrough bench (fleet-ops#3766)
+# so it never overwrites a bench a prior detector already wrote — the
+# fallthrough is only for a seat that is genuinely unbenched and flapping.
+# fleet-ops#6032: restored from seat-lib — a `return 1` stub made the
+# fallthrough claim "not benched" for every seat.
+_seat_is_benched() {
+    local p="$1" m="$2"
+    local sb_path sb_usable
+    sb_path=$(seat_spawn_bench_path "$p" "$m")
+    if [[ -f "$sb_path" ]]; then
+        sb_usable=$(jq -r '.usable_at // ""' "$sb_path" 2>/dev/null || true)
+        if [[ -n "$sb_usable" ]] && _seat_in_future "$sb_usable"; then
+            return 0
+        fi
+    fi
+    local f hc bench_until usable_at
+    f=$(seat_ledger_path "$p" "$m")
+    [[ -f "$f" ]] || return 1
+    IFS=$'\x1f'$'\n' read -r hc bench_until usable_at < <(
+        jq -r '[(.health_class//""),(.bench_until//""),(.usable_at//"")] | join("")' "$f" 2>/dev/null || true
+    )
+    [[ -z "$hc" ]] && return 1
+    # Any non-healthy class is a bench (quota / overload / transient_fault /
+    # corpse) — never overwrite it with a fresh spawn-fail.
+    [[ "$hc" != "healthy" ]] && return 0
+    if [[ -n "$bench_until" ]] && _seat_in_future "$bench_until"; then return 0; fi
+    if [[ -n "$usable_at" ]] && _seat_in_future "$usable_at"; then return 0; fi
+    return 1
+}
+
 # _seat_merge_error_class <provider> <model> <class> <reason>
 # Field-merge last_error_class + bench_reason into the existing seat ledger,
 # preserving every other field (health_class / failure_mode / seat_dead).
-# fleet-ops#6032: restored from the pre-#5993 routing library — a `return 0` stub made callers
+# fleet-ops#6032: restored from seat-lib — a `return 0` stub made callers
 # (pi-issue-run observability stamps, the fleet-ops#3947 corpse bench_reason
 # backfill) believe the merge landed when nothing was written.
 _seat_merge_error_class() {
@@ -1715,9 +1763,9 @@ _seat_merge_error_class() {
     return 1
 }
 
-# Observability only (fleet-ops#3766). Class matchers above are stubs, so
-# the class is unknown unless the hang_etimedout grep hits. The literal
-# still lands on PACKET-VERDICT; the proxy owns cooldown.
+# Observability only (fleet-ops#3766). The literal lands on PACKET-VERDICT
+# and (via _seat_merge_error_class) on the seat ledger; the proxy owns
+# cooldown.
 classify_death_error() {
     local out="${1:-}" err="${2:-}" sess="${3:-}"
     local out_text="" err_text=""

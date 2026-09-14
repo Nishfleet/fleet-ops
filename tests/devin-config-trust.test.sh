@@ -16,9 +16,9 @@
 #      existing account fields.
 #   3. The seatlib detector is_workspace_trust_error matches the literal
 #      "Refusing to run in an untrusted workspace".
-#   4. mark_seat_config_fault_bench writes a config_fault ledger entry that is
-#      NEVER retired (seat_dead=false), proving config/trust faults are
-#      infrastructure, not seat yield.
+#   4. the LiteLLM proxy cooldown owns the cross-run seat skip — the local
+#      config-fault bench writer was a log-only stub, deleted in
+#      fleet-ops#6032.
 #   5. classify_death_error classifies the trust literal as
 #      `config_fault_trust`, not `unknown` (so the fast-death fallthrough does
 #      not re-bench it as an ordinary failure).
@@ -127,15 +127,6 @@ cat >"$scratch/seat-caps.json" <<'JSON'
       "quota_bench_default_s": 900,
       "models": {"glm-5-2": 4, "swe-1-7": 4}
     }
-  },
-  "error_classes": {
-    "quota_bench": {
-      "matcher": "is_quota_cap_error",
-      "writer": "mark_seat_quota_bench",
-      "default_window_s_seconds": "quota_bench_default_s",
-      "trigger_order": 2,
-      "description": "Hard cap / quota wall."
-    }
   }
 }
 JSON
@@ -203,9 +194,9 @@ set -e
 ok "is_workspace_trust_error: does not match empty input"
 
 # ============================================================================
-# 4. retired (fleet-ops#4263): the config_fault bench ledger lived in the
-# deleted routing library; the LiteLLM proxy owns cooldown and
-# mark_seat_config_fault_bench is a logging stub. The matcher (3) stays.
+# 4. retired (fleet-ops#4263; stub deleted fleet-ops#6032): the config_fault
+# bench ledger lived in the deleted routing library; the LiteLLM proxy owns
+# cooldown. The matcher (3) stays.
 
 # 5. classify_death_error classifies the trust literal as config_fault_trust
 # ============================================================================

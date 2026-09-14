@@ -99,11 +99,10 @@ _lit_group="worker-cheap"
 seat=$(litellm_seat "$_lit_group" "$tried_file" || true)
 seat_log "pi-packet-run: $pid group=$_lit_group (privacy=$pkt_privacy)"
 if [[ -z "$seat" ]]; then
-    if [[ "$difficulty" == "keystone" ]]; then
-        seat_log "pi-packet-run: KEYSTONE ESCALATION for $pid (tried: $(tr '\n' ' ' < "$tried_file" 2>/dev/null || true)) — exiting 1 so OnFailure summons senior conference"
-    else
-        seat_log "pi-packet-run: no alternate seat for $pid (tried: $(tr '\n' ' ' < "$tried_file" 2>/dev/null || true)) — exiting 1 so OnFailure escalates"
-    fi
+    # fleet-ops#6032: no keystone special-case — post-#5993 the keystone two-
+    # strike path is the LiteLLM senior-group fallback, and every no-seat exit
+    # is identical: exit 1 so OnFailure escalates to the senior conference.
+    seat_log "pi-packet-run: no alternate seat for $pid (difficulty=$difficulty, tried: $(tr '\n' ' ' < "$tried_file" 2>/dev/null || true)) — exiting 1 so OnFailure escalates"
     exit 1
 fi
 

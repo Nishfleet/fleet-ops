@@ -15,14 +15,12 @@
 #      sentinel AND the refusal phrases the gated seats already emit
 #      ("approval cards rejected", "blocked by auto-review", devin's
 #      "rejected a tool call").
-#   2. mark_seat_writes_refused_bench (seatlib) writes a config_fault
-#      ledger entry (seat_dead=false — infrastructure, never seat yield)
-#      whose usable_at window (default 3600s) OUTLASTS the caller unit's
-#      RestartSec=900, so the systemd retry walks the senior ladder instead
-#      of re-picking the same gated seat.
+#   2. the LiteLLM proxy cooldown owns the cross-run seat skip — the local
+#      writes-refused bench writer was a log-only stub, deleted in
+#      fleet-ops#6032.
 #   3. agent-cron-run checks the captured output on the rc=0 path, records
-#      the refused run's output into the dated log file, benches the seat,
-#      and exits 1 (loud: Restart= -> OnFailure escalation).
+#      the refused run's output into the dated log file, and exits 1 (loud:
+#      Restart= -> OnFailure escalation).
 #
 # Offline: stubbed seat-caps.json/ledger for the seatlib sections; a stub
 # seatlib + fake pi for the agent-cron-run end-to-end.
@@ -54,15 +52,6 @@ cat >"$scratch/seat-caps.json" <<'JSON'
       "cap": 2, "class": "prepaid-quota",
       "quota_bench_default_s": 900,
       "models": {"cursor-grok-4.6-high": 2}
-    }
-  },
-  "error_classes": {
-    "quota_bench": {
-      "matcher": "is_quota_cap_error",
-      "writer": "mark_seat_quota_bench",
-      "default_window_s_seconds": "quota_bench_default_s",
-      "trigger_order": 2,
-      "description": "Hard cap / quota wall."
     }
   }
 }
@@ -137,15 +126,14 @@ set +e; match "" ""; rc=$?; set -e
 ok "is_writes_refused: empty input does not match"
 
 # ============================================================================
-# 2/2b: retired (fleet-ops#4263). The config_fault bench ledger and the
-# seat_usable skip lived in the deleted routing library; the LiteLLM proxy owns
-# cooldown, and mark_seat_writes_refused_bench is a logging stub. The matcher
-# (1) and the agent-cron-run end-to-end refusal path (3) stay.
+# 2/2b: retired (fleet-ops#4263, stub deleted fleet-ops#6032). The
+# config_fault bench ledger and the seat_usable skip lived in the deleted
+# routing library; the LiteLLM proxy owns cooldown. The matcher (1) and the
+# agent-cron-run end-to-end refusal path (3) stay.
 
-# 3. agent-cron-run end-to-end: refused output on rc=0 -> exit 1 + bench +
-#    output recorded; clean output -> exit 0 as before
+# 3. agent-cron-run end-to-end: refused output on rc=0 -> exit 1 + output
+#    recorded; clean output -> exit 0 as before
 # ============================================================================
-bench_record="$scratch/bench.calls"
 stub_lib="$scratch/stub-seatlib.sh"
 cat >"$stub_lib" <<'EOF'
 export HOME="${HOME:-/home/nish}"
@@ -159,11 +147,9 @@ clear_active_seat() { :; }
 is_spawn_etimeout() { return 1; }
 is_quota_cap_error() { return 1; }
 mark_seat_spawn_fail() { return 0; }
-mark_seat_quota_bench() { return 0; }
 # The real matcher is unit-tested above; the e2e exercises the wiring with
 # the contract sentinel, the marker the prompt guarantees.
 is_writes_refused() { grep -q 'WRITES-REFUSED' <<<"$1$2"; }
-mark_seat_writes_refused_bench() { printf '%s\t%s\t%s\n' "$1" "$2" "$3" >>"$BENCH_RECORD"; return 0; }
 litellm_seat() { printf 'cursor\tcursor-grok-4.6-high\n'; return 0; }
 EOF
 
@@ -193,7 +179,6 @@ export PROMPTS_DIR="$prompts_dir"
 export LOG_DIR="$log_dir"
 export WORKDIR="$scratch"
 export ATTEMPTS_DIR="$scratch/attempts"
-export BENCH_RECORD="$bench_record"
 
 set +e
 "$bin" orchestrator-decision-sweep >"$scratch/run.out" 2>"$scratch/run.err"
@@ -203,11 +188,8 @@ set -e
     || fail "e2e: a run whose output carries WRITES-REFUSED must exit 1 (loud), got $rc (stderr: $(cat "$scratch/run.err"))"
 ok "e2e: WRITES-REFUSED output -> exit 1 (was the silent rc=0 stall)"
 
-# The seat must be benched so the systemd retry walks the ladder.
-[[ -s "$bench_record" ]] || fail "e2e: mark_seat_writes_refused_bench must be called on a refused run"
-grep -q $'cursor\tcursor-grok-4.6-high\tagent-cron:orchestrator-decision-sweep' "$bench_record" \
-    || fail "e2e: bench call must carry the seat and the slug reason, got: $(cat "$bench_record")"
-ok "e2e: refused seat benched (cursor/cursor-grok-4.6-high, reason names the slug)"
+# fleet-ops#6032: the local writes-refused bench marker is gone — the proxy
+# cooldown owns the cross-run skip. The loud exit-1 above is the contract.
 
 # The refused run's output must be recorded in the dated log file — the
 # drafted verdicts are the evidence.
@@ -234,13 +216,11 @@ printf 'all verdicts posted.\n'
 printf 'orchestrator-decision-sweep: decided=2 dep=7 nish=3 closed=0 skipped=0\n'
 EOF
 chmod +x "$fake_pi"
-: >"$bench_record"
 set +e
 "$bin" orchestrator-decision-sweep >"$scratch/run2.out" 2>"$scratch/run2.err"
 rc=$?
 set -e
 [[ "$rc" == "0" ]] || fail "control: a clean run must still exit 0, got $rc (stderr: $(cat "$scratch/run2.err"))"
-[[ ! -s "$bench_record" ]] || fail "control: a clean run must NOT bench the seat, got: $(cat "$bench_record")"
 ok "control: clean run exits 0, no bench (detector does not false-positive the normal path)"
 
 # ============================================================================
@@ -252,9 +232,7 @@ ok "prompt declares the WRITES-REFUSED sentinel contract"
 
 grep -q 'is_writes_refused' "$bin" \
     || fail "agent-cron-run must call is_writes_refused"
-grep -q 'mark_seat_writes_refused_bench' "$bin" \
-    || fail "agent-cron-run must call mark_seat_writes_refused_bench"
-ok "agent-cron-run wires is_writes_refused + mark_seat_writes_refused_bench"
+ok "agent-cron-run wires is_writes_refused"
 
 
 echo

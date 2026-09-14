@@ -10,7 +10,7 @@
 # red-blocking every open PR:
 #   1. pi-issue-run resume tool-count (stubbed session_tool_calls)
 #   2. tests/seat-credentials-bad-replay.test.sh extracting
-#      is_credentials_error / mark_seat_credentials_bad from the deleted
+#      is_credentials_error / the credential bench writer from the deleted
 #      lib/seat-lib.sh
 #   3. tests/repair-rung.test.sh:46 asserting _pick_repair_rung_seat
 # Each was found by a P14 run on the NEXT PR, not on #5993 itself.

@@ -87,8 +87,9 @@ against off-the-shelf LiteLLM features too. Verified mapping:
    removal. Corpse retirement (403 credentials_bad) still works — 401/403 are
    hard failures and qualify — but transient 429 walls will NOT auto-bench a
    deployment; they rely on `cooldown_time` + `allowed_fails` after a real
-   request fails. The fleet's current `mark_seat_quota_bench` benches on the
-   *first* 429 with a parsed reset window. To preserve that behaviour, set
+   request fails. The fleet's seat-lib-era quota bench writer parked on the
+   *first* 429 with a parsed reset window (log-only stub, deleted
+   fleet-ops#6032). To preserve that behaviour, set
    `allowed_fails: 1` for quota-class errors via `allowed_fails_policy`, and
    accept that 429 cooldown is now request-path, not proactive.
 

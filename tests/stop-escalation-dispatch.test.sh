@@ -101,11 +101,17 @@ mark_seat_spawn_fail() {
   [ -n "${STOP_ESCALATION_TEST_BENCH_FILE:-}" ] || return 0
   printf '%s/%s\n' "$p" "$m" >> "$STOP_ESCALATION_TEST_BENCH_FILE"
 }
+# fleet-ops#6652's real money-wall bench — the one named per-class writer
+# that survived the #6032 stub purge. Same bench-file seam as spawn-fail.
+mark_seat_quota_bench() {
+  local p="$1" m="$2"
+  [ -n "${STOP_ESCALATION_TEST_BENCH_FILE:-}" ] || return 0
+  printf '%s/%s\n' "$p" "$m" >> "$STOP_ESCALATION_TEST_BENCH_FILE"
+}
 # Mirror the real seatlib detectors (fleet-ops#623): "insufficient funds" is
 # NOT a quota_cap match in production either, so a 402 falls through to
 # mark_seat_spawn_fail — that is the live tight-loop path this fix targets.
 is_credentials_error() { return 1; }
-mark_seat_credentials_bad() { return 1; }
 is_quota_cap_error() {
   local out="$1" err="$2"
   local combined="$out"$'\n'"$err"
@@ -124,16 +130,6 @@ is_overload_error() {
   local combined="$out"$'\n'"$err"
   grep -qiE 'upstream[[:space:]]+(model[[:space:]]+)?provider[[:space:]]+is[[:space:]]+temporarily[[:space:]]+unavailable' <<<"$combined" || return 1
   return 0
-}
-mark_seat_quota_bench() {
-  local p="$1" m="$2"
-  [ -n "${STOP_ESCALATION_TEST_BENCH_FILE:-}" ] || return 0
-  printf '%s/%s\n' "$p" "$m" >> "$STOP_ESCALATION_TEST_BENCH_FILE"
-}
-mark_seat_overload_bench() {
-  local p="$1" m="$2"
-  [ -n "${STOP_ESCALATION_TEST_BENCH_FILE:-}" ] || return 0
-  printf '%s/%s\n' "$p" "$m" >> "$STOP_ESCALATION_TEST_BENCH_FILE"
 }
 seat_log() { :; }
 EOF
@@ -173,7 +169,7 @@ case "$mode" in
     # fleet-ops#3780: the live xkiro free-tier daily wall. pi surfaces it
     # as rc=1 with the 429 body on stderr; the real is_quota_cap_error
     # classifies it (free-model token quota + rate_limit_exceeded), so the
-    # dispatcher must bench via the quota path, not the spawn_fail fallback
+    # dispatcher must classify bench=quota_cap, not the no_block fallback
     # that accumulated the 47-count park.
     printf '429: {"message":"You'"'"'ve reached today'"'"'s free-model token quota. Your plan'"'"'s paid allowance is separate — switch to a paid model to keep going, or wait for the daily reset.","type":"rate_limit_error","code":"rate_limit_exceeded"}\n' >&2
     exit 1
@@ -629,8 +625,9 @@ ok "fleet-ops#623: rc=1 HTTP 402 seat benches + rotates, never unbounded loop"
 
 # ---------------------------------------------------------------------------
 # Invariant 13 (fleet-ops#623): a seat returning pi_rc=1 with a quota/cap wall
-# ("quota exhausted, resets in 1h") is benched via the quota bench path, not
-# the spawn-fail fallback.  Proves the longer-bench ladder is wired.
+# ("quota exhausted, resets in 1h") is classified bench=quota_cap, not the
+# no_block fallback.  fleet-ops#6032: the per-class bench writers were
+# log-only stubs; the spawn-fail marker now benches every class.
 # ---------------------------------------------------------------------------
 : > "$STOP_ESCALATION_SEEN"
 : > "$STOP_ESCALATION_KILLS"
@@ -650,10 +647,10 @@ set -e
 grep -q "DISPATCH-NO-BLOCK hash=$hashq provider=devin" "$STOP_ESCALATION_AUDITOR_LOG" \
   || fail "quota: expected DISPATCH-NO-BLOCK on devin"
 grep -q "bench=quota_cap" "$STOP_ESCALATION_AUDITOR_LOG" \
-  || fail "quota: expected bench=quota_cap (quota wall uses the long bench)"
+  || fail "quota: expected bench=quota_cap (quota wall must classify, not fall through)"
 grep -qxF "devin/glm-5-2" "$STOP_ESCALATION_TEST_BENCH_FILE" \
   || fail "quota: devin must be benched"
-ok "fleet-ops#623: rc=1 quota wall -> quota bench path (long bench)"
+ok "fleet-ops#623: rc=1 quota wall -> quota_cap class, spawn-fail bench"
 
 # ---------------------------------------------------------------------------
 # Invariant 13b (fleet-ops#3780): the xkiro free-tier daily-token-quota wall
@@ -661,9 +658,9 @@ ok "fleet-ops#623: rc=1 quota wall -> quota bench path (long bench)"
 # type=rate_limit_error code=rate_limit_exceeded) is a quota_cap, NOT a
 # spawn_fail. The live seat accumulated 47 consecutive spawn_fail because
 # the stub's is_quota_cap_error predated the #3816 free-model patterns; the
-# real matcher classifies it, so the dispatcher must take the quota bench
-# path (long bench until the daily reset), never the no_block:rc=1 fallback
-# that drove the corpse park.
+# real matcher classifies it, so the dispatcher must classify
+# bench=quota_cap, never the no_block:rc=1 fallback that drove the corpse
+# park.
 # ---------------------------------------------------------------------------
 : > "$STOP_ESCALATION_SEEN"
 : > "$STOP_ESCALATION_KILLS"
@@ -683,12 +680,12 @@ set -e
 grep -q "DISPATCH-NO-BLOCK hash=$hashx provider=devin" "$STOP_ESCALATION_AUDITOR_LOG" \
   || fail "xkiro_quota: expected DISPATCH-NO-BLOCK on devin"
 grep -q "bench=quota_cap" "$STOP_ESCALATION_AUDITOR_LOG" \
-  || fail "xkiro_quota: expected bench=quota_cap (xkiro free-model daily wall is a quota cap, not a spawn_fail)"
+  || fail "xkiro_quota: expected bench=quota_cap (xkiro free-model daily wall is a quota cap, not a no_block)"
 ! grep -q "bench=no_block:rc=1" "$STOP_ESCALATION_AUDITOR_LOG" \
-  || fail "xkiro_quota: must NOT fall through to no_block:rc=1 spawn_fail (the 47-count misclassification)"
+  || fail "xkiro_quota: must NOT fall through to no_block:rc=1 (the 47-count misclassification)"
 grep -qxF "devin/glm-5-2" "$STOP_ESCALATION_TEST_BENCH_FILE" \
-  || fail "xkiro_quota: devin must be benched via quota path"
-ok "fleet-ops#3780: xkiro free-model daily-token-quota 429 -> quota_cap bench, not spawn_fail"
+  || fail "xkiro_quota: devin must be benched via the spawn-fail marker"
+ok "fleet-ops#3780: xkiro free-model daily-token-quota 429 -> quota_cap class, spawn-fail bench"
 
 # ---------------------------------------------------------------------------
 # Invariant 14 (fleet-ops#2661): escalate-lane provider-wedge check. A

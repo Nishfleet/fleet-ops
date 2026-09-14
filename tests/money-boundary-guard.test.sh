@@ -266,7 +266,7 @@ cat > "$legacy_as/lanes/seats/xai-oauth__grok-4.6.json" <<JSON
   "usable_at": "$sixh",
   "bench_until": "$sixh",
   "observed_at": "$obs",
-  "writer": "mark_seat_quota_bench"
+  "writer": "seat-health"
 }
 JSON
 MONEY_BOUNDARY_AS="$legacy_as" "$script" --check >/dev/null 2>&1 \

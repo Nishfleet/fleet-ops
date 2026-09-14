@@ -743,7 +743,7 @@ main() {
     reason=$(extract_reason "$combined") || reason=""
 
     if [ -z "$verdict" ]; then
-        log "auditor output did not contain a PASS/FAIL verdict (empty verdict; exiting 1 for systemd retry)"
+        log "auditor output did not contain a verdict (AUDIT_KIND=${AUDIT_KIND:-scout}; empty verdict, exiting 1 for systemd retry)"
         exit 1
     fi
     if [ -z "$reason" ]; then
