@@ -133,6 +133,9 @@ jobs:
         # Devin message rate limit = pause + in-session resume, never a worker
         # death (114 deaths/24h on that one message, 2026-09-11).
         bash tests/devin-provider-rate-limit-retry.test.sh
+        # fleet-ops#6228: LiteLLM CustomLLM devin bridge (stubbed litellm +
+        # fake devin binary — hermetic, no real seat calls in CI).
+        bash tests/fleet-litellm-devin-adapter.test.sh
         bash tests/repair-rotation.test.sh
         bash tests/alert-repair-seat-walled.test.sh
         bash tests/alert-repair-class-park-skip.test.sh

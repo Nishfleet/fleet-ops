@@ -1263,6 +1263,13 @@ systemd/fleet-litellm-postgres.service.d/20-oom-avoid.conf /home/nish/.config/sy
 systemd/fleet-litellm-proxy.service.d/20-oom-avoid.conf /home/nish/.config/systemd/user/fleet-litellm-proxy.service.d/20-oom-avoid.conf
 systemd/fleet-litellm-redis.service.d/20-oom-avoid.conf /home/nish/.config/systemd/user/fleet-litellm-redis.service.d/20-oom-avoid.conf
 libexec/fleet-litellm-health-canary.py /home/nish/.local/libexec/fleet-litellm-health-canary.py
+# fleet-ops#6228: LiteLLM CustomLLM bridge into `devin --print` for the
+# funded Devin/Windsurf seats (no OpenAI-compatible endpoint exists,
+# fleet-ops#4263). LiteLLM resolves custom_provider_map handlers relative
+# to the config file, so the adapter installs as a SIBLING of the live
+# litellm-proxy.yaml — not into libexec — where `import
+# fleet_devin_adapter` finds it. Same organ, no new unit/timer (#1250).
+libexec/fleet-litellm-devin-adapter/fleet_devin_adapter.py /home/nish/.config/fleet-ops/fleet_devin_adapter.py
 # fleet-ops#4628: sitecustomize that retargets LiteLLM 1.98's PrismaWrapper
 # _write_engine onto prisma-client-py 0.15's _engine setter. PYTHONPATH is
 # set on the proxy unit; this is not a new organ, it is a one-file compat
