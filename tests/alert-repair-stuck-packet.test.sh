@@ -299,5 +299,66 @@ if grep -q "STUCK-PACKET" "$scratch/run.stderr"; then
 fi
 ok "scenario 7: vanished-at-disposal packet decision-logged, counted, never silent (fleet-ops#6430)"
 
+# ---------------------------------------------------------------------------
+# Scenario 8 (fleet-ops#6536): the filing seam is production-only. A run
+# with an overridden packet dir and NO explicit FLEET_ESCALATION_DRAIN_ISSUE_FILE
+# must refuse to file into the production tracker and fail open (packet
+# kept, LOUD, no DISPOSITION, no archive, no state write). 6536's own
+# thread carries the leak this pins: a dedup comment citing "drain run at
+# 2026-09-13T20:48:42Z ... newest dispatch instant 2026-09-13T13:48:42Z"
+# — a run present in no escalation-drain journal and a packet that never
+# existed in the production packet dir. The #1212 gate contained that one
+# as a score=1.00 dedup comment; a borderline score would have filed a
+# GHOST issue instead.
+#
+# Scenario 7's FleetGhost witness is a directory and would still be
+# stuck-listed; remove it so this scenario's burst is exactly the phantom
+# prop (scenario 7's assertions already ran).
+# ---------------------------------------------------------------------------
+rm -rf "$AS/alert-repair/packet-FleetGhost-${ts_8h_ago}.md"
+rm -f "$AS/alert-repair/stuck-escalation-state.json"
+unset FLEET_ESCALATION_DRAIN_ISSUE_FILE
+touch "$AS/alert-repair/packet-FleetPhantom-${ts_8h_ago}.md"
+: > "$STUB_LOG"
+rm -f "$scratch/run.stderr"
+# Deliberately NO FLEET_ESCALATION_DRAIN_ISSUE_FILE: the unstubbed-hermetic
+# shape the guard exists for.
+FLEET_ESCALATION_DRAIN_AGENT_STATE="$AS" \
+FLEET_ESCALATION_DRAIN_NISH="$AS/NISH-ESCALATIONS.md" \
+FLEET_ESCALATION_DRAIN_SEEN="$AS/lanes/nish-boundary-notify.seen" \
+FLEET_ESCALATION_DRAIN_PACKET_DIR="$AS/alert-repair" \
+FLEET_ESCALATION_DRAIN_MAX_LINES=50 \
+    bash "$bin" 2>"$scratch/run.stderr" \
+    || fail "scenario 8: a refused filing is fail-open, the drain must still exit 0; stderr: $(cat "$scratch/run.stderr")"
+grep -F "WARN refusing stuck-packet filing" "$scratch/run.stderr" >/dev/null \
+    || fail "scenario 8: the refusal must be journaled with its reason; stderr: $(cat "$scratch/run.stderr")"
+grep -q "STUCK-PACKET" "$scratch/run.stderr" \
+    || fail "scenario 8: a refused filing must fail open with the LOUD line; stderr: $(cat "$scratch/run.stderr")"
+[[ -f "$AS/alert-repair/packet-FleetPhantom-${ts_8h_ago}.md" ]] \
+    || fail "scenario 8: refused-filing packet must be KEPT (never silently deleted)"
+[[ -f "$AS/alert-repair/archived/stuck/packet-FleetPhantom-${ts_8h_ago}.md" ]] \
+    && fail "scenario 8: refused-filing packet must NOT be archived" || true
+[[ -f "$AS/alert-repair/stuck-escalation-state.json" ]] \
+    && fail "scenario 8: a refused filing must not write the state watermark" || true
+grep -qF "packet-FleetPhantom" "$AS/alert-repair/actions.log" \
+    && fail "scenario 8: a refused filing must not log a DISPOSITION" || true
+[[ -s "$STUB_LOG" ]] \
+    && fail "scenario 8: the real seam must never be reached from an unstubbed non-production run; stub: $(cat "$STUB_LOG")" || true
+ok "scenario 8: unstubbed non-production run refuses to file, fails open loud (fleet-ops#6536)"
+
+# Negative control: the SAME burst with the seam stubbed converges — the
+# guard is the only delta, not the packet shape.
+: > "$STUB_LOG"
+rm -f "$scratch/run.stderr"
+run_drain "$scratch/fleet-issue-file-stub"
+[[ "$(grep -c "^stub-call " "$STUB_LOG" 2>/dev/null || true)" -eq 1 ]] \
+    || fail "scenario 8: with the seam stubbed the same burst must file exactly once; calls: $(cat "$STUB_LOG" 2>/dev/null || true)"
+grep -F "DISPOSITION stuck-packet packet=packet-FleetPhantom-${ts_8h_ago}.md terminal=escalated-filed issue=999" \
+    "$AS/alert-repair/actions.log" >/dev/null \
+    || fail "scenario 8: stubbed re-run must dispose the packet; log: $(tail -3 "$AS/alert-repair/actions.log" 2>/dev/null || true)"
+[[ -f "$AS/alert-repair/archived/stuck/packet-FleetPhantom-${ts_8h_ago}.md" ]] \
+    || fail "scenario 8: stubbed re-run must archive the packet"
+ok "scenario 8: stubbed seam converges the same burst — the guard is the only delta"
+
 echo
 echo "alert-repair-stuck-packet: all scenarios passed (fleet-ops#5622)"
