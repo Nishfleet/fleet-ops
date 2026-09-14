@@ -26,14 +26,83 @@ ok()   { echo "OK: $*"; }
 [[ -x "$bin" ]] || fail "not executable: $bin"
 
 scratch="$(mktemp -d -t pi-issue-senior.XXXXXX)"
-# PI_SENIOR_KEEP=1 keeps the scratch (watch.log receipts) for inspection.
-trap '[[ "${PI_SENIOR_KEEP:-0}" == 1 ]] || rm -rf "$scratch"' EXIT INT TERM
+stub_pid=""
+cleanup() {
+    # PI_SENIOR_KEEP=1 keeps the scratch (watch.log receipts) for inspection.
+    if [[ -n "${stub_pid:-}" ]]; then kill "$stub_pid" 2>/dev/null || true; fi
+    [[ "${PI_SENIOR_KEEP:-0}" == 1 ]] || rm -rf "$scratch"
+}
+trap cleanup EXIT INT TERM
 
 export HOME="$scratch/home"
 mkdir -p "$HOME" "$scratch/xdg" "$scratch/bin"
 # P14 hosts (worker-token-fail-closed) export WORKER_APP_CREDS_FILE into their
 # own scratch. Unset so this test's HOME creds file is the one read.
 unset WORKER_APP_CREDS_FILE || true
+
+# fleet-ops#6163: HERMETIC PROXY STUB. lib/litellm-seat.sh documents the
+# LITELLM_HEALTH_URL override as the hermetic escape for tests; without it
+# this test curled the LIVE 127.0.0.1:4000 proxy on the VPS, so the #5889
+# glob host rolled live dice: in the #6315 wedged state (2026-09-13,
+# readiness 0-byte timeouts under load) litellm_ready went false, the
+# direct-fallback/walled path ran, and the watch.log 'running on
+# litellm/senior' line never appeared — ci-standards-audit red on a clean
+# tree while this same child passed standalone seconds later and the ci.yml
+# leg passed on its own GITHUB_ACTIONS fail-open. The stub answers readiness
+# healthy (and 1-token completions 200), so the routing assertions below
+# exercise the real bin/pi-issue-run + real lib/litellm-seat.sh against a
+# proxy this test owns — never live seat/proxy state. Same job as #4398's
+# ci.yml stub, in-test; same house shape as worker-app-bootstrap.test.sh.
+free_port() {
+    python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1",0)); print(s.getsockname()[1]); s.close()'
+}
+LITELLM_STUB_PORT="$(free_port)"
+cat >"$scratch/litellm_stub.py" <<'PY'
+#!/usr/bin/env python3
+"""Stand-in for the LiteLLM proxy: readiness healthy + 1-token completions 200."""
+import sys
+from http.server import BaseHTTPRequestHandler, HTTPServer
+
+port, log_path = int(sys.argv[1]), sys.argv[2]
+
+
+class Handler(BaseHTTPRequestHandler):
+    def log_message(self, fmt, *args):
+        return
+
+    def _healthy(self):
+        # Request log = the hermeticity receipt: the routing assertions must
+        # be decided by THIS stub, never by the live proxy (fleet-ops#6163).
+        with open(log_path, "a", encoding="utf-8") as f:
+            f.write(self.path + "\n")
+        body = b'{"status":"healthy","db":"connected"}'
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    do_GET = _healthy
+
+    def do_POST(self):
+        n = int(self.headers.get("Content-Length") or 0)
+        if n:
+            self.rfile.read(n)
+        self._healthy()
+
+
+HTTPServer(("127.0.0.1", port), Handler).serve_forever()
+PY
+LITELLM_STUB_LOG="$scratch/litellm_stub.log"
+python3 "$scratch/litellm_stub.py" "$LITELLM_STUB_PORT" "$LITELLM_STUB_LOG" & stub_pid=$!
+export LITELLM_HEALTH_URL="http://127.0.0.1:${LITELLM_STUB_PORT}/health/readiness"
+# Fail loud, never roll live dice: the stub must answer before the cases run.
+n=0
+until curl -sf -o /dev/null "$LITELLM_HEALTH_URL"; do
+    n=$((n + 1))
+    (( n < 50 )) || fail "litellm stub on 127.0.0.1:${LITELLM_STUB_PORT} never answered — refusing to fall back to the live proxy (fleet-ops#6163)"
+    sleep 0.1
+done
 
 # P14 (fleet-ops#568) class lock: the App-identity stub, exactly as
 # pi-issue-run-failure-reason.test.sh.
@@ -131,6 +200,15 @@ if grep -qF 'group=worker-cheap (privacy=public)' "$state1/watch.log"; then
     fail "required #3: a public senior-review packet must not pick worker-cheap: $(cat "$state1/watch.log")"
 fi
 ok "public senior-review packet picks the senior ladder (group=senior, litellm/senior, not worker-cheap)"
+
+# fleet-ops#6163 guard: the runs must have consulted THIS stub. If a future
+# edit drops the LITELLM_HEALTH_URL export above, the pick silently reverts
+# to live 127.0.0.1:4000 state (the #6315 wedging dice) while the assertions
+# here can still pass — the empty stub log catches that revert and fails
+# loud instead of green-on-live-state-luck.
+grep -q '/health/readiness' "$LITELLM_STUB_LOG" \
+    || fail "runs never consulted the hermetic litellm stub — LITELLM_HEALTH_URL override not in effect; refusing a live-proxy verdict (fleet-ops#6163)"
+ok "routing verdicts came from the hermetic stub, not the live proxy"
 
 # --- 2. private + senior-review: the #520 line holds --------------------------
 # Private repos already reach the prepaid glm-5.3 class via worker-private;
