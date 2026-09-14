@@ -5,6 +5,11 @@
     "unit": "remeasure-4891-timer.timer",
     "reason": "2026-09-10 transient one-shot (created by hand-run systemd-run) for the fleet-ops#4891 memory-budget re-measure. Fires once at 2026-09-11 14:05 UTC then self-releases (RemainAfterElapse=no). Deliberately not repo-sourced: its ExecStart packet lives in agent-state (outside the repo) and the unit carries no [Install]/Persistent, so a repo copy could not restart it on a rebuild anyway. fleet-ops#4952.",
     "source": "transient"
+   },
+   {
+    "unit": "0509-digest-headline-ratio-guard.timer",
+    "reason": "2026-09-14 hand-placed by the Nishfleet/0509 repo (docs/ops-backup-uptime.md): daily digest headline-ratio regression guard. No fleet-ops .timer source and not enrolled in this repo's MANIFEST — foreign-repo machinery on the shared user systemd.",
+    "source": "hand-placed"
    }
   ]
 }
