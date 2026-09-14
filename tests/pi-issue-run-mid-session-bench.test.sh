@@ -1,24 +1,17 @@
 #!/usr/bin/env bash
 # tests/pi-issue-run-mid-session-bench.test.sh
 #
-# fleet-ops#516 (auditor 2026-08-27): a provider process killed mid-session
-# (SIGTERM/143 — cursor-grok-4.6-high exits 143 on heavy ~14-minute packets)
-# must bench the seat via mark_seat_spawn_fail, exactly like the no-op path.
-# Otherwise the tried-seats exclusion is the ONLY thing keeping the next
-# restart off the killing seat, and the reaper wipes tried-seats on every
-# reap — so the intake re-claim starts from an empty list and pick-seat
-# re-selects the same killing seat (0509-974: cursor 143 x3, summoned the
-# auditor 2026-08-26T20:40Z).
+# fleet-ops#516/#4903: a provider process killed mid-session (SIGTERM/143 —
+# cursor-grok-4.6-high exits 143 on heavy ~14-minute packets) is an INFRA
+# death, not a work failure. pi-issue-run must exit 0 so systemd Restart= does
+# NOT re-spawn the same unit (the re-spawn storm: 174/322 <60s deaths in 12h);
+# ExecStopPost starts pi-intake@ which re-queues through intake.
 #
-# fleet-ops#4903: a mid-session death is an infra death, not a work failure.
-# pi-issue-run must exit 0 so systemd Restart= does NOT re-spawn the same
-# unit (the re-spawn storm: 174/322 <60s deaths in 12h). ExecStopPost
-# starts pi-intake@ which re-queues through intake. The seat is still
-# benched (asserted below).
-#
-# A mid-session death is NOT a spawn ETIMEDOUT (elapsed > SPAWN_FAIL_MAX_S)
-# and NOT a quota wall (no 429 in the output), so it previously fell through
-# UNBENCHED. This test pins the bench.
+# Cleanup #4263/#6100: the per-seat bench ledger and its mark_seat_* stubs are
+# DELETED — the LiteLLM proxy cooldown owns cross-unit seat health. The
+# runner's mid-session duty is: classify (tried-seats, death class, exit 0),
+# never bench. The record-only spy below pins that: a non-empty record fails
+# the run.
 #
 # Runs entirely offline: stubbed models.json, seat-caps.json, ledger dir,
 # a fake pi, and PI_ISSUES_DIR redirected into scratch. No live state
@@ -129,15 +122,14 @@ cat >"$SEAT_CAPS_JSON" <<'JSON'
 }
 JSON
 
-# Overlay: record mark_seat_spawn_fail calls, then run the real function
-# so the per-seat ledger is actually written.
+# Overlay: record-only spy for the deleted bench stub. Cleanup #4263/#6100
+# removed mark_seat_spawn_fail from lib/litellm-seat.sh; if pi-issue-run ever
+# calls it again the record file becomes non-empty and the assertion fails.
 cat >"$scratch/seatlib.sh" <<EOF
 # shellcheck shell=bash
 source "$repo_root/lib/litellm-seat.sh"
-eval "\$(declare -f mark_seat_spawn_fail | sed '1s/^mark_seat_spawn_fail/orig_mark_seat_spawn_fail/')"
 mark_seat_spawn_fail() {
     printf '%s/%s %s\n' "\$1" "\$2" "\${3:-}" >>"$scratch/mark_calls"
-    orig_mark_seat_spawn_fail "\$@"
 }
 EOF
 export PI_PACKET_SEAT_LIB="$scratch/seatlib.sh"
@@ -169,14 +161,11 @@ seat_line=$(head -n1 "$tried")
 np="${seat_line%%/*}"
 nm="${seat_line#*/}"
 
-# (a) mark_seat_spawn_fail was called for that seat, with a mid-session reason.
+# (a) Cleanup #4263/#6100: the mid-session death path must NOT bench — the
+# spy record must stay empty (the LiteLLM proxy cooldown owns seat health).
 [[ -f "$scratch/mark_calls" ]] \
-  || fail "mark_seat_spawn_fail was never called (mid-session death path did not bench the seat)"
-grep -qF "$np/$nm" "$scratch/mark_calls" \
-  || fail "mark_seat_spawn_fail was not called for $np/$nm; calls: $(cat "$scratch/mark_calls")"
-grep -qE "mid-session" "$scratch/mark_calls" \
-  || fail "mark_seat_spawn_fail reason must mention mid-session; calls: $(cat "$scratch/mark_calls")"
-ok "mid-session death -> mark_seat_spawn_fail called for $np/$nm"
+  && fail "mark_seat_spawn_fail was called on mid-session death — bench stubs are deleted (cleanup #4263/#6100); calls: $(cat "$scratch/mark_calls")"
+ok "mid-session death calls NO bench stub for $np/$nm (proxy cooldown owns routing)"
 
 # P3b: mark_* is a log stub. Proxy cooldown owns skip, not a local ledger.
 shopt -s nullglob

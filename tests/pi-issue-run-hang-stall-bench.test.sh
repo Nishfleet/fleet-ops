@@ -3,8 +3,8 @@
 #
 # fleet-ops#2133: two detectors that previously existed only as a hot-patch on
 # the LIVE /home/nish/.local/bin/pi-issue-run (never landed on a PR) must fire
-# and bench the seat via mark_seat_hang_bench so pick-seat skips it on the next
-# restart. Both gate on spawn_elapsed_s > PI_HANG_BENCH_MIN_S (default 300s).
+# so the run fails loud and the seat is avoided on the next restart. Both gate
+# on spawn_elapsed_s > PI_HANG_BENCH_MIN_S (default 300s).
 #
 #   (A) devin long-hang-then-ETIMEDOUT: rc=1, elapsed > 300s, stderr contains
 #       "spawnSync ... ETIMEDOUT". NOT a spawn-phase failure (elapsed >
@@ -14,6 +14,11 @@
 #   (B) Ready-for-input stall: rc=1 (not 124), elapsed > 300s, stderr has
 #       >5 "Ready for input" lines. The provider loops prompting but never
 #       advances.
+#
+# Cleanup #4263/#6100: the per-seat bench ledger and its mark_seat_* stubs are
+# DELETED — the LiteLLM proxy cooldown owns cross-unit seat health. The
+# detectors' remaining job is classification + loud exit 1; the record-only
+# spies below pin that NO bench stub fires (a non-empty record fails the run).
 #
 # Runs entirely offline: stubbed models.json, seat-caps.json, ledger dir, a
 # fake pi, and PI_ISSUES_DIR redirected into scratch. PI_HANG_BENCH_MIN_S=1
@@ -116,20 +121,16 @@ cat >"$SEAT_CAPS_JSON" <<'JSON'
 }
 JSON
 
-# Overlay: record mark_seat_hang_bench calls, then run the real function so
-# the per-seat ledger is actually written with health_class="hang_bench".
+# Overlay: record-only spies for the deleted bench stubs. Cleanup #4263/#6100
+# removed them from lib/litellm-seat.sh; a non-empty record fails the run.
 cat >"$scratch/seatlib.sh" <<EOF
 # shellcheck shell=bash
 source "$repo_root/lib/litellm-seat.sh"
-eval "\$(declare -f mark_seat_hang_bench | sed '1s/^mark_seat_hang_bench/orig_mark_seat_hang_bench/')"
 mark_seat_hang_bench() {
     printf '%s/%s %s\n' "\$1" "\$2" "\${3:-}" >>"$scratch/hang_calls"
-    orig_mark_seat_hang_bench "\$@"
 }
-eval "\$(declare -f mark_seat_spawn_fail | sed '1s/^mark_seat_spawn_fail/orig_mark_seat_spawn_fail/')"
 mark_seat_spawn_fail() {
     printf '%s/%s %s\n' "\$1" "\$2" "\${3:-}" >>"$scratch/spawnfail_calls"
-    orig_mark_seat_spawn_fail "\$@"
 }
 EOF
 export PI_PACKET_SEAT_LIB="$scratch/seatlib.sh"
@@ -168,10 +169,10 @@ STUB
     nm="${seat_line#*/}"
 
     [[ -f "$scratch/hang_calls" ]] \
-      || fail "$label: mark_seat_hang_bench was never called (detector did not fire)"
-    grep -qF "$np/$nm" "$scratch/hang_calls" \
-      || fail "$label: mark_seat_hang_bench not called for $np/$nm; calls: $(cat "$scratch/hang_calls")"
-    ok "$label: mark_seat_hang_bench called for $np/$nm"
+      && fail "$label: mark_seat_hang_bench was called — bench stubs are deleted (cleanup #4263/#6100); calls: $(cat "$scratch/hang_calls")"
+    [[ -f "$scratch/spawnfail_calls" ]] \
+      && fail "$label: mark_seat_spawn_fail was called — bench stubs are deleted (cleanup #4263/#6100); calls: $(cat "$scratch/spawnfail_calls")"
+    ok "$label: hang detector fires, exits 1, calls NO bench stub for $np/$nm"
 
     shopt -s nullglob
     _hang_ledgers=("$LEDGER"/*.json)
@@ -262,27 +263,19 @@ STUB
     if [[ "$expect_bench" == "no" ]]; then
         [[ ! -f "$scratch/spawnfail_calls" ]] \
           || fail "$label: mark_seat_spawn_fail was called for a session with $ntools tool calls: $(cat "$scratch/spawnfail_calls")"
-        grep -q "HANG WATCHDOG kill after $ntools tool calls" "$STATE_DIR/watch.log" "$scratch/run.err" 2>/dev/null \
-          || fail "$label: slow-session log line missing: $(grep -h 'pi-issue-run' "$STATE_DIR/watch.log" 2>/dev/null | tail -n 5)"
-        seat_usable "$np" "$nm" \
-          || fail "$label: seat $np/$nm became unusable after a working session was watchdog-killed"
-        ok "$label: rc=124 with $ntools tool calls -> no bench, seat $np/$nm stays usable, death class infra"
+        if (( ntools > 0 )); then
+            grep -q "HANG WATCHDOG kill after $ntools tool calls" "$STATE_DIR/watch.log" "$scratch/run.err" 2>/dev/null \
+              || fail "$label: slow-session log line missing: $(grep -h 'pi-issue-run' "$STATE_DIR/watch.log" 2>/dev/null | tail -n 5)"
+        fi
+        ok "$label: rc=124 with $ntools tool calls -> no bench stub call, death class infra (proxy cooldown owns health)"
     else
         [[ -f "$scratch/spawnfail_calls" ]] \
-          || fail "$label: mark_seat_spawn_fail was NOT called for a 0-tool-call hang (true hang must still bench)"
-        grep -qF "$np/$nm" "$scratch/spawnfail_calls" \
-          || fail "$label: spawn-fail not marked for $np/$nm: $(cat "$scratch/spawnfail_calls")"
-        grep -q 'mid-session-death:rc=124' "$scratch/spawnfail_calls" \
-          || fail "$label: bench reason is not mid-session-death:rc=124: $(cat "$scratch/spawnfail_calls")"
-        shopt -s nullglob
-        _wd_ledgers=("$LEDGER"/*.json)
-        (( ${#_wd_ledgers[@]} == 0 )) \
-          || fail "$label: P3b must not write local routing ledgers, got: ${_wd_ledgers[*]}"
-        ok "$label: rc=124 with 0 tool calls -> mark_seat_spawn_fail logged, no local ledger"
+          && fail "$label: mark_seat_spawn_fail was called for a 0-tool-call hang — bench stubs are deleted (cleanup #4263/#6100); calls: $(cat "$scratch/spawnfail_calls")"
+        ok "$label: rc=124 with 0 tool calls -> exits loud via intake re-queue, no bench stub call"
     fi
 }
 
 run_watchdog_scenario "wd-slow-3883" 7 no
-run_watchdog_scenario "wd-hang-3883" 0 yes
+run_watchdog_scenario "wd-hang-3883" 0 no
 
-ok "pi-issue-run #2133 hang/stall detectors fire and bench the seat via mark_seat_hang_bench"
+ok "pi-issue-run #2133 hang/stall detectors fire and exit loud; no bench stub fires (cleanup #4263/#6100)"

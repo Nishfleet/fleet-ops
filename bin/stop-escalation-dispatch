@@ -462,7 +462,7 @@ if [ "$pi_rc" -ne 0 ] || [ "$has_block" -eq 0 ]; then
         printf '%s\n' "$combined"
       } >> "$LOG"
     fi
-    echo "STOP-ESCALATION-FAULT: auditor dispatch failed (rc=$pi_rc, has_block=$has_block, bench=$bench_reason)" >&2
+    echo "STOP-ESCALATION-FAULT: auditor dispatch failed (rc=$pi_rc, has_block=$has_block, class=$bench_reason)" >&2
     # Do NOT update stop-escalation-seen.txt.  The hash's dispatch budget is
     # unchanged, so the next STOP-REASON change or daily sweep re-tries.
     exit 0

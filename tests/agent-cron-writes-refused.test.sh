@@ -15,14 +15,12 @@
 #      sentinel AND the refusal phrases the gated seats already emit
 #      ("approval cards rejected", "blocked by auto-review", devin's
 #      "rejected a tool call").
-#   2. mark_seat_writes_refused_bench (seatlib) writes a config_fault
-#      ledger entry (seat_dead=false — infrastructure, never seat yield)
-#      whose usable_at window (default 3600s) OUTLASTS the caller unit's
-#      RestartSec=900, so the systemd retry walks the senior ladder instead
-#      of re-picking the same gated seat.
+#   2. RETIRED (cleanup #4263/#6100): the config_fault bench ledger and
+#      mark_seat_writes_refused_bench are deleted; the LiteLLM proxy owns
+#      cooldown, so the refusal path only fails loud.
 #   3. agent-cron-run checks the captured output on the rc=0 path, records
-#      the refused run's output into the dated log file, benches the seat,
-#      and exits 1 (loud: Restart= -> OnFailure escalation).
+#      the refused run's output into the dated log file, and exits 1
+#      (loud: Restart= -> OnFailure escalation) — with NO bench side effect.
 #
 # Offline: stubbed seat-caps.json/ledger for the seatlib sections; a stub
 # seatlib + fake pi for the agent-cron-run end-to-end.
@@ -203,11 +201,10 @@ set -e
     || fail "e2e: a run whose output carries WRITES-REFUSED must exit 1 (loud), got $rc (stderr: $(cat "$scratch/run.err"))"
 ok "e2e: WRITES-REFUSED output -> exit 1 (was the silent rc=0 stall)"
 
-# The seat must be benched so the systemd retry walks the ladder.
-[[ -s "$bench_record" ]] || fail "e2e: mark_seat_writes_refused_bench must be called on a refused run"
-grep -q $'cursor\tcursor-grok-4.6-high\tagent-cron:orchestrator-decision-sweep' "$bench_record" \
-    || fail "e2e: bench call must carry the seat and the slug reason, got: $(cat "$bench_record")"
-ok "e2e: refused seat benched (cursor/cursor-grok-4.6-high, reason names the slug)"
+# Cleanup #4263/#6100: the refusal path must NOT bench — the stub records
+# bench calls, so the record staying empty proves no ledger write happens.
+[[ -s "$bench_record" ]] && fail "e2e: refused run must NOT bench the seat (cleanup #4263), got: $(cat "$bench_record")"
+ok "e2e: refused run writes no bench marker (LiteLLM proxy owns cooldown)"
 
 # The refused run's output must be recorded in the dated log file — the
 # drafted verdicts are the evidence.
@@ -253,8 +250,8 @@ ok "prompt declares the WRITES-REFUSED sentinel contract"
 grep -q 'is_writes_refused' "$bin" \
     || fail "agent-cron-run must call is_writes_refused"
 grep -q 'mark_seat_writes_refused_bench' "$bin" \
-    || fail "agent-cron-run must call mark_seat_writes_refused_bench"
-ok "agent-cron-run wires is_writes_refused + mark_seat_writes_refused_bench"
+    && fail "agent-cron-run must NOT call the deleted bench stub (cleanup #4263/#6100)"
+ok "agent-cron-run wires is_writes_refused; bench stub stays deleted"
 
 
 echo

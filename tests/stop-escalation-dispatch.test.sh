@@ -43,10 +43,12 @@ JSON
 SEAT_LIB_STUB="$scratch/seatlib-stub.sh"
 # The stub mirrors the real seatlib contract the fix relies on:
 #   - pick-seat honours need_capable (arg 3) and the tried-file exclusion (arg 4)
-#   - pick-seat skips seats recorded in $STOP_ESCALATION_TEST_BENCH_FILE
-#     (stands in for seat_usable reading the per-seat ledger a real
-#     mark_seat_spawn_fail writes)
-#   - mark_seat_spawn_fail appends to the bench file so the next pick rotates
+#   - pick-seat skips seats recorded in $STOP_ESCALATION_TEST_BENCH_FILE —
+#     the stand-in for the LITELLM PROXY COOLDOWN state (cleanup #4263/#6100
+#     deleted the per-seat bench ledger; the proxy owns seat skipping)
+#   - mark_seat_* are SPIES only: they append to the spy file if the
+#     dispatcher ever calls them (it must not — the bench side effects are
+#     deleted; a non-empty spy file fails the run)
 # Only ollama is treated as not-capable, so the existing healthy/second modes
 # (devin / cursor) keep returning a seat and the legacy invariants are
 # unchanged.
@@ -73,7 +75,7 @@ litellm_seat() {
     IFS="$TAB" read -r p m <<<"$s"
     # need_capable: ollama/flash is the tools=0 dead-seat class (fleet-ops#1354)
     if [ "$need_capable" = "1" ] && [ "$p" = "ollama" ]; then continue; fi
-    # benched seats (stands in for seat_usable reading the ledger)
+    # cooled-down seats (stands in for the LiteLLM proxy cooldown state)
     if [ -n "${STOP_ESCALATION_TEST_BENCH_FILE:-}" ] && [ -f "$STOP_ESCALATION_TEST_BENCH_FILE" ] \
        && grep -qxF "$p/$m" "$STOP_ESCALATION_TEST_BENCH_FILE" 2>/dev/null; then continue; fi
     # tried seats (the dispatcher records each pick in the tried file)
@@ -88,9 +90,9 @@ litellm_seat() {
   return 1
 }
 mark_seat_spawn_fail() {
-  local p="$1" m="$2"
-  [ -n "${STOP_ESCALATION_TEST_BENCH_FILE:-}" ] || return 0
-  printf '%s/%s\n' "$p" "$m" >> "$STOP_ESCALATION_TEST_BENCH_FILE"
+  # Spy only (cleanup #4263/#6100): the dispatcher must NOT bench.
+  [ -n "${STOP_ESCALATION_TEST_BENCH_SPY:-}" ] || return 0
+  printf 'spawn_fail %s/%s\n' "$1" "$2" >> "$STOP_ESCALATION_TEST_BENCH_SPY"
 }
 # Mirror the real seatlib detectors (fleet-ops#623): "insufficient funds" is
 # NOT a quota_cap match in production either, so a 402 falls through to
@@ -117,14 +119,14 @@ is_overload_error() {
   return 0
 }
 mark_seat_quota_bench() {
-  local p="$1" m="$2"
-  [ -n "${STOP_ESCALATION_TEST_BENCH_FILE:-}" ] || return 0
-  printf '%s/%s\n' "$p" "$m" >> "$STOP_ESCALATION_TEST_BENCH_FILE"
+  # Spy only (cleanup #4263/#6100): the dispatcher must NOT bench.
+  [ -n "${STOP_ESCALATION_TEST_BENCH_SPY:-}" ] || return 0
+  printf 'quota_bench %s/%s\n' "$1" "$2" >> "$STOP_ESCALATION_TEST_BENCH_SPY"
 }
 mark_seat_overload_bench() {
-  local p="$1" m="$2"
-  [ -n "${STOP_ESCALATION_TEST_BENCH_FILE:-}" ] || return 0
-  printf '%s/%s\n' "$p" "$m" >> "$STOP_ESCALATION_TEST_BENCH_FILE"
+  # Spy only (cleanup #4263/#6100): the dispatcher must NOT bench.
+  [ -n "${STOP_ESCALATION_TEST_BENCH_SPY:-}" ] || return 0
+  printf 'overload_bench %s/%s\n' "$1" "$2" >> "$STOP_ESCALATION_TEST_BENCH_SPY"
 }
 seat_log() { :; }
 EOF
@@ -203,10 +205,18 @@ export STOP_ESCALATION_AUDITOR_TIMEOUT=2
 export STOP_ESCALATION_COOLDOWN=0
 # Walled cooldown disabled so re-fire invariants are not silently skipped.
 export STOP_ESCALATION_WALLED_CD=0
-# Stands in for the per-seat ledger a real mark_seat_spawn_fail writes.
-# Cleared per-invariant that needs a fresh bench set.
+# Stands in for the LiteLLM proxy cooldown state (cleanup #4263/#6100 deleted
+# the per-seat bench ledger): the test seeds it between fires to model the
+# proxy cooling a seat. Cleared per-invariant that needs a fresh cooldown set.
 export STOP_ESCALATION_TEST_BENCH_FILE="$scratch/benched.txt"
 : > "$STOP_ESCALATION_TEST_BENCH_FILE"
+# Spy file: proves the dispatcher never calls the deleted bench stubs.
+export STOP_ESCALATION_TEST_BENCH_SPY="$scratch/bench-spy.txt"
+: > "$STOP_ESCALATION_TEST_BENCH_SPY"
+bench_spy_empty() {
+    [[ ! -s "$STOP_ESCALATION_TEST_BENCH_SPY" ]] \
+      || fail "$1: dispatcher called a deleted bench stub (cleanup #4263/#6100): $(cat "$STOP_ESCALATION_TEST_BENCH_SPY")"
+}
 
 # ---------------------------------------------------------------------------
 # Invariant 1: fully-walled ladder -> MONEY-BOUNDARY in NISH (fleet-ops#1534),
@@ -483,25 +493,28 @@ hash1354=$(sha256sum "$STOP_ESCALATION_STOP_REASON" | awk '{print $1}')
 export STOP_ESCALATION_TEST_SEAT_MODE=rotate
 export STOP_ESCALATION_TEST_PI_MODE=empty
 
-# Fire 1: picks the first capable seat (devin), rc=0/empty -> bench it, exit 1.
+# Fire 1: picks the first capable seat (devin), rc=0/empty -> DISPATCH-NO-BLOCK,
+# exit 1, NO bench call (cleanup #4263/#6100); the test then cools devin in the
+# proxy-stand-in file so the next trip rotates.
 set +e
 "$dispatch"; rc=$?
 set -e
 [[ $rc -eq 0 ]] || fail "1354 fire 1: expected exit 0, got $rc"
 grep -q "DISPATCH-NO-BLOCK hash=$hash1354 provider=devin" "$STOP_ESCALATION_AUDITOR_LOG" \
   || fail "1354 fire 1: expected DISPATCH-NO-BLOCK on devin"
-grep -qxF "devin/glm-5-2" "$STOP_ESCALATION_TEST_BENCH_FILE" \
-  || fail "1354 fire 1: devin must be benched (mark_seat_spawn_fail called)"
+bench_spy_empty "1354 fire 1"
+printf 'devin/glm-5-2\n' >> "$STOP_ESCALATION_TEST_BENCH_FILE"  # proxy cooldowns devin
 
-# Fire 2: devin is benched -> rotates to cursor, rc=0/empty -> bench it, exit 1.
+# Fire 2: devin is cooled by the proxy -> rotates to cursor, rc=0/empty ->
+# DISPATCH-NO-BLOCK, exit 1, NO bench call; then cool cursor too.
 set +e
 "$dispatch"; rc=$?
 set -e
 [[ $rc -eq 0 ]] || fail "1354 fire 2: expected exit 0, got $rc"
 grep -q "DISPATCH-NO-BLOCK hash=$hash1354 provider=cursor" "$STOP_ESCALATION_AUDITOR_LOG" \
   || fail "1354 fire 2: expected DISPATCH-NO-BLOCK on cursor (rotation)"
-grep -qxF "cursor/sonnet-4" "$STOP_ESCALATION_TEST_BENCH_FILE" \
-  || fail "1354 fire 2: cursor must be benched"
+bench_spy_empty "1354 fire 2"
+printf 'cursor/sonnet-4\n' >> "$STOP_ESCALATION_TEST_BENCH_FILE"  # proxy cooldowns cursor
 
 # Fire 3: both capable seats benched -> ladder walled -> MONEY-BOUNDARY in
 # NISH (fleet-ops#1534: writer class-gate tags walled ladders), exit 0
@@ -513,9 +526,10 @@ set +e
 set -e
 [[ $rc -eq 0 ]] || fail "1354 fire 3: expected exit 0 (ladder walled, quiet), got $rc"
 grep -q "LADDER-WALLED hash=$hash1354" "$STOP_ESCALATION_AUDITOR_LOG" \
-  || fail "1354 fire 3: benched wall must land in auditor LOG (storm fix: not a money page)"
+  || fail "1354 fire 3: cooled wall must land in auditor LOG (storm fix: not a money page)"
 ! grep -q "hash=$hash1354" "$STOP_ESCALATION_NISH" \
-  || fail "1354 fire 3: benched wall must NOT reach NISH"
+  || fail "1354 fire 3: cooled wall must NOT reach NISH"
+bench_spy_empty "1354 fire 3"
 
 # Exactly 2 dispatches across 3 fires — never an unbounded same-seat loop.
 dispatch_count=$(grep -c "DISPATCH hash=$hash1354" "$STOP_ESCALATION_AUDITOR_LOG" || true)
@@ -524,7 +538,7 @@ dispatch_count=$(grep -c "DISPATCH hash=$hash1354" "$STOP_ESCALATION_AUDITOR_LOG
 # Budget never consumed (no-block does not consume the 2-dispatch cap).
 count=$(awk -v h="$hash1354" '$1==h{print $2}' "$STOP_ESCALATION_SEEN" 2>/dev/null || true)
 [[ -z "$count" ]] || fail "1354: no-block must not consume dispatch budget (got count=$count)"
-ok "fleet-ops#1354: rc=0/empty seat benches + rotates, never unbounded loop"
+ok "fleet-ops#1354: rc=0/empty seat rotates via the proxy cooldown (no bench stub), never unbounded loop"
 
 # ---------------------------------------------------------------------------
 # Invariant 11 (fleet-ops#1354): need_capable=1 excludes a tools=0 flash seat
@@ -559,11 +573,13 @@ ok "fleet-ops#1354: need_capable=1 excludes tools=0 flash seat at pick time"
 
 # ---------------------------------------------------------------------------
 # Invariant 12 (fleet-ops#623): a seat returning pi_rc=1 with an HTTP 402
-# "Insufficient funds" billing wall MUST be benched (spawn-fail fallback) and
-# rotate, never re-picked.  This is the live tight-loop cause: the #1354 fix
-# only benched rc=0 seats, so a 402 seat was re-offered every trip and the
-# unit failed 6x in 2 min.  Two capable seats, both 402 -> bench + rotate,
-# then ladder walled (exit 0).
+# "Insufficient funds" billing wall MUST be classified (no_block:rc=1 — "insufficient
+# funds" is not a quota_cap match) and rotate, never re-picked.  This is the
+# live tight-loop cause: the #1354 fix only rotated rc=0 seats, so a 402 seat
+# was re-offered every trip and the unit failed 6x in 2 min.  Two capable
+# seats, both 402 -> classify + rotate (the test cools each seat in the
+# proxy-stand-in file after its fire, cleanup #4263/#6100 style), then ladder
+# walled (exit 0).
 # ---------------------------------------------------------------------------
 : > "$STOP_ESCALATION_SEEN"
 : > "$STOP_ESCALATION_KILLS"
@@ -577,30 +593,30 @@ hash623=$(sha256sum "$STOP_ESCALATION_STOP_REASON" | awk '{print $1}')
 export STOP_ESCALATION_TEST_SEAT_MODE=rotate
 export STOP_ESCALATION_TEST_PI_MODE=http402
 
-# Fire 1: picks devin, 402 -> bench (spawn-fail, not quota: "insufficient
-# funds" is not a quota_cap match), DISPATCH-NO-BLOCK, exit 1.
+# Fire 1: picks devin, 402 -> classify as no_block:rc=1 ("insufficient funds"
+# is not a quota_cap match), DISPATCH-NO-BLOCK, exit 1. No bench stub call.
 set +e
 "$dispatch"; rc=$?
 set -e
 [[ $rc -eq 0 ]] || fail "623 fire 1: expected exit 0, got $rc"
 grep -q "DISPATCH-NO-BLOCK hash=$hash623 provider=devin" "$STOP_ESCALATION_AUDITOR_LOG" \
   || fail "623 fire 1: expected DISPATCH-NO-BLOCK on devin"
-grep -q "bench=no_block:rc=1" "$STOP_ESCALATION_AUDITOR_LOG" \
-  || fail "623 fire 1: expected bench=no_block:rc=1 (402 is not a quota wall)"
-grep -qxF "devin/glm-5-2" "$STOP_ESCALATION_TEST_BENCH_FILE" \
-  || fail "623 fire 1: devin must be benched (rc=1 402 -> spawn-fail bench)"
+grep -q "class=no_block:rc=1" "$STOP_ESCALATION_AUDITOR_LOG" \
+  || fail "623 fire 1: expected class=no_block:rc=1 (402 is not a quota wall)"
+bench_spy_empty "623 fire 1"
+printf 'devin/glm-5-2\n' >> "$STOP_ESCALATION_TEST_BENCH_FILE"  # proxy cooldowns devin
 
-# Fire 2: devin benched -> rotates to cursor, 402 -> bench, exit 1.
+# Fire 2: devin cooled -> rotates to cursor, 402 -> classify, exit 1.
 set +e
 "$dispatch"; rc=$?
 set -e
 [[ $rc -eq 0 ]] || fail "623 fire 2: expected exit 0, got $rc"
 grep -q "DISPATCH-NO-BLOCK hash=$hash623 provider=cursor" "$STOP_ESCALATION_AUDITOR_LOG" \
   || fail "623 fire 2: expected DISPATCH-NO-BLOCK on cursor (rotation)"
-grep -qxF "cursor/sonnet-4" "$STOP_ESCALATION_TEST_BENCH_FILE" \
-  || fail "623 fire 2: cursor must be benched"
+bench_spy_empty "623 fire 2"
+printf 'cursor/sonnet-4\n' >> "$STOP_ESCALATION_TEST_BENCH_FILE"  # proxy cooldowns cursor
 
-# Fire 3: both benched -> ladder walled -> MONEY-BOUNDARY, exit 0 (quiet).
+# Fire 3: both cooled -> ladder walled -> MONEY-BOUNDARY, exit 0 (quiet).
 # (fleet-ops#1534: writer class-gate tags walled ladders with MONEY-BOUNDARY.)
 : > "$STOP_ESCALATION_NISH"
 set +e
@@ -608,20 +624,22 @@ set +e
 set -e
 [[ $rc -eq 0 ]] || fail "623 fire 3: expected exit 0 (ladder walled, quiet), got $rc"
 grep -q "LADDER-WALLED hash=$hash623" "$STOP_ESCALATION_AUDITOR_LOG" \
-  || fail "623 fire 3: benched wall must land in auditor LOG (storm fix: not a money page)"
+  || fail "623 fire 3: cooled wall must land in auditor LOG (storm fix: not a money page)"
 ! grep -q "hash=$hash623" "$STOP_ESCALATION_NISH" \
-  || fail "623 fire 3: benched wall must NOT reach NISH"
+  || fail "623 fire 3: cooled wall must NOT reach NISH"
+bench_spy_empty "623 fire 3"
 dispatch_count=$(grep -c "DISPATCH hash=$hash623" "$STOP_ESCALATION_AUDITOR_LOG" || true)
 [[ "$dispatch_count" == "2" ]] \
   || fail "623: expected exactly 2 dispatches (rotation), got $dispatch_count"
 count=$(awk -v h="$hash623" '$1==h{print $2}' "$STOP_ESCALATION_SEEN" 2>/dev/null || true)
 [[ -z "$count" ]] || fail "623: no-block must not consume dispatch budget (got count=$count)"
-ok "fleet-ops#623: rc=1 HTTP 402 seat benches + rotates, never unbounded loop"
+ok "fleet-ops#623: rc=1 HTTP 402 seat classifies + rotates via the proxy cooldown, never unbounded loop"
 
 # ---------------------------------------------------------------------------
 # Invariant 13 (fleet-ops#623): a seat returning pi_rc=1 with a quota/cap wall
-# ("quota exhausted, resets in 1h") is benched via the quota bench path, not
-# the spawn-fail fallback.  Proves the longer-bench ladder is wired.
+# ("quota exhausted, resets in 1h") is CLASSIFIED as quota_cap (the long-bench
+# class), not the no_block fallback. Proves the classification ladder is wired.
+# Cleanup #4263/#6100: classification only — no bench side effect.
 # ---------------------------------------------------------------------------
 : > "$STOP_ESCALATION_SEEN"
 : > "$STOP_ESCALATION_KILLS"
@@ -640,21 +658,21 @@ set -e
 [[ $rc -eq 0 ]] || fail "quota: expected exit 0, got $rc"
 grep -q "DISPATCH-NO-BLOCK hash=$hashq provider=devin" "$STOP_ESCALATION_AUDITOR_LOG" \
   || fail "quota: expected DISPATCH-NO-BLOCK on devin"
-grep -q "bench=quota_cap" "$STOP_ESCALATION_AUDITOR_LOG" \
-  || fail "quota: expected bench=quota_cap (quota wall uses the long bench)"
-grep -qxF "devin/glm-5-2" "$STOP_ESCALATION_TEST_BENCH_FILE" \
-  || fail "quota: devin must be benched"
-ok "fleet-ops#623: rc=1 quota wall -> quota bench path (long bench)"
+grep -q "class=quota_cap" "$STOP_ESCALATION_AUDITOR_LOG" \
+  || fail "quota: expected class=quota_cap (quota wall uses the long-bench class)"
+bench_spy_empty "quota"
+ok "fleet-ops#623: rc=1 quota wall -> quota_cap class (no bench side effect)"
 
 # ---------------------------------------------------------------------------
 # Invariant 13b (fleet-ops#3780): the xkiro free-tier daily-token-quota wall
 # (HTTP 429, "free-model token quota ... wait for the daily reset",
 # type=rate_limit_error code=rate_limit_exceeded) is a quota_cap, NOT a
-# spawn_fail. The live seat accumulated 47 consecutive spawn_fail because
-# the stub's is_quota_cap_error predated the #3816 free-model patterns; the
-# real matcher classifies it, so the dispatcher must take the quota bench
-# path (long bench until the daily reset), never the no_block:rc=1 fallback
-# that drove the corpse park.
+# spawn_fail/no_block. The live seat accumulated 47 consecutive spawn_fail
+# because the stub's is_quota_cap_error predated the #3816 free-model
+# patterns; the real matcher classifies it, so the dispatcher must take the
+# quota_cap class (long bench until the daily reset), never the
+# no_block:rc=1 fallback that drove the corpse park. Cleanup #4263/#6100:
+# classification only — no bench side effect.
 # ---------------------------------------------------------------------------
 : > "$STOP_ESCALATION_SEEN"
 : > "$STOP_ESCALATION_KILLS"
@@ -673,13 +691,12 @@ set -e
 [[ $rc -eq 0 ]] || fail "xkiro_quota: expected exit 0, got $rc"
 grep -q "DISPATCH-NO-BLOCK hash=$hashx provider=devin" "$STOP_ESCALATION_AUDITOR_LOG" \
   || fail "xkiro_quota: expected DISPATCH-NO-BLOCK on devin"
-grep -q "bench=quota_cap" "$STOP_ESCALATION_AUDITOR_LOG" \
-  || fail "xkiro_quota: expected bench=quota_cap (xkiro free-model daily wall is a quota cap, not a spawn_fail)"
-! grep -q "bench=no_block:rc=1" "$STOP_ESCALATION_AUDITOR_LOG" \
-  || fail "xkiro_quota: must NOT fall through to no_block:rc=1 spawn_fail (the 47-count misclassification)"
-grep -qxF "devin/glm-5-2" "$STOP_ESCALATION_TEST_BENCH_FILE" \
-  || fail "xkiro_quota: devin must be benched via quota path"
-ok "fleet-ops#3780: xkiro free-model daily-token-quota 429 -> quota_cap bench, not spawn_fail"
+grep -q "class=quota_cap" "$STOP_ESCALATION_AUDITOR_LOG" \
+  || fail "xkiro_quota: expected class=quota_cap (xkiro free-model daily wall is a quota cap, not a spawn_fail)"
+! grep -q "class=no_block:rc=1" "$STOP_ESCALATION_AUDITOR_LOG" \
+  || fail "xkiro_quota: must NOT fall through to no_block:rc=1 (the 47-count misclassification)"
+bench_spy_empty "xkiro_quota"
+ok "fleet-ops#3780: xkiro free-model daily-token-quota 429 -> quota_cap class, not spawn_fail (no bench stub)"
 
 # ---------------------------------------------------------------------------
 # Invariant 14 (fleet-ops#2661): escalate-lane provider-wedge check. A
@@ -726,4 +743,4 @@ grep -q "LADDER-WALLED hash=$hashw" "$STOP_ESCALATION_AUDITOR_LOG" \
 unset FLEET_ESCALATION_WEDGE_CHECK
 ok "fleet-ops#2661: escalate lanes refuse overload-wedged providers (rotation skips; all-wedged ladder walls quietly"
 
-ok "stop-escalation-dispatch: lane faults rotate, timeout/no-block quiet, cap enforced, kill-retry capped, dead-seat rotation (#1354), rc=1 benching + quiet walled ladder (#623)"
+ok "stop-escalation-dispatch: lane faults rotate, timeout/no-block quiet, cap enforced, kill-retry capped, dead-seat rotation (#1354), rc=1 classification + quiet walled ladder (#623), no bench stubs (#6100)"

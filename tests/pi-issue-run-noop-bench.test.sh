@@ -1,19 +1,17 @@
 #!/usr/bin/env bash
 # tests/pi-issue-run-noop-bench.test.sh
 #
-# fleet-ops#390: a no-op (pi exits 0 with stdout < OUT_MIN) must bench the
-# seat via mark_seat_spawn_fail BEFORE exiting 1. Otherwise pick-seat sees
-# a still-healthy seat and an intake re-spawn with an empty tried-seats
-# file re-selects the same no-op'ing seat — the 2026-08-26 fleet-ops-378
-# stuck loop (devin/swe-1-7, 1 byte stdout, unit dead, tried-seats empty).
+# fleet-ops#390/#1298: a no-op (pi exits 0 with stdout < OUT_MIN) must fail
+# the claim loudly (exit 1) so systemd re-seats — never silently count as
+# success (the 2026-08-26 fleet-ops-378 stuck loop: devin/swe-1-7, 1 byte
+# stdout, unit dead, tried-seats empty).
 #
-# A no-op is a transient flake, not a dead seat: bench is short
-# (SPAWN_FAIL_BACKOFF_S, default 300s), matching the existing spawn-fail
-# path.
-#
-# Runs entirely offline: stubbed models.json, seat-caps.json, ledger dir,
-# a fake pi, and PI_ISSUES_DIR redirected into scratch. No live state
-# dir, no network, no systemd.
+# Cleanup #4263/#6100: the per-seat bench ledger and its mark_seat_* stubs
+# are DELETED — the LiteLLM proxy cooldown owns cross-unit seat health. The
+# runner's job shrinks to: classify (tried-seats, death class, exit codes),
+# re-seat in-process (fleet-ops#1378), and fail loud. These tests pin that
+# the bench stubs are never called: the record-only spies below stay EMPTY
+# on every path (a non-empty record fails the run).
 
 set -euo pipefail
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -140,20 +138,17 @@ cat >"$SEAT_CAPS_JSON" <<'JSON'
 }
 JSON
 
-# Overlay: record mark_seat_spawn_fail calls, then run the real function
-# so the per-seat ledger is actually written.
+# Overlay: record-only spies for the deleted bench stubs. Cleanup #4263/#6100
+# removed them from lib/litellm-seat.sh; if pi-issue-run ever calls one again
+# the record file becomes non-empty and the assertions below fail.
 cat >"$scratch/seatlib.sh" <<EOF
 # shellcheck shell=bash
 source "$repo_root/lib/litellm-seat.sh"
-eval "\$(declare -f mark_seat_spawn_fail | sed '1s/^mark_seat_spawn_fail/orig_mark_seat_spawn_fail/')"
 mark_seat_spawn_fail() {
     printf '%s/%s %s\n' "\$1" "\$2" "\${3:-}" >>"$scratch/mark_calls"
-    orig_mark_seat_spawn_fail "\$@"
 }
-eval "\$(declare -f mark_seat_empty_run | sed '1s/^mark_seat_empty_run/orig_mark_seat_empty_run/')"
 mark_seat_empty_run() {
     printf '%s/%s %s\n' "\$1" "\$2" "\${3:-}" >>"$scratch/mark_empty_calls"
-    orig_mark_seat_empty_run "\$@"
 }
 EOF
 export PI_PACKET_SEAT_LIB="$scratch/seatlib.sh"
@@ -181,26 +176,16 @@ seat_line=$(head -n1 "$tried")
 np="${seat_line%%/*}"
 nm="${seat_line#*/}"
 
-# (a) fleet-ops#1298: provider no-ops (stdout < OUT_MIN, exit 0) ARE seat
-# faults — same class as the verdict tools=0 empty-run (fleet-ops#902).
-# The seat is benched via mark_seat_empty_run (FLAT cooldown,
-# EMPTY_RUN_BACKOFF_S = 15 min, fleet-ops#2343) so pick-seat skips it on the
-# next intake re-spawn and reroutes to a healthy seat. #1298 reversed the
-# #1416 "lane fault, no bench" decision: without a bench, an intake re-spawn
-# (fresh claim, empty tried-seats) re-picked the same no-op'ing seat and
-# burned 8 runs/2h on straitly/deepseek-v4-pro. mark_seat_spawn_fail must
-# NOT be called (spawn-fail is the wrong class — empty_run now shares the
-# geometric #3531 ladder, capped at 6 h / 1800 s for remote agents).
+# (a) fleet-ops#1298: provider no-ops (stdout < OUT_MIN, exit 0) fail the
+# claim loudly (exit 1) so systemd re-seats. Cleanup #4263/#6100: NO bench
+# side effect — neither stub may fire; the tried-seats record for THIS unit
+# keeps the in-process retry (fleet-ops#1378) off the no-op'ing seat.
 if [[ -f "$scratch/mark_calls" ]]; then
-    fail "mark_seat_spawn_fail was called for stdout < OUT_MIN — must use mark_seat_empty_run (empty_run class, geometric cooldown), not spawn-fail (calls: $(cat "$scratch/mark_calls"))"
+    fail "mark_seat_spawn_fail was called for stdout < OUT_MIN — bench stubs are deleted (cleanup #4263/#6100), calls: $(cat "$scratch/mark_calls")"
 fi
 [[ -f "$scratch/mark_empty_calls" ]] \
-  || fail "mark_seat_empty_run was NOT called for stdout < OUT_MIN — provider no-op must bench the seat (fleet-ops#1298)"
-grep -qF "$np/$nm" "$scratch/mark_empty_calls" \
-  || fail "mark_seat_empty_run not called for $np/$nm; calls: $(cat "$scratch/mark_empty_calls")"
-grep -qF "provider-no-op" "$scratch/mark_empty_calls" \
-  || fail "mark_seat_empty_run reason must mention provider-no-op; calls: $(cat "$scratch/mark_empty_calls")"
-ok "provider no-op (stdout < OUT_MIN) -> mark_seat_empty_run called for $np/$nm (seat fault, geometric cooldown)"
+  && fail "mark_seat_empty_run was called for stdout < OUT_MIN — bench stubs are deleted (cleanup #4263/#6100), calls: $(cat "$scratch/mark_empty_calls")"
+ok "provider no-op (stdout < OUT_MIN) exits 1 and calls NO bench stub (proxy cooldown owns routing)"
 
 # P3b: empty_run cooldown lives in the proxy. Wrappers still call the stub.
 shopt -s nullglob
@@ -209,16 +194,15 @@ _noop_ledgers=("$LEDGER"/*.json)
   || fail "P3b must not write local routing ledgers, got: ${_noop_ledgers[*]}"
 ok "P3b: no local empty_run ledger after provider no-op (proxy cooldown owns routing)"
 
-ok "pi-issue-run provider no-op exits 1 and logs mark_seat_empty_run; systemd re-seats the LiteLLM group"
+ok "pi-issue-run provider no-op exits 1 with no bench side effect; systemd re-seats the LiteLLM group"
 
 # =============================================================================
 # fleet-ops#902: verdict-based EMPTY RUN — pi exits 0 and the ONLY stdout is
 # the PACKET-VERDICT tools=0 line (no final text). At ~90B this exceeds
 # OUT_MIN (20B), so the byte-count check alone would count it as success (the
 # #902 gap: devin lane exit 0, zero output, silently counted as success). The
-# empty-run check must exit 1 AND bench the seat via mark_seat_empty_run with
-# a ~15 min (900s) cooldown, so the packet is re-routed and the seat is
-# auto-re-eligible after the cooldown.
+# empty-run check must exit 1 (loud re-queue); cleanup #4263/#6100 removed the
+# bench side effect — the LiteLLM proxy cooldown owns cross-unit seat health.
 # =============================================================================
 cat >"$stub_bin/pi" <<'STUB'
 #!/usr/bin/env bash
@@ -248,14 +232,11 @@ np2="${seat2_line%%/*}"
 nm2="${seat2_line#*/}"
 [[ "$np2" && "$nm2" ]] || fail "could not parse seat from $tried2: $seat2_line"
 
-# (a) mark_seat_empty_run was called for that seat, with an empty-run reason.
+# (a) Cleanup #4263/#6100: the empty run fails loudly (exit 1) and calls NO
+# bench stub — the record-only spies must stay empty.
 [[ -f "$scratch/mark_empty_calls" ]] \
-  || fail "mark_seat_empty_run was never called for the empty run; spawn-fail calls: $(cat "$scratch/mark_calls" 2>/dev/null || true)"
-grep -qF "$np2/$nm2" "$scratch/mark_empty_calls" \
-  || fail "mark_seat_empty_run not called for $np2/$nm2; calls: $(cat "$scratch/mark_empty_calls")"
-grep -qF "empty-run" "$scratch/mark_empty_calls" \
-  || fail "mark_seat_empty_run reason must mention the empty run; calls: $(cat "$scratch/mark_empty_calls")"
-ok "empty-run -> mark_seat_empty_run called for $np2/$nm2"
+  && fail "mark_seat_empty_run was called for the empty run — bench stubs are deleted (cleanup #4263/#6100); calls: $(cat "$scratch/mark_empty_calls")"
+ok "empty-run exits 1 and calls NO bench stub for $np2/$nm2"
 
 shopt -s nullglob
 _er_ledgers=("$LEDGER"/*.json)
@@ -263,17 +244,16 @@ _er_ledgers=("$LEDGER"/*.json)
   || fail "P3b must not write local routing ledgers after empty-run, got: ${_er_ledgers[*]}"
 ok "P3b: no local empty_run ledger (proxy cooldown owns routing)"
 
-ok "empty-run (tools=0 + no final text) fails loudly and logs mark_seat_empty_run"
+ok "empty-run (tools=0 + no final text) fails loudly with no bench side effect"
 
 # =============================================================================
 # fleet-ops#1378: in-process no-op retry — when a seat produces a provider
 # no-op (0B stdout), the script must re-run on a different seat INSIDE the
 # same invocation instead of exiting 1 and consuming a systemd
 # StartLimitBurst slot. The script exits 0 when the second seat succeeds, so
-# no StartLimitBurst slot is consumed. Per fleet-ops#1298 the first no-op
-# seat IS now benched (empty_run, geometric cooldown) so an intake re-spawn skips
-# it — but the in-process retry still fires immediately on a different
-# seat, so the item is never charged a StartLimitBurst slot for the flake.
+# no StartLimitBurst slot is consumed. Cleanup #4263/#6100: no bench fires —
+# the tried-seats record alone keeps the in-process retry off the no-op'ing
+# seat, and the LiteLLM proxy cooldown owns cross-unit health.
 # =============================================================================
 # Set EMPTY_RUN_RETRY_MAX=1 so the script retries once before giving up.
 export EMPTY_RUN_RETRY_MAX=1
@@ -325,14 +305,14 @@ tried3="$STATE_DIR/attempts/pi-issue-${inst3}.tried-seats"
 [[ -s "$tried3" ]] && fail "successful run must reset tried-seats, got: $(cat "$tried3")"
 ok "tried-seats reset after successful in-process retry"
 
-# fleet-ops#1298: the first no-op group is logged via mark_seat_empty_run.
-# P3b: that group is litellm/worker-cheap, not a per-model pick-seat row.
+# Cleanup #4263/#6100: the first no-op group must not touch a bench stub.
 if grep -qF 'litellm/worker-cheap' "$scratch/mark_calls" 2>/dev/null; then
-    fail "first no-op group must use mark_seat_empty_run, not mark_seat_spawn_fail (calls: $(cat "$scratch/mark_calls"))"
+    fail "first no-op group must not call mark_seat_spawn_fail (bench stubs deleted; calls: $(cat "$scratch/mark_calls"))"
 fi
-grep -qF 'litellm/worker-cheap' "$scratch/mark_empty_calls" 2>/dev/null \
-  || fail "first no-op group must log mark_seat_empty_run; empty calls: $(cat "$scratch/mark_empty_calls" 2>/dev/null || true)"
-ok "first no-op group logged via mark_seat_empty_run (proxy cooldown owns skip)"
+if grep -qF 'litellm/worker-cheap' "$scratch/mark_empty_calls" 2>/dev/null; then
+    fail "first no-op group must not call mark_seat_empty_run (bench stubs deleted; calls: $(cat "$scratch/mark_empty_calls"))"
+fi
+ok "first no-op group logs no bench stub call (proxy cooldown owns skip)"
 
 # =============================================================================
 # fleet-ops#3531: a remote devin session that exits 0 with tools=0 but a
@@ -374,10 +354,10 @@ echo "$out4" | grep -qF 'https://github.com/Nishfleet/fleet-ops/pull/9999' \
   || fail "output file should contain the PR URL, got: $out4"
 ok "remote devin (tools=0 + PR URL) treated as success, output contains PR URL"
 
-# mark_seat_empty_run must NOT be called for this remote PR success.
-if [[ -f "$scratch/mark_empty_calls" ]] && grep -qF 'devin' "$scratch/mark_empty_calls"; then
-    fail "remote devin PR success must NOT call mark_seat_empty_run; empty calls: $(cat "$scratch/mark_empty_calls")"
-fi
+# mark_seat_empty_run must NOT be called for this remote PR success (nor for
+# anything else — the stubs are deleted, cleanup #4263/#6100).
+[[ -f "$scratch/mark_empty_calls" ]] \
+  && fail "remote devin PR success called mark_seat_empty_run; calls: $(cat "$scratch/mark_empty_calls")"
 ok "remote devin PR success did NOT bench the seat (no mark_seat_empty_run call)"
 
 # The tried-seats file for a successful run should be reset.
@@ -482,8 +462,8 @@ set -e
 [[ "$rc7" == "1" ]] \
   || fail "true no-op (0B, no verdict, no tool calls) must still exit 1, got rc=$rc7"
 [[ -s "$scratch/mark_empty_calls" ]] \
-  || fail "true no-op must still bench the seat via mark_seat_empty_run"
-ok "fleet-ops#3714 (c): true no-op still benched (detector not loosened)"
+  && fail "true no-op must NOT call the deleted mark_seat_empty_run (cleanup #4263/#6100)"
+ok "fleet-ops#3714 (c): true no-op still exits 1 loudly (detector not loosened; no bench stub)"
 
 # (d) worked-no-text WITH a PR shipped -> exit 0 (real success, #3810).
 rm -f "$scratch/mark_calls" "$scratch/mark_empty_calls" 2>/dev/null || true

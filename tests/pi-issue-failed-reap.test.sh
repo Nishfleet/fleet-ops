@@ -156,12 +156,11 @@ chmod +x "$gh_bin/gh"
 
 : >"$triage"
 write_fake inactive 0
-# fleet-ops#1227: isolate the seat ledger. The reaper sources seatlib and
-# keeps tried-seats when seat_usable says the last seat is benched
-# (TRIED-SEATS-KEPT). Point SEAT_LIB at the repo copy and
-# PI_SEAT_HEALTH_LEDGER_DIR at an empty scratch ledger so a live VPS bench
-# cannot leak into this recover case. Write last-seat so seat_usable is
-# actually consulted (no ledger file fail-opens as usable → RESET).
+# fleet-ops#1227 → cleanup #4263/#6100: the per-seat bench ledger is deleted
+# and the reaper no longer consults any bench state — a claim release always
+# truncates tried-seats (TRIED-SEATS-RESET). Point SEAT_LIB at the repo copy
+# and PI_SEAT_HEALTH_LEDGER_DIR at a scratch dir so a live VPS ledger cannot
+# leak into this recover case.
 printf 'cursor/composer-2.5\n' >"$state/attempts/pi-issue-fleet-ops-381.seat"
 ledger_reset="$fake/ledger-reset"
 mkdir -p "$ledger_reset"
@@ -181,9 +180,12 @@ grep -q 'TRIED-SEATS-RESET' "$triage" || fail "triage missing TRIED-SEATS-RESET:
 grep -q 'TRIED-SEATS-KEPT' "$triage" && fail "empty ledger must not KEEP tried-seats: $(cat "$triage")"
 ok "reaper truncates tried-seats after claim release (fleet-ops#381)"
 
-# Inverse of the recover case (fleet-ops#516): last seat is benched in the
-# isolated ledger, so the re-claim must keep tried-seats and pick a different
-# seat. Own state + ledger dirs so this cannot poison the RESET case.
+# Inverse of the recover case (fleet-ops#516, adapted by cleanup #4263/#6100):
+# with the per-seat bench ledger DELETED there is no bench state to consult —
+# even a stale ledger file left behind from the bench era cannot keep
+# tried-seats. The re-claim always starts from a clean seat rotation; the
+# LiteLLM proxy cooldown owns seat health. Own state + ledger dirs so this
+# cannot poison the RESET case.
 state_keep="$fake/state-keep"
 mkdir -p "$state_keep/attempts"
 tried_keep="$state_keep/attempts/pi-issue-fleet-ops-516.tried-seats"
@@ -191,6 +193,7 @@ printf 'devin/swe-1-7\ncursor/composer-2.5\n' >"$tried_keep"
 printf 'cursor/composer-2.5\n' >"$state_keep/attempts/pi-issue-fleet-ops-516.seat"
 ledger_keep="$fake/ledger-keep"
 mkdir -p "$ledger_keep"
+# Stale bench-era ledger file: must be IGNORED (no seat_usable reader exists).
 cat >"$ledger_keep/cursor__composer-2.5.json" <<'LEDGER'
 {"health_class":"quota_bench","seat_dead":false,"observed_at":"2026-08-27T00:00:00Z","bench_until":"2099-01-01T00:00:00Z"}
 LEDGER
@@ -205,13 +208,12 @@ out="$(PATH="$gh_bin:$PATH" SYSTEMCTL="$fake/systemctl" TRIAGE_FILE="$triage" \
     "$bin" fleet-ops-516 2>&1)"
 rc=$?
 set -e
-[[ "$rc" == "0" ]] || fail "benched-last-seat reap must exit 0, got $rc ($out)"
-[[ -s "$tried_keep" ]] || fail "benched last-seat must keep tried-seats, file empty or missing"
-grep -q 'cursor/composer-2.5' "$tried_keep" || fail "kept tried-seats lost last seat, got: $(cat "$tried_keep")"
-grep -q 'devin/swe-1-7' "$tried_keep" || fail "kept tried-seats lost earlier seat, got: $(cat "$tried_keep")"
-grep -q 'TRIED-SEATS-KEPT' "$triage" || fail "triage missing TRIED-SEATS-KEPT: $(cat "$triage")"
-grep -q 'TRIED-SEATS-RESET' "$triage" && fail "benched last-seat must not RESET tried-seats: $(cat "$triage")"
-ok "reaper keeps tried-seats when last seat is benched (fleet-ops#516)"
+[[ "$rc" == "0" ]] || fail "stale-ledger reap must exit 0, got $rc ($out)"
+grep -q 'TRIED-SEATS-RESET' "$triage" || fail "stale bench ledger must not keep tried-seats — bench state is deleted (cleanup #4263/#6100): $(cat "$triage")"
+grep -q 'TRIED-SEATS-KEPT' "$triage" && fail "no TRIED-SEATS-KEPT may exist after cleanup #4263/#6100: $(cat "$triage")"
+[[ -f "$tried_keep" ]] || fail "tried-seats file must still exist after reap"
+[[ ! -s "$tried_keep" ]] || fail "tried-seats must be truncated even with a stale bench ledger, got: $(cat "$tried_keep")"
+ok "reaper resets tried-seats even with a stale bench-era ledger present (cleanup #4263/#6100)"
 
 # fleet-ops#638 (auditor 2026-08-27T03:31Z): a stale .in packet at
 # $PI_ISSUES_DIR/<instance>.in keeps pi-issue@<instance>.service on
