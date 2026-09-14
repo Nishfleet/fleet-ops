@@ -138,7 +138,17 @@ case "$1" in
         printf '{"ahead_by":%s}\n' "$(cat "$FAKE_DIR/ahead-by" 2>/dev/null || echo 0)"
         ;;
       *compare/*)
-        printf '{"status":"%s"}\n' "$(cat "$FAKE_DIR/compare-status" 2>/dev/null || echo diverged)"
+        # Per-call override: compare-<BASE>-<HEAD> wins when present, so a
+        # test can pin one sha pair to "ahead" while the generic status
+        # stays "diverged" (stranded-merge map cases, fleet-ops#5785).
+        _pair="${endpoint#*compare/}"
+        _a="${_pair%%...*}"
+        _b="${_pair#*...}"
+        if [ -f "$FAKE_DIR/compare-${_a}-${_b}" ]; then
+          printf '{"status":"%s"}\n' "$(cat "$FAKE_DIR/compare-${_a}-${_b}")"
+        else
+          printf '{"status":"%s"}\n' "$(cat "$FAKE_DIR/compare-status" 2>/dev/null || echo diverged)"
+        fi
         ;;
       repos/*)
         echo '{"default_branch":"main"}'
@@ -448,6 +458,92 @@ grep -q 'deploy_fault_reopened=0' <<<"$out" \
 [ ! -s "$scratch/reopens.log" ] \
     || fail "trailer: must not reopen a close proven via a multi-line Closes #N trailer: $(cat "$scratch/reopens.log")"
 ok "trailer path: multi-line Closes #N body resolves the fix SHA (regression for the @tsv newline bug)"
+
+# =========================================================================
+# 9. REPLAY 0509#2944 stranded-merge (2026-09-11 main-history rewrite): the
+#    recorded delivery merge 9cc3f3ba... is orphaned — compare reports
+#    "diverged" forever — so the close is unprovable WITHOUT the map.
+# =========================================================================
+reset_fake
+echo '[]' >"$scratch/merged.json"
+python3 - <<'PY' >"$scratch/closed.json"
+import json
+print(json.dumps([{
+    "number": 2944, "title": "fix(e2e): Gate-B journey-2 mobile — entity context",
+    "state": "CLOSED", "stateReason": "COMPLETED",
+    "closedAt": "2026-09-14T08:36:55Z",
+    "author": {"login": "app/nishfleet-worker"},
+    "labels": [{"name": "deploy-fault"}],
+    "body": "blocks every production deploy",
+}]))
+PY
+cat >"$scratch/merged-head-2944.json" <<'JSON'
+[{"number": 2947, "mergeCommit": {"oid": "9cc3f3babe829d04e2b4f92e04fea41cbff91168"}}]
+JSON
+cat >"$scratch/comments-2944.json" <<'JSON'
+{"comments":[{"body":"Production proof now exists — closing per deploy-fault-gate (fleet-ops#5785). https://github.com/Nishfleet/0509/actions/runs/34798996355"}]}
+JSON
+cat >"$scratch/run-34798996355.json" <<'JSON'
+{"conclusion": "success", "workflowName": "Deploy production",
+ "headSha": "beef2944", "createdAt": "2026-09-14T02:22:33Z",
+ "url": "https://github.com/Nishfleet/0509/actions/runs/34798996355"}
+JSON
+cat >"$scratch/runs-green.json" <<'JSON'
+[{"databaseId": 34798996355, "headSha": "beef2944", "createdAt": "2026-09-14T02:22:33Z",
+  "url": "https://github.com/Nishfleet/0509/actions/runs/34798996355"}]
+JSON
+echo diverged >"$scratch/compare-status"   # orphaned sha: no relation to any run
+
+out=$(env DEPLOY_FAULT_STRANDED_MERGES="$scratch/no-map.json" "$sweep" 2>"$scratch/err8.txt")
+grep -q 'deploy_fault_reopened=1' <<<"$out" \
+    || fail "stranded sha without map must stay unproven (reopen): $out"
+ok "stranded recorded merge, no map -> unproven -> reopened"
+
+# =========================================================================
+# 10. Same stranded merge WITH the stranded-merges map: the recorded merge
+#    redirects to its on-main replacement, containment passes on the green
+#    run, and the close STANDS.
+# =========================================================================
+reset_fake
+echo '[]' >"$scratch/merged.json"
+python3 - <<'PY' >"$scratch/closed.json"
+import json
+print(json.dumps([{
+    "number": 2944, "title": "fix(e2e): Gate-B journey-2 mobile — entity context",
+    "state": "CLOSED", "stateReason": "COMPLETED",
+    "closedAt": "2026-09-14T08:36:55Z",
+    "author": {"login": "app/nishfleet-worker"},
+    "labels": [{"name": "deploy-fault"}],
+    "body": "blocks every production deploy",
+}]))
+PY
+cat >"$scratch/merged-head-2944.json" <<'JSON'
+[{"number": 2947, "mergeCommit": {"oid": "9cc3f3babe829d04e2b4f92e04fea41cbff91168"}}]
+JSON
+cat >"$scratch/comments-2944.json" <<'JSON'
+{"comments":[{"body":"Production proof now exists — closing per deploy-fault-gate (fleet-ops#5785). https://github.com/Nishfleet/0509/actions/runs/34798996355"}]}
+JSON
+cat >"$scratch/run-34798996355.json" <<'JSON'
+{"conclusion": "success", "workflowName": "Deploy production",
+ "headSha": "beef2944", "createdAt": "2026-09-14T02:22:33Z",
+ "url": "https://github.com/Nishfleet/0509/actions/runs/34798996355"}
+JSON
+cat >"$scratch/runs-green.json" <<'JSON'
+[{"databaseId": 34798996355, "headSha": "beef2944", "createdAt": "2026-09-14T02:22:33Z",
+  "url": "https://github.com/Nishfleet/0509/actions/runs/34798996355"}]
+JSON
+echo diverged >"$scratch/compare-status"   # everything else stays unrelated
+cat >"$scratch/map.json" <<'JSON'
+{"0509": {"9cc3f3babe829d04e2b4f92e04fea41cbff91168": "c26c55ce9011e23877b185d368d6ef57065ae9cf"}}
+JSON
+echo ahead >"$scratch/compare-c26c55ce9011e23877b185d368d6ef57065ae9cf-beef2944"
+
+out=$(env DEPLOY_FAULT_STRANDED_MERGES="$scratch/map.json" "$sweep" 2>"$scratch/err9.txt")
+grep -q 'deploy_fault_reopened=0' <<<"$out" \
+    || fail "stranded sha mapped to on-main replacement must prove the close: $out"
+[ ! -s "$scratch/reopens.log" ] \
+    || fail "mapped stranded merge: reopen must not fire: $(cat "$scratch/reopens.log")"
+ok "stranded recorded merge + map -> replacement proves the close"
 
 echo
 echo "all fleet-deploy-fault-gate tests passed"
