@@ -566,6 +566,27 @@ if litellm_ready; then
             fi
         fi
     fi
+    # fleet-ops#6652 gap: prepaid fallback can itself be unusable (live:
+    # worker-cheap benched, direct_fallback_seat printed devin/swe-2-max,
+    # seat_usable rejected it, workers=0 next to ready work). Try the
+    # other proxy groups in the SAME tick before the no-seat exit.
+    if [[ -z "$seat" && "$_lit_group" == "worker-cheap" ]]; then
+        _fb=""
+        _fb_p=""
+        _fb_m=""
+        for _fb_group in worker-capable worker-private; do
+            _fb=$(litellm_seat "$_fb_group" || true)
+            [[ -n "$_fb" ]] || continue
+            read -r _fb_p _fb_m <<< "$_fb"
+            if _SEAT_USABLE_SILENT=1 seat_usable "$_fb_p" "$_fb_m" 2>/dev/null; then
+                seat="$_fb"
+                _lit_group="$_fb_group"
+                seat_log "pi-issue-run: $inst litellm group $_fb_p/$_fb_m carries this tick (worker-cheap walled; fleet-ops#6652)"
+                break
+            fi
+        done
+        unset _fb _fb_p _fb_m _fb_group
+    fi
 else
     seat=""
     # fleet-ops#6315: #5093's walled exit stranded the prepaid NON-proxy
