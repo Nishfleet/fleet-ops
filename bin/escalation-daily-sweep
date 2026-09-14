@@ -32,4 +32,14 @@ with open(lockpath, 'w') as lk:
     os.replace(tmp, path)
 PY
 echo "escalation-daily-sweep: wrote synthetic daily-sweep STOP-REASON entry"
+
+# fleet-ops#5854: liveness marker for the organ-death watcher
+# (bin/escalation-organ-watch). The sweep is itself excluded from
+# escalation, so its death used to be silent until this marker goes stale.
+AS_DIR="${UNIT_ESCALATION_AGENT_STATE:-${AS:-/home/nish/workspaces/agent-state}}"
+mkdir -p "$AS_DIR"
+cat > "$AS_DIR/ESCALATION-DAILY-SWEEP-LIVENESS" <<EOF
+last-run: $(date -u +%Y-%m-%dT%H:%M:%SZ)
+source: escalation-daily-sweep
+EOF
 exit 0

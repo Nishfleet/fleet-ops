@@ -9,8 +9,11 @@
 The old `.idle-fleet-alarm.json` banner is GONE. It lived in the fleet control
 plane, which was deleted on 2026-08-23 ("Everything runs through Pi, directly.
 No launchers." — vault `global-standing-rules.md`). Do not look for it, and do
-not trust any stale copy you find: `agent-state/lanes/` now holds only
-`pi-seat-health.json`.
+not trust any stale copy you find: the canonical live file is
+`agent-state/lanes/pi-seat-health.json`. The `lanes/` directory also holds
+operational artefacts — seats/, reports/, outbound-gate/, `.seen` markers,
+logs, timestamped seats-quarantine/corpse dirs — none of which this check
+reads (fleet-ops#6613).
 
 Check live state directly instead, in this order:
 
@@ -46,7 +49,7 @@ Full text: `/home/nish/workspaces/tooling/nish-vault/_system/shared-memory/stand
 <!-- SECTION: nish-preimplementation-contract -->
 ## Mandatory pre-implementation contract
 
-Before implementation work, automatically read and follow `/home/nish/workspaces/tooling/nish-vault/_system/shared-memory/pre-implementation-contract.md`. This is non-negotiable for {{SURFACE_PREIMPLEMENT_PHRASE}}. For non-trivial work, investigate first, present Goal, Blocking questions, Assumptions, and Plan, then stop for Nish's approval. Only the contract's tiny obvious-change proportionality exception permits immediate implementation.
+Before implementation work, automatically read and follow `/home/nish/workspaces/tooling/nish-vault/_system/shared-memory/pre-implementation-contract.md`. This is non-negotiable for {{SURFACE_PREIMPLEMENT_PHRASE}}. For non-trivial work, investigate first, present Goal, Blocking questions, Assumptions, and Plan. Then stop for Nish's approval only when the work touches a canonical reserved class (vault `global-standing-rules.md` → "Canonical reserved-classes list") or is irreversible. Everything else begins once the plan is on the record — "Engineer reversibility, don't gate" (Nish, 2026-08-24): make it revertible in under two minutes and stop asking (fleet-ops#6610).
 <!-- END SECTION: nish-preimplementation-contract -->
 
 <!-- SECTION: shared-fleet-routing -->

@@ -591,6 +591,48 @@ grep -q '^rc=0$' <<<"$rc" || fail "case28: prose 'moved' must fall through to pr
 grep -q 'issue view 777' "$scratch/gh.log" || fail "case28: first bounded mention must still resolve: $(cat "$scratch/gh.log")"
 ok "case28: prose 'moved' with no adjacent ref still falls through to first-bounded #N (priority 4)"
 
+# --- Case 29 (fleet-ops#6421, hermetic replay of PR #5834): the CLOSE
+# exit from the stale-conflicting class. Land-or-close (b) — the tracker
+# PR #5834 was CLOSED (not merged) at 2026-09-13T13:32:03Z after 25h+ of
+# CONFLICTING — must clear on the NEXT scan: the PR vanishes from the
+# open list, the GC pass prunes its first-seen marker, the flagged list
+# rewrites empty, and the sweep exits 0 so the fleet-merged-pr-close
+# ExecStartPre->ExecStart rail unwedges. Two runs, ONE state dir, the
+# #5834 lifecycle end to end (body carries its real first-mention #5792).
+set_fixtures \
+  '[{"number":5834,"title":"config(seat-caps): dead-credit and dead-token providers get cap=0 with dated reasons — enrolment must tell the truth","headRefName":"fix/seat-caps-dead-seats-cap0","mergeable":"CONFLICTING","body":"Part of #5792 (route-around) and the seat_availability SLO burn"}]' \
+  5792:OPEN
+printf '%s\n' "$(date -u -d '25 hours ago' +%Y-%m-%dT%H:%M:%SZ)" \
+  >"$scratch/state/fleet-ops-5834.first-seen"
+rc=$(run)
+grep -q '^rc=1$' <<<"$rc" || fail "case29: stale-CONFLICTING must flag while the PR is OPEN: $rc"
+grep -q '^stale_conflicting_prs=1$' "$scratch/stdout.log" \
+  || fail "case29: stale measure must be 1 while the PR is OPEN: $(cat "$scratch/stdout.log")"
+grep -qx 'Nishfleet/fleet-ops 5834 5792' "$scratch/state/stale-conflicting.list" \
+  || fail "case29: PR 5834 must sit on the flagged list while OPEN: $(cat "$scratch/state/stale-conflicting.list")"
+[ -f "$scratch/state/fleet-ops-5834.first-seen" ] \
+  || fail "case29: marker must be kept while the PR stays in class"
+# The close: #5834 -> CLOSED 2026-09-13T13:32:03Z, so it vanishes from the
+# OPEN pr list. SAME state dir, next tick: wedge cleared, rc 0. Only the
+# prlist fixture is swapped — set_fixtures would wipe the very state
+# (marker + flagged list) this case is here to prove gets cleared.
+printf '%s' '[]' >"$scratch/prlist.json"
+rc=$(run)
+grep -q '^rc=0$' <<<"$rc" || fail "case29: after the CLOSE the sweep must exit 0: $rc"
+grep -q '^stale_conflicting_prs=0$' "$scratch/stdout.log" \
+  || fail "case29: stale measure must be 0 after the close: $(cat "$scratch/stdout.log")"
+[ "$(last_measure)" = "dead_conflicting_prs=0" ] \
+  || fail "case29: last measure must still be dead_conflicting_prs=0: $(last_measure)"
+[ ! -f "$scratch/state/fleet-ops-5834.first-seen" ] \
+  || fail "case29: GC must prune the 5834 marker once the PR vanishes from the open list"
+[[ -f "$scratch/state/stale-conflicting.list" && ! -s "$scratch/state/stale-conflicting.list" ]] \
+  || fail "case29: flagged list must rewrite empty after the close"
+grep -q 'GC: dropped first-seen marker fleet-ops-5834.first-seen' "$scratch/stderr.log" \
+  || fail "case29: the GC drop of the 5834 marker must be logged: $(cat "$scratch/stderr.log")"
+grep -q 'scan done: conflicting=0 unknown-mergeable=0 dead=0 stale-conflicting=0' "$scratch/stderr.log" \
+  || fail "case29: scan-done must read all-zero after the close: $(cat "$scratch/stderr.log")"
+ok "case29: stale-flagged CLOSE exit -> marker GC'd, flagged list empty, wedge exits 0 (fleet-ops#6421 / #5834)"
+
 # --- No agent names anywhere in detector output ---
 grep -qiE '(^|[[:space:]])(by|with|via|from|using|through|used)[[:space:]]+(the[[:space:]]+)?(claude|codex|devin|cursor|grok|openai|anthropic|deepseek|minimax|copilot|gemini|opus|chatgpt|fable|luna|sol)([^a-z]|$)' \
     "$scratch/stdout.log" "$scratch/stderr.log" \

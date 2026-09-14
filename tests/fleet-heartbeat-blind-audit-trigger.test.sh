@@ -49,9 +49,11 @@ grep -F -- '--json number --jq length' "$tier1" >/dev/null \
     || fail "tier1 §10 must count issues with --json number --jq length"
 ok "A: gap-board count source locked (gh issue list -l gap-audit --state open)"
 
-# Empty board -> start the audit unit. Pin the start call.
-grep -F -- 'systemctl --user start fleet-blind-audit.service' "$tier1" >/dev/null \
-    || fail "tier1 §10 must start fleet-blind-audit.service when the gap-board is empty"
+# Empty board -> start the audit unit, NON-BLOCKING (the audit runs ~30min;
+# a blocking start blew the heartbeat's TimeoutStartSec=45min — fleet-ops#5343).
+# Pin the start call in its --no-block contract.
+grep -F -- 'systemctl --user start --no-block fleet-blind-audit.service' "$tier1" >/dev/null \
+    || fail "tier1 §10 must start fleet-blind-audit.service --no-block when the gap-board is empty"
 # Active/activating -> no-op (one audit at a time; a running audit blocks
 # re-trigger via the unit itself, not a hand-built lock).
 grep -F -- 'systemctl --user is-active fleet-blind-audit.service' "$tier1" >/dev/null \
@@ -121,7 +123,14 @@ case "$cmd" in
     exit 0
     ;;
   start)
-    printf 'start %s\n' "$1" >>"${CALLS:-/dev/null}"
+    if [ "${1:-}" = "--no-block" ]; then
+      # the §10 contract: start is issued non-blocking; the fake records the
+      # exact shape so the counters below can assert the --no-block form.
+      shift
+      printf 'start --no-block %s\n' "$1" >>"${CALLS:-/dev/null}"
+    else
+      printf 'start %s\n' "$1" >>"${CALLS:-/dev/null}"
+    fi
     exit "${START_RC:-0}"
     ;;
   *)
@@ -146,7 +155,7 @@ run_section10() {
                 return 0
                 ;;
             *)
-                if systemctl --user start fleet-blind-audit.service 2>/dev/null; then
+                if systemctl --user start --no-block fleet-blind-audit.service 2>/dev/null; then
                     new_ts="2026-08-26T06:20:00Z"
                     python3 - "$plan" "$new_ts" <<'PY'
 import sys, re
@@ -177,7 +186,7 @@ PY
     return 0
 }
 
-count_starts() { local n; n=$(grep -c '^start fleet-blind-audit.service' "$calls" 2>/dev/null || true); echo "${n:-0}"; }
+count_starts() { local n; n=$(grep -c '^start --no-block fleet-blind-audit.service' "$calls" 2>/dev/null || true); echo "${n:-0}"; }
 has_stamp()    { grep -qE '^last-blind-audit-dispatch:' "$plan" 2>/dev/null; }
 has_loud()     { grep -q 'BLIND-AUDIT-START-FAIL' "$triage" 2>/dev/null; }
 

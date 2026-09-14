@@ -294,6 +294,58 @@ jq -r 'select(.disposition=="duplicate_of") | .title' "$scratch/ledger.jsonl" \
   || fail "run 3: dedupe not mirrored as duplicate_of in the canonical ledger"
 ok "carryover: signature carried by an open issue is dropped with a log line, not filed"
 
+# ---------------------------------------------------------------- run 4 -----
+# (e) fleet-ops#6568: a carried machinery finding (kind=unit|drop-in) whose
+# live evidence path is already gone — or is now a repo-managed symlink — is
+# stale. Resolve it without a panel call or a filing. A carried machinery
+# finding whose path is still a real file is processed normally.
+printf '[]\n' > "$issues_json"
+co_dead="$scratch/dead-unit.path"        # absent on disk
+co_live="$scratch/live-unit.path"        # real file, still present
+printf '[Path]\nPathChanged=/tmp/x\n' > "$co_live"
+co_link="$scratch/repo-sourced.path"     # symlink (repo-sourced, e.g. MANIFEST)
+ln -s "$repo_root/install.sh" "$co_link"
+mk_sig() { python3 -c 'import hashlib,sys; print(hashlib.sha256(sys.argv[1].encode()).hexdigest())' "$1"; }
+: > "$scratch/carryover.jsonl"
+jq -cn --arg s "$(mk_sig dead)" --arg p "$co_dead" --arg ev "unit=dead-unit.path path=$co_dead" \
+  '{first_seen:"2026-08-26T00:00:00Z", run:"0000", signature:$s, finding:{rank:"CO",kind:"unit",unit:"dead-unit.path",path:$p,title:"hand-placed machinery not on allowlist: dead-unit",body:"A non-transient user unit fragment.","severity":"high",evidence:$ev}}' \
+  >> "$scratch/carryover.jsonl"
+jq -cn --arg s "$(mk_sig link)" --arg p "$co_link" --arg ev "unit=repo-sourced.path path=$co_link" \
+  '{first_seen:"2026-08-26T00:00:00Z", run:"0000", signature:$s, finding:{rank:"CO",kind:"unit",unit:"repo-sourced.path",path:$p,title:"hand-placed machinery not on allowlist: repo-sourced",body:"A non-transient user unit fragment.","severity":"high",evidence:$ev}}' \
+  >> "$scratch/carryover.jsonl"
+jq -cn --arg s "$(mk_sig live)" --arg p "$co_live" --arg ev "unit=live-unit.path path=$co_live" \
+  '{first_seen:"2026-08-26T00:00:00Z", run:"0000", signature:$s, finding:{rank:"CO",kind:"unit",unit:"live-unit.path",path:$p,title:"hand-placed machinery not on allowlist: live-unit",body:"A non-transient user unit fragment.","severity":"high",evidence:$ev}}' \
+  >> "$scratch/carryover.jsonl"
+
+rc=0
+env "${common_env[@]}" \
+  GH_CREATE_LOG="$scratch/create-4.log" \
+  AUDIT_DELIBERATE_STATES="$repo_root/docs/deliberate-states.md" \
+  AUDIT_FAKE_NOW="2026-08-26T06:35:00Z" \
+  AUDIT_MAX_FINDINGS="8" \
+  AUDIT_DRILL_FINDINGS="$empty_findings" \
+  AUDIT_SEAM_EVIDENCE="$scratch/empty-seams.json" \
+  "$repo_root/bin/fleet-blind-audit" >"$scratch/run4.log" 2>&1 || rc=$?
+[[ $rc == 0 ]] || { cat "$scratch/run4.log"; fail "run 4 exited $rc"; }
+
+# The two stale entries are resolved and removed from the ledger; the live
+# entry is processed normally (filed via the stub gh).
+if grep -q 'dead-unit\|repo-sourced' "$scratch/create-4.log" 2>/dev/null; then
+  fail "run 4: filed a stale machinery carry-over whose live path is gone/symlinked"
+fi
+grep -q 'carry-over: resolved (live evidence path gone or repo-symlinked' "$scratch/run4.log" \
+  || fail "run 4: missing live-path resolve log line: $(cat "$scratch/run4.log")"
+[[ "$(grep -c 'live evidence path gone or repo-symlinked' "$scratch/run4.log")" == "2" ]] \
+  || fail "run 4: expected 2 live-path resolves (dead + symlinked), saw: $(grep -c 'live evidence path' "$scratch/run4.log")"
+grep -q 'live-unit' "$scratch/create-4.log" \
+  || fail "run 4: carried machinery finding with a live path was not filed"
+co4=$(grep -c . "$scratch/carryover.jsonl" 2>/dev/null; true)
+[[ "$co4" -eq 0 ]] || fail "run 4: carry-over ledger should be empty, saw $co4"
+# The two drops are mirrored as by_design rows against the live path ref.
+[[ "$(jq -r 'select(.disposition=="by_design") | .ref' "$scratch/ledger.jsonl" | grep -c '^live:')" == "2" ]] \
+  || fail "run 4: stale machinery drops not mirrored as by_design live: rows"
+ok "carryover: stale machinery finding with a dead/symlinked live path is resolved, not re-filed"
+
 # (d) global guard: packet must not cap the reviewer.
 if grep -q 'Max findings to return' "$repo_root/prompts/blind-audit.md" "$repo_root/bin/fleet-blind-audit"; then
   fail "the reviewer is still told a Max findings to return cap"

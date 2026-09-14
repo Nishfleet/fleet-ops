@@ -88,6 +88,27 @@ if command -v load_seat_caps >/dev/null 2>&1; then
     load_seat_caps || true
 fi
 
+# fleet-ops#6114: the #5993 deletion of lib/seat-lib.sh took model_cap with
+# it, so the restored senior ladder's cap gate had no read. Read the cap
+# straight from config/seat-caps.json: providers.<p>.models[<m>] (an int, or
+# an object carrying .cap), else the provider cap, else 0. This is the
+# sequencing-row "config read in the callers" — the #1167 overage model
+# (ladder head) and the #4206 cap 2 are enforced from the same file. Defined
+# only when the sourced seat library did not provide one (tests stub it).
+# $0's realpath keeps the deployed unit on the deploy-clone's committed
+# config; the worktree tests read the worktree's own copy.
+AUDIT_SEAT_CAPS_JSON="${PI_AUDIT_SEAT_CAPS_JSON:-$(dirname "$(readlink -f "$0" 2>/dev/null || echo "$0")")/../config/seat-caps.json}"
+if ! declare -F model_cap >/dev/null 2>&1; then
+    model_cap() {
+        local p="$1" m="$2" v
+        [ -f "$AUDIT_SEAT_CAPS_JSON" ] || { echo 0; return; }
+        v=$(jq -r --arg p "$p" --arg m "$m" \
+            '(.providers[$p].models[$m] | if type == "object" then (.cap // 0) else . end) // .providers[$p].cap // 0' \
+            "$AUDIT_SEAT_CAPS_JSON" 2>/dev/null || echo 0)
+        case "$v" in (''|*[!0-9]*) echo 0 ;; *) printf '%s\n' "$v" ;; esac
+    }
+fi
+
 # fleet-ops#786: timestamp split out so the printf line stays free of
 # $(date) and the cache-marker regex does not flag the log helper. The
 # variable name avoids the volatile alternatives (TS/RUN_TS/NOW_ISO/...)
@@ -260,6 +281,17 @@ resolve_free_glm() {
 # seat is skipped, never a unit failure. If the whole ladder is walled the
 # resolver falls through to any usable capable seat. Returns 1 (lane fault ->
 # exit 0, no vote, retry next tick) only when nothing anywhere is usable.
+# fleet-ops#3121: the senior role replaces the dead straitly auditor. First
+# usable seat in the senior ladder wins; a walled seat is skipped, never a
+# unit failure. #6114: the ladder itself is back in command — the #5993
+# LiteLLM `senior` group (GLM/DeepSeek) is the documented FALLBACK, not the
+# primary, so senior audits bill the #1167 Cursor $400 bucket through
+# cursor/cursor-grok-4.6-high again. The ladder head (the #1167 $400 overage
+# model) is READ from config/seat-caps.json .cursor_overage.overage_model;
+# the opens_after_included_exhausted sequencing itself has no live consumer
+# since #5993 (pick_seat deleted) and is documented in the enforcement-matrix
+# row. Returns 1 (lane fault -> exit 0, no vote, retry next tick) only when
+# nothing anywhere — ladder, proxy, any-capable — is usable.
 resolve_senior_seat() {
     if [ -n "${AUDIT_SENIOR_SEAT:-}" ]; then
         printf '%s\t%s\n' "${AUDIT_SENIOR_SEAT%%:*}" "${AUDIT_SENIOR_SEAT#*:}"
@@ -270,16 +302,18 @@ resolve_senior_seat() {
         return 0
     fi
     local s
-    # Prefer the shared litellm-seat ladder (first usable, any-capable fallback
-    # built in). Only inline when litellm-seat is not available (tests, degraded).
-    if command -v find_senior_seat >/dev/null 2>&1; then
-        if s=$(find_senior_seat); then
-            printf '%s\n' "$s"
-            return 0
-        fi
-        return 1
+    local order="${AUDIT_SENIOR_ORDER:-}"
+    if [ -z "$order" ]; then
+        # #6114: the ladder head is a config read, not a hardcoded slug.
+        # seat-caps.json sits beside this script (deploy-clone via $0's
+        # realpath; tests read the worktree copy). Any failure falls back to
+        # the literal #3121 head.
+        local head
+        head=$(jq -r '.cursor_overage.overage_model // "cursor-grok-4.6-high"' \
+            "$AUDIT_SEAT_CAPS_JSON" 2>/dev/null || echo "cursor-grok-4.6-high")
+        case "$head" in (''|*[!A-Za-z0-9._-]*) head="cursor-grok-4.6-high" ;; esac
+        order="cursor/$head xai-oauth/grok-4.6 openrouter/deepseek/deepseek-v4.1-flash"
     fi
-    local order="${AUDIT_SENIOR_ORDER:-cursor/cursor-grok-4.6-high xai-oauth/grok-4.6 openrouter/deepseek/deepseek-v4.1-flash}"
     local seat p m
     for seat in $order; do
         [ -n "$seat" ] || continue
@@ -291,11 +325,22 @@ resolve_senior_seat() {
         printf '%s\t%s\n' "$p" "$m"
         return 0
     done
-    log "no usable senior seat from ladder; falling through to any capable seat"
-    if s=$(find_any_capable_seat); then
-        printf '%s\n' "$s"
-        return 0
+    # #6114: ladder exhausted. The #5993 LiteLLM proxy `senior` group
+    # (GLM/DeepSeek) is the documented fallback; any capable seat is the
+    # last resort (old seat-lib's any-capable tail).
+    if command -v find_senior_seat >/dev/null 2>&1; then
+        if s=$(find_senior_seat); then
+            printf '%s\n' "$s"
+            return 0
+        fi
     fi
+    if command -v find_any_capable_seat >/dev/null 2>&1; then
+        if s=$(find_any_capable_seat); then
+            printf '%s\n' "$s"
+            return 0
+        fi
+    fi
+    log "no usable senior seat (ladder, proxy, any-capable all exhausted)"
     return 1
 }
 
@@ -617,15 +662,21 @@ main() {
         free-glm-5-3|free|free-glm) group=worker-cheap ;;
         *) group=worker-capable ;;
     esac
-    if declare -F litellm_seat >/dev/null 2>&1; then
+    # #6114: the senior role picks from its own ladder first (head = the
+    # #1167 Cursor $400 overage model) and only reaches the #5993 LiteLLM
+    # proxy group through resolve_senior_seat's fallback. Other roles stay
+    # on the proxy.
+    if [[ "$group" == "senior" ]] && seat=$(resolve_senior_seat); then
+        log "pi-audit-run: $role -> senior ladder ($seat)"
+    elif declare -F litellm_seat >/dev/null 2>&1; then
         seat=$(litellm_seat "$group" || true)
+        log "pi-audit-run: $role -> litellm/$group"
     elif seat=$(resolve_seat "$role"); then
         :
     else
         log "no usable seat for role=$role (lane fault); skipping"
         exit 0
     fi
-    log "pi-audit-run: $role -> litellm/$group"
     provider=$(printf '%s\n' "$seat" | cut -f1)
     model=$(printf '%s\n' "$seat" | cut -f2)
 

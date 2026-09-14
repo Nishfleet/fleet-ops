@@ -101,7 +101,12 @@
 #   FLEET_ESCALATION_DRAIN_ISSUE_FILE     fleet-issue-file binary used to file
 #                                         the stuck-packet escalation (default:
 #                                         sibling bin/fleet-issue-file of this
-#                                         script; test stub seam)
+#                                         script; test stub seam). A run with
+#                                         an overridden packet dir and NO
+#                                         explicit seam refuses to file — a
+#                                         non-production packet set must not
+#                                         write to the production tracker
+#                                         (fleet-ops#6536).
 #   FLEET_ESCALATION_DRAIN_ESCALATION_REPO  repo the escalation issue is filed
 #                                         to (default Nishfleet/fleet-ops)
 #
@@ -1191,11 +1196,22 @@ escalate_stuck_packets() {
     local -a stuck=("$@")
     local n_stuck=${#stuck[@]}
 
-    # Stuck packets arrive in glob (oldest-first) order; the LAST entry
-    # carries the newest dispatch instant.
-    local newest_iso=""
-    newest_iso="${stuck[$((n_stuck - 1))]##*packet=}"
-    newest_iso="${newest_iso%\)}"
+    # fleet-ops#6345: glob order is (alertname, dispatch-ts) lexicographic,
+    # NOT dispatch order — a burst mixing alertnames puts the newest
+    # dispatch anywhere in the list (observed 2026-09-13T11:43:48Z: the
+    # issue evidence reported 04:44:52Z while FleetLitellmProxyAbsent-053252Z,
+    # dispatched 05:32:52Z, sat in the same burst, so the recorded watermark
+    # understated the newest covered packet). Take the MAX dispatch instant
+    # across the burst; ISO-8601Z compares correctly as a string, the same
+    # assumption every other comparison in this file makes.
+    local newest_iso="" s_newest_iso
+    for s_newest_iso in "${stuck[@]}"; do
+        s_newest_iso="${s_newest_iso##*packet=}"
+        s_newest_iso="${s_newest_iso%\)}"
+        if [[ -z "$newest_iso" || "$s_newest_iso" > "$newest_iso" ]]; then
+            newest_iso="$s_newest_iso"
+        fi
+    done
 
     local filed_issue=""
     if [ -f "$STATE_FILE" ] && command -v jq >/dev/null 2>&1; then
@@ -1233,7 +1249,26 @@ escalate_stuck_packets() {
             leftover=$((leftover + 1))
             continue
         fi
-        [ -f "$PACKET_DIR/$name" ] || continue
+        # fleet-ops#6430: the vanish gap. The stuck scan listed this packet,
+        # but it is already gone at disposal time (a concurrent drain or
+        # repair actor raced the mv). The old bare continue dropped it
+        # silently: no DISPOSITION, no LOUD, not counted, while the burst
+        # summary still claimed the disposal — #6430's own issue names a
+        # disposal no production surface proves. Decision: log the vanish
+        # and record the DISPOSITION (same terminal rule as the mv path:
+        # escalated-filed on a fresh filing, reasoned-drop when the state
+        # watermark already covers the burst). No chains.terminated.jsonl
+        # write on this path: the drain did not move the file, so whoever
+        # removed it owns that consumption record. Once the racing winner
+        # moves the packet, the next scan never lists it again, so this
+        # stays a one-time witness, not an hourly chorus.
+        if [ ! -f "$PACKET_DIR/$name" ]; then
+            local vterminal="escalated-filed"
+            [ -n "$filed_issue" ] && vterminal="reasoned-drop"
+            log "vanished: $name (stuck-scanned, gone at disposal — raced by a concurrent drain/repair actor); DISPOSITION recorded, not silently dropped"
+            log_disposition "$name" "$vterminal" "$issue_no"
+            continue
+        fi
         mkdir -p "$STUCK_ARCH_DIR"
         if mv "$PACKET_DIR/$name" "$STUCK_ARCH_DIR/$name" 2>/dev/null; then
             local terminal="escalated-filed"
@@ -1321,6 +1356,26 @@ log_disposition() {
 file_stuck_escalation_issue() {
     local n_packets="$1"
     local newest_iso="$2"
+    # fleet-ops#6536: the filing seam is the drain's only write to the
+    # production tracker, so it must only fire for the production packet
+    # set. 6536's own thread carries the leak it guards: a dedup comment
+    # citing "drain run at 2026-09-13T20:48:42Z ... newest dispatch instant
+    # 2026-09-13T13:48:42Z" — a run present in no escalation-drain journal
+    # (the production timer fires at :43 and its every invocation is
+    # journaled) and a packet that never existed in the production packet
+    # dir. A drain aimed at an overridden packet dir (hermetic scratch,
+    # restored copy, second checkout) that forgets to stub the seam files
+    # its burst into the real repo: contained as a dedup comment when the
+    # #1212 gate scores 1.00, a GHOST issue when it scores borderline.
+    # Guard: an overridden packet dir without an explicit seam fails open
+    # exactly like an unavailable filing — packets kept, LOUD line, no
+    # network write. Production (no env overrides) is unaffected; every
+    # in-repo test harness stubs the seam explicitly, so none regress.
+    if [[ -n "${FLEET_ESCALATION_DRAIN_AGENT_STATE:-}" || -n "${FLEET_ESCALATION_DRAIN_PACKET_DIR:-}" ]] \
+        && [[ -z "${FLEET_ESCALATION_DRAIN_ISSUE_FILE:-}" ]]; then
+        log "WARN refusing stuck-packet filing: packet dir is overridden but the filing seam is not stubbed (set FLEET_ESCALATION_DRAIN_ISSUE_FILE for hermetic runs) — a non-production packet set must not file into $ESCALATION_REPO"
+        return 1
+    fi
     local issue_file="$ISSUE_FILE_BIN"
     if [ ! -x "$issue_file" ]; then
         log "WARN fleet-issue-file missing/not executable at $issue_file — cannot file stuck-packet escalation"

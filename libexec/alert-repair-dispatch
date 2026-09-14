@@ -1578,8 +1578,8 @@ def main():
         "",
         "PRODUCTION-CLAIM RULE (fleet-ops#5786): a deliverable line may state a change is already in production or already serving on this host only when that same line cites a git SHA that `git merge-base --is-ancestor <sha> origin/main` proves is merged to origin/main. A fix on a branch is a PR, not production — the deploy clone checked out on your branch is NOT production, and the packet-verdict checker + dead-man reject and fail the unit on a false claim.",
         "",
-        "TRAILING-WINDOW RULE (senior auditor 2026-09-10T15:55Z; alert-repair-FleetOomdKillsHigh-20260910T144950Z timed out waiting for its window to drain): a trailing-window metric — `increase(<counter>[Nh])` or any long-window ratio — CANNOT clear on your fix alone; the pre-fix events must age out. Do NOT wait, sleep or poll for the drain. This unit is killed at RuntimeMaxSec 60 min, and a killed unit trips the dead-man with NO context for the senior auditor, which is strictly worse than an honest non-zero exit.",
-        "Do this instead: append your one-line result to actions.log, append '## FAILED-REPAIR CONTEXT' naming the root cause, the fix, and the PREDICTED CLEAR TIME (oldest in-window event + window length), then finish the turn. Any bounded re-check must be under 5 minutes total.",
+        "TRAILING-WINDOW RULE (senior auditor 2026-09-10T15:55Z; alert-repair-FleetOomdKillsHigh-20260910T144950Z timed out waiting for its window to drain): a trailing-window metric — `increase(<counter>[Nh])` or any long-window ratio — CANNOT clear on your fix alone; the pre-fix events must age out. Do NOT wait, sleep or poll for the drain. This unit is killed at RuntimeMaxSec 90 min, and a killed unit trips the dead-man with NO context for the senior auditor, which is strictly worse than an honest non-zero exit.",
+        "Do this instead: append your one-line result to actions.log, append '## FAILED-REPAIR CONTEXT' naming the root cause, the fix, and the PREDICTED CLEAR TIME (oldest in-window event + window length), then finish the turn. Any bounded re-check must be under 5 minutes total. BUDGET RULE (senior auditor 2026-09-13T17:00Z; both alert-repair-Fleet{Seat,Claude}QuotaStale-20260913T153646Z workers were deadline-killed at 60 min, 0-5 min AFTER their alerts had already resolved — 47+ tools of real diagnosis, verdicts stranded): by minute 50 of the 90, STOP investigating — the actions.log line plus your verdict ARE the deliverable; anything still unresolved goes to FAILED-REPAIR CONTEXT with a predicted clear time, per the paragraph above.",
         "",
         "HOT-PATCH RULE: `~/.local/state/pi-packet/seat-caps.json` and `pi-models.json` are MANIFEST copy-installed files — deploy `install.sh` overwrites them from the repo copy on the next merge, so a live edit there is reverted and shows up as MANIFEST install drift (and resets learned caps). If a fix belongs in one of those files, make it in `config/<file>` in the fleet-ops repo via PR and say so in FAILED-REPAIR CONTEXT; never present a live edit to them as a durable repair.",
         "",
@@ -1663,11 +1663,19 @@ def main():
         PI_SYSTEMD_RUN_BIN,
         "--unit", unit,
         "--stdin", str(packet),
-        # CLOCK_RUN is 3600s (packet 11). --deadline drives RuntimeMaxSec so
-        # the unit self-terminates at the run-hop budget instead of holding
-        # fleet_chain_stalled{hop=run} open (fleet-ops#3328). pi-systemd-run's
-        # default 90 min is the dispatch-plane orphan window, not this hop.
-        "--deadline", "60",
+        # 2026-09-13 (auditor, summoning trip 20260913T153646Z): 60 -> 90.
+        # BOTH FleetSeatQuotaStale + FleetClaudeQuotaStale repair workers were
+        # deadline-killed at exactly 60 min, 0-5 min AFTER their alerts
+        # resolved (PACKET-VERDICT tools=47 class=worked, deliverable=unset —
+        # the #6371 unless-gate landed mid-run via the 16:30:33Z IST deploy+
+        # reload; resolve evidence = exporter cadence + prometheus reload +
+        # for:5m + one evaluation, which lags the FIX by ~10 min). 90 equals
+        # pi-systemd-run's own dispatch-plane orphan default; #3328's
+        # hung-run stall signal (fleet_chain_stalled{hop=run}) now waits 30
+        # min longer — accepted: one dead-man trip costs a full auditor
+        # summon. --deadline still drives RuntimeMaxSec so the unit
+        # self-terminates at the run-hop budget (fleet-ops#3328).
+        "--deadline", "90",
         "--",
         "pi", "--print",
         "--provider", provider,

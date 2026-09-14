@@ -73,7 +73,7 @@ set +e
 rc=$?
 set -e
 [[ "$rc" == 1 ]] || fail "second acquire must exit 1, got rc=$rc"
-printf '%s' "$(cat "$scratch/second.out")" | grep -q '^claimed-by-other' \
+grep -q '^claimed-by-other' "$scratch/second.out" \
     || fail "expected 'claimed-by-other' from second acquire, got: $(cat "$scratch/second.out")"
 
 # Confirm the claim branch is on origin and points at main's tip.

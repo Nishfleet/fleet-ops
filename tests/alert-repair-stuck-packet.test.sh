@@ -18,6 +18,10 @@
 #      retired fleet-completion-canary stopped writing (fleet-ops#5869);
 #      the record absorbs later re-dispatches of the same episode so the
 #      stuck set returns to 0 instead of the backlog trending up.
+#   5. fleet-ops#6430: a stuck-scanned packet already gone at disposal
+#      time still gets its DISPOSITION (terminal per the mv-path rule),
+#      logged and counted. Never a silent bare continue: #6430's issue
+#      names a disposal no production surface proves.
 #
 # Hermetic: scratch ALERT dir, fake chains.terminated.jsonl, and a stub
 # fleet-issue-file. The real GitHub API and the live agent-state dir are
@@ -157,6 +161,14 @@ grep -q "STUCK-PACKET.*packet-FleetStuckFail-${ts_8h_ago}.md" "$scratch/run.stde
     && fail "scenario 3: failed-filing packet must NOT be archived" || true
 ok "scenario 3: filing failure keeps the packet + LOUD (fail open)"
 
+# fleet-ops#6345: the fail-open leftover's duty (kept + LOUD) ends here.
+# Remove it so scenario 4a's burst is exactly the covered-older packet and
+# the true-MAX watermark (not this older prop) decides fresh-vs-covered:
+# with the prop kept, the 4a burst's newest (8h-ago) exceeds the state
+# watermark (9h-ago) and legitimately re-opens the burst with a fresh
+# filing instead of taking the reasoned-drop path 4a exists to prove.
+rm -f "$AS/alert-repair/packet-FleetStuckFail-${ts_8h_ago}.md"
+
 # ---------------------------------------------------------------------------
 # Scenario 4: state watermark dedupe — an OLDER- THAN-watermark stuck packet
 # arriving after a settled burst is a reasoned drop under the EXISTING filing
@@ -212,6 +224,141 @@ if grep -q "STUCK-PACKET" "$scratch/run.stderr"; then
     fail "scenario 5: absorbed episode must not re-LOUD; stderr: $(cat "$scratch/run.stderr")"
 fi
 ok "scenario 5: terminal record absorbs the episode's re-fire — stuck set returns to 0 (fleet-ops#5869)"
+
+# ---------------------------------------------------------------------------
+# Scenario 6 (fleet-ops#6345): the newest-packet watermark takes the MAX
+# dispatch instant across the burst, not the lexically-last stuck packet.
+# Glob order is (alertname, ts) lexicographic, NOT dispatch order, so a
+# burst mixing alertnames puts its newest dispatch anywhere in the list.
+# Observed 2026-09-13T11:43:48Z: the issue evidence reported "newest
+# dispatch instant 04:44:52Z" while FleetLitellmProxyAbsent-053252Z
+# (dispatched 05:32:52Z) was in that very burst — the recorded watermark
+# understated the newest covered packet, which decides fresh-filing vs
+# reasoned-drop for the NEXT burst.
+#
+# FleetAlpha (7h ago) is the true newest; FleetZulu (9h ago) sorts LAST in
+# glob order. The legacy last-entry read reports 9h-ago; the fixed read
+# must report 7h-ago in BOTH the filing evidence and the state watermark.
+# ---------------------------------------------------------------------------
+rm -f "$AS/alert-repair/stuck-escalation-state.json"
+touch "$AS/alert-repair/packet-FleetAlpha-${ts_7h_ago}.md"
+touch "$AS/alert-repair/packet-FleetZulu-${ts_9h_ago}.md"
+: > "$STUB_LOG"
+rm -f "$scratch/run.stderr"
+run_drain "$scratch/fleet-issue-file-stub"
+[[ "$(grep -c "^stub-call " "$STUB_LOG" 2>/dev/null || true)" -eq 1 ]] \
+    || fail "scenario 6: exactly one filing expected for the fresh burst; calls: $(grep -c "^stub-call " "$STUB_LOG" 2>/dev/null || true)"
+alpha_iso="${ts_7h_ago:0:4}-${ts_7h_ago:4:2}-${ts_7h_ago:6:2}T${ts_7h_ago:9:2}:${ts_7h_ago:11:2}:${ts_7h_ago:13:2}Z"
+grep -F "newest dispatch instant $alpha_iso" "$STUB_LOG" >/dev/null \
+    || fail "scenario 6: filing evidence must report the TRUE newest dispatch instant ($alpha_iso), not the lexically-last packet's (${ts_9h_ago}Z); stub: $(cat "$STUB_LOG")"
+jq -e --arg a "$alpha_iso" '.newest_packet_iso == $a' "$AS/alert-repair/stuck-escalation-state.json" >/dev/null \
+    || fail "scenario 6: state watermark must be the true newest dispatch instant ($alpha_iso); state: $(cat "$AS/alert-repair/stuck-escalation-state.json" 2>/dev/null || true)"
+grep -F "DISPOSITION stuck-packet packet=packet-FleetAlpha-${ts_7h_ago}.md terminal=escalated-filed issue=999" \
+    "$AS/alert-repair/actions.log" >/dev/null \
+    || fail "scenario 6: FleetAlpha (true newest) must be disposed; log: $(tail -4 "$AS/alert-repair/actions.log")"
+grep -F "DISPOSITION stuck-packet packet=packet-FleetZulu-${ts_9h_ago}.md terminal=escalated-filed issue=999" \
+    "$AS/alert-repair/actions.log" >/dev/null \
+    || fail "scenario 6: FleetZulu (lexically last) must be disposed; log: $(tail -4 "$AS/alert-repair/actions.log")"
+if grep -q "STUCK-PACKET" "$scratch/run.stderr"; then
+    fail "scenario 6: fully disposed burst must NOT re-LOUD; stderr: $(cat "$scratch/run.stderr")"
+fi
+ok "scenario 6: newest-packet watermark = MAX dispatch instant, not the lexically-last stuck packet (fleet-ops#6345)"
+
+# ---------------------------------------------------------------------------
+# Scenario 7 (fleet-ops#6430): the vanish gap. A stuck-scanned packet that
+# is already gone at disposal time must still get its TERMINAL DISPOSITION:
+# a vanished: journal line, a DISPOSITION decision in actions.log, counted,
+# never silently dropped. #6430 lived it: the 14:15:47Z run filed its
+# escalation, then lost the packet between scan and disposal, and no
+# production surface recorded either fact.
+#
+# Black-box recipe, no race: a stuck-listed "packet" that is a DIRECTORY.
+# It globs, its name matches the webhook pattern, the stuck list carries
+# it, but [ -f ] fails at disposal. Fresh state (removed here) so the
+# burst takes the escalated-filed path, proving the vanished: branch emits
+# the same terminal a successful mv would have.
+# ---------------------------------------------------------------------------
+rm -f "$AS/alert-repair/stuck-escalation-state.json"
+mkdir -p "$AS/alert-repair/packet-FleetGhost-${ts_8h_ago}.md"
+: > "$STUB_LOG"
+rm -f "$scratch/run.stderr"
+run_drain "$scratch/fleet-issue-file-stub"
+[[ "$(grep -c "^stub-call " "$STUB_LOG" 2>/dev/null || true)" -eq 1 ]] \
+    || fail "scenario 7: the vanished packet's burst must still file exactly once; calls: $(grep -c "^stub-call " "$STUB_LOG" 2>/dev/null || true)"
+grep -F "vanished: packet-FleetGhost-${ts_8h_ago}.md" "$scratch/run.stderr" >/dev/null \
+    || fail "scenario 7: the vanished packet must be named in the journal; stderr: $(cat "$scratch/run.stderr")"
+grep -F "DISPOSITION stuck-packet packet=packet-FleetGhost-${ts_8h_ago}.md terminal=escalated-filed issue=999" \
+    "$AS/alert-repair/actions.log" >/dev/null \
+    || fail "scenario 7: the vanished packet must still get its DISPOSITION decision line; log: $(tail -3 "$AS/alert-repair/actions.log" 2>/dev/null || true)"
+[[ -d "$AS/alert-repair/packet-FleetGhost-${ts_8h_ago}.md" ]] \
+    || fail "scenario 7: the vanished packet's witness must survive (the drain did not move it)"
+[[ ! -f "$AS/alert-repair/archived/stuck/packet-FleetGhost-${ts_8h_ago}.md" ]] \
+    || fail "scenario 7: a vanished (non-file) unit cannot be archived; it must not pretend it was"
+if grep -q "STUCK-PACKET" "$scratch/run.stderr"; then
+    fail "scenario 7: a vanished-and-dispositioned burst is settled, must NOT re-LOUD; stderr: $(cat "$scratch/run.stderr")"
+fi
+ok "scenario 7: vanished-at-disposal packet decision-logged, counted, never silent (fleet-ops#6430)"
+
+# ---------------------------------------------------------------------------
+# Scenario 8 (fleet-ops#6536): the filing seam is production-only. A run
+# with an overridden packet dir and NO explicit FLEET_ESCALATION_DRAIN_ISSUE_FILE
+# must refuse to file into the production tracker and fail open (packet
+# kept, LOUD, no DISPOSITION, no archive, no state write). 6536's own
+# thread carries the leak this pins: a dedup comment citing "drain run at
+# 2026-09-13T20:48:42Z ... newest dispatch instant 2026-09-13T13:48:42Z"
+# — a run present in no escalation-drain journal and a packet that never
+# existed in the production packet dir. The #1212 gate contained that one
+# as a score=1.00 dedup comment; a borderline score would have filed a
+# GHOST issue instead.
+#
+# Scenario 7's FleetGhost witness is a directory and would still be
+# stuck-listed; remove it so this scenario's burst is exactly the phantom
+# prop (scenario 7's assertions already ran).
+# ---------------------------------------------------------------------------
+rm -rf "$AS/alert-repair/packet-FleetGhost-${ts_8h_ago}.md"
+rm -f "$AS/alert-repair/stuck-escalation-state.json"
+unset FLEET_ESCALATION_DRAIN_ISSUE_FILE
+touch "$AS/alert-repair/packet-FleetPhantom-${ts_8h_ago}.md"
+: > "$STUB_LOG"
+rm -f "$scratch/run.stderr"
+# Deliberately NO FLEET_ESCALATION_DRAIN_ISSUE_FILE: the unstubbed-hermetic
+# shape the guard exists for.
+FLEET_ESCALATION_DRAIN_AGENT_STATE="$AS" \
+FLEET_ESCALATION_DRAIN_NISH="$AS/NISH-ESCALATIONS.md" \
+FLEET_ESCALATION_DRAIN_SEEN="$AS/lanes/nish-boundary-notify.seen" \
+FLEET_ESCALATION_DRAIN_PACKET_DIR="$AS/alert-repair" \
+FLEET_ESCALATION_DRAIN_MAX_LINES=50 \
+    bash "$bin" 2>"$scratch/run.stderr" \
+    || fail "scenario 8: a refused filing is fail-open, the drain must still exit 0; stderr: $(cat "$scratch/run.stderr")"
+grep -F "WARN refusing stuck-packet filing" "$scratch/run.stderr" >/dev/null \
+    || fail "scenario 8: the refusal must be journaled with its reason; stderr: $(cat "$scratch/run.stderr")"
+grep -q "STUCK-PACKET" "$scratch/run.stderr" \
+    || fail "scenario 8: a refused filing must fail open with the LOUD line; stderr: $(cat "$scratch/run.stderr")"
+[[ -f "$AS/alert-repair/packet-FleetPhantom-${ts_8h_ago}.md" ]] \
+    || fail "scenario 8: refused-filing packet must be KEPT (never silently deleted)"
+[[ -f "$AS/alert-repair/archived/stuck/packet-FleetPhantom-${ts_8h_ago}.md" ]] \
+    && fail "scenario 8: refused-filing packet must NOT be archived" || true
+[[ -f "$AS/alert-repair/stuck-escalation-state.json" ]] \
+    && fail "scenario 8: a refused filing must not write the state watermark" || true
+grep -qF "packet-FleetPhantom" "$AS/alert-repair/actions.log" \
+    && fail "scenario 8: a refused filing must not log a DISPOSITION" || true
+[[ -s "$STUB_LOG" ]] \
+    && fail "scenario 8: the real seam must never be reached from an unstubbed non-production run; stub: $(cat "$STUB_LOG")" || true
+ok "scenario 8: unstubbed non-production run refuses to file, fails open loud (fleet-ops#6536)"
+
+# Negative control: the SAME burst with the seam stubbed converges — the
+# guard is the only delta, not the packet shape.
+: > "$STUB_LOG"
+rm -f "$scratch/run.stderr"
+run_drain "$scratch/fleet-issue-file-stub"
+[[ "$(grep -c "^stub-call " "$STUB_LOG" 2>/dev/null || true)" -eq 1 ]] \
+    || fail "scenario 8: with the seam stubbed the same burst must file exactly once; calls: $(cat "$STUB_LOG" 2>/dev/null || true)"
+grep -F "DISPOSITION stuck-packet packet=packet-FleetPhantom-${ts_8h_ago}.md terminal=escalated-filed issue=999" \
+    "$AS/alert-repair/actions.log" >/dev/null \
+    || fail "scenario 8: stubbed re-run must dispose the packet; log: $(tail -3 "$AS/alert-repair/actions.log" 2>/dev/null || true)"
+[[ -f "$AS/alert-repair/archived/stuck/packet-FleetPhantom-${ts_8h_ago}.md" ]] \
+    || fail "scenario 8: stubbed re-run must archive the packet"
+ok "scenario 8: stubbed seam converges the same burst — the guard is the only delta"
 
 echo
 echo "alert-repair-stuck-packet: all scenarios passed (fleet-ops#5622)"

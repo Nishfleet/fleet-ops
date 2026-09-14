@@ -1628,6 +1628,27 @@ while IFS= read -r entry; do
         carryover_resolve "$co_sig" "carried by an open/closed issue (title signature match)"
         continue
     fi
+    # fleet-ops#6568: a carried machinery finding (kind=unit|drop-in) whose
+    # live evidence path is no longer a real hand-placed file — deleted, or
+    # now a repo-managed symlink — describes a fixed state, not a live gap.
+    # The 2026-08-29 fleet-steer-onland.path deletion was re-filed on
+    # 2026-09-13 purely by carry-over replay: the file never came back, but
+    # the carried Aug-29 detection re-panelled and filed fresh the moment
+    # its dedupe target closed. Resolve it here instead of spending a panel
+    # call on a dead path.
+    co_kind=$(printf '%s' "$co_finding" | jq -r '.kind // ""')
+    co_path=$(printf '%s' "$co_finding" | jq -r '.path // ""')
+    if { [ "$co_kind" = "unit" ] || [ "$co_kind" = "drop-in" ]; } \
+        && [ -n "$co_path" ] && [ "${co_path#/}" != "$co_path" ] \
+        && { [ ! -e "$co_path" ] || [ -L "$co_path" ]; }; then
+        title=$(printf '%s' "$co_finding" | jq -r '.title // ""')
+        severity=$(printf '%s' "$co_finding" | jq -r '.severity // "info"')
+        findings_ledger_row "by_design" "live:${co_path}" \
+            "carry-over dropped: live evidence path is gone or repo-symlinked" \
+            "$(printf '%s' "$entry" | jq -r '.run // ""')"
+        carryover_resolve "$co_sig" "live evidence path gone or repo-symlinked: $co_path"
+        continue
+    fi
     log "carry-over: re-panelling entry ($co_sig)"
     process_one_finding "$co_finding" "1" "$co_sig"
     # A kept entry (cap reached again) stays in the ledger.
@@ -1732,7 +1753,7 @@ if [ -x "$here/chain-e2e-drill" ] && [ "${AUDIT_RUN_CHAIN_E2E_DRILL:-1}" = "1" ]
     # wiring only, a live audit runs the isolated fixture fault for real.
     if CHAIN_E2E_DRY_RUN="${AUDIT_DRY_RUN:-1}" "$here/chain-e2e-drill" \
         > "$REPORT_DIR/chain-e2e-drill.log" 2>&1; then
-        log "chain-e2e drill: PASS (all six hops)"
+        log "chain-e2e drill: PASS (all hops)"
     else
         # The drill already appended a LOUD finding in live mode; here we
         # surface the failure in the report without killing the audit.

@@ -357,11 +357,19 @@ model_cap() {
     local p="${1:-}" m="${2:-}" cap
     if (( ! _seat_caps_loaded )); then load_seat_caps || true; fi
     [[ -f "$SEAT_CAPS_JSON" ]] || { echo 0; return; }
+    # fleet-ops#6114: model caps come in BOTH shapes — a bare int (cursor:
+    # "cursor-grok-4.6-high": 2, the #1167 $400 overage model; also xai, bai,
+    # minimax, cline, commandcode, opencode) and the object-with-.cap form.
+    # `2 | .cap` is null, so every int-capped model read as 0 and every
+    # model_cap > 0 gate — pi-audit-run's senior ladder head, the
+    # gap-closure conference resolver, comeback-release — silently skipped
+    # the int-capped rungs while the stubbed tests (model_cap -> 1) stayed
+    # green. Read both shapes; unlisted model stays 0.
     cap=$(jq -r --arg p "$p" --arg m "$m" '
         .providers[$p] as $prov
         | if $prov == null then 0
           elif (($prov.cap // 0) == 0) then 0
-          elif (($prov.models | type) == "object") then ($prov.models[$m].cap // 0)
+          elif (($prov.models | type) == "object") then (($prov.models[$m] | if type == "object" then (.cap // 0) else $prov.models[$m] end) // 0)
           else ($prov.cap // 0) end' "$SEAT_CAPS_JSON" 2>/dev/null || echo 0)
     [[ "$cap" =~ ^[0-9]+$ ]] || cap=0
     echo "$cap"
@@ -1398,7 +1406,197 @@ mark_seat_empty_run() {
     rm -f "$tmp" 2>/dev/null || true
     return 1
 }
-mark_seat_quota_bench() { seat_log "mark_seat_quota_bench: $* (proxy cooldown owns routing)"; return 0; }
+# fleet-ops#6652: un-stubbed. A 402 "Payment Required: exhausted your budget"
+# is a money wall — the proxy does NOT own this cooldown (it routes to the
+# next 402 provider). Write a real ledger entry + clobber-proof spawn-bench
+# marker so seat_usable holds the group until the reset window (or the
+# provider default from seat-caps.json) and the pick path falls back to the
+# direct prepaid lane. source="money_boundary" lets the wall exceed
+# SEAT_NON_MONEY_WALL_MAX_S when the provider default declares a longer
+# window (the budget only resets when Nish adds funds — never bypassed by
+# adding funds programmatically).
+mark_seat_quota_bench() {
+    local p="$1" m="$2" text="${3:-}"
+    if ! _seat_key_guard "$p" "$m" "mark_seat_quota_bench"; then return 1; fi
+    if _transport_is_down; then _mark_transport_down "$p" "$m"; return 1; fi
+    local path
+    path=$(seat_ledger_path "$p" "$m")
+    mkdir -p "$LEDGER_DIR" 2>/dev/null || true
+    local now_utc
+    now_utc=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+
+    # Parse a reset window from the error text (seconds). 0 = not found.
+    local window=0
+    local hh mm days
+    if [[ "$text" =~ resets?[[:space:]]+in[[:space:]]+([0-9]+)d[[:space:]]+([0-9]+)h ]]; then
+        days="${BASH_REMATCH[1]}"; hh="${BASH_REMATCH[2]}"
+        window=$(( days * 86400 + hh * 3600 ))
+    elif [[ "$text" =~ resets?[[:space:]]+in[[:space:]]+([0-9]+)h[[:space:]]+([0-9]+)m ]]; then
+        hh="${BASH_REMATCH[1]}"; mm="${BASH_REMATCH[2]}"
+        window=$(( hh * 3600 + mm * 60 ))
+    elif [[ "$text" =~ resets?[[:space:]]+in[[:space:]]+([0-9]+)h ]]; then
+        window=$(( ${BASH_REMATCH[1]} * 3600 ))
+    elif [[ "$text" =~ resets?[[:space:]]+in[[:space:]]+([0-9]+)m ]]; then
+        window=$(( ${BASH_REMATCH[1]} * 60 ))
+    elif [[ "$text" =~ resets?[[:space:]]+in[[:space:]]+([0-9]+)s ]]; then
+        window="${BASH_REMATCH[1]}"
+    elif [[ "$text" =~ retry[[:space:]_-]?after[[:space:]:]*[[:space:]]*([0-9]+) ]]; then
+        window="${BASH_REMATCH[1]}"
+    fi
+
+    # Fall back to the provider's quota_bench_default_s from seat-caps.json.
+    local declared=""
+    if (( window == 0 )) && [[ -f "$SEAT_CAPS_JSON" ]]; then
+        if (( ! _seat_caps_loaded )); then load_seat_caps || true; fi
+        declared=$(jq -r --arg p "$p" '.providers[$p].quota_bench_default_s // empty' "$SEAT_CAPS_JSON" 2>/dev/null || true)
+        if [[ "$declared" =~ ^[0-9]+$ ]] && (( declared > 0 )); then
+            window="$declared"
+        fi
+    elif [[ "$window" =~ ^[0-9]+$ ]] && (( window > 0 )); then
+        # Track the declared default for the clamp exemption even when we
+        # parsed a window (the parsed window might be shorter than the
+        # declared one — use the max).
+        if [[ -f "$SEAT_CAPS_JSON" ]]; then
+            local d2
+            d2=$(jq -r --arg p "$p" '.providers[$p].quota_bench_default_s // empty' "$SEAT_CAPS_JSON" 2>/dev/null || true)
+            if [[ "$d2" =~ ^[0-9]+$ ]] && (( d2 > window )); then
+                declared="$d2"; window="$d2"
+            fi
+        fi
+    fi
+
+    # No window and no provider default: use a 1 h fallback so the seat is
+    # re-probed periodically (the budget only resets when Nish adds funds).
+    if (( window == 0 )); then
+        window="${SEAT_QUOTA_BENCH_DEFAULT_S:-3600}"
+    fi
+
+    # A budget-402 is a money boundary — only Nish adding funds resolves it.
+    # source="money_boundary" exempts the wall from SEAT_NON_MONEY_WALL_MAX_S
+    # when a provider default declares a longer window.
+    local source="money_boundary"
+    window=$(_seat_clamp_non_money_window_s "$window" "$source" "$declared")
+
+    local usable_at
+    usable_at=$(date -u -d "@$(($(date -u +%s) + window))" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || echo "$now_utc")
+
+    local tmp="$path.quota.$$.$RANDOM.tmp"
+    if jq -nc \
+        --arg provider "$p" --arg model "$m" \
+        --arg observed "$now_utc" --arg usable "$usable_at" \
+        --argjson http_status 402 --argjson retry_after null \
+        --argjson retryable false --argjson seat_dead false --argjson poison_ladder false \
+        --arg writer "mark_seat_quota_bench" \
+        '{
+          provider:$provider, model:$model,
+          http_status:$http_status, retry_after:$retry_after,
+          health_class:"quota_bench",
+          retryable:$retryable, seat_dead:$seat_dead, poison_ladder:$poison_ladder,
+          observed_at:$observed,
+          source:"money_boundary",
+          failure_mode:"quota_bench",
+          usable_at:$usable,
+          consecutive_failure_count:1,
+          writer:$writer
+        }' > "$tmp" 2>/dev/null; then
+        chmod 0644 "$tmp" 2>/dev/null || true
+        if mv "$tmp" "$path" 2>/dev/null; then
+            seat_log "quota-bench: marked $p/$m unusable until $usable_at (budget-402, window=${window}s, source=$source)"
+            # Clobber-proof spawn-bench marker so seat_usable honours this
+            # bench even if seat-health.ts later writes a healthy observation.
+            _seat_write_spawn_bench "$p" "$m" "$usable_at" "quota_bench" "$window" 1 "quota_bench" false "$source" 2>/dev/null || true
+            return 0
+        fi
+    fi
+    rm -f "$tmp" 2>/dev/null || true
+    seat_log "quota-bench: FAILED to write marker for $p/$m"
+    return 1
+}
+# fleet-ops#6781: real writer (mirrors mark_seat_quota_bench) for the LiteLLM
+# 429 "No deployments available for selected model" wall — the proxy's model
+# group has zero healthy upstream deployments. Provider-capacity wall, NOT a
+# money wall: source="provider_quota_window" (a justified wall source, but
+# honest — nothing here is a money boundary), http_status=429, failure_mode=
+# quota_no_deployments so post-mortem tooling can tell a dead upstream group
+# from a budget-402 quota_bench. health_class stays quota_bench so
+# seat_usable's exclusion list and the comeback-probe contract treat it
+# exactly like a quota wall: probe-gated re-admission, never a clock-gated
+# re-offer onto a still-dead group. Window: the body's advertised "Try again
+# in N seconds" (the LiteLLM no-deployments hint), the provider's
+# quota_bench_default_s when larger, never under SPAWN_FAIL_BACKOFF_S (300s)
+# — the issue contract is 300s+.
+mark_seat_no_deployments_bench() {
+    local p="$1" m="$2" text="${3:-}"
+    if ! _seat_key_guard "$p" "$m" "mark_seat_no_deployments_bench"; then return 1; fi
+    if _transport_is_down; then _mark_transport_down "$p" "$m"; return 1; fi
+    local path
+    path=$(seat_ledger_path "$p" "$m")
+    mkdir -p "$LEDGER_DIR" 2>/dev/null || true
+    local now_utc
+    now_utc=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+
+    # Advertised retry window: "Try again in 300 seconds" (LiteLLM
+    # no-deployments body) or a Retry-After header value. 0 = not found.
+    local window=0
+    if [[ "$text" =~ [Tt]ry[[:space:]]+again[[:space:]]+in[[:space:]]+([0-9]+) ]]; then
+        window="${BASH_REMATCH[1]}"
+    elif [[ "$text" =~ retry[[:space:]_-]?after[[:space:]:]*[[:space:]]*([0-9]+) ]]; then
+        window="${BASH_REMATCH[1]}"
+    fi
+
+    # Provider default from seat-caps.json bounds a body with no (or a
+    # shorter) window — same max(parsed, declared) rule as mark_seat_quota_bench.
+    local declared=""
+    if [[ -f "$SEAT_CAPS_JSON" ]]; then
+        if (( ! _seat_caps_loaded )); then load_seat_caps || true; fi
+        declared=$(jq -r --arg p "$p" '.providers[$p].quota_bench_default_s // empty' "$SEAT_CAPS_JSON" 2>/dev/null || true)
+        if [[ "$declared" =~ ^[0-9]+$ ]] && (( declared > window )); then
+            window="$declared"
+        fi
+    fi
+    # Class floor: a no-deployments wall never benches under 300s.
+    if (( window < SPAWN_FAIL_BACKOFF_S )); then
+        window="$SPAWN_FAIL_BACKOFF_S"
+    fi
+
+    local source="provider_quota_window"
+    window=$(_seat_clamp_non_money_window_s "$window" "$source" "$declared")
+
+    local usable_at
+    usable_at=$(date -u -d "@$(($(date -u +%s) + window))" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || echo "$now_utc")
+
+    local tmp="$path.nodep.$$.$RANDOM.tmp"
+    if jq -nc \
+        --arg provider "$p" --arg model "$m" \
+        --arg observed "$now_utc" --arg usable "$usable_at" \
+        --argjson http_status 429 --argjson retry_after null \
+        --argjson retryable false --argjson seat_dead false --argjson poison_ladder false \
+        --arg writer "mark_seat_no_deployments_bench" \
+        '{
+          provider:$provider, model:$model,
+          http_status:$http_status, retry_after:$retry_after,
+          health_class:"quota_bench",
+          retryable:$retryable, seat_dead:$seat_dead, poison_ladder:$poison_ladder,
+          observed_at:$observed,
+          source:"provider_quota_window",
+          failure_mode:"quota_no_deployments",
+          usable_at:$usable,
+          consecutive_failure_count:1,
+          writer:$writer
+        }' > "$tmp" 2>/dev/null; then
+        chmod 0644 "$tmp" 2>/dev/null || true
+        if mv "$tmp" "$path" 2>/dev/null; then
+            seat_log "no-deployments-bench: marked $p/$m unusable until $usable_at (429 no-deployments, window=${window}s, source=$source)"
+            # Clobber-proof spawn-bench marker so seat_usable honours this
+            # bench even if seat-health.ts later writes a healthy observation.
+            _seat_write_spawn_bench "$p" "$m" "$usable_at" "quota_no_deployments" "$window" 1 "quota_no_deployments" false "$source" 2>/dev/null || true
+            return 0
+        fi
+    fi
+    rm -f "$tmp" 2>/dev/null || true
+    seat_log "no-deployments-bench: FAILED to write marker for $p/$m"
+    return 1
+}
 mark_seat_overload_bench() { seat_log "mark_seat_overload_bench: $* (proxy cooldown owns routing)"; return 0; }
 mark_seat_hang_bench() { seat_log "mark_seat_hang_bench: $* (proxy cooldown owns routing)"; return 0; }
 mark_seat_credentials_bad() { seat_log "mark_seat_credentials_bad: ${1:-}/${2:-} (proxy cooldown owns routing)"; return 0; }
@@ -1529,7 +1727,7 @@ is_quota_cap_error() {
     # `quota (exhausted|...)` misses it and the death fell to
     # error_class=unknown, never benched, seat re-picked every cycle. Match
     # `token-plan` and `quota has been` as the hard-wall signal the same way.
-    if ! grep -qiE 'weekly[[:space:]]+(clinepass[[:space:]]+)?limit|daily[[:space:]]+limit|quota[[:space:]]+(exhausted|exceeded|reached)|quota[[:space:]]+has[[:space:]]+been|token-plan|usage[[:space:]]+balance[[:space:]]+exhausted|budget_exceeded|credit[[:space:]]+balance[[:space:]]+depleted|free-model[[:space:]]+token[[:space:]]+quota|resource_exhausted|Connection error, send a message to continue retrying|INFERENCE_CAP_ERROR|usage[[:space:]]+limit|plan[[:space:]]+limit|out[[:space:]]+of[[:space:]]+credits|insufficient[[:space:]]+credits|credit_insufficient|budget_error|insufficient_user_quota|message[[:space:]]+rate[[:space:]]+limit|rate[[:space:]]+limit[[:space:]]+(exceeded|reached)|cap[[:space:]]+(exceeded|reached)|exceeded[[:space:]]+your' <<<"$combined"; then
+    if ! grep -qiE 'weekly[[:space:]]+(clinepass[[:space:]]+)?limit|daily[[:space:]]+limit|quota[[:space:]]+(exhausted|exceeded|reached)|quota[[:space:]]+has[[:space:]]+been|token-plan|usage[[:space:]]+balance[[:space:]]+exhausted|budget_exceeded|credit[[:space:]]+balance[[:space:]]+depleted|free-model[[:space:]]+token[[:space:]]+quota|resource_exhausted|Connection error, send a message to continue retrying|INFERENCE_CAP_ERROR|usage[[:space:]]+limit|plan[[:space:]]+limit|out[[:space:]]+of[[:space:]]+credits|insufficient[[:space:]]+credits|credit_insufficient|budget_error|insufficient_user_quota|message[[:space:]]+rate[[:space:]]+limit|rate[[:space:]]+limit[[:space:]]+(exceeded|reached)|cap[[:space:]]+(exceeded|reached)|exceeded[[:space:]]+your|Payment[[:space:]]+Required|exhausted[[:space:]]+your[[:space:]]+budget|add[[:space:]]+funds' <<<"$combined"; then
         return 1
     fi
     # A reset signal: an explicit window OR a "resets" keyword. The provider
@@ -1564,13 +1762,58 @@ is_quota_cap_error() {
     # (~12 claims/hour). The body carries no reset window, so it must pass the
     # hard-cap list like `credit balance depleted` does; the 3600s
     # quota_bench_default_s in seat-caps.json bounds the re-probe.
-    if grep -qiE 'weekly[[:space:]]+(clinepass[[:space:]]+)?limit|daily[[:space:]]+limit|INFERENCE_CAP_ERROR|FreeUsageLimitError|usage[[:space:]]+balance[[:space:]]+exhausted|budget_exceeded|budget_error|credit[[:space:]]+balance[[:space:]]+depleted|insufficient[[:space:]]+credits|credit_insufficient|insufficient_user_quota|usage[[:space:]]+limit[[:space:]]+for[[:space:]]+the[[:space:]]+current[[:space:]]+free[[:space:]]+model|free-model[[:space:]]+token[[:space:]]+quota|resource_exhausted' <<<"$combined"; then
+    # "Payment Required" / "exhausted your budget" / "add funds" (nebius HTTP 402
+    # wrapped in a litellm 429, fleet-ops#6652, 2026-09-14: litellm/worker-cheap
+    # routed to nebius which returned 402 {"detail":"Payment Required: You have
+    # exhausted your budget. Please add funds"} — 100 deaths in the trailing
+    # window, every one booked error_class=unknown -> 300s spawn bench, the dead
+    # group re-offered every 5 min). A budget wall wearing a 402 is a hard wall,
+    # not a transient retry: classify it so the money wall is never counted as
+    # seat yield.
+    if grep -qiE 'weekly[[:space:]]+(clinepass[[:space:]]+)?limit|daily[[:space:]]+limit|INFERENCE_CAP_ERROR|FreeUsageLimitError|usage[[:space:]]+balance[[:space:]]+exhausted|budget_exceeded|budget_error|credit[[:space:]]+balance[[:space:]]+depleted|insufficient[[:space:]]+credits|credit_insufficient|insufficient_user_quota|usage[[:space:]]+limit[[:space:]]+for[[:space:]]+the[[:space:]]+current[[:space:]]+free[[:space:]]+model|free-model[[:space:]]+token[[:space:]]+quota|resource_exhausted|Payment[[:space:]]+Required|exhausted[[:space:]]+your[[:space:]]+budget|add[[:space:]]+funds' <<<"$combined"; then
         return 0
     fi
     return 1
 }
+# fleet-ops#6781: LiteLLM proxy 429 {"message":"No deployments available for
+# selected model, Try again in 300 seconds. Passed model=<group>"} — the model
+# group has ZERO healthy upstream deployments. A provider-capacity wall, not a
+# lane fault and not a money wall: every pick of the group dies in <20s with
+# rc=1, and while it booked error_class=unknown the claim re-ran on the
+# StartLimitBurst restart loop (0509-2952 03:52Z + 04:52Z; fleet-ops#6731
+# 10:05Z re-died on the same wall after the judge cleared its reclaim 09:45Z).
+# The literal alone is the signal — the 429 prefix may or may not survive into
+# the captured text, so it is not required.
+is_no_deployments_error() {
+    local out="${1:-}" err="${2:-}"
+    local combined="$out"$'\n'"$err"
+    [[ -n "${out}${err}" ]] || return 1
+    grep -qiE 'no[[:space:]]+deployments[[:space:]]+available[[:space:]]+for[[:space:]]+selected[[:space:]]+model' <<<"$combined"
+}
 _seat_is_benched() { return 1; }
-_seat_merge_error_class() { return 0; }
+# _seat_merge_error_class <provider> <model> <class> <reason>
+# Field-merge last_error_class + bench_reason into the existing seat ledger,
+# preserving every other field (health_class / failure_mode / seat_dead).
+# fleet-ops#6032: restored from the pre-#5993 routing library — a `return 0` stub made callers
+# (pi-issue-run observability stamps, the fleet-ops#3947 corpse bench_reason
+# backfill) believe the merge landed when nothing was written.
+_seat_merge_error_class() {
+    local p="$1" m="$2" cls="${3:-unknown}" reason="${4:-}"
+    if ! _seat_key_guard "$p" "$m" "_seat_merge_error_class"; then return 1; fi
+    local path
+    path=$(seat_ledger_path "$p" "$m")
+    [[ -f "$path" ]] || return 1
+    local tmp="$path.errcls.$$.$RANDOM.tmp"
+    if jq --arg ec "$cls" --arg br "$reason" \
+        '.last_error_class=$ec | .bench_reason=$br' "$path" >"$tmp" 2>/dev/null; then
+        chmod 0644 "$tmp" 2>/dev/null || true
+        if mv "$tmp" "$path" 2>/dev/null; then
+            return 0
+        fi
+    fi
+    rm -f "$tmp" 2>/dev/null || true
+    return 1
+}
 
 # Observability only (fleet-ops#3766). Class matchers above are stubs, so
 # the class is unknown unless the hang_etimedout grep hits. The literal
@@ -1583,6 +1826,8 @@ classify_death_error() {
     local cls="unknown"
     if is_quota_cap_error "$out_text" "$err_text"; then
         cls="quota_cap"
+    elif is_no_deployments_error "$out_text" "$err_text"; then
+        cls="quota_no_deployments"
     elif is_overload_error "$out_text" "$err_text"; then
         cls="overload_503"
     elif is_workspace_trust_error "$out_text" "$err_text"; then
@@ -1610,4 +1855,161 @@ classify_death_error() {
     fi
     [[ -z "$literal" ]] && literal="(no error text captured)"
     printf '%s\n%s\n' "$cls" "$literal"
+}
+
+# --- fleet-ops#6032: AIMD learned-cap + parked-ledger primitives -------------
+# #5993 deleted the routing library; #6095 restored its other callers' needs
+# into this file. These four are the residue the #6032 sweep still found
+# called (comeback-release overload wall + corpse retire). Restored verbatim
+# from the pre-#5993 routing library (5411da097^), with the pick-side prose
+# reworded off the retired-routing signature (freeze gate). Nobody reads
+# learned-caps.json yet (the #4263 read side went to the proxy): the write
+# side is the mechanism the comeback-release caller documents, and the audit
+# line is the durable record.
+
+LEARNED_CAPS_JSON="${LEARNED_CAPS_JSON:-$HOME/.local/state/pi-packet/learned-caps.json}"
+LEARNED_CAPS_AUDIT="${LEARNED_CAPS_AUDIT:-$HOME/.local/state/pi-packet/learned-caps-audit.log}"
+
+declare -A LEARNED_CAP=()
+declare -A LEARNED_BENCH_UNTIL=()
+declare -A LEARNED_RAMP=()
+
+_set_learned_in_memory() {
+    local p="$1" lc="$2" bench="${3:-}" ramp="${4:-}"
+    LEARNED_CAP["$p"]="$lc"
+    if [[ -n "$bench" ]]; then
+        LEARNED_BENCH_UNTIL["$p"]="$bench"
+    else
+        unset 'LEARNED_BENCH_UNTIL[$p]'
+    fi
+    if [[ "$ramp" == "1" ]]; then
+        LEARNED_RAMP["$p"]=1
+    elif [[ "$ramp" == "0" ]]; then
+        unset 'LEARNED_RAMP[$p]'
+    fi
+}
+
+# Persist learned state for one provider and emit an audit line.
+# Args: provider learned_cap result bench_until [ramp]
+# result in {probe, backoff, decay, ramp}. ramp in {0,1}; absent preserves the
+# current in-memory LEARNED_RAMP[$p] (so probes during a ramp keep the flag).
+_learned_audit() {
+    local line="$1"
+    printf '[%s] %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$line" >>"$LEARNED_CAPS_AUDIT" 2>/dev/null || true
+}
+
+_record_learned_cap() {
+    local p="$1" lc="$2" result="$3" bench="${4:-}" ramp="${5:-}"
+    [[ "$lc" =~ ^[0-9]+$ ]] || return 1
+    # Absent ramp arg: preserve the current flag (probe during ramp stays ramp).
+    local ramp_val="${LEARNED_RAMP[$p]:-0}"
+    [[ "$ramp" == "0" || "$ramp" == "1" ]] && ramp_val="$ramp"
+    mkdir -p "$(dirname "$LEARNED_CAPS_JSON")" 2>/dev/null || true
+    local tmp="$LEARNED_CAPS_JSON.tmp.$$.$RANDOM" now_utc
+    now_utc=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+    local ramp_json
+    [[ "$ramp_val" == "1" ]] && ramp_json="true" || ramp_json="false"
+    if [[ -f "$LEARNED_CAPS_JSON" ]] && jq -e . "$LEARNED_CAPS_JSON" >/dev/null 2>&1; then
+        # Merge via object addition, not $ps[$p] = ... jq 1.7 rejects
+        # assignment through a variable-held object ("Invalid path
+        # expression") and the fallback would then rewrite the file with
+        # only this provider, wiping sibling learned caps.
+        if jq --arg p "$p" --argjson lc "$lc" --arg r "$result" \
+                --arg b "$bench" --arg t "$now_utc" --argjson ramp "$ramp_json" \
+            '.providers = ((.providers // {}) + {($p): {learned_cap:$lc, last_result:$r, bench_until:(if $b == "" then null else $b end), ramp:$ramp, last_at:$t}})' \
+            "$LEARNED_CAPS_JSON" >"$tmp" 2>/dev/null; then
+            :
+        else
+            rm -f "$tmp" 2>/dev/null || true
+            tmp=""
+        fi
+    else
+        tmp=""
+    fi
+    if [[ -z "$tmp" || ! -s "$tmp" ]]; then
+        tmp="$LEARNED_CAPS_JSON.tmp.$$.$RANDOM"
+        if ! jq -nc --arg p "$p" --argjson lc "$lc" --arg r "$result" \
+            --arg b "$bench" --arg t "$now_utc" --argjson ramp "$ramp_json" \
+            '{providers: {($p): {learned_cap:$lc, last_result:$r, bench_until:(if $b == "" then null else $b end), ramp:$ramp, last_at:$t}}}' >"$tmp" 2>/dev/null; then
+            seat_log "aimd: state write FAILED for $p (lc=$lc result=$result) — in-memory only"
+            rm -f "$tmp" 2>/dev/null || true
+            _set_learned_in_memory "$p" "$lc" "$bench" "$ramp_val"
+            return 0
+        fi
+    fi
+    chmod 0644 "$tmp" 2>/dev/null || true
+    if mv "$tmp" "$LEARNED_CAPS_JSON" 2>/dev/null; then
+        _set_learned_in_memory "$p" "$lc" "$bench" "$ramp_val"
+        local bench_desc="no bench"
+        if [[ -n "$bench" ]]; then
+            local bs nowb
+            nowb=$(date -u +%s)
+            bs=$(date -u -d "$bench" +%s 2>/dev/null || echo 0)
+            bs=$(( bs > nowb ? bs - nowb : 0 ))
+            bench_desc="bench=${bs}s bench_until=$bench"
+        fi
+        local ramp_desc=""
+        [[ "$ramp_val" == "1" ]] && ramp_desc=" ramp"
+        _learned_audit "aimd $p: learned_cap=$lc result=$result$bench_desc$ramp_desc"
+        return 0
+    fi
+    seat_log "aimd: state rename FAILED for $p at $LEARNED_CAPS_JSON — in-memory only"
+    rm -f "$tmp" 2>/dev/null || true
+    _set_learned_in_memory "$p" "$lc" "$bench" "$ramp_val"
+    return 0
+}
+
+write_parked_ledger() {
+    local p="$1" m="$2" reason="${3:-corpse-retired}"
+    local path now_utc now_s far_future tmp
+    # fleet-ops#3661: never write a ledger for a phantom seat key.
+    if ! _seat_key_guard "$p" "$m" "write_parked_ledger"; then return 1; fi
+    path=$(seat_ledger_path "$p" "$m")
+    mkdir -p "$LEDGER_DIR" 2>/dev/null || true
+    now_s=$(date -u +%s)
+    now_utc=$(date -u -d "@$now_s" +%Y-%m-%dT%H:%M:%SZ)
+    # Far future: 10 years out, so seat_usable's future-usable_at check always
+    # holds the seat off the ladder (and seat_dead=true is the terminal block).
+    far_future=$(date -u -d "@$((now_s + 315360000))" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || echo "$now_utc")
+    tmp="$path.park.$$.$RANDOM.tmp"
+    # fleet-ops#3603: a corpse ledger that carries NO bench_reason reads as the
+    # fail-open corpse shape (fleet-ops#1890/#2712) to the seat-health census /
+    # corpse snapshot, which re-files the same durably-benched corpse ticket
+    # every tick as "bench_reason=null". Record the durable bench literal here
+    # so a corpse-retired ledger (cap=0 + intentional_cap_zero=corpse is the
+    # real bench; the picker never offers it) is recognisable as benched, never
+    # fail-open.
+    br="corpse-retired: cap=0 corpse bench, the picker never offers (durable, fleet-ops#2716/#3669)"
+    if ! jq -nc \
+        --arg provider "$p" --arg model "$m" \
+        --arg observed "$now_utc" --arg usable "$far_future" \
+        --arg br "$br" \
+        --argjson seat_dead true --argjson poison_ladder false \
+        '{
+          provider:$provider, model:$model,
+          http_status:null, retry_after:null,
+          health_class:"parked",
+          retryable:false, seat_dead:$seat_dead, poison_ladder:$poison_ladder,
+          observed_at:$observed,
+          source:"corpse_retirement",
+          failure_mode:"corpse_retired",
+          last_error_class:"corpse_retired",
+          bench_reason:$br,
+          bench_until:$usable,
+          usable_at:$usable,
+          consecutive_failure_count:0,
+          writer:"write_parked_ledger"
+        }' > "$tmp" 2>/dev/null; then
+        seat_log "parked-ledger: jq compose FAILED for $p/$m — parked ledger NOT written"
+        rm -f "$tmp" 2>/dev/null || true
+        return 1
+    fi
+    chmod 0644 "$tmp" 2>/dev/null || true
+    if mv "$tmp" "$path" 2>/dev/null; then
+        seat_log "parked-ledger: $p/$m parked (seat_dead=true, class=parked, usable_at=$far_future, reason=$reason)"
+        return 0
+    fi
+    seat_log "parked-ledger: rename FAILED for $p/$m at $path"
+    rm -f "$tmp" 2>/dev/null || true
+    return 1
 }

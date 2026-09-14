@@ -26,6 +26,13 @@
 #      closes it once a green run contains the merge SHA — with the run URL
 #      in the closing comment.
 #   7. A green run not containing the fix -> gate holds (no close).
+#   8. fleet-ops#6814 (live 0509#3412/#3413): a judge-handoff duplicate
+#      close delivers under ANOTHER issue's claim branch ("Duplicate of
+#      #3409 — fixed by #3420") — delivery named only in the issue's own
+#      comments. A green run containing the comment-named PR's merge ->
+#      close stands.
+#   9. Same shape, green run NOT containing it -> reopened (the comment
+#      refs are load-bearing, and the since-fallback still guards).
 
 set -euo pipefail
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -114,6 +121,13 @@ case "$1" in
         fi
         exit 0
         ;;
+      view)
+        # fleet-ops#6814: comment-named delivery refs are resolved with
+        # `gh pr view <num>`. A missing fixture = not a PR (like the real
+        # gh for an issue number) -> exit 1, the lib skips the ref.
+        f="$FAKE_DIR/prview-$3.json"
+        if [ -f "$f" ]; then cat "$f"; else echo "no pull requests for #$3" >&2; exit 1; fi
+        ;;
       *) echo "unexpected gh pr $*" >&2; exit 1 ;;
     esac
     ;;
@@ -138,7 +152,17 @@ case "$1" in
         printf '{"ahead_by":%s}\n' "$(cat "$FAKE_DIR/ahead-by" 2>/dev/null || echo 0)"
         ;;
       *compare/*)
-        printf '{"status":"%s"}\n' "$(cat "$FAKE_DIR/compare-status" 2>/dev/null || echo diverged)"
+        # Per-call override: compare-<BASE>-<HEAD> wins when present, so a
+        # test can pin one sha pair to "ahead" while the generic status
+        # stays "diverged" (stranded-merge map cases, fleet-ops#5785).
+        _pair="${endpoint#*compare/}"
+        _a="${_pair%%...*}"
+        _b="${_pair#*...}"
+        if [ -f "$FAKE_DIR/compare-${_a}-${_b}" ]; then
+          printf '{"status":"%s"}\n' "$(cat "$FAKE_DIR/compare-${_a}-${_b}")"
+        else
+          printf '{"status":"%s"}\n' "$(cat "$FAKE_DIR/compare-status" 2>/dev/null || echo diverged)"
+        fi
         ;;
       repos/*)
         echo '{"default_branch":"main"}'
@@ -189,7 +213,8 @@ reset_fake() {
     echo '[]' >"$scratch/merged.json"; echo '[]' >"$scratch/runs-green.json"
     rm -f "$scratch"/comments-*.json "$scratch"/merged-head-*.json \
           "$scratch"/open-head-*.json "$scratch"/run-*.json \
-          "$scratch"/compare-status "$scratch"/ahead-by "$scratch"/ref-exists
+          "$scratch"/compare-status "$scratch"/compare-*-* \
+          "$scratch"/ahead-by "$scratch"/ref-exists
 }
 
 # =========================================================================
@@ -399,6 +424,227 @@ grep -q 'close 4001' "$scratch/closes.log" \
 grep -q 'actions/runs/9999' "$scratch/closes.log" \
     || fail "gate: closing comment must cite the green run URL: $(cat "$scratch/closes.log")"
 ok "close gate: green run containing the fix -> closes with run URL in the comment"
+
+# =========================================================================
+# 8. fleet-ops#6814 REPLAY 0509#3412 — judge-handoff duplicate close: the
+#    delivery rode claim/issue-3409 (PR #3420, body "Closes #3409"), so no
+#    claim/issue-3412 PR and no trailer exist. The issue's comments name
+#    the delivery ("Duplicate of #3409 — fixed by #3420"). A green run
+#    whose headSha CONTAINS #3420's merge -> close stands.
+# =========================================================================
+reset_fake
+python3 - "$BODY_2662" <<'PY' >"$scratch/closed.json"
+import json, sys
+print(json.dumps([{
+    "number": 3412, "title": "no-time-bomb gate red at main", "state": "CLOSED",
+    "stateReason": "COMPLETED", "closedAt": "2026-09-14T10:57:38Z",
+    "author": {"login": "app/nishfleet-worker"},
+    "labels": [{"name": "deploy-fault"}],
+    "body": sys.argv[1],
+}]))
+PY
+echo '[]' >"$scratch/merged-head-3412.json"
+cat >"$scratch/comments-3412.json" <<'JSON'
+{"comments":[
+  {"body": "Duplicate of #3409 — fixed by #3420 (merged 22:20Z). Closing as dupe per judge handoff."},
+  {"body": "DECISION (orchestrator sweep 2026-09-14): CLOSED COMPLETED — Deploy production run 34828003346 (sha 507226eb, 09:26:54Z today) got past its Test step."}
+]}
+JSON
+cat >"$scratch/merged.json" <<'JSON'
+[{"number": 3420, "title": "fix no-time-bomb fixtures", "body": "Closes #3409",
+  "mergeCommit": {"oid": "16bb3165974915d61779a528e239abeb090e33ea"}}]
+JSON
+cat >"$scratch/prview-3420.json" <<'JSON'
+{"state": "MERGED", "mergeCommit": {"oid": "16bb3165974915d61779a528e239abeb090e33ea"}}
+JSON
+cat >"$scratch/runs-green.json" <<'JSON'
+[{"databaseId": 34828003346, "headSha": "507226eb49589470376d4786c88387426314d71f",
+  "createdAt": "2026-09-14T09:26:54Z",
+  "url": "https://github.com/Nishfleet/0509/actions/runs/34828003346"}]
+JSON
+echo "ahead" >"$scratch/compare-status"   # 16bb3165 is an ancestor of 507226eb
+
+out=$("$sweep" 2>"$scratch/err8.txt")
+grep -q 'deploy_fault_reopened=0' <<<"$out" \
+    || fail "dupe-handoff: comment-named delivery + green containing run must stand: $out"
+[ ! -s "$scratch/reopens.log" ] \
+    || fail "dupe-handoff: reopen must not fire: $(cat "$scratch/reopens.log")"
+ok "fleet-ops#6814: delivery named only in comments + green containing run -> close stands"
+
+# =========================================================================
+# 9. Same shape, green run NOT containing the comment-named delivery ->
+#    still reopened (the since-fallback is untouched and still guards).
+# =========================================================================
+reset_fake
+python3 - "$BODY_2662" <<'PY' >"$scratch/closed.json"
+import json, sys
+print(json.dumps([{
+    "number": 3412, "title": "no-time-bomb gate red at main", "state": "CLOSED",
+    "stateReason": "COMPLETED", "closedAt": "2026-09-14T10:57:38Z",
+    "author": {"login": "app/nishfleet-worker"},
+    "labels": [{"name": "deploy-fault"}],
+    "body": sys.argv[1],
+}]))
+PY
+echo '[]' >"$scratch/merged-head-3412.json"
+cat >"$scratch/comments-3412.json" <<'JSON'
+{"comments":[
+  {"body": "Duplicate of #3409 — fixed by #3420 (merged 22:20Z). Closing as dupe per judge handoff."}
+]}
+JSON
+cat >"$scratch/merged.json" <<'JSON'
+[{"number": 3420, "title": "fix no-time-bomb fixtures", "body": "Closes #3409",
+  "mergeCommit": {"oid": "16bb3165974915d61779a528e239abeb090e33ea"}}]
+JSON
+cat >"$scratch/prview-3420.json" <<'JSON'
+{"state": "MERGED", "mergeCommit": {"oid": "16bb3165974915d61779a528e239abeb090e33ea"}}
+JSON
+cat >"$scratch/runs-green.json" <<'JSON'
+[{"databaseId": 34828003346, "headSha": "507226eb49589470376d4786c88387426314d71f",
+  "createdAt": "2026-09-14T09:26:54Z",
+  "url": "https://github.com/Nishfleet/0509/actions/runs/34828003346"}]
+JSON
+echo "behind" >"$scratch/compare-status"   # the green run predates the delivery
+
+out=$("$sweep" 2>"$scratch/err9.txt")
+grep -q 'deploy_fault_reopened=1' <<<"$out" \
+    || fail "dupe-handoff: non-containing green run must still reopen: $out"
+ok "fleet-ops#6814: comment-named delivery NOT in the green run -> reopened"
+
+# =========================================================================
+# 8. TRAILER PATH: a merged PR whose multi-line body carries `Closes #N` on
+#    its own line resolves the fix SHA, so a green run containing that merge
+#    is proof and the close stands. Regression for the @tsv newline bug:
+#    jq @tsv escapes the body's newlines as literal `\n`, so the char before
+#    `Closes` is `n` (alphanumeric) and the regex anchor `(^|[^0-9A-Za-z])`
+#    fails under `printf '%s'`. The gate must unescape with `printf '%b'`
+#    before grepping, or every multi-line trailer is invisible and a proven
+#    close is falsely reopened (0509#3438, fleet-ops#5785).
+# =========================================================================
+reset_fake
+python3 - "$BODY_2662" <<'PY' >"$scratch/closed.json"
+import json, sys
+print(json.dumps([{
+    "number": 5001, "title": "deploy-fault fixed by a trailer PR",
+    "state": "CLOSED", "stateReason": "COMPLETED",
+    "closedAt": "2026-09-11T15:00:00Z",
+    "author": {"login": "app/nishfleet-worker"},
+    "labels": [{"name": "deploy-fault"}],
+    "body": sys.argv[1],
+}]))
+PY
+# No claim/issue-5001 delivery — the fix arrives via a Closes #5001 trailer
+# on a separately-merged PR whose body is multi-line (the real-world shape).
+echo '[]' >"$scratch/merged-head-5001.json"
+python3 - <<'PY' >"$scratch/merged.json"
+import json
+body = ("fix(d1): restore migration 0102\n\n"
+        "Deploy production run 34790254270 fails at the Test step.\n\n"
+        "Verification:\n- vitest 38 passed\n\n"
+        "Closes #5001 (deploy-fault: this restore is the fix).\n")
+print(json.dumps([{
+    "number": 7788, "mergeCommit": {"oid": "deadbeef02deadbeef02deadbeef02deadbeef02"},
+    "body": body,
+}]))
+PY
+cat >"$scratch/runs-green.json" <<'JSON'
+[{"databaseId": 7777, "headSha": "beef7777", "createdAt": "2026-09-11T14:00:00Z",
+  "url": "https://github.com/Nishfleet/0509/actions/runs/7777"}]
+JSON
+echo "ahead" >"$scratch/compare-status"   # deadbeef02 is an ancestor of beef7777
+
+out=$("$sweep" 2>"$scratch/err8.txt")
+grep -q 'deploy_fault_reopened=0' <<<"$out" \
+    || fail "trailer: multi-line Closes #N must resolve the fix SHA so a green run containing it is proof (no reopen): $out"
+[ ! -s "$scratch/reopens.log" ] \
+    || fail "trailer: must not reopen a close proven via a multi-line Closes #N trailer: $(cat "$scratch/reopens.log")"
+ok "trailer path: multi-line Closes #N body resolves the fix SHA (regression for the @tsv newline bug)"
+
+# =========================================================================
+# 9. REPLAY 0509#2944 stranded-merge (2026-09-11 main-history rewrite): the
+#    recorded delivery merge 9cc3f3ba... is orphaned — compare reports
+#    "diverged" forever — so the close is unprovable WITHOUT the map.
+# =========================================================================
+reset_fake
+echo '[]' >"$scratch/merged.json"
+python3 - <<'PY' >"$scratch/closed.json"
+import json
+print(json.dumps([{
+    "number": 2944, "title": "fix(e2e): Gate-B journey-2 mobile — entity context",
+    "state": "CLOSED", "stateReason": "COMPLETED",
+    "closedAt": "2026-09-14T08:36:55Z",
+    "author": {"login": "app/nishfleet-worker"},
+    "labels": [{"name": "deploy-fault"}],
+    "body": "blocks every production deploy",
+}]))
+PY
+cat >"$scratch/merged-head-2944.json" <<'JSON'
+[{"number": 2947, "mergeCommit": {"oid": "9cc3f3babe829d04e2b4f92e04fea41cbff91168"}}]
+JSON
+cat >"$scratch/comments-2944.json" <<'JSON'
+{"comments":[{"body":"Production proof now exists — closing per deploy-fault-gate (fleet-ops#5785). https://github.com/Nishfleet/0509/actions/runs/34798996355"}]}
+JSON
+cat >"$scratch/run-34798996355.json" <<'JSON'
+{"conclusion": "success", "workflowName": "Deploy production",
+ "headSha": "beef2944", "createdAt": "2026-09-14T02:22:33Z",
+ "url": "https://github.com/Nishfleet/0509/actions/runs/34798996355"}
+JSON
+cat >"$scratch/runs-green.json" <<'JSON'
+[{"databaseId": 34798996355, "headSha": "beef2944", "createdAt": "2026-09-14T02:22:33Z",
+  "url": "https://github.com/Nishfleet/0509/actions/runs/34798996355"}]
+JSON
+echo diverged >"$scratch/compare-status"   # orphaned sha: no relation to any run
+
+out=$(env DEPLOY_FAULT_STRANDED_MERGES="$scratch/no-map.json" "$sweep" 2>"$scratch/err9.txt")
+grep -q 'deploy_fault_reopened=1' <<<"$out" \
+    || fail "stranded sha without map must stay unproven (reopen): $out"
+ok "stranded recorded merge, no map -> unproven -> reopened"
+
+# =========================================================================
+# 10. Same stranded merge WITH the stranded-merges map: the recorded merge
+#     redirects to its on-main replacement, containment passes on the green
+#     run, and the close STANDS.
+# =========================================================================
+reset_fake
+echo '[]' >"$scratch/merged.json"
+python3 - <<'PY' >"$scratch/closed.json"
+import json
+print(json.dumps([{
+    "number": 2944, "title": "fix(e2e): Gate-B journey-2 mobile — entity context",
+    "state": "CLOSED", "stateReason": "COMPLETED",
+    "closedAt": "2026-09-14T08:36:55Z",
+    "author": {"login": "app/nishfleet-worker"},
+    "labels": [{"name": "deploy-fault"}],
+    "body": "blocks every production deploy",
+}]))
+PY
+cat >"$scratch/merged-head-2944.json" <<'JSON'
+[{"number": 2947, "mergeCommit": {"oid": "9cc3f3babe829d04e2b4f92e04fea41cbff91168"}}]
+JSON
+cat >"$scratch/comments-2944.json" <<'JSON'
+{"comments":[{"body":"Production proof now exists — closing per deploy-fault-gate (fleet-ops#5785). https://github.com/Nishfleet/0509/actions/runs/34798996355"}]}
+JSON
+cat >"$scratch/run-34798996355.json" <<'JSON'
+{"conclusion": "success", "workflowName": "Deploy production",
+ "headSha": "beef2944", "createdAt": "2026-09-14T02:22:33Z",
+ "url": "https://github.com/Nishfleet/0509/actions/runs/34798996355"}
+JSON
+cat >"$scratch/runs-green.json" <<'JSON'
+[{"databaseId": 34798996355, "headSha": "beef2944", "createdAt": "2026-09-14T02:22:33Z",
+  "url": "https://github.com/Nishfleet/0509/actions/runs/34798996355"}]
+JSON
+echo diverged >"$scratch/compare-status"   # everything else stays unrelated
+cat >"$scratch/map.json" <<'JSON'
+{"0509": {"9cc3f3babe829d04e2b4f92e04fea41cbff91168": "c26c55ce9011e23877b185d368d6ef57065ae9cf"}}
+JSON
+echo ahead >"$scratch/compare-c26c55ce9011e23877b185d368d6ef57065ae9cf-beef2944"
+
+out=$(env DEPLOY_FAULT_STRANDED_MERGES="$scratch/map.json" "$sweep" 2>"$scratch/err10.txt")
+grep -q 'deploy_fault_reopened=0' <<<"$out" \
+    || fail "stranded sha mapped to on-main replacement must prove the close: $out"
+[ ! -s "$scratch/reopens.log" ] \
+    || fail "mapped stranded merge: reopen must not fire: $(cat "$scratch/reopens.log")"
+ok "stranded recorded merge + map -> replacement proves the close"
 
 echo
 echo "all fleet-deploy-fault-gate tests passed"

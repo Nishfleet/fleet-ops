@@ -300,13 +300,19 @@ is_infra_death() {
     [[ "$rc" == "124" ]] && return 0
     # provider signal death / OOM kill mid-session (rc=143 / SIGTERM / Killed).
     is_mid_session_death "$err_file" && return 0
-    # spawn-phase ETIMEDOUT (connect/socket/child timeout before the session
-    # was live) — a lane fault, never a work failure.
-    if (( rc != 0 )) && (( spawn_elapsed_s < SPAWN_FAIL_MAX_S )); then
+    if (( rc != 0 )); then
         local _io _ie
         _io=$(cat "$out_file" 2>/dev/null || true)
         _ie=$(cat "$err_file" 2>/dev/null || true)
-        if is_spawn_etimeout "$_io" "$_ie"; then return 0; fi
+        # fleet-ops#6781: a LiteLLM 429 "No deployments available for selected
+        # model" is a provider-capacity wall at ANY elapsed time — the work
+        # item never ran, so the death is a lane fault: re-queue via intake
+        # (exit 0), never burn the WORK reclaim cap or a StartLimitBurst
+        # restart on a dead group.
+        if is_no_deployments_error "$_io" "$_ie"; then return 0; fi
+        # spawn-phase ETIMEDOUT (connect/socket/child timeout before the
+        # session was live) — a lane fault, never a work failure.
+        if (( spawn_elapsed_s < SPAWN_FAIL_MAX_S )) && is_spawn_etimeout "$_io" "$_ie"; then return 0; fi
     fi
     # provider hard session bound: died at/near the run's hard timeout. A
     # seat that is killed by its provider at ~PI_HANG_TIMEOUT_S (or its own
@@ -527,6 +533,16 @@ export PI_PICK_PREFER_CLASS
 # fallback, cooldown, and health checks.
 _lit_group="worker-cheap"
 [[ "$pkt_privacy" == "private" ]] && _lit_group="worker-private"
+# fleet-ops#6393: a public difficulty: senior-review packet rides the senior
+# ladder — the prepaid glm-5.3 group — never the cheap flash pool. When no
+# senior deployment is free the PROXY's own fallback (senior -> worker-
+# capable) holds it above the cheap deployments, and when the proxy itself is
+# down the #6315 direct prepaid lane answers, so the packet never downgrades
+# to worker-cheap. Private repos already reach that same prepaid glm-5.3
+# class via worker-private (the #520 free-tier privacy line), so only the
+# public case moves. #4639's armed repair reservation still wins below
+# (judge -> senior: the senior ladder either way).
+[[ "$pkt_privacy" == "public" && "$difficulty" == "senior-review" ]] && _lit_group="senior"
 # fleet-ops#4639: repair-rung packets route to the reserved judge group.
 [[ "${PI_REPAIR_RUNG:-0}" == "1" ]] && _lit_group="judge"
 # fleet-ops#5093 on the proxy: a proxy that is not ready IS the walled fleet.
@@ -535,6 +551,48 @@ _lit_group="worker-cheap"
 # fail-open in CI/no-proxy hosts, so only a live proxy that is down walls.
 if litellm_ready; then
     seat=$(litellm_seat "$_lit_group" || true)
+    # fleet-ops#6652: a ready proxy can still route to a budget-walled group
+    # (litellm/worker-cheap -> nebius 402 "Payment Required: exhausted your
+    # budget"). litellm_seat always answers a name; without a seat_usable
+    # check the walled group is re-picked every restart and burns the
+    # StartLimitBurst on a guaranteed 402. Check the picked seat; if it is
+    # benched (quota_bench / hang / spawn-fail), fall back in the SAME tick
+    # to the direct prepaid lane so the work item still runs.
+    if [[ -n "$seat" ]]; then
+        read -r _lit_p _lit_m <<< "$seat"
+        if ! _SEAT_USABLE_SILENT=1 seat_usable "$_lit_p" "$_lit_m" 2>/dev/null; then
+            seat_log "pi-issue-run: $inst litellm group $_lit_p/$_lit_m benched (budget/quota/hang) — trying direct prepaid fallback (fleet-ops#6652)"
+            seat=""
+            if _dfp=$(direct_fallback_seat); then
+                read -r _dfp_p _dfp_m <<< "$_dfp"
+                if _SEAT_USABLE_SILENT=1 seat_usable "$_dfp_p" "$_dfp_m" 2>/dev/null; then
+                    seat="$_dfp"
+                    seat_log "pi-issue-run: $inst direct prepaid lane $_dfp_p/$_dfp_m carries this tick (litellm group walled; fleet-ops#6652)"
+                fi
+            fi
+        fi
+    fi
+    # fleet-ops#6652 gap: prepaid fallback can itself be unusable (live:
+    # worker-cheap benched, direct_fallback_seat printed devin/swe-2-max,
+    # seat_usable rejected it, workers=0 next to ready work). Try the
+    # other proxy groups in the SAME tick before the no-seat exit.
+    if [[ -z "$seat" && "$_lit_group" == "worker-cheap" ]]; then
+        _fb=""
+        _fb_p=""
+        _fb_m=""
+        for _fb_group in worker-capable worker-private; do
+            _fb=$(litellm_seat "$_fb_group" || true)
+            [[ -n "$_fb" ]] || continue
+            read -r _fb_p _fb_m <<< "$_fb"
+            if _SEAT_USABLE_SILENT=1 seat_usable "$_fb_p" "$_fb_m" 2>/dev/null; then
+                seat="$_fb"
+                _lit_group="$_fb_group"
+                seat_log "pi-issue-run: $inst litellm group $_fb_p/$_fb_m carries this tick (worker-cheap walled; fleet-ops#6652)"
+                break
+            fi
+        done
+        unset _fb _fb_p _fb_m _fb_group
+    fi
 else
     seat=""
     # fleet-ops#6315: #5093's walled exit stranded the prepaid NON-proxy
@@ -861,6 +919,20 @@ if (( rc != 0 )) && (( ! spawn_fail_triggered )); then
             seat_log "pi-issue-run: $inst seat $np/$nm benched; next systemd Restart will skip it via the LiteLLM proxy cooldown (excluded by bench_until)"
         else
             seat_log "pi-issue-run: $inst WARN: quota-bench marker NOT written for $np/$nm (no window and no provider default) — relying on reactive ledger + systemd Restart"
+        fi
+    elif is_no_deployments_error "$out_for_scan" "$err_for_scan"; then
+        # fleet-ops#6781: LiteLLM 429 "No deployments available for selected
+        # model" — the group's upstreams are all down. Provider-capacity wall:
+        # bench the group for its advertised retry window (>=300s floor) so
+        # the next pick falls back (direct prepaid / sibling groups, the
+        # fleet-ops#6652 path) instead of re-dying on the same wall every
+        # StartLimitBurst. Classed quota-family: quota_bench ledger +
+        # error_class=quota_no_deployments.
+        seat_log "pi-issue-run: $inst NO-DEPLOYMENTS 429 on $np/$nm (rc=$rc) — benching seat for its advertised retry window (>=${SPAWN_FAIL_BACKOFF_S}s floor) (fleet-ops#6781)"
+        if mark_seat_no_deployments_bench "$np" "$nm" "$out_for_scan"$'\n'"$err_for_scan"; then
+            seat_log "pi-issue-run: $inst seat $np/$nm benched (quota_no_deployments); next pick skips it via the LiteLLM proxy cooldown (excluded by bench_until)"
+        else
+            seat_log "pi-issue-run: $inst WARN: no-deployments bench marker NOT written for $np/$nm — relying on reactive ledger + systemd Restart"
         fi
     fi
 fi

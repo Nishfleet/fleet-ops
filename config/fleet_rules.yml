@@ -53,7 +53,7 @@ groups:
           service: fleet
         annotations:
           summary: "Detached job {{ $labels.unit }} ended without its deliverable"
-          description: "unit={{ $labels.unit }} dispatch={{ $labels.dispatch }} deliverable_promised={{ $labels.deliverable }} deadline={{ $labels.deadline }} (fleet-ops#4266). deliverable_promised is a 0/1 FLAG from the fleet_detached_job_died series, NOT a path: 0 = the run promised no artifact, so relaunch with the same --stdin packet and OMIT --deliverable; 1 = it promised one, so pass the real artifact path. Never pass the literal 0/1 (it resolves to <workdir>/0 and can never exist — live 2026-09-10: a repair worker passed `--deliverable 0` and false-tripped the auditor on a migration that had already merged). Then run: fleet-who-stopped {{ $labels.unit }} and post the audit line to the auditor. Clear the dead-man once relaunched: pi-detached-deadman --clear {{ $labels.unit }} (fleet-ops#4921: both commands are on PATH, symlinked from the canonical checkout /home/nish/workspaces/tooling/fleet-ops-deploy-clone/ — never a cwd-relative `bin/...` path, which made repair workers guess the wrong checkout and swallow a pi-detached-deadman ENOENT)"
+          description: "unit={{ $labels.unit }} dispatch={{ $labels.dispatch }} deliverable_promised={{ $labels.deliverable }} deadline={{ $labels.deadline }} (fleet-ops#4266). deliverable_promised is a 0/1 FLAG from the fleet_detached_job_died series, NOT a path: 0 = the run promised no artifact, so relaunch with the same --stdin packet and OMIT --deliverable; 1 = it promised one, so pass the real artifact path. Never pass the literal 0/1 (it resolves to <workdir>/0 and can never exist — live 2026-09-10: a repair worker passed `--deliverable 0` and false-tripped the auditor on a migration that had already merged). Then run: fleet-who-stopped {{ $labels.unit }} and post the audit line to the auditor. Clear the dead-man once relaunched: pi-detached-deadman --clear {{ $labels.unit }} (fleet-ops#4921: both commands are on PATH, symlinked from the canonical checkout /home/nish/workspaces/tooling/fleet-ops-deploy-clone/ — never a cwd-relative `bin/...` path, which made repair workers guess the wrong checkout and swallow a pi-detached-deadman ENOENT) error_class={{ $labels.error_class }} cause_unit={{ $labels.cause_unit }} (fleet-ops#5799: cause_unit=fleet-litellm-proxy = the shared text-lane PROXY organ was bounced under the run; the failure is the organ, not the worker — relaunch the packet, the bounce is recorded; empty = the death predates the attribution or no provider error was found)"
 
       - alert: FleetUndersatGuardAbsent
         expr: absent(fleet_pi_workers_active)
@@ -255,14 +255,25 @@ groups:
       # — the metric powering it never reported a real age before, so no alert
       # could ever fire.
       - alert: FleetSeatQuotaStale
-        expr: fleet_seat_quota_observed_seconds > 900 or absent(fleet_seat_quota_observed_seconds)
+        # 2026-09-13: #4221-style unless-gate, same shape as
+        # FleetClaudeQuotaStale. While the exporter's claude denial sidecar is
+        # live (org subscription cancelled, claude_free denies ALL OAuth —
+        # #4611; the gauge reads source="denied"), the deliberately-dark
+        # claude series must not page the GENERIC stale rule too: its
+        # observed_seconds grows past 900s by design until the subscription
+        # returns. Matched on(provider) so ONLY the claude series is gated;
+        # every other provider's staleness and the whole-family absent() leg
+        # stay loud. The gate lifts itself when the subscription returns
+        # (first 200 clears workspaces/agent-state/fleet-metrics/
+        # claude-quota-backoff.json — no human un-gating step).
+        expr: (fleet_seat_quota_observed_seconds > 900 or absent(fleet_seat_quota_observed_seconds)) unless on(provider) (fleet_seat_quota_observed_seconds{provider="claude",source="denied"} > 0)
         for: 5m
         labels:
           severity: warning
           service: fleet
         annotations:
           summary: "live seat quota observation stale or absent (>15 min, fleet-ops#4217)"
-          description: "fleet-ops#4217: a provider's fleet_seat_quota_observed_seconds is > QUOTA_STALE_S (900s, 15 min) OR the whole fleet_seat_quota family is absent from fleet.prom. The provider's remaining% figure is stale — its quota endpoint stopped answering or its credential/session died on this VPS. The per-provider fleet_seat_quota_observed_seconds{provider=\"...\"} series names the seat; repair the credential/session as in #4233 (credential-blocked API seats) / #4232 (browser-dashboard seats), or investigate the endpoint. A healthy exporter re-fetches every 5 min, so this firing means the provider has not been observed for a full 15 min."
+          description: "fleet-ops#4217: a provider's fleet_seat_quota_observed_seconds is > QUOTA_STALE_S (900s, 15 min) OR the whole fleet_seat_quota family is absent from fleet.prom. The provider's remaining% figure is stale — its quota endpoint stopped answering or its credential/session died on this VPS. The per-provider fleet_seat_quota_observed_seconds{provider=\"...\"} series names the seat; repair the credential/session as in #4233 (credential-blocked API seats) / #4232 (browser-dashboard seats), or investigate the endpoint. A healthy exporter re-fetches every 5 min, so this firing means the provider has not been observed for a full 15 min. 2026-09-13: while provider=claude reads source=\"denied\" (org subscription cancelled, claude_free denies all OAuth — deliberate, #4611), the claude series is unless-gated quiet here and in FleetClaudeQuotaStale; the denial state lives in workspaces/agent-state/fleet-metrics/claude-quota-backoff.json (6h recheck, a 200 clears it) — a deliberately unpaid-dark claude seat is NOT this alert's repair case."
 
       # fleet-ops#4611: the claude OAuth quota meter went silently absent for 7d
       # because a 401 fetch dropped the whole claude family and the generic
@@ -275,14 +286,23 @@ groups:
       # invisible spend risk under the zero-revenue standing rule (fleet-ops#3150)
       # — no spend without Nish's visibility.
       - alert: FleetClaudeQuotaStale
-        expr: fleet_seat_quota_observed_seconds{provider="claude"} > 900 or absent(fleet_seat_quota_remaining_pct{provider="claude"})
+        # 2026-09-13: #4221-style unless-gate — when the exporter reports
+        # source="denied" (the org's subscription was cancelled and claude_free
+        # denies ALL OAuth: 403 oauth_not_allowed_for_organization on
+        # /api/oauth/usage AND /v1/messages, proven live), the meter being dark
+        # is deliberate, not broken, so this alert stays quiet. The gate lifts
+        # itself when the subscription returns (first 200 clears the
+        # fleet-metrics/claude-quota-backoff.json sidecar and the denied series).
+        # To force-verify a re-subscribed org, delete that sidecar; the next
+        # 5-min exporter run fetches for real.
+        expr: (fleet_seat_quota_observed_seconds{provider="claude"} > 900 or absent(fleet_seat_quota_remaining_pct{provider="claude"})) unless on() (fleet_seat_quota_observed_seconds{provider="claude",source="denied"} > 0)
         for: 5m
         labels:
           severity: warning
           service: fleet
         annotations:
           summary: "claude OAuth quota meter stale or absent (>15 min, fleet-ops#4611)"
-          description: "fleet-ops#4611/#4670: fleet_seat_quota_observed_seconds{provider=\"claude\"} is > QUOTA_STALE_S (900s, 15 min) OR fleet_seat_quota_remaining_pct{provider=\"claude\"} is absent from fleet.prom — the claude OAuth usage endpoint (api.anthropic.com/api/oauth/usage) stopped answering or the file login at ~/.claude/.credentials.json is dead (HTTP 401/429). claude is a real billable seat; a dark meter is invisible spend risk under the zero-revenue rule (fleet-ops#3150). The exporter refreshes that file token via platform.claude.com/v1/oauth/token before the 8h expiry (setup-token is inference-only and is never used). If this still fires, the refresh grant failed or the usage endpoint is 429ing; repair the file login or investigate the endpoint."
+          description: "fleet-ops#4611/#4670: fleet_seat_quota_observed_seconds{provider=\"claude\"} is > QUOTA_STALE_S (900s, 15 min) OR fleet_seat_quota_remaining_pct{provider=\"claude\"} is absent from fleet.prom — the claude OAuth usage endpoint (api.anthropic.com/api/oauth/usage) stopped answering or the file login at ~/.claude/.credentials.json is dead (HTTP 401/429). claude is a real billable seat; a dark meter is invisible spend risk under the zero-revenue rule (fleet-ops#3150). The exporter refreshes that file token via platform.claude.com/v1/oauth/token before the 8h expiry (setup-token is inference-only and is never used). If this still fires, the refresh grant failed or the usage endpoint is 429ing; repair the file login or investigate the endpoint. 2026-09-13: the subscription WAS cancelled (profile endpoint: subscription_status=canceled, organization_type=claude_free) so claude_free denies all OAuth — the exporter then emits source=denied and this alert deliberately stays quiet (#4221-style unless-gate) until the subscription returns; denial state lives in workspaces/agent-state/fleet-metrics/claude-quota-backoff.json (6h recheck, 200 clears it)."
 
       # fleet-ops#3284 (child of #3150): the zero-revenue standing rule needs a
       # hard money boundary, not just a digest line. Two legs, per provider:
@@ -1781,4 +1801,25 @@ groups:
         annotations:
           summary: "opencode-go cap above pace — the remaining weekly pool will not last to its reset"
           description: "fleet-ops#5022: fleet_prepaid_declared_cap{provider=\"opencode-go\"} is above fleet_prepaid_paced_cap for 2h. The paced cap is floor(remaining_weekly_pct / hours_to_reset * K), floor 1, ceiling the declared cap, with K measured 2026-09-10 (80% of the weekly pool over ~4 days at cap 10 => 0.8%/h per 10 cap units => K=12.5); it is how much concurrency spends exactly the remaining pool by the reset. Repair worker — set config/seat-caps.json .providers.\"opencode-go\".cap to the current fleet_prepaid_paced_cap and lower the deepseek-flash model cap with it (keep 1 as the floor), carrying a dated reason that quotes fleet_prepaid_usage_pct{provider=\"opencode-go\",window=\"weekly\"} and the reset; then PR it. Do NOT edit the live ~/.local/state/pi-packet/seat-caps.json — deploy install.sh overwrites it and it shows as MANIFEST drift. Do NOT touch other providers."
+
+      # FleetInotifyWatchExhausted (fleet-ops#5839): the per-uid inotify watch
+      # budget is >90% consumed for 10+ minutes. At 100% EVERY systemd --user
+      # unit start fails its cgroup watch adds (2x "Failed to add
+      # control|memory inotify watch descriptor ...: No space left on device")
+      # and any new watcher fails silently. The 2026-09-12 11:19-11:40 IST
+      # burst did exactly this for 21 minutes; steady state is ~2%
+      # (273/124083), so 90% sustained is a real holder, not burst noise.
+      # The holder itself is in fleet_inotify_watch_top{pid,cmd}, sampled
+      # DURING the burst by fleet-metrics-export (every 5 min) — the only fd
+      # accounting on the box, because fd counts are not journaled.
+      - alert: FleetInotifyWatchExhausted
+        expr: fleet_inotify_watch_usage_ratio > 0.9
+        for: 10m
+        labels:
+          severity: critical
+          service: fleet
+          repo: Nishfleet/fleet-ops
+        annotations:
+          summary: "inotify watch budget >90% consumed — unit starts log ENOSPC (Failed to add inotify watch descriptor)"
+          description: "fleet-ops#5839: fleet_inotify_watch_usage_ratio > 0.9 for 10m against fs.inotify.max_user_watches. Every systemd --user unit start fails its control+memory cgroup watch adds ('No space left on device'), burying real failures in journalctl --user -p err. Repair worker — (1) read fleet_inotify_watch_top{pid,cmd} from the latest /var/lib/prometheus/node-exporter/fleet.prom: that IS the consumer, sampled mid-burst (fd accounting is not journaled anywhere, so this metric is the only holder evidence on the box); (2) if the holder is a one-off/burst, raise the budget via /etc/sysctl.d — the drop-in is tracked at etc/sysctl.d/90-fleet-inotify.conf (max_user_watches 524288, max_user_instances 512) and applying it needs sudo (Nish-reserved): sudo install -m 644 <repo>/etc/sysctl.d/90-fleet-inotify.conf /etc/sysctl.d/ && sudo sysctl --system; (3) if the holder persists, fix the watcher itself; (4) never silence journald or filter the journal — that hides the symptom, not the cause. Termination: journalctl --user --since '2 hours ago' -p err | grep -c 'inotify watch descriptor' is 0."
 

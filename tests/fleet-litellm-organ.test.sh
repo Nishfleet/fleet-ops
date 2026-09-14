@@ -166,10 +166,15 @@ scratch="$(mktemp -d)"
 trap 'rm -rf "$scratch"' EXIT
 stub="$scratch/stub.json"
 printf '{"healthy_endpoints":[{"model_info":{"model_name":"worker-cheap"}}],"unhealthy_endpoints":[]}' > "$stub"
+# #6115: the shortfall verdict compares the census against the configured
+# model_list, so the happy-path invocation must point at a 1-entry config
+# that matches its 1-endpoint census stub (9>1 short-fall would exit 1).
+printf 'model_list:\n  - model_name: worker-cheap\n' > "$scratch/one-model.yaml"
 # proxy_up=1 path: exit 0, prom written with the heartbeat metric
 FLEET_LITELLM_PROM="$scratch/up.prom" \
 FLEET_LITELLM_STATE="$scratch/up.json" \
 FLEET_LITELLM_STUB="$stub" \
+FLEET_LITELLM_CONFIG="$scratch/one-model.yaml" \
 FLEET_LITELLM_STUB_PG=1 \
 FLEET_LITELLM_STUB_REDIS=1 \
 FLEET_LITELLM_STUB_INSTALLED=1 \
@@ -656,13 +661,18 @@ esac
     || fail "17: canary unit TimeoutStartSec=$ts is under 90s starvation headroom (2026-09-11 trip: SIGTERM at 30s, nothing printed, no prom write)"
 ok "17: canary unit carries >=90s starvation headroom (TimeoutStartSec=$ts)"
 
-# --- 18: the loud deployment drill (fleet-ops#6054, #5792 accept line).
-# #5792: "re-adding a dead deployment fails the health canary loudly". A
-# populated census that still carries an UNHEALTHY deployment (the
-# 2026-09-12 fault: 4x xkiro deepseek-v4-pro 503s deployed in the active
-# groups, unhealthy_count=4, nobody noticed because organ liveness was
-# green) must exit 1 with a named verdict. After the deployment is benched
-# (census all-healthy) the same canary is a quiet 0.
+# --- 18: the loud deployment drill (fleet-ops#6054, #5792 accept line) now
+# carries the #6427 transient hold. #5792: "re-adding a dead deployment
+# fails the health canary loudly" — but the 2026-09-13 prepaid Z.AI 429
+# bursts each self-healed within 2-3 ticks, and each first-tick exit priced
+# a senior-auditor summon. So: the FIRST continuously-unhealthy tick is
+# HELD (exit 0, health-deployment-unhealthy-hold, the hold-clock
+# unhealthy_since[senior] persisted in the state json, mirroring
+# dead_since); the same group still unhealthy one tick later stays held and
+# CONTINUES the clock (no re-latch); a deployment that heals inside the
+# tolerance (the 2026-09-13 case) NEVER exits — 18b, the held-then-healed
+# case, is a quiet 0 with the clock cleared; sustained starvation (2026-09-12:
+# HOURS) still exits 1 with the plain verdict, clock still continuous.
 printf '{"healthy_endpoints":[{"model_info":{"model_name":"worker-cheap"}}],"unhealthy_endpoints":[{"model_info":{"model_name":"senior"},"error":"litellm.ServiceUnavailableError: OpenAIException - A server error occurred. Please try again."}]}' > "$scratch/census-dead.json"
 FLEET_LITELLM_PROM="$scratch/drill.prom" \
 FLEET_LITELLM_STATE="$scratch/drill.state.json" \
@@ -674,25 +684,111 @@ FLEET_LITELLM_STUB_REDIS=1 \
 FLEET_LITELLM_STUB_INSTALLED=1 \
 FLEET_LITELLM_NOW=1700000300 \
 python3 "$canary" >"$scratch/drill.out" 2>"$scratch/drill.err" \
-    && fail "18: a deployed dead deployment must fail the canary loudly (fleet-ops#6054 drill), got exit 0"
-grep -q 'health-deployment-unhealthy' "$scratch/drill.err" "$scratch/drill.out" \
-    || fail "18: drill verdict must log health-deployment-unhealthy, got: $(cat "$scratch/drill.err" "$scratch/drill.out")"
+    || fail "18: first unhealthy tick inside the 300s tolerance must be HELD (exit 0, #6427)"
+grep -q 'health-deployment-unhealthy-hold' "$scratch/drill.err" "$scratch/drill.out" \
+    || fail "18: the held tick must log health-deployment-unhealthy-hold, got: $(cat "$scratch/drill.err" "$scratch/drill.out")"
+grep -q 'health-deployment-unhealthy ' "$scratch/drill.err" "$scratch/drill.out" \
+    && fail "18: the held tick must NOT log the plain verdict (that is the summon)"
 grep -q 'fleet_litellm_proxy_unhealthy_deployments{group="senior"} 1' "$scratch/drill.prom" \
-    || fail "18: prom must keep the unhealthy-deployment gauge scrapeable through the drill exit"
-grep -q 'fleet_litellm_proxy_up{endpoint="readiness"} 1' "$scratch/drill.prom" \
-    || fail "18: drill must NOT conceal organ liveness (proxy_up=1 stays exported)"
-# 18b: the same deployment benched -> the census is all-healthy -> quiet 0.
+    || fail "18: prom must keep the unhealthy-deployment gauge scrapeable through the HOLD"
+python3 - "$scratch/drill.state.json" <<'PY' || fail "18: the held tick must persist the unhealthy_since hold-clock (mirrors dead_since, #6427)"
+import json, sys
+d = json.load(open(sys.argv[1]))
+since = d.get("unhealthy_since")
+assert isinstance(since, dict) and since.get("senior") == 1700000300, since
+PY
+FLEET_LITELLM_PROM="$scratch/drill.prom" \
+FLEET_LITELLM_STATE="$scratch/drill.state.json" \
+FLEET_LITELLM_STUB="$scratch/ready-ok.json" \
+FLEET_LITELLM_STUB_HEALTH="$scratch/census-dead.json" \
+FLEET_LITELLM_CONFIG="$scratch/models.yaml" \
+FLEET_LITELLM_STUB_PG=1 \
+FLEET_LITELLM_STUB_REDIS=1 \
+FLEET_LITELLM_STUB_INSTALLED=1 \
+FLEET_LITELLM_NOW=1700000360 \
+python3 "$canary" >"$scratch/drill2.out" 2>"$scratch/drill2.err" \
+    || fail "18: the second continuously-unhealthy tick (60s < 300s) must stay HELD (exit 0, #6427)"
+python3 - "$scratch/drill.state.json" <<'PY' || fail "18: the held second tick must CONTINUE the hold-clock (no re-latch), mirroring dead_since"
+import json, sys
+d = json.load(open(sys.argv[1]))
+assert d.get("unhealthy_since", {}).get("senior") == 1700000300, d.get("unhealthy_since")
+PY
+# 18b: held-then-healed (the 2026-09-13 case): the deployment heals inside
+# the tolerance -> the census is all-healthy -> quiet 0 AND the hold-clock
+# clears, so a 2-3-tick 429 burst costs zero senior-auditor summons.
 printf '{"healthy_endpoints":[{"model_info":{"model_name":"worker-cheap"}},{"model_info":{"model_name":"senior"}}],"unhealthy_endpoints":[]}' > "$scratch/census-benched.json"
 FLEET_LITELLM_PROM="$scratch/drill2.prom" \
-FLEET_LITELLM_STATE="$scratch/drill2.state.json" \
+FLEET_LITELLM_STATE="$scratch/drill.state.json" \
 FLEET_LITELLM_STUB="$scratch/ready-ok.json" \
 FLEET_LITELLM_STUB_HEALTH="$scratch/census-benched.json" \
 FLEET_LITELLM_CONFIG="$scratch/models.yaml" \
 FLEET_LITELLM_STUB_PG=1 \
 FLEET_LITELLM_STUB_REDIS=1 \
 FLEET_LITELLM_STUB_INSTALLED=1 \
-FLEET_LITELLM_NOW=1700000400 \
-python3 "$canary" --quiet || fail "18b: all-healthy census after benching must stay quiet (exit 0)"
-ok "18: deployed dead deployment fails the canary loudly (exit 1); benched, all-healthy census is a quiet 0"
+FLEET_LITELLM_NOW=1700000480 \
+python3 "$canary" --quiet || fail "18b: all-healthy census after the burst heals must stay quiet (exit 0)"
+python3 - "$scratch/drill.state.json" <<'PY' || fail "18b: a healed deployment must drop out of unhealthy_since (no stale hold-clock)"
+import json, sys
+d = json.load(open(sys.argv[1]))
+assert d.get("unhealthy_since") == {}, d.get("unhealthy_since")
+PY
+# 18c: sustained starvation (the 2026-09-12 case) still exits 1: a fresh
+# unhealthy tick is held, then the SAME group continuously unhealthy at
+# +300s trips the plain verdict with the hold-clock still continuous.
+FLEET_LITELLM_PROM="$scratch/drill.prom" \
+FLEET_LITELLM_STATE="$scratch/drill.state.json" \
+FLEET_LITELLM_STUB="$scratch/ready-ok.json" \
+FLEET_LITELLM_STUB_HEALTH="$scratch/census-dead.json" \
+FLEET_LITELLM_CONFIG="$scratch/models.yaml" \
+FLEET_LITELLM_STUB_PG=1 \
+FLEET_LITELLM_STUB_REDIS=1 \
+FLEET_LITELLM_STUB_INSTALLED=1 \
+FLEET_LITELLM_NOW=1700000600 \
+python3 "$canary" --quiet || fail "18c: a re-broken deployment starts a fresh hold (exit 0)"
+FLEET_LITELLM_PROM="$scratch/drill.prom" \
+FLEET_LITELLM_STATE="$scratch/drill.state.json" \
+FLEET_LITELLM_STUB="$scratch/ready-ok.json" \
+FLEET_LITELLM_STUB_HEALTH="$scratch/census-dead.json" \
+FLEET_LITELLM_CONFIG="$scratch/models.yaml" \
+FLEET_LITELLM_STUB_PG=1 \
+FLEET_LITELLM_STUB_REDIS=1 \
+FLEET_LITELLM_STUB_INSTALLED=1 \
+FLEET_LITELLM_NOW=1700000900 \
+python3 "$canary" >"$scratch/drill3.out" 2>"$scratch/drill3.err" \
+    && fail "18c: sustained (300s continuously-unhealthy) starvation must still exit 1, got exit 0"
+grep -q 'health-deployment-unhealthy ' "$scratch/drill3.err" "$scratch/drill3.out" \
+    || fail "18c: the sustained verdict must log plain health-deployment-unhealthy, got: $(cat "$scratch/drill3.err" "$scratch/drill3.out")"
+grep -q 'fleet_litellm_proxy_unhealthy_deployments{group="senior"} 1' "$scratch/drill.prom" \
+    || fail "18c: prom must keep the unhealthy-deployment gauge scrapeable through the drill exit"
+grep -q 'fleet_litellm_proxy_up{endpoint="readiness"} 1' "$scratch/drill.prom" \
+    || fail "18c: drill must NOT conceal organ liveness (proxy_up=1 stays exported)"
+python3 - "$scratch/drill.state.json" <<'PY' || fail "18c: the sustained exit-1 tick must keep the hold-clock continuous (not re-latch at 1700000900)"
+import json, sys
+d = json.load(open(sys.argv[1]))
+assert d.get("unhealthy_since", {}).get("senior") == 1700000600, d.get("unhealthy_since")
+PY
+ok "18: unhealthy deployment: 1st+2nd ticks held (0, clock persisted+continued), heal inside 300s = quiet 0 + clock cleared; sustained 300s still exits 1 (clock continuous, gauge+proxy_up scrapeable)"
+
+# --- 18d (fleet-ops#6115): populated-but-short census = entitled-but-unwired.
+# The retired tier1 block-15 entitled-vs-wired canary's question, now owned by
+# this verdict: the yaml configures 2 deployments, /health answers only 1,
+# neither unhealthy -> the proxy never loaded it -> exit 1, loudly. The prom
+# and state writes still land before the exit (same #6054 contract).
+printf '{"healthy_endpoints":[{"model_info":{"model_name":"worker-cheap"}}],"unhealthy_endpoints":[]}' > "$scratch/census-shortfall.json"
+FLEET_LITELLM_PROM="$scratch/shortfall.prom" \
+FLEET_LITELLM_STATE="$scratch/shortfall.state.json" \
+FLEET_LITELLM_STUB="$scratch/ready-ok.json" \
+FLEET_LITELLM_STUB_HEALTH="$scratch/census-shortfall.json" \
+FLEET_LITELLM_CONFIG="$scratch/models.yaml" \
+FLEET_LITELLM_STUB_PG=1 \
+FLEET_LITELLM_STUB_REDIS=1 \
+FLEET_LITELLM_STUB_INSTALLED=1 \
+FLEET_LITELLM_NOW=1700000450 \
+python3 "$canary" --quiet 2>"$scratch/shortfall.err" && fail "18d: census short of model_list must exit 1 (entitled-but-unwired)"
+grep -q 'health-census-shortfall' "$scratch/shortfall.err" \
+    || fail "18d: shortfall exit must name itself (health-census-shortfall) on stderr"
+grep -q 'fleet_litellm_health_census 1' "$scratch/shortfall.prom" \
+    || fail "18d: shortfall exit must still leave the prom written (scrapeable through the failure)"
+ok "18d: populated-but-short census exits 1 (entitlement = the model_list, #6115)"
 
 echo "ALL OK: fleet-litellm-organ"

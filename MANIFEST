@@ -46,6 +46,10 @@ bin/fleet-close-and-archive-repo /home/nish/.local/bin/fleet-close-and-archive-r
 # fleet-ops#1157: ConsoleLying + ConsoleTileVerifyAbsent. System scope —
 # install.sh --system deploys to /etc/prometheus/fleet_rules.yml.
 config/fleet_rules.yml /etc/prometheus/fleet_rules.yml
+# fleet-ops#5839: inotify watch-budget headroom. The sudo sysctl --system
+# apply step is Nish-reserved (documented in the file itself); this row only
+# ships the drop-in so the NEXT --system install carries it.
+etc/sysctl.d/90-fleet-inotify.conf /etc/sysctl.d/90-fleet-inotify.conf
 # fleet-ops#1136: live self-maintenance ratio + upgrade/repair/churn quality
 # + queue composition + verified-merges numerator. The exporter is the
 # canonical source for fleet_self_maintenance_*, fleet_pr_quality_*,
@@ -246,6 +250,16 @@ bin/pi-transport-check /home/nish/.local/bin/pi-transport-check
 bin/pi-issue-run /home/nish/.local/bin/pi-issue-run
 bin/pi-issue-failed-reap /home/nish/.local/bin/pi-issue-failed-reap
 bin/pi-systemd-run /home/nish/.local/bin/pi-systemd-run
+# fleet-ops#5444: OnFailure handler for retry-exhausted packets — triage +
+# findings-ledger + agent-ready re-queue for --deliverable runs.
+# fleet-ops#5456 folds the handler into the STOP-REASON chain; it still
+# must be installed or deploy drops the binary.
+bin/pi-packet-failed /home/nish/.local/bin/pi-packet-failed
+# fleet-ops#5444: the handler's findings-ledger write must go through the
+# shared single-writer helper (fleet-ops#5443), auto-detected at
+# ~/.local/lib/pi-packet/findings_ledger.py — without this install line the
+# runtime handler silently falls back to direct append.
+lib/findings_ledger.py /home/nish/.local/lib/pi-packet/findings_ledger.py
 # fleet-ops#4266: ExecStopPost dead-man — the verdict hook that turns "the
 # unit ended" into success ping / STOP-REASON + /fail ping + died gauge.
 bin/pi-detached-deadman /home/nish/.local/bin/pi-detached-deadman
@@ -510,15 +524,10 @@ bin/fleet-escalation-canary /home/nish/.local/bin/fleet-escalation-canary
 # hop clocks + stall ladder + detector-red terminal. 15-min systemd timer.
 # fleet-ops#468: alert-repair COMPLETION service. oneshot, fail-loud, no restart.
 # fleet-ops#468: alert-repair COMPLETION timer. 15-min OnCalendar.
-# fleet-ops#387: entitled-vs-wired canary. Run by heartbeat-tier1 block 15.
-# Diffs entitled-seats.json against seat-caps.json every tick; missing row,
-# cap=0 without a dated reason, or a prepaid seat labelled free goes LOUD
-# and auto-files. No new scheduler.
-bin/fleet-entitled-wired-canary /home/nish/.local/bin/fleet-entitled-wired-canary
-# fleet-ops#424: leftover AIMD meter canary. Run by heartbeat-tier1 block 37.
-# AIMD symbols missing from seat-lib.sh while learned-caps-audit.log remains
-# goes LOUD and auto-files. No new scheduler.
-bin/fleet-aimd-meter-canary /home/nish/.local/bin/fleet-aimd-meter-canary
+# fleet-ops#6115: the #387 entitled-vs-wired and #424 AIMD meter canaries
+# are retired (entitlement = the proxy model_list — the litellm health
+# canary's census-shortfall verdict; AIMD = the router's cooldown). Their
+# MANIFEST rows, bins, and test hosts are gone; see #6115's PR.
 # fleet-ops#435 / #545: OpenCode + CommandCode MiniMax M3 catalog canary.
 # Run by heartbeat-tier1. Billing slug in seat-caps fails the tick. A
 # free-form slug whose models.json cost is non-zero also fails. A new
@@ -700,9 +709,22 @@ systemd/stop-escalation.service /home/nish/.config/systemd/user/stop-escalation.
 systemd/unit-escalation@.service /home/nish/.config/systemd/user/unit-escalation@.service
 systemd/unit-escalation@.service.d/no-self-escalate.conf /home/nish/.config/systemd/user/unit-escalation@.service.d/no-self-escalate.conf
 systemd/service.d/10-escalate.conf /home/nish/.config/systemd/user/service.d/10-escalate.conf
+# fleet-ops#5456: the RESUME POLICY declaration (allowlist, deliberately no
+# global Restart= — see the file). Hash-asserted by fleet-escalation-canary
+# block 1b every tick.
+systemd/service.d/20-resume.conf /home/nish/.config/systemd/user/service.d/20-resume.conf
+# fleet-ops#5456 E/H: the kill-three-ways chain drill + its isolated fixture
+# (throwaway resume-drill-* dummies; runs from fleet-heartbeat-tier1 5b, no
+# new timer).
+bin/chain-e2e-drill /home/nish/.local/bin/chain-e2e-drill
+systemd/chain-e2e-drill-fixture.service /home/nish/.config/systemd/user/chain-e2e-drill-fixture.service
+systemd/chain-e2e-drill.slice /home/nish/.config/systemd/user/chain-e2e-drill.slice
 # fleet-ops#618: .path and .timer units do not inherit service.d/.
 systemd/path.d/10-escalate.conf /home/nish/.config/systemd/user/path.d/10-escalate.conf
 systemd/timer.d/10-escalate.conf /home/nish/.config/systemd/user/timer.d/10-escalate.conf
+# fleet-ops#5855: .socket units likewise — the 9 loaded vendor sockets had no
+# OnFailure and a socket-activation failure produced only a journal line.
+systemd/socket.d/10-escalate.conf /home/nish/.config/systemd/user/socket.d/10-escalate.conf
 # fleet-ops#428: pi-transport-check is owned by the pi package, but its
 # OnFailure= was wired to the old direct Telegram page. This drop-in removes
 # the page and keeps only the unit-escalation path.
@@ -765,6 +787,17 @@ systemd/escalation-daily-sweep.timer /home/nish/.config/systemd/user/escalation-
 bin/fleet-escalation-drain /home/nish/.local/bin/fleet-escalation-drain
 systemd/escalation-drain.service /home/nish/.config/systemd/user/escalation-drain.service
 systemd/escalation-drain.timer /home/nish/.config/systemd/user/escalation-drain.timer
+# fleet-ops#5854: the organ-death watcher. Every 5 min, watches the
+# anti-recursion-excluded escalation organs (stop-escalation.path,
+# unit-escalation@ template, parked stop-escalation-dispatch, daily-sweep
+# liveness marker) and fails loud on red. OnFailure= reset drop-in + write
+# name guard keep it out of the chain it watches; the out-of-band page is
+# the HC_URL_ORGANWATCH dead-man (same one-time provisioning as the other
+# keystone HC_URL_* checks) and the hourly tier1 failed-units sweep.
+bin/escalation-organ-watch /home/nish/.local/bin/escalation-organ-watch
+systemd/escalation-organ-watch.service /home/nish/.config/systemd/user/escalation-organ-watch.service
+systemd/escalation-organ-watch.service.d/no-self-escalate.conf /home/nish/.config/systemd/user/escalation-organ-watch.service.d/no-self-escalate.conf
+systemd/escalation-organ-watch.timer /home/nish/.config/systemd/user/escalation-organ-watch.timer
 prompts/heartbeat.md /home/nish/.pi/agent/prompts/heartbeat.md
 # P14: nishfleet-worker GitHub App identity for workers
 bin/worker-token /home/nish/.local/bin/worker-token
@@ -909,11 +942,9 @@ bin/fleet-timer-manifest-drift-canary /home/nish/.local/bin/fleet-timer-manifest
 # Deferred products auto-file. Heartbeat-tier1 block 29.
 bin/fleet-verify-harness-canary /home/nish/.local/bin/fleet-verify-harness-canary
 config/verify-harness.json /home/nish/.local/state/pi-packet/verify-harness.json
-# fleet-ops#917: SuperGrok live-validate canary. Runs `grok models` (CLI
-# silent refresh) every heartbeat tick; writes credentials_bad when the
-# live CLI is unauthenticated; auto-files `grok login --device-auth` when
-# refresh is impossible. Heartbeat-tier1 block 30.
-bin/fleet-seat-live-validate /home/nish/.local/bin/fleet-seat-live-validate
+# fleet-ops#6115: the #917 SuperGrok live-validate canary is retired
+# (/health census is the authority — the litellm health canary owns the
+# dead-deployment verdict). MANIFEST row, bin, and test host gone.
 # fleet-ops#938: credential/token expiry coverage through 2026-09-08.
 # GET /app App-JWT liveness (GitHub App keys do not expire) plus
 # FLEET_SYNC_PAT GitHub-Authentication-Token-Expiration horizon.
@@ -1101,6 +1132,10 @@ systemd/fleet-bare-metal-rebuild-drill.timer /home/nish/.config/systemd/user/fle
 bin/fleet-asset-census /home/nish/.local/bin/fleet-asset-census
 lib/pi-packet/asset-census.py /home/nish/.local/lib/pi-packet/asset-census.py
 config/asset-guard-map.json /home/nish/.local/state/pi-packet/asset-guard-map.json
+# fleet-ops#5785: stranded recorded merge SHAs (main-history rewrites) ->
+# on-main replacements, consumed by lib/deploy-fault-gate.sh so the
+# deploy-fault containment proof survives a rewrite.
+config/deploy-fault-stranded-merges.json /home/nish/.local/state/pi-packet/deploy-fault-stranded-merges.json
 systemd/fleet-asset-census.service /home/nish/.config/systemd/user/fleet-asset-census.service
 systemd/fleet-asset-census.timer /home/nish/.config/systemd/user/fleet-asset-census.timer
 # fleet-ops#1460: event-driven sweep. Convert pollers to systemd .path triggers
@@ -1137,8 +1172,9 @@ docs/escalation-matrix.md /home/nish/.local/share/fleet-ops/docs/escalation-matr
 
 # fleet-ops#41: headless OAuth refresh of the live SuperGrok seat
 # (~/.pi/agent/auth.json["xai-oauth"]). 4h timer keeps the prepaid
-# credential from aging into a 401; fleet-seat-live-validate catches
-# the dead case but does not heal it. Cap on the legacy `grok` entry
+# credential from aging into a 401; the litellm health canary catches
+# the dead case (fleet-ops#6115 retired the #917 live-validate canary)
+# but does not heal it. Cap on the legacy `grok` entry
 # stays 0 — the live seat is xai-oauth (fleet-ops#1163).
 bin/grok-token-refresh /home/nish/.local/bin/grok-token-refresh
 systemd/grok-token-refresh.service /home/nish/.config/systemd/user/grok-token-refresh.service

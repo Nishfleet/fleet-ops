@@ -80,6 +80,8 @@ jobs:
         bash tests/pi-transport-check.test.sh
         bash tests/minimax-token-refresh.test.sh
         bash tests/seat-credentials-bad-replay.test.sh
+        bash tests/budget-402-classification.test.sh
+        bash tests/budget-402-pick-fallback.test.sh
         bash tests/alert-repair-flagship-seat.test.sh
         bash tests/fleet-deploy-fault-gate.test.sh
         bash tests/fleet-production-stale-alert.test.sh
@@ -237,6 +239,10 @@ jobs:
         # fleet-ops#1460: lock the timer manifest shape (every user timer
         # has a manifest entry with a named reason — schedule-needs-reason).
         bash tests/timer-manifest.test.sh
+        # fleet-ops#6537: MANIFEST-installed [Install] template instances
+        # (gh-runner@{1,2,3}) are expected-enabled; non-MANIFEST templates
+        # still alarm. Was re-firing DRIFT-UNITS every tick (#6366).
+        bash tests/fleet-ops-drift-template-instances.test.sh
         # fleet-ops#1534: single chokepoint for messages to Nish's phone.
         # hermes outbound class-gate (--urgent requires sanctioned --class),
         # alertmanager routing matrix (only severity=page -> telegram),

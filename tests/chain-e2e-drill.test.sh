@@ -4,7 +4,7 @@
 # fleet-ops#375: the chain-e2e drill proves the whole failure chain end to
 # end by injecting one synthetic fixture fault and asserting each hop
 # mechanically. This test runs the drill in DRY_RUN (wiring proofs only, no
-# live systemd / no GitHub writes) and asserts all six hops pass, then locks
+# live systemd / no GitHub writes) and asserts every hop passes, then locks
 # the wiring: SLO snapshot folds it in, blind-audit runs it on the cadence,
 # and the escalation canary treats the fixture as a drill.
 
@@ -67,6 +67,8 @@ jq -e '.results[] | select(.name == "observe-to-close-flips-on-green" and .pass)
   || fail "hop 5b (ticket flips closed on green) must pass"
 jq -e '.results[] | select(.name == "slo-snapshot" and .pass)' "$res" >/dev/null \
   || fail "hop 6 (SLO snapshot) must pass"
+jq -e '.results[] | select(.name == "resume-wiring" and .pass)' "$res" >/dev/null \
+  || fail "hop 7 (resume-or-dispatch wiring, fleet-ops#5456) must pass"
 
 # --- the fixture stub unit must be unmistakably synthetic -------------------
 [[ -f "$fixture_unit" ]] || fail "fixture stub unit missing"
@@ -94,9 +96,40 @@ grep -qF 'chain-e2e-drill' "$audit" \
   || fail "fleet-blind-audit must run the chain-e2e drill on its cadence"
 ok "fleet-blind-audit runs the chain-e2e drill once per audit cycle"
 
+# --- hop 7 wiring: the hourly heartbeat runs the kill-three-ways drill ------
+# fleet-ops#5456 H: the drill runs from the EXISTING hourly fleet-heartbeat
+# verify step (block 5b), not a new timer, and a drill failure propagates so
+# the heartbeat unit lands in --state=failed.
+grep -qF 'chain-e2e-drill' "$repo_root/bin/fleet-heartbeat-tier1" \
+  || fail "fleet-heartbeat-tier1 must run the kill-three-ways drill (block 5b)"
+grep -qF 'drill_rc' "$repo_root/bin/fleet-heartbeat-tier1" \
+  || fail "block 5b must propagate a drill failure (drill_rc exit)"
+ok "fleet-heartbeat-tier1 runs the kill-three-ways drill hourly (block 5b, fail-loud)"
+
 # --- hop 1 wiring: the escalation canary treats the fixture as a drill ------
 grep -qF 'chain-e2e-drill-fixture' "$canary" \
   || fail "fleet-escalation-canary must exclude chain-e2e-drill-fixture from escalation"
 ok "escalation canary excludes the fixture (no real senior page)"
 
-echo "OK: chain-e2e drill — all six hops pass in DRY_RUN, wiring locked"
+# --- hop 1 lockstep: unit-escalation-write must exclude the fixture too -----
+# fleet-ops#6734: the canary listed the fixture but the write-script guard
+# did not — the live drill fault wrote a real STOP-REASON and the
+# dispatcher filed a real agent-ready [unit-death] issue, burning a worker
+# seat every heartbeat block-5b spin. The script guard is the designed
+# chokepoint: the generic service.d drop-in applies after any per-unit
+# drop-in, so a per-unit OnFailure= reset cannot win.
+grep -qF 'chain-e2e-drill-fixture*' "$repo_root/bin/unit-escalation-write" \
+  || fail "unit-escalation-write must exclude chain-e2e-drill-fixture* (lockstep with the canary)"
+ok "unit-escalation-write excludes the fixture (no STOP-REASON, no dispatch)"
+
+# --- the fixture LOUD line must survive systemd specifier expansion ---------
+# fleet-ops#6734: a bare % in ExecStart is a systemd specifier — the live
+# line opened "[/usr/bin/zsh]" (%s -> user shell) and failed the
+# reconciler's [ISO-ts] [TAG] TRIAGE_RE, so the fixture ticket could never
+# file on the real path. Every % bash must see is written %%.
+if grep '^ExecStart=' "$fixture_unit" | sed 's/%%//g' | grep -q '%'; then
+  fail "fixture ExecStart carries an unescaped % (systemd specifier footgun — write %%)"
+fi
+ok "fixture ExecStart has no unescaped % specifier"
+
+echo "OK: chain-e2e drill — all hops pass in DRY_RUN, wiring locked"

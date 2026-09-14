@@ -23,6 +23,21 @@
 set -Eeuo pipefail
 
 ausearch_bin="$(command -v ausearch || true)"
+if [[ -z "$ausearch_bin" ]]; then
+    # The auditd package installs ausearch under /usr/sbin, which is routinely
+    # missing from interactive/agent PATHs (pi workers run with
+    # ~/.pi/agent/bin:~/.local/bin:/usr/local/bin:/usr/bin:/bin). The
+    # "NOT INSTALLED" note below must not fire for a PATH miss — it told
+    # every DetachedJobDied repair worker (and, via pi-detached-deadman, the
+    # STOP-REASON detail) that the trail was absent while auditd was in fact
+    # installed and running (fleet-ops#5799).
+    for _cand in /usr/sbin/ausearch /sbin/ausearch; do
+        if [[ -x "$_cand" ]]; then
+            ausearch_bin="$_cand"
+            break
+        fi
+    done
+fi
 last=3
 units=()
 

@@ -217,6 +217,11 @@ bash "$here/git-mirror-update.test.sh" || fail "git-mirror-update tests failed"
 # scratch textfile, unset-URL HC env.
 bash "$here/pi-detached-deadman.test.sh" || fail "pi-detached-deadman tests failed"
 
+# fleet-ops#5799: nested so hosted CI runs the fleet-who-stopped ausearch
+# resolution + usage tests without a workflow edit. Hermetic: the note-branch
+# case self-selects by whether an sbin ausearch exists on the runner.
+bash "$here/fleet-who-stopped.test.sh" || fail "fleet-who-stopped tests failed"
+
 # ============================================================================
 # Dispatch ledger (fleet-ops#1009)
 # ============================================================================
@@ -255,6 +260,11 @@ echo "test packet body" > "$pkt"
 
 LEDGER="$scratch2/dispatch-ledger.jsonl"
 AS="$scratch2/agent-state"
+# fleet-ops#5456: pi-systemd-run writes the per-unit 90-no-resume.conf under
+# $XDG_RUNTIME_DIR/systemd/user — redirect it to scratch so the test never
+# drops a real drop-in into the live runtime dir.
+XDG_SCRATCH="$scratch2/xdg"
+mkdir -p "$XDG_SCRATCH/systemd/user"
 
 # --- 7. dry-run with --deadline/--provider/--model/--chain-id/--hop --------
 set +e
@@ -264,6 +274,7 @@ PI_SALVAGE_DISABLE=1 \
 AGENT_STATE="$AS" \
 FLEET_DISPATCH_LEDGER="$LEDGER" \
 FLEET_DISPATCH_LEDGER_NO_WRITE=1 \
+XDG_RUNTIME_DIR="$XDG_SCRATCH" \
 SR_LOG="$scratch2/sr.log" \
   "$bin" --dry-run --unit testunit --stdin "$pkt" \
     --deadline 30 --provider devin --model glm-5-2 \
@@ -274,6 +285,8 @@ set -e
 [[ "$rc" == "0" ]] || fail "dry-run with new flags rc=$rc"
 [[ ! -s "$scratch2/sr.log" ]] || fail "dry-run must not call systemd-run"
 [[ ! -f "$LEDGER" ]] || fail "dry-run must not write ledger"
+[[ ! -e "$XDG_SCRATCH/systemd/user/testunit.service.d/90-no-resume.conf" ]] \
+  || fail "dry-run must not write the no-resume drop-in"
 ok "dry-run accepts --deadline/--provider/--model/--chain-id/--hop (fleet-ops#1009)"
 # fleet-ops#3328: --deadline must become RuntimeMaxSec so the unit dies at
 # the budget instead of holding hop=run. Re-run the same dry-run and read
@@ -284,12 +297,15 @@ PI_SALVAGE_DISABLE=1 \
 AGENT_STATE="$AS" \
 FLEET_DISPATCH_LEDGER="$LEDGER" \
 FLEET_DISPATCH_LEDGER_NO_WRITE=1 \
+XDG_RUNTIME_DIR="$XDG_SCRATCH" \
   "$bin" --dry-run --unit testunit --stdin "$pkt" \
     --deadline 30 --provider devin --model glm-5-2 \
     --chain-id chain-x --hop 0 \
     -- pi --print --provider devin --model glm-5-2)"
 printf '%s\n' "$out" | grep -q 'RuntimeMaxSec=30min' \
   || fail "--deadline 30 must set RuntimeMaxSec=30min (fleet-ops#3328): $out"
+printf '%s\n' "$out" | grep -q 'PI_DEADMAN_DROPIN_DIR=' \
+  || fail "the unit env must carry PI_DEADMAN_DROPIN_DIR so the dead-man removes the drop-in at stop (fleet-ops#5456): $out"
 ok "--deadline 30 wires RuntimeMaxSec=30min (fleet-ops#3328)"
 
 # --- 8. real dispatch: ledger append + packet copy + provider parse --------
@@ -301,6 +317,7 @@ PI_SALVAGE_DISABLE=1 \
 AGENT_STATE="$AS" \
 FLEET_DISPATCH_LEDGER="$LEDGER" \
 FLEET_DISPATCH_PACKET_DIR="$AS/dispatch-packets" \
+XDG_RUNTIME_DIR="$XDG_SCRATCH" \
 SR_LOG="$scratch2/sr.log" \
   "$bin" --unit ledger-test --stdin "$pkt" \
     --deadline 5 --chain-id chain-abc --hop 0 \
@@ -308,6 +325,13 @@ SR_LOG="$scratch2/sr.log" \
 rc=$?
 set -e
 [[ "$rc" == "0" ]] || fail "real dispatch rc=$rc"
+
+# fleet-ops#5456: the per-unit no-resume drop-in landed under the (redirected)
+# runtime dir and carries Restart=no — packet deaths resume through the
+# dispatcher's hop+1 relaunch, never an in-place systemd restart.
+dropin="$XDG_SCRATCH/systemd/user/ledger-test.service.d/90-no-resume.conf"
+[[ -f "$dropin" ]] || fail "dispatch must write the per-unit no-resume drop-in"
+grep -q '^Restart=no$' "$dropin" || fail "drop-in must carry Restart=no, got: $(cat "$dropin")"
 
 # Ledger must have exactly one entry.
 lines=$(wc -l < "$LEDGER")
@@ -369,6 +393,7 @@ set +e
 SYSTEMD_RUN="$scratch2/fake-systemd-run" SYSTEMCTL="$scratch2/fake-systemctl" \
 PI_SALVAGE_DISABLE=1 AGENT_STATE="$AS" \
 FLEET_DISPATCH_LEDGER="$LEDGER" FLEET_DISPATCH_LEDGER_NO_WRITE=1 \
+XDG_RUNTIME_DIR="$XDG_SCRATCH" \
 SR_LOG="$scratch2/sr.log" \
   "$bin" --unit noledger --stdin "$pkt" -- /bin/sleep 1 2>/dev/null
 rc=$?
@@ -377,3 +402,23 @@ set -e
 [[ ! -f "$LEDGER" ]] || fail "FLEET_DISPATCH_LEDGER_NO_WRITE must suppress ledger"
 
 ok "FLEET_DISPATCH_LEDGER_NO_WRITE suppresses ledger append (fleet-ops#1009)"
+
+# --- 11. --deliverable injects the instruction into the packet copy ----------
+# Auditor 2026-09-11 (review-issue-2446b): --deliverable armed the deadman but
+# nothing told the run to create the file — reviewer finished APPROVE, trip
+# fired anyway. The durable packet copy must carry the instruction.
+rm -f "$LEDGER"; : > "$scratch2/sr.log"
+set +e
+SYSTEMD_RUN="$scratch2/fake-systemd-run" SYSTEMCTL="$scratch2/fake-systemctl" \
+PI_SALVAGE_DISABLE=1 AGENT_STATE="$AS" \
+FLEET_DISPATCH_LEDGER="$LEDGER" SR_LOG="$scratch2/sr.log" \
+  "$bin" --unit injtest --stdin "$pkt" --deliverable /tmp/injtest-verdict.md -- /bin/sleep 1 2>/dev/null
+rc=$?
+set -e
+[[ "$rc" == "0" ]] || fail "inject dispatch rc=$rc"
+copy=$(grep '"unit":"injtest"' "$LEDGER" | python3 -c 'import sys,json;print(json.load(sys.stdin)["packet_path"])')
+grep -qF 'write your final deliverable/verdict to the file: /tmp/injtest-verdict.md' "$copy" \
+  || fail "--deliverable path must be injected into the durable packet copy"
+[[ "$(grep -cF 'DELIVERABLE (required)' "$pkt")" == "0" ]] \
+  || fail "original stdin file must NOT be mutated"
+ok "--deliverable injects instruction into packet copy, original untouched (auditor 2026-09-11 review-issue-2446b)"

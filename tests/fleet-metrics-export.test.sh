@@ -1303,6 +1303,21 @@ fixtures = {
         "http_status": 429, "health_class": "rate_limited", "seat_dead": False,
         "usable_at": PAST, "bench_until": None, "consecutive_failure_count": 15,
     },
+    # 10. fleet-ops#3891: the LIVED phantom key, exercised directly —
+    #     openrouter/deepseek/deepseek-v4-pro-0813 (provider=openrouter,
+    #     model=deepseek/deepseek-v4-pro-0813) past-wall + quota_exhausted.
+    #     It was retired 2026-09-06 via alert-repair and was NEVER a
+    #     seat-caps.json models key, so the #3661 guard must exclude it the
+    #     same way it excludes the synthetic phantom above; the 3 real
+    #     past-wall seats (cb_n==3) must still count with this fixture
+    #     present. No consecutive_failure_count: it stays outside the
+    #     [10, 25) never-released window, so nr_n==1 below also proves the
+    #     lived phantom does not leak into that collector either.
+    "openrouter__deepseek_deepseek-v4-pro-0813.json": {
+        "provider": "openrouter", "model": "deepseek/deepseek-v4-pro-0813",
+        "http_status": 402, "health_class": "quota_exhausted", "seat_dead": False,
+        "usable_at": PAST, "bench_until": None,
+    },
 }
 for name, body in fixtures.items():
     (Path(seat_dir) / name).write_text(json.dumps(body))
@@ -1350,7 +1365,15 @@ assert not any("muse-spark" in i for i in ids), "corpse leaked into comeback"
 # its wall is expired (fleet-ops#3661 SEAT-KEY-INVALID consistency).
 assert not any("phantom-gone-free" in i for i in ids), \
     "phantom seat key leaked into comeback-overdue"
+# fleet-ops#3891: the LIVED phantom — provider=openrouter,
+# model=deepseek/deepseek-v4-pro-0813 (past-wall, quota_exhausted; retired
+# 2026-09-06 and never a seat-caps.json models key) — is excluded by the
+# same #3661 guard, while the 3 real past-wall seats still count (cb_n==3
+# above stays 3 with this fixture present).
+assert "openrouter__deepseek/deepseek-v4-pro-0813" not in ids, \
+    f"lived phantom key (fleet-ops#3891) leaked into comeback-overdue: {ids}"
 print("OK: _read_comeback_overdue counts past-wall seats, excludes bench/test/corpse/mid-cycle + phantom keys")
+print("OK: lived phantom openrouter/deepseek/deepseek-v4-pro-0813 excluded, 3 real past-wall seats still count (fleet-ops#3891)")
 
 # --- _read_never_released over the scratch ledger ---
 # The phantom fixture has cfc=15 (inside the [10, 25) never-released window) as
@@ -3517,8 +3540,9 @@ ok "fleet-ops#4217: live seat quota metric family + VPS-native reads (OpenRouter
 # =========================================================================
 CL_200="$scratch/claude-200.prom"
 CL_FAIL="$scratch/claude-fail.prom"
+CL_DEN="$scratch/claude-denied.prom"
 cat >"$scratch/claude-quota-4611.test.py" <<'PY'
-import importlib.util, json, os, sys, time
+import importlib.util, json, os, re, sys, time
 from pathlib import Path
 exporter, out_path, cache_dir, mode = sys.argv[1:5]
 spec = importlib.util.spec_from_file_location("fme", exporter)
@@ -3583,6 +3607,28 @@ if mode == "200":
 else:
     m._fetch_claude_usage = lambda: None
 
+if mode == "denied":
+    # 2026-09-13: cancelled subscription -> claude_free denies ALL OAuth
+    # (403 oauth_not_allowed_for_organization on /api/oauth/usage AND
+    # /v1/messages). The fail-loud gauge must flip to source="denied" with
+    # the FIRST-403 anchor (ts=now-7200 -> observed ~7200, NOT the
+    # stale-cache anchor) so the #4221-style `unless` gate in
+    # FleetClaudeQuotaStale can silence the deliberately-dark case while the
+    # denial AGE stays visible. No remaining_pct may be emitted: a denied
+    # meter has no honest quota number to report. The sidecar is written
+    # THROUGH the module's own constant (not the setattr-underscore loop), so
+    # reader, writer and test agree on the one real hyphenated filename.
+    m.CLAUDE_QUOTA_BACKOFF = Path(cache_dir) / "claude-quota-backoff.json"
+    # The sidecar is written BEFORE main() runs, so nothing has created the
+    # cache dir yet (the 200/fail modes only write via main(), which mkdirs).
+    # CI: FileNotFoundError on /tmp/fme-test.*/cl-denied-cache/... at 10:23Z
+    # 2026-09-13 — the denial-lease case red'd the whole P14 suite and parked
+    # PR #6371 for 5.5h. Match the production writer's mkdir contract.
+    Path(cache_dir).mkdir(parents=True, exist_ok=True)
+    m.CLAUDE_QUOTA_BACKOFF.write_text(json.dumps(
+        {"kind": "denied", "until": time.time() + 3600,
+         "lease_s": 21600, "ts": time.time() - 7200}))
+
 rc = m.main()
 assert rc == 0, f"main rc={rc}"
 body = Path(out_path).read_text()
@@ -3594,16 +3640,40 @@ if mode == "200":
     assert 'fleet_seat_quota_observed_seconds{provider="claude",source="api"}' in body, body
     print("OK: claude 200-path emits remaining_pct/reset/observed (source=api)")
 else:
-    assert 'fleet_seat_quota_remaining_pct{provider="claude"' not in body, \
-        "dead fetch must not emit a claude remaining_pct: " + body
-    assert 'fleet_seat_quota_observed_seconds{provider="claude",source="stale"}' in body, \
-        "dead claude fetch must emit growing observed_seconds (source=stale), not go silent: " + body
-    print("OK: claude dead fetch fails loud via observed_seconds{source=stale}")
+    if mode == "denied":
+        assert 'fleet_seat_quota_remaining_pct{provider="claude"' not in body, \
+            "denied meter must not emit a (fabricated) claude remaining_pct: " + body
+        _match = re.search(
+            r'fleet_seat_quota_observed_seconds\{provider="claude",source="denied"\} ([0-9.]+)',
+            body)
+        assert _match, "denied sidecar must flip the fail-loud gauge to source=denied: " + body
+        _age = float(_match.group(1))
+        assert 7100.0 <= _age <= 7300.0, \
+            f"denied age must count from the FIRST-403 anchor (ts=now-7200), got {_age}"
+        print(f"OK: claude denied-lease gauge source=denied age={_age:.0f}s (no fabricated remaining_pct)")
+    else:
+        assert 'fleet_seat_quota_remaining_pct{provider="claude"' not in body, \
+            "dead fetch must not emit a claude remaining_pct: " + body
+        assert 'fleet_seat_quota_observed_seconds{provider="claude",source="stale"}' in body, \
+            "dead claude fetch must emit growing observed_seconds (source=stale), not go silent: " + body
+        print("OK: claude dead fetch fails loud via observed_seconds{source=stale}")
 PY
 python3 "$scratch/claude-quota-4611.test.py" "$exporter" "$CL_200" "$scratch/cl-200-cache" "200" \
   || fail "claude 200-path emission failed"
 python3 "$scratch/claude-quota-4611.test.py" "$exporter" "$CL_FAIL" "$scratch/cl-fail-cache" "fail" \
   || fail "claude fail-loud emission failed"
+python3 "$scratch/claude-quota-4611.test.py" "$exporter" "$CL_DEN" "$scratch/cl-denied-cache" "denied" \
+  || fail "claude denied-gate emission failed"
+# 2026-09-13: the FleetClaudeQuotaStale expr must carry the #4221-style denial
+# unless-gate, so a cancelled-subscription (claude_free) silence is deliberate
+# (self-healing, not a lost meter)
+grep -q 'unless on() (fleet_seat_quota_observed_seconds{provider="claude",source="denied"} > 0)' "$rules" \
+  || fail "FleetClaudeQuotaStale missing the #4221-style denial unless-gate"
+# 2026-09-13 (FleetSeatQuotaStale repair): the GENERIC stale rule must gate the
+# deliberately-dark claude denial the same way, but matched on(provider) so the
+# other providers' staleness and the whole-family absent() leg stay loud.
+grep -q 'unless on(provider) (fleet_seat_quota_observed_seconds{provider="claude",source="denied"} > 0)' "$rules" \
+  || fail "FleetSeatQuotaStale missing the #4221-style claude-denial unless-gate (on(provider))"
 # rule presence (acceptance #2/#3: the alert fires when the claude gauge is
 # absent/stale > threshold)
 grep -q "alert: FleetClaudeQuotaStale" "$rules" \
@@ -4140,9 +4210,13 @@ print("OK: worktree reaper HELP/TYPE constants + _read_worktree_reaper helper pr
 PY
 
 # _read_worktree_reaper: present summary -> counts; missing/unparseable/stale -> present=False.
+# ts must be generated at run time: a hardcoded 2026-09-07 date became
+# summary-stale after WORKTREE_REAPER_STALE_S (7d) and red-mained P14
+# (run 34849034702, 2026-09-14T13:40Z).
 WT_SUMMARY="$scratch/reaper-summary.json"
-cat >"$WT_SUMMARY" <<'JSON'
-{"script":"fleet-worktree-reaper","ts":"2026-09-07T13:33:53Z","scanned":307,"reaped":14,"post_count":326,"pre_count":341,"bound_breached":0,"skipped_dirty":60,"skipped_notpushed":137,"skipped_live":9,"skipped_young":14,"skipped_unmerged":60,"skipped_notterminal":12,"salvaged":0,"failed":1}
+WT_TS=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+cat >"$WT_SUMMARY" <<JSON
+{"script":"fleet-worktree-reaper","ts":"$WT_TS","scanned":307,"reaped":14,"post_count":326,"pre_count":341,"bound_breached":0,"skipped_dirty":60,"skipped_notpushed":137,"skipped_live":9,"skipped_young":14,"skipped_unmerged":60,"skipped_notterminal":12,"salvaged":0,"failed":1}
 JSON
 python3 - "$exporter" "$WT_SUMMARY" <<'PY' || fail "_read_worktree_reaper parse/degrade failed"
 import importlib.util, json, os, sys, time
@@ -4624,3 +4698,87 @@ ok "fleet-ops#4643: packet-layout determinism green on P14 path"
 # fleet-ops#4643: FleetPromptCacheHitLow alert + seat-caps TTL comment.
 bash "$here/fleet-prompt-cache-hit-alert.test.sh" || fail "fleet-prompt-cache-hit-alert tests failed"
 ok "fleet-ops#4643: fleet-prompt-cache-hit-alert green on P14 path"
+
+# =========================================================================
+# fleet-ops#5839: inotify budget family — LIVE /proc sample (no gh, no
+# prometheus, no systemd — pure /proc, always available even on CI), the
+# FleetInotifyWatchExhausted rule row, the sysctl drop-in and its MANIFEST
+# row. One scanning pass over /proc, so it stays cheap.
+# =========================================================================
+
+# (a) The exporter module exposes _inotify_usage and the family emits
+#     well-formed textfile lines with exactly ONE HELP/TYPE per name
+#     (fleet-ops#1844 class invariant), ints parse, the ratio matches
+#     usage/limit, and every top line carries pid + cmd labels.
+python3 - "$exporter" <<'PY' || fail "fleet-ops#5839 inotify family checks failed"
+import importlib.util
+import sys
+
+spec = importlib.util.spec_from_file_location("fme_inotify_5839", sys.argv[1])
+mod = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(mod)
+
+lines = [str(ln) for ln in mod._inotify_usage()]
+body = "\n".join(lines)
+names = [
+    "fleet_inotify_watch_usage",
+    "fleet_inotify_watch_limit",
+    "fleet_inotify_instance_usage",
+    "fleet_inotify_instance_limit",
+    "fleet_inotify_watch_usage_ratio",
+    "fleet_inotify_watch_top",
+]
+for n in names:
+    # fleet-ops#1844 class: exactly ONE # HELP and ONE # TYPE per metric name.
+    assert len([l for l in lines if l.startswith(f"# HELP {n} ")]) == 1, f"HELP {n}"
+    assert len([l for l in lines if l.startswith(f"# TYPE {n} ")]) == 1, f"TYPE {n}"
+
+
+def _row(name):
+    for l in lines:
+        if l.startswith(n + " "):
+            return float(l.split()
+                        [-1])
+    raise AssertionError(f"missing row {n}:\n{body}")
+
+
+usage = float(next(l for l in lines if l.startswith("fleet_inotify_watch_usage ")).split()[1])
+limit = float(next(l for l in lines if l.startswith("fleet_inotify_watch_limit ")).split()[1])
+instances = float(next(l for l in lines if l.startswith("fleet_inotify_instance_usage ")).split()[1])
+instance_limit = float(next(l for l in lines if l.startswith("fleet_inotify_instance_limit ")).split()[1])
+ratio = float(next(l for l in lines if l.startswith("fleet_inotify_watch_usage_ratio ")).split()[1])
+assert usage >= 0 and instances >= 0, body
+assert limit == float(open("/proc/sys/fs/inotify/max_user_watches").read().strip()), limit
+assert instance_limit == float(open("/proc/sys/fs/inotify/max_user_instances").read().strip()), instance_limit
+expected_ratio = round(usage / limit, 6) if limit > 0 else -1.0
+assert ratio == expected_ratio, (ratio, expected_ratio)
+
+top = [l for l in lines if l.startswith("fleet_inotify_watch_top{")]
+assert top, f"watch_top series must exist even with no holders:\n{body}"
+for t in top:
+    labels, val = t.rsplit(" ", 1)
+    assert 'pid="' in labels and 'cmd="' in labels, t
+    assert int(float(val)) >= 0, t
+assert sum(int(float(t.rsplit(" ", 1)[1])) for t in top) <= usage, "top watchers must not exceed the total"
+print("OK: inotify family lines well-formed; usage/limit/ratio/top all parse")
+PY
+ok "fleet-ops#5839: exporter emits the inotify budget family from a live /proc sample"
+
+# The warn-level threshold and the family names must line up between the
+# exporter and the rule row.
+grep -q 'FleetInotifyWatchExhausted' "$rules" \
+    || fail "fleet_rules.yml missing FleetInotifyWatchExhausted (fleet-ops#5839)"
+grep -q 'fleet_inotify_watch_usage_ratio > 0.9' "$rules" \
+    || fail "FleetInotifyWatchExhausted expr must key on fleet_inotify_watch_usage_ratio"
+[[ -f "$repo_root/etc/sysctl.d/90-fleet-inotify.conf" ]] \
+    || fail "sysctl drop-in missing: etc/sysctl.d/90-fleet-inotify.conf"
+grep -q 'fs.inotify.max_user_watches = 524288' "$repo_root/etc/sysctl.d/90-fleet-inotify.conf" \
+    || fail "sysctl drop-in must raise max_user_watches to 524288 (fleet-ops#5839)"
+grep -q 'fs.inotify.max_user_instances = 512' "$repo_root/etc/sysctl.d/90-fleet-inotify.conf" \
+    || fail "sysctl drop-in missing max_user_instances 512"
+grep -q 'etc/sysctl.d/90-fleet-inotify.conf /etc/sysctl.d/90-fleet-inotify.conf' "$manifest" \
+    || fail "MANIFEST missing etc/sysctl.d/90-fleet-inotify.conf row (fleet-ops#5839)"
+if command -v promtool >/dev/null 2>&1; then
+    promtool check rules "$rules" || fail "fleet_rules.yml does not parse with promtool"
+fi
+ok "fleet-ops#5839: FleetInotifyWatchExhausted rule row + sysctl drop-in + MANIFEST row green"

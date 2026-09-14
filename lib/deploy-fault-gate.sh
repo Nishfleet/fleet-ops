@@ -89,11 +89,16 @@ deploy_fault_is_issue() {
 
 # deploy_fault_fix_shas REPO NUM — resolve the issue's delivery merge SHAs
 # into DF_FIX_SHAS (newline-separated). Sources: merged PRs on the
-# claim/issue-<NUM> head branch (the worker delivery), then merged PRs whose
-# body carries an explicit Closes/Fixes/Resolves trailer for NUM. Empty
-# DF_FIX_SHAS = no resolvable delivery (or a gh blip — DF_CHECK_FAILED).
+# claim/issue-<NUM> head branch (the worker delivery), merged PRs whose
+# body carries an explicit Closes/Fixes/Resolves trailer for NUM, then
+# (fleet-ops#6814) merged PRs NAMED in the issue's own comments in
+# fix-language ("Duplicate of #X — fixed by #Y", "PR #N") — a judge-handoff
+# duplicate close delivers under ANOTHER issue's claim branch, so the first
+# two sources come up empty and the close would be unprovable even with a
+# green containing run on record. Empty DF_FIX_SHAS = no resolvable
+# delivery (or a gh blip — DF_CHECK_FAILED).
 deploy_fault_fix_shas() {
-    local repo="$1" num="$2" re prs out pbody psha
+    local repo="$1" num="$2" re prs out pbody psha comments crefs prow pstate
     DF_FIX_SHAS=""
     out=$(_df_gh pr list -R "$repo" --head "claim/issue-${num}" --state merged \
         --json mergeCommit 2>/dev/null) || DF_CHECK_FAILED=1
@@ -102,13 +107,80 @@ deploy_fault_fix_shas() {
     prs=$(_df_gh pr list -R "$repo" --state merged --limit 300 \
         --json body,mergeCommit 2>/dev/null) || DF_CHECK_FAILED=1
     re=$(printf "$DF_TRAILER_RE" "$num")
+    # jq @tsv escapes newlines/tabs/backslashes in the body as literal \n/\t/\\,
+    # so the char before a `Closes #N` on its own line becomes `n` (alphanumeric)
+    # and the regex anchor `(^|[^0-9A-Za-z])` never matches under `printf '%s'`.
+    # `printf '%b'` unescapes them back to real control chars before grep, so a
+    # multi-line trailer is legible (0509#3438, fleet-ops#5785).
     while IFS=$'\t' read -r pbody psha; do
         [ -n "$psha" ] || continue
-        if printf '%s' "$pbody" | grep -Eiq "$re"; then
+        if printf '%b' "$pbody" | grep -Eiq "$re"; then
             DF_FIX_SHAS="${DF_FIX_SHAS}${DF_FIX_SHAS:+$'\n'}${psha}"
         fi
     done < <(printf '%s' "${prs:-[]}" \
         | jq -r '.[] | [(.body // ""), (.mergeCommit.oid // "")] | @tsv' 2>/dev/null)
+    # fleet-ops#6814: third source — delivery refs named in the issue's own
+    # comments, resolved as MERGED PRs. A ref that is not a merged PR (the
+    # duplicated issue's number, an open PR) is skipped, not a check
+    # failure; a comments FETCH blip is one (DF_CHECK_FAILED — callers must
+    # not act on rc 2). Capped at 10 refs to bound the gh cost.
+    comments=$(_df_gh issue view "$num" -R "$repo" --json comments 2>/dev/null) \
+        || { DF_CHECK_FAILED=1; return 0; }
+    crefs=$(printf '%s' "$comments" \
+        | jq -r '.comments[]?.body // empty' 2>/dev/null \
+        | grep -Eio '(fixed|delivered|merged)[[:space:]]+(by|in|as|via)[[:space:]]+#[0-9]+|(duplicate|dupe)[[:space:]]+of[[:space:]]+#[0-9]+|PR[[:space:]]+#[0-9]+' \
+        | grep -Eo '[0-9]+' | sort -un | head -10) || crefs=""
+    while IFS= read -r cref; do
+        [ -n "$cref" ] || continue
+        prow=$(_df_gh pr view "$cref" -R "$repo" --json state,mergeCommit 2>/dev/null) \
+            || continue
+        pstate=$(printf '%s' "$prow" | jq -r '.state // ""')
+        psha=$(printf '%s' "$prow" | jq -r '.mergeCommit.oid // ""')
+        [ "$pstate" = "MERGED" ] && [ -n "$psha" ] || continue
+        DF_FIX_SHAS="${DF_FIX_SHAS}${DF_FIX_SHAS:+$'\n'}${psha}"
+    done <<< "$crefs"
+    _deploy_fault_remap_stranded "$repo"
+    return 0
+}
+
+# _deploy_fault_stranded_map REPO — path of the stranded-merge overlay for
+# REPO. DEPLOY_FAULT_STRANDED_MERGES env wins (tests); else the config/
+# sibling of this lib in its source tree (working copy and deploy-clone
+# layouts); else the MANIFEST-installed flat copy under ~/.local/state/pi-packet/.
+_deploy_fault_stranded_map() {
+    local repo="$1" here="${BASH_SOURCE[0]:-}" cand
+    if [ -n "${DEPLOY_FAULT_STRANDED_MERGES:-}" ]; then
+        printf '%s' "$DEPLOY_FAULT_STRANDED_MERGES"
+        return 0
+    fi
+    if [ -n "$here" ] && [ "$here" != "deploy-fault-gate.sh" ]; then
+        cand="$(dirname "$here")/../config/deploy-fault-stranded-merges.json"
+        [ -f "$cand" ] && { printf '%s' "$cand"; return 0; }
+    fi
+    printf '%s' "${HOME}/.local/state/pi-packet/deploy-fault-stranded-merges.json"
+}
+
+# _deploy_fault_remap_stranded REPO — redirect recorded merge SHAs that a
+# main-history rewrite stranded off the repo, via the stranded-merges map.
+# Live case (2026-09-11, PRs #2838–#2949): a force-push rebuilt main with
+# recreated commits, so GitHub's recorded PR mergeCommit.oid values point at
+# commits no longer reachable from any deploy run; `gh api compare` reports
+# "diverged" forever and the containment proof can never pass — every legal
+# close of an issue delivered by such a PR was reopened each tick (live
+# 0509#2944 + #3460, 2026-09-14). The map names the on-main replacement
+# (same content, rebuilt SHA) per stranded recorded merge. Missing map, or
+# a sha absent from it: unchanged.
+_deploy_fault_remap_stranded() {
+    local repo="$1" short="${repo##*/}" smap mapped out=""
+    [ -n "$DF_FIX_SHAS" ] || return 0
+    smap=$(_deploy_fault_stranded_map "$repo")
+    [ -n "$smap" ] && [ -f "$smap" ] || return 0
+    while IFS= read -r f; do
+        [ -n "$f" ] || continue
+        mapped=$(jq -r --arg r "$short" --arg s "$f" '.[$r][$s] // empty' "$smap" 2>/dev/null)
+        out="${out}${out:+$'\n'}${mapped:-$f}"
+    done <<< "$DF_FIX_SHAS"
+    DF_FIX_SHAS="$out"
     return 0
 }
 

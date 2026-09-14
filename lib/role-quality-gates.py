@@ -45,6 +45,10 @@ NON_ROLE_UNIT_PREFIXES = (
     # of-class lines, deletes ledger-terminated packets). Runs no model,
     # owns no prompt, produces no work items — plumbing, not a role.
     "escalation-drain",
+    # fleet-ops#5854: escalation-organ-watch is the deterministic organ-death
+    # watcher for the escalation organs (5-min timer, no model, owns no
+    # prompt, produces no work items — plumbing, same class as escalation-drain).
+    "escalation-organ-watch",
     "intake-reconcile",
     "fleet-restore",
     "fleet-resilience",
