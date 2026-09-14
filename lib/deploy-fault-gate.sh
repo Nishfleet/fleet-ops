@@ -11,13 +11,15 @@
 #
 # PROOF: a green (conclusion=success) run of the repo's production-deploy
 # workflow whose head SHA CONTAINS the fix — i.e. the merge commit of the
-# issue's delivery PR (claim/issue-<N> head branch or an explicit
-# Closes/Fixes/Resolves trailer) is an ancestor of, or equal to, the run's
-# headSha. When no delivery SHA is resolvable (human close, no merged PR),
-# a green run created at-or-after the issue's closedAt is the fallback
-# evidence. Proof may come from a run URL cited in the issue's comments or
-# from the workflow run list itself: what makes a close legal is the green
-# run existing, not the comment's formatting.
+# issue's delivery PR (claim/issue-<N> head branch, an explicit
+# Closes/Fixes/Resolves trailer, or a delivery PR named in the issue's own
+# comments — "Duplicate of #X — fixed by #Y", "PR #Y"; fleet-ops#6814) is an
+# ancestor of, or equal to, the run's headSha. When no delivery SHA is
+# resolvable (human close, no merged PR), a green run created at-or-after
+# the issue's closedAt is the fallback evidence. Proof may come from a run
+# URL cited in the issue's comments or from the workflow run list itself:
+# what makes a close legal is the green run existing, not the comment's
+# formatting.
 #
 # Failure discipline: the gh calls below are evidence fetches. A fetch
 # failure while proof is still absent is NOT "no proof" — it is "cannot
@@ -44,15 +46,40 @@ DF_ISSUE_NR_RE='(^|[^0-9A-Za-z])([A-Za-z0-9_.-]+(/[A-Za-z0-9_.-]+)?)?#%s([^0-9A-
 # repo-prefixed issue reference.
 DF_TRAILER_RE='(^|[^0-9A-Za-z])(Clos(es?|ed)|Fix(es|ed)?|Resolv(es?|ed))[[:space:]]+([A-Za-z0-9_.-]+(/[A-Za-z0-9_.-]+)?)?#%s([^0-9A-Za-z]|$)'
 
+# Comment delivery refs (fleet-ops#6814): a duplicate/handoff close names
+# the delivery PR in its own comment — "fixed by #Y", "delivered in #Y",
+# "merged via #Y", "PR #Y". The ref must follow a delivery word directly,
+# so an unrelated "#X" in the same comment (e.g. "Duplicate of #X") is not
+# picked up.
+DF_COMMENT_REF_RE='(^|[^A-Za-z])(fix(ed|es)?[[:space:]-]*(by|in)|deliver(ed|y)?[[:space:]-]*(by|in|via)|merg(e|ed|ing)[[:space:]-]*(in|via|by)|PR)[[:space:]:]*#[0-9]+'
+
 # Marker every gate/reopen comment carries. Dedup + audit anchor.
 DEPLOY_FAULT_MARKER="deploy-fault-gate (fleet-ops#5785)"
 
 DF_FIX_SHAS=""
 DF_PROOF_URL=""
 DF_CHECK_FAILED=0
+DF_COMMENTS=""
+DF_COMMENTS_KEY=""
 
 _df_gh() {
     "${GH:-gh}" "$@"
+}
+
+# _deploy_fault_issue_comments REPO NUM — the issue's comments JSON, fetched
+# once per repo#num: deploy_fault_fix_shas scans comments for delivery refs
+# and deploy_fault_comment_proof scans the same payload for run URLs, so one
+# fetch serves both within a deploy_fault_has_proof call. A fetch failure is
+# "cannot check", not "no comments" — DF_CHECK_FAILED=1, rc 1, cache left
+# unset so the next call retries.
+_deploy_fault_issue_comments() {
+    local repo="$1" num="$2" key="${repo}#${num}"
+    if [ "$DF_COMMENTS_KEY" != "$key" ]; then
+        DF_COMMENTS=$(_df_gh issue view "$num" -R "$repo" --json comments 2>/dev/null) \
+            || { DF_CHECK_FAILED=1; DF_COMMENTS=""; DF_COMMENTS_KEY=""; return 1; }
+        DF_COMMENTS_KEY="$key"
+    fi
+    printf '%s' "$DF_COMMENTS"
 }
 
 # deploy_fault_workflow REPO — production-deploy workflow name for REPO
@@ -89,11 +116,12 @@ deploy_fault_is_issue() {
 
 # deploy_fault_fix_shas REPO NUM — resolve the issue's delivery merge SHAs
 # into DF_FIX_SHAS (newline-separated). Sources: merged PRs on the
-# claim/issue-<NUM> head branch (the worker delivery), then merged PRs whose
-# body carries an explicit Closes/Fixes/Resolves trailer for NUM. Empty
+# claim/issue-<NUM> head branch (the worker delivery), merged PRs whose
+# body carries an explicit Closes/Fixes/Resolves trailer for NUM, then
+# merged PRs named as the delivery in the issue's own comments. Empty
 # DF_FIX_SHAS = no resolvable delivery (or a gh blip — DF_CHECK_FAILED).
 deploy_fault_fix_shas() {
-    local repo="$1" num="$2" re prs out pbody psha
+    local repo="$1" num="$2" re prs out pbody psha comments prj ref
     DF_FIX_SHAS=""
     out=$(_df_gh pr list -R "$repo" --head "claim/issue-${num}" --state merged \
         --json mergeCommit 2>/dev/null) || DF_CHECK_FAILED=1
@@ -114,6 +142,31 @@ deploy_fault_fix_shas() {
         fi
     done < <(printf '%s' "${prs:-[]}" \
         | jq -r '.[] | [(.body // ""), (.mergeCommit.oid // "")] | @tsv' 2>/dev/null)
+    # fleet-ops#6814: a judge-handoff duplicate close delivers the fix under
+    # the CANONICAL issue's claim branch and closes only that issue — this
+    # issue's own delivery is then unresolvable above (live 0509#3412/#3413
+    # false-reopened; delivery rode claim/issue-3409 via PR #3420 whose body
+    # says "Closes #3409"). The close comment names it instead: "Duplicate
+    # of #X — fixed by #Y (merged)". Scan the issue's comments for
+    # delivery-named refs and resolve each merged PR's mergeCommit.
+    # Best-effort: capped at 10 refs; a ref that is not a PR (an issue
+    # number) fails `gh pr view` and is skipped; a comments-fetch blip is
+    # DF_CHECK_FAILED via the shared comments cache, not a silent miss.
+    if comments=$(_deploy_fault_issue_comments "$repo" "$num"); then
+        while IFS= read -r ref; do
+            [ -n "$ref" ] || continue
+            prj=$(_df_gh pr view "$ref" -R "$repo" \
+                --json state,mergeCommit 2>/dev/null) || continue
+            [ "$(printf '%s' "$prj" | jq -r '.state // ""' 2>/dev/null)" = "MERGED" ] \
+                || continue
+            psha=$(printf '%s' "$prj" | jq -r '.mergeCommit.oid // ""' 2>/dev/null)
+            [ -n "$psha" ] || continue
+            DF_FIX_SHAS="${DF_FIX_SHAS}${DF_FIX_SHAS:+$'\n'}${psha}"
+        done < <(printf '%s' "$comments" \
+            | jq -r '.comments[]?.body // empty' 2>/dev/null \
+            | grep -Eio "$DF_COMMENT_REF_RE" \
+            | grep -Eo '[0-9]+$' | awk '!seen[$0]++' | head -n 10)
+    fi
     _deploy_fault_remap_stranded "$repo"
     return 0
 }
@@ -201,8 +254,7 @@ deploy_fault_comment_proof() {
     local repo="$1" num="$2" fix_shas="$3" since="$4" wf comments ids id row
     local conc wname sha created url
     wf=$(deploy_fault_workflow "$repo")
-    comments=$(_df_gh issue view "$num" -R "$repo" --json comments 2>/dev/null) \
-        || { DF_CHECK_FAILED=1; return 1; }
+    comments=$(_deploy_fault_issue_comments "$repo" "$num") || return 1
     ids=$(printf '%s' "$comments" \
         | jq -r '.comments[]?.body // empty' 2>/dev/null \
         | grep -Eo 'actions/runs/[0-9]+' | grep -Eo '[0-9]+$' | sort -u)
