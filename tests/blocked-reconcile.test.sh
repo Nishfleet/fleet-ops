@@ -878,6 +878,18 @@ got=$(epy '{"repo":"Nishfleet/0509","number":50,"title":"x","body":"blocked-on: 
 [[ "$(printf '%s' "$got" | jq -r '.kind')" == "orchestrator-attest" ]] || fail "attest pin kind: $got"
 ok "a blocker body containing gate-integrity-attest never yields kind=nish-decision"
 
+# fleet-ops#6835: the #5870 handoff template phrase "attest-requested:
+# <40-hex head sha>" appears in issue accept-criteria as worker instruction,
+# not as a blocker. It must NOT classify as orchestrator-attest (which would
+# re-park needs-orchestrator every tick — the FleetNeedsOrchestratorStale
+# bounce loop). Real attest blockers name an admin/authority explicitly.
+tpl1=$(epy '{"repo":"Nishfleet/0509","number":3389,"title":"x","body":"4. If a gate-owned path must be edited: post attest-requested: <40-hex head sha> and STOP — the orchestrator attests (fleet-ops#5870, different identity, never blocked-on: nish-decision).\n","comments":[]}')
+[[ "$(printf '%s' "$tpl1" | jq -r '.kind')" != "orchestrator-attest" ]] || fail "template attest-requested must not be orchestrator-attest: $tpl1"
+[[ "$(printf '%s' "$tpl1" | jq -r '.attest')" == "false" ]] || fail "template attest-requested must not set attest=true: $tpl1"
+tpl2=$(epy '{"repo":"Nishfleet/0509","number":3406,"title":"x","body":"5. Gate-integrity: follow the #5870 handoff: post attest-requested: <40-hex head sha> on the PR and stop — attesting is the orchestrator job; do not park as blocked-on: nish-decision.\n","comments":[]}')
+[[ "$(printf '%s' "$tpl2" | jq -r '.kind')" != "orchestrator-attest" ]] || fail "template attest-requested (variant) must not be orchestrator-attest: $tpl2"
+ok "instructional attest-requested template does not classify as orchestrator-attest (fleet-ops#6835)"
+
 # Clean up the helper so later cases do not see it.
 unset -f epy
 
