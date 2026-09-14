@@ -886,7 +886,16 @@ if (( rc != 0 )) && (( ! spawn_fail_triggered )); then
     elif is_credentials_error "$out_for_scan" "$err_for_scan"; then
         seat_log "pi-issue-run: $inst CREDENTIALS 401 on $np/$nm (rc=$rc) — credentials wall; proxy cooldown owns the skip (fleet-ops#4640)"
     elif is_quota_cap_error "$out_for_scan" "$err_for_scan"; then
-        seat_log "pi-issue-run: $inst QUOTA/CAP WALL on $np/$nm (rc=$rc) — proxy cooldown owns the skip until the reset window"
+        seat_log "pi-issue-run: $inst QUOTA/CAP WALL on $np/$nm (rc=$rc) — benching seat for its reset window"
+        # fleet-ops#6652: mark_seat_quota_bench is a REAL writer again (402
+        # money-wall ledger + clobber-proof spawn-bench marker); it survived
+        # the #6032 stub purge because a budget wall is NOT proxy-cooldown
+        # business — the proxy just routes to the next 402 provider.
+        if mark_seat_quota_bench "$np" "$nm" "$out_for_scan"$'\n'"$err_for_scan"; then
+            seat_log "pi-issue-run: $inst seat $np/$nm quota-benched; next systemd Restart skips it via usable_at"
+        else
+            seat_log "pi-issue-run: $inst WARN: quota-bench marker NOT written for $np/$nm — relying on reactive ledger + systemd Restart"
+        fi
     fi
 fi
 

@@ -101,6 +101,13 @@ mark_seat_spawn_fail() {
   [ -n "${STOP_ESCALATION_TEST_BENCH_FILE:-}" ] || return 0
   printf '%s/%s\n' "$p" "$m" >> "$STOP_ESCALATION_TEST_BENCH_FILE"
 }
+# fleet-ops#6652's real money-wall bench — the one named per-class writer
+# that survived the #6032 stub purge. Same bench-file seam as spawn-fail.
+mark_seat_quota_bench() {
+  local p="$1" m="$2"
+  [ -n "${STOP_ESCALATION_TEST_BENCH_FILE:-}" ] || return 0
+  printf '%s/%s\n' "$p" "$m" >> "$STOP_ESCALATION_TEST_BENCH_FILE"
+}
 # Mirror the real seatlib detectors (fleet-ops#623): "insufficient funds" is
 # NOT a quota_cap match in production either, so a 402 falls through to
 # mark_seat_spawn_fail — that is the live tight-loop path this fix targets.

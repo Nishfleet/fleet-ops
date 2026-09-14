@@ -283,17 +283,22 @@ if (( rc != 0 )) && (( spawn_elapsed_s < SPAWN_FAIL_MAX_S )); then
     fi
 fi
 
-# --- fleet-ops#90: quota/cap wall -------------------------------------------
-# A hard-capped seat (ClinePass weekly cap, devin 15-min 429) is a walled
-# seat, not a transient retry. The LiteLLM proxy's own cooldown owns the
-# cross-run skip (fleet-ops#6032: the local bench-marker writer was a
-# log-only stub). Skipped when the spawn-fail path already handled this exit.
+# --- fleet-ops#90: quota/cap wall bench -------------------------------------
+# A hard-capped seat (ClinePass weekly cap, devin 15-min 429, a provider 402
+# budget wall) is a walled seat, not a transient retry. Bench it until its
+# advertised reset window (or the provider default) so the next Restart's
+# pick-seat skips it instead of burning a StartLimitBurst attempt on a
+# guaranteed failure — mark_seat_quota_bench is a real writer again
+# (fleet-ops#6652 money-wall ledger + spawn-bench marker). Skipped when the
+# spawn-fail path already handled this exit.
 if (( rc != 0 )) && (( ! spawn_fail_triggered )); then
     out_for_scan=""; err_for_scan=""
     [[ -f "$out" ]] && out_for_scan=$(cat "$out" 2>/dev/null || true)
     [[ -f "$err" ]] && err_for_scan=$(cat "$err" 2>/dev/null || true)
     if is_quota_cap_error "$out_for_scan" "$err_for_scan"; then
-        seat_log "agent-cron-run: $slug QUOTA/CAP WALL on $np/$nm (rc=$rc) — proxy cooldown owns the skip"
+        seat_log "agent-cron-run: $slug QUOTA/CAP WALL on $np/$nm (rc=$rc) — benching seat for its reset window"
+        mark_seat_quota_bench "$np" "$nm" "$out_for_scan"$'\n'"$err_for_scan" \
+            || seat_log "agent-cron-run: $slug WARN: quota-bench marker NOT written for $np/$nm (no window and no provider default)"
     fi
 fi
 
