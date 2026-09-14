@@ -37,6 +37,17 @@ PACKET_DIR = Path(os.environ.get(
 ))
 LOG = PACKET_DIR / "actions.log"
 
+# fleet-ops#6642: the append-only terminal ledger the retired
+# fleet-completion-canary used to write when a chain reached green /
+# detector-red / escalated. Since #4146 the drain is the only writer and
+# only for escalations — a resolved-notification terminal recorded in the
+# resolved branch below is what lets a repaired alert's packet drain
+# instead of ageing into a stuck burst.
+TERMINATED_LEDGER = Path(os.environ.get(
+    "ALERT_REPAIR_TERMINATED_LEDGER",
+    str(PACKET_DIR / "chains.terminated.jsonl"),
+))
+
 # Class-park awareness (auditor 2026-08-31T11:1xZ, fleet-ops#2495 follow-up).
 # fleet-completion-canary writes `decision_class_until` into per-alert
 # state files under fleet-completion-canary/open/<alertname>.json when it
@@ -1236,6 +1247,105 @@ def _deliverable_satisfied(labels, gh_budget):
         return ""
 
 
+def _iso_z(ts):
+    """Normalize a timestamp to %Y-%m-%dT%H:%M:%SZ; '' when absent or
+    unparseable (callers fall back to utcnow). Production AMX env vars are
+    Unix epoch integers (`ends_at: 0` in firing packets); ISO 8601 is also
+    accepted. An epoch of 0 means "not ended" — treated as absent."""
+    if not ts:
+        return ""
+    s = str(ts).strip()
+    try:
+        if s.isdigit():
+            epoch = int(s)
+            if epoch <= 0:
+                return ""
+            return datetime.fromtimestamp(
+                epoch, tz=timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        return datetime.fromisoformat(s.replace("Z", "+00:00")) \
+            .astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    except (ValueError, OverflowError, OSError):
+        return ""
+
+
+def _record_resolved_terminals(alertnames, receiver):
+    """Append one terminal record per resolved alertname that has a live
+    webhook packet.
+
+    fleet-ops#6642: the retired completion-canary was the ledger's only
+    producer for non-escalated chains; since #4146 nothing writes
+    chains.terminated.jsonl when a repair succeeds, so EVERY packet —
+    fixed or not — ages past STUCK_AGE_S and the drain escalates bursts
+    of already-resolved chains (5 of the 8 packets escalated under #6642
+    carry RESOLVED repair lines in actions.log — FleetPiSeatUnhealthy,
+    DetachedJobDied, FleetDeployFaultClosedWithoutGreen x2,
+    FleetUndersaturated). The AMX resolved
+    notification IS the chain's terminal: a firing alert that resolved
+    ended its dispatch cycle. Record it here on the existing webhook
+    rail; the drain's consumed-rule (alertname + end_ts >= packet
+    dispatch instant) then drains the packet on the next hourly run.
+
+    Gated on a live packet for that alertname so resolutions for alerts
+    nothing dispatched never grow the ledger. Fail-open end to end: a
+    ledger error must not break the resolved path or the slowburn close.
+    """
+    end_by_name = {}
+    for i in range(1, 65):
+        n = os.environ.get(f"AMX_ALERT_{i}_LABEL_alertname")
+        if n and n not in end_by_name:
+            end_by_name[n] = _iso_z(os.environ.get(f"AMX_ALERT_{i}_END", ""))
+
+    # alertname -> oldest live packet dispatch instant (same filename
+    # grammar + ISO conversion as the drain's own packet scan).
+    pkt_re = re.compile(r"^packet-([A-Za-z0-9_]+)-(\d{8}T(?:\d{6}|\d{4}))Z\.md$")
+    oldest = {}
+    try:
+        packets = sorted(PACKET_DIR.glob("packet-*.md"))
+    except OSError:
+        packets = []
+    for p in packets:
+        m = pkt_re.match(p.name)
+        if not m:
+            continue
+        ts = m.group(2)
+        if len(ts) == 13:
+            ts += "00"
+        iso = f"{ts[0:4]}-{ts[4:6]}-{ts[6:8]}T{ts[9:11]}:{ts[11:13]}:{ts[13:15]}Z"
+        if m.group(1) not in oldest or iso < oldest[m.group(1)]:
+            oldest[m.group(1)] = iso
+
+    for name in alertnames:
+        start_iso = oldest.get(name)
+        if not start_iso:
+            continue
+        end_iso = end_by_name.get(name) or utcnow()
+        try:
+            started = int(datetime.strptime(
+                start_iso, "%Y-%m-%dT%H:%M:%SZ").replace(
+                    tzinfo=timezone.utc).timestamp())
+            ended = int(datetime.strptime(
+                end_iso, "%Y-%m-%dT%H:%M:%SZ").replace(
+                    tzinfo=timezone.utc).timestamp())
+            cycle = max(0, ended - started)
+        except (ValueError, OverflowError):
+            cycle = 0
+        rec = {"alertname": name, "cycle_seconds": cycle,
+               "end_ts": end_iso, "start_ts": start_iso,
+               "terminal": "resolved", "unit": "alert-repair-dispatch"}
+        try:
+            with TERMINATED_LEDGER.open("a") as lf:
+                lf.write(json.dumps(rec, sort_keys=True) + "\n")
+        except OSError as e:
+            with LOG.open("a") as f:
+                f.write(f"[{utcnow()}] WARN terminal ledger write failed "
+                        f"alertname={name} err={e}\n")
+            continue
+        with LOG.open("a") as f:
+            f.write(f"[{utcnow()}] TERMINAL alertname={name} "
+                    f"terminal=resolved end_ts={end_iso} "
+                    f"receiver={receiver}\n")
+
+
 def main():
     # --print-seat (no AMX env): emit a single "<provider>\t<model>\t<reason>"
     # line on stdout and exit 0. Used by fleet-completion-canary when it
@@ -1286,6 +1396,7 @@ def main():
     if status == "resolved":
         with LOG.open("a") as f:
             f.write(f"[{utcnow()}] SKIP resolved notification receiver={receiver}\n")
+        _record_resolved_terminals(alertnames, receiver)
         # fleet-ops#5272 observe-to-close: when the resolved group includes
         # the slow burn, close the auto-filed terminus — an open critical-path
         # terminus after the burn cleared is reclaim-bait and would swallow

@@ -829,3 +829,127 @@ closed_lines=$(grep -c '\] CLOSED alertname=' "$PACKET_DIR/actions.log" || true)
 ok "(q) failed gh issue close: WARN, no CLOSED line, dispatch exit 0"
 
 echo "OK: fleet-ops#5272 slowburn observe-to-close pass"
+
+# ============================================================================
+# fleet-ops#6642: a resolved notification IS the chain's terminal.
+# The retired completion-canary was the only producer of
+# chains.terminated.jsonl records for non-escalated chains; since it went
+# away every repaired alert's packet still aged into a stuck burst. The
+# dispatcher's resolved branch now appends terminal=resolved records for
+# resolved alertnames that have a live webhook packet — the drain's
+# consumed-rule (alertname + end_ts >= packet dispatch instant) then
+# drains the packet on the next hourly run.
+# Proves:
+#   (r) resolved alert + live packet -> exactly one ledger record with the
+#       drain-consumable shape (alertname, start_ts=packet instant,
+#       end_ts=AMX_ALERT_<i>_END epoch normalized to ISO, terminal=resolved,
+#       unit=alert-repair-dispatch), a TERMINAL actions.log line, and the
+#       packet left in place (the drain owns deletion).
+#   (s) resolved alert with NO live packet -> no ledger record (resolutions
+#       for alerts nothing dispatched must not grow the ledger).
+#   (t) a firing notification never writes the ledger.
+#   (u) AMX end of "0" (epoch zero = "not ended") -> end_ts falls back to
+#       now, still >= the packet instant so the drain consumes it.
+#   (v) ISO-8601 end is normalized identically.
+# ============================================================================
+
+ledger="$PACKET_DIR/chains.terminated.jsonl"
+
+fire_resolved_end() {
+    # fire_resolved_end <alertname> <AMX_ALERT_1_END>
+    AMX_ALERT_1_LABEL_alertname="${1:-$slowburn}" \
+    AMX_ALERT_1_LABEL_severity="warning" \
+    AMX_ALERT_1_LABEL_service="fleet" \
+    AMX_ALERT_1_END="${2:-}" \
+    AMX_STATUS="resolved" \
+    AMX_RECEIVER="test-receiver" \
+    PATH="$mock_bin2:$mock_bin:$PATH" \
+    HOME="$scratch" \
+    FLEET_ISSUE_FILE="$mock_bin2/fleet-issue-file" \
+    GH="$sb_gh" \
+    FLEET_SLOWBURN_REPO="Nishfleet/fleet-ops" \
+    FLEET_SLOWBURN_SIGNAL="slo/seat-availability-slowburn" \
+    "$dispatch_bin" \
+        >"$scratch/sb.out" 2>"$scratch/sb.err"
+}
+
+# --- (r) resolved alert + live packet -> terminal record ------------------
+reset_log
+set_gh_issues "[]"
+rm -f "$ledger"
+printf '# packet\n' >"$PACKET_DIR/packet-FleetMainRed-20260825T230000Z.md"
+end_epoch=$(date -u -d "2026-08-25T23:30:00Z" +%s)
+rc=0; fire_resolved_end "FleetMainRed" "$end_epoch" || rc=$?
+[[ "$rc" == 0 ]] \
+    || fail "(r) resolved dispatch must exit 0, got rc=$rc (stderr: $(cat "$scratch/sb.err"))"
+[[ -f "$ledger" ]] || fail "(r) ledger not created at $ledger"
+rec_count=$(jq -c 'select(.alertname=="FleetMainRed")' "$ledger" | wc -l)
+[[ "$rec_count" == "1" ]] \
+    || fail "(r) expected exactly 1 FleetMainRed record, got $rec_count: $(cat "$ledger")"
+jq -e 'select(.alertname=="FleetMainRed")
+       | .terminal == "resolved"
+         and .unit == "alert-repair-dispatch"
+         and .start_ts == "2026-08-25T23:00:00Z"
+         and .end_ts == "2026-08-25T23:30:00Z"
+         and .cycle_seconds == 1800' "$ledger" >/dev/null \
+    || fail "(r) record shape wrong (need start=packet ts, end=AMX end epoch normalized, cycle=1800): $(cat "$ledger")"
+grep -q 'TERMINAL alertname=FleetMainRed .*terminal=resolved' "$PACKET_DIR/actions.log" \
+    || fail "(r) actions.log must carry the TERMINAL line: $(cat "$PACKET_DIR/actions.log")"
+[[ -f "$PACKET_DIR/packet-FleetMainRed-20260825T230000Z.md" ]] \
+    || fail "(r) the packet must stay in place — the drain owns deletion"
+ok "(r) resolved + live packet -> one terminal record (epoch end normalized, drain-consumable)"
+
+# --- (s) resolved alert with no live packet -> no record ------------------
+reset_log
+set_gh_issues "[]"
+rm -f "$ledger"
+rc=0; fire_resolved_end "DetachedJobDied" "$end_epoch" || rc=$?
+[[ "$rc" == 0 ]] \
+    || fail "(s) resolved dispatch must exit 0, got rc=$rc (stderr: $(cat "$scratch/sb.err"))"
+rec_count=0
+[[ -f "$ledger" ]] && rec_count=$(wc -l <"$ledger")
+[[ "$rec_count" == "0" ]] \
+    || fail "(s) a resolve with no live packet must not write the ledger: $(cat "$ledger" 2>/dev/null)"
+ok "(s) resolved alert with no live packet: ledger untouched"
+
+# --- (t) firing status never writes the ledger ----------------------------
+reset_log
+rm -f "$ledger"
+AMX_ALERT_1_LABEL_alertname="$name" \
+AMX_ALERT_1_LABEL_severity="warning" \
+AMX_ALERT_1_LABEL_service="fleet" \
+AMX_LABEL_repo="fleet-ops" \
+AMX_STATUS="firing" \
+AMX_RECEIVER="test-receiver" \
+PATH="$mock_bin:$PATH" \
+HOME="$scratch" \
+"$dispatch_bin" >"$scratch/t.out" 2>"$scratch/t.err"
+[[ -f "$ledger" ]] && fail "(t) a firing notification must not write the ledger"
+ok "(t) firing status: no ledger write"
+
+# --- (u) epoch-zero end falls back to now ---------------------------------
+reset_log
+rm -f "$ledger"
+printf '# packet\n' >"$PACKET_DIR/packet-FleetMainRed-20260825T230000Z.md"
+rc=0; fire_resolved_end "FleetMainRed" "0" || rc=$?
+[[ "$rc" == 0 ]] \
+    || fail "(u) resolved dispatch must exit 0, got rc=$rc (stderr: $(cat "$scratch/sb.err"))"
+[[ -f "$ledger" ]] || fail "(u) ledger not created"
+jq -e 'select(.alertname=="FleetMainRed")
+       | .terminal == "resolved"
+         and .end_ts >= "2026-08-25T23:00:00Z"' "$ledger" >/dev/null \
+    || fail "(u) epoch-zero end must fall back to now (>= packet instant): $(cat "$ledger")"
+ok "(u) AMX end '0' (not-ended) -> end_ts falls back to now, drain-consumable"
+
+# --- (v) ISO-8601 end normalizes identically -------------------------------
+reset_log
+rm -f "$ledger"
+rc=0; fire_resolved_end "FleetMainRed" "2026-08-25T23:45:00Z" || rc=$?
+[[ "$rc" == 0 ]] \
+    || fail "(v) resolved dispatch must exit 0, got rc=$rc (stderr: $(cat "$scratch/sb.err"))"
+jq -e 'select(.alertname=="FleetMainRed") | .end_ts == "2026-08-25T23:45:00Z"' \
+    "$ledger" >/dev/null \
+    || fail "(v) ISO end must pass through normalized: $(cat "$ledger")"
+ok "(v) ISO-8601 AMX end normalized to the ledger shape"
+
+echo "OK: fleet-ops#6642 resolved-notification terminal records pass"

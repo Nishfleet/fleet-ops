@@ -174,6 +174,17 @@ export FAKE_DIR="$scratch"
 export CLAIM_RECONCILE_REPOS="Nishfleet/fleet-ops"
 export CLAIM_RECONCILE_LOCKDIR="$scratch/lock"
 export CLAIM_RECONCILE_NOW="2026-08-26T00:00:00Z"
+# fleet-ops#6642 ghost-claim pass seams — keep the whole file hermetic:
+# first-seen markers and the alert-scope allowlist must never touch the
+# live state dir or the real fleet_rules.yml.
+export CLAIM_RECONCILE_GHOST_SEEN_DIR="$scratch/ghost-seen"
+export CLAIM_RECONCILE_RULES_YML="$scratch/fleet_rules.yml"
+cat >"$CLAIM_RECONCILE_RULES_YML" <<'YML'
+rules:
+  - alert: FleetMainRed
+  - alert: DeployBlockedStuck
+  - alert: DetachedJobDied
+YML
 
 REPO="Nishfleet/fleet-ops"
 mkdir -p "$scratch/api/$REPO/git/refs/heads/claim" "$scratch/issues/$REPO" "$scratch/prs/$REPO"
@@ -400,6 +411,147 @@ out=$("$bin" 2>"$scratch/err.log")
 [ ! -f "$ALERT_STATE_DIR/fleet-ops-fleet-main-red.json" ] \
     || fail "A5: orphaned state file not cleaned up"
 ok "A5: state file for an already-gone claim is cleaned up"
+
+# --- fleet-ops#6642 ghost alert-repair claims ----------------------------
+# alert-repair-claim pushes claim/<scope>-<repo> FIRST and writes the
+# ALERT_STATE_DIR state file SECOND; a kill between the two (or a corrupt
+# zero-byte state file) leaves a remote mutex the state pass never sees —
+# every future dispatch of that (alert, repo) exits skipped-claimed and its
+# packets age into stuck-packet bursts. The ghost pass reaps an
+# alert-scoped claim branch with no valid state file, no live alert-repair
+# worker and no open PR — after a one-tick first-seen grace.
+#
+#   G1: alert-scoped claim, no state file, no worker, no PR -> first tick
+#       marks (ghost_seen, no delete), second tick reaps branch + marker.
+#   G2: non-alert scope (claim/fix-... ) -> never touched, no marker.
+#   G3: ghost + live alert-repair worker -> held, no marker written.
+#   G4: ghost + open PR head -> held, no marker written.
+#   G5: alert-scoped branch WITH a valid fresh state file -> registered by
+#       the state pass, ghost pass skips it, no marker.
+#   G6: zero-byte/corrupt state file -> not registered, ghost path marks
+#       then reaps AND removes the corrupt state file.
+#   G7: missing rules file -> alert_scope empty -> fail-closed, ghost
+#       branch never touched across two ticks.
+#   G8: marker GC — a stale first-seen marker whose branch vanished is
+#       removed so a future claim starts a fresh grace.
+
+# --- G1: ghost claim marked on first tick, reaped on second --------------
+reset_logs
+rm -f "$scratch/live/alert-repair-*" "$ALERT_STATE_DIR"/*.json
+mark_alert_branch "claim/detached-job-died-fleet-ops"
+write_branches '[{"name":"claim/detached-job-died-fleet-ops"}]'
+out=$("$bin" 2>"$scratch/err.log")
+! deleted_branch "claim/detached-job-died-fleet-ops" \
+    || fail "G1: first-seen ghost must NOT be deleted on the marking tick"
+[[ -f "$CLAIM_RECONCILE_GHOST_SEEN_DIR/fleet-ops--detached-job-died" ]] \
+    || fail "G1: first-seen marker not written"
+printf '%s\n' "$out" | grep -q 'ghost_seen=1' \
+    || fail "G1: summary must count the first-seen mark, got: $out"
+out=$("$bin" 2>"$scratch/err.log")
+deleted_branch "claim/detached-job-died-fleet-ops" \
+    || fail "G1: second-tick ghost not reaped: $(cat "$scratch/deletes.log")"
+[[ ! -f "$CLAIM_RECONCILE_GHOST_SEEN_DIR/fleet-ops--detached-job-died" ]] \
+    || fail "G1: marker must be removed with the reap"
+printf '%s\n' "$out" | grep -q 'ghost=1' \
+    || fail "G1: summary must count the reap, got: $out"
+ok "G1: ghost alert claim marked first tick, reaped second tick"
+
+# --- G2: non-alert scope is never ours to reap ----------------------------
+reset_logs
+mark_alert_branch "claim/fix-intake-stagger-fleet-ops"
+write_branches '[{"name":"claim/fix-intake-stagger-fleet-ops"}]'
+out=$("$bin" 2>"$scratch/err.log")
+out=$("$bin" 2>"$scratch/err.log")
+! deleted_branch "claim/fix-intake-stagger-fleet-ops" \
+    || fail "G2: non-alert scope must never be reaped"
+[[ ! -f "$CLAIM_RECONCILE_GHOST_SEEN_DIR/fleet-ops--fix-intake-stagger" ]] \
+    || fail "G2: non-alert scope must not even earn a marker"
+ok "G2: auditor/fix claim (non-alert scope) untouched across two ticks"
+
+# --- G3: live alert-repair worker holds the ghost -------------------------
+reset_logs
+mark_alert_branch "claim/detached-job-died-fleet-ops"
+write_branches '[{"name":"claim/detached-job-died-fleet-ops"}]'
+mark_live_alert
+out=$("$bin" 2>"$scratch/err.log")
+out=$("$bin" 2>"$scratch/err.log")
+! deleted_branch "claim/detached-job-died-fleet-ops" \
+    || fail "G3: live alert worker must hold the ghost claim"
+[[ ! -f "$CLAIM_RECONCILE_GHOST_SEEN_DIR/fleet-ops--detached-job-died" ]] \
+    || fail "G3: a held ghost must not accumulate a marker"
+ok "G3: live alert-repair worker holds the ghost claim"
+
+# --- G4: open PR head holds the ghost -------------------------------------
+reset_logs
+rm -f "$scratch/live/alert-repair-*"
+mark_alert_branch "claim/detached-job-died-fleet-ops"
+write_branches '[{"name":"claim/detached-job-died-fleet-ops"}]'
+mark_pr_head "claim/detached-job-died-fleet-ops"
+out=$("$bin" 2>"$scratch/err.log")
+out=$("$bin" 2>"$scratch/err.log")
+! deleted_branch "claim/detached-job-died-fleet-ops" \
+    || fail "G4: open PR head must hold the ghost claim"
+[[ ! -f "$CLAIM_RECONCILE_GHOST_SEEN_DIR/fleet-ops--detached-job-died" ]] \
+    || fail "G4: a PR-held ghost must not accumulate a marker"
+ok "G4: open PR with the claim as head holds it"
+
+# --- G5: a registered (valid state file) claim is never a ghost -----------
+reset_logs
+rm -f "$scratch/prs/$REPO/claim/detached-job-died-fleet-ops.json"
+mark_alert_branch "claim/detached-job-died-fleet-ops"
+write_branches '[{"name":"claim/detached-job-died-fleet-ops"}]'
+# Fresh state (10 min before NOW) -> the state pass holds it, and the
+# ghost pass must see it as registered.
+write_alert_state "fleet-ops-detached-job-died" "claim/detached-job-died-fleet-ops" "2026-08-25T23:50:00Z"
+out=$("$bin" 2>"$scratch/err.log")
+out=$("$bin" 2>"$scratch/err.log")
+! deleted_branch "claim/detached-job-died-fleet-ops" \
+    || fail "G5: a state-file-registered claim must not be ghost-reaped"
+[[ ! -f "$CLAIM_RECONCILE_GHOST_SEEN_DIR/fleet-ops--detached-job-died" ]] \
+    || fail "G5: registered claim must not accumulate a marker"
+ok "G5: valid state file registers the claim; ghost pass skips it"
+
+# --- G6: corrupt zero-byte state file -> ghost path reaps + cleans --------
+reset_logs
+rm -f "$ALERT_STATE_DIR"/*.json
+mark_alert_branch "claim/deploy-blocked-stuck-fleet-ops"
+write_branches '[{"name":"claim/deploy-blocked-stuck-fleet-ops"}]'
+# The live failure: a zero-byte state file jq cannot parse (observed
+# claim/deploy-blocked-stuck-fleet-ops, fleet-ops#6642).
+: >"$ALERT_STATE_DIR/fleet-ops-deploy-blocked-stuck.json"
+out=$("$bin" 2>"$scratch/err.log")
+! deleted_branch "claim/deploy-blocked-stuck-fleet-ops" \
+    || fail "G6: first-seen ghost must NOT be deleted on the marking tick"
+out=$("$bin" 2>"$scratch/err.log")
+deleted_branch "claim/deploy-blocked-stuck-fleet-ops" \
+    || fail "G6: corrupt-state ghost not reaped on second tick"
+[[ ! -f "$ALERT_STATE_DIR/fleet-ops-deploy-blocked-stuck.json" ]] \
+    || fail "G6: the corrupt state file must be removed with the reap"
+ok "G6: zero-byte state file -> ghost mark, reap, corrupt file removed"
+
+# --- G7: missing rules file -> fail-closed, never guess a scope -----------
+reset_logs
+rm -f "$ALERT_STATE_DIR"/*.json
+mark_alert_branch "claim/detached-job-died-fleet-ops"
+write_branches '[{"name":"claim/detached-job-died-fleet-ops"}]'
+out=$(CLAIM_RECONCILE_RULES_YML="$scratch/does-not-exist.yml" "$bin" 2>"$scratch/err.log")
+out=$(CLAIM_RECONCILE_RULES_YML="$scratch/does-not-exist.yml" "$bin" 2>"$scratch/err.log")
+! deleted_branch "claim/detached-job-died-fleet-ops" \
+    || fail "G7: empty alert-scope map must fail closed (no reap)"
+[[ ! -f "$CLAIM_RECONCILE_GHOST_SEEN_DIR/fleet-ops--detached-job-died" ]] \
+    || fail "G7: fail-closed pass must not write markers"
+grep -q 'alert-scope map empty' "$scratch/err.log" \
+    || fail "G7: the fail-closed skip must be logged: $(cat "$scratch/err.log")"
+ok "G7: missing rules file -> ghost pass fail-closed, logged"
+
+# --- G8: stale first-seen marker GC'd when the branch vanished ------------
+reset_logs
+write_branches '[]'
+printf '2026-08-25T00:00:00Z\n' >"$CLAIM_RECONCILE_GHOST_SEEN_DIR/fleet-ops--detached-job-died"
+out=$("$bin" 2>"$scratch/err.log")
+[[ ! -f "$CLAIM_RECONCILE_GHOST_SEEN_DIR/fleet-ops--detached-job-died" ]] \
+    || fail "G8: marker for a vanished branch must be GC'd"
+ok "G8: stale first-seen marker removed when its branch is gone"
 
 # --- Case 10: overlapping flock no-op -----------------------------------
 export CLAIM_RECONCILE_LOCKDIR="$scratch/lock-overlap"
