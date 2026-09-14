@@ -545,6 +545,27 @@ _lit_group="worker-cheap"
 # fail-open in CI/no-proxy hosts, so only a live proxy that is down walls.
 if litellm_ready; then
     seat=$(litellm_seat "$_lit_group" || true)
+    # fleet-ops#6652: a ready proxy can still route to a budget-walled group
+    # (litellm/worker-cheap -> nebius 402 "Payment Required: exhausted your
+    # budget"). litellm_seat always answers a name; without a seat_usable
+    # check the walled group is re-picked every restart and burns the
+    # StartLimitBurst on a guaranteed 402. Check the picked seat; if it is
+    # benched (quota_bench / hang / spawn-fail), fall back in the SAME tick
+    # to the direct prepaid lane so the work item still runs.
+    if [[ -n "$seat" ]]; then
+        read -r _lit_p _lit_m <<< "$seat"
+        if ! _SEAT_USABLE_SILENT=1 seat_usable "$_lit_p" "$_lit_m" 2>/dev/null; then
+            seat_log "pi-issue-run: $inst litellm group $_lit_p/$_lit_m benched (budget/quota/hang) — trying direct prepaid fallback (fleet-ops#6652)"
+            seat=""
+            if _dfp=$(direct_fallback_seat); then
+                read -r _dfp_p _dfp_m <<< "$_dfp"
+                if _SEAT_USABLE_SILENT=1 seat_usable "$_dfp_p" "$_dfp_m" 2>/dev/null; then
+                    seat="$_dfp"
+                    seat_log "pi-issue-run: $inst direct prepaid lane $_dfp_p/$_dfp_m carries this tick (litellm group walled; fleet-ops#6652)"
+                fi
+            fi
+        fi
+    fi
 else
     seat=""
     # fleet-ops#6315: #5093's walled exit stranded the prepaid NON-proxy

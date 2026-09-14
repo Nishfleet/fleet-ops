@@ -80,6 +80,8 @@ jobs:
         bash tests/pi-transport-check.test.sh
         bash tests/minimax-token-refresh.test.sh
         bash tests/seat-credentials-bad-replay.test.sh
+        bash tests/budget-402-classification.test.sh
+        bash tests/budget-402-pick-fallback.test.sh
         bash tests/alert-repair-flagship-seat.test.sh
         bash tests/fleet-deploy-fault-gate.test.sh
         bash tests/fleet-production-stale-alert.test.sh
