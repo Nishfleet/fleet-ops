@@ -123,7 +123,8 @@ live_skip[seat-health-quarantine.test.sh]=1
 live_skip[seat-caps-citation.test.sh]=1
 live_skip[seat-caps-citation-rule6-replay.test.sh]=1
 live_skip[pi-issue-run-noop-bench.test.sh]=1
-live_skip[fleet-seat-comeback-release.test.sh]=1
+# fleet-ops#6101: tests/fleet-seat-comeback-release.test.sh was deleted with
+# the #6101 demolition, so its live_skip entry went too (the #4141 pattern).
 
 # Existing tests that are not yet listed or hosted. These pre-date the gate.
 # When a test is listed or hosted, remove it from this list.

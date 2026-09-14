@@ -190,33 +190,6 @@ seat_is_poison() {
     [ "$pl" = "true" ]
 }
 
-find_free_seat() {
-    # A free-class seat with a nonzero model cap, healthy (seat_usable), and
-    # not poison-ladder. Free is a class per seat-caps.json (commandcode,
-    # hetzner, opencode, orcarouter, groq, inferx), NOT the zenmux glm-5.3
-    # model specifically (that seat is credentials_bad since 2026-08-25 and
-    # no other glm-5.3 free seat exists -> hard-matching it made the whole
-    # free-glm-5-3 role NO-USABLE-SEAT -> unit-failure escalation loop).
-    if [ -n "${AUDIT_FREE_GLM53_SEAT:-}" ]; then
-        printf '%s\t%s\n' "${AUDIT_FREE_GLM53_SEAT%%:*}" "${AUDIT_FREE_GLM53_SEAT#*:}"
-        return 0
-    fi
-    if ! command -v enumerate_seats >/dev/null 2>&1; then
-        return 1
-    fi
-    local p m _capable
-    while IFS=$'\t' read -r p m _ _capable; do
-        [ -n "$p" ] || continue
-        [ "$(class_of "$p" 2>/dev/null || echo "")" = "free" ] || continue
-        [ "$(model_cap "$p" "$m" 2>/dev/null || echo 0)" -gt 0 ] 2>/dev/null || continue
-        seat_usable "$p" "$m" 2>/dev/null || continue
-        seat_is_poison "$p" "$m" 2>/dev/null && continue
-        printf '%s\t%s\n' "$p" "$m"
-        return 0
-    done < <(enumerate_seats)
-    return 1
-}
-
 # Fallback: any usable capable seat (not class-restricted). Keeps the panel
 # from NO-USABLE-SEAT'ing when every free seat is momentarily benched while
 # strong seats are healthy. Logged, so the degradation is visible.
@@ -231,49 +204,6 @@ find_any_capable_seat() {
         return 0
     done < <(enumerate_seats)
     return 1
-}
-
-resolve_free_role() {
-    local seat
-    if seat=$(find_free_seat); then
-        printf '%s\n' "$seat"
-        return 0
-    fi
-    log "no free-class seat usable; falling back to any capable seat"
-    if seat=$(find_any_capable_seat); then
-        printf '%s\n' "$seat"
-        return 0
-    fi
-    return 1
-}
-
-# fleet-ops#3121: the free-glm role (Nish 2026-09-04 three-role panel).
-# First usable of zenmux/z-ai/glm-5.3-free, cline/z-ai/glm-5.3-flash; then
-# any free-class seat; then any usable capable seat. Never a unit failure on
-# a specific slug — free is a class, not a model.
-resolve_free_glm() {
-    if [ -n "${AUDIT_FREE_GLM_SEAT:-}" ]; then
-        printf '%s\t%s\n' "${AUDIT_FREE_GLM_SEAT%%:*}" "${AUDIT_FREE_GLM_SEAT#*:}"
-        return 0
-    fi
-    if [ -n "${AUDIT_FREE_GLM53_SEAT:-}" ]; then
-        printf '%s\t%s\n' "${AUDIT_FREE_GLM53_SEAT%%:*}" "${AUDIT_FREE_GLM53_SEAT#*:}"
-        return 0
-    fi
-    local order="${AUDIT_FREE_GLM_ORDER:-zenmux/z-ai/glm-5.3-free cline/z-ai/glm-5.3-flash}"
-    local slug p m
-    for slug in $order; do
-        [ -n "$slug" ] || continue
-        p="${slug%%/*}"
-        m="${slug#*/}"
-        [ -n "$p" ] && [ -n "$m" ] || continue
-        [ "$(model_cap "$p" "$m" 2>/dev/null || echo 0)" -gt 0 ] 2>/dev/null || continue
-        seat_usable "$p" "$m" 2>/dev/null || continue
-        printf '%s\t%s\n' "$p" "$m"
-        return 0
-    done
-    log "no ordered free-glm seat usable; falling back to any free-class seat"
-    resolve_free_role
 }
 
 # fleet-ops#3121: the senior role replaces the dead straitly auditor. First
@@ -342,29 +272,6 @@ resolve_senior_seat() {
     fi
     log "no usable senior seat (ladder, proxy, any-capable all exhausted)"
     return 1
-}
-
-resolve_seat() {
-    local role="$1"
-    case "$role" in
-        devin)
-            if [ -n "${AUDIT_DEVIN_SEAT:-}" ]; then
-                printf '%s\t%s\n' "${AUDIT_DEVIN_SEAT%%:*}" "${AUDIT_DEVIN_SEAT#*:}"
-            else
-                printf 'devin\tswe-2-max\n'
-            fi
-            ;;
-        free-glm-5-3|free|free-glm)
-            resolve_free_glm
-            ;;
-        senior|straitly)
-            resolve_senior_seat
-            ;;
-        *)
-            log "unknown auditor role: $role"
-            return 1
-            ;;
-    esac
 }
 
 # --- helpers -----------------------------------------------------------------
@@ -665,17 +572,22 @@ main() {
     # #6114: the senior role picks from its own ladder first (head = the
     # #1167 Cursor $400 overage model) and only reaches the #5993 LiteLLM
     # proxy group through resolve_senior_seat's fallback. Other roles stay
-    # on the proxy.
-    if [[ "$group" == "senior" ]] && seat=$(resolve_senior_seat); then
+    # on the proxy; #6101 deletes the non-litellm resolve_seat fallback —
+    # both lanes skip (exit 0) when nothing resolves.
+    if [ "$group" = "senior" ]; then
+        if ! seat=$(resolve_senior_seat); then
+            log "no usable seat for role=$role (lane fault); skipping"
+            exit 0
+        fi
         log "pi-audit-run: $role -> senior ladder ($seat)"
-    elif declare -F litellm_seat >/dev/null 2>&1; then
-        seat=$(litellm_seat "$group" || true)
-        log "pi-audit-run: $role -> litellm/$group"
-    elif seat=$(resolve_seat "$role"); then
-        :
     else
-        log "no usable seat for role=$role (lane fault); skipping"
-        exit 0
+        if declare -F litellm_seat >/dev/null 2>&1; then
+            seat=$(litellm_seat "$group" || true)
+        fi
+        if [ -z "${seat:-}" ]; then
+            log "no usable seat for role=$role (lane fault); skipping"
+            exit 0
+        fi
     fi
     provider=$(printf '%s\n' "$seat" | cut -f1)
     model=$(printf '%s\n' "$seat" | cut -f2)

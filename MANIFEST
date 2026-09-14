@@ -1198,26 +1198,11 @@ systemd/minimax-token-refresh.timer /home/nish/.config/systemd/user/minimax-toke
 # Wired into fleet-heartbeat-tier1; fail-loud on violation -> unit-escalation.
 bin/fleet-max-speed /home/nish/.local/bin/fleet-max-speed
 
-# fleet-ops#1348 REMOVED (fleet-ops#2394 deletion review): seat-walled-probe
-# (probe bin + service + timer) deleted — 14-day 100% fail (Unknown provider
-# "test" on stale ledger fixtures), zero issues filed, seat-transition duty
-# overlaps fleet-seat-recovery + seat-lib comeback clocks. Its successor
-# (fleet-ops#2421) is fleet-seat-comeback-release below: the ACTIVE release
-# path that re-probes a seat whose wall clock has passed and unwalls a
-# provably-usable seat; it excludes test__/.spawn-bench pseudo-seats and
-# corpses (the predecessor-killers) and renders the stalled loud check.
-bin/fleet-seat-comeback-release /home/nish/.local/bin/fleet-seat-comeback-release
-systemd/fleet-seat-comeback-release.service /home/nish/.config/systemd/user/fleet-seat-comeback-release.service
-systemd/fleet-seat-comeback-release.timer /home/nish/.config/systemd/user/fleet-seat-comeback-release.timer
-
-# fleet-ops#5285: bench-truth probe — event-driven half of the 15-min
-# bench-verification cadence (DECISION 2026-09-11: 15-min sweep timer + a
-# path unit on the seats dir so a fresh bench is probed at min(advertised
-# reset, 15 min)). Runs the same bin's --false-wall-only mode; the bin's
-# per-seat 15-min probe interval and 60s sweep debounce are the rate
-# limiters (the #5093 dir-watcher storm class, StartLimitIntervalSec=0).
-systemd/fleet-seat-bench-truth.path /home/nish/.config/systemd/user/fleet-seat-bench-truth.path
-systemd/fleet-seat-bench-truth.service /home/nish/.config/systemd/user/fleet-seat-bench-truth.service
+# fleet-ops#6101: fleet-seat-comeback-release (+ its --false-wall-only
+# wrapper units fleet-seat-bench-truth.path/.service) deleted — per-seat
+# benches/parks/comebacks are the LiteLLM proxy's job (cooldown, /health,
+# fallbacks). Its ledger metrics in libexec/fleet-metrics-export.py read the
+# seat ledger directly and stay.
 
 # fleet-ops#1151: week-over-week MAD strangeness pre-pass for the Weekly
 # Fleet Review. Deterministic stdlib Python; writes the WFR input dir
