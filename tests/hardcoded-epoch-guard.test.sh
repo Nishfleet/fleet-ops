@@ -128,7 +128,8 @@ ok "guard fires on re-injected 1788854400 (frozen now=$frozen):"$'\n'"$fire_hits
 # --- 4. Negative fixture is excluded from the default tree scan ---------
 # (so the clean-tree run in step 1 stays clean even as the literal ages;
 # the proof in step 3 scans it explicitly.)
-if epoch_guard_hits "$repo_root/tests" "$repo_root/bin" | grep -q 'epoch-guard-negative'; then
+tree_hits="$(epoch_guard_hits "$repo_root/tests" "$repo_root/bin")"
+if grep -q 'epoch-guard-negative' <<<"$tree_hits"; then
   fail "negative fixture must be skipped by the default tree scan"
 fi
 ok "negative fixture is skipped by the default tree scan"

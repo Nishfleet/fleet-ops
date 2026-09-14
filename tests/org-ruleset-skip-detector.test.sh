@@ -6,6 +6,12 @@
 # org rulesets were already binding every repo.
 
 set -euo pipefail
+# Issue #6102: the drill reports used fixed shared /tmp paths that 5
+# parallel copies (xargs -P 8) truncated mid-read; this copy's private dir
+# removes the collision.
+TD="$(mktemp -d)"
+trap 'rm -rf "$TD"' EXIT INT TERM
+export TD
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 repo_root="$(cd "$here/.." && pwd)"
 script="$repo_root/.github/scripts/org-ruleset-skip-detector.mjs"
@@ -137,11 +143,11 @@ if (report.classification.plan !== "free") {
 
 # --- replay: plan-limit 403 is SKIP ----------------------------------------
 set +e
-node "$script" --from-json "$fixtures/team-required-403.json" --format json --no-issue >/tmp/org-ruleset-403.json
+node "$script" --from-json "$fixtures/team-required-403.json" --format json --no-issue >"$TD/org-ruleset-403.json"
 rc403=$?
 set -e
 [[ "$rc403" -eq 0 ]] || fail "team-required 403 must exit 0 (steady SKIP is green), got $rc403"
-jq -e '.classification.status == "team-required"' /tmp/org-ruleset-403.json >/dev/null \
+jq -e '.classification.status == "team-required"' "$TD/org-ruleset-403.json" >/dev/null \
   || fail "team-required-403 fixture must classify team-required"
 
 # --- replay: paid plan is available, exit 0 --------------------------------
@@ -151,20 +157,20 @@ echo "$avail_json" | jq -e '.classification.status == "available" and .classific
 
 # --- replay: permission-denied is a loud failure, never a pass -------------
 set +e
-node "$script" --from-json "$fixtures/permission-denied.json" --format json --no-issue >/tmp/org-ruleset-perm.json
+node "$script" --from-json "$fixtures/permission-denied.json" --format json --no-issue >"$TD/org-ruleset-perm.json"
 rcperm=$?
 set -e
 [[ "$rcperm" -eq 1 ]] || fail "permission-denied must exit 1, got $rcperm"
-jq -e '.classification.status == "permission-denied"' /tmp/org-ruleset-perm.json >/dev/null \
+jq -e '.classification.status == "permission-denied"' "$TD/org-ruleset-perm.json" >/dev/null \
   || fail "permission-denied fixture must classify permission-denied"
 
 # --- replay: empty probe is a loud failure ---------------------------------
 set +e
-node "$script" --from-json "$fixtures/error-empty.json" --format json --no-issue >/tmp/org-ruleset-empty.json
+node "$script" --from-json "$fixtures/error-empty.json" --format json --no-issue >"$TD/org-ruleset-empty.json"
 rcempty=$?
 set -e
 [[ "$rcempty" -eq 1 ]] || fail "empty probe must exit 1, got $rcempty"
-jq -e '.classification.status == "error"' /tmp/org-ruleset-empty.json >/dev/null \
+jq -e '.classification.status == "error"' "$TD/org-ruleset-empty.json" >/dev/null \
   || fail "error-empty fixture must classify error"
 
 # --- human copy ------------------------------------------------------------

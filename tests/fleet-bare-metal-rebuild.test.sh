@@ -207,7 +207,8 @@ cat >"$scratch/bin/docker" <<'DOCKER'
 #!/usr/bin/env bash
 # Fake docker that proves the drill attempts the container proof without
 # pulling or running a real container.
-log="${DOCKER_LOG:-/tmp/fake-docker.log}"
+#6102: per-invocation private fallback (never a fixed shared path).
+log="${DOCKER_LOG:-$(mktemp -t fake-docker.XXXXXX)}"
 printf '%s\n' "$*" >>"$log"
 if [[ "${1:-}" == "info" ]]; then
   exit 0
