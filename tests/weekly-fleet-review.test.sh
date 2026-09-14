@@ -18,6 +18,10 @@
 #       check helper, and live audit is green
 #   (h) agent-cron-run with this slug succeeds on a stubbed pi (the
 #       deliverable run; outermost edge stubbed)
+#   (i) ExecStartPost asserts the mandated Phase-3 records were refreshed
+#       (fleet-ops#6744: a run may exit 0 after filing issues but before
+#       writing last-ratchet.json/conference.md — the stale record then
+#       kills the heartbeat via the quality-ratchet canary a week later)
 # Nested from tests/rule-enforcement.test.sh so CI cannot skip it without
 # a workflow edit this token cannot push.
 
@@ -259,9 +263,40 @@ grep -q 'seat=devin/glm-5-2' "$out_file" \
   || fail "output file must record the seat"
 ok "(h) agent-cron-run weekly-fleet-review exits 0 on stubbed pi"
 
+# (i) ExecStartPost deliverable check (fleet-ops#6744). The 2026-09-13 run
+# exited 0 after filing its issues but before writing any Phase-3 record —
+# the unit logged SUCCESS and the stale last-ratchet.json tripped the
+# quality-ratchet canary 8 days later, failing every heartbeat tick. The
+# unit must assert every record the prompt mandates each week was refreshed
+# this run, so a half-finished review fails -> Restart=on-failure re-seats
+# -> StartLimitBurst pages, instead of reading as success until the canary
+# trips. The check is a bounded freshness test (<120min; TimeoutStartSec
+# caps a run at 90min), not a content audit — evaluate_record owns content.
+grep -q '^ExecStartPost=' "$svc" \
+  || fail "service must carry an ExecStartPost deliverable check (fleet-ops#6744)"
+for f in \
+  agent-state/WFR/conference.md \
+  agent-state/WFR/last-ratchet.json \
+  agent-state/WFR/last-slo-ratchet.json \
+  agent-state/WFR/last-actions.json \
+  agent-state/WFR/last-self-score.json \
+  agent-state/scoreboard/wfr-ratio.json; do
+  grep -q "$f" "$svc" \
+    || fail "ExecStartPost must require $f refreshed this run (fleet-ops#6744)"
+done
+grep -q -- '-mmin -120' "$svc" \
+  || fail "ExecStartPost freshness window must be bounded (-mmin -120 covers TimeoutStartSec=90min)"
+grep -q 'Restart=on-failure' "$svc" \
+  || fail "service must Restart=on-failure so a missing-records failure re-seats"
+# The failure path must exit non-zero AND name what is missing — a silent
+# ExecStartPost that always exits 0 is a no-op.
+grep -q 'WFR-RECORDS-MISSING' "$svc" \
+  || fail "ExecStartPost must log WFR-RECORDS-MISSING with the stale file list"
+ok "(i) ExecStartPost asserts the six mandated Phase-3 records are fresh (fleet-ops#6744)"
+
 # Nested CI host
 grep -Fq 'bash "$here/weekly-fleet-review.test.sh"' "$here/rule-enforcement.test.sh" \
   || fail "rule-enforcement.test.sh must nest this file"
 ok "contracts: nested CI host"
 
-ok "weekly-fleet-review: matrix, MANIFEST, agent-cron-run slug, timer, install, prompt contract, role gate, stubbed run"
+ok "weekly-fleet-review: matrix, MANIFEST, agent-cron-run slug, timer, install, prompt contract, role gate, stubbed run, ExecStartPost record check"

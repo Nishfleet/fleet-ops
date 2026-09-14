@@ -65,7 +65,9 @@
 #
 # Deliberate exclusions (the two bugs that killed the predecessor
 # seat-walled-probe, fleet-ops#2394): .spawn-bench bench-marker pseudo-seats
-# and test__ fixtures (provider == "test") are never probed. Corpse seats
+# and test__ fixtures (provider == "test") are never probed — as ledger
+# entries; the marker pass at sweep end probes the SEAT a fresh marker
+# still holds (fleet-ops#6731). Corpse seats
 # (seat_dead=true) are normally never probed either: they carry no comeback
 # clock (fleet-ops#2415) and FleetDeadCredentialSeats owns the still-live
 # credentials_bad class. fleet-ops#3156 CARVES OUT a recoverable subclass —
@@ -1976,6 +1978,124 @@ main() {
         fi
         last_probe["$base"]="$(now_epoch)"
     done
+
+    # fleet-ops#6731: WRAPPER-MARKER holds the ledger loop cannot see.
+    # seat_usable (lib/litellm-seat.sh) reads <seat>.spawn-bench.json
+    # BEFORE the ledger, so a seat can be held on marker evidence alone:
+    # no ledger file at all, a healthy ledger whose post-marker
+    # observation is the false-healthy clobber while the marker count
+    # sits past the failure ceiling (fleet-ops#3826), or a marker-
+    # declared corpse held durably for a comeback_release write
+    # (fleet-ops#3889, no freshness gate). The ledger iteration above
+    # reaches none of those — the 2026-09-14 workers=0 fault held every
+    # worker lane exactly this way. Mirror the marker half of
+    # seat_usable here: while the marker's own bench clock is still
+    # future the bench is running (honour it); once usable_at has passed
+    # the seat owes the same tool-using probe. Success -> unwall_seat
+    # writes source=comeback_release (fresh observed_at lifts every
+    # marker branch, and creates the ledger row when none exists).
+    # Failure -> rebench_wrapper_marker refreshes written_at/usable_at
+    # so the hold persists without a work item paying for the
+    # discovery; a missing ledger also gains a comeback_release_rebench
+    # row so the seat becomes visible to the ledger-based loud checks.
+    if (( ! FALSE_WALL_ONLY )); then
+        local mk ps ms mk_dead mk_usable_e mk_written_e mk_count mk_mode
+        local l_src l_obs_e _l_hc _ceil _marker_hold _hold_why
+        for mk in "$LEDGER"/*__*.spawn-bench.json; do
+            [[ -f "$mk" ]] || continue
+            p=$(jq -r '.provider // ""' "$mk" 2>/dev/null || true)
+            [[ -n "$p" && "$p" != "test" ]] || continue
+            m=$(jq -r '.model // ""' "$mk" 2>/dev/null || true)
+            [[ -n "$m" ]] || continue
+            ps="${p//[^A-Za-z0-9._-]/_}"
+            ms="${m//[^A-Za-z0-9._-]/_}"
+            base="${ps}__${ms}.json"
+            f="$LEDGER/$base"
+            # Already probed this run by the ledger loop (the healthy +
+            # #3737 branch or a wall path stamps last_probe at >= now).
+            (( ${last_probe["$base"]:-0} >= now )) && continue
+            # A non-healthy ledger is the ledger loop's own candidate
+            # surface (expired wall / no-wall re-probe / corpse path) —
+            # it owns the seat; this pass covers marker-ONLY holds.
+            if [[ -f "$f" ]]; then
+                _l_hc=$(jq -r '.health_class // ""' "$f" 2>/dev/null || true)
+                [[ "$_l_hc" == "healthy" ]] || continue
+            fi
+            # Same key guards as the ledger loop: a probe-artifact id is
+            # never routable; a real-but-unlisted seat is not
+            # re-auditioned while its provider carries an account wall
+            # (fleet-ops#4659).
+            if ! _seat_key_valid "$p" "$m"; then
+                _seat_is_probe_artifact "$m" && continue
+                provider_has_account_wall "$p" "$m" && continue
+            fi
+            mk_dead=$(jq -r '.seat_dead // false' "$mk" 2>/dev/null || echo false)
+            mk_usable_e=$(ts_epoch "$(jq -r '.usable_at // ""' "$mk" 2>/dev/null || true)")
+            mk_written_e=$(ts_epoch "$(jq -r '.written_at // ""' "$mk" 2>/dev/null || true)")
+            mk_count=$(jq -r '.consecutive_failure_count // 0' "$mk" 2>/dev/null || echo 0)
+            [[ "$mk_count" =~ ^[0-9]+$ ]] || mk_count=0
+            mk_mode=$(jq -r '.failure_mode // ""' "$mk" 2>/dev/null || true)
+            l_src="" l_obs_e=""
+            if [[ -f "$f" ]]; then
+                l_src=$(jq -r '.source // ""' "$f" 2>/dev/null || true)
+                l_obs_e=$(ts_epoch "$(jq -r '.observed_at // ""' "$f" 2>/dev/null || true)")
+            fi
+            # The marker's own bench clock still runs — the clock is the
+            # hold; the seat is probed when it passes, same as a ledger
+            # wall.
+            [[ -n "$mk_usable_e" ]] && (( mk_usable_e > now )) && continue
+            # A comeback_release ledger observation already lifted every
+            # marker branch (fleet-ops#3889 reads it off the ledger).
+            [[ "$l_src" == "comeback_release" ]] && continue
+            _marker_hold=0 _hold_why=""
+            if [[ "$mk_dead" == "true" ]]; then
+                # fleet-ops#3889: marker-declared corpse — held durably,
+                # no freshness gate; only a comeback_release re-proves it.
+                _marker_hold=1
+                _hold_why="marker-declared corpse (fleet-ops#3889)"
+            elif [[ -n "$mk_written_e" ]] && (( now - mk_written_e <= SPAWN_BENCH_FRESH_S )); then
+                if [[ ! -f "$f" ]] || [[ -z "$l_obs_e" ]] || (( l_obs_e <= mk_written_e )); then
+                    # fleet-ops#3737: fresh marker, expired clock, still
+                    # the seat's latest evidence — held for a probe.
+                    _marker_hold=1
+                    _hold_why="fresh marker is latest evidence (fleet-ops#3737)"
+                else
+                    # fleet-ops#3826: a post-marker healthy write is the
+                    # false-healthy clobber, not recovery — past the
+                    # failure ceiling only a comeback_release releases.
+                    _ceil="${SEAT_FAILURE_CEILING:-20}"
+                    [[ "$mk_mode" == "empty_run" ]] && _ceil="${EMPTY_RUN_FAILURE_CEILING:-5}"
+                    if declare -F _seat_parked_by_ceiling >/dev/null 2>&1; then
+                        _seat_parked_by_ceiling "$mk_count" "$_ceil" && _marker_hold=1
+                    else
+                        (( mk_count >= _ceil )) && _marker_hold=1
+                    fi
+                    [[ "$_marker_hold" == "1" ]] \
+                        && _hold_why="marker count $mk_count >= ceiling $_ceil, post-marker healthy write is not comeback_release (fleet-ops#3826)"
+                fi
+            fi
+            [[ "$_marker_hold" == "1" ]] || continue
+            log "probe $p/$m: held ONLY by wrapper marker ($_hold_why) — no ledger wall; comeback probe owed (fleet-ops#6731)"
+            last_probe["$base"]="$(now_epoch)"
+            if probe_seat "$p" "$m"; then
+                ((probed++)) || true
+                reset_overload_strikes "$p"
+                OWN_FAIL["$base"]="0"
+                if unwall_seat "$p" "$m" "$f" 0 real-work; then
+                    ((released_this_run++)) || true
+                fi
+            else
+                ((probed++)) || true
+                OWN_FAIL["$base"]=$(( ${OWN_FAIL["$base"]:-0} + 1 ))
+                rebench_wrapper_marker "$p" "$m" "$mk" \
+                    || log "wrapper marker re-bench failed for $p/$m (fleet-ops#6731)"
+                # fleet-ops#6731: a marker-only seat that failed its probe
+                # gets a ledger row too — otherwise it stays invisible to
+                # the ledger-based expired/interval-breach loud checks.
+                [[ -f "$f" ]] || rebench_seat "$p" "$m" "$f" || true
+            fi
+        done
+    fi
 
     # Post-sweep truth: recount EXPIRED wall clocks from the LEDGER itself
     # (a re-anchored seat is no longer expired; a cleared wall is healthy).

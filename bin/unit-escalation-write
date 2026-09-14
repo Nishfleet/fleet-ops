@@ -144,8 +144,18 @@ fi
 # live SENIOR AUDITOR or fires the real stop-escalation path pre-merge —
 # same carve-out argument as live-dummy*: a real unit never carries a
 # resume-drill- name.
+# chain-e2e-drill-fixture* (fleet-ops#375, observed fleet-ops#6734): the
+# chain-e2e drill's throwaway fixture exits 1 ON PURPOSE — that fault IS the
+# drill working, and bin/chain-e2e-drill's own results are the assertion
+# sink. fleet-escalation-canary's is_escalation_excluded already lists it;
+# this guard is the designed lockstep chokepoint (the generic service.d
+# drop-in applies after any per-unit drop-in, so a per-unit OnFailure=
+# reset cannot win). Without it every live drill spin wrote a real
+# STOP-REASON and the dispatcher filed a real agent-ready [unit-death]
+# issue that burned a worker seat (fleet-ops#6734, hourly via heartbeat
+# block 5b).
 case "$UNIT" in
-  unit-escalation@*|stop-escalation.service|stop-escalation.path|ready-work.service|escalation-daily-sweep.service|escalation-daily-sweep.timer|escalation-organ-watch.service|escalation-organ-watch.timer|resilience-drill-stub*|gap-closure-drill-stub*.service|gap-closure-drill-mask-probe.service|notify-probe.service|notify-probe.onfail.service|probe-*.service|fleet-orphan-reset-probe@*.service|multi-*-sink.service|pi-issue@*.service|init.scope|app-*.scope|live-dummy*|*resume-drill-*)
+  unit-escalation@*|stop-escalation.service|stop-escalation.path|ready-work.service|escalation-daily-sweep.service|escalation-daily-sweep.timer|escalation-organ-watch.service|escalation-organ-watch.timer|resilience-drill-stub*|gap-closure-drill-stub*.service|gap-closure-drill-mask-probe.service|notify-probe.service|notify-probe.onfail.service|probe-*.service|fleet-orphan-reset-probe@*.service|multi-*-sink.service|pi-issue@*.service|chain-e2e-drill-fixture*|init.scope|app-*.scope|live-dummy*|*resume-drill-*)
     echo "unit-escalation-write: skipping excluded unit '$UNIT' (no self-trigger / own failure handling)" >&2
     exit 0
     ;;
