@@ -37,7 +37,6 @@ lib="$repo_root/lib/litellm-seat.sh"
 # Minimal seat-caps.json so seatlib loads.
 cat >"$scratch/seat-caps.json" <<'JSON'
 {
-  "ram_gb_per_worker": 1.5,
   "free_providers_in_order": ["devin"],
   "providers": {
     "litellm": {
