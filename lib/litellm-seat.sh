@@ -1406,7 +1406,112 @@ mark_seat_empty_run() {
     rm -f "$tmp" 2>/dev/null || true
     return 1
 }
-mark_seat_quota_bench() { seat_log "mark_seat_quota_bench: $* (proxy cooldown owns routing)"; return 0; }
+# fleet-ops#6652: un-stubbed. A 402 "Payment Required: exhausted your budget"
+# is a money wall — the proxy does NOT own this cooldown (it routes to the
+# next 402 provider). Write a real ledger entry + clobber-proof spawn-bench
+# marker so seat_usable holds the group until the reset window (or the
+# provider default from seat-caps.json) and the pick path falls back to the
+# direct prepaid lane. source="money_boundary" lets the wall exceed
+# SEAT_NON_MONEY_WALL_MAX_S when the provider default declares a longer
+# window (the budget only resets when Nish adds funds — never bypassed by
+# adding funds programmatically).
+mark_seat_quota_bench() {
+    local p="$1" m="$2" text="${3:-}"
+    if ! _seat_key_guard "$p" "$m" "mark_seat_quota_bench"; then return 1; fi
+    if _transport_is_down; then _mark_transport_down "$p" "$m"; return 1; fi
+    local path
+    path=$(seat_ledger_path "$p" "$m")
+    mkdir -p "$LEDGER_DIR" 2>/dev/null || true
+    local now_utc
+    now_utc=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+
+    # Parse a reset window from the error text (seconds). 0 = not found.
+    local window=0
+    local hh mm days
+    if [[ "$text" =~ resets?[[:space:]]+in[[:space:]]+([0-9]+)d[[:space:]]+([0-9]+)h ]]; then
+        days="${BASH_REMATCH[1]}"; hh="${BASH_REMATCH[2]}"
+        window=$(( days * 86400 + hh * 3600 ))
+    elif [[ "$text" =~ resets?[[:space:]]+in[[:space:]]+([0-9]+)h[[:space:]]+([0-9]+)m ]]; then
+        hh="${BASH_REMATCH[1]}"; mm="${BASH_REMATCH[2]}"
+        window=$(( hh * 3600 + mm * 60 ))
+    elif [[ "$text" =~ resets?[[:space:]]+in[[:space:]]+([0-9]+)h ]]; then
+        window=$(( ${BASH_REMATCH[1]} * 3600 ))
+    elif [[ "$text" =~ resets?[[:space:]]+in[[:space:]]+([0-9]+)m ]]; then
+        window=$(( ${BASH_REMATCH[1]} * 60 ))
+    elif [[ "$text" =~ resets?[[:space:]]+in[[:space:]]+([0-9]+)s ]]; then
+        window="${BASH_REMATCH[1]}"
+    elif [[ "$text" =~ retry[[:space:]_-]?after[[:space:]:]*[[:space:]]*([0-9]+) ]]; then
+        window="${BASH_REMATCH[1]}"
+    fi
+
+    # Fall back to the provider's quota_bench_default_s from seat-caps.json.
+    local declared=""
+    if (( window == 0 )) && [[ -f "$SEAT_CAPS_JSON" ]]; then
+        if (( ! _seat_caps_loaded )); then load_seat_caps || true; fi
+        declared=$(jq -r --arg p "$p" '.providers[$p].quota_bench_default_s // empty' "$SEAT_CAPS_JSON" 2>/dev/null || true)
+        if [[ "$declared" =~ ^[0-9]+$ ]] && (( declared > 0 )); then
+            window="$declared"
+        fi
+    elif [[ "$window" =~ ^[0-9]+$ ]] && (( window > 0 )); then
+        # Track the declared default for the clamp exemption even when we
+        # parsed a window (the parsed window might be shorter than the
+        # declared one — use the max).
+        if [[ -f "$SEAT_CAPS_JSON" ]]; then
+            local d2
+            d2=$(jq -r --arg p "$p" '.providers[$p].quota_bench_default_s // empty' "$SEAT_CAPS_JSON" 2>/dev/null || true)
+            if [[ "$d2" =~ ^[0-9]+$ ]] && (( d2 > window )); then
+                declared="$d2"; window="$d2"
+            fi
+        fi
+    fi
+
+    # No window and no provider default: use a 1 h fallback so the seat is
+    # re-probed periodically (the budget only resets when Nish adds funds).
+    if (( window == 0 )); then
+        window="${SEAT_QUOTA_BENCH_DEFAULT_S:-3600}"
+    fi
+
+    # A budget-402 is a money boundary — only Nish adding funds resolves it.
+    # source="money_boundary" exempts the wall from SEAT_NON_MONEY_WALL_MAX_S
+    # when a provider default declares a longer window.
+    local source="money_boundary"
+    window=$(_seat_clamp_non_money_window_s "$window" "$source" "$declared")
+
+    local usable_at
+    usable_at=$(date -u -d "@$(($(date -u +%s) + window))" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || echo "$now_utc")
+
+    local tmp="$path.quota.$$.$RANDOM.tmp"
+    if jq -nc \
+        --arg provider "$p" --arg model "$m" \
+        --arg observed "$now_utc" --arg usable "$usable_at" \
+        --argjson http_status 402 --argjson retry_after null \
+        --argjson retryable false --argjson seat_dead false --argjson poison_ladder false \
+        --arg writer "mark_seat_quota_bench" \
+        '{
+          provider:$provider, model:$model,
+          http_status:$http_status, retry_after:$retry_after,
+          health_class:"quota_bench",
+          retryable:$retryable, seat_dead:$seat_dead, poison_ladder:$poison_ladder,
+          observed_at:$observed,
+          source:"money_boundary",
+          failure_mode:"quota_bench",
+          usable_at:$usable,
+          consecutive_failure_count:1,
+          writer:$writer
+        }' > "$tmp" 2>/dev/null; then
+        chmod 0644 "$tmp" 2>/dev/null || true
+        if mv "$tmp" "$path" 2>/dev/null; then
+            seat_log "quota-bench: marked $p/$m unusable until $usable_at (budget-402, window=${window}s, source=$source)"
+            # Clobber-proof spawn-bench marker so seat_usable honours this
+            # bench even if seat-health.ts later writes a healthy observation.
+            _seat_write_spawn_bench "$p" "$m" "$usable_at" "quota_bench" "$window" 1 "quota_bench" false "$source" 2>/dev/null || true
+            return 0
+        fi
+    fi
+    rm -f "$tmp" 2>/dev/null || true
+    seat_log "quota-bench: FAILED to write marker for $p/$m"
+    return 1
+}
 mark_seat_overload_bench() { seat_log "mark_seat_overload_bench: $* (proxy cooldown owns routing)"; return 0; }
 mark_seat_hang_bench() { seat_log "mark_seat_hang_bench: $* (proxy cooldown owns routing)"; return 0; }
 mark_seat_credentials_bad() { seat_log "mark_seat_credentials_bad: ${1:-}/${2:-} (proxy cooldown owns routing)"; return 0; }
@@ -1537,7 +1642,7 @@ is_quota_cap_error() {
     # `quota (exhausted|...)` misses it and the death fell to
     # error_class=unknown, never benched, seat re-picked every cycle. Match
     # `token-plan` and `quota has been` as the hard-wall signal the same way.
-    if ! grep -qiE 'weekly[[:space:]]+(clinepass[[:space:]]+)?limit|daily[[:space:]]+limit|quota[[:space:]]+(exhausted|exceeded|reached)|quota[[:space:]]+has[[:space:]]+been|token-plan|usage[[:space:]]+balance[[:space:]]+exhausted|budget_exceeded|credit[[:space:]]+balance[[:space:]]+depleted|free-model[[:space:]]+token[[:space:]]+quota|resource_exhausted|Connection error, send a message to continue retrying|INFERENCE_CAP_ERROR|usage[[:space:]]+limit|plan[[:space:]]+limit|out[[:space:]]+of[[:space:]]+credits|insufficient[[:space:]]+credits|credit_insufficient|budget_error|insufficient_user_quota|message[[:space:]]+rate[[:space:]]+limit|rate[[:space:]]+limit[[:space:]]+(exceeded|reached)|cap[[:space:]]+(exceeded|reached)|exceeded[[:space:]]+your' <<<"$combined"; then
+    if ! grep -qiE 'weekly[[:space:]]+(clinepass[[:space:]]+)?limit|daily[[:space:]]+limit|quota[[:space:]]+(exhausted|exceeded|reached)|quota[[:space:]]+has[[:space:]]+been|token-plan|usage[[:space:]]+balance[[:space:]]+exhausted|budget_exceeded|credit[[:space:]]+balance[[:space:]]+depleted|free-model[[:space:]]+token[[:space:]]+quota|resource_exhausted|Connection error, send a message to continue retrying|INFERENCE_CAP_ERROR|usage[[:space:]]+limit|plan[[:space:]]+limit|out[[:space:]]+of[[:space:]]+credits|insufficient[[:space:]]+credits|credit_insufficient|budget_error|insufficient_user_quota|message[[:space:]]+rate[[:space:]]+limit|rate[[:space:]]+limit[[:space:]]+(exceeded|reached)|cap[[:space:]]+(exceeded|reached)|exceeded[[:space:]]+your|Payment[[:space:]]+Required|exhausted[[:space:]]+your[[:space:]]+budget|add[[:space:]]+funds' <<<"$combined"; then
         return 1
     fi
     # A reset signal: an explicit window OR a "resets" keyword. The provider
@@ -1572,7 +1677,15 @@ is_quota_cap_error() {
     # (~12 claims/hour). The body carries no reset window, so it must pass the
     # hard-cap list like `credit balance depleted` does; the 3600s
     # quota_bench_default_s in seat-caps.json bounds the re-probe.
-    if grep -qiE 'weekly[[:space:]]+(clinepass[[:space:]]+)?limit|daily[[:space:]]+limit|INFERENCE_CAP_ERROR|FreeUsageLimitError|usage[[:space:]]+balance[[:space:]]+exhausted|budget_exceeded|budget_error|credit[[:space:]]+balance[[:space:]]+depleted|insufficient[[:space:]]+credits|credit_insufficient|insufficient_user_quota|usage[[:space:]]+limit[[:space:]]+for[[:space:]]+the[[:space:]]+current[[:space:]]+free[[:space:]]+model|free-model[[:space:]]+token[[:space:]]+quota|resource_exhausted' <<<"$combined"; then
+    # "Payment Required" / "exhausted your budget" / "add funds" (nebius HTTP 402
+    # wrapped in a litellm 429, fleet-ops#6652, 2026-09-14: litellm/worker-cheap
+    # routed to nebius which returned 402 {"detail":"Payment Required: You have
+    # exhausted your budget. Please add funds"} — 100 deaths in the trailing
+    # window, every one booked error_class=unknown -> 300s spawn bench, the dead
+    # group re-offered every 5 min). A budget wall wearing a 402 is a hard wall,
+    # not a transient retry: classify it so the money wall is never counted as
+    # seat yield.
+    if grep -qiE 'weekly[[:space:]]+(clinepass[[:space:]]+)?limit|daily[[:space:]]+limit|INFERENCE_CAP_ERROR|FreeUsageLimitError|usage[[:space:]]+balance[[:space:]]+exhausted|budget_exceeded|budget_error|credit[[:space:]]+balance[[:space:]]+depleted|insufficient[[:space:]]+credits|credit_insufficient|insufficient_user_quota|usage[[:space:]]+limit[[:space:]]+for[[:space:]]+the[[:space:]]+current[[:space:]]+free[[:space:]]+model|free-model[[:space:]]+token[[:space:]]+quota|resource_exhausted|Payment[[:space:]]+Required|exhausted[[:space:]]+your[[:space:]]+budget|add[[:space:]]+funds' <<<"$combined"; then
         return 0
     fi
     return 1
