@@ -413,7 +413,7 @@ resume_or_dispatch() {
     derived_repo="${BASH_REMATCH[1]}"; derived_n="${BASH_REMATCH[2]}"
   fi
   if [ -n "$derived_n" ] && [ "$RESUME_DRYRUN" != "1" ] \
-      && [ "$unit_no_sf" != *resume-drill-* ]; then
+      && [[ "$unit_no_sf" != *resume-drill-* ]]; then
     local dstate=""
     dstate=$("$RESUME_GH" issue view "$derived_n" -R "Nishfleet/$derived_repo" \
         --json state --jq '.state' 2>/dev/null || true)
