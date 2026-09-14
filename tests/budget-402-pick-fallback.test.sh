@@ -183,5 +183,60 @@ set -e
     || fail "pick path must keep litellm/worker-cheap when not walled, got '$result2'"
 ok "Test 8: healthy litellm/worker-cheap -> no fallback (result=$result2)"
 
+# === Test 9: cross-group fallback exists (worker-capable then worker-private) ===
+# The 2026-09-14 outage: classifier fired, direct prepaid was unusable,
+# workers=0 while worker-capable and worker-private were USABLE. The pick
+# path must try those groups before the no-seat exit.
+grep -qF 'for _fb_group in worker-capable worker-private' "$bin" \
+    || fail "bin/pi-issue-run does not loop worker-capable then worker-private after a walled cheap group"
+ok "Test 9: worker-capable then worker-private loop is in pi-issue-run"
+
+# === Test 10: cheap walled + prepaid unusable -> worker-capable ===
+set +e
+result3=$(bash -c '
+    source "$0" 2>/dev/null
+    load_seat_caps 2>/dev/null
+    litellm_ready() { return 0; }
+    direct_fallback_seat() { printf "devin\tswe-2-max\n"; }
+    seat_usable() {
+        case "$1/$2" in
+            litellm/worker-cheap|devin/swe-2-max) return 1 ;;
+            *) return 0 ;;
+        esac
+    }
+    _lit_group="worker-cheap"
+    seat=$(litellm_seat "$_lit_group" 2>/dev/null || true)
+    if [[ -n "$seat" ]]; then
+        read -r _lit_p _lit_m <<< "$seat"
+        if ! _SEAT_USABLE_SILENT=1 seat_usable "$_lit_p" "$_lit_m" 2>/dev/null; then
+            seat=""
+            if _dfp=$(direct_fallback_seat); then
+                read -r _dfp_p _dfp_m <<< "$_dfp"
+                if _SEAT_USABLE_SILENT=1 seat_usable "$_dfp_p" "$_dfp_m" 2>/dev/null; then
+                    seat="$_dfp"
+                fi
+            fi
+        fi
+    fi
+    if [[ -z "$seat" && "$_lit_group" == "worker-cheap" ]]; then
+        for _fb_group in worker-capable worker-private; do
+            _fb=$(litellm_seat "$_fb_group" 2>/dev/null || true)
+            [[ -n "$_fb" ]] || continue
+            read -r _fb_p _fb_m <<< "$_fb"
+            if _SEAT_USABLE_SILENT=1 seat_usable "$_fb_p" "$_fb_m" 2>/dev/null; then
+                seat="$_fb"
+                break
+            fi
+        done
+    fi
+    printf "%s" "$seat"
+' "$lib" 2>/dev/null)
+rc=$?
+set -e
+[[ "$rc" == "0" ]] || fail "cross-group pick path simulation failed (rc=$rc)"
+[[ "$result3" == $'litellm\tworker-capable' ]] \
+    || fail "pick path must fall back to litellm/worker-capable when cheap+prepaid are unusable, got '$result3'"
+ok "Test 10: walled cheap + unusable prepaid -> worker-capable (result=$result3)"
+
 echo
 echo "All budget-402 pick fallback tests passed."
