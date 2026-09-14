@@ -6,6 +6,9 @@
 # correct TARGET line, calls pick-seat from lib/litellm-seat.sh, and runs
 # pi --print --provider <provider> --model <model> on the assembled packet.
 #
+# fleet-ops#6034: when pi prints a PACKET-VERDICT line, the wrapper restamps
+# it once with the run's wall-clock elapsed and the unit's start budget.
+#
 # Args:
 #   $1 = repo instance (e.g. fleet-ops)
 #
@@ -13,6 +16,8 @@
 #   PI_PACKET_SEAT_LIB        path to litellm-seat.sh
 #   INTAKE_REPAIR_PROMPT_DIR  prompt directory (default ~/.pi/agent/prompts)
 #   PI_BIN                    pi binary (default ~/.local/bin/pi)
+#   SYSTEMCTL                 systemctl binary for the verdict budget lookup
+#                             (default systemctl)
 
 set -euo pipefail
 
@@ -25,6 +30,10 @@ source "$SEAT_LIB"
 
 PI_BIN="${PI_BIN:-$HOME/.local/bin/pi}"
 PROMPT_DIR="${INTAKE_REPAIR_PROMPT_DIR:-$HOME/.pi/agent/prompts}"
+# fleet-ops#6034: SYSTEMCTL override mirrors install.sh's precedent
+# ("Tests inject a stub via SYSTEMCTL= (fleet-ops#290).", install.sh:41) so
+# the budget lookup below can be stubbed without touching real systemctl.
+SYSTEMCTL="${SYSTEMCTL:-systemctl}"
 
 usage() {
     echo "usage: pi-intake-repair-run <repo>" >&2
@@ -73,8 +82,81 @@ nm=$(printf '%s' "$seat" | cut -f2)
 
 seat_log "pi-intake-repair-run: $repo running on $np/$nm (weight=$difficulty)"
 
-{
-    cat "$prompt_file"
-    echo
-    echo "TARGET: intake unit pi-intake@${repo}.service, repo Nishfleet/${repo}"
-} | "$PI_BIN" --print --provider "$np" --model "$nm"
+# fleet-ops#6034: resolve the LIVE unit's start budget (TimeoutStartUSec) so
+# the verdict line can carry budget=<secs>s. Human-usec forms only: "45min",
+# "30s", "1h 30min 30s", "7500ms" (ms -> /1000); "us" tokens are rounding
+# below 1s. "infinity", empty, zero, or any unparseable shape prints nothing,
+# so the augmented line just omits budget= (never fabricate a number).
+start_budget_secs() {
+    local raw tok num suffix total_ms secs
+    raw="$($SYSTEMCTL --user show "pi-intake-repair@${repo}.service" -p TimeoutStartUSec --value 2>/dev/null || true)"
+    # A KEY=VALUE reply (older systemctl without --value support) still parses.
+    raw="${raw#*=}"
+    raw="${raw//$'\r'/}"
+    [[ -n "$raw" ]] || return 0
+    [[ "$raw" == "infinity" ]] && return 0
+    total_ms=0
+    for tok in $raw; do
+        num="${tok%%[!0-9]*}"        # leading digit run ("" when none)
+        suffix="${tok#"$num"}"       # whatever follows the digits
+        [[ -n "$num" ]] || return 0
+        num=$((10#$num))
+        case "$suffix" in
+            '')  total_ms=$((total_ms + num * 1000)) ;;  # bare N -> seconds
+            s)   total_ms=$((total_ms + num * 1000)) ;;
+            min) total_ms=$((total_ms + num * 60000)) ;;
+            h)   total_ms=$((total_ms + num * 3600000)) ;;
+            ms)  total_ms=$((total_ms + num)) ;;         # accumulated, /1000 below
+            us)  : ;;                                    # sub-second: ignore
+            *)   return 0 ;;                             # unknown form: omit
+        esac
+    done
+    secs=$((total_ms / 1000))
+    if (( secs > 0 )); then
+        echo "$secs"
+    fi
+}
+
+# fleet-ops#6034: stream pi's stdout through tee into a temp capture so the
+# journal keeps today's live verdict (tee passes bytes through unbuffered)
+# while a copy survives to restamp below. Nothing before this point changed:
+# the no-seat path above stays byte-identical, and if the capture file cannot
+# be created the pipeline below is exactly the old one. The verdict lookup
+# takes the LAST PACKET-VERDICT line; with no verdict line nothing extra is
+# printed (never a synthetic line). `|| run_rc=$?` captures the pipeline rc
+# so set -e cannot skip the restamp; the wrapper still exits with pi's rc.
+run_started=$SECONDS
+run_rc=0
+capture="$(mktemp -t intake-repair-verdict.XXXXXX 2>/dev/null || true)"
+if [[ -n "$capture" ]]; then
+    trap 'rm -f "$capture"' EXIT
+    {
+        cat "$prompt_file"
+        echo
+        echo "TARGET: intake unit pi-intake@${repo}.service, repo Nishfleet/${repo}"
+    } | "$PI_BIN" --print --provider "$np" --model "$nm" | tee "$capture" || run_rc=$?
+else
+    {
+        cat "$prompt_file"
+        echo
+        echo "TARGET: intake unit pi-intake@${repo}.service, repo Nishfleet/${repo}"
+    } | "$PI_BIN" --print --provider "$np" --model "$nm" || run_rc=$?
+fi
+
+# fleet-ops#6034: exactly one extra stdout line when (and only when) the
+# capture carries a PACKET-VERDICT line: that same line with the wall-clock
+# elapsed (SECONDS builtin) appended, plus budget=<secs>s when the unit's
+# TimeoutStartUSec resolves to a positive integer.
+elapsed=$((SECONDS - run_started))
+verdict_line=''
+if [[ -n "$capture" ]] && [[ -f "$capture" ]]; then
+    verdict_line="$(grep '^PACKET-VERDICT' "$capture" 2>/dev/null | tail -n 1 || true)"
+fi
+if [[ -n "$verdict_line" ]]; then
+    budget_secs="$(start_budget_secs || true)"
+    augmented="$verdict_line elapsed=${elapsed}s"
+    [[ -n "$budget_secs" ]] && augmented="$augmented budget=${budget_secs}s"
+    printf '%s\n' "$augmented"
+fi
+
+exit "$run_rc"
