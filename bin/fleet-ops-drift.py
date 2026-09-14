@@ -1289,14 +1289,25 @@ def unit_has_install(path: Path) -> bool:
         return False
 
 
-def parse_manifest(checkout: Path) -> tuple[dict[str, Path], set[str]]:
-    """Return (dest->src mapping, set of unit names that should be enabled)."""
+def parse_manifest(checkout: Path) -> tuple[dict[str, Path], set[str], set[str]]:
+    """Return (dest->src mapping, enabled units, MANIFEST-installed templates).
+
+    The template set holds canonical template names (``gh-runner@.service``)
+    that the MANIFEST installs to the user systemd dir AND whose source has
+    an [Install] section. Every enabled instance of such a template counts as
+    expected-enabled (fleet-ops#6537) — parse_manifest used to skip every
+    @-templated basename, so instances like gh-runner@{1,2,3}.service
+    re-fired DRIFT-UNITS extra-enabled on every heartbeat tick. A template
+    NOT installed via the MANIFEST never lands here, so instances of a
+    non-MANIFEST template still alarm.
+    """
     manifest = checkout / "MANIFEST"
     if not manifest.exists():
         fail_loud("DRIFT-FATAL", f"MANIFEST missing at {manifest}")
 
     entries: dict[str, Path] = {}
     expected_enabled: set[str] = set()
+    expected_templates: set[str] = set()
     user_systemd_dir = str(HOME / ".config" / "systemd" / "user") + os.sep
 
     with manifest.open("r", encoding="utf-8") as f:
@@ -1314,18 +1325,25 @@ def parse_manifest(checkout: Path) -> tuple[dict[str, Path], set[str]]:
                 continue
 
             basename = os.path.basename(dest)
-            if "@" in basename:
-                continue
-
             repo_file = checkout / src
             if not repo_file.exists():
                 continue
+
+            if "@" in basename:
+                # fleet-ops#6537: a MANIFEST-installed template with an
+                # [Install] section is an enable-class unit; its enabled
+                # instances are fleet-managed expected-enabled.
+                base, suffix = basename.split("@", 1)
+                if suffix.startswith(".") and unit_has_install(repo_file):
+                    expected_templates.add(basename)
+                continue
+
             if not unit_has_install(repo_file):
                 continue
 
             expected_enabled.add(basename)
 
-    return entries, expected_enabled
+    return entries, expected_enabled, expected_templates
 
 
 def parse_intake_repos(checkout: Path) -> list[str]:
@@ -1927,7 +1945,25 @@ def check_manifest_install(checkout: Path) -> None:
     log("install.sh --check: clean")
 
 
-def check_enabled_units(checkout: Path, expected_enabled: set[str]) -> None:
+def matches_template(name: str, templates: set[str]) -> bool:
+    """True iff ``name`` is an instance of one of the canonical templates.
+
+    ``gh-runner@1.service`` matches template ``gh-runner@.service``; the
+    template itself matches directly (fleet-ops#6537).
+    """
+    if name in templates:
+        return True
+    if "@" not in name:
+        return False
+    base, rest = name.split("@", 1)
+    if "." in rest and f"{base}@.{rest.rsplit('.', 1)[1]}" in templates:
+        return True
+    return False
+
+
+def check_enabled_units(
+    checkout: Path, expected_enabled: set[str], expected_templates: set[str]
+) -> None:
     expected_enabled = set(expected_enabled)
     managed = fleet_managed_units(checkout)
 
@@ -1954,6 +1990,14 @@ def check_enabled_units(checkout: Path, expected_enabled: set[str]) -> None:
         if not unit:
             continue
         if unit in expected_enabled:
+            continue
+        if matches_template(unit, expected_templates):
+            # fleet-ops#6537: enabled instance of a MANIFEST-installed
+            # [Install] template (gh-runner@1.service of gh-runner@.service)
+            # is expected-enabled, not drift. Rogue intake instances of the
+            # pi-intake@/pi-scout@ templates stay policed by the intake
+            # reconciler's undeclared-drift disable (fleet-ops#32), and the
+            # per-repo missing-enabled direction above is unchanged.
             continue
         if is_fleet_managed_unit(unit, managed):
             extra.append(unit)
@@ -2136,7 +2180,7 @@ def main(argv: list[str] | None = None) -> None:
         sys.exit(0)
 
     checkout = find_checkout()
-    expected_dests, expected_enabled = parse_manifest(checkout)
+    expected_dests, expected_enabled, expected_templates = parse_manifest(checkout)
 
     check_papered_heartbeat_dropin()
     check_volatile_canary_bin()
@@ -2152,7 +2196,7 @@ def main(argv: list[str] | None = None) -> None:
     check_checkout(checkout)
     check_manifest_install(checkout)
     check_live_matches_origin_main(checkout)
-    check_enabled_units(checkout, expected_enabled)
+    check_enabled_units(checkout, expected_enabled, expected_templates)
     check_extra_symlinks(checkout, set(expected_dests.keys()))
     check_volatile_unit_paths(checkout)
     check_missing_execstarts()
