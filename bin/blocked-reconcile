@@ -135,8 +135,16 @@ NISH_REASON = re.compile(
 ATTEST_MENTION = re.compile(
     r"(?i)\battest|gate[\s-]*integrity\s*attest|attest-requested"
 )
+# fleet-ops#6835: `attest-requested` removed from ATTEST_ADMIN — the
+# template phrase `attest-requested: <40-hex head sha>` appears in issue
+# accept-criteria as worker instruction (fleet-ops#5870 handoff text), not as
+# a blocker. Matching it here made every issue carrying that template
+# classify as orchestrator-attest and re-park needs-orchestrator every tick
+# (bounce loop pinning FleetNeedsOrchestratorStale). A real attest blocker
+# names an admin/authority explicitly ("needs an admin gate-integrity-attest",
+# "verifier-attest requires an admin identity"); the template alone does not.
 ATTEST_ADMIN = re.compile(
-    r"(?i)\badmin\b|gate[\s-]*integrity\s*attest|attest-requested|"
+    r"(?i)\badmin\b|gate[\s-]*integrity\s*attest|"
     r"verifier[\s-]*attest"
 )
 ATTEST_KIND = "orchestrator-attest"
