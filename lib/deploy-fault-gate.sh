@@ -114,6 +114,48 @@ deploy_fault_fix_shas() {
         fi
     done < <(printf '%s' "${prs:-[]}" \
         | jq -r '.[] | [(.body // ""), (.mergeCommit.oid // "")] | @tsv' 2>/dev/null)
+    _deploy_fault_remap_stranded "$repo"
+    return 0
+}
+
+# _deploy_fault_stranded_map REPO — path of the stranded-merge overlay for
+# REPO. DEPLOY_FAULT_STRANDED_MERGES env wins (tests); else the config/
+# sibling of this lib in its source tree (working copy and deploy-clone
+# layouts); else the MANIFEST-installed flat copy under ~/.local/state/pi-packet/.
+_deploy_fault_stranded_map() {
+    local repo="$1" here="${BASH_SOURCE[0]:-}" cand
+    if [ -n "${DEPLOY_FAULT_STRANDED_MERGES:-}" ]; then
+        printf '%s' "$DEPLOY_FAULT_STRANDED_MERGES"
+        return 0
+    fi
+    if [ -n "$here" ] && [ "$here" != "deploy-fault-gate.sh" ]; then
+        cand="$(dirname "$here")/../config/deploy-fault-stranded-merges.json"
+        [ -f "$cand" ] && { printf '%s' "$cand"; return 0; }
+    fi
+    printf '%s' "${HOME}/.local/state/pi-packet/deploy-fault-stranded-merges.json"
+}
+
+# _deploy_fault_remap_stranded REPO — redirect recorded merge SHAs that a
+# main-history rewrite stranded off the repo, via the stranded-merges map.
+# Live case (2026-09-11, PRs #2838–#2949): a force-push rebuilt main with
+# recreated commits, so GitHub's recorded PR mergeCommit.oid values point at
+# commits no longer reachable from any deploy run; `gh api compare` reports
+# "diverged" forever and the containment proof can never pass — every legal
+# close of an issue delivered by such a PR was reopened each tick (live
+# 0509#2944 + #3460, 2026-09-14). The map names the on-main replacement
+# (same content, rebuilt SHA) per stranded recorded merge. Missing map, or
+# a sha absent from it: unchanged.
+_deploy_fault_remap_stranded() {
+    local repo="$1" short="${repo##*/}" smap mapped out=""
+    [ -n "$DF_FIX_SHAS" ] || return 0
+    smap=$(_deploy_fault_stranded_map "$repo")
+    [ -n "$smap" ] && [ -f "$smap" ] || return 0
+    while IFS= read -r f; do
+        [ -n "$f" ] || continue
+        mapped=$(jq -r --arg r "$short" --arg s "$f" '.[$r][$s] // empty' "$smap" 2>/dev/null)
+        out="${out}${out:+$'\n'}${mapped:-$f}"
+    done <<< "$DF_FIX_SHAS"
+    DF_FIX_SHAS="$out"
     return 0
 }
 
