@@ -159,5 +159,19 @@ if [[ -z "$revert_pr" ]]; then
 fi
 
 gh pr merge --auto --squash --repo "$REPO" "$revert_pr"
+
+# fleet-ops#5810: an auto-revert PR is a red-main repair PR. Label it so the
+# repair-queue jump machinery (heartbeat block 2 entry-jump + 2b sweep) can
+# recognise it, then try the head-of-queue enqueue directly. On a repo with
+# no merge queue the helper exits 4 and the armed auto-merge is the whole
+# path; on a merge-queue repo it lands at the head instead of tail-appending
+# behind the entries whose group builds fail on the reverted defect. Best
+# effort only — a refused jump is retried by the hourly sweep.
+gh label create repair:main-red --repo "$REPO" --color B60205 \
+  --description "red-main/auto-revert repair PR — may jump the merge queue (fleet-ops#5810)" \
+  --force >/dev/null 2>&1 || true
+gh pr edit "$revert_pr" --repo "$REPO" --add-label repair:main-red >/dev/null 2>&1 || true
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+node "$script_dir/repair-queue-jump.mjs" enqueue --repo "$REPO" --pr "$revert_pr" >/dev/null 2>&1 || true
+
 bash "$script_dir/reopen-reverted-issues.sh" "$REPO" "$HEAD_SHA" "$revert_pr"
