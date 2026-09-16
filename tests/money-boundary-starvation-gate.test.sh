@@ -279,14 +279,20 @@ PY
 # same reason — only the real page counts.
 MONEY_BOUNDARY_PAGES_LOG="$AS/lanes/money-boundary-pages.log" python3 - "$metrics" <<'PY'
 import sys, importlib.util, os
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 spec = importlib.util.spec_from_file_location("m", sys.argv[1])
 m = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(m)
 log = Path(os.environ["MONEY_BOUNDARY_PAGES_LOG"])
-log.write_text("""2026-09-09T01:29:00Z reason=provider_credits_dry provider=openrouter
-2026-09-09T01:56:00Z suppressed reason=provider_credits_dry provider=openrouter
-""")
+# Dates must fall inside the exporter's trailing-7d window (the reader
+# skips anything older); fixed dates would age out and silently zero the
+# count. Two fresh stamps: one real page, one suppressed, same reason.
+now = datetime.now(timezone.utc)
+ts1 = (now - timedelta(minutes=30)).strftime("%Y-%m-%dT%H:%M:%SZ")
+ts2 = (now - timedelta(minutes=5)).strftime("%Y-%m-%dT%H:%M:%SZ")
+log.write_text(f"{ts1} reason=provider_credits_dry provider=openrouter\n"
+               f"{ts2} suppressed reason=provider_credits_dry provider=openrouter\n")
 counts = m._read_money_boundary_pages()
 assert counts.get("provider_credits_dry") == 1, \
     f"suppressed page must not count toward the total; got {counts}"
