@@ -185,6 +185,8 @@ jobs:
         # fleet-ops#5443: canonical findings ledger — strict writer + judge line.
         bash tests/findings-ledger.test.sh
         bash tests/findings-measure-line.test.sh
+        # fleet-ops#7371: shared Jev helper contract (dry-run, refusals, log shape, cap, key hygiene).
+        bash tests/jev-eval.test.sh
         bash tests/fleet-unjustified-wait.test.sh
         bash tests/fleet-deploy-check.test.sh
         bash tests/fleet-seat-recovery.test.sh
@@ -299,13 +301,13 @@ jobs:
         export PATH="${HOME}/.local/bin:${PATH}"
         # shellcheck -x follows `source` calls: bin/pi-issue-run sources
         # lib/seat-lib.sh through a variable, and without -x shellcheck emits
-        # SC1091. bin/* is filtered to skip non-shell files (Python/TS emit
+        # SC1091. bin/* is filtered to skip non-shell files (Python/TS/JS emit
         # SC1071 and exit nonzero, which is wrong for this layout).
         # Keep only regular files: semgrep (run above) leaves bin/__pycache__,
         # and shellcheck cannot read a directory (openBinaryFile: is a dir).
         shopt -s extglob
         files=()
-        for f in bin/!(*.py|*.ts); do
+        for f in bin/!(*.py|*.ts|*.mjs|*.js); do
           [[ -f "$f" ]] && files+=("$f")
         done
         files+=(.github/scripts/gate-integrity.sh install.sh)
