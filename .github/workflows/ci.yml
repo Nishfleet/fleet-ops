@@ -185,6 +185,8 @@ jobs:
         # fleet-ops#5443: canonical findings ledger — strict writer + judge line.
         bash tests/findings-ledger.test.sh
         bash tests/findings-measure-line.test.sh
+        # fleet-ops#7371: shared Jev helper contract (dry-run, refusals, log shape, cap, key hygiene).
+        bash tests/jev-eval.test.sh
         bash tests/fleet-unjustified-wait.test.sh
         bash tests/fleet-deploy-check.test.sh
         bash tests/fleet-seat-recovery.test.sh
