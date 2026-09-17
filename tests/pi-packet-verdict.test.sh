@@ -249,6 +249,82 @@ else
     FAIL=$((FAIL + 1))
 fi
 
+# Advisory-only exit classifier. Fixtures never enter the live benchmark log.
+python3 - "$CHECKER" <<'PY'
+import importlib.util
+import json
+import os
+import subprocess
+import sys
+import tempfile
+from pathlib import Path
+from unittest.mock import patch
+spec = importlib.util.spec_from_file_location('verdict', sys.argv[1])
+v = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(v)
+assert hasattr(v, 'advisory_exit'), 'missing advisory_exit integration'
+with tempfile.TemporaryDirectory() as tmp:
+    root = Path(tmp)
+    out = root / 'run.out'
+    err = root / 'run.err'
+    out.write_text('Work completed\nPACKET-VERDICT class=worked tools=12\n')
+    err.write_text('')
+    log = root / 'compare.jsonl'
+    env = {'JEV_PACKET_VERDICT': '0', 'PI_VERDICT_COMPARE_LOG': str(log)}
+    with patch.dict(os.environ, env), patch.object(v.subprocess, 'run') as run:
+        v.advisory_exit('fleet-ops-7391', 1, 'pi-failed', str(out), str(err))
+        run.assert_not_called()
+        assert not log.exists()
+    env['JEV_PACKET_VERDICT'] = '1'
+    def invoke(cmd, **kwargs):
+        if cmd[0] == v.GH:
+            return subprocess.CompletedProcess(cmd, 0, '[{"number":7542,"state":"closed","merged_at":"2026-09-17T20:00:00Z"}]', '')
+        state = json.loads(kwargs['input'])['state']
+        assert state['existing_verdicts'] == ['PACKET-VERDICT class=worked tools=12']
+        assert state['rc'] == 1
+        assert state['prs']['status'] == 'known'
+        return subprocess.CompletedProcess(cmd, 0, json.dumps(receipt), '')
+    with patch.dict(os.environ, env):
+        for choice in ('done', 'partial', 'empty_run', 'failed'):
+            receipt = {'answers': {'verdict': {'choice': choice, 'probabilities': {c: .85 if c == choice else .05 for c in ('done', 'partial', 'empty_run', 'failed')}}}, 'state_sha256': 'a' * 64}
+            with patch.object(v.subprocess, 'run', side_effect=invoke):
+                v.advisory_exit('fleet-ops-7391', 1, 'pi-failed', str(out), str(err))
+            row = json.loads(log.read_text().splitlines()[-1])
+            assert row['choice'] == choice and row['p'] == .85
+            assert row['rc'] == 1 and row['existing_verdicts']
+        before = log.read_text()
+        for failure in (OSError('missing helper'), subprocess.TimeoutExpired('jev-eval', 10)):
+            with patch.object(v.subprocess, 'run', side_effect=failure):
+                v.advisory_exit('fleet-ops-7391', 1, 'pi-failed', str(out), str(err))
+            assert log.read_text() == before
+        receipt['answers']['verdict']['probabilities']['failed'] = float('nan')
+        with patch.object(v.subprocess, 'run', side_effect=invoke):
+            v.advisory_exit('fleet-ops-7391', 1, 'pi-failed', str(out), str(err))
+        assert log.read_text() == before
+    assert out.read_text() == 'Work completed\nPACKET-VERDICT class=worked tools=12\n'
+    # Execute the exact production EXIT trap body, including timeout failure.
+    source = (Path(sys.argv[1]).parents[1] / 'bin/pi-issue-run').read_text()
+    trap_body = source[source.index('_journal_exit() {'):source.index("trap '_journal_exit' EXIT")]
+    hook = root / 'hook.py'
+    hook.write_text('import sys\nprint("HOOK " + " ".join(sys.argv[1:]))\n')
+    for enabled in ('0', '1'):
+        for code in (0, 1, 7):
+            script = ('journal_mark() { :; }; clear_active_seat() { :; }; '
+                      'inst=fleet-ops-7391; _exit_reason=pi-failed; '
+                      'out_file=run.out; err_file=run.err;\n' + trap_body +
+                      "trap '_journal_exit' EXIT\nexit " + str(code))
+            result = subprocess.run(['bash', '-euc', script], capture_output=True, text=True,
+                                    env={**os.environ, 'JEV_PACKET_VERDICT': enabled,
+                                         'PI_VERDICT_EXIT_CHECKER': str(hook)})
+            assert result.returncode == code, (enabled, code, result)
+            assert ('HOOK --advisory-exit' in result.stdout) == (enabled == '1')
+    hook.write_text('raise SystemExit(9)\n')
+    result = subprocess.run(['bash', '-euc', script], capture_output=True, text=True,
+                            env={**os.environ, 'JEV_PACKET_VERDICT': '1', 'PI_VERDICT_EXIT_CHECKER': str(hook)})
+    assert result.returncode == 7 and 'advisory exit command failed' in result.stderr
+print('OK advisory: off, four classes, helper failure, timeout, invalid probability, unchanged output and EXIT codes')
+PY
+
 echo
 echo "RESULT: pass=$PASS fail=$FAIL"
 if [ "$FAIL" -gt 0 ]; then

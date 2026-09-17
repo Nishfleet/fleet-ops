@@ -367,6 +367,14 @@ _journal_exit() {
     local rc=$?
     journal_mark exit "$rc" "$_exit_reason"
     clear_active_seat "pi-issue-${inst}" 2>/dev/null || true
+    # #7391: bounded advisory side effect only; preserve the original exit.
+    if [[ "${JEV_PACKET_VERDICT:-1}" != 0 ]]; then
+        local checker="${PI_VERDICT_EXIT_CHECKER:-$HOME/.local/lib/pi-packet/pi-packet-verdict.py}"
+        if ! timeout 18s python3 "$checker" --advisory-exit "$inst" "$rc" "$_exit_reason" "${out_file:-}" "${err_file:-}"; then
+            echo "JEV-PACKET-VERDICT unavailable: advisory exit command failed" >&2
+        fi
+    fi
+    return "$rc"
 }
 trap '_journal_exit' EXIT
 trap 'clear_active_seat "pi-issue-${inst}" 2>/dev/null || true' INT TERM
