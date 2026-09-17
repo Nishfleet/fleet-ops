@@ -3,7 +3,7 @@
 # runs under a throwaway HOME so real logs and spend are never touched.
 set -u
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-J="$here/bin/jev-eval"
+J="$here/bin/jev-eval.mjs"
 fail() { echo "FAIL: $*" >&2; exit 1; }
 command -v node >/dev/null || fail "node missing"
 export HOME="$(mktemp -d)"; trap 'rm -rf "$HOME"' EXIT

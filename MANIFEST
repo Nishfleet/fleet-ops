@@ -77,7 +77,7 @@ config/prometheus.yml /etc/prometheus/prometheus.yml
 # Lives next to the rules so the verify drill + PR gate can read it in-repo.
 config/fleet-organs.json /home/nish/.local/state/pi-packet/fleet-organs.json
 bin/siterep-live-canary /home/nish/.local/bin/siterep-live-canary
-bin/jev-eval /home/nish/.local/bin/jev-eval
+bin/jev-eval.mjs /home/nish/.local/bin/jev-eval
 bin/siterep-deploy /home/nish/.local/bin/siterep-deploy
 bin/siterep-deploy-verify /home/nish/.local/bin/siterep-deploy-verify
 bin/siterep-deploy-rollback /home/nish/.local/bin/siterep-deploy-rollback
