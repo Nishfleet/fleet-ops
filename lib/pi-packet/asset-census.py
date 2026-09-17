@@ -50,6 +50,9 @@ import configparser
 import concurrent.futures
 import fnmatch
 import json
+import math
+import stat
+import time
 import os
 import re
 import shutil
@@ -1363,12 +1366,128 @@ def cmd_set_subscriptions(args: argparse.Namespace) -> int:
     return 0
 
 
+def retention_classes(home: Path, observed: float) -> list[dict[str, Any]]:
+    """Stat a bounded set of local logs, never their contents or linked targets."""
+    rows = []
+    for name, directory, pattern in (
+        ("issue-inputs", "pi-issues", "*.in"),
+        ("issue-outputs", "pi-issues", "*.out"),
+        ("issue-errors", "pi-issues", "*.err"),
+        ("watch-active", "pi-packet", "watch.log"),
+        ("watch-rotated", "pi-packet", "watch.log.[1-5]*"),
+    ):
+        root = home / ".local/state" / directory
+        records, errors = [], []
+        if root.is_symlink():
+            errors.append("root is a symlink; not scanned")
+        else:
+            try:
+                for path in root.iterdir():
+                    if not fnmatch.fnmatch(path.name, pattern):
+                        continue
+                    try:
+                        s = path.lstat()
+                        if stat.S_ISREG(s.st_mode):
+                            records.append((str(path), s))
+                    except OSError as exc:
+                        errors.append(f"{path}: {exc.__class__.__name__}")
+            except OSError as exc:
+                errors.append(f"{root}: {exc.__class__.__name__}")
+        mtimes = [max(0, observed - s.st_mtime) / 86400 for _, s in records]
+        atimes = [max(0, observed - s.st_atime) / 86400 for _, s in records]
+        rows.append({
+            "class": name, "root": str(root), "pattern": pattern,
+            "count": len(records), "bytes": sum(s.st_size for _, s in records),
+            "allocated_bytes": sum(s.st_blocks * 512 for _, s in records),
+            "age_days_range": [min(mtimes), max(mtimes)] if mtimes else None,
+            "atime_age_days_range": [min(atimes), max(atimes)] if atimes else None,
+            "last_read": None,
+            "last_read_note": "Unknown: atime may be relatime/noatime, and scanners count as access.",
+            "refs": {"per_file_consumers": "unknown", "known_class_use":
+                "systemd/pi-issue@.service consumes inputs and writes outputs/errors; receipts support audits and salvage"
+                if directory == "pi-issues" else
+                "config/logrotate.conf and systemd/pi-packet-logrotate.service retain active watch.log plus five rotations"},
+            "record_paths": sorted(p for p, _ in records), "errors": errors,
+        })
+    return rows
+
+
+def retention_verdict(answers: dict[str, Any]) -> tuple[float, str]:
+    score = answers["value"]["score"]
+    action = answers["action"]["choice"]
+    if type(score) not in (int, float) or not math.isfinite(score) or not 0 <= score <= 4:
+        raise ValueError("invalid retention score")
+    if action not in ("keep", "review-drop"):
+        raise ValueError("invalid retention action")
+    return score, action
+
+
+def cmd_retention(args: argparse.Namespace) -> int:
+    if os.environ.get("FLEET_RETENTION_ENABLED", "1") != "1":
+        print(json.dumps({"status": "disabled", "advisory": True, "deleted_bytes": 0}))
+        return 0
+    cfg = Config(args)
+    observed = time.time()
+    rows = retention_classes(cfg.home, observed)
+    report = {"observed_at": now_iso(), "advisory": True, "deleted_bytes": 0,
+              "approval": "Nish or weekly review must confirm the exact list once; no deletion implemented",
+              "scope": "local issue packets and watch logs only; R2 and inotify unmeasured",
+              "gb_unit": "decimal GB (bytes / 1e9); allocated bytes are not guaranteed reclaimable",
+              "classes": rows}
+    helper = shutil.which("jev-eval") or str(cfg.fleet_ops_repo / "bin/jev-eval.mjs")
+    if args.helper:
+        helper = args.helper
+    try:
+        for row in rows:
+            row["gb"] = row["bytes"] / 1e9
+            row["proposed_drop_gb"] = 0
+            if not row["count"] or row["errors"]:
+                row.update(score=None, proposed_action="unknown", status="incomplete-or-empty")
+                continue
+            # Full class metadata plus scope/limitations; paths stay local in the report.
+            state = {"observed_at": report["observed_at"],
+                     "class": {k: v for k, v in row.items() if k != "record_paths"},
+                     "scope": report["scope"], "approval": report["approval"],
+                     "rules": "Score class retention value 0-4. Active logs and current issue work are valuable. Age is modification age, not creation age. Missing references/read evidence is unknown, not disuse. No benchmark cut threshold exists. Suggest drops only for review, never execution."}
+            ref = f"{row['root']}/{row['pattern']} at {report['observed_at']}"
+            payload = {"state": state, "site": "artefact-retention", "ref": ref,
+                       "questions": {
+                           "value": {"type": "score", "instructions": "Score retention value for this class using all supplied evidence and unknowns.",
+                                     "criteria": ["No remaining value demonstrated", "Low historical value", "Uncertain or moderate value", "Strong audit or recovery value", "Required for current operation"]},
+                           "action": {"type": "choice", "instructions": "Which advisory action fits the whole measured class? Unknown consumers or ongoing writes favor keep. No deletion authority is granted.",
+                                      "criteria": {"keep": "Keep the class; valuable or insufficient disuse evidence", "review-drop": "Propose the measured class for one-time review of a possible drop"}}}}
+            result = subprocess.run([helper, "--cap-usd", "1"], input=json.dumps(payload),
+                                    text=True, capture_output=True, timeout=60, check=False)
+            if result.returncode:
+                raise ValueError(f"shared helper exited {result.returncode}; no valid report")
+            evaluation = json.loads(result.stdout)
+            score, action = retention_verdict(evaluation["answers"])
+            row.update(score=score, proposed_action=action, evaluation=evaluation)
+            row["proposed_drop_gb"] = row["gb"] if action == "review-drop" else 0
+        report["proposed_drop_gb"] = sum(r["proposed_drop_gb"] for r in rows)
+        report["status"] = "incomplete" if any(r.get("status") for r in rows) else "scored"
+        text = json.dumps(report, indent=2) + "\n"
+        if args.output_json:
+            atomic_write(Path(args.output_json), text, mode=0o600)
+        else:
+            print(text, end="")
+        return 0 if report["status"] == "scored" else 1
+    except (OSError, ValueError, KeyError, TypeError, subprocess.TimeoutExpired) as exc:
+        log("retention-report failed: %s", exc)
+        return 2
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--fleet-ops-repo", default=None, help="path to fleet-ops checkout")
     parser.add_argument("--state-dir", default=None, help="state directory")
     parser.add_argument("--map", default=None, help="guard map JSON path")
     sub = parser.add_subparsers(dest="cmd", required=True)
+
+    p_retention = sub.add_parser("retention-report", help="score local log classes; advisory only, never deletes")
+    p_retention.add_argument("--output-json", default=None)
+    p_retention.add_argument("--helper", default=None, help="shared jev-eval executable path")
+    p_retention.set_defaults(func=cmd_retention)
 
     p_census = sub.add_parser("census", help="enumerate live assets")
     p_census.add_argument("--output-json", default=None)

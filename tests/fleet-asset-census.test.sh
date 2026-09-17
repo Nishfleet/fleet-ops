@@ -248,4 +248,5 @@ pruned=$(echo "$out" | jq '[.assets[] | select(.id | contains(".config/git/"))] 
 [[ "$pruned" -eq 0 ]] || fail "pruned git/ subtree leaked $pruned assets into the census"
 ok "scalability: large config tree scanned in ${elapsed}s, vendored subtree pruned"
 
+python3 "$here/asset-retention.test.py"
 echo "OK: fleet-asset-census (fleet-ops#1149)"
