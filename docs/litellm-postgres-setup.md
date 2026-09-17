@@ -199,25 +199,27 @@ set -euo pipefail
 set -a
 
 # --- env-file providers (KEY=value format, safe to source) ---
-source /home/nish/fleet2/etc/opencode.env
-source /home/nish/fleet2/etc/commandcode.env
-source /home/nish/fleet2/etc/hetzner.env
-source /home/nish/fleet2/etc/devin.env
-source /home/nish/fleet2/etc/cursor.env
-source /home/nish/fleet2/etc/openrouter.env
+# fleet-ops#6748: use the seats directory from repair record #7100.
+# The old fleet2 directory was removed; see the incident note below.
+source /home/nish/.config/fleet-ops/seats/opencode.env
+source /home/nish/.config/fleet-ops/seats/commandcode.env
+source /home/nish/.config/fleet-ops/seats/hetzner.env
+source /home/nish/.config/fleet-ops/seats/devin.env
+source /home/nish/.config/fleet-ops/seats/cursor.env
+source /home/nish/.config/fleet-ops/seats/openrouter.env
 # fleet-ops#4219: P3a dual-run found the original pool walled/dead in seat-lib
 # (opencode-zen balance, commandcode model unsupported, hetzner corpse, straitly
 # credits exhausted, grok cli-chat-proxy 426). Source the credential env files of
 # the seats that are actually usable and OpenAI-compatible.
-source /home/nish/fleet2/etc/alibaba-coding.env
-source /home/nish/fleet2/etc/groq.env
-source /home/nish/fleet2/etc/ollama.env
-source /home/nish/fleet2/etc/cline.env
-source /home/nish/fleet2/etc/paretoinference.env
+source /home/nish/.config/fleet-ops/seats/alibaba-coding.env
+source /home/nish/.config/fleet-ops/seats/groq.env
+source /home/nish/.config/fleet-ops/seats/ollama.env
+source /home/nish/.config/fleet-ops/seats/cline.env
+source /home/nish/.config/fleet-ops/seats/paretoinference.env
 source /home/nish/.config/xkiro/.env
-source /home/nish/fleet2/etc/runinfra.env
-source /home/nish/fleet2/etc/entrim.env
-source /home/nish/fleet2/etc/crof.env
+source /home/nish/.config/fleet-ops/seats/runinfra.env
+source /home/nish/.config/fleet-ops/seats/entrim.env
+source /home/nish/.config/fleet-ops/seats/crof.env
 # 2026-09-11 seat wire-up: synthetic + llmgateway-devpass prepaid worker seats
 # (fleet-ops packet; env files mode 600 under ~/.config/fleet-ops/seats/).
 source /home/nish/.config/fleet-ops/seats/synthetic.env
@@ -276,6 +278,51 @@ exec /home/nish/.local/venvs/litellm/bin/litellm \
 EOF
 chmod 700 ~/.local/bin/fleet-litellm-proxy-start
 ```
+
+#### September 15–16 outage evidence, #6748
+
+The preserved user journal identifies a startup failure, not a slow boot.
+All times below are UTC. Read with `journalctl --user --utc -o short-iso`
+and the named unit and time range.
+
+- `fleet-litellm-proxy.service`, September 14 18:31:42: the service stopped.
+  From 18:31:43 to 19:15:13, 20 starts failed at wrapper line 16 because
+  `/home/nish/fleet2/etc/opencode.env` was missing. Under `set -euo pipefail`,
+  that first failed source aborts startup. The other 13 sources are not
+  evidence of 13 additional failures. Systemd exhausted its restart limit.
+- `fleet-litellm-health-canary.service` remained unreachable through
+  September 15 and into September 16. At September 16 04:03:00 its dead
+  counter was 120,660 seconds. This was about 33.5 hours, not a restart gap.
+- At September 16 04:00:36 through 04:02:12 the proxy journal records a
+  second startup error in the restored `devin.env`: an unbound variable.
+  The token fragment from that error is deliberately omitted here.
+- [Repair record #7100](https://github.com/Nishfleet/fleet-ops/issues/7100)
+  describes restoring the missing files, fixing shell quoting, then moving
+  the 14 sources to the seats directory and updating the wrapper. Its
+  claim that gap-audit caused the deletion is an attributed report: the
+  journal proves the missing file, not who deleted it. Its approximate
+  outage start time is superseded by the 18:31:43 journal record above.
+- The canary's first green record in the recovery window is September 16
+  04:04:01: `proxy_up=1 status=200 census=6 expected=6 groups=2 pg_up=1
+  redis_up=1`. The 04:05, 04:06 and 04:07 runs agree. Restoration preceded
+  the final directory move; the live wrapper's mtime is 04:15:27 UTC.
+  Inspection on September 17 found the 14 replacement source paths in
+  that wrapper, no old directory references, and a clean `bash -n` result.
+
+This PR records that existing repair and fixes the reinstall instructions;
+it does not deploy the wrapper or claim a fresh production repair. No
+merged repair SHA was found for the operator-owned wrapper. The identity
+and command responsible for deleting the old directory remain unproven.
+The separate routing and audit-policy follow-ups in #7100 are not closed
+by this mapping. Failed attempts retained from #7028, #7030, #7061, #7088,
+#7056 and #7082 are not counted as successful repairs.
+
+The inherited commits `9b8ef205b177fedebf7bbc83f81c3d02cc57642b` and
+`0b8ef1d031dd434e65e301a22c5267395f54d161` are rejected, not carried forward.
+Their 300-second restart hold and resettable clock could hide a sustained
+outage. Neither commit is an ancestor of the checked base
+`9f4d08bfef7dfd6e0e2b13ee8bbdedaece76565a`. The existing 60-second dead
+alarm remains unchanged. No new checker or timeout relaxation is added.
 
 ### 3b. Pi's client side (`config/pi-models.json` provider `litellm`)
 
