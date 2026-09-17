@@ -64,9 +64,25 @@ GH_SECONDARY_STATE="$GH_SECONDARY_STATE_DIR/gh-secondary-rate.json"
 _gh_read() {
     if [[ "${_gh_rl_pre_exhausted:-0}" == "1" ]]; then
         ( unset GH_TOKEN GITHUB_TOKEN; gh "$@" )
-    else
-        gh "$@"
+        return
     fi
+    # fleet-ops#7485: belt and braces for a stale or missing pre-check state
+    # file — an App-identity read that dies on a rate limit retries ONCE on
+    # the human gh identity instead of failing the tick. Reads only; the
+    # claim/write path still honours the pre-check hold. stdout passes
+    # through untouched (callers parse JSON from it); only stderr is inspected.
+    local _err _rc
+    _err=$(mktemp "${TMPDIR:-/tmp}/pi-intake-ghread.XXXXXX")
+    gh "$@" 2>"$_err"; _rc=$?
+    if (( _rc != 0 )) && grep -qi 'rate limit' "$_err"; then
+        echo "gh read hit the App rate limit mid-tick; retrying this read on human gh — gate: gh_rate_limit read-glide (fleet-ops#7485)" >&2
+        rm -f "$_err"
+        _gh_rl_pre_exhausted=1
+        ( unset GH_TOKEN GITHUB_TOKEN; gh "$@" )
+        return
+    fi
+    cat "$_err" >&2; rm -f "$_err"
+    return $_rc
 }
 
 _gh_secondary_read() {
@@ -410,8 +426,26 @@ if [[ -r "$gh_rl_pre_path" ]]; then
         # across core/search/graphql, so top-level is the search floor (30/30)
         # while REST core is ~5000. The #4352 pre-check remaining<500 then
         # skipped every tick. Fall back to top-level for old sidecars.
-        _gh_rl_pre_remaining=$(printf '%s' "$_gh_rl_pre_json" | jq -r '.resources.core.remaining // .remaining // 0' 2>/dev/null) || _gh_rl_pre_remaining=0
-        _gh_rl_pre_limit=$(printf '%s' "$_gh_rl_pre_json" | jq -r '.resources.core.limit // .limit // 0' 2>/dev/null) || _gh_rl_pre_limit=0
+        # fleet-ops#7485 (2026-09-17): `gh issue list` is a GraphQL call, so the
+        # pre-check must honour the GraphQL bucket too. Live that day: core
+        # 4647/5000 (healthy) while graphql 0/5000 — the core-only read never
+        # flipped _gh_rl_pre_exhausted, reads stayed on the App token, and the
+        # tick crash-looped 15 times on "GraphQL: API rate limit already
+        # exceeded". Take whichever of core/graphql has the LOWER headroom
+        # (search stays excluded — its 30/30 floor is the #4352 false alarm).
+        _gh_rl_pre_remaining=$(printf '%s' "$_gh_rl_pre_json" | jq -r '
+            def hd(r): if (r.limit // 0) > 0 then ((r.remaining // 0) / r.limit) else 1 end;
+            if .resources then
+              (if (.resources.graphql // null) != null and hd(.resources.graphql) < hd(.resources.core // {}) then .resources.graphql else .resources.core end).remaining // 0
+            else (.remaining // 0) end' 2>/dev/null) || _gh_rl_pre_remaining=0
+        _gh_rl_pre_limit=$(printf '%s' "$_gh_rl_pre_json" | jq -r '
+            def hd(r): if (r.limit // 0) > 0 then ((r.remaining // 0) / r.limit) else 1 end;
+            if .resources then
+              (if (.resources.graphql // null) != null and hd(.resources.graphql) < hd(.resources.core // {}) then .resources.graphql else .resources.core end).limit // 0
+            else (.limit // 0) end' 2>/dev/null) || _gh_rl_pre_limit=0
+        _gh_rl_pre_resource=$(printf '%s' "$_gh_rl_pre_json" | jq -r '
+            def hd(r): if (r.limit // 0) > 0 then ((r.remaining // 0) / r.limit) else 1 end;
+            if .resources then (if (.resources.graphql // null) != null and hd(.resources.graphql) < hd(.resources.core // {}) then "graphql" else "core" end) else "top" end' 2>/dev/null) || _gh_rl_pre_resource=core
         _gh_rl_pre_fetched=$(printf '%s' "$_gh_rl_pre_json" | jq -r '.fetched_at // 0' 2>/dev/null) || _gh_rl_pre_fetched=0
         _gh_rl_pre_now=$(date +%s)
         _gh_rl_pre_age=$(( _gh_rl_pre_now - ${_gh_rl_pre_fetched%.*} ))

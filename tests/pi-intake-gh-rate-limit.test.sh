@@ -254,6 +254,76 @@ rc=$?
 echo "$out" | grep -qF 'gliding intake tick onto human-gh reads' || fail "must log gliding line: $out"
 ok "pre-check low headroom (<10%) skips tick, no gh call"
 
+# Test 3e (fleet-ops#7485): the exporter's resources form with core HEALTHY
+# but graphql EXHAUSTED must glide too — `gh issue list` is GraphQL. Live
+# 2026-09-17: core 4647/5000, graphql 0/5000, core-only pre-check missed it
+# and the tick crash-looped 15 times.
+write_state_resources() {
+    local core_rem="$1" gql_rem="$2"
+    cat >"$scratch/gh-rate-limit.json" <<JSON
+{
+  "low": 0,
+  "remaining": 30,
+  "limit": 30,
+  "resources": {
+    "core": {"remaining": $core_rem, "limit": 5000, "reset": $(( $(date +%s) + 3600 )), "low": 0},
+    "graphql": {"remaining": $gql_rem, "limit": 5000, "reset": $(( $(date +%s) + 600 )), "low": 1},
+    "search": {"remaining": 30, "limit": 30, "reset": $(( $(date +%s) + 60 )), "low": 0}
+  },
+  "fetched_at": $(date +%s)
+}
+JSON
+}
+write_state_resources 4647 0
+rm -f "$scratch/gh-calls.log"
+out="$(env \
+        GITHUB_ACTIONS=true \
+        PATH="$stubs:${PATH}" \
+        HOME="$scratch" \
+        XDG_RUNTIME_DIR="$scratch/run" \
+        PI_INTAKE_LOCKDIR="$scratch" \
+        PI_INTAKE_DEBOUNCE_SEC=0 \
+        PI_INTAKE_RECONCILER_PROM="$scratch/reconciler" \
+        PI_INTAKE_GH_RATE_LIMIT_STATE="$scratch/gh-rate-limit.json" \
+        PI_INTAKE_GH_RATE_LIMIT_MAX_AGE="120" \
+        PI_INTAKE_GH_SECONDARY_STATE_DIR="$scratch/secondary" \
+        PI_INTAKE_ISSUE_STATE_DIR="$scratch/pi-issues" \
+        PI_INTAKE_RL_SKIP_PROM="$scratch/rl-skip/fleet-intake-tick-skipped-rate-limit" \
+        GH_CALL_LOG="$scratch/gh-calls.log" \
+        SEAT_LIB="$stubs" \
+        PRECEDENCE_BAND_LIB="$stubs" \
+        PRIOR_ART_CLAIM_CHECK="$prior_art_stub" \
+        FLEET_ISSUE_REPO="Nishfleet/fleet-ops" \
+        bash "$tick" fleet-ops 2>&1)"
+rc=$?
+[[ "$rc" == "0" ]] || fail "graphql-exhausted tick must exit 0, got rc=$rc: $out"
+echo "$out" | grep -qF 'gliding intake tick onto human-gh reads' || fail "graphql-exhausted state must glide reads: $out"
+ok "pre-check honours the graphql bucket: core healthy + graphql 0 glides (fleet-ops#7485)"
+
+# Test 3f: resources form, both healthy -> no glide.
+write_state_resources 4647 4900
+out="$(env \
+        GITHUB_ACTIONS=true \
+        PATH="$stubs:${PATH}" \
+        HOME="$scratch" \
+        XDG_RUNTIME_DIR="$scratch/run" \
+        PI_INTAKE_LOCKDIR="$scratch" \
+        PI_INTAKE_DEBOUNCE_SEC=0 \
+        PI_INTAKE_RECONCILER_PROM="$scratch/reconciler" \
+        PI_INTAKE_GH_RATE_LIMIT_STATE="$scratch/gh-rate-limit.json" \
+        PI_INTAKE_GH_RATE_LIMIT_MAX_AGE="120" \
+        PI_INTAKE_GH_SECONDARY_STATE_DIR="$scratch/secondary" \
+        PI_INTAKE_ISSUE_STATE_DIR="$scratch/pi-issues" \
+        PI_INTAKE_RL_SKIP_PROM="$scratch/rl-skip/fleet-intake-tick-skipped-rate-limit" \
+        GH_CALL_LOG="$scratch/gh-calls.log" \
+        SEAT_LIB="$stubs" \
+        PRECEDENCE_BAND_LIB="$stubs" \
+        PRIOR_ART_CLAIM_CHECK="$prior_art_stub" \
+        FLEET_ISSUE_REPO="Nishfleet/fleet-ops" \
+        bash "$tick" fleet-ops 2>&1)"
+echo "$out" | grep -qF 'gliding intake tick onto human-gh reads' && fail "healthy resources form must NOT glide: $out" || true
+ok "pre-check resources form: both buckets healthy -> no glide (fleet-ops#7485)"
+
 # Test 3d: healthy headroom (remaining >= 500 and >= 10%) -> pre-check does NOT
 # skip; the tick proceeds to the gh issue list call (stub returns a claim).
 out="$(run_tick_precheck 3000 5000)"
