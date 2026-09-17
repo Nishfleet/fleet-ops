@@ -478,6 +478,53 @@ fi
 mkdir -p "$session_dir"
 
 empty_run_attempt=0
+preflight_done=0
+
+# Advisory only until task-specific labelled outcomes prove >=95% abort precision.
+# The shared helper owns evaluation, spend limits and JSONL logging.
+worker_preflight() (
+    [[ "${JEV_WORKER_PREFLIGHT:-1}" != "0" ]] || return 0
+    local helper="${JEV_WORKER_PREFLIGHT_BIN:-$HOME/.local/bin/jev-eval}"
+    local issue="${inst##*-}" context comments prs request result body rc
+    [[ -n "$pkt_repo" && "$issue" =~ ^[0-9]+$ ]] || return 0
+    [[ -x "$helper" ]] || { seat_log "pi-issue-run: $inst preflight skipped: helper unavailable"; return 0; }
+    # REST only; missing context is a failed advisory, never a guessed verdict.
+    context=$(timeout 10s gh api "repos/Nishfleet/$pkt_repo/issues/$issue") || return $?
+    comments=$(timeout 10s gh api "repos/Nishfleet/$pkt_repo/issues/$issue/comments?per_page=100" --paginate --slurp) || return $?
+    prs=$(timeout 10s gh api "repos/Nishfleet/$pkt_repo/pulls?state=open&per_page=100" --paginate --slurp) || return $?
+    request=$(jq -n --rawfile packet "$pkt" --slurpfile issue <(printf '%s' "$context") \
+        --slurpfile comments <(printf '%s' "$comments") --slurpfile prs <(printf '%s' "$prs") \
+        --arg ref "Nishfleet/$pkt_repo#$issue" --arg unit "$inst" '{
+        site: "worker-preflight", ref: $ref,
+        state: {packet: $packet, issue: $issue[0], comments: [$comments[0][][]],
+          open_prs: [$prs[0][][] | {number,title,body,head: .head.ref}], unit: $unit,
+          context: "Advice only. The worker implements exactly the target issue. Later decision-resolved comments supersede older blockers. Money/pricing, privacy, security, legal, brand, product direction, customer-data deletion and explicitly reserved authority require approval; routine reversible work does not. No secret inventory is supplied: do not infer a missing secret just because it is not in the packet. No credentials may appear in answers."},
+        questions: {
+          spec_complete: {type:"score", criteria:["No actionable requirements", "Clear scope, acceptance and verification"], instructions:"Score specification completeness from 0 to 1, considering issue and resolved comments."},
+          blocked_on_orchestrator: {type:"boolean", instructions:"Does an unresolved dependency or decision require the orchestrator before this work can start? Ignore superseded blockers."},
+          duplicate_of_open_pr: {type:"boolean", instructions:"Does a supplied open PR already implement this issue? Similar words alone do not establish a duplicate."},
+          needs_secret_missing_here: {type:"boolean", instructions:"Is there explicit evidence that this task requires a credential unavailable to this worker? Absence from the prompt is not evidence."},
+          scope_mismatch: {type:"boolean", instructions:"Does the packet target or requested work conflict with this issue and its latest resolved scope?"}
+        }}') || return $?
+    result=$(printf '%s\n' "$request" | timeout --kill-after=2s 15s "$helper") || return $?
+    body=$(printf '%s\n' "$result" | jq -er '
+        def probability: type == "number" and . >= 0 and . <= 1;
+        .answers as $a |
+        if ($a.spec_complete.score | probability) and
+           (["blocked_on_orchestrator","duplicate_of_open_pr","needs_secret_missing_here","scope_mismatch"] |
+             all(.[]; $a[.].probability | probability)) then
+          "worker-preflight: advisory\n\n" +
+          "spec_complete score: \($a.spec_complete.score)\n" +
+          (["blocked_on_orchestrator","duplicate_of_open_pr","needs_secret_missing_here","scope_mismatch"] |
+            map("\(.) probability: \($a[.].probability)") | join("\n")) +
+          "\n\nAdvice only. Worker continues; abort behavior is unchanged."
+        else error("invalid preflight answers") end') || return $?
+    if timeout 10s gh api -X POST "repos/Nishfleet/$pkt_repo/issues/$issue/comments" -f "body=$body" >/dev/null; then
+        seat_log "pi-issue-run: $inst preflight advisory posted"
+    else
+        rc=$?; return "$rc"
+    fi
+)
 
 # fleet-ops#2462: reclaim-count initialization. The intake tick's first claim
 # of this issue is the first strike; failed re-claims are counted by
@@ -731,6 +778,17 @@ else
   seat_log "pi-issue-run: $inst DEAD APP IDENTITY — no nishfleet-worker creds file at $WORKER_CREDS_FILE; refusing human-gh-auth fallback"
   _exit_reason="dead-app-no-creds"
   exit 1
+fi
+
+# Run once after App identity is established, not again on an in-process resume.
+if (( preflight_done == 0 )); then
+    preflight_done=1
+    if worker_preflight; then
+        :
+    else
+        preflight_rc=$?
+        seat_log "pi-issue-run: $inst preflight call failed with exit $preflight_rc; advisory skipped, worker continues"
+    fi
 fi
 
 # --- run pi, capture stdout/stderr -----------------------------------------
