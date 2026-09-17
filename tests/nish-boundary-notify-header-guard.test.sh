@@ -180,5 +180,27 @@ grep -q "delivered (hermes, attempt 1)" "$tmp/out" \
     || fail "the populated section must still deliver; out: $(cat "$tmp/out")"
 ok "starved section loud alongside a real delivery"
 
+# Drain must keep a section that was empty before archiving, including a
+# duplicate header immediately after a delivered entry (bounded pass).
+echo '--- scenario 6: drain preserves undelivered header evidence ---'
+{
+    printf '# Nish escalations\n\nFormat header\n\n\n\n'
+    printf '## repeated sweep header\n'
+    printf '2026-09-14T00:00:01Z CREDENTIAL-BOUNDARY issue-fleet-ops-6845 test-only\n'
+    printf '## repeated sweep header\n\n'
+} > "$escalations"
+printf '%s' '2026-09-14T00:00:01Z CREDENTIAL-BOUNDARY issue-fleet-ops-6845 test-only' \
+    | sha256sum | cut -c1-32 > "$seen"
+FLEET_ESCALATION_DRAIN_AGENT_STATE="$state" \
+FLEET_ESCALATION_DRAIN_MAX_LINES=7 \
+    bash "$repo_root/bin/fleet-escalation-drain" > "$tmp/drain.out" 2> "$tmp/drain.err"
+[[ $(grep -c '^## repeated sweep header' "$escalations") -eq 1 ]] \
+    || fail 'drain must remove only the emptied delivered section, preserving the duplicate bare header'
+hermes_log="$tmp/h6.log"; : > "$hermes_log"
+rc=$(run_notify "$hermes_log")
+[[ "$rc" -eq 1 ]] || fail "undelivered section must still alarm after drain; got $rc"
+[[ ! -s "$hermes_log" ]] || fail 'drain/notifier drill must not resend archived entries'
+ok 'drain keeps undelivered header; notifier alarms without resending'
+
 echo ""
-echo "OK: nish-boundary-notify header-only guard drill (fleet-ops#6845) — 5/5 scenarios pass"
+echo "OK: nish-boundary-notify header-only guard drill (fleet-ops#6845) — 6/6 scenarios pass"

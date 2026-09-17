@@ -59,17 +59,14 @@ C. NISH — only the reserved classes above. Do BOTH:
       lines you wrote — if not, the write did not land: treat it as a
       refused write (the WRITES-REFUSED path below). A claimed verification
       without both counts is a failed run.
-      `before=0` is NOT proof that earlier writes were lost: the hourly
-      drain promotes DELIVERED lines to
-      `agent-state/nish-escalations-archive/YYYY-MM-DD.md` and strips the
-      emptied `## ` header — the healthy post-drain lifecycle
-      (fleet-ops#6845). Before appending for an issue, grep the archive for
-      its slug (`grep -l 'issue-<repo>-<n>'
-      agent-state/nish-escalations-archive/*.md`) and check
-      `journalctl --user -u nish-boundary-notify.service` for
-      `delivered (hermes`. A slug the archive already holds was already
-      delivered — do NOT re-append it: a re-append carries a fresh
-      timestamp and hash, so it re-pages Nish for the same wait.
+      `grep -cE` prints 0 and exits 1 when there are no matches; accept
+      that status for an empty count, but fail on read errors (exit 2).
+      `before=0` alone does not prove lost writes. The drain archives
+      resolved and non-class entries as well as delivered entries. An
+      archived issue slug is NOT proof of delivery. Check the exact entry's
+      delivery receipt in `lanes/nish-boundary-notify.seen` or a matching
+      notifier journal record before claiming it reached Nish. Do not
+      re-page an unchanged question with a confirmed delivery receipt.
    2. On the issue: comment `blocked-on: nish-decision` naming the reserved
       reason in the same comment (the word must appear — blocked-reconcile
       rewrites any nish-decision line whose text lacks it), and remove the

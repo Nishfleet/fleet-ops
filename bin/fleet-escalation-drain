@@ -302,6 +302,8 @@ drain_nish() {
     local -a bounded_archive=()
     local -a current_entry=()
     local line_ind=0
+    local section_id=0
+    local -A section_had_entry=()
 
     flush_entry() {
         # Append current_entry to the destination chosen by header_class.
@@ -350,6 +352,11 @@ drain_nish() {
     header_class=""
     while IFS= read -r line || [ -n "$line" ]; do
         line_ind=$((line_ind + 1))
+        if [[ "$line" =~ ^##[[:space:]] ]]; then
+            section_id=$((section_id + 1))
+        elif [[ "$line" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}(:[0-9]{2}){1,2}Z[[:space:]] ]]; then
+            section_had_entry[$section_id]=1
+        fi
 
         # File-format header section: keep verbatim (first 6 lines).
         if [ "$line_ind" -le 6 ]; then
@@ -460,6 +467,14 @@ drain_nish() {
                 fi
                 continue
             fi
+            # A delivered entry must not absorb the next section header.
+            if [[ "$ln" =~ ^##[[:space:]] ]]; then
+                if [ "${#pending_entry[@]}" -gt 0 ]; then
+                    flush_pending
+                fi
+                new_kept+=("$ln")
+                continue
+            fi
             if [ "${#pending_entry[@]}" -gt 0 ]; then
                 pending_entry+=("$ln")
             else
@@ -474,19 +489,20 @@ drain_nish() {
         kept_count=${#kept_lines[@]}
     fi
 
-    # fleet-ops#6845: a `## ` prose header whose section holds only blank
-    # lines is a fossil — the notifier delivered the section's canonical
-    # entries and the archive passes above moved them out, leaving the
-    # header verbatim. ~14 such fossils made every later sweep misread the
-    # healthy post-drain file as "bare headers = writes lost" and re-page
-    # Nish. Strip an empty `## ` section (the header and its blank run); a
-    # section with ANY content line keeps its header. `## DRAIN-DIGEST`
-    # pointers are this drain's own bookkeeping — they stay.
+    # Remove headers only when this run emptied their formerly populated
+    # section. Originally empty sections remain evidence for the notifier's
+    # starvation guard. Use section ordinals: header text can be duplicated.
+    # Archival can mean resolved or non-class, not necessarily delivered.
     local -a stripped_kept=()
     local kidx knext kcontent
+    section_id=0
     for ((kidx = 0; kidx < ${#kept_lines[@]}; kidx++)); do
         local kl="${kept_lines[$kidx]}"
-        if [[ "$kl" =~ ^##[[:space:]] && ! "$kl" =~ ^##[[:space:]]*DRAIN-DIGEST ]]; then
+        if [[ "$kl" =~ ^##[[:space:]] ]]; then
+            section_id=$((section_id + 1))
+        fi
+        if [[ "$kl" =~ ^##[[:space:]] && ! "$kl" =~ ^##[[:space:]]*DRAIN-DIGEST ]] \
+            && [[ "${section_had_entry[$section_id]:-0}" = 1 ]]; then
             kcontent=0
             for ((knext = kidx + 1; knext < ${#kept_lines[@]}; knext++)); do
                 local nl="${kept_lines[$knext]}"

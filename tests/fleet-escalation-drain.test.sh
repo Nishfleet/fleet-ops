@@ -42,6 +42,10 @@ trap 'rm -rf "$scratch"' EXIT INT TERM
 
 AS="$scratch/agent-state"
 mkdir -p "$AS/alert-repair" "$AS/lanes"
+# No live alert reads: an unavailable snapshot preserves the legacy
+# packet archive path exercised here. Resolved-alert tests live separately.
+printf '{}\n' > "$scratch/firing.json"
+export FLEET_ESCALATION_DRAIN_FIRING_FILE="$scratch/firing.json"
 
 # fleet-ops#5622 rebase: success stub for the stuck-packet escalation
 # filing — prints a fixture issue URL (the drain parses issue #999 from
@@ -738,13 +742,8 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-# Scenario 12: empty `## ` prose headers are fossils (fleet-ops#6845). The
-# notifier delivers a section's canonical lines; the archive passes move
-# them out and leave the `## ` header verbatim — a bare header that every
-# later sweep misreads as "write lost" and re-pages Nish for. The drain now
-# strips a `## ` section holding only blank lines, keeps a populated
-# section, keeps `## DRAIN-DIGEST` bookkeeping pointers, and rewrites the
-# live file even when nothing was archived (no empty archive file minted).
+# Scenario 12: never-populated headers are starvation evidence (#6845).
+# Keep them, active sections and DRAIN-DIGEST pointers unchanged.
 # ---------------------------------------------------------------------------
 rm -rf "$AS/lanes/seats"
 {
@@ -755,7 +754,7 @@ rm -rf "$AS/lanes/seats"
     printf 'Four lines of header.\n'
     printf '\n'
     printf 'Format: entry line.\n'
-    # Bare fossil A: no canonical lines, no prose — must be stripped.
+    # Never-populated section: preserve starvation evidence.
     printf '## Orchestrator decision sweep 2026-09-13T20:58Z — canonical entry lines\n'
     printf '\n'
     # Populated section: canonical entry under the header — kept whole.
@@ -764,7 +763,7 @@ rm -rf "$AS/lanes/seats"
     printf '  SUMMARY: drill active entry.\n'
     # Drain bookkeeping pointer — exempt, stays.
     printf '## DRAIN-DIGEST 2026-09-14T01:00:00Z — 3 stale entries moved to /tmp/digest-2026-09-14.md (fleet-ops#5624 bound-breach)\n'
-    # Bare fossil C at EOF — must be stripped.
+    # Never-populated section at EOF: preserve starvation evidence.
     printf '## Orchestrator decision sweep 2026-09-14T02:00Z — canonical entry lines\n'
 } > "$AS/NISH-ESCALATIONS.md"
 
@@ -773,29 +772,27 @@ rm -f "$AS/lanes/nish-boundary-notify.seen"
 run_drain
 
 grep -qF "2026-09-13T20:58Z" "$AS/NISH-ESCALATIONS.md" \
-    && fail "scenario 12: bare fossil header A must be stripped" || true
+    || fail "scenario 12: never-populated header A must remain"
 grep -qF "2026-09-14T02:00Z" "$AS/NISH-ESCALATIONS.md" \
-    && fail "scenario 12: bare fossil header at EOF must be stripped" || true
+    || fail "scenario 12: never-populated header at EOF must remain"
 grep -qF "Orchestrator decision sweep 2026-09-14T00:00Z" "$AS/NISH-ESCALATIONS.md" \
-    || fail "scenario 12: populated `## ` section header must be kept"
+    || fail 'scenario 12: populated section header must be kept'
 grep -qF "hash=active-6845" "$AS/NISH-ESCALATIONS.md" \
     || fail "scenario 12: active canonical entry must be kept"
 grep -qF "DRAIN-DIGEST" "$AS/NISH-ESCALATIONS.md" \
     || fail "scenario 12: DRAIN-DIGEST bookkeeping pointer must be kept"
-grep -q "hdr_stripped=2" "$scratch/run.stderr" \
-    || fail "scenario 12: log must report hdr_stripped=2; stderr: $(cat "$scratch/run.stderr")"
-grep -q "nish_hdr_stripped=2" "$scratch/run.stderr" \
-    || fail "scenario 12: summary must report nish_hdr_stripped=2; stderr: $(cat "$scratch/run.stderr")"
-# A header-strip-only run mints no archive entries.
+grep -q "nish_hdr_stripped=0" "$scratch/run.stderr" \
+    || fail "scenario 12: summary must report no headers stripped"
+# A no-op run mints no archive entries.
 day12="$(date -u +%Y-%m-%d)"
 archive12="$AS/nish-escalations-archive/$day12.md"
 if [ -f "$archive12" ]; then
     grep -qF "Orchestrator decision sweep" "$archive12" \
         && fail "scenario 12: stripped fossil headers must NOT be written to the archive" || true
 fi
-ok "scenario 12: bare `## ` fossils stripped; populated section + DRAIN-DIGEST kept"
+ok 'scenario 12: never-populated headers, active entries and DRAIN-DIGEST kept'
 
-# Idempotency: re-running on the stripped file is a no-op.
+# Idempotency: re-running on the preserved file is a no-op.
 rm -f "$scratch/run.stderr"
 run_drain
 grep -q "nothing to archive" "$scratch/run.stderr" \
