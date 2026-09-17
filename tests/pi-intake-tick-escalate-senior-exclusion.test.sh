@@ -36,8 +36,8 @@ ok()   { echo "OK: $*"; }
 [[ -f "$tick" ]] || fail "lib/pi-intake-tick.sh missing"
 
 # === Test 1: tick fetches labels ===
-grep -qF '_gh_read issue list -R "$FULL" -l agent-ready --state open --json number,title,labels' "$tick" \
-    || fail "tick must fetch labels (--json number,title,labels) so the escalate-senior filter has data (fleet-ops#5489: via the _gh_read seam)"
+grep -qF '_gh_read issue list -R "$FULL" -l agent-ready --state open --json number,title,body,labels' "$tick" \
+    || fail "tick must fetch body and labels so acquisition advice and the escalate-senior filter have data"
 ok "Test 1: tick fetches labels for the escalate-senior filter"
 
 # === Test 2: ESCALATE_LABEL seam defined and overridable ===
