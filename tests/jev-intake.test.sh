@@ -27,6 +27,7 @@ class AdvisoryTests(unittest.TestCase):
             self.assertEqual(ref, 'repo#1')
             self.assertEqual(state['body'], 'body')
             if site == 'pi-intake-spec':
+                self.assertEqual(len(questions['quality']['criteria']), 4)
                 return {'quality': {'score': 1}}
             return {'scope': {'choice': 'heavy', 'probabilities': {'heavy': .8}}}
         with patch.object(m, 'jev_answers', side_effect=evaluate):
@@ -66,6 +67,27 @@ class AdvisoryTests(unittest.TestCase):
         for stdout, rc in [('bad json', 0), ('[]', 0), ('{}', 3)]:
             with patch.object(m.subprocess, 'run', return_value=subprocess.CompletedProcess([], rc, stdout, '')):
                 self.assertEqual(m.jev_answers('site', 'ref', {}, {'x': {}}), {})
+
+    def test_filing_branches_and_dry_run(self):
+        issue = {'number': 1, 'repository': 'repo', 'title': 'existing', 'body': 'existing'}
+        args = m.build_parser().parse_args(['file', '-R', 'repo', '--title', 'candidate', '--body', 'body', '--from-json', 'unused'])
+        for score, kind in [(.5, 'borderline'), (.8, 'duplicate')]:
+            with patch.object(m, 'collect_open', return_value=[issue]), patch.object(m, 'best_match', return_value={'score': score, 'issue': issue}), patch.object(m, 'issue_has_filing_comment', return_value=False), patch.object(m, 'gh_comment', return_value=(0, '')) as comment, patch.object(m, 'gh_create', return_value=(0, 'https://github.com/repo/issues/2')) as create, patch.object(m, 'duplicate_advisory', return_value='jev_p=0.87') as advice:
+                args.dry_run = True
+                self.assertEqual(m.cmd_file(args), 0)
+                advice.assert_not_called()
+                create.assert_not_called()
+                comment.assert_not_called()
+                args.dry_run = False
+                self.assertEqual(m.cmd_file(args), 0)
+                advice.assert_called_once()
+                output = comment.call_args.args[2] if kind == 'duplicate' else create.call_args.args[2]
+                self.assertIn('jev_p=0.87', output)
+                advice.return_value = ''
+                self.assertEqual(m.cmd_file(args), 0)
+                output = comment.call_args.args[2] if kind == 'duplicate' else create.call_args.args[2]
+                expected = m.comment_body('candidate', 'body', score, 'repo') if kind == 'duplicate' else m.duplicate_marker('repo#1', score) + 'body'
+                self.assertEqual(output, expected)
 
     def test_tick_uses_existing_filer_without_changing_routing(self):
         text = Path('lib/pi-intake-tick.sh').read_text()
