@@ -339,12 +339,13 @@ model map, so health-check mode resolution would otherwise raise) plus a
 unique `model_info.id` (lets `model: <id>` pin the deployment for
 deterministic proof calls). See `config/litellm-proxy.yaml` for the exact
 deployment shape. Model policy is enforced in the adapter allowlist:
-`glm-5-2` and `swe-2-max` only — `swe-1-7` is retired (cap 0) and
-`swe-2-high` is parked to 2036; neither may ever be wired.
+`swe-2-max` only. The 2026-09-17 recovery follows current seat policy:
+`glm-5-2` and `swe-1-7` are retired, and `swe-2-high` is parked to 2036.
+The allowlist is fixed; environment settings cannot widen it.
 
 The §3a wrapper already sources `~/fleet2/etc/devin.env`, so
 `DEVIN_API_KEY` is in the proxy environment — no env work needed. Tunables
-(env, all optional): `FLEET_DEVIN_BIN`, `FLEET_DEVIN_ALLOWED_MODELS`,
+(env, all optional): `FLEET_DEVIN_BIN`,
 `FLEET_DEVIN_BRIDGE_TIMEOUT_S` (default 1500, below router timeout 1800),
 `FLEET_DEVIN_BRIDGE_RATE_WAIT_S` (default 90 — short devin rate-limit
 windows are waited out once in-process; longer raises `RateLimitError` so

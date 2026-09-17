@@ -19,10 +19,9 @@ unit, timer, or organ (fleet-ops#1250): the proxy start wrapper already
 sources ``fleet2/etc/devin.env`` (runbook §3a), so ``DEVIN_API_KEY`` is
 already in the proxy environment.
 
-Model policy (issue #6228 hard lines): only ``glm-5-2`` and
-``swe-2-max`` may route. ``swe-1-7`` (retired, cap 0) and
-``swe-2-high`` (parked to 2036) are refused here even if a deployment
-is misconfigured — the allowlist is the last line of defence.
+Model policy (2026-09-17 recovery): only ``swe-2-max`` may route.
+Current seat policy retires ``glm-5-2`` and ``swe-1-7``; ``swe-2-high``
+is parked to 2036. Configuration cannot widen this allowlist.
 
 Health checks: LiteLLM's internal health check calls ``acompletion``
 with ``metadata.tags == ["litellm-internal-health-check"]``. A real
@@ -81,13 +80,9 @@ PROBE_TIMEOUT_S = int(os.environ.get("FLEET_DEVIN_PROBE_TIMEOUT_S", "60"))
 # starves the whole intake lane.
 RATE_LIMIT_WAIT_S = int(os.environ.get("FLEET_DEVIN_BRIDGE_RATE_WAIT_S", "90"))
 
-# Issue #6228 approved slugs. swe-1-7 is retired (cap 0) and swe-2-high
-# is parked to 2036 — neither may ever appear here.
-_ALLOWED_MODELS = {
-    m.strip()
-    for m in os.environ.get("FLEET_DEVIN_ALLOWED_MODELS", "glm-5-2,swe-2-max").split(",")
-    if m.strip()
-}
+# Current seat-caps.json retirement policy, reconciled per #6228's
+# 2026-09-17 continuation. Environment overrides must not un-retire a model.
+_ALLOWED_MODELS = frozenset({"swe-2-max"})
 
 HEALTH_CHECK_TAG = "litellm-internal-health-check"
 
@@ -166,7 +161,7 @@ class DevinWindsurfLLM(CustomLLM):
             raise litellm.BadRequestError(
                 message=(
                     f"devin model {slug!r} is not in the fleet allowlist "
-                    f"({sorted(_ALLOWED_MODELS)}); swe-1-7 is retired and "
+                    f"({sorted(_ALLOWED_MODELS)}); glm-5-2 and swe-1-7 are retired and "
                     "swe-2-high is parked to 2036 (fleet-ops#6228)"
                 ),
                 model=model,

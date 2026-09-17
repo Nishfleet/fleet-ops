@@ -141,7 +141,7 @@ def scratch_dirs():
 BASE_SCRATCH = scratch_dirs()  # stale dirs from prior runs are ignored
 
 # allowlist: approved slugs pass, forbidden slugs raise BadRequestError
-assert h._slug("devin/glm-5-2") == "glm-5-2"
+expect(litellm.BadRequestError, lambda: h._slug("devin/glm-5-2"), "retired-glm-5-2")
 assert h._slug("devin/swe-2-max") == "swe-2-max"
 expect(litellm.BadRequestError, lambda: h._slug("devin/swe-1-7"), "swe-1-7")
 expect(litellm.BadRequestError, lambda: h._slug("devin/swe-2-high"), "swe-2-high")
@@ -150,14 +150,14 @@ expect(litellm.BadRequestError, lambda: h._slug("devin/gpt-5"), "unknown")
 # happy path: real --print call, response shape
 os.environ["FAKE_DEVIN_MODE"] = "ok"
 reset_log()
-r = h.completion(model="devin/glm-5-2", messages=msgs, litellm_params={})
+r = h.completion(model="devin/swe-2-max", messages=msgs, litellm_params={})
 argv = log_lines()[0]
-for want in ("--print", "--prompt-file", "--model glm-5-2",
+for want in ("--print", "--prompt-file", "--model swe-2-max",
              "--respect-workspace-trust false", "--permission-mode auto"):
     assert want in argv, f"argv missing {want}: {argv}"
-assert r.model == "devin/glm-5-2"
+assert r.model == "devin/swe-2-max"
 assert r.id.startswith("chatcmpl-devin-")
-assert r.choices[0].message.content.startswith("STUB-REPLY model=glm-5-2")
+assert r.choices[0].message.content.startswith("STUB-REPLY model=swe-2-max")
 assert "## User" in r.choices[0].message.content  # prompt flattened + echoed
 assert r.usage.total_tokens > 0
 assert r._hidden_params["custom_llm_provider"] == "devin"
@@ -169,20 +169,20 @@ assert not leaked, f"leaked scratch dirs: {leaked}"
 # empty output is a failure, not a silent empty message
 os.environ["FAKE_DEVIN_MODE"] = "empty"
 expect(litellm.InternalServerError,
-       lambda: h.completion(model="devin/glm-5-2", messages=msgs,
+       lambda: h.completion(model="devin/swe-2-max", messages=msgs,
                             litellm_params={}), "empty")
 
 # nonzero exit (non-rate-limit) → InternalServerError with tail
 os.environ["FAKE_DEVIN_MODE"] = "fail"
 expect(litellm.InternalServerError,
-       lambda: h.completion(model="devin/glm-5-2", messages=msgs,
+       lambda: h.completion(model="devin/swe-2-max", messages=msgs,
                             litellm_params={}), "fail")
 
 # short rate-limit window: one in-process retry, then success
 os.environ["FAKE_DEVIN_MODE"] = "rl-short"
 open(os.environ["FAKE_DEVIN_COUNT"], "w").close()
 reset_log()
-r = h.completion(model="devin/glm-5-2", messages=msgs, litellm_params={})
+r = h.completion(model="devin/swe-2-max", messages=msgs, litellm_params={})
 assert "REPLY-AFTER-RETRY" in r.choices[0].message.content
 assert len(log_lines()) == 2, f"expected exactly 2 devin calls, got {log_lines()}"
 
@@ -190,26 +190,26 @@ assert len(log_lines()) == 2, f"expected exactly 2 devin calls, got {log_lines()
 os.environ["FAKE_DEVIN_MODE"] = "rl-long"
 reset_log()
 expect(litellm.RateLimitError,
-       lambda: h.completion(model="devin/glm-5-2", messages=msgs,
+       lambda: h.completion(model="devin/swe-2-max", messages=msgs,
                             litellm_params={}), "rl-long")
 assert len(log_lines()) == 1, "long window must not retry in-process"
 
 # unparseable clock-style reset → treated as long window
 os.environ["FAKE_DEVIN_MODE"] = "rl-clock"
 expect(litellm.RateLimitError,
-       lambda: h.completion(model="devin/glm-5-2", messages=msgs,
+       lambda: h.completion(model="devin/swe-2-max", messages=msgs,
                             litellm_params={}), "rl-clock")
 
 # CLI timeout → litellm.Timeout (FLEET_DEVIN_BRIDGE_TIMEOUT_S=3, stub sleeps 5)
 os.environ["FAKE_DEVIN_MODE"] = "timeout"
 expect(litellm.Timeout,
-       lambda: h.completion(model="devin/glm-5-2", messages=msgs,
+       lambda: h.completion(model="devin/swe-2-max", messages=msgs,
                             litellm_params={}), "timeout")
 
 # health probe: `models list` auth check, no --print, no message burned
 os.environ["FAKE_DEVIN_MODE"] = "ok"
 reset_log()
-r = h.completion(model="devin/glm-5-2", messages=[{"role": "user", "content": "test"}],
+r = h.completion(model="devin/swe-2-max", messages=[{"role": "user", "content": "test"}],
                  litellm_params=probe_lp)
 calls = log_lines()
 assert calls and calls[0].startswith("models list"), f"probe ran {calls}"
@@ -225,12 +225,12 @@ del os.environ["FAKE_MODELS"]
 
 # async paths
 os.environ["FAKE_DEVIN_MODE"] = "ok"
-r = asyncio.run(h.acompletion(model="devin/glm-5-2", messages=msgs,
+r = asyncio.run(h.acompletion(model="devin/swe-2-max", messages=msgs,
                               litellm_params={}))
 assert r.choices[0].message.content.startswith("STUB-REPLY")
 
 async def drain():
-    chunks = [c async for c in h.astreaming(model="devin/glm-5-2",
+    chunks = [c async for c in h.astreaming(model="devin/swe-2-max",
                                           messages=msgs, litellm_params={})]
     return chunks
 chunks = asyncio.run(drain())
@@ -244,7 +244,7 @@ assert isinstance(chunks[0]["usage"], dict), \
     f"chunk usage must be a ChatCompletionUsageBlock dict, got {type(chunks[0]['usage'])}"
 assert chunks[0]["usage"]["total_tokens"] > 0
 
-chunks = list(h.streaming(model="devin/glm-5-2", messages=msgs,
+chunks = list(h.streaming(model="devin/swe-2-max", messages=msgs,
                           litellm_params={}))
 assert len(chunks) == 1 and chunks[0]["is_finished"] is True
 assert isinstance(chunks[0]["usage"], dict), \
@@ -272,7 +272,7 @@ assert mod._rate_limit_wait_s("all good") is None
 # secret safety: DEVIN_API_KEY value must never reach error text/output
 os.environ["FAKE_DEVIN_MODE"] = "fail"
 try:
-    h.completion(model="devin/glm-5-2", messages=msgs, litellm_params={})
+    h.completion(model="devin/swe-2-max", messages=msgs, litellm_params={})
 except litellm.InternalServerError as e:
     assert "stub-key" not in str(e), "secret leaked into error"
 
@@ -293,7 +293,7 @@ deploys = cfg.get("model_list") or []
 devin_deps = [d for d in deploys
               if str((d.get("litellm_params") or {}).get("model", "")).startswith("devin/")]
 slugs = sorted({d["litellm_params"]["model"].split("/", 1)[1] for d in devin_deps})
-assert slugs == ["glm-5-2", "swe-2-max"], f"devin deployments must be exactly glm-5-2 + swe-2-max, got {slugs}"
+assert slugs == ["swe-2-max"], f"only current approved devin model may route, got {slugs}"
 groups = sorted({d["model_name"] for d in devin_deps})
 assert groups == ["judge", "senior", "worker-capable", "worker-cheap", "worker-private"], \
     f"devin seats terminate every group post pareto/synthetic benches, got {groups}"
@@ -308,11 +308,11 @@ for d in devin_deps:
     assert "prepaid" in (lp.get("tags") or []), d
     assert (lp.get("order") or 99) <= 2, f"{d['model_name']} order must sit in the cheap tier"
 # hard lines: forbidden models are never deployed — the slugs set above is
-# already exactly {glm-5-2, swe-2-max}; assert no deployment smuggles one in
+# already exactly {swe-2-max}; assert no deployment smuggles one in
 # under a non-devin/ prefix either
 for d in deploys:
     m = str((d.get("litellm_params") or {}).get("model", ""))
-    for bad in ("swe-1-7", "swe-2-high"):
+    for bad in ("glm-5-2", "swe-1-7", "swe-2-high"):
         assert bad not in m, f"forbidden model {bad} deployed in {d['model_name']}"
 print("config wiring ok")
 PY
