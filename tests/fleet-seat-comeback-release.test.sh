@@ -2450,23 +2450,28 @@ grep -qE "PONG probe devin/swe-2-max|SEAT-WALL-FALSE" "$TMPD/run27.err" \
   && fail "27: a policy bench must not be PONG-probed at all: $(cat "$TMPD/run27.err")"
 ok "27: a policy bench (daily_spend_cap) is money — not probed, not cleared, not counted (fleet-ops#5285)"
 
-# --- 28. fleet-ops#6731: organ default ledger == picker ledger (seat-health) --
+# --- 28. fleet-ops#6731: organ default ledger == picker ledger (ONE dir) --
 # Live 2026-09-14: workers=0 because the organ defaulted to lanes/seats
 # (census sidecar, swe-2-max healthy from a hand PONG) while seat_usable
 # held the same seats via #3737 markers in ~/.local/state/pi-packet/seat-health.
 # A transient_fault ledger + expired wrapper marker in the PICKER dir must
 # be selected; the two defaults must not diverge.
-grep -q 'LEDGER_DIR="${PI_SEAT_HEALTH_LEDGER_DIR:-$STATE_DIR/seat-health}"' \
+# fleet-ops#7374 (2026-09-17): the shared default is now lanes/seats — the ONE
+# ledger seat-health.ts also writes. Markers move with LEDGER_DIR, so the
+# #6731 invariant (organ reads the picker's markers) still holds; what #6731
+# pinned was equality, not the dead pi-packet/seat-health copy (which parked
+# every worker seat until 2036 and starved the fleet 2026-09-15..17).
+grep -q 'LEDGER_DIR="${PI_SEAT_HEALTH_LEDGER_DIR:-$HOME/workspaces/agent-state/lanes/seats}"' \
     "$repo_root/lib/litellm-seat.sh" \
-  || fail "28: picker LEDGER_DIR default must be \$STATE_DIR/seat-health"
-grep -q 'LEDGER="${PI_SEAT_HEALTH_LEDGER_DIR:-$STATE_DIR/seat-health}"' \
+  || fail "28: picker LEDGER_DIR default must be lanes/seats (fleet-ops#7374)"
+grep -q 'LEDGER="${PI_SEAT_HEALTH_LEDGER_DIR:-$HOME/workspaces/agent-state/lanes/seats}"' \
     "$BIN" \
-  || fail "28: organ LEDGER default must match the picker (seat-health), not lanes/seats"
+  || fail "28: organ LEDGER default must equal the picker default (lanes/seats, fleet-ops#7374)"
 grep -q 'LEDGER="${PI_SEAT_HEALTH_LEDGER_DIR:-$AS/lanes/seats}"' "$BIN" \
   && fail "28: organ still defaults to lanes/seats — that is the 6731 split-brain"
-grep -q 'Environment=PI_SEAT_HEALTH_LEDGER_DIR=/home/nish/.local/state/pi-packet/seat-health' \
+grep -q 'Environment=PI_SEAT_HEALTH_LEDGER_DIR=' \
     "$repo_root/systemd/fleet-seat-comeback-release.service" \
-  || fail "28: timer unit must pin the picker ledger so install.sh cannot silently revert to lanes/seats"
+  && fail "28: timer unit must NOT pin a private ledger dir — one shared default, no split-brain (fleet-ops#7374)"
 SEATD28="$TMPD/seats28"
 mkdir -p "$SEATD28"
 # Live shape: expired usable_at, observed_at == marker written_at, not healthy.
