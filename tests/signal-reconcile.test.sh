@@ -1550,4 +1550,21 @@ grep -q "issue close 5100" "$tmp/gh.log" \
     || fail "scenario 19b: expected gh issue close 5100 (got: $(cat "$tmp/gh.log"))"
 ok "scenario 19b: convened ESCALATION-PANEL observe-to-closes the filing"
 
+# 20. Renewal issues belong to the credential canary, which reads the
+# expiry state itself. #7471 was filed at 2026-09-17T16:03:46Z and wrongly
+# closed here at 16:04:56Z because that canary writes to the journal, not
+# triage. Retain the renewal while still closing a cleared managed alarm.
+cat > "$tmp/open20.json" <<'EOF'
+[{"number":7471,"body":"signal: cred-expiry/xai-oauth","labels":[],"comments":[]},{"number":5100,"body":"`loud/escalation-panel-pending/0509`","labels":[],"comments":[]}]
+EOF
+true > "$tmp/gh.log"
+run "$tmp/open20.json" "$tmp/triage19-off.md" > "$tmp/summary20.json"
+! grep -q "issue close 7471" "$tmp/gh.log" \
+    || fail "scenario 20: credential canary owns renewal #7471; reconciler must not close it"
+grep -q "issue close 5100" "$tmp/gh.log" \
+    || fail "scenario 20: cleared managed alarm must still close"
+jq -e '.closed == 1' "$tmp/summary20.json" >/dev/null \
+    || fail "scenario 20: only the managed alarm should close"
+ok "scenario 20: credential renewal remains owned by its canary"
+
 ok "all signal-reconcile scenarios passed"
