@@ -2756,6 +2756,22 @@ blocked-on: orchestrator" 2>/dev/null || true
     # header share it). While the repair rung is armed the light-only filter
     # does NOT apply — the rung is the reserved exemption.
     difficulty="$(issue_difficulty "${labels[$i]}" "$title" "$body")"
+    # #7389: opt-in shadow collection only. Never feed advice into a filter
+    # or the packet difficulty. One receipt per body/difficulty avoids tick spam.
+    if [[ "${JEV_PI_INTAKE:-0}" == "1" ]]; then
+        _jev_hash=$(printf '%s\n%s\n%s' "$title" "$body" "$difficulty" | sha256sum | cut -d' ' -f1)
+        _jev_marker="<!-- jev-intake-advisory: $_jev_hash -->"
+        if [[ "$comments" != *"$_jev_marker"* ]]; then
+            if _jev_advice=$(printf '%s' "$body" | "$_ISSUE_FILE_BIN" intake-advisory --ref "$FULL#$N" --title "$title" --difficulty "$difficulty"); then
+                if [[ -n "$_jev_advice" ]]; then
+                    gh issue comment "$N" -R "$FULL" --body "$_jev_marker
+$_jev_advice" || echo "intake advisory comment call failed for $FULL#$N; admission unchanged" >&2
+                fi
+            else
+                echo "intake advisory call failed for $FULL#$N; admission unchanged" >&2
+            fi
+        fi
+    fi
     if [[ "$_light_only_claims" == "1" && "$_repair_rung_armed" == "0" && "$difficulty" != "light" ]]; then
         echo "issue $N ($title): skipped-heavy-no-heavy-seat (light-only tick — no usable heavy-capable seat, fleet-ops#4639)"
         continue
