@@ -659,13 +659,18 @@ def _issue_comments(
 ) -> list[dict[str, Any]]:
     """Return the comments for one issue, fetched lazily.
 
-    The bulk issue list deliberately omits comments so a single GraphQL call
-    does not time out at open-issue volume (fleet-ops#4552). The daily
+    The bulk issue list deliberately omits comments (fleet-ops#4552; the REST
+    page shape cannot carry per-issue comment bodies at all). The daily
     heartbeat throttle is the only consumer that needs comment bodies, and it
     touches a bounded set (currently-alarmed deduped issues) per tick, so it
     fetches them one issue at a time. Results are cached per run; failures are
     cached as [] so a transient timeout degrades to "no recent comment" (post
     a heartbeat) rather than crashing the reconciler.
+
+    Read on REST (separate 5,000/hour core quota; fleet-ops#7485 batch (a))
+    instead of GraphQL-backed ``gh issue view``. Paginated arrays are
+    accumulated with --paginate --slurp; comment bodies keep the createdAt
+    key the throttle consumer reads.
     """
     if number in cache:
         return cache[number]
@@ -673,7 +678,13 @@ def _issue_comments(
         cache[number] = []
         return cache[number]
     proc = subprocess.run(
-        [gh, "issue", "view", str(number), "-R", repo, "--json", "comments"],
+        [
+            gh,
+            "api",
+            f"repos/{repo}/issues/{number}/comments?per_page=100",
+            "--paginate",
+            "--slurp",
+        ],
         capture_output=True,
         text=True,
         check=False,
@@ -681,9 +692,12 @@ def _issue_comments(
     comments: list[dict[str, Any]] = []
     if proc.returncode == 0 and (proc.stdout or "").strip():
         try:
-            parsed = json.loads(proc.stdout)
-            comments = parsed.get("comments") or []
-        except json.JSONDecodeError:
+            comments = [
+                {**row, "createdAt": row.get("created_at") or ""}
+                for page in json.loads(proc.stdout)
+                for row in page
+            ]
+        except (json.JSONDecodeError, TypeError):
             comments = []
     cache[number] = comments
     return comments
@@ -696,27 +710,16 @@ def load_open_issues(
 ) -> list[dict[str, Any]]:
     if from_json:
         return json.loads(Path(from_json).read_text(encoding="utf-8"))
-    # fetch the issue list WITHOUT comments: requesting the full comment
-    # bodies for up to 300 open issues in one GraphQL call routinely times
-    # out (HTTP 504) at fleet open-issue volume, which made this loader
-    # return [] every tick. With an empty open_issues the observe-to-close
-    # pass had nothing to close, so green alarm issues (and the per-slug
-    # DEBUG-PLAYBOOK class that re-claims them) never closed. Comments are
-    # only needed for the daily-heartbeat throttle, which fetches them
-    # lazily per-issue in has_recent_heartbeat_comment (fleet-ops#4552).
+    # REST uses core quota, not GraphQL (#7485). Fetch every page, exclude
+    # PRs like gh issue list, and retain the consumer's createdAt key.
+    # Comment bodies remain lazy per issue (#4552).
     proc = subprocess.run(
         [
             gh,
-            "issue",
-            "list",
-            "-R",
-            repo,
-            "--state",
-            "open",
-            "--limit",
-            "300",
-            "--json",
-            "number,title,body,labels,createdAt",
+            "api",
+            f"repos/{repo}/issues?state=open&per_page=100",
+            "--paginate",
+            "--slurp",
         ],
         capture_output=True,
         text=True,
@@ -726,7 +729,12 @@ def load_open_issues(
         log(f"WARN: could not list open issues (rc={proc.returncode})")
         return []
     try:
-        return json.loads(proc.stdout)
+        return [
+            {**row, "createdAt": row.get("created_at") or ""}
+            for page in json.loads(proc.stdout)
+            for row in page
+            if "pull_request" not in row
+        ]
     except json.JSONDecodeError:
         log("WARN: could not parse open issues JSON")
         return []
@@ -846,7 +854,13 @@ def verify_filed_signal(
     if not number:
         return False
     proc = subprocess.run(
-        [gh, "issue", "view", number, "-R", repo, "--json", "title", "--jq", ".title"],
+        [
+            gh,
+            "api",
+            f"repos/{repo}/issues/{number}",
+            "--jq",
+            ".title",
+        ],
         capture_output=True,
         text=True,
         check=False,

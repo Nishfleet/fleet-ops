@@ -59,13 +59,13 @@ log = os.environ.get("FAKE_GH_LOG", "/dev/null")
 with open(log, "a", encoding="utf-8") as f:
     f.write("gh " + " ".join(sys.argv[1:]) + "\n")
 
-if sys.argv[1:3] == ["issue", "list"]:
+if sys.argv[1] == "api" and "/issues?state=open" in sys.argv[2]:
     path = os.environ.get("FAKE_GH_OPEN_ISSUES", "")
     if not path:
-        print("[]")
+        print("[[]]")
     else:
         with open(path, encoding="utf-8") as f:
-            print(f.read())
+            print(json.dumps([json.load(f)]))
     sys.exit(0)
 
 # comment, close, edit just need to look successful.
@@ -76,7 +76,7 @@ if sys.argv[1] == "issue" and sys.argv[2] in ("comment", "close", "edit"):
 # filed for this issue number (fleet-ops#4622 verify_filed_signal). The fake
 # fleet-issue-file logs each filing to FAKE_FLEET_ISSUE_FILE_LOG; read the
 # most recent entry's title so the verify matches the signal key.
-if sys.argv[1:3] == ["issue", "view"] and "--json" in sys.argv and "title" in sys.argv:
+if sys.argv[1] == "api" and "--jq" in sys.argv and ".title" in sys.argv:
     override = os.environ.get("FAKE_GH_VIEW_TITLE", "")
     if override:
         print(override)
@@ -911,11 +911,48 @@ env "${common_env[@]}" FAKE_GH_OPEN_ISSUES="$tmp/open11.json" \
 jq -e '.closed == 1' "$tmp/summary11.json" >/dev/null \
     || fail "scenario 11: live loader failed to observe-to-close a green filed-format issue (got: $(cat "$tmp/summary11.json"))"
 # bulk list must not request comments (the 504 cause).
-grep -q 'issue list' "$tmp/gh.log" || fail "scenario 11: expected a live gh issue list call"
-if grep -Eq 'issue list.*(--json|--jq).*comments' "$tmp/gh.log"; then
-    fail "scenario 11: bulk gh issue list must not request comments (504 cause)"
+grep -q 'api repos/Nishfleet/fleet-ops/issues?state=open&per_page=100 --paginate --slurp' "$tmp/gh.log" || fail "scenario 11: expected paginated REST list"
+if grep -Eq 'gh issue (list|view)' "$tmp/gh.log"; then
+    fail "scenario 11: reads must not use GraphQL"
 fi
 ok "scenario 11: live loader omits comments from the bulk list and observe-to-close still works"
+
+# REST boundary regressions (#7485): pages, field names, and read failures.
+python3 - "$lib" <<'PY'
+import importlib.util
+import json
+import subprocess
+import sys
+from datetime import datetime, timezone
+from unittest.mock import patch
+spec = importlib.util.spec_from_file_location("reconciler", sys.argv[1])
+m = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(m)
+issue = {"number": 7485, "title": "quota", "body": "signal: quota",
+         "labels": [{"name": "agent-ready"}], "created_at": "2026-09-17T16:00:00Z"}
+pr = dict(issue, number=7494, pull_request={})
+def response(payload, rc=0):
+    return subprocess.CompletedProcess([], rc, json.dumps(payload), "")
+with patch.object(m.subprocess, "run", return_value=response([[pr], [issue]])) as run:
+    rows = m.load_open_issues("Nishfleet/fleet-ops", "gh", None)
+    assert len(rows) == 1 and rows[0]["number"] == 7485
+    assert rows[0]["labels"] == [{"name": "agent-ready"}], rows
+    assert rows[0]["createdAt"] == issue["created_at"]
+    assert run.call_args.args[0] == ["gh", "api", "repos/Nishfleet/fleet-ops/issues?state=open&per_page=100", "--paginate", "--slurp"]
+comment = {"body": "detector heartbeat: still alarmed", "created_at": "2026-09-17T18:00:00Z"}
+with patch.object(m.subprocess, "run", return_value=response([[], [comment]])) as run:
+    cache = {}
+    comments = m._issue_comments("Nishfleet/fleet-ops", 7485, "gh", False, cache)
+    assert m.has_recent_heartbeat_comment({"comments": comments}, datetime(2026, 9, 17, 19, tzinfo=timezone.utc), 24)
+    assert m._issue_comments("Nishfleet/fleet-ops", 7485, "gh", False, cache) == comments
+    assert run.call_count == 1
+    assert run.call_args.args[0] == ["gh", "api", "repos/Nishfleet/fleet-ops/issues/7485/comments?per_page=100", "--paginate", "--slurp"]
+for result in (response([], 1), subprocess.CompletedProcess([], 0, "not-json", "")):
+    with patch.object(m.subprocess, "run", return_value=result):
+        assert m.load_open_issues("Nishfleet/fleet-ops", "gh", None) == []
+        assert m._issue_comments("Nishfleet/fleet-ops", 7485, "gh", False, {}) == []
+print("OK: REST pages, labels, dates, heartbeat cache and failures")
+PY
 
 # ---------------------------------------------------------------------------
 # 12. FILED-LINK-MISMATCH (fleet-ops#4622): fleet-issue-file may dedupe to
