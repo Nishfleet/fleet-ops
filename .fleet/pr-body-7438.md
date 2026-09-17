@@ -26,6 +26,8 @@ Live run on the VPS: exit 0, all five classes scored, `proposed_drop_gb` 0.0, `d
 
 Full report: `docs/reports/retention-7438.md`. Real records include `/home/nish/.local/state/pi-issues/0509-1051.in` and `/home/nish/.local/state/pi-packet/watch.log.1`. The helper appended five real, non-synthetic rows to `/home/nish/.local/state/pi-packet/jev/artefact-retention.jsonl`, each with the class path/pattern, observation timestamp, state hash, answers, probabilities, usage and duration. Five SDK calls, 4,248 input tokens, about $0.000178416 at the helper's rate, each under the shared $1 budget.
 
+Re-verified 2026-09-17T22:12:54Z: exit 0, five classes scored, `proposed_drop_gb` 0, `deleted_bytes` 0, keep probabilities 0.90–0.98, five non-synthetic helper rows in `~/.local/state/pi-packet/jev/artefact-retention.jsonl`.
+
 run-proof: `python3 tests/asset-retention.test.py` (6 tests, pass, red before implementation); `bash tests/fleet-asset-census.test.sh` (pass, includes the new tests and existing organ/scalability checks); `bash tests/jev-eval.test.sh` (pass); `sgscan --base origin/main` (no new findings); `python3 -m py_compile lib/pi-packet/asset-census.py` (pass); real `retention-report` run on the VPS (exit 0, five scored classes, JSONL rows written); `FLEET_RETENTION_ENABLED=0 bin/fleet-asset-census retention-report` (rollback prints the disabled record with no helper call, proven in test).
 
 Unknowns are preserved, not converted into a savings claim: last-read history and per-file consumer references stay `unknown` in the report and the shared state, since atime is not reliable under relatime/noatime and scanners also touch files. R2 and inotify pressure are unmeasured and named as such.
@@ -45,6 +47,10 @@ Only the new subcommand reads new paths. `census`, `diff`, `validate-map`, metri
 ## Review
 
 Local review is blocked: `crgate --agent` failed with exit 3, "CodeRabbit is not signed in on this machine. Run: coderabbit auth login".
+
+## Arm decision
+
+The PR opens as a draft and is not armed for auto-merge: the local CodeRabbit gate cannot run until sign-in. Jev agreed (hold_for_review p=0.95, site issue-worker, ref Nishfleet/fleet-ops#7438, state_sha256 5231e1c42c577b746b116ce610fd0d158006a49238d9354346a3b7ba02fb7bc9). Arming waits until the review gate completes.
 
 ## Loose ends
 

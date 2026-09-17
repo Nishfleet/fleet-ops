@@ -13,6 +13,8 @@ The installed command resolves the shared `jev-eval` helper from PATH. Use `--he
 
 ## Real run
 
+Re-verified 2026-09-17T22:12:54Z by the resuming worker: `retention-report` exited 0, five classes scored, `proposed_drop_gb` 0, `deleted_bytes` 0. Keep probabilities ranged 0.90 to 0.98; the helper appended five non-synthetic rows to `~/.local/state/pi-packet/jev/artefact-retention.jsonl` (15 rows total). Figures below are from the earlier 17:56:16Z run.
+
 Observed 2026-09-17T17:56:16Z on the VPS. Command exited 0. Five SDK calls through the shared helper, 4,248 input tokens, estimated $0.000178416 at the helper's recorded rate. Each call used `--cap-usd 1`, the helper's shared cumulative budget. The earlier 17:53:36Z run also passed; the figures below are the second run only.
 
 | Class | Files | Decimal GB | Value, 0–4 | Keep probability | Proposed drop GB |
@@ -41,4 +43,4 @@ Scores use five ordered levels from no demonstrated remaining value to current o
 
 `bash tests/fleet-asset-census.test.sh`: passes, including the new tests and existing census, guard map, metrics, scalability and heartbeat checks.
 
-`bash tests/jev-eval.test.sh`: passes. `sgscan --base origin/main`: no new findings. Local review remains blocked because the review CLI is not signed in.
+`bash tests/jev-eval.test.sh`: passes. `sgscan --base origin/main`: no new findings. Local review remains blocked because the review CLI is not signed in; the PR opens as a draft and is not armed for merge until that review runs.
