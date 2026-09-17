@@ -51,8 +51,11 @@ EOF
 
   mkdir -p "$scratch/agent-state"
   cat >"$scratch/agent-state/STOP-REASON.json" <<'JSON'
-{"reason":"unit-failure","detail":{"unit":"pi-issue@fleet-ops-5863.service"}}
+{"reason":"max_auto_continues","detail":{"unit":"pi-issue@fleet-ops-5863.service"}}
 JSON
+
+  # Unit deaths use the resume rail since #6586; max_auto_continues still
+  # reaches the senior auditor. Keep this regression on that repair path.
 
   # Seat stub: one healthy capable seat, matching the real
   # lib/litellm-seat.sh contract (group + tried-file args).
@@ -183,6 +186,8 @@ if grep -q 'AUDITOR-DIRTY-CLONE' "$STOP_ESCALATION_AUDITOR_LOG"; then
 fi
 grep -q 'SENIOR AUDITOR' "$STOP_ESCALATION_AUDITOR_LOG" \
   || fail "clean case: diagnosis block missing from AUDITOR-LOG.md"
+[[ -z "$(git -C "$STOP_ESCALATION_DEPLOY_CLONE" status --porcelain)" ]] \
+  || fail "clean auditor run left changes in the deploy clone"
 ok "clean auditor run -> no AUDITOR-DIRTY-CLONE false positive, block still logged"
 rm -rf "$scratch3"
 

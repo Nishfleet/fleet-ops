@@ -951,3 +951,6 @@ set -e
 ok "resume: circuit-breaker trips keep the auditor path (never resume/dispatch)"
 
 ok "stop-escalation-dispatch: #5456 resume-or-dispatch (relaunch hop+1, dispatch on exhaustion, Nish only when both rails fail, drill sink)"
+
+# #5863: keep the repair-clone regression on this existing CI entry point.
+bash "$here/stop-escalation-deploy-clone-clean.test.sh"
