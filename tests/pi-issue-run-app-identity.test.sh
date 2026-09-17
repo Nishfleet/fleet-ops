@@ -148,4 +148,70 @@ grep -q 'nishfleet-worker App token' "$scratch/err3" \
 [[ -f "$pi_marker" ]] || fail "pi must run after a successful mint"
 ok "creds + mint success runs pi as the App identity"
 
-echo "OK: pi-issue-run App identity scream/fall-through (fleet-ops#413)"
+# Pre-flight must use the minted identity and finish before pi starts.
+export PREFLIGHT_TRACE="$scratch/preflight.trace" PREFLIGHT_INPUT="$scratch/preflight.json"
+export PREFLIGHT_COMMENT="$scratch/comment" JEV_WORKER_PREFLIGHT_BIN="$stub_bin/jev-eval"
+cat >"$stub_bin/jev-eval" <<'STUB'
+#!/usr/bin/env bash
+[[ "$GH_TOKEN" == fake-test-token-cccccccccccccccc ]] || exit 91
+cat >"$PREFLIGHT_INPUT"
+echo eval >>"$PREFLIGHT_TRACE"
+[[ "${PREFLIGHT_FAIL:-0}" == 0 ]] || exit 3
+if [[ "${PREFLIGHT_BAD:-0}" == 1 ]]; then echo '{}'; exit 0; fi
+printf '%s\n' '{"answers":{"spec_complete":{"score":0.2},"blocked_on_orchestrator":{"probability":0.99},"duplicate_of_open_pr":{"probability":0.99},"needs_secret_missing_here":{"probability":0.99},"scope_mismatch":{"probability":0.99}},"ms":12,"state_sha256":"test"}'
+STUB
+cat >"$stub_bin/gh" <<'STUB'
+#!/usr/bin/env bash
+if [[ "$*" == *'/comments'* && "$*" == *'POST'* ]]; then
+  [[ "$GH_TOKEN" == fake-test-token-cccccccccccccccc ]] || exit 92
+  [[ "${PREFLIGHT_POST_FAIL:-0}" == 0 ]] || exit 4
+  while [[ $# -gt 0 ]]; do
+    if [[ "$1" == '-f' ]]; then printf '%s\n' "$2" >"$PREFLIGHT_COMMENT"; fi
+    shift
+  done
+  echo comment >>"$PREFLIGHT_TRACE"
+elif [[ "$*" == *'/pulls?'* && "${PREFLIGHT_LARGE:-0}" == 1 && "$*" == *'--slurp'* ]]; then
+  python3 -c 'import json; print(json.dumps([[{"number":1,"title":"Large PR", "body":"x"*200000,"head":{"ref":"test"}}]]))'
+elif [[ "$*" == *'/comments'* || "$*" == *'/pulls?'* ]]; then
+  echo '[]'
+else
+  echo '{"title":"Preflight fixture","body":"Test the advisory call","labels":[]}'
+fi
+STUB
+cat >"$stub_bin/pi" <<'STUB'
+#!/usr/bin/env bash
+cat >/dev/null
+echo pi >>"$PREFLIGHT_TRACE"
+echo 'OK https://github.com/Nishfleet/fleet-ops/pull/4130'
+STUB
+chmod +x "$stub_bin/jev-eval" "$stub_bin/gh" "$stub_bin/pi"
+printf 'Test advisory preflight.\nTARGET: repo Nishfleet/fleet-ops issue 7400 unit pi-issue-fleet-ops-7400\n' >"$ISSUES_DIR/fleet-ops-7400.in"
+"$bin" fleet-ops-7400 >"$scratch/advice.out" 2>"$scratch/advice.err" || fail 'advisory blocked the worker'
+[[ "$(tr '\n' ' ' <"$PREFLIGHT_TRACE")" == 'eval comment pi ' ]] || fail 'expected evaluation and comment before pi'
+jq -e '.questions | keys == ["blocked_on_orchestrator","duplicate_of_open_pr","needs_secret_missing_here","scope_mismatch","spec_complete"]' "$PREFLIGHT_INPUT" >/dev/null || fail 'five questions missing'
+grep -q 'worker-preflight: advisory' "$PREFLIGHT_COMMENT" || fail 'advisory comment missing'
+! grep -q 'blocked-on:' "$PREFLIGHT_COMMENT" || fail 'advice must not park issue'
+ok 'five advisory answers posted under minted identity before pi; high probabilities do not abort'
+: >"$PREFLIGHT_TRACE"
+JEV_WORKER_PREFLIGHT=0 "$bin" fleet-ops-7400 >"$scratch/off.out" 2>"$scratch/off.err" || fail 'disabled advice blocked worker'
+[[ "$(tr '\n' ' ' <"$PREFLIGHT_TRACE")" == 'pi ' ]] || fail 'disable must skip helper and comment'
+ok 'rollback flag skips preflight'
+: >"$PREFLIGHT_TRACE"
+PREFLIGHT_FAIL=1 "$bin" fleet-ops-7400 >"$scratch/fail.out" 2>"$scratch/fail.err" || fail 'helper failure blocked worker'
+[[ "$(tr '\n' ' ' <"$PREFLIGHT_TRACE")" == 'eval pi ' ]] || fail 'helper failure must continue without comment'
+grep -q 'preflight.*failed.*3' "$scratch/fail.err" || fail 'helper failure must be named'
+ok 'helper failure is loud and leaves worker exit unchanged'
+for mode in PREFLIGHT_BAD PREFLIGHT_POST_FAIL; do
+  : >"$PREFLIGHT_TRACE"
+  env "$mode=1" "$bin" fleet-ops-7400 >"$scratch/$mode.out" 2>"$scratch/$mode.err" || fail "$mode blocked worker"
+  [[ "$(tr '\n' ' ' <"$PREFLIGHT_TRACE")" == 'eval pi ' ]] || fail "$mode must continue without a comment"
+  grep -q 'preflight call failed' "$scratch/$mode.err" || fail "$mode failure not named"
+done
+ok 'invalid answers and failed comment never block pi'
+: >"$PREFLIGHT_TRACE"
+PREFLIGHT_LARGE=1 "$bin" fleet-ops-7400 >"$scratch/large.out" 2>"$scratch/large.err" || fail 'large context blocked worker'
+[[ "$(tr '\n' ' ' <"$PREFLIGHT_TRACE")" == 'eval comment pi ' ]] || fail 'large context lost advisory'
+jq -e '.state.open_prs[0].body | length == 200000' "$PREFLIGHT_INPUT" >/dev/null || fail 'large context truncated'
+jq -e '.questions.spec_complete.criteria | length == 2' "$PREFLIGHT_INPUT" >/dev/null || fail 'score rubric missing'
+ok 'large PR context stays complete without exceeding argv limit'
+echo "OK: pi-issue-run App identity and advisory preflight"
