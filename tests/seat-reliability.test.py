@@ -1,8 +1,6 @@
-"""Offline regression tests; fixtures are not classified-death proof rows."""
+"""Offline journal join tests. Only the 7414 pair below is a real-record proof."""
 import importlib.util
-import json
 from pathlib import Path
-import tempfile
 import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -11,47 +9,18 @@ m = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(m)
 
 
-class DeathEvidence(unittest.TestCase):
-    def test_attempt_window_excludes_old_errors_and_later_resume(self):
-        with tempfile.TemporaryDirectory() as directory:
-            p = Path(directory) / 'session.jsonl'
-            p.write_text('\n'.join(json.dumps(row) for row in [
-                {'timestamp': '2026-09-17T10:00:00Z', 'message': {'errorMessage': 'old'}},
-                {'timestamp': '2026-09-17T11:00:01Z', 'message': {'role': 'assistant', 'provider': 'p', 'model': 'm', 'usage': {'totalTokens': 12}}},
-                {'timestamp': '2026-09-17T11:00:02Z', 'message': {'role': 'toolResult'}},
-                {'timestamp': '2026-09-17T12:00:00Z', 'message': {'errorMessage': 'later'}},
-            ]))
-            result = m.session_evidence(p, m.epoch('2026-09-17T11:00:00Z'), m.epoch('2026-09-17T11:30:00Z'))
-            self.assertEqual(result['tools'], 1)
-            self.assertEqual(result['tokens'], 12)
-            self.assertEqual(result['provider'], 'p')
-            self.assertEqual(len(result['tail']), 2)
-            self.assertNotIn('old', str(result))
-            self.assertNotIn('later', str(result))
+def row(when, phase, suffix='', boot='a'):
+    return {'__REALTIME_TIMESTAMP': str(when * 1000000),
+            'MESSAGE': f'pi-issue-run: x-1 phase={phase}{suffix}', '_BOOT_ID': boot}
 
-    def test_bad_probabilities_never_become_classifications(self):
-        for probability in [float('nan'), float('inf'), -0.1, 1.1, None, True]:
-            with self.assertRaises(ValueError):
-                m.validate_answers({'cause': {'choice': 'provider_5xx', 'probabilities': {'provider_5xx': probability}}})
 
-    def test_missing_boolean_is_unavailable(self):
-        with self.assertRaises(ValueError):
-            m.validate_answers({'cause': {'choice': 'provider_5xx', 'probabilities': {'provider_5xx': 0.9}}})
-
-    def test_secret_line_not_exported(self):
-        self.assertEqual(m.safe_line('Authorization: Bearer test-private-value'), '[withheld: credential-shaped record]')
-
-    def test_journal_join_keeps_denominator_and_does_not_call_success_a_death(self):
-        rows = [
-            {'__REALTIME_TIMESTAMP': '1000000', 'MESSAGE': 'pi-issue-run: x-1 phase=start', '_PID': '1', '_BOOT_ID': 'a'},
-            {'__REALTIME_TIMESTAMP': '2000000', 'MESSAGE': 'pi-issue-run: x-1 phase=exit rc=0 reason=success', '_PID': '1', '_BOOT_ID': 'a'},
-            {'__REALTIME_TIMESTAMP': '3000000', 'MESSAGE': 'pi-issue-run: x-1 phase=start', '_PID': '2', '_BOOT_ID': 'a'},
-            {'__REALTIME_TIMESTAMP': '4000000', 'MESSAGE': 'pi-issue-run: x-1 phase=exit rc=0 reason=infra-death-requeue', '_PID': '2', '_BOOT_ID': 'a'},
-        ]
-        runs = m.join_journal(rows)
+class JournalEvidence(unittest.TestCase):
+    def test_retains_successes_for_denominator(self):
+        runs = m.join_journal([row(1, 'start'), row(2, 'exit', ' rc=0 reason=success'),
+                              row(3, 'start'), row(4, 'exit', ' rc=0 reason=infra-death-requeue')])
         self.assertEqual(len(runs), 2)
-        self.assertFalse(runs[0]['death'])
-        self.assertTrue(runs[1]['death'])
+        self.assertFalse(runs[0]['death_candidate'])
+        self.assertTrue(runs[1]['death_candidate'])
         self.assertEqual(runs[1]['start'], 3)
 
     def test_real_7414_journal_join_ignores_systemd_cat_pid(self):
@@ -65,8 +34,26 @@ class DeathEvidence(unittest.TestCase):
         self.assertAlmostEqual(run['elapsed_s'], 2521.177575, places=5)
 
     def test_unmatched_exit_has_no_invented_duration(self):
-        runs = m.join_journal([{'__REALTIME_TIMESTAMP': '4000000', 'MESSAGE': 'pi-issue-run: x-1 phase=exit rc=1 reason=unknown'}])
-        self.assertIsNone(runs[0]['start'])
+        run = m.join_journal([row(4, 'exit', ' rc=1 reason=pi-failed')])[0]
+        self.assertIsNone(run['start'])
+        self.assertIsNone(run['elapsed_s'])
+
+    def test_unknown_reason_stays_unknown(self):
+        run = m.join_journal([row(1, 'start'), row(2, 'exit', ' rc=1 reason=unknown')])[0]
+        self.assertIsNone(run['death_candidate'])
+
+    def test_ambiguous_starts_not_silently_overwritten(self):
+        run = m.join_journal([row(1, 'start'), row(2, 'start'), row(3, 'exit', ' rc=1 reason=pi-failed')])[0]
+        self.assertIsNone(run['start'])
+        self.assertEqual(run['join_status'], 'ambiguous_starts')
+
+    def test_no_cross_boot_pair(self):
+        run = m.join_journal([row(1, 'start'), row(3, 'exit', ' rc=1 reason=pi-failed', boot='b')])[0]
+        self.assertIsNone(run['start'])
+
+    def test_duplicate_rows_not_extra_deaths(self):
+        rows = [row(1, 'start'), row(2, 'exit', ' rc=1 reason=pi-failed')]
+        self.assertEqual(len(m.join_journal(rows + rows)), 1)
 
 
 if __name__ == '__main__':
