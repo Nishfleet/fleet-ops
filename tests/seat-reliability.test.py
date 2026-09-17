@@ -51,6 +51,18 @@ class JournalEvidence(unittest.TestCase):
         run = m.join_journal([row(1, 'start'), row(3, 'exit', ' rc=1 reason=pi-failed', boot='b')])[0]
         self.assertIsNone(run['start'])
 
+    def test_naive_time_bounds_rejected(self):
+        with self.assertRaises(ValueError):
+            m.epoch('2026-09-17T00:00:00')
+
+    def test_explicit_offset_matches_utc(self):
+        self.assertEqual(m.epoch('2026-09-17T05:30:00+05:30'),
+                         m.epoch('2026-09-17T00:00:00Z'))
+
+    def test_non_text_message_skipped(self):
+        binary = {'__REALTIME_TIMESTAMP': '1000000', 'MESSAGE': [255, 0]}
+        self.assertEqual(m.join_journal([binary]), [])
+
     def test_duplicate_rows_not_extra_deaths(self):
         rows = [row(1, 'start'), row(2, 'exit', ' rc=1 reason=pi-failed')]
         self.assertEqual(len(m.join_journal(rows + rows)), 1)

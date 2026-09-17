@@ -17,13 +17,19 @@ MARK = re.compile(r'pi-issue-run: (\S+) phase=(start|exit)(?: rc=(\d+) reason=(\
 
 
 def epoch(value):
-    return datetime.fromisoformat(value.replace('Z', '+00:00')).timestamp()
+    parsed = datetime.fromisoformat(value.replace('Z', '+00:00'))
+    if parsed.tzinfo is None:
+        raise ValueError('timestamp must include Z or an explicit UTC offset')
+    return parsed.timestamp()
 
 
 def join_journal(rows):
     starts, runs, seen = {}, [], set()
     for row in sorted(rows, key=lambda r: int(r['__REALTIME_TIMESTAMP'])):
-        match = MARK.fullmatch(row.get('MESSAGE', ''))
+        message = row.get('MESSAGE', '')
+        if not isinstance(message, str):
+            continue
+        match = MARK.fullmatch(message)
         if not match:
             continue
         # A saved journal can contain duplicate rows after concatenating pages.
@@ -58,13 +64,16 @@ def join_journal(rows):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--journal', type=Path, required=True)
-    parser.add_argument('--since', help='Inclusive ISO exit timestamp')
-    parser.add_argument('--until', help='Exclusive ISO exit timestamp')
+    parser.add_argument('--since', help='Inclusive ISO exit timestamp, Z or offset required')
+    parser.add_argument('--until', help='Exclusive ISO exit timestamp, Z or offset required')
     args = parser.parse_args()
     with args.journal.open() as source:
         rows = [json.loads(line) for line in source if line.strip()]
-    since = epoch(args.since) if args.since else float('-inf')
-    until = epoch(args.until) if args.until else float('inf')
+    try:
+        since = epoch(args.since) if args.since else float('-inf')
+        until = epoch(args.until) if args.until else float('inf')
+    except ValueError as exc:
+        parser.error(str(exc))
     if until <= since:
         parser.error('--until must be later than --since')
     for run in join_journal(rows):
