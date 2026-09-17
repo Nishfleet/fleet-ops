@@ -733,13 +733,11 @@ def load_open_issues(
         check=False,
     )
     if proc.returncode != 0 or not (proc.stdout or "").strip():
-        log(f"WARN: could not list open issues (rc={proc.returncode})")
-        return []
+        raise RuntimeError(f"could not list open issues (rc={proc.returncode})")
     try:
         return json.loads(proc.stdout)
-    except json.JSONDecodeError:
-        log("WARN: could not parse open issues JSON")
-        return []
+    except json.JSONDecodeError as exc:
+        raise RuntimeError("could not parse open issues JSON") from exc
 
 
 def gh_comment(repo: str, number: int, body: str, gh: str, dry_run: bool) -> bool:
@@ -1012,7 +1010,7 @@ def reconcile(
             log(f"WARN: failed to file {sig} (rc={rc}): {out}")
 
     if capped_sigs:
-        loud(triage, "SIGNAL-RECONCILE-CAP", f"auto-file cap reached ({cap}); unfiled signals: {', '.join(capped_sigs)}")
+        loud(triage, "SIGNAL-RECONCILE-CAP", f"auto-file cap reached ({cap}); capped={summary['capped']}; unfiled signals: {', '.join(capped_sigs)}")
 
     # Observe-to-close: close open signal-keyed issues not in current tick.
     current_open_signals = set(open_by_signal.keys())
@@ -1195,8 +1193,17 @@ def main(argv: list[str] | None = None) -> int:
     if args.json:
         print(json.dumps(summary, sort_keys=True))
 
-    if summary["capped"] > 0:
-        return 1
+    # Metrics export (fleet-ops#7479): persist the latest capped count so the
+    # metrics exporter can read a small snapshot instead of parsing journals.
+    snapshot_path = os.environ.get("FLEET_SIGNAL_RECONCILE_SUMMARY")
+    if snapshot_path:
+        try:
+            Path(snapshot_path).write_text(
+                json.dumps(summary, sort_keys=True), encoding="utf-8"
+            )
+        except OSError as exc:
+            log(f"WARN: could not write reconcile snapshot {snapshot_path}: {exc}")
+
     return 0
 
 

@@ -2970,6 +2970,7 @@ if [ -f "$SIGNAL_RECONCILE_LIB" ]; then
     log "38. detector→queue reconciler starting"
     if FLEET_HEARTBEAT_TRIAGE="$TRIAGE" \
        FLEET_SIGNAL_RECONCILE_TICK_START="$TICK_START" \
+       FLEET_SIGNAL_RECONCILE_SUMMARY="${FLEET_SIGNAL_RECONCILE_SUMMARY:-$HOME/.local/state/fleet-heartbeat/signal-reconcile.json}" \
        FLEET_SIGNAL_RECONCILE_FILE_ISSUES=1 \
        FLEET_SIGNAL_RECONCILE_OK_TO_CLOSE=1 \
        python3 "$SIGNAL_RECONCILE_LIB"; then
@@ -3244,9 +3245,8 @@ fi
 if [ "${escalation_completion_rc:-0}" -ne 0 ]; then
     exit "${escalation_completion_rc}"
 fi
-# detector→queue reconciler: rc 1 means the cap was exceeded (already LOUD).
-# A real crash is rc >= 2.
-if [ "${reconcile_rc:-0}" -ge 2 ]; then
+# Cap hits warn and return 0; propagate real reconciler failures, including rc=1.
+if [ "${reconcile_rc:-0}" -ne 0 ]; then
     exit "$reconcile_rc"
 fi
 exit 0

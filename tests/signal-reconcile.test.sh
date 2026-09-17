@@ -105,6 +105,7 @@ common_env=(
     "GH=$tmp/gh"
     "FAKE_FLEET_ISSUE_FILE_LOG=$tmp/filed.jsonl"
     "FAKE_GH_LOG=$tmp/gh.log"
+    "FLEET_SIGNAL_RECONCILE_SUMMARY=$tmp/reconcile.json"
 )
 
 run() {
@@ -174,11 +175,76 @@ true > "$tmp/filed.jsonl"
 true > "$tmp/gh.log"
 env "${common_env[@]}" FLEET_SIGNAL_RECONCILE_OPEN_ISSUES_JSON="$tmp/empty.json" \
     python3 "$lib" --triage "$tmp/triage4.md" --tick-start "2026-08-28T13:30:00Z" \
-    --ok-to-close 1 --json --now "2026-08-28T13:45:00Z" --cap 1 > "$tmp/summary4.json" || true
+    --ok-to-close 1 --json --now "2026-08-28T13:45:00Z" --cap 1 > "$tmp/summary4.json" 2> "$tmp/cap.log" \
+    || fail "scenario 4: cap must return 0"
 jq -e '.filed == 1 and .capped > 0' "$tmp/summary4.json" >/dev/null \
     || fail "scenario 4: expected one filed and capped"
 [[ $(wc -l < "$tmp/filed.jsonl") -eq 1 ]] || fail "scenario 4: cap should stop additional filings"
-ok "scenario 4: cap is respected and a cap alarm is emitted"
+grep -q 'SIGNAL-RECONCILE-CAP.*capped=2.*loud/escalation-canary-pending/three.*loud/escalation-canary-pending/two' "$tmp/cap.log" \
+    || fail "scenario 4: warning must name capped count and signals"
+jq -e '.capped == 2' "$tmp/reconcile.json" >/dev/null || fail "cap snapshot missing"
+python3 - "$repo_root" "$tmp/reconcile.json" <<'PY'
+import os, runpy, sys
+os.environ['FLEET_SIGNAL_RECONCILE_SUMMARY'] = sys.argv[2]
+metrics = runpy.run_path(sys.argv[1] + '/libexec/fleet-metrics-export.py')
+lines = []
+metrics['_emit_signal_reconcile'](lines)
+assert 'fleet_signal_reconcile_capped 2' in lines, lines
+PY
+ok "scenario 4: cap is respected, returns 0, warns and exports count"
+
+# GitHub unavailable or invalid JSON is not an empty queue.
+for response in error invalid; do
+    printf '#!/bin/sh\n' > "$tmp/bad-gh"
+    if [[ "$response" == error ]]; then
+        printf 'exit 1\n' >> "$tmp/bad-gh"
+    else
+        printf 'echo invalid-json\n' >> "$tmp/bad-gh"
+    fi
+    chmod +x "$tmp/bad-gh"
+    rc=0
+    env "${common_env[@]}" GH="$tmp/bad-gh" FLEET_SIGNAL_RECONCILE_OPEN_ISSUES_JSON= \
+        python3 "$lib" --triage "$tmp/triage1.md" --ok-to-close 1 > "$tmp/error.log" 2>&1 || rc=$?
+    [[ "$rc" == 1 ]] || fail "GitHub $response must return 1, got $rc"
+done
+ok "GitHub errors remain rc=1"
+
+# Execute the actual tier1 final guard, then the heartbeat wrapper and ping hook.
+python3 - "$repo_root/bin/fleet-heartbeat-tier1" "$tmp/guard.sh" <<'PY'
+from pathlib import Path
+import sys
+source = Path(sys.argv[1]).read_text()
+start = source.rindex('if [ "${reconcile_rc:-0}"')
+Path(sys.argv[2]).write_text(source[start:])
+PY
+printf '#!/bin/bash\nrc=0\npython3 "$RECONCILER" --triage "$CAP_TRIAGE" --cap 0 --json || rc=$?\nreconcile_rc=$rc\nsource "$RC_GUARD"\n' > "$tmp/tier1"
+chmod +x "$tmp/tier1"
+printf 'heartbeat_ping_deadman() { echo "dead-man: ping"; }\n' > "$tmp/watchman"
+printf 'last-heartbeat: 2000-01-01T00:00:00Z\n' > "$tmp/plan"
+printf '#!/bin/sh\nexit 0\n' > "$tmp/tier2"
+chmod +x "$tmp/tier2"
+touch "$tmp/prompt" "$tmp/hb-triage"
+for mode in cap exception; do
+    input="$tmp/empty.json"
+    [[ "$mode" != exception ]] || input="$tmp/missing.json"
+    rc=0
+    env "${common_env[@]}" FLEET_SIGNAL_RECONCILE_OPEN_ISSUES_JSON="$input" \
+        RECONCILER="$lib" CAP_TRIAGE="$tmp/triage1.md" RC_GUARD="$tmp/guard.sh" \
+        FLEET_PLAN_FILE="$tmp/plan" FLEET_HEARTBEAT_TIER1="$tmp/tier1" \
+        FLEET_HEARTBEAT_TIER2="$tmp/tier2" FLEET_HEARTBEAT_PROMPT="$tmp/prompt" \
+        FLEET_HEARTBEAT_TRIAGE="$tmp/hb-triage" FLEET_HEARTBEAT_LOG_DIR="$tmp/logs" \
+        FLEET_HEARTBEAT_WATCHMAN="$tmp/watchman" \
+        "$repo_root/bin/fleet-heartbeat" > "$tmp/hb-$mode.log" 2>&1 || rc=$?
+    if [[ "$mode" == cap ]]; then
+        [[ "$rc" == 0 ]] || fail "capped heartbeat rc=$rc"
+        grep -q 'SIGNAL-RECONCILE-CAP' "$tmp/hb-$mode.log" || fail "warning absent"
+        grep -q 'dead-man: ping' "$tmp/hb-$mode.log" || fail "ping not reached"
+    else
+        [[ "$rc" == 1 ]] || fail "exception heartbeat rc=$rc"
+        grep -q 'dead-man: skip ping' "$tmp/hb-$mode.log" || fail "failure ping not skipped"
+    fi
+done
+ok "cap reaches heartbeat ping; exception propagates rc=1 without ping"
 
 # ---------------------------------------------------------------------------
 # 5. Green lines are skipped.

@@ -5424,6 +5424,26 @@ HELP_FBIA = "# HELP fleet_blocked_issue_age_seconds Age stats for blocked issues
 TYPE_FBIA = "# TYPE fleet_blocked_issue_age_seconds gauge"
 
 
+def _emit_signal_reconcile(lines):
+    """Export the capped count from the last completed detector queue tick."""
+    path = Path(os.environ.get(
+        "FLEET_SIGNAL_RECONCILE_SUMMARY",
+        str(Path.home() / ".local/state/fleet-heartbeat/signal-reconcile.json"),
+    ))
+    lines.extend([
+        "# HELP fleet_signal_reconcile_capped Signals deferred by the filing cap in the last completed tick.",
+        "# TYPE fleet_signal_reconcile_capped gauge",
+    ])
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        count = data["capped"]
+        if not isinstance(count, int) or count < 0:
+            return
+    except (OSError, ValueError, KeyError, TypeError):
+        return
+    lines.append(f"fleet_signal_reconcile_capped {count}")
+
+
 def _emit_blocked_reconcile(lines):
     """Append blocked-queue metrics.
 
@@ -6884,6 +6904,7 @@ def main():
     # --- blocked-reconcile nish-decision lint (fleet-ops#3312) ---
     # Per-sweep count of rejected `blocked-on: nish-decision` lines.
     _emit_blocked_reconcile(lines)
+    _emit_signal_reconcile(lines)
 
     # --- close-duplicates close guard (fleet-ops#3161) ---
     # Per-tick close count by label; cross_repo and protected must stay 0.
