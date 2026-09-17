@@ -29,7 +29,9 @@ and proposes up to 5 changes that move the bar. Same seat, different lens.
 3. `/home/nish/workspaces/agent-state/WFR/` — last week's review (if any):
    `last-actions.json` (the actions filed last week + their disposition
    this week) and `last-self-score.json` (the self-score). Phase 3 owes a
-   self-score against last week's actions.
+   self-score against last week's actions. When advice is enabled, freeze
+   the prior actions here as specified in the Jev rubric below, before
+   any conference or Phase-3 writes. Reuse the snapshot on same-run retry.
 4. The current heartbeat scoreboard, especially the WFR-ratio field
    (`/home/nish/workspaces/agent-state/scoreboard/wfr-ratio.json` or the
    same field the heartbeat-tick produces). A high adopt-rate from the
@@ -346,6 +348,82 @@ Record shape:
 
 `hold` may omit `knob` / `from` / `to` / `filed`. Fail loud if the
 file is missing. The next heartbeat tick catches it.
+
+### Jev advisory rubric (fleet-ops#7395)
+
+Before the self-score, run an **advisory-only** machine score of last
+week's actions. This is advice next to the auditors' work — it never
+changes a review decision, an adopt, or a discard, and it does not count
+toward the 5. Rollback: if `JEV_WEEKLY_REVIEW=0` is set in the
+environment, skip this block entirely and restore the prior behaviour.
+
+1. **Freeze last week's actions first.** At input collection, copy
+   `/home/nish/workspaces/agent-state/WFR/last-actions.json` to
+   `last-actions-frozen.json` in the same dir BEFORE any Phase-3 step
+   replaces it — the scores must describe the week that was, not the
+   week being written. Read the frozen copy for scoring. Keep its source
+   date and SHA-256 in the packet. On retry of the same review, reuse that
+   snapshot rather than copying this week's replacement. If there is no
+   prior review, record `no-prior-actions` and make no call; malformed
+   input is an explicit unavailable result, not an empty successful week.
+   Before seeing Jev output, the auditors independently write three
+   numeric scores per action using the same anchors and cited evidence.
+   Save those scores in `last-self-score.json`; do not revise them after
+   seeing advice. Missing evidence is a gap, never proof of success.
+2. **Score every prior-week action** (each `filed` issue number and each
+   discard line) 0-3 on three criteria — *landed as specified*,
+   *measurable effect*, *no regressions* — through the shared Jev
+   helper only (fleet-ops#7371; never a second client, never a raw
+   gateway POST):
+   `cat <payload.json> | jev-eval --site fleet-weekly-review --ref WFR/<date> --cap-usd 1`
+   Build the payload as JSON `{state, questions}` with a JSON serializer,
+   not shell interpolation. Each question is `type: "score"` with a
+   `criteria` array of four ordered anchors. Use these same anchors for
+   auditors and Jev:
+   - landed as specified: no implementation evidence; partial work;
+     most acceptance met with gaps; all acceptance verified.
+   - measurable effect: no measurement; indirect signal only;
+     measured improvement with gaps; target effect measured in full.
+   - no regressions: regression found or no regression checks;
+     narrow checks only; relevant checks with gaps; relevant checks and
+     post-change observation clean. No reported bug alone is not a 3.
+   For discards, score the stated discard commitment, not a nonexistent
+   implementation; retain the original line and its evidence. The answer's `score` is the probability-weighted mean over
+   the anchors and `probabilities` is the distribution across anchor
+   keys "0"-"3"; record both. Build `state` from the real records (the
+   frozen actions file, issue acceptance, REST issue/comments, linked PR
+   merge/check evidence and dated measurements). Include the rubric and
+   advisory rules, omit credentials and customer data. Never attach
+   unrelated PR evidence or include the auditors' verdicts in the state.
+   Jev scores the record alone; the comparison happens after. Use a ref
+   with snapshot date plus issue id or discard index, not the date alone.
+   Require exit 0, all three finite scores in [0,3], and four finite
+   probabilities in [0,1] per score. Missing probabilities or a failed
+   call means `unavailable` for that action, with reason, never p=1.
+   Keep the helper's JSONL receipts under
+   `~/.local/state/pi-packet/jev/fleet-weekly-review.jsonl`. Its cap is
+   cumulative shared spend, not a reset per action: do not reset the
+   ledger or raise the cap on refusal. JEV_WEEKLY_REVIEW=0 skips the
+   helper and credits queries; no scores are written.
+3. **Land the scores beside the auditors' scores** in the review output
+   and `conference.md` as a `## Jev score table (advisory-only)` block:
+   one row per action, three 0-3 columns with each probability `p`, the
+   helper's `state_sha256`, and the auditors' own score/disposition for
+   the same action. Print the `/v1/credits` balance before and after the
+   calls in the review output (never the key).
+4. **Log disagreement without changing anything.** A row is a
+   disagreement when the jev score differs from the auditor's verdict by
+   any amount on any criterion. Record all three signed differences
+   (Jev minus auditor), including zeros, plus one-line evidence for
+   disagreements. Append the comparison rows to the existing review
+   packet and store them in `last-self-score.json` with refs and hashes.
+   Disagreement changes no decision, adoption ratio, cap, or gate.
+   Do not turn advice into a gate without #7371's matching benchmark go
+   row and threshold. Retain unavailable/no-evidence rows without fake
+   numbers. Before replacing last-actions.json, confirm every frozen
+   action has a score/comparison row or an explicit unavailable reason.
+   The next scheduled review's table is the termination proof; a manual
+   sample or a stubbed runner test is not that proof.
 
 ### Per-repo quality ceiling ratchet (fleet-ops#3519)
 

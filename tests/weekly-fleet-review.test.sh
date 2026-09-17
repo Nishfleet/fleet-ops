@@ -295,6 +295,53 @@ grep -q 'WFR-RECORDS-MISSING' "$svc" \
   || fail "ExecStartPost must log WFR-RECORDS-MISSING with the stale file list"
 ok "(i) ExecStartPost asserts the six mandated Phase-3 records are fresh (fleet-ops#6744)"
 
+# (j) Jev advisory rubric (fleet-ops#7395). The weekly review scores every
+# prior-week action 0-3 on "landed as specified" / "measurable effect" /
+# "no regressions" with probabilities, via the shared jev-eval client
+# only (fleet-ops#7371 — no second client), beside the auditors' scores,
+# disagreement logged, advisory-only (no decision change), with a
+# freeze-before-overwrite of last-actions and the JEV_WEEKLY_REVIEW=0
+# rollback flag.
+grep -q '### Jev advisory rubric (fleet-ops#7395)' "$prompt" \
+  || fail "prompt must carry the Jev advisory rubric block (fleet-ops#7395)"
+grep -q 'landed as specified' "$prompt" \
+  || fail "prompt must score 'landed as specified' (fleet-ops#7395)"
+grep -q 'measurable effect' "$prompt" \
+  || fail "prompt must score 'measurable effect' (fleet-ops#7395)"
+grep -q 'no regressions' "$prompt" \
+  || fail "prompt must score 'no regressions' (fleet-ops#7395)"
+grep -q 'jev-eval --site fleet-weekly-review' "$prompt" \
+  || fail "prompt must call the shared jev-eval client with --site fleet-weekly-review (no second client, fleet-ops#7371)"
+grep -q 'last-actions-frozen.json' "$prompt" \
+  || fail "prompt must freeze last-actions.json before replacing it (fleet-ops#7395)"
+grep -q 'JEV_WEEKLY_REVIEW=0' "$prompt" \
+  || fail "prompt must document the per-site rollback flag JEV_WEEKLY_REVIEW=0"
+grep -q 'disagreement' "$prompt" \
+  || fail "prompt must log jev-vs-auditor disagreement (fleet-ops#7395)"
+grep -q 'advisory-only' "$prompt" \
+  || fail "prompt must mark the jev scores advisory-only (no decision change)"
+# Check the rubric block itself, not coincidental words elsewhere.
+python3 - "$prompt" <<'PY'
+import pathlib, sys
+text = pathlib.Path(sys.argv[1]).read_text()
+block = text.split('### Jev advisory rubric (fleet-ops#7395)', 1)[1].split('### Per-repo', 1)[0]
+for required in (
+    'JSON `{state, questions}`', '`type: "score"`',
+    '`criteria` array of four ordered anchors', 'probability-weighted mean',
+    'Before seeing Jev output, the auditors independently write three',
+    'do not revise them after', 'signed differences', 'last-self-score.json',
+    'Require exit 0', 'probabilities or a failed', '`unavailable`',
+    '`no-prior-actions`', 'On retry of the same review, reuse that',
+    'cap is\n   cumulative shared spend', 'helper and credits queries',
+    'Disagreement changes no decision, adoption ratio, cap, or gate.',
+    'next scheduled review', 'not that proof',
+):
+    assert required in block, f'missing rubric contract: {required}'
+assert block.index('auditors independently') < block.index('jev-eval --site')
+assert block.index('last-actions-frozen.json') < block.index('jev-eval --site')
+PY
+ok "(j) advisory rubric contract: anchors, independent scores, freeze/retry, rollback, unavailable, comparisons, scheduled proof"
+
 # Nested CI host
 grep -Fq 'bash "$here/weekly-fleet-review.test.sh"' "$here/rule-enforcement.test.sh" \
   || fail "rule-enforcement.test.sh must nest this file"
