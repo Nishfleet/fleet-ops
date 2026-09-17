@@ -32,4 +32,85 @@ echo '{"state":"x","questions":{"q":{"type":"boolean","instructions":"x"}}}' | "
 # 5. no key material anywhere in the logs
 grep -rq "VERCEL_AI_GATEWAY_JEV_KEY=" "$HOME/.local/state/pi-packet/jev" && fail "key leaked into log"
 grep -q "console.log" "$J" && fail "helper must not console.log (key hygiene)"
+# 6. Second opinion CLI contract. The SDK alone is stubbed; the real helper,
+# logs, framing, accounting and comparison all run. Invented fixtures stay synthetic.
+python3 - "$J" <<'PY' || fail "second-opinion contracts"
+import json, os, pathlib, subprocess, sys
+home = pathlib.Path(os.environ['HOME'])
+root = home / '.local/state/pi-packet/jev'
+spend = root / 'spend.json'
+lib = home / 'sdk'
+(lib / 'node_modules/ai').mkdir(parents=True)
+(lib / 'package.json').write_text('{}')
+(lib / 'node_modules/ai/package.json').write_text('{"main":"index.js"}')
+(lib / 'node_modules/ai/index.js').write_text('''
+let n = 0;
+exports.experimental_evaluate = async (input) => {
+  require('node:fs').appendFileSync(process.env.CAPTURE, JSON.stringify(input) + '\\n');
+  if (++n === 2 && process.env.FAIL_SECOND) throw new Error('second call failed');
+  return {answers: JSON.parse(process.env.ANSWERS)[n-1], usage: {inputTokens: 100, outputTokens: 2, totalTokens: 102}};
+};
+''')
+key = home / '.config/fleet-ops/seats/typesafe-jev.env'
+key.parent.mkdir(parents=True)
+key.write_text('VERCEL_AI_GATEWAY_JEV_KEY=unit-test-only\n')
+card = {'state': {'context': 'rules', 'item': 'card', 'history': ['record']},
+        'questions': {'q': {'type': 'boolean', 'instructions': 'needs approval?'}},
+        'site': 'ensemble', 'ref': 'synthetic-unit-test'}
+def run(pair, *, payload=card, flags=(), env=None, cap=1):
+    spend.write_text('{"usd":0,"calls":0,"inputTokens":0}')
+    capture = home / 'capture.jsonl'
+    capture.write_text('')
+    e = dict(os.environ, JEV_EVAL_LIB=str(lib), CAPTURE=str(capture), ANSWERS=json.dumps(pair))
+    e.update(env or {})
+    p = subprocess.run([sys.executable.replace('python3', 'node')] if False else
+        ['node', sys.argv[1], '--second-opinion', '--synthetic', '--cap-usd', str(cap), *flags],
+        input=json.dumps(payload), text=True, capture_output=True, env=e)
+    calls = [json.loads(x) for x in capture.read_text().splitlines()]
+    return p, calls
+
+def answer(kind, value):
+    return {'q': {'type': kind, {'boolean':'probability','choice':'choice','score':'score'}[kind]: value}}
+for kind, a, b, expected in [('boolean', .9, .8, False), ('boolean', .9, .1, True),
+                            ('boolean', .5, .9, None), ('choice', 'yes', 'no', True),
+                            ('choice', 'yes', 'yes', False), ('score', 2, 3, True),
+                            ('score', 2, 2, False)]:
+    payload = dict(card, questions={'q': {'type': kind, 'instructions': 'compare', 'criteria': {'yes':'yes','no':'no'}}})
+    pair = [answer(kind, a), answer(kind, b)]
+    p, calls = run(pair, payload=payload)
+    assert p.returncode == 0, p.stderr
+    d = json.loads(p.stdout)
+    assert 'second_opinion' in d, 'stdout missing second_opinion'
+    so = d['second_opinion']
+    assert so['disagreement'] is expected, so
+    assert so['a']['answers'] == pair[0] and so['b']['answers'] == pair[1]
+    assert len(calls) == 2 and calls[0]['questions'] == calls[1]['questions'] == payload['questions']
+    states = [json.loads(c['state']) for c in calls]
+    assert states[0] == states[1] == card['state']
+    assert list(states[0])[:2] == ['item','context'] and list(states[1])[:2] == ['context','item']
+    assert so['a']['state_sha256'] != so['b']['state_sha256']
+    assert json.loads(spend.read_text())['calls'] == 2
+    assert json.loads(spend.read_text())['inputTokens'] == 200
+    rows = [json.loads(x) for x in (root / 'ensemble.jsonl').read_text().splitlines()]
+    assert rows[-1]['second_opinion'] == so and rows[-1]['synthetic']
+    assert rows[-1]['ref'] == card['ref']
+pair = [answer('boolean', .9), answer('boolean', .1)]
+p, calls = run(pair, flags=['--dry-run'])
+assert p.returncode == 0 and not calls
+assert json.loads(p.stdout)['second_opinion']['disagreement'] is None
+p, calls = run(pair, env={'JEV_SECOND_OPINION':'0'})
+assert p.returncode == 0 and len(calls) == 1 and 'second_opinion' not in json.loads(p.stdout)
+p, calls = run(pair, payload=dict(card, state='no context'))
+assert p.returncode == 2 and not calls
+p, calls = run(pair, env={'FAIL_SECOND':'1'})
+assert p.returncode == 1 and not p.stdout and len(calls) == 2
+assert json.loads(spend.read_text())['calls'] == 1
+p, calls = run(pair, cap=.000001)
+assert p.returncode == 3 and len(calls) == 1 and not p.stdout
+assert json.loads(spend.read_text())['calls'] == 1
+p, calls = run([{}, {}])
+assert p.returncode == 0 and json.loads(p.stdout)['second_opinion']['disagreement'] is None
+assert 'unit-test-only' not in (root / 'ensemble.jsonl').read_text()
+PY
+
 echo "jev-eval tests: green"
