@@ -737,8 +737,73 @@ else
     echo "SKIP: retired-mechanisms ledger absent (hosted CI) — skipping retired-mechanism regression"
 fi
 
+# ---------------------------------------------------------------------------
+# Scenario 12: empty `## ` prose headers are fossils (fleet-ops#6845). The
+# notifier delivers a section's canonical lines; the archive passes move
+# them out and leave the `## ` header verbatim — a bare header that every
+# later sweep misreads as "write lost" and re-pages Nish for. The drain now
+# strips a `## ` section holding only blank lines, keeps a populated
+# section, keeps `## DRAIN-DIGEST` bookkeeping pointers, and rewrites the
+# live file even when nothing was archived (no empty archive file minted).
+# ---------------------------------------------------------------------------
+rm -rf "$AS/lanes/seats"
+{
+    printf '# Nish escalations\n'
+    printf '\n'
+    printf 'One line per escalation.\n'
+    printf 'Three lines of header.\n'
+    printf 'Four lines of header.\n'
+    printf '\n'
+    printf 'Format: entry line.\n'
+    # Bare fossil A: no canonical lines, no prose — must be stripped.
+    printf '## Orchestrator decision sweep 2026-09-13T20:58Z — canonical entry lines\n'
+    printf '\n'
+    # Populated section: canonical entry under the header — kept whole.
+    printf '## Orchestrator decision sweep 2026-09-14T00:00Z — canonical entry lines\n'
+    printf '2026-09-14T00:00:01Z CREDENTIAL-BOUNDARY hash=active-6845 count=1\n'
+    printf '  SUMMARY: drill active entry.\n'
+    # Drain bookkeeping pointer — exempt, stays.
+    printf '## DRAIN-DIGEST 2026-09-14T01:00:00Z — 3 stale entries moved to /tmp/digest-2026-09-14.md (fleet-ops#5624 bound-breach)\n'
+    # Bare fossil C at EOF — must be stripped.
+    printf '## Orchestrator decision sweep 2026-09-14T02:00Z — canonical entry lines\n'
+} > "$AS/NISH-ESCALATIONS.md"
+
+rm -f "$AS/lanes/nish-boundary-notify.seen"
+
+run_drain
+
+grep -qF "2026-09-13T20:58Z" "$AS/NISH-ESCALATIONS.md" \
+    && fail "scenario 12: bare fossil header A must be stripped" || true
+grep -qF "2026-09-14T02:00Z" "$AS/NISH-ESCALATIONS.md" \
+    && fail "scenario 12: bare fossil header at EOF must be stripped" || true
+grep -qF "Orchestrator decision sweep 2026-09-14T00:00Z" "$AS/NISH-ESCALATIONS.md" \
+    || fail "scenario 12: populated `## ` section header must be kept"
+grep -qF "hash=active-6845" "$AS/NISH-ESCALATIONS.md" \
+    || fail "scenario 12: active canonical entry must be kept"
+grep -qF "DRAIN-DIGEST" "$AS/NISH-ESCALATIONS.md" \
+    || fail "scenario 12: DRAIN-DIGEST bookkeeping pointer must be kept"
+grep -q "hdr_stripped=2" "$scratch/run.stderr" \
+    || fail "scenario 12: log must report hdr_stripped=2; stderr: $(cat "$scratch/run.stderr")"
+grep -q "nish_hdr_stripped=2" "$scratch/run.stderr" \
+    || fail "scenario 12: summary must report nish_hdr_stripped=2; stderr: $(cat "$scratch/run.stderr")"
+# A header-strip-only run mints no archive entries.
+day12="$(date -u +%Y-%m-%d)"
+archive12="$AS/nish-escalations-archive/$day12.md"
+if [ -f "$archive12" ]; then
+    grep -qF "Orchestrator decision sweep" "$archive12" \
+        && fail "scenario 12: stripped fossil headers must NOT be written to the archive" || true
+fi
+ok "scenario 12: bare `## ` fossils stripped; populated section + DRAIN-DIGEST kept"
+
+# Idempotency: re-running on the stripped file is a no-op.
+rm -f "$scratch/run.stderr"
+run_drain
+grep -q "nothing to archive" "$scratch/run.stderr" \
+    || fail "scenario 12: re-run on stripped file must be a no-op; stderr: $(cat "$scratch/run.stderr")"
+ok "scenario 12: re-run is a no-op (idempotent)"
+
 echo
-echo "fleet-escalation-drain: all scenarios passed (fleet-ops#2677 + #2773 + #3996 + #4418)"
+echo "fleet-escalation-drain: all scenarios passed (fleet-ops#2677 + #2773 + #3996 + #4418 + #6845)"
 
 echo
 # fleet-ops#5624 bound-breach second stage (breach stamp + LOUD alert +

@@ -499,6 +499,36 @@ $marker"; then
 $marker" "$class" || prose_fail=1
 done
 
+# --- Header-only section guard (fleet-ops#6845) ------------------------------
+# ~10 sweep runs 2026-09-10 -> 2026-09-14 left `## ... (canonical entry
+# lines)` headers whose `<ts> <CLASS>` lines were absent from the live file:
+# every section claimed an escalation this parser had nothing to deliver,
+# and each run reported success while the page channel stayed dark. The
+# paired drain fix (same issue) strips a `## ` header whose body went empty
+# on archive, so a `## ` section that STILL holds no `^[0-9]{4}-` canonical
+# line AND no deliverable prose marker (NISH ACTION / NISH DECISION NEEDED /
+# class token — the prose scan above owns those) is exactly one thing: a
+# starved write. `## DRAIN-DIGEST` pointers are the drain's own bookkeeping
+# — exempt. A starved section is an undelivered-escalation signal: loud
+# exit 1 so OnFailure summons an auditor, never a silent green run.
+starved=0
+while IFS= read -r starved_hdr; do
+  [ -n "$starved_hdr" ] || continue
+  echo "UNDELIVERED-ESCALATION: header-only section has no canonical line or prose marker: $starved_hdr" >&2
+  starved=1
+done < <(awk -v m="$prose_mark" '
+  /^## / {
+    if (seen_hdr && !deliverable) print hdr
+    hdr = $0; seen_hdr = 1
+    deliverable = ($0 ~ /^## DRAIN-DIGEST/) ? 1 : 0
+    next
+  }
+  seen_hdr && /^[0-9]{4}-/ { deliverable = 1 }
+  seen_hdr && $0 ~ m { deliverable = 1 }
+  END { if (seen_hdr && !deliverable) print hdr }
+' "$FILE")
+[ "$starved" = 1 ] && fail=1
+
 # A failed delivery (entry-format, prose, OR confirmed-question issue) must be
 # loud: exit 1 so OnFailure summons an auditor. A spurious trigger with
 # nothing to deliver exits 0.
