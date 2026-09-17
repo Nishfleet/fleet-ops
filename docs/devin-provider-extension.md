@@ -39,6 +39,42 @@ off. The classifier benches the seat with a named reason instead of a day of
 empty runs, and never retires it (a CLI/flag config fault is infrastructure,
 not seat yield).
 
+## Bounded print probe (2026-09-17, fleet-ops#6822)
+
+`devin-sandbox-print-392792.service` failed on 2026-09-14 at
+12:58:31Z with exit 2. Its journal command put the prompt after other options
+without a `--` separator. Replaying that invocation with CLI
+`3000.10.31 (b98cc431)` reproduced this parser error:
+
+```text
+error: the argument '--print [<PROMPT>]' cannot be used with '[PATH]...'
+```
+
+Keep the trailing prompt separate from path arguments. This foreground probe
+uses the failed command's model, working directory, trust and permission options:
+
+```bash
+(
+  cd /tmp || exit
+  output=$(timeout --kill-after=10s 300s /home/nish/.local/bin/devin \
+    --print --model glm-5-2 --respect-workspace-trust false \
+    --permission-mode auto -- 'Reply with exactly: ADAPTER-PROBE-OK') || exit
+  test "$output" = 'ADAPTER-PROBE-OK'
+)
+```
+
+The real run started at `2026-09-17T19:01:49Z`, returned
+`ADAPTER-PROBE-OK`, and passed the exact-output assertion with exit 0.
+Host receipt: `/tmp/issue-6822-proof.VaN3e7`.
+The original failure remains recorded in the user journal for the named unit.
+
+This proves print-mode request/response only, not sandbox execution, tool writes,
+or the full Pi provider path. Despite its name, the original unit did not pass
+`--sandbox`; this repair changes no sandbox, trust, or permission settings.
+The provider already uses `--prompt-file`, so it needs no argument change.
+No tracked launcher for the transient probe was found; do not add a new service
+or infer success merely because the old unit disappeared.
+
 ## Rate-limit resume (2026-09-11)
 
 A Devin "Reached overall message rate limit ... reset in N minutes" no longer ends the
