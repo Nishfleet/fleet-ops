@@ -326,7 +326,7 @@ while IFS= read -r line; do
   body=$(awk -v want="$line" '
     $0==want {p=1; print; next}
     p && /^[[:space:]]/ {print; next}
-    p {exit}' "$FILE" | head -25)
+    p {exit}' "$FILE")
 
   # --- fleet-ops#4627: fleet-starvation gate (defense-in-depth) -------------
   # The writer (bin/money-boundary-raise) is authoritative — it suppresses the
@@ -504,11 +504,11 @@ done
 # lines)` headers whose `<ts> <CLASS>` lines were absent from the live file:
 # every section claimed an escalation this parser had nothing to deliver,
 # and each run reported success while the page channel stayed dark. The
-# paired drain fix (same issue) strips a `## ` header whose body went empty
-# on archive, so a `## ` section that STILL holds no `^[0-9]{4}-` canonical
+# paired drain fix strips a header only when this run archived its entries;
+# it preserves originally empty sections. A section with no canonical
 # line AND no deliverable prose marker (NISH ACTION / NISH DECISION NEEDED /
-# class token — the prose scan above owns those) is exactly one thing: a
-# starved write. `## DRAIN-DIGEST` pointers are the drain's own bookkeeping
+# class token — the prose scan above owns those) is missing-entry evidence.
+# It does not establish whether a historical write failed. `## DRAIN-DIGEST` pointers are the drain's own bookkeeping
 # — exempt. A starved section is an undelivered-escalation signal: loud
 # exit 1 so OnFailure summons an auditor, never a silent green run.
 starved=0
