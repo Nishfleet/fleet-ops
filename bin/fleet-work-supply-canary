@@ -29,7 +29,7 @@ fi
 #
 # Subcommands:
 #   (default) / canary   heartbeat canary (fail-loud)
-#   gate <repo>          systemd ExecCondition: 0=run, 1=rest, 255=error
+#   gate <repo>          systemd ExecCondition: 0=run, 1=rest, 2=measurement-failure
 #                        fleet-ops#3547: rest needs BOTH runway >= REST_H
 #                        AND live supply (created-24h >= 20, agent-ready
 #                        >= 40); thin supply runs the scout regardless of
@@ -120,7 +120,7 @@ usage: fleet-work-supply-canary [canary]
 
 24h/12h work-supply drain trigger (fleet-ops#540).
   canary  heartbeat fail-loud watch (default)
-  gate    systemd ExecCondition: exit 0 run, 1 rest, 255 error
+  gate    systemd ExecCondition: exit 0 run, 1 rest, 2 measurement-failure
   hours   JSON snapshot of ready, drain, hours, action
 EOF
 }
@@ -190,7 +190,7 @@ fetch_ready() {
         return 0
     fi
     n=$("$GH" issue list -R "Nishfleet/${short}" -l agent-ready --state open \
-        --json number --limit 200 --jq 'length' 2>/dev/null || true)
+        --json number --limit 200 --jq 'length' 2>/dev/null) || return 1
     printf '%s\n' "$n"
 }
 
@@ -213,7 +213,7 @@ fetch_created_24h() {
     since=$(date -u -d "@$((now_s - 86400))" +%Y-%m-%dT%H:%M:%SZ)
     n=$("$GH" issue list -R "Nishfleet/${short}" --state all --limit 200 \
         --search "created:>=${since}" --json number,title,labels \
-        --jq "$SUPPLY_ISSUE_COUNT_JQ" 2>/dev/null || true)
+        --jq "$SUPPLY_ISSUE_COUNT_JQ" 2>/dev/null) || return 1
     printf '%s\n' "$n"
 }
 
@@ -223,8 +223,7 @@ fetch_created_24h() {
 # (default 40). Returns 1 when supply is healthy or the repo is exempt
 # (fleet-ops: the control plane's own scout must not be pushed harder — the
 # 20% self-maintenance budget, fleet-ops#3254). If created-24h cannot be
-# measured the floor stays closed and the runway rule decides (logged), so a
-# gh hiccup never turns into a scout storm.
+# measured, return 2; the gate reports measurement-failure, not healthy supply.
 supply_floor_open() {
     local short="$1" snap="$2" ready created min_created min_ready r
     local -a skip
@@ -238,11 +237,8 @@ supply_floor_open() {
     is_uint "$min_ready" || min_ready=40
     ready=$(jq -r '.ready' <<<"$snap")
     is_uint "$ready" || ready=0
-    created=$(fetch_created_24h "$short")
-    if ! is_uint "$created"; then
-        log "gate: $short supply floor: created-24h unmeasured ('${created}') — runway rule decides"
-        return 1
-    fi
+    created=$(fetch_created_24h "$short") || return 2
+    is_uint "$created" || return 2
     if [[ "$created" -lt "$min_created" || "$ready" -lt "$min_ready" ]]; then
         log "gate: $short supply floor OPEN: created_24h=$created (min $min_created) ready=$ready (min $min_ready) — run the scout regardless of runway (fleet-ops#3547)"
         return 0
@@ -274,8 +270,8 @@ snapshot() {
     if [[ -n "${FLEET_WORK_SUPPLY_HOURS:-}" ]]; then
         hours="$FLEET_WORK_SUPPLY_HOURS"
         is_uint "$hours" || return 1
-        ready=$(fetch_ready "$short")
-        is_uint "$ready" || ready=0
+        ready=$(fetch_ready "$short") || return 1
+        is_uint "$ready" || return 1
         closed=0
         action=$(work_supply_action "$hours")
         jq -n --arg repo "$short" --argjson ready "$ready" --argjson closed "$closed" \
@@ -283,7 +279,7 @@ snapshot() {
             '{repo:$repo,ready:$ready,closed_in_window:$closed,window_h:$window,hours_of_work:$hours,action:$action,hours_overridden:true}'
         return 0
     fi
-    ready=$(fetch_ready "$short")
+    ready=$(fetch_ready "$short") || return 1
     is_uint "$ready" || return 1
     closed_json=$(fetch_closed_json "$short") || return 1
     now_s="${FLEET_WORK_SUPPLY_NOW_EPOCH:-$(date -u +%s)}"
@@ -302,11 +298,16 @@ cmd_hours() {
     printf '%s\n' "$out"
 }
 
-# ExecCondition: 0 run (hours < 24), 1 skip rest, 255 error.
+# ExecCondition: 0 run, 1 rest, 2 measurement-failure. Codes 1..254 skip
+# without failing the unit. Do not add 2 to SuccessExitStatus (would run).
+# Alert through the existing triage channel instead of OnFailure (#7523).
 cmd_gate() {
     local short="$1" snap hours action park_state pdry park_n park_buf
     valid_repo "$short" || { log "gate: invalid repo '$short'"; return 255; }
-    snap=$(snapshot "$short") || { log "gate: gh/measurement failed for $short"; return 255; }
+    snap=$(snapshot "$short") || {
+        loud "WORK-SUPPLY-WATCHER-BROKEN" "gate: $short measurement-failure: gh/measurement failed; supply unknown; skipping"
+        return 2
+    }
     hours=$(jq -r '.hours_of_work' <<<"$snap")
     action=$(jq -r '.action' <<<"$snap")
     log "gate: $short hours=$hours action=$action"
@@ -321,6 +322,14 @@ cmd_gate() {
     # before the park or runway rest can bind.
     if supply_floor_open "$short" "$snap"; then
         return 0
+    else
+        case $? in
+            1) ;; # Healthy supply or exempt repo; runway/park decides.
+            *)
+                loud "WORK-SUPPLY-WATCHER-BROKEN" "gate: $short measurement-failure: supply floor unmeasured; supply unknown; skipping"
+                return 2
+                ;;
+        esac
     fi
     # fleet-ops#3418: auto-park a green-and-sterile scout. Once
     # scout-futility-check has escalated (consecutive_dry >= N), the scout

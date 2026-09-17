@@ -3,9 +3,9 @@
 #
 # Proves the 24h/12h drain trigger (fleet-ops#540) offline:
 #   1. Hours math: famine, floor drain, go-ham, generate, rest.
-#   2. gate: generate/go-ham exit 0; rest exit 1; gh fail exit 255.
+#   2. gate: generate/go-ham exit 0; rest exit 1; measurement failure exit 2.
 #   2c. gate supply floor: created-24h<20 or ready<40 -> run=0 despite rest
-#       hours; fleet-ops exempt; unmeasured -> runway rule (fleet-ops#3547).
+#       hours; fleet-ops exempt; unmeasured -> measurement-failure (#7523).
 #   2b. gate auto-park: consecutive_dry>=N + hours<BUFFER_H -> rest=1;
 #       lifts at hours>=BUFFER_H; no state / dry<N -> run=0 (fleet-ops#3418).
 #   3. Canary clean: wired ExecCondition, prompt, workers ungated,
@@ -115,7 +115,7 @@ cat >"$gh_fake" <<'FAKE'
 #!/usr/bin/env bash
 printf '%s\n' "$*" >>"${GH_LOG:-/dev/null}"
 if [[ -f "${GH_BROKEN:-/dev/nonexistent}" ]]; then
-  echo "gh: simulated failure" >&2
+  echo "GraphQL: API rate limit already exceeded for installation ID 156789042" >&2
   exit 1
 fi
 case "$*" in
@@ -211,6 +211,7 @@ run_canary() {
 
 # --- 2. gate exits ----------------------------------------------------------
 write_wired_checkout
+export FLEET_WORK_SUPPLY_CREATED_24H=65 FLEET_WORK_SUPPLY_READY=65
 export FLEET_WORK_SUPPLY_HOURS=20
 set +e
 "$bin" gate demo >/dev/null 2>&1
@@ -229,7 +230,7 @@ set +e
 gate_rc=$?
 set -e
 [[ "$gate_rc" == "1" ]] || fail "gate rest (30h) must exit 1, got $gate_rc"
-unset FLEET_WORK_SUPPLY_HOURS
+unset FLEET_WORK_SUPPLY_HOURS FLEET_WORK_SUPPLY_CREATED_24H FLEET_WORK_SUPPLY_READY
 touch "$scratch/gh_broken"
 export GH_BROKEN="$scratch/gh_broken"
 set +e
@@ -238,8 +239,38 @@ gate_rc=$?
 set -e
 unset GH_BROKEN
 rm -f "$scratch/gh_broken"
-[[ "$gate_rc" == "255" ]] || fail "gate gh fail must exit 255, got $gate_rc"
-ok "scenario2: gate exit 0/1/255"
+[[ "$gate_rc" == "2" ]] || fail "gate gh fail must exit 2, got $gate_rc"
+ok "scenario2: gate exit 0/1/2"
+
+# --- 2a. replay #7523's quota failure through each measurement path ----------
+# Real incident: 2026-09-17T18:55Z, installation 156789042, gate 0509 rc=255.
+# These are stubbed regression cases, not proof of a production recovery.
+touch "$scratch/gh_broken"
+export GH_BROKEN="$scratch/gh_broken"
+for short in 0509 fleet-ops; do
+  for measurement in ready closed override-ready floor; do
+    unset FLEET_WORK_SUPPLY_HOURS FLEET_WORK_SUPPLY_READY FLEET_WORK_SUPPLY_CREATED_24H
+    case "$measurement" in
+      closed) export FLEET_WORK_SUPPLY_READY=65 ;;
+      override-ready) export FLEET_WORK_SUPPLY_HOURS=5 ;;
+      floor)
+        [[ "$short" == fleet-ops ]] && continue # Exempt from the floor.
+        export FLEET_WORK_SUPPLY_HOURS=66 FLEET_WORK_SUPPLY_READY=65 ;;
+    esac
+    : >"$triage"
+    run_canary gate "$short"
+    [[ "$env_rc" == 2 ]] || fail "scenario2a: $short/$measurement expected 2, got $env_rc ($env_out)"
+    grep -q 'WORK-SUPPLY-WATCHER-BROKEN.*measurement-failure.*supply unknown' <<<"$env_out" \
+      || fail "scenario2a: missing loud failure"
+    grep -q 'measurement-failure' "$triage" || fail "scenario2a: missing triage alert"
+    if grep -q 'action=\|supply floor closed\|parked' "$triage"; then
+      fail "scenario2a: failure must not claim supply present"
+    fi
+  done
+done
+unset FLEET_WORK_SUPPLY_HOURS FLEET_WORK_SUPPLY_READY GH_BROKEN
+rm -f "$scratch/gh_broken"
+ok "scenario2a: quota failure at ready/closed/override/floor exits 2 with triage alert"
 
 # --- 2b. auto-park a green-and-sterile scout (fleet-ops#3418) ---------------
 # The scout-futility tracker escalated (consecutive_dry >= N) and the buffer
@@ -355,9 +386,9 @@ set +e; "$bin" gate fleet-ops >/dev/null 2>&1; gate_rc=$?; set -e
 unset FLEET_WORK_SUPPLY_CREATED_24H
 export FLEET_WORK_SUPPLY_READY=65
 set +e; "$bin" gate 0509 >/dev/null 2>&1; gate_rc=$?; set -e
-[[ "$gate_rc" == "1" ]] || fail "scenario2c: created-24h unmeasured (fake gh) + ready=65 hours=66 must rest=1 (runway rule), got $gate_rc"
+[[ "$gate_rc" == "2" ]] || fail "scenario2c: created-24h unmeasured must be measurement-failure=2, got $gate_rc"
 unset FLEET_WORK_SUPPLY_HOURS FLEET_WORK_SUPPLY_READY
-ok "scenario2c: supply floor runs the scout at created-24h<20 or ready<40; fleet-ops exempt; unmeasured -> runway rule (fleet-ops#3547)"
+ok "scenario2c: supply floor runs at created-24h<20 or ready<40; fleet-ops exempt; unmeasured -> 2"
 
 # --- 2d. created-24h counts real supply only ---------------------------------
 # 2026-09-06: 0509 auto-revert.yml filed 40 "AUTO-REVERT HALT" notices in
