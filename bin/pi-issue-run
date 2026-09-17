@@ -242,7 +242,7 @@ session_ended_in_provider_error() {
 seat_unhealthy_since() {
     # args: provider model since_epoch -> 0 when the seat ledger recorded a non-healthy provider response after since_epoch
     local prov="${1:-}" model="${2:-}" since="${3:-0}" f obs_epoch cls
-    f="$PI_SEAT_HEALTH_LEDGER_DIR/${prov}__${model//\//_}.json"
+    f="${PI_SEAT_HEALTH_LEDGER_DIR:-$LEDGER_DIR}/${prov}__${model//\//_}.json"
     [[ -f "$f" ]] || return 1
     cls=$(jq -r '.health_class // "healthy"' "$f" 2>/dev/null || echo healthy)
     obs_epoch=$(date -u -d "$(jq -r '.observed_at // empty' "$f" 2>/dev/null)" +%s 2>/dev/null || echo 0)

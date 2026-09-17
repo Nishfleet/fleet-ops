@@ -21,7 +21,14 @@ LOG_FILE="${SEAT_LOG_FILE:-$STATE_DIR/watch.log}"
 PI_ISSUES_DIR="${PI_ISSUES_DIR:-$HOME/.local/state/pi-issues}"
 PI_BIN="${PI_BIN:-$HOME/.local/bin/pi}"
 SEAT_CAPS_JSON="${SEAT_CAPS_JSON:-$HOME/.local/state/pi-packet/seat-caps.json}"
-LEDGER_DIR="${PI_SEAT_HEALTH_LEDGER_DIR:-$STATE_DIR/seat-health}"
+# fleet-ops#7374 (2026-09-17): ONE seat ledger directory. seat-health.ts writes
+# real HTTP observations to lanes/seats; every reader (pi-issue-run seat_usable,
+# comeback-release, bench-truth, the canaries) must read the SAME files. The
+# old default $STATE_DIR/seat-health was a second, unclobbered copy: corpse
+# parks written there (bench_until 2036) were invisible to the live ledger and
+# never re-probed, so pi-issue-run exited no-seat 396 times on 2026-09-16
+# while lanes/seats said healthy — zero packets ran for 2.5 days.
+LEDGER_DIR="${PI_SEAT_HEALTH_LEDGER_DIR:-$HOME/workspaces/agent-state/lanes/seats}"
 HEAVY_PKT_BYTES="${PI_PACKET_HEAVY_BYTES:-8192}"
 LITELLM_HEALTH_URL="${LITELLM_HEALTH_URL:-http://127.0.0.1:4000/health/readiness}"
 # fleet-ops#6315: the completions OR-probe. Derived from the readiness origin
