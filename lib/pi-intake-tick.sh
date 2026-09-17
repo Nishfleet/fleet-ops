@@ -1079,6 +1079,82 @@ issue_difficulty() {
     echo "light"
 }
 
+# fleet-ops#7405: advisory Jev tier/visibility for the SAME decision the
+# heuristic just made (issue_difficulty above, repo_privacy in the seat lib).
+# Log-only: the answer changes nothing — normal stays vocabulary, not a new
+# dispatch tier (orchestrator decision 2026-09-17), routing, caps and privacy
+# rules are untouched, and activation needs 200 outcome-linked rows first.
+# Calls bin/jev-eval (#7371, JEV-ONLY) once per claimed issue; a failure is a
+# loud one-line note that never fails the tick. Row = the real record the
+# observation is about, joined to the heuristic answer. PI_INTAKE_JEV_TIER=0
+# is the rollback flag (vault standing rules: engineer reversibility).
+# CI and dry tests set it to 0 (no key, no network in a hosted runner).
+if [[ -z "${PI_INTAKE_JEV_TIER+x}" ]]; then
+    if [[ -n "${GITHUB_ACTIONS:-}" ]]; then
+        PI_INTAKE_JEV_TIER=0
+    else
+        PI_INTAKE_JEV_TIER=1
+    fi
+fi
+jev_tier_log() {
+    # $1 labels JSON, $2 title, $3 body, $4 heuristic tier — from the one
+    # issue_difficulty pass above (fleet-ops#4639), never a second call.
+    local labels_json="$1" title="$2" body="$3" heuristic_tier="$4"
+    [[ "${PI_INTAKE_JEV_TIER:-1}" == 1 ]] || return 0
+    local heuristic_privacy p rc payload
+    heuristic_privacy=$(repo_privacy "$REPO") || heuristic_privacy=private
+    local state questions
+    state=$(jq -cn \
+        --arg repo "$REPO" --arg issue "$N" --arg title "$title" --arg body "$body" \
+        --arg heuristic_tier "$heuristic_tier" --arg heuristic_privacy "$heuristic_privacy" \
+        --arg reserved "money/pricing, privacy, security, legal, brand, product direction, customer-data deletion" \
+        --argjson labels "${labels_json:-[]}" \
+        '{repo: $repo, issue: {number: ($issue|tonumber), title: $title, body: $body, labels: $labels},
+          heuristic: {tier: $heuristic_tier, privacy: $heuristic_privacy},
+          rules: {mode: "advisory-only", normal_tier: "vocabulary only, no dispatch mapping", activation: "config flip needs 200 real outcome-linked rows (OOM/timeout/empty-run comparison)", privacy_line: "free-tier privacy line 2026-08-18 — private repos never leave the private seat pool", reserved_classes: $reserved}}') || {
+        echo "issue $N: jev tier state construction failed (advisory only)" >&2
+        return 0
+    }
+    questions=$(cat <<'JSON'
+{"tier":{"type":"choice","criteria":{"light":"small bounded fix or answer, one obvious form, low blast radius","normal":"routine multi-file work with repo tests, no schema/gate/deploy risk","heavy":"multi-phase or research-heavy work, long runtime, oom/timeout risk","keystone":"senior judgement, architecture, migration or gate work, high blast radius"},"instructions":"Which difficulty tier should this issue claim? Advisory only: the heuristic answer is recorded beside yours and routing stays unchanged."},"privacy":{"type":"choice","criteria":{"public":"repo is public, worker content may transit shared seat pools","private":"repo is private or holds private material, worker must stay in the private seat pool"},"instructions":"Is this repo public or private for seat-pool privacy? Advisory only: the configured repo privacy policy is recorded beside your answer and is never changed by this question."}}
+JSON
+)
+    payload=$(printf '{"state":%s,"questions":%s}' "$state" "$questions")
+    rc=0
+    p=$(printf '%s\n' "$payload" | timeout 8s bash -c 'jev-eval "$@"' _ --site pi-intake-tier --ref "$FULL#$N") || rc=$?
+    if (( rc != 0 )); then
+        echo "issue $N: jev tier advice skipped (jev-eval failed, advisory only)" >&2
+        return 0
+    fi
+    # Validate before logging: a bad answer never enters the 200-row tally.
+    if ! printf '%s' "$p" | jq -e '
+        def valid($keys):
+            .choice as $c | .probabilities as $p |
+            ($keys | index($c)) != null and
+            ($p | type == "object") and ($p | keys | sort) == ($keys | sort) and
+            ($p | all(.[]; type == "number" and . >= 0 and . <= 1)) and
+            ($p | [ .[] ] | add | . >= 0.99 and . <= 1.01);
+        (.answers.tier | valid(["light","normal","heavy","keystone"])) and
+        (.answers.privacy | valid(["public","private"]))' >/dev/null 2>&1; then
+        echo "issue $N: jev tier answer invalid, dropped (advisory only)" >&2
+        return 0
+    fi
+    local log_dir log_file
+    log_dir="${PI_PACKET_STATE:-$HOME/.local/state/pi-packet}/jev"
+    log_file="$log_dir/pi-intake-tier-observations.jsonl"
+    (
+        umask 077
+        mkdir -p "$log_dir" &&
+        jq -c --arg ref "$FULL#$N" --argjson state "$state" '
+            {observed_at: (now|todate), site: "pi-intake-tier-observations",
+             ref: $ref, unit: ("pi-issue-" + $state.repo + "-" + ($state.issue.number|tostring)),
+             state_sha256, heuristic: $state.heuristic, answers,
+             advisory_only: true, synthetic: (.synthetic // false), dry_run: (.dry_run // false)}' \
+            <<<"$p" >>"$log_file"
+    ) || echo "issue $N: jev tier log write failed (advisory only)" >&2
+    return 0
+}
+
 geo_aeo_needed() {
     # $1 = labels JSON array (from gh issue list --json labels), e.g.
     # [{"name":"agent-ready",...},{"name":"geo",...}]. Returns 0 when any
@@ -2929,6 +3005,10 @@ blocked-on: orchestrator" 2>/dev/null || true
         fi
         echo "TARGET: repo $FULL issue $N unit pi-issue-${REPO}-${N}"
     } > "$packet_path"
+
+    # fleet-ops#7405: advisory Jev tier/visibility beside the heuristic — log
+    # only, never routes, never edits the packet. Failures are loud notes.
+    jev_tier_log "${labels[$i]}" "$title" "$body" "$difficulty"
 
     # Activate the worker unit. --no-block is mandatory: pi-issue@.service is
     # Type=oneshot, so a plain `systemctl start` blocks until the worker finishes
