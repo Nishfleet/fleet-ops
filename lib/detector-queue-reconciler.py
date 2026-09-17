@@ -65,6 +65,16 @@ SKIP_MSG_PREFIXES = ("rule-enforcement:",)
 # agent-ready issues open for claimable hours.
 CLOSE_GRACE_TAGS = {"ESCALATION-COMPLETION-STALE-TRIP"}
 CLOSE_GRACE_SIGNAL_PREFIX = "loud/escalation-completion-stale-trip/"
+# fleet-ops#7477: renewal issues for expiring model-seat credentials are
+# owned by the credential-expiry canary's own wrapper, which reads the
+# expiry state directly from the live auth store. The canary emits its
+# findings to the journal and never to triage, so its `cred-expiry/*`
+# keys never appear in the tick — observe-to-close here would close a
+# renewal that is still live and turn every later tick into a
+# first-detection failure. #7471 (xai-oauth) is the live proof: filed
+# 2026-09-17T16:03:46Z, closed here at 16:04:56Z in the same tick. The
+# canary's own observe-to-close path closes them when the token rotates.
+OWNED_SIGNAL_PREFIXES = ("cred-expiry/",)
 # Per-session DEBUG-PLAYBOOK-MISSING LOUD lines are the detector's own
 # deterrent log. The detector already files one daily aggregate
 # (fleet-ops#4384). Queuing them as loud/debug-playbook-missing created a
@@ -1007,6 +1017,11 @@ def reconcile(
     # Observe-to-close: close open signal-keyed issues not in current tick.
     current_open_signals = set(open_by_signal.keys())
     for sig in sorted(current_open_signals - current_signals):
+        # fleet-ops#7477: cred-expiry/* keys never appear in the tick (the
+        # canary reports via the journal), so leave their renewal issues to
+        # the canary's own wrapper — closing them here re-arms the alarm.
+        if sig.startswith(OWNED_SIGNAL_PREFIXES):
+            continue
         issue = open_by_signal[sig]
         # fleet-ops#5190 close-grace (flap guard): a close-grace signal that
         # fired within the grace window is deferred, not closed — a single
