@@ -72,7 +72,7 @@
       "_ceiling_2026_09_05": "2026-09-05: probe ceilings 6/8 put 8 devin sessions in flight and Devin answered resource_exhausted on every new one (133 deaths in 12h at ~40s, 85% daily quota unused). Ceilings pinned to caps until the resource_exhausted bench proves AIMD backs off; then raise via fleet-ops#3258.",
       "_devin_remote_2026_09_05": "2026-09-05 fleet-ops#3531: devin is a remote agent (remote_agent: true). Its sessions complete without local tool calls, so empty-run detection judges by session outcome (exit 0, stdout under OUT_MIN, no pull/<n> URL) rather than local tool count. A false empty run on this prepaid seat is capped at 1800 s.",
       "_swe17_20260905": "2026-09-05 CORRECTION (orchestrator): the fable-check retirement read n=20 pr_count=0 from seat-yield.json, but every one of those sessions was an INFRASTRUCTURE death: rc=143/1801s from the devin-provider 30-min spawnSync timeout (raised to 40 min 09:20 IST) and resource_exhausted concurrency errors the detectors could not see until #3443/#3475. Working yield measured before the poisoning: 80% sessions-to-PR. Infra deaths never count as seat yield (#3250/#3310). cap 4 / probe 4 (ceiling==cap while pinned, #3443).",
-      "tick_spawn_cap": 4,
+      "tick_spawn_cap": 8,
       "_tick_spawn_cap_3690": "fleet-ops#3690: at most 2 new devin sessions per intake tick (5 spawns at once after a learned-caps reset all died rc=143 in <30s). pick_seat skips devin seats once the per-tick counter hits this; the intake tick resets the counter at the start of each tick."
     },
     "cursor": {
