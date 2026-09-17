@@ -10,6 +10,10 @@
 # 10s window and the unit wedged in failed (later triggers silently dropped
 # until `systemctl --user reset-failed`, which is a band-aid, not the fix).
 #
+# #6665 adds the missing start-rate bound: hold the existing oneshot for
+# 30s after every successful sweep, including debounce skips. The live
+# layer checks the installed hold and counts real starts without writing
+# to the production ledger.
 # Structural contract this test pins (the unit-level debounce, not the bin's):
 #   1. The REPO unit ships StartLimitIntervalSec=0 in [Unit] so the start
 #      counter can never wedge the unit into failed during a write storm.
@@ -20,11 +24,9 @@
 #      state are fired with 10 back-to-back ExecStart invocations inside 5s;
 #      EXACTLY ONE full sweep completes, the other 9 debounce-skip, and every
 #      invocation exits 0 (a oneshot no-op accumulates no failures).
-#   4. DRILL, live layer (skipped when the path unit is not installed or on
-#      hosted CI): the INSTALLED unit must still carry StartLimitIntervalSec=0
-#      (the stale-deploy detector — this is exactly how #5471 happened), then
-#      fire 10 real triggers into the watched seats dir in 5s and assert the
-#      unit never enters failed and the path unit stays active.
+#   4. Live layer: the installed unit must contain the hold, remain healthy,
+#      and have between 1 and 199 Starting records in the last hour. Run
+#      after one full hour on the installed revision for post-deploy proof.
 #
 # VPS graders run `bash tests/<name>.test.sh` directly; hosted CI has no user
 # systemd units and skips layer 4 rather than failing (same convention as
@@ -52,6 +54,17 @@ if [[ "$path_section" == *StartLimit* ]]; then
   fail "$PATH_SRC must not carry its own StartLimit (path units count no restarts; the knob belongs on the service)"
 fi
 ok "path unit carries no conflicting StartLimit override"
+
+# #6665: the bin debounce limits sweeps, NOT service starts. Keep the
+# existing oneshot activating after even a no-op sweep so path events coalesce.
+service_section="$(awk '/^\[Service\]/{flag=1;next}/^\[/{flag=0}flag' <<<"$unit_txt")"
+grep -qx 'Type=oneshot' <<<"$service_section" || fail 'start bound requires a oneshot'
+grep -qx 'ExecStartPost=/bin/sleep 30' <<<"$service_section" ||
+  fail 'missing 30s service hold: in-bin debounce cannot bound path starts/h'
+# Even zero-duration sweeps cannot start more than 121 times in a closed
+# one-hour window. The endpoint allowance avoids rounding away a start.
+(( 3600 / 30 + 1 < 200 )) || fail 'service hold exceeds the 200 starts/h budget'
+ok 'path starts bounded at 121/hour including endpoints by 30s service hold'
 
 # --- 2. bin debounce contract ------------------------------------------------
 bin_txt="$(cat "$BIN")"
@@ -96,7 +109,7 @@ debounces=$(grep -c 'bench-truth sweep debounce' "$storm_log" 2>/dev/null || tru
 [[ "$debounces" == "9" ]] || fail "expected 9 debounced-skip lines across the 10-trigger storm, got $debounces (the coalescing contract: first trigger sweeps, rest debounce)"
 ok "storm coalescing: exactly 1 sweep + 9 debounce-skips over 10 triggers in 5s"
 
-# --- 4. live layer: installed unit is fresh + survives a real storm ---------
+# --- 4. read-only post-deploy proof ----------------------------------------
 if [[ "${FLEET_SEAT_BENCH_TRUTH_DRILL_LIVE:-}" != "0" ]] \
    && command -v systemctl >/dev/null 2>&1 \
    && systemctl --user cat fleet-seat-bench-truth.service >/dev/null 2>&1; then
@@ -108,24 +121,14 @@ if [[ "${FLEET_SEAT_BENCH_TRUTH_DRILL_LIVE:-}" != "0" ]] \
   grep -q '^StartLimitIntervalSec=0$' <<<"$installed_txt" ||
     fail "INSTALLED fleet-seat-bench-truth.service lacks StartLimitIntervalSec=0 — stale deploy (the exact #5471 outage at 2026-09-11T16:16Z); re-run install.sh so the unit's start counter stays disabled"
 
-  SEATS_DIR="${PI_SEAT_HEALTH_LEDGER_DIR:-/home/nish/workspaces/agent-state/lanes/seats}"
-  before_done="$(journalctl --user -u fleet-seat-bench-truth.service --no-pager 2>/dev/null | grep -c 'false-wall-only sweep complete' || true)"
-  for i in 1 2 3 4 5 6 7 8 9 10; do
-    touch "$SEATS_DIR" 2>/dev/null || fail "cannot touch the watched seats dir $SEATS_DIR"
-    sleep 0.5
-  done
-
-  deadline=$(( $(date +%s) + 180 ))
-  after_done="$before_done"
-  while (( $(date +%s) < deadline )); do
-    active="$(systemctl --user show fleet-seat-bench-truth.service --property=ActiveState --value 2>/dev/null || echo unknown)"
-    [[ "$active" != "failed" ]] || fail "live storm drill: unit entered FAILED — the start-limit structural fix did not hold"
-    after_done="$(journalctl --user -u fleet-seat-bench-truth.service --no-pager 2>/dev/null | grep -c 'false-wall-only sweep complete' || true)"
-    if (( after_done > before_done )); then
-      break
-    fi
-    sleep 5
-  done
+  grep -qx 'ExecStartPost=/bin/sleep 30' <<<"$installed_txt" ||
+    fail 'installed service lacks the #6665 hold; deploy before claiming start-rate proof'
+  journal="$(journalctl --user -u fleet-seat-bench-truth.service --since '-1h' --no-pager -o cat)" ||
+    fail 'cannot read the one-hour journal'
+  # Type=oneshot logs Starting/Finished, not Started. Never accept a zero
+  # count from the wrong verb or an absent/inactive probe as a fix.
+  starts="$(awk '/^Starting fleet-seat-bench-truth.service/{n++} END{print n+0}' <<<"$journal")"
+  (( starts > 0 && starts < 200 )) || fail "one-hour start count must be 1..199, got $starts"
 
   active="$(systemctl --user show fleet-seat-bench-truth.service --property=ActiveState --value 2>/dev/null || echo unknown)"
   result="$(systemctl --user show fleet-seat-bench-truth.service --property=Result --value 2>/dev/null || echo unknown)"
@@ -135,12 +138,7 @@ if [[ "${FLEET_SEAT_BENCH_TRUTH_DRILL_LIVE:-}" != "0" ]] \
     fail "live storm drill under 10 triggers in 5s: unit FAILED (Result=$result) — the debounce must live in the unit"
   [[ "$result" != "start-limit-hit" ]] ||
     fail "live storm drill hit Result=start-limit-hit — StartLimitIntervalSec=0 is not holding on the installed unit"
-  ok "live storm: 10 triggers in 5s, unit ends Result=$result ActiveState=$active, path unit still active"
-  if (( after_done > before_done )); then
-    ok "live storm: at least one full sweep ran during the drill window"
-  else
-    ok "live storm: all 10 triggers coalesced behind the 60s debounce (previous sweep still fresh)"
-  fi
+  ok "live journal at $(date -u +%FT%TZ): $starts starts/hour, Result=$result ActiveState=$active, path active"
 else
   ok "4: live layer skipped (unit fleet-seat-bench-truth.service not installed, no systemctl, or FLEET_SEAT_BENCH_TRUTH_DRILL_LIVE=0)"
 fi
