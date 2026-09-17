@@ -138,7 +138,6 @@ AS="${AGENT_STATE:-/home/nish/workspaces/agent-state}"
 # Must match lib/litellm-seat.sh LEDGER_DIR. The picker (#3737 marker hold)
 # reads ~/.local/state/pi-packet/seat-health; lanes/seats is the census
 # sidecar and can read healthy while the picker is still held (fleet-ops#6731).
-STATE_DIR="${PI_PACKET_STATE:-$HOME/.local/state/pi-packet}"
 LEDGER="${PI_SEAT_HEALTH_LEDGER_DIR:-$HOME/workspaces/agent-state/lanes/seats}"  # fleet-ops#7374: one ledger dir
 PI_BIN="${PI_BIN:-/home/nish/.local/bin/pi}"
 STATE_FILE="${FLEET_SEAT_COMEBACK_STATE:-$HOME/.local/state/fleet-seat-comeback-release.json}"
