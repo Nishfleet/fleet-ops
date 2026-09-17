@@ -114,7 +114,105 @@ model_list:
 # deployment ONLY with a green /health probe cited in the PR — while any
 # DEPLOYED census entry is unhealthy the health canary fails loud
 # (health-deployment-unhealthy; #5792 accept-line drill).
+# 2026-09-17 (claude-mac; Nish: "wire up union alpha stealth model to the fleet from all these
+# providers"): Union Alpha = anonymous stealth preview, $0, 262K ctx, 131K max out, tools+images.
+# Probed 200 from THIS host 2026-09-17 ~19:05 IST via OpenRouter (stealth/union-alpha, usage.cost=0)
+# and Cline (stealth/union-alpha, SSE standard). worker-cheap/worker-capable order:1 (free, ahead of the
+# 429-bursting devin bridge); senior/judge order:2 (devin swe-2-max stays primary for judging).
+# NOT in worker-private: OpenRouter Stealth terms = prompts retained by the provider (not trained on);
+# privacy placement is Nish's call. OpenCode Zen union-alpha: HTTP 500 x4 (both keys) -> benched below.
+# Cloudflare AI Gateway 402 insufficient balance (money) and AI/ML API (paid) deliberately NOT wired;
+# Kilo (stealth/union-alpha listed) has no account yet. Free-period cliff: if it turns paid, OpenRouter
+# self-walls (balance $0 -> 402 -> cooldown -> fallback) and Cline 4xx likewise; no metered spend path.
+- model_name: worker-cheap
+  litellm_params:
+    model: openai/stealth/union-alpha
+    api_base: https://openrouter.ai/api/v1
+    api_key: os.environ/OPENROUTER_API_KEY
+    extra_headers: {HTTP-Referer: https://0509.io, X-Title: nish-fleet}
+    tags:
+    - free
+    - stealth
+    order: 1
+    max_parallel_requests: 4
+  model_info:
+    mode: chat
+    id: union-alpha-openrouter-worker-cheap
+    input_cost_per_token: 0
+    output_cost_per_token: 0
+- model_name: worker-capable
+  litellm_params:
+    model: openai/stealth/union-alpha
+    api_base: https://openrouter.ai/api/v1
+    api_key: os.environ/OPENROUTER_API_KEY
+    extra_headers: {HTTP-Referer: https://0509.io, X-Title: nish-fleet}
+    tags:
+    - free
+    - stealth
+    order: 1
+    max_parallel_requests: 4
+  model_info:
+    mode: chat
+    id: union-alpha-openrouter-worker-capable
+    input_cost_per_token: 0
+    output_cost_per_token: 0
+- model_name: senior
+  litellm_params:
+    model: openai/stealth/union-alpha
+    api_base: https://openrouter.ai/api/v1
+    api_key: os.environ/OPENROUTER_API_KEY
+    extra_headers: {HTTP-Referer: https://0509.io, X-Title: nish-fleet}
+    tags:
+    - free
+    - stealth
+    order: 2
+    max_parallel_requests: 4
+  model_info:
+    mode: chat
+    id: union-alpha-openrouter-senior
+    input_cost_per_token: 0
+    output_cost_per_token: 0
+- model_name: judge
+  litellm_params:
+    model: openai/stealth/union-alpha
+    api_base: https://openrouter.ai/api/v1
+    api_key: os.environ/OPENROUTER_API_KEY
+    extra_headers: {HTTP-Referer: https://0509.io, X-Title: nish-fleet}
+    tags:
+    - free
+    - stealth
+    order: 2
+    max_parallel_requests: 4
+  model_info:
+    mode: chat
+    id: union-alpha-openrouter-judge
+    input_cost_per_token: 0
+    output_cost_per_token: 0
 benched:
+- benched_at: 2026-09-17
+  reason: "openai/stealth/union-alpha @ https://api.cline.bot/api/v1 (CLINE_API_KEY) — Cline wraps NON-streaming responses in {data:{...},success:true}; LiteLLM /health (non-streaming) fails 'provider returned a response with no choices' on all 4 deployments while STREAMING routed calls succeed (worker-cheap -> x-litellm-model-id union-alpha-cline-worker-cheap, 'pong', 2026-09-17 19:00 IST). Benched to keep the #6054 census green; restore via a CustomLLM unwrap adapter (like fleet_devin_adapter) — follow-up issue cited in the PR."
+  was: [worker-cheap, worker-capable, senior, judge]
+  litellm_params:
+    model: openai/stealth/union-alpha
+    api_base: https://api.cline.bot/api/v1
+    api_key: os.environ/CLINE_API_KEY
+    tags:
+    - free
+    - stealth
+    order: 1
+    max_parallel_requests: 2
+- benched_at: 2026-09-17
+  reason: "openai/union-alpha @ https://opencode.ai/zen/v1 (OPENCODE_API_KEY) — HTTP 500 'Internal server error' on 4 direct probes 2026-09-17 ~18:55 IST (Mac key AND VPS key; control model on the same key returns a clean CreditsError, so auth is fine and the union-alpha upstream is broken/overloaded). Free until 2026-09-23 per OpenCode. Restore ONLY with a green direct probe cited in the PR."
+  was: [worker-cheap, worker-capable, senior, judge]
+  litellm_params:
+    model: openai/union-alpha
+    api_base: https://opencode.ai/zen/v1
+    api_key: os.environ/OPENCODE_API_KEY
+    tags:
+    - free
+    - stealth
+    order: 1
+    max_parallel_requests: 2
 - benched_at: 2026-09-14
   reason: "openai/zai-org/GLM-5.3-Flash @ https://api.tokenfactory.nebius.com/v1 (NEBIUS_API_KEY, metered) — HTTP 402 'Payment Required: You have exhausted your budget. Please add funds to continue using the API.' on routed calls AND /health, BOTH deployments (worker-cheap order:3, worker-capable order:3), continuous from ~02:41Z (08:11 IST). Dead-credit/money class (budget exhausted; renewal = Nish's call, NOT on this path). The 402 retry-storm (num_retries:2 = 3x per request) flooded the fallback chain worker-cheap -> worker-capable -> senior, all hitting pareto glm-5.3, which rate-limited (429) and put BOTH senior rungs in LiteLLM router cooldown -> pi-seat-health reported health_class=rate_limited for litellm/senior -> FleetPiSeatUnhealthy fired 30+ min. Repair (alert-repair-FleetPiSeatUnhealthy-20260914T031144Z): benched both nebius rungs; worker-cheap re-pointed at pareto glm-5.3 (prepaid, healthy, probed 200 direct) so it has a live rung and stops generating 402 fallback flood; proxy restarted to clear stale in-memory cooldown. Restore ONLY with a green /health probe cited in the PR (nebius budget topped up by Nish first)."
   was: [worker-cheap, worker-capable]
