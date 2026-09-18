@@ -594,6 +594,47 @@
           "maxTokens": 32768
         }
       ]
+    },
+    "ollama": {
+      "baseUrl": "https://ollama.com/v1",
+      "api": "openai-completions",
+      "apiKey": "!cut -d= -f2- /home/nish/.config/fleet-ops/seats/ollama.env",
+      "models": [
+        {
+          "id": "glm-5.3-flash",
+          "name": "GLM-5.3 Flash (Ollama cloud)",
+          "contextWindow": 131072,
+          "maxTokens": 32768
+        },
+        {
+          "id": "kimi-k3",
+          "name": "Kimi K3 (Ollama cloud)",
+          "contextWindow": 131072,
+          "maxTokens": 32768
+        },
+        {
+          "id": "kimi-k2.7-code",
+          "name": "Kimi K2.7 Code (Ollama cloud)",
+          "contextWindow": 131072,
+          "maxTokens": 32768
+        },
+        {
+          "id": "qwen3.5:397b",
+          "name": "Qwen3.5 397B (Ollama cloud)",
+          "contextWindow": 131072,
+          "maxTokens": 32768
+        },
+        {
+          "id": "gpt-oss:120b",
+          "name": "GPT-OSS 120B (Ollama cloud)",
+          "contextWindow": 131072,
+          "maxTokens": 32768
+        }
+      ],
+      "compat": {
+        "maxTokensField": "max_tokens"
+      },
+      "_comment_max_tokens_field": "fleet-ops#4234: ollama.com's OpenAI-compat endpoint reads ONLY max_tokens; it accepts max_completion_tokens and silently drops it. Pi's useMaxTokens allowlist (openai-completions detectCompat) does not include ollama.com, so without this compat override every request ran at the endpoint's 65536 ceiling instead of the 16384 configured here, and 80 sessions in 7d ended as one 65536-token reasoning block with zero answer."
     }
   }
 }
