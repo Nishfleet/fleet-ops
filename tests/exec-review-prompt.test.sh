@@ -45,7 +45,7 @@ grep -q 'Only after a clean run' "$prompt" \
 ok "review gates follow a clean run"
 
 grep -q 'Then run the Execution IS the review inner loop' "$prompt" \
-  || fail "step 5 must invoke the inner loop before tests/sgscan"
+  || fail "step 5 must invoke the inner loop before tests/semgrep"
 ok "step 5 invokes the inner loop"
 
 [[ ! -e "$repo_root/bin/exec-review" ]] \

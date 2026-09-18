@@ -68,7 +68,7 @@ COMMAND_RUNNERS = frozenset(
     {
         "bash", "sh", "python", "python3", "node", "npm", "npx", "pnpm",
         "yarn", "bun", "deno", "vitest", "playwright", "pytest", "make",
-        "curl", "gh", "git", "systemctl", "journalctl", "sgscan", "cargo",
+        "curl", "gh", "git", "systemctl", "journalctl", "semgrep", "cargo",
         "terraform", "wrangler", "docker", "kubectl", "pi",
         "systemd-run", "go",
     }

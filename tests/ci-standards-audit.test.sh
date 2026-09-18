@@ -473,12 +473,6 @@ bash "$here/seat-health-overload-bench.test.sh"
 # bin/fleet-gap-closure-conference. Hosted here so P14 runs it without a
 # workflow-file edit (the worker App cannot push .github/workflows/**).
 
-# fleet-ops#796: sgscan wrapper regression suite (--help, JSON parsing,
-# unknown-flag rejection). Added by #1652 without a ci.yml listing or
-# host; hosted here so P14 runs it without a workflow-file edit and the
-# p14-test-listing-gate accounts for it (fleet-ops#1622).
-bash "$here/sgscan.test.sh"
-
 # auditor 2026-08-30: p14-test-listing-gate red on 4 orphan tests
 # (pi-issue-run-hang-stall-bench + unit-escalation-write-retry-absorb +
 # unit-escalation-write-scout-futility-dedupe).
