@@ -30,8 +30,20 @@
 #   excluded[*].permanent==true (fleet2, archived): MASK. Permanent means
 #                                        it must never run; enable is wrong
 #                                        even by accident.
-#   excluded[*].permanent==false: DISABLE.
-#   deferred[]    : DISABLE. Re-enrolment is a PR, not a sweep decision.
+#   excluded[*].permanent==false: DISABLE + PURGE per-instance unit files.
+#   deferred[]    : DISABLE + PURGE per-instance unit files. Re-enrolment is
+#                   a PR, not a sweep decision.
+#
+# PURGE (fleet-ops#32, deletion path added 2026-09-18): disabling converges
+# systemd's ENABLEMENT but leaves per-instance unit FILES on disk forever.
+# 56 of them had accumulated under ~/.config/systemd/user for 8 deferred
+# repos with 0 runs — every one a mask symlink to /dev/null left by an
+# older masking policy that the disable path can never clear. A repo that is
+# not enrolled must leave no unit files behind, so the not-enrolled branches
+# now delete them. ONLY per-instance mask symlinks (a link whose target is
+# exactly /dev/null) are removed — never a regular file, never a link into
+# the repo's systemd/ dir, never a template. Permanent exclusions are the
+# deliberate exception: their masks are the loud-fail signal and stay.
 #   UNDECLARED    : DISABLE if a unit exists for it, plus a LOUD alert.
 #                   An undeclared repo running means something is acting
 #                   out of band; the file is the source of truth.
@@ -81,6 +93,11 @@ GH="${INTAKE_RECONCILE_GH:-gh}"
 INTAKE_JSON="${INTAKE_RECONCILE_INTAKE_JSON:-/home/nish/workspaces/products/fleet-ops/config/intake-repos.json}"
 TRIAGE="${INTAKE_RECONCILE_TRIAGE:-/home/nish/workspaces/agent-state/FLEET-HEARTBEAT-TRIAGE.md}"
 DRY="${INTAKE_RECONCILE_DRY_RUN:-0}"
+# Where per-instance unit files live. Tests override it to a scratch dir.
+UNIT_DIR="${INTAKE_RECONCILE_UNIT_DIR:-$HOME/.config/systemd/user}"
+# Set to 1 by purge_unit_files when it actually removed something, so the
+# run issues exactly one daemon-reload at the end instead of one per file.
+PURGED=0
 TRANSIENT_THRESHOLD="${INTAKE_RECONCILE_TRANSIENT_THRESHOLD:-3}"
 case "$TRANSIENT_THRESHOLD" in
     ''|*[!0-9]*) TRANSIENT_THRESHOLD=3 ;;
@@ -274,6 +291,47 @@ units_for() {
     # the unit that actually moved.
     local repo="$1"
     printf 'pi-intake@%s.timer\npi-scout@%s.timer\n' "$repo" "$repo"
+}
+
+# Every per-instance unit-file name a repo can leave behind. Wider than
+# units_for (which is the ENABLEMENT set): the file set also covers the
+# .service halves and the -repair siblings, all of which were masked by the
+# older policy.
+unit_files_for() {
+    local repo="$1" tmpl suffix
+    for tmpl in pi-intake pi-scout pi-intake-repair pi-scout-repair; do
+        for suffix in service timer; do
+            printf '%s@%s.%s\n' "$tmpl" "$repo" "$suffix"
+        done
+    done
+}
+
+# purge_unit_files REPO WHY — the deletion half of convergence for a repo
+# that is NOT enrolled. Removes each per-instance unit file that is a mask
+# symlink (target exactly /dev/null). Anything else on that path — a
+# regular file, a link to a real unit, a template — is left alone and
+# logged, because this function must never be able to delete a live unit.
+purge_unit_files() {
+    local repo="$1" why="$2" unit path target
+    while IFS= read -r unit; do
+        [ -n "$unit" ] || continue
+        path="$UNIT_DIR/$unit"
+        [ -L "$path" ] || { [ -e "$path" ] && log "  $unit: not a mask symlink — left in place"; continue; }
+        target="$(readlink "$path" 2>/dev/null || true)"
+        if [ "$target" != "/dev/null" ]; then
+            log "  $unit: symlink to '$target', not a mask — left in place"
+            continue
+        fi
+        if [ "$DRY" = "1" ]; then
+            log "DRY purge $unit ($why)"
+            audit "$unit" "purge" "$why"
+            continue
+        fi
+        rm -f "$path" || { log "purge $unit FAILED"; continue; }
+        PURGED=1
+        audit "$unit" "purge" "$why"
+        log "  $unit: unit file removed ($why)"
+    done < <(unit_files_for "$repo")
 }
 
 # --- systemd probes ----------------------------------------------------------
@@ -473,7 +531,8 @@ converge_repo() {
                 [ -n "$u" ] || continue
                 disable_unit "$u" "declared-deferred:$reason"
             done < <(units_for "$repo")
-            log "  $repo: deferred — units disabled ($reason)"
+            purge_unit_files "$repo" "declared-deferred:$reason"
+            log "  $repo: deferred — units disabled and unit files purged ($reason)"
             ;;
         exclude-perm)
             # Mask: permanent exclusion means this repo MUST NEVER run.
@@ -525,7 +584,8 @@ converge_repo() {
                 [ -n "$u" ] || continue
                 disable_unit "$u" "declared-excluded-nonperm:$reason"
             done < <(units_for "$repo")
-            log "  $repo: non-perm excluded — units disabled ($reason)"
+            purge_unit_files "$repo" "declared-excluded-nonperm:$reason"
+            log "  $repo: non-perm excluded — units disabled and unit files purged ($reason)"
             ;;
         undeclared)
             # A unit for a repo that is in NEITHER repos NOR excluded NOR
@@ -539,6 +599,7 @@ converge_repo() {
                 [ -n "$u" ] || continue
                 disable_unit "$u" "undeclared-drift"
             done < <(units_for "$repo")
+            purge_unit_files "$repo" "undeclared-drift"
             ;;
     esac
 }
@@ -630,6 +691,14 @@ for repo in $ordered_repos; do
 done
 snap="$snap]}"
 printf '%s\n' "$snap" >"$(snapshot_path)"
+
+# One daemon-reload for the whole run, only when a unit file actually went
+# away — systemd keeps a removed mask in its in-memory state otherwise and
+# `list-unit-files` would still show the instance as masked.
+if [ "$PURGED" = "1" ]; then
+    "$SYSTEMCTL" --user daemon-reload >/dev/null 2>&1 \
+        || log "WARN: daemon-reload after purge failed"
+fi
 
 log "converged ${#declared_mode[@]} repos"
 if [ "$RECONCILE_ERRORS" -ne 0 ]; then

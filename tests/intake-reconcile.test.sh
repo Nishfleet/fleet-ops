@@ -214,6 +214,12 @@ case "$cmd" in
         fi
         exit 0
         ;;
+    daemon-reload)
+        # The purge path drops unit FILES, so systemd must be told. Logged
+        # like the other mutating calls: the test pins exactly one per run.
+        printf 'daemon-reload\n' >>"${CALLS:-/dev/null}"
+        exit 0
+        ;;
     *)
         printf 'unexpected systemctl call: %s %s\n' "$cmd" "$*" >&2
         exit 1
@@ -221,6 +227,11 @@ case "$cmd" in
 esac
 FAKE
 chmod +x "$systemctl_fake"
+
+# Per-instance unit-file dir the purge path operates on. NEVER the real
+# ~/.config/systemd/user: a test must not be able to delete a live unit.
+unit_dir="$scratch/units"
+mkdir -p "$unit_dir"
 
 # --- helper: run reconciler with the fakes wired in -------------------------
 # Note on bash quoting: env-var prefixes attach to a *simple* command, not
@@ -237,6 +248,7 @@ run_reconcile() {
         INTAKE_RECONCILE_INTAKE_JSON="$1" \
         INTAKE_RECONCILE_AUDIT_LOG="$audit_log" \
         INTAKE_RECONCILE_TRIAGE="$triage" \
+        INTAKE_RECONCILE_UNIT_DIR="$unit_dir" \
         INTAKE_RECONCILE_NOW="2026-08-26T02:00:00Z" \
         "$bin" 2>&1
     )
@@ -408,6 +420,48 @@ grep -qx 'enable pi-intake@demo.timer' "$CALLS" \
 ok "scenario4: deferred repo → disable; enrolled repo still enrolled"
 
 # ============================================================================
+# Scenario 4b (fleet-ops#32 deletion path): disabling converges ENABLEMENT
+# but left per-instance unit FILES on disk forever — 56 mask symlinks had
+# piled up for 8 deferred repos with 0 runs. A deferred repo must leave no
+# unit files behind. Only mask symlinks (-> /dev/null) go; a regular file
+# and a symlink pointing at a real unit are both left alone, because this
+# path must never be able to delete a live unit. One daemon-reload, not one
+# per file.
+# ============================================================================
+reset_world
+rm -rf "$unit_dir"; mkdir -p "$unit_dir"
+for tmpl in pi-intake pi-scout pi-intake-repair pi-scout-repair; do
+  for suffix in service timer; do
+    ln -s /dev/null "$unit_dir/$tmpl@0509-telemetry.$suffix"
+  done
+done
+# Decoys: neither may be removed.
+printf '[Unit]\n' >"$unit_dir/pi-intake@demo.service"
+ln -s "$unit_dir/pi-intake@demo.service" "$unit_dir/pi-scout@demo.timer"
+printf 'agent-ready\nagent-in-progress\nagent-blocked\n' >"$LABEL_FILE"
+printf 'pi-intake@0509-telemetry.timer enabled\npi-scout@0509-telemetry.timer enabled\n' >"$UNIT_FILES"
+
+run_reconcile "$intake_json"
+n=$(find "$unit_dir" -maxdepth 1 -name '*@0509-telemetry.*' | wc -l)
+[ "$n" = "0" ] || fail "scenario4b: all 8 deferred unit files must be purged, $n left: $(ls "$unit_dir")"
+[ -f "$unit_dir/pi-intake@demo.service" ] \
+    || fail "scenario4b: a regular unit file must never be purged"
+[ -L "$unit_dir/pi-scout@demo.timer" ] \
+    || fail "scenario4b: a symlink to a real unit must never be purged"
+grep -q 'pi-intake@0509-telemetry.timer purge actor=reconciler' "$audit_log" \
+    || fail "scenario4b: every purge must write an audit line: $(cat "$audit_log")"
+n=$(grep -c '^daemon-reload$' "$CALLS" || true)
+[ "$n" = "1" ] || fail "scenario4b: exactly one daemon-reload per run expected, got $n: $(cat "$CALLS")"
+ok "scenario4b: deferred repo's 8 mask symlinks purged, decoys untouched, one daemon-reload"
+
+# Idempotence: nothing left to purge -> no second daemon-reload.
+reset_world
+run_reconcile "$intake_json"
+grep -q '^daemon-reload$' "$CALLS" \
+    && fail "scenario4b: a run that purges nothing must not daemon-reload: $(cat "$CALLS")"
+ok "scenario4b idempotent: a converged tick purges nothing and does not reload"
+
+# ============================================================================
 # Scenario 5: permanently-excluded repo → DISABLE + LOUD; NOT auto-masked
 # ============================================================================
 reset_world
@@ -560,6 +614,7 @@ env_out=$(
     INTAKE_RECONCILE_INTAKE_JSON="$intake_json" \
     INTAKE_RECONCILE_AUDIT_LOG="$audit_log" \
     INTAKE_RECONCILE_TRIAGE="$triage" \
+    INTAKE_RECONCILE_UNIT_DIR="$unit_dir" \
     INTAKE_RECONCILE_DRY_RUN=1 \
     INTAKE_RECONCILE_NOW="2026-08-26T02:00:00Z" \
     "$bin" 2>&1
