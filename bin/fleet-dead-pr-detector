@@ -65,6 +65,18 @@ fi
 # consumes to suppress repair dispatches the flag has already proven
 # futile.
 #
+# Fourth class (fleet-ops#7694) — MISCITED PARENT: a CLOSED parent alone is
+# not proof the fix shipped. When the parent issue was closed BEFORE the
+# PR's newest head commit, the parent cannot have shipped this branch's
+# work — the body merely cited it (live case: PR #7683 cited #7499, a
+# backups issue closed before the branch existed, and the unit failed on
+# every tick until the PR was hand-closed). Such a PR logs
+# `miscited-parent:` + `miscited-parent-human:` and is skipped — not
+# dead-classified, not counted in dead_conflicting_prs. The guard covers
+# the CLOSED case only; a MERGED parent keeps the dead classification
+# unchanged. Gh/jq failure or empty closedAt/committedDate reads fail
+# closed (exit 2) like issue_state.
+#
 # GitHub computes mergeability asynchronously: while undecided gh returns
 # `mergeable: "UNKNOWN"` or null, and a future gh may return new values.
 # Any value that is not exactly MERGEABLE or CONFLICTING is counted in the
@@ -95,7 +107,8 @@ fi
 #
 # Output: one `dead-pr:` evidence line + one human line per dead PR, one
 # `stale-conflicting-pr:` evidence line + one human line per
-# stale-conflicting PR, then the `stale_conflicting_prs=<n>` measure line,
+# stale-conflicting PR, one `miscited-parent:` evidence line + one human
+# line per miscited PR, then the `stale_conflicting_prs=<n>` measure line,
 # then the measure line `dead_conflicting_prs=<n>` as the LAST stdout line.
 # Logging is stderr only; stdout is machine-readable.
 #
@@ -360,6 +373,50 @@ while IFS= read -r pr; do
     state="$(issue_state "$parent" "$num")"
 
     if [ "$state" = "MERGED" ] || [ "$state" = "CLOSED" ]; then
+        # fleet-ops#7694: a CLOSED parent alone is not proof the fix
+        # shipped — a parent closed BEFORE the PR's newest head commit
+        # cannot have shipped this branch's work, so the body merely cited
+        # it. Guard the CLOSED case only; a MERGED parent keeps the dead
+        # classification. Gh/jq failure or empty field: fail closed like
+        # issue_state.
+        if [ "$state" = "CLOSED" ]; then
+            if ! closed_json=$("$GH" issue view "$parent" -R "$REPO" --json closedAt 2>/dev/null); then
+                loud "DEAD-PR-GH" "$REPO: gh issue view #$parent (closedAt) failed for PR #$num"
+                exit 2
+            fi
+            if ! closed_at="$(printf '%s' "$closed_json" | jq -r '.closedAt // ""' 2>/dev/null)"; then
+                loud "DEAD-PR-BROKEN" "$REPO: could not read closedAt of issue #$parent (PR #$num)"
+                exit 2
+            fi
+            if [ -z "$closed_at" ]; then
+                loud "DEAD-PR-BROKEN" "$REPO: no closedAt for issue #$parent (PR #$num)"
+                exit 2
+            fi
+            if ! commits_json=$("$GH" pr view "$num" -R "$REPO" --json commits 2>/dev/null); then
+                loud "DEAD-PR-GH" "$REPO: gh pr view #$num (commits) failed"
+                exit 2
+            fi
+            if ! head_date="$(printf '%s' "$commits_json" | jq -r '[.commits[].committedDate] | max // ""' 2>/dev/null)"; then
+                loud "DEAD-PR-BROKEN" "$REPO: could not read commits of PR #$num"
+                exit 2
+            fi
+            if [ -z "$head_date" ]; then
+                loud "DEAD-PR-BROKEN" "$REPO: no committedDate for PR #$num"
+                exit 2
+            fi
+            head_epoch="$(date -u -d "$head_date" +%s 2>/dev/null)" \
+                || { loud "DEAD-PR-BROKEN" "$REPO: unparseable committedDate '$head_date' for PR #$num"; exit 2; }
+            closed_epoch="$(date -u -d "$closed_at" +%s 2>/dev/null)" \
+                || { loud "DEAD-PR-BROKEN" "$REPO: unparseable closedAt '$closed_at' for issue #$parent (PR #$num)"; exit 2; }
+            if [ "$head_epoch" -gt "$closed_epoch" ]; then
+                url="https://github.com/${REPO}/pull/${num}"
+                printf 'miscited-parent: %s %s parent=%s parent-closed=%s head-commit=%s %s\n' \
+                    "$num" "$title" "$parent" "$closed_at" "$head_date" "$url"
+                printf 'miscited-parent-human: PR #%s cites parent issue #%s, but that parent was closed (%s) before the newest commit on this branch (%s) — the parent cannot have shipped the work; a mis-citation, not a dead branch.\n' \
+                    "$num" "$parent" "$closed_at" "$head_date"
+                continue
+            fi
+        fi
         dead=$((dead + 1))
         url="https://github.com/${REPO}/issues/${parent}"
         printf 'dead-pr: %s %s parent=%s parent-state=%s %s\n' \
