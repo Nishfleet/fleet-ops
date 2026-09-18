@@ -1,0 +1,149 @@
+#!/usr/bin/env node
+/**
+ * Jev decision evaluation helper.
+ *
+ * Reads JSON from stdin: {state, questions} -> stdout JSON {answers, usage, ms}
+ * Uses typesafe-ai/jev via ai@7 experimental_evaluate or direct curl.
+ * Fails (exit 2) if model is anything but typesafe-ai/jev.
+ *
+ * $0.042/MTok in, $0 out. Memory: typesafe-jev-seat.
+ */
+
+import { readFileSync } from 'fs';
+import { spawn } from 'child_process';
+import { URL } from 'url';
+
+// --- Config ---
+const JEV_KEY_FILE = process.env.HOME + '/.config/fleet-ops/seats/typesafe-jev.env';
+const AI_GATEWAY = 'https://ai-gateway.vercel.sh/v4/ai/evaluation-model';
+const MODEL = 'typesafe-ai/jev';
+
+// --- Parse stdin JSON ---
+let stdin;
+try {
+  stdin = JSON.parse(readFileSync(0, 'utf-8'));
+} catch (err) {
+  console.error('FAIL: stdin is not valid JSON');
+  process.exit(1);
+}
+
+const { state, questions } = stdin;
+
+// --- Validate model ---
+if (!questions || typeof questions !== 'object') {
+  console.error('FAIL: questions must be an object');
+  process.exit(1);
+}
+
+for (const [key, q] of Object.entries(questions)) {
+  if (!q || q.type !== 'choice' && q.type !== 'boolean' && q.type !== 'score') {
+    console.error(`FAIL: question ${key} must have type: choice | boolean | score`);
+    process.exit(1);
+  }
+}
+
+// --- Check model constraint ---
+for (const q of Object.values(questions)) {
+  if (q.model && q.model !== MODEL) {
+    console.error(`FAIL: question ${q.type} cannot use model ${q.model} — only ${MODEL} is allowed`);
+    process.exit(2);
+  }
+}
+
+// --- Prepare request body ---
+const requestBody = {
+  model: MODEL,
+  questions,
+  state,
+};
+
+// --- Try ai@7 first (smaller diff if available) ---
+try {
+  const ai = await import('ai');
+  const { experimental_evaluate } = ai;
+
+  console.time('jev-eval');
+  const result = await experimental_evaluate({
+    model: MODEL,
+    questions,
+    state,
+  });
+  console.timeEnd('jev-eval');
+
+  // Normalize output format
+  const answers = {};
+  for (const [key, value] of Object.entries(result.answers)) {
+    answers[key] = {
+      probability: value.probability ?? value,
+    };
+  }
+
+  process.stdout.write(JSON.stringify({
+    answers,
+    usage: {
+      inputTokens: result.usage?.inputTokens ?? 0,
+      outputTokens: result.usage?.outputTokens ?? 0,
+    },
+    ms: result.usage?.ms ?? 0,
+  }, null, 2) + '\n');
+  process.exit(0);
+} catch (err) {
+  // Fallback to direct curl if ai@7 is not available
+  console.warn('WARN: ai@7 not available, falling back to direct HTTP call');
+}
+
+// --- Direct curl fallback ---
+const env = { ...process.env };
+env.AI_GATEWAY_API_KEY = readFileSync(JEV_KEY_FILE, 'utf-8').trim();
+
+console.time('jev-eval');
+const curl = spawn('curl', [
+  '-s',
+  '-X', 'POST',
+  '-H', 'Content-Type: application/json',
+  '-H', `Authorization: Bearer ${env.AI_GATEWAY_API_KEY}`,
+  '--data-binary', JSON.stringify(requestBody),
+  AI_GATEWAY,
+], {
+  env,
+});
+
+let stdout = '';
+let stderr = '';
+
+curl.stdout.on('data', (data) => {
+  stdout += data.toString();
+});
+
+curl.stderr.on('data', (data) => {
+  stderr += data.toString();
+});
+
+const exitCode = await new Promise((resolve) => {
+  curl.on('close', (code) => resolve(code));
+});
+
+console.timeEnd('jev-eval');
+
+if (exitCode !== 0) {
+  console.error('FAIL: curl failed with exit code', exitCode);
+  console.error('stderr:', stderr);
+  process.exit(exitCode);
+}
+
+try {
+  const response = JSON.parse(stdout);
+  process.stdout.write(JSON.stringify({
+    answers: response.answers,
+    usage: {
+      inputTokens: response.usage?.inputTokens ?? 0,
+      outputTokens: response.usage?.outputTokens ?? 0,
+    },
+    ms: response.usage?.ms ?? 0,
+  }, null, 2) + '\n');
+  process.exit(0);
+} catch (err) {
+  console.error('FAIL: curl returned invalid JSON');
+  console.error('stdout:', stdout);
+  process.exit(1);
+}
