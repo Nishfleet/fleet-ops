@@ -19,7 +19,7 @@
 # triggers simply do not fire until the #457 snapshot lands.
 #
 # Environment seams (tests):
-#   RESEARCHER_STATE_DIR RESEARCHER_QUALITY_JSON RESEARCHER_GAP_JSON
+#   RESEARCHER_STATE_DIR RESEARCHER_QUALITY_JSON
 #   RESEARCHER_SEAT_MAP  RESEARCHER_LIB  RESEARCHER_FAKE_NOW
 #   RESEARCHER_STALE_DAYS RESEARCHER_NTH_CYCLE RESEARCHER_MIN_INTERVAL_S
 #   RESEARCHER_DISABLE=1  SYSTEMCTL  GH
@@ -36,7 +36,6 @@ GH="${GH:-gh}"
 TRIAGE="${FLEET_HEARTBEAT_TRIAGE:-/home/nish/workspaces/agent-state/FLEET-HEARTBEAT-TRIAGE.md}"
 STATE_DIR="${RESEARCHER_STATE_DIR:-/home/nish/workspaces/agent-state/fleet-researcher}"
 QUALITY_JSON="${RESEARCHER_QUALITY_JSON:-${QUALITY_SCOREBOARD_JSON:-$STATE_DIR/../quality-scoreboard/snapshot.json}}"
-GAP_JSON="${RESEARCHER_GAP_JSON:-$STATE_DIR/../gap-closure/state.json}"
 SEAT_MAP="${RESEARCHER_SEAT_MAP:-$HOME/.local/state/pi-packet/entitled-seats.json}"
 UNIT="${RESEARCHER_UNIT:-fleet-researcher.service}"
 STALE_DAYS="${RESEARCHER_STALE_DAYS:-28}"
@@ -75,7 +74,6 @@ Exit 1 = dispatcher broken (helper missing/unreadable in a hard way).
 Environment:
   RESEARCHER_STATE_DIR       state sink (default: agent-state/fleet-researcher)
   RESEARCHER_QUALITY_JSON    quality scoreboard snapshot
-  RESEARCHER_GAP_JSON        gap-closure state.json
   RESEARCHER_SEAT_MAP        entitled-seats.json for hash trigger
   RESEARCHER_LIB             researcher-delta.py path
   RESEARCHER_FAKE_NOW        ISO-8601 UTC override for tests
@@ -164,7 +162,6 @@ fi
 quality_args=()
 gap_args=()
 [ -f "$QUALITY_JSON" ] && quality_args=(--quality "$QUALITY_JSON")
-[ -f "$GAP_JSON" ] && gap_args=(--gap "$GAP_JSON")
 now_args=()
 [ -n "${RESEARCHER_FAKE_NOW:-}" ] && now_args=(--now "$RESEARCHER_FAKE_NOW")
 

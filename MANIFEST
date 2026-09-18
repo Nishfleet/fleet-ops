@@ -527,23 +527,10 @@ prompts/senior-conference.md /home/nish/.pi/agent/prompts/senior-conference.md
 # Heartbeat starts the loop oneshot once per tick. Conference/drill/
 # fleet-gap-closure-auditor@ are started by the loop. Stub units live in
 # gap-closure-drill.slice only. Sibling of pi-audit@ (admission panel).
-bin/fleet-gap-closure-loop /home/nish/.local/bin/fleet-gap-closure-loop
-bin/fleet-gap-closure-conference /home/nish/.local/bin/fleet-gap-closure-conference
-bin/fleet-gap-closure-tally /home/nish/.local/bin/fleet-gap-closure-tally
-bin/fleet-gap-closure-drill /home/nish/.local/bin/fleet-gap-closure-drill
-bin/fleet-gap-closure-slo /home/nish/.local/bin/fleet-gap-closure-slo
-bin/fleet-gap-closure-auditor /home/nish/.local/bin/fleet-gap-closure-auditor
-bin/fleet-gap-closure-yield /home/nish/.local/bin/fleet-gap-closure-yield
-bin/fleet-gap-closure-order /home/nish/.local/bin/fleet-gap-closure-order
-systemd/fleet-gap-closure-loop.service /home/nish/.config/systemd/user/fleet-gap-closure-loop.service
-systemd/fleet-gap-closure-conference.service /home/nish/.config/systemd/user/fleet-gap-closure-conference.service
-systemd/fleet-gap-closure-drill.service /home/nish/.config/systemd/user/fleet-gap-closure-drill.service
-systemd/fleet-gap-closure-auditor@.service /home/nish/.config/systemd/user/fleet-gap-closure-auditor@.service
 systemd/gap-closure-drill.slice /home/nish/.config/systemd/user/gap-closure-drill.slice
-prompts/gap-closure-conference.md /home/nish/.pi/agent/prompts/gap-closure-conference.md
-prompts/gap-closure-conference-round2.md /home/nish/.pi/agent/prompts/gap-closure-conference-round2.md
-prompts/gap-closure-research.md /home/nish/.pi/agent/prompts/gap-closure-research.md
-prompts/gap-closure-research-round2.md /home/nish/.pi/agent/prompts/gap-closure-research-round2.md
+systemd/gap-closure-drill-stub-fail.service /home/nish/.config/systemd/user/gap-closure-drill-stub-fail.service
+systemd/gap-closure-drill-stub-mask.service /home/nish/.config/systemd/user/gap-closure-drill-stub-mask.service
+systemd/gap-closure-drill-stub-mask.timer /home/nish/.config/systemd/user/gap-closure-drill-stub-mask.timer
 # fleet-ops#527: monthly rulebook red-team + rollback-backup gate. Timer is
 # the primary trigger (named reason in the unit). Heading-growth bonus and
 # cadence-overdue scream live in heartbeat-tier1 §22. Sibling backups are
@@ -650,6 +637,9 @@ systemd/service.d/20-resume.conf /home/nish/.config/systemd/user/service.d/20-re
 # fleet-ops#5456 E/H: the kill-three-ways chain drill + its isolated fixture
 # (throwaway resume-drill-* dummies; runs from fleet-heartbeat-tier1 5b, no
 # new timer).
+bin/chain-e2e-drill /home/nish/.local/bin/chain-e2e-drill
+systemd/chain-e2e-drill-fixture.service /home/nish/.config/systemd/user/chain-e2e-drill-fixture.service
+systemd/chain-e2e-drill.slice /home/nish/.config/systemd/user/chain-e2e-drill.slice
 # fleet-ops#618: .path and .timer units do not inherit service.d/.
 systemd/path.d/10-escalate.conf /home/nish/.config/systemd/user/path.d/10-escalate.conf
 systemd/timer.d/10-escalate.conf /home/nish/.config/systemd/user/timer.d/10-escalate.conf
@@ -669,6 +659,16 @@ systemd/camofox-browser.service.d/tmpdir.conf /home/nish/.config/systemd/user/ca
 # absorb so deploy symlinks it and the drop-in hunt stays clean. The gate bin
 # it references stays hand-placed as part of the allowlisted infra tool.
 systemd/camofox-browser.service.d/xvfb-auth-gate.conf /home/nish/.config/systemd/user/camofox-browser.service.d/xvfb-auth-gate.conf
+# fleet-ops#4063: codex-remote-control is a hand-placed infra tool (allowlist
+# class a). This OOM drop-in was a real file under the live drop-in dir
+# (blind-audit fleet-ops#2924 / #1548). Absorb so deploy symlinks it;
+# pure ManagedOOM* / memory cap override, not new machinery.
+systemd/codex-remote-control.service.d/20-oom-avoid.conf /home/nish/.config/systemd/user/codex-remote-control.service.d/20-oom-avoid.conf
+# fleet-ops#4148: per-role Codex launch templates (paper, shape-only).
+# ExecStart hard-codes model/provider/effort so identity holds by
+# construction. Live PATH wrapper remains until the gated wipe; see each file.
+systemd/codex-sol@.service /home/nish/.config/systemd/user/codex-sol@.service
+systemd/codex-luna@.service /home/nish/.config/systemd/user/codex-luna@.service
 # fleet-ops#3111: self-heal drop-in. Overrides ExecStart with the
 # pi-transport-self-heal wrapper (npm rebuild; no hand-written symlink).
 systemd/pi-transport-check.service.d/20-self-heal.conf /home/nish/.config/systemd/user/pi-transport-check.service.d/20-self-heal.conf
@@ -849,9 +849,14 @@ lib/credential-expiry-canary.py /home/nish/.local/lib/pi-packet/credential-expir
 # Heartbeat-tier1 block 32.
 bin/fleet-cf-token-canary /home/nish/.local/bin/fleet-cf-token-canary
 lib/cf-token-canary.py /home/nish/.local/lib/pi-packet/cf-token-canary.py
+systemd/oomd-drill.slice /home/nish/.config/systemd/user/oomd-drill.slice
+systemd/oomd-drill-hog.service /home/nish/.config/systemd/user/oomd-drill-hog.service
+bin/oomd-drill /home/nish/.local/bin/oomd-drill
 # fleet-ops#78: gated reap of the unmanaged Codex app-server during the
 # weekly window. Drop-in fires as ExecStartPre of vps-weekly-update
 # (Sun 03:30 IST, after the 15-minute quiesce drain).
+bin/codex-orphan-reap /home/nish/.local/bin/codex-orphan-reap
+systemd/vps-weekly-update.service.d/10-codex-orphan-reap.conf /home/nish/.config/systemd/user/vps-weekly-update.service.d/10-codex-orphan-reap.conf
 # fleet-ops#1160: VPS weekly update script (user-scope, installed to ~/.local/bin)
 bin/vps-weekly-update /home/nish/.local/bin/vps-weekly-update
 # fleet-ops#1160: post-reboot verify script with tailscale recover (user-scope)
