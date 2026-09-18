@@ -45,7 +45,7 @@ Attribution rule (issue accept §1):
 
 Sources:
   - journalctl --user for oneshot unit Result= (siterep-live-canary,
-    fleet-resilience-drill)
+    (fleet-resilience-drill was deleted 2026-09-18)
   - `gh issue list` for bug/regression-labeled issues in each organ's
     product repos
 
@@ -179,21 +179,6 @@ ORGANS: tuple[Organ, ...] = (
         name="siterep-live-canary",
         product_repos=("Nishfleet/siterep-public",),
         unit="siterep-live-canary.service",
-    ),
-    Organ(
-        name="fleet-resilience-drill",
-        # Daily oneshot — count runs/failures from the unit journal, not
-        # from the always-on all_pass gauge (that gauge is scraped every
-        # 15s and would inflate runs_total by ~5000x).
-        # No product_repos: the drill is a machinery-resilience canary, not
-        # a user-facing product canary. Its failure signature (a drill plane
-        # going red) does NOT match the fleet-ops product path users hit, so
-        # correlating fleet-ops bug/regression issues against it produces only
-        # false missed-regression counts (CanarySilentTooLong/EffectivenessLow
-        # false positives, fleet-ops#3030). Its own health is independently
-        # guarded by the dedicated fleet_resilience_drill_* alerts.
-        product_repos=(),
-        unit="fleet-resilience-drill.service",
     ),
 )
 

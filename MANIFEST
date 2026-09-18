@@ -664,17 +664,12 @@ systemd/fleet-issue-close-duplicates.timer /home/nish/.config/systemd/user/fleet
 # event_trigger_spot) are sandboxed against the libs below; isolated
 # stubs only; never kills live tailscaled. Daily timer; named reason is
 # in the unit file.
-bin/fleet-resilience-drill /home/nish/.local/bin/fleet-resilience-drill
 bin/keystone-hc-ping /home/nish/.local/bin/keystone-hc-ping
 # fleet-ops#4266: audit watch on systemctl/kill execve (auid=1000) so a
 # clean stop leaves a "who stopped it" trail. install.sh --system copies to
 # /etc/audit/rules.d/ and reloads via augenrules --load when auditd is
 # present; auditd ships in bare-metal-rebuild-manifest.json packages.core.
 config/audit/rules.d/30-fleet-unit-stop.rules /etc/audit/rules.d/30-fleet-unit-stop.rules
-systemd/fleet-resilience-drill.service /home/nish/.config/systemd/user/fleet-resilience-drill.service
-systemd/fleet-resilience-drill.timer /home/nish/.config/systemd/user/fleet-resilience-drill.timer
-systemd/resilience-drill.slice /home/nish/.config/systemd/user/resilience-drill.slice
-systemd/resilience-drill-stub-restart.service /home/nish/.config/systemd/user/resilience-drill-stub-restart.service
 # fleet-ops#1463: the five failure-class planes source these libs at
 # runtime. precedence-band.sh is the band floor's sandbox (live install
 # is via the line below; the repo copy is what the drill sees when
@@ -1129,10 +1124,7 @@ config/etc-default-prometheus /etc/default/prometheus
 # fleet-ops#1135: bare-metal fleet rebuild manifest, runbook, script and drill.
 # The manifest is the versioned inventory; the script and drill make it provable.
 bin/fleet-bare-metal-rebuild /home/nish/.local/bin/fleet-bare-metal-rebuild
-bin/fleet-bare-metal-rebuild-drill /home/nish/.local/bin/fleet-bare-metal-rebuild-drill
 config/bare-metal-rebuild-manifest.json /home/nish/.config/fleet-ops/bare-metal-rebuild-manifest.json
-systemd/fleet-bare-metal-rebuild-drill.service /home/nish/.config/systemd/user/fleet-bare-metal-rebuild-drill.service
-systemd/fleet-bare-metal-rebuild-drill.timer /home/nish/.config/systemd/user/fleet-bare-metal-rebuild-drill.timer
 # fleet-ops#1149: mechanical VPS asset census, guard mapping, and unguarded-asset
 # auto-filer. Runs weekly before the Weekly Fleet Review, writes Prometheus
 # textfile metrics, and auto-files deduped `unguarded asset:` issues.
@@ -1269,20 +1261,16 @@ systemd/fleet-litellm-redis.service /home/nish/.config/systemd/user/fleet-litell
 systemd/fleet-litellm-postgres.service.d/20-oom-avoid.conf /home/nish/.config/systemd/user/fleet-litellm-postgres.service.d/20-oom-avoid.conf
 systemd/fleet-litellm-proxy.service.d/20-oom-avoid.conf /home/nish/.config/systemd/user/fleet-litellm-proxy.service.d/20-oom-avoid.conf
 systemd/fleet-litellm-redis.service.d/20-oom-avoid.conf /home/nish/.config/systemd/user/fleet-litellm-redis.service.d/20-oom-avoid.conf
-libexec/fleet-litellm-health-canary.py /home/nish/.local/libexec/fleet-litellm-health-canary.py
 # fleet-ops#4628: sitecustomize that retargets LiteLLM 1.98's PrismaWrapper
 # _write_engine onto prisma-client-py 0.15's _engine setter. PYTHONPATH is
 # set on the proxy unit; this is not a new organ, it is a one-file compat
 # hook for the existing proxy organ.
 libexec/fleet-litellm-prisma-compat/sitecustomize.py /home/nish/.local/libexec/fleet-litellm-prisma-compat/sitecustomize.py
 bin/fleet-litellm-key /home/nish/.local/bin/fleet-litellm-key
-systemd/fleet-litellm-health-canary.service /home/nish/.config/systemd/user/fleet-litellm-health-canary.service
-systemd/fleet-litellm-health-canary.timer /home/nish/.config/systemd/user/fleet-litellm-health-canary.timer
 # fleet-ops#4439: health-canary pg-socket drop-in was a real file under the
 # live drop-in dir (blind-audit fleet-ops#2924 / #1548). Absorb so deploy
 # symlinks it; pure Environment override pointing the postgres probe at the
 # user-level socket dir, not new machinery. fleet-ops#4130.
-systemd/fleet-litellm-health-canary.service.d/10-pg-socket.conf /home/nish/.config/systemd/user/fleet-litellm-health-canary.service.d/10-pg-socket.conf
 # fleet-ops#5935: 3 owned ephemeral GitHub Actions runners (gh-runner@{1..3})
 # inside fleet-ci.slice — merge_group + push heavy jobs off the 20-job
 # hosted concurrent cap; pull_request jobs stay hosted so fork PRs never

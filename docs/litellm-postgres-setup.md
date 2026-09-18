@@ -356,9 +356,7 @@ curl -s http://127.0.0.1:4000/health/readiness | jq .
 ## 4. /health canary + prom scrape
 
 ```sh
-systemctl --user enable --now fleet-litellm-health-canary.timer
 # Prove one tick:
-systemctl --user start fleet-litellm-health-canary.service
 cat /var/lib/prometheus/node-exporter/fleet-litellm-health.prom
 # Reload prometheus so the new litellm scrape job + absent() rules load:
 sudo systemctl reload prometheus
@@ -385,8 +383,8 @@ The P4 drill proves Postgres-down → workers fail loud <60s, restore
 ## Rollback (full)
 
 ```sh
-systemctl --user stop fleet-litellm-proxy fleet-litellm-postgres fleet-litellm-redis fleet-litellm-health-canary.timer
-systemctl --user disable fleet-litellm-proxy fleet-litellm-postgres fleet-litellm-redis fleet-litellm-health-canary.timer
+systemctl --user stop fleet-litellm-proxy fleet-litellm-postgres fleet-litellm-redis
+systemctl --user disable fleet-litellm-proxy fleet-litellm-postgres fleet-litellm-redis
 # Remove the litellm scrape job from config/prometheus.yml + reload prom.
 # Drop the fleet-owned cluster (no sudo — it is user-owned):
 psql -h 127.0.0.1 -p 5432 -U "$USER" -d postgres -c "DROP DATABASE litellm;"

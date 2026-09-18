@@ -162,35 +162,15 @@ grep -qF '.no-usable-seat' "$repo_root/bin/pi-issue-run" \
   || fail "bin/pi-issue-run must write the .no-usable-seat sentinel (fleet-ops#5093)"
 ok "trigger: .path watches <seats>/.no-usable-seat only (no directory watch, no TriggerLimit*)"
 
-# --- 4b. the live sentinel drill lives in the resilience drill --------------
-# fleet-ops#5106: the live proof (install a name-swapped stub pair, 100
-# seat-json writes -> 0 starts, one sentinel touch -> 1 start, second write
-# -> 1 more, watcher stays active/success) moved to the seat_sentinel plane
-# of bin/fleet-resilience-drill. A drill is a periodic assurance check: it
-# runs on the drill's daily timer, not once per test-suite run (the inner-
-# loop churn that made this change: 247 stub starts/h on 2026-09-11).
-# This gate keeps the move honest: a regression that drops the plane (or its
-# offline skip) red-fails HERE instead of silently retiring the assurance.
-drill_bin="$repo_root/bin/fleet-resilience-drill"
-[[ -f "$drill_bin" ]] || fail "missing: $drill_bin"
-grep -q '^plane_seat_sentinel()' "$drill_bin" \
-  || fail "bin/fleet-resilience-drill must carry the seat_sentinel plane (the live sentinel proof, fleet-ops#5106)"
-grep -q 'plane_seat_sentinel || rc=1' "$drill_bin" \
-  || fail "run_drill must invoke plane_seat_sentinel (fleet-ops#5106)"
-grep -q 'resilience-drill-stub-seat-sentinel' "$drill_bin" \
-  || fail "seat_sentinel plane must drive the resilience-drill-stub-seat-sentinel stub (fleet-ops#5106)"
-ok "live sentinel drill: seat_sentinel plane present in bin/fleet-resilience-drill (daily timer cadence, fleet-ops#5106)"
-
-# --- 4c. the same plane carries the negative control ----------------------
-# fleet-ops#5096: the armed-not-decorative proof moved with the drill — the
-# seat_sentinel plane also runs the same sentinel storm against a burst=5
-# stub (resilience-drill-stub-seat-sentinel-tiny) and asserts it wedges the
-# watcher. Pin it here so the control cannot be silently dropped.
-grep -q 'resilience-drill-stub-seat-sentinel-tiny' "$drill_bin" \
-  || fail "seat_sentinel plane must carry the burst=5 negative-control stub (fleet-ops#5096)"
-grep -q 'StartLimitBurst=5' "$drill_bin" \
-  || fail "seat_sentinel plane must drive the negative-control stub at StartLimitBurst=5 (fleet-ops#5096)"
-ok "negative control: seat_sentinel plane wedges a burst=5 stub on the same storm (fleet-ops#5096)"
+# --- 4b/4c. RETIRED 2026-09-18 with bin/fleet-resilience-drill ------------
+# The live sentinel proof (fleet-ops#5106: install a name-swapped stub pair,
+# 100 seat-json writes -> 0 starts, one sentinel touch -> 1 start; plus the
+# fleet-ops#5096 burst=5 negative control that must wedge) lived in that
+# drill's seat_sentinel plane and went with it when the synthetic drills were
+# deleted. This is a RETIRED ASSURANCE, recorded here rather than dropped
+# silently: nothing now re-proves the seat-recovery watcher end to end. The
+# static wiring below (sections 5+) still pins who writes the latch and when.
+# Rebuild it on a real rail if the watcher regresses.
 
 # --- 5. the sentinel latch is written by bin/pi-issue-run, edge-only ---------
 # fleet-ops#5093: nothing else in the repo observes BOTH seat verdicts, so

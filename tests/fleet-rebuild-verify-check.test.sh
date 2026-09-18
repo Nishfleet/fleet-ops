@@ -136,7 +136,6 @@ ok "E3: README edit is SKIP"
 for path in \
     'config/bare-metal-rebuild-manifest.json' \
     'bin/fleet-bare-metal-rebuild' \
-    'bin/fleet-bare-metal-rebuild-drill' \
     'lib/bare-metal-masked-units.sh' \
     'docs/bare-metal-rebuild.md' \
     'tests/fleet-bare-metal-rebuild.test.sh'

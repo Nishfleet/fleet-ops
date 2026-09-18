@@ -203,11 +203,11 @@ SYSTEMCTL_BIN = os.environ.get("SYSTEMCTL_BIN", "systemctl")
 # dispatch for FleetLitellmProxyAbsent asked a dead proxy to repair itself —
 # 12 + 8 dispatches in 7 days with zero possible successes, every one dying
 # "Connection error." (cause_unit=fleet-litellm-proxy in the dead-man line).
+# 2026-09-18: the Postgres/Redis/HealthCanary alerts were deleted with the
+# /health canary that emitted their gauges; only the proxy entry survives,
+# and its rule now probes up{job="litellm"} directly.
 DIRECT_UNIT_REPAIR = {
     "FleetLitellmProxyAbsent": "fleet-litellm-proxy.service",
-    "FleetLitellmPostgresAbsent": "fleet-litellm-postgres.service",
-    "FleetLitellmRedisAbsent": "fleet-litellm-redis.service",
-    "FleetLitellmHealthCanaryAbsent": "fleet-litellm-health-canary.timer",
 }
 
 # (2) Death cooldown — if a repair unit for the SAME alert died inside this

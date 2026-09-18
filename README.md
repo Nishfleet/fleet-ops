@@ -465,7 +465,12 @@ This repo copies files in. The symlink cutover (making the live paths point
 here) is a separate, later step. Until then the live paths are real files and
 `install.sh --check` will report every entry as a DIFF.
 
-## Four-plane resilience drill — `fleet-resilience-drill` (issue #455)
+## Four-plane resilience drill — DELETED 2026-09-18 (was `fleet-resilience-drill`, issue #455)
+
+> Removed with the synthetic-drill sweep: 1474 lines of rehearsal whose stub units died
+> by design. The seat_sentinel live proof (#5106) went with it — see
+> `tests/fleet-seat-recovery-units.test.sh` section 4b/4c for the retired-assurance note.
+> The commands below no longer exist.
 
 Single-VPS resilience is detection + repair + a regular drill, not a second
 copy of a stateless thing. The adopted-delta list and specs live in

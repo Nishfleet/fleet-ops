@@ -30,9 +30,7 @@ cheaper than building, because prose bans lose to urgency at decision time.
 | Duplicate-issue drain (webhook) | fleet-issue-close-duplicates | `fleet-issue-close-duplicates.{service,timer}` | #3270 |
 | Tight merge→live deploy | fleet-deploy-check | `fleet-deploy-check.timer` | #468, TOP GEAR |
 | Blind audit / gap-closure | fleet-blind-audit | `fleet-blind-audit.timer` | #377 |
-| Resilience drill | fleet-resilience-drill | `fleet-resilience-drill.timer` | #1010 |
 | Restore drill | fleet-restore-drill | `fleet-restore-drill.timer` | #1135 |
-| Bare-metal rebuild drill | fleet-bare-metal-rebuild-drill | `…-drill.timer` | docs/bare-metal-rebuild.md |
 | OOM drill hog | oomd-drill-hog | `oomd-drill-hog.service` | #1010 |
 | Weekly review / watches | fleet-weekly-fleet-review | `fleet-weekly-fleet-review.timer` | #1146 |
 | Asset census | fleet-asset-census | `fleet-asset-census.timer` | #1149 |
@@ -87,3 +85,10 @@ use a primitive, not a script:
 If you reach for a row in this second table, stop and open a design proposal.
 The conference adjudicates; most close autonomously with a recorded rationale;
 only Nish-reserved verdicts reach Nish.
+
+> **DELETED 2026-09-18.** `fleet-resilience-drill`, `fleet-bare-metal-rebuild-drill` and
+`fleet-litellm-health-canary` were removed with the rest of the restart-survival glue.
+The canary alone produced 2709 unit deaths in 7 days. LiteLLM organ death is now probed
+directly by `up{job="litellm"}` over the existing scrape job. `fleet-restore-drill` and
+`restic-r2-*` stay: the restore drill is the only watchdog on the restic backup organs and
+the only pg_dump of the LiteLLM Postgres.

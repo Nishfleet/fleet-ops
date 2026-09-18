@@ -52,7 +52,9 @@ StartLimitBurst=200
 # for the side effect (the intake fire).
 #
 # tests/fleet-seat-recovery-units.test.sh pins this ceiling and gates that the
-# live proof still exists in bin/fleet-resilience-drill's seat_sentinel plane —
+# live proof lived in bin/fleet-resilience-drill's seat_sentinel plane, deleted
+# 2026-09-18 with the synthetic drills (retired assurance, see
+# tests/fleet-seat-recovery-units.test.sh 4b/4c) —
 # which proves on the daily drill timer that a sentinel storm fires the
 # watcher AND that a ceiling BELOW the storm wedges it — i.e. that the guard
 # is armed, not decorative.

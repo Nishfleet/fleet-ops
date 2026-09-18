@@ -262,10 +262,7 @@ manifest_check() {
     #    installed on the live box.
     for artifact in \
       "bin/fleet-bare-metal-rebuild" \
-      "bin/fleet-bare-metal-rebuild-drill" \
-      "config/bare-metal-rebuild-manifest.json" \
-      "systemd/fleet-bare-metal-rebuild-drill.service" \
-      "systemd/fleet-bare-metal-rebuild-drill.timer"
+      "config/bare-metal-rebuild-manifest.json"
     do
       if ! grep -Fxq "$artifact" "$manifest_srcs" 2>/dev/null; then
         # The runbook is in docs/ and is not installed to a live path.
@@ -568,8 +565,7 @@ apply_rebuild() {
   if [[ "$dry_run" != 1 ]]; then
     log "rebuild complete; run the drills manually:"
     log "  fleet-restore-drill"
-    log "  fleet-resilience-drill"
-    log "  fleet-bare-metal-rebuild-drill"
+    log "  fleet-bare-metal-rebuild --manifest-check"
   fi
 }
 

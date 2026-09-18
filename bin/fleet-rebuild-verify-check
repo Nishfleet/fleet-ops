@@ -27,7 +27,6 @@
 # Trigger paths (any status A/M/R/C/D — "touching", not just "adding"):
 #   config/bare-metal-rebuild-manifest.json   the masking config + rebuild inventory
 #   bin/fleet-bare-metal-rebuild              the rebuild script
-#   bin/fleet-bare-metal-rebuild-drill        the rebuild drill
 #   lib/bare-metal-masked-units.sh            the masking helper
 #   docs/bare-metal-rebuild.md                the runbook
 #   tests/fleet-bare-metal-rebuild.test.sh    the rebuild test
@@ -88,7 +87,6 @@ is_rebuild_path() {
     case "$path" in
         config/bare-metal-rebuild-manifest.json) return 0 ;;
         bin/fleet-bare-metal-rebuild) return 0 ;;
-        bin/fleet-bare-metal-rebuild-drill) return 0 ;;
         lib/bare-metal-masked-units.sh) return 0 ;;
         docs/bare-metal-rebuild.md) return 0 ;;
         tests/fleet-bare-metal-rebuild.test.sh) return 0 ;;

@@ -1,5 +1,9 @@
 # Resilience blueprint for a single-VPS fleet
 
+> **DELETED 2026-09-18.** `bin/fleet-resilience-drill`, its timer and its stub units
+> were removed (synthetic-drill sweep). This document is now a record of the planes that
+> existed, not a description of live machinery.
+
 fleet-ops#455. Nish, 2026-08-26: redundancies upon redundancies, all
 mechanical. The frame the pros actually use: untested redundancy is false
 confidence, and blind duplication on a single box is theater.

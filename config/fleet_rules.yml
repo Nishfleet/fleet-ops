@@ -1031,28 +1031,6 @@ groups:
           summary: "console tile-verify organ absent — the self-audit pass is missing or dead"
           description: "Repair worker: fleet-console-pi/verify.py must write fleet_console_tile_verify_timestamp_seconds (and fleet_console_tile_mismatch). Check fleet-console-pi.timer is running and journalctl --user -u fleet-console-pi.service. No new timer was added; verify piggybacks the existing push cycle (fleet-ops#1157)."
 
-      # Organ heartbeat (fleet-ops#1463 + #1010 standing pattern). The
-      # resilience drill exports fleet_resilience_drill_last_green_seconds
-      # ONLY when every plane passes (or skips) on the last run; a red run
-      # deliberately keeps the timestamp at 0 so a drill that stays red is
-      # itself loud. 26h is just over one missed daily cycle (the drill
-      # fires at 05:47; a one-day skip should not page on a brief host
-      # pause, a two-day skip is a real failure). absent() catches a
-      # missing file (node-exporter textfile collector keeps the last
-      # scrape, so a frozen file keeps the timestamp fresh — that's why
-      # time()-timestamp is in the OR clause). The drill runs on the
-      # existing daily 05:47 timer (no new timer; #1463 only extends the
-      # existing roster).
-      - alert: ResilienceDrillAbsent
-        expr: absent(fleet_resilience_drill_last_green_seconds) or fleet_resilience_drill_last_green_seconds == 0 or (time() - fleet_resilience_drill_last_green_seconds) > 93600
-        for: 4h
-        labels:
-          severity: critical
-          service: fleet
-        annotations:
-          summary: "fleet resilience drill organ absent — the eleven-plane drill is missing, dead, or stuck red"
-          description: "Repair worker: bin/fleet-resilience-drill must write fleet_resilience_drill_last_green_seconds on every all-pass run. fleet_resilience_drill_plane_fail{plane=...} and fleet_resilience_drill_plane_skip{plane=...} name the failing planes. Check fleet-resilience-drill.timer is running and journalctl --user -u fleet-resilience-drill.service. The five #1463 failure-class planes (queue_freeze, pipeline_red, boundary_delivery, band_floor, event_trigger_spot) sandbox against live state, so a red plane is safe to reproduce."
-
       # fleet-ops#1232: 17 min of honest-dark gh tiles because caches aged
       # out and scheduled refreshes did not recover. Honesty rendering
       # (dash + stale marker) already works; this is the missing
@@ -1609,42 +1587,42 @@ groups:
         annotations:
           summary: "observe-to-close metric family vanished"
           description: "fleet_observe_to_close_total is absent for 15+ minutes — the merged-pr-close summary is not being written or the exporter is not emitting the family. Check bin/fleet-merged-pr-close in the heartbeat tick log and the merged-pr-close.json summary path. fleet-ops#3231."
+      # fleet-ops#4130 P1 organ death, probed directly. The 60s /health
+      # canary that used to emit fleet_litellm_proxy_up / _postgres_up /
+      # _redis_up / _last_green_seconds was deleted (2026-09-18): it
+      # restarted every minute carrying "holding" tolerance logic whose only
+      # job was to survive the proxy's own restarts, and it produced 2709
+      # unit deaths in 7 days — burying the real ones. Prometheus already
+      # scrapes the proxy itself (job="litellm", 127.0.0.1:4000/metrics/,
+      # config/prometheus.yml), so `up` is the direct probe: no canary, no
+      # textfile, no tolerance window. The proxy carries Restart=on-failure
+      # and litellm's own background_health_checks. Postgres and Redis lost
+      # their canary-emitted gauges with it; they are covered by the
+      # universal unit-death escalation (systemd/service.d/10-escalate.conf
+      # OnFailure=unit-escalation@%n.service) and by this alert, since the
+      # proxy cannot serve without them.
+      #
+      # Retired with the canary, recorded so it is not a silent degrade: the
+      # per-deployment health verdict (a deployment continuously unhealthy
+      # >=300s) and the entitled-vs-wired census shortfall (#6115). Both are
+      # rebuildable as pure rules with no new machinery — the proxy's own
+      # litellm_deployment_state (0 healthy / 1 partial / 2 outage, per
+      # model_name, already scraped by job="litellm") carries the first, and
+      # count(litellm_deployment_state) carries the second. Deliberately NOT
+      # armed here: at deletion time worker-capable and worker-cheap read
+      # state=2 and three :free models read state=1, so an alert on
+      # state > 0 would fire on arrival and dispatch repair — trading one
+      # noise source for another. Arm it with a threshold Nish has agreed
+      # to, not by default.
       - alert: FleetLitellmProxyAbsent
-        expr: (absent(fleet_litellm_proxy_up{endpoint="readiness"}) or fleet_litellm_proxy_up{endpoint="readiness"} == 0) unless fleet_litellm_organ_installed == 0
+        expr: absent(up{job="litellm"}) or up{job="litellm"} == 0
         for: 2m
         labels:
           severity: critical
           service: fleet
         annotations:
           summary: "LiteLLM proxy organ absent or down (fleet-ops#4130 P1)"
-          description: "fleet_litellm_proxy_up is absent for 2+ minutes or 0 (proxy unreachable on 127.0.0.1:4000/health/readiness) while the organ is installed (fleet_litellm_organ_installed=1). The unless-gate suppresses this while the P1 organ is deliberately NOT live-installed (Nish-gated, fleet-ops#4174): the canary then writes organ_installed=0 and the alert must not fire; once the venv exists the canary writes 1 and real organ death fires again. The proxy is the routing organ in front of every seat; its death benches the whole fleet. Repair: check journalctl --user -u fleet-litellm-proxy.service and the /health canary at journalctl --user -u fleet-litellm-health-canary.service. P4 drill: workers must fail loud <60s when this fires. fleet-ops#4130, #4221."
-      - alert: FleetLitellmPostgresAbsent
-        expr: (absent(fleet_litellm_postgres_up) or fleet_litellm_postgres_up == 0) unless fleet_litellm_organ_installed == 0
-        for: 2m
-        labels:
-          severity: critical
-          service: fleet
-        annotations:
-          summary: "LiteLLM Postgres organ absent or down (fleet-ops#4130 P1)"
-          description: "fleet_litellm_postgres_up is absent for 2+ minutes or 0 (pg_isready failed on the local socket) while the organ is installed (fleet_litellm_organ_installed=1). The unless-gate suppresses this while the P1 organ family is deliberately NOT live-installed (Nish-gated, fleet-ops#4174): the canary then writes organ_installed=0. Postgres backs budgets/keys/spend; without it budgets fail open (docs/proxy/users). Repair: check journalctl --user -u fleet-litellm-postgres.service and pg_isready -h /var/run/postgresql. Runbook: docs/litellm-postgres-setup.md. fleet-ops#4130, #4221."
-      - alert: FleetLitellmRedisAbsent
-        expr: (absent(fleet_litellm_redis_up) or fleet_litellm_redis_up == 0) unless fleet_litellm_organ_installed == 0
-        for: 2m
-        labels:
-          severity: warning
-          service: fleet
-        annotations:
-          summary: "LiteLLM Redis organ absent or down (fleet-ops#4130 P1)"
-          description: "fleet_litellm_redis_up is absent for 2+ minutes or 0 (redis-cli PING did not return PONG on 127.0.0.1:6379) while the organ is installed (fleet_litellm_organ_installed=1). The unless-gate suppresses this while the P1 organ family is deliberately NOT live-installed (Nish-gated, fleet-ops#4174): the canary then writes organ_installed=0. Redis backs the router fast path (cooldown cache, provider budget spend); without it the proxy falls back to per-request state. Repair: check journalctl --user -u fleet-litellm-redis.service. Runbook: docs/litellm-postgres-setup.md (Redis section). fleet-ops#4130, #4221."
-      - alert: FleetLitellmHealthCanaryAbsent
-        expr: absent(fleet_litellm_proxy_last_green_seconds) unless fleet_litellm_organ_installed == 0
-        for: 3m
-        labels:
-          severity: warning
-          service: fleet
-        annotations:
-          summary: "LiteLLM /health canary freshness vanished (fleet-ops#4130 P1)"
-          description: "fleet_litellm_proxy_last_green_seconds is absent for 3+ minutes while the organ is installed (fleet_litellm_organ_installed=1) — the 60s health canary (libexec/fleet-litellm-health-canary.py) is not running or has never seen proxy_up=1. The unless-gate suppresses this while the P1 organ is deliberately NOT live-installed (Nish-gated, fleet-ops#4174): the fail-open canary then writes organ_installed=0 and never last_green (fleet-ops#4221), so this alert must not fire. Once the venv exists the canary writes 1 and freshness loss fires again; if the canary itself dies, organ_installed goes stale, the gate drops, and the alert fires. The canary timer is fleet-litellm-health-canary.timer. Check journalctl --user -u fleet-litellm-health-canary.service. fleet-ops#4130, #4221."
+          description: "Prometheus cannot scrape the LiteLLM proxy on 127.0.0.1:4000/metrics/ for 2+ minutes (up{job=\"litellm\"} absent or 0). The proxy is the routing organ in front of every seat; its death benches the whole fleet. Repair: check journalctl --user -u fleet-litellm-proxy.service, then fleet-litellm-postgres.service and fleet-litellm-redis.service (the proxy cannot serve without them). fleet-ops#4130."
 
   # fleet-ops#4141: recording rules that replace the derived numbers the
   # retired opus-heartbeat-gather computed from raw sources (systemd,

@@ -114,7 +114,10 @@
       "uid": 1000,
       "home": "/home/nish",
       "shell": "/bin/bash",
-      "groups": ["sudo", "docker"]
+      "groups": [
+        "sudo",
+        "docker"
+      ]
     }
   ],
   "repositories": {
@@ -211,13 +214,16 @@
     "tool": "restic",
     "repo_env": "/etc/restic/hostinger-r2.env",
     "exclude_file": "/etc/restic/hostinger-r2-excludes",
-    "sources": ["/home/nish", "/etc", "/root", "/usr/local"],
+    "sources": [
+      "/home/nish",
+      "/etc",
+      "/root",
+      "/usr/local"
+    ],
     "restore_command": "sudo restic -r $RESTIC_REPOSITORY restore latest -t /"
   },
   "drills": [
     "fleet-restore-drill",
-    "fleet-resilience-drill",
-    "fleet-bare-metal-rebuild-drill",
     "oomd-drill"
   ],
   "runbook_path": "docs/bare-metal-rebuild.md",

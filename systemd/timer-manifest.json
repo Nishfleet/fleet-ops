@@ -74,12 +74,6 @@
       "cadence": "weekly",
       "source": "repo"
     },
-    "fleet-bare-metal-rebuild-drill.timer": {
-      "reason": "Weekly bare-metal rebuild drill — manifest completeness invariant is not an event signal; weekly container proof catches drift",
-      "classification": "scheduled",
-      "cadence": "weekly",
-      "source": "repo"
-    },
     "fleet-blind-audit.timer": {
       "reason": "Daily blind audit floor — unknown unknowns have no event to subscribe to; daily calendar floor is the only correct primary trigger",
       "classification": "scheduled",
@@ -121,12 +115,6 @@
       "classification": "scheduled",
       "cadence": "5min",
       "source": "user-config"
-    },
-    "fleet-resilience-drill.timer": {
-      "reason": "Daily four-plane resilience drill — each plane's failure is silent without periodic proof; daily at 05:47 IST off heartbeat cluster",
-      "classification": "scheduled",
-      "cadence": "daily",
-      "source": "repo"
     },
     "fleet-restore-drill.timer": {
       "reason": "6h control-plane restore drill — rebuild story is a continuity invariant with no event signal; 6h catches stale backup within one waking window",
@@ -528,12 +516,6 @@
       "reason": "Hourly fleet judge on Kimi K3 (pi cursor/kimi-k3-max), offset :20 UTC (fleet-ops#4455 third POV) — main consumer of the Ultra 'Other Models' $400/month bucket; initial hourly cadence per Nish 2026-09-08 'use generously to use up the $400 before sub expires', adjusted from measured $/run. Repo-sourced.",
       "classification": "scheduled",
       "cadence": "1h",
-      "source": "repo"
-    },
-    "fleet-litellm-health-canary.timer": {
-      "reason": "60s LiteLLM proxy /health/readiness probe (fleet-ops#4130 P1) — the proxy is a daemon whose death must surface in <2 min, not on the 5-min metrics-export cadence. The 60s timer is the named reason (organ-death latency).",
-      "classification": "scheduled",
-      "cadence": "1min",
       "source": "repo"
     }
   }

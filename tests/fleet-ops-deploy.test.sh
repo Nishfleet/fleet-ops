@@ -1128,23 +1128,17 @@ ok "scenario12b-orphan-loop: install.sh removes the orphaned fleet-loop@.service
 # 20-start-timeout.conf file — the repo-sourced 10-pg-socket.conf symlink in
 # fleet-litellm-health-canary.service.d must survive.
 mkdir -p "$checkout/systemd/fleet-litellm-health-canary.service.d"
-printf '[Service]\nEnvironment=PGSOCKET=/tmp\n' \
-    > "$checkout/systemd/fleet-litellm-health-canary.service.d/10-pg-socket.conf"
-pg_socket="$HOME/.config/systemd/user/fleet-litellm-health-canary.service.d/10-pg-socket.conf"
-for u in fleet-litellm-health-canary gh-webhook-canary; do
+for u in gh-webhook-canary; do
     bridge_dir="$HOME/.config/systemd/user/${u}.service.d"
     mkdir -p "$bridge_dir"
     printf '[Service]\nTimeoutStartSec=120\n' > "$bridge_dir/20-start-timeout.conf"
 done
-ln -sfn "$checkout/systemd/fleet-litellm-health-canary.service.d/10-pg-socket.conf" "$pg_socket"
 PATH="$scratch:$PATH" "$install" >/dev/null 2>&1 || true
-for u in fleet-litellm-health-canary gh-webhook-canary; do
+for u in gh-webhook-canary; do
     [[ ! -e "$HOME/.config/systemd/user/${u}.service.d/20-start-timeout.conf" ]] \
         || fail "scenario12b-canary-timeout: bridge start-timeout drop-in for $u was not removed"
 done
-[[ -L "$pg_socket" ]] \
-    || fail "scenario12b-canary-timeout: repo-sourced 10-pg-socket.conf symlink was removed"
-ok "scenario12b-canary-timeout: install.sh removes the bridge 20-start-timeout.conf drop-ins, keeps 10-pg-socket.conf (fleet-ops#5203)"
+ok "scenario12b-canary-timeout: install.sh removes the bridge 20-start-timeout.conf drop-in (fleet-ops#5203; fleet-litellm-health-canary deleted 2026-09-18)"
 
 # --- scenario 12c: cap drop with NEWER repo mtime (fleet-ops#371) ------------
 # git checkout of a stale commit stamps the working tree now, so the #372

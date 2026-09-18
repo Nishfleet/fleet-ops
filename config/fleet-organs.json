@@ -116,17 +116,6 @@
       ]
     },
     {
-      "name": "resilience-drill",
-      "kind": "canary",
-      "heartbeat_metric": "fleet_resilience_drill_last_green_seconds",
-      "absent_alert": "ResilienceDrillAbsent",
-      "files": [
-        "bin/fleet-resilience-drill",
-        "systemd/fleet-resilience-drill.service",
-        "systemd/fleet-resilience-drill.timer"
-      ]
-    },
-    {
       "name": "gh-webhook-receiver",
       "kind": "exporter",
       "heartbeat_metric": "fleet_gh_webhook_receiver_last_green_seconds",
@@ -233,46 +222,15 @@
     {
       "name": "litellm-proxy",
       "kind": "guard",
-      "heartbeat_metric": "fleet_litellm_proxy_up",
+      "heartbeat_metric": "up{job=\"litellm\"}",
       "absent_alert": "FleetLitellmProxyAbsent",
       "files": [
         "systemd/fleet-litellm-proxy.service",
         "systemd/app-litellm.slice",
         "config/litellm-proxy.yaml",
         "libexec/fleet-litellm-prisma-compat/sitecustomize.py"
-      ]
-    },
-    {
-      "name": "litellm-postgres",
-      "kind": "guard",
-      "heartbeat_metric": "fleet_litellm_postgres_up",
-      "absent_alert": "FleetLitellmPostgresAbsent",
-      "files": [
-        "systemd/fleet-litellm-postgres.service",
-        "systemd/app-litellm-postgres.slice"
-      ]
-    },
-    {
-      "name": "litellm-redis",
-      "kind": "guard",
-      "heartbeat_metric": "fleet_litellm_redis_up",
-      "absent_alert": "FleetLitellmRedisAbsent",
-      "files": [
-        "systemd/fleet-litellm-redis.service",
-        "systemd/app-litellm-redis.slice"
-      ]
-    },
-    {
-      "name": "litellm-health-canary",
-      "kind": "canary",
-      "heartbeat_metric": "fleet_litellm_proxy_last_green_seconds",
-      "absent_alert": "FleetLitellmHealthCanaryAbsent",
-      "files": [
-        "libexec/fleet-litellm-health-canary.py",
-        "systemd/fleet-litellm-health-canary.service",
-        "systemd/fleet-litellm-health-canary.timer",
-        "systemd/fleet-litellm-health-canary.service.d/10-pg-socket.conf"
-      ]
+      ],
+      "note": "Organ death is probed directly by Prometheus over the litellm scrape job (config/prometheus.yml, 127.0.0.1:4000/metrics/). The /health canary that emitted fleet_litellm_proxy_up was deleted 2026-09-18 (2709 unit deaths in 7 days from per-minute restart-survival glue). litellm-postgres and litellm-redis were de-registered with it: their heartbeat gauges came from that canary and no exporter replaces them; the units stay live and ride the universal unit-death escalation (systemd/service.d/10-escalate.conf), and the proxy cannot serve without them, so this alert covers their death too."
     }
   ]
 }

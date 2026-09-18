@@ -438,14 +438,13 @@ remove_judge_budget_dropins() {
 # flight. The value now lives in the unit files; remove the bridge so the
 # repo unit is the only source (two sources for one value is the #5095
 # silent-contradiction bug). Remove only the 20-start-timeout.conf file,
-# never the whole dir: the repo-sourced 10-pg-socket.conf symlink in
-# fleet-litellm-health-canary.service.d must stay. Only touch it when this
-# MANIFEST installs into the live user unit dir.
+# never the whole dir. Only touch it when this MANIFEST installs into the
+# live user unit dir. (fleet-litellm-health-canary was deleted 2026-09-18.)
 remove_canary_start_timeout_dropins() {
     local user_systemd="${HOME}/.config/systemd/user"
     local u dropin
     grep -q " ${user_systemd}/" "$manifest" 2>/dev/null || return 0
-    for u in fleet-litellm-health-canary gh-webhook-canary; do
+    for u in gh-webhook-canary; do
         dropin="${user_systemd}/${u}.service.d/20-start-timeout.conf"
         if [ -e "$dropin" ] || [ -L "$dropin" ]; then
             rm -f "$dropin"

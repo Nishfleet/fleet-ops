@@ -73,13 +73,13 @@ assert [i.number for i in caught] == [1], caught
 assert sorted(i.number for i in missed) == [2, 3], missed
 
 # Cross-organ: failures for organ A must not catch incidents when the
-# caller pre-filters — stats_for_organ enforces that. The resilience
-# drill has product_repos=() (fleet-ops#3030): fleet-ops incidents are
-# attributed to NO organ, never to the drill.
+# caller pre-filters — stats_for_organ enforces that. An incident in a repo
+# no registered organ watches (fleet-ops here) is attributed to NO organ.
+# (Until 2026-09-18 fleet-resilience-drill, product_repos=(), was the
+# registered example; it was deleted with the synthetic drills.)
 events = [
     m.Event(organ="siterep-live-canary", ts=1000.0, kind="run"),
     m.Event(organ="siterep-live-canary", ts=1000.0, kind="failure"),
-    m.Event(organ="fleet-resilience-drill", ts=1000.0, kind="run"),
     # siterep never failed
 ]
 incidents = [
@@ -89,10 +89,7 @@ incidents = [
 by = {s.organ: s for s in m.compute_all(events, incidents)}
 assert by["siterep-live-canary"].caught == 1
 assert by["siterep-live-canary"].missed == 0
-assert by["fleet-resilience-drill"].caught == 0
-assert by["fleet-resilience-drill"].missed == 0
 assert abs(by["siterep-live-canary"].effectiveness_ratio - 1.0) < 1e-9
-assert by["fleet-resilience-drill"].effectiveness_ratio == 0.0
 print("OK: correlate")
 
 # Pre-observe incidents must not count as missed. Live 2026-09-04
@@ -115,13 +112,13 @@ assert by_obs["siterep-live-canary"].caught == 1, by_obs["siterep-live-canary"]
 assert by_obs["siterep-live-canary"].missed == 1, by_obs["siterep-live-canary"]
 # Pre-observe 1132 dropped; 1419 (no prior failure) missed; 1500 caught.
 # Organs with zero observed events must not inherit another organ's
-# product-repo incidents as misses (fleet-ops#1466 vs resilience-drill).
+# product-repo incidents as misses (fleet-ops#1466). No registered organ
+# watches fleet-ops, so the incident is attributed to nobody.
 by_none = {s.organ: s for s in m.compute_all(
-    [m.Event(organ="fleet-resilience-drill", ts=first_probe, kind="run")],
+    [],
     [m.Incident(repo="Nishfleet/fleet-ops", ts=first_probe - 100, number=1466)],
 )}
-assert by_none["fleet-resilience-drill"].missed == 0, by_none["fleet-resilience-drill"]
-assert by_none["fleet-resilience-drill"].caught == 0
+assert all(v.missed == 0 for v in by_none.values()), by_none
 print("OK: pre-observe")
 PY
 ok "helpers: correlate caught vs missed; organs do not cross-contaminate"
@@ -142,8 +139,6 @@ grep -q '^fleet_canary_effectiveness_last_run_seconds 1788350400$' "$FLEET_CANAR
   || fail "heartbeat epoch wrong: $(grep fleet_canary_effectiveness_last_run_seconds "$FLEET_CANARY_EFF_OUT" || echo missing)"
 grep -q 'fleet_canary_effectiveness_ratio{organ="siterep-live-canary"} 0.000000' "$FLEET_CANARY_EFF_OUT" \
   || fail "empty window must emit ratio 0 for siterep-live-canary"
-grep -q 'fleet_canary_runs_total{organ="fleet-resilience-drill"} 0' "$FLEET_CANARY_EFF_OUT" \
-  || fail "empty window must emit runs=0 for resilience-drill"
 grep -q 'fleet_canary_runs_total{organ="siterep-live-canary"} 0' "$FLEET_CANARY_EFF_OUT" \
   || fail "empty window must emit runs=0 for siterep-live-canary"
 ok "empty window emits heartbeat + per-organ zeros"
@@ -153,8 +148,8 @@ ok "empty window emits heartbeat + per-organ zeros"
 # =========================================================================
 # Window ends 2026-09-02T12:00:00Z. Place events inside 30d.
 # siterep-live-canary: failure at T-2h, bug issue 1h later → caught
-# fleet-resilience-drill: run only; the fleet-ops incident is NOT counted
-# (product_repos=(), fleet-ops#3030) → missed stays 0.
+# The fleet-ops incident is NOT counted against any organ (no registered
+# organ watches fleet-ops, fleet-ops#3030).
 python3 - <<'PY' >"$scratch/fixture.json"
 import json
 end = 1788350400  # 2026-09-02T12:00:00Z
@@ -162,7 +157,6 @@ events = [
     {"organ": "siterep-live-canary", "ts": end - 7200, "kind": "run"},
     {"organ": "siterep-live-canary", "ts": end - 7200, "kind": "failure",
      "detail": "Failed with result 'exit-code'."},
-    {"organ": "fleet-resilience-drill", "ts": end - 3600, "kind": "run"},
 ]
 incidents = [
     {"repo": "Nishfleet/siterep-public", "ts": end - 3600, "number": 101,
@@ -189,12 +183,6 @@ grep -q 'fleet_canary_effectiveness_ratio{organ="siterep-live-canary"} 1.000000'
 grep -q 'fleet_canary_failures_total{organ="siterep-live-canary"} 1' "$FLEET_CANARY_EFF_OUT" \
   || fail "siterep failures=1"
 
-grep -q 'fleet_canary_missed_regressions_total{organ="fleet-resilience-drill"} 0' "$FLEET_CANARY_EFF_OUT" \
-  || fail "resilience must not count fleet-ops incidents it does not watch (fleet-ops#3030)"
-grep -q 'fleet_canary_caught_regressions_total{organ="fleet-resilience-drill"} 0' "$FLEET_CANARY_EFF_OUT" \
-  || fail "resilience caught should be 0"
-grep -q 'fleet_canary_effectiveness_ratio{organ="fleet-resilience-drill"} 0.000000' "$FLEET_CANARY_EFF_OUT" \
-  || fail "resilience ratio should be 0"
 
 # last_failure_seconds non-zero for organs that failed
 grep -q 'fleet_canary_last_failure_seconds{organ="siterep-live-canary"} 1788343200' "$FLEET_CANARY_EFF_OUT" \

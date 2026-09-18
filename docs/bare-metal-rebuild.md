@@ -1,5 +1,11 @@
 # Bare-metal fleet rebuild runbook
 
+> **2026-09-18.** The weekly `fleet-bare-metal-rebuild-drill` (script + service + timer)
+> was deleted: no release gate read its artifact, and its only meaningful plane (the
+> fresh-OS container proof) had been silently SKIPping for want of a local ubuntu:24.04
+> image while still reporting `all_pass: true`. Run the check on demand instead:
+> `fleet-bare-metal-rebuild --manifest-check`.
+
 fleet-ops#1135. Box death during Nish's 2026-08-28..09-08 absence would page a
 human who is on vacation. This runbook and the manifest make the rebuild
 mechanical, versioned, and provable.
@@ -171,11 +177,10 @@ Run the drills:
 
 ```
 /home/nish/.local/bin/fleet-restore-drill
-/home/nish/.local/bin/fleet-resilience-drill
-/home/nish/.local/bin/fleet-bare-metal-rebuild-drill
+/home/nish/.local/bin/fleet-bare-metal-rebuild --manifest-check
 ```
 
-All three should exit 0. If `fleet-bare-metal-rebuild-drill` does not have a
+All should exit 0. If `fleet-bare-metal-rebuild --manifest-check` does not have a
 local `ubuntu:24.04` image, it will LOUD-skip the container proof; pull the
 image with `docker pull ubuntu:24.04` and rerun.
 
