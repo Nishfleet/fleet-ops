@@ -64,7 +64,6 @@ tests/fleet-metrics-export.test.sh:4
 tests/fleet-ops-3310-infra-death-class-switch.test.sh:1
 tests/fleet-restore-drill.test.sh:2
 tests/fleet-review-arm-check.test.sh:1
-tests/fleet-seat-recovery-units.test.sh:4
 tests/fleet-vibes-canary.test.sh:14
 tests/fleet-work-slice-tasksmax.test.sh:7
 tests/keystone-routing.test.sh:1

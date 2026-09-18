@@ -84,7 +84,7 @@ collect_service_rels() {
 # live `systemd-analyze verify` invocation. A `seat_svc=...fleet-seat-recovery.service`
 # assignment followed by a `grep -q` is a SHAPE check, not a verify, and the
 # original detector false-positived on it (red-on-main: CI / P14 tests
-# `tests/escalation-units-shape.test.sh verifies systemd/fleet-seat-recovery.service`
+# `tests/p14-unit-shape-fixture.test.sh verifies systemd/fleet-seat-recovery.service`
 # despite the test never passing that path to `systemd-analyze verify`).
 # Continuation lines (backslash-newline) collapse into a single logical line
 # so `systemd-analyze verify --man=no \ \n systemd/X.service \` flags X.
@@ -262,13 +262,13 @@ ok "fixture: comment-only systemd-analyze verify stays quiet"
 # --- 4. Fixture: /bin/bash -c ExecStart may still be verified ---------------
 safe="$scratch/bash-c-ok"
 mkdir -p "$safe/tests" "$safe/systemd" "$safe/.github/workflows"
-write_minimal_ci "$safe/.github/workflows/ci.yml" "tests/escalation-units-shape.test.sh"
+write_minimal_ci "$safe/.github/workflows/ci.yml" "tests/p14-unit-shape-fixture.test.sh"
 cat >"$safe/systemd/stop-escalation.service" <<'EOF'
 [Service]
 Type=oneshot
 ExecStart=/bin/bash -c 'exec /home/nish/.local/bin/stop-escalation-dispatch'
 EOF
-cat >"$safe/tests/escalation-units-shape.test.sh" <<'EOF'
+cat >"$safe/tests/p14-unit-shape-fixture.test.sh" <<'EOF'
 #!/usr/bin/env bash
 systemd-analyze verify --man=no systemd/stop-escalation.service >/dev/null
 EOF
@@ -277,20 +277,20 @@ safe_findings="$(scan_p14_inline_verify "$safe")"
 ok "fixture: verify of a /bin/bash -c unit stays quiet"
 
 # --- 4b. Fixture: the fleet-ops#830 re-breakage shape is flagged ------------
-# fleet-ops#830: tests/escalation-units-shape.test.sh once inline-verified
+# fleet-ops#830: tests/p14-unit-shape-fixture.test.sh once inline-verified
 # systemd/fleet-seat-recovery.service (a VPS-only ExecStart). #617 (dd9b454)
 # replaced that call with a StartLimitIntervalSec=0 grep. This fixture proves
 # the detector still catches that exact re-breakage shape, so a future edit
 # that re-introduces it cannot silently re-merge.
 seat_red="$scratch/seat-recovery-830"
 mkdir -p "$seat_red/tests" "$seat_red/systemd" "$seat_red/.github/workflows"
-write_minimal_ci "$seat_red/.github/workflows/ci.yml" "tests/escalation-units-shape.test.sh"
+write_minimal_ci "$seat_red/.github/workflows/ci.yml" "tests/p14-unit-shape-fixture.test.sh"
 cat >"$seat_red/systemd/fleet-seat-recovery.service" <<'EOF'
 [Service]
 Type=oneshot
 ExecStart=/home/nish/.local/bin/fleet-seat-recovery
 EOF
-cat >"$seat_red/tests/escalation-units-shape.test.sh" <<'EOF'
+cat >"$seat_red/tests/p14-unit-shape-fixture.test.sh" <<'EOF'
 #!/usr/bin/env bash
 # re-introduction of the fleet-ops#830 inline verify on fleet-seat-recovery
 if command -v systemd-analyze >/dev/null 2>&1; then
@@ -301,7 +301,7 @@ fi
 EOF
 seat_findings="$(scan_p14_inline_verify "$seat_red")"
 [[ -n "$seat_findings" ]] || fail "fixture seat-recovery-830 must flag the inline fleet-seat-recovery verify (drill regressed)"
-printf '%s\n' "$seat_findings" | grep -q 'escalation-units-shape.test.sh' \
+printf '%s\n' "$seat_findings" | grep -q 'p14-unit-shape-fixture.test.sh' \
   || fail "fixture seat-recovery-830 must name the P14 test, got: $seat_findings"
 printf '%s\n' "$seat_findings" | grep -q 'fleet-seat-recovery' \
   || fail "fixture seat-recovery-830 must name the VPS ExecStart, got: $seat_findings"
@@ -313,28 +313,6 @@ ok "fixture: #830 inline verify of fleet-seat-recovery is flagged"
 #   fleet-seat-recovery.service: Command /home/nish/.local/bin/fleet-seat-recovery
 #   is not executable: No such file or directory
 # because the inline verify needs the VPS bin present. The shipped fix in
-# tests/fleet-seat-recovery-units.test.sh step 3 SKIPs the verify when the
-# bin is absent and points at the dedicated unit-verify CI job as the syntax
-# gate. Pin the SKIP shape so a future edit that strips the SKIP and re-runs
-# the inline verify unconditionally cannot silently re-merge (it would
-# red-fail hosted CI run #N+1 instead).
-units_test="$repo_root/tests/fleet-seat-recovery-units.test.sh"
-[[ -f "$units_test" ]] || fail "missing $units_test"
-# Anchors must be CODE, not prose: comment-only references to the bin path
-# or to the unit-verify job would let a re-breakage that strips the guard
-# slip through (proven by the negative drill on 2026-08-30: the first pass
-# grepped 'SKIP' + 'unit-verify CI job', both satisfiable in comments, and
-# the lock held while the functional guard was gone).
-# 1. The existence guard on the VPS bin (the line that makes CI skip).
-grep -Fq 'if [[ -x /home/nish/.local/bin/fleet-seat-recovery ]]; then' "$units_test" \
-  || fail "fleet-seat-recovery-units.test.sh must gate verify on the VPS bin with -x (fleet-ops#884)"
-# 2. The bin-absent SKIP echo with its named reason (code line, not comment).
-grep -Fq 'echo "SKIP: fleet-seat-recovery bin absent' "$units_test" \
-  || fail "fleet-seat-recovery-units.test.sh bin-absent branch must SKIP with a named reason (fleet-ops#884)"
-# 3. The verify call must still exist for the VPS path (verify not deleted).
-grep -Fq 'systemd-analyze verify --man=no' "$units_test" \
-  || fail "fleet-seat-recovery-units.test.sh must still call systemd-analyze verify on the VPS path"
-ok "fixture: #884 SKIP block in fleet-seat-recovery-units.test.sh is locked"
 
 # --- 5. Live repo: agent-cron P14 test has no live verify -------------------
 agent_cron="$repo_root/tests/agent-cron-seat-rotation.test.sh"

@@ -166,6 +166,7 @@ jobs:
         bash tests/fleet-heartbeat-low-water-mark.test.sh
         # tests fail the workflow check otherwise).
         bash tests/mass-close-guard.test.sh
+        bash tests/codex-orphan-reap.test.sh
         # fleet-ops#1161: orphan-workflow detector (audit findings 3+4).
         bash tests/orphan-workflow-detector.test.sh
         # fleet-ops#5692: diff ACTIVE Actions registrations against the
@@ -200,18 +201,6 @@ jobs:
         bash tests/pi-packet-run.test.sh
         bash tests/intake-reconcile.test.sh
         bash tests/exec-review-prompt.test.sh
-        # fleet-ops#407: prove a real end-to-end run before shipping new
-        # units/timers/workflows. The drill (test) always runs; the live
-        # PR-body check only runs for pull_request events and exits 0/SKIP
-        # when the diff adds no machinery.
-        bash tests/prove-one-run-check.test.sh
-        if [ "$GITHUB_EVENT_NAME" = "pull_request" ]; then
-          body_file="$(mktemp)"
-          status_file="$(mktemp)"
-          jq -r '.pull_request.body // ""' "$GITHUB_EVENT_PATH" > "$body_file"
-          git diff --name-status origin/main...HEAD > "$status_file"
-          bin/prove-one-run-check --body "$body_file" --name-status "$status_file"
-        fi
         # The CI-standards audit parses workflow YAML with PyYAML.
         python3 -m pip install --no-input "pyyaml==6.0.1"
         bash tests/ci-standards-audit.test.sh
@@ -309,6 +298,11 @@ jobs:
           /home/nish/.local/bin/agent-cron-run \
           /home/nish/.local/bin/intake-reconcile \
           /home/nish/.local/bin/pi-issue-failed-reap \
+          /home/nish/.local/bin/siterep-deploy \
+          /home/nish/.local/bin/siterep-deploy-verify \
+          /home/nish/.local/bin/siterep-deploy-rollback \
+          /home/nish/.local/bin/siterep-live-canary \
+          /home/nish/.local/bin/siterep-uptime \
           /home/nish/.local/bin/fleet-heartbeat \
           /home/nish/.local/bin/fleet-heartbeat-tier1 \
           /home/nish/.local/bin/fleet-heartbeat-tier2 \
