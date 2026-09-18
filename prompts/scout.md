@@ -173,10 +173,6 @@ block is the supply bug this floor exists to prevent.
 
 From the PR list: `mergeable:CONFLICTING` or open >3 days with clear product intent. Prefer "rebase-and-land or close with evidence" issues like #911–#916, not new implementation from scratch when a PR already exists.
 
-### C. Backlog file (THIRD)
-
-Read `/home/nish/workspaces/agent-state/ci-cost-cut/backlog/backlog.md` for `queued-*` items not marked completed and not Nish-reserved. Only promote items with product user impact; skip pure billing/UI-only account settings.
-
 ## Step 3 — Issue body schema (every filed issue)
 
 Use this exact field set (quality bar: issues #911–#916 on Nishfleet/0509):

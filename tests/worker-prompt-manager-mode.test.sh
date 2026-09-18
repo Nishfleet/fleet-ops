@@ -9,7 +9,8 @@
 # ships the PR. Light issues stay flat.
 #
 # This is a prompt-only change (no new bin/ file — the issue forbids that by
-# design via research-before-build-check). The replay drill:
+# design; the stock-pieces-only rule in the section carries it now that
+# bin/research-before-build-check is deleted). The replay drill:
 #   1. grep-locks every manager-mode directive into prompts/worker.md,
 #   2. rebuilds a packet the way `lib/pi-intake-tick.sh` does (difficulty
 #      header + worker.md + TARGET) for heavy, keystone, and light, and
@@ -109,7 +110,7 @@ grep -qF 'prompts/scout-and-plan.md' "$prompt" \
 grep -qF 'does NOT re-implement any stock prompt or the plan format' "$prompt" \
   || fail "worker.md must forbid re-implementing stock prompts/plan format"
 grep -qF 'A PR that adds a new `bin/` file for this fails' "$prompt" \
-  || fail "worker.md must state a new bin/ file fails research-before-build-check"
+  || fail "worker.md must state a new bin/ file fails the stock-pieces-only rule"
 ok "constraint: stock pieces only, no new bin/"
 
 grep -qF 'Stall rule (both levels)' "$prompt" \

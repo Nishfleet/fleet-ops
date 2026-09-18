@@ -3,9 +3,11 @@
 #
 # fleet-ops#1902: pi-issue-run empty runs (stdout=0B) were benching healthy
 # seats 18x/2h. Root cause: the worker prompt (prompts/worker.md) had bloated
-# to ~45 KB with a single 22 KB line — the failed-command shape enumeration
-# that is redundant with the 20+ tests/fleet-failed-command-*.test.sh files
-# and the bin/fleet-failed-command-flagged session-close lint. Free-tier seats
+# to ~45 KB with a single 22 KB line — the failed-command shape enumeration.
+# (Both the tests/fleet-failed-command-*.test.sh files and the
+# bin/fleet-failed-command-flagged session-close lint that once carried the
+# authoritative shape list were deleted in the 2026-09-18 glue sweep; the
+# rule itself now lives only in the prompt.) Free-tier seats
 # with limited context windows returned empty completions (exit 0, stdout=0B,
 # tools=0) on the oversized packet, and pi-issue-run benched the seat for a
 # transient provider hiccup instead of a real seat fault.
@@ -40,7 +42,7 @@ worker="$repo_root/prompts/worker.md"
 PACKET_CEILING=32768
 packet_size=$( { cat "$worker"; echo; echo "TARGET: repo Nishfleet/fleet-ops issue 1902 unit pi-issue-fleet-ops-1902"; } | wc -c )
 if [[ "$packet_size" -gt "$PACKET_CEILING" ]]; then
-	fail "worker packet is ${packet_size}B, exceeds ${PACKET_CEILING}B ceiling — prompt bloat re-introduced the fleet-ops#1902 empty-run class. Trim the enumeration (the tests/fleet-failed-command-*.test.sh files + bin/fleet-failed-command-flagged lint are the authoritative shape list)."
+	fail "worker packet is ${packet_size}B, exceeds ${PACKET_CEILING}B ceiling — prompt bloat re-introduced the fleet-ops#1902 empty-run class. Trim the prose; state each rule once and do not re-enumerate failed-command shapes."
 fi
 ok "worker packet is ${packet_size}B, under ${PACKET_CEILING}B ceiling"
 
@@ -70,7 +72,11 @@ ok "longest worker.md line is ${longest}B, under ${LINE_CAP}B per-line cap"
 # regression worse than the bloat.
 grep -q 'failed command' "$worker" || fail "core 'failed command' rule missing from worker.md"
 grep -q 'no-match probe' "$worker" || fail "no-match-probe exception missing from worker.md"
-grep -q 'fleet-failed-command-flagged' "$worker" || fail "pointer to the session-close lint missing from worker.md"
-ok "core failed-command rule, no-match-probe exception, and lint pointer all present"
+# The session-close lint (bin/fleet-failed-command-flagged) was deleted in the
+# 2026-09-18 glue sweep, so the prompt no longer names it. Pin the live
+# stale-path lesson it used to backstop instead (fleet-ops#1097).
+grep -q 'cat ENOENT is never a no-match probe' "$worker" \
+	|| fail "stale-path (ENOENT is not a probe) lesson missing from worker.md"
+ok "core failed-command rule, no-match-probe exception, and stale-path lesson all present"
 
 echo "worker-prompt-size-ceiling: PASS"
