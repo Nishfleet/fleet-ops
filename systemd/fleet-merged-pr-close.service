@@ -23,18 +23,24 @@ Environment=XDG_RUNTIME_DIR=/run/user/1000
 Environment=FLEET_MERGED_PR_CLOSE_OK=1
 Environment=MERGED_PR_CLOSE_INTAKE_JSON=/home/nish/workspaces/products/fleet-ops/config/intake-repos.json
 WorkingDirectory=/home/nish
-# fleet-ops#4468: dead-conflicting-PR detector runs before the observe-to-
-# close pass. A CONFLICTING open PR whose parent issue is MERGED/CLOSED fails
-# the unit (exit 1) so OnFailure escalation pages instead of the dead branch
-# lingering until a manual sweep. No new timer: piggybacks this rail.
-# NO leading '-' on this ExecStartPre: a dead conflicting PR MUST fail the
-# unit so OnFailure escalates (systemd semantics: a '-' prefix would swallow
-# the detector's non-zero exit and the page would never fire — mirror the
-# pi-scout gate's fail-loud ExecCondition, not its futility-tracker '-').
+# The stale-conflicting-PR detector runs before the observe-to-close pass.
+# No new timer: piggybacks this rail.
+#
+# LEADING '-' (changed 2026-09-18): the detector is an ADVISORY age scan and
+# must never be the reason the merge-landing pass does not run. Its old
+# fail-loud contract (fleet-ops#4468: a CONFLICTING PR whose cited issue is
+# closed fails the unit so OnFailure pages) failed this unit 106 times in
+# 149 starts over 7 days — 96 of them on that deleted dead-PR rule, 7 on
+# conflict age, 3 on a transient `gh pr list` error — and an ExecStartPre
+# failure means ExecStart never runs, so the load-bearing landing pass was
+# skipped on 71% of ticks while ZERO failures came from the pass itself.
+# The detector's delivery is its stale-conflicting.list (read by
+# fleet-heartbeat-red-pr-repair), not its exit code. This unit now fails
+# only when the merge-landing pass itself fails.
 # Wrapped in `/bin/bash -c '...'` so the hosted-runner `systemd-analyze
 # verify` only validates `/bin/bash` (a real path on every runner); the
 # `exec ...` keeps the inner process as PID 1's child so signals propagate.
-ExecStartPre=/bin/bash -c 'exec /home/nish/.local/bin/fleet-dead-pr-detector'
+ExecStartPre=-/bin/bash -c 'exec /home/nish/.local/bin/fleet-dead-pr-detector'
 ExecStart=/bin/bash -c 'exec /home/nish/.local/bin/fleet-merged-pr-close'
 TimeoutStartSec=10min
 # Never restart: the webhook (or the backstop timer) is the retry.

@@ -12,16 +12,29 @@ if [[ -z "${GH_TOKEN:-}" && "${GITHUB_ACTIONS:-}" != "true" && "${GH:-gh}" == "g
     eval "$_minted"
     unset _wt _minted
 fi
-# fleet-dead-pr-detector — flag open CONFLICTING PRs whose parent issue is
-# already resolved (fleet-ops#4468).
+# fleet-dead-pr-detector — flag open CONFLICTING PRs whose conflict has
+# stood past a bound (fleet-ops#5205).
 #
-# The class: an open PR that GitHub reports as `mergeable: CONFLICTING` but
-# whose work was already shipped by a merged/closed fix on the default
-# branch. Nothing detects it automatically — the branch sits red until a
-# manual sweep. When its parent issue is MERGED or CLOSED the PR is dead:
-# the branch cannot merge and its work already landed.
+# DELETED 2026-09-18: the original dead class (fleet-ops#4468) — "an open
+# CONFLICTING PR whose resolved parent issue is MERGED/CLOSED is dead" —
+# is gone. A closed issue cited by a PR is EVIDENCE, not a parent: it says
+# nothing about whether the branch can land. The rule produced 96 of this
+# unit's 106 failures in the 7 days to 2026-09-18, and PR #7683 is the
+# replay — its body's first `#N` ref resolved to the unrelated issue
+# #7499 (VPS backup sizing), closed 23 minutes earlier, so a live PR was
+# published as a dead branch and the merge-landing pass behind this
+# ExecStartPre never ran.
 #
-# Parent-originating issue resolution is deterministic, exact-number only
+# The stricter signals already cover the real class and need no heuristic:
+# a genuinely dead branch is one whose PR is CLOSED (it leaves this scan,
+# which lists `--state open` only) or whose head branch is deleted on the
+# remote (which closes the PR). PR #7683 took exactly that path hours
+# later: state=CLOSED, head `fix/specgate-refusal-once` 404 on the remote.
+# Parent state is therefore never consulted as a death signal again.
+#
+# Parent-originating issue resolution (used ONLY to confirm a live parent
+# before the stale-conflicting clock runs; never to declare a PR dead) is
+# deterministic, exact-number only
 # (never substring; #11352 must not match issue 1135 — same convention as
 # fleet-merged-pr-close). The body is scrubbed BEFORE any matching — refs
 # that can never name a parent issue of the scanned repo are removed:
@@ -44,10 +57,9 @@ fi
 #   3. head branch `claim/issue-<N>`
 #   4. first bounded `#N` reference in the body (word-boundary, N >= 1,
 #      optional repo prefix accepted)
-# A CONFLICTING PR with no resolvable parent is NOT dead-classified — we
-# cannot prove a resolved parent, so it is skipped, never guessed.
+# A CONFLICTING PR with no resolvable parent is skipped, never guessed.
 #
-# Third class (fleet-ops#5205) — STALE-CONFLICTING: a decided-CONFLICTING PR
+# The one class (fleet-ops#5205) — STALE-CONFLICTING: a decided-CONFLICTING PR
 # whose parent is still OPEN is not dead, but a conflict left standing rots
 # the branch, holds the parent's claim, and feeds the red-PR repair rail a
 # failure shape no worker can fix (a conflict is not a red check). A PR
@@ -57,25 +69,13 @@ fi
 # conflict later — so the detector keeps a first-seen marker per PR under
 # its state dir (DEAD_PR_STATE_DIR, beside the red-pr-repair state) and
 # prunes it the same way that state is pruned: the instant the PR leaves
-# the class (goes MERGEABLE, dead-classifies, loses its resolvable parent,
-# or leaves the open list) the marker is dropped by the same GC pass, and
+# the class (goes MERGEABLE, loses its resolvable parent or its live
+# parent, or leaves the open list) the marker is dropped by the GC pass, and
 # the flagged list is rewritten to exactly the currently-flagged set.
 # Flagged members are also written to $STATE_DIR/stale-conflicting.list
 # (one `<repo> <pr>` line each) which fleet-heartbeat-red-pr-repair
 # consumes to suppress repair dispatches the flag has already proven
 # futile.
-#
-# Fourth class (fleet-ops#7694) — MISCITED PARENT: a CLOSED parent alone is
-# not proof the fix shipped. When the parent issue was closed BEFORE the
-# PR's newest head commit, the parent cannot have shipped this branch's
-# work — the body merely cited it (live case: PR #7683 cited #7499, a
-# backups issue closed before the branch existed, and the unit failed on
-# every tick until the PR was hand-closed). Such a PR logs
-# `miscited-parent:` + `miscited-parent-human:` and is skipped — not
-# dead-classified, not counted in dead_conflicting_prs. The guard covers
-# the CLOSED case only; a MERGED parent keeps the dead classification
-# unchanged. Gh/jq failure or empty closedAt/committedDate reads fail
-# closed (exit 2) like issue_state.
 #
 # GitHub computes mergeability asynchronously: while undecided gh returns
 # `mergeable: "UNKNOWN"` or null, and a future gh may return new values.
@@ -88,12 +88,10 @@ fi
 # `conflicting` and `unknown-mergeable`. An undecided PR is re-queried with
 # `gh pr view` — up to DEAD_PR_UNKNOWN_ATTEMPTS tries, DEAD_PR_UNKNOWN_SLEEP
 # seconds between — and only a MERGEABLE/CONFLICTING answer ends the
-# question. Still undecided after the retries, the parent decides:
-# MERGED/CLOSED parent -> DEAD-PR-UNRESOLVED, exit 2, so the sweep can never
-# read clean over a possible dead PR; OPEN parent -> logged and skipped (a
-# live parent is never dead); no resolvable parent -> logged and skipped,
-# consistent with the never-guess rule. A `gh pr view` that errors is
-# fail-closed (exit 2), never a silent pass.
+# question. Still undecided after the retries it is logged and skipped:
+# with the dead class deleted there is nothing an undecided value could
+# hide, and the stale clock only ever runs on a decided CONFLICTING value.
+# A `gh pr view` that errors is fail-closed (exit 2), never a silent pass.
 #
 # Retry budget: bounded per PR at DEAD_PR_UNKNOWN_ATTEMPTS - 1 waits of
 # DEAD_PR_UNKNOWN_SLEEP seconds (2 waits x 2s by default), and the sweep
@@ -101,21 +99,18 @@ fi
 # bound on a tick and the sweep is never silently truncated.
 #
 # Runs as ExecStartPre of the fleet-merged-pr-close unit (same rail, no new
-# timer). A found dead PR exits 1 so the unit fails and the existing
-# OnFailure escalation pages instead of the branch lingering until a manual
-# sweep.
+# timer) — with a `-` prefix: this is an advisory age scan and must never
+# be the reason the merge-landing pass does not run. Its delivery is
+# $STATE_DIR/stale-conflicting.list, which fleet-heartbeat-red-pr-repair
+# reads; the exit code matters only when it is run standalone.
 #
-# Output: one `dead-pr:` evidence line + one human line per dead PR, one
-# `stale-conflicting-pr:` evidence line + one human line per
-# stale-conflicting PR, one `miscited-parent:` evidence line + one human
-# line per miscited PR, then the `stale_conflicting_prs=<n>` measure line,
-# then the measure line `dead_conflicting_prs=<n>` as the LAST stdout line.
-# Logging is stderr only; stdout is machine-readable.
+# Output: one `stale-conflicting-pr:` evidence line + one human line per
+# stale-conflicting PR, then the `stale_conflicting_prs=<n>` measure line
+# as the LAST stdout line. Logging is stderr only; stdout is
+# machine-readable.
 #
-# Exit codes: 0 clean, 1 when at least one dead or stale-conflicting PR is
-# proven (same rail, same OnFailure page), 2 on any gh/jq infra failure or
-# on a PR whose mergeable stays undecided while its parent is MERGED/CLOSED
-# (fail-closed — never a false green).
+# Exit codes: 0 clean, 1 when at least one stale-conflicting PR is proven,
+# 2 on a gh/jq infra failure that stopped the scan.
 #
 # Environment seams (tests override all of these):
 #   GH             gh binary (mockable)
@@ -309,7 +304,6 @@ if ! printf '%s' "$prs_json" | jq -e 'type == "array"' >/dev/null 2>&1; then
 fi
 
 conflicting=0
-dead=0
 stale=0
 unknown_mergeable=0
 in_class=()
@@ -344,86 +338,25 @@ while IFS= read -r pr; do
         continue
     fi
 
-    parent="$(resolve_parent "$body" "$head")"
-
     if [ "$undecided" = "1" ]; then
-        # Still undecided after the retries: resolve the parent FIRST and
-        # let it decide, so the sweep can never read clean over a possible
-        # dead PR. Anything the parent reports that is not OPEN cannot be
-        # proven live, so it fails closed with the CLOSED/MERGED case.
-        if [ -z "$parent" ]; then
-            log "PR #$num: mergeable '$mergeable' still undecided after $UNKNOWN_ATTEMPTS tries and no resolvable parent issue — not dead-classified, skipped"
-            continue
-        fi
-        state="$(issue_state "$parent" "$num")"
-        if [ "$state" = "OPEN" ]; then
-            log "PR #$num: mergeable '$mergeable' still undecided after $UNKNOWN_ATTEMPTS tries, parent #$parent state=OPEN — live parent, not dead, skipped"
-            continue
-        fi
-        loud "DEAD-PR-UNRESOLVED" "$REPO: PR #$num mergeable '$mergeable' still undecided after $UNKNOWN_ATTEMPTS tries and parent issue #$parent is $state — possible dead conflicting branch, sweep cannot be proven clean"
-        exit 2
+        # Undecided mergeability is not a proven conflict. The stale clock
+        # only runs on a decided CONFLICTING value, and with the dead class
+        # deleted an undecided value can hide nothing — skip it.
+        log "PR #$num: mergeable '$mergeable' still undecided after $UNKNOWN_ATTEMPTS tries — no conflict proven, skipped"
+        continue
     fi
+
+    parent="$(resolve_parent "$body" "$head")"
 
     conflicting=$((conflicting + 1))
     if [ -z "$parent" ]; then
-        log "PR #$num: CONFLICTING but no resolvable parent issue — not dead-classified, skipped"
+        log "PR #$num: CONFLICTING but no resolvable parent issue — cannot confirm a live parent, skipped"
         continue
     fi
 
     state="$(issue_state "$parent" "$num")"
 
-    if [ "$state" = "MERGED" ] || [ "$state" = "CLOSED" ]; then
-        # fleet-ops#7694: a CLOSED parent alone is not proof the fix
-        # shipped — a parent closed BEFORE the PR's newest head commit
-        # cannot have shipped this branch's work, so the body merely cited
-        # it. Guard the CLOSED case only; a MERGED parent keeps the dead
-        # classification. Gh/jq failure or empty field: fail closed like
-        # issue_state.
-        if [ "$state" = "CLOSED" ]; then
-            if ! closed_json=$("$GH" issue view "$parent" -R "$REPO" --json closedAt 2>/dev/null); then
-                loud "DEAD-PR-GH" "$REPO: gh issue view #$parent (closedAt) failed for PR #$num"
-                exit 2
-            fi
-            if ! closed_at="$(printf '%s' "$closed_json" | jq -r '.closedAt // ""' 2>/dev/null)"; then
-                loud "DEAD-PR-BROKEN" "$REPO: could not read closedAt of issue #$parent (PR #$num)"
-                exit 2
-            fi
-            if [ -z "$closed_at" ]; then
-                loud "DEAD-PR-BROKEN" "$REPO: no closedAt for issue #$parent (PR #$num)"
-                exit 2
-            fi
-            if ! commits_json=$("$GH" pr view "$num" -R "$REPO" --json commits 2>/dev/null); then
-                loud "DEAD-PR-GH" "$REPO: gh pr view #$num (commits) failed"
-                exit 2
-            fi
-            if ! head_date="$(printf '%s' "$commits_json" | jq -r '[.commits[].committedDate] | max // ""' 2>/dev/null)"; then
-                loud "DEAD-PR-BROKEN" "$REPO: could not read commits of PR #$num"
-                exit 2
-            fi
-            if [ -z "$head_date" ]; then
-                loud "DEAD-PR-BROKEN" "$REPO: no committedDate for PR #$num"
-                exit 2
-            fi
-            head_epoch="$(date -u -d "$head_date" +%s 2>/dev/null)" \
-                || { loud "DEAD-PR-BROKEN" "$REPO: unparseable committedDate '$head_date' for PR #$num"; exit 2; }
-            closed_epoch="$(date -u -d "$closed_at" +%s 2>/dev/null)" \
-                || { loud "DEAD-PR-BROKEN" "$REPO: unparseable closedAt '$closed_at' for issue #$parent (PR #$num)"; exit 2; }
-            if [ "$head_epoch" -gt "$closed_epoch" ]; then
-                url="https://github.com/${REPO}/pull/${num}"
-                printf 'miscited-parent: %s %s parent=%s parent-closed=%s head-commit=%s %s\n' \
-                    "$num" "$title" "$parent" "$closed_at" "$head_date" "$url"
-                printf 'miscited-parent-human: PR #%s cites parent issue #%s, but that parent was closed (%s) before the newest commit on this branch (%s) — the parent cannot have shipped the work; a mis-citation, not a dead branch.\n' \
-                    "$num" "$parent" "$closed_at" "$head_date"
-                continue
-            fi
-        fi
-        dead=$((dead + 1))
-        url="https://github.com/${REPO}/issues/${parent}"
-        printf 'dead-pr: %s %s parent=%s parent-state=%s %s\n' \
-            "$num" "$title" "$parent" "$state" "$url"
-        printf 'dead-pr-human: PR #%s is a dead conflicting branch — parent issue #%s is %s (%s); the fix already shipped, the branch cannot merge.\n' \
-            "$num" "$parent" "$state" "$url"
-    elif [ "$state" = "OPEN" ]; then
+    if [ "$state" = "OPEN" ]; then
         # Stale-conflicting class (fleet-ops#5205): the parent is alive so
         # the PR is not dead, but a conflict that has stood past
         # STALE_HOURS is its own fault. Age comes from the first-seen
@@ -463,13 +396,17 @@ while IFS= read -r pr; do
             fi
         fi
     else
-        log "PR #$num: parent #$parent state=$state — still live, not dead"
+        # Parent not OPEN. NOT evidence the branch is dead: a PR routinely
+        # cites a closed issue. The death signals are PR-closed and
+        # head-branch-deleted, both of which remove the PR from this scan
+        # on their own (fleet-ops#4468 rule deleted 2026-09-18).
+        log "PR #$num: parent #$parent state=$state — cited issue is not a live parent, no stale clock, skipped"
     fi
 done < <(printf '%s' "$prs_json" | jq -c '.[]')
 
 # GC: a first-seen marker whose PR left the class this scan (went
-# MERGEABLE, stayed undecided, dead-classified, lost its resolvable parent,
-# or vanished from the open list) is stale state — drop it. Same
+# MERGEABLE, stayed undecided, lost its resolvable parent or its live
+# parent, or vanished from the open list) is stale state — drop it. Same
 # prune-on-class-exit path the red-pr-repair state uses beside it; the
 # flagged-list rewrite below bounds the flagged set to this scan.
 shopt -s nullglob
@@ -495,9 +432,8 @@ done
 mv "$_tmp_list" "$STATE_DIR/stale-conflicting.list"
 
 printf 'stale_conflicting_prs=%s\n' "$stale"
-printf 'dead_conflicting_prs=%s\n' "$dead"
-log "scan done: conflicting=$conflicting unknown-mergeable=$unknown_mergeable dead=$dead stale-conflicting=$stale"
-if [ "$dead" -gt 0 ] || [ "$stale" -gt 0 ]; then
+log "scan done: conflicting=$conflicting unknown-mergeable=$unknown_mergeable stale-conflicting=$stale"
+if [ "$stale" -gt 0 ]; then
     exit 1
 fi
 exit 0
