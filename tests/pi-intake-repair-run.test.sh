@@ -118,8 +118,8 @@ ok "MANIFEST installs pi-intake-repair-run"
 
 # --- canary allowlist includes this wrapper (fleet-ops#351 omission) ------
 grep -qE '^[[:space:]]+pi-intake-repair-run$' \
-    "$repo_root/bin/fleet-escalation-canary" \
-  || fail "pi-intake-repair-run missing from SANCTIONED_PI_RUNNERS in fleet-escalation-canary"
+# The SANCTIONED_PI_RUNNERS allowlist lived in bin/fleet-escalation-canary,
+# deleted with the escalation tower (glue sweep 2026-09-18).
 ok "escalation canary sanctions pi-intake-repair-run"
 
 # --- systemd-analyze verify on the unit file -------------------------------

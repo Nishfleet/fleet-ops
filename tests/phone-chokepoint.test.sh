@@ -24,7 +24,6 @@
 #   4. exactly one severity=page alert (RepairDispatchDown)
 #   5. nish-boundary-notify passes --class to hermes (the detected boundary token)
 #   6. daily-digest passes --class daily-digest to hermes
-#   7. stop-escalation-dispatch write_nish gates NISH writes to boundary classes
 #   8. no other caller reaches hermes send --urgent without --class
 set -euo pipefail
 
@@ -100,16 +99,10 @@ grep -q 'hermes send -t telegram --urgent --class evening-highlights-digest' "$r
   || fail "evening-highlights-digest must pass --class evening-highlights-digest to hermes send"
 ok "evening-highlights-digest passes --class evening-highlights-digest to hermes"
 
-# --- 7. stop-escalation-dispatch write_nish gates NISH writes ---
-grep -q '^write_nish()' "$repo_root/bin/stop-escalation-dispatch" \
-  || fail "stop-escalation-dispatch must have write_nish helper"
-grep -q 'write_nish "CAP-REACHED"' "$repo_root/bin/stop-escalation-dispatch" \
-  || fail "CAP-REACHED must route via write_nish (auditor path, not NISH)"
-grep -q 'write_nish "KILL-ESCALATION"' "$repo_root/bin/stop-escalation-dispatch" \
-  || fail "KILL-ESCALATION must route via write_nish (auditor path, not NISH)"
-grep -q 'write_nish "MONEY-BOUNDARY"' "$repo_root/bin/stop-escalation-dispatch" \
-  || fail "walled ladder must tag MONEY-BOUNDARY via write_nish"
-ok "stop-escalation-dispatch write_nish gates NISH writes to boundary classes"
+# --- 7. (removed) stop-escalation-dispatch write_nish gate — the dispatcher
+# was deleted with the escalation tower (glue sweep 2026-09-18). The
+# boundary-class gate that mattered lives in bin/nish-boundary-notify,
+# asserted in section 5 above.
 
 # --- 8. no other caller reaches hermes send --urgent without --class ---
 # Scan bin/ and libexec/ for any send --urgent call (literal "hermes send" or

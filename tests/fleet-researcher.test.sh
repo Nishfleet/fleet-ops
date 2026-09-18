@@ -430,8 +430,7 @@ if command -v systemd-analyze >/dev/null 2>&1; then
   ok "systemd-analyze verify accepts fleet-researcher.service"
 fi
 
-grep -F 'fleet-researcher-run' "$repo_root/bin/fleet-escalation-canary" >/dev/null \
-  || fail "fleet-researcher-run must be on SANCTIONED_PI_RUNNERS"
-ok "SANCTIONED_PI_RUNNERS includes fleet-researcher-run"
+# The SANCTIONED_PI_RUNNERS allowlist lived in bin/fleet-escalation-canary,
+# deleted with the escalation tower (glue sweep 2026-09-18).
 
 ok "fleet-ops#458 researcher role: contract, triggers, dispatch, drills, heartbeat wiring"
