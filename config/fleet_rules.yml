@@ -189,10 +189,17 @@ groups:
       # silently never fire. A ProductDown written here was exactly that broken
       # instant comparison, and is deleted rather than left as false coverage.
 
-      # The three rules above have exactly one producer. If it stops, they all
-      # read as healthy forever — so the producer's own freshness is a rule.
+      # The rules above have exactly one producer. If it stops, they read as
+      # healthy forever — so the producer's own freshness is a rule.
+      #
+      # NOTE the regex: node_exporter labels textfiles with their FULL PATH
+      # (file="/var/lib/prometheus/node-exporter/fleet.prom"), not the basename.
+      # An exact file="fleet.prom" matcher — which is what these two rules
+      # shipped with for about two hours on 2026-09-18 — matches nothing, so
+      # FleetProbeMissing fires forever and FleetProbeStale can never fire at
+      # all. Caught by the first real daily-digest run reporting it.
       - alert: FleetProbeStale
-        expr: (time() - node_textfile_mtime_seconds{file="fleet.prom"}) > 1200
+        expr: (time() - node_textfile_mtime_seconds{file=~".*/fleet\\.prom"}) > 1200
         for: 5m
         labels:
           severity: critical
@@ -202,7 +209,7 @@ groups:
           description: "fleet-metrics-export.timer runs every 5 minutes. While it is stale, FleetMainRed, ProductDown and FleetPrepaidCreditsLow cannot fire. Repair: systemctl --user status fleet-metrics-export.service."
 
       - alert: FleetProbeMissing
-        expr: absent(node_textfile_mtime_seconds{file="fleet.prom"})
+        expr: absent(node_textfile_mtime_seconds{file=~".*/fleet\\.prom"})
         for: 10m
         labels:
           severity: critical
