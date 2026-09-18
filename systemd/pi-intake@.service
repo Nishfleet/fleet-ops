@@ -1,32 +1,27 @@
 [Unit]
 Description=Pi fleet issue intake tick for Nishfleet/%i
 OnFailure=pi-intake-repair@%i.service
-# Retry ladder is systemd's own; StartLimit* must live in [Unit].
 StartLimitIntervalSec=1h
-# fleet-ops#3695: worker-exit top-ups (pi-issue@.service ExecStopPost) start
-# this unit up to once per debounce window (60 s). At 8/h the start limit
-# tripped on a busy hour and silenced the timer tick with it.
+# Worker-exit top-ups (pi-issue@.service ExecStopPost) start this unit up to
+# once per finishing worker; 90/h keeps a busy hour from silencing the timer.
 StartLimitBurst=90
 
 [Service]
-Type=simple
+# Second cut 2026-09-18: the tick IS this unit. prompts/intake.md tells Pi to
+# label, order, claim and spawn; the 3,320-line lib/pi-intake-tick.sh that did
+# the same thing deterministically is gone, as is the bin/pi-intake-run flock
+# (systemd already refuses to run two starts of one unit instance at once) and
+# bin/pi-packet-run's seat rotation (the `worker-cheap` LiteLLM group is the
+# router, and it is the group pi-packet-run resolved to anyway).
+Type=oneshot
+Environment=HOME=/home/nish
+Environment=PATH=/home/nish/.local/bin:/usr/local/bin:/usr/bin:/bin
+Environment=XDG_RUNTIME_DIR=/run/user/1000
+WorkingDirectory=/home/nish
+# One cheap gh call decides whether to spend a seat at all. Exit 255 on a gh
+# fault so systemd records a failure instead of skipping quietly.
+ExecCondition=/bin/sh -c 'out=$$(gh issue list -R Nishfleet/%i -l agent-ready --json number -L 1 2>&1) || { echo "gh failed: $$out" >&2; exit 255; }; [ "$$out" != "[]" ]'
+ExecStart=/bin/sh -c '{ cat "$HOME/.pi/agent/prompts/intake.md"; echo; echo "TARGET REPO: Nishfleet/%i"; } | exec pi --print --provider litellm --model worker-cheap'
+TimeoutStartSec=1800
 Restart=on-failure
 RestartSec=20
-RuntimeDirectory=pi-intake-%i
-Environment=PATH=/home/nish/.local/bin:/usr/local/bin:/usr/bin:/bin
-WorkingDirectory=/home/nish
-ExecCondition=/bin/sh -c 'out=$$(gh issue list -R Nishfleet/%i -l agent-ready --json number -L 1 2>&1) || { echo "gh failed: $$out" >&2; exit 255; }; [ "$$out" != "[]" ]'
-# Seat rotation is pi-packet-run's documented job ("Pick a DIFFERENT seat on
-# each restart"), and the retry ladder is systemd's own Restart=/RestartSec=/
-# StartLimitBurst=. Nothing here is hand-rolled: ExecStartPre builds the packet,
-# pi-packet-run picks the seat, systemd owns the retries.
-#
-# A pinned --provider minimax previously died with HTTP 429 on every repo when
-# MiniMax hit its 5h rolling window (2026-08-25), stalling the whole fleet
-# while healthy seats sat unused.
-#
-# pi-intake-run holds an exclusive flock so a manual `systemctl start` racing
-# the timer is a no-op instead of a second tick (fleet-ops#26).
-ExecStartPre=/bin/sh -c '{ cat /home/nish/.pi/agent/prompts/intake.md; echo; echo "TARGET REPO: Nishfleet/%i"; } > %t/pi-intake-%i/intake-%i.pkt'
-ExecStart=/home/nish/.local/bin/pi-intake-run %i
-TimeoutStartSec=1800

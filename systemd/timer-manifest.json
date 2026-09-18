@@ -51,7 +51,6 @@
       "source": "repo"
     },
     "fleet-heartbeat.timer": {
-      "reason": "Orchestrator continuity across interactive-session restarts \u2014 event notifications die with sessions; this timer survives every session exit. fleet-ops#3270: cadence 15->60 min; the three GitHub-reading sections (lifecycle-label-sweep, merged-pr-close, close-duplicates) moved behind webhook triggers, so the heartbeat keeps only host-local sections (deploy, queue, reclaim, failed-unit recovery, RAM, seat-health, canaries)",
       "classification": "scheduled",
       "cadence": "60min",
       "source": "repo"
@@ -110,18 +109,6 @@
       "cadence": "5min",
       "source": "repo"
     },
-    "intake-reconcile.timer": {
-      "reason": "30-min backstop for intake reconciler \u2014 path unit handles synchronous file-change trips; this timer catches missed mtime bumps or masked path units",
-      "classification": "scheduled",
-      "cadence": "30min",
-      "source": "repo"
-    },
-    "lifecycle-label-sweep.timer": {
-      "reason": "fleet-ops#3270: hourly backstop for the lifecycle-label sweep. Webhooks (issues/opened + issues/labeled via gh-webhook-receiver) are the primary trigger; this timer catches webhooks that never arrive. The sweep is idempotent (only relabels unlabeled), so a webhook + timer double-fire dedupes naturally",
-      "classification": "scheduled",
-      "cadence": "hourly",
-      "source": "repo"
-    },
     "interactive-session-reap.timer": {
       "reason": "Hourly stale-interactive-session reaper \u2014 idle age is a clock fact, not an event; hourly is proportionate to measured 8h idle threshold",
       "classification": "scheduled",
@@ -141,7 +128,6 @@
       "source": "repo"
     },
     "pi-intake@.timer": {
-      "reason": "Template timer for pi-intake instances \u2014 instantiated per repo by intake-reconcile",
       "classification": "template",
       "cadence": "15min",
       "source": "repo"
@@ -153,25 +139,21 @@
       "source": "repo"
     },
     "pi-intake@0509-telemetry.timer": {
-      "reason": "Pi issue intake for 0509-telemetry \u2014 instantiated by intake-reconcile from config/intake-repos.json",
       "classification": "scheduled",
       "cadence": "15min",
       "source": "repo"
     },
     "pi-intake@aiconverter-app.timer": {
-      "reason": "Pi issue intake for aiconverter-app \u2014 instantiated by intake-reconcile from config/intake-repos.json",
       "classification": "scheduled",
       "cadence": "15min",
       "source": "repo"
     },
     "pi-intake@context-hub.timer": {
-      "reason": "Pi issue intake for context-hub \u2014 instantiated by intake-reconcile from config/intake-repos.json",
       "classification": "scheduled",
       "cadence": "15min",
       "source": "repo"
     },
     "pi-intake@egress-probe.timer": {
-      "reason": "Pi issue intake for egress-probe \u2014 instantiated by intake-reconcile from config/intake-repos.json",
       "classification": "scheduled",
       "cadence": "15min",
       "source": "repo"
@@ -183,31 +165,26 @@
       "source": "repo"
     },
     "pi-intake@inish-site.timer": {
-      "reason": "Pi issue intake for inish-site \u2014 instantiated by intake-reconcile from config/intake-repos.json",
       "classification": "scheduled",
       "cadence": "15min",
       "source": "repo"
     },
     "pi-intake@tinystudio-in.timer": {
-      "reason": "Pi issue intake for tinystudio-in \u2014 instantiated by intake-reconcile from config/intake-repos.json",
       "classification": "scheduled",
       "cadence": "15min",
       "source": "repo"
     },
     "pi-intake@TinyStudio.io-public.timer": {
-      "reason": "Pi issue intake for TinyStudio.io-public \u2014 instantiated by intake-reconcile from config/intake-repos.json",
       "classification": "scheduled",
       "cadence": "15min",
       "source": "repo"
     },
     "pi-intake@TinyStudio.io.timer": {
-      "reason": "Pi issue intake for TinyStudio.io \u2014 instantiated by intake-reconcile from config/intake-repos.json",
       "classification": "scheduled",
       "cadence": "15min",
       "source": "repo"
     },
     "pi-intake-repair@.timer": {
-      "reason": "Template repair timer for pi-intake instances \u2014 instantiated per repo by intake-reconcile",
       "classification": "template",
       "cadence": "on-failure",
       "source": "repo"
@@ -261,7 +238,6 @@
       "source": "repo"
     },
     "pi-scout@.timer": {
-      "reason": "Template timer for pi-scout instances \u2014 instantiated per repo by intake-reconcile",
       "classification": "template",
       "cadence": "4h",
       "source": "repo"
@@ -279,7 +255,6 @@
       "source": "repo"
     },
     "pi-scout-repair@.timer": {
-      "reason": "Template repair timer for pi-scout instances \u2014 instantiated per repo by intake-reconcile",
       "classification": "template",
       "cadence": "on-failure",
       "source": "repo"

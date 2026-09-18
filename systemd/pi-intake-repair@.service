@@ -11,5 +11,5 @@ WorkingDirectory=/home/nish
 # previously died with HTTP 429 while healthy seats sat unused (fleet-ops#138).
 # /bin/bash -c exec keeps systemd-analyze verify from needing a new CI stub
 # (same shape as pi-scout@.service / pi-scout-repair@.service).
-ExecStart=/bin/bash -c 'exec /home/nish/.local/bin/pi-intake-repair-run %i'
+ExecStart=/bin/sh -c '{ cat "$HOME/.pi/agent/prompts/intake-repair.md"; echo; echo "TARGET REPO: Nishfleet/%i"; } | exec pi --print --provider litellm --model worker-cheap'
 TimeoutStartSec=1800

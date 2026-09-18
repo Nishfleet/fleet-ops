@@ -77,7 +77,6 @@ jobs:
         bash tests/intake-repos-shape.test.sh
         bash tests/intake-repos-path-resolution.test.sh
         bash tests/worker-token-fail-closed.test.sh
-        bash tests/pi-issue-run-resume-on-provider-death.test.sh
         bash tests/pi-transport-check.test.sh
         bash tests/minimax-token-refresh.test.sh
         bash tests/seat-credentials-bad-replay.test.sh
@@ -96,46 +95,32 @@ jobs:
         bash tests/pi-packet-guard.test.sh
         bash tests/fleet-work-supply-canary.test.sh
         bash tests/pi-systemd-run.test.sh
-        bash tests/pi-intake-run.test.sh
         bash tests/prior-art-claim-check.test.sh
         bash tests/scout-futility.test.sh
         bash tests/pi-audit-tally-epic-guard.test.sh
         bash tests/pi-audit-tally-escalate-senior.test.sh
         bash tests/pi-audit-tally-question.test.sh
         bash tests/pi-audit-tally-skip-exhausted.test.sh
-        bash tests/pi-issue-start.test.sh
-        bash tests/pi-issue-start-packet-regen.test.sh
         bash tests/worker-prompt-size-ceiling.test.sh
-        bash tests/pi-issue-failed-reap.test.sh
         # fleet-ops#2133: reclaim cooldown + stale-claim release break the
         # spawn-die-respawn wedge (reaper writes cooldown marker, intake
         # skips for 15min, stale claims with no live worker/PR are released).
-        bash tests/pi-issue-failed-reap-cooldown.test.sh
-        bash tests/pi-intake-tick-reclaim-cooldown.test.sh
         bash tests/claim-pr-head-owner.test.sh
-        bash tests/pi-intake-tick-difficulty-from-issue.test.sh
         # fleet-ops#4808: intake honors a `depends-on:` line in a ticket body
         # and never claims a ticket whose named dependencies are not
         # merged/closed (the 0509 seam batch had to be hand-gated).
-        bash tests/pi-intake-tick-depends-on.test.sh
         # fleet-ops#5165: intake also honors the ticket's own
         # `collision-gate:` line — never claim a ticket whose named
         # same-file blockers are still open.
-        bash tests/pi-intake-tick-collision-gate.test.sh
         # fleet-ops#5238: the auto-merge arm refuses gate-path PRs whose
         # advisory gate-integrity check is not green (#5207 escaped this
         # way).
         bash tests/gate-arm-guard.test.sh
-        bash tests/pi-intake-topup.test.sh
-        bash tests/pi-intake-tick-scout-on-empty.test.sh
         bash tests/blocked-reconcile-large-issue-json.test.sh
-        bash tests/pi-intake-tick-land-or-close-park.test.sh
         # fleet-ops#5048: park the protected + no-termination + no-claim-PR
         # cell when a named user timer/service is active or a merged
         # non-claim-branch PR delivered the work (live case #4891).
-        bash tests/pi-intake-tick-protected-delivered-park.test.sh
         bash tests/fleet-console-pi-utc.test.sh
-        bash tests/pi-issue-run-session-error-feed.test.sh
         # Devin message rate limit = pause + in-session resume, never a worker
         # death (114 deaths/24h on that one message, 2026-09-11).
         bash tests/devin-provider-rate-limit-retry.test.sh
@@ -168,7 +153,6 @@ jobs:
         # fleet-ops#153: lock the product-vs-control-plane throughput split.
         bash tests/fleet-heartbeat-throughput-split.test.sh
         # fleet-ops#153: lock the 0509 scout packet-assembly contract.
-        bash tests/pi-scout-packet-assembly.test.sh
         bash tests/fleet-heartbeat-low-water-mark.test.sh
         # tests fail the workflow check otherwise).
         bash tests/mass-close-guard.test.sh
@@ -202,8 +186,6 @@ jobs:
         # push .github/workflows/**; this is an admin-lane push, not a Nish
         # decision. All four verified rc=0 on origin/main 46cd075 before add.
         bash tests/heartbeat-watchman.test.sh
-        bash tests/pi-packet-run.test.sh
-        bash tests/intake-reconcile.test.sh
         bash tests/exec-review-prompt.test.sh
         # The CI-standards audit parses workflow YAML with PyYAML.
         python3 -m pip install --no-input "pyyaml==6.0.1"
@@ -295,12 +277,7 @@ jobs:
         # verify unit-file SYNTAX only. Collect all failures, then exit.
         for p in \
           /home/nish/.local/bin/pi \
-          /home/nish/.local/bin/pi-issue-run \
-          /home/nish/.local/bin/pi-packet-run \
-          /home/nish/.local/bin/pi-intake-run \
           /home/nish/.local/bin/agent-cron-run \
-          /home/nish/.local/bin/intake-reconcile \
-          /home/nish/.local/bin/pi-issue-failed-reap \
           /home/nish/.local/bin/siterep-deploy \
           /home/nish/.local/bin/siterep-deploy-verify \
           /home/nish/.local/bin/siterep-deploy-rollback \

@@ -10,14 +10,11 @@ WorkingDirectory=/home/nish
 # Same wrapper as pi-scout@.service: pick_seat, fail loud when every seat
 # is walled. Do not pin --provider here — a hardcoded repair seat is how
 # this unit sat activating on quota_exhausted glm-5-2 (fleet-ops#130).
-ExecStart=/bin/bash -c 'exec /home/nish/.local/bin/pi-scout-run %i scout-repair'
-# 75 = pi-scout-run's "no usable seat" SKIP (saturated pool), same reserved
+ExecStart=/bin/sh -c '{ cat "$HOME/.pi/agent/prompts/scout-repair.md"; echo; echo "TARGET REPO: Nishfleet/%i"; } | exec pi --print --provider litellm --model worker-cheap'
 # code pi-scout@.service already carries. Without this the repair unit was
 # marked FAILED for a non-fault and the unit-escalation@%n drop-in wrote a
 # STOP-REASON per SKIP, which invited another retry into the same saturated
-# pool (fleet-ops#5071). Only this one reserved code — real failures still
 # escalate.
-SuccessExitStatus=75
 # fleet-ops#6577: this hop is the chain terminal. pi-scout@'s OnFailure
 # summons THIS unit only after the scout's own ExecStopPost futility-end has
 # run, so a provider wall that killed both hops used to end with two failed

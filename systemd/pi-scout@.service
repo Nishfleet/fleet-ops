@@ -1,36 +1,22 @@
 [Unit]
-Description=Pi fleet product scout for Nishfleet/%i (work supply for autonomous lanes; event-driven intake exists for claiming, but generation needs periodic product inspection)
+Description=Pi fleet product scout for Nishfleet/%i (generates work supply)
 OnFailure=pi-scout-repair@%i.service
 
 [Service]
+# Second cut 2026-09-18: the scout IS this unit. bin/pi-scout-run's packet
+# assembly + pick-seat is replaced by piping prompts/scout.md into the
+# `worker-cheap` LiteLLM group directly — the same group pick-seat resolved to.
+# The old ExecCondition (fleet-work-supply-canary) and the
+# ExecStartPre/ExecStopPost pair (scout-futility-check) were fleet
+# self-monitoring wrapped around the scout; over 7 days they failed more often
+# than they succeeded (fleet-ops 241 started/184 failed, 0509 199/201), which is
+# a gate that costs more work than it saves. Gone with the rest of the glue.
 Type=oneshot
+Environment=HOME=/home/nish
 Environment=PATH=/home/nish/.local/bin:/usr/local/bin:/usr/bin:/bin
+Environment=XDG_RUNTIME_DIR=/run/user/1000
 WorkingDirectory=/home/nish
-# fleet-ops#540: rest when remaining work is >= 24h at the measured drain
-# rate; run when below that. A hardcoded issue count (the old `-lt 12`)
-# treated 1 issue as 1 hour and blocked go-ham while a fast drain still
-# had <12h of work. Missing helper is 255 so systemd does not skip-quiet.
-# /bin/bash -c keeps systemd-analyze verify from needing the dest in CI.
-ExecCondition=/bin/bash -c 'bin=/home/nish/.local/bin/fleet-work-supply-canary; if [ ! -x "$$bin" ]; then echo "work-supply-gate missing" >&2; exit 255; fi; exec "$$bin" gate %i'
-# fleet-ops#454: snapshot the agent-ready buffer around the scout so a
-# green run that files nothing cannot loop quietly. Leading '-' so a
-# tracker fault never skips the scout or trips OnFailure repair.
-ExecStartPre=-/bin/bash -c 'exec /home/nish/.local/bin/scout-futility-check begin %i'
-# Seat rotation is pi-scout-run's job (pick_seat). A pinned --provider
-# previously died with HTTP 429 while healthy seats sat unused (fleet-ops#130).
-# /bin/bash -c exec keeps systemd-analyze verify from needing a new CI stub
-# (same shape as stop-escalation.service / unit-escalation@.service).
-ExecStart=/bin/bash -c 'exec /home/nish/.local/bin/pi-scout-run %i scout'
-# 75 = pi-scout-run's "no usable seat" SKIP (saturated pool: the claim workers
-# won the seat race). Without this the unit went FAILED and OnFailure summoned
-# pi-scout-repair@%i for a non-fault, which failed identically. Not a
-# SuccessExitStatus fudge of real errors: only this one reserved code.
-SuccessExitStatus=75
-ExecStopPost=-/bin/bash -c 'exec /home/nish/.local/bin/scout-futility-check end %i'
-# 10800s (3h): #4450 raised scout workload 5x (label_budget 8->40) but this
-# budget stayed 3600 — every tick died 143/'timeout' at 1h mid-turn for 8+
-# days (2026-09-13 wedge: 2x-slow lane, turns 13-22min). A 5400 bridge was
-# PROVEN insufficient (run H died AT 5400s mid-turn, no PACKET-VERDICT);
-# repair's numbers: 60-110min need, 8 turns = 176min. 10800 = 1.6x worst-need,
-# fits the 4h OnCalendar cadence; retires the hand-placed .d bridge (#4547 class).
+ExecStart=/bin/sh -c 'GH_TOKEN=$(worker-token --print); export GH_TOKEN; { cat "$HOME/.pi/agent/prompts/scout.md"; echo; echo "TARGET REPO: Nishfleet/%i"; } | exec pi --print --provider litellm --model worker-cheap'
+# 3h: measured scout turns run 13-22 min across 8 turns; 10800 is 1.6x the
+# worst measured need and still fits inside the 4h OnCalendar cadence.
 TimeoutStartSec=10800

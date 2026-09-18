@@ -1,38 +1,31 @@
 [Unit]
 Description=Pi fleet issue worker %i
-# P4-A: seat rotation on retry. pi-issue-run picks a DIFFERENT seat on each
-# Restart=, so a timeout on devin/swe-1-7 lands the next try on cursor or
-# cline instead of repeating the failing call. systemd's own retry policy
-# (RestartSec / RestartSteps / StartLimitBurst) drives the timing.
+# Second cut 2026-09-18: this unit IS the worker. There is no wrapper script.
+# ExecStart assembles the prompt and pipes it into `pi --print`. Everything the
+# old bin/pi-issue-run (1,542 lines) did is either systemd's job or the LiteLLM
+# proxy's job:
+#   - retries / backoff / hang-kill  -> Restart=, RestartSec=, TimeoutStartSec=
+#   - seat rotation / fallback       -> the `worker-cheap` LiteLLM group. That
+#     group is what the old wrapper resolved to anyway (pi-packet-run called
+#     litellm_seat "worker-cheap"), so calling the proxy directly removes a
+#     layer without removing a capability.
+#   - verdict parsing                -> the packet-verdict + stop-judge Pi
+#     extensions, already loaded (EXTLOAD-OK on every run).
+# The old .in packet file is gone with the wrapper, and with it the entire
+# 208/STDIN failure class (fleet-ops#1451) and the ConditionPathExists guard:
+# a prompt that is built at ExecStart time can never be missing.
 OnFailure=pi-issue-failed@%i.service
 StartLimitIntervalSec=1h
 StartLimitBurst=3
-# fleet-ops#1451: systemd opens StandardInput=file BEFORE ExecStartPre runs,
-# so a missing .in packet (archived by the reaper while the claim branch
-# survived) makes the unit fail 208/STDIN — which trips OnFailure and
-# unit-escalation on every restart-ladder step and every re-dispatch.
-# ConditionPathExists is checked BEFORE stdin setup: a missing .in makes the
-# start a clean SKIP (no failure, no OnFailure, no escalation). The dispatch
-# path (pi-issue-start, fleet-heartbeat-red-pr-repair) regenerates the .in
-# before starting, so a skip here means the dispatcher raced a not-yet-
-# regenerated packet and the next tick retries cleanly.
-ConditionPathExists=/home/nish/.local/state/pi-issues/%i.in
 
 [Service]
-# Per-worker memory caps, restored from the pre-2026-08-23 lane-manager
-# design (lane-manager.py:108 'RAM is the binding resource - which the
-# launch floor (MIN_FREE_RAM_MB) and per-worker MemoryHigh=3G/Max=6G
-# already govern'). systemd's own cgroup controls: High throttles and
-# reclaims, Max is the hard stop. Measured MemoryPeak n=14: median 1.28G,
-# max 4.8G - so 3G throttles the tail without killing normal work.
+# Per-worker memory caps (cgroup, systemd's own). Measured MemoryPeak n=14:
+# median 1.28G, max 4.8G — 3G throttles the tail without killing normal work.
 MemoryAccounting=yes
 MemoryHigh=3G
 MemoryMax=6G
 # fleet-ops#3611: never let a runaway worker thrash swap and OOM unrelated
-# fleet units. MemorySwapMax=0 keeps the worker inside its cgroup: when it
-# exceeds MemoryMax it is OOM-killed locally instead of spilling to swap and
-# starving the whole host (systemd-oomd killed codex-remote-control,
-# fleet-deploy-check and an ephemeral Chromium scope on 2026-09-05).
+# units. Exceeding MemoryMax is a local OOM kill, not a host-wide stall.
 MemorySwapMax=0
 Type=oneshot
 Environment=HOME=/home/nish
@@ -40,48 +33,26 @@ Environment=PATH=/home/nish/.local/bin:/usr/local/bin:/usr/bin:/bin
 Environment=XDG_RUNTIME_DIR=/run/user/1000
 Environment=PI_UNIT_INSTANCE=%i
 WorkingDirectory=/home/nish
-StandardInput=file:/home/nish/.local/state/pi-issues/%i.in
-StandardOutput=file:/home/nish/.local/state/pi-issues/%i.out
-StandardError=file:/home/nish/.local/state/pi-issues/%i.err
-# ExecStart = seat-rotation wrapper. Mirrors pi-packet-run. %i is the unit
-# instance name (e.g. 0509-915); the wrapper reads its packet + tries from
-# state and rotates seat via pick_seat on every restart.
-ExecStart=/home/nish/.local/bin/pi-issue-run %i
-
-# fleet-ops#1204: bank a dirty issue worktree when this worker dies.
-# issue-%i is the intake worktree contract (prompts/worker.md).
-Environment=PI_SALVAGE_WORKDIR=/home/nish/workspaces/agent-worktrees/issue-%i
-Environment=PI_SALVAGE_UNIT=pi-issue-%i
-Environment=PI_SALVAGE_PACKET=/home/nish/.local/state/pi-issues/%i.in
-# Leading '-' so a missing binary (pre-deploy, or hosted systemd-analyze
-# which cannot stub this path) cannot wedge the worker stop path.
-ExecStopPost=-/home/nish/.local/bin/pi-salvage-worktree
-# fleet-ops#3695: continuous top-up. The intake timer ticks every 20 min and
-# a cohort of workers finishes inside ~10 min, so half of every window sat
-# idle next to ready work (2026-09-05T15:56Z: 0 workers, 72 agent-ready). A
-# finishing worker asks its own repo's intake for a refill; the tick's flock
-# plus its debounce (lib/pi-intake-tick.sh) coalesce a cohort into ONE tick.
-# Instance is <repo>-<issue>; the repo is everything before the last '-'
-# ($$ and %% are systemd escapes for a literal $ and %). --no-block: never
-# wait on intake inside a worker's stop path; '-' so it can never wedge it.
-ExecStopPost=-/bin/sh -c 'i=%i; systemctl --user start --no-block "pi-intake@$${i%%-*}.service"'
-# Glue sweep 2026-09-18: every worker start writes a per-instance drop-in dir
-# (memory.conf from pi-issue-start / lib/pi-intake-tick.sh, fleet-ops#1558),
-# and nothing ever removed it — 2,512 orphan *.d dirs (23MB) had accumulated
-# back to issue 527, re-read on every daemon-reload. The write is load-bearing
-# (it is the per-repo/per-difficulty memory cap), so the cleanup lives here in
-# the unit's own stop path rather than in a new sweeper organ.
-# Only on SERVICE_RESULT=success: on a failure systemd restarts the unit
-# without going through pi-issue-start, so the cap must survive the retry
-# ladder. The terminal-failure residue is cleared by pi-issue-failed@.service.
-ExecStopPost=-/bin/sh -c '[ "$$SERVICE_RESULT" = success ] && rm -rf "$$HOME/.config/systemd/user/%n.d"'
+# %i is <repo>-<issue>. sed splits it without any '%' in the script body, so
+# systemd never sees an unknown specifier. worker-token mints the ≤1h
+# nishfleet-worker App token (RS256 JWT over the App private key) — the one
+# step here that is neither systemd's nor Pi's: a worker must not push as Nish.
+# An empty mint fails the unit rather than silently falling back to human auth.
+ExecStart=/bin/sh -c 'set -e; i="$1"; r=$(echo "$i" | sed "s/-[0-9][0-9]*$//"); n=$(echo "$i" | sed "s/.*-//"); GH_TOKEN=$(worker-token --print); [ -n "$GH_TOKEN" ] || { echo "worker-token mint failed — refusing human-gh fallback" >&2; exit 1; }; export GH_TOKEN; { cat "$HOME/.pi/agent/prompts/worker.md"; echo; echo "TARGET: repo Nishfleet/$r issue $n unit pi-issue-$i"; } | exec pi --print --provider litellm --model worker-cheap' sh %i
+# The worker created its own worktree; the worker's own unit cleans it up.
+# No reaper, no salvage organ: work that was never committed and pushed did not
+# happen, and the next dispatch starts from origin/main. Leading '-' so cleanup
+# can never wedge the stop path.
+ExecStopPost=-/bin/sh -c 'w="$HOME/workspaces/agent-worktrees/issue-$1"; for g in "$HOME/workspaces/tooling/fleet-ops-deploy-clone" "$HOME/workspaces/products/0509" "$HOME/workspaces/products/fleet-ops"; do git -C "$g" worktree remove --force "$w" >/dev/null 2>&1 || true; done; rm -rf "$w"' sh %i
+# fleet-ops#3695: a finishing worker asks its own repo's intake for a refill,
+# so a cohort that drains in 10 min does not leave the rest of the window idle.
+ExecStopPost=-/bin/sh -c 'r=$(echo "$1" | sed "s/-[0-9][0-9]*$//"); systemctl --user start --no-block "pi-intake@$r.service"' sh %i
 TimeoutStopSec=180
 
-# Retry policy - systemd's own, not a counter in bash.
+# Retry policy — systemd's own, not a counter in bash.
 Restart=on-failure
 RestartSec=240
 RestartSteps=3
 RestartMaxDelaySec=30min
 # Hang detection: a worker active longer than this is terminated into `failed`.
-# (TimeoutStartSec, not RuntimeMaxSec: systemd ignores RuntimeMaxSec on Type=oneshot.)
 TimeoutStartSec=45min

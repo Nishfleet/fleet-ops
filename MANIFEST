@@ -214,8 +214,6 @@ template/agents/reviewer.md /home/nish/.pi/agent/agents/reviewer.md
 template/agents/scout.md /home/nish/.pi/agent/agents/scout.md
 template/agents/worker.md /home/nish/.pi/agent/agents/worker.md
 bin/pi-transport-check /home/nish/.local/bin/pi-transport-check
-bin/pi-issue-run /home/nish/.local/bin/pi-issue-run
-bin/pi-issue-failed-reap /home/nish/.local/bin/pi-issue-failed-reap
 bin/pi-systemd-run /home/nish/.local/bin/pi-systemd-run
 # fleet-ops#5444: OnFailure handler for retry-exhausted packets — triage +
 # findings-ledger + agent-ready re-queue for --deliverable runs.
@@ -277,23 +275,18 @@ systemd/fleet-metrics-export.service.d/intake-effectiveness.conf /home/nish/.con
 # as a new organ — the exporter already runs every 5 min.
 lib/fleet-product-slo.py /home/nish/.local/lib/pi-packet/fleet-product-slo.py
 systemd/fleet-metrics-export.service.d/product-slo.conf /home/nish/.config/systemd/user/fleet-metrics-export.service.d/product-slo.conf
-bin/pi-intake-run /home/nish/.local/bin/pi-intake-run
 # fleet-ops#379: mechanical intake priority. critical-path (and
 # escalate-senior, which implies it) claims before the agent-ready tail;
 # a 2/3 claim-ratio guard stops the tail starving. The prompt calls this
 # binary; do not re-introduce issue-number order.
 bin/pi-intake-priority /home/nish/.local/bin/pi-intake-priority
 lib/intake-priority.sh /home/nish/.local/lib/pi-packet/intake-priority.sh
-bin/pi-packet-run /home/nish/.local/bin/pi-packet-run
-bin/pi-issue-start /home/nish/.local/bin/pi-issue-start
 bin/pi-packet-guard /home/nish/.local/bin/pi-packet-guard
-bin/pi-scout-run /home/nish/.local/bin/pi-scout-run
 # fleet-ops#454: green-and-empty scout detector. N consecutive scout
 # completions with no net ready-work increase while below the 12h
 # buffer LOUD + auto-file escalate-senior. Wired as ExecStartPre /
 # ExecStopPost on pi-scout@.service; leading '-' so a tracker fault
 # cannot skip the scout or trip OnFailure repair.
-bin/pi-intake-repair-run /home/nish/.local/bin/pi-intake-repair-run
 # fleet-ops#143: version-control the agent-cron runner + the daily market
 # signal unit. The runner rotates seats via pick_seat (replacing the
 # single-snapshot seat-health gate that a transient fleet 429 could trip),
@@ -381,7 +374,6 @@ template/extensions/bash-spawn-hook.ts /home/nish/.pi/agent/extensions/bash-spaw
 template/extensions/jev-decide.ts /home/nish/.pi/agent/extensions/jev-decide.ts
 bin/blocked-reconcile /home/nish/.local/bin/blocked-reconcile
 bin/claim-reconcile /home/nish/.local/bin/claim-reconcile
-bin/lifecycle-label-sweep /home/nish/.local/bin/lifecycle-label-sweep
 # fleet-ops#543: agent-ready spec-gate. First admission (sweep + tally)
 # refuses a body without termination:/accept:/required:/metric:.
 # fleet-ops#3309: check-size bounces >2 live required: lines at claim time.
@@ -557,8 +549,6 @@ systemd/fleet-worktree-reaper.timer /home/nish/.config/systemd/user/fleet-worktr
 # fleet-ops#3270: four GitHub-reading heartbeat sections moved behind
 # webhook triggers (gh-webhook-receiver dispatches to these .service
 # units). Each has a backstop .timer for webhooks that never arrive.
-systemd/lifecycle-label-sweep.service /home/nish/.config/systemd/user/lifecycle-label-sweep.service
-systemd/lifecycle-label-sweep.timer /home/nish/.config/systemd/user/lifecycle-label-sweep.timer
 systemd/fleet-merged-pr-close.service /home/nish/.config/systemd/user/fleet-merged-pr-close.service
 systemd/fleet-merged-pr-close.timer /home/nish/.config/systemd/user/fleet-merged-pr-close.timer
 systemd/fleet-issue-close-duplicates.service /home/nish/.config/systemd/user/fleet-issue-close-duplicates.service
@@ -595,7 +585,6 @@ systemd/system/tailscaled.service.d/50-restart-always.conf /etc/systemd/system/t
 # pi-scout systemd state — the four silent reversions on 2026-08-25/26
 # had no record; this path unit + 30-min timer trip the reconciler, and
 # every state change writes one audit line so drift is grep-able.
-bin/intake-reconcile /home/nish/.local/bin/intake-reconcile
 # fleet-ops#149: merge-to-live deploy step + drift canary. Heartbeat pulls
 # origin/main, runs install.sh, then this canary fails loud on any drift.
 bin/fleet-ops-deploy /home/nish/.local/bin/fleet-ops-deploy
@@ -603,9 +592,6 @@ bin/fleet-ops-drift.py /home/nish/.local/bin/fleet-ops-drift
 # fleet-ops#410: retarget products/fleet-ops at the deploy-clone once no
 # worktrees remain on the pre-rewrite parent. Drift canary runs --apply.
 bin/fleet-ops-retarget-products /home/nish/.local/bin/fleet-ops-retarget-products
-systemd/intake-reconcile.path /home/nish/.config/systemd/user/intake-reconcile.path
-systemd/intake-reconcile.service /home/nish/.config/systemd/user/intake-reconcile.service
-systemd/intake-reconcile.timer /home/nish/.config/systemd/user/intake-reconcile.timer
 systemd/intake-reconcile.service.d/10-deploy-checkout.conf /home/nish/.config/systemd/user/intake-reconcile.service.d/10-deploy-checkout.conf
 systemd/fleet-heartbeat.service /home/nish/.config/systemd/user/fleet-heartbeat.service
 systemd/fleet-heartbeat.timer /home/nish/.config/systemd/user/fleet-heartbeat.timer
@@ -892,7 +878,6 @@ systemd/fleet-deploy-check.timer /home/nish/.config/systemd/user/fleet-deploy-ch
 # write would re-fire the unit that just ran.
 # fleet-ops#468 TOP GEAR teeth + escalation-matrix FIXES (both wired into
 # fleet-heartbeat-tier1 block 15; fail-loud on violation -> unit-escalation).
-lib/pi-intake-tick.sh /home/nish/.local/lib/pi-packet/pi-intake-tick.sh
 bin/prior-art-claim-check /home/nish/.local/bin/prior-art-claim-check
 # fleet-ops#4801: spec-judge lib (Kimi K3 Max over shared-file batches
 # before claim). Sourced by pi-intake-tick.sh; the fallback path in the
