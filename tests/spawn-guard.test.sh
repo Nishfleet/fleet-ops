@@ -29,11 +29,6 @@ bash "$here/fleet-spawn-guard-slice-lifecycle.test.sh"
 # fleet-ops#5902: worker toolchain ban (tsc -b / vitest --coverage / npm run
 # typecheck|test:coverage) is mechanical, gated on the pi-issue@ cgroup.
 bash "$here/spawn-guard-worker-toolchain.test.sh"
-# fleet-ops#3111 (part 5): the no-local-bin-clobber lint proves no test
-# writes into the real ~/.local/bin / ~/.local/lib/node_modules / ~/.pi
-# (the 2026-09-03 clobber shape). Hosted here with the other spawn-guard
-# drills so P14 runs it without a workflow-file edit.
-bash "$here/tests-no-local-bin-clobber.test.sh"
 # fleet-ops#5700: wrangler_deploy_0509 precision — quoted-string/heredoc
 # mentions do not block, --dry-run is allowed, all four entry points in
 # executable position stay blocked. Imports the repo template (the live

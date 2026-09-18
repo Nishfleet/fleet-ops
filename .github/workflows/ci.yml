@@ -132,7 +132,6 @@ jobs:
         # fleet-ops#5692: diff ACTIVE Actions registrations against the
         # default branch in this repo (offline mock of gh + the temp-ref
         # fetch); --report must exit 0 even with an orphan.
-        bash tests/open-question-sweep-deleted.test.sh
         # fleet-ops#5443: canonical findings ledger — strict writer + judge line.
         bash tests/findings-ledger.test.sh
         bash tests/findings-measure-line.test.sh

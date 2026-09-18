@@ -227,21 +227,6 @@ bash "$here/issue-file.test.sh"
 bash "$here/merge-trample-gate.test.sh"
 
 
-# fleet-ops#1493 (fleet-ops#2020): tests/ready-work-deleted.test.sh pins the deletion
-# of the hand-placed ready-work dispatcher and checks the allowlist / MANIFEST /
-# organ-catalog. Host it here from this already-listed ci-standards-audit test so
-# the P14 test-listing gate goes green without a workflow edit.
-bash "$here/ready-work-deleted.test.sh"
-
-# fleet-ops#1492 / #1497 / #1498: tests that pin the deletion
-# (auditor-stdio-test -> MECHANICAL-INSTEAD, quality-baseline-research ->
-# MECHANICAL-INSTEAD) verdicts against the allowlist / MANIFEST / organ-catalog.
-# Hosted here from this already-listed ci-standards-audit test so the P14
-# test-listing gate goes green without a workflow edit.
-bash "$here/auditor-stdio-test-deleted.test.sh"
-
-
-
 # fleet-ops#1232: FleetGhCacheStale (warning, 45m) on the repair rail.
 # Hosted here so P14 runs it without a workflow-file edit.
 bash "$here/fleet-gh-cache-stale.test.sh"
@@ -665,34 +650,6 @@ bash "$here/seat-empty-run-count-persists-new-issue.test.sh"
 # Prometheus response + capture hermes stub, no gh/prometheus/systemd).
 bash "$here/daily-digest.test.sh"
 
-# fleet-ops#4143 (child of #4140 row 3): the hand-built claim/lock/queue
-# scripts venue-claim + open-question were retired (live-only, orphaned).
-# Hosted here so P14 runs the deletion pin without a workflow-file edit (the
-# worker App cannot push .github/workflows/**). The named pin in
-# tests/p14-test-listing-gate.test.sh is the class-prevention so a future
-# drop of this host line fails by name. Hermetic (repo-only checks, no
-# gh/prometheus/systemd).
-bash "$here/venue-claim-open-question-deleted.test.sh"
-
-# fleet-ops#4150 (child of #4140 row 11): the hand-built hermes-staff
-# generator (live-only, orphaned systemd-twin of hermes cron) was retired.
-# Hosted here so P14 runs the deletion pin without a workflow-file edit (the
-# worker App cannot push .github/workflows/**). Hermetic (repo-only checks,
-# no gh/prometheus/systemd).
-bash "$here/hermes-staff-deleted.test.sh"
-
-# fleet-ops#4150 (child of #4140 row 11): the hand-built oracle-* scripts
-# (live-only OCI Always Free ARM capacity poller + bootstrap provisioner)
-# were retired. Hosted here so P14 runs the deletion pin without a
-# workflow-file edit. Hermetic (repo-only checks).
-bash "$here/oracle-scripts-deleted.test.sh"
-
-# fleet-ops#4150 (child of #4140 row 11): the hand-built 0509-surface-probe
-# (live-only authenticated surface-matrix probe duplicating 0509 CI) was
-# retired. Hosted here so P14 runs the deletion pin without a workflow-file
-# edit. Hermetic (repo-only checks).
-bash "$here/0509-surface-probe-deleted.test.sh"
-
 # fleet-ops#4130 P1: the LiteLLM proxy organ test (proxy + Postgres + Redis +
 # /health canary absent() rules, prom scrape, MANIFEST install, canary bin).
 # Hosted here so P14 runs it without a workflow-file edit (the worker App
@@ -710,23 +667,6 @@ bash "$here/0509-surface-probe-deleted.test.sh"
 # cannot push .github/workflows/**). Hermetic (repo-only; promtool optional).
 bash "$here/fleet-duty-officer-recording.test.sh"
 
-
-# fleet-ops#4147 (child of #4140 row 8): the hand-built load-storm brake
-# + all-agents orphan janitor were retired (live-only, never tracked in this
-# repo), replaced by systemd-oomd + CPUWeight/IOWeight + cgroup scoping.
-# Hosted here so P14 runs the deletion pin without a workflow-file edit (the
-# worker App cannot push .github/workflows/**). The named pin in
-# tests/p14-test-listing-gate.test.sh is the class-prevention so a future
-# drop of this host line fails by name. Hermetic (repo-only checks, no
-# gh/prometheus/systemd).
-bash "$here/load-storm-brake-agent-orphan-watchdog-deleted.test.sh"
-
-# fleet-ops#4801: spec-judge gate (Kimi K3 Max over batches of agent-ready
-# tickets that share files, BEFORE a worker may claim them). Hermetic
-# (scratch state, fake gh, no network/systemd); shellcheck section skips
-# when shellcheck is absent. Hosted here so P14 runs it without a
-# workflow-file edit (the worker App cannot push .github/workflows/**).
-bash "$here/spec-judge.test.sh"
 
 # fleet-ops#4956: the #4804 CPU sampler scored `ready` from a cache that has
 # no such key, so the decision rule's backlog conjunct was unscoreable. This

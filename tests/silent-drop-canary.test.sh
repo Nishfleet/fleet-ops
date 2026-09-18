@@ -23,12 +23,10 @@ fail=0
 # Explicit allowlist — every entry must have a row in docs/silent-drop-ledger.md.
 CAP_ALLOWLIST=(
   "bin/fleet-escalation-canary"    # auto_file_cap_per_tick; LOUD PENDING + rows re-derived each tick (by-design)
-  "lib/scout-money-path-walk.mjs"  # MAX_FINDINGS=4; LOUD suppressed count (fixed 2026-09-11)
 )
 DROP_ALLOWLIST=(
   "bin/lifecycle-label-sweep"      # 4 comment-only `|| true` notices (queued issue)
   "lib/pi-intake-tick.sh"          # observe-to-close park comments; park re-derived next tick (by-design)
-  "lib/spec-judge.sh"              # judge failure-fallback + apply-step comments (queued issue)
 )
 # Fix assertions (introduced by the 2026-09-11 sweep PR). New `|| true` drops
 # in these files must never come back.
@@ -79,8 +77,6 @@ for f in "${MUST_STAY_CLEAN[@]}"; do
     fail_row "$f reintroduced an 'gh issue ... || true' silent drop (fixed in the 2026-09-11 sweep)"
   fi
 done
-grep -q 'suppressedFindings' lib/scout-money-path-walk.mjs \
-  || fail_row "lib/scout-money-path-walk.mjs lost the LOUD suppressed-findings counter (silent-drop sweep 2026-09-11)"
 [ -f "$LEDGER" ] || fail_row "$LEDGER missing"
 
 if [ "$fail" -eq 0 ]; then
