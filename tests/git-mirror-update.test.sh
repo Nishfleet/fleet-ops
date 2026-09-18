@@ -195,12 +195,12 @@ if grep -R -l 'git-mirror-update' "$repo_root/systemd"/*.timer >/dev/null 2>&1; 
 fi
 ok "exporter drop-in is ExecStartPost=- (no new timer)"
 
-# --- 10. MANIFEST + clone convention in prompts/docs ----------------------
-manifest="$repo_root/MANIFEST"
-grep -Fxq 'bin/git-mirror-update /home/nish/.local/bin/git-mirror-update' "$manifest" \
-    || fail "MANIFEST missing git-mirror-update"
-grep -Fxq 'systemd/fleet-metrics-export.service.d/10-git-mirrors.conf /home/nish/.config/systemd/user/fleet-metrics-export.service.d/10-git-mirrors.conf' "$manifest" \
-    || fail "MANIFEST missing exporter drop-in"
+# --- 10. sources + clone convention in prompts/docs -----------------------
+# MANIFEST deleted 2026-09-18; live paths are symlinks into these sources.
+for f in bin/git-mirror-update \
+         systemd/fleet-metrics-export.service.d/10-git-mirrors.conf; do
+    [[ -f "$repo_root/$f" ]] || fail "missing repo source: $f"
+done
 
 for f in \
     "$repo_root/prompts/worker.md" \
@@ -216,7 +216,7 @@ grep -qi 'never push' "$repo_root/prompts/worker.md" \
     || fail "worker.md must say never push to a mirror"
 grep -qi 'never push' "$repo_root/prompts/heartbeat.md" \
     || fail "heartbeat.md must say never push to a mirror"
-ok "MANIFEST, prompts, pi-systemd-run, and README name the clone convention"
+ok "sources, prompts, pi-systemd-run, and README name the clone convention"
 
 # --- 11. symlink invocation resolves repo_root (fleet-ops#1390) -------------
 # Installed as ~/.local/bin/git-mirror-update -> <repo>/bin/git-mirror-update.

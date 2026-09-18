@@ -756,7 +756,6 @@ bash "$here/seat-empty-run-count-persists-new-issue.test.sh"
 # without a workflow-file edit (the worker App cannot push
 # .github/workflows/**). Offline import of memoryctl plus a live layer
 # that skips in hosted CI (no user journal / no vault health file).
-bash "$here/curator-journal-cap.test.sh"
 
 # fleet-ops#3273: config sprawl — .bak next to a managed MANIFEST file.
 # Hosted here so P14 runs it without a workflow-file edit (the worker

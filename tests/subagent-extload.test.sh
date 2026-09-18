@@ -1,64 +1,43 @@
 #!/usr/bin/env bash
 # tests/subagent-extload.test.sh
 #
-# fleet-ops#3277: install.sh owns the subagent extension + unpinned agent
+# fleet-ops#3277: the repo owns the subagent extension + unpinned agent
 # defs, and pi-transport-check --subagent asserts EXTLOAD at worker start.
 #
 # Invariants:
-#   1. MANIFEST declares the wrapper, npm-pin symlinks, and agent defs.
+#   1. The wrapper, agent defs and probe exist in the repo.
 #   2. Wrapper prints EXTLOAD-OK and re-exports stock (not a fork).
 #   3. Agent defs have no model: pin.
 #   4. Default pi-transport-check stays cli.js-only (self-heal / seatlib).
 #   5. --subagent fails loud without the handshake; passes when present.
-#   6. install.sh npm-pin creates a symlink to the package examples dir.
-#   7. pi-issue-run calls --subagent at worker start.
 #
 # Lock-and-leave. Runs offline (scratch HOME, stubbed npm examples).
 set -euo pipefail
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 repo_root="$(cd "$here/.." && pwd)"
-manifest="$repo_root/MANIFEST"
 wrapper="$repo_root/template/extensions/subagent/index.ts"
 probe="$repo_root/bin/pi-transport-check"
-install_src="$repo_root/install.sh"
-run_src="$repo_root/bin/pi-issue-run"
 
 fail() { echo "FAIL: $*" >&2; exit 1; }
 ok()   { echo "OK: $*"; }
 
-[[ -f "$manifest" ]] || fail "MANIFEST missing"
 [[ -f "$wrapper" ]] || fail "wrapper missing: $wrapper"
 [[ -x "$probe" ]] || fail "not executable: $probe"
-[[ -x "$install_src" ]] || fail "not executable: $install_src"
-[[ -f "$run_src" ]] || fail "missing: $run_src"
 
-# --- 1. MANIFEST owns dests ------------------------------------------------
-entries=(
-  "template/extensions/subagent/index.ts /home/nish/.pi/agent/extensions/subagent/index.ts"
-  "npm-pin:extensions/subagent/agents.ts /home/nish/.pi/agent/extensions/subagent/agents.ts"
-  "npm-pin:extensions/subagent/prompts/implement.md /home/nish/.pi/agent/prompts/implement.md"
-  "npm-pin:extensions/subagent/prompts/implement-and-review.md /home/nish/.pi/agent/prompts/implement-and-review.md"
-  "npm-pin:extensions/subagent/prompts/scout-and-plan.md /home/nish/.pi/agent/prompts/scout-and-plan.md"
-  "template/agents/planner.md /home/nish/.pi/agent/agents/planner.md"
-  "template/agents/reviewer.md /home/nish/.pi/agent/agents/reviewer.md"
-  "template/agents/scout.md /home/nish/.pi/agent/agents/scout.md"
-  "template/agents/worker.md /home/nish/.pi/agent/agents/worker.md"
-  "bin/pi-transport-check /home/nish/.local/bin/pi-transport-check"
-)
-for entry in "${entries[@]}"; do
-  grep -Fxq "$entry" "$manifest" || fail "MANIFEST missing: $entry"
+# --- 1. repo sources exist -------------------------------------------------
+# MANIFEST deleted 2026-09-18: live user paths are symlinks into this repo,
+# and the four npm-pin: dests are symlinks into the installed pi package's
+# examples/ (see README "Install"). What CI can still prove is that every
+# source the fleet links to is present.
+for f in template/extensions/subagent/index.ts \
+         template/agents/planner.md \
+         template/agents/reviewer.md \
+         template/agents/scout.md \
+         template/agents/worker.md \
+         bin/pi-transport-check; do
+  [[ -f "$repo_root/$f" ]] || fail "missing repo source: $f"
 done
-ok "MANIFEST declares subagent wrapper, npm-pin symlinks, agent defs, probe"
-
-# Deploy order: wrapper before probe before pi-issue-run, so a mid-install
-# worker never asserts EXTLOAD against the pre-wrapper stock symlink.
-wrap_n=$(grep -nFx 'template/extensions/subagent/index.ts /home/nish/.pi/agent/extensions/subagent/index.ts' "$manifest" | head -1 | cut -d: -f1)
-probe_n=$(grep -nFx 'bin/pi-transport-check /home/nish/.local/bin/pi-transport-check' "$manifest" | head -1 | cut -d: -f1)
-run_n=$(grep -nFx 'bin/pi-issue-run /home/nish/.local/bin/pi-issue-run' "$manifest" | head -1 | cut -d: -f1)
-[[ -n "$wrap_n" && -n "$probe_n" && -n "$run_n" ]] || fail "could not find MANIFEST line numbers"
-(( wrap_n < probe_n && probe_n < run_n )) \
-  || fail "MANIFEST order must be wrapper ($wrap_n) < probe ($probe_n) < pi-issue-run ($run_n)"
-ok "MANIFEST install order: wrapper then probe then pi-issue-run"
+ok "subagent wrapper, agent defs and probe are in the repo"
 
 # --- 2. Wrapper is a handshake + re-export, not a stock fork ---------------
 grep -q 'EXTLOAD-OK extension=subagent' "$wrapper" \
@@ -142,64 +121,10 @@ ok "--subagent rejects a pinned agent def"
 # restore unpinned worker for later steps
 cp "$repo_root/template/agents/worker.md" "$scratch/home/.pi/agent/agents/worker.md"
 
-# --- 6. install.sh npm-pin + wrapper copy ----------------------------------
-install="$scratch/install.sh"
-cp -a "$install_src" "$install"
-chmod +x "$install"
-mkdir -p "$scratch/template/extensions/subagent" "$scratch/template/agents"
-cp "$wrapper" "$scratch/template/extensions/subagent/index.ts"
-cp "$repo_root/template/agents/planner.md" "$scratch/template/agents/planner.md"
-printf 'export const stockAgents = true;\n' >"$scratch/examples/extensions/subagent/agents.ts"
-printf '# implement\n' >"$scratch/examples/extensions/subagent/prompts/implement.md"
+# Sections 6 (install.sh npm-pin + wrapper copy) and 7 (pi-issue-run wires
+# the EXTLOAD assert) were deleted 2026-09-18 with their subjects: install.sh
+# went with the deploy-cluster cut (live paths are symlinks into this repo,
+# so there is nothing to install), and bin/pi-issue-run went with the
+# run-wrapper cut (pi-issue@.service execs `pi --print` directly).
 
-cat >"$scratch/MANIFEST" <<EOF
-template/extensions/subagent/index.ts $scratch/live/extensions/subagent/index.ts
-npm-pin:extensions/subagent/agents.ts $scratch/live/extensions/subagent/agents.ts
-npm-pin:extensions/subagent/prompts/implement.md $scratch/live/prompts/implement.md
-template/agents/planner.md $scratch/live/agents/planner.md
-EOF
-
-export PI_PACKAGE_EXAMPLES="$scratch/examples"
-export FLEET_OPS_ALLOW_NONCANONICAL=1
-export SYSTEMCTL="$scratch/bin/systemctl"
-printf '#!/bin/sh\nexit 0\n' >"$scratch/bin/systemctl"
-chmod +x "$scratch/bin/systemctl"
-
-mkdir -p "$scratch/live"
-cd "$scratch"
-"$install" >/dev/null
-[[ -f "$scratch/live/extensions/subagent/index.ts" ]] \
-  || fail "install.sh did not copy the wrapper"
-[[ -L "$scratch/live/extensions/subagent/agents.ts" ]] \
-  || fail "install.sh npm-pin must create a symlink for agents.ts"
-got=$(readlink -f "$scratch/live/extensions/subagent/agents.ts")
-want=$(readlink -f "$scratch/examples/extensions/subagent/agents.ts")
-[[ "$got" == "$want" ]] || fail "agents.ts symlink want $want got $got"
-[[ -L "$scratch/live/prompts/implement.md" ]] \
-  || fail "install.sh npm-pin must create a symlink for implement.md"
-[[ -L "$scratch/live/agents/planner.md" ]] \
-  || fail "install.sh must symlink unpinned agent def"
-grep -q 'EXTLOAD-OK extension=subagent' "$scratch/live/extensions/subagent/index.ts" \
-  || fail "installed wrapper lost EXTLOAD handshake"
-if ! "$install" --check >/dev/null; then
-  fail "install.sh --check must be clean after install"
-fi
-ok "install.sh copies wrapper, npm-pins stock symlinks, links agent defs"
-
-rm -f "$scratch/live/extensions/subagent/agents.ts"
-set +e
-out=$("$install" --check 2>&1)
-rc=$?
-set -e
-[[ "$rc" -eq 1 ]] || fail "--check must DIFF a dropped npm-pin dest, rc=$rc out=$out"
-grep -q 'DIFF:' <<<"$out" || fail "--check must name DIFF for dropped agents.ts: $out"
-ok "install.sh --check reports a dropped subagent symlink"
-
-# --- 7. pi-issue-run wires the assert --------------------------------------
-grep -q 'pi-transport-check --subagent' "$run_src" \
-  || fail "pi-issue-run must call pi-transport-check --subagent"
-grep -q 'assert_subagent_extload' "$run_src" \
-  || fail "pi-issue-run must define assert_subagent_extload"
-ok "pi-issue-run asserts subagent EXTLOAD at worker start"
-
-echo "ALL OK: subagent extension is MANIFEST-owned and EXTLOAD-asserted"
+echo "ALL OK: subagent extension sources present and EXTLOAD handshake locked"

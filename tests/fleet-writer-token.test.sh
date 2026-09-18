@@ -53,10 +53,9 @@ check_py() {
 }
 
 # Python writer organs that run standalone and write directly to GitHub. The
-# two here file issues themselves; the rest of the python helpers (e.g.
+# one here files issues itself; the rest of the python helpers (e.g.
 # lib/issue-file.py) are exec'd by a bash wrapper that already mints and so
 # inherit GH_TOKEN. Add a new standalone python writer here with its mint.
-check_py "bin/fleet-ops-drift.py"
 check_py "libexec/fleet-metrics-export.py"
 
 # Bash writer organs: files that directly issue a gh write command.

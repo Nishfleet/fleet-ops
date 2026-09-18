@@ -66,6 +66,7 @@ bash "$here/gate-integrity.test.sh" || fail "gate-integrity tests failed"
 bash "$here/gate-integrity-config.test.sh" || fail "gate-integrity config tests failed"
 bash "$here/seat-caps-citation.test.sh" || fail "seat-caps-citation tests failed"
 bash "$here/seat-caps-citation-rule6-replay.test.sh" \
+  || fail "seat-caps-citation rule6 replay tests failed"
 bash "$here/keystone-routing.test.sh" || fail "keystone-routing tests failed"
 bash "$here/senior-review-routing.test.sh" || fail "senior-review-routing tests failed"
 bash "$here/seat-caps-zero-yield.test.sh" || fail "seat-caps-zero-yield tests failed"
