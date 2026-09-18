@@ -3,8 +3,9 @@
 #
 # fleet-ops#5788 drill: keep the fleet-litellm-proxy MINIMAX_API_KEY in
 # sync with the underlying ~/.mmx/config.json OAuth credential cached
-# by claude-minimax-key. Proves offline, no live proxy bounce, no
-# credential leak:
+# by claude-minimax-key. Proves offline that the proxy is NEVER bounced
+# (the seat is dead and a restart SIGKILLs in-flight Pi runs), and that
+# no credential leaks:
 #   1. wrapper missing / not executable      -> REJECT, exit 1.
 #   2. ~/.mmx missing                        -> SKIP, exit 0.
 #   3. no live fleet-litellm-proxy process   -> SKIP, exit 0,
@@ -14,30 +15,25 @@
 #                                             -> SKIP, exit 0, no bounce,
 #                                                rotations_total unchanged.
 #   5. proxy env MINIMAX_API_KEY differs from wrapper output
-#                                             -> SUCCESS, exit 0,
-#                                                try-reload-or-restart fired
-#                                                with the correct unit name,
+#                                             -> SUCCESS, exit 0, drift
+#                                                RECORDED and NO systemctl
+#                                                restart of any kind,
 #                                                last_success advances,
 #                                                rotations_total += 1.
 #   6. wrapper exits non-zero                 -> REJECT, exit 1,
 #                                                last_success preserved,
 #                                                rotations_total unchanged.
 #   7. wrapper produces empty stdout          -> REJECT, exit 1.
-#   8. SKIP_PROXY=1 set                      -> SUCCESS path runs but the
-#                                                systemctl call is skipped;
-#                                                rotations_total still bumps
-#                                                (test mode lets us verify
-#                                                the rotation logic without
-#                                                bouncing anything).
-#   9. SKIP_PROXY=1 + matching key           -> SKIP, no rotation.
+#   8. The script names no proxy restart at all (structural): no
+#      try-reload-or-restart, no restart, no SKIP_PROXY escape hatch.
 #  10. SKIP path never logs credential contents.
 #  11. SUCCESS path logs only sha256 prefix, never the value.
 #  12. Lock directory is created and removed cleanly.
 #  13. Lock busy (parallel tick)             -> REJECT, exit 1,
 #                                                last_success preserved.
 #  14. prom textfile is rewritten (not appended) on every run.
-#  15. Re-check inside the lock (another tick already rotated)
-#                                             -> SKIP, no double bounce.
+#  15. Re-check inside the lock (another tick already recorded it)
+#                                             -> SKIP, no double count.
 #  16. --help exits 0 and prints the usage.
 #  17. unknown argument exits 2.
 #  18. Heartbeat wiring (tier1 picks up the absent() rule + organ entry).
@@ -90,8 +86,9 @@ exit 0
 KEYSTUB
 chmod +x "$key_stub"
 
-# Stub systemctl so the script can bounce a fake proxy unit but never
-# the live organ. Records the call to $STUBCTL_LOG.
+# Stub systemctl. The script must only ever use the read-only `show -p
+# MainPID` path; any try-reload-or-restart is recorded to $STUBCTL_LOG so
+# a reintroduced proxy bounce fails the suite loudly.
 STUBCTL_DIR="$scratch/bin"
 STUBCTL="$STUBCTL_DIR/systemctl"
 cat >"$STUBCTL" <<'STUBCTL'
@@ -299,15 +296,15 @@ set -e
 (( rc == 0 )) || fail "7. differ want rc=0 got $rc out=$out"
 [[ "$out" == *"rotation detected"* ]] || fail "7. differ expected 'rotation detected', got: $out"
 [[ "$out" == *"OK rotated"* ]] || fail "7. differ expected 'OK rotated', got: $out"
-grep -q "try-reload-or-restart fleet-litellm-proxy.service" "$STUBCTL_LOG" \
-    || fail "7. differ must call try-reload-or-restart with the proxy unit; got: $(cat "$STUBCTL_LOG")"
+[[ ! -s "$STUBCTL_LOG" ]] \
+    || fail "7. differ must NOT restart the proxy; got: $(cat "$STUBCTL_LOG")"
 assert_metric_outcome "success"
 assert_rotations_total "1"
 # sha256 prefix must appear in the log, NOT the value itself.
 [[ "$out" == *"sha_prefix="* ]] || fail "7. differ expected sha_prefix= in log"
 [[ "$out" != *"oat-NEW-key-freshly-rotated-cccc"* ]] \
     || fail "7. differ must NEVER log the key value; got: $out"
-ok "7. differing key -> SUCCESS, proxy bounced, rotations_total=1, no value leak"
+ok "7. differing key -> SUCCESS, drift recorded, proxy NOT bounced, rotations_total=1, no value leak"
 
 # --------- 8. wrapper exits non-zero (reject) ----------
 write_fake_proc_env "3333" "oat-some-key-present-dddd"
@@ -359,48 +356,20 @@ printf '%s' "${MINIMAX_STUB_KEY:-}"
 exit 0
 KEYSTUB3
 chmod +x "$key_stub"
+export MINIMAX_STUB_EMPTY=0  # reset for every subsequent scenario
 ok "9. wrapper empty stdout -> REJECT exit 1"
 
-# --------- 10. SKIP_PROXY=1 with rotation (test mode) ----------
-write_fake_proc_env "5555" "oat-OLD-key-from-prior-cycle-ffff"
-export STUB_PID="5555"
-export MINIMAX_STUB_KEY="oat-NEW-key-with-skip-proxy-gggg"
-export MINIMAX_STUB_EMPTY=0
-: >"$TEXTFILE"
-: >"$STUBCTL_LOG"
-export MINIMAX_TOKEN_REFRESH_SKIP_PROXY=1
-set +e
-out=$(run_script); rc=$(cat "$scratch/run_rc")
-set -e
-export MINIMAX_TOKEN_REFRESH_SKIP_PROXY=0
-(( rc == 0 )) || fail "10. SKIP_PROXY=1 rotation want rc=0 got $rc out=$out"
-[[ "$out" == *"SKIP_PROXY=1"* ]] || fail "10. SKIP_PROXY=1 expected 'SKIP_PROXY=1' message, got: $out"
-[[ ! -s "$STUBCTL_LOG" ]] || fail "10. SKIP_PROXY=1 must not call systemctl; got: $(cat "$STUBCTL_LOG")"
-assert_metric_outcome "success"
-assert_rotations_total "1"
-ok "10. SKIP_PROXY=1 rotation -> SUCCESS, no systemctl call, rotations_total=1"
-
-# --------- 11. SKIP_PROXY=1 + matching key (skip) ----------
-# Seed the textfile with the rotations_total we expect to be preserved
-# (the test above wrote 1). This proves the SKIP branch reads-then-writes
-# rather than zeroing the counter on every run.
-write_fake_proc_env "6666" "oat-same-key-on-both-sides-hhhh"
-export STUB_PID="6666"
-export MINIMAX_STUB_KEY="oat-same-key-on-both-sides-hhhh"
-: >"$TEXTFILE"
-cat >"$TEXTFILE" <<EOF
-fleet_minimax_token_refresh_rotations_total 1
-EOF
-: >"$STUBCTL_LOG"
-export MINIMAX_TOKEN_REFRESH_SKIP_PROXY=1
-set +e
-out=$(run_script); rc=$(cat "$scratch/run_rc")
-set -e
-(( rc == 0 )) || fail "11. SKIP_PROXY=1 matching want rc=0 got $rc out=$out"
-[[ "$out" == *"matches fresh wrapper key"* ]] || fail "11. SKIP_PROXY=1 matching expected SKIP, got: $out"
-assert_metric_outcome "skipped"
-assert_rotations_total "1"  # preserved from the seeded textfile
-ok "11. SKIP_PROXY=1 + matching -> SKIP, rotations_total preserved"
+# --------- 10. structural: the script names no proxy restart ----------
+# The bounce is gone for good. Assert on the source so a future edit that
+# reintroduces it fails here rather than in production at 3am.
+grep -q 'try-reload-or-restart' "$bin" \
+    && fail "10. $bin must not reference try-reload-or-restart"
+# Comments explain WHY the bounce is gone, so judge executable lines only.
+grep -v '^[[:space:]]*#' "$bin" | grep -qE 'restart|reload' \
+    && fail "10. $bin must not restart or reload anything"
+grep -q 'SKIP_PROXY' "$bin" \
+    && fail "10. $bin must not keep the SKIP_PROXY escape hatch"
+ok "10. script names no proxy restart and no SKIP_PROXY escape hatch"
 
 # --------- 12. SKIP path never logs credential contents ----------
 # Reuse the matching-key scenario and assert the value never appears.
@@ -408,7 +377,6 @@ write_fake_proc_env "7777" "oat-shared-fake-key-for-test-aaaa"
 export STUB_PID="7777"
 export MINIMAX_STUB_KEY="oat-shared-fake-key-for-test-aaaa"
 : >"$TEXTFILE"
-export MINIMAX_TOKEN_REFRESH_SKIP_PROXY=0
 set +e
 out=$(run_script); rc=$(cat "$scratch/run_rc")
 set -e
@@ -446,17 +414,16 @@ out=$(run_script); rc=$(cat "$scratch/run_rc")
 set -e
 (( rc == 1 )) || fail "14. lock-busy want rc=1 got $rc out=$out"
 [[ "$out" == *"LOCK-BUSY"* ]] || fail "14. lock-busy expected LOCK-BUSY, got: $out"
-[[ ! -s "$STUBCTL_LOG" ]] || fail "14. lock-busy must not bounce proxy; got: $(cat "$STUBCTL_LOG")"
+[[ ! -s "$STUBCTL_LOG" ]] || fail "14. lock-busy must not restart proxy; got: $(cat "$STUBCTL_LOG")"
 assert_metric_outcome "reject"
 # The script's trap may have already removed the lock dir on exit;
 # the test cleanup is idempotent so rmdir must not fail loud.
 rmdir "$MINIMAX_TOKEN_REFRESH_LOCK_DIR" 2>/dev/null || true
-ok "14. lock busy -> REJECT exit 1, no bounce"
+ok "14. lock busy -> REJECT exit 1, no systemctl restart"
 
 # --------- 15. lock re-check (parallel tick already rotated) ----------
 # Simulate: another tick rotated, so by the time we acquire the lock and
 # re-read /proc, the captured key matches the wrapper.
-export MINIMAX_TOKEN_REFRESH_SKIP_PROXY=0
 write_fake_proc_env "10000" "oat-already-rotated-mmmm"
 export STUB_PID="10000"
 export MINIMAX_STUB_KEY="oat-already-rotated-mmmm"  # same on both sides
@@ -467,23 +434,7 @@ set -e
 (( rc == 0 )) || fail "15. lock-recheck want rc=0 got $rc out=$out"
 [[ "$out" == *"matches fresh wrapper key"* ]] || fail "15. lock-recheck expected SKIP, got: $out"
 assert_metric_outcome "skipped"
-ok "15. lock re-check sees the rotation already done -> SKIP"
-
-# --------- 16. systemctl bounce failure (REJECT after rotation) ----------
-write_fake_proc_env "11111" "oat-OLD-key-fail-reload-nnnn"
-export STUB_PID="11111"
-export MINIMAX_STUB_KEY="oat-NEW-key-fail-reload-oooo"
-: >"$TEXTFILE"
-: >"$STUBCTL_LOG"
-export STUBCTL_FAIL=1
-set +e
-out=$(run_script); rc=$(cat "$scratch/run_rc")
-set -e
-export STUBCTL_FAIL=0
-(( rc == 1 )) || fail "16. reload-fail want rc=1 got $rc out=$out"
-[[ "$out" == *"RELOAD-FAILED"* ]] || fail "16. reload-fail expected RELOAD-FAILED, got: $out"
-assert_metric_outcome "reject"
-ok "16. systemctl reload failure -> REJECT exit 1"
+ok "15. lock re-check sees the rotation already recorded -> SKIP"
 
 # --------- 17. prom textfile is rewritten, not appended ----------
 write_fake_proc_env "12222" "oat-OLD-key-textfile-pppp"
@@ -550,5 +501,5 @@ grep -q 'fleet-ops#5788' "$repo_root/docs/litellm-postgres-setup.md" \
 ok "23. litellm-postgres-setup.md documents the wrapper path with citation"
 
 echo
-echo "ALL OK: 23/23 minimax-token-refresh checks passed"
+echo "ALL OK: 21/21 minimax-token-refresh checks passed"
 exit 0

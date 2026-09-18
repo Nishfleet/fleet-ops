@@ -39,7 +39,7 @@
 #  24. SKIP after a prior success advances last_success to now (no false alarm).
 #  25. REJECT preserves last_success (failed grant is not a healthy run).
 #  26. TOKEN_TTL_S default is 18000 (5h) — a 4h-life token is refreshed, not SKIPped.
-#  27. SUCCESS reloads the LiteLLM proxy so it re-reads auth.json; SKIP/REJECT do not
+#  27. NO run (SUCCESS, SKIP or REJECT) ever touches the shared LiteLLM proxy
 #      (fleet-ops#4629: wrapper exports XAI_OAUTH_ACCESS_TOKEN once at start).
 
 set -euo pipefail
@@ -112,14 +112,18 @@ export FLEET_GROK_REFRESH_TRIAGE="$scratch/triage.md"
 export GROK_CURL_LOG="$scratch/curl.log"
 : >"$GROK_CURL_LOG"
 
-# fleet-ops#4629: SUCCESS reloads the LiteLLM proxy so it re-reads auth.json.
-# Stub the reload so this test never bounces the live organ.
-RELOAD_LOG="$scratch/reload.log"
-: >"$RELOAD_LOG"
-reload_stub="$scratch/reload-stub"
-printf '#!/bin/sh\nprintf reload\\n >>"%s"\n' "$RELOAD_LOG" >"$reload_stub"
-chmod +x "$reload_stub"
-export GROK_TOKEN_REFRESH_RELOAD_CMD="$reload_stub"
+# Token rotation must NEVER restart the shared LiteLLM proxy: the proxy
+# carries no xai/grok model entry, and bouncing it SIGKILLs every in-flight
+# Pi run. Put a recording `systemctl` first on PATH; scenario 27 asserts the
+# log stays empty on every outcome.
+SYSTEMCTL_LOG="$scratch/systemctl.log"
+: >"$SYSTEMCTL_LOG"
+systemctl_stub_dir="$scratch/stub-path"
+mkdir -p "$systemctl_stub_dir"
+printf '#!/bin/sh\nprintf "%%s\\n" "$*" >>"%s"\nexit 0\n' "$SYSTEMCTL_LOG" \
+    >"$systemctl_stub_dir/systemctl"
+chmod +x "$systemctl_stub_dir/systemctl"
+export PATH="$systemctl_stub_dir:$PATH"
 
 run_script() {
     set +e
@@ -584,35 +588,43 @@ got_access="$(jq -r '.["xai-oauth"].access' "$AUTH_JSON")"
 [[ "$got_access" == "AT-NEW" ]] || fail "scenario26: expected access rotated to AT-NEW, got $got_access"
 ok "scenario26: TOKEN_TTL_S default 18000 -> 4h-life token is refreshed, not SKIPped"
 
-# --- 27. SUCCESS reloads the LiteLLM proxy; SKIP/REJECT do not (fleet-ops#4629)
-# The start wrapper exports XAI_OAUTH_ACCESS_TOKEN once. A rotated token that
-# never reaches the running proxy is the stale-at-start half of #4629. SKIP
-# and REJECT must not bounce the organ: SKIP did not change the token, REJECT
-# did not write one.
-: >"$RELOAD_LOG"
+# --- 27. No run ever bounces the shared LiteLLM proxy
+# The proxy has no xai/grok model entry, so a restart healed nothing and
+# SIGKILLed every in-flight Pi run (44 restarts / 7 days, 25 by SIGKILL).
+# Token rotation writes the token and stops there — on SUCCESS, SKIP and
+# REJECT alike. Asserted structurally (the script names no systemctl and no
+# reload seam) and at runtime (a recording systemctl on PATH stays unused).
+grep -q 'systemctl' "$bin" \
+    && fail "scenario27: $bin must not reference systemctl at all"
+grep -q 'RELOAD_CMD' "$bin" \
+    && fail "scenario27: $bin must not keep a *_RELOAD_CMD seam"
+ok "scenario27: script references neither systemctl nor a reload seam"
+
+: >"$SYSTEMCTL_LOG"
 write_auth "RT-FIXTURE-NOT-A-REAL-TOKEN-001" $(( ($(date -u +%s) - 60) * 1000 ))
 export GROK_CURL_FIXTURE="$fixture_ok"
 export GROK_CURL_STATUS=200
 run_script
 [[ "$rc" -eq 0 ]] || fail "scenario27-success: expected rc=0, got $rc ($out)"
-[[ -s "$RELOAD_LOG" ]] || fail "scenario27-success: SUCCESS must run GROK_TOKEN_REFRESH_RELOAD_CMD (empty $RELOAD_LOG)"
-grep -q reload "$RELOAD_LOG" || fail "scenario27-success: reload stub must have recorded a call: $(cat "$RELOAD_LOG")"
-ok "scenario27: SUCCESS reloads the LiteLLM proxy"
+got_access="$(jq -r '.["xai-oauth"].access' "$AUTH_JSON")"
+[[ "$got_access" == "AT-NEW" ]] || fail "scenario27-success: token must still rotate, got $got_access"
+[[ ! -s "$SYSTEMCTL_LOG" ]] || fail "scenario27-success: SUCCESS must not call systemctl: $(cat "$SYSTEMCTL_LOG")"
+ok "scenario27: SUCCESS rotates the token and calls no systemctl"
 
-: >"$RELOAD_LOG"
+: >"$SYSTEMCTL_LOG"
 write_auth "RT-FIXTURE-NOT-A-REAL-TOKEN-001" $(( ($(date -u +%s) + 86400) * 1000 ))
 run_script
 [[ "$rc" -eq 0 ]] || fail "scenario27-skip: expected rc=0, got $rc ($out)"
-[[ ! -s "$RELOAD_LOG" ]] || fail "scenario27-skip: SKIP must not reload the proxy: $(cat "$RELOAD_LOG")"
-ok "scenario27: SKIP does not reload the LiteLLM proxy"
+[[ ! -s "$SYSTEMCTL_LOG" ]] || fail "scenario27-skip: SKIP must not call systemctl: $(cat "$SYSTEMCTL_LOG")"
+ok "scenario27: SKIP calls no systemctl"
 
-: >"$RELOAD_LOG"
+: >"$SYSTEMCTL_LOG"
 write_auth "RT-FIXTURE-NOT-A-REAL-TOKEN-001" $(( ($(date -u +%s) - 60) * 1000 ))
 unset GROK_CURL_FIXTURE
 export GROK_CURL_STATUS=500
 run_script
 [[ "$rc" -eq 1 ]] || fail "scenario27-reject: expected rc=1, got $rc ($out)"
-[[ ! -s "$RELOAD_LOG" ]] || fail "scenario27-reject: REJECT must not reload the proxy: $(cat "$RELOAD_LOG")"
-ok "scenario27: REJECT does not reload the LiteLLM proxy"
+[[ ! -s "$SYSTEMCTL_LOG" ]] || fail "scenario27-reject: REJECT must not call systemctl: $(cat "$SYSTEMCTL_LOG")"
+ok "scenario27: REJECT calls no systemctl"
 
-echo "OK: grok-token-refresh: skip paths, success path, reject paths, refresh-omitted keep, no token leak, idempotent, lock, prom rewrite, organ + rules + manifest wired, last_success advances on skip+success, preserved on reject, TTL_S default 18000, SUCCESS reloads LiteLLM proxy"
+echo "OK: grok-token-refresh: skip paths, success path, reject paths, refresh-omitted keep, no token leak, idempotent, lock, prom rewrite, organ + rules + manifest wired, last_success advances on skip+success, preserved on reject, TTL_S default 18000, no run ever bounces the LiteLLM proxy"
