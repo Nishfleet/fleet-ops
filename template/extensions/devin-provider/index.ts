@@ -5,7 +5,7 @@
  *   devin -p "<prompt>" --model <model> --respect-workspace-trust false
  *         --permission-mode smart --sandbox
  *
- * Credential: $DEVIN_API_KEY from ~/fleet2/etc/devin.env
+ * Credential: $DEVIN_API_KEY from ~/.config/fleet-ops/seats/devin.env
  * Models: the SWE-2 lane (config/seat-caps.json). A Devin message rate limit is waited out
  * and resumed in-session (rate-limit.ts), never a worker death.
  */
@@ -27,6 +27,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { writeSeatHealthFromCliSpawn, writeSeatHealthFromCliTimeout } from "../seat-health.ts";
 import { isDevinRateLimit, parseDevinResetSeconds, planDevinRetry } from "./rate-limit.ts";
+import { loadSeatEnv, modelsFromModelsJson } from "./seat-env";
 
 // =============================================================================
 // Helpers — extract the user prompt from Pi's message context
@@ -58,26 +59,11 @@ function extractPrompt(context: Context): string {
 }
 
 // =============================================================================
-// Load env vars from fleet2/etc so $DEVIN_API_KEY resolves
+// Load env vars from the seats root (~/.config/fleet-ops/seats) so $DEVIN_API_KEY resolves
 // =============================================================================
 
 function loadFleetEnv(): void {
-	const envFile = "/home/nish/fleet2/etc/devin.env";
-	if (existsSync(envFile)) {
-		const content = readFileSync(envFile, "utf-8");
-		for (const line of content.split("\n")) {
-			const trimmed = line.trim();
-			if (!trimmed || trimmed.startsWith("#")) continue;
-			const eqIdx = trimmed.indexOf("=");
-			if (eqIdx > 0) {
-				const key = trimmed.slice(0, eqIdx);
-				const val = trimmed.slice(eqIdx + 1);
-				if (!process.env[key]) {
-					process.env[key] = val;
-				}
-			}
-		}
-	}
+	loadSeatEnv("devin");
 }
 
 loadFleetEnv();
@@ -168,7 +154,7 @@ function streamDevin(
 			};
 			if (!env.DEVIN_API_KEY) {
 				throw new Error(
-					"DEVIN_API_KEY is not set. Source ~/fleet2/etc/devin.env or set it in your environment.",
+					"DEVIN_API_KEY is not set. Source ~/.config/fleet-ops/seats/devin.env or set it in your environment.",
 				);
 			}
 
@@ -297,26 +283,7 @@ export default function (pi: ExtensionAPI) {
 		baseUrl: "https://api.devin.ai",
 		apiKey: "$DEVIN_API_KEY",
 		api: "devin-cli",
-		models: [
-			{
-				id: "glm-5-2",
-				name: "GLM-5.2 High",
-				reasoning: true,
-				input: ["text", "image"],
-				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-				contextWindow: 200000,
-				maxTokens: 131072,
-			},
-			{
-				id: "swe-1-7",
-				name: "SWE-1.7 Max",
-				reasoning: true,
-				input: ["text"],
-				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-				contextWindow: 262144,
-				maxTokens: 131072,
-			},
-		],
+		models: modelsFromModelsJson("devin", { reasoning: true, input: ["text", "image"], cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } }),
 		// Delegate all streaming to the custom impl — not a standard API
 		streamSimple: streamDevin,
 	});

@@ -34,7 +34,7 @@
       "model": "gpt-4o-mini",
       "base_url": "https://api.openai.com/v1",
       "api_key_env": "OPENAI_API_KEY",
-      "env_file": "/home/nish/fleet2/etc/openai.env",
+      "env_file": "/home/nish/.config/fleet-ops/seats/openai.env",
       "metered": false
     },
     {
@@ -43,7 +43,7 @@
       "model": "sonar",
       "base_url": "https://api.perplexity.ai",
       "api_key_env": "PERPLEXITY_API_KEY",
-      "env_file": "/home/nish/fleet2/etc/perplexity.env",
+      "env_file": "/home/nish/.config/fleet-ops/seats/perplexity.env",
       "metered": false
     },
     {
@@ -52,7 +52,7 @@
       "model": "claude-sonnet-5",
       "base_url": "https://api.anthropic.com",
       "api_key_env": "ANTHROPIC_API_KEY",
-      "env_file": "/home/nish/fleet2/etc/anthropic.env",
+      "env_file": "/home/nish/.config/fleet-ops/seats/anthropic.env",
       "metered": false
     }
   ]
