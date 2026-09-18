@@ -13,5 +13,10 @@ Type=oneshot
 Environment=PATH=/home/nish/.local/bin:/usr/local/bin:/usr/bin:/bin
 Environment=HOME=/home/nish
 WorkingDirectory=/home/nish
-ExecStart=/bin/sh -c 'i="$1"; r=$(echo "$i" | sed "s/-[0-9][0-9]*$//"); n=$(echo "$i" | sed "s/.*-//"); eval "$(worker-token --print)"; export GH_TOKEN; gh api -X DELETE "repos/Nishfleet/$r/git/refs/heads/claim/issue-$n" >/dev/null 2>&1 || true; gh issue edit "$n" -R "Nishfleet/$r" --remove-label agent-in-progress --add-label agent-ready || true; echo "released claim Nishfleet/$r#$n"' sh %i
+# fleet-ops#7776: a tools=0 (no-tools) verdict is a seat wall, not a packet
+# strike — do not release or relabel. The claim branch stays so the same
+# unit resumes re-entrantly when the wall lifts. The extension's counter
+# prints the verdict as the run's last line, so the LAST PACKET-VERDICT in
+# the journal is the real one (model-forged lookalikes land earlier).
+ExecStart=/bin/sh -c 'i="$1"; if python3 "$HOME/.local/lib/pi-packet/pi-packet-verdict.py" --no-tools-unit "pi-issue@$i.service"; then echo "no-tools run — claim kept for Nishfleet issue $i (seat wall, fleet-ops#7776)"; exit 0; fi; r=$(echo "$i" | sed "s/-[0-9][0-9]*$//"); n=$(echo "$i" | sed "s/.*-//"); eval "$(worker-token --print)"; export GH_TOKEN; gh api -X DELETE "repos/Nishfleet/$r/git/refs/heads/claim/issue-$n" >/dev/null 2>&1 || true; gh issue edit "$n" -R "Nishfleet/$r" --remove-label agent-in-progress --add-label agent-ready || true; echo "released claim Nishfleet/$r#$n"' sh %i
 TimeoutStartSec=120
