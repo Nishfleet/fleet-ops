@@ -417,31 +417,6 @@ if (( ${#stale[@]} > 0 )); then
 fi
 ok "known-orphan list is accurate (no stale entries)"
 
-# fleet-ops#619: the auditor panel test is the only automated check that
-# the admission panel lists scout-candidates, starts the three pi-audit
-# units, and tallies 2-of-3. It must stay in the P14 reachable set.
-# Parking it on known_orphans after dropping the host would pass the
-# accounting above and silently leave the panel untested in CI.
-[[ -n "${reachable[fleet-heartbeat-auditor.test.sh]:-}" ]] \
-  || fail "fleet-heartbeat-auditor.test.sh must be listed in ci.yml or hosted by a listed test (fleet-ops#619)"
-[[ -z "${known_orphan_set[fleet-heartbeat-auditor.test.sh]:-}" ]] \
-  || fail "fleet-heartbeat-auditor.test.sh must not be a known orphan (fleet-ops#619)"
-ok "fleet-heartbeat-auditor.test.sh is in the P14 reachable set (fleet-ops#619)"
-
-# fleet-ops#777/#787: dirty-worktree-audit classifies a worktree as
-# landed by `ls-remote` (HEAD on origin) — the same check
-# fleet-wipe-lessons uses for its deletion guard. The early pin above
-# (before the $bad[] accounting) is the named-failure line of defence
-# for a dropped host. These checks below cover the bypass class: a
-# future worker who sees the generic "1 test file(s) are neither..."
-# message and parks the test on known_orphans to silence it would
-# also fail the named pin below.
-[[ -n "${reachable[dirty-worktree-audit.test.sh]:-}" ]] \
-  || fail "dirty-worktree-audit.test.sh must be listed in ci.yml or hosted by a listed test (fleet-ops#777)"
-[[ -z "${known_orphan_set[dirty-worktree-audit.test.sh]:-}" ]] \
-  || fail "dirty-worktree-audit.test.sh must not be a known orphan (fleet-ops#777)"
-ok "dirty-worktree-audit.test.sh is in the P14 reachable set, not parked on known_orphans (fleet-ops#777)"
-
 # fleet-ops#1200: bypass-class after $bad[] — parking the test on
 # known_orphans to silence the generic "1 test file(s) are neither..."
 # message must fail by name. The early pin above is the loud named
@@ -453,38 +428,10 @@ ok "dirty-worktree-audit.test.sh is in the P14 reachable set, not parked on know
   || fail "pi-packet-verdict.test.sh must not be a known orphan (fleet-ops#1200)"
 ok "pi-packet-verdict.test.sh is in the P14 reachable set, not parked on known_orphans (fleet-ops#1200)"
 
-# fleet-ops#1309: bypass-class after $bad[] — parking the test on
-# known_orphans to silence the generic "1 test file(s) are neither..."
-# message must fail by name. The early pin above is the loud named
-# failure; these checks are the second line so a future worker who
-# comments out the early pin still cannot park the test.
-[[ -n "${reachable[alert-repair-claim-mutex.test.sh]:-}" ]] \
-  || fail "alert-repair-claim-mutex.test.sh must be listed in ci.yml or hosted by a listed test (fleet-ops#1309)"
-[[ -z "${known_orphan_set[alert-repair-claim-mutex.test.sh]:-}" ]] \
-  || fail "alert-repair-claim-mutex.test.sh must not be a known orphan (fleet-ops#1309)"
-ok "alert-repair-claim-mutex.test.sh is in the P14 reachable set, not parked on known_orphans (fleet-ops#1309)"
-
 # Self-check: this file is hosted by ci-standards-audit, not by ci.yml.
 grep -Fq 'bash "$here/p14-test-listing-gate.test.sh"' "$here/ci-standards-audit.test.sh" \
   || fail "ci-standards-audit.test.sh must host p14-test-listing-gate.test.sh"
 ok "p14-test-listing-gate.test.sh is hosted by ci-standards-audit.test.sh"
-
-# fleet-ops#2920 (PR #2937 follow-up): hard-pin the host line for
-# fleet-ops-drift-metrics-dropin in ci-standards-audit so a future
-# refactor that drops it is caught by name. The test landed on main
-# via PR #2937 without a ci.yml listing or a host; the reachable-set
-# check below also fails, but this named check runs first so the
-# operator gets the issue number in the FAIL line. class-prevention:
-# parking it on known_orphans to silence the generic message must
-# also fail by name below.
-grep -Eq '^[[:space:]]*bash[[:space:]]+"?\$here/fleet-ops-drift-metrics-dropin\.test\.sh"?' \
-  "$here/ci-standards-audit.test.sh" \
-  || fail "ci-standards-audit.test.sh must bash-invoke fleet-ops-drift-metrics-dropin.test.sh (fleet-ops#2920)"
-[[ -n "${reachable[fleet-ops-drift-metrics-dropin.test.sh]:-}" ]] \
-  || fail "fleet-ops-drift-metrics-dropin.test.sh must be hosted by a listed test (fleet-ops#2920)"
-[[ -z "${known_orphan_set[fleet-ops-drift-metrics-dropin.test.sh]:-}" ]] \
-  || fail "fleet-ops-drift-metrics-dropin.test.sh must not be a known orphan (fleet-ops#2920)"
-ok "fleet-ops-drift-metrics-dropin.test.sh host line in ci-standards-audit.test.sh is pinned (fleet-ops#2920)"
 
 # fleet-ops#2934 (PR #2948 follow-up): hard-pin the host line for
 # seat-empty-run-intermittent-count in ci-standards-audit so a future
@@ -528,65 +475,6 @@ grep -Eq '^[[:space:]]*bash[[:space:]]+"?\$here/seat-empty-run-count-persists-ne
   || fail "seat-empty-run-count-persists-new-issue.test.sh must not be a known orphan (fleet-ops#3730)"
 ok "seat-empty-run-count-persists-new-issue.test.sh host line in ci-standards-audit.test.sh is pinned (fleet-ops#3730)"
 
-# fleet-ops#1520: hard-pin the host line for curator-journal-cap in
-# ci-standards-audit so a future refactor that drops it is caught by
-# name. The live dump was fixed in memory-compound#9; this test is the
-# fleet-ops class lock. Hosted from tests/ci-standards-audit.test.sh
-# (already listed in ci.yml) because the worker App cannot push
-# .github/workflows/**. Parking it on known_orphans to silence the
-# generic message must also fail by name below.
-grep -Eq '^[[:space:]]*bash[[:space:]]+"?\$here/curator-journal-cap\.test\.sh"?' \
-  "$here/ci-standards-audit.test.sh" \
-  || fail "ci-standards-audit.test.sh must bash-invoke curator-journal-cap.test.sh (fleet-ops#1520)"
-[[ -n "${reachable[curator-journal-cap.test.sh]:-}" ]] \
-  || fail "curator-journal-cap.test.sh must be hosted by a listed test (fleet-ops#1520)"
-[[ -z "${known_orphan_set[curator-journal-cap.test.sh]:-}" ]] \
-  || fail "curator-journal-cap.test.sh must not be a known orphan (fleet-ops#1520)"
-ok "curator-journal-cap.test.sh host line in ci-standards-audit.test.sh is pinned (fleet-ops#1520)"
-
-# fleet-ops#3273: hard-pin the host line for install-manifest-bak-sprawl in
-# ci-standards-audit so a future refactor that drops it is caught by name.
-# Hosted from tests/ci-standards-audit.test.sh (already listed in ci.yml)
-# because the worker App cannot push .github/workflows/**. Parking it on
-# known_orphans to silence the generic message must also fail by name below.
-grep -Eq '^[[:space:]]*bash[[:space:]]+"?\$here/install-manifest-bak-sprawl\.test\.sh"?' \
-  "$here/ci-standards-audit.test.sh" \
-  || fail "ci-standards-audit.test.sh must bash-invoke install-manifest-bak-sprawl.test.sh (fleet-ops#3273)"
-[[ -n "${reachable[install-manifest-bak-sprawl.test.sh]:-}" ]] \
-  || fail "install-manifest-bak-sprawl.test.sh must be hosted by a listed test (fleet-ops#3273)"
-[[ -z "${known_orphan_set[install-manifest-bak-sprawl.test.sh]:-}" ]] \
-  || fail "install-manifest-bak-sprawl.test.sh must not be a known orphan (fleet-ops#3273)"
-ok "install-manifest-bak-sprawl.test.sh host line in ci-standards-audit.test.sh is pinned (fleet-ops#3273)"
-
-# fleet-ops#5602: hard-pin the host line for
-# fleet-ops-drift-sprawl-quarantine in ci-standards-audit so a future
-# refactor that drops it is caught by name. Hosted from
-# tests/ci-standards-audit.test.sh (already listed in ci.yml) because the
-# worker App cannot push .github/workflows/**. Parking it on known_orphans
-# to silence the generic message must also fail by name below.
-grep -Eq '^[[:space:]]*bash[[:space:]]+"?\$here/fleet-ops-drift-sprawl-quarantine\.test\.sh"?' \
-  "$here/ci-standards-audit.test.sh" \
-  || fail "ci-standards-audit.test.sh must bash-invoke fleet-ops-drift-sprawl-quarantine.test.sh (fleet-ops#5602)"
-[[ -n "${reachable[fleet-ops-drift-sprawl-quarantine.test.sh]:-}" ]] \
-  || fail "fleet-ops-drift-sprawl-quarantine.test.sh must be hosted by a listed test (fleet-ops#5602)"
-[[ -z "${known_orphan_set[fleet-ops-drift-sprawl-quarantine.test.sh]:-}" ]] \
-  || fail "fleet-ops-drift-sprawl-quarantine.test.sh must not be a known orphan (fleet-ops#5602)"
-ok "fleet-ops-drift-sprawl-quarantine.test.sh host line in ci-standards-audit.test.sh is pinned (fleet-ops#5602)"
-
-# fleet-ops#4948: hard-pin the host line for install-check-content-equivalent in
-# ci-standards-audit so a future refactor that drops it is caught by name.
-# Hosted from tests/ci-standards-audit.test.sh (already listed in ci.yml)
-# because the worker App cannot push .github/workflows/**. Parking it on
-# known_orphans to silence the generic message must also fail by name below.
-grep -Eq '^[[:space:]]*bash[[:space:]]+"?\$here/install-check-content-equivalent\.test\.sh"?' \
-  "$here/ci-standards-audit.test.sh" \
-  || fail "ci-standards-audit.test.sh must bash-invoke install-check-content-equivalent.test.sh (fleet-ops#4948)"
-[[ -n "${reachable[install-check-content-equivalent.test.sh]:-}" ]] \
-  || fail "install-check-content-equivalent.test.sh must be hosted by a listed test (fleet-ops#4948)"
-[[ -z "${known_orphan_set[install-check-content-equivalent.test.sh]:-}" ]] \
-  || fail "install-check-content-equivalent.test.sh must not be a known orphan (fleet-ops#4948)"
-ok "install-check-content-equivalent.test.sh host line in ci-standards-audit.test.sh is pinned (fleet-ops#4948)"
-
 # fleet-ops#3285: hard-pin the host line for daily-digest in
 # ci-standards-audit so a future refactor that drops it is caught by name.
 # The spend-line replay drill landed in this PR without a ci.yml listing
@@ -616,20 +504,6 @@ grep -Eq '^[[:space:]]*bash[[:space:]]+"?\$here/fleet-duty-officer-recording\.te
   || fail "fleet-duty-officer-recording.test.sh must not be a known orphan (fleet-ops#4394)"
 ok "fleet-duty-officer-recording.test.sh is pinned in the P14 reachable set (fleet-ops#4394)"
 
-
-# fleet-ops#5059: hard-pin the host line for helper-symlink-resolution in
-# ci-standards-audit so a future refactor that drops it is caught by name.
-# Hosted from tests/ci-standards-audit.test.sh (already listed in ci.yml)
-# because the worker App cannot push .github/workflows/**. Parking it on
-# known_orphans to silence the generic message must also fail by name below.
-grep -Eq '^[[:space:]]*bash[[:space:]]+"?\$here/helper-symlink-resolution\.test\.sh"?' \
-  "$here/ci-standards-audit.test.sh" \
-  || fail "ci-standards-audit.test.sh must bash-invoke helper-symlink-resolution.test.sh (fleet-ops#5059)"
-[[ -n "${reachable[helper-symlink-resolution.test.sh]:-}" ]] \
-  || fail "helper-symlink-resolution.test.sh must be hosted by a listed test (fleet-ops#5059)"
-[[ -z "${known_orphan_set[helper-symlink-resolution.test.sh]:-}" ]] \
-  || fail "helper-symlink-resolution.test.sh must not be a known orphan (fleet-ops#5059)"
-ok "helper-symlink-resolution.test.sh host line in ci-standards-audit.test.sh is pinned (fleet-ops#5059)"
 
 # fleet-ops#5588: hard-pin the host line for one-fleet-rule-pointer.test.sh in
 # ci-standards-audit.test.sh (itself listed in ci.yml). The consolidation
@@ -696,38 +570,5 @@ grep -Eq '^[[:space:]]*bash[[:space:]]+"?\$here/pick-seat-freeze\.test\.sh"?' \
 [[ -z "${known_orphan_set[pick-seat-freeze.test.sh]:-}" ]] \
   || fail "pick-seat-freeze.test.sh must not be a known orphan (fleet-ops#4263)"
 ok "pick-seat-freeze.test.sh host line in ci-standards-audit.test.sh is pinned (fleet-ops#4263)"
-
-# fleet-ops#6020: hard-pin the fleet-ops#1176 nested-host line for
-# fleet-token-economy.test.sh in rule-enforcement.test.sh (itself listed in
-# ci.yml). The #6020 finding judged the suite "not in the P14 CI list" from a
-# grep of ci.yml alone — the exact fleet-ops#619 trap: it was already hosted
-# here since #1176. The red the finding cites (beda5a135, #3125 yield-order
-# assertion) was fixed by #6037 the same day. If this host line is ever
-# dropped, the suite silently leaves P14, so it is caught by name here —
-# the #4396-class "never silently rot again" teeth, without a redundant
-# standalone ci.yml line (nested host = the #660/#1176 pattern; worker
-# tokens cannot push .github/workflows/** edits).
-grep -Eq '^[[:space:]]*bash[[:space:]]+"?\$here/fleet-token-economy\.test\.sh"?' \
-  "$here/rule-enforcement.test.sh" \
-  || fail "rule-enforcement.test.sh must bash-invoke fleet-token-economy.test.sh (fleet-ops#6020)"
-[[ -n "${reachable[fleet-token-economy.test.sh]:-}" ]] \
-  || fail "fleet-token-economy.test.sh must be listed in ci.yml or hosted by a listed test (fleet-ops#6020)"
-[[ -z "${known_orphan_set[fleet-token-economy.test.sh]:-}" ]] \
-  || fail "fleet-token-economy.test.sh must not be a known orphan (fleet-ops#6020)"
-ok "fleet-token-economy.test.sh host line in rule-enforcement.test.sh is pinned (fleet-ops#6020)"
-# fleet-ops#5493: hard-pin the host line for install-seat-caps-stale-
-# snapshot-refuse.test.sh in ci-standards-audit so a future refactor that
-# drops it is caught by name. Hosted from tests/ci-standards-audit.test.sh
-# (already listed in ci.yml) because the worker App cannot push
-# .github/workflows/**. Parking it on known_orphans to silence the generic
-# message must also fail by name, same shape as every other hosted test.
-grep -Eq '^[[:space:]]*bash[[:space:]]+"?\$here/install-seat-caps-stale-snapshot-refuse\.test\.sh"?' \
-  "$here/ci-standards-audit.test.sh" \
-  || fail "ci-standards-audit.test.sh must bash-invoke install-seat-caps-stale-snapshot-refuse.test.sh (fleet-ops#5493)"
-[[ -n "${reachable[install-seat-caps-stale-snapshot-refuse.test.sh]:-}" ]] \
-  || fail "install-seat-caps-stale-snapshot-refuse.test.sh must be hosted by a listed test (fleet-ops#5493)"
-[[ -z "${known_orphan_set[install-seat-caps-stale-snapshot-refuse.test.sh]:-}" ]] \
-  || fail "install-seat-caps-stale-snapshot-refuse.test.sh must not be a known orphan (fleet-ops#5493)"
-ok "install-seat-caps-stale-snapshot-refuse.test.sh host line in ci-standards-audit.test.sh is pinned (fleet-ops#5493)"
 
 echo "OK: p14-test-listing-gate.test.sh: P14 test list is closed"

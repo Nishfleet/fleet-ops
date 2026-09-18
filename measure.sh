@@ -82,7 +82,13 @@ fi
 # Merged PRs across the fleet repos in the trailing 24h (gh is the live truth;
 # a gh failure makes the numerator unknown and is flagged, not silently zeroed).
 merged_24h=0
-repo_list="${MEASURE_REPOS:-Nishfleet/fleet-ops Nishfleet/0509 Nishfleet/siterep-public Nishfleet/inish-site}"
+# `${MEASURE_REPOS-...}` (no colon) on purpose: MEASURE_REPOS="" is the
+# offline seam four tests use to run measure.sh with no gh at all. With the
+# colon form an explicit empty string still expanded to the four live repos,
+# so every "hermetic" measure.sh test silently hit GitHub and the
+# attest-waiting detector below walked the whole open queue issue-by-issue
+# (tests/measure-cursor-today.test.sh hit its 300s timeout on 2026-09-18).
+repo_list="${MEASURE_REPOS-Nishfleet/fleet-ops Nishfleet/0509 Nishfleet/siterep-public Nishfleet/inish-site}"
 for repo in $repo_list; do
   if command -v gh >/dev/null 2>&1; then
     n=$(gh pr list -R "$repo" --state merged --limit 200 --json mergedAt \

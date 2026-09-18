@@ -18,6 +18,7 @@
 #     attest-waiting: UNAVAILABLE:<why> — gh failure, never a fabricated 0
 # Env: ATTEST_WAITING_NOW=<iso8601>     freeze "now" (tests)
 #      ATTEST_WAITING_STALE_S=<secs>    staleness threshold (default 7200)
+#      ATTEST_WAITING_BUDGET_S=<secs>   total wall-clock budget (default 60)
 
 attest_waiting_line() {
     [[ $# -gt 0 ]] || return 0
@@ -32,8 +33,14 @@ attest_waiting_line() {
     local repos_json fail=0
     repos_json=$(printf '%s\n' "$@" | jq -R . | jq -s .)
 
+    # fleet-ops#5870: each gh call already carries timeout=120, but the loop
+    # below is one gh call PER open agent-ready/agent-blocked issue across
+    # every repo, so the TOTAL had no bound — a large queue wedged measure.sh
+    # and, through it, the 5-min fleet-metrics-export tick. An overall budget
+    # degrades to UNAVAILABLE (never a fabricated 0) instead of hanging.
+    local budget_s="${ATTEST_WAITING_BUDGET_S:-60}"
     local payload
-    payload=$(python3 - "$now_iso" "$stale_s" "$repos_json" <<'PY' 2>/dev/null
+    payload=$(timeout "$budget_s" python3 - "$now_iso" "$stale_s" "$repos_json" <<'PY' 2>/dev/null
 import json, os, subprocess, sys
 
 now_iso, stale_s, repos_json = sys.argv[1], sys.argv[2], sys.argv[3]
@@ -107,7 +114,7 @@ PY
     ) || fail=1
 
     if [ "$fail" -eq 1 ] || [ -z "${payload:-}" ]; then
-        echo "attest-waiting: UNAVAILABLE:gh-error"
+        echo "attest-waiting: UNAVAILABLE:gh-error-or-budget"
         return 0
     fi
     printf '%s\n' "$payload"
