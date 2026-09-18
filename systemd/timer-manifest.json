@@ -38,12 +38,6 @@
       "cadence": "daily",
       "source": "user-config"
     },
-    "fleet-console-pi.timer": {
-      "reason": "Fleet Console (Pi) page refresh — GitHub PR/CI state drifts continuously; 12-min cadence keeps page current inside API budget. CONVERTING TO PATH UNIT",
-      "classification": "converting",
-      "cadence": "12min",
-      "source": "repo"
-    },
     "fleet-deploy-check.timer": {
       "reason": "Merge-to-live deploy check — TOP GEAR: merged-but-not-live latency bound. CONVERTING TO PATH UNIT on state file changes",
       "classification": "converting",

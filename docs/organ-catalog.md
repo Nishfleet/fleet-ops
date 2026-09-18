@@ -34,7 +34,6 @@ cheaper than building, because prose bans lose to urgency at decision time.
 | Asset census | fleet-asset-census | `fleet-asset-census.timer` | #1149 |
 | Baseline-delta | fleet-baseline-delta | `fleet-baseline-delta.timer` | #1151 |
 | GEO/AEO probe | fleet-aeo-probe | `fleet-aeo-probe.timer` | #1245 |
-| Console tile truth | fleet-console-pi | `fleet-console-pi.timer` | #1157 |
 | Seat recovery | fleet-seat-recovery | `fleet-seat-recovery.{path,service}` | seat governor |
 | Metrics export | fleet-metrics-export | `fleet-metrics-export.timer` | organ: metrics-export |
 | Scout canary | pi-scout@ | `pi-scout@.timer` | organ: scout |

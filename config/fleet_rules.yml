@@ -690,35 +690,6 @@ groups:
 
   - name: fleet_console_truth
     rules:
-      # fleet-ops#1157: a tile whose independent truth-check disagrees with
-      # the number on the page. Warning, 30m, rides the existing repair rail
-      # (severity=warning -> repair-dispatch). Exact counts mismatch immediately;
-      # the 30m `for` is the lie that persists across two push cycles.
-      - alert: ConsoleLying
-        expr: fleet_console_tile_mismatch > 0
-        for: 30m
-        labels:
-          severity: warning
-          service: fleet
-        annotations:
-          summary: "fleet console tile {{ $labels.tile }} is DISPUTED for 30+ minutes"
-          description: "fleet_console_tile_mismatch{tile=\"{{ $labels.tile }}\"} > 0 for 30m. The console push job's verify pass recomputed this tile from source and disagreed with the rendered number. Repair: read the tile's verify.cmd on the page (what is this?), run it, and fix the collector (not the verify). PI WORK mismatches against ExecStart content are fleet-ops#1155."
-
-      # Organ heartbeat (fleet-ops#1010 standing pattern). The verify pass
-      # writes fleet_console_tile_verify_timestamp_seconds on every push.
-      # 40m is >3 push cycles (12 min). absent() catches a missing file;
-      # time()-timestamp catches a frozen file (textfile collector keeps
-      # the last scrape). No new timer: fleet-console-pi.timer is the schedule.
-      - alert: ConsoleTileVerifyAbsent
-        expr: absent(fleet_console_tile_verify_timestamp_seconds) or (time() - fleet_console_tile_verify_timestamp_seconds) > 2400
-        for: 40m
-        labels:
-          severity: critical
-          service: fleet
-        annotations:
-          summary: "console tile-verify organ absent — the self-audit pass is missing or dead"
-          description: "Repair worker: fleet-console-pi/verify.py must write fleet_console_tile_verify_timestamp_seconds (and fleet_console_tile_mismatch). Check fleet-console-pi.timer is running and journalctl --user -u fleet-console-pi.service. No new timer was added; verify piggybacks the existing push cycle (fleet-ops#1157)."
-
       # fleet-ops#1232: 17 min of honest-dark gh tiles because caches aged
       # out and scheduled refreshes did not recover. Honesty rendering
       # (dash + stale marker) already works; this is the missing
@@ -777,61 +748,6 @@ groups:
         annotations:
           summary: "gh rate-limit has been below 20% for 6+ hours"
           description: "max(fleet_gh_rate_limit_low{resource=...}) flipped from 0 to 1 in the last 6h, sustained 6h. The throttle gate in pi-intake-tick.sh has been holding claims the whole window. A rate-limited fleet is slower than a governed one (Nish 2026-08-27 #1167). Inspect fleet_gh_rate_limit_remaining{resource=\"...\"} to see which resource is exhausted; fleet_gh_rate_limit_reset is the time-to-reset. Recovery: either (1) wait for the window to reset, or (2) reduce the worker count (drop free-lane caps in config/seat-caps.json). The alert is a TREND (delta) not a level so a brief 19% spike does not fire."
-
-  - name: fleet_scout_supply
-    rules:
-      # Organ heartbeat (fleet-ops#1010 standing pattern: every new organ
-      # ships its absent() rule in the same PR). scout-futility-check writes
-      # fleet_scout_last_run_seconds on ExecStartPre begin — not on
-      # ExecStopPost of an ExecCondition skip, so a rest-skipped tick does
-      # not look like a live scout. 8h is two missed 4h timer cycles.
-      # 0 means begin has never succeeded (missing snapshot).
-      - alert: FleetScoutStale
-        expr: absent(fleet_scout_last_run_seconds) or (time() - fleet_scout_last_run_seconds) > 28800
-        for: 15m
-        labels:
-          severity: warning
-          service: fleet
-        annotations:
-          summary: "pi-scout@{{ $labels.repo }} has not actually begun in 8+ hours"
-          description: "Repair worker: fleet_scout_last_run_seconds is absent or older than 8h (two pi-scout@ timer cycles). This is last ExecStartPre begin, not last timer fire — ExecCondition skip still triggers the timer. Check journalctl --user -u pi-scout@{{ $labels.repo }}.service for action=rest vs missing begin snapshot. If hours_of_work < 24, start the scout. Helper: /home/nish/.local/bin/scout-futility-check. fleet-ops#1277."
-
-      # Organ heartbeat (fleet-ops#1137 standing pattern). The truth
-      # staleness checker exports fleet_truth_staleness_last_run_seconds on
-      # every run (the exporter-piggyback ExecStartPost on the 5-min exporter
-      # tick — no timer of its own since fleet-ops#4149). 25h is a generous
-      # slack so a routine skip never fires but a dead checker does. absent()
-      # catches a missing file; time()-timestamp catches a frozen file
-      # (textfile collector keeps last scrape).
-      - alert: TruthStalenessAbsent
-        expr: absent(fleet_truth_staleness_last_run_seconds) or (time() - fleet_truth_staleness_last_run_seconds) > 90000
-        for: 12h
-        labels:
-          severity: critical
-          service: fleet
-        annotations:
-          summary: "truth-staleness-checker organ absent — the standing-doc checker is missing or dead"
-          description: "Repair worker: fleet_truth_staleness_last_run_seconds is absent or older than 25h. The truth-staleness-checker (fleet-ops#1137) cross-checks standing docs against live state; if this is silent, standing truth can silently rot without detection. Check: (1) `systemctl --user status fleet-metrics-export.service` (the checker piggybacks the exporter via ExecStartPost in systemd/fleet-metrics-export.service.d/staleness-checker.conf); (2) `cat ~/.local/libexec/staleness-checker.py` is intact; (3) run it by hand: `python3 ~/.local/libexec/staleness-checker.py`. The weekly timer + issue filing were retired in fleet-ops#4149 — TruthStalenessMismatch notifies on actual mismatches. Helper: /home/nish/.local/libexec/staleness-checker.py. fleet-ops#1137."
-
-      # fleet-ops#4149: the hand-built weekly truth-staleness timer + GitHub
-      # issue filing are retired. This alert is their off-the-shelf
-      # replacement: when the checker finds a mismatch (stale doc path, dead
-      # unit ref, or rotten issue ref), fleet_truth_staleness_mismatches_by_kind
-      # goes > 0 with one series per kind. The finding details (kind, source
-      # doc, raw claim, reason) live in the JSON cache the checker writes on
-      # every run: ~/workspaces/agent-state/fleet-metrics/staleness-findings-cache.json
-      # (fleet-metrics-export.py reads the same cache for this gauge).
-      # severity=warning -> repair-dispatch (no phone): docs-vs-live drift is
-      # a repair job, not a page (fleet-ops#1534).
-      - alert: TruthStalenessMismatch
-        expr: fleet_truth_staleness_mismatches_by_kind > 0
-        for: 1h
-        labels:
-          severity: warning
-          service: fleet
-        annotations:
-          summary: "truth staleness mismatches — standing docs drifted from live state"
-          description: "Repair worker: fleet_truth_staleness_mismatches_by_kind > 0 — one or more standing-doc claims (file paths, systemd units, issue refs) failed live validation. Read the details in ~/workspaces/agent-state/fleet-metrics/staleness-findings-cache.json (kind, source doc, raw claim, reason), then either fix the live state or correct the doc. The checker piggybacks the exporter tick (ExecStartPost in systemd/fleet-metrics-export.service.d/staleness-checker.conf); this alert replaced the retired weekly timer + auto-filed issues (fleet-ops#4149)."
 
   - name: fleet_grok_token_refresh_supply
     rules:

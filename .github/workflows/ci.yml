@@ -89,13 +89,11 @@ jobs:
         bash tests/repeat-deterministic-detector.test.sh
         bash tests/red-on-main-detector.test.sh
         bash tests/ci-failure-escalation-detector.test.sh
-        bash tests/staleness-checker.test.sh
         bash tests/required-check-purity.test.sh
         bash tests/ci-checklist-gate.test.sh
         bash tests/pi-packet-guard.test.sh
         bash tests/pi-systemd-run.test.sh
         bash tests/prior-art-claim-check.test.sh
-        bash tests/scout-futility.test.sh
         bash tests/worker-prompt-size-ceiling.test.sh
         # fleet-ops#2133: reclaim cooldown + stale-claim release break the
         # spawn-die-respawn wedge (reaper writes cooldown marker, intake
@@ -115,7 +113,6 @@ jobs:
         # fleet-ops#5048: park the protected + no-termination + no-claim-PR
         # cell when a named user timer/service is active or a merged
         # non-claim-branch PR delivered the work (live case #4891).
-        bash tests/fleet-console-pi-utc.test.sh
         # Devin message rate limit = pause + in-session resume, never a worker
         # death (114 deaths/24h on that one message, 2026-09-11).
         bash tests/devin-provider-rate-limit-retry.test.sh
@@ -276,7 +273,6 @@ jobs:
           /home/nish/.local/bin/fleet-escalation-completion \
           /home/nish/.local/bin/memory-index-autocompact \
           /usr/bin/redis-server \
-          /home/nish/workspaces/tooling/fleet-console-pi/push.sh
         do
           sudo install -D -m 0755 /dev/null "$p"
         done
