@@ -11,7 +11,7 @@
 #   1. no tracked non-archive file references the dead path
 #   2. every `!cmd` apiKey in config/pi-models.json names an absolute path or
 #      helper that EXISTS on the host (seats root, a ~/.config/<x> env, or a
-#      ~/.local/bin key helper), never fleet2, and keeps '=' inside values
+#      ~/.local/bin key helper) and is non-empty, never fleet2, and keeps '=' inside values
 #      (cut -f2-). CI without the host dirs: existence check SKIPs.
 #   3. both provider extensions import ./seat-env (env + models) and MANIFEST
 #      installs the helper beside each of them
@@ -42,7 +42,9 @@ for name, prov in d.get("providers", {}).items():
     if not paths: bad.append(f"{name}: key command names no absolute path or helper: {k}"); continue
     if on_host:
         for q in paths:
-            if not os.path.exists(q): bad.append(f"{name}: {q} does not exist on this host (points nowhere)")
+            if not os.path.exists(q): bad.append(f"{name}: {q} does not exist on this host (points nowhere)"); continue
+            if q.endswith(".env") and not re.search(r"^(export\s+)?[A-Za-z_][A-Za-z0-9_]*=\S", open(q).read(), flags=re.M):
+                bad.append(f"{name}: {q} is empty / has no KEY=value line (a keyless seat is a lie — place the key or delete the provider)")
 if bad: print("\n".join(bad)); sys.exit(1)
 PY
 }

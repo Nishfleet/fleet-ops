@@ -5,7 +5,7 @@
  *   cursor-agent --print --api-key "$CURSOR_API_KEY" --model <model>
  *                --force --trust --workspace <workspace> -- <prompt>
  *
- * Credential: $CURSOR_API_KEY from ~/.config/fleet-ops/seats/cursor.env
+ * Credential: cursor-agent login (cursor-agent status); optional $CURSOR_API_KEY from ~/.config/fleet-ops/seats/cursor.env
  * Models (NON-NEGOTIABLE LOCK, Nish 2026-08-22; kimi added 2026-09-08):
  *   composer-2.5         — Cursor Composer 2.5
  *   cursor-grok-4.6-high — Cursor Grok 4.6 High
@@ -130,11 +130,9 @@ function streamCursor(
 				throw new Error(`Cursor binary not found at ${cursorBin}`);
 			}
 
-			if (!apiKey) {
-				throw new Error(
-					"CURSOR_API_KEY is not set. Source ~/.config/fleet-ops/seats/cursor.env or set it in your environment.",
-				);
-			}
+			// fleet-ops#7664: cursor-agent carries its own login (`cursor-agent status` ->
+			// "Logged in as ..."); CURSOR_API_KEY (seats/cursor.env) is an optional override,
+			// not a requirement — a missing key must not turn a logged-in seat into a corpse.
 
 			// Build the command
 			// cursor-agent --print --model <model> --force --trust
@@ -165,7 +163,7 @@ function streamCursor(
 			// (standing write autonomy, Nish 2026-08-05; devin half inverted identically
 			// by fleet-ops#4780). Live probe 2026-09-11: --print --force on
 			// cursor-grok-4.6-high accepted a `gh issue comment` write on fleet-ops#5174.
-			const child = spawnSync(cursorBin, ["--print", "--api-key", apiKey, "--model", model.id, "--force", "--trust", "--workspace", workspace], {
+			const child = spawnSync(cursorBin, ["--print", ...(apiKey ? ["--api-key", apiKey] : []), "--model", model.id, "--force", "--trust", "--workspace", workspace], {
 				cwd: workspace,
 				input: prompt, // stdin transport (see E2BIG note above) — never argv
 				timeout: 2400000, // 40 min (2026-09-04 fleet-ops#3263: 30 min killed heavy packets at 1801s — same class as the devin-provider fix; pi hang watchdog is 2520s, provider must stay under it)
@@ -232,7 +230,7 @@ export default function (pi: ExtensionAPI) {
 	pi.registerProvider("cursor", {
 		name: "Cursor",
 		baseUrl: "https://api2.cursor.sh",
-		apiKey: "$CURSOR_API_KEY",
+		// apiKey omitted on purpose (optional per pi docs/models.md): auth = cursor-agent login, CURSOR_API_KEY overrides.
 		api: "cursor-cli",
 		models: modelsFromModelsJson("cursor", { reasoning: true, input: ["text", "image"], cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } }),
 		// Delegate all streaming to the custom impl — not a standard API
