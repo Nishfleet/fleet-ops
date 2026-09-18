@@ -90,10 +90,11 @@ ok()   { echo "OK: $*"; }
 command -v jq >/dev/null 2>&1 || fail "jq missing"
 [[ -x "$repo_root/bin/fleet-ops-deploy" ]] || fail "missing bin/fleet-ops-deploy"
 [[ -f "$repo_root/bin/fleet-ops-drift.py" ]] || fail "missing bin/fleet-ops-drift.py"
-grep -q 'fleet-ops-deploy' "$repo_root/bin/fleet-heartbeat-tier1" \
-    || fail "fleet-heartbeat-tier1 must invoke fleet-ops-deploy"
-grep -q 'deploy_rc' "$repo_root/bin/fleet-heartbeat-tier1" \
-    || fail "fleet-heartbeat-tier1 must propagate deploy_rc"
+# Second cut 2026-09-18: the heartbeat tower that used to drive the deploy is
+# deleted. fleet-deploy-check.timer (every 2 min) is the only caller now, and
+# tests/fleet-deploy-check.test.sh owns that contract.
+grep -q 'fleet-ops-deploy' "$repo_root/bin/fleet-deploy-check" \
+    || fail "fleet-deploy-check must invoke fleet-ops-deploy"
 grep -q 'rev-parse --git-dir' "$repo_root/bin/fleet-ops-deploy" \
     || fail "fleet-ops-deploy must use rev-parse --git-dir (worktree-safe), not [ -d .git ]"
 if grep -Fq '[ ! -d "$DEPLOY_CHECKOUT/.git" ]' "$repo_root/bin/fleet-ops-deploy"; then
