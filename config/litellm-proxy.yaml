@@ -31,51 +31,9 @@ model_list:
 # Jev (site fleet-seats): wire ultra order:1 0.58, add lightning 0.60, senior/judge 0.49 (not done).
 # Same $0 / prompts-retained class Nish approved for union-alpha on 09-17: NOT in worker-private.
 # Revert: cp litellm-proxy.yaml.bak-pre-nemotron-* litellm-proxy.yaml && systemctl --user restart fleet-litellm-proxy
-- model_name: worker-cheap
-  litellm_params:
-    model: openai/nvidia/nemotron-3-ultra-550b-a55b:free
-    api_base: https://openrouter.ai/api/v1
-    api_key: os.environ/OPENROUTER_API_KEY
-    extra_headers: {HTTP-Referer: https://0509.io, X-Title: nish-fleet}
-    tags:
-    - free
-    - nemotron
-    order: 1
-    max_parallel_requests: 4
-  model_info:
-    mode: chat
-    id: nemotron-ultra-openrouter-worker-cheap
-    input_cost_per_token: 0
-- model_name: worker-cheap
-  litellm_params:
-    model: openai/nvidia/nemotron-3.5-lightning:free
-    api_base: https://openrouter.ai/api/v1
-    api_key: os.environ/OPENROUTER_API_KEY
-    extra_headers: {HTTP-Referer: https://0509.io, X-Title: nish-fleet}
-    tags:
-    - free
-    - nemotron
-    order: 1
-    max_parallel_requests: 4
-  model_info:
-    mode: chat
-    id: nemotron-lightning-openrouter-worker-cheap
-    input_cost_per_token: 0
-- model_name: worker-capable
-  litellm_params:
-    model: openai/nvidia/nemotron-3-ultra-550b-a55b:free
-    api_base: https://openrouter.ai/api/v1
-    api_key: os.environ/OPENROUTER_API_KEY
-    extra_headers: {HTTP-Referer: https://0509.io, X-Title: nish-fleet}
-    tags:
-    - free
-    - nemotron
-    order: 1
-    max_parallel_requests: 4
-  model_info:
-    mode: chat
-    id: nemotron-ultra-openrouter-worker-capable
-    input_cost_per_token: 0
+# 2026-09-18 14:29 IST (claude-vps): fleet-litellm-health-canary tripped health-deployment-unhealthy on the 3
+# nemotron deployments + zenmux glm-4.7-flash-free (429 free-quota walls, 830s >= 300s hold). All benched below,
+# see the benched: entries dated 2026-09-18. Zenmux/ollama/inferx rungs exist only in the live yaml (14:20 IST widening, not yet synced here).
 - model_name: worker-cheap
   litellm_params:
     model: openai/hf:zai-org/GLM-5.3-Flash
@@ -267,6 +225,44 @@ benched:
     - prepaid
     order: 2
     max_parallel_requests: 1
+- benched_at: 2026-09-18
+  reason: "openai/nvidia/nemotron-3-ultra-550b-a55b:free @ https://openrouter.ai/api/v1 (OPENROUTER_API_KEY), worker-cheap + worker-capable — fleet-litellm-health-canary health-deployment-unhealthy: /health RateLimitError 'Rate limit exceeded: free-models-per-day-high-balance', continuously unhealthy 830s >= the #6427 300s hold. OpenRouter's free-models-per-day cap is per ACCOUNT, so every openrouter :free rung shares one daily bucket. Independently, the 2026-09-18 nemotron-out removal note (bak-nemotron-out-20260918T085208Z) stands: HTTP 200 with ZERO tool calls on real packets (PACKET-VERDICT 7d 966 no-tools vs 127 worked). Restore ONLY with BOTH a green /health probe AND a tool-call rate measured over real packets, cited in the PR (fleet-ops#6054 drill, #5792 accept line, #6427 hold; canary trip 2026-09-18 14:29 IST, re-confirmed by direct GET /health at 2026-09-18T09:00:04Z before benching)."
+  was: [worker-cheap, worker-capable]
+  litellm_params:
+    model: openai/nvidia/nemotron-3-ultra-550b-a55b:free
+    api_base: https://openrouter.ai/api/v1
+    api_key: os.environ/OPENROUTER_API_KEY
+    extra_headers: {HTTP-Referer: https://0509.io, X-Title: nish-fleet}
+    tags:
+    - free
+    - nemotron
+    order: 1
+    max_parallel_requests: 4
+- benched_at: 2026-09-18
+  reason: "openai/nvidia/nemotron-3.5-lightning:free @ https://openrouter.ai/api/v1 (OPENROUTER_API_KEY), worker-cheap — fleet-litellm-health-canary health-deployment-unhealthy: /health RateLimitError 'Rate limit exceeded: free-models-per-day-high-balance', continuously unhealthy 830s >= the #6427 300s hold. OpenRouter's free-models-per-day cap is per ACCOUNT, so every openrouter :free rung shares one daily bucket. Independently, the 2026-09-18 nemotron-out removal note (bak-nemotron-out-20260918T085208Z) stands: HTTP 200 with ZERO tool calls on real packets (PACKET-VERDICT 7d 966 no-tools vs 127 worked). Restore ONLY with BOTH a green /health probe AND a tool-call rate measured over real packets, cited in the PR (fleet-ops#6054 drill, #5792 accept line, #6427 hold; canary trip 2026-09-18 14:29 IST, re-confirmed by direct GET /health at 2026-09-18T09:00:04Z before benching)."
+  was: [worker-cheap]
+  litellm_params:
+    model: openai/nvidia/nemotron-3.5-lightning:free
+    api_base: https://openrouter.ai/api/v1
+    api_key: os.environ/OPENROUTER_API_KEY
+    extra_headers: {HTTP-Referer: https://0509.io, X-Title: nish-fleet}
+    tags:
+    - free
+    - nemotron
+    order: 1
+    max_parallel_requests: 4
+- benched_at: 2026-09-18
+  reason: "openai/z-ai/glm-4.7-flash-free @ https://zenmux.ai/api/v1 (ZENMUX_API_KEY), worker-cheap — wired 2026-09-18 14:20 IST in the free-pool widening on a single PONG probe; within ~10 min of fleet load /health RateLimitError 'You have reached the usage limit for the current free model. Please try again later, or use a different model', continuously unhealthy 830s >= the #6427 300s hold. A one-shot PONG is not a capacity proof for a quota-capped free model. Restore ONLY with a green /health probe AND a sustained-load probe (>= 20 real packets without 429) cited in the PR (fleet-ops#6054 drill, #5792 accept line, #6427 hold; canary trip 2026-09-18 14:29 IST, re-confirmed by direct GET /health at 2026-09-18T09:00:04Z before benching)."
+  was: [worker-cheap]
+  litellm_params:
+    model: openai/z-ai/glm-4.7-flash-free
+    api_base: https://zenmux.ai/api/v1
+    api_key: os.environ/ZENMUX_API_KEY
+    tags:
+    - free
+    - zenmux
+    order: 1
+    max_parallel_requests: 4
 router_settings:
   routing_strategy: simple-shuffle
   fallbacks:
