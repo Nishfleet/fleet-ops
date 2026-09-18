@@ -37,6 +37,22 @@ Environment=HOME=/home/nish
 Environment=PATH=/home/nish/.local/bin:/usr/local/bin:/usr/bin:/bin
 Environment=XDG_RUNTIME_DIR=/run/user/1000
 Environment=PI_UNIT_INSTANCE=%i
+# Commit identity. The worker commits inside a worktree of the deploy clone or
+# of products/0509, and BOTH carry a repo-local `user.name = Nish` — so without
+# this block a worker's commits land authored by Nish himself. The retired
+# bin/pi-issue-run set the identity per-commit; when it was deleted the override
+# went with it, and the first worker on the new rail pushed
+# claim/issue-7783 @ 88d52047c authored "Nish <nish@users.noreply.github.com>"
+# while every claim branch from before the cut is authored nishfleet-worker[bot].
+# git's own env vars are the fix: they outrank repo-local config (proven on this
+# host 2026-09-18 against a local config of exactly `Nish`), they are set once in
+# the unit instead of restated in prose the model can forget, and they cover
+# `git commit` however the worker invokes it. This is the commit identity only —
+# push auth is the GH_TOKEN minted below, and they are separate mechanisms.
+Environment=GIT_AUTHOR_NAME=nishfleet-worker[bot]
+Environment=GIT_AUTHOR_EMAIL=321485391+nishfleet-worker[bot]@users.noreply.github.com
+Environment=GIT_COMMITTER_NAME=nishfleet-worker[bot]
+Environment=GIT_COMMITTER_EMAIL=321485391+nishfleet-worker[bot]@users.noreply.github.com
 WorkingDirectory=/home/nish
 # App identity: `gh token` (the Link-/gh-token gh extension, v2.0.10) mints the
 # <=1h nishfleet-worker installation token. It replaces bin/worker-token (350
