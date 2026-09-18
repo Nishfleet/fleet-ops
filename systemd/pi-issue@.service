@@ -65,6 +65,16 @@ ExecStopPost=-/home/nish/.local/bin/pi-salvage-worktree
 # ($$ and %% are systemd escapes for a literal $ and %). --no-block: never
 # wait on intake inside a worker's stop path; '-' so it can never wedge it.
 ExecStopPost=-/bin/sh -c 'i=%i; systemctl --user start --no-block "pi-intake@$${i%%-*}.service"'
+# Glue sweep 2026-09-18: every worker start writes a per-instance drop-in dir
+# (memory.conf from pi-issue-start / lib/pi-intake-tick.sh, fleet-ops#1558),
+# and nothing ever removed it — 2,512 orphan *.d dirs (23MB) had accumulated
+# back to issue 527, re-read on every daemon-reload. The write is load-bearing
+# (it is the per-repo/per-difficulty memory cap), so the cleanup lives here in
+# the unit's own stop path rather than in a new sweeper organ.
+# Only on SERVICE_RESULT=success: on a failure systemd restarts the unit
+# without going through pi-issue-start, so the cap must survive the retry
+# ladder. The terminal-failure residue is cleared by pi-issue-failed@.service.
+ExecStopPost=-/bin/sh -c '[ "$$SERVICE_RESULT" = success ] && rm -rf "$$HOME/.config/systemd/user/%n.d"'
 TimeoutStopSec=180
 
 # Retry policy - systemd's own, not a counter in bash.
