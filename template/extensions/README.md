@@ -21,8 +21,9 @@ Deleted, with what replaced each (verified live, not assumed):
 | `stop-judge.ts` | 404 | nothing — a stop policy the fleet no longer wants |
 | `bash-spawn-hook.ts` (fleet fork) | 90 | folded into `permission-gate.ts` |
 | `jev-decide.ts` | 77 | nothing here — Jev is being moved to a LiteLLM pass-through endpoint |
+| `packet-verdict.ts` | 89 | `pi-issue@.service` `ExecStopPost`: requires `claim/issue-<n>` on origin, else `Result=failed` (the rail unit's cut, landed d4a42ced6) |
 
-**2,663 lines removed.** The process ceiling is no longer userspace: it is
+**2,752 lines removed.** The process ceiling is no longer userspace: it is
 `systemd.resource-control` `TasksMax=8000` on `fleet-work.slice`, from the
 linked drop-in `systemd/fleet-work.slice.d/10-tasksmax.conf`. Proved live:
 `systemctl --user show fleet-work.slice -p TasksMax -p DropInPaths`, and locked
@@ -40,7 +41,6 @@ Deleting it is strictly less machinery than symlinking it.
 |---|---:|---|
 | `permission-gate.ts` | 54 | **fork of stock (pi 0.85.1).** Adds 3 fleet rules to stock's 3: `git stash` (not `list`/`show`), `systemctl … restart`, `wrangler … deploy`. Stock already blocks `rm -rf`, `sudo`, `chmod 777`. Forked because pi's `settings.json` has no per-extension config key (`docs/settings.md:286`) — the pattern list only lives in the file. |
 | `protected-paths.ts` | 49 | **fork of stock (pi 0.85.1).** Adds the fleet credential paths (`~/.config/fleet-ops/seats`, `/etc/restic`, `~/.pi/agent/auth.json`, `*.pem`) to stock's `.env`/`.git/`/`node_modules/`. Same reason. |
-| `packet-verdict.ts` | 89 | one `PACKET-VERDICT tools=<n> class=<…>` line on shutdown, from pi's own `tool_call` counter (not model-writable). Slated for deletion as soon as `PI_PACKET_EXPECTS_TOOLS` leaves `pi-issue@.service`. |
 | `subagent/index.ts` | 15 | 11-line fork of the stock entry point: prints the `EXTLOAD-OK` handshake stock lacks, then re-exports stock. **Kept because `bin/pi-transport-check --subagent` greps this file for that string and hard-fails without it.** |
 | `cursor-provider/`, `devin-provider/` | 378 / 426 | pi's documented custom-provider mechanism (`docs/custom-provider.md`) for the Cursor and Devin CLIs; pi ships no provider for either. `devin-provider` kept because a LiteLLM group still routes to devin (`litellm_deployment_state{api_provider="devin",litellm_model_name="swe-2-max"}`). |
 
