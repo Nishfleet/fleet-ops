@@ -29,7 +29,7 @@ cheaper than building, because prose bans lose to urgency at decision time.
 | Duplicate-issue drain (webhook) | fleet-issue-close-duplicates | `fleet-issue-close-duplicates.{service,timer}` | #3270 |
 | Tight merge→live deploy | fleet-deploy-check | `fleet-deploy-check.timer` | #468, TOP GEAR |
 | Blind audit / gap-closure | fleet-blind-audit | `fleet-blind-audit.timer` | #377 |
-| Restore drill | fleet-restore-drill | `fleet-restore-drill.timer` | #1135 |
+| Restore proof (off-site) | restic-r2-backup / restic-r2-verify / restic-r2-restore-test (ROOT units) | `restic-r2-*.timer` | #388, #1135 |
 | Weekly review / watches | fleet-weekly-fleet-review | `fleet-weekly-fleet-review.timer` | #1146 |
 | Asset census | fleet-asset-census | `fleet-asset-census.timer` | #1149 |
 | Baseline-delta | fleet-baseline-delta | `fleet-baseline-delta.timer` | #1151 |
@@ -81,6 +81,15 @@ only Nish-reserved verdicts reach Nish.
 > **DELETED 2026-09-18.** `fleet-resilience-drill`, `fleet-bare-metal-rebuild-drill` and
 `fleet-litellm-health-canary` were removed with the rest of the restart-survival glue.
 The canary alone produced 2709 unit deaths in 7 days. LiteLLM organ death is now probed
-directly by `up{job="litellm"}` over the existing scrape job. `fleet-restore-drill` and
-`restic-r2-*` stay: the restore drill is the only watchdog on the restic backup organs and
-the only pg_dump of the LiteLLM Postgres.
+directly by `up{job="litellm"}` over the existing scrape job.
+
+> **DELETED 2026-09-18 (glue sweep third cut).** `fleet-restore-drill` (542 LOC) and
+`fleet-bare-metal-rebuild` (596 LOC + a 244-line package manifest) are gone. The rebuild
+script never rebuilt this box once. The drill's five planes are now restic's own verbs on
+the ROOT units: `restic-r2-backup.service` (backup, plus an `ExecStartPre` `pg_dump -Fc`
+of the LiteLLM control-plane Postgres), `restic-r2-verify.service`
+(`check --read-data-subset=5%`) and `restic-r2-restore-test.service`
+(`restore --verify` of `/etc/hostname` + the fleet control plane, plus `stats`). That last
+unit publishes `/var/lib/prometheus/node-exporter/restic-restore-test.prom`, and the
+`ResticRestoreProofStale` / `LitellmPgDumpStale` rules in `config/fleet_rules.yml` are what
+makes a stale proof reach the repair path.

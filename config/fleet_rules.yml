@@ -1140,3 +1140,44 @@ groups:
           summary: "inotify watch budget >90% consumed — unit starts log ENOSPC (Failed to add inotify watch descriptor)"
           description: "fleet-ops#5839: fleet_inotify_watch_usage_ratio > 0.9 for 10m against fs.inotify.max_user_watches. Every systemd --user unit start fails its control+memory cgroup watch adds ('No space left on device'), burying real failures in journalctl --user -p err. Repair worker — (1) read fleet_inotify_watch_top{pid,cmd} from the latest /var/lib/prometheus/node-exporter/fleet.prom: that IS the consumer, sampled mid-burst (fd accounting is not journaled anywhere, so this metric is the only holder evidence on the box); (2) if the holder is a one-off/burst, raise the budget via /etc/sysctl.d — the drop-in is tracked at etc/sysctl.d/90-fleet-inotify.conf (max_user_watches 524288, max_user_instances 512) and applying it needs sudo (Nish-reserved): sudo install -m 644 <repo>/etc/sysctl.d/90-fleet-inotify.conf /etc/sysctl.d/ && sudo sysctl --system; (3) if the holder persists, fix the watcher itself; (4) never silence journald or filter the journal — that hides the symptom, not the cause. Termination: journalctl --user --since '2 hours ago' -p err | grep -c 'inotify watch descriptor' is 0."
 
+  # fleet-ops glue sweep third cut 2026-09-18 — plane D of the deleted
+  # bin/fleet-restore-drill (542 LOC, fleet-ops#388). That drill proved the
+  # rebuild story every 6h by LOUD-ing "[RESTORE-DRILL-OK] ..." into the
+  # journal, where nothing ever read it. The proof now comes from restic's own
+  # verbs and lands in the node_exporter textfile collector:
+  #   restic-r2-backup.service      restic backup            (backup fresh)
+  #     + ExecStartPre pg_dump -Fc  litellm control plane    (plane E)
+  #   restic-r2-verify.service      restic check --read-data-subset=5%
+  #   restic-r2-restore-test.service restic restore --verify + stats, and it
+  #     writes /var/lib/prometheus/node-exporter/restic-restore-test.prom
+  # These two rules are what makes a stale proof reach the repair path instead
+  # of sitting unread in the journal. severity=critical routes to
+  # repair-dispatch (no phone) — a stale backup proof is a fleet repair job,
+  # not a Nish-reserved boundary.
+  - name: fleet-backup-restore-proof
+    rules:
+      - alert: ResticRestoreProofStale
+        # restic-r2-restore-test.timer fires every 6h; 8h allows one missed
+        # slot plus RandomizedDelaySec before the repair worker is called.
+        expr: (time() - fleet_restore_drill_last_success_seconds > 28800) or absent(fleet_restore_drill_last_success_seconds)
+        for: 15m
+        labels:
+          severity: critical
+          service: fleet
+          repo: Nishfleet/fleet-ops
+        annotations:
+          summary: "off-site restore proof stale — no verified restic restore in 8+ hours"
+          description: "fleet_restore_drill_last_success_seconds (published by restic-r2-restore-test.service to /var/lib/prometheus/node-exporter/restic-restore-test.prom) is over 8h old or absent. Nothing has proven in 8h that the R2 backup can actually be restored, so the whole off-site backup may be decorative. Repair worker — (1) sudo systemctl status restic-r2-restore-test.service restic-r2-restore-test.timer and sudo journalctl -u restic-r2-restore-test.service -n 50; (2) the unit restores /etc/hostname (checksummed) and /home/nish/.config/systemd/user (restic restore --verify) from the latest snapshot, so a failure means the repo, the credentials in /etc/restic/hostinger-r2.env, or R2 itself; (3) a checksum mismatch after a legitimate hostname change is NOT a backup fault — update EXPECTED_SHA256_DEFAULT in /usr/local/sbin/restic-r2-restore-test; (4) sudo systemctl start restic-r2-restore-test.service must exit 0 and refresh the metric. Termination: the metric is under 8h old again."
+
+      - alert: LitellmPgDumpStale
+        # restic-r2-backup.timer is daily; 36h allows one missed day. mtime 0
+        # means the dump is missing entirely.
+        expr: (time() - fleet_litellm_pgdump_mtime_seconds > 129600) or fleet_litellm_pgdump_mtime_seconds == 0 or absent(fleet_litellm_pgdump_mtime_seconds)
+        for: 15m
+        labels:
+          severity: critical
+          service: fleet
+          repo: Nishfleet/fleet-ops
+        annotations:
+          summary: "LiteLLM control-plane pg_dump missing or 36h+ stale"
+          description: "fleet-ops#4264: the LiteLLM control-plane Postgres is a user-scope cluster git does not track, and a file copy of a running PGDATA is not restorable. restic-r2-backup.service takes pg_dump -Fc to /home/nish/workspaces/agent-state/backups/litellm.dump in ExecStartPre (prefixed '-' so a Postgres hiccup never stops the filesystem backup — THIS alert is the failure signal instead). Repair worker — (1) sudo journalctl -u restic-r2-backup.service -n 80 and look for the pg_dump line; (2) check the cluster answers: /usr/lib/postgresql/16/bin/pg_isready -h /home/nish/.local/share/fleet-litellm-postgres/run; (3) if it is down, systemctl --user status fleet-litellm-postgres.service; (4) sudo systemctl start restic-r2-backup.service, then confirm ls -l /home/nish/workspaces/agent-state/backups/litellm.dump is fresh and non-empty. Termination: fleet_litellm_pgdump_mtime_seconds is nonzero and under 36h old."

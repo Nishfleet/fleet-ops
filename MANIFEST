@@ -412,15 +412,13 @@ lib/gate-integrity-config.sh /home/nish/.local/lib/pi-packet/gate-integrity-conf
 # the primary trigger (named reason in the unit). Heading-growth bonus and
 # cadence-overdue scream live in heartbeat-tier1 §22. Sibling backups are
 # required before any finding is filed.
-# fleet-ops#388: control-plane restore drill. Proves the rebuild story on a
-# 6h cycle — backup freshness (system restic units, no sudo needed), fleet
-# control-plane files present + parseable (seat-caps, claims index, MANIFEST
-# srcs), and the critical paths under a restic backup source. A failed drill
-# escalates via the global service.d drop-in.
-bin/fleet-restore-drill /home/nish/.local/bin/fleet-restore-drill
-systemd/fleet-restore-drill.service /home/nish/.config/systemd/user/fleet-restore-drill.service
-systemd/fleet-restore-drill.timer /home/nish/.config/systemd/user/fleet-restore-drill.timer
-systemd/fleet-restore-drill.service.d/10-keystone-hc.conf /home/nish/.config/systemd/user/fleet-restore-drill.service.d/10-keystone-hc.conf
+# fleet-ops#388 DELETED 2026-09-18 (glue sweep third cut): the control-plane
+# restore drill's five planes are now restic's own verbs on the ROOT units —
+# restic-r2-backup (+ ExecStartPre pg_dump -Fc for the LiteLLM control plane),
+# restic-r2-verify (check --read-data-subset=5%) and restic-r2-restore-test
+# (restore --verify + stats, publishing restic-restore-test.prom). The proof is
+# the ResticRestoreProofStale / LitellmPgDumpStale rules in
+# config/fleet_rules.yml, not a LOUD journal line nobody grepped.
 # fleet-ops#2227 + fleet-ops#2637: orphan agent-worktree reaper. Daily
 # GC of worktrees whose cycle state is recorded as terminal AND whose
 # work is preserved on origin AND whose tree is clean. Two modes:
@@ -447,7 +445,7 @@ bin/keystone-hc-ping /home/nish/.local/bin/keystone-hc-ping
 # fleet-ops#4266: audit watch on systemctl/kill execve (auid=1000) so a
 # clean stop leaves a "who stopped it" trail. install.sh --system copies to
 # /etc/audit/rules.d/ and reloads via augenrules --load when auditd is
-# present; auditd ships in bare-metal-rebuild-manifest.json packages.core.
+# present.
 config/audit/rules.d/30-fleet-unit-stop.rules /etc/audit/rules.d/30-fleet-unit-stop.rules
 # fleet-ops#1463: the five failure-class planes source these libs at
 # runtime. precedence-band.sh is the band floor's sandbox (live install
@@ -736,14 +734,13 @@ config/precedence-band.json /home/nish/.local/state/pi-packet/precedence-band.js
 # this file changes, because --storage.tsdb.retention.time is a start-time
 # flag.
 config/etc-default-prometheus /etc/default/prometheus
-# fleet-ops#1135: bare-metal fleet rebuild manifest, runbook, script and drill.
-# The manifest is the versioned inventory; the script and drill make it provable.
-bin/fleet-bare-metal-rebuild /home/nish/.local/bin/fleet-bare-metal-rebuild
-config/bare-metal-rebuild-manifest.json /home/nish/.config/fleet-ops/bare-metal-rebuild-manifest.json
+# fleet-ops#1135 DELETED 2026-09-18 (glue sweep third cut): the bare-metal
+# rebuild script, its 244-line package manifest, the asset-guard map and the
+# masked-unit library never rebuilt this box once. The rebuild input that does
+# exist and is proven weekly is the restic snapshot itself.
 # fleet-ops#1149: mechanical VPS asset census, guard mapping, and unguarded-asset
 # auto-filer. Runs weekly before the Weekly Fleet Review, writes Prometheus
 # textfile metrics, and auto-files deduped `unguarded asset:` issues.
-config/asset-guard-map.json /home/nish/.local/state/pi-packet/asset-guard-map.json
 systemd/pi-intake-trigger.path /home/nish/.config/systemd/user/pi-intake-trigger.path
 systemd/pi-intake-trigger.service /home/nish/.config/systemd/user/pi-intake-trigger.service
 bin/pi-intake-trigger /home/nish/.local/bin/pi-intake-trigger

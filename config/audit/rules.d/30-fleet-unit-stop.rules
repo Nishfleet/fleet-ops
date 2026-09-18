@@ -16,7 +16,7 @@
 #
 # Install: install.sh --system copies this to /etc/audit/rules.d/ and
 # reloads via `sudo augenrules --load` (idempotent; auditd must be
-# installed — see bare-metal-rebuild-manifest.json packages.core + the
+# installed — see the
 # vps-weekly-update install line).
 #
 # Query: bin/fleet-who-stopped <unit>  (ausearch -k fleet-unit-stop -i)

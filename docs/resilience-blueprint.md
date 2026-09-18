@@ -64,7 +64,7 @@ deployment recovery time (the old "time to restore service", tightened in
 A backup never restored is not a backup. Same lesson as fleet-ops#378
 (never-run-audit).
 
-we do Y. `fleet-restore-drill` (#388, 6h) proves the restic mechanism,
+we do Y. `restic-r2-restore-test` (#388, 6h, ROOT unit) proves the restic mechanism by restoring and verifying,
 parseable control-plane files, backup coverage, and the LiteLLM
 control-plane pg_dump. Deploy-clone rebuilds
 code from origin.
@@ -82,7 +82,7 @@ we do Y. healthchecks.io already watches the heartbeat from outside the
 box. GitHub-hosted runners already provide off-box compute for CI.
 
 adopting X means Z. Extend the external dead-man to intake, scout,
-intake-reconcile, and restore-drill with *separate* checks (sharing the
+intake-reconcile, and restic-r2-restore-test with *separate* checks (sharing the
 heartbeat URL would mask a dead heartbeat). Wire pings on success only.
 The four ping URLs live in `~/.config/fleet-ops/keystone-hc.env` (not
 in git). Missing or unset URLs are a LOUD SKIP. A URL shared with
@@ -125,7 +125,7 @@ Drill: `supervision_resurrection` in `fleet-resilience-drill`.
 
 GitHub is the replica for code/config. Non-git state is restic + #388.
 
-Detection: restore-drill FAIL / stale backup canary.
+Detection: `ResticRestoreProofStale` / `LitellmPgDumpStale` (config/fleet_rules.yml).
 Repair: restic restore (system units; nish has no sudo on the repo creds,
 so the drill observes Result= via `systemctl show`).
 Drill: `state_restore` asserts the #388 timer is active.
