@@ -112,10 +112,6 @@ HELP_DCT = "# HELP fleet_pi_seat_dead_credential_total Number of enrolled (model
 TYPE_DCT = "# TYPE fleet_pi_seat_dead_credential_total gauge"
 HELP_DC = "# HELP fleet_pi_seat_dead_credential 1 for each dead-credential seat; health_class=credentials_bad means re-auth may help, health_class=corpse means the seat is terminal and must be retired from config/seat-caps.json (fleet-ops#1445, fleet-ops#2667)."
 TYPE_DC = "# TYPE fleet_pi_seat_dead_credential gauge"
-HELP_CB = "# HELP fleet_seat_comeback_overdue_total Number of seats still classed non-healthy whose wall clock (usable_at/bench_until) has passed — released by the router but not re-observed since (fleet-ops#2407)."
-TYPE_CB = "# TYPE fleet_seat_comeback_overdue_total gauge"
-HELP_CBP = "# HELP fleet_seat_comeback_overdue 1 for each seat whose wall clock has passed but is still classed non-healthy (fleet-ops#2407)."
-TYPE_CBP = "# TYPE fleet_seat_comeback_overdue gauge"
 # fleet-ops#2638: never-probed comeback visibility. Counts seats the prober
 # has been failing on (consecutive_failure_count >= 10) without yet reaching
 # the corpse threshold (default 25). Sustained > 0 here is the loud signal
@@ -123,10 +119,6 @@ TYPE_CBP = "# TYPE fleet_seat_comeback_overdue gauge"
 # next sweep should corpse it. Combined with fleet_seat_comeback_overdue_total
 # it tells the repair worker which overdue seats are approaching the corpse
 # boundary before the bin has actually written the corpse.
-HELP_NRT = "# HELP fleet_seat_comeback_never_released_total Number of seats the comeback-release prober has been failing on (consecutive_failure_count in [10, SEAT_DEAD_CONSECUTIVE_THRESHOLD)) that are not yet corpse — the never-probed comeback visibility (fleet-ops#2638)."
-TYPE_NRT = "# TYPE fleet_seat_comeback_never_released_total gauge"
-HELP_NRP = "# HELP fleet_seat_comeback_never_released 1 for each seat whose consecutive_failure_count is in the never-released window (fleet-ops#2638)."
-TYPE_NRP = "# TYPE fleet_seat_comeback_never_released gauge"
 # fleet-ops#2712: provider-level (account-level) quota exhaustion. A
 # provider counts when >=2 of its seats report HTTP 402/health_class=
 # quota_exhausted within a 1h window — one billing wall, many seats.
@@ -4188,109 +4180,6 @@ def _seat_key_in_caps(provider, model):
     return True
 
 
-def _read_comeback_overdue():
-    """Seats still classed non-healthy whose wall clock has already passed.
-
-    fleet-ops#2407: the wall-release path only clears on the NEXT observation
-    (a healthy write reclassifies; a failure re-anchors usable_at), so a seat
-    whose wall expired and nothing re-probed it lingers classed walled. Those
-    seats are comeback-OVERDUE: the router has fail-opened them but they were
-    not re-observed since. Exported once per tick (total + per-seat series) so
-    the state fails loud instead of silently depressing the seat_availability
-    rollup. seat_dead=true corpses are excluded here (they are deliberately
-    terminal — FleetDeadCredentialSeats owns them); a quota/credential hold
-    counts only once its own wall clock has passed (a hard billing wall whose
-    reset window elapsed is exactly an overdue comeback).
-
-    fleet-ops#2806: the RELEASER (bin/fleet-seat-comeback-release) re-probes a
-    walled seat within one probe interval (walled_comeback.
-    min_probe_interval_s, ~900s) of its wall clock passing — the seat returns
-    to the healthy pool at usable_at (the router fail-opens it and this
-    rollup already releases it, fleet-ops#2407). A seat whose wall passed only
-    seconds ago is therefore mid-cycle, NOT overdue; the metric must not
-    flag the releaser for a state it is about to act on (the lived
-    2026-09-02T09:45Z case: two seats 6-14min past usable_at, releaser firing
-    in the same tick, FleetSeatComebackOverdue pending at value=2). The
-    overdue flag is graced by one probe interval: only a seat whose wall
-    clock is past by MORE than COMEBACK_OVERDUE_GRACE_S (default 900) counts
-    — the releaser had a full probe cycle to re-probe (re-anchor or unwall)
-    and did not. This is the "overdue by more than one probe interval"
-    boundary; the release organ's own interval-breach loud check
-    (fleet_seat_comeback_release_interval_breached, fleet-ops#2806) fires on
-    the same boundary from inside the sweep.
-
-    Returns (count, [ {provider, model, health_class, usable_at, bench_until} ]).
-    Never raises on a missing/unreadable ledger.
-    """
-    seats = []
-    if not SEAT_LEDGER.is_dir():
-        return 0, seats
-    now = time.time()
-    try:
-        for f in sorted(SEAT_LEDGER.iterdir()):
-            if not f.is_file() or "__" not in f.name or not f.name.endswith(".json"):
-                continue
-            if ".spawn-bench" in f.name:
-                continue
-            if ".empty-success" in f.name:
-                continue
-            try:
-                data = json.loads(f.read_text())
-            except (OSError, json.JSONDecodeError):
-                continue
-            if not isinstance(data, dict):
-                continue
-            if data.get("provider") == "test":
-                continue
-            if data.get("seat_dead") is True:
-                continue
-            if data.get("health_class") == "healthy":
-                continue
-            # fleet-ops#3661 (consistency with seat-lib's SEAT-KEY-INVALID
-            # guard): a ledger whose provider/model is not a valid
-            # seat-caps.json models key is a PHANTOM. Comeback-release
-            # refuses to probe or release phantoms, so they can never be
-            # unwalled here — counting them as overdue just fires this alert
-            # until a worker manually retires the phantom. A phantom is
-            # cleanup-owned, never a live-seat comeback signal; skip it.
-            if not _seat_key_in_caps(data.get("provider", ""), data.get("model", "")):
-                continue
-            end = _seat_wall_end_epoch(data)
-            # No wall clock: nothing to come back from — not an overdue
-            # comeback (the class is a defensive hold or legacy garbage; the
-            # census still counts it walled). Only expired clocks alarm.
-            if end is None:
-                continue
-            # fleet-ops#2806: grace of one probe interval. A seat whose wall
-            # passed within the grace window is mid-cycle — the releaser
-            # re-probes it on the next 15-min tick (re-anchor or unwall).
-            # Only a wall past by more than one probe interval is OVERDUE.
-            if now - end <= COMEBACK_OVERDUE_GRACE_S:
-                continue
-            seats.append(
-                {
-                    "provider": data.get("provider", ""),
-                    "model": data.get("model", ""),
-                    "health_class": data.get("health_class", ""),
-                    "usable_at": data.get("usable_at"),
-                    "bench_until": data.get("bench_until"),
-                }
-            )
-    except OSError:
-        return 0, []
-    return len(seats), seats
-
-
-# fleet-ops#2712: provider-level (account-level) quota exhaustion. Three
-# seats from the same provider all returning HTTP 402 inside a 1h window
-# points at the provider's account being out of quota, not at three
-# independent seat faults — the per-seat health_class=quota_exhausted
-# signal alone collapses three failures into one root cause. Surface
-# that pattern here so the operator (and the alert below) can tell
-# "account billing wall" from "lone seat quota hold". A provider only
-# counts when it has at least MIN_PROVIDER_QUOTA_SEATS (default 2) seats
-# observed as quota_exhausted within PROVIDER_QUOTA_WINDOW_S (default
-# 3600s); one seat alone is an isolated hold, not account exhaustion.
 MIN_PROVIDER_QUOTA_SEATS = 2
 PROVIDER_QUOTA_WINDOW_S = 3600
 
@@ -4559,112 +4448,6 @@ def _read_cap0_stale():
 # the corpse path.
 NEVER_RELEASED_MIN_COUNT = 10  # floor for "stuck" so a healthy probe cycle
                                 # doesn't render every wall as stuck
-
-
-def _read_never_released():
-    """Seats that the prober has been failing on for a while without corpse.
-
-    fleet-ops#2638: the lived poolside/laguna (23x 503s) and opencode/mimo
-    (42x 429s) cases both sat at health_class != healthy with the prober
-    re-benching every 15 min, count climbing, the seat never recovering.
-    These are NEVER-PROBED COMEBACKS — the bin fires on them but the seat
-    never releases. The prober's corpse path (at SEAT_DEAD_CONSECUTIVE_THRESHOLD,
-    default 25) converts them to terminal corpses, but the stuck state
-    between "high count" and "corpse" was invisible. This gauge makes
-    that window visible: seats with consecutive_failure_count in
-    [NEVER_RELEASED_MIN_COUNT, SEAT_DEAD_CONSECUTIVE_THRESHOLD) that are
-    NOT corpses. Sustained > 0 here is the loud signal that the release
-    path is operating but the seat still cannot recover — the next
-    corpse write should fire. Combined with fleet_seat_comeback_overdue_total
-    it tells the repair worker which overdue seats are approaching the
-    corpse boundary.
-
-    The threshold env var defaults to 25 (matching SEAT_DEAD_CONSECUTIVE_THRESHOLD
-    in lib/seat-lib.sh, fleet-ops#2594) so the corpus threshold and the
-    stuck-window upper bound stay in lock-step.
-
-    Returns (count, [ {provider, model, health_class, count} ]).
-    Never raises on a missing/unreadable ledger.
-    """
-    seats = []
-    if not SEAT_LEDGER.is_dir():
-        return 0, seats
-    now = time.time()
-    try:
-        threshold = int(os.environ.get("SEAT_DEAD_CONSECUTIVE_THRESHOLD", "25"))
-    except (TypeError, ValueError):
-        threshold = 25
-    if threshold < 1:
-        threshold = 25
-    try:
-        for f in sorted(SEAT_LEDGER.iterdir()):
-            if not f.is_file() or "__" not in f.name or not f.name.endswith(".json"):
-                continue
-            if ".spawn-bench" in f.name:
-                continue
-            if ".empty-success" in f.name:
-                continue
-            try:
-                data = json.loads(f.read_text())
-            except (OSError, json.JSONDecodeError):
-                continue
-            if not isinstance(data, dict):
-                continue
-            if data.get("provider") == "test":
-                continue
-            if data.get("seat_dead") is True:
-                continue  # corpses are counted elsewhere (FleetDeadCredentialSeats)
-            if data.get("health_class") == "healthy":
-                continue  # recovered
-            # fleet-ops#3661 (consistency with seat-lib's SEAT-KEY-INVALID
-            # guard): a ledger whose provider/model is not a valid
-            # seat-caps.json models key is a PHANTOM and is never probed or
-            # released by comeback-release, so its consecutive-failure window
-            # can never resolve here — counting it fires
-            # FleetSeatComebackNeverReleased until a worker manually retires
-            # the phantom. A phantom is cleanup-owned, never a live-seat
-            # comeback signal; skip it.
-            if not _seat_key_in_caps(data.get("provider", ""), data.get("model", "")):
-                continue
-            # fleet-ops#2752: a seat whose wall clock (bench_until ??
-            # usable_at) is still in the FUTURE is legitimately walled —
-            # it will self-release when the wall passes (the comeback-
-            # release prober re-probes it at that point). It is NOT a
-            # never-released corpse: the cline/cline-pass_minimax-m3
-            # corpse was written by repair-dispatch because this window
-            # counted a 17-day-future-walled quota seat as "stuck" (count
-            # 19, threshold 25 — the natural corpse path could never fire
-            # while the wall kept the seat benched), FleetSeatComebackNeverReleased
-            # fired, and the repair worker manually corpse'd a VALID
-            # subscription seat whose monthly cap resets 16d14h out. Only
-            # a seat whose wall has PASSED (or that never had one) can be
-            # a never-probed comeback — a future-walled seat is not owed a
-            # comeback yet.
-            _wall = _seat_wall_end_epoch(data)
-            if _wall is not None and _wall >= now:
-                continue
-            try:
-                count = int(data.get("consecutive_failure_count") or 0)
-            except (TypeError, ValueError):
-                count = 0
-            # "Stuck" = close to but below the corpse threshold. The lower
-            # bound (NEVER_RELEASED_MIN_COUNT, default 10) prevents the gauge
-            # from spiking on a single fresh failure; the upper bound is the
-            # corpse boundary (seat at threshold will be corpse on the next
-            # sweep and disappear from this gauge).
-            if count < NEVER_RELEASED_MIN_COUNT or count >= threshold:
-                continue
-            seats.append(
-                {
-                    "provider": data.get("provider", ""),
-                    "model": data.get("model", ""),
-                    "health_class": data.get("health_class", ""),
-                    "count": count,
-                }
-            )
-    except OSError:
-        return 0, []
-    return len(seats), seats
 
 
 def _spawn_bench_active(ledger_path: Path) -> bool:
@@ -6103,53 +5886,6 @@ def main():
         _hcl = _prom_label(str(_s.get("health_class") or ""))
         lines.append(
             f'fleet_pi_seat_dead_credential{{seat="{_seat_label}",http_status="{_st}",health_class="{_hcl}"}} 1'
-        )
-    # fleet-ops#2407: surface comeback-overdue seats (still classed non-healthy
-    # past their usable_at/bench_until — released by the router's fail-open but
-    # never re-observed since). The total gauge drives the alert rule; the
-    # per-seat series names each lingering seat so the repair worker knows who
-    # to probe. .spawn-bench markers and test__ fixtures are synthetic, and
-    # seat_dead corpses are deliberately terminal (FleetDeadCredentialSeats
-    # owns them) — none of them appear here.
-    _cb_n, _cb = _read_comeback_overdue()
-    lines.append("")
-    lines.append(HELP_CB)
-    lines.append(TYPE_CB)
-    lines.append(f"fleet_seat_comeback_overdue_total {_cb_n}")
-    lines.append("")
-    lines.append(HELP_CBP)
-    lines.append(TYPE_CBP)
-    for _s in _cb:
-        _seat_label = _prom_label(
-            "{}__{}".format(_s["provider"], _s["model"]).strip("_") or "unknown"
-        )
-        _hc = _prom_label(str(_s.get("health_class") or ""))
-        lines.append(
-            f'fleet_seat_comeback_overdue{{seat="{_seat_label}",health_class="{_hc}"}} 1'
-        )
-    # fleet-ops#2638: never-probed comeback visibility. A seat in this gauge
-    # means the comeback-release prober has fired on it >=10 times, the seat
-    # has not recovered, and the next sweep will corpse it. Sustained > 0 here
-    # is the loud signal that the release path is operating on a chronically
-    # failing seat — the repair worker should expect a fleet_seat_comeback_release_corpse_total
-    # increment on the next sweep and may want to inspect the provider before
-    # the next bench window. Per-seat series names each stuck seat.
-    _nr_n, _nr = _read_never_released()
-    lines.append("")
-    lines.append(HELP_NRT)
-    lines.append(TYPE_NRT)
-    lines.append(f"fleet_seat_comeback_never_released_total {_nr_n}")
-    lines.append("")
-    lines.append(HELP_NRP)
-    lines.append(TYPE_NRP)
-    for _s in _nr:
-        _seat_label = _prom_label(
-            "{}__{}".format(_s["provider"], _s["model"]).strip("_") or "unknown"
-        )
-        _hc = _prom_label(str(_s.get("health_class") or ""))
-        _count = int(_s.get("count") or 0)
-        lines.append(
-            f'fleet_seat_comeback_never_released{{seat="{_seat_label}",health_class="{_hc}",count="{_count}"}} 1'
         )
     # fleet-ops#2712: provider-level (account-level) quota exhaustion.
     # Group quota_exhausted seats by provider; emit a 1-row per affected

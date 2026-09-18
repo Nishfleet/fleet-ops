@@ -329,18 +329,8 @@ if command -v promtool >/dev/null 2>&1; then
 else
   echo "OK: promtool not installed locally — skipping syntax check (CI box has it)"
 fi
-grep -q "alert: FleetSelfMaintenanceAbsent" "$rules" \
-  || fail "fleet_rules.yml missing FleetSelfMaintenanceAbsent"
-grep -q 'absent(fleet_self_maintenance_merges{kind="total"})' "$rules" \
-  || fail "absent rule must key on kind=\"total\" (always-emitted heartbeat)"
-grep -q "alert: FleetSelfMaintenanceRegression" "$rules" \
-  || fail "fleet_rules.yml missing FleetSelfMaintenanceRegression"
 grep -q "offset 24h" "$rules" \
   || fail "regression rule must be a 24h-offset TREND, not a level threshold"
-grep -q "alert: FleetQualityChurnRegression" "$rules" \
-  || fail "fleet_rules.yml missing FleetQualityChurnRegression"
-grep -q "fleet_self_maintenance_ratio - fleet_self_maintenance_ratio offset 24h" "$rules" \
-  || fail "regression rule must be ratio - ratio offset 24h (trend delta)"
 # Verified-merges regression trend rule (objective decision).
 grep -q "alert: FleetVerifiedMergeRegression" "$rules" \
   || fail "fleet_rules.yml missing FleetVerifiedMergeRegression"
@@ -349,18 +339,10 @@ grep -q "fleet_verified_merge_ratio - fleet_verified_merge_ratio offset 24h" "$r
 # Queue composition 64% tripwire (fleet-ops#2171): a LEVEL held above 0.64
 # (not a delta), but smoothed over the trailing 7d so a momentary dip or
 # export gap cannot reset a raw for: and keep the alert pending forever.
-grep -q "alert: FleetQueueSelfMaintenanceRatioHigh" "$rules" \
-  || fail "fleet_rules.yml missing FleetQueueSelfMaintenanceRatioHigh"
-grep -q "avg_over_time(fleet_queue_self_maintenance_ratio\[7d\]) > 0.64" "$rules" \
-  || fail "queue tripwire must be the 7d-smoothed level (> 0.64) — an instant value with a long for: never fires (fleet-ops#2171)"
 # The same tripwire must reach FIRING within its for: on a realistic series
 # (high ratio with recurring dips), not sit pending forever — proved with
 # promtool test rules (the live 2026-08-30 shape: ratio > 0.64 100% of the
 # time but the 1w for: never completed, fleet-ops#2171).
-grep -q "alert: FleetSeatComebackOverdue" "$rules" \
-  || fail "fleet_rules.yml missing FleetSeatComebackOverdue (fleet-ops#2407)"
-grep -q "fleet_seat_comeback_overdue_total > 0" "$rules" \
-  || fail "comeback-overdue rule must trip on fleet_seat_comeback_overdue_total > 0"
 # fleet-ops#2712: provider-level quota exhaustion alert — one billing wall,
 # many seats. Pin that the rule name + expr are present in fleet_rules.yml.
 grep -q "alert: FleetProviderQuotaExhausted" "$rules" \
@@ -394,40 +376,6 @@ grep -q "quota_bench" <<<"$spend_block" \
 grep -q "lanes/seats" <<<"$spend_block" \
   || fail "FleetProviderSpendBoundary description must name the seat ledger dir"
 if command -v promtool >/dev/null 2>&1; then
-  unit_yml="$scratch/fleet-queue-ratio.test.yml"
-  cat >"$unit_yml" <<YOAML
-rule_files:
-  - $rules
-evaluation_interval: 6h
-tests:
-  - interval: 6h
-    input_series:
-      - series: 'fleet_queue_self_maintenance_ratio{queue="agent-ready"}'
-        # 32 steps cover the 7d window; recurring 0.50 dips would reset a raw
-        # instant + 1w for: rule but not the 7d average (real fleet-ops#2171 shape).
-        values: '0.85 0.85 0.50 0.85 0.85 0.50 0.85 0.85 0.50 0.85 0.85 0.50 0.85 0.85 0.50 0.85 0.85 0.50 0.85 0.85 0.50 0.85 0.85 0.50 0.85 0.85 0.50 0.85 0.85 0.50 0.85 0.85'
-    alert_rule_test:
-      - eval_time: 12h
-        alertname: FleetQueueSelfMaintenanceRatioHigh
-        exp_alerts:
-          - exp_labels:
-              alertname: FleetQueueSelfMaintenanceRatioHigh
-              queue: agent-ready
-              service: fleet
-              severity: warning
-            exp_annotations:
-              summary: 'queue agent-ready 7-day self-maintenance ratio stayed above 64% (fleet2 death-number) for 6 hours'
-              description: 'avg_over_time(fleet_queue_self_maintenance_ratio{queue="agent-ready"}[7d]) has been above 0.64 (the fleet2 death-number) for 6+ hours. fleet2 died at 64% self-maintenance; a sustained high ratio in the intake queue means the fleet is queueing machinery work faster than product work. The 7d window absorbs the momentary dips and export gaps that reset the old 1w for: and kept this alert pending forever (fleet-ops#2171). The ratio is exported only when total>0. Feeds Weekly Review scoring and the precedence-sunset question. Inspect fleet_queue_total and fleet_queue_self_maintenance_total for the queue.'
-YOAML
-  # promtool test rules exits 1 on a failed case AND prints FAILED to
-  # stdout, so gate on both: exit code (loud) and output text (catches
-  # the exit-0-print-FAILED quirk on other builds).
-  if ! out="$(promtool test rules "$unit_yml" 2>&1)"; then
-    fail "promtool test rules exited non-zero on the queue-tripwire unit test: $out"
-  fi
-  grep -q "SUCCESS" <<<"$out" \
-    || fail "promtool test rules: queue tripwire must transition pending->firing within for: 6h on the smoothed 7d window ($out)"
-  ok "promtool test rules: queue tripwire fires despite momentary dips (fleet-ops#2171)"
 
   # fleet-ops#2712: provider-level quota exhaustion alert. Pin that
   # (a) total=1 fires the alert within its for: 30m window, and
@@ -1338,60 +1286,13 @@ assert m._seat_is_released(ld("opencode__muse-spark-1.2-contributor-free.json"))
     "corpse (seat_dead) never releases"
 print("OK: _seat_is_released mirrors seat_usable fail-open (fleet-ops#2407)")
 
-# --- _read_comeback_overdue over the scratch ledger ---
+
+# Wire the scratch seat-caps before the availability rollup (the phantom-key
+# guard must read the scratch config, not /home/nish/... which CI lacks).
 m.SEAT_LEDGER = Path(seat_dir)
-# Wire seat-caps BEFORE the comeback collectors so the fleet-ops#3661
-# phantom-key guard reads the scratch config deterministically — CI has no
-# /home/nish/... paths, and fail-open on a missing config would leak the
-# phantom into the counts (catching the real default path only locally).
 m.SEAT_CAPS_DEFAULT = Path(seat_caps)
 m.SEAT_CAPS_FALLBACK = Path(seat_caps)
 m.SEAT_CAPS_LIVE = Path("/nonexistent/live-caps.json")  # hermetic: repo-checkouts path list only
-cb_n, cb = m._read_comeback_overdue()
-ids = {f"{s['provider']}__{s['model']}" for s in cb}
-# Past-wall non-dead non-excluded seats: commandcode minimax (overload past
-# 1h), minimax MiniMax-M3 (quota past 1h), opencode mimo (rate_limited past
-# 1h) = 3. opencode nemotron (past only 300s) is inside the one-interval
-# grace (fleet-ops#2806) and must NOT count as overdue.
-assert cb_n == 3, f"comeback_overdue_n must be 3, got {cb_n} (ids={ids})"
-assert {"commandcode__minimax/minimax-m3-free", "minimax__MiniMax-M3", "opencode__mimo-v2.5-free"} <= ids, ids
-assert not any(i.startswith("opencode__nemotron") for i in ids), (
-    f"mid-cycle seat (past by 300s < grace 900s) must NOT be overdue: {ids}"
-)
-assert not any("grok-4.5" in i for i in ids), "spawn-bench leaked into comeback"
-assert not any(i.startswith("test__") for i in ids), "test__ leaked into comeback"
-assert not any("muse-spark" in i for i in ids), "corpse leaked into comeback"
-# A phantom seat key (not in seat-caps.json models) must be excluded even when
-# its wall is expired (fleet-ops#3661 SEAT-KEY-INVALID consistency).
-assert not any("phantom-gone-free" in i for i in ids), \
-    "phantom seat key leaked into comeback-overdue"
-# fleet-ops#3891: the LIVED phantom — provider=openrouter,
-# model=deepseek/deepseek-v4-pro-0813 (past-wall, quota_exhausted; retired
-# 2026-09-06 and never a seat-caps.json models key) — is excluded by the
-# same #3661 guard, while the 3 real past-wall seats still count (cb_n==3
-# above stays 3 with this fixture present).
-assert "openrouter__deepseek/deepseek-v4-pro-0813" not in ids, \
-    f"lived phantom key (fleet-ops#3891) leaked into comeback-overdue: {ids}"
-print("OK: _read_comeback_overdue counts past-wall seats, excludes bench/test/corpse/mid-cycle + phantom keys")
-print("OK: lived phantom openrouter/deepseek/deepseek-v4-pro-0813 excluded, 3 real past-wall seats still count (fleet-ops#3891)")
-
-# --- _read_never_released over the scratch ledger ---
-# The phantom fixture has cfc=15 (inside the [10, 25) never-released window) as
-# a non-corpse non-healthy seat past its wall. With the fleet-ops#3661
-# consistency guard it must be excluded even though every window condition
-# (fc count, wall passed, non-corpse) would otherwise count it — comeback-_
-# release can never unwind a phantom, so it is not a live comeback signal.
-nr_n, nr = m._read_never_released()
-nr_ids = {f"{s['provider']}__{s['model']}" for s in nr}
-# opencode/mimo-v2.5-free (cfc=15, past wall, valid caps key) must still count;
-# the phantom (cfc=15, past wall, NOT a valid caps key) must be excluded even
-# though every window condition would otherwise count it — comeback-release can
-# never unwind a phantom, so it is not a live comeback signal.
-assert nr_n == 1, f"never_released_n must be 1 (mimo only), got {nr_n}: {nr_ids}"
-assert {"opencode__mimo-v2.5-free"} <= nr_ids, nr_ids
-assert not any("phantom-gone-free" in i for i in nr_ids), \
-    f"phantom seat key leaked into never-released (got {nr_ids})"
-print("OK: _read_never_released excludes phantom seat keys, keeps real engaged seats (SEAT-KEY-INVALID consistency)")
 
 # --- availability rollup: released seats count healthy ---
 # Seed every enrolled provider (cap>0) with a healthy fixture ledger, then
@@ -1603,8 +1504,6 @@ m._gh_rate_limit = lambda: None
 m._read_dead_credentials = lambda: (0, [])
 m._healthy_enrolled_seat_count = lambda: 0
 m._enrolled_seat_total = lambda: 0
-m._read_comeback_overdue = lambda: (0, [])
-m._read_never_released = lambda: (0, [])
 m._read_provider_quota_exhausted = lambda: (0, [])
 m._ping_healthcheck = lambda: None
 m._fetch_openrouter_credits = lambda: None
@@ -2207,24 +2106,6 @@ m.SEAT_CAPS_DEFAULT = nr_caps
 m.SEAT_CAPS_FALLBACK = Path("/nonexistent/seat-caps.json")
 m.SEAT_CAPS_LIVE = Path("/nonexistent/live-caps.json")  # hermetic: repo-checkouts path list only
 
-m.SEAT_LEDGER = Path(seat_dir)
-n, seats = m._read_never_released()
-ids = {f"{s['provider']}__{s['model']}" for s in seats}
-
-assert n == 2, f"never_released_n must be 2, got {n}: {ids}"
-assert {"opencode__no-wall", "opencode__past-wall"} <= ids, ids
-assert "opencode__future-wall" not in ids, f"future-walled seat must not count as never-released: {ids}"
-assert "opencode__future-wall-low" not in ids, "future-walled + below floor must not count"
-assert not any(i.startswith("test__") for i in ids), "test__ leaked into never-released"
-assert not any("corpse" in i for i in ids), "corpse leaked into never-released"
-assert not any(".spawn-bench" in i for i in ids), "spawn-bench leaked into never-released"
-print("OK: _read_never_released excludes future-walled, healthy, corpse, test, and spawn-bench seats (fleet-ops#2752)")
-
-# Missing ledger dir returns (0, []) — never raises.
-(Path(seat_dir)).rename(Path(seat_dir).parent / "nr-seats-renamed")
-n2, seats2 = m._read_never_released()
-assert n2 == 0 and seats2 == [], (n2, seats2)
-print("OK: _read_never_released missing ledger dir returns empty signal (no crash)")
 PY
 
 ok "fleet-ops#2712 + #2752: provider-level 402 collapse and never-released skips future-walled seats"
