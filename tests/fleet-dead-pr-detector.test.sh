@@ -99,6 +99,10 @@ case "$1" in
         exit "${FAKE_PR_LIST_RC:-0}"
         ;;
       view)
+        if grep -q -- '--json commits' <<<"$*"; then
+          printf '{"commits":[{"committedDate":"%s"}]}\n' "${FAKE_HEAD_COMMIT:-2020-01-01T00:00:00Z}"
+          exit 0
+        fi
         if [ -f "$FAKE_DIR/prview-$3.json" ]; then
           cat "$FAKE_DIR/prview-$3.json"
           exit 0
@@ -115,6 +119,10 @@ case "$1" in
   issue)
     case "$2" in
       view)
+        if grep -q -- '--json closedAt' <<<"$*"; then
+          printf '{"closedAt":"%s"}\n' "${FAKE_CLOSED_AT:-2026-01-01T00:00:00Z}"
+          exit 0
+        fi
         cat "$FAKE_DIR/issue-$3.json" 2>/dev/null \
           || { echo "no fixture issue-$3" >&2; exit 1; }
         exit 0
@@ -133,10 +141,19 @@ run() {
     # wins. Detector stdout lands in $scratch/stdout.log, stderr in
     # $scratch/stderr.log; prints rc=<n> on stdout. First-seen markers and
     # the flagged list live in $scratch/state (DEAD_PR_STATE_DIR).
+    # FAKE_CLOSED_AT (issue closedAt) and FAKE_HEAD_COMMIT (newest PR
+    # committedDate) drive the fleet-ops#7694 guard fixtures; empty means
+    # the defaults — closedAt 2026-01-01, AFTER the default head commit
+    # 2020-01-01 — so the existing dead cases keep closedAt after the
+    # commit and still dead-classify.
+    # FAKE_CLOSED_AT (issue closedAt) and FAKE_HEAD_COMMIT (newest PR
+    # committedDate) drive the fleet-ops#7694 guard fixtures; both empty
+    # means the legacy single-JSON shapes are served.
     local rc
     set +e
     env GH="$scratch/bin/gh" DEAD_PR_REPO="Nishfleet/fleet-ops" \
-        DEAD_PR_STATE_DIR="$scratch/state" "$@" \
+        DEAD_PR_STATE_DIR="$scratch/state" FAKE_CLOSED_AT="${FAKE_CLOSED_AT:-}" \
+        FAKE_HEAD_COMMIT="${FAKE_HEAD_COMMIT:-}" "$@" \
         "$bin" >"$scratch/stdout.log" 2>"$scratch/stderr.log"
     rc=$?
     set -e
@@ -632,6 +649,46 @@ grep -q 'GC: dropped first-seen marker fleet-ops-5834.first-seen' "$scratch/stde
 grep -q 'scan done: conflicting=0 unknown-mergeable=0 dead=0 stale-conflicting=0' "$scratch/stderr.log" \
   || fail "case29: scan-done must read all-zero after the close: $(cat "$scratch/stderr.log")"
 ok "case29: stale-flagged CLOSE exit -> marker GC'd, flagged list empty, wedge exits 0 (fleet-ops#6421 / #5834)"
+
+# --- Case 30 (fleet-ops#7694, live replay of PR #7683 citing #7499): a
+# CLOSED parent whose closedAt (2026-09-01) is EARLIER than the PR's
+# newest committedDate (2026-09-18) — the parent closed before the
+# branch's work existed, so the body merely cited it. Not dead:
+# `miscited-parent:` + human line on stdout, no `dead-pr:` line,
+# dead_conflicting_prs=0, exit 0. ---
+set_fixtures \
+  '[{"number":7683,"title":"fix: backup spam","headRefName":"fix/spam","mergeable":"CONFLICTING","body":"Live evidence of the spam: #7499"}]' \
+  7499:CLOSED
+FAKE_CLOSED_AT=2026-09-01T00:00:00Z FAKE_HEAD_COMMIT=2026-09-18T08:51:00Z rc=$(run)
+grep -q '^rc=0$' <<<"$rc" || fail "case30: miscited parent must be skipped with exit 0: $rc"
+grep -q '^miscited-parent: 7683 fix: backup spam parent=7499 parent-closed=2026-09-01T00:00:00Z head-commit=2026-09-18T08:51:00Z' "$scratch/stdout.log" \
+  || fail "case30: miscited-parent evidence line missing: $(cat "$scratch/stdout.log")"
+grep -q '^miscited-parent-human:' "$scratch/stdout.log" \
+  || fail "case30: miscited-parent-human line missing: $(cat "$scratch/stdout.log")"
+n=$(grep -c '^dead-pr:' "$scratch/stdout.log" || true)
+[ "$n" = "0" ] || fail "case30: no dead-pr evidence line allowed for a miscited parent: $(cat "$scratch/stdout.log")"
+[ "$(last_measure)" = "dead_conflicting_prs=0" ] \
+  || fail "case30: dead_conflicting_prs must be 0 and last: $(last_measure)"
+grep -q 'issue view 7499 -R Nishfleet/fleet-ops --json closedAt' "$scratch/gh.log" \
+  || fail "case30: must fetch the parent closedAt: $(cat "$scratch/gh.log")"
+grep -q 'pr view 7683 -R Nishfleet/fleet-ops --json commits' "$scratch/gh.log" \
+  || fail "case30: must fetch the PR commits: $(cat "$scratch/gh.log")"
+ok "case30 (fleet-ops#7694): CLOSED parent predates the head commit -> miscited-parent, skipped, exit 0"
+
+# --- Case 31 (fleet-ops#7694, CLOSED-only pin): a MERGED parent whose
+# closedAt predates the PR's newest commit STAYS dead — the guard never
+# touches MERGED parents, and gh must not even be asked for commits. ---
+set_fixtures \
+  '[{"number":46,"title":"feat: seat retry windows","headRefName":"fix/seats","mergeable":"CONFLICTING","body":"Closes #1941"}]' \
+  1941:MERGED
+FAKE_CLOSED_AT=2020-06-01T00:00:00Z FAKE_HEAD_COMMIT=2026-09-18T08:51:00Z rc=$(run)
+grep -q '^rc=1$' <<<"$rc" || fail "case31: MERGED parent with post-close commits must stay dead: $rc"
+grep -q 'parent=1941 parent-state=MERGED' "$scratch/stdout.log" \
+  || fail "case31: dead classification for MERGED parent must be unchanged: $(cat "$scratch/stdout.log")"
+[ "$(last_measure)" = "dead_conflicting_prs=1" ] || fail "case31: measure must be = 1: $(last_measure)"
+grep -Eq 'pr view 46 .*--json commits' "$scratch/gh.log" \
+  && fail "case31: MERGED parents must not trigger the commits read: $(cat "$scratch/gh.log")"
+ok "case31 (fleet-ops#7694): MERGED parent, closedAt predates commits -> still dead, no commits read"
 
 # --- No agent names anywhere in detector output ---
 grep -qiE '(^|[[:space:]])(by|with|via|from|using|through|used)[[:space:]]+(the[[:space:]]+)?(claude|codex|devin|cursor|grok|openai|anthropic|deepseek|minimax|copilot|gemini|opus|chatgpt|fable|luna|sol)([^a-z]|$)' \
