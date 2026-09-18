@@ -410,31 +410,6 @@ remove_papered_heartbeat_dropin() {
     fi
 }
 
-# fleet-ops#2924: live bandage for FleetScoutStale (chmod 0644 + drop 0-valued
-# series) written 2026-08-28 "until PR #1395 deploys". #1395 merged
-# 2026-08-27T20:05:29Z (write fleet-scout.prom mode 0644). The drop-in is
-# leftover and still rewrites the prom file on every scout. Only touch it
-# when this MANIFEST installs into the live user unit dir.
-# fleet-ops#5203: bridge drop-ins written by hand on 2026-09-11
-# (TimeoutStartSec=120 on the two network canaries) while #5200 was in
-# flight. The value now lives in the unit files; remove the bridge so the
-# repo unit is the only source (two sources for one value is the #5095
-# silent-contradiction bug). Remove only the 20-start-timeout.conf file,
-# never the whole dir. Only touch it when this MANIFEST installs into the
-# live user unit dir. (fleet-litellm-health-canary was deleted 2026-09-18.)
-remove_canary_start_timeout_dropins() {
-    local user_systemd="${HOME}/.config/systemd/user"
-    local u dropin
-    grep -q " ${user_systemd}/" "$manifest" 2>/dev/null || return 0
-    for u in gh-webhook-canary; do
-        dropin="${user_systemd}/${u}.service.d/20-start-timeout.conf"
-        if [ -e "$dropin" ] || [ -L "$dropin" ]; then
-            rm -f "$dropin"
-            echo "removed bridge start-timeout drop-in: $dropin (fleet-ops#5203)"
-            user_unit_changed=1
-        fi
-    done
-}
 
 remove_stale_scout_prom_mode_dropin() {
     local user_systemd="${HOME}/.config/systemd/user"
@@ -1176,7 +1151,6 @@ if [ "$do_user_install" = 1 ]; then
   rm -f "$HOME/.local/lib/pi-packet/seat-lib.sh"
   remove_papered_heartbeat_dropin
   remove_stale_scout_prom_mode_dropin
-  remove_canary_start_timeout_dropins
   remove_orphaned_fleet_auto_deploy_dropin
   remove_orphaned_fleet_auto_ship_dropin
   remove_orphaned_fleet_cheap_triage_dropin
