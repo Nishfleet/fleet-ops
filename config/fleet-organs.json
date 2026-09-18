@@ -34,16 +34,6 @@
       "files": []
     },
     {
-      "name": "waste-ledger",
-      "kind": "exporter",
-      "heartbeat_metric": "fleet_waste_runs",
-      "absent_alert": "FleetWasteLedgerAbsent",
-      "files": [
-        "libexec/fleet-waste-export.py",
-        "systemd/fleet-metrics-export.service.d/waste-ledger.conf"
-      ]
-    },
-    {
       "name": "canary-effectiveness",
       "kind": "exporter",
       "heartbeat_metric": "fleet_canary_effectiveness_last_run_seconds",
@@ -61,16 +51,6 @@
       "files": [
         "lib/intake-prioritization-effectiveness.py",
         "systemd/fleet-metrics-export.service.d/intake-effectiveness.conf"
-      ]
-    },
-    {
-      "name": "scout-effectiveness",
-      "kind": "exporter",
-      "heartbeat_metric": "fleet_scout_effectiveness_last_run_seconds",
-      "absent_alert": "FleetScoutEffectivenessAbsent",
-      "files": [
-        "lib/scout-effectiveness.py",
-        "systemd/fleet-metrics-export.service.d/scout-effectiveness.conf"
       ]
     },
     {
@@ -100,19 +80,6 @@
         "bin/scout-futility-check",
         "systemd/pi-scout@.service",
         "systemd/pi-scout@.timer"
-      ]
-    },
-    {
-      "name": "asset-census",
-      "kind": "canary",
-      "heartbeat_metric": "fleet_asset_census_last_run_seconds",
-      "absent_alert": "FleetAssetCensusAbsent",
-      "files": [
-        "bin/fleet-asset-census",
-        "lib/pi-packet/asset-census.py",
-        "systemd/fleet-asset-census.service",
-        "systemd/fleet-asset-census.timer",
-        "config/asset-guard-map.json"
       ]
     },
     {
@@ -167,17 +134,6 @@
       ]
     },
     {
-      "name": "baseline-delta",
-      "kind": "canary",
-      "heartbeat_metric": "fleet_baseline_delta_last_run_seconds",
-      "absent_alert": "FleetBaselineDeltaAbsent",
-      "files": [
-        "libexec/fleet-baseline-delta.py",
-        "systemd/fleet-baseline-delta.service",
-        "systemd/fleet-baseline-delta.timer"
-      ]
-    },
-    {
       "name": "seat-comeback-release",
       "kind": "canary",
       "heartbeat_metric": "fleet_seat_comeback_release_last_green_seconds",
@@ -186,27 +142,6 @@
         "bin/fleet-seat-comeback-release",
         "systemd/fleet-seat-comeback-release.service",
         "systemd/fleet-seat-comeback-release.timer"
-      ]
-    },
-    {
-      "name": "fleet-aeo-probe",
-      "kind": "canary",
-      "heartbeat_metric": "fleet_aeo_probe_last_run_seconds",
-      "absent_alert": "FleetAeoProbeAbsent",
-      "files": [
-        "libexec/fleet-aeo-probe.py",
-        "systemd/fleet-aeo-probe.service",
-        "systemd/fleet-aeo-probe.timer"
-      ]
-    },
-    {
-      "name": "quality-slo-scoreboard",
-      "kind": "guard",
-      "heartbeat_metric": "fleet_quality_slo_last_computed_seconds",
-      "absent_alert": "FleetQualitySloStale",
-      "files": [
-        "bin/fleet-quality-slo",
-        "lib/quality-slo.py"
       ]
     },
     {
