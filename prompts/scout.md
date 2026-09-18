@@ -257,9 +257,10 @@ gh issue edit <N> -R Nishfleet/<repo> --add-label scout-candidate
 Exception: when `$1` is `fleet-ops` the target repo is control-plane. Those issues
 already sit behind CI + conference + auto-revert, and the product auditor
 FAILS fleet/CI tooling by design. Apply `agent-ready` there, still within
-`label_budget`, and only when the body passes the spec-gate (a
-`termination:` command, or `accept:` / `required:` / `metric:`). A
-prose-only body stays unlabeled until it has a spec (fleet-ops#543).
+`label_budget`, and only when the body itself carries a spec terminator: a
+`termination:` line with a runnable command, or at least one
+`accept:` / `required:` / `metric:` line. A prose-only body stays
+unlabeled until it has a spec (fleet-ops#543).
 
 Prefer labeling the highest product-impact issues first. For `0509` while `signups-30d == 0`, that order is A.8: acquisition-class first, then fix/polish-class. A 0509 candidate with no `funnel_stage:` line gets `usage-uncited` instead of `scout-candidate`. Do not label more than `label_budget` total. Do not change `label_budget` itself.
 
