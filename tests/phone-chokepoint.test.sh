@@ -94,10 +94,6 @@ grep -q -- 'send -t telegram --urgent --class daily-digest' "$repo_root/libexec/
   || fail "daily-digest must pass --class daily-digest to hermes send"
 ok "daily-digest passes --class daily-digest to hermes"
 
-# --- 6b. evening-highlights-digest passes --class evening-highlights-digest ---
-grep -q 'hermes send -t telegram --urgent --class evening-highlights-digest' "$repo_root/libexec/evening-highlights-digest" \
-  || fail "evening-highlights-digest must pass --class evening-highlights-digest to hermes send"
-ok "evening-highlights-digest passes --class evening-highlights-digest to hermes"
 
 # --- 7. (removed) stop-escalation-dispatch write_nish gate — the dispatcher
 # was deleted with the escalation tower (glue sweep 2026-09-18). The

@@ -65,7 +65,6 @@ prompts/worker-blocks/d1-gate-integrity.md /home/nish/.pi/agent/prompts/worker-b
 prompts/worker-blocks/geo-aeo.md /home/nish/.pi/agent/prompts/worker-blocks/geo-aeo.md
 prompts/intake-repair.md /home/nish/.pi/agent/prompts/intake-repair.md
 prompts/scout.md /home/nish/.pi/agent/prompts/scout.md
-prompts/nish-question-auditor.md /home/nish/.pi/agent/prompts/nish-question-auditor.md
 prompts/scout-repair.md /home/nish/.pi/agent/prompts/scout-repair.md
 config/seat-caps.json /home/nish/.local/state/pi-packet/seat-caps.json
 # fleet-ops#3722: ~/.pi/agent/models.json becomes MANIFEST-managed. The live
