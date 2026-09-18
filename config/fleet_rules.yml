@@ -9,16 +9,6 @@ groups:
           summary: "Watchdog heartbeat for the alerting pipeline"
           description: "Always firing. If this disappears, Prometheus or Alertmanager is dead."
 
-      - alert: FleetHeartbeatStale
-        expr: (time() - fleet_timer_last_trigger_seconds{timer="fleet-heartbeat.timer"}) > 7200
-        for: 2m
-        labels:
-          severity: critical
-          service: fleet
-        annotations:
-          summary: "fleet-heartbeat.timer has not fired in 2+ hours"
-          description: "Fleet orchestrator heartbeat is dead; nothing is dispatching or repairing."
-
       # Glue sweep 2026-09-18: the global service.d/timer.d/path.d/socket.d/
       # scope.d 10-escalate.conf drop-ins (OnFailure=unit-escalation@%n) were
       # deleted with the escalation tower. node_systemd_unit_state covers ROOT
@@ -33,7 +23,7 @@ groups:
       # + OnFailure=pi-intake-repair@; gh-webhook-receiver by Restart + its
       # absent() rule; prometheus-am-executor and syncthing by Restart=
       # on-failure; fleet-metrics-export by FleetMetricsExportStale below;
-      # pi-transport-check by OnFailure=fleet-heartbeat-failed-notify.service.
+      # pi-transport-check by its 20-self-heal.conf ExecStart repair.
       - alert: FleetLoadBearingTimerStale
         expr: (time() - fleet_timer_last_trigger_seconds{timer=~"fleet-merged-pr-close\\.timer|fleet-deploy-check\\.timer|pi-intake@.+\\.timer|pi-scout@.+\\.timer|pi-transport-check\\.timer"}) > 10800
         for: 10m

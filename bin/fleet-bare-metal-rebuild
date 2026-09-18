@@ -391,7 +391,7 @@ live_check() {
 
     # 7. Critical user units are active.
     local unit
-    for unit in fleet-heartbeat.timer fleet-restore-drill.timer fleet-resilience-drill.timer; do
+    for unit in fleet-deploy-check.timer fleet-restore-drill.timer; do
       if ! "$SYSTEMCTL" --user is-active "$unit" >/dev/null 2>&1; then
         log "check: user unit not active: $unit"
         violations=$((violations + 1))
@@ -438,7 +438,7 @@ detect_live_box() {
   local canon
   canon="$(manifest_value '.repositories.fleet_ops.canonical_checkout')"
   if [[ -d "$canon" || -f "$canon" ]] && [[ -d "$HOME/.config/systemd/user" ]]; then
-    if "$SYSTEMCTL" --user is-active fleet-heartbeat.timer >/dev/null 2>&1; then
+    if "$SYSTEMCTL" --user is-active fleet-deploy-check.timer >/dev/null 2>&1; then
       return 0
     fi
   fi
@@ -559,7 +559,7 @@ apply_rebuild() {
   # 7. Reload and start user units.
   run_step "daemon-reload" "$SYSTEMCTL" --user daemon-reload
   # install.sh enables timers that have [Install]; explicitly start timers.
-  run_step "start-heartbeat" "$SYSTEMCTL" --user start fleet-heartbeat.timer
+  run_step "start-deploy-check" "$SYSTEMCTL" --user start fleet-deploy-check.timer
 
   # 8. Run drills.
   if [[ "$dry_run" != 1 ]]; then

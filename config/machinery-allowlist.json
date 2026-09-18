@@ -3,16 +3,6 @@
   "scope": "user systemd units on netcup-rs2000",
   "authorized": [
     {
-      "unit": "fleet-heartbeat",
-      "class": "a",
-      "source": "repo"
-    },
-    {
-      "unit": "fleet-heartbeat-failed-notify",
-      "class": "a",
-      "source": "repo"
-    },
-    {
       "unit": "fleet-deploy-check",
       "class": "a",
       "source": "repo"
@@ -160,13 +150,13 @@
       "unit": "0509-demo-brand-timeline-canary",
       "class": "a",
       "source": "hand-placed",
-      "endorsement": "unit desc: 0509 demo-brand offer timeline public-surface canary (0509 issue #1899) \u2014 probes the five demo brands' public /timeline/:domain pages for a rendered dated ledger, daily 06:10 IST; deliberately a user unit on the fleet VPS (like 0509-search-tier-canary, issue #1452) because the worker GitHub App token cannot create/update .github/workflows files and the check needs no secrets (only outbound HTTPS to 0509.io); runs from a dedicated read-only checkout that self-syncs to main on every run"
+      "endorsement": "unit desc: 0509 demo-brand offer timeline public-surface canary (0509 issue #1899) — probes the five demo brands' public /timeline/:domain pages for a rendered dated ledger, daily 06:10 IST; deliberately a user unit on the fleet VPS (like 0509-search-tier-canary, issue #1452) because the worker GitHub App token cannot create/update .github/workflows files and the check needs no secrets (only outbound HTTPS to 0509.io); runs from a dedicated read-only checkout that self-syncs to main on every run"
     },
     {
       "unit": "0509-sneaker-resale-recall-canary",
       "class": "a",
       "source": "hand-placed",
-      "endorsement": "unit desc: sneaker-resale seed-list recall guard (0509 issue #1945) \u2014 fails loud when any sneaker-resale seed-list brand with genuine Meta ad coverage returns 0 verified/likely rows on production /search, 3h daily; deliberately a user unit on the fleet VPS (same shape as 0509-demo-brand-timeline-canary, issue #1899) because the worker GitHub App token cannot create/update .github/workflows files and the check needs no secrets (only outbound HTTPS to 0509.io); runs from a dedicated read-only checkout that self-syncs to main on every run; allowlisted via fleet-ops#4531 adjudication"
+      "endorsement": "unit desc: sneaker-resale seed-list recall guard (0509 issue #1945) — fails loud when any sneaker-resale seed-list brand with genuine Meta ad coverage returns 0 verified/likely rows on production /search, 3h daily; deliberately a user unit on the fleet VPS (same shape as 0509-demo-brand-timeline-canary, issue #1899) because the worker GitHub App token cannot create/update .github/workflows files and the check needs no secrets (only outbound HTTPS to 0509.io); runs from a dedicated read-only checkout that self-syncs to main on every run; allowlisted via fleet-ops#4531 adjudication"
     },
     {
       "unit": "nish-boundary-notify",
@@ -283,10 +273,10 @@
       "banned_class": "test debris",
       "follow_up": "filed",
       "adjudicated": "MECHANICAL-INSTEAD",
-      "verdict": "deleted; not fleet machinery \u2014 a stdio-ordering test fixture left installed as a user unit (ExecStart is `cat > /tmp/auditor-stdio-test.out`). No repo trace (no MANIFEST line, no timer-manifest.json entry, no systemd/ file, no organ). No live safety gate depends on it. Test fixtures do not belong in the user unit dir; the machinery-authorization-gate (fleet-ops#1548) is the mechanical prevention, this deletion closes the audit trail.",
+      "verdict": "deleted; not fleet machinery — a stdio-ordering test fixture left installed as a user unit (ExecStart is `cat > /tmp/auditor-stdio-test.out`). No repo trace (no MANIFEST line, no timer-manifest.json entry, no systemd/ file, no organ). No live safety gate depends on it. Test fixtures do not belong in the user unit dir; the machinery-authorization-gate (fleet-ops#1548) is the mechanical prevention, this deletion closes the audit trail.",
       "resolved_by": "#1492",
       "recurrence_issue": 5736,
-      "recurrence_note": "2026-09-12 gap-audit finding #5736: the deleted unit reappeared as a live file and the hunt re-flagged it with no pointer to the existing verdict; live file confirmed absent again 2026-09-12T08:2xZ. Verdict stands \u2014 hunt now surfaces prior adjudications on recurrent filings."
+      "recurrence_note": "2026-09-12 gap-audit finding #5736: the deleted unit reappeared as a live file and the hunt re-flagged it with no pointer to the existing verdict; live file confirmed absent again 2026-09-12T08:2xZ. Verdict stands — hunt now surfaces prior adjudications on recurrent filings."
     },
     {
       "unit": "ready-work",
@@ -309,7 +299,7 @@
       "banned_class": "dispatcher",
       "follow_up": "filed",
       "adjudicated": "MECHANICAL-INSTEAD",
-      "verdict": "deleted; quality research is owned by the sanctioned quality-research-weekly (class (a), repo-sourced) per docs/organ-catalog.md. The hand-placed quality-baseline-research.service/.timer + ~/.local/bin/quality-baseline-refresh was a hand-rolled dispatcher (banned class 'Hand-rolled dispatcher -> Pi stock dispatch') with no repo base, built 2026-08-25 (the day before the 2026-08-26 ban). Both runs (2026-08-25, 2026-08-28) produced SKIP-WITH-NUDGE \u2014 zero research ran in 5 days because no gate it depends on is live. visual-quality-waves.md stays (it is the canonical never-say-next SENIOR-AUDITOR escalation-layer program doc, referenced by stop-escalation-dispatch / escalation-daily-sweep / memory-index-autocompact); only the dispatcher was deleted. Same shape as the ready-work dispatcher adjudication (#1493).",
+      "verdict": "deleted; quality research is owned by the sanctioned quality-research-weekly (class (a), repo-sourced) per docs/organ-catalog.md. The hand-placed quality-baseline-research.service/.timer + ~/.local/bin/quality-baseline-refresh was a hand-rolled dispatcher (banned class 'Hand-rolled dispatcher -> Pi stock dispatch') with no repo base, built 2026-08-25 (the day before the 2026-08-26 ban). Both runs (2026-08-25, 2026-08-28) produced SKIP-WITH-NUDGE — zero research ran in 5 days because no gate it depends on is live. visual-quality-waves.md stays (it is the canonical never-say-next SENIOR-AUDITOR escalation-layer program doc, referenced by stop-escalation-dispatch / escalation-daily-sweep / memory-index-autocompact); only the dispatcher was deleted. Same shape as the ready-work dispatcher adjudication (#1493).",
       "resolved_by": "#1497"
     },
     {
