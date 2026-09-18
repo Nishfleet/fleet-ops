@@ -1,0 +1,17 @@
+<!-- nish-fleet-model-routing:start -->
+## Fleet model routing (mandatory)
+
+Before routing or launching implementation, load
+`/home/nish/workspaces/tooling/nish-vault/_system/shared-memory/codex-model-routing.md`.
+Sol at `medium` orchestrates only and does not implement. Cursor on this VPS is
+an internal Grok 4.5 High fallback component (`cursor-grok-4.5-high`), invoked
+serially by `implementation-worker-grok-auto` + `governed-run` only after a
+named SuperGrok primary unavailability, provider/auth/quota/network failure, or
+timeout; never select this launcher directly. Grok sits outside the
+normal DeepSeek/OpenCode → DeepSeek/CommandCode → MiniMax M3 → Luna/max-last
+ladder; off-ladder work of this shape routes via `implementation-worker-grok-auto`,
+with the reason stated.
+Exact identity is fail-closed; no Terra; no silent substitution. Do not spawn Task/model-
+switching subagents when running as a sealed worker.
+Docs: `/home/nish/.local/share/implementation-worker-routing/README.md`.
+<!-- nish-fleet-model-routing:end -->
