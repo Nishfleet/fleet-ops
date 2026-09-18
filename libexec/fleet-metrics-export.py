@@ -61,7 +61,11 @@ def _ensure_worker_token() -> None:
 
 # --- Config ----------------------------------------------------------------
 
-OUT = Path("/var/lib/prometheus/node-exporter/fleet.prom")
+OUT = Path(
+    os.environ.get(
+        "FLEET_METRICS_OUT", "/var/lib/prometheus/node-exporter/fleet.prom"
+    )
+)
 # fleet-ops#2273: legacy stale textfile left behind when staleness-checker.py
 # was refactored (a639520) to stop writing fleet-staleness.prom. node_exporter
 # reads ALL .prom files in the textfile dir, so the stale file's duplicate
@@ -93,12 +97,8 @@ TIMER_PREFIXES = ("fleet-", "pi-")
 
 HELP_LT = "# HELP fleet_timer_last_trigger_seconds Epoch (s) of the last trigger for a fleet/pi timer."
 TYPE_LT = "# TYPE fleet_timer_last_trigger_seconds gauge"
-HELP_ACT = "# HELP fleet_timer_active 1 if the timer is active, else 0."
-TYPE_ACT = "# TYPE fleet_timer_active gauge"
 HELP_HEALTH = "# HELP fleet_pi_seat_healthy 1 if the Pi seat is healthy, else 0."
 TYPE_HEALTH = "# TYPE fleet_pi_seat_healthy gauge"
-HELP_OBS = "# HELP fleet_pi_seat_observed_seconds Epoch (s) when the Pi seat was last observed."
-TYPE_OBS = "# TYPE fleet_pi_seat_observed_seconds gauge"
 # fleet-ops#3111: a stale pi-seat-health.json must read as UNKNOWN, never
 # "healthy". The 2026-09-03 incident left the console tile saying "seat
 # healthy" from a 2-day-old observation while the transport was down 33h.
@@ -106,8 +106,6 @@ TYPE_OBS = "# TYPE fleet_pi_seat_observed_seconds gauge"
 # alert rule fires >1800 (30 min) so a stale feed can never mask an outage.
 HELP_AGE = "# HELP fleet_pi_seat_health_age_seconds Seconds since the Pi seat was last observed (-1 if the observation is absent/unparseable). fleet-ops#3111."
 TYPE_AGE = "# TYPE fleet_pi_seat_health_age_seconds gauge"
-HELP_SEAT_TOTAL = "# HELP fleet_pi_seat_total Number of enrolled seats (providers with cap>0 in seat-caps.json). Denominator for the seat_availability SLO (fleet-ops#1291)."
-TYPE_SEAT_TOTAL = "# TYPE fleet_pi_seat_total gauge"
 HELP_DCT = "# HELP fleet_pi_seat_dead_credential_total Number of enrolled (model cap>0) seats with seat_dead=true carrying a credentials_bad signal in health_class or failure_mode (HTTP 401/403) that will not recover on their own (fleet-ops#1445, fleet-ops#2667, fleet-ops#3301)."
 TYPE_DCT = "# TYPE fleet_pi_seat_dead_credential_total gauge"
 HELP_DC = "# HELP fleet_pi_seat_dead_credential 1 for each dead-credential seat; health_class=credentials_bad means re-auth may help, health_class=corpse means the seat is terminal and must be retired from config/seat-caps.json (fleet-ops#1445, fleet-ops#2667)."
@@ -136,10 +134,6 @@ TYPE_PQEP = "# TYPE fleet_provider_quota_exhausted gauge"
 # 3+ days. This gauge counts those seats so the WFR lens and the next
 # blind-audit see them instead of a quiet depressed rollup. Sustained > 0
 # here is the loud signal that a restore was forgotten.
-HELP_HCAP0 = "# HELP fleet_seat_healthy_cap0_total Number of seats whose ledger is healthy (health_class=healthy, seat_dead=false) but whose model cap in seat-caps.json is 0 — healthy-but-parked, silently costing throughput (fleet-ops#2738)."
-TYPE_HCAP0 = "# TYPE fleet_seat_healthy_cap0_total gauge"
-HELP_HCAP0P = "# HELP fleet_seat_healthy_cap0 1 for each healthy-but-parked seat (health_class=healthy, seat_dead=false, model cap=0) so the repair worker knows which cap to restore (fleet-ops#2738)."
-TYPE_HCAP0P = "# TYPE fleet_seat_healthy_cap0 gauge"
 # fleet-ops#4627: per-class healthy seat count. The money-boundary starvation
 # gate pages Nish ONLY when the fleet is starved — no healthy prepaid/free
 # seat. This gauge exposes the per-class healthy-enrolled count so the alert
@@ -153,8 +147,6 @@ TYPE_SHC = "# TYPE fleet_seat_healthy gauge"
 # trailing 7d. The success metric is
 # nish_boundary_money_pages_total{reason="provider_credits_dry"} == 0 while
 # fleet_seat_healthy{class=~"prepaid|free"} > 0.
-HELP_MBPT = "# HELP nish_boundary_money_pages_total Number of MONEY-BOUNDARY pages delivered to Nish by reason over the trailing 7 days (fleet-ops#4627). Suppressed pages (fleet not starved) do not count."
-TYPE_MBPT = "# TYPE nish_boundary_money_pages_total counter"
 # fleet-ops#3111: stale cap=0 seats (intentional_cap_zero="stale") that have
 # not been re-auditioned. The 2026-09-03 incident showed groq/inferx/orcarouter
 # lingering at cap=0 for weeks while the fleet starved. The age is parsed from
@@ -173,14 +165,6 @@ TEST_ALERT_FILE = Path(f"/run/user/{os.getuid()}/fleet-test-alert")
 # Self-observation metrics (Task 2). All stdlib; gh is cached to <=1 call/30min.
 HELP_MPR = "# HELP fleet_merged_prs_24h Merged PR count per repo in the trailing 24h."
 TYPE_MPR = "# TYPE fleet_merged_prs_24h gauge"
-HELP_OOMD = "# HELP fleet_oomd_kills_6h systemd-oomd kills of app-pi-issue.slice units in the trailing 6h, by unit (fleet-ops#4164). A rise > 3 in 6h trips FleetOomdKillsHigh, whose repair packet raises the live ram_gb_per_worker charge back to 2.0. Counts only oomd-managed kills (MESSAGE=Killed unit or Killed process), not kernel OOM."
-TYPE_OOMD = "# TYPE fleet_oomd_kills_6h gauge"
-HELP_RDISP = "# HELP fleet_repair_dispatch_24h DISPATCH lines in alert-repair actions.log within 24h."
-TYPE_RDISP = "# TYPE fleet_repair_dispatch_24h gauge"
-HELP_RSKIP = "# HELP fleet_repair_skip_24h SKIP lines in alert-repair actions.log within 24h."
-TYPE_RSKIP = "# TYPE fleet_repair_skip_24h gauge"
-HELP_AD = "# HELP fleet_alert_outcome_24h Per-alertname repair outcomes in the trailing 24h (fleet-ops#1291 alert-quality). kind=dispatch|resolved|failed|skipped|phantom_resolved. phantom_resolved = RESOLVED entries whose root_cause starts with PHANTOM_ALERT (drill fixtures, not real repair work) — the WFR alert-quality lens reads phantom_resolved>5/24h as phantom-drift regression (fleet-ops#2694). Feeds the WFR alert-quality lens."
-TYPE_AD = "# TYPE fleet_alert_outcome_24h gauge"
 HELP_OPEN = "# HELP fleet_open_prs Open pull-request count per repo from a cached org snapshot."
 TYPE_OPEN = "# TYPE fleet_open_prs gauge"
 HELP_CI = "# HELP fleet_main_ci_green 1 if default-branch CI is green, 0 if red. PENDING rollup resolved from latest completed CI run; repos with no CI omitted. Tracks only the workflow literally named \"CI\" — a repo's production-deploy greenness is fleet_product_deploy_green (fleet-ops#5140)."
@@ -188,7 +172,6 @@ TYPE_CI = "# TYPE fleet_main_ci_green gauge"
 HELP_FRESH = "# HELP fleet_gh_cache_fresh 1 if this gh-derived family is served from a cache younger than 2h."
 TYPE_FRESH = "# TYPE fleet_gh_cache_fresh gauge"
 HELP_CTS = "# HELP fleet_gh_cache_timestamp_seconds Epoch seconds at which the served data for this gh-derived family was MEASURED. Equals the cache write time when the cache was served, and the export time when gh was just fetched. A consumer of a cached family (the console tiles) must stamp this, not its own run time: stamping the export time on a <=30 min old count reads as seconds-fresh (fleet-ops#5155, ConsoleLying tile=open_prs)."
-TYPE_CTS = "# TYPE fleet_gh_cache_timestamp_seconds gauge"
 
 # Undersaturation-guard metrics (2026-08-27, fleet-ops UNDERSATURATED — the
 # deleted fleet1 watchdog's Pi-era reincarnation on stock machinery).
@@ -216,23 +199,6 @@ TYPE_READY = "# TYPE fleet_ready_work gauge"
 HELP_MAINT = "# HELP fleet_maintenance_quiescing 1 during the weekly maintenance window (or manual quiesce), else 0. Gates FleetUndersaturated. Missing flag -> 0 (fail-safe toward alerting)."
 TYPE_MAINT = "# TYPE fleet_maintenance_quiescing gauge"
 
-# Queue composition metrics (2026-08-29, fleet-ops#1136 scope addition).
-# fleet2 died at 64% self-maintenance; the queue composition was unmeasured.
-# Two queues: "agent-ready" (ALL agent-ready issues across Nishfleet) and
-# "ready-work" (agent-ready issues in enrolled repos only — what intake
-# actually processes). We export:
-#   fleet_queue_total{queue="agent-ready"|"ready-work"} — total open issues
-#   fleet_queue_self_maintenance_total{queue="agent-ready"|"ready-work"} — self-maintenance issues
-#   fleet_queue_self_maintenance_ratio{queue="agent-ready"|"ready-work"} — ratio 0..1 (omitted when total=0)
-# The 64% tripwire (fleet2 death-number) is a LEVEL held above 0.64,
-# smoothed over the trailing 7 days (avg_over_time[7d]) so momentary dips
-# and export gaps cannot reset it (fleet-ops#2171).
-HELP_QT = "# HELP fleet_queue_total Open agent-ready issues by queue. queue=agent-ready: all Nishfleet repos. queue=ready-work: enrolled repos only (intake-repos.json)."
-TYPE_QT = "# TYPE fleet_queue_total gauge"
-HELP_QSM = "# HELP fleet_queue_self_maintenance_total Self-maintenance agent-ready issues by queue. Self-maintenance = repos in config/self-maintenance-repos.json (default fleet-ops)."
-TYPE_QSM = "# TYPE fleet_queue_self_maintenance_total gauge"
-HELP_QSMR = "# HELP fleet_queue_self_maintenance_ratio Self-maintenance / total agent-ready issues by queue. 0..1. Omitted when total=0."
-TYPE_QSMR = "# TYPE fleet_queue_self_maintenance_ratio gauge"
 
 # Self-maintenance + PR-quality metrics (2026-08-27, fleet-ops#1136).
 # fleet2 died at 64% self-maintenance; the fleet-ops:product merge split was
@@ -289,10 +255,6 @@ TYPE_VMR = "# TYPE fleet_verified_merge_ratio gauge"
 # if pick_seat stops routing keystone packets (or the ledger is wiped), the
 # gauge disappears and the alert fires. Mirrors the FleetMetricsExportMissing
 # pattern: the metric's PRESENCE is the health signal, not its value.
-HELP_KROUTE = "# HELP fleet_keystone_routed_total Cumulative keystone packets routed to a strong seat by pick_seat (fleet-ops#1133)."
-TYPE_KROUTE = "# TYPE fleet_keystone_routed_total counter"
-HELP_KESC = "# HELP fleet_keystone_escalated_total Cumulative keystone packets escalated to a senior conference after two strikes (fleet-ops#1133)."
-TYPE_KESC = "# TYPE fleet_keystone_escalated_total counter"
 HELP_KHB = "# HELP fleet_keystone_routing_heartbeat_seconds mtime (epoch s) of the keystone routing ledger. Its presence is the health signal for the routing organ; absent() fires FleetKeystoneRoutingAbsent."
 TYPE_KHB = "# TYPE fleet_keystone_routing_heartbeat_seconds gauge"
 # The ledger lives in the pi-packet state dir. The state dir is the same one
@@ -308,9 +270,6 @@ KEYSTONE_LEDGER = Path(
 # heartbeat can gauge (fleet_worktree_dirs) plus a liveness signal. A summary
 # older than WORKTREE_REAPER_STALE_S (7d, matching the retired opus-heartbeat
 # REAPER_STALE_S) is treated as stale — the reaper missed a week of daily runs.
-WORKTREE_REAPER_SUMMARY = Path(
-    "/home/nish/workspaces/agent-state/worktree-reaper-last-run.json"
-)
 WORKTREE_REAPER_STALE_S = 7 * 86400
 
 # Worktree reaper gauge family (fleet-ops#4118). fleet_worktree_dirs is the
@@ -320,59 +279,9 @@ WORKTREE_REAPER_STALE_S = 7 * 86400
 # the heartbeat can tell a dead reaper (0) from a healthy one (1); the count
 # gauges are emitted only when the summary is present and fresh (a missing or
 # stale summary means the count is unknown, not 0).
-HELP_WTP = (
-    "# HELP fleet_worktree_reaper_present 1 when the worktree reaper's last-run "
-    "summary is present and fresh, 0 when missing/unparseable/stale. The "
-    "liveness signal for the reaper organ (fleet-ops#4118)."
-)
-TYPE_WTP = "# TYPE fleet_worktree_reaper_present gauge"
-HELP_WTD = (
-    "# HELP fleet_worktree_dirs Number of directories left under agent-worktrees "
-    "after the last worktree-reaper run (post_count). The count metric the "
-    "heartbeat gauges for unbounded worktree sprawl (fleet-ops#4118)."
-)
-TYPE_WTD = "# TYPE fleet_worktree_dirs gauge"
-HELP_WTR = (
-    "# HELP fleet_worktree_reaped Number of worktrees the reaper removed "
-    "in its last run (fleet-ops#4118)."
-)
-TYPE_WTR = "# TYPE fleet_worktree_reaped gauge"
-HELP_WTHB = (
-    "# HELP fleet_worktree_reaper_heartbeat_seconds Epoch (s) of the reaper's "
-    "last-run summary timestamp. Its presence is the freshness signal for the "
-    "reaper organ; absent() fires when the reaper is dead (fleet-ops#4118)."
-)
-TYPE_WTHB = "# TYPE fleet_worktree_reaper_heartbeat_seconds gauge"
 
-# Truth staleness metrics (fleet-ops#1137: cross-check standing docs vs live
-# state). The staleness checker exports fleet_truth_staleness_last_run_seconds,
-# fleet_truth_staleness_total_claims, and
-# fleet_truth_staleness_mismatches_by_kind{kind="path"|"unit"|"issue"} to the
-# same fleet.prom textfile. The absent() rule in fleet_rules.yml watches the
-# last_run_seconds gauge; if the checker is dead or removed, the metric
-# disappears and TruthStalenessAbsent fires. This is the organ heartbeat
-# per fleet-ops#1010 standing pattern.
-HELP_TS_LRUN = (
-    "# HELP fleet_truth_staleness_last_run_seconds "
-    "Epoch (s) of the last truth-staleness-checker run."
-)
-TYPE_TS_LRUN = "# TYPE fleet_truth_staleness_last_run_seconds gauge"
-HELP_TS_CLAIMS = (
-    "# HELP fleet_truth_staleness_total_claims "
-    "Total verifiable claims extracted this run."
-)
-TYPE_TS_CLAIMS = "# TYPE fleet_truth_staleness_total_claims gauge"
-HELP_TS_MISS = (
-    "# HELP fleet_truth_staleness_mismatches_by_kind "
-    "Count of mismatches found, by claim kind."
-)
-TYPE_TS_MISS = "# TYPE fleet_truth_staleness_mismatches_by_kind gauge"
 
-ACTIONS_LOG = Path(
-    "/home/nish/workspaces/agent-state/alert-repair/actions.log"
-)
 PR_CACHE_DIR = Path("/home/nish/workspaces/agent-state/fleet-metrics")
-STALENESS_CACHE = PR_CACHE_DIR / "staleness-findings-cache.json"
 PR_CACHE = PR_CACHE_DIR / "merged-prs-cache.json"
 # fleet-ops#1136: detailed merged-PR records (repo+title) power the
 # self-maintenance ratio and the upgrade/repair/churn classification. Separate
@@ -383,7 +292,6 @@ PR_CACHE_TTL = 1800      # 30 min — refresh gh at most this often
 PR_CACHE_STALE = 7200    # 2 h — beyond this, omit the metric family
 GH_OWNER = "Nishfleet"
 GH_TIMEOUT = 45          # gh can be slow; exporter must finish < 60s
-JOURNAL_TIMEOUT = 20
 GH_PAGES = 10
 
 # GitHub API rate-limit metrics (fleet-ops#1350). The 5000/hr core budget is
@@ -519,7 +427,6 @@ READY_GH_TIMEOUT = 45
 # Queue composition caches (fleet-ops#1136 scope addition). Separate from
 # READY_CACHE so the old int shape is not misread.
 QUEUE_CACHE = PR_CACHE_DIR / "queue-composition-cache.json"
-ALL_AGENT_READY_CACHE = PR_CACHE_DIR / "all-agent-ready-cache.json"
 
 # --- Seat yield ledger (fleet-ops#3250) ---
 # Pi issue-work sessions live here. Only pi-issue-* directories carry product
@@ -528,15 +435,8 @@ SESSIONS_DIR = Path(
     os.environ.get("FLEET_SESSIONS_DIR", str(Path.home() / ".pi" / "agent" / "sessions"))
 )
 # Per-file parse cache so re-export ticks are cheap; keyed on file mtime seconds.
-SEAT_YIELD_CACHE = PR_CACHE_DIR / "seat-yield-sessions-cache.json"
 # JSON sidecar consumed by lib/seat-lib.sh pick_seat. Not a new organ; just a
 # state file written by the existing fleet-metrics-export tick.
-SEAT_YIELD_JSON = Path(
-    os.environ.get(
-        "FLEET_SEAT_YIELD_JSON",
-        str(Path.home() / ".local" / "state" / "pi-packet" / "seat-yield.json"),
-    )
-)
 # --- Seat spend + provider balance (fleet-ops#3283) ---
 # Pi session jsonl already carries usage.cost per message; we sum it per
 # provider per UTC day. The per-file mtime cache keeps re-export cheap.
@@ -558,48 +458,6 @@ XKIRO_BALANCE_CACHE = PR_CACHE_DIR / "xkiro-balance-cache.json"
 # precomputed remaining field (live 2026-09-05); remaining = credits - usage.
 OPENROUTER_API_KEY_ENV = "OPENROUTER_API_KEY"
 
-SEAT_YIELD_WINDOW = 20
-SEAT_YIELD_PROVISIONAL = 0.5
-# fleet-ops#3250/#3310 state the rule "infra deaths never count as seat yield",
-# but the ledger below never implemented it: a session that died because the
-# PROVIDER failed (resource_exhausted, 429/5xx, connection reset, hang-watchdog
-# rc=124/143) was counted as a no-PR miss, so a seat was punished for the
-# fleet's own infrastructure. That poisoning already produced wrong verdicts:
-# devin/swe-1-7 was retired on it (#3389, corrected in #3473). Matched against
-# the final assistant message's structured stopReason/errorMessage pair — never
-# free transcript text, so a worker discussing a timeout is not misread.
-SEAT_YIELD_INFRA_RE = re.compile(
-    r"resource_exhausted|rate[ _-]?limit|\b(?:429|500|502|503|504)\b"
-    r"|ETIMEDOUT|ECONNRESET|ECONNREFUSED|socket hang up|connection error"
-    r"|timed? ?out|overloaded|unavailable|bad gateway"
-    r"|exited with code (?:124|143)|SIGKILL|SIGTERM|no seat available",
-    re.I,
-)
-# Final assistant text contains a Nishfleet PR URL (http/s optional).
-PR_URL_RE = re.compile(
-    r"(?:https?://)?github\.com/Nishfleet/[^/\s\"]+/pull/\d+", re.IGNORECASE
-)
-HELP_SY = (
-    "# HELP fleet_seat_yield Rolling last-20 issue-work sessions PR yield "
-    "per seat (0..1). Seats with <20 sessions report a provisional 0.5 "
-    "yield so new seats are tried (fleet-ops#3250)."
-)
-TYPE_SY = "# TYPE fleet_seat_yield gauge"
-HELP_SNPR = (
-    "# HELP fleet_sessions_no_pr_total Number of issue-work sessions in the "
-    "last-20 window that did not produce a PR URL, per seat (fleet-ops#3250)."
-)
-TYPE_SNPR = "# TYPE fleet_sessions_no_pr_total gauge"
-# fleet-ops#3322: per-seat sessions-to-PR percentage (0..100). The issue's
-# moves: sessions_to_pr_pct metric. Computed from the same rolling window as
-# fleet_seat_yield; emitted as a percentage so the fleet-landing-watch measure
-# and the audition verdict share one scale. Does NOT replace
-# fleet_sessions_no_pr_total — both are emitted.
-HELP_STPR = (
-    "# HELP fleet_sessions_to_pr_pct Rolling last-20 issue-work sessions PR "
-    "yield as a percentage (0..100) per seat (fleet-ops#3322)."
-)
-TYPE_STPR = "# TYPE fleet_sessions_to_pr_pct gauge"
 
 # Self-maintenance repo set (fleet-ops#1136). PR-tunable; never hardcoded in
 # the classifier. Default ["fleet-ops"] when the file is missing/unparseable
@@ -728,18 +586,6 @@ def _list_timers():
     return out
 
 
-def _timer_active(unit):
-    try:
-        r = subprocess.run(
-            ["systemctl", "--user", "is-active", unit],
-            capture_output=True,
-            text=True,
-            timeout=5,
-            env={**os.environ, "XDG_RUNTIME_DIR": XDG},
-        )
-    except (OSError, subprocess.TimeoutExpired):
-        return 0
-    return 1 if r.stdout.strip() == "active" else 0
 
 
 def _read_seat():
@@ -937,7 +783,6 @@ def _ping_healthcheck():
 
 # --- Self-observation (Task 2) ---------------------------------------------
 
-_TS_RE = re.compile(r"^\[(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})Z\]")
 
 
 def _parse_iso_utc(s):
@@ -989,280 +834,12 @@ def _write_cache(path, data):
         print(f"cache write {path}: {exc}", file=sys.stderr)
 
 
-def _extract_text(content):
-    """Flatten assistant message content to plain text.
-
-    Content may be a raw string or a list of objects. Only text objects
-    are extracted; reasoning/thinking blocks are ignored.
-    """
-    if isinstance(content, str):
-        return content
-    if not isinstance(content, list):
-        return ""
-    parts = []
-    for item in content or []:
-        if isinstance(item, dict) and item.get("type") == "text" and isinstance(item.get("text"), str):
-            parts.append(item["text"])
-    return "".join(parts)
 
 
-def _parse_session_file(path):
-    """Return {seat, timestamp, has_pr_url, cost} for a pi-issue session .jsonl.
-
-    Seat is taken from the first model_change event; the timestamp is the
-    session start time. A session counts as PR-producing if the final
-    assistant message text contains a Nishfleet PR URL. cost is the sum of
-    message.usage.cost.total across the session (fleet-ops#3323) — 0.0 for
-    free lanes and sessions that record no usage.cost. infra_death is True
-    when the session ended on a provider-side error (stopReason "error" whose
-    errorMessage matches SEAT_YIELD_INFRA_RE); those sessions never count as
-    seat yield (fleet-ops#3250/#3310).
-    """
-    session_ts = None
-    model_seat = None
-    last_assistant_line = None
-    fallback_ts = None
-    cost = 0.0
-    try:
-        with path.open("r", encoding="utf-8", errors="replace") as f:
-            for raw in f:
-                line = raw.strip()
-                if not line:
-                    continue
-                if session_ts is None and re.search(r'"type"\s*:\s*"session"', line):
-                    try:
-                        data = json.loads(line)
-                        session_ts = data.get("timestamp")
-                        # id is a fallback sort key; timestamps should be unique
-                        # enough, but a stable id prevents ties.
-                        fallback_ts = data.get("id", "")
-                    except json.JSONDecodeError:
-                        pass
-                    continue
-                if model_seat is None and re.search(r'"type"\s*:\s*"model_change"', line):
-                    try:
-                        data = json.loads(line)
-                        provider = data.get("provider")
-                        model = data.get("modelId")
-                        if provider and model:
-                            model_seat = f"{provider}/{model}"
-                    except json.JSONDecodeError:
-                        pass
-                    continue
-                if '"usage"' in line and '"cost"' in line:
-                    try:
-                        data = json.loads(line)
-                        c = (
-                            ((data.get("message") or {}).get("usage") or {})
-                            .get("cost") or {}
-                        ).get("total")
-                        if c is not None:
-                            cost += float(c)
-                    except (json.JSONDecodeError, ValueError, TypeError):
-                        pass
-                if re.search(r'"role"\s*:\s*"assistant"', line):
-                    last_assistant_line = line
-    except OSError:
-        return None
-    if not model_seat:
-        return None
-    has_pr = False
-    infra_death = False
-    if last_assistant_line:
-        try:
-            data = json.loads(last_assistant_line)
-            msg = data.get("message") or {}
-            content = msg.get("content")
-            text = _extract_text(content)
-            if PR_URL_RE.search(text):
-                has_pr = True
-            # A provider-side failure ends the session with stopReason "error"
-            # and a structured errorMessage. Only that pair is inspected, so
-            # the classification cannot be tripped by transcript prose.
-            if msg.get("stopReason") == "error":
-                infra_death = bool(
-                    SEAT_YIELD_INFRA_RE.search(msg.get("errorMessage") or "")
-                )
-        except json.JSONDecodeError:
-            pass
-    ts_epoch = _parse_iso_utc(session_ts) if session_ts else None
-    if ts_epoch is None:
-        # If we cannot parse the ISO timestamp, keep ordering stable by falling
-        # back to 0. This is rare (malformed session line) and safe: a bogus
-        # session floats to the start of the window and is quickly evicted.
-        ts_epoch = 0
-    return {
-        "seat": model_seat,
-        "timestamp": ts_epoch,
-        "has_pr_url": has_pr,
-        "cost": cost,
-        "infra_death": infra_death,
-    }
 
 
-def _compute_seat_yield():
-    """Compute per-seat rolling last-20 issue-work session PR yield and cost.
-
-    Scans FLEET_SESSIONS_DIR/pi-issue-*/**/*.jsonl, caches per-file results
-    by mtime, and returns {seat: {yield, sessions, pr_count, provisional,
-    cost_per_session}}. cost_per_session is the mean usage.cost over the
-    same rolling window (fleet-ops#3323) so pick_seat can rank by value =
-    yield / max(cost_per_session, 0.001).
-    Also writes the JSON sidecar used by lib/seat-lib.sh pick_seat.
-    """
-    sessions_dir = Path(SESSIONS_DIR)
-    if not sessions_dir.is_dir():
-        return {}
-
-    cache = {}
-    try:
-        data, _age = _read_cache(SEAT_YIELD_CACHE)
-        # v3: cached entries carry infra_death (fleet-ops#3250 enforcement);
-        # v1/v2 entries lack it, so they are re-parsed once on this tick.
-        if isinstance(data, dict) and data.get("v") == 3:
-            cache = data.get("entries") or {}
-    except (OSError, json.JSONDecodeError):
-        pass
-
-    new_cache = {}
-    sessions = []
-    for path in sessions_dir.glob("pi-issue-*/*.jsonl"):
-        try:
-            mtime_s = int(path.stat().st_mtime)
-        except OSError:
-            continue
-        key = str(path)
-        cached = cache.get(key)
-        if isinstance(cached, dict) and cached.get("mtime_s") == mtime_s:
-            entry = {
-                "seat": cached["seat"],
-                "timestamp": cached["timestamp"],
-                "has_pr_url": cached["has_pr_url"],
-                "cost": cached.get("cost", 0.0),
-                "infra_death": cached.get("infra_death", False),
-            }
-        else:
-            entry = _parse_session_file(path)
-            if entry is None:
-                continue
-        new_cache[key] = {
-            "mtime_s": mtime_s,
-            "seat": entry["seat"],
-            "timestamp": entry["timestamp"],
-            "has_pr_url": entry["has_pr_url"],
-            "cost": entry["cost"],
-            "infra_death": entry["infra_death"],
-        }
-        sessions.append(entry)
-
-    try:
-        _write_cache(SEAT_YIELD_CACHE, {"v": 3, "entries": new_cache})
-    except OSError:
-        pass
-
-    # Group by seat, then fold in the cap-map allowlist so new/idle seats get
-    # a provisional 0.5 entry in the JSON/metrics.
-    by_seat = {}
-    for e in sessions:
-        by_seat.setdefault(e["seat"], []).append(e)
-
-    known_caps = _seat_caps_model_cap_map()
-    if known_caps:
-        for seat, cap in known_caps.items():
-            if cap > 0 and seat not in by_seat:
-                by_seat[seat] = []
-
-    result = {}
-    for seat, entries in by_seat.items():
-        entries.sort(key=lambda x: x["timestamp"], reverse=True)
-        # Cost keeps the raw last-20 window: an infra death can still burn
-        # tokens before it dies, and the audition spend cap (fleet-ops#3322)
-        # must keep seeing that spend. Only the QUALITY signal is filtered.
-        window = entries[:SEAT_YIELD_WINDOW]
-        # fleet-ops#3250/#3310: yield is measured over sessions where the model
-        # actually worked. Infra deaths are dropped rather than counted as
-        # misses, and the window reaches further back to stay 20 deep, which is
-        # exactly the retirement rule's ">= 20 sessions ended with the model
-        # working" bar.
-        working = [e for e in entries if not e.get("infra_death")]
-        infra_deaths = sum(1 for e in window if e.get("infra_death"))
-        yield_window = working[:SEAT_YIELD_WINDOW]
-        total = len(yield_window)
-        pr_count = sum(1 for e in yield_window if e["has_pr_url"])
-        no_pr = total - pr_count
-        if entries and not working:
-            # Every attempt died on infrastructure. There is no quality
-            # evidence either way, so the seat is NOT promoted to the
-            # provisional 0.5 it would get as a newcomer; benching and caps
-            # (seat-lib) own dead seats, not this ledger.
-            y = 0.0
-            provisional = False
-        elif total < SEAT_YIELD_WINDOW:
-            y = SEAT_YIELD_PROVISIONAL
-            provisional = True
-        else:
-            y = pr_count / total if total > 0 else 0.0
-            provisional = False
-        # fleet-ops#3323: mean usage.cost per session over the same window.
-        # Sessions with no recorded cost count 0, so free lanes land on 0 and
-        # pick_seat's value floor (0.001) sorts them first at equal yield.
-        raw_total = len(window)
-        cost_per_session = (
-            sum(e.get("cost", 0.0) for e in window) / raw_total
-            if raw_total > 0 else 0.0
-        )
-        # fleet-ops#3322: total audition cost (sum over the rolling window).
-        # The audition lane caps total spend at $1; cost_usd is the figure the
-        # intake tick reads to enforce that cap. cost_per_session stays for the
-        # value-ranking path (fleet-ops#3323) — both are written so existing
-        # consumers are unaffected.
-        cost_usd = sum(e.get("cost", 0.0) for e in window) if raw_total > 0 else 0.0
-        result[seat] = {
-            "yield": y,
-            "sessions": total,
-            "pr_count": pr_count,
-            "no_pr_count": no_pr,
-            "provisional": provisional,
-            "infra_deaths": infra_deaths,
-            "cost_per_session": cost_per_session,
-            "cost_usd": cost_usd,
-        }
-
-    try:
-        _atomic_write(SEAT_YIELD_JSON, json.dumps(result, sort_keys=True))
-    except OSError as exc:
-        print(f"seat-yield json write: {exc}", file=sys.stderr)
-
-    return result
 
 
-def _emit_seat_yield(lines, seat_yield):
-    """Append fleet_seat_yield and fleet_sessions_no_pr_total families.
-
-    The two metric families share the same per-seat loop. HELP/TYPE are
-    emitted once per family so the node_exporter textfile stays parseable.
-    """
-    if not seat_yield:
-        return
-    lines.append("")
-    lines.append(HELP_SY)
-    lines.append(TYPE_SY)
-    lines.append("")
-    lines.append(HELP_SNPR)
-    lines.append(TYPE_SNPR)
-    lines.append("")
-    lines.append(HELP_STPR)
-    lines.append(TYPE_STPR)
-    for seat in sorted(seat_yield):
-        y = seat_yield[seat]
-        lbl = _prom_label(seat)
-        lines.append(f'fleet_seat_yield{{seat="{lbl}"}} {y["yield"]:.6f}')
-        lines.append(
-            f'fleet_sessions_no_pr_total{{seat="{lbl}"}} {y["no_pr_count"]}'
-        )
-        # fleet-ops#3322: sessions-to-PR percentage (0..100).
-        pct = (y["yield"] * 100.0) if isinstance(y.get("yield"), (int, float)) else 0.0
-        lines.append(f'fleet_sessions_to_pr_pct{{seat="{lbl}"}} {pct:.2f}')
 
 
 def _day_from_iso(s):
@@ -1460,125 +1037,20 @@ def _emit_spend(lines, spend):
         lines.extend(today_rows)
 
 
-_HELP_USD24 = (
-    "# HELP fleet_usd_24h Rate-card cost of the trailing 24h in USD from "
-    "session usage tokens x the seat rate card (fleet-ops#4459). "
-    "metered=per-token seats; flat_share=prorated daily share of flat plans."
-)
-_TYPE_USD24 = "# TYPE fleet_usd_24h gauge"
-_HELP_USD_PER_PR = (
-    "# HELP fleet_usd_per_merged_pr USD (metered + flat_share) 24h / merged "
-    "PRs 24h (fleet-ops#4459). 0 when no PR merged or spend is unreadable."
-)
-_TYPE_USD_PER_PR = "# TYPE fleet_usd_per_merged_pr gauge"
 
 # fleet-ops#4643: prompt prefix-cache hit ratio. cacheRead is the cached
 # prefix; input is uncached prompt tokens. ratio = cacheRead/(input+cacheRead).
 # class follows the issue's metered/free vocabulary (prepaid-quota seats bill
 # uncached input the same way metered seats do, so they count as metered).
-_HELP_CACHE_HIT = (
-    "# HELP fleet_prompt_cache_hit_ratio Prefix-cache hit ratio for the "
-    "trailing 24h by provider and packet type, from Pi session jsonl usage "
-    "(cacheRead / (input + cacheRead); fleet-ops#4643). 0..1. Omitted when no "
-    "prompt tokens were recorded for that (provider, packet_type) pair."
-)
-_TYPE_CACHE_HIT = "# TYPE fleet_prompt_cache_hit_ratio gauge"
-
-_FLEET_USD_MOD = None
 
 
-def _fleet_usd_mod():
-    """Lazily load lib/fleet_usd.py from ../lib/."""
-    global _FLEET_USD_MOD
-    if _FLEET_USD_MOD is not None:
-        return _FLEET_USD_MOD
-    import importlib.util
-    lib_path = Path(__file__).resolve().parent.parent / "lib" / "fleet_usd.py"
-    spec = importlib.util.spec_from_file_location("fleet_usd", lib_path)
-    mod = importlib.util.module_from_spec(spec)
-    sys.modules["fleet_usd"] = mod
-    spec.loader.exec_module(mod)
-    _FLEET_USD_MOD = mod
-    return mod
 
 
-def _resolve_seat_caps_path():
-    """First readable seat-caps.json (live file first, repo checkouts fallback)."""
-    for path in (SEAT_CAPS_LIVE, SEAT_CAPS_DEFAULT, SEAT_CAPS_FALLBACK):
-        try:
-            path.read_text()
-            return path
-        except OSError:
-            continue
-    return SEAT_CAPS_DEFAULT
 
 
-def _emit_usd_24h(lines, pr_counts):
-    """Emit fleet_usd_24h + fleet_usd_per_merged_pr from rate card x usage.
-
-    Shares the exact rate-card math with measure.sh via lib/fleet_usd.py so the
-    judge header and the prom metric cannot drift. pr_counts is the per-repo
-    merged-PR map from the detailed fetch (may be None if that fetch failed);
-    usd_per_merged_pr is emitted only when a real merge count is available and
-    > 0, else it is UNAVAILABLE — never a fabricated $0."""
-    try:
-        mod = _fleet_usd_mod()
-        caps_path = _resolve_seat_caps_path()
-        rate_card = mod.load_rate_card(str(caps_path))
-        agg, seen_missing, flat = mod.compute_usd_24h(str(SESSIONS_DIR), rate_card)
-        metered = sum(
-            v for prov, v in agg.items() if not rate_card.get(prov, {}).get("flat")
-        )
-        flat_share = sum(flat.values())
-        lines.append("")
-        lines.append(_HELP_USD24)
-        lines.append(_TYPE_USD24)
-        lines.append(f'fleet_usd_24h{{kind="metered"}} {metered:.6f}')
-        lines.append(f'fleet_usd_24h{{kind="flat_share"}} {flat_share:.6f}')
-        if pr_counts and sum(pr_counts.values()) > 0:
-            merged_total = sum(pr_counts.values())
-            lines.append("")
-            lines.append(_HELP_USD_PER_PR)
-            lines.append(_TYPE_USD_PER_PR)
-            per = (metered + flat_share) / merged_total
-            lines.append(
-                f'fleet_usd_per_merged_pr{{merged_prs="{merged_total}"}} {per:.6f}'
-            )
-    except Exception as exc:  # noqa: BLE001 — metric must never take main() down
-        lines.append(f'# fleet_usd_24h UNAVAILABLE error: {_prom_label(str(exc))[:120]}')
 
 
-def _emit_cache_hit_ratio(lines):
-    """Emit fleet_prompt_cache_hit_ratio{provider,packet_type,class} (fleet-ops#4643).
 
-    Aggregates cacheRead vs uncached input over the trailing 24h of Pi session
-    jsonl via lib/fleet_usd.compute_cache_hit_24h. Rows with no prompt tokens
-    are omitted by the helper (no denominator). A failure never takes main()
-    down — it emits a UNAVAILABLE comment line, matching _emit_usd_24h.
-    """
-    try:
-        mod = _fleet_usd_mod()
-        caps_path = _resolve_seat_caps_path()
-        rate_card = mod.load_rate_card(str(caps_path))
-        rows = mod.compute_cache_hit_24h(str(SESSIONS_DIR), rate_card)
-        if not rows:
-            return
-        lines.append("")
-        lines.append(_HELP_CACHE_HIT)
-        lines.append(_TYPE_CACHE_HIT)
-        for r in rows:
-            prov = _prom_label(r["provider"])
-            ptype = _prom_label(r["packet_type"])
-            cls = _prom_label(r["class"])
-            lines.append(
-                f'fleet_prompt_cache_hit_ratio{{provider="{prov}",'
-                f'packet_type="{ptype}",class="{cls}"}} {r["ratio"]:.6f}'
-            )
-    except Exception as exc:  # noqa: BLE001 — metric must never take main() down
-        lines.append(
-            f'# fleet_prompt_cache_hit_ratio UNAVAILABLE error: '
-            f'{_prom_label(str(exc))[:120]}'
-        )
 
 
 def _read_env_key(path, names):
@@ -1606,150 +1078,17 @@ def _read_env_key(path, names):
     return None
 
 
-# --- 0509 signups funnel (fleet-ops#4582) --------------------------------
-# The direction metric — signups/week (nish→0509 #4518 direction entry) — was
-# unmeasured on the control plane: every steering decision stressed a number
-# nobody could query. Read it live from 0509's D1 ‘user’ table each tick via
-# the SAME sanctioned VPS Cloudflare token + REST “query” endpoint that
-# lib/fleet-product-slo.py uses (fleet-ops#4456 / fleet-ops#1166) — no new
-# credential is minted. An empty-but-reachable table is a HEALTHY 0 (a real
-# value, never a scrape error); an UNREACHABLE source omits the family (the
-# exporter's “no fabricated 0” rule), so Prometheus absent() surfaces
-# the outage instead of a false zero.
-_S7_D1_ACCOUNT = os.environ.get(
-    "FLEET_PRODUCT_D1_ACCOUNT", "f670a698e17bf160c8e4679823e68916")
-_S7_D1_DATABASE = os.environ.get(
-    "FLEET_PRODUCT_D1_DATABASE", "746c6e3d-782e-443a-82d6-28ca93a16294")
-_S7_CF_TOKEN_CANDIDATES = [
-    os.environ.get("FLEET_PRODUCT_CF_FILE", ""),
-    os.path.expanduser("~/.config/cloudflare/deploy-ci.env"),
-]
-# The SQL is a literal. Only the two Cloudflare ID segments come from config
-# and each is validated 32-hex before URL interpolation (see _S7_url). The
-# 0509 table is ‘user’ (lowercase), matching fleet-purchase-slo.py's live
-# query — the issue's “FROM User” is the conceptual table, not the schema.
-_S7_SQL = (
-    "SELECT COUNT(*) AS n FROM user "
-    "WHERE julianday(createdAt) >= julianday('now','-7 days');"
-)
-# Hex alphabet for validating the Cloudflare D1 account/database IDs before
-# they are interpolated into the fixed api.cloudflare.com URL (fleet-ops#4456).
-_HEX = "0123456789abcdefABCDEF"
-HELP_S7 = (
-    "# HELP fleet_signups_7d Users created in 0509 D1 in the trailing 7 days "
-    "(fleet-ops#4582). Source: 0509 D1 user.createdAt via the sanctioned "
-    "Cloudflare token (reuses fleet-ops#4456's access path; no new credential). "
-    "0 is a healthy-but-empty table, not a failure; the family is omitted only "
-    "when the D1 source is unreachable."
-)
-TYPE_S7 = "# TYPE fleet_signups_7d gauge"
 
 
 
-def _s7_cf_token():
-    """Return the sanctioned VPS Cloudflare API token, or None.
-
-    fleet-ops#1166: the token file is ~/.config/cloudflare/deploy-ci.env and
-    holds CLOUDFLARE_API_TOKEN=<value>. The value is NEVER printed or logged;
-    only whether one was found is reported.
-    """
-    for cand in _S7_CF_TOKEN_CANDIDATES:
-        if not cand:
-            continue
-        try:
-            for line in Path(cand).read_text(
-                encoding="utf-8", errors="ignore"
-            ).splitlines():
-                line = line.strip()
-                prefix = "CLOUDFLARE_API_TOKEN="
-                if line.startswith(prefix):
-                    return line[len(prefix):].strip()
-        except (OSError, UnicodeDecodeError):
-            continue
-    return None
 
 
-def _s7_is_d1_id(value):
-    """True when value is a Cloudflare D1 ID: 32 hex chars (dashes allowed)."""
-    if not isinstance(value, str) or not value:
-        return False
-    digits = value.replace("-", "")
-    return len(digits) == 32 and all(c in _HEX for c in digits)
 
 
-def _s7_url():
-    """The fixed D1 “query” URL with validated ID segments, or None."""
-    account = _S7_D1_ACCOUNT
-    database = _S7_D1_DATABASE
-    if not _s7_is_d1_id(account):
-        print("signups_7d: invalid D1 account id (must be hex)", file=sys.stderr)
-        return None
-    if not _s7_is_d1_id(database):
-        print("signups_7d: invalid D1 database id (must be hex)", file=sys.stderr)
-        return None
-    return (
-        "https://api.cloudflare.com/client/v4/accounts/"
-        f"{account}/d1/database/{database}/query"
-    )
 
 
-def _fetch_signups_7d():
-    """Return the trailing-7-day 0509 signup count, or None when unavailable.
-
-    None means the source could not be READ (no token / network / Cloudflare
-    error / bad shape) — the emitter then omits the family. A successful query
-    that returns 0 rows returns 0 (a real value). Web call only when a token
-    and valid IDs are present, so offline tests stay hermetic (they stub this
-    function outright).
-    """
-    token = _s7_cf_token()
-    if not token:
-        print(
-            "signups_7d: no sanctioned Cloudflare token (fleet-ops#4582)",
-            file=sys.stderr,
-        )
-        return None
-    url = _s7_url()
-    if url is None:
-        return None
-    payload = json.dumps({"sql": _S7_SQL}).encode("utf-8")
-    req = urllib.request.Request(
-        url,
-        data=payload,
-        headers={
-            "Authorization": f"Bearer {token}",
-            "Content-Type": "application/json",
-        },
-        method="POST",
-    )
-    try:
-        with urllib.request.urlopen(req, timeout=15) as resp:  # nosemgrep
-            data = json.loads(resp.read().decode("utf-8"))
-    except (OSError, ValueError, urllib.error.HTTPError) as exc:
-        print(f"signups_7d: D1 query unavailable: {exc}", file=sys.stderr)
-        return None
-    if not data.get("success"):
-        print(
-            f"signups_7d: D1 unavailable: cloudflare errors={data.get('errors')}",
-            file=sys.stderr,
-        )
-        return None
-    rows = (data.get("result") or [{}])[0].get("results") or []
-    try:
-        return int(rows[0]["n"])
-    except (IndexError, KeyError, TypeError, ValueError):
-        print(f"signups_7d: unexpected shape {rows!r}", file=sys.stderr)
-        return None
 
 
-def _emit_signups_7d(lines, signups):
-    """Append the fleet_signups_7d gauge, or omit the family when None."""
-    if signups is None:
-        return
-    lines.append("")
-    lines.append(HELP_S7)
-    lines.append(TYPE_S7)
-    lines.append(f"fleet_signups_7d {int(signups)}")
 
 
 def _resolve_cut_directive(value):
@@ -2893,17 +2232,6 @@ def _cached_json(path, fetcher, name):
     return None
 
 
-def _merged_prs_24h():
-    """Return dict {repo: count} for PRs merged in the trailing 24h, or None.
-
-    Derived from the detailed fetch (_merged_prs_detail) so the per-repo
-    family and the #1136 self-maintenance/quality families share ONE gh call.
-    """
-    detail = _merged_prs_detail()
-    if detail is None:
-        return None
-    counts = Counter(r["repo"] for r in detail)
-    return dict(counts)
 
 
 def _merged_prs_detail():
@@ -2935,9 +2263,6 @@ def _merged_prs_detail():
     return detail
 
 
-def _gh_merged_prs():
-    """Back-compat alias for callers expecting {repo: count}."""
-    return _merged_prs_24h()
 
 
 def _gh_merged_prs_raw():
@@ -3291,92 +2616,8 @@ def _repo_snapshot():
     return _cached_json(SNAPSHOT_CACHE, _gh_repo_snapshot, "repo_snapshot")
 
 
-def _oomd_kills_6h():
-    """Count systemd-oomd kills of app-pi-issue.slice units in the last 6h.
-
-    fleet-ops#4164: a rise > 3 in 6h trips FleetOomdKillsHigh, whose repair
-    packet raises the live ram_gb_per_worker charge back to 2.0. Counts only
-    oomd-managed kills (systemd-oomd logs "Killed unit ..." or
-    "Killed process ..."), not kernel OOM. Scoped to the app-pi-issue.slice
-    cgroup so host-level oomd kills (unrelated services) do not trip the
-    fleet alert. Returns a dict {unit: count} (top 20).
-
-    Overridable for tests via FLEET_OOMD_JOURNAL_STUB (a file whose lines
-    stand in for journalctl --output=cat output).
-    """
-    stub = os.environ.get("FLEET_OOMD_JOURNAL_STUB")
-    if stub:
-        try:
-            with open(stub) as f:
-                stdout = f.read()
-        except OSError:
-            return {}
-        rc = 0
-    else:
-        try:
-            r = subprocess.run(
-                [
-                    "journalctl", "--user",
-                    "--since", "6 hours ago",
-                    "--no-pager",
-                    "--output=cat",
-                    "SYSTEMD_OOMD_KILL=1",
-                ],
-                capture_output=True, text=True, timeout=JOURNAL_TIMEOUT,
-                env={**os.environ, "XDG_RUNTIME_DIR": XDG},
-            )
-        except (OSError, subprocess.TimeoutExpired) as exc:
-            print(f"oomd-kills journalctl failed: {exc}", file=sys.stderr)
-            return {}
-        rc = r.returncode
-        stdout = r.stdout
-    if rc != 0 and not stub:
-        print(f"oomd-kills journalctl rc={rc}", file=sys.stderr)
-        return {}
-    counts = Counter()
-    for line in stdout.splitlines():
-        # systemd-oomd log lines (cat output): "Killed unit <name>.service."
-        # or "Killed unit <name>.slice." or
-        # "Killed process <pid> (<comm>) in unit <name>.service."
-        m = re.search(r"in unit (\S+?)\.service", line)
-        if not m:
-            m = re.search(r"Killed unit (\S+?)\.(service|slice)", line)
-        if not m:
-            continue
-        unit = m.group(1)
-        # Scope to fleet worker units (pi-issue@* under app-pi-issue.slice)
-        # and the slice itself. A host-level oomd kill of an unrelated
-        # service is not a fleet signal.
-        if not (unit.startswith("pi-issue@") or unit == "app-pi-issue"):
-            continue
-        counts[unit] += 1
-    return dict(counts.most_common(20))
 
 
-def _repair_log_counts_24h():
-    """Return (dispatch_count, skip_count) from actions.log within 24h."""
-    if not ACTIONS_LOG.exists():
-        return 0, 0
-    cutoff = time.time() - 86400
-    disp = skip = 0
-    try:
-        with ACTIONS_LOG.open("r") as f:
-            for line in f:
-                m = _TS_RE.match(line)
-                if not m:
-                    continue
-                ep = _parse_iso_utc(m.group(1))
-                if ep is None or ep < cutoff:
-                    continue
-                rest = line[m.end():].lstrip()
-                if rest.startswith("DISPATCH "):
-                    disp += 1
-                elif rest.startswith("SKIP "):
-                    skip += 1
-    except OSError as exc:
-        print(f"actions.log read: {exc}", file=sys.stderr)
-        return 0, 0
-    return disp, skip
 
 
 # fleet-ops#1291: per-alertname repair-outcome counts for the WFR
@@ -3387,69 +2628,11 @@ def _repair_log_counts_24h():
 # judge false-positives — the stats feed the review, the review judges.
 # Handles both bracketed `[YYYY-..Z]` and bare `YYYY-..Z` timestamps (the
 # dispatcher's FAILED/RESOLVED lines use the bare form).
-_BARE_TS_RE = re.compile(r"^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})Z")
-_ALERTNAME_RE = re.compile(r"alertname=(\S+)")
 # fleet-ops#2694: phantom resolutions carry root_cause=PHANTOM_ALERT...
 # (the value is underscore-joined; the first whitespace-delimited token is
 # the signal). Real resolutions have transient_npm_.../no root_cause token.
-_ROOT_CAUSE_RE = re.compile(r"root_cause=(\S+)")
 
 
-def _repair_log_per_alertname_24h():
-    """Return dict[alertname] = {dispatch, resolved, failed, skipped,
-    phantom_resolved} for the trailing 24h, or {} when actions.log is
-    missing. RESOLVED entries whose root_cause starts with PHANTOM_ALERT
-    count as phantom_resolved, not resolved — drill fixtures are not
-    repair work (fleet-ops#2694)."""
-    if not ACTIONS_LOG.exists():
-        return {}
-    cutoff = time.time() - 86400
-    out: dict = {}
-    try:
-        with ACTIONS_LOG.open("r") as f:
-            for line in f:
-                # Try bracketed then bare timestamp.
-                m = _TS_RE.match(line)
-                off = m.end() if m else None
-                if off is None:
-                    m = _BARE_TS_RE.match(line)
-                    off = m.end() if m else None
-                if off is None:
-                    continue
-                ep = _parse_iso_utc(m.group(1))
-                if ep is None or ep < cutoff:
-                    continue
-                rest = line[off:].lstrip()
-                kind = None
-                if rest.startswith("DISPATCH "):
-                    kind = "dispatch"
-                elif rest.startswith("RESOLVED "):
-                    # fleet-ops#2694: PHANTOM_ALERT root_cause = drill
-                    # fixture, not a real fix; keep it out of "resolved"
-                    # so the WFR lens can flag phantom drift.
-                    rc = _ROOT_CAUSE_RE.search(rest)
-                    if rc and rc.group(1).startswith("PHANTOM_ALERT"):
-                        kind = "phantom_resolved"
-                    else:
-                        kind = "resolved"
-                elif rest.startswith("FAILED "):
-                    kind = "failed"
-                elif rest.startswith("SKIPPED-CLAIMED "):
-                    kind = "skipped"
-                if kind is None:
-                    continue
-                am = _ALERTNAME_RE.search(rest)
-                if not am:
-                    continue
-                name = am.group(1)
-                d = out.setdefault(name, {"dispatch": 0, "resolved": 0,
-                                          "failed": 0, "skipped": 0,
-                                          "phantom_resolved": 0})
-                d[kind] += 1
-    except OSError as exc:
-        print(f"actions.log per-alertname read: {exc}", file=sys.stderr)
-        return {}
-    return out
 
 
 # --- Undersaturation guard (2026-08-27) ------------------------------------
@@ -3753,60 +2936,6 @@ def _keystone_routing_counts():
     return routed, escalated, st.st_mtime
 
 
-def _read_worktree_reaper():
-    """Read the worktree reaper's last-run summary (fleet-ops#4118).
-
-    bin/fleet-worktree-reaper writes a JSON breakdown to
-    WORKTREE_REAPER_SUMMARY on every daily timer run. This surfaces the count
-    the heartbeat can gauge: post_count (dirs left under agent-worktrees after
-    the reap), reaped (how many the reaper removed), and the run timestamp for
-    freshness. Degrades to present=False when the summary is missing,
-    unparseable, or stale (older than WORKTREE_REAPER_STALE_S) so the heartbeat
-    can tell a dead reaper from a healthy one — a missing reaper result is
-    data, not a crash.
-
-    Returns a dict with present + the count fields, or present=False with a
-    reason.
-    """
-    try:
-        doc = json.loads(
-            WORKTREE_REAPER_SUMMARY.read_text(encoding="utf-8", errors="replace")
-        )
-    except OSError:
-        return {"present": False, "reason": "summary-missing"}
-    except json.JSONDecodeError:
-        return {"present": False, "reason": "summary-unparseable"}
-    ts = doc.get("ts")
-    age_s = None
-    if isinstance(ts, str):
-        ts_epoch = _parse_iso_utc(ts)
-        if ts_epoch is not None:
-            age_s = time.time() - ts_epoch
-    if age_s is not None and age_s > WORKTREE_REAPER_STALE_S:
-        return {
-            "present": False,
-            "reason": "summary-stale",
-            "ts": ts,
-            "age_s": age_s,
-        }
-    return {
-        "present": True,
-        "ts": ts,
-        "age_s": age_s,
-        "post_count": doc.get("post_count"),
-        "pre_count": doc.get("pre_count"),
-        "reaped": doc.get("reaped"),
-        "scanned": doc.get("scanned"),
-        "bound_breached": doc.get("bound_breached"),
-        "skipped_dirty": doc.get("skipped_dirty"),
-        "skipped_notpushed": doc.get("skipped_notpushed"),
-        "skipped_live": doc.get("skipped_live"),
-        "skipped_young": doc.get("skipped_young"),
-        "skipped_unmerged": doc.get("skipped_unmerged"),
-        "skipped_notterminal": doc.get("skipped_notterminal"),
-        "salvaged": doc.get("salvaged"),
-        "failed": doc.get("failed"),
-    }
 
 
 # --- Self-maintenance + PR quality (fleet-ops#1136) ------------------------
@@ -4096,7 +3225,6 @@ _SEAT_RELEASE_AT_EXPIRY_CLASSES = frozenset(
 # interval. The comeback-overdue metric and the thorough gather's
 # usable_at_overdue grace on this boundary so a mid-cycle seat (a few
 # minutes past, releaser about to re-probe) is not flagged.
-COMEBACK_OVERDUE_GRACE_S = 900
 
 
 def _seat_wall_end_epoch(data):
@@ -4298,74 +3426,6 @@ def _seat_caps_model_cap_map():
     return None
 
 
-def _read_healthy_cap0():
-    """Healthy-but-parked seats: ledger healthy, model cap in seat-caps is 0.
-
-    fleet-ops#2738: a seat whose ledger reports health_class=healthy and
-    seat_dead=false (the seat works — proven by a 200 observation) but whose
-    model cap in seat-caps.json is 0 is silently parked: pick_seat skips it
-    every tick while the seat-availability SLO burns. The devin/glm-5-2
-    restore lapsed exactly this way — the ledger came back healthy on
-    2026-09-01, the cap stayed 0 for 3+ days, and no metric surfaced it.
-    This gauge counts those seats (total + per-seat series) so the WFR lens
-    and the next blind-audit see a healthy-but-parked seat instead of a
-    quiet depressed rollup. Sustained > 0 here is the loud signal that a
-    restore was forgotten.
-
-    A held wrapper spawn-bench (fleet-ops#2493) outranks a later healthy
-    observation, so a spawn-bench-active seat is NOT counted as healthy
-    here (it is not actually healthy — the wrapper benched it). test__
-    fixtures and .spawn-bench sibling markers are skipped. Never raises on
-    a missing/unreadable ledger or config; returns (0, []) when the config
-    is unavailable so the metric fails safe (no false healthy-parked alarm
-    from a missing config).
-
-    Returns (count, [ {provider, model} ]).
-    """
-    caps = _seat_caps_model_cap_map()
-    if caps is None:
-        return 0, []
-    seats = []
-    if not SEAT_LEDGER.is_dir():
-        return 0, seats
-    try:
-        for f in sorted(SEAT_LEDGER.iterdir()):
-            if not f.is_file() or "__" not in f.name or not f.name.endswith(".json"):
-                continue
-            if ".spawn-bench" in f.name:
-                continue
-            if ".empty-success" in f.name:
-                continue
-            try:
-                data = json.loads(f.read_text())
-            except (OSError, json.JSONDecodeError):
-                continue
-            if not isinstance(data, dict):
-                continue
-            if data.get("provider") == "test":
-                continue
-            if data.get("seat_dead") is True:
-                continue
-            if data.get("health_class") != "healthy":
-                continue
-            # fleet-ops#2493: a held wrapper spawn-bench outranks a later
-            # healthy observation — the seat is not actually healthy.
-            if _spawn_bench_active(f):
-                continue
-            prov = data.get("provider")
-            model = data.get("model")
-            if not isinstance(prov, str) or not isinstance(model, str):
-                continue
-            if not prov or not model:
-                continue
-            # seat-lib model_cap returns 0 for unlisted models; mirror that
-            # so a healthy ledger for a removed model still flags (the cap
-            # is effectively 0 — pick_seat will not route to it).
-            if caps.get(f"{prov}/{model}", 0) == 0:
-                seats.append({"provider": prov, "model": model})
-    except OSError:
-        return 0, []
-    return len(seats), seats
 
 
 def _read_cap0_stale():
@@ -4446,7 +3506,6 @@ def _read_cap0_stale():
 # has fired on it and the seat still won't recover. Exporting this as
 # a per-tick gauge makes the stuck state visible before it crosses into
 # the corpse path.
-NEVER_RELEASED_MIN_COUNT = 10  # floor for "stuck" so a healthy probe cycle
                                 # doesn't render every wall as stuck
 
 
@@ -4806,59 +3865,8 @@ def _healthy_enrolled_seat_count_by_class():
     return counts
 
 
-def _money_boundary_pages_log():
-    """Path to the money-boundary pages log (writer's page counter)."""
-    return Path(os.environ.get(
-        "MONEY_BOUNDARY_PAGES_LOG",
-        "/home/nish/workspaces/agent-state/lanes/money-boundary-pages.log",
-    ))
 
 
-def _read_money_boundary_pages():
-    """Count money-boundary page log lines by reason over the trailing 7d.
-
-    fleet-ops#4627: the success metric is
-    `nish_boundary_money_pages_total{reason="provider_credits_dry"} == 0
-    while fleet_seat_healthy{class=~"prepaid|free"} > 0` over seven days.
-    The writer (bin/money-boundary-raise) appends one line per page (or
-    suppressed page) to money-boundary-pages.log:
-        <ts> reason=<reason> provider=<p>            (a real page)
-        <ts> suppressed reason=<reason> provider=<p>  (a suppressed page)
-    Returns a dict {reason: count} of REAL (non-suppressed) pages in the
-    trailing 7 days. Suppressed lines do not count toward the total — the
-    metric tracks pages that actually reached Nish. Returns {} when the
-    log is missing/unreadable.
-    """
-    log = _money_boundary_pages_log()
-    if not log.is_file():
-        return {}
-    cutoff = time.time() - 7 * 86400
-    counts = {}
-    try:
-        for line in log.read_text().splitlines():
-            line = line.strip()
-            if not line or line.startswith("#"):
-                continue
-            # Skip suppressed lines — they did not reach Nish. The writer
-            # emits `<ts> suppressed reason=...` (the remainder after the
-            # first space starts with "suppressed").
-            if line.split(" ", 1)[1].startswith("suppressed"):
-                continue
-            ts = line.split(" ", 1)[0]
-            try:
-                epoch = calendar.timegm(time.strptime(ts[:19], "%Y-%m-%dT%H:%M:%S"))
-            except ValueError:
-                continue
-            if epoch < cutoff:
-                continue
-            m = re.search(r"reason=([A-Za-z0-9_-]+)", line)
-            if not m:
-                continue
-            reason = m.group(1)
-            counts[reason] = counts.get(reason, 0) + 1
-    except OSError:
-        return {}
-    return counts
 
 
 def _slo_compliance(slo, main_ci, healthy, rate_limit, seat_total):
@@ -4999,19 +4007,6 @@ _DQ_GAUGES = (
 )
 
 
-# --- blocked-reconcile nish-decision lint (fleet-ops#3312) -----------------
-# blocked-reconcile writes its last sweep summary to
-# /home/nish/.local/state/fleet-heartbeat/blocked-queue.json. We export the
-# count of rejected `blocked-on: nish-decision` lines that were rewritten to
-# `blocked-on: orchestrator` and labelled `needs-orchestrator`.
-BLOCKED_QUEUE_JSON = Path(
-    os.environ.get(
-        "FLEET_BLOCKED_QUEUE_JSON",
-        "/home/nish/.local/state/fleet-heartbeat/blocked-queue.json",
-    )
-)
-HELP_NBR = "# HELP fleet_nish_decision_rejected_total Number of `blocked-on: nish-decision` lines rejected and rewritten to `blocked-on: orchestrator` in the last blocked-reconcile sweep (fleet-ops#3312)."
-TYPE_NBR = "# TYPE fleet_nish_decision_rejected_total gauge"
 
 # fleet-ops#4260: the blocked queue must be observable BY KIND so a parked
 # needs-orchestrator class is visible before a human notices the fleet went
@@ -5021,93 +4016,10 @@ TYPE_NBR = "# TYPE fleet_nish_decision_rejected_total gauge"
 # a wider set, overlapping the others by design (an issue can be both
 # agent-blocked and needs-orchestrator). Every kind is always emitted (0 when
 # absent) so a stale family cannot false-fire or false-clear an alert.
-_BLOCKED_KINDS = (
-    "work-item",
-    "nish-decision",
-    "orchestrator",
-    "infra",
-    "senior-review",
-    "needs-orchestrator",
-)
-HELP_FBI = "# HELP fleet_blocked_issues Open blocked issues by kind from the last blocked-reconcile sweep (fleet-ops#4260). kind=needs-orchestrator counts the label sweep across all open issues; the other kinds count the agent-blocked queue."
-TYPE_FBI = "# TYPE fleet_blocked_issues gauge"
-HELP_FBIA = "# HELP fleet_blocked_issue_age_seconds Age stats for blocked issues by kind, seconds, from the last blocked-reconcile sweep (fleet-ops#4260). kind=needs-orchestrator reports time since the issue entered that class (last label add), not issue age: FleetNeedsOrchestratorStale measures a parked drain, not old tickets."
-TYPE_FBIA = "# TYPE fleet_blocked_issue_age_seconds gauge"
 
 
-def _emit_signal_reconcile(lines):
-    """Export the capped count from the last completed detector queue tick."""
-    path = Path(os.environ.get(
-        "FLEET_SIGNAL_RECONCILE_SUMMARY",
-        str(Path.home() / ".local/state/fleet-heartbeat/signal-reconcile.json"),
-    ))
-    lines.extend([
-        "# HELP fleet_signal_reconcile_capped Signals deferred by the filing cap in the last completed tick.",
-        "# TYPE fleet_signal_reconcile_capped gauge",
-    ])
-    try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-        count = data["capped"]
-        if not isinstance(count, int) or count < 0:
-            return
-    except (OSError, ValueError, KeyError, TypeError):
-        return
-    lines.append(f"fleet_signal_reconcile_capped {count}")
 
 
-def _emit_blocked_reconcile(lines):
-    """Append blocked-queue metrics.
-
-    Reads the last blocked-reconcile sweep summary. A missing or
-    unparseable file emits zeros so the metric families are always present.
-    """
-    count = 0
-    by_kind = {k: 0 for k in _BLOCKED_KINDS}
-    orch_p50 = 0
-    orch_oldest = 0
-    try:
-        data = json.loads(BLOCKED_QUEUE_JSON.read_text(encoding="utf-8"))
-        raw = data.get("rejected_nish_decisions")
-        if isinstance(raw, (int, float)):
-            count = int(raw)
-        for item in data.get("items") or []:
-            k = item.get("kind") if isinstance(item, dict) else None
-            if k in by_kind:
-                by_kind[k] += 1
-        orch = data.get("needs_orchestrator")
-        if isinstance(orch, dict):
-            oc = orch.get("count")
-            if isinstance(oc, (int, float)):
-                by_kind["needs-orchestrator"] = int(oc)
-            for key, dest in (("p50_age_s", "p50"), ("oldest_age_s", "oldest")):
-                v = orch.get(key)
-                if isinstance(v, (int, float)):
-                    if dest == "p50":
-                        orch_p50 = int(v)
-                    else:
-                        orch_oldest = int(v)
-    except (OSError, json.JSONDecodeError):
-        pass
-    lines.append("")
-    lines.append(HELP_NBR)
-    lines.append(TYPE_NBR)
-    lines.append(f"fleet_nish_decision_rejected_total {count}")
-    lines.append("")
-    lines.append(HELP_FBI)
-    lines.append(TYPE_FBI)
-    for k in _BLOCKED_KINDS:
-        lines.append(f'fleet_blocked_issues{{kind="{k}"}} {by_kind[k]}')
-    lines.append("")
-    lines.append(HELP_FBIA)
-    lines.append(TYPE_FBIA)
-    lines.append(
-        'fleet_blocked_issue_age_seconds{kind="needs-orchestrator",quantile="0.5"} '
-        f"{orch_p50}"
-    )
-    lines.append(
-        'fleet_blocked_issue_age_seconds{kind="needs-orchestrator",quantile="1"} '
-        f"{orch_oldest}"
-    )
 
 
 # --- close-duplicates close guard (fleet-ops#3161) ------------------------
@@ -5227,62 +4139,8 @@ def _emit_observe_to_close(lines):
 #   - merged-pr-close.json: deploy_fault_gate_blocked counts deliveries
 #     observe-to-close refused to close this tick because production is
 #     not green yet (the gate holding, not a violation).
-LIFECYCLE_SWEEP_JSON = Path(
-    os.environ.get(
-        "FLEET_LIFECYCLE_SWEEP_JSON",
-        "/home/nish/.local/state/fleet-heartbeat/lifecycle-label-sweep.json",
-    )
-)
-HELP_DFG = (
-    "# HELP fleet_deploy_fault_closed_without_green Deploy-fault issues found "
-    "closed without a green production-deploy run proving the fix in the last "
-    "lifecycle-label-sweep tick (each was reopened; fleet-ops#5785). Must be 0."
-)
-TYPE_DFG = "# TYPE fleet_deploy_fault_closed_without_green gauge"
-HELP_DFG_BLOCKED = (
-    "# HELP fleet_deploy_fault_gate_blocked Deliveries observe-to-close refused "
-    "to close this tick because the deploy-fault issue has no green "
-    "production-deploy run containing the fix yet (fleet-ops#5785)."
-)
-TYPE_DFG_BLOCKED = "# TYPE fleet_deploy_fault_gate_blocked gauge"
-HELP_DFG_LABELED = (
-    "# HELP fleet_deploy_fault_labeled Open issues the lifecycle sweep labelled "
-    "deploy-fault this tick because the body cites a failed production-deploy "
-    "run (fleet-ops#5785)."
-)
-TYPE_DFG_LABELED = "# TYPE fleet_deploy_fault_labeled gauge"
 
 
-def _emit_deploy_fault_gate(lines):
-    """Append the fleet_deploy_fault_* gauges. Never raises: missing or
-    unparseable summaries emit 0 so the tripwire only fires on a real count."""
-    violations = 0
-    labeled = 0
-    try:
-        data = json.loads(LIFECYCLE_SWEEP_JSON.read_text(encoding="utf-8"))
-        if isinstance(data.get("deploy_fault_closed_without_green"), (int, float)):
-            violations = int(data["deploy_fault_closed_without_green"])
-        if isinstance(data.get("deploy_fault_labeled"), (int, float)):
-            labeled = int(data["deploy_fault_labeled"])
-    except (OSError, json.JSONDecodeError):
-        pass
-    blocked = 0
-    try:
-        data = json.loads(MERGED_PR_CLOSE_JSON.read_text(encoding="utf-8"))
-        if isinstance(data.get("deploy_fault_gate_blocked"), (int, float)):
-            blocked = int(data["deploy_fault_gate_blocked"])
-    except (OSError, json.JSONDecodeError):
-        pass
-    lines.append("")
-    lines.append(HELP_DFG)
-    lines.append(TYPE_DFG)
-    lines.append(f"fleet_deploy_fault_closed_without_green {violations}")
-    lines.append(HELP_DFG_BLOCKED)
-    lines.append(TYPE_DFG_BLOCKED)
-    lines.append(f"fleet_deploy_fault_gate_blocked {blocked}")
-    lines.append(HELP_DFG_LABELED)
-    lines.append(TYPE_DFG_LABELED)
-    lines.append(f"fleet_deploy_fault_labeled {labeled}")
 
 
 def _emit_deploy_quality(lines):
@@ -5333,287 +4191,39 @@ def _emit_deploy_quality(lines):
 # for 12h, so a tick that misses it (gh hiccup, exporter down) catches it on
 # a later tick. The PR list is cached to WEEK_LATER_CACHE_TTL so the gh
 # search runs at most ~4x/day, not every 5-min tick.
-WEEK_LATER_WINDOW_S = 6 * 3600
 # Client-side floor on merge age (fleet-ops#3948): a PR younger than this is
 # never evaluated, whatever the search returned.
-WEEK_LATER_MIN_AGE_S = 7 * 86400 - WEEK_LATER_WINDOW_S
 WEEK_LATER_CACHE_TTL = 6 * 3600
-WEEK_LATER_CACHE = PR_CACHE_DIR / "week-later-prs-cache.json"
 # Per-PR evaluation ledger: once a PR is evaluated (improved / already-filed /
 # filed) it is never re-evaluated, so the gh dedup/create calls are bounded to
 # one per PR, not one per tick. Pruned after WEEK_LATER_STATE_TTL.
-WEEK_LATER_STATE = PR_CACHE_DIR / "week-later-state.json"
 WEEK_LATER_STATE_TTL = 14 * 86400
-WEEK_LATER_PROM_URL = "http://127.0.0.1:9090/api/v1/query"
-WEEK_LATER_PROM_TIMEOUT = 10
 
 # moves: metric -> Prometheus expression for the metric's value. The 7d value
 # is the avg_over_time of this expression over a 7d window. Only metrics with
 # a mapping here are comparable; add mappings as the sibling parts land.
-_MOVES_METRIC_QUERIES = {
-    "product_merges_per_day": 'sum(fleet_self_maintenance_merges{kind="product"})',
-}
 
 # Line-anchored `moves:` field (the sibling spec-gate's body line). Leading
 # list markers allowed so a `- moves: ...` body line counts, mirroring the
 # spec-gate's FIELD_RE.
-_MOVES_RE = re.compile(r"(?im)^(?:[-*]\s+)*moves\s*:\s*(\S+)")
 
 
-def _week_later_prs():
-    """Cached list of fleet-ops PRs merged ~7 days ago with a moves: line.
-
-    Returns a list of {"number", "title", "moves", "merged_at"} or [] on
-    failure. The gh search is cached to WEEK_LATER_CACHE_TTL so the exporter
-    does not hammer the API every 5-min tick; a stale cache is served on a
-    gh failure (the window is wide enough that a missed tick is caught later).
-    """
-    cached, age = _read_cache(WEEK_LATER_CACHE)
-    if age is not None and age <= WEEK_LATER_CACHE_TTL and cached is not None:
-        return cached
-    data = _gh_week_later_prs()
-    if data is not None:
-        _write_cache(WEEK_LATER_CACHE, data)
-        return data
-    if cached is not None:
-        print("week-later: gh failed, serving stale PR list", file=sys.stderr)
-        return cached
-    return []
 
 
-def _gh_week_later_prs():
-    """Query GitHub for fleet-ops PRs merged ~7 days ago with a moves: line.
-
-    One paginated GraphQL search across Nishfleet/fleet-ops for PRs merged in
-    [now-7d-WINDOW, now-7d+WINDOW]. Returns a list of {"number", "title",
-    "moves", "merged_at"} for PRs whose body carries a `moves:` line, or None
-    on failure. The cutoff is interpolated as a literal in the search string
-    (GraphQL does not expand variables inside `search(query: ...)`).
-    """
-    now = time.time()
-    start = now - 7 * 86400 - WEEK_LATER_WINDOW_S
-    end = now - 7 * 86400 + WEEK_LATER_WINDOW_S
-    start_iso = datetime.fromtimestamp(start, tz=timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-    end_iso = datetime.fromtimestamp(end, tz=timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-    query = (
-        "query($cursor: String) {\n"
-        '  search(query: "repo:Nishfleet/fleet-ops is:pr is:merged '
-        f"merged:{start_iso}..{end_iso} sort:merged-desc\"" "\n"
-        "    type: ISSUE, first: 100, after: $cursor) {\n"
-        "    pageInfo { hasNextPage endCursor }\n"
-        "    nodes {\n"
-        "      ... on PullRequest {\n"
-        "        number\n"
-        "        title\n"
-        "        body\n"
-        "        mergedAt\n"
-        "      }\n"
-        "    }\n"
-        "  }\n"
-        "}\n"
-    )
-    out = []
-    cursor = None
-    for _ in range(GH_PAGES):
-        payload = _gh_graphql(query, cursor)
-        if payload is None:
-            return None
-        if payload.get("errors"):
-            print(f"week-later gh graphql errors: {payload['errors'][:1]}", file=sys.stderr)
-            return None
-        conn = ((payload.get("data") or {}).get("search") or {})
-        for node in conn.get("nodes") or []:
-            number = node.get("number")
-            if not isinstance(number, int):
-                continue
-            body = node.get("body") or ""
-            m = _MOVES_RE.search(body)
-            if not m:
-                continue
-            out.append({
-                "number": number,
-                "title": node.get("title") or "",
-                "moves": m.group(1).strip(),
-                "merged_at": node.get("mergedAt") or "",
-            })
-        page = conn.get("pageInfo") or {}
-        if not page.get("hasNextPage"):
-            return out
-        cursor = page.get("endCursor")
-        if not cursor:
-            return out
-    print("week-later gh search: hit page cap", file=sys.stderr)
-    return out
 
 
-def _prom_query_value(expr, time_epoch):
-    """Return the value of a Prometheus instant query at time_epoch, or None."""
-    params = urllib.parse.urlencode({"query": expr, "time": str(time_epoch)})
-    url = f"{WEEK_LATER_PROM_URL}?{params}"
-    try:
-        with urllib.request.urlopen(url, timeout=WEEK_LATER_PROM_TIMEOUT) as r:  # nosemgrep
-            payload = json.load(r)
-    except (urllib.error.URLError, urllib.error.HTTPError, OSError,
-            json.JSONDecodeError) as exc:
-        print(f"week-later prom query failed: {exc}", file=sys.stderr)
-        return None
-    if payload.get("status") != "success":
-        return None
-    result = (payload.get("data") or {}).get("result") or []
-    if not result:
-        return None
-    try:
-        return float(result[0].get("value")[1])
-    except (TypeError, ValueError, IndexError):
-        return None
 
 
-def _metric_7d_value(metric, time_epoch):
-    """Return the metric's 7d average value at time_epoch, or None.
-
-    The 7d value is avg_over_time(<metric expr>[7d:1d]) evaluated at
-    time_epoch — the average daily value over the 7 days ending there. None
-    when the metric has no mapped expression or Prometheus cannot answer.
-    """
-    expr = _MOVES_METRIC_QUERIES.get(metric)
-    if not expr:
-        return None
-    return _prom_query_value(f"avg_over_time({expr}[7d:1d])", time_epoch)
 
 
-def _revert_candidate_exists(pr_number, metric):
-    """True when an open revert-candidate issue for this PR already exists.
-
-    Dedup by exact title match against open issues whose title contains
-    "revert candidate". Fail-safe: on any gh failure return True so a PR is
-    never double-filed (a transient gh error must not create a duplicate).
-    """
-    target = f"revert candidate: #{pr_number} did not move {metric}"
-    try:
-        r = subprocess.run(
-            ["gh", "issue", "list", "-R", "Nishfleet/fleet-ops",
-             "--state", "open", "--search", "revert candidate in:title",
-             "--json", "number,title", "--limit", "50"],
-            capture_output=True, text=True, timeout=GH_TIMEOUT,
-            env={**os.environ, "GH": "/usr/bin/gh"},
-        )
-    except (OSError, subprocess.TimeoutExpired) as exc:
-        print(f"week-later dedup gh issue list failed: {exc}", file=sys.stderr)
-        return True
-    if r.returncode != 0:
-        print(f"week-later dedup gh issue list rc={r.returncode}", file=sys.stderr)
-        return True
-    try:
-        rows = json.loads(r.stdout or "[]")
-    except json.JSONDecodeError:
-        return True
-    return any((row.get("title") or "") == target for row in rows)
 
 
-def _file_revert_candidate(pr_number, metric, before, after, merged_at):
-    """File one revert-candidate issue. Returns True on success."""
-    title = f"revert candidate: #{pr_number} did not move {metric}"
-    marker = f"signal: revert-candidate/{pr_number}/{metric}"
-    body = (
-        f"Revert candidate: PR #{pr_number} (merged {merged_at}) carried "
-        f"`moves: {metric}` but the metric's 7d value did not improve after "
-        f"merge.\n\n"
-        f"before: {before}\n"
-        f"after: {after}\n\n"
-        f"termination: revert PR for #{pr_number} merged\n\n"
-        f"{marker}\n"
-    )
-    try:
-        r = subprocess.run(
-            ["gh", "issue", "create", "-R", "Nishfleet/fleet-ops",
-             "--title", title, "--label", "agent-ready", "--body", body],
-            capture_output=True, text=True, timeout=GH_TIMEOUT,
-            env={**os.environ, "GH": "/usr/bin/gh"},
-        )
-    except (OSError, subprocess.TimeoutExpired) as exc:
-        print(f"week-later gh issue create failed: {exc}", file=sys.stderr)
-        return False
-    if r.returncode != 0:
-        print(f"week-later gh issue create rc={r.returncode}: {r.stderr.strip()[:200]}",
-              file=sys.stderr)
-        return False
-    return True
 
 
-def _read_week_later_state():
-    """Return the per-PR evaluation ledger dict, or {} on failure."""
-    try:
-        data = json.loads(WEEK_LATER_STATE.read_text())
-        if isinstance(data, dict):
-            return data
-    except (OSError, json.JSONDecodeError):
-        pass
-    return {}
 
 
-def _write_week_later_state(state, now):
-    """Persist the ledger, pruning entries older than WEEK_LATER_STATE_TTL."""
-    pruned = {
-        k: v for k, v in state.items()
-        if isinstance(v, dict) and (now - (v.get("checked_at") or 0)) <= WEEK_LATER_STATE_TTL
-    }
-    try:
-        _atomic_write(WEEK_LATER_STATE, json.dumps(pruned, sort_keys=True))
-    except OSError as exc:
-        print(f"week-later state write: {exc}", file=sys.stderr)
 
 
-def _week_later_revert_check():
-    """Run the week-later revert-candidate check. Returns a summary string.
-
-    Never raises and never fails the exporter: every gh/Prometheus failure is
-    logged and the PR is left unevaluated (retried on a later tick). A PR is
-    evaluated at most once (the state ledger), so the gh dedup/create calls
-    are bounded to one per PR.
-    """
-    prs = _week_later_prs()
-    if not prs:
-        return "week-later: no fleet-ops PRs merged ~7d ago with a moves: line"
-    state = _read_week_later_state()
-    now = time.time()
-    filed = 0
-    skipped = 0
-    for pr in prs:
-        number = pr["number"]
-        metric = pr["moves"]
-        if metric not in _MOVES_METRIC_QUERIES:
-            continue  # metric not yet mapped to a Prometheus query
-        if str(number) in state:
-            skipped += 1
-            continue
-        merged_epoch = _parse_iso_utc(pr["merged_at"])
-        if merged_epoch is None:
-            continue
-        if now - merged_epoch < WEEK_LATER_MIN_AGE_S:
-            # fleet-ops#3948: the search window is the only thing that
-            # makes this a WEEK-later check. When it leaks younger PRs
-            # (two `merged:` qualifiers were OR-ed by GitHub search and
-            # returned everything merged in the last 7d), before and
-            # after cover the same trailing-7d data and the PR is filed
-            # as a revert candidate hours after merge. Not evaluated, not
-            # recorded: retried when it is actually a week old.
-            continue
-        before = _metric_7d_value(metric, merged_epoch)
-        after = _metric_7d_value(metric, now)
-        if before is None or after is None:
-            continue  # Prometheus unavailable; retry on a later tick
-        if after > before:
-            state[str(number)] = {"checked_at": now, "verdict": "improved"}
-            continue
-        if _revert_candidate_exists(number, metric):
-            state[str(number)] = {"checked_at": now, "verdict": "already-filed"}
-            skipped += 1
-            continue
-        if _file_revert_candidate(number, metric, before, after, pr["merged_at"]):
-            state[str(number)] = {"checked_at": now, "verdict": "filed"}
-            filed += 1
-    _write_week_later_state(state, now)
-    return f"week-later: filed={filed} skipped={skipped}"
 
 
 # --- Inotify budget (fleet-ops#5839) ----------------------------------------
@@ -5786,6 +4396,145 @@ def _ensure_worker_token() -> None:
     sys.exit(1)
 
 
+
+
+LIFECYCLE_SWEEP_JSON = Path(
+    os.environ.get(
+        "FLEET_LIFECYCLE_SWEEP_JSON",
+        "/home/nish/.local/state/fleet-heartbeat/lifecycle-label-sweep.json",
+    )
+)
+
+
+def _emit_deploy_fault_gate(lines):
+    """Append the fleet_deploy_fault_* gauges. Never raises: missing or
+    unparseable summaries emit 0 so the tripwire only fires on a real count."""
+    violations = 0
+    labeled = 0
+    try:
+        data = json.loads(LIFECYCLE_SWEEP_JSON.read_text(encoding="utf-8"))
+        if isinstance(data.get("deploy_fault_closed_without_green"), (int, float)):
+            violations = int(data["deploy_fault_closed_without_green"])
+        if isinstance(data.get("deploy_fault_labeled"), (int, float)):
+            labeled = int(data["deploy_fault_labeled"])
+    except (OSError, json.JSONDecodeError):
+        pass
+    blocked = 0
+    try:
+        data = json.loads(MERGED_PR_CLOSE_JSON.read_text(encoding="utf-8"))
+        if isinstance(data.get("deploy_fault_gate_blocked"), (int, float)):
+            blocked = int(data["deploy_fault_gate_blocked"])
+    except (OSError, json.JSONDecodeError):
+        pass
+    lines.append("")
+    lines.append(HELP_DFG)
+    lines.append(TYPE_DFG)
+    lines.append(f"fleet_deploy_fault_closed_without_green {violations}")
+    lines.append(HELP_DFG_BLOCKED)
+    lines.append(TYPE_DFG_BLOCKED)
+    lines.append(f"fleet_deploy_fault_gate_blocked {blocked}")
+    lines.append(HELP_DFG_LABELED)
+    lines.append(TYPE_DFG_LABELED)
+    lines.append(f"fleet_deploy_fault_labeled {labeled}")
+
+
+TYPE_DFG_LABELED = "# TYPE fleet_deploy_fault_labeled gauge"
+
+
+HELP_DFG_LABELED = (
+    "# HELP fleet_deploy_fault_labeled Open issues the lifecycle sweep labelled "
+    "deploy-fault this tick because the body cites a failed production-deploy "
+    "run (fleet-ops#5785)."
+)
+
+
+TYPE_DFG = "# TYPE fleet_deploy_fault_closed_without_green gauge"
+
+
+HELP_DFG_BLOCKED = (
+    "# HELP fleet_deploy_fault_gate_blocked Deliveries observe-to-close refused "
+    "to close this tick because the deploy-fault issue has no green "
+    "production-deploy run containing the fix yet (fleet-ops#5785)."
+)
+
+
+TYPE_DFG_BLOCKED = "# TYPE fleet_deploy_fault_gate_blocked gauge"
+
+
+HELP_DFG = (
+    "# HELP fleet_deploy_fault_closed_without_green Deploy-fault issues found "
+    "closed without a green production-deploy run proving the fix in the last "
+    "lifecycle-label-sweep tick (each was reopened; fleet-ops#5785). Must be 0."
+)
+
+
+def _read_money_boundary_pages():
+    """Count money-boundary page log lines by reason over the trailing 7d.
+
+    fleet-ops#4627: the success metric is
+    `nish_boundary_money_pages_total{reason="provider_credits_dry"} == 0
+    while fleet_seat_healthy{class=~"prepaid|free"} > 0` over seven days.
+    The writer (bin/money-boundary-raise) appends one line per page (or
+    suppressed page) to money-boundary-pages.log:
+        <ts> reason=<reason> provider=<p>            (a real page)
+        <ts> suppressed reason=<reason> provider=<p>  (a suppressed page)
+    Returns a dict {reason: count} of REAL (non-suppressed) pages in the
+    trailing 7 days. Suppressed lines do not count toward the total — the
+    metric tracks pages that actually reached Nish. Returns {} when the
+    log is missing/unreadable.
+    """
+    log = _money_boundary_pages_log()
+    if not log.is_file():
+        return {}
+    cutoff = time.time() - 7 * 86400
+    counts = {}
+    try:
+        for line in log.read_text().splitlines():
+            line = line.strip()
+            if not line or line.startswith("#"):
+                continue
+            # Skip suppressed lines — they did not reach Nish. The writer
+            # emits `<ts> suppressed reason=...` (the remainder after the
+            # first space starts with "suppressed").
+            if line.split(" ", 1)[1].startswith("suppressed"):
+                continue
+            ts = line.split(" ", 1)[0]
+            try:
+                epoch = calendar.timegm(time.strptime(ts[:19], "%Y-%m-%dT%H:%M:%S"))
+            except ValueError:
+                continue
+            if epoch < cutoff:
+                continue
+            m = re.search(r"reason=([A-Za-z0-9_-]+)", line)
+            if not m:
+                continue
+            reason = m.group(1)
+            counts[reason] = counts.get(reason, 0) + 1
+    except OSError:
+        return {}
+    return counts
+
+
+def _money_boundary_pages_log():
+    """Path to the money-boundary pages log (writer's page counter)."""
+    return Path(os.environ.get(
+        "MONEY_BOUNDARY_PAGES_LOG",
+        "/home/nish/workspaces/agent-state/lanes/money-boundary-pages.log",
+    ))
+
+
+# fleet-ops#4627: money-boundary page counter. The writer
+# (bin/money-boundary-raise) appends one line per page to
+# money-boundary-pages.log; this counter rolls them up by reason over the
+# trailing 7d. The success metric is
+# nish_boundary_money_pages_total{reason="provider_credits_dry"} == 0 while
+# fleet_seat_healthy{class=~"prepaid|free"} > 0.
+HELP_MBPT = "# HELP nish_boundary_money_pages_total Number of MONEY-BOUNDARY pages delivered to Nish by reason over the trailing 7 days (fleet-ops#4627). Suppressed pages (fleet not starved) do not count."
+
+
+TYPE_MBPT = "# TYPE nish_boundary_money_pages_total counter"
+
+
 def main():
     # fleet-ops#3445's fail-closed guard is about gh WRITES (the week-later
     # revert-candidate filing below). Everything else in this exporter is
@@ -5831,24 +4580,9 @@ def main():
                 f'fleet_timer_last_trigger_seconds{{timer="{unit}"}} {sec}'
             )
     lines.append("")
-    lines.append(HELP_ACT)
-    lines.append(TYPE_ACT)
-    for t in timers:
-        unit = t["unit"]
-        lines.append(
-            f'fleet_timer_active{{timer="{unit}"}} {_timer_active(unit)}'
-        )
-    lines.append("")
     lines.append(HELP_HEALTH)
     lines.append(TYPE_HEALTH)
     lines.append(f"fleet_pi_seat_healthy {healthy}")
-    if observed_epoch is not None:
-        lines.append("")
-        lines.append(HELP_OBS)
-        lines.append(TYPE_OBS)
-        lines.append(
-            f"fleet_pi_seat_observed_seconds {observed_epoch}"
-        )
     # fleet-ops#3111: seat-health age. A stale feed (>30 min) is UNKNOWN, never
     # "healthy". -1 when observed_at is absent/unparseable so the alert rule can
     # distinguish "no data" from "fresh". Drives FleetPiSeatHealthStale.
@@ -5916,21 +4650,6 @@ def main():
     # repair worker knows which cap to restore. Sustained > 0 here is the loud
     # signal that a restore was forgotten (the devin/glm-5-2 lapse lived here
     # for 3+ days with no metric surfacing it).
-    _hc0_n, _hc0 = _read_healthy_cap0()
-    lines.append("")
-    lines.append(HELP_HCAP0)
-    lines.append(TYPE_HCAP0)
-    lines.append(f"fleet_seat_healthy_cap0_total {_hc0_n}")
-    lines.append("")
-    lines.append(HELP_HCAP0P)
-    lines.append(TYPE_HCAP0P)
-    for _s in _hc0:
-        _seat_label = _prom_label(
-            "{}__{}".format(_s["provider"], _s["model"]).strip("_") or "unknown"
-        )
-        lines.append(
-            f'fleet_seat_healthy_cap0{{seat="{_seat_label}"}} 1'
-        )
     # fleet-ops#4627: per-class healthy seat count + money-boundary page
     # counter. The starvation gate pages Nish ONLY when the fleet is starved
     # (no healthy prepaid/free seat). This gauge exposes the per-class count
@@ -5942,6 +4661,8 @@ def main():
     lines.append(TYPE_SHC)
     for _cls, _n in sorted(_shc.items()):
         lines.append(f'fleet_seat_healthy{{class="{_cls}"}} {_n}')
+    # fleet-ops#4627: money-boundary page counter. Nish paging is reserved and
+    # load-bearing; this rolls up real (non-suppressed) pages by reason over 7d.
     _mbp = _read_money_boundary_pages()
     lines.append("")
     lines.append(HELP_MBPT)
@@ -6135,103 +4856,12 @@ def main():
     lines.append(f"fleet_ready_work {ready}")
     fresh_kinds.append("ready_work")
 
-    # Queue composition: "agent-ready" (all Nishfleet repos) and "ready-work"
-    # (enrolled repos only). Both export total, self-maintenance count, and
-    # ratio (omitted when total=0). The 64% fleet2 death-number tripwire
-    # is a 7d-smoothed level (avg_over_time[7d] > 0.64) — see
-    # config/fleet_rules.yml FleetQueueSelfMaintenanceRatioHigh
-    # (fleet-ops#2171).
-    # HELP/TYPE is emitted once per metric name; the per-queue samples
-    # follow. Duplicate HELP/TYPE lines make the textfile unparseable
-    # (promtool rejects them), so they must stay outside the loop.
-    lines.append("")
-    lines.append(HELP_QT)
-    lines.append(TYPE_QT)
-    for queue in ("agent-ready", "ready-work"):
-        lines.append(
-            f'fleet_queue_total{{queue="{queue}"}} {qc[queue]["total"]}'
-        )
-    lines.append("")
-    lines.append(HELP_QSM)
-    lines.append(TYPE_QSM)
-    for queue in ("agent-ready", "ready-work"):
-        lines.append(
-            f'fleet_queue_self_maintenance_total{{queue="{queue}"}} {qc[queue]["self"]}'
-        )
-    ratio_lines = []
-    for queue in ("agent-ready", "ready-work"):
-        q = qc[queue]
-        total = q["total"]
-        if total > 0:
-            ratio = q["self"] / total
-            ratio_lines.append(
-                f'fleet_queue_self_maintenance_ratio{{queue="{queue}"}} {ratio:.6f}'
-            )
-    if ratio_lines:
-        lines.append("")
-        lines.append(HELP_QSMR)
-        lines.append(TYPE_QSMR)
-        lines.extend(ratio_lines)
-    fresh_kinds.append("queue_composition")
-
     if fresh_kinds:
         lines.append("")
         lines.append(HELP_FRESH)
         lines.append(TYPE_FRESH)
         for kind in fresh_kinds:
             lines.append(f'fleet_gh_cache_fresh{{kind="{kind}"}} 1')
-    if _CACHE_TS_SERVED:
-        lines.append("")
-        lines.append(HELP_CTS)
-        lines.append(TYPE_CTS)
-        for _kind, _ts in sorted(_CACHE_TS_SERVED.items()):
-            lines.append(
-                f'fleet_gh_cache_timestamp_seconds{{kind="{_kind}"}} {_ts:.0f}'
-            )
-
-    # oomd kills of app-pi-issue.slice units in the last 6h (fleet-ops#4164).
-    oomd_counts = _oomd_kills_6h()
-    lines.append("")
-    lines.append(HELP_OOMD)
-    lines.append(TYPE_OOMD)
-    for unit in sorted(oomd_counts):
-        lines.append(
-            f'fleet_oomd_kills_6h{{unit="{unit}"}} {oomd_counts[unit]}'
-        )
-
-    # Repair dispatch / skip counts.
-    disp_count, skip_count = _repair_log_counts_24h()
-    lines.append("")
-    lines.append(HELP_RDISP)
-    lines.append(TYPE_RDISP)
-    lines.append(f"fleet_repair_dispatch_24h {disp_count}")
-    lines.append("")
-    lines.append(HELP_RSKIP)
-    lines.append(TYPE_RSKIP)
-    lines.append(f"fleet_repair_skip_24h {skip_count}")
-
-    # --- Per-alertname repair outcomes (fleet-ops#1291 alert-quality) ---
-    # Feeds the WFR alert-quality lens: dispatch vs skipped = action rate,
-    # resolved vs failed = success rate, repeated failed = noisy/unactionable.
-    # fleet-ops#2694: phantom_resolved counts RESOLVED entries whose
-    # root_cause starts with PHANTOM_ALERT (drill fixtures, no real defect)
-    # so the lens can flag phantom drift without conflating it with real
-    # fixes.
-    per_alert = _repair_log_per_alertname_24h()
-    if per_alert:
-        lines.append("")
-        lines.append(HELP_AD)
-        lines.append(TYPE_AD)
-        for name in sorted(per_alert):
-            counts = per_alert[name]
-            lbl = _prom_label(name)
-            for kind in ("dispatch", "resolved", "failed", "skipped",
-                         "phantom_resolved"):
-                lines.append(
-                    f'fleet_alert_outcome_24h{{alertname="{lbl}",kind="{kind}"}} '
-                    f'{counts[kind]}'
-                )
-
     # --- Undersaturation guard (2026-08-27) ---
     # fleet_pi_workers_active{kind=...} — always exported (no gh, no journal).
     # unit = active+activating pi-*/alert-repair-* services; process =
@@ -6262,66 +4892,17 @@ def main():
     # FleetKeystoneRoutingAbsent absent() rule fires: the metric's PRESENCE
     # is the health signal, not its value. Mirrors FleetMetricsExportMissing.
     k_routed, k_escalated, k_mtime = _keystone_routing_counts()
-    lines.append("")
-    lines.append(HELP_KROUTE)
-    lines.append(TYPE_KROUTE)
-    lines.append(f"fleet_keystone_routed_total {k_routed}")
-    lines.append("")
-    lines.append(HELP_KESC)
-    lines.append(TYPE_KESC)
-    lines.append(f"fleet_keystone_escalated_total {k_escalated}")
     if k_mtime is not None:
         lines.append("")
         lines.append(HELP_KHB)
         lines.append(TYPE_KHB)
         lines.append(f"fleet_keystone_routing_heartbeat_seconds {k_mtime:.3f}")
 
-    # --- Worktree reaper gauge (fleet-ops#4118) ---
-    # The reaper (bin/fleet-worktree-reaper) writes a daily summary JSON. The
-    # present gauge is ALWAYS emitted so the heartbeat can tell a dead reaper
-    # (0) from a healthy one (1); the count + heartbeat gauges are emitted only
-    # when the summary is present and fresh (a missing/stale summary means the
-    # count is unknown, not 0). fleet_worktree_dirs is the count metric the
-    # heartbeat gauges for unbounded worktree sprawl.
-    wt = _read_worktree_reaper()
-    lines.append("")
-    lines.append(HELP_WTP)
-    lines.append(TYPE_WTP)
-    lines.append(f"fleet_worktree_reaper_present {1 if wt.get('present') else 0}")
-    if wt.get("present"):
-        lines.append("")
-        lines.append(HELP_WTD)
-        lines.append(TYPE_WTD)
-        lines.append(f"fleet_worktree_dirs {int(wt.get('post_count') or 0)}")
-        lines.append("")
-        lines.append(HELP_WTR)
-        lines.append(TYPE_WTR)
-        lines.append(f"fleet_worktree_reaped {int(wt.get('reaped') or 0)}")
-        if isinstance(wt.get("ts"), str):
-            ts_epoch = _parse_iso_utc(wt["ts"])
-            if ts_epoch is not None:
-                lines.append("")
-                lines.append(HELP_WTHB)
-                lines.append(TYPE_WTHB)
-                lines.append(f"fleet_worktree_reaper_heartbeat_seconds {ts_epoch}")
-
-    # --- Seat yield ledger (fleet-ops#3250) ---
-    # Computed from the agent's own pi-issue session files. Per-seat rolling
-    # last-20-sessions PR yield; new/idle seats get a provisional 0.5 yield
-    # so they are tried, not starved. Emits the family and writes a JSON
-    # sidecar for lib/seat-lib.sh pick_seat to consume.
-    seat_yield = _compute_seat_yield()
-    _emit_seat_yield(lines, seat_yield)
-
     # --- Seat spend + metered provider balances (fleet-ops#3283) ---
     # Spend is derived from per-message usage.cost in pi session jsonl.  Balance
     # is fetched from each vendor's own credits/usage endpoint where one exists.
     spend = _compute_spend()
     _emit_spend(lines, spend)
-    # fleet-ops#4459: rate-card USD for the 24h + $/merged-PR, shared with measure.sh
-    _emit_usd_24h(lines, pr_counts)
-    # fleet-ops#4643: prompt prefix-cache hit ratio (cacheRead vs uncached input)
-    _emit_cache_hit_ratio(lines)
     openrouter_balance = _cached_vendor_json(
         OPENROUTER_BALANCE_CACHE, _fetch_openrouter_credits, "openrouter_credits"
     )
@@ -6394,58 +4975,11 @@ def main():
             else:
                 _emit_seat_quota_fail_loud(lines, _prov, _obs)
 
-    # --- Truth staleness (fleet-ops#1137) ---
-    # Read the staleness checker's cached results and re-export as Prometheus
-    # gauges so the absent() rule in fleet_rules.yml can watch them. The
-    # checker writes to the same fleet.prom textfile via ExecStartPost; we
-    # re-read it for completeness (idempotent — duplicate gauges are OK
-    # because they have identical values).
-    try:
-        stale_data, stale_age = _read_cache(STALENESS_CACHE)
-        if stale_data is not None:
-            ts_run = stale_data.get("ts", 0)
-            total_claims = stale_data.get("total_claims", 0)
-            lines.append("")
-            lines.append(HELP_TS_LRUN)
-            lines.append(TYPE_TS_LRUN)
-            lines.append(f"fleet_truth_staleness_last_run_seconds {ts_run:.3f}")
-            lines.append("")
-            lines.append(HELP_TS_CLAIMS)
-            lines.append(TYPE_TS_CLAIMS)
-            lines.append(f"fleet_truth_staleness_total_claims {total_claims}")
-            lines.append("")
-            lines.append(HELP_TS_MISS)
-            lines.append(TYPE_TS_MISS)
-            kind_counts = Counter(
-                f.get("type", "unknown")
-                for f in (stale_data.get("findings") or [])
-            )
-            for kind in ("path", "unit", "issue"):
-                lines.append(
-                    f'fleet_truth_staleness_mismatches_by_kind{{kind="{_prom_label(kind)}"}} '
-                    f'{kind_counts.get(kind, 0)}'
-                )
-    except OSError as exc:
-        print(f"staleness cache read: {exc}", file=sys.stderr)
-
-    # --- 0509 signups funnel (fleet-ops#4582) ---
-    # The direction metric (signups/week) read live from 0509's D1 every tick
-    # over the sanctioned Cloudflare path (no new credential). A healthy-empty
-    # table exports 0; an unreachable source returns None and the family is
-    # omitted (never a fabricated 0), so absent() surfaces the outage.
-    _emit_signups_7d(lines, _fetch_signups_7d())
-
     # --- SLO error budgets (fleet-ops#1291) ---
     # Emitted last so every source the SLOs read (CI rollup, seat health,
     # rate limit) has been gathered this tick. fleet_pi_seat_total
     # is the seat_availability denominator; published here so the SLO's
     # compliance is auditable from the raw gauges alone.
-    _seat_total = _enrolled_seat_total()
-    if _seat_total is not None:
-        lines.append("")
-        lines.append(HELP_SEAT_TOTAL)
-        lines.append(TYPE_SEAT_TOTAL)
-        lines.append(f"fleet_pi_seat_total {_seat_total}")
     _emit_slo_metrics(lines, main_ci, healthy, rl)
 
     # --- Deployment quality SLOs (fleet-ops#2758) ---
@@ -6455,11 +4989,6 @@ def main():
     # the exporter oneshot.
     _emit_deploy_quality(lines)
 
-    # --- blocked-reconcile nish-decision lint (fleet-ops#3312) ---
-    # Per-sweep count of rejected `blocked-on: nish-decision` lines.
-    _emit_blocked_reconcile(lines)
-    _emit_signal_reconcile(lines)
-
     # --- close-duplicates close guard (fleet-ops#3161) ---
     # Per-tick close count by label; cross_repo and protected must stay 0.
     _emit_close_duplicates(lines)
@@ -6468,19 +4997,6 @@ def main():
     # Per-tick close count by reason; bare-mention and protected must stay 0.
     _emit_observe_to_close(lines)
     _emit_deploy_fault_gate(lines)
-
-    # --- Week-later revert check (fleet-ops#3124 part 4/4) ---
-    # For each fleet-ops PR merged ~7 days ago with a `moves:` metric, compare
-    # the metric's 7d value before vs after; if it did not improve, file ONE
-    # revert-candidate issue (never re-filed). Non-fatal: a failure is logged
-    # and the exporter still writes fleet.prom.
-    if gh_write:
-        _week_later_revert_check()
-    else:
-        print(
-            "week-later: skipped (app token unavailable — no human-gh write)",
-            file=sys.stderr,
-        )
 
     body = "\n".join(lines) + "\n"
     _atomic_write(OUT, body)

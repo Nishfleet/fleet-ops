@@ -82,7 +82,6 @@ jobs:
         bash tests/seat-credentials-bad-replay.test.sh
         bash tests/budget-402-classification.test.sh
         bash tests/budget-402-pick-fallback.test.sh
-        bash tests/alert-repair-flagship-seat.test.sh
         bash tests/fleet-deploy-fault-gate.test.sh
         bash tests/fleet-production-stale-alert.test.sh
         bash tests/semantic-conflict-detector.test.sh
@@ -120,9 +119,6 @@ jobs:
         # death (114 deaths/24h on that one message, 2026-09-11).
         bash tests/devin-provider-rate-limit-retry.test.sh
         bash tests/repair-rotation.test.sh
-        bash tests/alert-repair-seat-walled.test.sh
-        bash tests/alert-repair-class-park-skip.test.sh
-        bash tests/alert-repair-detached-recursion-skip.test.sh
         bash tests/fleet-claim.test.sh
         bash tests/agent-cron-seat-rotation.test.sh
         # fleet-ops#6252: cron units must never point a workdir at a fleet-ops

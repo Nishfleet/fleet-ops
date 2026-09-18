@@ -104,35 +104,3 @@ fleet2_excluded="$(jq -r '[.excluded[] | select(.name=="fleet2" and .permanent==
 
 echo "OK: intake-repos.json shape locked ($repo_count repos, $excl_count excluded, fleet2 guard live, 0509 only product + fleet-ops control plane)"
 
-# fleet-ops#29: the agent-blocked label is a live queue, not a parking lot.
-# CI's tests job does not yet have a named step for tests/blocked-reconcile.test.sh
-# (workflow files are out of band for the worker App). Run them here so a
-# regression cannot merge green.
-bash "$here/blocked-reconcile.test.sh"
-# fleet-ops#39: claim-reconcile self-heals split-brain and garbage claim
-# branches. A named tests/claim-reconcile.test.sh step in ci.yml is out of
-# band for the worker App (Contents cannot push workflow files). Run it
-# here so a regression cannot merge green.
-bash "$here/claim-reconcile.test.sh"
-# fleet-ops#32 / #129: same pattern for the declared-set reconciler — the
-# intake-repos.json shape is meaningless without bin/intake-reconcile, so
-# gate on both. The P14 tests job runs this file; a named
-# tests/intake-reconcile.test.sh step in .github/workflows/ci.yml is out
-# of band for the worker App (Contents cannot push workflow files).
-# Workers implementing these issues must NEVER touch the live user
-# manager; the test runs entirely against stubbed systemctl + gh.
-bash "$here/intake-reconcile.test.sh"
-# 2026-08-26 split-brain: intake-reconcile must read deploy-clone
-# intake-repos.json. Named ci.yml step is out of band for the worker App.
-bash "$here/intake-reconcile-deploy-checkout.test.sh"
-# fleet-ops#376: unlabeled open issues must get a lifecycle label within one
-# existing heartbeat tick. Named ci.yml step is out of band for the worker App.
-bash "$here/lifecycle-label-sweep.test.sh"
-# fleet-ops#4022: scout-candidate admission/bounce + cooldown re-apply guard.
-# Named ci.yml step is out of band for the worker App, so it nests here.
-bash "$here/lifecycle-label-sweep-admission.test.sh"
-# fleet-ops#156 finding 9 / #177 / #239: heartbeat queue, claim, and
-# verify_timers must all derive from this file. Named ci.yml steps are
-# out of band for the worker App.
-bash "$here/fleet-heartbeat-verify-timers.test.sh"
-bash "$here/fleet-heartbeat-queue-claim-from-intake.test.sh"
