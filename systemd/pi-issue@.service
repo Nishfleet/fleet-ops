@@ -88,12 +88,20 @@ ExecStopPost=-/bin/sh -c 'r=$(echo "$1" | sed "s/-[0-9][0-9]*$//"); systemctl --
 # was an env var arming a hand-written extension to count tool calls. Counting
 # tool calls was always a proxy for the thing that actually matters: did the
 # run leave the artifact behind? This asks that directly. A worker's first act
-# is to push claim/issue-<N>; if that branch is not on origin, the run produced
-# nothing, so exit 1 turns Result=success into Result=exit-code -> `failed`,
-# which is what OnFailure=, Restart=on-failure and StartLimitBurst all key off.
+# is to push claim/issue-<N>; if neither that branch NOR a PR that was opened
+# from it exists, the run produced nothing, so exit 1 turns Result=success into
+# Result=exit-code -> `failed`, which is what OnFailure=, Restart=on-failure and
+# StartLimitBurst all key off.
+# The PR arm is not belt-and-braces, it is required: caught live 2026-09-18 on
+# the first full run of this rail. Worker fleet-ops-7783 pushed the branch,
+# opened PR #7789, armed auto-merge, and GitHub merged it and DELETED the branch
+# at 19:06:12Z — all while the unit was still running. A branch-only check marks
+# that worker `failed` for having succeeded completely, which would then release
+# its claim and re-dispatch work that is already merged. Ask for the artifact in
+# either place it can legitimately be.
 # Runs LAST so the worktree cleanup and the intake refill above happen first.
 # Only checked on a success exit — a run that already failed is already failed.
-ExecStopPost=/bin/sh -c '[ "$SERVICE_RESULT" = success ] || exit 0; i="$1"; r=$(echo "$i" | sed "s/-[0-9][0-9]*$//"); n=$(echo "$i" | sed "s/.*-//"); GH_TOKEN=$(gh token generate --app-id 4728578 --key "$HOME/.config/fleet-worker/nishfleet-worker.private-key.pem" --installation-id 156789042 --token-only 2>/dev/null); export GH_TOKEN; gh api "repos/Nishfleet/$r/branches/claim/issue-$n" >/dev/null 2>&1 || { echo "no claim/issue-$n on origin Nishfleet/$r — the run exited 0 with no artifact" >&2; exit 1; }' sh %i
+ExecStopPost=/bin/sh -c '[ "$SERVICE_RESULT" = success ] || exit 0; i="$1"; r=$(echo "$i" | sed "s/-[0-9][0-9]*$//"); n=$(echo "$i" | sed "s/.*-//"); GH_TOKEN=$(gh token generate --app-id 4728578 --key "$HOME/.config/fleet-worker/nishfleet-worker.private-key.pem" --installation-id 156789042 --token-only 2>/dev/null); export GH_TOKEN; gh api "repos/Nishfleet/$r/branches/claim/issue-$n" >/dev/null 2>&1 && exit 0; [ "$(gh api "repos/Nishfleet/$r/pulls?state=all&head=Nishfleet:claim/issue-$n&per_page=1" --jq length 2>/dev/null)" = 1 ] && exit 0; echo "no claim/issue-$n branch and no PR from it on Nishfleet/$r — the run exited 0 with no artifact" >&2; exit 1' sh %i
 TimeoutStopSec=180
 
 # Retry policy — systemd's own, not a counter in bash.
