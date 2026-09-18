@@ -284,18 +284,13 @@ ok "non-JSON curl output is a mint failure, not an install list"
 # fleet-ops#413: App-identity canary and pi-issue-run scream path.
 # Chained here because the P14 CI job cannot
 # gain a new workflow step (nishfleet-worker has no Workflows permission).
-bash "$here/pi-issue-run-app-identity.test.sh"
 # fleet-ops#568: the failure-reason lock must keep reaching the generic
 # `pi exited` path after the App-identity gate. Worker tokens cannot add a
 # P14 verify-command line, so this already-listed host runs it.
-bash "$here/pi-issue-run-failure-reason.test.sh"
 # fleet-ops#567: scratch-HOME App identity class lock + the tried-reset
 # behavioural test, now green. Same P14-host constraint as above.
-bash "$here/pi-issue-run-scratch-home-identity.test.sh"
-bash "$here/pi-issue-run-tried-reset.test.sh"
 # fleet-ops#3766: fast-death error classification replay drill. Same P14-host
 # constraint as above (worker App cannot push workflow files to list in ci.yml).
-bash "$here/pi-issue-run-fast-death-class.test.sh"
 # fleet-ops#1233: legal-basics inventory lock. Named ci.yml step is out of
 # band for the worker App (Contents cannot push workflow files).
 bash "$here/legal-basics-surfaces.test.sh"

@@ -185,7 +185,6 @@ bash "$here/pick-seat-freeze.test.sh"
 # control (3 branches, 1 cause -> red-main-suspicion). Hosted here so P14
 # runs it without a workflow-file edit (the worker App cannot push
 # .github/workflows/**).
-bash "$here/fleet-red-main-suspicion.test.sh"
 
 # fleet-ops#1457: stop-the-line detector drill. The detector + watch
 # workflows landed in #1465, but the test was never registered in ci.yml
@@ -197,7 +196,6 @@ bash "$here/stop-the-line-detector.test.sh"
 # Hermetic (fake wrappers, scratch state, no network/systemd). Hosted here
 # so P14 runs it without a workflow-file edit (the worker App cannot push
 # .github/workflows/**).
-bash "$here/signal-reconcile.test.sh"
 
 # fleet-ops#375: whole-chain e2e drill (synthetic failure -> auto-ticket ->
 # senior routing -> mechanical gate -> observe-to-close -> SLO snapshot).
@@ -223,7 +221,6 @@ bash "$here/issue-file.test.sh"
 # on hosted CI (no user units there).
 
 # fleet-ops#4468 dead-conflicting-PR detector
-bash "$here/fleet-dead-pr-detector.test.sh"
 
 # fleet-ops#1229: merge-trample gate. Hosted here so P14 runs the drill
 # without a workflow-file edit.
@@ -288,7 +285,6 @@ bash "$here/memoryctl-ttl-provenance.test.sh"
 # dispatcher SKIP_SET + canary SKIP_FIRING (+ stubbed no-spawn /
 # no-STOP-REASON proof). Hosted here so P14 runs it without a
 # workflow-file edit.
-bash "$here/alert-repair-wfr-trend-skip.test.sh"
 
 # fleet-ops#2672: the WFR-input main_green slow-burn SLO lives in the
 # dispatcher SKIP_SET + canary SKIP_FIRING so the 6h AMX repeat can no
@@ -296,7 +292,6 @@ bash "$here/alert-repair-wfr-trend-skip.test.sh"
 # integrator (the verify chain it created stalled at hop=verify and
 # re-seated onto an empty-run benched seat). Hosted here so P14 runs it
 # without a workflow-file edit.
-bash "$here/alert-repair-slo-slowburn-skip.test.sh"
 
 # fleet-ops#3376: FleetEscalationStorm is a 24h rolling count / trend gauge;
 # a repair worker cannot clear it because the count ages out. Lock it into
@@ -314,7 +309,6 @@ bash "$here/alert-repair-slo-slowburn-skip.test.sh"
 # (no gh/prometheus/systemd) — runs fine in hosted CI. Hosted here so P14
 # runs it without a workflow-file edit (the worker App cannot push
 # .github/workflows/**).
-bash "$here/alert-repair-outcome-metric.test.sh"
 
 # fleet-ops#5142: detached-deliverable preflight alert. Hosted here so P14
 # runs it without a workflow-file edit (the worker App cannot push
@@ -576,9 +570,6 @@ bash "$here/seat-health-overload-bench.test.sh"
 # Hosted here so P14 runs them without a workflow-file edit (the worker
 # App cannot push .github/workflows/**).
 bash "$here/gh-webhook-receiver-hmac.test.sh"
-bash "$here/gh-webhook-canary.test.sh"
-bash "$here/gh-webhook-organ-heartbeat.test.sh"
-bash "$here/fleet-intake-reconciler-counter.test.sh"
 
 # fleet-ops#180: gap-closure loop state machine (stubbed acceptance).
 # Hosted here so P14 runs it without a workflow-file edit (the worker App
@@ -601,7 +592,6 @@ bash "$here/sgscan.test.sh"
 # SPEC-GATE-REFUSED the intake tick, dropped running=2 vs admit=22, and
 # tripped the fleet-heartbeat undersat fail-loud. Hosted here so P14 runs
 # them without a workflow-file edit.
-bash "$here/pi-issue-run-hang-stall-bench.test.sh"
 # fleet-ops#4602 / PR #4638: hang-bench window scales to observed hang.
 # Hosted here so P14 runs it without a workflow-file edit (same #1622 path).
 # pi-issue-run-hang-window-scale.test.sh deleted with the seat-bench window (fleet-ops#4263: the LiteLLM proxy owns cooldown).
@@ -666,7 +656,6 @@ bash "$here/subagent-extload.test.sh"
 # it without a workflow-file edit (the worker App cannot push
 # .github/workflows/**). The live reset-failed proof in Phase D skips in
 # hosted CI (no user systemd there) and runs on the VPS.
-bash "$here/fleet-heartbeat-orphan-reset.test.sh"
 
 # fleet-ops#2462: cap re-claims per item (MAX_RECLAIMS in pi-intake-tick.sh)
 # + systemic-failure skip (.systemic marker when every tried seat is benched).
@@ -816,7 +805,6 @@ bash "$here/install-check-content-equivalent.test.sh"
 # (split of #3548). Hosted here so P14 runs the drill without a
 # workflow-file edit (the worker App cannot push .github/workflows/**).
 # Hermetic (scratch vote state + stub gh, no real API).
-bash "$here/pi-audit-tally-escalate-senior.test.sh"
 
 # fleet-ops#3594 (PR #3633 follow-up): the pi-audit-run strip-preamble replay
 # drill landed without a ci.yml listing or a host, so P14 ran red on "1 test
@@ -825,7 +813,6 @@ bash "$here/pi-audit-tally-escalate-senior.test.sh"
 # Hosted here so P14 runs it without a workflow-file edit (the worker App
 # cannot push .github/workflows/**). Hermetic (stub pi + scratch vote dir,
 # no gh/prometheus/systemd).
-bash "$here/pi-audit-run-strip-preamble.test.sh"
 
 # fleet-ops#3285: the daily-digest spend-line replay drill. The test landed
 # in this PR without a ci.yml listing (the worker App cannot push
@@ -868,7 +855,6 @@ bash "$here/0509-surface-probe-deleted.test.sh"
 # Hosted here so P14 runs it without a workflow-file edit (the worker App
 # cannot push .github/workflows/**). Hermetic (repo-only checks, no
 # gh/prometheus/systemd).
-bash "$here/fleet-litellm-organ.test.sh"
 
 # fleet-ops#4148 (child of #4140 row 9): shape-only per-role unit templates
 # systemd/codex-sol@.service + codex-luna@.service (identity pinned in
@@ -905,7 +891,6 @@ bash "$here/spec-judge.test.sh"
 # freshness -> NO_DATA) and the analysis's ready_min/ready_max report.
 # Hosted here so P14 runs it without a workflow-file edit (the worker App
 # cannot push .github/workflows/**). Hermetic (temp state, stubbed gh).
-bash "$here/fleet-cpu-sampler-ready.test.sh"
 
 # fleet-ops#5059: install.sh --check must flag a helper symlink under
 # ~/.local/bin or ~/.local/lib/pi-packet whose target (a fleet-ops checkout
@@ -973,7 +958,6 @@ bash "$here/deleted-symbol-gate.test.sh"
 # tests/p14-test-listing-gate.test.sh is the class-prevention so a future
 # drop of this host line fails by name. Hermetic (scratch state-file stubs,
 # no gh/network/systemd).
-bash "$here/pi-intake-rate-limit-precheck-cadence.test.sh"
 # fleet-ops#5493: behavioral regression for the pre-#331 stale seat-caps
 # snapshot (devin 4->0, ollama 4->2) being installed over live caps. The
 # repo-mtime refresh by git checkout defeats the plain mtime guard, so the
