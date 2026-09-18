@@ -168,6 +168,10 @@ benched:
   litellm_params:
     model: openai/zai-org/GLM-5.3-Flash
     api_base: https://api.tokenfactory.nebius.com/v1
+    # Money guard (glue sweep 2026-09-18): METERED pay-as-you-go rung, benched
+    # today. Capped so a future restore comes back capped by default.
+    max_budget: 5.0
+    budget_duration: 1mo
     api_key: os.environ/NEBIUS_API_KEY
     tags:
     - metered
@@ -201,6 +205,10 @@ benched:
   litellm_params:
     model: openai/deepseek/deepseek-v4-pro
     api_base: https://api.xkiro.com/v1
+    # Money guard (glue sweep 2026-09-18): METERED pay-as-you-go rung, benched
+    # today. Capped so a future restore comes back capped by default.
+    max_budget: 5.0
+    budget_duration: 1mo
     api_key: os.environ/XKIRO_API_KEY
     tags:
     - free
@@ -231,6 +239,10 @@ benched:
   litellm_params:
     model: openai/nvidia/nemotron-3-ultra-550b-a55b:free
     api_base: https://openrouter.ai/api/v1
+    # Money guard (glue sweep 2026-09-18): METERED pay-as-you-go rung, benched
+    # today. Capped so a future restore comes back capped by default.
+    max_budget: 5.0
+    budget_duration: 1mo
     api_key: os.environ/OPENROUTER_API_KEY
     extra_headers: {HTTP-Referer: https://0509.io, X-Title: nish-fleet}
     tags:
@@ -244,6 +256,10 @@ benched:
   litellm_params:
     model: openai/nvidia/nemotron-3.5-lightning:free
     api_base: https://openrouter.ai/api/v1
+    # Money guard (glue sweep 2026-09-18): METERED pay-as-you-go rung, benched
+    # today. Capped so a future restore comes back capped by default.
+    max_budget: 5.0
+    budget_duration: 1mo
     api_key: os.environ/OPENROUTER_API_KEY
     extra_headers: {HTTP-Referer: https://0509.io, X-Title: nish-fleet}
     tags:
@@ -257,6 +273,10 @@ benched:
   litellm_params:
     model: openai/z-ai/glm-4.7-flash-free
     api_base: https://zenmux.ai/api/v1
+    # Money guard (glue sweep 2026-09-18): METERED pay-as-you-go rung, benched
+    # today. Capped so a future restore comes back capped by default.
+    max_budget: 5.0
+    budget_duration: 1mo
     api_key: os.environ/ZENMUX_API_KEY
     tags:
     - free
