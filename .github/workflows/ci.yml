@@ -130,7 +130,6 @@ jobs:
         bash tests/findings-ledger.test.sh
         bash tests/findings-measure-line.test.sh
         # fleet-ops#7371: shared Jev helper contract (dry-run, refusals, log shape, cap, key hygiene).
-        bash tests/jev-eval.test.sh
         bash tests/reusable-workflows.test.sh
         # fleet-ops#1296: reject typo'd/unregistered action@<sha> pins in
         # .github/workflows/** before a scheduled workflow fails to resolve
@@ -212,13 +211,13 @@ jobs:
         # SC1071 and exit nonzero, which is wrong for this layout).
         # Keep only regular files: semgrep (run above) leaves bin/__pycache__,
         # and shellcheck cannot read a directory (openBinaryFile: is a dir).
-        # Filter by SHEBANG, not by extension. bin/jev-eval is an
+        # Filter by SHEBANG, not by extension. (bin/jev-eval was an
         # extensionless `#!/usr/bin/env node` shim, so the extglob below
         # cannot exclude it and shellcheck parsed JS as shell (SC1008/
         # SC1127/SC1036/SC2211), holding main red from 3febb390d onward.
         # A shebang test handles the next extensionless non-shell bin/ file
         # by class instead of needing a new exclusion each time. Measured
-        # 2026-09-18: drops bin/jev-eval only, keeps all 22 shell scripts.
+        # extensionless Node shim; deleted 2026-09-18 with the Jev pass-through.)
         shopt -s extglob
         files=()
         for f in bin/!(*.py|*.ts|*.mjs|*.js); do

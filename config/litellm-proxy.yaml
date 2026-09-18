@@ -320,6 +320,29 @@ litellm_settings:
   - prometheus
   require_auth_for_metrics_endpoint: false
 general_settings:
+  # Jev (typesafe-ai/jev) as a pass-through endpoint — glue sweep 2026-09-18.
+  #
+  # Replaces bin/jev-eval.mjs + bin/jev-eval + ~/.local/lib/jev-eval: a Node
+  # helper with its own SDK install, its own key read, its own JSONL spend
+  # ledger and its own hand-rolled $1 cap. Jev's gateway endpoint is a plain
+  # JSON POST, so the proxy can forward it and the proxy's OWN budget engine
+  # does the cap — the same engine that caps every model seat.
+  #
+  # auth: true means a caller must present a LiteLLM virtual key. The key
+  # `jev-eval` carries max_budget 1.0 USD / budget_duration 1mo, so LiteLLM
+  # refuses the call itself once the month's dollar is spent.
+  # cost_per_request is Jev's measured cost: $0.042/MTok in, $0 out, ~350 input
+  # tokens on a real fleet question (#7371) = ~$0.0000147. Rounded up.
+  pass_through_endpoints:
+    - path: "/jev"
+      target: "https://ai-gateway.vercel.sh/v4/ai/evaluation-model"
+      cost_per_request: 0.000015
+      auth: true
+      headers:
+        Authorization: "Bearer os.environ/VERCEL_AI_GATEWAY_JEV_KEY"
+        ai-gateway-protocol-version: "0.0.1"
+        ai-evaluation-model-specification-version: "4"
+        ai-model-id: "typesafe-ai/jev"
   background_health_checks: true
   health_check_interval: 60
   database_url: postgresql://litellm@127.0.0.1:5432/litellm

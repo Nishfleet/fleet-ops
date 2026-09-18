@@ -140,6 +140,32 @@ this bullet is a pointer, not a restatement (fleet-ops#5586, fleet-ops#5685).
 Plus the standing exception unrelated to those classes: an unrepairable
 failure must fail LOUD, never degrade silently.
 
+**HOW to call Jev (glue sweep 2026-09-18).** Jev is a LiteLLM pass-through
+endpoint. One curl, budget and spend enforced by the proxy:
+
+```
+curl -s -X POST 127.0.0.1:4000/jev \
+  -H "Authorization: Bearer $LITELLM_JEV_KEY" \
+  -H 'Content-Type: application/json' \
+  -d '{"state":{...},"questions":{"<id>":{"type":"boolean","instructions":"..."}}}'
+```
+
+`questions` is a RECORD keyed by question id, not an array, and each entry uses
+`instructions` (not `question`). Response is
+`{"answers":{"<id>":{"type":"boolean","probability":0.38}},"usage":{...}}`.
+`LITELLM_JEV_KEY` lives in `~/.config/fleet-ops/seats/typesafe-jev.env`
+(mode 0600) — never inline it, never print it.
+
+The proxy holds the cap: the `jev-eval` virtual key is max_budget 1.00 USD,
+budget_duration 1mo, and LiteLLM refuses the call itself once the month's
+dollar is spent. Spend is visible at
+`curl -s "127.0.0.1:4000/key/info?key=$LITELLM_JEV_KEY" -H "Authorization: Bearer $LITELLM_MASTER_KEY"`.
+
+This replaces `bin/jev-eval` / `bin/jev-eval.mjs` and its hand-rolled JSONL
+spend ledger, all deleted: a Node helper with its own SDK install, its own key
+read and its own $1 cap, doing what the proxy's own budget engine does for
+every other seat.
+
 **HOW an agent escalates a reserved-class finding (glue sweep 2026-09-18).**
 One stock line, from any user unit or session, unauthenticated:
 
