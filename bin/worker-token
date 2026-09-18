@@ -188,18 +188,37 @@ get_installation_id() {
     echo "worker-token: app/installations lookup returned invalid payload — degraded" >&2
     exit 3
   fi
-  printf '%s' "$list" | jq '{installations: .}' > "$INSTALL_CACHE" 2>/dev/null || {
-    echo "worker-token: app/installations parse failed — degraded" >&2
-    exit 3; }
-  chmod 600 "$INSTALL_CACHE" 2>/dev/null || true
+  # Resolve the id from the payload we just fetched — NEVER by re-reading the
+  # cache file. $INSTALL_CACHE is shared by every concurrent worker-token, and
+  # the old `> "$INSTALL_CACHE"` write truncated it in place: a sibling mint
+  # truncating between our write and our read-back made jq return an empty id,
+  # which this function then reported as the flatly wrong "no installation of
+  # nishfleet-worker in org 'Nishfleet'" — sending the reader hunting for an
+  # App install that was never missing. Observed once on 2026-09-18T08:45:01Z
+  # (fleet-ops#3445 class).
   local id
-  id="$(jq -r --arg org "$ORG" \
-    '.installations[] | select(.account.login == $org) | .id' \
-    "$INSTALL_CACHE")"
+  id="$(printf '%s' "$list" | jq -r --arg org "$ORG" \
+    '.[] | select(.account.login == $org) | .id')"
   if [[ -z "$id" || "$id" == "null" ]]; then
-    echo "worker-token: no installation of nishfleet-worker in org '$ORG' — degraded" >&2
-    echo "  (the app exists but has not been installed under that org yet)" >&2
+    local seen
+    seen="$(printf '%s' "$list" | jq -r 'length' 2>/dev/null || echo '?')"
+    echo "worker-token: org '$ORG' has no App install in the returned list ($seen seen) — degraded" >&2
     exit 3
+  fi
+  # Publish the cache atomically: write a sibling temp file, then rename(2) it
+  # into place. Same directory means the same filesystem, so a concurrent
+  # reader sees either the whole old file or the whole new one, never a
+  # half-written or zero-length one. A cache-write failure is NOT fatal — we
+  # already hold a good id; the cache is only a 5-minute optimisation.
+  local tmp_cache
+  tmp_cache="$(mktemp "${INSTALL_CACHE}.XXXXXX" 2>/dev/null || true)"
+  if [[ -n "$tmp_cache" ]]; then
+    if printf '%s' "$list" | jq '{installations: .}' > "$tmp_cache" 2>/dev/null; then
+      chmod 600 "$tmp_cache" 2>/dev/null || true
+      mv -f "$tmp_cache" "$INSTALL_CACHE" 2>/dev/null || rm -f "$tmp_cache"
+    else
+      rm -f "$tmp_cache"
+    fi
   fi
   printf '%s\n' "$id"
 }
