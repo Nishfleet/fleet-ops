@@ -637,18 +637,6 @@ systemd/fleet-judge-block-disarm.service /home/nish/.config/systemd/user/fleet-j
 # FLEET_SYNC_PAT GitHub-Authentication-Token-Expiration horizon.
 # Heartbeat-tier1 block 31.
 # Heartbeat-tier1 block 32.
-# fleet-ops#78: gated reap of the unmanaged Codex app-server during the
-# weekly window. Drop-in fires as ExecStartPre of vps-weekly-update
-# (Sun 03:30 IST, after the 15-minute quiesce drain).
-# fleet-ops#1160: VPS weekly update script (user-scope, installed to ~/.local/bin)
-bin/vps-weekly-update /home/nish/.local/bin/vps-weekly-update
-# fleet-ops#1160: post-reboot verify script with tailscale recover (user-scope)
-bin/vps-post-reboot-verify /home/nish/.local/bin/vps-post-reboot-verify
-# fleet-ops#1160: system-scope post-reboot verify service (install.sh --system)
-systemd/system/vps-post-reboot-verify.service /etc/systemd/system/vps-post-reboot-verify.service
-# fleet-ops#1160: re-verify timer ~30 min post-reboot (Persistent=true,
-# system-scope so it can trigger the system-scope service)
-systemd/system/vps-post-reboot-verify.timer /etc/systemd/system/vps-post-reboot-verify.timer
 # fleet-ops#45: peak-RSS measurement so ram_gb_per_worker can be re-derived
 # by command rather than re-read from a comment. Pure observability — no
 # timers, no agents, no escalation. State at ~/.local/state/ram-measurement/
@@ -656,12 +644,6 @@ systemd/system/vps-post-reboot-verify.timer /etc/systemd/system/vps-post-reboot-
 # fleet-ops#202: live memory.current vs VmRSS compare so the 35 MB vs
 # ~800 MB mismatch stays measured. Pure observability — never edits
 # ram_gb_per_worker. State at ~/.local/state/ram-measurement/
-# fleet-ops#85: hourly reaper for stale interactive Claude/ccd-cli sessions
-# in session-*.scope. SIGTERM then SIGKILL; skips dirty/claim worktrees.
-# N=8h from the 2026-08-27 idle tail (live pile at 0h, stale cluster from 6h).
-bin/interactive-session-reap /home/nish/.local/bin/interactive-session-reap
-systemd/interactive-session-reap.service /home/nish/.config/systemd/user/interactive-session-reap.service
-systemd/interactive-session-reap.timer /home/nish/.config/systemd/user/interactive-session-reap.timer
 # P14 tests (not installed — only run from the repo)
 # fleet-ops#71: system-scope RAM governor drop-ins (live in /etc/systemd/system,
 # requires root for install). install.sh --system copies them and runs

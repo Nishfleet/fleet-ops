@@ -1263,25 +1263,10 @@ elif [ "$do_system_install" = 1 ]; then
       echo "install.sh: prometheus not active — skipped reload + rules proof (fleet-ops#1307)" >&2
     fi
   fi
-  # fleet-ops#1160: vps-post-reboot-verify.timer is system-scope (the
-  # service it triggers is system-scope too). Install --system does not
-  # auto-enable system units (is_installable_unit excludes systemd/system/*),
-  # so enable it here — same class as the user timer --now enables above.
-  if [ -f "$here/systemd/system/vps-post-reboot-verify.timer" ]; then
-    if ! sudo systemctl is-enabled vps-post-reboot-verify.timer 2>/dev/null; then
-      sudo systemctl enable --now vps-post-reboot-verify.timer \
-        || { echo "install.sh: failed to enable vps-post-reboot-verify.timer" >&2; rc=1; }
-      echo "enabled+started: vps-post-reboot-verify.timer (system)"
-    elif ! sudo systemctl is-active --quiet vps-post-reboot-verify.timer 2>/dev/null; then
-      sudo systemctl start vps-post-reboot-verify.timer \
-        || { echo "install.sh: failed to start vps-post-reboot-verify.timer" >&2; rc=1; }
-      echo "started: vps-post-reboot-verify.timer (system, was enabled but inactive)"
-    fi
-  fi
   # fleet-ops#4266: a changed audit rules.d file needs augenrules --load to
   # reach the RUNNING auditd (the rules.d file alone only takes effect at
   # boot). auditd absent = note only (the package install is the bare-metal
-  # manifest / vps-weekly-update concern).
+  # manifest concern).
   if [ "$system_audit_changed" = 1 ]; then
     if sudo systemctl is-active --quiet auditd 2>/dev/null; then
       if ! sudo augenrules --load >/dev/null 2>&1; then

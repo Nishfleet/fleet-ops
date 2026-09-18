@@ -46,12 +46,9 @@ cheaper than building, because prose bans lose to urgency at decision time.
 | Stop-escalation | stop-escalation | `stop-escalation.{path,service}` | escalation rail |
 | Unit escalation | unit-escalation@ | `unit-escalation@.service` | escalation rail |
 | Intake reconcile | intake-reconcile | `intake-reconcile.{path,timer}` | #32 |
-| Interactive session reap | interactive-session-reap | `interactive-session-reap.timer` | dead-seat EXTLOAD |
 | Standing-rules render | standing-rules-render | `standing-rules-render.{path,service}` | vault |
 | Quality research (weekly) | quality-research-weekly | `quality-research-weekly.timer` | #457 |
 | Boundary-notify (Nish-reserved) | nish-boundary-notify | `nish-boundary-notify.service` | standing rule |
-| Memory curator | nish-memory-curator | `nish-memory-curator.timer` | memory compound |
-| VPS maintenance (quiesce/deadman/update) | vps-maintenance-* / vps-weekly-update | `vps-maintenance-*.timer` | systemd-by-default |
 | Alert→repair bridge | prometheus-am-executor | `prometheus-am-executor.service` | alert pipeline |
 | Transport integrity | pi-transport-check | `pi-transport-check.timer` | Pi transport |
 | Daily digest | daily-digest | `daily-digest.timer` | Pi-era data |
