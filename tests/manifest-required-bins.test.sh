@@ -35,7 +35,6 @@ required=(
   "bin/pi-scout-run /home/nish/.local/bin/pi-scout-run"
   "bin/blocked-reconcile /home/nish/.local/bin/blocked-reconcile"
   "bin/fleet-heartbeat-undersaturation /home/nish/.local/bin/fleet-heartbeat-undersaturation"
-  "bin/codex-orphan-reap /home/nish/.local/bin/codex-orphan-reap"
   "bin/claim-reconcile /home/nish/.local/bin/claim-reconcile"
   "bin/lifecycle-label-sweep /home/nish/.local/bin/lifecycle-label-sweep"
   "bin/fleet-heartbeat-low-water-mark /home/nish/.local/bin/fleet-heartbeat-low-water-mark"

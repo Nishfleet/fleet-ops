@@ -170,14 +170,6 @@ NON_ROLE_UNIT_PREFIXES = (
     # gate is the unit's failed state plus the search-tier-canary check in
     # the 0509 product repo.
     "0509-search-tier",
-    # fleet-ops#4148: codex-sol@ / codex-luna@ are per-role Codex launch
-    # templates (shape-only paper). The ExecStart pins identity (model,
-    # provider, effort) so a launch cannot express another role; they own
-    # no judging prompt and produce no work items — launch plumbing, not a
-    # role. Their gate is the machinery-allowlist row (class (a), repo) +
-    # the codex-launcher-retired pin test.
-    "codex-sol",
-    "codex-luna",
     # fleet-ops#5935: gh-runner@ is GitHub's own actions/runner as an
     # ephemeral launch template on this VPS — each activation registers a
     # fresh single-use JIT token (fail-loud on an empty token or a 422),

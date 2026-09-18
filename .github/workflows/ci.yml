@@ -168,7 +168,6 @@ jobs:
         bash tests/fleet-heartbeat-low-water-mark.test.sh
         # tests fail the workflow check otherwise).
         bash tests/mass-close-guard.test.sh
-        bash tests/codex-orphan-reap.test.sh
         # fleet-ops#1161: orphan-workflow detector (audit findings 3+4).
         bash tests/orphan-workflow-detector.test.sh
         # fleet-ops#5692: diff ACTIVE Actions registrations against the

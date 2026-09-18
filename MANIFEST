@@ -683,16 +683,6 @@ systemd/camofox-browser.service.d/tmpdir.conf /home/nish/.config/systemd/user/ca
 # absorb so deploy symlinks it and the drop-in hunt stays clean. The gate bin
 # it references stays hand-placed as part of the allowlisted infra tool.
 systemd/camofox-browser.service.d/xvfb-auth-gate.conf /home/nish/.config/systemd/user/camofox-browser.service.d/xvfb-auth-gate.conf
-# fleet-ops#4063: codex-remote-control is a hand-placed infra tool (allowlist
-# class a). This OOM drop-in was a real file under the live drop-in dir
-# (blind-audit fleet-ops#2924 / #1548). Absorb so deploy symlinks it;
-# pure ManagedOOM* / memory cap override, not new machinery.
-systemd/codex-remote-control.service.d/20-oom-avoid.conf /home/nish/.config/systemd/user/codex-remote-control.service.d/20-oom-avoid.conf
-# fleet-ops#4148: per-role Codex launch templates (paper, shape-only).
-# ExecStart hard-codes model/provider/effort so identity holds by
-# construction. Live PATH wrapper remains until the gated wipe; see each file.
-systemd/codex-sol@.service /home/nish/.config/systemd/user/codex-sol@.service
-systemd/codex-luna@.service /home/nish/.config/systemd/user/codex-luna@.service
 # fleet-ops#4108: fable-fleet-check is a hand-placed infra tool (allowlist
 # class a). This OOM drop-in was a real file under the live drop-in dir
 # (blind-audit fleet-ops#2924 / #1548). Absorb so deploy symlinks it;
@@ -902,8 +892,6 @@ lib/cf-token-canary.py /home/nish/.local/lib/pi-packet/cf-token-canary.py
 # fleet-ops#78: gated reap of the unmanaged Codex app-server during the
 # weekly window. Drop-in fires as ExecStartPre of vps-weekly-update
 # (Sun 03:30 IST, after the 15-minute quiesce drain).
-bin/codex-orphan-reap /home/nish/.local/bin/codex-orphan-reap
-systemd/vps-weekly-update.service.d/10-codex-orphan-reap.conf /home/nish/.config/systemd/user/vps-weekly-update.service.d/10-codex-orphan-reap.conf
 # fleet-ops#1160: VPS weekly update script (user-scope, installed to ~/.local/bin)
 bin/vps-weekly-update /home/nish/.local/bin/vps-weekly-update
 # fleet-ops#1160: post-reboot verify script with tailscale recover (user-scope)

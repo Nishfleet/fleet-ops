@@ -332,24 +332,6 @@
       "note": "infra tool"
     },
     {
-      "unit": "codex-remote-control",
-      "class": "a",
-      "source": "hand-placed",
-      "note": "infra tool"
-    },
-    {
-      "unit": "codex-sol@",
-      "class": "a",
-      "source": "repo",
-      "note": "per-role Codex launch template (fleet-ops#4148) shape-only unused paper; Sol retired 2026-09-07; live PATH wrapper remains until wipe; identity pinned in ExecStart (gpt-5.6-sol, openai, effort=instance)"
-    },
-    {
-      "unit": "codex-luna@",
-      "class": "a",
-      "source": "repo",
-      "note": "per-role Codex launch template (fleet-ops#4148) shape-only; live PATH wrapper remains until wipe; identity pinned in ExecStart (gpt-5.6-luna, openai, effort=max)"
-    },
-    {
       "unit": "gh-runner@",
       "class": "a",
       "source": "repo",
