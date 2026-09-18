@@ -507,9 +507,9 @@ blind-audit timer stays). Two-of-three continues and the dissent is filed as a
 `gap-audit` issue. A later finding or a quality-snapshot FAIL reopens the loop.
 
 While the loop is converging, intake prefers those gap-audit issues over
-product work (`fleet-gap-closure-yield` plus `pi-intake-priority`, which treats
-`gap-audit` as critical until unanimous DONE). Unanimous DONE flips that to
-product.
+product work (`fleet-gap-closure-yield`). `pi-intake-priority`, which treated
+`gap-audit` as critical until unanimous DONE, was deleted on 2026-09-18 — it
+had no caller and had never run.
 
 Live validation of a full cycle (real drill + real conference) is a follow-up
 once merge-to-live has installed these units. This repo ships the machinery

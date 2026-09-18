@@ -328,10 +328,16 @@ PY
 # --- Signups this week (fleet-ops#4603) --------------------------------------
 # The whole 0509 direction decision (signups/week, fleet-ops#4518) is judged on
 # this one number, so the morning briefing must actually surface it. Reads the
-# fleet_signups_7d gauge that libexec/fleet-metrics-export.py exports (PR #4601)
-# via the same localhost:9090 Prometheus the alert section uses — /api/v1/query
-# needs no new transport. Absent or unreachable gauge -> a graceful "unknown"
-# line, never an error (mirrors the spend section's absent-metric fallback).
+# fleet_signups_7d gauge via the same localhost:9090 Prometheus the alert
+# section uses — /api/v1/query needs no new transport.
+#
+# 2026-09-18: NOTHING EXPORTS fleet_signups_7d. The comment here used to claim
+# libexec/fleet-metrics-export.py did (PR #4601); it never has, and the gauge is
+# absent from every file in /var/lib/prometheus/node-exporter/. So this line has
+# silently read "unknown" every morning since #4603 landed, on the one number
+# the 0509 direction is judged by. The absent-gauge text below now names the
+# cause instead of looking like a transient blip — a missing exporter must not
+# read the same as a momentarily unreachable Prometheus.
 signup_json="$(curl -sS --max-time 5 --get "$prom_url/api/v1/query" \
     --data-urlencode "query=fleet_signups_7d" \
     2>/dev/null || echo '{}')"
@@ -349,7 +355,8 @@ if results:
     except Exception:
         val = None
 if val is None:
-    print("• Signups this week: unknown.")
+    print("• Signups this week: NO DATA — nothing exports fleet_signups_7d "
+          "(not a Prometheus blip; the exporter was never written).")
 else:
     print(f"• Signups this week: {val:g}.")
 PY

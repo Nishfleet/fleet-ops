@@ -20,8 +20,7 @@ groups:
       # Units NOT listed are already covered: root units by SystemUnitFailed;
       # gh-runner@1/2/3 by Restart=always; the litellm trio by Restart=
       # on-failure + FleetLitellmProxyAbsent; pi-intake@ by Restart=on-failure
-      # + OnFailure=pi-intake-repair@; gh-webhook-receiver by Restart + its
-      # absent() rule; prometheus-am-executor and syncthing by Restart=
+      # + OnFailure=pi-intake-repair@; prometheus-am-executor and syncthing by Restart=
       # on-failure; fleet-metrics-export by FleetMetricsExportStale below;
       # pi-transport-check by its 20-self-heal.conf ExecStart repair.
       - alert: FleetLoadBearingTimerStale
@@ -289,7 +288,7 @@ groups:
           severity: page
           service: fleet
         annotations:
-          summary: "alert-repair-dispatch webhook receiver is down — the repair path is broken"
+          summary: "prometheus-am-executor is down — the repair path is broken"
           description: "prometheus-am-executor.service (127.0.0.1:9095) has been down for 2+ minutes. No critical/warning alert can spawn a repair worker while this is down. Nish must restart it manually: systemctl --user restart prometheus-am-executor."
 
   - name: host_and_system
