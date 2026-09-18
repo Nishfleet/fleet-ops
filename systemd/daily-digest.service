@@ -1,0 +1,28 @@
+[Unit]
+Description=9 AM IST daily digest push (Telegram)
+
+# Glue sweep 2026-09-18 (exporter lane). This unit ran
+# /home/nish/.local/libexec/daily-digest: 361 lines of bash gathering seven
+# sections and shelling out to the bin/hermes outbound shim, which was itself
+# a 177-line wrapper around a separate agent. Both are deleted.
+#
+# It is now a Pi prompt on the same timer. prompts/daily-digest.md gathers the
+# same sections from live sources (prometheus 9090, LiteLLM 4000, gh api,
+# systemctl, amtool) and sends with ONE curl to the Telegram bot API. No
+# outbound gate is needed: the 3/24h ceiling that gate enforced existed to
+# stop the deleted machinery texting Nish, and the only other phone path is
+# the alertmanager severity=nish/page route, which alertmanager rate-limits
+# itself via group_interval.
+#
+# Credentials come from the EnvironmentFile below and are referenced as shell
+# variables by the prompt — never inlined, never logged. The file is mode 0600
+# and lives outside the repo.
+
+[Service]
+Type=oneshot
+Environment=HOME=/home/nish
+Environment=PATH=/home/nish/.local/bin:/usr/local/bin:/usr/bin:/bin
+Environment=XDG_RUNTIME_DIR=/run/user/1000
+EnvironmentFile=/home/nish/.config/fleet-ops/telegram.env
+ExecStart=/bin/sh -c 'cat /home/nish/workspaces/tooling/fleet-ops-deploy-clone/prompts/daily-digest.md | exec pi --print --session-dir "$HOME/.pi/agent/sessions/daily-digest" --provider litellm --model worker-capable'
+TimeoutStartSec=900
