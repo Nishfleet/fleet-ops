@@ -263,7 +263,7 @@ def check_agent_ready_spec_gate(repo: Path, _role: dict[str, Any]) -> str | None
     """First admission to agent-ready must call the spec-gate (fleet-ops#543)."""
     if not (repo / "lib" / "agent-ready-spec-gate.py").exists():
         return "lib/agent-ready-spec-gate.py missing"
-    for rel in ("bin/lifecycle-label-sweep", "bin/pi-audit-tally"):
+    for rel in ("bin/lifecycle-label-sweep",):
         text = _read(repo / rel)
         if not text:
             return f"{rel} missing"
@@ -290,12 +290,6 @@ def check_reviewer_attestation_gate(repo: Path, _role: dict[str, Any]) -> str | 
         return "lib/attest-identity-gate.py missing (attestation separation)"
     return None
 
-
-def check_senior_cannot_self_admit(repo: Path, _role: dict[str, Any]) -> str | None:
-    tally = _read(repo / "bin" / "pi-audit-tally")
-    if "2-of-3" not in tally and "pass" not in tally.lower():
-        return "bin/pi-audit-tally does not enforce 2-of-3 admission"
-    return None
 
 
 def check_orchestrator_verdict_guard(repo: Path, _role: dict[str, Any]) -> str | None:
@@ -348,7 +342,6 @@ BYPASS_CHECKS = {
     "agent_ready_spec_gate": check_agent_ready_spec_gate,
     "builder_ci_and_auto_revert": check_builder_ci_and_auto_revert,
     "reviewer_attestation_gate": check_reviewer_attestation_gate,
-    "senior_cannot_self_admit": check_senior_cannot_self_admit,
     "orchestrator_verdict_guard": check_orchestrator_verdict_guard,
     "audit_has_panel": check_audit_has_panel,
     "researcher_delta_contract": check_researcher_delta_contract,

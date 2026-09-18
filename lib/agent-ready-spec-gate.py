@@ -71,10 +71,9 @@ MOVES_METRICS = (
 
 FIRST_ADMISSION = (
     "bin/lifecycle-label-sweep",
-    "bin/pi-audit-tally",
     # fleet-ops#3121: owner-authored admission bypass applies agent-ready
     # directly (no three-seat panel) after running the spec gate on the
-    # issue body — a first-admission path, same class as pi-audit-tally.
+    # issue body — a first-admission path.
     "bin/fleet-heartbeat-auditor",
     # fleet-ops#6097: the escalation tally (fleet-ops#234) files the admitted
     # fix issue with gh issue create --label; it runs the spec gate

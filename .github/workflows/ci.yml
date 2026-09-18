@@ -96,10 +96,6 @@ jobs:
         bash tests/pi-systemd-run.test.sh
         bash tests/prior-art-claim-check.test.sh
         bash tests/scout-futility.test.sh
-        bash tests/pi-audit-tally-epic-guard.test.sh
-        bash tests/pi-audit-tally-escalate-senior.test.sh
-        bash tests/pi-audit-tally-question.test.sh
-        bash tests/pi-audit-tally-skip-exhausted.test.sh
         bash tests/worker-prompt-size-ceiling.test.sh
         # fleet-ops#2133: reclaim cooldown + stale-claim release break the
         # spawn-die-respawn wedge (reaper writes cooldown marker, intake

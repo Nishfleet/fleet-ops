@@ -53,9 +53,9 @@ ok "matrix row led-2026-08-27-worker-lane-order is retired-advisory (volume orde
 # $400 machinery (Prometheus pacing group, seat-caps, the direct callers)
 # never depended on the deleted pick_seat alone. Both rows are enforced
 # again, and the mechanism must name the LIVE pacing + caller machinery.
-jq -e '.rules[] | select(.id == "led-2026-08-27-cursor-400-correction-nish" and .status == "enforced" and (.mechanism | test("fleet_cursor_prepaid_pacing")) and (.mechanism | test("bin/fleet-prepaid-util-canary")) and (.mechanism | test("bin/pi-audit-run")) and (.mechanism | test("bin/fleet-gap-closure-conference")) and (.mechanism | test("config/role-quality-gates.json")))' \
+jq -e '.rules[] | select(.id == "led-2026-08-27-cursor-400-correction-nish" and .status == "enforced" and (.mechanism | test("fleet_cursor_prepaid_pacing")) and (.mechanism | test("bin/fleet-prepaid-util-canary")) and (.mechanism | test("bin/fleet-gap-closure-conference")) and (.mechanism | test("config/role-quality-gates.json")))' \
   "$matrix" >/dev/null \
-  || fail "led-2026-08-27-cursor-400-correction-nish must be enforced with the live mechanism named: fleet_rules.yml fleet_cursor_prepaid_pacing, the restored prepaid-util-canary reader, and the direct callers (fleet-gap-closure-conference, pi-audit-run, role-quality-gates.json) (fleet-ops#6114)"
+  || fail "led-2026-08-27-cursor-400-correction-nish must be enforced with the live mechanism named: fleet_rules.yml fleet_cursor_prepaid_pacing, the restored prepaid-util-canary reader, and the direct callers (fleet-gap-closure-conference, role-quality-gates.json) (fleet-ops#6114)"
 ok "matrix row led-2026-08-27-cursor-400-correction-nish is enforced (fleet-ops#6114)"
 
 jq -e '.rules[] | select(.id == "led-2026-08-27-cursor-400-sequencing-model-nish" and .status == "enforced" and (.mechanism | test("NO LIVE MECHANISM")) and (.mechanism | test("cursor_overage.overage_model")) and (.mechanism | test("FleetCursorPrepaidBurnPacingLow")))' \

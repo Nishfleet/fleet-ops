@@ -520,7 +520,7 @@ drill → measure → conference.
 
 A cycle with findings never convenes the conference. A clean cycle with green
 SLOs and passing drills does. Three senior auditors vote via
-`fleet-gap-closure-auditor@` (sibling of `pi-audit@`, which stays the
+`fleet-gap-closure-auditor@` (formerly a sibling of the deleted `pi-audit@` panel, which was the
 admission panel); only unanimous DONE closes the intensive loop (the daily
 blind-audit timer stays). Two-of-three continues and the dissent is filed as a
 `gap-audit` issue. A later finding or a quality-snapshot FAIL reopens the loop.

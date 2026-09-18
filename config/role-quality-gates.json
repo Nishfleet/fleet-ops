@@ -12,10 +12,7 @@
       "proof": [
         "prompts/scout.md",
         "prompts/auditor.md",
-        "bin/fleet-heartbeat-auditor",
-        "bin/pi-audit-tally",
-        "lib/agent-ready-spec-gate.py",
-        "systemd/pi-audit@.service"
+        "lib/agent-ready-spec-gate.py"
       ],
       "units": [
         "pi-scout@.service",
@@ -81,29 +78,6 @@
       "prompts": [],
       "bypass_checks": [
         "reviewer_attestation_gate"
-      ]
-    },
-    {
-      "id": "senior-auditor",
-      "gate": "overturn-rate on the scoreboard; panel is 2-of-3 and cannot self-admit",
-      "proof": [
-        "prompts/auditor.md",
-        "prompts/escalation-auditor.md",
-        "prompts/senior-conference.md",
-        "prompts/nish-question-auditor.md",
-        "bin/pi-audit-tally"
-      ],
-      "units": [
-        "pi-audit@.service"
-      ],
-      "prompts": [
-        "auditor.md",
-        "escalation-auditor.md",
-        "senior-conference.md",
-        "nish-question-auditor.md"
-      ],
-      "bypass_checks": [
-        "senior_cannot_self_admit"
       ]
     },
     {
@@ -175,7 +149,7 @@
     },
     {
       "id": "weekly-fleet-review",
-      "gate": "blind 6-lens research + senior conference (throughput, output-quality, machinery, truth, outside-world, SECURITY), output capped at 5 specced actions or ledger discards, self-scoring against the rolling 4-week ratio, output = claimed work only (no Nish report) \u2014 fleet-ops#1146, ledger 2026-08-27 Weekly Fleet Review approved",
+      "gate": "blind 6-lens research + senior conference (throughput, output-quality, machinery, truth, outside-world, SECURITY), output capped at 5 specced actions or ledger discards, self-scoring against the rolling 4-week ratio, output = claimed work only (no Nish report) — fleet-ops#1146, ledger 2026-08-27 Weekly Fleet Review approved",
       "proof": [
         "bin/agent-cron-run",
         "config/rule-enforcement.json"
@@ -202,7 +176,7 @@
     },
     {
       "id": "rulebook-redteam",
-      "gate": "sibling <file>.pre-rulebook-redteam-<UTCts> backups are required before filing (fleet-ops#5682 \u2014 .bak* is the #3273 sprawl class); monthly timer + heading-growth bonus; cadence-overdue screams",
+      "gate": "sibling <file>.pre-rulebook-redteam-<UTCts> backups are required before filing (fleet-ops#5682 — .bak* is the #3273 sprawl class); monthly timer + heading-growth bonus; cadence-overdue screams",
       "proof": [
         "prompts/rulebook-redteam.md"
       ],
@@ -214,7 +188,7 @@
     },
     {
       "id": "litellm-proxy",
-      "gate": "P1 organ \u2014 proxy + Postgres + Redis, live and Nish-gated (docs/litellm-postgres-setup.md); organ death is probed directly by up{job=\"litellm\"} in config/fleet_rules.yml (the /health canary was deleted 2026-09-18) plus the universal unit-death escalation",
+      "gate": "P1 organ — proxy + Postgres + Redis, live and Nish-gated (docs/litellm-postgres-setup.md); organ death is probed directly by up{job=\"litellm\"} in config/fleet_rules.yml (the /health canary was deleted 2026-09-18) plus the universal unit-death escalation",
       "proof": [
         "systemd/fleet-litellm-proxy.service",
         "systemd/fleet-litellm-postgres.service",
