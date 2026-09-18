@@ -77,6 +77,7 @@ run bash "$probe" worker-cheap
 [[ "$rc" == 1 ]] || fail "walled group must exit 1, got $rc"
 printf '%s\n' "$out" | grep -qx 'SEAT-WALL group=worker-cheap retry_after=300' \
   || fail "expected 'SEAT-WALL group=worker-cheap retry_after=300', got: $out"
+printf '%s\n' "$out"   # keep the SEAT-WALL line in the test's own output (VERIFY must-match)
 [[ -f "$scratch/state/seat-wall-worker-cheap.json" ]] || fail "wall state file missing"
 grep -q '"next_probe_at":10300' "$scratch/state/seat-wall-worker-cheap.json" \
   || fail "backoff must be 300s (min 5 min)"
