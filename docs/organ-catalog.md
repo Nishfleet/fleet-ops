@@ -31,7 +31,6 @@ cheaper than building, because prose bans lose to urgency at decision time.
 | Tight merge→live deploy | fleet-deploy-check | `fleet-deploy-check.timer` | #468, TOP GEAR |
 | Blind audit / gap-closure | fleet-blind-audit | `fleet-blind-audit.timer` | #377 |
 | Restore drill | fleet-restore-drill | `fleet-restore-drill.timer` | #1135 |
-| OOM drill hog | oomd-drill-hog | `oomd-drill-hog.service` | #1010 |
 | Weekly review / watches | fleet-weekly-fleet-review | `fleet-weekly-fleet-review.timer` | #1146 |
 | Asset census | fleet-asset-census | `fleet-asset-census.timer` | #1149 |
 | Baseline-delta | fleet-baseline-delta | `fleet-baseline-delta.timer` | #1151 |

@@ -213,11 +213,6 @@
       "endorsement": "vault global-standing-rules.md: named mechanical enforcement (layer 3) for the endorsed 'standing machinery is agent-agnostic' rule; migrated to repo per fleet-ops#1495"
     },
     {
-      "unit": "oomd-drill-hog",
-      "class": "a",
-      "source": "repo"
-    },
-    {
       "unit": "fable-fleet-check",
       "class": "a",
       "source": "repo",

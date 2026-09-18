@@ -169,10 +169,6 @@ for d in 10-git-mirrors.conf staleness-checker.conf waste-ledger.conf; do
 done
 ok "fleet-ops#1499: metrics-export drop-ins kept (10-git-mirrors + staleness-checker + waste-ledger) + MANIFEST-listed"
 
-# fleet-ops#62: drill tooling. CI lists THIS file explicitly; the worker
-# GitHub App cannot add a workflow step, so the drill test rides along.
-bash "$here/oomd-drill.test.sh"
-
 # fleet-ops#92: slice syntax. Same CI-list constraint; the dedicated
 # unit-verify job cannot gain systemd/*.slice without a workflow push.
 bash "$here/systemd-analyze-slices.test.sh"

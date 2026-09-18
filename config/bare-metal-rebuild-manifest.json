@@ -223,8 +223,7 @@
     "restore_command": "sudo restic -r $RESTIC_REPOSITORY restore latest -t /"
   },
   "drills": [
-    "fleet-restore-drill",
-    "oomd-drill"
+    "fleet-restore-drill"
   ],
   "runbook_path": "docs/bare-metal-rebuild.md",
   "validation": {

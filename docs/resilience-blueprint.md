@@ -43,7 +43,7 @@ steady state, prefers production, automates the experiments, and
 ([Principles of Chaos Engineering](https://principlesofchaos.org/),
 [Netflix 2016](https://arxiv.org/abs/1702.05843)).
 
-we do Y. Isolated stubs (oomd-drill.slice, gap-closure-drill stubs,
+we do Y. Isolated stubs (gap-closure-drill stubs,
 this repo's resilience-drill.slice). The 2026-08-26 oomd live kill is the
 documented counterexample.
 

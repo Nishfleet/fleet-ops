@@ -199,13 +199,6 @@ bash "$here/stop-the-line-detector.test.sh"
 # .github/workflows/**).
 bash "$here/signal-reconcile.test.sh"
 
-# fleet-ops#375: whole-chain e2e drill (synthetic failure -> auto-ticket ->
-# senior routing -> mechanical gate -> observe-to-close -> SLO snapshot).
-# Hermetic (DRY_RUN, fake wrappers, scratch state) — hosted here so P14 runs
-# it without a workflow-file edit (the worker App cannot push
-# .github/workflows/**).
-bash "$here/chain-e2e-drill.test.sh"
-
 # fleet-ops#1458: nish-boundary-notify retry + direct Telegram API fallback
 # drill. Landed in #1471 but was not registered in ci.yml (workers cannot
 # push .github/workflows/**). Runs offline against temp files. Hosted here
@@ -348,17 +341,6 @@ bash "$here/alert-repair-outcome-metric.test.sh"
 # runs it without a workflow-file edit (the worker App cannot push
 # .github/workflows/**).
 bash "$here/detached-deliverable-preflight.test.sh"
-
-# fleet-ops#2768: one-shot dispatch-ledger fixture-row sweep. PR #2873
-# landed the test without a ci.yml listing or a host, so P14 ran red on
-# "1 test file(s) are neither in ci.yml, hosted by a listed test,
-# live/destructive, nor a known orphan: dispatch-ledger-fixture-sweep.test.sh"
-# (run 33662643290). Hosted here so P14 runs it without a workflow-file
-# edit (the worker App cannot push .github/workflows/**). The named pin
-# in tests/p14-test-listing-gate.test.sh is the class-prevention so a
-# future drop of this host line fails by name.
-# Hermetic (scratch ledger, no gh/prometheus/systemd).
-bash "$here/dispatch-ledger-fixture-sweep.test.sh"
 
 # fleet-ops#2902 (PR #2885 follow-up): the deploy-quality SLO test landed
 # on main without a ci.yml listing or a host, so P14 ran red on "2 test

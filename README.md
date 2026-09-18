@@ -489,34 +489,6 @@ scout, reconcile, restore) live in `~/.config/fleet-ops/keystone-hc.env`
 and must be four checks distinct from the heartbeat dead-man. Unset URLs
 are a LOUD skip. A shared URL is a LOUD fail.
 
-## systemd-oomd drill — `oomd-drill` (issue #62)
-
-The fleet's RAM policy is a five-layer tree, owned by this repo and documented
-in [docs/ram-governor-tree.md](docs/ram-governor-tree.md). `systemd-oomd` is
-the reactive last resort; the 2026-08-26 01:24 IST drill proved its managed
-kill path fires under pressure (provenance recorded in
-`systemd/app-pi\x2dissue.slice`).
-
-That drill was run ad-hoc via `systemd-run`; this repo now holds the
-reproducible tooling so it can be re-run after any oomd or kernel upgrade:
-
-```
-oomd-drill          # run the drill, print proof, exit 0/1
-oomd-drill --check  # report whether oomd + the drill units are in place
-```
-
-`bin/oomd-drill` drives a bounded thrasher (`MemoryHigh=128M`, `MemoryMax=1G`,
-`MemorySwapMax=0`) inside `oomd-drill.slice` — which carries the same
-`ManagedOOMMemoryPressure=kill` mechanism behind a low 5% trip point — then
-confirms oomd's own journal shows the managed kill (not the kernel OOM killer,
-not systemd's `RuntimeMaxSec` backstop) and that `sshd`, `tailscaled`,
-`fleet-heartbeat` and the intake timers stayed live. It proves the mechanism
-fires and is safely scoped; the production 80% trip point is calibrated from
-measurement (see the governor tree), not driven live, since doing so would
-throttle real workers. `systemd/systemd#33486` notes pressure limits can fail
-to fire — re-run `oomd-drill` after any upgrade to confirm the path still
-trips.
-
 ## Worker RAM measurement — `ram-measure` (issue #45)
 
 Admission carries no RAM charge: the concurrency bound is
