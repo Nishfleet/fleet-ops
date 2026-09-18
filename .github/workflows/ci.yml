@@ -222,10 +222,19 @@ jobs:
         # SC1071 and exit nonzero, which is wrong for this layout).
         # Keep only regular files: semgrep (run above) leaves bin/__pycache__,
         # and shellcheck cannot read a directory (openBinaryFile: is a dir).
+        # Filter by SHEBANG, not by extension. bin/jev-eval is an
+        # extensionless `#!/usr/bin/env node` shim, so the extglob below
+        # cannot exclude it and shellcheck parsed JS as shell (SC1008/
+        # SC1127/SC1036/SC2211), holding main red from 3febb390d onward.
+        # A shebang test handles the next extensionless non-shell bin/ file
+        # by class instead of needing a new exclusion each time. Measured
+        # 2026-09-18: drops bin/jev-eval only, keeps all 22 shell scripts.
         shopt -s extglob
         files=()
         for f in bin/!(*.py|*.ts|*.mjs|*.js); do
-          [[ -f "$f" ]] && files+=("$f")
+          [[ -f "$f" ]] || continue
+          head -n1 "$f" | grep -qE '^#!.*(\b(ba|da|k)?sh\b|busybox sh)' || continue
+          files+=("$f")
         done
         files+=(.github/scripts/gate-integrity.sh)
         shellcheck -x "${files[@]}"

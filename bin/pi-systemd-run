@@ -413,7 +413,6 @@ packet_path=""
 # AND the id the dead-man verdict row joins on. Resetting it here used to
 # give the ledger entry a different id than PI_DEADMAN_DISPATCH, which made
 # the verdict row unjoinable.
-original_stdin="$stdin_file"
 if [[ "$dry_run" != "1" && "${FLEET_DISPATCH_LEDGER_NO_WRITE:-0}" != "1" && -n "$stdin_file" ]]; then
     AS="${AGENT_STATE:-/home/nish/workspaces/agent-state}"
     PKT_DIR="${FLEET_DISPATCH_PACKET_DIR:-$AS/dispatch-packets}"
