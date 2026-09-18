@@ -325,43 +325,6 @@ else:
 PY
 )"
 
-# --- Signups this week (fleet-ops#4603) --------------------------------------
-# The whole 0509 direction decision (signups/week, fleet-ops#4518) is judged on
-# this one number, so the morning briefing must actually surface it. Reads the
-# fleet_signups_7d gauge via the same localhost:9090 Prometheus the alert
-# section uses — /api/v1/query needs no new transport.
-#
-# 2026-09-18: NOTHING EXPORTS fleet_signups_7d. The comment here used to claim
-# libexec/fleet-metrics-export.py did (PR #4601); it never has, and the gauge is
-# absent from every file in /var/lib/prometheus/node-exporter/. So this line has
-# silently read "unknown" every morning since #4603 landed, on the one number
-# the 0509 direction is judged by. The absent-gauge text below now names the
-# cause instead of looking like a transient blip — a missing exporter must not
-# read the same as a momentarily unreachable Prometheus.
-signup_json="$(curl -sS --max-time 5 --get "$prom_url/api/v1/query" \
-    --data-urlencode "query=fleet_signups_7d" \
-    2>/dev/null || echo '{}')"
-signup_line="$(SIGNUP_JSON="$signup_json" python3 <<'PY'
-import json, os
-raw = os.environ.get("SIGNUP_JSON") or "{}"
-try:
-    results = json.loads(raw).get("data", {}).get("result", [])
-except Exception:
-    results = []
-val = None
-if results:
-    try:
-        val = float(results[0].get("value", [0, "0"])[1])
-    except Exception:
-        val = None
-if val is None:
-    print("• Signups this week: NO DATA — nothing exports fleet_signups_7d "
-          "(not a Prometheus blip; the exporter was never written).")
-else:
-    print(f"• Signups this week: {val:g}.")
-PY
-)"
-
 # --- Compose ------------------------------------------------------------------
 # Plain language. No jargon. Short. Header names what it is and when.
 # (datestr is 09:00 IST of the trigger day, or NOW for an ad-hoc run.)
@@ -374,7 +337,6 @@ $pr_line
 
 $fail_line
 $prom_line
-$signup_line
 $repair_line
 $seat_line
 $quality_line
