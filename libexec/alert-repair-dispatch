@@ -3,8 +3,11 @@
 
 Reads AMX_* env vars (per the upstream README), writes a self-contained
 repair packet, and hands it to `pi-systemd-run` so a worker outlives
-this script. No retries, no state. Alertmanager already dedupes
-(group_interval 1m) and throttles (repeat_interval 6h).
+this script. No retries, no state. Alertmanager dedupes (group_interval
+15m) and throttles (repeat_interval 6h); this script adds the two rails
+Alertmanager cannot know about — a direct unit start for *Absent alerts
+that name their organ, and a 4h cooldown after a repair unit for the same
+alert died (DIRECT_UNIT_REPAIR / DEATH_COOLDOWN_S below).
 
 Skip: Watchdog (heartbeat) and FleetTestAlert (synthetic) — both go to
 Telegram but must NOT spawn a repair worker.
@@ -186,6 +189,91 @@ PI_SYSTEMD_RUN_BIN = os.environ.get("PI_SYSTEMD_RUN_BIN", "pi-systemd-run")
 DISPATCH_LEDGER = os.environ.get("FLEET_DISPATCH_LEDGER") or str(
     Path(os.environ.get("AGENT_STATE", "/home/nish/workspaces/agent-state"))
     / "dispatch-ledger.jsonl")
+SYSTEMCTL_BIN = os.environ.get("SYSTEMCTL_BIN", "systemctl")
+
+# One dispatch per firing (2026-09-18). Journal evidence, 7 days: 335
+# alert-repair-* units started, 238 dead (228 exit-code, 4 timeout, 6 success).
+# Alertmanager re-notifies a still-firing group, the webhook launches a clone,
+# the clone dies the same way. Two rails close it.
+#
+# (1) DIRECT_UNIT_REPAIR — an *Absent alert whose rule names the ONE unit that
+# must be running is repaired by starting that unit, never by a Pi worker.
+# The LiteLLM entries were also unwinnable by construction: every repair seat
+# routes THROUGH the proxy (seat=litellm/worker-cheap in actions.log), so a Pi
+# dispatch for FleetLitellmProxyAbsent asked a dead proxy to repair itself —
+# 12 + 8 dispatches in 7 days with zero possible successes, every one dying
+# "Connection error." (cause_unit=fleet-litellm-proxy in the dead-man line).
+DIRECT_UNIT_REPAIR = {
+    "FleetLitellmProxyAbsent": "fleet-litellm-proxy.service",
+    "FleetLitellmPostgresAbsent": "fleet-litellm-postgres.service",
+    "FleetLitellmRedisAbsent": "fleet-litellm-redis.service",
+    "FleetLitellmHealthCanaryAbsent": "fleet-litellm-health-canary.timer",
+}
+
+# (2) Death cooldown — if a repair unit for the SAME alert died inside this
+# window, the next firing logs one line and exits instead of launching a
+# clone into the same fault. No new state file: pi-detached-deadman already
+# journals `died: unit=alert-repair-<Alert>-<stamp>` for every death, and
+# that line IS the ledger. 0 disables (self-tests).
+DEATH_COOLDOWN_S = int(os.environ.get("ALERT_REPAIR_DEATH_COOLDOWN_S", "14400"))
+
+
+def _recent_repair_death(name):
+    """Newest alert-repair-<name>-* death inside DEATH_COOLDOWN_S, or "".
+
+    Reads pi-detached-deadman's own journal line — the death ledger that
+    already exists — so this adds no state file and no new organ. Fail-open:
+    any journal error returns "" and the dispatch proceeds, because a flaky
+    journal must never be able to block every repair.
+    """
+    if DEATH_COOLDOWN_S <= 0:
+        return ""
+    needle = f"died: unit=alert-repair-{_sanitise(name)}-"
+    since = time.strftime(
+        "%Y-%m-%d %H:%M:%S UTC",
+        time.gmtime(time.time() - DEATH_COOLDOWN_S))
+    try:
+        r = subprocess.run(
+            [JOURNALCTL_BIN, "--user", "--since", since, "-o", "cat",
+             "-g", needle],
+            capture_output=True, text=True, timeout=30,
+        )
+    except Exception:
+        return ""
+    if r.returncode != 0:
+        return ""
+    hits = [ln for ln in r.stdout.splitlines() if needle in ln]
+    if not hits:
+        return ""
+    m = re.match(r"\[([0-9T:Z.+-]+)\]", hits[-1].strip())
+    return m.group(1) if m else "recent"
+
+
+def _direct_unit_repair(name, log):
+    """Start the one unit an *Absent alert names. True iff handled here.
+
+    "The organ is not running" is repaired by starting the organ, in-process,
+    in under a second — a Pi worker cannot do it better and (for the LiteLLM
+    organs) cannot do it at all, because its own seat rides the dead proxy.
+    """
+    unit = DIRECT_UNIT_REPAIR.get(name)
+    if not unit:
+        return False
+    env = os.environ.copy()
+    env.setdefault("XDG_RUNTIME_DIR", "/run/user/1000")
+    try:
+        r = subprocess.run(
+            [SYSTEMCTL_BIN, "--user", "start", unit],
+            capture_output=True, text=True, timeout=120, env=env,
+        )
+        rc, err = r.returncode, r.stderr.strip().replace("\n", " ")[:200]
+    except Exception as exc:
+        rc, err = 1, str(exc).replace("\n", " ")[:200]
+    with LOG.open("a") as f:
+        f.write(f"[{utcnow()}] DIRECT-UNIT-REPAIR alertname={name} "
+                f"unit={unit} rc={rc} err={err}\n")
+    log(f"DIRECT-UNIT-REPAIR alertname={name} unit={unit} rc={rc} err={err}")
+    return True
 
 
 def _target_repo(alertnames, common_labels, alerts):
@@ -1301,11 +1389,6 @@ def main():
               file=sys.stderr)
         return 2
 
-    # fleet-ops#1199 / #4773: stderr logger used by the skip loop's
-    # slowburn file-or-link and the alert-repair mutex below.
-    def _log(msg):
-        print(f"[{utcnow()}] {msg}", file=sys.stderr)
-
     # Skip synthetic/heartbeat alerts.
     for name in alertnames:
         if name in SKIP_SET:
@@ -1362,6 +1445,25 @@ def main():
                 )
             print(f"[{utcnow()}] SKIP alertname={name} (class-park "
                   f"until={until})", file=sys.stderr)
+            return 0
+
+    # One dispatch per firing. Both rails are keyed on alertname and run
+    # before packet render, seat selection and the claim mutex, so a
+    # suppressed firing costs one journal read and nothing else.
+    for name in alertnames:
+        if _direct_unit_repair(name, _log):
+            return 0
+        died_at = _recent_repair_death(name)
+        if died_at:
+            with LOG.open("a") as f:
+                f.write(
+                    f"[{utcnow()}] SKIP alertname={name} receiver={receiver} "
+                    f"reason=repair-died-recently last_death={died_at} "
+                    f"cooldown_s={DEATH_COOLDOWN_S}\n"
+                )
+            print(f"[{utcnow()}] SKIP alertname={name} "
+                  f"reason=repair-died-recently last_death={died_at}",
+                  file=sys.stderr)
             return 0
 
     # Common (group) labels.

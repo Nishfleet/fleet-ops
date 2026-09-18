@@ -12,6 +12,17 @@
 #   - any DetachedJobDied with an empty cmdline (unlaunchable)
 # while still dispatching a real detached job like pi-fleetops-pr4422-rebase.
 #
+# 2026-09-18 — the same file now covers the two general rails that stop the
+# redispatch loop for EVERY alert, not just DetachedJobDied (335 alert-repair-*
+# units in 7 days, 238 dead):
+#   - tests 5/6: a repair unit for the same alert that died inside
+#     ALERT_REPAIR_DEATH_COOLDOWN_S suppresses the next firing; a death for a
+#     DIFFERENT alert does not (the control).
+#   - test 7: FleetLitellmProxyAbsent starts fleet-litellm-proxy.service
+#     directly and launches NO Pi unit. That dispatch was unwinnable by
+#     construction: repair seats route through the LiteLLM proxy, so the
+#     worker sent to repair the absent proxy had to reach a model through it.
+#
 # Hermetic: no live 9090, no real systemd, no real dead-man textfile, no
 # real journalctl/gh — the fleet-ops#5142 deliverable pre-flight seams
 # (JOURNALCTL_BIN, GH, FLEET_DISPATCH_LEDGER/AGENT_STATE, PI_SYSTEMD_RUN_BIN)
@@ -66,6 +77,12 @@ MOCK_JOURNALCTL="$scratch/mock-bin/journalctl"
 cat >"$MOCK_JOURNALCTL" <<'MOCK'
 #!/usr/bin/env bash
 echo "journalctl $*" >> "${MOCK_JOURNAL_LOG:-/dev/null}"
+# MOCK_JOURNAL_OUT (optional): a file of fixture journal lines to replay, so
+# the death-cooldown rail can be exercised hermetically. Unset -> prints
+# nothing, which is the original behaviour tests 1-4 rely on.
+if [[ -n "${MOCK_JOURNAL_OUT:-}" && -f "${MOCK_JOURNAL_OUT}" ]]; then
+    cat "${MOCK_JOURNAL_OUT}"
+fi
 exit 0
 MOCK
 chmod +x "$MOCK_JOURNALCTL"
@@ -82,6 +99,16 @@ echo "gh $*" >> "${MOCK_GH_LOG:-/dev/null}"
 exit 1
 MOCK
 chmod +x "$MOCK_GH"
+
+# Mock systemctl (SYSTEMCTL_BIN seam): records argv and exits 0, so the
+# direct-unit-repair rail can be proven without touching real units.
+MOCK_SYSTEMCTL="$scratch/mock-bin/systemctl"
+cat >"$MOCK_SYSTEMCTL" <<'MOCK'
+#!/usr/bin/env bash
+echo "systemctl $*" >> "${MOCK_SYSTEMCTL_LOG:-/dev/null}"
+exit 0
+MOCK
+chmod +x "$MOCK_SYSTEMCTL"
 
 # Mock spawn helper (PI_SYSTEMD_RUN_BIN seam): records argv and exits 0.
 # ALERT_REPAIR_NO_SPAWN already suppresses the spawn path; the seam still
@@ -247,4 +274,77 @@ grep -q 'unit=pi-fleetops-pr4422-rebase' "$scratch/packets"/*.md \
     || fail "packet must not list test-unit"
 ok 'mixed group: two artifacts skipped/cleared, only real unit in packet'
 
-ok 'fleet-ops#4266 recursion guard passes'
+# --- one dispatch per firing (2026-09-18) ---------------------------------
+# These three use their own alertnames (no `unit` label), so they exercise the
+# generic rails rather than the DetachedJobDied guard above.
+
+# Test 5: a repair unit for the SAME alert died recently -> no redispatch.
+: >"$scratch/packets/actions.log"
+: >"$scratch/mock-spawn.log"
+DEATH_FIXTURE="$scratch/deaths.log"
+cat >"$DEATH_FIXTURE" <<'DEATHS'
+[2026-09-18T08:44:37Z] [pi-detached-deadman] died: unit=alert-repair-FleetUndersaturated-20260918T081400Z result=exit-code deliverable=unset bounce: error_class=connection cause_unit=fleet-litellm-proxy (fleet-ops#5799) verdict=died:exit-code — dead-man tripped
+DEATHS
+run_dispatch \
+    "MOCK_JOURNAL_OUT=$DEATH_FIXTURE" \
+    'ALERT_REPAIR_DEATH_COOLDOWN_S=14400' \
+    'AMX_ALERT_1_LABEL_alertname=FleetUndersaturated' \
+    'AMX_ALERT_1_STATUS=firing'
+rc=$?
+[[ "$rc" == 0 ]] || fail "death-cooldown SKIP must exit 0, got rc=$rc"
+grep -q 'SKIP alertname=FleetUndersaturated.*reason=repair-died-recently.*last_death=2026-09-18T08:44:37Z' \
+    "$scratch/packets/actions.log" \
+    || fail "expected repair-died-recently SKIP; actions.log=$(cat "$scratch/packets/actions.log" 2>/dev/null)"
+! grep -q '\] DISPATCH ' "$scratch/packets/actions.log" \
+    || fail "death cooldown must not produce a DISPATCH line"
+! grep -q '\] NO-SPAWN ' "$scratch/packets/actions.log" \
+    || fail "death cooldown must return before seat selection (no NO-SPAWN line)"
+shopt -s nullglob
+undersat_packets=("$scratch/packets"/packet-*FleetUndersaturated*.md)
+[[ "${#undersat_packets[@]}" == 0 ]] \
+    || fail "death cooldown must write no packet, got: ${undersat_packets[*]}"
+ok 'repair died inside cooldown -> SKIP repair-died-recently, no packet, no spawn'
+
+# Test 6 (control): a death for a DIFFERENT alert must NOT suppress this one.
+: >"$scratch/packets/actions.log"
+run_dispatch \
+    "MOCK_JOURNAL_OUT=$DEATH_FIXTURE" \
+    'ALERT_REPAIR_DEATH_COOLDOWN_S=14400' \
+    'AMX_ALERT_1_LABEL_alertname=FleetPiSeatHealthStale' \
+    'AMX_ALERT_1_STATUS=firing'
+rc=$?
+[[ "$rc" == 0 ]] || fail "control dispatch must exit 0, got rc=$rc"
+! grep -q 'reason=repair-died-recently' "$scratch/packets/actions.log" \
+    || fail "another alert's death must not suppress this one; actions.log=$(cat "$scratch/packets/actions.log" 2>/dev/null)"
+grep -q '\] NO-SPAWN alertname=FleetPiSeatHealthStale' "$scratch/packets/actions.log" \
+    || fail "control must reach the spawn path; actions.log=$(cat "$scratch/packets/actions.log" 2>/dev/null)"
+ok 'control: a different alert-s death does not suppress the dispatch'
+
+# Test 7: FleetLitellmProxyAbsent is repaired by starting the unit, no Pi run.
+: >"$scratch/packets/actions.log"
+: >"$scratch/mock-spawn.log"
+: >"$scratch/mock-systemctl.log"
+run_dispatch \
+    "SYSTEMCTL_BIN=$MOCK_SYSTEMCTL" \
+    "MOCK_SYSTEMCTL_LOG=$scratch/mock-systemctl.log" \
+    'AMX_ALERT_1_LABEL_alertname=FleetLitellmProxyAbsent' \
+    'AMX_ALERT_1_STATUS=firing'
+rc=$?
+[[ "$rc" == 0 ]] || fail "direct unit repair must exit 0, got rc=$rc"
+grep -q 'DIRECT-UNIT-REPAIR alertname=FleetLitellmProxyAbsent unit=fleet-litellm-proxy.service rc=0' \
+    "$scratch/packets/actions.log" \
+    || fail "expected DIRECT-UNIT-REPAIR line; actions.log=$(cat "$scratch/packets/actions.log" 2>/dev/null)"
+grep -q 'systemctl --user start fleet-litellm-proxy.service' "$scratch/mock-systemctl.log" \
+    || fail "must start the proxy unit; log=$(cat "$scratch/mock-systemctl.log" 2>/dev/null)"
+! grep -q '\] DISPATCH ' "$scratch/packets/actions.log" \
+    || fail "proxy-absent must not dispatch a Pi unit"
+! grep -q '\] NO-SPAWN ' "$scratch/packets/actions.log" \
+    || fail "proxy-absent must return before seat selection"
+[[ ! -s "$scratch/mock-spawn.log" ]] \
+    || fail "proxy-absent must not call pi-systemd-run; log=$(cat "$scratch/mock-spawn.log")"
+proxy_packets=("$scratch/packets"/packet-*FleetLitellmProxyAbsent*.md)
+[[ "${#proxy_packets[@]}" == 0 ]] \
+    || fail "proxy-absent must write no packet, got: ${proxy_packets[*]}"
+ok 'FleetLitellmProxyAbsent: unit started directly, zero Pi units, no packet'
+
+ok 'fleet-ops#4266 recursion guard + one-dispatch-per-firing rails pass'

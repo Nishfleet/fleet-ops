@@ -13,6 +13,9 @@
 #                         Watchdog, which is matched first). [no phone]
 #   default (no match) -> repair-dispatch.
 #
+# Re-notification: group_interval 15m / repeat_interval 6h on every branch
+# except the phone (severity=page keeps group_interval 1m).
+#
 # Only severity=page reaches the phone. critical/warning/none reach
 # repair-dispatch (alert-repair-dispatch), which spawns a repair worker or
 # skips (SKIP_SET: Watchdog, FleetTestAlert, CanaryDrill,
@@ -26,11 +29,22 @@
 global:
   resolve_timeout: 5m
 
+# Re-notification budget (2026-09-18). group_interval was 1m, which is what
+# actually drove the redispatch storm: 335 alert-repair-* units in 7 days, 238
+# dead. repeat_interval only throttles a group whose membership is UNCHANGED —
+# every new fingerprint joining a group (a fresh DetachedJobDied unit label, a
+# flapping FleetUndersaturated) re-notifies after group_interval instead, so
+# 6h throttling never applied: DetachedJobDied fired 62 times in 7 days, some
+# one minute apart. 15m collapses those into one notification per quarter hour
+# and leaves repeat_interval at 6h (lowering it to 4h would have made a
+# still-firing alert re-notify 50% MORE often, not less).
+# The phone path keeps 1m: severity=page overrides group_interval below, so
+# RepairDispatchDown is never delayed by this budget.
 route:
   receiver: repair-dispatch
   group_by: ['alertname']
   group_wait: 10s
-  group_interval: 1m
+  group_interval: 15m
   repeat_interval: 6h
   routes:
     - matchers:
@@ -44,6 +58,7 @@ route:
     - matchers:
         - severity="page"
       receiver: telegram
+      group_interval: 1m
       continue: false
     - matchers:
         - severity="warning"
