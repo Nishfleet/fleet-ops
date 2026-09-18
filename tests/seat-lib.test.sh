@@ -68,10 +68,7 @@ bash "$here/seat-caps-citation.test.sh" || fail "seat-caps-citation tests failed
 bash "$here/seat-caps-citation-rule6-replay.test.sh" \
 bash "$here/keystone-routing.test.sh" || fail "keystone-routing tests failed"
 bash "$here/senior-review-routing.test.sh" || fail "senior-review-routing tests failed"
-bash "$here/agent-cron-writes-refused.test.sh" || fail "agent-cron-writes-refused tests failed"
-bash "$here/agent-cron-empty-stdout.test.sh" || fail "agent-cron-empty-stdout tests failed"
 bash "$here/seat-caps-zero-yield.test.sh" || fail "seat-caps-zero-yield tests failed"
-bash "$here/devin-config-trust.test.sh" || fail "devin-config-trust tests failed"
 bash "$here/devin-writes-rejected.test.sh" || fail "devin-writes-rejected tests failed"
 bash "$here/watch-log-rotation.test.sh" || fail "watch-log-rotation tests failed"
 # fleet-ops#1138: Relates to, not Closes, for decisions-ledger fixes.

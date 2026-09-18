@@ -769,7 +769,7 @@ seat_usable() {
     return 0
 }
 
-# Wrappers (pi-issue-run, agent-cron-run) compare spawn_elapsed_s against
+# Wrappers (pi-issue-run) compare spawn_elapsed_s against
 # these under `set -u`. Defaults lived in the deleted routing library;
 # without them CI dies at `(( spawn_elapsed_s < SPAWN_FAIL_MAX_S ))`.
 SPAWN_FAIL_BACKOFF_S="${SPAWN_FAIL_BACKOFF_S:-300}"
@@ -1684,8 +1684,8 @@ mark_seat_writes_refused_bench() { seat_log "mark_seat_writes_refused_bench: $* 
 mark_seat_config_fault_bench() { seat_log "mark_seat_config_fault_bench: $* (proxy owns cooldown/spend)"; return 0; }
 mark_seat_devin_writes_rejected_bench() { seat_log "mark_seat_devin_writes_rejected_bench: $* (proxy owns cooldown/spend)"; return 0; }
 mark_seat_empty_success() { seat_log "mark_seat_empty_success: $* (proxy owns cooldown/spend)"; return 0; }
-# Real matcher (restored, fleet-ops#4263 fallout): agent-cron-run classifies an
-# approval-gate refusal with it behind `declare -F`, so its deletion silently
+# Real matcher (restored, fleet-ops#4263 fallout): the packet wrappers classify
+# an approval-gate refusal with it behind `declare -F`, so its deletion silently
 # disabled WRITES-REFUSED detection instead of failing.
 is_writes_refused() {
     local out="$1" err="$2"

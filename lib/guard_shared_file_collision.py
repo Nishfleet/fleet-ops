@@ -4,7 +4,7 @@ open PR touching this shared control-plane file.
 
 fleet-ops#539. Canonical logic. The hook shim at
 bin/guard_shared_file_collision_hook.py is installed to
-~/.claude/hooks/guard_shared_file_collision.py by MANIFEST.
+~/.claude/hooks/guard_shared_file_collision.py (a symlink into this repo).
 
 Shared files: fleet control plane, systemd units, lib/litellm-seat.sh,
 config/seat-caps.json, hooks, global-standing-rules.md, decisions-ledger.md.

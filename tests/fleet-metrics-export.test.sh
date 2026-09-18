@@ -25,7 +25,7 @@
 #      the FleetSelfMaintenanceAbsent + regression-trend rules, the
 #      FleetVerifiedMergeRegression trend rule, and the
 #      FleetQueueSelfMaintenanceRatioHigh 64% tripwire.
-#   9. MANIFEST declares the exporter, its timer/service, the self-maintenance
+#   9. The exporter, its timer/service and the alert rules exist in the
 #      config, and the rules file.
 #  10. The exporter emits the new metric lines for a canned detail list
 #      (end-to-end main() shape check via a stubbed detail fetch), including
@@ -45,7 +45,6 @@ exporter="$repo_root/libexec/fleet-metrics-export.py"
 receipt="$repo_root/lib/exec-review-receipt.py"
 sm_config="$repo_root/config/self-maintenance-repos.json"
 rules="$repo_root/config/fleet_rules.yml"
-manifest="$repo_root/MANIFEST"
 
 fail() { echo "FAIL: $*" >&2; exit 1; }
 ok()   { echo "OK: $*"; }
@@ -516,19 +515,17 @@ fi
 ok "fleet_rules.yml: absent heartbeat + 3 regression-trend rules + queue tripwire + provider quota"
 
 # =========================================================================
-# 9. MANIFEST declares the exporter, units, config, and rules
+# 9. The exporter, its units, config and rules exist in the repo
 # =========================================================================
-grep -Fxq "libexec/fleet-metrics-export.py /home/nish/.local/libexec/fleet-metrics-export.py" "$manifest" \
-  || fail "MANIFEST missing libexec/fleet-metrics-export.py"
-grep -Fxq "systemd/fleet-metrics-export.service /home/nish/.config/systemd/user/fleet-metrics-export.service" "$manifest" \
-  || fail "MANIFEST missing fleet-metrics-export.service"
-grep -Fxq "systemd/fleet-metrics-export.timer /home/nish/.config/systemd/user/fleet-metrics-export.timer" "$manifest" \
-  || fail "MANIFEST missing fleet-metrics-export.timer"
-grep -Fxq "config/self-maintenance-repos.json /home/nish/workspaces/tooling/fleet-ops/config/self-maintenance-repos.json" "$manifest" \
-  || fail "MANIFEST missing config/self-maintenance-repos.json"
-grep -Fxq "config/fleet_rules.yml /etc/prometheus/fleet_rules.yml" "$manifest" \
-  || fail "MANIFEST missing config/fleet_rules.yml (system scope)"
-ok "MANIFEST declares exporter + units + self-maintenance config + rules"
+# MANIFEST deleted 2026-09-18; the live paths are symlinks into these files
+# (config/fleet_rules.yml is the /etc copy fleet-sync.service maintains).
+for f in libexec/fleet-metrics-export.py \
+         systemd/fleet-metrics-export.service \
+         systemd/fleet-metrics-export.timer \
+         config/fleet_rules.yml; do
+  [[ -f "$repo_root/$f" ]] || fail "missing repo source: $f"
+done
+ok "exporter + units + rules present in the repo"
 
 # =========================================================================
 # 9b. fleet-ops#3111: seat-health age is UTC-parsed, host-TZ independent.

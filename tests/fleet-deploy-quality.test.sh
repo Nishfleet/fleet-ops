@@ -27,7 +27,6 @@ repo_root="$(cd "$here/.." && pwd)"
 module="$repo_root/lib/fleet-deploy-quality.py"
 exporter="$repo_root/libexec/fleet-metrics-export.py"
 rules="$repo_root/config/fleet_rules.yml"
-manifest="$repo_root/MANIFEST"
 
 fail() { echo "FAIL: $*" >&2; exit 1; }
 ok()   { echo "OK: $*"; }
@@ -381,7 +380,7 @@ tests:
               service: fleet
             exp_annotations:
               summary: "fleet-ops deploy blocked for 15+ minutes (fleet-ops#2725 pattern)"
-              description: "fleet_deploy_blocked_duration_seconds{repo=\"fleet-ops\"} exceeded 900s (15 min): the fleet-ops deploy clone is stuck DEPLOY-BLOCKED. 2026-09-02 live case: >1h blocked on dirty tracked files with zero mechanized alert (fleet-ops#2725). Merge-to-live is halted; clear the dirty state on /home/nish/workspaces/tooling/fleet-ops-deploy-clone or root-cause the block. Check journalctl --user -u fleet-deploy-check.service."
+              description: "fleet_deploy_blocked_duration_seconds{repo=\"fleet-ops\"} exceeded 900s (15 min): the fleet-ops deploy clone is stuck DEPLOY-BLOCKED. 2026-09-02 live case: >1h blocked on dirty tracked files with zero mechanized alert (fleet-ops#2725). Merge-to-live is halted; clear the dirty state on /home/nish/workspaces/tooling/fleet-ops-deploy-clone or root-cause the block. Check journalctl --user -u fleet-sync.service."
   - interval: 1m
     name: DeployBlockedStuck resolves when the block clears (fleet-ops#3178)
     input_series:
@@ -398,7 +397,7 @@ tests:
               service: fleet
             exp_annotations:
               summary: "fleet-ops deploy blocked for 15+ minutes (fleet-ops#2725 pattern)"
-              description: "fleet_deploy_blocked_duration_seconds{repo=\"fleet-ops\"} exceeded 900s (15 min): the fleet-ops deploy clone is stuck DEPLOY-BLOCKED. 2026-09-02 live case: >1h blocked on dirty tracked files with zero mechanized alert (fleet-ops#2725). Merge-to-live is halted; clear the dirty state on /home/nish/workspaces/tooling/fleet-ops-deploy-clone or root-cause the block. Check journalctl --user -u fleet-deploy-check.service."
+              description: "fleet_deploy_blocked_duration_seconds{repo=\"fleet-ops\"} exceeded 900s (15 min): the fleet-ops deploy clone is stuck DEPLOY-BLOCKED. 2026-09-02 live case: >1h blocked on dirty tracked files with zero mechanized alert (fleet-ops#2725). Merge-to-live is halted; clear the dirty state on /home/nish/workspaces/tooling/fleet-ops-deploy-clone or root-cause the block. Check journalctl --user -u fleet-sync.service."
       - eval_time: 15m
         alertname: DeployBlockedStuck
         exp_alerts: []
@@ -495,13 +494,14 @@ else
 fi
 
 # =========================================================================
-# 8. MANIFEST + exporter hook presence
+# 8. module source + exporter hook presence
 # =========================================================================
-grep -Fqx "lib/fleet-deploy-quality.py /home/nish/.local/lib/pi-packet/fleet-deploy-quality.py" "$manifest" \
-  || fail "MANIFEST missing lib/fleet-deploy-quality.py"
+# MANIFEST deleted 2026-09-18; the live module is a symlink into this file.
+[[ -f "$repo_root/lib/fleet-deploy-quality.py" ]] \
+  || fail "missing repo source: lib/fleet-deploy-quality.py"
 grep -q "_emit_deploy_quality" "$exporter" || fail "exporter missing _emit_deploy_quality"
 grep -q "fleet-deploy-quality.py" "$exporter" || fail "exporter missing module reference"
-ok "MANIFEST entry + exporter hook present"
+ok "module source + exporter hook present"
 
 echo
 echo "all fleet-deploy-quality tests passed"

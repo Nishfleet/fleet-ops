@@ -41,7 +41,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # Checkout: helper next to this wrapper, credentials at ../credentials.
-# Installed (MANIFEST): helper at ~/.local/lib/fleet-worker/, credentials
+# Installed (symlink into this repo): helper at ~/.local/lib/fleet-worker/, credentials
 # at ~/.config/fleet-worker/. Prefer the layout that actually exists so
 # `worker-app-bootstrap` works after install, not only from a checkout.
 first_existing() {

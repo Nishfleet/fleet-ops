@@ -40,7 +40,7 @@ Environment=XDG_RUNTIME_DIR=/run/user/1000
 # The config is operator-owned (lives in ~/.config, not the repo) so keys
 # resolved through the existing credential resolvers never enter the repo
 # or the unit file. The repo copy at config/litellm-proxy.yaml is the shape
-# reference ONLY — it is deliberately not a MANIFEST install target, because
+# reference ONLY — it is deliberately not symlinked to a live path, because
 # dropping *.example baseUrls over a live router would cut the organ's seats
 # (fleet-ops#4174 reopen). ConditionPathExists above gates on this exact %h
 # path: if the operator has not created it, the unit stays condition-skipped

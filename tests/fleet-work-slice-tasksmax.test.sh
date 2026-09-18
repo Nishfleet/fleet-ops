@@ -18,7 +18,7 @@
 #   3. spawn-guard-core.ts FLEET_SLICE_TASKS_MAX=8000,
 #      FLEET_SPAWN_SOFT_CEILING=7500; bash-spawn-hook interpolates those
 #      constants (no hardcoded 2800/3000).
-#   4. MANIFEST installs drop-in + both extension files.
+#   4. the drop-in + both extension sources exist in the repo.
 #   5. seat-caps.json ram_gb_per_worker is the interim admission charge (1.5;
 #      fleet-ops#4896 after #4893 dropped in-worker coverage/tsc; remeasure-4891
 #      replaces this with measured p95 on 2026-09-11).
@@ -36,13 +36,11 @@ ok()   { echo "OK: $*"; }
 dropin="$repo_root/systemd/fleet-work.slice.d/10-tasksmax.conf"
 core="$repo_root/template/extensions/spawn-guard-core.ts"
 hook="$repo_root/template/extensions/bash-spawn-hook.ts"
-manifest="$repo_root/MANIFEST"
 caps="$repo_root/config/seat-caps.json"
 
 [[ -f "$dropin" ]] || fail "missing drop-in: $dropin"
 [[ -f "$core" ]] || fail "missing spawn-guard-core.ts: $core"
 [[ -f "$hook" ]] || fail "missing bash-spawn-hook.ts: $hook"
-[[ -f "$manifest" ]] || fail "missing MANIFEST"
 [[ -f "$caps" ]] || fail "missing seat-caps.json"
 
 # --- 1. drop-in shape -------------------------------------------------------
@@ -86,14 +84,15 @@ if grep -q 'ceiling=2800/3000' "$hook"; then
 fi
 ok "spawn-guard: 8000/7500; EXTLOAD interpolates constants"
 
-# --- 4. MANIFEST exact dests -----------------------------------------------
-drop_line="systemd/fleet-work.slice.d/10-tasksmax.conf /home/nish/.config/systemd/user/fleet-work.slice.d/10-tasksmax.conf"
-core_line="template/extensions/spawn-guard-core.ts /home/nish/.pi/agent/extensions/spawn-guard-core.ts"
-hook_line="template/extensions/bash-spawn-hook.ts /home/nish/.pi/agent/extensions/bash-spawn-hook.ts"
-grep -Fxq "$drop_line" "$manifest" || fail "MANIFEST missing: $drop_line"
-grep -Fxq "$core_line" "$manifest" || fail "MANIFEST missing: $core_line"
-grep -Fxq "$hook_line" "$manifest" || fail "MANIFEST missing: $hook_line"
-ok "MANIFEST installs drop-in + spawn-guard-core + bash-spawn-hook"
+# --- 4. the three repo sources exist ---------------------------------------
+# MANIFEST was deleted 2026-09-18; the live paths are symlinks/copies sourced
+# from these three files, so their presence in the repo is the wiring.
+for f in systemd/fleet-work.slice.d/10-tasksmax.conf \
+         template/extensions/spawn-guard-core.ts \
+         template/extensions/bash-spawn-hook.ts; do
+  [[ -f "$repo_root/$f" ]] || fail "missing repo source: $f"
+done
+ok "drop-in + spawn-guard-core + bash-spawn-hook present in the repo"
 
 # --- 5. RAM governor unchanged ----------------------------------------------
 # fleet-ops#4263 termination: no hand-set per-worker RAM charge remains in config.

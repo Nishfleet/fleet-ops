@@ -102,18 +102,18 @@ pairs = mod.dispatch("issues", "labeled", "agent-ready",
 fireable = [u for u, _ in pairs if u]
 assert "pi-intake@fleet-ops.service" in fireable, fireable
 
-# fleet-deploy-check is fleet-wide, NOT enrollment-gated (pipeline-red)
+# fleet-sync is fleet-wide, NOT enrollment-gated (pipeline-red)
 unit, reason = first_fireable(mod.dispatch("issues", "labeled", "pipeline-red",
                             "fleet-ops-canary", "", dry=True,
                             enrolled=enrolled))
-assert unit == "fleet-deploy-check.service", \
+assert unit == "fleet-sync.service", \
     f"pipeline-red must dispatch regardless of enrollment: {unit!r}"
 
 # workflow_run/completed/success is fleet-wide, NOT enrollment-gated
 unit, reason = first_fireable(mod.dispatch("workflow_run", "completed", "",
                             "fleet-ops-canary", "success", dry=True,
                             enrolled=enrolled))
-assert unit == "fleet-deploy-check.service", \
+assert unit == "fleet-sync.service", \
     f"workflow_run must dispatch regardless of enrollment: {unit!r}"
 
 # enrolled=None (legacy callers / tests) → no gating, backwards compatible
@@ -123,7 +123,7 @@ fireable = [u for u, _ in pairs if u]
 assert "pi-intake@fleet-ops.service" in fireable, fireable
 print("enrollment guard OK")
 PYEOF
-ok "3: dispatch() gates pi-intake on enrollment, leaves fleet-deploy-check ungated"
+ok "3: dispatch() gates pi-intake on enrollment, leaves fleet-sync ungated"
 
 # --- 4: end-to-end — an ignored (non-enrolled) event still bumps the
 # heartbeat, via the real HTTP server in DRY mode. This is the live

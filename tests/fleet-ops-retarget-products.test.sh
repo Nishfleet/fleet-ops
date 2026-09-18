@@ -11,8 +11,7 @@
 #   6. --check never mutates, even when retarget is safe.
 #   7. the script never deletes the worktree parent.
 #   8. worker.md uses the deploy-clone as the fleet-ops git parent.
-#   9. drift canary calls --apply and auto-files the #410 marker on error.
-#  10. MANIFEST installs the helper.
+#   9. the helper supports --apply and --check.
 #
 # Overlay FLEET_OPS_WORKSPACES_ROOT so this never touches the live box.
 
@@ -31,18 +30,14 @@ if grep -E -q '\brm[[:space:]]+(-[a-zA-Z]*f|--force)' "$bin"; then
 fi
 ok "helper exists, cites #410, and does not rm -f"
 
-grep -q 'check_products_symlink' "$repo_root/bin/fleet-ops-drift.py" \
-  || fail "drift canary must call check_products_symlink"
-grep -q 'products-symlink-stale: fleet-ops#410' "$repo_root/bin/fleet-ops-drift.py" \
-  || fail "drift canary must auto-file with the #410 marker"
-grep -q -- '--apply' "$repo_root/bin/fleet-ops-drift.py" \
-  || fail "drift canary must invoke the helper with --apply"
-ok "drift canary wires --apply + #410 auto-file"
-
-grep -Fxq "bin/fleet-ops-retarget-products /home/nish/.local/bin/fleet-ops-retarget-products" \
-  "$repo_root/MANIFEST" \
-  || fail "MANIFEST must install bin/fleet-ops-retarget-products"
-ok "MANIFEST installs the helper"
+# The drift canary (bin/fleet-ops-drift.py) that used to invoke this helper
+# with --apply was deleted 2026-09-18 with the rest of the copy-then-detect-
+# drift deploy cluster: live paths are symlinks into the repo, so there is no
+# drift to detect. The helper stays as a hand-run one-shot; its behaviour is
+# what the scenarios below lock.
+grep -q -- '--apply' "$bin" || fail "helper must support --apply"
+grep -q -- '--check' "$bin" || fail "helper must support --check"
+ok "helper supports --apply and --check"
 
 grep -q 'tooling/fleet-ops-deploy-clone' "$repo_root/prompts/worker.md" \
   || fail "worker.md must name the deploy-clone as the fleet-ops git parent"
@@ -147,94 +142,7 @@ set -e
   || fail "scenario6: --check mutated the symlink"
 ok "scenario6: --check never mutates"
 
-# --- 9b. drift canary: waiting is not DRIFT-PRODUCTS-SYMLINK ---------------
-# Rebuild an attached worktree so the helper exits 2. Drift must not fail
-# on that class (it is the expected drain state).
-git -C "$parent" worktree add -q "$wt"
-ln -sfn "$parent" "$products"
-gh_fake="$scratch/gh"
-cat >"$gh_fake" <<'FAKE'
-#!/usr/bin/env bash
-printf '%s\n' "$*" >>"${GH_LOG:-/dev/null}"
-case "$*" in
-  *"issue list"*) echo '[]'; exit 0 ;;
-  *"issue create"*) echo "https://github.com/Nishfleet/fleet-ops/issues/4100"; exit 0 ;;
-esac
-exit 0
-FAKE
-chmod +x "$gh_fake"
-: >"$scratch/gh.log"
+echo "OK: fleet-ops#410 retarget helper scenarios pass"
 
-# Minimal git checkout so find_checkout succeeds; other checks may fail
-# after the products gate. We only assert the products gate's own tag.
-dummy="$scratch/dummy-checkout"
-mkdir -p "$dummy"
-git -C "$dummy" init -q
-git -C "$dummy" config user.email "test@example.com"
-git -C "$dummy" config user.name "test"
-git -C "$dummy" commit -q --allow-empty -m "dummy"
-printf 'bin/x /tmp/x\n' >"$dummy/MANIFEST"
-
-set +e
-drift_out=$(
-  HOME="$scratch/home" \
-  FLEET_OPS_CHECKOUT="$dummy" \
-  FLEET_OPS_WORKSPACES_ROOT="$ws" \
-  FLEET_OPS_CANONICAL_CHECKOUT="$canon" \
-  FLEET_OPS_PRODUCTS_LINK="$products" \
-  FLEET_OPS_WORKTREE_PARENT="$parent" \
-  FLEET_OPS_RETARGET_BIN="$bin" \
-  FLEET_OPS_SKIP_FETCH=1 \
-  FLEET_OPS_DRIFT_FILE=1 \
-  FLEET_OPS_DRIFT_REPO="Nishfleet/fleet-ops" \
-  FLEET_OPS_TRIAGE="$scratch/triage.md" \
-  FLEET_OPS_AUDIT_LOG="$scratch/audit.log" \
-  GH="$gh_fake" \
-  GH_LOG="$scratch/gh.log" \
-  python3 "$repo_root/bin/fleet-ops-drift.py" 2>&1
-)
-drift_rc=$?
-set -e
-[[ "$drift_out" == *"PRODUCTS-STALE-WAITING"* ]] \
-  || fail "scenario9b: drift must log WAITING, got: $drift_out"
-[[ "$drift_out" != *"DRIFT-PRODUCTS-SYMLINK"* ]] \
-  || fail "scenario9b: waiting must not be DRIFT-PRODUCTS-SYMLINK: $drift_out"
-grep -q 'issue create' "$scratch/gh.log" \
-  && fail "scenario9b: waiting must not auto-file (log=$(cat "$scratch/gh.log"))"
-ok "scenario9b: drift waiting is not a canary failure and does not auto-file"
-
-# Directory refuse must fail loud + auto-file.
-git -C "$parent" worktree remove --force "$wt" || true
-rm -f "$products"
-mkdir -p "$products"
-: >"$scratch/gh.log"
-: >"$scratch/triage.md"
-set +e
-drift_out=$(
-  HOME="$scratch/home" \
-  FLEET_OPS_CHECKOUT="$dummy" \
-  FLEET_OPS_WORKSPACES_ROOT="$ws" \
-  FLEET_OPS_CANONICAL_CHECKOUT="$canon" \
-  FLEET_OPS_PRODUCTS_LINK="$products" \
-  FLEET_OPS_WORKTREE_PARENT="$parent" \
-  FLEET_OPS_RETARGET_BIN="$bin" \
-  FLEET_OPS_SKIP_FETCH=1 \
-  FLEET_OPS_DRIFT_FILE=1 \
-  FLEET_OPS_DRIFT_REPO="Nishfleet/fleet-ops" \
-  FLEET_OPS_TRIAGE="$scratch/triage.md" \
-  FLEET_OPS_AUDIT_LOG="$scratch/audit.log" \
-  GH="$gh_fake" \
-  GH_LOG="$scratch/gh.log" \
-  python3 "$repo_root/bin/fleet-ops-drift.py" 2>&1
-)
-drift_rc=$?
-set -e
-[[ "$drift_rc" -eq 1 ]] || fail "scenario9c: refuse should fail canary rc=1, got $drift_rc out=$drift_out"
-[[ "$drift_out" == *"DRIFT-PRODUCTS-SYMLINK"* ]] \
-  || fail "scenario9c: expected DRIFT-PRODUCTS-SYMLINK, got: $drift_out"
-grep -q 'issue create' "$scratch/gh.log" \
-  || fail "scenario9c: must auto-file (log=$(cat "$scratch/gh.log"))"
-ok "scenario9c: drift auto-files when products/fleet-ops is not a symlink"
-
-echo "OK: fleet-ops#410 retarget helper refuses while worktrees remain, applies when they are gone, and the canary auto-files the class"
+echo "OK: fleet-ops#410 retarget helper refuses while worktrees remain, applies when they are gone"
 exit 0

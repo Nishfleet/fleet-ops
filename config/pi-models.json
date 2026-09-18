@@ -424,7 +424,7 @@
             "cacheRead": 0,
             "cacheWrite": 0
           },
-          "_comment_4181": "fleet-ops#4181 P2: first consumer (agent-cron-run fable-check). The fallback chain lives in the operator-owned ~/.config/fleet-ops/litellm-proxy.yaml router_settings.fallbacks. Cost is 0 here because the proxy tracks spend in Postgres against the real upstream seats; pi's cost map would double-count."
+          "_comment_4181": "fleet-ops#4181 P2: first consumer (the retired agent-cron fable-check). The fallback chain lives in the operator-owned ~/.config/fleet-ops/litellm-proxy.yaml router_settings.fallbacks. Cost is 0 here because the proxy tracks spend in Postgres against the real upstream seats; pi's cost map would double-count."
         },
         {
           "id": "worker-cheap",

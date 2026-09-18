@@ -13,16 +13,16 @@ set -euo pipefail
 
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 repo_root="$(cd "$here/.." && pwd)"
-manifest="$repo_root/MANIFEST"
 dropin="$repo_root/systemd/pi-transport-check.service.d/20-self-heal.conf"
 
 fail() { echo "FAIL: $*" >&2; exit 1; }
 ok()   { echo "OK: $*"; }
 
 [[ -f "$dropin" ]] || fail "missing drop-in: $dropin"
-grep -Fxq "systemd/pi-transport-check.service.d/20-self-heal.conf /home/nish/.config/systemd/user/pi-transport-check.service.d/20-self-heal.conf" "$manifest" \
-  || fail "MANIFEST missing pi-transport-check drop-in"
-ok "drop-in exists and is MANIFESTed"
+# MANIFEST deleted 2026-09-18; the live drop-in is a symlink into the repo.
+[[ -f "$repo_root/systemd/pi-transport-check.service.d/20-self-heal.conf" ]] \
+  || fail "missing repo source: systemd/pi-transport-check.service.d/20-self-heal.conf"
+ok "drop-in exists in the repo"
 
 grep -q '^\[Unit\]$' "$dropin" || fail "drop-in must have [Unit]"
 grep -q '^OnFailure=$' "$dropin" || fail "drop-in must reset OnFailure"

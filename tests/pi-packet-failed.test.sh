@@ -36,7 +36,6 @@ repo_root="$(cd "$here/.." && pwd)"
 bin="$repo_root/bin/pi-packet-failed"
 unit_file="$repo_root/systemd/pi-packet-failed@.service"
 runner="$repo_root/bin/pi-systemd-run"
-manifest="$repo_root/MANIFEST"
 
 fail() { echo "FAIL: $*" >&2; exit 1; }
 ok()   { echo "OK: $*"; }
@@ -57,9 +56,10 @@ grep -qF 'pi-packet-failed@${unit}.service.service' "$runner" \
     || fail "pi-systemd-run OnFailure must include pi-packet-failed@<unit> (transient path)"
 grep -qF 'unit-escalation@${unit}.service.service' "$runner" \
     || fail "pi-systemd-run OnFailure must keep unit-escalation@ (auditor rail)"
-grep -Fxq 'bin/pi-packet-failed /home/nish/.local/bin/pi-packet-failed' "$manifest" \
-    || fail "MANIFEST must install bin/pi-packet-failed"
-ok "wiring: unit ExecStart, pi-systemd-run OnFailure, MANIFEST"
+# MANIFEST deleted 2026-09-18; the live path is a symlink into this file.
+[[ -f "$repo_root/bin/pi-packet-failed" ]] \
+    || fail "missing repo source: bin/pi-packet-failed"
+ok "wiring: unit ExecStart, pi-systemd-run OnFailure, repo source"
 
 # --- hermetic scaffolding ----------------------------------------------------
 scratch="$(mktemp -d)"

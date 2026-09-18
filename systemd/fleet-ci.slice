@@ -17,7 +17,7 @@
 # the template unit is the whole mechanism (fleet-ops#5935).
 #
 # Drop-in-removable: delete this file + the gh-runner@.service unit and
-# daemon-reload to revert. The MANIFEST lines keep the install idempotent.
+# daemon-reload to revert. The live file is a symlink into this repo.
 [Slice]
 MemoryHigh=7G
 MemoryMax=9G

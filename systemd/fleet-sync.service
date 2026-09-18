@@ -1,0 +1,46 @@
+[Unit]
+Description=Sync the fleet-ops deploy clone and reload systemd (fleet-ops third cut)
+# Replaces install.sh + MANIFEST + bin/fleet-ops-deploy + bin/fleet-deploy-check
+# + bin/fleet-ops-drift.py (5,948 LOC). Those existed to COPY files from the
+# repo to their live paths and then to detect the drift that copying creates.
+# Every user-scope live path is already a symlink into this repo
+# (`systemctl --user list-unit-files` reports the units as `linked`), so there
+# is nothing to copy and nothing that can drift: a `git pull` IS the deploy.
+#
+# man systemctl: "link PATH...  Link a unit file that is not in the unit file
+# search path into the unit file search path. This command expects an absolute
+# path to a unit file." A new unit file added to systemd/ is wired once, by
+# hand, with `systemctl --user link` + `enable --now` (see README "Install").
+# There is no installer to run and no manifest to keep in step.
+StartLimitIntervalSec=1h
+StartLimitBurst=100
+
+[Service]
+Type=oneshot
+# 1. Fast-forward the clone, and log what the pull did. A dirty tree or a
+#    diverged branch fails LOUD here, which is the correct behaviour: the
+#    live source must be clean origin/main, and a failed unit is visible to
+#    the failed-unit sweep. The log line is the deploy record
+#    lib/fleet-deploy-quality.py reads (merge -> live latency); it replaces
+#    the identical line the deleted fleet-deploy-check used to print.
+#    `$$` is a literal `$` for the shell: systemd expands $VAR in ExecStart
+#    before sh ever sees it, and `%%` is a literal `%` (systemd specifier).
+ExecStart=/usr/bin/sh -c 'r=/home/nish/workspaces/tooling/fleet-ops-deploy-clone; b=$$(git -C "$$r" rev-parse HEAD); git -C "$$r" pull --ff-only origin main || { echo "[$$(date -u +%%Y-%%m-%%dT%%H:%%M:%%SZ)] [fleet-sync] DEPLOY-BLOCKED pull --ff-only refused (dirty or diverged clone)"; exit 1; }; a=$$(git -C "$$r" rev-parse HEAD); if [ "$$b" != "$$a" ]; then echo "[$$(date -u +%%Y-%%m-%%dT%%H:%%M:%%SZ)] [fleet-sync] origin/main moved $$b -> $$a — invoking sanctioned deploy"; else echo "[$$(date -u +%%Y-%%m-%%dT%%H:%%M:%%SZ)] [fleet-sync] origin/main unchanged (HEAD=$$a) — nothing to do"; fi'
+# 2. Re-read the linked unit files. The symlinks never move; only their
+#    contents changed with the pull.
+ExecStart=/usr/bin/systemctl --user daemon-reload
+# 3. Validate the alert rules before they can reach prometheus. promtool is
+#    the built-in checker; a parse error stops the unit here instead of
+#    silently leaving prometheus on the old rules.
+ExecStart=/usr/bin/promtool check rules /home/nish/workspaces/tooling/fleet-ops-deploy-clone/config/fleet_rules.yml
+# 4. /etc/prometheus/fleet_rules.yml stays a root-owned COPY, not a symlink:
+#    prometheus runs as user `prometheus` and /home/nish is 0750 nish:nish, so
+#    it cannot traverse into the repo (proved: `sudo -u prometheus test -r
+#    <repo>/config/fleet_rules.yml` fails). Copy only when the bytes changed,
+#    then HUP prometheus (ExecReload is kill -HUP; it re-reads rules only on
+#    reload).
+ExecStart=/usr/bin/sh -c 'cmp -s /home/nish/workspaces/tooling/fleet-ops-deploy-clone/config/fleet_rules.yml /etc/prometheus/fleet_rules.yml || { sudo -n install -D -m 0644 -o root -g root /home/nish/workspaces/tooling/fleet-ops-deploy-clone/config/fleet_rules.yml /etc/prometheus/fleet_rules.yml && sudo -n systemctl reload prometheus; }'
+TimeoutStartSec=300
+
+[Install]
+WantedBy=default.target

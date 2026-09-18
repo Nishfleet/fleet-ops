@@ -249,7 +249,7 @@ unit="${unit%.service}"
 unit="${unit//[^A-Za-z0-9:_.\\-]/_}"
 [[ -n "$unit" ]] || { echo "pi-systemd-run: empty --unit after sanitise" >&2; exit 2; }
 
-# --- Timer-MANIFEST gate (fleet-ops#4472) ------------------------------------
+# --- Timer-declaration gate (fleet-ops#4472) ------------------------------------
 [[ -d "$workdir" ]] || { echo "pi-systemd-run: working directory not found: $workdir" >&2; exit 2; }
 
 # fleet-ops#5456: per-unit no-resume drop-in. These transient packet units

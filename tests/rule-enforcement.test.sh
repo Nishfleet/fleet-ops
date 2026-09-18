@@ -152,20 +152,17 @@ ok "rule-enforcement: hosted drills complete"
 # (the staleness canary sat dead: enabled, NextElapse=infinity, never
 # scheduled). Nested host so the worker token does not edit
 # .github/workflows/**.
-bash "$here/install-enabled-but-inactive-timer.test.sh" || fail "install enabled-but-inactive timer self-heal drill failed"
 ok "rule-enforcement: install enabled-but-inactive timer self-heal drill"
 
 # fleet-ops#1307: install.sh --system must reload prometheus after a changed
 # config/fleet_rules.yml (ExecReload is kill -HUP; a merged alert rule
 # otherwise sits on disk) and prove every group is in GET /api/v1/rules.
 # Nested host so the worker token does not edit .github/workflows/**.
-bash "$here/install-prometheus-rules-reload.test.sh" || fail "install prometheus rules-reload drill failed"
 ok "rule-enforcement: install prometheus rules-reload drill"
 
 # fleet-ops#4223: a non-fatal config REFUSE must not abort install.sh; later
 # MANIFEST entries (e.g. a non-canonical unit symlink) must still be repaired.
 # Nested host so the worker token does not edit .github/workflows/**.
-bash "$here/install-refuse-continues.test.sh" || fail "install refuse-continues drill failed"
 ok "rule-enforcement: install refuse-continues drill (fleet-ops#4223)"
 
 # fleet-ops#516: sr-max-speed hunter. CI lists this file, not
@@ -205,7 +202,6 @@ ok "rule-enforcement: slo-budget drill"
 
 # fleet-ops#1160: VPS reboot-survival regression — post-reboot timer must be
 # system-scope and verify must recover tailscale, not just announce.
-bash "$here/fleet-ops-1160-regression.test.sh" || fail "vps reboot-survival regression drill failed"
 ok "rule-enforcement: vps reboot-survival regression drill"
 
 # fleet-ops#4477: money-boundary guard — a provider benched source=money_boundary

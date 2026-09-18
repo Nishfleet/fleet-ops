@@ -13,83 +13,119 @@ script, or prompt lands unseen.
 - `config/` — fleet configuration. `seat-caps.json` is the per-seat ceiling
   map; `intake-repos.json` is the declared set of repos enrolled in
   pi-intake/pi-scout (see [Intake enrolment](#intake-enrolment)).
-- `MANIFEST` — one line per file: `<repo-relative-path> <absolute-install-path>`.
-- `install.sh` — symlinks each manifest entry into its live path, then
-  `systemctl --user daemon-reload`. `--check` reports drift without changing
-  anything (exits nonzero on any difference).
+- `systemd/fleet-sync.{service,timer}` — the whole deploy mechanism: every
+  two minutes, `git pull --ff-only` + `systemctl --user daemon-reload`, plus
+  `promtool check rules` and a prometheus reload when the alert rules changed.
 
 ## Install
 
+There is no installer. Every live user-scope path is a **symlink into this
+repo**, so a `git pull` is the deploy — the file the fleet runs and the file
+in git are the same inode. Nothing is copied, so nothing can drift, and the
+5,948 LOC that used to copy files and then hunt for the drift copying caused
+(`install.sh`, `MANIFEST`, `bin/fleet-ops-deploy`, `bin/fleet-deploy-check`,
+`bin/fleet-ops-drift.py`) were deleted on 2026-09-18.
+
+`systemd/fleet-sync.timer` keeps the clone current. It is the only deploy
+machinery on the box:
+
 ```
-./install.sh              # user-scope only: symlink MANIFEST entries, systemctl --user daemon-reload
-./install.sh --system     # system-scope only: copy /etc/systemd/system drop-ins, sudo systemctl daemon-reload
-./install.sh --check      # drift detection for user-scope entries
-./install.sh --check --system  # drift detection for system-scope entries
+systemctl --user list-timers fleet-sync.timer
+systemctl --user start fleet-sync.service   # force a sync now
+journalctl --user -u fleet-sync.service -n 50
 ```
 
-install.sh is hand-written because no platform feature installs from an
-explicit manifest; GNU stow was rejected because its directory-sweep semantics
-conflict with the allowlist requirement (only listed files install, nothing
-more).
+`git pull --ff-only` fails loudly on a dirty or diverged clone. That is
+correct: the live source must be clean `origin/main`, and a failed
+`fleet-sync.service` is visible to the failed-unit sweep.
 
-install.sh refuses to overwrite a live file whose mtime is newer than the
-repo copy. That stops a stale checkout from replacing live seat caps.
+### Wiring a NEW unit (one-time, by hand)
+
+`man systemctl`: *"link PATH... Link a unit file that is not in the unit file
+search path into the unit file search path. This command expects an absolute
+path to a unit file."* Add the unit file to `systemd/`, merge it, then once:
+
+```
+systemctl --user link  /home/nish/workspaces/tooling/fleet-ops-deploy-clone/systemd/<unit>
+systemctl --user enable --now /home/nish/workspaces/tooling/fleet-ops-deploy-clone/systemd/<unit>   # timers and .path units
+systemd-analyze verify /home/nish/workspaces/tooling/fleet-ops-deploy-clone/systemd/<unit>
+```
+
+`systemctl --user list-unit-files | grep linked` shows the linked set.
+Retiring a unit is the mirror image: `systemctl --user disable --now <unit>`
+then `systemctl --user unlink <unit>` (or `rm ~/.config/systemd/user/<unit>`)
+and delete the file from `systemd/`.
+
+Drop-in directories (`<unit>.service.d/*.conf`) are not unit files, so
+`systemctl link` does not take them. Symlink them by hand, once:
+
+```
+mkdir -p ~/.config/systemd/user/<unit>.service.d
+ln -sfn /home/nish/workspaces/tooling/fleet-ops-deploy-clone/systemd/<unit>.service.d/<x>.conf \
+        ~/.config/systemd/user/<unit>.service.d/<x>.conf
+```
+
+Same idiom for a new `bin/` helper (`ln -sfn <repo>/bin/<x> ~/.local/bin/<x>`),
+a `lib/` module (`~/.local/lib/pi-packet/<x>`), a Pi prompt
+(`~/.pi/agent/prompts/<x>.md`), or a `libexec/` script
+(`~/.local/libexec/<x>`). One `ln -sfn`, once, and git owns it from then on.
+
+### The exceptions: files that must stay COPIES
+
+Four classes are deliberately copies, not symlinks, and a `git pull` does
+NOT update them. Refresh by hand when the repo file changes:
+
+| live path | repo source | why a symlink is wrong |
+|---|---|---|
+| `/etc/prometheus/fleet_rules.yml` | `config/fleet_rules.yml` | prometheus runs as `prometheus`; `/home/nish` is `0750 nish:nish`, so it cannot traverse into the repo. **Handled automatically** by `fleet-sync.service` (promtool check + copy + reload). |
+| `~/.pi/agent/extensions/**.ts` | `template/extensions/**` | the providers `import '../seat-health.ts'`, which resolves against the symlink's real path — into the repo, where that sibling does not exist (fleet-ops#3263). |
+| `~/.local/state/pi-packet/seat-caps.json`, `~/.pi/agent/models.json`, `~/.local/state/pi-packet/model-candidates.json` | `config/seat-caps.json`, `config/pi-models.json`, `config/model-candidates.json` | live state the git working tree must not rewrite on every checkout (fleet-ops#2910/#3722/#3322). |
+| `/etc/**` (systemd drop-ins, `sysctl.d`, `audit/rules.d`, `default/prometheus`, `prometheus/*.yml`) | `config/`, `etc/`, `systemd/system/` | cross a privilege boundary. |
+
+```
+# a changed pi extension:
+install -D -m 0644 <repo>/template/extensions/<x>.ts ~/.pi/agent/extensions/<x>.ts
+# a changed /etc file:
+sudo -n install -D -m 0644 -o root -g root <repo>/<src> /etc/<dest>
+sudo -n systemctl daemon-reload          # for /etc/systemd/system/**
+sudo -n augenrules --load                # for /etc/audit/rules.d/**
+sudo -n sysctl --system                  # for /etc/sysctl.d/**   (Nish-reserved)
+# a changed root unit:
+sudo -n systemctl link /home/nish/workspaces/tooling/fleet-ops-deploy-clone/systemd/system/<unit>
+```
+
+### Devin workspace-trust key (fleet-ops#4825)
+
+`install.sh` used to merge `skip_workspace_trust: true` into
+`~/.config/devin/config.json` on every deploy, so a Devin auto-update that
+rewrote the config could not silently wall the seat. That merge is gone with
+the installer. The live config carries the key today; if the Devin CLI ever
+refuses with *"Refusing to run in an untrusted workspace"*, re-apply it once:
+
+```
+jq '. * ($o[0]) | del(.respect_workspace_trust)' --slurpfile o <repo>/template/devin-config.json \
+   ~/.config/devin/config.json > /tmp/devin.json && mv /tmp/devin.json ~/.config/devin/config.json
+```
 
 ### Canonical checkout (fleet-ops#372)
 
-Live install source, the only tree `install.sh` and the heartbeat deploy
-step may run from:
+The live source — the tree every live symlink resolves into:
 
 `/home/nish/workspaces/tooling/fleet-ops-deploy-clone`
 
-`fleet-heartbeat.service` pins `FLEET_OPS_CHECKOUT` to that path.
-`fleet-blind-audit.service` pins `AUDIT_REPO_ROOT` to the same path
-(fleet-ops#367). A run pointed at `products/fleet-ops` or the worktree
-parent retargets to the deploy-clone and auto-files
-`audit-target-noncanonical: fleet-ops#367`.
-`products/fleet-ops` still points at the worktree parent
-(`/home/nish/workspaces/tooling/fleet-ops`) until no linked worktrees
-remain there. `fleet-ops-retarget-products` (run with `--apply` by the
-drift canary) then points the symlink at the deploy-clone. That parent
-holds linked worktrees and carries the pre-rewrite init history (16
-commits with no merge-base against `origin/main`). Do not install from
-it. Do not delete it while worktrees are attached. New fleet-ops
-worktrees are created from the deploy-clone (fleet-ops#410).
+It must stay on branch `main`, clean. Feature and auditor work uses a linked
+worktree. `products/fleet-ops` still points at the worktree parent
+(`/home/nish/workspaces/tooling/fleet-ops`) until no linked worktrees remain
+there; that parent carries the pre-rewrite init history (16 commits with no
+merge-base against `origin/main`). Do not deploy from it and do not delete it
+while worktrees are attached. New fleet-ops worktrees are created from the
+deploy-clone (fleet-ops#410).
 
-The drift canary compares live-installed files to `origin/main` blobs, not
-to the checkout working tree, so it cannot self-compare. It also fails if
-any installed unit file or enable-link resolves into `/tmp`, `/run`, or
-`agent-worktrees`.
-
-`install.sh` (mutating modes) and `fleet-ops-deploy` refuse to run from any
-path under `/home/nish/workspaces` that is not that canonical checkout.
-`--check` still runs from a worktree so an auditor can see DIFF. Override
-with `FLEET_OPS_ALLOW_NONCANONICAL=1`. The drift canary tags
-`DRIFT-SOURCE` and auto-files when live dests point at a non-canonical
-workspaces tree (fleet-ops#176).
-
-The deploy-clone itself must stay on branch `main`. Feature and auditor
-work uses a linked worktree. Heartbeat merge-to-live blocks and the
-drift canary auto-files `deploy-clone-off-main: fleet-ops#477` if a
-named non-main branch is checked out there.
-
-### System-scope entries (fleet-ops#71)
-
-The MANIFEST may list entries under `/etc/systemd/system/...` and
-`/etc/prometheus/...` — those are SYSTEM scope and need root to install.
-`./install.sh` (default) SKIPS them. Heartbeat `fleet-ops-deploy` runs
-`./install.sh --system` after the user-scope install and reloads prometheus
-when that unit is active, so `fleet_rules.yml` actually loads
-(fleet-ops#1247). A hand-run of `./install.sh --system` still works.
-`--system` is non-interactive (it checks `sudo -n true`; if sudo requires a
-password, it refuses with a loud error and the exact manual command to run,
-so a worker can never hang on a sudo prompt). Drift on system entries is
-also worth checking from heartbeat tier 1: `./install.sh --check --system`
-exits nonzero on any byte-difference.
-
-The two system drop-ins repo-owned by `#71` are the fleet RAM governor
-themselves — see [docs/ram-governor-tree.md](docs/ram-governor-tree.md) for
-the full five-layer policy tree and what each layer does.
+The old non-canonical-checkout guard lived in `install.sh`: it refused a
+mutating install from any other tree, because an install from a worktree
+retargeted every live symlink at a tree that could be deleted. With no
+installer there is nothing to point the wrong way — the symlinks are set once
+and only `fleet-sync.service`, pinned to the canonical path, touches the tree.
 
 ## systemd by default
 

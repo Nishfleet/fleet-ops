@@ -547,7 +547,7 @@
         "judge": {
           "cap": 0,
           "intentional_cap_zero": "p3b_pending",
-          "reason": "2026-09-08 (fleet-ops#4425): LiteLLM judge group registered at cap 0. No worker caller routes via PI_SEAT_SOURCE=litellm yet (live seat map grep -c litellm = 0 at the decision run; proxy readiness probe healthy). cap 0 so pick_seat never offers it to product work before the #4422 P3b switchover. The P2 agent-cron-run fable-check consumes litellm/judge directly (bypasses pick_seat/seat-caps), so this cap does not gate live judge traffic. Raise with the P3b enablement PR. Not stale - never auto-expire."
+          "reason": "2026-09-08 (fleet-ops#4425): LiteLLM judge group registered at cap 0. No worker caller routes via PI_SEAT_SOURCE=litellm yet (live seat map grep -c litellm = 0 at the decision run; proxy readiness probe healthy). cap 0 so pick_seat never offers it to product work before the #4422 P3b switchover. The P2 fable-check consumer (agent-cron, retired 2026-09-18) consumed litellm/judge directly, bypassing pick_seat/seat-caps, so this cap does not gate live judge traffic. Raise with the P3b enablement PR. Not stale - never auto-expire."
         },
         "worker-cheap": {
           "cap": 0,

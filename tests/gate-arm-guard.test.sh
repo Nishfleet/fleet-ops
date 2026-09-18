@@ -33,7 +33,6 @@ lib="$repo_root/lib/gate-arm-guard.py"
 fixtures="$here/fixtures/gate-arm-guard"
 arm_wf="$repo_root/.github/workflows/reusable-auto-merge-arm.yml"
 ci_yml="$repo_root/.github/workflows/ci.yml"
-manifest="$repo_root/MANIFEST"
 
 fail() { echo "FAIL: $*" >&2; exit 1; }
 ok()   { echo "OK: $*"; }
@@ -114,14 +113,12 @@ ok "reusable arm workflow wires the guard and gates the arm on it"
 # reusable arm workflow checked above is now the only arm path, so that is
 # where the guard has to be wired.
 
-# --- wiring: MANIFEST installs the evaluator for the live heartbeat -------
-grep -Fq 'bin/fleet-gate-arm-guard' "$manifest" \
-  || fail "MANIFEST must install bin/fleet-gate-arm-guard"
-grep -Fq 'lib/gate-arm-guard.py' "$manifest" \
-  || fail "MANIFEST must install lib/gate-arm-guard.py"
-grep -Fq 'lib/gate-integrity-config.sh' "$manifest" \
-  || fail "MANIFEST must install lib/gate-integrity-config.sh (live glob loader)"
-ok "MANIFEST installs the guard"
+# --- wiring: the guard's three sources exist in the repo -------------------
+# MANIFEST deleted 2026-09-18; the live paths are symlinks into these files.
+for f in bin/fleet-gate-arm-guard lib/gate-arm-guard.py lib/gate-integrity-config.sh; do
+  [[ -f "$repo_root/$f" ]] || fail "missing repo source: $f"
+done
+ok "the guard's sources are in the repo"
 
 # --- DEFAULT_GLOBS stay locked to the shared loader ------------------------
 python3 - "$lib" "$repo_root/lib/gate-integrity-config.sh" <<'PY' \

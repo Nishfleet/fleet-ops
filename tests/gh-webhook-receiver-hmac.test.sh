@@ -13,7 +13,7 @@
 #   2. A valid issues/labeled/agent-ready payload dispatches
 #      pi-intake@<repo>.service.
 #   3. A valid workflow_run/completed/success dispatches
-#      fleet-deploy-check.service.
+#      fleet-sync.service.
 #   4. A tampered body returns 401 (HMAC FAIL — fail-closed).
 #   5. An unknown event returns 200 with "ignored" (Worker must always
 #      see 200; the receiver never bounces).
@@ -97,11 +97,11 @@ assert unit == fireable[0], (unit, fireable)
 
 unit, reason = first_fireable(mod.dispatch("issues", "labeled", "pipeline-red", "fleet-ops",
                             "", dry=False))
-assert unit == "fleet-deploy-check.service", unit
+assert unit == "fleet-sync.service", unit
 
 unit, reason = first_fireable(mod.dispatch("workflow_run", "completed", "", "fleet-ops",
                             "success", dry=False))
-assert unit == "fleet-deploy-check.service", unit
+assert unit == "fleet-sync.service", unit
 
 # pull_request/closed (merged) → fleet-merged-pr-close
 # AND fleet-merged-pr-close (fleet-ops#3270) — two-unit fan-out.
@@ -285,7 +285,7 @@ echo "$body_resp" | grep -q 'bad repo' \
     || fail "6: bad repo must surface in response: $body_resp"
 ok "6: bad repo name → 200 + ignored (defense-in-depth)"
 
-# --- 7: workflow_run/completed/success → fleet-deploy-check ---
+# --- 7: workflow_run/completed/success → fleet-sync ---
 body_wf='{"action":"completed","workflow_run":{"conclusion":"success"},"repository":{"name":"fleet-ops"}}'
 sig_wf="sha256=$(printf '%s' "$body_wf" | openssl dgst -sha256 -hmac "$secret" -hex | awk '{print $NF}')"
 resp="$(curl -sS -X POST "http://127.0.0.1:$TEST_PORT/webhook" \
@@ -296,9 +296,9 @@ resp="$(curl -sS -X POST "http://127.0.0.1:$TEST_PORT/webhook" \
 status="$(printf '%s' "$resp" | tail -n1)"
 body_resp="$(printf '%s' "$resp" | head -n-1)"
 [[ "$status" == "200" ]] || fail "7: workflow_run got $status; expected 200"
-echo "$body_resp" | grep -q '"fleet-deploy-check.service"' \
-    || fail "7: workflow_run should dispatch fleet-deploy-check: $body_resp"
-ok "7: workflow_run/completed/success → fleet-deploy-check.service"
+echo "$body_resp" | grep -q '"fleet-sync.service"' \
+    || fail "7: workflow_run should dispatch fleet-sync: $body_resp"
+ok "7: workflow_run/completed/success → fleet-sync.service"
 
 # --- 7b: pull_request/closed (merged) → nothing (route retired 2026-09-18) ---
 body_pr='{"action":"closed","pull_request":{"merged":true,"number":3269},"repository":{"name":"fleet-ops"}}'

@@ -13,7 +13,7 @@
 #      helper that EXISTS on the host (seats root, a ~/.config/<x> env, or a
 #      ~/.local/bin key helper) and is non-empty, never fleet2, and keeps '=' inside values
 #      (cut -f2-). CI without the host dirs: existence check SKIPs.
-#   3. both provider extensions import ./seat-env (env + models) and MANIFEST
+#   3. both provider extensions import ./seat-env (env + models) and the
 #      installs the helper beside each of them
 #   4. the pi-models check is proven RED on a fixture that still names fleet2
 
@@ -62,7 +62,7 @@ for e in devin-provider cursor-provider; do
   grep -q 'from "./seat-env"' "$f" || fail "$e does not import ./seat-env"
   grep -q 'loadSeatEnv(' "$f" || fail "$e does not call loadSeatEnv"
   grep -q 'modelsFromModelsJson(' "$f" || fail "$e still carries its own models array"
-  grep -qE "^template/extensions/seat-env\.ts /home/nish/\.pi/agent/extensions/$e/seat-env\.ts$" "$repo/MANIFEST" || fail "MANIFEST does not install seat-env.ts beside $e"
+  [[ -f "$repo/template/extensions/seat-env.ts" ]] || fail "missing repo source: template/extensions/seat-env.ts"
 done
 
 # 4 prove red
@@ -70,4 +70,4 @@ tmp="$(mktemp)"; trap 'rm -f "$tmp"' EXIT
 printf '{"providers":{"x":{"apiKey":"!cut -d= -f2 /home/nish/fleet2/etc/x.env"}}}\n' > "$tmp"
 if check_models "$tmp" "" >/dev/null 2>&1; then fail "fixture with fleet2 path passed — gate is blind"; fi
 
-echo "PASS: one seat-credential root; no dead paths; extensions + MANIFEST wired; gate proven red"
+echo "PASS: one seat-credential root; no dead paths; extensions wired; gate proven red"

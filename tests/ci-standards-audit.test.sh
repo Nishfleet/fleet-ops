@@ -714,7 +714,6 @@ bash "$here/fleet-product-slo-backtest.test.sh"
 # The named pin in tests/p14-test-listing-gate.test.sh is the
 # class-prevention so a future drop of this host line fails by name.
 # Hermetic (stub gh + systemctl, overlay workspaces root).
-bash "$here/fleet-ops-drift-metrics-dropin.test.sh"
 
 # fleet-ops#2934 (PR #2948 follow-up): the empty-run count-merge window
 # test landed on main without a ci.yml listing or a host, so P14 ran red
@@ -764,7 +763,6 @@ bash "$here/curator-journal-cap.test.sh"
 # App cannot push .github/workflows/**). The named pin in
 # tests/p14-test-listing-gate.test.sh is the class-prevention so a
 # future drop of this host line fails by name.
-bash "$here/install-manifest-bak-sprawl.test.sh"
 
 # fleet-ops#5602: the drift-canary sprawl-quarantine drill — a .bak/.orig
 # sibling next to a MANIFEST-managed path is moved to the quarantine dir
@@ -774,7 +772,6 @@ bash "$here/install-manifest-bak-sprawl.test.sh"
 # tests/p14-test-listing-gate.test.sh is the class-prevention so a future
 # drop of this host line fails by name.
 # Hermetic (stub gh + systemctl, overlay workspaces root).
-bash "$here/fleet-ops-drift-sprawl-quarantine.test.sh"
 
 # fleet-ops#4948: install.sh --check must accept a JSON copy-install config
 # file that differs from the repo copy only by serialization (escaping/key
@@ -783,7 +780,6 @@ bash "$here/fleet-ops-drift-sprawl-quarantine.test.sh"
 # .github/workflows/**. The named pin in tests/p14-test-listing-gate.test.sh
 # is the class-prevention so a future drop of this host line fails by name.
 # Hermetic (scratch MANIFEST + files, no gh/systemd/live install).
-bash "$here/install-check-content-equivalent.test.sh"
 
 # fleet-ops#3574: the admission tally escalates a candidate refused for
 # evidence 3 times (escalate-senior) instead of re-queuing it forever
@@ -887,7 +883,6 @@ bash "$here/spec-judge.test.sh"
 # tests/p14-test-listing-gate.test.sh is the class-prevention so a future
 # drop of this host line fails by name. Hermetic (scratch MANIFEST + scratch
 # HOME + fake checkout, stubbed systemctl, no live install).
-bash "$here/helper-symlink-resolution.test.sh"
 
 # fleet-ops#5588: the one-fleet-rule consolidation detector. Guards that the
 # canonical one-fleet section is title + archive pointer, the heading carries
@@ -953,7 +948,6 @@ bash "$here/deleted-symbol-gate.test.sh"
 # tests/p14-test-listing-gate.test.sh is the class-prevention so a future
 # drop of this host line fails by name. Hermetic (scratch MANIFEST + fake
 # HOME + stub systemctl, does NOT touch the real live state file).
-bash "$here/install-seat-caps-stale-snapshot-refuse.test.sh"
 
 # Glue sweep 2026-09-18: escalation-coverage-canary.test.sh was the CI host
 # for these siblings and was deleted with the escalation tower. Re-hosted

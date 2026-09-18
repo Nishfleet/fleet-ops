@@ -37,7 +37,7 @@
 # Restart=always is the autoscaler; StartLimit keeps a broken keyring or a
 # transient API outage from hammering the registrations endpoint.
 #
-# Install: MANIFEST symlinks this file; enable with
+# Install: systemctl --user link <repo>/systemd/gh-runner@.service; enable with
 #   systemctl --user enable --now gh-runner@{1..3}
 
 [Unit]

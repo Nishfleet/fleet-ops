@@ -6,7 +6,7 @@
 // so every direct Pi provider on the VPS resolved NO key while the seats ledger
 // parked them as corpses. tests/no-dead-credential-paths.test.sh is the gate.
 //
-// MANIFEST installs this file as <provider>-provider/seat-env.ts next to each
+// This file is copied to <provider>-provider/seat-env.ts next to each
 // index.ts (a top-level extensions/*.ts would be auto-loaded by Pi as an extension).
 import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
@@ -35,7 +35,7 @@ export function loadSeatEnv(seat: string): boolean {
 	return true;
 }
 
-/** Model list from ~/.pi/agent/models.json (MANIFEST copy of config/pi-models.json): one declarative source, no duplicated arrays. */
+/** Model list from ~/.pi/agent/models.json (a copy of config/pi-models.json): one declarative source, no duplicated arrays. */
 export function modelsFromModelsJson<T extends object>(
 	provider: string,
 	defaults: T,

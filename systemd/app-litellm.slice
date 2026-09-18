@@ -7,7 +7,7 @@
 # ceiling and vice versa.
 #
 # Drop-in-removable: delete this file + the three service unit files and
-# daemon-reload to revert. The MANIFEST line keeps the install idempotent.
+# daemon-reload to revert. The live file is a symlink into this repo.
 [Slice]
 CPUQuota=200%
 MemoryMax=1G

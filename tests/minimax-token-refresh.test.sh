@@ -37,7 +37,7 @@
 #  16. --help exits 0 and prints the usage.
 #  17. unknown argument exits 2.
 #  18. Heartbeat wiring (tier1 picks up the absent() rule + organ entry).
-#  19. MANIFEST ships the script + both units.
+#  19. the repo ships the script + both units.
 #  20. seat-caps reason cites the timer and the issue.
 
 set -euo pipefail
@@ -46,7 +46,6 @@ repo_root="$(cd "$here/.." && pwd)"
 bin="$repo_root/bin/minimax-token-refresh"
 svc="$repo_root/systemd/minimax-token-refresh.service"
 timer="$repo_root/systemd/minimax-token-refresh.timer"
-manifest="$repo_root/MANIFEST"
 rules="$repo_root/config/fleet_rules.yml"
 organs="$repo_root/config/fleet-organs.json"
 seat_caps="$repo_root/config/seat-caps.json"
@@ -461,14 +460,14 @@ ok "18. script uses PATH-resolved systemctl (covered by 7)"
 # --------- 19. --help exits 0 (covered in #1) ---
 ok "19. --help exits 0 (covered by 1)"
 
-# --------- 20. MANIFEST ships the script + both units ----------
-grep -q "^bin/minimax-token-refresh " "$manifest" \
-    || fail "20. MANIFEST missing bin/minimax-token-refresh"
-grep -q "^systemd/minimax-token-refresh.service " "$manifest" \
-    || fail "20. MANIFEST missing systemd/minimax-token-refresh.service"
-grep -q "^systemd/minimax-token-refresh.timer " "$manifest" \
-    || fail "20. MANIFEST missing systemd/minimax-token-refresh.timer"
-ok "20. MANIFEST ships the script + both units"
+# --------- 20. the repo ships the script + both units ----------
+# MANIFEST deleted 2026-09-18; live paths are symlinks into these sources.
+for f in bin/minimax-token-refresh \
+         systemd/minimax-token-refresh.service \
+         systemd/minimax-token-refresh.timer; do
+    [[ -f "$repo_root/$f" ]] || fail "20. missing repo source: $f"
+done
+ok "20. the repo ships the script + both units"
 
 # --------- 22. heartbeat wiring (absent() rule + organ entry) ----------
 

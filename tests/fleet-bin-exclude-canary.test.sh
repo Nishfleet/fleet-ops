@@ -10,13 +10,11 @@
 set -euo pipefail
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 repo_root="$(cd "$here/.." && pwd)"
-manifest="$repo_root/MANIFEST"
 
 fail() { echo "FAIL: $*" >&2; exit 1; }
 ok()   { echo "OK: $*"; }
 
 command -v git >/dev/null 2>&1 || fail "git missing"
-[[ -f "$manifest" ]] || fail "MANIFEST missing: $manifest"
 
 # --- 1. bin/ is not ignored --------------------------------------------------
 # Use --git-common-dir because the canonical checkout may be a worktree; the
@@ -68,24 +66,22 @@ trap - EXIT INT TERM
 
 ok "bin/ is not ignored by git exclude or .gitignore"
 
-# --- 2. Every MANIFEST bin/ source is tracked and exists ---------------------
+# --- 2. Every bin/ source on disk is tracked --------------------------------
+# MANIFEST was deleted 2026-09-18 (live paths are symlinks into this repo, so
+# there is no install allowlist any more). The invariant that survives is the
+# one that mattered: a bin/ file the fleet execs must be tracked, or a fresh
+# clone cannot resolve the symlink.
 missing=0
-while read -r src _ || [[ -n "$src" ]]; do
-  [[ -z "$src" ]] && continue
-  [[ "$src" == \#* ]] && continue
-  [[ "$src" == bin/* ]] || continue
-  if [[ ! -f "$repo_root/$src" ]]; then
-    echo "MISSING on disk: $src" >&2
-    missing=1
-    continue
-  fi
-  if ! git -C "$repo_root" ls-files --error-unmatch "$src" >/dev/null 2>&1; then
-    echo "NOT TRACKED: $src" >&2
+for src in "$repo_root"/bin/*; do
+  [[ -f "$src" ]] || continue
+  rel="bin/$(basename "$src")"
+  if ! git -C "$repo_root" ls-files --error-unmatch "$rel" >/dev/null 2>&1; then
+    echo "NOT TRACKED: $rel" >&2
     missing=1
   fi
-done < "$manifest"
-[[ "$missing" -eq 0 ]] || fail "one or more MANIFEST bin/ sources are missing or not tracked"
-ok "every MANIFEST bin/ source exists and is tracked"
+done
+[[ "$missing" -eq 0 ]] || fail "one or more bin/ sources are not tracked"
+ok "every bin/ source exists and is tracked"
 
 # --- 3. Drill: 'bin/**' exclude actually ignores a new bin file ------------
 scratch="$(mktemp -d -t bin-exclude-canary.XXXXXX)"
@@ -109,4 +105,4 @@ grep -Fq 'bash "$here/fleet-bin-exclude-canary.test.sh"' "$here/rule-enforcement
   || fail "rule-enforcement.test.sh must nest this test (worker token cannot edit .github/workflows)"
 ok "rule-enforcement.test.sh nests this test"
 
-ok "fleet-bin-exclude-canary: bin/ not ignored, MANIFEST sources exist and tracked, drill passes"
+ok "fleet-bin-exclude-canary: bin/ not ignored, bin/ sources tracked, drill passes"

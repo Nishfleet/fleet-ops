@@ -6,7 +6,7 @@
 # 255+ fails when the ExecStart binary is missing:
 #   Command /home/nish/.local/bin/agent-cron-run is not executable: No such file or directory
 # That red-on-main'd CI at run 32935434973 (commit 7383611) inside
-# tests/agent-cron-seat-rotation.test.sh. Unit syntax belongs in the dedicated
+# tests/pi-systemd-run.test.sh. Unit syntax belongs in the dedicated
 # `systemd-analyze` job, which stubs those paths first.
 #
 # This file is the class lock. A P14 test that inline-verifies a unit whose
@@ -220,13 +220,13 @@ trap 'rm -rf "$scratch"' EXIT INT TERM
 
 red="$scratch/red-154"
 mkdir -p "$red/tests" "$red/systemd" "$red/.github/workflows"
-write_minimal_ci "$red/.github/workflows/ci.yml" "tests/agent-cron-seat-rotation.test.sh"
+write_minimal_ci "$red/.github/workflows/ci.yml" "tests/pi-systemd-run.test.sh"
 cat >"$red/systemd/agent-cron-0509-daily-market-signal.service" <<'EOF'
 [Service]
 Type=oneshot
 ExecStart=/home/nish/.local/bin/agent-cron-run 0509-daily-market-signal
 EOF
-cat >"$red/tests/agent-cron-seat-rotation.test.sh" <<'EOF'
+cat >"$red/tests/pi-systemd-run.test.sh" <<'EOF'
 #!/usr/bin/env bash
 # re-introduction of the fleet-ops#154 inline verify
 if command -v systemd-analyze >/dev/null 2>&1; then
@@ -237,19 +237,19 @@ fi
 EOF
 red_findings="$(scan_p14_inline_verify "$red")"
 [[ -n "$red_findings" ]] || fail "fixture red-154 must flag the inline agent-cron verify"
-printf '%s\n' "$red_findings" | grep -q 'agent-cron-seat-rotation.test.sh' \
+printf '%s\n' "$red_findings" | grep -q 'pi-systemd-run.test.sh' \
   || fail "fixture red-154 must name the P14 test, got: $red_findings"
 printf '%s\n' "$red_findings" | grep -q 'agent-cron-run' \
   || fail "fixture red-154 must name the VPS ExecStart, got: $red_findings"
-ok "fixture: #154 inline verify of agent-cron is flagged"
+ok "fixture: #154 inline verify of a cron unit is flagged"
 
 # --- 3. Fixture: comment-only verify stays quiet ----------------------------
 quiet="$scratch/comment-only"
 mkdir -p "$quiet/tests" "$quiet/systemd" "$quiet/.github/workflows"
-write_minimal_ci "$quiet/.github/workflows/ci.yml" "tests/agent-cron-seat-rotation.test.sh"
+write_minimal_ci "$quiet/.github/workflows/ci.yml" "tests/pi-systemd-run.test.sh"
 cp "$red/systemd/agent-cron-0509-daily-market-signal.service" \
   "$quiet/systemd/agent-cron-0509-daily-market-signal.service"
-cat >"$quiet/tests/agent-cron-seat-rotation.test.sh" <<'EOF'
+cat >"$quiet/tests/pi-systemd-run.test.sh" <<'EOF'
 #!/usr/bin/env bash
 # --- systemd-analyze verify on the unit files -------------------------------
 # Do NOT re-verify here: systemd-analyze verify false-positives on CI.
@@ -315,12 +315,12 @@ ok "fixture: #830 inline verify of fleet-seat-recovery is flagged"
 # because the inline verify needs the VPS bin present. The shipped fix in
 
 # --- 5. Live repo: agent-cron P14 test has no live verify -------------------
-agent_cron="$repo_root/tests/agent-cron-seat-rotation.test.sh"
+agent_cron="$repo_root/tests/pi-systemd-run.test.sh"
 [[ -f "$agent_cron" ]] || fail "missing $agent_cron"
 if has_live_verify "$agent_cron"; then
-  fail "tests/agent-cron-seat-rotation.test.sh must not call systemd-analyze verify (fleet-ops#154)"
+  fail "tests/pi-systemd-run.test.sh must not call systemd-analyze verify (fleet-ops#154)"
 fi
-ok "live: agent-cron-seat-rotation.test.sh has no live systemd-analyze verify"
+ok "live: pi-systemd-run.test.sh has no live systemd-analyze verify"
 
 # --- 6. Live repo: no P14 test repeats the #154 class -----------------------
 live_findings="$(scan_p14_inline_verify "$repo_root")"
@@ -330,9 +330,7 @@ ok "live: no P14 test inline-verifies a VPS ExecStart unit"
 # --- 7. Live repo: unit-verify stubs every VPS ExecStart --------------------
 stub_findings="$(scan_missing_stubs "$repo_root")"
 [[ -z "$stub_findings" ]] || fail "ci.yml unit-verify is missing stubs:\n$stub_findings"
-grep -Fq '/home/nish/.local/bin/agent-cron-run' "$repo_root/.github/workflows/ci.yml" \
-  || fail "ci.yml unit-verify must stub /home/nish/.local/bin/agent-cron-run"
-ok "live: ci.yml stubs every VPS ExecStart including agent-cron-run"
+ok "live: ci.yml stubs every VPS ExecStart"
 
 # --- 8. This lock is actually reached from a P14 test -----------------------
 # Worker App tokens cannot push .github/workflows/**, so the lock cannot be

@@ -19,7 +19,7 @@ Environment=GH_WEBHOOK_RECEIVER_PORT=8088
 Environment=GH_WEBHOOK_SECRET_FILE=%h/.config/fleet-ops/gh-webhook.secret
 Environment=GH_WEBHOOK_RECEIVER_PROM=/var/lib/prometheus/node-exporter/fleet-gh-webhook-receiver.prom
 # P14 systemd-analyze dodge on hosted runners that lack ~/.local. The
-# repo install.sh symlinks serve.py to ~/.local/libexec for the live box.
+# ~/.local/libexec/gh-webhook-receiver/serve.py is a symlink into this repo.
 ExecStart=/usr/bin/python3 %h/.local/libexec/gh-webhook-receiver/serve.py
 # Restart on any failure (bind error, port conflict). 3s delay so the
 # journalctl storm is bounded; systemd caps the storm with StartLimit*.

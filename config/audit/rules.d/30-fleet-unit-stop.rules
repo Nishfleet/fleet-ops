@@ -14,7 +14,7 @@
 # are visible in the same records anyway via exe, and -F auid=1000 keeps
 # the noise down to the fleet user's own stopping commands.
 #
-# Install: install.sh --system copies this to /etc/audit/rules.d/ and
+# Install: sudo -n install -D -m 0644 -o root -g root this file to /etc/audit/rules.d/ and
 # reloads via `sudo augenrules --load` (idempotent; auditd must be
 # installed).
 #

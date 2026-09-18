@@ -308,9 +308,10 @@ MONEY_BOUNDARY_AS="$legacy_as" "$script" --check >/dev/null 2>&1 \
   || fail "minute-only historical prebench stamp must age out"
 ok "historical prebench minute-only stamp is aged out of --check"
 
-# --- 7. MANIFEST installs the guard ---------------------------------------
-grep -q 'bin/money-boundary-raise' "$repo_root/MANIFEST" \
-  || fail "MANIFEST must install bin/money-boundary-raise"
-ok "MANIFEST installs bin/money-boundary-raise"
+# --- 7. the guard source is in the repo -----------------------------------
+# MANIFEST deleted 2026-09-18; the live path is a symlink into this file.
+[[ -f "$repo_root/bin/money-boundary-raise" ]] \
+  || fail "missing repo source: bin/money-boundary-raise"
+ok "bin/money-boundary-raise is in the repo"
 
 ok "money-boundary guard drill: deterministic raise, dedupe, FAIL-LOUD, --check, backup scan, rule routing, and #5204 legacy-wall/age-window/heartbeat wiring"

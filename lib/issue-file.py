@@ -156,8 +156,7 @@ UNIT_RE = re.compile(
     r"\b[A-Za-z0-9_@.:-]+\.(?:service|timer|socket|target|path|slice)\b"
 )
 INSTANCE_RE = re.compile(
-    r"\b(?:pi-issue|pi-intake|pi-scout|pi-packet|unit-escalation|fleet-heartbeat"
-    r"|fleet-deploy-check)@[A-Za-z0-9_.-]+\b"
+    r"\b(?:pi-issue|pi-intake|pi-scout|pi-packet|unit-escalation|fleet-heartbeat)@[A-Za-z0-9_.-]+\b"
 )
 
 # --- signal keys -----------------------------------------------------------

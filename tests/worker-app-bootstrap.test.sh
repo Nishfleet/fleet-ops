@@ -214,30 +214,20 @@ grep -q 'https://box.tailnet.ts.net/?org=Nishfleet' "$scratch/wrap.err" \
   || fail "wrapper --serve must print the public open URL, got: $(cat "$scratch/wrap.err")"
 ok "wrapper --serve prints tailscale serve + public URL"
 
-# --- 5. fleet-ops#442: MANIFEST dests match installed lookup --------------
+# --- 5. fleet-ops#442: installed lookup paths stay put --------------------
 # After install the wrapper lives in ~/.local/bin, the Python helper in
 # ~/.local/lib/fleet-worker, and credentials in ~/.config/fleet-worker.
 # SCRIPT_DIR-relative lookup of those files is the live command, not a
 # checkout. This lock is the prevention mechanism: a dest or lookup drift
 # fails CI before the next click.
-manifest="$repo_root/MANIFEST"
-dest_of() {
-  awk -v src="$1" '$1 == src { print $2; found=1 } END { exit !found }' "$manifest"
-}
-dest_wrap="$(dest_of bin/worker-app-bootstrap)"
-dest_helper="$(dest_of bin/_worker-app-bootstrap-server.py)"
-dest_json="$(dest_of credentials/app-manifest.json)"
-dest_html="$(dest_of credentials/bootstrap.html)"
-[[ "$dest_wrap" == */.local/bin/worker-app-bootstrap ]] \
-  || fail "MANIFEST dest for wrapper must be ~/.local/bin, got $dest_wrap"
-[[ "$dest_helper" == */.local/lib/fleet-worker/_worker-app-bootstrap-server.py ]] \
-  || fail "MANIFEST dest for helper must be ~/.local/lib/fleet-worker, got $dest_helper"
-[[ "$dest_json" == */.config/fleet-worker/app-manifest.json ]] \
-  || fail "MANIFEST dest for app-manifest.json must be ~/.config/fleet-worker, got $dest_json"
-[[ "$dest_html" == */.config/fleet-worker/bootstrap.html ]] \
-  || fail "MANIFEST dest for bootstrap.html must be ~/.config/fleet-worker, got $dest_html"
+# MANIFEST deleted 2026-09-18; the four sources below must exist in the repo
+# and the wrapper must still look them up at their INSTALLED paths.
+for f in bin/worker-app-bootstrap bin/_worker-app-bootstrap-server.py \
+         credentials/app-manifest.json credentials/bootstrap.html; do
+  [[ -f "$repo_root/$f" ]] || fail "missing repo source: $f"
+done
 grep -Fq '.local/lib/fleet-worker/_worker-app-bootstrap-server.py' "$wrapper" \
-  || fail "wrapper must look up the installed helper path (MANIFEST dest)"
+  || fail "wrapper must look up the installed helper path"
 grep -Fq '.config/fleet-worker/app-manifest.json' "$wrapper" \
   || fail "wrapper must look up installed credentials under ~/.config/fleet-worker"
 
@@ -263,6 +253,6 @@ if grep -q 'missing ' "$scratch/installed.err"; then
 fi
 grep -q 'https://box.tailnet.ts.net/?org=Nishfleet' "$scratch/installed.err" \
   || fail "installed wrapper must start, got: $(cat "$scratch/installed.err")"
-ok "installed MANIFEST layout finds helper and credentials"
+ok "installed layout finds helper and credentials"
 
 echo "OK: worker-app-bootstrap exchange logging, empty POST, and --serve"

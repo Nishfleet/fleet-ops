@@ -16,7 +16,6 @@ repo_root="$(cd "$here/.." && pwd)"
 gate="$repo_root/bin/fleet-merge-trample-gate"
 lib="$repo_root/lib/merge-trample-gate.py"
 fixtures="$here/fixtures/merge-trample-gate"
-manifest="$repo_root/MANIFEST"
 
 fail() { echo "FAIL: $*" >&2; exit 1; }
 ok()   { echo "OK: $*"; }
@@ -198,15 +197,15 @@ jq -e '[.hits[].worktree_gap_paths[]?] | index("bin/pi-salvage-worktree")' <<<"$
   || fail "sweep hit must name salvage: $sweep"
 ok "sweep reports the worktree-gap first-parent commit"
 
-# --- MANIFEST + no dispatcher / no new unit -------------------------------
-grep -q 'bin/fleet-merge-trample-gate' "$manifest" \
-  || fail "MANIFEST must install bin/fleet-merge-trample-gate"
-grep -q 'lib/merge-trample-gate.py' "$manifest" \
-  || fail "MANIFEST must install lib/merge-trample-gate.py"
+# --- sources present + no dispatcher / no new unit ------------------------
+# MANIFEST deleted 2026-09-18; live paths are symlinks into these sources.
+for f in bin/fleet-merge-trample-gate lib/merge-trample-gate.py; do
+  [[ -f "$repo_root/$f" ]] || fail "missing repo source: $f"
+done
 [[ ! -e "$repo_root/bin/fleet-merge-trample-dispatcher" ]] \
   || fail "must not add a dispatcher; the gate is a pure evaluator"
 [[ ! -e "$repo_root/systemd/fleet-merge-trample-gate.service" ]] \
   || fail "must not add a systemd unit"
-ok "MANIFEST installs the gate; no dispatcher / no new unit"
+ok "the gate sources are in the repo; no dispatcher / no new unit"
 
 echo "OK: merge-trample-gate drill: REJECT worktree-gap and HEAD-tree squash, PASS clean/delete-only/revert/trample-ok"

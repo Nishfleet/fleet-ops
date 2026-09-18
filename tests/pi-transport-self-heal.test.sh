@@ -23,7 +23,6 @@ here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 repo_root="$(cd "$here/.." && pwd)"
 script="$repo_root/bin/pi-transport-self-heal"
 dropin="$repo_root/systemd/pi-transport-check.service.d/20-self-heal.conf"
-manifest="$repo_root/MANIFEST"
 
 fail() { echo "FAIL: $*" >&2; exit 1; }
 ok()   { echo "OK: $*"; }
@@ -31,12 +30,13 @@ ok()   { echo "OK: $*"; }
 [[ -x "$script" ]] || fail "missing executable: $script"
 [[ -f "$dropin" ]] || fail "missing drop-in: $dropin"
 
-# --- shape: files are MANIFESTed and wired on the EXISTING unit ---------------
-grep -Fxq "bin/pi-transport-self-heal /home/nish/.local/bin/pi-transport-self-heal" "$manifest" \
-  || fail "MANIFEST missing bin/pi-transport-self-heal"
-grep -Fxq "systemd/pi-transport-check.service.d/20-self-heal.conf /home/nish/.config/systemd/user/pi-transport-check.service.d/20-self-heal.conf" "$manifest" \
-  || fail "MANIFEST missing 20-self-heal drop-in"
-ok "self-heal script and drop-in are present and MANIFESTed"
+# --- shape: sources are in the repo and wired on the EXISTING unit -----------
+# MANIFEST deleted 2026-09-18; live paths are symlinks into these sources.
+for f in bin/pi-transport-self-heal \
+         systemd/pi-transport-check.service.d/20-self-heal.conf; do
+  [[ -f "$repo_root/$f" ]] || fail "missing repo source: $f"
+done
+ok "self-heal script and drop-in are present in the repo"
 
 grep -q '^\[Service\]$' "$dropin" || fail "drop-in must have [Service]"
 grep -q '^ExecStart=$' "$dropin" || fail "drop-in must reset the base ExecStart"

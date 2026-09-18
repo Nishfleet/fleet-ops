@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
 """Deployment quality SLOs for the fleet metrics exporter (fleet-ops#2758).
 
-The fleet deploys fleet-ops via fleet-deploy-check.timer (2 min) -> bin/
-fleet-ops-deploy on the VPS, not via GitHub Deployments (the API returns
+The fleet deploys fleet-ops via fleet-sync.timer (2 min: git pull --ff-only
++ daemon-reload) on the VPS, not via GitHub Deployments (the API returns
 zero deployments for this repo — verified live 2026-09-02). So this module
 measures the deployment pipeline from the sources that actually record it:
 
-  (a) deployment latency  = mergedAt -> first GREEN fleet-deploy-check
+  (a) deployment latency  = mergedAt -> first GREEN fleet-sync
       cycle that ran the sanctioned deploy on the VPS. Green = a cycle
       whose "origin/main moved ... — invoking sanctioned deploy" line is
       NOT followed by a LOUD DEPLOY-BLOCKED / DEPLOY-CHECK-FAILED line.
@@ -84,7 +84,7 @@ Environment seams (tests):
   FLEET_DQ_NOW              ISO/epoch override for deterministic tests
   FLEET_DQ_MERGED           path to a JSON list of {mergedAt} (skip gh)
   FLEET_DQ_REVERTS          path to a JSON list; length = auto-revert events (skip gh)
-  FLEET_DQ_JOURNAL          path to a fleet-deploy-check journal fixture
+  FLEET_DQ_JOURNAL          path to a fleet-sync journal fixture
   FLEET_DQ_ACTIONS_LOG      path to an alert-repair actions.log fixture
   FLEET_DQ_CRITICAL_ALERTS  comma-separated critical alert names (tests)
   FLEET_DQ_CACHE_DIR        cache dir (default: $AGENT_STATE/fleet-metrics)
@@ -121,7 +121,7 @@ WINDOW_DAYS = 30
 # The 1h attribution window for "deployment caused a critical alert".
 DEPLOY_ALERT_WINDOW_S = 3600
 # Max gap (s) between consecutive blocked lines that still belongs to the
-# same blocked episode. fleet-deploy-check runs every 2 min, so consecutive
+# same blocked episode. fleet-sync runs every 2 min, so consecutive
 # blocked cycles are ~120s apart; 600s absorbs a delayed tick.
 BLOCK_RUN_GAP_S = 600
 GH_TIMEOUT = 45
@@ -224,7 +224,7 @@ METRIC_DEFS = (
     # before any product row, and # HELP/# TYPE appear exactly once per name.
     ("fleet_deployment_latency_seconds",
      "p95 merge-to-live latency per measured repo: fleet-ops = mergedAt -> first green "
-     "fleet-deploy-check cycle; a product repo = mergedAt -> first green production-deploy "
+     "fleet-sync cycle; a product repo = mergedAt -> first green production-deploy "
      "run; trailing window. fleet-ops#2758, fleet-ops#5140."),
     ("fleet_deployment_rollback_rate",
      "auto-revert events / merged deployments for fleet-ops, trailing 30 days. fleet-ops only: "
@@ -240,7 +240,7 @@ METRIC_DEFS = (
      "actions.log, so no series is emitted for a product repo (fleet-ops#5140)."),
     ("fleet_deploy_blocked_duration_seconds",
      "Age in seconds of the current non-green deploy episode per measured repo: fleet-ops = "
-     "run of consecutive DEPLOY-BLOCKED fleet-deploy-check cycles; a GitHub-deployed product "
+     "run of consecutive DEPLOY-BLOCKED fleet-sync cycles; a GitHub-deployed product "
      "repo = age of the current run of consecutive non-green production-deploy runs (an "
      "in-flight run counts as non-green), 0 when the newest run is green, NaN when the repo "
      "could not be measured this scrape. fleet-ops#2725, fleet-ops#5140."),
@@ -528,7 +528,7 @@ def _revert_count(env):
 
 
 def _read_journal(env, now):
-    """Return sorted list of (ts, kind) for fleet-deploy-check events, or
+    """Return sorted list of (ts, kind) for fleet-sync events, or
     None when the journal is unavailable (degraded — never a fake empty)."""
     seam = (env or os.environ).get("FLEET_DQ_JOURNAL")
     cache_path = _cache_paths(env)[2]
@@ -544,7 +544,7 @@ def _read_journal(env, now):
     cutoff_iso = _iso(cutoff)
     xdg = (env or os.environ).get("XDG_RUNTIME_DIR") or f"/run/user/{os.getuid()}"
     r = _run([
-        "journalctl", "--user", "-u", "fleet-deploy-check.service",
+        "journalctl", "--user", "-u", "fleet-sync.service",
         "--since", cutoff_iso, "--no-pager",
     ], {"XDG_RUNTIME_DIR": xdg}, timeout=30)
     if r is not None:
@@ -802,7 +802,7 @@ def compute(env=None):
     merged = [m for m in merged if m >= window_start and m <= now]
     total = len(merged)
     # Data-depth limits: journal and actions.log only retain ~6-7 days on
-    # this box (verified 2026-09-02: fleet-deploy-check unit journal starts
+    # this box (verified 2026-09-02: fleet-sync unit journal starts
     # 2026-08-27; actions.log 2026-08-27). Latency / time-to-detect /
     # success-rate are computed over the deployments whose deploy and alert
     # windows fall inside the recorded data; rollback rate and totals use

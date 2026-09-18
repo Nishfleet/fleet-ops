@@ -72,7 +72,6 @@ jobs:
             exit 1
           }
         done
-        bash tests/manifest-shape.test.sh
         bash tests/no-dead-credential-paths.test.sh
         bash tests/intake-repos-shape.test.sh
         bash tests/intake-repos-path-resolution.test.sh
@@ -116,11 +115,6 @@ jobs:
         # death (114 deaths/24h on that one message, 2026-09-11).
         bash tests/devin-provider-rate-limit-retry.test.sh
         bash tests/repair-rotation.test.sh
-        bash tests/agent-cron-seat-rotation.test.sh
-        # fleet-ops#6252: cron units must never point a workdir at a fleet-ops
-        # deploy checkout, and agent-cron-run must refuse one before any pi
-        # spawn (live DEPLOY-BLOCKED class, 2026-09-13).
-        bash tests/agent-cron-deploy-workdir-guard.test.sh
         bash tests/seat-lib.test.sh
         bash tests/seat-lib-degraded.test.sh
         bash tests/seat-lib-org-reserve.test.sh
@@ -131,11 +125,9 @@ jobs:
         bash tests/seat-wall-reset-horizon.test.sh
         # fleet-ops#1164: persist nish-boundary-notify CLASSES in git + lint.
         bash tests/nish-boundary-notify-classes.test.sh
-        bash tests/system-dropins-shape.test.sh
-        bash tests/fleet-ops-deploy.test.sh
-        # fleet-ops#3634: self-rescue a deploy clone left on a named branch or
-        # dirty instead of blocking every merge (2 incidents 2026-09-05).
-        bash tests/fleet-ops-deploy-rescue.test.sh
+        # fleet-ops: slice shape lock. Its old host,
+        # tests/system-dropins-shape.test.sh, was deleted with the MANIFEST.
+        bash tests/systemd-analyze-slices.test.sh
         # tests fail the workflow check otherwise).
         bash tests/mass-close-guard.test.sh
         # fleet-ops#1161: orphan-workflow detector (audit findings 3+4).
@@ -149,7 +141,6 @@ jobs:
         bash tests/findings-measure-line.test.sh
         # fleet-ops#7371: shared Jev helper contract (dry-run, refusals, log shape, cap, key hygiene).
         bash tests/jev-eval.test.sh
-        bash tests/fleet-deploy-check.test.sh
         bash tests/rule-enforcement.test.sh
         bash tests/reusable-workflows.test.sh
         # fleet-ops#1296: reject typo'd/unregistered action@<sha> pins in
@@ -184,10 +175,6 @@ jobs:
         bash tests/prometheus-retention-40d.test.sh
         # fleet-ops#1460: lock the timer manifest shape (every user timer
         # has a manifest entry with a named reason — schedule-needs-reason).
-        # fleet-ops#6537: MANIFEST-installed [Install] template instances
-        # (gh-runner@{1,2,3}) are expected-enabled; non-MANIFEST templates
-        # still alarm. Was re-firing DRIFT-UNITS every tick (#6366).
-        bash tests/fleet-ops-drift-template-instances.test.sh
         # fleet-ops#1534: single chokepoint for messages to Nish's phone.
         # hermes outbound class-gate (--urgent requires sanctioned --class),
         # alertmanager routing matrix (only severity=page -> telegram),
@@ -244,7 +231,7 @@ jobs:
         for f in bin/!(*.py|*.ts|*.mjs|*.js); do
           [[ -f "$f" ]] && files+=("$f")
         done
-        files+=(.github/scripts/gate-integrity.sh install.sh)
+        files+=(.github/scripts/gate-integrity.sh)
         shellcheck -x "${files[@]}"
         # `systemd-analyze verify` checks ExecStart paths exist; the units
         # reference VPS paths a hosted runner lacks, so create empty stubs
@@ -252,13 +239,11 @@ jobs:
         # verify unit-file SYNTAX only. Collect all failures, then exit.
         for p in \
           /home/nish/.local/bin/pi \
-          /home/nish/.local/bin/agent-cron-run \
           /home/nish/.local/bin/siterep-deploy \
           /home/nish/.local/bin/siterep-deploy-verify \
           /home/nish/.local/bin/siterep-deploy-rollback \
           /home/nish/.local/bin/siterep-live-canary \
           /home/nish/.local/bin/siterep-uptime \
-          /home/nish/.local/bin/fleet-deploy-check \
           /home/nish/.local/bin/fleet-escalation-completion \
           /usr/bin/redis-server \
         do

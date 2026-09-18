@@ -19,11 +19,11 @@ repo_root="$(cd "$here/.." && pwd)"
 fail() { echo "FAIL: $*" >&2; exit 1; }
 ok()   { echo "OK: $*"; }
 
-# Worker App tokens cannot add a workflow step. system-dropins-shape.test.sh
+# system-dropins-shape.test.sh was deleted with MANIFEST (2026-09-18); this
 # is already in the P14 verify-command list, so this lock rides along there.
-grep -Fq 'systemd-analyze-slices.test.sh' "$repo_root/tests/system-dropins-shape.test.sh" \
-  || fail "tests/system-dropins-shape.test.sh must invoke systemd-analyze-slices.test.sh"
-ok "lock is wired through tests/system-dropins-shape.test.sh (already in P14)"
+grep -Fq 'systemd-analyze-slices.test.sh' "$repo_root/.github/workflows/ci.yml" \
+  || fail ".github/workflows/ci.yml must invoke systemd-analyze-slices.test.sh"
+ok "lock is wired directly in ci.yml (its old host, system-dropins-shape.test.sh, was deleted with MANIFEST)"
 
 shopt -s nullglob
 slices=("$repo_root"/systemd/*.slice)

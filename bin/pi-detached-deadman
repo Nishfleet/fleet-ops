@@ -28,7 +28,7 @@
 # fleet-unit-stop) when auditd is installed; the line is echo'd to stderr so
 # it lands in the unit's journal (and therefore in the STOP-REASON detail
 # captured by unit-escalation-write). No auditd = the line says so; the
-# auditd install is shipped by install.sh --system + the bare-metal manifest.
+# auditd rules ship in config/audit/rules.d/ and are root-copied by hand.
 #
 # Exit contract (fleet-ops#5456): exits 1 when the verdict is `died` so a
 # clean-stop-without-deliverable still lands the unit in `failed` and fires
@@ -340,7 +340,7 @@ if [[ -n "$error_class" ]]; then
 fi
 
 stopper_line=""
-[[ -z "$stopper_line" ]] && stopper_line="who-stopped: no audit trail (auditd not installed?) — install.sh --system ships /etc/audit/rules.d/30-fleet-unit-stop.rules"
+[[ -z "$stopper_line" ]] && stopper_line="who-stopped: no audit trail (auditd not installed?) — the repo ships /etc/audit/rules.d/30-fleet-unit-stop.rules"
 
 if [[ "${PI_DEADMAN_DRYRUN:-0}" == "1" ]]; then
     if [[ "$died" == "1" ]]; then

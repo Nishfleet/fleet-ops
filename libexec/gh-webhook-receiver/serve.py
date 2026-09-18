@@ -32,13 +32,13 @@ issues, action=labeled (any label)
 issues, action=labeled, label=agent-ready
         → start pi-intake@<repo>.service
 issues, action=labeled, label=pipeline-red
-        → start fleet-deploy-check.service
+        → start fleet-sync.service
 issues, action=opened, label=agent-ready
         → start pi-intake@<repo>.service   (race-safe: the tick will dedupe)
 issues, action=closed
         → start fleet-issue-close-duplicates.service
 workflow_run, action=completed, conclusion=success
-        → start fleet-deploy-check.service
+        → start fleet-sync.service
 pull_request, action=closed (merged OR closed)
         (merged-PR close route removed in the 2026-09-18 second cut)
 ping    → no-op (200)
@@ -203,7 +203,7 @@ def dispatch(event: str, action: str, label: str, repo: str, conclusion: str,
     ``enrolled`` is the set of repos in config/intake-repos.json. A
     pi-intake@<repo> dispatch is refused for a repo NOT in that set —
     the synthetic canary repo (fleet-ops-canary) is the canonical
-    non-enrolled case. fleet-deploy-check is fleet-wide, NOT per-repo,
+    non-enrolled case. fleet-sync is fleet-wide, NOT per-repo,
     so it is never enrollment-gated. The lifecycle-label-sweep and
     close-duplicates dispatches are also enrollment-agnostic: they
     read config/intake-repos.json themselves and never reach a
@@ -286,8 +286,8 @@ def dispatch(event: str, action: str, label: str, repo: str, conclusion: str,
                 units.append((f"pi-intake@{repo}.service",
                               f"issues/{action}/agent-ready → pi-intake@{repo}"))
             elif action == "labeled" and label == "pipeline-red":
-                units.append(("fleet-deploy-check.service",
-                              f"issues/labeled/pipeline-red → fleet-deploy-check"))
+                units.append(("fleet-sync.service",
+                              f"issues/labeled/pipeline-red → fleet-sync"))
             elif action == "opened" and label == "agent-ready":
                 if enrolled is not None and repo not in enrolled:
                     return [("", f"issues: {repo!r} not enrolled in intake-repos.json")]
@@ -305,8 +305,8 @@ def dispatch(event: str, action: str, label: str, repo: str, conclusion: str,
 
     if event == "workflow_run":
         if action == "completed" and conclusion == "success":
-            return [("fleet-deploy-check.service",
-                     "workflow_run/completed/success → fleet-deploy-check")]
+            return [("fleet-sync.service",
+                     "workflow_run/completed/success → fleet-sync")]
         return [("", f"workflow_run: ignored (action={action}, conclusion={conclusion})")]
 
     return [("", f"unknown event: {event!r}")]

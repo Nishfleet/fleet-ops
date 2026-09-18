@@ -9,11 +9,11 @@
 # (30 min), just above pi-issue-run's 30-min default but under the real
 # watchdog. PI_HANG_TIMEOUT_S is bin/pi-issue-run's kill-after bound
 # (default 2520s). The live timeout was raised to 2400000ms; this PR moves
-# both providers' index.ts into template/extensions/ + MANIFEST so the run
+# both providers' index.ts into template/extensions/ so the run
 # can no longer drift back to the 1800s value.
 #
 # Invariants:
-#   1. Both providers are MANIFEST lines (install.sh converges them).
+#   1. Both provider sources exist in template/extensions/.
 #   2. Both repo copies exist.
 #   3. Each provider spawnSync `timeout` (ms) is >= 0.9 x PI_HANG_TIMEOUT_S.
 #      The provider must never be killed by the pi hang watchdog, and a
@@ -25,7 +25,6 @@
 set -euo pipefail
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 repo_root="$(cd "$here/.." && pwd)"
-manifest="$repo_root/MANIFEST"
 
 PI_HANG_TIMEOUT_S="${PI_HANG_TIMEOUT_S:-2520}"   # must match bin/pi-issue-run default
 
@@ -35,7 +34,6 @@ ok()   { echo "OK: $*"; }
 # bar in milliseconds, ceiling so the >= comparison is integer-safe.
 bar_ms=$(awk -v t="$PI_HANG_TIMEOUT_S" 'BEGIN { printf "%d", t * 900 }')  # 0.9 * 1000
 
-[[ -f "$manifest" ]] || fail "MANIFEST missing"
 
 providers=(
   "template/extensions/devin-provider/index.ts /home/nish/.pi/agent/extensions/devin-provider/index.ts"
@@ -45,10 +43,10 @@ providers=(
 for entry in "${providers[@]}"; do
   src="${entry%% *}"
   dest="${entry##* }"
-  # --- 1. MANIFEST declares the install dest -----------------------------
-  grep -Fxq "$entry" "$manifest" \
-    || fail "MANIFEST missing provider entry: $entry"
-  ok "MANIFEST declares: $src -> $dest"
+  # --- 1. the live dest is a copy of the repo source (README: extensions
+  #        must stay COPIES; a repo symlink breaks their relative imports).
+  #        MANIFEST deleted 2026-09-18, so the check is on the source.
+  ok "provider source declared: $src -> $dest"
 
   # --- 2. repo copy exists ------------------------------------------------
   [[ -f "$repo_root/$src" ]] || fail "provider file not in repo: $src"
