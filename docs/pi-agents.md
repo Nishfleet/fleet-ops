@@ -1,6 +1,10 @@
 <!-- CANONICAL: Pi AGENTS.md shared body.
-     Edit this file and run `bin/render-pi-agents-md.py --render` to
-     propagate changes to ~/AGENTS.md and ~/.pi/agent/AGENTS.md. -->
+     Wording authority: nish-vault global-standing-rules.md. This file
+     mirrors into ~/AGENTS.md and ~/.pi/agent/AGENTS.md. Since the
+     2026-09-18 glue sweep (fleet-ops f8b567588, fleet-ops#5694) deleted
+     bin/render-pi-agents-md.py, the surfaces are hand-edited markdown:
+     edit this file, then copy the shared body into both surfaces (keep
+     each host's H1 heading). -->
 
 ## READ FIRST — BEFORE BUILDING ANYTHING NEW (Nish, 2026-08-28, on top for ALL agents)
 

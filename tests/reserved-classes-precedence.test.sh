@@ -15,12 +15,13 @@
 #      BOTH privacy AND customer-data deletion — the two items that made
 #      the old surface lists non-supersets.
 #
-# Live rendered targets (~/AGENTS.md, ~/.claude/CLAUDE.md) are verified by
-# `bin/render-standing-rules.py --check --canonical <repo canonical>` and
-# `bin/render-pi-agents-md.py --check` when those targets exist on this
-# host: drift there is a hard FAIL (a silent no-op render once shipped as
-# green against the deploy-clone default canonical). On a bare CI host the
-# targets are absent and those checks SKIP.
+# Live rendered targets (~/AGENTS.md, ~/.claude/CLAUDE.md): the render
+# machinery (bin/render-standing-rules.py, bin/render-pi-agents-md.py) and
+# their drift-check blocks were deleted in the 2026-09-18 glue sweep
+# (fleet-ops f8b567588, fleet-ops#5694). The surfaces are now hand-edited
+# plain markdown; the text assertions below (not byte-level drift checks)
+# are what keep guarding the reserved-classes precedence on the live
+# surfaces. Where a live surface is absent (bare CI host) the check SKIPS.
 
 set -euo pipefail
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
