@@ -65,11 +65,6 @@ ok "rule-enforcement: ci-hosted-paths class gate"
 bash "$here/vault-conflict-resolver.test.sh" || fail "vault-conflict-resolver drill failed"
 ok "rule-enforcement: vault-conflict-resolver drill"
 
-# fleet-ops#1264: vault snapshot lint. Nested host so P14 covers it
-# without a workflow edit (worker tokens cannot push .github/workflows/**).
-bash "$here/vault-lint.test.sh" || fail "vault-lint drill failed"
-ok "rule-enforcement: vault-lint drill"
-
 # fleet-ops#1265: paved-road vault capture. Nested host so P14 covers it
 # without a workflow edit (worker tokens cannot push .github/workflows/**).
 

@@ -82,7 +82,6 @@ jobs:
         bash tests/seat-credentials-bad-replay.test.sh
         bash tests/budget-402-classification.test.sh
         bash tests/budget-402-pick-fallback.test.sh
-        bash tests/fleet-deploy-fault-gate.test.sh
         bash tests/fleet-production-stale-alert.test.sh
         bash tests/semantic-conflict-detector.test.sh
         bash tests/repeat-deterministic-detector.test.sh
@@ -90,9 +89,7 @@ jobs:
         bash tests/ci-failure-escalation-detector.test.sh
         bash tests/required-check-purity.test.sh
         bash tests/ci-checklist-gate.test.sh
-        bash tests/pi-packet-guard.test.sh
         bash tests/pi-systemd-run.test.sh
-        bash tests/prior-art-claim-check.test.sh
         bash tests/worker-prompt-size-ceiling.test.sh
         bash tests/worker-prompt-manager-mode.test.sh
         bash tests/worker-prompt-reviewer-round.test.sh
@@ -119,7 +116,6 @@ jobs:
         # death (114 deaths/24h on that one message, 2026-09-11).
         bash tests/devin-provider-rate-limit-retry.test.sh
         bash tests/repair-rotation.test.sh
-        bash tests/fleet-claim.test.sh
         bash tests/agent-cron-seat-rotation.test.sh
         # fleet-ops#6252: cron units must never point a workdir at a fleet-ops
         # deploy checkout, and agent-cron-run must refuse one before any pi

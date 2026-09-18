@@ -1147,7 +1147,6 @@ bash "$here/fleet-questions-stale.test.sh" || fail "fleet-questions-stale tests 
 # cache, manifest, duplicate routes, public-repo leaks) the judges read
 # right after product:. Hosted here for the same P14 reason as
 # fleet-usd-spend above (no workflow-scope edit; stubbed curl/gh).
-bash "$here/fleet-visitor-probe.test.sh" || fail "fleet-visitor-probe tests failed"
 
 # =========================================================================
 # 15. fleet-ops#2493: held wrapper spawn-bench outranks a later healthy

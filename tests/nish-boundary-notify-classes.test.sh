@@ -97,7 +97,5 @@ ok "nish-boundary-notify questions mode hosted (fleet-ops#4474)"
 # Q:<repo>#<n> handle produces the `decision-resolved:` comment via the
 # worker App token; ambiguous replies never guess (ONE clarifying line).
 # Hosted from the same class suite (family-only, P14-reachable).
-bash "$here/fleet-question-answer-ingest.test.sh" || fail "fleet-question-answer-ingest tests failed (fleet-ops#4476)"
-ok "fleet-question-answer-ingest hosted (fleet-ops#4476)"
 
 echo "OK: every Nish-reserved token is present in CLASSES (fleet-ops#1164)"

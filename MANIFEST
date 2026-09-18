@@ -149,11 +149,6 @@ lib/slo_budget.py /home/nish/.local/lib/pi-packet/slo_budget.py
 # the issue's rollback contract); the gauges land in fleet.prom on the
 # existing 5-min tick. Same install dir as the other lib modules.
 lib/fleet-deploy-quality.py /home/nish/.local/lib/pi-packet/fleet-deploy-quality.py
-# fleet-ops#5785: deploy-fault issue class + green-run production proof,
-# shared by bin/fleet-merged-pr-close (close gate) and
-# bin/lifecycle-label-sweep (deploy-fault labelling + reopen pass). A lib,
-# not an organ — no unit, no timer.
-lib/deploy-fault-gate.sh /home/nish/.local/lib/pi-packet/deploy-fault-gate.sh
 # fleet-ops#4459: rate-card USD math shared by measure.sh and the exporter's
 # fleet_usd_24h metric (like fleet-deploy-quality.py, lazy-loaded inside
 # libexec/fleet-metrics-export.py, no service change).
@@ -174,7 +169,6 @@ lib/fleet-questions.sh /home/nish/.local/lib/pi-packet/fleet-questions.sh
 # reply / Claude-session answer into the `decision-resolved:` comment via the
 # worker App token (never a human-gh write). Hermes' rule and the Claude
 # nish-questions-pipeline memory both pipe replies here on stdin.
-bin/fleet-question-answer-ingest /home/nish/.local/bin/fleet-question-answer-ingest
 systemd/pi-issue@.service /home/nish/.config/systemd/user/pi-issue@.service
 systemd/pi-issue-failed@.service /home/nish/.config/systemd/user/pi-issue-failed@.service
 systemd/app-pi\x2dissue.slice /home/nish/.config/systemd/user/app-pi\x2dissue.slice
@@ -258,8 +252,6 @@ bin/pi-packet-guard /home/nish/.local/bin/pi-packet-guard
 # and the service carries Restart=on-failure so a transient wall delays the
 # daily job instead of killing it for the day.
 bin/agent-cron-run /home/nish/.local/bin/agent-cron-run
-systemd/agent-cron-0509-daily-market-signal.service /home/nish/.config/systemd/user/agent-cron-0509-daily-market-signal.service
-systemd/agent-cron-0509-daily-market-signal.timer /home/nish/.config/systemd/user/agent-cron-0509-daily-market-signal.timer
 # fleet-ops#4260: orchestrator decision sweep — drains needs-orchestrator.
 # On-demand service only (no timer): blocked-reconcile starts it when an
 # open needs-orchestrator issue is older than 1h; the prompt's
@@ -280,10 +272,6 @@ systemd/0509-search-tier-canary.timer /home/nish/.config/systemd/user/0509-searc
 # IS endorsed, so this is sanctioned class (a), not the class (c) the audit
 # flagged by "hand-placed" alone. Fail-loud watchdog (no heartbeat metric,
 # not an organ). install.sh symlinks over the live file in place.
-# fleet-ops#317: the daily market-signal prompt must live in the repo and be
-# installed by MANIFEST, otherwise a missing untracked prompt causes every
-# scheduled timer fire to FATAL immediately.
-prompts/0509-daily-market-signal.md /home/nish/.pi/agent/prompts/0509-daily-market-signal.md
 # fleet-ops#541: weekly quality>speed>efficiency research sweep. Reuses
 # agent-cron-run (need <slug>) instead of a second wrapper. Same live unit
 # names as the 2026-08-26 drop-in so install overwrites that unmanaged pair.
@@ -712,7 +700,6 @@ systemd/vault-conflict-resolver.path /home/nish/.config/systemd/user/vault-confl
 # check-command and a fresh observed timestamp. --check is the worker
 # pre-write gate; --report is the heartbeat drift surface; --pre-write
 # is the capture-wrapper refuse path (slice 4 / #1265 calls it).
-lib/vault-lint.py /home/nish/.local/bin/vault-lint
 # fleet-ops#1265: paved-road vault capture. One-command drop-zone note with
 # auto-provenance and inline lint. The ratio helper is the weekly adoption
 # metric (drop vs direct-with-wrapper) from the vault capture audit log.
@@ -825,10 +812,6 @@ config/bare-metal-rebuild-manifest.json /home/nish/.config/fleet-ops/bare-metal-
 # auto-filer. Runs weekly before the Weekly Fleet Review, writes Prometheus
 # textfile metrics, and auto-files deduped `unguarded asset:` issues.
 config/asset-guard-map.json /home/nish/.local/state/pi-packet/asset-guard-map.json
-# fleet-ops#5785: stranded recorded merge SHAs (main-history rewrites) ->
-# on-main replacements, consumed by lib/deploy-fault-gate.sh so the
-# deploy-fault containment proof survives a rewrite.
-config/deploy-fault-stranded-merges.json /home/nish/.local/state/pi-packet/deploy-fault-stranded-merges.json
 # fleet-ops#1460: event-driven sweep. Convert pollers to systemd .path triggers
 # and gate every remaining schedule with a named reason in timer-manifest.json.
 # Each .path unit fires on the state file its service renders; the timer stays
