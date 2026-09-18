@@ -341,7 +341,7 @@ groups:
           service: host
         annotations:
           summary: "load1 above 3x core count for 2m — restart storm likely"
-          description: "node_load1 > 3 * count(idle cpus) (3x nproc). Prevented by oomd + CPUWeight/IOWeight + cgroup scoping; if it still fires, alert-repair-dispatch root-causes it."
+          description: "node_load1 > 3 * count(idle cpus) (3x nproc). Prevented by oomd + CPUWeight/IOWeight + cgroup scoping; if it still fires, the repair path root-causes it."
 
       - alert: SustainedLoadHigh
         expr: node_load15 > 12
@@ -396,9 +396,9 @@ groups:
           description: "sum(fleet_merged_prs_24h) < 10 for 6h. Family omitted (stale gh cache) does not fire this rule."
 
       # fleet-ops#1199: tightened from 2h to 30m. The 30m floor is enforced
-      # by the alert-repair-dispatch mutex (claim/<alert-scope>-<repo> on
-      # the target repo) so two dispatches 10s apart cannot both spawn a
-      # worker. The threshold is ratchet-managed from this 30m start —
+      # by prometheus-am-executor's `max: 1` (the claim/<alert-scope>-<repo>
+      # mutex went with the deleted alert-repair-dispatch), so two dispatches
+      # 10s apart cannot both spawn a worker. The threshold is ratchet-managed from this 30m start —
       # raising it back requires a new issue and the same atomic guard
       # to ship with the change.
       - alert: FleetMainRed
@@ -409,7 +409,7 @@ groups:
           service: fleet
         annotations:
           summary: "main branch CI red on {{ $labels.repo }} for 30+ minutes"
-          description: "Trunk is broken; merges/deploys unsafe. The alert-repair-dispatch mutex guarantees exactly one repair worker spawns per (alert, repo) pair."
+          description: "Trunk is broken; merges/deploys unsafe. prometheus-am-executor runs the repair command with `max: 1`, so exactly one repair worker spawns at a time."
   - name: fleet_undersaturation_guard
     rules:
       - alert: FleetUndersaturated
@@ -596,26 +596,13 @@ groups:
           summary: "gh rate-limit metrics absent — the #1350 governor path is missing or dead"
           description: "Repair worker: fleet_gh_rate_limit_fetched_seconds is absent or older than 30m. fleet-metrics-export.py must call `gh api rate_limit` and write the side-car state file. Check journalctl --user -u fleet-metrics-export.service for the fetcher error, gh auth (`gh auth status`), and the PR_CACHE_DIR/gh-rate-limit-cache.json cache. The throttle gate in pi-intake-tick.sh fail-OPENS on a missing state file, so a dead fetcher silently removes the API budget governor — fix the fetcher, not the throttle."
 
-      # Sustained-exhaustion TREND alert (fleet-ops#1350). The 20% threshold
-      # is the soft throttle (intake holds claims this tick). A TREND alert
-      # (delta over 6h) catches SUSTAINED exhaustion — a busy hour that
-      # bounces off 18% briefly is not a fault, but staying below 20% for
-      # most of a 6h window means the worker count is past the API budget.
-      # The `low` gauge is the exporter's precomputed 0/1 (any of the
-      # three resources below 20% → 1), so the alert does not re-derive
-      # the threshold. max() over all resources because exhaustion on ANY
-      # resource is a fault; do not narrow the scope with avg() (a 5000/hr
-      # core budget at 19% is a real problem even with search/graphql
-      # healthy). offset 6h cannot fire on the first 6h after deploy.
-      - alert: FleetGhRateLimitLowSustained
-        expr: (max(fleet_gh_rate_limit_low) - max(fleet_gh_rate_limit_low offset 6h)) > 0
-        for: 6h
-        labels:
-          severity: warning
-          service: fleet
-        annotations:
-          summary: "gh rate-limit has been below 20% for 6+ hours"
-          description: "max(fleet_gh_rate_limit_low{resource=...}) flipped from 0 to 1 in the last 6h, sustained 6h. The throttle gate in pi-intake-tick.sh has been holding claims the whole window. A rate-limited fleet is slower than a governed one (Nish 2026-08-27 #1167). Inspect fleet_gh_rate_limit_remaining{resource=\"...\"} to see which resource is exhausted; fleet_gh_rate_limit_reset is the time-to-reset. Recovery: either (1) wait for the window to reset, or (2) reduce the worker count (drop free-lane caps in config/seat-caps.json). The alert is a TREND (delta) not a level so a brief 19% spike does not fire."
+      # FleetGhRateLimitLowSustained (fleet-ops#1350) deleted 2026-09-18: its
+      # inputs fleet_gh_rate_limit_low/_remaining/_reset were cut from the
+      # exporter in the fourth glue cut (0 fires in 40d, no other reader).
+      # GitHub rate-limit headroom is still covered by
+      # fleet_slo_compliance{slo="gh_rate_limit_headroom"}, which reads the
+      # in-process _gh_rate_limit() dict and is unaffected. The soft throttle
+      # in pi-intake-tick.sh also reads that dict directly, not Prometheus.
 
   - name: fleet_grok_token_refresh_supply
     rules:
@@ -650,7 +637,7 @@ groups:
   # - RATIO SLOs (main_green, seat_availability): multiwindow burn-rate.
   #     burn_rate = (1 - avg_over_time(fleet_slo_compliance{slo}[W])) / (1 - target)
   #     Fast burn = 14.4x sustained over BOTH 1h AND 5m (long+short suppress flap).
-  #     Slow burn = 1x sustained over BOTH 6h AND 30m (feeds the WFR).
+  #     Slow burn = 1x sustained over BOTH 6h AND 30m.
   #     Gated on fleet_slo_instrumented{slo} == 1 so an uninstrumented SLO
   #     (source metric pending) never burns budget it cannot measure.
   # - THRESHOLD-GAUGE SLOs (waste_ratio, gh_rate_limit_headroom): the
@@ -659,7 +646,7 @@ groups:
   #     threshold-window alerts on the raw source metric instead.
   # severity: fast_burn=critical (pages the repair rail, NOT Nish's phone —
   # fleet-ops#1534 reserves severity=page for RepairDispatchDown only),
-  # slow_burn=warning (feeds the WFR alert-quality lens).
+  # slow_burn=warning (quality lens; read on demand since the WFR was deleted).
   - name: fleet_slo_burn
     rules:
       # Organ heartbeat (fleet-ops#1010): the SLO metric family is emitted
@@ -695,7 +682,7 @@ groups:
           service: fleet
         annotations:
           summary: "SLO main_green slow burn — CI green fraction trending below the 99% budget line"
-          description: "WFR input: the main_green SLO is in slow burn — on pace to exhaust its weekly error budget. Not paging; feeds the weekly fleet review alert-quality lens. NOTE: this is a windowed burn-rate alert (6h AND 30m avg_over_time), not a point-in-time check — it legitimately fires for up to 30m after all repos go green because the 30m window still includes recent red history. The green map (fleet_main_ci_green) is point-in-time; the SLO is windowed. They disagree by design during recovery. fleet-ops#1291, #3367."
+          description: "Quality-lens input: the main_green SLO is in slow burn — on pace to exhaust its weekly error budget. Not paging. (The Weekly Fleet Review that consumed these was deleted; they are now read on demand.) NOTE: this is a windowed burn-rate alert (6h AND 30m avg_over_time), not a point-in-time check — it legitimately fires for up to 30m after all repos go green because the 30m window still includes recent red history. The green map (fleet_main_ci_green) is point-in-time; the SLO is windowed. They disagree by design during recovery. fleet-ops#1291, #3367."
 
       # fleet-ops#3367: consistency check — SLO compliance and the per-repo
       # green map both derive from the same main_ci dict in one atomic export,
@@ -731,13 +718,13 @@ groups:
           service: fleet
         annotations:
           summary: "SLO seat_availability slow burn — healthy seats trending below the 90% budget line"
-          description: "WFR input: the seat_availability SLO is in slow burn. Repair terminates in the intake REPAIR-RUNG (fleet-ops#4639) — after two consecutive ticks with usable slots < 2, intake claims critical-path fleet-ops on reserved seats (litellm judge / mergegateway audition / cursor keystone). When this alert has been firing >1h, alert-repair-dispatch auto-files or links exactly one critical-path fleet-ops issue (signal: slo/seat-availability-slowburn, fleet-ops#4773) and notifies am-executor. Alert-repair workers cannot raise seats; this warning must not page Nish. fleet-ops#1291."
+          description: "Quality-lens input: the seat_availability SLO is in slow burn. Repair terminates in the intake REPAIR-RUNG (fleet-ops#4639) — after two consecutive ticks with usable slots < 2, intake claims critical-path fleet-ops on reserved seats (litellm judge / mergegateway audition / cursor keystone). When this alert has been firing >1h, the repair path (alertmanager -> prometheus-am-executor -> prompts/alert-repair.md) files or links exactly one critical-path fleet-ops issue (signal: slo/seat-availability-slowburn, fleet-ops#4773); the 1,811-line alert-repair-dispatch it used to run was deleted 2026-09-18. Alert-repair workers cannot raise seats; this warning must not page Nish. fleet-ops#1291."
 
       # --- gh_rate_limit_headroom: threshold-gauge SLO, target 0.20 (min) ---
       # Fires when min(remaining/limit) across core/search/graphql drops
       # below 20% for 30m. The existing FleetGhRateLimitLow level alert and
       # the 6h trend alert cover the same signal; this SLO alert is the
-      # budget-framed wrapper that feeds the WFR SMOOTH verdict.
+      # budget-framed wrapper for the SMOOTH verdict.
       - alert: FleetSloGhRateLimitHeadroomLow
         expr: (fleet_slo_instrumented{slo="gh_rate_limit_headroom"} == 1) and (fleet_slo_compliance{slo="gh_rate_limit_headroom"} < 0.20)
         for: 30m
@@ -746,7 +733,7 @@ groups:
           service: fleet
         annotations:
           summary: "SLO gh_rate_limit_headroom low — GitHub rate limit below 20% headroom for 30m+"
-          description: "WFR input: the gh_rate_limit_headroom SLO (min remaining/limit ≥ 20%) is under target. Inspect fleet_gh_rate_limit_remaining{resource=...}; fleet_gh_rate_limit_reset is time-to-reset. fleet-ops#1291."
+          description: "Quality-lens input: the gh_rate_limit_headroom SLO (min remaining/limit ≥ 20%) is under target. Inspect with `gh api rate_limit` — the fleet_gh_rate_limit_remaining/_reset gauges were cut on 2026-09-18 (the SLO reads the in-process dict, not Prometheus). fleet-ops#1291."
 
   - name: fleet_deploy_quality
     rules:
@@ -838,10 +825,9 @@ groups:
       # run failed Gate C, 0509#2662 was closed by PR #2949 with no green
       # run proving the fix, and 100+ AUTO-REVERT HALT issues piled up —
       # a human found it by hand. severity=critical + repair_seat=flagship
-      # routes the packet to a SENIOR seat through alert-repair-dispatch
-      # (the Stalled dispatches to the cheapest healthy seat could see the
-      # alert but never fixed the fault); the claim mutex still applies so
-      # repeats cannot pile up. The AUTO-REVERT HALT issue pile-up is NOT
+      # routes the packet to a SENIOR seat (the Stalled dispatches to the
+      # cheapest healthy seat could see the alert but never fixed the fault);
+      # am-executor's `max: 1` still applies so repeats cannot pile up. The AUTO-REVERT HALT issue pile-up is NOT
       # the escalation path — halts are noise-class, this alert is the
       # flagship repair dispatch.
       - alert: FleetProductionStale
@@ -904,7 +890,8 @@ groups:
       # `Deploy production` run proving the fix — the lifecycle sweep already
       # reopened it (that IS the repair), so this alert is the audit
       # tripwire only: it must stay 0 and it never spawns a worker
-      # (SKIP_SET in libexec/alert-repair-dispatch). A count >0 means some
+      # (the audit-only class; alert-repair-dispatch's SKIP_SET is gone with
+      # it, so keep this rule out of any repair route). A count >0 means some
       # close path bypassed the gate — GitHub auto-close on a merged trailer,
       # a human close, or a regression in the gate itself.
       - alert: FleetDeployFaultClosedWithoutGreen
@@ -1023,7 +1010,7 @@ groups:
 
       # FleetCursorPrepaidSpendReaderAbsent: the spend reader is dead or
       # the canary tick stopped writing the textfile. severity=warning so
-      # alert-repair-dispatch spawns a worker; the absence is the fault,
+      # the repair path spawns a worker; the absence is the fault,
       # not a slow burn.
       - alert: FleetCursorPrepaidSpendReaderAbsent
         expr: absent(fleet_prepaid_spend_usd{provider="cursor"})
@@ -1041,7 +1028,7 @@ groups:
       # $400 pool will not be spent by the reset. The repair packet adds
       # difficulty: senior-review to waiting heavy issues so pick_seat routes
       # them to the cursor/cursor-grok-4.6-high senior ladder.
-      # severity=warning so alert-repair-dispatch spawns a worker that
+      # severity=warning so the repair path spawns a worker that
       # edits issue bodies (gh issue edit --body) per the fable-check
       # 'Cursor API budget' block.
       - alert: FleetCursorPrepaidBurnPacingLow
