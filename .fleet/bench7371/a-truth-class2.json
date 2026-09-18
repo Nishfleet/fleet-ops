@@ -1,0 +1,711 @@
+{
+"3064": {
+"records": [
+{
+"record": 3081,
+"kind": "label:deploy-fault",
+"created": "2026-09-11T22:27:13Z",
+"state": "closed"
+},
+{
+"record": 3075,
+"kind": "title:auto-revert",
+"created": "2026-09-11T22:22:40Z",
+"state": "closed"
+}
+],
+"positives": [
+3081,
+3075
+]
+},
+"3072": {
+"records": [
+{
+"record": 3166,
+"kind": "label:deploy-fault",
+"created": "2026-09-12T04:09:12Z",
+"state": "closed"
+}
+],
+"positives": [
+3166
+]
+},
+"3089": {
+"records": [
+{
+"record": 3166,
+"kind": "label:deploy-fault",
+"created": "2026-09-12T04:09:12Z",
+"state": "closed"
+}
+],
+"positives": [
+3166
+]
+},
+"3094": {
+"records": [
+{
+"record": 3166,
+"kind": "label:deploy-fault",
+"created": "2026-09-12T04:09:12Z",
+"state": "closed"
+}
+],
+"positives": [
+3166
+]
+},
+"3116": {
+"records": [
+{
+"record": 3166,
+"kind": "label:deploy-fault",
+"created": "2026-09-12T04:09:12Z",
+"state": "closed"
+}
+],
+"positives": [
+3166
+]
+},
+"3118": {
+"records": [
+{
+"record": 3166,
+"kind": "label:deploy-fault",
+"created": "2026-09-12T04:09:12Z",
+"state": "closed"
+}
+],
+"positives": [
+3166
+]
+},
+"3119": {
+"records": [
+{
+"record": 3166,
+"kind": "label:deploy-fault",
+"created": "2026-09-12T04:09:12Z",
+"state": "closed"
+}
+],
+"positives": [
+3166
+]
+},
+"3131": {
+"records": [
+{
+"record": 3296,
+"kind": "label:deploy-fault",
+"created": "2026-09-12T13:05:29Z",
+"state": "open"
+}
+],
+"positives": [
+3296
+]
+},
+"3134": {
+"records": [
+{
+"record": 3166,
+"kind": "label:deploy-fault",
+"created": "2026-09-12T04:09:12Z",
+"state": "closed"
+}
+],
+"positives": [
+3166
+]
+},
+"3137": {
+"records": [
+{
+"record": 3174,
+"kind": "label:deploy-fault",
+"created": "2026-09-12T04:23:54Z",
+"state": "closed"
+}
+],
+"positives": [
+3174
+]
+},
+"3148": {
+"records": [
+{
+"record": 3166,
+"kind": "label:deploy-fault",
+"created": "2026-09-12T04:09:12Z",
+"state": "closed"
+}
+],
+"positives": [
+3166
+]
+},
+"3153": {
+"records": [
+{
+"record": 3264,
+"kind": "label:deploy-fault",
+"created": "2026-09-12T10:08:33Z",
+"state": "open"
+}
+],
+"positives": [
+3264
+]
+},
+"3154": {
+"records": [
+{
+"record": 3242,
+"kind": "label:deploy-fault",
+"created": "2026-09-12T08:51:36Z",
+"state": "open"
+}
+],
+"positives": [
+3242
+]
+},
+"3181": {
+"records": [
+{
+"record": 3330,
+"kind": "label:deploy-fault",
+"created": "2026-09-13T01:23:54Z",
+"state": "open"
+}
+],
+"positives": [
+3330
+]
+},
+"3184": {
+"records": [
+{
+"record": 3512,
+"kind": "label:deploy-fault",
+"created": "2026-09-14T12:09:42Z",
+"state": "open"
+},
+{
+"record": 3314,
+"kind": "label:deploy-fault",
+"created": "2026-09-12T16:45:11Z",
+"state": "open"
+}
+],
+"positives": [
+3512,
+3314
+]
+},
+"3191": {
+"records": [
+{
+"record": 3409,
+"kind": "label:deploy-fault",
+"created": "2026-09-13T21:11:34Z",
+"state": "closed"
+},
+{
+"record": 3361,
+"kind": "label:repair:main-red",
+"created": "2026-09-13T10:55:58Z",
+"state": "closed"
+}
+],
+"positives": [
+3409,
+3361
+]
+},
+"3194": {
+"records": [
+{
+"record": 3242,
+"kind": "label:deploy-fault",
+"created": "2026-09-12T08:51:36Z",
+"state": "open"
+}
+],
+"positives": [
+3242
+]
+},
+"3216": {
+"records": [
+{
+"record": 3249,
+"kind": "label:deploy-fault",
+"created": "2026-09-12T09:33:14Z",
+"state": "open"
+},
+{
+"record": 3242,
+"kind": "label:deploy-fault",
+"created": "2026-09-12T08:51:36Z",
+"state": "open"
+}
+],
+"positives": [
+3249,
+3242
+]
+},
+"3220": {
+"records": [
+{
+"record": 3364,
+"kind": "label:deploy-fault",
+"created": "2026-09-13T11:28:12Z",
+"state": "open"
+}
+],
+"positives": [
+3364
+]
+},
+"3223": {
+"records": [
+{
+"record": 3249,
+"kind": "label:deploy-fault",
+"created": "2026-09-12T09:33:14Z",
+"state": "open"
+}
+],
+"positives": [
+3249
+]
+},
+"3228": {
+"records": [
+{
+"record": 3264,
+"kind": "label:deploy-fault",
+"created": "2026-09-12T10:08:33Z",
+"state": "open"
+}
+],
+"positives": [
+3264
+]
+},
+"3236": {
+"records": [
+{
+"record": 3272,
+"kind": "label:deploy-fault",
+"created": "2026-09-12T10:52:48Z",
+"state": "open"
+},
+{
+"record": 3270,
+"kind": "title:auto-revert",
+"created": "2026-09-12T10:35:48Z",
+"state": "closed"
+}
+],
+"positives": [
+3272,
+3270
+]
+},
+"3239": {
+"records": [
+{
+"record": 3272,
+"kind": "label:deploy-fault",
+"created": "2026-09-12T10:52:48Z",
+"state": "open"
+},
+{
+"record": 3264,
+"kind": "label:deploy-fault",
+"created": "2026-09-12T10:08:33Z",
+"state": "open"
+},
+{
+"record": 3257,
+"kind": "label:deploy-fault",
+"created": "2026-09-12T09:38:09Z",
+"state": "open"
+}
+],
+"positives": [
+3272,
+3264,
+3257
+]
+},
+"3240": {
+"records": [
+{
+"record": 3257,
+"kind": "label:deploy-fault",
+"created": "2026-09-12T09:38:09Z",
+"state": "open"
+}
+],
+"positives": [
+3257
+]
+},
+"3243": {
+"records": [
+{
+"record": 3266,
+"kind": "label:deploy-fault",
+"created": "2026-09-12T10:12:45Z",
+"state": "open"
+},
+{
+"record": 3265,
+"kind": "label:deploy-fault",
+"created": "2026-09-12T10:12:23Z",
+"state": "open"
+},
+{
+"record": 3264,
+"kind": "label:deploy-fault",
+"created": "2026-09-12T10:08:33Z",
+"state": "open"
+}
+],
+"positives": [
+3266,
+3265,
+3264
+]
+},
+"3245": {
+"records": [
+{
+"record": 3314,
+"kind": "label:deploy-fault",
+"created": "2026-09-12T16:45:11Z",
+"state": "open"
+}
+],
+"positives": [
+3314
+]
+},
+"3269": {
+"records": [
+{
+"record": 3286,
+"kind": "title:auto-revert",
+"created": "2026-09-12T11:32:06Z",
+"state": "closed"
+}
+],
+"positives": [
+3286
+]
+},
+"3273": {
+"records": [
+{
+"record": 3296,
+"kind": "label:deploy-fault",
+"created": "2026-09-12T13:05:29Z",
+"state": "open"
+}
+],
+"positives": [
+3296
+]
+},
+"3287": {
+"records": [
+{
+"record": 3296,
+"kind": "label:deploy-fault",
+"created": "2026-09-12T13:05:29Z",
+"state": "open"
+}
+],
+"positives": [
+3296
+]
+},
+"3313": {
+"records": [
+{
+"record": 3314,
+"kind": "label:deploy-fault",
+"created": "2026-09-12T16:45:11Z",
+"state": "open"
+}
+],
+"positives": [
+3314
+]
+},
+"3327": {
+"records": [
+{
+"record": 3330,
+"kind": "label:deploy-fault",
+"created": "2026-09-13T01:23:54Z",
+"state": "open"
+}
+],
+"positives": [
+3330
+]
+},
+"3345": {
+"records": [
+{
+"record": 3348,
+"kind": "title:auto-revert",
+"created": "2026-09-13T06:44:30Z",
+"state": "closed"
+}
+],
+"positives": [
+3348
+]
+},
+"3365": {
+"records": [
+{
+"record": 3392,
+"kind": "label:deploy-fault",
+"created": "2026-09-13T18:22:27Z",
+"state": "open"
+}
+],
+"positives": [
+3392
+]
+},
+"3366": {
+"records": [
+{
+"record": 3392,
+"kind": "label:deploy-fault",
+"created": "2026-09-13T18:22:27Z",
+"state": "open"
+}
+],
+"positives": [
+3392
+]
+},
+"3368": {
+"records": [
+{
+"record": 3413,
+"kind": "label:deploy-fault",
+"created": "2026-09-13T21:23:45Z",
+"state": "closed"
+},
+{
+"record": 3409,
+"kind": "label:deploy-fault",
+"created": "2026-09-13T21:11:34Z",
+"state": "closed"
+}
+],
+"positives": [
+3413,
+3409
+]
+},
+"3375": {
+"records": [
+{
+"record": 3392,
+"kind": "label:deploy-fault",
+"created": "2026-09-13T18:22:27Z",
+"state": "open"
+}
+],
+"positives": [
+3392
+]
+},
+"3377": {
+"records": [
+{
+"record": 3381,
+"kind": "label:deploy-fault",
+"created": "2026-09-13T16:27:30Z",
+"state": "open"
+}
+],
+"positives": [
+3381
+]
+},
+"3394": {
+"records": [
+{
+"record": 3412,
+"kind": "label:deploy-fault",
+"created": "2026-09-13T21:23:45Z",
+"state": "closed"
+},
+{
+"record": 3413,
+"kind": "label:deploy-fault",
+"created": "2026-09-13T21:23:45Z",
+"state": "closed"
+},
+{
+"record": 3409,
+"kind": "label:deploy-fault",
+"created": "2026-09-13T21:11:34Z",
+"state": "closed"
+}
+],
+"positives": [
+3412,
+3413,
+3409
+]
+},
+"3396": {
+"records": [
+{
+"record": 3403,
+"kind": "label:deploy-fault",
+"created": "2026-09-13T19:45:40Z",
+"state": "open"
+}
+],
+"positives": [
+3403
+]
+},
+"3397": {
+"records": [
+{
+"record": 3412,
+"kind": "label:deploy-fault",
+"created": "2026-09-13T21:23:45Z",
+"state": "closed"
+}
+],
+"positives": [
+3412
+]
+},
+"3398": {
+"records": [
+{
+"record": 3403,
+"kind": "label:deploy-fault",
+"created": "2026-09-13T19:45:40Z",
+"state": "open"
+}
+],
+"positives": [
+3403
+]
+},
+"3420": {
+"records": [
+{
+"record": 3438,
+"kind": "label:deploy-fault",
+"created": "2026-09-13T23:12:45Z",
+"state": "closed"
+}
+],
+"positives": [
+3438
+]
+},
+"3434": {
+"records": [
+{
+"record": 3438,
+"kind": "label:deploy-fault",
+"created": "2026-09-13T23:12:45Z",
+"state": "closed"
+},
+{
+"record": 3436,
+"kind": "title:auto-revert",
+"created": "2026-09-13T23:01:23Z",
+"state": "closed"
+}
+],
+"positives": [
+3438,
+3436
+]
+},
+"3443": {
+"records": [
+{
+"record": 3462,
+"kind": "title:auto-revert",
+"created": "2026-09-14T01:49:45Z",
+"state": "closed"
+}
+],
+"positives": [
+3462
+]
+},
+"3479": {
+"records": [
+{
+"record": 3489,
+"kind": "title:auto-revert",
+"created": "2026-09-14T10:15:12Z",
+"state": "closed"
+}
+],
+"positives": [
+3489
+]
+},
+"3491": {
+"records": [
+{
+"record": 3501,
+"kind": "label:deploy-fault",
+"created": "2026-09-14T11:06:55Z",
+"state": "closed"
+},
+{
+"record": 3492,
+"kind": "title:auto-revert",
+"created": "2026-09-14T10:49:24Z",
+"state": "closed"
+}
+],
+"positives": [
+3501,
+3492
+]
+},
+"3527": {
+"records": [
+{
+"record": 3586,
+"kind": "label:repair:main-red",
+"created": "2026-09-17T19:31:39Z",
+"state": "closed"
+}
+],
+"positives": [
+3586
+]
+}
+}

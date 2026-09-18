@@ -1,0 +1,2161 @@
+{
+"3527": {
+"positives": true,
+"classes": [
+"ii"
+],
+"evidence": {
+"ii": [
+{
+"record": 3586,
+"kind": "label:repair:main-red",
+"created": "2026-09-17T19:31:39Z",
+"state": "closed"
+}
+]
+},
+"quarter": 1
+},
+"3525": {
+"positives": true,
+"classes": [
+"iii"
+],
+"evidence": {
+"iii": [
+"d1/migrations:scripts/d1-migration-sync-check.lib.mjs",
+"d1/migrations:tests/d1-migration-sync-check.test.ts"
+]
+},
+"quarter": 1
+},
+"3526": {
+"positives": false,
+"classes": [],
+"evidence": {},
+"quarter": 1
+},
+"3524": {
+"positives": true,
+"classes": [
+"iii"
+],
+"evidence": {
+"iii": [
+"d1/migrations:scripts/d1-migration-sync-check.lib.mjs",
+"d1/migrations:scripts/d1-remote-restore-evidence-core.mjs",
+"d1/migrations:scripts/d1-remote-restore-evidence.mjs",
+"d1/migrations:tests/d1-migration-sync-check.test.ts",
+"d1/migrations:tests/d1-remote-restore-evidence.test.ts"
+]
+},
+"quarter": 1
+},
+"3523": {
+"positives": false,
+"classes": [],
+"evidence": {},
+"quarter": 1
+},
+"3511": {
+"positives": false,
+"classes": [],
+"evidence": {},
+"quarter": 1
+},
+"3508": {
+"positives": true,
+"classes": [
+"iii"
+],
+"evidence": {
+"iii": [
+"auth:app/components/auth-form.tsx",
+"auth:app/routes/auth.signup.tsx"
+]
+},
+"quarter": 1
+},
+"3518": {
+"positives": false,
+"classes": [],
+"evidence": {},
+"quarter": 1
+},
+"3517": {
+"positives": true,
+"classes": [
+"iii"
+],
+"evidence": {
+"iii": [
+"d1/migrations:migrations/0104_competitor_suggestion_dismissal.sql",
+"d1/migrations:tests/d1-remote-restore-evidence.test.ts"
+]
+},
+"quarter": 1
+},
+"3481": {
+"positives": false,
+"classes": [],
+"evidence": {},
+"quarter": 1
+},
+"3513": {
+"positives": false,
+"classes": [],
+"evidence": {},
+"quarter": 1
+},
+"3503": {
+"positives": false,
+"classes": [],
+"evidence": {},
+"quarter": 1
+},
+"3510": {
+"positives": false,
+"classes": [],
+"evidence": {},
+"quarter": 1
+},
+"3504": {
+"positives": false,
+"classes": [],
+"evidence": {},
+"quarter": 1
+},
+"3506": {
+"positives": false,
+"classes": [],
+"evidence": {},
+"quarter": 1
+},
+"3505": {
+"positives": false,
+"classes": [],
+"evidence": {},
+"quarter": 1
+},
+"3497": {
+"positives": false,
+"classes": [],
+"evidence": {},
+"quarter": 1
+},
+"3468": {
+"positives": true,
+"classes": [
+"iii"
+],
+"evidence": {
+"iii": [
+"d1/migrations:migrations/0103_widen_source_target_connector_youtube.sql",
+"d1/migrations:tests/d1-remote-restore-evidence.test.ts"
+]
+},
+"quarter": 1
+},
+"3495": {
+"positives": false,
+"classes": [],
+"evidence": {},
+"quarter": 1
+},
+"3494": {
+"positives": false,
+"classes": [],
+"evidence": {},
+"quarter": 1
+},
+"3376": {
+"positives": true,
+"classes": [
+"iii"
+],
+"evidence": {
+"iii": [
+"d1/migrations:migrations/0098_competitor_suggestion_dismissal.sql",
+"d1/migrations:tests/d1-remote-restore-evidence.test.ts"
+]
+},
+"quarter": 1
+},
+"3492": {
+"positives": false,
+"classes": [],
+"evidence": {},
+"quarter": 1
+},
+"3491": {
+"positives": true,
+"classes": [
+"ii"
+],
+"evidence": {
+"ii": [
+{
+"record": 3501,
+"kind": "label:deploy-fault",
+"created": "2026-09-14T11:06:55Z",
+"state": "closed"
+},
+{
+"record": 3492,
+"kind": "title:auto-revert",
+"created": "2026-09-14T10:49:24Z",
+"state": "closed"
+}
+]
+},
+"quarter": 1
+},
+"3489": {
+"positives": false,
+"classes": [],
+"evidence": {},
+"quarter": 1
+},
+"3488": {
+"positives": false,
+"classes": [],
+"evidence": {},
+"quarter": 1
+},
+"3487": {
+"positives": false,
+"classes": [],
+"evidence": {},
+"quarter": 1
+},
+"3485": {
+"positives": false,
+"classes": [],
+"evidence": {},
+"quarter": 1
+},
+"3484": {
+"positives": false,
+"classes": [],
+"evidence": {},
+"quarter": 1
+},
+"3482": {
+"positives": false,
+"classes": [],
+"evidence": {},
+"quarter": 1
+},
+"3479": {
+"positives": true,
+"classes": [
+"ii"
+],
+"evidence": {
+"ii": [
+{
+"record": 3489,
+"kind": "title:auto-revert",
+"created": "2026-09-14T10:15:12Z",
+"state": "closed"
+}
+]
+},
+"quarter": 1
+},
+"3475": {
+"positives": false,
+"classes": [],
+"evidence": {},
+"quarter": 1
+},
+"3467": {
+"positives": false,
+"classes": [],
+"evidence": {},
+"quarter": 1
+},
+"3474": {
+"positives": false,
+"classes": [],
+"evidence": {},
+"quarter": 1
+},
+"3469": {
+"positives": false,
+"classes": [],
+"evidence": {},
+"quarter": 1
+},
+"3463": {
+"positives": true,
+"classes": [
+"iii"
+],
+"evidence": {
+"iii": [
+"auth:e2e/local-authenticated.spec.ts"
+]
+},
+"quarter": 1
+},
+"3462": {
+"positives": true,
+"classes": [
+"iii"
+],
+"evidence": {
+"iii": [
+"d1/migrations:tests/monitoring-d1-type-error-incident.test.ts"
+]
+},
+"quarter": 1
+},
+"3443": {
+"positives": true,
+"classes": [
+"ii",
+"iii"
+],
+"evidence": {
+"ii": [
+{
+"record": 3462,
+"kind": "title:auto-revert",
+"created": "2026-09-14T01:49:45Z",
+"state": "closed"
+}
+],
+"iii": [
+"d1/migrations:tests/monitoring-d1-type-error-incident.test.ts"
+]
+},
+"quarter": 1
+},
+"3423": {
+"positives": false,
+"classes": [],
+"evidence": {},
+"quarter": 1
+},
+"3452": {
+"positives": true,
+"classes": [
+"iii"
+],
+"evidence": {
+"iii": [
+"d1/migrations:tests/d1-remote-restore-evidence.test.ts"
+]
+},
+"quarter": 1
+},
+"3428": {
+"positives": false,
+"classes": [],
+"evidence": {},
+"quarter": 1
+},
+"3451": {
+"positives": false,
+"classes": [],
+"evidence": {},
+"quarter": 1
+},
+"3450": {
+"positives": false,
+"classes": [],
+"evidence": {},
+"quarter": 1
+},
+"3449": {
+"positives": false,
+"classes": [],
+"evidence": {},
+"quarter": 1
+},
+"3448": {
+"positives": false,
+"classes": [],
+"evidence": {},
+"quarter": 1
+},
+"3426": {
+"positives": false,
+"classes": [],
+"evidence": {},
+"quarter": 1
+},
+"3424": {
+"positives": false,
+"classes": [],
+"evidence": {},
+"quarter": 1
+},
+"3446": {
+"positives": true,
+"classes": [
+"iii"
+],
+"evidence": {
+"iii": [
+"d1/migrations:migrations/0102_widen_source_target_connector_podcast.sql",
+"d1/migrations:tests/integration/presence-migration-0102.integration.test.ts"
+]
+},
+"quarter": 1
+},
+"3416": {
+"positives": false,
+"classes": [],
+"evidence": {},
+"quarter": 1
+},
+"3439": {
+"positives": true,
+"classes": [
+"iii"
+],
+"evidence": {
+"iii": [
+"d1/migrations:tests/d1-remote-restore-evidence.test.ts"
+]
+},
+"quarter": 1
+},
+"3436": {
+"positives": true,
+"classes": [
+"iii"
+],
+"evidence": {
+"iii": [
+"d1/migrations:migrations/0102_widen_source_target_connector_podcast.sql"
+]
+},
+"quarter": 1
+},
+"3435": {
+"positives": false,
+"classes": [],
+"evidence": {},
+"quarter": 2
+},
+"3434": {
+"positives": true,
+"classes": [
+"ii",
+"iii"
+],
+"evidence": {
+"ii": [
+{
+"record": 3438,
+"kind": "label:deploy-fault",
+"created": "2026-09-13T23:12:45Z",
+"state": "closed"
+},
+{
+"record": 3436,
+"kind": "title:auto-revert",
+"created": "2026-09-13T23:01:23Z",
+"state": "closed"
+}
+],
+"iii": [
+"d1/migrations:migrations/0102_widen_source_target_connector_podcast.sql"
+]
+},
+"quarter": 2
+},
+"3433": {
+"positives": false,
+"classes": [],
+"evidence": {},
+"quarter": 2
+},
+"3427": {
+"positives": true,
+"classes": [
+"iii"
+],
+"evidence": {
+"iii": [
+"auth:app/lib/better-auth.server.ts"
+]
+},
+"quarter": 2
+},
+"3425": {
+"positives": false,
+"classes": [],
+"evidence": {},
+"quarter": 2
+},
+"3420": {
+"positives": true,
+"classes": [
+"ii"
+],
+"evidence": {
+"ii": [
+{
+"record": 3438,
+"kind": "label:deploy-fault",
+"created": "2026-09-13T23:12:45Z",
+"state": "closed"
+}
+]
+},
+"quarter": 2
+},
+"3419": {
+"positives": false,
+"classes": [],
+"evidence": {},
+"quarter": 2
+},
+"3418": {
+"positives": true,
+"classes": [
+"iii"
+],
+"evidence": {
+"iii": [
+"d1/migrations:migrations/0101_widen_source_target_connector_pinterest.sql",
+"d1/migrations:tests/d1-remote-restore-evidence.test.ts"
+]
+},
+"quarter": 2
+},
+"3417": {
+"positives": false,
+"classes": [],
+"evidence": {},
+"quarter": 2
+},
+"3405": {
+"positives": false,
+"classes": [],
+"evidence": {},
+"quarter": 2
+},
+"3410": {
+"positives": false,
+"classes": [],
+"evidence": {},
+"quarter": 2
+},
+"3408": {
+"positives": false,
+"classes": [],
+"evidence": {},
+"quarter": 2
+},
+"3404": {
+"positives": false,
+"classes": [],
+"evidence": {},
+"quarter": 2
+},
+"3394": {
+"positives": true,
+"classes": [
+"ii"
+],
+"evidence": {
+"ii": [
+{
+"record": 3412,
+"kind": "label:deploy-fault",
+"created": "2026-09-13T21:23:45Z",
+"state": "closed"
+},
+{
+"record": 3413,
+"kind": "label:deploy-fault",
+"created": "2026-09-13T21:23:45Z",
+"state": "closed"
+},
+{
+"record": 3409,
+"kind": "label:deploy-fault",
+"created": "2026-09-13T21:11:34Z",
+"state": "closed"
+}
+]
+},
+"quarter": 2
+},
+"3397": {
+"positives": true,
+"classes": [
+"ii"
+],
+"evidence": {
+"ii": [
+{
+"record": 3412,
+"kind": "label:deploy-fault",
+"created": "2026-09-13T21:23:45Z",
+"state": "closed"
+}
+]
+},
+"quarter": 2
+},
+"3368": {
+"positives": true,
+"classes": [
+"ii",
+"iii"
+],
+"evidence": {
+"ii": [
+{
+"record": 3413,
+"kind": "label:deploy-fault",
+"created": "2026-09-13T21:23:45Z",
+"state": "closed"
+},
+{
+"record": 3409,
+"kind": "label:deploy-fault",
+"created": "2026-09-13T21:11:34Z",
+"state": "closed"
+}
+],
+"iii": [
+"deploy-workflows:.github/workflows/ads-prog-seo-canary.yml"
+]
+},
+"quarter": 2
+},
+"3363": {
+"positives": false,
+"classes": [],
+"evidence": {},
+"quarter": 2
+},
+"3399": {
+"positives": false,
+"classes": [],
+"evidence": {},
+"quarter": 2
+},
+"3402": {
+"positives": false,
+"classes": [],
+"evidence": {},
+"quarter": 2
+},
+"3398": {
+"positives": true,
+"classes": [
+"ii"
+],
+"evidence": {
+"ii": [
+{
+"record": 3403,
+"kind": "label:deploy-fault",
+"created": "2026-09-13T19:45:40Z",
+"state": "open"
+}
+]
+},
+"quarter": 2
+},
+"3396": {
+"positives": true,
+"classes": [
+"ii"
+],
+"evidence": {
+"ii": [
+{
+"record": 3403,
+"kind": "label:deploy-fault",
+"created": "2026-09-13T19:45:40Z",
+"state": "open"
+}
+]
+},
+"quarter": 2
+},
+"3374": {
+"positives": true,
+"classes": [
+"iii"
+],
+"evidence": {
+"iii": [
+"deploy-workflows:.github/workflows/auto-revert.yml"
+]
+},
+"quarter": 2
+},
+"3388": {
+"positives": false,
+"classes": [],
+"evidence": {},
+"quarter": 2
+},
+"3378": {
+"positives": false,
+"classes": [],
+"evidence": {},
+"quarter": 2
+},
+"3349": {
+"positives": true,
+"classes": [
+"iii"
+],
+"evidence": {
+"iii": [
+"deploy-workflows:.github/workflows/ratchet-auto-tighten.yml"
+]
+},
+"quarter": 2
+},
+"3387": {
+"positives": false,
+"classes": [],
+"evidence": {},
+"quarter": 2
+},
+"3386": {
+"positives": false,
+"classes": [],
+"evidence": {},
+"quarter": 2
+},
+"3384": {
+"positives": false,
+"classes": [],
+"evidence": {},
+"quarter": 2
+},
+"3375": {
+"positives": true,
+"classes": [
+"ii",
+"iii"
+],
+"evidence": {
+"ii": [
+{
+"record": 3392,
+"kind": "label:deploy-fault",
+"created": "2026-09-13T18:22:27Z",
+"state": "open"
+}
+],
+"iii": [
+"d1/migrations:migrations/0100_widen_source_target_connector_hn.sql",
+"d1/migrations:tests/d1-remote-restore-evidence.test.ts"
+]
+},
+"quarter": 2
+},
+"3377": {
+"positives": true,
+"classes": [
+"ii"
+],
+"evidence": {
+"ii": [
+{
+"record": 3381,
+"kind": "label:deploy-fault",
+"created": "2026-09-13T16:27:30Z",
+"state": "open"
+}
+]
+},
+"quarter": 2
+},
+"3371": {
+"positives": false,
+"classes": [],
+"evidence": {},
+"quarter": 2
+},
+"3365": {
+"positives": true,
+"classes": [
+"ii"
+],
+"evidence": {
+"ii": [
+{
+"record": 3392,
+"kind": "label:deploy-fault",
+"created": "2026-09-13T18:22:27Z",
+"state": "open"
+}
+]
+},
+"quarter": 2
+},
+"3366": {
+"positives": true,
+"classes": [
+"ii"
+],
+"evidence": {
+"ii": [
+{
+"record": 3392,
+"kind": "label:deploy-fault",
+"created": "2026-09-13T18:22:27Z",
+"state": "open"
+}
+]
+},
+"quarter": 2
+},
+"3355": {
+"positives": false,
+"classes": [],
+"evidence": {},
+"quarter": 2
+},
+"3361": {
+"positives": false,
+"classes": [],
+"evidence": {},
+"quarter": 2
+},
+"3360": {
+"positives": true,
+"classes": [
+"iii"
+],
+"evidence": {
+"iii": [
+"d1/migrations:migrations/0099_widen_source_target_connector_threads.sql",
+"d1/migrations:tests/d1-remote-restore-evidence.test.ts"
+]
+},
+"quarter": 2
+},
+"3354": {
+"positives": false,
+"classes": [],
+"evidence": {},
+"quarter": 2
+},
+"3352": {
+"positives": false,
+"classes": [],
+"evidence": {},
+"quarter": 2
+},
+"3135": {
+"positives": false,
+"classes": [],
+"evidence": {},
+"quarter": 2
+},
+"3348": {
+"positives": false,
+"classes": [],
+"evidence": {},
+"quarter": 2
+},
+"3345": {
+"positives": true,
+"classes": [
+"ii"
+],
+"evidence": {
+"ii": [
+{
+"record": 3348,
+"kind": "title:auto-revert",
+"created": "2026-09-13T06:44:30Z",
+"state": "closed"
+}
+]
+},
+"quarter": 2
+},
+"3343": {
+"positives": false,
+"classes": [],
+"evidence": {},
+"quarter": 2
+},
+"3342": {
+"positives": false,
+"classes": [],
+"evidence": {},
+"quarter": 2
+},
+"3341": {
+"positives": false,
+"classes": [],
+"evidence": {},
+"quarter": 2
+},
+"3339": {
+"positives": false,
+"classes": [],
+"evidence": {},
+"quarter": 2
+},
+"3332": {
+"positives": false,
+"classes": [],
+"evidence": {},
+"quarter": 2
+},
+"3336": {
+"positives": false,
+"classes": [],
+"evidence": {},
+"quarter": 2
+},
+"3334": {
+"positives": true,
+"classes": [
+"iii"
+],
+"evidence": {
+"iii": [
+"payments:app/lib/customer-billing-copy.ts",
+"payments:app/routes/api.billing.dodo.checkout.ts",
+"payments:app/routes/api.billing.dodo.plan-change.ts",
+"payments:app/routes/api.e2e.billing.replay.ts",
+"payments:app/routes/app.billing.tsx",
+"payments:tests/billing-page.route.test.ts",
+"payments:tests/dodo-checkout.route.test.ts",
+"payments:tests/stripe-checkout.route.test.ts"
+]
+},
+"quarter": 2
+},
+"3327": {
+"positives": true,
+"classes": [
+"ii"
+],
+"evidence": {
+"ii": [
+{
+"record": 3330,
+"kind": "label:deploy-fault",
+"created": "2026-09-13T01:23:54Z",
+"state": "open"
+}
+]
+},
+"quarter": 2
+},
+"3328": {
+"positives": false,
+"classes": [],
+"evidence": {},
+"quarter": 2
+},
+"3316": {
+"positives": true,
+"classes": [
+"iii"
+],
+"evidence": {
+"iii": [
+"deploy-workflows:.github/workflows/ci.yml",
+"deploy-workflows:.github/workflows/deploy-production.yml",
+"deploy-workflows:.github/workflows/preview-assert.yml"
+]
+},
+"quarter": 3
+},
+"3324": {
+"positives": true,
+"classes": [
+"iii"
+],
+"evidence": {
+"iii": [
+"d1/migrations:scripts/d1-migration-sync-check.lib.mjs",
+"d1/migrations:tests/d1-remote-restore-evidence.test.ts"
+]
+},
+"quarter": 3
+},
+"3320": {
+"positives": false,
+"classes": [],
+"evidence": {},
+"quarter": 3
+},
+"3031": {
+"positives": false,
+"classes": [],
+"evidence": {},
+"quarter": 3
+},
+"3313": {
+"positives": true,
+"classes": [
+"ii"
+],
+"evidence": {
+"ii": [
+{
+"record": 3314,
+"kind": "label:deploy-fault",
+"created": "2026-09-12T16:45:11Z",
+"state": "open"
+}
+]
+},
+"quarter": 3
+},
+"3312": {
+"positives": true,
+"classes": [
+"iii"
+],
+"evidence": {
+"iii": [
+"d1/migrations:scripts/d1-backup-local-storage.mjs",
+"d1/migrations:tests/d1-backup-local-storage.test.ts"
+]
+},
+"quarter": 3
+},
+"3245": {
+"positives": true,
+"classes": [
+"ii"
+],
+"evidence": {
+"ii": [
+{
+"record": 3314,
+"kind": "label:deploy-fault",
+"created": "2026-09-12T16:45:11Z",
+"state": "open"
+}
+]
+},
+"quarter": 3
+},
+"3037": {
+"positives": true,
+"classes": [
+"iii"
+],
+"evidence": {
+"iii": [
+"d1/migrations:.github/workflows/d1-remote-restore-evidence.yml",
+"deploy-workflows:.github/workflows/d1-remote-restore-evidence.yml",
+"d1/migrations:scripts/d1-migration-row-invariant.mjs",
+"d1/migrations:scripts/d1-remote-restore-evidence.mjs",
+"d1/migrations:tests/d1-migration-chain-row-invariant.test.ts",
+"d1/migrations:tests/d1-migration-row-invariant.test.ts",
+"d1/migrations:tests/d1-remote-restore-evidence.test.ts",
+"d1/migrations:tests/d1-workflow-inline-payloads.test.ts"
+]
+},
+"quarter": 3
+},
+"3041": {
+"positives": true,
+"classes": [
+"iii"
+],
+"evidence": {
+"iii": [
+"deploy-workflows:.github/workflows/gate-integrity.yml"
+]
+},
+"quarter": 3
+},
+"3300": {
+"positives": false,
+"classes": [],
+"evidence": {},
+"quarter": 3
+},
+"3289": {
+"positives": true,
+"classes": [
+"iii"
+],
+"evidence": {
+"iii": [
+"d1/migrations:migrations/0098_widen_source_target_connector_bluesky.sql",
+"d1/migrations:tests/d1-remote-restore-evidence.test.ts"
+]
+},
+"quarter": 3
+},
+"3305": {
+"positives": false,
+"classes": [],
+"evidence": {},
+"quarter": 3
+},
+"3283": {
+"positives": false,
+"classes": [],
+"evidence": {},
+"quarter": 3
+},
+"3297": {
+"positives": false,
+"classes": [],
+"evidence": {},
+"quarter": 3
+},
+"3284": {
+"positives": true,
+"classes": [
+"iii"
+],
+"evidence": {
+"iii": [
+"d1/migrations:migrations/0098_widen_source_target_connector_gdelt.sql",
+"d1/migrations:tests/d1-remote-restore-evidence.test.ts"
+]
+},
+"quarter": 3
+},
+"3282": {
+"positives": false,
+"classes": [],
+"evidence": {},
+"quarter": 3
+},
+"3232": {
+"positives": true,
+"classes": [
+"iii"
+],
+"evidence": {
+"iii": [
+"deploy-workflows:.github/workflows/deploy-production.yml"
+]
+},
+"quarter": 3
+},
+"3285": {
+"positives": true,
+"classes": [
+"iii"
+],
+"evidence": {
+"iii": [
+"d1/migrations:migrations/0098_email_delivery_canary.sql",
+"d1/migrations:tests/d1-remote-restore-evidence.test.ts"
+]
+},
+"quarter": 3
+},
+"3271": {
+"positives": false,
+"classes": [],
+"evidence": {},
+"quarter": 3
+},
+"3287": {
+"positives": true,
+"classes": [
+"ii"
+],
+"evidence": {
+"ii": [
+{
+"record": 3296,
+"kind": "label:deploy-fault",
+"created": "2026-09-12T13:05:29Z",
+"state": "open"
+}
+]
+},
+"quarter": 3
+},
+"3258": {
+"positives": false,
+"classes": [],
+"evidence": {
+"i": "review:deep label event 2026-09-12; but 0 review threads (REST reviews/comments empty) -> criterion (i) NOT met"
+},
+"quarter": 3
+},
+"3281": {
+"positives": false,
+"classes": [],
+"evidence": {},
+"quarter": 3
+},
+"3273": {
+"positives": true,
+"classes": [
+"ii"
+],
+"evidence": {
+"ii": [
+{
+"record": 3296,
+"kind": "label:deploy-fault",
+"created": "2026-09-12T13:05:29Z",
+"state": "open"
+}
+]
+},
+"quarter": 3
+},
+"3274": {
+"positives": true,
+"classes": [
+"iii"
+],
+"evidence": {
+"iii": [
+"deploy-workflows:.github/workflows/red-on-main-watch.yml",
+"deploy-workflows:.github/workflows/stop-the-line-watch.yml"
+]
+},
+"quarter": 3
+},
+"3269": {
+"positives": true,
+"classes": [
+"ii"
+],
+"evidence": {
+"ii": [
+{
+"record": 3286,
+"kind": "title:auto-revert",
+"created": "2026-09-12T11:32:06Z",
+"state": "closed"
+}
+]
+},
+"quarter": 3
+},
+"3211": {
+"positives": true,
+"classes": [
+"iii"
+],
+"evidence": {
+"iii": [
+"payments:app/lib/billing-canary-identity.server.ts",
+"payments:app/routes/api.billing.dodo.canary.ts",
+"d1/migrations:migrations/0097_status_probe_samples.sql",
+"d1/migrations:tests/d1-remote-restore-evidence.test.ts"
+]
+},
+"quarter": 3
+},
+"3260": {
+"positives": false,
+"classes": [],
+"evidence": {},
+"quarter": 3
+},
+"3259": {
+"positives": false,
+"classes": [],
+"evidence": {},
+"quarter": 3
+},
+"3241": {
+"positives": true,
+"classes": [
+"iii"
+],
+"evidence": {
+"iii": [
+"deploy-workflows:.github/workflows/ads-prog-seo-canary.yml"
+]
+},
+"quarter": 3
+},
+"3236": {
+"positives": true,
+"classes": [
+"ii"
+],
+"evidence": {
+"ii": [
+{
+"record": 3272,
+"kind": "label:deploy-fault",
+"created": "2026-09-12T10:52:48Z",
+"state": "open"
+},
+{
+"record": 3270,
+"kind": "title:auto-revert",
+"created": "2026-09-12T10:35:48Z",
+"state": "closed"
+}
+]
+},
+"quarter": 3
+},
+"3256": {
+"positives": false,
+"classes": [],
+"evidence": {},
+"quarter": 3
+},
+"3248": {
+"positives": false,
+"classes": [],
+"evidence": {},
+"quarter": 3
+},
+"3230": {
+"positives": false,
+"classes": [],
+"evidence": {},
+"quarter": 3
+},
+"3243": {
+"positives": true,
+"classes": [
+"ii",
+"iii"
+],
+"evidence": {
+"ii": [
+{
+"record": 3266,
+"kind": "label:deploy-fault",
+"created": "2026-09-12T10:12:45Z",
+"state": "open"
+},
+{
+"record": 3265,
+"kind": "label:deploy-fault",
+"created": "2026-09-12T10:12:23Z",
+"state": "open"
+},
+{
+"record": 3264,
+"kind": "label:deploy-fault",
+"created": "2026-09-12T10:08:33Z",
+"state": "open"
+}
+],
+"iii": [
+"auth:tests/activation/first-brief-same-session.test.tsx",
+"d1/migrations:tests/d1-remote-restore-evidence.test.ts",
+"payments:tests/delivery-billing-lifecycle-recovery-deferral.test.ts",
+"payments:tests/delivery.billing-recovery.test.ts",
+"payments:tests/dodo-billing-guard.route.test.ts",
+"payments:tests/dodo-billing-webhook-lease-atomicity.test.ts",
+"payments:tests/integration/billing-checkout-cancel.integration.test.ts"
+]
+},
+"quarter": 3
+},
+"3228": {
+"positives": true,
+"classes": [
+"ii",
+"iii"
+],
+"evidence": {
+"ii": [
+{
+"record": 3264,
+"kind": "label:deploy-fault",
+"created": "2026-09-12T10:08:33Z",
+"state": "open"
+}
+],
+"iii": [
+"payments:tests/legacy-billing-provider-removal.test.ts"
+]
+},
+"quarter": 3
+},
+"3052": {
+"positives": false,
+"classes": [],
+"evidence": {},
+"quarter": 3
+},
+"1924": {
+"positives": true,
+"classes": [
+"iii"
+],
+"evidence": {
+"iii": [
+"deploy-workflows:.github/workflows/auto-merge-arm.yml",
+"deploy-workflows:.github/workflows/red-on-main-watch.yml",
+"deploy-workflows:.github/workflows/stop-the-line-watch.yml"
+]
+},
+"quarter": 3
+},
+"1064": {
+"positives": true,
+"classes": [
+"iii"
+],
+"evidence": {
+"iii": [
+"deploy-workflows:.github/workflows/ratchet-auto-tighten.yml"
+]
+},
+"quarter": 3
+},
+"3240": {
+"positives": true,
+"classes": [
+"ii"
+],
+"evidence": {
+"ii": [
+{
+"record": 3257,
+"kind": "label:deploy-fault",
+"created": "2026-09-12T09:38:09Z",
+"state": "open"
+}
+]
+},
+"quarter": 3
+},
+"3239": {
+"positives": true,
+"classes": [
+"ii",
+"iii"
+],
+"evidence": {
+"ii": [
+{
+"record": 3272,
+"kind": "label:deploy-fault",
+"created": "2026-09-12T10:52:48Z",
+"state": "open"
+},
+{
+"record": 3264,
+"kind": "label:deploy-fault",
+"created": "2026-09-12T10:08:33Z",
+"state": "open"
+},
+{
+"record": 3257,
+"kind": "label:deploy-fault",
+"created": "2026-09-12T09:38:09Z",
+"state": "open"
+}
+],
+"iii": [
+"deploy-workflows:.github/workflows/preview-assert.yml"
+]
+},
+"quarter": 3
+},
+"3234": {
+"positives": false,
+"classes": [],
+"evidence": {},
+"quarter": 3
+},
+"3138": {
+"positives": false,
+"classes": [],
+"evidence": {},
+"quarter": 3
+},
+"3163": {
+"positives": false,
+"classes": [],
+"evidence": {},
+"quarter": 3
+},
+"3220": {
+"positives": true,
+"classes": [
+"ii",
+"iii"
+],
+"evidence": {
+"ii": [
+{
+"record": 3364,
+"kind": "label:deploy-fault",
+"created": "2026-09-13T11:28:12Z",
+"state": "open"
+}
+],
+"iii": [
+"deploy-workflows:.github/workflows/auto-revert.yml"
+]
+},
+"quarter": 3
+},
+"3216": {
+"positives": true,
+"classes": [
+"ii",
+"iii"
+],
+"evidence": {
+"ii": [
+{
+"record": 3249,
+"kind": "label:deploy-fault",
+"created": "2026-09-12T09:33:14Z",
+"state": "open"
+},
+{
+"record": 3242,
+"kind": "label:deploy-fault",
+"created": "2026-09-12T08:51:36Z",
+"state": "open"
+}
+],
+"iii": [
+"deploy-workflows:.github/workflows/uptime-health.yml"
+]
+},
+"quarter": 3
+},
+"3194": {
+"positives": true,
+"classes": [
+"ii"
+],
+"evidence": {
+"ii": [
+{
+"record": 3242,
+"kind": "label:deploy-fault",
+"created": "2026-09-12T08:51:36Z",
+"state": "open"
+}
+]
+},
+"quarter": 3
+},
+"3225": {
+"positives": false,
+"classes": [],
+"evidence": {},
+"quarter": 3
+},
+"3226": {
+"positives": false,
+"classes": [],
+"evidence": {},
+"quarter": 3
+},
+"3223": {
+"positives": true,
+"classes": [
+"ii"
+],
+"evidence": {
+"ii": [
+{
+"record": 3249,
+"kind": "label:deploy-fault",
+"created": "2026-09-12T09:33:14Z",
+"state": "open"
+}
+]
+},
+"quarter": 3
+},
+"3145": {
+"positives": true,
+"classes": [
+"iii"
+],
+"evidence": {
+"iii": [
+"deploy-workflows:.github/workflows/auto-revert.yml"
+]
+},
+"quarter": 3
+},
+"3169": {
+"positives": false,
+"classes": [],
+"evidence": {},
+"quarter": 4
+},
+"3154": {
+"positives": true,
+"classes": [
+"ii"
+],
+"evidence": {
+"ii": [
+{
+"record": 3242,
+"kind": "label:deploy-fault",
+"created": "2026-09-12T08:51:36Z",
+"state": "open"
+}
+]
+},
+"quarter": 4
+},
+"3026": {
+"positives": false,
+"classes": [],
+"evidence": {},
+"quarter": 4
+},
+"3153": {
+"positives": true,
+"classes": [
+"ii"
+],
+"evidence": {
+"ii": [
+{
+"record": 3264,
+"kind": "label:deploy-fault",
+"created": "2026-09-12T10:08:33Z",
+"state": "open"
+}
+]
+},
+"quarter": 4
+},
+"3150": {
+"positives": false,
+"classes": [],
+"evidence": {},
+"quarter": 4
+},
+"3184": {
+"positives": true,
+"classes": [
+"ii",
+"iii"
+],
+"evidence": {
+"ii": [
+{
+"record": 3512,
+"kind": "label:deploy-fault",
+"created": "2026-09-14T12:09:42Z",
+"state": "open"
+},
+{
+"record": 3314,
+"kind": "label:deploy-fault",
+"created": "2026-09-12T16:45:11Z",
+"state": "open"
+}
+],
+"iii": [
+"d1/migrations:scripts/d1-migration-sync-check.lib.mjs",
+"d1/migrations:scripts/d1-remote-restore-evidence-core.mjs",
+"d1/migrations:scripts/d1-remote-restore-evidence.mjs",
+"d1/migrations:tests/d1-migration-sync-check.test.ts",
+"d1/migrations:tests/d1-remote-restore-evidence.test.ts"
+]
+},
+"quarter": 4
+},
+"3139": {
+"positives": false,
+"classes": [],
+"evidence": {},
+"quarter": 4
+},
+"3181": {
+"positives": true,
+"classes": [
+"ii"
+],
+"evidence": {
+"ii": [
+{
+"record": 3330,
+"kind": "label:deploy-fault",
+"created": "2026-09-13T01:23:54Z",
+"state": "open"
+}
+]
+},
+"quarter": 4
+},
+"3159": {
+"positives": false,
+"classes": [],
+"evidence": {},
+"quarter": 4
+},
+"3054": {
+"positives": false,
+"classes": [],
+"evidence": {},
+"quarter": 4
+},
+"3191": {
+"positives": true,
+"classes": [
+"ii"
+],
+"evidence": {
+"ii": [
+{
+"record": 3409,
+"kind": "label:deploy-fault",
+"created": "2026-09-13T21:11:34Z",
+"state": "closed"
+},
+{
+"record": 3361,
+"kind": "label:repair:main-red",
+"created": "2026-09-13T10:55:58Z",
+"state": "closed"
+}
+]
+},
+"quarter": 4
+},
+"3148": {
+"positives": true,
+"classes": [
+"ii"
+],
+"evidence": {
+"ii": [
+{
+"record": 3166,
+"kind": "label:deploy-fault",
+"created": "2026-09-12T04:09:12Z",
+"state": "closed"
+}
+]
+},
+"quarter": 4
+},
+"3119": {
+"positives": true,
+"classes": [
+"ii"
+],
+"evidence": {
+"ii": [
+{
+"record": 3166,
+"kind": "label:deploy-fault",
+"created": "2026-09-12T04:09:12Z",
+"state": "closed"
+}
+]
+},
+"quarter": 4
+},
+"3094": {
+"positives": true,
+"classes": [
+"ii"
+],
+"evidence": {
+"ii": [
+{
+"record": 3166,
+"kind": "label:deploy-fault",
+"created": "2026-09-12T04:09:12Z",
+"state": "closed"
+}
+]
+},
+"quarter": 4
+},
+"3072": {
+"positives": true,
+"classes": [
+"ii"
+],
+"evidence": {
+"ii": [
+{
+"record": 3166,
+"kind": "label:deploy-fault",
+"created": "2026-09-12T04:09:12Z",
+"state": "closed"
+}
+]
+},
+"quarter": 4
+},
+"3043": {
+"positives": false,
+"classes": [],
+"evidence": {},
+"quarter": 4
+},
+"3141": {
+"positives": false,
+"classes": [],
+"evidence": {},
+"quarter": 4
+},
+"3107": {
+"positives": false,
+"classes": [],
+"evidence": {},
+"quarter": 4
+},
+"3090": {
+"positives": false,
+"classes": [],
+"evidence": {},
+"quarter": 4
+},
+"3142": {
+"positives": false,
+"classes": [],
+"evidence": {},
+"quarter": 4
+},
+"3136": {
+"positives": true,
+"classes": [
+"iii"
+],
+"evidence": {
+"iii": [
+"auth:app/lib/better-auth.server.ts",
+"d1/migrations:migrations/0096_email_suppression.sql"
+]
+},
+"quarter": 4
+},
+"3096": {
+"positives": false,
+"classes": [],
+"evidence": {},
+"quarter": 4
+},
+"3140": {
+"positives": false,
+"classes": [],
+"evidence": {},
+"quarter": 4
+},
+"3137": {
+"positives": true,
+"classes": [
+"ii"
+],
+"evidence": {
+"ii": [
+{
+"record": 3174,
+"kind": "label:deploy-fault",
+"created": "2026-09-12T04:23:54Z",
+"state": "closed"
+}
+]
+},
+"quarter": 4
+},
+"3131": {
+"positives": true,
+"classes": [
+"ii",
+"iii"
+],
+"evidence": {
+"ii": [
+{
+"record": 3296,
+"kind": "label:deploy-fault",
+"created": "2026-09-12T13:05:29Z",
+"state": "open"
+}
+],
+"iii": [
+"deploy-workflows:.github/workflows/deploy-production.yml"
+]
+},
+"quarter": 4
+},
+"3089": {
+"positives": true,
+"classes": [
+"ii",
+"iii"
+],
+"evidence": {
+"ii": [
+{
+"record": 3166,
+"kind": "label:deploy-fault",
+"created": "2026-09-12T04:09:12Z",
+"state": "closed"
+}
+],
+"iii": [
+"auth:docs/email-outbound-auth.md",
+"auth:scripts/check-outbound-email-auth.mjs",
+"auth:tests/outbound-email-auth.test.ts"
+]
+},
+"quarter": 4
+},
+"3134": {
+"positives": true,
+"classes": [
+"ii"
+],
+"evidence": {
+"ii": [
+{
+"record": 3166,
+"kind": "label:deploy-fault",
+"created": "2026-09-12T04:09:12Z",
+"state": "closed"
+}
+]
+},
+"quarter": 4
+},
+"3130": {
+"positives": false,
+"classes": [],
+"evidence": {},
+"quarter": 4
+},
+"3082": {
+"positives": true,
+"classes": [
+"iii"
+],
+"evidence": {
+"iii": [
+"d1/migrations:migrations/0096_error_reports.sql"
+]
+},
+"quarter": 4
+},
+"3071": {
+"positives": false,
+"classes": [],
+"evidence": {},
+"quarter": 4
+},
+"3086": {
+"positives": false,
+"classes": [],
+"evidence": {},
+"quarter": 4
+},
+"3073": {
+"positives": false,
+"classes": [],
+"evidence": {},
+"quarter": 4
+},
+"3067": {
+"positives": true,
+"classes": [
+"iii"
+],
+"evidence": {
+"iii": [
+"d1/migrations:.lane/reports/0509-lane1-d1-restore-kill-esrch-already-resolved.md",
+"payments:.lane/reports/0509-lane1-llms-live-search-dodo-checkout.md",
+"d1/migrations:.lane/reports/0509-lane1-magicbrief-migration-cta-already-resolved-reverify.md",
+"d1/migrations:.lane/reports/0509-lane1-magicbrief-migration-cta.md",
+"auth:.lane/reports/0509-lane1-same-session-first-value-reverify.md",
+"auth:.lane/reports/0509-lane1-same-session-first-value-third-reverify.md",
+"auth:.lane/reports/0509-lane1-same-session-first-value.md",
+"auth:.lane/reports/0509-lane1-sshd-session-table-2026-08-20-reverify.md",
+"auth:.lane/reports/0509-lane1-sshd-session-table-fresh-verification.md",
+"auth:.lane/reports/0509-lane1-sshd-session-table-reverified.md",
+"d1/migrations:.lane/reports/0509-lane2-d1-restore-kill-esrch-already-resolved.md",
+"auth:.lane/reports/archived-shared-report-06-thin-rendered-content-on-search-auth-login-dogfood-694ddbd68.md",
+"auth:.lane/reports/fix-market-signal-auth-diagnosis.md",
+"auth:.lane/reports/report-lane1-sshd-session-table-exhausted.md",
+"auth:legacy/src/app/auth/callback/route.ts",
+"auth:legacy/src/app/auth/login/page.tsx",
+"auth:legacy/src/app/auth/signup/page.tsx",
+"auth:legacy/src/components/auth-provider.tsx",
+"d1/migrations:legacy/supabase/migrations/001_saved_searches_bookmarks.sql"
+]
+},
+"quarter": 4
+},
+"3051": {
+"positives": false,
+"classes": [],
+"evidence": {},
+"quarter": 4
+},
+"3063": {
+"positives": false,
+"classes": [],
+"evidence": {},
+"quarter": 4
+},
+"3117": {
+"positives": false,
+"classes": [],
+"evidence": {},
+"quarter": 4
+},
+"3121": {
+"positives": false,
+"classes": [],
+"evidence": {},
+"quarter": 4
+},
+"3118": {
+"positives": true,
+"classes": [
+"ii"
+],
+"evidence": {
+"ii": [
+{
+"record": 3166,
+"kind": "label:deploy-fault",
+"created": "2026-09-12T04:09:12Z",
+"state": "closed"
+}
+]
+},
+"quarter": 4
+},
+"3116": {
+"positives": true,
+"classes": [
+"ii"
+],
+"evidence": {
+"ii": [
+{
+"record": 3166,
+"kind": "label:deploy-fault",
+"created": "2026-09-12T04:09:12Z",
+"state": "closed"
+}
+]
+},
+"quarter": 4
+},
+"3112": {
+"positives": false,
+"classes": [],
+"evidence": {},
+"quarter": 4
+},
+"3108": {
+"positives": true,
+"classes": [
+"iii"
+],
+"evidence": {
+"iii": [
+"auth:app/components/auth-form.tsx",
+"auth:app/routes/auth.signup.tsx",
+"auth:tests/auth-form-signup-guidance.test.ts",
+"auth:tests/auth-validation.test.ts",
+"auth:tests/auth.server.test.ts"
+]
+},
+"quarter": 4
+},
+"3022": {
+"positives": false,
+"classes": [],
+"evidence": {},
+"quarter": 4
+},
+"3106": {
+"positives": false,
+"classes": [],
+"evidence": {},
+"quarter": 4
+},
+"3100": {
+"positives": false,
+"classes": [],
+"evidence": {},
+"quarter": 4
+},
+"3102": {
+"positives": false,
+"classes": [],
+"evidence": {},
+"quarter": 4
+},
+"3101": {
+"positives": false,
+"classes": [],
+"evidence": {},
+"quarter": 4
+},
+"3085": {
+"positives": false,
+"classes": [],
+"evidence": {},
+"quarter": 4
+},
+"3023": {
+"positives": true,
+"classes": [
+"iii"
+],
+"evidence": {
+"iii": [
+"deploy-workflows:.github/workflows/preview-assert.yml",
+"d1/migrations:tests/d1-remote-restore-evidence.test.ts"
+]
+},
+"quarter": 4
+},
+"3088": {
+"positives": false,
+"classes": [],
+"evidence": {},
+"quarter": 4
+},
+"3064": {
+"positives": true,
+"classes": [
+"ii",
+"iii"
+],
+"evidence": {
+"ii": [
+{
+"record": 3081,
+"kind": "label:deploy-fault",
+"created": "2026-09-11T22:27:13Z",
+"state": "closed"
+},
+{
+"record": 3075,
+"kind": "title:auto-revert",
+"created": "2026-09-11T22:22:40Z",
+"state": "closed"
+}
+],
+"iii": [
+"lockfiles:package-lock.json"
+]
+},
+"quarter": 4
+}
+}
