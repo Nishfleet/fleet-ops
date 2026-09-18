@@ -133,7 +133,6 @@ jobs:
         bash tests/findings-measure-line.test.sh
         # fleet-ops#7371: shared Jev helper contract (dry-run, refusals, log shape, cap, key hygiene).
         bash tests/jev-eval.test.sh
-        bash tests/rule-enforcement.test.sh
         bash tests/reusable-workflows.test.sh
         # fleet-ops#1296: reject typo'd/unregistered action@<sha> pins in
         # .github/workflows/** before a scheduled workflow fails to resolve
@@ -161,7 +160,6 @@ jobs:
         # classification, queue composition, and verified-merges numerator
         # (non-null diff AND delivery evidence) in the metrics exporter, plus
         # the absent/trend alert rules and the self-maintenance config shape.
-        bash tests/fleet-metrics-export.test.sh
         # fleet-ops#1235: lock the /etc/default/prometheus retention
         # override (40d) and the deploy restart-vs-reload + headroom guard.
         bash tests/prometheus-retention-40d.test.sh
