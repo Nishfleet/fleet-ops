@@ -37,8 +37,10 @@ WorkingDirectory=/home/nish
 # systemd never sees an unknown specifier. worker-token mints the ≤1h
 # nishfleet-worker App token (RS256 JWT over the App private key) — the one
 # step here that is neither systemd's nor Pi's: a worker must not push as Nish.
-# An empty mint fails the unit rather than silently falling back to human auth.
-ExecStart=/bin/sh -c 'set -e; i="$1"; r=$(echo "$i" | sed "s/-[0-9][0-9]*$//"); n=$(echo "$i" | sed "s/.*-//"); GH_TOKEN=$(worker-token --print); [ -n "$GH_TOKEN" ] || { echo "worker-token mint failed — refusing human-gh fallback" >&2; exit 1; }; export GH_TOKEN; { cat "$HOME/.pi/agent/prompts/worker.md"; echo; echo "TARGET: repo Nishfleet/$r issue $n unit pi-issue-$i"; } | exec pi --print --provider litellm --model worker-cheap' sh %i
+# worker-token --print emits the LINE `export GH_TOKEN=<token>` (it never prints
+# the bare token), so it is eval'd, not captured. An empty mint fails the unit
+# rather than silently falling back to human auth.
+ExecStart=/bin/sh -c 'set -e; i="$1"; r=$(echo "$i" | sed "s/-[0-9][0-9]*$//"); n=$(echo "$i" | sed "s/.*-//"); eval "$(worker-token --print)"; [ -n "$GH_TOKEN" ] || { echo "worker-token mint failed — refusing human-gh fallback" >&2; exit 1; }; export GH_TOKEN; { cat "$HOME/.pi/agent/prompts/worker.md"; echo; echo "TARGET: repo Nishfleet/$r issue $n unit pi-issue-$i"; } | exec pi --print --provider litellm --model worker-cheap' sh %i
 # The worker created its own worktree; the worker's own unit cleans it up.
 # No reaper, no salvage organ: work that was never committed and pushed did not
 # happen, and the next dispatch starts from origin/main. Leading '-' so cleanup
