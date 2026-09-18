@@ -23,29 +23,32 @@ set -euo pipefail
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 repo_root="$(cd "$here/.." && pwd)"
 prompt="$repo_root/prompts/worker.md"
-tick="$repo_root/lib/pi-intake-tick.sh"
+# lib/pi-intake-tick.sh was deleted in the 2026-09-18 second cut; the manager
+# trigger is the issue's own labels now, so there is no tick file to check.
 
 fail() { echo "FAIL: $*" >&2; exit 1; }
 ok()   { echo "OK: $*"; }
 
 [[ -f "$prompt" ]] || fail "missing $prompt"
-[[ -f "$tick" ]]   || fail "missing $tick"
 
 # --- 1. manager-mode directive grep-locks -----------------------------------
 grep -qF 'Manager mode (heavy|keystone) — fleet-ops#3274' "$prompt" \
   || fail "worker.md must carry the Manager mode (heavy|keystone) header (fleet-ops#3274)"
 ok "manager-mode header present"
 
-grep -qF '`difficulty: heavy`, `difficulty: keystone`, or `difficulty: light`' "$prompt" \
-  || fail "worker.md must key manager mode off the packet's difficulty header line"
+# Second cut 2026-09-18: the packet no longer carries a `difficulty:` header —
+# lib/pi-intake-tick.sh wrote it and is gone. Manager mode keys off the issue's
+# own labels, which is the same signal without a second place to write it.
+grep -qF "the issue's own labels" "$prompt" \
+  || fail "worker.md must key manager mode off the issue's labels"
 ok "keys off the difficulty header"
 
 grep -qF 'you run as MANAGER' "$prompt" \
   || fail "worker.md must state the worker runs as MANAGER for heavy|keystone"
 ok "names the MANAGER role"
 
-grep -qF 'Light issues' "$prompt" \
-  || fail "worker.md must keep light issues flat (skip manager mode)"
+grep -qF 'Every other issue stays flat' "$prompt" \
+  || fail "worker.md must keep non-heavy/keystone issues flat (skip manager mode)"
 ok "light issues stay flat"
 
 # (1) plan into an issue-unique plan path (fleet-ops#5526: the shared
@@ -126,43 +129,12 @@ grep -qF 'planner/worker/reviewer are NOT those — they are allowed' "$prompt" 
   || fail "worker.md must reconcile the depth-1 spawn-guard with stock subagents"
 ok "spawn-guard reconciled with stock subagents"
 
-# --- 2. packet replay drill (heavy / keystone / light) ----------------------
-scratch="$(mktemp -d -t worker-prompt-manager-mode.XXXXXX)"
-trap 'rm -rf "$scratch"' EXIT INT TERM
-
-# Rebuild the packet the way lib/pi-intake-tick.sh does (fleet-ops#4643):
-# stable prefix first (worker.md), volatile tail last (difficulty + TARGET).
-build_packet() {
-  local diff="$1" out="$2"
-  {
-    cat "$prompt"
-    echo
-    echo "difficulty: $diff"
-    echo "TARGET: repo Nishfleet/fleet-ops issue 3274 unit pi-issue-fleet-ops-3274"
-  } > "$out"
-}
-
-for d in heavy keystone light; do
-  build_packet "$d" "$scratch/$d.in"
-  head -1 "$scratch/$d.in" | grep -q '^# Pi fleet issue worker' \
-    || fail "packet for $d must start with worker.md (got '$(head -1 "$scratch/$d.in")')"
-  grep -q "^difficulty: $d\$" "$scratch/$d.in" \
-    || fail "packet for $d must carry difficulty: $d in the volatile tail"
-done
-ok "packet replay: worker.md first, difficulty header in volatile tail (heavy/keystone/light)"
-
-# Heavy and keystone packets must contain the manager-mode trigger wording;
-# the light packet must still contain the flat Steps (so light did not get
-# deleted). All three carry the manager section (it is gated by the header,
-# not by absence of the text), so assert the section is present in each and
-# that the flat Steps survive.
-for d in heavy keystone light; do
-  grep -qF 'Manager mode (heavy|keystone) — fleet-ops#3274' "$scratch/$d.in" \
-    || fail "$d packet lost the manager-mode section"
-  grep -qF 'Steps:' "$scratch/$d.in" \
-    || fail "$d packet lost the flat Steps section (light must still work)"
-done
-ok "all three packets carry manager section + flat Steps"
+# --- 2. REMOVED in the 2026-09-18 second cut --------------------------------
+# This section replayed the packet lib/pi-intake-tick.sh built (worker.md as the
+# stable prefix, a `difficulty:` header in the volatile tail). Both the tick and
+# the packet file are gone: pi-issue@.service builds the prompt in ExecStart and
+# manager mode keys off the issue's own labels, so there is no second place that
+# writes the trigger and nothing left here to replay.
 
 # --- 3. stock subagent pieces the prompt names must exist on disk -----------
 # GitHub runners do not have the pi agent files (HOME is /home/runner); the
@@ -188,30 +160,32 @@ else
   fail "expected 0 or ${#stock_pieces[@]} stock pi subagent pieces, found $stock_present"
 fi
 
-# The tick still emits the difficulty header (the trigger the manager section
-# keys off). Lock the wire so a refactor cannot silently drop it.
-grep -qF 'difficulty="$(issue_difficulty' "$tick" \
-  || fail "lib/pi-intake-tick.sh must still capture difficulty via issue_difficulty()"
-grep -qF 'echo "difficulty: $difficulty"' "$tick" \
-  || fail "lib/pi-intake-tick.sh must still emit 'difficulty: $difficulty' as the packet header"
-ok "tick still emits the difficulty header the manager section keys off"
+# The trigger the manager section keys off is the issue's own labels, read by
+# the worker itself. Lock the wire at the only place that still carries it: the
+# unit that builds the prompt must feed worker.md to pi.
+grep -qF 'prompts/worker.md' "$repo_root/systemd/pi-issue@.service" \
+  || fail "pi-issue@.service must feed worker.md to pi (manager mode trigger lives in the prompt)"
+ok "the manager-mode trigger is wired: the unit feeds worker.md to pi"
 
 # --- 4. CI host (fleet-ops#82: no new workflow line) ------------------------
 ci_yml="$repo_root/.github/workflows/ci.yml"
-host="$repo_root/tests/pi-issue-start.test.sh"
+# pi-issue-start.test.sh was deleted with bin/pi-issue-start (2026-09-18
+# second cut); ci.yml is the host now. Probe a file that exists so the
+# grep below reports "not hosted" instead of erroring on a missing path.
+host="$repo_root/tests/worker-prompt-size-ceiling.test.sh"
 listed=0
 hosted=0
 grep -Fq 'bash tests/worker-prompt-manager-mode.test.sh' "$ci_yml" && listed=1
 grep -Fq 'bash "$here/worker-prompt-manager-mode.test.sh"' "$host" && hosted=1
 if [[ "$listed" -eq 0 && "$hosted" -eq 0 ]]; then
-  fail "worker-prompt-manager-mode.test.sh has no CI host (fleet-ops#82): list it in ci.yml or invoke it from pi-issue-start.test.sh"
+  fail "worker-prompt-manager-mode.test.sh has no CI host (fleet-ops#82): list it in ci.yml"
 fi
 ok "CI host exists (ci.yml listed=$listed pi-issue-start hosted=$hosted)"
 
 # Empty-host drill: an empty ci.yml + empty host must miss both, so the
 # check above is not vacuously true.
 empty="$(mktemp -d)"
-trap 'rm -rf "$scratch" "$empty"' EXIT INT TERM
+trap 'rm -rf "$empty"' EXIT INT TERM
 : >"$empty/ci.yml"
 : >"$empty/host.test.sh"
 empty_listed=0

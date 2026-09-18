@@ -26,9 +26,9 @@ no-op, so a fast-path burst + the slow-path timer backstop both run
 without fighting (fleet-ops#3270).
 
 issues, action=opened (any repo, host-level)
-        → start lifecycle-label-sweep.service
+        → start pi-intake@<repo>.service (its step 1 is the lifecycle pass)
 issues, action=labeled (any label)
-        → start lifecycle-label-sweep.service
+        → start pi-intake@<repo>.service (its step 1 is the lifecycle pass)
 issues, action=labeled, label=agent-ready
         → start pi-intake@<repo>.service
 issues, action=labeled, label=pipeline-red
@@ -271,14 +271,15 @@ def dispatch(event: str, action: str, label: str, repo: str, conclusion: str,
                 units.append(("fleet-issue-close-duplicates.service",
                               f"issues/{action} → fleet-issue-close-duplicates"))
             if action in ("labeled", "opened", "reopened") and label != "pipeline-red":
-                # Lifecycle-label sweep runs on every open + label event
-                # except pipeline-red (a deploy signal, not a lifecycle
-                # state change — fleet-ops#3270). Cheap (one `gh issue
-                # list` per enrolled repo), idempotent (only relabels
-                # unlabeled), and protected against a closed repo by the
-                # helper's own guard.
-                units.append(("lifecycle-label-sweep.service",
-                              f"issues/{action} → lifecycle-label-sweep"))
+                # Second cut 2026-09-18: lifecycle labelling is step 1 of
+                # prompts/intake.md, so the event that used to wake a
+                # dedicated sweep now wakes intake itself — one unit instead
+                # of two, and the label pass happens right before the claim
+                # pass that needs it. pipeline-red is still excluded (it is a
+                # deploy signal, not a lifecycle state change).
+                if enrolled is None or repo in enrolled:
+                    units.append((f"pi-intake@{repo}.service",
+                                  f"issues/{action} → pi-intake@{repo} (lifecycle pass)"))
             if action == "labeled" and label == "agent-ready":
                 if enrolled is not None and repo not in enrolled:
                     return [("", f"issues: {repo!r} not enrolled in intake-repos.json")]
@@ -293,6 +294,12 @@ def dispatch(event: str, action: str, label: str, repo: str, conclusion: str,
                 units.append((f"pi-intake@{repo}.service",
                               f"issues/{action}/agent-ready → pi-intake@{repo}"))
             if units:
+                # Since the lifecycle pass folded into pi-intake, an issues/labeled/agent-ready
+                # event names pi-intake@<repo> twice. Starting one oneshot twice is a no-op
+                # but it burns StartLimitBurst, so collapse duplicates, keeping the first
+                # reason.
+                _seen: set[str] = set()
+                units = [(u, r) for u, r in units if not (u in _seen or _seen.add(u))]
                 return units
         return [("", f"issues: ignored (action={action}, label={label})")]
 

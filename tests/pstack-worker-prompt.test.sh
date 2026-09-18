@@ -50,8 +50,12 @@ grep -q 'Ignore pstack babysit, shipping, orchestrate, autopilot-' "$prompt" \
   || fail "worker.md must skip Graphite playbooks"
 ok "skips Graphite babysit/shipping/orchestrate/autopilot"
 
-grep -q 'cat /home/nish/.pi/agent/prompts/worker.md' "$intake" \
-  || fail "intake.md must still cat worker.md into the packet"
+# Second cut 2026-09-18: the packet is assembled by pi-issue@.service's
+# ExecStart, not by intake.md — intake starts the unit and the unit builds
+# the prompt. Assert the unit still feeds worker.md to pi.
+unit="$repo_root/systemd/pi-issue@.service"
+grep -q 'prompts/worker.md' "$unit" \
+  || fail "pi-issue@.service must cat worker.md into the prompt it pipes to pi"
 ok "intake packet still cats worker.md"
 
 grep -q '## Rejection log' "$adoption" \
@@ -62,13 +66,16 @@ ok "adoption doc has a Rejection log"
 # This file must stay listed in ci.yml OR invoked from a test that already
 # is (currently pi-issue-start.test.sh).
 ci_yml="$repo_root/.github/workflows/ci.yml"
-host="$repo_root/tests/pi-issue-start.test.sh"
+# pi-issue-start.test.sh was deleted with bin/pi-issue-start (2026-09-18
+# second cut); ci.yml is the host now. Probe a file that exists so the
+# grep below reports "not hosted" instead of erroring on a missing path.
+host="$repo_root/tests/worker-prompt-size-ceiling.test.sh"
 listed=0
 hosted=0
 grep -Fq 'bash tests/pstack-worker-prompt.test.sh' "$ci_yml" && listed=1
 grep -Fq 'bash "$here/pstack-worker-prompt.test.sh"' "$host" && hosted=1
 if [[ "$listed" -eq 0 && "$hosted" -eq 0 ]]; then
-  fail "pstack-worker-prompt.test.sh has no CI host (fleet-ops#82): list it in ci.yml or invoke it from pi-issue-start.test.sh"
+  fail "pstack-worker-prompt.test.sh has no CI host (fleet-ops#82): list it in ci.yml"
 fi
 ok "CI host exists (ci.yml listed=$listed pi-issue-start hosted=$hosted)"
 

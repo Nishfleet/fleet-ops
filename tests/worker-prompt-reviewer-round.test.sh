@@ -193,13 +193,16 @@ ok "replay: arm allows after the Act-on item is resolved and the body carries fo
 # verify-command by a worker. It rides an existing CI-listed test instead
 # (pi-issue-start.test.sh).
 ci_yml="$repo_root/.github/workflows/ci.yml"
-host="$repo_root/tests/pi-issue-start.test.sh"
+# pi-issue-start.test.sh was deleted with bin/pi-issue-start (2026-09-18
+# second cut); ci.yml is the host now. Probe a file that exists so the
+# grep below reports "not hosted" instead of erroring on a missing path.
+host="$repo_root/tests/worker-prompt-size-ceiling.test.sh"
 listed=0
 hosted=0
 grep -Fq 'bash tests/worker-prompt-reviewer-round.test.sh' "$ci_yml" && listed=1
 grep -Fq 'bash "$here/worker-prompt-reviewer-round.test.sh"' "$host" && hosted=1
 if [[ "$listed" -eq 0 && "$hosted" -eq 0 ]]; then
-  fail "worker-prompt-reviewer-round.test.sh has no CI host (fleet-ops#82): list it in ci.yml or invoke it from pi-issue-start.test.sh"
+  fail "worker-prompt-reviewer-round.test.sh has no CI host (fleet-ops#82): list it in ci.yml"
 fi
 ok "CI host exists (ci.yml listed=$listed pi-issue-start hosted=$hosted)"
 

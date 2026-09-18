@@ -95,6 +95,10 @@ jobs:
         bash tests/pi-systemd-run.test.sh
         bash tests/prior-art-claim-check.test.sh
         bash tests/worker-prompt-size-ceiling.test.sh
+        bash tests/worker-prompt-manager-mode.test.sh
+        bash tests/worker-prompt-reviewer-round.test.sh
+        bash tests/worker-prompt-systemd-run.test.sh
+        bash tests/pstack-worker-prompt.test.sh
         # fleet-ops#2133: reclaim cooldown + stale-claim release break the
         # spawn-die-respawn wedge (reaper writes cooldown marker, intake
         # skips for 15min, stale claims with no live worker/PR are released).

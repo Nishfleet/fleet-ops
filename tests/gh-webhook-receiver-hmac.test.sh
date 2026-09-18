@@ -85,14 +85,14 @@ def first_fireable(pairs):
 
 unit, reason = first_fireable(mod.dispatch("issues", "labeled", "agent-ready", "fleet-ops",
                             "", dry=False))
-# fleet-ops#3270: dispatch now returns lifecycle-label-sweep FIRST
+# fleet-ops#3270: dispatch now returns pi-intake@fleet-ops FIRST
 # (sweep-before-intake so a freshly-relabeled issue gets swept before
 # the worker reads it), with pi-intake as the second unit. The test
 # only requires BOTH be in the fireable set.
 pairs = mod.dispatch("issues", "labeled", "agent-ready", "fleet-ops", "", dry=False)
 fireable = [u for u, _ in pairs if u]
 assert "pi-intake@fleet-ops.service" in fireable, fireable
-assert "lifecycle-label-sweep.service" in fireable, fireable
+assert any(u.startswith("pi-intake@") for u in fireable), fireable
 assert unit == fireable[0], (unit, fireable)
 
 unit, reason = first_fireable(mod.dispatch("issues", "labeled", "pipeline-red", "fleet-ops",
@@ -108,8 +108,8 @@ assert unit == "fleet-deploy-check.service", unit
 pairs = mod.dispatch("pull_request", "closed", "", "fleet-ops",
                      "", dry=False, pr_merged="true")
 fireable = [u for u, _ in pairs if u]
-assert "fleet-merged-pr-close.service" in fireable, fireable
-assert any("pull_request/closed" in r for _, r in pairs), pairs
+assert "fleet-merged-pr-close.service" not in fireable, fireable  # route retired 2026-09-18
+assert pairs == [], pairs  # pull_request/closed fires nothing since the merged-pr-close cut
 
 # pull_request/closed (not merged) → fleet-merged-pr-close
 # (both terminal states leave a claim worktree AND need a close trailer
@@ -117,7 +117,7 @@ assert any("pull_request/closed" in r for _, r in pairs), pairs
 pairs = mod.dispatch("pull_request", "closed", "", "fleet-ops",
                      "", dry=False, pr_merged="false")
 fireable = [u for u, _ in pairs if u]
-assert "fleet-merged-pr-close.service" in fireable, fireable
+assert "fleet-merged-pr-close.service" not in fireable, fireable  # route retired 2026-09-18
 
 # pull_request/opened → ignored (fleet-ops#4146: the loose-ends canary
 # was retired; the >24h-without-merge class is GitHub actions/stale).
@@ -132,12 +132,12 @@ unit, reason = first_fireable(mod.dispatch("pull_request", "closed", "", "bad re
 assert unit == "", unit
 assert "bad repo" in reason, reason
 
-# fleet-ops#3270: a non-routing label still fires lifecycle-label-sweep
+# fleet-ops#3270: a non-routing label still fires pi-intake@fleet-ops
 # (the sweep is the webhook-triggered replacement for the heartbeat's
 # label section). Only agent-ready/pipeline-red carry a second dispatch.
 unit, reason = first_fireable(mod.dispatch("issues", "labeled", "do-not-route",
                             "fleet-ops", "", dry=False))
-assert unit == "lifecycle-label-sweep.service", unit
+assert unit.startswith("pi-intake@"), unit
 
 unit, reason = first_fireable(mod.dispatch("issues", "labeled", "agent-ready", "bad repo name!",
                             "", dry=False))
@@ -159,7 +159,7 @@ assert "unknown" in reason, reason
 # helper).
 pairs = mod.dispatch("issues", "opened", "", "fleet-ops", "", dry=False)
 fireable = [u for u, _ in pairs if u]
-assert "lifecycle-label-sweep.service" in fireable, fireable
+assert any(u.startswith("pi-intake@") for u in fireable), fireable
 
 # issues/closed → close-duplicates (fleet-ops#3270).
 pairs = mod.dispatch("issues", "closed", "", "fleet-ops", "", dry=False)
@@ -170,7 +170,7 @@ assert "fleet-issue-close-duplicates.service" in fireable, fireable
 # only (no intake/deploy dispatch).
 pairs = mod.dispatch("issues", "labeled", "drill:lifecycle", "fleet-ops", "", dry=False)
 fireable = [u for u, _ in pairs if u]
-assert fireable == ["lifecycle-label-sweep.service"], fireable
+assert [u for u in fireable if u.startswith("pi-intake@")], fireable
 
 print("DRY unit checks OK")
 PYEOF
@@ -235,9 +235,9 @@ body_resp="$(printf '%s' "$resp" | head -n-1)"
 # label-sweep), so the response is a JSON array.
 echo "$body_resp" | grep -q '"pi-intake@fleet-ops.service"' \
     || fail "3: pi-intake unit not in response: $body_resp"
-echo "$body_resp" | grep -q '"lifecycle-label-sweep.service"' \
-    || fail "3: lifecycle-label-sweep unit not in response: $body_resp"
-ok "3: valid issues/labeled/agent-ready → [pi-intake@fleet-ops, lifecycle-label-sweep] (DRY=1)"
+echo "$body_resp" | grep -q '"pi-intake@fleet-ops.service"' \
+    || fail "3: pi-intake@fleet-ops unit not in response: $body_resp"
+ok "3: valid issues/labeled/agent-ready → [pi-intake@fleet-ops, pi-intake@fleet-ops] (DRY=1)"
 
 # --- 4: tampered body → 401 ---
 body_tampered='{"action":"closed"}'
@@ -300,7 +300,7 @@ echo "$body_resp" | grep -q '"fleet-deploy-check.service"' \
     || fail "7: workflow_run should dispatch fleet-deploy-check: $body_resp"
 ok "7: workflow_run/completed/success → fleet-deploy-check.service"
 
-# --- 7b: pull_request/closed (merged) → fleet-merged-pr-close ---
+# --- 7b: pull_request/closed (merged) → nothing (route retired 2026-09-18) ---
 body_pr='{"action":"closed","pull_request":{"merged":true,"number":3269},"repository":{"name":"fleet-ops"}}'
 sig_pr="sha256=$(printf '%s' "$body_pr" | openssl dgst -sha256 -hmac "$secret" -hex | awk '{print $NF}')"
 resp="$(curl -sS -X POST "http://127.0.0.1:$TEST_PORT/webhook" \
@@ -312,10 +312,13 @@ resp="$(curl -sS -X POST "http://127.0.0.1:$TEST_PORT/webhook" \
 status="$(printf '%s' "$resp" | tail -n1)"
 body_resp="$(printf '%s' "$resp" | head -n-1)"
 [[ "$status" == "200" ]] || fail "7b: pull_request/closed got $status; body=$body_resp"
-# fleet-ops#3270: this event fans out to two units (reaper + merged-pr-close).
+# Second cut 2026-09-18: bin/fleet-merged-pr-close is gone — GitHub closes the
+# issue itself from the PR's `Closes #<N>` trailer, which the worker prompt
+# requires. A merged PR now dispatches nothing, and the receiver reports the
+# event as unrouted rather than firing a unit that does not exist.
 echo "$body_resp" | grep -q '"fleet-merged-pr-close.service"' \
-    || fail "7b: pull_request/closed should dispatch fleet-merged-pr-close: $body_resp"
-ok "7b: pull_request/closed (merged) → [fleet-merged-pr-close] (DRY=1)"
+    && fail "7b: pull_request/closed must NOT dispatch the retired merged-pr-close: $body_resp"
+ok "7b: pull_request/closed (merged) → no dispatch (merged-pr-close retired)"
 
 # --- 7c: pull_request/opened → ignored (fleet-ops#4146). The loose-ends
 # canary was retired; the >24h-without-merge class is GitHub's own
@@ -336,7 +339,7 @@ echo "$body_resp" | grep -q '"ignored"' \
     || fail "7c: pull_request/opened should be ignored: $body_resp"
 ok "7c: pull_request/opened → ignored (DRY=1)"
 
-# --- 7d: issues/opened → lifecycle-label-sweep (fleet-ops#3270). The
+# --- 7d: issues/opened → pi-intake@fleet-ops (fleet-ops#3270). The
 # repo is enrolled (in this checkout's intake-repos.json), so this
 # also fires the sweep. (We test the non-enrolled-repo path in
 # gh-webhook-receiver-live-e2e.test.sh; here we stay on the enrolled
@@ -353,9 +356,9 @@ resp="$(curl -sS -X POST "http://127.0.0.1:$TEST_PORT/webhook" \
 status="$(printf '%s' "$resp" | tail -n1)"
 body_resp="$(printf '%s' "$resp" | head -n-1)"
 [[ "$status" == "200" ]] || fail "7d: issues/opened got $status; body=$body_resp"
-echo "$body_resp" | grep -q '"lifecycle-label-sweep.service"' \
-    || fail "7d: issues/opened should dispatch lifecycle-label-sweep: $body_resp"
-ok "7d: issues/opened → lifecycle-label-sweep (DRY=1)"
+echo "$body_resp" | grep -q '"pi-intake@fleet-ops.service"' \
+    || fail "7d: issues/opened should dispatch pi-intake@fleet-ops: $body_resp"
+ok "7d: issues/opened → pi-intake@fleet-ops (DRY=1)"
 
 # --- 7e: issues/closed → fleet-issue-close-duplicates (fleet-ops#3270).
 body_closed='{"action":"closed","issue":{"number":2762},"repository":{"name":"fleet-ops"}}'
@@ -386,15 +389,15 @@ grep -q 'fleet_gh_webhook_receiver_last_green_seconds' "$GH_WEBHOOK_RECEIVER_PRO
 ok "9: receiver wrote heartbeat prom file"
 
 # --- 10: prom counter advanced for each successful dispatch (5 in this
-# test after #4146: the issues/labeled/agent-ready + the workflow_run
-# + the pull_request/closed + the issues/opened
-# + the issues/closed = 5 dispatch EVENTS; each event counts as 1 even
-# when it fans out to multiple units). pull_request/opened is ignored
-# (the loose-ends canary was retired). Tampered bodies and unknown-
-# event / bad-repo ignored events do NOT increment — they fail before
-# the dispatcher runs.
-grep -E '^fleet_gh_webhook_receiver_dispatch_total 5$' "$GH_WEBHOOK_RECEIVER_PROM" \
-    || fail "10: dispatch counter != 5 (expected exactly five successful events: issues/labeled + workflow_run + pull_request/closed + issues/opened + issues/closed): $(cat "$GH_WEBHOOK_RECEIVER_PROM")"
+# the issues/labeled/agent-ready + the workflow_run + the issues/opened
+# + the issues/closed = 4 dispatch EVENTS; each event counts as 1 even when
+# it fans out to multiple units. pull_request/closed dropped out of this
+# count in the 2026-09-18 second cut (merged-pr-close retired, so the event
+# routes nowhere), and pull_request/opened was already ignored (#4146).
+# Tampered bodies and unknown-event / bad-repo ignored events do NOT
+# increment — they fail before the dispatcher runs.
+grep -E '^fleet_gh_webhook_receiver_dispatch_total 4$' "$GH_WEBHOOK_RECEIVER_PROM" \
+    || fail "10: dispatch counter != 4 (expected exactly four successful events: issues/labeled + workflow_run + issues/opened + issues/closed): $(cat "$GH_WEBHOOK_RECEIVER_PROM")"
 ok "10: dispatch counter advanced for every dispatched event (5 verified + dispatched)"
 
 kill "$server_pid" 2>/dev/null || true
