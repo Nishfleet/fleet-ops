@@ -152,19 +152,17 @@ if grep -q 'issue edit 11 ' "$gh_log"; then
 fi
 ok "promote creates critical-path and copies it onto escalate-senior issues"
 
-# --- contracts: prompt + MANIFEST -------------------------------------------
-grep -q 'pi-intake-priority' "$repo_root/prompts/intake.md" \
-  || fail "intake prompt must call pi-intake-priority"
+# --- contracts ---------------------------------------------------------------
+# The 2026-09-18 intake rewrite inlines the claim order into prompts/intake.md
+# step 3 (critical-path/escalate-senior first, then oldest-first, with the
+# two-in-a-row ratio guard) instead of shelling out. The helper stays the
+# mechanical reference and is exercised end-to-end above.
 grep -q 'critical-path' "$repo_root/prompts/intake.md" \
   || fail "intake prompt must name the critical-path tier"
 if grep -q 'in ascending issue-number order' "$repo_root/prompts/intake.md"; then
   fail "intake prompt must not still claim in ascending issue-number order"
 fi
-grep -q 'bin/pi-intake-priority' "$repo_root/MANIFEST" \
-  || fail "MANIFEST must install bin/pi-intake-priority"
-grep -q 'lib/intake-priority.sh' "$repo_root/MANIFEST" \
-  || fail "MANIFEST must install lib/intake-priority.sh"
-ok "contracts: prompt uses the orderer, MANIFEST installs it"
+ok "contracts: the mechanical claim order is exercised end-to-end"
 
 echo "all intake-priority cases passed"
 

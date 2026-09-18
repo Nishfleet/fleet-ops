@@ -202,10 +202,11 @@ for f in bin/git-mirror-update \
     [[ -f "$repo_root/$f" ]] || fail "missing repo source: $f"
 done
 
+# prompts/intake.md no longer clones anything (2026-09-18: "the unit IS the
+# worker" — intake claims and starts the unit) and prompts/heartbeat.md is
+# deleted, so the clone convention is pinned where the clone actually happens.
 for f in \
     "$repo_root/prompts/worker.md" \
-    "$repo_root/prompts/intake.md" \
-    "$repo_root/prompts/heartbeat.md" \
     "$repo_root/bin/pi-systemd-run" \
     "$repo_root/README.md"
 do
@@ -214,9 +215,7 @@ do
 done
 grep -qi 'never push' "$repo_root/prompts/worker.md" \
     || fail "worker.md must say never push to a mirror"
-grep -qi 'never push' "$repo_root/prompts/heartbeat.md" \
-    || fail "heartbeat.md must say never push to a mirror"
-ok "sources, prompts, pi-systemd-run, and README name the clone convention"
+ok "worker.md, pi-systemd-run, and README name the clone convention"
 
 # --- 11. symlink invocation resolves repo_root (fleet-ops#1390) -------------
 # Installed as ~/.local/bin/git-mirror-update -> <repo>/bin/git-mirror-update.

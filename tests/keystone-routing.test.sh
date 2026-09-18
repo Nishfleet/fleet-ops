@@ -132,16 +132,16 @@ grep -Fq 'bash "$here/keystone-routing.test.sh"' "$here/seat""-lib.test.sh" \
   || fail "seat.lib.test.sh must nest this file (CI cannot gain a new workflow line)"
 ok "seat.lib.test.sh hosts this file"
 
-grep -Fq "cat /home/nish/.pi/agent/prompts/worker.md" "$repo_root/prompts/intake.md" \
-  || fail "prompts/intake.md must write worker.md first (fleet-ops#4643 stable prefix)"
-grep -Fq "printf 'difficulty: keystone\\n'" "$repo_root/prompts/intake.md" \
-  || fail "prompts/intake.md must write the difficulty: keystone marker AFTER worker.md (fleet-ops#1133/#4643)"
-grep -Fq '} > /home/nish/.local/state/pi-issues/<repo>-N.in' "$repo_root/prompts/intake.md" \
-  || fail "prompts/intake.md must still overwrite the packet with >"
-if grep -qE 'worker\.md.*>> /home/nish/.local/state/pi-issues' "$repo_root/prompts/intake.md"; then
-  fail "prompts/intake.md must not append (>>) worker.md onto the packet"
+# fleet-ops#4643's stable-prefix pin is retired: the 2026-09-18 rail collapse
+# ("the unit IS the worker") deleted packet assembly, so intake.md writes no
+# worker.md prefix and no difficulty marker. packet_difficulty above is still
+# the live contract and is exercised against real packets.
+# The append-vs-overwrite hazard that pin guarded cannot recur: nothing
+# assembles a packet file any more.
+if grep -q '/home/nish/.local/state/pi-issues' "$repo_root/prompts/intake.md"; then
+  fail "prompts/intake.md writes a packet file again — re-pin the overwrite contract"
 fi
-ok "intake.md writes the keystone marker with overwrite, not append"
+ok "intake.md assembles no packet file (rail collapse, 2026-09-18)"
 
 echo "OK: keystone-routing: marker, cost-first unchanged, strongest-first, two-strike"
 exit 0

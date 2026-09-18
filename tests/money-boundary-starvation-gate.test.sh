@@ -116,10 +116,18 @@ echo "$out" | grep -q "SUPPRESSED" \
   || fail "raise must report SUPPRESSED when the fleet is not starved: $out"
 ok "writer suppresses the page when the fleet is not starved (fleet-ops#4627)"
 
-# No MONEY-BOUNDARY ledger line must have been written.
+# The RECORD is always written (fleet-ops#4477) — a benched seat with no
+# record anywhere is the silent-wall defect this script exists to prevent.
+# Only the PAGE is suppressed, and `paged=no` is what nish-boundary-notify
+# filters on (reconciled 2026-09-18; the suppressed path used to write
+# nothing, so --check could never go green for a non-starved provider).
 [[ -f "$AS/NISH-ESCALATIONS.md" ]] \
-  && fail "raise must NOT write a ledger line when the page is suppressed" || true
-ok "writer writes no MONEY-BOUNDARY ledger line when suppressed"
+  || fail "raise must still RECORD the money wall when the page is suppressed"
+grep -q 'MONEY-BOUNDARY provider=openrouter .*paged=no reason=not-starved' "$AS/NISH-ESCALATIONS.md" \
+  || fail "suppressed record must carry paged=no reason=not-starved: $(cat "$AS/NISH-ESCALATIONS.md")"
+! grep -q 'paged=yes' "$AS/NISH-ESCALATIONS.md" \
+  || fail "suppressed path must never write a paged=yes line: $(cat "$AS/NISH-ESCALATIONS.md")"
+ok "writer records the wall with paged=no and never paged=yes when suppressed"
 
 # The dry provider must still be benched.
 [[ -f "$SEAT_DIR/openrouter__deepseek-ai_deepseek-v4-flash.json" ]] \

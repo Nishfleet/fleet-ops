@@ -15,8 +15,6 @@
 #      unavailable= (acceptance), with a fixture session dir (no gh).
 #   4. lib/fleet_usd.py computes the same marginal USD the exporter emits:
 #      a metered crof session of 1M input / 1M output / 1M cached = $0.183.
-#   5. The exporter's _emit_usd_24h emits fleet_usd_24h{kind=metered} (acceptance:
-#      fleet_usd_24h present in the prom output family).
 #   6. A seat with no rate card and no flat plan reports UNAVAILABLE:<why>, never
 #      a fabricated $0.
 
@@ -114,35 +112,11 @@ PY
 echo "$cache_out" | grep -q "OK" || fail "fleet_usd compute_usd_24h cache warm-read failed: $cache_out"
 ok "fleet_usd.py caches per-file by mtime so re-scans are cheap (no result drift)"
 
-# exporter emits fleet_usd_24h family from the same session tree.
-expout="$(
-SEAT_CAPS_JSON="$caps" FLEET_SESSIONS_DIR="$scratch/sessions" python3 - <<PY
-import importlib.util, pathlib, os
-os.environ.setdefault("FLEET_SESSIONS_DIR", "$scratch/sessions")
-mp = pathlib.Path("$exporter")
-spec = importlib.util.spec_from_file_location("fme", mp)
-m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
-m.SEAT_CAPS_LIVE = pathlib.Path("$caps")
-m.SEAT_CAPS_DEFAULT = m.SEAT_CAPS_LIVE
-m.SEAT_CAPS_FALLBACK = m.SEAT_CAPS_LIVE
-m.SESSIONS_DIR = pathlib.Path("$scratch/sessions")
-lines=[]
-m._emit_usd_24h(lines, {"Nishfleet/crof": 1})
-print("\n".join(l for l in lines if "fleet_usd" in l))
-PY
-)"
-echo "$expout" | grep -qE 'fleet_usd_24h\{kind="metered"\}' || fail "exporter did not emit fleet_usd_24h{kind=metered}; got: $expout"
-echo "$expout" | grep -qE 'fleet_usd_24h\{kind="flat_share"\}' || fail "exporter did not emit fleet_usd_24h{kind=flat_share}"
-# fleet-ops#4459 regression: the label VALUE must be quoted. Prometheus
-# exposition format requires quoted label values; `merged_prs=133` is a parse
-# error, and the node_exporter textfile collector drops the ENTIRE file on one
-# bad line — so an unquoted value took fleet_usd_24h dark with it
-# (node_textfile_scrape_error=1, observed live 2026-09-08T09:0xZ).
-echo "$expout" | grep -qE 'fleet_usd_per_merged_pr\{merged_prs="[0-9]+"\} [0-9]' \
-  || fail "exporter must emit fleet_usd_per_merged_pr with a QUOTED label value (textfile-parseable); got: $(echo "$expout" | grep fleet_usd_per_merged_pr)"
-echo "$expout" | grep -qE 'fleet_usd_per_merged_pr\{merged_prs=[0-9]' \
-  && fail "exporter emitted an unquoted merged_prs label value — node_exporter drops the whole textfile on that line"
-ok "exporter emits fleet_usd_24h + fleet_usd_per_merged_pr with a quoted, parseable label (#4459)"
+# 5. retired (2026-09-18 collector cut): the exporter's _emit_usd_24h and
+# _emit_usd_per_merged_pr collectors were deleted with every other family no
+# surviving alert in config/fleet_rules.yml reads. The rate card and
+# lib/fleet_usd.py above remain the USD source of truth; measure.sh (checked
+# in step 3) is the surviving reader.
 
 # 6. retired (fleet-ops#4263): per-seat prepaid USD recording went with the
 # routing library; spend is the LiteLLM proxy /spend now.
