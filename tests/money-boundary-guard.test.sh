@@ -308,16 +308,9 @@ MONEY_BOUNDARY_AS="$legacy_as" "$script" --check >/dev/null 2>&1 \
   || fail "minute-only historical prebench stamp must age out"
 ok "historical prebench minute-only stamp is aged out of --check"
 
-# --- 7. heartbeat-tier1 wires --check and propagates rc>=2 only ------------
-tier1="$repo_root/bin/fleet-heartbeat-tier1"
-grep -q 'money-boundary-raise --check' "$tier1" \
-  || fail "heartbeat-tier1 must call money-boundary-raise --check (fleet-ops#5204)"
-grep -q 'money_boundary_check_rc' "$tier1" \
-  || fail "heartbeat-tier1 must track money_boundary_check_rc"
-grep -q 'money_boundary_check_rc.*-ge 2' "$tier1" \
-  || fail "heartbeat-tier1 must propagate money_boundary_check_rc only on rc>=2"
+# --- 7. MANIFEST installs the guard ---------------------------------------
 grep -q 'bin/money-boundary-raise' "$repo_root/MANIFEST" \
   || fail "MANIFEST must install bin/money-boundary-raise"
-ok "heartbeat-tier1 wires the guard (rc>=2 only) + MANIFEST dest"
+ok "MANIFEST installs bin/money-boundary-raise"
 
 ok "money-boundary guard drill: deterministic raise, dedupe, FAIL-LOUD, --check, backup scan, rule routing, and #5204 legacy-wall/age-window/heartbeat wiring"

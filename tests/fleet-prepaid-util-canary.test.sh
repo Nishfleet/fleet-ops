@@ -9,8 +9,9 @@
 # REAL expiring $400 (Cursor Ultra Included API bucket, $235.704 used) went
 # into the #4566 field names the rules never read.
 #
-#   1. Offline (no auth, no fixture): exit 0, "no data" log, heartbeat-tier1
-#      still invokes the canary (the #4263 block-38 slot contract).
+#   1. Offline (no auth, no fixture): exit 0, "no data" log, and the
+#      metrics-export drop-in still invokes the canary (the scheduler contract;
+#      the #4263 block-38 slot until the heartbeat was deleted 2026-09-18).
 #   2. THE #6114 regression: a live-shaped GetCurrentPeriodUsage fixture with
 #      a non-zero Included-API bucket and a 0/0 SpendLimitUsage (Nish keeps
 #      the on-demand overage at 0) must plant the BUCKET figures under the
@@ -31,7 +32,7 @@ set -euo pipefail
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 repo_root="$here"
 bin="$repo_root/bin/fleet-prepaid-util-canary"
-tier1="$repo_root/bin/fleet-heartbeat-tier1"
+sched="$repo_root/systemd/fleet-metrics-export.service.d/40-prepaid-spend.conf"
 
 fail() { echo "FAIL: $*" >&2; exit 1; }
 ok()   { echo "OK: $*"; }
@@ -56,13 +57,13 @@ set +e
 offline_out=$("$bin" 2>&1)
 offline_rc=$?
 set -e
-[[ "$offline_rc" == "0" ]] || fail "scenario1: offline canary must exit 0 (heartbeat tier1 must not page), got $offline_rc ($offline_out)"
+[[ "$offline_rc" == "0" ]] || fail "scenario1: offline canary must exit 0 (a vendor hiccup must not fail the exporter), got $offline_rc ($offline_out)"
 grep -q 'cursor spend reader: no data' <<<"$offline_out" \
   || fail "scenario1: offline must log the no-data line, got: $offline_out"
 [[ ! -s "$prom_out" ]] || fail "scenario1: no .prom must be written when there is no data"
-grep -F 'fleet-prepaid-util-canary' "$tier1" >/dev/null \
-  || fail "heartbeat-tier1 must still invoke fleet-prepaid-util-canary (block-38 slot, #4263)"
-ok "scenario1: offline exit 0, no .prom, tier1 slot wired"
+grep -F 'fleet-prepaid-util-canary' "$sched" >/dev/null \
+  || fail "the fleet-metrics-export drop-in must invoke fleet-prepaid-util-canary (scheduler contract, #4263/#6114)"
+ok "scenario1: offline exit 0, no .prom, exporter drop-in wired"
 
 # --- 2. THE #6114 regression: non-zero bucket -> non-zero #4206 metrics -----
 # Live-shaped response (fleet-ops#4566): SpendLimitUsage carries NO limits
