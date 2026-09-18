@@ -157,7 +157,7 @@ UNIT_RE = re.compile(
 )
 INSTANCE_RE = re.compile(
     r"\b(?:pi-issue|pi-intake|pi-scout|pi-packet|unit-escalation|fleet-heartbeat"
-    r"|siterep-deploy|siterep-uptime)@[A-Za-z0-9_.-]+\b"
+    r"|fleet-deploy-check)@[A-Za-z0-9_.-]+\b"
 )
 
 # --- signal keys -----------------------------------------------------------

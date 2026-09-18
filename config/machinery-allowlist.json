@@ -147,32 +147,7 @@
       "source": "repo"
     },
     {
-      "unit": "siterep-deploy",
-      "class": "a",
-      "source": "repo"
-    },
-    {
-      "unit": "siterep-deploy-verify",
-      "class": "a",
-      "source": "repo"
-    },
-    {
-      "unit": "siterep-deploy-rollback",
-      "class": "a",
-      "source": "repo"
-    },
-    {
-      "unit": "siterep-live-canary",
-      "class": "a",
-      "source": "repo"
-    },
-    {
       "unit": "0509-search-tier-canary",
-      "class": "a",
-      "source": "repo"
-    },
-    {
-      "unit": "siterep-uptime",
       "class": "a",
       "source": "repo"
     },
@@ -272,11 +247,6 @@
     },
     {
       "unit": "pi-transport-check",
-      "class": "b",
-      "source": "hand-placed"
-    },
-    {
-      "unit": "siterep-uptime-repair",
       "class": "b",
       "source": "hand-placed"
     },

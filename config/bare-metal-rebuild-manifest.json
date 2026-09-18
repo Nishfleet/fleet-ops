@@ -182,7 +182,6 @@
       "/home/nish/.config/fleet-heartbeat/hc.env",
       "/home/nish/.config/fleet-ops/keystone-hc.env",
       "/home/nish/.config/fleet-console/cf.env",
-      "/home/nish/.config/siterep-uptime/hc.env",
       "/home/nish/.config/fleet-worker/nishfleet-worker.env",
       "/etc/tiny-studio/heartbeats.env"
     ]

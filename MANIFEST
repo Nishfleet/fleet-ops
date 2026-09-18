@@ -8,14 +8,6 @@ systemd/pi-packet@.service /home/nish/.config/systemd/user/pi-packet@.service
 systemd/pi-packet-failed@.service /home/nish/.config/systemd/user/pi-packet-failed@.service
 systemd/pi-packet-logrotate.service /home/nish/.config/systemd/user/pi-packet-logrotate.service
 systemd/pi-packet-logrotate.timer /home/nish/.config/systemd/user/pi-packet-logrotate.timer
-systemd/siterep-deploy.service /home/nish/.config/systemd/user/siterep-deploy.service
-systemd/siterep-deploy.timer /home/nish/.config/systemd/user/siterep-deploy.timer
-systemd/siterep-deploy-verify.service /home/nish/.config/systemd/user/siterep-deploy-verify.service
-systemd/siterep-deploy-rollback.service /home/nish/.config/systemd/user/siterep-deploy-rollback.service
-systemd/siterep-uptime.service /home/nish/.config/systemd/user/siterep-uptime.service
-systemd/siterep-uptime.timer /home/nish/.config/systemd/user/siterep-uptime.timer
-systemd/siterep-live-canary.service /home/nish/.config/systemd/user/siterep-live-canary.service
-systemd/siterep-live-canary.timer /home/nish/.config/systemd/user/siterep-live-canary.timer
 systemd/fleet-console-pi.service /home/nish/.config/systemd/user/fleet-console-pi.service
 systemd/fleet-console-pi.timer /home/nish/.config/systemd/user/fleet-console-pi.timer
 # fleet-console-pi.path REMOVED (fleet-ops#1460 class): it watched
@@ -75,12 +67,7 @@ config/prometheus.yml /etc/prometheus/prometheus.yml
 # fleet-ops#1010: organ registry consumed by bin/fleet-organ-heartbeat-check.
 # Lives next to the rules so the verify drill + PR gate can read it in-repo.
 config/fleet-organs.json /home/nish/.local/state/pi-packet/fleet-organs.json
-bin/siterep-live-canary /home/nish/.local/bin/siterep-live-canary
 bin/jev-eval.mjs /home/nish/.local/bin/jev-eval
-bin/siterep-deploy /home/nish/.local/bin/siterep-deploy
-bin/siterep-deploy-verify /home/nish/.local/bin/siterep-deploy-verify
-bin/siterep-deploy-rollback /home/nish/.local/bin/siterep-deploy-rollback
-bin/siterep-uptime /home/nish/.local/bin/siterep-uptime
 prompts/intake.md /home/nish/.pi/agent/prompts/intake.md
 prompts/spec-judge.md /home/nish/.pi/agent/prompts/spec-judge.md
 prompts/worker.md /home/nish/.pi/agent/prompts/worker.md
@@ -91,7 +78,6 @@ prompts/scout.md /home/nish/.pi/agent/prompts/scout.md
 prompts/auditor.md /home/nish/.pi/agent/prompts/auditor.md
 prompts/nish-question-auditor.md /home/nish/.pi/agent/prompts/nish-question-auditor.md
 prompts/scout-repair.md /home/nish/.pi/agent/prompts/scout-repair.md
-prompts/siterep-uptime-repair.md /home/nish/.pi/agent/prompts/siterep-uptime-repair.md
 config/seat-caps.json /home/nish/.local/state/pi-packet/seat-caps.json
 # fleet-ops#3722: ~/.pi/agent/models.json becomes MANIFEST-managed. The live
 # file was hand-edited for every seat wire (fleet-ops#384, #1163, #1739);
@@ -907,8 +893,6 @@ lib/vault-lint.py /home/nish/.local/bin/vault-lint
 # fleet-ops#1265: paved-road vault capture. One-command drop-zone note with
 # auto-provenance and inline lint. The ratio helper is the weekly adoption
 # metric (drop vs direct-with-wrapper) from the vault capture audit log.
-bin/siterep-vault-capture /home/nish/.local/bin/siterep-vault-capture
-bin/siterep-vault-capture-ratio /home/nish/.local/bin/siterep-vault-capture-ratio
 # fleet-ops#525: daily vault knowledge-format lint. The script lives in
 # nish-vault because it writes the shared-memory report and 03 Knowledge hub
 # contents; the timer is the named, scheduled fleet-ops enforcer.

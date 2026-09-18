@@ -316,8 +316,8 @@
     {
       "id": "sr-reversibility",
       "source": "global-standing-rules.md: Engineer reversibility, don't gate (Nish, 2026-08-24 — fleet default)",
-      "mechanism": "auto-revert on red main + siterep-deploy-rollback on failed verify",
-      "proof": ".github/workflows/auto-revert.yml; systemd/siterep-deploy-rollback.service; tests/auto-revert-required-check-gate.test.sh",
+      "mechanism": "auto-revert on red main",
+      "proof": ".github/workflows/auto-revert.yml; tests/auto-revert-required-check-gate.test.sh",
       "status": "enforced"
     },
     {

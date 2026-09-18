@@ -52,9 +52,6 @@ cheaper than building, because prose bans lose to urgency at decision time.
 | Vault conflict resolve | vault-conflict-resolver | `vault-conflict-resolver.timer` | vault sync guard |
 | Vault knowledge format | vault-knowledge-format | `vault-knowledge-format.timer` | vault format |
 | Standing-rules render | standing-rules-render | `standing-rules-render.{path,service}` | vault |
-| Siterep deploy / verify / rollback | siterep-deploy* | `siterep-deploy*` | siterep rail |
-| Siterep live canary | siterep-live-canary | `siterep-live-canary.timer` | canary |
-| Siterep uptime | siterep-uptime | `siterep-uptime.timer` | uptime rail |
 | Quality research (weekly) | quality-research-weekly | `quality-research-weekly.timer` | #457 |
 | Boundary-notify (Nish-reserved) | nish-boundary-notify | `nish-boundary-notify.service` | standing rule |
 | Memory curator | nish-memory-curator | `nish-memory-curator.timer` | memory compound |

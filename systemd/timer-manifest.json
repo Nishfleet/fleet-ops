@@ -362,28 +362,10 @@
       "cadence": "30min",
       "source": "user-config"
     },
-    "siterep-deploy.timer": {
-      "reason": "DISABLED: siterep.net autonomous deploy drift tick \u2014 deliberately NOT installed per packet p51; kept for reference",
-      "classification": "disabled",
-      "cadence": "5min",
-      "source": "repo"
-    },
-    "siterep-live-canary.timer": {
-      "reason": "Hourly siterep.net live canary (T3 deep tier) \u2014 chromium+firefox layout smoke + synthetic monitor; hourly per three-tier monitoring cadence",
-      "classification": "scheduled",
-      "cadence": "hourly",
-      "source": "repo"
-    },
     "siterep-pr-conflict-watchdog.timer": {
       "reason": "PR conflict watchdog for siterep.net \u2014 detects merge conflicts on open PRs",
       "classification": "scheduled",
       "cadence": "unknown",
-      "source": "repo"
-    },
-    "siterep-uptime.timer": {
-      "reason": "2-min uptime probe for siterep.net (T1) \u2014 decisive HTTP 200 + TLS + title marker; Persistent=false so missed probes don't stack on boot",
-      "classification": "scheduled",
-      "cadence": "2min",
       "source": "repo"
     },
     "tinystudio-live-site-check.timer": {

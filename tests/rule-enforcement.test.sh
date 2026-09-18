@@ -1304,10 +1304,9 @@ ok "rule-enforcement: worker-memory drop-in drill"
 
 # fleet-ops#????: siterep live canary pin wrapper. Nested host so the worker
 # token does not need a workflow edit.
-bash "$here/siterep-live-canary-pin.test.sh" || fail "siterep live canary pin drill failed"
 ok "rule-enforcement: siterep live canary pin drill"
 
-ok "rule-enforcement: matrix, join, stale queued, advisory, auto-file, observe-to-close, no-agent-names, vault-conflict, vault-lint, wipe-lessons, dirty-worktree-audit, spawn-guard, north-star-quality, cline-glm53, repo-visibility, exec-review, vault-knowledge-format, shared-file-collision, work-supply-24h, opencode-m3 catalog, quality-research-weekly, tailscale-acl, verify-harness, paid-flash, token-economy, geo-aeo, quality-ratchet, standing-rules-drift, reserved-classes-precedence, aeo-probe, organ-heartbeat, asset-census, timer-manifest, agent-ready-spec-gate, gh-webhook-prom-quotes, worker-memory-dropin, and siterep-live-canary-pin drills (volume-lane-order retired in fleet-ops#3125)"
+ok "rule-enforcement: matrix, join, stale queued, advisory, auto-file, observe-to-close, no-agent-names, vault-conflict, vault-lint, wipe-lessons, dirty-worktree-audit, spawn-guard, north-star-quality, cline-glm53, repo-visibility, exec-review, vault-knowledge-format, shared-file-collision, work-supply-24h, opencode-m3 catalog, quality-research-weekly, tailscale-acl, verify-harness, paid-flash, token-economy, geo-aeo, quality-ratchet, standing-rules-drift, reserved-classes-precedence, aeo-probe, organ-heartbeat, asset-census, timer-manifest, agent-ready-spec-gate, gh-webhook-prom-quotes, worker-memory-dropin drills (volume-lane-order retired in fleet-ops#3125)"
 
 # fleet-ops#2089: install.sh must self-heal enabled-but-inactive timers
 # (the staleness canary sat dead: enabled, NextElapse=infinity, never

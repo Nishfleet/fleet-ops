@@ -386,7 +386,6 @@ while IFS= read -r f; do
   fi
 done <<'EOF'
 bin/fleet-blind-audit
-bin/siterep-deploy-rollback
 bin/fleet-free-roster-canary
 bin/fleet-ops-drift.py
 .github/scripts/auto-revert.sh
@@ -395,7 +394,6 @@ EOF
 # helper exists, the listed auto-filers must call it.
 for f in \
   bin/fleet-blind-audit \
-  bin/siterep-deploy-rollback \
   bin/fleet-free-roster-canary \
   bin/fleet-ops-drift.py \
   .github/scripts/auto-revert.sh \

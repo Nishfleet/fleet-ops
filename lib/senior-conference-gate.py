@@ -80,7 +80,6 @@ DEFAULT_CRITICAL_PATH_GLOBS = [
     "**/deploy/**",
     "install.sh",
     "bin/*deploy*",
-    "bin/siterep-deploy*",
     "bin/fleet-deploy*",
     ".github/workflows/*deploy*",
     # migrations — one-way D1/schema changes (D1 has no down-migrations)

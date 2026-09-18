@@ -59,7 +59,6 @@ bash "$here/alert-repair-claim-mutex.test.sh" || fail "alert-repair-claim-mutex 
 bash "$here/repo-privacy-guard.test.sh" || fail "repo-privacy-guard tests failed"
 bash "$here/pi-issue-run-debug-playbook-gate.test.sh" || fail "pi-issue-run-debug-playbook-gate tests failed"
 bash "$here/scout-prompt-difficulty.test.sh" || fail "scout-prompt-difficulty tests failed"
-bash "$here/siterep-deploy-rollback-rc-propagation.test.sh" || fail "siterep-deploy-rollback tests failed"
 bash "$here/role-quality-gates.test.sh" || fail "role-quality-gates tests failed"
 bash "$here/reusable-surface-audit.test.sh" || fail "reusable-surface-audit tests failed"
 bash "$here/pi-seat-source-litellm.test.sh" || fail "pi-seat-source-litellm tests failed"

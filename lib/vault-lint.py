@@ -19,7 +19,7 @@ Exit codes:
 
 --pre-write is the capture-wrapper refuse path (complements fleet-ops#1265):
 print the violation report and exit 2 so the author can fix the note before
-it is committed. siterep-vault-capture should call this before any write.
+it is committed. Vault writers should call this before any write.
 """
 from __future__ import annotations
 
