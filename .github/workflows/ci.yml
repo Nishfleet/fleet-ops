@@ -76,7 +76,6 @@ jobs:
         bash tests/intake-repos-shape.test.sh
         bash tests/intake-repos-path-resolution.test.sh
         bash tests/pi-transport-check.test.sh
-        bash tests/minimax-token-refresh.test.sh
         bash tests/seat-credentials-bad-replay.test.sh
         bash tests/budget-402-classification.test.sh
         bash tests/fleet-production-stale-alert.test.sh

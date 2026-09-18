@@ -247,12 +247,16 @@ except Exception:
 
 # --- MiniMax (fleet-ops#5788): the claude-minimax-key wrapper resolves
 # ~/.mmx/config.json into an access token, refreshing it transparently if
-# within 5 min of expiry. Captured once at proxy start; the
-# minimax-token-refresh timer compares the wrapper's fresh key to the
-# proxy's captured env var every 2h and bounces this unit on a mismatch
-# so a rotated token reaches the running proxy. Do not change this to a
-# file read — env var capture is intentional and the timer is the
-# healer (fleet-ops#5788 termination).
+# within 5 min of expiry. Captured once at proxy start.
+#
+# The minimax-token-refresh timer that used to compare this captured value
+# against a fresh wrapper key every 2h and bounce the proxy on a mismatch
+# was DELETED in the 2026-09-18 glue sweep: the live yaml carries no MiniMax
+# deployment any more (the key 401s "login fail" — see the yaml header), so
+# there was nothing left for a rotated key to reach. Its last 8 hours of runs
+# all logged "SKIP: no live fleet-litellm-proxy process to inspect" — its
+# /proc detection had stopped matching the running proxy too.
+# Restore the timer from git history if a MiniMax deployment ever returns.
 export MINIMAX_API_KEY=$(/home/nish/.local/bin/claude-minimax-key)
 
 # --- the proxy's own admin key (virtual-key minting). Generated once,
