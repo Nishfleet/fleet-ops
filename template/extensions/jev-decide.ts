@@ -24,6 +24,7 @@ import { Type } from "typebox";
 const JEV_EVAL = process.env.JEV_EVAL_BIN ?? join(homedir(), ".local", "bin", "jev-eval");
 
 export default function (pi: ExtensionAPI) {
+	console.log("EXTLOAD-OK extension=jev-decide mode=print-safe");
 	pi.registerTool({
 		name: "jev_decide",
 		label: "Jev decide",
