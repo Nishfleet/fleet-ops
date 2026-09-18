@@ -7,9 +7,7 @@
 #
 # Proves, offline (no gh, no prometheus, no systemd):
 #   1. The exporter module imports and the new helpers exist.
-#   2. _classify_title maps feat->upgrade, fix/test->repair, chore->churn,
 #      unclassified/bare->churn (the issue's "to start" heuristic).
-#   3. _self_maintenance_and_quality splits self vs product by the config
 #      repo set, computes the ratio, and the quality counts + shares.
 #   4. total=0 -> ratio and shares are None (omitted), counts are 0 (the
 #      kind="total" heartbeat gauge still emits so absent() does not false-fire
@@ -87,55 +85,16 @@ from pathlib import Path
 m.SELF_MAINT_JSON_DEFAULT = Path(sm_cfg)
 m.SELF_MAINT_JSON_FALLBACK = Path("/nonexistent/sm-fallback.json")
 
-cases = [
-    ("feat: add ratio", "upgrade"),
-    ("feat(metrics): add ratio", "upgrade"),
-    ("feat!: break API", "upgrade"),
-    ("Feat: title case", "upgrade"),
-    ("fix: seat crash", "repair"),
-    ("fix(seats): null deref", "repair"),
-    ("test: cover ratio", "repair"),
-    ("chore: bump deps", "churn"),
-    ("refactor: rename", "churn"),
-    ("docs: readme", "churn"),
-    ("ci: workflow", "churn"),
-    ("Update foo.py", "churn"),
-    ("", "churn"),
-    ("no prefix here", "churn"),
-]
-for title, exp in cases:
-    got = m._classify_title(title)
-    assert got == exp, f"classify {title!r} -> {got}, expected {exp}"
-print("OK: classifier feat/fix/test/chore/unclassified")
-
+# 2026-09-18 (74145328b): _classify_title and _self_maintenance_and_quality were
+# cut with the self-maintenance + PR-quality families — their alert rules had
+# already been removed from fleet_rules.yml, so the metrics were orphans.
+# _self_maintenance_repos is KEPT: it also splits the queue for _gh_ready_work,
+# and the two checks below are the surviving contract.
 repos = m._self_maintenance_repos()
 assert repos == {"Nishfleet/fleet-ops", "Nishfleet/fleet-ops-deploy"}, repos
 print("OK: self-maintenance repo set from config")
 
-detail = [
-    {"repo": "Nishfleet/fleet-ops", "title": "feat: add self-maintenance ratio"},
-    {"repo": "Nishfleet/fleet-ops", "title": "fix: seat crash"},
-    {"repo": "Nishfleet/fleet-ops-deploy", "title": "chore: bump"},
-    {"repo": "Nishfleet/0509", "title": "feat: new landing"},
-    {"repo": "Nishfleet/0509", "title": "test: cover x"},
-    {"repo": "Nishfleet/tinystudio-in", "title": "random title"},
-]
-sm = m._self_maintenance_and_quality(detail)
-assert sm["self"] == 3, sm
-assert sm["product"] == 3, sm
-assert sm["total"] == 6, sm
-assert abs(sm["ratio"] - 0.5) < 1e-9, sm["ratio"]
-assert sm["quality"] == {"upgrade": 2, "repair": 2, "churn": 2}, sm["quality"]
-assert abs(sm["share"]["upgrade"] - 2/6) < 1e-9, sm["share"]
-assert abs(sm["share"]["churn"] - 2/6) < 1e-9, sm["share"]
-print("OK: self-maintenance+quality counts, ratio, shares")
 
-sm0 = m._self_maintenance_and_quality([])
-assert sm0["total"] == 0 and sm0["self"] == 0 and sm0["product"] == 0, sm0
-assert sm0["ratio"] is None, sm0
-assert sm0["share"]["upgrade"] is None and sm0["share"]["churn"] is None, sm0
-assert sm0["quality"] == {"upgrade": 0, "repair": 0, "churn": 0}, sm0
-print("OK: no-merge day -> ratio/share omitted, heartbeat counts 0")
 
 m.SELF_MAINT_JSON_DEFAULT = Path("/nonexistent/sm-1.json")
 m.SELF_MAINT_JSON_FALLBACK = Path("/nonexistent/sm-2.json")
@@ -772,17 +731,12 @@ rc = m.main()
 assert rc == 0, f"main rc={rc}"
 body = Path(out_path).read_text()
 # Heartbeat gauges always present.
-assert 'fleet_self_maintenance_merges{kind="self"} 1' in body, body
-assert 'fleet_self_maintenance_merges{kind="product"} 2' in body, body
-assert 'fleet_self_maintenance_merges{kind="total"} 3' in body, body
-assert "fleet_self_maintenance_ratio 0.333333" in body, body
-# Quality counts: feat->upgrade(1), fix->repair(1), chore->churn(1).
-assert 'fleet_pr_quality_24h{class="upgrade"} 1' in body, body
-assert 'fleet_pr_quality_24h{class="repair"} 1' in body, body
-assert 'fleet_pr_quality_24h{class="churn"} 1' in body, body
-assert 'fleet_pr_quality_share{class="upgrade"} 0.333333' in body, body
-# Verified-merges: PR1 (diff+evidence) + PR2 (diff+evidence) verified; PR3
-# (diff but no evidence) unverified. verified=2, unverified=1, total=3.
+# 2026-09-18 (74145328b): the fleet_self_maintenance_* and fleet_pr_quality_*
+# families were cut — their alert rules were already gone from
+# fleet_rules.yml, leaving the metrics with no consumer at all.
+assert "fleet_self_maintenance_merges" not in body, "cut family came back: " + body
+assert "fleet_pr_quality_24h" not in body, "cut family came back: " + body
+
 assert 'fleet_verified_merges_24h{kind="verified"} 2' in body, body
 assert 'fleet_verified_merges_24h{kind="unverified"} 1' in body, body
 assert 'fleet_verified_merges_24h{kind="total"} 3' in body, body
@@ -810,7 +764,7 @@ assert 'fleet_pi_seat_dead_credential{seat="bai__deepseek-v4-flash"' not in body
 # in the dead-credential SERIES — pin that series specifically, not the
 # whole body, so the healthy_cap0 metric can surface the parked seat.
 assert 'fleet_pi_seat_dead_credential{seat="devin__glm-5-2"' not in body, "healthy seat must not appear in dead-credential series: " + body
-print("OK: main() emits self-maintenance + quality + verified-merges families")
+print("OK: main() emits verified-merges + dead-credential families; cut families stay gone")
 PY
 
 # 12. fleet-ops#1772: null ready_work must fail loud, not write a partial file
@@ -1610,13 +1564,15 @@ with tempfile.TemporaryDirectory() as td:
     lines = []
     m._emit_deploy_fault_gate(lines)
     out = "\n".join(lines)
-    for name in ("fleet_deploy_fault_closed_without_green",
-                 "fleet_deploy_fault_gate_blocked",
-                 "fleet_deploy_fault_labeled"):
+    # 2026-09-18 (74145328b): deploy_fault_{gate_blocked,labeled} were cut;
+    # _closed_without_green is KEPT because its rule actually fires.
+    for name in ("fleet_deploy_fault_closed_without_green",):
         assert out.count(f"# HELP {name}") == 1, out
         assert out.count(f"# TYPE {name}") == 1, out
         assert f"{name} 0" in out, out
-    print("OK: missing summaries -> all three gauges 0, HELP/TYPE once")
+    assert "fleet_deploy_fault_gate_blocked" not in out, "cut family came back: " + out
+    assert "fleet_deploy_fault_labeled" not in out, "cut family came back: " + out
+    print("OK: missing summaries -> closed_without_green 0, HELP/TYPE once; cut families gone")
 
 # 2. Real counts land — including a nonzero tripwire (the 0509#2662 class:
 #    a deploy-fault issue the sweep found closed without a green run).
@@ -1634,9 +1590,7 @@ with tempfile.TemporaryDirectory() as td:
     m._emit_deploy_fault_gate(lines)
     out = "\n".join(lines)
     assert "fleet_deploy_fault_closed_without_green 1" in out, out
-    assert "fleet_deploy_fault_labeled 2" in out, out
-    assert "fleet_deploy_fault_gate_blocked 1" in out, out
-    print("OK: nonzero tripwire + labeled + gate_blocked emitted faithfully")
+    print("OK: nonzero tripwire emitted faithfully")
 
 # 3. Unparseable file -> 0, no crash.
 with tempfile.TemporaryDirectory() as td:
@@ -1651,7 +1605,7 @@ with tempfile.TemporaryDirectory() as td:
     print("OK: unparseable summaries -> 0 (no crash)")
 PY
 
-ok "fleet-ops#5785: fleet_deploy_fault_* gauges emitted (missing/real/unparseable)"
+ok "fleet-ops#5785: fleet_deploy_fault_closed_without_green emitted (missing/real/unparseable)"
 
 # =========================================================================
 # fleet-ops#3301: cap=0 credentials_bad corpses do not page as dead-cred.
@@ -1999,13 +1953,12 @@ assert '# TYPE fleet_seat_credits_remaining_usd gauge' in body, body
 assert 'fleet_seat_credits_remaining_usd{provider="openrouter"} 6.950000' in body, body
 assert 'fleet_seat_credits_remaining_usd{provider="xkiro"} 0.000000' in body, body
 
-assert '# HELP fleet_seat_free_tokens_remaining' in body, body
-assert '# TYPE fleet_seat_free_tokens_remaining gauge' in body, body
-assert 'fleet_seat_free_tokens_remaining{provider="xkiro"} 999999' in body, body
+# 2026-09-18 (74145328b): the xKiro wallet pair (free_tokens_remaining,
+# credits_held_usd) was cut — no consumer. _fetch_xkiro_usage is KEPT because
+# its return still feeds fleet_seat_credits_remaining_usd, asserted above.
+assert 'fleet_seat_free_tokens_remaining' not in body, "cut family came back: " + body
 
-assert '# HELP fleet_seat_credits_held_usd' in body, body
-assert '# TYPE fleet_seat_credits_held_usd gauge' in body, body
-assert 'fleet_seat_credits_held_usd{provider="xkiro"} 0.000000' in body, body
+assert 'fleet_seat_credits_held_usd' not in body, "cut family came back: " + body
 
 # HELP/TYPE emitted exactly once per metric family.
 from collections import Counter
@@ -2020,16 +1973,14 @@ for fam in (
     "fleet_seat_spend_usd",
     "fleet_seat_spend_today_usd",
     "fleet_seat_credits_remaining_usd",
-    "fleet_seat_free_tokens_remaining",
-    "fleet_seat_credits_held_usd",
 ):
     assert help_counts[fam] == 1, f"{fam} HELP count {help_counts[fam]}"
     assert type_counts[fam] == 1, f"{fam} TYPE count {type_counts[fam]}"
 
-print("OK: main() emits spend, credits, xkiro free tokens and held; HELP/TYPE once")
+print("OK: main() emits spend + credits; HELP/TYPE once; cut xKiro wallet pair stays gone")
 PY
 
-ok "fleet-ops#3283: spend, credits, xkiro wallet/free-token metrics"
+ok "fleet-ops#3283: spend + credits metrics (xKiro wallet pair cut 2026-09-18)"
 
 # =========================================================================
 # fleet-ops#4217: live seat quotas. The exporter emits
@@ -2089,13 +2040,13 @@ m._emit_seat_quota(lines, "claude", rows, "api", time.time())
 body = "\n".join(lines)
 assert 'fleet_seat_quota_remaining_pct{provider="claude",window="session",source="api"} 92.0000' in body, body
 assert 'fleet_seat_quota_remaining_pct{provider="claude",window="weekly",source="api"} 46.0000' in body, body
-assert 'fleet_seat_quota_reset_seconds{provider="claude",window="session",source="api"} 2250.0000' in body, body
-assert 'fleet_seat_quota_reset_seconds{provider="claude",window="weekly",source="api"} 450.0000' in body, body
+# 2026-09-18 (74145328b): fleet_seat_quota_reset_seconds was cut as a
+# dead-console leftover; remaining_pct and the observed heartbeat stay.
+assert 'fleet_seat_quota_reset_seconds' not in body, "cut family came back: " + body
 assert 'fleet_seat_quota_observed_seconds{provider="claude",source="api"}' in body, body
 assert body.count("# HELP fleet_seat_quota_remaining_pct") == 1, "duplicate HELP pct"
 assert body.count("# TYPE fleet_seat_quota_remaining_pct") == 1, "duplicate TYPE pct"
-assert body.count("# HELP fleet_seat_quota_reset_seconds") == 1, "duplicate HELP reset"
-assert body.count("# TYPE fleet_seat_quota_reset_seconds") == 1, "duplicate TYPE reset"
+
 assert body.count("# HELP fleet_seat_quota_observed_seconds") == 1, "duplicate HELP observed"
 assert body.count("# TYPE fleet_seat_quota_observed_seconds") == 1, "duplicate TYPE observed"
 # Two providers must NOT duplicate HELP/TYPE (the fleet-ops#1844 regression).
@@ -2391,7 +2342,8 @@ body = Path(out_path).read_text()
 if mode == "200":
     assert 'fleet_seat_quota_remaining_pct{provider="claude",window="session",source="api"} 92.0000' in body, body
     assert 'fleet_seat_quota_remaining_pct{provider="claude",window="weekly",source="api"} 46.0000' in body, body
-    assert 'fleet_seat_quota_reset_seconds{provider="claude",window="session",source="api"} 2250.0000' in body, body
+    # 2026-09-18 (74145328b): fleet_seat_quota_reset_seconds was cut.
+    assert 'fleet_seat_quota_reset_seconds' not in body, "cut family came back: " + body
     assert 'fleet_seat_quota_observed_seconds{provider="claude",source="api"}' in body, body
     print("OK: claude 200-path emits remaining_pct/reset/observed (source=api)")
 else:

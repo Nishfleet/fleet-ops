@@ -272,39 +272,9 @@ assert '"free": 0' in src, \
 # The prepaid-quota -> prepaid mapping must be present.
 assert 'cls == "prepaid-quota"' in src, \
     "exporter must map prepaid-quota -> prepaid for the metric label"
-assert 'nish_boundary_money_pages_total' in src, \
-    "exporter must emit nish_boundary_money_pages_total counter"
 assert 'fleet_seat_healthy' in src, \
     "exporter must emit fleet_seat_healthy gauge"
-print("OK: exporter emits fleet_seat_healthy{class=prepaid|free} + nish_boundary_money_pages_total")
+print("OK: exporter emits fleet_seat_healthy{class=prepaid|free}")
 PY
 
-# --- 4b. metric: suppressed pages must NOT count toward the page total -----
-# The success metric is nish_boundary_money_pages_total{reason="provider_credits_dry"}
-# == 0 while a healthy prepaid/free seat exists. A suppressed page (fleet not
-# starved) must not be counted as a real page. Run the exporter's parser
-# against a fixture pages log: one real page + one suppressed line for the
-# same reason — only the real page counts.
-MONEY_BOUNDARY_PAGES_LOG="$AS/lanes/money-boundary-pages.log" python3 - "$metrics" <<'PY'
-import sys, importlib.util, os
-from datetime import datetime, timedelta, timezone
-from pathlib import Path
-spec = importlib.util.spec_from_file_location("m", sys.argv[1])
-m = importlib.util.module_from_spec(spec)
-spec.loader.exec_module(m)
-log = Path(os.environ["MONEY_BOUNDARY_PAGES_LOG"])
-# Dates must fall inside the exporter's trailing-7d window (the reader
-# skips anything older); fixed dates would age out and silently zero the
-# count. Two fresh stamps: one real page, one suppressed, same reason.
-now = datetime.now(timezone.utc)
-ts1 = (now - timedelta(minutes=30)).strftime("%Y-%m-%dT%H:%M:%SZ")
-ts2 = (now - timedelta(minutes=5)).strftime("%Y-%m-%dT%H:%M:%SZ")
-log.write_text(f"{ts1} reason=provider_credits_dry provider=openrouter\n"
-               f"{ts2} suppressed reason=provider_credits_dry provider=openrouter\n")
-counts = m._read_money_boundary_pages()
-assert counts.get("provider_credits_dry") == 1, \
-    f"suppressed page must not count toward the total; got {counts}"
-print("OK: suppressed page excluded from nish_boundary_money_pages_total")
-PY
-
-ok "money-boundary starvation-gate drill: writer suppresses, notifier revokes, alert gated, metric labeled (fleet-ops#4627)"
+ok "money-boundary starvation-gate drill: writer suppresses, notifier revokes, alert gated, seat classes labeled (fleet-ops#4627)"

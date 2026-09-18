@@ -5,8 +5,8 @@
 # state file that gates pi-intake-tick.sh.
 #
 # Proves, offline (no gh, no prometheus, no systemd):
-#   1. The exporter emits fleet_gh_rate_limit_* families when gh returns data.
-#   2. The low gauge is 1 when any consumed resource is <20% of limit.
+#   1. The exporter emits the fleet_gh_rate_limit_fetched_seconds heartbeat.
+#   2. The side-car low flag is 1 when any consumed resource is <20% of limit.
 #   3. The side-car state file is written with low/remaining/limit/reset/fetched_at
 #      and the binding floor across core/search/graphql.
 #   4. A healthy (>=20%) payload sets low=0 and the side-car reflects the
@@ -123,10 +123,10 @@ def _run(payload_file, expect_low, expect_remaining, expect_limit):
     rc = m.main()
     assert rc == 0, f"main rc={rc}"
     body = m.OUT.read_text()
-    assert "fleet_gh_rate_limit_remaining" in body, "missing remaining family"
-    assert "fleet_gh_rate_limit_limit" in body, "missing limit family"
-    assert "fleet_gh_rate_limit_reset" in body, "missing reset family"
-    assert "fleet_gh_rate_limit_low" in body, "missing low family"
+    # 2026-09-18 (74145328b): the four gh_rate_limit_{remaining,limit,reset,low}
+    # gauges were cut — no rule, dashboard or script read them. _gh_rate_limit()
+    # itself is KEPT because the SLO and the throttle sidecar read its dict, and
+    # the organ heartbeat below is still the absent() input.
     assert "fleet_gh_rate_limit_fetched_seconds" in body, "missing heartbeat family"
     state = json.loads(m.GH_RATE_LIMIT_STATE.read_text())
     assert state["low"] == expect_low, f"state low={state['low']}, expected {expect_low}"
