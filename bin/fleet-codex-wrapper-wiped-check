@@ -1,0 +1,20 @@
+#!/usr/bin/env python3
+"""Detect if the retired codex wrapper reappears and fail loud."""
+
+from pathlib import Path
+import sys
+
+CODEX_WRAPPER_PATH = Path("/home/nish/.local/bin/codex")
+
+
+def main() -> int:
+    """Check if the codex wrapper exists and fail if it does."""
+    if CODEX_WRAPPER_PATH.exists():
+        print(f"ERROR: Retired codex wrapper reappeared at {CODEX_WRAPPER_PATH}", file=sys.stderr)
+        print("This should not happen. The wrapper was wiped per fleet-ops#4278.", file=sys.stderr)
+        return 1
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

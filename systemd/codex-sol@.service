@@ -1,0 +1,43 @@
+# fleet-ops#4148: per-role Codex launch template — Sol identity by construction.
+#
+# Shape-only replacement for the hand-built ~/.local/bin/codex governance
+# wrapper (archived under archive/codex-launcher-retired-2026-09-07/).
+# Sol is retired (Nish 2026-09-07, fleet-ops#4148): do not launch
+# `gpt-5.6-sol`, do not top up straitly for it. The remaining Codex identity
+# is Luna via `codex-luna@` after the ChatGPT usage reset; until the gated
+# wipe the live PATH `codex` wrapper still exists. Exact model/effort identity
+# is fail-closed: prove host, provider, model, role and effort from runtime
+# evidence before launch. Missing proof means no launch. No silent substitution.
+#
+# This unit pins model/provider/effort in a fixed ExecStart; the instance
+# (%i) selects medium or xhigh effort. A launch through this unit cannot
+# express another model, provider or effort, so the allow-list holds by
+# construction.
+#
+# ExecStart is `/bin/bash -c 'exec …'` so hosted `systemd-analyze verify`
+# checks bash (present on the runner) rather than `%h/.local/libexec/codex-real`
+# (absent on CI; fleet-ops#4148 P14/systemd-analyze red). Identity pins stay
+# in the inner argv.
+#
+# Not expressible as a fixed ExecStart and therefore dropped (listed in the
+# #4148 PR body): agent_type=executor_sol and fork_turns=none were
+# wrapper-internal identity markers with no Codex CLI/config equivalent.
+#
+# A real packet run:
+#
+#   systemd-run --user --collect --wait --unit <name> \
+#     -p StandardInput=file:/path/to/packet.md \
+#     -- /home/nish/.config/systemd/user/codex-sol@.service
+#   (or: systemd-run … codex-sol@<label>.service)
+
+[Unit]
+Description=Codex Sol session (%i) — per-role launch template (fleet-ops#4148)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+Environment=CODEX_HOME=%h/.codex
+ExecStart=/bin/bash -c 'exec /home/nish/.local/libexec/codex-real exec --json --skip-git-repo-check -m gpt-5.6-sol -c model_provider=openai -c model_reasoning_effort=%i'
+KillMode=control-group
+TimeoutStopSec=30
