@@ -569,7 +569,6 @@ systemd/pi-intake@.service.d/10-keystone-hc.conf /home/nish/.config/systemd/user
 # redeploy cannot silently reintroduce pi-intake-run.
 systemd/pi-intake@.service.d/10-use-tick.conf /home/nish/.config/systemd/user/pi-intake@.service.d/10-use-tick.conf
 systemd/pi-scout@.service.d/10-keystone-hc.conf /home/nish/.config/systemd/user/pi-scout@.service.d/10-keystone-hc.conf
-systemd/intake-reconcile.service.d/20-keystone-hc.conf /home/nish/.config/systemd/user/intake-reconcile.service.d/20-keystone-hc.conf
 systemd/system/tailscaled.service.d/50-restart-always.conf /etc/systemd/system/tailscaled.service.d/50-restart-always.conf
 # fleet-ops#32: declared-set reconciler. Closes the loop between the
 # declared repo set in config/intake-repos.json and the live pi-intake /
@@ -583,7 +582,6 @@ bin/fleet-ops-drift.py /home/nish/.local/bin/fleet-ops-drift
 # fleet-ops#410: retarget products/fleet-ops at the deploy-clone once no
 # worktrees remain on the pre-rewrite parent. Drift canary runs --apply.
 bin/fleet-ops-retarget-products /home/nish/.local/bin/fleet-ops-retarget-products
-systemd/intake-reconcile.service.d/10-deploy-checkout.conf /home/nish/.config/systemd/user/intake-reconcile.service.d/10-deploy-checkout.conf
 # fleet-ops#368: OnFailure page must resolve hostname at send time.
 # fleet-ops#5456: the RESUME POLICY declaration (allowlist, deliberately no
 # global Restart= — see the file). Hash-asserted by fleet-escalation-canary
