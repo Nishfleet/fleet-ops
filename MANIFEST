@@ -517,7 +517,6 @@ prompts/senior-conference.md /home/nish/.pi/agent/prompts/senior-conference.md
 # Heartbeat starts the loop oneshot once per tick. Conference/drill/
 # fleet-gap-closure-auditor@ are started by the loop. Stub units live in
 # gap-closure-drill.slice only. Sibling of pi-audit@ (admission panel).
-systemd/gap-closure-drill.slice /home/nish/.config/systemd/user/gap-closure-drill.slice
 # fleet-ops#527: monthly rulebook red-team + rollback-backup gate. Timer is
 # the primary trigger (named reason in the unit). Heading-growth bonus and
 # cadence-overdue scream live in heartbeat-tier1 §22. Sibling backups are
