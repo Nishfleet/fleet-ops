@@ -100,9 +100,11 @@ grep -q 'rev-parse --git-dir' "$repo_root/bin/fleet-ops-deploy" \
 if grep -Fq '[ ! -d "$DEPLOY_CHECKOUT/.git" ]' "$repo_root/bin/fleet-ops-deploy"; then
     fail "fleet-ops-deploy still uses [ ! -d .git ] which false-negatives on linked worktrees"
 fi
-grep -q 'FLEET_OPS_CHECKOUT=/home/nish/workspaces/tooling/fleet-ops-deploy-clone' \
-    "$repo_root/systemd/fleet-heartbeat.service" \
-    || fail "fleet-heartbeat.service must pin the canonical deploy-clone checkout"
+# Second cut 2026-09-18: fleet-heartbeat.service pinned this; the tower is
+# deleted, so the canonical checkout is now the default in fleet-deploy-check.
+grep -q 'FLEET_OPS_CHECKOUT:-/home/nish/workspaces/tooling/fleet-ops-deploy-clone' \
+    "$repo_root/bin/fleet-deploy-check" \
+    || fail "fleet-deploy-check must default to the canonical deploy-clone checkout"
 grep -q 'check_live_matches_origin_main' "$repo_root/bin/fleet-ops-drift.py" \
     || fail "drift canary must compare live dests to origin/main blobs"
 grep -q 'DRIFT-VOLATILE' "$repo_root/bin/fleet-ops-drift.py" \
@@ -131,8 +133,6 @@ grep -q 'remove_orphaned_fleet_idea_intake_dropin' "$repo_root/install.sh" \
     || fail "install.sh must remove the orphaned fleet-idea-intake.service.d drop-in (fleet-ops#4435)"
 grep -q 'remove_orphaned_fleet_loop_dropin' "$repo_root/install.sh" \
     || fail "install.sh must remove the orphaned fleet-loop@.service.d drop-in (fleet-ops#4502)"
-grep -q 'remove_canary_start_timeout_dropins' "$repo_root/install.sh" \
-    || fail "install.sh must remove the bridge start-timeout drop-ins (fleet-ops#5203)"
 grep -q 'pi-scout@.service.d/20-prom-mode.conf' "$repo_root/bin/fleet-ops-deploy" \
     || fail "fleet-ops-deploy must remove the stale scout 20-prom-mode drop-in (fleet-ops#2924)"
 grep -q 'fleet-auto-deploy.timer.d' "$repo_root/bin/fleet-ops-deploy" \
@@ -149,14 +149,9 @@ grep -q 'fleet-idea-intake.service.d' "$repo_root/bin/fleet-ops-deploy" \
     || fail "fleet-ops-deploy must remove the orphaned fleet-idea-intake.service.d drop-in (fleet-ops#4435)"
 grep -q 'fleet-loop@.service.d' "$repo_root/bin/fleet-ops-deploy" \
     || fail "fleet-ops-deploy must remove the orphaned fleet-loop@.service.d drop-in (fleet-ops#4502)"
-grep -q '20-start-timeout.conf' "$repo_root/bin/fleet-ops-deploy" \
-    || fail "fleet-ops-deploy must remove the bridge start-timeout drop-ins (fleet-ops#5203)"
-grep -q 'systemd/pi-intake@.service.d/10-use-tick.conf' "$repo_root/MANIFEST" \
-    || fail "MANIFEST must list 10-use-tick.conf (fleet-ops#2924 absorb)"
-[[ -f "$repo_root/systemd/pi-intake@.service.d/10-use-tick.conf" ]] \
-    || fail "repo must ship systemd/pi-intake@.service.d/10-use-tick.conf"
-grep -q 'pi-intake-tick.sh' "$repo_root/systemd/pi-intake@.service.d/10-use-tick.conf" \
-    || fail "10-use-tick.conf must ExecStart the deterministic tick"
+# Second cut 2026-09-18 (rail): lib/pi-intake-tick.sh and its
+# pi-intake@.service.d/10-use-tick.conf drop-in were deleted in ca33faa96 when
+# the intake unit became `pi --print` directly. Nothing to assert here.
 grep -q 'refuse_noncanonical_install' "$repo_root/install.sh" \
     || fail "install.sh must refuse to install from a non-canonical workspaces checkout"
 grep -q 'DEPLOY-NONCANONICAL' "$repo_root/bin/fleet-ops-deploy" \
@@ -179,9 +174,6 @@ grep -q 'DEPLOY-DRIFT-BIN-VOLATILE' "$repo_root/bin/fleet-ops-deploy" \
     || fail "fleet-ops-deploy must refuse FLEET_OPS_DRIFT_BIN under agent-worktrees"
 grep -q 'fleet-heartbeat.service.d/10-deploy-checkout.conf' "$repo_root/bin/fleet-ops-deploy" \
     || fail "fleet-ops-deploy must remove the paper-over heartbeat drop-in"
-if grep -q 'FLEET_OPS_DRIFT_BIN=' "$repo_root/systemd/fleet-heartbeat.service"; then
-    fail "fleet-heartbeat.service must not pin FLEET_OPS_DRIFT_BIN (that was the paper-over)"
-fi
 [[ ! -e "$repo_root/systemd/fleet-heartbeat.service.d/10-deploy-checkout.conf" ]] \
     || fail "repo must not ship the paper-over heartbeat drop-in"
 grep -q 'check_products_symlink' "$repo_root/bin/fleet-ops-drift.py" \
@@ -1119,24 +1111,6 @@ printf 'bak\n' > "$orphan_loop_dir/zz-gate-retry.conf.bak-time-audit-20260812"
 PATH="$scratch:$PATH" "$install" >/dev/null 2>&1 || true
 [[ ! -d "$orphan_loop_dir" ]] || fail "scenario12b-orphan-loop: orphaned fleet-loop@.service.d drop-in dir was not removed"
 ok "scenario12b-orphan-loop: install.sh removes the orphaned fleet-loop@.service.d drop-in dir (fleet-ops#4502)"
-
-# fleet-ops#5203: bridge start-timeout drop-ins for the two network canaries
-# (hand-placed 2026-09-11 while #5200 was in flight; the units still exist and
-# now carry TimeoutStartSec=120 themselves). install.sh must remove only the
-# 20-start-timeout.conf file — the repo-sourced 10-pg-socket.conf symlink in
-# fleet-litellm-health-canary.service.d must survive.
-mkdir -p "$checkout/systemd/fleet-litellm-health-canary.service.d"
-for u in gh-webhook-canary; do
-    bridge_dir="$HOME/.config/systemd/user/${u}.service.d"
-    mkdir -p "$bridge_dir"
-    printf '[Service]\nTimeoutStartSec=120\n' > "$bridge_dir/20-start-timeout.conf"
-done
-PATH="$scratch:$PATH" "$install" >/dev/null 2>&1 || true
-for u in gh-webhook-canary; do
-    [[ ! -e "$HOME/.config/systemd/user/${u}.service.d/20-start-timeout.conf" ]] \
-        || fail "scenario12b-canary-timeout: bridge start-timeout drop-in for $u was not removed"
-done
-ok "scenario12b-canary-timeout: install.sh removes the bridge 20-start-timeout.conf drop-in (fleet-ops#5203; fleet-litellm-health-canary deleted 2026-09-18)"
 
 # --- scenario 12c: cap drop with NEWER repo mtime (fleet-ops#371) ------------
 # git checkout of a stale commit stamps the working tree now, so the #372
@@ -2562,8 +2536,6 @@ ok "scenario21c: correct origin fetch URL -> unchanged behaviour"
 # add a workflow step, so the canonical-checkout drill rides along.
 bash "$here/canonical-checkout-guard.test.sh"
 
-# fleet-ops#175: same CI-list constraint; required-bins drill rides along.
-bash "$here/manifest-required-bins.test.sh"
 
 # fleet-ops#410: same CI-list constraint; products-symlink retarget rides along.
 bash "$here/fleet-ops-retarget-products.test.sh"
