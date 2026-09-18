@@ -544,107 +544,10 @@ groups:
         annotations:
           summary: "workers idle while agent-ready work waits"
           description: "fleet_pi_workers_active{kind=\"sum\"} < 2 with fleet_ready_work > 0 for 30m, and not in the maintenance window. The fleet has ready work and fewer than 2 live workers — concurrency silently dropped. The repair worker should: (1) check Pi seat health (`cat /home/nish/workspaces/agent-state/lanes/pi-seat-health.json`); (2) start the intake loop for every enrolled repo (`for s in 0509 fleet-ops; do systemctl --user start pi-intake@${s}.service || true; done`); (3) verify workers climb (re-check the exporter output and `systemctl --user list-units 'pi-*.service' --state=active,activating`). If workers do not climb within 10 min, fail loud (exit non-zero) so the senior-auditor pipeline picks it up. The weekly maintenance window is excluded by fleet_maintenance_quiescing (read from agent-state/maintenance.json), NOT by the 30m `for` — the window drains workers for >30m."
-  - name: fleet_self_maintenance
-    rules:
-      # Organ heartbeat (fleet-ops#1010 standing pattern: every new organ
-      # ships its absent() rule in the same PR). fleet_self_maintenance_merges
-      # is ALWAYS emitted by a live exporter run (even on a no-merge day, as
-      # zeros), so absent() fires only when the #1136 code path is dead or
-      # removed — not on a quiet day. The ratio gauge itself is omitted when
-      # total=0, so the heartbeat keys on the always-present kind="total" gauge.
-      - alert: FleetSelfMaintenanceAbsent
-        expr: absent(fleet_self_maintenance_merges{kind="total"})
-        for: 3h
-        labels:
-          severity: critical
-          service: fleet
-        annotations:
-          summary: "self-maintenance metrics absent — the #1136 ratio/quality exporter path is missing or dead"
-          description: "Repair worker: fleet-metrics-export.py must emit fleet_self_maintenance_merges. Check fleet-metrics-export.timer is running and `journalctl --user -u fleet-metrics-export.service` for errors. The #1136 code path (self-maintenance ratio + upgrade/repair/churn classification) is not exporting. Rebuild/restart per /home/nish/workspaces/agent-state/alert-repair/issue-1136-progress.md until fleet_self_maintenance_merges{kind=\"total\"} appears."
-
-      # Regression TREND alert, not a level. fleet2 died at 64% self-maintenance;
-      # the level is Nish's policy call, but a 15-point drop versus yesterday's
-      # 24h window is physics. offset 24h compares today's rolling 24h ratio to
-      # yesterday's; on the first day after deploy the offset is absent so the
-      # rule cannot fire (no false alarm during warmup). The ratio is omitted on
-      # a no-merge day, so a quiet day never trips this either.
-      - alert: FleetSelfMaintenanceRegression
-        expr: (fleet_self_maintenance_ratio - fleet_self_maintenance_ratio offset 24h) < -0.15
-        for: 6h
-        labels:
-          severity: warning
-          service: fleet
-        annotations:
-          summary: "self-maintenance ratio fell 15+ points versus yesterday's 24h window"
-          description: "fleet_self_maintenance_ratio dropped by more than 0.15 compared to its value 24h ago, sustained 6h. This is a TREND alert (delta), not a level — the absolute ratio is Nish's policy. fleet2 died at 64% self-maintenance; a sustained drop is the physics to watch. Inspect fleet_self_maintenance_merges{kind=\"self\"|\"product\"} and the merged-PR mix."
-
-      # Churn-share regression TREND. The 2026-08-14 baseline was 49% churn; a
-      # 20-point rise versus yesterday is the fleet spending more of its merge
-      # budget on churn (chore/refactor/docs/unclassified) and less on
-      # upgrade/repair. Trend, not level — the acceptable churn level is policy.
-      - alert: FleetQualityChurnRegression
-        expr: (fleet_pr_quality_share{class="churn"} - fleet_pr_quality_share{class="churn"} offset 24h) > 0.20
-        for: 6h
-        labels:
-          severity: warning
-          service: fleet
-        annotations:
-          summary: "churn share of merged PRs rose 20+ points versus yesterday's 24h window"
-          description: "fleet_pr_quality_share{class=\"churn\"} rose by more than 0.20 versus its value 24h ago, sustained 6h. TREND alert (delta), not a level. The fleet is merging a growing share of churn (chore/refactor/docs/unclassified) at the expense of upgrade (feat) and repair (fix/test). Inspect fleet_pr_quality_24h{class=...} and recent merge titles."
-
-      # Verified-merges regression TREND (fleet-ops#1136 objective decision,
-      # 2026-08-28). The fleet's single optimization target is max
-      # quality-throughput: verified, live-proven merged product work per day.
-      # Raw merge counts stay on the console; the WFR ratchets against the
-      # verified number. A 20-point drop versus yesterday's 24h window is the
-      # fleet merging a growing share of unverified work (null diff or no
-      # delivery evidence). Trend, not level — the acceptable verified ratio
-      # is policy (baseline established on the first instrumented week). The
-      # ratio is omitted on a no-merge day, so a quiet day never trips this.
-      - alert: FleetVerifiedMergeRegression
-        expr: (fleet_verified_merge_ratio - fleet_verified_merge_ratio offset 24h) < -0.20
-        for: 6h
-        labels:
-          severity: warning
-          service: fleet
-        annotations:
-          summary: "verified-merge ratio fell 20+ points versus yesterday's 24h window"
-          description: "fleet_verified_merge_ratio dropped by more than 0.20 compared to its value 24h ago, sustained 6h. TREND alert (delta), not a level. A merged PR is verified when it has a non-null effective diff AND delivery evidence on closure (run-proof:/Verification: run-cue, per lib/exec-review-receipt.py). The WFR ratchets against this verified number, not raw merge counts. A sustained drop means the fleet is merging a growing share of unverified work. Inspect fleet_verified_merges_24h{kind=\"verified\"|\"unverified\"} and recent merge bodies."
 
   - name: fleet_queue_composition
     rules:
-      # Queue composition metrics (fleet-ops#1136 scope addition).
-      # Two queues: "agent-ready" (all Nishfleet repos) and "ready-work"
-      # (enrolled repos only). The 64% fleet2 death-number is the tripwire
-      # (Nish, 2026-08-27 scope addition): warning when any queue's ratio
-      # exceeds 64% for a week. The physics signal is the WEEK, so the rule
-      # smooths the ratio over the trailing 7d (avg_over_time[7d]) instead of
-      # demanding the raw gauge sit above 0.64 for 7 uninterrupted wall-clock
-      # days. The instantaneous value dips (product issues land, the queue
-      # empties and the series goes stale) and every dip or >5m export gap
-      # reset a raw 1w `for:`, so that rule never reached firing
-      # (fleet-ops#2171). The 7d average absorbs momentary dips; `for: 6h`
-      # only certifies the smoothed breach is steady before it dispatches.
-      # The ratio is exported only when total>0, so an empty queue never
-      # trips this. Severity=warning feeds the Weekly Review scoring and the
-      # precedence-sunset question.
-      - alert: FleetQueueSelfMaintenanceRatioHigh
-        expr: avg_over_time(fleet_queue_self_maintenance_ratio[7d]) > 0.64
-        for: 6h
-        labels:
-          severity: warning
-          service: fleet
-        annotations:
-          summary: "queue {{ $labels.queue }} 7-day self-maintenance ratio stayed above 64% (fleet2 death-number) for 6 hours"
-          description: "avg_over_time(fleet_queue_self_maintenance_ratio{queue=\"{{ $labels.queue }}\"}[7d]) has been above 0.64 (the fleet2 death-number) for 6+ hours. fleet2 died at 64% self-maintenance; a sustained high ratio in the intake queue means the fleet is queueing machinery work faster than product work. The 7d window absorbs the momentary dips and export gaps that reset the old 1w for: and kept this alert pending forever (fleet-ops#2171). The ratio is exported only when total>0. Feeds Weekly Review scoring and the precedence-sunset question. Inspect fleet_queue_total and fleet_queue_self_maintenance_total for the queue."
 
-      # fleet-ops#4260: needs-orchestrator items must drain through the
-      # orchestrator decision pass within ~2h. blocked-reconcile (heartbeat
-      # block 6) already starts agent-cron-orchestrator-decision-sweep.service
-      # on sight of an item older than 1h; this alert is the backstop for a
-      # reconcile that dies or a sweep run that fails — the repair packet
-      # re-runs the decision pass by hand. p50 (not max) so one legitimately
-      # parked item cannot hold the alert open while the class drains.
       - alert: FleetNeedsOrchestratorStale
         expr: fleet_blocked_issue_age_seconds{kind="needs-orchestrator",quantile="0.5"} > 7200
         for: 30m
@@ -654,76 +557,6 @@ groups:
         annotations:
           summary: "needs-orchestrator issues parked with a median age over 2h — the decision drain is not running"
           description: "fleet-ops#4260: p50 age of open needs-orchestrator issues exceeded 2h. The drain is agent-cron-orchestrator-decision-sweep.service (stock agent-cron-run + prompts/orchestrator-decision-sweep.md, senior-review seat). Repair: run `systemctl --user start agent-cron-orchestrator-decision-sweep.service`, then check `journalctl --user -u agent-cron-orchestrator-decision-sweep -n 80` and the snapshot at /home/nish/.local/state/fleet-heartbeat/blocked-queue.json (needs_orchestrator block). If every seat fails the unit, escalate the seat fault — do not re-park the issues."
-
-  - name: fleet_waste
-    rules:
-      # Organ heartbeat (fleet-ops#1010). fleet_waste_runs{kind="total"} is
-      # ALWAYS emitted by a live waste-ledger export (zeros on a quiet
-      # window), so absent() fires only when the #1211 path is dead — not
-      # on a no-dispatch day. The ratio gauge itself is omitted when
-      # total spend is 0.
-      - alert: FleetWasteLedgerAbsent
-        expr: absent(fleet_waste_runs{kind="total"})
-        for: 3h
-        labels:
-          severity: warning
-          service: fleet
-        annotations:
-          summary: "waste-ledger metrics absent — the #1211 loss-accounting exporter path is missing or dead"
-          description: "Repair: fleet-waste-export.py must emit fleet_waste_runs{kind=\"total\"}. It piggybacks fleet-metrics-export.service via systemd/fleet-metrics-export.service.d/waste-ledger.conf (no new timer). Check fleet-metrics-export.timer and journalctl --user -u fleet-metrics-export.service."
-
-      # TREND alert, not a level, not a page. WasteRatioRising feeds the
-      # Weekly Fleet Review (L3 machinery health + cost). severity=none AND
-      # SKIP_SET (alert-repair-dispatch) so a firing trend cannot spawn a
-      # repair worker. offset 24h cannot fire on the first day after deploy.
-      - alert: WasteRatioRising
-        expr: (fleet_waste_ratio - fleet_waste_ratio offset 24h) > 0.15
-        for: 6h
-        labels:
-          severity: none
-          service: fleet
-        annotations:
-          summary: "fleet waste ratio rose 15+ points versus yesterday's 24h window"
-          description: "fleet_waste_ratio rose by more than 0.15 versus its value 24h ago, sustained 6h. TREND alert (delta), not a level, not a page — Weekly Fleet Review owns the response. Inspect fleet_waste_empty_runs_24h (the #902 empty-run class) and fleet_waste_retries_24h (the #1204 salvage-bleed class) per lane."
-
-      # fleet-ops#4643: prompt prefix-cache hit ratio. The single biggest
-      # spend lever on metered lanes — uncached input is billed at 10-25x
-      # cached, and the layout change (stable prefix first) only pays when
-      # the prefix is byte-identical across same-type packets. This alert
-      # fires per (provider, packet_type) lane whose 24h cache-hit ratio is
-      # below 85% for 6h, so a lane that records prompt tokens but never
-      # hits the prefix cache surfaces. severity=warning -> repair-dispatch
-      # (am-executor), NOT the phone — a spend optimisation is never a
-      # Nish page. The metric omits lanes with no prompt tokens (no
-      # denominator), so a quiet lane never fires; only an active-low lane
-      # does. Repair: re-check the packet layout for that packet_type
-      # (tests/packet-layout.test.sh) and the provider's cache TTL window
-      # (config/seat-caps.json _comment_4643_cache_ttl) — same-type packets
-      # must land inside the TTL window.
-      # fleet-ops#4643 follow-up (2026-09-11): the expr MUST scope to real
-      # packet lanes, i.e. exclude packet_type=~"interactive|probe". Both are
-      # structurally incapable of a prefix cache hit regardless of packet
-      # layout: an interactive `pi` session has a human typing a different
-      # prompt each turn, and a probe's whole prompt is a one-word sentinel
-      # ('Reply OK' / 'PONG') with nothing to reuse. Measuring them against a
-      # packet-layout target is a category error. Before this scoping the
-      # selector matched them: on 2026-09-11 litellm/other (0.27) and
-      # paretoinference/other (0.81) fired for 6h+ while every session
-      # driving both lanes had cwd=/home/nish and the litellm prompts were
-      # literally 'Reply OK' (17 seat probes in one rebase worktree) — and the
-      # real packet lanes were above target (paretoinference/worker 0.906).
-      # The alert asks whether the PACKET layout keeps a stable prefix; only
-      # packet lanes can answer it. packet_type="other" stays IN scope: it is
-      # the bucket for genuine packets matching no named lane.
-      - alert: FleetPromptCacheHitLow
-        expr: fleet_prompt_cache_hit_ratio{class="metered",packet_type!~"interactive|probe"} < 0.85
-        for: 6h
-        labels:
-          severity: warning
-          service: fleet
-        annotations:
-          summary: "prompt prefix-cache hit ratio below 85% for 6h on {{ $labels.provider }}/{{ $labels.packet_type }}"
-          description: "fleet_prompt_cache_hit_ratio{provider=\"{{ $labels.provider }}\",packet_type=\"{{ $labels.packet_type }}\"} < 0.85 for 6h (fleet-ops#4643). Uncached input is 84% of metered spend; target >= 90%. Repair: verify the packet layout keeps a byte-identical stable prefix for this packet_type (bash tests/packet-layout.test.sh) and that same-type packets land inside the provider's cache TTL window (config/seat-caps.json _comment_4643_cache_ttl). Not a Nish page — routes to am-executor."
 
   - name: fleet_canary_effectiveness
     rules:
@@ -842,47 +675,6 @@ groups:
         annotations:
           summary: "product-first hold is starving fleet-ops: engaged > 80% of 14d while control merges < 0.5/week"
           description: "avg_over_time(fleet_intake_hold_active{repo=\"fleet-ops\"}[14d]) > 0.8 and fleet_intake_control_merge_rate_week{repo=\"fleet-ops\"} < 0.5 — the fleet-ops#2657 hard-stall pattern. The hold engages most of the time yet the control plane merges almost nothing; repair/mechanism work is locked out. Re-tune PRODUCT_FIRST_SELF_RATIO_MAX in lib/precedence-band.sh or widen the floor lanes."
-
-  - name: fleet_scout_effectiveness
-    rules:
-      # Organ heartbeat (fleet-ops#1010 standing pattern: every new organ
-      # ships its absent() rule in the same PR). The exporter always emits
-      # fleet_scout_effectiveness_last_run_seconds on a live tick, so
-      # absent() fires only when the piggyback path is dead — not on a
-      # quiet scout window. 3h for: matches the 5-min exporter piggyback
-      # cadence (waste-ledger uses 3h; intake-effectiveness uses 3h).
-      - alert: FleetScoutEffectivenessAbsent
-        expr: absent(fleet_scout_effectiveness_last_run_seconds) or (time() - fleet_scout_effectiveness_last_run_seconds) > 10800
-        for: 1h
-        labels:
-          severity: warning
-          service: fleet
-        annotations:
-          summary: "scout-effectiveness metrics absent — the #2756 exporter path is missing or dead"
-          description: "Repair: lib/scout-effectiveness.py must emit fleet_scout_effectiveness_last_run_seconds. It piggybacks fleet-metrics-export.service via systemd/fleet-metrics-export.service.d/scout-effectiveness.conf (no new timer). Check fleet-metrics-export.timer and journalctl --user -u fleet-metrics-export.service."
-
-      # fleet-ops#2756 output-vs-outcome: the scout may RUN green
-      # (mechanism) while producing no mergeable product work (outcome).
-      # Fires when the trailing 14d effectiveness_ratio (merged_14d / runs)
-      # is < 0.1 AND at least one run happened — a productive scout should
-      # land > 0.3 issues/run that survive intake dedup (issue target).
-      # The ratio gauge is a 14d trailing raw value baked into the
-      # exporter, so this is a level check on a trend window. Omitted when
-      # runs == 0 (no scout ran — that is the FleetScoutStale rule's job),
-      # so a quiet window never trips it. No repo label: covers every
-      # enrolled scout repo (0509 by scout-candidate, fleet-ops by
-      # agent-ready) so a newly-scouted repo is protected without a rule
-      # edit (fleet-ops#3152).
-      - alert: ScoutEffectivenessLow
-        expr: fleet_scout_effectiveness_ratio < 0.1 and fleet_scout_runs_total > 0
-        for: 6h
-        labels:
-          severity: warning
-          service: fleet
-        annotations:
-          summary: "scout runs but produces no mergeable work (effectiveness_ratio < 0.1 over 14d)"
-          description: "fleet_scout_effectiveness_ratio is below 0.1 while fleet_scout_runs_total > 0 (fleet-ops#2756). The scout is running but its output is not translating to merged PRs — the scout-futility green-and-empty pattern, now quantified. Inspect fleet_scout_issues_filed / survive_intake / agent_ready / merged_14d to find where the pipeline leaks (filed but duped at intake, agent-ready but never claimed, claimed but never merged). Compare against the > 0.3 issues/run target."
-
 
   - name: fleet_product_slo
     rules:
@@ -1145,26 +937,6 @@ groups:
           summary: "truth staleness mismatches — standing docs drifted from live state"
           description: "Repair worker: fleet_truth_staleness_mismatches_by_kind > 0 — one or more standing-doc claims (file paths, systemd units, issue refs) failed live validation. Read the details in ~/workspaces/agent-state/fleet-metrics/staleness-findings-cache.json (kind, source doc, raw claim, reason), then either fix the live state or correct the doc. The checker piggybacks the exporter tick (ExecStartPost in systemd/fleet-metrics-export.service.d/staleness-checker.conf); this alert replaced the retired weekly timer + auto-filed issues (fleet-ops#4149)."
 
-
-  - name: fleet_asset_census_supply
-    rules:
-      # Organ heartbeat (fleet-ops#1010 standing pattern: every new organ
-      # ships its absent() rule in the same PR; required by fleet-ops#1149
-      # item 4). fleet-asset-census writes fleet_asset_census_last_run_seconds
-      # on every successful weekly diff — findings (unguarded assets) still
-      # count as a healthy run, only a stopped timer leaves the metric stale.
-      # 14d is two missed weekly timer cycles (Sun 03:15 IST), matching the
-      # scout doctrine of two missed cycles before "dead".
-      - alert: FleetAssetCensusAbsent
-        expr: absent(fleet_asset_census_last_run_seconds) or (time() - fleet_asset_census_last_run_seconds) > 1209600
-        for: 30m
-        labels:
-          severity: warning
-          service: fleet
-        annotations:
-          summary: "weekly VPS asset census has not run in 14+ days"
-          description: "Repair worker: fleet_asset_census_last_run_seconds is absent or older than 14d (two weekly timer cycles). The census enumerates the VPS surface and diffs against config/asset-guard-map.json; a dead census means new/unguarded assets are invisible. Check journalctl --user -u fleet-asset-census.service and systemctl --user list-timers fleet-asset-census.timer. Helper: /home/nish/.local/bin/fleet-asset-census. fleet-ops#1149."
-
   - name: fleet_gh_webhook_supply
     rules:
       # Organ heartbeat (fleet-ops#1010 standing pattern: every new organ
@@ -1318,19 +1090,6 @@ groups:
           summary: "SLO seat_availability slow burn — healthy seats trending below the 90% budget line"
           description: "WFR input: the seat_availability SLO is in slow burn. Repair terminates in the intake REPAIR-RUNG (fleet-ops#4639) — after two consecutive ticks with usable slots < 2, intake claims critical-path fleet-ops on reserved seats (litellm judge / mergegateway audition / cursor keystone). When this alert has been firing >1h, alert-repair-dispatch auto-files or links exactly one critical-path fleet-ops issue (signal: slo/seat-availability-slowburn, fleet-ops#4773) and notifies am-executor. Alert-repair workers cannot raise seats; this warning must not page Nish. fleet-ops#1291."
 
-      # --- waste_ratio: threshold-gauge SLO, target 0.10 (max) ---
-      # Canonical threshold-window alert (burn-rate ratio model does not fit
-      # a single gauge). Fires when waste exceeds 10% for a sustained window.
-      - alert: FleetSloWasteRatioOverTarget
-        expr: (fleet_slo_instrumented{slo="waste_ratio"} == 1) and (fleet_waste_ratio > 0.10)
-        for: 1h
-        labels:
-          severity: warning
-          service: fleet
-        annotations:
-          summary: "SLO waste_ratio over target — fleet waste ratio above 10% for 1h+"
-          description: "WFR input: the waste_ratio SLO (fleet waste ≤ 10%) is over target. Read fleet_waste_runs{kind=...} and the per-lane fleet_waste_empty_runs_24h / fleet_waste_retries_24h families (fleet-ops#1211). WasteRatioRising is the trend sibling. fleet-ops#1291."
-
       # --- gh_rate_limit_headroom: threshold-gauge SLO, target 0.20 (min) ---
       # Fires when min(remaining/limit) across core/search/graphql drops
       # below 20% for 30m. The existing FleetGhRateLimitLow level alert and
@@ -1345,70 +1104,6 @@ groups:
         annotations:
           summary: "SLO gh_rate_limit_headroom low — GitHub rate limit below 20% headroom for 30m+"
           description: "WFR input: the gh_rate_limit_headroom SLO (min remaining/limit ≥ 20%) is under target. Inspect fleet_gh_rate_limit_remaining{resource=...}; fleet_gh_rate_limit_reset is time-to-reset. fleet-ops#1291."
-
-  - name: fleet_baseline_delta_supply
-    rules:
-      # fleet-ops#1151: week-over-week MAD strangeness pre-pass for the Weekly
-      # Fleet Review. This rule watches the ORGAN, not the anomalies — a high
-      # |z| is a report line for the review conference, never a page. The
-      # metric is written by libexec/fleet-baseline-delta.py to
-      # /var/lib/prometheus/node-exporter/fleet-baseline-delta.prom on every
-      # completed run (zero anomalies is still a healthy run, so the rule
-      # fires only when the weekly timer stops). 14d is two missed weekly
-      # timer cycles (Sun 04:00 IST), matching the scout/asset-census
-      # doctrine of two missed cycles before "dead".
-      - alert: FleetBaselineDeltaAbsent
-        expr: absent(fleet_baseline_delta_last_run_seconds) or (time() - fleet_baseline_delta_last_run_seconds) > 1209600
-        for: 30m
-        labels:
-          severity: warning
-          service: fleet
-        annotations:
-          summary: "weekly baseline-delta strangeness pass has not run in 14+ days"
-          description: "Repair worker: fleet_baseline_delta_last_run_seconds is absent or older than 14d (two weekly timer cycles). fleet-baseline-delta (#1151) queries Prometheus for every fleet_* and key node_* series, compares this week vs a trailing 4-week median+MAD baseline, and writes the ranked top-20 strangeness report the Weekly Fleet Review reads; a dead job means week-over-week anomalies are invisible to the review. Check journalctl --user -u fleet-baseline-delta.service and systemctl --user list-timers fleet-baseline-delta.timer. Helper: /home/nish/.local/libexec/fleet-baseline-delta.py. fleet-ops#1151."
-
-  - name: fleet_aeo_probe_supply
-    rules:
-      # fleet-ops#1236 / #1010: weekly AEO visibility probe for 0509. The
-      # probe writes fleet_aeo_probe_last_run_seconds to
-      # /var/lib/prometheus/node-exporter/fleet-aeo.prom on every completed
-      # run (missing API seats skip the query but still land the heartbeat),
-      # so this rule fires only when the weekly timer stops. 14d is two
-      # missed weekly timer cycles (Sun 03:30 IST), matching the
-      # baseline-delta/asset-census doctrine of two missed cycles before
-      # "dead". severity: critical because a dead probe makes 0509's
-      # search-visibility signal (vs StockX/GOAT) go dark with no alert —
-      # the exact class that took down quality-research-weekly on 2026-08-30.
-      - alert: FleetAeoProbeAbsent
-        expr: absent(fleet_aeo_probe_last_run_seconds) or (time() - fleet_aeo_probe_last_run_seconds) > 1209600
-        for: 15m
-        labels:
-          severity: critical
-          service: fleet
-        annotations:
-          summary: "weekly AEO probe has not run in 14+ days"
-          description: "Repair worker: fleet_aeo_probe_last_run_seconds is absent or older than 14d (two weekly timer cycles). The AEO probe (#1236) is 0509's outermost search-visibility line — it proves 0509 ranks for money-queries against StockX/GOAT and feeds the weekly senior conference; a dead probe goes dark silently, so the repair rail must resurrect fleet-aeo-probe.timer. Check journalctl --user -u fleet-aeo-probe.service and systemctl --user list-timers fleet-aeo-probe.timer. Helper: /home/nish/.local/libexec/fleet-aeo-probe.py. fleet-ops#1236."
-
-  - name: fleet_quality_slo
-    rules:
-      # fleet-ops#2444: the quality-SLO scoreboard must refresh at least
-      # daily or the fleet silently serves old quality numbers (a 4-day-old
-      # scoreboard cannot adjudicate a live FleetQueueSelfMaintenanceRatioHigh
-      # alert). fleet-quality-slo writes fleet_quality_slo_last_computed_seconds
-      # to /var/lib/prometheus/node-exporter/fleet-quality-slo.prom on every
-      # successful recompute (each heartbeat tick). absent() fires when the
-      # recompute path is dead; the >86400 delta fires when a live recompute
-      # has stopped refreshing the snapshot for over 24h — both are loud so a
-      # stale scoreboard can never be trusted silently.
-      - alert: FleetQualitySloStale
-        expr: absent(fleet_quality_slo_last_computed_seconds) or (time() - fleet_quality_slo_last_computed_seconds) > 86400
-        for: 1h
-        labels:
-          severity: warning
-          service: fleet
-        annotations:
-          summary: "quality-SLO scoreboard stale (>24h) or its recompute path is dead"
-          description: "fleet_quality_slo_last_computed_seconds is absent or older than 24h (fleet-ops#2444). The quality scoreboard has been serving stale numbers — a 4-day-old snapshot cannot adjudicate a live FleetQueueSelfMaintenanceRatioHigh alert. Repair: bin/fleet-quality-slo must run (wired as heartbeat-tier1 block 19) and recompute agent-state/quality-slo/snapshot.json, exporting fleet_quality_slo_last_computed_seconds each run. Check journalctl --user -u fleet-heartbeat.service and systemctl --user status fleet-heartbeat.service."
 
   - name: fleet_deploy_quality
     rules:

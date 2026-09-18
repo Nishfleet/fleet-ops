@@ -68,27 +68,6 @@
       }
     },
     {
-      "id": "waste_ratio",
-      "name": "Waste Ratio Ceiling",
-      "description": "Fleet waste ratio (empty runs + salvage bleed) stays below 10% (fleet_waste_ratio from fleet-waste-export)",
-      "target": 0.1,
-      "window": "1w",
-      "window_seconds": 604800,
-      "direction": "below",
-      "metric_source": "fleet_waste_ratio",
-      "aggregation": "max_over_time",
-      "instrumented": true,
-      "ratchet": {
-        "notch": 0.01,
-        "stop_at": 0.02,
-        "min_weeks_unspent": 4
-      },
-      "severity": {
-        "fast_burn": "critical",
-        "slow_burn": "warning"
-      }
-    },
-    {
       "id": "seat_availability",
       "name": "Pi Seat Availability",
       "description": "Fraction of enrolled seats that are healthy (fleet_pi_seat_healthy / fleet_pi_seat_total rollup)",

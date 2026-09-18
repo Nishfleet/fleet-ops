@@ -1276,32 +1276,12 @@ if [ "$do_user_install" = 1 ]; then
   fi
   # fleet-ops#541: weekly continuous-research sweep. Same #183 class as the
   # 0509 timer: [Install] in MANIFEST is not enough; install.sh must enable.
-  if [ -f "$here/systemd/quality-research-weekly.timer" ]; then
-    if ! is_unit_enabled quality-research-weekly.timer; then
-      "$SYSTEMCTL" --user enable --now quality-research-weekly.timer
-    fi
-  fi
   # fleet-ops#1146: Weekly Fleet Review — Sun 04:30 IST, post-vps-weekly-update.
   # Blind 6-lens senior research + conference, output capped at 5 specced
   # actions. Same install-sh enable as #541.
-  if [ -f "$here/systemd/fleet-weekly-fleet-review.timer" ]; then
-    if ! is_unit_enabled fleet-weekly-fleet-review.timer; then
-      "$SYSTEMCTL" --user enable --now fleet-weekly-fleet-review.timer
-    fi
-  fi
   # fleet-ops#1236: weekly AEO visibility probe — Sun 03:30 IST, before WFR.
   # Same install-sh enable as #541 / #1146 (MANIFEST [Install] is not enough).
-  if [ -f "$here/systemd/fleet-aeo-probe.timer" ]; then
-    if ! is_unit_enabled fleet-aeo-probe.timer; then
-      "$SYSTEMCTL" --user enable --now fleet-aeo-probe.timer
-    fi
-  fi
   # fleet-ops#1151: weekly baseline-delta pre-pass. Same #183 class.
-  if [ -f "$here/systemd/fleet-baseline-delta.timer" ]; then
-    if ! is_unit_enabled fleet-baseline-delta.timer; then
-      "$SYSTEMCTL" --user enable --now fleet-baseline-delta.timer
-    fi
-  fi
 elif [ "$do_system_install" = 1 ]; then
   # daemon-reload needs to happen at system scope; we are still in the user
   # session, so it must go through sudo.

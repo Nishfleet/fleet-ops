@@ -95,7 +95,6 @@ jobs:
         bash tests/ci-checklist-gate.test.sh
         bash tests/pi-packet-guard.test.sh
         bash tests/fleet-work-supply-canary.test.sh
-        bash tests/scout-futility.test.sh
         bash tests/pi-systemd-run.test.sh
         bash tests/pi-intake-run.test.sh
         bash tests/pi-issue-start.test.sh
@@ -167,12 +166,7 @@ jobs:
         # fleet-ops#153: lock the 0509 scout packet-assembly contract.
         bash tests/pi-scout-packet-assembly.test.sh
         bash tests/fleet-heartbeat-low-water-mark.test.sh
-        bash tests/fleet-blind-audit.test.sh
-        # fleet-ops#5475: new blind-audit test files must run in P14 (orphan
         # tests fail the workflow check otherwise).
-        bash tests/fleet-blind-audit-carryover.test.sh
-        bash tests/fleet-blind-audit-backfill.test.sh
-        bash tests/fleet-heartbeat-blind-audit-trigger.test.sh
         bash tests/mass-close-guard.test.sh
         bash tests/codex-orphan-reap.test.sh
         # fleet-ops#1161: orphan-workflow detector (audit findings 3+4).
@@ -188,7 +182,6 @@ jobs:
         bash tests/findings-measure-line.test.sh
         # fleet-ops#7371: shared Jev helper contract (dry-run, refusals, log shape, cap, key hygiene).
         bash tests/jev-eval.test.sh
-        bash tests/fleet-unjustified-wait.test.sh
         bash tests/fleet-deploy-check.test.sh
         bash tests/fleet-seat-recovery.test.sh
         bash tests/fleet-escalation-completion.test.sh
@@ -260,7 +253,6 @@ jobs:
         # fleet-ops#754: lock spawn-guard stash readonly enforcement.
         bash tests/fleet-spawn-guard-stash-readonly.test.sh
         bash tests/phone-chokepoint.test.sh
-        bash tests/scout-effectiveness-multirepo.test.sh
         # fleet-ops#3740 landed tests/fleet-close-and-archive-repo.test.sh without a
         # ci.yml entry, so the P14 listing gate went red on main and blocked every
         # PR (orchestrator fix, 2026-09-06). Drill: 5 scenarios, stubbed gh.
@@ -269,8 +261,6 @@ jobs:
         # 10 sessions, judged by the yield ledger. Offline drill (stubbed gh/caps);
         # listed here by the orchestrator because the worker token lacks workflow scope.
         bash tests/audition-lane.test.sh
-        bash tests/pi-audit-tally-epic-guard.test.sh
-        bash tests/pi-audit-tally-skip-exhausted.test.sh
         # A saturated seat pool is infrastructure, not a scout outcome: the
         # no-seat path exits the reserved SKIP code 75 so pi-scout@%i stays
         # green instead of failing and summoning pi-scout-repair@%i for a
@@ -333,14 +323,9 @@ jobs:
           /home/nish/.local/bin/fleet-heartbeat \
           /home/nish/.local/bin/fleet-heartbeat-tier1 \
           /home/nish/.local/bin/fleet-heartbeat-tier2 \
-          /home/nish/.local/bin/fleet-blind-audit \
-          /home/nish/.local/bin/fleet-blind-audit-panel \
           /home/nish/.local/bin/fleet-deploy-check \
           /home/nish/.local/bin/fleet-seat-recovery \
-          /home/nish/.local/bin/fleet-unjustified-wait \
           /home/nish/.local/bin/fleet-escalation-completion \
-          /home/nish/.local/bin/fleet-asset-census \
-          /home/nish/.local/bin/agent-scheduler-drift-check \
           /home/nish/.local/bin/memory-index-autocompact \
           /usr/bin/redis-server \
           /home/nish/workspaces/tooling/fleet-console-pi/push.sh

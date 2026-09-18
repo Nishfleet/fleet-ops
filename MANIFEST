@@ -37,7 +37,6 @@ bin/fleet-console-tile-truth-drill /home/nish/.local/bin/fleet-console-tile-trut
 # fleet-ops#4061: on-demand product-vs-self merge split per repo (7d), the
 # top self-maintenance workload classes, and a shipped_24h tile reconcile.
 # Observe-to-close; no timer, no prom metric.
-bin/fleet-self-maintenance-split.py /home/nish/.local/bin/fleet-self-maintenance-split.py
 # fleet-ops#3268: retire a dead repo — close every open PR with one comment,
 # then archive it (gh repo archive). Child of the waste-cut #3128. Dry-run
 # default. Archive step is Administration-gated (Worker App lacks it); the
@@ -115,26 +114,17 @@ lib/heartbeat-watchman.sh /home/nish/.local/lib/pi-packet/heartbeat-watchman.sh
 # ~/.local/state/fleet-heartbeat/failed-notify).
 lib/fleet-heartbeat-failed-notify.py /home/nish/.local/lib/pi-packet/fleet-heartbeat-failed-notify.py
 # fleet-ops#378: cadence-overdue canary sourced by heartbeat-tier1 §11.
-lib/blind-audit-cadence.sh /home/nish/.local/lib/pi-packet/blind-audit-cadence.sh
-bin/prove-one-run-check /home/nish/.local/bin/prove-one-run-check
 # fleet-ops#517: new bin/ files need a research: line before the PR opens.
-bin/research-before-build-check /home/nish/.local/bin/research-before-build-check
 # fleet-ops#3191: rebuild/masking changes must carry a VERIFY line.
 bin/fleet-rebuild-verify-check /home/nish/.local/bin/fleet-rebuild-verify-check
 # fleet-ops#1250: claim-step bounce for build-shaped issues with no Prior art.
-bin/prior-art-claim-check /home/nish/.local/bin/prior-art-claim-check
 # fleet-ops#3111: self-heal the pi transport (npm rebuild) on the existing
 # pi-transport-check unit. Wired as ExecStart via the drop-in below.
 bin/pi-transport-self-heal /home/nish/.local/bin/pi-transport-self-heal
 # fleet-ops#523: token-efficiency gate for custom prompt assemblers.
-bin/fleet-token-efficiency-check /home/nish/.local/bin/fleet-token-efficiency-check
-lib/fleet-token-efficiency-check.py /home/nish/.local/lib/pi-packet/fleet-token-efficiency-check.py
 # fleet-ops#519: no agent names on Nish's work — PR-body + commit-message lint.
-lib/fleet-no-agent-names-check.py /home/nish/.local/lib/pi-packet/fleet-no-agent-names-check.py
-bin/fleet-no-agent-names-check /home/nish/.local/bin/fleet-no-agent-names-check
 # fleet-ops#533: argv[0]/argv[1] process match + push-before-delete.
 lib/fleet-wipe-lessons.py /home/nish/.local/lib/pi-packet/fleet-wipe-lessons.py
-bin/fleet-wipe-lessons-check /home/nish/.local/bin/fleet-wipe-lessons-check
 lib/guard_pi_packet.py /home/nish/.local/lib/pi-packet/guard_pi_packet.py
 # fleet-ops#5786: the LIVE-claim gate — the pi-packet hook, the detached
 # dead-man, and --body checks all load this sibling checker.
@@ -144,27 +134,19 @@ lib/pi-packet-verdict.py /home/nish/.local/lib/pi-packet/pi-packet-verdict.py
 lib/guard_shared_file_collision.py /home/nish/.local/lib/pi-packet/guard_shared_file_collision.py
 bin/guard_shared_file_collision /home/nish/.local/bin/guard_shared_file_collision
 bin/guard_shared_file_collision_hook.py /home/nish/.claude/hooks/guard_shared_file_collision.py
-lib/blind-audit-panel.py /home/nish/.local/lib/pi-packet/blind-audit-panel.py
-lib/manual-seam-lens.py /home/nish/.local/lib/pi-packet/manual-seam-lens.py
 lib/packet-assembly.sh /home/nish/.local/lib/pi-packet/packet-assembly.sh
 lib/scout-money-path-walk.mjs /home/nish/.local/lib/pi-packet/scout-money-path-walk.mjs
 # fleet-ops#383: join helper for the rule-enforcement canary step.
 lib/rule-enforcement.py /home/nish/.local/lib/pi-packet/rule-enforcement.py
 # fleet-ops#515: session-close lint for "every finding gets queued".
 # Heartbeat-tier1 block 15; fail-loud + auto-file on unqueued offers.
-lib/findings-queued.py /home/nish/.local/lib/pi-packet/findings-queued.py
-bin/fleet-findings-queued /home/nish/.local/bin/fleet-findings-queued
 # fleet-ops#514: session-close lint for "check the decisions ledger
 # before asking Nish". Heartbeat-tier1 block 16; fail-loud + auto-file
 # on ledger-overlapping re-asks. Claude PreToolUse remains the
 # AskUserQuestion choke; this covers Pi and other JSONL sessions.
-lib/decisions-ledger.py /home/nish/.local/lib/pi-packet/decisions-ledger.py
-bin/fleet-decisions-ledger /home/nish/.local/bin/fleet-decisions-ledger
 # fleet-ops#535: session-close lint for "a failed command is ALWAYS flagged".
 # Heartbeat-tier1 block 17; fail-loud + auto-file on swallowed non-zero.
 # grep/rg/diff exit 1 is POSIX no-match and is skipped.
-lib/failed-command-flagged.py /home/nish/.local/lib/pi-packet/failed-command-flagged.py
-bin/fleet-failed-command-flagged /home/nish/.local/bin/fleet-failed-command-flagged
 # fleet-ops#522: session-close lint for "debugging sessions end with a
 # playbook note". Heartbeat-tier1 block 18; fail-loud + auto-file on a
 # multi-attempt debug that skipped the four-heading vault note.
@@ -181,8 +163,6 @@ bin/fleet-dead-pr-detector /home/nish/.local/bin/fleet-dead-pr-detector
 # fleet-ops#526: session-close lint for "interventions get eliminated,
 # not repeated". Heartbeat-tier1 block 20; fail-loud + auto-file on a
 # third identical correction in the window.
-lib/interventions-eliminated.py /home/nish/.local/lib/pi-packet/interventions-eliminated.py
-bin/fleet-interventions-eliminated /home/nish/.local/bin/fleet-interventions-eliminated
 # fleet-ops#457: per-role quality gates + quality-weighted seat routing.
 config/role-quality-gates.json /home/nish/.local/state/pi-packet/role-quality-gates.json
 config/quality-routing.json /home/nish/.local/state/pi-packet/quality-routing.json
@@ -192,7 +172,6 @@ config/quality-ratchet.json /home/nish/.local/state/pi-packet/quality-ratchet.js
 lib/quality-ratchet.py /home/nish/.local/lib/pi-packet/quality-ratchet.py
 lib/role-quality-gates.py /home/nish/.local/lib/pi-packet/role-quality-gates.py
 lib/quality-routing.py /home/nish/.local/lib/pi-packet/quality-routing.py
-bin/fleet-role-gate-audit /home/nish/.local/bin/fleet-role-gate-audit
 # fleet-ops#1291: SLO error budgets + multiwindow burn-rate alerts
 # (Google SRE Workbook Ch.5). config is the single source of truth; the
 # lib does the budget math; the exporter emits fleet_slo_* gauges; the
@@ -281,12 +260,9 @@ systemd/fleet-metrics-export.service.d/20-oom-avoid.conf /home/nish/.config/syst
 # fleet-ops#1211: loss-accounting family. Piggybacks the existing 5-min
 # fleet-metrics-export tick (no new timer). Leading '-' so a waste-ledger
 # fault cannot fail Prometheus export.
-libexec/fleet-waste-export.py /home/nish/.local/libexec/fleet-waste-export.py
-systemd/fleet-metrics-export.service.d/waste-ledger.conf /home/nish/.config/systemd/user/fleet-metrics-export.service.d/waste-ledger.conf
 # fleet-ops#4460: blind-spot counters for the weekly review and the judge.
 # Read by the judge's measure.sh (new_measures_7d / caught_by_hand_7d from
 # the decisions-ledger + fable-state). Pure logic, no new timer.
-libexec/fleet-blindspot-count.py /home/nish/.local/libexec/fleet-blindspot-count.py
 # fleet-ops#2757: canary effectiveness family. Piggybacks the existing 5-min
 # fleet-metrics-export tick (no new timer). Leading '-' so a canary-
 # effectiveness fault cannot fail Prometheus export. Installs under
@@ -306,8 +282,6 @@ systemd/fleet-metrics-export.service.d/intake-effectiveness.conf /home/nish/.con
 # fleet-metrics-export tick (no new timer); writes
 # fleet-scout-effectiveness.prom. Leading '-' so a scout-effectiveness
 # fault cannot fail Prometheus export.
-lib/scout-effectiveness.py /home/nish/.local/lib/pi-packet/scout-effectiveness.py
-systemd/fleet-metrics-export.service.d/scout-effectiveness.conf /home/nish/.config/systemd/user/fleet-metrics-export.service.d/scout-effectiveness.conf
 # fleet-ops#2755: product delivery SLO family (throughput / lead time /
 # revert rate / merged_24h). Piggybacks the existing 5-min
 # fleet-metrics-export tick (no new timer); writes
@@ -332,7 +306,6 @@ bin/pi-scout-run /home/nish/.local/bin/pi-scout-run
 # buffer LOUD + auto-file escalate-senior. Wired as ExecStartPre /
 # ExecStopPost on pi-scout@.service; leading '-' so a tracker fault
 # cannot skip the scout or trip OnFailure repair.
-bin/scout-futility-check /home/nish/.local/bin/scout-futility-check
 bin/pi-intake-repair-run /home/nish/.local/bin/pi-intake-repair-run
 # fleet-ops#143: version-control the agent-cron runner + the daily market
 # signal unit. The runner rotates seats via pick_seat (replacing the
@@ -364,9 +337,6 @@ systemd/0509-search-tier-canary.timer /home/nish/.config/systemd/user/0509-searc
 # IS endorsed, so this is sanctioned class (a), not the class (c) the audit
 # flagged by "hand-placed" alone. Fail-loud watchdog (no heartbeat metric,
 # not an organ). install.sh symlinks over the live file in place.
-bin/agent-scheduler-drift-check /home/nish/.local/bin/agent-scheduler-drift-check
-systemd/agent-scheduler-drift.service /home/nish/.config/systemd/user/agent-scheduler-drift.service
-systemd/agent-scheduler-drift.timer /home/nish/.config/systemd/user/agent-scheduler-drift.timer
 # fleet-ops#317: the daily market-signal prompt must live in the repo and be
 # installed by MANIFEST, otherwise a missing untracked prompt causes every
 # scheduled timer fire to FATAL immediately.
@@ -374,23 +344,14 @@ prompts/0509-daily-market-signal.md /home/nish/.pi/agent/prompts/0509-daily-mark
 # fleet-ops#541: weekly quality>speed>efficiency research sweep. Reuses
 # agent-cron-run (need <slug>) instead of a second wrapper. Same live unit
 # names as the 2026-08-26 drop-in so install overwrites that unmanaged pair.
-systemd/quality-research-weekly.service /home/nish/.config/systemd/user/quality-research-weekly.service
-systemd/quality-research-weekly.timer /home/nish/.config/systemd/user/quality-research-weekly.timer
-prompts/quality-research-weekly.md /home/nish/.pi/agent/prompts/quality-research-weekly.md
 # fleet-ops#1146: Weekly Fleet Review — blind 5-lens senior research +
 # conference, output capped at 5 specced actions. agent-cron-run owns
 # seat rotation; this unit is the runner with the weekly-fleet-review
 # slug. Same proven pattern as quality-research-weekly.
-systemd/fleet-weekly-fleet-review.service /home/nish/.config/systemd/user/fleet-weekly-fleet-review.service
-systemd/fleet-weekly-fleet-review.timer /home/nish/.config/systemd/user/fleet-weekly-fleet-review.timer
-prompts/weekly-fleet-review.md /home/nish/.pi/agent/prompts/weekly-fleet-review.md
 # fleet-ops#1236: weekly AEO visibility probe. Phase A found no $0 SaaS
 # that runs custom money-queries weekly; this is the residue. python3
 # libexec (not agent-cron-run) so a missing ChatGPT key does not burn a
 # pi seat. Timer fires Sun 03:30 IST, before Weekly Fleet Review.
-systemd/fleet-aeo-probe.service /home/nish/.config/systemd/user/fleet-aeo-probe.service
-systemd/fleet-aeo-probe.timer /home/nish/.config/systemd/user/fleet-aeo-probe.timer
-libexec/fleet-aeo-probe.py /home/nish/.local/libexec/fleet-aeo-probe.py
 config/aeo-probe.json /home/nish/.config/fleet-aeo/probe.json
 # fleet-ops#1137: truth staleness detector — cross-check of standing docs
 # vs live state. The checker piggybacks the metrics exporter via a drop-in
@@ -497,7 +458,6 @@ bin/fleet-heartbeat-low-water-mark /home/nish/.local/bin/fleet-heartbeat-low-wat
 # bin/fleet-heartbeat-low-water-mark.
 bin/fleet-heartbeat-auditor /home/nish/.local/bin/fleet-heartbeat-auditor
 bin/pi-audit-run /home/nish/.local/bin/pi-audit-run
-bin/pi-audit-tally /home/nish/.local/bin/pi-audit-tally
 prompts/auditor.md /home/nish/.pi/agent/prompts/auditor.md
 # fleet-ops#234: escalate-senior intake path. The orchestrator routes open
 # escalate-senior issues to the three-senior panel; the tally files an
@@ -544,9 +504,6 @@ bin/opencode-m3-catalog-canary /home/nish/.local/bin/opencode-m3-catalog-canary
 # daily timer (primary) + heartbeat drained-board bonus; cadence-overdue
 # screams through tier1 §11. Dispatches a pi reviewer, runs findings through
 # a local panel, and files gap-audit issues linked to a durable report.
-bin/fleet-blind-audit /home/nish/.local/bin/fleet-blind-audit
-bin/fleet-blind-audit-panel /home/nish/.local/bin/fleet-blind-audit-panel
-prompts/blind-audit.md /home/nish/.pi/agent/prompts/blind-audit.md
 # fleet-ops#366: mechanical-fix gate. Conference auto-rejects a failure-fix
 # with no prevention mechanism and no mechanism-impossible: line. Pure
 # evaluator — no dispatcher. Blind audit merges recurrence hits before filing.
@@ -580,8 +537,6 @@ bin/fleet-gate-arm-guard /home/nish/.local/bin/fleet-gate-arm-guard
 lib/gate-arm-guard.py /home/nish/.local/lib/pi-packet/gate-arm-guard.py
 lib/gate-integrity-config.sh /home/nish/.local/lib/pi-packet/gate-integrity-config.sh
 prompts/senior-conference.md /home/nish/.pi/agent/prompts/senior-conference.md
-systemd/fleet-blind-audit.service /home/nish/.config/systemd/user/fleet-blind-audit.service
-systemd/fleet-blind-audit.timer /home/nish/.config/systemd/user/fleet-blind-audit.timer
 # fleet-ops#180: gap-closure loop (audit→fix→drill→measure→conference).
 # Heartbeat starts the loop oneshot once per tick. Conference/drill/
 # fleet-gap-closure-auditor@ are started by the loop. Stub units live in
@@ -591,8 +546,6 @@ bin/fleet-gap-closure-conference /home/nish/.local/bin/fleet-gap-closure-confere
 bin/fleet-gap-closure-tally /home/nish/.local/bin/fleet-gap-closure-tally
 bin/fleet-gap-closure-drill /home/nish/.local/bin/fleet-gap-closure-drill
 bin/fleet-gap-closure-slo /home/nish/.local/bin/fleet-gap-closure-slo
-bin/fleet-quality-slo /home/nish/.local/bin/fleet-quality-slo
-lib/quality-slo.py /home/nish/.local/lib/pi-packet/quality-slo.py
 bin/fleet-gap-closure-auditor /home/nish/.local/bin/fleet-gap-closure-auditor
 bin/fleet-gap-closure-yield /home/nish/.local/bin/fleet-gap-closure-yield
 bin/fleet-gap-closure-order /home/nish/.local/bin/fleet-gap-closure-order
@@ -609,11 +562,7 @@ prompts/gap-closure-research-round2.md /home/nish/.pi/agent/prompts/gap-closure-
 # the primary trigger (named reason in the unit). Heading-growth bonus and
 # cadence-overdue scream live in heartbeat-tier1 §22. Sibling backups are
 # required before any finding is filed.
-bin/fleet-rulebook-redteam /home/nish/.local/bin/fleet-rulebook-redteam
-lib/rulebook-redteam-cadence.sh /home/nish/.local/lib/pi-packet/rulebook-redteam-cadence.sh
 prompts/rulebook-redteam.md /home/nish/.pi/agent/prompts/rulebook-redteam.md
-systemd/fleet-rulebook-redteam.service /home/nish/.config/systemd/user/fleet-rulebook-redteam.service
-systemd/fleet-rulebook-redteam.timer /home/nish/.config/systemd/user/fleet-rulebook-redteam.timer
 # fleet-ops#458: standing researcher role. Event-driven dispatch on the
 # heartbeat; oneshot unit runs the cheap/free-lane researcher; deltas go
 # through the same scout-candidate admission panel. No researcher timer —
@@ -1024,7 +973,6 @@ bin/render-standing-rules.py /home/nish/.local/bin/render-standing-rules.py
 bin/render-pi-agents-md.py /home/nish/.local/bin/render-pi-agents-md.py
 lib/standing-rules/canonical.md /home/nish/workspaces/tooling/nish-vault/_system/shared-memory/global-standing-rules.canonical.md
 # fleet-ops#1537 P1: rule-debt consolidation inventory tool (live join analyzer)
-bin/rule-debt-inventory.py /home/nish/.local/bin/rule-debt-inventory
 systemd/standing-rules-render.service /home/nish/.config/systemd/user/standing-rules-render.service
 systemd/standing-rules-render.path /home/nish/.config/systemd/user/standing-rules-render.path
 
@@ -1061,7 +1009,6 @@ systemd/fleet-seat-recovery.service /home/nish/.config/systemd/user/fleet-seat-r
 systemd/fleet-seat-recovery.path /home/nish/.config/systemd/user/fleet-seat-recovery.path
 # fleet-ops#468 TOP GEAR teeth + escalation-matrix FIXES (both wired into
 # fleet-heartbeat-tier1 block 15; fail-loud on violation -> unit-escalation).
-bin/fleet-unjustified-wait /home/nish/.local/bin/fleet-unjustified-wait
 bin/fleet-escalation-completion /home/nish/.local/bin/fleet-escalation-completion
 lib/pi-intake-tick.sh /home/nish/.local/lib/pi-packet/pi-intake-tick.sh
 # fleet-ops#4801: spec-judge lib (Kimi K3 Max over shared-file batches
@@ -1119,15 +1066,11 @@ config/bare-metal-rebuild-manifest.json /home/nish/.config/fleet-ops/bare-metal-
 # fleet-ops#1149: mechanical VPS asset census, guard mapping, and unguarded-asset
 # auto-filer. Runs weekly before the Weekly Fleet Review, writes Prometheus
 # textfile metrics, and auto-files deduped `unguarded asset:` issues.
-bin/fleet-asset-census /home/nish/.local/bin/fleet-asset-census
-lib/pi-packet/asset-census.py /home/nish/.local/lib/pi-packet/asset-census.py
 config/asset-guard-map.json /home/nish/.local/state/pi-packet/asset-guard-map.json
 # fleet-ops#5785: stranded recorded merge SHAs (main-history rewrites) ->
 # on-main replacements, consumed by lib/deploy-fault-gate.sh so the
 # deploy-fault containment proof survives a rewrite.
 config/deploy-fault-stranded-merges.json /home/nish/.local/state/pi-packet/deploy-fault-stranded-merges.json
-systemd/fleet-asset-census.service /home/nish/.config/systemd/user/fleet-asset-census.service
-systemd/fleet-asset-census.timer /home/nish/.config/systemd/user/fleet-asset-census.timer
 # fleet-ops#1460: event-driven sweep. Convert pollers to systemd .path triggers
 # and gate every remaining schedule with a named reason in timer-manifest.json.
 # Each .path unit fires on the state file its service renders; the timer stays
@@ -1186,7 +1129,6 @@ systemd/minimax-token-refresh.service /home/nish/.config/systemd/user/minimax-to
 systemd/minimax-token-refresh.timer /home/nish/.config/systemd/user/minimax-token-refresh.timer
 # fleet-ops#516 sr-max-speed: hunt artificial limiters (not money/safety/hardware).
 # Wired into fleet-heartbeat-tier1; fail-loud on violation -> unit-escalation.
-bin/fleet-max-speed /home/nish/.local/bin/fleet-max-speed
 
 # fleet-ops#1348 REMOVED (fleet-ops#2394 deletion review): seat-walled-probe
 # (probe bin + service + timer) deleted — 14-day 100% fail (Unknown provider
@@ -1213,9 +1155,6 @@ systemd/fleet-seat-bench-truth.service /home/nish/.config/systemd/user/fleet-sea
 # Fleet Review. Deterministic stdlib Python; writes the WFR input dir
 # (/home/nish/workspaces/agent-state/WFR) + its own .prom textfile;
 # heartbeat metric + absent() rule. Not an alert.
-libexec/fleet-baseline-delta.py /home/nish/.local/libexec/fleet-baseline-delta.py
-systemd/fleet-baseline-delta.service /home/nish/.config/systemd/user/fleet-baseline-delta.service
-systemd/fleet-baseline-delta.timer /home/nish/.config/systemd/user/fleet-baseline-delta.timer
 
 # fleet-ops#4130 P1: LiteLLM proxy organ — proxy + Postgres + Redis as
 # systemd USER units in dedicated slices, plus a 60s /health canary.

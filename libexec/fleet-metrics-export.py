@@ -499,17 +499,8 @@ _KNOWN_SLO_IDS = (
     "main_green",
     "0509_user_journey",
     "digest_delivery",
-    "waste_ratio",
     "seat_availability",
     "gh_rate_limit_headroom",
-)
-# fleet-waste-export writes fleet_waste_ratio here; the SLO emitter reads
-# the live value rather than recomputing it (single source of truth).
-WASTE_PROM = Path(
-    os.environ.get(
-        "FLEET_WASTE_OUT",
-        "/var/lib/prometheus/node-exporter/fleet-waste.prom",
-    )
 )
 # seat-caps.json is the source of truth for enrolled-seat count
 # (fleet_pi_seat_total) — providers with cap>0 are enrolled.
@@ -4141,7 +4132,7 @@ def _verified_merges(detail):
 # the exporter stays a standalone script with no sys.path games at import
 # time). The exporter computes compliance for each INSTRUMENTED SLO from
 # data it already gathers in main() (CI green rollup, seat health, rate
-# limit) plus the live fleet_waste_ratio from fleet-waste.prom, then emits
+# limit), then emits
 # the fleet_slo_* gauge family. Burn-rate ALERTS live in
 # config/fleet_rules.yml as multiwindow avg_over_time() queries over
 # fleet_slo_compliance (ratio SLOs) or threshold-window alerts (gauge SLOs)
@@ -4179,30 +4170,6 @@ def _load_slo_defs():
             continue
     return None
 
-
-def _read_waste_ratio():
-    """Read the live fleet_waste_ratio gauge from fleet-waste.prom, or None.
-
-    fleet-waste-export is the single source of truth for the waste ratio;
-    the SLO emitter reads its published value rather than recomputing it.
-    Returns None when the prom file is missing or the gauge is absent
-    (e.g., a fresh install before the waste exporter has run once) — the
-    waste_ratio SLO then reports instrumented=0 for this tick.
-    """
-    try:
-        text = WASTE_PROM.read_text()
-    except OSError:
-        return None
-    for line in text.splitlines():
-        line = line.strip()
-        if not line or line.startswith("#"):
-            continue
-        if line.startswith("fleet_waste_ratio "):
-            try:
-                return float(line.split()[-1])
-            except (ValueError, IndexError):
-                return None
-    return None
 
 
 def _enrolled_seat_providers():
@@ -5243,7 +5210,7 @@ def _read_money_boundary_pages():
     return counts
 
 
-def _slo_compliance(slo, main_ci, healthy, rate_limit, waste_ratio, seat_total):
+def _slo_compliance(slo, main_ci, healthy, rate_limit, seat_total):
     """Compute live compliance (0..1 ratio or value/target gauge) for one SLO.
 
     Returns (compliance_or_None, instrumented_bool). None compliance means
@@ -5286,12 +5253,6 @@ def _slo_compliance(slo, main_ci, healthy, rate_limit, waste_ratio, seat_total):
         if not fracs:
             return None, False
         return min(fracs), True
-    if sid == "waste_ratio":
-        # Gauge "below" SLO: compliance = actual/target (>1 means over budget).
-        if waste_ratio is None:
-            return None, False
-        target = slo["target"]
-        return (waste_ratio / target) if target > 0 else None, True
     # 0509_user_journey / digest_delivery: source metrics pending instrumentation
     # (follow-up issues). Even if flagged instrumented=true in config, no live
     # reader exists yet → not instrumented.
@@ -5302,7 +5263,7 @@ def _emit_slo_metrics(lines, main_ci, healthy, rate_limit):
     """Append the fleet_slo_* gauge family for every SLO in the config.
 
     Called from main() with the data it has already gathered. Reads
-    fleet-waste.prom and seat-caps.json for the SLOs
+    seat-caps.json for the SLOs
     whose sources live outside this exporter. Always emits the family (even
     on a missing config — zeros with instrumented=0) so FleetSloMetricsAbsent
     never false-fires on a config glitch; a missing config is logged to
@@ -5310,7 +5271,6 @@ def _emit_slo_metrics(lines, main_ci, healthy, rate_limit):
     """
     sb = _slo_budget_mod()
     defs = _load_slo_defs()
-    waste_ratio = _read_waste_ratio()
     seat_total = _enrolled_seat_total()
     lines.append("")
     lines.extend(sb.format_prometheus_help_type())
@@ -5333,7 +5293,7 @@ def _emit_slo_metrics(lines, main_ci, healthy, rate_limit):
         window_s = slo.get("window_seconds", defs.get("default_window_seconds", 604800))
         direction = slo.get("direction", "above")
         compliance, instrumented = _slo_compliance(
-            slo, main_ci, healthy, rate_limit, waste_ratio, seat_total
+            slo, main_ci, healthy, rate_limit, seat_total
         )
         if not instrumented or compliance is None:
             # Uninstrumented or source unavailable this tick: emit zero
@@ -6883,7 +6843,7 @@ def main():
 
     # --- SLO error budgets (fleet-ops#1291) ---
     # Emitted last so every source the SLOs read (CI rollup, seat health,
-    # rate limit, waste ratio) has been gathered this tick. fleet_pi_seat_total
+    # rate limit) has been gathered this tick. fleet_pi_seat_total
     # is the seat_availability denominator; published here so the SLO's
     # compliance is auditable from the raw gauges alone.
     _seat_total = _enrolled_seat_total()
