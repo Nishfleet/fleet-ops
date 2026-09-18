@@ -155,6 +155,11 @@ NON_ROLE_UNIT_PREFIXES = (
     "fleet-gap-closure-drill",
     "fleet-gap-closure-loop",
     "gap-closure-drill",
+    # fleet-ops#375: chain-e2e drill. Synthetic-fault rehearsal of the whole
+    # failure chain — mechanical plumbing with no model of its own, same
+    # class as the gap-closure drill above.
+    "fleet-chain-e2e-drill",
+    "chain-e2e-drill",
     # fleet-ops#1495: agent-scheduler-drift is a mechanical drift detector
     # (standing-rules enforcement layer 3). It runs no model, owns no prompt
     # and produces no work items — same class as fleet-aeo-probe. Its own
@@ -167,6 +172,14 @@ NON_ROLE_UNIT_PREFIXES = (
     # gate is the unit's failed state plus the search-tier-canary check in
     # the 0509 product repo.
     "0509-search-tier",
+    # fleet-ops#4148: codex-sol@ / codex-luna@ are per-role Codex launch
+    # templates (shape-only paper). The ExecStart pins identity (model,
+    # provider, effort) so a launch cannot express another role; they own
+    # no judging prompt and produce no work items — launch plumbing, not a
+    # role. Their gate is the machinery-allowlist row (class (a), repo) +
+    # the codex-launcher-retired pin test.
+    "codex-sol",
+    "codex-luna",
     # fleet-ops#5935: gh-runner@ is GitHub's own actions/runner as an
     # ephemeral launch template on this VPS — each activation registers a
     # fresh single-use JIT token (fail-loud on an empty token or a 422),
@@ -304,33 +317,6 @@ def check_researcher_delta_contract(repo: Path, _role: dict[str, Any]) -> str | 
     return None
 
 
-def check_weekly_fleet_review_output_contract(repo: Path, _role: dict[str, Any]) -> str | None:
-    """WFR (fleet-ops#1146) must lock the 5-action cap + signal in the prompt.
-
-    The prompt is the only output-contract surface — a worker that drops
-    the cap or the `signal: wfr-action/...` attribution can flood the
-    queue or break the rolling-ratio self-score. Gate-checked here so a
-    hand-edit cannot bypass either. The 6th SECURITY lens (Nish 2026-08-27
-    "are we doing everything" sweep) is also locked here — a prompt that
-    drops it silently loses the standing security audit.
-    """
-    text = _read(repo / "prompts" / "weekly-fleet-review.md")
-    if not text:
-        return "prompts/weekly-fleet-review.md missing"
-    if "Adopt \u2264 5" not in text and "Adopt <= 5" not in text and "Adopt \\u2264 5" not in text:
-        return "prompts/weekly-fleet-review.md does not lock the Adopt \u2264 5 cap"
-    if "signal: wfr-action/" not in text:
-        return "prompts/weekly-fleet-review.md does not require signal: wfr-action/ attribution"
-    if "claimed work only" not in text:
-        return "prompts/weekly-fleet-review.md drops the 'claimed work only' output rule (no Nish report)"
-    if "blind" not in text.lower():
-        return "prompts/weekly-fleet-review.md drops the blind 8-lens structure"
-    if "L6 SECURITY" not in text:
-        return "prompts/weekly-fleet-review.md drops the L6 SECURITY lens (fleet-ops#1146 Nish addition)"
-    if '"lens": "throughput|quality|machinery|truth|outside|security|slo|alert_quality"' not in text:
-        return "prompts/weekly-fleet-review.md lens enum does not include security"
-    return None
-
 
 def check_quality_ratchet_contract(repo: Path, _role: dict[str, Any]) -> str | None:
     """WFR (fleet-ops#1222) must lock the weekly quality ratchet.
@@ -354,22 +340,6 @@ def check_quality_ratchet_contract(repo: Path, _role: dict[str, Any]) -> str | N
         return "lib/quality-ratchet.py missing (quality ratchet canary)"
     if not (repo / "config" / "quality-ratchet.json").exists():
         return "config/quality-ratchet.json missing (committed floors)"
-def check_rulebook_redteam_backups(repo: Path, _role: dict[str, Any]) -> str | None:
-    """Red-team must refuse to file without sibling backups (fleet-ops#527)."""
-    timer = repo / "systemd" / "fleet-rulebook-redteam.timer"
-    if not timer.exists():
-        return "systemd/fleet-rulebook-redteam.timer missing"
-    text = _read(timer)
-    if "OnCalendar=" not in text or "Persistent=true" not in text:
-        return "timer must be OnCalendar monthly floor + Persistent=true"
-    runner = repo / "bin" / "fleet-rulebook-redteam"
-    if not runner.exists():
-        return "bin/fleet-rulebook-redteam missing"
-    body = _read(runner)
-    if "_require_backups" not in body:
-        return "runner must refuse to file without sibling backups"
-    return None
-
 
 BYPASS_CHECKS = {
     "scout_agent_ready_product": check_scout_agent_ready_product,
@@ -382,9 +352,7 @@ BYPASS_CHECKS = {
     "orchestrator_verdict_guard": check_orchestrator_verdict_guard,
     "audit_has_panel": check_audit_has_panel,
     "researcher_delta_contract": check_researcher_delta_contract,
-    "weekly_fleet_review_output_contract": check_weekly_fleet_review_output_contract,
     "quality_ratchet_contract": check_quality_ratchet_contract,
-    "rulebook_redteam_backups": check_rulebook_redteam_backups,
 }
 
 

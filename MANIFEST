@@ -1,6 +1,7 @@
 systemd/pi-intake@.service /home/nish/.config/systemd/user/pi-intake@.service
 systemd/pi-intake@.timer /home/nish/.config/systemd/user/pi-intake@.timer
 systemd/pi-intake-repair@.service /home/nish/.config/systemd/user/pi-intake-repair@.service
+bin/scout-futility-check /home/nish/.local/bin/scout-futility-check
 systemd/pi-scout@.service /home/nish/.config/systemd/user/pi-scout@.service
 systemd/pi-scout@.timer /home/nish/.config/systemd/user/pi-scout@.timer
 systemd/pi-scout-repair@.service /home/nish/.config/systemd/user/pi-scout-repair@.service
@@ -923,6 +924,7 @@ systemd/fleet-deploy-check.timer /home/nish/.config/systemd/user/fleet-deploy-ch
 # fleet-ops#468 TOP GEAR teeth + escalation-matrix FIXES (both wired into
 # fleet-heartbeat-tier1 block 15; fail-loud on violation -> unit-escalation).
 lib/pi-intake-tick.sh /home/nish/.local/lib/pi-packet/pi-intake-tick.sh
+bin/prior-art-claim-check /home/nish/.local/bin/prior-art-claim-check
 # fleet-ops#4801: spec-judge lib (Kimi K3 Max over shared-file batches
 # before claim). Sourced by pi-intake-tick.sh; the fallback path in the
 # tick resolves this live install copy.

@@ -97,6 +97,12 @@ jobs:
         bash tests/fleet-work-supply-canary.test.sh
         bash tests/pi-systemd-run.test.sh
         bash tests/pi-intake-run.test.sh
+        bash tests/prior-art-claim-check.test.sh
+        bash tests/scout-futility.test.sh
+        bash tests/pi-audit-tally-epic-guard.test.sh
+        bash tests/pi-audit-tally-escalate-senior.test.sh
+        bash tests/pi-audit-tally-question.test.sh
+        bash tests/pi-audit-tally-skip-exhausted.test.sh
         bash tests/pi-issue-start.test.sh
         bash tests/pi-issue-start-packet-regen.test.sh
         bash tests/worker-prompt-size-ceiling.test.sh
@@ -304,7 +310,6 @@ jobs:
           /home/nish/.local/bin/fleet-heartbeat-tier1 \
           /home/nish/.local/bin/fleet-heartbeat-tier2 \
           /home/nish/.local/bin/fleet-deploy-check \
-          /home/nish/.local/bin/fleet-seat-recovery \
           /home/nish/.local/bin/fleet-escalation-completion \
           /home/nish/.local/bin/memory-index-autocompact \
           /usr/bin/redis-server \

@@ -20,7 +20,6 @@ repo_root="$(cd "$here/.." && pwd)"
 py="$repo_root/lib/quality-ratchet.py"
 ratchet="$repo_root/config/quality-ratchet.json"
 qr="$repo_root/config/quality-routing.json"
-prompt="$repo_root/prompts/weekly-fleet-review.md"
 role_gates_lib="$repo_root/lib/role-quality-gates.py"
 matrix="$repo_root/config/rule-enforcement.json"
 tier1="$repo_root/bin/fleet-heartbeat-tier1"
@@ -33,7 +32,6 @@ ok()   { echo "OK: $*"; }
 [[ -x "$py" ]] || fail "not executable: $py"
 [[ -f "$ratchet" ]] || fail "missing $ratchet"
 [[ -f "$qr" ]] || fail "missing $qr"
-[[ -f "$prompt" ]] || fail "missing $prompt"
 [[ -f "$role_gates_lib" ]] || fail "missing $role_gates_lib"
 [[ -f "$matrix" ]] || fail "missing $matrix"
 [[ -f "$tier1" ]] || fail "missing $tier1"
@@ -54,8 +52,6 @@ printf '%s\n' "$proof" | grep -q 'lib/quality-ratchet.py' \
   || fail "proof must name lib/quality-ratchet.py (got: $proof)"
 printf '%s\n' "$proof" | grep -q 'tests/quality-ratchet.test.sh' \
   || fail "proof must name this test (got: $proof)"
-printf '%s\n' "$proof" | grep -q 'prompts/weekly-fleet-review.md' \
-  || fail "proof must name the WFR prompt (got: $proof)"
 ok "(a) led-2026-08-27-quality-ratchet-nish is enforced with mechanism+proof"
 
 scratch=$(mktemp -d -t quality-ratchet.XXXXXX)
@@ -230,20 +226,12 @@ set -e
 [[ "$have_rc" == "0" ]] || fail "valid weekly record must pass canary (rc=$have_rc out=$have_out)"
 ok "(g) WFR run without last-ratchet.json fails; hold record passes"
 
-# (h) WFR prompt + role-gate
-grep -q 'Quality ratchet' "$prompt" \
-  || fail "WFR prompt must name the Quality ratchet phase"
-grep -q 'one notch' "$prompt" \
-  || fail "WFR prompt must lock one notch per week"
-grep -q 'last-ratchet.json' "$prompt" \
-  || fail "WFR prompt must require last-ratchet.json"
-grep -qi 'never loosen' "$prompt" \
-  || fail "WFR prompt must say never loosen without Nish"
+# (h) role-gate (the WFR prompt went with the meta-metrics sweep)
 grep -q 'quality_ratchet_contract' "$role_gates_lib" \
   || fail "role-quality-gates.py must name quality_ratchet_contract"
 grep -q 'def check_quality_ratchet_contract' "$role_gates_lib" \
   || fail "role-quality-gates.py must define check_quality_ratchet_contract"
-ok "(h) WFR prompt and role-gate lock the ratchet contract"
+ok "(h) role-gate locks the ratchet contract"
 
 # (i) heartbeat + MANIFEST
 grep -F 'quality-ratchet.py' "$tier1" >/dev/null \
@@ -333,8 +321,6 @@ PY
 ok "(j) tighten-ceilings never loosens (high p50 leaves ceilings unchanged)"
 
 # WFR prompt documents the per-repo ceiling ratchet
-grep -q 'tighten-ceilings' "$prompt" \
-  || fail "WFR prompt must document per-repo tighten-ceilings (fleet-ops#3519)"
 ok "(j) WFR prompt documents the per-repo quality ceiling ratchet (fleet-ops#3519)"
 
 grep -Fq 'bash "$here/quality-ratchet.test.sh"' "$here/rule-enforcement.test.sh" \

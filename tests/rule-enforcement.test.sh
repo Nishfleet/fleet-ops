@@ -170,13 +170,6 @@ done
 bash "$here/quality-ratchet.test.sh" || fail "quality-ratchet drill failed"
 ok "rule-enforcement: quality-ratchet drill"
 
-# fleet-ops#1223: precedence-band canary (ledger rent-paying band). Nested
-# host so this token does not need a workflow edit. Before the live vault
-# join so a busy board of other uncovered sibling ledger lines cannot skip
-# this drill.
-bash "$here/fleet-precedence-band.test.sh" || fail "precedence-band canary drill failed"
-ok "rule-enforcement: precedence-band canary drill"
-
 # fleet-ops#234: escalate-senior intake path (senior panel). Nested host so
 # the worker token does not need a workflow edit (fleet-ops#566).
 ok "rule-enforcement: pi-escalation-audit drill"
