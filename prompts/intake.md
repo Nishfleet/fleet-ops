@@ -29,7 +29,13 @@ Steps:
    remain, print `at capacity` and exit 0.
 
 3. **Pick work.** `gh issue list -R Nishfleet/<repo> -l agent-ready --state open
-   --json number,title,labels,createdAt --limit 50`. Empty means print
+   --json number,title,labels,createdAt --limit 200`. The limit MUST cover the
+   whole ready queue: `gh issue list` returns newest-first, so a limit smaller
+   than the queue hides the OLDEST ready issues behind the page and starves
+   exactly the work that has waited longest (fleet-ops#1377/#2924 — this is
+   why the model intake path was switched off once before; the limit, not the
+   model, was the bug). If the result length equals the limit, raise it and
+   list again. Empty means print
    `no ready issues` and exit 0. Order them: issues labelled `critical-path` or
    `escalate-senior` first, then oldest-first by `createdAt`. After two
    critical-path claims in a row, take the oldest plain issue next so the tail

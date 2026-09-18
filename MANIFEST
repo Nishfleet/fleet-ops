@@ -546,7 +546,6 @@ systemd/pi-intake@.service.d/10-keystone-hc.conf /home/nish/.config/systemd/user
 # fleet-ops#1377 / #2924: deterministic tick overrides model-path ExecStart.
 # Live host ran this as a hand-placed real file for 7+ days; absorb so a
 # redeploy cannot silently reintroduce pi-intake-run.
-systemd/pi-intake@.service.d/10-use-tick.conf /home/nish/.config/systemd/user/pi-intake@.service.d/10-use-tick.conf
 systemd/pi-scout@.service.d/10-keystone-hc.conf /home/nish/.config/systemd/user/pi-scout@.service.d/10-keystone-hc.conf
 systemd/system/tailscaled.service.d/50-restart-always.conf /etc/systemd/system/tailscaled.service.d/50-restart-always.conf
 # fleet-ops#32: declared-set reconciler. Closes the loop between the
@@ -674,7 +673,6 @@ lib/exec-review-receipt.py /home/nish/.local/lib/pi-packet/exec-review-receipt.p
 # low-water go-hams at <12h; heartbeat canary fail-loud if scouts sit idle
 # under 12h. Heartbeat-tier1 block 27.
 lib/work-supply.sh /home/nish/.local/lib/pi-packet/work-supply.sh
-bin/fleet-work-supply-canary /home/nish/.local/bin/fleet-work-supply-canary
 # fleet-ops#544: VPS→Mac Tailscale grants lockdown canary (led-tailscale).
 # Fail-loud if compiled PacketFilter (`tailscale debug netmap`) allows this
 # VPS as src toward the Mac. Heartbeat-tier1 block 28.
