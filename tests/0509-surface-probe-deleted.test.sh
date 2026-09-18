@@ -22,10 +22,6 @@
 # A rebuild that re-adds any of these to active code without a Nish-endorsed
 # exception fails this test. The machinery-authorization-gate (fleet-ops#1548)
 # is the mechanical prevention; this test is the deletion pin.
-#
-# Note: tests/canary-effectiveness.test.sh uses "0509-surface-probe" as a
-# fixture organ name in a generic canary-effectiveness metric test; that is
-# test data, not a live reference, and is allowed.
 
 set -euo pipefail
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -48,8 +44,7 @@ ok "no 0509-surface-probe/0050-surface-probe script in bin/, lib/, libexec/"
 # --- 2. no reference in active code paths -----------------------------------
 # The design doc (docs/design/hand-built-vs-off-the-shelf.md) is the
 # retirement record and is allowed. This test file is also allowed (it
-# pins the retirement). tests/canary-effectiveness.test.sh uses the name
-# as fixture data and is allowed. Everything else must be clean.
+# pins the retirement). Everything else must be clean.
 for path in prompts config systemd MANIFEST; do
   if grep -rIn '0509-surface-probe\|0050-surface-probe' \
        "$repo_root/$path" >/dev/null 2>&1; then

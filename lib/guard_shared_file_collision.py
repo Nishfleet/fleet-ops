@@ -38,8 +38,6 @@ WATCHED = (
     "entitled-seats.json",
     "intake-repos.json",
     "pi-extensions-allowlist.json",
-    "role-quality-gates.json",
-    "quality-routing.json",
 )
 
 CACHE_TTL = 600

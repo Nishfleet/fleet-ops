@@ -485,13 +485,6 @@ PY
 ok "21. timer-manifest.json entry has named reason citing #5788"
 
 # --------- 22. heartbeat wiring (absent() rule + organ entry) ----------
-# Check the role-quality-gates has minimax-token-refresh in the
-# credential-plumbing class.
-grep -q '"minimax-token-refresh"' "$repo_root/lib/role-quality-gates.py" \
-    || fail "22. lib/role-quality-gates.py missing 'minimax-token-refresh' entry"
-grep -q 'fleet-ops#5788' "$repo_root/lib/role-quality-gates.py" \
-    || fail "22. lib/role-quality-gates.py missing fleet-ops#5788 citation"
-ok "22. role-quality-gates classifies minimax-token-refresh as credential plumbing"
 
 # --------- 23. docs/litellm-postgres-setup.md mentions the wrapper ----------
 grep -q "minimax-token-refresh" "$repo_root/docs/litellm-postgres-setup.md" \

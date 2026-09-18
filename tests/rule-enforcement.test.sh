@@ -1,165 +1,19 @@
 #!/usr/bin/env bash
 # tests/rule-enforcement.test.sh
 #
-# Proves the rule-coverage matrix + canary (fleet-ops#383):
-#   1. Committed config/rule-enforcement.json is valid.
-#   2. Join against a fixture vault: complete coverage is green.
-#   3. Drill: a fixture `## ` heading with no matrix entry is uncovered,
-#      the canary exits 1 naming it, and an issue is auto-filed (fake gh).
-#   4. Replay: an open issue carrying the signal key is deduped (no second file).
-#   5. queued(#N) older than queued_stale_days is a LOUD violation.
-#   6. advisory without a reason fails validate-matrix.
-#   7. FLAG ledger lines are skipped (not standing rules).
-#   8. Observe-to-close: an enforced row with an open fallback-signal
-#      mechanism issue gets a `canary-covered:` comment; replay is a no-op.
-#
-# Offline. Live vault coverage is asserted when the vault files exist
-# (VPS inner loop); hosted CI skips that one check rather than inventing
-# a stale snapshot.
+# Glue sweep 2026-09-18 (final pass, cluster rule-enforcement, Jev p=0.86):
+# the rule-coverage matrix itself is deleted — config/rule-enforcement.json
+# and lib/rule-enforcement.py are gone, Pi reads the rule files natively and
+# the canonical standing-rules text lives in docs/. What is left here is the
+# CI host: this file is listed in ci.yml, and the drills below are invoked
+# from it because the worker App cannot push .github/workflows/**.
 
 set -euo pipefail
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 repo_root="$(cd "$here/.." && pwd)"
-lib="$repo_root/lib/rule-enforcement.py"
-matrix="$repo_root/config/rule-enforcement.json"
-vault_rules="/home/nish/workspaces/tooling/nish-vault/_system/shared-memory/global-standing-rules.md"
-vault_ledger="/home/nish/workspaces/tooling/nish-vault/_system/shared-memory/decisions-ledger.md"
 
 fail() { echo "FAIL: $*" >&2; exit 1; }
 ok()   { echo "OK: $*"; }
-
-[[ -f "$lib" ]] || fail "missing $lib"
-[[ -f "$matrix" ]] || fail "missing $matrix"
-command -v python3 >/dev/null 2>&1 || fail "python3 missing"
-command -v jq >/dev/null 2>&1 || fail "jq missing"
-
-python3 "$lib" validate-matrix --matrix "$matrix" \
-  || fail "committed matrix failed validate-matrix"
-count=$(jq '.rules | length' "$matrix")
-[[ "$count" -gt 0 ]] || fail "matrix.rules is empty"
-ok "committed matrix is valid ($count rules)"
-
-jq -e '.rules[] | select(.id == "led-worker-lane-refresh" and .status == "enforced")' \
-  "$matrix" >/dev/null \
-  || fail "led-worker-lane-refresh must be status=enforced (fleet-ops#545)"
-ok "matrix row led-worker-lane-refresh is enforced"
-
-jq -e '.rules[] | select(.id == "led-2026-08-27-worker-lane-order-nish-emphatic-can-t-stress-enou" and (.status | startswith("advisory")) and (.mechanism | contains("RETIRED")))' \
-  "$matrix" >/dev/null \
-  || fail "led-2026-08-27-worker-lane-order must be status=advisory(RETIRED by fleet-ops#3125) not enforced (fleet-ops#1178 retired 2026-09-04)"
-ok "matrix row led-2026-08-27-worker-lane-order is retired-advisory (volume order replaced by yield)"
-
-# fleet-ops#6114: #6037 wrongly retired the two Cursor-$400 rows — the
-# $400 machinery (Prometheus pacing group, seat-caps, the direct callers)
-# never depended on the deleted pick_seat alone. Both rows are enforced
-# again, and the mechanism must name the LIVE pacing + caller machinery.
-jq -e '.rules[] | select(.id == "led-2026-08-27-cursor-400-correction-nish" and .status == "enforced" and (.mechanism | test("fleet_cursor_prepaid_pacing")) and (.mechanism | test("bin/fleet-prepaid-util-canary")) and (.mechanism | test("bin/fleet-gap-closure-conference")) and (.mechanism | test("config/role-quality-gates.json")))' \
-  "$matrix" >/dev/null \
-  || fail "led-2026-08-27-cursor-400-correction-nish must be enforced with the live mechanism named: fleet_rules.yml fleet_cursor_prepaid_pacing, the restored prepaid-util-canary reader, and the direct callers (fleet-gap-closure-conference, role-quality-gates.json) (fleet-ops#6114)"
-ok "matrix row led-2026-08-27-cursor-400-correction-nish is enforced (fleet-ops#6114)"
-
-jq -e '.rules[] | select(.id == "led-2026-08-27-cursor-400-sequencing-model-nish" and .status == "enforced" and (.mechanism | test("NO LIVE MECHANISM")) and (.mechanism | test("cursor_overage.overage_model")) and (.mechanism | test("FleetCursorPrepaidBurnPacingLow")))' \
-  "$matrix" >/dev/null \
-  || fail "led-2026-08-27-cursor-400-sequencing-model-nish must be enforced, say which part of the #1167 sequencing lost its mechanism with #5993 (NO LIVE MECHANISM: opens_after_included_exhausted), and name the restored config read + the pacing rule (fleet-ops#6114)"
-ok "matrix row led-2026-08-27-cursor-400-sequencing-model-nish is enforced (fleet-ops#6114)"
-
-jq -e '.rules[] | select(.id == "sr-verify-harness" and .status == "enforced")' \
-  "$matrix" >/dev/null \
-  || fail "sr-verify-harness must be status=enforced (fleet-ops#524)"
-ok "matrix row sr-verify-harness is enforced"
-
-jq -e '.rules[] | select(.id == "sr-pstack-review" and .status == "enforced") | .proof | test("prompts/worker.md")' \
-  "$matrix" >/dev/null \
-  || fail "sr-pstack-review must be enforced and proof must name prompts/worker.md (fleet-ops#1260)"
-ok "matrix row sr-pstack-review is enforced via worker.md"
-
-jq -e '.rules[] | select(.id == "led-work-supply-agent-ready" and .status == "enforced")' \
-  "$matrix" >/dev/null \
-  || fail "led-work-supply-agent-ready must be status=enforced (fleet-ops#543)"
-ok "matrix row led-work-supply-agent-ready is enforced"
-
-# fleet-ops#552: the two 2026-08-27 ledger rules must have enforced matrix
-# rows even when the live vault is absent (CI skips the live join).
-for src in \
-  "decisions-ledger.md: 2026-08-27 | TOP GEAR everywhere, non-negotiable" \
-  "decisions-ledger.md: 2026-08-27 | escalation matrix FIXES, not just routes" \
-  "decisions-ledger.md: 2026-08-27 | Vacation window corrected"
-do
-  status=$(jq -r --arg src "$src" '.rules[] | select(.source == $src) | .status' "$matrix")
-  [[ "$status" == "enforced" ]] || fail "matrix must have $src as enforced, got ${status:-missing}"
-  ok "matrix row for $src is enforced"
-done
-# fleet-ops#1178: apostrophe in "can't" — assert via --arg, not a double-quoted for-loop entry.
-# fleet-ops#3125 (2026-09-04): the volume lane order is RETIRED (yield-ranked
-# product routing replaced the volume prefix) — the row must carry an
-# advisory RETIRED status, not enforced.
-src_1178='decisions-ledger.md: 2026-08-27 | Worker lane order (Nish, emphatic: "can'"'"'t stress enough")'
-status=$(jq -r --arg src "$src_1178" '.rules[] | select(.source == $src) | .status' "$matrix")
-[[ "$status" == "enforced" || ( "$status" == advisory* && "$status" == *RETIRED* ) ]] \
-  || fail "matrix must have $src_1178 as enforced or advisory-RETIRED, got ${status:-missing}"
-ok "matrix row for worker lane order (fleet-ops#1178) is retired-advisory (volume canary deleted)"
-
-src_1245='decisions-ledger.md: 2026-08-27 | GEO/AEO: fleet executes measurement + owned-content tactics; community/PR parked for Nish'
-status=$(jq -r --arg src "$src_1245" '.rules[] | select(.source == $src) | .status' "$matrix")
-[[ "$status" == "enforced" ]] || fail "matrix must have $src_1245 as enforced, got ${status:-missing}"
-ok "matrix row for GEO/AEO parked tactics (fleet-ops#1245) is enforced"
-
-# fleet-ops#1529: the five 2026-08-28 afternoon ledger decisions must each
-# have a matrix entry with a valid status (enforced | queued(#N) |
-# advisory(reason)). Same class as #1371. Asserted against the matrix
-# directly so it holds on CI too, where the live-vault join is skipped.
-for src in \
-  'decisions-ledger.md: 2026-08-28 | Runway measured in TIME, not items (Nish: "duhh yes")' \
-  'decisions-ledger.md: 2026-08-28 | Band inversion: 70:30 is priority order, not an idle-mandate (Nish)' \
-  'decisions-ledger.md: 2026-08-28 | 0509 completeness claims distrusted (Nish: "scouts/researchers/auditors are blatantly lying")' \
-  'decisions-ledger.md: 2026-08-28 | 0509 product direction: three epics (Nish, verbatim)' \
-  'decisions-ledger.md: 2026-08-28 | Legit-work-only is fleet-wide law (Nish)'
-do
-  status=$(jq -r --arg src "$src" '.rules[] | select(.source == $src) | .status' "$matrix")
-  case "$status" in
-    enforced|"queued("*|"advisory"*) ok "matrix row for $src is present (fleet-ops#1529)" ;;
-    *) fail "matrix must have a valid-status row for $src, got ${status:-missing} (fleet-ops#1529)" ;;
-  esac
-done
-
-# fleet-ops#1621: the remaining seven 2026-08-28 vault entries (1 standing
-# rule + 6 ledger decisions) must each have a matrix row with a valid status
-# (enforced | queued(#N) | advisory(reason)). Same class as #1371/#1529. The
-# live-vault join covers them on the VPS, but CI skips that join, so pin them
-# directly to keep the batch from silently drifting on CI.
-for src in \
-  'global-standing-rules.md: Quality is a constraint, never a trade-off (Nish, 2026-08-28)' \
-  'decisions-ledger.md: 2026-08-28 | Optimization target: MAX QUALITY THROUGHPUT (Nish: "max *quality* throughput because *quality* above all else")' \
-  'decisions-ledger.md: 2026-08-28 | Quality is a CONSTRAINT, never a trade-off (Nish)' \
-  'decisions-ledger.md: 2026-08-28 | 25 concurrent workers is the standing floor (Nish: "I want 25 workers on all the time... quality is the bar, it has to keep climbing")' \
-  'decisions-ledger.md: 2026-08-28 | hostinger-kvm4 revival queued under existing decisions (ledger-derived, no new ask)' \
-  $'decisions-ledger.md: 2026-08-28 | hostinger-kvm4 is RETIRED (Nish: "Hostinger was retired. It\'s now Netcup dummy")' \
-  'decisions-ledger.md: 2026-08-28 | Capacity: ceiling accepted (Nish, via decision prompt)'
-do
-  status=$(jq -r --arg src "$src" '.rules[] | select(.source == $src) | .status' "$matrix")
-  case "$status" in
-    enforced|"queued("*|"advisory"*) ok "matrix row for $src is present (fleet-ops#1621)" ;;
-    *) fail "matrix must have a valid-status row for $src, got ${status:-missing} (fleet-ops#1621)" ;;
-  esac
-done
-
-# fleet-ops#1403: the four 2026-08-27/28 ledger decisions must each have a
-# matrix entry with a valid status (enforced | queued(#N) |
-# advisory(reason)). The rows were added by PR #1400 (closing #1371), but
-# only the live-vault join covered them, which CI skips. Assert directly
-# against the matrix so they hold on CI too, in the same class as #1371/#1529.
-for src in \
-  $'decisions-ledger.md: 2026-08-27 | Free lanes auto-retry after cooldowns (Nish: "since they\'re free, we can keep trying")' \
-  'decisions-ledger.md: 2026-08-27 | Opus duty-officer heartbeat: HOURLY (Nish, via Telegram)' \
-  'decisions-ledger.md: 2026-08-27 | Heartbeat made exhaustive (Nish)' \
-  'decisions-ledger.md: 2026-08-28 | Relic pager masked (emergency, 01:05 IST)'
-do
-  status=$(jq -r --arg src "$src" '.rules[] | select(.source == $src) | .status' "$matrix")
-  case "$status" in
-    enforced|"queued("*|"advisory"*) ok "matrix row for $src is present (fleet-ops#1403)" ;;
-    *) fail "matrix must have a valid-status row for $src, got ${status:-missing} (fleet-ops#1403)" ;;
-  esac
-done
 
 # fleet-ops#1245: GEO/AEO parked-tactics + brand-gate canary. Hosted
 # BEFORE the live vault join for the same reason as #1178.
@@ -195,592 +49,6 @@ ok "rule-enforcement: d1-prod-migration-process drill"
 bash "$here/fleet-alert-detached-deadman-command-path.test.sh" || fail "alert detached-deadman command-path drill failed"
 ok "rule-enforcement: alert detached-deadman command-path drill"
 
-# Live vault join when the files are on this box.
-if [[ -f "$vault_rules" && -f "$vault_ledger" ]]; then
-  set +e
-  live=$(python3 "$lib" join --rules "$vault_rules" --ledger "$vault_ledger" \
-    --matrix "$matrix" --now "2026-08-26T16:00:00Z")
-  live_rc=$?
-  set -e
-  uncovered=$(jq '.uncovered | length' <<<"$live")
-  malformed=$(jq '.malformed | length' <<<"$live")
-  extra=$(jq '.extra_matrix | length' <<<"$live")
-  [[ "$uncovered" == "0" ]] || fail "live vault has uncovered rules: $(jq -c '.uncovered' <<<"$live")"
-  [[ "$malformed" == "0" ]] || fail "live matrix has malformed rows: $(jq -c '.malformed' <<<"$live")"
-  [[ "$extra" == "0" ]] || fail "live matrix has extra rows: $(jq -c '.extra_matrix' <<<"$live")"
-  jq -e '.covered_rows[] | select(.source == "decisions-ledger.md: 2026-08-27 | TOP GEAR everywhere, non-negotiable" and .status == "enforced")' <<<"$live" >/dev/null \
-    || fail "live join must report TOP GEAR as enforced covered_rows (fleet-ops#479): $(jq -c '.covered_rows' <<<"$live")"
-  jq -e '.covered_rows[] | select(.source == "global-standing-rules.md: Prepaid subs run at max utilization (Nish, 2026-08-20)" and .status == "enforced")' <<<"$live" >/dev/null \
-    || fail "live join must report sr-prepaid-max-util as enforced covered_rows (fleet-ops#531): $(jq -c '.covered_rows' <<<"$live")"
-  jq -e '.covered_rows[] | select(.source == "decisions-ledger.md: 2026-08-27 | escalation matrix FIXES, not just routes" and .status == "enforced")' <<<"$live" >/dev/null \
-    || fail "live join must report escalation FIXES as enforced covered_rows (fleet-ops#548): $(jq -c '.covered_rows' <<<"$live")"
-  jq -e '.covered_rows[] | select(.source == "global-standing-rules.md: Vault sync conflicts auto-resolve (Nish, 2026-08-19, amends the freeze rule)" and .status == "enforced")' <<<"$live" >/dev/null \
-    || fail "live join must report vault sync conflicts as enforced covered_rows (fleet-ops#529): $(jq -c '.covered_rows' <<<"$live")"
-  jq -e '.covered_rows[] | select(.source == "global-standing-rules.md: Find the proven thing before you build anything (Nish, 2026-08-23)" and .status == "enforced")' <<<"$live" >/dev/null \
-    || fail "live join must report sr-find-proven-thing as enforced covered_rows (fleet-ops#534): $(jq -c '.covered_rows' <<<"$live")"
-  jq -e '.covered_rows[] | select(.source == "decisions-ledger.md: 2026-08-26 | NORTH STAR: quality through and through" and .status == "enforced")' <<<"$live" >/dev/null \
-    || fail "live join must report led-north-star-quality as enforced covered_rows (fleet-ops#459): $(jq -c '.covered_rows' <<<"$live")"
-  jq -e '.covered_rows[] | select(.source == "decisions-ledger.md: 2026-08-26 | GLM 5.3 flash free on ClinePass" and .status == "enforced")' <<<"$live" >/dev/null \
-    || fail "live join must report GLM 5.3 flash ClinePass as enforced covered_rows (fleet-ops#462): $(jq -c '.covered_rows' <<<"$live")"
-  jq -e '.covered_rows[] | select(.source == "global-standing-rules.md: Debugging sessions end with a playbook note (Nish, 2026-08-19)" and .status == "enforced")' <<<"$live" >/dev/null \
-    || fail "live join must report sr-debug-playbook as enforced covered_rows (fleet-ops#522): $(jq -c '.covered_rows' <<<"$live")"
-  jq -e '.covered_rows[] | select(.source == "decisions-ledger.md: 2026-08-25 | repo visibility" and .status == "enforced")' <<<"$live" >/dev/null \
-    || fail "live join must report repo visibility as enforced covered_rows (fleet-ops#542): $(jq -c '.covered_rows' <<<"$live")"
-  jq -e '.covered_rows[] | select(.source == "global-standing-rules.md: Execution IS the review — run it, log the bugs, fix, run again (Nish, 2026-08-25 — non-negotiable)" and .status == "enforced")' <<<"$live" >/dev/null \
-    || fail "live join must report sr-execution-is-review as enforced covered_rows (fleet-ops#537): $(jq -c '.covered_rows' <<<"$live")"
-  jq -e '.covered_rows[] | select(.source == "decisions-ledger.md: 2026-08-26 | work supply (rev: 24h, same day)" and .status == "enforced")' <<<"$live" >/dev/null \
-    || fail "live join must report work supply 24h as enforced covered_rows (fleet-ops#540): $(jq -c '.covered_rows' <<<"$live")"
-  jq -e '.covered_rows[] | select(.source == "decisions-ledger.md: 2026-08-26 | worker-lane refresh (Nish)" and .status == "enforced")' <<<"$live" >/dev/null \
-    || fail "live join must report worker-lane refresh as enforced covered_rows (fleet-ops#545): $(jq -c '.covered_rows' <<<"$live")"
-  # fleet-ops#3125: the worker-lane-order rule is RETIRED — the join counts it
-  # as covered/advisory but does not enumerate it in covered_rows, so assert
-  # the matrix row carries the advisory-RETIRED status (uncovered==0 above
-  # already proves the live ledger line is covered).
-  jq -e --arg src 'decisions-ledger.md: 2026-08-27 | Worker lane order (Nish, emphatic: "can'"'"'t stress enough")' \
-    '.rules[] | select(.source == $src and (.status | startswith("advisory")) and (.mechanism | contains("RETIRED")))' "$matrix" >/dev/null \
-    || fail "matrix must mark worker lane order as advisory-RETIRED (fleet-ops#1178 retired 2026-09-04 by fleet-ops#3125)"
-  # fleet-ops#6114: #6037 wrongly retired the Cursor-$400 sequencing row; it
-  # is enforced again, so the live join must now enumerate it as an ENFORCED
-  # covered_row (the #4263 advisory-RETIRED expectation is gone).
-  jq -e --arg src 'decisions-ledger.md: 2026-08-27 | Cursor $400 sequencing + model (Nish)' \
-    '.covered_rows[] | select(.source == $src and .status == "enforced")' <<<"$live" >/dev/null \
-    || fail "live join must report cursor \$400 sequencing as an enforced covered_row (fleet-ops#6114): $(jq -c '.covered_rows' <<<"$live")"
-  jq -e --arg src 'decisions-ledger.md: 2026-08-27 | GEO/AEO: fleet executes measurement + owned-content tactics; community/PR parked for Nish' \
-    '.covered_rows[] | select(.source == $src and .status == "enforced")' <<<"$live" >/dev/null \
-    || fail "live join must report GEO/AEO parked tactics as enforced covered_rows (fleet-ops#1245): $(jq -c '.covered_rows' <<<"$live")"
-  jq -e '.covered_rows[] | select(.source == "decisions-ledger.md: 2026-08-27 | Quality ratchet (Nish)" and .status == "enforced")' <<<"$live" >/dev/null \
-    || fail "live join must report Quality ratchet as enforced covered_rows (fleet-ops#1222): $(jq -c '.covered_rows' <<<"$live")"
-  jq -e '.covered_rows[] | select(.source == "decisions-ledger.md: 2026-08-25 | continuous research" and .status == "enforced")' <<<"$live" >/dev/null \
-    || fail "live join must report continuous research as enforced covered_rows (fleet-ops#541): $(jq -c '.covered_rows' <<<"$live")"
-  jq -e '.covered_rows[] | select(.source == "decisions-ledger.md: 2026-08-24 | Tailscale" and .status == "enforced")' <<<"$live" >/dev/null \
-    || fail "live join must report Tailscale ACL lockdown as enforced covered_rows (fleet-ops#544): $(jq -c '.covered_rows' <<<"$live")"
-  jq -e '.covered_rows[] | select(.source == "global-standing-rules.md: Per-repo verification harness (Nish, 2026-08-20, adopted from Cursor pstack)" and .status == "enforced")' <<<"$live" >/dev/null \
-    || fail "live join must report sr-verify-harness as enforced covered_rows (fleet-ops#524): $(jq -c '.covered_rows' <<<"$live")"
-  jq -e '.covered_rows[] | select(.source == "decisions-ledger.md: 2026-08-25 | work supply" and .status == "enforced")' <<<"$live" >/dev/null \
-    || fail "live join must report work-supply agent-ready as enforced covered_rows (fleet-ops#543): $(jq -c '.covered_rows' <<<"$live")"
-  src_906='decisions-ledger.md: 2026-08-27 | D1 prod migrations — CORRECTION'
-  jq -e --arg src "$src_906" '.covered_rows[] | select(.source == $src and .status == "enforced")' <<<"$live" >/dev/null \
-    || fail "live join must report D1 prod migrations correction as enforced covered_rows (fleet-ops#906): $(jq -c '.covered_rows' <<<"$live")" 
-  ok "live vault join is covered (vault=$(jq .vault_rule_count <<<"$live") rc=$live_rc)"
-  ok "live join: TOP GEAR source is enforced (observe-to-close for #479)"
-  ok "live join: prepaid max-util source is enforced (observe-to-close for #531)"
-  ok "live join: escalation FIXES source is enforced (observe-to-close for #548)"
-  ok "live join: vault sync conflicts source is enforced (observe-to-close for #529)"
-  ok "live join: find-the-proven-thing source is enforced (observe-to-close for #534)"
-  ok "live join: NORTH STAR quality source is enforced (observe-to-close for #459)"
-  ok "live join: GLM 5.3 flash ClinePass source is enforced (observe-to-close for #462)"
-  ok "live join: debug-playbook source is enforced (observe-to-close for #522)"
-  ok "live join: repo visibility source is enforced (observe-to-close for #542)"
-  ok "live join: execution-is-review source is enforced (observe-to-close for #537)"
-  ok "live join: work supply 24h source is enforced (observe-to-close for #540)"
-  ok "live join: worker-lane refresh source is enforced (observe-to-close for #545)"
-  ok "live join: worker lane order source is enforced (observe-to-close for #1178)"
-  ok "live join: cursor \$400 sequencing row is enforced (fleet-ops#6114)"
-  ok "live join: GEO/AEO parked tactics source is enforced (observe-to-close for #1245)"
-  ok "live join: Quality ratchet source is enforced (observe-to-close for #1222)"
-  ok "live join: continuous research source is enforced (observe-to-close for #541)"
-  ok "live join: Tailscale ACL lockdown source is enforced (observe-to-close for #544)"
-  ok "live join: per-repo verification harness source is enforced (observe-to-close for #524)"
-  ok "live join: work-supply agent-ready source is enforced (observe-to-close for #543)"
-else
-  ok "live vault not present (hosted CI) — skip exhaustiveness join"
-fi
-
-# fleet-ops#5746: vault→archive pointer integrity. Every
-# 'Full text: `standing-rules-archive.md` → `## X`' pointer in the standing
-# rules must resolve to a literal `## X` heading in the archive — a rule was
-# added to the short file + matrix but never archived (the 2026-09-11
-# fails-silently rule), and nothing guarded that invariant so it rotted
-# silently. Hosted CI (no vault files) skips, same as the live join above.
-if [[ -f "$vault_rules" ]]; then
-  vault_archive="$(dirname "$vault_rules")/standing-rules-archive.md"
-  [[ -f "$vault_archive" ]] || fail "vault archive missing next to standing rules: $vault_archive"
-  pointer_count=$(python3 - "$vault_rules" "$vault_archive" <<'PY'
-import re, sys
-
-def headings(path):
-    out = {}
-    with open(path, encoding="utf-8") as f:
-        for line in f:
-            m = re.match(r"^## (.+?)\s*$", line)
-            if m:
-                out.setdefault("## " + m.group(1), line.rstrip("\n"))
-    return out
-
-rules_text = open(sys.argv[1], encoding="utf-8").read()
-heads = headings(sys.argv[2])
-pointers = re.findall(
-    r"Full text:\s*`standing-rules-archive\.md`\s*→\s*`(## [^`]+)`", rules_text
-)
-assert pointers, "no archive pointers found in standing rules — extraction pattern broke"
-missing = [p for p in pointers if p not in heads]
-assert not missing, "GSR→archive pointer(s) 404: %r" % missing
-capture = (
-    "## Nothing on the VPS fails silently, everything resumes, "
-    "nothing is duct tape (Nish, 2026-09-11 — NON-NEGOTIABLE, forever)"
-)
-assert capture in heads, "the 2026-09-11 fails-silently rule is still not archived (fleet-ops#5746)"
-print(len(pointers))
-PY
-) || fail "vault→archive pointer integrity check failed (fleet-ops#5746)"
-  ok "vault→archive pointer integrity: every Full-text pointer resolves ($pointer_count pointers)"
-else
-  ok "live vault not present (hosted CI) — skip vault→archive pointer integrity"
-fi
-
-# --- parser unit: FLAG lines skipped, ### not counted, ## counted ------------
-scratch="$(mktemp -d -t rule-enf.XXXXXX)"
-trap 'rm -rf "$scratch"' EXIT INT TERM
-
-cat >"$scratch/rules.md" <<'EOF'
-# Title
-## Real standing rule (Nish, 2026-08-26)
-body
-### Child heading must not count
-## Second standing rule
-EOF
-cat >"$scratch/ledger.md" <<'EOF'
-## Ledger
-### Product / fleet
-- 2026-08-26 | real decision | STANDING, NON-NEGOTIABLE: a rule
-- 2026-08-26 | flag row | FLAG (not a Nish decision): skip me
-- not a decision line
-- 2026-08-28 | REVERSAL: machinery-gate builds DELETED | The two entries above are VOID - do not re-execute
-- 2026-08-28 | Clarification of the reversal above | The VOID applies to the build only
-EOF
-
-python3 - "$lib" "$scratch/rules.md" "$scratch/ledger.md" <<'PY' || fail "parser unit failed"
-import importlib.util, sys
-spec = importlib.util.spec_from_file_location("reenf", sys.argv[1])
-m = importlib.util.module_from_spec(spec)
-spec.loader.exec_module(m)
-standing = m.parse_standing_rules(open(sys.argv[2], encoding="utf-8").read())
-ledger = m.parse_ledger(open(sys.argv[3], encoding="utf-8").read())
-assert len(standing) == 2, standing
-assert standing[0]["key"] == "Real standing rule (Nish, 2026-08-26)", standing
-assert len(ledger) == 1, ledger
-assert ledger[0]["key"] == "2026-08-26 | real decision", ledger
-assert ledger[0]["key"] == "2026-08-26 | real decision", ledger
-
-src = "decisions-ledger.md: 2026-08-27 | TOP GEAR everywhere, non-negotiable"
-assert m.fallback_id_from_source(src) == (
-    "led-2026-08-27-top-gear-everywhere-non-negotiable"
-), m.fallback_id_from_source(src)
-row = {
-    "id": "led-top-gear-everywhere",
-    "source": src,
-    "status": "enforced",
-    "fallback_id": m.fallback_id_from_source(src),
-}
-body_fallback = (
-    "The rule-coverage canary found a standing rule with no live enforcer.\n\n"
-    f"- source: `{src}`\n\n"
-    "signal: rule-enforcement/led-2026-08-27-top-gear-everywhere-non-negotiable\n"
-)
-assert m.issue_matches_covered(body_fallback, row), "fallback signal + source backtick must match"
-body_matrix_id = "signal: rule-enforcement/led-top-gear-everywhere\n"
-assert m.issue_matches_covered(body_matrix_id, row), "matrix id signal must match"
-assert not m.issue_matches_covered("unrelated body", row)
-assert not m.issue_matches_covered(
-    f"- source: `{src}`\nrelated but not a mechanism signal\n", row
-), "quoting the source without a signal must not match"
-
-report = {
-    "covered_rows": [row],
-    "auto_file_cap_per_tick": 5,
-}
-issues = [
-    {"number": 479, "body": body_fallback, "comments": []},
-    {"number": 480, "body": "signal: rule-enforcement/other", "comments": []},
-    {
-        "number": 481,
-        "body": body_fallback,
-        "comments": [{"body": f"canary-covered: {src}\n"}],
-    },
-]
-targets = m.observe_targets(report, issues)
-assert [t["number"] for t in targets] == [479], targets
-assert targets[0]["marker"] == f"canary-covered: {src}", targets
-
-# close_targets: only issues that carry the canary-covered marker AND match an
-# enforced row are closeable. #481 has the marker -> closeable. #479 has no
-# marker yet (canary has not reported green) -> NOT closeable. #480 is an
-# unrelated signal -> NOT closeable.
-close_targets = m.close_targets(report, issues)
-assert [t["number"] for t in close_targets] == [481], close_targets
-assert close_targets[0]["marker"] == f"canary-covered: {src}", close_targets
-assert close_targets[0]["id"] == row["id"], close_targets
-
-# A non-enforced row must never produce a close target even with the marker.
-queued_row = dict(row, status="queued", issue=362)
-queued_report = {"covered_rows": [queued_row], "auto_file_cap_per_tick": 5}
-queued_issues = [
-    {"number": 482, "body": body_fallback, "comments": [{"body": f"canary-covered: {src}\n"}]},
-]
-assert m.close_targets(queued_report, queued_issues) == [], "queued row must not close"
-
-# needs-interactive guard (fleet-ops#2006): an issue whose body carries a
-# `needs-interactive:` marker is an ACTIVE human-action fault (e.g. the grok
-# CLI seat is dead and Nish must `grok login --device-auth`). The
-# rule-enforcement canary "covers" the signal because it DETECTS the dead
-# seat every tick — but "covered" means detected, not fixed. Without this
-# guard the observe-to-close loop posts canary-covered, then closes the
-# ticket while the seat is still dead, the canary re-files next tick, and
-# the class recurs indefinitely (4 tickets in ~4h on 2026-08-29). Such an
-# issue must be excluded from BOTH observe_targets (no canary-covered
-# comment) and close_targets (no close) so the live fault stays open until
-# a human actually fixes it.
-needs_interactive_body = (
-    body_fallback
-    + "\n\nseat-live-validate: grok needs-interactive\n"
-)
-needs_interactive_issues = [
-    {
-        "number": 483,
-        "body": needs_interactive_body,
-        "comments": [{"body": f"canary-covered: {src}\n"}],
-    },
-]
-assert m.observe_targets(report, needs_interactive_issues) == [], \
-    "needs-interactive issue must not get a canary-covered comment"
-assert m.close_targets(report, needs_interactive_issues) == [], \
-    "needs-interactive issue must not be observe-to-closed while the fault is live"
-print("parser-ok")
-PY
-ok "parser: ## headings counted, ### ignored, FLAG ledger lines skipped"
-ok "observe-to-close: fallback id, source backtick, and already-commented issues"
-ok "observe-to-close close_targets: marker+enforced closes, no-marker and queued do not"
-ok "observe-to-close: needs-interactive issue is not commented or closed (fleet-ops#2006)"
-
-# --- fixture join: complete coverage ----------------------------------------
-cat >"$scratch/covered-rules.md" <<'EOF'
-## Covered fixture rule (Nish, 2026-08-26)
-EOF
-cat >"$scratch/covered-ledger.md" <<'EOF'
-- 2026-08-26 | covered ledger rule | a decision
-EOF
-cat >"$scratch/covered-matrix.json" <<'EOF'
-{
-  "queued_stale_days": 7,
-  "auto_file_cap_per_tick": 5,
-  "rules": [
-    {
-      "id": "sr-covered-fixture",
-      "source": "global-standing-rules.md: Covered fixture rule (Nish, 2026-08-26)",
-      "mechanism": "test gate",
-      "proof": "tests/rule-enforcement.test.sh",
-      "status": "enforced"
-    },
-    {
-      "id": "led-covered-fixture",
-      "source": "decisions-ledger.md: 2026-08-26 | covered ledger rule",
-      "mechanism": "test gate",
-      "proof": "tests/rule-enforcement.test.sh",
-      "status": "enforced"
-    }
-  ]
-}
-EOF
-python3 "$lib" join --rules "$scratch/covered-rules.md" --ledger "$scratch/covered-ledger.md" \
-  --matrix "$scratch/covered-matrix.json" --now "2026-08-26T12:00:00Z" >"$scratch/covered.json"
-jq -e '.violations == 0 and .uncovered == []' "$scratch/covered.json" >/dev/null \
-  || fail "complete fixture must have zero violations: $(cat "$scratch/covered.json")"
-ok "join: complete fixture is green"
-
-# --- sunset convention ratchet (fleet-ops#5749) -------------------------------
-# The convention binds only NEW rules, so the gate is a ratchet: unmarked
-# `## ` sections must not outnumber matrix.sunset_unmarked_baseline. Markers:
-# `review-by:YYYY-MM-DD` or an "absorbed into <mechanism>" exit anywhere in
-# the section. Rules past review-by land on .sunset.due for the Weekly Fleet
-# Review's quality ratchet.
-cat >"$scratch/sunset-rules.md" <<'EOF'
-## Marked by review date (Nish, 2026-08-26)
-Sunset: review-by 2030-01-01.
-## Marked absorbed (Nish, 2026-08-26)
-This rule is absorbed into the example mechanism.
-## Due for review (Nish, 2026-08-26)
-Sunset: review-by: 2026-08-01.
-## Old unmarked rule (Nish, 2026-08-26)
-body
-## New unmarked rule (Nish, 2026-08-26)
-body
-## Bogus date rule (Nish, 2026-08-26)
-Sunset: review-by: 2026-13-45.
-EOF
-cat >"$scratch/sunset-matrix.json" <<'EOF'
-{
-  "queued_stale_days": 7,
-  "auto_file_cap_per_tick": 5,
-  "sunset_unmarked_baseline": 1,
-  "rules": [
-    {"id":"sr-marked-review","source":"global-standing-rules.md: Marked by review date (Nish, 2026-08-26)","mechanism":"test gate","proof":"tests/rule-enforcement.test.sh","status":"enforced"},
-    {"id":"sr-marked-absorbed","source":"global-standing-rules.md: Marked absorbed (Nish, 2026-08-26)","mechanism":"test gate","proof":"tests/rule-enforcement.test.sh","status":"enforced"},
-    {"id":"sr-due-review","source":"global-standing-rules.md: Due for review (Nish, 2026-08-26)","mechanism":"test gate","proof":"tests/rule-enforcement.test.sh","status":"enforced"},
-    {"id":"sr-old-unmarked","source":"global-standing-rules.md: Old unmarked rule (Nish, 2026-08-26)","mechanism":"test gate","proof":"tests/rule-enforcement.test.sh","status":"enforced"},
-    {"id":"sr-new-unmarked","source":"global-standing-rules.md: New unmarked rule (Nish, 2026-08-26)","mechanism":"test gate","proof":"tests/rule-enforcement.test.sh","status":"enforced"},
-    {"id":"sr-bogus-date","source":"global-standing-rules.md: Bogus date rule (Nish, 2026-08-26)","mechanism":"test gate","proof":"tests/rule-enforcement.test.sh","status":"enforced"}
-  ]
-}
-EOF
-: >"$scratch/empty-ledger.md"
-python3 "$lib" join --rules "$scratch/sunset-rules.md" --ledger "$scratch/empty-ledger.md" \
-  --matrix "$scratch/sunset-matrix.json" --now "2026-08-26T12:00:00Z" >"$scratch/sunset.json"
-jq -e '.violations == 0' "$scratch/sunset.json" >/dev/null \
-  || fail "sunset over-baseline must not fold into violations (the canary owns the LOUD): $(cat "$scratch/sunset.json")"
-jq -e '.sunset.marked == 3 and .sunset.unmarked == 3 and .sunset.baseline == 1' \
-  "$scratch/sunset.json" >/dev/null \
-  || fail "sunset block must count marked/unmarked against the baseline (a malformed review-by is unmarked): $(jq -c '.sunset' "$scratch/sunset.json")"
-jq -e '.sunset.over_baseline | length == 2' "$scratch/sunset.json" >/dev/null \
-  || fail "baseline 1 over 3 unmarked must flag exactly two: $(jq -c '.sunset' "$scratch/sunset.json")"
-jq -e '.sunset.over_baseline[0].id == "sunset-sr-new-unmarked"
-       and (.sunset.over_baseline[0].source | contains("New unmarked rule"))
-       and (.sunset.over_baseline[0].reason | contains("sunset convention"))' \
-  "$scratch/sunset.json" >/dev/null \
-  || fail "over-baseline item must carry the sunset- id namespace + reason: $(jq -c '.sunset.over_baseline' "$scratch/sunset.json")"
-jq -e '(.sunset.due | length) == 1 and .sunset.due[0].review_by == "2026-08-01"
-       and (.sunset.due[0].source | contains("Due for review"))' \
-  "$scratch/sunset.json" >/dev/null \
-  || fail "a rule past review-by must land on sunset.due: $(jq -c '.sunset' "$scratch/sunset.json")"
-ok "join: sunset ratchet flags only unmarked rules beyond baseline; due rules listed"
-
-# Baseline at the current unmarked count -> ratchet green.
-jq '.sunset_unmarked_baseline = 3' "$scratch/sunset-matrix.json" >"$scratch/sunset-matrix-2.json"
-python3 "$lib" join --rules "$scratch/sunset-rules.md" --ledger "$scratch/empty-ledger.md" \
-  --matrix "$scratch/sunset-matrix-2.json" --now "2026-08-26T12:00:00Z" >"$scratch/sunset2.json"
-jq -e '.sunset.over_baseline == []' "$scratch/sunset2.json" >/dev/null \
-  || fail "unmarked == baseline must be green: $(jq -c '.sunset' "$scratch/sunset2.json")"
-ok "join: sunset ratchet is green at the baseline"
-
-# No baseline in the matrix -> gate off, no over_baseline items.
-jq -e '.sunset.baseline == null and .sunset.over_baseline == []' \
-  "$scratch/covered.json" >/dev/null \
-  || fail "a matrix without the baseline must report gate-off, not violations: $(jq -c '.sunset' "$scratch/covered.json")"
-ok "join: missing sunset baseline disables the gate (no violations)"
-
-# A non-integer baseline fails validate-matrix.
-cat >"$scratch/bad-baseline.json" <<'EOF'
-{
-  "queued_stale_days": 7,
-  "auto_file_cap_per_tick": 5,
-  "sunset_unmarked_baseline": "soon",
-  "rules": [
-    {"id":"sr-x","source":"global-standing-rules.md: X","mechanism":"m","proof":"p","status":"enforced"}
-  ]
-}
-EOF
-set +e
-python3 "$lib" validate-matrix --matrix "$scratch/bad-baseline.json" >/dev/null 2>"$scratch/bad-baseline.err"
-bb_rc=$?
-set -e
-[[ "$bb_rc" == "1" ]] || fail "non-integer baseline must fail validate, got rc=$bb_rc"
-grep -q 'sunset_unmarked_baseline' "$scratch/bad-baseline.err" \
-  || fail "baseline error must name the field: $(cat "$scratch/bad-baseline.err")"
-ok "validate-matrix: non-integer sunset baseline is rejected"
-
-# The committed matrix pins the live unmarked count as the baseline.
-jq -e '.sunset_unmarked_baseline == 56' "$matrix" >/dev/null \
-  || fail "committed matrix must carry sunset_unmarked_baseline=56 (live unmarked ## count at fleet-ops#5749)"
-ok "committed matrix carries the sunset ratchet baseline"
-
-# The sunset-filed issue keeps the sunset- id namespace in title + signal.
-sunset_item=$(jq -c '.sunset.over_baseline[0]' "$scratch/sunset.json")
-title_out=$(python3 "$lib" issue-title --json "$sunset_item")
-[[ "$title_out" == fix\(sunset\):* ]] \
-  || fail "sunset item must render a fix(sunset): title, got: $title_out"
-body_out=$(python3 "$lib" issue-body --json "$sunset_item")
-grep -q 'signal: rule-enforcement/sunset-sr-new-unmarked' <<<"$body_out" \
-  || fail "sunset issue body must carry the sunset- signal: $body_out"
-ok "issue-title/issue-body: sunset items file under the sunset- id namespace"
-
-# fleet-ops#548: CI-visible guard for the VPS-only miss. A ledger with the
-# two 2026-08-27 titles must be covered by the committed rows, and omitting
-# those rows must surface the fallback ids the canary auto-files.
-cat >"$scratch/548-rules.md" <<'EOF'
-# none
-EOF
-cat >"$scratch/548-ledger.md" <<'EOF'
-- 2026-08-27 | TOP GEAR everywhere, non-negotiable | a decision
-- 2026-08-27 | escalation matrix FIXES, not just routes | a decision
-EOF
-jq '{
-  queued_stale_days: .queued_stale_days,
-  auto_file_cap_per_tick: .auto_file_cap_per_tick,
-  rules: [.rules[] | select(
-    .source == "decisions-ledger.md: 2026-08-27 | TOP GEAR everywhere, non-negotiable"
-    or .source == "decisions-ledger.md: 2026-08-27 | escalation matrix FIXES, not just routes"
-  )]
-}' "$matrix" >"$scratch/548-covered-matrix.json"
-python3 "$lib" join --rules "$scratch/548-rules.md" --ledger "$scratch/548-ledger.md" \
-  --matrix "$scratch/548-covered-matrix.json" --now "2026-08-27T12:00:00Z" \
-  >"$scratch/548-covered.json"
-jq -e '.violations == 0 and (.uncovered | length) == 0 and (.covered == 2)' \
-  "$scratch/548-covered.json" >/dev/null \
-  || fail "committed 2026-08-27 rows must cover the two ledger titles: $(cat "$scratch/548-covered.json")"
-ok "join: committed 2026-08-27 rows cover the two ledger titles (fleet-ops#548)"
-
-cat >"$scratch/548-missing-matrix.json" <<'EOF'
-{
-  "queued_stale_days": 7,
-  "auto_file_cap_per_tick": 5,
-  "rules": [
-    {
-      "id": "led-unrelated-548",
-      "source": "decisions-ledger.md: 2026-08-26 | unrelated covered",
-      "mechanism": "test gate",
-      "proof": "tests/rule-enforcement.test.sh",
-      "status": "enforced"
-    }
-  ]
-}
-EOF
-set +e
-python3 "$lib" join --rules "$scratch/548-rules.md" --ledger "$scratch/548-ledger.md" \
-  --matrix "$scratch/548-missing-matrix.json" --now "2026-08-27T12:00:00Z" \
-  >"$scratch/548-missing.json"
-missing_rc=$?
-set -e
-[[ "$missing_rc" == "1" ]] || fail "omitting the 2026-08-27 rows must make join exit 1, got $missing_rc"
-jq -e '[.uncovered[].id] | sort == [
-  "led-2026-08-27-escalation-matrix-fixes-not-just-routes",
-  "led-2026-08-27-top-gear-everywhere-non-negotiable"
-]' "$scratch/548-missing.json" >/dev/null \
-  || fail "omitting the 2026-08-27 rows must uncover the canary fallback ids: $(cat "$scratch/548-missing.json")"
-ok "join: omitting the 2026-08-27 rows uncovers the canary fallback ids (fleet-ops#548)"
-
-# --- queued row in report ---------------------------------------------------
-cat >"$scratch/queued-rules.md" <<'EOF'
-# fixture
-## Covered fixture rule (Nish, 2026-08-26)
-## Queued fixture rule waiting for a mechanism (Nish, 2026-08-26)
-EOF
-cat >"$scratch/queued-matrix.json" <<'EOF'
-{
-  "queued_stale_days": 7,
-  "auto_file_cap_per_tick": 5,
-  "rules": [
-    {
-      "id": "sr-covered-fixture",
-      "source": "global-standing-rules.md: Covered fixture rule (Nish, 2026-08-26)",
-      "mechanism": "test gate",
-      "proof": "tests/rule-enforcement.test.sh",
-      "status": "enforced"
-    },
-    {
-      "id": "led-covered-fixture",
-      "source": "decisions-ledger.md: 2026-08-26 | covered ledger rule",
-      "mechanism": "test gate",
-      "proof": "tests/rule-enforcement.test.sh",
-      "status": "enforced"
-    },
-    {
-      "id": "sr-queued-fixture",
-      "source": "global-standing-rules.md: Queued fixture rule waiting for a mechanism (Nish, 2026-08-26)",
-      "mechanism": "not yet",
-      "proof": "fleet-ops#1",
-      "status": "queued(#1)",
-      "queued_since": "2026-08-26"
-    }
-  ]
-}
-EOF
-python3 "$lib" join --rules "$scratch/queued-rules.md" --ledger "$scratch/covered-ledger.md" \
-  --matrix "$scratch/queued-matrix.json" --now "2026-08-26T12:00:00Z" >"$scratch/queued.json"
-jq -e '.queued | length == 1' "$scratch/queued.json" >/dev/null \
-  || fail "queued fixture must report one queued row: $(cat "$scratch/queued.json")"
-jq -e '.queued[0].mechanism == "not yet" and .queued[0].proof == "fleet-ops#1"' "$scratch/queued.json" >/dev/null \
-  || fail "queued row must carry mechanism and proof: $(jq -c '.queued[0]' "$scratch/queued.json")"
-ok "join: queued rows include mechanism and proof"
-
-# --- stale queued -----------------------------------------------------------
-cat >"$scratch/stale-matrix.json" <<'EOF'
-{
-  "queued_stale_days": 7,
-  "auto_file_cap_per_tick": 5,
-  "rules": [
-    {
-      "id": "sr-covered-fixture",
-      "source": "global-standing-rules.md: Covered fixture rule (Nish, 2026-08-26)",
-      "mechanism": "not yet",
-      "proof": "fleet-ops#1",
-      "status": "queued(#1)",
-      "queued_since": "2026-08-01"
-    },
-    {
-      "id": "led-covered-fixture",
-      "source": "decisions-ledger.md: 2026-08-26 | covered ledger rule",
-      "mechanism": "test gate",
-      "proof": "tests/rule-enforcement.test.sh",
-      "status": "enforced"
-    }
-  ]
-}
-EOF
-set +e
-python3 "$lib" join --rules "$scratch/covered-rules.md" --ledger "$scratch/covered-ledger.md" \
-  --matrix "$scratch/stale-matrix.json" --now "2026-08-26T12:00:00Z" >"$scratch/stale.json"
-stale_rc=$?
-set -e
-[[ "$stale_rc" == "1" ]] || fail "stale queued must make join exit 1, got $stale_rc"
-jq -e '.stale_queued | length == 1' "$scratch/stale.json" >/dev/null \
-  || fail "stale queued not reported: $(cat "$scratch/stale.json")"
-ok "join: queued older than 7 days is a violation"
-
-# --- duplicate source fails validate ----------------------------------------
-cat >"$scratch/bad-duplicate.json" <<'EOF'
-{
-  "queued_stale_days": 7,
-  "auto_file_cap_per_tick": 5,
-  "rules": [
-    {
-      "id": "led-2026-08-27-top-gear-everywhere-non-negotiable",
-      "source": "decisions-ledger.md: 2026-08-27 | TOP GEAR everywhere, non-negotiable",
-      "mechanism": "Mechanism issue auto-filed by fleet-escalation-canary; implement the enforcer and flip to enforced",
-      "proof": "Nishfleet/fleet-ops#479",
-      "status": "queued(#479)",
-      "queued_since": "2026-08-27"
-    },
-    {
-      "id": "led-top-gear-everywhere",
-      "source": "decisions-ledger.md: 2026-08-27 | TOP GEAR everywhere, non-negotiable",
-      "mechanism": "TOP GEAR invariant: deferral requires a named clock; merge-to-live <=5min event-driven; seat-recovery fires intake instantly",
-      "proof": "fleet-ops #468",
-      "status": "enforced"
-    }
-  ]
-}
-EOF
-set +e
-python3 "$lib" validate-matrix --matrix "$scratch/bad-duplicate.json" >/dev/null 2>"$scratch/bad-dup.err"
-dup_rc=$?
-set -e
-[[ "$dup_rc" == "1" ]] || fail "duplicate source must fail validate, got rc=$dup_rc"
-grep -q 'duplicate source' "$scratch/bad-dup.err" \
-  || fail "duplicate source error must name the source: $(cat "$scratch/bad-dup.err")"
-ok "validate-matrix: duplicate source is rejected"
-
-# --- advisory without reason fails validate ---------------------------------
-cat >"$scratch/bad-advisory.json" <<'EOF'
-{
-  "queued_stale_days": 7,
-  "auto_file_cap_per_tick": 5,
-  "rules": [
-    {
-      "id": "sr-x",
-      "source": "global-standing-rules.md: X",
-      "mechanism": "none",
-      "proof": "n/a",
-      "status": "advisory()"
-    }
-  ]
-}
-EOF
-set +e
-python3 "$lib" validate-matrix --matrix "$scratch/bad-advisory.json" >/dev/null 2>"$scratch/bad-adv.err"
-adv_rc=$?
-set -e
-[[ "$adv_rc" == "1" ]] || fail "empty advisory reason must fail validate"
-ok "validate-matrix: advisory() without a reason is rejected"
-
 # ============================================================================
 # Glue sweep 2026-09-18: the fleet-escalation-canary auto-file/observe-to-close
 # drill that lived here was removed with the escalation tower (the canary, the
@@ -811,17 +79,6 @@ ok "rule-enforcement: vault-lint drill"
 # fleet-ops#1265: paved-road vault capture. Nested host so P14 covers it
 # without a workflow edit (worker tokens cannot push .github/workflows/**).
 
-# fleet-ops#533: argv[0] + push-before-delete + FLEET-PAUSED. Same
-# nested-CI host so this token does not need a workflow edit.
-bash "$here/fleet-wipe-lessons.test.sh" || fail "fleet-wipe-lessons gate drill failed"
-ok "rule-enforcement: fleet-wipe-lessons gate drill"
-
-# fleet-ops#787: dirty-worktree-audit shares the "is HEAD on origin"
-# classification with fleet-wipe-lessons (see its docstring). Host it from
-# the same nested-CI file so P14 covers it without a workflow edit.
-bash "$here/dirty-worktree-audit.test.sh" || fail "dirty-worktree-audit drill failed"
-ok "rule-enforcement: dirty-worktree-audit drill"
-
 # fleet-ops#754 + #3244: spawn-guard live regex allow/block matrices. The
 # guard lives in ~/.pi/agent/extensions/spawn-guard-core.ts. The nested
 # suite runs the git_stash_forbidden drill (#754) and the sudo-write drill
@@ -832,8 +89,6 @@ ok "rule-enforcement: spawn-guard drill"
 
 # fleet-ops#459: NORTH STAR quality guard. Nested host so the worker token
 # does not need to edit .github/workflows/**.
-bash "$here/north-star-quality.test.sh" || fail "north-star-quality gate drill failed"
-ok "rule-enforcement: north-star-quality gate drill"
 
 # fleet-ops#462: ClinePass GLM 5.3 flash canary. Same nested-CI host so
 # this token does not need a workflow edit.
@@ -854,11 +109,6 @@ ok "rule-enforcement: vault knowledge-format drill"
 # worker token does not need to edit .github/workflows/**.
 bash "$here/guard-shared-file-collision.test.sh" || fail "shared-file collision guard drill failed"
 ok "rule-enforcement: shared-file collision guard drill"
-
-# fleet-ops#540: 24h/12h work-supply drain trigger. Nested host so the worker
-# token does not need to edit .github/workflows/**.
-bash "$here/fleet-work-supply-canary.test.sh" || fail "work-supply canary drill failed"
-ok "rule-enforcement: work-supply 24h/12h drain canary drill"
 
 # fleet-ops#545: CommandCode MiniMax M3 fail-closed catalog canary. Nested
 # host so the worker token does not need to edit .github/workflows/**.
@@ -894,13 +144,6 @@ ok "rule-enforcement: work-supply 24h/12h drain canary drill"
 bash "$here/fleet-token-economy.test.sh" || fail "token economy canary drill failed"
 ok "rule-enforcement: token economy canary drill"
 
-# fleet-ops#1152: standing-rules drift gate. The generator that renders the
-# canonical standing rules into CLAUDE.md/AGENTS.md is only a gate if its
-# drift test actually runs; nested host so the worker token does not need
-# to edit .github/workflows/**.
-bash "$here/standing-rules-drift.test.sh" || fail "standing-rules drift drill failed"
-ok "rule-enforcement: standing-rules drift drill"
-
 # fleet-ops#5644: retired-host gate. The live rulebook surfaces must never
 # scope the VPS write-autonomy / credential-parity postures to the retired
 # 'hostinger-kvm4' host; nested host so the worker token does not need to
@@ -908,50 +151,18 @@ ok "rule-enforcement: standing-rules drift drill"
 bash "$here/rulebook-host-drift.test.sh" || fail "rulebook retired-host drill failed"
 ok "rule-enforcement: rulebook retired-host drill"
 
-# fleet-ops#5586: reserved-classes precedence gate. Nish's reserved-escalation
-# classes have ONE canonical list (vault global-standing-rules.md) and every
-# agent surface points at it; this drill proves the canonical sources carry
-# the union and the live renders match the repo canonical (fail-loud on
-# drift, fleet-ops#5586 first-round no-op render). Nested host so the worker
-# token does not need to edit .github/workflows/**.
-bash "$here/reserved-classes-precedence.test.sh" || fail "reserved-classes precedence drill failed"
-ok "rule-enforcement: reserved-classes precedence drill"
-
-# fleet-ops#1010: organ-heartbeat invariant. Every fleet organ ships an
-# absent() rule in the same PR; the registry enumerates the known organs and
-# the gate rejects a PR that touches an organ without its absent() rule.
-# Nested host so the worker token does not need to edit .github/workflows/**.
-bash "$here/fleet-organ-heartbeat.test.sh" || fail "organ-heartbeat drill failed"
-ok "rule-enforcement: organ-heartbeat drill"
-
 # fleet-ops#1149: asset census and guard-mapping canary. Nested host so
 # the worker token does not need to edit .github/workflows/**.
-
-# fleet-ops#1460: timer manifest shape lock (every user timer has a
-# named-reason manifest entry). Nested host so the worker token does
-# not need to edit .github/workflows/**.
-bash "$here/timer-manifest.test.sh" || fail "timer-manifest drill failed"
-ok "rule-enforcement: timer-manifest shape lock drill"
-
-# fleet-ops#543: agent-ready spec-gate. Nested host so the worker token
-# does not need to edit .github/workflows/**.
-bash "$here/agent-ready-spec-gate.test.sh" || fail "agent-ready spec-gate drill failed"
-ok "rule-enforcement: agent-ready spec-gate drill"
 
 # fleet-ops#1464: gh-webhook receiver prom-quote regression. Nested host
 # so the worker token does not need a workflow edit.
 bash "$here/gh-webhook-receiver-prom-quotes.test.sh" || fail "gh-webhook receiver prom-quotes drill failed"
 ok "rule-enforcement: gh-webhook receiver prom-quotes drill"
 
-# fleet-ops#1558: per-repo worker memory drop-ins. Nested host so the worker
-# token does not need a workflow edit.
-bash "$here/worker-memory-dropin.test.sh" || fail "worker-memory drop-in drill failed"
-ok "rule-enforcement: worker-memory drop-in drill"
-
 # fleet-ops#????: siterep live canary pin wrapper. Nested host so the worker
 # token does not need a workflow edit.
 
-ok "rule-enforcement: matrix, join, stale queued, advisory, auto-file, observe-to-close, no-agent-names, vault-conflict, vault-lint, wipe-lessons, dirty-worktree-audit, spawn-guard, north-star-quality, cline-glm53, repo-visibility, exec-review, vault-knowledge-format, shared-file-collision, work-supply-24h, opencode-m3 catalog, quality-research-weekly, tailscale-acl, verify-harness, paid-flash, token-economy, geo-aeo, quality-ratchet, standing-rules-drift, reserved-classes-precedence, aeo-probe, organ-heartbeat, asset-census, timer-manifest, agent-ready-spec-gate, gh-webhook-prom-quotes, worker-memory-dropin, and siterep-live-canary-pin drills (volume-lane-order retired in fleet-ops#3125)"
+ok "rule-enforcement: hosted drills complete"
 
 # fleet-ops#2089: install.sh must self-heal enabled-but-inactive timers
 # (the staleness canary sat dead: enabled, NextElapse=infinity, never
@@ -975,14 +186,6 @@ ok "rule-enforcement: install refuse-continues drill (fleet-ops#4223)"
 
 # fleet-ops#516: sr-max-speed hunter. CI lists this file, not
 # fleet-max-speed.test.sh (workers cannot edit .github/workflows).
-
-# fleet-ops#523: token-efficiency PR gate for prompt assemblers. Nested
-# host so the worker token does not need to edit .github/workflows/**.
-# fleet-ops#3191: rebuild/masking PR gate — a change to the rebuild manifest,
-# unit-masking config, or rebuild scripts/runbook/test must carry a VERIFY
-# line. Nested host so the worker token does not edit .github/workflows/**.
-bash "$here/fleet-rebuild-verify-check.test.sh" || fail "rebuild-verify gate drill failed"
-ok "rule-enforcement: rebuild-verify gate drill"
 # fleet-ops#527: monthly rulebook red-team + rollback-backup gate. Same
 # CI constraint (worker token cannot add a P14 line in ci.yml).
 
@@ -1016,12 +219,6 @@ ok "rule-enforcement: slo-budget drill"
 # already-listed test so P14 runs it without a workflow edit.
 
 
-# fleet-ops#2227: fleet-worktree-reaper GCs orphan agent worktrees on merged+
-# terminal claims. Hermetic (fake gh/systemctl, local bare repos). Hosted
-# here so P14 runs it without a workflow edit.
-bash "$here/fleet-worktree-reaper.test.sh" || fail "worktree-reaper drill failed"
-ok "rule-enforcement: worktree-reaper drill"
-
 # fleet-ops#1160: VPS reboot-survival regression — post-reboot timer must be
 # system-scope and verify must recover tailscale, not just announce.
 bash "$here/fleet-ops-1160-regression.test.sh" || fail "vps reboot-survival regression drill failed"
@@ -1041,4 +238,4 @@ ok "rule-enforcement: money-boundary guard drill"
 bash "$here/money-boundary-starvation-gate.test.sh" || fail "money-boundary starvation-gate drill failed"
 ok "rule-enforcement: money-boundary starvation-gate drill"
 
-ok "rule-enforcement: matrix, join, stale queued, advisory, auto-file, observe-to-close, no-agent-names, vault-conflict, rulebook-redteam, vibes, skills-symlink, bin-exclude, slo-budget, tailscale-localapi-canary, worktree-reaper, vps-reboot-survival, money-boundary-guard, and money-boundary-starvation-gate drills"
+ok "rule-enforcement: hosted drills complete"

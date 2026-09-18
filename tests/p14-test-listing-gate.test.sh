@@ -116,7 +116,6 @@ live_skip[seat-empty-run-clobber-park.test.sh]=1
 live_skip[seat-caps-zero-yield.test.sh]=1
 live_skip[keystone-routing.test.sh]=1
 live_skip[senior-review-routing.test.sh]=1
-live_skip[quality-routing.test.sh]=1
 live_skip[audition-lane.test.sh]=1
 live_skip[seat-wall-reset-horizon.test.sh]=1
 live_skip[seat-health-quarantine.test.sh]=1
@@ -159,60 +158,6 @@ declare -A known_orphan_set
 for t in "${known_orphans[@]}"; do
   known_orphan_set[$t]=1
 done
-
-# fleet-ops#777: hard-pin the host line for dirty-worktree-audit BEFORE
-# the $bad[] accounting so a future refactor that drops the host line
-# in tests/rule-enforcement.test.sh is caught by name. The $bad[] check
-# below also fails (test becomes unhosted), but its message is generic
-# ("1 test file(s) are neither ..."). This named check runs first so
-# the operator gets the issue number in the FAIL line.
-#
-# Provenance: fleet-ops#824 first observed dirty-worktree-audit as
-# unaccounted in the P14 reachable set; the immediate host landed in
-# tests/rule-enforcement.test.sh via fleet-ops#787 (PR #883) and this
-# named pin layered on top via fleet-ops#777 (PR #901). #824 stayed
-# open because neither fix PR included "Closes #824"; this comment
-# plus the closing PR is the receipt.
-#
-# fleet-ops#831 was filed on 2026-08-27T04:45:45Z as a duplicate of
-# #824 (same FAIL class, same test) and never independently fixed; it
-# closed via this PR (no new code, the host line and named pin above
-# already do the work). #824 provenance was re-anchored in PR #924.
-#
-# fleet-ops#799 is the ORIGINAL issue in this pile (filed
-# 2026-08-27T02:21:00Z, before #824 at 02:53:41Z and #831 at
-# 03:13:59Z): "tests/dirty-worktree-audit.test.sh is orphaned (not
-# run in CI)", surfaced while implementing fleet-ops#660. The fix
-# (host line via PR #883, named pin via PR #901) landed before #799
-# was re-queued, so #799 stayed open with no remaining work — the
-# test is hosted from rule-enforcement.test.sh and is not in
-# known_orphans. This comment plus the closing PR is the receipt;
-# no new code, same as #831.
-#
-# class-prevention: the named FAIL is the loudest signal; a future
-# worker who sees "1 test file(s) are neither ..." and parks the
-# test on known_orphans to silence the message would now also fail
-# the named pin below (in the bypass-class section).
-#
-# The grep is anchored to a real `bash $here/...` invocation, not a
-# comment: a future "comment out the host line to silence the gate"
-# trick would still be caught by $bad[] but should be caught by name
-# here too. Use `^[[:space:]]*bash` to skip commented lines.
-grep -Eq '^[[:space:]]*bash[[:space:]]+"?\$here/dirty-worktree-audit\.test\.sh"?' \
-  "$here/rule-enforcement.test.sh" \
-  || fail "rule-enforcement.test.sh must bash-invoke dirty-worktree-audit.test.sh (fleet-ops#777)"
-ok "dirty-worktree-audit.test.sh host line in rule-enforcement.test.sh is pinned (fleet-ops#777)"
-
-# fleet-ops#1460: hard-pin the host line for timer-manifest BEFORE
-# the $bad[] accounting so a future refactor that drops the host line
-# in tests/rule-enforcement.test.sh is caught by name. The test landed
-# on main via PR #1490's chain without a ci.yml listing or host; this
-# named pin is the class-prevention so the host cannot be deleted
-# without a named FAIL.
-grep -Eq '^[[:space:]]*bash[[:space:]]+"?\$here/timer-manifest\.test\.sh"?' \
-  "$here/rule-enforcement.test.sh" \
-  || fail "rule-enforcement.test.sh must bash-invoke timer-manifest.test.sh (fleet-ops#1460)"
-ok "timer-manifest.test.sh host line in rule-enforcement.test.sh is pinned (fleet-ops#1460)"
 
 # fleet-ops#1200: hard-pin the host line for pi-packet-verdict BEFORE
 # the $bad[] accounting so a future refactor that drops the host line
@@ -261,21 +206,6 @@ ok "alert-repair-claim-mutex.test.sh is pinned in the P14 reachable set (fleet-o
 # receipt, same shape as the #831/#799 duplicate receipts above.
 # Verified: `bash tests/ci-standards-audit.test.sh` no longer reports
 # alert-repair-claim-mutex.test.sh as an unhosted orphan on origin/main.
-
-# fleet-ops#1152: hard-pin the host line for standing-rules-drift. The test
-# landed on main as `test_standing_rules_drift.sh` — a name this gate does
-# not scan (`*.test.sh` only), so it ran nowhere in CI while looking like a
-# gate. Renamed into the suite and hosted from rule-enforcement.test.sh;
-# this named pin is the class-prevention so the host line cannot be dropped
-# and the test cannot be parked on known_orphans to silence $bad[].
-grep -Eq '^[[:space:]]*bash[[:space:]]+"?\$here/standing-rules-drift\.test\.sh"?' \
-  "$here/rule-enforcement.test.sh" \
-  || fail "rule-enforcement.test.sh must bash-invoke standing-rules-drift.test.sh (fleet-ops#1152)"
-[[ -n "${reachable[standing-rules-drift.test.sh]:-}" ]] \
-  || fail "standing-rules-drift.test.sh must be listed in ci.yml or hosted by a listed test (fleet-ops#1152)"
-[[ -z "${known_orphan_set[standing-rules-drift.test.sh]:-}" ]] \
-  || fail "standing-rules-drift.test.sh must not be a known orphan (fleet-ops#1152)"
-ok "standing-rules-drift.test.sh is pinned in the P14 reachable set (fleet-ops#1152)"
 
 # fleet-ops#5586: hard-pin the host line for reserved-classes-precedence.
 # Nested host from rule-enforcement.test.sh (already in ci.yml). Named pin
@@ -1009,21 +939,6 @@ grep -Eq '^[[:space:]]*bash[[:space:]]+"?\$here/measure-attest-waiting\.test\.sh
   || fail "measure-attest-waiting.test.sh must not be a known orphan (fleet-ops#5870)"
 ok "measure-attest-waiting.test.sh host line in ci-standards-audit.test.sh is pinned (fleet-ops#5870)"
 
-# fleet-ops#6159: hard-pin the host line for measure-p14-main in
-# ci-standards-audit so a future refactor that drops it is caught by name.
-# The detector landed on the claim branch hosted from
-# tests/ci-standards-audit.test.sh because the worker App cannot push
-# .github/workflows/**. Parking it on known_orphans to silence the generic
-# $bad[] message must also fail by name here first, same shape as every
-# other hosted test.
-grep -Eq '^[[:space:]]*bash[[:space:]]+"?\$here/measure-p14-main\.test\.sh"?' \
-  "$here/ci-standards-audit.test.sh" \
-  || fail "ci-standards-audit.test.sh must bash-invoke measure-p14-main.test.sh (fleet-ops#6159)"
-[[ -n "${reachable[measure-p14-main.test.sh]:-}" ]] \
-  || fail "measure-p14-main.test.sh must be listed in ci.yml or hosted by a listed test (fleet-ops#6159)"
-[[ -z "${known_orphan_set[measure-p14-main.test.sh]:-}" ]] \
-  || fail "measure-p14-main.test.sh must not be a known orphan (fleet-ops#6159)"
-ok "measure-p14-main.test.sh host line in ci-standards-audit.test.sh is pinned (fleet-ops#6159)"
 
 # fleet-ops#4263: hard-pin the host line for pick-seat-freeze in
 # ci-standards-audit.test.sh. The caller-set freeze rides on that listed

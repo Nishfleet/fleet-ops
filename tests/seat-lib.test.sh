@@ -60,7 +60,6 @@ bash "$here/repo-privacy-guard.test.sh" || fail "repo-privacy-guard tests failed
 bash "$here/pi-issue-run-debug-playbook-gate.test.sh" || fail "pi-issue-run-debug-playbook-gate tests failed"
 bash "$here/scout-prompt-difficulty.test.sh" || fail "scout-prompt-difficulty tests failed"
 bash "$here/siterep-deploy-rollback-rc-propagation.test.sh" || fail "siterep-deploy-rollback tests failed"
-bash "$here/role-quality-gates.test.sh" || fail "role-quality-gates tests failed"
 bash "$here/reusable-surface-audit.test.sh" || fail "reusable-surface-audit tests failed"
 bash "$here/pi-seat-source-litellm.test.sh" || fail "pi-seat-source-litellm tests failed"
 # fleet-ops#449 lock: fleet-blindspot-count had no CI host (its lock grepped a
@@ -68,7 +67,6 @@ bash "$here/pi-seat-source-litellm.test.sh" || fail "pi-seat-source-litellm test
 # fleet-ops#4263 fallout: #5993 dropped these host lines (113 -> 71), so the
 # tests silently left CI; restored verbatim from the pre-#5993 host.
 bash "$here/opencode-m3-catalog-canary.test.sh" || fail "opencode-m3-catalog-canary tests failed"
-bash "$here/quality-routing.test.sh" || fail "quality-routing tests failed"
 bash "$here/fleet-failed-command-http-status-quoted-content.test.sh" || fail "fleet-failed-command-http-status-quoted-content tests failed"
 bash "$here/fleet-failed-command-output-token-limit-never-ran.test.sh" || fail "fleet-failed-command-output-token-limit-never-ran tests failed"
 bash "$here/fleet-failed-command-git-C-rev-parse-probe.test.sh" || fail "fleet-failed-command-git-C-rev-parse-probe tests failed"

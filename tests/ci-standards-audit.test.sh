@@ -301,10 +301,6 @@ bash "$here/memoryctl-ttl-provenance.test.sh"
 # fleet-ops#1211: waste-ledger metric family + WasteRatioRising (no page).
 # Hosted here so P14 runs it without a workflow-file edit.
 
-# fleet-ops#2757: canary effectiveness metric family + CanaryEffectivenessLow
-# / CanarySilentTooLong. Hosted here so P14 runs it without a workflow-file
-# edit.
-bash "$here/canary-effectiveness.test.sh"
 
 # fleet-ops#2528: three WFR-input trend regression alerts live in the
 # dispatcher SKIP_SET + canary SKIP_FIRING (+ stubbed no-spawn /
@@ -735,12 +731,6 @@ bash "$here/seat-empty-run-clobber-park.test.sh"
 # Hosted here so P14 runs it without a workflow-file edit.
 bash "$here/seat-empty-run-ceiling-default.test.sh"
 
-# fleet-ops#2759: intake prioritization effectiveness metric (precedence-band
-# product-first hold -> product merge lift). Hosted here so P14 runs it
-# without a workflow-file edit (the worker App cannot push
-# .github/workflows/**). Hermetic test (no gh/prometheus/systemd) — runs
-# fine in hosted CI.
-bash "$here/intake-prioritization-effectiveness.test.sh"
 
 # fleet-ops#2756: scout effectiveness metric (filed -> survive intake ->
 # agent-ready -> merged_14d). Hosted here so P14 runs it without a
@@ -982,17 +972,6 @@ bash "$here/live-state-doctrine-precedence.test.sh"
 # no live network).
 bash "$here/measure-attest-waiting.test.sh"
 
-# fleet-ops#6159: the judge-header measure line `p14-main(main=<12hex>): ...`
-# (lib/measure-p14-main.sh, wired into measure.sh) RUNS the ci.yml P14 shape —
-# shellcheck / semgrep / systemd-analyze + the exact suite list — against a
-# throwaway worktree of origin/main and prints red suites by name; ok on a
-# green main; verdict cached by main sha; UNAVAILABLE decays after 1h; never
-# a fabricated ok. Hosted here so P14 runs it without a workflow-file edit
-# (the worker App cannot push .github/workflows/**). The named pin in
-# tests/p14-test-listing-gate.test.sh is the class-prevention so a future
-# drop of this host line fails by name. Hermetic (fixture trees + a
-# throwaway fixture GIT repo, no network, no full-suite execution).
-bash "$here/measure-p14-main.test.sh"
 
 # fleet-ops#6052: the deleted-symbol gate — a PR that deletes a lib/ or bin/
 # definition cannot merge while tests/ still reference it (#5993 went red

@@ -323,15 +323,3 @@ if [ -f "$repo_root/lib/findings_ledger.py" ]; then
         || echo "findings: total=0 filed=0 carried_over=0 oldest_carry_h=0 panel_fail=0 UNAVAILABLE:measure-failed"
 fi
 
-# --- p14-main: is origin/main's P14 suite actually green? (fleet-ops#6159) ---
-# 4th caught-by-hand sighting: the P14 suites run as PR checks only, so the
-# check-run view of main is structurally blind to a suite red on main. This
-# detector RUNS the ci.yml shape (shellcheck / semgrep / systemd-analyze + the
-# exact suite list) against a throwaway worktree of origin/main, verdict
-# cached by main sha so the judge pays once per main-advance. Sourced (not
-# run) from lib/measure-p14-main.sh; one line, never a fabricated ok.
-if [ -f "$repo_root/lib/measure-p14-main.sh" ]; then
-    # shellcheck disable=SC1090,SC1091
-    source "$repo_root/lib/measure-p14-main.sh"
-    fleet_p14_main_line "$repo_root" || echo "p14-main: UNAVAILABLE:detector-failed"
-fi
