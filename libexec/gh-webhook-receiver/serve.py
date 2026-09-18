@@ -40,7 +40,7 @@ issues, action=closed
 workflow_run, action=completed, conclusion=success
         → start fleet-deploy-check.service
 pull_request, action=closed (merged OR closed)
-        + start fleet-merged-pr-close.service  (fleet-ops#3270)
+        (merged-PR close route removed in the 2026-09-18 second cut)
 ping    → no-op (200)
 
 The three sections that previously ran only on the
@@ -226,14 +226,13 @@ def dispatch(event: str, action: str, label: str, repo: str, conclusion: str,
             # CLOSED after the age gate (fleet-ops#3023), so both terminal
             # states must trigger it. systemctl start on an already-active
             # oneshot is a no-op, so a burst of closes dedupes naturally.
-            # fleet-ops#3270: also fire merged-pr-close — a merged PR
-            # with a forgotten `Closes #<N>` trailer is the second
-            # terminal-state side effect, and the helper is cheap
-            # (one `gh issue list` + one `gh pr list` per enrolled repo).
-            return [
-                ("fleet-merged-pr-close.service",
-                 f"pull_request/{action}/merged={pr_merged} → fleet-merged-pr-close"),
-            ]
+            # Second cut 2026-09-18: the merged-pr-close route is gone with
+            # bin/fleet-merged-pr-close. GitHub closes the issue itself when
+            # the PR carries `Closes #<N>`, and the worker prompt's PR-body
+            # contract requires that trailer — so the sweep was a watcher for
+            # the fleet's own paperwork, not a step on the issue->PR->merge
+            # path. Its unit failed 209 of 152 starts over 7 days.
+            return []
         if action == "labeled" and label == "blocked-by-judge":
             # fleet-ops#4557: a judge block must have teeth within seconds,
             # not at the next hourly tier1 tick. The judge (reviewer round)
