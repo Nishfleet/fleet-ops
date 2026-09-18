@@ -213,18 +213,6 @@
       "endorsement": "vault global-standing-rules.md: named mechanical enforcement (layer 3) for the endorsed 'standing machinery is agent-agnostic' rule; migrated to repo per fleet-ops#1495"
     },
     {
-      "unit": "fable-fleet-check",
-      "class": "a",
-      "source": "repo",
-      "endorsement": "unit desc: temporary — retire with fleet-landing-watch (vault agent-drop 2026-09-04T11-31-05Z); timer-manifest.json carries the cadence entry (fleet-ops#3338)"
-    },
-    {
-      "unit": "fable-fleet-check-opus",
-      "class": "a",
-      "source": "repo",
-      "endorsement": "unit desc: temporary — second POV of the two-judge fleet check (fable-check.md: Cursor Grok 4.6 high at :15, Opus 5 xhigh at :45, independent POVs, same packet; Nish 2026-09-07 both Opus 5 and Grok 4.6 high), retire with fleet-landing-watch like fable-fleet-check; timer-manifest.json carries the cadence entry (fleet-ops#4230)"
-    },
-    {
       "unit": "0509-demo-brand-timeline-canary",
       "class": "a",
       "source": "hand-placed",

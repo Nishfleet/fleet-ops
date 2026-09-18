@@ -566,11 +566,6 @@ ok "agent-cron seat rotation: gate replaced by pick-seat, transient 429 routes t
 # listed agent-cron-seat-rotation.test.sh hosts the sibling guard test.
 bash "$here/agent-cron-workdir-guard.test.sh" || fail "agent-cron-workdir-guard tests failed"
 
-# fleet-ops#4181 P2: the fable-check -> litellm/judge routing test lives in
-# this file's P14 family (agent-cron-run). Same CI constraint: workers
-# cannot edit .github/workflows/ci.yml, so the listed
-# agent-cron-seat-rotation.test.sh hosts the litellm-routing sibling test.
-bash "$here/agent-cron-fable-check-litellm-routing.test.sh" || fail "agent-cron-fable-check-litellm-routing tests failed"
 
 # fleet-ops#5309: the prompt-E2BIG pre-flight guard test lives in this
 # file's P14 family (agent-cron-run). Same CI constraint: workers cannot

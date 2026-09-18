@@ -1,8 +1,0 @@
-[Unit]
-Description=Hourly fleet judge (agent-cron-run senior ladder), offset :00 UTC — first of three non-overlapping POVs (fleet-ops#4906)
-[Timer]
-OnCalendar=*-*-* *:00:00 UTC
-Persistent=true
-RandomizedDelaySec=0
-[Install]
-WantedBy=timers.target

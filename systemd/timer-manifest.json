@@ -451,24 +451,6 @@
       "classification": "scheduled",
       "cadence": "15min",
       "source": "repo"
-    },
-    "fable-fleet-check.timer": {
-      "reason": "Hourly fleet judge (agent-cron-run senior ladder), offset :00 UTC \u2014 first of three non-overlapping POVs; unit adopted into the repo by fleet-ops#4906 (was hand-placed 2026-09-04)",
-      "classification": "scheduled",
-      "cadence": "1h",
-      "source": "repo"
-    },
-    "fable-fleet-check-opus.timer": {
-      "reason": "Hourly fleet judge on Opus 5, offset :40 UTC (second POV; Nish 2026-09-07) \u2014 unit adopted into the repo by fleet-ops#4906 (was hand-placed)",
-      "classification": "scheduled",
-      "cadence": "1h",
-      "source": "repo"
-    },
-    "fable-fleet-check-kimi.timer": {
-      "reason": "Hourly fleet judge on Kimi K3 (pi cursor/kimi-k3-max), offset :20 UTC (fleet-ops#4455 third POV) \u2014 main consumer of the Ultra 'Other Models' $400/month bucket; initial hourly cadence per Nish 2026-09-08 'use generously to use up the $400 before sub expires', adjusted from measured $/run. Repo-sourced.",
-      "classification": "scheduled",
-      "cadence": "1h",
-      "source": "repo"
     }
   }
 }

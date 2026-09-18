@@ -128,8 +128,7 @@
         "fleet-heartbeat.service",
         "pi-packet@.service",
         "pi-packet-logrotate.service",
-        "memory-index-autocompact.service",
-        "fable-fleet-check-kimi.service"
+        "memory-index-autocompact.service"
       ],
       "prompts": [
         "heartbeat.md",
@@ -215,22 +214,6 @@
       ]
     },
     {
-      "id": "judge",
-      "gate": "hourly fable-check judge: every reported number is a verbatim measure.sh line, and the blind-spot invariant holds — new_measures_7d >= caught_by_hand_7d (fleet-ops#4460) — every caught-by-hand item gets a measure.sh line the same run or it is a fault",
-      "proof": [
-        "prompts/fable-check.md",
-        "libexec/fleet-blindspot-count.py",
-        "prompts/weekly-fleet-review.md",
-        "systemd/fable-fleet-check.service.d/20-oom-avoid.conf",
-        "systemd/fable-fleet-check.service.d/30-skip-litellm-drained.conf"
-      ],
-      "units": [],
-      "prompts": [
-        "fable-check.md"
-      ],
-      "bypass_checks": []
-    },
-    {
       "id": "spec-judge",
       "gate": "Kimi K3 Max (cursor/kimi-k3-max, judge-only) reviews every batch of >= 2 agent-ready tickets that share files BEFORE a worker may claim a member; verdict applied mechanically (READY/EDIT/BLOCK), never implemented by the judge (fleet-ops#4801)",
       "proof": [
@@ -282,26 +265,6 @@
         "fleet-litellm-proxy.service",
         "fleet-litellm-postgres.service",
         "fleet-litellm-redis.service"
-      ],
-      "prompts": [],
-      "bypass_checks": []
-    },
-    {
-      "id": "judge",
-      "gate": "hourly senior judges run under the packet contract with a machine-checked verdict line every run; unit guards (20-min offsets, oneshot caps, no overlap) pinned by fleet-ops#4906",
-      "proof": [
-        "systemd/fable-fleet-check.service",
-        "systemd/fable-fleet-check.timer",
-        "systemd/fable-fleet-check-opus.service",
-        "systemd/fable-fleet-check-opus.timer",
-        "systemd/fable-fleet-check-kimi.service",
-        "systemd/fable-fleet-check-kimi.timer",
-        "lib/guard_pi_packet.py"
-      ],
-      "units": [
-        "fable-fleet-check.service",
-        "fable-fleet-check-opus.service",
-        "fable-fleet-check-kimi.service"
       ],
       "prompts": [],
       "bypass_checks": []

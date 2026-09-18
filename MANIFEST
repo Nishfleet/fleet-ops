@@ -683,32 +683,6 @@ systemd/camofox-browser.service.d/tmpdir.conf /home/nish/.config/systemd/user/ca
 # absorb so deploy symlinks it and the drop-in hunt stays clean. The gate bin
 # it references stays hand-placed as part of the allowlisted infra tool.
 systemd/camofox-browser.service.d/xvfb-auth-gate.conf /home/nish/.config/systemd/user/camofox-browser.service.d/xvfb-auth-gate.conf
-# fleet-ops#4108: fable-fleet-check is a hand-placed infra tool (allowlist
-# class a). This OOM drop-in was a real file under the live drop-in dir
-# (blind-audit fleet-ops#2924 / #1548). Absorb so deploy symlinks it;
-# pure ManagedOOM* override, not new machinery.
-systemd/fable-fleet-check.service.d/20-oom-avoid.conf /home/nish/.config/systemd/user/fable-fleet-check.service.d/20-oom-avoid.conf
-# fleet-ops#4415: fable-fleet-check skip-litellm drop-in was a real file under
-# the live drop-in dir (blind-audit fleet-ops#2924 / #1548). Absorb so deploy
-# symlinks it; TEMPORARY (fleet-ops#4410) — pure Environment override via the
-# AGENT_CRON_SKIP_LITELLM escape hatch, not new machinery. REMOVE WHEN the
-# durable seat-lib fallback lands (fleet-ops#4410) or openrouter credits are
-# restored AND the P3 native Cursor adapter exists.
-systemd/fable-fleet-check.service.d/30-skip-litellm-drained.conf /home/nish/.config/systemd/user/fable-fleet-check.service.d/30-skip-litellm-drained.conf
-# fleet-ops#4455: dedicated Kimi K3 judge POV (pi cursor/kimi-k3-max), the
-# main consumer of the Ultra 'Other Models' $400/month bucket. Repo-sourced
-# (NOT a hand-placed unit, unlike fable-fleet-check-opus) so deploy symlinks
-# and enables it. Report written to cron-output with the seat= header.
-systemd/fable-fleet-check-kimi.service /home/nish/.config/systemd/user/fable-fleet-check-kimi.service
-# fleet-ops#4906: the other two judge POVs were hand-placed on the host
-# (timer-manifest.json: "installed by hand outside the repo deploy"). Adopt
-# them exactly like the kimi unit so deploy owns all three; no new machinery,
-# same three units, now with RuntimeMaxSec/MemoryMax and 20-min offsets.
-systemd/fable-fleet-check.service /home/nish/.config/systemd/user/fable-fleet-check.service
-systemd/fable-fleet-check.timer /home/nish/.config/systemd/user/fable-fleet-check.timer
-systemd/fable-fleet-check-opus.service /home/nish/.config/systemd/user/fable-fleet-check-opus.service
-systemd/fable-fleet-check-opus.timer /home/nish/.config/systemd/user/fable-fleet-check-opus.timer
-systemd/fable-fleet-check-kimi.timer /home/nish/.config/systemd/user/fable-fleet-check-kimi.timer
 # fleet-ops#3111: self-heal drop-in. Overrides ExecStart with the
 # pi-transport-self-heal wrapper (npm rebuild; no hand-written symlink).
 systemd/pi-transport-check.service.d/20-self-heal.conf /home/nish/.config/systemd/user/pi-transport-check.service.d/20-self-heal.conf
