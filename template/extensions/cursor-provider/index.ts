@@ -5,7 +5,7 @@
  *   cursor-agent --print --api-key "$CURSOR_API_KEY" --model <model>
  *                --force --trust --workspace <workspace> -- <prompt>
  *
- * Credential: $CURSOR_API_KEY from ~/fleet2/etc/cursor.env
+ * Credential: $CURSOR_API_KEY from ~/.config/fleet-ops/seats/cursor.env
  * Models (NON-NEGOTIABLE LOCK, Nish 2026-08-22; kimi added 2026-09-08):
  *   composer-2.5         — Cursor Composer 2.5
  *   cursor-grok-4.6-high — Cursor Grok 4.6 High
@@ -27,6 +27,7 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { spawnSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import { writeSeatHealthFromCliSpawn, writeSeatHealthFromCliTimeout } from "../seat-health.ts";
+import { loadSeatEnv, modelsFromModelsJson } from "./seat-env";
 
 // =============================================================================
 // Helpers
@@ -59,22 +60,7 @@ function extractPrompt(context: Context): string {
 // =============================================================================
 
 function loadFleetEnv(): void {
-	const envFile = "/home/nish/fleet2/etc/cursor.env";
-	if (existsSync(envFile)) {
-		const content = readFileSync(envFile, "utf-8");
-		for (const line of content.split("\n")) {
-			const trimmed = line.trim();
-			if (!trimmed || trimmed.startsWith("#")) continue;
-			const eqIdx = trimmed.indexOf("=");
-			if (eqIdx > 0) {
-				const key = trimmed.slice(0, eqIdx);
-				const val = trimmed.slice(eqIdx + 1);
-				if (!process.env[key]) {
-					process.env[key] = val;
-				}
-			}
-		}
-	}
+	loadSeatEnv("cursor");
 }
 
 loadFleetEnv();
@@ -146,7 +132,7 @@ function streamCursor(
 
 			if (!apiKey) {
 				throw new Error(
-					"CURSOR_API_KEY is not set. Source ~/fleet2/etc/cursor.env or set it in your environment.",
+					"CURSOR_API_KEY is not set. Source ~/.config/fleet-ops/seats/cursor.env or set it in your environment.",
 				);
 			}
 
@@ -248,44 +234,7 @@ export default function (pi: ExtensionAPI) {
 		baseUrl: "https://api2.cursor.sh",
 		apiKey: "$CURSOR_API_KEY",
 		api: "cursor-cli",
-		models: [
-			{
-				id: "composer-2.5",
-				name: "Composer 2.5",
-				reasoning: true,
-				input: ["text", "image"],
-				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-				contextWindow: 128000,
-				maxTokens: 64000,
-			},
-			{
-				id: "cursor-grok-4.6-high",
-				name: "Cursor Grok 4.6 High",
-				reasoning: true,
-				input: ["text", "image"],
-				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-				contextWindow: 500000,
-				maxTokens: 500000,
-			},
-			{
-				id: "kimi-k3-high",
-				name: "Kimi K3 (High)",
-				reasoning: true,
-				input: ["text"],
-				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-				contextWindow: 256000,
-				maxTokens: 128000,
-			},
-			{
-				id: "kimi-k3-max",
-				name: "Kimi K3",
-				reasoning: true,
-				input: ["text"],
-				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-				contextWindow: 256000,
-				maxTokens: 128000,
-			},
-		],
+		models: modelsFromModelsJson("cursor", { reasoning: true, input: ["text", "image"], cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } }),
 		// Delegate all streaming to the custom impl — not a standard API
 		streamSimple: streamCursor,
 	});
