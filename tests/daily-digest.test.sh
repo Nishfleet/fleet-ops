@@ -177,45 +177,21 @@ grep -qF "No live escalations" "$scratch/body5.txt" \
   || fail "case 5: missing-ledger fallback missing: $(grep -i escalation "$scratch/body5.txt" || echo none)"
 ok "case 5: missing ledger -> graceful fallback"
 
-# --- case 6: signups-this-week section (fleet-ops#4603) ----------------------
-# The direction metric (signups/week, fleet-ops#4518) must reach the morning
-# briefing. Case asserts the present-gauge path renders a plain-language number
-# line and that the PromQL references the fleet_signups_7d gauge.
-cat >"$scratch/signup.json" <<'JSON'
-{"status":"success","data":{"resultType":"vector","result":[
-  {"metric":{},"value":[1.0,"3"]}
-]}}
-JSON
+# cases 6 + 7 (signups-this-week) retired 2026-09-18 (aca063f30): the whole
+# section was deleted from libexec/daily-digest. Nothing has ever exported
+# fleet_signups_7d — not the exporter the comment credited (PR #4601), not any
+# file in /var/lib/prometheus/node-exporter — so the line had silently read
+# "unknown" every morning since #4603 landed. An inverse pin instead, so a
+# revival without an exporter behind it fails here:
 env SPEND_RESPONSE="$scratch/spend.json" \
-    SIGNUP_RESPONSE="$scratch/signup.json" \
     CURL_QUERY_CAPTURE="$scratch/query6.txt" \
-    SIGNUP_QUERY_CAPTURE="$scratch/signupq6.txt" \
     DAILY_DIGEST_CAPTURE="$scratch/body6.txt" \
     HERMES_BIN="$scratch/bin/hermes" \
     bash "$digest" >/dev/null 2>&1
 [[ -f "$scratch/body6.txt" ]] || fail "case 6: digest did not invoke the hermes stub"
-grep -qF "• Signups this week: 3." "$scratch/body6.txt" \
-  || fail "case 6: signup line missing/incorrect: $(grep 'Signups this week' "$scratch/body6.txt" || echo none)"
-[[ -f "$scratch/signupq6.txt" ]] || fail "case 6: curl stub never saw the signup /api/v1/query call"
-grep -q "fleet_signups_7d" "$scratch/signupq6.txt" \
-  || fail "case 6: signup query does not reference fleet_signups_7d: $(cat "$scratch/signupq6.txt")"
-ok "case 6: signups present -> '$(grep 'Signups this week' "$scratch/body6.txt")'"
-
-# --- case 7: signup gauge absent/unreachable -> graceful unknown -------------
-# No SIGNUP_RESPONSE supplied: the stub serves an empty result, so the digest
-# must degrade to the "unknown" fallback, never error the whole digest.
-env SPEND_RESPONSE="$scratch/spend.json" \
-    CURL_QUERY_CAPTURE="$scratch/query7.txt" \
-    SIGNUP_QUERY_CAPTURE="$scratch/signupq7.txt" \
-    DAILY_DIGEST_CAPTURE="$scratch/body7.txt" \
-    HERMES_BIN="$scratch/bin/hermes" \
-    bash "$digest" >/dev/null 2>&1
-[[ -f "$scratch/body7.txt" ]] || fail "case 7: digest did not invoke the hermes stub"
-# 2026-09-18 (3cec2df61): the absent-gauge line names the cause instead of
-# reading like a transient Prometheus blip — nothing has ever exported
-# fleet_signups_7d, so "unknown." was indistinguishable from a real outage.
-grep -qF "• Signups this week: NO DATA — nothing exports fleet_signups_7d" "$scratch/body7.txt" \
-  || fail "case 7: unknown fallback missing: $(grep 'Signups this week' "$scratch/body7.txt" || echo none)"
-ok "case 7: absent gauge -> unknown fallback: '$(grep 'Signups this week' "$scratch/body7.txt")'"
+if grep -qi 'signups this week' "$scratch/body6.txt"; then
+  fail "signups line is back with no exporter behind fleet_signups_7d: $(grep -i 'signups this week' "$scratch/body6.txt")"
+fi
+ok "case 6: no signups line (section cut; nothing exports fleet_signups_7d)"
 
 echo "all daily-digest cases passed"
