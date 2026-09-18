@@ -24,4 +24,3 @@ WantedBy=default.target
 # unit-escalation-write refuses stop-escalation.path (and the rest of the
 # anti-recursion set) so this drop-in cannot feed the watcher its own failure.
 [Unit]
-OnFailure=unit-escalation@%n.service

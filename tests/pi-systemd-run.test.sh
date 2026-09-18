@@ -37,8 +37,8 @@ printf '%s\n' "$out" | grep -q 'RuntimeMaxSec=90min' || fail "dry-run must set R
 ok "dry-run wires ExecStopPost salvage + RuntimeMaxSec"
 
 # fleet-ops#4266: the dead-man rail must be armed on EVERY launch.
-printf '%s\n' "$out" | grep -q 'OnFailure=unit-escalation@issue26-shape.service.service' \
-  || fail "dry-run must set the explicit OnFailure escalation property (fleet-ops#4266): $out"
+printf '%s\n' "$out" | grep -q 'OnFailure=pi-packet-failed@issue26-shape.service.service' \
+  || fail "dry-run must set the explicit OnFailure pi-packet-failed rail (fleet-ops#4266; the unit-escalation rail was deleted in the glue sweep 2026-09-18): $out"
 printf '%s\n' "$out" | grep -Fq 'keystone-hc-ping\ detached\ start' \
   || fail "dry-run must arm the /start dead-man ping (fleet-ops#4266): $out"
 printf '%s\n' "$out" | grep -q 'ExecStopPost=.*pi-detached-deadman' \

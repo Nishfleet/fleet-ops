@@ -57,12 +57,10 @@ export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
 
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 whostopped_bin="${PI_DEADMAN_WHOSTOPPED_BIN:-$here/fleet-who-stopped}"
-# fleet-ops#5456 rebase: #5786's clean-stop escalation hook (below) uses this
-# seam; the definition is restored here (main carries it at its own defaults
-# block) — without it the #5786 reason never reaches STOP-REASON (unbound
-# variable under set -u) and the #5786 test's esc_log stays empty.
-#   PI_DEADMAN_ESCALATION_BIN unit-escalation-write path (default: sibling)
-escalation_bin="${PI_DEADMAN_ESCALATION_BIN:-$here/unit-escalation-write}"
+# Glue sweep 2026-09-18: the clean-stop escalation hook wrote a STOP-REASON
+# entry for the deleted SENIOR-AUDITOR pipeline. The load-bearing half — the
+# fleet_detached_job_died gauge (DetachedJobDied -> alert-repair-dispatch) and
+# the nonzero exit that lands the unit in --state=failed — is untouched.
 textfile="${PI_DEADMAN_TEXTFILE:-/var/lib/prometheus/node-exporter/fleet-detached.prom}"
 
 log() { printf '[%s] [pi-detached-deadman] %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$*" >&2; }
@@ -402,9 +400,7 @@ PY
     if [[ "$service_result" == "success" ]]; then
         esc_reason="unit-stopped-without-deliverable"
         [[ "$false_live_claim" == "1" ]] && esc_reason="unit-false-live-claim"
-        UNIT_ESCALATION_REASON="$esc_reason" \
-        UNIT_ESCALATION_SOURCE="pi-detached-deadman" \
-            "$escalation_bin" "$unit" >/dev/null 2>&1 || true
+        log "clean stop without deliverable: reason=$esc_reason"
     fi
     _textfile_set 1
     log "died: unit=$unit result=$service_result deliverable=${deliverable:-unset}${bounce_line:+ $bounce_line} verdict=$verdict — dead-man tripped"

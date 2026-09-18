@@ -41,8 +41,8 @@ LOGGER="${LOGGER:-logger}"
 inst="${1:-}"
 if [[ -z "$inst" || "$inst" == "-h" || "$inst" == "--help" ]]; then
     echo "usage: pi-packet-failed <instance-or-unit>" >&2
-    echo "  OnFailure translator: writes a packet-exhausted STOP-REASON for the" >&2
-    echo "  real failed unit so the dispatcher resumes or dispatches it." >&2
+    echo "  OnFailure recorder: names the real failed unit in syslog and leaves" >&2
+    echo "  it in --state=failed for the heartbeat failed-units pass." >&2
     [[ -n "$inst" ]] && exit 0 || exit 2
 fi
 
@@ -52,10 +52,11 @@ case "$inst" in
 esac
 
 "${LOGGER:-logger}" -t pi-packet-failed -p user.err \
-    "packet $inst exhausted retries — escalated to the dispatcher (reason=packet-exhausted), not just a log" || true
+    "packet $inst exhausted retries (reason=packet-exhausted) — unit $unit left in --state=failed for the heartbeat failed-units pass" || true
 
-here="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
-writer="${UNIT_ESCALATION_WRITE_BIN:-$here/unit-escalation-write}"
-
-exec env UNIT_ESCALATION_REASON=packet-exhausted UNIT_ESCALATION_SOURCE=pi-packet-failed \
-    "$writer" "$unit"
+# Glue sweep 2026-09-18: the STOP-REASON writer and its SENIOR-AUDITOR
+# dispatcher are deleted. The exhausted packet's unit stays in --state=failed,
+# where fleet-heartbeat-tier1 block 4 (the hourly failed-units pass) records,
+# classifies, repairs or requeues it, and pages through the watchman.
+printf 'pi-packet-failed: %s exhausted retries (unit=%s) — left in --state=failed for the heartbeat failed-units pass\n' "$inst" "$unit" >&2
+exit 0

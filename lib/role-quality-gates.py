@@ -37,8 +37,6 @@ REPAIR_PROMPT_SUFFIX = "-repair.md"
 NON_ROLE_UNIT_PREFIXES = (
     "siterep-",
     "oomd-",
-    "stop-escalation",
-    "unit-escalation",
     "escalation-daily",
     # fleet-ops#2773: escalation-drain is the bounded-file maintainer for
     # NISH-ESCALATIONS.md + alert-repair packets (archives resolved/out-
@@ -48,7 +46,6 @@ NON_ROLE_UNIT_PREFIXES = (
     # fleet-ops#5854: escalation-organ-watch is the deterministic organ-death
     # watcher for the escalation organs (5-min timer, no model, owns no
     # prompt, produces no work items — plumbing, same class as escalation-drain).
-    "escalation-organ-watch",
     "intake-reconcile",
     "fleet-restore",
     "fleet-resilience",

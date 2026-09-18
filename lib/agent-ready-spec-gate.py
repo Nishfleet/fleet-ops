@@ -79,7 +79,6 @@ FIRST_ADMISSION = (
     # fleet-ops#6097: the escalation tally (fleet-ops#234) files the admitted
     # fix issue with gh issue create --label; it runs the spec gate
     # fail-closed on the composed body before applying the label.
-    "bin/pi-escalation-audit-tally",
 )
 
 REQUEUE_ALLOWLIST = (

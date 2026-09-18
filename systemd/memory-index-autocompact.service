@@ -39,4 +39,3 @@ Environment=PATH=/home/nish/.local/bin:/usr/local/bin:/usr/bin:/bin
 #      a per-unit OnFailure= reset cannot override it; the script guard does.
 # %n = full unit name of the failed service -> becomes the template instance.
 [Unit]
-OnFailure=unit-escalation@%n.service

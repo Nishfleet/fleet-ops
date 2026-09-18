@@ -38,24 +38,6 @@
       "cadence": "daily",
       "source": "user-config"
     },
-    "escalation-daily-sweep.timer": {
-      "reason": "Daily dead-man floor for SENIOR-AUDITOR escalation layer \u2014 bounds max time-to-audit at 24h for failures with no dedicated tripwire",
-      "classification": "scheduled",
-      "cadence": "daily",
-      "source": "repo"
-    },
-    "escalation-drain.timer": {
-      "reason": "Hourly bounded-file maintainer for NISH-ESCALATIONS.md and alert-repair packet dir (fleet-ops#2677 + #2773) \u2014 accumulation is structural (every CAP-REACHED + every Alertmanager webhook appends), so hourly bounds the live file to roughly one cycle's worth of growth; daily-sweep is the dead-man floor if the drain dies",
-      "classification": "scheduled",
-      "cadence": "hourly",
-      "source": "repo"
-    },
-    "escalation-organ-watch.timer": {
-      "reason": "5-min organ-death watcher for the anti-recursion-excluded escalation organs (fleet-ops#5854) \u2014 those organs are excluded from their own STOP-REASON chain, so their death is otherwise silent until the next hourly tier1 failed-units sweep; this timer bounds detection to the 5-min contract",
-      "classification": "scheduled",
-      "cadence": "5min",
-      "source": "repo"
-    },
     "fleet-console-pi.timer": {
       "reason": "Fleet Console (Pi) page refresh \u2014 GitHub PR/CI state drifts continuously; 12-min cadence keeps page current inside API budget. CONVERTING TO PATH UNIT",
       "classification": "converting",
@@ -151,12 +133,6 @@
       "classification": "scheduled",
       "cadence": "5min",
       "source": "user-config"
-    },
-    "pi-escalation-audit.timer": {
-      "reason": "Hourly senior escalation panel intake \u2014 escalations are rare and network-bound; hourly floor keeps time-to-panel under an hour",
-      "classification": "scheduled",
-      "cadence": "hourly",
-      "source": "repo"
     },
     "pi-packet-logrotate.timer": {
       "reason": "Size-based rotation of pi-packet watch.log \u2014 seat-selection lines accumulate on every pick and the log was 104 MB unrotated; 10-min cadence bounds growth and logrotate keeps 5 compressed back copies",

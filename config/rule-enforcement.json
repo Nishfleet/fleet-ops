@@ -72,7 +72,7 @@
       "id": "sr-systemd-by-default",
       "source": "global-standing-rules.md: systemd by default (Nish, 2026-08-18)",
       "mechanism": "Escalation canary: every pi --print in bin/ must be a sanctioned unit wrapper; pi-systemd-run for session-outliving work",
-      "proof": "bin/fleet-escalation-canary block 2; bin/pi-systemd-run; tests/escalation-coverage-canary.test.sh",
+      "proof": "bin/pi-systemd-run",
       "status": "enforced"
     },
     {
@@ -100,7 +100,7 @@
       "id": "sr-unfixable-reaches-nish",
       "source": "global-standing-rules.md: Only the un-fixable reaches Nish (Nish, 2026-08-18)",
       "mechanism": "Watchdogs dispatch agents via unit-escalation OnFailure, not a Nish page; Telegram is the last-resort pager for the unit",
-      "proof": "systemd/unit-escalation@.service; systemd/stop-escalation.service; bin/stop-escalation-dispatch",
+      "proof": "bin/nish-boundary-notify; systemd/nish-boundary-notify.path; bin/money-boundary-raise; bin/fleet-heartbeat-tier1 block 48",
       "status": "enforced"
     },
     {
@@ -184,7 +184,7 @@
       "id": "sr-vault-sync-conflicts",
       "source": "global-standing-rules.md: Vault sync conflicts auto-resolve (Nish, 2026-08-19, amends the freeze rule)",
       "mechanism": "vault-conflict-resolver.timer every 10 min resolves identical / append-superset / missing-base and quarantines divergent *.sync-conflict-* files; freeze-on-conflict remains (memory-ledger-supersede exits 2); heartbeat canary block 11 plants a fixture conflict and screams if the timer dies or the handler no longer clears it",
-      "proof": "lib/vault-conflict-resolver.py; systemd/vault-conflict-resolver.timer; bin/fleet-escalation-canary block 11; tests/vault-conflict-resolver.test.sh; tests/memory-ledger-supersede.test.sh",
+      "proof": "lib/vault-conflict-resolver.py; systemd/vault-conflict-resolver.timer; tests/vault-conflict-resolver.test.sh; tests/memory-ledger-supersede.test.sh",
       "status": "enforced"
     },
     {
@@ -212,7 +212,7 @@
       "id": "sr-raw-api-through-pi",
       "source": "global-standing-rules.md: Every raw-API token flows through pi (Nish, 2026-08-20)",
       "mechanism": "Escalation canary flags unwrapped `pi --print` in bin/; sanctioned wrappers only",
-      "proof": "bin/fleet-escalation-canary block 2; tests/escalation-coverage-canary.test.sh",
+      "proof": "bin/pi-systemd-run; bin/pi-issue-run; lib/litellm-seat.sh",
       "status": "enforced"
     },
     {
@@ -247,7 +247,7 @@
       "id": "sr-pi-directly",
       "source": "global-standing-rules.md: Everything runs through Pi, directly. No launchers. (Nish, 2026-08-23)",
       "mechanism": "pi-systemd-run is the session-outliving wrapper; canary bans unsanctioned pi binaries in bin/",
-      "proof": "bin/pi-systemd-run; bin/fleet-escalation-canary; tests/pi-systemd-run.test.sh",
+      "proof": "bin/pi-systemd-run; tests/pi-systemd-run.test.sh",
       "status": "enforced"
     },
     {
@@ -282,7 +282,7 @@
       "id": "sr-watchdogs-dispatch",
       "source": "global-standing-rules.md: Watchdogs dispatch agents, they never page Nish (Nish, 2026-08-24 - non-negotiable)",
       "mechanism": "OnFailure=unit-escalation@%n.service drop-in + stop-escalation path unit; heartbeat-watchman, fleet-heartbeat.service and pi-transport-check drop-in do NOT page Nish for unit failures; canary proves coverage",
-      "proof": "systemd/service.d/10-escalate.conf; systemd/path.d/10-escalate.conf; systemd/timer.d/10-escalate.conf; systemd/unit-escalation@.service; lib/heartbeat-watchman.sh; systemd/fleet-heartbeat.service; systemd/pi-transport-check.service.d/10-no-direct-notify.conf; bin/fleet-escalation-canary",
+      "proof": "lib/heartbeat-watchman.sh; systemd/fleet-heartbeat.service; systemd/pi-transport-check.service.d/10-no-direct-notify.conf",
       "status": "enforced"
     },
     {
@@ -421,8 +421,8 @@
     {
       "id": "led-gap-closure-loop",
       "source": "decisions-ledger.md: 2026-08-26 | gap-closure loop",
-      "mechanism": "Audit→fix→drill→re-audit until unanimous DONE. Detector→queue reconciler + observe-to-close implemented in fleet-escalation-canary block 9: every LOUD signal auto-files an issue (deduped by signal key), issues only close when the detector goes green on a real tick. Remaining drill work tracked in fleet-ops#362.",
-      "proof": "fleet-ops#180; fleet-ops#362; bin/fleet-escalation-canary block 9 (auto-file + observe-to-close); lib/rule-enforcement.py; tests/rule-enforcement.test.sh",
+      "mechanism": "Audit→fix→drill→re-audit until unanimous DONE. Detector→queue reconciler + observe-to-close: every LOUD signal auto-files an issue (deduped by signal key), issues only close when the detector goes green on a real tick. Remaining drill work tracked in fleet-ops#362.",
+      "proof": "fleet-ops#180; fleet-ops#362; lib/rule-enforcement.py; tests/rule-enforcement.test.sh",
       "status": "enforced"
     },
     {
@@ -436,7 +436,7 @@
       "id": "led-escalation-coverage",
       "source": "decisions-ledger.md: 2026-08-26 | escalation coverage",
       "mechanism": "Heartbeat escalation-coverage canary on VPS + GitHub planes every tick",
-      "proof": "bin/fleet-escalation-canary; tests/escalation-coverage-canary.test.sh; bin/fleet-heartbeat-tier1 block 14",
+      "proof": "bin/fleet-heartbeat-tier1 block 14",
       "status": "enforced"
     },
     {
@@ -583,7 +583,7 @@
       "id": "led-enforcement-mechanical",
       "source": "decisions-ledger.md: 2026-08-26 | enforcement itself is mechanical",
       "mechanism": "This matrix + heartbeat canary join; uncovered rules auto-file; stale queued screams",
-      "proof": "config/rule-enforcement.json; lib/rule-enforcement.py; bin/fleet-escalation-canary block 9; tests/rule-enforcement.test.sh",
+      "proof": "config/rule-enforcement.json; lib/rule-enforcement.py; tests/rule-enforcement.test.sh",
       "status": "enforced"
     },
     {
@@ -646,7 +646,7 @@
       "id": "led-escalation-matrix-fixes",
       "source": "decisions-ledger.md: 2026-08-27 | escalation matrix FIXES, not just routes",
       "mechanism": "Escalation completion invariant: every failure chain terminates in a verified fix; stalled chains climb the ladder; only detector-green or Nish-reserved wall are terminal. Stale trips climb the same ladder: LOUD + re-fire stop-escalation.service on a bounded cadence (fleet-ops#5190 — re-fail-per-tick could not summon an auditor; unit-escalation same-unit dedupe swallowed it), and the reconciler's close-grace keeps the filed alarm open across hold ticks so it cannot flap-close while the chain is still open",
-      "proof": "fleet-ops #468 / #480 / #5187 / #5190; enforced by bin/fleet-escalation-completion (per-chain stall budget + stale-trip re-fire ladder + fail-loud bound, wired into fleet-heartbeat-tier1) and lib/detector-queue-reconciler.py close-grace; tests/fleet-escalation-completion.test.sh nested from tests/escalation-coverage-canary.test.sh",
+      "proof": "fleet-ops #468 / #480 / #5187 / #5190",
       "status": "enforced"
     },
     {
@@ -883,8 +883,8 @@
     {
       "id": "led-2026-08-28-manual-evidence-pinning-and-triage-greps-fleet-op",
       "source": "decisions-ledger.md: 2026-08-28 | Manual evidence-pinning and triage greps (fleet-ops#1521 line 5)",
-      "mechanism": "The escalation pipeline attaches the failing unit's evidence to STOP-REASON automatically: unit-escalation@%i.service (OnFailure drop-in) runs bin/unit-escalation-write %i, which writes the last 5 journal lines (detail.journal) plus the last 5 error-priority lines, syslog err or higher (detail.journal_errors), into STOP-REASON.json so the senior auditor carries the failure evidence without a hand journalctl grep. Unit name always from systemd's %i (never an 'unknown unit' placeholder). The phone page (fleet-heartbeat-failed-notify) carries the same guarantee: systemd v250+ sets MONITOR_UNIT for OnFailure= activations with a single trigger source (verified live, systemd 255; absent when multiple units trip the same target — the 2026-08-28 'unknown unit' shape) and the helper refuses to page when MONITOR_UNIT is unset — a name-less page is structurally impossible, and the per-unit STOP-REASON path covers every failure with the correct name and evidence. Drill: live writer run on a real failed unit.",
-      "proof": "bin/unit-escalation-write; systemd/unit-escalation@.service; tests/unit-escalation-write-journal-evidence.test.sh; tests/escalation-units-shape.test.sh; tests/fleet-heartbeat-failed-notify-threshold.test.sh (unknown-unit lock); drill: live writer run on a real failed unit + live OnFailure= notify page (fleet-ops#1526)",
+      "mechanism": "absent when multiple units trip the same target — the 2026-08-28 'unknown unit' shape) and the helper refuses to page when MONITOR_UNIT is unset — a name-less page is structurally impossible, and the per-unit STOP-REASON path covers every failure with the correct name and evidence. Drill: live writer run on a real failed unit.",
+      "proof": "tests/fleet-heartbeat-failed-notify-threshold.test.sh (unknown-unit lock); drill: live writer run on a real failed unit + live OnFailure= notify page (fleet-ops#1526)",
       "status": "enforced"
     },
     {
@@ -904,8 +904,8 @@
     {
       "id": "sr-nothing-on-the-vps-fails-silently-everything-resumes-nothing",
       "source": "global-standing-rules.md: Nothing on the VPS fails silently, everything resumes, nothing is duct tape (Nish, 2026-09-11 — NON-NEGOTIABLE, forever)",
-      "mechanism": "Escalation chain terminates in ACTION, never a log: global service.d/10-escalate.conf OnFailure=unit-escalation@%n -> STOP-REASON -> stop-escalation.path -> stop-escalation-dispatch resume-or-dispatch (hop<2 pi-systemd-run packet relaunches --hop+1 on the next healthy seat; hop>=2/non-packet files an agent-ready issue + findings-ledger carried_over row + LOUD triage line). Deliverable contract: pi-systemd-run's ExecStopPost dead-man exits nonzero when --deliverable is missing/empty at stop, so a clean exit-0-without-deliverable still lands the unit failed and fires OnFailure. Resume policy is an allowlist (20-resume.conf declaration + per-unit drop-ins), not a global Restart= — the 2026-09-11 incident proved a global restart restart-loops oneshot canaries into start-limit-hit. Coverage is mechanical: fleet-escalation-canary fails on any loaded unit without the OnFailure hook and hash-asserts both global drop-ins (block 1b); the kill-three-ways drill runs hourly from fleet-heartbeat-tier1 block 5b. This is the #5604 queued row flipped when the fleet-ops#5456 rollout landed.",
-      "proof": "bin/stop-escalation-dispatch resume_or_dispatch; bin/pi-detached-deadman verdict exit contract; bin/pi-systemd-run per-unit 90-no-resume.conf + dispatch-ledger launch row; systemd/service.d/20-resume.conf; systemd/pi-packet-failed@.service (fleet-ops#5444 fold-in); bin/fleet-escalation-canary blocks 1+1b; bin/chain-e2e-drill hop 7; bin/fleet-heartbeat-tier1 block 5b; tests/escalation-coverage-canary.test.sh scenario 3b; tests/stop-escalation-dispatch.test.sh; tests/pi-detached-deadman.test.sh",
+      "mechanism": "Unit death terminates in ACTION, never a log: pi-systemd-run ExecStopPost dead-man exits nonzero when --deliverable is missing/empty at stop, so a clean exit-0-without-deliverable still lands the unit failed; OnFailure=pi-packet-failed@ records it and fleet-heartbeat-tier1 block 4 (the hourly failed-units pass) classifies, repairs or requeues it and pages through the watchman. Resume policy is an allowlist (20-resume.conf declaration + per-unit drop-ins), not a global Restart=. (The global 10-escalate.conf OnFailure drop-ins, the STOP-REASON writer and the stop-escalation SENIOR-AUDITOR dispatcher were deleted in the glue sweep 2026-09-18.)",
+      "proof": "bin/pi-detached-deadman verdict exit contract; bin/pi-systemd-run per-unit 90-no-resume.conf + dispatch-ledger launch row; systemd/service.d/20-resume.conf; systemd/pi-packet-failed@.service (fleet-ops#5444 fold-in); bin/chain-e2e-drill hop 7; bin/fleet-heartbeat-tier1 block 5b; tests/pi-detached-deadman.test.sh",
       "status": "enforced",
       "queued_since": "2026-09-11"
     }

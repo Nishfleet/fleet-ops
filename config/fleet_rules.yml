@@ -19,6 +19,31 @@ groups:
           summary: "fleet-heartbeat.timer has not fired in 2+ hours"
           description: "Fleet orchestrator heartbeat is dead; nothing is dispatching or repairing."
 
+      # Glue sweep 2026-09-18: the global service.d/timer.d/path.d/socket.d/
+      # scope.d 10-escalate.conf drop-ins (OnFailure=unit-escalation@%n) were
+      # deleted with the escalation tower. node_systemd_unit_state covers ROOT
+      # units only, so this is the one replacement rule for the load-bearing
+      # USER units whose failure had no other signal. It rides the existing
+      # fleet_timer_last_trigger_seconds gauge the exporter already emits — no
+      # new exporter, no new textfile, no new unit. Every timer listed here
+      # has a cadence of 60 min or less, so 3h is a 3x floor.
+      # Units NOT listed are already covered: root units by SystemUnitFailed;
+      # gh-runner@1/2/3 by Restart=always; the litellm trio by Restart=
+      # on-failure + FleetLitellmProxyAbsent; pi-intake@ by Restart=on-failure
+      # + OnFailure=pi-intake-repair@; gh-webhook-receiver by Restart + its
+      # absent() rule; prometheus-am-executor and syncthing by Restart=
+      # on-failure; fleet-metrics-export by FleetMetricsExportStale below;
+      # pi-transport-check by OnFailure=fleet-heartbeat-failed-notify.service.
+      - alert: FleetLoadBearingTimerStale
+        expr: (time() - fleet_timer_last_trigger_seconds{timer=~"fleet-merged-pr-close\\.timer|fleet-deploy-check\\.timer|pi-intake@.+\\.timer|pi-scout@.+\\.timer|pi-transport-check\\.timer"}) > 10800
+        for: 10m
+        labels:
+          severity: critical
+          service: fleet
+        annotations:
+          summary: "load-bearing timer {{ $labels.timer }} has not fired in 3+ hours"
+          description: "fleet_timer_last_trigger_seconds{timer=\"{{ $labels.timer }}\"} is over 3h stale. These user units are Restart=no or have no other failure signal since the escalation tower was deleted (glue sweep 2026-09-18). Repair: systemctl --user status {{ $labels.timer }} and its .service, then journalctl --user -u the service."
+
       - alert: FleetMetricsExportStale
         expr: (time() - node_textfile_mtime_seconds{file=~".*fleet.prom"}) > 1200
         for: 2m
@@ -500,22 +525,6 @@ groups:
         annotations:
           summary: "fleet merged fewer than 10 PRs in 24h; investigate stalls."
           description: "sum(fleet_merged_prs_24h) < 10 for 6h. Family omitted (stale gh cache) does not fire this rule."
-
-      # fleet-ops#3368: the expr keeps the total-greater-than-threshold gate
-      # but ANDs it with topk(1, fleet_escalations_24h) so the firing vector
-      # carries the dominant producer as its `unit` label. The description
-      # (and summary) name that unit so a recurrence is actionable without a
-      # manual journal dig. tests/fleet-rules-escalation-storm.test.sh locks
-      # the naming via promtool rule unit test.
-      - alert: FleetEscalationStorm
-        expr: topk(1, fleet_escalations_24h) and on() (sum(fleet_escalations_24h) > 300)
-        for: 30m
-        labels:
-          severity: warning
-          service: fleet
-        annotations:
-          summary: "escalation volume abnormal; dominant producer {{ $labels.unit }}"
-          description: "sum(fleet_escalations_24h) > 300 for 30m; top producer {{ $labels.unit }}={{$value}}."
 
       # fleet-ops#1199: tightened from 2h to 30m. The 30m floor is enforced
       # by the alert-repair-dispatch mutex (claim/<alert-scope>-<repo> on
@@ -1292,10 +1301,10 @@ groups:
       # config/prometheus.yml), so `up` is the direct probe: no canary, no
       # textfile, no tolerance window. The proxy carries Restart=on-failure
       # and litellm's own background_health_checks. Postgres and Redis lost
-      # their canary-emitted gauges with it; they are covered by the
-      # universal unit-death escalation (systemd/service.d/10-escalate.conf
-      # OnFailure=unit-escalation@%n.service) and by this alert, since the
-      # proxy cannot serve without them.
+      # their canary-emitted gauges with it; they are covered by their own
+      # Restart=on-failure and by this alert, since the proxy cannot serve
+      # without them. (The universal unit-death escalation drop-in that used
+      # to cover them was deleted in the glue sweep 2026-09-18.)
       #
       # Retired with the canary, recorded so it is not a silent degrade: the
       # per-deployment health verdict (a deployment continuously unhealthy

@@ -385,14 +385,10 @@ bin/lifecycle-label-sweep /home/nish/.local/bin/lifecycle-label-sweep
 # refuses a body without termination:/accept:/required:/metric:.
 # fleet-ops#3309: check-size bounces >2 live required: lines at claim time.
 lib/agent-ready-spec-gate.py /home/nish/.local/lib/pi-packet/agent-ready-spec-gate.py
-bin/stop-escalation-dispatch /home/nish/.local/bin/stop-escalation-dispatch
-bin/unit-escalation-write /home/nish/.local/bin/unit-escalation-write
 # fleet-ops#4266: close the `systemd-run --user --scope` escalation bypass —
 # generic scope.d drop-in mirroring service.d/10-escalate.conf (scopes take
 # no service-level drop-ins). Exclusions: init.scope + app-*.scope enforced
 # by the unit-escalation-write script guard (lockstep with the canary).
-systemd/scope.d/10-escalate.conf /home/nish/.config/systemd/user/scope.d/10-escalate.conf
-bin/escalation-daily-sweep /home/nish/.local/bin/escalation-daily-sweep
 # fleet-ops#1164: persist nish-boundary-notify CLASSES in git + lint. The
 # script delivers Nish-RESERVED escalation classes out of NISH-ESCALATIONS.md;
 # its CLASSES regex is the allowlist of classes that may page Nish. Landing it
@@ -449,12 +445,6 @@ prompts/auditor.md /home/nish/.pi/agent/prompts/auditor.md
 # escalate-senior issues to the three-senior panel; the tally files an
 # agent-ready fix issue on 2-of-3 PASS or dismisses (comment + close) on
 # 2-of-3 FAIL. The @ template reuses pi-audit-run with the escalation prompt.
-bin/pi-escalation-audit /home/nish/.local/bin/pi-escalation-audit
-bin/pi-escalation-audit-tally /home/nish/.local/bin/pi-escalation-audit-tally
-prompts/escalation-auditor.md /home/nish/.pi/agent/prompts/escalation-auditor.md
-systemd/pi-escalation-audit@.service /home/nish/.config/systemd/user/pi-escalation-audit@.service
-systemd/pi-escalation-audit.service /home/nish/.config/systemd/user/pi-escalation-audit.service
-systemd/pi-escalation-audit.timer /home/nish/.config/systemd/user/pi-escalation-audit.timer
 systemd/pi-audit@.service /home/nish/.config/systemd/user/pi-audit@.service
 # fleet-ops#146 (storm-tolerant panel): concurrency cap. Slice is the
 # aggregate CPU/Memory ceiling for the audit cohort (300% CPU / 4G
@@ -472,7 +462,6 @@ bin/fleet-stale-auto-revert-sweep /home/nish/.local/bin/fleet-stale-auto-revert-
 # proves the two-plane invariant (VPS unit-escalation coverage + GitHub
 # red-check coverage) every tick. Installed by the merge-to-live step (#149)
 # so the first install lands it with zero hands.
-bin/fleet-escalation-canary /home/nish/.local/bin/fleet-escalation-canary
 # fleet-ops#468: alert-repair COMPLETION canary (Prometheus alert chains).
 # hop clocks + stall ladder + detector-red terminal. 15-min systemd timer.
 # fleet-ops#468: alert-repair COMPLETION service. oneshot, fail-loud, no restart.
@@ -625,11 +614,6 @@ systemd/fleet-heartbeat.service /home/nish/.config/systemd/user/fleet-heartbeat.
 systemd/fleet-heartbeat.timer /home/nish/.config/systemd/user/fleet-heartbeat.timer
 # fleet-ops#368: OnFailure page must resolve hostname at send time.
 systemd/fleet-heartbeat-failed-notify.service /home/nish/.config/systemd/user/fleet-heartbeat-failed-notify.service
-systemd/stop-escalation.path /home/nish/.config/systemd/user/stop-escalation.path
-systemd/stop-escalation.service /home/nish/.config/systemd/user/stop-escalation.service
-systemd/unit-escalation@.service /home/nish/.config/systemd/user/unit-escalation@.service
-systemd/unit-escalation@.service.d/no-self-escalate.conf /home/nish/.config/systemd/user/unit-escalation@.service.d/no-self-escalate.conf
-systemd/service.d/10-escalate.conf /home/nish/.config/systemd/user/service.d/10-escalate.conf
 # fleet-ops#5456: the RESUME POLICY declaration (allowlist, deliberately no
 # global Restart= — see the file). Hash-asserted by fleet-escalation-canary
 # block 1b every tick.
@@ -641,11 +625,8 @@ bin/chain-e2e-drill /home/nish/.local/bin/chain-e2e-drill
 systemd/chain-e2e-drill-fixture.service /home/nish/.config/systemd/user/chain-e2e-drill-fixture.service
 systemd/chain-e2e-drill.slice /home/nish/.config/systemd/user/chain-e2e-drill.slice
 # fleet-ops#618: .path and .timer units do not inherit service.d/.
-systemd/path.d/10-escalate.conf /home/nish/.config/systemd/user/path.d/10-escalate.conf
-systemd/timer.d/10-escalate.conf /home/nish/.config/systemd/user/timer.d/10-escalate.conf
 # fleet-ops#5855: .socket units likewise — the 9 loaded vendor sockets had no
 # OnFailure and a socket-activation failure produced only a journal line.
-systemd/socket.d/10-escalate.conf /home/nish/.config/systemd/user/socket.d/10-escalate.conf
 # fleet-ops#428: pi-transport-check is owned by the pi package, but its
 # OnFailure= was wired to the old direct Telegram page. This drop-in removes
 # the page and keeps only the unit-escalation path.
@@ -672,16 +653,11 @@ systemd/codex-luna@.service /home/nish/.config/systemd/user/codex-luna@.service
 # fleet-ops#3111: self-heal drop-in. Overrides ExecStart with the
 # pi-transport-self-heal wrapper (npm rebuild; no hand-written symlink).
 systemd/pi-transport-check.service.d/20-self-heal.conf /home/nish/.config/systemd/user/pi-transport-check.service.d/20-self-heal.conf
-systemd/escalation-daily-sweep.service /home/nish/.config/systemd/user/escalation-daily-sweep.service
-systemd/escalation-daily-sweep.timer /home/nish/.config/systemd/user/escalation-daily-sweep.timer
 # fleet-ops#2677 + #2773: bounded-file maintainer for the escalation
 # channel. Drains NISH-ESCALATIONS.md (archives RESOLVED / REVOKED /
 # non-class noise + delivered boundary entries past MAX_LINES) and
 # deletes alert-repair packets with a complete chain in actions.log.
 # Idempotent, no-op when the file is already bounded. Hourly cadence.
-bin/fleet-escalation-drain /home/nish/.local/bin/fleet-escalation-drain
-systemd/escalation-drain.service /home/nish/.config/systemd/user/escalation-drain.service
-systemd/escalation-drain.timer /home/nish/.config/systemd/user/escalation-drain.timer
 # fleet-ops#5854: the organ-death watcher. Every 5 min, watches the
 # anti-recursion-excluded escalation organs (stop-escalation.path,
 # unit-escalation@ template, parked stop-escalation-dispatch, daily-sweep
@@ -689,10 +665,6 @@ systemd/escalation-drain.timer /home/nish/.config/systemd/user/escalation-drain.
 # name guard keep it out of the chain it watches; the out-of-band page is
 # the HC_URL_ORGANWATCH dead-man (same one-time provisioning as the other
 # keystone HC_URL_* checks) and the hourly tier1 failed-units sweep.
-bin/escalation-organ-watch /home/nish/.local/bin/escalation-organ-watch
-systemd/escalation-organ-watch.service /home/nish/.config/systemd/user/escalation-organ-watch.service
-systemd/escalation-organ-watch.service.d/no-self-escalate.conf /home/nish/.config/systemd/user/escalation-organ-watch.service.d/no-self-escalate.conf
-systemd/escalation-organ-watch.timer /home/nish/.config/systemd/user/escalation-organ-watch.timer
 prompts/heartbeat.md /home/nish/.pi/agent/prompts/heartbeat.md
 # P14: nishfleet-worker GitHub App identity for workers
 bin/worker-token /home/nish/.local/bin/worker-token
@@ -960,7 +932,6 @@ systemd/fleet-seat-recovery.service /home/nish/.config/systemd/user/fleet-seat-r
 systemd/fleet-seat-recovery.path /home/nish/.config/systemd/user/fleet-seat-recovery.path
 # fleet-ops#468 TOP GEAR teeth + escalation-matrix FIXES (both wired into
 # fleet-heartbeat-tier1 block 15; fail-loud on violation -> unit-escalation).
-bin/fleet-escalation-completion /home/nish/.local/bin/fleet-escalation-completion
 lib/pi-intake-tick.sh /home/nish/.local/lib/pi-packet/pi-intake-tick.sh
 # fleet-ops#4801: spec-judge lib (Kimi K3 Max over shared-file batches
 # before claim). Sourced by pi-intake-tick.sh; the fallback path in the
@@ -1051,7 +1022,6 @@ systemd/gh-webhook-canary.timer /home/nish/.config/systemd/user/gh-webhook-canar
 docs/github-push-channel.md /home/nish/.local/share/fleet-ops/docs/github-push-channel.md
 # fleet-ops#4476 (part 3): the escalation matrix — the single home of the
 # question-route rows (precedent / orchestrator / worker / NISH / matrix-gap).
-docs/escalation-matrix.md /home/nish/.local/share/fleet-ops/docs/escalation-matrix.md
 
 
 # fleet-ops#41: headless OAuth refresh of the live SuperGrok seat

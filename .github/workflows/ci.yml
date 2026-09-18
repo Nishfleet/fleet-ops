@@ -151,8 +151,6 @@ jobs:
         # reset horizon (quota_window) so a vendor-claimed 19-day Retry-After
         # cannot freeze a weekly-resetting seat for three cycles.
         bash tests/seat-wall-reset-horizon.test.sh
-        bash tests/stop-escalation-dispatch.test.sh
-        bash tests/escalation-units-shape.test.sh
         # fleet-ops#1164: persist nish-boundary-notify CLASSES in git + lint.
         bash tests/nish-boundary-notify-classes.test.sh
         bash tests/system-dropins-shape.test.sh
@@ -175,7 +173,6 @@ jobs:
         # fetch); --report must exit 0 even with an orphan.
         bash tests/workflow-registration-inventory.test.sh
         bash tests/open-question-sweep-deleted.test.sh
-        bash tests/escalation-coverage-canary.test.sh
         # fleet-ops#5443: canonical findings ledger — strict writer + judge line.
         bash tests/findings-ledger.test.sh
         bash tests/findings-measure-line.test.sh
@@ -183,7 +180,6 @@ jobs:
         bash tests/jev-eval.test.sh
         bash tests/fleet-deploy-check.test.sh
         bash tests/fleet-seat-recovery.test.sh
-        bash tests/fleet-escalation-completion.test.sh
         bash tests/rule-enforcement.test.sh
         bash tests/reusable-workflows.test.sh
         # fleet-ops#1296: reject typo'd/unregistered action@<sha> pins in
@@ -248,7 +244,6 @@ jobs:
         bash tests/hermes-outbound-class-gate.test.sh
         bash tests/alertmanager-routing-matrix.test.sh
         bash tests/fleet-rules-severity-page.test.sh
-        bash tests/stop-escalation-writer-class-gate.test.sh
         # fleet-ops#754: lock spawn-guard stash readonly enforcement.
         bash tests/fleet-spawn-guard-stash-readonly.test.sh
         bash tests/phone-chokepoint.test.sh

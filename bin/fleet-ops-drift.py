@@ -248,9 +248,6 @@ FLEET_PREFIXES = (
     "intake-",
     "oomd-",
     "codex-",
-    "escalation-",
-    "stop-",
-    "unit-escalation",
 )
 
 MANAGED_DIRS = (

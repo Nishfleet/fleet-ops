@@ -181,8 +181,6 @@ TEST_ALERT_FILE = Path(f"/run/user/{os.getuid()}/fleet-test-alert")
 # Self-observation metrics (Task 2). All stdlib; gh is cached to <=1 call/30min.
 HELP_MPR = "# HELP fleet_merged_prs_24h Merged PR count per repo in the trailing 24h."
 TYPE_MPR = "# TYPE fleet_merged_prs_24h gauge"
-HELP_ESC = "# HELP fleet_escalations_24h Count of unit-escalation@ instances in the last 24h (top 20)."
-TYPE_ESC = "# TYPE fleet_escalations_24h gauge"
 HELP_OOMD = "# HELP fleet_oomd_kills_6h systemd-oomd kills of app-pi-issue.slice units in the trailing 6h, by unit (fleet-ops#4164). A rise > 3 in 6h trips FleetOomdKillsHigh, whose repair packet raises the live ram_gb_per_worker charge back to 2.0. Counts only oomd-managed kills (MESSAGE=Killed unit or Killed process), not kernel OOM."
 TYPE_OOMD = "# TYPE fleet_oomd_kills_6h gauge"
 HELP_RDISP = "# HELP fleet_repair_dispatch_24h DISPATCH lines in alert-repair actions.log within 24h."
@@ -3299,136 +3297,6 @@ def _gh_repo_snapshot():
 def _repo_snapshot():
     """Cached org snapshot or None to omit both open_prs and main_ci families."""
     return _cached_json(SNAPSHOT_CACHE, _gh_repo_snapshot, "repo_snapshot")
-
-
-def _escalations_24h():
-    """Count unit-escalation@<instance> starts in the last 24h (top 20).
-
-    Excludes the same units unit-escalation-write refuses (no self-trigger /
-    feedback-loop units), plus canary / recovery units whose escalations are
-    not a "unit flapping" signal. Mirrors the case list in
-    /home/nish/.local/bin/unit-escalation-write, extended for this metric.
-    """
-    # Patterns match the FAILED unit name (the template instance). The journal
-    # regex below strips a trailing .service, so we test both the stripped name
-    # and the reconstructed full name against each glob.
-    excluded = (
-        "unit-escalation@*",
-        "stop-escalation.service",
-        "stop-escalation.path",
-        "ready-work.service",
-        "escalation-daily-sweep.service",
-        "escalation-daily-sweep.timer",
-        # fleet-ops#5854: escalation-organ-watch is the organ-death watcher;
-        # its OnFailure= drop-in resets self-escalation and the writer refuses
-        # it by name, so a template start would be churn, not escalation
-        # volume. Mirrored here so the drift-lock keeps the lists in step.
-        "escalation-organ-watch.service",
-        "escalation-organ-watch.timer",
-        "resilience-drill-stub*",
-        # fleet-ops#180 (PR #4437): the gap-closure drill stubs.
-        # fleet-gap-closure-drill's drill_unit_escalation / drill_timer_mask
-        # spin a throwaway ExecStart=/bin/false unit to prove the escalation
-        # and timer OnFailure= chain fires; the stub failing IS the drill
-        # working. unit-escalation-write refuses the trip, so counting the
-        # unit-escalation@<stub> template START here would still storm
-        # FleetEscalationStorm and summon a fresh auditor per drill cycle
-        # (same class as the #3617 fleet-orphan-reset-probe@* fix). Globs are
-        # suffix-open so they match both the stripped and full unit name.
-        "gap-closure-drill-stub*",
-        "gap-closure-drill-mask-probe*",
-        # fleet-ops#3180: resync with the writer's refuse list. The
-        # 2026-08-30 pi-issue@* exclusion (fleet-ops#2133/#2475 — workers
-        # escalate via their own reaper + re-dispatch lane, never to the
-        # senior auditor) and the drill/probe scaffolding never landed here,
-        # so the unit-escalation@<instance> template START was still counted
-        # even though the writer refused the trip. Measured 2026-09-05:
-        # 868 of 936 counted starts were pi-issue@* no-seat crash-loops,
-        # tripping FleetEscalationStorm (threshold 300; remaining 64).
-        # tests/fleet-metrics-export.test.sh locks this list against the
-        # writer's case line so a future exclusion cannot drift again.
-        "notify-probe.service",
-        "notify-probe.onfail.service",
-        "probe-*.service",
-        # fleet-ops#3617: the fleet-orphan-reset-probe@* test stub (fleet-ops#3617)
-        # proves reset-failed semantics via ExecStart=/bin/false; its
-        # deliberate failure is refused by unit-escalation-write (excluded in
-        # the writer's case list) so its template STOPS there — but the
-        # unit-escalation@<instance> template START was still being counted
-        # here, tripping the escalation-exclusion drift-lock. Mirror the
-        # writer's refuse entry so the metric and writer cannot drift.
-        "fleet-orphan-reset-probe@*",
-        "multi-*-sink.service",
-        "pi-issue@*",
-        # fleet-ops#4266 detached dead-man: the writer refuses the scope.d
-        # anti-recursion scopes (init.scope, app-*.scope) and the live-dummy*
-        # dead-man PROOF units (a deliberate stop-without-deliverable is the
-        # verdict being proven, not a fault). Mirror the writer's refuse
-        # entries so the metric and writer cannot drift.
-        "init.scope",
-        "app-*.scope",
-        "live-dummy*",
-        # fleet-ops#5456 (E/H kill-three-ways drill): the chain-e2e-drill
-        # spawns live-dummy-resume-drill-* units whose deliberate death is
-        # the drill asserting the resume+dispatch contract. unit-escalation-write
-        # refuses them under *resume-drill-* (belt-and-suspenders on top of
-        # live-dummy*); mirror the writer here so the drill never storms
-        # FleetEscalationStorm (the chain-e2e-drill live transcript asserts
-        # drill deaths are recorded against the drill sink, not counted as
-        # fleet escalation volume).
-        "*resume-drill-*",
-        # fleet-ops#6734: the chain-e2e drill's throwaway fixture exits 1 ON
-        # PURPOSE (fleet-ops#375) — the fault IS the drill working. The writer
-        # now refuses chain-e2e-drill-fixture* (lockstep with
-        # fleet-escalation-canary's is_escalation_excluded), so its
-        # unit-escalation@ template START is refused churn, not escalation
-        # volume. Mirror the writer here so the hourly heartbeat block-5b
-        # drill spin cannot storm FleetEscalationStorm, and so the
-        # drift-lock test cannot drift.
-        "chain-e2e-drill-fixture*",
-        # Canaries / orchestrator organs: their deliberate fail-loud escalations
-        # are expected, not a flapping worker.
-        "fleet-heartbeat*",
-        "pi-intake@fleet-ops-canary*",
-        # OnFailure repair units are recovery machinery; counting them in the
-        # storm metric double-counts the original failure. fleet-ops#3349:
-        # alert-repair-* units use a hyphen separator, so they escaped the
-        # *-repair@* glob and stayed counted (the "alert-repair run hop stalled"
-        # component of the FleetEscalationStorm); exclude them too.
-        "*-repair@*",
-        "alert-repair-*",
-    )
-
-    def _is_excluded(name):
-        full = name if name.endswith((".service", ".timer", ".path")) else name + ".service"
-        return any(fnmatch.fnmatch(name, p) or fnmatch.fnmatch(full, p) for p in excluded)
-
-    try:
-        r = subprocess.run(
-            [
-                "journalctl", "--user",
-                "-u", "unit-escalation@*",
-                "--since", "24 hours ago",
-                "--no-pager",
-                "--output=cat",
-            ],
-            capture_output=True, text=True, timeout=JOURNAL_TIMEOUT,
-            env={**os.environ, "XDG_RUNTIME_DIR": XDG},
-        )
-    except (OSError, subprocess.TimeoutExpired) as exc:
-        print(f"escalation journalctl failed: {exc}", file=sys.stderr)
-        return {}
-    if r.returncode != 0:
-        print(f"escalation journalctl rc={r.returncode}", file=sys.stderr)
-        return {}
-    # systemd logs "Starting unit-escalation@<instance>.service - ...".
-    # With --output=cat we get just the message line.
-    counts = Counter()
-    for line in r.stdout.splitlines():
-        m = re.search(r"Starting unit-escalation@(.+?)\.service", line)
-        if m and not _is_excluded(m.group(1)):
-            counts[m.group(1)] += 1
-    return dict(counts.most_common(20))
 
 
 def _oomd_kills_6h():
@@ -6584,16 +6452,6 @@ def main():
             lines.append(
                 f'fleet_gh_cache_timestamp_seconds{{kind="{_kind}"}} {_ts:.0f}'
             )
-
-    # Escalations per unit (top 20).
-    esc_counts = _escalations_24h()
-    lines.append("")
-    lines.append(HELP_ESC)
-    lines.append(TYPE_ESC)
-    for unit in sorted(esc_counts):
-        lines.append(
-            f'fleet_escalations_24h{{unit="{unit}"}} {esc_counts[unit]}'
-        )
 
     # oomd kills of app-pi-issue.slice units in the last 6h (fleet-ops#4164).
     oomd_counts = _oomd_kills_6h()

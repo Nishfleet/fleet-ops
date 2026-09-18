@@ -113,70 +113,40 @@ run_handler() {
         "$@" "$bin" "$inst"
 }
 
-assert_stop_reason() {
-    # $1 = state dir, $2 = expected detail.unit
-    python3 - "$1" "$2" <<'PY'
-import json, sys
-st, want_unit = sys.argv[1], sys.argv[2]
-with open(st + "/STOP-REASON.json") as f:
-    sr = json.load(f)
-assert sr["reason"] == "packet-exhausted", sr
-assert sr["source"] == "pi-packet-failed", sr
-assert sr["extension"] == "unit-escalation", sr
-d = sr["detail"]
-assert d["unit"] == want_unit, (d["unit"], want_unit)
-assert d["result"] == "failure", d
-assert d["exit_status"] == "1", d
-assert d["memory_peak"] == "123456789", d
-assert any("line five (last)" in l for l in d["journal"]), d
-assert sr["timestamp"], sr
-PY
-}
 
-# --- Phase A: burst-exhausted packet -> syslog kept + STOP-REASON ------------
+# --- Phase A: burst-exhausted packet -> syslog line kept ---------------------
+# Glue sweep 2026-09-18: the STOP-REASON writer and its SENIOR-AUDITOR
+# dispatcher were deleted. What survives is the syslog record and the fact
+# that the exhausted packet's unit is left in --state=failed, where
+# fleet-heartbeat-tier1 block 4 (the hourly failed-units pass) picks it up.
 fa="$scratch/fa"; sta="$scratch/sta"
 mk_fakes "$fa" 3
 run_handler "$fa" "$sta" drillpkt \
-    || fail "handler must exit 0 when the STOP-REASON lands"
+    || fail "handler must exit 0"
 
 grep -q 'packet drillpkt exhausted retries' "$fa/logger.calls" \
     || fail "syslog line must be kept: $(cat "$fa/logger.calls" 2>/dev/null)"
 grep -q 'reason=packet-exhausted' "$fa/logger.calls" \
     || fail "syslog line must carry the reason: $(cat "$fa/logger.calls" 2>/dev/null)"
-ok "syslog line preserved"
+grep -q 'unit pi-packet@drillpkt.service' "$fa/logger.calls" \
+    || fail "syslog line must name the real unit: $(cat "$fa/logger.calls" 2>/dev/null)"
+ok "syslog line preserved and names the real unit"
 
-[[ -f "$sta/STOP-REASON.json" ]] || fail "STOP-REASON missing — the fold must write it"
-assert_stop_reason "$sta" "pi-packet@drillpkt.service" \
-    || fail "STOP-REASON schema wrong for a bare instance"
-ok "STOP-REASON: reason=packet-exhausted source=pi-packet-failed unit=pi-packet@drillpkt.service"
+[[ -f "$sta/STOP-REASON.json" ]] \
+    && fail "the deleted escalation writer must not be resurrected"
+ok "no STOP-REASON written (escalation tower deleted)"
 
 # --- Phase B: full unit name passes through unchanged -------------------------
 # pi-systemd-run transients list pi-packet-failed@<unit>.service in OnFailure,
 # so %i already carries the unit suffix; prefixing pi-packet@ again would
-# double-name the dispatcher's dedupe title and the relaunch target.
+# double-name the relaunch target.
 fb="$scratch/fb"; stb="$scratch/stb"
 mk_fakes "$fb" 3
 run_handler "$fb" "$stb" "mypkt-abc123.service" \
     || fail "handler must exit 0 for a full unit name"
-assert_stop_reason "$stb" "mypkt-abc123.service" \
-    || fail "full unit name must pass through unchanged"
+grep -q 'unit mypkt-abc123.service' "$fb/logger.calls" \
+    || fail "full unit name must pass through unchanged: $(cat "$fb/logger.calls" 2>/dev/null)"
 ok "full unit name %i maps to itself (no double pi-packet@ prefix)"
-
-# --- Phase C: retry cycle still in flight -> writer skips, no STOP-REASON ----
-# fleet-ops#1467 through the fold: NRestarts < StartLimitBurst means systemd's
-# own retry is about to absorb the fault; the handler still logs (the syslog
-# line is the kept #5444 record) but the writer must not escalate.
-fc="$scratch/fc"; stc="$scratch/stc"
-mk_fakes "$fc" 1
-run_handler "$fc" "$stc" drillpkt 2>"$fc/stderr" \
-    || fail "handler must exit 0 when the writer skips (retry in flight)"
-grep -q 'packet drillpkt exhausted retries' "$fc/logger.calls" \
-    || fail "syslog line must be kept even when the writer skips"
-grep -q 'retry cycle in flight' "$fc/stderr" \
-    || fail "writer must say why it skipped: $(cat "$fc/stderr" 2>/dev/null)"
-[[ -f "$stc/STOP-REASON.json" ]] \
-    && fail "retry cycle in flight must NOT write a STOP-REASON"
-ok "retry-cycle suppression survives the fold (logged, not escalated)"
 
 # --- Phase D: missing arg fails ------------------------------------------------
 set +e
@@ -240,10 +210,11 @@ EOF
     done
     grep -q "packet $dstub.service exhausted retries" "$fd6/logger.calls" 2>/dev/null \
         || fail "drill: syslog line missing — $dstub failure never reached the handler (stderr: $(cat "$std6/handler.stderr" 2>/dev/null | tail -4))"
-    # The writer MUST refuse the live-dummy unit even through the fold —
-    # that refusal is the drill staying hermetic.
-    grep -q "skipping excluded unit '$dstub.service'" "$std6/handler.stderr" \
-        || fail "drill: writer must exclude the live-dummy stub (stderr: $(cat "$std6/handler.stderr" 2>/dev/null | tail -4))"
+    # Glue sweep 2026-09-18: the writer and its exclusion list were deleted
+    # with the escalation tower, so the drill is hermetic by construction —
+    # the handler only records. Assert it stayed a recorder.
+    grep -q "left in --state=failed" "$std6/handler.stderr" \
+        || fail "drill: handler must only record (stderr: $(cat "$std6/handler.stderr" 2>/dev/null | tail -4))"
     [[ -f "$std6/STOP-REASON.json" ]] \
         && fail "drill: live-dummy stub must never write a STOP-REASON"
     # Cleanup: stub + handler instance and the runtime template.

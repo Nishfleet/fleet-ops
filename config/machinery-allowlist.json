@@ -64,17 +64,6 @@
       "source": "repo"
     },
     {
-      "unit": "escalation-daily-sweep",
-      "class": "a",
-      "source": "repo"
-    },
-    {
-      "unit": "escalation-drain",
-      "class": "a",
-      "source": "repo",
-      "note": "fleet-ops#2677 + #2773: bounded-file maintainer for NISH-ESCALATIONS.md + alert-repair packets (hourly timer); same escalation-layer class as escalation-daily-sweep."
-    },
-    {
       "unit": "intake-reconcile",
       "class": "a",
       "source": "repo"
@@ -137,11 +126,6 @@
       "source": "repo"
     },
     {
-      "unit": "pi-escalation-audit",
-      "class": "a",
-      "source": "repo"
-    },
-    {
       "unit": "quality-research-weekly",
       "class": "a",
       "source": "repo"
@@ -153,16 +137,6 @@
     },
     {
       "unit": "standing-rules-render",
-      "class": "a",
-      "source": "repo"
-    },
-    {
-      "unit": "stop-escalation",
-      "class": "a",
-      "source": "repo"
-    },
-    {
-      "unit": "unit-escalation@",
       "class": "a",
       "source": "repo"
     },

@@ -22,7 +22,6 @@ here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 repo_root="$(cd "$here/.." && pwd)"
 lib="$repo_root/lib/rule-enforcement.py"
 matrix="$repo_root/config/rule-enforcement.json"
-canary="$repo_root/bin/fleet-escalation-canary"
 vault_rules="/home/nish/workspaces/tooling/nish-vault/_system/shared-memory/global-standing-rules.md"
 vault_ledger="/home/nish/workspaces/tooling/nish-vault/_system/shared-memory/decisions-ledger.md"
 
@@ -31,7 +30,6 @@ ok()   { echo "OK: $*"; }
 
 [[ -f "$lib" ]] || fail "missing $lib"
 [[ -f "$matrix" ]] || fail "missing $matrix"
-[[ -x "$canary" ]] || fail "not executable: $canary"
 command -v python3 >/dev/null 2>&1 || fail "python3 missing"
 command -v jq >/dev/null 2>&1 || fail "jq missing"
 
@@ -794,326 +792,12 @@ set -e
 ok "validate-matrix: advisory() without a reason is rejected"
 
 # ============================================================================
-# Drill: extra ## heading -> canary flags it AND auto-files an issue
+# Glue sweep 2026-09-18: the fleet-escalation-canary auto-file/observe-to-close
+# drill that lived here was removed with the escalation tower (the canary, the
+# global 10-escalate.conf drop-ins and the STOP-REASON pipeline are deleted).
+# The matrix validate/join assertions above and the per-gate drills below are
+# unchanged.
 # ============================================================================
-drill="$scratch/drill"
-mkdir -p "$drill/home" "$drill/repo/bin" "$drill/repo/config" \
-         "$drill/repo/.github/workflows" "$drill/state" "$drill/onf" "$drill/fakebin"
-cp "$canary" "$drill/repo/bin/fleet-escalation-canary"
-chmod +x "$drill/repo/bin/fleet-escalation-canary"
-
-cat >"$drill/repo/.github/workflows/auto-revert.yml" <<'WF'
-on:
-  workflow_run:
-    workflows: ["CI"]
-WF
-cat >"$drill/repo/.github/workflows/red-on-main-detector.yml" <<'WF'
-on:
-  workflow_call:
-WF
-
-# fleet-ops#5456: canary block 1b hash-asserts the two global drop-ins
-# (repo copy vs the live install under $HOME/.config/systemd/user/service.d).
-mkdir -p "$drill/repo/systemd/service.d" "$drill/home/.config/systemd/user/service.d"
-printf '# OnFailure=unit-escalation@%%n.service (fixture copy)\n' >"$drill/repo/systemd/service.d/10-escalate.conf"
-printf '# RESUME POLICY: allowlist, no global Restart= (fixture copy)\n' >"$drill/repo/systemd/service.d/20-resume.conf"
-cp "$drill/repo/systemd/service.d/10-escalate.conf" "$drill/home/.config/systemd/user/service.d/10-escalate.conf"
-cp "$drill/repo/systemd/service.d/20-resume.conf" "$drill/home/.config/systemd/user/service.d/20-resume.conf"
-
-cat >"$drill/standing.md" <<'EOF'
-# fixture
-## Covered fixture rule (Nish, 2026-08-26)
-## Untracked fixture rule that must scream (Nish, 2026-08-26)
-## Queued fixture rule waiting for a mechanism (Nish, 2026-08-26)
-EOF
-cat >"$drill/ledger.md" <<'EOF'
-- 2026-08-26 | covered ledger rule | a decision
-- 2026-08-26 | untracked ledger rule that must scream | a decision
-EOF
-cat >"$drill/repo/config/rule-enforcement.json" <<'EOF'
-{
-  "queued_stale_days": 7,
-  "auto_file_cap_per_tick": 5,
-  "rules": [
-    {
-      "id": "sr-covered-fixture",
-      "source": "global-standing-rules.md: Covered fixture rule (Nish, 2026-08-26)",
-      "mechanism": "test gate",
-      "proof": "tests/rule-enforcement.test.sh",
-      "status": "enforced"
-    },
-    {
-      "id": "led-covered-fixture",
-      "source": "decisions-ledger.md: 2026-08-26 | covered ledger rule",
-      "mechanism": "test gate",
-      "proof": "tests/rule-enforcement.test.sh",
-      "status": "enforced"
-    },
-    {
-      "id": "sr-queued-fixture",
-      "source": "global-standing-rules.md: Queued fixture rule waiting for a mechanism (Nish, 2026-08-26)",
-      "mechanism": "not yet",
-      "proof": "fleet-ops#1",
-      "status": "queued(#1)",
-      "queued_since": "2026-08-18"
-    }
-  ]
-}
-EOF
-
-printf '%s\n' "good-worker.service" >"$drill/loaded"
-printf 'unit-escalation@good-worker.service.service\n' >"$drill/onf/good-worker.service"
-printf '{"repos":[{"name":"0509"}],"excluded":[]}' >"$drill/repo/config/intake-repos.json"
-printf '{"claim_repos":["Nishfleet/0509"]}' >"$drill/state/fleet-repos.json"
-: >"$drill/state/.escalation-delivery"
-: >"$drill/state/.red-ci-ownerless-guard"
-: >"$drill/state/.red-check-senior-auditor-bridge"
-: >"$drill/triage.md"
-
-cat >"$drill/systemctl" <<'FAKE'
-#!/usr/bin/env bash
-shift
-cmd="$1"; shift
-case "$cmd" in
-  list-units)
-    printf 'good-worker.service loaded active running -\n'
-    exit 0
-    ;;
-  show)
-    printf 'unit-escalation@good-worker.service.service\n'
-    exit 0
-    ;;
-  *)
-    exit 1
-    ;;
-esac
-FAKE
-chmod +x "$drill/systemctl"
-
-cat >"$drill/fakebin/gh" <<'FAKE_GH'
-#!/usr/bin/env bash
-log="${GH_LOG:-/dev/null}"
-printf '%s\n' "$*" >>"$log"
-subcmd="${1:-}"
-shift || true
-case "$subcmd" in
-  issue)
-    case "${1:-}" in
-      list)
-        if [[ -f "${GH_OPEN_ISSUES:-/dev/null}" ]]; then
-          cat "${GH_OPEN_ISSUES}"
-        else
-          printf '[]\n'
-        fi
-        ;;
-      create)
-        echo "https://github.com/Nishfleet/fleet-ops/issues/4242"
-        echo create >>"${GH_CREATED:-/dev/null}"
-        ;;
-      view)
-        # Replay comments from GH_OPEN_ISSUES for the requested number.
-        num=""
-        for arg in "$@"; do
-          case "$arg" in
-            [0-9]*) num="$arg"; break ;;
-          esac
-        done
-        if [[ -f "${GH_OPEN_ISSUES:-/dev/null}" && -n "$num" ]]; then
-          jq -c --argjson n "$num" '.[] | select(.number == $n)' "${GH_OPEN_ISSUES}" \
-            | jq -c '{comments: (.comments // [])}' \
-            || printf '{"comments":[]}\n'
-        else
-          printf '{"comments":[]}\n'
-        fi
-        ;;
-      comment)
-        num=""
-        for arg in "$@"; do
-          case "$arg" in
-            [0-9]*) num="$arg"; break ;;
-          esac
-        done
-        if [[ -n "${GH_COMMENTED:-}" && "${GH_COMMENTED}" != "/dev/null" ]]; then
-          printf '%s\n' "$num" >>"$GH_COMMENTED"
-        fi
-        echo "https://github.com/Nishfleet/fleet-ops/issues/${num}#comment"
-        ;;
-      close)
-        num=""
-        for arg in "$@"; do
-          case "$arg" in
-            [0-9]*) num="$arg"; break ;;
-          esac
-        done
-        if [[ -n "${GH_CLOSED:-}" && "${GH_CLOSED}" != "/dev/null" ]]; then
-          printf '%s\n' "$num" >>"$GH_CLOSED"
-        fi
-        ;;
-    esac
-    ;;
-esac
-exit 0
-FAKE_GH
-chmod +x "$drill/fakebin/gh"
-
-created="$drill/created.txt"
-: >"$created"
-glog="$drill/gh.log"
-: >"$glog"
-
-run_drill() {
-  set +e
-  env_out=$(
-    HOME="$drill/home" \
-    SYSTEMCTL="$drill/systemctl" \
-    GH="$drill/fakebin/gh" \
-    PATH="$drill/fakebin:$PATH" \
-    FLEET_OPS_REPO="$drill/repo" \
-    FLEET_HEARTBEAT_TRIAGE="$drill/triage.md" \
-    AGENT_STATE="$drill/state" \
-    FLEET_ESCALATION_CANARY_DELIVERY="$drill/state/.escalation-delivery" \
-    FLEET_ESCALATION_CANARY_REDCI="$drill/state/.red-ci-ownerless-guard" \
-    FLEET_ESCALATION_CANARY_BRIDGE="$drill/state/.red-check-senior-auditor-bridge" \
-    FLEET_INTAKE_REPOS_JSON="$drill/repo/config/intake-repos.json" \
-    FLEET_REDPR_REPOS_JSON="$drill/state/fleet-repos.json" \
-    FLEET_STANDING_RULES="$drill/standing.md" \
-    FLEET_DECISIONS_LEDGER="$drill/ledger.md" \
-    FLEET_RULE_ENFORCEMENT_JSON="$drill/repo/config/rule-enforcement.json" \
-    FLEET_RULE_ENFORCEMENT_LIB="$lib" \
-    FLEET_RULE_ENFORCEMENT_FILE_ISSUES=1 \
-    FLEET_RULE_ENFORCEMENT_ISSUE_REPO="Nishfleet/fleet-ops" \
-    FLEET_RULE_ENFORCEMENT_NOW="2026-08-26T12:00:00Z" \
-    GH_LOG="$glog" \
-    GH_CREATED="$created" \
-    GH_COMMENTED="${GH_COMMENTED:-/dev/null}" \
-    GH_CLOSED="${GH_CLOSED:-/dev/null}" \
-    GH_OPEN_ISSUES="${GH_OPEN_ISSUES:-}" \
-    FLEET_ESCALATION_CANARY_SKIP_BACKUP="${FLEET_ESCALATION_CANARY_SKIP_BACKUP:-0}" \
-    FLEET_ESCALATION_CANARY_SKIP_VAULT_CONFLICT="${FLEET_ESCALATION_CANARY_SKIP_VAULT_CONFLICT:-0}" \
-    FLEET_ESCALATION_CANARY_SKIP_PRIVACY_GUARD=1 \
-    "$canary" 2>&1
-  )
-  env_rc=$?
-  set -e
-}
-
-run_drill
-
-[[ "$env_rc" == "1" ]] || fail "drill: canary must exit 1, got $env_rc ($env_out)"
-grep -q 'Untracked fixture rule that must scream' "$drill/triage.md" \
-  || fail "drill: triage must name the untracked heading"
-grep -q 'untracked ledger rule that must scream' "$drill/triage.md" \
-  || fail "drill: triage must name the untracked ledger entry (fleet-ops#474)"
-grep -q 'ESCALATION-CANARY-VIOLATION' "$drill/triage.md" \
-  || fail "drill: triage missing VIOLATION"
-create_count=$(grep -c create "$created" 2>/dev/null || echo 0)
-[[ "$create_count" == "3" ]] || fail "drill: expected 3 gh issue create calls (uncovered standing + uncovered ledger + queued), got $create_count (log=$(cat "$glog"))"
-grep -q 'FILED' <<<"$env_out" || fail "drill: canary must log FILED (out=$env_out)"
-ok "drill: extra heading, uncovered ledger entry, and queued row are flagged and auto-filed"
-
-# Replay: open issue with the signal key -> no second create for either.
-printf '%s\n' '[{"number":77,"title":"already","body":"signal: rule-enforcement/sr-untracked-fixture-rule-that-must-scream-nish-2026-08-26"},{"number":79,"title":"ledger","body":"signal: rule-enforcement/led-2026-08-26-untracked-ledger-rule-that-must-scream"},{"number":78,"title":"queued","body":"signal: rule-enforcement/sr-queued-fixture"}]' \
-  >"$drill/open.json"
-: >"$created"
-: >"$drill/triage.md"
-export GH_OPEN_ISSUES="$drill/open.json"
-run_drill
-[[ "$env_rc" == "1" ]] || fail "dedupe replay: still a coverage violation, must exit 1"
-if grep -q create "$created"; then
-  fail "dedupe replay: must not file a second issue"
-fi
-grep -q 'already has an open mechanism issue' <<<"$env_out" \
-  || fail "dedupe replay: must log deduped (out=$env_out)"
-ok "drill: open issue with signal key is deduped"
-
-# Observe-to-close (fleet-ops#479): a fully covered vault + an open
-# mechanism issue filed under the fallback signal must get a canary comment,
-# even when the matrix id differs from the auto-file id. Replay with the
-# marker already in comments must not comment twice.
-cat >"$drill/standing.md" <<'EOF'
-# fixture
-## Covered fixture rule (Nish, 2026-08-26)
-## Queued fixture rule waiting for a mechanism (Nish, 2026-08-26)
-EOF
-cat >"$drill/ledger.md" <<'EOF'
-- 2026-08-26 | covered ledger rule | a decision
-EOF
-# Rewrite the matrix so sr-queued-fixture is non-stale (queued_since=now).
-# The vault covers it, but the row stays queued — #78 must NOT be closed
-# (only enforced rows get observe-to-close). No stale_queued violation =>
-# canary exits 0.
-cat >"$drill/repo/config/rule-enforcement.json" <<'EOF'
-{
-  "queued_stale_days": 7,
-  "auto_file_cap_per_tick": 5,
-  "rules": [
-    {
-      "id": "sr-covered-fixture",
-      "source": "global-standing-rules.md: Covered fixture rule (Nish, 2026-08-26)",
-      "mechanism": "test gate",
-      "proof": "tests/rule-enforcement.test.sh",
-      "status": "enforced"
-    },
-    {
-      "id": "led-covered-fixture",
-      "source": "decisions-ledger.md: 2026-08-26 | covered ledger rule",
-      "mechanism": "test gate",
-      "proof": "tests/rule-enforcement.test.sh",
-      "status": "enforced"
-    },
-    {
-      "id": "sr-queued-fixture",
-      "source": "global-standing-rules.md: Queued fixture rule waiting for a mechanism (Nish, 2026-08-26)",
-      "mechanism": "not yet",
-      "proof": "fleet-ops#1",
-      "status": "queued(#1)",
-      "queued_since": "2026-08-26"
-    }
-  ]
-}
-EOF
-: >"$created"
-: >"$drill/triage.md"
-commented="$drill/commented.txt"
-: >"$commented"
-printf '%s\n' '[{"number":479,"title":"mechanism for TOP GEAR","body":"- source: `decisions-ledger.md: 2026-08-26 | covered ledger rule`\n\nsignal: rule-enforcement/led-2026-08-26-covered-ledger-rule","comments":[]},{"number":78,"title":"queued","body":"signal: rule-enforcement/sr-queued-fixture"}]' \
-  >"$drill/open.json"
-export GH_OPEN_ISSUES="$drill/open.json"
-export GH_COMMENTED="$commented"
-export FLEET_ESCALATION_CANARY_SKIP_BACKUP=1
-export FLEET_ESCALATION_CANARY_SKIP_VAULT_CONFLICT=1
-run_drill
-[[ "$env_rc" == "0" ]] || fail "observe-to-close: canary must exit 0 when covered (rc=$env_rc out=$env_out)"
-if grep -q create "$created"; then
-  fail "observe-to-close: must not file a new issue when the source is covered"
-fi
-grep -q '^479$' "$commented" || fail "observe-to-close: must comment on #479 (commented=$(cat "$commented") out=$env_out)"
-grep -q 'OBSERVED-COVERED' <<<"$env_out" || fail "observe-to-close: must log OBSERVED-COVERED (out=$env_out)"
-ok "drill: enforced coverage comments on the fallback-signal mechanism issue"
-
-: >"$commented"
-: >"$drill/triage.md"
-closed="$drill/closed.txt"
-: >"$closed"
-export GH_CLOSED="$closed"
-printf '%s\n' '[{"number":479,"title":"mechanism for TOP GEAR","body":"- source: `decisions-ledger.md: 2026-08-26 | covered ledger rule`\n\nsignal: rule-enforcement/led-2026-08-26-covered-ledger-rule","comments":[{"body":"canary-covered: decisions-ledger.md: 2026-08-26 | covered ledger rule\n"}]},{"number":78,"title":"queued","body":"signal: rule-enforcement/sr-queued-fixture"}]' \
-  >"$drill/open.json"
-run_drill
-[[ "$env_rc" == "0" ]] || fail "observe replay: canary must stay exit 0 (rc=$env_rc out=$env_out)"
-if grep -q create "$created"; then
-  fail "observe replay: must not file"
-fi
-if grep -q . "$commented"; then
-  fail "observe replay: must not comment again (commented=$(cat "$commented") out=$env_out)"
-fi
-# Observe-to-close close step (fleet-ops#521): #479 carries the canary-covered
-# marker AND its rule is enforced -> the canary closes it as completed. #78 is
-# a queued row (no enforced coverage) -> must NOT be closed.
-grep -q '^479$' "$closed" || fail "observe-to-close close: must close #479 (closed=$(cat "$closed") out=$env_out)"
-! grep -q '^78$' "$closed" || fail "observe-to-close close: must NOT close queued #78 (closed=$(cat "$closed"))"
-grep -q 'OBSERVE-CLOSED' <<<"$env_out" || fail "observe-to-close close: must log OBSERVE-CLOSED (out=$env_out)"
-ok "drill: canary-covered marker is not posted twice"
-ok "drill: observe-to-close closes #479 (marker + enforced); queued #78 stays open"
 
 # fleet-ops#519: run the no-agent-names gate drill as part of the
 # rule-enforcement suite so it is exercised in CI without a workflow edit.
@@ -1304,9 +988,10 @@ ok "rule-enforcement: worker-memory drop-in drill"
 
 # fleet-ops#????: siterep live canary pin wrapper. Nested host so the worker
 # token does not need a workflow edit.
+bash "$here/siterep-live-canary-pin.test.sh" || fail "siterep live canary pin drill failed"
 ok "rule-enforcement: siterep live canary pin drill"
 
-ok "rule-enforcement: matrix, join, stale queued, advisory, auto-file, observe-to-close, no-agent-names, vault-conflict, vault-lint, wipe-lessons, dirty-worktree-audit, spawn-guard, north-star-quality, cline-glm53, repo-visibility, exec-review, vault-knowledge-format, shared-file-collision, work-supply-24h, opencode-m3 catalog, quality-research-weekly, tailscale-acl, verify-harness, paid-flash, token-economy, geo-aeo, quality-ratchet, standing-rules-drift, reserved-classes-precedence, aeo-probe, organ-heartbeat, asset-census, timer-manifest, agent-ready-spec-gate, gh-webhook-prom-quotes, worker-memory-dropin drills (volume-lane-order retired in fleet-ops#3125)"
+ok "rule-enforcement: matrix, join, stale queued, advisory, auto-file, observe-to-close, no-agent-names, vault-conflict, vault-lint, wipe-lessons, dirty-worktree-audit, spawn-guard, north-star-quality, cline-glm53, repo-visibility, exec-review, vault-knowledge-format, shared-file-collision, work-supply-24h, opencode-m3 catalog, quality-research-weekly, tailscale-acl, verify-harness, paid-flash, token-economy, geo-aeo, quality-ratchet, standing-rules-drift, reserved-classes-precedence, aeo-probe, organ-heartbeat, asset-census, timer-manifest, agent-ready-spec-gate, gh-webhook-prom-quotes, worker-memory-dropin, and siterep-live-canary-pin drills (volume-lane-order retired in fleet-ops#3125)"
 
 # fleet-ops#2089: install.sh must self-heal enabled-but-inactive timers
 # (the staleness canary sat dead: enabled, NextElapse=infinity, never

@@ -454,11 +454,15 @@ for v in KEYSTONE_HC_ENV PI_DEADMAN_TEXTFILE PI_DEADMAN_DRYRUN \
 # trip the LIVE (pre-deploy) pi-packet-failed@ -> bin/pi-packet-failed
 # recorder, which has no live-dummy* exclusion and would write a fake triage
 # line + findings-ledger row. unit-escalation@ alone still proves the rail.
-_onfailure="unit-escalation@${unit}.service.service"
+# Glue sweep 2026-09-18: the unit-escalation@ rail was deleted with the
+# escalation tower. pi-packet-failed@ is the remaining OnFailure rail; the
+# dead-man's nonzero deliverable verdict (ExecStopPost below) still lands the
+# unit in --state=failed, where the heartbeat failed-units pass sees it.
+_onfailure=""
 if [[ "${PI_SYSTEMD_RUN_NO_PACKET_FAILED:-0}" != "1" ]]; then
-    _onfailure+=" pi-packet-failed@${unit}.service.service"
+    _onfailure="pi-packet-failed@${unit}.service.service"
 fi
-cmd+=(--property="OnFailure=${_onfailure}")
+[[ -n "$_onfailure" ]] && cmd+=(--property="OnFailure=${_onfailure}")
 cmd+=(--property="ExecStartPost=${ping_bin} detached start")
 if [[ "${PI_SALVAGE_DISABLE:-0}" != "1" ]]; then
     # Repeated --property=ExecStopPost= APPENDS (proven live 2026-09-07): a

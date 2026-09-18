@@ -40,7 +40,6 @@ required=(
   "bin/fleet-heartbeat-low-water-mark /home/nish/.local/bin/fleet-heartbeat-low-water-mark"
   "bin/fleet-heartbeat-red-pr-repair /home/nish/.local/bin/fleet-heartbeat-red-pr-repair"
   "bin/ram-measure /home/nish/.local/bin/ram-measure"
-  "bin/fleet-escalation-canary /home/nish/.local/bin/fleet-escalation-canary"
   "bin/worker-app-canary /home/nish/.local/bin/worker-app-canary"
   "bin/fleet-credential-expiry-canary /home/nish/.local/bin/fleet-credential-expiry-canary"
   "lib/credential-expiry-canary.py /home/nish/.local/lib/pi-packet/credential-expiry-canary.py"
@@ -72,7 +71,6 @@ helpers = {
     "AUDITOR_BIN=": "senior-auditor panel",
     "REDPR_BIN=": "red-pr-repair",
     "RAM_BIN=": "ram-measure",
-    "CANARY_BIN=": "escalation-coverage canary",
     # fleet-ops#6115: the #387 entitled-vs-wired canary retired with its
     # tier1 block (entitlement = the proxy model_list; the litellm health
     # canary's census-shortfall verdict owns the question). The #6114

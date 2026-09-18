@@ -165,7 +165,7 @@
         "config/litellm-proxy.yaml",
         "libexec/fleet-litellm-prisma-compat/sitecustomize.py"
       ],
-      "note": "Organ death is probed directly by Prometheus over the litellm scrape job (config/prometheus.yml, 127.0.0.1:4000/metrics/). The /health canary that emitted fleet_litellm_proxy_up was deleted 2026-09-18 (2709 unit deaths in 7 days from per-minute restart-survival glue). litellm-postgres and litellm-redis were de-registered with it: their heartbeat gauges came from that canary and no exporter replaces them; the units stay live and ride the universal unit-death escalation (systemd/service.d/10-escalate.conf), and the proxy cannot serve without them, so this alert covers their death too."
+      "note": "Organ death is probed directly by Prometheus over the litellm scrape job (config/prometheus.yml, 127.0.0.1:4000/metrics/). The /health canary that emitted fleet_litellm_proxy_up was deleted 2026-09-18 (2709 unit deaths in 7 days from per-minute restart-survival glue). litellm-postgres and litellm-redis were de-registered with it: their heartbeat gauges came from that canary and no exporter replaces them; the units stay live on their own Restart=on-failure (the universal unit-death escalation drop-in was deleted in the glue sweep 2026-09-18), and the proxy cannot serve without them, so this alert covers their death too."
     }
   ]
 }

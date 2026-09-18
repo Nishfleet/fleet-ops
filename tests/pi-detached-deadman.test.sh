@@ -284,8 +284,11 @@ out="$(env "${common[@]}" PI_DEADMAN_DISPATCH=77777777-7777-7777-7777-7777777777
 [[ $fcl_rc -eq 1 ]] || fail "false-claim verdict must exit 1 (died, #5456-F), got $fcl_rc: $out"
 grep -q 'unit="u-falseclaim"' "$tf" \
     || fail "a false LIVE claim must write the died series: $(cat "$tf")"
-grep -q 'reason=unit-false-live-claim source=pi-detached-deadman' "$esc_log" \
-    || fail "false claim must write STOP-REASON unit-false-live-claim: $(cat "$esc_log")"
+# Glue sweep 2026-09-18: the STOP-REASON escalation write was deleted with the
+# escalation tower. The load-bearing signals below (died series, exit 1,
+# DEPLOY-CLAIM-FALSE loud, dispatch-ledger verdict) are unchanged.
+printf '%s\n' "$out" | grep -q 'reason=unit-false-live-claim' \
+    || fail "false claim must name reason=unit-false-live-claim: $out"
 printf '%s\n' "$out" | grep -q 'DEPLOY-CLAIM-FALSE' \
     || fail "false claim must loud DEPLOY-CLAIM-FALSE: $out"
 grep -q '"unit":"u-falseclaim".*"verdict":"false-live-claim"' "$ledger" \
@@ -377,8 +380,8 @@ grep -q 'error_class="connection",cause_unit="fleet-litellm-proxy"' "$tf" \
     || fail "connection+bounce death must carry BOTH attribution labels: $(cat "$tf")"
 printf '%s\n' "$out" | grep -q 'bounce: error_class=connection cause_unit=fleet-litellm-proxy (fleet-ops#5799)' \
     || fail "the died path must send the bounce: line to stderr (STOP-REASON rail): $out"
-grep -q 'reason=unit-stopped-without-deliverable source=pi-detached-deadman' "$esc_log" \
-    || fail "attribution must not disturb the #4266 STOP-REASON: $(cat "$esc_log")"
+printf '%s\n' "$out" | grep -q 'reason=unit-stopped-without-deliverable' \
+    || fail "attribution must not disturb the #4266 clean-stop reason: $out"
 ok "connection-class death + proxy stop+start: gauge labels + bounce: line, #4266 reason untouched"
 
 # 10c. Connection-class death WITHOUT a proxy stop+start in the window:
