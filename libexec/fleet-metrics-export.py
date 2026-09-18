@@ -165,13 +165,10 @@ TEST_ALERT_FILE = Path(f"/run/user/{os.getuid()}/fleet-test-alert")
 # Self-observation metrics (Task 2). All stdlib; gh is cached to <=1 call/30min.
 HELP_MPR = "# HELP fleet_merged_prs_24h Merged PR count per repo in the trailing 24h."
 TYPE_MPR = "# TYPE fleet_merged_prs_24h gauge"
-HELP_OPEN = "# HELP fleet_open_prs Open pull-request count per repo from a cached org snapshot."
-TYPE_OPEN = "# TYPE fleet_open_prs gauge"
 HELP_CI = "# HELP fleet_main_ci_green 1 if default-branch CI is green, 0 if red. PENDING rollup resolved from latest completed CI run; repos with no CI omitted. Tracks only the workflow literally named \"CI\" — a repo's production-deploy greenness is fleet_product_deploy_green (fleet-ops#5140)."
 TYPE_CI = "# TYPE fleet_main_ci_green gauge"
 HELP_FRESH = "# HELP fleet_gh_cache_fresh 1 if this gh-derived family is served from a cache younger than 2h."
 TYPE_FRESH = "# TYPE fleet_gh_cache_fresh gauge"
-HELP_CTS = "# HELP fleet_gh_cache_timestamp_seconds Epoch seconds at which the served data for this gh-derived family was MEASURED. Equals the cache write time when the cache was served, and the export time when gh was just fetched. A consumer of a cached family (the console tiles) must stamp this, not its own run time: stamping the export time on a <=30 min old count reads as seconds-fresh (fleet-ops#5155, ConsoleLying tile=open_prs)."
 
 # Undersaturation-guard metrics (2026-08-27, fleet-ops UNDERSATURATED — the
 # deleted fleet1 watchdog's Pi-era reincarnation on stock machinery).
@@ -199,28 +196,6 @@ TYPE_READY = "# TYPE fleet_ready_work gauge"
 HELP_MAINT = "# HELP fleet_maintenance_quiescing 1 during the weekly maintenance window (or manual quiesce), else 0. Gates FleetUndersaturated. Missing flag -> 0 (fail-safe toward alerting)."
 TYPE_MAINT = "# TYPE fleet_maintenance_quiescing gauge"
 
-
-# Self-maintenance + PR-quality metrics (2026-08-27, fleet-ops#1136).
-# fleet2 died at 64% self-maintenance; the fleet-ops:product merge split was
-# unmeasured. These make it a live number and classify merged PRs by title
-# prefix (feat->upgrade, fix/test->repair, chore->churn; refine later).
-# `fleet_self_maintenance_merges{kind="self|product|total"}` — always emitted
-# (the organ heartbeat; absent() fires if this family disappears).
-# `fleet_self_maintenance_ratio` — self/total, 0..1; emitted only when total>0
-# so a no-merge day does not paint a false 0% (the absent rule keys on the
-# always-emitted `kind="total"` gauge, not the ratio).
-# `fleet_pr_quality_24h{class="upgrade|repair|churn"}` — merged-PR counts.
-# `fleet_pr_quality_share{class="upgrade|repair|churn"}` — class/total, 0..1;
-# emitted only when total>0. Trend alerts ride the 24h-offset delta, never a
-# level threshold (levels are Nish's policy; trends are physics).
-HELP_SM = "# HELP fleet_self_maintenance_merges Merged-PR count in the trailing 24h by self-maintenance kind. kind=self: fleet-infra repos (config/self-maintenance-repos.json). kind=product: every other Nishfleet repo. kind=total: self+product. Always emitted (organ heartbeat)."
-TYPE_SM = "# TYPE fleet_self_maintenance_merges gauge"
-HELP_SMR = "# HELP fleet_self_maintenance_ratio self-maintenance merges / total merges, trailing 24h. 0..1. Omitted when total=0 (no-merge day) so a quiet day is not a false 0%."
-TYPE_SMR = "# TYPE fleet_self_maintenance_ratio gauge"
-HELP_PQ = "# HELP fleet_pr_quality_24h Merged-PR count in the trailing 24h by quality class (title-prefix heuristic: feat->upgrade, fix/test->repair, chore->churn; unclassified->churn). Refine later (fleet-ops#1136)."
-TYPE_PQ = "# TYPE fleet_pr_quality_24h gauge"
-HELP_PQS = "# HELP fleet_pr_quality_share class count / total merged PRs, trailing 24h. 0..1. Omitted when total=0. Trend alerts ride the 24h-offset delta, never a level."
-TYPE_PQS = "# TYPE fleet_pr_quality_share gauge"
 
 # Verified-merges numerator (fleet-ops#1136 objective decision, 2026-08-28).
 # The fleet's single optimization target is max quality-throughput: verified,
@@ -294,43 +269,19 @@ GH_OWNER = "Nishfleet"
 GH_TIMEOUT = 45          # gh can be slow; exporter must finish < 60s
 GH_PAGES = 10
 
-# GitHub API rate-limit metrics (fleet-ops#1350). The 5000/hr core budget is
-# the next binding constraint past RAM (Nish 2026-08-27 #1167 ceiling addendum),
-# so the exporter pulls `gh api rate_limit` once per run and emits the
-# remaining/limit/reset for the three resources the fleet actually consumes:
-# core (REST), search (REST search), graphql (the merged-PR / repo-snapshot
-# path). reset is an epoch-seconds gauge so a dashboard can plot "time
-# until next reset" with time() - fleet_gh_rate_limit_reset{resource=...}.
+# GitHub API rate-limit heartbeat (fleet-ops#1350). The 5000/hr core budget
+# is the next binding constraint past RAM (Nish 2026-08-27 #1167 ceiling
+# addendum), so the exporter pulls `gh api rate_limit` once per run. The
+# per-resource remaining/limit/reset/low gauges were deleted on 2026-09-18
+# (fourth cut, Jev p=0.79 ref fourth-cut-metrics) — nothing read them. The
+# shaped dict is still LOAD-BEARING for two readers:
+#   - _slo_compliance (gh_rate_limit_headroom SLO) reads remaining/limit
+#     straight off the returned dict, never off Prometheus;
+#   - _write_gh_rate_limit_state writes the pi-intake-tick.sh throttle
+#     side-car (low + smallest remaining/limit) that gates claims.
 # The `fleet_gh_rate_limit_fetched_seconds` gauge is the organ heartbeat
 # (fleet-ops#1010): the absent() rule in fleet_rules.yml fires when the
-# exporter stops pulling the limit. fleet_gh_rate_limit_low{resource=...} is
-# 1 when remaining < 20% of limit, the threshold pi-intake-tick.sh uses to
-# hold claims this tick. A failing gh call OMITS the family (no frozen
-# "0 remaining" that would falsely trigger the throttle).
-HELP_GHRL = (
-    "# HELP fleet_gh_rate_limit_remaining "
-    "GitHub API requests remaining in the current window per resource. "
-    "Omitted when the rate_limit fetch fails (never a frozen value)."
-)
-TYPE_GHRL = "# TYPE fleet_gh_rate_limit_remaining gauge"
-HELP_GHRLIM = (
-    "# HELP fleet_gh_rate_limit_limit "
-    "GitHub API requests limit per resource (the window maximum)."
-)
-TYPE_GHRLIM = "# TYPE fleet_gh_rate_limit_limit gauge"
-HELP_GHRSET = (
-    "# HELP fleet_gh_rate_limit_reset "
-    "Epoch (s) when the GitHub API window resets for the resource. "
-    "time() - fleet_gh_rate_limit_reset is the seconds-to-reset."
-)
-TYPE_GHRSET = "# TYPE fleet_gh_rate_limit_reset gauge"
-HELP_GHLOW = (
-    "# HELP fleet_gh_rate_limit_low "
-    "1 when remaining < 20% of limit (the throttle threshold in "
-    "pi-intake-tick.sh, fleet-ops#1350). 0 when remaining >= 20%. "
-    "Omitted when the rate_limit fetch fails."
-)
-TYPE_GHLOW = "# TYPE fleet_gh_rate_limit_low gauge"
+# exporter stops pulling the limit. A failing gh call OMITS the family.
 HELP_GHFT = (
     "# HELP fleet_gh_rate_limit_fetched_seconds "
     "Epoch (s) of the last successful gh rate_limit fetch. Organ "
@@ -992,16 +943,6 @@ HELP_CREDITS = (
     "for metered providers from vendor credits/usage endpoints (fleet-ops#3283)."
 )
 TYPE_CREDITS = "# TYPE fleet_seat_credits_remaining_usd gauge"
-HELP_FREE_TOKENS = (
-    "# HELP fleet_seat_free_tokens_remaining Remaining free-tier tokens "
-    "for xkiro (fleet-ops#3283)."
-)
-TYPE_FREE_TOKENS = "# TYPE fleet_seat_free_tokens_remaining gauge"
-HELP_HELD = (
-    "# HELP fleet_seat_credits_held_usd Held/pending spend in USD "
-    "for xkiro wallet (fleet-ops#3283)."
-)
-TYPE_HELD = "# TYPE fleet_seat_credits_held_usd gauge"
 
 
 def _emit_spend(lines, spend):
@@ -1297,29 +1238,6 @@ def _emit_credits_remaining(lines, balances):
         lines.extend(rows)
 
 
-def _emit_xkiro_wallet(lines, xkiro):
-    """Append xkiro free tokens and wallet held metrics."""
-    if xkiro is None:
-        return
-    remaining, balance, held = xkiro
-    rows = []
-    if remaining is not None:
-        rows.append(
-            f'fleet_seat_free_tokens_remaining{{provider="xkiro"}} {remaining}'
-        )
-    if held is not None:
-        rows.append(
-            f'fleet_seat_credits_held_usd{{provider="xkiro"}} {held:.6f}'
-        )
-    if rows:
-        lines.append("")
-        lines.append(HELP_FREE_TOKENS)
-        lines.append(TYPE_FREE_TOKENS)
-        lines.append(HELP_HELD)
-        lines.append(TYPE_HELD)
-        lines.extend(rows)
-
-
 # --- Live seat quotas (fleet-ops#4217) ---
 # Nish 2026-09-07: the fleet learns a wall reactively (429/402) and benches on
 # guesses. This family emits the LIVE remaining quota per seat so judges and
@@ -1345,12 +1263,6 @@ HELP_QUOTA_PCT = (
     "dashboard (headless-browser scrape), stale (session died, repair pending)."
 )
 TYPE_QUOTA_PCT = "# TYPE fleet_seat_quota_remaining_pct gauge"
-HELP_QUOTA_RESET = (
-    "# HELP fleet_seat_quota_reset_seconds Seconds until the quota window "
-    "resets, per provider per window (fleet-ops#4217). 0 when the provider "
-    "does not report a reset time."
-)
-TYPE_QUOTA_RESET = "# TYPE fleet_seat_quota_reset_seconds gauge"
 HELP_QUOTA_OBSERVED = (
     "# HELP fleet_seat_quota_observed_seconds Seconds since the quota was last "
     "observed from the provider (fleet-ops#4217). absent() on this family is "
@@ -2127,15 +2039,9 @@ def _emit_seat_quota(lines, provider, rows, source, observed_at):
     for r in rows:
         window = _prom_label(r.get("window") or "primary")
         pct = r["pct"]
-        reset_s = r.get("reset_s")
-        reset_val = float(reset_s) if reset_s is not None else 0.0
         lines.append(
             f'fleet_seat_quota_remaining_pct{{provider="{_prom_label(provider)}",'
             f'window="{window}",source="{_prom_label(source)}"}} {pct:.4f}'
-        )
-        lines.append(
-            f'fleet_seat_quota_reset_seconds{{provider="{_prom_label(provider)}",'
-            f'window="{window}",source="{_prom_label(source)}"}} {reset_val:.4f}'
         )
     lines.append(
         f'fleet_seat_quota_observed_seconds{{provider="{_prom_label(provider)}",'
@@ -2185,18 +2091,11 @@ def _emit_seat_quota_headers(lines):
     lines.append("")
     lines.append(HELP_QUOTA_PCT)
     lines.append(TYPE_QUOTA_PCT)
-    lines.append(HELP_QUOTA_RESET)
-    lines.append(TYPE_QUOTA_RESET)
     lines.append(HELP_QUOTA_OBSERVED)
     lines.append(TYPE_QUOTA_OBSERVED)
 
 
 _GH_FETCHED_THIS_RUN = False
-
-# Measurement time (epoch seconds) of the data _cached_json actually served,
-# per family. See HELP_CTS: a cached family's number was measured when the
-# CACHE was written, not when this exporter run copied it out.
-_CACHE_TS_SERVED = {}
 
 
 def _cached_json(path, fetcher, name):
@@ -2211,23 +2110,19 @@ def _cached_json(path, fetcher, name):
     global _GH_FETCHED_THIS_RUN
     cached, cache_age = _read_cache(path)
     if cache_age is not None and cache_age <= PR_CACHE_TTL and cached is not None:
-        _CACHE_TS_SERVED[name] = time.time() - cache_age
         return cached
     if _GH_FETCHED_THIS_RUN:
         if cached is not None and cache_age is not None and cache_age <= PR_CACHE_STALE:
-            _CACHE_TS_SERVED[name] = time.time() - cache_age
             return cached
         return None
     data = fetcher()
     _GH_FETCHED_THIS_RUN = True
     if data is not None:
         _write_cache(path, data)
-        _CACHE_TS_SERVED[name] = time.time()
         return data
     if cached is not None and cache_age is not None and cache_age <= PR_CACHE_STALE:
         print(f"{name} gh failed, serving stale cache (age={int(cache_age)}s)",
               file=sys.stderr)
-        _CACHE_TS_SERVED[name] = time.time() - cache_age
         return cached
     return None
 
@@ -2938,33 +2833,11 @@ def _keystone_routing_counts():
 
 
 
-# --- Self-maintenance + PR quality (fleet-ops#1136) ------------------------
-
-# Conventional-commit prefix -> quality class. The issue's "to start" heuristic:
-#   feat       -> upgrade  (new forward capability)
-#   fix, test  -> repair   (fixing / bulletproofing existing behaviour)
-#   chore      -> churn    (no forward value)
-#   everything else -> churn (refine later; churn is the safe catch-all so an
-#                       unclassified merge never inflates 'upgrade').
-# A bare title with no prefix (e.g. "Update foo.py") also lands in churn.
-_QUALITY_PREFIX = {
-    "feat": "upgrade",
-    "fix": "repair",
-    "test": "repair",
-    "chore": "churn",
-}
-# Match the leading type token of a conventional-commit title:
-#   "feat(scope): ...", "fix!: ...", "chore: ...", "Feat: ..." (case-insensitive).
-# An optional scope in parens and a '!' for a breaking change are tolerated.
-_PREFIX_RE = re.compile(r"^\s*([A-Za-z]+)(?:\([^)]*\))?\s*!?\s*:")
-
-
-def _classify_title(title):
-    """Return 'upgrade' | 'repair' | 'churn' for a merged-PR title."""
-    m = _PREFIX_RE.match(title or "")
-    if not m:
-        return "churn"
-    return _QUALITY_PREFIX.get(m.group(1).lower(), "churn")
+# --- Self-maintenance repo set (fleet-ops#1136) ----------------------------
+# The fleet_self_maintenance_* / fleet_pr_quality_* families were deleted on
+# 2026-09-18 (fourth cut). This set survives because the queue-composition
+# counters (_gh_ready_work / _gh_all_agent_ready) split open agent-ready work
+# into self vs product with it.
 
 
 def _self_maintenance_repos():
@@ -2990,41 +2863,6 @@ def _self_maintenance_repos():
         if out:
             return out
     return {"Nishfleet/" + r for r in SELF_MAINT_DEFAULT_SET}
-
-
-def _self_maintenance_and_quality(detail):
-    """Derive self-maintenance counts + ratio and quality counts + shares.
-
-    Input: list of {"repo": "Nishfleet/<name>", "title": "..."} from
-    _merged_prs_detail(). Returns a dict:
-      {"self": n, "product": n, "total": n, "ratio": float|None,
-       "quality": {"upgrade": n, "repair": n, "churn": n},
-       "share":   {"upgrade": f|None, "repair": f|None, "churn": f|None}}
-    ratio/share are None when total == 0 (caller omits those gauges).
-    """
-    self_repos = _self_maintenance_repos()
-    self_n = product_n = 0
-    quality = {"upgrade": 0, "repair": 0, "churn": 0}
-    for row in detail or []:
-        repo = row.get("repo") or ""
-        if repo in self_repos:
-            self_n += 1
-        else:
-            product_n += 1
-        quality[_classify_title(row.get("title") or "")] += 1
-    total = self_n + product_n
-    ratio = (self_n / total) if total > 0 else None
-    share = {}
-    for cls in ("upgrade", "repair", "churn"):
-        share[cls] = (quality[cls] / total) if total > 0 else None
-    return {
-        "self": self_n,
-        "product": product_n,
-        "total": total,
-        "ratio": ratio,
-        "quality": quality,
-        "share": share,
-    }
 
 
 # --- Verified-merges numerator (fleet-ops#1136 objective decision) ---------
@@ -4022,6 +3860,7 @@ _DQ_GAUGES = (
 
 
 
+
 # --- close-duplicates close guard (fleet-ops#3161) ------------------------
 # The heartbeat writes lib/issue-file.py close-duplicates summary to
 # $FLEET_HEARTBEAT_LOG_DIR/close-duplicates.json every tick. We emit the
@@ -4410,55 +4249,19 @@ def _emit_deploy_fault_gate(lines):
     """Append the fleet_deploy_fault_* gauges. Never raises: missing or
     unparseable summaries emit 0 so the tripwire only fires on a real count."""
     violations = 0
-    labeled = 0
     try:
         data = json.loads(LIFECYCLE_SWEEP_JSON.read_text(encoding="utf-8"))
         if isinstance(data.get("deploy_fault_closed_without_green"), (int, float)):
             violations = int(data["deploy_fault_closed_without_green"])
-        if isinstance(data.get("deploy_fault_labeled"), (int, float)):
-            labeled = int(data["deploy_fault_labeled"])
-    except (OSError, json.JSONDecodeError):
-        pass
-    blocked = 0
-    try:
-        data = json.loads(MERGED_PR_CLOSE_JSON.read_text(encoding="utf-8"))
-        if isinstance(data.get("deploy_fault_gate_blocked"), (int, float)):
-            blocked = int(data["deploy_fault_gate_blocked"])
     except (OSError, json.JSONDecodeError):
         pass
     lines.append("")
     lines.append(HELP_DFG)
     lines.append(TYPE_DFG)
     lines.append(f"fleet_deploy_fault_closed_without_green {violations}")
-    lines.append(HELP_DFG_BLOCKED)
-    lines.append(TYPE_DFG_BLOCKED)
-    lines.append(f"fleet_deploy_fault_gate_blocked {blocked}")
-    lines.append(HELP_DFG_LABELED)
-    lines.append(TYPE_DFG_LABELED)
-    lines.append(f"fleet_deploy_fault_labeled {labeled}")
-
-
-TYPE_DFG_LABELED = "# TYPE fleet_deploy_fault_labeled gauge"
-
-
-HELP_DFG_LABELED = (
-    "# HELP fleet_deploy_fault_labeled Open issues the lifecycle sweep labelled "
-    "deploy-fault this tick because the body cites a failed production-deploy "
-    "run (fleet-ops#5785)."
-)
 
 
 TYPE_DFG = "# TYPE fleet_deploy_fault_closed_without_green gauge"
-
-
-HELP_DFG_BLOCKED = (
-    "# HELP fleet_deploy_fault_gate_blocked Deliveries observe-to-close refused "
-    "to close this tick because the deploy-fault issue has no green "
-    "production-deploy run containing the fix yet (fleet-ops#5785)."
-)
-
-
-TYPE_DFG_BLOCKED = "# TYPE fleet_deploy_fault_gate_blocked gauge"
 
 
 HELP_DFG = (
@@ -4466,73 +4269,6 @@ HELP_DFG = (
     "closed without a green production-deploy run proving the fix in the last "
     "lifecycle-label-sweep tick (each was reopened; fleet-ops#5785). Must be 0."
 )
-
-
-def _read_money_boundary_pages():
-    """Count money-boundary page log lines by reason over the trailing 7d.
-
-    fleet-ops#4627: the success metric is
-    `nish_boundary_money_pages_total{reason="provider_credits_dry"} == 0
-    while fleet_seat_healthy{class=~"prepaid|free"} > 0` over seven days.
-    The writer (bin/money-boundary-raise) appends one line per page (or
-    suppressed page) to money-boundary-pages.log:
-        <ts> reason=<reason> provider=<p>            (a real page)
-        <ts> suppressed reason=<reason> provider=<p>  (a suppressed page)
-    Returns a dict {reason: count} of REAL (non-suppressed) pages in the
-    trailing 7 days. Suppressed lines do not count toward the total — the
-    metric tracks pages that actually reached Nish. Returns {} when the
-    log is missing/unreadable.
-    """
-    log = _money_boundary_pages_log()
-    if not log.is_file():
-        return {}
-    cutoff = time.time() - 7 * 86400
-    counts = {}
-    try:
-        for line in log.read_text().splitlines():
-            line = line.strip()
-            if not line or line.startswith("#"):
-                continue
-            # Skip suppressed lines — they did not reach Nish. The writer
-            # emits `<ts> suppressed reason=...` (the remainder after the
-            # first space starts with "suppressed").
-            if line.split(" ", 1)[1].startswith("suppressed"):
-                continue
-            ts = line.split(" ", 1)[0]
-            try:
-                epoch = calendar.timegm(time.strptime(ts[:19], "%Y-%m-%dT%H:%M:%S"))
-            except ValueError:
-                continue
-            if epoch < cutoff:
-                continue
-            m = re.search(r"reason=([A-Za-z0-9_-]+)", line)
-            if not m:
-                continue
-            reason = m.group(1)
-            counts[reason] = counts.get(reason, 0) + 1
-    except OSError:
-        return {}
-    return counts
-
-
-def _money_boundary_pages_log():
-    """Path to the money-boundary pages log (writer's page counter)."""
-    return Path(os.environ.get(
-        "MONEY_BOUNDARY_PAGES_LOG",
-        "/home/nish/workspaces/agent-state/lanes/money-boundary-pages.log",
-    ))
-
-
-# fleet-ops#4627: money-boundary page counter. The writer
-# (bin/money-boundary-raise) appends one line per page to
-# money-boundary-pages.log; this counter rolls them up by reason over the
-# trailing 7d. The success metric is
-# nish_boundary_money_pages_total{reason="provider_credits_dry"} == 0 while
-# fleet_seat_healthy{class=~"prepaid|free"} > 0.
-HELP_MBPT = "# HELP nish_boundary_money_pages_total Number of MONEY-BOUNDARY pages delivered to Nish by reason over the trailing 7 days (fleet-ops#4627). Suppressed pages (fleet not starved) do not count."
-
-
-TYPE_MBPT = "# TYPE nish_boundary_money_pages_total counter"
 
 
 def main():
@@ -4661,14 +4397,6 @@ def main():
     lines.append(TYPE_SHC)
     for _cls, _n in sorted(_shc.items()):
         lines.append(f'fleet_seat_healthy{{class="{_cls}"}} {_n}')
-    # fleet-ops#4627: money-boundary page counter. Nish paging is reserved and
-    # load-bearing; this rolls up real (non-suppressed) pages by reason over 7d.
-    _mbp = _read_money_boundary_pages()
-    lines.append("")
-    lines.append(HELP_MBPT)
-    lines.append(TYPE_MBPT)
-    for _reason, _n in sorted(_mbp.items()):
-        lines.append(f'nish_boundary_money_pages_total{{reason="{_reason}"}} {_n}')
     # fleet-ops#3111: stale cap=0 seats. A stale cap=0 seat
     # (intentional_cap_zero=stale) has a dated reason and should be
     # re-auditioned; seat-lib auto-expires it to cap=1 after 14d. This metric
@@ -4706,31 +4434,6 @@ def main():
     rl = _gh_rate_limit()
     if rl is not None:
         lines.append("")
-        lines.append(HELP_GHRL)
-        lines.append(TYPE_GHRL)
-        lines.append(HELP_GHRLIM)
-        lines.append(TYPE_GHRLIM)
-        lines.append(HELP_GHRSET)
-        lines.append(TYPE_GHRSET)
-        lines.append(HELP_GHLOW)
-        lines.append(TYPE_GHLOW)
-        for r in GH_RATE_LIMIT_RESOURCES:
-            row = rl.get(r)
-            if row is None:
-                continue
-            lines.append(
-                f'fleet_gh_rate_limit_remaining{{resource="{_prom_label(r)}"}} {row["remaining"]}'
-            )
-            lines.append(
-                f'fleet_gh_rate_limit_limit{{resource="{_prom_label(r)}"}} {row["limit"]}'
-            )
-            lines.append(
-                f'fleet_gh_rate_limit_reset{{resource="{_prom_label(r)}"}} {row["reset"]}'
-            )
-            lines.append(
-                f'fleet_gh_rate_limit_low{{resource="{_prom_label(r)}"}} {row["low"]}'
-            )
-        lines.append("")
         lines.append(HELP_GHFT)
         lines.append(TYPE_GHFT)
         lines.append(f"fleet_gh_rate_limit_fetched_seconds {time.time():.3f}")
@@ -4747,8 +4450,8 @@ def main():
     # gh-derived families are omitted entirely if gh fails AND cache is >2h.
     fresh_kinds = []
     # fleet-ops#1136: fetch the detailed merged-PR records ONCE; the per-repo
-    # family, the self-maintenance ratio, and the upgrade/repair/churn
-    # classification all derive from this single fetch (one gh call/run).
+    # family and the verified-merge numerator both derive from this single
+    # fetch (one gh call/run).
     detail = _merged_prs_detail()
     pr_counts = None
     if detail is not None:
@@ -4762,38 +4465,6 @@ def main():
                 f'fleet_merged_prs_24h{{repo="{_prom_label(repo)}"}} {pr_counts[repo]}'
             )
         fresh_kinds.append("merged_prs")
-
-        # --- Self-maintenance + PR quality (fleet-ops#1136) ---
-        # Always emitted when the merged-PR fetch succeeded (even on a
-        # no-merge day: counts are 0, ratio/share omitted). The
-        # kind="total" gauge is the organ heartbeat for FleetSelfMaintenanceAbsent.
-        sm = _self_maintenance_and_quality(detail)
-        lines.append("")
-        lines.append(HELP_SM)
-        lines.append(TYPE_SM)
-        lines.append(f'fleet_self_maintenance_merges{{kind="self"}} {sm["self"]}')
-        lines.append(f'fleet_self_maintenance_merges{{kind="product"}} {sm["product"]}')
-        lines.append(f'fleet_self_maintenance_merges{{kind="total"}} {sm["total"]}')
-        if sm["ratio"] is not None:
-            lines.append("")
-            lines.append(HELP_SMR)
-            lines.append(TYPE_SMR)
-            lines.append(f"fleet_self_maintenance_ratio {sm['ratio']:.6f}")
-        lines.append("")
-        lines.append(HELP_PQ)
-        lines.append(TYPE_PQ)
-        for cls in ("upgrade", "repair", "churn"):
-            lines.append(
-                f'fleet_pr_quality_24h{{class="{cls}"}} {sm["quality"][cls]}'
-            )
-        if sm["total"] > 0:
-            lines.append("")
-            lines.append(HELP_PQS)
-            lines.append(TYPE_PQS)
-            for cls in ("upgrade", "repair", "churn"):
-                lines.append(
-                    f'fleet_pr_quality_share{{class="{cls}"}} {sm['share'][cls]:.6f}'
-                )
 
         # --- Verified-merges numerator (fleet-ops#1136 objective decision) ---
         # A merged PR is verified when it has a non-null effective diff AND
@@ -4817,15 +4488,7 @@ def main():
     snap = _repo_snapshot()
     main_ci = {}
     if snap is not None:
-        open_prs = snap.get("open_prs") or {}
         main_ci = snap.get("main_ci") or {}
-        lines.append("")
-        lines.append(HELP_OPEN)
-        lines.append(TYPE_OPEN)
-        for repo in sorted(open_prs):
-            lines.append(
-                f'fleet_open_prs{{repo="{_prom_label(repo)}"}} {open_prs[repo]}'
-            )
         lines.append("")
         lines.append(HELP_CI)
         lines.append(TYPE_CI)
@@ -4915,7 +4578,6 @@ def main():
     if xkiro_usage is not None and xkiro_usage[1] is not None:
         balances["xkiro"] = xkiro_usage[1]
     _emit_credits_remaining(lines, balances)
-    _emit_xkiro_wallet(lines, xkiro_usage)
 
     # --- Live seat quotas (fleet-ops#4217) ---
     # VPS-native API reads. Each fetcher is cached independently; a None
