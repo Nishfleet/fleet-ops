@@ -35,7 +35,6 @@ WATCHED = (
     "decisions-ledger.md",
     "litellm-seat.sh",
     "seat-caps.json",
-    "entitled-seats.json",
     "intake-repos.json",
     "pi-extensions-allowlist.json",
 )
@@ -57,7 +56,6 @@ REPO_FALLBACKS = (
     ("global-standing-rules.md", VAULT_REMOTE),
     ("decisions-ledger.md", VAULT_REMOTE),
     ("seat-caps.json", FLEET_OPS_REMOTE),
-    ("entitled-seats.json", FLEET_OPS_REMOTE),
     ("litellm-seat.sh", FLEET_OPS_REMOTE),
 )
 

@@ -200,7 +200,7 @@ OFF_MAIN_MARKER = "deploy-clone-off-main: fleet-ops#477"
 # MANIFEST entries installed as file COPIES (not symlinks) by design; exempt
 # from the must-be-a-symlink check. Keep in lockstep with MANIFEST
 # (fleet-ops#2910 seat-caps.json, #3838 pi-models.json, #3858 the gap).
-COPY_INSTALLED_SRC_NAMES = {"seat-caps.json", "pi-models.json", "model-candidates.json"}
+COPY_INSTALLED_SRC_NAMES = {"seat-caps.json", "pi-models.json"}
 HOTPATCH_MARKER = "stale-overwrite-hot-patch: fleet-ops#463"
 VOLATILE_MARKER = "volatile-unit-path: fleet-ops#369"
 # fleet-ops#2725: the deploy-clone on main but dirty/diverged is a distinct
@@ -1556,7 +1556,7 @@ def check_live_matches_origin_main(checkout: Path) -> None:
             continue
         if actual != expected:
             # fleet-ops#4948 parity: a copy-install JSON config (seat-caps.json,
-            # pi-models.json, model-candidates.json) is legitimately
+            # pi-models.json) is legitimately
             # re-serialized live, so compare it semantically. A real
             # structural change, unparseable JSON, or any non-copy-install
             # dest still fails byte-strict. Duplicate object keys collapse the
