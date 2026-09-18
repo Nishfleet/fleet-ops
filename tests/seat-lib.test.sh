@@ -53,7 +53,6 @@ ok "litellm_seat returns litellm<TAB>group"
 ok "spawn-fail defaults are set for set -u wrappers"
 
 # Nested CI hosts that do not depend on the deleted routing library.
-bash "$here/salvage-secret-scan.test.sh" || fail "salvage-secret-scan tests failed"
 bash "$here/pi-packet-verdict.test.sh" || fail "pi-packet-verdict tests failed"
 bash "$here/repo-privacy-guard.test.sh" || fail "repo-privacy-guard tests failed"
 bash "$here/scout-prompt-difficulty.test.sh" || fail "scout-prompt-difficulty tests failed"

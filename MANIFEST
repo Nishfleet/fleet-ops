@@ -581,10 +581,6 @@ config/geo-aeo-policy.json /home/nish/.local/state/pi-packet/geo-aeo-policy.json
 # agent-ready count / measured close rate. ExecCondition rests at >=24h;
 # low-water go-hams at <12h; heartbeat canary fail-loud if scouts sit idle
 # under 12h. Heartbeat-tier1 block 27.
-# fleet-ops#544: VPS→Mac Tailscale grants lockdown canary (led-tailscale).
-# Fail-loud if compiled PacketFilter (`tailscale debug netmap`) allows this
-# VPS as src toward the Mac. Heartbeat-tier1 block 28.
-config/tailscale-acl-lockdown.json /home/nish/.local/state/pi-packet/tailscale-acl-lockdown.json
 # fleet-ops#2151: tailscaled localapi socket reachability as the
 # UNPRIVILEGED user. The ACL canary (block 28) reads netmap via sudo,
 # which bypasses the /run/tailscale socket-dir permission; a 0700
@@ -715,11 +711,8 @@ systemd/fleet-deploy-check.timer /home/nish/.config/systemd/user/fleet-deploy-ch
 # before claim). Sourced by pi-intake-tick.sh; the fallback path in the
 # tick resolves this live install copy.
 lib/spec-judge.sh /home/nish/.local/lib/pi-packet/spec-judge.sh
-# fleet-ops#1204 salvage pre-push secret-scan helper (p1204-scan)
-bin/salvage-secret-scan /home/nish/.local/bin/salvage-secret-scan
 # fleet-ops#796 sgscan wrapper — semgrep diff-scan review gate
 bin/sgscan /home/nish/.local/bin/sgscan
-lib/salvage_secret_scan.py /home/nish/.local/lib/pi-packet/salvage_secret_scan.py
 # fleet-ops#796: repo-ize the sgscan semgrep wrapper so worker review gates are
 # version-controlled, and fix --help / unknown-flag crashes.
 bin/sgscan /home/nish/.local/bin/sgscan

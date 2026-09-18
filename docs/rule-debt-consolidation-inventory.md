@@ -210,7 +210,7 @@ Plus two conventions (not constraints — process rules for the file itself):
 | led-work-supply-agent-ready | queued(#543) | binding-constraint | demote-to-pointer | — | work supply (agent-ready) |
 | led-gitleaks | enforced | mechanism-exists | demote-to-pointer | — | Gitleaks (mechanism: gitleaks CI check) |
 | led-coderabbit | advisory | advisory | archive | — | CodeRabbit |
-| led-tailscale | enforced | mechanism-exists | demote-to-pointer | — | Tailscale (mechanism: tailscale-acl-lockdown.json) |
+| led-tailscale | retired | mechanism-deleted-20260918 | drop | — | Tailscale VPS→Mac lockdown: canary and its config deleted; the ACL lockdown was RESOLVED 2026-08-26 |
 | led-attestation-breach | enforced | incident-memorial | archive | — | attestation breach evidence (one-time; worker-identity fix is the mechanism) |
 | led-mechanical-fix | queued(#366) | binding-constraint | collapse-into | BC5 | every failure gets a mechanical fix |
 | led-everything-mechanical | queued(#377) | binding-constraint | collapse-into | BC5 | EVERYTHING mechanical |
