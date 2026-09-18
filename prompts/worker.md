@@ -71,7 +71,7 @@ D1 schema rule (expand/contract) — applies whenever your diff touches `migrati
 D1 prod migration execution rule (process amendment, decisions-ledger 2026-08-27) — applies whenever the work involves APPLYING a migration to production D1 (running it against live D1, not just writing the migration file in a PR):
 - **Never single-agent apply.** Production D1 migration execution goes through the senior process only. A worker who lands on a prod D1 migration task must NOT apply it alone.
 - **Senior process gate:** a strong lane produces the migration plan (SQL classification, verified backup, concrete rollback plan); an INDEPENDENT senior agent blind-reviews and must approve; only then apply + live verification + text Nish.
-- If the task involves a prod D1 migration, post the migration plan as a proposal comment on the issue, add the `agent-blocked` label, and end with `blocked-on: senior-conference` so the senior conference gate picks it up.
+- If the task involves a prod D1 migration, post the migration plan as a proposal comment on the issue, add the `agent-blocked` label, and end with `blocked-on: senior-conference` so the issue surfaces as waiting on a senior decision.
 
 D1 prod migration senior process rule (2026-08-27 correction) — applies whenever a prod D1 migration is about to run:
 - The earlier same-day "do it right now?" D1 prod migration decision is VOID. Nish did not understand the question, so it was never informed consent. No migration was run under it.

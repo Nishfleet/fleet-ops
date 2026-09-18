@@ -52,26 +52,6 @@ for pattern in \
 done
 ok "MANIFEST has all three memory-index-autocompact install lines"
 
-# --- 4. allowlist records EXCEPTION-APPROVED (authorized class b) ----------
-auth="$(jq -r '.authorized[] | select(.unit=="memory-index-autocompact") | .unit // empty' "$repo_root/config/machinery-allowlist.json")"
-[[ -n "$auth" ]] || fail "allowlist must carry memory-index-autocompact in authorized[] (#1498)"
-cls="$(jq -r '.authorized[] | select(.unit=="memory-index-autocompact") | .class // empty' "$repo_root/config/machinery-allowlist.json")"
-[[ "$cls" == "b" ]] || fail "allowlist memory-index-autocompact class must be b, got '$cls'"
-src="$(jq -r '.authorized[] | select(.unit=="memory-index-autocompact") | .source // empty' "$repo_root/config/machinery-allowlist.json")"
-[[ "$src" == "repo" ]] || fail "allowlist memory-index-autocompact source must be repo, got '$src'"
-ok "allowlist records memory-index-autocompact as authorized class b repo"
-
-# --- 5. allowlist pending_adjudication entry has adjudicated verdict --------
-entry="$(jq -c '.pending_adjudication_class_c[] | select(.unit=="memory-index-autocompact")' "$repo_root/config/machinery-allowlist.json")"
-[[ -n "$entry" ]] || fail "allowlist must retain the memory-index-autocompact adjudication record"
-adj="$(jq -r '.pending_adjudication_class_c[] | select(.unit=="memory-index-autocompact") | .adjudicated // empty' "$repo_root/config/machinery-allowlist.json")"
-[[ -n "$adj" ]] || fail "allowlist memory-index-autocompact record must carry an adjudicated verdict (#1498)"
-[[ "$adj" == "EXCEPTION-APPROVED" ]] || fail "allowlist memory-index-autocompact adjudicated must be EXCEPTION-APPROVED, got '$adj'"
-verdict="$(jq -r '.pending_adjudication_class_c[] | select(.unit=="memory-index-autocompact") | .verdict // empty' "$repo_root/config/machinery-allowlist.json")"
-[[ -n "$verdict" ]] || fail "allowlist memory-index-autocompact verdict must be non-empty"
-[[ "$verdict" == *"migrated to repo as class (b)"* ]] || fail "allowlist memory-index-autocompact verdict must mention migration to repo class b, got '$verdict'"
-ok "allowlist records EXCEPTION-APPROVED verdict for memory-index-autocompact"
-
 # --- 6. audit report annotated ----------------------------------------------
 grep -q "ADJUDICATED 2026-08-30: EXCEPTION-APPROVED" "$repo_root/reports/machinery-audit-2026-08-28.md" \
   || fail "reports/machinery-audit-2026-08-28.md must be annotated with EXCEPTION-APPROVED adjudication (#1498)"

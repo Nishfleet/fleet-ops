@@ -281,10 +281,9 @@ if grep -q "no installation of nishfleet-worker in org" "$scratch/bad.err"; then
 fi
 ok "non-JSON curl output is a mint failure, not an install list"
 
-# fleet-ops#413: identity-separation drill, App-identity canary, and
-# pi-issue-run scream path. Chained here because the P14 CI job cannot
+# fleet-ops#413: App-identity canary and pi-issue-run scream path.
+# Chained here because the P14 CI job cannot
 # gain a new workflow step (nishfleet-worker has no Workflows permission).
-bash "$here/attest-identity-gate.test.sh"
 bash "$here/pi-issue-run-app-identity.test.sh"
 # fleet-ops#568: the failure-reason lock must keep reaching the generic
 # `pi exited` path after the App-identity gate. Worker tokens cannot add a

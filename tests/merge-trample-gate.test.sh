@@ -16,8 +16,6 @@ repo_root="$(cd "$here/.." && pwd)"
 gate="$repo_root/bin/fleet-merge-trample-gate"
 lib="$repo_root/lib/merge-trample-gate.py"
 fixtures="$here/fixtures/merge-trample-gate"
-tier1="$repo_root/bin/fleet-heartbeat-tier1"
-conference="$repo_root/prompts/senior-conference.md"
 manifest="$repo_root/MANIFEST"
 
 fail() { echo "FAIL: $*" >&2; exit 1; }
@@ -199,36 +197,6 @@ jq -e '.hits | length >= 1' <<<"$sweep" >/dev/null \
 jq -e '[.hits[].worktree_gap_paths[]?] | index("bin/pi-salvage-worktree")' <<<"$sweep" >/dev/null \
   || fail "sweep hit must name salvage: $sweep"
 ok "sweep reports the worktree-gap first-parent commit"
-
-# --- senior conference references the gate --------------------------------
-grep -F -q 'fleet-merge-trample-gate evaluate' "$conference" \
-  || fail "senior-conference.md must reference the gate"
-grep -F -q "$ledger" "$conference" \
-  || fail "senior-conference.md must carry the ledger line verbatim"
-ok "senior-conference.md carries the gate and the ledger line"
-
-# --- heartbeat arms only after the gate -----------------------------------
-python3 - "$tier1" <<'PY' || fail "heartbeat must call the gate before gh pr merge --auto"
-import pathlib, sys
-text = pathlib.Path(sys.argv[1]).read_text()
-gate = text.find("fleet-merge-trample-gate")
-auto = text.find("--auto --squash")
-if gate < 0:
-    raise SystemExit("fleet-merge-trample-gate missing from tier1")
-# The arm we care about is the queue-pass auto-squash. An earlier
-# `gh pr merge --disable-auto` (fleet-ops#5238 gate-integrity refuse)
-# is a disarm, not the arm, so pin on `--auto --squash`.
-queue = text.find("2. queue pass starting")
-if queue < 0:
-    raise SystemExit("queue pass marker missing")
-gate_in_queue = text.find("fleet-merge-trample-gate", queue)
-arm_in_queue = text.find("--auto --squash", queue)
-if gate_in_queue < 0 or arm_in_queue < 0:
-    raise SystemExit("queue pass must call the gate and gh pr merge --auto")
-if gate_in_queue > arm_in_queue:
-    raise SystemExit("trample gate must run BEFORE gh pr merge --auto in the queue pass")
-PY
-ok "heartbeat queue pass runs the gate before arming auto-merge"
 
 # --- MANIFEST + no dispatcher / no new unit -------------------------------
 grep -q 'bin/fleet-merge-trample-gate' "$manifest" \

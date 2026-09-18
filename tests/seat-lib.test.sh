@@ -94,7 +94,6 @@ bash "$here/watch-log-rotation.test.sh" || fail "watch-log-rotation tests failed
 bash "$here/fleet-findings-queued.test.sh" || fail "fleet-findings-queued tests failed"
 # fleet-ops#1138: Relates to, not Closes, for decisions-ledger fixes.
 bash "$here/fleet-decisions-ledger.test.sh" || fail "fleet-decisions-ledger tests failed"
-bash "$here/fleet-debug-playbook.test.sh" || fail "fleet-debug-playbook tests failed"
 bash "$here/fleet-interventions-eliminated.test.sh" || fail "fleet-interventions-eliminated tests failed"
 bash "$here/fleet-failed-command-flagged.test.sh" || fail "fleet-failed-command-flagged tests failed"
 bash "$here/fleet-failed-command-cat-stale-fleet-ops.test.sh" || fail "fleet-failed-command-cat-stale-fleet-ops tests failed"

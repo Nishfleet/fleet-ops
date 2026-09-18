@@ -546,21 +546,6 @@ packet_usage_block() {
     fi
 }
 
-# packet_mechanical_fix_rule
-# Print the fleet-ops#366 ledger line verbatim for auditor/conference packets.
-packet_mechanical_fix_rule() {
-    local lib_dir gate
-    lib_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-    gate="${PACKET_MECHANISM_GATE:-$lib_dir/failure-mechanism-gate.py}"
-    printf '## Mechanical-fix rule (verbatim ledger line, fleet-ops#366)\n\n'
-    if [[ ! -f "$gate" ]]; then
-        printf 'MISSING gate script: %s\n\n' "$gate"
-        return 1
-    fi
-    python3 "$gate" --ledger-line
-    printf '\n\n'
-}
-
 # packet_decisions_ledger
 # Print the DECISIONS LEDGER section from the plan file, or the whole file.
 # Do not byte-cap: starving the ledger to save tokens is forbidden

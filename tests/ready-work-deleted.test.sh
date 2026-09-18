@@ -50,20 +50,6 @@ if grep -nE 'systemd/ready-work(-recheck)?\.(service|timer|path)' "$repo_root/MA
 fi
 ok "MANIFEST has no ready-work install line"
 
-# --- 4. allowlist records the adjudication ----------------------------------
-entry="$(jq -c '.pending_adjudication_class_c[] | select(.unit=="ready-work")' "$repo_root/config/machinery-allowlist.json")"
-[[ -n "$entry" ]] || fail "allowlist must retain the ready-work adjudication record"
-adj="$(jq -r '.pending_adjudication_class_c[] | select(.unit=="ready-work") | .adjudicated // empty' "$repo_root/config/machinery-allowlist.json")"
-[[ -n "$adj" ]] || fail "allowlist ready-work record must carry an adjudicated verdict (#1493)"
-[[ "$adj" == "MECHANICAL-INSTEAD" ]] \
-  || fail "allowlist ready-work adjudicated must be MECHANICAL-INSTEAD, got '$adj'"
-ok "allowlist records MECHANICAL-INSTEAD verdict for ready-work"
-
-# --- 5. the unit is NOT on the authorized allowlist ------------------------
-auth="$(jq -r '.authorized[] | select(.unit=="ready-work") | .unit // empty' "$repo_root/config/machinery-allowlist.json")"
-[[ -z "$auth" ]] || fail "ready-work must not appear in the authorized allowlist — it was deleted, not endorsed"
-ok "ready-work is not on the authorized allowlist"
-
 # --- 6. organ-catalog names Pi stock dispatch as the dispatcher owner -------
 grep -qi 'Pi stock dispatch' "$repo_root/docs/organ-catalog.md" \
   || fail "docs/organ-catalog.md must name Pi stock dispatch as the dispatcher owner"

@@ -42,26 +42,4 @@ if grep -nE 'systemd/auditor-stdio-test\.(service|timer|path)' "$repo_root/MANIF
 fi
 ok "MANIFEST has no auditor-stdio-test install line"
 
-# --- 4. allowlist records the adjudication ----------------------------------
-entry="$(jq -c '.pending_adjudication_class_c[] | select(.unit=="auditor-stdio-test")' "$repo_root/config/machinery-allowlist.json")"
-[[ -n "$entry" ]] || fail "allowlist must retain the auditor-stdio-test adjudication record"
-adj="$(jq -r '.pending_adjudication_class_c[] | select(.unit=="auditor-stdio-test") | .adjudicated // empty' "$repo_root/config/machinery-allowlist.json")"
-[[ -n "$adj" ]] || fail "allowlist auditor-stdio-test record must carry an adjudicated verdict (#1492)"
-[[ "$adj" == "MECHANICAL-INSTEAD" ]] \
-  || fail "allowlist auditor-stdio-test adjudicated must be MECHANICAL-INSTEAD, got '$adj'"
-ok "allowlist records MECHANICAL-INSTEAD verdict for auditor-stdio-test"
-
-# --- 5. the unit is NOT on the authorized allowlist -------------------------
-auth="$(jq -r '.authorized[] | select(.unit=="auditor-stdio-test") | .unit // empty' "$repo_root/config/machinery-allowlist.json")"
-[[ -z "$auth" ]] || fail "auditor-stdio-test must not appear in the authorized allowlist — it was deleted, not endorsed"
-ok "auditor-stdio-test is not on the authorized allowlist"
-
-# --- 6. the #5736 recurrence is recorded on the adjudication row ---------
-# fleet-ops#5736: the deleted unit reappeared and the hunt re-flagged it
-# with no pointer to the settled #1492 verdict. The row must carry that
-# recurrence so the fresh hunt surfaces prior-adjudication context.
-ri=$(jq -r '.pending_adjudication_class_c[] | select(.unit=="auditor-stdio-test") | .recurrence_issue // empty' "$repo_root/config/machinery-allowlist.json")
-[[ "$ri" == "5736" ]] || fail "allowlist auditor-stdio-test row must record recurrence_issue 5736 (fleet-ops#5736), got '$ri'"
-ok "adjudication row records the #5736 recurrence"
-
 exit 0

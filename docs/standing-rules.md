@@ -43,7 +43,7 @@ divergence is resolved in this block's favour.
 <!-- SECTION: one-fleet-rule -->
 ## One fleet (Nish, 2026-08-21; machinery superseded 2026-08-23 — corrected 2026-08-25)
 
-Full text: `/home/nish/workspaces/tooling/nish-vault/_system/shared-memory/standing-rules-archive.md` → `## One fleet (Nish, 2026-08-21; machinery superseded 2026-08-23 — corrected 2026-08-25)`. Enforced by the rule-enforcement matrix.
+Full text: `/home/nish/workspaces/tooling/nish-vault/_system/shared-memory/standing-rules-archive.md` → `## One fleet (Nish, 2026-08-21; machinery superseded 2026-08-23 — corrected 2026-08-25)`.
 <!-- END SECTION: one-fleet-rule -->
 
 <!-- SECTION: nish-preimplementation-contract -->

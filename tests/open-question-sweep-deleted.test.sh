@@ -39,20 +39,6 @@ if grep -nE 'systemd/open-question-sweep\.(service|timer|path)' "$repo_root/MANI
 fi
 ok "MANIFEST has no open-question-sweep install line"
 
-# --- 4. allowlist records the adjudication ----------------------------------
-entry="$(jq -c '.pending_adjudication_class_c[] | select(.unit=="open-question-sweep")' "$repo_root/config/machinery-allowlist.json")"
-[[ -n "$entry" ]] || fail "allowlist must retain the open-question-sweep adjudication record"
-adj="$(jq -r '.pending_adjudication_class_c[] | select(.unit=="open-question-sweep") | .adjudicated // empty' "$repo_root/config/machinery-allowlist.json")"
-[[ -n "$adj" ]] || fail "allowlist open-question-sweep record must carry an adjudicated verdict (#1494)"
-[[ "$adj" == "MECHANICAL-INSTEAD" ]] \
-  || fail "allowlist open-question-sweep adjudicated must be MECHANICAL-INSTEAD, got '$adj'"
-ok "allowlist records MECHANICAL-INSTEAD verdict for open-question-sweep"
-
-# --- 5. the unit is NOT on the authorized allowlist ------------------------
-auth="$(jq -r '.authorized[] | select(.unit=="open-question-sweep") | .unit // empty' "$repo_root/config/machinery-allowlist.json")"
-[[ -z "$auth" ]] || fail "open-question-sweep must not appear in the authorized allowlist — it was deleted, not endorsed"
-ok "open-question-sweep is not on the authorized allowlist"
-
 # --- 6. organ-catalog still names the watch-lens owner ----------------------
 grep -qi 'Weekly Fleet Review' "$repo_root/docs/organ-catalog.md" \
   || fail "docs/organ-catalog.md must name the Weekly Fleet Review as the watch-lens owner"

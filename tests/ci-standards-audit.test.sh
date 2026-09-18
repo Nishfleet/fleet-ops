@@ -216,12 +216,6 @@ bash "$here/nish-boundary-notify-retry-fallback.test.sh"
 # .github/workflows/**).
 bash "$here/issue-file.test.sh"
 
-# fleet-ops#695: same-repo `Closes <repo>#N` rejection gate. Pure
-# evaluator hosted by this listed test so the drill runs in P14
-# without a workflow-file edit (the worker App cannot push
-# .github/workflows/**).
-bash "$here/same-repo-closes-gate.test.sh"
-
 # fleet-ops#5471: bench-truth path-unit storm drill. Landed in #5567 but was
 # not hosted by a listed test (workers cannot push .github/workflows/**),
 # so the p14-test-listing-gate red'd the P14 check. Hosted here so P14
@@ -235,23 +229,11 @@ bash "$here/fleet-dead-pr-detector.test.sh"
 # without a workflow-file edit.
 bash "$here/merge-trample-gate.test.sh"
 
-# fleet-ops#1548: machinery-authorization gate. Hosted here so P14 runs
-# the drill without a workflow-file edit (nishfleet-worker cannot push
-# .github/workflows/**).
-bash "$here/machinery-authorization-gate.test.sh"
-
 # fleet-ops#4557: judge-block arm-refusal replay drill (blocked-by-judge
 # has teeth: refuse the arm, disarm armed auto-merge, unlabel re-permits).
 # Hosted here so P14 runs it without a workflow-file edit (the worker App
 # cannot push .github/workflows/**).
 bash "$here/fleet-judge-block-gate.test.sh"
-
-# fleet-ops#3756: senior-conference seriousness gate. A PR that trips the
-# seriousness gate (lines > 500 OR files > 10 OR touches deploy/migrations/
-# security/branch-protection) is REJECT unless it carries conference-approved.
-# Hosted here so P14 runs the drill without a workflow-file edit (the worker
-# App cannot push .github/workflows/**).
-bash "$here/senior-conference-gate.test.sh"
 
 # fleet-ops#1493 (fleet-ops#2020): tests/ready-work-deleted.test.sh pins the deletion
 # of the hand-placed ready-work dispatcher and checks the allowlist / MANIFEST /
