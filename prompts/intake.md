@@ -21,12 +21,18 @@ Steps:
    `agent-ready` to an issue that already carries `agent-blocked` or
    `awaiting-runtime-gate`.
 
-2. **Capacity.** Count active workers:
-   `systemctl --user list-units 'pi-issue@*.service' --state=active --no-legend | wc -l`.
-   The ceiling is 25 concurrent workers fleet-wide. Also read MemAvailable from
-   `/proc/meminfo`: if it is under 4 GB, start nothing this tick and say so —
-   RAM is the binding resource and an OOM kill costs a whole claim. If no slots
-   remain, print `at capacity` and exit 0.
+2. **Capacity.** Two limits, both hard:
+   - **Per tick: claim at most 3 issues.** This tick is not responsible for
+     filling the fleet. A finishing worker starts the next tick itself
+     (pi-issue@.service ExecStopPost), and the timer ticks anyway, so the
+     queue drains continuously. Do not deliberate about the fleet-wide
+     number — take up to 3 and stop.
+   - **Fleet-wide: 25 concurrent workers.**
+     `systemctl --user list-units 'pi-issue@*.service' --state=active --no-legend | wc -l`.
+   Also read MemAvailable from `/proc/meminfo`: under 4 GB, start nothing this
+   tick and say so — RAM is the binding resource and an OOM kill costs a whole
+   claim. `slots = min(3, 25 - active)`. If slots <= 0, print `at capacity`
+   and exit 0.
 
 3. **Pick work.** `gh issue list -R Nishfleet/<repo> -l agent-ready --state open
    --json number,title,labels,createdAt --limit 200`. The limit MUST cover the
@@ -41,7 +47,9 @@ Steps:
    critical-path claims in a row, take the oldest plain issue next so the tail
    cannot starve. Do not sort by issue number and do not pick by vibes.
 
-4. **Claim, in order, while slots remain.** For each issue `N`:
+4. **Claim, in order, while slots remain.** Do the commands — do not describe
+   what you would do, and do not stop to re-check capacity between issues; you
+   computed slots in step 2. For each issue `N`:
    a. `git -C /home/nish/workspaces/products/<repo> fetch origin`
    b. `git -C ... ls-remote origin refs/heads/claim/issue-N` — a hash means
       someone already holds it; skip.
