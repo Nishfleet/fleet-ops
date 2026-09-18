@@ -267,8 +267,28 @@ router_settings:
   routing_strategy: simple-shuffle
   fallbacks:
     # every group has a terminal healthy route; worker-capable must not dead-end (fleet-ops#4404)
-    - worker-cheap: [worker-capable, senior]
-    - worker-capable: [senior]
+    #
+    # 2026-09-18 (fleet-ops#7761) — STANDING RULE, not just today's bench list:
+    # a worker group (worker-cheap / worker-capable) may contain ONLY deployments
+    # that have been proven to return `finish_reason=tool_calls`. `senior` is the
+    # `devin/swe-2-max` CustomLLM bridge, and `devin --print` is an agent-in-a-box:
+    # fleet_devin_adapter flattens the messages into a prompt, runs devin's OWN
+    # tools in devin's OWN sandbox, and returns final prose. It never forwards the
+    # `tools` array and can never return a tool_calls response. Listing it as a
+    # worker fallback is what produced the 2026-09-18 outage — every pi-issue@
+    # worker from ~16:30Z scored PACKET-VERDICT tools=0 and exited 0 while 100+
+    # agent-ready issues sat untouched.
+    # Note `order:` does NOT protect against this: routing_strategy is
+    # simple-shuffle, which ignores it (devin took 667 of 1835 worker-cheap calls
+    # from a lower-priority order). A non-tool-calling deployment has to be ABSENT
+    # from the group, not merely demoted.
+    # #4404 still holds: the two worker groups fall back to each other and both
+    # carry a proven tool-calling rung. If both are down the call errors LOUDLY,
+    # which beats a silent no-op that exits 0.
+    - worker-cheap: [worker-capable]
+    - worker-capable: [worker-cheap]
+    # senior/judge/worker-private consume prose (review, adjudication), not tool
+    # calls, so the devin bridge stays correct for them.
     - senior: [worker-capable]
     - judge: [senior]
     - worker-private: [worker-capable]

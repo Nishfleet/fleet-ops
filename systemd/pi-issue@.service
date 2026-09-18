@@ -46,6 +46,21 @@ Environment=HOME=/home/nish
 Environment=PATH=/home/nish/.local/bin:/usr/local/bin:/usr/bin:/bin
 Environment=XDG_RUNTIME_DIR=/run/user/1000
 Environment=PI_UNIT_INSTANCE=%i
+# fleet-ops#7761: a worker run that made ZERO tool calls must not exit 0.
+# On 2026-09-18 the LiteLLM worker groups fell through to the `devin --print`
+# bridge, which is an agent-in-a-box: it never forwards the tools array and can
+# never return a tool_calls response. Every worker from ~16:30Z therefore ended
+# PACKET-VERDICT tools=0 class=no-tools with rc=0, so systemd recorded
+# Result=success while 100+ agent-ready issues went untouched — and because
+# Restart=on-failure, OnFailure=pi-issue-failed@ and StartLimitBurst all key off
+# the exit code, the silent 0 disabled this unit's entire retry and alerting
+# path. This env var arms the packet-verdict extension to exit 1 on a no-tools
+# run, turning a silent no-op back into a `failed` unit that OnFailure catches.
+# Opt-in on purpose: an interactive or read-only pi session legitimately ends
+# with tools=0, so only work packets set it. Proof 2026-09-18 17:29Z — same
+# prompt, same env: senior (devin, cannot tool-call) rc=1, worker-capable
+# (synthetic, proven tool_calls) rc=0, and no-tools WITHOUT this var rc=0.
+Environment=PI_PACKET_EXPECTS_TOOLS=1
 WorkingDirectory=/home/nish
 # %i is <repo>-<issue>. sed splits it without any '%' in the script body, so
 # systemd never sees an unknown specifier. worker-token mints the ≤1h
