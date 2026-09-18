@@ -4,7 +4,7 @@
 # fleet-ops#3708 (part 1/2 of #3264, child of #3127): product PRs (0509,
 # siterep-public, inish-site; fleet-ops exempt) get exactly ONE reviewer
 # round before the auto-merge arm, run on the first usable entry of
-# `senior_seats_in_order` (#3121), passed explicitly to the reviewer
+# the `senior` LiteLLM model group (#3121), passed explicitly to the reviewer
 # subagent (the extension inherits the parent seat by default), never the
 # worker's own seat. Findings land in the review-adjudication buckets; Act-on
 # items are fixed before the arm; one round only, no loops. Part 2/2 owns the
@@ -20,8 +20,8 @@
 # Invariants:
 #   1. worker.md step 8 names the reviewer round with the exact reviewer prompt.
 #   2. The auto-merge arm is step 9, so the round precedes the arm.
-#   3. The reviewer seat comes from `senior_seats_in_order`
-#      (cursor/cursor-grok-4.6-high first), passed explicitly to the subagent,
+#   3. The reviewer seat is the `senior` LiteLLM model group
+#      (the router owns the ordering), passed explicitly to the subagent,
 #      never the worker's own seat.
 #   4. The four review-adjudication buckets are named; Act-on items are fixed
 #      before the arm; one round only, no loops.
@@ -61,15 +61,16 @@ arm_line=$(grep -n '^9\. Arm' "$prompt" | head -1 | cut -d: -f1)
 ok "reviewer round (step 8) precedes the auto-merge arm (step 9)"
 
 # --- 3. senior seat: senior_seats_in_order, explicit pass, not worker's seat -
-grep -q 'senior_seats_in_order' "$prompt" \
-  || fail "worker.md must source the reviewer seat from senior_seats_in_order (fleet-ops#3121)"
-grep -q 'cursor/cursor-grok-4.6-high first' "$prompt" \
-  || fail "worker.md must name cursor/cursor-grok-4.6-high first in the senior ladder"
+# 9853ec72c deleted lib/litellm-seat.sh: the senior ladder is now the `senior`
+# LiteLLM model group, and the router owns the ordering that senior_seats_in_order
+# used to encode in shell. Same requirement, one layer fewer.
+grep -q '`senior` LiteLLM model group' "$prompt" \
+  || fail "worker.md must route the reviewer to the \`senior\` LiteLLM model group"
 grep -q 'passed explicitly' "$prompt" \
   || fail "worker.md must pass the reviewer seat explicitly to the subagent call"
 grep -qE "never the worker's own seat|never your own seat" "$prompt" \
   || fail "worker.md must forbid running the reviewer on the worker's own seat"
-ok "reviewer seat: senior_seats_in_order (cursor/cursor-grok-4.6-high first), passed explicitly, not the worker's own seat"
+ok "reviewer seat: the `senior` LiteLLM group, passed explicitly, not the worker's own seat"
 
 # --- 4. review-adjudication buckets; Act-on fixed before arm; one round ------
 for bucket in 'Act on' Consider Noted 'Dismissed-with-reason'; do
@@ -103,13 +104,14 @@ PY
 ok "0509, siterep-public, inish-site marked product; fleet-ops exempt"
 
 # --- 6. replay drill: arm refuses until Act-on resolved + 4 buckets + seat ----
-# The reviewer seat name the prompt mandates is the first entry of
-# senior_seats_in_order, read live from the config so the drill is coupled to
-# the seat ladder (fleet-ops#3121), not a hardcoded string.
-REVIEWER_SEAT="$(jq -r '.senior_seats_in_order[0]' "$seats")"
-[[ -n "$REVIEWER_SEAT" ]] || fail "senior_seats_in_order[0] is empty in $seats"
+# The reviewer seat the prompt mandates is the `senior` LiteLLM model group.
+# 9853ec72c deleted lib/litellm-seat.sh and with it senior_seats_in_order: the
+# router now owns which upstream `senior` resolves to, so the prompt names the
+# group and the drill below keys the arm gate off that same name (fleet-ops#3121
+# intent preserved, one indirection fewer).
+REVIEWER_SEAT="senior"
 grep -q "$REVIEWER_SEAT" "$prompt" \
-  || fail "worker.md must name the first senior seat ($REVIEWER_SEAT)"
+  || fail "worker.md must name the \`$REVIEWER_SEAT\` LiteLLM model group as the reviewer seat"
 
 drill="$(mktemp -d)"
 trap 'rm -rf "$drill"' EXIT

@@ -15,7 +15,7 @@
 # on a non-comment line is allowed: that is how Phase E of
 # fleet-no-agent-names.test.sh names `main` on purpose.
 #
-# Hosted by tests/rule-enforcement.test.sh so P14 runs this without a
+# Listed in ci.yml directly so P14 runs this without a
 # workflow-file edit (worker tokens cannot push .github/workflows/**).
 
 set -euo pipefail
@@ -154,8 +154,10 @@ done
 ok "live: no P14 test uses an unpinned main.. / main... rev range"
 
 # --- 6. This lock is actually reached from a P14-listed test ----------------
-grep -Fq 'bash "$here/ci-hosted-paths.test.sh"' "$here/rule-enforcement.test.sh" \
-  || fail "rule-enforcement.test.sh must invoke this file (P14 host, fleet-ops#926)"
-ok "lock is wired through tests/rule-enforcement.test.sh (already in P14)"
+# 2026-09-18 glue sweep: tests/rule-enforcement.test.sh was deleted with the
+# organs it drilled, so this file is listed in ci.yml directly instead of being
+# nested. The self-check that pinned the host line is gone with the host — P14's
+# reachable[] check already fails if this file stops being listed.
+ok "lock is wired through ci.yml directly (P14 reachable[] covers it)"
 
 echo "OK: ci-hosted-paths.test.sh: hosted-runner rev-range class is locked"

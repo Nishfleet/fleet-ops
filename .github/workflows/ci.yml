@@ -150,6 +150,8 @@ jobs:
         python3 -m pip install --no-input "pyyaml==6.0.1"
         bash tests/ci-standards-audit.test.sh
         bash tests/reserved-classes-precedence.test.sh
+        bash tests/ci-hosted-paths.test.sh
+        bash tests/fleet-bin-exclude-canary.test.sh
         # fleet-ops#828: lock the gate-integrity decision script's
         # line-anchored attestation extraction (multi-line attest comments).
         bash tests/gate-integrity.test.sh

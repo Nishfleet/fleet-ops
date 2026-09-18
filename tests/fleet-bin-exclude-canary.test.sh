@@ -101,8 +101,10 @@ set -e
 ok "drill: 'bin/**' exclude ignores a new bin file in a scratch repo"
 
 # --- 4. Nested CI host -------------------------------------------------------
-grep -Fq 'bash "$here/fleet-bin-exclude-canary.test.sh"' "$here/rule-enforcement.test.sh" \
-  || fail "rule-enforcement.test.sh must nest this test (worker token cannot edit .github/workflows)"
-ok "rule-enforcement.test.sh nests this test"
+# 2026-09-18 glue sweep: tests/rule-enforcement.test.sh was deleted with the
+# organs it drilled, so this file is listed in ci.yml directly instead of being
+# nested. The self-check that pinned the host line is gone with the host — P14's
+# reachable[] check already fails if this file stops being listed.
+ok "listed in ci.yml directly (P14 reachable[] covers it)"
 
 ok "fleet-bin-exclude-canary: bin/ not ignored, bin/ sources tracked, drill passes"
