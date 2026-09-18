@@ -6,7 +6,7 @@ fleet-ops#539. Canonical logic. The hook shim at
 bin/guard_shared_file_collision_hook.py is installed to
 ~/.claude/hooks/guard_shared_file_collision.py (a symlink into this repo).
 
-Shared files: fleet control plane, systemd units, lib/litellm-seat.sh,
+Shared files: fleet control plane, systemd units,
 config/seat-caps.json, hooks, global-standing-rules.md, decisions-ledger.md.
 
 Warn only, never block. The warning is emitted as a Claude hook
@@ -33,7 +33,6 @@ WATCHED = (
     ".claude/settings.json",
     "global-standing-rules.md",
     "decisions-ledger.md",
-    "litellm-seat.sh",
     "seat-caps.json",
     "intake-repos.json",
     "pi-extensions-allowlist.json",
@@ -56,7 +55,6 @@ REPO_FALLBACKS = (
     ("global-standing-rules.md", VAULT_REMOTE),
     ("decisions-ledger.md", VAULT_REMOTE),
     ("seat-caps.json", FLEET_OPS_REMOTE),
-    ("litellm-seat.sh", FLEET_OPS_REMOTE),
 )
 
 REMOTE_RE = re.compile(
