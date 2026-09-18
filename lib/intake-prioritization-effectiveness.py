@@ -165,6 +165,15 @@ LRUN_HELP = (
     "disappears (fleet-ops#1010, #2759)."
 )
 LRUN_TYPE = "# TYPE fleet_intake_effectiveness_last_run_seconds gauge"
+RATIO_HELP = (
+    "# HELP fleet_intake_effectiveness_ratio Product merge-rate ratio from the "
+    "product-first hold: rate_during_hold / rate_baseline, trailing 14d "
+    "(fleet-ops#7667). 1.0 means the hold changed nothing; above 1.0 means "
+    "product throughput rose. Always emitted: 0.0 when the rate pair cannot be "
+    "computed (no baseline window, zero baseline rate, or merge data "
+    "unavailable) — the organ fails open rather than going absent."
+)
+RATIO_TYPE = "# TYPE fleet_intake_effectiveness_ratio gauge"
 
 # --- Journal evidence parsing ----------------------------------------------
 
@@ -504,6 +513,7 @@ def compute(samples, merges, window_start, now):
         "control_rate_baseline": None,
         "control_rate_week": None,
         "effectiveness": None,
+        "effectiveness_ratio": 0.0,
     }
     window_days = (now - window_start) / _SECONDS_PER_DAY
     # Live hold gauge: last observed state at-or-before `now`, bounded by
@@ -553,6 +563,7 @@ def compute(samples, merges, window_start, now):
     ph = out["product_rate_hold"]
     if pb is not None and pb > 0 and ph is not None:
         out["effectiveness"] = (ph - pb) / pb
+        out["effectiveness_ratio"] = ph / pb
     return out
 
 
@@ -596,7 +607,11 @@ def format_prometheus(stats, last_run_epoch):
                   f'fleet_intake_prioritization_effectiveness{{repo="{p_label}"}} {stats["effectiveness"]:.6f}',
                   ""]
     lines += [LRUN_HELP, LRUN_TYPE,
-              f"fleet_intake_effectiveness_last_run_seconds {last_run_epoch:.3f}" + "\n"]
+              f"fleet_intake_effectiveness_last_run_seconds {last_run_epoch:.3f}",
+              "",
+              RATIO_HELP, RATIO_TYPE,
+              f'fleet_intake_effectiveness_ratio{{repo="{c_label}"}} '
+              f'{stats["effectiveness_ratio"]:.6f}' + "\n"]
     return "\n".join(lines)
 
 
@@ -638,6 +653,8 @@ def main(argv=None):
     stats = compute(samples, merges, window_start, now)
     body = format_prometheus(stats, now)
     _atomic_write(OUT, body)
+    if argv and "--stdout" in argv:
+        sys.stdout.write(body)
     print(
         f"intake-effective: wrote {OUT} hold_active={stats['hold_active']} "
         f"hold_fraction={stats['hold_fraction']:.3f} "
