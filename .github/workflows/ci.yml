@@ -117,7 +117,6 @@ jobs:
         # cannot freeze a weekly-resetting seat for three cycles.
         bash tests/seat-wall-reset-horizon.test.sh
         # fleet-ops#1164: persist nish-boundary-notify CLASSES in git + lint.
-        bash tests/nish-boundary-notify-classes.test.sh
         # fleet-ops: slice shape lock. Its old host,
         # tests/system-dropins-shape.test.sh, was deleted with the MANIFEST.
         bash tests/systemd-analyze-slices.test.sh
@@ -172,12 +171,10 @@ jobs:
         # in stop-escalation-dispatch (CAP-REACHED/KILL-ESCALATION -> auditor
         # path, LADDER-WALLED -> MONEY-BOUNDARY), and the integration test
         # proving the two gates together form one phone chokepoint.
-        bash tests/hermes-outbound-class-gate.test.sh
         bash tests/alertmanager-routing-matrix.test.sh
         bash tests/fleet-rules-severity-page.test.sh
         # fleet-ops#754: lock spawn-guard stash readonly enforcement.
         bash tests/fleet-spawn-guard-stash-readonly.test.sh
-        bash tests/phone-chokepoint.test.sh
         # fleet-ops#3322 audition lane: candidate seats get cap 1 on light issues for
         # 10 sessions, judged by the yield ledger. Offline drill (stubbed gh/caps);
         # listed here by the orchestrator because the worker token lacks workflow scope.

@@ -140,6 +140,27 @@ this bullet is a pointer, not a restatement (fleet-ops#5586, fleet-ops#5685).
 Plus the standing exception unrelated to those classes: an unrepairable
 failure must fail LOUD, never degrade silently.
 
+**HOW an agent escalates a reserved-class finding (glue sweep 2026-09-18).**
+One stock line, from any user unit or session, unauthenticated:
+
+```
+amtool alert add alertname=NishEscalation severity=nish \
+  --annotation=summary='<one sentence: what, and what you need from Nish>'
+```
+
+`severity=nish` is an existing Alertmanager route straight to the Telegram
+receiver at group_interval 1m. Use `--annotation=summary`, NOT a bare
+`summary=`: a bare key becomes a LABEL, which (a) the telegram message
+template reads `.CommonAnnotations.summary` so the message body arrives empty,
+and (b) changes the alert fingerprint, so every escalation becomes a distinct
+alert that never dedupes or resolves. Resolve by re-sending the same labels
+with `--end` in the past once the item is closed.
+
+This replaces appending a line to `agent-state/NISH-ESCALATIONS.md` and the
+`nish-boundary-notify` path unit + `hermes` shim that watched it — all
+deleted. Everything else still holds: escalate ONLY the canonical
+reserved-classes list, and fix everything around it first.
+
 Corollary: **if a human had to notice it by hand, that blind spot is the real
 bug.** Fix the instance AND the detector. Canonical text:
 `nish-vault/_system/shared-memory/agent-contract.md`.

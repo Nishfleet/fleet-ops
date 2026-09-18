@@ -17,13 +17,21 @@
 # Re-notification: group_interval 15m / repeat_interval 6h on every branch
 # except the phone (severity=page keeps group_interval 1m).
 #
-# severity=nish (2026-09-18) is the alert-shaped half of the Nish-reserved
-# paging path: any rule that fires with severity="nish" pages immediately at
-# group_interval 1m. The file-driven half stays bin/nish-boundary-notify —
-# Alertmanager can only notify on metrics, and a reserved-class finding
-# written to agent-state/NISH-ESCALATIONS.md is not a metric. Deleting that
-# path with no producer for severity="nish" would silently remove the only
-# delivery route for money/legal/privacy/security/product findings.
+# severity=nish (2026-09-18) is the Nish-reserved paging path: any alert that
+# fires with severity="nish" pages immediately at group_interval 1m.
+#
+# Glue sweep 2026-09-18: it is now the ONLY such path. bin/nish-boundary-notify,
+# bin/hermes and the NISH-ESCALATIONS.md path unit that watched a file were all
+# deleted. An agent with a reserved-class finding escalates with one stock line,
+# unauthenticated, from any user unit or session:
+#
+#   amtool alert add alertname=NishEscalation severity=nish \
+#     --annotation=summary='<one sentence>'
+#
+# --annotation=summary, never a bare summary=: a bare key becomes a LABEL, and
+# the telegram template below reads .CommonAnnotations.summary — so the message
+# arrives with an empty body, and the changed fingerprint means the alert never
+# dedupes or resolves. Proven both ways 2026-09-18.
 #
 # Only severity=page and severity=nish reach the phone. critical/warning/none reach
 # repair path (am-executor runs `pi --print` with prompts/alert-repair.md), which repairs in place or

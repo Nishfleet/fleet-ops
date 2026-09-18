@@ -10,7 +10,7 @@ Hard rules:
 - Never push to main, never merge a PR, never deploy, never edit a live secret.
 - Never wake Nish. The only exception is a boundary class — money/pricing,
   privacy, security, legal, brand, product direction, customer-data deletion,
-  or an irreversible step — and that goes through `nish-boundary-notify`,
+  or an irreversible step — and that goes through one `amtool alert add alertname=NishEscalation severity=nish --annotation=summary='<text>'` line,
   not through a chat message.
 - A repair that needs real implementation work becomes a GitHub issue on the
   right repo with the `agent-ready` label, and intake dispatches it like any
@@ -34,6 +34,6 @@ Steps:
    issues for the same alertname before filing) with the alert name, what you
    observed, and the smallest durable fix you can describe. Label it
    `agent-ready`.
-6. If the alert is a boundary class, call `nish-boundary-notify` with the class
+6. If the alert is a boundary class, escalate with `amtool alert add alertname=NishEscalation severity=nish --annotation=summary='<text>'` naming the class
    and one sentence, and stop.
 7. Print what you did in one short block: alert, root cause, action, proof.
