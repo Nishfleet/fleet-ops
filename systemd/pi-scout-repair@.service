@@ -15,16 +15,8 @@ ExecStart=/bin/sh -c '{ cat "$HOME/.pi/agent/prompts/scout-repair.md"; echo; ech
 # marked FAILED for a non-fault and the unit-escalation@%n drop-in wrote a
 # STOP-REASON per SKIP, which invited another retry into the same saturated
 # escalate.
-# fleet-ops#6577: this hop is the chain terminal. pi-scout@'s OnFailure
-# summons THIS unit only after the scout's own ExecStopPost futility-end has
-# run, so a provider wall that killed both hops used to end with two failed
-# units, a counted wall-crash #1, and no dispatch until the next ~4h timer
-# re-fire (2026-09-14T04:15Z: pi-scout@0509 + pi-scout-repair@0509 both died
-# on `Connection error.` 11s apart; this template carried no ExecStopPost at
-# all, so the chain-terminal exit was observed by nothing). end-repair
-# classifies this unit's own journal; a terminal wall-class exit emits one
-# LOUD SCOUT-WALL-CHAIN-DEAD triage line that the existing detector->queue
-# reconciler files as ONE `alarm: SCOUT-WALL-CHAIN-DEAD` issue, deduped per
-# wall-storm. Leading '-' so a detector fault never marks the unit further.
-ExecStopPost=-/bin/bash -c 'exec /home/nish/.local/bin/scout-futility-check end-repair %i'
+# fleet-ops second-cut-A (fa2f27bf9, 2026-09-18) deleted scout-futility-check;
+# its dead ExecStopPost reference was removed from this live file 2026-09-19
+# (fleet-ops issue files the incomplete sweep). No on-exit futility classifier
+# remains; pi-scout@ liveness is covered by the existing canary/timer path.
 TimeoutStartSec=3600
