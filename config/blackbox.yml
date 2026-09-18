@@ -1,0 +1,120 @@
+modules:
+  http_2xx:
+    prober: http
+    http:
+      preferred_ip_protocol: "ip4"
+  http_post_2xx:
+    prober: http
+    http:
+      method: POST
+  tcp_connect:
+    prober: tcp
+  pop3s_banner:
+    prober: tcp
+    tcp:
+      query_response:
+      - expect: "^+OK"
+      tls: true
+      tls_config:
+        insecure_skip_verify: false
+  grpc:
+    prober: grpc
+    grpc:
+      tls: true
+      preferred_ip_protocol: "ip4"
+  grpc_plain:
+    prober: grpc
+    grpc:
+      tls: false
+      service: "service1"
+  ssh_banner:
+    prober: tcp
+    tcp:
+      query_response:
+      - expect: "^SSH-2.0-"
+      - send: "SSH-2.0-blackbox-ssh-check"
+  irc_banner:
+    prober: tcp
+    tcp:
+      query_response:
+      - send: "NICK prober"
+      - send: "USER prober prober prober :prober"
+      - expect: "PING :([^ ]+)"
+        send: "PONG ${1}"
+      - expect: "^:[^ ]+ 001"
+  icmp:
+    prober: icmp
+  icmp_ttl5:
+    prober: icmp
+    timeout: 5s
+    icmp:
+      ttl: 5
+
+  # --- fleet-ops glue sweep 2026-09-18 (zero-scripts) ---------------------
+  # These two modules replace hand-written node canaries with the stock
+  # blackbox prober. Each assertion below is the canary's own pass condition,
+  # copied from the script it retires.
+  #
+  # 0509-demo-brand-timeline-canary (issue #1899): pass = HTTP 200 AND the
+  # body carries BOTH the "As of" retrieval affordance and a rendered
+  # f9-timeline-entry row. A 410 is the proof-gate dark state and must fail,
+  # which valid_status_codes:[200] enforces. fail_if_body_not_matches_regexp
+  # requires EVERY listed regexp to match, so both markers are mandatory —
+  # the script's reason for demanding both (a 200 with "As of" but no entry
+  # row is the empty/D1-failure shell, not a populated ledger).
+  0509_timeline_ledger:
+    prober: http
+    timeout: 30s
+    http:
+      preferred_ip_protocol: "ip4"
+      valid_status_codes: [200]
+      method: GET
+      headers:
+        User-Agent: "0509-timeline-blackbox/1.0"
+        Cache-Control: "no-cache"
+      fail_if_body_not_matches_regexp:
+        - "As of"
+        - "f9-timeline-entry"
+
+  # 0509-search-tier-canary (issue #1452): pass = HTTP 200 AND at least one
+  # verified-or-likely row. The shipped three-tier model renders one
+  # <span class="f9-tier-badge is-<tier>"> per row (TierBadge in
+  # app/components/search/tier-badge.tsx), so one regexp expresses
+  # "tierCounts.verified + tierCounts.likely > 0" exactly. A blanket-Unmatched
+  # page renders only is-unmatched badges and correctly fails; a dead-end
+  # renders no badge at all and also fails.
+  0509_search_tier:
+    prober: http
+    timeout: 30s
+    http:
+      preferred_ip_protocol: "ip4"
+      valid_status_codes: [200]
+      method: GET
+      headers:
+        User-Agent: "0509-search-tier-blackbox/1.0"
+        Cache-Control: "no-cache"
+        Accept: "text/html,application/xhtml+xml"
+      fail_if_body_not_matches_regexp:
+        - 'class="f9-tier-badge is-(verified|likely)"'
+
+  # 0509-search-tier-canary, KNOWN_ALIAS_GAPS arm (same issue #1452): for a
+  # brand on the script's KNOWN_ALIAS_GAPS list (oura -> Nishfleet/0509#1427,
+  # ridge -> Nishfleet/0509#2075) a blanket-Unmatched page is the named alias
+  # gap's symptom, reported as a WARNING and NOT a canary failure. What still
+  # fails for those brands is a DEAD-END: zero rows at all. This module is
+  # that weaker assertion — "at least one result row rendered" — so the two
+  # gap brands keep exactly the coverage the script gave them and no more.
+  # Move a brand back to 0509_search_tier the moment its issue lands.
+  0509_search_rows_present:
+    prober: http
+    timeout: 30s
+    http:
+      preferred_ip_protocol: "ip4"
+      valid_status_codes: [200]
+      method: GET
+      headers:
+        User-Agent: "0509-search-tier-blackbox/1.0"
+        Cache-Control: "no-cache"
+        Accept: "text/html,application/xhtml+xml"
+      fail_if_body_not_matches_regexp:
+        - 'class="f9-wk-row[ ">]'

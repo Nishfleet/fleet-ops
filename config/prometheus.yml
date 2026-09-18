@@ -58,3 +58,92 @@ scrape_configs:
     metrics_path: /metrics/
     static_configs:
       - targets: ['127.0.0.1:4000']
+
+  # --- product surface canaries, glue sweep 2026-09-18 (zero-scripts) ------
+  # These jobs replace hand-written node canaries + their systemd
+  # service/timer pairs with the stock blackbox_exporter (127.0.0.1:9115).
+  # Module definitions and the exact assertion each one inherited live in
+  # /etc/prometheus/blackbox.yml (repo source: config/blackbox.yml).
+  #
+  # SCRAPE INTERVALS ARE LOAD-BEARING, NOT COSMETIC. Anonymous /search on
+  # 0509.io is rate limited to 20 requests / 10 minutes / IP
+  # (enforcePublicSearchRateLimit). Prometheus spreads a job's targets across
+  # its scrape_interval by target hash, so the sustained rate is
+  # targets/interval:
+  #   timeline  5 targets / 15m = 3.3 req per 10 min  (/timeline, not rate limited)
+  #   search    7 targets / 30m = 2.3 req per 10 min  (/search, counts against the 20)
+  # That leaves the great majority of the anonymous budget free. Do NOT
+  # shorten these intervals or add /search targets without redoing this
+  # arithmetic — overrunning the limiter turns every probe into a 429 and the
+  # alerts in config/fleet_rules.yml into permanent false positives.
+  #
+  # Detection latency still improves sharply: both canaries ran once daily,
+  # so a dark page could hide for ~24h; these see it within 15-30 minutes.
+  - job_name: blackbox-0509-timeline
+    metrics_path: /probe
+    scrape_interval: 15m
+    scrape_timeout: 45s
+    params:
+      module: [0509_timeline_ledger]
+    static_configs:
+      - targets:
+          - https://0509.io/timeline/nike.com
+          - https://0509.io/timeline/nykaa.com
+          - https://0509.io/timeline/allbirds.com
+          - https://0509.io/timeline/lenskart.com
+          - https://0509.io/timeline/mamaearth.com
+    relabel_configs:
+      - source_labels: [__address__]
+        target_label: __param_target
+      - source_labels: [__param_target]
+        target_label: instance
+      - target_label: __address__
+        replacement: 127.0.0.1:9115
+
+  # The five brands that must render a verified-or-likely row for a bare
+  # keyword search (issue #1452 minus the two KNOWN_ALIAS_GAPS entries).
+  - job_name: blackbox-0509-search-tier
+    metrics_path: /probe
+    scrape_interval: 30m
+    scrape_timeout: 45s
+    params:
+      module: [0509_search_tier]
+    static_configs:
+      - targets:
+          - https://0509.io/search?q=allbirds&country=all
+          - https://0509.io/search?q=notion&country=all
+          - https://0509.io/search?q=gymshark&country=all
+          - https://0509.io/search?q=hubspot&country=all
+          - https://0509.io/search?q=mamaearth&country=all
+    relabel_configs:
+      - source_labels: [__address__]
+        target_label: __param_target
+      - source_labels: [__param_target]
+        target_label: instance
+      - target_label: __address__
+        replacement: 127.0.0.1:9115
+
+  # oura (Nishfleet/0509#1427) and ridge (Nishfleet/0509#2075) are the
+  # script's KNOWN_ALIAS_GAPS: blanket-Unmatched is the named gap's symptom
+  # and was a WARNING, never a canary failure — only a dead-end (zero rows)
+  # failed. The weaker rows-present module keeps exactly that coverage.
+  # Verified live 2026-09-18: q=ridge fails 0509_search_tier (all Unmatched)
+  # and passes 0509_search_rows_present. Move a brand back to the job above
+  # the moment its issue lands.
+  - job_name: blackbox-0509-search-aliasgap
+    metrics_path: /probe
+    scrape_interval: 30m
+    scrape_timeout: 45s
+    params:
+      module: [0509_search_rows_present]
+    static_configs:
+      - targets:
+          - https://0509.io/search?q=oura&country=all
+          - https://0509.io/search?q=ridge&country=all
+    relabel_configs:
+      - source_labels: [__address__]
+        target_label: __param_target
+      - source_labels: [__param_target]
+        target_label: instance
+      - target_label: __address__
+        replacement: 127.0.0.1:9115

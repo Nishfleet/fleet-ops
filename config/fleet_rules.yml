@@ -209,3 +209,61 @@ groups:
         annotations:
           summary: "fleet.prom textfile is absent entirely"
           description: "The textfile has never been written or was deleted. Same blind spot as FleetProbeStale, but with no timestamp to age out. Repair: systemctl --user start fleet-metrics-export.service."
+
+  # ------------------------------------------------------------------------
+  # Product public-surface canaries (glue sweep 2026-09-18, zero-scripts).
+  # These replace two hand-written node canaries and their systemd
+  # service/timer pairs with the stock blackbox_exporter. The assertion each
+  # rule inherited is documented on its module in config/blackbox.yml.
+  #
+  # Every expression uses min_over_time(...[Nh]) rather than a bare
+  # `probe_success == 0` because these jobs scrape every 15-30 minutes (the
+  # /search rate limit forbids faster — see config/prometheus.yml). A series
+  # scraped that slowly is STALE to an instant query most of the time, so a
+  # bare comparison would silently evaluate to empty and never fire. The
+  # range lookback is the fix, and it is also what makes a single transient
+  # 429 or timeout not page: the probe must be failing for the whole window.
+  - name: product_surface
+    rules:
+      - alert: Product0509TimelineDark
+        expr: min_over_time(probe_success{job="blackbox-0509-timeline"}[1h]) == 0
+        for: 5m
+        labels:
+          severity: critical
+          service: 0509
+        annotations:
+          summary: "0509 /timeline is dark for {{ $labels.instance }}"
+          description: "Every probe in the last hour of {{ $labels.instance }} failed: the page did not return 200 with BOTH the 'As of' retrieval affordance and a rendered f9-timeline-entry row. A 410 is the proof-gate dark state (rows stored but the public timeline filtered them out, issue #1284); a 200 with 'As of' but no entry row is the empty or D1-failure shell. This is the customer-visible promise of issue #1899 — a buyer follows a competitor and sees an empty ledger. Repair: check the nightly capture (runDemoBrandBackfill) and the proof gate."
+
+      - alert: Product0509SearchTierRegression
+        expr: min_over_time(probe_success{job="blackbox-0509-search-tier"}[2h]) == 0
+        for: 5m
+        labels:
+          severity: critical
+          service: 0509
+        annotations:
+          summary: "0509 /search renders no verified/likely row for {{ $labels.instance }}"
+          description: "Every probe in the last two hours of {{ $labels.instance }} failed: the page rendered no 'f9-tier-badge is-verified' or 'is-likely' row. That is either a dead-end (no rows at all) or a blanket-Unmatched tier-label regression on a section 1.8 money-path brand (issue #1452). The free preview dead-ends for this brand. Repair: check search-v2 identity resolution and the tier-label path."
+
+      - alert: Product0509SearchAliasGapDeadEnd
+        expr: min_over_time(probe_success{job="blackbox-0509-search-aliasgap"}[2h]) == 0
+        for: 5m
+        labels:
+          severity: critical
+          service: 0509
+        annotations:
+          summary: "0509 /search dead-ends entirely for known-alias-gap brand {{ $labels.instance }}"
+          description: "Every probe in the last two hours of {{ $labels.instance }} returned no result row at all. These brands (oura Nishfleet/0509#1427, ridge Nishfleet/0509#2075) are KNOWN_ALIAS_GAPS: a blanket-Unmatched page is the named gap's expected symptom and deliberately does NOT alert. A DEAD-END does, because the guard's core promise is zero dead-end empty states. Repair: this is a recall regression, not the alias gap — check ad ingestion for the brand."
+
+      # The three rules above can only fire while the blackbox exporter is
+      # actually scraped. If it stops, they all read as healthy forever —
+      # the same blind spot FleetProbeStale closes for fleet.prom.
+      - alert: ProductCanaryProbeDown
+        expr: min_over_time(up{job=~"blackbox-0509-.*"}[1h]) == 0
+        for: 10m
+        labels:
+          severity: critical
+          service: 0509
+        annotations:
+          summary: "blackbox canary job {{ $labels.job }} has not scraped successfully in an hour"
+          description: "While this fires, Product0509TimelineDark, Product0509SearchTierRegression and Product0509SearchAliasGapDeadEnd cannot fire and the 0509 public surface is UNGUARDED. Repair: systemctl status prometheus-blackbox-exporter (listens on 127.0.0.1:9115)."
