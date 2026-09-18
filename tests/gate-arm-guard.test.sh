@@ -33,7 +33,6 @@ lib="$repo_root/lib/gate-arm-guard.py"
 fixtures="$here/fixtures/gate-arm-guard"
 arm_wf="$repo_root/.github/workflows/reusable-auto-merge-arm.yml"
 ci_yml="$repo_root/.github/workflows/ci.yml"
-tier1="$repo_root/bin/fleet-heartbeat-tier1"
 manifest="$repo_root/MANIFEST"
 
 fail() { echo "FAIL: $*" >&2; exit 1; }
@@ -110,30 +109,10 @@ grep -Fq 'set +e' "$arm_wf" \
   || fail "gateint step must set +e so a refuse (exit 1) cannot fail the required arm check"
 ok "reusable arm workflow wires the guard and gates the arm on it"
 
-# --- wiring: the hourly queue pass refuses AND disarms -------------------
-grep -Fq 'fleet-gate-arm-guard' "$tier1" \
-  || fail "tier1 queue pass must call fleet-gate-arm-guard"
-grep -Fq 'GATE-INTEGRITY not green' "$tier1" \
-  || fail "tier1 must skip+disarm gate-path PRs whose gate is not green"
-python3 - "$tier1" <<'PY' || fail "heartbeat must call the guard before gh pr merge --auto"
-import pathlib, sys
-text = pathlib.Path(sys.argv[1]).read_text()
-queue = text.find("2. queue pass starting")
-if queue < 0:
-    raise SystemExit("queue pass marker missing")
-gate = text.find("fleet-gate-arm-guard", queue)
-disarm = text.find("--disable-auto", queue)
-arm = text.find("--auto --squash", queue)
-if gate < 0:
-    raise SystemExit("queue pass must call fleet-gate-arm-guard")
-if arm < 0:
-    raise SystemExit("queue pass must still call gh pr merge --auto")
-if gate > arm:
-    raise SystemExit("gate-arm-guard must run BEFORE gh pr merge --auto in the queue pass")
-if disarm < 0 or not (gate < disarm < arm):
-    raise SystemExit("queue-pass refuse path must --disable-auto before the arm")
-PY
-ok "heartbeat queue pass runs the guard before arming and disarms on refuse"
+# --- (retired) the hourly heartbeat queue-pass wiring ---------------------
+# bin/fleet-heartbeat-tier1 was deleted in the 2026-09 rail collapse; the
+# reusable arm workflow checked above is now the only arm path, so that is
+# where the guard has to be wired.
 
 # --- wiring: MANIFEST installs the evaluator for the live heartbeat -------
 grep -Fq 'bin/fleet-gate-arm-guard' "$manifest" \
