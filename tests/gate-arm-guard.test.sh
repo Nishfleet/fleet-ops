@@ -167,4 +167,6 @@ grep -Fq 'gate-escapes-24h' "$repo_root/measure.sh" \
   || fail "measure.sh must print the gate-escapes-24h line (issue metric)"
 ok "measure.sh carries gate-escapes-24h"
 
+# Inline host keeps the related measure regression in the existing P14 entry.
+bash "$repo_root/tests/measure-required-check-escapes.test.sh"
 echo "gate-arm-guard: all checks passed ($seen fixtures)"

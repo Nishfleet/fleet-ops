@@ -186,6 +186,7 @@ lib/cursor-api-bucket.sh /home/nish/.local/lib/pi-packet/cursor-api-bucket.sh
 # fleet-ops#4459: the usd_24h / usd_per_merged_pr snapshot the judge header's
 # third line and the weekly seat table consume.
 measure.sh /home/nish/.local/bin/measure.sh
+lib/required-check-escapes.sh /home/nish/.local/bin/lib/required-check-escapes.sh
 # fleet-ops#4476 (part 3): shared question-queue math + unfiled detector that
 # measure.sh sources for its `questions:` header line (for-nish/oldest/
 # in-conference/unfiled). Lives under lib/ so nish-boundary-notify's wait
