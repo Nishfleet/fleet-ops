@@ -121,22 +121,26 @@ assert abs(st["product_rate_baseline"] - (1 / 6)) < 1e-9, st["product_rate_basel
 assert abs(st["control_rate_hold"] - (3 / 8)) < 1e-9, st["control_rate_hold"]
 assert abs(st["control_rate_baseline"] - (2 / 6)) < 1e-9, st["control_rate_baseline"]
 assert abs(st["effectiveness"] - 2.0) < 1e-6, st["effectiveness"]              # (0.5-1/6)/(1/6)
+assert abs(st["effectiveness_ratio"] - 3.0) < 1e-6, st["effectiveness_ratio"]  # 0.5/(1/6)
 assert abs(st["control_rate_week"] - (5 / 14) * 7) < 1e-9, st["control_rate_week"]
 
 # --- (d) edge cases --------------------------------------------------------
 no_hold = m.compute([], merges, START, NOW)
 assert no_hold["hold_fraction"] == 0.0 and no_hold["hold_active"] == 0
 assert no_hold["product_rate_hold"] is None and no_hold["effectiveness"] is None
+assert no_hold["effectiveness_ratio"] == 0.0  # never absent: fails open to 0
 assert abs(no_hold["product_rate_baseline"] - (5 / 14)) < 1e-9   # all merges baseline
 
 no_merges = m.compute(samples, [], START, NOW)
 assert no_merges["product_rate_hold"] == 0.0
 assert no_merges["product_rate_baseline"] == 0.0
 assert no_merges["effectiveness"] is None    # baseline rate 0 -> omitted
+assert no_merges["effectiveness_ratio"] == 0.0
 assert no_merges["control_rate_week"] == 0.0
 
 gh_down = m.compute(samples, None, START, NOW)
 assert gh_down["product_rate_hold"] is None and gh_down["effectiveness"] is None
+assert gh_down["effectiveness_ratio"] == 0.0  # emitted even with no merge data
 assert gh_down["hold_fraction"] == 8 / 14    # hold gauges still present
 
 print("HELPER-CHECKS DONE")
@@ -189,6 +193,7 @@ issue_fams = {
     "fleet_intake_product_merge_rate_baseline": {r'{repo="0509"}': "0.166667"},
     "fleet_intake_control_merge_rate_during_hold": {r'{repo="fleet-ops"}': "0.375000"},
     "fleet_intake_prioritization_effectiveness": {r'{repo="0509"}': "2.000000"},
+    "fleet_intake_effectiveness_ratio": {r'{repo="fleet-ops"}': "3.000000"},
 }
 for fam, want in issue_fams.items():
     assert fam in fams and want == {k: v for k, v in fams[fam].items() if k in want}, (fam, fams.get(fam))
@@ -208,6 +213,21 @@ if command -v promtool >/dev/null 2>&1; then
   ok "promtool: exported textfile parses"
 fi
 ok "main(): prom export carries all issue metric names + labels, HELP/TYPE once"
+
+# fleet-ops#7667: --stdout prints the same body it writes; the ratio gauge is
+# the verify target and must never be absent.
+INTAKE_OUT="$scratch/fleet-intake-effectiveness-stdout.prom" \
+INTAKE_HOLD_JOURNAL="$scratch/hold-journal.jsonl" \
+INTAKE_MERGES_CACHE="$scratch/merges-cache.json" \
+INTAKE_NOW="1970-01-15T00:00:00Z" \
+python3 "$helper" --stdout > "$scratch/stdout-body.txt" 2>/dev/null \
+  || fail "main() --stdout failed"
+grep -q 'fleet_intake_effectiveness_ratio{repo="fleet-ops"} 3.000000' \
+  "$scratch/stdout-body.txt" \
+  || fail "--stdout output missing fleet_intake_effectiveness_ratio{repo=\"fleet-ops\"}"
+diff -q "$scratch/stdout-body.txt" "$scratch/fleet-intake-effectiveness-stdout.prom" >/dev/null \
+  || fail "--stdout body differs from the written .prom"
+ok "--stdout: prints the written body; ratio gauge present and never absent"
 
 # =========================================================================
 # 6-7. Rules, MANIFEST, organ registry, test host
