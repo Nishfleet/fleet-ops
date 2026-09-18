@@ -6,35 +6,35 @@
   "classes": {
     "systemd-user-service": {
       "guard": "OnFailure=unit-escalation@%n.service drop-in (user) + global escalation path",
-      "proof": "config/rule-enforcement.json"
+      "proof": "docs/standing-rules.md"
     },
     "systemd-user-timer": {
       "guard": "OnFailure=unit-escalation@%n.service drop-in (timer) + global escalation path",
-      "proof": "config/rule-enforcement.json"
+      "proof": "docs/standing-rules.md"
     },
     "systemd-user-path": {
       "guard": "OnFailure=unit-escalation@%n.service drop-in (path) + global escalation path",
-      "proof": "config/rule-enforcement.json"
+      "proof": "docs/standing-rules.md"
     },
     "systemd-user-socket": {
       "guard": "OnFailure=unit-escalation@%n.service drop-in (socket) + global escalation path, or documented manual guard",
-      "proof": "config/rule-enforcement.json"
+      "proof": "docs/standing-rules.md"
     },
     "systemd-system-service": {
       "guard": "system OnFailure or kernel/oomd-supervised, documented in escalation canary exclusions",
-      "proof": "config/rule-enforcement.json"
+      "proof": "docs/standing-rules.md"
     },
     "systemd-system-timer": {
       "guard": "system OnFailure or kernel/oomd-supervised, documented in escalation canary exclusions",
-      "proof": "config/rule-enforcement.json"
+      "proof": "docs/standing-rules.md"
     },
     "systemd-system-path": {
       "guard": "system OnFailure or kernel/oomd-supervised, documented in escalation canary exclusions",
-      "proof": "config/rule-enforcement.json"
+      "proof": "docs/standing-rules.md"
     },
     "systemd-system-socket": {
       "guard": "system OnFailure or kernel/oomd-supervised, documented in escalation canary exclusions",
-      "proof": "config/rule-enforcement.json"
+      "proof": "docs/standing-rules.md"
     },
     "port-tcp": {
       "guard": "process owner maps to a systemd unit with global escalation; unknown owners are a census finding",

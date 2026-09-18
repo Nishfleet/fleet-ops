@@ -253,20 +253,6 @@ jobs:
             echo "    repos: |"
             while IFS= read -r r; do echo "      $r"; done < repos-red-on-main.txt
           } >> .github/sync.yml
-          # Group 5: rule-enforcement.json -> Nishfleet repos EXCEPT fleet-ops
-          # (source of truth). Portable-standards (08-25): future repos inherit
-          # the matrix so a standing rule without an enforcer is visible
-          # everywhere. The live canary stays in fleet-heartbeat on the VPS
-          # (no new scheduler). nish3451 personal repos are skipped the same
-          # way as red-on-main-watch — this file is Nishfleet control-plane.
-          grep -E '^Nishfleet/' repos-all.txt | grep -vxE 'Nishfleet/fleet-ops' > repos-rule-enforcement.txt || true
-          {
-            echo "  - files:"
-            echo "      - source: config/rule-enforcement.json"
-            echo "        dest: config/rule-enforcement.json"
-            echo "    repos: |"
-            while IFS= read -r r; do echo "      $r"; done < repos-rule-enforcement.txt
-          } >> .github/sync.yml
           # Group 6: stop-the-line-watch.yml -> Nishfleet repos EXCEPT fleet-ops
           # (already has it; the auto-merge-arm on each repo consults the open
           # issue this workflow writes and refuses to arm while it is open —

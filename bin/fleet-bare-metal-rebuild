@@ -244,7 +244,7 @@ manifest_check() {
     # 2. Files referenced by the rebuild manifest must exist.
     #    MANIFEST is the install allowlist; the bare-metal manifest is the
     #    versioned inventory. Source-of-truth files used directly from the
-    #    checkout (e.g. intake-repos.json, rule-enforcement.json) are not
+    #    checkout (e.g. intake-repos.json) are not
     #    required to be in MANIFEST.
     for ref in \
       "$(manifest_value '.repositories.intake_repos_source')" \

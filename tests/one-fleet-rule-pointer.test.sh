@@ -16,7 +16,7 @@ set -euo pipefail
 fail() { echo "FAIL: $*" >&2; exit 1; }
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-canonical="$repo_root/lib/standing-rules/canonical.md"
+canonical="$repo_root/docs/standing-rules.md"
 archive="${ONE_FLEET_ARCHIVE-/home/nish/workspaces/tooling/nish-vault/_system/shared-memory/standing-rules-archive.md}"
 # Rendered targets are VPS host paths; overridable so a fixture can stand in
 # and so CI (ubuntu-latest, no /home/nish tree) can pass an empty list.

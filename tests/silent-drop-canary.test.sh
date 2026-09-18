@@ -23,7 +23,6 @@ fail=0
 # Explicit allowlist — every entry must have a row in docs/silent-drop-ledger.md.
 CAP_ALLOWLIST=(
   "bin/fleet-escalation-canary"    # auto_file_cap_per_tick; LOUD PENDING + rows re-derived each tick (by-design)
-  "lib/rule-enforcement.py"        # defines auto_file_cap_per_tick in the matrix parser (by-design)
   "lib/scout-money-path-walk.mjs"  # MAX_FINDINGS=4; LOUD suppressed count (fixed 2026-09-11)
 )
 DROP_ALLOWLIST=(

@@ -39,12 +39,6 @@ if grep -nE 'systemd/open-question-sweep\.(service|timer|path)' "$repo_root/MANI
 fi
 ok "MANIFEST has no open-question-sweep install line"
 
-# --- 3. no timer-manifest.json entry ----------------------------------------
-if jq -e '.timers["open-question-sweep.timer"]' "$repo_root/systemd/timer-manifest.json" >/dev/null 2>&1; then
-  fail "timer-manifest.json must not carry open-question-sweep.timer — deleted (#1494)"
-fi
-ok "timer-manifest.json has no open-question-sweep.timer entry"
-
 # --- 4. allowlist records the adjudication ----------------------------------
 entry="$(jq -c '.pending_adjudication_class_c[] | select(.unit=="open-question-sweep")' "$repo_root/config/machinery-allowlist.json")"
 [[ -n "$entry" ]] || fail "allowlist must retain the open-question-sweep adjudication record"

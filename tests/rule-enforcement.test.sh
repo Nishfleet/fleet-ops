@@ -138,6 +138,12 @@ ok "rule-enforcement: shared-file collision guard drill"
 bash "$here/fleet-token-economy.test.sh" || fail "token economy canary drill failed"
 ok "rule-enforcement: token economy canary drill"
 
+# fleet-ops#5586: reserved-classes precedence — the vault list is the single
+# source of truth and every surface defers to it. Text-only guard; the
+# renderer it used to check was deleted in the 2026-09-18 glue sweep.
+bash "$here/reserved-classes-precedence.test.sh" || fail "reserved-classes precedence drill failed"
+ok "rule-enforcement: reserved-classes precedence drill"
+
 # fleet-ops#5644: retired-host gate. The live rulebook surfaces must never
 # scope the VPS write-autonomy / credential-parity postures to the retired
 # 'hostinger-kvm4' host; nested host so the worker token does not need to

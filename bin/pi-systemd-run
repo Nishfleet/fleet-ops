@@ -131,7 +131,7 @@ usage: pi-systemd-run [--dry-run] [--unit NAME] [--working-directory DIR] [--std
 Run COMMAND as a user systemd unit so it outlives this session.
     Never use nohup or trailing & — those die with the launching shell.
     A --unit that names a .timer is refused unless it has an entry in
-    systemd/timer-manifest.json (fleet-ops#4472).
+    each unit's own header comment (fleet-ops#4472).
 EOF
     exit 2
 }

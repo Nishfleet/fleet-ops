@@ -29,8 +29,8 @@ repo_root="$(cd "$here/.." && pwd)"
 fail() { echo "FAIL: $*" >&2; exit 1; }
 ok()   { echo "OK: $*"; }
 
-pi_canonical="$repo_root/lib/pi-agents-md/canonical.md"
-sr_canonical="$repo_root/lib/standing-rules/canonical.md"
+pi_canonical="$repo_root/docs/pi-agents.md"
+sr_canonical="$repo_root/docs/standing-rules.md"
 vault_gsr="${FLEET_VAULT_GSR:-/home/nish/workspaces/tooling/nish-vault/_system/shared-memory/global-standing-rules.md}"
 
 [[ -f "$pi_canonical" ]] || fail "missing $pi_canonical"
@@ -83,38 +83,6 @@ if [[ -f "$vault_gsr" ]]; then
   echo "OK: vault canonical reserved-classes block present"
 else
   echo "SKIP: vault GSR not present at $vault_gsr (non-VPS host)"
-fi
-
-# 4. Renders, when the machinery exists on this host, must be in sync.
-#
-# The standing-rules renderer's DEFAULT canonical is the vault symlink into
-# the deploy clone — checking against it proves nothing about THIS repo's
-# canonical (a silent no-op render once shipped as green that way, the
-# exact fleet-ops#5586 follow-up failure). Always pass the repo canonical
-# explicitly, and treat live-target drift as a FAIL; only absent targets
-# (bare CI host) skip.
-if [[ -x "$repo_root/bin/render-standing-rules.py" ]]; then
-  sr_targets_missing=0
-  for t in /home/nish/.claude/CLAUDE.md /home/nish/.codex/AGENTS.md; do
-    [[ -f "$t" ]] || sr_targets_missing=1
-  done
-  if [[ "$sr_targets_missing" == 1 ]]; then
-    echo "SKIP: standing-rules render targets absent on this host"
-  elif python3 "$repo_root/bin/render-standing-rules.py" --check \
-        --canonical "$sr_canonical" >/dev/null 2>&1; then
-    echo "OK: standing-rules render check green against the repo canonical"
-  else
-    fail "live CLAUDE.md/.codex AGENTS.md drift from $sr_canonical — run: bin/render-standing-rules.py --render --canonical lib/standing-rules/canonical.md"
-  fi
-fi
-if [[ -x "$repo_root/bin/render-pi-agents-md.py" ]]; then
-  if [[ ! -f /home/nish/AGENTS.md ]]; then
-    echo "SKIP: pi-agents-md render targets absent on this host"
-  elif python3 "$repo_root/bin/render-pi-agents-md.py" --check >/dev/null 2>&1; then
-    echo "OK: pi-agents-md render check green"
-  else
-    fail "live AGENTS.md surfaces drift from $pi_canonical — run: bin/render-pi-agents-md.py --render"
-  fi
 fi
 
 # 5. Hand-written trailing prose on the live surfaces must not restate a

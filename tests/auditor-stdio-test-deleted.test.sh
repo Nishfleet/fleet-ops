@@ -42,12 +42,6 @@ if grep -nE 'systemd/auditor-stdio-test\.(service|timer|path)' "$repo_root/MANIF
 fi
 ok "MANIFEST has no auditor-stdio-test install line"
 
-# --- 3. no timer-manifest.json entry ----------------------------------------
-if jq -e '.timers["auditor-stdio-test.timer"]' "$repo_root/systemd/timer-manifest.json" >/dev/null 2>&1; then
-  fail "timer-manifest.json must not carry auditor-stdio-test.timer — deleted (#1492)"
-fi
-ok "timer-manifest.json has no auditor-stdio-test.timer entry"
-
 # --- 4. allowlist records the adjudication ----------------------------------
 entry="$(jq -c '.pending_adjudication_class_c[] | select(.unit=="auditor-stdio-test")' "$repo_root/config/machinery-allowlist.json")"
 [[ -n "$entry" ]] || fail "allowlist must retain the auditor-stdio-test adjudication record"

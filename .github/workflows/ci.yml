@@ -192,7 +192,6 @@ jobs:
         bash tests/prometheus-retention-40d.test.sh
         # fleet-ops#1460: lock the timer manifest shape (every user timer
         # has a manifest entry with a named reason — schedule-needs-reason).
-        bash tests/timer-manifest.test.sh
         # fleet-ops#6537: MANIFEST-installed [Install] template instances
         # (gh-runner@{1,2,3}) are expected-enabled; non-MANIFEST templates
         # still alarm. Was re-firing DRIFT-UNITS every tick (#6366).

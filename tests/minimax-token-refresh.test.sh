@@ -39,7 +39,6 @@
 #  18. Heartbeat wiring (tier1 picks up the absent() rule + organ entry).
 #  19. MANIFEST ships the script + both units.
 #  20. seat-caps reason cites the timer and the issue.
-#  21. timer-manifest.json entry exists with the named reason.
 
 set -euo pipefail
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -51,7 +50,6 @@ manifest="$repo_root/MANIFEST"
 rules="$repo_root/config/fleet_rules.yml"
 organs="$repo_root/config/fleet-organs.json"
 seat_caps="$repo_root/config/seat-caps.json"
-timer_manifest="$repo_root/systemd/timer-manifest.json"
 
 fail() { echo "FAIL: $*" >&2; exit 1; }
 ok()   { echo "OK: $*"; }
@@ -471,18 +469,6 @@ grep -q "^systemd/minimax-token-refresh.service " "$manifest" \
 grep -q "^systemd/minimax-token-refresh.timer " "$manifest" \
     || fail "20. MANIFEST missing systemd/minimax-token-refresh.timer"
 ok "20. MANIFEST ships the script + both units"
-
-# --------- 21. timer-manifest.json entry exists with named reason ----------
-python3 - "$timer_manifest" <<'PY'
-import json, sys
-m = json.load(open(sys.argv[1]))
-t = m.get("timers", {}).get("minimax-token-refresh.timer")
-assert t is not None, "minimax-token-refresh.timer not in timer-manifest.json"
-assert "fleet-ops#5788" in t["reason"], f"reason missing fleet-ops#5788: {t['reason']}"
-assert t["cadence"] == "2h", f"cadence expected 2h got {t['cadence']}"
-assert t["classification"] == "scheduled", f"classification expected scheduled got {t['classification']}"
-PY
-ok "21. timer-manifest.json entry has named reason citing #5788"
 
 # --------- 22. heartbeat wiring (absent() rule + organ entry) ----------
 

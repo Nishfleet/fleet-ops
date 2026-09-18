@@ -50,12 +50,6 @@ if grep -nE 'systemd/ready-work(-recheck)?\.(service|timer|path)' "$repo_root/MA
 fi
 ok "MANIFEST has no ready-work install line"
 
-# --- 3. no timer-manifest.json entry ----------------------------------------
-if jq -e '.timers["ready-work-recheck.timer"]' "$repo_root/systemd/timer-manifest.json" >/dev/null 2>&1; then
-  fail "timer-manifest.json must not carry ready-work-recheck.timer — deleted (#1493)"
-fi
-ok "timer-manifest.json has no ready-work-recheck.timer entry"
-
 # --- 4. allowlist records the adjudication ----------------------------------
 entry="$(jq -c '.pending_adjudication_class_c[] | select(.unit=="ready-work")' "$repo_root/config/machinery-allowlist.json")"
 [[ -n "$entry" ]] || fail "allowlist must retain the ready-work adjudication record"
