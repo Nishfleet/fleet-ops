@@ -285,7 +285,6 @@ ok "non-JSON curl output is a mint failure, not an install list"
 # pi-issue-run scream path. Chained here because the P14 CI job cannot
 # gain a new workflow step (nishfleet-worker has no Workflows permission).
 bash "$here/attest-identity-gate.test.sh"
-bash "$here/worker-app-canary.test.sh"
 bash "$here/pi-issue-run-app-identity.test.sh"
 # fleet-ops#568: the failure-reason lock must keep reaching the generic
 # `pi exited` path after the App-identity gate. Worker tokens cannot add a

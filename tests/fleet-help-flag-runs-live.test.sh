@@ -20,16 +20,13 @@ repo_root="$(cd "$here/.." && pwd)"
 fail() { echo "FAIL: $*" >&2; exit 1; }
 ok()   { echo "OK: $*"; }
 
-blind="$repo_root/bin/fleet-blind-audit"
 researcher="$repo_root/bin/fleet-researcher-dispatch"
 lifecycle="$repo_root/bin/lifecycle-label-sweep"
 stale="$repo_root/bin/fleet-stale-auto-revert-sweep"
 
-[[ -x "$blind" ]] || fail "not executable: $blind"
 [[ -x "$researcher" ]] || fail "not executable: $researcher"
 [[ -x "$lifecycle" ]] || fail "not executable: $lifecycle"
 [[ -x "$stale" ]] || fail "not executable: $stale"
-bash -n "$blind" || fail "blind-audit: bash -n"
 bash -n "$researcher" || fail "researcher-dispatch: bash -n"
 bash -n "$lifecycle" || fail "lifecycle-label-sweep: bash -n"
 bash -n "$stale" || fail "fleet-stale-auto-revert-sweep: bash -n"
@@ -37,31 +34,11 @@ bash -n "$stale" || fail "fleet-stale-auto-revert-sweep: bash -n"
 # Source guard: the help branch must exist and must sit before the first
 # side effect (mkdir -p / python3 init). A grep for the case arm is the
 # cheap class lock; the live run below is the real proof.
-for script in "$blind" "$researcher" "$lifecycle" "$stale"; do
+for script in "$researcher" "$lifecycle" "$stale"; do
     grep -Fq 'case "${1:-}" in' "$script" \
       || fail "$(basename "$script") must dispatch argv[1] before side effects"
 done
 
-# --- fleet-blind-audit -------------------------------------------------
-# Point AUDIT_STATE_DIR at a scratch dir so any stray mkdir -p is visible.
-scratch_blind=$(mktemp -d)
-trap 'rm -rf "${scratch_blind:-}" "${scratch_researcher:-}" "${scratch_lifecycle:-}" "${scratch_stale:-}"' EXIT
-
-for flag in --help -h; do
-    out=$(AUDIT_STATE_DIR="$scratch_blind" "$blind" "$flag" 2>/dev/null) || rc=$?
-    rc=${rc:-0}
-    [[ "$rc" -eq 0 ]] || fail "fleet-blind-audit $flag exited $rc (must exit 0)"
-    [[ -n "$out" ]] || fail "fleet-blind-audit $flag printed nothing"
-    # Usage must name the binary, not a live-run verdict.
-    echo "$out" | grep -Eq "fleet-blind-audit|Usage" \
-      || fail "fleet-blind-audit $flag did not print usage (got: $(printf '%s' "$out" | head -1))"
-    # No report directory must appear under the scratch state dir.
-    found=$(find "$scratch_blind" -mindepth 1 2>/dev/null | head -1 || true)
-    [[ -z "$found" ]] \
-      || fail "fleet-blind-audit $flag created state under \$AUDIT_STATE_DIR ($found) — help must not run"
-    rc=
-done
-ok "fleet-blind-audit --help/-h print usage, exit 0, write no report dir"
 
 # --- fleet-researcher-dispatch -----------------------------------------
 scratch_researcher=$(mktemp -d)

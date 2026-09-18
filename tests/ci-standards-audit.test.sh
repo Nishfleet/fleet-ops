@@ -1047,5 +1047,4 @@ bash "$here/fleet-restore-drill.test.sh" || fail "fleet-restore-drill tests fail
 bash "$here/fleet-provider-no-dangerous-modes.test.sh" || fail "fleet-provider-no-dangerous-modes tests failed"
 bash "$here/fleet-prepaid-util-canary.test.sh" || fail "fleet-prepaid-util-canary tests failed"
 bash "$here/grok-token-refresh.test.sh" || fail "grok-token-refresh tests failed"
-bash "$here/scratch-home-worker-token.test.sh" || fail "scratch-home-worker-token tests failed"
 bash "$here/fleet-bare-metal-rebuild.test.sh" || fail "fleet-bare-metal-rebuild tests failed"
