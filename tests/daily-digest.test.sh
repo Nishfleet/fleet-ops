@@ -211,7 +211,10 @@ env SPEND_RESPONSE="$scratch/spend.json" \
     HERMES_BIN="$scratch/bin/hermes" \
     bash "$digest" >/dev/null 2>&1
 [[ -f "$scratch/body7.txt" ]] || fail "case 7: digest did not invoke the hermes stub"
-grep -qF "• Signups this week: unknown." "$scratch/body7.txt" \
+# 2026-09-18 (3cec2df61): the absent-gauge line names the cause instead of
+# reading like a transient Prometheus blip — nothing has ever exported
+# fleet_signups_7d, so "unknown." was indistinguishable from a real outage.
+grep -qF "• Signups this week: NO DATA — nothing exports fleet_signups_7d" "$scratch/body7.txt" \
   || fail "case 7: unknown fallback missing: $(grep 'Signups this week' "$scratch/body7.txt" || echo none)"
 ok "case 7: absent gauge -> unknown fallback: '$(grep 'Signups this week' "$scratch/body7.txt")'"
 

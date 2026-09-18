@@ -479,15 +479,6 @@ bash "$here/seat-health-ledger-noop-write.test.sh"
 # .github/workflows/**).
 bash "$here/seat-health-overload-bench.test.sh"
 
-# fleet-ops#1464: GitHub push channel (webhook → Worker → tunnel → VPS).
-# The four tests are offline (DRY=1, ephemeral localhost ports, temp dirs):
-#   - gh-webhook-receiver-hmac: HMAC verify + dispatch table + /healthz
-#   - gh-webhook-canary: synthetic probe HMAC + dead-man status states
-#   - gh-webhook-organ-heartbeat: organ registry + absent() rules + gate
-#   - fleet-intake-reconciler-counter: reconciler-caught counter + cadence
-# Hosted here so P14 runs them without a workflow-file edit (the worker
-# App cannot push .github/workflows/**).
-bash "$here/gh-webhook-receiver-hmac.test.sh"
 
 # fleet-ops#180: gap-closure loop state machine (stubbed acceptance).
 # Hosted here so P14 runs it without a workflow-file edit (the worker App

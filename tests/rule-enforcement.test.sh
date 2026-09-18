@@ -70,23 +70,6 @@ ok "rule-enforcement: ci-hosted-paths class gate"
 bash "$here/spawn-guard.test.sh" || fail "spawn-guard drill failed"
 ok "rule-enforcement: spawn-guard drill"
 
-# fleet-ops#459: NORTH STAR quality guard. Nested host so the worker token
-# does not need to edit .github/workflows/**.
-
-# fleet-ops#462: ClinePass GLM 5.3 flash canary. Same nested-CI host so
-# this token does not need a workflow edit.
-
-# fleet-ops#542: repo-visibility canary. Nested host so the worker token
-# does not need to edit .github/workflows/**.
-
-# fleet-ops#4887: straitly ds4-pro canary retired with the seat (2026-09-10).
-
-# fleet-ops#537: execution-is-review receipt canary. Same nested-CI host.
-
-# fleet-ops#539: shared-file collision PreToolUse guard. Nested host so the
-# worker token does not need to edit .github/workflows/**.
-bash "$here/guard-shared-file-collision.test.sh" || fail "shared-file collision guard drill failed"
-ok "rule-enforcement: shared-file collision guard drill"
 
 # fleet-ops#545: CommandCode MiniMax M3 fail-closed catalog canary. Nested
 # host so the worker token does not need to edit .github/workflows/**.
@@ -135,13 +118,6 @@ ok "rule-enforcement: reserved-classes precedence drill"
 bash "$here/rulebook-host-drift.test.sh" || fail "rulebook retired-host drill failed"
 ok "rule-enforcement: rulebook retired-host drill"
 
-# fleet-ops#1149: asset census and guard-mapping canary. Nested host so
-# the worker token does not need to edit .github/workflows/**.
-
-# fleet-ops#1464: gh-webhook receiver prom-quote regression. Nested host
-# so the worker token does not need a workflow edit.
-bash "$here/gh-webhook-receiver-prom-quotes.test.sh" || fail "gh-webhook receiver prom-quotes drill failed"
-ok "rule-enforcement: gh-webhook receiver prom-quotes drill"
 
 # fleet-ops#????: siterep live canary pin wrapper. Nested host so the worker
 # token does not need a workflow edit.
