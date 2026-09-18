@@ -230,7 +230,10 @@ export default function (pi: ExtensionAPI) {
 	pi.registerProvider("cursor", {
 		name: "Cursor",
 		baseUrl: "https://api2.cursor.sh",
-		// apiKey omitted on purpose (optional per pi docs/models.md): auth = cursor-agent login, CURSOR_API_KEY overrides.
+		// Literal placeholder, the documented pattern for CLI/locally-authenticated providers
+		// (pi docs/models.md shows "local"): auth is the cursor-agent login; a real CURSOR_API_KEY
+		// in the environment overrides it (passed as --api-key only when set).
+		apiKey: "cursor-agent-login",
 		api: "cursor-cli",
 		models: modelsFromModelsJson("cursor", { reasoning: true, input: ["text", "image"], cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } }),
 		// Delegate all streaming to the custom impl — not a standard API
