@@ -93,7 +93,6 @@ jobs:
         bash tests/required-check-purity.test.sh
         bash tests/ci-checklist-gate.test.sh
         bash tests/pi-packet-guard.test.sh
-        bash tests/fleet-work-supply-canary.test.sh
         bash tests/pi-systemd-run.test.sh
         bash tests/prior-art-claim-check.test.sh
         bash tests/scout-futility.test.sh

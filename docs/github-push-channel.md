@@ -20,8 +20,6 @@ This document is the runbook for that hand-off.
 | Cloudflare Worker source         | `workers/github-push-forward/`                            |
 | VPS-side webhook receiver        | `libexec/gh-webhook-receiver/serve.py`                    |
 | Receiver systemd unit            | `systemd/gh-webhook-receiver.service`                     |
-| Synthetic canary script          | `bin/gh-webhook-canary.py`                                |
-| Canary systemd unit + timer      | `systemd/gh-webhook-canary.{service,timer}`               |
 | Intake cadence slow-down         | `systemd/pi-intake@.timer` (`*:00/15` → `*:00/20`)        |
 | Reconciler-caught counter        | `lib/pi-intake-tick.sh`                                   |
 | Organ registry entries           | `config/fleet-organs.json`                                |
@@ -138,7 +136,6 @@ this via `install.sh`):
 install.sh                       # picks up the new systemd units + bins
 systemctl --user daemon-reload
 systemctl --user enable --now gh-webhook-receiver.service
-systemctl --user enable --now gh-webhook-canary.timer
 ```
 
 Verify:
@@ -147,8 +144,6 @@ Verify:
 systemctl --user status gh-webhook-receiver.service
 curl -sS http://127.0.0.1:8088/healthz | jq .
 # Synthetic canary hits the receiver from inside the VPS — no tunnel involved.
-systemctl --user start gh-webhook-canary.service
-journalctl --user -u gh-webhook-canary.service -n 5
 ```
 
 ### 6. Wire the (optional) healthchecks.io ping URL
