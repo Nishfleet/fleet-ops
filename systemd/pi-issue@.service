@@ -73,7 +73,14 @@ WorkingDirectory=/home/nish
 # issues have EVER been opened in Nishfleet/fleet-ops or Nishfleet/0509, so
 # worker.md's manager mode — the only caller — never fired once. It is deleted
 # with this change.
-ExecStart=/bin/sh -c 'set -e; GH_TOKEN=$(gh token generate --app-id 4728578 --key "$HOME/.config/fleet-worker/nishfleet-worker.private-key.pem" --installation-id 156789042 --token-only); [ -n "$GH_TOKEN" ] || { echo "app token mint failed — refusing human-gh fallback" >&2; exit 1; }; export GH_TOKEN; echo "/worker $1" | exec pi --print --session-dir "$HOME/.pi/agent/sessions/pi-issue-$1" --exclude-tools subagent --provider litellm --model worker-capable' sh %i
+# Per-run invariants (hard rules, PR body contract, memory budget, D1 rules) live
+# in the repo AGENTS.md and are appended to the system prompt, not re-pasted into
+# every packet. `--append-system-prompt <file>` is Pi's own flag and takes file
+# contents (proven on this host 2026-09-18). It is used instead of relying on Pi's
+# AGENTS.md context-file discovery because that walks up from the STARTUP cwd, and
+# this unit starts in /home/nish — the repo file would never be reached. Canonical
+# path, never cwd-relative: the unit must not depend on which checkout it runs from.
+ExecStart=/bin/sh -c 'set -e; GH_TOKEN=$(gh token generate --app-id 4728578 --key "$HOME/.config/fleet-worker/nishfleet-worker.private-key.pem" --installation-id 156789042 --token-only); [ -n "$GH_TOKEN" ] || { echo "app token mint failed — refusing human-gh fallback" >&2; exit 1; }; export GH_TOKEN; echo "/worker $1" | exec pi --print --append-system-prompt "/home/nish/workspaces/tooling/fleet-ops-deploy-clone/AGENTS.md" --session-dir "$HOME/.pi/agent/sessions/pi-issue-$1" --exclude-tools subagent --provider litellm --model worker-capable' sh %i
 # The worker created its own worktree; the worker's own unit cleans it up.
 # No reaper, no salvage organ: work that was never committed and pushed did not
 # happen, and the next dispatch starts from origin/main. Leading '-' so cleanup
