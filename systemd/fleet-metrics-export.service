@@ -34,4 +34,4 @@ Type=oneshot
 # pi-issue@ workers mint theirs.
 Environment=HOME=/home/nish
 Environment=PATH=/home/nish/.local/bin:/usr/local/bin:/usr/bin:/bin
-ExecStart=/home/nish/workspaces/tooling/fleet-ops-deploy-clone/libexec/fleet-metrics-probe.sh
+ExecStart=/bin/sh /home/nish/workspaces/tooling/fleet-ops-deploy-clone/libexec/fleet-metrics-probe.sh
