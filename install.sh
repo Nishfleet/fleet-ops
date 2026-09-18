@@ -1021,7 +1021,7 @@ process_entry() {
     echo "installed (system): $dest"
   else
     # User scope: symlink, idempotent. mkdir -p so nested drop-in dirs
-    # (e.g. vps-weekly-update.service.d/) exist on first install.
+    # (e.g. a unit's .service.d/) exist on first install.
     # seat-caps.json: a stale checkout whose files were just git-checked-out
     # has a *newer* mtime than live, so the #372 mtime guard misses it.
     # Refuse a cap drop unless this file is origin/main's blob (merged
@@ -1231,7 +1231,9 @@ if [ "$do_user_install" = 1 ]; then
   fi
   # fleet-ops#541: weekly continuous-research sweep. Same #183 class as the
   # 0509 timer: [Install] in MANIFEST is not enough; install.sh must enable.
-  # fleet-ops#1146: Weekly Fleet Review — Sun 04:30 IST, post-vps-weekly-update.
+  # fleet-ops#1146: Weekly Fleet Review — Sun 04:30 IST (vps-weekly-update,
+  # which this used to follow, was deleted 2026-09-18; unattended-upgrades
+  # runs on its own apt-daily-upgrade schedule).
   # Blind 6-lens senior research + conference, output capped at 5 specced
   # actions. Same install-sh enable as #541.
   # fleet-ops#1236: weekly AEO visibility probe — Sun 03:30 IST, before WFR.
