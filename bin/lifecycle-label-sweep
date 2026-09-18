@@ -423,6 +423,11 @@ drill_num=""
 SCOUT_BOUNCE_MARKER="scout-candidate-bounce:"
 SCOUT_BOUNCE_COOLDOWN_SECONDS=$((72 * 60 * 60))
 
+# fleet-ops#7499: spec-gate refusal dedup. The sweep posts at most one
+# spec-gate refusal comment per issue; the marker in the comment body is
+# the dedup signal so the next tick does not re-post it.
+SPEC_GATE_REFUSAL_MARKER="spec-gate: refused agent-ready"
+
 ensure_label() {
     local repo="$1" name="$2"
     local color desc
@@ -544,6 +549,14 @@ bounce_in_cooldown() {
         (( diff < SCOUT_BOUNCE_COOLDOWN_SECONDS )) && return 0
     done < <(printf '%s' "$comments_json" | jq -c '.[] // empty' 2>/dev/null)
     return 1
+}
+
+# True (0) when the issue already carries a spec-gate refusal comment
+# (fleet-ops#7499). The marker in the comment body is the dedup signal.
+spec_refusal_already_posted() {
+    local comments_json="$1"
+    printf '%s' "$comments_json" \
+        | jq -e --arg m "$SPEC_GATE_REFUSAL_MARKER" '[.[]?.body // empty] | any(contains($m))' >/dev/null 2>&1
 }
 
 # fleet-ops#4892: true (0) if the issue has a comment starting with
@@ -773,9 +786,12 @@ while IFS= read -r repo; do
             if ! issue_passes_spec_gate "$issue_body" "$repo"; then
                 log "  $repo#$num: SPEC-GATE-REFUSED agent-ready ($title)"
                 if [ "$DRY" != "1" ]; then
-                    comment_issue "$repo" "$num" \
-                        "spec-gate: refused agent-ready (fleet-ops#543). Body needs termination: / accept: / required: / metric:." \
-                        "spec-gate refusal"
+                    spec_comments_json=$(fetch_issue_comments "$repo" "$num")
+                    if ! spec_refusal_already_posted "$spec_comments_json"; then
+                        comment_issue "$repo" "$num" \
+                            "spec-gate: refused agent-ready (fleet-ops#543). Body needs termination: / accept: / required: / metric:." \
+                            "spec-gate refusal"
+                    fi
                 fi
                 skipped=$((skipped + 1))
                 continue

@@ -205,6 +205,23 @@ grep -q 'SPEC-GATE-REFUSED' "$scratch/err1c.txt" \
 grep -q 'spec-gate: refused agent-ready' "$scratch/comments.log" \
   || fail "spec-less fleet-ops must comment the refusal: $(cat "$scratch/comments.log")"
 ok "unlabeled fleet-ops issue without a spec → refused (spec-gate)"
+
+# Case 1d: spec-gate refusal marker already present → re-post suppressed (fleet-ops#7499)
+cat >"$scratch/list.json" <<'JSON'
+[{"number":544,"title":"feat(quality): stamp ready with no spec","body":"please look at this\n","labels":[]}]
+JSON
+: >"$scratch/edits.log"
+: >"$scratch/comments.log"
+cat >"$scratch/view-544.json" <<'JSON'
+{"comments":[{"body":"spec-gate: refused agent-ready (fleet-ops#543). Body needs termination: / accept: / required: / metric:.","createdAt":"2026-09-17T18:56:00Z"}]}
+JSON
+out=$("$bin" 2>"$scratch/err1d.txt")
+grep -q 'SPEC-GATE-REFUSED' "$scratch/err1d.txt" || fail "spec-gate refusal must be logged: $(cat "$scratch/err1d.txt")"
+if grep -q 'spec-gate: refused agent-ready' "$scratch/comments.log"; then
+  fail "re-post must be suppressed; marker already present: $(cat "$scratch/comments.log")"
+fi
+ok "fleet-ops#7499: spec-gate refusal posted once — existing marker suppresses re-post"
+rm -f "$scratch/view-544.json"
 export LIFECYCLE_SWEEP_REPOS="Nishfleet/0509"
 
 # Case 2: AUTO-REVERT SKIP (live #361 shape) → noise-class, not agent-ready
