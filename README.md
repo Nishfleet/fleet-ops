@@ -165,14 +165,12 @@ A short log with no verdict after `nohup` or `&` is a **launcher fault**
 `ETIMEDOUT` / `quota` is a **lane fault** (rotate the seat). Do not mix
 them up.
 
-The `pi-packet-guard` (and the Claude PostToolUse hook that calls it)
-classifies these automatically from the redirected packet log. Launcher
-faults advise `pi-systemd-run`; lane faults advise seat rotation.
+The Claude PostToolUse hook `~/.claude/hooks/guard_pi_packet.py` classifies
+these from the redirected packet log. Launcher faults advise `pi-systemd-run`;
+lane faults advise seat rotation.
 
-Overlapping `systemctl start` of a live intake tick is a no-op
-(`pi-intake-run` flock). Starting a live `pi-issue@` worker is a no-op
-(`pi-issue-start`). The failed-reaper will not release a claim while that
-worker still has a MainPID.
+Overlapping `systemctl start` of a live intake tick or of a live `pi-issue@`
+worker is a no-op — systemd will not start a unit that is already running.
 
 ## Claim shared files before editing (interactive sessions)
 
@@ -217,9 +215,8 @@ the hook cannot see.
 Stale interactive **sessions** are no longer reaped by a bespoke timer:
 `interactive-session-reap` was deleted on 2026-09-18 after 113 consecutive
 hourly runs that each reaped nothing. `systemd-oomd` is the native reaper
-under real memory pressure. sshd, tailscaled, fleet-heartbeat, and intake
-timers are out of scope: they do not live in `session-*.scope`. The durable
-heartbeat still reaps orphaned `claim/issue-*` branches (queued work);
+under real memory pressure. sshd, tailscaled, and the intake timers are out
+of scope: they do not live in `session-*.scope`. `claim/issue-*` and
 `claim/adhoc-*` branches are released by the agent that claimed them.
 
 ## CI
@@ -230,7 +227,7 @@ heartbeat still reaps orphaned `claim/issue-*` branches (queued work);
    `no-hand-built-orchestration.yml` ruleset from Nishfleet/siterep-public at
    an exact commit SHA once packet p56 merges it. Until then the
    orchestration-specific rules are NOT applied — flagged loudly.
-2. **shellcheck** — `bin/*` and `install.sh` (pinned binary + sha256).
+2. **shellcheck** — `bin/*` (pinned binary + sha256).
 3. **unit-verify** — `systemd-analyze verify --man=no` on every `systemd/*`
    file. Proven to catch breakage: a malformed unit (bad section header,
    missing `=`) makes verify exit nonzero with a clear message.
@@ -290,47 +287,19 @@ have a green push-to-main CI workflow and required checks.
 
 ## Allowlist
 
-Only the files listed in `MANIFEST` are tracked and installed. Nothing else
-from `~/.config/systemd/user/`, `~/.local/bin/`, or `~/.pi/agent/prompts/` is
-swept in. EnvironmentFile= targets (e.g. `hc.env`, `deploy.env`, `cf.env`) are
-never tracked — only the units that reference them.
+There is no manifest and no installer. A path is live because something
+symlinks to it from `~/.config/systemd/user/`, `~/.local/bin/`, or
+`~/.pi/agent/prompts/`. EnvironmentFile= targets (e.g. `hc.env`, `deploy.env`,
+`cf.env`) are never tracked — only the units that reference them.
 
-## Fleet heartbeat (durable, session-independent)
+## Fleet heartbeat — DELETED 2026-09-18
 
-`fleet-heartbeat.timer` + `fleet-heartbeat.service` keep the fleet flowing
-even when every interactive Claude / Pi session dies. The old session-bound
-watcher/cron died 4x in one day on session hops — this one is owned by the
-user systemd instance (Persistent=true), not by any agent or tmux session.
-
-Two-tier design (so the heartbeat still works if every LLM is dead):
-
-- **Tier 1 (deterministic, every tick, no LLM)**: queue green fleet PRs,
-  release orphaned claims, recover failed fleet units then surface what remains
-  in triage (no direct Telegram page), verify scout/intake timers are armed,
-  re-examine `agent-blocked` issues, check `pi-seat-health.json` is fresh
-  (`observed_at` < 90 min), update the `last-heartbeat:` stamp in the
-  playbook. Also re-dispatches repair workers onto orphaned red fleet-worker
-  PRs whose worker has exited (debounced one tick, bounded 2 attempts, then
-  fail-loud into the unit-escalation path). Plain bash + gh + jq. Zero quota.
-  A successful tick also pings healthchecks.io (`HC_URL` in
-  `~/.config/fleet-heartbeat/hc.env`, same dead-man pattern as siterep-uptime)
-  so a masked or dead timer is visible off-box.
-- **Tier 2 (judgment, only when the triage file is non-empty or the held
-  queue has dispatchable items)**: walk a seat ladder
-  `claude -p --model claude-opus-5` → `pi --print --provider devin
-  --model swe-2-max` (after a 30 s probe) → `pi --print --provider minimax
-  --model MiniMax-M3`. First healthy seat wins; all dead → loud triage
-  line + unit FAILS (systemd's `state=failed` is the page).
-
-Freshness guard: the orchestrator entry reads the plan file's
-`last-heartbeat:` line and exits 0 immediately if < 20 minutes old, so the
-durable timer does not thrash against a live interactive session.
-
-Schedule: every 30 minutes at minute `:17` (off-peak — avoids the cluster
-of fleet timers firing at :00, :13, :15, :23, :38, :39, :43, :48, :52).
-
-Prompt: `prompts/heartbeat.md` — provider-neutral (no Claude-specific
-tool references). Plain instructions any agent with shell + `gh` executes.
+`fleet-heartbeat.timer`/`.service`, `bin/fleet-heartbeat-tier1` and
+`prompts/heartbeat.md` are gone. Their jobs live in the organs that already
+did them: `pi-intake@<repo>.timer` picks up queued work, PR auto-merge is a
+GitHub workflow, and a failed unit pages through the `SystemUnitFailed` rule
+in `config/fleet_rules.yml`. Its healthchecks.io dead-man is superseded by
+`bin/keystone-hc-ping` (`~/.config/fleet-ops/keystone-hc.env`).
 
 ## Intake enrolment
 
@@ -475,12 +444,6 @@ in `tests/spec-judge.test.sh`.
 
 - `backlog-console-refresh.service.retired-20260819`
 
-## Live paths are NOT touched by this repo
-
-This repo copies files in. The symlink cutover (making the live paths point
-here) is a separate, later step. Until then the live paths are real files and
-`install.sh --check` will report every entry as a DIFF.
-
 ## Four-plane resilience drill — DELETED 2026-09-18 (was `fleet-resilience-drill`, issue #455)
 
 > Removed with the synthetic-drill sweep: 1474 lines of rehearsal whose stub units died
@@ -502,10 +465,10 @@ The drill never kills live tailscaled or live heartbeat. Resurrection is an
 isolated `Restart=always` stub. State recovery reuses #388. Compute
 break-glass is GitHub-hosted runners. Keystone healthchecks.io URLs (intake,
 scout, reconcile, restore) live in `~/.config/fleet-ops/keystone-hc.env`
-and must be four checks distinct from the heartbeat dead-man. Unset URLs
+and must be four distinct checks. Unset URLs
 are a LOUD skip. A shared URL is a LOUD fail.
 
-## Worker RAM measurement — `ram-measure` (issue #45)
+## Worker RAM admission (issue #45)
 
 Admission carries no RAM charge: the concurrency bound is
 `min(target_concurrent, Σ declared provider caps)` — `seat_max_concurrent()`/
@@ -519,30 +482,14 @@ override the per-unit limits via intake-written drop-ins: fleet-ops#3930 set
 band is what makes oomd pressure-kill a random sibling, so it was removed;
 4G is now the hard stop with a clean local OOM at the cap), while the heavy
 class of #3281 writes 3G/2G for heavy|keystone packets — this proof's own
-unit (fleet-ops#5806) ran that heavy drop-in. A re-derive is
-one command:
+unit (fleet-ops#5806) ran that heavy drop-in.
 
-```
-ram-measure                          # one-line summary
-jq '.history[0]' ~/.local/state/ram-measurement/ram-measurement.json
-```
-
-`bin/ram-measure` walks every `pi-issue@*.service` and `pi-packet@*.service`
-unit, pulls `MemoryPeak` (bytes) from `systemctl show`, and reports count,
-mean, median, p95, and max in GiB plus a per-unit breakdown. State lives at
-`~/.local/state/ram-measurement/ram-measurement.json` with a rolling
-10-run history. The fleet-heartbeat calls it once per tick (section 14 of
-`bin/fleet-heartbeat-tier1`) so a re-derive is a one-time `jq` over the
-history, not a re-read of a comment. Pure observability — never a gate, never
-an escalation, never an edit to the cap map.
-
-`bin/ram-metric-compare` (fleet-ops#202) samples live `pi-issue@` units for
-both cgroup `memory.current` and process VmRSS. The 35 MB figure in older
-comments is VmRSS, not cgroup cost. Live 2026-08-26: `memory.current` p95
-was 822.6 MB. The compare command records both every tick. Until
-fleet-ops#4263 the comparison sized the admission RAM charge
-(`ram_gb_per_worker`; #489, #1168); the charge is gone — the compare now
-informs per-unit `MemoryMax` sizing only.
+`bin/ram-measure` and `bin/ram-metric-compare` are deleted along with the
+heartbeat that called them; their last samples remain under
+`~/.local/state/ram-measurement/` (live 2026-08-26: `pi-issue@` cgroup
+`memory.current` p95 822.6 MB — the 35 MB figure in older comments is VmRSS,
+not cgroup cost). Live RAM is now `systemctl --user show -p MemoryPeak
+<unit>` and `systemd-cgtop`.
 
 ## Gap-closure loop (issue #180)
 

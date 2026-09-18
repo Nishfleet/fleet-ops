@@ -49,7 +49,7 @@ Full text: `/home/nish/workspaces/tooling/nish-vault/_system/shared-memory/stand
 <!-- SECTION: nish-preimplementation-contract -->
 ## Mandatory pre-implementation contract
 
-Before implementation work, automatically read and follow `/home/nish/workspaces/tooling/nish-vault/_system/shared-memory/pre-implementation-contract.md`. This is non-negotiable for {{SURFACE_PREIMPLEMENT_PHRASE}}. For non-trivial work, investigate first, present Goal, Blocking questions, Assumptions, and Plan. Then stop for Nish's approval only when the work touches a canonical reserved class (vault `global-standing-rules.md` → "Canonical reserved-classes list") or is irreversible. Everything else begins once the plan is on the record — "Engineer reversibility, don't gate" (Nish, 2026-08-24): make it revertible in under two minutes and stop asking (fleet-ops#6610).
+Before implementation work, automatically read and follow `/home/nish/workspaces/tooling/nish-vault/_system/shared-memory/pre-implementation-contract.md`. This is non-negotiable for every agent and subagent on this host. For non-trivial work, investigate first, present Goal, Blocking questions, Assumptions, and Plan. Then stop for Nish's approval only when the work touches a canonical reserved class (vault `global-standing-rules.md` → "Canonical reserved-classes list") or is irreversible. Everything else begins once the plan is on the record — "Engineer reversibility, don't gate" (Nish, 2026-08-24): make it revertible in under two minutes and stop asking (fleet-ops#6610).
 <!-- END SECTION: nish-preimplementation-contract -->
 
 <!-- SECTION: shared-fleet-routing -->
@@ -69,12 +69,15 @@ For delegated work use Pi's stock `subagent` extension (`scout`, `planner`, `wor
 echo 'Use worker to <task>' | pi --print --provider devin --model glm-5-2
 ```
 
-Check the seat before routing: `agent-state/lanes/pi-seat-health.json` {{SEAT_CHECK_PHRASE}}
+Check the seat before routing: `agent-state/lanes/pi-seat-health.json` carries the last observed provider/model, HTTP status and `health_class`. Confirm `observed_at` is recent before trusting it.
 
 **Before writing ANY orchestration** — dispatch, queue, scheduling, spec gates, handoff, reporting — read Pi's 79 shipped example extensions (verified 2026-09-01: `ls ~/.local/lib/node_modules/@earendil-works/pi-coding-agent/examples/extensions/ | wc -l`) in `~/.local/lib/node_modules/@earendil-works/pi-coding-agent/examples/extensions/` and `docs/`. The fleet hand-built ~20,000 lines of control plane that Pi already ships. A hand-built fork of a stock extension is the known failure mode.
 
-**Compute rule:** prefer event-driven over scheduled every time. The old fleet burned money polling; a schedule now needs a named reason.{{OLD_LAUNCHER_BLOCK}}
-{{SOL_IDENTITY_BLOCK}}
+**Compute rule:** prefer event-driven over scheduled every time. The old fleet burned money polling; a schedule now needs a named reason.
+
+The old DeepSeek/MiniMax/Luna launcher ladder and `_system/shared-memory/codex-model-routing.md` are SUPERSEDED - history only.
+
+Sol is retired (Nish 2026-09-07, fleet-ops#4148): do not launch `gpt-5.6-sol`, do not top up straitly for it. The remaining Codex identity is Luna via `codex-luna@`. Exact model/effort identity is fail-closed: prove host, provider, model, role and effort from runtime evidence before launch. Missing proof means no launch. No silent substitution.
 <!-- END SECTION: shared-fleet-routing -->
 
 <!-- SECTION: never-relay-finding -->
@@ -109,6 +112,7 @@ bug.** Fix the instance AND the detector. Canonical text:
 <!-- SECTION: shared-memory-loop -->
 ## Automatic shared-memory loop
 
-{{FAILURE_RESPONSE_BLOCK}}- Non-negotiable response style: default to concise ELI5 language with plain words and the direct answer first. Add depth only when Nish explicitly asks or when essential safety or verification details cannot be omitted.
+- **Failure response is #1 (Nish, 2026-08-08):** any detected fleet-infrastructure failure gets automatic, autonomous, INSTANT repair dispatch on the cheapest healthy Pi seat (picked via `agent-state/lanes/pi-seat-health.json`), escalating to a flagship seat for broad or high-stakes repair. Never a quiet degraded mode, never 'flag for Nish'. Fail LOUD when repair is impossible.
+- Non-negotiable response style: default to concise ELI5 language with plain words and the direct answer first. Add depth only when Nish explicitly asks or when essential safety or verification details cannot be omitted.
 - Memory is the Pi session plus the plain markdown in `nish-vault` — the `memoryctl` recall/outcome/feedback/capture loop and its curator were deleted on 2026-09-18 (the write path had not run in 39 days and the curator compiled 0 notes in its entire live history).
 <!-- END SECTION: shared-memory-loop -->
