@@ -13,10 +13,9 @@
 #       self-maintenance-repos.json (fleet-ops dropped; 0509 kept)
 #   (e) empty window still emits fleet_product_slo_last_run_seconds
 #   (f) main() end-to-end writes a textfile with exact metric names
-#   (g) MANIFEST installs the helper + exporter drop-in (no new timer)
+#   (g) exporter drop-in installed (no new timer)
 #   (h) fleet_rules.yml ships FleetProductSloAbsent + ProductThroughputStalled
 #       + ProductLeadTimeDegrading + ProductRevertRateHigh
-#   (i) config/fleet-organs.json registers the organ
 #   (j) console shipped_24h source is fleet_product_merged_24h
 #   (o) product OUTCOME gauges (signups/activated/paying/briefs, fleet-ops#4456)
 #       are emitted only when the D1 source is reachable — never a fabricated 0
@@ -34,13 +33,9 @@ here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 repo_root="$(cd "$here/.." && pwd)"
 helper="$repo_root/lib/fleet-product-slo.py"
 rules="$repo_root/config/fleet_rules.yml"
-manifest="$repo_root/MANIFEST"
 dropin="$repo_root/systemd/fleet-metrics-export.service.d/product-slo.conf"
-organs="$repo_root/config/fleet-organs.json"
 intake="$repo_root/config/intake-repos.json"
 selfm="$repo_root/config/self-maintenance-repos.json"
-generate="$repo_root/libexec/fleet-console-pi/generate.py"
-verify="$repo_root/libexec/fleet-console-pi/verify.py"
 
 fail() { echo "FAIL: $*" >&2; exit 1; }
 ok()   { echo "OK: $*"; }
@@ -48,7 +43,6 @@ ok()   { echo "OK: $*"; }
 [[ -f "$helper" ]] || fail "missing $helper"
 [[ -f "$rules" ]] || fail "missing $rules"
 [[ -f "$dropin" ]] || fail "missing $dropin"
-[[ -f "$organs" ]] || fail "missing $organs"
 [[ -f "$intake" ]] || fail "missing $intake"
 [[ -f "$selfm" ]] || fail "missing $selfm"
 command -v python3 >/dev/null 2>&1 || fail "python3 required"
@@ -553,22 +547,18 @@ PY
 ok "(f) main() fixture end-to-end textfile"
 
 # =========================================================================
-# (g) MANIFEST + drop-in + no new timer
+# (g) exporter drop-in + no new timer
 # =========================================================================
-grep -Fxq "lib/fleet-product-slo.py /home/nish/.local/lib/pi-packet/fleet-product-slo.py" "$manifest" \
-  || fail "MANIFEST missing lib/fleet-product-slo.py dest"
-grep -Fxq "systemd/fleet-metrics-export.service.d/product-slo.conf /home/nish/.config/systemd/user/fleet-metrics-export.service.d/product-slo.conf" "$manifest" \
-  || fail "MANIFEST missing product-slo drop-in"
 grep -q "ExecStart=-/bin/bash -c 'exec /usr/bin/python3 /home/nish/.local/lib/pi-packet/fleet-product-slo.py'" "$dropin" \
   || fail "drop-in must ExecStart=- the helper under ~/.local/lib/pi-packet/"
 [[ ! -f "$repo_root/systemd/fleet-product-slo.timer" ]] \
   || fail "must not add a new timer; piggyback fleet-metrics-export (accept §5 rejected as new organ)"
 [[ ! -f "$repo_root/systemd/fleet-product-slo.service" ]] \
   || fail "must not add a new service; piggyback fleet-metrics-export"
-ok "(g) MANIFEST + drop-in wiring; no new timer"
+ok "(g) exporter drop-in wiring; no new timer"
 
 # =========================================================================
-# (h)(i) Rules + organ registry
+# (h) Rules
 # =========================================================================
 grep -q 'alert: FleetProductSloAbsent' "$rules" \
   || fail "rules missing FleetProductSloAbsent"
@@ -586,25 +576,7 @@ grep -q 'fleet_product_lead_time_days{repo="0509"} > 14' "$rules" \
   || fail "ProductLeadTimeDegrading must gate on lead_time > 14"
 grep -q 'fleet_product_revert_rate{repo="0509"} > 0.15' "$rules" \
   || fail "ProductRevertRateHigh must gate on revert_rate > 0.15"
-
-jq -e '.organs[] | select(.name=="product-slo")
-  | select(.heartbeat_metric=="fleet_product_slo_last_run_seconds")
-  | select(.absent_alert=="FleetProductSloAbsent")' "$organs" >/dev/null \
-  || fail "fleet-organs.json missing product-slo organ"
-ok "(h)(i) rules + organ registry"
-
-# =========================================================================
-# (j) console tile single source of truth
-# =========================================================================
-grep -q 'fleet_product_merged_24h' "$generate" \
-  || fail "generate.py must read fleet_product_merged_24h"
-grep -q 'prometheus:fleet_product_merged_24h' "$generate" \
-  || fail "generate.py shipped tile source must be fleet_product_merged_24h"
-! grep -q 'src = "prometheus:fleet_merged_prs_24h"' "$generate" \
-  || fail "generate.py must not still source shipped_24h from fleet_merged_prs_24h"
-grep -q 'sum(fleet_product_merged_24h)' "$verify" \
-  || fail "verify.py shipped_prom must sum fleet_product_merged_24h"
-ok "(j) console shipped_24h reads fleet_product_merged_24h"
+ok "(h) rules"
 
 # =========================================================================
 # (k) fleet-ops#3519 per-repo quality metrics + committed ceilings
@@ -1044,4 +1016,4 @@ else
   echo "SKIP: promtool not on PATH"
 fi
 
-echo "OK: fleet-product-slo: throughput, lead-time-excludes-reverts, revert-rate, intake list, MANIFEST, rules, organ, console source"
+echo "OK: fleet-product-slo: throughput, lead-time-excludes-reverts, revert-rate, intake list, drop-in, rules"

@@ -80,7 +80,6 @@ jobs:
         bash tests/minimax-token-refresh.test.sh
         bash tests/seat-credentials-bad-replay.test.sh
         bash tests/budget-402-classification.test.sh
-        bash tests/budget-402-pick-fallback.test.sh
         bash tests/fleet-production-stale-alert.test.sh
         bash tests/semantic-conflict-detector.test.sh
         bash tests/repeat-deterministic-detector.test.sh
@@ -97,7 +96,6 @@ jobs:
         # fleet-ops#2133: reclaim cooldown + stale-claim release break the
         # spawn-die-respawn wedge (reaper writes cooldown marker, intake
         # skips for 15min, stale claims with no live worker/PR are released).
-        bash tests/claim-pr-head-owner.test.sh
         # fleet-ops#4808: intake honors a `depends-on:` line in a ticket body
         # and never claims a ticket whose named dependencies are not
         # merged/closed (the 0509 seam batch had to be hand-gated).
@@ -114,7 +112,6 @@ jobs:
         # Devin message rate limit = pause + in-session resume, never a worker
         # death (114 deaths/24h on that one message, 2026-09-11).
         bash tests/devin-provider-rate-limit-retry.test.sh
-        bash tests/repair-rotation.test.sh
         bash tests/seat-lib.test.sh
         bash tests/seat-lib-degraded.test.sh
         bash tests/seat-lib-org-reserve.test.sh

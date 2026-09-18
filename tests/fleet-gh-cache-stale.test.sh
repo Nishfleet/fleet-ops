@@ -13,7 +13,6 @@
 #   3. for: 45m, severity: warning, service: fleet (repair rail).
 #   4. 45m is 1.5x the 30 min cache cadence.
 #   5. Repair annotation names the exporter, gh auth/rate limit, refresh path.
-#   6. FleetGhCacheStale is NOT in alert-repair-dispatch SKIP_SET.
 #   7. promtool check rules (if present).
 set -euo pipefail
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -23,15 +22,13 @@ fail() { echo "FAIL: $*" >&2; exit 1; }
 ok()   { echo "OK: $*"; }
 
 rules="$repo_root/config/fleet_rules.yml"
-dispatch="$repo_root/libexec/alert-repair-dispatch"
 
 [[ -f "$rules" ]] || fail "missing $rules"
-[[ -f "$dispatch" ]] || fail "missing $dispatch"
 
 grep -q 'alert: FleetGhCacheStale' "$rules" \
   || fail "missing FleetGhCacheStale"
 
-python3 - "$rules" "$dispatch" <<'PY' || fail "FleetGhCacheStale shape failed"
+python3 - "$rules" <<'PY' || fail "FleetGhCacheStale shape failed"
 from pathlib import Path
 import ast, re, sys
 
@@ -55,12 +52,6 @@ assert "auth" in low, block
 assert "rate limit" in low, block
 print("OK: FleetGhCacheStale is warning/45m/fleet with min==0 or absent()")
 
-src = Path(sys.argv[2]).read_text()
-sm = re.search(r"SKIP_SET = (\{.*?\})", src, re.S)
-assert sm, "SKIP_SET not found in alert-repair-dispatch"
-skip = ast.literal_eval(sm.group(1))
-assert "FleetGhCacheStale" not in skip, skip
-print("OK: FleetGhCacheStale is not in SKIP_SET (rides the repair rail)")
 PY
 
 if command -v promtool >/dev/null 2>&1; then

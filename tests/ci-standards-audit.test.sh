@@ -226,11 +226,6 @@ bash "$here/issue-file.test.sh"
 # without a workflow-file edit.
 bash "$here/merge-trample-gate.test.sh"
 
-# fleet-ops#4557: judge-block arm-refusal replay drill (blocked-by-judge
-# has teeth: refuse the arm, disarm armed auto-merge, unlabel re-permits).
-# Hosted here so P14 runs it without a workflow-file edit (the worker App
-# cannot push .github/workflows/**).
-bash "$here/fleet-judge-block-gate.test.sh"
 
 # fleet-ops#1493 (fleet-ops#2020): tests/ready-work-deleted.test.sh pins the deletion
 # of the hand-placed ready-work dispatcher and checks the allowlist / MANIFEST /
@@ -245,18 +240,7 @@ bash "$here/ready-work-deleted.test.sh"
 # test-listing gate goes green without a workflow edit.
 bash "$here/auditor-stdio-test-deleted.test.sh"
 
-# fleet-ops#1157: self-auditing console (verify field, DISPUTED, ConsoleLying).
-# Hosted here so P14 runs it without a workflow-file edit.
-bash "$here/console-tile-verify.test.sh"
 
-# fleet-ops#4061: product-vs-self merge-split measurement tool test. Hermetic
-# (fake gh via FLEET_SELF_SPLIT_GH, scratch dirs). Hosted here so P14 runs it
-# without a workflow-file edit (the worker App cannot push .github/workflows/**).
-
-# fleet-ops#4061: shipped_24h tile spot-check now excludes revert PRs. Hermetic
-# (fake gh, in-process verify.py). Hosted here so P14 runs it without a
-# workflow-file edit.
-bash "$here/console-shipped-spot-revert.test.sh"
 
 # fleet-ops#1232: FleetGhCacheStale (warning, 45m) on the repair rail.
 # Hosted here so P14 runs it without a workflow-file edit.
@@ -266,39 +250,6 @@ bash "$here/fleet-gh-cache-stale.test.sh"
 # Hosted here so P14 runs it without a workflow-file edit.
 
 
-# fleet-ops#2528: three WFR-input trend regression alerts live in the
-# dispatcher SKIP_SET + canary SKIP_FIRING (+ stubbed no-spawn /
-# no-STOP-REASON proof). Hosted here so P14 runs it without a
-# workflow-file edit.
-
-# fleet-ops#2672: the WFR-input main_green slow-burn SLO lives in the
-# dispatcher SKIP_SET + canary SKIP_FIRING so the 6h AMX repeat can no
-# longer spawn a repair worker into a mechanism-impossible lagging
-# integrator (the verify chain it created stalled at hop=verify and
-# re-seated onto an empty-run benched seat). Hosted here so P14 runs it
-# without a workflow-file edit.
-
-# fleet-ops#3376: FleetEscalationStorm is a 24h rolling count / trend gauge;
-# a repair worker cannot clear it because the count ages out. Lock it into
-# dispatcher SKIP_SET + canary SKIP_FIRING so a firing storm cannot ladder
-# to a STOP-REASON / senior conference while the issue worker fixes the
-# exporter/metric. Hosted here so P14 runs it without a workflow-file edit.
-
-# fleet-ops#2694 (PR #2796 follow-up): the fleet_alert_outcome_24h
-# phantom-vs-real split test landed on main without a ci.yml listing or a
-# host, so P14 ran red on "1 test file(s) are neither in ci.yml, hosted by
-# a listed test, live/destructive, nor a known orphan:
-# alert-repair-outcome-metric.test.sh" for every push since 08:05Z (the
-# named pin in tests/p14-test-listing-gate.test.sh is the class-prevention
-# so a future drop of this host line fails by name). Hermetic test
-# (no gh/prometheus/systemd) — runs fine in hosted CI. Hosted here so P14
-# runs it without a workflow-file edit (the worker App cannot push
-# .github/workflows/**).
-
-# fleet-ops#5142: detached-deliverable preflight alert. Hosted here so P14
-# runs it without a workflow-file edit (the worker App cannot push
-# .github/workflows/**).
-bash "$here/detached-deliverable-preflight.test.sh"
 
 # fleet-ops#2768: one-shot dispatch-ledger fixture-row sweep. PR #2873
 # landed the test without a ci.yml listing or a host, so P14 ran red on
@@ -468,24 +419,6 @@ bash "$here/fleet-issue-file-dedupe-comment-idempotent.test.sh"
 # name. Hermetic (fake gh, no network).
 bash "$here/fleet-issue-file-dedupe-closed-canonical.test.sh"
 
-# fleet-ops#5622: stuck webhook packets must reach a terminal disposition
-# (chain, issue, or reasoned drop) instead of sitting LOUD-listed forever.
-# Hosted here so P14 runs it without a workflow edit (the worker App cannot
-# push .github/workflows/**). The named pin in
-# tests/p14-test-listing-gate.test.sh is the class-prevention so a future
-# drop of this host line fails by name. Hermetic (fixture packets + fake
-
-# chains.terminated.jsonl + stubbed fleet-issue-file, no network).
-# fleet-ops#2902 (PR #2905 follow-up): the leaky-worktree containment
-# detector landed on main without a ci.yml listing or a host — and P14 was
-# already red on the two orphans above, so this leftover slipped in
-# unmasked. Hosted here so P14 runs it without a workflow-file edit (the
-# worker App cannot push .github/workflows/**). The named pin in
-# tests/p14-test-listing-gate.test.sh is the class-prevention so a future
-# drop of this host line fails by name.
-# Hermetic self-test with fixture worktrees; live scan zeroes out (exit 0)
-# when roots are absent, so it runs fine in hosted CI.
-bash "$here/worktree-leaky-test-containment.test.sh"
 
 # fleet-ops#1466: closure condition for the seat-health.ts 200/empty-body
 # false-healthy gap. The test imports the live extension at
@@ -596,68 +529,7 @@ bash "$here/provider-timeout.test.sh"
 # EXTLOAD gate. Hosted here so P14 runs it without a workflow-file edit
 # (workers cannot push .github/workflows/**).
 bash "$here/subagent-extload.test.sh"
-# 2026-08-28: pin journal evidence into STOP-REASON) without a ci.yml listing
-# or host, leaving p14-test-listing-gate red on main -> FleetMainRed. Hosted
-# here alongside its sibling unit-escalation-write-* tests so P14 runs it
-# without a workflow-file edit.
 
-# fleet-ops#2614 (PR #2655): same-unit re-fire dedupe + orphan-chain sweep.
-# or host, leaving p14-test-listing-gate red on main -> FleetMainRed (same
-# failure class as fleet-ops#2399 journal-evidence, below). Hosted here
-# alongside their sibling unit-escalation-write-*/escalation-completion
-# tests so P14 runs them without a workflow-file edit (the worker App cannot
-# push .github/workflows/**).
-
-# fleet-ops#2912: closeout-skipped recurrence suppression in unit-escalation-write —
-# a recurring same-class unit trip (fleet-heartbeat's structural reds, 35 trips
-# in ~2 days) must stop re-summoning a senior auditor once the same class has
-# been closeout-skipped RECURRENCE_SUPPRESS_N times. Hosted here alongside its
-# unit-escalation-write-* siblings so P14 runs it without a workflow-file edit
-# (the worker App cannot push .github/workflows/**).
-
-# fleet-ops#2133 / #2475 (PR #2193): pi-issue@*.service exclusion from
-# unit-escalation-write. The worker has its own OnFailure=pi-issue-failed@%i
-# reaper + Restart=on-failure with StartLimitBurst=3, so the SENIOR AUDITOR
-# path was redundant and amplified pi-issue failures into seat-burning
-# auditor dispatches (measured 2026-08-30 05:00Z: 59/62/33). The runtime
-# test (4 cases: real-instance skip, template skip, reaper NOT excluded,
-# unrelated unit NOT excluded) is the loud proof that the writer exits 0
-# with a "skipping excluded unit" message instead of writing STOP-REASON
-# for pi-issue@*. Hosts here alongside its sibling unit-escalation-write-*
-# tests so P14 runs it without a workflow-file edit (the worker App cannot
-# push .github/workflows/**).
-
-# fleet-ops#3368: the FleetEscalationStorm alert must name its dominant
-# producer so a recurrence is actionable without a manual dig. Locks the
-# topk(1, fleet_escalations_24h) expr + {{ $labels.unit }} annotations via
-# a promtool rule-unit test. Runs offline (no live prometheus); skips the
-# promtool section cleanly when promtool is absent. Hosted here so P14
-# runs it without a workflow-file edit.
-
-# fleet-ops#3617: the tier1 orphan-pass releases a dead worker's claim but
-# never clears the orphaned pi-issue@ unit's `failed` state, so the audit
-# re-files it as an "orphan systemd unit is failed" gap-audit every cycle.
-# This test pins the reset-failed-on-release fix. Hosted here so P14 runs
-# it without a workflow-file edit (the worker App cannot push
-# .github/workflows/**). The live reset-failed proof in Phase D skips in
-# hosted CI (no user systemd there) and runs on the VPS.
-
-# fleet-ops#2462: cap re-claims per item (MAX_RECLAIMS in pi-intake-tick.sh)
-# + systemic-failure skip (.systemic marker when every tried seat is benched).
-# Hosts the 11-test gate (MAX_RECLAIMS env var, tick read path, skip+escalate,
-# .systemic marker, reaper increment+reset, run init+reset, shellcheck) so
-# P14 covers it without a workflow-file edit (the worker App cannot push
-# .github/workflows/**).
-bash "$here/fleet-ops-2462-claim-cap.test.sh"
-
-# fleet-ops#3310: infra deaths never count, and the WORK reclaim cap reroutes
-# to a different seat CLASS instead of parking for a senior conference. Hosts
-# the 16-test gate (infra-death classification, .last-death-class marker,
-# .prefer-class ladder, reaper infra-vs-work counter split, CLOSED clears,
-# pick-seat prefer-class, and a replay drill that RUNS the real pi-issue-run /
-# pi-issue-failed-reap against scratch dirs) so P14 covers it without a
-# workflow-file edit (the worker App cannot push .github/workflows/**).
-bash "$here/fleet-ops-3310-infra-death-class-switch.test.sh"
 
 # fleet-ops#2666: 0B-stdout empty-run burst on healthy seats — the 2h
 # burst signal the #902 24h waste-ratio gauge masks (2026-09-01 12:48Z-

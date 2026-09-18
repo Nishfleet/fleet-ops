@@ -48,9 +48,7 @@ repo_root="$(cd "$here/.." && pwd)"
 bin="$repo_root/bin/grok-token-refresh"
 svc="$repo_root/systemd/grok-token-refresh.service"
 timer="$repo_root/systemd/grok-token-refresh.timer"
-manifest="$repo_root/MANIFEST"
 rules="$repo_root/config/fleet_rules.yml"
-organs="$repo_root/config/fleet-organs.json"
 seat_caps="$repo_root/config/seat-caps.json"
 
 fail() { echo "FAIL: $*" >&2; exit 1; }
@@ -501,25 +499,12 @@ grep -F 'command -v "$CURL_BIN"' "$bin" >/dev/null \
     || fail "scenario20: script must gate on command -v \$CURL_BIN"
 ok "scenario20: script gates on command -v \$CURL_BIN"
 
-# --- 21. Heartbeat wiring (rules + organs) --------------------------------
+# --- 21. Heartbeat wiring (rules) -----------------------------------------
 grep -F 'FleetGrokTokenRefreshStale' "$rules" >/dev/null \
     || fail "scenario21: fleet_rules.yml must carry FleetGrokTokenRefreshStale"
 grep -F 'fleet_grok_token_refresh_last_success_seconds' "$rules" >/dev/null \
     || fail "scenario21: fleet_rules.yml must reference the heartbeat metric"
-jq -e '.organs[] | select(.name=="grok-token-refresh")' "$organs" >/dev/null \
-    || fail "scenario21: fleet-organs.json must register grok-token-refresh"
-jq -e '.organs[] | select(.name=="grok-token-refresh") | .absent_alert == "FleetGrokTokenRefreshStale"' "$organs" >/dev/null \
-    || fail "scenario21: organ absent_alert must match rules"
-ok "scenario21: rules + organs wired (FleetGrokTokenRefreshStale + grok-token-refresh organ)"
-
-# --- 22. MANIFEST ships the script + both units ---------------------------
-grep -F 'bin/grok-token-refresh' "$manifest" >/dev/null \
-    || fail "scenario22: MANIFEST must install bin/grok-token-refresh"
-grep -F 'systemd/grok-token-refresh.service' "$manifest" >/dev/null \
-    || fail "scenario22: MANIFEST must install grok-token-refresh.service"
-grep -F 'systemd/grok-token-refresh.timer' "$manifest" >/dev/null \
-    || fail "scenario22: MANIFEST must install grok-token-refresh.timer"
-ok "scenario22: MANIFEST ships the script + service + timer"
+ok "scenario21: rules wired (FleetGrokTokenRefreshStale + heartbeat metric)"
 
 # --- 23. seat-caps cites grok-token-refresh -------------------------------
 jq -e '.providers.grok.reason | contains("grok-token-refresh")' "$seat_caps" >/dev/null \
@@ -627,4 +612,4 @@ run_script
 [[ ! -s "$SYSTEMCTL_LOG" ]] || fail "scenario27-reject: REJECT must not call systemctl: $(cat "$SYSTEMCTL_LOG")"
 ok "scenario27: REJECT calls no systemctl"
 
-echo "OK: grok-token-refresh: skip paths, success path, reject paths, refresh-omitted keep, no token leak, idempotent, lock, prom rewrite, organ + rules + manifest wired, last_success advances on skip+success, preserved on reject, TTL_S default 18000, no run ever bounces the LiteLLM proxy"
+echo "OK: grok-token-refresh: skip paths, success path, reject paths, refresh-omitted keep, no token leak, idempotent, lock, prom rewrite, rules wired, last_success advances on skip+success, preserved on reject, TTL_S default 18000, no run ever bounces the LiteLLM proxy"

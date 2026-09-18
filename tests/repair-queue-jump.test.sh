@@ -26,9 +26,9 @@
 #      is check-bucket green but BLOCKED at the queue (a required check
 #      never reported on its stale head) is skipped WITHOUT any mutation;
 #      a CLEAN one jumps.
-#   6. Heartbeat wiring shape: bin/fleet-heartbeat-tier1 block 2 labels
-#      revert/* heads, entry-jumps repair-labelled arms, and block 2b runs
-#      the sweep.
+#   6. Wiring shape: .github/scripts/auto-revert.sh labels its PRs
+#      repair:main-red (the heartbeat and alert-repair dispatcher that also
+#      carried this wiring were deleted in the 2026-09-18 glue sweep).
 
 set -euo pipefail
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -304,19 +304,13 @@ printf '%s' "$rj6_out" | grep -q 'blocked: BLOCKED (mergeStateStatus)' \
   || fail "BLOCKED skip must be named in the report"
 ok "drill: BLOCKED repair PR skipped, zero mutations (#2768 lesson)"
 
-# --- 6. heartbeat wiring shape ------------------------------------------------
-hb="$repo_root/bin/fleet-heartbeat-tier1"
-grep -q 'repair:main-red' "$hb" || fail "heartbeat must label revert/* heads repair:main-red"
-grep -q 'repair-queue-jump.mjs' "$hb" || fail "heartbeat must resolve the repair-jump helper"
-grep -q 'REPAIR_JUMP_MJS' "$hb" || fail "heartbeat must define REPAIR_JUMP_MJS"
-grep -q '2b. repair-queue-jump sweep' "$hb" || fail "heartbeat must run the 2b sweep"
-grep -q 'REPAIR-JUMP at head' "$hb" || fail "heartbeat must entry-jump repair arms"
-grep -q 'repair-queue-jump.mjs' libexec/alert-repair-dispatch \
-  || fail "alert-repair packet must instruct workers to run the jump helper"
-grep -q 'repair:main-red' libexec/alert-repair-dispatch \
-  || fail "alert-repair packet must instruct workers to label repair PRs"
+# --- 6. wiring shape ----------------------------------------------------------
+# The heartbeat (bin/fleet-heartbeat-tier1) and the alert-repair dispatcher
+# (libexec/alert-repair-dispatch) were deleted in the 2026-09-18 glue sweep;
+# auto-revert.sh is the surviving producer of repair PRs, so its label is the
+# only wiring left to pin.
 grep -q 'repair:main-red' .github/scripts/auto-revert.sh \
   || fail "auto-revert.sh must label its PRs repair:main-red"
-ok "wiring: heartbeat label+jump+sweep, alert-repair packet, auto-revert.sh"
+ok "wiring: auto-revert.sh labels repair PRs repair:main-red"
 
 echo "ALL TESTS PASSED"

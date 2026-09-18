@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # tests/worker-token-fail-closed.test.sh
 #
-# Proves worker-token and pi-issue-run fail closed when the GitHub App
+# Proves worker-token fails closed when the GitHub App
 # is not configured. Runs entirely offline / without GitHub credentials —
 # no app, no creds, no network. There is no fallback to a human account.
 #
@@ -11,10 +11,6 @@
 #   2. worker-token with a creds file that's empty → exits 3.
 #   3. worker-token --degrade-probe with no creds file → exits 1 (so a
 #      caller can use it as a "should I rotate?" check).
-#   4. pi-issue-run screams (DEAD APP IDENTITY) when nishfleet-worker.env
-#      is absent or worker-token mint fails; it never falls back to a
-#      human gh auth. We exercise this by sourcing the script body in a
-#      controlled way.
 #   5. The manifest claim about permissions matches what worker-token
 #      would mint (no admin scope, no workflows, no organization).
 #
@@ -104,20 +100,6 @@ rc=$?
 set -e
 [[ "$rc" == "3" ]] || fail "creds file with PEM but no APP_ID: expected exit 3, got $rc (out=$out)"
 
-# --- invariant 4: pi-issue-run falls through cleanly -----------------------
-# We do NOT exec the real script (it dispatches to pi). Instead we
-# grep the source for the fall-through log lines, and we run the
-# minimal logic in isolation by sourcing a shim around it. The shim
-# declares a register_active_seat / clear_active_seat function so we
-# can run only the P14-relevant slice.
-issue_run="$repo_root/bin/pi-issue-run"
-[[ -x "$issue_run" ]] || fail "pi-issue-run missing or not executable: $issue_run"
-
-grep -q 'DEAD APP IDENTITY' "$issue_run" \
-  || fail "pi-issue-run must scream DEAD APP IDENTITY when creds are missing or mint fails"
-grep -q 'WORKER_APP_CREDS_FILE' "$issue_run" \
-  || fail "pi-issue-run must source WORKER_APP_CREDS_FILE"
-
 # --- invariant 5: source-of-truth cross-check ------------------------------
 # Match what the manifest claims (contents/pull_requests/issues write,
 # metadata read) against what the worker-token would emit if it ever
@@ -152,16 +134,12 @@ for guarded in "$repo_root"/bin/* "$repo_root"/libexec/*; do
     || grep -qs 'GH", "gh") != "gh"' "$guarded" \
     || fail "organ preamble missing hardened GH guard (fleet-ops#3576): $guarded"
 done
-grep -qsF "$hardened" "$repo_root"/lib/pi-intake-tick.sh \
-  || fail "lib/pi-intake-tick.sh preamble missing hardened GH guard (fleet-ops#3576)"
-grep -qs 'GH", "gh") != "gh"' "$repo_root"/bin/fleet-ops-drift.py \
-  || fail "bin/fleet-ops-drift.py preamble missing hardened GH guard (fleet-ops#3576)"
 grep -qs 'GH", "gh") != "gh"' "$repo_root"/libexec/fleet-metrics-export.py \
   || fail "libexec/fleet-metrics-export.py preamble missing hardened GH guard (fleet-ops#3576)"
 
 # Behavioural proof: run one guard-carrying organ in a scratch HOME with GH
 # unset and worker-token missing — it must refuse, not fall through.
-guard_organ="$repo_root/bin/blocked-reconcile"
+guard_organ="$repo_root/bin/fleet-issue-file"
 [[ -x "$guard_organ" ]] || fail "guard representative missing: $guard_organ"
 guard_home="$scratch/guard-home"
 mkdir -p "$guard_home"
@@ -175,7 +153,6 @@ printf '%s' "$out" | grep -q 'refusing human-gh writes' \
 
 ok "worker-token fails closed on missing/empty/invalid creds"
 ok "preamble guard still refuses when GH unset and worker-token missing (fleet-ops#3576)"
-ok "pi-issue-run scream path is present and indexed"
 ok "manifest permissions exactly match the audit cross-check"
 
 # =========================================================================

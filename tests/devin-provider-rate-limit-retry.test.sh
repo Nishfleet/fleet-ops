@@ -3,7 +3,7 @@
 #
 # A Devin "Reached overall message rate limit ... reset in N minutes" is a
 # pause, not a worker death. The provider waits out the advertised reset and
-# re-runs the same packet in the same pi session, bounded by pi-issue-run's
+# re-runs the same packet in the same pi session, bounded by the worker unit's
 # hang watchdog (PI_HANG_TIMEOUT_S, exported for the extension).
 #
 # Population that motivated this (archived worker stderr, 2026-09-10/11):
@@ -14,7 +14,6 @@
 # 2. Lock: index.ts routes non-zero exits through the planner; the spawnSync
 #    timeout literal the provider-timeout suite greps is still present exactly
 #    once and nothing later in the file can shadow it.
-# 3. Lock: bin/pi-issue-run exports PI_HANG_TIMEOUT_S; MANIFEST installs rate-limit.ts.
 set -euo pipefail
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 repo_root="$(cd "$here/.." && pwd)"
@@ -72,7 +71,4 @@ last=$(grep -oE 'timeout: *[0-9]+' "$idx" | tail -n1 | grep -oE '[0-9]+')
 ok "index.ts wiring + timeout literal locks"
 
 # --- 3. runner + manifest locks ----------------------------------------------
-grep -qE '^export PI_HANG_TIMEOUT_S$' "$repo_root/bin/pi-issue-run" || fail "bin/pi-issue-run must export PI_HANG_TIMEOUT_S for the extension"
-grep -Fxq 'template/extensions/devin-provider/rate-limit.ts /home/nish/.pi/agent/extensions/devin-provider/rate-limit.ts' "$repo_root/MANIFEST" || fail "MANIFEST missing rate-limit.ts install line"
-ok "pi-issue-run export + MANIFEST line"
 echo "PASS: devin-provider-rate-limit-retry"

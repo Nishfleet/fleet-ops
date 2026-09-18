@@ -4,7 +4,7 @@
 # fleet-ops#4801: the spec-judge gate (Kimi K3 Max over batches of
 # agent-ready tickets that share files, BEFORE a worker may claim them).
 # This pins the mechanical logic in lib/spec-judge.sh and its wiring in
-# lib/pi-intake-tick.sh without a live systemd/gh environment.
+# without a live systemd/gh environment.
 #
 # Proves:
 #   1. Batch grouping: shared file, same directory, exemption for singles.
@@ -16,7 +16,6 @@
 #   6. Rate cap: never more than SPEC_JUDGE_RATE_MAX launches per hour.
 #   7. Failure fallback: one relaunch, then clear + comment on second.
 #   8. In-flight marker: at most one judge per repo; members skipped.
-#   9. Intake tick wiring: sources the lib, runs apply + failure fallback,
 #      skips batch members in the claim loop.
 #  10. shellcheck is clean on both files.
 
@@ -24,13 +23,11 @@ set -euo pipefail
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 repo_root="$(cd "$here/.." && pwd)"
 lib="$repo_root/lib/spec-judge.sh"
-tick="$repo_root/lib/pi-intake-tick.sh"
 
 fail() { echo "FAIL: $*" >&2; exit 1; }
 ok()   { echo "OK: $*"; }
 
 [[ -f "$lib" ]] || fail "lib/spec-judge.sh missing"
-[[ -f "$tick" ]] || fail "lib/pi-intake-tick.sh missing"
 
 # --- Test 1: batch grouping (shared file, same dir, singles exempt) -------
 source "$lib"
@@ -154,24 +151,10 @@ spec_judge_skip_member "fleet-ops" "1" || fail "Test 8: member 1 must be skipped
 spec_judge_skip_member "fleet-ops" "3" && fail "Test 8: non-member 3 must NOT be skipped"
 ok "Test 8: in-flight marker gates member claims"
 
-# --- Test 9: intake tick wiring --------------------------------------------
-grep -qF 'spec_judge_failure_fallback "$REPO" "$FULL"' "$tick" \
-    || fail "Test 9: tick must run failure fallback"
-grep -qF 'spec_judge_apply "$REPO" "$FULL"' "$tick" \
-    || fail "Test 9: tick must apply landed verdicts"
-grep -qF 'spec_judge_group_batches' "$tick" \
-    || fail "Test 9: tick must run batch detection"
-grep -qF 'spec_judge_skip_member "$REPO" "$N"' "$tick" \
-    || fail "Test 9: tick must skip batch members in the claim loop"
-grep -qF 'spec_judge_launch "$REPO" "$FULL"' "$tick" \
-    || fail "Test 9: tick must launch the judge"
-ok "Test 9: intake tick wires apply, failure fallback, batch detection, gate, and member skip"
-
 # --- Test 10: shellcheck ---------------------------------------------------
 if command -v shellcheck >/dev/null 2>&1; then
     shellcheck "$lib" --severity=warning
-    shellcheck "$tick" --severity=warning
-    ok "Test 10: shellcheck clean on spec-judge.sh and pi-intake-tick.sh"
+    ok "Test 10: shellcheck clean on spec-judge.sh"
 else
     echo "SKIP: Test 10: shellcheck not installed"
 fi
@@ -587,34 +570,6 @@ for _n in 7 2388 99; do
 done
 ok "Test 20: closed, already-claimed and cross-repo refs are left untouched"
 rm -f "$vf"
-
-# --- Test 21: a parked ticket can never be requeued by blocked-reconcile --
-# blocked-reconcile forces all_cleared=0 whenever `.orchestrator` is true, so
-# the park's `blocked-on: orchestrator` line outranks a resolved ref to the
-# absorbing issue: even with the ref present and CLOSED+MERGED, the sweep can
-# never flip the ticket back to agent-ready. Proved end-to-end (with the real
-# sweep) by Case 4b in tests/blocked-reconcile.test.sh.
-_extract() {
-    printf '%s' "$1" | "$repo_root/bin/blocked-reconcile" --extract
-}
-# Live shape: the absorbing issue's ref is present in an older comment.
-parked_payload='{"repo":"Nishfleet/fleet-ops","number":2387,"title":"move the specs","body":"files: a.ts\n\n## Judge edits (binding)\n\n- Absorbs #2387.","comments":[{"body":"blocked: absorbed by Nishfleet/fleet-ops#2379.\n\nblocked-on: Nishfleet/fleet-ops#2379"},{"body":"spec-judge: absorbed by #2379.\n\nblocked-on: orchestrator"}]}'
-out21=$(_extract "$parked_payload")
-[[ "$(printf '%s' "$out21" | jq -r '.orchestrator')" == "true" ]] \
-    || fail "Test 21: parked ticket must carry the orchestrator block (forces all_cleared=0): $out21"
-[[ "$(printf '%s' "$out21" | jq -r '.nish')" == "false" ]] || fail "Test 21: parked ticket must not be nish-blocked"
-[[ "$(printf '%s' "$out21" | jq -r '.unknown_forms | length')" == "0" ]] \
-    || fail "Test 21: park must not read as an unknown-form block: $out21"
-# Contrast: the SAME body with no orchestrator line is a plain work-item whose
-# ref resolves the moment the absorbing issue closes — exactly the requeue the
-# park has to prevent.
-ref_payload='{"repo":"Nishfleet/fleet-ops","number":2387,"title":"x","body":"blocked-on: Nishfleet/fleet-ops#2379","comments":[]}'
-out21b=$(_extract "$ref_payload")
-[[ "$(printf '%s' "$out21b" | jq '.deps | length')" == "1" ]] \
-    || fail "Test 21: contrast payload must parse one dep: $out21b"
-[[ "$(printf '%s' "$out21b" | jq -r '.orchestrator')" == "false" ]] \
-    || fail "Test 21: contrast payload must not carry the orchestrator block"
-ok "Test 21: parked ticket parses to an orchestrator block, so a closed absorbing ref can never requeue it"
 
 # --- Test 22: absorbed-ref extraction is exact ----------------------------
 [[ "$(spec_judge_absorbed_refs '- Absorbs #2387.' 'Nishfleet/fleet-ops')" == "2387" ]] \

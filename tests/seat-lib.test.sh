@@ -57,7 +57,6 @@ bash "$here/pi-packet-verdict.test.sh" || fail "pi-packet-verdict tests failed"
 bash "$here/repo-privacy-guard.test.sh" || fail "repo-privacy-guard tests failed"
 bash "$here/scout-prompt-difficulty.test.sh" || fail "scout-prompt-difficulty tests failed"
 bash "$here/reusable-surface-audit.test.sh" || fail "reusable-surface-audit tests failed"
-bash "$here/pi-seat-source-litellm.test.sh" || fail "pi-seat-source-litellm tests failed"
 # fleet-ops#449 lock: fleet-blindspot-count had no CI host (its lock grepped a
 # mangled path that never existed); hosted here per its own contract.
 # fleet-ops#4263 fallout: #5993 dropped these host lines (113 -> 71), so the
@@ -70,7 +69,6 @@ bash "$here/seat-caps-citation-rule6-replay.test.sh" \
 bash "$here/keystone-routing.test.sh" || fail "keystone-routing tests failed"
 bash "$here/senior-review-routing.test.sh" || fail "senior-review-routing tests failed"
 bash "$here/seat-caps-zero-yield.test.sh" || fail "seat-caps-zero-yield tests failed"
-bash "$here/devin-writes-rejected.test.sh" || fail "devin-writes-rejected tests failed"
 bash "$here/watch-log-rotation.test.sh" || fail "watch-log-rotation tests failed"
 # fleet-ops#1138: Relates to, not Closes, for decisions-ledger fixes.
 bash "$here/gate-integrity-reusable.test.sh" || fail "gate-integrity reusable tests failed"

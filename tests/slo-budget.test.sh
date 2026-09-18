@@ -17,9 +17,6 @@
 #      group with FleetSloMetricsAbsent + fast/slow burn alerts. No new
 #      severity=page alert (phone-chokepoint preserved). Burn alerts are
 #      gated on fleet_slo_instrumented == 1.
-#   5. prompts/weekly-fleet-review.md mentions the L7 SLO lens, L8
-#      alert-quality lens, and the SLO ratchet.
-#   6. MANIFEST declares lib/slo_budget.py and config/slo-definitions.json.
 set -euo pipefail
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 repo_root="$(cd "$here/.." && pwd)"
@@ -27,8 +24,6 @@ slo_lib="$repo_root/lib/slo_budget.py"
 slo_defs="$repo_root/config/slo-definitions.json"
 exporter="$repo_root/libexec/fleet-metrics-export.py"
 rules="$repo_root/config/fleet_rules.yml"
-wfr="$repo_root/prompts/weekly-fleet-review.md"
-manifest="$repo_root/MANIFEST"
 
 fail() { echo "FAIL: $*" >&2; exit 1; }
 ok()   { echo "OK: $*"; }
@@ -37,8 +32,6 @@ ok()   { echo "OK: $*"; }
 [[ -f "$slo_defs" ]]  || fail "config/slo-definitions.json not found"
 [[ -f "$exporter" ]]  || fail "exporter not found"
 [[ -f "$rules" ]]     || fail "fleet_rules.yml not found"
-[[ -f "$wfr" ]]       || fail "weekly-fleet-review.md not found"
-[[ -f "$manifest" ]]  || fail "MANIFEST not found"
 command -v python3 >/dev/null 2>&1 || fail "python3 required"
 command -v jq >/dev/null 2>&1 || fail "jq required"
 
@@ -117,10 +110,6 @@ for prov in sorted(enrolled):
                     "health_class": "healthy", "seat_dead": False})
     )
 m.SEAT_LEDGER = seat_dir
-# Stub waste prom
-wp = Path(scratch) / "fleet-waste.prom"
-wp.write_text("# HELP fleet_waste_ratio ...\n# TYPE fleet_waste_ratio gauge\nfleet_waste_ratio 0.08\n")
-m.WASTE_PROM = wp
 # Stub actions.log (empty) so per-alertname parser returns {}
 m.ACTIONS_LOG = Path(scratch) / "actions.log"
 m.ACTIONS_LOG.write_text("")
@@ -160,9 +149,6 @@ print(f"OK: {len(inst)} instrumented + {len(uninst)} uninstrumented SLOs emitted
 assert "fleet_slo_compliance{slo=\"main_green\"} 0.666667" in text, "main_green compliance wrong"
 print("OK: main_green compliance = 0.666667 (2/3 green)")
 
-# waste_ratio compliance = 0.08/0.10 = 0.8 (within budget, "below" gauge).
-assert "fleet_slo_compliance{slo=\"waste_ratio\"} 0.800000" in text, "waste_ratio compliance wrong"
-print("OK: waste_ratio compliance = 0.800000 (0.08/0.10)")
 PY
 
 # =========================================================================
@@ -208,7 +194,7 @@ caps.write_text(json.dumps({"providers": {
 m.SEAT_CAPS_DEFAULT = caps
 m.SEAT_CAPS_FALLBACK = caps
 
-comp, inst = m._slo_compliance(slo, {}, 0, {}, None, 3)
+comp, inst = m._slo_compliance(slo, {}, 0, {}, 3)
 assert inst, "seat_availability should be instrumented with a readable ledger"
 assert abs(comp - 2 / 3) < 1e-9, f"expected 2/3 rollup, got {comp}"
 print("OK: seat_availability compliance = 0.666667 (2/3 healthy-enrolled rollup)")
@@ -219,13 +205,13 @@ caps2.write_text(json.dumps({"providers": {
     "a": {"cap": 1}, "b": {"cap": 1}, "d": {"cap": 1}}}))
 m.SEAT_CAPS_DEFAULT = caps2
 m.SEAT_CAPS_FALLBACK = caps2
-comp2, inst2 = m._slo_compliance(slo, {}, 0, {}, None, 3)
+comp2, inst2 = m._slo_compliance(slo, {}, 0, {}, 3)
 assert inst2 and abs(comp2 - 2 / 3) < 1e-9, f"expected 2/3 with unproven provider d, got {comp2}"
 print("OK: unledgered enrolled provider counts unhealthy (fail-safe rollup)")
 
 # Missing ledger dir -> source unavailable (instrumented=0), not 1/13.
 m.SEAT_LEDGER = Path(scratch) / "no-such-seats-dir"
-comp3, inst3 = m._slo_compliance(slo, {}, 0, {}, None, 3)
+comp3, inst3 = m._slo_compliance(slo, {}, 0, {}, 3)
 assert not inst3, "seat_availability must be uninstrumented when ledger unreadable"
 assert comp3 is None, f"expected None compliance on missing ledger, got {comp3}"
 print("OK: missing seat ledger -> instrumented=0 (no false 1/13 pin)")
@@ -338,23 +324,6 @@ print("OK: SLO compliance == green-map rollup for all test shapes (all-green/one
 PY
 
 # =========================================================================
-# 3e. fleet-ops#3367: new alert is in the dispatch skip set.
-# =========================================================================
-python3 - "$repo_root/libexec/alert-repair-dispatch" <<'PY' || fail "skip-set membership check failed"
-import ast, re, sys
-from pathlib import Path
-name = "FleetSloMainGreenGreenMapDisagree"
-path = Path(sys.argv[1])
-var = "SKIP_SET"
-src = path.read_text()
-m = re.search(rf"{var} = (\{{.*?\}})", src, re.S)
-assert m, f"{var} not found in {path.name}"
-skip = ast.literal_eval(m.group(1))
-assert name in skip, f"{name} missing from {var} in {path.name}"
-print(f"OK: {name} in SKIP_SET (dispatch)")
-PY
-
-# =========================================================================
 # 4. fleet_rules.yml: SLO group + phone-chokepoint preserved
 # =========================================================================
 python3 - "$rules" <<'PY' || fail "rules check failed"
@@ -384,22 +353,6 @@ for name, r in slo_rules.items():
         f"{name} not gated on fleet_slo_instrumented"
 print("OK: fleet_slo_burn group present, phone-chokepoint preserved, burn alerts gated on instrumented=1")
 PY
-
-# =========================================================================
-# 5. WFR mentions L7 SLO + L8 alert-quality + SLO ratchet
-# =========================================================================
-grep -q "L7 SLO error budgets" "$wfr" || fail "WFR missing L7 SLO lens"
-grep -q "L8 alert-quality" "$wfr" || fail "WFR missing L8 alert-quality lens"
-grep -q "SLO ratchet" "$wfr" || fail "WFR missing SLO ratchet"
-grep -q "8-lens" "$wfr" || fail "WFR not updated to 8-lens"
-ok "WFR has L7 SLO lens + L8 alert-quality lens + SLO ratchet + 8-lens count"
-
-# =========================================================================
-# 6. MANIFEST declares the new files
-# =========================================================================
-grep -q "lib/slo_budget.py" "$manifest" || fail "MANIFEST missing lib/slo_budget.py"
-grep -q "config/slo-definitions.json" "$manifest" || fail "MANIFEST missing config/slo-definitions.json"
-ok "MANIFEST declares lib/slo_budget.py + config/slo-definitions.json"
 
 echo
 echo "slo-budget: all invariants pass (fleet-ops#1291)"

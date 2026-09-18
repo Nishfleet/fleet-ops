@@ -35,7 +35,6 @@ grep -q "console.log" "$J" && fail "helper must not console.log (key hygiene)"
 echo "jev-eval tests: green"
 
 # Exercise the worker's shared-helper integration in the existing CI entry.
-PI_SEAT_LIB_CHECK_TRANSPORT=0 bash "$here/tests/pi-issue-run-app-identity.test.sh" || fail "pi-issue-run app identity"
 
 # Offline death-report inventory coverage, using this existing CI entry (#7444).
 python3 "$here/tests/seat-reliability.test.py" || fail "seat reliability inventory"

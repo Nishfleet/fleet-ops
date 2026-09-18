@@ -156,14 +156,5 @@ assert all(not u for u, _ in units), units
 PYEOF
 ok "8: webhook dispatch fires fleet-judge-block-disarm on the judge-block label"
 
-# --- 9. tier1 source pin: labels fetched + refusal before the arm ---
-grep -q 'number,headRefName,isDraft,mergeable,title,labels' \
-  "$repo_root/bin/fleet-heartbeat-tier1" \
-  || fail "tier1 queue pass must fetch labels"
-grep -q 'BLOCKED-BY-JUDGE' "$repo_root/bin/fleet-heartbeat-tier1" \
-  || fail "tier1 queue pass must refuse the arm on blocked-by-judge"
-grep -q 'fleet-judge-block-gate' "$repo_root/bin/fleet-heartbeat-tier1" \
-  || fail "tier1 must call the judge-block gate (disarm on the labeled path)"
-ok "9: tier1 queue pass honours the judge-block label (source pin)"
 
 echo "ALL PASS: fleet-judge-block-gate replay drill"

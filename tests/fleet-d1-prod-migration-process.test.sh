@@ -18,13 +18,11 @@ set -euo pipefail
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 repo_root="$(cd "$here/.." && pwd)"
 worker="$repo_root/prompts/worker.md"
-matrix="$repo_root/config/rule-enforcement.json"
 
 fail() { echo "FAIL: $*" >&2; exit 1; }
 ok()   { echo "OK: $*"; }
 
 [[ -f "$worker" ]] || fail "missing $worker"
-[[ -f "$matrix" ]] || fail "missing $matrix"
 command -v jq >/dev/null 2>&1 || fail "jq missing"
 
 scratch="$(mktemp -d -t d1-process.XXXXXX)"
@@ -64,26 +62,4 @@ for drop in "${needles[@]}"; do
   ok "scenario2: dropping '$drop' is rejected"
 done
 
-# --- 3. matrix row is enforced with mechanism and proof ----------------------
-jq -e '.rules[] | select(.id == "led-2026-08-27-d1-prod-migrations-process-amendment" and .status == "enforced")' \
-  "$matrix" >/dev/null || fail "led-2026-08-27 process amendment must be status=enforced"
-
-mech=$(jq -r '.rules[] | select(.id == "led-2026-08-27-d1-prod-migrations-process-amendment") | .mechanism' "$matrix")
-printf '%s\n' "$mech" | grep -q 'senior process gate' \
-  || fail "mechanism must name the senior process gate (got: $mech)"
-printf '%s\n' "$mech" | grep -q 'worker.md' \
-  || fail "mechanism must name worker.md (got: $mech)"
-printf '%s\n' "$mech" | grep -q 'senior-conference' \
-  || fail "mechanism must name the senior-conference gate (got: $mech)"
-
-proof=$(jq -r '.rules[] | select(.id == "led-2026-08-27-d1-prod-migrations-process-amendment") | .proof' "$matrix")
-printf '%s\n' "$proof" | grep -q 'tests/fleet-d1-prod-migration-process.test.sh' \
-  || fail "proof must name this test (got: $proof)"
-printf '%s\n' "$proof" | grep -q 'prompts/worker.md' \
-  || fail "proof must name the worker prompt (got: $proof)"
-printf '%s\n' "$proof" | grep -q 'fleet-ops#908' \
-  || fail "proof must cite fleet-ops#908 (got: $proof)"
-
-ok "scenario3: matrix row is enforced with mechanism+proof"
-
-ok "d1-prod-migration-process: worker needles, matrix enforced, proof locked"
+ok "d1-prod-migration-process: worker.md D1 senior-process needles locked"
