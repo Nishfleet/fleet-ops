@@ -131,6 +131,11 @@ caps="$scratch/seat-caps.json"
 ledger="$scratch/ledger"
 mkdir -p "$ledger"
 # Tiny threshold so the whole ladder is reachable in three writes.
+# fleet-ops#3712: seat-health.ts refuses a write whose provider/model is not
+# in seat-caps providers (LOUD SEAT-KEY-INVALID), and isSeatKeyInCaps
+# fails CLOSED when the caps file has no `providers` key at all — so these
+# fixtures have to register their own synthetic seats or every
+# writeSeatLedgerEntry below is a silent no-op.
 cat >"$caps" <<'JSON'
 {
   "walled_comeback": {
@@ -143,6 +148,13 @@ cat >"$caps" <<'JSON'
     "quarantine_threshold": 2,
     "quarantine_floor_s": 3600,
     "quarantine_cap_s": 86400
+  },
+  "providers": {
+    "opencode": {
+      "models": {
+        "muse-spark-1.2-contributor-free": {}
+      }
+    }
   }
 }
 JSON

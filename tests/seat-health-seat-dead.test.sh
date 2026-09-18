@@ -116,6 +116,11 @@ fi
 scratch=$(mktemp -d -t seat-dead.XXXXXX)
 trap 'rm -rf "$scratch"' EXIT INT TERM
 caps="$scratch/seat-caps.json"
+# fleet-ops#3712: seat-health.ts refuses a write whose provider/model is not
+# in seat-caps providers (LOUD SEAT-KEY-INVALID), and isSeatKeyInCaps
+# fails CLOSED when the caps file has no `providers` key at all — so these
+# fixtures have to register their own synthetic seats or every
+# writeSeatLedgerEntry below is a silent no-op.
 cat >"$caps" <<'JSON'
 {
   "walled_comeback": {
@@ -131,6 +136,24 @@ cat >"$caps" <<'JSON'
     "seat_dead_consecutive_threshold": 25,
     "seat_dead_quota_age_s": 86400,
     "shared_pool_dead_threshold": 5
+  },
+  "providers": {
+    "opencode": {
+      "models": {
+        "muse-spark-1.2-contributor-free": {}
+      }
+    },
+    "minimax": {
+      "models": {
+        "MiniMax-M3": {}
+      }
+    },
+    "openrouter": {
+      "models": {
+        "google/gemma-4-31b-it:free": {},
+        "google/plain-429-model": {}
+      }
+    }
   }
 }
 JSON

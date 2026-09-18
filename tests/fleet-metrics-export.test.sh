@@ -1140,6 +1140,15 @@ bash "$here/measure-deploy-age.test.sh" || fail "measure-deploy-age tests failed
 # Hosted here so P14 runs it without a workflow-file edit. Hermetic (fake gh).
 bash "$here/fleet-questions-stale.test.sh" || fail "fleet-questions-stale tests failed"
 
+# fleet-ops#4508: prevent the next hardcoded-epoch time-bomb from re-red'ing
+# this P14 step. Hosted here (not in .github/workflows/ci.yml) so worker
+# tokens can wire it without a workflow-file edit; this file is already on
+# the P14 path. (The host line was dropped as collateral by the 2026-09-18
+# webhook-route fold, e9ca6b174, which left the guard reaching nothing —
+# tests/hardcoded-epoch-guard.test.sh asserts this exact line by name.)
+bash "$here/hardcoded-epoch-guard.test.sh"
+ok "fleet-ops#4508: hardcoded-epoch guard green on P14 path"
+
 # fleet-ops#5417: the outside-in `visitor:` probe (https redirect, edge
 # cache, manifest, duplicate routes, public-repo leaks) the judges read
 # right after product:. Hosted here for the same P14 reason as

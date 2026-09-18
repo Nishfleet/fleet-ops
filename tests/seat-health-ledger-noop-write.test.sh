@@ -77,6 +77,11 @@ trap 'rm -rf "$scratch"' EXIT INT TERM
 
 # Hermetic seat-caps so the walled-comeback ladder is deterministic.
 caps="$scratch/seat-caps.json"
+# fleet-ops#3712: seat-health.ts refuses a write whose provider/model is not
+# in seat-caps providers (LOUD SEAT-KEY-INVALID), and isSeatKeyInCaps
+# fails CLOSED when the caps file has no `providers` key at all — so these
+# fixtures have to register their own synthetic seats or every
+# writeSeatLedgerEntry below is a silent no-op.
 cat >"$caps" <<'JSON'
 {
   "walled_comeback": {
@@ -91,6 +96,19 @@ cat >"$caps" <<'JSON'
     "quarantine_cap_s": 86400,
     "seat_dead_consecutive_threshold": 25,
     "seat_dead_quota_age_s": 86400
+  },
+  "providers": {
+    "bench": {
+      "models": {
+        "healthy-hot-loop": {},
+        "pred": {},
+        "refreshed": {},
+        "healthy": {},
+        "rate-limited": {},
+        "quota-exhausted": {},
+        "corpse": {}
+      }
+    }
   }
 }
 JSON
