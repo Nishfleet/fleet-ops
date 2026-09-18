@@ -418,7 +418,13 @@ while IFS= read -r line; do
     continue
   fi
   deliver "$key" "$line" "$body" "$class" || fail=1
-done < <(grep -E "^[0-9-]{10}T[0-9:]{8}Z ($CLASSES) " "$FILE" 2>/dev/null || true)
+# fleet-ops#4477/#4627 split: money-boundary-raise now ALWAYS writes the
+# MONEY-BOUNDARY record (so `--check` and any audit can see a benched seat),
+# and marks whether the phone should ring. `paged=no` means the fleet was not
+# starved — a recorded lane fault, not a Nish-reserved ask — so it never
+# reaches the phone. Lines with no paged= marker (every other reserved class)
+# page exactly as before.
+done < <(grep -E "^[0-9-]{10}T[0-9:]{8}Z ($CLASSES) " "$FILE" 2>/dev/null | grep -v '[[:space:]]paged=no[[:space:]]' || true)
 
 # --- Prose-scan detector (fleet-ops#4048) ----------------------------
 # The entry-line grep above only matches the canonical timestamp shape

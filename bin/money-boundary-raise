@@ -296,7 +296,16 @@ today="$(date -u +%Y-%m-%d)"
 # Escape the provider for the regex (provider tokens are [A-Za-z0-9._-]).
 # A dot is not special in ERE unless used in bracket; treat provider literally
 # by matching the exact token.
-line="MONEY-BOUNDARY provider=${PROVIDER} spend_today_usd=${SPEND} credits_remaining_usd=${CREDITS} — provider over the USD 5 boundary; only Nish can approve spend (fleet-ops#3284)"
+# fleet-ops#4477 (record) and fleet-ops#4627 (page) are two different jobs and
+# used to fight: #4477 says ALWAYS write the ledger line, #4627 says do not
+# page unless the fleet is starved — and the suppressed path wrote no line at
+# all, so `--check` could never go green for a non-starved provider (5 real
+# gaps on 2026-09-18: xai-oauth and openrouter benched at a money wall with no
+# record anywhere). They are separated here: the RECORD is always written, and
+# `paged=` says whether the phone rang. Spend is unchanged either way, so this
+# is not a money decision.
+line="MONEY-BOUNDARY provider=${PROVIDER} spend_today_usd=${SPEND} credits_remaining_usd=${CREDITS} — provider over the USD 5 boundary; only Nish can approve spend (fleet-ops#3284) paged=yes"
+line_recorded="MONEY-BOUNDARY provider=${PROVIDER} spend_today_usd=${SPEND} credits_remaining_usd=${CREDITS} — provider benched at the USD 5 boundary; healthy prepaid/free seats still carry the work, so the fleet is not starved and Nish was not paged (fleet-ops#4627) paged=no reason=not-starved"
 # The deliverer matches the class as the SECOND whitespace field after a
 # leading UTC timestamp, so every ledger line carries the ts prefix.
 ledger_line="${ts} ${line}"
@@ -305,8 +314,18 @@ ledger_line="${ts} ${line}"
 # A provider that already has a MONEY-BOUNDARY provider=<p> line dated today
 # gets NO second append (dedupe, not silence — the line is already there and
 # nish-boundary-notify's seen-mark prevents a re-page).
-if [ -f "$NISH" ] && grep -qE "^${today}T.* MONEY-BOUNDARY provider=${PROVIDER}([[:space:]]|\$)" "$NISH"; then
-    echo "money-boundary-raise: dedupe — MONEY-BOUNDARY provider=${PROVIDER} already written today (${today}); no second append"
+# Two separate facts: was the provider RECORDED today, and was Nish PAGED
+# today. A provider recorded with paged=no still deserves a real page later
+# the same day if the fleet actually becomes starved, so only a paged=yes line
+# dedupes the page.
+paged_today=0
+recorded_today=0
+if [ -f "$NISH" ]; then
+    grep -qE "^${today}T.* MONEY-BOUNDARY provider=${PROVIDER}[[:space:]].*paged=yes([[:space:]]|\$)" "$NISH" && paged_today=1
+    grep -qE "^${today}T.* MONEY-BOUNDARY provider=${PROVIDER}([[:space:]]|\$)" "$NISH" && recorded_today=1
+fi
+if [ "$paged_today" -eq 1 ]; then
+    echo "money-boundary-raise: dedupe — MONEY-BOUNDARY provider=${PROVIDER} already paged today (${today}); no second append"
     append_done=1
 else
     append_done=0
@@ -329,11 +348,20 @@ fi
 page_suppressed=0
 if [ "$append_done" -eq 0 ] && ! fleet_starved; then
     page_suppressed=1
-    append_done=1   # passes the hard gate below; NO ledger line is written
-    echo "money-boundary-raise: SUPPRESSED page for provider=${PROVIDER} — fleet not starved (healthy prepaid/free seats exist); benching + logging, no page (fleet-ops#4627)"
+    # The RECORD is still written (fleet-ops#4477) — it is what --check and any
+    # later audit read, and a benched seat with no record anywhere is exactly
+    # the silent-wall defect this script exists to prevent. Only the PAGE is
+    # suppressed, and `paged=no` is what nish-boundary-notify filters on.
+    ledger_line="${ts} ${line_recorded}"
+    echo "money-boundary-raise: SUPPRESSED page for provider=${PROVIDER} — fleet not starved (healthy prepaid/free seats exist); recording the ledger line with paged=no, benching, no page (fleet-ops#4627)"
+    if [ "$recorded_today" -eq 1 ]; then
+        # already on the record today with paged=no; do not spam the ledger
+        append_done=1
+        echo "money-boundary-raise: dedupe — paged=no record for provider=${PROVIDER} already written today (${today})"
+    fi
     if [ "$DRY_RUN" -eq 0 ]; then
         mkdir -p "$(dirname "$PAGES_LOG")" 2>/dev/null || true
-        printf '%s suppressed reason=%s provider=%s — fleet not starved; benched, no page\n' \
+        printf '%s suppressed reason=%s provider=%s — fleet not starved; benched, recorded, no page\n' \
             "$ts" "$reason" "$PROVIDER" >> "$PAGES_LOG" 2>/dev/null || true
     fi
 fi
@@ -356,8 +384,10 @@ if [ "$append_done" -eq 0 ]; then
             # fleet-ops#4627: count the page for the success metric
             # nish_boundary_money_pages_total{reason=...}. One line per
             # fresh page (deduped re-runs do not re-count).
-            mkdir -p "$(dirname "$PAGES_LOG")" 2>/dev/null || true
-            printf '%s reason=%s provider=%s\n' "$ts" "$reason" "$PROVIDER" >> "$PAGES_LOG" 2>/dev/null || true
+            if [ "$page_suppressed" -eq 0 ]; then
+                mkdir -p "$(dirname "$PAGES_LOG")" 2>/dev/null || true
+                printf '%s reason=%s provider=%s\n' "$ts" "$reason" "$PROVIDER" >> "$PAGES_LOG" 2>/dev/null || true
+            fi
         else
             echo "FAIL-LOUD: MONEY-BOUNDARY provider=${PROVIDER} still not in $NISH after append (bench aborted)" >&2
             exit 1
