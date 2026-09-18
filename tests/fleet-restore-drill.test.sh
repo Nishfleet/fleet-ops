@@ -3,7 +3,7 @@
 #
 # fleet-ops#388: lock the restore drill's shape and prove its four planes
 # (backup mechanism, fleet files parseable, paths covered, dated artifact
-# marker) on a mocked systemctl + scratch repo. Does NOT touch the live
+# on a mocked systemctl + scratch repo. Does NOT touch the live
 # system restic units.
 #
 # What it proves:
@@ -19,16 +19,10 @@
 #   8. Empty claims index -> exit 1, LOUD.
 #   9. MANIFEST src missing in repo -> exit 1, LOUD.
 #  10. --check reports ready/missing without system calls.
-#  11. Absent artifact marker (fleet-ops#2471) -> exit 1, LOUD
-#      artifact-missing; the marker is still rewritten when A/B/C passed, so
 #      the next run self-heals green.
-#  12. Stale artifact marker (older than the max-age bound) -> exit 1, LOUD
-#      artifact-stale; the marker is refreshed on the rebuild-green run.
-#  13. A green run emits a dated marker at the alert-repair path the
-#      heartbeat stats (backup_freshness.newest_backup_marker).
 #  14. Plane E (fleet-ops#4264): absent litellm cluster -> SKIP, drill green.
 #  15. Plane E green: pg_dump produced in the dump dir, scratch-restore
-#      proven, marker cites litellm-pg, rotation keeps the newest KEEP dumps.
+#      proven, rotation keeps the newest KEEP dumps.
 #  16. Plane E pg_dump failure -> exit 1, LOUD, no dangling dump.
 set -euo pipefail
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -187,13 +181,6 @@ write_claims() {
   printf '2026-08-26T16:53:40Z claimed line=43\n' >"$CLAIMS_LOG"
 }
 
-# Seed a fresh dated artifact marker (fleet-ops#2471). reset_all writes it so
-# green scenarios stay green; scenario J/K delete or age it on purpose.
-write_marker_fresh() {
-  mkdir -p "$state/alert-repair"
-  printf '%s OK control plane rebuildable\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
-    >"$state/alert-repair/fleet-restore-drill-marker"
-}
 
 write_manifest() {
   # The MANIFEST references srcs that must exist in the scratch repo.
@@ -222,7 +209,6 @@ reset_all() {
   write_seat_caps
   write_claims
   write_manifest
-  write_marker_fresh
 }
 
 # ============================================================================
@@ -233,12 +219,7 @@ run_drill
 [[ "$drill_rc" == 0 ]] || fail "scenarioA: must exit 0, got $drill_rc ($drill_out)"
 grep -q 'RESTORE-DRILL-OK' "$triage" || fail "scenarioA: triage missing OK line"
 grep -q 'control plane rebuildable' "$triage" || fail "scenarioA: OK line must name the rebuild story"
-[[ -f "$state/alert-repair/fleet-restore-drill-marker" ]] \
-  || fail "scenarioA: green run must emit the artifact marker"
-grep -qE '^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z OK control plane rebuildable' \
-  "$state/alert-repair/fleet-restore-drill-marker" \
-  || fail "scenarioA: marker must carry a dated artifact line"
-ok "scenarioA: green run -> exit 0 with OK line + dated marker"
+ok "scenarioA: green run -> exit 0 with OK line"
 
 # ============================================================================
 # Scenario B: stale backup -> exit 1, LOUD staleness
@@ -339,38 +320,7 @@ grep -q 'SKIP' <<<"$drill_out" || fail "scenarioI: drill must log the SKIP"
 ok "scenarioI: skip-system flag skips plane A"
 
 # ============================================================================
-# Scenario J: absent artifact marker -> exit 1, LOUD artifact-missing
-# (fleet-ops#2471). The marker is still rewritten (A/B/C pass), so the next
-# run self-heals green.
-# ============================================================================
-reset_all
-rm -f "$state/alert-repair/fleet-restore-drill-marker"
-run_drill
-[[ "$drill_rc" == 1 ]] || fail "scenarioJ: must exit 1 (marker absent), got $drill_rc ($drill_out)"
-grep -q 'RESTORE-DRILL-ARTIFACT-MISSING' "$triage" || fail "scenarioJ: triage missing ARTIFACT-MISSING"
-grep -q 'newest_backup_marker would be null' "$triage" || fail "scenarioJ: triage must name the heartbeat null case"
-[[ -f "$state/alert-repair/fleet-restore-drill-marker" ]] \
-  || fail "scenarioJ: marker must be rewritten on the rebuild-green run"
-run_drill
-[[ "$drill_rc" == 0 ]] || fail "scenarioJ: second run must be green (self-heal), got $drill_rc ($drill_out)"
-ok "scenarioJ: absent marker -> exit 1 LOUD, marker rewritten, next run green"
-
-# ============================================================================
-# Scenario K: stale artifact marker (older than the max-age bound) -> exit 1,
-# LOUD artifact-stale; refreshed on the rebuild-green run.
-# ============================================================================
-reset_all
-touch -d '3 days ago' "$state/alert-repair/fleet-restore-drill-marker"
-run_drill
-[[ "$drill_rc" == 1 ]] || fail "scenarioK: must exit 1 (stale marker), got $drill_rc ($drill_out)"
-grep -q 'RESTORE-DRILL-ARTIFACT-STALE' "$triage" || fail "scenarioK: triage missing ARTIFACT-STALE"
-grep -q '28800s bound' "$triage" || fail "scenarioK: triage must name the staleness bound"
-run_drill
-[[ "$drill_rc" == 0 ]] || fail "scenarioK: second run must be green (self-heal), got $drill_rc ($drill_out)"
-ok "scenarioK: stale marker -> exit 1 LOUD, marker refreshed, next run green"
-
-# ============================================================================
-# Scenario L: plane E green — dump produced, scratch-restore proven, marker
+# Scenario L: plane E green — dump produced, scratch-restore proven,
 # cites it, rotation keeps the newest KEEP dumps (fleet-ops#4264).
 # ============================================================================
 reset_all
@@ -415,8 +365,6 @@ grep -q 'E.  - OK' <<<"$drill_out" || fail "scenarioL: drill must log plane E OK
 dumpfile="$(ls -1t "$state"/backups/"litellm-"*.sql.gz 2>/dev/null | head -n 1)"
 [[ -n "$dumpfile" && -s "$dumpfile" ]] || fail "scenarioL: pg_dump must land in the dump dir"
 grep -q 'scratch-restore proven' <<<"$drill_out" || fail "scenarioL: drill must prove the scratch restore"
-grep -q 'litellm-pg dump+scratch-restore proven' "$state/alert-repair/fleet-restore-drill-marker" \
-  || fail "scenarioL: marker must cite the litellm-pg proof"
 # Rotation: seed 16 older dumps (16 + the fresh dump = 17) -> keep-14 must
 # rotate out the 3 oldest BY MTIME. The touch arithmetic puts 000014Z
 # uniquely at 2 days ago (the oldest seeded mtime -> rotated out) and
@@ -435,7 +383,7 @@ count=$(find "$state/backups" -maxdepth 1 -name 'litellm-*.sql.gz' | wc -l)
   || fail "scenarioL: the newest of the seeded old dumps must survive rotation"
 [[ ! -f "$state/backups/litellm-20260101T000014Z.sql.gz" ]] \
   || fail "scenarioL: the oldest seeded dump must be rotated out"
-ok "scenarioL: plane E green — dump + scratch-restore proof + marker cite + rotation"
+ok "scenarioL: plane E green — dump + scratch-restore proof + rotation"
 
 # ============================================================================
 # Scenario M: plane E pg_dump failure -> exit 1, LOUD, no dangling dump

@@ -65,9 +65,8 @@ A backup never restored is not a backup. Same lesson as fleet-ops#378
 (never-run-audit).
 
 we do Y. `fleet-restore-drill` (#388, 6h) proves the restic mechanism,
-parseable control-plane files, and backup coverage, and emits a dated
-artifact marker the heartbeat stats (`alert-repair/fleet-restore-drill-marker`,
-fleet-ops#2471). Deploy-clone rebuilds
+parseable control-plane files, backup coverage, and the LiteLLM
+control-plane pg_dump. Deploy-clone rebuilds
 code from origin.
 
 adopting X means Z. Keep #388 as the state plane. This drill asserts that
