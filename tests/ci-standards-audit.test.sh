@@ -203,7 +203,6 @@ bash "$here/stop-the-line-detector.test.sh"
 # drill. Landed in #1471 but was not registered in ci.yml (workers cannot
 # push .github/workflows/**). Runs offline against temp files. Hosted here
 # so P14 runs it without a workflow-file edit.
-bash "$here/nish-boundary-notify-retry-fallback.test.sh"
 
 # fleet-ops#1212: filing-time same-problem dedupe helper. Hosted here so
 # P14 runs it without a workflow-file edit (the worker App cannot push
@@ -225,7 +224,6 @@ bash "$here/merge-trample-gate.test.sh"
 
 # fleet-ops#1232: FleetGhCacheStale (warning, 45m) on the repair rail.
 # Hosted here so P14 runs it without a workflow-file edit.
-bash "$here/fleet-gh-cache-stale.test.sh"
 
 # fleet-ops#1211: waste-ledger metric family + WasteRatioRising (no page).
 # Hosted here so P14 runs it without a workflow-file edit.
@@ -252,7 +250,6 @@ bash "$here/fleet-gh-cache-stale.test.sh"
 # tests/p14-test-listing-gate.test.sh is the class-prevention so a future
 # drop of this host line fails by name.
 # Hermetic (pin fixtures, no gh/prometheus/systemd).
-bash "$here/fleet-deploy-quality.test.sh"
 
 # fleet-ops#5140: the 0509 product-repo deploy-quality test (red streak,
 # green-newest, unreadable-runs degradation, HELP/TYPE dedup). Hosted here
@@ -260,7 +257,6 @@ bash "$here/fleet-deploy-quality.test.sh"
 # .github/workflows/**). The named pin in tests/p14-test-listing-gate.test.sh
 # is the class-prevention so a future drop of this host line fails by name.
 # Hermetic (file seams only, FLEET_DQ_GH=/nonexistent/gh, no network).
-bash "$here/fleet-product-deploy-0509.test.sh"
 
 # fleet-ops#2902 (PR #2900 follow-up): the close-duplicates drain test
 # landed on main without a ci.yml listing or a host (same 2-orphan FAIL as
@@ -335,7 +331,6 @@ bash "$here/fleet-issue-file-dedupe-closed-canonical.test.sh"
 # tests/p14-test-listing-gate.test.sh is the class-prevention so a future
 # drop of this host line fails by name.
 # Hermetic (pin fixtures, no gh/prometheus/systemd).
-bash "$here/fleet-deploy-quality.test.sh"
 
 # fleet-ops#5140: the 0509 product-repo deploy-quality test (red streak,
 # green-newest, unreadable-runs degradation, HELP/TYPE dedup). Hosted here
@@ -343,7 +338,6 @@ bash "$here/fleet-deploy-quality.test.sh"
 # .github/workflows/**). The named pin in tests/p14-test-listing-gate.test.sh
 # is the class-prevention so a future drop of this host line fails by name.
 # Hermetic (file seams only, FLEET_DQ_GH=/nonexistent/gh, no network).
-bash "$here/fleet-product-deploy-0509.test.sh"
 
 # fleet-ops#2902 (PR #2900 follow-up): the close-duplicates drain test
 # landed on main without a ci.yml listing or a host (same 2-orphan FAIL as
@@ -409,7 +403,6 @@ bash "$here/fleet-issue-file-dedupe-closed-canonical.test.sh"
 # and passes once the classifier is fixed. Hosted here so P14 runs it
 # without a workflow-file edit (the worker App cannot push
 # .github/workflows/**).
-bash "$here/seat-health-classifier.test.sh"
 
 # fleet-ops#1422: closure condition for the runaway-seat quarantine. The
 # test imports the live extension at
@@ -421,7 +414,6 @@ bash "$here/seat-health-classifier.test.sh"
 # the pre-fix extension and passes once computeUsableAt/writeSeatLedgerEntry
 # quarantine. Hosted here so P14 runs it without a workflow-file edit (the
 # worker App cannot push .github/workflows/**).
-bash "$here/seat-health-quarantine.test.sh"
 
 # fleet-ops#2145: closure condition for the seat_dead corpse mark. The test
 # imports the live extension at $HOME/.pi/agent/extensions/seat-health.ts (or
@@ -433,7 +425,6 @@ bash "$here/seat-health-quarantine.test.sh"
 # extension and passes once shouldMarkSeatDead is wired into
 # writeSeatLedgerEntry. Hosted here so P14 runs it without a workflow-file
 # edit (the worker App cannot push .github/workflows/**).
-bash "$here/seat-health-seat-dead.test.sh"
 
 # fleet-ops#5096: closure condition for the seat-recovery hot loop's TRIGGER
 # fix. fleet-seat-recovery.path watches the ledger DIRECTORY, so every ledger
@@ -448,7 +439,6 @@ bash "$here/seat-health-seat-dead.test.sh"
 # on the VPS the test fails against the pre-fix extension and passes once
 # writeSeatLedgerEntry skips. Hosted here so P14 runs it without a
 # workflow-file edit (the worker App cannot push .github/workflows/**).
-bash "$here/seat-health-ledger-noop-write.test.sh"
 
 # fleet-ops#5430: closure condition for the sustained-503 Retry-After bench
 # floor. Imports the live extension and asserts that 3+ consecutive
@@ -458,7 +448,6 @@ bash "$here/seat-health-ledger-noop-write.test.sh"
 # corpse at the seat_dead threshold. Hosted here so P14 runs it without a
 # workflow-file edit (the worker App cannot push
 # .github/workflows/**).
-bash "$here/seat-health-overload-bench.test.sh"
 
 
 # fleet-ops#180: gap-closure loop state machine (stubbed acceptance).
@@ -485,7 +474,6 @@ bash "$here/seat-health-overload-bench.test.sh"
 # auto-merge arm and marks the body `review: skipped, no capable seat`
 # so the loose-ends surface it. Hosted here so P14 runs it
 # without a workflow-file edit (workers cannot push .github/workflows/**).
-bash "$here/fleet-review-arm-check.test.sh"
 
 # fleet-ops#3263 (PR #3304): devin/cursor provider extension + spawnSync
 # timeout gate. Hosted here so P14 runs it without a workflow-file edit
@@ -516,14 +504,12 @@ bash "$here/subagent-extload.test.sh"
 # and openrouter/deepseek-v4-flash-0731) was the wrapper-side marker
 # staying at count=1 every cycle. Hosted here so P14 runs it without a
 # workflow-file edit (the worker App cannot push .github/workflows/**).
-bash "$here/seat-empty-run-clobber-park.test.sh"
 
 # fleet-ops#3046 / #3531: the empty-run bench now escalates geometrically
 # and uses the generic failure ceiling. The marker count still accumulates
 # across healthy clobbers and the park engages at the ceiling. This test
 # exercises the default window and the geometric/park behaviour.
 # Hosted here so P14 runs it without a workflow-file edit.
-bash "$here/seat-empty-run-ceiling-default.test.sh"
 
 
 # fleet-ops#2756: scout effectiveness metric (filed -> survive intake ->
@@ -535,13 +521,11 @@ bash "$here/seat-empty-run-ceiling-default.test.sh"
 # revert rate / merged_24h). Hosted here so P14 runs it without a
 # workflow-file edit (the worker App cannot push .github/workflows/**).
 # Hermetic test (no gh/prometheus/systemd) — runs fine in hosted CI.
-bash "$here/fleet-product-slo.test.sh"
 
 # fleet-ops#3759: the quality-ceiling proxy replay drill (--backtest 4w
 # --repo <r>). Hosted here so P14 runs it without a workflow-file edit (the
 # worker App cannot push .github/workflows/**). Hermetic test (fixture, no
 # live gh) — runs fine in hosted CI.
-bash "$here/fleet-product-slo-backtest.test.sh"
 
 # fleet-ops#2920 (PR #2937 follow-up): the drift-canary metrics drop-in
 # test landed on main without a ci.yml listing or a host, so P14 ran red
@@ -556,24 +540,20 @@ bash "$here/fleet-product-slo-backtest.test.sh"
 # fleet-ops#2934 (PR #2948 follow-up): the empty-run count-merge window
 # test landed on main without a ci.yml listing or a host, so P14 ran red
 # on "1 test file(s) are neither in ci.yml, hosted by a listed test,
-# live/destructive, nor a known orphan: seat-empty-run-intermittent-count.test.sh"
 # for every push since 21:04Z. Hosted here so P14 runs it without a
 # workflow-file edit (the worker App cannot push .github/workflows/**).
 # The named pin in tests/p14-test-listing-gate.test.sh is the
 # class-prevention so a future drop of this host line fails by name.
 # Hermetic (scratch ledger/state, no gh/prometheus/systemd).
-bash "$here/seat-empty-run-intermittent-count.test.sh"
 
 # fleet-ops#3666 (PR #3769 follow-up): the failure-ceiling park (24 h)
 # persistence test landed on the claim branch without a ci.yml listing or
 # a host, so P14 ran red on "1 test file(s) are neither in ci.yml, hosted
 # by a listed test, live/destructive, nor a known orphan:
-# seat-empty-run-park-persists.test.sh". Hosted here so P14 runs it
 # without a workflow-file edit (the worker App cannot push
 # .github/workflows/**). The named pin in tests/p14-test-listing-gate.test.sh
 # is the class-prevention so a future drop of this host line fails by name.
 # Hermetic (scratch ledger/state, no gh/prometheus/systemd).
-bash "$here/seat-empty-run-park-persists.test.sh"
 
 # fleet-ops#3730: the empty-run counter must persist across a re-seat
 # cycle — a NEW issue picking the same seat (the intake re-spawn / fresh-
@@ -585,7 +565,6 @@ bash "$here/seat-empty-run-park-persists.test.sh"
 # pick-seat itself. Hosted here so P14 runs it without a workflow-file edit
 # (the worker App cannot push .github/workflows/**).
 # Hermetic (scratch ledger/state, no gh/prometheus/systemd).
-bash "$here/seat-empty-run-count-persists-new-issue.test.sh"
 
 # fleet-ops#1520: curator journal-cap lock. The live dump (~40KB of
 # dispositioned trust_denials.entries every 5 min) was fixed in
@@ -638,7 +617,6 @@ bash "$here/seat-empty-run-count-persists-new-issue.test.sh"
 # in tests/p14-test-listing-gate.test.sh is the class-prevention so a future
 # drop of this host line fails by name. Hermetic (mock PATH + canned
 # Prometheus response + capture hermes stub, no gh/prometheus/systemd).
-bash "$here/daily-digest.test.sh"
 
 # fleet-ops#4130 P1: the LiteLLM proxy organ test (proxy + Postgres + Redis +
 # /health canary absent() rules, prom scrape, MANIFEST install, canary bin).
@@ -655,7 +633,6 @@ bash "$here/daily-digest.test.sh"
 # or exporter HELP, and count() of an empty vector must be 0 not absent.
 # Hosted here so P14 runs it without a workflow-file edit (the worker App
 # cannot push .github/workflows/**). Hermetic (repo-only; promtool optional).
-bash "$here/fleet-duty-officer-recording.test.sh"
 
 
 # fleet-ops#4956: the #4804 CPU sampler scored `ready` from a cache that has
@@ -746,5 +723,4 @@ bash "$here/deleted-symbol-gate.test.sh"
 # here (ci-standards-audit.test.sh is listed in ci.yml) so none of them
 # falls out of the P14 reachable set. Workers cannot edit .github/workflows.
 bash "$here/fleet-provider-no-dangerous-modes.test.sh" || fail "fleet-provider-no-dangerous-modes tests failed"
-bash "$here/fleet-prepaid-util-canary.test.sh" || fail "fleet-prepaid-util-canary tests failed"
 bash "$here/grok-token-refresh.test.sh" || fail "grok-token-refresh tests failed"

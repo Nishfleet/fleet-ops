@@ -121,6 +121,26 @@ groups:
           summary: "no proven restic restore in 8+ hours"
           description: "restic-r2-restore-test.timer runs every 6h and only writes fleet_restore_drill_last_success_seconds after a --verify restore actually succeeds. Stale means the backup is unproven, which is the same risk as no backup. Repair: systemctl start restic-r2-restore-test.service and read its journal."
 
+      # Restored 2026-09-19 (claude-vps "verify", glue sweep). f65e812c4 cut this
+      # with 52 others, but it belongs to the classes the exporter cut KEPT: it
+      # guards a live prepaid seat, and it rides a stock metric -- the script
+      # writes fleet_grok_token_refresh_last_success_seconds into node_exporter's
+      # textfile collector (/var/lib/prometheus/node-exporter/
+      # fleet-grok-token-refresh.prom), scraped and queryable now. No fleet
+      # exporter is involved. grok-token-refresh.service is a USER timer, so
+      # node_exporter's systemd collector (system units only) cannot see it --
+      # this textfile metric is the only signal that the timer still runs, and
+      # the seat 401s within 6h of it stopping.
+      - alert: FleetGrokTokenRefreshStale
+        expr: absent(fleet_grok_token_refresh_last_success_seconds) or (time() - fleet_grok_token_refresh_last_success_seconds) > 43200
+        for: 1h
+        labels:
+          severity: warning
+          service: fleet
+        annotations:
+          summary: "grok-token-refresh has not run in 12+ hours"
+          description: "fleet_grok_token_refresh_last_success_seconds is absent or older than 12h (two 4h timer cycles). The script advances it on every SUCCESS and SKIP, so only a REJECT (failed grant) or a dead timer leaves it stale. It keeps ~/.pi/agent/auth.json[xai-oauth] alive so the live SuperGrok seat does not age into a 401 within 6h. Check journalctl --user -u grok-token-refresh.service and systemctl --user list-timers grok-token-refresh.timer. fleet-ops#41."
+
       - alert: LitellmPgDumpStale
         expr: (time() - fleet_litellm_pgdump_mtime_seconds > 129600) or fleet_litellm_pgdump_mtime_seconds == 0
         for: 15m

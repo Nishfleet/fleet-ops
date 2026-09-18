@@ -71,10 +71,15 @@ ck("AuthenticationErrorAllowedFails==0", afp.get("AuthenticationErrorAllowedFail
 # 3. every group's fallback chain terminates at an existing group
 fb = rs.get("fallbacks", [])
 finals = {
-    "worker-cheap": ["worker-capable", "senior"],
-    "worker-capable": ["senior"],
+    # fleet-ops#7761 (2026-09-18) removed devin from every WORKER fallback
+    # chain: the devin bridge cannot return tool_calls, so a worker packet that
+    # fell through to senior was guaranteed tools=0. senior/judge/worker-private
+    # keep devin -- those roles consume prose. Updated to the live chains.
+    "worker-cheap": ["worker-capable"],
+    "worker-capable": ["worker-cheap"],
     "senior": ["worker-capable"],
     "judge": ["senior"],
+    "worker-private": ["worker-capable"],
     "worker-private": ["worker-capable"],
 }
 for entry in fb:

@@ -56,6 +56,10 @@ bin/ram-measure:1
 tests/agent-cron-writes-refused.test.sh:1
 tests/blocked-reconcile.test.sh:1
 tests/deleted-symbol-gate.test.sh:2
+# fleet-ops#4508 re-home (2026-09-18 glue sweep): the exporter cut deleted this
+# file s old P14 host, so it was re-homed onto tests/seat-lib.test.sh. The 5
+# matches are that host filename in prose + the wiring assertion, not callers.
+tests/hardcoded-epoch-guard.test.sh:5
 tests/devin-config-trust.test.sh:1
 tests/devin-writes-rejected.test.sh:1
 tests/fleet-heartbeat-low-water-mark.test.sh:2
@@ -88,11 +92,6 @@ tests/ram-metric-compare.test.sh:18
 tests/repair-rung.test.sh:1
 tests/repo-privacy-guard.test.sh:1
 tests/rule-enforcement.test.sh:1
-tests/seat-empty-run-ceiling-default.test.sh:1
-tests/seat-empty-run-clobber-park.test.sh:1
-tests/seat-empty-run-count-persists-new-issue.test.sh:1
-tests/seat-empty-run-intermittent-count.test.sh:1
-tests/seat-empty-run-park-persists.test.sh:1
 tests/seat-lib-product-only-spend-cap.test.sh:1
 tests/senior-review-routing.test.sh:1
 tests/worker-memory-dropin.test.sh:15

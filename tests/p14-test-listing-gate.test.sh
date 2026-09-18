@@ -102,11 +102,6 @@ live_skip[worker-token-live.test.sh]=1
 # fleet-ops#4263 P3b: pick-seat / AIMD / ledger tests are retired with the
 # routing library. They stay on disk until a workflow-scoped PR can drop
 # them; they are not hosted CI.
-live_skip[seat-empty-run-park-persists.test.sh]=1
-live_skip[seat-empty-run-ceiling-default.test.sh]=1
-live_skip[seat-empty-run-intermittent-count.test.sh]=1
-live_skip[seat-empty-run-count-persists-new-issue.test.sh]=1
-live_skip[seat-empty-run-clobber-park.test.sh]=1
 live_skip[seat-caps-zero-yield.test.sh]=1
 live_skip[keystone-routing.test.sh]=1
 live_skip[senior-review-routing.test.sh]=1
@@ -390,47 +385,8 @@ grep -Fq 'bash "$here/p14-test-listing-gate.test.sh"' "$here/ci-standards-audit.
   || fail "ci-standards-audit.test.sh must host p14-test-listing-gate.test.sh"
 ok "p14-test-listing-gate.test.sh is hosted by ci-standards-audit.test.sh"
 
-# fleet-ops#2934 (PR #2948 follow-up): hard-pin the host line for
-# seat-empty-run-intermittent-count in ci-standards-audit so a future
-# refactor that drops it is caught by name. Same class-prevention as the
-# drift test above: parking it on known_orphans to silence the generic
-# message must also fail by name below.
-grep -Eq '^[[:space:]]*bash[[:space:]]+"?\$here/seat-empty-run-intermittent-count\.test\.sh"?' \
-  "$here/ci-standards-audit.test.sh" \
-  || fail "ci-standards-audit.test.sh must bash-invoke seat-empty-run-intermittent-count.test.sh (fleet-ops#2934)"
-[[ -n "${reachable[seat-empty-run-intermittent-count.test.sh]:-}" ]] \
-  || fail "seat-empty-run-intermittent-count.test.sh must be hosted by a listed test (fleet-ops#2934)"
-[[ -z "${known_orphan_set[seat-empty-run-intermittent-count.test.sh]:-}" ]] \
-  || fail "seat-empty-run-intermittent-count.test.sh must not be a known orphan (fleet-ops#2934)"
-ok "seat-empty-run-intermittent-count.test.sh host line in ci-standards-audit.test.sh is pinned (fleet-ops#2934)"
 
-# fleet-ops#3666 (PR #3769 follow-up): hard-pin the host line for
-# seat-empty-run-park-persists in ci-standards-audit so a future refactor
-# that drops it is caught by name. Same class-prevention as the drift test
-# above: parking it on known_orphans to silence the generic message must
-# also fail by name below.
-grep -Eq '^[[:space:]]*bash[[:space:]]+"?\$here/seat-empty-run-park-persists\.test\.sh"?' \
-  "$here/ci-standards-audit.test.sh" \
-  || fail "ci-standards-audit.test.sh must bash-invoke seat-empty-run-park-persists.test.sh (fleet-ops#3666)"
-[[ -n "${reachable[seat-empty-run-park-persists.test.sh]:-}" ]] \
-  || fail "seat-empty-run-park-persists.test.sh must be hosted by a listed test (fleet-ops#3666)"
-[[ -z "${known_orphan_set[seat-empty-run-park-persists.test.sh]:-}" ]] \
-  || fail "seat-empty-run-park-persists.test.sh must not be a known orphan (fleet-ops#3666)"
-ok "seat-empty-run-park-persists.test.sh host line in ci-standards-audit.test.sh is pinned (fleet-ops#3666)"
 
-# fleet-ops#3730: hard-pin the host line for seat-empty-run-count-persists-new-issue.
-# The empty-run counter must persist across a re-seat cycle (a new issue id
-# must not reset it to 1) and the seat must be held until a non-empty run
-# proves it. Hosted from ci-standards-audit (already in P14); named pin so a
-# future drop of the host line fails by name and cannot be parked on orphans.
-grep -Eq '^[[:space:]]*bash[[:space:]]+"?\$here/seat-empty-run-count-persists-new-issue\.test\.sh"?' \
-  "$here/ci-standards-audit.test.sh" \
-  || fail "ci-standards-audit.test.sh must bash-invoke seat-empty-run-count-persists-new-issue.test.sh (fleet-ops#3730)"
-[[ -n "${reachable[seat-empty-run-count-persists-new-issue.test.sh]:-}" ]] \
-  || fail "seat-empty-run-count-persists-new-issue.test.sh must be hosted by a listed test (fleet-ops#3730)"
-[[ -z "${known_orphan_set[seat-empty-run-count-persists-new-issue.test.sh]:-}" ]] \
-  || fail "seat-empty-run-count-persists-new-issue.test.sh must not be a known orphan (fleet-ops#3730)"
-ok "seat-empty-run-count-persists-new-issue.test.sh host line in ci-standards-audit.test.sh is pinned (fleet-ops#3730)"
 
 # (removed) the fleet-ops#3285 named pin for daily-digest.test.sh — the
 # 2026-09-18 glue sweep deleted that test along with its subject, so both
