@@ -11,6 +11,13 @@ Description=Pi fleet issue worker %i
 #     layer without removing a capability.
 #   - verdict parsing                -> the packet-verdict + stop-judge Pi
 #     extensions, already loaded (EXTLOAD-OK on every run).
+# --session-dir is load-bearing, not tidiness. Pi stores sessions per working
+# directory, so every unit running in /home/nish shared one session pool: the
+# first workers on the new rail resumed each other's transcripts ("continuing
+# from where the transcript left off") and exited after ~3 minutes and 8 tools
+# without touching the issue. A per-instance session dir is what the retired
+# wrapper did too — the leftover sessions/pi-issue-0509-3610 dir is its
+# fingerprint — and it is a pi flag, not a wrapper.
 # The old .in packet file is gone with the wrapper, and with it the entire
 # 208/STDIN failure class (fleet-ops#1451) and the ConditionPathExists guard:
 # a prompt that is built at ExecStart time can never be missing.
@@ -40,7 +47,7 @@ WorkingDirectory=/home/nish
 # worker-token --print emits the LINE `export GH_TOKEN=<token>` (it never prints
 # the bare token), so it is eval'd, not captured. An empty mint fails the unit
 # rather than silently falling back to human auth.
-ExecStart=/bin/sh -c 'set -e; i="$1"; r=$(echo "$i" | sed "s/-[0-9][0-9]*$//"); n=$(echo "$i" | sed "s/.*-//"); eval "$(worker-token --print)"; [ -n "$GH_TOKEN" ] || { echo "worker-token mint failed — refusing human-gh fallback" >&2; exit 1; }; export GH_TOKEN; { cat "$HOME/.pi/agent/prompts/worker.md"; echo; echo "TARGET: repo Nishfleet/$r issue $n unit pi-issue-$i"; } | exec pi --print --provider litellm --model worker-cheap' sh %i
+ExecStart=/bin/sh -c 'set -e; i="$1"; r=$(echo "$i" | sed "s/-[0-9][0-9]*$//"); n=$(echo "$i" | sed "s/.*-//"); eval "$(worker-token --print)"; [ -n "$GH_TOKEN" ] || { echo "worker-token mint failed — refusing human-gh fallback" >&2; exit 1; }; export GH_TOKEN; { cat "$HOME/.pi/agent/prompts/worker.md"; echo; echo "TARGET: repo Nishfleet/$r issue $n unit pi-issue-$i"; } | exec pi --print --session-dir "$HOME/.pi/agent/sessions/pi-issue-$i" --provider litellm --model worker-cheap' sh %i
 # The worker created its own worktree; the worker's own unit cleans it up.
 # No reaper, no salvage organ: work that was never committed and pushed did not
 # happen, and the next dispatch starts from origin/main. Leading '-' so cleanup
