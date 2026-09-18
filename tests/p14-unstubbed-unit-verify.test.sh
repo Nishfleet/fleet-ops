@@ -314,13 +314,14 @@ ok "fixture: #830 inline verify of fleet-seat-recovery is flagged"
 #   is not executable: No such file or directory
 # because the inline verify needs the VPS bin present. The shipped fix in
 
-# --- 5. Live repo: agent-cron P14 test has no live verify -------------------
-agent_cron="$repo_root/tests/pi-systemd-run.test.sh"
-[[ -f "$agent_cron" ]] || fail "missing $agent_cron"
-if has_live_verify "$agent_cron"; then
-  fail "tests/pi-systemd-run.test.sh must not call systemd-analyze verify (fleet-ops#154)"
-fi
-ok "live: pi-systemd-run.test.sh has no live systemd-analyze verify"
+# --- 5. (removed) named pin on tests/pi-systemd-run.test.sh ----------------
+# d4a42ced6 deleted that test with the rest of the rail glue, leaving this
+# pin asserting a file that no longer exists — main went red on
+# "FAIL: missing .../tests/pi-systemd-run.test.sh". Section 6 below already
+# enforces the same #154 rule across EVERY P14 test via
+# scan_p14_inline_verify, so the named pin was redundant even while the file
+# existed. Same treatment as 911ce6342 ("drop 89 host lines and 14 named
+# pins for tests that no longer exist").
 
 # --- 6. Live repo: no P14 test repeats the #154 class -----------------------
 live_findings="$(scan_p14_inline_verify "$repo_root")"
