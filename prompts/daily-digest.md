@@ -64,7 +64,13 @@ and the bin/hermes outbound shim. Same sections, same voice, gathered by you.
 9. **Close** — "Reply to this message if you want anything investigated.
    Otherwise, on to the day."
 
-## Send
+## Send — THIS IS THE DELIVERABLE
+
+Gathering the numbers is not the job; Nish receiving them is. You are NOT done
+until the curl below has run and returned `"ok":true`. Do not stop after the
+last gather step. Do not summarise the digest to stdout instead of sending it.
+If you find yourself about to end the turn, check: have you run the send? If
+not, run it now.
 
 One curl to the Telegram bot API. `TELEGRAM_BOT_TOKEN` and
 `TELEGRAM_CHAT_ID` are already in your environment from the unit's
@@ -78,7 +84,13 @@ curl -s --max-time 20 -X POST \
   --data-urlencode text="$body"
 ```
 
-Then print the API response's `ok` field and `result.message_id` as your final
-line, so the systemd journal carries proof of delivery. If `ok` is not true,
-print the full error response and exit non-zero — a digest that silently fails
-to send is worse than no digest.
+Print the API response's `ok` field and `result.message_id` as your final line,
+so the systemd journal carries proof of delivery. If `ok` is not true, print the
+full error response and say so plainly — a digest that silently fails to send is
+worse than no digest.
+
+Because `pi --print` can drop the final assistant text when a tool call ends the
+turn, do not rely on your closing message to carry the proof: make the LAST tool
+call itself echo the result, e.g. append
+`| tee /tmp/daily-digest-send.json` to the curl and then
+`cat /tmp/daily-digest-send.json` so the journal shows it either way.
