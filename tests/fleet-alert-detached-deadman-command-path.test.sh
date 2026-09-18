@@ -2,7 +2,7 @@
 # tests/fleet-alert-detached-deadman-command-path.test.sh
 #
 # fleet-ops#4921: the DetachedJobDied alert description told alert-repair
-# workers to run `bin/fleet-who-stopped <unit>` and
+# workers to run
 # `bin/pi-detached-deadman --clear <unit>` — bare cwd-relative `bin/...`
 # paths with NO stated base directory. In the live 2026-09-10 alert-repair
 # session the worker guessed a checkout that did not ship those scripts and
@@ -27,7 +27,7 @@ ok()   { echo "OK: $*"; }
 
 [[ -f "$rules" ]] || fail "missing: $rules"
 
-REQUIRED_CMDS=(fleet-who-stopped pi-detached-deadman)
+REQUIRED_CMDS=(pi-detached-deadman)
 CANONICAL_CHECKOUT="/home/nish/workspaces/tooling/fleet-ops-deploy-clone"
 
 # The two repair commands must be shipped scripts for the alert to name them.
@@ -64,7 +64,7 @@ if det is None:
 d = det  # shorthand
 
 # (a) repair commands must be referenced by PATH name, not a bare relative bin path.
-for cmd in ("fleet-who-stopped", "pi-detached-deadman"):
+for cmd in ("pi-detached-deadman",):
     if f"bin/{cmd}" in d:
         fail(f"DetachedJobDied description uses cwd-relative `bin/{cmd}` with no base dir — repair workers guess the checkout and swallow an ENOENT (fleet-ops#4921)")
     if cmd not in d:

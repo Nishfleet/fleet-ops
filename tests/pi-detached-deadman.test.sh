@@ -25,7 +25,7 @@
 #      (node_exporter rejects a textfile with a second HELP line) and the
 #      file stays 0644 so node_exporter (User=prometheus) can read it
 #
-# All hermetic: fake who-stopped, scratch textfile + scratch dispatch
+# All hermetic: scratch textfile + scratch dispatch
 # ledger, KEYSTONE_HC_ENV pointing at an unset-URL env file so ping
 # fail-opens silent (circle-marked in the job only). Hosted by ci.yml
 # directly.
@@ -45,12 +45,6 @@ trap 'rm -rf "$scratch"' EXIT
 tf="$scratch/fleet-detached.prom"
 ledger="$scratch/dispatch-ledger.jsonl"
 
-# Fake who-stopped: canned audit line.
-cat >"$scratch/whostopped" <<'EOF'
-#!/usr/bin/env bash
-echo "ausearch line for $1"
-EOF
-chmod +x "$scratch/whostopped"
 
 # Empty HC env -> keystone-hc-ping detached fail-opens silent.
 envfile="$scratch/hc.env"
@@ -83,7 +77,6 @@ chmod +x "$scratch/esc-stub"
 # live agent-state file.
 common=(PI_DEADMAN_TEXTFILE="$tf"
         FLEET_DISPATCH_LEDGER="$ledger"
-        PI_DEADMAN_WHOSTOPPED_BIN="$scratch/whostopped"
         PI_DEADMAN_JOURNALCTL="$scratch/journalctl-stub"
         PI_DEADMAN_ESCALATION_BIN="$scratch/esc-stub"
         PI_DEADMAN_TEST_ESC_LOG="$esc_log"
@@ -415,26 +408,6 @@ grep -q 'error_class="",cause_unit=""' "$tf" \
     || fail "no-provider-error death must leave both labels empty: $(cat "$tf")"
 ok "no provider error in journal: both labels empty (honest miss, death still recorded)"
 
-# 10f. The helper's honest STDERR answer must survive: fleet-who-stopped
-# prints its failure notes ("no audit records naming <unit>") to stderr, so
-# the stdout-only capture discarded them and the blanket "auditd not
-# installed?" fallback overwrote a real answer (fleet-ops#5799: auditd was
-# installed and running, the trail had actually been queried).
-cat >"$scratch/whostopped-stderr" <<'EOF'
-#!/usr/bin/env bash
-echo "fleet-who-stopped: no audit records naming $1 in the last 24h (key=fleet-unit-stop, all systemctl/kill execve)" >&2
-exit 0
-EOF
-chmod +x "$scratch/whostopped-stderr"
-if out="$(env "${common[@]}" PI_DEADMAN_WHOSTOPPED_BIN="$scratch/whostopped-stderr" \
-    PI_DEADMAN_DISPATCH=10101010-1010-1010-1010-101010101014 \
-    PI_DEADMAN_UNIT=u-stderr PI_DEADMAN_CMDLINE="pi --print" SERVICE_RESULT=exit-code \
-    "$deadman" 2>&1)"; then fail "stderr-answer death must exit 1 (died verdict, fleet-ops#5456)"; fi
-printf '%s\n' "$out" | grep -q 'fleet-who-stopped: no audit records naming u-stderr' \
-    || fail "the helper's honest stderr answer must reach the STOP-REASON rail: $out"
-printf '%s\n' "$out" | grep -q 'auditd not installed' \
-    && fail "the false 'auditd not installed?' fallback must not overwrite a real answer: $out"
-ok "helper's honest stderr answer replaces the false 'auditd not installed?' fallback"
 
 # 10g. A helper that prints NOTHING still gets the fallback — its remaining
 # domain is a missing/silent helper, not an answered query.

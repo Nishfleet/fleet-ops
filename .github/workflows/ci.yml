@@ -109,7 +109,6 @@ jobs:
         # advisory gate-integrity check is not green (#5207 escaped this
         # way).
         bash tests/gate-arm-guard.test.sh
-        bash tests/blocked-reconcile-large-issue-json.test.sh
         # fleet-ops#5048: park the protected + no-termination + no-claim-PR
         # cell when a named user timer/service is active or a merged
         # non-claim-branch PR delivered the work (live case #4891).
@@ -148,7 +147,6 @@ jobs:
         # fleet-ops#5692: diff ACTIVE Actions registrations against the
         # default branch in this repo (offline mock of gh + the temp-ref
         # fetch); --report must exit 0 even with an orphan.
-        bash tests/workflow-registration-inventory.test.sh
         bash tests/open-question-sweep-deleted.test.sh
         # fleet-ops#5443: canonical findings ledger — strict writer + judge line.
         bash tests/findings-ledger.test.sh

@@ -60,7 +60,6 @@ config/alertmanager.yml /etc/prometheus/alertmanager.yml
 config/prometheus.yml /etc/prometheus/prometheus.yml
 # fleet-ops#1010: organ registry consumed by bin/fleet-organ-heartbeat-check.
 # Lives next to the rules so the verify drill + PR gate can read it in-repo.
-config/fleet-organs.json /home/nish/.local/state/pi-packet/fleet-organs.json
 bin/jev-eval.mjs /home/nish/.local/bin/jev-eval
 prompts/intake.md /home/nish/.pi/agent/prompts/intake.md
 prompts/spec-judge.md /home/nish/.pi/agent/prompts/spec-judge.md
@@ -94,7 +93,6 @@ lib/litellm-seat.sh /home/nish/.local/lib/pi-packet/litellm-seat.sh
 # fleet-ops#378: cadence-overdue canary sourced by heartbeat-tier1 §11.
 # fleet-ops#517: new bin/ files need a research: line before the PR opens.
 # fleet-ops#3191: rebuild/masking changes must carry a VERIFY line.
-bin/fleet-rebuild-verify-check /home/nish/.local/bin/fleet-rebuild-verify-check
 # fleet-ops#1250: claim-step bounce for build-shaped issues with no Prior art.
 # fleet-ops#3111: self-heal the pi transport (npm rebuild) on the existing
 # pi-transport-check unit. Wired as ExecStart via the drop-in below.
@@ -220,7 +218,6 @@ lib/findings_ledger.py /home/nish/.local/lib/pi-packet/findings_ledger.py
 # unit ended" into success ping / STOP-REASON + /fail ping + died gauge.
 bin/pi-detached-deadman /home/nish/.local/bin/pi-detached-deadman
 # fleet-ops#4266: ausearch wrapper answering "who stopped it" (auditd).
-bin/fleet-who-stopped /home/nish/.local/bin/fleet-who-stopped
 # fleet-ops#1204: ExecStopPost salvage — bank a dying worker's dirty
 # worktree onto wip/<unit>-<ts>. Weekly --gc is the WIP branch lifecycle.
 bin/pi-salvage-worktree /home/nish/.local/bin/pi-salvage-worktree
@@ -266,6 +263,7 @@ systemd/fleet-metrics-export.service.d/intake-effectiveness.conf /home/nish/.con
 # as a new organ — the exporter already runs every 5 min.
 lib/fleet-product-slo.py /home/nish/.local/lib/pi-packet/fleet-product-slo.py
 systemd/fleet-metrics-export.service.d/product-slo.conf /home/nish/.config/systemd/user/fleet-metrics-export.service.d/product-slo.conf
+systemd/fleet-metrics-export.service.d/40-prepaid-spend.conf /home/nish/.config/systemd/user/fleet-metrics-export.service.d/40-prepaid-spend.conf
 # fleet-ops#379: mechanical intake priority. critical-path (and
 # escalate-senior, which implies it) claims before the agent-ready tail;
 # a 2/3 claim-ratio guard stops the tail starving. The prompt calls this
@@ -291,8 +289,6 @@ systemd/agent-cron-0509-daily-market-signal.timer /home/nish/.config/systemd/use
 # open needs-orchestrator issue is older than 1h; the prompt's
 # `difficulty: senior-review` marker routes it to the senior seat ladder
 # through the stock agent-cron-run (no new wrapper).
-systemd/agent-cron-orchestrator-decision-sweep.service /home/nish/.config/systemd/user/agent-cron-orchestrator-decision-sweep.service
-prompts/orchestrator-decision-sweep.md /home/nish/.pi/agent/prompts/orchestrator-decision-sweep.md
 # fleet-ops#3735: daily §1.8 six-domain /search tier regression canary for
 # 0509 (issue Nishfleet/0509#1452). Absorbed from a hand-placed real file
 # into the repo so the machinery-authorization hunt stops flagging it as
@@ -361,8 +357,6 @@ template/extensions/spawn-guard-core.ts /home/nish/.pi/agent/extensions/spawn-gu
 template/extensions/bash-spawn-hook.ts /home/nish/.pi/agent/extensions/bash-spawn-hook.ts
 # fleet-ops#7371 "Jev decides": in-session rail — jev_decide tool shells out to jev-eval (Jev-only credential stays in the helper).
 template/extensions/jev-decide.ts /home/nish/.pi/agent/extensions/jev-decide.ts
-bin/blocked-reconcile /home/nish/.local/bin/blocked-reconcile
-bin/claim-reconcile /home/nish/.local/bin/claim-reconcile
 # fleet-ops#543: agent-ready spec-gate. First admission (sweep + tally)
 # refuses a body without termination:/accept:/required:/metric:.
 # fleet-ops#3309: check-size bounces >2 live required: lines at claim time.
@@ -402,7 +396,6 @@ libexec/alert-repair-dispatch /home/nish/.local/libexec/alert-repair-dispatch
 # reports/machinery-audit-2026-08-28.md). The daily-digest.{timer,service} user
 # units already symlink to this repo's systemd/ — only the script was missing.
 libexec/daily-digest /home/nish/.local/libexec/daily-digest
-bin/fleet-workflow-registration-scan /home/nish/.local/bin/fleet-workflow-registration-scan
 # fleet-ops#5692: orphan Actions-registration scan canary. Called from
 # heartbeat-tier1 block 49 every tick; rc=1 (orphan found) is logged and
 # not propagated (the report at agent-state/FLEET-ORPHAN-WORKFLOW-
@@ -448,8 +441,6 @@ config/machinery-allowlist.json /home/nish/.local/state/pi-packet/machinery-allo
 # fleet-ops#1010: organ-heartbeat invariant. Every fleet organ ships an
 # absent() rule in the same PR; the registry enumerates the known organs
 # and the gate rejects a PR that touches an organ without its absent() rule.
-bin/fleet-organ-heartbeat-check /home/nish/.local/bin/fleet-organ-heartbeat-check
-lib/fleet-organ-heartbeat-check.py /home/nish/.local/lib/pi-packet/fleet-organ-heartbeat-check.py
 bin/fleet-same-repo-closes-gate /home/nish/.local/bin/fleet-same-repo-closes-gate
 lib/same-repo-closes-gate.py /home/nish/.local/lib/pi-packet/same-repo-closes-gate.py
 # fleet-ops#1229: merge-trample gate. Conference + heartbeat queue-pass
@@ -738,11 +729,9 @@ systemd/system/vps-post-reboot-verify.timer /etc/systemd/system/vps-post-reboot-
 # by command rather than re-read from a comment. Pure observability — no
 # timers, no agents, no escalation. State at ~/.local/state/ram-measurement/
 # with a rolling 10-run history.
-bin/ram-measure /home/nish/.local/bin/ram-measure
 # fleet-ops#202: live memory.current vs VmRSS compare so the 35 MB vs
 # ~800 MB mismatch stays measured. Pure observability — never edits
 # ram_gb_per_worker. State at ~/.local/state/ram-measurement/
-bin/ram-metric-compare /home/nish/.local/bin/ram-metric-compare
 # fleet-ops#389: ledger-supersession pass on the memory curator. A new
 # decisions-ledger line makes the next curator tick mark conflicting
 # compiled / agent memories SUPERSEDED-BY:<date+title> (no delete, no

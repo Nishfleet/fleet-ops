@@ -6,7 +6,7 @@ autonomously (caps + spec gate); Nish's per-item key is not required.
 
 This is the spec-gate half. An issue may receive `agent-ready` on first
 admission only when its body carries a machine-checkable spec. Re-queue
-paths (blocked-reconcile, undersaturation, in-progress flip) are not
+paths (undersaturation, in-progress flip) are not
 first admission and do not call this.
 
 Accepted spec shapes:
@@ -81,7 +81,6 @@ FIRST_ADMISSION = (
 )
 
 REQUEUE_ALLOWLIST = (
-    "bin/blocked-reconcile",
     "bin/fleet-heartbeat-undersaturation",
     # §3 orphan-claim release: already-admitted work returning to the queue
     "bin/fleet-heartbeat-tier1",

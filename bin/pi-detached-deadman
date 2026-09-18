@@ -47,7 +47,6 @@
 #   KEYSTONE_HC_ENV, PI_DEADMAN_URL_BASE     ping seams (keystone-hc-ping)
 #   PI_DEADMAN_TEXTFILE       node_exporter textfile (default
 #                             /var/lib/prometheus/node-exporter/fleet-detached.prom)
-#   PI_DEADMAN_WHOSTOPPED_BIN fleet-who-stopped path (default: sibling)
 #   PI_DEADMAN_DRYRUN         1 = print the verdict, write nothing (tests)
 
 set -Eeuo pipefail
@@ -56,7 +55,6 @@ export HOME="${HOME:-/home/nish}"
 export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
 
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-whostopped_bin="${PI_DEADMAN_WHOSTOPPED_BIN:-$here/fleet-who-stopped}"
 # Glue sweep 2026-09-18: the clean-stop escalation hook wrote a STOP-REASON
 # entry for the deleted SENIOR-AUDITOR pipeline. The load-bearing half — the
 # fleet_detached_job_died gauge (DetachedJobDied -> alert-repair-dispatch) and
@@ -341,20 +339,7 @@ if [[ -n "$error_class" ]]; then
     bounce_line="bounce: error_class=$error_class cause_unit=${cause_unit:-none} (fleet-ops#5799)"
 fi
 
-# --- who stopped it (audit trail, best-effort) ------------------------------
 stopper_line=""
-if [[ "$died" == "1" && -x "$whostopped_bin" ]]; then
-    # The helper prints the decoded trail to stdout and its honest failure
-    # notes ("no audit records naming <unit>", "ausearch NOT INSTALLED") to
-    # stderr. Capturing stdout-only threw the note away and let the blanket
-    # "auditd not installed?" fallback overwrite a REAL answer — the exact
-    # #5799 trap: auditd was installed and running, the trail had been
-    # queried, and the STOP-REASON still told the repair worker to install
-    # auditd. Blank lines are stripped before tail: the decoded ausearch
-    # output ends with a trailing BLANK separator, so a bare `tail -n 1`
-    # captured the empty line even when the trail had answered.
-    stopper_line="$("$whostopped_bin" "$unit" 2>&1 | sed -e '/^[[:space:]]*$/d' | tail -n 1 || true)"
-fi
 [[ -z "$stopper_line" ]] && stopper_line="who-stopped: no audit trail (auditd not installed?) — install.sh --system ships /etc/audit/rules.d/30-fleet-unit-stop.rules"
 
 if [[ "${PI_DEADMAN_DRYRUN:-0}" == "1" ]]; then

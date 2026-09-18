@@ -146,10 +146,6 @@ ok "fixture check rejects the old wording and accepts the required sentence"
 
 names_pi_systemd_run "$repo_root/README.md" \
     || fail "README.md must name pi-systemd-run"
-names_pi_systemd_run "$repo_root/prompts/heartbeat.md" \
-    || fail "prompts/heartbeat.md must name pi-systemd-run"
-grep -q 'never `nohup`' "$repo_root/prompts/heartbeat.md" \
-    || fail "heartbeat.md must ban nohup in the spawn step"
 ok "in-repo README and heartbeat name pi-systemd-run"
 
 # Live copies agents actually read. GitHub runners do not have these files

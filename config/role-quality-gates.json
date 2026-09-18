@@ -95,8 +95,7 @@
         "memory-index-autocompact.service"
       ],
       "prompts": [
-        "heartbeat.md",
-        "orchestrator-decision-sweep.md"
+        "heartbeat.md"
       ],
       "bypass_checks": [
         "orchestrator_verdict_guard"
@@ -195,7 +194,6 @@
         "systemd/fleet-litellm-redis.service",
         "libexec/fleet-litellm-prisma-compat/sitecustomize.py",
         "config/litellm-proxy.yaml",
-        "config/fleet-organs.json",
         "config/fleet_rules.yml",
         "tests/fleet-litellm-organ.test.sh",
         "docs/litellm-postgres-setup.md"
