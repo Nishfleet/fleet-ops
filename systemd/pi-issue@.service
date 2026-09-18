@@ -5,10 +5,17 @@ Description=Pi fleet issue worker %i
 # old bin/pi-issue-run (1,542 lines) did is either systemd's job or the LiteLLM
 # proxy's job:
 #   - retries / backoff / hang-kill  -> Restart=, RestartSec=, TimeoutStartSec=
-#   - seat rotation / fallback       -> the `worker-cheap` LiteLLM group. That
-#     group is what the old wrapper resolved to anyway (pi-packet-run called
-#     litellm_seat "worker-cheap"), so calling the proxy directly removes a
-#     layer without removing a capability.
+#   - seat rotation / fallback       -> the LiteLLM proxy groups. The old
+#     wrapper resolved to a group too (pi-packet-run called litellm_seat), so
+#     naming the group directly removes a layer, not a capability.
+#     Workers use `worker-capable`, NOT `worker-cheap`. Measured on this exact
+#     prompt 2026-09-18: worker-cheap answered "I'll start by checking the
+#     environment" and stopped with tools=0; worker-capable ran 31 tools of
+#     real investigation. The retired wrapper reached the same place by
+#     ordering product picks on measured PR yield (PI_PICK_ROLE=product) —
+#     the cheapest seat was never the one that did issue work. Intake and
+#     scout stay on worker-cheap: measured tools=16 and tools=22, they are
+#     mechanical and the cheap group handles them.
 #   - verdict parsing                -> the packet-verdict + stop-judge Pi
 #     extensions, already loaded (EXTLOAD-OK on every run).
 # --session-dir is load-bearing, not tidiness. Pi stores sessions per working
@@ -47,7 +54,7 @@ WorkingDirectory=/home/nish
 # worker-token --print emits the LINE `export GH_TOKEN=<token>` (it never prints
 # the bare token), so it is eval'd, not captured. An empty mint fails the unit
 # rather than silently falling back to human auth.
-ExecStart=/bin/sh -c 'set -e; i="$1"; r=$(echo "$i" | sed "s/-[0-9][0-9]*$//"); n=$(echo "$i" | sed "s/.*-//"); eval "$(worker-token --print)"; [ -n "$GH_TOKEN" ] || { echo "worker-token mint failed — refusing human-gh fallback" >&2; exit 1; }; export GH_TOKEN; { cat "$HOME/.pi/agent/prompts/worker.md"; echo; echo "TARGET: repo Nishfleet/$r issue $n unit pi-issue-$i"; } | exec pi --print --session-dir "$HOME/.pi/agent/sessions/pi-issue-$i" --provider litellm --model worker-cheap' sh %i
+ExecStart=/bin/sh -c 'set -e; i="$1"; r=$(echo "$i" | sed "s/-[0-9][0-9]*$//"); n=$(echo "$i" | sed "s/.*-//"); eval "$(worker-token --print)"; [ -n "$GH_TOKEN" ] || { echo "worker-token mint failed — refusing human-gh fallback" >&2; exit 1; }; export GH_TOKEN; { cat "$HOME/.pi/agent/prompts/worker.md"; echo; echo "TARGET: repo Nishfleet/$r issue $n unit pi-issue-$i"; } | exec pi --print --session-dir "$HOME/.pi/agent/sessions/pi-issue-$i" --provider litellm --model worker-capable' sh %i
 # The worker created its own worktree; the worker's own unit cleans it up.
 # No reaper, no salvage organ: work that was never committed and pushed did not
 # happen, and the next dispatch starts from origin/main. Leading '-' so cleanup
