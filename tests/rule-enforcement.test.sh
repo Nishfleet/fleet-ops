@@ -59,12 +59,6 @@ ok "rule-enforcement: alert detached-deadman command-path drill"
 bash "$here/ci-hosted-paths.test.sh" || fail "ci-hosted-paths class gate failed"
 ok "rule-enforcement: ci-hosted-paths class gate"
 
-# fleet-ops#529: conflict-file canary. Invoked from this CI-listed file so
-# hosted runners run it without a workflow edit (worker tokens cannot push
-# .github/workflows/**).
-bash "$here/vault-conflict-resolver.test.sh" || fail "vault-conflict-resolver drill failed"
-ok "rule-enforcement: vault-conflict-resolver drill"
-
 # fleet-ops#1265: paved-road vault capture. Nested host so P14 covers it
 # without a workflow edit (worker tokens cannot push .github/workflows/**).
 
@@ -88,11 +82,6 @@ ok "rule-enforcement: spawn-guard drill"
 # fleet-ops#4887: straitly ds4-pro canary retired with the seat (2026-09-10).
 
 # fleet-ops#537: execution-is-review receipt canary. Same nested-CI host.
-
-# fleet-ops#525: vault knowledge-format lint timer. Nested host so the worker
-# token does not need to edit .github/workflows/**.
-bash "$here/fleet-vault-knowledge-format.test.sh" || fail "vault knowledge-format drill failed"
-ok "rule-enforcement: vault knowledge-format drill"
 
 # fleet-ops#539: shared-file collision PreToolUse guard. Nested host so the
 # worker token does not need to edit .github/workflows/**.

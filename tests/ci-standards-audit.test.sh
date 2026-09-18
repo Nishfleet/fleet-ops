@@ -240,14 +240,10 @@ bash "$here/ready-work-deleted.test.sh"
 
 # fleet-ops#1492 / #1497 / #1498: tests that pin the deletion
 # (auditor-stdio-test -> MECHANICAL-INSTEAD, quality-baseline-research ->
-# MECHANICAL-INSTEAD) and the migration (memory-index-autocompact ->
-# EXCEPTION-APPROVED) verdicts against the allowlist / MANIFEST / organ-catalog.
+# MECHANICAL-INSTEAD) verdicts against the allowlist / MANIFEST / organ-catalog.
 # Hosted here from this already-listed ci-standards-audit test so the P14
 # test-listing gate goes green without a workflow edit.
 bash "$here/auditor-stdio-test-deleted.test.sh"
-# note: memory-index-autocompact-migrated.test.sh runs `systemd-analyze verify` on
-# a unit whose ExecStart points to /home/nish/.local/bin/memory-index-autocompact
-# (VPS-only) — it is live_skip in p14-test-listing-gate, not hosted here.
 
 # fleet-ops#1160: tests/fleet-ops-1160-regression.test.sh pins the tailscale
 # RECOVER / sudo-probe / Persistent-timer logic in bin/vps-post-reboot-verify
@@ -272,10 +268,6 @@ bash "$here/console-shipped-spot-revert.test.sh"
 # fleet-ops#1232: FleetGhCacheStale (warning, 45m) on the repair rail.
 # Hosted here so P14 runs it without a workflow-file edit.
 bash "$here/fleet-gh-cache-stale.test.sh"
-
-# fleet-ops#1263: TTL + provenance compile layer. Nested host so P14
-# covers it without a workflow-file edit.
-bash "$here/memoryctl-ttl-provenance.test.sh"
 
 # fleet-ops#1211: waste-ledger metric family + WasteRatioRising (no page).
 # Hosted here so P14 runs it without a workflow-file edit.

@@ -452,10 +452,8 @@ config/audit/rules.d/30-fleet-unit-stop.rules /etc/audit/rules.d/30-fleet-unit-s
 # fleet-ops#1463: the five failure-class planes source these libs at
 # runtime. precedence-band.sh is the band floor's sandbox (live install
 # is via the line below; the repo copy is what the drill sees when
-# invoked from a checkout). vault-conflict-resolver.py classifies the
-# sync-conflict fixture under a scratch VAULT.
+# invoked from a checkout).
 lib/precedence-band.sh /home/nish/.local/lib/pi-packet/precedence-band.sh
-lib/vault-conflict-resolver.py /home/nish/.local/bin/vault-conflict-resolver
 systemd/pi-intake@.service.d/10-keystone-hc.conf /home/nish/.config/systemd/user/pi-intake@.service.d/10-keystone-hc.conf
 # fleet-ops#1377 / #2924: deterministic tick overrides model-path ExecStart.
 # Live host ran this as a hand-placed real file for 7+ days; absorb so a
@@ -664,33 +662,6 @@ systemd/system/vps-post-reboot-verify.timer /etc/systemd/system/vps-post-reboot-
 # fleet-ops#202: live memory.current vs VmRSS compare so the 35 MB vs
 # ~800 MB mismatch stays measured. Pure observability — never edits
 # ram_gb_per_worker. State at ~/.local/state/ram-measurement/
-# fleet-ops#389: ledger-supersession pass on the memory curator. A new
-# decisions-ledger line makes the next curator tick mark conflicting
-# compiled / agent memories SUPERSEDED-BY:<date+title> (no delete, no
-# rewritten prose). Drop-in appends ExecStart on nish-memory-curator.
-bin/memory-ledger-supersede.py /home/nish/.local/bin/memory-ledger-supersede
-systemd/nish-memory-curator.service.d/10-ledger-supersede.conf /home/nish/.config/systemd/user/nish-memory-curator.service.d/10-ledger-supersede.conf
-# fleet-ops#529: adopt the live vault-conflict-resolver into deploy so the
-# 2026-08-23 wipe cannot silently delete the timer again. Syncthing itself
-# only writes *.sync-conflict-* copies (no resolve command — syncthing
-# --help / cli --help). The freeze is memory-ledger-supersede; this unit
-# is the self-clearing half.
-lib/vault-conflict-resolver.py /home/nish/.local/bin/vault-conflict-resolver
-systemd/vault-conflict-resolver.service /home/nish/.config/systemd/user/vault-conflict-resolver.service
-systemd/vault-conflict-resolver.timer /home/nish/.config/systemd/user/vault-conflict-resolver.timer
-systemd/vault-conflict-resolver.path /home/nish/.config/systemd/user/vault-conflict-resolver.path
-# fleet-ops#1264: vault snapshot lint. Flags live-state prose without a
-# check-command and a fresh observed timestamp. --check is the worker
-# pre-write gate; --report is the heartbeat drift surface; --pre-write
-# is the capture-wrapper refuse path (slice 4 / #1265 calls it).
-# fleet-ops#1265: paved-road vault capture. One-command drop-zone note with
-# auto-provenance and inline lint. The ratio helper is the weekly adoption
-# metric (drop vs direct-with-wrapper) from the vault capture audit log.
-# fleet-ops#525: daily vault knowledge-format lint. The script lives in
-# nish-vault because it writes the shared-memory report and 03 Knowledge hub
-# contents; the timer is the named, scheduled fleet-ops enforcer.
-systemd/vault-knowledge-format.service /home/nish/.config/systemd/user/vault-knowledge-format.service
-systemd/vault-knowledge-format.timer /home/nish/.config/systemd/user/vault-knowledge-format.timer
 # fleet-ops#85: hourly reaper for stale interactive Claude/ccd-cli sessions
 # in session-*.scope. SIGTERM then SIGKILL; skips dirty/claim worktrees.
 # N=8h from the 2026-08-27 idle tail (live pile at 0h, stale cluster from 6h).
@@ -752,21 +723,6 @@ lib/salvage_secret_scan.py /home/nish/.local/lib/pi-packet/salvage_secret_scan.p
 # fleet-ops#796: repo-ize the sgscan semgrep wrapper so worker review gates are
 # version-controlled, and fix --help / unknown-flag crashes.
 bin/sgscan /home/nish/.local/bin/sgscan
-# fleet-ops#1263: TTL + provenance on recorded facts (recall/compile layer).
-# Policy file stays in-repo (lib/shared-memory/ttl-policy.md); recall resolves
-# the symlink and reads it. Do not MANIFEST-install into nish-vault — that
-# dirties the vault git tree. Recall prefers the vault path when present.
-bin/memoryctl-recall.py /home/nish/.local/bin/memoryctl-recall
-# fleet-ops#1498: memory-index-autocompact — class (b) sanctioned maintenance
-# script (audited EXCEPTION-APPROVED). Distinct from nish-memory-curator:
-# this compacts the Claude auto-memory index (~/.claude/projects/.../MEMORY.md),
-# the curator compiles the vault (~/workspaces/tooling/nish-vault/...).
-# The script has tier-1 deterministic dedupe + tier-2 Opus headless compaction.
-# Path unit watches the index file; service is oneshot. install.sh symlinks
-# over the live hand-placed units in place.
-bin/memory-index-autocompact /home/nish/.local/bin/memory-index-autocompact
-systemd/memory-index-autocompact.service /home/nish/.config/systemd/user/memory-index-autocompact.service
-systemd/memory-index-autocompact.path /home/nish/.config/systemd/user/memory-index-autocompact.path
 # fleet-ops#1212: filing-time same-problem dedupe. All auto-filers route
 # through this instead of raw `gh issue create`.
 bin/fleet-issue-file /home/nish/.local/bin/fleet-issue-file

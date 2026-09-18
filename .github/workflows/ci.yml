@@ -260,7 +260,6 @@ jobs:
           /home/nish/.local/bin/siterep-uptime \
           /home/nish/.local/bin/fleet-deploy-check \
           /home/nish/.local/bin/fleet-escalation-completion \
-          /home/nish/.local/bin/memory-index-autocompact \
           /usr/bin/redis-server \
         do
           sudo install -D -m 0755 /dev/null "$p"

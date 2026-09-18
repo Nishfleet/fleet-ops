@@ -151,7 +151,7 @@ Plus two conventions (not constraints — process rules for the file itself):
 | sr-gap-rules-audit | queued(#527) | binding-constraint | demote-to-pointer | — | Gap rules from the 2026-08-20 rulebook audit |
 | sr-nothing-half-done | queued(#528) | binding-constraint | collapse-into | BC7 | Nothing sits half-done, and no question dies unanswered |
 | sr-one-instruction-binds | enforced | binding-constraint | collapse-into | BC13 | One instruction binds every agent, everywhere |
-| sr-vault-sync-conflicts | enforced | mechanism-exists | demote-to-pointer | — | Vault sync conflicts auto-resolve (mechanism: vault-conflict-resolver timer) |
+| sr-vault-sync-conflicts | enforced | mechanism-deleted-20260918 | demote-to-pointer | — | Vault sync conflicts auto-resolve (resolver timer deleted; Syncthing names `*.sync-conflict-*` natively, the rule is a one-line existence test) |
 | sr-claim-surface | enforced | binding-constraint | keep | — | Claim your surface before operating |
 | sr-prepaid-max-util | queued(#531) | binding-constraint | collapse-into | BC2 | Prepaid subs run at max utilization |
 | sr-devin-4-wide | enforced | mechanism-exists | demote-to-pointer | — | Devin Pro runs 4 workers wide (mechanism: fleet seat-caps.json) |

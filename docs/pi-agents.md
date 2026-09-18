@@ -170,7 +170,7 @@ flag, verify it still exists before acting on it.
 - Write new cross-agent captures only under `00 Inbox/agent-drop/`.
 - Never sync credentials, sessions, databases, caches, logs, or runtime state.
 - Stop all vault writes if any `*.sync-conflict-*` file exists.
-- The `pi` runtime is a registered `memoryctl` writer surface (fleet-ops#4907). Pi-run judges/workers log outcomes under the `pi-vps` lane through `00 Inbox/agent-drop/pi/vps/` via `memoryctl outcome --agent pi-vps`, never a `cursor-vps` placeholder.
+- Pi-run judges/workers drop durable notes as plain markdown under `00 Inbox/agent-drop/pi/vps/` in `nish-vault`, never a `cursor-vps` placeholder. (`memoryctl` itself was deleted on 2026-09-18 — fleet-ops#4907's writer-surface registration no longer applies.)
 
 ## Skills
 

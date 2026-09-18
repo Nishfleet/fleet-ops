@@ -47,8 +47,6 @@ cheaper than building, because prose bans lose to urgency at decision time.
 | Unit escalation | unit-escalation@ | `unit-escalation@.service` | escalation rail |
 | Intake reconcile | intake-reconcile | `intake-reconcile.{path,timer}` | #32 |
 | Interactive session reap | interactive-session-reap | `interactive-session-reap.timer` | dead-seat EXTLOAD |
-| Vault conflict resolve | vault-conflict-resolver | `vault-conflict-resolver.timer` | vault sync guard |
-| Vault knowledge format | vault-knowledge-format | `vault-knowledge-format.timer` | vault format |
 | Standing-rules render | standing-rules-render | `standing-rules-render.{path,service}` | vault |
 | Quality research (weekly) | quality-research-weekly | `quality-research-weekly.timer` | #457 |
 | Boundary-notify (Nish-reserved) | nish-boundary-notify | `nish-boundary-notify.service` | standing rule |

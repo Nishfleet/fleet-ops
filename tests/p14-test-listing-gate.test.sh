@@ -95,10 +95,6 @@ live_skip[pi-worker-execstart-live.test.sh]=1
 # fleet-ops#4141: the 12 opus-heartbeat-* tests were deleted (the opus-
 # heartbeat family was retired — recording rules + fable-check.md replaced
 # it). No live_skip entries needed for deleted tests.
-# fleet-ops#1498: memory-index-autocompact-migrated runs `systemd-analyze verify`
-# on a unit whose ExecStart points to /home/nish/.local/bin/memory-index-autocompact
-# (VPS-only), absent on hosted runners. Live/VPS-only — cannot run in hosted CI.
-live_skip[memory-index-autocompact-migrated.test.sh]=1
 # fleet-ops#1740 added gh-webhook-receiver-live-e2e.test.sh (live webhook →
 # Prometheus → alert e2e) but omitted the live_skip entry, leaving main red
 # on this required gate. The test skips gracefully in hosted CI (no live
@@ -144,7 +140,6 @@ known_orphans=(
   fleet-heartbeat-red-pr-repair.test.sh
   fleet-researcher.test.sh
   install-manifest-comment-purity.test.sh
-  memory-ledger-supersede.test.sh
   org-ruleset-skip-detector.test.sh
   pi-issue-run-defensive-mkdir.test.sh
   pi-issue-run-mid-session-bench.test.sh

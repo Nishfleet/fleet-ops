@@ -266,7 +266,8 @@ Net: 19 live before #4149 → 18 after (truth-staleness-check retired; the other
 - `memory-index-dedupe.py` (222): dedupes the memory index. **Classify** —
   if the index is a plain file, dedupe is a one-shot maintenance script, not a
   mechanism; keep as a manual tool, no timer. Verdict: **NO-GO (KEEP)** —
-  consumer is `bin/memory-index-autocompact` (tier-1 deterministic rebuild);
+  consumer was `bin/memory-index-autocompact` (deleted 2026-09-18: every run
+  in its full live history printed 'nothing to do');
   no off-the-shelf deterministic equivalent exists (tier-2 uses Anthropic's
   shipped `consolidate-memory` skill but burns an Opus run on a mechanical
   edit; dedupe exists to avoid that spend). The autocompact path unit is the
