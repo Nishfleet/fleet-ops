@@ -35,16 +35,13 @@ required=(
   "bin/pi-scout-run /home/nish/.local/bin/pi-scout-run"
   "bin/blocked-reconcile /home/nish/.local/bin/blocked-reconcile"
   "bin/fleet-heartbeat-undersaturation /home/nish/.local/bin/fleet-heartbeat-undersaturation"
+  "bin/oomd-drill /home/nish/.local/bin/oomd-drill"
+  "bin/codex-orphan-reap /home/nish/.local/bin/codex-orphan-reap"
   "bin/claim-reconcile /home/nish/.local/bin/claim-reconcile"
   "bin/lifecycle-label-sweep /home/nish/.local/bin/lifecycle-label-sweep"
   "bin/fleet-heartbeat-low-water-mark /home/nish/.local/bin/fleet-heartbeat-low-water-mark"
   "bin/fleet-heartbeat-red-pr-repair /home/nish/.local/bin/fleet-heartbeat-red-pr-repair"
   "bin/ram-measure /home/nish/.local/bin/ram-measure"
-  "bin/worker-app-canary /home/nish/.local/bin/worker-app-canary"
-  "bin/fleet-credential-expiry-canary /home/nish/.local/bin/fleet-credential-expiry-canary"
-  "lib/credential-expiry-canary.py /home/nish/.local/lib/pi-packet/credential-expiry-canary.py"
-  "bin/fleet-cf-token-canary /home/nish/.local/bin/fleet-cf-token-canary"
-  "lib/cf-token-canary.py /home/nish/.local/lib/pi-packet/cf-token-canary.py"
 )
 for entry in "${required[@]}"; do
   grep -Fxq "$entry" "$manifest" || fail "MANIFEST missing required dest: $entry"

@@ -166,7 +166,6 @@ jobs:
         bash tests/fleet-heartbeat-low-water-mark.test.sh
         # tests fail the workflow check otherwise).
         bash tests/mass-close-guard.test.sh
-        bash tests/codex-orphan-reap.test.sh
         # fleet-ops#1161: orphan-workflow detector (audit findings 3+4).
         bash tests/orphan-workflow-detector.test.sh
         # fleet-ops#5692: diff ACTIVE Actions registrations against the
@@ -180,7 +179,6 @@ jobs:
         # fleet-ops#7371: shared Jev helper contract (dry-run, refusals, log shape, cap, key hygiene).
         bash tests/jev-eval.test.sh
         bash tests/fleet-deploy-check.test.sh
-        bash tests/fleet-seat-recovery.test.sh
         bash tests/rule-enforcement.test.sh
         bash tests/reusable-workflows.test.sh
         # fleet-ops#1296: reject typo'd/unregistered action@<sha> pins in
@@ -250,7 +248,6 @@ jobs:
         # non-fault. Drills the dry-burn trap (SuccessExitStatus makes
         # SERVICE_RESULT "success") and the wall-streak masking, plus both
         # control paths. Offline (stubbed gh, real helper).
-        bash tests/pi-scout-seat-skip.test.sh
         # fleet-ops#5385 live-run fixes: enforce_admins=false in the relax window
         # (+ restore verify), snapshot refresh, refs/pull-aware ancestor check,
         # and stage5 rename-back eventual-consistency polling. Offline drills

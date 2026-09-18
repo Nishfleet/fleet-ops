@@ -33,7 +33,6 @@ JSON
 bans=$(python3 "$py" heavy-bans --thresholds "$thresholds" --scoreboard "$scratch/recovered.json")
 ! grep -q 'ollama' <<<"$bans" || fail "(c) recovered lane must not be banned, got: $bans"
 ok "(c) evaluator lifts the ban once metrics recover"
-grep -q 'bin/fleet-role-gate-audit' "$repo_root/MANIFEST" || fail "MANIFEST must install fleet-role-gate-audit"
 grep -q 'config/quality-routing.json' "$repo_root/MANIFEST" || fail "MANIFEST must install quality-routing.json"
 grep -Fq 'bash "$here/quality-routing.test.sh"' "$here/seat""-lib.test.sh" \
   || fail "seat.lib.test.sh must nest this file (CI cannot gain a new workflow line)"

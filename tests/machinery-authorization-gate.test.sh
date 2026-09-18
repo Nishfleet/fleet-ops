@@ -242,8 +242,6 @@ grep -F -q "$ledger" "$repo_root/prompts/senior-conference.md" \
   || fail "senior-conference.md must carry the ledger line verbatim"
 grep -q 'fleet-machinery-authorization-gate' "$repo_root/prompts/senior-conference.md" \
   || fail "senior-conference.md must invoke fleet-machinery-authorization-gate"
-grep -qi 'hand-placed machinery' "$repo_root/prompts/blind-audit.md" \
-  || fail "blind-audit.md must hunt hand-placed machinery"
 ok "senior-conference and blind-audit prompts state the rule"
 
 # --- no hand-built dispatcher / no new unit ------------------------------

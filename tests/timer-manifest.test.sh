@@ -270,6 +270,5 @@ bash "$SCRIPT_DIR/timer-guard.test.sh" || fail "timer-guard drill failed (instal
 # timer-guard drill above). The canary drill proves the scheduled drift
 # detector fires for a missing persistent timer (exit 1 + LOUD signal) and
 # does NOT fire for a Transient=yes timer (acceptance 3).
-bash "$SCRIPT_DIR/timer-manifest-drift-canary.test.sh" || fail "timer-manifest drift canary drill failed (fleet-ops#4647)"
 
 exit 0

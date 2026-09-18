@@ -27,13 +27,6 @@
       "files": []
     },
     {
-      "name": "self-maintenance",
-      "kind": "exporter",
-      "heartbeat_metric": "fleet_self_maintenance_merges",
-      "absent_alert": "FleetSelfMaintenanceAbsent",
-      "files": []
-    },
-    {
       "name": "canary-effectiveness",
       "kind": "exporter",
       "heartbeat_metric": "fleet_canary_effectiveness_last_run_seconds",
@@ -131,17 +124,6 @@
       "absent_alert": "FleetGhRateLimitAbsent",
       "files": [
         "libexec/fleet-metrics-export.py"
-      ]
-    },
-    {
-      "name": "seat-comeback-release",
-      "kind": "canary",
-      "heartbeat_metric": "fleet_seat_comeback_release_last_green_seconds",
-      "absent_alert": "FleetSeatComebackReleaseAbsent",
-      "files": [
-        "bin/fleet-seat-comeback-release",
-        "systemd/fleet-seat-comeback-release.service",
-        "systemd/fleet-seat-comeback-release.timer"
       ]
     },
     {

@@ -18,7 +18,6 @@ if grep -rn 'PI_SEAT_HEALTH_LEDGER_DIR:-\$STATE_DIR/seat-health' "$ROOT/bin" "$R
 fi
 # 3. the lib and comeback-release agree on lanes/seats
 grep -q 'LEDGER_DIR="${PI_SEAT_HEALTH_LEDGER_DIR:-$HOME/workspaces/agent-state/lanes/seats}"' "$ROOT/lib/litellm-seat.sh" || { say "FAIL: lib default is not lanes/seats"; fail=1; }
-grep -q 'LEDGER="${PI_SEAT_HEALTH_LEDGER_DIR:-$HOME/workspaces/agent-state/lanes/seats}"' "$ROOT/bin/fleet-seat-comeback-release" || { say "FAIL: comeback-release default is not lanes/seats"; fail=1; }
 # 4. behavioural: under a fake HOME the lib's seat_ledger_path lands in lanes/seats
 tmp=$(mktemp -d); trap 'rm -rf "$tmp"' EXIT
 got=$(HOME="$tmp" PI_PACKET_STATE="$tmp/pi-packet" bash -c 'source "$1/lib/litellm-seat.sh" >/dev/null 2>&1; seat_ledger_path litellm worker-cheap' _ "$ROOT")

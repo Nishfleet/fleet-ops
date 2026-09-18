@@ -1,0 +1,534 @@
+#!/usr/bin/env bash
+
+# pi-audit-tally's gh override is AUDIT_GH, not GH. Resolve it before the
+# worker-token preamble so the ${GH:-gh} guard sees the real gh binary and
+# skips the mint when a test injects a fake (fleet-ops#3576).
+GH="${AUDIT_GH:-gh}"
+
+# Use the nishfleet-worker App token for any GitHub write. Fail closed if
+# the App cannot mint and no token was inherited from a parent organ, so a
+# dead App never falls through to the human gh identity (fleet-ops#3445).
+# Human gh is read-only for organs; GH Actions (tests) has no App creds and
+# stubs gh as read-only, so skip minting there.
+if [[ -z "${GH_TOKEN:-}" && "${GITHUB_ACTIONS:-}" != "true" && "${GH:-gh}" == "gh" ]]; then
+    command -v gh >/dev/null 2>&1 || export PATH=/home/nish/.local/bin:/usr/local/bin:/usr/bin:/bin:${PATH:-}
+    _wt="${NISHFLEET_WORKER_TOKEN_BIN:-${HOME:-/home/nish}/.local/bin/worker-token}"
+    _minted="$("$_wt" --print)" || { echo "fleet-ops#3445: $_wt --print failed - refusing human-gh writes" >&2; exit 1; }
+    eval "$_minted"
+    unset _wt _minted
+fi
+# bin/pi-audit-tally
+#
+# Tallies the three senior-auditor votes for one scout candidate and applies
+# the result to the GitHub issue: 2-of-3 PASS -> add agent-ready, drop
+# scout-candidate; 2-of-3 FAIL -> add discarded, drop scout-candidate, and
+# comment with the fail reasons; otherwise -> no action (pending).
+#
+# Args: <repo> <candidate>
+#
+# Environment seams:
+#   AUDIT_STATE_DIR    vote file tree
+#   AUDIT_GH           gh override
+#   AUDIT_DRY_RUN      1 = log, do not mutate labels
+#   ESCALATE_AFTER     refuse EVIDENCE-REFUSED N times before escalate-senior (default 3)
+#   AUDIT_PANEL_QUORUM real (non-SKIP) votes needed before any verdict (default 3)
+
+set -euo pipefail
+
+export HOME="${HOME:-/home/nish}"
+command -v gh >/dev/null 2>&1 || export PATH=/home/nish/.local/bin:/usr/local/bin:/usr/bin:/bin
+export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
+
+STATE_DIR="${AUDIT_STATE_DIR:-$HOME/.local/state/fleet-audit}"
+DRY_RUN="${AUDIT_DRY_RUN:-0}"
+ESCALATE_AFTER="${ESCALATE_AFTER:-3}"
+PANEL_QUORUM="${AUDIT_PANEL_QUORUM:-3}"
+
+spec_gate_py() {
+    if [ -n "${AGENT_READY_SPEC_GATE:-}" ]; then
+        printf '%s\n' "$AGENT_READY_SPEC_GATE"
+        return 0
+    fi
+    local here
+    here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+    if [ -f "$here/../lib/agent-ready-spec-gate.py" ]; then
+        printf '%s\n' "$here/../lib/agent-ready-spec-gate.py"
+        return 0
+    fi
+    printf '%s\n' "/home/nish/.local/lib/pi-packet/agent-ready-spec-gate.py"
+}
+
+issue_passes_spec_gate() {
+    local body="$1" repo="$2"
+    local py
+    py=$(spec_gate_py)
+    if [ ! -f "$py" ]; then
+        log "SPEC-GATE missing at $py — refuse agent-ready (fail closed)"
+        return 1
+    fi
+    printf '%s' "$body" | python3 "$py" check-body --repo "$repo" >/dev/null
+}
+
+# fleet-ops#3121: keyword-only compliance is not a judgement. A PASS reason
+# must carry repo-specific evidence — an issue number (#N), a path, or a URL —
+# or the admission (2-of-3 PASS) is keyword-babble, not a senior verdict.
+# Returns 0 when the reason names evidence, 1 when it is keyword-only.
+reason_has_evidence() {
+    local r="$1" candidate="$2" body="$3"
+    # (1) Existing repo-specific evidence: any issue number, URL, or path.
+    if grep -qE '#[0-9]+|[a-z][a-z0-9+.-]*://|[A-Za-z0-9_.]+/[A-Za-z0-9_.]+' <<<"$r"; then
+        return 0
+    fi
+    # fleet-ops#3573: the auditors run with NO tools (tools=0), so they cannot
+    # cite a live path or URL. Accept a PASS whose reason cites THIS candidate
+    # issue number together with a concrete repo path that appears VERBATIM in
+    # the candidate's own issue body — the body is the only repo specificity a
+    # tool-less auditor is handed, so a body-path citation is still evidence,
+    # not keyword-babble. Without the path it is still refused.
+    grep -qE "#${candidate}([^0-9]|$)" <<<"$r" || return 1
+    local tok
+    while IFS= read -r tok; do
+        [ -n "$tok" ] || continue
+        grep -qF "$tok" <<<"$r" && return 0
+    done <<<"$(printf '%s\n' "$body" | grep -oE '[A-Za-z0-9_.]+(/[A-Za-z0-9_.]+)+' | sort -u 2>/dev/null)"
+    return 1
+}
+
+# fleet-ops#4451: an epic's dependency chain cannot be judged as a standalone
+# candidate. The auditor bar in prompts/auditor.md asks for direct user-facing
+# impact and the smallest durable fix; a Q1-evals / Q2-wiring / Q3-UI chain
+# fails both by construction, which is how the panel discarded all six scoped
+# items of Nish-ratified EPIC Nishfleet/0509#1367 (#1382-#1387) between 09-05
+# and 09-07. A candidate that belongs to an epic is never discarded here.
+# fleet-ops#6151: 0509#3171 was discarded 2026-09-12 despite a PASS vote - its
+# title is the bare-`EPIC:` shape (colon, no #number) and its body carries none
+# of the four #4451 patterns, so the guard never fired. Two more links, read
+# from what the tally already holds: the title prefix, and the issue's
+# `epic` label - labels are already fetched at the top of main for the
+# idempotence check and passed in here; no second API call.
+# fleet-ops#5861: Nish-ratified epic titles come in three shapes -
+# "EPIC #123", "EPIC: ...", "EPIC (Nish): ..." - and all of them start with
+# EPIC, so one ^EPIC test covers every shape (it subsumes #6151's bare-`EPIC:`
+# prefix, which missed the `EPIC (Nish):`-title shape). It also adds the
+# split-family citation: a slice's title literally ends "(split of #2992)"
+# (0509#3195) and must be judged on its epic, never discarded standalone. The
+# umbrella itself is caught by ^EPIC above; this catches the cited slices,
+# which the #4451 guard also missed.
+candidate_is_epic_linked() {
+    local title="$1" body="$2" labels="${3:-}"
+    grep -qE '^EPIC' <<<"$title" && return 0
+    grep -qE 'EPIC #[0-9]+' <<<"$body" && return 0
+    grep -qF 'docs/epics/' <<<"$body" && return 0
+    grep -qE 'EPIC \(Nish\):' <<<"$body" && return 0
+    case ",$labels," in *',epic,'*) return 0 ;; esac
+    grep -qE 'split of #[0-9]+' <<<"$title" && return 0
+    grep -qE 'split of #[0-9]+' <<<"$body" && return 0
+    return 1
+}
+
+log() { printf '[%s] [pi-audit-tally] %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$*" >&2; }
+
+# fleet-ops#4503: a SKIP whose seat is recast-exhausted (fleet-ops#3962 marker
+# "$dir/<role>.skip-exhausted", written after AUDIT_SKIP_RECAST_MAX recasts)
+# can never be recast again — that seat will never vote. Counting it as a
+# recorded SKIP wedges the panel at PENDING forever (2 FAIL + exhausted SKIP
+# never reached a verdict) and AUDITOR-PANEL-PENDING fired on every heartbeat
+# tick. An exhausted SKIP is an abstention that no longer blocks: it drops out
+# of the SKIP gate so the arrived real votes decide (2-of-2). Reads the
+# <role>\t<verdict> pairs already collected in the votes JSON.
+exhausted_skip_count() {
+    local dir="$1" votes="$2" n=0 role verdict
+    while IFS=$'\t' read -r role verdict; do
+        [ -n "$role" ] || continue
+        if [ "$verdict" = "SKIP" ] && [ -f "$dir/$role.skip-exhausted" ]; then
+            n=$(( n + 1 ))
+        fi
+    done <<<"$(printf '%s\n' "$votes" | jq -r '.[] | "\(.role)\t\(.verdict)"' 2>/dev/null || true)"
+    printf '%s\n' "$n"
+}
+
+[ $# -eq 2 ] || { log "usage: pi-audit-tally <repo> <candidate>"; exit 2; }
+repo="$1"
+candidate="$2"
+
+case_dir() {
+    printf '%s/%s/%s\n' "$STATE_DIR" "$repo" "$candidate"
+}
+
+votes_json() {
+    local dir
+    dir=$(case_dir)
+    shopt -s nullglob
+    local files=("$dir"/*.vote)
+    shopt -u nullglob
+    if [ "${#files[@]}" -eq 0 ]; then
+        printf '[]\n'
+        return
+    fi
+    jq -s '.' "${files[@]}"
+}
+
+# fleet-ops#4474: tally the senior panel's NISH/MATRIX votes for ONE open
+# `question` issue and route the verdict. Called from main only when the
+# candidate carries the `question` label and is not already decided.
+# The route token in each MATRIX reason is machine-read; the majority route
+# wins. precedent -> post decision-resolved; orchestrator -> rewrite the
+# blocking marker; worker -> relabel agent-ready. SKIP never counts toward
+# 2-of-3 (fleet-ops#4451 arithmetic). Idempotent: a decided question exits
+# before any write.
+tally_question() {
+    local dir="$1" issue_json="$2" issue_title="$3" issue_body="$4"
+    local votes nish matrix skip real reasons nish_reasons matrix_reasons
+    votes=$(votes_json)
+    nish=$(printf '%s\n' "$votes" | jq '[.[] | select(.verdict == "NISH")] | length')
+    matrix=$(printf '%s\n' "$votes" | jq '[.[] | select(.verdict == "MATRIX")] | length')
+    skip=$(printf '%s\n' "$votes" | jq '[.[] | select(.verdict == "SKIP")] | length')
+    real=$(( nish + matrix ))
+    reasons=$(printf '%s\n' "$votes" | jq -r '[.[] | "\(.role): \(.verdict) - \(.reason)"] | join("\n")')
+    nish_reasons=$(printf '%s\n' "$votes" | jq -r '[.[] | select(.verdict == "NISH") | .reason] | join("\n")')
+    matrix_reasons=$(printf '%s\n' "$votes" | jq -r '[.[] | select(.verdict == "MATRIX") | .reason] | join("\n")')
+
+    log "$repo/#$candidate question votes: NISH=$nish MATRIX=$matrix SKIP=$skip real=$real quorum=$PANEL_QUORUM"
+
+    # A SKIP is a seat that did not vote, not a vote. It never shrinks the
+    # denominator: with a SKIP recorded the panel is PENDING until the third
+    # seat returns (fleet-ops#4451 arithmetic).
+    local exhausted blocking_skips
+    exhausted=$(exhausted_skip_count "$dir" "$votes")
+    blocking_skips=$(( skip - exhausted ))
+    if [ "$blocking_skips" -gt 0 ] && [ "$real" -lt "$PANEL_QUORUM" ]; then
+        log "$repo/#$candidate question PENDING: $real real vote(s) of $PANEL_QUORUM, $skip SKIP recorded ($exhausted exhausted, fleet-ops#4503)"
+        exit 0
+    fi
+
+    if [ "$nish" -ge 2 ]; then
+        if [ "$DRY_RUN" = "1" ]; then
+            log "DRY-RUN: would add nish-reserved + comment for $repo/#$candidate"
+        else
+            if ! "$GH" issue edit "$candidate" -R "Nishfleet/$repo" --add-label nish-reserved >/dev/null 2>&1; then
+                log "$repo/#$candidate: gh issue edit FAILED (add nish-reserved)"
+                exit 1
+            fi
+            "$GH" issue comment "$candidate" -R "Nishfleet/$repo" \
+                --body "question panel (2-of-3 NISH, fleet-ops#4474): this ask stays on the Nish tab. Senior panel judged it reserved (money/pricing, legal, brand, product direction, customer-data deletion, or a reserved authority) and not already decided. Reasons:\n\n$nish_reasons" \
+                >/dev/null 2>&1 || log "$repo/#$candidate: gh issue comment FAILED (admit question)"
+        fi
+        log "$repo/#$candidate NISH -> nish-reserved (on the tab, awaiting Nish)"
+        exit 0
+    fi
+
+    if [ "$matrix" -ge 2 ]; then
+        local route
+        route=$(matrix_route "$matrix_reasons")
+        log "$repo/#$candidate MATRIX -> route=$route"
+        if [ "$DRY_RUN" = "1" ]; then
+            log "DRY-RUN: would route $repo/#$candidate via $route + remove question"
+        else
+            apply_question_route "$route" "$matrix_reasons" "$issue_title" "$issue_body"
+        fi
+        exit 0
+    fi
+
+    log "$repo/#$candidate question remains PENDING (NISH=$nish MATRIX=$matrix SKIP=$skip)"
+    exit 0
+}
+
+# Pick the majority route across the MATRIX votes' reasons. A route token is
+# `precedent: <text>`, `orchestrator`, or `worker`. precedent is the strongest
+# (an existing ledger answer), then orchestrator, then worker; mixed panels
+# resolve to the most common token, defaulting to orchestrator.
+matrix_route() {
+    local reasons="$1" lc p o w
+    lc=$(printf '%s' "$reasons" | tr '[:upper:]' '[:lower:]')
+    p=$(printf '%s' "$lc" | grep -c '\bprecedent:' || true)
+    o=$(printf '%s' "$lc" | grep -cE '\borchestrator\b' || true)
+    w=$(printf '%s' "$lc" | grep -cE '\bworker\b' || true)
+    if [ "$p" -ge 2 ]; then printf 'precedent\n'; return 0; fi
+    if [ "$o" -ge 2 ]; then printf 'orchestrator\n'; return 0; fi
+    if [ "$w" -ge 2 ]; then printf 'worker\n'; return 0; fi
+    # No token reached a majority: pick the first strongest present, else
+    # orchestrator (the safe non-Nish route, fleet-ops#4260).
+    if [ "$p" -ge 1 ]; then printf 'precedent\n'; return 0; fi
+    if [ "$w" -ge 1 ]; then printf 'worker\n'; return 0; fi
+    printf 'orchestrator\n'
+}
+
+# Apply one MATRIX route, then remove the `question` label so the issue leaves
+# the Nish tab. precedent: post decision-resolved from the ledger line.
+# orchestrator: rewrite `blocked-on: nish-decision` to `blocked-on: orchestrator`,
+# drop the nish-decision blocker. worker: relabel agent-ready with the answer.
+apply_question_route() {
+    local route="$1" matrix_reasons="$2" issue_title="$3" issue_body="$4"
+    case "$route" in
+        precedent)
+            # Extract the precedent text from a MATRIX vote's reason. grep
+            # exits 1 on no match; under set -e/-o pipefail guard the whole
+            # substitution so an absent precedent falls through to orchestrator.
+            # fleet-ops#4503: no byte-cap on the extracted precedent. This
+            # feeds an issue-comment body, not model context (and the vote
+            # reasons are already posted in full by the other routes), so a
+            # head -c cap was both unnecessary and a token-efficiency
+            # anti-pattern shape (fleet-token-efficiency-check).
+            local answer
+            answer=$(printf '%s' "$matrix_reasons" | grep -ioE '\bprecedent:[[:space:]]*.*' -m1 | sed -E 's/^.*\bprecedent:[[:space:]]*//I' || true)
+            if [ -n "$answer" ]; then
+                "$GH" issue comment "$candidate" -R "Nishfleet/$repo" \
+                    --body "decision-resolved: the decisions ledger already answers this (precedent: $answer). Removing from the question tab. (fleet-ops#4474)" \
+                    >/dev/null 2>&1 || log "$repo/#$candidate: gh issue comment FAILED (precedent)"
+            else
+                log "$repo/#$candidate: MATRIX precedent route but no precedent text parsed; treating as orchestrator"
+                route=orchestrator
+            fi
+            ;;
+        worker)
+            "$GH" issue comment "$candidate" -R "Nishfleet/$repo" \
+                --body "question panel (2-of-3 MATRIX, fleet-ops#4474): this is a work task, not a question for Nish. The MATRIX panel already answered it; relabeled agent-ready. Reasons:\n\n$matrix_reasons" \
+                >/dev/null 2>&1 || log "$repo/#$candidate: gh issue comment FAILED (worker)"
+            ;;
+        orchestrator)
+            "$GH" issue comment "$candidate" -R "Nishfleet/$repo" \
+                --body "question panel (2-of-3 MATRIX, fleet-ops#4474): not a question that needs Nish. Routed to the orchestrator decision-sweep (blocked-on: orchestrator). Reasons:\n\n$matrix_reasons" \
+                >/dev/null 2>&1 || log "$repo/#$candidate: gh issue comment FAILED (orchestrator)"
+            ;;
+    esac
+
+    # Rewrite the blocking marker and remove the `question` label for all routes.
+    # The nish-decision blocker may be a whole line OR embedded mid-line after a
+    # note (e.g. "... (money). blocked-on: nish-decision (money: top up straitly)").
+    # Delete any line carrying it; orchestrator then appends its own marker so
+    # the issue stays blocked (for the orchestrator decision-sweep, fleet-ops#4260)
+    # rather than becoming claimable/unrouted. precedent/worker leave no blocker
+    # at all (the question is resolved).
+    local new_body
+    new_body=$(printf '%s' "$issue_body" | grep -v -E 'blocked-on:[[:space:]]*nish-decision' || true)
+    if [ "$route" = "orchestrator" ]; then
+        new_body="$new_body
+blocked-on: orchestrator (fleet-ops#4474 question panel)"
+    fi
+    local body_tmp
+    body_tmp=$(mktemp)
+    printf '%s\n' "$new_body" > "$body_tmp"
+    if ! "$GH" issue edit "$candidate" -R "Nishfleet/$repo" \
+        --remove-label question --body-file "$body_tmp" >/dev/null 2>&1; then
+        log "$repo/#$candidate: gh issue edit FAILED (apply route $route)"
+        rm -f "$body_tmp"
+        exit 1
+    fi
+    rm -f "$body_tmp"
+    if [ "$route" = "worker" ]; then
+        "$GH" issue edit "$candidate" -R "Nishfleet/$repo" --add-label agent-ready >/dev/null 2>&1 || \
+            log "$repo/#$candidate: gh issue edit FAILED (add agent-ready)"
+    fi
+    log "$repo/#$candidate routed via $route; question label removed"
+}
+
+main() {
+    local dir votes pass fail skip real reasons issue_labels issue_title
+    dir=$(case_dir)
+    if [ ! -d "$dir" ]; then
+        log "no votes yet for $repo/#$candidate"
+        exit 0
+    fi
+
+    # fleet-ops#4451: read the issue ONCE, before any vote arithmetic, so the
+    # idempotence and epic guards below can decide without a second API call.
+    # The pass branch reuses issue_body instead of re-fetching it.
+    issue_json=$("$GH" issue view "$candidate" -R "Nishfleet/$repo" --json body,title,labels 2>/dev/null || true)
+    issue_body=$(printf '%s' "$issue_json" | jq -r '.body // empty' 2>/dev/null || true)
+    issue_title=$(printf '%s' "$issue_json" | jq -r '.title // empty' 2>/dev/null || true)
+    issue_labels=$(printf '%s' "$issue_json" | jq -r '[.labels[]?.name] | join(",")' 2>/dev/null || true)
+
+    # fleet-ops#4451 (idempotence): a candidate that already carries a verdict
+    # label is DECIDED. Re-tallying it writes nothing new but re-comments every
+    # heartbeat tick: 0509#1382 collected 243 identical "Senior auditor panel
+    # ... discarded" comments this way. Exit before any write. fleet-ops#4474:
+    # a question already marked nish-reserved or conference-approved is decided
+    # and must never be re-committed either.
+    case ",$issue_labels," in
+        *,discarded,*|*,agent-ready,*|*,nish-reserved,*|*,conference-approved,*)
+            log "$repo/#$candidate already decided (labels: $issue_labels) - no re-tally, no comment (fleet-ops#4451)"
+            exit 0
+            ;;
+    esac
+
+    # fleet-ops#4474: a `question` candidate goes through the Nish-question
+    # panel, not the scout admission panel. The senior auditors voted NISH vs
+    # MATRIX (with SKIP for a seat that could not vote). Route the verdict:
+    #  NISH 2-of-3   -> add `nish-reserved` (stays on the Nish tab, question
+    #                   label kept), comment that Nish must answer.
+    #  MATRIX 2-of-3 -> apply the majority route and REMOVE the `question`
+    #                   label so it leaves the tab.
+    # otherwise     -> PENDING (SKIP never counts toward 2-of-3).
+    case ",$issue_labels," in
+        *,question,*)
+            # tally_question always exits (every branch ends in `exit 0`), so
+            # no trailing exit here — shellcheck -x flags a trailing one as
+            # SC2317 unreachable (CI P14 failure on PR #4500).
+            tally_question "$dir" "$(printf '%s' "$issue_json")" "$issue_title" "$issue_body"
+            ;;
+    esac
+
+    votes=$(votes_json)
+    pass=$(printf '%s\n' "$votes" | jq '[.[] | select(.verdict == "PASS")] | length')
+    fail=$(printf '%s\n' "$votes" | jq '[.[] | select(.verdict == "FAIL")] | length')
+    skip=$(printf '%s\n' "$votes" | jq '[.[] | select(.verdict == "SKIP")] | length')
+    real=$(( pass + fail ))
+    reasons=$(printf '%s\n' "$votes" | jq -r '[.[] | "\(.role): \(.verdict) - \(.reason)"] | join("\n")')
+
+    log "$repo/#$candidate votes: PASS=$pass FAIL=$fail SKIP=$skip real=$real quorum=$PANEL_QUORUM"
+
+    # fleet-ops#4451 (SKIP arithmetic): a SKIP is a seat that did not vote, not
+    # a vote. It must not shrink the denominator. "2-of-3" means two real
+    # verdicts out of three real votes; with a SKIP in the panel the result is
+    # PENDING until the third seat returns, never 2-of-2.
+    #
+    # The gate is deliberately narrow: it fires only when a SKIP was actually
+    # RECORDED and the seat is still recast-able. A recorded SKIP is proof the
+    # panel had a third seat and it declined, so two verdicts are not a
+    # majority of three. When no SKIP file exists the tally has no evidence a
+    # third seat was ever dispatched, and the pre-existing convention (the
+    # arrived votes decide) stands - that convention is pinned by
+    # tests/fleet-heartbeat-auditor.test.sh and is not this issue's fault to
+    # change.
+    # fleet-ops#4503: a seat whose recast budget is exhausted (its
+    # <role>.skip-exhausted marker exists, fleet-ops#3962) can never vote
+    # again, so its SKIP must not hold the panel hostage — it drops out of the
+    # gate and the arrived real votes decide (2-of-2).
+    local exhausted blocking_skips
+    exhausted=$(exhausted_skip_count "$dir" "$votes")
+    blocking_skips=$(( skip - exhausted ))
+    if [ "$blocking_skips" -gt 0 ] && [ "$real" -lt "$PANEL_QUORUM" ]; then
+        log "$repo/#$candidate PENDING: $real real vote(s) of $PANEL_QUORUM, $skip SKIP recorded ($exhausted exhausted, fleet-ops#4503) (a recast-able SKIP does not shrink the denominator)"
+        exit 0
+    fi
+
+    if [ "$pass" -ge 2 ]; then
+        # fleet-ops#543: 2-of-3 PASS is not enough without a spec.
+        # fleet-ops#3121: nor without repo-specific evidence in the PASS
+        # reasons — keyword-only compliance is not a judgement.
+        # fleet-ops#3573: fetch the body first so the evidence gate can accept
+        # a tool-less auditor's citation of this candidate# + a body path.
+        # issue_json/issue_body were fetched once at the top of main (fleet-ops#4451).
+        local pass_reasons evidenceless r_b64 r
+        pass_reasons=$(printf '%s\n' "$votes" | jq -r '[.[] | select(.verdict == "PASS") | .reason] | join("\n")')
+        evidenceless=0
+        # fleet-ops#3548 follow-up: judge each PASS vote's reason as ONE unit,
+        # not line by line. The reasons were joined with "\n" and read back
+        # per line, so a multi-line reason was split and every line had to
+        # carry evidence on its own. Live votes end in a "## stderr"
+        # diagnostic line (cast before #3934 stripped it at the source): that
+        # line has no evidence, so unanimous, evidence-citing panels were
+        # refused 13 times and escalated (0509#1747/#1749/#1750/#1759-#1763).
+        # Each reason is read back base64-safe, the stderr block is dropped
+        # (same rule as pi-audit-run extract_reason), and an empty reason is
+        # keyword-less by definition.
+        while IFS= read -r r_b64; do
+            r=$(printf '%s' "$r_b64" | base64 -d | sed -E '/^#+[[:space:]]+stderr([[:space:]]|$)/,$d')
+            if [ -z "$(printf '%s' "$r" | tr -d '[:space:]')" ] || ! reason_has_evidence "$r" "$candidate" "$issue_body"; then
+                evidenceless=1
+                log "$repo/#$candidate PASS reason lacks repo-specific evidence (issue #, path, or URL): $(printf '%s' "$r" | tr '\n' ' ' | head -c 160)"
+            fi
+        done <<<"$(printf '%s\n' "$votes" | jq -r '.[] | select(.verdict == "PASS") | (.reason // "") | @base64')"
+        if [ "$evidenceless" = "1" ]; then
+            # fleet-ops#3574: a candidate refused for evidence ESCALATE_AFTER
+            # times (default 3) is escalated (escalate-senior + drop
+            # scout-candidate) so the admission queue never re-runs the same
+            # evidence-less panel forever. The counter and refusal-history
+            # ledger live under the candidate's state dir.
+            local refusals reasons_ledger n
+            refusals="$dir/.evidence-refusals"
+            reasons_ledger="$dir/.evidence-refusal-reasons"
+            n=0
+            [ -f "$refusals" ] && n=$(<"$refusals")
+            n=$(( ${n:-0} + 1 ))
+            printf '%s\n' "$n" > "$refusals"
+            printf '\n== evidence refusal #%s (%s) ==\n%s\n' "$n" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$pass_reasons" >> "$reasons_ledger" 2>/dev/null || true
+            log "$repo/#$candidate EVIDENCE-REFUSED (2-of-3 PASS but keyword-only reasons) count=$n (escalate at $ESCALATE_AFTER)"
+            if [ "$n" -ge "$ESCALATE_AFTER" ]; then
+                log "$repo/#$candidate escalated: $n evidence refusals, escalate-senior, stop re-queuing (fleet-ops#3574)"
+                if [ "$DRY_RUN" = "1" ]; then
+                    log "DRY-RUN: would add escalate-senior + remove scout-candidate + comment for $repo/#$candidate"
+                else
+                    if ! "$GH" issue edit "$candidate" -R "Nishfleet/$repo" --remove-label scout-candidate --add-label escalate-senior >/dev/null 2>&1; then
+                        log "$repo/#$candidate: gh issue edit FAILED (escalate-senior)"
+                        exit 1
+                    fi
+                    local ledger
+                    ledger=$(cat "$reasons_ledger" 2>/dev/null || printf 'refusal history unavailable')
+                    "$GH" issue comment "$candidate" -R "Nishfleet/$repo" \
+                        --body "escalate-senior (fleet-ops#3574): $repo/#$candidate refused for evidence $n times. Every PASS reason was keyword-only with no repo-specific evidence (issue number, path, or URL), so 2-of-3 PASS could never admit. Escalated rather than re-queued forever. Refusals:$ledger" \
+                        >/dev/null 2>&1 || true
+                fi
+            else
+                if [ "$DRY_RUN" = "1" ]; then
+                    log "DRY-RUN: would refuse agent-ready for $repo/#$candidate (keyword-only PASS reasons)"
+                else
+                    "$GH" issue comment "$candidate" -R "Nishfleet/$repo" \
+                        --body "evidence-refused (fleet-ops#3121). 2-of-3 PASS, but at least one PASS reason is keyword-only with no repo-specific evidence (issue number, path, or URL). Keyword-only compliance is not a judgement." \
+                        >/dev/null 2>&1 || true
+                fi
+            fi
+            exit 0
+        fi
+        if ! issue_passes_spec_gate "$issue_body" "$repo"; then
+            log "$repo/#$candidate SPEC-GATE-REFUSED (2-of-3 PASS but no spec)"
+            if [ "$DRY_RUN" = "1" ]; then
+                log "DRY-RUN: would refuse agent-ready for $repo/#$candidate (no spec)"
+            else
+                "$GH" issue comment "$candidate" -R "Nishfleet/$repo" \
+                    --body "spec-gate: refused agent-ready (fleet-ops#543). 2-of-3 PASS, but the body needs termination: / accept: / required: / metric:." \
+                    >/dev/null 2>&1 || true
+            fi
+            exit 0
+        fi
+        log "$repo/#$candidate admitted (2-of-3 PASS)"
+        if [ "$DRY_RUN" = "1" ]; then
+            log "DRY-RUN: would add agent-ready + remove scout-candidate for $repo/#$candidate"
+        else
+            if ! "$GH" issue edit "$candidate" -R "Nishfleet/$repo" --remove-label scout-candidate --add-label agent-ready >/dev/null 2>&1; then
+                log "$repo/#$candidate: gh issue edit FAILED (admit)"
+                exit 1
+            fi
+        fi
+        exit 0
+    fi
+
+    if [ "$fail" -ge 2 ]; then
+        # fleet-ops#4451 (epic guard): never discard a candidate that belongs to
+        # a Nish-ratified epic. A FAIL majority on an epic child means the SPEC
+        # is thin, not that the work is unwanted - so it gets spec-needed, keeps
+        # scout-candidate, and stays in the queue for a re-spec.
+        if candidate_is_epic_linked "$issue_title" "$issue_body" "$issue_labels"; then
+            log "$repo/#$candidate EPIC-GUARD: 2-of-3 FAIL on an epic-linked candidate - spec-needed, NOT discarded (fleet-ops#4451)"
+            if [ "$DRY_RUN" = "1" ]; then
+                log "DRY-RUN: would add spec-needed + keep scout-candidate + comment for $repo/#$candidate"
+            else
+                "$GH" issue edit "$candidate" -R "Nishfleet/$repo" --add-label spec-needed >/dev/null 2>&1 || \
+                    log "$repo/#$candidate: gh issue edit FAILED (spec-needed)"
+                "$GH" issue comment "$candidate" -R "Nishfleet/$repo" \
+                    --body "epic guard (fleet-ops#4451): the senior auditor panel returned 2-of-3 FAIL, but this candidate is a dependency item of a Nish-ratified epic, so it is NOT discarded. A dependency item is judged on the epic it serves, not on standalone user-facing impact. Label set to spec-needed; scout-candidate kept so a re-spec can re-enter the queue. Failing bar(s):\n\n$reasons" \
+                    >/dev/null 2>&1 || log "$repo/#$candidate: gh issue comment FAILED (epic guard)"
+            fi
+            exit 0
+        fi
+        log "$repo/#$candidate discarded (2-of-3 FAIL)"
+        if [ "$DRY_RUN" = "1" ]; then
+            log "DRY-RUN: would add discarded + remove scout-candidate + comment for $repo/#$candidate"
+            log "discarded reasons:\n$reasons"
+        else
+            if ! "$GH" issue edit "$candidate" -R "Nishfleet/$repo" --remove-label scout-candidate --add-label discarded >/dev/null 2>&1; then
+                log "$repo/#$candidate: gh issue edit FAILED (discard)"
+                return 0  # still try to comment
+            fi
+            if ! "$GH" issue comment "$candidate" -R "Nishfleet/$repo" --body "Senior auditor panel (2-of-3) discarded this candidate. Reasons:\n\n$reasons" >/dev/null 2>&1; then
+                log "$repo/#$candidate: gh issue comment FAILED (discard)"
+            fi
+        fi
+        exit 0
+    fi
+
+    log "$repo/#$candidate remains PENDING (PASS=$pass FAIL=$fail SKIP=$skip)"
+    exit 0
+}
+
+main

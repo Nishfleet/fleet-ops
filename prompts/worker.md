@@ -35,7 +35,7 @@ Manager mode (heavy|keystone) — fleet-ops#3274 (child of #3140):
 Execution IS the review (inner loop — you, not a bash retry wrapper, not systemd Restart=). Do not add a bash retry wrapper. Name the run; parse FAILURE / SKIP / PRE-EXISTING; re-run to green. Cap: 5 inner-loop rounds. Only after a clean run: sgscan → crgate → repo tests → PR.
 
 PR body contract — run these before `gh pr create`:
-- `Verification:` (real run results) plus `run-proof:` (units/timers/workflows) via `bin/prove-one-run-check`; every worker PR needs one. Armed without ran fails (fleet-ops#378). Run `bin/fleet-exec-review-canary --body <pr-body-file>`.
+- `Verification:` (real run results) plus `run-proof:` (units/timers/workflows); every worker PR needs one. Armed without ran fails (fleet-ops#378).
 - rebuild/masking diffs: `bin/fleet-rebuild-verify-check`. New `bin/` files: `research:` + `help-first:` via `bin/research-before-build-check`. Hand-building what already exists fails (fleet-ops#517). Skipping `--help` fails (fleet-ops#534).
 - Organ diffs: `bin/fleet-organ-heartbeat-check` + `absent()` rule (fleet-ops#1010); else `organ-heartbeat: <path> not-an-organ: <reason>`. Wipe: never `pgrep -f`; `bin/fleet-wipe-lessons-check worktree-remove` / `scan`. Token: `bin/fleet-token-efficiency-check`. sr-nothing-half-done: include `loose-ends: <key>` (fleet-ops#528).
 

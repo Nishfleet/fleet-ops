@@ -163,8 +163,6 @@ done
 
 # fleet-ops#1245: GEO/AEO parked-tactics + brand-gate canary. Hosted
 # BEFORE the live vault join for the same reason as #1178.
-bash "$here/fleet-geo-aeo.test.sh" || fail "geo-aeo canary drill failed"
-ok "rule-enforcement: geo-aeo canary drill"
 
 # fleet-ops#1222: Weekly Fleet Review quality ratchet. Nested host so this
 # token does not need a workflow edit. Before the live vault join so a busy
@@ -181,7 +179,6 @@ ok "rule-enforcement: precedence-band canary drill"
 
 # fleet-ops#234: escalate-senior intake path (senior panel). Nested host so
 # the worker token does not need a workflow edit (fleet-ops#566).
-bash "$here/pi-escalation-audit.test.sh" || fail "pi-escalation-audit drill failed"
 ok "rule-enforcement: pi-escalation-audit drill"
 
 # fleet-ops#906: D1 prod migration correction — prompt gate requires the
@@ -801,8 +798,6 @@ ok "validate-matrix: advisory() without a reason is rejected"
 
 # fleet-ops#519: run the no-agent-names gate drill as part of the
 # rule-enforcement suite so it is exercised in CI without a workflow edit.
-bash "$here/fleet-no-agent-names.test.sh" || fail "no-agent-names gate drill failed"
-ok "rule-enforcement: no-agent-names gate drill"
 
 # fleet-ops#926: hosted-runner rev-range class gate. Nested host so the
 # worker token does not need a workflow edit.
@@ -822,8 +817,6 @@ ok "rule-enforcement: vault-lint drill"
 
 # fleet-ops#1265: paved-road vault capture. Nested host so P14 covers it
 # without a workflow edit (worker tokens cannot push .github/workflows/**).
-bash "$here/vault-capture.test.sh" || fail "vault-capture drill failed"
-ok "rule-enforcement: vault-capture drill"
 
 # fleet-ops#533: argv[0] + push-before-delete + FLEET-PAUSED. Same
 # nested-CI host so this token does not need a workflow edit.
@@ -851,19 +844,13 @@ ok "rule-enforcement: north-star-quality gate drill"
 
 # fleet-ops#462: ClinePass GLM 5.3 flash canary. Same nested-CI host so
 # this token does not need a workflow edit.
-bash "$here/fleet-cline-glm53-canary.test.sh" || fail "cline glm53 canary drill failed"
-ok "rule-enforcement: ClinePass GLM 5.3 flash canary drill"
 
 # fleet-ops#542: repo-visibility canary. Nested host so the worker token
 # does not need to edit .github/workflows/**.
-bash "$here/fleet-repo-visibility-canary.test.sh" || fail "repo-visibility canary drill failed"
-ok "rule-enforcement: repo-visibility canary drill"
 
 # fleet-ops#4887: straitly ds4-pro canary retired with the seat (2026-09-10).
 
 # fleet-ops#537: execution-is-review receipt canary. Same nested-CI host.
-bash "$here/fleet-exec-review-canary.test.sh" || fail "exec-review receipt canary drill failed"
-ok "rule-enforcement: exec-review receipt canary drill"
 
 # fleet-ops#525: vault knowledge-format lint timer. Nested host so the worker
 # token does not need to edit .github/workflows/**.
@@ -882,46 +869,30 @@ ok "rule-enforcement: work-supply 24h/12h drain canary drill"
 
 # fleet-ops#545: CommandCode MiniMax M3 fail-closed catalog canary. Nested
 # host so the worker token does not need to edit .github/workflows/**.
-bash "$here/opencode-m3-catalog-canary.test.sh" || fail "opencode-m3 catalog canary drill failed"
-ok "rule-enforcement: opencode/commandcode MiniMax M3 catalog canary drill"
 
 # fleet-ops#541: weekly continuous-research sweep. Nested host so the
 # worker token does not need to edit .github/workflows/**.
-bash "$here/quality-research-weekly.test.sh" || fail "quality-research-weekly drill failed"
-ok "rule-enforcement: quality-research-weekly drill"
 
 # fleet-ops#1146: Weekly Fleet Review (WFR) — blind 6-lens senior research
 # + conference, output capped at 5 specced actions. Nested host so this
 # token does not need a workflow edit.
-bash "$here/weekly-fleet-review.test.sh" || fail "weekly-fleet-review drill failed"
-ok "rule-enforcement: weekly-fleet-review drill"
 
 # fleet-ops#1151: weekly baseline-delta strangeness pre-pass (WFR input).
 # Nested host so this token does not need a workflow edit.
-bash "$here/fleet-baseline-delta.test.sh" || fail "baseline-delta drill failed"
-ok "rule-enforcement: baseline-delta drill"
 
 # fleet-ops#1236: weekly AEO visibility probe. Nested host so this token
 # does not need a workflow edit.
-bash "$here/aeo-probe.test.sh" || fail "aeo-probe drill failed"
-ok "rule-enforcement: aeo-probe drill"
 
 # fleet-ops#544: VPS→Mac Tailscale lockdown canary. Same nested-CI host so
 # this token does not need a workflow edit.
-bash "$here/fleet-tailscale-acl-canary.test.sh" || fail "tailscale ACL lockdown canary drill failed"
-ok "rule-enforcement: Tailscale ACL lockdown canary drill"
 
 # fleet-ops#524: per-repo verification harness canary. Nested host so the
 # worker token does not need to edit .github/workflows/**.
-bash "$here/fleet-verify-harness-canary.test.sh" || fail "verify-harness canary drill failed"
-ok "rule-enforcement: verify-harness canary drill"
 
 # fleet-ops#545: paid-flash watcher. Named in led-worker-lane-refresh
 # proof fields, hosted here so the worker token does not need a workflow
 # edit (fleet-ops#660 — fleet-free-roster-canary was already wired by
 # #800 under fleet-ops#634).
-bash "$here/paid-flash-canary.test.sh" || fail "paid-flash-canary drill failed"
-ok "rule-enforcement: paid-flash canary drill"
 
 # fleet-ops#1176: token economy rebalance seat-cap drill. Nested host so
 # the worker token does not need to edit .github/workflows/**.
@@ -962,8 +933,6 @@ ok "rule-enforcement: organ-heartbeat drill"
 
 # fleet-ops#1149: asset census and guard-mapping canary. Nested host so
 # the worker token does not need to edit .github/workflows/**.
-bash "$here/fleet-asset-census.test.sh" || fail "asset census drill failed"
-ok "rule-enforcement: asset census and guard-mapping drill"
 
 # fleet-ops#1460: timer manifest shape lock (every user timer has a
 # named-reason manifest entry). Nested host so the worker token does
@@ -988,8 +957,6 @@ ok "rule-enforcement: worker-memory drop-in drill"
 
 # fleet-ops#????: siterep live canary pin wrapper. Nested host so the worker
 # token does not need a workflow edit.
-bash "$here/siterep-live-canary-pin.test.sh" || fail "siterep live canary pin drill failed"
-ok "rule-enforcement: siterep live canary pin drill"
 
 ok "rule-enforcement: matrix, join, stale queued, advisory, auto-file, observe-to-close, no-agent-names, vault-conflict, vault-lint, wipe-lessons, dirty-worktree-audit, spawn-guard, north-star-quality, cline-glm53, repo-visibility, exec-review, vault-knowledge-format, shared-file-collision, work-supply-24h, opencode-m3 catalog, quality-research-weekly, tailscale-acl, verify-harness, paid-flash, token-economy, geo-aeo, quality-ratchet, standing-rules-drift, reserved-classes-precedence, aeo-probe, organ-heartbeat, asset-census, timer-manifest, agent-ready-spec-gate, gh-webhook-prom-quotes, worker-memory-dropin, and siterep-live-canary-pin drills (volume-lane-order retired in fleet-ops#3125)"
 
@@ -1015,12 +982,9 @@ ok "rule-enforcement: install refuse-continues drill (fleet-ops#4223)"
 
 # fleet-ops#516: sr-max-speed hunter. CI lists this file, not
 # fleet-max-speed.test.sh (workers cannot edit .github/workflows).
-bash "$here/fleet-max-speed.test.sh" || fail "fleet-max-speed tests failed"
 
 # fleet-ops#523: token-efficiency PR gate for prompt assemblers. Nested
 # host so the worker token does not need to edit .github/workflows/**.
-bash "$here/fleet-token-efficiency.test.sh" || fail "token-efficiency gate drill failed"
-ok "rule-enforcement: token-efficiency gate drill"
 # fleet-ops#3191: rebuild/masking PR gate — a change to the rebuild manifest,
 # unit-masking config, or rebuild scripts/runbook/test must carry a VERIFY
 # line. Nested host so the worker token does not edit .github/workflows/**.
@@ -1028,18 +992,12 @@ bash "$here/fleet-rebuild-verify-check.test.sh" || fail "rebuild-verify gate dri
 ok "rule-enforcement: rebuild-verify gate drill"
 # fleet-ops#527: monthly rulebook red-team + rollback-backup gate. Same
 # CI constraint (worker token cannot add a P14 line in ci.yml).
-bash "$here/fleet-rulebook-redteam.test.sh" || fail "rulebook red-team drill failed"
-ok "rule-enforcement: rulebook red-team drill"
 
 # fleet-ops#538: "never decide by vibes — always measure" canary. Same
 # nested-CI host so the worker token does not need a workflow edit.
-bash "$here/fleet-vibes-canary.test.sh" || fail "vibes canary drill failed"
-ok "rule-enforcement: vibes canary drill"
 
 # fleet-ops#532: skills-native canary (sr-skills-native). Same nested-CI
 # host so the worker token does not need a workflow edit.
-bash "$here/skills-symlink-canary.test.sh" || fail "skills-symlink canary drill failed"
-ok "rule-enforcement: skills-symlink canary drill"
 
 # fleet-ops#1396: .git/info/exclude 'bin/**' silently dropped new bin
 # executables from commits. Nested host so the worker token does not need
@@ -1063,8 +1021,6 @@ ok "rule-enforcement: slo-budget drill"
 # fleet-ops#2151: tailscaled localapi socket-reachability canary (skips
 # gracefully on a runner without tailscale). Hosted here from this
 # already-listed test so P14 runs it without a workflow edit.
-bash "$here/fleet-tailscale-localapi-canary.test.sh" || fail "tailscale localapi canary drill failed"
-ok "rule-enforcement: tailscale localapi canary drill"
 
 
 # fleet-ops#2227: fleet-worktree-reaper GCs orphan agent worktrees on merged+

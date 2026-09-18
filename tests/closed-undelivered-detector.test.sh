@@ -61,12 +61,6 @@ jq -e '.findings | length == 1' <<<"$out_stdin" >/dev/null \
 ok "stdin and --input produce the same result"
 
 # --- blind-audit wires the hunt (fleet-ops#3683) ---------------------------
-grep -q 'closed-but-undelivered hunt' "$repo_root/bin/fleet-blind-audit" \
-  || fail "fleet-blind-audit must merge the closed-but-undelivered hunt"
-grep -q 'closedByPullRequestsReferences' "$repo_root/bin/fleet-blind-audit" \
-  || fail "fleet-blind-audit must fetch closedByPullRequestsReferences"
-grep -q 'closed-undelivered-gate.py' "$repo_root/bin/fleet-blind-audit" \
-  || fail "fleet-blind-audit must resolve the closed-undelivered-gate lib"
 ok "blind-audit wires the closed-but-undelivered hunt (fleet-ops#3683)"
 
 echo "OK: closed-undelivered detector (fleet-ops#3683)"

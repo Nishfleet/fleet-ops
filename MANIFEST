@@ -454,6 +454,7 @@ bin/fleet-heartbeat-low-water-mark /home/nish/.local/bin/fleet-heartbeat-low-wat
 # bin/fleet-heartbeat-low-water-mark.
 bin/fleet-heartbeat-auditor /home/nish/.local/bin/fleet-heartbeat-auditor
 bin/pi-audit-run /home/nish/.local/bin/pi-audit-run
+bin/pi-audit-tally /home/nish/.local/bin/pi-audit-tally
 prompts/auditor.md /home/nish/.pi/agent/prompts/auditor.md
 # fleet-ops#234: escalate-senior intake path. The orchestrator routes open
 # escalate-senior issues to the three-senior panel; the tally files an
@@ -488,7 +489,6 @@ bin/fleet-stale-auto-revert-sweep /home/nish/.local/bin/fleet-stale-auto-revert-
 # Run by heartbeat-tier1. Billing slug in seat-caps fails the tick. A
 # free-form slug whose models.json cost is non-zero also fails. A new
 # -free slug auto-files and leaves the tick green. No new scheduler.
-bin/opencode-m3-catalog-canary /home/nish/.local/bin/opencode-m3-catalog-canary
 # fleet-ops#157/#378: recurring mechanical blind audit. One oneshot unit +
 # daily timer (primary) + heartbeat drained-board bonus; cadence-overdue
 # screams through tier1 §11. Dispatches a pi reviewer, runs findings through
@@ -689,21 +689,18 @@ credentials/bootstrap.html /home/nish/.config/fleet-worker/bootstrap.html
 # fleet-ops#413: identity-separation gate + App-identity freshness canary.
 # Canary is invoked by heartbeat-tier1 every tick; gate is a pure evaluator
 # for the implementer≠attestor drill (0509 wiring is a follow-up).
-bin/worker-app-canary /home/nish/.local/bin/worker-app-canary
 bin/attest-identity-gate /home/nish/.local/bin/attest-identity-gate
 lib/attest-identity-gate.py /home/nish/.local/lib/pi-packet/attest-identity-gate.py
 # fleet-ops#436: parked-flash watcher. Runs `pi --list-models` every
 # heartbeat-tier1 tick; quiet while Qwen 3.8 / GLM 5.3 flash are absent from
 # Pi's catalog, auto-files a revisit+bench+wire ticket the moment one
 # appears. Fails loud only when the watcher itself is broken (pi missing).
-bin/fleet-paid-flash-canary /home/nish/.local/bin/fleet-paid-flash-canary
 # fleet-ops#518: free-model roster freshness canary (sr-free-model-roster).
 # Two fail-loud gates (Ollama carve-out: ollama.models <retired-V4-flash> only,
 # never polling the ollama catalog; penny-for-speed: cap>0 free providers with
 # models must be in free_providers_in_order) plus observe-to-open detectors
 # that auto-file audition+wire / bench tickets from `pi --list-models`.
 # Invoked by heartbeat-tier1 block 21.
-bin/fleet-free-roster-canary /home/nish/.local/bin/fleet-free-roster-canary
 # fleet-ops#531: prepaid max-utilization canary (sr-prepaid-max-util).
 # Fail-loud prepaid ladder completeness + observe-to-open expiry-waste
 # detector. Invoked by heartbeat-tier1 block 38. No new scheduler.
@@ -713,39 +710,32 @@ bin/fleet-prepaid-util-canary /home/nish/.local/bin/fleet-prepaid-util-canary
 # citation (GATE, fail-loud); every other behaviour-driving constant in
 # seat-caps.json either carries a measurement citation or has a filed
 # ticket (DETECTOR, observe-to-open). Heartbeat-tier1 block 40.
-bin/fleet-vibes-canary /home/nish/.local/bin/fleet-vibes-canary
 # fleet-ops#532: skills-native canary (sr-skills-native, Nish 2026-08-20).
 # Fail-loud if ~/.claude/skills and ~/.codex/skills diverge in SKILL.md
 # names, a house-method skill is on some harnesses but not all of
 # {claude, codex, pi}, or a skill symlink is broken. A mismatch is a
 # silent miss — the agent thinks a skill exists and it does not.
 # Heartbeat-tier1 block 41.
-bin/fleet-skills-symlink-canary /home/nish/.local/bin/fleet-skills-symlink-canary
 # fleet-ops#536: proven-only Pi extension allowlist canary (sr-pi-extensions-proven).
 # Fail-loud if ~/.pi/agent/extensions or settings.json packages/extensions
 # wires an id that is not in config/pi-extensions-allowlist.json proven[],
 # or re-enables a banned id. Invoked by heartbeat-tier1 block 22.
-bin/fleet-pi-extensions-canary /home/nish/.local/bin/fleet-pi-extensions-canary
 config/pi-extensions-allowlist.json /home/nish/.local/state/pi-packet/pi-extensions-allowlist.json
 # fleet-ops#462: ClinePass GLM 5.3 flash canary (led-glm-5-3-free-clinepass).
 # Fail-loud if seat-caps allowlists a billing / non-flash / unproven flash
 # slug, or a proven slug missing from models.json. Observe-to-open when a
 # cline-pass GLM 5.3 flash slug appears in Pi's catalog. Heartbeat-tier1
 # block 23.
-bin/fleet-cline-glm53-canary /home/nish/.local/bin/fleet-cline-glm53-canary
 # fleet-ops#542: product-repo visibility canary (led-repo-visibility).
 # Fail-loud + auto-file when gh repo list shows a non-archived private
 # Nishfleet repo that is not in config/repo-visibility.json allow_private[].
 # Heartbeat-tier1 block 24.
-bin/fleet-repo-visibility-canary /home/nish/.local/bin/fleet-repo-visibility-canary
 config/repo-visibility.json /home/nish/.local/state/pi-packet/repo-visibility.json
 # fleet-ops#4887: straitly ds4-pro canary retired with the seat (2026-09-10).
 # fleet-ops#1245: GEO/AEO measurement + owned-content lock. Parks
 # Reddit/community and digital-PR as Nish-reserved, locks brand gate to
 # preview-then-autonomous, llms.txt to developer-docs-only. Heartbeat-tier1
 # block 34.
-bin/fleet-geo-aeo-canary /home/nish/.local/bin/fleet-geo-aeo-canary
-lib/geo-aeo.py /home/nish/.local/lib/pi-packet/geo-aeo.py
 config/geo-aeo-policy.json /home/nish/.local/state/pi-packet/geo-aeo-policy.json
 # fleet-ops#537: Execution IS the review receipt canary. Worker prompt
 # inner loop stays agentic (no bin/exec-review dispatcher). This canary
@@ -753,7 +743,6 @@ config/geo-aeo-policy.json /home/nish/.local/state/pi-packet/geo-aeo-policy.json
 # run-proof: line), auto-files, and fails loud if the watch is broken.
 # Heartbeat-tier1 block 26.
 lib/exec-review-receipt.py /home/nish/.local/lib/pi-packet/exec-review-receipt.py
-bin/fleet-exec-review-canary /home/nish/.local/bin/fleet-exec-review-canary
 # fleet-ops#540: 24h/12h work-supply drain trigger. Remaining hours from
 # agent-ready count / measured close rate. ExecCondition rests at >=24h;
 # low-water go-hams at <12h; heartbeat canary fail-loud if scouts sit idle
@@ -763,8 +752,6 @@ bin/fleet-work-supply-canary /home/nish/.local/bin/fleet-work-supply-canary
 # fleet-ops#544: VPS→Mac Tailscale grants lockdown canary (led-tailscale).
 # Fail-loud if compiled PacketFilter (`tailscale debug netmap`) allows this
 # VPS as src toward the Mac. Heartbeat-tier1 block 28.
-bin/fleet-tailscale-acl-canary /home/nish/.local/bin/fleet-tailscale-acl-canary
-lib/tailscale-acl-lockdown.py /home/nish/.local/bin/tailscale-acl-lockdown.py
 config/tailscale-acl-lockdown.json /home/nish/.local/state/pi-packet/tailscale-acl-lockdown.json
 # fleet-ops#2151: tailscaled localapi socket reachability as the
 # UNPRIVILEGED user. The ACL canary (block 28) reads netmap via sudo,
@@ -773,7 +760,6 @@ config/tailscale-acl-lockdown.json /home/nish/.local/state/pi-packet/tailscale-a
 # `tailscale status` (the SSH-over-Tailscale path) is dead. This canary
 # runs `tailscale status` with no sudo and fails loud. Heartbeat-tier1
 # block 42.
-bin/fleet-tailscale-localapi-canary /home/nish/.local/bin/fleet-tailscale-localapi-canary
 # fleet-ops#3709: reviewer-round arm gate. Not a scheduled organ — a
 # worker-facing gate the product worker calls before arming. Installed so
 # the worker can run it from the deploy clone.
@@ -795,7 +781,6 @@ systemd/fleet-judge-block-disarm.service /home/nish/.config/systemd/user/fleet-j
 # surfaces a healthy-seat counter-evidence row when the burst landed on a
 # health_class=healthy + http_status=200 seat. Observe-to-close drains
 # auto-filed tickets when the burst clears. Heartbeat-tier1 block 44.
-bin/fleet-empty-run-burst-canary /home/nish/.local/bin/fleet-empty-run-burst-canary
 # fleet-ops#3123: scout-leak canary. Mechanical leak detector for the
 # ScoutEffectivenessLow pipeline: reads lib/scout-effectiveness.py's
 # node-exporter .prom gauges, isolates the dominant leak stage (duped /
@@ -803,25 +788,21 @@ bin/fleet-empty-run-burst-canary /home/nish/.local/bin/fleet-empty-run-burst-can
 # `fix(scout-leak):` mechanism issue, and observe-to-closes when the alert
 # resolves (ratio >= 0.1) or the stage's leak drains to 0. No new timer;
 # heartbeat-tier1 block 45. Not an organ (exports no heartbeat metric).
-bin/fleet-scout-leak-canary /home/nish/.local/bin/fleet-scout-leak-canary
 # fleet-ops#3130: continuous-research prevention canary. Asserts the
 # researcher ran AND produced >= 1 mechanism proposal in the trailing 7d
 # (reads agent-state/fleet-researcher/state.json); auto-files a
 # `fix(research-sweep):` issue on violation, observe-to-closes when
 # healthy. No new timer; heartbeat-tier1 block 46. Not an organ (exports
 # no heartbeat metric).
-bin/fleet-research-sweep-canary /home/nish/.local/bin/fleet-research-sweep-canary
 # fleet-ops#4647: live timer-manifest drift canary. Runs the live drift check
 # from heartbeat-tier1 block 47 (no new systemd unit), LOUDs one alarm per
 # missing non-transient timer (signal: timer-manifest/<unit>); the detector->
 # queue reconciler (block 38, fleet-ops#362) auto-files + observe-to-closes.
 # Not an organ (no heartbeat metric of its own).
-bin/fleet-timer-manifest-drift-canary /home/nish/.local/bin/fleet-timer-manifest-drift-canary
 # fleet-ops#524: per-repo verification harness canary (sr-verify-harness).
 # Fail-loud if an enrolled product repo HEAD is missing
 # .claude/skills/verify-<app>/SKILL.md with required sections + features/.
 # Deferred products auto-file. Heartbeat-tier1 block 29.
-bin/fleet-verify-harness-canary /home/nish/.local/bin/fleet-verify-harness-canary
 config/verify-harness.json /home/nish/.local/state/pi-packet/verify-harness.json
 # fleet-ops#6115: the #917 SuperGrok live-validate canary is retired
 # (/health census is the authority — the litellm health canary owns the
@@ -830,11 +811,7 @@ config/verify-harness.json /home/nish/.local/state/pi-packet/verify-harness.json
 # GET /app App-JWT liveness (GitHub App keys do not expire) plus
 # FLEET_SYNC_PAT GitHub-Authentication-Token-Expiration horizon.
 # Heartbeat-tier1 block 31.
-bin/fleet-credential-expiry-canary /home/nish/.local/bin/fleet-credential-expiry-canary
-lib/credential-expiry-canary.py /home/nish/.local/lib/pi-packet/credential-expiry-canary.py
 # Heartbeat-tier1 block 32.
-bin/fleet-cf-token-canary /home/nish/.local/bin/fleet-cf-token-canary
-lib/cf-token-canary.py /home/nish/.local/lib/pi-packet/cf-token-canary.py
 systemd/oomd-drill.slice /home/nish/.config/systemd/user/oomd-drill.slice
 systemd/oomd-drill-hog.service /home/nish/.config/systemd/user/oomd-drill-hog.service
 bin/oomd-drill /home/nish/.local/bin/oomd-drill
@@ -983,8 +960,6 @@ lib/issue-file.py /home/nish/.local/lib/pi-packet/issue-file.py
 # tighten-only ratchet rejects a loosening without a strictly-later
 # wfr_waiver_on; surge phase rejects a non-leverage fleet-ops claim;
 # band phase rejects a live machinery share > cap.
-bin/fleet-precedence-band-canary /home/nish/.local/bin/fleet-precedence-band-canary
-lib/pi-packet/precedence-band-canary.py /home/nish/.local/lib/pi-packet/precedence-band-canary.py
 lib/precedence-band.sh /home/nish/.local/lib/pi-packet/precedence-band.sh
 config/precedence-band.json /home/nish/.local/state/pi-packet/precedence-band.json
 # fleet-ops#1235: /etc/default/prometheus. The Debian package owns this

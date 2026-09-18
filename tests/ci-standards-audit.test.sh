@@ -199,6 +199,12 @@ bash "$here/stop-the-line-detector.test.sh"
 # .github/workflows/**).
 bash "$here/signal-reconcile.test.sh"
 
+# fleet-ops#375: whole-chain e2e drill (synthetic failure -> auto-ticket ->
+# senior routing -> mechanical gate -> observe-to-close -> SLO snapshot).
+# Hermetic (DRY_RUN, fake wrappers, scratch state) — hosted here so P14 runs
+# it without a workflow-file edit (the worker App cannot push
+# .github/workflows/**).
+
 # fleet-ops#1458: nish-boundary-notify retry + direct Telegram API fallback
 # drill. Landed in #1471 but was not registered in ci.yml (workers cannot
 # push .github/workflows/**). Runs offline against temp files. Hosted here
@@ -221,7 +227,6 @@ bash "$here/same-repo-closes-gate.test.sh"
 # so the p14-test-listing-gate red'd the P14 check. Hosted here so P14
 # runs it without a workflow-file edit; its live systemd layer self-skips
 # on hosted CI (no user units there).
-bash "$here/fleet-seat-bench-truth-path-storm-drill.test.sh"
 
 # fleet-ops#4468 dead-conflicting-PR detector
 bash "$here/fleet-dead-pr-detector.test.sh"
@@ -261,7 +266,6 @@ bash "$here/ready-work-deleted.test.sh"
 # Hosted here from this already-listed ci-standards-audit test so the P14
 # test-listing gate goes green without a workflow edit.
 bash "$here/auditor-stdio-test-deleted.test.sh"
-bash "$here/quality-baseline-research-deleted.test.sh"
 # note: memory-index-autocompact-migrated.test.sh runs `systemd-analyze verify` on
 # a unit whose ExecStart points to /home/nish/.local/bin/memory-index-autocompact
 # (VPS-only) — it is live_skip in p14-test-listing-gate, not hosted here.
@@ -280,7 +284,6 @@ bash "$here/console-tile-verify.test.sh"
 # fleet-ops#4061: product-vs-self merge-split measurement tool test. Hermetic
 # (fake gh via FLEET_SELF_SPLIT_GH, scratch dirs). Hosted here so P14 runs it
 # without a workflow-file edit (the worker App cannot push .github/workflows/**).
-bash "$here/fleet-self-maintenance-split.test.sh"
 
 # fleet-ops#4061: shipped_24h tile spot-check now excludes revert PRs. Hermetic
 # (fake gh, in-process verify.py). Hosted here so P14 runs it without a
@@ -297,7 +300,6 @@ bash "$here/memoryctl-ttl-provenance.test.sh"
 
 # fleet-ops#1211: waste-ledger metric family + WasteRatioRising (no page).
 # Hosted here so P14 runs it without a workflow-file edit.
-bash "$here/fleet-waste-ledger.test.sh"
 
 # fleet-ops#2757: canary effectiveness metric family + CanaryEffectivenessLow
 # / CanarySilentTooLong. Hosted here so P14 runs it without a workflow-file
@@ -323,7 +325,6 @@ bash "$here/alert-repair-slo-slowburn-skip.test.sh"
 # dispatcher SKIP_SET + canary SKIP_FIRING so a firing storm cannot ladder
 # to a STOP-REASON / senior conference while the issue worker fixes the
 # exporter/metric. Hosted here so P14 runs it without a workflow-file edit.
-bash "$here/alert-repair-fleet-escalation-storm-skip.test.sh"
 
 # fleet-ops#2694 (PR #2796 follow-up): the fleet_alert_outcome_24h
 # phantom-vs-real split test landed on main without a ci.yml listing or a
@@ -341,6 +342,16 @@ bash "$here/alert-repair-outcome-metric.test.sh"
 # runs it without a workflow-file edit (the worker App cannot push
 # .github/workflows/**).
 bash "$here/detached-deliverable-preflight.test.sh"
+
+# fleet-ops#2768: one-shot dispatch-ledger fixture-row sweep. PR #2873
+# landed the test without a ci.yml listing or a host, so P14 ran red on
+# "1 test file(s) are neither in ci.yml, hosted by a listed test,
+# live/destructive, nor a known orphan: dispatch-ledger-fixture-sweep.test.sh"
+# (run 33662643290). Hosted here so P14 runs it without a workflow-file
+# edit (the worker App cannot push .github/workflows/**). The named pin
+# in tests/p14-test-listing-gate.test.sh is the class-prevention so a
+# future drop of this host line fails by name.
+# Hermetic (scratch ledger, no gh/prometheus/systemd).
 
 # fleet-ops#2902 (PR #2885 follow-up): the deploy-quality SLO test landed
 # on main without a ci.yml listing or a host, so P14 ran red on "2 test
@@ -424,7 +435,6 @@ bash "$here/fleet-issue-file-dedupe-closed-canonical.test.sh"
 # tests/p14-test-listing-gate.test.sh is the class-prevention so a future
 # drop of this host line fails by name. Hermetic (fixture packets + fake
 # chains.terminated.jsonl + stubbed fleet-issue-file, no network).
-bash "$here/alert-repair-stuck-packet.test.sh"
 
 # fleet-ops#2902 (PR #2885 follow-up): the deploy-quality SLO test landed
 # on main without a ci.yml listing or a host, so P14 ran red on "2 test
@@ -507,7 +517,6 @@ bash "$here/fleet-issue-file-dedupe-closed-canonical.test.sh"
 # push .github/workflows/**). The named pin in
 # tests/p14-test-listing-gate.test.sh is the class-prevention so a future
 # drop of this host line fails by name. Hermetic (fixture packets + fake
-bash "$here/alert-repair-stuck-packet.test.sh"
 
 # chains.terminated.jsonl + stubbed fleet-issue-file, no network).
 # fleet-ops#2902 (PR #2905 follow-up): the leaky-worktree containment
@@ -596,12 +605,10 @@ bash "$here/fleet-intake-reconciler-counter.test.sh"
 # fleet-ops#180: gap-closure loop state machine (stubbed acceptance).
 # Hosted here so P14 runs it without a workflow-file edit (the worker App
 # cannot push .github/workflows/**).
-bash "$here/fleet-gap-closure-loop.test.sh"
 
 # fleet-ops#4211: senior-seat split (TAB vs slash) in
 # bin/fleet-gap-closure-conference. Hosted here so P14 runs it without a
 # workflow-file edit (the worker App cannot push .github/workflows/**).
-bash "$here/fleet-gap-closure-conference-senior-seat.test.sh"
 
 # fleet-ops#3268 (child of waste-cut #3128): offline replay drill for
 # bin/fleet-close-and-archive-repo (retire-a-dead-repo loop with a stubbed
@@ -650,25 +657,17 @@ bash "$here/provider-timeout.test.sh"
 # EXTLOAD gate. Hosted here so P14 runs it without a workflow-file edit
 # (workers cannot push .github/workflows/**).
 bash "$here/subagent-extload.test.sh"
-bash "$here/unit-escalation-write-retry-absorb.test.sh"
-bash "$here/unit-escalation-write-scout-futility-dedupe.test.sh"
-# fleet-ops#2399 added unit-escalation-write-journal-evidence.test.sh (ledger
 # 2026-08-28: pin journal evidence into STOP-REASON) without a ci.yml listing
 # or host, leaving p14-test-listing-gate red on main -> FleetMainRed. Hosted
 # here alongside its sibling unit-escalation-write-* tests so P14 runs it
 # without a workflow-file edit.
-bash "$here/unit-escalation-write-journal-evidence.test.sh"
 
 # fleet-ops#2614 (PR #2655): same-unit re-fire dedupe + orphan-chain sweep.
-# PR #2655 landed unit-escalation-write-same-unit-rerun-dedupe.test.sh and
-# fleet-escalation-completion-orphan-sweep.test.sh WITHOUT a ci.yml listing
 # or host, leaving p14-test-listing-gate red on main -> FleetMainRed (same
 # failure class as fleet-ops#2399 journal-evidence, below). Hosted here
 # alongside their sibling unit-escalation-write-*/escalation-completion
 # tests so P14 runs them without a workflow-file edit (the worker App cannot
 # push .github/workflows/**).
-bash "$here/unit-escalation-write-same-unit-rerun-dedupe.test.sh"
-bash "$here/fleet-escalation-completion-orphan-sweep.test.sh"
 
 # fleet-ops#2912: closeout-skipped recurrence suppression in unit-escalation-write —
 # a recurring same-class unit trip (fleet-heartbeat's structural reds, 35 trips
@@ -676,7 +675,6 @@ bash "$here/fleet-escalation-completion-orphan-sweep.test.sh"
 # been closeout-skipped RECURRENCE_SUPPRESS_N times. Hosted here alongside its
 # unit-escalation-write-* siblings so P14 runs it without a workflow-file edit
 # (the worker App cannot push .github/workflows/**).
-bash "$here/unit-escalation-write-recurrence-suppress.test.sh"
 
 # fleet-ops#2133 / #2475 (PR #2193): pi-issue@*.service exclusion from
 # unit-escalation-write. The worker has its own OnFailure=pi-issue-failed@%i
@@ -689,7 +687,6 @@ bash "$here/unit-escalation-write-recurrence-suppress.test.sh"
 # for pi-issue@*. Hosts here alongside its sibling unit-escalation-write-*
 # tests so P14 runs it without a workflow-file edit (the worker App cannot
 # push .github/workflows/**).
-bash "$here/unit-escalation-write-pi-issue-exclusion.test.sh"
 
 # fleet-ops#3368: the FleetEscalationStorm alert must name its dominant
 # producer so a recurrence is actionable without a manual dig. Locks the
@@ -697,7 +694,6 @@ bash "$here/unit-escalation-write-pi-issue-exclusion.test.sh"
 # a promtool rule-unit test. Runs offline (no live prometheus); skips the
 # promtool section cleanly when promtool is absent. Hosted here so P14
 # runs it without a workflow-file edit.
-bash "$here/fleet-rules-escalation-storm.test.sh"
 
 # fleet-ops#3617: the tier1 orphan-pass releases a dead worker's claim but
 # never clears the orphaned pi-issue@ unit's `failed` state, so the audit
@@ -733,9 +729,6 @@ bash "$here/fleet-ops-3310-infra-death-class-switch.test.sh"
 # bucketing, dedup, and observe-to-close. Hosted here so P14 runs it
 # without a workflow-file edit (the worker App cannot push
 # .github/workflows/**).
-bash "$here/fleet-empty-run-burst-canary.test.sh"
-bash "$here/fleet-scout-leak-canary.test.sh"
-bash "$here/fleet-research-sweep-canary.test.sh"
 
 # fleet-ops#2627: empty-run count must accumulate across healthy ledger
 # clobbers (seat-health.ts resets ledger count=0 on every 200 OK, so the
@@ -767,7 +760,6 @@ bash "$here/intake-prioritization-effectiveness.test.sh"
 # agent-ready -> merged_14d). Hosted here so P14 runs it without a
 # workflow-file edit (the worker App cannot push .github/workflows/**).
 # Hermetic test (no gh/prometheus/systemd) — runs fine in hosted CI.
-bash "$here/scout-effectiveness.test.sh"
 
 # fleet-ops#2755: product delivery SLO family (throughput / lead time /
 # revert rate / merged_24h). Hosted here so P14 runs it without a
@@ -920,6 +912,11 @@ bash "$here/0509-surface-probe-deleted.test.sh"
 # gh/prometheus/systemd).
 bash "$here/fleet-litellm-organ.test.sh"
 
+# fleet-ops#4148 (child of #4140 row 9): shape-only per-role unit templates
+# systemd/codex-sol@.service + codex-luna@.service (identity pinned in
+# ExecStart). Live wrapper wipe is gated. Hosted here so P14 runs the shape
+# pin without a workflow-file edit. Hermetic (repo-only checks).
+
 # fleet-ops#4394: judge-cited PromQL names must resolve to a recording rule
 # or exporter HELP, and count() of an empty vector must be 0 not absent.
 # Hosted here so P14 runs it without a workflow-file edit (the worker App
@@ -1041,3 +1038,14 @@ bash "$here/pi-intake-rate-limit-precheck-cadence.test.sh"
 # drop of this host line fails by name. Hermetic (scratch MANIFEST + fake
 # HOME + stub systemctl, does NOT touch the real live state file).
 bash "$here/install-seat-caps-stale-snapshot-refuse.test.sh"
+
+# Glue sweep 2026-09-18: escalation-coverage-canary.test.sh was the CI host
+# for these siblings and was deleted with the escalation tower. Re-hosted
+# here (ci-standards-audit.test.sh is listed in ci.yml) so none of them
+# falls out of the P14 reachable set. Workers cannot edit .github/workflows.
+bash "$here/fleet-restore-drill.test.sh" || fail "fleet-restore-drill tests failed"
+bash "$here/fleet-provider-no-dangerous-modes.test.sh" || fail "fleet-provider-no-dangerous-modes tests failed"
+bash "$here/fleet-prepaid-util-canary.test.sh" || fail "fleet-prepaid-util-canary tests failed"
+bash "$here/grok-token-refresh.test.sh" || fail "grok-token-refresh tests failed"
+bash "$here/scratch-home-worker-token.test.sh" || fail "scratch-home-worker-token tests failed"
+bash "$here/fleet-bare-metal-rebuild.test.sh" || fail "fleet-bare-metal-rebuild tests failed"

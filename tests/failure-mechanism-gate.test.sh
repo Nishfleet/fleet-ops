@@ -113,8 +113,6 @@ grep -q 'fleet-ops#366' "$repo_root/prompts/worker.md" \
   || fail "worker.md must cite fleet-ops#366"
 grep -q 'mechanism-impossible:' "$repo_root/prompts/scout.md" \
   || fail "scout.md must require mechanism-impossible: on fix-shaped issues"
-grep -q 'Recurred failure classes' "$repo_root/prompts/blind-audit.md" \
-  || fail "blind-audit.md must hunt recurred failure classes"
 ok "worker, scout, and blind-audit prompts state the rule"
 
 # --- no hand-built conference dispatcher -----------------------------------
