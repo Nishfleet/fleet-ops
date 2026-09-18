@@ -220,8 +220,6 @@ bin/pi-detached-deadman /home/nish/.local/bin/pi-detached-deadman
 # fleet-ops#4266: ausearch wrapper answering "who stopped it" (auditd).
 # fleet-ops#1204: ExecStopPost salvage — bank a dying worker's dirty
 # worktree onto wip/<unit>-<ts>. Weekly --gc is the WIP branch lifecycle.
-bin/pi-salvage-worktree /home/nish/.local/bin/pi-salvage-worktree
-systemd/vps-weekly-update.service.d/20-wip-gc.conf /home/nish/.config/systemd/user/vps-weekly-update.service.d/20-wip-gc.conf
 # fleet-ops#1213: local bare mirrors + --reference-if-able clones.
 # Updated on the existing 5-min fleet-metrics-export tick (no new timer).
 bin/git-mirror-update /home/nish/.local/bin/git-mirror-update
@@ -491,9 +489,6 @@ systemd/fleet-restore-drill.service.d/10-keystone-hc.conf /home/nish/.config/sys
 # dry-run capable, never deletes blind. NOT a fleet organ (no heartbeat
 # metric exported) — a plain maintenance timer, so no absent() rule or
 # fleet-organs.json entry.
-bin/fleet-worktree-reaper /home/nish/.local/bin/fleet-worktree-reaper
-systemd/fleet-worktree-reaper.service /home/nish/.config/systemd/user/fleet-worktree-reaper.service
-systemd/fleet-worktree-reaper.timer /home/nish/.config/systemd/user/fleet-worktree-reaper.timer
 # fleet-ops#3270: four GitHub-reading heartbeat sections moved behind
 # webhook triggers (gh-webhook-receiver dispatches to these .service
 # units). Each has a backstop .timer for webhooks that never arrive.

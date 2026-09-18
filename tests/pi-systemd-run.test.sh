@@ -34,7 +34,7 @@ ok "dry-run is systemd-run --user --collect --no-block"
 printf '%s\n' "$out" | grep -q 'ExecStopPost=' || fail "dry-run must set ExecStopPost (fleet-ops#1204): $out"
 printf '%s\n' "$out" | grep -q 'TimeoutStopSec=180' || fail "dry-run must set TimeoutStopSec=180: $out"
 printf '%s\n' "$out" | grep -q 'RuntimeMaxSec=90min' || fail "dry-run must set RuntimeMaxSec from default --deadline 90 (fleet-ops#3328): $out"
-ok "dry-run wires ExecStopPost salvage + RuntimeMaxSec"
+ok "dry-run wires ExecStopPost dead-man + RuntimeMaxSec"
 
 # fleet-ops#4266: the dead-man rail must be armed on EVERY launch.
 printf '%s\n' "$out" | grep -q 'OnFailure=pi-packet-failed@issue26-shape.service.service' \
@@ -198,10 +198,6 @@ else
     ok "unit still live after launching parent exited (state=$state)"
 fi
 
-# fleet-ops#1204: nested so hosted CI runs salvage tests without a workflow edit
-# (nishfleet-worker cannot push .github/workflows/**). Hermetic cases do not
-# need user systemd; the nested file skips its own live SIGTERM drill.
-bash "$here/pi-salvage-worktree.test.sh" || fail "pi-salvage-worktree tests failed"
 
 # fleet-ops#1213: nested so hosted CI runs git-mirror-update tests without
 # a workflow edit (nishfleet-worker cannot push .github/workflows/**).

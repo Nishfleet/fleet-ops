@@ -103,22 +103,20 @@ unit, reason = first_fireable(mod.dispatch("workflow_run", "completed", "", "fle
                             "success", dry=False))
 assert unit == "fleet-deploy-check.service", unit
 
-# pull_request/closed (merged) → fleet-worktree-reaper (fleet-ops#3269)
+# pull_request/closed (merged) → fleet-merged-pr-close
 # AND fleet-merged-pr-close (fleet-ops#3270) — two-unit fan-out.
 pairs = mod.dispatch("pull_request", "closed", "", "fleet-ops",
                      "", dry=False, pr_merged="true")
 fireable = [u for u, _ in pairs if u]
-assert "fleet-worktree-reaper.service" in fireable, fireable
 assert "fleet-merged-pr-close.service" in fireable, fireable
 assert any("pull_request/closed" in r for _, r in pairs), pairs
 
-# pull_request/closed (not merged) → fleet-worktree-reaper + merged-pr-close
+# pull_request/closed (not merged) → fleet-merged-pr-close
 # (both terminal states leave a claim worktree AND need a close trailer
 # check; fleet-ops#3023 + #3270).
 pairs = mod.dispatch("pull_request", "closed", "", "fleet-ops",
                      "", dry=False, pr_merged="false")
 fireable = [u for u, _ in pairs if u]
-assert "fleet-worktree-reaper.service" in fireable, fireable
 assert "fleet-merged-pr-close.service" in fireable, fireable
 
 # pull_request/opened → ignored (fleet-ops#4146: the loose-ends canary
@@ -302,7 +300,7 @@ echo "$body_resp" | grep -q '"fleet-deploy-check.service"' \
     || fail "7: workflow_run should dispatch fleet-deploy-check: $body_resp"
 ok "7: workflow_run/completed/success → fleet-deploy-check.service"
 
-# --- 7b: pull_request/closed (merged) → fleet-worktree-reaper (fleet-ops#3269) ---
+# --- 7b: pull_request/closed (merged) → fleet-merged-pr-close ---
 body_pr='{"action":"closed","pull_request":{"merged":true,"number":3269},"repository":{"name":"fleet-ops"}}'
 sig_pr="sha256=$(printf '%s' "$body_pr" | openssl dgst -sha256 -hmac "$secret" -hex | awk '{print $NF}')"
 resp="$(curl -sS -X POST "http://127.0.0.1:$TEST_PORT/webhook" \
@@ -315,11 +313,9 @@ status="$(printf '%s' "$resp" | tail -n1)"
 body_resp="$(printf '%s' "$resp" | head -n-1)"
 [[ "$status" == "200" ]] || fail "7b: pull_request/closed got $status; body=$body_resp"
 # fleet-ops#3270: this event fans out to two units (reaper + merged-pr-close).
-echo "$body_resp" | grep -q '"fleet-worktree-reaper.service"' \
-    || fail "7b: pull_request/closed should dispatch fleet-worktree-reaper: $body_resp"
 echo "$body_resp" | grep -q '"fleet-merged-pr-close.service"' \
     || fail "7b: pull_request/closed should dispatch fleet-merged-pr-close: $body_resp"
-ok "7b: pull_request/closed (merged) → [fleet-worktree-reaper, fleet-merged-pr-close] (DRY=1)"
+ok "7b: pull_request/closed (merged) → [fleet-merged-pr-close] (DRY=1)"
 
 # --- 7c: pull_request/opened → ignored (fleet-ops#4146). The loose-ends
 # canary was retired; the >24h-without-merge class is GitHub's own

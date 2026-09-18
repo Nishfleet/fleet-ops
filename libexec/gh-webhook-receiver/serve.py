@@ -40,7 +40,6 @@ issues, action=closed
 workflow_run, action=completed, conclusion=success
         → start fleet-deploy-check.service
 pull_request, action=closed (merged OR closed)
-        → start fleet-worktree-reaper.service  (fleet-ops#3269)
         + start fleet-merged-pr-close.service  (fleet-ops#3270)
 ping    → no-op (200)
 
@@ -232,8 +231,6 @@ def dispatch(event: str, action: str, label: str, repo: str, conclusion: str,
             # terminal-state side effect, and the helper is cheap
             # (one `gh issue list` + one `gh pr list` per enrolled repo).
             return [
-                ("fleet-worktree-reaper.service",
-                 f"pull_request/{action}/merged={pr_merged} → fleet-worktree-reaper"),
                 ("fleet-merged-pr-close.service",
                  f"pull_request/{action}/merged={pr_merged} → fleet-merged-pr-close"),
             ]

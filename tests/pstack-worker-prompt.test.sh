@@ -42,11 +42,9 @@ grep -q 'do NOT spawn Task, arena, architect, swarm, or interrogate' "$prompt" \
   || fail "worker.md must forbid Task/arena/architect/swarm/interrogate spawn"
 ok "depth-1 spawn-guard forbids fan-out"
 
-grep -q 'bin/pi-salvage-worktree' "$prompt" \
-  || fail "worker.md must keep salvage as fleet-owned"
 grep -q 'Claim branch' "$prompt" \
   || fail "worker.md must keep the claim branch as fleet-owned"
-ok "keeps claim branch and salvage"
+ok "keeps claim branch"
 
 grep -q 'Ignore pstack babysit, shipping, orchestrate, autopilot-' "$prompt" \
   || fail "worker.md must skip Graphite playbooks"

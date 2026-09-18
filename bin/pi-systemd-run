@@ -26,7 +26,7 @@
 #   --dry-run              Print the systemd-run argv; do not start anything.
 #   --unit NAME            Transient unit name (default: pi-job-<ts>-<pid>).
 #   --working-directory D  Default: /home/nish. MUST be the git worktree to
-#                          salvage on a non-clean stop (fleet-ops#1204).
+#                          the packet runs in.
 #   --stdin FILE           StandardInput=file: (absolute path). Packet on stdin.
 #   --deadline MIN         Dispatch deadline in minutes (default 90). The
 #                          completion canary re-dispatches entries still open
@@ -72,10 +72,7 @@
 #   2. ExecStartPost keystone-hc-ping detached start — /start ping with the
 #      per-run rid on the dedicated HC_URL_DETACHED check (silent skip when
 #      the URL is not provisioned yet).
-#   3. ExecStopPost <salvage> + <pi-detached-deadman> (two separate
-#      --property=ExecStopPost= directives; a `;`-joined value is NOT split
-#      by --property= — proven live 2026-09-07 — and would 203/EXEC) — the
-#      verdict hook.
+#   3. ExecStopPost <pi-detached-deadman> — the verdict hook.
 #      SERVICE_RESULT != success OR (--deliverable set AND file absent OR
 #      empty) = died: /fail ping + fleet_detached_job_died{unit,...} 1
 #      textfile gauge + dispatch-ledger verdict row + exit NONZERO so the
@@ -96,11 +93,6 @@
 #   $XDG_RUNTIME_DIR/systemd/user is honoured for transient units.
 #   The dead-man removes the drop-in dir at stop.
 #
-# Salvage (fleet-ops#1204): every real dispatch sets ExecStopPost to
-# pi-salvage-worktree and TimeoutStopSec=180 so a SIGTERM/SIGKILL/nonzero
-# exit banks a dirty worktree onto wip/<unit>-<ts>. --working-directory is
-# the worktree contract. PI_SALVAGE_DISABLE=1 omits the hook (tests).
-#
 # Dispatch ledger (fleet-ops#1009): every real dispatch with --stdin appends
 # one JSONL entry to $FLEET_DISPATCH_LEDGER (default
 # $AGENT_STATE/dispatch-ledger.jsonl): {id, chain_id, hop, ts, unit,
@@ -114,11 +106,10 @@
 # appended by fleet-completion-canary; the last line per id wins.
 #
 # Environment overrides (tests):
-#   SYSTEMD_RUN, SYSTEMCTL, PI_SALVAGE_BIN, PI_SALVAGE_DISABLE, AGENT_STATE,
+#   SYSTEMD_RUN, SYSTEMCTL, AGENT_STATE,
 #   FLEET_DISPATCH_LEDGER, FLEET_DISPATCH_PACKET_DIR,
 #   FLEET_DISPATCH_LEDGER_NO_WRITE (1 = skip the append, for tests that
-#   only want the systemd-run shape). Salvage seams: PI_SALVAGE_WORKTREE_ROOT
-#   (fleet-ops#5800 sibling sweep). Dead-man
+#   only want the systemd-run shape). Dead-man
 #   seams: PI_DEADMAN_BIN, PI_DEADMAN_TEXTFILE, PI_DEADMAN_DRYRUN,
 #   KEYSTONE_HC_ENV,
 #   PI_RESUME_DROPIN_DISABLE (1 = skip the no-resume drop-in, for tests),
@@ -326,7 +317,6 @@ if [[ "$dry_run" != "1" ]]; then
 fi
 
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-salvage_bin="${PI_SALVAGE_BIN:-$here/pi-salvage-worktree}"
 deadman_bin="${PI_DEADMAN_BIN:-$here/pi-detached-deadman}"
 ping_bin="${PI_DEADMAN_PING_BIN:-$here/keystone-hc-ping}"
 
@@ -349,24 +339,6 @@ cmd=(
 )
 if [[ -n "${GH_TOKEN:-}" ]]; then
     cmd+=(--setenv=GH_TOKEN)
-fi
-if [[ "${PI_SALVAGE_DISABLE:-0}" != "1" ]]; then
-    # ExecStopPost still runs after SIGKILL of the main PID (proven
-    # 2026-08-27: SERVICE_RESULT=signal EXIT_CODE=killed EXIT_STATUS=KILL).
-    # TimeoutStopSec covers the stop job so commit+push is not aborted at
-    # the 90s user default.
-    cmd+=(--setenv=PI_SALVAGE_WORKDIR="$workdir")
-    cmd+=(--setenv=PI_SALVAGE_UNIT="$unit")
-    # Inherit test/runtime overrides so ExecStopPost writes the same ledger
-    # and scans the same worktree root (fleet-ops#5800 sibling sweep).
-    for v in AGENT_STATE FLEET_DISPATCH_LEDGER PI_SALVAGE_SKIP_SGSCAN \
-             PI_SALVAGE_NOW PI_SALVAGE_REMOTE PI_SALVAGE_SCAN \
-             PI_SALVAGE_WORKTREE_ROOT \
-             SYSTEMCTL; do
-        if [[ -n "${!v:-}" ]]; then
-            cmd+=(--setenv="$v")
-        fi
-    done
 fi
 # TimeoutStopSec always: the dead-man verdict (ping + textfile + possibly
 # STOP-REASON) may push past the 90s user default too.
@@ -422,21 +394,12 @@ if [[ "${PI_SYSTEMD_RUN_NO_PACKET_FAILED:-0}" != "1" ]]; then
 fi
 [[ -n "$_onfailure" ]] && cmd+=(--property="OnFailure=${_onfailure}")
 cmd+=(--property="ExecStartPost=${ping_bin} detached start")
-if [[ "${PI_SALVAGE_DISABLE:-0}" != "1" ]]; then
-    # Repeated --property=ExecStopPost= APPENDS (proven live 2026-09-07): a
-    # `;`-joined value is NOT split by --property= and execs as one literal
-    # path (203/EXEC). Two directives: salvage the worktree first, then the
-    # dead-man verdict. Salvage always exits 0; the dead-man exits nonzero
-    # on a `died` verdict so a clean stop still lands the unit failed
-    # (fleet-ops#5456 — that nonzero is the deliverable contract).
-    cmd+=(--property="ExecStopPost=${salvage_bin}")
-fi
 cmd+=(--property="ExecStopPost=${deadman_bin}")
 # CLOCK_RUN / dispatch-plane deadline is a kill, not just a ledger field.
 # Type=simple (systemd-run default) honours RuntimeMaxSec; a hung pi worker
 # then SIGTERMs at the budget instead of sitting ActiveState=active forever
 # (live fleet-ops#3328: alert-repair-FleetMainRed-20260904T161106Z had no
-# cap and held hop=run past 70 min). TimeoutStopSec=180 still covers salvage.
+# cap and held hop=run past 70 min).
 cmd+=(--property="RuntimeMaxSec=${deadline_min}min")
 
 # --- Dispatch ledger: copy the packet into agent-state BEFORE building the --
@@ -445,8 +408,6 @@ cmd+=(--property="RuntimeMaxSec=${deadline_min}min")
 # and (b) a failed copy never leaves a running unit with no re-dispatchable
 # file. The copy is the packet_path recorded in the ledger; the unit's
 # StandardInput points at it so re-dispatch re-issues the SAME file.
-# PI_SALVAGE_PACKET still points at the ORIGINAL file so the ExecStopPost
-# salvage stamp is visible to the caller (and tests).
 packet_path=""
 # fleet-ops#5456: keep the dispatch_id generated above — it is the hc.io rid
 # AND the id the dead-man verdict row joins on. Resetting it here used to
@@ -471,9 +432,6 @@ if [[ "$dry_run" != "1" && "${FLEET_DISPATCH_LEDGER_NO_WRITE:-0}" != "1" && -n "
     stdin_file="$packet_path"
 fi
 
-if [[ "${PI_SALVAGE_DISABLE:-0}" != "1" && -n "$original_stdin" ]]; then
-    cmd+=(--setenv=PI_SALVAGE_PACKET="$original_stdin")
-fi
 if [[ -n "$stdin_file" ]]; then
     cmd+=(--property="StandardInput=file:${stdin_file}")
 fi

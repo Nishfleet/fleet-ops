@@ -66,11 +66,6 @@ NON_ROLE_UNIT_PREFIXES = (
     # a judging role.
     "fleet-baseline-delta",
     "fleet-metrics-export",
-    # fleet-ops#2227: fleet-worktree-reaper GCs orphan agent worktrees on
-    # merged+terminal claims (deletes git worktrees, runs no model, owns no
-    # prompt, produces no work items). Deterministic plumbing, not a role;
-    # its gate is tests/fleet-worktree-reaper.test.sh.
-    "fleet-worktree-reaper",
     # fleet-ops#3270: the three heartbeat sections that only read GitHub
     # state (lifecycle-label-sweep, merged-pr observe-to-close,
     # close-duplicates) moved behind webhook triggers.
@@ -78,7 +73,7 @@ NON_ROLE_UNIT_PREFIXES = (
     # (lifecycle-label-sweep, fleet-merged-pr-close,
     # fleet-issue-file close-duplicates); they
     # run no model, own no prompt and produce no work items — same
-    # dispatch-plumbing class as fleet-worktree-reaper above. Their own
+    # dispatch-plumbing class. Their own
     # gates are the per-helper tests (tests/lifecycle-label-sweep.test.sh,
     # tests/fleet-merged-pr-close.test.sh) plus the absent() rule on each
     # unit's heartbeat metric.
