@@ -537,6 +537,63 @@
         "supportsReasoningEffort": true
       },
       "_comment_devpass": "2026-09-11 seat wire-up: llmgateway.io DevPass $29/mo subscription that mints $87/mo of METERED credits \u2014 a fixed credit pool that runs out (no open-ended billing), so class=prepaid-quota in seat-caps.json and max concurrency 1 everywhere (paid lanes trickle, never flood). EXACTLY ONE wired id per Nish 2026-09-11: glm-5.3-flash, the cheapest compliant flash on DevPass; kimi-k3, glm-5.2, minimax-m3 deliberately NOT wired. The catalog also lists deepseek-v4-flash \u2014 BANNED fleet-wide (Nish 2026-09-10), deliberately not wired. Live /v1/models probe 2026-09-11: context_length 1048576, max_output 131072, text+image, reasoning+reasoning_efforts supported; headline pricing $0.088/M in / $0.25/M out / $0.025/M cache-read (cheapest upstream scx-ai-gp; modal upstream zai/novita $0.15/$0.50/$0.03)."
+    },
+    "zenmux": {
+      "baseUrl": "https://zenmux.ai/api/v1",
+      "api": "openai-completions",
+      "apiKey": "!cut -d= -f2- /home/nish/.config/fleet-ops/seats/zenmux.env",
+      "models": [
+        {
+          "id": "z-ai/glm-4.7-flash-free",
+          "name": "GLM-4.7-flash via ZenMux (free)",
+          "contextWindow": 131072,
+          "maxTokens": 16384
+        },
+        {
+          "id": "deepseek/deepseek-v4.1-flash",
+          "name": "DeepSeek V4.1 Flash via ZenMux (paid $5)",
+          "contextWindow": 131072,
+          "maxTokens": 16384
+        }
+      ]
+    },
+    "hetzner": {
+      "baseUrl": "https://inference.hetzner.com/api/v1",
+      "api": "openai-completions",
+      "apiKey": "!cut -d= -f2- /home/nish/.config/fleet-ops/seats/hetzner.env",
+      "models": [
+        {
+          "id": "Qwen/Qwen3.6-35B-A3B-FP8",
+          "name": "Qwen3.6-35B via Hetzner (free experimental)",
+          "contextWindow": 131072,
+          "maxTokens": 16384
+        }
+      ]
+    },
+    "inferx": {
+      "baseUrl": "https://model.inferx.net/endpoints/v1",
+      "api": "openai-completions",
+      "apiKey": "!cut -d= -f2- /home/nish/.config/fleet-ops/seats/inferx.env",
+      "models": [
+        {
+          "id": "glm-5.3-flash",
+          "name": "GLM-5.3 Flash (InferX)",
+          "contextWindow": 131072,
+          "maxTokens": 32768
+        },
+        {
+          "id": "Qwen3-Coder-Next-FP8",
+          "name": "Qwen3 Coder Next (InferX)",
+          "contextWindow": 131072,
+          "maxTokens": 32768
+        },
+        {
+          "id": "Qwen3.6-35B-A3B-FP8",
+          "name": "Qwen3.6 35B A3B (InferX)",
+          "contextWindow": 131072,
+          "maxTokens": 32768
+        }
+      ]
     }
   }
 }
