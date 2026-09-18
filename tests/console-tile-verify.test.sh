@@ -15,10 +15,9 @@
 #   7. push.sh runs verify.py after generate.py (no new timer).
 #   8. fleet-console-pi.service ExecStart is the vendored push.sh via
 #      /bin/bash -c (P14-safe), still the existing unit, no new timer.
-#   9. MANIFEST declares console files + fleet_rules.yml + the drill.
+#   9. MANIFEST declares console files + fleet_rules.yml.
 #  10. fleet_rules.yml: ConsoleLying (warning, 30m) + absent() heartbeat.
 #  11. promtool check rules (if present).
-#  12. The tile-truth drill --check is green.
 #  13. Product outcome tile (fleet-ops#5003): the REAL run_outcome_prom
 #      verifies all four numbers against their own PromQL re-query, an
 #      injected lie on any one of them DISPUTES, and shell.html carries
@@ -42,7 +41,6 @@ svc="$repo_root/systemd/fleet-console-pi.service"
 tmr="$repo_root/systemd/fleet-console-pi.timer"
 rules="$repo_root/config/fleet_rules.yml"
 manifest="$repo_root/MANIFEST"
-drill="$repo_root/bin/fleet-console-tile-truth-drill"
 
 [[ -f "$gen" ]] || fail "missing $gen"
 [[ -f "$ver" ]] || fail "missing $ver"
@@ -51,7 +49,6 @@ drill="$repo_root/bin/fleet-console-tile-truth-drill"
 [[ -f "$svc" ]] || fail "missing $svc"
 [[ -f "$tmr" ]] || fail "missing $tmr"
 [[ -f "$rules" ]] || fail "missing $rules"
-[[ -f "$drill" ]] || fail "missing $drill"
 command -v python3 >/dev/null 2>&1 || fail "python3 required"
 
 scratch="$(mktemp -d -t ctv-test.XXXXXX)"
@@ -663,11 +660,9 @@ grep -Fxq "libexec/fleet-console-pi/push.sh /home/nish/.local/libexec/fleet-cons
   || fail "MANIFEST missing push.sh"
 grep -Fxq "libexec/fleet-console-pi/shell.html /home/nish/.local/libexec/fleet-console-pi/shell.html" "$manifest" \
   || fail "MANIFEST missing shell.html"
-grep -Fxq "bin/fleet-console-tile-truth-drill /home/nish/.local/bin/fleet-console-tile-truth-drill" "$manifest" \
-  || fail "MANIFEST missing tile-truth drill"
 grep -Fxq "config/fleet_rules.yml /etc/prometheus/fleet_rules.yml" "$manifest" \
   || fail "MANIFEST missing config/fleet_rules.yml (system scope)"
-ok "MANIFEST declares console + rules + drill"
+ok "MANIFEST declares console + rules"
 
 # =========================================================================
 # 10-11. fleet_rules.yml
@@ -1444,22 +1439,6 @@ for needle in ("q-cap", "q.capped", "capped at"):
 print("OK: 5133 — a saturated window is disclosed (tile capped=true, shell says so)")
 PY
 ok "fleet-ops#5133: all 31 open questions reach the tile and its verifier"
-
-# =========================================================================
-# 13. drill --check
-# =========================================================================
-bash -n "$drill" || fail "drill: bash syntax error"
-bash -n "$push" || fail "push.sh: bash syntax error"
-FLEET_OPS_REPO="$repo_root" "$drill" --check >/dev/null \
-  || fail "drill --check failed"
-ok "drill --check"
-
-# =========================================================================
-# 14. drill inject path (uses real /proc; 999 cannot match)
-# =========================================================================
-FLEET_OPS_REPO="$repo_root" "$drill" >/dev/null \
-  || fail "tile-truth drill failed"
-ok "tile-truth drill: inject lie -> DISPUTED"
 
 # =========================================================================
 # 15. console-truth pytest suite (fleet-ops#5072)

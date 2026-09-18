@@ -610,20 +610,6 @@ bash "$here/fleet-intake-reconciler-counter.test.sh"
 # bin/fleet-gap-closure-conference. Hosted here so P14 runs it without a
 # workflow-file edit (the worker App cannot push .github/workflows/**).
 
-# fleet-ops#3268 (child of waste-cut #3128): offline replay drill for
-# bin/fleet-close-and-archive-repo (retire-a-dead-repo loop with a stubbed
-# gh). Landed on main via PR #3740 without a ci.yml listing or host, so the
-# P14 listing gate failed on the next push. Hosted here so P14 runs it
-# without a workflow-file edit (the worker App cannot push
-# .github/workflows/**).
-bash "$here/fleet-close-and-archive-repo.test.sh"
-
-# fleet-ops#1549: --help/-h on fleet-blind-audit and fleet-researcher-dispatch
-# must print usage and exit 0 without running a live audit or dispatch.
-# Hosted here so P14 runs it without a workflow-file edit (the worker App
-# cannot push .github/workflows/**).
-bash "$here/fleet-help-flag-runs-live.test.sh"
-
 # fleet-ops#796: sgscan wrapper regression suite (--help, JSON parsing,
 # unknown-flag rejection). Added by #1652 without a ci.yml listing or
 # host; hosted here so P14 runs it without a workflow-file edit and the

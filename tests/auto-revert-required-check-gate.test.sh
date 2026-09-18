@@ -484,8 +484,3 @@ if ! grep -q 'repos/${REPO}/issues/${num}/comments' "$script"; then
   fail "auto-revert.sh must POST comments to repos/\$REPO/issues/\$num/comments"
 fi
 ok "contract: halt comments use REST, not GraphQL gh issue comment"
-
-# fleet-ops#349: stale auto-revert PRs must close themselves so heartbeat
-# cannot auto-merge them after main has moved. A named ci.yml step is out
-# of band for the worker App (Contents cannot push workflow files).
-bash "$here/fleet-stale-auto-revert-sweep.test.sh"

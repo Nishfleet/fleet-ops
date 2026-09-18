@@ -19,7 +19,6 @@ systemd/pi-packet-logrotate.timer /home/nish/.config/systemd/user/pi-packet-logr
 # fleet-ops so the tile truth-check is version-controlled. push.sh still
 # runs on the existing 12-min timer (no new timer). verify.py writes
 # /var/lib/prometheus/node-exporter/fleet-console-tiles.prom.
-bin/fleet-console-tile-truth-drill /home/nish/.local/bin/fleet-console-tile-truth-drill
 # fleet-ops#4061: on-demand product-vs-self merge split per repo (7d), the
 # top self-maintenance workload classes, and a shipped_24h tile reconcile.
 # Observe-to-close; no timer, no prom metric.
@@ -27,7 +26,6 @@ bin/fleet-console-tile-truth-drill /home/nish/.local/bin/fleet-console-tile-trut
 # then archive it (gh repo archive). Child of the waste-cut #3128. Dry-run
 # default. Archive step is Administration-gated (Worker App lacks it); the
 # tool closes PRs (worker scope) and reports the archive command loudly.
-bin/fleet-close-and-archive-repo /home/nish/.local/bin/fleet-close-and-archive-repo
 # fleet-ops#1157: ConsoleLying + ConsoleTileVerifyAbsent. System scope —
 # install.sh --system deploys to /etc/prometheus/fleet_rules.yml.
 config/fleet_rules.yml /etc/prometheus/fleet_rules.yml
@@ -399,7 +397,6 @@ prompts/auditor.md /home/nish/.pi/agent/prompts/auditor.md
 # fleet-ops#349: close stale auto-revert PRs before the queue pass can
 # auto-merge them. Heartbeat queues revert/ heads; a revert opened when
 # main was SHA X stays MERGEABLE after main moves.
-bin/fleet-stale-auto-revert-sweep /home/nish/.local/bin/fleet-stale-auto-revert-sweep
 # fleet-ops#152: escalation coverage canary. Run by heartbeat-tier1 block 15;
 # proves the two-plane invariant (VPS unit-escalation coverage + GitHub
 # red-check coverage) every tick. Installed by the merge-to-live step (#149)
