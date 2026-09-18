@@ -33,6 +33,13 @@ Steps:
    tick and say so — RAM is the binding resource and an OOM kill costs a whole
    claim. `slots = min(3, 25 - active)`. If slots <= 0, print `at capacity`
    and exit 0.
+   - **Seat wall (fleet-ops#7776).** Before claiming, run once:
+     `bash /home/nish/.local/lib/pi-packet/seat-probe.sh worker-capable`.
+     If it prints `SEAT-WALL`, print `seat-walled` and exit 0 — claims made
+     while the worker group is walled only park issues as agent-in-progress
+     with no worker to run them. (The unit's ExecCondition already probed
+     both groups before this tick ran; this catches a wall that lands
+     mid-tick.)
 
 3. **Pick work.** `gh issue list -R Nishfleet/<repo> -l agent-ready --state open
    --json number,title,labels,createdAt --limit 200`. The limit MUST cover the

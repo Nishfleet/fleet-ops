@@ -62,6 +62,13 @@ Environment=PI_UNIT_INSTANCE=%i
 # (synthetic, proven tool_calls) rc=0, and no-tools WITHOUT this var rc=0.
 Environment=PI_PACKET_EXPECTS_TOOLS=1
 WorkingDirectory=/home/nish
+# fleet-ops#7776: probe worker-capable before every (re)start. A walled group
+# skips the start — ExecCondition is not a failure, so there is no verdict
+# cycle, no restart burn, no OnFailure release — and the claim branch stays
+# for re-entrant resume when the wall lifts. Deliberately not ExecStartPre:
+# a failed ExecStartPre fails the unit and fires OnFailure=pi-issue-failed@,
+# which is exactly the release churn this probe exists to stop.
+ExecCondition=/bin/sh -c 'x=/home/nish/.local/lib/pi-packet/seat-probe.sh; [ -x "$x" ] || exit 0; exec "$x" worker-capable'
 # %i is <repo>-<issue>. sed splits it without any '%' in the script body, so
 # systemd never sees an unknown specifier. worker-token mints the ≤1h
 # nishfleet-worker App token (RS256 JWT over the App private key) — the one

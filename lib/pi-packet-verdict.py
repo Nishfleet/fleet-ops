@@ -85,6 +85,37 @@ LIST_LIMIT    = int(os.environ.get("PI_VERDICT_LIST_LIMIT", "1000"))
 ISSUE_REPO    = os.environ.get("PI_VERDICT_ISSUE_REPO", "Nishfleet/fleet-ops")
 METRIC_FILE   = Path("/var/lib/prometheus/node-exporter/fleet-verdict.prom")
 
+# ---- no-tools run classification (fleet-ops#7776) ---------------------------
+# The packet-verdict extension prints `PACKET-VERDICT tools=<n> class=<c>` as
+# the LAST line of a run; the extension's own counter emits it at shutdown,
+# so any earlier lookalike line in model prose cannot be the last match.
+# A tools=0 run under a seat wall is not a packet strike: pi-issue-failed@
+# checks the failed unit's journal through here and must NOT release the
+# claim on it (the claim stays for re-entrant resume when the wall lifts).
+VERDICT_LINE  = re.compile(r"PACKET-VERDICT\s+tools=(\d+)\s+class=\S+")
+JOURNAL_LINES = int(os.environ.get("PI_VERDICT_JOURNAL_LINES", "400"))
+JOURNALCTL    = os.environ.get("PI_VERDICT_JOURNALCTL", "journalctl")
+
+
+def last_verdict_tools(text):
+    """Tools count from the LAST PACKET-VERDICT line in a run log, or None."""
+    tools = None
+    for m in VERDICT_LINE.finditer(text):
+        tools = int(m.group(1))
+    return tools
+
+
+def unit_run_text(unit):
+    """Latest journal output for a --user unit; '' on any journal fault."""
+    try:
+        r = subprocess.run(
+            [JOURNALCTL, "--user", "-u", unit, "--no-pager",
+             "-n", str(JOURNAL_LINES), "-o", "cat"],
+            capture_output=True, text=True, timeout=20)
+        return r.stdout or ""
+    except (OSError, subprocess.TimeoutExpired):
+        return ""
+
 # ---- LIVE-claim gate (fleet-ops#5786) ---------------------------------------
 # A deliverable may only claim LIVE / DEPLOYED / live-on-host when the SAME
 # line cites a SHA already present on origin/main of a known clone —
@@ -685,11 +716,31 @@ def main():
     ap.add_argument("--scan-prs", help="Read pre-fetched JSON array of PRs")
     ap.add_argument("--metricsonly", action="store_true",
                     help="Only write metrics (zero counts = clean state)")
+    ap.add_argument("--no-tools-unit",
+                    help="exit 0 when the unit's last PACKET-VERDICT is "
+                         "tools=0 (seat-wall no-op — keep the claim)")
+    ap.add_argument("--no-tools-file",
+                    help="same check against a saved run log file")
     args = ap.parse_args()
 
     if args.metricsonly:
         write_metrics(0, 0)
         return
+
+    # --no-tools-unit / --no-tools-file: the claim-release gate reads the
+    # last verdict of a failed run (fleet-ops#7776).
+    if args.no_tools_unit or args.no_tools_file:
+        if args.no_tools_unit:
+            text = unit_run_text(args.no_tools_unit)
+        else:
+            try:
+                text = Path(args.no_tools_file).read_text(errors="replace")
+            except OSError:
+                text = ""
+        tools = last_verdict_tools(text)
+        print(json.dumps({"no_tools": tools == 0,
+                          "last_verdict_tools": tools}))
+        sys.exit(0 if tools == 0 else 1)
 
     live_repos = _live_repo_dirs(args.repo_dir,
                                  no_defaults=args.no_default_repos)
