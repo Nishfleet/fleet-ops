@@ -42,8 +42,6 @@
 
 [Unit]
 Description=GitHub Actions ephemeral self-hosted runner %i — one job per activation (fleet-ops#5935)
-After=network-online.target
-Wants=network-online.target
 StartLimitIntervalSec=120
 StartLimitBurst=4
 
