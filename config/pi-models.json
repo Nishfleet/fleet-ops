@@ -496,12 +496,6 @@
       "apiKey": "!cut -d= -f2- /home/nish/.config/fleet-ops/seats/crof.env",
       "models": []
     },
-    "entrim": {
-      "baseUrl": "https://api.entrim.ai/v1",
-      "api": "openai-completions",
-      "apiKey": "!cut -d= -f2- /home/nish/.config/fleet-ops/seats/entrim.env",
-      "models": []
-    },
     "litellm": {
       "name": "LiteLLM proxy (fleet seat routing, fleet-ops#4130 P2+P3a)",
       "baseUrl": "http://127.0.0.1:4000",
