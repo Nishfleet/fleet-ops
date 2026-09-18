@@ -1,0 +1,380 @@
+{
+ "3527": [],
+ "3525": [
+  "d1/migrations:scripts/d1-migration-sync-check.lib.mjs",
+  "d1/migrations:tests/d1-migration-sync-check.test.ts"
+ ],
+ "3526": [],
+ "3524": [
+  "d1/migrations:scripts/d1-migration-sync-check.lib.mjs",
+  "d1/migrations:scripts/d1-remote-restore-evidence-core.mjs",
+  "d1/migrations:scripts/d1-remote-restore-evidence.mjs",
+  "d1/migrations:tests/d1-migration-sync-check.test.ts",
+  "d1/migrations:tests/d1-remote-restore-evidence.test.ts"
+ ],
+ "3523": [],
+ "3511": [],
+ "3508": [
+  "auth:app/components/auth-form.tsx",
+  "auth:app/routes/auth.signup.tsx"
+ ],
+ "3518": [],
+ "3517": [
+  "d1/migrations:migrations/0104_competitor_suggestion_dismissal.sql",
+  "d1/migrations:tests/d1-remote-restore-evidence.test.ts"
+ ],
+ "3481": [],
+ "3513": [],
+ "3503": [],
+ "3510": [],
+ "3504": [],
+ "3506": [],
+ "3505": [],
+ "3497": [],
+ "3468": [
+  "d1/migrations:migrations/0103_widen_source_target_connector_youtube.sql",
+  "d1/migrations:tests/d1-remote-restore-evidence.test.ts"
+ ],
+ "3495": [],
+ "3494": [],
+ "3376": [
+  "d1/migrations:migrations/0098_competitor_suggestion_dismissal.sql",
+  "d1/migrations:tests/d1-remote-restore-evidence.test.ts"
+ ],
+ "3492": [],
+ "3491": [],
+ "3489": [],
+ "3488": [],
+ "3487": [],
+ "3485": [],
+ "3484": [],
+ "3482": [],
+ "3479": [],
+ "3475": [],
+ "3467": [],
+ "3474": [],
+ "3469": [],
+ "3463": [
+  "auth:e2e/local-authenticated.spec.ts"
+ ],
+ "3462": [
+  "d1/migrations:tests/monitoring-d1-type-error-incident.test.ts"
+ ],
+ "3443": [
+  "d1/migrations:tests/monitoring-d1-type-error-incident.test.ts"
+ ],
+ "3423": [],
+ "3452": [
+  "d1/migrations:tests/d1-remote-restore-evidence.test.ts"
+ ],
+ "3428": [],
+ "3451": [],
+ "3450": [],
+ "3449": [],
+ "3448": [],
+ "3426": [],
+ "3424": [],
+ "3446": [
+  "d1/migrations:migrations/0102_widen_source_target_connector_podcast.sql",
+  "d1/migrations:tests/integration/presence-migration-0102.integration.test.ts"
+ ],
+ "3416": [],
+ "3439": [
+  "d1/migrations:tests/d1-remote-restore-evidence.test.ts"
+ ],
+ "3436": [
+  "d1/migrations:migrations/0102_widen_source_target_connector_podcast.sql"
+ ],
+ "3435": [],
+ "3434": [
+  "d1/migrations:migrations/0102_widen_source_target_connector_podcast.sql"
+ ],
+ "3433": [],
+ "3427": [
+  "auth:app/lib/better-auth.server.ts"
+ ],
+ "3425": [],
+ "3420": [],
+ "3419": [],
+ "3418": [
+  "d1/migrations:migrations/0101_widen_source_target_connector_pinterest.sql",
+  "d1/migrations:tests/d1-remote-restore-evidence.test.ts"
+ ],
+ "3417": [],
+ "3405": [],
+ "3410": [],
+ "3408": [],
+ "3404": [],
+ "3394": [],
+ "3397": [],
+ "3368": [
+  "deploy-workflows:.github/workflows/ads-prog-seo-canary.yml"
+ ],
+ "3363": [],
+ "3399": [],
+ "3402": [],
+ "3398": [],
+ "3396": [],
+ "3374": [
+  "deploy-workflows:.github/workflows/auto-revert.yml"
+ ],
+ "3388": [],
+ "3378": [],
+ "3349": [
+  "deploy-workflows:.github/workflows/ratchet-auto-tighten.yml"
+ ],
+ "3387": [],
+ "3386": [],
+ "3384": [],
+ "3375": [
+  "d1/migrations:migrations/0100_widen_source_target_connector_hn.sql",
+  "d1/migrations:tests/d1-remote-restore-evidence.test.ts"
+ ],
+ "3377": [],
+ "3371": [],
+ "3365": [],
+ "3366": [],
+ "3355": [],
+ "3361": [],
+ "3360": [
+  "d1/migrations:migrations/0099_widen_source_target_connector_threads.sql",
+  "d1/migrations:tests/d1-remote-restore-evidence.test.ts"
+ ],
+ "3354": [],
+ "3352": [],
+ "3135": [],
+ "3348": [],
+ "3345": [],
+ "3343": [],
+ "3342": [],
+ "3341": [],
+ "3339": [],
+ "3332": [],
+ "3336": [],
+ "3334": [
+  "payments:app/lib/customer-billing-copy.ts",
+  "payments:app/routes/api.billing.dodo.checkout.ts",
+  "payments:app/routes/api.billing.dodo.plan-change.ts",
+  "payments:app/routes/api.e2e.billing.replay.ts",
+  "payments:app/routes/app.billing.tsx",
+  "payments:tests/billing-page.route.test.ts",
+  "payments:tests/dodo-checkout.route.test.ts",
+  "payments:tests/stripe-checkout.route.test.ts"
+ ],
+ "3327": [],
+ "3328": [],
+ "3316": [
+  "deploy-workflows:.github/workflows/ci.yml",
+  "deploy-workflows:.github/workflows/deploy-production.yml",
+  "deploy-workflows:.github/workflows/preview-assert.yml"
+ ],
+ "3324": [
+  "d1/migrations:scripts/d1-migration-sync-check.lib.mjs",
+  "d1/migrations:tests/d1-remote-restore-evidence.test.ts"
+ ],
+ "3320": [],
+ "3031": [],
+ "3313": [],
+ "3312": [
+  "d1/migrations:scripts/d1-backup-local-storage.mjs",
+  "d1/migrations:tests/d1-backup-local-storage.test.ts"
+ ],
+ "3245": [],
+ "3037": [
+  "d1/migrations:.github/workflows/d1-remote-restore-evidence.yml",
+  "deploy-workflows:.github/workflows/d1-remote-restore-evidence.yml",
+  "d1/migrations:scripts/d1-migration-row-invariant.mjs",
+  "d1/migrations:scripts/d1-remote-restore-evidence.mjs",
+  "d1/migrations:tests/d1-migration-chain-row-invariant.test.ts",
+  "d1/migrations:tests/d1-migration-row-invariant.test.ts",
+  "d1/migrations:tests/d1-remote-restore-evidence.test.ts",
+  "d1/migrations:tests/d1-workflow-inline-payloads.test.ts"
+ ],
+ "3041": [
+  "deploy-workflows:.github/workflows/gate-integrity.yml"
+ ],
+ "3300": [],
+ "3289": [
+  "d1/migrations:migrations/0098_widen_source_target_connector_bluesky.sql",
+  "d1/migrations:tests/d1-remote-restore-evidence.test.ts"
+ ],
+ "3305": [],
+ "3283": [],
+ "3297": [],
+ "3284": [
+  "d1/migrations:migrations/0098_widen_source_target_connector_gdelt.sql",
+  "d1/migrations:tests/d1-remote-restore-evidence.test.ts"
+ ],
+ "3282": [],
+ "3232": [
+  "deploy-workflows:.github/workflows/deploy-production.yml"
+ ],
+ "3285": [
+  "d1/migrations:migrations/0098_email_delivery_canary.sql",
+  "d1/migrations:tests/d1-remote-restore-evidence.test.ts"
+ ],
+ "3271": [],
+ "3287": [],
+ "3258": [],
+ "3281": [],
+ "3273": [],
+ "3274": [
+  "deploy-workflows:.github/workflows/red-on-main-watch.yml",
+  "deploy-workflows:.github/workflows/stop-the-line-watch.yml"
+ ],
+ "3269": [],
+ "3211": [
+  "payments:app/lib/billing-canary-identity.server.ts",
+  "payments:app/routes/api.billing.dodo.canary.ts",
+  "d1/migrations:migrations/0097_status_probe_samples.sql",
+  "d1/migrations:tests/d1-remote-restore-evidence.test.ts"
+ ],
+ "3260": [],
+ "3259": [],
+ "3241": [
+  "deploy-workflows:.github/workflows/ads-prog-seo-canary.yml"
+ ],
+ "3236": [],
+ "3256": [],
+ "3248": [],
+ "3230": [],
+ "3243": [
+  "auth:tests/activation/first-brief-same-session.test.tsx",
+  "d1/migrations:tests/d1-remote-restore-evidence.test.ts",
+  "payments:tests/delivery-billing-lifecycle-recovery-deferral.test.ts",
+  "payments:tests/delivery.billing-recovery.test.ts",
+  "payments:tests/dodo-billing-guard.route.test.ts",
+  "payments:tests/dodo-billing-webhook-lease-atomicity.test.ts",
+  "payments:tests/integration/billing-checkout-cancel.integration.test.ts"
+ ],
+ "3228": [
+  "payments:tests/legacy-billing-provider-removal.test.ts"
+ ],
+ "3052": [],
+ "1924": [
+  "deploy-workflows:.github/workflows/auto-merge-arm.yml",
+  "deploy-workflows:.github/workflows/red-on-main-watch.yml",
+  "deploy-workflows:.github/workflows/stop-the-line-watch.yml"
+ ],
+ "1064": [
+  "deploy-workflows:.github/workflows/ratchet-auto-tighten.yml"
+ ],
+ "3240": [],
+ "3239": [
+  "deploy-workflows:.github/workflows/preview-assert.yml"
+ ],
+ "3234": [],
+ "3138": [],
+ "3163": [],
+ "3220": [
+  "deploy-workflows:.github/workflows/auto-revert.yml"
+ ],
+ "3216": [
+  "deploy-workflows:.github/workflows/uptime-health.yml"
+ ],
+ "3194": [],
+ "3225": [],
+ "3226": [],
+ "3223": [],
+ "3145": [
+  "deploy-workflows:.github/workflows/auto-revert.yml"
+ ],
+ "3169": [],
+ "3154": [],
+ "3026": [],
+ "3153": [],
+ "3150": [],
+ "3184": [
+  "d1/migrations:scripts/d1-migration-sync-check.lib.mjs",
+  "d1/migrations:scripts/d1-remote-restore-evidence-core.mjs",
+  "d1/migrations:scripts/d1-remote-restore-evidence.mjs",
+  "d1/migrations:tests/d1-migration-sync-check.test.ts",
+  "d1/migrations:tests/d1-remote-restore-evidence.test.ts"
+ ],
+ "3139": [],
+ "3181": [],
+ "3159": [],
+ "3054": [],
+ "3191": [],
+ "3148": [],
+ "3119": [],
+ "3094": [],
+ "3072": [],
+ "3043": [],
+ "3141": [],
+ "3107": [],
+ "3090": [],
+ "3142": [],
+ "3136": [
+  "auth:app/lib/better-auth.server.ts",
+  "d1/migrations:migrations/0096_email_suppression.sql"
+ ],
+ "3096": [],
+ "3140": [],
+ "3137": [],
+ "3131": [
+  "deploy-workflows:.github/workflows/deploy-production.yml"
+ ],
+ "3089": [
+  "auth:docs/email-outbound-auth.md",
+  "auth:scripts/check-outbound-email-auth.mjs",
+  "auth:tests/outbound-email-auth.test.ts"
+ ],
+ "3134": [],
+ "3130": [],
+ "3082": [
+  "d1/migrations:migrations/0096_error_reports.sql"
+ ],
+ "3071": [],
+ "3086": [],
+ "3073": [],
+ "3067": [
+  "d1/migrations:.lane/reports/0509-lane1-d1-restore-kill-esrch-already-resolved.md",
+  "payments:.lane/reports/0509-lane1-llms-live-search-dodo-checkout.md",
+  "d1/migrations:.lane/reports/0509-lane1-magicbrief-migration-cta-already-resolved-reverify.md",
+  "d1/migrations:.lane/reports/0509-lane1-magicbrief-migration-cta.md",
+  "auth:.lane/reports/0509-lane1-same-session-first-value-reverify.md",
+  "auth:.lane/reports/0509-lane1-same-session-first-value-third-reverify.md",
+  "auth:.lane/reports/0509-lane1-same-session-first-value.md",
+  "auth:.lane/reports/0509-lane1-sshd-session-table-2026-08-20-reverify.md",
+  "auth:.lane/reports/0509-lane1-sshd-session-table-fresh-verification.md",
+  "auth:.lane/reports/0509-lane1-sshd-session-table-reverified.md",
+  "d1/migrations:.lane/reports/0509-lane2-d1-restore-kill-esrch-already-resolved.md",
+  "auth:.lane/reports/archived-shared-report-06-thin-rendered-content-on-search-auth-login-dogfood-694ddbd68.md",
+  "auth:.lane/reports/fix-market-signal-auth-diagnosis.md",
+  "auth:.lane/reports/report-lane1-sshd-session-table-exhausted.md",
+  "auth:legacy/src/app/auth/callback/route.ts",
+  "auth:legacy/src/app/auth/login/page.tsx",
+  "auth:legacy/src/app/auth/signup/page.tsx",
+  "auth:legacy/src/components/auth-provider.tsx",
+  "d1/migrations:legacy/supabase/migrations/001_saved_searches_bookmarks.sql"
+ ],
+ "3051": [],
+ "3063": [],
+ "3117": [],
+ "3121": [],
+ "3118": [],
+ "3116": [],
+ "3112": [],
+ "3108": [
+  "auth:app/components/auth-form.tsx",
+  "auth:app/routes/auth.signup.tsx",
+  "auth:tests/auth-form-signup-guidance.test.ts",
+  "auth:tests/auth-validation.test.ts",
+  "auth:tests/auth.server.test.ts"
+ ],
+ "3022": [],
+ "3106": [],
+ "3100": [],
+ "3102": [],
+ "3101": [],
+ "3085": [],
+ "3023": [
+  "deploy-workflows:.github/workflows/preview-assert.yml",
+  "d1/migrations:tests/d1-remote-restore-evidence.test.ts"
+ ],
+ "3088": [],
+ "3064": [
+  "lockfiles:package-lock.json"
+ ]
+}
