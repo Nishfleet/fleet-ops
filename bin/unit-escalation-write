@@ -71,6 +71,29 @@ FUT_N=${SCOUT_FUTILITY_N:-3}
 case "$FUT_N" in ''|*[!0-9]*) FUT_N=3 ;; esac
 UNIT="${1:-}"
 
+# Usage guard (fleet-ops false-trip class, observed 2026-09-09T06:08Z AND
+# 2026-09-12T08:42Z — recurred because the 09-09 diagnosis never landed a
+# source fix): agents legitimately probe this CLI for usage
+# (`unit-escalation-write --help`). Without a guard $1 is taken as the unit
+# name and a bogus STOP-REASON for unit "--help" trips the whole
+# senior-auditor pipeline (two auditor summons burned). systemd unit names
+# never begin with "-", so any leading-dash argument is a usage probe, not a
+# unit. -h/--help print usage and exit 0; any other leading-dash argument
+# exits 2 loud. No STOP-REASON is ever written on a usage path.
+if [ "$UNIT" = "-h" ] || [ "$UNIT" = "--help" ]; then
+  echo "usage: unit-escalation-write <unit-name>"
+  echo "  Writes a unit-failure STOP-REASON.json entry for <unit-name>."
+  echo "  Normally invoked by unit-escalation@%i.service via OnFailure= —"
+  echo "  do not call by hand unless you are reproducing a real failure."
+  exit 0
+fi
+case "$UNIT" in
+  -*)
+    echo "unit-escalation-write: refusing leading-dash argument '$UNIT' — not a valid systemd unit name (usage probe, not a failure); no STOP-REASON written" >&2
+    exit 2
+    ;;
+esac
+
 if [ -z "$UNIT" ]; then
   echo "unit-escalation-write: missing unit name (expected %i)" >&2
   exit 1
