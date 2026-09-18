@@ -49,8 +49,12 @@ grep -q "The 5-step fleet live-state check is canonical" "$pi_canonical" \
 # reader of the Pi surface alone does not skip them.
 grep -q "list-units --state=failed" "$pi_canonical" \
   || fail "pi canonical omits the failed-units sweep (step 3)"
-grep -q "pi-seat-health.json" "$pi_canonical" \
-  || fail "pi canonical omits the seat-health recency check (step 4)"
+# Step 4 became the LiteLLM router's own state on 2026-09-18: seat-health.ts
+# (the pi-seat-health.json writer) was deleted in the glue sweep, so the file
+# is frozen. Prometheus already scrapes the proxy (config/prometheus.yml
+# job_name: litellm), so the gauge is the live source.
+grep -q "litellm_deployment_state" "$pi_canonical" \
+  || fail "pi canonical omits the LiteLLM seat-state check (step 4)"
 grep -q "uptime" "$pi_canonical" \
   || fail "pi canonical omits the uptime/throughput step (step 5)"
 

@@ -9,8 +9,8 @@
 The old `.idle-fleet-alarm.json` banner is GONE. It lived in the fleet control
 plane, which was deleted on 2026-08-23 ("Everything runs through Pi, directly.
 No launchers." — vault `global-standing-rules.md`). Do not look for it, and do
-not trust any stale copy you find: the canonical live file is
-`agent-state/lanes/pi-seat-health.json`. The `lanes/` directory also holds
+not trust any stale copy you find: live seat state now comes from the LiteLLM
+router itself (step 4), not from a file. The `lanes/` directory also holds
 operational artefacts — seats/, reports/, outbound-gate/, `.seen` markers,
 logs, timestamped seats-quarantine/corpse dirs — none of which this check
 reads (fleet-ops#6613).
@@ -26,9 +26,13 @@ Check live state directly instead, in this order:
 3. `systemctl --user list-units --state=failed` — must be EMPTY. Anything failed
    is a fault you own repairing in this turn. (Needs
    `XDG_RUNTIME_DIR=/run/user/$(id -u)` set, or it silently returns nothing.)
-4. `cat /home/nish/workspaces/agent-state/lanes/pi-seat-health.json` — the Pi
-   seat's last observed provider/model, HTTP status and `health_class`. Check
-   `observed_at` is recent before believing it.
+4. `curl -s 127.0.0.1:4000/health/readiness` — LiteLLM's own readiness
+   (`{"status":"healthy","db":"connected"}`); then
+   `curl -sL 127.0.0.1:4000/metrics | grep litellm_deployment_state` — one
+   gauge per deployment, 0 = healthy, 1 = partial outage, 2 = complete
+   outage. This REPLACES `lanes/pi-seat-health.json`: its writer
+   (`seat-health.ts`, 1,472 lines) was deleted on 2026-09-18, so that file is
+   frozen at its last write and must not be read as live state.
 5. `uptime` for load, and merged-PR counts per repo for actual throughput.
 
 A missing or unparseable state file is itself a finding — report it, never treat
@@ -101,7 +105,7 @@ For delegated work use Pi's stock `subagent` extension (`scout`, `planner`, `wor
 echo 'Use worker to <task>' | pi --print --provider devin --model glm-5-2
 ```
 
-Check the seat before routing: `agent-state/lanes/pi-seat-health.json` carries the last observed provider/model, HTTP status and `health_class`. Confirm `observed_at` is recent before trusting it.
+Check the seat before routing: `curl -sL 127.0.0.1:4000/metrics | grep litellm_deployment_state` (0 = healthy, 1 = partial, 2 = complete outage).
 
 **Before writing ANY orchestration** — dispatch, queue, scheduling, spec gates, handoff, reporting — read Pi's 79 shipped example extensions (verified 2026-09-01: `ls ~/.local/lib/node_modules/@earendil-works/pi-coding-agent/examples/extensions/ | wc -l`) in `~/.local/lib/node_modules/@earendil-works/pi-coding-agent/examples/extensions/` and `docs/`. The fleet hand-built ~20,000 lines of control plane that Pi already ships. A hand-built fork of a stock extension is the known failure mode.
 
@@ -144,7 +148,7 @@ bug.** Fix the instance AND the detector. Canonical text:
 <!-- SECTION: shared-memory-loop -->
 ## Automatic shared-memory loop
 
-- **Failure response is #1 (Nish, 2026-08-08):** any detected fleet-infrastructure failure gets automatic, autonomous, INSTANT repair dispatch on the cheapest healthy Pi seat (picked via `agent-state/lanes/pi-seat-health.json`), escalating to a flagship seat for broad or high-stakes repair. Never a quiet degraded mode, never 'flag for Nish'. Fail LOUD when repair is impossible.
+- **Failure response is #1 (Nish, 2026-08-08):** any detected fleet-infrastructure failure gets automatic, autonomous, INSTANT repair dispatch on the cheapest healthy Pi seat (pick seats via `litellm_deployment_state` on 127.0.0.1:4000/metrics), escalating to a flagship seat for broad or high-stakes repair. Never a quiet degraded mode, never 'flag for Nish'. Fail LOUD when repair is impossible.
 - Non-negotiable response style: default to concise ELI5 language with plain words and the direct answer first. Add depth only when Nish explicitly asks or when essential safety or verification details cannot be omitted.
 - Memory is the Pi session plus the plain markdown in `nish-vault` — the `memoryctl` recall/outcome/feedback/capture loop and its curator were deleted on 2026-09-18 (the write path had not run in 39 days and the curator compiled 0 notes in its entire live history).
 <!-- END SECTION: shared-memory-loop -->

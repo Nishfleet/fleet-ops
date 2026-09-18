@@ -36,9 +36,13 @@ duties and must be performed, not skipped:
 
 3. `systemctl --user list-units --state=failed` — must be EMPTY (needs
    `XDG_RUNTIME_DIR=/run/user/$(id -u)` set, or it silently returns nothing).
-4. `cat /home/nish/workspaces/agent-state/lanes/pi-seat-health.json` — check
-   `observed_at` is recent before believing it; a missing or unparseable
-   state file is itself a finding.
+4. `curl -s 127.0.0.1:4000/health/readiness` — LiteLLM's own readiness
+   (`{"status":"healthy","db":"connected"}`); then
+   `curl -sL 127.0.0.1:4000/metrics | grep litellm_deployment_state` — one
+   gauge per deployment, 0 = healthy, 1 = partial outage, 2 = complete
+   outage. This REPLACES `lanes/pi-seat-health.json`: its writer
+   (`seat-health.ts`, 1,472 lines) was deleted on 2026-09-18, so that file is
+   frozen at its last write and must not be read as live state.
 5. `uptime` for load, and merged-PR counts per repo for actual throughput.
 
 **Quick minimum, in order:** (1) if `~/workspaces/agent-state/FLEET-PAUSED`
@@ -155,7 +159,7 @@ Read these rather than guessing. They are canonical and they change.
 | Standing rules, all machines | `~/workspaces/tooling/nish-vault/_system/shared-memory/global-standing-rules.md` |
 | Vault contract — read before writing | `~/workspaces/tooling/nish-vault/_system/shared-memory/agent-contract.md` |
 | Vault governance | `~/workspaces/tooling/nish-vault/_system/governance.md` |
-| Model/lane routing — `pi --print --provider <provider> --model <model>` direct; old `codex-model-routing.md` ladder is history only | `~/workspaces/agent-state/lanes/pi-seat-health.json` |
+| Model/lane routing — `pi --print --provider <provider> --model <model>` direct; old `codex-model-routing.md` ladder is history only | `curl -sL 127.0.0.1:4000/metrics \| grep litellm_deployment_state` |
 | Pre-implementation contract | `~/workspaces/tooling/nish-vault/_system/shared-memory/pre-implementation-contract.md` |
 | House method skills | `~/workspaces/tooling/nish-vault/_system/shared-memory/skills-library/` |
 | Durable memories (index first) | `~/.claude/projects/-home-nish/memory/MEMORY.md` |

@@ -15,10 +15,15 @@
 # Invariants:
 #   1. Drop-in exists, [Slice], TasksMax=8000, no CPUQuota.
 #   2. Comment names 11 threads per pi and that RAM remains admission.
-#   3. spawn-guard-core.ts FLEET_SLICE_TASKS_MAX=8000,
-#      FLEET_SPAWN_SOFT_CEILING=7500; bash-spawn-hook interpolates those
-#      constants (no hardcoded 2800/3000).
-#   4. the drop-in + both extension sources exist in the repo.
+#   3. the LIVE slice actually reports TasksMax=8000 and sources it from the
+#      linked drop-in (systemd is the ceiling now).
+#   4. the drop-in source exists in the repo.
+#
+# 2026-09-18 glue sweep: spawn-guard-core.ts (620 lines) and the fleet fork of
+# bash-spawn-hook.ts are DELETED. They carried a userspace soft ceiling of 7500
+# that duplicated what systemd already enforces. systemd.resource-control's
+# TasksMax is the stock feature and the only ceiling now, so this test asserts
+# the live slice instead of the deleted constants.
 #   5. seat-caps.json ram_gb_per_worker is the interim admission charge (1.5;
 #      fleet-ops#4896 after #4893 dropped in-worker coverage/tsc; remeasure-4891
 #      replaces this with measured p95 on 2026-09-11).
@@ -34,13 +39,9 @@ fail() { echo "FAIL: $*" >&2; exit 1; }
 ok()   { echo "OK: $*"; }
 
 dropin="$repo_root/systemd/fleet-work.slice.d/10-tasksmax.conf"
-core="$repo_root/template/extensions/spawn-guard-core.ts"
-hook="$repo_root/template/extensions/bash-spawn-hook.ts"
 caps="$repo_root/config/seat-caps.json"
 
 [[ -f "$dropin" ]] || fail "missing drop-in: $dropin"
-[[ -f "$core" ]] || fail "missing spawn-guard-core.ts: $core"
-[[ -f "$hook" ]] || fail "missing bash-spawn-hook.ts: $hook"
 [[ -f "$caps" ]] || fail "missing seat-caps.json"
 
 # --- 1. drop-in shape -------------------------------------------------------
@@ -64,39 +65,34 @@ grep -qi 'MemAvailable' "$dropin" \
   || fail "10-tasksmax.conf comment must name MemAvailable as admission authority"
 ok "drop-in comment: 11 threads/pi; RAM remains admission"
 
-# --- 3. spawn-guard constants + EXTLOAD interpolates them -------------------
-grep -q '^export const FLEET_SLICE_TASKS_MAX = 8000;$' "$core" \
-  || fail "spawn-guard-core.ts: FLEET_SLICE_TASKS_MAX must be 8000"
-grep -q '^export const FLEET_SPAWN_SOFT_CEILING = 7500;$' "$core" \
-  || fail "spawn-guard-core.ts: FLEET_SPAWN_SOFT_CEILING must be 7500"
-if grep -qE 'FLEET_SLICE_TASKS_MAX = 3000' "$core"; then
-  fail "spawn-guard-core.ts reintroduced FLEET_SLICE_TASKS_MAX = 3000"
+# --- 3. the LIVE slice enforces it, and from the linked drop-in -------------
+if command -v systemctl >/dev/null 2>&1 && [[ -n "${XDG_RUNTIME_DIR:-}" || -d /run/user/$(id -u) ]]; then
+  export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
+  live_max=$(systemctl --user show fleet-work.slice -p TasksMax --value 2>/dev/null || echo "")
+  live_drops=$(systemctl --user show fleet-work.slice -p DropInPaths --value 2>/dev/null || echo "")
+  if [[ -n "$live_max" ]]; then
+    [[ "$live_max" == "8000" ]] \
+      || fail "live fleet-work.slice TasksMax=$live_max, expected 8000"
+    grep -q '10-tasksmax.conf' <<<"$live_drops" \
+      || fail "live TasksMax does not come from the linked 10-tasksmax.conf drop-in: $live_drops"
+    ok "live slice: TasksMax=8000 sourced from the linked drop-in"
+  else
+    ok "live slice: skipped (no user systemd in this environment)"
+  fi
+else
+  ok "live slice: skipped (no systemctl)"
 fi
-if grep -qE 'FLEET_SPAWN_SOFT_CEILING = 2800' "$core"; then
-  fail "spawn-guard-core.ts reintroduced FLEET_SPAWN_SOFT_CEILING = 2800"
-fi
-grep -q 'FLEET_SPAWN_SOFT_CEILING' "$hook" \
-  || fail "bash-spawn-hook.ts must interpolate FLEET_SPAWN_SOFT_CEILING"
-grep -q 'FLEET_SLICE_TASKS_MAX' "$hook" \
-  || fail "bash-spawn-hook.ts must interpolate FLEET_SLICE_TASKS_MAX"
-if grep -q 'ceiling=2800/3000' "$hook"; then
-  fail "bash-spawn-hook.ts still hardcodes ceiling=2800/3000"
-fi
-ok "spawn-guard: 8000/7500; EXTLOAD interpolates constants"
 
-# --- 4. the three repo sources exist ---------------------------------------
-# MANIFEST was deleted 2026-09-18; the live paths are symlinks/copies sourced
-# from these three files, so their presence in the repo is the wiring.
-for f in systemd/fleet-work.slice.d/10-tasksmax.conf \
-         template/extensions/spawn-guard-core.ts \
-         template/extensions/bash-spawn-hook.ts; do
-  [[ -f "$repo_root/$f" ]] || fail "missing repo source: $f"
-done
-ok "drop-in + spawn-guard-core + bash-spawn-hook present in the repo"
+# --- 4. the repo source exists ---------------------------------------------
+# MANIFEST was deleted 2026-09-18; the live path is a symlink sourced from this
+# file, so its presence in the repo is the wiring.
+[[ -f "$repo_root/systemd/fleet-work.slice.d/10-tasksmax.conf" ]] \
+  || fail "missing repo source: systemd/fleet-work.slice.d/10-tasksmax.conf"
+ok "drop-in present in the repo"
 
 # --- 5. RAM governor unchanged ----------------------------------------------
 # fleet-ops#4263 termination: no hand-set per-worker RAM charge remains in config.
 jq -e 'has("ram_gb_per_worker") | not' "$caps" >/dev/null || fail "config/seat-caps.json must not carry ram_gb_per_worker after fleet-ops#4263"
 ok "seat-caps.json carries no per-worker RAM charge (fleet-ops#4263)"
 
-echo "OK: fleet-work.slice TasksMax=8000; spawn-guard 7500/8000; RAM admission unchanged"
+echo "OK: fleet-work.slice TasksMax=8000 (systemd is the only ceiling); RAM admission unchanged"

@@ -25,7 +25,6 @@ import { spawnSync } from "node:child_process";
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { writeSeatHealthFromCliSpawn, writeSeatHealthFromCliTimeout } from "../seat-health.ts";
 import { isDevinRateLimit, parseDevinResetSeconds, planDevinRetry } from "./rate-limit.ts";
 import { loadSeatEnv, modelsFromModelsJson } from "./seat-env";
 
@@ -199,7 +198,8 @@ function streamDevin(
 						// quota. Record it as a DISTINCT mode so the ledger does not treat
 						// it as rate-limit/quota exhaustion (long window) — short backoff.
 						if ((child.error as NodeJS.ErrnoException).code === "ETIMEDOUT") {
-							writeSeatHealthFromCliTimeout(model.provider, model.id);
+							// seat-health.ts deleted 2026-09-18 (glue sweep): LiteLLM/Prometheus own seat state.
+							// writeSeatHealthFromCliTimeout(model.provider, model.id);
 						}
 						throw child.error;
 					}
@@ -211,7 +211,8 @@ function streamDevin(
 					const failureText = `${stderr}\n${stdoutSoFar}`;
 					// The ledger still learns about the wall (other workers skip the seat
 					// for its reset); a successful resume rewrites the record healthy.
-					writeSeatHealthFromCliSpawn(model.provider, model.id, failureText, child.status);
+					// seat-health.ts deleted 2026-09-18 (glue sweep): LiteLLM/Prometheus own seat state.
+					// writeSeatHealthFromCliSpawn(model.provider, model.id, failureText, child.status);
 
 					if (isDevinRateLimit(failureText)) {
 						const resetS = parseDevinResetSeconds(failureText);
@@ -244,7 +245,8 @@ function streamDevin(
 			}
 
 			const stdout = child.stdout?.toString() || "";
-			writeSeatHealthFromCliSpawn(model.provider, model.id, stdout, 0);
+			// seat-health.ts deleted 2026-09-18 (glue sweep): LiteLLM/Prometheus own seat state.
+			// writeSeatHealthFromCliSpawn(model.provider, model.id, stdout, 0);
 
 			// Push text content
 			output.content.push({ type: "text", text: "" });

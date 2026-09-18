@@ -26,7 +26,6 @@ import {
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { spawnSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
-import { writeSeatHealthFromCliSpawn, writeSeatHealthFromCliTimeout } from "../seat-health.ts";
 import { loadSeatEnv, modelsFromModelsJson } from "./seat-env";
 
 // =============================================================================
@@ -173,9 +172,10 @@ function streamCursor(
 			if (child.error) {
 				// ETIMEDOUT means the cursor-agent CLI itself hung — distinct from
 				// quota exhaustion. Record as cli_timeout (short backoff), NOT a
-				// long rate-limit window. See seat-health.ts.
+				// long rate-limit window.
 				if ((child.error as NodeJS.ErrnoException).code === "ETIMEDOUT") {
-					writeSeatHealthFromCliTimeout(model.provider, model.id);
+					// seat-health.ts deleted 2026-09-18 (glue sweep): LiteLLM/Prometheus own seat state.
+					// writeSeatHealthFromCliTimeout(model.provider, model.id);
 				}
 				throw child.error;
 			}
@@ -183,17 +183,13 @@ function streamCursor(
 			if (child.status !== 0 && child.status !== null) {
 				const stderr = child.stderr?.toString() || "";
 				const stdout = child.stdout?.toString() || "";
-				writeSeatHealthFromCliSpawn(
-					model.provider,
-					model.id,
-					`${stderr}\n${stdout}`,
-					child.status,
-				);
+				// seat-health.ts deleted 2026-09-18 (glue sweep): LiteLLM/Prometheus own seat state.
 				throw new Error(`Cursor exited with code ${child.status}: ${stderr.slice(0, 1000)}`);
 			}
 
 			const stdout = child.stdout?.toString() || "";
-			writeSeatHealthFromCliSpawn(model.provider, model.id, stdout, 0);
+			// seat-health.ts deleted 2026-09-18 (glue sweep): LiteLLM/Prometheus own seat state.
+			// writeSeatHealthFromCliSpawn(model.provider, model.id, stdout, 0);
 
 			// Push text content
 			output.content.push({ type: "text", text: "" });
