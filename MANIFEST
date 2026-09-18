@@ -121,8 +121,6 @@ lib/scout-money-path-walk.mjs /home/nish/.local/lib/pi-packet/scout-money-path-w
 # fleet-ops#522: session-close lint for "debugging sessions end with a
 # playbook note". Heartbeat-tier1 block 18; fail-loud + auto-file on a
 # multi-attempt debug that skipped the four-heading vault note.
-lib/debug-playbook.py /home/nish/.local/lib/pi-packet/debug-playbook.py
-bin/fleet-debug-playbook /home/nish/.local/bin/fleet-debug-playbook
 # fleet-ops#1435: observe-to-close an open issue that a merged PR shipped
 # but forgot to close (the forgotten-Closes-trailer class). Heartbeat-tier1;
 # close gated behind FLEET_MERGED_PR_CLOSE_OK=1.
@@ -240,7 +238,6 @@ systemd/fleet-metrics-export.service.d/40-prepaid-spend.conf /home/nish/.config/
 # binary; do not re-introduce issue-number order.
 bin/pi-intake-priority /home/nish/.local/bin/pi-intake-priority
 lib/intake-priority.sh /home/nish/.local/lib/pi-packet/intake-priority.sh
-bin/pi-packet-guard /home/nish/.local/bin/pi-packet-guard
 # fleet-ops#454: green-and-empty scout detector. N consecutive scout
 # completions with no net ready-work increase while below the 12h
 # buffer LOUD + auto-file escalate-senior. Wired as ExecStartPre /
@@ -324,7 +321,6 @@ template/extensions/jev-decide.ts /home/nish/.pi/agent/extensions/jev-decide.ts
 # fleet-ops#543: agent-ready spec-gate. First admission (sweep + tally)
 # refuses a body without termination:/accept:/required:/metric:.
 # fleet-ops#3309: check-size bounces >2 live required: lines at claim time.
-lib/agent-ready-spec-gate.py /home/nish/.local/lib/pi-packet/agent-ready-spec-gate.py
 # fleet-ops#4266: close the `systemd-run --user --scope` escalation bypass —
 # generic scope.d drop-in mirroring service.d/10-escalate.conf (scopes take
 # no service-level drop-ins). Exclusions: init.scope + app-*.scope enforced
@@ -347,7 +343,6 @@ bin/money-boundary-raise /home/nish/.local/bin/money-boundary-raise
 # the other phone path. install.sh symlinks this over the hand-placed real
 # file on deploy.
 bin/hermes /home/nish/.local/bin/hermes
-bin/fleet-claim /home/nish/.local/bin/fleet-claim
 # fleet-ops#1199: atomic alert-repair claim mutex. Lives next to
 # alert-repair-dispatch under /home/nish/.local/libexec/ so the dispatch
 # script can resolve it via ALERT_REPAIR_CLAIM_BIN default. install.sh
@@ -389,20 +384,13 @@ libexec/daily-digest /home/nish/.local/libexec/daily-digest
 # fleet-ops#366: mechanical-fix gate. Conference auto-rejects a failure-fix
 # with no prevention mechanism and no mechanism-impossible: line. Pure
 # evaluator — no dispatcher. Blind audit merges recurrence hits before filing.
-bin/fleet-failure-mechanism-gate /home/nish/.local/bin/fleet-failure-mechanism-gate
-lib/failure-mechanism-gate.py /home/nish/.local/lib/pi-packet/failure-mechanism-gate.py
 # fleet-ops#1548: machinery-authorization gate. Conference auto-rejects
 # new systemd/** / MANIFEST unit lines that are neither allowlisted nor
 # carrying authorized-by-nish:. Pure evaluator — no dispatcher. Blind
 # audit merges hand-placed-unit hunt hits before filing.
-bin/fleet-machinery-authorization-gate /home/nish/.local/bin/fleet-machinery-authorization-gate
-lib/machinery-authorization-gate.py /home/nish/.local/lib/pi-packet/machinery-authorization-gate.py
-config/machinery-allowlist.json /home/nish/.local/state/pi-packet/machinery-allowlist.json
 # fleet-ops#1010: organ-heartbeat invariant. Every fleet organ ships an
 # absent() rule in the same PR; the registry enumerates the known organs
 # and the gate rejects a PR that touches an organ without its absent() rule.
-bin/fleet-same-repo-closes-gate /home/nish/.local/bin/fleet-same-repo-closes-gate
-lib/same-repo-closes-gate.py /home/nish/.local/lib/pi-packet/same-repo-closes-gate.py
 # fleet-ops#1229: merge-trample gate. Conference + heartbeat queue-pass
 # reject a PR whose merge diff deletes paths its commits never modified,
 # or the #1228 worktree-gap class. Pure evaluator — no dispatcher.
@@ -416,7 +404,6 @@ lib/merge-trample-gate.py /home/nish/.local/lib/pi-packet/merge-trample-gate.py
 bin/fleet-gate-arm-guard /home/nish/.local/bin/fleet-gate-arm-guard
 lib/gate-arm-guard.py /home/nish/.local/lib/pi-packet/gate-arm-guard.py
 lib/gate-integrity-config.sh /home/nish/.local/lib/pi-packet/gate-integrity-config.sh
-prompts/senior-conference.md /home/nish/.pi/agent/prompts/senior-conference.md
 # fleet-ops#180: gap-closure loop (audit→fix→drill→measure→conference).
 # Heartbeat starts the loop oneshot once per tick. Conference/drill/
 # fleet-gap-closure-auditor@ are started by the loop. Stub units live in
@@ -541,8 +528,6 @@ credentials/bootstrap.html /home/nish/.config/fleet-worker/bootstrap.html
 # fleet-ops#413: identity-separation gate + App-identity freshness canary.
 # Canary is invoked by heartbeat-tier1 every tick; gate is a pure evaluator
 # for the implementer≠attestor drill (0509 wiring is a follow-up).
-bin/attest-identity-gate /home/nish/.local/bin/attest-identity-gate
-lib/attest-identity-gate.py /home/nish/.local/lib/pi-packet/attest-identity-gate.py
 # fleet-ops#436: parked-flash watcher. Runs `pi --list-models` every
 # heartbeat-tier1 tick; quiet while Qwen 3.8 / GLM 5.3 flash are absent from
 # Pi's catalog, auto-files a revisit+bench+wire ticket the moment one
@@ -594,7 +579,6 @@ config/geo-aeo-policy.json /home/nish/.local/state/pi-packet/geo-aeo-policy.json
 # detects a worker PR that skipped the run (no Verification: run-cue /
 # run-proof: line), auto-files, and fails loud if the watch is broken.
 # Heartbeat-tier1 block 26.
-lib/exec-review-receipt.py /home/nish/.local/lib/pi-packet/exec-review-receipt.py
 # fleet-ops#540: 24h/12h work-supply drain trigger. Remaining hours from
 # agent-ready count / measured close rate. ExecCondition rests at >=24h;
 # low-water go-hams at <12h; heartbeat canary fail-loud if scouts sit idle
@@ -653,7 +637,6 @@ systemd/fleet-judge-block-disarm.service /home/nish/.config/systemd/user/fleet-j
 # Fail-loud if an enrolled product repo HEAD is missing
 # .claude/skills/verify-<app>/SKILL.md with required sections + features/.
 # Deferred products auto-file. Heartbeat-tier1 block 29.
-config/verify-harness.json /home/nish/.local/state/pi-packet/verify-harness.json
 # fleet-ops#6115: the #917 SuperGrok live-validate canary is retired
 # (/health census is the authority — the litellm health canary owns the
 # dead-deployment verdict). MANIFEST row, bin, and test host gone.
@@ -757,7 +740,6 @@ systemd/fleet-deploy-check.timer /home/nish/.config/systemd/user/fleet-deploy-ch
 # write would re-fire the unit that just ran.
 # fleet-ops#468 TOP GEAR teeth + escalation-matrix FIXES (both wired into
 # fleet-heartbeat-tier1 block 15; fail-loud on violation -> unit-escalation).
-bin/prior-art-claim-check /home/nish/.local/bin/prior-art-claim-check
 # fleet-ops#4801: spec-judge lib (Kimi K3 Max over shared-file batches
 # before claim). Sourced by pi-intake-tick.sh; the fallback path in the
 # tick resolves this live install copy.
@@ -796,6 +778,7 @@ lib/issue-file.py /home/nish/.local/lib/pi-packet/issue-file.py
 # wfr_waiver_on; surge phase rejects a non-leverage fleet-ops claim;
 # band phase rejects a live machinery share > cap.
 lib/precedence-band.sh /home/nish/.local/lib/pi-packet/precedence-band.sh
+lib/exec-review-receipt.py /home/nish/.local/lib/pi-packet/exec-review-receipt.py
 config/precedence-band.json /home/nish/.local/state/pi-packet/precedence-band.json
 # fleet-ops#1235: /etc/default/prometheus. The Debian package owns this
 # path; the fleet-ops MANIFEST re-installs it so the retention value is
@@ -812,14 +795,6 @@ config/bare-metal-rebuild-manifest.json /home/nish/.config/fleet-ops/bare-metal-
 # auto-filer. Runs weekly before the Weekly Fleet Review, writes Prometheus
 # textfile metrics, and auto-files deduped `unguarded asset:` issues.
 config/asset-guard-map.json /home/nish/.local/state/pi-packet/asset-guard-map.json
-# fleet-ops#1460: event-driven sweep. Convert pollers to systemd .path triggers
-# and gate every remaining schedule with a named reason in timer-manifest.json.
-# Each .path unit fires on the state file its service renders; the timer stays
-# as a dead-man backstop so silence stays loud.
-# fleet-ops#1494: open-question-sweep.path removed — class-(c) watchdog
-# adjudicated MECHANICAL-INSTEAD; the Weekly Fleet Review + blind audit
-# carry the watch lens (docs/organ-catalog.md). The hand-placed .service
-# and .timer were deleted from the live box in the same turn.
 systemd/pi-intake-trigger.path /home/nish/.config/systemd/user/pi-intake-trigger.path
 systemd/pi-intake-trigger.service /home/nish/.config/systemd/user/pi-intake-trigger.service
 bin/pi-intake-trigger /home/nish/.local/bin/pi-intake-trigger
