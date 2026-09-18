@@ -1,0 +1,59 @@
+#!/bin/sh
+# Fleet metrics probe. Glue sweep 2026-09-18 (exporter lane).
+#
+# Replaces libexec/fleet-metrics-export.py (4,679 lines, ~90 gauge families).
+# Emits ONLY the three facts that have no stock exporter on this host, because
+# they live behind a vendor API rather than a /metrics endpoint. Everything
+# else config/fleet_rules.yml alerts on comes from LiteLLM's own prometheus
+# callback, node_exporter, the restic restore-test textfile, or up{}.
+#
+# curl + jq + gh only. No Python, no library, no state directory.
+# Adding a metric here requires a rule that consumes it: a gauge nothing
+# alerts on is exactly what this sweep deleted.
+#
+# The brief asked for this to be a single curl|jq ExecStart= line. It is a file
+# instead because systemd's escape handling and $-expansion both rewrite the
+# line before /bin/sh ever sees it: `\"` is silently dropped (so Prometheus
+# label quotes vanish and the textfile is unparseable) and `$T` is expanded by
+# systemd, not the shell. Proven with systemd-analyze --user verify on the
+# one-line version. Same dependencies, same size, and it can actually be read.
+set -u
+
+T=/var/lib/prometheus/node-exporter/fleet.prom
+N="$T.$$"
+
+{
+    echo '# HELP fleet_main_ci_green Latest completed CI run on the default branch succeeded (1) or not (0).'
+    echo '# TYPE fleet_main_ci_green gauge'
+    for r in fleet-ops 0509; do
+        c=$(gh api "repos/Nishfleet/$r/actions/runs?branch=main&per_page=1&status=completed" \
+              --jq '.workflow_runs[0].conclusion' 2>/dev/null)
+        # No answer means GitHub was unreachable, not that main is green.
+        # Emit nothing and let FleetProbeStale catch a persistent outage.
+        [ -z "$c" ] && continue
+        [ "$c" = success ] && v=1 || v=0
+        echo "fleet_main_ci_green{repo=\"$r\"} $v"
+    done
+
+    echo '# HELP fleet_product_up Production origin returned a success status (1) or not (0).'
+    echo '# TYPE fleet_product_up gauge'
+    s=$(curl -s -o /dev/null -w '%{http_code}' --max-time 10 https://0509.io 2>/dev/null)
+    case "$s" in
+        2*|3*) echo 'fleet_product_up{repo="0509"} 1' ;;
+        *)     echo 'fleet_product_up{repo="0509"} 0' ;;
+    esac
+
+    echo '# HELP fleet_prepaid_credits_usd Prepaid vendor credit remaining, USD (vendor API only).'
+    echo '# TYPE fleet_prepaid_credits_usd gauge'
+    t=$(jq -r .accessToken "$HOME/.config/cursor/auth.json" 2>/dev/null)
+    if [ -n "$t" ] && [ "$t" != null ]; then
+        curl -s --max-time 10 -X POST \
+            -H "Authorization: Bearer $t" \
+            -H 'Content-Type: application/json' -d '{}' \
+            https://api2.cursor.sh/aiserver.v1.DashboardService/GetCurrentPeriodUsage 2>/dev/null \
+          | jq -r '.planUsage | select(.limit != null)
+                   | "fleet_prepaid_credits_usd{provider=\"cursor\"} \(.limit - (.limit * ((.apiPercentUsed // 0) / 100)))"' \
+            2>/dev/null
+    fi
+# Atomic: node_exporter must never read a half-written textfile.
+} > "$N" && mv -f "$N" "$T"

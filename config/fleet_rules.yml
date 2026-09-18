@@ -1,6 +1,44 @@
+# Fleet alert rules.
+#
+# Glue sweep 2026-09-18 (exporter lane). This file went 67 rules -> 14.
+#
+# THE RULE FOR THIS FILE, and the only one: a rule lives here if and only if
+#   (a) it guards money, backups, the seat proxy, main-red, or product
+#       availability, AND
+#   (b) its expression is written on a metric a STOCK exporter already emits.
+#
+# Stock sources, proven present on this host 2026-09-18:
+#   litellm_*                     LiteLLM's own prometheus callback, 127.0.0.1:4000/metrics
+#   node_systemd_unit_state       node_exporter systemd collector
+#   node_filesystem_*, node_memory_*   node_exporter
+#   node_textfile_mtime_seconds   node_exporter textfile collector
+#   fleet_restore_drill_*         /usr/local/sbin/restic-r2-restore-test writes
+#   fleet_litellm_pgdump_*        restic-restore-test.prom (same writer)
+#   up{}                          prometheus scrape state
+#   fleet_main_ci_green, fleet_product_up, fleet_prepaid_credits_usd
+#                                 fleet-metrics-export.service — now ONE curl|jq
+#                                 ExecStart line, no Python. Vendor state (GitHub
+#                                 CI, the 0509 origin, Cursor's bucket) has no
+#                                 stock exporter; this is the smallest reader.
+#
+# probe_success is NOT available (no blackbox_exporter on this host — the
+# prometheus query returns an empty vector), so no rule may use it.
+#
+# The 53 deleted rules all read fleet_* gauges produced by the 4,679-line
+# libexec/fleet-metrics-export.py and its SLO/quality libraries, which this
+# sweep deleted. A rule with no producer is worse than no rule: it reads as
+# coverage and can never fire.
+#
+# severity routing (config/alertmanager.yml): nish -> telegram (Nish's phone),
+# page -> telegram, critical/warning/none -> prometheus-am-executor (repair
+# dispatch). Only money reaches the phone as severity=nish.
+
 groups:
   - name: fleet_watchdog
     rules:
+      # Always firing. Its ABSENCE is the signal: if this stops arriving,
+      # Prometheus or Alertmanager is dead and every other rule below is
+      # silently unenforced.
       - alert: Watchdog
         expr: vector(1)
         labels:
@@ -9,290 +47,92 @@ groups:
           summary: "Watchdog heartbeat for the alerting pipeline"
           description: "Always firing. If this disappears, Prometheus or Alertmanager is dead."
 
-      # Glue sweep 2026-09-18: the global service.d/timer.d/path.d/socket.d/
-      # scope.d 10-escalate.conf drop-ins (OnFailure=unit-escalation@%n) were
-      # deleted with the escalation tower. node_systemd_unit_state covers ROOT
-      # units only, so this is the one replacement rule for the load-bearing
-      # USER units whose failure had no other signal. It rides the existing
-      # fleet_timer_last_trigger_seconds gauge the exporter already emits — no
-      # new exporter, no new textfile, no new unit. Every timer listed here
-      # has a cadence of 60 min or less, so 3h is a 3x floor.
-      # Units NOT listed are already covered: root units by SystemUnitFailed;
-      # gh-runner@1/2/3 by Restart=always; the litellm trio by Restart=
-      # on-failure + FleetLitellmProxyAbsent; pi-intake@ by Restart=on-failure
-      # + OnFailure=pi-intake-repair@; prometheus-am-executor and syncthing by Restart=
-      # on-failure; fleet-metrics-export by FleetMetricsExportStale below;
-      # pi-transport-check by its 20-self-heal.conf ExecStart repair.
-      - alert: FleetLoadBearingTimerStale
-        expr: (time() - fleet_timer_last_trigger_seconds{timer=~"fleet-merged-pr-close\\.timer|fleet-sync\\.timer|pi-intake@.+\\.timer|pi-scout@.+\\.timer|pi-transport-check\\.timer"}) > 10800
-        for: 10m
-        labels:
-          severity: critical
-          service: fleet
-        annotations:
-          summary: "load-bearing timer {{ $labels.timer }} has not fired in 3+ hours"
-          description: "fleet_timer_last_trigger_seconds{timer=\"{{ $labels.timer }}\"} is over 3h stale. These user units are Restart=no or have no other failure signal since the escalation tower was deleted (glue sweep 2026-09-18). Repair: systemctl --user status {{ $labels.timer }} and its .service, then journalctl --user -u the service."
-
-      - alert: FleetMetricsExportStale
-        expr: (time() - node_textfile_mtime_seconds{file=~".*fleet.prom"}) > 1200
-        for: 2m
-        labels:
-          severity: critical
-          service: fleet
-        annotations:
-          summary: "fleet metrics exporter frozen for 20+ minutes"
-          description: "Timer alerts are blind; fleet-metrics-export.timer or its script is dead."
-
-      - alert: FleetMetricsExportMissing
-        expr: absent(node_textfile_mtime_seconds{file=~".*fleet.prom"})
-        for: 5m
-        labels:
-          severity: critical
-          service: fleet
-        annotations:
-          summary: "fleet metrics textfile missing"
-          description: "fleet.prom is gone from the node-exporter textfile dir."
-
-      - alert: DetachedJobDied
-        # fleet-ops#4266: a pi-systemd-run unit ended WITHOUT its deliverable
-        # (even at exit 0 — a clean stop never fires OnFailure, so the
-        # STOP-REASON + /fail ping + gauge 1 written by pi-detached-deadman
-        # are the only failure signal). Series are cleared by the deadman on
-        # a success verdict or by pi-detached-deadman --clear after the
-        # repair worker relaunches.
-        expr: fleet_detached_job_died == 1
-        for: 1m
-        labels:
-          severity: critical
-          service: fleet
-        annotations:
-          summary: "Detached job {{ $labels.unit }} ended without its deliverable"
-          description: "unit={{ $labels.unit }} dispatch={{ $labels.dispatch }} deliverable_promised={{ $labels.deliverable }} deadline={{ $labels.deadline }} (fleet-ops#4266). deliverable_promised is a 0/1 FLAG from the fleet_detached_job_died series, NOT a path: 0 = the run promised no artifact, so relaunch with the same --stdin packet and OMIT --deliverable; 1 = it promised one, so pass the real artifact path. Never pass the literal 0/1 (it resolves to <workdir>/0 and can never exist — live 2026-09-10: a repair worker passed `--deliverable 0` and false-tripped the auditor on a migration that had already merged). Clear the dead-man once relaunched: pi-detached-deadman --clear {{ $labels.unit }} (fleet-ops#4921: the command is on PATH, symlinked from the canonical checkout /home/nish/workspaces/tooling/fleet-ops-deploy-clone/ — never a cwd-relative `bin/...` path, which made repair workers guess the wrong checkout and swallow a pi-detached-deadman ENOENT) error_class={{ $labels.error_class }} cause_unit={{ $labels.cause_unit }} (fleet-ops#5799: cause_unit=fleet-litellm-proxy = the shared text-lane PROXY organ was bounced under the run; the failure is the organ, not the worker — relaunch the packet, the bounce is recorded; empty = the death predates the attribution or no provider error was found)"
-
-      - alert: FleetUndersatGuardAbsent
-        expr: absent(fleet_pi_workers_active)
-        for: 3h
-        labels:
-          severity: critical
-          service: fleet
-        annotations:
-          summary: "undersaturation guard metrics absent — the never-idle guard is missing or dead"
-          description: "Repair worker: (re)build per /home/nish/workspaces/agent-state/alert-repair/packet-13-undersaturation-guard.md until fleet_pi_workers_active exports. Check unit undersat-guard-r2-20260827 first."
-
-      - alert: FleetPiSeatUnhealthy
-        expr: fleet_pi_seat_healthy == 0
-        for: 30m
-        labels:
-          severity: warning
-          service: fleet
-        annotations:
-          summary: "Pi seat unhealthy for 30+ minutes"
-          description: "pi-seat-health.json reports a non-healthy seat class."
-
-      # fleet-ops#3111: a stale pi-seat-health.json is UNKNOWN, never "healthy".
-      # The 2026-09-03 incident left the console tile green on a 2-day-old
-      # observation while the transport was down 33h. -1 = no observation at all.
-      - alert: FleetPiSeatHealthStale
-        expr: fleet_pi_seat_health_age_seconds == -1 or fleet_pi_seat_health_age_seconds > 1800
-        for: 5m
-        labels:
-          severity: warning
-          service: fleet
-        annotations:
-          summary: "Pi seat health observation is stale or absent (>30 min)"
-          description: "pi-seat-health.json has not been refreshed in over 30 minutes (or is absent/unparseable, age=-1). The console 'seat healthy' tile is NOT trustworthy while this fires — treat the seat as UNKNOWN, never healthy. Check pi-transport-check (journalctl --user -u pi-transport-check) and the seat-health extension. fleet-ops#3111."
-
-      # fleet-ops#3111: stale cap=0 seats need re-audition. seat-lib
-      # auto-expires them to cap=1 after 14d, but sustained > 0 here means
-      # seats are lingering at cap=0 past their re-audition date — the
-      # 2026-09-03 incident showed groq/inferx/orcarouter sitting for weeks.
-      - alert: FleetSeatCap0Stale
-        expr: fleet_seat_cap0_stale_total > 0
-        for: 1h
-        labels:
-          severity: info
-          service: fleet
-        annotations:
-          summary: "stale cap=0 seats need re-audition or will auto-expire"
-          description: "One or more seats are at cap=0 with intentional_cap_zero=stale — they have a dated re-audition reason and have not been re-probed. seat-lib auto-expires them to cap=1 after 14d (SEAT_CAP_ZERO_STALE_TTL_S); this alert fires 1h after the first stale seat appears so the operator can re-audition BEFORE the auto-expiry (probe the seat live; if it works, restore the cap; if not, re-date the reason). The per-seat fleet_seat_cap0_stale series names each seat with its age_seconds. fleet-ops#3111."
-
-      - alert: FleetDeadCredentialSeats
-        expr: fleet_pi_seat_dead_credential_total > 0
-        for: 5m
-        labels:
-          severity: warning
-          service: fleet
-        annotations:
-          summary: "dead-credential seats need re-auth or retirement"
-          description: "One or more ENROLLED (model cap>0) seats are seat_dead=true carrying a credentials_bad signal (HTTP 401/403) in health_class or failure_mode, and will not recover on their own (fleet-ops#1445, fleet-ops#2667, fleet-ops#3301). Cap=0 rows are excluded: pick_seat never routes to them, so a 401 there is not a re-auth action. The per-seat fleet_pi_seat_dead_credential series names each seat and its health_class. Triage: probe the seat live AND probe a second model on the same provider as a control. If the control also fails, the credential is dead -> re-auth. If the control succeeds, the credential is fine and the MODEL is gone (a provider can return 401/403 for a retired slug) -> retire that model row in config/seat-caps.json at cap 0 with intentional_cap_zero=corpse and a dated reason. health_class=corpse means terminal: re-auth cannot help, retire it. Ledger: /home/nish/workspaces/agent-state/lanes/seats."
-
-      - alert: FleetProviderQuotaExhausted
-        expr: fleet_provider_quota_exhausted_total > 0
-        for: 30m
-        labels:
-          severity: warning
-          service: fleet
-        annotations:
-          summary: "provider-level quota exhaustion — one billing wall, multiple seats 402"
-          description: "fleet-ops#2712: a provider has >=2 seats reporting HTTP 402/health_class=quota_exhausted within the last 1h. The per-provider fleet_provider_quota_exhausted{provider=\"...\"} series names the affected provider and its seat count; the seat-health ledger at /home/nish/workspaces/agent-state/lanes/seats lists each seat. This is ONE account-level billing wall, not N independent seat faults — triage the provider's quota/billing, not each seat separately. Until the billing wall clears the seat_availability SLO burn is expected (quota_exhausted seats are held unconditionally; see _SEAT_RELEASE_AT_EXPIRY_CLASSES in libexec/fleet-metrics-export.py)."
-
-      # fleet-ops#4217: a seat's live quota figure has gone stale.
-      # fleet_seat_quota_observed_seconds is "seconds since the quota was last
-      # observed from the provider" — the exporter now stamps it with the real
-      # observation time (the fetch, or the cache's own ts when a dying fetch
-      # serves a stale cache). A healthy read is 0-300s on the 5-min export
-      # cadence. > QUOTA_STALE_S (900s, 15 min) means the provider's own quota
-      # endpoint has stopped answering or its credential/session died, so the
-      # shown remaining% is stale. absent() on the whole family fires when the
-      # exporter's quota path is broken entirely (no provider emits a row). This
-      # is the "Stale >15 min => absent, and an absent() alert" acceptance item
-      # — the metric powering it never reported a real age before, so no alert
-      # could ever fire.
-      - alert: FleetSeatQuotaStale
-        # 2026-09-13: #4221-style unless-gate, same shape as
-        # FleetClaudeQuotaStale. While the exporter's claude denial sidecar is
-        # live (org subscription cancelled, claude_free denies ALL OAuth —
-        # #4611; the gauge reads source="denied"), the deliberately-dark
-        # claude series must not page the GENERIC stale rule too: its
-        # observed_seconds grows past 900s by design until the subscription
-        # returns. Matched on(provider) so ONLY the claude series is gated;
-        # every other provider's staleness and the whole-family absent() leg
-        # stay loud. The gate lifts itself when the subscription returns
-        # (first 200 clears workspaces/agent-state/fleet-metrics/
-        # claude-quota-backoff.json — no human un-gating step).
-        expr: (fleet_seat_quota_observed_seconds > 900 or absent(fleet_seat_quota_observed_seconds)) unless on(provider) (fleet_seat_quota_observed_seconds{provider="claude",source="denied"} > 0)
-        for: 5m
-        labels:
-          severity: warning
-          service: fleet
-        annotations:
-          summary: "live seat quota observation stale or absent (>15 min, fleet-ops#4217)"
-          description: "fleet-ops#4217: a provider's fleet_seat_quota_observed_seconds is > QUOTA_STALE_S (900s, 15 min) OR the whole fleet_seat_quota family is absent from fleet.prom. The provider's remaining% figure is stale — its quota endpoint stopped answering or its credential/session died on this VPS. The per-provider fleet_seat_quota_observed_seconds{provider=\"...\"} series names the seat; repair the credential/session as in #4233 (credential-blocked API seats) / #4232 (browser-dashboard seats), or investigate the endpoint. A healthy exporter re-fetches every 5 min, so this firing means the provider has not been observed for a full 15 min. 2026-09-13: while provider=claude reads source=\"denied\" (org subscription cancelled, claude_free denies all OAuth — deliberate, #4611), the claude series is unless-gated quiet here and in FleetClaudeQuotaStale; the denial state lives in workspaces/agent-state/fleet-metrics/claude-quota-backoff.json (6h recheck, a 200 clears it) — a deliberately unpaid-dark claude seat is NOT this alert's repair case."
-
-      # fleet-ops#4611: the claude OAuth quota meter went silently absent for 7d
-      # because a 401 fetch dropped the whole claude family and the generic
-      # FleetSeatQuotaStale absent() leg never fired (other providers kept the
-      # family present). The exporter now ALWAYS emits a growing
-      # fleet_seat_quota_observed_seconds{provider="claude",source="stale"} on a
-      # dead fetch (http 401/429 -> api.anthropic.com/api/oauth/usage), so this
-      # rule's first leg fires, and the second leg fires if the claude gauge is
-      # missing entirely. claude is a real billable seat: a dark meter is
-      # invisible spend risk under the zero-revenue standing rule (fleet-ops#3150)
-      # — no spend without Nish's visibility.
-      - alert: FleetClaudeQuotaStale
-        # 2026-09-13: #4221-style unless-gate — when the exporter reports
-        # source="denied" (the org's subscription was cancelled and claude_free
-        # denies ALL OAuth: 403 oauth_not_allowed_for_organization on
-        # /api/oauth/usage AND /v1/messages, proven live), the meter being dark
-        # is deliberate, not broken, so this alert stays quiet. The gate lifts
-        # itself when the subscription returns (first 200 clears the
-        # fleet-metrics/claude-quota-backoff.json sidecar and the denied series).
-        # To force-verify a re-subscribed org, delete that sidecar; the next
-        # 5-min exporter run fetches for real.
-        expr: (fleet_seat_quota_observed_seconds{provider="claude"} > 900 or absent(fleet_seat_quota_remaining_pct{provider="claude"})) unless on() (fleet_seat_quota_observed_seconds{provider="claude",source="denied"} > 0)
-        for: 5m
-        labels:
-          severity: warning
-          service: fleet
-        annotations:
-          summary: "claude OAuth quota meter stale or absent (>15 min, fleet-ops#4611)"
-          description: "fleet-ops#4611/#4670: fleet_seat_quota_observed_seconds{provider=\"claude\"} is > QUOTA_STALE_S (900s, 15 min) OR fleet_seat_quota_remaining_pct{provider=\"claude\"} is absent from fleet.prom — the claude OAuth usage endpoint (api.anthropic.com/api/oauth/usage) stopped answering or the file login at ~/.claude/.credentials.json is dead (HTTP 401/429). claude is a real billable seat; a dark meter is invisible spend risk under the zero-revenue rule (fleet-ops#3150). The exporter refreshes that file token via platform.claude.com/v1/oauth/token before the 8h expiry (setup-token is inference-only and is never used). If this still fires, the refresh grant failed or the usage endpoint is 429ing; repair the file login or investigate the endpoint. 2026-09-13: the subscription WAS cancelled (profile endpoint: subscription_status=canceled, organization_type=claude_free) so claude_free denies all OAuth — the exporter then emits source=denied and this alert deliberately stays quiet (#4221-style unless-gate) until the subscription returns; denial state lives in workspaces/agent-state/fleet-metrics/claude-quota-backoff.json (6h recheck, 200 clears it)."
-
-      # fleet-ops#3284 (child of #3150): the zero-revenue standing rule needs a
-      # hard money boundary, not just a digest line. Two legs, per provider:
-      #   - fleet_seat_spend_today_usd > 5 — current-UTC-day metered spend over
-      #     the $5/day line. The day-labelled fleet_seat_spend_usd series cannot
-      #     express "today" in a static PromQL rule (the day label is a date
-      #     string, not comparable to now()), so the exporter also emits this
-      #     day-less copy of the current day's row.
-      #   - fleet_seat_credits_remaining_usd < 5 — the vendor-reported balance
-      #     is under $5. A fetch failure OMITS the series rather than emitting
-      #     a fake 0 (_cached_vendor_json -> None), so a vendor API outage
-      #     cannot false-fire this leg.
-      # severity=warning routes to repair-dispatch, never the phone directly —
-      # the Nish route is the repair worker writing a MONEY-BOUNDARY entry to
-      # NISH-ESCALATIONS.md, which the nish-boundary-notify.path unit delivers
-      # (the class-'money' page; MONEY-BOUNDARY is Nish-reserved by rule).
-      # for:5m rides out a single mid-write textfile scrape or a one-tick
-      # export blip; a real breach holds for the rest of the UTC day anyway.
-      #
-      # fleet-ops#4627: starvation gate. A dry METERED provider is a lane
-      # fault, not a money decision, while any prepaid/free seat can carry
-      # the work. The alert fires ONLY when the fleet is starved — zero
-      # healthy prepaid/free seats (fleet_seat_healthy{class=~"prepaid|free"}
-      # == 0 or absent). The `and on()` applies the fleet-wide condition to
-      # every per-provider boundary series, so a firing alert with healthy
-      # prepaid seats is bench+log, never a page. Defense-in-depth: the
-      # writer (bin/money-boundary-raise) and the notifier
-      # (bin/nish-boundary-notify) each re-check the seat state so a
-      # hand-written or stale line is also suppressed.
-      - alert: FleetProviderSpendBoundary
-        expr: (fleet_seat_spend_today_usd > 5 or fleet_seat_credits_remaining_usd < 5) and on() (sum(fleet_seat_healthy{class=~"prepaid|free"}) == 0 or absent(fleet_seat_healthy{class=~"prepaid|free"}))
-        for: 5m
-        labels:
-          severity: warning
-          service: fleet
-        annotations:
-          summary: "provider {{ $labels.provider }} crossed the USD 5 money boundary AND the fleet is starved (no healthy prepaid/free seat)"
-          description: "fleet-ops#3284/#4627: provider {{ $labels.provider }} breached the money boundary — fleet_seat_spend_today_usd > 5 (current-UTC-day metered spend) and/or fleet_seat_credits_remaining_usd < 5 (vendor-reported balance) — AND the fleet is starved (fleet_seat_healthy{class=~\"prepaid|free\"} == 0, no healthy prepaid/free seat can carry the work). A dry metered provider with healthy prepaid/free seats is a lane fault, not a money page; this alert is gated to fire only on starvation. Repair worker — run the deterministic money-wall raise bin/money-boundary-raise in the fleet-ops deploy clone: 'bin/money-boundary-raise {{ $labels.provider }} <spend_today_usd from fleet_seat_spend_today_usd> <credits_remaining_usd from fleet_seat_credits_remaining_usd>'. That ONE script does BOTH required steps IN ORDER in one run (fleet-ops#4477): (1) appends the MONEY-BOUNDARY line to /home/nish/workspaces/agent-state/NISH-ESCALATIONS.md (MONEY-BOUNDARY as the second whitespace field, what nish-boundary-notify.path delivers to Nish's phone), deduped to one phone ping per wall per UTC day, and (2) benches the provider's cap>0 seats via the quota_bench path (source=money_boundary, far-future bench_until +365d, ledger lines under /home/nish/workspaces/agent-state/lanes/seats/) plus the spend-boundary-prebench backup, FAIL-LOUDing (and aborting the bench) if the ledger line cannot be written. The script re-checks fleet starvation before writing the ledger line (fleet-ops#4627): if a healthy prepaid/free seat exists it benches + logs without paging. Do NOT top up, re-auth, or un-bench — money is Nish's alone; only Nish clears the wall. Then report the entries written."
-
-      - alert: FleetKeystoneRoutingAbsent
-        expr: absent(fleet_keystone_routing_heartbeat_seconds)
-        for: 3h
-        labels:
-          severity: critical
-          service: fleet
-        annotations:
-          summary: "keystone routing organ absent — reliability-first routing is missing or dead"
-          description: "fleet-ops#1133: the keystone routing ledger (keystone-routing.jsonl) has not been touched in 3h. pick_seat is not routing keystone packets to strong seats, or the ledger was wiped. Check seat-lib.sh packet_is_keystone / pick_seat keystone branch and the pi-packet state dir."
-
-      # fleet-ops#3324: the minimum-usable floor fail-opens a recoverable
-      # bench instead of stalling. A sustained climb on the counter means the
-      # fleet is living on slightly-early retries (every tick empty, every
-      # tick fail-open) — am-executor repair, not Nish. Money walls never
-      # increment this counter. increase() over 5m staying >0 for 30m is
-      # "increasing for 30 min".
-      - alert: FleetSeatFloorFailopen
-        expr: increase(fleet_seat_floor_failopen_total[5m]) > 0
-        for: 30m
-        labels:
-          severity: warning
-          service: fleet
-        annotations:
-          summary: "seat-floor fail-open climbing for 30 min — fleet living on slightly-early retries"
-          description: "Repair worker: pick_seat has been fail-opening the shortest remaining recoverable bench (transient_fault / rate_limited / empty_run / overload_bench) for 30 minutes (fleet-ops#3324). That is a starved capable set, not a money wall. Inspect watch.log for 'seat-floor: fail-open', the seat-health ledger at /home/nish/workspaces/agent-state/lanes/seats, and journalctl --user -u pi-intake@*. A money-walled seat is never fail-opened; if every remaining seat is quota_exhausted / corpse / credentials_bad the counter stays flat and this rule stays silent."
-
-      - alert: FleetTestAlert
-        expr: fleet_test_alert == 1
-        for: 1m
-        labels:
-          severity: critical
-          service: fleet
-        annotations:
-          summary: "Fleet monitoring test alert"
-          description: "Synthetic alert for end-to-end proof."
-
-      # fleet-ops#1534: the one meta-alert that pages Nish. severity=page is
-      # the ONLY alertmanager route that reaches the phone (config/alertmanager.yml).
-      # Fires when the am-executor webhook receiver (prometheus-am-executor.service,
-      # 127.0.0.1:9095) is down — the repair path itself is broken, so no
-      # critical/warning alert can spawn a repair worker. This is the last
-      # resort: if it is silent, the repair path is healthy; if it fires,
-      # Nish must intervene manually because the automatic repair path is dead.
-      # 2m for: am-executor restarts on transient errors; only a sustained
-      # outage pages. Scraped by the am-executor job in config/prometheus.yml.
+      # Every non-money rule terminates in prometheus-am-executor, which
+      # dispatches the repair. If it is down, alerts fire into nothing.
       - alert: RepairDispatchDown
         expr: up{job="am-executor"} == 0
-        for: 2m
+        for: 5m
         labels:
           severity: page
           service: fleet
         annotations:
-          summary: "prometheus-am-executor is down — the repair path is broken"
-          description: "prometheus-am-executor.service (127.0.0.1:9095) has been down for 2+ minutes. No critical/warning alert can spawn a repair worker while this is down. Nish must restart it manually: systemctl --user restart prometheus-am-executor."
+          summary: "prometheus-am-executor is down — alerts cannot dispatch repair"
+          description: "The repair-dispatch receiver is not scrapeable. Until it returns, every critical/warning alert is silent. Repair: systemctl --user status prometheus-am-executor."
 
-  - name: host_and_system
+  - name: fleet_money
     rules:
+      # MONEY. The only rules on this file that reach Nish's phone.
+      #
+      # LiteLLM enforces the budget itself (it 400s the request when a key or
+      # deployment is over max_budget); this rule exists so a key running DOWN
+      # is visible before the fleet stalls on a hard wall. Both series come
+      # straight from LiteLLM's prometheus callback.
+      - alert: LitellmKeyBudgetNearlyExhausted
+        expr: (litellm_remaining_api_key_budget_metric / litellm_api_key_max_budget_metric) < 0.10
+        for: 10m
+        labels:
+          severity: nish
+          service: money
+        annotations:
+          summary: "LiteLLM key {{ $labels.api_key_alias }} has under 10% of its budget left"
+          description: "litellm_remaining_api_key_budget_metric for key alias {{ $labels.api_key_alias }} is below 10% of its max_budget. When it reaches zero LiteLLM hard-refuses the key and the fleet stalls. Money is Nish-reserved: raising a budget is his call, not the fleet's. Inspect with: curl -s 127.0.0.1:4000/key/info -H \"Authorization: Bearer $LITELLM_MASTER_KEY\"."
+
+      # Prepaid vendor credit is only visible through the vendor API, so it
+      # arrives via the one curl|jq textfile reader.
+      - alert: FleetPrepaidCreditsLow
+        expr: fleet_prepaid_credits_usd < 5
+        for: 15m
+        labels:
+          severity: nish
+          service: money
+        annotations:
+          summary: "prepaid seat {{ $labels.provider }} has under $5 of credit left"
+          description: "fleet_prepaid_credits_usd{provider=\"{{ $labels.provider }}\"} is below $5. The seat walls at zero and every packet routed to it fails over. Topping it up is a money decision and therefore Nish's."
+
+  - name: fleet_seat_proxy
+    rules:
+      # The seat proxy is the single routing organ. Nothing reaches a model
+      # without it.
+      - alert: FleetLitellmProxyAbsent
+        expr: absent(up{job="litellm"}) or up{job="litellm"} == 0
+        for: 5m
+        labels:
+          severity: critical
+          service: seat-proxy
+        annotations:
+          summary: "LiteLLM seat proxy is down or unscrapeable"
+          description: "up{job=\"litellm\"} is 0 or absent. Every pi worker routes through this proxy, so the whole fleet is stalled. Repair: systemctl --user status fleet-litellm-proxy, then journalctl --user -u fleet-litellm-proxy -n 100."
+
+  - name: fleet_backups
+    rules:
+      # Backups. Both series are written by /usr/local/sbin/restic-r2-restore-test
+      # into restic-restore-test.prom — a restic textfile, independent of any
+      # fleet exporter.
+      - alert: ResticRestoreProofStale
+        expr: (time() - fleet_restore_drill_last_success_seconds > 28800) or absent(fleet_restore_drill_last_success_seconds)
+        for: 15m
+        labels:
+          severity: critical
+          service: backups
+        annotations:
+          summary: "no proven restic restore in 8+ hours"
+          description: "restic-r2-restore-test.timer runs every 6h and only writes fleet_restore_drill_last_success_seconds after a --verify restore actually succeeds. Stale means the backup is unproven, which is the same risk as no backup. Repair: systemctl start restic-r2-restore-test.service and read its journal."
+
+      - alert: LitellmPgDumpStale
+        expr: (time() - fleet_litellm_pgdump_mtime_seconds > 129600) or fleet_litellm_pgdump_mtime_seconds == 0
+        for: 15m
+        labels:
+          severity: critical
+          service: backups
+        annotations:
+          summary: "LiteLLM control-plane pg_dump is stale or missing"
+          description: "The budgets/keys/spend database behind the seat proxy has no fresh dump. Losing it loses every virtual key and its spend history. Written by restic-r2-backup.service ExecStartPre; repair by running that unit."
+
+  - name: fleet_host
+    rules:
+      # Host rules are here because a full disk or an exhausted machine takes
+      # out the backups and the seat proxy — they are not general host
+      # monitoring, and the load/inode/predict_linear variants were cut.
       - alert: SystemUnitFailed
         expr: node_systemd_unit_state{state="failed"} == 1
         for: 5m
@@ -301,7 +141,7 @@ groups:
           service: host
         annotations:
           summary: "system unit {{ $labels.name }} failed"
-          description: "Root-level systemd unit in failed state; user-level escalation cannot see it."
+          description: "Root-level systemd unit {{ $labels.name }} is in failed state. Repair: systemctl status {{ $labels.name }} and journalctl -u {{ $labels.name }} -n 100."
 
       - alert: DiskAlmostFull
         expr: (node_filesystem_avail_bytes{fstype!~"tmpfs|overlay"} / node_filesystem_size_bytes) < 0.10
@@ -311,797 +151,61 @@ groups:
           service: host
         annotations:
           summary: "filesystem {{ $labels.mountpoint }} below 10% free"
-          description: "filesystem {{ $labels.mountpoint }} below 10% free"
-
-      - alert: DiskWillFillIn24h
-        expr: predict_linear(node_filesystem_avail_bytes{fstype!~"tmpfs|overlay"}[6h], 24*3600) < 0
-        for: 30m
-        labels:
-          severity: warning
-          service: host
-        annotations:
-          summary: "filesystem {{ $labels.mountpoint }} predicted to fill within 24h"
-          description: "filesystem {{ $labels.mountpoint }} predicted to fill within 24h based on 6h trend"
-
-      - alert: InodesAlmostFull
-        expr: (node_filesystem_files_free / node_filesystem_files) < 0.10
-        for: 10m
-        labels:
-          severity: critical
-          service: host
-        annotations:
-          summary: "inodes {{ $labels.mountpoint }} below 10% free"
-          description: "filesystem {{ $labels.mountpoint }} below 10% inodes free"
-
-      - alert: LoadStorm
-        expr: node_load1 > 3 * count(node_cpu_seconds_total{mode="idle"})
-        for: 2m
-        labels:
-          severity: critical
-          service: host
-        annotations:
-          summary: "load1 above 3x core count for 2m — restart storm likely"
-          description: "node_load1 > 3 * count(idle cpus) (3x nproc). Prevented by oomd + CPUWeight/IOWeight + cgroup scoping; if it still fires, the repair path root-causes it."
-
-      - alert: SustainedLoadHigh
-        expr: node_load15 > 12
-        for: 30m
-        labels:
-          severity: warning
-          service: host
-        annotations:
-          summary: "sustained load15 above 12 for 30m"
-          description: "Box has 8 vCPUs (nproc=8); threshold = 1.5 * 8 = 12 (fleet-ops#4902, 2026-09-10). The old 0.75*8=6 fired whenever 6+ workers ran their test suites and dispatched a repair worker to 'root-cause the load' (4 packets in 24h on 2026-09-10) — each one added load. A batch box at load15 8-12 is healthy; LoadStorm (3x nproc) stays the real brake, oomd + CPUWeight keep the organs responsive."
+          description: "A full disk fails the restic backup and the LiteLLM postgres write path. Repair: reclaim space, starting with agent worktrees under ~/workspaces/agent-worktrees."
 
       - alert: MemoryPressureHigh
         expr: (node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes) < 0.08
-        for: 10m
+        for: 15m
         labels:
           severity: critical
           service: host
         annotations:
-          summary: "memory available below 8% for 10m"
-          description: "node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes < 0.08"
+          summary: "under 8% memory available"
+          description: "systemd-oomd starts reaping at this point, and it does not preferentially spare the seat proxy or postgres. Repair: check the pi-issue@ worker count against the 25-worker cap in the intake prompt."
 
-      # fleet-ops#4872: FleetOomdKillsHigh alerts on sum(fleet_oomd_kills_6h) > 3
-      # but the textfile exporter only writes samples when journalctl finds
-      # systemd-oomd kills of pi-issue@* units, so the name is often absent
-      # and the alert can never fire. node_exporter already exports
-      # node_vmstat_oom_kill (live counter). Record increase over 6h as the
-      # producer. HOST-WIDE: this series carries NO unit= label (kernel OOM
-      # counter, not per-cgroup oomd). Do not claim fleet_oomd_kills_6h{unit=...}.
-      - record: fleet_oomd_kills_6h
-        expr: sum(increase(node_vmstat_oom_kill[6h]))
-
-      - alert: FleetOomdKillsHigh
-        expr: sum(fleet_oomd_kills_6h) > 3
-        for: 5m
-        labels:
-          severity: critical
-          service: fleet
-        annotations:
-          summary: "host-wide OOM kills > 3 in 6h — cut per-worker memory (fleet-ops#4891); trailing 6h window"
-          description: "sum(fleet_oomd_kills_6h) > 3 for 5m (fleet-ops#4164, #4872). fleet_oomd_kills_6h is the 6h increase of node_vmstat_oom_kill: host-wide kernel OOM, no unit= label. TRAILING WINDOW: a correct fix cannot clear this alert until the pre-fix kills age out (up to 6h) — do NOT wait for it inside the repair unit (it is killed at 60 min with no context); name the predicted clear time and exit non-zero. REMEDY: there is no hand-tuned admission charge anymore — fleet-ops#4263 deleted the seat-lib RAM governor; worker count is bounded by systemd resources (per-unit MemoryMax + oomd pressure). The host-wide kill source is per-worker memory (pi-issue tsc -b / vitest --coverage); the follow-through work item is fleet-ops#4891 (cut per-worker MemoryPeak < 1G). Do NOT raise the slice MemoryHigh above 12G."
-
-  - name: fleet_self_observation
+  - name: fleet_delivery
     rules:
-      - alert: FleetThroughputCollapse
-        expr: sum(fleet_merged_prs_24h) < 10
-        for: 6h
-        labels:
-          severity: warning
-          service: fleet
-        annotations:
-          summary: "fleet merged fewer than 10 PRs in 24h; investigate stalls."
-          description: "sum(fleet_merged_prs_24h) < 10 for 6h. Family omitted (stale gh cache) does not fire this rule."
-
-      # fleet-ops#1199: tightened from 2h to 30m. The 30m floor is enforced
-      # by prometheus-am-executor's `max: 1` (the claim/<alert-scope>-<repo>
-      # mutex went with the deleted alert-repair-dispatch), so two dispatches
-      # 10s apart cannot both spawn a worker. The threshold is ratchet-managed from this 30m start —
-      # raising it back requires a new issue and the same atomic guard
-      # to ship with the change.
+      # main-red and product availability. Neither GitHub nor the 0509 origin
+      # is a prometheus target, so both arrive through the one curl|jq
+      # ExecStart in fleet-metrics-export.service.
       - alert: FleetMainRed
         expr: fleet_main_ci_green == 0
-        for: 30m
-        labels:
-          severity: critical
-          service: fleet
-        annotations:
-          summary: "main branch CI red on {{ $labels.repo }} for 30+ minutes"
-          description: "Trunk is broken; merges/deploys unsafe. prometheus-am-executor runs the repair command with `max: 1`, so exactly one repair worker spawns at a time."
-  - name: fleet_undersaturation_guard
-    rules:
-      - alert: FleetUndersaturated
-        expr: fleet_pi_workers_active{kind="sum"} < 2 and on (instance, job) fleet_ready_work > 0 and on (instance, job) fleet_maintenance_quiescing == 0
-        for: 30m
-        labels:
-          severity: warning
-          service: fleet
-          guard: undersaturation
-        annotations:
-          summary: "workers idle while agent-ready work waits"
-          description: "fleet_pi_workers_active{kind=\"sum\"} < 2 with fleet_ready_work > 0 for 30m, and not in the maintenance window. The fleet has ready work and fewer than 2 live workers — concurrency silently dropped. The repair worker should: (1) check Pi seat health (`cat /home/nish/workspaces/agent-state/lanes/pi-seat-health.json`); (2) start the intake loop for every enrolled repo (`for s in 0509 fleet-ops; do systemctl --user start pi-intake@${s}.service || true; done`); (3) verify workers climb (re-check the exporter output and `systemctl --user list-units 'pi-*.service' --state=active,activating`). If workers do not climb within 10 min, fail loud (exit non-zero) so the senior-auditor pipeline picks it up. The weekly maintenance window is excluded by fleet_maintenance_quiescing (read from agent-state/maintenance.json), NOT by the 30m `for` — the window drains workers for >30m."
-
-  - name: fleet_verified_merges
-    rules:
-      # TREND alert (delta), not a level. Verified-merge ratio comes from the
-      # GitHub merge data the exporter already gathers (non-null effective
-      # diff AND delivery evidence on closure, per lib/exec-review-receipt.py)
-      # — a real throughput-quality signal, kept when the meta-metrics
-      # scorers around it were deleted (glue sweep 2026-09-18).
-      - alert: FleetVerifiedMergeRegression
-        expr: (fleet_verified_merge_ratio - fleet_verified_merge_ratio offset 24h) < -0.20
-        for: 6h
-        labels:
-          severity: warning
-          service: fleet
-        annotations:
-          summary: "verified-merge ratio fell 20+ points versus yesterday's 24h window"
-          description: "fleet_verified_merge_ratio dropped by more than 0.20 compared to its value 24h ago, sustained 6h. TREND alert (delta), not a level. A merged PR is verified when it has a non-null effective diff AND delivery evidence on closure (run-proof:/Verification: run-cue, per lib/exec-review-receipt.py). A sustained drop means the fleet is merging a growing share of unverified work. Inspect fleet_verified_merges_24h{kind=\"verified\"|\"unverified\"} and recent merge bodies."
-
-  - name: fleet_product_slo
-    rules:
-      # Organ heartbeat (fleet-ops#1010 standing pattern: every new organ
-      # ships its absent() rule in the same PR). The exporter always emits
-      # fleet_product_slo_last_run_seconds on a live tick, so absent() fires
-      # only when the piggyback path is dead — not on a quiet product week.
-      # 3h matches the scout/intake/waste piggyback cadence.
-      - alert: FleetProductSloAbsent
-        expr: absent(fleet_product_slo_last_run_seconds) or (time() - fleet_product_slo_last_run_seconds) > 10800
-        for: 1h
-        labels:
-          severity: warning
-          service: fleet
-        annotations:
-          summary: "product-slo metrics absent — the #2755 exporter path is missing or dead"
-          description: "Repair: lib/fleet-product-slo.py must emit fleet_product_slo_last_run_seconds. It piggybacks fleet-metrics-export.service via systemd/fleet-metrics-export.service.d/product-slo.conf (no new timer). Check fleet-metrics-export.timer and journalctl --user -u fleet-metrics-export.service."
-
-      # fleet-ops#5000: a 0509 production business table read ZERO rows after
-      # holding rows within the last 24h. A level check against zero, NOT a
-      # percentage-decay rule: migrations/0085_retention_sweep_state.sql makes
-      # gradual decay expected, so only a cliff to empty is evidence of
-      # deletion (or a destructive write) rather than ageing.
-      - alert: ProductDataCensusDropped
-        expr: fleet_product_table_rows == 0 and max_over_time(fleet_product_table_rows[24h] offset 5m) >= 1
-        for: 5m
-        labels:
-          severity: critical
-          service: fleet
-        annotations:
-          summary: "0509 production table {{ $labels.table }} is empty — the row census dropped to 0"
-          description: "fleet_product_table_rows{table=\"{{ $labels.table }}\"} == 0 while the same table held rows within the last 24h: production product data is empty — rows were deleted, not aged out (Nishfleet/fleet-ops#5000). migrations/0085_retention_sweep_state.sql decays rows gradually, so a cliff to zero is deletion, not ageing. Repair: inspect the {{ $labels.table }} table in the 0509 production D1 database and restore it from D1 Time Travel or the most recent export, then check recent migrations/sweeps for an accidental DELETE or TRUNCATE of {{ $labels.table }}."
-
-      # fleet-ops#2755 accept §4: throughput < 2/week for 2 weeks.
-      # avg_over_time over 14d of the weekly gauge approximates "sustained
-      # low throughput" without a separate 2-week counter.
-      - alert: ProductThroughputStalled
-        expr: avg_over_time(fleet_product_throughput_weekly{repo="0509"}[14d]) < 2
-        for: 1h
-        labels:
-          severity: warning
-          service: fleet
-        annotations:
-          summary: "0509 product throughput stalled (< 2 merged PRs/week over 14d)"
-          description: "avg_over_time(fleet_product_throughput_weekly{repo=\"0509\"}[14d]) < 2 (fleet-ops#2755). Product delivery is quiet while operational SLOs may still be green. Inspect fleet_product_merged_24h, scout effectiveness, and the intake product-first hold."
-
-      # fleet-ops#2755 accept §4: p50 lead time > 14 days.
-      - alert: ProductLeadTimeDegrading
-        expr: fleet_product_lead_time_days{repo="0509"} > 14
-        for: 6h
-        labels:
-          severity: warning
-          service: fleet
-        annotations:
-          summary: "0509 product lead time p50 > 14 days"
-          description: "fleet_product_lead_time_days{repo=\"0509\"} > 14 (fleet-ops#2755). Median issue→merge for non-revert product merges exceeds two weeks. Check claim/queue stalls and review latency."
-
-      # fleet-ops#2755 accept §4: revert rate > 0.15 over trailing 4 weeks.
-      - alert: ProductRevertRateHigh
-        expr: fleet_product_revert_rate{repo="0509"} > 0.15
-        for: 1h
-        labels:
-          severity: critical
-          service: fleet
-        annotations:
-          summary: "0509 product revert rate > 15% over 28d"
-          description: "fleet_product_revert_rate{repo=\"0509\"} > 0.15 (fleet-ops#2755). More than one in six product merges is a revert. Pause new product supply and inspect recent reverts before filing more 0509 work."
-
-      # fleet-ops#3519: per-repo rolling-7d quality ceiling breaches. A quality
-      # ceiling is breached only after the same metric sits above its
-      # committed ceiling for 60 minutes (not a spike — a sustained miss), and
-      # severity=warning means it dispatches an am-executor repair worker
-      # (repair-dispatch), NOT a page. The ceiling series is emitted beside
-      # each gauge for a `> on(repo)` pairing. `for: 60m` per accept §4.
-      - alert: FleetProductQualityAbsent
-        expr: absent(fleet_product_quality_reverts_per_100)
-        for: 3h
-        labels:
-          severity: warning
-          service: fleet
-        annotations:
-          summary: "quality metrics absent — the fleet-ops#3519 per-repo quality path is missing or dead"
-          description: "absent(fleet_product_quality_reverts_per_100) — lib/fleet-product-slo.py must export the fleet_product_quality_* family. Repair: check fleet-metrics-export.timer and journalctl --user -u fleet-metrics-export.service; the exporter loads lib/fleet-product-slo.py via systemd/fleet-metrics-export.service.d/product-slo.conf."
-
-      - alert: QualityRevertsCeiling
-        expr: fleet_product_quality_reverts_per_100 > on(repo) fleet_product_quality_ceiling{metric="reverts_per_100_merges"}
-        for: 60m
-        labels:
-          severity: warning
-          service: fleet
-          quality: ceiling
-        annotations:
-          summary: "{{ $labels.repo }} reverts per 100 merges above its committed ceiling for 60m"
-          description: "fleet_product_quality_reverts_per_100{repo=\"{{ $labels.repo }}\"} > its config/quality-ratchet.json ceiling for 60m (fleet-ops#3519). Repair: inspect recent reverts on {{ $labels.repo }} and the merge/review path that shipped breakage."
-
-      - alert: QualityPostMergeDefectsCeiling
-        expr: fleet_product_quality_post_merge_defects_per_100 > on(repo) fleet_product_quality_ceiling{metric="post_merge_defects_per_100"}
-        for: 60m
-        labels:
-          severity: warning
-          service: fleet
-          quality: ceiling
-        annotations:
-          summary: "{{ $labels.repo }} post-merge defects per 100 merges above its committed ceiling for 60m"
-          description: "fleet_product_quality_post_merge_defects_per_100{repo=\"{{ $labels.repo }}\"} > its config/quality-ratchet.json ceiling for 60m (fleet-ops#3519). Repair: desk-triage / red-on-main / customer-facing issues are being filed against fresh merges; inspect review depth and the merge gate."
-
-      - alert: QualitySessionsPrCeiling
-        expr: fleet_product_quality_sessions_to_pr_pct > on(repo) fleet_product_quality_ceiling{metric="sessions_to_pr_pct"}
-        for: 60m
-        labels:
-          severity: warning
-          service: fleet
-          quality: ceiling
-        annotations:
-          summary: "{{ $labels.repo }} sessions per 100 PRs above its committed ceiling for 60m"
-          description: "fleet_product_quality_sessions_to_pr_pct{repo=\"{{ $labels.repo }}\"} > its config/quality-ratchet.json ceiling for 60m (fleet-ops#3519). Too many issue-work sessions per merged PR on {{ $labels.repo }} — work is churning without landing. Inspect claim/queue and review latency."
-
-  - name: fleet_console_truth
-    rules:
-      # fleet-ops#1232: 17 min of honest-dark gh tiles because caches aged
-      # out and scheduled refreshes did not recover. Honesty rendering
-      # (dash + stale marker) already works; this is the missing
-      # escalation. 45m = 1.5x the 30 min cache cadence (PR_CACHE_TTL)
-      # so a single missed tick never fires. severity=warning rides the
-      # existing repair rail (not in SKIP_SET).
-      # The exporter emits fleet_gh_cache_fresh=1 for a fresh family and
-      # OMITS the series when stale (never 0). min==0 is the named
-      # condition; absent() is the live omit-on-stale path that actually
-      # went dark.
-      - alert: FleetGhCacheStale
-        expr: min(fleet_gh_cache_fresh) == 0 or absent(fleet_gh_cache_fresh)
-        for: 45m
-        labels:
-          severity: warning
-          service: fleet
-        annotations:
-          summary: "gh-derived Prometheus families stale for 45+ minutes"
-          description: "Repair worker: run the exporter (`systemctl --user start fleet-metrics-export.service`), check gh auth/rate limit (`gh auth status`; `gh api rate_limit`), and fix the refresh path in fleet-metrics-export.py (`_cached_json` / PR_CACHE_TTL=30m). 45m is 1.5x the cache cadence so routine expiry never fires."
-
-  - name: fleet_gh_rate_limit_supply
-    rules:
-      # Organ heartbeat (fleet-ops#1010 standing pattern). The exporter
-      # writes fleet_gh_rate_limit_fetched_seconds on every successful
-      # gh rate_limit fetch (fleet-ops#1350). absent() catches a missing
-      # file; time()-timestamp catches a frozen file (textfile collector
-      # keeps the last scrape). 30m is 30x the 60s exporter cadence, so
-      # routine cache misses never fire but a dead fetcher path does.
-      - alert: FleetGhRateLimitAbsent
-        expr: absent(fleet_gh_rate_limit_fetched_seconds) or (time() - fleet_gh_rate_limit_fetched_seconds) > 1800
-        for: 10m
-        labels:
-          severity: warning
-          service: fleet
-        annotations:
-          summary: "gh rate-limit metrics absent — the #1350 governor path is missing or dead"
-          description: "Repair worker: fleet_gh_rate_limit_fetched_seconds is absent or older than 30m. fleet-metrics-export.py must call `gh api rate_limit` and write the side-car state file. Check journalctl --user -u fleet-metrics-export.service for the fetcher error, gh auth (`gh auth status`), and the PR_CACHE_DIR/gh-rate-limit-cache.json cache. The throttle gate in pi-intake-tick.sh fail-OPENS on a missing state file, so a dead fetcher silently removes the API budget governor — fix the fetcher, not the throttle."
-
-      # FleetGhRateLimitLowSustained (fleet-ops#1350) deleted 2026-09-18: its
-      # inputs fleet_gh_rate_limit_low/_remaining/_reset were cut from the
-      # exporter in the fourth glue cut (0 fires in 40d, no other reader).
-      # GitHub rate-limit headroom is still covered by
-      # fleet_slo_compliance{slo="gh_rate_limit_headroom"}, which reads the
-      # in-process _gh_rate_limit() dict and is unaffected. The soft throttle
-      # in pi-intake-tick.sh also reads that dict directly, not Prometheus.
-
-  - name: fleet_grok_token_refresh_supply
-    rules:
-      # Organ heartbeat (fleet-ops#1010 standing pattern: every new organ
-      # ships its absent() rule in the same PR). grok-token-refresh writes
-      # fleet_grok_token_refresh_last_success_seconds on every run that
-      # does not REJECT — SUCCESS (rotated) and SKIP (credential still
-      # fresh, no rotation needed) both advance it to now. A SKIP is a
-      # successful run: the script ran and found the credential healthy.
-      # Only REJECT (failed grant) preserves the prior value. fleet-ops#2817:
-      # the old preserve-on-skip logic let last_success go stale while the
-      # timer kept SKIPping a fresh token, firing a false
-      # FleetGrokTokenRefreshStale. 12h is two missed 4h timer cycles —
-      # by the time the absent() rule fires the script has provably not
-      # run, not merely not rotated.
-      - alert: FleetGrokTokenRefreshStale
-        expr: absent(fleet_grok_token_refresh_last_success_seconds) or (time() - fleet_grok_token_refresh_last_success_seconds) > 43200
-        for: 1h
-        labels:
-          severity: warning
-          service: fleet
-        annotations:
-          summary: "grok-token-refresh has not run in 12+ hours"
-          description: "Repair worker: fleet_grok_token_refresh_last_success_seconds is absent or older than 12h (two 4h timer cycles). The script advances this metric on every SUCCESS and SKIP — only a REJECT (failed grant) or a dead timer leaves it stale. The script is the prevention side of fleet-ops#41 — it keeps ~/.pi/agent/auth.json[xai-oauth] alive so the live SuperGrok seat (fleet-ops#1163) does not age into a 401. Check journalctl --user -u grok-token-refresh.service and systemctl --user list-timers grok-token-refresh.timer. Helper: /home/nish/.local/bin/grok-token-refresh. fleet-ops#41."
-
-  # fleet-ops#1291: SLO error budgets + multiwindow burn-rate alerts
-  # (Google SRE Workbook Ch.5 canon). config/slo-definitions.json is the
-  # single source of truth; lib/slo_budget.py does the budget math;
-  # libexec/fleet-metrics-export.py emits the fleet_slo_* gauges.
-  #
-  # Alert model (Workbook §5.4, translated for a sampled-gauge SLI):
-  # - RATIO SLOs (main_green, seat_availability): multiwindow burn-rate.
-  #     burn_rate = (1 - avg_over_time(fleet_slo_compliance{slo}[W])) / (1 - target)
-  #     Fast burn = 14.4x sustained over BOTH 1h AND 5m (long+short suppress flap).
-  #     Slow burn = 1x sustained over BOTH 6h AND 30m.
-  #     Gated on fleet_slo_instrumented{slo} == 1 so an uninstrumented SLO
-  #     (source metric pending) never burns budget it cannot measure.
-  # - THRESHOLD-GAUGE SLOs (waste_ratio, gh_rate_limit_headroom): the
-  #     error-budget ratio model does not fit a single threshold gauge
-  #     (Workbook applies burn-rate to ratio SLIs); these get canonical
-  #     threshold-window alerts on the raw source metric instead.
-  # severity: fast_burn=critical (pages the repair rail, NOT Nish's phone —
-  # fleet-ops#1534 reserves severity=page for RepairDispatchDown only),
-  # slow_burn=warning (quality lens; read on demand since the WFR was deleted).
-  - name: fleet_slo_burn
-    rules:
-      # Organ heartbeat (fleet-ops#1010): the SLO metric family is emitted
-      # every scrape by fleet-metrics-export. If it disappears, the
-      # exporter is dead and every SLO alert below is blind.
-      - alert: FleetSloMetricsAbsent
-        expr: absent(fleet_slo_instrumented)
-        for: 15m
-        labels:
-          severity: critical
-          service: fleet
-        annotations:
-          summary: "fleet SLO metrics absent — the SLO exporter path is dead"
-          description: "Repair worker: fleet_slo_instrumented is absent for 15m. fleet-metrics-export.py emits the fleet_slo_* family every scrape; if it disappears the exporter crashed (check journalctl --user -u fleet-metrics-export.service) or config/slo-definitions.json is unparseable. Without this family every burn alert below is blind. NOTE: a prior attempt deployed an exporter referencing lib/slo_budget.py before the file existed (2026-08-30T05:55Z ModuleNotFoundError crash) — verify lib/slo_budget.py is present and the exporter imports clean. fleet-ops#1291."
-
-      # --- main_green: ratio SLO, target 0.99, budget = 1% of week ---
-      # Fast burn: >2% of weekly budget in 1h (14.4x normal), 1h AND 5m.
-      - alert: FleetSloMainGreenFastBurn
-        expr: (fleet_slo_instrumented{slo="main_green"} == 1) and ((1 - avg_over_time(fleet_slo_compliance{slo="main_green"}[1h])) / (1 - fleet_slo_target{slo="main_green"}) > 14.4) and ((1 - avg_over_time(fleet_slo_compliance{slo="main_green"}[5m])) / (1 - fleet_slo_target{slo="main_green"}) > 14.4)
-        for: 2m
-        labels:
-          severity: critical
-          service: fleet
-        annotations:
-          summary: "SLO main_green fast burn — CI green fraction burning >2% of weekly budget per hour"
-          description: "Repair worker: the main_green SLO (default-branch CI green across enrolled repos) is in fast burn — >14.4x the normal budget consumption rate over both 1h and 5m. Check fleet_main_ci_green{repo=...} for which repo(s) are red and whether a red-on-main or stop-the-line condition is active. fleet-ops#1291."
-      # Slow burn: >10% of weekly budget in 6h (1x), 6h AND 30m.
-      - alert: FleetSloMainGreenSlowBurn
-        expr: (fleet_slo_instrumented{slo="main_green"} == 1) and ((1 - avg_over_time(fleet_slo_compliance{slo="main_green"}[6h])) / (1 - fleet_slo_target{slo="main_green"}) > 1) and ((1 - avg_over_time(fleet_slo_compliance{slo="main_green"}[30m])) / (1 - fleet_slo_target{slo="main_green"}) > 1)
-        for: 30m
-        labels:
-          severity: warning
-          service: fleet
-        annotations:
-          summary: "SLO main_green slow burn — CI green fraction trending below the 99% budget line"
-          description: "Quality-lens input: the main_green SLO is in slow burn — on pace to exhaust its weekly error budget. Not paging. (The Weekly Fleet Review that consumed these was deleted; they are now read on demand.) NOTE: this is a windowed burn-rate alert (6h AND 30m avg_over_time), not a point-in-time check — it legitimately fires for up to 30m after all repos go green because the 30m window still includes recent red history. The green map (fleet_main_ci_green) is point-in-time; the SLO is windowed. They disagree by design during recovery. fleet-ops#1291, #3367."
-
-      # fleet-ops#3367: consistency check — SLO compliance and the per-repo
-      # green map both derive from the same main_ci dict in one atomic export,
-      # so they must agree at every scrape. A disagreement means a stale/frozen
-      # SLO gauge (e.g. config parse failure left old compliance in Prometheus
-      # while fleet_main_ci_green kept updating). "More than one scrape" = 2m
-      # (4 scrapes at 30s); a single-scrape race is tolerated.
-      - alert: FleetSloMainGreenGreenMapDisagree
-        expr: (fleet_slo_instrumented{slo="main_green"} == 1) and (abs(fleet_slo_compliance{slo="main_green"} - (sum(fleet_main_ci_green) / count(fleet_main_ci_green))) > 0.001)
-        for: 2m
-        labels:
-          severity: warning
-          service: fleet
-        annotations:
-          summary: "SLO main_green compliance disagrees with the per-repo green map"
-          description: "fleet_slo_compliance{slo=\"main_green\"} and sum(fleet_main_ci_green)/count(fleet_main_ci_green) disagree for >2m. Both derive from the same main_ci dict in one atomic export, so a disagreement means a stale/frozen SLO gauge while the green map updates — a real consistency bug. Check the exporter journal (journalctl --user -u fleet-metrics-export.service) and config/slo-definitions.json. fleet-ops#3367."
-
-      # --- seat_availability: ratio SLO, target 0.90, budget = 10% of week ---
-      - alert: FleetSloSeatAvailFastBurn
-        expr: (fleet_slo_instrumented{slo="seat_availability"} == 1) and ((1 - avg_over_time(fleet_slo_compliance{slo="seat_availability"}[1h])) / (1 - fleet_slo_target{slo="seat_availability"}) > 14.4) and ((1 - avg_over_time(fleet_slo_compliance{slo="seat_availability"}[5m])) / (1 - fleet_slo_target{slo="seat_availability"}) > 14.4)
-        for: 2m
-        labels:
-          severity: critical
-          service: fleet
-        annotations:
-          summary: "SLO seat_availability fast burn — healthy-seat fraction collapsing"
-          description: "Repair worker: the seat_availability SLO (healthy seats / enrolled seats) is in fast burn. Check fleet_pi_seat_healthy, the seat-health ledger at /home/nish/workspaces/agent-state/lanes/seats, and FleetDeadCredentialSeats. fleet-ops#1291."
-      - alert: FleetSloSeatAvailSlowBurn
-        expr: (fleet_slo_instrumented{slo="seat_availability"} == 1) and ((1 - avg_over_time(fleet_slo_compliance{slo="seat_availability"}[6h])) / (1 - fleet_slo_target{slo="seat_availability"}) > 1) and ((1 - avg_over_time(fleet_slo_compliance{slo="seat_availability"}[30m])) / (1 - fleet_slo_target{slo="seat_availability"}) > 1)
-        for: 30m
-        labels:
-          severity: warning
-          service: fleet
-        annotations:
-          summary: "SLO seat_availability slow burn — healthy seats trending below the 90% budget line"
-          description: "Quality-lens input: the seat_availability SLO is in slow burn. Repair terminates in the intake REPAIR-RUNG (fleet-ops#4639) — after two consecutive ticks with usable slots < 2, intake claims critical-path fleet-ops on reserved seats (litellm judge / mergegateway audition / cursor keystone). When this alert has been firing >1h, the repair path (alertmanager -> prometheus-am-executor -> prompts/alert-repair.md) files or links exactly one critical-path fleet-ops issue (signal: slo/seat-availability-slowburn, fleet-ops#4773); the 1,811-line alert-repair-dispatch it used to run was deleted 2026-09-18. Alert-repair workers cannot raise seats; this warning must not page Nish. fleet-ops#1291."
-
-      # --- gh_rate_limit_headroom: threshold-gauge SLO, target 0.20 (min) ---
-      # Fires when min(remaining/limit) across core/search/graphql drops
-      # below 20% for 30m. The existing FleetGhRateLimitLow level alert and
-      # the 6h trend alert cover the same signal; this SLO alert is the
-      # budget-framed wrapper for the SMOOTH verdict.
-      - alert: FleetSloGhRateLimitHeadroomLow
-        expr: (fleet_slo_instrumented{slo="gh_rate_limit_headroom"} == 1) and (fleet_slo_compliance{slo="gh_rate_limit_headroom"} < 0.20)
-        for: 30m
-        labels:
-          severity: warning
-          service: fleet
-        annotations:
-          summary: "SLO gh_rate_limit_headroom low — GitHub rate limit below 20% headroom for 30m+"
-          description: "Quality-lens input: the gh_rate_limit_headroom SLO (min remaining/limit ≥ 20%) is under target. Inspect with `gh api rate_limit` — the fleet_gh_rate_limit_remaining/_reset gauges were cut on 2026-09-18 (the SLO reads the in-process dict, not Prometheus). fleet-ops#1291."
-
-  - name: fleet_deploy_quality
-    rules:
-      # fleet-ops#2758: deployment quality SLOs. Computed by
-      # lib/fleet-deploy-quality.py (loaded by libexec/fleet-metrics-export.py
-      # on the 5-min tick). Latency/time-to-detect are p95 gauges; rollback/
-      # success are 30d ratios; blocked_duration is the LIVE age of the
-      # current DEPLOY-BLOCKED episode (0 when green). NaN policy: a data
-      # outage emits NaN gauges + fleet_deployment_quality_up 0, so these
-      # threshold rules stay silent (NaN comparisons are false) and
-      # DeploymentQualityStale below carries the loud signal.
-      - alert: DeploymentLatencyHigh
-        expr: fleet_deployment_latency_seconds{repo="fleet-ops"} > 1800
-        for: 5m
-        labels:
-          severity: warning
-          service: fleet
-        annotations:
-          summary: "fleet-ops merge-to-live p95 latency above 30 min"
-          description: "p95 fleet-ops deployment latency (merge -> first green fleet-sync deploy) exceeded 30 minutes for 5+ minutes. The 2-min deploy gate is saturated or blocked; inspect journalctl --user -u fleet-sync.service. fleet-ops#2758."
-      - alert: DeploymentRollbackRateHigh
-        expr: fleet_deployment_rollback_rate{repo="fleet-ops"} > 0.1
         for: 10m
         labels:
           severity: critical
           service: fleet
         annotations:
-          summary: "fleet-ops auto-revert rate above 10% of deployments (30d)"
-          description: "More than 10% of fleet-ops deployments in the trailing 30 days were rolled back by the auto-revert machinery (revert: auto-restore green main PRs / merged deployments). The fleet is shipping breakage to main faster than the red-on-main pipeline catches it. fleet-ops#2758."
-      - alert: DeploymentTimeToDetectHigh
-        expr: fleet_deployment_time_to_detect_seconds{repo="fleet-ops"} > 600
+          summary: "main is red on {{ $labels.repo }}"
+          description: "The default branch of {{ $labels.repo }} has a failing CI conclusion. Every worker branches from main, so a red main poisons every PR opened after it. Fix forward or revert now — never watch main red."
+
+      - alert: ProductDown
+        expr: fleet_product_up == 0
         for: 5m
         labels:
-          severity: warning
-          service: fleet
+          severity: critical
+          service: product
         annotations:
-          summary: "fleet-ops p95 time-to-detect above 10 min"
-          description: "p95 time from a fleet-ops deployment to the first critical alert dispatch exceeded 10 minutes for 5+ minutes. Bad deploys are not being caught by the alert plane within budget; inspect the alert-repair actions.log coverage and the critical alert rules. fleet-ops#2758."
-      - alert: DeployBlockedStuck
-        expr: fleet_deploy_blocked_duration_seconds{repo="fleet-ops"} > 900
-        for: 3m
+          summary: "product {{ $labels.repo }} is not serving"
+          description: "An HTTP probe of the {{ $labels.repo }} production origin did not return a success status. This is customer-visible. Repair: check the most recent deploy and roll back if it correlates."
+
+      # The three rules above have exactly one producer. If it stops, they all
+      # read as healthy forever — so the producer's own freshness is a rule.
+      - alert: FleetProbeStale
+        expr: (time() - node_textfile_mtime_seconds{file="fleet.prom"}) > 1200
+        for: 5m
         labels:
           severity: critical
           service: fleet
         annotations:
-          summary: "fleet-ops deploy blocked for 15+ minutes (fleet-ops#2725 pattern)"
-          description: "fleet_deploy_blocked_duration_seconds{repo=\"fleet-ops\"} exceeded 900s (15 min): the fleet-ops deploy clone is stuck DEPLOY-BLOCKED. 2026-09-02 live case: >1h blocked on dirty tracked files with zero mechanized alert (fleet-ops#2725). Merge-to-live is halted; clear the dirty state on /home/nish/workspaces/tooling/fleet-ops-deploy-clone or root-cause the block. Check journalctl --user -u fleet-sync.service."
-      # fleet-ops#5786: DEPLOY-CLONE DRIFT — the deploy clone has been off
-      # main or dirty for >15 minutes. The clone is the live install source;
-      # drift means merge-to-live may be riding unmerged code AND it lets a
-      # worker back a false LIVE claim (2026-09-12: an alert-repair worker
-      # left the clone on its fix branch and reported "Live on this host"
-      # while its PR was still open with auto-merge off). The 2-min
-      # the deploy-check tick used to emit DEPLOY-CHECK-OFF-MAIN and
-      # invokes the sanctioned deploy to converge; this rule is the page
-      # when convergence has failed for 15+ minutes. The gauge clears the
-      # first tick the clone is clean main again.
-      - alert: DeployCloneOffMain
-        expr: fleet_deploy_clone_off_main == 1
-        for: 15m
-        labels:
-          severity: critical
-          service: fleet
-        annotations:
-          summary: "{{ $labels.repo }} deploy clone off main or dirty for 15+ minutes (fleet-ops#5786)"
-          description: "fleet_deploy_clone_off_main{repo=\"{{ $labels.repo }}\"} has been 1 for 15+ minutes: the deploy clone is on a non-main branch, detached, or dirty — the live install source is not clean origin/main, so 'LIVE on this host' may be riding unmerged code. Repair: name the writer first (journalctl --user -u fleet-sync.service for a failed fleet-sync.service (git pull --ff-only refuses a dirty or diverged clone); ls of /home/nish/workspaces/agent-worktrees for the branch owner). Salvage the branch's diff into the writer's claim worktree if it is not already in a PR, then converge the clone to clean origin/main (`git -C /home/nish/workspaces/tooling/fleet-ops-deploy-clone checkout main && git reset --hard origin/main`). Done means the gauge reads 0 next tick. Never claim LIVE for a change still on a branch — the packet-verdict checker rejects the deliverable (fleet-ops#5786)."
-      # fleet-ops#5140: a product repo's production deploy has been non-green
-      # for over an hour — the 2026-09-10 stall class where 131 merged product
-      # PRs sat undelivered for 28h while every dashboard read green.
-      # Deliberately severity=warning, NOT critical: a stalled product deploy
-      # stalls customer-facing work, it does not page Nish. fleet-ops keeps
-      # its own DeployBlockedStuck (>900s, critical) above. The newest red
-      # run's URL is pulled from the fleet_product_deploy_last_red_run_info
-      # info series via the query template function — a url label on the
-      # duration series itself would mint a new series per run and restart
-      # this rule's for: timer forever.
-      # ProductDeployStalled (warning, cheap-seat dispatch) DELETED 2026-09-12: superseded by
-      # FleetProductionStale below (last-green age + undeployed merges, critical, flagship).
-      # One invariant, one alert, one repair path.
-      # fleet-ops#5785: STALE PRODUCTION — the replacement for the deleted (2026-09-12)
-      # ProductDeployStalled. The trigger is the age of the LAST GREEN
-      # production deploy, not the newest run's redness, so it also fires
-      # on the shape Stalled is blind to: a newest-green-but-ancient run
-      # (blocked duration reads 0 while production serves 3-day-old code),
-      # and it proves the staleness MATTERS by requiring a main merge newer
-      # than the last green — an idle repo with nothing merged does not
-      # fire. The live instance this exists for: 0509 production sat on
-      # the 2026-09-09T17:03Z build ~2.5 days while every Deploy production
-      # run failed Gate C, 0509#2662 was closed by PR #2949 with no green
-      # run proving the fix, and 100+ AUTO-REVERT HALT issues piled up —
-      # a human found it by hand. severity=critical + repair_seat=flagship
-      # routes the packet to a SENIOR seat (the Stalled dispatches to the
-      # cheapest healthy seat could see the alert but never fixed the fault);
-      # am-executor's `max: 1` still applies so repeats cannot pile up. The AUTO-REVERT HALT issue pile-up is NOT
-      # the escalation path — halts are noise-class, this alert is the
-      # flagship repair dispatch.
-      - alert: FleetProductionStale
-        expr: fleet_product_production_stale_hours > 2 and on(repo) (fleet_product_undeployed_merges == 1)
-        for: 15m
-        labels:
-          severity: critical
-          service: fleet
-          repair_seat: flagship
-        annotations:
-          summary: "{{ $labels.repo }} production stale: last green {{ $labels.workflow }} deploy {{ $value }}h ago while main has undeployed merges"
-          description: "{{ $labels.repo }}'s production deploy workflow {{ $labels.workflow }} last ran GREEN {{ $value }}h ago AND main carries a merge newer than that green run — customers are running code merges superseded. Evidence: newest red run {{ with query (printf \"fleet_product_deploy_last_red_run_info{repo='%s',workflow='%s'}\" $labels.repo $labels.workflow) }}{{ . | first | label \"url\" }}{{ else }}none fetched{{ end }}; failing step {{ with query (printf \"fleet_product_deploy_last_red_step_info{repo='%s',workflow='%s'}\" $labels.repo $labels.workflow) }}{{ . | first | label \"job\" }}/{{ . | first | label \"step\" }}{{ else }}unknown{{ end }}; newest main merge {{ with query (printf \"fleet_product_main_last_merge_seconds{repo='%s'}\" $labels.repo) }}{{ . | first | value | humanizeTimestamp }}{{ else }}unknown{{ end }}. Repair (flagship seat): open the newest red run, read the failing step, land the fix, then confirm a GREEN {{ $labels.workflow }} run whose SHA contains the fix before the deploy-fault issue may close (the deploy-fault gate reopens it otherwise, fleet-ops#5785). fleet-ops#5785: 0509 production sat stale ~2.5 days on the 2026-09-09T17:03Z build while halts piled up."
-          evidence: '{"repo":"{{ $labels.repo }}","workflow":"{{ $labels.workflow }}","stale_hours":{{ $value }},"last_red_run":{{ with query (printf "fleet_product_deploy_last_red_run_info{repo=''%s'',workflow=''%s''}" $labels.repo $labels.workflow) }}"{{ . | first | label "url" }}"{{ else }}null{{ end }},"failing_job":{{ with query (printf "fleet_product_deploy_last_red_step_info{repo=''%s'',workflow=''%s''}" $labels.repo $labels.workflow) }}"{{ . | first | label "job" }}"{{ else }}null{{ end }},"failing_step":{{ with query (printf "fleet_product_deploy_last_red_step_info{repo=''%s'',workflow=''%s''}" $labels.repo $labels.workflow) }}"{{ . | first | label "step" }}"{{ else }}null{{ end }}}'
-      - alert: DeploymentQualityStale
-        expr: absent(fleet_deployment_quality_up{repo="fleet-ops"}) or fleet_deployment_quality_up{repo="fleet-ops"} == 0
-        for: 15m
-        labels:
-          severity: warning
-          service: fleet
-        annotations:
-          summary: "deployment-quality metrics computation failed or vanished"
-          description: "fleet_deployment_quality_up is absent or 0 for 15+ minutes — lib/fleet-deploy-quality.py failed (the gauges are NaN so threshold rules are silent; THIS alert is the only loud signal). The exporter logs 'deploy-quality: ...' to stderr; check journalctl --user -u fleet-metrics-export.service and /home/nish/.local/lib/pi-packet/fleet-deploy-quality.py. fleet-ops#2758."
-      # fleet-ops#5250: a product repo whose deploy-quality computation failed
-      # emits fleet_deployment_quality_up{repo="<r>"} 0 (missing
-      # PRODUCT_DEPLOY_WORKFLOWS entry, unreadable runs source, gh outage) and
-      # its gauges go NaN — ProductDeployStalled is blind for it.
-      # DeploymentQualityStale above is repo="fleet-ops" scoped, so without
-      # this rule an unmeasurable product repo emits up=0 forever unnoticed —
-      # the same silent-absence shape #5140 fixed for the happy path. The 30m
-      # fuse is longer than ProductDeployStalled's: a single bad scrape must
-      # not fire.
-      - alert: ProductDeployUnmeasurable
-        expr: fleet_deployment_quality_up{repo!="fleet-ops"} == 0
-        for: 30m
-        labels:
-          severity: warning
-          service: fleet
-        annotations:
-          summary: "{{ $labels.repo }} deployment-quality unmeasurable: fleet_deployment_quality_up 0 for 30m+"
-          description: "fleet_deployment_quality_up{repo=\"{{ $labels.repo }}\"} has been 0 for 30+ minutes — lib/fleet-deploy-quality.py could not measure {{ $labels.repo }} (missing PRODUCT_DEPLOY_WORKFLOWS entry, unreadable runs source, or gh outage) and its deploy-quality gauges are NaN, so ProductDeployStalled is blind for it. The exporter logs 'deploy-quality: ...' to stderr; check journalctl --user -u fleet-metrics-export.service and /home/nish/.local/lib/pi-packet/fleet-deploy-quality.py. fleet-ops#5250."
-      - alert: FleetCloseDuplicatesWrongClose
-        expr: fleet_close_duplicates_closes_total{cross_repo="true"} > 0 or fleet_close_duplicates_closes_total{protected="true"} > 0
-        for: 1m
-        labels:
-          severity: critical
-          service: fleet
-        annotations:
-          summary: "close-duplicates closed a cross-repo or protected issue (fleet-ops#3161)"
-          description: "fleet_close_duplicates_closes_total{cross_repo=\"true\"} or {protected=\"true\"} is > 0: the duplicate sweep closed an issue it must only comment on (cross-repo canonical, critical-path label, or nish3451-authored). Both series must stay 0. Check the last close-duplicates.json and the tick log dup-cluster review lines."
-      - alert: FleetObserveToCloseWrongClose
-        expr: fleet_observe_to_close_total{reason="bare-mention"} > 0 or fleet_observe_to_close_total{reason="protected"} > 0
-        for: 1m
-        labels:
-          severity: critical
-          service: fleet
-        annotations:
-          summary: "observe-to-close closed a mentioned or protected issue (fleet-ops#3231)"
-          description: "fleet_observe_to_close_total{reason=\"bare-mention\"} or {reason=\"protected\"} is > 0: observe-to-close closed an issue it must only comment on (a mere PR mention without a Closes trailer or claim branch, or a critical-path/owner-authored issue). Both series must stay 0 — only claim-branch and closes-trailer may increment. This is the PR #3205 regression class: #3140/#3146 were closed by a bare mention. Check the last merged-pr-close.json and the tick log."
-      # fleet-ops#5785: a deploy-fault issue was found CLOSED without a green
-      # `Deploy production` run proving the fix — the lifecycle sweep already
-      # reopened it (that IS the repair), so this alert is the audit
-      # tripwire only: it must stay 0 and it never spawns a worker
-      # (the audit-only class; alert-repair-dispatch's SKIP_SET is gone with
-      # it, so keep this rule out of any repair route). A count >0 means some
-      # close path bypassed the gate — GitHub auto-close on a merged trailer,
-      # a human close, or a regression in the gate itself.
-      - alert: FleetDeployFaultClosedWithoutGreen
-        expr: fleet_deploy_fault_closed_without_green > 0
-        for: 1m
-        labels:
-          severity: warning
-          service: fleet
-        annotations:
-          summary: "a deploy-fault issue was closed without a green Deploy production run (fleet-ops#5785)"
-          description: "fleet_deploy_fault_closed_without_green is {{ $value }}: the lifecycle-label-sweep reopen pass found deploy-fault issue(s) closed while no green production-deploy run's SHA contains the fix, and reopened them. The repair already happened (reopen + deploy-fault-gate comment). Investigate WHO closed them — the legal close paths are a closing comment citing the green run URL, or a green run containing the delivery merge. Check /home/nish/.local/state/fleet-heartbeat/lifecycle-label-sweep.json and the sweep's tick log. Must stay 0."
-      - alert: FleetObserveToCloseAbsent
-        expr: absent(fleet_observe_to_close_total{reason="claim-branch"})
-        for: 15m
-        labels:
-          severity: warning
-          service: fleet
-        annotations:
-          summary: "observe-to-close metric family vanished"
-          description: "fleet_observe_to_close_total is absent for 15+ minutes — the merged-pr-close summary is not being written or the exporter is not emitting the family. Check bin/fleet-merged-pr-close in the heartbeat tick log and the merged-pr-close.json summary path. fleet-ops#3231."
-      # fleet-ops#4130 P1 organ death, probed directly. The 60s /health
-      # canary that used to emit fleet_litellm_proxy_up / _postgres_up /
-      # _redis_up / _last_green_seconds was deleted (2026-09-18): it
-      # restarted every minute carrying "holding" tolerance logic whose only
-      # job was to survive the proxy's own restarts, and it produced 2709
-      # unit deaths in 7 days — burying the real ones. Prometheus already
-      # scrapes the proxy itself (job="litellm", 127.0.0.1:4000/metrics/,
-      # config/prometheus.yml), so `up` is the direct probe: no canary, no
-      # textfile, no tolerance window. The proxy carries Restart=on-failure
-      # and litellm's own background_health_checks. Postgres and Redis lost
-      # their canary-emitted gauges with it; they are covered by their own
-      # Restart=on-failure and by this alert, since the proxy cannot serve
-      # without them. (The universal unit-death escalation drop-in that used
-      # to cover them was deleted in the glue sweep 2026-09-18.)
-      #
-      # Retired with the canary, recorded so it is not a silent degrade: the
-      # per-deployment health verdict (a deployment continuously unhealthy
-      # >=300s) and the entitled-vs-wired census shortfall (#6115). Both are
-      # rebuildable as pure rules with no new machinery — the proxy's own
-      # litellm_deployment_state (0 healthy / 1 partial / 2 outage, per
-      # model_name, already scraped by job="litellm") carries the first, and
-      # count(litellm_deployment_state) carries the second. Deliberately NOT
-      # armed here: at deletion time worker-capable and worker-cheap read
-      # state=2 and three :free models read state=1, so an alert on
-      # state > 0 would fire on arrival and dispatch repair — trading one
-      # noise source for another. Arm it with a threshold Nish has agreed
-      # to, not by default.
-      - alert: FleetLitellmProxyAbsent
-        expr: absent(up{job="litellm"}) or up{job="litellm"} == 0
-        for: 2m
-        labels:
-          severity: critical
-          service: fleet
-        annotations:
-          summary: "LiteLLM proxy organ absent or down (fleet-ops#4130 P1)"
-          description: "Prometheus cannot scrape the LiteLLM proxy on 127.0.0.1:4000/metrics/ for 2+ minutes (up{job=\"litellm\"} absent or 0). The proxy is the routing organ in front of every seat; its death benches the whole fleet. Repair: check journalctl --user -u fleet-litellm-proxy.service, then fleet-litellm-postgres.service and fleet-litellm-redis.service (the proxy cannot serve without them). fleet-ops#4130."
+          summary: "fleet.prom textfile is over 20 minutes stale"
+          description: "fleet-metrics-export.timer runs every 5 minutes. While it is stale, FleetMainRed, ProductDown and FleetPrepaidCreditsLow cannot fire. Repair: systemctl --user status fleet-metrics-export.service."
 
-  # fleet-ops#4141: recording rules that replace the derived numbers the
-  # retired opus-heartbeat-gather computed from raw sources (systemd,
-  # textfiles, seat JSON, logs). The hourly fleet judge (fable-fleet-check,
-  # packet agent-state/fleet-landing-watch/fable-check.md) queries these via
-  # /api/v1/query instead of re-deriving them. Every rule here is a pure
-  # PromQL aggregation over metrics the existing exporter already emits — no
-  # new exporter, no new textfile, no hand-built gatherer.
-  - name: fleet_duty_officer_recording
-    rules:
-      # fleet-ops#4394: count() of an empty vector is absent, not 0. Each
-      # expr uses `or vector(0)` so the judge-cited names
-      # (`fleet_failed_units`, `fleet_seat_unhealthy_count`,
-      # `fleet_workers_active`) always return a value.
-      # tests/fleet-duty-officer-recording.test.sh pins the citations.
-      # failed_units: the gather counted `systemctl --user list-units
-      # --state=failed`; node_systemd_unit_state already carries it.
-      - record: fleet_failed_units
-        expr: count(node_systemd_unit_state{state="failed"} == 1) or vector(0)
-
-      # unhealthy seat count: the gather read seat JSON and counted
-      # health_class != healthy; fleet_pi_seat_healthy already carries it.
-      - record: fleet_seat_unhealthy_count
-        expr: count(fleet_pi_seat_healthy == 0) or vector(0)
-
-      # active worker count (unit + process): the gather counted
-      # systemctl pi-issue@ units; fleet_pi_workers_active already carries
-      # the same rollup the undersaturation guard uses.
-      - record: fleet_workers_active
-        expr: sum(fleet_pi_workers_active{kind="sum"}) or vector(0)
-
-  # fleet-ops#4206: Cursor $400 'API Usage' on-demand pool pacing. The
-  # measured spend reader (bin/fleet-prepaid-util-canary) emits
-  # fleet_prepaid_spend_usd{provider="cursor"} + pool/cycle/included from
-  # POST api2.cursor.sh/aiserver.v1.DashboardService/GetCurrentPeriodUsage
-  # into /var/lib/prometheus/node-exporter/prepaid-spend.prom. The rules
-  # here pace the pool to zero by the billing-cycle reset and file a repair
-  # packet (adds difficulty: senior-review to waiting heavy issues) when
-  # the projected burn falls below pool/remaining-days. No new exporter or
-  # scheduler — the existing canary tick + node_exporter textfile collector
-  # feed these rules.
-  - name: fleet_cursor_prepaid_pacing
-    rules:
-      # fleet_cursor_prepaid_remaining_usd: how much of the $400 on-demand
-      # pool is left (pool - spend).
-      - record: fleet_cursor_prepaid_remaining_usd
-        expr: fleet_prepaid_pool_usd{provider="cursor"} - fleet_prepaid_spend_usd{provider="cursor"}
-
-      # fleet_cursor_prepaid_remaining_days: days until the billing cycle
-      # resets. Floored at 0 so a passed reset does not divide by zero or
-      # produce a negative pacing target.
-      - record: fleet_cursor_prepaid_remaining_days
-        expr: clamp_min((fleet_prepaid_cycle_end_timestamp{provider="cursor"} - time()) / 86400, 0)
-
-      # fleet_cursor_prepaid_required_daily_burn_usd: the daily spend rate
-      # needed to exhaust the remaining pool by the reset. When the cycle
-      # has passed (remaining_days == 0) this is 0 — no pacing needed.
-      - record: fleet_cursor_prepaid_required_daily_burn_usd
-        expr: fleet_cursor_prepaid_remaining_usd / clamp_min(fleet_cursor_prepaid_remaining_days, 1) * on() (fleet_cursor_prepaid_remaining_days > 0)
-
-      # FleetCursorPrepaidSpendReaderAbsent: the spend reader is dead or
-      # the canary tick stopped writing the textfile. severity=warning so
-      # the repair path spawns a worker; the absence is the fault,
-      # not a slow burn.
-      - alert: FleetCursorPrepaidSpendReaderAbsent
-        expr: absent(fleet_prepaid_spend_usd{provider="cursor"})
-        for: 30m
-        labels:
-          severity: warning
-          service: fleet
-          repo: Nishfleet/fleet-ops
-        annotations:
-          summary: "cursor prepaid spend reader absent — fleet_prepaid_spend_usd{provider=cursor} missing for 30+ minutes"
-          description: "fleet-ops#4206: bin/fleet-prepaid-util-canary is not writing /var/lib/prometheus/node-exporter/prepaid-spend.prom or the Cursor DashboardService GetCurrentPeriodUsage call is failing (auth missing, API unreachable, response shape changed). The $400 'API Usage' on-demand pool cannot be paced without this metric. Repair worker — check (1) the canary tick log for 'cursor spend reader: no data'; (2) ~/.config/cursor/auth.json exists and has accessToken (do NOT print the token); (3) curl -s -X POST -H 'Authorization: Bearer <token>' -d '{}' https://api2.cursor.sh/aiserver.v1.DashboardService/GetCurrentPeriodUsage returns JSON with spendLimitUsage; (4) the prepaid-spend.prom textfile is world-readable (0644) in the node_exporter textfile dir. Do NOT emit a fake zero — the absent() rule is the correct fail-loud."
-
-      # FleetCursorPrepaidBurnPacingLow: the trailing-24h burn is below the
-      # required daily burn (pool/remaining-days) for 2h, meaning the Cursor
-      # $400 pool will not be spent by the reset. The repair packet adds
-      # difficulty: senior-review to waiting heavy issues so pick_seat routes
-      # them to the cursor/cursor-grok-4.6-high senior ladder.
-      # severity=warning so the repair path spawns a worker that
-      # edits issue bodies (gh issue edit --body) per the fable-check
-      # 'Cursor API budget' block.
-      - alert: FleetCursorPrepaidBurnPacingLow
-        expr: |
-          fleet_cursor_prepaid_remaining_usd > 0
-            and fleet_cursor_prepaid_remaining_days > 0
-            and increase(fleet_prepaid_spend_usd{provider="cursor"}[24h]) < fleet_cursor_prepaid_required_daily_burn_usd
-        for: 2h
-        labels:
-          severity: warning
-          service: fleet
-          repo: Nishfleet/fleet-ops
-        annotations:
-          summary: "cursor $400 prepaid pool burn pacing low — trailing-24h burn below pool/remaining-days for 2h"
-          description: "fleet-ops#4206: the Cursor 'API Usage' on-demand pool is being spent too slowly to exhaust by the billing-cycle reset. Repair worker — increase the share of senior-review/keystone work landing on cursor/cursor-grok-4.6-high: for each waiting heavy fleet-ops/0509 issue (open, agent-ready or unclaimed, difficulty: heavy or keystone), prepend 'difficulty: senior-review' to the top of the issue body (gh issue edit --body) so pick_seat routes it to the senior ladder (senior_seats_in_order starts with cursor/cursor-grok-4.6-high). Cap stays 2 (ETIMEDOUT above that); pacing comes from hours, not concurrency. Do NOT raise the cap above 2. Do NOT touch worker-tier models. The judge's Telegram line should quote fleet_prepaid_spend_usd{provider=cursor} and the remaining pool."
-
-  # fleet-ops#5839: inotify watch-budget exhaustion. (This group used to be
-  # fleet_opencode_go_prepaid_pacing; the glue sweep third cut 2026-09-18
-  # deleted its four OpenCode Go rules — bin/fleet-prepaid-util-canary has
-  # carried no opencode-go usage reader since 2026-09-12 and the seat's key
-  # file is gone, so fleet_prepaid_usage_pct was being served forever from a
-  # stale prepaid-usage.prom and the absent() fail-loud could never fire.)
-  - name: fleet_inotify
-    rules:
-      - alert: FleetInotifyWatchExhausted
-        expr: fleet_inotify_watch_usage_ratio > 0.9
+      - alert: FleetProbeMissing
+        expr: absent(node_textfile_mtime_seconds{file="fleet.prom"})
         for: 10m
         labels:
           severity: critical
           service: fleet
-          repo: Nishfleet/fleet-ops
         annotations:
-          summary: "inotify watch budget >90% consumed — unit starts log ENOSPC (Failed to add inotify watch descriptor)"
-          description: "fleet-ops#5839: fleet_inotify_watch_usage_ratio > 0.9 for 10m against fs.inotify.max_user_watches. Every systemd --user unit start fails its control+memory cgroup watch adds ('No space left on device'), burying real failures in journalctl --user -p err. Repair worker — (1) read fleet_inotify_watch_top{pid,cmd} from the latest /var/lib/prometheus/node-exporter/fleet.prom: that IS the consumer, sampled mid-burst (fd accounting is not journaled anywhere, so this metric is the only holder evidence on the box); (2) if the holder is a one-off/burst, raise the budget via /etc/sysctl.d — the drop-in is tracked at etc/sysctl.d/90-fleet-inotify.conf (max_user_watches 524288, max_user_instances 512) and applying it needs sudo (Nish-reserved): sudo install -m 644 <repo>/etc/sysctl.d/90-fleet-inotify.conf /etc/sysctl.d/ && sudo sysctl --system; (3) if the holder persists, fix the watcher itself; (4) never silence journald or filter the journal — that hides the symptom, not the cause. Termination: journalctl --user --since '2 hours ago' -p err | grep -c 'inotify watch descriptor' is 0."
-
-  # fleet-ops glue sweep third cut 2026-09-18 — plane D of the deleted
-  # bin/fleet-restore-drill (542 LOC, fleet-ops#388). That drill proved the
-  # rebuild story every 6h by LOUD-ing "[RESTORE-DRILL-OK] ..." into the
-  # journal, where nothing ever read it. The proof now comes from restic's own
-  # verbs and lands in the node_exporter textfile collector:
-  #   restic-r2-backup.service      restic backup            (backup fresh)
-  #     + ExecStartPre pg_dump -Fc  litellm control plane    (plane E)
-  #   restic-r2-verify.service      restic check --read-data-subset=5%
-  #   restic-r2-restore-test.service restic restore --verify + stats, and it
-  #     writes /var/lib/prometheus/node-exporter/restic-restore-test.prom
-  # These two rules are what makes a stale proof reach the repair path instead
-  # of sitting unread in the journal. severity=critical routes to
-  # repair-dispatch (no phone) — a stale backup proof is a fleet repair job,
-  # not a Nish-reserved boundary.
-  - name: fleet-backup-restore-proof
-    rules:
-      - alert: ResticRestoreProofStale
-        # restic-r2-restore-test.timer fires every 6h; 8h allows one missed
-        # slot plus RandomizedDelaySec before the repair worker is called.
-        expr: (time() - fleet_restore_drill_last_success_seconds > 28800) or absent(fleet_restore_drill_last_success_seconds)
-        for: 15m
-        labels:
-          severity: critical
-          service: fleet
-          repo: Nishfleet/fleet-ops
-        annotations:
-          summary: "off-site restore proof stale — no verified restic restore in 8+ hours"
-          description: "fleet_restore_drill_last_success_seconds (published by restic-r2-restore-test.service to /var/lib/prometheus/node-exporter/restic-restore-test.prom) is over 8h old or absent. Nothing has proven in 8h that the R2 backup can actually be restored, so the whole off-site backup may be decorative. Repair worker — (1) sudo systemctl status restic-r2-restore-test.service restic-r2-restore-test.timer and sudo journalctl -u restic-r2-restore-test.service -n 50; (2) the unit restores /etc/hostname (checksummed) and /home/nish/.config/systemd/user (restic restore --verify) from the latest snapshot, so a failure means the repo, the credentials in /etc/restic/hostinger-r2.env, or R2 itself; (3) a checksum mismatch after a legitimate hostname change is NOT a backup fault — update EXPECTED_SHA256_DEFAULT in /usr/local/sbin/restic-r2-restore-test; (4) sudo systemctl start restic-r2-restore-test.service must exit 0 and refresh the metric. Termination: the metric is under 8h old again."
-
-      - alert: LitellmPgDumpStale
-        # restic-r2-backup.timer is daily; 36h allows one missed day. mtime 0
-        # means the dump is missing entirely.
-        expr: (time() - fleet_litellm_pgdump_mtime_seconds > 129600) or fleet_litellm_pgdump_mtime_seconds == 0 or absent(fleet_litellm_pgdump_mtime_seconds)
-        for: 15m
-        labels:
-          severity: critical
-          service: fleet
-          repo: Nishfleet/fleet-ops
-        annotations:
-          summary: "LiteLLM control-plane pg_dump missing or 36h+ stale"
-          description: "fleet-ops#4264: the LiteLLM control-plane Postgres is a user-scope cluster git does not track, and a file copy of a running PGDATA is not restorable. restic-r2-backup.service takes pg_dump -Fc to /home/nish/workspaces/agent-state/backups/litellm.dump in ExecStartPre (prefixed '-' so a Postgres hiccup never stops the filesystem backup — THIS alert is the failure signal instead). Repair worker — (1) sudo journalctl -u restic-r2-backup.service -n 80 and look for the pg_dump line; (2) check the cluster answers: /usr/lib/postgresql/16/bin/pg_isready -h /home/nish/.local/share/fleet-litellm-postgres/run; (3) if it is down, systemctl --user status fleet-litellm-postgres.service; (4) sudo systemctl start restic-r2-backup.service, then confirm ls -l /home/nish/workspaces/agent-state/backups/litellm.dump is fresh and non-empty. Termination: fleet_litellm_pgdump_mtime_seconds is nonzero and under 36h old."
+          summary: "fleet.prom textfile is absent entirely"
+          description: "The textfile has never been written or was deleted. Same blind spot as FleetProbeStale, but with no timestamp to age out. Repair: systemctl --user start fleet-metrics-export.service."

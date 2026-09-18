@@ -1,6 +1,37 @@
 [Unit]
-Description=Fleet Prometheus metrics exporter
+Description=Fleet metrics probe — vendor state that has no stock exporter
+
+# Glue sweep 2026-09-18 (exporter lane).
+#
+# This unit used to run libexec/fleet-metrics-export.py: 4,679 lines of Python
+# emitting ~90 fleet_* gauge families, feeding 53 alert rules. Both are gone.
+# config/fleet_rules.yml now keeps 14 rules, and every one of them reads a
+# metric a stock exporter already emits — litellm_* from LiteLLM's own
+# prometheus callback, node_* from node_exporter, fleet_restore_drill_* from
+# the restic restore-test textfile, up{} from prometheus itself.
+#
+# Three facts have no stock exporter on this host, because they live behind a
+# vendor API rather than a /metrics endpoint:
+#
+#   fleet_main_ci_green      GitHub Actions conclusion on the default branch
+#   fleet_product_up         the 0509 production origin answering HTTP
+#   fleet_prepaid_credits_usd  Cursor's prepaid bucket
+#
+# So this is the smallest possible reader for exactly those three:
+# libexec/fleet-metrics-probe.sh, ~40 lines of curl/jq/gh, no Python, no
+# library, no state directory. It writes the node_exporter textfile atomically.
+# The probe file carries the note on why this is a file and not an inline
+# ExecStart one-liner (systemd rewrites the quoting and the $ expansions).
+#
+# Failure is not silent: FleetProbeStale and FleetProbeMissing in
+# fleet_rules.yml alert on this file's own mtime, because the three rules above
+# would otherwise read as healthy forever if the probe stopped.
 
 [Service]
 Type=oneshot
-ExecStart=/usr/bin/python3 /home/nish/.local/libexec/fleet-metrics-export.py
+
+# gh needs a token; the fleet worker identity is minted the same way the
+# pi-issue@ workers mint theirs.
+Environment=HOME=/home/nish
+Environment=PATH=/home/nish/.local/bin:/usr/local/bin:/usr/bin:/bin
+ExecStart=/home/nish/workspaces/tooling/fleet-ops-deploy-clone/libexec/fleet-metrics-probe.sh
