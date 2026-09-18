@@ -31,7 +31,7 @@
 #   and byte sizes (MemoryHigh=3221225472) are not reset/expiry keys, so
 #   they are not flagged either.
 #
-# Hosted by tests/fleet-metrics-export.test.sh so P14 runs this without a
+# Hosted by tests/seat-lib.test.sh so P14 runs this without a
 # workflow-file edit (worker tokens cannot push .github/workflows/**). The
 # negative fixture tests/fixtures/epoch-guard-negative.json carries the
 # exact bomb literal 1788854400 and is excluded from the default tree scan
@@ -135,8 +135,11 @@ fi
 ok "negative fixture is skipped by the default tree scan"
 
 # --- 5. This lock is actually reached from a P14-listed test ------------
-grep -Fq 'bash "$here/hardcoded-epoch-guard.test.sh"' "$here/fleet-metrics-export.test.sh" \
-  || fail "fleet-metrics-export.test.sh must invoke this file (P14 host, fleet-ops#4508)"
-ok "lock is wired through tests/fleet-metrics-export.test.sh (already in P14)"
+# Glue sweep 2026-09-18: the old host tests/fleet-metrics-export.test.sh was
+# deleted with the exporter itself. Re-homed onto tests/seat-lib.test.sh, which
+# is listed in ci.yml and is this repo's surviving P14 nesting host.
+grep -Fq 'bash "$here/hardcoded-epoch-guard.test.sh"' "$here/seat-lib.test.sh" \
+  || fail "seat-lib.test.sh must invoke this file (P14 host, fleet-ops#4508)"
+ok "lock is wired through tests/seat-lib.test.sh (already in P14)"
 
 echo "OK: hardcoded-epoch-guard.test.sh: future-epoch time-bomb class is locked (fleet-ops#4508)"

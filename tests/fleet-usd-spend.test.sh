@@ -23,7 +23,6 @@ here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 repo_root="$(cd "$here/.." && pwd)"
 caps="$repo_root/config/seat-caps.json"
 lib="$repo_root/lib/fleet_usd.py"
-exporter="$repo_root/libexec/fleet-metrics-export.py"
 measure="$repo_root/measure.sh"
 
 fail() { echo "FAIL: $*" >&2; exit 1; }
@@ -31,7 +30,10 @@ ok()   { echo "OK: $*"; }
 
 [[ -f "$caps" ]]  || fail "seat-caps.json not found: $caps"
 [[ -f "$lib" ]]   || fail "lib/fleet_usd.py not found: $lib"
-[[ -f "$exporter" ]] || fail "exporter not found: $exporter"
+# Glue sweep 2026-09-18: libexec/fleet-metrics-export.py is deleted, and with it
+# the fleet_usd_24h gauge this file used to keep in lock-step with measure.sh.
+# The rate card and measure.sh — the two things this test actually asserts on —
+# both survive, so the test keeps its value without the exporter existence check.
 [[ -f "$measure" ]] || fail "measure.sh not found: $measure"
 command -v jq >/dev/null 2>&1 || fail "jq required"
 command -v python3 >/dev/null 2>&1 || fail "python3 required"

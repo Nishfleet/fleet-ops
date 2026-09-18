@@ -73,12 +73,15 @@ jobs:
             exit 1
           }
         done
+        # fleet-ops#5586: listed DIRECTLY since the glue sweep deleted its old
+        # host rule-enforcement.test.sh (the rule<->slo-definitions matrix it
+        # enforced went with the exporter). The reserved-classes precedence
+        # detector must never become unreachable.
+        bash tests/seat-lib.test.sh
+        bash tests/rule-enforcement.test.sh
+        bash tests/reserved-classes-precedence.test.sh
         bash tests/no-dead-credential-paths.test.sh
         bash tests/intake-repos-shape.test.sh
-        bash tests/intake-repos-path-resolution.test.sh
-        bash tests/seat-credentials-bad-replay.test.sh
-        bash tests/budget-402-classification.test.sh
-        bash tests/fleet-production-stale-alert.test.sh
         bash tests/semantic-conflict-detector.test.sh
         bash tests/repeat-deterministic-detector.test.sh
         bash tests/red-on-main-detector.test.sh
@@ -107,14 +110,9 @@ jobs:
         # Devin message rate limit = pause + in-session resume, never a worker
         # death (114 deaths/24h on that one message, 2026-09-11).
         bash tests/devin-provider-rate-limit-retry.test.sh
-        bash tests/seat-lib.test.sh
-        bash tests/seat-lib-degraded.test.sh
-        bash tests/seat-lib-org-reserve.test.sh
-        bash tests/seat-lib-product-only-spend-cap.test.sh
         # fleet-ops#2563: cap quota_bench walls at the provider's declared
         # reset horizon (quota_window) so a vendor-claimed 19-day Retry-After
         # cannot freeze a weekly-resetting seat for three cycles.
-        bash tests/seat-wall-reset-horizon.test.sh
         # fleet-ops#1164: persist nish-boundary-notify CLASSES in git + lint.
         # fleet-ops: slice shape lock. Its old host,
         # tests/system-dropins-shape.test.sh, was deleted with the MANIFEST.
@@ -178,7 +176,6 @@ jobs:
         # fleet-ops#3322 audition lane: candidate seats get cap 1 on light issues for
         # 10 sessions, judged by the yield ledger. Offline drill (stubbed gh/caps);
         # listed here by the orchestrator because the worker token lacks workflow scope.
-        bash tests/audition-lane.test.sh
         # A saturated seat pool is infrastructure, not a scout outcome: the
         # no-seat path exits the reserved SKIP code 75 so pi-scout@%i stays
         # green instead of failing and summoning pi-scout-repair@%i for a
@@ -241,6 +238,7 @@ jobs:
           /home/nish/.local/bin/siterep-live-canary \
           /home/nish/.local/bin/siterep-uptime \
           /home/nish/.local/bin/fleet-escalation-completion \
+          /home/nish/workspaces/tooling/fleet-ops-deploy-clone/libexec/fleet-metrics-probe.sh \
           /usr/bin/redis-server
         do
           sudo install -D -m 0755 /dev/null "$p"

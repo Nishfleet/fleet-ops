@@ -15,14 +15,17 @@
 #   fleet_restore_drill_*         /usr/local/sbin/restic-r2-restore-test writes
 #   fleet_litellm_pgdump_*        restic-restore-test.prom (same writer)
 #   up{}                          prometheus scrape state
-#   fleet_main_ci_green, fleet_product_up, fleet_prepaid_credits_usd
-#                                 fleet-metrics-export.service — now ONE curl|jq
-#                                 ExecStart line, no Python. Vendor state (GitHub
-#                                 CI, the 0509 origin, Cursor's bucket) has no
-#                                 stock exporter; this is the smallest reader.
+#   probe_success                 blackbox_exporter (3 targets on 0509)
+#   fleet_main_ci_green, fleet_prepaid_credits_usd, fleet_prepaid_used_usd
+#                                 fleet-metrics-export.service — now a ~45-line
+#                                 curl/jq/gh probe, no Python. GitHub's CI
+#                                 conclusion and Cursor's prepaid bucket live
+#                                 behind vendor APIs with no /metrics endpoint;
+#                                 this is the smallest reader for them.
 #
-# probe_success is NOT available (no blackbox_exporter on this host — the
-# prometheus query returns an empty vector), so no rule may use it.
+# probe_success was NOT available when these rules were first cut (no
+# blackbox_exporter, empty vector). Another lane of this same sweep installed
+# it (be38630df), so ProductDown below uses it instead of a bespoke gauge.
 #
 # The 53 deleted rules all read fleet_* gauges produced by the 4,679-line
 # libexec/fleet-metrics-export.py and its SLO/quality libraries, which this
@@ -178,15 +181,13 @@ groups:
           summary: "main is red on {{ $labels.repo }}"
           description: "The default branch of {{ $labels.repo }} has a failing CI conclusion. Every worker branches from main, so a red main poisons every PR opened after it. Fix forward or revert now — never watch main red."
 
-      - alert: ProductDown
-        expr: fleet_product_up == 0
-        for: 5m
-        labels:
-          severity: critical
-          service: product
-        annotations:
-          summary: "product {{ $labels.repo }} is not serving"
-          description: "An HTTP probe of the {{ $labels.repo }} production origin did not return a success status. This is customer-visible. Repair: check the most recent deploy and roll back if it correlates."
+      # Product availability is NOT a rule of this lane's. The canary lane of
+      # this same sweep (be38630df) installed blackbox_exporter and wrote the
+      # product_surface group below, which covers it properly: those rules use
+      # min_over_time(...[1h]) because the canary jobs scrape slowly enough that
+      # a bare `probe_success == 0` evaluates to empty most of the time and would
+      # silently never fire. A ProductDown written here was exactly that broken
+      # instant comparison, and is deleted rather than left as false coverage.
 
       # The three rules above have exactly one producer. If it stops, they all
       # read as healthy forever — so the producer's own freshness is a rule.

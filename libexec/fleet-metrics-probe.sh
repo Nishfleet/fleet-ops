@@ -2,7 +2,7 @@
 # Fleet metrics probe. Glue sweep 2026-09-18 (exporter lane).
 #
 # Replaces libexec/fleet-metrics-export.py (4,679 lines, ~90 gauge families).
-# Emits ONLY the three facts that have no stock exporter on this host, because
+# Emits ONLY the facts that have no stock exporter on this host, because
 # they live behind a vendor API rather than a /metrics endpoint. Everything
 # else config/fleet_rules.yml alerts on comes from LiteLLM's own prometheus
 # callback, node_exporter, the restic restore-test textfile, or up{}.
@@ -35,16 +35,10 @@ N="$T.$$"
         echo "fleet_main_ci_green{repo=\"$r\"} $v"
     done
 
-    echo '# HELP fleet_product_up Production origin returned a success status (1) or not (0).'
-    echo '# TYPE fleet_product_up gauge'
-    s=$(curl -s -o /dev/null -w '%{http_code}' --max-time 10 https://0509.io 2>/dev/null)
-    case "$s" in
-        2*|3*) echo 'fleet_product_up{repo="0509"} 1' ;;
-        *)     echo 'fleet_product_up{repo="0509"} 0' ;;
-    esac
-
     echo '# HELP fleet_prepaid_credits_usd Prepaid vendor credit remaining, USD (vendor API only).'
     echo '# TYPE fleet_prepaid_credits_usd gauge'
+    echo '# HELP fleet_prepaid_used_usd Prepaid vendor credit CONSUMED this cycle, USD.'
+    echo '# TYPE fleet_prepaid_used_usd gauge'
     t=$(jq -r .accessToken "$HOME/.config/cursor/auth.json" 2>/dev/null)
     if [ -n "$t" ] && [ "$t" != null ]; then
         curl -s --max-time 10 -X POST \
@@ -52,7 +46,8 @@ N="$T.$$"
             -H 'Content-Type: application/json' -d '{}' \
             https://api2.cursor.sh/aiserver.v1.DashboardService/GetCurrentPeriodUsage 2>/dev/null \
           | jq -r '.planUsage | select(.limit != null)
-                   | "fleet_prepaid_credits_usd{provider=\"cursor\"} \(.limit - (.limit * ((.apiPercentUsed // 0) / 100)))"' \
+                   | "fleet_prepaid_credits_usd{provider=\"cursor\"} \(.limit - (.limit * ((.apiPercentUsed // 0) / 100)))",
+                     "fleet_prepaid_used_usd{provider=\"cursor\"} \(.limit * ((.apiPercentUsed // 0) / 100))"' \
             2>/dev/null
     fi
 # Atomic: node_exporter must never read a half-written textfile.

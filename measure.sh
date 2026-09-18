@@ -194,19 +194,38 @@ if [ -f "$repo_root/lib/attest-waiting.sh" ]; then
 fi
 
 # --- cursor_today: real Cursor-side API-bucket burn (fleet-ops#4566/#4621)
-# Shared helper: lib/cursor-api-bucket.sh (also sourced by the prepaid-util
-# canary so the judge-facing usd_today cannot be the token $0). Reconciliation:
-# GetCurrentPeriodUsage planUsage.apiPercentUsed x (limit/100) — see
-# `bash lib/cursor-api-bucket.sh --help`.
-# shellcheck disable=SC1091
-source "$repo_root/lib/cursor-api-bucket.sh"
-CURSOR_TODAY_FIGURE="$(cursor_today_figure)"
-export CURSOR_TODAY_FIGURE
-# SC2155: the helper's rc is masked exactly as the inline export-assign did
-# (|| true preserves today's behaviour: its printed UNAVAILABLE:... strings
-# are the signal, its rc never killed the header).
-CURSOR_API_CYCLE_USD="$(cursor_api_cycle_usd)" || true
-export CURSOR_API_CYCLE_USD
+# Glue sweep 2026-09-18: lib/cursor-api-bucket.sh (126 lines, its own
+# prepaid-spend/ and prepaid-usage/ state dirs and history files) is deleted
+# along with bin/fleet-prepaid-util-canary that shared it. The same Cursor
+# reconciliation — GetCurrentPeriodUsage planUsage.apiPercentUsed x limit — is
+# now one curl in libexec/fleet-metrics-probe.sh, published as the Prometheus
+# gauge fleet_prepaid_credits_usd{provider="cursor"}. Read it from there.
+#
+# UNAVAILABLE (never a fabricated $0) stays the contract: if Prometheus has no
+# sample, say so — a $0 that is really "could not read" is the failure mode
+# fleet-ops#4459 was filed for.
+_cursor_prom() {
+    curl -sG --max-time 10 'http://127.0.0.1:9090/api/v1/query' \
+        --data-urlencode "query=$1" 2>/dev/null \
+      | "$python" -c 'import json,sys
+try: r=json.load(sys.stdin)["data"]["result"]
+except Exception: r=[]
+print(r[0]["value"][1] if r else "")' 2>/dev/null
+}
+# NOTE the gauge choice: the old helper reported apiPercentUsed x (limit/100),
+# i.e. the bucket CONSUMED this cycle — not what is left. The probe publishes
+# both, so read fleet_prepaid_used_usd here to keep this line's meaning
+# identical. (fleet_prepaid_credits_usd is the remaining side, which is what
+# FleetPrepaidCreditsLow alerts on.)
+_cursor_used="$(_cursor_prom 'fleet_prepaid_used_usd{provider="cursor"}')"
+if [[ -n "$_cursor_used" ]]; then
+    CURSOR_API_CYCLE_USD="$_cursor_used"
+    CURSOR_TODAY_FIGURE="$_cursor_used"
+else
+    CURSOR_API_CYCLE_USD="UNAVAILABLE:no-prom-sample"
+    CURSOR_TODAY_FIGURE="UNAVAILABLE:no-prom-sample"
+fi
+export CURSOR_API_CYCLE_USD CURSOR_TODAY_FIGURE
 
 # Compute the USD numbers via the shared helper (kept in lock-step with the
 # fleet_usd_24h prom exporter).
