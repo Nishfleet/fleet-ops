@@ -386,8 +386,6 @@ bin/fleet-claim /home/nish/.local/bin/fleet-claim
 # alert-repair-dispatch under /home/nish/.local/libexec/ so the dispatch
 # script can resolve it via ALERT_REPAIR_CLAIM_BIN default. install.sh
 # honours the libexec/ -> /home/nish/.local/libexec/ prefix.
-libexec/alert-repair-claim /home/nish/.local/libexec/alert-repair-claim
-libexec/alert-repair-dispatch /home/nish/.local/libexec/alert-repair-dispatch
 # fleet-ops#1534: repo-ize the daily-digest sender so the --class daily-digest
 # declaration (the outbound gate's sanctioned digest class) is PR-reviewed and
 # cannot drift back. Hand-placed script was class (b) (machinery audit
@@ -999,3 +997,4 @@ bin/fleet-litellm-key /home/nish/.local/bin/fleet-litellm-key
 #   systemctl --user enable --now gh-runner@{1..3}
 systemd/fleet-ci.slice /home/nish/.config/systemd/user/fleet-ci.slice
 systemd/gh-runner@.service /home/nish/.config/systemd/user/gh-runner@.service
+prompts/alert-repair.md /home/nish/.pi/agent/prompts/alert-repair.md
