@@ -31,6 +31,145 @@ model_list:
 # Jev (site fleet-seats): wire ultra order:1 0.58, add lightning 0.60, senior/judge 0.49 (not done).
 # Same $0 / prompts-retained class Nish approved for union-alpha on 09-17: NOT in worker-private.
 # Revert: cp litellm-proxy.yaml.bak-pre-nemotron-* litellm-proxy.yaml && systemctl --user restart fleet-litellm-proxy
+# 2026-09-18 14:20 IST (claude-vps): worker pool widened with the seats restored today. Two OpenRouter free rungs
+# alone 429 under fleet load and every 429 fell through to the devin failover (empty runs on long packets).
+# All rungs below probed on THIS host today with real tool calls via pi (zenmux/inferx/ollama PONG).
+# OpenCode Zen free tier refuses non-OpenCode clients (FreeTierError) — deliberately not wired here.
+- model_name: worker-cheap
+  litellm_params:
+    model: openai/glm-5.3-flash
+    api_base: https://ollama.com/v1
+    api_key: os.environ/OLLAMA_API_KEY
+    tags:
+    - free
+    - ollama
+    order: 1
+    max_parallel_requests: 4
+  model_info:
+    mode: chat
+    id: ollama-glm53flash-worker-cheap
+    input_cost_per_token: 0
+    output_cost_per_token: 0
+- model_name: worker-cheap
+  litellm_params:
+    model: openai/glm-5.3-flash
+    api_base: https://model.inferx.net/endpoints/v1
+    api_key: os.environ/INFERX_API_KEY
+    tags:
+    - free
+    - inferx
+    order: 1
+    max_parallel_requests: 4
+  model_info:
+    mode: chat
+    id: inferx-glm53flash-worker-cheap
+    input_cost_per_token: 0
+    output_cost_per_token: 0
+- model_name: worker-cheap
+  litellm_params:
+    model: openai/z-ai/glm-4.7-flash-free
+    api_base: https://zenmux.ai/api/v1
+    api_key: os.environ/ZENMUX_API_KEY
+    tags:
+    - free
+    - zenmux
+    order: 1
+    max_parallel_requests: 4
+  model_info:
+    mode: chat
+    id: zenmux-glm47flash-worker-cheap
+    input_cost_per_token: 0
+    output_cost_per_token: 0
+- model_name: worker-capable
+  litellm_params:
+    model: openai/kimi-k3
+    api_base: https://ollama.com/v1
+    api_key: os.environ/OLLAMA_API_KEY
+    tags:
+    - free
+    - ollama
+    order: 1
+    max_parallel_requests: 4
+  model_info:
+    mode: chat
+    id: ollama-kimi-k3-worker-capable
+    input_cost_per_token: 0
+    output_cost_per_token: 0
+- model_name: worker-capable
+  litellm_params:
+    model: openai/qwen3.5:397b
+    api_base: https://ollama.com/v1
+    api_key: os.environ/OLLAMA_API_KEY
+    tags:
+    - free
+    - ollama
+    order: 1
+    max_parallel_requests: 4
+  model_info:
+    mode: chat
+    id: ollama-qwen35-397b-worker-capable
+    input_cost_per_token: 0
+    output_cost_per_token: 0
+- model_name: worker-capable
+  litellm_params:
+    model: openai/Qwen3-Coder-Next-FP8
+    api_base: https://model.inferx.net/endpoints/v1
+    api_key: os.environ/INFERX_API_KEY
+    tags:
+    - free
+    - inferx
+    order: 1
+    max_parallel_requests: 4
+  model_info:
+    mode: chat
+    id: inferx-qwen3-coder-next-worker-capable
+    input_cost_per_token: 0
+    output_cost_per_token: 0
+- model_name: worker-cheap
+  litellm_params:
+    model: openai/nvidia/nemotron-3-ultra-550b-a55b:free
+    api_base: https://openrouter.ai/api/v1
+    api_key: os.environ/OPENROUTER_API_KEY
+    extra_headers: {HTTP-Referer: https://0509.io, X-Title: nish-fleet}
+    tags:
+    - free
+    - nemotron
+    order: 1
+    max_parallel_requests: 4
+  model_info:
+    mode: chat
+    id: nemotron-ultra-openrouter-worker-cheap
+    input_cost_per_token: 0
+- model_name: worker-cheap
+  litellm_params:
+    model: openai/nvidia/nemotron-3.5-lightning:free
+    api_base: https://openrouter.ai/api/v1
+    api_key: os.environ/OPENROUTER_API_KEY
+    extra_headers: {HTTP-Referer: https://0509.io, X-Title: nish-fleet}
+    tags:
+    - free
+    - nemotron
+    order: 1
+    max_parallel_requests: 4
+  model_info:
+    mode: chat
+    id: nemotron-lightning-openrouter-worker-cheap
+    input_cost_per_token: 0
+- model_name: worker-capable
+  litellm_params:
+    model: openai/nvidia/nemotron-3-ultra-550b-a55b:free
+    api_base: https://openrouter.ai/api/v1
+    api_key: os.environ/OPENROUTER_API_KEY
+    extra_headers: {HTTP-Referer: https://0509.io, X-Title: nish-fleet}
+    tags:
+    - free
+    - nemotron
+    order: 1
+    max_parallel_requests: 4
+  model_info:
+    mode: chat
+    id: nemotron-ultra-openrouter-worker-capable
+    input_cost_per_token: 0
 - model_name: worker-cheap
   litellm_params:
     model: openai/nvidia/nemotron-3-ultra-550b-a55b:free
@@ -286,6 +425,11 @@ router_settings:
   num_retries: 2
   timeout: 1800
   enable_tag_filtering: false
+  # 2026-09-18: free rungs get ONE rate-limit retry before falling through (they cost nothing; the
+  # 2026-09-14 retry-storm was metered 402/429 seats, which stay at 0 via the global policy).
+  model_group_retry_policy:
+    worker-cheap: {RateLimitErrorRetries: 1}
+    worker-capable: {RateLimitErrorRetries: 1}
   retry_policy:
     AuthenticationErrorRetries: 2
     RateLimitErrorRetries: 2
