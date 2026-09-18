@@ -184,6 +184,25 @@ are still worth borrowing from; refresh one by hand with
 `git -C /home/nish/workspaces/.mirrors/<repo>.git fetch --all` if it ever
 drifts far enough to matter.
 
+One trap lives in the mirror itself (fleet-ops#5737): a bare mirror's fetch
+refspec covers `refs/heads/*` and `refs/tags/*` only, so any leftover
+`refs/remotes/origin/*` refs never update — `git show origin/main:<file>`
+against the mirror then silently serves hours-old content while `main` is
+current. Map the heads namespace into the remote-tracking one on every fetch
+so the two spellings cannot disagree, then refresh:
+
+```
+git -C /home/nish/workspaces/.mirrors/<repo>.git config --add \
+  remote.origin.fetch '+refs/heads/*:refs/remotes/origin/*'
+git -C /home/nish/workspaces/.mirrors/<repo>.git fetch --all
+```
+
+After this, every `fetch --all` force-moves `refs/remotes/origin/*` to the
+same SHAs as `refs/heads/*`; a mirror created fresh with `git clone --mirror`
+has no `refs/remotes/` at all (its `origin/main` spelling fails loudly
+instead of lying). Never hand-`update-ref` `refs/remotes/origin/*` in a
+mirror.
+
 A short log with no verdict after a backgrounded launch is a **launcher fault**
 (the session reaped the process). A log containing `rate_limit` /
 `ETIMEDOUT` / `quota` is a **lane fault** (rotate the seat). Do not mix
