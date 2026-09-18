@@ -44,7 +44,6 @@
 #   PI_DEADMAN_DROPIN_DIR     per-unit no-resume drop-in dir to remove at
 #                             stop (pi-systemd-run writes it at launch)
 #   SERVICE_RESULT, EXIT_CODE, EXIT_STATUS   (systemd ExecStopPost)
-#   KEYSTONE_HC_ENV, PI_DEADMAN_URL_BASE     ping seams (keystone-hc-ping)
 #   PI_DEADMAN_TEXTFILE       node_exporter textfile (default
 #                             /var/lib/prometheus/node-exporter/fleet-detached.prom)
 #   PI_DEADMAN_DRYRUN         1 = print the verdict, write nothing (tests)
@@ -354,8 +353,6 @@ if [[ "${PI_DEADMAN_DRYRUN:-0}" == "1" ]]; then
 fi
 
 if [[ "$died" == "1" ]]; then
-    # /fail ping: instant DOWN beats waiting out the grace period.
-    "$here/keystone-hc-ping" detached fail || true
     # fleet-ops#5456: closing ledger row for this dispatch. The unit's own
     # ledger entry stays the launch record; this row is the verdict — the
     # dispatcher reads it when deciding hop+1 relaunch vs terminal dispatch.
@@ -390,9 +387,10 @@ PY
     _textfile_set 1
     log "died: unit=$unit result=$service_result deliverable=${deliverable:-unset}${bounce_line:+ $bounce_line} verdict=$verdict — dead-man tripped"
 else
-    # The run kept its promise: success ping (same run id), and the died
-    # series (if any stale one exists) is cleared.
-    "$here/keystone-hc-ping" detached success || true
+    # The run kept its promise: the died series (if any stale one exists)
+    # is cleared. The healthchecks.io success ping that rode here went with
+    # bin/keystone-hc-ping in the 2026-09-18 glue sweep — HC_URL_DETACHED was
+    # never provisioned, so it had always been a silent skip.
     _textfile_set 0
 fi
 

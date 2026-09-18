@@ -39,8 +39,11 @@ ok "dry-run wires ExecStopPost dead-man + RuntimeMaxSec"
 # fleet-ops#4266: the dead-man rail must be armed on EVERY launch.
 printf '%s\n' "$out" | grep -q 'OnFailure=pi-packet-failed@issue26-shape.service.service' \
   || fail "dry-run must set the explicit OnFailure pi-packet-failed rail (fleet-ops#4266; the unit-escalation rail was deleted in the glue sweep 2026-09-18): $out"
-printf '%s\n' "$out" | grep -Fq 'keystone-hc-ping\ detached\ start' \
-  || fail "dry-run must arm the /start dead-man ping (fleet-ops#4266): $out"
+# The /start healthchecks.io ping was deleted with bin/keystone-hc-ping in the
+# 2026-09-18 glue sweep (HC_URL_DETACHED was never provisioned, so it had always
+# been a silent skip). Assert it STAYS gone, so nobody reintroduces the wrapper.
+printf '%s\n' "$out" | grep -Fqv 'keystone-hc-ping' \
+  || fail "dry-run must NOT reference the deleted keystone-hc-ping (2026-09-18 glue sweep): $out"
 printf '%s\n' "$out" | grep -q 'ExecStopPost=.*pi-detached-deadman' \
   || fail "dry-run must wire the dead-man ExecStopPost (fleet-ops#4266): $out"
 printf '%s\n' "$out" | grep -q 'PI_DEADMAN_DISPATCH=' \
@@ -49,7 +52,7 @@ printf '%s\n' "$out" | grep -q 'PI_DEADMAN_CMDLINE=sleep\\ 1' \
   || fail "dry-run must record PI_DEADMAN_CMDLINE (fleet-ops#4266): $out"
 printf '%s\n' "$out" | grep -q 'PI_DEADMAN_DEADLINE=90' \
   || fail "dry-run must pass --deadline into the dead-man (fleet-ops#4266): $out"
-ok "dry-run arms the #4266 dead-man rail (OnFailure + /start ping + deadman ExecStopPost)"
+ok "dry-run arms the #4266 dead-man rail (OnFailure + deadman ExecStopPost; no ping wrapper)"
 
 # --deliverable must surface as PI_DEADMAN_DELIVERABLE for the verdict hook.
 out="$("$bin" --dry-run --unit issue26-dl --deliverable /tmp/issue26-dl.md -- sleep 1)"

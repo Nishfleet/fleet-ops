@@ -26,9 +26,9 @@
 #      file stays 0644 so node_exporter (User=prometheus) can read it
 #
 # All hermetic: scratch textfile + scratch dispatch
-# ledger, KEYSTONE_HC_ENV pointing at an unset-URL env file so ping
-# fail-opens silent (circle-marked in the job only). Hosted by ci.yml
-# directly.
+# ledger. (The keystone-hc-ping seam is gone: the detached healthchecks.io
+# ping was deleted with that script in the 2026-09-18 glue sweep — its URL
+# was never provisioned.) Hosted by ci.yml directly.
 set -euo pipefail
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 repo_root="$(cd "$here/.." && pwd)"
@@ -46,9 +46,6 @@ tf="$scratch/fleet-detached.prom"
 ledger="$scratch/dispatch-ledger.jsonl"
 
 
-# Empty HC env -> keystone-hc-ping detached fail-opens silent.
-envfile="$scratch/hc.env"
-: >"$envfile"
 
 # Stub journalctl: cases feed the unit journal via JOURNAL_STUB_TEXT.
 cat >"$scratch/journalctl-stub" <<'EOF'
@@ -81,7 +78,7 @@ common=(PI_DEADMAN_TEXTFILE="$tf"
         PI_DEADMAN_ESCALATION_BIN="$scratch/esc-stub"
         PI_DEADMAN_TEST_ESC_LOG="$esc_log"
         PI_VERDICT_LIVE_FETCH=0
-        KEYSTONE_HC_ENV="$envfile")
+        )
 
 # --- 1. not armed ------------------------------------------------------------
 out="$("$deadman" 2>&1)"
