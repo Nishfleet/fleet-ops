@@ -174,9 +174,15 @@ git clone --reference-if-able /home/nish/workspaces/.mirrors/<repo>.git \
 ```
 
 Never `--dissociate` on throwaway worktrees. Never push to a mirror
-(read-only fetch target). A missing or corrupt mirror degrades to a
-plain clone. `git-mirror-update` keeps the mirrors on the existing
-5-min `fleet-metrics-export` tick (no new timer).
+(read-only fetch target). A missing, stale or corrupt mirror degrades to a
+plain clone — which is exactly why the `git-mirror-update` refresher was
+deleted in the 2026-09-18 glue sweep: `--reference-if-able` borrows whatever
+objects the mirror already has and fetches the rest from GitHub, so a mirror
+that stops being refreshed costs a little bandwidth, never correctness. The
+mirrors under `/home/nish/workspaces/.mirrors` are left in place (14G) and
+are still worth borrowing from; refresh one by hand with
+`git -C /home/nish/workspaces/.mirrors/<repo>.git fetch --all` if it ever
+drifts far enough to matter.
 
 A short log with no verdict after a backgrounded launch is a **launcher fault**
 (the session reaped the process). A log containing `rate_limit` /

@@ -340,7 +340,7 @@ longer exists) or REWRITTEN to query LiteLLM endpoints.
 | `pi-issue-failed-reap` | seat death classification | REWRITE: read router cooldown state from `/health` |
 | `fleet-seat-comeback-release` | un-benches seats | REWRITE: router cooldown auto-expires; canary reads `/health` |
 | `fleet-seat-recovery` | re-audits dead seats | REWRITE: trigger `/health` refresh; DELETE if redundant |
-| `pi-transport-check` / `pi-transport-self-heal` | local CLI spawn health | KEEP — not seat routing |
+| `pi-transport-check` / `pi-transport-self-heal` | local CLI spawn health | DELETED 2026-09-18 — lib/litellm-seat.sh was its only programmatic reader and went in the same sweep |
 | `ram-measure` | RAM governor | KEEP — cgroup measurement, not routing |
 | `lib/pi-intake-tick.sh` | `PICK_SEAT_COUNT_SLOTS` | REWRITE: query `/health` headroom for claim-bounding |
 

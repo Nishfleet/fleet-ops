@@ -50,7 +50,6 @@ cheaper than building, because prose bans lose to urgency at decision time.
 | Quality research (weekly) | quality-research-weekly | `quality-research-weekly.timer` | #457 |
 | Boundary-notify (Nish-reserved) | nish-boundary-notify | `nish-boundary-notify.service` | standing rule |
 | Alert→repair bridge | prometheus-am-executor | `prometheus-am-executor.service` | alert pipeline |
-| Transport integrity | pi-transport-check | `pi-transport-check.timer` | Pi transport |
 | Daily digest | daily-digest | `daily-digest.timer` | Pi-era data |
 | Product nightly site check | tinystudio-live-site-check | `tinystudio-live-site-check.timer` | product-ops |
 | Product cron | agent-cron-0509-* | `agent-cron-0509-*.timer` | product cron |

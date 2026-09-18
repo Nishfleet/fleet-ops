@@ -59,8 +59,9 @@ jobs:
         set -euo pipefail
         # fleet-ops#3235 part six (the follow-up its own commit message planned:
         # "CI workflow change in a follow-up commit — GitHub App cannot push
-        # workflow files"). GitHub runners have neither pi-transport-check nor
-        # pi, so the #3235 transport gate read every bench writer as
+        # workflow files"). GitHub runners have neither pi nor (since the
+        # 2026-09-18 glue sweep) pi-transport-check, so the #3235 gate read
+        # every bench writer as
         # transport-down and red'd the suite at the first ledger assertion
         # (seat-lib.test.sh run 33888017048, then pi-issue-run-noop-bench). The
         # suite runs transport-offline by declaration; the gate itself stays ON
@@ -75,7 +76,6 @@ jobs:
         bash tests/no-dead-credential-paths.test.sh
         bash tests/intake-repos-shape.test.sh
         bash tests/intake-repos-path-resolution.test.sh
-        bash tests/pi-transport-check.test.sh
         bash tests/seat-credentials-bad-replay.test.sh
         bash tests/budget-402-classification.test.sh
         bash tests/fleet-production-stale-alert.test.sh
@@ -149,6 +149,7 @@ jobs:
         # The CI-standards audit parses workflow YAML with PyYAML.
         python3 -m pip install --no-input "pyyaml==6.0.1"
         bash tests/ci-standards-audit.test.sh
+        bash tests/reserved-classes-precedence.test.sh
         # fleet-ops#828: lock the gate-integrity decision script's
         # line-anchored attestation extraction (multi-line attest comments).
         bash tests/gate-integrity.test.sh
@@ -172,7 +173,6 @@ jobs:
         bash tests/alertmanager-routing-matrix.test.sh
         bash tests/fleet-rules-severity-page.test.sh
         # fleet-ops#754: lock spawn-guard stash readonly enforcement.
-        bash tests/fleet-spawn-guard-stash-readonly.test.sh
         # fleet-ops#3322 audition lane: candidate seats get cap 1 on light issues for
         # 10 sessions, judged by the yield ledger. Offline drill (stubbed gh/caps);
         # listed here by the orchestrator because the worker token lacks workflow scope.

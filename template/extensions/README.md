@@ -41,7 +41,7 @@ Deleting it is strictly less machinery than symlinking it.
 |---|---:|---|
 | `permission-gate.ts` | 54 | **fork of stock (pi 0.85.1).** Adds 3 fleet rules to stock's 3: `git stash` (not `list`/`show`), `systemctl … restart`, `wrangler … deploy`. Stock already blocks `rm -rf`, `sudo`, `chmod 777`. Forked because pi's `settings.json` has no per-extension config key (`docs/settings.md:286`) — the pattern list only lives in the file. |
 | `protected-paths.ts` | 49 | **fork of stock (pi 0.85.1).** Adds the fleet credential paths (`~/.config/fleet-ops/seats`, `/etc/restic`, `~/.pi/agent/auth.json`, `*.pem`) to stock's `.env`/`.git/`/`node_modules/`. Same reason. |
-| `subagent/index.ts` | 15 | 11-line fork of the stock entry point: prints the `EXTLOAD-OK` handshake stock lacks, then re-exports stock. **Kept because `bin/pi-transport-check --subagent` greps this file for that string and hard-fails without it.** |
+| `subagent/index.ts` | 15 | 11-line fork of the stock entry point: prints the `EXTLOAD-OK` handshake stock lacks, then re-exports stock. **Kept for the handshake itself: the `EXTLOAD-OK` line is how a unit journal proves the extension loaded, and tests/subagent-extload.test.sh locks it. (`bin/pi-transport-check --subagent`, which used to grep this file for that string, was deleted 2026-09-18.)** |
 | `cursor-provider/`, `devin-provider/` | 378 / 426 | pi's documented custom-provider mechanism (`docs/custom-provider.md`) for the Cursor and Devin CLIs; pi ships no provider for either. `devin-provider` kept because a LiteLLM group still routes to devin (`litellm_deployment_state{api_provider="devin",litellm_model_name="swe-2-max"}`). |
 
 ## Symlinked to stock (upstream pi 0.85.1)

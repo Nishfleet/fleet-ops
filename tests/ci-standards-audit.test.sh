@@ -165,10 +165,6 @@ echo "OK: ci-standards-audit.mjs fixtures and pure functions"
 bash "$here/p14-unstubbed-unit-verify.test.sh"
 
 # fleet-ops#3237: pi transport self-heal regression test. Proves the
-# pi-transport-self-heal wrapper re-creates the bin symlink via npm rebuild,
-# falls back to npm install@pinned, and only escalates when the package itself
-# is broken. Hosted here so P14 runs it without a workflow-file edit.
-bash "$here/pi-transport-self-heal.test.sh"
 
 # fleet-ops#566: P14 verify-command is an explicit list. Workers cannot push
 # .github/workflows/**, so the listing gate rides on this listed test.
@@ -495,7 +491,7 @@ bash "$here/fleet-review-arm-check.test.sh"
 # timeout gate. Hosted here so P14 runs it without a workflow-file edit
 # (workers cannot push .github/workflows/**).
 bash "$here/provider-timeout.test.sh"
-# fleet-ops#3277: subagent extension MANIFEST + pi-transport-check --subagent
+# fleet-ops#3277: subagent extension wrapper + EXTLOAD handshake
 # EXTLOAD gate. Hosted here so P14 runs it without a workflow-file edit
 # (workers cannot push .github/workflows/**).
 bash "$here/subagent-extload.test.sh"
