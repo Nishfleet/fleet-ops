@@ -205,18 +205,23 @@ trial can be authorized.
 
 ## Exact commands
 
-### Run the sampler (one pi-systemd-run unit, exits on its own)
+### Run the sampler (one transient systemd unit, exits on its own)
 
 ```bash
-pi-systemd-run --unit fleet-cpu-sampler-4804 \
-  --deadline 1500 \
-  --deliverable /home/nish/workspaces/agent-state/fleet-metrics/cpu-sampler-<start-epoch>.jsonl \
+systemd-run --user --collect --unit fleet-cpu-sampler-4804 \
+  -p RuntimeMaxSec=90000 \
+  -E DELIVERABLE=/home/nish/workspaces/agent-state/fleet-metrics/cpu-sampler-<start-epoch>.jsonl \
+  -p 'ExecStopPost=/bin/sh -c '"'"'test -s "$DELIVERABLE" || { echo no-deliverable >&2; exit 1; }'"'"'' \
   -- python3 /home/nish/workspaces/tooling/fleet-ops/libexec/fleet-cpu-sampler.py
 ```
 
+(Historical note: this study was run with `bin/pi-systemd-run --deadline 1500
+--deliverable ...`. That wrapper was deleted on 2026-09-18; `RuntimeMaxSec=90000`
+is the same 25h grace budget in seconds.)
+
 The sampler writes one JSONL line per 60s sample to
 `agent-state/fleet-metrics/cpu-sampler-<start-epoch>.jsonl` and exits on its
-own after 24h. `--deadline 1500` = 25h grace budget (1500 minutes).
+own after 24h. `RuntimeMaxSec=90000` = the same 25h grace budget.
 
 > The sampler script (`libexec/fleet-cpu-sampler.py`) was deleted after the
 > study per the issue's "delete the sampler" instruction. It was re-created

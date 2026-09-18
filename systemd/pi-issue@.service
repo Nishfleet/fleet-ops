@@ -1,9 +1,9 @@
 [Unit]
 Description=Pi fleet issue worker %i
 # Second cut 2026-09-18: this unit IS the worker. There is no wrapper script.
-# ExecStart assembles the prompt and pipes it into `pi --print`. Everything the
-# old bin/pi-issue-run (1,542 lines) did is either systemd's job or the LiteLLM
-# proxy's job:
+# ExecStart invokes a Pi PROMPT TEMPLATE and pipes it into `pi --print`.
+# Everything the old bin/pi-issue-run (1,542 lines) did is either systemd's job
+# or the LiteLLM proxy's job:
 #   - retries / backoff / hang-kill  -> Restart=, RestartSec=, TimeoutStartSec=
 #   - seat rotation / fallback       -> the LiteLLM proxy groups. The old
 #     wrapper resolved to a group too (pi-packet-run called litellm_seat), so
@@ -11,23 +11,14 @@ Description=Pi fleet issue worker %i
 #     Workers use `worker-capable`, NOT `worker-cheap`. Measured on this exact
 #     prompt 2026-09-18: worker-cheap answered "I'll start by checking the
 #     environment" and stopped with tools=0; worker-capable ran 31 tools of
-#     real investigation. The retired wrapper reached the same place by
-#     ordering product picks on measured PR yield (PI_PICK_ROLE=product) —
-#     the cheapest seat was never the one that did issue work. Intake and
-#     scout stay on worker-cheap: measured tools=16 and tools=22, they are
-#     mechanical and the cheap group handles them.
-#   - verdict parsing                -> the packet-verdict + stop-judge Pi
-#     extensions, already loaded (EXTLOAD-OK on every run).
+#     real investigation. Intake and scout stay on worker-cheap: measured
+#     tools=16 and tools=22, they are mechanical.
+#   - verdict parsing                -> replaced by the ExecStopPost artifact
+#     check below. See the comment there.
 # --session-dir is load-bearing, not tidiness. Pi stores sessions per working
 # directory, so every unit running in /home/nish shared one session pool: the
-# first workers on the new rail resumed each other's transcripts ("continuing
-# from where the transcript left off") and exited after ~3 minutes and 8 tools
-# without touching the issue. A per-instance session dir is what the retired
-# wrapper did too — the leftover sessions/pi-issue-0509-3610 dir is its
-# fingerprint — and it is a pi flag, not a wrapper.
-# The old .in packet file is gone with the wrapper, and with it the entire
-# 208/STDIN failure class (fleet-ops#1451) and the ConditionPathExists guard:
-# a prompt that is built at ExecStart time can never be missing.
+# first workers on the new rail resumed each other's transcripts and exited
+# after ~3 minutes and 8 tools without touching the issue.
 OnFailure=pi-issue-failed@%i.service
 StartLimitIntervalSec=1h
 StartLimitBurst=3
@@ -46,30 +37,27 @@ Environment=HOME=/home/nish
 Environment=PATH=/home/nish/.local/bin:/usr/local/bin:/usr/bin:/bin
 Environment=XDG_RUNTIME_DIR=/run/user/1000
 Environment=PI_UNIT_INSTANCE=%i
-# fleet-ops#7761: a worker run that made ZERO tool calls must not exit 0.
-# On 2026-09-18 the LiteLLM worker groups fell through to the `devin --print`
-# bridge, which is an agent-in-a-box: it never forwards the tools array and can
-# never return a tool_calls response. Every worker from ~16:30Z therefore ended
-# PACKET-VERDICT tools=0 class=no-tools with rc=0, so systemd recorded
-# Result=success while 100+ agent-ready issues went untouched — and because
-# Restart=on-failure, OnFailure=pi-issue-failed@ and StartLimitBurst all key off
-# the exit code, the silent 0 disabled this unit's entire retry and alerting
-# path. This env var arms the packet-verdict extension to exit 1 on a no-tools
-# run, turning a silent no-op back into a `failed` unit that OnFailure catches.
-# Opt-in on purpose: an interactive or read-only pi session legitimately ends
-# with tools=0, so only work packets set it. Proof 2026-09-18 17:29Z — same
-# prompt, same env: senior (devin, cannot tool-call) rc=1, worker-capable
-# (synthetic, proven tool_calls) rc=0, and no-tools WITHOUT this var rc=0.
-Environment=PI_PACKET_EXPECTS_TOOLS=1
 WorkingDirectory=/home/nish
-# %i is <repo>-<issue>. sed splits it without any '%' in the script body, so
-# systemd never sees an unknown specifier. worker-token mints the ≤1h
-# nishfleet-worker App token (RS256 JWT over the App private key) — the one
-# step here that is neither systemd's nor Pi's: a worker must not push as Nish.
-# worker-token --print emits the LINE `export GH_TOKEN=<token>` (it never prints
-# the bare token), so it is eval'd, not captured. An empty mint fails the unit
-# rather than silently falling back to human auth.
-ExecStart=/bin/sh -c 'set -e; i="$1"; r=$(echo "$i" | sed "s/-[0-9][0-9]*$//"); n=$(echo "$i" | sed "s/.*-//"); eval "$(worker-token --print)"; [ -n "$GH_TOKEN" ] || { echo "worker-token mint failed — refusing human-gh fallback" >&2; exit 1; }; export GH_TOKEN; { cat "$HOME/.pi/agent/prompts/worker.md"; echo; echo "TARGET: repo Nishfleet/$r issue $n unit pi-issue-$i"; } | exec pi --print --session-dir "$HOME/.pi/agent/sessions/pi-issue-$i" --provider litellm --model worker-capable' sh %i
+# App identity: `gh token` (the Link-/gh-token gh extension, v2.0.10) mints the
+# <=1h nishfleet-worker installation token. It replaces bin/worker-token (350
+# lines of hand-rolled RS256 JWT + installation discovery + cache) with the
+# stock gh extension that does exactly the same three GitHub calls. Proven
+# 2026-09-18: app-id 4728578 / installation 156789042 ->
+# `gh api /installation/repositories --jq .total_count` = 13.
+# An empty mint fails the unit rather than silently falling back to human auth.
+#
+# `--exclude-tools subagent` is depth-1, enforced by Pi's own CLI flag rather
+# than by ~/.pi/agent/extensions/spawn-guard-core.ts (a LOCAL hand-written
+# extension, deleted in this sweep). `subagent` is the exact tool name the
+# stock subagent extension registers (examples/extensions/subagent/index.ts:473)
+# and the only spawn tool a worker has. Stock agent definitions under
+# ~/.pi/agent/agents/ already declare `tools: read, grep, find, ls[, bash]`
+# with no `subagent`, so children could never re-spawn; this flag closes the
+# root. Cost measured before flipping it: zero `keystone` and zero `heavy`
+# issues have EVER been opened in Nishfleet/fleet-ops or Nishfleet/0509, so
+# worker.md's manager mode — the only caller — never fired once. It is deleted
+# with this change.
+ExecStart=/bin/sh -c 'set -e; GH_TOKEN=$(gh token generate --app-id 4728578 --key "$HOME/.config/fleet-worker/nishfleet-worker.private-key.pem" --installation-id 156789042 --token-only); [ -n "$GH_TOKEN" ] || { echo "app token mint failed — refusing human-gh fallback" >&2; exit 1; }; export GH_TOKEN; echo "/worker $1" | exec pi --print --session-dir "$HOME/.pi/agent/sessions/pi-issue-$1" --exclude-tools subagent --provider litellm --model worker-capable' sh %i
 # The worker created its own worktree; the worker's own unit cleans it up.
 # No reaper, no salvage organ: work that was never committed and pushed did not
 # happen, and the next dispatch starts from origin/main. Leading '-' so cleanup
@@ -78,6 +66,18 @@ ExecStopPost=-/bin/sh -c 'w="$HOME/workspaces/agent-worktrees/issue-$1"; for g i
 # fleet-ops#3695: a finishing worker asks its own repo's intake for a refill,
 # so a cohort that drains in 10 min does not leave the rest of the window idle.
 ExecStopPost=-/bin/sh -c 'r=$(echo "$1" | sed "s/-[0-9][0-9]*$//"); systemctl --user start --no-block "pi-intake@$r.service"' sh %i
+# ARTIFACT CHECK — replaces the packet-verdict extension and PI_PACKET_EXPECTS_TOOLS.
+# fleet-ops#7761 caught a worker run that made ZERO tool calls exiting 0, so
+# systemd recorded Result=success while the issue went untouched; the fix then
+# was an env var arming a hand-written extension to count tool calls. Counting
+# tool calls was always a proxy for the thing that actually matters: did the
+# run leave the artifact behind? This asks that directly. A worker's first act
+# is to push claim/issue-<N>; if that branch is not on origin, the run produced
+# nothing, so exit 1 turns Result=success into Result=exit-code -> `failed`,
+# which is what OnFailure=, Restart=on-failure and StartLimitBurst all key off.
+# Runs LAST so the worktree cleanup and the intake refill above happen first.
+# Only checked on a success exit — a run that already failed is already failed.
+ExecStopPost=/bin/sh -c '[ "$SERVICE_RESULT" = success ] || exit 0; i="$1"; r=$(echo "$i" | sed "s/-[0-9][0-9]*$//"); n=$(echo "$i" | sed "s/.*-//"); GH_TOKEN=$(gh token generate --app-id 4728578 --key "$HOME/.config/fleet-worker/nishfleet-worker.private-key.pem" --installation-id 156789042 --token-only 2>/dev/null); export GH_TOKEN; gh api "repos/Nishfleet/$r/branches/claim/issue-$n" >/dev/null 2>&1 || { echo "no claim/issue-$n on origin Nishfleet/$r — the run exited 0 with no artifact" >&2; exit 1; }' sh %i
 TimeoutStopSec=180
 
 # Retry policy — systemd's own, not a counter in bash.

@@ -70,13 +70,18 @@ ok "longest worker.md line is ${longest}B, under ${LINE_CAP}B per-line cap"
 # The trim must keep the core instruction (flag failed commands in user-facing
 # text) and the no-match-probe exception. Dropping the rule would be a
 # regression worse than the bloat.
-grep -q 'failed command' "$worker" || fail "core 'failed command' rule missing from worker.md"
-grep -q 'no-match probe' "$worker" || fail "no-match-probe exception missing from worker.md"
+# 2026-09-18: the invariant rules moved to the repo AGENTS.md (a Pi context
+# file loaded once per session) — the ceilings above still guard the packet,
+# and the needles below now guard their new home.
+invariants="$repo_root/AGENTS.md"
+[[ -f "$invariants" ]] || fail "repo AGENTS.md not found at $invariants"
+grep -q 'failed command' "$invariants" || fail "core 'failed command' rule missing from AGENTS.md"
+grep -q 'no-match probe' "$invariants" || fail "no-match-probe exception missing from AGENTS.md"
 # The session-close lint (bin/fleet-failed-command-flagged) was deleted in the
 # 2026-09-18 glue sweep, so the prompt no longer names it. Pin the live
 # stale-path lesson it used to backstop instead (fleet-ops#1097).
-grep -q 'cat ENOENT is never a no-match probe' "$worker" \
-	|| fail "stale-path (ENOENT is not a probe) lesson missing from worker.md"
+grep -q 'cat ENOENT is never a no-match probe' "$invariants" \
+	|| fail "stale-path (ENOENT is not a probe) lesson missing from AGENTS.md"
 ok "core failed-command rule, no-match-probe exception, and stale-path lesson all present"
 
 echo "worker-prompt-size-ceiling: PASS"

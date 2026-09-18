@@ -70,7 +70,7 @@ COMMAND_RUNNERS = frozenset(
         "yarn", "bun", "deno", "vitest", "playwright", "pytest", "make",
         "curl", "gh", "git", "systemctl", "journalctl", "sgscan", "cargo",
         "terraform", "wrangler", "docker", "kubectl", "pi",
-        "pi-systemd-run", "go",
+        "systemd-run", "go",
     }
 )
 

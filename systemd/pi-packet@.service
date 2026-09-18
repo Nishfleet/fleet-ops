@@ -1,8 +1,10 @@
 [Unit]
 Description=Pi worker packet %i
-# Escalation is event-driven: systemd activates this when the unit lands in `failed`.
-# Replaces the 60-second poll loop that used to do this in bash.
-OnFailure=pi-packet-failed@%i.service
+# Glue sweep 2026-09-18: OnFailure=pi-packet-failed@%i.service is gone with its
+# handler. bin/pi-packet-failed did exactly two things — write one logger line,
+# and leave the unit in `failed`. systemd already leaves it in `failed`, and the
+# hourly failed-units pass is what reads that state, so the handler recorded a
+# fact its own comment said systemd had already recorded.
 StartLimitIntervalSec=1h
 StartLimitBurst=3
 

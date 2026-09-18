@@ -66,7 +66,7 @@ use a primitive, not a script:
 | Retry loop / cooldown | systemd `Restart=` / `WatchdogSec=` / `StartLimitBurst` |
 | Backoff | systemd `RestartSec=` + `StartLimitInterval` |
 | Poller for work | event-driven: `.path` unit, `fleet-deploy-check` rev-compare, or a timer with a named reason |
-| Queue daemon | Pi stock `subagent` extension (`/implement`, `/scout-and-plan`) or systemd `pi-systemd-run` |
+| Queue daemon | Pi stock `subagent` extension (`/implement`, `/scout-and-plan`) or a `systemd-run --user` transient unit |
 | Watchdog for a thing Nish wants watched | the Weekly Fleet Review + blind audit carry the watch lens; file an issue, do not script a watcher |
 | Hand-rolled dispatcher | Pi stock dispatch (`pi-issue@`, `pi-packet@`, `pi-scout@`) — extend intake-repos.json, do not write a new dispatcher |
 

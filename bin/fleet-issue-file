@@ -7,10 +7,18 @@
 # stubs gh as read-only, so skip minting there.
 if [[ -z "${GH_TOKEN:-}" && "${GITHUB_ACTIONS:-}" != "true" && "${GH:-gh}" == "gh" ]]; then
     command -v gh >/dev/null 2>&1 || export PATH=/home/nish/.local/bin:/usr/local/bin:/usr/bin:/bin:${PATH:-}
-    _wt="${NISHFLEET_WORKER_TOKEN_BIN:-${HOME:-/home/nish}/.local/bin/worker-token}"
-    _minted="$("$_wt" --print)" || { echo "fleet-ops#3445: $_wt --print failed - refusing human-gh writes" >&2; exit 1; }
-    eval "$_minted"
-    unset _wt _minted
+    # 2026-09-18: bin/worker-token is deleted. `gh token` (the Link-/gh-token gh
+    # extension) mints the same nishfleet-worker installation token with the same
+    # three GitHub calls, so there is no hand-rolled JWT to maintain.
+    _minted="$(gh token generate \
+        --app-id "${NISHFLEET_WORKER_APP_ID:-4728578}" \
+        --key "${NISHFLEET_WORKER_PEM:-${HOME:-/home/nish}/.config/fleet-worker/nishfleet-worker.private-key.pem}" \
+        --installation-id "${NISHFLEET_WORKER_INSTALLATION_ID:-156789042}" \
+        --token-only)" \
+        || { echo "fleet-ops#3445: gh token generate failed - refusing human-gh writes" >&2; exit 1; }
+    [[ -n "$_minted" ]] || { echo "fleet-ops#3445: gh token generate returned empty - refusing human-gh writes" >&2; exit 1; }
+    export GH_TOKEN="$_minted"
+    unset _minted
 fi
 # fleet-issue-file — filing-time same-problem dedupe (fleet-ops#1212).
 #

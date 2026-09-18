@@ -16,7 +16,10 @@ Environment=HOME=/home/nish
 Environment=PATH=/home/nish/.local/bin:/usr/local/bin:/usr/bin:/bin
 Environment=XDG_RUNTIME_DIR=/run/user/1000
 WorkingDirectory=/home/nish
-ExecStart=/bin/sh -c 'eval "$(worker-token --print)"; export GH_TOKEN; { cat "$HOME/.pi/agent/prompts/scout.md"; echo; echo "TARGET REPO: Nishfleet/%i"; } | exec pi --print --session-dir "$HOME/.pi/agent/sessions/pi-scout-%i" --provider litellm --model worker-cheap'
+# App identity via the stock `gh token` extension (Link-/gh-token), not the
+# retired bin/worker-token. Prompt comes from the Pi prompt template
+# ~/.pi/agent/prompts/scout.md, invoked as `/scout <repo>`.
+ExecStart=/bin/sh -c 'set -e; GH_TOKEN=$(gh token generate --app-id 4728578 --key "$HOME/.config/fleet-worker/nishfleet-worker.private-key.pem" --installation-id 156789042 --token-only); export GH_TOKEN; echo "/scout %i" | exec pi --print --session-dir "$HOME/.pi/agent/sessions/pi-scout-%i" --provider litellm --model worker-cheap'
 # 3h: measured scout turns run 13-22 min across 8 turns; 10800 is 1.6x the
 # worst measured need and still fits inside the 4h OnCalendar cadence.
 TimeoutStartSec=10800

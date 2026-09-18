@@ -13,5 +13,5 @@ Type=oneshot
 Environment=PATH=/home/nish/.local/bin:/usr/local/bin:/usr/bin:/bin
 Environment=HOME=/home/nish
 WorkingDirectory=/home/nish
-ExecStart=/bin/sh -c 'i="$1"; r=$(echo "$i" | sed "s/-[0-9][0-9]*$//"); n=$(echo "$i" | sed "s/.*-//"); eval "$(worker-token --print)"; export GH_TOKEN; gh api -X DELETE "repos/Nishfleet/$r/git/refs/heads/claim/issue-$n" >/dev/null 2>&1 || true; gh issue edit "$n" -R "Nishfleet/$r" --remove-label agent-in-progress --add-label agent-ready || true; echo "released claim Nishfleet/$r#$n"' sh %i
+ExecStart=/bin/sh -c 'i="$1"; r=$(echo "$i" | sed "s/-[0-9][0-9]*$//"); n=$(echo "$i" | sed "s/.*-//"); GH_TOKEN=$(gh token generate --app-id 4728578 --key "$HOME/.config/fleet-worker/nishfleet-worker.private-key.pem" --installation-id 156789042 --token-only); export GH_TOKEN; gh api -X DELETE "repos/Nishfleet/$r/git/refs/heads/claim/issue-$n" >/dev/null 2>&1 || true; gh issue edit "$n" -R "Nishfleet/$r" --remove-label agent-in-progress --add-label agent-ready || true; echo "released claim Nishfleet/$r#$n"' sh %i
 TimeoutStartSec=120

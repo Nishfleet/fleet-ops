@@ -12,7 +12,9 @@
 set -euo pipefail
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 repo_root="$(cd "$here/.." && pwd)"
-prompt="$repo_root/prompts/worker.md"
+# 2026-09-18: the pstack playbook rule is a per-run invariant, so it moved
+# from prompts/worker.md to the repo AGENTS.md that Pi loads as context.
+prompt="$repo_root/AGENTS.md"
 intake="$repo_root/prompts/intake.md"
 adoption="$repo_root/docs/pstack-adoption.md"
 
@@ -54,9 +56,9 @@ ok "skips Graphite babysit/shipping/orchestrate/autopilot"
 # ExecStart, not by intake.md — intake starts the unit and the unit builds
 # the prompt. Assert the unit still feeds worker.md to pi.
 unit="$repo_root/systemd/pi-issue@.service"
-grep -q 'prompts/worker.md' "$unit" \
-  || fail "pi-issue@.service must cat worker.md into the prompt it pipes to pi"
-ok "intake packet still cats worker.md"
+grep -q "echo \"/worker " "$unit" \
+  || fail "pi-issue@.service must invoke the /worker prompt template it pipes to pi"
+ok "unit invokes the /worker prompt template"
 
 grep -q '## Rejection log' "$adoption" \
   || fail "docs/pstack-adoption.md must carry a Rejection log (prior-art gate)"

@@ -30,9 +30,10 @@
 # The escalation canary's detached-work lint (block 13) reads the audit
 # trail of systemd-run execve by auid=1000 to catch a raw `systemd-run
 # --user` transient created WITHOUT --property=OnFailure (a clean stop of
-# such a unit dies silently — the exact #4266 gap). pi-systemd-run always
-# adds the OnFailure property, so a compliant execve carries it; a raw one
-# does not. Watch the systemd-run binary (and its /bin symlink) so the
+# such a unit dies silently — the exact #4266 gap). Since 2026-09-18 the
+# compliant shape is the README one-liner: a transient unit carrying both
+# -p RuntimeMaxSec= and the -p ExecStopPost= deliverable check, so a
+# compliant execve carries those properties; a bare one does not. Watch the systemd-run binary (and its /bin symlink) so the
 # lint has a trail to query. Key fleet-unit-run is distinct from the
 # fleet-unit-stop key above (who-stopped) so the two queries stay clean.
 #

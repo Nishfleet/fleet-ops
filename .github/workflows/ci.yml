@@ -75,7 +75,6 @@ jobs:
         bash tests/no-dead-credential-paths.test.sh
         bash tests/intake-repos-shape.test.sh
         bash tests/intake-repos-path-resolution.test.sh
-        bash tests/worker-token-fail-closed.test.sh
         bash tests/pi-transport-check.test.sh
         bash tests/minimax-token-refresh.test.sh
         bash tests/seat-credentials-bad-replay.test.sh
@@ -87,11 +86,8 @@ jobs:
         bash tests/ci-failure-escalation-detector.test.sh
         bash tests/required-check-purity.test.sh
         bash tests/ci-checklist-gate.test.sh
-        bash tests/pi-systemd-run.test.sh
         bash tests/worker-prompt-size-ceiling.test.sh
-        bash tests/worker-prompt-manager-mode.test.sh
         bash tests/worker-prompt-reviewer-round.test.sh
-        bash tests/worker-prompt-systemd-run.test.sh
         bash tests/pstack-worker-prompt.test.sh
         # fleet-ops#2133: reclaim cooldown + stale-claim release break the
         # spawn-die-respawn wedge (reaper writes cooldown marker, intake

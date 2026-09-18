@@ -61,7 +61,39 @@ Call `pi` directly, prompt on **stdin** (Pi rejects a `--` end-of-options flag):
 pi --print --provider <provider> --model <model>
 ```
 
-For work that must outlive this session, use `pi-systemd-run`, never `nohup pi ... &` — the launching shell reaps a nohup'd child and leaves dead-seat EXTLOAD lines. `pi-systemd-run --unit <name> --stdin <packet.md> --deadline <min> --deliverable <path> -- <cmd>` (a thin `systemd-run --user --collect --no-block` wrapper; not a dispatcher — no retry, no queue). Canonical copy-paste block: fleet-ops README (README.md "systemd by default"). Every detached launch carries `--deadline` and `--deliverable`: the wrapper installs the deliverable verdict ONLY when `--deliverable` is set, so a flag-less invocation could stop clean at exit 0 with no artifact and the exit-0-no-deliverable FAILURE verdict (fleet-ops#4266) could never fire.
+For work that must outlive this session, use a systemd transient unit, never a
+backgrounded `pi` — the launching shell reaps the child and leaves dead-seat
+EXTLOAD lines. `bin/pi-systemd-run` and `bin/pi-detached-deadman` were deleted on
+2026-09-18; the two stock `systemd-run` properties below replace them exactly, and
+there is no wrapper to keep in sync:
+
+```
+systemd-run --user --collect --unit <name> \
+  -p RuntimeMaxSec=<seconds> \
+  -E DELIVERABLE=<absolute artifact path> \
+  -p 'ExecStopPost=/bin/sh -c '"'"'test -s "$DELIVERABLE" || { echo no-deliverable >&2; exit 1; }'"'"'' \
+  -- sh -c 'cat /path/to/packet.md | pi --print --provider <provider> --model <model>'
+```
+
+`RuntimeMaxSec=` is the deadline: systemd kills an over-running unit into
+`Result=timeout`. The `ExecStopPost=` line is the deliverable check: a stop at
+exit 0 that left no artifact becomes `Result=exit-code`, i.e. `failed`, which is
+what `OnFailure=` and the failed-units pass key off. Both halves were proven on
+this host on 2026-09-18 (RED: no artifact -> `Result=exit-code`; GREEN: artifact
+written -> `Result=success`; `RuntimeMaxSec=5` against `sleep 60` ->
+`Result=timeout`).
+
+Drop `--collect` when you want the dead unit to stay listed in
+`systemctl --user list-units --state=failed`. With `--collect` systemd unloads
+the unit as soon as it dies, so the failure survives only in the journal
+(`journalctl --user -u <name>`).
+
+Watch a live run with `systemctl --user status <name>.service`.
+
+Every detached launch carries both: without `RuntimeMaxSec=` a hung run never
+dies, and without the `ExecStopPost=` check a run could stop clean at exit 0 with
+no artifact and the exit-0-no-deliverable FAILURE (fleet-ops#4266) could never
+fire. Canonical copy-paste block: fleet-ops README (README.md "systemd by default").
 
 For delegated work use Pi's stock `subagent` extension (`scout`, `planner`, `worker`, `reviewer`; `/implement`, `/scout-and-plan`, `/implement-and-review`):
 

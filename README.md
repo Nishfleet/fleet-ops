@@ -129,23 +129,41 @@ and only `fleet-sync.service`, pinned to the canonical path, touches the tree.
 
 ## systemd by default
 
-`nohup pi ... &` dies when the launching shell ends. The four `EXTLOAD-OK`
-lines it leaves behind look like a dead seat. Use the thin systemd wrapper:
+A backgrounded `pi` dies when the launching shell ends, and the four
+`EXTLOAD-OK` lines it leaves behind look like a dead seat. Detached runs are a
+systemd transient unit. There is no wrapper script: `bin/pi-systemd-run` (523
+lines) and `bin/pi-detached-deadman` (410 lines) were deleted on 2026-09-18 and
+replaced by two stock `systemd-run` properties.
 
 ```
-pi-systemd-run --unit mypacket --stdin /path/to/packet.md --deadline 42 \
-  --deliverable /path/to/outcome.md -- \
-  pi --print --provider minimax --model MiniMax-M3
+systemd-run --user --collect --unit <name> \
+  -p RuntimeMaxSec=<seconds> \
+  -E DELIVERABLE=<absolute artifact path> \
+  -p 'ExecStopPost=/bin/sh -c '"'"'test -s "$DELIVERABLE" || { echo no-deliverable >&2; exit 1; }'"'"'' \
+  -- sh -c 'cat /path/to/packet.md | pi --print --provider <provider> --model <model>'
 ```
 
-That is `systemd-run --user --collect --no-block`. Not a dispatcher: no
-retry ladder, no seat rotation, no queue. This invocation is the canonical
-flag signature (single source, fleet-ops#5683): `--deadline` is the grace
-budget and `--deliverable` the artifact the run MUST produce; the wrapper
-also adds the healthchecks dead-man (start/complete ping) and OnFailure
-escalation, so exit 0 with no deliverable is a FAILURE, not a success
-(fleet-ops#4266). Watch with
-`systemctl --user status mypacket.service`.
+`RuntimeMaxSec=` is the deadline: systemd kills an over-running unit into
+`Result=timeout`. The `ExecStopPost=` line is the deliverable check: a stop at
+exit 0 that left no artifact becomes `Result=exit-code`, i.e. `failed`, which is
+what `OnFailure=` and the failed-units pass key off. Both halves were proven on
+this host on 2026-09-18 (RED: no artifact -> `Result=exit-code`; GREEN: artifact
+written -> `Result=success`; `RuntimeMaxSec=5` against `sleep 60` ->
+`Result=timeout`).
+
+Drop `--collect` when you want the dead unit to stay listed in
+`systemctl --user list-units --state=failed`. With `--collect` systemd unloads
+the unit as soon as it dies, so the failure survives only in the journal
+(`journalctl --user -u <name>`).
+
+Watch a live run with `systemctl --user status <name>.service`.
+
+Not a dispatcher: no retry ladder, no seat rotation, no queue. `RuntimeMaxSec=`
+and the deliverable check together are the whole of what the retired wrapper's
+`--deadline` and `--deliverable` flags did (fleet-ops#4266); the healthchecks
+dead-man ping and the `fleet_detached_job_died` gauge went with the script, and
+the `DetachedJobDied` alert that read that gauge was deleted with them — systemd
+already records the death.
 
 If the packet clones a repo, use a reference clone against the local
 bare mirror (fleet-ops#1213), not a full GitHub copy:
@@ -160,14 +178,14 @@ Never `--dissociate` on throwaway worktrees. Never push to a mirror
 plain clone. `git-mirror-update` keeps the mirrors on the existing
 5-min `fleet-metrics-export` tick (no new timer).
 
-A short log with no verdict after `nohup` or `&` is a **launcher fault**
+A short log with no verdict after a backgrounded launch is a **launcher fault**
 (the session reaped the process). A log containing `rate_limit` /
 `ETIMEDOUT` / `quota` is a **lane fault** (rotate the seat). Do not mix
 them up.
 
 The Claude PostToolUse hook `~/.claude/hooks/guard_pi_packet.py` classifies
-these from the redirected packet log. Launcher faults advise `pi-systemd-run`;
-lane faults advise seat rotation.
+these from the redirected packet log. Launcher faults advise the transient-unit
+one-liner above; lane faults advise seat rotation.
 
 Overlapping `systemctl start` of a live intake tick or of a live `pi-issue@`
 worker is a no-op — systemd will not start a unit that is already running.
@@ -412,9 +430,9 @@ section with the landing order and shared-helper owners.
    without a `spec-judged: <sha-of-bodies>` marker comment is a batch that
    needs judging; single tickets are exempt.
 2. **Gate.** For such a batch, intake does NOT claim any member. It
-   launches ONE judge run via `pi-systemd-run` (`--provider cursor
+   launches ONE judge run as a transient unit (`--provider cursor
    --model kimi-k3-max`, prompt on stdin = `prompts/spec-judge.md` + the
-   batch bodies/comments, `--deadline 30`, `--deliverable <verdict>`). At
+   batch bodies/comments, `RuntimeMaxSec=1800`, `DELIVERABLE=<verdict>`). At
    most one judge run in flight per repo, never more than 3 per hour
    fleet-wide (Cursor seat cap). While a batch is being judged the members
    are skipped, not de-labelled.

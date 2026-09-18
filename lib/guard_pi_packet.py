@@ -7,7 +7,7 @@ failure mode:
 
 - launcher fault  — command used `nohup` or a trailing `&`, the process was
   reaped, and the log is short with no verdict line. Tell the agent to use
-  `pi-systemd-run` instead of `nohup ... &`.
+  a `systemd-run --user` transient unit (README "systemd by default").
 - lane fault      — log contains rate limit / quota / ETIMEDOUT. Tell the
   agent to rotate the seat and not charge the task.
 
@@ -96,7 +96,7 @@ def classify_packet_text(text: str, *, launcher_hint: bool = False, verdict_re=N
             problems.append(
                 "launcher fault — command used nohup or trailing '&' and the "
                 "process was reaped before producing a verdict. Use "
-                "`pi-systemd-run` instead of `nohup ... &`"
+                "a `systemd-run --user` transient unit instead (README \"systemd by default\")"
             )
         else:
             problems.append(
@@ -145,8 +145,8 @@ def main() -> int:
         if _is_launcher_hint(cmd):
             print(
                 "pi-packet guard: launcher fault — command used nohup or trailing '&' "
-                "and no packet log was produced. Use `pi-systemd-run` instead of "
-                "`nohup ... &` so the process outlives the launching shell.",
+                "and no packet log was produced. Use a `systemd-run --user` transient "
+                "unit so the process outlives the launching shell (README \"systemd by default\").",
                 file=sys.stderr,
             )
             return 2

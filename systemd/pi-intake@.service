@@ -21,7 +21,20 @@ WorkingDirectory=/home/nish
 # One cheap gh call decides whether to spend a seat at all. Exit 255 on a gh
 # fault so systemd records a failure instead of skipping quietly.
 ExecCondition=/bin/sh -c 'out=$$(gh issue list -R Nishfleet/%i -l agent-ready --json number -L 1 2>&1) || { echo "gh failed: $$out" >&2; exit 255; }; [ "$$out" != "[]" ]'
-ExecStart=/bin/sh -c '{ cat "$HOME/.pi/agent/prompts/intake.md"; echo; echo "TARGET REPO: Nishfleet/%i"; } | exec pi --print --session-dir "$HOME/.pi/agent/sessions/pi-intake-%i" --provider litellm --model worker-cheap'
+# The prompt is a Pi prompt template (~/.pi/agent/prompts/intake.md), invoked
+# as `/intake <repo>`. Pi expands `/name args` from stdin in --print mode and
+# substitutes $1 — verified 2026-09-18 on this host.
+ExecStart=/bin/sh -c 'echo "/intake %i" | exec pi --print --session-dir "$HOME/.pi/agent/sessions/pi-intake-%i" --provider litellm --model worker-cheap'
+# ARTIFACT CHECK. Intake's entire job is to turn agent-ready issues into
+# agent-in-progress claims with a worker spawned behind them. Two counts say
+# whether it did: if work was waiting (ready>0) and NOTHING is claimed
+# (in-progress==0), the tick ran and moved nothing, so exit 1 records a
+# `failed` unit instead of a green no-op. Deliberately narrow: ready==0 is
+# nothing to do, and in-progress>0 means claims exist — this check says
+# nothing about whether the RIGHT issue was claimed, and it is not meant to.
+# ExecCondition already skipped the run entirely when ready==0, so in practice
+# this fires only on a tick that had work and dropped it.
+ExecStopPost=/bin/sh -c '[ "$SERVICE_RESULT" = success ] || exit 0; ready=$(gh api "repos/Nishfleet/%i/issues?labels=agent-ready&state=open&per_page=100" --jq length 2>/dev/null) || exit 0; claimed=$(gh api "repos/Nishfleet/%i/issues?labels=agent-in-progress&state=open&per_page=100" --jq length 2>/dev/null) || exit 0; [ "$ready" -gt 0 ] && [ "$claimed" -eq 0 ] && { echo "intake tick left $ready agent-ready issues with 0 claimed" >&2; exit 1; }; exit 0'
 TimeoutStartSec=1800
 Restart=on-failure
 RestartSec=20

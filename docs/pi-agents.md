@@ -112,16 +112,15 @@ Simple language is never baby talk and never condescending.
 - **Verify live truth.** Nothing assumed. Official docs over local folklore. Say
   when something is an inference.
 - **Queue every finding.** A fix only mentioned in chat is lost. Queue it.
-- **Session-outliving work uses `pi-systemd-run`, never `nohup`.** A
-  `nohup pi ... &` dies when the launching shell ends and leaves dead-seat
-  EXTLOAD lines. `pi-systemd-run --unit <name> --stdin <packet.md>
-  --deadline <min> --deliverable <path> -- pi
-  --print --provider <provider> --model <model>` (a thin
-  `systemd-run --user --collect --no-block` wrapper; not a dispatcher).
-  `--deadline` is the grace budget and `--deliverable` the artifact the run MUST
-  produce; the wrapper adds the healthchecks dead-man and OnFailure escalation
-  (fleet-ops#4266). Canonical wording: fleet-ops README and
-  `prompts/heartbeat.md`.
+- **Session-outliving work is a systemd transient unit, never a backgrounded
+  `pi`.** A backgrounded launch dies when the shell ends and leaves dead-seat
+  EXTLOAD lines. `bin/pi-systemd-run` and `bin/pi-detached-deadman` were deleted
+  on 2026-09-18; use two stock `systemd-run` properties instead —
+  `-p RuntimeMaxSec=<seconds>` for the deadline and
+  `-p 'ExecStopPost=/bin/sh -c '"'"'test -s "$DELIVERABLE" || { echo no-deliverable >&2; exit 1; }'"'"''`
+  with `-E DELIVERABLE=<abs path>` for the artifact the run MUST produce
+  (fleet-ops#4266). Canonical copy-paste block: fleet-ops README
+  ("systemd by default").
 
 ## Hard lines
 

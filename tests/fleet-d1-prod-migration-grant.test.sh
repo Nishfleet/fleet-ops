@@ -14,7 +14,10 @@
 set -euo pipefail
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 repo_root="$(cd "$here/.." && pwd)"
-worker="$repo_root/prompts/worker.md"
+# 2026-09-18: the per-run-invariant rules moved out of prompts/worker.md
+# into the repo AGENTS.md, which Pi loads as a context file. Same rules,
+# same needles, one home instead of one copy per packet.
+worker="$repo_root/AGENTS.md"
 
 fail() { echo "FAIL: $*" >&2; exit 1; }
 ok()   { echo "OK: $*"; }
