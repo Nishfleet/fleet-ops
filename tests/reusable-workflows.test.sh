@@ -135,3 +135,57 @@ fi
 ok ".github/** classifies as code, docs/** as docs (fleet-ops#4294)"
 
 echo "OK: reusable workflow set is shape-locked"
+
+# --- verify-command must be valid shell ---------------------------------------
+# The block is executed as a script body (`run: ${{ inputs.verify-command }}`,
+# locked above), so one shell syntax error in it fails CI on every branch and
+# every commit. Two sat in it at once on 2026-09-18: shellcheck parsing the
+# extensionless Node shim bin/jev-eval as shell, and `for p in ... \` running
+# its continuation onto `do` so `do` became a list word and `sudo` was an
+# unexpected token. The second was invisible for as long as the first aborted
+# the run before reaching it, and main stayed red for 9 consecutive commits
+# with nothing asserting the block even parses. Parse it here.
+# extglob is on for the parse because the block enables it at runtime.
+ci_yml="$repo_root/.github/workflows/ci.yml"
+[[ -f "$ci_yml" ]] || fail "ci.yml not found at $ci_yml"
+verify_sh="$(mktemp)"
+python3 - "$ci_yml" "$verify_sh" <<'PY' || fail "could not extract verify-command from ci.yml"
+import sys, yaml
+def find(o):
+    if isinstance(o, dict):
+        for k, v in o.items():
+            if k == "verify-command":
+                return v
+            r = find(v)
+            if r:
+                return r
+    elif isinstance(o, list):
+        for i in o:
+            r = find(i)
+            if r:
+                return r
+    return None
+body = find(yaml.safe_load(open(sys.argv[1])))
+if not body:
+    sys.exit("no verify-command key in ci.yml")
+open(sys.argv[2], "w").write(body)
+PY
+if ! bash -O extglob -n "$verify_sh" 2>/tmp/verify-parse.$$; then
+  echo "--- verify-command parse errors ---" >&2
+  cat /tmp/verify-parse.$$ >&2
+  rm -f "$verify_sh" /tmp/verify-parse.$$
+  fail "ci.yml verify-command is not valid shell; it runs as a script body, so this reds every CI run"
+fi
+rm -f "$verify_sh" /tmp/verify-parse.$$
+ok "ci.yml verify-command parses as shell (bash -n, extglob on)"
+
+# RED drill: the guard must reject the exact shape that shipped, so it is not
+# a tautology that passes whatever it is handed.
+broken_sh="$(mktemp)"
+printf 'for p in /a \\\n  /b \\\ndo\n  sudo install "$p"\ndone\n' >"$broken_sh"
+if bash -O extglob -n "$broken_sh" 2>/dev/null; then
+  rm -f "$broken_sh"
+  fail "parse guard is vacuous: trailing backslash before 'do' must not parse"
+fi
+rm -f "$broken_sh"
+ok "parse guard trips on the trailing-backslash-before-do shape"
