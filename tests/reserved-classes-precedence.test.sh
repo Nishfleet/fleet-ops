@@ -90,18 +90,16 @@ fi
 #    means fix it' bullet quoted a 3-class list). A surface that mentions
 #    reserved classes must either point at global-standing-rules.md or not
 #    enumerate a divergent list. Live-target check: SKIPPED when absent.
-for t in /home/nish/.claude/CLAUDE.md /home/nish/.codex/AGENTS.md; do
-  [[ -f "$t" ]] || { echo "SKIP: reserved-classes surface-prose check ($t absent)"; continue; }
-  if grep -q "Only the reserved classes" "$t"; then
-    fail "live surface $t restates the old divergent reserved-classes list — point at global-standing-rules.md instead"
-  fi
-  # Any 'reserved classes' prose that enumerates without naming the vault source is drift.
-  # Wrap-aware (fleet-ops#6031): a mention and its vault pointer may wrap
-  # across the bullet's indented continuation lines (the house wrap
-  # convention in the live targets), so each mention is judged joined with
-  # its wrapped lines — a pointer on the next wrapped line satisfies the
-  # check; a mention with no pointer in its own bullet is still drift.
-  if ! awk '
+#
+# surface_prose_is_drift: Wrap-aware (fleet-ops#6031) — a mention and its
+# vault pointer may wrap across the bullet's indented continuation lines
+# (the house wrap convention in the live targets), so each mention is
+# judged joined with its wrapped lines: a pointer on the next wrapped line
+# satisfies the check; a mention with no pointer in its own bullet is still
+# drift. This gate is bullet/paragraph-aware, not line-based — bullet
+# continuation lines merge into a logical line before judging.
+surface_prose_is_drift() {
+  awk '
     function flush() {
       if (logical != "" \
           && tolower(logical) ~ /reserved classes/ \
@@ -113,7 +111,54 @@ for t in /home/nish/.claude/CLAUDE.md /home/nish/.codex/AGENTS.md; do
     /^[ \t]/ && logical != "" { logical = logical " " $0; next }
     { flush(); logical = $0 }
     END { flush(); exit drift + 0 }
-  ' "$t"; then
+  ' "$1"
+}
+
+# 5b. fleet-ops#5757 regression fixtures — the drill keeps the wrap probe
+#     off the no-op path (fleet-ops#366: every behavioral fix ships a
+#     detector/test that would fail if the gate were silently weakened
+#     back). The positive fixture is the exact wrapped bullet shape from
+#     the issue report (the line-based grep false-positived on it); the
+#     negative fixture is a divergent list with no pointer.
+fx="$repo_root/tests/fixtures/reserved-classes-precedence"
+for name in wrapped-pointer-ok; do
+  [[ -f "$fx/$name.md" ]] || fail "missing regression fixture $fx/$name.md"
+  if surface_prose_is_drift "$fx/$name.md"; then
+    ok "fixture $name: wrap-aware pointer accepted"
+  else
+    fail "regression: gate still false-positives on the wrapped-pointer bullet (fleet-ops#5757; fixture $fx/$name.md)"
+  fi
+done
+for name in divergent-no-pointer; do
+  [[ -f "$fx/$name.md" ]] || fail "missing regression fixture $fx/$name.md"
+  if surface_prose_is_drift "$fx/$name.md"; then
+    fail "regression: gate no longer catches a divergent no-pointer restatement (fleet-ops#5757; fixture $fx/$name.md)"
+  else
+    ok "fixture $name: divergent no-pointer restatement rejected"
+  fi
+done
+# Drill hygiene (house pattern): an empty file and a comment-only file must
+# not trip the gate; an awk that degenerated would otherwise never fail
+# clean and the drill would look green while checking nothing.
+hyg="$(mktemp /tmp/rcpx-hyg.XXXXXX)"
+trap 'rm -f "$hyg"' EXIT
+: >"$hyg"
+if surface_prose_is_drift "$hyg"; then :;
+else fail "hygiene: empty file must not read as drift"; fi
+printf '# reserved-classes-precedence.test.sh\n' >"$hyg"
+if surface_prose_is_drift "$hyg"; then :;
+else fail "hygiene: comment-only filename must not satisfy the drill"; fi
+rm -f "$hyg"
+trap - EXIT
+
+for t in /home/nish/.claude/CLAUDE.md /home/nish/.codex/AGENTS.md; do
+  [[ -f "$t" ]] || { echo "SKIP: reserved-classes surface-prose check ($t absent)"; continue; }
+  if grep -q "Only the reserved classes" "$t"; then
+    fail "live surface $t restates the old divergent reserved-classes list — point at global-standing-rules.md instead"
+  fi
+  # Any 'reserved classes' prose that enumerates without naming the vault source is drift.
+  if surface_prose_is_drift "$t"; then :;
+  else
     fail "live surface $t names reserved classes without pointing at global-standing-rules.md"
   fi
   echo "OK: $t carries no divergent reserved-classes restatement"
