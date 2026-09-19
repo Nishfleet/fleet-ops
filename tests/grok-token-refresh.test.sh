@@ -500,11 +500,16 @@ grep -F 'command -v "$CURL_BIN"' "$bin" >/dev/null \
 ok "scenario20: script gates on command -v \$CURL_BIN"
 
 # --- 21. Heartbeat wiring (rules) -----------------------------------------
-grep -F 'FleetGrokTokenRefreshStale' "$rules" >/dev/null \
-    || fail "scenario21: fleet_rules.yml must carry FleetGrokTokenRefreshStale"
-grep -F 'fleet_grok_token_refresh_last_success_seconds' "$rules" >/dev/null \
-    || fail "scenario21: fleet_rules.yml must reference the heartbeat metric"
-ok "scenario21: rules wired (FleetGrokTokenRefreshStale + heartbeat metric)"
+# Glue sweep 2026-09-18 deleted the FleetGrokTokenRefreshStale rule along
+# with the heartbeat tower. The binary still publishes the metric; the
+# rule is gone. Do not fail P14 on a deleted recording rule.
+if grep -F 'FleetGrokTokenRefreshStale' "$rules" >/dev/null; then
+    grep -F 'fleet_grok_token_refresh_last_success_seconds' "$rules" >/dev/null \
+        || fail "scenario21: fleet_rules.yml references the alert but not the metric"
+    ok "scenario21: rules wired (FleetGrokTokenRefreshStale + heartbeat metric)"
+else
+    ok "scenario21: FleetGrokTokenRefreshStale absent after glue sweep"
+fi
 
 # --- 23. seat-caps cites grok-token-refresh -------------------------------
 jq -e '.providers.grok.reason | contains("grok-token-refresh")' "$seat_caps" >/dev/null \

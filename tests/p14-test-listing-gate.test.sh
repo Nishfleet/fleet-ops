@@ -112,6 +112,11 @@ live_skip[pi-extensions-forks-live.test.sh]=1
 live_skip[seat-caps-zero-yield.test.sh]=1
 live_skip[seat-caps-citation.test.sh]=1
 live_skip[seat-caps-citation-rule6-replay.test.sh]=1
+# Hosted CI has no promtool and no live fleet-work.slice. These two were
+# auto-hosted once earlier P14 steps stopped dying at findings-measure-line
+# (fleet-ops#6257). They are VPS-only.
+live_skip[ci-queue-alerts.test.sh]=1
+live_skip[fleet-work-slice-tasksmax.test.sh]=1
 
 # Existing tests that are not yet listed or hosted. These pre-date the gate.
 # When a test is listed or hosted, remove it from this list.

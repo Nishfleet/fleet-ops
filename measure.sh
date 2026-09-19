@@ -175,11 +175,12 @@ echo "gate-escapes-24h: ${gate_escapes}"
 
 # --- attest-waiting -------------------------------------------------------
 # fleet-ops#5870: judge-header blind-spot detector. An agent-ready/agent-blocked
-# issue whose latest blocked-status comment mentions an attestation and that has
-# had no orchestrator comment for >2h is a stalled gate handoff (0509#3068 sat
-# 8h as a fake nish-decision). The detector lives in lib/attest-waiting.sh and
-# this line is the new-measure: for fleet-ops#4460. Zero is the normal value;
-# a gh failure is UNAVAILABLE, never a fabricated 0.
+# issue whose LATEST state still requests an attestation and that has had no
+# orchestrator comment for >2h is a stalled gate handoff (0509#3068 sat 8h as
+# a fake nish-decision). Historical attest comments are suppressed (fleet-ops
+# #6257). The detector lives in lib/attest-waiting.sh and this line is the
+# new-measure: for fleet-ops#4460. Zero is the normal value; a gh failure is
+# UNAVAILABLE, never a fabricated 0.
 # shellcheck disable=SC1090,SC1091
 if [ -f "$repo_root/lib/attest-waiting.sh" ]; then
     attrepos=()
@@ -217,7 +218,7 @@ print(r[0]["value"][1] if r else "")' 2>/dev/null
 # both, so read fleet_prepaid_used_usd here to keep this line's meaning
 # identical. (fleet_prepaid_credits_usd is the remaining side, which is what
 # FleetPrepaidCreditsLow alerts on.)
-_cursor_used="$(_cursor_prom 'fleet_prepaid_used_usd{provider="cursor"}')"
+_cursor_used="$(_cursor_prom 'fleet_prepaid_used_usd{provider="cursor"}' || true)"
 if [[ -n "$_cursor_used" ]]; then
     CURSOR_API_CYCLE_USD="$_cursor_used"
     CURSOR_TODAY_FIGURE="$_cursor_used"
