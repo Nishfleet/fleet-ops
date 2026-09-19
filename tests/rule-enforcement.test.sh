@@ -30,10 +30,6 @@ ok()   { echo "OK: $*"; }
 # fleet-ops#1245: GEO/AEO parked-tactics + brand-gate canary. Hosted
 # BEFORE the live vault join for the same reason as #1178.
 
-# fleet-ops#234: escalate-senior intake path (senior panel). Nested host so
-# the worker token does not need a workflow edit (fleet-ops#566).
-ok "rule-enforcement: pi-escalation-audit drill"
-
 # fleet-ops#906: D1 prod migration correction — prompt gate requires the
 # senior process from the final 2026-08-27 process amendment.
 bash "$here/fleet-d1-migration-senior-process.test.sh" || fail "d1 migration senior process drill failed"

@@ -21,13 +21,12 @@ LEDGER="docs/silent-drop-ledger.md"
 fail=0
 
 # Explicit allowlist — every entry must have a row in docs/silent-drop-ledger.md.
-CAP_ALLOWLIST=(
-  "bin/fleet-escalation-canary"    # auto_file_cap_per_tick; LOUD PENDING + rows re-derived each tick (by-design)
-)
-DROP_ALLOWLIST=(
-  "bin/lifecycle-label-sweep"      # 4 comment-only `|| true` notices (queued issue)
-  "lib/pi-intake-tick.sh"          # observe-to-close park comments; park re-derived next tick (by-design)
-)
+# fleet-ops#5890: entries name LIVE files only. An entry for a deleted file is
+# not dormant — it pre-authorizes the pattern if the file is ever resurrected.
+# bin/fleet-escalation-canary, bin/lifecycle-label-sweep and lib/pi-intake-tick.sh
+# were deleted in the 2026-09-18 glue sweep and removed here.
+CAP_ALLOWLIST=()
+DROP_ALLOWLIST=()
 # Fix assertions (introduced by the 2026-09-11 sweep PR). New `|| true` drops
 # in these files must never come back.
 MUST_STAY_CLEAN=(
@@ -80,6 +79,6 @@ done
 [ -f "$LEDGER" ] || fail_row "$LEDGER missing"
 
 if [ "$fail" -eq 0 ]; then
-  say "silent-drop canary: PASS ($(printf '%s\n' "${CAP_ALLOWLIST[@]}" | wc -l | tr -d ' ') cap allowlist entries, $(printf '%s\n' "${DROP_ALLOWLIST[@]}" | wc -l | tr -d ' ') drop allowlist entries)"
+  say "silent-drop canary: PASS (${#CAP_ALLOWLIST[@]} cap allowlist entries, ${#DROP_ALLOWLIST[@]} drop allowlist entries)"
 fi
 exit "$fail"
