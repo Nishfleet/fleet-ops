@@ -65,6 +65,7 @@ tests/devin-writes-rejected.test.sh:1
 tests/fleet-heartbeat-low-water-mark.test.sh:2
 tests/fleet-metrics-export.test.sh:4
 tests/fleet-ops-3310-infra-death-class-switch.test.sh:1
+tests/fleet-researcher-oversize.test.sh:4
 tests/fleet-review-arm-check.test.sh:1
 tests/fleet-vibes-canary.test.sh:14
 tests/fleet-work-slice-tasksmax.test.sh:7
