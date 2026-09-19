@@ -1,6 +1,8 @@
 <!-- CANONICAL: Pi AGENTS.md shared body.
-     Edit this file and run `bin/render-pi-agents-md.py --render` to
-     propagate changes to ~/AGENTS.md and ~/.pi/agent/AGENTS.md. -->
+     Plain hand-edited surface since 2026-09-18 — the renderer
+     (bin/render-pi-agents-md.py) was deleted in fleet-ops 72b38e857;
+     edit this file, then fold shared-body edits into the live mirrors
+     ~/AGENTS.md and ~/.pi/agent/AGENTS.md so they do not re-drift. -->
 
 ## READ FIRST — BEFORE BUILDING ANYTHING NEW (Nish, 2026-08-28, on top for ALL agents)
 
@@ -142,13 +144,18 @@ Simple language is never baby talk and never condescending.
   self-land per `global-standing-rules.md` → "Agent-authored PRs land
   themselves" (fleet-ops#5715: the bare "never merge" wording contradicted the
   enforced self-land rule).
-- **Any writer of a MANIFEST-managed live file** (`~/.pi/agent/models.json`,
-  seat-caps, model-candidates — anything install.sh copy-installs) **must leave
-  a dated backup sibling** `<file>.pre-<why>-<UTCts>` (never `.bak*` —
-  fleet-ops#3273 flags those as sprawl) **and a dated actions.log line naming
-  the file**. An unattributed live write is a fleet-ops#5663 incident:
-  install.sh REFUSEs, and the drift canary opens a reconcile PR that names the
-  writer — or reports it UNATTRIBUTED.
+- **Any writer of a live COPIES file** (`~/.pi/agent/models.json`,
+  seat-caps, model-candidates — the README "The exceptions: files that
+  must stay COPIES" rows) **must leave a dated backup sibling**
+  `<file>.pre-<why>-<UTCts>` (never `.bak*` — the legacy convention,
+  first quarantined under fleet-ops#3273 as sprawl) **and a dated
+  actions.log line naming the file**. Backups never sit outside the
+  managed tree (`~/workspaces/agent-state/backups/…` is fine),
+  regardless of name (fleet-ops#5958: `seat-caps.json.bak-<epoch>`
+  needed a canary quarantine because it sat beside the managed path).
+  An unattributed live write is a fleet-ops#5663 incident. (Before
+  2026-09-18 this named install.sh/MANIFEST and leaned on a drift
+  canary + REFUSE; both went in the glue sweep — README "Install".)
 
 ## Where the real context lives
 
