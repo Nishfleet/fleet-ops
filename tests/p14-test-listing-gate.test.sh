@@ -90,7 +90,6 @@ done
 
 # Live/destructive tests that are intentionally not run in hosted CI.
 declare -A live_skip
-live_skip[worker-token-live.test.sh]=1
 # fleet-ops#4141: the 12 opus-heartbeat-* tests were deleted (the opus-
 # heartbeat family was retired — recording rules + fable-check.md replaced
 # it). No live_skip entries needed for deleted tests.
@@ -99,19 +98,15 @@ live_skip[worker-token-live.test.sh]=1
 # on this required gate. The test skips gracefully in hosted CI (no live
 # receiver/Prometheus) and only runs on the VPS, so live_skip is the correct
 # classification, not a ci.yml listing (which would need workflow scope).
-# fleet-ops#4263 P3b: pick-seat / AIMD / ledger tests are retired with the
-# routing library. They stay on disk until a workflow-scoped PR can drop
-# them; they are not hosted CI.
+# fleet-ops#4263 P3b: the pick-seat / AIMD / ledger tests retired with the
+# routing library are DELETED, not parked here. Seven entries below used to
+# name files the 2026-09-18 sweep had already removed — fleet-ops#6003.
+# fleet-ops#6003: an entry naming a file that no longer exists is not an
+# exemption, it is a hole — the list reads healthy while the file is gone,
+# and nothing checked. The stale-file check further down now fails on it.
 live_skip[seat-caps-zero-yield.test.sh]=1
-live_skip[keystone-routing.test.sh]=1
-live_skip[senior-review-routing.test.sh]=1
-live_skip[audition-lane.test.sh]=1
-live_skip[seat-wall-reset-horizon.test.sh]=1
-live_skip[seat-health-quarantine.test.sh]=1
 live_skip[seat-caps-citation.test.sh]=1
 live_skip[seat-caps-citation-rule6-replay.test.sh]=1
-live_skip[pi-issue-run-noop-bench.test.sh]=1
-live_skip[fleet-seat-comeback-release.test.sh]=1
 
 # Existing tests that are not yet listed or hosted. These pre-date the gate.
 # When a test is listed or hosted, remove it from this list.
@@ -125,18 +120,13 @@ live_skip[fleet-seat-comeback-release.test.sh]=1
 # below fails. The "stale entries" check (further down in this file) is
 # the class-prevention mechanism — if a future change re-adds them, the
 # gate fails with their basenames in the FAIL message.
+# fleet-ops#6003: ten entries here also named files the sweep had deleted
+# (agent-cron-failure-reason, the four fleet-heartbeat-*, fleet-researcher,
+# install-manifest-comment-purity, pi-issue-run-defensive-mkdir,
+# pi-issue-run-mid-session-bench, pi-scout-seat-rotation). Only the two tests
+# that are actually on disk and genuinely orphaned stay.
 known_orphans=(
-  agent-cron-failure-reason.test.sh
-  fleet-heartbeat-degraded-lane-glob.test.sh
-  fleet-heartbeat-failed-units-recover.test.sh
-  fleet-heartbeat-orphan-distinguish.test.sh
-  fleet-heartbeat-red-pr-repair.test.sh
-  fleet-researcher.test.sh
-  install-manifest-comment-purity.test.sh
   org-ruleset-skip-detector.test.sh
-  pi-issue-run-defensive-mkdir.test.sh
-  pi-issue-run-mid-session-bench.test.sh
-  pi-scout-seat-rotation.test.sh
   verify-fleet-sync-pat.test.sh
 )
 
@@ -350,6 +340,25 @@ if (( ${#bad[@]} > 0 )); then
 fi
 
 ok "all ${#all_tests[@]} test files accounted for (listed+hosted: $reachable_count, live skip: $live_count, known orphan: $known_count, auto-hosted: ${#bad[@]})"
+
+# fleet-ops#6003: every exemption entry must name a file that still exists.
+# The reachable-only check below cannot see a DELETED file, so a stale
+# live_skip / known_orphans entry sat here unnoticed through the whole
+# #5993/#6037 sweep — the gate read green while exempting nothing. This is
+# that class's missing teeth; it fails by name on any future stale entry.
+missing_exempt=()
+for t in "${!live_skip[@]}" "${known_orphans[@]}"; do
+  [[ -f "$here/$t" ]] || missing_exempt+=("$t")
+done
+if (( ${#missing_exempt[@]} > 0 )); then
+  {
+    echo "FAIL: exemption list(s) name test file(s) that do not exist:"
+    printf '  %s\n' "${missing_exempt[@]}"
+    echo "Remove the stale live_skip / known_orphans entry — a file that is gone cannot be exempt."
+  } >&2
+  exit 1
+fi
+ok "live_skip and known_orphans name only test files that exist"
 
 # The known-orphan list must not contain tests that have become reachable.
 stale=()
