@@ -5,6 +5,8 @@
 - Alert rules: `promtool check rules config/fleet_rules.yml`
 - Diff-scoped semgrep: `semgrep --config p/default --baseline-commit "$(git merge-base HEAD origin/main)" --quiet --metrics=off`
 - Repo tests: `bash tests/<name>.test.sh` (the suite is being deleted under fleet-ops#7828; gates are GitHub built-ins)
+- Cancelled-while-queued detector drill (fleet-ops#819): `bash tests/cancelled-while-queued-detector.test.sh`
+- Replay with the actual enrolled set: `node .github/scripts/cancelled-while-queued-detector.mjs --targets-from config/intake-repos.json --dry-run --output-json /tmp/cwq.json`
 
 ## Per-run invariants for the Pi fleet issue worker
 
