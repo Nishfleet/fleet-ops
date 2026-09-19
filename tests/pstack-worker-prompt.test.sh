@@ -52,6 +52,21 @@ grep -q 'Ignore pstack babysit, shipping, orchestrate, autopilot-' "$prompt" \
   || fail "worker.md must skip Graphite playbooks"
 ok "skips Graphite babysit/shipping/orchestrate/autopilot"
 
+# Nishfleet/0509#3622 (the fix now lives in prompts/intake.md step 2): the
+# fleet-wide capacity count must cover BOTH live states. `pi-issue@*.service`
+# is Type=oneshot, so a RUNNING worker sits in `activating` for the entire
+# ExecStart and only reaches `active` at completion — a bare `--state=active`
+# count therefore reads 0 while the fleet is full, `slots = min(3, 8 - running)`
+# never hits 0, and the cap silently never fires. Live-proven on this host
+# 2026-09-18: 12 workers mid-run, old command 0, new command 12. This is the
+# regression lock the fix landed without (fleet-ops#366 mechanical-fix rule).
+grep -q -- "--state=active,activating" "$intake" \
+  || fail "intake.md capacity count must use --state=active,activating (0509#3622)"
+if grep -q -- "--state=active --no-legend" "$intake"; then
+  fail "intake.md must not count with bare --state=active — it misses activating oneshot workers (0509#3622)"
+fi
+ok "intake capacity count covers activating oneshot workers"
+
 # Second cut 2026-09-18: the packet is assembled by pi-issue@.service's
 # ExecStart, not by intake.md — intake starts the unit and the unit builds
 # the prompt. Assert the unit still feeds worker.md to pi.
