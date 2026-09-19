@@ -64,7 +64,9 @@ Steps:
    d. `gh issue edit N -R Nishfleet/<repo> --remove-label agent-ready
       --add-label agent-in-progress`
    e. `gh issue comment N -R Nishfleet/<repo> --body "claimed by
-      pi-issue-<repo>-N at <UTC timestamp>"`
+      pi-issue-<repo>-N at <UTC timestamp>. Re-claim = remote reset done;
+      locally: git checkout -B claim/issue-N origin/main, then cherry-pick
+      the latest wip(salvage) commit (fleet-ops#6206)."`
    f. Start the worker, but only if it is not already live:
       Engine: if `systemctl --user list-units 'devin-issue@*.service' --state=active,activating --no-legend | wc -l`
       is below 3, use `devin-issue@<repo>-N` (Devin SWE-2 Max, $0 on the account, proven headless
