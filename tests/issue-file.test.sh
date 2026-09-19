@@ -14,6 +14,8 @@
 #   8. Auto-filers in bin/ route through fleet-issue-file, not raw gh create.
 #  10. Spec-schema bodies for two DIFFERENT problems never reach DUP_THRESHOLD,
 #      while a genuinely same-problem pair still does (fleet-ops#5058).
+#  11. fleet-ops#4454: `__scout_probe_*` titles are refused (no create), and
+#      intake.md / scout.md skip or never-file that marker plus noise-class.
 set -euo pipefail
 
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -500,5 +502,69 @@ ok "same-problem spec-schema pair is still duplicate (score=$sc)"
 
 # --- 9. standards-drift dedupe keys on the missing file (fleet-ops#4591) ---
 bash "$here/standards-drift-dedupe.test.sh"
+
+# --- 11. scout-probe titles must not become tickets (fleet-ops#4454) --------
+python3 - "$lib" <<'PY' || fail "is_scout_probe_title cases failed"
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location("issue_file", sys.argv[1])
+mod = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(mod)
+assert mod.is_scout_probe_title("__scout_probe_noop__ do not file")
+assert mod.is_scout_probe_title("  __scout_probe_x")
+assert not mod.is_scout_probe_title("do not file")
+assert not mod.is_scout_probe_title("prefix __scout_probe_noop__")
+assert not mod.is_scout_probe_title("Synthetic user-journey probes")
+print("ok")
+PY
+ok "is_scout_probe_title matches only the __scout_probe_ prefix"
+
+printf '[]\n' >"$scratch/empty-open.json"
+: >"$scratch/created"
+mkdir -p "$scratch/fakebin-probe"
+cat >"$scratch/fakebin-probe/gh" <<'GH'
+#!/usr/bin/env bash
+echo "unexpected gh: $*" >&2
+echo create >>"${GH_CREATED:-/dev/null}"
+exit 1
+GH
+chmod +x "$scratch/fakebin-probe/gh"
+out=$(
+  PATH="$scratch/fakebin-probe:$PATH" GH="$scratch/fakebin-probe/gh" \
+    GH_CREATED="$scratch/created" \
+    python3 "$lib" file --json --no-cross-repo --open-json "$scratch/empty-open.json" \
+      --repo Nishfleet/fleet-ops \
+      --title "__scout_probe_noop__ do not file" \
+      --body "metric: n/a"
+)
+action=$(jq -r .action <<<"$out")
+reason=$(jq -r .reason <<<"$out")
+[[ "$action" == "refused" ]] || fail "probe title must refuse, got $out"
+[[ "$reason" == "scout-probe-noop" ]] || fail "probe refuse reason, got $out"
+[[ ! -s "$scratch/created" ]] || fail "probe title must not call gh create"
+ok "file refuses __scout_probe_noop__ do not file (no create)"
+
+out=$(
+  python3 "$lib" file --json --dry-run --no-cross-repo --open-json "$scratch/empty-open.json" \
+    --repo Nishfleet/fleet-ops \
+    --title "Synthetic user-journey probes for 0509 blackbox monitoring" \
+    --body "Probes exercising homepage search."
+)
+action=$(jq -r .action <<<"$out")
+[[ "$action" == "filed" ]] || fail "ordinary probe-word title must still file, got $out"
+ok "ordinary title containing 'probes' still files"
+
+intake="$repo_root/prompts/intake.md"
+scout="$repo_root/prompts/scout.md"
+grep -q 'or `noise-class`' "$intake" \
+  || fail "intake.md must never add agent-ready to noise-class"
+grep -q 'DROP any issue that carries `noise-class`' "$intake" \
+  || fail "intake.md pick-work must DROP noise-class issues"
+grep -q 'skipped-noise-class' "$intake" \
+  || fail "intake.md claim step must print skipped-noise-class"
+grep -q '__scout_probe_' "$intake" \
+  || fail "intake.md must skip __scout_probe_ titles"
+grep -q 'NEVER file an issue whose title starts with `__scout_probe_`' "$scout" \
+  || fail "scout.md must never-file __scout_probe_ titles"
+ok "intake.md and scout.md pin the #4454 skip/refuse"
 
 echo "OK: issue-file same-problem dedupe (fleet-ops#1212)"

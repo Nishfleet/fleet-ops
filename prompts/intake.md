@@ -19,11 +19,14 @@ Hard rules:
 Steps:
 
 1. **Label the invisible.** `gh issue list -R Nishfleet/<repo> --state open
-   --json number,labels --limit 100`. Intake only sees `agent-ready`, so an open
+   --json number,title,labels --limit 100`. Intake only sees `agent-ready`, so an open
    issue carrying none of `agent-ready` / `agent-in-progress` / `agent-blocked`
-   is invisible forever. Add `agent-ready` to each such issue. Never add
-   `agent-ready` to an issue that already carries `agent-blocked` or
-   `awaiting-runtime-gate`.
+   / `noise-class` is invisible forever. Add `agent-ready` to each such issue.
+   Never add `agent-ready` to an issue that already carries `agent-blocked`,
+   `awaiting-runtime-gate`, or `noise-class`. `noise-class` is terminal: not
+   work. Leave those issues as they are. Also skip any issue whose title
+   starts with `__scout_probe_`. That marker means do not file, and a leaked
+   probe must not be labeled agent-ready (fleet-ops#4454).
 
 2. **Capacity.** Two limits, both hard:
    - **Per tick: claim at most 3 issues.** This tick is not responsible for
@@ -48,14 +51,19 @@ Steps:
    why the model intake path was switched off once before; the limit, not the
    model, was the bug). If the result length equals the limit, raise it and
    list again. Empty means print
-   `no ready issues` and exit 0. Order them: issues labelled `critical-path` or
+   `no ready issues` and exit 0. DROP any issue that carries `noise-class` or
+   whose title starts with `__scout_probe_`, even if it also carries
+   `agent-ready` (fleet-ops#4454: #4454 was re-armed three times after a
+   worker labeled it noise-class). Order them: issues labelled `critical-path` or
    `escalate-senior` first, then oldest-first by `createdAt`. After two
    critical-path claims in a row, take the oldest plain issue next so the tail
    cannot starve. Do not sort by issue number and do not pick by vibes.
 
 4. **Claim, in order, while slots remain.** Do the commands — do not describe
    what you would do, and do not stop to re-check capacity between issues; you
-   computed slots in step 2. For each issue `N`:
+   computed slots in step 2. For each issue `N`, if it carries `noise-class` or
+   its title starts with `__scout_probe_`, print `skipped-noise-class` and move
+   on. Do not claim, do not spawn. Otherwise:
    a. `git -C /home/nish/workspaces/products/<repo> fetch origin`
    b. `git -C ... ls-remote origin refs/heads/claim/issue-N` — a hash means
       someone already holds it; skip.
@@ -80,4 +88,4 @@ Steps:
    g. One slot used.
 
 5. Print one line per issue (`claimed+spawned` / `skipped-claim-lost` /
-   `skipped-capacity`) and exit 0.
+   `skipped-capacity` / `skipped-noise-class`) and exit 0.
