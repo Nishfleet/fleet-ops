@@ -88,7 +88,7 @@ WorkingDirectory=/home/nish
 # AGENTS.md context-file discovery because that walks up from the STARTUP cwd, and
 # this unit starts in /home/nish — the repo file would never be reached. Canonical
 # path, never cwd-relative: the unit must not depend on which checkout it runs from.
-ExecStart=/bin/sh -c 'set -e; GH_TOKEN=$(gh token generate --app-id 4728578 --key "$HOME/.config/fleet-worker/nishfleet-worker.private-key.pem" --installation-id 156789042 --token-only); [ -n "$GH_TOKEN" ] || { echo "app token mint failed — refusing human-gh fallback" >&2; exit 1; }; export GH_TOKEN; { cat "$HOME/workspaces/tooling/fleet-ops-deploy-clone/AGENTS.md"; echo; sed -e "1,/^---$/d" -e "s/\$1/$1/g" "$HOME/workspaces/tooling/fleet-ops-deploy-clone/prompts/worker.md"; } | exec devin --permission-mode dangerous --model swe-2-max -p --prompt-file /dev/stdin' sh %i
+ExecStart=/bin/sh -c 'set -e; GH_TOKEN=$(gh token generate --app-id 4728578 --key "$HOME/.config/fleet-worker/nishfleet-worker.private-key.pem" --installation-id 156789042 --token-only); [ -n "$GH_TOKEN" ] || { echo "app token mint failed — refusing human-gh fallback" >&2; exit 1; }; export GH_TOKEN; { cat "$HOME/workspaces/tooling/fleet-ops-deploy-clone/AGENTS.md"; echo; sed -e "1,/^---$/d" -e "s/[$]1/$1/g" "$HOME/workspaces/tooling/fleet-ops-deploy-clone/prompts/worker.md"; } | exec devin --permission-mode dangerous --model swe-2-max -p --prompt-file /dev/stdin' sh %i
 # The worker created its own worktree; the worker's own unit cleans it up.
 # No reaper, no salvage organ: work that was never committed and pushed did not
 # happen, and the next dispatch starts from origin/main. Leading '-' so cleanup
