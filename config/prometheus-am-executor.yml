@@ -1,0 +1,31 @@
+---
+listen_address: "127.0.0.1:9095"
+verbose: true
+commands:
+  # Second cut 2026-09-18: the dispatcher IS this line. The 1,811-line
+  # libexec/alert-repair-dispatch classified the alert, picked a seat, applied
+  # skip/park/dedupe rules and then ran `pi --print` anyway; the seat it picked
+  # was the LiteLLM `worker-cheap` group, which this reaches directly. The
+  # classification and repair judgement now live in prompts/alert-repair.md,
+  # where they are readable and editable without a deploy of shell code.
+  #
+  # fleet-ops#6347: wrap the summons in am-executor-claim so two webhooks
+  # for the same alertname cannot start two repairs. max: 1 stays as the
+  # in-process fingerprint cap (glue sweep); the wrapper is the durable
+  # flock+claim that survives "command returned while the worker still
+  # ran" (the 2026-09-13 twin-spawn). The wrapper also feeds the webhook
+  # payload to stdin — prometheus-am-executor dispatches via AMX_* env,
+  # not stdin, so the inner `cat` only sees a body because the wrapper
+  # writes one.
+  #
+  # max: 1 — a webhook arriving while a repair is still deciding can never
+  # start a second one (parallel Alertmanager notifications for the same group
+  # land ~10s apart).
+  - cmd: /home/nish/workspaces/tooling/fleet-ops-deploy-clone/bin/am-executor-claim
+    args:
+      - /bin/sh
+      - "-c"
+      - '{ cat "$HOME/.pi/agent/prompts/alert-repair.md"; echo; echo "--- ALERTMANAGER PAYLOAD ---"; cat; } | exec pi --print --session-dir "$HOME/.pi/agent/sessions/alert-repair" --provider litellm --model worker-cheap'
+    max: 1
+    ignore_resolved: true
+    notify_on_failure: false

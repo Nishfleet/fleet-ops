@@ -1,0 +1,174 @@
+#!/usr/bin/env bash
+# am-executor-claim — singleflight for prometheus-am-executor repairs (fleet-ops#6347).
+#
+# prometheus-am-executor's max: 1 is per-fingerprint and dies with the
+# process. The 2026-09-13 twin-spawn (same gauge, two pi workers 8 min
+# apart) happened because the command returned while the worker kept
+# running. This wrapper is the #1199 ceremony on the command that still
+# runs: consult a live alert-repair-* unit, flock the alertname, write a
+# claim record, then run the repair. A second firing while held exits 0
+# with skipped-live-worker.
+#
+# Release is this process's EXIT trap (claim-reconcile, the old 7200s
+# sweeper, was deleted in the 2026-09-18 glue sweep). The lock fd is the
+# live-worker signal; a leftover claim file whose lock is free is
+# overwritten, not a 2-hour starve.
+#
+# Usage:
+#   am-executor-claim [--] <command> [args...]
+#
+# Alertname comes from AMX_LABEL_alertname (what prometheus-am-executor
+# actually exports) or, for tests, from Alertmanager JSON on stdin.
+# The payload is then fed to <command> on stdin so the repair prompt
+# sees it (the executor itself does not attach the webhook body to stdin).
+#
+# Environment (tests override):
+#   ALERT_STATE_DIR   default /home/nish/.local/state/fleet-alert-repair
+#   SYSTEMCTL         default systemctl
+#   AM_EXECUTOR_CLAIM_UNIT  recorded in the claim file (default am-executor-claim)
+
+set -euo pipefail
+
+export HOME="${HOME:-/home/nish}"
+export PATH="${HOME}/.local/bin:/usr/local/bin:/usr/bin:/bin:${PATH:-}"
+export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
+
+ALERT_STATE_DIR="${ALERT_STATE_DIR:-${HOME}/.local/state/fleet-alert-repair}"
+SYSTEMCTL="${SYSTEMCTL:-systemctl}"
+CLAIM_UNIT="${AM_EXECUTOR_CLAIM_UNIT:-am-executor-claim}"
+
+log() {
+    printf '[%s] am-executor-claim: %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$*" >&2
+}
+
+usage() {
+    cat <<'EOF'
+am-executor-claim — singleflight for prometheus-am-executor repair commands (fleet-ops#6347)
+
+usage: am-executor-claim [--] <command> [args...]
+
+Consults live alert-repair-<Alertname>-* units (claim-reconcile's
+is_live_alert_worker probe, copied not re-invented), then flock-claims
+ALERT_STATE_DIR/<scope>.lock and writes {alertname, unit, fired_at}.
+A firing while held prints skipped-live-worker and exits 0.
+
+The Alertmanager payload is read from stdin when present; otherwise a
+minimal JSON object is built from AMX_* environment variables. That
+payload is passed to <command> on stdin.
+EOF
+}
+
+if [[ "${1:-}" == "--help" || "${1:-}" == "-h" ]]; then
+    usage
+    exit 0
+fi
+
+if [[ "${1:-}" == "--" ]]; then
+    shift
+fi
+
+if [[ $# -lt 1 ]]; then
+    usage >&2
+    exit 2
+fi
+
+command -v jq >/dev/null 2>&1 || { log "FATAL: jq missing"; exit 2; }
+
+payload="$(cat || true)"
+
+alertname="${AMX_LABEL_alertname:-${AMX_GLABEL_alertname:-}}"
+if [[ -z "$alertname" && -n "$payload" ]]; then
+    alertname="$(printf '%s' "$payload" | jq -r '
+        .commonLabels.alertname
+        // .groupLabels.alertname
+        // .alerts[0].labels.alertname
+        // empty
+    ' 2>/dev/null || true)"
+fi
+
+if [[ -z "$payload" && -n "${AMX_STATUS:-}${AMX_LABEL_alertname:-}" ]]; then
+    payload="$(python3 - <<'PY'
+import json, os
+labels = {}
+ann = {}
+for key, val in os.environ.items():
+    if key.startswith("AMX_LABEL_"):
+        labels[key[len("AMX_LABEL_"):]] = val
+    elif key.startswith("AMX_ANNOTATION_"):
+        ann[key[len("AMX_ANNOTATION_"):]] = val
+print(json.dumps({
+    "status": os.environ.get("AMX_STATUS", "firing"),
+    "receiver": os.environ.get("AMX_RECEIVER", ""),
+    "commonLabels": labels,
+    "commonAnnotations": ann,
+    "groupLabels": {"alertname": labels.get("alertname", "")},
+    "alerts": [{
+        "status": os.environ.get("AMX_STATUS", "firing"),
+        "labels": labels,
+        "annotations": ann,
+    }],
+}))
+PY
+)"
+    alertname="${alertname:-${AMX_LABEL_alertname:-}}"
+fi
+
+if [[ -z "$alertname" ]]; then
+    log "no alertname (stdin JSON and AMX_LABEL_alertname both empty); running command without a claim"
+    printf '%s' "$payload" | exec "$@"
+fi
+
+# CamelCase -> kebab-case, then branch-safe. Copied from the deleted
+# libexec/alert-repair-claim sanitizer so claim filenames stay stable.
+sanitize_alert() {
+    local s="$1"
+    s="$(printf '%s' "$s" | sed -E 's/([a-z0-9])([A-Z])/\1-\2/g; s/([A-Z]+)([A-Z][a-z])/\1-\2/g')"
+    s="$(printf '%s' "$s" | tr '[:upper:]' '[:lower:]')"
+    s="${s//[^a-z0-9._-]/_}"
+    s="$(printf '%s\n' "$s" | sed -E 's/_+/_/g; s/^_+//; s/_+$//')"
+    printf '%s' "$s"
+}
+
+scope="$(sanitize_alert "$alertname")"
+if [[ -z "$scope" ]]; then
+    log "alert sanitised to empty scope: '$alertname'; running command without a claim"
+    printf '%s' "$payload" | exec "$@"
+fi
+
+# (1) consult — claim-reconcile is_live_alert_worker, scoped to this
+# alertname. Any matching active/activating unit means a repair is already
+# in flight (the pre-glue-sweep pi-systemd-run shape). Empty is a continue.
+if "$SYSTEMCTL" --user list-units "alert-repair-${alertname}-*" \
+    --state=active,activating --no-legend 2>/dev/null \
+    | awk '{print $1}' | grep -q '^alert-repair-'; then
+    log "skipped-live-worker alertname=${alertname}"
+    exit 0
+fi
+
+mkdir -p "$ALERT_STATE_DIR"
+lockfile="${ALERT_STATE_DIR}/${scope}.lock"
+claim_file="${ALERT_STATE_DIR}/${scope}.json"
+
+# (2) claim — non-blocking flock. A holder is the in-process equivalent of
+# a live worker on the current inline pi --print path.
+exec 9>"$lockfile"
+if ! flock -n 9; then
+    log "skipped-live-worker alertname=${alertname}"
+    exit 0
+fi
+
+fired_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+claim_tmp="${claim_file}.tmp.$$"
+printf '{"alertname":%s,"unit":%s,"fired_at":%s}\n' \
+    "$(jq -cn --arg a "$alertname" '$a')" \
+    "$(jq -cn --arg u "$CLAIM_UNIT" '$u')" \
+    "$(jq -cn --arg t "$fired_at" '$t')" >"$claim_tmp"
+mv "$claim_tmp" "$claim_file"
+log "claimed alertname=${alertname} file=${claim_file}"
+
+# (3) release — unlink our claim when the repair exits. flock drops with
+# this process. claim-reconcile no longer runs; EXIT is the sweep.
+trap 'rm -f "$claim_file"' EXIT
+
+printf '%s' "$payload" | "$@"
+exit $?

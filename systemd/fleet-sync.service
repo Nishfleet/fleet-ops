@@ -40,6 +40,11 @@ ExecStart=/usr/bin/promtool check rules /home/nish/workspaces/tooling/fleet-ops-
 #    then HUP prometheus (ExecReload is kill -HUP; it re-reads rules only on
 #    reload).
 ExecStart=/usr/bin/sh -c 'cmp -s /home/nish/workspaces/tooling/fleet-ops-deploy-clone/config/fleet_rules.yml /etc/prometheus/fleet_rules.yml || { sudo -n install -D -m 0644 -o root -g root /home/nish/workspaces/tooling/fleet-ops-deploy-clone/config/fleet_rules.yml /etc/prometheus/fleet_rules.yml && sudo -n systemctl reload prometheus; }'
+# 5. prometheus-am-executor -f path is user-scope, so it can be a symlink
+#    into the clone (house pattern). Relink when the live path is a regular
+#    file or points elsewhere. Does not restart the executor — loading the
+#    new command line needs a bounce (loose-ends: am-executor-claim-reload).
+ExecStart=/usr/bin/sh -c 'src=/home/nish/workspaces/tooling/fleet-ops-deploy-clone/config/prometheus-am-executor.yml; dst=/home/nish/.config/prometheus-am-executor/config.yml; mkdir -p /home/nish/.config/prometheus-am-executor; if [ ! -L "$$dst" ] || [ "$$(readlink "$$dst")" != "$$src" ]; then ln -sfn "$$src" "$$dst"; echo "[$$(date -u +%%Y-%%m-%%dT%%H:%%M:%%SZ)] [fleet-sync] linked prometheus-am-executor config -> $$src"; fi'
 TimeoutStartSec=300
 
 [Install]
