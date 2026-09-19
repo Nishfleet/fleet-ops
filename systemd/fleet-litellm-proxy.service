@@ -39,7 +39,6 @@ Environment=HOME=/home/nish
 # copy is missing. LiteLLM's primary load is still the sibling file at
 # ~/.config/fleet-ops/fleet_devin_adapter.py (runbook §3c).
 Environment=PATH=/home/nish/.local/venvs/litellm/bin:/home/nish/.local/bin:/usr/local/bin:/usr/bin:/bin
-Environment=PYTHONPATH=/home/nish/.local/libexec/fleet-litellm-prisma-compat:/home/nish/workspaces/tooling/fleet-ops-deploy-clone/libexec/fleet-litellm-devin-adapter
 Environment=XDG_RUNTIME_DIR=/run/user/1000
 # The config is operator-owned (lives in ~/.config, not the repo) so keys
 # resolved through the existing credential resolvers never enter the repo
@@ -72,7 +71,11 @@ Environment=LITELLM_PROXY_CONFIG=%h/.config/fleet-ops/litellm-proxy.yaml
 # first token) and p14-unstubbed-unit-verify both pass WITHOUT a Workflows-
 # scope ci.yml stub (fleet-ops#4398). /usr/bin/env execs the wrapper via its
 # shebang, so the live organ is unchanged.
-ExecStart=/usr/bin/env /home/nish/.local/bin/fleet-litellm-proxy-start
+Environment=DATABASE_URL=postgresql://litellm@localhost:5432/litellm
+EnvironmentFile=-%h/.config/fleet-ops/seats/*.env
+EnvironmentFile=-%h/.config/xkiro/.env
+EnvironmentFile=-%h/.config/straitly/straitly.env
+ExecStart=/home/nish/.local/venvs/litellm/bin/litellm --config %h/.config/fleet-ops/litellm-proxy.yaml --port 4000 --host 127.0.0.1
 # Master key for virtual-key minting (operator-owned, generated once per
 # the runbook and stored root-owned/0600 in ~/.config/fleet-ops — the value
 # is NEVER in the repo). The live config's general_settings.master_key is
