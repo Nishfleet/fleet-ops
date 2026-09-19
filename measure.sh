@@ -218,7 +218,7 @@ print(r[0]["value"][1] if r else "")' 2>/dev/null
 # both, so read fleet_prepaid_used_usd here to keep this line's meaning
 # identical. (fleet_prepaid_credits_usd is the remaining side, which is what
 # FleetPrepaidCreditsLow alerts on.)
-_cursor_used="$(_cursor_prom 'fleet_prepaid_used_usd{provider="cursor"}')"
+_cursor_used="$(_cursor_prom 'fleet_prepaid_used_usd{provider="cursor"}' || true)"
 if [[ -n "$_cursor_used" ]]; then
     CURSOR_API_CYCLE_USD="$_cursor_used"
     CURSOR_TODAY_FIGURE="$_cursor_used"
