@@ -31,19 +31,13 @@ Steps:
      (pi-issue@.service ExecStopPost), and the timer ticks anyway, so the
      queue drains continuously. Do not deliberate about the fleet-wide
      number — take up to 3 and stop.
-   - **Fleet-wide: 12 concurrent workers** (fleet-ops#7820, 2026-09-19 12:45 IST:
-     live worker slots = pareto glm-5.3-flash 3 (header max_parallel_requests 3)
-     + opencode-go ds4.1-flash 4 + ollama 4+4 + zenmux free 2 + xkiro free 4+4 (free daily quotas, out most of
-     the day) = 15-21, minus ~3 for intake/scout/repair ticks that share the lane. Synthetic stays ONE GLM rung at 1 (Nish); ollama 4+4 is
-     quota-walled on and off. Change this number only from a measured
-     `max_parallel_requests` sum over rungs that `litellm_deployment_state`
-     shows healthy).
-     `systemctl --user list-units 'pi-issue@*.service' 'devin-issue@*.service' 'cursor-issue@*.service' --state=active,activating --no-legend | wc -l`
-     (pi-issue@ is Type=oneshot, so a RUNNING worker is `activating`, not `active`;
-     counting only `active` always returned 0 and the cap never bit — #7820).
+   - **Fleet-wide: 4 concurrent workers** (fleet-ops#7820, 2026-09-19 15:30 IST: pareto
+     glm-5.3-flash is the only healthy rung (3 in flight); synthetic, ollama, zenmux, xkiro
+     and opencode-go are all quota- or credit-walled today. Raise this only from a measured
+     `max_parallel_requests` sum over rungs that `litellm_deployment_state` shows healthy).
    Also read MemAvailable from `/proc/meminfo`: under 4 GB, start nothing this
    tick and say so — RAM is the binding resource and an OOM kill costs a whole
-   claim. `slots = min(3, 12 - active)`. If slots <= 0, print `at capacity`
+   claim. `slots = min(3, 4 - active)`. If slots <= 0, print `at capacity`
    and exit 0.
 
 3. **Pick work.** `gh issue list -R Nishfleet/<repo> -l agent-ready --state open
