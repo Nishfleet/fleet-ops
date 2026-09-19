@@ -724,3 +724,11 @@ bash "$here/deleted-symbol-gate.test.sh"
 # falls out of the P14 reachable set. Workers cannot edit .github/workflows.
 bash "$here/fleet-provider-no-dangerous-modes.test.sh" || fail "fleet-provider-no-dangerous-modes tests failed"
 bash "$here/grok-token-refresh.test.sh" || fail "grok-token-refresh tests failed"
+
+# fleet-ops#7842: stale `.bak-*` siblings under ~/.pi/agent/skills. Hosted
+# here (a listed test) so P14 runs it without a workflow-file edit; the
+# worker App cannot push .github/workflows/**. The named pin in
+# tests/p14-test-listing-gate.test.sh is the class-prevention so a future
+# drop of this host line fails by name. Hermetic (scratch skills+vault),
+# plus a skip-if-absent live count.
+bash "$here/skill-bak-sprawl.test.sh" || fail "skill-bak-sprawl tests failed"
