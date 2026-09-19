@@ -155,6 +155,12 @@ else
     ok "4. negative check: injected groq rung correctly fails the detector"
 fi
 
+# fleet-ops#6094: standing-FAIL failed-cycle lock. Hosted here so P14
+# reaches it through the existing oversize host chain (workers cannot
+# add a ci.yml line).
+bash "$here/fleet-researcher-failed-cycle.test.sh" \
+  || fail "fleet-researcher-failed-cycle tests failed"
+
 echo
 echo "ALL OK: fleet-researcher-oversize checks passed"
 exit 0
