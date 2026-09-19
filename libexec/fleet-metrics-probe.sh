@@ -26,10 +26,21 @@ N="$T.$$"
     echo '# HELP fleet_main_ci_green Latest completed CI run on the default branch succeeded (1) or not (0).'
     echo '# TYPE fleet_main_ci_green gauge'
     for r in fleet-ops 0509; do
-        c=$(gh api "repos/Nishfleet/$r/actions/runs?branch=main&per_page=1&status=completed" \
-              --jq '.workflow_runs[0].conclusion' 2>/dev/null)
-        # No answer means GitHub was unreachable, not that main is green.
-        # Emit nothing and let FleetProbeStale catch a persistent outage.
+        # Latest PUSH-triggered run with a real verdict, not just the newest
+        # completed run of any trigger. False FleetMainRed on a green 0509
+        # trunk 2026-09-19T06:35Z (and 3x in the previous 24h): the newest
+        # completed run was `Auto revert` (event=workflow_run, conclusion
+        # `skipped`), and a skipped run is not a failed trunk. Same bug family
+        # as fleet-ops#3626 (a cancelled run counted as red) — that fix lived
+        # in the deleted 4,679-line exporter and was not carried over by the
+        # glue sweep. Looks back over the last 100 completed push runs for the
+        # first success/failure/timed_out/startup_failure so a run that was
+        # cancelled or skipped by a newer push does not become the verdict.
+        c=$(gh api "repos/Nishfleet/$r/actions/runs?branch=main&per_page=100&status=completed&event=push" \
+              --jq '[.workflow_runs[].conclusion | select(.=="success" or .=="failure" or .=="timed_out" or .=="startup_failure")][0] // empty' 2>/dev/null)
+        # No answer means GitHub was unreachable (or no push verdict exists at
+        # all — main is unarmed), not that main is green. Emit nothing and let
+        # FleetProbeStale catch a persistent outage.
         [ -z "$c" ] && continue
         [ "$c" = success ] && v=1 || v=0
         echo "fleet_main_ci_green{repo=\"$r\"} $v"
