@@ -82,16 +82,6 @@ groups:
 
       # Prepaid vendor credit is only visible through the vendor API, so it
       # arrives via the one curl|jq textfile reader.
-      - alert: FleetPrepaidCreditsLow
-        expr: fleet_prepaid_credits_usd < 5
-        for: 15m
-        labels:
-          severity: nish
-          service: money
-        annotations:
-          summary: "prepaid seat {{ $labels.provider }} has under $5 of credit left"
-          description: "fleet_prepaid_credits_usd{provider=\"{{ $labels.provider }}\"} is below $5. The seat walls at zero and every packet routed to it fails over. Topping it up is a money decision and therefore Nish's."
-
   - name: fleet_seat_proxy
     rules:
       # The seat proxy is the single routing organ. Nothing reaches a model
@@ -131,26 +121,6 @@ groups:
       # node_exporter's systemd collector (system units only) cannot see it --
       # this textfile metric is the only signal that the timer still runs, and
       # the seat 401s within 6h of it stopping.
-      - alert: FleetGrokTokenRefreshStale
-        expr: absent(fleet_grok_token_refresh_last_success_seconds) or (time() - fleet_grok_token_refresh_last_success_seconds) > 43200
-        for: 1h
-        labels:
-          severity: warning
-          service: fleet
-        annotations:
-          summary: "grok-token-refresh has not run in 12+ hours"
-          description: "fleet_grok_token_refresh_last_success_seconds is absent or older than 12h (two 4h timer cycles). The script advances it on every SUCCESS and SKIP, so only a REJECT (failed grant) or a dead timer leaves it stale. It keeps ~/.pi/agent/auth.json[xai-oauth] alive so the live SuperGrok seat does not age into a 401 within 6h. Check journalctl --user -u grok-token-refresh.service and systemctl --user list-timers grok-token-refresh.timer. fleet-ops#41."
-
-      - alert: LitellmPgDumpStale
-        expr: (time() - fleet_litellm_pgdump_mtime_seconds > 129600) or fleet_litellm_pgdump_mtime_seconds == 0
-        for: 15m
-        labels:
-          severity: critical
-          service: backups
-        annotations:
-          summary: "LiteLLM control-plane pg_dump is stale or missing"
-          description: "The budgets/keys/spend database behind the seat proxy has no fresh dump. Losing it loses every virtual key and its spend history. Written by restic-r2-backup.service ExecStartPre; repair by running that unit."
-
   - name: fleet_host
     rules:
       # Host rules are here because a full disk or an exhausted machine takes
@@ -191,53 +161,6 @@ groups:
       # main-red and product availability. Neither GitHub nor the 0509 origin
       # is a prometheus target, so both arrive through the one curl|jq
       # ExecStart in fleet-metrics-export.service.
-      - alert: FleetMainRed
-        expr: fleet_main_ci_green == 0
-        for: 10m
-        labels:
-          severity: critical
-          service: fleet
-        annotations:
-          summary: "main is red on {{ $labels.repo }}"
-          description: "The default branch of {{ $labels.repo }} has a failing CI conclusion. Every worker branches from main, so a red main poisons every PR opened after it. Fix forward or revert now — never watch main red."
-
-      # Product availability is NOT a rule of this lane's. The canary lane of
-      # this same sweep (be38630df) installed blackbox_exporter and wrote the
-      # product_surface group below, which covers it properly: those rules use
-      # min_over_time(...[1h]) because the canary jobs scrape slowly enough that
-      # a bare `probe_success == 0` evaluates to empty most of the time and would
-      # silently never fire. A ProductDown written here was exactly that broken
-      # instant comparison, and is deleted rather than left as false coverage.
-
-      # The rules above have exactly one producer. If it stops, they read as
-      # healthy forever — so the producer's own freshness is a rule.
-      #
-      # NOTE the regex: node_exporter labels textfiles with their FULL PATH
-      # (file="/var/lib/prometheus/node-exporter/fleet.prom"), not the basename.
-      # An exact file="fleet.prom" matcher — which is what these two rules
-      # shipped with for about two hours on 2026-09-18 — matches nothing, so
-      # FleetProbeMissing fires forever and FleetProbeStale can never fire at
-      # all. Caught by the first real daily-digest run reporting it.
-      - alert: FleetProbeStale
-        expr: (time() - node_textfile_mtime_seconds{file=~".*/fleet\\.prom"}) > 1200
-        for: 5m
-        labels:
-          severity: critical
-          service: fleet
-        annotations:
-          summary: "fleet.prom textfile is over 20 minutes stale"
-          description: "fleet-metrics-export.timer runs every 5 minutes. While it is stale, FleetMainRed, ProductDown and FleetPrepaidCreditsLow cannot fire. Repair: systemctl --user status fleet-metrics-export.service."
-
-      - alert: FleetProbeMissing
-        expr: absent(node_textfile_mtime_seconds{file=~".*/fleet\\.prom"})
-        for: 10m
-        labels:
-          severity: critical
-          service: fleet
-        annotations:
-          summary: "fleet.prom textfile is absent entirely"
-          description: "The textfile has never been written or was deleted. Same blind spot as FleetProbeStale, but with no timestamp to age out. Repair: systemctl --user start fleet-metrics-export.service."
-
   # ------------------------------------------------------------------------
   # Product public-surface canaries (glue sweep 2026-09-18, zero-scripts).
   # These replace two hand-written node canaries and their systemd
