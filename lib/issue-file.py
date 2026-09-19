@@ -10,6 +10,8 @@ unit-name match. No ML.
   below BORDERLINE        -> file clean
 
 All auto-filers route through this instead of raw `gh issue create`.
+Titles that start with `__scout_probe_` are refused (fleet-ops#4454): that
+marker means the probe must not become a ticket.
 
 Usage:
   issue-file.py file --repo OWNER/NAME --title T (--body B | --body-file F)
@@ -96,6 +98,12 @@ STOPWORDS = frozenset(
 PATH_RE = re.compile(
     r"(?:(?:\./)?[A-Za-z0-9_.-]+/){1,}[A-Za-z0-9_.-]+(?:\.[A-Za-z0-9]+)?"
 )
+
+# fleet-ops#4454: a scout (or a drill) used `__scout_probe_noop__ do not file`
+# as a title and the filing path created a real ticket. Intake then labeled
+# it agent-ready. Prefix match so any future `__scout_probe_*` marker dies
+# here instead of entering the dispatch queue.
+SCOUT_PROBE_TITLE_RE = re.compile(r"^__scout_probe_")
 
 # fleet-ops#5198: PATH_RE is a shape matcher — it cannot tell a real file
 # key from a repo ref (`nishfleet/fleet-ops` inside a `Nishfleet/<repo>#N`
@@ -972,6 +980,11 @@ def emit(payload: dict, as_json: bool, url: str) -> None:
         print(json.dumps(payload, sort_keys=True))
 
 
+def is_scout_probe_title(title: str) -> bool:
+    """True when the title is a scout probe that must never become a ticket."""
+    return bool(SCOUT_PROBE_TITLE_RE.match((title or "").strip()))
+
+
 def cmd_score(args: argparse.Namespace) -> int:
     issues = load_open_from_json(args.against_json)
     match = best_match(args.title, args.body or "", issues)
@@ -986,6 +999,23 @@ def cmd_score(args: argparse.Namespace) -> int:
 
 def cmd_file(args: argparse.Namespace) -> int:
     title = args.title
+    if is_scout_probe_title(title):
+        payload = {
+            "action": "refused",
+            "reason": "scout-probe-noop",
+            "score": 0.0,
+            "kind": "refused",
+            "existing": None,
+            "url": "",
+            "number": None,
+            "repo": args.repo,
+        }
+        print(
+            f"[issue-file] refused scout-probe title {title!r} (fleet-ops#4454)",
+            file=sys.stderr,
+        )
+        emit(payload, args.json, "")
+        return 0
     if args.body_file:
         body = Path(args.body_file).read_text(encoding="utf-8")
     else:

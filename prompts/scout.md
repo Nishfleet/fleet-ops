@@ -33,6 +33,7 @@ Hard rules:
 - Max **8 new issues** per run. If you cannot write a concrete `termination:` command for a candidate, **do not file it**.
 - Max **1 infra issue** per run, and only when it blocks a named product flow (cite the flow).
 - NEVER file: refactors for their own sake, CI/tooling polish, control-plane work, duplicate work already covered by an open issue or PR.
+- NEVER file an issue whose title starts with `__scout_probe_` (that marker means the probe must not become a ticket; fleet-ops#4454 leaked `__scout_probe_noop__ do not file` into the dispatch queue).
 - **Every candidate must cite its research source.** The RESEARCH CONTEXT section is appended after this prompt. Use a `source:` line in the issue body with the exact market-signal line, bet ID, north-star rule reference, or merged-PR title that motivated the candidate. No citation = do not file.
 
 ## Capacity gate (already enforced by systemd)
@@ -163,7 +164,7 @@ traffic must still produce a fed queue; a starved queue from a green Usage
 block is a supply bug, not a spec win.
 
 **No-reconsider loop (fleet-ops#4850):** once you name a candidate you will
-file, file it in the NEXT action (`gh issue create ...`) and move on. Do not
+file, file it in the NEXT action (`fleet-issue-file file ...`) and move on. Do not
 reconsider an already-decided candidate. Do not loop between "I'll file X"
 and "let me reconsider whether to file more." If you have filed fewer than 1
 research-grounded candidate under an all-green Usage block, your run is
