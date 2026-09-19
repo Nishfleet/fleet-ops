@@ -18,26 +18,38 @@
 # reloads via `sudo augenrules --load` (idempotent; auditd must be
 # installed).
 #
-# Query: bin/fleet-who-stopped <unit>  (ausearch -k fleet-unit-stop -i)
+# Query (fleet-ops#5918): run as root —
+#   /usr/sbin/ausearch -k fleet-unit-stop -ts yesterday -i
+# The absolute path is mandatory: ExecStopPost and the systemd user manager
+# run with PATH=/home/nish/.local/bin:/usr/local/bin:/usr/bin:/bin, which has
+# no /usr/sbin — and ausearch ships at /usr/sbin/ausearch. A bare `ausearch`
+# (or the deleted bin/fleet-who-stopped wrapper, removed 2026-09-18 with the
+# glue sweep) finds nothing there and reports `no audit trail` on a host
+# where the trail exists. See #4733 (same fix for the canary) and #5456
+# addendum J (no silent path left in prose).
 # =============================================================================
 -w /usr/bin/systemctl -p x -F auid=1000 -k fleet-unit-stop
 -w /usr/bin/kill      -p x -F auid=1000 -k fleet-unit-stop
 -w /bin/systemctl     -p x -F auid=1000 -k fleet-unit-stop
 -w /bin/kill          -p x -F auid=1000 -k fleet-unit-stop
 # =============================================================================
-# fleet-ops#4266 — raw systemd-run lint trail (canary block 13)
+# fleet-ops#4266 — raw systemd-run forensic trail
 # =============================================================================
-# The escalation canary's detached-work lint (block 13) reads the audit
-# trail of systemd-run execve by auid=1000 to catch a raw `systemd-run
-# --user` transient created WITHOUT --property=OnFailure (a clean stop of
-# such a unit dies silently — the exact #4266 gap). Since 2026-09-18 the
-# compliant shape is the README one-liner: a transient unit carrying both
-# -p RuntimeMaxSec= and the -p ExecStopPost= deliverable check, so a
-# compliant execve carries those properties; a bare one does not. Watch the systemd-run binary (and its /bin symlink) so the
-# lint has a trail to query. Key fleet-unit-run is distinct from the
-# fleet-unit-stop key above (who-stopped) so the two queries stay clean.
+# The escalation canary's detached-work lint (block 13) that read this trail
+# was deleted 2026-09-18 with the glue sweep; the six -w rules stay as the
+# on-disk forensic evidence for the #4266 silent-death vector (a bare
+# `systemd-run --user` transient — no OnFailure, no RuntimeMaxSec, no
+# ExecStopPost deliverable check — is only reconstructable from these execve
+# records). The compliant shape is the README one-liner: a transient unit
+# carrying both -p RuntimeMaxSec= and the -p ExecStopPost= deliverable check.
+# Watch the systemd-run binary (and its /bin symlink) so the trail stays
+# populated. Key fleet-unit-run is distinct from the fleet-unit-stop key
+# above (who-stopped) so the two queries stay clean.
 #
-# Query: ausearch -k fleet-unit-run -ts yesterday -i  (canary block 13)
+# Query (fleet-ops#5918): run as root with the absolute path —
+#   /usr/sbin/ausearch -k fleet-unit-run -ts yesterday -i
+# (bare `ausearch` fails on the systemd-user PATH; see the fleet-unit-stop
+# block above for why.)
 # =============================================================================
 -w /usr/bin/systemd-run -p x -F auid=1000 -k fleet-unit-run
 -w /bin/systemd-run     -p x -F auid=1000 -k fleet-unit-run
