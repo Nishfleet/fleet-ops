@@ -3,8 +3,8 @@
 #
 # fleet-ops#5748: the "how to check whether the fleet is live" procedure
 # existed twice — a 2-step "Authoritative check, in order" in the Pi
-# canonical (docs/pi-agents.md) and a 5-step generated
-# idle-fleet-alarm block (docs/standing-rules.md, rendered into
+# rulebook (docs/pi-agents.md before #7866; AGENTS.md since) and a 5-step
+# generated idle-fleet-alarm block (docs/standing-rules.md, rendered into
 # ~/.claude/CLAUDE.md) — with already-diverged procedures and NO recorded
 # precedence. An agent following the shorter list skipped the failed-units
 # sweep and the seat-health recency check.
@@ -21,7 +21,7 @@
 set -euo pipefail
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 repo_root="$(cd "$here/.." && pwd)"
-pi_canonical="$repo_root/docs/pi-agents.md"
+pi_canonical="$repo_root/AGENTS.md"
 sr_canonical="$repo_root/docs/standing-rules.md"
 
 fail() { echo "FAIL: $*" >&2; exit 1; }

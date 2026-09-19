@@ -7,7 +7,8 @@
 # -> "Canonical reserved-classes list", the union, precedence-stated) and
 # every agent canonical surface must POINT at it rather than restate a
 # divergent copy:
-#   1. fleet-ops Pi canonical.md points at the vault list (no standalone
+#   1. fleet-ops Pi rulebook (AGENTS.md, since #7866 folded docs/pi-agents.md
+#      into a pointer) points at the vault list (no standalone
 #      "money, privacy, security, ... " list left inline).
 #   2. fleet-ops standing-rules canonical.md never-relay-finding section
 #      points at the vault list (no inline list left).
@@ -29,7 +30,7 @@ repo_root="$(cd "$here/.." && pwd)"
 fail() { echo "FAIL: $*" >&2; exit 1; }
 ok()   { echo "OK: $*"; }
 
-pi_canonical="$repo_root/docs/pi-agents.md"
+pi_canonical="$repo_root/AGENTS.md"
 sr_canonical="$repo_root/docs/standing-rules.md"
 vault_gsr="${FLEET_VAULT_GSR:-/home/nish/workspaces/tooling/nish-vault/_system/shared-memory/global-standing-rules.md}"
 
@@ -51,11 +52,11 @@ grep -q "in only for money, privacy, security, legal, product direction, or dest
 # 1b. fleet-ops#5715: the 'Hard lines' deploy line must NOT contradict the
 # enforced 'Agent-authored PRs land themselves' rule — the bare 'Never merge'
 # wording is the regression; the precedence carve-out pattern is required.
-sed -n '/^## Hard lines/,/^## Where/p' "$pi_canonical" | grep -q "Never merge, never deploy without Nish" \
+sed -n '/^## Hard lines/,/^## /p' "$pi_canonical" | grep -q "Never merge, never deploy without Nish" \
   && fail "pi canonical hard line still carries the bare 'Never merge' wording that contradicts the self-land rule (fleet-ops#5715)"
-sed -n '/^## Hard lines/,/^## Where/p' "$pi_canonical" | grep -q "Never deploy without Nish" \
+sed -n '/^## Hard lines/,/^## /p' "$pi_canonical" | grep -q "Never deploy without Nish" \
   || fail "pi canonical hard line lost the 'Never deploy without Nish' clause"
-sed -n '/^## Hard lines/,/^## Where/p' "$pi_canonical" | grep -q "self-land" \
+sed -n '/^## Hard lines/,/^## /p' "$pi_canonical" | grep -q "self-land" \
   || fail "pi canonical hard line lost the self-land precedence carve-out"
 
 # 2. Claude standing-rules canonical points at the vault list.
@@ -73,10 +74,17 @@ sed -n '/SECTION: never-relay-finding/,/END SECTION: never-relay-finding/p' "$sr
   && fail "never-relay-finding still carries the old divergent inline list"
 
 # 3. Vault canonical list (VPS-only surface; SKIPPED, never a pass lie).
+#    The 2026-09-19 vault audit cut renamed the section heading
+#    "Canonical reserved-classes list" to "Only these reach Nish"; accept either
+#    so the gate reads the live list (the old heading is history).
 if [[ -f "$vault_gsr" ]]; then
-  grep -q "Canonical reserved-classes list" "$vault_gsr" \
-    || fail "vault GSR missing the canonical reserved-classes block"
-  blk="$(grep -A12 "Canonical reserved-classes list" "$vault_gsr")"
+  if grep -q "Canonical reserved-classes list" "$vault_gsr"; then
+    blk="$(grep -A12 "Canonical reserved-classes list" "$vault_gsr")"
+  elif grep -q "Only these reach Nish" "$vault_gsr"; then
+    blk="$(grep -A12 "Only these reach Nish" "$vault_gsr")"
+  else
+    fail "vault GSR missing the canonical reserved-classes block (expected 'Canonical reserved-classes list' or 'Only these reach Nish')"
+  fi
   for klass in "privacy" "security" "customer-data deletion" "brand" "legal" "product direction" "irreversible"; do
     echo "$blk" | grep -q "$klass" || fail "vault canonical list missing reserved class: $klass"
   done

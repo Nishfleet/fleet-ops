@@ -8,6 +8,44 @@
 - Cancelled-while-queued detector drill (fleet-ops#819): `bash tests/cancelled-while-queued-detector.test.sh`
 - Replay with the actual enrolled set: `node .github/scripts/cancelled-while-queued-detector.mjs --targets-from config/intake-repos.json --dry-run --output-json /tmp/cwq.json`
 
+## Hard lines
+
+- **Canonical reserved-classes list** — the only things that reach Nish:
+  money/pricing, privacy, security, legal, brand, product direction,
+  customer-data deletion, destructive/irreversible steps, and authority he has
+  explicitly reserved. It lives in the vault (`global-standing-rules.md` →
+  "Only these reach Nish"); older or shorter surface lists fold into it, and a
+  surface is a pointer, not a second source (fleet-ops#5586). Stop for approval
+  only for those classes or irreversible work — present the plan and begin
+  everything else (fleet-ops#6610).
+- Never deploy without Nish; agent-authored PRs self-land per
+  `global-standing-rules.md` → "Agent-authored PRs land themselves"
+  (fleet-ops#5715: the bare "never merge" wording contradicted the enforced
+  self-land rule).
+- Money is Nish's alone. No payments, cards, or paid trials.
+- Secrets never get printed, moved, rotated, or committed.
+- `main`/`master` are protected. Branch or use a worktree.
+
+## Live state
+
+**The 5-step fleet live-state check is canonical; the quick minimum below is a
+minimum, never a complete procedure.** Where any live-state wording drifts, the
+generated `idle-fleet-alarm` block in `~/.claude/CLAUDE.md`
+(`docs/standing-rules.md`, SECTION: idle-fleet-alarm) WINS — it is the single
+edit point (fleet-ops#5748). Its steps 3–5 are findings-grade duties and must be
+performed, not skipped:
+
+3. `systemctl --user list-units --state=failed` — must be EMPTY (set
+   `XDG_RUNTIME_DIR=/run/user/$(id -u)`, or it silently returns nothing).
+4. `curl -s 127.0.0.1:4000/health/readiness`, then
+   `curl -sL 127.0.0.1:4000/metrics | grep litellm_deployment_state` — one gauge
+   per deployment (0 healthy, 1 partial, 2 complete outage).
+5. `uptime` for load, and merged-PR counts per repo for actual throughput.
+
+**Quick minimum, in order:** (1) if `~/workspaces/agent-state/FLEET-PAUSED`
+exists the fleet is deliberately down — respect it; (2) otherwise
+`XDG_RUNTIME_DIR=/run/user/$(id -u) systemctl --user list-timers` is the truth.
+
 ## Per-run invariants for the Pi fleet issue worker
 
 Moved here from `prompts/worker.md` on 2026-09-18: these rules are the same on every
