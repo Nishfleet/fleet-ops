@@ -1,0 +1,196 @@
+#!/usr/bin/env bash
+# fleet-silent-pr-close-check — flag App-identity PR closes that left no
+# closing comment (fleet-ops#6292).
+#
+# The shape it catches (the 2026-09-13 PR #6258 incident): a claim/issue-<N>
+# or fable/issue-<N> PR closed NOT-merged by the nishfleet-worker App
+# identity, with no comment by that actor at-or-near the close, the head
+# branch deleted underneath it, and the owning issue still open. That is
+# automation destroying endorsed work with no mechanism named and no trace —
+# the failure shape of silent worker death (fleet-ops#5456).
+#
+# Sanctioned closers are NOT flagged: a merged PR is the land path, and the
+# explicit land-or-close / auto-revert actions close with `gh pr close
+# --comment`, which leaves a comment by the same actor at close time. The
+# predicate is therefore: closed-not-merged + zero comments by the closing
+# actor in a window ending at the close + owning issue still open.
+#
+# Runs as the second ExecStart of pi-issue-failed@.service — event-driven on
+# the exact failure path that produces the class, no new timer. A finding
+# exits 1, the unit goes `failed`, and the SystemUnitFailed rule pages it;
+# --apply also posts one deduped SILENT-PR-CLOSE trace comment on the owning
+# issue (the (b) trace line), marker-file deduped so repeat runs never spam.
+#
+# Usage: fleet-silent-pr-close-check <repo-name> [--apply] [--limit N] [--dry-run]
+#
+# Output (stdout, machine-readable): one
+#   SILENT-PR-CLOSE repo=<full> pr=<n> closed_at=<ts> actor=<login> head=<ref>
+#                   branch_exists=<yes|no> issue=<n> issue_state=<s>
+# per finding, then `silent_pr_closes=<n>` as the last line. stderr is logs.
+#
+# Exit: 0 clean, 1 at least one silent close flagged, 2 gh/jq infra failure
+# (fail-closed — never a false green).
+#
+# Environment (tests override all of these):
+#   GH                    gh binary (test seam — a stub also skips the token mint)
+#   GH_TOKEN              preset token skips the App mint
+#   GITHUB_ACTIONS        skips the App mint
+#   SILENT_CLOSE_STATE_DIR  dedupe markers (default ~/.local/state/fleet-silent-pr-close)
+#   SILENT_CLOSE_WINDOW_S   comment-window seconds before the close (default 300)
+#   SILENT_CLOSE_APP_RE     actor-login regex for the App identity
+#                         (default ^nishfleet-worker)
+
+set -euo pipefail
+
+export HOME="${HOME:-/home/nish}"
+export PATH="${PATH:-/home/nish/.local/bin:/usr/local/bin:/usr/bin:/bin}"
+
+GH="${GH:-gh}"
+STATE_DIR="${SILENT_CLOSE_STATE_DIR:-$HOME/.local/state/fleet-silent-pr-close}"
+WINDOW_S="${SILENT_CLOSE_WINDOW_S:-300}"
+APP_RE="${SILENT_CLOSE_APP_RE:-^nishfleet-worker}"
+LIMIT=50
+
+log() {
+    printf '[%s] fleet-silent-pr-close-check: %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$*" >&2
+}
+
+usage() {
+    cat <<'EOF'
+fleet-silent-pr-close-check — flag App-identity PR closes with no closing comment (fleet-ops#6292)
+
+usage: fleet-silent-pr-close-check <repo-name> [--apply] [--limit N] [--dry-run]
+
+Scans recently closed claim/issue-<N> and fable/issue-<N> PRs on Nishfleet/<repo-name>
+for the silent-close shape: closed NOT-merged by the App identity, no comment by
+that actor within SILENT_CLOSE_WINDOW_S seconds of the close, owning issue still open.
+
+  --apply     post one deduped SILENT-PR-CLOSE trace comment on each flagged issue
+  --limit N   closed-PR page size (default 50)
+  --dry-run   detect and print flags, write nothing
+
+exit: 0 clean, 1 finding(s), 2 gh/jq infra failure (fail-closed).
+EOF
+}
+
+repo=""
+apply=0
+dry_run=0
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --apply) apply=1 ;;
+        --dry-run) dry_run=1 ;;
+        --limit) LIMIT="${2:?--limit needs a value}"; shift ;;
+        -h|--help) usage; exit 0 ;;
+        -*) echo "fleet-silent-pr-close-check: unknown flag $1" >&2; usage; exit 2 ;;
+        *) repo="$1" ;;
+    esac
+    shift
+done
+[[ -n "$repo" ]] || { usage; exit 2; }
+full="Nishfleet/${repo}"
+
+# App identity — same mint as the worker units. Stubbed GH seam / preset
+# GH_TOKEN / GITHUB_ACTIONS skips the mint.
+if [[ -z "${GH_TOKEN:-}" && "${GITHUB_ACTIONS:-}" != "true" && "$GH" == "gh" ]]; then
+    GH_TOKEN="$("$GH" token generate --app-id 4728578 \
+        --key "$HOME/.config/fleet-worker/nishfleet-worker.private-key.pem" \
+        --installation-id 156789042 --token-only)" || {
+        echo "fleet-silent-pr-close-check: app token mint failed — refusing human-gh writes" >&2
+        exit 1
+    }
+    export GH_TOKEN
+fi
+
+mkdir -p "$STATE_DIR"
+
+# --- closed claim/fable PRs, unmerged only ------------------------------------
+pulls_json=""
+if ! pulls_json=$("$GH" api "repos/$full/pulls?state=closed&per_page=$LIMIT&sort=updated&direction=desc" 2>/dev/null); then
+    log "PULLS-LIST-FAILED $full — gh api error (fail-closed exit 2)"
+    exit 2
+fi
+if ! printf '%s' "$pulls_json" | jq -e 'type == "array"' >/dev/null 2>&1; then
+    log "PULLS-LIST-FAILED $full — non-array payload (fail-closed exit 2)"
+    exit 2
+fi
+candidates="$(printf '%s' "$pulls_json" | jq -r '
+    [.[] | select(.merged_at == null)
+        | select(.head.ref | test("^(claim|fable)/issue-[0-9]+$"))
+        | "\(.number)\t\(.head.ref)"][]' 2>/dev/null)" || {
+    log "PULLS-PARSE-FAILED $full (fail-closed exit 2)"
+    exit 2
+}
+
+found=0
+while IFS=$'\t' read -r pr_num head_ref; do
+    [ -z "${pr_num:-}" ] && continue
+    issue_n="${head_ref##*-}"
+
+    # Timeline: last closed event (actor, ts); any comment by that actor in
+    # [closed-WINDOW, +inf) counts as the closing comment; a merged event
+    # means the land path — skip entirely.
+    timeline=""
+    if ! timeline=$("$GH" api "repos/$full/issues/$pr_num/timeline?per_page=100" 2>/dev/null); then
+        log "TIMELINE-FAILED $full#$pr_num — gh api error (fail-closed exit 2)"
+        exit 2
+    fi
+    if ! printf '%s' "$timeline" | jq -e 'type == "array"' >/dev/null 2>&1; then
+        log "TIMELINE-FAILED $full#$pr_num — non-array payload (fail-closed exit 2)"
+        exit 2
+    fi
+    verdict="$(printf '%s' "$timeline" | jq -r --argjson window "$WINDOW_S" --arg app_re "$APP_RE" '
+        ([.[] | select(.event == "merged")] | length) as $merged
+        | ([.[] | select(.event == "closed")] | last) as $c
+        | if $merged > 0 or $c == null then "skip"
+          elif (($c.actor.login // "") | test($app_re)) | not then "skip"
+          else
+            ($c.created_at | fromdateiso8601) as $ct
+            | ([.[] | select(.event == "commented"
+                            and (.actor.login == $c.actor.login)
+                            and ((.created_at | fromdateiso8601) >= ($ct - $window)))] | length) as $comments
+            | if $comments > 0 then "skip"
+              else "flag\t\($c.created_at)\t\($c.actor.login // "unknown")"
+              end
+          end' 2>/dev/null)" || {
+        log "TIMELINE-PARSE-FAILED $full#$pr_num (fail-closed exit 2)"
+        exit 2
+    }
+    [[ "$verdict" == flag* ]] || continue
+    closed_at="$(printf '%s' "$verdict" | cut -f2)"
+    actor="$(printf '%s' "$verdict" | cut -f3)"
+
+    branch_exists=no
+    "$GH" api "repos/$full/git/refs/heads/$head_ref" >/dev/null 2>&1 && branch_exists=yes
+
+    issue_state=unknown
+    if issue_json=$("$GH" api "repos/$full/issues/$issue_n" 2>/dev/null); then
+        issue_state="$(printf '%s' "$issue_json" | jq -r '.state // "unknown"' 2>/dev/null || echo unknown)"
+    fi
+    # An issue that is not open is not endorsed work in flight — the close is
+    # still recorded but only the open-issue shape is the #6258 class.
+    [[ "$issue_state" == "open" || "$issue_state" == "OPEN" ]] || continue
+
+    printf 'SILENT-PR-CLOSE repo=%s pr=%s closed_at=%s actor=%s head=%s branch_exists=%s issue=%s issue_state=%s\n' \
+        "$full" "$pr_num" "$closed_at" "$actor" "$head_ref" "$branch_exists" "$issue_n" "$issue_state"
+    found=$((found + 1))
+
+    if [[ "$apply" == "1" ]]; then
+        marker="$STATE_DIR/${repo}-${pr_num}.flagged"
+        body="SILENT-PR-CLOSE (fleet-ops#6292): PR #${pr_num} on \`${head_ref}\` was closed NOT-merged at ${closed_at} by ${actor} with no closing comment and the head branch deleted underneath it — the #6258 class (automation closing endorsed work silently). This issue is the owning packet; the close mechanism was the claim-release path for a failed worker. Branch state now: ${branch_exists}. Judge/orchestrator owns restore-or-close."
+        if [[ "$dry_run" == "1" ]]; then
+            log "DRY issue#$issue_n trace comment (marker $marker)"
+        elif [[ -f "$marker" ]]; then
+            log "issue#$issue_n trace already posted (marker $marker) — deduped"
+        elif "$GH" issue comment "$issue_n" -R "$full" --body "$body" >/dev/null 2>&1; then
+            : >"$marker"
+            log "posted SILENT-PR-CLOSE trace on $full#$issue_n"
+        else
+            log "WARN: trace comment FAILED on $full#$issue_n (flag stands, comment lost)"
+        fi
+    fi
+done <<< "$candidates"
+
+printf 'silent_pr_closes=%s\n' "$found"
+[[ "$found" -gt 0 ]] && exit 1
+exit 0

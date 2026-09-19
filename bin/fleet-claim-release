@@ -1,0 +1,209 @@
+#!/usr/bin/env bash
+# fleet-claim-release — guarded claim release for pi-issue-failed@.service
+# (fleet-ops#6292).
+#
+# Runs as the OnFailure= path of pi-issue@/cursor-issue@/devin-issue@ when a
+# worker unit ends `failed` (retries exhausted, hang-kill, OOM, dead-man
+# artifact check). Releasing a claim is two GitHub calls — drop the claim
+# branch, flip the issue label back — plus, since this fix, the trace lines
+# the silent-close class requires.
+#
+# THE CLASS THIS GUARDS (fleet-ops#6292): deleting a PR's head branch makes
+# GitHub close the PR under the deleting identity with NO comment — a silent,
+# unrecoverable-looking destroy of in-flight endorsed work. On 2026-09-13 the
+# heartbeat tier-1 orphan pass (fleet-heartbeat-tier1 §3, the only path that
+# owned agent-in-progress claims; the same fail-open shape existed in
+# pi-intake-tick's stale-claim release) deleted claim/issue-6252 after
+# pi-issue@fleet-ops-6252 exited reason=infra-death-requeue: its
+# `gh pr list | jq -e 'length>0'` guard read a transient gh failure as
+# "0 open PRs", the DELETE landed, and PR #6258 closed unmerged at
+# 03:19:27Z by nishfleet-worker[bot] — no closing comment, issue left open
+# agent-in-progress. The judge restored the branch from the PR head sha.
+#
+# RULES (the issue's Required, made mechanical):
+#   1. The open-PR check is FAIL-CLOSED. A gh failure on the pulls?head=
+#      lookup means "unknown", never "zero" — hold the claim, log LOUD,
+#      exit 0 (a held claim is the safe side; the next failure re-runs this).
+#   2. An open PR from claim/issue-<N> means the work is in review, not
+#      orphaned: NEVER delete the branch, NEVER flip labels. Post one comment
+#      on the PR naming the mechanism + reason + owning issue, and one trace
+#      line on the parent issue. That is the (a)+(b) evidence the class
+#      demands around any close — and here there is no close at all.
+#   3. No open PR -> release as before (delete the branch if present, flip
+#      agent-in-progress -> agent-ready on an open issue, agent-in-progress
+#      only on a closed or agent-blocked one) and post the trace line on the
+#      issue so the release is never silent.
+#
+# Usage: fleet-claim-release <repo>-<issue> [--dry-run]
+#
+# Environment (tests override all of these):
+#   GH                 gh binary (test seam — a stub also skips the token mint)
+#   GH_TOKEN           preset token skips the App mint
+#   GITHUB_ACTIONS     skips the App mint (CI has no App key)
+#   CLAIM_RELEASE_NOW  ISO-8601 UTC clock for trace timestamps
+#
+# Exit: 0 on every tolerated path (released, held, or deferred on gh
+# failure — a held claim is never fatal). Non-zero only on usage errors or
+# an App-token mint failure (auth is a hard precondition).
+
+set -euo pipefail
+
+export HOME="${HOME:-/home/nish}"
+export PATH="${PATH:-/home/nish/.local/bin:/usr/local/bin:/usr/bin:/bin}"
+
+GH="${GH:-gh}"
+NOW="${CLAIM_RELEASE_NOW:-$(date -u +%Y-%m-%dT%H:%M:%SZ)}"
+UNIT_PREFIX="${CLAIM_RELEASE_UNIT_PREFIX:-pi-issue}"
+
+log() {
+    printf '[%s] fleet-claim-release: %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$*" >&2
+}
+
+usage() {
+    cat <<'EOF'
+fleet-claim-release — guarded claim release for pi-issue-failed@ (fleet-ops#6292)
+
+usage: fleet-claim-release <repo>-<issue> [--dry-run]
+
+Releases a dead worker's claim without ever silently closing an open PR:
+  - open PR on claim/issue-<N>  -> HOLD: no branch delete, no label flip;
+    comment on the PR (mechanism + reason + owning issue) and a trace line
+    on the issue.
+  - no open PR                  -> release: delete claim/issue-<N>, flip
+    agent-in-progress -> agent-ready (open issue), trace line on the issue.
+  - gh check failure            -> HOLD (fail-closed): loud log, exit 0.
+
+EOF
+}
+
+dry_run=0
+instance=""
+for a in "$@"; do
+    case "$a" in
+        --dry-run) dry_run=1 ;;
+        -h|--help) usage; exit 0 ;;
+        -*) echo "fleet-claim-release: unknown flag $a" >&2; usage; exit 2 ;;
+        *) instance="$a" ;;
+    esac
+done
+[[ -n "$instance" ]] || { usage; exit 2; }
+
+repo="${instance%-[0-9]*}"
+issue="${instance##*-}"
+if [[ "$repo" == "$instance" || -z "$repo" || ! "$issue" =~ ^[0-9]+$ ]]; then
+    echo "fleet-claim-release: cannot parse instance '$instance' as <repo>-<issue>" >&2
+    exit 2
+fi
+full="Nishfleet/${repo}"
+branch="claim/issue-${issue}"
+unit="${UNIT_PREFIX}@${instance}.service"
+
+# App identity — same mint as the worker units. A stubbed GH seam (tests,
+# GITHUB_ACTIONS) or a preset GH_TOKEN skips the mint.
+if [[ -z "${GH_TOKEN:-}" && "${GITHUB_ACTIONS:-}" != "true" && "$GH" == "gh" ]]; then
+    GH_TOKEN="$("$GH" token generate --app-id 4728578 \
+        --key "$HOME/.config/fleet-worker/nishfleet-worker.private-key.pem" \
+        --installation-id 156789042 --token-only)" || {
+        echo "fleet-claim-release: app token mint failed — refusing human-gh writes" >&2
+        exit 1
+    }
+    export GH_TOKEN
+fi
+
+comment_issue() {
+    # comment_issue <body> — trace line on the parent issue. A failed comment
+    # is logged LOUD but never flips the release (old heartbeat convention).
+    if [[ "$dry_run" == "1" ]]; then
+        log "DRY issue#$issue comment: $1"
+        return 0
+    fi
+    "$GH" issue comment "$issue" -R "$full" --body "$1" >/dev/null 2>&1 \
+        || log "WARN: trace comment FAILED on $full#$issue (release note not recorded)"
+}
+
+# --- 1. open-PR check, FAIL-CLOSED -------------------------------------------
+# REST pulls?head= takes owner:branch (Nishfleet:claim/issue-N), not
+# repo:branch — the 2026-09-05 fleet-ops:... filter bug deleted branches with
+# live PRs. A gh failure here is UNKNOWN, not zero: hold, never delete.
+open_prs_json=""
+if ! open_prs_json=$("$GH" api "repos/$full/pulls?state=open&head=Nishfleet:${branch}&per_page=100" 2>/dev/null); then
+    log "OPEN-PR-CHECK-FAILED $full $branch — gh api error; claim HELD (fail-closed, fleet-ops#6292)"
+    exit 0
+fi
+if ! printf '%s' "$open_prs_json" | jq -e 'type == "array"' >/dev/null 2>&1; then
+    log "OPEN-PR-CHECK-FAILED $full $branch — non-array payload; claim HELD (fail-closed, fleet-ops#6292)"
+    exit 0
+fi
+open_pr_numbers="$(printf '%s' "$open_prs_json" | jq -r '.[].number' 2>/dev/null || true)"
+
+if [[ -n "$open_pr_numbers" ]]; then
+    while IFS= read -r pr_num; do
+        [ -z "$pr_num" ] && continue
+        body="silent-close guard (fleet-ops#6292): ${unit} fired after the worker for issue #${issue} ended \`failed\`, and the claim-release path found this PR still open on \`${branch}\`. The head branch is NOT being deleted — deleting it would silently close this PR (the #6258 class: automation closed endorsed PR #6258 unmerged on 2026-09-13 with no comment and deleted the branch). Branch, labels and the close/reopen decision stay with review, not with the release path. Owning issue: #${issue}."
+        if [[ "$dry_run" == "1" ]]; then
+            log "DRY PR#$pr_num comment: $body"
+        else
+            "$GH" api -X POST "repos/$full/issues/$pr_num/comments" -f body="$body" >/dev/null 2>&1 \
+                || log "WARN: PR comment FAILED on $full#$pr_num"
+        fi
+    done <<< "$open_pr_numbers"
+    comment_issue "claim release held by ${unit} at ${NOW} — worker ended failed but open PR(s) exist on ${branch} ($(printf '%s' "$open_pr_numbers" | tr '\n' ' ')); branch and labels left intact (fleet-ops#6292)."
+    log "HELD $full#$issue — open PR(s) on $branch ($(printf '%s' "$open_pr_numbers" | tr '\n' ' ')); branch not deleted, labels untouched"
+    exit 0
+fi
+
+# --- 2. issue state (drives the label flip) -----------------------------------
+issue_json=""
+if ! issue_json=$("$GH" issue view "$issue" -R "$full" --json state,labels 2>/dev/null); then
+    log "ISSUE-FETCH-FAILED $full#$issue — gh error; claim HELD (fail-closed)"
+    exit 0
+fi
+issue_state="$(printf '%s' "$issue_json" | jq -r '.state // "unknown"')"
+in_progress="$(printf '%s' "$issue_json" | jq -r '[.labels[]?.name] | any(. == "agent-in-progress")')"
+agent_blocked="$(printf '%s' "$issue_json" | jq -r '[.labels[]?.name] | any(. == "agent-blocked")')"
+
+# --- 3. delete the claim branch if it still exists -----------------------------
+branch_deleted="no-branch"
+if [[ "$dry_run" == "1" ]]; then
+    log "DRY would delete $full ref $branch if present"
+    branch_deleted="dry"
+elif "$GH" api "repos/$full/git/refs/heads/$branch" >/dev/null 2>&1; then
+    if "$GH" api -X DELETE "repos/$full/git/refs/heads/$branch" >/dev/null 2>&1; then
+        branch_deleted="yes"
+        log "deleted branch $branch on $full"
+    else
+        log "branch delete FAILED on $full ($branch) — label flip will continue"
+    fi
+fi
+
+# --- 4. label flip + trace line ------------------------------------------------
+if [[ "$issue_state" == "OPEN" || "$issue_state" == "open" ]]; then
+    if [[ "$agent_blocked" == "true" ]]; then
+        # fleet-ops#3763: parked issue — clear the stale in-progress tag only;
+        # re-adding agent-ready would re-dispatch into the same block.
+        flip_args=(--remove-label agent-in-progress)
+    else
+        flip_args=(--remove-label agent-in-progress --add-label agent-ready)
+    fi
+    if [[ "$dry_run" == "1" ]]; then
+        log "DRY issue#$issue edit: ${flip_args[*]}"
+    else
+        "$GH" issue edit "$issue" -R "$full" "${flip_args[@]}" >/dev/null 2>&1 \
+            || log "WARN: label flip FAILED on $full#$issue — will retry on the next failure pass"
+    fi
+elif [[ "$in_progress" == "true" ]]; then
+    # Closed issue: drop the stale tag only (old §3 convention).
+    if [[ "$dry_run" == "1" ]]; then
+        log "DRY issue#$issue edit: --remove-label agent-in-progress (closed)"
+    else
+        "$GH" issue edit "$issue" -R "$full" --remove-label agent-in-progress >/dev/null 2>&1 \
+            || log "WARN: agent-in-progress removal FAILED on closed $full#$issue"
+    fi
+fi
+
+detail="no live worker, no open PR"
+[[ "$agent_blocked" == "true" ]] && detail="$detail; agent-blocked held — not re-queued"
+[[ "$issue_state" != "OPEN" && "$issue_state" != "open" ]] && detail="$detail; issue ${issue_state}"
+comment_issue "claim branch released by ${unit} at ${NOW} (${detail}; branch_deleted=${branch_deleted}; fleet-ops#6292)"
+log "RELEASED $full#$issue branch_deleted=$branch_deleted state=$issue_state blocked=$agent_blocked"
+exit 0
