@@ -31,16 +31,18 @@ Steps:
      (pi-issue@.service ExecStopPost), and the timer ticks anyway, so the
      queue drains continuously. Do not deliberate about the fleet-wide
      number — take up to 3 and stop.
-   - **Fleet-wide: 3 concurrent workers** (fleet-ops#7820, 2026-09-19: synthetic
-     sells ONE concurrent request per model and is the only live upstream; the
-     router holds 3 synthetic models at `max_parallel_requests` 1 each = 3 slots.
-     Raise this only when a second upstream is healthy in `litellm_deployment_state`).
+   - **Fleet-wide: 1 concurrent worker** (fleet-ops#7820, 2026-09-19: synthetic
+     sells ONE concurrent request per model, the fleet seat carries exactly one
+     model (GLM-5.3-Flash; Kimi-K3 there is Hermes's slot), and ollama is
+     quota-walled. The router holds one synthetic rung at `max_parallel_requests`
+     1 = one slot. Raise this only when `litellm_deployment_state` shows a second
+     healthy upstream, and raise it to that upstream's max_parallel_requests).
      `systemctl --user list-units 'pi-issue@*.service' --state=active,activating --no-legend | wc -l`
      (pi-issue@ is Type=oneshot, so a RUNNING worker is `activating`, not `active`;
      counting only `active` always returned 0 and the cap never bit — #7820).
    Also read MemAvailable from `/proc/meminfo`: under 4 GB, start nothing this
    tick and say so — RAM is the binding resource and an OOM kill costs a whole
-   claim. `slots = min(3, 3 - active)`. If slots <= 0, print `at capacity`
+   claim. `slots = min(3, 1 - active)`. If slots <= 0, print `at capacity`
    and exit 0.
 
 3. **Pick work.** `gh issue list -R Nishfleet/<repo> -l agent-ready --state open
