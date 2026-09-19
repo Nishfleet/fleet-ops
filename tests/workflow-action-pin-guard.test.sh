@@ -9,7 +9,7 @@
 #
 # This test is the mechanical prevention for that class. It is OFFLINE (no
 # GitHub API call) so it runs in the P14 test suite on hosted runners that
-# have no GH_TOKEN. Two checks:
+# have no GH_TOKEN. Three checks:
 #
 #   1. Canonical registry: every `uses: <repo>@<sha>` pin in
 #      .github/workflows/** must match a known-good SHA in the registry below.
@@ -21,6 +21,11 @@
 #      SHA pins. A second SHA for the same action is almost always a typo or a
 #      half-bumped pin; if a bump is intentional, every caller moves together
 #      and the registry is updated in the same PR.
+#
+#   3. bump half (fleet-ops#6153): .github/dependabot.yml exists with a
+#      github-actions ecosystem block matching the 0509 shape. Pin without
+#      an automatic bump is a rotting pin; deleting this file would restore
+#      the gap this issue closed.
 #
 # Why a registry and not a live `gh api .../git/commits/<sha>` probe: the test
 # suite runs on hosted runners with no GH_TOKEN, and a network probe makes the
@@ -89,6 +94,32 @@ done
 same action is almost always a typo or a half-bumped pin; bump every caller \
 together and update the registry in the same PR."
 ok "each action is pinned to a single SHA across all workflows"
+
+# 3. bump half (fleet-ops#6153): Dependabot must be enrolled so SHA pins
+# cannot rot. Shape is the 0509 github-actions block; a missing or hollow
+# file is the original gap. Grep-only so this stays offline and does not
+# depend on PyYAML (this test runs in ci.yml before the pip install).
+cfg="$repo_root/.github/dependabot.yml"
+[[ -f "$cfg" ]] || fail "missing .github/dependabot.yml: SHA pins have no bump producer (fleet-ops#6153)"
+need() {
+  grep -Eq -- "$1" "$cfg" || fail "dependabot.yml missing /$1/ (fleet-ops#6153)"
+}
+need '^version: 2[[:space:]]*$'
+need 'package-ecosystem:[[:space:]]*github-actions'
+need 'directory:[[:space:]]*/[[:space:]]*$'
+need 'interval:[[:space:]]*weekly'
+need 'day:[[:space:]]*monday'
+need 'time:[[:space:]]*"09:35"'
+need 'timezone:[[:space:]]*Asia/Kolkata'
+need 'default-days:[[:space:]]*7'
+need 'open-pull-requests-limit:[[:space:]]*2'
+need 'prefix:[[:space:]]*ci[[:space:]]*$'
+need 'groups:'
+need '- "\*"'
+ecosystems=$(grep -cE 'package-ecosystem:' "$cfg" || true)
+[[ "$ecosystems" -eq 1 ]] \
+  || fail "dependabot.yml has $ecosystems package-ecosystem entries; want exactly one github-actions block"
+ok "dependabot.yml enrolls the github-actions bump half (fleet-ops#6153)"
 
 echo "OK: workflow action pins are canonical and consistent (fleet-ops#1296)"
 exit 0

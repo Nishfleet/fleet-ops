@@ -1,0 +1,27 @@
+# fleet-ops#6153: the bump half of GitHub's pin-and-bump pairing.
+# SHA pins live in .github/workflows/** (locked by
+# tests/workflow-action-pin-guard.test.sh). Without this file those SHAs
+# only move by hand, which is a rotting pin, not a control.
+# Shape copied from Nishfleet/0509's github-actions block (proven: #2046
+# and #1579 merged 2026-09-11). One ecosystem only. fleet-ops is not an
+# npm app. Dependabot PRs already ride enqueue-green-prs (app/dependabot
+# author allowlist) and heartbeat's dependabot/ skip.
+version: 2
+
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+      time: "09:35"
+      timezone: Asia/Kolkata
+    cooldown:
+      default-days: 7
+    open-pull-requests-limit: 2
+    commit-message:
+      prefix: ci
+    groups:
+      github-actions:
+        patterns:
+          - "*"
