@@ -347,6 +347,27 @@ install -m 700 /dev/null ~/.local/bin/fleet-litellm-key
 Do not hand the master key to consumers: it is the admin credential that
 mints and revokes virtual keys.
 
+### 3c. Devin CustomLLM sibling (fleet-ops#6228)
+
+LiteLLM loads `litellm_settings.custom_provider_map` handlers as a file
+next to the live config (`get_instance_fn` joins the config directory with
+the module name). After a yaml sync, the handler must exist at
+`~/.config/fleet-ops/fleet_devin_adapter.py` or the proxy fails to start.
+
+MANIFEST/install.sh are gone. The durable copy is a symlink into the
+deploy clone, the same pattern as prisma-compat:
+
+```sh
+ln -sfn /home/nish/workspaces/tooling/fleet-ops-deploy-clone/libexec/fleet-litellm-devin-adapter/fleet_devin_adapter.py \
+  /home/nish/.config/fleet-ops/fleet_devin_adapter.py
+```
+
+Do not run this without Nish's go: it is part of putting the organ live,
+not part of landing the repo file. The unit's PYTHONPATH also lists the
+deploy-clone adapter directory so `import_module` can find the handler if
+the sibling file is missing. `custom_provider_map` in
+`config/litellm-proxy.yaml` names `fleet_devin_adapter.devin_windsurf_llm`.
+
 Start the proxy:
 
 ```sh
