@@ -26,9 +26,14 @@
 #      ATTEST_WAITING_BUDGET_S=<secs>   total wall-clock budget (default 60)
 
 attest_waiting_line() {
+    # measure.sh runs under set -e. A failure inside this function is NOT
+    # covered by the caller's `|| echo` (inner commands are not part of that
+    # OR-list) and would abort the judge feed before the findings: line
+    # (tests/findings-measure-line.test.sh).
+    set +e
     [[ $# -gt 0 ]] || return 0
     if ! { command -v gh >/dev/null 2>&1 && command -v jq >/dev/null 2>&1 \
-        && command -v python3 >/dev/null 2>&1; }; then
+        && command -v python3 >/dev/null 2>&1 && command -v timeout >/dev/null 2>&1; }; then
         echo "attest-waiting: UNAVAILABLE:missing-tool"
         return 0
     fi
@@ -52,8 +57,12 @@ from datetime import datetime, timezone
 now_iso, stale_s, repos_json = sys.argv[1], sys.argv[2], sys.argv[3]
 repos = json.loads(repos_json)
 
-def gh(*args):
-    r = subprocess.run(["gh", *args], capture_output=True, text=True, timeout=120)
+def gh(*args, wait=120):
+    try:
+        r = subprocess.run(["gh", *args], capture_output=True, text=True,
+                           timeout=wait)
+    except subprocess.TimeoutExpired as e:
+        raise RuntimeError(f"gh timeout after {wait}s") from e
     if r.returncode != 0:
         raise RuntimeError(r.stderr.strip()[:200] or "gh failed")
     return r.stdout
@@ -118,7 +127,7 @@ def is_dep_form(raw):
 def sha_merged(repo, sha):
     # Fail closed: unproven merge keeps the live attest request waiting.
     try:
-        raw = gh("api", f"repos/{repo}/commits/{sha}/pulls")
+        raw = gh("api", f"repos/{repo}/commits/{sha}/pulls", wait=8)
     except RuntimeError:
         return False
     try:
