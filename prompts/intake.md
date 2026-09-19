@@ -31,11 +31,15 @@ Steps:
      (pi-issue@.service ExecStopPost), and the timer ticks anyway, so the
      queue drains continuously. Do not deliberate about the fleet-wide
      number — take up to 3 and stop.
-   - **Fleet-wide: 25 concurrent workers.**
+   - **Fleet-wide: 8 concurrent workers** (fleet-ops#7820, 2026-09-19: the live
+     worker lane is synthetic only, `max_parallel_requests` 2+2 = 4 in flight and
+     synthetic 429s at 8; workers are in flight about half the time, so 8 units
+     fill 4 slots. 11 workers against 4 slots crash-looped 9 units to failed.
+     Raise this only when a second upstream is healthy in `litellm_deployment_state`).
      `systemctl --user list-units 'pi-issue@*.service' --state=active --no-legend | wc -l`.
    Also read MemAvailable from `/proc/meminfo`: under 4 GB, start nothing this
    tick and say so — RAM is the binding resource and an OOM kill costs a whole
-   claim. `slots = min(3, 25 - active)`. If slots <= 0, print `at capacity`
+   claim. `slots = min(3, 8 - active)`. If slots <= 0, print `at capacity`
    and exit 0.
 
 3. **Pick work.** `gh issue list -R Nishfleet/<repo> -l agent-ready --state open
