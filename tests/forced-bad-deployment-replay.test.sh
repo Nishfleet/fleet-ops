@@ -165,7 +165,9 @@ assert rs["allowed_fails_policy"]["AuthenticationErrorAllowedFails"] == 0
 # counts; the invariant is live_before rungs remain) + the fallback group
 # worker-capable (its own healthy upstreams).
 assert len(seni) == live_before + 1, f"injected copy should have {live_before + 1} senior deployments ({live_before} live + 1 dead)"
-live_rungs = [d for d in seni[1:] if "127.0.0.1" not in d["api_base"]]
+# devin/* rungs carry no api_base (CustomLLM bridge, fleet-ops#6228) — a
+# missing api_base is a live rung, not the injected dead one.
+live_rungs = [d for d in seni[1:] if "127.0.0.1" not in d.get("api_base", "")]
 assert len(live_rungs) == live_before, f"expected {live_before} live rungs remaining"
 fb = {k: v for e in rs["fallbacks"] for k, v in e.items()}
 assert fb["senior"] == ["worker-capable"], "senior fallback must land on worker-capable"

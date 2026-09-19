@@ -34,8 +34,12 @@ Environment=HOME=/home/nish
 # PYTHONPATH loads libexec/fleet-litellm-prisma-compat/sitecustomize.py so
 # LiteLLM 1.98 writes the query engine through prisma 0.15's _engine setter
 # instead of the dropped _Prisma__engine mangled name (fleet-ops#4628).
+# fleet-ops#6228: the Devin CustomLLM handler is also on PYTHONPATH so
+# import_module can find fleet_devin_adapter if the live-config sibling
+# copy is missing. LiteLLM's primary load is still the sibling file at
+# ~/.config/fleet-ops/fleet_devin_adapter.py (runbook §3c).
 Environment=PATH=/home/nish/.local/venvs/litellm/bin:/home/nish/.local/bin:/usr/local/bin:/usr/bin:/bin
-Environment=PYTHONPATH=/home/nish/.local/libexec/fleet-litellm-prisma-compat
+Environment=PYTHONPATH=/home/nish/.local/libexec/fleet-litellm-prisma-compat:/home/nish/workspaces/tooling/fleet-ops-deploy-clone/libexec/fleet-litellm-devin-adapter
 Environment=XDG_RUNTIME_DIR=/run/user/1000
 # The config is operator-owned (lives in ~/.config, not the repo) so keys
 # resolved through the existing credential resolvers never enter the repo
