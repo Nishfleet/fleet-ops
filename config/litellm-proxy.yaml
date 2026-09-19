@@ -2,7 +2,7 @@
 # Source of truth: fleet-ops config/litellm-proxy.yaml (PR references fleet-ops#5792 / #5788). Backup: litellm-proxy.yaml.pre-router-401-fix-*.
 # BENCHED 2026-09-12 (live probes, /health at 10:45 IST) — restore only with a green probe cited in the PR:
 #   anthropic/MiniMax-M3 @ api.minimax.io/anthropic     : 401 "login fail" with BOTH Authorization and X-Api-Key forms -> dead key (killed 4 workers)
-#   openai/grok-4.6 @ cli-chat-proxy.grok.com           : 403 personal-team
+#   openai/grok-4.6 @ cli-chat-proxy.grok.com           : 426 Grok CLI version (none) outdated (fleet-ops#4423)
 #   openai/deepseek/deepseek-v4.1-flash @ openrouter    : insufficient credits
 #   openai/deepseek/deepseek-v4.1-flash @ commandcode   : insufficient credits
 #   openai/Qwen3.6-35B-A3B-FP8 @ inference.hetzner.com  : 403
@@ -353,6 +353,17 @@ benched:
     - zenmux
     order: 1
     max_parallel_requests: 4
+- benched_at: 2026-09-18
+  reason: "openai/grok-4.6 @ https://cli-chat-proxy.grok.com/v1 (XAI_OAUTH_ACCESS_TOKEN) — HTTP 426 'Your Grok CLI version (none) is outdated' (dual-run result, fleet-ops#4423); LiteLLM cannot replicate the pi-grok OAuth flow that adds required client headers (x-grok-client-version, x-grok-client-mode, X-XAI-Token-Auth). xai-oauth seat is cap=2 via stnly/pi-grok OAuth extension; LiteLLM routes through openai provider which lacks the OAuth token and headers. Restore ONLY with pi-grok OAuth integration in LiteLLM (not available as of 1.98.0) or a CustomLLM bridge (like fleet_devin_adapter) that adds the required headers — follow-up issue cited in the PR."
+  was: [worker-cheap, worker-capable, senior, judge]
+  litellm_params:
+    model: openai/grok-4.6
+    api_base: https://cli-chat-proxy.grok.com/v1
+    api_key: os.environ/XAI_OAUTH_ACCESS_TOKEN
+    tags:
+    - prepaid
+    order: 2
+    max_parallel_requests: 2
 router_settings:
   routing_strategy: simple-shuffle
   fallbacks:
