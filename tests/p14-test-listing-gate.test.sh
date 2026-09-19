@@ -464,4 +464,18 @@ grep -Eq '^[[:space:]]*bash[[:space:]]+"?\$here/pick-seat-freeze\.test\.sh"?' \
   || fail "pick-seat-freeze.test.sh must not be a known orphan (fleet-ops#4263)"
 ok "pick-seat-freeze.test.sh host line in ci-standards-audit.test.sh is pinned (fleet-ops#4263)"
 
+# fleet-ops#7842: hard-pin the host line for skill-bak-sprawl in
+# ci-standards-audit.test.sh. The hash-verify-and-delete lock for stale
+# `.bak-*` skill siblings rides on that listed test (the worker App cannot
+# push .github/workflows/**); the pin is class-prevention so a dropped host
+# line cannot park the lock on known_orphans — it fails by name first.
+grep -Eq '^[[:space:]]*bash[[:space:]]+"?\$here/skill-bak-sprawl\.test\.sh"?' \
+  "$here/ci-standards-audit.test.sh" \
+  || fail "ci-standards-audit.test.sh must bash-invoke skill-bak-sprawl.test.sh (fleet-ops#7842)"
+[[ -n "${reachable[skill-bak-sprawl.test.sh]:-}" ]] \
+  || fail "skill-bak-sprawl.test.sh must be hosted by a listed test (fleet-ops#7842)"
+[[ -z "${known_orphan_set[skill-bak-sprawl.test.sh]:-}" ]] \
+  || fail "skill-bak-sprawl.test.sh must not be a known orphan (fleet-ops#7842)"
+ok "skill-bak-sprawl.test.sh host line in ci-standards-audit.test.sh is pinned (fleet-ops#7842)"
+
 echo "OK: p14-test-listing-gate.test.sh: P14 test list is closed"

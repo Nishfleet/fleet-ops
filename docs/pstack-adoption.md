@@ -65,8 +65,11 @@ Drift (re-synced, fleet-ops#1311; regressed and restored, fleet-ops#3441):
   symlink itself is the guard, and a real directory left behind by a
   pstack install now diverges silently until noticed by hand.
 - Known residual: pi `unslop`/`why` are again real dirs, not symlinks
-  (content-synced 2026-09-19) — fleet-ops#7841. 199 stale `.bak-*`
-  sibling dirs left by install-links runs — fleet-ops#7842.
+  (content-synced 2026-09-19) — fleet-ops#7841.
+- 199 stale `.bak-*` sibling dirs under `~/.pi/agent/skills` (fleet-ops#7842)
+  are gone: live `find` count 0 on 2026-09-19, live `unslop`/`why`/
+  `blast-radius` SKILL.md hashes match the vault copies, and
+  `tests/skill-bak-sprawl.test.sh` locks the hash-verify-and-delete class.
 
 `~/.cursor/rules/pstack-models.mdc` sets every role to `inherit-parent` so
 pstack cannot bypass the seat governor. That stays.
