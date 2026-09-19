@@ -38,7 +38,7 @@ Steps:
      quota-walled on and off. Change this number only from a measured
      `max_parallel_requests` sum over rungs that `litellm_deployment_state`
      shows healthy).
-     `systemctl --user list-units 'pi-issue@*.service' --state=active,activating --no-legend | wc -l`
+     `systemctl --user list-units 'pi-issue@*.service' 'devin-issue@*.service' --state=active,activating --no-legend | wc -l`
      (pi-issue@ is Type=oneshot, so a RUNNING worker is `activating`, not `active`;
      counting only `active` always returned 0 and the cap never bit — #7820).
    Also read MemAvailable from `/proc/meminfo`: under 4 GB, start nothing this
@@ -72,8 +72,11 @@ Steps:
    e. `gh issue comment N -R Nishfleet/<repo> --body "claimed by
       pi-issue-<repo>-N at <UTC timestamp>"`
    f. Start the worker, but only if it is not already live:
-      `systemctl --user is-active --quiet pi-issue@<repo>-N.service ||
-       systemctl --user start --no-block pi-issue@<repo>-N.service`
+      Engine: if `systemctl --user list-units 'devin-issue@*.service' --state=active,activating --no-legend | wc -l`
+      is below 3, use `devin-issue@<repo>-N` (Devin SWE-2 Max, $0 on the account, proven headless
+      2026-09-19); otherwise `pi-issue@<repo>-N`. Then:
+      `systemctl --user is-active --quiet <engine>-issue@<repo>-N.service ||
+       systemctl --user start --no-block <engine>-issue@<repo>-N.service`
       Sleep 5 seconds before the next start — a cohort whose startup peaks
       coincide spikes the slice and trips systemd-oomd.
    g. One slot used.
