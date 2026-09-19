@@ -90,7 +90,15 @@ WorkingDirectory=/home/nish
 # AGENTS.md context-file discovery because that walks up from the STARTUP cwd, and
 # this unit starts in /home/nish — the repo file would never be reached. Canonical
 # path, never cwd-relative: the unit must not depend on which checkout it runs from.
-ExecStart=/bin/sh -c 'set -e; GH_TOKEN=$(gh token generate --app-id 4728578 --key "$HOME/.config/fleet-worker/nishfleet-worker.private-key.pem" --installation-id 156789042 --token-only); [ -n "$GH_TOKEN" ] || { echo "app token mint failed — refusing human-gh fallback" >&2; exit 1; }; export GH_TOKEN; { cat "$HOME/workspaces/tooling/fleet-ops-deploy-clone/AGENTS.md"; echo; sed -e "1,/^---$/d" -e "s/[$]1/$1/g" "$HOME/workspaces/tooling/fleet-ops-deploy-clone/prompts/worker.md"; } | exec cursor-agent -p --output-format text --model cursor-grok-4.6-high --force --trust' sh %i
+# --workspace is load-bearing. cursor-agent treats its workspace as the search root
+# for every read/grep tool call. The first proof run (cursor-issue@fleet-ops-7842,
+# 2026-09-19 13:24 IST) started in /home/nish with no --workspace and spent 10+ min
+# running rg over the whole home directory: 2.7 GB of page cache in the cgroup
+# (anon 161 MB), MemoryHigh throttling, no worktree created. The issue worktree
+# path is pre-created EMPTY here so it can be the workspace from the first tool
+# call; `git worktree add` accepts an existing empty directory, so the worker's own
+# worktree step is unchanged, and the existing ExecStopPost removes the same path.
+ExecStart=/bin/sh -c 'set -e; mkdir -p "$HOME/workspaces/agent-worktrees/issue-$1"; GH_TOKEN=$(gh token generate --app-id 4728578 --key "$HOME/.config/fleet-worker/nishfleet-worker.private-key.pem" --installation-id 156789042 --token-only); [ -n "$GH_TOKEN" ] || { echo "app token mint failed — refusing human-gh fallback" >&2; exit 1; }; export GH_TOKEN; { cat "$HOME/workspaces/tooling/fleet-ops-deploy-clone/AGENTS.md"; echo; sed -e "1,/^---$/d" -e "s/[$]1/$1/g" "$HOME/workspaces/tooling/fleet-ops-deploy-clone/prompts/worker.md"; } | exec cursor-agent -p --output-format text --model cursor-grok-4.6-high --force --trust --workspace "$HOME/workspaces/agent-worktrees/issue-$1"' sh %i
 # The worker created its own worktree; the worker's own unit cleans it up.
 # No reaper, no salvage organ: work that was never committed and pushed did not
 # happen, and the next dispatch starts from origin/main. Leading '-' so cleanup
