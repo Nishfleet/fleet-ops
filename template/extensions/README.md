@@ -10,6 +10,13 @@ install method.
 Do not replace a symlink with a copy. If a stock file must change, fork it with
 a header naming the upstream version and the reason, and list it below.
 
+**Never `ln -sf` the declared-fork names to stock.** `permission-gate.ts`,
+`protected-paths.ts` and `subagent/index.ts` carry fleet rules stock lacks; a
+blanket symlink pass silently drops them (happened twice 2026-09-19 — at 10:39
+and again at 13:59 inside worker runs; fleet-ops#5912). They MUST stay regular
+files identical to this template. `tests/pi-extensions-forks-live.test.sh`
+enforces it on the VPS.
+
 ## 2026-09-18 glue sweep
 
 Deleted, with what replaced each (verified live, not assumed):
