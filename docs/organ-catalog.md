@@ -24,7 +24,6 @@ cheaper than building, because prose bans lose to urgency at decision time.
 
 | Job class | Existing owner | Unit / mechanism | Ref |
 |---|---|---|---|
-| Lifecycle-label sweep (webhook) | lifecycle-label-sweep | `lifecycle-label-sweep.{service,timer}` | #3270 |
 | Merged-PR observe-to-close (webhook) | fleet-merged-pr-close | `fleet-merged-pr-close.{service,timer}` | #3270 |
 | Duplicate-issue drain (webhook) | fleet-issue-close-duplicates | `fleet-issue-close-duplicates.{service,timer}` | #3270 |
 | Tight merge→live deploy | fleet-deploy-check | `fleet-deploy-check.timer` | #468, TOP GEAR |
@@ -41,11 +40,6 @@ cheaper than building, because prose bans lose to urgency at decision time.
 | Intake repair | pi-intake-repair@ | `pi-intake-repair@<repo>.timer` | stock Pi |
 | Issue dispatch | pi-issue@ | `pi-issue@.service` | stock Pi |
 | Packet dispatch | pi-packet@ | `pi-packet@.service` | stock Pi |
-| Escalation daily sweep | escalation-daily-sweep | `escalation-daily-sweep.timer` | escalation rail |
-| Escalation audit | pi-escalation-audit | `pi-escalation-audit.timer` | escalation rail |
-| Stop-escalation | stop-escalation | `stop-escalation.{path,service}` | escalation rail |
-| Unit escalation | unit-escalation@ | `unit-escalation@.service` | escalation rail |
-| Intake reconcile | intake-reconcile | `intake-reconcile.{path,timer}` | #32 |
 | Standing-rules render | standing-rules-render | `standing-rules-render.{path,service}` | vault |
 | Quality research (weekly) | quality-research-weekly | `quality-research-weekly.timer` | #457 |
 | Boundary-notify (Nish-reserved) | nish-boundary-notify | `nish-boundary-notify.service` | standing rule |
