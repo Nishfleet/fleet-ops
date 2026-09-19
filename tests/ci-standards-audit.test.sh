@@ -660,9 +660,10 @@ bash "$here/live-state-doctrine-precedence.test.sh"
 
 # fleet-ops#5870: the judge-header detector `attest-waiting: <n> [#a #b]`
 # (lib/attest-waiting.sh, wired into measure.sh) lists agent-ready /
-# agent-blocked issues whose latest blocked-status comment mentions an
-# attestation and that have had no orchestrator comment for >2h; zero is
-# the normal value; a gh failure is UNAVAILABLE, never a fabricated 0.
+# agent-blocked issues whose LATEST state still requests an attestation
+# and that have had no orchestrator comment for >2h (fleet-ops#6257
+# newest-state); zero is the normal value; a gh failure is UNAVAILABLE,
+# never a fabricated 0.
 # Hosted here so P14 runs it without a workflow-file edit (the worker App
 # cannot push .github/workflows/**). The named pin in
 # tests/p14-test-listing-gate.test.sh is the class-prevention so a future

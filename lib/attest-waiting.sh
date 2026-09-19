@@ -1,15 +1,20 @@
-# fleet-ops#5870: the attest-waiting detector.
+# fleet-ops#5870: the attest-waiting detector. fleet-ops#6257: newest-state.
 # shellcheck shell=bash
 #
 # A worker that hits a gate-owned path refuses to self-attest correctly, but
 # three instances (0509#3068, 0509#3144, fleet-ops#5760) then parked the issue
 # as kind=nish-decision and it sat for hours until a judge read it by hand.
-# The classifier (bin/blocked-reconcile) now routes those to
-# orchestrator-attest; THIS detector is the observer that catches any straggler
-# in the agent-ready/agent-blocked queue: an issue whose latest blocked-status
-# comment mentions an attestation and that has had no orchestrator comment for
-# more than 2h. Zero is the normal value; any non-zero line is judge-visible
-# (`attest-waiting: <n> [#a #b]` in the measure.sh header).
+# bin/blocked-reconcile used to classify those as orchestrator-attest; it was
+# deleted in the 2026-09-18 glue sweep. THIS detector is the remaining
+# observer: an issue whose LATEST state still requests an attestation and
+# that has had no orchestrator comment for more than 2h. Historical attest
+# comments are suppressed by a later decision-resolved: line, by a live
+# non-orchestrator blocked-on: as the last blocked-on form, or by an
+# attest-referenced PR head that is already merged (fleet-ops#6257). A
+# thread whose latest comment still asks for an admin attest still waits.
+# That is #5870's real-time path. Zero is the normal value; any non-zero
+# line is judge-visible (`attest-waiting: <n> [#a #b]` in the measure.sh
+# header).
 #
 # Contract (testable in isolation):
 #   attest_waiting_line <repo...>     prints exactly one line on stdout:
@@ -41,7 +46,8 @@ attest_waiting_line() {
     local budget_s="${ATTEST_WAITING_BUDGET_S:-60}"
     local payload
     payload=$(timeout "$budget_s" python3 - "$now_iso" "$stale_s" "$repos_json" <<'PY' 2>/dev/null
-import json, os, subprocess, sys
+import json, re, subprocess, sys
+from datetime import datetime, timezone
 
 now_iso, stale_s, repos_json = sys.argv[1], sys.argv[2], sys.argv[3]
 repos = json.loads(repos_json)
@@ -52,13 +58,124 @@ def gh(*args):
         raise RuntimeError(r.stderr.strip()[:200] or "gh failed")
     return r.stdout
 
-from datetime import datetime, timezone
 try:
     now = datetime.strptime(now_iso.replace("Z", "+0000"), "%Y-%m-%dT%H:%M:%S%z")
 except ValueError:
     now = datetime.now(timezone.utc)
 
 REST_RE = ("gate-integrity-attest", "verifier-attest", "attest-requested")
+SKIP_COMMENT = re.compile(
+    r"(?i)^(claimed by |claim branch released|blocked-checked:)"
+)
+STRUCK_LINE = re.compile(r"^\s*(?:[-*]\s+)?~~.+~~\s*$")
+BLOCKED_ON = re.compile(r"(?im)^blocked-on:\s*(.+?)\s*$")
+DECISION_RESOLVED = re.compile(r"(?im)^decision-resolved:\s*")
+ATTEST_SHA = re.compile(
+    r"(?im)^(?:gate-integrity-attest|verifier-attest|attest-requested)"
+    r":\s*([0-9a-f]{40})\b"
+)
+ATTEST_MENTION = re.compile(
+    r"(?i)\battest|gate[\s-]*integrity\s*attest|attest-requested"
+)
+ATTEST_ADMIN = re.compile(
+    r"(?i)\badmin\b|gate[\s-]*integrity\s*attest|attest-requested|"
+    r"verifier[\s-]*attest"
+)
+NAMED_NOT_DEP = {
+    "orchestrator", "nish-decision", "infra", "senior-review",
+    "split", "senior-conference",
+}
+URL = re.compile(
+    r"^https://github\.com/([\w.-]+)/([\w.-]+)/(issues|pull)/(\d+)/?$"
+)
+OWNED = re.compile(r"^([\w.-]+)/([\w.-]+)#(\d+)$")
+HASH = re.compile(r"^#(\d+)$")
+
+
+def live_text(text):
+    lines = []
+    for line in (text or "").splitlines():
+        if STRUCK_LINE.match(line):
+            continue
+        lines.append(line)
+    return "\n".join(lines)
+
+
+def is_attest_blocker(text):
+    t = text or ""
+    if any(k in t.lower() for k in REST_RE):
+        return True
+    return bool(ATTEST_MENTION.search(t) and ATTEST_ADMIN.search(t))
+
+
+def is_dep_form(raw):
+    raw = (raw or "").strip().rstrip(".,;")
+    if raw.lower() in NAMED_NOT_DEP:
+        return False
+    return bool(URL.match(raw) or OWNED.match(raw) or HASH.match(raw))
+
+
+def sha_merged(repo, sha):
+    # Fail closed: unproven merge keeps the live attest request waiting.
+    try:
+        raw = gh("api", f"repos/{repo}/commits/{sha}/pulls")
+    except RuntimeError:
+        return False
+    try:
+        pulls = json.loads(raw or "[]")
+    except json.JSONDecodeError:
+        return False
+    if not isinstance(pulls, list):
+        return False
+    return any(isinstance(p, dict) and p.get("merged_at") for p in pulls)
+
+
+def newest_state(comments):
+    usable = []
+    for c in sorted(comments, key=lambda x: x["at"]):
+        body = c.get("body") or ""
+        if SKIP_COMMENT.match(body.lstrip()):
+            continue
+        usable.append({
+            "at": c["at"],
+            "who": c.get("who"),
+            "assoc": c.get("assoc"),
+            "live": live_text(body),
+            "raw": body,
+        })
+    last_blocked = None
+    last_attest_ts = None
+    last_resolved_ts = None
+    orch_ts = None
+    shas = []
+    for c in usable:
+        live = c["live"]
+        for m in BLOCKED_ON.finditer(live):
+            last_blocked = m.group(1).strip()
+        if DECISION_RESOLVED.search(live) and not BLOCKED_ON.search(live):
+            last_resolved_ts = c["at"]
+        if is_attest_blocker(live):
+            last_attest_ts = c["at"]
+            for m in ATTEST_SHA.finditer(live):
+                shas.append(m.group(1).lower())
+        raw = c["raw"]
+        if (c.get("assoc") == "OWNER" or c.get("who") == "nish3451"
+                or raw.lstrip().lower().startswith(
+                    ("gate-integrity-attest:", "verifier-attest:"))):
+            orch_ts = c["at"]
+    latest_requests = bool(usable) and is_attest_blocker(usable[-1]["live"])
+    suppress = False
+    if last_attest_ts:
+        if last_resolved_ts and last_resolved_ts >= last_attest_ts:
+            suppress = True
+        if last_blocked and is_dep_form(last_blocked):
+            suppress = True
+        # Real-time path: a thread whose latest comment still asks for an
+        # admin attest still waits (fleet-ops#6257 must-not).
+        if latest_requests:
+            suppress = False
+    return last_attest_ts, orch_ts, suppress, latest_requests, shas
+
 
 problems = []
 for repo in repos:
@@ -76,21 +193,17 @@ for repo in repos:
         except RuntimeError:
             raise
         comments = json.loads(raw) or []
-        attest_ts = None
-        orch_ts = None
-        for c in sorted(comments, key=lambda x: x["at"]):
-            body = c.get("body") or ""
-            low = body.lower()
-            if any(k in low for k in REST_RE) or "attest" in low:
-                attest_ts = c["at"]
-            if (c.get("assoc") == "OWNER" or c.get("who") == "nish3451"
-                    or body.lstrip().lower().startswith(
-                        ("gate-integrity-attest:", "verifier-attest:"))):
-                orch_ts = c["at"]
+        attest_ts, orch_ts, suppress, latest_requests, shas = newest_state(
+            comments)
         if attest_ts is None:
             continue
-        # The latest attest mention is newer than any orchestrator response.
         if orch_ts is not None and orch_ts >= attest_ts:
+            continue
+        if suppress and not latest_requests:
+            continue
+        # Merged-head suppression applies even when the latest comment still
+        # asks for attest. That request can never be actionable.
+        if shas and all(sha_merged(repo, sha) for sha in shas):
             continue
         base = orch_ts or attest_ts
         try:
