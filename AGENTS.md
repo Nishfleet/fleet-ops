@@ -2,32 +2,9 @@
 
 ## Verification commands
 
-- Rule-enforcement matrix: `python3 lib/rule-enforcement.py validate-matrix --matrix config/rule-enforcement.json`
-- Live coverage check: `python3 lib/rule-enforcement.py join --rules $STANDING_RULES --ledger $DECISIONS_LEDGER --matrix config/rule-enforcement.json`
-- Rule-enforcement tests: `bash tests/rule-enforcement.test.sh`
-- Rulebook red-team (monthly + backup gate): `bash tests/fleet-rulebook-redteam.test.sh`
-- Findings-queued session-close lint: `bash tests/fleet-findings-queued.test.sh`
-- Decisions-ledger session-close lint: `bash tests/fleet-decisions-ledger.test.sh`
-- Failed-command session-close lint: `bash tests/fleet-failed-command-flagged.test.sh`
-- Debug-playbook session-close lint: `bash tests/fleet-debug-playbook.test.sh`
-- Interventions-eliminated session-close lint: `bash tests/fleet-interventions-eliminated.test.sh`
-- Escalation canary tests: `bash tests/escalation-coverage-canary.test.sh`
-- Signal-reconcile tests: `bash tests/signal-reconcile.test.sh`
-- Cancelled-while-queued detector drill (fleet-ops#819): `bash tests/cancelled-while-queued-detector.test.sh`
-- Replay with the actual enrolled set: `node .github/scripts/cancelled-while-queued-detector.mjs --targets-from config/intake-repos.json --dry-run --output-json /tmp/cwq.json`
-- Full P14 suite: `bash tests/manifest-shape.test.sh && bash tests/intake-repos-shape.test.sh && ...` (see `.github/workflows/ci.yml`)
-
-## Useful env vars for canary
-
-- `FLEET_RULE_ENFORCEMENT_FILE_ISSUES=1` enables auto-filing mechanism issues.
-- `FLEET_RULE_ENFORCEMENT_NOW=YYYY-MM-DDTHH:MM:SSZ` fixes the "now" timestamp for queued-age checks in tests.
-
-## Detector→queue reconciler (fleet-ops#362)
-
-- Runs from `bin/fleet-heartbeat-tier1` block 38 with `TICK_START` filtered to the current tick.
-- `lib/detector-queue-reconciler.py` is pure logic; tests use fake `gh` and `FLEET_ISSUE_FILE`.
-- `FLEET_SIGNAL_RECONCILE_OK_TO_CLOSE=1` enables observe-to-close (default is 0 outside of the production heartbeat).
-- `FLEET_SIGNAL_RECONCILE_DRY_RUN=1` prints the planned actions without calling `gh` or `fleet-issue-file`.
+- Alert rules: `promtool check rules config/fleet_rules.yml`
+- Diff-scoped semgrep: `semgrep --config p/default --baseline-commit "$(git merge-base HEAD origin/main)" --quiet --metrics=off`
+- Repo tests: `bash tests/<name>.test.sh` (the suite is being deleted under fleet-ops#7828; gates are GitHub built-ins)
 
 ## Per-run invariants for the Pi fleet issue worker
 
@@ -54,7 +31,7 @@ Hard rules:
 - Maintain the todo list via the loaded todo extension, one item per acceptance bullet; if no item has been completed in 10 minutes, stop polishing, commit what works, and either open the PR or post a `blocked-on:` proposal.
 - The bar is 'extremely well', never 'perfect'. (69 hang-kills at 42 min; 27-min low-yield sessions. NOT adopted: agent-to-agent chat loops, 96 sub-agents.)
 - GEO/AEO (ledger 2026-08-27, fleet-ops#1245): measurement and owned-content tactics only; brand gate is preview-then-autonomous; Reddit/community and digital-PR are Nish-reserved (only with a grants[] row in config/geo-aeo-policy.json); llms.txt: skip except developer docs.
-pstack playbooks (fleet-ops#1260) at `~/.pi/agent/skills/poteto-mode/playbooks/`: bug-fix.md, feature.md, investigation.md, perf-issue.md, session-pickup.md, pause-safely.md, unslop, review-adjudication; end with opening-a-pr.md. Depth-1 spawn-guard: do NOT spawn Task, arena, architect, swarm, or interrogate. Claim branch stays ours. Do NOT bank a dirty worktree: your unit removes the worktree in its own ExecStopPost, so uncommitted work did not happen — commit and push before you finish. Ignore pstack babysit, shipping, orchestrate, autopilot-* (Graphite).
+pstack playbooks (fleet-ops#1260) at `~/.pi/agent/skills/poteto-mode/playbooks/`: bug-fix.md, feature.md, investigation.md, perf-issue.md, session-pickup.md, pause-safely.md; end with opening-a-pr.md. Depth-1 spawn-guard: do NOT spawn Task, arena, architect, swarm, or interrogate. Claim branch stays ours. Do NOT bank a dirty worktree: your unit removes the worktree in its own ExecStopPost, so uncommitted work did not happen — commit and push before you finish. Ignore pstack babysit, shipping, orchestrate, autopilot-* (Graphite).
 
 ### PR body contract — run these before `gh pr create`
 
