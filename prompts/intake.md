@@ -38,7 +38,7 @@ Steps:
      quota-walled on and off. Change this number only from a measured
      `max_parallel_requests` sum over rungs that `litellm_deployment_state`
      shows healthy).
-     `systemctl --user list-units 'pi-issue@*.service' 'devin-issue@*.service' --state=active,activating --no-legend | wc -l`
+     `systemctl --user list-units 'pi-issue@*.service' 'devin-issue@*.service' 'cursor-issue@*.service' --state=active,activating --no-legend | wc -l`
      (pi-issue@ is Type=oneshot, so a RUNNING worker is `activating`, not `active`;
      counting only `active` always returned 0 and the cap never bit — #7820).
    Also read MemAvailable from `/proc/meminfo`: under 4 GB, start nothing this
@@ -74,7 +74,9 @@ Steps:
    f. Start the worker, but only if it is not already live:
       Engine: if `systemctl --user list-units 'devin-issue@*.service' --state=active,activating --no-legend | wc -l`
       is below 3, use `devin-issue@<repo>-N` (Devin SWE-2 Max, $0 on the account, proven headless
-      2026-09-19); otherwise `pi-issue@<repo>-N`. Then:
+      2026-09-19); else if `systemctl --user list-units 'cursor-issue@*.service' --state=active,activating --no-legend | wc -l`
+      is below 3, use `cursor-issue@<repo>-N` (Cursor Grok 4.6 High on Nish's prepaid Cursor seat,
+      proven headless 2026-09-19 13:21 IST); otherwise `pi-issue@<repo>-N`. Then:
       `systemctl --user is-active --quiet <engine>-issue@<repo>-N.service ||
        systemctl --user start --no-block <engine>-issue@<repo>-N.service`
       Sleep 5 seconds before the next start — a cohort whose startup peaks
