@@ -17,11 +17,15 @@
 #   up{}                          prometheus scrape state
 #   probe_success                 blackbox_exporter (3 targets on 0509)
 #   fleet_main_ci_green, fleet_prepaid_credits_usd, fleet_prepaid_used_usd
+#   ci_merge_queue_entries, ci_merge_queue_head_wait_seconds,
+#   ci_hosted_runs_queued, ci_hosted_runs_in_progress,
+#   ci_hosted_runs_*_by_workflow, ci_workflow_run_median_seconds
 #                                 fleet-metrics-export.service — now a ~45-line
 #                                 curl/jq/gh probe, no Python. GitHub's CI
-#                                 conclusion and Cursor's prepaid bucket live
-#                                 behind vendor APIs with no /metrics endpoint;
-#                                 this is the smallest reader for them.
+#                                 conclusion, merge-queue state and Cursor's
+#                                 prepaid bucket live behind vendor APIs with
+#                                 no /metrics endpoint; this is the smallest
+#                                 reader for them.
 #
 # probe_success was NOT available when these rules were first cut (no
 # blackbox_exporter, empty vector). Another lane of this same sweep installed
@@ -158,9 +162,52 @@ groups:
 
   - name: fleet_delivery
     rules:
-      # main-red and product availability. Neither GitHub nor the 0509 origin
-      # is a prometheus target, so both arrive through the one curl|jq
-      # ExecStart in fleet-metrics-export.service.
+      # main-red and CI-queue capacity. GitHub is not a prometheus target, so
+      # every series here arrives through the one curl|jq textfile probe in
+      # fleet-metrics-export.service (libexec/fleet-metrics-probe.sh, 5-min
+      # cadence; enrolled repos from config/intake-repos.json).
+      #
+      # fleet-ops#5807: on 2026-09-12 the 0509 merge-queue head waited 2h20m
+      # while 67 hosted runs sat queued — the org plan caps at 20 concurrent
+      # hosted jobs and each PR spawns ~20 checks, so a saturated queue stalls
+      # every landing — and no alert fired; a human noticed by hand. Both
+      # rules dispatch to the repair receiver (severity critical/warning ->
+      # prometheus-am-executor), whose packet names the consolidation issues
+      # and can read the by_workflow detail series for the top slot consumers.
+      - alert: CiMergeQueueHeadWaitHigh
+        expr: ci_merge_queue_head_wait_seconds > 1200
+        for: 10m
+        labels:
+          severity: critical
+          service: ci-capacity
+        annotations:
+          summary: "merge-queue head on {{ $labels.repo }} waiting {{ $value | humanizeDuration }}"
+          description: "The oldest mergeQueue entry on {{ $labels.repo }} is over 20m old and has been for 10m. Packet context: queue depth ci_merge_queue_entries{repo=\"{{ $labels.repo }}\"}; top slot consumers by count topk(5, ci_hosted_runs_queued_by_workflow{repo=\"{{ $labels.repo }}\"}) and by hold time topk(5, ci_workflow_run_median_seconds{repo=\"{{ $labels.repo }}\"}); in-progress ci_hosted_runs_in_progress{repo=\"{{ $labels.repo }}\"}. Consolidation issues: Nishfleet/0509#3069, Nishfleet/0509#3068, Nishfleet/0509#3070. Repair: shed load — pause intake merges, cancel stale queued runs."
+
+      - alert: CiHostedQueueDepthHigh
+        expr: ci_hosted_runs_queued > 30
+        for: 15m
+        labels:
+          severity: warning
+          service: ci-capacity
+        annotations:
+          summary: "{{ $value }} hosted runs queued on {{ $labels.repo }}"
+          description: "More than 30 GitHub-hosted runs queued on {{ $labels.repo }} for 15m (org plan = 20 concurrent hosted jobs). Packet context: top consumers topk(5, ci_hosted_runs_queued_by_workflow{repo=\"{{ $labels.repo }}\"}); hold time ci_workflow_run_median_seconds{repo=\"{{ $labels.repo }}\"}; merge-queue head wait ci_merge_queue_head_wait_seconds{repo=\"{{ $labels.repo }}\"}. Consolidation issues: Nishfleet/0509#3069, Nishfleet/0509#3068, Nishfleet/0509#3070. Repair: cancel stale queued runs, consolidate check matrices per the named issues."
+
+      # FleetProbeStale is the probe's own heartbeat, restored: the file's
+      # comments above already name it as the guard for this blind spot, and
+      # without it every fleet_* and ci_* series here can go absent while the
+      # rules still read as healthy — the same failure this group exists to
+      # close (a dead producer is indistinguishable from an idle queue).
+      - alert: FleetProbeStale
+        expr: (time() - node_textfile_mtime_seconds{file="/var/lib/prometheus/node-exporter/fleet.prom"} > 1200) or absent(node_textfile_mtime_seconds{file="/var/lib/prometheus/node-exporter/fleet.prom"})
+        for: 10m
+        labels:
+          severity: critical
+          service: fleet
+        annotations:
+          summary: "fleet.prom textfile stale or absent — probe has not written in >20m"
+          description: "node_textfile_mtime_seconds for fleet.prom is over 1200s old or missing. Every fleet_* and ci_* rule reads series this file carries; while stale they are all silently unenforced. Repair: systemctl --user status fleet-metrics-export.timer and journalctl --user -u fleet-metrics-export.service -n 50; if the unit is uninstalled, re-wire per README Install (systemctl --user link + enable --now), then run it once and confirm fleet.prom updates."
   # ------------------------------------------------------------------------
   # Product public-surface canaries (glue sweep 2026-09-18, zero-scripts).
   # These replace two hand-written node canaries and their systemd

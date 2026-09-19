@@ -1,0 +1,82 @@
+# fleet-ops#5807: promtool unit test for the fleet_ci_queue rules.
+#
+# input_series replays the issue's 2026-09-12 10:50 IST snapshot on 0509:
+# merge-queue head wait 2h20m (8400s), 14 entries, 58 queued + 11
+# in-progress hosted runs. A second enrolled repo below both thresholds is
+# the control and must never appear in exp_alerts. FleetProbeStale is also
+# exercised: no node_textfile_mtime_seconds series is loaded, so absent()
+# must fire it (the producer-dead case the rule exists for). exp_annotations
+# are the exact rendered strings — promtool compares the full alert, and
+# pinning them locks the packet text the repair receiver reads.
+rule_files:
+  - ../../config/fleet_rules.yml
+
+evaluation_interval: 1m
+
+tests:
+  - interval: 1m
+    input_series:
+      - series: 'ci_merge_queue_head_wait_seconds{repo="0509"}'
+        values: '8400+0x30'
+      - series: 'ci_merge_queue_entries{repo="0509"}'
+        values: '14+0x30'
+      - series: 'ci_hosted_runs_queued{repo="0509"}'
+        values: '58+0x30'
+      - series: 'ci_hosted_runs_in_progress{repo="0509"}'
+        values: '11+0x30'
+      - series: 'ci_merge_queue_head_wait_seconds{repo="fleet-ops"}'
+        values: '90+0x30'
+      - series: 'ci_merge_queue_entries{repo="fleet-ops"}'
+        values: '1+0x30'
+      - series: 'ci_hosted_runs_queued{repo="fleet-ops"}'
+        values: '4+0x30'
+      - series: 'ci_hosted_runs_in_progress{repo="fleet-ops"}'
+        values: '2+0x30'
+
+    alert_rule_test:
+      # for: 10m — still pending at 9m on a held 25-min-equivalent wait.
+      - eval_time: 9m
+        alertname: CiMergeQueueHeadWaitHigh
+        exp_alerts: []
+
+      # 10:50 snapshot: both issue rules fire on 0509 only; the control repo
+      # fires neither (exp_alerts is the COMPLETE firing set per alertname).
+      - eval_time: 15m
+        alertname: CiMergeQueueHeadWaitHigh
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              service: ci-capacity
+              repo: "0509"
+            exp_annotations:
+              summary: "merge-queue head on 0509 waiting 2h 20m 0s"
+              description: "The oldest mergeQueue entry on 0509 is over 20m old and has been for 10m. Packet context: queue depth ci_merge_queue_entries{repo=\"0509\"}; top slot consumers by count topk(5, ci_hosted_runs_queued_by_workflow{repo=\"0509\"}) and by hold time topk(5, ci_workflow_run_median_seconds{repo=\"0509\"}); in-progress ci_hosted_runs_in_progress{repo=\"0509\"}. Consolidation issues: Nishfleet/0509#3069, Nishfleet/0509#3068, Nishfleet/0509#3070. Repair: shed load — pause intake merges, cancel stale queued runs."
+
+      - eval_time: 14m
+        alertname: CiHostedQueueDepthHigh
+        exp_alerts: []
+
+      - eval_time: 20m
+        alertname: CiHostedQueueDepthHigh
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              service: ci-capacity
+              repo: "0509"
+            exp_annotations:
+              summary: "58 hosted runs queued on 0509"
+              description: "More than 30 GitHub-hosted runs queued on 0509 for 15m (org plan = 20 concurrent hosted jobs). Packet context: top consumers topk(5, ci_hosted_runs_queued_by_workflow{repo=\"0509\"}); hold time ci_workflow_run_median_seconds{repo=\"0509\"}; merge-queue head wait ci_merge_queue_head_wait_seconds{repo=\"0509\"}. Consolidation issues: Nishfleet/0509#3069, Nishfleet/0509#3068, Nishfleet/0509#3070. Repair: cancel stale queued runs, consolidate check matrices per the named issues."
+
+      # No fleet.prom mtime series is loaded -> absent() -> producer-dead
+      # guard must fire (critical -> repair dispatch). absent() carries the
+      # selector's file= label into the firing alert.
+      - eval_time: 15m
+        alertname: FleetProbeStale
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              service: fleet
+              file: "/var/lib/prometheus/node-exporter/fleet.prom"
+            exp_annotations:
+              summary: "fleet.prom textfile stale or absent — probe has not written in >20m"
+              description: "node_textfile_mtime_seconds for fleet.prom is over 1200s old or missing. Every fleet_* and ci_* rule reads series this file carries; while stale they are all silently unenforced. Repair: systemctl --user status fleet-metrics-export.timer and journalctl --user -u fleet-metrics-export.service -n 50; if the unit is uninstalled, re-wire per README Install (systemctl --user link + enable --now), then run it once and confirm fleet.prom updates."
