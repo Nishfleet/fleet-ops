@@ -2,16 +2,29 @@
 Description=Release the claim after Pi issue worker %i exhausts its retry policy
 
 [Service]
-# OnFailure= path of pi-issue@.service. Releasing a claim is two GitHub calls:
-# drop the claim branch, flip the label back to agent-ready so the next intake
-# tick can re-dispatch. The old bin/pi-issue-failed-reap was 632 lines of
-# re-claim accounting, cooldown ledgers and packet archiving around these two
-# calls; none of that survives the rule that only issue->PR->deploy is
-# load-bearing. A failed release is not fatal — the issue simply stays
-# agent-in-progress until the next failure or a human looks.
+# OnFailure= path of pi-issue@/cursor-issue@/devin-issue@. Releasing a claim
+# is bin/fleet-claim-release, guarded since fleet-ops#6292: an open PR on
+# claim/issue-<N> means HOLD — never delete a live PR's head branch, because
+# GitHub closes the PR under the deleting identity with no comment (the
+# #6258 class: endorsed PR closed unmerged + branch deleted, silently, on
+# 2026-09-13 by the heartbeat §3 orphan pass whose `gh pr list` guard read a
+# transient failure as "0 open PRs"). The check is fail-closed; every
+# outcome leaves a trace line on the issue. The old bin/pi-issue-failed-reap
+# was 632 lines of re-claim accounting around these calls; none of that
+# survives the rule that only issue->PR->deploy is load-bearing. A failed
+# release is not fatal — the issue simply stays agent-in-progress until the
+# next failure or a human looks.
 Type=oneshot
 Environment=PATH=/home/nish/.local/bin:/usr/local/bin:/usr/bin:/bin
 Environment=HOME=/home/nish
 WorkingDirectory=/home/nish
-ExecStart=/bin/sh -c 'i="$1"; r=$(echo "$i" | sed "s/-[0-9][0-9]*$//"); n=$(echo "$i" | sed "s/.*-//"); GH_TOKEN=$(gh token generate --app-id 4728578 --key "$HOME/.config/fleet-worker/nishfleet-worker.private-key.pem" --installation-id 156789042 --token-only); export GH_TOKEN; gh api -X DELETE "repos/Nishfleet/$r/git/refs/heads/claim/issue-$n" >/dev/null 2>&1 || true; gh issue edit "$n" -R "Nishfleet/$r" --remove-label agent-in-progress --add-label agent-ready || true; echo "released claim Nishfleet/$r#$n"' sh %i
-TimeoutStartSec=120
+ExecStart=/home/nish/workspaces/tooling/fleet-ops-deploy-clone/bin/fleet-claim-release %i
+# Second ExecStart — the after-the-fact net for the same class, event-driven
+# on the exact failure path that produces it (no new timer):
+# bin/fleet-silent-pr-close-check scans the repo's closed claim/fable PRs
+# for App-identity closes with no closing comment while the owning issue
+# stays open, posts a deduped SILENT-PR-CLOSE trace on the issue (--apply),
+# and exits 1 on a finding — this unit goes `failed` and the SystemUnitFailed
+# rule pages it.
+ExecStart=/bin/sh -c 'r=$(echo "$1" | sed "s/-[0-9][0-9]*$//"); exec /home/nish/workspaces/tooling/fleet-ops-deploy-clone/bin/fleet-silent-pr-close-check "$r" --apply' sh %i
+TimeoutStartSec=300
