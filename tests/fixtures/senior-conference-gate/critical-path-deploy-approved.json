@@ -1,9 +1,0 @@
-{
-  "additions": 5,
-  "deletions": 1,
-  "changedFiles": 1,
-  "files": [
-    {"path": "bin/siterep-deploy-verify"}
-  ],
-  "labels": ["conference-approved"]
-}

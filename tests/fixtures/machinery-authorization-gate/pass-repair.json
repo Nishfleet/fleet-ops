@@ -1,8 +1,0 @@
-{
-  "name_status": "M\tsystemd/fleet-heartbeat.service\nM\tbin/fleet-heartbeat\n",
-  "body": "Repair an existing unit. Fix-it-now.\n",
-  "allowlist": {
-    "authorized": []
-  },
-  "manifest_added_lines": []
-}
