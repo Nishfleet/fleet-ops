@@ -49,16 +49,24 @@ Missing vs upstream:
   2026-08-20 standing-rule review.
 - `poteto-mode/scripts/check-plan.mjs` (Cursor plan helper).
 
-Drift (re-synced, fleet-ops#1311):
+Drift (re-synced, fleet-ops#1311; regressed and restored, fleet-ops#3441):
 
-- `blast-radius/SKILL.md` upstream `b060df3ca858`, the vault copy
+- `blast-radius/SKILL.md` upstream `b060df3ca858`; the vault copy
   `88274acde55a` is the house-adapted canonical, and all live harnesses
-  (Claude, Codex, Pi) now symlink to that single vault copy.
-  `unslop` and `why` were in the same real-dir state and were re-linked at
-  the same time.
-- The `fleet-skills-symlink-canary` compares the SHA-256 of every vault-listed
-  house skill against each harness on every heartbeat tick, so a pstack install
-  that leaves a real directory behind no longer silently diverges.
+  (Claude, Codex, Pi) symlink to that single vault copy.
+- 2026-09-05 regression (fleet-ops#3441): a re-sync ran the wrong direction
+  and promoted the drifted pi copy `a4b87de5` INTO the vault canonical,
+  losing the house delta. Syncthing `.stversions` kept the canonical;
+  restored 2026-09-19 and verified `sha256sum` = `88274acde55a` on the
+  vault file and on every harness read.
+- The `fleet-skills-symlink-canary` (SHA-256 of every vault-listed house
+  skill vs each harness, every heartbeat tick) was deleted in the
+  2026-09-18 glue sweep (ada87b543). No drift detector remains; the
+  symlink itself is the guard, and a real directory left behind by a
+  pstack install now diverges silently until noticed by hand.
+- Known residual: pi `unslop`/`why` are again real dirs, not symlinks
+  (content-synced 2026-09-19) — fleet-ops#7841. 199 stale `.bak-*`
+  sibling dirs left by install-links runs — fleet-ops#7842.
 
 `~/.cursor/rules/pstack-models.mdc` sets every role to `inherit-parent` so
 pstack cannot bypass the seat governor. That stays.
