@@ -35,10 +35,6 @@ PACKET-VERDICT tools=<n> class=<worked|no-tools>
 - The line must be the LAST assistant text of the run. A run that ends without
   a verdict line is an empty run — do not report it as dispatched/working.
 
-The file `lib/guard_cursor_packet.py` (fleet-ops) runs the same
-`guard_pi_packet` verdict-line grammar over cursor agent-transcripts; treat a
-`guard-cursor-packet:` warning on your transcript as a flagged empty run.
-
 ## 3. Delivery evidence at close
 
 - Close means a PR (or commit with evidence), same as the Pi lanes: the close
