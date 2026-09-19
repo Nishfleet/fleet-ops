@@ -1,0 +1,6 @@
+# Replay of the 2026-09-12T07:57Z researcher cycle (fleet-ops#6094).
+# The live report at agent-state/fleet-researcher/reports/20260912T075737Z/
+# is gone; this is the trigger line the issue filed against, plus the
+# empty deltas body five of seven same-trigger cycles produced.
+Why this run fired: failed-cycle
+{"deltas": []}

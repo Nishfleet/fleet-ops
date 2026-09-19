@@ -506,4 +506,19 @@ grep -Eq '^[[:space:]]*bash[[:space:]]+"?\$here/fleet-researcher-oversize\.test\
   || fail "fleet-researcher-oversize.test.sh must not be a known orphan (fleet-ops#6025)"
 ok "fleet-researcher-oversize.test.sh host line in seat-lib.test.sh is pinned (fleet-ops#6025)"
 
+# fleet-ops#6094: hard-pin the host line for fleet-researcher-failed-cycle
+# in fleet-researcher-oversize.test.sh (already on a listed P14 host).
+# The standing-FAIL 24h lock rides on that listed chain (the worker App
+# cannot push .github/workflows/**); the pin is class-prevention so a
+# dropped host line cannot park the lock on known_orphans — it fails by
+# name first.
+grep -Eq '^[[:space:]]*bash[[:space:]]+"?\$here/fleet-researcher-failed-cycle\.test\.sh"?' \
+  "$here/fleet-researcher-oversize.test.sh" \
+  || fail "fleet-researcher-oversize.test.sh must bash-invoke fleet-researcher-failed-cycle.test.sh (fleet-ops#6094)"
+[[ -n "${reachable[fleet-researcher-failed-cycle.test.sh]:-}" ]] \
+  || fail "fleet-researcher-failed-cycle.test.sh must be hosted by a listed test (fleet-ops#6094)"
+[[ -z "${known_orphan_set[fleet-researcher-failed-cycle.test.sh]:-}" ]] \
+  || fail "fleet-researcher-failed-cycle.test.sh must not be a known orphan (fleet-ops#6094)"
+ok "fleet-researcher-failed-cycle.test.sh host line in fleet-researcher-oversize.test.sh is pinned (fleet-ops#6094)"
+
 echo "OK: p14-test-listing-gate.test.sh: P14 test list is closed"
