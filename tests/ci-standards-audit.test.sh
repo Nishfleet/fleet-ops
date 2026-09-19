@@ -485,32 +485,14 @@ bash "$here/provider-timeout.test.sh"
 bash "$here/subagent-extload.test.sh"
 
 
-# fleet-ops#2666: 0B-stdout empty-run burst on healthy seats — the 2h
-# burst signal the #902 24h waste-ratio gauge masks (2026-09-01 12:48Z-
-# 14:11Z: empty_runs_last_2h 0 -> 6 on minimax/MiniMax-M3 + openrouter/
-# deepseek-v4-flash-0731, both healthy seats). The 16-scenario offline
-# suite proves the burst gate, cause classification, healthy-seat
-# bucketing, dedup, and observe-to-close. Hosted here so P14 runs it
-# without a workflow-file edit (the worker App cannot push
-# .github/workflows/**).
-
-# fleet-ops#2627: empty-run count must accumulate across healthy ledger
-# clobbers (seat-health.ts resets ledger count=0 on every 200 OK, so the
-# wrapper's mark_seat_empty_run must carry the count in the clobber-proof
-# spawn-bench marker — fleet-ops#1512 — and engage the failure-ceiling
-# park from the marker-carried count). fleet-ops#3531: the bench now
-# escalates geometrically and uses the generic failure ceiling.
-# live 18 empty runs in 2h on healthy-reporting seats (opencode/nemotron
-# and openrouter/deepseek-v4-flash-0731) was the wrapper-side marker
-# staying at count=1 every cycle. Hosted here so P14 runs it without a
-# workflow-file edit (the worker App cannot push .github/workflows/**).
-
-# fleet-ops#3046 / #3531: the empty-run bench now escalates geometrically
-# and uses the generic failure ceiling. The marker count still accumulates
-# across healthy clobbers and the park engages at the ceiling. This test
-# exercises the default window and the geometric/park behaviour.
-# Hosted here so P14 runs it without a workflow-file edit.
-
+# fleet-ops#2666 / #2627 / #3046 / #3531: the 0B-stdout empty-run burst suite and
+# the clobber-proof spawn-bench marker suites lived here. All are DELETED —
+# fleet-ops#6003. The wrapper-side marker writer (`mark_seat_empty_run`) went
+# with lib/litellm-seat.sh in the 2026-09-18 glue sweep; the LiteLLM router now
+# owns cooldown, retries and fallbacks, so there is no harness-side empty-run
+# count and no failure-ceiling park to assert. The host lines had already gone
+# (002f99b26); these four orphaned comment blocks were the last reference and
+# they described a contract that no longer exists.
 
 # fleet-ops#2756: scout effectiveness metric (filed -> survive intake ->
 # agent-ready -> merged_14d). Hosted here so P14 runs it without a
