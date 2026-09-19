@@ -91,6 +91,11 @@ done
 # Live/destructive tests that are intentionally not run in hosted CI.
 declare -A live_skip
 live_skip[worker-token-live.test.sh]=1
+# fleet-ops#5912: declared-fork extensions must be regular files identical to
+# the repo template under ~/.pi/agent/extensions — a 2026-09-19 `ln -sf` pass
+# re-symlinked them to stock and dropped the fleet rules silently. VPS-only
+# (reads ~/.pi); skips in hosted CI.
+live_skip[pi-extensions-forks-live.test.sh]=1
 # fleet-ops#4141: the 12 opus-heartbeat-* tests were deleted (the opus-
 # heartbeat family was retired — recording rules + fable-check.md replaced
 # it). No live_skip entries needed for deleted tests.
