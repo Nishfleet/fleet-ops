@@ -492,4 +492,18 @@ grep -Eq '^[[:space:]]*bash[[:space:]]+"?\$here/skill-bak-sprawl\.test\.sh"?' \
   || fail "skill-bak-sprawl.test.sh must not be a known orphan (fleet-ops#7842)"
 ok "skill-bak-sprawl.test.sh host line in ci-standards-audit.test.sh is pinned (fleet-ops#7842)"
 
+# fleet-ops#6025: hard-pin the host line for fleet-researcher-oversize in
+# seat-lib.test.sh (already listed in ci.yml). The groq TPM-wall lock
+# rides on that listed test (the worker App cannot push .github/workflows/**);
+# the pin is class-prevention so a dropped host line cannot park the lock
+# on known_orphans — it fails by name first.
+grep -Eq '^[[:space:]]*bash[[:space:]]+"?\$here/fleet-researcher-oversize\.test\.sh"?' \
+  "$here/seat-lib.test.sh" \
+  || fail "seat-lib.test.sh must bash-invoke fleet-researcher-oversize.test.sh (fleet-ops#6025)"
+[[ -n "${reachable[fleet-researcher-oversize.test.sh]:-}" ]] \
+  || fail "fleet-researcher-oversize.test.sh must be hosted by a listed test (fleet-ops#6025)"
+[[ -z "${known_orphan_set[fleet-researcher-oversize.test.sh]:-}" ]] \
+  || fail "fleet-researcher-oversize.test.sh must not be a known orphan (fleet-ops#6025)"
+ok "fleet-researcher-oversize.test.sh host line in seat-lib.test.sh is pinned (fleet-ops#6025)"
+
 echo "OK: p14-test-listing-gate.test.sh: P14 test list is closed"

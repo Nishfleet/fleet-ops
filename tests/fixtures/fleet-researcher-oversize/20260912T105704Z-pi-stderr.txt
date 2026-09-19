@@ -1,0 +1,6 @@
+# Replay of the 2026-09-12T10:57Z researcher cycle (fleet-ops#6025).
+# The live report at agent-state/fleet-researcher/reports/20260912T105704Z/
+# is gone; this is the incident string the issue filed against, plus the
+# Groq envelope (HTTP 413, code=rate_limit_exceeded, type=tokens) that the
+# same seat returned on the 2026-09-02 PONG probe (seat-caps groq reason).
+litellm.RateLimitError: groqException - {"error":{"message":"Request too large for model `openai/gpt-oss-20b` on tokens per minute (TPM): Limit 8000, Requested 15657. Please reduce the size of your prompt.","type":"tokens","code":"rate_limit_exceeded"}}

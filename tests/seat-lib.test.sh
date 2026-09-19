@@ -54,6 +54,11 @@ bash "$here/seat-caps-citation.test.sh" || fail "seat-caps-citation tests failed
 bash "$here/seat-caps-citation-rule6-replay.test.sh" \
   || fail "seat-caps-citation rule6 replay tests failed"
 bash "$here/seat-caps-zero-yield.test.sh" || fail "seat-caps-zero-yield tests failed"
+# fleet-ops#6025: groq TPM 8000 cannot fit a pi packet. The picker is gone;
+# this lock keeps the corpse off the LiteLLM router. Hosted here so P14
+# runs it without a workflow-file edit.
+bash "$here/fleet-researcher-oversize.test.sh" \
+  || fail "fleet-researcher-oversize tests failed"
 # fleet-ops#1138: Relates to, not Closes, for decisions-ledger fixes.
 bash "$here/gate-integrity-reusable.test.sh" || fail "gate-integrity reusable tests failed"
 bash "$here/gate-integrity-reusable-828.test.sh" || fail "gate-integrity reusable 828 tests failed"
