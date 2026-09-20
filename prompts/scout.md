@@ -51,6 +51,8 @@ gh pr list -R Nishfleet/<repo> --state open --json number,title,body,mergeable -
 
 Before filing anything, check every candidate against ALL open issue titles/bodies and ALL open PR titles/bodies. If the same product defect, same stale PR, or same acceptance criteria already exists, skip it. Near-duplicates count as dupes.
 
+**Marker match beats prose match (fleet-ops#6596).** When a candidate body would carry a source-marker line — a `<filer>: <key>` line identifying the detector or canary that produced it (e.g. `paid-flash-canary: qwen-3.8-flash available`, `loud/<alarm>/<class>`) — grep the open-issue corpus for that exact line first. An open issue already carrying the identical marker line IS the same work item: skip the candidate no matter how far the surrounding prose has drifted. Prose-only matching let the #5846 refire through on 2026-09-12 because the incumbent-lane wording changed between firings.
+
 ## Step 2 — Inspect sources (value order)
 
 Work top-down. Stop adding candidates once you have more than 8 strong ones; you will trim in step 4.
