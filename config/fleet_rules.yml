@@ -67,6 +67,23 @@ groups:
           summary: "prometheus-am-executor is down — alerts cannot dispatch repair"
           description: "The repair-dispatch receiver is not scrapeable. Until it returns, every critical/warning alert is silent. Repair: systemctl --user status prometheus-am-executor."
 
+      # fleet-ops#6845: the last hop of the nish/page rail can fail silently.
+      # amtool alert add is synchronous (a refused POST is loud), but a dead
+      # telegram sender or a down alertmanager leaves the escalation
+      # accepted-and-undelivered — the same dark-channel class as the
+      # NISH-ESCALATIONS.md starvation this issue recorded, on the only rail
+      # that still exists. severity=critical -> repair-dispatch summons a
+      # repair worker, never the phone: telegram is the thing that is broken.
+      - alert: FleetNishPageRailDown
+        expr: increase(alertmanager_notifications_failed_total{integration="telegram"}[10m]) > 0 or absent(up{job="alertmanager"}) or up{job="alertmanager"} == 0
+        for: 5m
+        labels:
+          severity: critical
+          service: escalation
+        annotations:
+          summary: "Nish page rail is dark — telegram sends failing or alertmanager down"
+          description: "alertmanager_notifications_failed_total{integration=\"telegram\"} rose in the last 10m, or up{job=\"alertmanager\"} is 0/absent. severity=nish and severity=page alerts are accepted but not reaching the phone. Repair: systemctl status prometheus-alertmanager; check /etc/prometheus/telegram_bot_token; run 'amtool alert query severity=nish' for the accepted-but-undelivered backlog."
+
   - name: fleet_money
     rules:
       # MONEY. The only rules on this file that reach Nish's phone.
