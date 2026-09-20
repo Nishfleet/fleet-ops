@@ -42,7 +42,7 @@ cheaper than building, because prose bans lose to urgency at decision time.
 | Packet dispatch | pi-packet@ | `pi-packet@.service` | stock Pi |
 | Standing-rules render | standing-rules-render | `standing-rules-render.{path,service}` | vault |
 | Quality research (weekly) | quality-research-weekly | `quality-research-weekly.timer` | #457 |
-| Boundary-notify (Nish-reserved) | nish-boundary-notify | `nish-boundary-notify.service` | standing rule |
+| Nish-reserved escalation (phone page) | alertmanager `severity="nish"` route | one stock amtool line, `config/alertmanager.yml` | #6845, `6fdd20ed1` |
 | Alert→repair bridge | prometheus-am-executor | `prometheus-am-executor.service` | alert pipeline |
 | Daily digest | daily-digest | `daily-digest.timer` | Pi-era data |
 | Product nightly site check | tinystudio-live-site-check | `tinystudio-live-site-check.timer` | product-ops |
@@ -71,6 +71,15 @@ only Nish-reserved verdicts reach Nish.
 `fleet-litellm-health-canary` were removed with the rest of the restart-survival glue.
 The canary alone produced 2709 unit deaths in 7 days. LiteLLM organ death is now probed
 directly by `up{job="litellm"}` over the existing scrape job.
+
+> **DELETED 2026-09-18 (escalation cut, `6fdd20ed1`).** `nish-boundary-notify`, `hermes`
+and `money-boundary-raise` plus the `NISH-ESCALATIONS.md` path unit were a 1,181-line
+hand-built second delivery path to Nish's phone behind alertmanager, which already owned
+the real one: the `severity="nish"` route to the telegram receiver. The row above points
+at that live mechanism (one stock `amtool alert add` line). The old
+`nish-boundary-notify.service.d/10-rate-limit.conf` rate-limit drop-in came and went with
+the tower — absorbed on main by `5b298fb28`, deleted with the whole unit (observe-close:
+fleet-ops#6926).
 
 > **DELETED 2026-09-18 (glue sweep third cut).** `fleet-restore-drill` (542 LOC) and
 `fleet-bare-metal-rebuild` (596 LOC + a 244-line package manifest) are gone. The rebuild
