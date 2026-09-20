@@ -16,7 +16,8 @@
 #   fleet_litellm_pgdump_*        restic-restore-test.prom (same writer)
 #   up{}                          prometheus scrape state
 #   probe_success                 blackbox_exporter (3 targets on 0509)
-#   fleet_main_ci_green, fleet_prepaid_credits_usd, fleet_prepaid_used_usd
+#   fleet_main_ci_green, fleet_prepaid_credits_usd, fleet_prepaid_used_usd,
+#   fleet_main_ci_run_timestamp_seconds
 #   ci_merge_queue_entries, ci_merge_queue_head_wait_seconds,
 #   ci_hosted_runs_queued, ci_hosted_runs_in_progress,
 #   ci_hosted_runs_*_by_workflow, ci_workflow_run_median_seconds
@@ -193,6 +194,28 @@ groups:
         annotations:
           summary: "{{ $value }} hosted runs queued on {{ $labels.repo }}"
           description: "More than 30 GitHub-hosted runs queued on {{ $labels.repo }} for 15m (org plan = 20 concurrent hosted jobs). Packet context: top consumers topk(5, ci_hosted_runs_queued_by_workflow{repo=\"{{ $labels.repo }}\"}); hold time ci_workflow_run_median_seconds{repo=\"{{ $labels.repo }}\"}; merge-queue head wait ci_merge_queue_head_wait_seconds{repo=\"{{ $labels.repo }}\"}. Consolidation issues: Nishfleet/0509#3069, Nishfleet/0509#3068, Nishfleet/0509#3070. Repair: cancel stale queued runs, consolidate check matrices per the named issues."
+
+      # fleet-ops#2963, restored 2026-09-20: 3edc23cc7 dropped this with five
+      # others on the premise that every textfile writer was deleted — but the
+      # probe and its fleet_main_ci_green series are live, and this file's own
+      # inclusion rule names main-red a guarded class. Without it the probe
+      # emits a gauge nothing reads and a red trunk alerts nobody. The verdict
+      # is the newest completed PUSH-triggered run with a real conclusion
+      # (skipped/cancelled/pending never count — the false-red family proven
+      # firing on a green 0509 trunk 2026-09-19); evidence-as-of is
+      # fleet_main_ci_run_timestamp_seconds. The 30m `for` is the
+      # fleet-ops#1199 ratchet floor — raising it needs a new issue. A
+      # vanished series is a GitHub-read failure (unknown), NOT green; a dead
+      # producer is FleetProbeStale's job below.
+      - alert: FleetMainRed
+        expr: fleet_main_ci_green == 0
+        for: 30m
+        labels:
+          severity: critical
+          service: fleet
+        annotations:
+          summary: "main branch CI red on {{ $labels.repo }} for 30+ minutes"
+          description: "Trunk is broken; merges/deploys unsafe. Evidence: fleet_main_ci_run_timestamp_seconds{repo=\"{{ $labels.repo }}\"} is the source-run update time — check it is fresh before trusting the red, and treat an absent fleet_main_ci_green series as a GitHub-read failure, not green. prometheus-am-executor runs the repair command with `max: 1`, so exactly one repair worker spawns at a time."
 
       # FleetProbeStale is the probe's own heartbeat, restored: the file's
       # comments above already name it as the guard for this blind spot, and
