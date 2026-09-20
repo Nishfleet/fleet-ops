@@ -36,9 +36,17 @@
 #     auto-enqueue:
 #       uses: Nishfleet/fleet-ops/.github/workflows/reusable-auto-enqueue.yml@main
 #       secrets:
-#         AUTO_REVERT_PAT: ${{ secrets.AUTO_REVERT_PAT }}
+#         NISHFLEET_WORKER_APP_ID: ${{ secrets.NISHFLEET_WORKER_APP_ID }}
+#         NISHFLEET_WORKER_PRIVATE_KEY: ${{ secrets.NISHFLEET_WORKER_PRIVATE_KEY }}
 #
 # Same-repo callers use ./.github/workflows/reusable-auto-enqueue.yml (this commit).
+#
+# Credential (fleet-ops#6793): the arm runs under a nishfleet-worker App
+# installation token minted per call (≤1h expiry) — never a human PAT. The
+# old AUTO_REVERT_PAT made Nish the triggering actor of every merge it armed
+# (fleet-ops#1469); the App is a real actor so merges still trigger push
+# workflows on main. Missing App secrets fail LOUD and the PR waits for a
+# human — no GITHUB_TOKEN fallback, same posture as the old auto-merge-arm.
 #
 # Standing CI standard (vault global-standing-rules.md), by construction:
 #   1. timeout-minutes on the job.
@@ -73,7 +81,9 @@ on:
         required: false
         default: 5
     secrets:
-      AUTO_REVERT_PAT:
+      NISHFLEET_WORKER_APP_ID:
+        required: true
+      NISHFLEET_WORKER_PRIVATE_KEY:
         required: true
 
 permissions:
@@ -85,10 +95,25 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: ${{ inputs.timeout-minutes }}
     steps:
+      - name: Mint nishfleet-worker App installation token
+        id: app-token
+        # ≤1h installation token for the nishfleet-worker GitHub App
+        # (fleet-ops#6793). github.repository_owner resolves to the CALLER's
+        # owner under workflow_call, so one file mints for the right
+        # installation in both Nishfleet and nish3451 consumers. No
+        # continue-on-error and no GITHUB_TOKEN fallback: a missing App
+        # secret must fail LOUD so the PR waits for a human (fleet-ops#1469).
+        # Same action pin as the old auto-merge-arm path.
+        uses: actions/create-github-app-token@fee1f7d63c2ff003460e3d139729b119787bc349 # v2.2.2
+        with:
+          app-id: ${{ secrets.NISHFLEET_WORKER_APP_ID }}
+          private-key: ${{ secrets.NISHFLEET_WORKER_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+
       - name: Resolve target PR(s) from the event
         id: targets
         env:
-          GH_TOKEN: ${{ secrets.AUTO_REVERT_PAT }}
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
           REPO: ${{ github.repository }}
           EVENT: ${{ github.event_name }}
           PR_NUMBER: ${{ github.event.pull_request.number || '' }}
@@ -112,14 +137,14 @@ jobs:
       - name: Arm/queue green fleet PRs
         if: steps.targets.outputs.count != '0'
         env:
-          GH_TOKEN: ${{ secrets.AUTO_REVERT_PAT }}
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
           REPO: ${{ github.repository }}
           FLEET_ONLY: ${{ inputs.fleet-only }}
           FLEET_AUTHORS: ${{ inputs.fleet-authors }}
           NO_MERGE_LABEL: ${{ inputs.no-merge-label }}
         run: |
           set -uo pipefail
-          [ -z "$GH_TOKEN" ] && { echo "::error::AUTO_REVERT_PAT not configured — cannot enqueue"; exit 1; }
+          [ -z "$GH_TOKEN" ] && { echo "::error::no nishfleet-worker App token minted — NISHFLEET_WORKER_APP_ID/NISHFLEET_WORKER_PRIVATE_KEY secrets missing or App not installed on this account (fleet-ops#6793)"; exit 1; }
 
           # Resolve the repo's merge-queue + squash settings once.
           repo_json="$(gh api "repos/$REPO")"
