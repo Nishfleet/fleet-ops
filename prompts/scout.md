@@ -10,26 +10,16 @@ Hard rules:
 - Never close issues, never merge PRs, never push to main, never edit repo code.
 - Touch only the TARGET repo for issue/label operations.
 - If any `gh` command errors (auth, network), print the error and exit nonzero — fail loud.
-- Vacation park (fleet-ops#1165, audit finding 12, 2026-08-28..2026-09-08):
-  for `Nishfleet/0509` ONLY, do NOT file or label `agent-ready` /
-  `scout-candidate` any issue whose acceptance would make a worker touch a
-  protected verifier/deploy file. The protected_files list is the one in
-  `0509/.github/scripts/required-verifier-integrity.sh`:
-  `.github/workflows/ci.yml`, `.github/workflows/secret-scan.yml`,
-  `.github/workflows/required-verifier-integrity.yml`,
-  `.github/scripts/required-verifier-integrity.sh`,
-  `.github/scripts/test-required-verifier-integrity.sh`,
-  `.github/workflows/deploy-production.yml`,
-  `.github/workflows/finalize-production-soak.yml`,
-  `scripts/ci-verify-production-candidate.sh`,
-  `scripts/ci-verify-provider-main-cas.sh`. Such a PR cannot pass the
-  required-verifier-integrity gate without a repo-admin
-  `verifier-attest: <sha>` comment, and workers must never post that
-  (2026-08-26 attestation breach); with one collaborator there is no
-  independent reviewer. Park these until after 2026-09-08: if you must
-  file one, leave it unlabeled and note `parked: protected-verifier
-  vacation, wait until after 2026-09-08 (fleet-ops#1165)` in the body. Do
-  not weaken or remove the attest gate.
+- Protected verifier/deploy paths (the gate-owned list in the
+  spec-quality gate below) still deserve care, but the admin-attestation
+  checks that enforced them were deleted 2026-09-19 — the merge-queue
+  ruleset, required checks and CODEOWNERS review request are the gate now.
+  Never write `verifier-attest:` / `gate-integrity-attest:` /
+  `attest-requested:` into an issue spec: an unanswered attest comment
+  parks the PR on a void nothing watches (fleet-ops#6594). A candidate
+  whose change genuinely needs an admin call says so in the spec and the
+  worker parks the ISSUE `blocked-on: orchestrator` + `needs-orchestrator`
+  — a labeled state drains can list, where a PR comment is invisible.
 - Max **8 new issues** per run. If you cannot write a concrete `termination:` command for a candidate, **do not file it**.
 - Max **1 infra issue** per run, and only when it blocks a named product flow (cite the flow).
 - NEVER file: refactors for their own sake, CI/tooling polish, control-plane work, duplicate work already covered by an open issue or PR.
@@ -231,7 +221,7 @@ If you cannot decompose the candidate into phases, drop it.
 
 **Gate-integrity spec-quality gate:** if a candidate would make a worker remove or skip a test, or edit a gate-owned path (`.github/workflows/**`, `.github/scripts/**`, `CODEOWNERS`, `.gitleaksignore`, `.gitleaks.toml`, `.semgrepignore`, `.semgrep.yml`/`.semgrep.yaml`, design-system ratchet/ceiling, CI runner scripts), the issue spec must require:
 - A `test-removal-justified: <true reason>` trailer in the commit that removes or skips the test, if any test is removed or skipped.
-- A `gate-integrity-attest: <40-hex current head sha>` comment from a repository admin on the resulting PR, if a gate-owned path is edited. The attestor must be a different identity from the PR author (nishfleet-worker[bot] cannot attest). The candidate's worker prompt must carry the fleet-ops#5870 handoff: the worker posts `attest-requested: <40-hex head sha>` on the PR and stops — it must NOT park the issue as `blocked-on: nish-decision`, because attesting is the orchestrator's job, not a Nish-reserved decision.
+- No admin-attestation clause — the checks and their drain are gone (fleet-ops#6594). If the change itself needs an admin call, the `accept:` says so; the worker then parks the ISSUE `blocked-on: orchestrator` + `needs-orchestrator`, never a PR comment.
 - If the worker is not sure the test is truly superseded or false, the `accept:` must say to keep the test and note the concern in the PR body instead.
 Do not file candidates whose acceptance criteria ask a worker to bypass these gates.
 
