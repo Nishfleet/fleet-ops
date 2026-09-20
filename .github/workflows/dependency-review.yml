@@ -1,0 +1,37 @@
+name: Dependency Review
+
+on:
+  pull_request:
+  merge_group:
+
+permissions: {}
+
+concurrency:
+  group: dependency-review-${{ github.event.pull_request.number || github.ref }}
+  # Cancel superseded runs on PRs only. Merge-queue groups complete.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  dependency-review:
+    name: Dependency Review
+    # Required-context shape (same as the Gitleaks job): NO job-level `if:`
+    # and NO `needs` — a skipped required context still satisfies branch
+    # protection, so the gate must always run to a real verdict. The action
+    # reviews the dependency diff via the Dependency Review API, so the job
+    # is safe on any PR: it consumes no repo secrets and never checks out or
+    # executes pull-request code.
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - name: Review dependency changes
+        uses: actions/dependency-review-action@2031cfc080254a8a887f58cffee85186f0e49e48 # v4.9.0
+        with:
+          fail-on-severity: high
+          fail-on-scopes: runtime
+          # pull_request carries its own base/head context; merge_group does
+          # not, so the queue's group SHAs are passed explicitly (empty on
+          # pull_request, where the action falls back to the event payload).
+          base-ref: ${{ github.event.merge_group.base_sha || '' }}
+          head-ref: ${{ github.event.merge_group.head_sha || '' }}
