@@ -98,50 +98,18 @@ model_list:
   model_info:
     mode: chat
     id: pareto-glm53flash-worker-private
-# fleet-ops#6228: Devin/Windsurf CustomLLM bridge (devin/swe-2-max only).
-# No api_base: the handler shells out to `devin --print`. api_key declares
-# the DEVIN_API_KEY the start wrapper already sources. model_info.mode:chat
-# is required because a custom provider is absent from litellm's model map.
-# model_info.id pins specific_deployment. Prose groups only — NEVER
-# worker-cheap/worker-capable (fleet-ops#7761: the bridge cannot return
-# tool_calls). This repo yaml is the shape reference; copying it onto the
-# live operator-owned config is a deploy and is not authorized by #6228.
-- model_name: senior
-  litellm_params:
-    model: devin/swe-2-max
-    api_key: os.environ/DEVIN_API_KEY
-    tags:
-    - prepaid
-    - senior
-    order: 1
-    max_parallel_requests: 1
-  model_info:
-    mode: chat
-    id: devin-swe-2-max-senior
-- model_name: judge
-  litellm_params:
-    model: devin/swe-2-max
-    api_key: os.environ/DEVIN_API_KEY
-    tags:
-    - prepaid
-    - judge
-    order: 1
-    max_parallel_requests: 1
-  model_info:
-    mode: chat
-    id: devin-swe-2-max-judge
-- model_name: worker-private
-  litellm_params:
-    model: devin/swe-2-max
-    api_key: os.environ/DEVIN_API_KEY
-    tags:
-    - prepaid
-    - private
-    order: 1
-    max_parallel_requests: 1
-  model_info:
-    mode: chat
-    id: devin-swe-2-max-private
+# fleet-ops#6133 (2026-09-21): the devin/swe-2-max CustomLLM rows added by
+# #7895 are REMOVED. The #7907 no-glue sweep deleted the handler
+# (libexec/fleet-litellm-devin-adapter/) later the same day — a
+# custom_provider_map module is exactly the hand-built extension class that
+# sweep retired, and this shape reference must stay deployable as written
+# (a missing handler fails the proxy at import).
+# Devin capacity is live on the devin-issue@ worker lane instead
+# (systemd/devin-issue@.service; prompts/intake.md picks devin-issue@<repo>-N
+# while fewer than 3 are active). `devin --print` is an agent, not an HTTP
+# endpoint, and can never return tool_calls — so it can never be a router
+# rung (fleet-ops#7761). NEVER swe-1-7 (retired, cap 0) or swe-2-high
+# (parked to 2036).
 # fleet-ops#6054 (2026-09-12): benched = NOT routed, NOT in model_list, and NOT
 # counted by the health canary's fleet_litellm_model_list_expected (only
 # "- model_name:" lines count). Inert to the loader: ProxyConfig reads known
@@ -288,10 +256,12 @@ benched:
 # direct-probe HTTP 200 08:15-08:25Z; back in model_list at its pre-#6193
 # placements (worker-cheap/worker-capable order:1, senior/worker-private order:2).
 # #6133 (2026-09-13): openai/* against api.devin.ai stays benched — those
-# bases 404 (live-proxied 2026-09-13). The #6228 CustomLLM wire is
-# `devin/swe-2-max` in model_list for senior/judge/worker-private only.
-# Do NOT restore this openai/* row; do NOT add the CustomLLM bridge to
-# worker-cheap/worker-capable (fleet-ops#7761).
+# bases 404 (live-proxied 2026-09-13). The #6228 CustomLLM wire
+# (devin/swe-2-max in senior/judge/worker-private, PR #7895) was retired
+# the same day by the #7907 no-glue sweep — devin seats now serve as the
+# devin-issue@ worker lane, not a router rung. Do NOT restore this openai/*
+# row; do NOT add any devin bridge to worker-cheap/worker-capable
+# (fleet-ops#7761).
 - benched_at: 2026-09-13
   reason: "openai/glm-5-2 + openai/swe-2-max @ Devin/Windsurf — openai/* 404 on all four candidate bases (api.devin.ai/v1, api.devin.ai, server.codeium.com, windsurf.com/api/v1; live-proxied 2026-09-13). Unlock is the #6228 CustomLLM handler (devin/swe-2-max in senior/judge/worker-private), not this openai/* row. NEVER restore openai/* here. NEVER swe-1-7 (retired) or swe-2-high (parked to 2036). NEVER put the CustomLLM bridge in worker groups (fleet-ops#7761)."
   was: [worker-cheap, worker-capable]
@@ -409,12 +379,6 @@ litellm_settings:
   callbacks:
   - prometheus
   require_auth_for_metrics_endpoint: false
-  # fleet-ops#6228: CustomLLM bridge. LiteLLM loads custom_handler as a
-  # sibling of the live config (~/.config/fleet-ops/fleet_devin_adapter.py).
-  # Repo source: libexec/fleet-litellm-devin-adapter/fleet_devin_adapter.py.
-  custom_provider_map:
-  - provider: devin
-    custom_handler: fleet_devin_adapter.devin_windsurf_llm
 general_settings:
   # Jev (typesafe-ai/jev) as a pass-through endpoint — glue sweep 2026-09-18.
   #
