@@ -1,0 +1,45 @@
+# fleet-ops#2963: promtool unit test for the restored FleetMainRed rule.
+#
+# fleet_main_ci_green{repo="0509"} is held at 0 for 40 straight minutes —
+# the rule's `for: 30m` (the fleet-ops#1199 ratchet floor) must fire at 31m
+# and stay silent at 29m. fleet-ops holds 1 the whole time as the green
+# control and must never appear in exp_alerts. The timestamp series is
+# loaded alongside so the test proves the rule keys on the verdict, not on
+# evidence age. No node_textfile_mtime_seconds is loaded, so FleetProbeStale
+# also fires — it is asserted in ci-queue-alerts.promtool.yml and not
+# re-asserted here.
+
+rule_files:
+  - ../../config/fleet_rules.yml
+
+evaluation_interval: 1m
+
+tests:
+  - interval: 1m
+    input_series:
+      - series: 'fleet_main_ci_green{repo="0509"}'
+        values: '0+0x40'
+      - series: 'fleet_main_ci_run_timestamp_seconds{repo="0509"}'
+        values: '1789800000+0x40'
+      - series: 'fleet_main_ci_green{repo="fleet-ops"}'
+        values: '1+0x40'
+      - series: 'fleet_main_ci_run_timestamp_seconds{repo="fleet-ops"}'
+        values: '1789800000+0x40'
+
+    alert_rule_test:
+      # for: 30m — still pending at 29m on a held red.
+      - eval_time: 29m
+        alertname: FleetMainRed
+        exp_alerts: []
+
+      # Held red past the ratchet floor: fires on 0509 only.
+      - eval_time: 31m
+        alertname: FleetMainRed
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              service: fleet
+              repo: "0509"
+            exp_annotations:
+              summary: "main branch CI red on 0509 for 30+ minutes"
+              description: "Trunk is broken; merges/deploys unsafe. Evidence: fleet_main_ci_run_timestamp_seconds{repo=\"0509\"} is the source-run update time — check it is fresh before trusting the red, and treat an absent fleet_main_ci_green series as a GitHub-read failure, not green. prometheus-am-executor runs the repair command with `max: 1`, so exactly one repair worker spawns at a time."

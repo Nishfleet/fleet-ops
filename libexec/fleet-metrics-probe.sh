@@ -30,16 +30,29 @@ REPOS="${CI_PROBE_REPOS:-$(jq -r '.repos[].name' "$(dirname "$0")/../config/inta
 [ -n "$(printf '%s' "$REPOS" | tr -d '[:space:]')" ] || REPOS="fleet-ops 0509"
 
 {
-    echo '# HELP fleet_main_ci_green Latest completed CI run on the default branch succeeded (1) or not (0).'
+    # fleet-ops#2963: the verdict is the newest completed PUSH-triggered run
+    # on main carrying a real conclusion — skipped/cancelled/null runs are not
+    # verdicts (the newest-completed-of-any-trigger read fired false
+    # FleetMainRed on a green 0509 trunk 2026-09-19, same family as
+    # fleet-ops#3626), and event=push keeps scheduled-monitor successes from
+    # masking a red trunk. fleet_main_ci_run_timestamp_seconds records the
+    # verdict run's update time — the source timestamp the issue requires, so
+    # evidence age is queryable as time() minus the series.
+    # No verdict (GitHub unreachable, no completed push run, every completed
+    # run cancelled/skipped) emits NOTHING for the repo: absent reads as
+    # unknown via FleetProbeStale, never as a fabricated green or red.
+    echo '# HELP fleet_main_ci_green Latest completed push-triggered run on the default branch returned a success verdict (1) or a real non-success verdict (0).'
     echo '# TYPE fleet_main_ci_green gauge'
+    echo '# HELP fleet_main_ci_run_timestamp_seconds Update time of the run that produced the fleet_main_ci_green verdict (evidence-as-of).'
+    echo '# TYPE fleet_main_ci_run_timestamp_seconds gauge'
     for r in $REPOS; do
-        c=$(timeout 20 gh api "repos/Nishfleet/$r/actions/runs?branch=main&per_page=1&status=completed" \
-              --jq '.workflow_runs[0].conclusion' 2>/dev/null)
-        # No answer means GitHub was unreachable, not that main is green.
-        # Emit nothing and let FleetProbeStale catch a persistent outage.
-        [ -z "$c" ] && continue
+        out=$(timeout 20 gh api "repos/Nishfleet/$r/actions/runs?branch=main&per_page=100&status=completed&event=push" \
+              --jq '[.workflow_runs[] | select(.conclusion == "success" or .conclusion == "failure" or .conclusion == "timed_out" or .conclusion == "startup_failure")][0] // empty | "\(.conclusion) \(.updated_at | fromdateiso8601)"' 2>/dev/null)
+        [ -z "$out" ] && continue
+        c=${out%% *}
         [ "$c" = success ] && v=1 || v=0
         echo "fleet_main_ci_green{repo=\"$r\"} $v"
+        echo "fleet_main_ci_run_timestamp_seconds{repo=\"$r\"} ${out##* }"
     done
 
     echo '# HELP fleet_prepaid_credits_usd Prepaid vendor credit remaining, USD (vendor API only).'
