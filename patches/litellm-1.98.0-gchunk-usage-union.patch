@@ -1,0 +1,20 @@
+--- a/litellm/litellm_core_utils/streaming_handler.py	2026-09-20 05:44:09.304263328 +0530
++++ b/litellm/litellm_core_utils/streaming_handler.py	2026-09-20 05:44:15.937098120 +0530
+@@ -1199,10 +1199,16 @@
+                 self.intermittent_finish_reason = anthropic_response_obj["finish_reason"]
+ 
+             if anthropic_response_obj["usage"] is not None:
++                _chunk_usage = anthropic_response_obj["usage"]
++                # fleet-ops#6863: usage may arrive already materialized as a
++                # pydantic Usage/BaseModel; ** only accepts a mapping, so
++                # normalize objects through model_dump() first.
++                if isinstance(_chunk_usage, BaseModel):
++                    _chunk_usage = _chunk_usage.model_dump()
+                 setattr(
+                     model_response,
+                     "usage",
+-                    litellm.Usage(**anthropic_response_obj["usage"]),
++                    litellm.Usage(**_chunk_usage),
+                 )
+ 
+             if "tool_use" in anthropic_response_obj and anthropic_response_obj["tool_use"] is not None:
