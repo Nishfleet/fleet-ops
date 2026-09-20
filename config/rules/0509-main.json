@@ -1,0 +1,61 @@
+{
+  "endpoint": "GET /repos/Nishfleet/0509/rules/branches/main",
+  "http_status": 200,
+  "verified_at_utc": "2026-09-20T02:21:41Z",
+  "verified_by": "nishfleet-worker token (read-only; writes stayed out of repo settings)",
+  "stage": "0509 parity target named by Nishfleet/fleet-ops#6476; snapshot is FACTUAL STATE, not a fleet-ops adoption record",
+  "payload_sha256": "11bca1472a6ad4f2764da861c70496837f54b385eb43725f93ab12bd53f74235",
+  "rules": [
+    {
+      "type": "non_fast_forward",
+      "ruleset_source_type": "Repository",
+      "ruleset_source": "Nishfleet/0509",
+      "ruleset_id": 21391031
+    },
+    {
+      "type": "deletion",
+      "ruleset_source_type": "Repository",
+      "ruleset_source": "Nishfleet/0509",
+      "ruleset_id": 21391031
+    },
+    {
+      "type": "merge_queue",
+      "parameters": {
+        "merge_method": "MERGE",
+        "max_entries_to_build": 5,
+        "min_entries_to_merge": 1,
+        "max_entries_to_merge": 5,
+        "min_entries_to_merge_wait_minutes": 0,
+        "grouping_strategy": "HEADGREEN",
+        "check_response_timeout_minutes": 60
+      },
+      "ruleset_source_type": "Repository",
+      "ruleset_source": "Nishfleet/0509",
+      "ruleset_id": 21391031
+    },
+    {
+      "type": "required_status_checks",
+      "parameters": {
+        "strict_required_status_checks_policy": false,
+        "do_not_enforce_on_create": false,
+        "required_status_checks": [
+          {
+            "context": "Gitleaks"
+          },
+          {
+            "context": "codex-node-checks"
+          },
+          {
+            "context": "semgrep"
+          },
+          {
+            "context": "preview-assert"
+          }
+        ]
+      },
+      "ruleset_source_type": "Repository",
+      "ruleset_source": "Nishfleet/0509",
+      "ruleset_id": 21391031
+    }
+  ]
+}
