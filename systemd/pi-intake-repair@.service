@@ -20,5 +20,5 @@ TimeoutStartSec=1800
 # $$ is a literal $ for the shell; systemd expands $VAR before sh sees it.
 # RuntimeDirectory is removed AFTER ExecStopPost, so the stamp is readable here.
 RuntimeDirectory=pi-intake-repair-%i
-ExecStartPre=/bin/sh -c 'date +%s > $$RUNTIME_DIRECTORY/start'
-ExecStopPost=-/bin/sh -c 'start=$$(cat "$$RUNTIME_DIRECTORY/start" 2>/dev/null || echo ""); now=$$(date +%s); if [ -n "$$start" ]; then elapsed=$$((now-start)); else elapsed="?"; fi; echo "INTAKE-REPAIR-VERDICT repo=%i elapsed=$${elapsed}s budget=1800s result=$$SERVICE_RESULT exit=$${EXIT_STATUS:-} code=$${EXIT_CODE:-}" >&2'
+ExecStartPre=/bin/sh -c 'date +%%s > $$RUNTIME_DIRECTORY/start'
+ExecStopPost=-/bin/sh -c 'start=$$(cat "$$RUNTIME_DIRECTORY/start" 2>/dev/null || echo ""); now=$$(date +%%s); if [ -n "$$start" ]; then elapsed=$$((now-start)); else elapsed="?"; fi; echo "INTAKE-REPAIR-VERDICT repo=%i elapsed=$${elapsed}s budget=1800s result=$$SERVICE_RESULT exit=$${EXIT_STATUS:-} code=$${EXIT_CODE:-}" >&2'
