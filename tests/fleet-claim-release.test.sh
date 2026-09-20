@@ -21,6 +21,15 @@
 #      agent-ready never re-added (fleet-ops#3763).
 #   7. systemd/pi-issue-failed@.service calls bin/fleet-claim-release and the
 #      silent-close check.
+#   8. THE #8003 SHAPE: no PR, claim branch AHEAD of main -> the branch is
+#      copied to wip/issue-<N> BEFORE the claim ref is deleted, and the trace
+#      line names the wip ref.
+#   9. wip/issue-<N> already exists on a divergent tip -> the preserve lands
+#      on a sha-suffixed wip ref instead of clobbering the earlier salvage.
+#  10. wip exists and its tip is already inside the claim history -> wip is
+#      fast-forwarded (PATCH), no suffixed ref.
+#  11. The ahead-of-main compare FAILS -> fail-closed: no DELETE, exit 0,
+#      AHEAD-CHECK-FAILED on stderr.
 
 set -euo pipefail
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -60,12 +69,23 @@ case "$cmd" in
             "repos/"*"/pulls?state=open&head="*)
                 [ "${MOCK_PULLS_RC:-0}" != "0" ] && exit "$MOCK_PULLS_RC"
                 printf '%s' "${MOCK_OPEN_PRS:-[]}" ;;
+            "repos/"*"/git/refs/heads/wip/"*)
+                [ "${MOCK_WIP_EXISTS:-no}" = "yes" ] && printf '{"ref":"x","object":{"sha":"%s"}}' "${MOCK_WIP_SHA:-w1pw1pw1p}" || exit 1 ;;
             "repos/"*"/git/refs/heads/"*)
-                [ "${MOCK_BRANCH_EXISTS:-yes}" = "yes" ] && printf '{"ref":"x"}' || exit 1 ;;
+                [ "${MOCK_BRANCH_EXISTS:-yes}" = "yes" ] && printf '{"ref":"x","object":{"sha":"%s"}}' "${MOCK_CLAIM_SHA:-c1a1c1a1c}" || exit 1 ;;
+            "repos/"*"/compare/"*)
+                case "$endpoint" in
+                    *"/compare/${MOCK_WIP_SHA:-_wipnone_}..."*)
+                        [ "${MOCK_WIP_COMPARE_RC:-0}" != "0" ] && exit "$MOCK_WIP_COMPARE_RC"
+                        if [ -n "${MOCK_WIP_COMPARE:-}" ]; then printf '%s' "$MOCK_WIP_COMPARE"; else printf '%s' '{"status":"ahead"}'; fi ;;
+                    *)  [ "${MOCK_COMPARE_RC:-0}" != "0" ] && exit "$MOCK_COMPARE_RC"
+                        if [ -n "${MOCK_COMPARE:-}" ]; then printf '%s' "$MOCK_COMPARE"; else printf '%s' '{"ahead_by":0,"status":"identical"}'; fi ;;
+                esac ;;
             *"timeline?"*) printf '%s' "${MOCK_TIMELINE:-[]}" ;;
             "repos/"*"/issues/"*)
                 [ "${MOCK_ISSUE_RC:-0}" != "0" ] && exit "$MOCK_ISSUE_RC"
                 if [ -n "${MOCK_ISSUE:-}" ]; then printf '%s' "$MOCK_ISSUE"; else printf '{"state":"open"}'; fi ;;
+            "repos/Nishfleet/"*) printf '{"default_branch":"%s"}' "${MOCK_DEFAULT_BRANCH:-main}" ;;
             *) printf '[]' ;;
         esac
         ;;
@@ -150,7 +170,60 @@ if grep -q "issue edit.*--add-label agent-ready" "$gh_log"; then
 fi
 ok "agent-blocked: DELETE + in-progress cleared, never re-queued"
 
-# --- 7. unit wiring --------------------------------------------------------------
+# --- 8. #8003 shape: claim branch ahead of main -> preserve to wip, then delete ---
+out="$(MOCK_CLAIM_SHA='aa11bb22cc33dd44' MOCK_COMPARE='{"ahead_by":2,"status":"ahead"}' \
+    run_release fleet-ops-6252 2>"$scratch/err.8")" || fail "preserve path exited nonzero: $(cat "$scratch/err.8")"
+grep -q "POST repos/Nishfleet/fleet-ops/git/refs .*refs/heads/wip/issue-6252 .*aa11bb22cc33dd44" "$gh_log" \
+    || fail "ahead path did not create wip/issue-6252 at the claim sha: $(cat "$gh_log")"
+grep -q "DELETE repos/Nishfleet/fleet-ops/git/refs/heads/claim/issue-6252" "$gh_log" \
+    || fail "ahead path did not delete the claim ref: $(cat "$gh_log")"
+post_line="$(grep -n "POST repos/Nishfleet/fleet-ops/git/refs" "$gh_log" | head -1 | cut -d: -f1)"
+del_line="$(grep -n "DELETE repos/Nishfleet/fleet-ops/git/refs/heads/claim" "$gh_log" | head -1 | cut -d: -f1)"
+[ -n "$post_line" ] && [ -n "$del_line" ] && [ "$post_line" -lt "$del_line" ] \
+    || fail "wip ref was not created before the claim delete: $(cat "$gh_log")"
+grep -q "compare/main...claim/issue-6252" "$gh_log" \
+    || fail "ahead check did not compare default branch vs claim: $(cat "$gh_log")"
+grep -q "preserved claim/issue-6252@aa11bb22cc33dd44 as refs/heads/wip/issue-6252" "$scratch/err.8" \
+    || fail "no preserved log line: $(cat "$scratch/err.8")"
+ok "ahead-of-main: wip copy created before DELETE, claim released"
+
+# --- 9. wip exists on a divergent tip -> suffixed ref, earlier salvage kept ------
+out="$(MOCK_CLAIM_SHA='aa11bb22cc33dd44' MOCK_COMPARE='{"ahead_by":2,"status":"ahead"}' \
+    MOCK_WIP_EXISTS=yes MOCK_WIP_SHA='ff99ee88dd77cc66' MOCK_WIP_COMPARE='{"status":"diverged"}' \
+    run_release fleet-ops-6252 2>"$scratch/err.9")" || fail "divergent-wip path exited nonzero: $(cat "$scratch/err.9")"
+grep -q "POST repos/Nishfleet/fleet-ops/git/refs .*refs/heads/wip/issue-6252-aa11bb22 .*aa11bb22cc33dd44" "$gh_log" \
+    || fail "divergent wip was clobbered or no suffixed ref created: $(cat "$gh_log")"
+if grep -q "PATCH repos/Nishfleet/fleet-ops/git/refs/heads/wip/issue-6252 " "$gh_log"; then
+    fail "divergent wip was force-updated: $(cat "$gh_log")"
+fi
+grep -q "DELETE repos/Nishfleet/fleet-ops/git/refs/heads/claim/issue-6252" "$gh_log" \
+    || fail "divergent-wip path did not delete the claim ref: $(cat "$gh_log")"
+ok "divergent wip: suffixed preserve ref, earlier salvage untouched"
+
+# --- 10. wip exists, tip already inside claim history -> fast-forward PATCH ------
+out="$(MOCK_CLAIM_SHA='aa11bb22cc33dd44' MOCK_COMPARE='{"ahead_by":3,"status":"ahead"}' \
+    MOCK_WIP_EXISTS=yes MOCK_WIP_SHA='ff99ee88dd77cc66' MOCK_WIP_COMPARE='{"status":"ahead"}' \
+    run_release fleet-ops-6252 2>"$scratch/err.10")" || fail "ff-wip path exited nonzero: $(cat "$scratch/err.10")"
+grep -q "PATCH repos/Nishfleet/fleet-ops/git/refs/heads/wip/issue-6252 .*aa11bb22cc33dd44" "$gh_log" \
+    || fail "wip was not fast-forwarded to the claim sha: $(cat "$gh_log")"
+if grep -q "refs/heads/wip/issue-6252-" "$gh_log"; then
+    fail "suffixed ref created although fast-forward was safe: $(cat "$gh_log")"
+fi
+grep -q "DELETE repos/Nishfleet/fleet-ops/git/refs/heads/claim/issue-6252" "$gh_log" \
+    || fail "ff-wip path did not delete the claim ref: $(cat "$gh_log")"
+ok "ancestor wip: fast-forwarded, no suffixed ref"
+
+# --- 11. compare fails -> fail-closed hold ----------------------------------------
+out="$(MOCK_COMPARE_RC=1 run_release fleet-ops-6252 2>"$scratch/err.11")" || fail "compare-failure path exited nonzero"
+if grep -q "DELETE" "$gh_log"; then fail "compare failure still deleted: $(cat "$gh_log")"; fi
+if grep -q "POST repos/Nishfleet/fleet-ops/git/refs" "$gh_log"; then
+    fail "compare failure still wrote refs: $(cat "$gh_log")"
+fi
+if grep -q "issue edit" "$gh_log"; then fail "label flip ran on a held claim: $(cat "$gh_log")"; fi
+grep -q "AHEAD-CHECK-FAILED" "$scratch/err.11" || fail "no loud flag on compare failure: $(cat "$scratch/err.11")"
+ok "compare failure -> fail-closed hold, loud flag"
+
+# --- 12. unit wiring --------------------------------------------------------------
 grep -q "bin/fleet-claim-release %i" "$unit" \
     || fail "pi-issue-failed@.service does not call bin/fleet-claim-release"
 grep -q "bin/fleet-silent-pr-close-check" "$unit" \
