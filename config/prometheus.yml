@@ -45,6 +45,17 @@ scrape_configs:
     static_configs:
       - targets: ['127.0.0.1:9095']
 
+  # fleet-ops#6845: scrape alertmanager's own /metrics so
+  # alertmanager_notifications_failed_total{integration="telegram"} and
+  # up{job="alertmanager"} exist in Prometheus — FleetNishPageRailDown in
+  # config/fleet_rules.yml fires on them. Without this job a dead telegram
+  # sender or a down alertmanager leaves the severity=nish/page phone rail
+  # accepted-but-undelivered with no signal anywhere: the #6845 starvation
+  # class on the only escalation path that still exists.
+  - job_name: alertmanager
+    static_configs:
+      - targets: ['127.0.0.1:9093']
+
   # fleet-ops#4130 P1: scrape the LiteLLM proxy's /metrics endpoint so
   # the router's own gauges (litellm_deployment_success_rate,
   # litellm_deployment_cooldowns, litellm_request_total_duration_seconds,
