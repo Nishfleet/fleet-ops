@@ -121,6 +121,29 @@ python3 -m venv ~/.local/venvs/litellm
 ~/.local/venvs/litellm/bin/pip audit   # CVE check before first start
 ```
 
+**fleet-ops#6863 — required post-install patch on litellm 1.98.0.** The
+generic-streaming-chunk branch of
+`litellm/litellm_core_utils/streaming_handler.py`
+(`CustomStreamWrapper._dispatch_provider_chunk`) does
+`Usage(**chunk["usage"])`, which raises `TypeError: ... argument after **
+must be a mapping, not Usage` whenever a provider's chunk dict carries an
+already-materialized usage object (anthropic-shaped/CustomLLM chunks —
+the shape that killed `litellm/senior` mid-stream on 2026-09-14). Still
+unfixed upstream at 1.101.0. The fleet patch normalizes objects through
+`model_dump()` before the `**` unpack, matching the three-shape
+(dict/Usage/BaseModel) handling the same file already uses downstream:
+
+```sh
+patch -d ~/.local/venvs/litellm/lib/python3.12/site-packages -p1 \
+  < /home/nish/workspaces/tooling/fleet-ops-deploy-clone/patches/litellm-1.98.0-gchunk-usage-union.patch
+```
+
+Apply it on every venv rebuild — a plain `pip install` reverts the file
+silently. `tests/litellm-gchunk-usage-patch.test.sh` is the detector: it
+fails when the installed file drops the patch or a litellm bump breaks
+the hunk's context. On a version bump, first check whether upstream
+fixed the line — if so, drop the patch and this step.
+
 Copy the repo config to the live path and fill in the credential
 resolvers. **The repo file is a shape reference only — it is NOT in
 MANIFEST and `install.sh` never touches this path.** It carries
