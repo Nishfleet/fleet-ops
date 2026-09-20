@@ -49,3 +49,12 @@ jobs:
           for f in config/*.yml; do
             python3 -c "import yaml,sys; yaml.safe_load(open(sys.argv[1]))" "$f"
           done
+
+          # fleet-ops#6793: fleet automation never rides a never-expiring
+          # classic PAT. Fail if any live workflow consumes a secrets.*PAT
+          # credential — the shape is a per-run App installation token minted
+          # via actions/create-github-app-token (≤1h expiry).
+          if grep -rEn 'secrets\.[A-Za-z_][A-Za-z0-9_]*PAT\b' .github/workflows/; then
+            echo "::error::a workflow consumes a secrets.*PAT credential — long-lived PATs are banned from fleet automation; mint a per-run App token instead (fleet-ops#6793)"
+            exit 1
+          fi

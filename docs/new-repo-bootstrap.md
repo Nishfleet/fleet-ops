@@ -8,14 +8,13 @@ SHA-pinned thin-caller workflows, merge-queue triggers) is enforced by
 
 To enroll a new repo **now** instead of waiting for the weekly sweep:
 
-```bash
-# From a fleet-ops checkout, with FLEET_SYNC_PAT exported:
-GH_TOKEN="$FLEET_SYNC_PAT" \
-  node .github/scripts/repo-standards-apply.mjs \
-    --apply --org Nishfleet --org nish3451 --format markdown
-```
+The apply machinery (`.github/scripts/repo-standards-*.mjs`) was removed in
+#7861 — there is no manual fast path today. When the sweep is rebuilt its
+credential is a per-run nishfleet-worker App installation token minted via
+`actions/create-github-app-token` (≤1h expiry, one token per account
+installation) — never an exported long-lived PAT (fleet-ops#6793).
 
-That single command:
+Once rebuilt, the sweep (and any manual fast path):
 1. discovers every non-archived non-fork repo in both accounts (including the
    one you just created),
 2. classifies it by repo type (node_app / infra / static_site) from its

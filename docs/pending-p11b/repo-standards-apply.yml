@@ -24,8 +24,16 @@ name: Repo standards apply
 # follow-up PR (one writer per repo). Never weakens anything found stronger.
 # Hands-off + local-richer repos skipped. Every active exception is reported.
 #
-# Blocked on: FLEET_SYNC_PAT secret (contents+workflows+pull-requests write
-# across Nishfleet + nish3451). Fails LOUD if absent.
+# Blocked on: the nishfleet-worker App holding contents+workflows+
+# pull-requests write on BOTH accounts (one installation each on Nishfleet
+# and nish3451 — fleet-ops#6793 PR 2, Nish-side settings). The credential is
+# minted per run below via actions/create-github-app-token (≤1h expiry); the
+# never-expiring classic PAT this file used to require (FLEET_SYNC_PAT) is
+# banned — ci.yml fails on any secrets.*PAT reference under
+# .github/workflows/. Also blocked: the apply machinery itself —
+# .github/scripts/repo-standards-*.mjs and enqueue-green-prs.mjs were deleted
+# in #7861, so this file cannot be promoted until an apply mechanism exists
+# again. Fails LOUD if a mint or the reach probe fails.
 
 on:
   schedule:
@@ -58,18 +66,57 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Verify FLEET_SYNC_PAT
+      - name: Mint app token (Nishfleet)
+        id: app-token-nishfleet
+        # ≤1h installation token per run (fleet-ops#6793), same action pin as
+        # the old auto-merge-arm path. continue-on-error lets a missing App
+        # secret fall through to the verify step's explicit error instead of
+        # dying here on a generic action failure.
+        continue-on-error: true
+        uses: actions/create-github-app-token@fee1f7d63c2ff003460e3d139729b119787bc349 # v2.2.2
+        with:
+          app-id: ${{ secrets.NISHFLEET_WORKER_APP_ID }}
+          private-key: ${{ secrets.NISHFLEET_WORKER_PRIVATE_KEY }}
+          owner: Nishfleet
+
+      - name: Mint app token (nish3451)
+        id: app-token-nish3451
+        continue-on-error: true
+        uses: actions/create-github-app-token@fee1f7d63c2ff003460e3d139729b119787bc349 # v2.2.2
+        with:
+          app-id: ${{ secrets.NISHFLEET_WORKER_APP_ID }}
+          private-key: ${{ secrets.NISHFLEET_WORKER_PRIVATE_KEY }}
+          owner: nish3451
+
+      - name: Verify minted tokens reach both orgs
         env:
-          PAT: ${{ secrets.FLEET_SYNC_PAT }}
+          TOKEN_NISHFLEET: ${{ steps.app-token-nishfleet.outputs.token }}
+          TOKEN_NISH3451: ${{ steps.app-token-nish3451.outputs.token }}
         run: |
-          if [ -z "$PAT" ]; then
-            echo "::error::FLEET_SYNC_PAT secret is not set. Create a PAT with contents+workflows+pull-requests write across Nishfleet and nish3451, add it as the FLEET_SYNC_PAT repo (or org) secret on Nishfleet/fleet-ops, then re-run this workflow. Until then the sync cannot run."
-            exit 1
-          fi
+          set -euo pipefail
+          # App-token mode of the old FLEET_SYNC_PAT verify gate (deleted with
+          # bin/verify-fleet-sync-pat in #7907): the probe is
+          # /installation/repositories — the repos the installation can see —
+          # not PAT scopes (fleet-ops#6793). An empty token means the App
+          # secrets are missing or the App is not installed on that account.
+          for org in Nishfleet nish3451; do
+            var="TOKEN_$(printf '%s' "$org" | tr '[:lower:]' '[:upper:]')"
+            tok="${!var}"
+            if [ -z "$tok" ]; then
+              echo "::error::no installation token minted for $org — NISHFLEET_WORKER_APP_ID/NISHFLEET_WORKER_PRIVATE_KEY secrets missing, or the nishfleet-worker App is not installed on $org (fleet-ops#6793)."
+              exit 1
+            fi
+            count="$(GH_TOKEN="$tok" gh api /installation/repositories --jq '.total_count')"
+            echo "$org: installation sees $count repositories"
+          done
 
       - name: Run standards sync
         env:
-          GH_TOKEN: ${{ secrets.FLEET_SYNC_PAT }}
+          # Installation tokens are single-account: the apply mechanism
+          # consumes one per org (the single-PAT GH_TOKEN env went with the
+          # PAT).
+          GH_TOKEN_NISHFLEET: ${{ steps.app-token-nishfleet.outputs.token }}
+          GH_TOKEN_NISH3451: ${{ steps.app-token-nish3451.outputs.token }}
           APPLY: ${{ inputs.apply || false }}
         run: |
           set -euo pipefail
@@ -79,7 +126,8 @@ jobs:
 
       - name: Enqueue green fleet PRs (amendment 2 part c)
         env:
-          GH_TOKEN: ${{ secrets.FLEET_SYNC_PAT }}
+          GH_TOKEN_NISHFLEET: ${{ steps.app-token-nishfleet.outputs.token }}
+          GH_TOKEN_NISH3451: ${{ steps.app-token-nish3451.outputs.token }}
           APPLY: ${{ inputs.apply || false }}
         run: |
           set -euo pipefail
