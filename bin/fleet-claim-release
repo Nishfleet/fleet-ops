@@ -29,10 +29,18 @@
 #      on the PR naming the mechanism + reason + owning issue, and one trace
 #      line on the parent issue. That is the (a)+(b) evidence the class
 #      demands around any close — and here there is no close at all.
-#   3. No open PR -> release as before (delete the branch if present, flip
-#      agent-in-progress -> agent-ready on an open issue, agent-in-progress
-#      only on a closed or agent-blocked one) and post the trace line on the
-#      issue so the release is never silent.
+#   3. No open PR -> release (flip agent-in-progress -> agent-ready on an
+#      open issue, agent-in-progress only on a closed or agent-blocked one)
+#      and post the trace line on the issue so the release is never silent.
+#      fleet-ops#8003: a claim branch AHEAD of the default branch holds pushed
+#      worker commits with no PR — deleting it orphans them until GitHub GC.
+#      The next claim force-pushes origin/main onto claim/issue-<N> (intake
+#      step 5c), so the work cannot stay on the claim ref either: copy it to
+#      wip/issue-<N> — the ref the #6206 re-claim cherry-pick convention
+#      reads — THEN delete the claim ref so intake can re-dispatch. Zero
+#      commits ahead stays a plain delete. The ahead check is fail-closed
+#      like the PR check: unreadable compare -> HOLD. A preserve that cannot
+#      land -> HOLD, never delete.
 #
 # Usage: fleet-claim-release <repo>-<issue> [--dry-run]
 #
@@ -69,8 +77,10 @@ Releases a dead worker's claim without ever silently closing an open PR:
   - open PR on claim/issue-<N>  -> HOLD: no branch delete, no label flip;
     comment on the PR (mechanism + reason + owning issue) and a trace line
     on the issue.
-  - no open PR                  -> release: delete claim/issue-<N>, flip
-    agent-in-progress -> agent-ready (open issue), trace line on the issue.
+  - no open PR                  -> release: if claim/issue-<N> is ahead of the
+    default branch, copy it to wip/issue-<N> first (fleet-ops#8003); then
+    delete claim/issue-<N>, flip agent-in-progress -> agent-ready (open
+    issue), trace line on the issue.
   - gh check failure            -> HOLD (fail-closed): loud log, exit 0.
 
 EOF
@@ -163,11 +173,67 @@ in_progress="$(printf '%s' "$issue_json" | jq -r '[.labels[]?.name] | any(. == "
 agent_blocked="$(printf '%s' "$issue_json" | jq -r '[.labels[]?.name] | any(. == "agent-blocked")')"
 
 # --- 3. delete the claim branch if it still exists -----------------------------
+# fleet-ops#8003: the branch may hold pushed, unmerged commits from a worker
+# that timed out mid-packet. ahead_by>0 vs the default branch -> copy to
+# wip/issue-<N> before deleting; the claim ref itself cannot hold the work
+# because the next claim force-resets it to origin/main.
 branch_deleted="no-branch"
+preserved_ref=""
 if [[ "$dry_run" == "1" ]]; then
-    log "DRY would delete $full ref $branch if present"
+    log "DRY would preserve-then-delete $full ref $branch if present"
     branch_deleted="dry"
-elif "$GH" api "repos/$full/git/refs/heads/$branch" >/dev/null 2>&1; then
+elif claim_json=$("$GH" api "repos/$full/git/refs/heads/$branch" 2>/dev/null); then
+    claim_sha="$(printf '%s' "$claim_json" | jq -r '.object.sha // empty')"
+    repo_json=""
+    default_branch=""
+    if repo_json=$("$GH" api "repos/$full" 2>/dev/null); then
+        default_branch="$(printf '%s' "$repo_json" | jq -r '.default_branch // empty')"
+    fi
+    ahead_by=""
+    if [[ -n "$claim_sha" && -n "$default_branch" ]]; then
+        cmp_json=""
+        if cmp_json=$("$GH" api "repos/$full/compare/${default_branch}...${branch}" 2>/dev/null); then
+            ahead_by="$(printf '%s' "$cmp_json" | jq -r '.ahead_by // empty')"
+        fi
+    fi
+    if [[ ! "$ahead_by" =~ ^[0-9]+$ ]]; then
+        # Unknown is never "zero" — same rule as the open-PR check.
+        log "AHEAD-CHECK-FAILED $full $branch — compare/default-branch unreadable; claim HELD (fail-closed, fleet-ops#8003)"
+        exit 0
+    fi
+    if [ "$ahead_by" -gt 0 ]; then
+        wip="wip/issue-${issue}"
+        wip_json=""
+        if wip_json=$("$GH" api "repos/$full/git/refs/heads/$wip" 2>/dev/null); then
+            wip_sha="$(printf '%s' "$wip_json" | jq -r '.object.sha // empty')"
+            if [[ "$wip_sha" == "$claim_sha" ]]; then
+                preserved_ref="$wip"
+            else
+                # wip holds salvage from an earlier cycle; fast-forward it only
+                # when its tip is already inside the claim history, else keep
+                # both under a sha-suffixed ref rather than orphan either.
+                wcmp=""
+                if wcmp=$("$GH" api "repos/$full/compare/${wip_sha}...${claim_sha}" 2>/dev/null) \
+                   && printf '%s' "$wcmp" | jq -e '.status == "ahead" or .status == "identical"' >/dev/null 2>&1; then
+                    if "$GH" api -X PATCH "repos/$full/git/refs/heads/$wip" -f sha="$claim_sha" -F force=true >/dev/null 2>&1; then
+                        preserved_ref="$wip"
+                    else
+                        log "WARN: wip fast-forward FAILED on $full ($wip)"
+                    fi
+                fi
+                [[ -z "$preserved_ref" ]] && wip="wip/issue-${issue}-${claim_sha:0:8}"
+            fi
+        fi
+        if [[ -z "$preserved_ref" ]]; then
+            if "$GH" api -X POST "repos/$full/git/refs" -f ref="refs/heads/$wip" -f sha="$claim_sha" >/dev/null 2>&1; then
+                preserved_ref="$wip"
+            else
+                log "PRESERVE-FAILED $full $branch@${claim_sha:-?} — claim HELD (fail-closed, fleet-ops#8003)"
+                exit 0
+            fi
+        fi
+        log "preserved $branch@$claim_sha as refs/heads/$preserved_ref on $full (${ahead_by} ahead of $default_branch)"
+    fi
     if "$GH" api -X DELETE "repos/$full/git/refs/heads/$branch" >/dev/null 2>&1; then
         branch_deleted="yes"
         log "deleted branch $branch on $full"
@@ -202,6 +268,7 @@ elif [[ "$in_progress" == "true" ]]; then
 fi
 
 detail="no live worker, no open PR"
+[[ -n "$preserved_ref" ]] && detail="$detail; pushed work preserved at refs/heads/$preserved_ref ($claim_sha)"
 [[ "$agent_blocked" == "true" ]] && detail="$detail; agent-blocked held — not re-queued"
 [[ "$issue_state" != "OPEN" && "$issue_state" != "open" ]] && detail="$detail; issue ${issue_state}"
 comment_issue "claim branch released by ${unit} at ${NOW} (${detail}; branch_deleted=${branch_deleted}; fleet-ops#6292)"
