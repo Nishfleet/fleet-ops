@@ -23,8 +23,10 @@ not rewrite either into a cursor-specific dialect.
 
 ## 2. Verdict out — every run ends with a machine-checkable verdict line
 
-End EVERY run with a verdict line, same grammar as the Pi lanes (this is the
-line the pi packet-verdict extension and guard_pi_packet.py check):
+End EVERY run with a verdict line, same grammar as the Pi lanes (the pi-side
+checkers — the packet-verdict extension and guard_pi_packet.py — were retired
+in the 2026-09-18 sweep; the line remains the run's machine-checkable close
+record in the transcript):
 
 ```
 PACKET-VERDICT tools=<n> class=<worked|no-tools>
