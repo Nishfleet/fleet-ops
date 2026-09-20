@@ -32,7 +32,7 @@ Live snapshot 2026-09-07:
 | # | Mechanism | Lines (live) | Owner unit(s) | Off-the-shelf replacement | What gets DELETED | Verdict |
 |---|---|---|---|---|---|---|
 | 1 | opus-heartbeat family | 3,249 (+7,858 .bak) | `opus-heartbeat.timer` + `heartbeat-audit` + `opus-heartbeat-run` + `opus-heartbeat-fallback` | PromQL recording rules + Alertmanager; judge packet reads `/api/v1/query` | gather + heartbeat + audit + run + fallback + 6 `.bak` copies | **DONE** (#4141) |
-| 2 | repo-sync-snapshot.py | 1,311 | `repo-sync-snapshot.timer` | (none — see row detail) | (none — see row detail) | **NO-GO** (misdescribed: not an org PR/CI snapshot; see row detail) |
+| 2 | repo-sync-snapshot.py | 1,311 | `repo-sync-snapshot.timer` | (none — see row detail) | (none — see row detail) | **NO-GO** (misdescribed: not an org PR/CI snapshot; mechanism wiped off the host with the 2026-09-18/19 control-plane cut; observe-close #4142) |
 | 3 | venue-claim + open-question | 1,810 | `venue-claim` / `open-question` (webhook/timer) | GitHub issue assignment + Projects, Actions concurrency groups, flock/systemd for local locks | venue-claim, open-question | **DONE** (retired 2026-09-07, #4143) |
 | 4 | fleet-pr-rebase | 0 (already retired) | — | GitHub merge queue + auto-merge + `gh pr update-branch` | already gone (git history only) | **NO-GO** (already retired) |
 | 5 | claude-telegram-bridge.py | 412 (+753 .bak) | `claude-telegram-bridge` | Hermes (Nish-owned) — one Telegram path | bridge + 2 `.bak` | **GO** (Nish decision on Telegram path) |
@@ -96,11 +96,17 @@ The mechanism is also **dormant**, not running:
 
 **NO-GO** for the proposed replacement — it does not cover the file's actual
 job, and the file is not in fleet-ops (a fleet-ops PR cannot delete it). The
-seed-map row is corrected here. Whether the dormant Mac↔VPS Git replication
-should itself be retired — and with what substitute (e.g. both machines pull
-from the existing GitHub mirrors / `.mirrors/`) — is a separate, correctly
-described decision for Nish, not this row. Issues #4142 and #4154 were filed
+seed-map row is corrected here. Issues #4142 and #4154 were filed
 from the wrong row and cannot be implemented as written.
+
+Update 2026-09-20 (#4142 observe-close): the open question above resolved
+itself — the entire mechanism left the host with the 2026-09-18/19
+control-plane cut (`control-plane/` repo, `~/.local/libexec/` install,
+`~/.local/state/repo-sync/` and the 476M `~/repo-sync-backups/` all absent),
+and the residual `refs/repo-sync/*` snapshot refs in the local clones were
+swept in the same run. Replication's substitute is GitHub remotes plus the
+`~/workspaces/.mirrors/` clone mirrors; the Mac is read-only. Closeout
+record: `docs/reports/repo-sync-snapshot-wiped-observe-close-4142.md`.
 
 ### Row 3 — venue-claim + open-question → GitHub native (DONE)
 
