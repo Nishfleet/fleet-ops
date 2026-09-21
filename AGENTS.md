@@ -28,10 +28,10 @@
 
 **The 5-step fleet live-state check is canonical; the quick minimum below is a
 minimum, never a complete procedure.** Where any live-state wording drifts, the
-generated `idle-fleet-alarm` block in `~/.claude/CLAUDE.md` WINS (fleet-ops#5748).
-The wording authority is the vault `_system/shared-memory/global-standing-rules.md` —
-the repo's `docs/standing-rules.md` copy was deleted in the glue sweep. The
-block's steps 3–5 are findings-grade duties and must be performed, not skipped:
+wording authority is the vault `_system/shared-memory/global-standing-rules.md` —
+the host `CLAUDE.md` `idle-fleet-alarm` block it used to defer to was deleted in
+the glue sweep (fleet-ops#5748, #7452). Steps 3–5 are findings-grade duties and
+must be performed, not skipped:
 
 3. `systemctl --user list-units --state=failed` — must be EMPTY (set
    `XDG_RUNTIME_DIR=/run/user/$(id -u)`, or it silently returns nothing).
@@ -75,7 +75,7 @@ pstack playbooks (fleet-ops#1260) at `~/.pi/agent/skills/poteto-mode/playbooks/`
 ### PR body contract — run these before `gh pr create`
 
 - `Verification:` (real run results) plus `run-proof:` (units/timers/workflows); every worker PR needs one. Armed without ran fails (fleet-ops#378).
-- New `bin/` files: the PR body carries `research:` + `help-first:` lines. Hand-building what already exists fails (fleet-ops#517). Skipping `--help` fails (fleet-ops#534).
+- New `bin/`/`scripts/` files are banned (no new scripts — worker packet step 5, vault rules); if you are ever asked to touch an existing one, the PR body carries `research:` + `help-first:` lines. Hand-building what already exists fails (fleet-ops#517). Skipping `--help` fails (fleet-ops#534).
 - Wipe safety: never `pgrep -f` to find or kill a worktree process. sr-nothing-half-done: include `loose-ends: <key>` (fleet-ops#528).
 
 ### Memory budget rule (fleet-ops#4891; blind POVs from Kimi K3 max + Grok 4.6 high agreed 2026-09-10) — applies to every worker, hardest on Nishfleet/0509:
