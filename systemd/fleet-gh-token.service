@@ -1,0 +1,12 @@
+[Unit]
+Description=Mint the nishfleet-worker App token into a runtime env file (read by intake and scout units)
+# fleet-ops#8057 (docs/GLUE-ZERO.md organ 12). pi-intake@ and pi-scout@ never minted a token;
+# since #8092 an empty GH_TOKEN is a hard stop, so every intake tick halted (2026-09-22 01:55 IST).
+# One sh -c with two vendor commands is the floor: nothing stock writes stdout as KEY=value.
+
+[Service]
+Type=oneshot
+Environment=HOME=/home/nish
+Environment=PATH=/home/nish/.local/bin:/usr/local/bin:/usr/bin:/bin
+UMask=0077
+ExecStart=/bin/sh -c 'printf "GH_TOKEN=%%s\n" "$(gh token generate --app-id 4728578 --key /home/nish/.config/fleet-worker/nishfleet-worker.private-key.pem --installation-id 156789042 --token-only)" > /run/user/1000/fleet-gh-token.env'

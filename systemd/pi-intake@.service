@@ -1,4 +1,6 @@
 [Unit]
+Requires=fleet-gh-token.service
+After=fleet-gh-token.service
 Description=Pi fleet issue intake tick for Nishfleet/%i
 StartLimitIntervalSec=1h
 # Worker-exit top-ups (pi-issue@.service ExecStopPost) start this unit up to
@@ -6,6 +8,8 @@ StartLimitIntervalSec=1h
 StartLimitBurst=90
 
 [Service]
+# Worker App token from fleet-gh-token.service (fleet-ops#8057); empty GH_TOKEN is a hard stop since #8092.
+EnvironmentFile=-/run/user/%U/fleet-gh-token.env
 # Second cut 2026-09-18: the tick IS this unit. prompts/intake.md tells Pi to
 # label, order, claim and spawn; the 3,320-line lib/pi-intake-tick.sh that did
 # the same thing deterministically is gone, as is the bin/pi-intake-run flock
