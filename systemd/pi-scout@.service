@@ -37,7 +37,7 @@ ExecStart=/bin/sh -c 'set -e; GH_TOKEN=$(gh token generate --app-id 4728578 --ke
 # (429 wall, token mint) keeps its real exit code untouched; and because a
 # failing ExecStartPost stops the list, the keystone-hc ping drop-in is
 # skipped on an abort too.
-ExecStartPost=/bin/sh -c 'journalctl --user _SYSTEMD_INVOCATION_ID="$INVOCATION_ID" --no-pager -o cat | grep -q "^supply:" || { echo "scout-abort-gate: no supply: line this invocation — run did not complete scouting" >&2; exit 1; }'
+ExecStartPost=/bin/sh -c 'journalctl --user _SYSTEMD_INVOCATION_ID="$INVOCATION_ID" --no-pager -o cat | grep -qE "supply:[[:space:]]*ready_count=[0-9]+" || { echo "scout-abort-gate: no supply: line this invocation — run did not complete scouting" >&2; exit 1; }'
 # 3h: measured scout turns run 13-22 min across 8 turns; 10800 is 1.6x the
 # worst measured need and still fits inside the 4h OnCalendar cadence.
 TimeoutStartSec=10800
