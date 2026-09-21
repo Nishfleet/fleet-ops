@@ -1,0 +1,14 @@
+[Unit]
+Description=Weekly fleet gardener (Claude, memory consolidation + unit census)
+# Replaces the desktop-app routine "weekly-fleet-gardener" (Nish 2026-09-22:
+# "move everything to the vps"). Stock claude CLI on the box's own login; the
+# prompt is the whole program. Type=oneshot, no Restart= (timer is the retry).
+
+[Service]
+Type=oneshot
+Environment=HOME=/home/nish
+Environment=PATH=/home/nish/.local/bin:/usr/local/bin:/usr/bin:/bin
+Environment=XDG_RUNTIME_DIR=/run/user/1000
+WorkingDirectory=/home/nish
+ExecStart=/bin/sh -c 'cat /home/nish/workspaces/tooling/fleet-ops-deploy-clone/prompts/gardener.md | exec claude -p --model claude-opus-5 --dangerously-skip-permissions'
+TimeoutStartSec=2700
