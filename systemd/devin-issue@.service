@@ -21,6 +21,12 @@ MemoryMax=6G
 # fleet-ops#3611: never let a runaway worker thrash swap and OOM unrelated
 # units. Exceeding MemoryMax is a local OOM kill, not a host-wide stall.
 MemorySwapMax=0
+# Same missing CPU bound as pi-issue@ (fleet-ops#4902 follow-up): admission is
+# RAM-only, so nothing counts cores. Full sizing rationale and the live probe
+# are in the pi-issue@.service comment — 25% per worker is a ceiling, not a
+# serialiser.
+CPUAccounting=yes
+CPUQuota=25%
 Type=oneshot
 Environment=HOME=/home/nish
 Environment=PATH=/home/nish/.local/bin:/usr/local/bin:/usr/bin:/bin
