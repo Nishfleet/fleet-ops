@@ -177,14 +177,16 @@ do not mix active-learning samples into the fixed evaluation cohort).
 - **Cadence:** the reviewer subagent labels at most 20 items/day from the
   queue, judging each site's own question against the row's recovered
   context (`ref` → `gh pr view` / commit / dispatch record).
-- **Table:** labels append to `docs/jev-active-learning-labels.jsonl` (the
-  no-glue check refuses added files under `.fleet/**`; the append target sits
-  beside this report instead), one JSON object per item:
+- **Table:** labels append to `docs/jev-active-learning-labels.jsonl` — the
+  cohort table for this loop, beside this report — one JSON object per item:
   `{ts, cohort:"active-learning", source_issue,
   site, ref, question, question_type, jev_p, band_lo, band_hi, label,
-  label_reason, labelled_by, label_run, labelled_at, state_sha256}`.
+  label_reason, labelled_by, label_model, label_run, labelled_at,
+  state_sha256}`. `label` is true/false, or `null` when the reviewer abstains
+  (insufficient evidence); abstentions never enter the observed-rate math.
+  `tests/jev-active-learning-labels.test.py` pins this contract.
 - **Reporting:** calibration deltas (bucketed `jev_p` vs observed label rate,
   per site+question) are reported from this table in the weekly fleet
-  review. Batch 1 (2026-09-22, 20 rows, reviewer = grok-4.7 xhigh):
+  review. Batch 1 (2026-09-22, 20 rows, label model `xai-oauth/grok-4.7:xhigh`):
   `needs_review` 7/10 true, `merge_risk` 3/5 true, `claims_contradicted`
-  0/4 true, `red_attributable_to_head_merge` 0/1 (insufficient evidence).
+  0/4 true, `red_attributable_to_head_merge` 0 decided (1 abstained).
