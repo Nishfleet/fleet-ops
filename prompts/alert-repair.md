@@ -37,8 +37,8 @@ Steps:
 6. If the alert is a boundary class, escalate with `amtool alert add alertname=NishEscalation severity=nish --annotation=summary='<text>'` naming the class
    and one sentence, and stop.
 7. Print what you did in one short block: alert, root cause, action, proof.
-   Then run the fleet-ops#7394 Shadow Jev tier at the end of this file once —
-   it is advisory and can never change or block what you did — and exit.
+   Then run the Shadow Jev tiers at the end of this file once each —
+   they are advisory and can never change or block what you did — and exit.
 
 ## Shadow Jev tier — advisory, never a gate (fleet-ops#7392)
 
@@ -802,5 +802,388 @@ try:
     main()
 except Exception as exc:
     note('jev advisory unavailable (%s); repair rules unchanged' % type(exc).__name__)
+PY
+```
+
+## Shadow Jev tier — per-test flakiness, advisory, never a gate (fleet-ops#7424)
+
+After the fleet-ops#7392 tier has read the failing run as a whole, run this
+one on that same failing run, before the step-7 summary: ask Jev one more
+advisory question — this time about the *tests* that failed in it, not the run
+as a whole. The rerun rules stay exactly as they are: this tier only logs a per-test
+flaky probability so the fleet can be scored later against real outcomes.
+`site=flaky-test-quarantine`, JSONL at
+`~/.local/state/pi-packet/jev/flaky-test-quarantine.jsonl`, `advisory_only=true`,
+off with `JEV_FLAKY_TEST_QUARANTINE=0` (on by default).
+
+For each failing test the block extracts the failing-test signature from the
+run's real failed-log output (`gh run view <id> --log-failed`: pytest
+`FAILED path::test`, Go `--- FAIL:`, vitest/jest `FAIL` / `✕`, TAP `not ok`,
+shell `FAIL:`), rebuilds that test's last 20 recorded outcomes from real
+`gh run list` history of the same workflow and branch — a green run is a pass; a
+red run is a fail when the signature is in its failed log, a pass when the
+workflow failed elsewhere — and adds the diff touch: the changed files from the
+run's PR or commit, so Jev sees whether the change under test touched the test
+file. One `POST 127.0.0.1:4000/jev` carries one boolean per test; the block
+prints one `jev-flaky: <test> p=<p>` line per test to quote in the step-7
+summary. Quote them; do not act on them.
+
+Real records only — no synthetic outcomes: they come from real run history. If the run history or failed log is missing, or Jev answers with an
+invalid probability, the block prints `jev advisory unavailable (…); repair
+rules unchanged` and the repair proceeds untouched. The seat key is the LiteLLM
+key from `~/.config/fleet-ops/seats/typesafe-jev.env` (or `LITELLM_JEV_KEY`);
+it is only sent as the Authorization header and never printed.
+
+**Do not flip this to a gate and do not change the retry policy here.** The flip
+bar is 100 real failures compared between this shadow advice and the actual
+rerun outcome (same shape as the benchmark-go row, fleet-ops#7754), landed in a
+separate PR. Until then this is a targeted retry *advisory* — a targeted retry
+being a rerun of only the tests that read flaky, never a blanket rerun — and the
+existing repair/rerun rules are authoritative and unchanged.
+
+```bash
+python3 - "<alertname>" "<repo-or-dash>" "<run-id-or-dash>" <<'PY'
+import datetime, hashlib, json, math, os, pathlib, re, subprocess, sys, time, urllib.request
+
+SEAT_KEY_FILE = os.path.expanduser('~/.config/fleet-ops/seats/typesafe-jev.env')
+ENDPOINT = os.environ.get('JEV_FLAKY_TEST_QUARANTINE_ENDPOINT') or 'http://127.0.0.1:4000/jev'
+LOG_PATH = os.environ.get('JEV_FLAKY_TEST_QUARANTINE_LOG') or os.path.expanduser('~/.local/state/pi-packet/jev/flaky-test-quarantine.jsonl')
+SITE = 'flaky-test-quarantine'
+HISTORY = 20
+MAX_TESTS = 5
+MAX_FILES = 40
+RUN_RE = re.compile(r'^\d{1,20}$')
+REPO_RE = re.compile(r'^Nishfleet/[A-Za-z0-9._-]{1,100}$')
+ALERT_RE = re.compile(r'^[A-Za-z0-9_]{1,80}$')
+RED = ('failure', 'timed_out')
+
+# Failing-test signatures as the common runners print them. Order matters:
+# pytest's FAILED before vitest's FAIL, and FAIL before the harness FAIL:.
+SIG_PATTERNS = (
+    ('pytest', re.compile(r'^\s*FAILED\s+(\S+?)(?:::(\S+))?(?=\s|$)')),
+    ('go', re.compile(r'^\s*---\s+FAIL:\s+(\S+)')),
+    ('vitest2', re.compile(r'^\s*FAIL\s+(\S+?)\s+>\s+(.+?)\s*$')),
+    ('vitest1', re.compile(r'^\s*(?:\u2715|\u2717|\u00d7)\s+(.+?)\s*$')),
+    ('tap', re.compile(r'^\s*not ok\s+\d+\s+-\s+(.+?)\s*$')),
+    ('harness', re.compile(r'^\s*FAIL:\s+(.+?)\s*$')),
+)
+
+_LOGS = {}
+
+
+def note(msg):
+    print(msg)
+
+
+def read_seat_key():
+    # The LiteLLM virtual key only; never the raw gateway variable.
+    k = os.environ.get('LITELLM_JEV_KEY')
+    if k:
+        return k
+    try:
+        txt = pathlib.Path(SEAT_KEY_FILE).read_text()
+    except Exception:
+        return None
+    m = re.search(r'^\s*LITELLM_JEV_KEY="?([^"\s]+)"?\s*$', txt, re.M)
+    return m.group(1) if m else None
+
+
+def run(cmd, timeout=20):
+    try:
+        r = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+        return r.stdout if r.returncode == 0 else None
+    except Exception:
+        return None
+
+
+def sha256_state(s):
+    return hashlib.sha256(json.dumps(s, sort_keys=True, default=str).encode()).hexdigest()
+
+
+def valid_p(p):
+    return (not isinstance(p, bool)) and isinstance(p, (int, float)) and math.isfinite(p) and 0 <= p <= 1
+
+
+def signatures(text):
+    # Stable per-test identifiers, in first-seen order.
+    out = []
+    seen = set()
+    for line in (text or '').splitlines():
+        for kind, rx in SIG_PATTERNS:
+            m = rx.match(line)
+            if not m:
+                continue
+            f = None
+            if kind == 'pytest':
+                f = m.group(1)
+                test = m.group(2) or ''
+                name = f + '::' + test if test else f
+            elif kind == 'go':
+                name = m.group(1)
+            elif kind == 'vitest2':
+                f = m.group(1)
+                name = f + ' > ' + m.group(2)
+            else:
+                name = m.group(1)
+            name = name.strip()[:300]
+            if name and name not in seen:
+                seen.add(name)
+                out.append((name, f))
+            break
+    return out
+
+
+def load_runs(repo, workflow):
+    fixture = os.environ.get('JEV_FLAKY_FIXTURE_RUNS')
+    if fixture:
+        try:
+            runs = json.loads(pathlib.Path(fixture).read_text())
+        except Exception:
+            return None
+    else:
+        cmd = ['gh', 'run', 'list', '-R', repo, '--limit', str(HISTORY), '--json',
+               'databaseId,workflowName,status,conclusion,event,headBranch,headSha,createdAt,displayTitle']
+        if workflow:
+            cmd += ['--workflow', workflow]
+        raw = run(cmd, 30)
+        if not raw:
+            return None
+        try:
+            runs = json.loads(raw)
+        except Exception:
+            return None
+    if not isinstance(runs, list):
+        return None
+    return [r for r in runs if isinstance(r, dict)]
+
+
+def run_meta(repo, run_id):
+    fixture = os.environ.get('JEV_FLAKY_FIXTURE_RUNMETA')
+    if fixture:
+        try:
+            d = json.loads(pathlib.Path(fixture).read_text())
+        except Exception:
+            return None
+    else:
+        raw = run(['gh', 'run', 'view', str(run_id), '-R', repo, '--json',
+                   'databaseId,workflowName,status,conclusion,event,headBranch,headSha,displayTitle'], 25)
+        if not raw:
+            return None
+        try:
+            d = json.loads(raw)
+        except Exception:
+            return None
+    return d if isinstance(d, dict) else None
+
+
+def failed_log(repo, run_id):
+    if run_id in _LOGS:
+        return _LOGS[run_id]
+    d = os.environ.get('JEV_FLAKY_FIXTURE_LOGS')
+    if d:
+        try:
+            log = pathlib.Path(d, '%s.log' % run_id).read_text(errors='replace')
+        except Exception:
+            log = None
+    else:
+        log = run(['gh', 'run', 'view', str(run_id), '-R', repo, '--log-failed'], 45)
+    _LOGS[run_id] = log
+    return log
+
+
+def history_for(sig, runs, repo):
+    # Real records only: success = pass; a red run is a fail when the
+    # signature appears in its failed log, else the workflow failed elsewhere.
+    outcomes = []
+    for r in reversed(runs):
+        if len(outcomes) >= HISTORY:
+            break
+        conc = r.get('conclusion')
+        if conc == 'success':
+            outcomes.append('pass')
+        elif conc in RED:
+            log = failed_log(repo, r.get('databaseId'))
+            outcomes.append('unknown' if log is None else ('fail' if sig in log else 'pass'))
+    return outcomes
+
+
+def diff_files(repo, target):
+    fixture = os.environ.get('JEV_FLAKY_FIXTURE_DIFF')
+    if fixture:
+        try:
+            data = json.loads(pathlib.Path(fixture).read_text())
+        except Exception:
+            return None
+        return [str(x) for x in data if isinstance(x, str)] if isinstance(data, list) else None
+    branch = target.get('headBranch')
+    sha = target.get('headSha')
+    if target.get('event') == 'pull_request' and branch:
+        raw = run(['gh', 'pr', 'list', '-R', repo, '--head', branch, '--state', 'all',
+                   '--limit', '1', '--json', 'number'], 20)
+        if raw:
+            try:
+                arr = json.loads(raw)
+            except Exception:
+                arr = None
+            if isinstance(arr, list) and arr and isinstance(arr[0], dict) and arr[0].get('number'):
+                raw = run(['gh', 'api', 'repos/%s/pulls/%s/files?per_page=100' % (repo, arr[0]['number'])], 25)
+                if raw:
+                    try:
+                        fl = json.loads(raw)
+                    except Exception:
+                        fl = None
+                    if isinstance(fl, list):
+                        return [str(f.get('filename')) for f in fl
+                                if isinstance(f, dict) and f.get('filename')]
+    if not sha:
+        return None
+    raw = run(['gh', 'api', 'repos/%s/commits/%s' % (repo, sha)], 25)
+    if not raw:
+        return None
+    try:
+        d = json.loads(raw)
+    except Exception:
+        return None
+    files = d.get('files') if isinstance(d, dict) else None
+    if not isinstance(files, list):
+        return None
+    return [str(f.get('filename')) for f in files if isinstance(f, dict) and f.get('filename')]
+
+
+def main():
+    if os.environ.get('JEV_FLAKY_TEST_QUARANTINE') == '0':
+        note('jev advisory off (JEV_FLAKY_TEST_QUARANTINE=0); repair rules unchanged')
+        return
+    alertname = sys.argv[1] if len(sys.argv) > 1 else '-'
+    repo = sys.argv[2] if len(sys.argv) > 2 else '-'
+    run_id = sys.argv[3] if len(sys.argv) > 3 else '-'
+    if not ALERT_RE.match(alertname) or not REPO_RE.match(repo):
+        note('jev advisory unavailable (bad args); repair rules unchanged')
+        return
+
+    key = read_seat_key()
+    if not key:
+        note('jev advisory unavailable (no seat key); repair rules unchanged')
+        return
+
+    workflow = None
+    runs = load_runs(repo, workflow)
+    if runs is None:
+        note('jev advisory unavailable (no run history); repair rules unchanged')
+        return
+
+    target = None
+    if run_id and RUN_RE.match(run_id):
+        target = next((r for r in runs if str(r.get('databaseId')) == run_id), None)
+        if target is None:
+            target = run_meta(repo, run_id)
+    else:
+        target = next((r for r in runs if r.get('conclusion') in RED), None)
+    if not target or not target.get('databaseId'):
+        note('jev advisory unavailable (no failing run); repair rules unchanged')
+        return
+    target_id = str(target['databaseId'])
+
+    log = failed_log(repo, target_id)
+    if log is None:
+        note('jev advisory unavailable (no failed-run log); repair rules unchanged')
+        return
+    failing = signatures(log)[:MAX_TESTS]
+    if not failing:
+        note('jev-flaky: no failing test signature in run %s; rules unchanged' % target_id)
+        return
+
+    files = diff_files(repo, target)
+    # Only outcomes recorded up to and including the target run; never leak the future.
+    hist_runs = runs[runs.index(target):] if target in runs else runs
+    tests_state = []
+    for i, (name, f) in enumerate(failing):
+        tests_state.append(dict(
+            index=i, test=name, file=f,
+            last_20_outcomes=history_for(name, hist_runs, repo),
+            diff_touches_test=bool(f and files and any(f in p for p in files)),
+        ))
+
+    state = dict(
+        repo=repo, run_id=target_id,
+        workflow=target.get('workflowName'), branch=target.get('headBranch'),
+        head_sha=target.get('headSha'), event=target.get('event'),
+        failing_tests=tests_state, diff_touched_files=(files or [])[:MAX_FILES],
+        context='per-test flakiness before a targeted rerun; each failing test with its recorded '
+                'outcomes (oldest to newest) and whether the diff touches it; advisory shadow read',
+    )
+    state_hash = sha256_state(state)
+
+    questions = {}
+    for t in tests_state:
+        touched = t['file'] + ' (touched by the diff)' if t['diff_touches_test'] else \
+            (', '.join((files or [])[:10]) or 'no changed files known')
+        questions['t%d_flaky' % t['index']] = dict(
+            type='boolean',
+            instructions=('Test "%s" failed in run %s of %s (branch %s). Its recorded outcomes, oldest to '
+                          'newest: %s. The change under test touched: %s. Is this failure flaky \u2014 a transient '
+                          'nondeterministic failure that a targeted rerun of only this test would likely clear \u2014 '
+                          'rather than a deterministic fault in the code or config under test? Advice only; the '
+                          'existing repair/rerun rules stay authoritative and unchanged.'
+                          % (t['test'], target_id, repo, state['branch'] or 'unknown',
+                             json.dumps(t['last_20_outcomes']), touched)))
+
+    payload = dict(model='typesafe-ai/jev', state=state, questions=questions)
+    req = urllib.request.Request(ENDPOINT, data=json.dumps(payload).encode(), method='POST')
+    req.add_header('Authorization', 'Bearer ' + key)
+    req.add_header('Content-Type', 'application/json')
+
+    start = time.monotonic()
+    try:
+        with urllib.request.urlopen(req, timeout=20) as resp:
+            res = json.loads(resp.read())
+    except Exception as exc:
+        note('jev advisory unavailable (%s); repair rules unchanged' % type(exc).__name__)
+        return
+    ms = int((time.monotonic() - start) * 1000)
+
+    rows = []
+    for t in tests_state:
+        qid = 't%d_flaky' % t['index']
+        p = ((res.get('answers') or {}).get(qid) or {}).get('probability')
+        if not valid_p(p):
+            note('jev advisory unavailable (invalid probability for %s); repair rules unchanged' % t['test'])
+            return
+        rows.append(dict(
+            ts=datetime.datetime.now(datetime.timezone.utc).isoformat(),
+            site=SITE,
+            ref='alert-repair:%s:%s:%s' % (alertname, target_id, t['test'][:80]),
+            state_sha256=state_hash,
+            answers={qid: dict(type='boolean', probability=float(p))},
+            probabilities={'flaky': float(p)},
+            advisory_only=True,
+            rule_tier='alert-repair',
+            alertname=alertname, repo=repo, run_id=target_id,
+            workflow=state['workflow'], head_sha=state['head_sha'],
+            test=t['test'], test_file=t['file'],
+            last_20_outcomes=t['last_20_outcomes'],
+            diff_touches_test=t['diff_touches_test'],
+            usage=res.get('usage'), ms=ms,
+        ))
+
+    try:
+        path = pathlib.Path(LOG_PATH)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with os.fdopen(os.open(path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600), 'a') as fh:
+            for row in rows:
+                fh.write(json.dumps(row) + '\n')
+    except Exception as exc:
+        note('jev advisory unavailable (%s); repair rules unchanged' % type(exc).__name__)
+        return
+
+    for row in rows:
+        note('jev-flaky: %s p=%.3f' % (row['test'], row['probabilities']['flaky']))
+
+
+try:
+    main()
+except Exception as exc:
+    note('jev advisory unavailable (%s); repair rules unchanged' % type(exc).__name__)
+
 PY
 ```
