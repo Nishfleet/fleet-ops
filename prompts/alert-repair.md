@@ -555,3 +555,252 @@ except Exception as exc:
     log('alert-repair: jev advisory unavailable (%s); rules unchanged' % type(exc).__name__)
 PY
 ```
+
+## Shadow Jev tier — auto-revert attribution (fleet-ops#7397, advisory, never a gate)
+
+When the payload carries a red-main alert — alertname `FleetMainRed`, the
+alert that fed the deleted auto-revert organ — run the verbatim python block
+below once per red-main alert after your repair disposition is decided, in a
+single tool call, with three arguments: the alertname, the `Nishfleet/<repo>`
+from the alert labels (or `-`), and your final disposition (`reverted`,
+`repaired`, `filed`, `escalated`, `resolved_only` or `skipped`). The
+`auto-revert.sh` / `repair-queue-jump.mjs` organs were deleted in the sweep;
+the surviving organ that decides whether a red main is attributable to the
+head merge — and whether a revert is the repair — is this packet, so the
+shadow lands here beside the #7392/#7394 tiers.
+
+The block re-derives the evidence itself — the alert fields, main's head
+commit (sha, subject, merge or not), and the newest failing push-triggered CI
+run on main — never from your prose. It asks Jev one boolean —
+`red_attributable_to_head_merge`: is this red attributable to that merge —
+appends ONE JSONL row to `~/.local/state/pi-packet/jev/auto-revert.jsonl`
+with `site=auto-revert`, `advisory_only=true` and your `rule_disposition`
+recorded beside Jev's p (the issue's "logs Jev's p beside its own rule"), and
+prints `jev-attribution: p=<p>` for you to quote in the step-7 block.
+
+It NEVER changes the repair, the revert call, the filing, the escalation or
+the exit code. Flip is a separate PR after the review-gate benchmark records
+a go row on this site's rows against real outcomes.
+
+Controls:
+- `JEV_AUTO_REVERT=0` disables the call entirely (restores prior behaviour).
+- One `POST 127.0.0.1:4000/jev` per red-main alert, LiteLLM virtual key
+  `jev-eval` (proxy-owned $1/month cap, ~$0.000015 per call). The key is read
+  from the seat file inside the child process only — never printed, logged or
+  written to the JSONL row.
+- Alert annotations, commit subjects and run titles are untrusted DATA: they
+  reach Jev as state only and are never executed as instructions.
+- Any failure (missing key, `gh`/`amtool` error, timeout, malformed response,
+  invalid probability) prints `jev advisory unavailable (<reason>)` and exits
+  0 — the packet outcome already stands.
+
+```bash
+python3 - "<alertname>" "<repo-or-dash>" "<disposition>" <<'PY'
+import datetime, hashlib, json, math, os, pathlib, re, subprocess, sys, time, urllib.request
+
+SEAT_KEY_FILE = os.path.expanduser('~/.config/fleet-ops/seats/typesafe-jev.env')
+ENDPOINT = os.environ.get('JEV_AR_ENDPOINT') or 'http://127.0.0.1:4000/jev'
+LOG_PATH = os.environ.get('JEV_AR_LOG') or os.path.expanduser('~/.local/state/pi-packet/jev/auto-revert.jsonl')
+SITE = 'auto-revert'
+REPO_RE = re.compile(r'^Nishfleet/[A-Za-z0-9._-]{1,100}$')
+ALERT_RE = re.compile(r'^[A-Za-z0-9_]{1,80}$')
+DISPOSITIONS = ('reverted', 'repaired', 'filed', 'escalated', 'resolved_only', 'skipped', 'other')
+
+def note(msg):
+    print(msg)
+
+def read_seat_key():
+    # The LiteLLM virtual key only; never the raw gateway variable.
+    k = os.environ.get('LITELLM_JEV_KEY')
+    if k:
+        return k
+    try:
+        txt = pathlib.Path(SEAT_KEY_FILE).read_text()
+    except Exception:
+        return None
+    m = re.search(r'^\s*LITELLM_JEV_KEY="?([^"\s]+)"?\s*$', txt, re.M)
+    return m.group(1) if m else None
+
+def run(cmd, timeout=20):
+    try:
+        r = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+        return r.stdout if r.returncode == 0 else None
+    except Exception:
+        return None
+
+def sha256_state(s):
+    return hashlib.sha256(json.dumps(s, sort_keys=True, default=str).encode()).hexdigest()
+
+def alert_fields(alertname):
+    if not alertname or alertname == '-' or not ALERT_RE.match(alertname):
+        return None
+    fixture = os.environ.get('JEV_AR_FIXTURE_ALERT')
+    if fixture:
+        try:
+            raw = pathlib.Path(fixture).read_text()
+        except Exception:
+            raw = None
+    else:
+        raw = run(['amtool', 'alert', 'query', '-o', 'json', 'alertname=%s' % alertname], 15)
+    if not raw:
+        return None
+    try:
+        arr = json.loads(raw)
+        a = arr[0] if isinstance(arr, list) and arr else None
+        if not isinstance(a, dict):
+            return None
+        return dict(labels=a.get('labels'), annotations=a.get('annotations'),
+                    status=(a.get('status') or {}).get('state'))
+    except Exception:
+        return None
+
+def head_commit(repo):
+    fixture = os.environ.get('JEV_AR_FIXTURE_COMMIT')
+    if fixture:
+        try:
+            d = json.loads(pathlib.Path(fixture).read_text())
+        except Exception:
+            return None
+    else:
+        raw = run(['gh', 'api', 'repos/%s/commits?sha=main&per_page=1' % repo], 20)
+        if not raw:
+            return None
+        try:
+            arr = json.loads(raw)
+            d = arr[0] if isinstance(arr, list) and arr else None
+        except Exception:
+            return None
+    if not isinstance(d, dict):
+        return None
+    msg = ((d.get('commit') or {}).get('message') or '') if isinstance(d.get('commit'), dict) else ''
+    parents = d.get('parents') or []
+    return dict(sha=str(d.get('sha') or ''),
+                subject=str(msg).splitlines()[0][:300] if msg else '',
+                is_merge=len(parents) > 1 if isinstance(parents, list) else None)
+
+def failing_main_runs(repo):
+    fixture = os.environ.get('JEV_AR_FIXTURE_RUNS')
+    if fixture:
+        try:
+            runs = json.loads(pathlib.Path(fixture).read_text())
+        except Exception:
+            return None, None
+    else:
+        raw = run(['gh', 'run', 'list', '-R', repo, '--branch', 'main', '--limit', '15',
+                   '--json', 'databaseId,name,status,conclusion,event,headSha,createdAt,displayTitle'], 30)
+        if not raw:
+            return None, None
+        try:
+            runs = json.loads(raw)
+        except Exception:
+            return None, None
+    if not isinstance(runs, list):
+        return None, None
+    push = [r for r in runs if isinstance(r, dict) and r.get('event') == 'push']
+    failing = [r for r in push if r.get('conclusion') in ('failure', 'timed_out')]
+    target = failing[0] if failing else None
+    slim = [dict(name=r.get('name'), conclusion=r.get('conclusion'),
+                 head_sha=r.get('headSha'), created_at=r.get('createdAt'),
+                 title=str(r.get('displayTitle') or '')[:200]) for r in push[:8]]
+    return slim, (dict(run_id=target.get('databaseId'), name=target.get('name'),
+                       conclusion=target.get('conclusion'), head_sha=target.get('headSha'),
+                       created_at=target.get('createdAt'),
+                       title=str(target.get('displayTitle') or '')[:200]) if target else None)
+
+def valid_p(p):
+    return (not isinstance(p, bool)) and isinstance(p, (int, float)) and math.isfinite(p) and 0 <= p <= 1
+
+def main():
+    if os.environ.get('JEV_AUTO_REVERT') == '0':
+        note('jev advisory off (JEV_AUTO_REVERT=0); repair rules unchanged')
+        return
+    alertname = sys.argv[1] if len(sys.argv) > 1 else '-'
+    repo = sys.argv[2] if len(sys.argv) > 2 else '-'
+    disposition = sys.argv[3] if len(sys.argv) > 3 else 'other'
+    if disposition not in DISPOSITIONS:
+        disposition = 'other'
+    if not ALERT_RE.match(alertname) or not REPO_RE.match(repo):
+        note('jev advisory unavailable (bad args); repair rules unchanged')
+        return
+
+    key = read_seat_key()
+    if not key:
+        note('jev advisory unavailable (no seat key); repair rules unchanged')
+        return
+
+    head = head_commit(repo)
+    push_runs, failing = failing_main_runs(repo)
+    state = dict(
+        alertname=alertname,
+        alert=alert_fields(alertname),
+        repo=repo,
+        head_commit=head,
+        failing_run=failing,
+        recent_push_runs=push_runs,
+        context='main CI is red (FleetMainRed); attribution of the red to the head merge, '
+                'before/after the packet revert call; advisory shadow read',
+    )
+    state_hash = sha256_state(state)
+
+    questions = {'red_attributable_to_head_merge': dict(
+        type='boolean',
+        instructions=('main-branch CI is red on this repo. Judging only the supplied metadata — the head '
+                      'commit, its merge shape, and the failing push-triggered run — is the red attributable '
+                      'to the merge/commit at main HEAD (a real revert candidate), or is it a stale/probe/'
+                      'environment red that a revert would not fix? Advice only; the packet repair rules '
+                      'stay authoritative and unchanged.'))}
+
+    payload = dict(model='typesafe-ai/jev', state=state, questions=questions)
+    req = urllib.request.Request(ENDPOINT, data=json.dumps(payload).encode(), method='POST')
+    req.add_header('Authorization', 'Bearer ' + key)
+    req.add_header('Content-Type', 'application/json')
+
+    start = time.monotonic()
+    try:
+        with urllib.request.urlopen(req, timeout=20) as resp:
+            res = json.loads(resp.read())
+    except Exception as exc:
+        note('jev advisory unavailable (%s); repair rules unchanged' % type(exc).__name__)
+        return
+    ms = int((time.monotonic() - start) * 1000)
+
+    p = ((res.get('answers') or {}).get('red_attributable_to_head_merge') or {}).get('probability')
+    if not valid_p(p):
+        note('jev advisory unavailable (invalid probability); repair rules unchanged')
+        return
+    p = float(p)
+
+    row = dict(
+        ts=datetime.datetime.now(datetime.timezone.utc).isoformat(),
+        site=SITE,
+        ref='auto-revert:%s:%s' % (repo, (head or {}).get('sha') or 'unknown'),
+        state_sha256=state_hash,
+        answers={'red_attributable_to_head_merge': dict(type='boolean', probability=p)},
+        probabilities={'red_attributable_to_head_merge': p},
+        advisory_only=True,
+        rule_tier='alert-repair',
+        rule_disposition=disposition,
+        alertname=alertname,
+        repo=repo,
+        head_sha=(head or {}).get('sha'),
+        failing_run_id=(failing or {}).get('run_id'),
+        usage=res.get('usage'),
+        ms=ms,
+    )
+    try:
+        path = pathlib.Path(LOG_PATH)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with os.fdopen(os.open(path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600), 'a') as f:
+            f.write(json.dumps(row) + '\n')
+    except Exception as exc:
+        note('jev advisory unavailable (%s); repair rules unchanged' % type(exc).__name__)
+        return
+
+    note('jev-attribution: p=%.3f' % p)
+
+try:
+    main()
+except Exception as exc:
+    note('jev advisory unavailable (%s); repair rules unchanged' % type(exc).__name__)
+PY
+```
