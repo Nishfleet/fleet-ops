@@ -104,4 +104,24 @@ secret "quoted heredoc keeps the idiom as text" ALLOW \
 	$'cat <<'"'"'EOF'"'"'\nnever expand "token: ${GH_TOKEN:+set}${GH_TOKEN:-EMPTY}"\nEOF'
 secret "comment carrying the var name" ALLOW 'echo done # token var is GH_TOKEN'
 secret "set -x without a secret in the call" ALLOW 'set -x; npm test'
+
+# --- fleet-ops#7448: auth-status / auth-token class --------------------------
+# The second leak in the same 2026-09-17 pi-issue-fleet-ops-7440 run: the
+# auth-status subcommand's env-var account line carries the token value, and
+# the auth-token subcommand prints it outright (verified live 2026-09-21).
+# The #7381 rule above covers the `${GH_TOKEN:-...}` half of that issue.
+secret "7440 second leak: auth-status piped through head" BLOCK \
+	'gh auth status 2>&1 | head -10'
+secret "auth-status with a global flag before the subcommand" BLOCK \
+	'gh --nopager auth status'
+secret "auth-token prints the credential outright" BLOCK 'gh auth token'
+secret "auth-token inside a command substitution" BLOCK \
+	't=$(gh auth token); test -n "$t"'
+secret "relative-path gh binary is the same command" BLOCK 'bin/gh auth status'
+secret "auth-status behind a runner prefix" BLOCK 'timeout 5 gh auth status'
+secret "prose: the ban named in a commit message" ALLOW \
+	'git commit -m "fix: forbid the auth-status output (fleet-ops#7448)"'
+secret "auth logout prints no credential" ALLOW 'gh auth logout'
+secret "auth login --with-token reads the credential instead" ALLOW \
+	'gh auth login --with-token < /tmp/t'
 echo "PASS: permission-gate worker toolchain ban + secret_print"

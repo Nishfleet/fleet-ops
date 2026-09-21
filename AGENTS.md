@@ -50,7 +50,7 @@ Moved here from `prompts/worker.md` on 2026-09-18: these rules are the same on e
 run, so they belong in the context file Pi loads once, not re-pasted into every packet.
 `prompts/worker.md` keeps only what changes per run (the target and the step sequence).
 
-`GH_TOKEN` is a ≤1h nishfleet-worker App token (Contents/PRs/Issues write, Metadata read, NO Workflows, NO Administration). Empty token: stop; no human-gh fallback. The ONLY presence check is `test -n "$GH_TOKEN"` with constant output — never expand the variable into a printed or logged line (`${GH_TOKEN:-...}`/`${GH_TOKEN:+...}` idioms and `printenv`/`env`/`set`/`declare -p` dumps all print the token itself into the transcript, fleet-ops#7381). Do not probe `gh api /user` or `gh api user` — 403 `Resource not accessible by integration` (fleet-ops#1253). `whoami` is enough; name the 403.
+`GH_TOKEN` is a ≤1h nishfleet-worker App token (Contents/PRs/Issues write, Metadata read, NO Workflows, NO Administration). Empty token: stop; no human-gh fallback. The ONLY presence check is `test -n "$GH_TOKEN"` with constant output — never expand the variable into a printed or logged line (`${GH_TOKEN:-...}`/`${GH_TOKEN:+...}` idioms and `printenv`/`env`/`set`/`declare -p` dumps all print the token itself into the transcript, fleet-ops#7381). Never run gh's auth-status or auth-token subcommand either — both print the token value into the transcript (fleet-ops#7448). Do not probe `gh api /user` or `gh api user` — 403 `Resource not accessible by integration` (fleet-ops#1253). `whoami` is enough; name the 403.
 
 ### Hard rules
 
