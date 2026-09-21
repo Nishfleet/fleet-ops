@@ -69,7 +69,9 @@ sections. It NEVER changes the send, the body, or any delivery decision. It
 logs one row per section + the message to
 `~/.local/state/pi-packet/jev/hermes-digest.jsonl` with `site=hermes-digest`.
 Current rule tier for every row is `digest`; `disagree=true` means Jev
-assigned `p >= 0.5` (i.e. "this item needs instant attention").
+assigned `p >= act_hi`, the attention edge this site reads from
+`config/jev-bands.json` (`sites.hermes-digest` — fleet-ops#7439; 0.5 as
+shipped). A missing/unreadable table logs `disagree=null` instead.
 
 Controls:
 - `JEV_HERMES=0` disables the call entirely (restores prior behaviour).
@@ -104,6 +106,28 @@ SEAT_KEY_FILE = os.path.expanduser('~/.config/fleet-ops/seats/typesafe-jev.env')
 JEV_ENDPOINT = 'http://127.0.0.1:4000/jev'
 LOG_PATH = os.environ.get('JEV_HERMES_LOG') or os.path.expanduser('~/.local/state/pi-packet/jev/hermes-digest.jsonl')
 JEV_HERMES_OFF = os.environ.get('JEV_HERMES') == '0'
+BANDS_PATH = os.environ.get('JEV_BANDS_FILE') or os.path.expanduser(
+    '~/workspaces/tooling/fleet-ops-deploy-clone/config/jev-bands.json')
+
+def read_bands(site):
+    # fleet-ops#7439 — band edges live in config/jev-bands.json, the one
+    # table every jev site reads. Missing/invalid values surface as None:
+    # the row still lands and records the nulls so the gap is visible.
+    try:
+        entry = (json.load(open(BANDS_PATH)).get('sites') or {}).get(site) or {}
+    except Exception:
+        entry = {}
+    def num(k):
+        try:
+            v = float(entry.get(k))
+            return v if 0 <= v <= 1 else None
+        except (TypeError, ValueError):
+            return None
+    sens = entry.get('sensitivity')
+    return dict(act_hi=num('act_hi'), review_lo=num('review_lo'),
+                sensitivity=[float(x) for x in sens
+                             if isinstance(x, (int, float)) and not isinstance(x, bool)
+                             and 0 <= x <= 1] if isinstance(sens, list) else [])
 
 def log(line):
     print(line, file=sys.stderr)
@@ -307,6 +331,8 @@ def main():
     usage = res.get('usage', {})
 
     # Validate ALL probabilities before writing any row
+    bands = read_bands('hermes-digest')
+    act_hi = bands['act_hi']
     rows = []
     for qid, qmeta in questions.items():
         a = ans.get(qid, {})
@@ -326,7 +352,9 @@ def main():
             probabilities={qid: float(p)},
             tier_p=float(p),
             rule_tier='digest',
-            disagree=bool(p >= 0.5),
+            act_hi=act_hi,
+            review_lo=bands['review_lo'],
+            disagree=(bool(p >= act_hi) if act_hi is not None else None),
             advisory_only=True,
             usage=usage,
             ms=elapsed_ms,
@@ -444,6 +472,31 @@ def read_key():
     return None
 
 
+BANDS_PATH = os.environ.get('JEV_BANDS_FILE') or os.path.expanduser(
+    '~/workspaces/tooling/fleet-ops-deploy-clone/config/jev-bands.json')
+
+
+def read_bands(site):
+    # fleet-ops#7439 — band edges live in config/jev-bands.json, the one
+    # table every jev site reads. Missing/invalid values surface as None:
+    # the row still lands and records the nulls so the gap is visible.
+    try:
+        entry = (json.load(open(BANDS_PATH)).get('sites') or {}).get(site) or {}
+    except Exception:
+        entry = {}
+    def num(k):
+        try:
+            v = float(entry.get(k))
+            return v if 0 <= v <= 1 else None
+        except (TypeError, ValueError):
+            return None
+    sens = entry.get('sensitivity')
+    return dict(act_hi=num('act_hi'), review_lo=num('review_lo'),
+                sensitivity=[float(x) for x in sens
+                             if isinstance(x, (int, float)) and not isinstance(x, bool)
+                             and 0 <= x <= 1] if isinstance(sens, list) else [])
+
+
 def read_queue(repo):
     owner, name = repo.split('/', 1)
     out = subprocess.run(['gh', 'api', 'graphql', '-f', 'query=' + QUEUE_QUERY,
@@ -499,6 +552,7 @@ def main():
     if not key:
         note('daily-digest: jev merge-queue batching unavailable (no key); digest unchanged')
         return
+    bands = read_bands('merge-queue-batches')
     pathlib.Path(LOG_PATH).parent.mkdir(parents=True, exist_ok=True)
     try:
         state_seen = json.loads(pathlib.Path(STATE_PATH).read_text())
@@ -553,6 +607,7 @@ def main():
                'would_save_note': ('one shared CI cycle instead of one per PR; only a calibrated '
                                    'collector may credit this'),
                'advisory_only': True, 'counts_toward_flip_bar': False,
+               'act_hi': bands['act_hi'], 'review_lo': bands['review_lo'],
                'calibration': CALIBRATION, 'rule_tier': 'digest',
                'state_sha256': hashlib.sha256(json.dumps(state, sort_keys=True).encode()).hexdigest(),
                'jev_usage': resp.get('usage') or {},

@@ -94,9 +94,13 @@ def main():
         blockfile = pathlib.Path(td) / 'block.py'
         blockfile.write_text(block)
         logfile = pathlib.Path(td) / 'gha-stuck-run-watch.jsonl'
+        bands_file = pathlib.Path(td) / 'jev-bands.json'
+        bands_file.write_text(json.dumps({'sites': {
+            'gha-stuck-run-watch': {'act_hi': 0.9, 'review_lo': 0.1}}}))
 
         base_env = dict(os.environ,
                         LITELLM_JEV_KEY='test-key-7392',
+                        JEV_BANDS_FILE=str(bands_file),
                         JEV_GHA_STUCK_RUN_WATCH_ENDPOINT=endpoint,
                         JEV_GHA_STUCK_RUN_WATCH_LOG=str(logfile))
         base_env.pop('JEV_GHA_STUCK_RUN_WATCH', None)
@@ -127,6 +131,8 @@ def main():
             check((row.get('probabilities', {}).get('failure_class') or {}).get('flaky') == 0.83,
                   'row %d per-option probability' % i)
             check(row.get('evidence', {}).get('fixture') is True, 'row %d fixture flag' % i)
+            check(row.get('act_hi') == 0.9 and row.get('review_lo') == 0.1,
+                  'row %d stamps the site band edges from the table' % i)
             check('test-key-7392' not in json.dumps(row), 'row %d carries no key' % i)
         check(Stub.last_body.get('model') == 'typesafe-ai/jev', 'request model id')
         check('failure_class' in (Stub.last_body.get('questions') or {}), 'request question id')

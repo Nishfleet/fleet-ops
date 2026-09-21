@@ -12,7 +12,13 @@ ROOT = pathlib.Path(__file__).resolve().parent.parent
 INTAKE = ROOT / 'prompts' / 'intake.md'
 BIN = ROOT / 'bin' / 'am-executor-claim'
 DOC = ROOT / 'docs' / 'jev-cascade.md'
+CONFIG = ROOT / 'config' / 'jev-bands.json'
 FAILS = []
+
+BANDS_FIXTURE = json.dumps({'sites': {
+    'intake-seat-smoke': {'act_hi': 0.9, 'review_lo': 0.1},
+    'alert-dispatch': {'act_hi': 0.9, 'review_lo': 0.1},
+    'alert-triage': {'act_hi': 0.9, 'review_lo': 0.1}}})
 
 
 def check(cond, msg):
@@ -124,6 +130,11 @@ def main():
             check(var not in block, '%s block never references %s' % (name, var))
         check(not re.search(r'print\([^)]*(?:\+\s*key\b|%\s*key\b|,\s*key\b|\{key)', block),
               '%s block never prints the key' % name)
+        # fleet-ops#7439: bands come from the config table, never constants
+        check('read_bands' in block and 'jev-bands.json' in block,
+              '%s block reads config/jev-bands.json' % name)
+        check(not re.search(r"band_env\('[LH][IO]',?\s*0\.", block),
+              '%s block carries no literal band constant' % name)
 
     if block_i is None or block_b is None:
         print('FAIL: cannot continue functional passes without both blocks', file=sys.stderr)
@@ -149,9 +160,12 @@ def main():
         pi_marked = td / 'pi-marked'
         pi_marked.write_text('#!/bin/sh\ntouch "%s"\necho smoke-ok\n' % ran_marker)
         pi_marked.chmod(pi_marked.stat().st_mode | stat.S_IEXEC)
+        bands_file = td / 'jev-bands.json'
+        bands_file.write_text(BANDS_FIXTURE)
 
         base = dict(os.environ,
                     LITELLM_JEV_KEY='test-key-7396',
+                    JEV_BANDS_FILE=str(bands_file),
                     JEV_CASCADE_INTAKE_SMOKE_ENDPOINT=endpoint,
                     JEV_CASCADE_INTAKE_SMOKE_METRICS=metrics,
                     JEV_CASCADE_INTAKE_SMOKE_LOG=str(log_i),
@@ -213,6 +227,33 @@ def main():
         r = run_block(block_i, ['worker-cheap', 'fleet-ops', '7396'], env)
         check(ran_marker.exists(), 'act mid ran the real probe')
 
+        # fleet-ops#7439: the table drives the band — a non-default review_lo
+        # in the fixture moves the same probability into the lo band.
+        tuned = td / 'jev-bands-tuned.json'
+        tuned.write_text(json.dumps({'sites': {'intake-seat-smoke':
+                                               {'act_hi': 0.9, 'review_lo': 0.4}}}))
+        env = dict(base, JEV_CASCADE_INTAKE_SMOKE='act', JEV_BANDS_FILE=str(tuned))
+        JevStub.prob = 0.3
+        ran_marker.unlink(missing_ok=True)
+        r = run_block(block_i, ['worker-cheap', 'fleet-ops', '7396'], env)
+        check(not ran_marker.exists(), 'table review_lo=0.4: p=0.3 skips the probe')
+        rs = rows()
+        check(rs and rs[-1]['band'] == 'lo' and rs[-1]['band_lo'] == 0.4,
+              'tuned table row records band_lo=0.4 %s' % (rs[-1] if rs else None))
+
+        # fleet-ops#7439: a missing table fails open — no edge, no confident
+        # band, the probe always runs and the row records the nulls.
+        env = dict(base, JEV_CASCADE_INTAKE_SMOKE='act',
+                   JEV_BANDS_FILE=str(td / 'does-not-exist.json'))
+        JevStub.prob = 0.02
+        ran_marker.unlink(missing_ok=True)
+        r = run_block(block_i, ['worker-cheap', 'fleet-ops', '7396'], env)
+        check(ran_marker.exists(), 'missing table: probe still runs (fail-open)')
+        rs = rows()
+        check(rs and rs[-1]['band'] == 'mid' and rs[-1]['band_lo'] is None
+              and rs[-1]['band_hi'] is None,
+              'missing table row records null edges %s' % (rs[-1] if rs else None))
+
         # off: no Jev call, probe runs
         env = dict(base, JEV_CASCADE_INTAKE_SMOKE='0')
         JevStub.hits.clear()
@@ -271,6 +312,8 @@ def main():
         stub = td / 'stub-repair'
         stub.write_text('#!/bin/sh\necho run >> "%s"\n' % runs)
         stub.chmod(0o755)
+        bands_file = td / 'jev-bands.json'
+        bands_file.write_text(BANDS_FIXTURE)
 
         def bin_env(extra):
             e = dict(os.environ)
@@ -279,6 +322,7 @@ def main():
                           SYSTEMCTL=str(bindir / 'systemctl'),
                           AM_EXECUTOR_CLAIM_UNIT='am-executor-claim-test',
                           LITELLM_JEV_KEY='test-key-7396',
+                          JEV_BANDS_FILE=str(bands_file),
                           JEV_CASCADE_ALERT_DISPATCH_ENDPOINT=endpoint,
                           JEV_CASCADE_ALERT_DISPATCH_LOG=str(log_b),
                           JEV_CASCADE_ALERT_DISPATCH_ACTIONS_LOG=str(actions)))

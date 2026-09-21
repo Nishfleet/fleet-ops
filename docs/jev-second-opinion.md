@@ -43,12 +43,14 @@ jev second-opinion: disagreement=<true|false|null>; <qid>=<a>/<b> ...; site=<sit
 
 `disagreement` is:
 
-- `true` if any boolean answers fall on opposite sides of 0.5, selected
-  choices differ, or numeric scores differ. Score comparison is exact and
-  conservative.
+- `true` if any boolean answers fall on opposite sides of the site's
+  `act_hi` edge from `config/jev-bands.json` (fleet-ops#7439; 0.5 as
+  shipped), selected choices differ, or numeric scores differ. Score
+  comparison is exact and conservative.
 - `false` if all answers are valid and agree by those rules.
-- `null` for missing/invalid answers or a boolean exactly at 0.5, unless
-  another valid pair already proves disagreement.
+- `null` for missing/invalid answers, a boolean exactly at the edge, or
+  an unreadable bands table, unless another valid pair already proves
+  disagreement.
 
 These are comparison rules, not calibrated authority thresholds.
 
@@ -111,7 +113,7 @@ real two-call run through the pass-through, not calibration accuracy or
 deployment.
 
 `python3 tests/jev-second-opinion.test.py` covers agreement/disagreement
-across all three question types, the 0.5 boundary, missing answers, card
-validation, ordering of the two state serializations, log receipts,
-off-flag rollback to one call, and fail-open behaviour. Endpoint responses
-in that test come from a stub — they are synthetic.
+across all three question types, the configured edge boundary, missing
+answers, card validation, ordering of the two state serializations, log
+receipts, off-flag rollback to one call, and fail-open behaviour. Endpoint
+responses in that test come from a stub — they are synthetic.

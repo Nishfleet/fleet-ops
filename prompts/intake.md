@@ -175,10 +175,11 @@ Controls:
   probe always — the exact prior behaviour. `act` = a confident band verdict
   IS the probe verdict and the seat call is skipped; the flip is
   benchmark-gated (fleet-ops#7371's go row) and is never the default.
-- Bands are config values, not invented thresholds: `JEV_CASCADE_LO` /
-  `JEV_CASCADE_HI` (defaults 0.1 / 0.9 — the fleet's standing act bands);
-  per-site `JEV_CASCADE_INTAKE_SMOKE_LO` / `JEV_CASCADE_INTAKE_SMOKE_HI`
-  override.
+- Band edges come from the one table `config/jev-bands.json`
+  (`sites.intake-seat-smoke.act_hi` / `.review_lo` — fleet-ops#7439), never
+  from local constants. Env overrides remain for rollback: per-site
+  `JEV_CASCADE_INTAKE_SMOKE_LO` / `JEV_CASCADE_INTAKE_SMOKE_HI`, then the
+  global `JEV_CASCADE_LO` / `JEV_CASCADE_HI`.
 - One `POST 127.0.0.1:4000/jev` per probe, LiteLLM virtual key `jev-eval`
   read from the seat file inside the child process only — never printed,
   logged, or written to the row. One JSONL row to
@@ -203,6 +204,29 @@ METRICS_URL = os.environ.get('JEV_CASCADE_INTAKE_SMOKE_METRICS') or 'http://127.
 PI_BIN = os.environ.get('JEV_CASCADE_INTAKE_SMOKE_PI') or 'pi'
 SMOKE_TIMEOUT = int(os.environ.get('JEV_CASCADE_INTAKE_SMOKE_TIMEOUT') or '90')
 SEAT_RE = re.compile(r'^[A-Za-z0-9._:/-]{1,120}$')
+BANDS_PATH = os.environ.get('JEV_BANDS_FILE') or os.path.expanduser(
+    '~/workspaces/tooling/fleet-ops-deploy-clone/config/jev-bands.json')
+
+def read_bands(site):
+    # fleet-ops#7439 — band edges live in config/jev-bands.json, the one
+    # table every jev site reads. Missing/invalid values surface as None:
+    # callers fail open (the probe/session still runs) and the row records
+    # the nulls so the gap is visible in telemetry.
+    try:
+        entry = (json.load(open(BANDS_PATH)).get('sites') or {}).get(site) or {}
+    except Exception:
+        entry = {}
+    def num(k):
+        try:
+            v = float(entry.get(k))
+            return v if 0 <= v <= 1 else None
+        except (TypeError, ValueError):
+            return None
+    sens = entry.get('sensitivity')
+    return dict(act_hi=num('act_hi'), review_lo=num('review_lo'),
+                sensitivity=[float(x) for x in sens
+                             if isinstance(x, (int, float)) and not isinstance(x, bool)
+                             and 0 <= x <= 1] if isinstance(sens, list) else [])
 
 def note(msg):
     print('intake-seat-smoke jev-cascade: %s' % msg, file=sys.stderr)
@@ -218,7 +242,9 @@ def mode():
         return 'act'
     return 'shadow'
 
-def band_env(name, default):
+def band_env(name, table_key):
+    # Env overrides still win (rollback ladder unchanged); absent an env the
+    # edge comes from config/jev-bands.json, not a local constant.
     for k in ('JEV_CASCADE_INTAKE_SMOKE_%s' % name, 'JEV_CASCADE_%s' % name):
         v = os.environ.get(k)
         if v:
@@ -228,7 +254,7 @@ def band_env(name, default):
                     return f
             except Exception:
                 pass
-    return default
+    return read_bands(SITE)[table_key]
 
 def read_seat_key():
     k = os.environ.get('LITELLM_JEV_KEY')
@@ -325,8 +351,8 @@ def main():
             note('unavailable (no seat key); real probe decides')
 
     if p is not None:
-        lo, hi = band_env('LO', 0.1), band_env('HI', 0.9)
-        band = 'hi' if p >= hi else ('lo' if p <= lo else 'mid')
+        lo, hi = band_env('LO', 'review_lo'), band_env('HI', 'act_hi')
+        band = 'hi' if hi is not None and p >= hi else ('lo' if lo is not None and p <= lo else 'mid')
         if m == 'act' and band != 'mid':
             smoke_ok = band == 'hi'
             skipped = True
@@ -348,8 +374,8 @@ def main():
             answers={'smoke_will_pass': dict(type='boolean', probability=p)},
             probabilities={'smoke_will_pass': p},
             band=band,
-            band_lo=band_env('LO', 0.1),
-            band_hi=band_env('HI', 0.9),
+            band_lo=band_env('LO', 'review_lo'),
+            band_hi=band_env('HI', 'act_hi'),
             would_skip=band != 'mid',
             skipped=skipped,
             big_model='pi --print --provider litellm --model %s' % seat,
@@ -400,11 +426,12 @@ Controls:
   file inside the child process only — never printed, logged, or written to
   the row.
 - One JSONL row to `~/.local/state/pi-packet/jev/worker-context.jsonl`:
-  `would_drop_default` (at `JEV_WORKER_CONTEXT_THRESHOLD`, default 0.1, the
-  standing act band), `would_drop_by_threshold` and
-  `token_delta_est_by_threshold` as sensitivity at 0.1 / 0.25 / 0.5, the
-  `items` with per-item `p`, `chars` and `tokens_est` (chars/4, a labelled
-  estimate), and `counts_toward_flip_bar: false`.
+  `would_drop_default` (at the site's `review_lo` edge in
+  `config/jev-bands.json` — fleet-ops#7439; `JEV_WORKER_CONTEXT_THRESHOLD`
+  still overrides for rollback), `would_drop_by_threshold` and
+  `token_delta_est_by_threshold` over the site's `sensitivity` list in the
+  same table, the `items` with per-item `p`, `chars` and `tokens_est`
+  (chars/4, a labelled estimate), and `counts_toward_flip_bar: false`.
 - Candidate lists come from code: the fixed packet paths, a
   `prompts/worker-blocks/*.md` glob, and the issue's comments via `gh api`.
   Issue titles, bodies and comments reach Jev as untrusted data only.
@@ -428,8 +455,8 @@ SITE = 'worker-context'
 REPO_RE = re.compile(r'^Nishfleet/[A-Za-z0-9._-]{1,100}$')
 NUM_RE = re.compile(r'^\d{1,7}$')
 CHARS_PER_TOKEN = 4
-BANDS = (0.1, 0.25, 0.5)
-DEFAULT_THRESHOLD = 0.1
+BANDS_PATH = os.environ.get('JEV_BANDS_FILE') or os.path.expanduser(
+    '~/workspaces/tooling/fleet-ops-deploy-clone/config/jev-bands.json')
 PREVIEW = 1200
 MAX_COMMENTS = 40
 
@@ -463,7 +490,30 @@ def sha256_state(s):
     return hashlib.sha256(json.dumps(s, sort_keys=True, default=str).encode()).hexdigest()
 
 
+def read_bands(site):
+    # fleet-ops#7439 — band edges live in config/jev-bands.json, the one
+    # table every jev site reads. Missing/invalid values surface as None:
+    # the row still lands and records the nulls so the gap is visible.
+    try:
+        entry = (json.load(open(BANDS_PATH)).get('sites') or {}).get(site) or {}
+    except Exception:
+        entry = {}
+    def num(k):
+        try:
+            v = float(entry.get(k))
+            return v if 0 <= v <= 1 else None
+        except (TypeError, ValueError):
+            return None
+    sens = entry.get('sensitivity')
+    return dict(act_hi=num('act_hi'), review_lo=num('review_lo'),
+                sensitivity=[float(x) for x in sens
+                             if isinstance(x, (int, float)) and not isinstance(x, bool)
+                             and 0 <= x <= 1] if isinstance(sens, list) else [])
+
+
 def threshold_override():
+    # JEV_WORKER_CONTEXT_THRESHOLD still wins for rollback; absent an env
+    # the drop edge is the site's review_lo row in config/jev-bands.json.
     v = os.environ.get('JEV_WORKER_CONTEXT_THRESHOLD')
     if v:
         try:
@@ -472,7 +522,7 @@ def threshold_override():
                 return f
         except Exception:
             pass
-    return DEFAULT_THRESHOLD
+    return read_bands(SITE)['review_lo']
 
 
 def packet_docs():
@@ -604,11 +654,12 @@ def main():
             return
         it['p'] = float(p)
 
+    site_bands = read_bands(SITE)
     thr = threshold_override()
-    bands = sorted(set(BANDS) | {thr})
+    bands = sorted(set(site_bands['sensitivity']) | ({thr} if thr is not None else set()))
     would_drop = {('%g' % t): [it['id'] for it in items if it['p'] <= t] for t in bands}
     token_delta = {('%g' % t): sum(it['tokens_est'] for it in items if it['p'] <= t) for t in bands}
-    default_key = '%g' % thr
+    default_key = '%g' % thr if thr is not None else None
 
     ref = 'pi-intake:%s#%s:%s' % (repo, issue,
                                   datetime.datetime.now(datetime.timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ'))
@@ -623,6 +674,8 @@ def main():
         answers={it['id']: dict(type='boolean', probability=it['p']) for it in items},
         probabilities={it['id']: it['p'] for it in items},
         items=[dict(it) for it in items],
+        act_hi=site_bands['act_hi'],
+        review_lo=site_bands['review_lo'],
         threshold_default=thr,
         would_drop_default=would_drop.get(default_key) or [],
         would_drop_by_threshold=would_drop,
@@ -644,10 +697,10 @@ def main():
         note('unavailable (log write failed: %s); builder unchanged' % type(exc).__name__)
         return
 
-    note('%s#%s items=%d would_drop(p<=%s)=%s delta_est=~%d tokens; advisory-only; builder unchanged'
-         % (repo, issue, len(items), default_key,
+    note('%s#%s items=%d would_drop(p<=%s)=%s delta_est=~%s tokens; advisory-only; builder unchanged'
+         % (repo, issue, len(items), default_key or 'n/a',
             ','.join(would_drop.get(default_key) or []) or 'none',
-            token_delta.get(default_key) or 0))
+            token_delta.get(default_key) if default_key is not None else 'n/a'))
 
 
 try:

@@ -70,7 +70,7 @@ def main():
           'off-flag accepts 0/off/false/no')
     for var in ('GH_TOKEN', 'VERCEL_AI_GATEWAY_JEV_KEY', 'TELEGRAM_BOT_TOKEN'):
         check(var not in block, 'block never references %s' % var)
-    check("'Authorization': 'Bearer ' + key" in block,
+    check("req.add_header('Authorization', 'Bearer ' + key)" in block,
           'key reaches only the Authorization header')
     check(not re.search(r'(?:print|note|log)\([^)]*(?:\+\s*key\b|,\s*key\b|%\s*key\b|\{\s*key\s*\})', block),
           'key variable never interpolated into a print call')
@@ -140,6 +140,9 @@ def main():
         ghbin.chmod(0o755)
 
         logfile = td / 'worker-context.jsonl'
+        bands_file = td / 'jev-bands.json'
+        bands_file.write_text(json.dumps({'sites': {'worker-context': {
+            'act_hi': 0.9, 'review_lo': 0.1, 'sensitivity': [0.1, 0.25, 0.5]}}}))
 
         def run(env):
             return subprocess.run([sys.executable, str(blockfile),
@@ -149,6 +152,7 @@ def main():
         base_env = dict(os.environ,
                         PATH='%s:%s' % (ghbin.parent, os.environ.get('PATH', '')),
                         LITELLM_JEV_KEY='test-key-7454',
+                        JEV_BANDS_FILE=str(bands_file),
                         JEV_WORKER_CONTEXT_ENDPOINT=endpoint,
                         JEV_WORKER_CONTEXT_LOG=str(logfile),
                         JEV_WORKER_CONTEXT_ROOT=str(packetroot),
@@ -178,6 +182,8 @@ def main():
             check(row.get('would_drop_by_threshold', {}).get('0.5') == ['rel_0', 'rel_1'],
                   'sensitivity bands reported')
             check(row.get('threshold_default') == 0.1, 'default threshold is the standing lo band')
+            check(row.get('act_hi') == 0.9 and row.get('review_lo') == 0.1,
+                  'row stamps the site band edges from the table')
             check(re.match(r'^pi-intake:Nishfleet/fleet-ops#7454:\d{4}-', row.get('ref') or '') is not None,
                   'row ref names repo/issue/time')
             check(re.match(r'^[0-9a-f]{64}$', row.get('state_sha256') or '') is not None,
@@ -212,6 +218,31 @@ def main():
         rows = [json.loads(l) for l in logfile.read_text().splitlines() if l.strip()]
         check(rows and rows[0].get('would_drop_default') == ['rel_0', 'rel_1'],
               'override threshold widens the would-drop set')
+
+        # fleet-ops#7439: the table drives both the default threshold and the
+        # sensitivity columns — a non-default fixture changes the row.
+        logfile.unlink()
+        tuned = td / 'jev-bands-tuned.json'
+        tuned.write_text(json.dumps({'sites': {'worker-context': {
+            'act_hi': 0.9, 'review_lo': 0.45, 'sensitivity': [0.9]}}}))
+        r = run(dict(base_env, JEV_BANDS_FILE=str(tuned)))
+        check(r.returncode == 0, 'tuned table exit 0')
+        rows = [json.loads(l) for l in logfile.read_text().splitlines() if l.strip()]
+        check(rows and rows[0].get('would_drop_default') == ['rel_0', 'rel_1']
+              and sorted((rows[0].get('would_drop_by_threshold') or {}).keys()) == ['0.45', '0.9'],
+              'tuned table drives default edge and sensitivity %s' % (rows[0] if rows else None))
+
+        # fleet-ops#7439: missing table fails open — row still lands with
+        # null edges and empty would-drop sets; the builder is untouched.
+        logfile.unlink()
+        r = run(dict(base_env, JEV_BANDS_FILE=str(td / 'does-not-exist.json')))
+        check(r.returncode == 0, 'missing table exit 0')
+        rows = [json.loads(l) for l in logfile.read_text().splitlines() if l.strip()]
+        check(rows and rows[0].get('threshold_default') is None
+              and rows[0].get('act_hi') is None and rows[0].get('review_lo') is None
+              and rows[0].get('would_drop_default') == []
+              and rows[0].get('would_drop_by_threshold') == {},
+              'missing table records null edges and no drops %s' % (rows[0] if rows else None))
 
         # rollback flag -> no call, no row
         calls_before = Stub.calls

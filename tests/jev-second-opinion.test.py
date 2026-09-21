@@ -101,7 +101,8 @@ def main():
 
     run_counter = [0]
 
-    def run_block(td, table=None, fail=False, off=False, card=CARD, key='test-key-7429'):
+    def run_block(td, table=None, fail=False, off=False, card=CARD, key='test-key-7429',
+                  bands={'act_hi': 0.5, 'review_lo': 0.5}):
         Stub.table = table or {}
         Stub.posts = []
         Stub.fail = fail
@@ -113,9 +114,13 @@ def main():
         cfile.write_text(json.dumps(card))
         bfile = rundir / 'block.py'
         bfile.write_text(block)
+        bpath = rundir / 'jev-bands.json'
+        if bands is not None:
+            bpath.write_text(json.dumps({'sites': {'second-opinion-test': bands}}))
         env = dict(os.environ,
                    JEV_SECOND_OPINION_ENDPOINT=endpoint,
-                   JEV_SECOND_OPINION_LOG_DIR=str(rundir / 'jev'))
+                   JEV_SECOND_OPINION_LOG_DIR=str(rundir / 'jev'),
+                   JEV_BANDS_FILE=str(bpath))
         if key is None:
             env.pop('LITELLM_JEV_KEY', None)
             env['HOME'] = str(rundir / 'nohome')  # no seat file there
@@ -153,6 +158,9 @@ def main():
         check(rows[-1].get('second_opinion', {}).get('disagreement') is False,
               'agree: summary disagreement false')
         check(all(x.get('advisory_only') is True for x in rows), 'agree: rows advisory_only')
+        check(all(x.get('act_hi') == 0.5 and x.get('review_lo') == 0.5 for x in rows),
+              'agree: rows stamp the site band edges from the table')
+        check(rows[-1].get('edge') == 0.5, 'agree: summary records the split edge')
         check('extra_state' not in json.dumps(rows), 'agree: raw state not logged')
 
         # 2. disagreement: opposite sides of 0.5 -> true
@@ -217,6 +225,26 @@ def main():
         r, rows, posts = run_block(td, table, card=dict(CARD, questions=q))
         check('risky=' in r.stdout and 'disagreement=true' in r.stdout,
               'custom-q: verdict uses card questions (%s)' % r.stdout.strip())
+
+        # 11. fleet-ops#7439: the table's act_hi is the split edge — 0.55 vs
+        # 0.7 agree at the 0.5 default but disagree at a tuned 0.6 edge, and
+        # a missing table leaves booleans unknown -> disagreement=null.
+        table = {'item-first': {'needsNish': {'type': 'boolean', 'probability': 0.55}},
+                 'context-first': {'needsNish': {'type': 'boolean', 'probability': 0.7}}}
+        r, rows, _ = run_block(td, table, card=card)
+        check('disagreement=false' in r.stdout,
+              'default edge 0.5: 0.55 vs 0.7 agree (%s)' % r.stdout.strip())
+        r, rows, _ = run_block(td, table, card=card,
+                               bands={'act_hi': 0.6, 'review_lo': 0.4})
+        check('disagreement=true' in r.stdout,
+              'tuned edge 0.6: 0.55 vs 0.7 disagree (%s)' % r.stdout.strip())
+        check(rows and rows[-1].get('edge') == 0.6, 'summary records tuned edge')
+        r, rows, _ = run_block(td, table, card=card, bands=None)
+        check('disagreement=null' in r.stdout,
+              'missing table: boolean pairs unknown -> null (%s)' % r.stdout.strip())
+        check(rows and rows[-1].get('edge') is None
+              and rows[-1].get('act_hi') is None,
+              'missing table: rows record null edges')
 
     print('---')
     if FAILS:
