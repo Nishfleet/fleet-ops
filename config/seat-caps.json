@@ -405,15 +405,22 @@
       "flat_usd_per_month": null,
       "_rate_card": "fleet-ops#4459 2026-09-08: grok-4.6 per-token rate card, measured from config/pi-models.json xai-oauth/models[0] cost: $2.00/M in / $6.00/M out / $0.50/M cached (per-1M USD, dated 2026-09-08). Paid via the SuperGrok subscription; the meter reads marginal spend.",
       "models": {
-        "grok-4.6": 2,
+        "grok-4.6": {
+          "cap": 0,
+          "max_probe_ceiling": 0,
+          "intentional_cap_zero": "retired",
+          "reason": "2026-09-22 Nish: grok 4.7 high or xhigh only; older Grok ids banned on this seat. Caught by the Grok 4.7 reviewer round on fleet-ops#8066 (models.json listed grok-4.7 with no cap row, so pick_seat would skip it)."
+        },
         "grok-4.5": {
           "cap": 0,
           "intentional_cap_zero": "money_only",
           "reason": "2026-09-04 fleet-ops#3125: grok-4.5 stays cap 0 (accepted assumption); HTTP 402 Grok Build usage balance exhausted observed 2026-08-30, self-healed 2026-09-02 but grok-4.6 occupies the provider cap. Re-audition if grok-4.6 yield drops and grok-4.5 is needed. Re-audited 2026-09-11 (FleetSeatCap0Stale repair): 402 balance / grok-4.6-cap condition unchanged; classified money_only (not stale)."
-        }
+        },
+        "grok-4.7": 2
       },
       "_grok_402_note": "HISTORY: 2026-08-30 auditor (STOP-REASON pi-scout@0509 trip 08:15Z) observed SuperGrok weekly sub drained - xai-oauth/grok-4.5 returned HTTP 402 'Grok Build usage balance exhausted' at 2026-08-30T08:15:06Z; both grok models share the same Grok Build balance so both were capped to 0. 2026-09-02 fleet-ops#2785 re-verification: SELF-HEALED \u2014 grok-token-refresh rotated access+refresh at 13:15:20Z and live probes on BOTH grok-4.5 and grok-4.6 returned PONG rc=0, ledgers healthy http_status=200. 2026-09-04 fleet-ops#3125 (Nish, decisions 2026-09-04, OpenUsage SuperGrok 61% left): provider cap restored 1 -> 2, grok-4.6 0 -> 2 (product lane); grok-4.5 stays 0 per the accepted 'grok-4.5 stays 0' assumption. This note stays for audit.",
-      "_comment_xai_oauth": "fleet-ops#1163 (2026-08-27): SuperGrok prepaid weekly sub, revived via stnly/pi-grok (pi-grok@0.10.1) OAuth provider \u2014 different from the api.x.ai 'grok' entry above (which has no live credential). Provider cap=2 (raised from 1 in fleet-ops#3125, expiry-first: the weekly sub drains or it is wasted) with grok-4.6 at model cap 2 (the 86%-yield product lane) and grok-4.5 at 0 (unchanged; the provider cap is occupied by grok-4.6). Subscription-backed $0 marginal \u2014 fits the 'prepaid subs run at max utilization' rule (the live weekly meter must move within minutes of any draw, never-double-wire). Pick a $0 marginal prepaid lane over a $1.20/M minimax metered one. The provider must also be present in ~/.pi/agent/models.json (xai-oauth entry with models grok-4.6 + grok-4.5) for enumerate_seats to emit it; the cap map here is the allowlist, models.json is the inventory. If the OAuth token dies the seat-health extension writes a credentials_bad ledger entry and pick_seat skips the seat \u2014 no silent 'ready' lie. The pi-grok extension also self-heals the token (auto-refresh on 401), so a transient 403 should be rare; a persistent one is the dead-credential case this row is wired to catch."
+      "_comment_xai_oauth": "fleet-ops#1163 (2026-08-27): SuperGrok prepaid weekly sub, revived via stnly/pi-grok (pi-grok@0.10.1) OAuth provider \u2014 different from the api.x.ai 'grok' entry above (which has no live credential). Provider cap=2 (raised from 1 in fleet-ops#3125, expiry-first: the weekly sub drains or it is wasted) with grok-4.6 at model cap 2 (the 86%-yield product lane) and grok-4.5 at 0 (unchanged; the provider cap is occupied by grok-4.6). Subscription-backed $0 marginal \u2014 fits the 'prepaid subs run at max utilization' rule (the live weekly meter must move within minutes of any draw, never-double-wire). Pick a $0 marginal prepaid lane over a $1.20/M minimax metered one. The provider must also be present in ~/.pi/agent/models.json (xai-oauth entry with models grok-4.6 + grok-4.5) for enumerate_seats to emit it; the cap map here is the allowlist, models.json is the inventory. If the OAuth token dies the seat-health extension writes a credentials_bad ledger entry and pick_seat skips the seat \u2014 no silent 'ready' lie. The pi-grok extension also self-heals the token (auto-refresh on 401), so a transient 403 should be rare; a persistent one is the dead-credential case this row is wired to catch.",
+      "_rate_card_note": "2026-09-22: rate card rows above were measured on grok-4.6; grok-4.7 inherits them until re-measured"
     },
     "mergegateway": {
       "cap": 2,
