@@ -53,10 +53,14 @@ grep -q "site='hermes-digest'" "$prompt" || fail "site name missing in rows"
 grep -q "127.0.0.1:4000/jev" "$prompt" || fail "sanctioned pass-through endpoint missing"
 ok "off flag, site name, log path, endpoint present"
 
-# 4. Advisory semantics: rows are advisory_only, rule tier digest, disagree field.
+# 4. Advisory semantics: rows are advisory_only, rule tier digest, disagree
+#    field driven by the site's act_hi edge from config/jev-bands.json
+#    (fleet-ops#7439) — never a local constant.
 grep -q "advisory_only=True" "$prompt" || fail "advisory_only marker missing"
 grep -q "rule_tier='digest'" "$prompt" || fail "rule_tier missing"
-grep -q "p >= 0.5" "$prompt" || fail "disagree threshold missing"
+grep -q "p >= act_hi" "$prompt" || fail "disagree edge check missing"
+grep -q "jev-bands.json" "$prompt" || fail "bands table reference missing"
+if grep -q "p >= 0\.5" "$prompt"; then fail "local 0.5 threshold constant crept back"; fi
 ok "advisory markers present"
 
 # 5. Privacy: the block reads the virtual key from the seat file, never the

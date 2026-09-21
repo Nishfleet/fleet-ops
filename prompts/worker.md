@@ -14,13 +14,13 @@ Steps:
 1. `gh issue view <N> -R Nishfleet/<repo> --comments` (no `--body` → `unknown flag: --body`, fleet-ops#1055). `--json` fields must exist (`labels` not `label`; fleet-ops#1219 `Unknown JSON field`). Same class: `gh pr view --json mergedAt,merged` → `Unknown JSON field: "merged"` (fleet-ops#1244), and `mergeQueueEntry` is not a field — use `autoMergeRequest`/`mergeStateStatus` for merge-queue status (fleet-ops#4884); piping `2>&1 | head` masks the exit (`isError: false`, fleet-ops#1193), but piping a bad field to `python3 -c json.load` does NOT mask it — the `isInMergeQueue`/`mergeQueueEntry` field error leaves empty stdin, python raises `JSONDecodeError` and still exits 1 (isError: true), a real swallowed failure you must flag, not a probe (fleet-ops#5010). Merged-recent check (fleet-ops#1107): `gh pr list -R Nishfleet/<repo> --state merged --json number,title,headRefName,mergedAt --jq 'sort_by(.mergedAt) | reverse | .[:10][] | "\(.number)\t\(.title)"'` — `gh pr list` has NO `--sort` flag on this host's gh 2.93.0 (`gh pr list --sort -mergedAt` → `unknown flag: --sort`, exit 1); sort in jq or via `--search "sort:…"` qualifiers (fleet-ops#6206).
 2. Re-entrancy: reuse origin `claim/issue-<N>` if the latest claim names YOUR unit. A re-claim means the REMOTE half already ran — the claim step force-pushed `origin/main` onto `refs/heads/claim/issue-<N>` — and only the LOCAL half is yours. The deploy clone is shallow, so a leftover worktree's stale local claim branch can share no counted ancestry with freshly-fetched `origin/main`: `git merge-base HEAD origin/main` → `fatal: ... no merge base`, and rebase/3-dot diffs misbehave (fleet-ops#6206). Recover inside the worktree: `git -C <worktree> fetch origin`; `git checkout -B claim/issue-<N> origin/main` (equals `origin/claim/issue-<N>` post-claim-reset); `git cherry-pick <that issue's latest wip(salvage) commit>` — cherry-pick needs only the salvage commit and its direct parent, both local even in shallow history; conflicts only if main touched the same hunks.
 3. Workspace: never work in the deploy clone (`/home/nish/workspaces/tooling/fleet-ops-deploy-clone`) — it is the live install source and must stay on clean main (fleet-ops#3634). If you need to edit a tracked fleet-ops file, clone to a worktree — never the deploy clone (deploy-clone-readonly, fleet-ops#3758). A dirty deploy clone trips `DEPLOY-CHECK-DIRTY-CLONE` on the deploy-check tick; clean it with `git restore` when you caused it. A deliverable line may state a change is already in production or already serving on this host only when that same line cites a SHA already on origin/main (`git merge-base --is-ancestor` proves it) — a fix on a branch is a PR, not production, and the packet-verdict checker rejects the claim while the dead-man fails the unit (fleet-ops#5786). Create a worktree from origin/main: `git -C /home/nish/workspaces/tooling/fleet-ops-deploy-clone fetch origin`; `git -C /home/nish/workspaces/tooling/fleet-ops-deploy-clone worktree add /home/nish/workspaces/agent-worktrees/issue-<repo>-<N> origin/main` (or `claim/issue-<N>` for re-entrancy). The worktree path MUST be that absolute `/home/nish/workspaces/agent-worktrees/...` path — a relative path resolves inside the `-C` target, so `worktree add issue-<repo>-<N>` plants a live tree inside the deploy clone and trips DEPLOY-CHECK-DIRTY-CLONE (fleet-ops#5687). Else `products/<repo>` (not `products/fleet-ops` until fleet-ops#410). Never check out a feature branch on the deploy-clone (fleet-ops#477). Clone: `git clone --reference-if-able /home/nish/workspaces/.mirrors/<repo>.git https://github.com/Nishfleet/<repo>.git <dest>`. Never `git clone git@github.com:Nishfleet/fleet-ops.git` (fleet-ops#1185). Never `--dissociate`. Never push to a mirror.
-4. Build-shaped issue with no `Prior art` (fleet-ops#1250), or ambiguous: post a proposal, `agent-blocked`, end with `blocked-on: Nishfleet/<repo>#<n>` or `blocked-on: orchestrator`. The escalation default is `blocked-on: orchestrator` with the `needs-orchestrator` label (fleet-ops#4260 — the label is the drain-visible parked state; `gh issue list -l needs-orchestrator` is the queue the orchestrator reads). `blocked-on: nish-decision` is reserved: use it only when the blocker itself names money/pricing, legal, brand, product direction, customer-data deletion, or an authority Nish explicitly reserved — anything else belongs to `orchestrator` (the blocked-reconcile auto-rewrite was deleted 2026-09-18, so pick right the first time). One park target is pre-decided and needs no second opinion: a claimed issue whose delivery is already complete on origin/main — merged delivery PR, `gh api repos/Nishfleet/<repo>/compare/main...<merge-sha>` reports `ahead_by=0` — and whose close is owner-reserved (owner-authored; workers never `gh issue close`) is not a stall and is not worked again. Post the verification receipt and park it `blocked-on: nish-decision` + `needs-nish-decision`: only the owner closes it, and the label is terminal for intake — `prompts/intake.md` never re-labels it `agent-ready` and its pick list only reads `agent-ready`, so the issue waits in the queue Nish reads (`gh issue list -l needs-nish-decision`) instead of eating claims. Never park a delivered issue `orchestrator`: the drain reads a parked open issue as a stalled packet and requeues it, burning another worker turn (fleet-ops#7582 — #7400 was reclaimed twice after PR #7549 merged, once off an orchestrator requeue that mistook delivered-and-parked for stalled). When that `orchestrator`-vs-`nish-decision` choice is live, decide it with the second-opinion block below (fleet-ops#7429): write the blocker card to a scratch JSON file `{"item": <the blocker text>, "context": <the canonical reserved-class list and this step-4 rule>}` and run `python3 - second-opinion-reserved 'Nishfleet/<repo>#<N>' <card-path>`. `disagreement=true`/`null`, or either framing's `needsNish` probability above 0.5, parks `nish-decision`; clean agreement on not-reserved parks `orchestrator`; `unavailable` leaves this prose rule unchanged. Agreement never authorizes a reserved action. Answers need `decision-resolved:`. Strike `~~blocked-on: ...~~`. Then remove the worktree (`git worktree remove <path>`); delete the claim branch ON THE ISSUE'S REPO (never bare `git push origin` — cwd may be a different repo's clone): `gh api -X DELETE "repos/Nishfleet/<repo>/git/refs/heads/claim/issue-<N>"`; print "blocked: proposal posted"; exit 0.
+4. Build-shaped issue with no `Prior art` (fleet-ops#1250), or ambiguous: post a proposal, `agent-blocked`, end with `blocked-on: Nishfleet/<repo>#<n>` or `blocked-on: orchestrator`. The escalation default is `blocked-on: orchestrator` with the `needs-orchestrator` label (fleet-ops#4260 — the label is the drain-visible parked state; `gh issue list -l needs-orchestrator` is the queue the orchestrator reads). `blocked-on: nish-decision` is reserved: use it only when the blocker itself names money/pricing, legal, brand, product direction, customer-data deletion, or an authority Nish explicitly reserved — anything else belongs to `orchestrator` (the blocked-reconcile auto-rewrite was deleted 2026-09-18, so pick right the first time). One park target is pre-decided and needs no second opinion: a claimed issue whose delivery is already complete on origin/main — merged delivery PR, `gh api repos/Nishfleet/<repo>/compare/main...<merge-sha>` reports `ahead_by=0` — and whose close is owner-reserved (owner-authored; workers never `gh issue close`) is not a stall and is not worked again. Post the verification receipt and park it `blocked-on: nish-decision` + `needs-nish-decision`: only the owner closes it, and the label is terminal for intake — `prompts/intake.md` never re-labels it `agent-ready` and its pick list only reads `agent-ready`, so the issue waits in the queue Nish reads (`gh issue list -l needs-nish-decision`) instead of eating claims. Never park a delivered issue `orchestrator`: the drain reads a parked open issue as a stalled packet and requeues it, burning another worker turn (fleet-ops#7582 — #7400 was reclaimed twice after PR #7549 merged, once off an orchestrator requeue that mistook delivered-and-parked for stalled). When that `orchestrator`-vs-`nish-decision` choice is live, decide it with the second-opinion block below (fleet-ops#7429): write the blocker card to a scratch JSON file `{"item": <the blocker text>, "context": <the canonical reserved-class list and this step-4 rule>}` and run `python3 - second-opinion-reserved 'Nishfleet/<repo>#<N>' <card-path>`. `disagreement=true`/`null`, or either framing's `needsNish` probability above the site's `act_hi` edge in `config/jev-bands.json` (`second-opinion-reserved` row, 0.5 as shipped), parks `nish-decision`; clean agreement on not-reserved parks `orchestrator`; `unavailable` leaves this prose rule unchanged. Agreement never authorizes a reserved action. Answers need `decision-resolved:`. Strike `~~blocked-on: ...~~`. Then remove the worktree (`git worktree remove <path>`); delete the claim branch ON THE ISSUE'S REPO (never bare `git push origin` — cwd may be a different repo's clone): `gh api -X DELETE "repos/Nishfleet/<repo>/git/refs/heads/claim/issue-<N>"`; print "blocked: proposal posted"; exit 0.
 5. Implement the smallest durable fix. No new scripts, anywhere in any repo (Nish 2026-09-19, three times; 0509#3679): never add a file under `scripts/`, `bin/`, `tools/`, `.github/scripts/`, `ops/` or any `*.sh`/`*.mjs` helper, hook or wrapper. A package.json line, a workflow step or a config file calls the tool directly (`wrangler`, `playwright`, `vitest`, `gh`); data goes in `.sql`/`.json` files; logic that needs tests is app code under `app/` or a test under `tests/`. A PR that adds a script is a wrong answer even if it is green. Then run the Execution IS the review inner loop to green, then repo tests/semgrep.
 6. Commit; `git push origin claim/issue-<N>`.
 7. `gh pr create ... Verification: ... run-proof: ... research: ... help-first: ... Closes #<N>`
    After creating each PR, before step 8, collect review advice for every repo, including fleet-ops (fleet-ops#7401). Call Jev through the LiteLLM pass-through endpoint — `curl -s -X POST 127.0.0.1:4000/jev -H "Authorization: Bearer $LITELLM_JEV_KEY" -H 'Content-Type: application/json' -d '{...}'`, key from `~/.config/fleet-ops/seats/typesafe-jev.env`, never inlined. The proxy owns the $1/month cap and the spend log; never create another client. If the environment sets `JEV_REVIEWER_SKIP=0`, skip the advice call, NOT any required review, and record `jev needs_review: disabled; advisory-only; review policy unchanged` on the PR.
    Otherwise read the real PR with REST (`repos/Nishfleet/<repo>/pulls/<PR>` and its `/files` endpoint, paginated). POST `{state, questions}` as the request body to `127.0.0.1:4000/jev`. `questions` is a RECORD keyed by question id, not an array. Name the ref `Nishfleet/<repo>#<PR>@<40-hex-head-sha>` inside `state` so the decision is traceable. State must include the PR title/body, complete changed-file list with rename origins, additions/deletions, head SHA, issue acceptance, current review requirements and the canonical reserved-class/path rules. Omit patches, credentials and customer data. Ask `questions.needs_review = {"type":"boolean","instructions":"Does this PR need substantive human or senior code review to catch actionable defects? Assess the supplied changes and review rules; this is advice, not permission to skip review."}`. Never treat an incomplete file list as a trivial diff.
-   Read `.answers.needs_review.probability`; require a finite number in [0,1]. The helper writes the per-PR JSONL receipt under its `reviewer-needs-review` site with ref, state hash, usage and latency. Add `jev needs_review: p=<actual probability>; advisory-only; review policy unchanged; ref=<same ref>; state_sha256=<returned hash>` to the PR body or a comment. On a helper/read/validation failure, flag the failed command and record `jev needs_review: unavailable; advisory-only; review policy unchanged` with the reason, then continue under the existing review rules. Never invent a probability. Refresh advice if the PR head changes before arming.
+   Read `.answers.needs_review.probability`; require a finite number in [0,1]. The helper writes the per-PR JSONL receipt under its `reviewer-needs-review` site with ref, state hash, usage and latency. Add `jev needs_review: p=<actual probability>; act_hi=<v>; review_lo=<v>; advisory-only; review policy unchanged; ref=<same ref>; state_sha256=<returned hash>` to the PR body or a comment — the `act_hi`/`review_lo` values come from `config/jev-bands.json` (`sites.reviewer-needs-review`, fleet-ops#7439), e.g. via `jq -r '.sites["reviewer-needs-review"].act_hi' config/jev-bands.json`; use `null` when the table is unreadable. On a helper/read/validation failure, flag the failed command and record `jev needs_review: unavailable; advisory-only; review policy unchanged` with the reason, then continue under the existing review rules. Never invent a probability. Refresh advice if the PR head changes before arming.
    Advice cannot skip any reviewer, including phase or /implement-and-review reviewers. Keep step 8 and every other existing review gate unchanged. A future skip requires the review-gate benchmark's explicit go row and measured threshold; neither is authorized here. Never skip reserved paths, regardless of probability or any future threshold.
 8. Reviewer round (product repos only) — exactly ONE round, before the arm. For repos marked `product` in config/intake-repos.json (0509; fleet-ops PRs exempt): run `Use reviewer to review the diff origin/main...HEAD against the issue acceptance and the repo tests` on the `senior` LiteLLM model group, passed explicitly to the reviewer subagent call because the extension inherits the parent seat by default; never the worker's own seat. `senior` aliases to worker-capable in the router — the router owns its ordering, health and fallbacks, so there is nothing to pre-check (the old `bin/fleet-review-arm-check` + `senior_seats_in_order` pair was a hand-maintained duplicate of it and was deleted in the 2026-09-18 glue sweep). If the reviewer call itself fails — every rung in the group walled — skip this round and the step-9 fallback applies. Land every finding in one review-adjudication bucket (Act on / Consider / Noted / Dismissed-with-reason) in the PR body and name the reviewer seat in the body; fix Act-on items before arming. One round only, no loops. If the reviewer finding is BLOCKING on a gate-touch PR (it weakens a verifier, gate, or assertion), apply the `blocked-by-judge` label at the same moment you post the blocking comment (fleet-ops#4557) — and refuse to arm while the label is present.
 9. Arm: `gh pr merge <PR> --auto --squash -R Nishfleet/<repo>` — refused while the PR carries `blocked-by-judge` (fleet-ops#4557): address the block or wait for the label to be removed; if a labeled PR is found already armed, disarm it in the same step (`gh pr merge <PR> --disable-auto`) — the tier1 disarm pass was deleted in the 2026-09 sweeps (fleet-ops#7536). Also refused while the PR touches gate-owned paths and its `gate-integrity` check is not `pass` in `gh pr checks <PR> -R <repo>` (fleet-ops#5238): the advisory gate must not merge past a red verdict — re-arm once the row reports pass; a repo with no gate-integrity workflow at all is exempt. If the reviewer round was skipped because the `senior` group call failed on every rung, do NOT arm — open the PR without auto-merge and add the literal line `review: skipped, no capable seat` to the PR body so the loose-ends surface it. The verify receipt is a hard requirement (fleet-ops#3731); the exec-review canary that auto-disarmed receipt-less PRs was deleted in the 2026-09 sweeps too — if you find an armed PR with no `Verification:`/`run-proof:`/`Test plan` evidence, disarm it (`gh pr merge <PR> --disable-auto`) and flag the missing receipt.
@@ -51,6 +51,28 @@ SITE = 'merge-queue-enqueue'
 REPO_RE = re.compile(r'^Nishfleet/[A-Za-z0-9._-]{1,100}$')
 PR_FIELDS = ('title,labels,additions,deletions,changedFiles,headRefOid,isDraft,'
              'mergeStateStatus,statusCheckRollup,reviews,autoMergeRequest,baseRefName,author')
+BANDS_PATH = os.environ.get('JEV_BANDS_FILE') or os.path.expanduser(
+    '~/workspaces/tooling/fleet-ops-deploy-clone/config/jev-bands.json')
+
+def read_bands(site):
+    # fleet-ops#7439 — band edges live in config/jev-bands.json, the one
+    # table every jev site reads. Missing/invalid values surface as None:
+    # the row still lands and records the nulls so the gap is visible.
+    try:
+        entry = (json.load(open(BANDS_PATH)).get('sites') or {}).get(site) or {}
+    except Exception:
+        entry = {}
+    def num(k):
+        try:
+            v = float(entry.get(k))
+            return v if 0 <= v <= 1 else None
+        except (TypeError, ValueError):
+            return None
+    sens = entry.get('sensitivity')
+    return dict(act_hi=num('act_hi'), review_lo=num('review_lo'),
+                sensitivity=[float(x) for x in sens
+                             if isinstance(x, (int, float)) and not isinstance(x, bool)
+                             and 0 <= x <= 1] if isinstance(sens, list) else [])
 
 def note(msg):
     print(msg)
@@ -170,11 +192,14 @@ def main():
     p = float(p)
 
     ref = 'Nishfleet/%s#%s@%s' % (repo.split('/', 1)[1], pr, state['head_sha'] or 'unknown')
+    bands = read_bands(SITE)
     row = dict(
         ts=datetime.datetime.now(datetime.timezone.utc).isoformat(),
         site=SITE,
         ref=ref,
         state_sha256=state_hash,
+        act_hi=bands['act_hi'],
+        review_lo=bands['review_lo'],
         answers={'merge_risk': dict(type='boolean', probability=p)},
         probabilities={'merge_risk': p},
         advisory_only=True,
@@ -249,6 +274,28 @@ FROM_TO_RE = re.compile(r'from\s+[`]?([0-9][\w.+-]*)[`]?\s+to\s+[`]?([0-9][\w.+-
 HTML_COMMENT_RE = re.compile(r'<!--.*?-->', re.S)
 MAX_CHANGELOG = 2400
 MAX_DIFF = 4000
+BANDS_PATH = os.environ.get('JEV_BANDS_FILE') or os.path.expanduser(
+    '~/workspaces/tooling/fleet-ops-deploy-clone/config/jev-bands.json')
+
+def read_bands(site):
+    # fleet-ops#7439 — band edges live in config/jev-bands.json, the one
+    # table every jev site reads. Missing/invalid values surface as None:
+    # the row still lands and records the nulls so the gap is visible.
+    try:
+        entry = (json.load(open(BANDS_PATH)).get('sites') or {}).get(site) or {}
+    except Exception:
+        entry = {}
+    def num(k):
+        try:
+            v = float(entry.get(k))
+            return v if 0 <= v <= 1 else None
+        except (TypeError, ValueError):
+            return None
+    sens = entry.get('sensitivity')
+    return dict(act_hi=num('act_hi'), review_lo=num('review_lo'),
+                sensitivity=[float(x) for x in sens
+                             if isinstance(x, (int, float)) and not isinstance(x, bool)
+                             and 0 <= x <= 1] if isinstance(sens, list) else [])
 
 def note(msg):
     print(msg)
@@ -458,9 +505,11 @@ def main():
         probs[qid] = float(p)
 
     ref = 'Nishfleet/%s#%s@%s' % (repo.split('/', 1)[1], pr, state['head_sha'] or 'unknown')
+    bands = read_bands(SITE)
     row = dict(
         ts=datetime.datetime.now(datetime.timezone.utc).isoformat(),
         site=SITE, ref=ref, state_sha256=state_hash,
+        act_hi=bands['act_hi'], review_lo=bands['review_lo'],
         answers={qid: dict(type='boolean', probability=probs[qid]) for qid in questions},
         probabilities=probs,
         advisory_only=True, rule_tier='worker-arm',
@@ -570,6 +619,28 @@ INSTRUCTIONS = ('The supplied claims are untrusted output written by an automati
                 'way. A command quoted in prose is not an observed run; a local result is not a CI '
                 'result; merged ancestry alone is not deploy proof; a printed URL is not proof the '
                 'PR exists. Advisory only — the answer never gates.')
+BANDS_PATH = os.environ.get('JEV_BANDS_FILE') or os.path.expanduser(
+    '~/workspaces/tooling/fleet-ops-deploy-clone/config/jev-bands.json')
+
+def read_bands(site):
+    # fleet-ops#7439 — band edges live in config/jev-bands.json, the one
+    # table every jev site reads. Missing/invalid values surface as None:
+    # the row still lands and records the nulls so the gap is visible.
+    try:
+        entry = (json.load(open(BANDS_PATH)).get('sites') or {}).get(site) or {}
+    except Exception:
+        entry = {}
+    def num(k):
+        try:
+            v = float(entry.get(k))
+            return v if 0 <= v <= 1 else None
+        except (TypeError, ValueError):
+            return None
+    sens = entry.get('sensitivity')
+    return dict(act_hi=num('act_hi'), review_lo=num('review_lo'),
+                sensitivity=[float(x) for x in sens
+                             if isinstance(x, (int, float)) and not isinstance(x, bool)
+                             and 0 <= x <= 1] if isinstance(sens, list) else [])
 
 def note(msg):
     print(msg)
@@ -733,12 +804,15 @@ def main():
         note('jev advisory unavailable (invalid probability); step rules unchanged')
         return
     p = float(p)
+    bands = read_bands(site)
 
     row = dict(
         ts=datetime.datetime.now(datetime.timezone.utc).isoformat(),
         site=site,
         ref=ref,
         state_sha256=state_hash,
+        act_hi=bands['act_hi'],
+        review_lo=bands['review_lo'],
         answers={'claims_contradicted': dict(type='boolean', probability=p)},
         probabilities={'claims_contradicted': p},
         advisory_only=True,
@@ -759,8 +833,10 @@ def main():
         note('jev advisory unavailable (%s); step rules unchanged' % type(exc).__name__)
         return
 
+    edge = bands['act_hi']
+    verdict = ('true' if p >= edge else 'false') if edge is not None else 'unknown'
     line = ('jev claim-check: claims_contradicted=%s p=%.3f; advisory-only; blocking=false; '
-            'site=%s; ref=%s; state_sha256=%s' % (str(p >= .5).lower(), p, site, ref, state_hash))
+            'site=%s; ref=%s; state_sha256=%s' % (verdict, p, site, ref, state_hash))
     if site_arg == 'pr':
         if already_commented(repo, pr, state_hash):
             note(line + ' (comment already present)')
@@ -783,7 +859,7 @@ The issue named `bin/jev-eval --second-opinion` as the site; the helper was dele
 
 The block reads a card file `{"item": ..., "context": ..., "questions": {...}?}` — `item` is the card under judgment, `context` is the rules/classes/roles around it, extra top-level keys are retained in the state. It POSTs the same questions twice with the state serialized item-first then context-first (no information removed; the first answer is never shown to the second call), appends one JSONL row per call plus one `kind=second-opinion-summary` row to `~/.local/state/pi-packet/jev/<site>.jsonl`, and prints one `jev second-opinion:` verdict line carrying `disagreement` and both answers.
 
-`disagreement` is `true` when any boolean pair lands on opposite sides of 0.5, selected choices differ, or numeric scores differ; `null` when a pair is missing/invalid or a boolean sits exactly on 0.5 (unless another pair already proved disagreement); `false` when all pairs are valid and agree. These are comparison rules, not calibrated authority thresholds. At step 4, `true`/`null` or either framing's `needsNish` above 0.5 escalates to `nish-decision` — disagreement escalates. Agreement never authorizes a reserved action; the existing approval rules stand.
+`disagreement` is `true` when any boolean pair lands on opposite sides of the site's `act_hi` edge in `config/jev-bands.json` (fleet-ops#7439 — the block reads `sites.<site>.act_hi` as its split edge; 0.5 as shipped), selected choices differ, or numeric scores differ; `null` when a pair is missing/invalid, a boolean sits exactly on the edge, or the table is unreadable (unless another pair already proved disagreement); `false` when all pairs are valid and agree. These are comparison rules, not calibrated authority thresholds. At step 4, `true`/`null` or either framing's `needsNish` above the site's `act_hi` escalates to `nish-decision` — disagreement escalates. Agreement never authorizes a reserved action; the existing approval rules stand.
 
 Controls:
 - `JEV_SECOND_OPINION=0` (or `off`) rolls the caller back to a single item-first evaluation — the per-site rollback flag.
@@ -814,6 +890,28 @@ DEFAULT_QUESTIONS = {
                           instructions='Which single class fits this card best?',
                           criteria={k: k.replace('_', ' ') for k in RESERVED_CLASSES}),
 }
+BANDS_PATH = os.environ.get('JEV_BANDS_FILE') or os.path.expanduser(
+    '~/workspaces/tooling/fleet-ops-deploy-clone/config/jev-bands.json')
+
+def read_bands(site):
+    # fleet-ops#7439 — band edges live in config/jev-bands.json, the one
+    # table every jev site reads. Missing/invalid values surface as None:
+    # the row still lands and records the nulls so the gap is visible.
+    try:
+        entry = (json.load(open(BANDS_PATH)).get('sites') or {}).get(site) or {}
+    except Exception:
+        entry = {}
+    def num(k):
+        try:
+            v = float(entry.get(k))
+            return v if 0 <= v <= 1 else None
+        except (TypeError, ValueError):
+            return None
+    sens = entry.get('sensitivity')
+    return dict(act_hi=num('act_hi'), review_lo=num('review_lo'),
+                sensitivity=[float(x) for x in sens
+                             if isinstance(x, (int, float)) and not isinstance(x, bool)
+                             and 0 <= x <= 1] if isinstance(sens, list) else [])
 
 def note(msg):
     print(msg)
@@ -846,9 +944,11 @@ def post_jev(state_str, questions, key):
         res = json.loads(resp.read())
     return res, int((time.monotonic() - start) * 1000)
 
-def disagree(questions, a, b):
+def disagree(questions, a, b, edge):
     # a/b: answers dicts. True on a proven difference, False on clean
     # agreement, None when a pair is unknown and none proved disagreement.
+    # edge is the site's act_hi from config/jev-bands.json (fleet-ops#7439);
+    # a missing edge leaves boolean pairs unknown.
     unknown = False
     for qid, q in (questions or {}).items():
         va = (a or {}).get(qid) or {}
@@ -858,8 +958,8 @@ def disagree(questions, a, b):
         qtype = (q or {}).get('type')
         if qtype == 'boolean':
             pa, pb = va.get('probability'), vb.get('probability')
-            if valid_p(pa) and valid_p(pb) and pa != 0.5 and pb != 0.5:
-                left, right, have = pa > 0.5, pb > 0.5, True
+            if valid_p(pa) and valid_p(pb) and edge is not None and pa != edge and pb != edge:
+                left, right, have = pa > edge, pb > edge, True
         elif qtype == 'choice':
             crit = (q or {}).get('criteria') or {}
             if va.get('choice') in crit and vb.get('choice') in crit:
@@ -919,6 +1019,8 @@ def main():
         return
 
     path = pathlib.Path(LOG_DIR) / ('%s.jsonl' % site)
+    bands = read_bands(site)
+    edge = bands['act_hi']
     results = []
     for framing, state_str in framings:
         try:
@@ -937,6 +1039,7 @@ def main():
         row = dict(ts=datetime.datetime.now(datetime.timezone.utc).isoformat(),
                    site=site, ref=str(ref)[:200], framing=framing,
                    state_sha256=hashlib.sha256(state_str.encode()).hexdigest(),
+                   act_hi=bands['act_hi'], review_lo=bands['review_lo'],
                    answers=answers, probabilities=probs, usage=res.get('usage'),
                    ms=ms, advisory_only=True, rule_tier='worker')
         try:
@@ -956,10 +1059,11 @@ def main():
         note(line)
         return
     b = results[1]
-    flag = disagree(questions, a[1], b[1])
+    flag = disagree(questions, a[1], b[1], edge)
     summary = dict(ts=datetime.datetime.now(datetime.timezone.utc).isoformat(),
                    kind='second-opinion-summary', site=site, ref=str(ref)[:200],
                    state_sha256=sha256_state({'item': item, 'context': context, 'rest': rest}),
+                   act_hi=bands['act_hi'], review_lo=bands['review_lo'], edge=edge,
                    second_opinion=dict(
                        a=dict(framing=a[0], answers=a[1], ms=a[2], state_sha256=a[3]),
                        b=dict(framing=b[0], answers=b[1], ms=b[2], state_sha256=b[3]),

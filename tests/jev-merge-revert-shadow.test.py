@@ -124,6 +124,10 @@ def main():
         rfile.write_text(rblock)
         wlog = td / 'merge-queue-enqueue.jsonl'
         rlog = td / 'auto-revert.jsonl'
+        bands_file = td / 'jev-bands.json'
+        bands_file.write_text(json.dumps({'sites': {
+            'merge-queue-enqueue': {'act_hi': 0.9, 'review_lo': 0.1},
+            'auto-revert': {'act_hi': 0.9, 'review_lo': 0.1}}}))
 
         # A stub gh that records argv and succeeds; it MUST intercept the
         # `gh pr comment` the enqueue block posts. The fake repo arg makes a
@@ -141,6 +145,7 @@ def main():
         base_env = dict(os.environ,
                         LITELLM_JEV_KEY='test-key-7397',
                         GH_STUB_LOG=str(ghlog),
+                        JEV_BANDS_FILE=str(bands_file),
                         PATH='%s:%s' % (bindir, os.environ.get('PATH', '')))
         for v in ('JEV_MERGE_QUEUE_ENQUEUE', 'JEV_AUTO_REVERT'):
             base_env.pop(v, None)
@@ -168,6 +173,8 @@ def main():
               'enqueue: row repo/pr')
         check(row.get('head_sha') == '0123456789abcdef0123456789abcdef01234567',
               'enqueue: row head_sha from fixture')
+        check(row.get('act_hi') == 0.9 and row.get('review_lo') == 0.1,
+              'enqueue: row stamps the site band edges from the table')
         check('test-key-7397' not in json.dumps(row), 'enqueue: row carries no key')
         check((Stub.last_body or {}).get('model') == 'typesafe-ai/jev', 'enqueue: request model id')
         check('merge_risk' in ((Stub.last_body or {}).get('questions') or {}),
@@ -235,6 +242,8 @@ def main():
         check(row.get('failing_run_id') == 9901, 'auto-revert: row failing run id')
         check(re.match(r'^[0-9a-f]{64}$', row.get('state_sha256') or '') is not None,
               'auto-revert: row state_sha256')
+        check(row.get('act_hi') == 0.9 and row.get('review_lo') == 0.1,
+              'auto-revert: row stamps the site band edges from the table')
         check('test-key-7397' not in json.dumps(row), 'auto-revert: row carries no key')
         check('red_attributable_to_head_merge' in ((Stub.last_body or {}).get('questions') or {}),
               'auto-revert: request question id')

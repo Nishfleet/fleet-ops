@@ -35,8 +35,9 @@ def main():
     shadow = next((i for i, l in enumerate(lines)
                    if l.startswith('## Shadow Jev tier — advisory, never a gate (fleet-ops#7394)')), -1)
     check(0 <= steps < shadow, 'shadow section follows the steps list')
-    check(not any(l.startswith('## ') for l in lines[shadow + 1:]),
-          'shadow section is the last section')
+    check(all(l.startswith('## Shadow Jev tier') for l in lines[shadow + 1:]
+              if l.startswith('## ')),
+          'only shadow-tier sections follow the shadow section')
 
     blocks = re.findall(r"python3 - <<'PY'\n", text)
     check(len(blocks) == 1, 'exactly one embedded python block for this site, got %d' % len(blocks))
@@ -111,6 +112,9 @@ def main():
         meta.write_text(json.dumps([{'alertname': 'DetachedJobDied', 'severity': 'warning',
                                      'status': 'firing', 'instance': '', 'disposition': 'filed'}]))
         logfile = td / 'alert-repair.jsonl'
+        bands_file = td / 'jev-bands.json'
+        bands_file.write_text(json.dumps({'sites': {
+            'alert-repair': {'act_hi': 0.9, 'review_lo': 0.1}}}))
         # Fixture actions.log: two in-window events for the alertname, one old,
         # one for a different alertname.
         now = datetime.datetime.now(datetime.timezone.utc)
@@ -125,6 +129,7 @@ def main():
 
         env = dict(os.environ,
                    LITELLM_JEV_KEY='test-key-7394',
+                   JEV_BANDS_FILE=str(bands_file),
                    JEV_ALERT_REPAIR_ENDPOINT=endpoint,
                    JEV_ALERT_REPAIR_META=str(meta),
                    JEV_ALERT_REPAIR_LOG=str(logfile),
@@ -151,6 +156,8 @@ def main():
         check((probs.get('class') or {}).get('file_issue') == 0.9, 'row class probabilities')
         check(probs.get('duplicate_of') == 0.76, 'row duplicate_of p')
         check(probs.get('flap') == 0.53, 'row flap p')
+        check(row.get('act_hi') == 0.9 and row.get('review_lo') == 0.1,
+              'row stamps the site band edges from the table')
         check('test-key-7394' not in json.dumps(row), 'row carries no key')
         check(not meta.exists(), 'meta temp file cleaned up')
 

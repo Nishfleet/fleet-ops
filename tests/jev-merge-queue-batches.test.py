@@ -125,6 +125,9 @@ def main():
         ghbin.chmod(0o755)
         logfile = td / 'merge-queue-batches.jsonl'
         statefile = td / 'merge-queue-batches.state'
+        bands_file = td / 'jev-bands.json'
+        bands_file.write_text(json.dumps({'sites': {
+            'merge-queue-batches': {'act_hi': 0.9, 'review_lo': 0.1}}}))
         threefile = td / 'three.json'
         threefile.write_text(json.dumps(queue_fixture(three)))
         onefile = td / 'one.json'
@@ -133,6 +136,7 @@ def main():
         base_env = dict(os.environ,
                         PATH='%s:%s' % (ghbin.parent, os.environ.get('PATH', '')),
                         LITELLM_JEV_KEY='test-key-7419',
+                        JEV_BANDS_FILE=str(bands_file),
                         JEV_MQB_ENDPOINT=endpoint,
                         JEV_MQB_LOG=str(logfile),
                         JEV_MQB_STATE=str(statefile),
@@ -164,6 +168,8 @@ def main():
             check(re.match(r'^[0-9a-f]{64}$', row.get('state_sha256') or '') is not None,
                   'row state_sha256')
             check(row.get('ref') == 'Nishfleet/fleet-ops#8110@aaa111', 'row ref = head PR + sha')
+            check(row.get('act_hi') == 0.9 and row.get('review_lo') == 0.1,
+                  'row stamps the site band edges from the table')
             check(len(row.get('conflicts') or {}) == 3, 'row carries one probability per pair')
             check(all(0.0 <= p <= 1.0 for p in (row.get('conflicts') or {}).values()),
                   'row probabilities in range')

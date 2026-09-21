@@ -183,7 +183,9 @@ assert cmd.get("max") == 1, cmd.get("max")
 assert "am-executor-claim" in cmd["cmd"]
 args = cmd.get("args") or []
 joined = " ".join(args)
-assert "pi --print" in joined, args
+# fleet-ops#7414: pi is invoked by absolute path (systemd PATH has no
+# ~/.local/bin), so the literal is `.local/bin/pi" --print`, not `pi --print`.
+assert '.local/bin/pi" --print' in joined, args
 assert "worker-cheap" in joined, args
 print("OK: yaml cmd is am-executor-claim with max: 1")
 PY

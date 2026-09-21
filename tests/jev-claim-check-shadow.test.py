@@ -99,6 +99,10 @@ def main():
         logdir = td / 'jev'
         prlog = logdir / 'claim-check-pr.jsonl'
         rplog = logdir / 'claim-check-report.jsonl'
+        bands_file = td / 'jev-bands.json'
+        bands_file.write_text(json.dumps({'sites': {
+            'claim-check-pr': {'act_hi': 0.5, 'review_lo': 0.5},
+            'claim-check-report': {'act_hi': 0.5, 'review_lo': 0.5}}}))
 
         # A stub gh that records argv and succeeds; it MUST intercept the
         # `gh pr comment` the pr-site block posts. The fake repo arg makes a
@@ -116,6 +120,7 @@ def main():
         base_env = dict(os.environ,
                         LITELLM_JEV_KEY='test-key-7404',
                         GH_STUB_LOG=str(ghlog),
+                        JEV_BANDS_FILE=str(bands_file),
                         PATH='%s:%s' % (bindir, os.environ.get('PATH', '')))
         base_env.pop('JEV_CLAIM_CHECK', None)
 
@@ -147,6 +152,8 @@ def main():
               'pr site: row repo/issue/pr')
         check(row.get('head_sha') == '0123456789abcdef0123456789abcdef01234567',
               'pr site: row head_sha from fixture')
+        check(row.get('act_hi') == 0.5 and row.get('review_lo') == 0.5,
+              'pr site: row stamps the site band edges from the table')
         check('test-key-7404' not in json.dumps(row), 'pr site: row carries no key')
         check((Stub.last_body or {}).get('model') == 'typesafe-ai/jev',
               'pr site: request model id')
@@ -245,6 +252,28 @@ def main():
                            capture_output=True, text=True, env=env, timeout=60)
         check(r.returncode == 0 and 'bad args' in r.stdout,
               'pr site without a pr -> bad args, exit 0')
+
+        # --- fleet-ops#7439: the table's act_hi is the printed edge ---
+        tuned = td / 'jev-bands-tuned.json'
+        tuned.write_text(json.dumps({'sites': {
+            'claim-check-pr': {'act_hi': 0.3, 'review_lo': 0.3},
+            'claim-check-report': {'act_hi': 0.5, 'review_lo': 0.5}}}))
+        env = dict(base_env, JEV_CLAIM_CHECK_ENDPOINT=endpoint,
+                   JEV_CLAIM_CHECK_LOG_DIR=str(logdir),
+                   JEV_BANDS_FILE=str(tuned),
+                   JEV_CC_FIXTURE_PR=str(FIXTURES / 'jev7404-pr.json'))
+        r = subprocess.run([sys.executable, str(bfile), 'pr', 'Nishfleet/jev7404-nonexistent',
+                            '7404', '999999'],
+                           capture_output=True, text=True, env=env, timeout=90)
+        check(re.search(r'claims_contradicted=true p=0\.420', r.stdout) is not None,
+              'tuned act_hi=0.3 flips the printed verdict at p=0.42 (%s)' % r.stdout.strip()[:160])
+
+        env = dict(env, JEV_BANDS_FILE=str(td / 'does-not-exist.json'))
+        r = subprocess.run([sys.executable, str(bfile), 'pr', 'Nishfleet/jev7404-nonexistent',
+                            '7404', '999999'],
+                           capture_output=True, text=True, env=env, timeout=90)
+        check(re.search(r'claims_contradicted=unknown p=0\.420', r.stdout) is not None,
+              'missing table prints unknown, not a local constant (%s)' % r.stdout.strip()[:160])
 
     srv.shutdown()
 

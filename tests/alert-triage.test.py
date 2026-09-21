@@ -136,6 +136,10 @@ def main():
         stub = td / 'stub-repair'
         stub.write_text('#!/bin/sh\necho run >> "%s"\ncat >/dev/null\n' % runs)
         stub.chmod(0o755)
+        bands_file = td / 'jev-bands.json'
+        bands_file.write_text(json.dumps({'sites': {
+            'alert-dispatch': {'act_hi': 0.9, 'review_lo': 0.1},
+            'alert-triage': {'act_hi': 0.9, 'review_lo': 0.1}}}))
 
         def bin_env(extra):
             e = dict(os.environ)
@@ -144,6 +148,7 @@ def main():
                           SYSTEMCTL=str(bindir / 'systemctl'),
                           AM_EXECUTOR_CLAIM_UNIT='am-executor-claim-test',
                           LITELLM_JEV_KEY='test-key-7414',
+                          JEV_BANDS_FILE=str(bands_file),
                           JEV_CASCADE_ALERT_DISPATCH_ENDPOINT=endpoint,
                           JEV_CASCADE_ALERT_DISPATCH_LOG=str(log_d),
                           JEV_CASCADE_ALERT_DISPATCH_ACTIONS_LOG=str(actions),
@@ -197,6 +202,7 @@ def main():
         check(len(rs) == 1 and rs[0]['site'] == 'alert-triage'
               and rs[0]['decision'] == 'resolved-noop' and rs[0]['jev_calls'] == 0
               and rs[0]['path_action'] == 'resolved-noop'
+              and rs[0]['act_hi'] == 0.9 and rs[0]['review_lo'] == 0.1
               and rs[0]['alerts'][0]['fingerprint'] == 'aa01',
               'resolved: alert-triage row %s' % (rs[-1] if rs else None))
         check(len(drows()) == 0, 'resolved: no alert-dispatch row')

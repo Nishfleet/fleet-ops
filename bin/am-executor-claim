@@ -48,16 +48,33 @@ TRIAGE_LOG="${JEV_ALERT_TRIAGE_LOG:-${HOME}/.local/state/pi-packet/jev/alert-tri
 # alert-triage row for decisions made in code before any model is spent
 # (fleet-ops#7414). $1 = decision, $2 = path_action. jev_calls stays 0 —
 # these exits never reach a model. fleet-ops#7754 scores the site.
+BANDS_FILE="${JEV_BANDS_FILE:-$HOME/workspaces/tooling/fleet-ops-deploy-clone/config/jev-bands.json}"
+
+# fleet-ops#7439: every site row stamps the band edges it ran under, read
+# from the one config table, so a tuner can replay what the table said when
+# the row was written. Missing/malformed values surface as null.
+band_val() {
+    jq -r --arg s "$2" --arg k "$1" \
+        '.sites[$s][$k] | if type == "number" then . else empty end' \
+        "$BANDS_FILE" 2>/dev/null || true
+}
+
 triage_row() {
     mkdir -p "$(dirname "$TRIAGE_LOG")" 2>/dev/null || true
+    local band_hi band_lo
+    band_hi="$(band_val act_hi alert-triage)"
+    band_lo="$(band_val review_lo alert-triage)"
     jq -cn \
         --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
         --arg ref "alert-triage:${alertname:-unknown}:$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
         --arg decision "$1" \
         --arg path_action "$2" \
+        --argjson act_hi "${band_hi:-null}" \
+        --argjson review_lo "${band_lo:-null}" \
         --argjson alerts "$(printf '%s' "${payload:-}" | jq -c '[.alerts[]? | {alertname: .labels.alertname, status, severity: .labels.severity, instance: .labels.instance, fingerprint: .fingerprint}]' 2>/dev/null || printf '[]')" \
         '{ts:$ts, site:"alert-triage", ref:$ref, decision:$decision,
           decision_source:"code", jev_calls:0, path_action:$path_action,
+          act_hi:$act_hi, review_lo:$review_lo,
           acted:true, alertname:($alerts[0].alertname // null), alerts:$alerts}' \
         >>"$TRIAGE_LOG" 2>/dev/null || true
 }
@@ -212,11 +229,12 @@ trap 'rm -f "$claim_file" "$payload_file"' EXIT
 # triage_class choice(4) + needs_nish boolean, logged beside the path action
 # at site=alert-triage. Only resolved-noop may act, and only in act mode.
 # Shadow by default: one POST 127.0.0.1:4000/jev, one JSONL row, and the
-# command still runs — inert by construction. JEV_CASCADE_ALERT_DISPATCH=act
-# (or the global JEV_CASCADE=act) is the go-row-gated flip: p <= lo means
-# "confident this firing does not need a session" and the pi --print below
-# is never spent. Boundary severities never gate. Any failure falls through
-# to the old path.
+# command still runs — inert by construction. Band edges come from
+# config/jev-bands.json (fleet-ops#7439); JEV_CASCADE_ALERT_DISPATCH=act
+# (or the global JEV_CASCADE=act) is the go-row-gated flip: p <= review_lo
+# means "confident this firing does not need a session" and the pi --print
+# below is never spent. Boundary severities never gate. Any failure falls
+# through to the old path.
 payload_file="${ALERT_STATE_DIR}/.${scope}.jev-payload"
 printf '%s' "$payload" >"$payload_file" 2>/dev/null || payload_file=""
 JEV_DECISION="$(JEV_ALERT_NAME="$alertname" JEV_ALERT_PAYLOAD_FILE="$payload_file" python3 - <<'PY'
@@ -254,6 +272,30 @@ MONEY_BOUNDARY = "Money is Nish's alone: no payments, cards, paid trials or spen
 def note(msg):
     print('am-executor-claim jev-cascade: %s' % msg, file=sys.stderr)
 
+BANDS_PATH = os.environ.get('JEV_BANDS_FILE') or os.path.expanduser(
+    '~/workspaces/tooling/fleet-ops-deploy-clone/config/jev-bands.json')
+
+def read_bands(site):
+    # fleet-ops#7439 — band edges live in config/jev-bands.json, the one
+    # table every jev site reads. Missing/invalid values surface as None:
+    # callers fail open (the probe/session still runs) and the row records
+    # the nulls so the gap is visible in telemetry.
+    try:
+        entry = (json.load(open(BANDS_PATH)).get('sites') or {}).get(site) or {}
+    except Exception:
+        entry = {}
+    def num(k):
+        try:
+            v = float(entry.get(k))
+            return v if 0 <= v <= 1 else None
+        except (TypeError, ValueError):
+            return None
+    sens = entry.get('sensitivity')
+    return dict(act_hi=num('act_hi'), review_lo=num('review_lo'),
+                sensitivity=[float(x) for x in sens
+                             if isinstance(x, (int, float)) and not isinstance(x, bool)
+                             and 0 <= x <= 1] if isinstance(sens, list) else [])
+
 def mode():
     v = os.environ.get('JEV_CASCADE_ALERT_DISPATCH')
     if v is None:
@@ -265,7 +307,9 @@ def mode():
         return 'act'
     return 'shadow'
 
-def band_env(name, default):
+def band_env(name, table_key):
+    # env overrides still win (rollback ladder unchanged); absent an env the
+    # edge comes from config/jev-bands.json, not a local constant.
     for k in ('JEV_CASCADE_ALERT_DISPATCH_%s' % name, 'JEV_CASCADE_%s' % name):
         v = os.environ.get(k)
         if v:
@@ -275,7 +319,7 @@ def band_env(name, default):
                     return f
             except Exception:
                 pass
-    return default
+    return read_bands(SITE)[table_key]
 
 def read_seat_key():
     k = os.environ.get('LITELLM_JEV_KEY')
@@ -339,12 +383,14 @@ def main():
     alerts = payload.get('alerts') if isinstance(payload.get('alerts'), list) else []
     severity = str(labels.get('severity') or '')
     if severity in NEVER_GATE_SEVERITIES:
+        tbands = read_bands(TRIAGE_SITE)
         try:
             append_row(TRIAGE_LOG_PATH, dict(
                 ts=datetime.datetime.now(datetime.timezone.utc).isoformat(),
                 site=TRIAGE_SITE,
                 ref='alert-triage:%s:%s' % (alertname, datetime.datetime.now(datetime.timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')),
                 decision='severity-never-gated', decision_source='code', jev_calls=0,
+                act_hi=tbands['act_hi'], review_lo=tbands['review_lo'],
                 path_action='spawned', acted=True, alertname=alertname, severity=severity))
         except Exception:
             pass
@@ -427,8 +473,8 @@ def main():
         return
     p = float(p)
 
-    lo, hi = band_env('LO', 0.1), band_env('HI', 0.9)
-    band = 'hi' if p >= hi else ('lo' if p <= lo else 'mid')
+    lo, hi = band_env('LO', 'review_lo'), band_env('HI', 'act_hi')
+    band = 'hi' if hi is not None and p >= hi else ('lo' if lo is not None and p <= lo else 'mid')
     would_skip = band == 'lo'
 
     # fleet-ops#7414: validate the triage answers independently — a malformed
@@ -481,12 +527,15 @@ def main():
         note('log write failed (%s); dispatch unchanged' % type(exc).__name__)
 
     if triage_ok and nn_ok:
+        tbands = read_bands(TRIAGE_SITE)
         trow = dict(
             ts=row['ts'],
             site=TRIAGE_SITE,
             ref='alert-triage:%s:%s' % (alertname, datetime.datetime.now(datetime.timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')),
             mode=mode(),
             advisory_only=mode() != 'act',
+            act_hi=tbands['act_hi'],
+            review_lo=tbands['review_lo'],
             state_sha256=state_hash,
             answers={'triage_class': dict(type='choice', choice=triage_choice,
                                           probabilities={k: float(v) for k, v in tprobs.items()}),

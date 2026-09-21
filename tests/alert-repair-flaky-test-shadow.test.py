@@ -98,9 +98,13 @@ def main():
         blockfile = pathlib.Path(td) / 'block.py'
         blockfile.write_text(block)
         logfile = pathlib.Path(td) / 'flaky-test-quarantine.jsonl'
+        bands_file = pathlib.Path(td) / 'jev-bands.json'
+        bands_file.write_text(json.dumps({'sites': {
+            'flaky-test-quarantine': {'act_hi': 0.9, 'review_lo': 0.1}}}))
 
         base_env = dict(os.environ,
                         LITELLM_JEV_KEY='test-key-7424',
+                        JEV_BANDS_FILE=str(bands_file),
                         JEV_FLAKY_TEST_QUARANTINE_ENDPOINT=endpoint,
                         JEV_FLAKY_TEST_QUARANTINE_LOG=str(logfile),
                         JEV_FLAKY_FIXTURE_LOGS=str(FIXTURES / 'jev7424-logs'),
@@ -138,6 +142,8 @@ def main():
               'row recorded outcomes, oldest to newest (got %s)' % alpha.get('last_20_outcomes'))
         check(alpha.get('diff_touches_test') is True, 'row diff touch true')
         check(alpha.get('test_file') == 'tests/foo.test.ts', 'row test file')
+        check(alpha.get('act_hi') == 0.9 and alpha.get('review_lo') == 0.1,
+              'row stamps the site band edges from the table')
         check(by_test.get('tests/test_bar.py::test_gamma', {}).get('diff_touches_test') is False,
               'row diff touch false for untouched test')
         check(all('test-key-7424' not in json.dumps(row) for row in rows), 'rows carry no key')

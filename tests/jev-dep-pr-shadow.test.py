@@ -100,6 +100,9 @@ def main():
         bfile = td / 'dep-pr-block.py'
         bfile.write_text(block)
         log = td / 'dependency-pr-arm.jsonl'
+        bands_file = td / 'jev-bands.json'
+        bands_file.write_text(json.dumps({'sites': {
+            'dependency-pr-arm': {'act_hi': 0.9, 'review_lo': 0.1}}}))
 
         # A stub gh that records argv and succeeds; it MUST intercept the
         # `gh api .../comments` dedupe read and the `gh pr comment` post. The
@@ -121,6 +124,7 @@ def main():
 
         base_env = dict(os.environ,
                         LITELLM_JEV_KEY='test-key-7459',
+                        JEV_BANDS_FILE=str(bands_file),
                         GH_STUB_LOG=str(ghlog),
                         GH_STUB_COMMENTS=str(gh_comments),
                         PATH='%s:%s' % (bindir, os.environ.get('PATH', '')))
@@ -157,6 +161,8 @@ def main():
               'dep-pr: row repo/pr')
         check(row.get('head_sha') == '0123456789abcdef0123456789abcdef01234567',
               'dep-pr: row head_sha from fixture')
+        check(row.get('act_hi') == 0.9 and row.get('review_lo') == 0.1,
+              'dep-pr: row stamps the site band edges from the table')
         ev = row.get('dependency_evidence') or {}
         check(ev.get('bot_author') is True and 'dependencies' in (ev.get('dep_labels') or []),
               'dep-pr: row dependency evidence')

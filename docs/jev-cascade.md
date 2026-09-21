@@ -21,10 +21,14 @@ only in the uncertain band between them.
 ```
 
 - `p` is the probability on the site's typed question (`boolean` today).
-- `hi`/`lo` are config values — `JEV_CASCADE_HI` / `JEV_CASCADE_LO`,
-  per-site `JEV_CASCADE_<SITE>_HI` / `_LO` overrides. Defaults 0.9 / 0.1,
-  the fleet's standing Jev act bands. Never invent a threshold: a band a
-  benchmark did not measure is not a band.
+- `hi`/`lo` come from the one table `config/jev-bands.json`
+  (`sites.<site>.act_hi` / `.review_lo` — fleet-ops#7439,
+  docs/jev-bands.md is the authority). Site code carries no local
+  threshold constants. Env overrides remain for rollback: per-site
+  `JEV_CASCADE_<SITE>_HI` / `_LO`, then global `JEV_CASCADE_HI` /
+  `JEV_CASCADE_LO`. Shipped values are 0.9 / 0.1, the fleet's standing
+  Jev act bands. Never invent a threshold: a band a benchmark did not
+  measure is not a band.
 - Every call appends one JSONL row to
   `~/.local/state/pi-packet/jev/<site>.jsonl`: `{ts, site, ref, mode,
   advisory_only, state_sha256, answers, probabilities, band, band_lo,

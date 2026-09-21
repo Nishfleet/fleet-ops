@@ -101,6 +101,28 @@ MAX_FIELD = 8000
 UNIT_RE = re.compile(r'^[A-Za-z0-9_.:@-]{1,120}$')
 REPO_RE = re.compile(r'^Nishfleet/[A-Za-z0-9._-]{1,100}$')
 ALERT_RE = re.compile(r'^[A-Za-z0-9_]{1,80}$')
+BANDS_PATH = os.environ.get('JEV_BANDS_FILE') or os.path.expanduser(
+    '~/workspaces/tooling/fleet-ops-deploy-clone/config/jev-bands.json')
+
+def read_bands(site):
+    # fleet-ops#7439 — band edges live in config/jev-bands.json, the one
+    # table every jev site reads. Missing/invalid values surface as None:
+    # the row still lands and records the nulls so the gap is visible.
+    try:
+        entry = (json.load(open(BANDS_PATH)).get('sites') or {}).get(site) or {}
+    except Exception:
+        entry = {}
+    def num(k):
+        try:
+            v = float(entry.get(k))
+            return v if 0 <= v <= 1 else None
+        except (TypeError, ValueError):
+            return None
+    sens = entry.get('sensitivity')
+    return dict(act_hi=num('act_hi'), review_lo=num('review_lo'),
+                sensitivity=[float(x) for x in sens
+                             if isinstance(x, (int, float)) and not isinstance(x, bool)
+                             and 0 <= x <= 1] if isinstance(sens, list) else [])
 
 def note(msg):
     print(msg)
@@ -256,11 +278,14 @@ def main():
         return
     p = float(probs.get(choice, a.get('probability') if isinstance(a.get('probability'), (int, float)) else 0.0))
 
+    bands = read_bands(SITE)
     row = dict(
         ts=datetime.datetime.now(datetime.timezone.utc).isoformat(),
         site=SITE,
         ref='alert-repair:%s:%s' % (alertname, datetime.datetime.now(datetime.timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')),
         state_sha256=state_hash,
+        act_hi=bands['act_hi'],
+        review_lo=bands['review_lo'],
         answers={'failure_class': dict(type='choice', choice=choice,
                                        probabilities={k: float(v) for k, v in probs.items()})},
         probabilities={'failure_class': {k: float(v) for k, v in probs.items()}},
@@ -346,6 +371,28 @@ CLASS_OPTIONS = {
     'nish_boundary': 'a canonical reserved class (money, privacy, security, legal, brand, product direction, customer-data deletion, irreversible step) — escalate to Nish via amtool',
     'no_action': 'resolved payload, transient, or otherwise nothing to do',
 }
+BANDS_PATH = os.environ.get('JEV_BANDS_FILE') or os.path.expanduser(
+    '~/workspaces/tooling/fleet-ops-deploy-clone/config/jev-bands.json')
+
+def read_bands(site):
+    # fleet-ops#7439 — band edges live in config/jev-bands.json, the one
+    # table every jev site reads. Missing/invalid values surface as None:
+    # the row still lands and records the nulls so the gap is visible.
+    try:
+        entry = (json.load(open(BANDS_PATH)).get('sites') or {}).get(site) or {}
+    except Exception:
+        entry = {}
+    def num(k):
+        try:
+            v = float(entry.get(k))
+            return v if 0 <= v <= 1 else None
+        except (TypeError, ValueError):
+            return None
+    sens = entry.get('sensitivity')
+    return dict(act_hi=num('act_hi'), review_lo=num('review_lo'),
+                sensitivity=[float(x) for x in sens
+                             if isinstance(x, (int, float)) and not isinstance(x, bool)
+                             and 0 <= x <= 1] if isinstance(sens, list) else [])
 
 def log(line):
     print(line, file=sys.stderr)
@@ -501,6 +548,7 @@ def main():
     usage = res.get('usage', {})
 
     # Validate ALL answers before writing any row.
+    bands = read_bands('alert-repair')
     rows = []
     for i, a in enumerate(alerts):
         pfx = 'a%d_' % i
@@ -526,6 +574,8 @@ def main():
                 'duplicate_of': float(ad['probability']),
                 'flap': float(af['probability'])},
             rule_disposition=a['disposition'] or None,
+            act_hi=bands['act_hi'],
+            review_lo=bands['review_lo'],
             advisory_only=True,
             usage=usage,
             ms=elapsed_ms,
@@ -604,6 +654,28 @@ SITE = 'auto-revert'
 REPO_RE = re.compile(r'^Nishfleet/[A-Za-z0-9._-]{1,100}$')
 ALERT_RE = re.compile(r'^[A-Za-z0-9_]{1,80}$')
 DISPOSITIONS = ('reverted', 'repaired', 'filed', 'escalated', 'resolved_only', 'skipped', 'other')
+BANDS_PATH = os.environ.get('JEV_BANDS_FILE') or os.path.expanduser(
+    '~/workspaces/tooling/fleet-ops-deploy-clone/config/jev-bands.json')
+
+def read_bands(site):
+    # fleet-ops#7439 — band edges live in config/jev-bands.json, the one
+    # table every jev site reads. Missing/invalid values surface as None:
+    # the row still lands and records the nulls so the gap is visible.
+    try:
+        entry = (json.load(open(BANDS_PATH)).get('sites') or {}).get(site) or {}
+    except Exception:
+        entry = {}
+    def num(k):
+        try:
+            v = float(entry.get(k))
+            return v if 0 <= v <= 1 else None
+        except (TypeError, ValueError):
+            return None
+    sens = entry.get('sensitivity')
+    return dict(act_hi=num('act_hi'), review_lo=num('review_lo'),
+                sensitivity=[float(x) for x in sens
+                             if isinstance(x, (int, float)) and not isinstance(x, bool)
+                             and 0 <= x <= 1] if isinstance(sens, list) else [])
 
 def note(msg):
     print(msg)
@@ -769,11 +841,14 @@ def main():
         return
     p = float(p)
 
+    bands = read_bands(SITE)
     row = dict(
         ts=datetime.datetime.now(datetime.timezone.utc).isoformat(),
         site=SITE,
         ref='auto-revert:%s:%s' % (repo, (head or {}).get('sha') or 'unknown'),
         state_sha256=state_hash,
+        act_hi=bands['act_hi'],
+        review_lo=bands['review_lo'],
         answers={'red_attributable_to_head_merge': dict(type='boolean', probability=p)},
         probabilities={'red_attributable_to_head_merge': p},
         advisory_only=True,
@@ -855,6 +930,28 @@ RUN_RE = re.compile(r'^\d{1,20}$')
 REPO_RE = re.compile(r'^Nishfleet/[A-Za-z0-9._-]{1,100}$')
 ALERT_RE = re.compile(r'^[A-Za-z0-9_]{1,80}$')
 RED = ('failure', 'timed_out')
+BANDS_PATH = os.environ.get('JEV_BANDS_FILE') or os.path.expanduser(
+    '~/workspaces/tooling/fleet-ops-deploy-clone/config/jev-bands.json')
+
+def read_bands(site):
+    # fleet-ops#7439 — band edges live in config/jev-bands.json, the one
+    # table every jev site reads. Missing/invalid values surface as None:
+    # the row still lands and records the nulls so the gap is visible.
+    try:
+        entry = (json.load(open(BANDS_PATH)).get('sites') or {}).get(site) or {}
+    except Exception:
+        entry = {}
+    def num(k):
+        try:
+            v = float(entry.get(k))
+            return v if 0 <= v <= 1 else None
+        except (TypeError, ValueError):
+            return None
+    sens = entry.get('sensitivity')
+    return dict(act_hi=num('act_hi'), review_lo=num('review_lo'),
+                sensitivity=[float(x) for x in sens
+                             if isinstance(x, (int, float)) and not isinstance(x, bool)
+                             and 0 <= x <= 1] if isinstance(sens, list) else [])
 
 # Failing-test signatures as the common runners print them. Order matters:
 # pytest's FAILED before vitest's FAIL, and FAIL before the harness FAIL:.
@@ -1141,6 +1238,7 @@ def main():
         return
     ms = int((time.monotonic() - start) * 1000)
 
+    bands = read_bands(SITE)
     rows = []
     for t in tests_state:
         qid = 't%d_flaky' % t['index']
@@ -1151,6 +1249,8 @@ def main():
         rows.append(dict(
             ts=datetime.datetime.now(datetime.timezone.utc).isoformat(),
             site=SITE,
+            act_hi=bands['act_hi'],
+            review_lo=bands['review_lo'],
             ref='alert-repair:%s:%s:%s' % (alertname, target_id, t['test'][:80]),
             state_sha256=state_hash,
             answers={qid: dict(type='boolean', probability=float(p))},
