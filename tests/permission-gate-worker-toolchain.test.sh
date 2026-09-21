@@ -75,6 +75,12 @@ console.log(r ? 'BLOCK:' + r : 'ALLOW');
 
 secret "7381 incident shape: :- expansion in echo" BLOCK \
 	'echo "token: ${GH_TOKEN:+set}${GH_TOKEN:-EMPTY}"'
+# fleet-ops#7463: the shape pi-issue-fleet-ops-7438 actually ran on 2026-09-17
+# — same :- leak, lowercase branch, a trailing sed pipe, and the prescribed
+# `[ -n "$GH_TOKEN" ]` check in the SAME call. The allowed check must not
+# rescue the print: the call blocks.
+secret "7463 incident shape: :- expansion with sed tail + allowed -n in one call" BLOCK \
+	'echo "token: ${GH_TOKEN:+set}${GH_TOKEN:-empty}" | sed '"'"'s/.*/&/'"'"' ; [ -n "$GH_TOKEN" ] && echo "TOKEN OK" || echo "TOKEN EMPTY"'
 secret "bare echo of the var" BLOCK 'echo "$GH_TOKEN"'
 secret "printf of a key var" BLOCK 'printf '"'"'%s'"'"' "$LITELLM_MASTER_KEY"'
 secret "printenv names the var without a dollar" BLOCK 'printenv GH_TOKEN'
