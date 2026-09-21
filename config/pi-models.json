@@ -272,30 +272,13 @@
       "apiKey": "!cut -d= -f2- /home/nish/.config/fleet-ops/seats/devin.env",
       "models": [
         {
-          "id": "glm-5-2",
-          "name": "GLM-5.2 High",
-          "contextWindow": 200000,
-          "maxTokens": 131072
-        },
-        {
-          "id": "swe-1-7",
-          "name": "SWE-1.7 Max",
-          "contextWindow": 262144,
-          "maxTokens": 131072
-        },
-        {
           "id": "swe-2-max",
           "name": "SWE-2 Max",
           "contextWindow": 262144,
           "maxTokens": 131072
-        },
-        {
-          "id": "swe-2-high",
-          "name": "SWE-2 High",
-          "contextWindow": 262144,
-          "maxTokens": 131072
         }
-      ]
+      ],
+      "_ban": "Nish 2026-09-22: swe-2-max only from Devin"
     },
     "cursor": {
       "name": "Cursor",

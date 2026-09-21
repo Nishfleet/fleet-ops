@@ -1,14 +1,14 @@
 # cursor-issue@.service — twin of pi-issue@.service (and devin-issue@.service) with Cursor's headless CLI as the engine.
 # Nish 2026-09-19 13:05 IST handed the Cursor API key: "crsr_... - cursor". Cursor has no OpenAI-compatible HTTP API
 # (api2.cursor.sh, own protocol), so it cannot be a router rung; it IS an agent, so it runs as a worker unit on the same rail. Proven on this host 2026-09-19 13:21 IST:
-# `cursor-agent -p --output-format text --model grok-4.7-high --force --trust` created proof.txt from `uname -r`,
+# `cursor-agent -p --output-format text --model cursor-grok-4.6-high --force --trust` created proof.txt from `uname -r`,
 # committed it (5be38f6) and printed DONE from a piped packet; a second run from /home/nish finished in 15s with no inotify growth.
-# Model is Nish's Cursor lock (memory cursor-two-model-lock): grok-4.7-high, never a -fast variant (memory cursor-pools-and-no-fast-models); kimi-k3-max is the judge-only sibling. Same claim/PR/ExecStopPost contract as pi-issue@; the packet is
+# Model is Nish's Cursor lock (memory cursor-two-model-lock): cursor-grok-4.6-high, never a -fast variant (memory cursor-pools-and-no-fast-models); kimi-k3-max is the judge-only sibling. Same claim/PR/ExecStopPost contract as pi-issue@; the packet is
 # AGENTS.md + prompts/worker.md with `$1` substituted (pi does that via its /worker template).
 # Key: ~/.config/fleet-ops/seats/cursor.env (CURSOR_API_KEY=..., mode 600), loaded by EnvironmentFile below.
 # Install: ln -sf <deploy-clone>/systemd/cursor-issue@.service ~/.config/systemd/user/ && systemctl --user daemon-reload
 [Unit]
-Description=Cursor fleet issue worker %i (Grok 4.7 High, headless cursor-agent CLI)
+Description=Cursor fleet issue worker %i (Grok 4.6 High, headless cursor-agent CLI)
 # Second cut 2026-09-18: this unit IS the worker. There is no wrapper script.
 # ExecStart invokes a Pi PROMPT TEMPLATE and pipes it into `pi --print`.
 # Everything the old bin/pi-issue-run (1,542 lines) did is either systemd's job
@@ -98,7 +98,7 @@ WorkingDirectory=/home/nish
 # path is pre-created EMPTY here so it can be the workspace from the first tool
 # call; `git worktree add` accepts an existing empty directory, so the worker's own
 # worktree step is unchanged, and the existing ExecStopPost removes the same path.
-ExecStart=/bin/sh -c 'set -e; mkdir -p "$HOME/workspaces/agent-worktrees/issue-$1"; GH_TOKEN=$(gh token generate --app-id 4728578 --key "$HOME/.config/fleet-worker/nishfleet-worker.private-key.pem" --installation-id 156789042 --token-only); [ -n "$GH_TOKEN" ] || { echo "app token mint failed — refusing human-gh fallback" >&2; exit 1; }; export GH_TOKEN; { cat "$HOME/workspaces/tooling/fleet-ops-deploy-clone/AGENTS.md"; echo; sed -e "1,/^---$/d" -e "s/[$]1/$1/g" "$HOME/workspaces/tooling/fleet-ops-deploy-clone/prompts/worker.md"; } | exec cursor-agent -p --output-format text --model grok-4.7-high --force --trust --workspace "$HOME/workspaces/agent-worktrees/issue-$1"' sh %i
+ExecStart=/bin/sh -c 'set -e; mkdir -p "$HOME/workspaces/agent-worktrees/issue-$1"; GH_TOKEN=$(gh token generate --app-id 4728578 --key "$HOME/.config/fleet-worker/nishfleet-worker.private-key.pem" --installation-id 156789042 --token-only); [ -n "$GH_TOKEN" ] || { echo "app token mint failed — refusing human-gh fallback" >&2; exit 1; }; export GH_TOKEN; { cat "$HOME/workspaces/tooling/fleet-ops-deploy-clone/AGENTS.md"; echo; sed -e "1,/^---$/d" -e "s/[$]1/$1/g" "$HOME/workspaces/tooling/fleet-ops-deploy-clone/prompts/worker.md"; } | exec cursor-agent -p --output-format text --model cursor-grok-4.6-high --force --trust --workspace "$HOME/workspaces/agent-worktrees/issue-$1"' sh %i
 # The worker created its own worktree; the worker's own unit cleans it up.
 # No reaper, no salvage organ: work that was never committed and pushed did not
 # happen, and the next dispatch starts from origin/main. Leading '-' so cleanup

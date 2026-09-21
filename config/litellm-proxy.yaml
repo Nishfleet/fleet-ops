@@ -42,6 +42,7 @@ model_list:
     model: openai/deepseek-v4.1-flash
     api_base: https://opencode.ai/zen/go/v1
     api_key: os.environ/OPENCODE_API_KEY
+    reasoning_effort: max
     extra_headers:
       x-opencode-session: fleet-worker-cheap
     tags:
@@ -58,6 +59,7 @@ model_list:
     model: openai/deepseek-v4.1-flash
     api_base: https://opencode.ai/zen/go/v1
     api_key: os.environ/OPENCODE_API_KEY
+    reasoning_effort: max
     extra_headers:
       x-opencode-session: fleet-judge
     tags:
@@ -110,20 +112,6 @@ model_list:
   model_info:
     mode: chat
     id: pareto-glm53flash-senior
-- model_name: judge
-  litellm_params:
-    model: openai/z-ai/glm-5.3-flash
-    api_base: https://api.paretoinference.com/v1
-    api_key: os.environ/PARETO_API_KEY
-    tags:
-    - prepaid
-    - pareto
-    - judge
-    order: 1
-    max_parallel_requests: 2
-  model_info:
-    mode: chat
-    id: pareto-glm53flash-judge
 - model_name: worker-private
   litellm_params:
     model: openai/z-ai/glm-5.3-flash
@@ -168,6 +156,22 @@ model_list:
 # Kilo (stealth/union-alpha listed) has no account yet. Free-period cliff: if it turns paid, OpenRouter
 # self-walls (balance $0 -> 402 -> cooldown -> fallback) and Cline 4xx likewise; no metered spend path.
 benched:
+- benched_at: 2026-09-22
+  reason: "pareto-glm53flash-judge: same family as every builder; took 1 of 5 judge calls under simple-shuffle after the Go rung landed. Verifier must differ from builder (fleet-ops#8035). Fallback judge->senior stays visible in x-litellm-model-id."
+  was: [judge]
+  litellm_params:
+    model: openai/z-ai/glm-5.3-flash
+    api_base: https://api.paretoinference.com/v1
+    api_key: os.environ/PARETO_API_KEY
+    tags:
+    - prepaid
+    - pareto
+    - judge
+    order: 1
+    max_parallel_requests: 2
+  model_info:
+    mode: chat
+    id: pareto-glm53flash-judge
 - benched_at: 2026-09-19
   reason: "openai/deepseek-v4.1-flash @ https://ollama.com/v1 (OLLAMA_API_KEY) — chat OK + tool_choice=ping OK at 18:00 IST, then HTTP 429 'you (nishant345) have reached your weekly usage limit' after the five-rung /health burst (fleet-ops#7862). Restore ONLY with a green chat AND a green tool_choice probe cited in the PR, and do not replicate the rung across groups without health_check_concurrency: 1."
   was: [worker-cheap, worker-capable, senior, judge, worker-private]
