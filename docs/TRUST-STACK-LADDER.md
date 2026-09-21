@@ -119,20 +119,83 @@ consolidation pass is scheduled rather than triggered.
 
 ---
 
-## E. Counts
+## E. The second wave — high-pain drops beyond the epic
 
-| | Rung 1 | Rung 2 | Rung 3 | Rung 4 | Rung 5 | delete |
-|---|---|---|---|---|---|---|
-| **Now** | 9 | 16 | ~95 | 7 | ~12 | — |
-| **Target** | 10 | 24 | ~55 | 7 | ~4 | ~22 |
+Derived from a full read of the corpus (not from probes; each row's evidence is
+the entry's own language). These did not make the epic's packets, and they are
+the next wave.
 
-Twelve rules move down a rung in this epic (section B). Twenty-two index rows
-retire (section D). Ten rules are confirmed to stay prose with a stated reason
-(section C) — which is itself a result: an `encoded: 5` with a reason is a
-legitimate terminal state, and knowing which rules those are stops the fleet
-re-litigating them.
+| Rule | Now | Target | Mechanism | Evidence of pain |
+|---|---|---|---|---|
+| No agent names on commits or PRs — no `Co-Authored-By`, no "Generated with" | 3, self-audited | 2 | A required check grepping the commit range and PR body for the forbidden patterns | fleet-ops#1052, added after a real violation, and still only self-audited |
+| `blocked-by-judge` must be applied in the **same step** as the blocking comment | 3 (the ordering half) | 2 | The label exists and the arm refuses on it; what is prose is the *ordering* | A PR merged 90 seconds after its block comment. The gap between comment and label is the whole defect |
+| Never delete `claim/issue-<N>` while its PR is open | 3 | 2 | Disable auto-delete of head branches, plus the same `gh pr list --json state` check the unlanded-work rule already specifies | A worker destroyed its own PR this way |
+| D1 migrations: no `DROP COLUMN`/`DROP TABLE`/rename/`NOT NULL` without `DEFAULT` in a code PR | 3 (`AGENTS.md`) | 2 | A migration linter on the `migrations/**` diff as a required check | The rule's own text: it "breaks the previous version of the code the instant it lands" |
+| A migration PR must extend `tests/integration/**` | 3 | 2 | Required check with a paths filter: a `migrations/**` change with no matching test change fails | Same class |
+| Cloudflare D1 rows-written cost | 3 | 2 | A Cloudflare billing budget alert (stock) | The bill hit $105 on 2026-09-17 and took until 09-19 to contain |
+| Editor watchers exhaust inotify | 3 | 2 | `fs.inotify.max_user_watches` sysctl plus a unit resource limit | Devin consumed 123k of 124k watches |
+| Nothing private goes to free-tier providers | 3 | 2 | LiteLLM metadata-tagged routing excluding free-tier deployments from `private` requests | A privacy boundary held only by prose |
+| Customer-data deletion and out-of-pipeline prod deploys stay human-gated | 3 | 2 | A GitHub Environment with required reviewers — the gate stays, but becomes structural | Correct rung-3 rule, wrong mechanism: today nothing stops it |
+| One heavy build or test at a time | 3 | 2 | GitHub Actions `concurrency:` group | Stock, one line |
+| Never sync credentials, sessions, caches or runtime state to the vault | 3 | 1 | Syncthing `.stignore` patterns | A rule guarding secrets should never be a rule |
+| Never auto-reboot | 3 | 1 | Disable unattended-upgrades' auto-reboot at OS config level | Same reasoning |
+| Outbound email is never Resend; CF deploys are wrangler OAuth only | 3 ×2 | 1 ×2 | Do not provision the credential. A capability that does not exist cannot be used | The purest rung-1 move available: delete the key |
 
-The single largest remaining concentration of rung-3 prose is
-`prompts/worker.md`, which holds roughly twenty past corrections as sentences.
-Packets #8029, #8030 and #8036 take the first six of them out. The rest are the
-next wave.
+## F. Dead mechanisms — the rules that outlived what they governed
+
+The corpus still carries rules for machinery that was deleted. Each one costs
+every session the tokens to read it, and a few are worse than dead: they
+instruct an agent to write to something nothing watches.
+
+**Actively harmful — an agent following these produces a silent no-op:**
+
+- `gate-integrity-attest:` / `verifier-attest:` / `attest-requested:` PR
+  comments. The checks and the drain that read them were deleted 2026-09-18/19.
+  Posting one now parks a PR on a void.
+- `lanes/pi-seat-health.json`. Its writer was deleted 2026-09-18, so the file is
+  frozen at that moment and must not be read as live state. It should be
+  deleted, not merely ignored — a stale file that looks live is the
+  `detection-lessons-history` failure mode exactly.
+- `.idle-fleet-alarm.json`. The standing rules already say "GONE, do not look
+  for it, and do not trust any stale copy" — which is a rule about a file that
+  should simply not exist.
+- `governed-run` and `~/.local/share/implementation-worker-routing/`. Retired
+  for Pi dispatch but explicitly **not deleted**, and still sanctioned for
+  ad-hoc non-Pi use. That ambiguity is a zombie. It needs a kill-or-keep
+  decision, not a rule describing both states.
+
+**Dead, delete the rows:** `bin/jev-eval`, `bin/pi-systemd-run`,
+`bin/pi-detached-deadman`, `agent-state/NISH-ESCALATIONS.md` and the
+`nish-boundary-notify` path unit, the `memoryctl` recall/capture loop and its
+curator (0 notes compiled in its entire live history), the fleet control plane
+and `implementation-worker-*` launcher layer (~20,000 lines deleted
+2026-08-23), Sol / `gpt-5.6-sol` (retired 2026-09-07), the
+`codex-model-routing.md` ladder, hostinger-kvm4, and the point-in-time glue-sweep
+snapshots (keep as history, never as live instruction).
+
+**Due now, not dead:** `jev-benchmark-nogo-was-starved-state` says "re-run
+#7909 after 09-21". Today is 2026-09-21. Until it is re-run, that NO-GO is
+unresolved and must not be cited as current truth.
+
+## G. Counts
+
+Full corpus read, ~156 index entries plus `CLAUDE.md`, the vault standing rules
+and `AGENTS.md`, with duplicates across sources merged into one row:
+
+| | Rung 1 | Rung 2 | Rung 3 | Rung 4 | Rung 5 |
+|---|---|---|---|---|---|
+| **Now** | ~5 | ~35 | **~105** | 2 | ~6 |
+| **Available** | 26 | 68 | ~45 | 7 | 6 |
+
+**The headline: roughly 94 rules can drop from rung 3 to rung 1 or 2.** Two
+thirds of the corpus is prose doing a static gate's job.
+
+That is the audit's real finding, and it reframes the epic. Twelve rules move in
+this epic (section B). Section E is the second wave. Section F retires the dead.
+What remains at rung 3 afterwards — about 45 rules — is the honest floor:
+reserved classes, judgment calls, and infrastructure facts that prevent no
+mistake but answer a question.
+
+Forty-five rules is a corpus an agent can actually hold. A hundred and five is
+not, which is the mechanical reason corrections keep recurring: the rules are
+real, and nobody can read them all every time.
