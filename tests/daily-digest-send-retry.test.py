@@ -5,6 +5,11 @@
 # prompts/daily-digest.md plus functional runs of the extracted send block
 # with a stubbed curl; no network and no credentials are involved.
 #
+# The functional drivers run under `set -euo pipefail`, so a conditional that
+# fails out of the loop (the review finding on the first push) aborts the
+# block and the case fails — the hard-down path must still print and tee its
+# error.
+#
 # Run: python3 tests/daily-digest-send-retry.test.py
 import os
 import re
@@ -38,10 +43,15 @@ def extract_block():
 def run_case(tmp, block_path, case):
     counter = os.path.join(tmp, 'counter-%s' % case)
     open(counter, 'w').write('0')
+    teecap = os.path.join(tmp, 'teecap-%s.json' % case)
+    if os.path.exists(teecap):
+        os.unlink(teecap)
     driver = os.path.join(tmp, 'driver-%s.sh' % case)
     with open(driver, 'w') as f:
         f.write(
+            'set -euo pipefail\n'
             'counter=%s\n'
+            'teecap=%s\n'
             'curl() {\n'
             '  c=$(cat "$counter"); c=$((c+1)); echo "$c" > "$counter"\n'
             '  case %s in\n'
@@ -52,12 +62,13 @@ def run_case(tmp, block_path, case):
             '  esac\n'
             '}\n'
             'sleep() { :; }\n'
-            'tee() { cat; }\n'
+            'tee() { c=$(cat); printf \'%%s\\n\' "$c" >> "$teecap"; printf \'%%s\\n\' "$c"; }\n'
             'body="test digest"; TELEGRAM_BOT_TOKEN=stub; TELEGRAM_CHAT_ID=stub\n'
-            '. %s\n' % (counter, case, block_path))
+            '. %s\n' % (counter, teecap, case, block_path))
     r = subprocess.run(['bash', driver], capture_output=True, text=True, timeout=60)
     calls = int(open(counter).read().strip() or '0')
-    return r, calls
+    teed = open(teecap).read() if os.path.exists(teecap) else ''
+    return r, calls, teed
 
 
 def main():
@@ -67,7 +78,13 @@ def main():
     joined = '\n'.join(block)
     check(any('for attempt in 1 2 3' in l for l in block), 'retry loop 1 2 3 present')
     check(any('grep' in l and '"ok":true' in l for l in block), 'ok:true break present')
+    check(any(l.strip().startswith('if printf') and 'grep -q' in l for l in block),
+          'ok-break is an if-form, safe under set -e')
     check(any('sleep 5' in l for l in block), 'inter-attempt pause present')
+    check(any(l.strip().startswith('if [') and 'sleep 5' in l for l in block),
+          'pause is an if-form, safe under set -e')
+    check(not any('&& break' in l or '&& sleep 5' in l for l in block),
+          'no && conditional left to fail out of a set -e shell')
     check(any('tee /tmp/daily-digest-send.json' in l for l in block),
           'journal proof tee present')
     check(any('--max-time 20' in l for l in block), 'per-attempt curl timeout present')
@@ -82,22 +99,32 @@ def main():
         open(block_path, 'w').write(joined + '\n')
 
         # 2. Functional run: fails twice, delivers on attempt 3.
-        r, calls = run_case(tmp, block_path, 'fail-fail-ok')
-        check(r.returncode in (0, 1), 'fail-fail-ok: block ran (rc=%d)' % r.returncode)
+        r, calls, teed = run_case(tmp, block_path, 'fail-fail-ok')
+        check(r.returncode == 0, 'fail-fail-ok: block ran clean under set -e (rc=%d)' % r.returncode)
         check(calls == 3, 'fail-fail-ok: exactly 3 send attempts (got %d)' % calls)
         check('"ok":true' in r.stdout, 'fail-fail-ok: ok:true proof printed')
+        check('"ok":true' in teed, 'fail-fail-ok: delivery proof reached the tee')
         check(r.stderr.count('not ok') == 2,
               'fail-fail-ok: 2 failure lines on stderr (got %d)' % r.stderr.count('not ok'))
 
         # 3. Functional run: delivered on attempt 1, no extra send, no noise.
-        r, calls = run_case(tmp, block_path, 'ok-first')
+        r, calls, teed = run_case(tmp, block_path, 'ok-first')
+        check(r.returncode == 0, 'ok-first: block ran clean under set -e (rc=%d)' % r.returncode)
         check(calls == 1, 'ok-first: healthy path sends exactly once (got %d)' % calls)
+        check('"ok":true' in teed, 'ok-first: delivery proof reached the tee')
         check(r.stderr.strip() == '', 'ok-first: no failure noise on stderr')
 
-        # 4. Functional run: Telegram hard-down — capped, no false ok.
-        r, calls = run_case(tmp, block_path, 'hard-down')
+        # 4. Functional run: Telegram hard-down — capped, no false ok, and the
+        #    full error still prints and reaches the tee even under set -e
+        #    (the case the retry exists for must not lose its own error output).
+        r, calls, teed = run_case(tmp, block_path, 'hard-down')
+        check(r.returncode == 0, 'hard-down: block ran clean under set -e (rc=%d)' % r.returncode)
         check(calls == 3, 'hard-down: capped at 3 attempts (got %d)' % calls)
         check('"ok":true' not in r.stdout, 'hard-down: no false ok:true printed')
+        check(r.stderr.count('not ok') == 3,
+              'hard-down: 3 failure lines on stderr (got %d)' % r.stderr.count('not ok'))
+        check('Bad Request' in teed and 'Bad Request' in r.stdout,
+              'hard-down: full error response still reaches stdout and the tee')
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
 
