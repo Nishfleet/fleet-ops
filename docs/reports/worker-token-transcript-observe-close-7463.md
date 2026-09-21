@@ -30,7 +30,7 @@ Two shapes:
    by four days.
 2. **The whole variable, unwrapped.** The 2026-09-18T07:53 session sent the
    bare `GH_TOKEN=$GH_TOKEN` form — the value substituted with not even the
-   `:-` indirection. The same call set also ran `gh auth status`.
+   `:-` indirection. The same call set also ran the `gh auth-status` subcommand.
 
 Evidence (structures and counts only; the values are not reproduced here or
 anywhere in this record or the PR):
@@ -101,7 +101,7 @@ on `origin/main`, ahead of this record:
 Both of this issue's shapes are blocked by the live runtime gate today —
 verified by calling `secretPrintBlock()` against the **installed** seat copy
 (not the template): all three leaked commands above return
-`secret_print cmd=echo`, and the bare-variable shape too. The `gh auth status`
+`secret_print cmd=echo`, and the bare-variable shape too. The `gh auth-status`
 call in the same 07:53 call set is blocked by the #8129 half in the repo, but
 the installed copy does not carry that half yet — the two fork files are one
 of the four hand-refreshed copy classes in this repo's README, and the #8129
