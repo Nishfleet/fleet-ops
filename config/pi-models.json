@@ -334,25 +334,8 @@
       "baseUrl": "https://cli-chat-proxy.grok.com/v1",
       "models": [
         {
-          "id": "grok-4.6",
-          "name": "Grok 4.6",
-          "reasoning": true,
-          "contextWindow": 500000,
-          "maxTokens": 131072,
-          "input": [
-            "text",
-            "image"
-          ],
-          "cost": {
-            "input": 2,
-            "output": 6,
-            "cacheRead": 0.5,
-            "cacheWrite": 0
-          }
-        },
-        {
-          "id": "grok-4.5",
-          "name": "Grok 4.5",
+          "id": "grok-4.7",
+          "name": "Grok 4.7",
           "reasoning": true,
           "contextWindow": 500000,
           "maxTokens": 131072,
@@ -368,7 +351,8 @@
           }
         }
       ],
-      "_note": "fleet-ops#1163 (2026-08-27): SuperGrok prepaid weekly sub via stnly/pi-grok OAuth provider. The runtime provider is registered by the pi-grok extension; this static entry mirrors it so seat-lib enumerate_seats() emits the seat and pick_seat can route to it. Class in seat-caps.json is prepaid-quota (alternation discipline, cap=1, never stack)."
+      "_note": "fleet-ops#1163 (2026-08-27): SuperGrok prepaid weekly sub via stnly/pi-grok OAuth provider. The runtime provider is registered by the pi-grok extension; this static entry mirrors it so seat-lib enumerate_seats() emits the seat and pick_seat can route to it. Class in seat-caps.json is prepaid-quota (alternation discipline, cap=1, never stack).",
+      "_ban": "Nish 2026-09-21: grok-4.7 at high or xhigh only; older Grok ids and every -fast variant are banned on this seat and on the Cursor seat"
     },
     "xkiro": {
       "baseUrl": "https://api.xkiro.com/v1",
