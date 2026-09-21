@@ -110,6 +110,9 @@ export GH_TOKEN="stub-token"
 export PATH="$scratch/bin:/usr/local/bin:/usr/bin:/bin"
 GH="$scratch/bin/gh"
 export GH
+# fleet-ops#7414: keep the drill hermetic — the escalation-shadow tier would
+# otherwise spend a real Jev call and write stub-scenario rows to the live log.
+export JEV_ESCALATION_SHADOW=0
 
 run_release() {
     : >"$gh_log"

@@ -83,6 +83,9 @@ export PATH="$scratch/bin:/usr/local/bin:/usr/bin:/bin"
 GH="$scratch/bin/gh"
 export GH
 export SILENT_CLOSE_STATE_DIR="$scratch/state"
+# fleet-ops#7414: keep the drill hermetic — the escalation-shadow tier would
+# otherwise spend a real Jev call and write stub-scenario rows to the live log.
+export JEV_ESCALATION_SHADOW=0
 
 # The #6258 fixture set (shape, not real payloads):
 P6258_PRS='[{"number":6258,"merged_at":null,"head":{"ref":"claim/issue-6252"},"title":"worker delivery"}]'
