@@ -163,3 +163,26 @@ HANDOFF.md recorded the same host counter at **$0.2234** (2026-09-17T21:52Z). Th
 | 9 | Weekly Fleet Review (rubric score) | missing evidence | No weekly-action rubric replay in committed files. |
 
 No child has a passing measured threshold. This packet does not file follow-up issues and does not wire a gate.
+
+## Active-learning cohort (fleet-ops#7430)
+
+Uncertainty-selected rows are labelled separately from the fixed A/B cohorts
+above (orchestrator ruling 2026-09-17: advisory logs are not benchmark truth;
+do not mix active-learning samples into the fixed evaluation cohort).
+
+- **Queue:** the `jev-labelling-queue` comment on fleet-ops#7430 — every live
+  JSONL row with a probability in the uncertain band `0.1 < p < 0.9` (the
+  standing `JEV_CASCADE_LO`/`_HI` defaults; no per-site overrides are set).
+  It is an issue comment, not a new store.
+- **Cadence:** the reviewer subagent labels at most 20 items/day from the
+  queue, judging each site's own question against the row's recovered
+  context (`ref` → `gh pr view` / commit / dispatch record).
+- **Table:** labels append to `.fleet/bench7371/active-learning-labels.jsonl`,
+  one JSON object per item: `{ts, cohort:"active-learning", source_issue,
+  site, ref, question, question_type, jev_p, band_lo, band_hi, label,
+  label_reason, labelled_by, label_run, labelled_at, state_sha256}`.
+- **Reporting:** calibration deltas (bucketed `jev_p` vs observed label rate,
+  per site+question) are reported from this table in the weekly fleet
+  review. Batch 1 (2026-09-22, 20 rows, reviewer = grok-4.7 xhigh):
+  `needs_review` 7/10 true, `merge_risk` 3/5 true, `claims_contradicted`
+  0/4 true, `red_attributable_to_head_merge` 0/1 (insufficient evidence).
