@@ -661,9 +661,9 @@ for attempt in 1 2 3; do
     "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
     -d chat_id="${TELEGRAM_CHAT_ID}" \
     --data-urlencode text="$body") || resp=""
-  printf '%s' "$resp" | grep -q '"ok":true' && break
+  if printf '%s' "$resp" | grep -q '"ok":true'; then break; fi
   echo "send attempt ${attempt} not ok: ${resp:-<curl error>}" >&2
-  [ "$attempt" -lt 3 ] && sleep 5
+  if [ "$attempt" -lt 3 ]; then sleep 5; fi
 done
 printf '%s\n' "$resp" | tee /tmp/daily-digest-send.json
 ```

@@ -104,6 +104,33 @@ retry loop now, so one transient timeout can no longer lose a day's digest.
    system scope only. Filed with full evidence as Nishfleet/fleet-ops#8161
    (plain finding, no labels; no unit, timer, rule or config touched for it).
 
+## Review round (the `blocked-by-judge` label)
+
+The first push's automated judge review (github-actions[bot], 2026-09-21
+23:34–23:36 IST, applied `blocked-by-judge`) raised three findings; all three
+are fixed in the same run:
+
+1. **`no-glue` FAILURE — a new `**/*.sh` cannot land.** The detector was added
+   as `tests/daily-digest-send-retry.test.sh`; the gate fails any PR that adds
+   `**/*.sh` (tests are not exempt). Ported to
+   `tests/daily-digest-send-retry.test.py`; `no-glue` passes on the new head.
+2. **`[ "$attempt" -lt 3 ] && sleep 5` was the last loop-body command, and
+   `printf … | grep -q … && break` was the first.** Under `set -e` either
+   failing `&&` aborts the block before the final `printf … | tee` — the
+   hard-down path, the exact case the retry exists for, would have lost its
+   own error output. Both are `if … then … fi` forms now (the ok-break and the
+   pause), so the block is `set -e`-clean.
+3. **The old `.sh` test sourced a block written to a fixed
+   `/tmp/daily-digest-send-block.sh`** (collision/staleness risk). The `.py`
+   port extracts into `tempfile.mkdtemp()` and removes it in `finally`.
+
+The detector now also runs every functional case under `set -euo pipefail` and
+captures the `tee` output, so finding 2's class is caught rather than read.
+Proven: with the `&&` forms temporarily restored the test reports exactly
+`FAIL: ok-break is an if-form, safe under set -e`, `FAIL: pause is an if-form,
+safe under set -e`, `FAIL: no && conditional left to fail out of a set -e
+shell` — `3 FAILURES` — and passes again once the `if` forms are back.
+
 ## Verification
 
 - `gh issue view 7635 -R Nishfleet/fleet-ops --json title,author,labels,createdAt`
@@ -176,4 +203,7 @@ deploy-lag — the retry text is live only after the merge's next `fleet-sync`
 pull. stale-branch — a local
 `fix/issue-7635-daily-digest-telegram-timeout` branch in the deploy clone is
 inert residue from the 2026-09-18 attempt (no salvage commits on it);
-untouched.
+untouched. judge-round-merge — #8162 merged 4m48s after the judge applied
+`blocked-by-judge`, through the merge queue (the label has no teeth there);
+this follow-up PR ships the finding-2 fixes to main, and the systemic
+gap is filed with evidence as Nishfleet/fleet-ops#8163.
