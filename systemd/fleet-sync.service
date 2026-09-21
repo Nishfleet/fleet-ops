@@ -42,9 +42,14 @@ ExecStart=/usr/bin/promtool check rules /home/nish/workspaces/tooling/fleet-ops-
 ExecStart=/usr/bin/sh -c 'cmp -s /home/nish/workspaces/tooling/fleet-ops-deploy-clone/config/fleet_rules.yml /etc/prometheus/fleet_rules.yml || { sudo -n install -D -m 0644 -o root -g root /home/nish/workspaces/tooling/fleet-ops-deploy-clone/config/fleet_rules.yml /etc/prometheus/fleet_rules.yml && sudo -n systemctl reload prometheus; }'
 # 5. prometheus-am-executor -f path is user-scope, so it can be a symlink
 #    into the clone (house pattern). Relink when the live path is a regular
-#    file or points elsewhere. Does not restart the executor — loading the
-#    new command line needs a bounce (loose-ends: am-executor-claim-reload).
+#    file or points elsewhere.
 ExecStart=/usr/bin/sh -c 'src=/home/nish/workspaces/tooling/fleet-ops-deploy-clone/config/prometheus-am-executor.yml; dst=/home/nish/.config/prometheus-am-executor/config.yml; mkdir -p /home/nish/.config/prometheus-am-executor; if [ ! -L "$$dst" ] || [ "$$(readlink "$$dst")" != "$$src" ]; then ln -sfn "$$src" "$$dst"; echo "[$$(date -u +%%Y-%%m-%%dT%%H:%%M:%%SZ)] [fleet-sync] linked prometheus-am-executor config -> $$src"; fi'
+# 6. The executor reads that file once at start; a pull that changed it must
+#    bounce the unit or the new command line never loads (fleet-ops#7414 —
+#    the loose-ends: am-executor-claim-reload gap that left the #6347 claim
+#    wrap unloaded for days while every spawn logged `pi: not found`). Blob
+#    SHA vs a stamp file, so it restarts only on real drift.
+ExecStart=/usr/bin/sh -c 'r=/home/nish/workspaces/tooling/fleet-ops-deploy-clone; s=/home/nish/.config/prometheus-am-executor/.sha; h=$$(git -C "$$r" rev-parse HEAD:config/prometheus-am-executor.yml); [ "$$(cat "$$s" 2>/dev/null)" = "$$h" ] || { systemctl --user try-restart prometheus-am-executor.service && echo "$$h" > "$$s"; }'
 TimeoutStartSec=300
 
 [Install]
