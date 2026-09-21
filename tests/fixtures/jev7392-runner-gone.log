@@ -1,0 +1,6 @@
+2026-09-21T18:02:11Z runner: Runner.Listener connected to broker, job ci / test accepted
+2026-09-21T18:02:40Z ##[group]Run npm test
+2026-09-21T18:02:41Z ##[warning]Lost communication with the server. Check the runner service logs.
+2026-09-21T18:03:12Z runner: Runner.Worker process finished with exit code 137 (SIGKILL)
+2026-09-21T18:03:12Z ##[error]The self-hosted runner: gh-runner-3 lost communication with the server.
+2026-09-21T18:03:12Z Error: The operation was canceled.
