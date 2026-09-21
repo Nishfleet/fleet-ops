@@ -90,13 +90,13 @@ Steps:
      (pi-issue@.service ExecStopPost), and the timer ticks anyway, so the
      queue drains continuously. Do not deliberate about the fleet-wide
      number — take up to 3 and stop.
-   - **Fleet-wide: 7 concurrent workers** (raised 2026-09-22, Nish: "keep it chugging at max lanes"; measured: 7 GB RAM free, 1.9 GB peak per Pi worker, worker-capable healthy max_parallel_requests 2+4 after the OpenCode Go rung; was 4 concurrent workers (fleet-ops#7820, 2026-09-19 15:30 IST: pareto
+   - **Fleet-wide: 10 concurrent workers** (raised again 2026-09-22 01:40 IST, Nish: "Lot of free ram sir. Ramp tf up"; measured 9 GB free with 5 live, the 4 GB MemAvailable floor below stays the governor; was 7 (raised 2026-09-22, Nish: "keep it chugging at max lanes"; measured: 7 GB RAM free, 1.9 GB peak per Pi worker, worker-capable healthy max_parallel_requests 2+4 after the OpenCode Go rung; was 4 concurrent workers (fleet-ops#7820, 2026-09-19 15:30 IST: pareto
      glm-5.3-flash is the only healthy rung (3 in flight); synthetic, ollama, zenmux, xkiro
      and opencode-go are all quota- or credit-walled today. Raise this only from a measured
      `max_parallel_requests` sum over rungs that `litellm_deployment_state` shows healthy).
    Also read MemAvailable from `/proc/meminfo`: under 4 GB, start nothing this
    tick and say so — RAM is the binding resource and an OOM kill costs a whole
-   claim. `slots = min(3, 7 - active)`. If slots <= 0, print `at capacity`
+   claim. `slots = min(5, 10 - active)`. If slots <= 0, print `at capacity`
    and exit 0.
 
 4. **Pick work.** `gh issue list -R Nishfleet/<repo> -l agent-ready --state open
@@ -134,7 +134,7 @@ Steps:
       the latest wip(salvage) commit (fleet-ops#6206)."`
    f. Start the worker, but only if it is not already live:
       Engine: if `systemctl --user list-units 'devin-issue@*.service' --state=active,activating --no-legend | wc -l`
-      is below 4, use `devin-issue@<repo>-N` (Devin SWE-2 Max, $0 on the account, proven headless
+      is below 5, use `devin-issue@<repo>-N` (Devin SWE-2 Max, $0 on the account, proven headless
       2026-09-19); else if `systemctl --user list-units 'cursor-issue@*.service' --state=active,activating --no-legend | wc -l`
       is below 3 AND the Cursor seat is not walled (parked 2026-09-22 01:20 IST: four starts answered `ActionRequiredError: You're out of usage`; un-park only after one `cursor-agent -p` probe on grok-4.7-high returns text, then delete this clause), use `cursor-issue@<repo>-N` (Cursor Grok 4.6 High on Nish's prepaid Cursor seat,
       proven headless 2026-09-19 13:21 IST); otherwise `pi-issue@<repo>-N`. Then:
