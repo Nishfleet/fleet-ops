@@ -148,6 +148,17 @@ const ENV_DUMP_SUBSHELL =
 const SUBSHELL_SECRET_PRINT = new RegExp(
 	`\\$\\(\\s*(?:echo|printf|printenv)\\b[^)]*${SECRET_NAMED_VAR.source}`,
 );
+/**
+ * fleet-ops#7448: the same 2026-09-17 pi-issue-fleet-ops-7440 run leaked live
+ * token material a second way — the auth-status subcommand of gh, whose
+ * env-var account line carries the token value (verified live 2026-09-21:
+ * the JWT is printed with only a trailing mask), and the auth-token
+ * subcommand, which prints the credential outright. This is the
+ * auth-status-output half of #7448's prevention clause; the expansion half
+ * is the #7381 rule above. Read on the quote-masked command surface, so a
+ * commit message naming the subcommand stays prose.
+ */
+const GH_AUTH_PRINT = /^\s*(?:[^\s;|&]+\s+)*auth\s+(status|token)\b/;
 const CMD_SEGMENT = /[^;|&\n(){}`<>]+/g;
 const SEGMENT_FIRST_WORD =
 	/^\s*(?:(?:[A-Za-z_][A-Za-z0-9_]*=\S*|!|time|command|builtin|exec|nice|nohup|env|xargs|do|then|else|elif|timeout\s+\S+|stdbuf\s+\S+)\s+)*([A-Za-z_][A-Za-z0-9_./-]*)/;
@@ -263,6 +274,10 @@ export function secretPrintBlock(command: string): string | null {
 			continue;
 		}
 		if (word === "printenv") return "secret_print cmd=printenv";
+		if (word === "gh" || word.endsWith("/gh")) {
+			const auth = text.slice(fw[0].length).match(GH_AUTH_PRINT);
+			if (auth) return `secret_print cmd=gh-auth-${auth[1]}`;
+		}
 		if (
 			word === "env" ||
 			word === "set" ||
@@ -288,7 +303,9 @@ export function secretPrintBlock(command: string): string | null {
 const SECRET_PRINT_GUIDANCE =
 	"A secret-named variable must never reach a printed/logged line: `${VAR:-...}`/`${VAR:+...}` " +
 	"expansions, printenv, bare env/set/export/declare and set -x all put the VALUE in the transcript " +
-	"(fleet-ops#7381). The GH_TOKEN presence check is `test -n \"$GH_TOKEN\"` — constant output only.";
+	"(fleet-ops#7381). The GH_TOKEN presence check is `test -n \"$GH_TOKEN\"` — constant output only. " +
+	"Never run gh's auth-status or auth-token subcommand either: both print the token " +
+	"into the transcript (fleet-ops#7448).";
 
 export default function (pi: ExtensionAPI) {
 	const dangerousPatterns = [
