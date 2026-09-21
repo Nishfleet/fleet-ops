@@ -177,8 +177,10 @@ do not mix active-learning samples into the fixed evaluation cohort).
 - **Cadence:** the reviewer subagent labels at most 20 items/day from the
   queue, judging each site's own question against the row's recovered
   context (`ref` → `gh pr view` / commit / dispatch record).
-- **Table:** labels append to `.fleet/bench7371/active-learning-labels.jsonl`,
-  one JSON object per item: `{ts, cohort:"active-learning", source_issue,
+- **Table:** labels append to `docs/jev-active-learning-labels.jsonl` (the
+  no-glue check refuses added files under `.fleet/**`; the append target sits
+  beside this report instead), one JSON object per item:
+  `{ts, cohort:"active-learning", source_issue,
   site, ref, question, question_type, jev_p, band_lo, band_hi, label,
   label_reason, labelled_by, label_run, labelled_at, state_sha256}`.
 - **Reporting:** calibration deltas (bucketed `jev_p` vs observed label rate,
