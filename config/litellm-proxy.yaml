@@ -232,7 +232,7 @@ benched:
     order: 1
     max_parallel_requests: 2
 - benched_at: 2026-09-17
-  reason: "openai/union-alpha @ https://opencode.ai/zen/v1 (OPENCODE_API_KEY) — HTTP 500 'Internal server error' on 4 direct probes 2026-09-17 ~18:55 IST (Mac key AND VPS key; control model on the same key returns a clean CreditsError, so auth is fine and the union-alpha upstream is broken/overloaded). Free until 2026-09-23 per OpenCode. Restore ONLY with a green direct probe cited in the PR."
+  reason: "openai/union-alpha @ https://opencode.ai/zen/v1 (OPENCODE_API_KEY) — HTTP 500 'Internal server error' on 4 direct probes 2026-09-17 ~18:55 IST (Mac key AND VPS key; control model on the same key returns a clean CreditsError, so auth is fine and the union-alpha upstream is broken/overloaded). Free until 2026-09-23 per OpenCode. EXPIRED 2026-09-21 (fleet-ops#7367): model DELISTED, not repaired — GET /models on zen/v1 returned HTTP 200 with a 30-model catalog containing no union-alpha (also absent from zen/go/v1's 31-model catalog; nearest is the different id omen-alpha), and 2x direct chat/completions probes returned HTTP 400 'Upstream request failed: Model is unavailable.' at ~18:16-18:18Z. The 500s ended by removal, so no probe can go green; closed early rather than watching a delisted id to 2026-09-23. If OpenCode re-adds the id, restore ONLY with a green direct probe cited in the PR. Successor candidate: omen-alpha @ zen/go/v1 (prepaid, needs x-opencode-session) probed 200 'pong' — placement decision filed as a separate issue."
   was: [worker-cheap, worker-capable, senior, judge]
   litellm_params:
     model: openai/union-alpha
