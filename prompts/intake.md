@@ -85,7 +85,7 @@ Steps:
      state that hides an issue from the queue is the unknown-gate case above.
 
 3. **Capacity.** Two limits, both hard:
-   - **Per tick: claim at most 3 issues.** This tick is not responsible for
+   - **Per tick: claim at most 5 issues** (was 3; 2026-09-22 01:55 IST, matches `slots = min(5, 10 - active)`; a tick that stops at 3 with 5 slots leaves two lanes idle). This tick is not responsible for
      filling the fleet. A finishing worker starts the next tick itself
      (pi-issue@.service ExecStopPost), and the timer ticks anyway, so the
      queue drains continuously. Do not deliberate about the fleet-wide
