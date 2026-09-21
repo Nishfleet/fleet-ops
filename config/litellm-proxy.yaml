@@ -26,6 +26,14 @@
 # does not fire them all at once (that 429'd the account when 4 rungs ran
 # together). max_parallel_requests matches the pre-#7862 pareto split (workers 2,
 # senior/judge 2, private 1). pi-issue@ stays --provider litellm --model worker-capable.
+# 2026-09-21 (fleet-ops#5792 converge): audited the live-only edits of
+# 2026-09-20 — synthetic worker-cheap + nemotron worker-capable re-benched
+# (evidence in their benched: entries). The cline/ union-alpha rungs +
+# custom_provider_map were live-only too and a LATENT CRASH: no
+# fleet_cline_adapter.py exists on the host, so the first restart died on
+# ImportError. Removed from live the same day — fleet-ops#7366 must land
+# adapter + config together in one PR. router_settings converged to the
+# closed #6732 posture (cooldown 60 / num_retries 0 / RateLimitErrorRetries 0).
 # Router policy: a single deployment error must never reach the client while another deployment or fallback group is healthy.
 model_list:
 # fleet-ops#4643 cache-affinity ladder still applies; routing_strategy is simple-shuffle so
@@ -140,8 +148,8 @@ benched:
     - ollama
     order: 1
     max_parallel_requests: 4
-- benched_at: 2026-09-19
-  reason: "openai/hf:zai-org/GLM-5.3-Flash @ https://api.synthetic.new/openai/v1 (SYNTHETIC_API_KEY) — HTTP 429 'You've exceeded your subscription rate limits' on both the 1-line chat probe and the tool_choice=ping probe, 2026-09-19 ~18:00 IST (fleet-ops#7862). Same wall as the 2026-09-13 #6193 bench. Restore ONLY with a green chat AND a green tool_choice probe cited in the PR."
+- benched_at: 2026-09-21
+  reason: "openai/hf:zai-org/GLM-5.3-Flash @ https://api.synthetic.new/openai/v1 (SYNTHETIC_API_KEY) — HTTP 429 'You've exceeded your subscription rate limits' on both the 1-line chat probe and the tool_choice=ping probe, 2026-09-19 ~18:00 IST (fleet-ops#7862). Same wall as the 2026-09-13 #6193 bench. RE-BENCHED 2026-09-21: the live-only restore of 2026-09-20 00:29 IST re-hit the identical 429 subscription wall — direct probe HTTP 429, /health continuously unhealthy, and at 12:30:40 IST worker-cheap dead-ended with BOTH rungs in cooldown. Removed live the same day (fleet-ops#5792). Restore ONLY with a green chat AND a green tool_choice probe cited in the PR — and check the subscription window first."
   was: [worker-cheap, worker-capable, senior, worker-private]
   litellm_params:
     model: openai/hf:zai-org/GLM-5.3-Flash
@@ -175,8 +183,8 @@ benched:
     - xkiro-free
     order: 1
     max_parallel_requests: 4
-- benched_at: 2026-09-17
-  reason: "openai/stealth/union-alpha @ https://api.cline.bot/api/v1 (CLINE_API_KEY) — Cline wraps NON-streaming responses in {data:{...},success:true}; LiteLLM /health (non-streaming) fails 'provider returned a response with no choices' on all 4 deployments while STREAMING routed calls succeed (worker-cheap -> x-litellm-model-id union-alpha-cline-worker-cheap, 'pong', 2026-09-17 19:00 IST). Benched to keep the #6054 census green; restore via a CustomLLM unwrap adapter (like fleet_devin_adapter) — follow-up issue cited in the PR."
+- benched_at: 2026-09-21
+  reason: "openai/stealth/union-alpha @ https://api.cline.bot/api/v1 (CLINE_API_KEY) — Cline wraps NON-streaming responses in {data:{...},success:true}; LiteLLM /health (non-streaming) fails 'provider returned a response with no choices' on all 4 deployments while STREAMING routed calls succeed (worker-cheap -> x-litellm-model-id union-alpha-cline-worker-cheap, 'pong', 2026-09-17 19:00 IST). RE-BENCHED 2026-09-21: a live-only restore of 4 union-alpha rungs + custom_provider_map (2026-09-20) referenced fleet_cline_adapter.py, which exists nowhere on the host — the first proxy restart died on ImportError, a latent crash the whole time (fleet-ops#5792). Restore ONLY via fleet-ops#7366 landing the unwrap adapter AND this config in ONE PR — config alone is undeployable."
   was: [worker-cheap, worker-capable, senior, judge]
   litellm_params:
     model: openai/stealth/union-alpha
@@ -263,7 +271,7 @@ benched:
 # row; do NOT add any devin bridge to worker-cheap/worker-capable
 # (fleet-ops#7761).
 - benched_at: 2026-09-13
-  reason: "openai/glm-5-2 + openai/swe-2-max @ Devin/Windsurf — openai/* 404 on all four candidate bases (api.devin.ai/v1, api.devin.ai, server.codeium.com, windsurf.com/api/v1; live-proxied 2026-09-13). Unlock is the #6228 CustomLLM handler (devin/swe-2-max in senior/judge/worker-private), not this openai/* row. NEVER restore openai/* here. NEVER swe-1-7 (retired) or swe-2-high (parked to 2036). NEVER put the CustomLLM bridge in worker groups (fleet-ops#7761)."
+  reason: "openai/glm-5-2 + openai/swe-2-max @ Devin/Windsurf — NO ROUTER WIRE: litellm->openai/* 404 on all four candidate bases (api.devin.ai/v1, api.devin.ai, server.codeium.com, windsurf.com/api/v1; live-proxied via a throwaway port-4321 litellm 2026-09-13; re-probed direct 2026-09-13T07:40Z: 3x 404 and windsurf.com/api/v1 200 = the Next.js marketing catch-all, not the API) and Windsurf/Exafunction inference is devin-CLI-only (signed Cascade client, pi ACP extension); litellm 1.98.0 and current upstream ship no windsurf/devin/codeium adapter (docs sitemap, 167 providers) — the #4263 verdict ('Cursor (api2.cursor.sh) and Devin (api.devin.ai) use proprietary protocols and do not expose /v1/chat/completions'). Seats themselves healthy via the devin CLI (cli_spawn ledger: devin/glm-5-2 200; swe-2-max bench expired 18:31Z at filing; today 2026-09-13: devin models list 48 families, exit 0). Creds plumbing already live: the deployed wrapper sources ~/.config/fleet-ops/seats/devin.env (fleet-litellm-proxy-start line 19), so unbenching after #6228 needs NO env work. Config-only wire: mechanism-impossible (the 404s). Unlock = the #6228 CustomLLM Windsurf/Devin adapter, mechanism approved by the orchestrator sweep 2026-09-13 (decision-resolved). NEVER swe-1-7 (retired, cap 0) or swe-2-high (parked to 2036)."
   was: [worker-cheap, worker-capable]
   litellm_params:
     model: openai/glm-5-2
@@ -273,8 +281,8 @@ benched:
     - prepaid
     order: 2
     max_parallel_requests: 1
-- benched_at: 2026-09-18
-  reason: "openai/nvidia/nemotron-3-ultra-550b-a55b:free @ https://openrouter.ai/api/v1 (OPENROUTER_API_KEY), worker-cheap + worker-capable — fleet-litellm-health-canary health-deployment-unhealthy: /health RateLimitError 'Rate limit exceeded: free-models-per-day-high-balance', continuously unhealthy 830s >= the #6427 300s hold. OpenRouter's free-models-per-day cap is per ACCOUNT, so every openrouter :free rung shares one daily bucket. Independently, the 2026-09-18 nemotron-out removal note (bak-nemotron-out-20260918T085208Z) stands: HTTP 200 with ZERO tool calls on real packets (PACKET-VERDICT 7d 966 no-tools vs 127 worked). Restore ONLY with BOTH a green /health probe AND a tool-call rate measured over real packets, cited in the PR (fleet-ops#6054 drill, #5792 accept line, #6427 hold; canary trip 2026-09-18 14:29 IST, re-confirmed by direct GET /health at 2026-09-18T09:00:04Z before benching)."
+- benched_at: 2026-09-21
+  reason: "openai/nvidia/nemotron-3-ultra-550b-a55b:free @ https://openrouter.ai/api/v1 (OPENROUTER_API_KEY), worker-cheap + worker-capable — fleet-litellm-health-canary health-deployment-unhealthy: /health RateLimitError 'Rate limit exceeded: free-models-per-day-high-balance', continuously unhealthy 830s >= the #6427 300s hold. OpenRouter's free-models-per-day cap is per ACCOUNT, so every openrouter :free rung shares one daily bucket. Independently, the 2026-09-18 nemotron-out removal note (bak-nemotron-out-20260918T085208Z) stands: HTTP 200 with ZERO tool calls on real packets (PACKET-VERDICT 7d 966 no-tools vs 127 worked). Restore ONLY with BOTH a green /health probe AND a tool-call rate measured over real packets, cited in the PR (fleet-ops#6054 drill, #5792 accept line, #6427 hold; canary trip 2026-09-18 14:29 IST, re-confirmed by direct GET /health at 2026-09-18T09:00:04Z before benching). RE-BENCHED 2026-09-21: the live-only restore of 2026-09-20 00:30 IST put it at worker-capable order:2 citing one tool_choice=ping probe; on 2026-09-21 five consecutive tool_choice=required probes through this router returned the call as text content with tool_calls: null — the #7761 no-tool-call class. Removed live the same day (fleet-ops#5792)."
   was: [worker-cheap, worker-capable]
   litellm_params:
     model: openai/nvidia/nemotron-3-ultra-550b-a55b:free
@@ -330,14 +338,15 @@ router_settings:
     #
     # 2026-09-18 (fleet-ops#7761) — STANDING RULE, not just today's bench list:
     # a worker group (worker-cheap / worker-capable) may contain ONLY deployments
-    # that have been proven to return `finish_reason=tool_calls`. `senior` is the
-    # `devin/swe-2-max` CustomLLM bridge, and `devin --print` is an agent-in-a-box:
-    # fleet_devin_adapter flattens the messages into a prompt, runs devin's OWN
-    # tools in devin's OWN sandbox, and returns final prose. It never forwards the
-    # `tools` array and can never return a tool_calls response. Listing it as a
-    # worker fallback is what produced the 2026-09-18 outage — every pi-issue@
-    # worker from ~16:30Z scored PACKET-VERDICT tools=0 and exited 0 while 100+
-    # agent-ready issues sat untouched.
+    # that have been proven to return `finish_reason=tool_calls`. The proof case
+    # was the `devin/swe-2-max` CustomLLM bridge (itself retired by the #7907
+    # no-glue sweep): `devin --print` is an agent-in-a-box that returns final
+    # prose, never a tool_calls response, and as a worker fallback it produced
+    # the 2026-09-18 outage — every pi-issue@ worker from ~16:30Z scored
+    # PACKET-VERDICT tools=0 and exited 0 while 100+ agent-ready issues sat
+    # untouched. Re-proven 2026-09-21: openrouter nemotron-3-ultra-550b-a55b:free
+    # returned the tool call as text content (tool_calls: null) on 5/5
+    # tool_choice=required probes through the live router — re-benched below.
     # Note `order:` does NOT protect against this: routing_strategy is
     # simple-shuffle, which ignores it (devin took 667 of 1835 worker-cheap calls
     # from a lower-priority order). A non-tool-calling deployment has to be ABSENT
@@ -348,23 +357,29 @@ router_settings:
     - worker-cheap: [worker-capable]
     - worker-capable: [worker-cheap]
     # senior/judge/worker-private consume prose (review, adjudication), not tool
-    # calls, so the devin bridge stays correct for them.
+    # calls, so a prose-only rung is legal there — though today every group's
+    # only rung is pareto glm-5.3-flash (the #7862 roster collapse).
     - senior: [worker-capable]
     - judge: [senior]
     - worker-private: [worker-capable]
-  # fleet-ops#6732: live runs cooldown_time:60 / num_retries:0 /
-  # RateLimitErrorRetries:0 since the 2026-09-14 retry-storm incident (a dead
-  # nebius rung retried 3x per request flooded pareto and cooled every group).
-  # Repo keeps the test-pinned #5811 values; the live divergence is deliberate
-  # incident posture — re-converge it only with the incident closed out.
-  cooldown_time: 300
+  # fleet-ops#6732 (CLOSED 2026-09-14): cooldown_time:60 / num_retries:0 /
+  # RateLimitErrorRetries:0 is the standing posture, not an incident band. The
+  # 2026-09-14 retry-storm showed why: a dead rung retried 3x per request
+  # flooded the next rung and cooled every group, and the 300/2/2 drift
+  # re-measured it — 588 RouterRateLimitError rejections in 88 min on
+  # 2026-09-20. Converged into the repo 2026-09-21 (fleet-ops#5792): with one
+  # upstream per group a same-group retry can only re-hit the same wall, and
+  # failover lives in `fallbacks`, which still fire on the first failure.
+  # If groups regain multiple healthy upstreams, num_retries>=2 becomes
+  # meaningful again (the #5792 router-policy spec).
+  cooldown_time: 60
   allowed_fails: 1
-  num_retries: 2
+  num_retries: 0
   timeout: 1800
   enable_tag_filtering: false
   retry_policy:
     AuthenticationErrorRetries: 2
-    RateLimitErrorRetries: 2
+    RateLimitErrorRetries: 0
     TimeoutErrorRetries: 1
     InternalServerErrorRetries: 2
     BadRequestErrorRetries: 0
