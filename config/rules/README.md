@@ -20,7 +20,7 @@ lives in `tests/rules-parity.test.sh`.
 - A scheduled live probe ("alert when the ruleset regresses") is a separate,
   already-filed ask: fleet-ops#7905 (agent-ready). Do not resurrect it here.
 
-## What is recorded (as verified 2026-09-20)
+## What is recorded (as verified 2026-09-21)
 
 - `fleet-ops-main.json` — `GET /repos/Nishfleet/fleet-ops/rules/branches/main`
   → 4 rules: `non_fast_forward`, `deletion` (the #6476 stage-1 pair, adopted
@@ -38,6 +38,30 @@ lives in `tests/rules-parity.test.sh`.
   `.rules` array (`jq -cS .rules`) as GitHub returned it at
   `verified_at_utc`. `tests/rules-parity.test.sh` re-derives the hash from
   the committed bytes, so an undocumented edit to a snapshot fails the test.
+
+## fleet-ops#5787 live acceptance evidence (verified 2026-09-21)
+
+- Ruleset active on every enrolled repo: `gh api
+  repos/Nishfleet/fleet-ops/rulesets` → `main-merge-queue` active (id
+  23692529); `repos/Nishfleet/0509/rulesets` → `main-merge-queue` active (id
+  21391031). Enrolled set = `config/intake-repos.json` `repos[]` = {0509,
+  fleet-ops}; coverage 2/2.
+- One live PR per repo merges through the queue with auto-merge only:
+  fleet-ops PRs #8023 (cbe95921) and #8024 (3028cd93) on 2026-09-21 show
+  `added_to_merge_queue -> merged -> removed_from_merge_queue` in
+  `gh api repos/Nishfleet/fleet-ops/issues/<pr>/timeline`; 0509 PR #3901
+  (merged 2026-09-21T10:03Z) shows the same sequence. The queue merged each
+  with no human dequeue/admin action.
+- Stale queued entries: none exist to repair — GraphQL
+  `mergeQueue(branch:"main") { entries }` returned `[]` on both repos at
+  check time. The `red-pr-repair` machinery this issue named
+  (`repair:`-label + `repair-queue-jump.mjs` + heartbeat sweep) was deleted
+  in the 2026-09-18/19 glue sweep (#7828) and has no live caller; with zero
+  required checks on the fleet-ops side the queue merges each entry
+  immediately, so entries cannot stale. Resurrecting a jump path is new
+  work under the sweep's terms, not this issue.
+- Required-checks residual stays deferred exactly as the stage-2 line below
+  records; no context was guessed into a settings change or a snapshot.
 
 ## Refresh procedure (worker-token, read-only)
 

@@ -1,9 +1,9 @@
 {
   "endpoint": "GET /repos/Nishfleet/fleet-ops/rules/branches/main",
   "http_status": 200,
-  "verified_at_utc": "2026-09-20T02:21:41Z",
+  "verified_at_utc": "2026-09-21T10:31:37Z",
   "verified_by": "nishfleet-worker token (read-only; writes stayed out of repo settings)",
-  "stage": "stage-1 of Nishfleet/fleet-ops#6476 adopted 2026-09-19 by the authorized admin (the #7844 rules sweep); verified live 2026-09-20",
+  "stage": "stage-1 of Nishfleet/fleet-ops#6476 adopted 2026-09-19 by the authorized admin (the #7844 rules sweep); re-verified live 2026-09-21 — payload identical; merge queue exercised same day (PRs #8023, #8024 merged via added_to_merge_queue -> merged)",
   "payload_sha256": "c00033e87b1e4277df0eee8274c69f7eff8a27ce7722beefb7519c3a07c98d08",
   "rules": [
     {
