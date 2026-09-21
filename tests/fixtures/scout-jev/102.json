@@ -1,0 +1,7 @@
+{
+  "number": 102,
+  "title": "empty state on /app does not explain watchlists",
+  "state": "open",
+  "labels": [{"name": "usage-uncited"}],
+  "body": "funnel_stage: first watchlist\nsource: nish#1368\n\nobserved: signed-in /app shows a blank pane with no call to action\n\naccept:\n- empty state names the watchlist action\n\ntermination: test -n \"$(curl -s https://0509.io/app | grep -i watchlist)\""
+}
