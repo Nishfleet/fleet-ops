@@ -21,10 +21,13 @@ Steps:
 1. **Label the invisible.** `gh issue list -R Nishfleet/<repo> --state open
    --json number,title,labels --limit 100`. Intake only sees `agent-ready`, so an open
    issue carrying none of `agent-ready` / `agent-in-progress` / `agent-blocked`
-   / `noise-class` is invisible forever. Add `agent-ready` to each such issue.
+   / `noise-class` / `superseded-by-rebuild` / `deputy` / `needs-nish-decision`
+   is invisible forever. Add `agent-ready` to each such issue.
    Never add `agent-ready` to an issue that already carries `agent-blocked`,
-   `awaiting-runtime-gate`, or `noise-class`. `noise-class` is terminal: not
-   work. Leave those issues as they are. Also skip any issue whose title
+   `awaiting-runtime-gate`, `noise-class`, `superseded-by-rebuild`, `deputy`,
+   or `needs-nish-decision`. `noise-class` and `superseded-by-rebuild` are
+   terminal: not work. `deputy` means the Opus deputy owns it, never the fleet.
+   `needs-nish-decision` waits for Nish. Leave those issues as they are. Also skip any issue whose title
    starts with `__scout_probe_`. That marker means do not file, and a leaked
    probe must not be labeled agent-ready (fleet-ops#4454).
 
