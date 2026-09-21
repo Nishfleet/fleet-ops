@@ -24,6 +24,7 @@ CONSUMERS = [
     ROOT / 'prompts' / 'alert-repair.md',
     ROOT / 'prompts' / 'daily-digest.md',
     ROOT / 'prompts' / 'intake.md',
+    ROOT / 'prompts' / 'scout.md',
     ROOT / 'prompts' / 'worker.md',
 ]
 FAILS = []
@@ -46,8 +47,8 @@ EXPECTED = {
     'claim-check-pr', 'claim-check-report', 'dependency-pr-arm',
     'flaky-test-quarantine', 'gha-stuck-run-watch', 'hermes-digest',
     'intake-seat-smoke', 'merge-queue-batches', 'merge-queue-enqueue',
-    'reviewer-needs-review', 'second-opinion', 'second-opinion-reserved',
-    'worker-context',
+    'reviewer-needs-review', 'scout', 'second-opinion',
+    'second-opinion-reserved', 'worker-context',
 }
 
 # Patterns that name a site literal in a consumer file.

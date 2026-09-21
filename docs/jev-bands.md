@@ -24,6 +24,9 @@ conclusive, this file is the knob — edit it and nothing else.
 - `sensitivity` (optional, per-site) — extra comparison edges a site may
   evaluate for telemetry only. Today only `worker-context` reads it, for
   its `would_drop_by_threshold`/`token_delta_est_by_threshold` columns.
+- `scout` is log-only: it applies no edge today, so its band values are
+  inert. The row still stamps them — they are the edges a future flip
+  (fleet-ops#7442) would read.
 
 Every site row stamps the `act_hi`/`review_lo` it ran under, so any row
 can be replayed against the table value that produced it. A missing file,
@@ -51,6 +54,7 @@ keeps an old constant.
 | `merge-queue-batches` | `prompts/daily-digest.md` | 0.9 | 0.1 |
 | `merge-queue-enqueue` | `prompts/worker.md` | 0.9 | 0.1 |
 | `reviewer-needs-review` | `prompts/worker.md` step 7 | 0.9 | 0.1 |
+| `scout` | `prompts/scout.md` | 0.9 | 0.1 |
 | `second-opinion` | `prompts/worker.md` | 0.5 | 0.5 |
 | `second-opinion-reserved` | `prompts/worker.md` | 0.5 | 0.5 |
 | `worker-context` | `prompts/intake.md` | 0.9 | 0.1 (+ `sensitivity` [0.1, 0.25, 0.5]) |

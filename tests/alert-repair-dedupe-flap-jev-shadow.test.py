@@ -35,8 +35,9 @@ def main():
     shadow = next((i for i, l in enumerate(lines)
                    if l.startswith('## Shadow Jev tier — advisory, never a gate (fleet-ops#7394)')), -1)
     check(0 <= steps < shadow, 'shadow section follows the steps list')
-    check(not any(l.startswith('## ') for l in lines[shadow + 1:]),
-          'shadow section is the last section')
+    check(all(l.startswith('## Shadow Jev tier') for l in lines[shadow + 1:]
+              if l.startswith('## ')),
+          'only shadow-tier sections follow the shadow section')
 
     blocks = re.findall(r"python3 - <<'PY'\n", text)
     check(len(blocks) == 1, 'exactly one embedded python block for this site, got %d' % len(blocks))

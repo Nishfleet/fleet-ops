@@ -135,11 +135,15 @@ def main():
         blockfile = pathlib.Path(td) / 'block.py'
         blockfile.write_text(block)
         logfile = pathlib.Path(td) / 'scout.jsonl'
+        bands_file = pathlib.Path(td) / 'jev-bands.json'
+        bands_file.write_text(json.dumps({'sites': {
+            'scout': {'act_hi': 0.9, 'review_lo': 0.1}}}))
 
         base_env = dict(os.environ,
                         LITELLM_JEV_KEY='test-key-7442',
                         JEV_SCOUT_ENDPOINT=endpoint,
                         JEV_SCOUT_LOG=str(logfile),
+                        JEV_BANDS_FILE=str(bands_file),
                         JEV_SCOUT_FIXTURE_DIR=str(FIXTURES))
 
         def invoke(env, args=('Nishfleet/0509', '101 102', '8')):
@@ -196,6 +200,8 @@ def main():
         check(set(r101.get('answers') or {}) == {'funnel', 'rank', 'spec', 'migrations'},
               'row answers keyed by question')
         check(r101.get('rule_tier') == 'scout', 'row rule_tier')
+        check(r101.get('act_hi') == 0.9 and r101.get('review_lo') == 0.1,
+              'row stamps the site band edges from the table')
         pp = r101.get('prompt_produced') or {}
         check(pp.get('funnel_stage') == 'signup', 'row prompt_produced funnel_stage from body')
         check('scout-candidate' in (pp.get('labels') or []), 'row prompt_produced labels')

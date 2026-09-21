@@ -342,6 +342,8 @@ KEYF = P.home() / '.config/fleet-ops/seats/typesafe-jev.env'
 ENDPOINT = E('JEV_SCOUT_ENDPOINT') or 'http://127.0.0.1:4000/jev'
 LOG = E('JEV_SCOUT_LOG') or str(P.home() / '.local/state/pi-packet/jev/scout.jsonl')
 FIX = E('JEV_SCOUT_FIXTURE_DIR')
+BANDS_PATH = E('JEV_BANDS_FILE') or str(P.home() /
+    'workspaces/tooling/fleet-ops-deploy-clone/config/jev-bands.json')
 FUNNEL = {'visit': 'moves a stranger onto the site', 'signup': 'converts a visit into an account',
           'first watchlist': 'a signed-up user saves a first watchlist',
           'first proof': 'a signed-up user gets a first proof/report/alert', 'paid': 'moves toward payment'}
@@ -351,6 +353,23 @@ FIELDS = ('metric:', 'observed:', 'evidence:', 'accept:', 'verify:', 'rollback:'
           'impact:', 'product_surface:', 'termination:', 'source:', 'funnel_stage:')
 note = lambda m: print('jev-scout: %s' % m, file=sys.stderr)
 ok = lambda v: isinstance(v, (int, float)) and not isinstance(v, bool) and math.isfinite(v)
+
+
+def read_bands(site):
+    # fleet-ops#7439 — band edges live in config/jev-bands.json, the one
+    # table every jev site reads. Missing/invalid values surface as None:
+    # the row still lands and records the nulls so the gap is visible.
+    try:
+        entry = (json.load(open(BANDS_PATH)).get('sites') or {}).get(site) or {}
+    except Exception:
+        entry = {}
+    def num(k):
+        try:
+            v = float(entry.get(k))
+            return v if 0 <= v <= 1 else None
+        except (TypeError, ValueError):
+            return None
+    return dict(act_hi=num('act_hi'), review_lo=num('review_lo'))
 
 
 def main():
@@ -427,6 +446,7 @@ def main():
         return note('advisory unavailable (%s); scout unchanged' % type(e).__name__)
     ms, ans = int((time.monotonic() - t0) * 1000), res.get('answers') or {}
     P(LOG).parent.mkdir(parents=True, exist_ok=True)
+    bands = read_bands('scout')
     rows = 0
     with os.fdopen(os.open(LOG, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600), 'a') as f:
         for n, c, pp in cands:
@@ -444,6 +464,7 @@ def main():
                 continue
             f.write(json.dumps(dict(ts=datetime.datetime.now(datetime.timezone.utc).isoformat(),
                 site='scout', ref='Nishfleet/%s#%d' % (repo.split('/', 1)[1], n), state_sha256=sh,
+                act_hi=bands['act_hi'], review_lo=bands['review_lo'],
                 answers=got, prompt_produced=pp, invalid_questions=inv or None, advisory_only=True,
                 rule_tier='scout', repo=repo, issue=n, usage=res.get('usage'), ms=ms)) + '\n')
             rows += 1
