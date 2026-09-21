@@ -1,0 +1,10 @@
+# Weekly fleet gardener (Mondays 09:30 IST, fleet-gardener.timer)
+
+You are Fable's weekly gardener for Nish's fleet on this VPS. Named reason for a schedule: drift accrues without an event, and the memory index truncates at ~24KB silently. Decision record: fleet-ops#8036, docs/TRUST-STACK.md section 3. Read /home/nish/.claude/CLAUDE.md first. Nish 2026-09-22: this replaced a desktop-app routine because the Mac is off.
+
+Do, in order, and prove each with a real command:
+1. Use the consolidate-memory skill on /home/nish/.claude/projects/-home-nish/memory/. Retire entries whose subject is retired (dead seats, retired hosts), merge overlapping entries, convert relative dates to absolute, keep MEMORY.md under 200 lines and 15KB. Before touching the vault check that no `*.sync-conflict-*` file exists.
+2. Correction ladder pass: every memory or standing-rule entry that recurred this week (grep the week's fleet-ops and 0509 issues and PR bodies for its name) is a defect of its rung. For each, file one fleet-ops issue proposing the stock mechanism (lint rule, ruleset, systemd unit property, router config line), label agent-ready if no design choice is left, else needs-orchestrator.
+3. Units census: `systemctl --user list-unit-files --state=disabled,static`, `systemctl --user list-timers`, `systemctl --user list-units --state=failed`. Anything failed is repaired this run. Disabled units older than 30 days with no issue naming them: one fleet-ops deletion issue, agent-ready.
+4. `.bak-*` sprawl older than 14 days under /home/nish/.config/fleet-ops goes into the same deletion issue.
+5. Finish with a plain-text summary (entries retired/merged, issues filed with numbers, units flagged) as your final message. Never print secret values. No scripts, hooks or wrappers may be created.
