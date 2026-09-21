@@ -254,18 +254,22 @@ in #4149; the finding details live in the JSON cache
 `fleet-loose-ends-canary` (row 7) are retired; the deadman metric + chain prom
 files are gone from the repo and the live box.
 
-**GitHub Actions scheduled-workflow candidates — KEEP (2), pending #4161:**
-`fleet-issue-close-duplicates`, `fleet-merged-pr-close` are webhook-triggered
-with a timer fallback. They cannot move to Actions yet: the worker token has
-NO Workflows permission and cannot write `.github/workflows/**` (fleet-ops#3735).
-Tracked in #4161; re-audit when the token is upgraded.
+**GitHub Actions scheduled-workflow candidates — RETIRED (#4161):**
+`fleet-issue-close-duplicates`, `fleet-merged-pr-close` no longer exist. The
+2026-09-18/19 glue sweeps deleted both drains outright, not just their timer
+fallbacks: `0dc5dd4ac` removed `bin/fleet-merged-pr-close`,
+`bin/fleet-dead-pr-detector` and `fleet-merged-pr-close.{service,timer}`
+(merged-PR close is GitHub's own `Closes #<N>` trailer close, which the
+PR-body contract already requires); `6fee069b6` removed `bin/fleet-issue-file`
+and `fleet-issue-close-duplicates`. No scheduled-workflow replacement was
+built — there is no drain left to schedule.
 
 **LiteLLM — PENDING (1):** `fleet-seat-comeback-release` (row 6, #4130). The
 LiteLLM proxy organ is in flight (#4178 P1); the comeback-release timer retires
 when #4130 lands.
 
-Net: 19 live before #4149 → 18 after (truth-staleness-check retired; the other
-18 are KEEP or tracked against #4130/#4161).
+Net: 19 live before #4149 → 16 after the #4161 pair retired with the
+2026-09-18/19 sweeps (the rest are KEEP or tracked against #4130).
 
 ## 5. Classify rows (row 11)
 
@@ -348,7 +352,7 @@ Row 11 classify rows are filed as classify issues.
 | 8 load-storm-brake + agent-orphan-watchdog | #4147 (dup #4158) |
 | 9 codex launcher wrapper | #4148 (canonical; #4159 closed as dup) |
 | 10 baseline-delta + truth-staleness -> Prom alert | #4160 (DONE — truth-staleness retired by #4245, TruthStalenessMismatch rule live; baseline-delta re-classified KEEP per its #1151 review-conference contract) |
-| 10 issue-close-duplicates + merged-pr-close -> Actions | #4161 |
+| 10 issue-close-duplicates + merged-pr-close -> Actions | #4161 (RETIRED — both drains deleted in the 2026-09-18/19 sweeps; merged-PR close is GitHub-native `Closes #`, no Actions replacement needed) |
 | 11 oracle-* classify | #4162 |
 | 11 memory-index-dedupe + hermes-staff + 0509-surface-probe classify | #4150 |
 

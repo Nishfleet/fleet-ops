@@ -24,8 +24,8 @@ cheaper than building, because prose bans lose to urgency at decision time.
 
 | Job class | Existing owner | Unit / mechanism | Ref |
 |---|---|---|---|
-| Merged-PR observe-to-close (webhook) | fleet-merged-pr-close | `fleet-merged-pr-close.{service,timer}` | #3270 |
-| Duplicate-issue drain (webhook) | fleet-issue-close-duplicates | `fleet-issue-close-duplicates.{service,timer}` | #3270 |
+| Merged-PR observe-to-close | GitHub `Closes #<N>` trailer (PR-body contract) | retired 2026-09-18 (`0dc5dd4ac`); no unit, no sweep | #3270, #4161 |
+| Duplicate-issue drain | retired — no owner | `fleet-issue-close-duplicates.{service,timer}` + `bin/fleet-issue-file` deleted 2026-09-19 (`6fee069b6`) | #3270, #4161 |
 | Tight merge→live deploy | fleet-deploy-check | `fleet-deploy-check.timer` | #468, TOP GEAR |
 | Blind audit / gap-closure | fleet-blind-audit | `fleet-blind-audit.timer` | #377 |
 | Restore proof (off-site) | restic-r2-backup / restic-r2-verify / restic-r2-restore-test (ROOT units) | `restic-r2-*.timer` | #388, #1135 |
