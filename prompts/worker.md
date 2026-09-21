@@ -14,7 +14,7 @@ Steps:
 1. `gh issue view <N> -R Nishfleet/<repo> --comments` (no `--body` → `unknown flag: --body`, fleet-ops#1055). `--json` fields must exist (`labels` not `label`; fleet-ops#1219 `Unknown JSON field`). Same class: `gh pr view --json mergedAt,merged` → `Unknown JSON field: "merged"` (fleet-ops#1244), and `mergeQueueEntry` is not a field — use `autoMergeRequest`/`mergeStateStatus` for merge-queue status (fleet-ops#4884); piping `2>&1 | head` masks the exit (`isError: false`, fleet-ops#1193), but piping a bad field to `python3 -c json.load` does NOT mask it — the `isInMergeQueue`/`mergeQueueEntry` field error leaves empty stdin, python raises `JSONDecodeError` and still exits 1 (isError: true), a real swallowed failure you must flag, not a probe (fleet-ops#5010). Merged-recent check (fleet-ops#1107): `gh pr list -R Nishfleet/<repo> --state merged --json number,title,headRefName,mergedAt --jq 'sort_by(.mergedAt) | reverse | .[:10][] | "\(.number)\t\(.title)"'` — `gh pr list` has NO `--sort` flag on this host's gh 2.93.0 (`gh pr list --sort -mergedAt` → `unknown flag: --sort`, exit 1); sort in jq or via `--search "sort:…"` qualifiers (fleet-ops#6206).
 2. Re-entrancy: reuse origin `claim/issue-<N>` if the latest claim names YOUR unit. A re-claim means the REMOTE half already ran — the claim step force-pushed `origin/main` onto `refs/heads/claim/issue-<N>` — and only the LOCAL half is yours. The deploy clone is shallow, so a leftover worktree's stale local claim branch can share no counted ancestry with freshly-fetched `origin/main`: `git merge-base HEAD origin/main` → `fatal: ... no merge base`, and rebase/3-dot diffs misbehave (fleet-ops#6206). Recover inside the worktree: `git -C <worktree> fetch origin`; `git checkout -B claim/issue-<N> origin/main` (equals `origin/claim/issue-<N>` post-claim-reset); `git cherry-pick <that issue's latest wip(salvage) commit>` — cherry-pick needs only the salvage commit and its direct parent, both local even in shallow history; conflicts only if main touched the same hunks.
 3. Workspace: never work in the deploy clone (`/home/nish/workspaces/tooling/fleet-ops-deploy-clone`) — it is the live install source and must stay on clean main (fleet-ops#3634). If you need to edit a tracked fleet-ops file, clone to a worktree — never the deploy clone (deploy-clone-readonly, fleet-ops#3758). A dirty deploy clone trips `DEPLOY-CHECK-DIRTY-CLONE` on the deploy-check tick; clean it with `git restore` when you caused it. A deliverable line may state a change is already in production or already serving on this host only when that same line cites a SHA already on origin/main (`git merge-base --is-ancestor` proves it) — a fix on a branch is a PR, not production, and the packet-verdict checker rejects the claim while the dead-man fails the unit (fleet-ops#5786). Create a worktree from origin/main: `git -C /home/nish/workspaces/tooling/fleet-ops-deploy-clone fetch origin`; `git -C /home/nish/workspaces/tooling/fleet-ops-deploy-clone worktree add /home/nish/workspaces/agent-worktrees/issue-<repo>-<N> origin/main` (or `claim/issue-<N>` for re-entrancy). The worktree path MUST be that absolute `/home/nish/workspaces/agent-worktrees/...` path — a relative path resolves inside the `-C` target, so `worktree add issue-<repo>-<N>` plants a live tree inside the deploy clone and trips DEPLOY-CHECK-DIRTY-CLONE (fleet-ops#5687). Else `products/<repo>` (not `products/fleet-ops` until fleet-ops#410). Never check out a feature branch on the deploy-clone (fleet-ops#477). Clone: `git clone --reference-if-able /home/nish/workspaces/.mirrors/<repo>.git https://github.com/Nishfleet/<repo>.git <dest>`. Never `git clone git@github.com:Nishfleet/fleet-ops.git` (fleet-ops#1185). Never `--dissociate`. Never push to a mirror.
-4. Build-shaped issue with no `Prior art` (fleet-ops#1250), or ambiguous: post a proposal, `agent-blocked`, end with `blocked-on: Nishfleet/<repo>#<n>` or `blocked-on: orchestrator`. The escalation default is `blocked-on: orchestrator` with the `needs-orchestrator` label (fleet-ops#4260 — the label is the drain-visible parked state; `gh issue list -l needs-orchestrator` is the queue the orchestrator reads). `blocked-on: nish-decision` is reserved: use it only when the blocker itself names money/pricing, legal, brand, product direction, customer-data deletion, or an authority Nish explicitly reserved — anything else belongs to `orchestrator` (the blocked-reconcile auto-rewrite was deleted 2026-09-18, so pick right the first time). Answers need `decision-resolved:`. Strike `~~blocked-on: ...~~`. Then remove the worktree (`git worktree remove <path>`); delete the claim branch ON THE ISSUE'S REPO (never bare `git push origin` — cwd may be a different repo's clone): `gh api -X DELETE "repos/Nishfleet/<repo>/git/refs/heads/claim/issue-<N>"`; print "blocked: proposal posted"; exit 0.
+4. Build-shaped issue with no `Prior art` (fleet-ops#1250), or ambiguous: post a proposal, `agent-blocked`, end with `blocked-on: Nishfleet/<repo>#<n>` or `blocked-on: orchestrator`. The escalation default is `blocked-on: orchestrator` with the `needs-orchestrator` label (fleet-ops#4260 — the label is the drain-visible parked state; `gh issue list -l needs-orchestrator` is the queue the orchestrator reads). `blocked-on: nish-decision` is reserved: use it only when the blocker itself names money/pricing, legal, brand, product direction, customer-data deletion, or an authority Nish explicitly reserved — anything else belongs to `orchestrator` (the blocked-reconcile auto-rewrite was deleted 2026-09-18, so pick right the first time). When that `orchestrator`-vs-`nish-decision` choice is live, decide it with the second-opinion block below (fleet-ops#7429): write the blocker card to a scratch JSON file `{"item": <the blocker text>, "context": <the canonical reserved-class list and this step-4 rule>}` and run `python3 - second-opinion-reserved 'Nishfleet/<repo>#<N>' <card-path>`. `disagreement=true`/`null`, or either framing's `needsNish` probability above 0.5, parks `nish-decision`; clean agreement on not-reserved parks `orchestrator`; `unavailable` leaves this prose rule unchanged. Agreement never authorizes a reserved action. Answers need `decision-resolved:`. Strike `~~blocked-on: ...~~`. Then remove the worktree (`git worktree remove <path>`); delete the claim branch ON THE ISSUE'S REPO (never bare `git push origin` — cwd may be a different repo's clone): `gh api -X DELETE "repos/Nishfleet/<repo>/git/refs/heads/claim/issue-<N>"`; print "blocked: proposal posted"; exit 0.
 5. Implement the smallest durable fix. No new scripts, anywhere in any repo (Nish 2026-09-19, three times; 0509#3679): never add a file under `scripts/`, `bin/`, `tools/`, `.github/scripts/`, `ops/` or any `*.sh`/`*.mjs` helper, hook or wrapper. A package.json line, a workflow step or a config file calls the tool directly (`wrangler`, `playwright`, `vitest`, `gh`); data goes in `.sql`/`.json` files; logic that needs tests is app code under `app/` or a test under `tests/`. A PR that adds a script is a wrong answer even if it is green. Then run the Execution IS the review inner loop to green, then repo tests/semgrep.
 6. Commit; `git push origin claim/issue-<N>`.
 7. `gh pr create ... Verification: ... run-proof: ... research: ... help-first: ... Closes #<N>`
@@ -482,5 +482,211 @@ try:
     main()
 except Exception as exc:
     note('jev advisory unavailable (%s); step rules unchanged' % type(exc).__name__)
+PY
+```
+
+## Second-opinion Jev call — reserved-class decisions (fleet-ops#7429, advisory, never a gate)
+
+The issue named `bin/jev-eval --second-opinion` as the site; the helper was deleted in the 2026-09-18 glue sweep when Jev became the `127.0.0.1:4000/jev` pass-through, so the feature rides the surviving call shape — a verbatim block at the one place the worker already makes a reserved-class decision: the step-4 `orchestrator`-vs-`nish-decision` triage. The documented pattern (docs/jev-second-opinion.md) is reusable for any reserved-class card.
+
+The block reads a card file `{"item": ..., "context": ..., "questions": {...}?}` — `item` is the card under judgment, `context` is the rules/classes/roles around it, extra top-level keys are retained in the state. It POSTs the same questions twice with the state serialized item-first then context-first (no information removed; the first answer is never shown to the second call), appends one JSONL row per call plus one `kind=second-opinion-summary` row to `~/.local/state/pi-packet/jev/<site>.jsonl`, and prints one `jev second-opinion:` verdict line carrying `disagreement` and both answers.
+
+`disagreement` is `true` when any boolean pair lands on opposite sides of 0.5, selected choices differ, or numeric scores differ; `null` when a pair is missing/invalid or a boolean sits exactly on 0.5 (unless another pair already proved disagreement); `false` when all pairs are valid and agree. These are comparison rules, not calibrated authority thresholds. At step 4, `true`/`null` or either framing's `needsNish` above 0.5 escalates to `nish-decision` — disagreement escalates. Agreement never authorizes a reserved action; the existing approval rules stand.
+
+Controls:
+- `JEV_SECOND_OPINION=0` (or `off`) rolls the caller back to a single item-first evaluation — the per-site rollback flag.
+- Two `POST 127.0.0.1:4000/jev` calls per run, LiteLLM virtual key `jev-eval` (proxy-owned $1/month cap, ~$0.000015 per call — the proxy's budget engine replaced the deleted helper's spend ledger). The key is read from the seat file inside the child process only and is never printed, logged, or written to a JSONL row. Each call row is logged before the next call is made, so a failed second call leaves the first receipt.
+- Card contents are untrusted DATA: they reach Jev as state only and are never executed as instructions.
+- Any failure (missing key, bad card, `gh`/network error, timeout, malformed response, invalid probability) prints `jev second-opinion: unavailable (<reason>)` and exits 0 — the step-4 prose rule is unchanged.
+
+```bash
+python3 - "<site>" "<ref>" "<card-path>" <<'PY'
+# jev second-opinion site=<arg1> (fleet-ops#7429)
+import datetime, hashlib, json, math, os, pathlib, re, sys, time, urllib.request
+
+SEAT_KEY_FILE = os.path.expanduser('~/.config/fleet-ops/seats/typesafe-jev.env')
+ENDPOINT = os.environ.get('JEV_SECOND_OPINION_ENDPOINT') or 'http://127.0.0.1:4000/jev'
+LOG_DIR = os.environ.get('JEV_SECOND_OPINION_LOG_DIR') or os.path.expanduser('~/.local/state/pi-packet/jev')
+SITE_RE = re.compile(r'^[A-Za-z0-9._-]{1,100}$')
+RESERVED_CLASSES = ('money_pricing', 'privacy', 'security', 'legal', 'brand',
+                    'product_direction', 'customer_data_deletion',
+                    'destructive_irreversible', 'authority_nish_reserved',
+                    'auto_fixable')
+DEFAULT_QUESTIONS = {
+    'needsNish': dict(type='boolean',
+                      instructions=('Does this card name a reserved class — money/pricing, privacy, '
+                                    'security, legal, brand, product direction, customer-data deletion, '
+                                    'destructive/irreversible steps, or authority Nish explicitly '
+                                    'reserved — so that Nish must decide it?')),
+    'reservedClass': dict(type='choice',
+                          instructions='Which single class fits this card best?',
+                          criteria={k: k.replace('_', ' ') for k in RESERVED_CLASSES}),
+}
+
+def note(msg):
+    print(msg)
+
+def read_seat_key():
+    # The LiteLLM virtual key only; never the raw gateway variable.
+    k = os.environ.get('LITELLM_JEV_KEY')
+    if k:
+        return k
+    try:
+        txt = pathlib.Path(SEAT_KEY_FILE).read_text()
+    except Exception:
+        return None
+    m = re.search(r'^\s*LITELLM_JEV_KEY="?([^"\s]+)"?\s*$', txt, re.M)
+    return m.group(1) if m else None
+
+def sha256_state(s):
+    return hashlib.sha256(json.dumps(s, sort_keys=True, default=str).encode()).hexdigest()
+
+def valid_p(p):
+    return (not isinstance(p, bool)) and isinstance(p, (int, float)) and math.isfinite(p) and 0 <= p <= 1
+
+def post_jev(state_str, questions, key):
+    payload = dict(model='typesafe-ai/jev', state=state_str, questions=questions)
+    req = urllib.request.Request(ENDPOINT, data=json.dumps(payload).encode(), method='POST')
+    req.add_header('Authorization', 'Bearer ' + key)
+    req.add_header('Content-Type', 'application/json')
+    start = time.monotonic()
+    with urllib.request.urlopen(req, timeout=20) as resp:
+        res = json.loads(resp.read())
+    return res, int((time.monotonic() - start) * 1000)
+
+def disagree(questions, a, b):
+    # a/b: answers dicts. True on a proven difference, False on clean
+    # agreement, None when a pair is unknown and none proved disagreement.
+    unknown = False
+    for qid, q in (questions or {}).items():
+        va = (a or {}).get(qid) or {}
+        vb = (b or {}).get(qid) or {}
+        left = right = None
+        have = False
+        qtype = (q or {}).get('type')
+        if qtype == 'boolean':
+            pa, pb = va.get('probability'), vb.get('probability')
+            if valid_p(pa) and valid_p(pb) and pa != 0.5 and pb != 0.5:
+                left, right, have = pa > 0.5, pb > 0.5, True
+        elif qtype == 'choice':
+            crit = (q or {}).get('criteria') or {}
+            if va.get('choice') in crit and vb.get('choice') in crit:
+                left, right, have = va['choice'], vb['choice'], True
+        elif qtype == 'score':
+            sa, sb = va.get('score'), vb.get('score')
+            nums = (isinstance(x, (int, float)) and not isinstance(x, bool) and math.isfinite(x)
+                    for x in (sa, sb))
+            if all(nums):
+                left, right, have = sa, sb, True
+        if not have:
+            unknown = True
+        elif left != right:
+            return True
+    return None if unknown else False
+
+def short(q, ans):
+    qtype = (q or {}).get('type')
+    if qtype == 'boolean':
+        p = (ans or {}).get('probability')
+        return 'p=%.3f' % p if valid_p(p) else 'p=?'
+    if qtype == 'choice':
+        return str((ans or {}).get('choice') or '?')
+    if qtype == 'score':
+        return str((ans or {}).get('score'))
+    return '?'
+
+def main():
+    site = sys.argv[1] if len(sys.argv) > 1 else '-'
+    ref = sys.argv[2] if len(sys.argv) > 2 else '-'
+    card_path = sys.argv[3] if len(sys.argv) > 3 else '-'
+    if not SITE_RE.match(site):
+        note('jev second-opinion: unavailable (bad site)')
+        return
+    try:
+        card = json.loads(pathlib.Path(card_path).read_text())
+    except Exception:
+        note('jev second-opinion: unavailable (bad card)')
+        return
+    if not isinstance(card, dict) or 'item' not in card or 'context' not in card:
+        note('jev second-opinion: unavailable (card needs item and context)')
+        return
+    questions = card.get('questions')
+    if not isinstance(questions, dict) or not questions:
+        questions = DEFAULT_QUESTIONS
+    item, context = card['item'], card['context']
+    rest = {k: v for k, v in card.items() if k not in ('item', 'context', 'questions')}
+
+    single = os.environ.get('JEV_SECOND_OPINION', '') in ('0', 'off')
+    framings = [('item-first', json.dumps(dict(item=item, context=context, **rest)))]
+    if not single:
+        framings.append(('context-first', json.dumps(dict(context=context, item=item, **rest))))
+
+    key = read_seat_key()
+    if not key:
+        note('jev second-opinion: unavailable (no seat key)')
+        return
+
+    path = pathlib.Path(LOG_DIR) / ('%s.jsonl' % site)
+    results = []
+    for framing, state_str in framings:
+        try:
+            res, ms = post_jev(state_str, questions, key)
+        except Exception as exc:
+            note('jev second-opinion: unavailable (%s)' % type(exc).__name__)
+            return
+        answers = res.get('answers')
+        if not isinstance(answers, dict):
+            note('jev second-opinion: unavailable (no answers)')
+            return
+        probs = {qid: ((answers.get(qid) or {}).get('probability')
+                       if (questions.get(qid) or {}).get('type') == 'boolean'
+                       else (answers.get(qid) or {}).get('choice', (answers.get(qid) or {}).get('score')))
+                 for qid in questions}
+        row = dict(ts=datetime.datetime.now(datetime.timezone.utc).isoformat(),
+                   site=site, ref=str(ref)[:200], framing=framing,
+                   state_sha256=hashlib.sha256(state_str.encode()).hexdigest(),
+                   answers=answers, probabilities=probs, usage=res.get('usage'),
+                   ms=ms, advisory_only=True, rule_tier='worker')
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            with os.fdopen(os.open(path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600), 'a') as f:
+                f.write(json.dumps(row) + '\n')
+        except Exception as exc:
+            note('jev second-opinion: unavailable (%s)' % type(exc).__name__)
+            return
+        results.append((framing, answers, ms, row['state_sha256']))
+
+    a = results[0]
+    if single:
+        line = 'jev second-opinion: off (JEV_SECOND_OPINION=0); %s; site=%s; ref=%s' % (
+            ' '.join('%s=%s' % (qid, short(questions.get(qid), a[1].get(qid))) for qid in questions),
+            site, ref)
+        note(line)
+        return
+    b = results[1]
+    flag = disagree(questions, a[1], b[1])
+    summary = dict(ts=datetime.datetime.now(datetime.timezone.utc).isoformat(),
+                   kind='second-opinion-summary', site=site, ref=str(ref)[:200],
+                   state_sha256=sha256_state({'item': item, 'context': context, 'rest': rest}),
+                   second_opinion=dict(
+                       a=dict(framing=a[0], answers=a[1], ms=a[2], state_sha256=a[3]),
+                       b=dict(framing=b[0], answers=b[1], ms=b[2], state_sha256=b[3]),
+                       disagreement=flag),
+                   advisory_only=True, rule_tier='worker')
+    try:
+        with os.fdopen(os.open(path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600), 'a') as f:
+            f.write(json.dumps(summary) + '\n')
+    except Exception as exc:
+        note('jev second-opinion: unavailable (%s)' % type(exc).__name__)
+        return
+    pairs = ' '.join('%s=%s/%s' % (qid, short(questions.get(qid), a[1].get(qid)),
+                                  short(questions.get(qid), b[1].get(qid))) for qid in questions)
+    note('jev second-opinion: disagreement=%s; %s; site=%s; ref=%s'
+         % ('null' if flag is None else str(flag).lower(), pairs, site, ref))
+
+try:
+    main()
+except Exception as exc:
+    note('jev second-opinion: unavailable (%s)' % type(exc).__name__)
 PY
 ```
