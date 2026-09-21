@@ -9,8 +9,11 @@ Description=Pi fleet issue intake schedule for Nishfleet/%i
 # bound to loopback with no ingress. Its only traffic was a canary built to
 # keep its own heartbeat green. Deleted 2026-09-18 (fourth cut); the timer
 # is the primary trigger again and gets its 15 minutes back.
-OnCalendar=*:00/15
-RandomizedDelaySec=120
+# 2026-09-22 (Nish: "ramp tf up"): every 5 min, was 15. Worker runs finish in
+# 3-15 min, so at 15 min the lanes drained between ticks and the cap (10) was
+# never reached. The 4 GB MemAvailable floor inside the tick is the governor.
+OnCalendar=*:00/5
+RandomizedDelaySec=30
 Persistent=true
 
 [Install]
