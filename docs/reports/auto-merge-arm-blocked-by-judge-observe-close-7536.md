@@ -49,7 +49,7 @@ updated. Every PR created already carrying `blocked-by-judge` between
 2026-09-08 and the workflow's deletion was armed on `opened`; #7535 and #7724
 are the two observed instances.
 
-## What enforces the rule now
+## What enforces the rule now (on this repo and host)
 
 1. **The identified path is deleted.** `ca67f570` ("cut(ci): drop detector
    scripts, their workflows, and the P14 suite (#7861)", merged 2026-09-19
@@ -68,9 +68,13 @@ are the two observed instances.
 3. **The surviving arm site already carries the rule.** Worker packet step 9
    (`prompts/worker.md`, mirrored in `AGENTS.md`) is now the only place a fleet
    actor arms a PR, and it refuses while `blocked-by-judge` is present. This PR
-   corrects its one stale clause, which still claimed the deleted tier1 pass
-   disarms labeled PRs hourly — it now says the disarm is the worker's own
-   same-step duty.
+   corrects three stale clauses in that step, each pointing at machinery the
+   sweeps deleted: the tier1 hourly disarm pass (now an explicit same-step
+   `--disable-auto` duty), the "reusable arm workflow refuses the same case"
+   aside (the workflow is gone; the gate-integrity refusal stands on its own),
+   and the exec-review-canary disarm claim under the #3731 verify receipt
+   (the receipt requirement stands; the auto-disarm organ is gone, so the
+   clause now tells the worker to disarm a receipt-less armed PR by hand).
 4. **The live violation is cleared.** PR #7724 (the #7535 reopen for #7501,
    still carrying `blocked-by-judge`) had been armed by the same workflow at
    2026-09-18T10:51:58Z — 81s after the label — and was still armed when this
@@ -107,16 +111,9 @@ rule).
 - *"Do not merge #7535 until its acceptance mismatch is resolved"*: #7535 was
   already closed 2026-09-18 (head deleted); its successor #7724 stays
   un-merged, un-armed and labeled, pending the authorized reviewer.
-- *"No new timer or guard requested"*: none added — one report, one prose
-  correction, one live disarm, one filed follow-up.
-
-## Related stale prose (noted, not edited here)
-
-Step 9's verify-receipt clause still says an armed receipt-less PR "gets
-`gh pr merge --disable-auto` from the exec-review canary" — that organ was
-also deleted in the sweeps; the receipt requirement stands as a body-contract
-rule but nothing mechanical enforces it. Same class of stale claim as the
-tier1 clause corrected here; flagged for the next worker.md pass.
+- *"No new timer or guard requested"*: none added — one report, one step-9
+  prose correction (three stale-machinery clauses), one live disarm, one
+  filed follow-up.
 
 mechanism: the sweep deleted the offending arming path itself — observe-close
 record per the fleet's deleted-organ convention (fleet-ops#7399 → #8108,
