@@ -1,6 +1,5 @@
 [Unit]
 Description=Pi fleet product scout for Nishfleet/%i (generates work supply)
-OnFailure=pi-scout-repair@%i.service
 
 [Service]
 # Second cut 2026-09-18: the scout IS this unit. bin/pi-scout-run's packet
