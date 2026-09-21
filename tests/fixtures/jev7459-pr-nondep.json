@@ -1,0 +1,24 @@
+{
+  "title": "feat(worker): advisory Jev claim-vs-evidence shadow on the PR-body and close-record paths",
+  "body": "Adds the claim-check tier to the worker packet.",
+  "labels": [],
+  "author": {"login": "nishfleet-worker[bot]", "is_bot": true},
+  "additions": 480,
+  "deletions": 0,
+  "changedFiles": 4,
+  "files": [
+    {"path": "prompts/worker.md"},
+    {"path": "tests/jev-claim-check-shadow.test.py"},
+    {"path": "tests/fixtures/jev7404-pr.json"},
+    {"path": "tests/fixtures/jev7404-branch.json"}
+  ],
+  "headRefOid": "fedcba9876543210fedcba9876543210fedcba98",
+  "isDraft": false,
+  "baseRefName": "main",
+  "mergeStateStatus": "CLEAN",
+  "autoMergeRequest": null,
+  "statusCheckRollup": [
+    {"name": "ci", "status": "COMPLETED", "conclusion": "SUCCESS"}
+  ],
+  "reviews": []
+}

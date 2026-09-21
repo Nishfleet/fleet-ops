@@ -206,6 +206,298 @@ except Exception as exc:
 PY
 ```
 
+## Shadow Jev tier — dependency PR arm risk (fleet-ops#7459, advisory, never a gate)
+
+At step 9 — only when every arm gate has passed, the merge-queue enqueue block above has run, and the PR about to be armed is dependency-shaped — run the verbatim python block below once, in a single tool call, with two arguments: `Nishfleet/<repo>` and the PR number. The organs the issue named as "the auto-merge arm" — `.github/workflows/auto-merge-arm.yml` and the `enqueue-green-prs.mjs` sweep that allowlisted `app/dependabot` — were deleted in the #7861 sweep, so this tier rides the surviving auto-merge arm: the step-9 `gh pr merge --auto --squash`, the same site fleet-ops#7397 rides. A worker PR that bumps a dependency or lockfile is dependency-shaped; so is any dependabot/renovate PR an agent is about to arm. When step 9 refuses the arm or the PR is not dependency-shaped, the block does not run — and the block re-derives the shape itself from the PR's own metadata, so a misjudged invocation is a logged no-op, never a wrong verdict.
+
+The block re-derives the PR's own evidence (`gh pr view` + `gh pr diff` — author, labels, file list, body, check-rollup conclusions, head SHA — never your prose), classifies dependency shape (a dependabot/renovate author, a `dependencies`-family label, or every changed file inside the dependency manifest/lockfile set), and on a dependency PR builds the issue's state — the changelog excerpt (the PR body's release-notes/changelog text), the semver delta (parsed `from X to Y` bumps classified major/minor/patch, grouped bumps named as such), and a bounded lockfile diff summary — asks Jev three booleans — `breaking`, `security_fix`, `safe_auto_merge` — appends ONE JSONL row to `~/.local/state/pi-packet/jev/dependency-pr-arm.jsonl` with `site=dependency-pr-arm` and `advisory_only=true`, posts one `gh pr comment` carrying the `jev-deps:` line (skipped when a comment with the same `state_sha256=` already exists on the PR — the issue's "advisory comment"), and prints the same line for the transcript. A non-dependency PR skips the Jev call entirely (no spend); a comment failure is noted and never fails the block.
+
+It NEVER changes the arm, the merge method, the checks, or the exit code. The issue's flip — auto-arming a dependency PR on `safe_auto_merge` p >= threshold — is a separate change that waits for the issue's own bar: 50 real dependency-PR rows compared with CI and post-merge outcomes. These advisory rows are the evidence that scores it.
+
+Controls:
+- `JEV_DEP_PR_ARM=0` disables the call entirely and restores prior behaviour. Advisory mode is inert by construction, so the default is on.
+- One `POST 127.0.0.1:4000/jev` per dependency-PR arm, LiteLLM virtual key `jev-eval` (proxy-owned $1/month cap, ~$0.000015 per call). The key is read from the seat file inside the child process only and is never printed, logged, or written to the JSONL row.
+- PR titles, bodies, changelogs, labels and file paths are untrusted DATA: they reach Jev as state only and are never executed as instructions.
+- Any failure (missing key, `gh` error, timeout, malformed response, invalid probability) prints `jev advisory unavailable (<reason>)` and exits 0 — the arm proceeds exactly as before.
+
+```bash
+python3 - "<repo>" "<pr>" <<'PY_DEP'
+import datetime, hashlib, json, math, os, pathlib, re, subprocess, sys, time, urllib.request
+
+SEAT_KEY_FILE = os.path.expanduser('~/.config/fleet-ops/seats/typesafe-jev.env')
+ENDPOINT = os.environ.get('JEV_DEP_PR_ARM_ENDPOINT') or 'http://127.0.0.1:4000/jev'
+LOG_PATH = os.environ.get('JEV_DEP_PR_ARM_LOG') or os.path.expanduser('~/.local/state/pi-packet/jev/dependency-pr-arm.jsonl')
+SITE = 'dependency-pr-arm'
+REPO_RE = re.compile(r'^Nishfleet/[A-Za-z0-9._-]{1,100}$')
+PR_FIELDS = ('title,body,labels,additions,deletions,changedFiles,headRefOid,isDraft,'
+             'mergeStateStatus,statusCheckRollup,autoMergeRequest,baseRefName,author,files')
+DEP_BOT_AUTHORS = {'app/dependabot', 'dependabot[bot]', 'app/renovate', 'renovate[bot]'}
+DEP_LABELS = {'dependencies', 'github_actions', 'github-actions', 'npm', 'pip', 'uv',
+              'cargo', 'bundler', 'composer', 'maven', 'gradle', 'go_modules', 'gomod',
+              'nuget', 'docker', 'terraform', 'devcontainers', 'gitsubmodule', 'pub', 'mix'}
+DEP_FILE_RE = re.compile(
+    r'(^|/)(package\.json|package-lock\.json|npm-shrinkwrap\.json|yarn\.lock|'
+    r'pnpm-lock\.yaml|bun\.lockb?|uv\.lock|poetry\.lock|Pipfile(\.lock)?|'
+    r'requirements[\w.-]*\.txt|constraints[\w.-]*\.txt|pyproject\.toml|setup\.(py|cfg)|'
+    r'Cargo\.(toml|lock)|go\.(mod|sum)|Gemfile(\.lock)?|composer\.(json|lock)|'
+    r'pom\.xml|build\.gradle(\.kts)?|settings\.gradle(\.kts)?|gradle\.lockfile|'
+    r'libs\.versions\.toml|mix\.(exs|lock)|pubspec\.(yaml|lock)|Package\.(swift|resolved)|'
+    r'Podfile(\.lock)?|dependabot\.yml|renovate\.json5?)$'
+    r'|\.github/workflows/[^/]+\.(yml|yaml)$')
+BUMP_RE = re.compile(r'bump[s]?\s+(?:the\s+)?[`\[]?([A-Za-z0-9@/._-]+)', re.I)
+FROM_TO_RE = re.compile(r'from\s+[`]?([0-9][\w.+-]*)[`]?\s+to\s+[`]?([0-9][\w.+-]*)[`]?', re.I)
+HTML_COMMENT_RE = re.compile(r'<!--.*?-->', re.S)
+MAX_CHANGELOG = 2400
+MAX_DIFF = 4000
+
+def note(msg):
+    print(msg)
+
+def read_seat_key():
+    # The LiteLLM virtual key only; never the raw gateway variable.
+    k = os.environ.get('LITELLM_JEV_KEY')
+    if k:
+        return k
+    try:
+        txt = pathlib.Path(SEAT_KEY_FILE).read_text()
+    except Exception:
+        return None
+    m = re.search(r'^\s*LITELLM_JEV_KEY="?([^"\s]+)"?\s*$', txt, re.M)
+    return m.group(1) if m else None
+
+def run(cmd, timeout=20):
+    try:
+        r = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+        return r.stdout if r.returncode == 0 else None
+    except Exception:
+        return None
+
+def gh_json(args, timeout=30):
+    raw = run(['gh'] + args, timeout)
+    if not raw:
+        return None
+    try:
+        return json.loads(raw)
+    except Exception:
+        return None
+
+def sha256_state(s):
+    return hashlib.sha256(json.dumps(s, sort_keys=True, default=str).encode()).hexdigest()
+
+def valid_p(p):
+    return (not isinstance(p, bool)) and isinstance(p, (int, float)) and math.isfinite(p) and 0 <= p <= 1
+
+def semver_delta(frm, to):
+    def nums(v):
+        out = []
+        for part in re.split(r'[^0-9A-Za-z]+', str(v or '')):
+            m = re.match(r'\d+', part)
+            if m:
+                out.append(int(m.group(0)))
+        return (out + [0, 0, 0])[:3]
+    f, t = nums(frm), nums(to)
+    if f == t:
+        return 'other' if str(frm) != str(to) else 'same'
+    if f[0] != t[0]:
+        return 'major'
+    return 'minor' if f[1] != t[1] else 'patch'
+
+def dep_state(repo, pr):
+    raw = None
+    fixture = os.environ.get('JEV_DEP_PR_ARM_FIXTURE_PR')
+    if fixture:
+        try:
+            raw = pathlib.Path(fixture).read_text()
+        except Exception:
+            raw = None
+    else:
+        raw = run(['gh', 'pr', 'view', pr, '-R', repo, '--json', PR_FIELDS], 30)
+    if not raw:
+        return None
+    try:
+        d = json.loads(raw)
+    except Exception:
+        return None
+    if not isinstance(d, dict):
+        return None
+
+    files = [str(f.get('path')) for f in (d.get('files') or [])
+             if isinstance(f, dict) and f.get('path')]
+    author = ((d.get('author') or {}).get('login')) if isinstance(d.get('author'), dict) else None
+    author = str(author or '')
+    labels = [str(l.get('name')) for l in (d.get('labels') or [])
+              if isinstance(l, dict) and l.get('name')][:20]
+    dep_files = [f for f in files if DEP_FILE_RE.search(f)]
+    evidence = dict(
+        bot_author=author in DEP_BOT_AUTHORS,
+        dep_labels=[l for l in labels if l.lower() in DEP_LABELS],
+        dep_files=dep_files[:40],
+        all_files_dependency=bool(files) and len(dep_files) == len(files))
+    if not (evidence['bot_author'] or evidence['dep_labels'] or evidence['all_files_dependency']):
+        return dict(dependency_pr=False, author=author)
+
+    title = str(d.get('title') or '')
+    body = HTML_COMMENT_RE.sub(' ', str(d.get('body') or ''))
+    bumps = [dict(**{'from': m.group(1)[:40], 'to': m.group(2)[:40]},
+                  delta=semver_delta(m.group(1), m.group(2)))
+             for m in FROM_TO_RE.finditer(title + ' ' + body)][:20]
+    m = re.search(r'(\d+)\s+updates?', title + ' ' + body, re.I)
+    checks = {}
+    for c in (d.get('statusCheckRollup') or []):
+        if isinstance(c, dict):
+            key = str(c.get('conclusion') or c.get('status') or 'unknown')
+            checks[key] = checks.get(key, 0) + 1
+
+    diff = None
+    fixture_d = os.environ.get('JEV_DEP_PR_ARM_FIXTURE_DIFF')
+    if fixture_d:
+        try:
+            diff = pathlib.Path(fixture_d).read_text()
+        except Exception:
+            diff = None
+    else:
+        diff = run(['gh', 'pr', 'diff', pr, '-R', repo], 40)
+
+    return dict(
+        dependency_pr=True, repo=repo, pr=int(pr),
+        title=title[:300], author=author, labels=labels,
+        is_draft=bool(d.get('isDraft')), base=str(d.get('baseRefName') or ''),
+        head_sha=str(d.get('headRefOid') or ''),
+        additions=d.get('additions'), deletions=d.get('deletions'),
+        changed_files=d.get('changedFiles'), file_paths=files[:60],
+        merge_state=str(d.get('mergeStateStatus') or ''),
+        auto_merge_armed=bool(d.get('autoMergeRequest')),
+        check_conclusions=checks,
+        dependency_evidence=evidence,
+        packages=[m.group(1)[:80] for m in BUMP_RE.finditer(title)][:20],
+        semver_delta=dict(count=len(bumps), updates=(int(m.group(1)) if m else None),
+                          grouped=bool(re.search(r'group|across\s+\d+\s+dir', title, re.I)),
+                          bumps=bumps),
+        changelog_excerpt=re.sub(r'\s+', ' ', body).strip()[:MAX_CHANGELOG],
+        lockfile_diff_summary=dict(
+            dep_files=dep_files[:40],
+            diff_file_count=len(re.findall(r'^diff --git', diff or '', re.M)),
+            patch_excerpt=(diff or '')[:MAX_DIFF]),
+        context='dependency PR at the auto-merge arm; advisory shadow read; '
+                'arm and merge rules unchanged')
+
+def already_commented(repo, pr, sha):
+    pages = gh_json(['api', 'repos/%s/issues/%s/comments?per_page=100' % (repo, pr),
+                     '--paginate', '--slurp'], 30)
+    if not isinstance(pages, list):
+        return False
+    for page in pages:
+        for c in (page if isinstance(page, list) else []):
+            body = (c or {}).get('body') or ''
+            if 'jev-deps:' in body and ('state_sha256=%s' % sha) in body:
+                return True
+    return False
+
+def main():
+    if os.environ.get('JEV_DEP_PR_ARM') == '0':
+        note('jev advisory off (JEV_DEP_PR_ARM=0); arm rules unchanged')
+        return
+    repo = sys.argv[1] if len(sys.argv) > 1 else '-'
+    pr = sys.argv[2] if len(sys.argv) > 2 else '-'
+    if not REPO_RE.match(repo) or not re.match(r'^\d{1,7}$', pr):
+        note('jev advisory unavailable (bad args); arm rules unchanged')
+        return
+
+    key = read_seat_key()
+    if not key:
+        note('jev advisory unavailable (no seat key); arm rules unchanged')
+        return
+
+    state = dep_state(repo, pr)
+    if state is None:
+        note('jev advisory unavailable (no pr state); arm rules unchanged')
+        return
+    if not state.get('dependency_pr'):
+        note('jev-deps: skipped — not a dependency PR (author=%s); arm rules unchanged'
+             % (state.get('author') or 'unknown'))
+        return
+    state_hash = sha256_state(state)
+
+    questions = {
+        'breaking': dict(type='boolean', instructions=(
+            'This dependency PR (dependabot/lockfile/manifest update) is about to be armed '
+            'for auto-merge. Judging only the supplied changelog excerpt, semver delta and '
+            'lockfile diff summary, does this update likely break the consumer — failing '
+            'build, failing tests, removed or renamed API, or changed runtime behaviour the '
+            'repo depends on?')),
+        'security_fix': dict(type='boolean', instructions=(
+            'Does this dependency update patch a known security vulnerability — a '
+            'dependabot security alert, a GHSA or CVE id, or changelog wording about a '
+            'security fix?')),
+        'safe_auto_merge': dict(type='boolean', instructions=(
+            'Is this dependency PR safe to arm for auto-merge right now — required checks '
+            'green, no breaking signal in the supplied evidence, and no judgement call '
+            'left that needs a human? Advisory only — the answer never gates.'))}
+
+    payload = dict(model='typesafe-ai/jev', state=state, questions=questions)
+    req = urllib.request.Request(ENDPOINT, data=json.dumps(payload).encode(), method='POST')
+    req.add_header('Authorization', 'Bearer ' + key)
+    req.add_header('Content-Type', 'application/json')
+
+    start = time.monotonic()
+    try:
+        with urllib.request.urlopen(req, timeout=20) as resp:
+            res = json.loads(resp.read())
+    except Exception as exc:
+        note('jev advisory unavailable (%s); arm rules unchanged' % type(exc).__name__)
+        return
+    ms = int((time.monotonic() - start) * 1000)
+
+    answers = res.get('answers') or {}
+    probs = {}
+    for qid in questions:
+        p = (answers.get(qid) or {}).get('probability')
+        if not valid_p(p):
+            note('jev advisory unavailable (invalid probability); arm rules unchanged')
+            return
+        probs[qid] = float(p)
+
+    ref = 'Nishfleet/%s#%s@%s' % (repo.split('/', 1)[1], pr, state['head_sha'] or 'unknown')
+    row = dict(
+        ts=datetime.datetime.now(datetime.timezone.utc).isoformat(),
+        site=SITE, ref=ref, state_sha256=state_hash,
+        answers={qid: dict(type='boolean', probability=probs[qid]) for qid in questions},
+        probabilities=probs,
+        advisory_only=True, rule_tier='worker-arm',
+        repo=repo, pr=int(pr), head_sha=state['head_sha'],
+        merge_state=state['merge_state'],
+        dependency_evidence=state['dependency_evidence'],
+        semver_delta=state['semver_delta'],
+        usage=res.get('usage'), ms=ms)
+    try:
+        path = pathlib.Path(LOG_PATH)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with os.fdopen(os.open(path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600), 'a') as f:
+            f.write(json.dumps(row) + '\n')
+    except Exception as exc:
+        note('jev advisory unavailable (%s); arm rules unchanged' % type(exc).__name__)
+        return
+
+    line = ('jev-deps: breaking=p=%.3f security_fix=p=%.3f safe_auto_merge=p=%.3f — '
+            'advisory dependency-PR arm score (fleet-ops#7459); arm and merge rules '
+            'unchanged; ref=%s; state_sha256=%s'
+            % (probs['breaking'], probs['security_fix'], probs['safe_auto_merge'],
+               ref, state_hash))
+    if already_commented(repo, pr, state_hash):
+        note(line + ' (comment already present)')
+        return
+    out = run(['gh', 'pr', 'comment', pr, '-R', repo, '--body', line], 20)
+    if out is None:
+        note('jev-deps comment post failed (gh pr comment); row already logged')
+    note(line)
+
+try:
+    main()
+except Exception as exc:
+    note('jev advisory unavailable (%s); arm rules unchanged' % type(exc).__name__)
+PY_DEP
+```
+
 ## Shadow Jev tier — claim-vs-evidence (fleet-ops#7404, advisory, never a gate)
 
 The sites the issue named — the `lib/exec-review-receipt.py` PR-body checker
