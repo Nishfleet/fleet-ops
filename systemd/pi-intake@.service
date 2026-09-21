@@ -1,6 +1,5 @@
 [Unit]
 Description=Pi fleet issue intake tick for Nishfleet/%i
-OnFailure=pi-intake-repair@%i.service
 StartLimitIntervalSec=1h
 # Worker-exit top-ups (pi-issue@.service ExecStopPost) start this unit up to
 # once per finishing worker; 90/h keeps a busy hour from silencing the timer.
