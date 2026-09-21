@@ -251,7 +251,11 @@ header and `config/litellm-proxy.yaml` are the current roster of record.
 
 The preserved user journal identifies a startup failure, not a slow boot.
 All times below are UTC. Read with `journalctl --user --utc -o short-iso`
-and the named unit and time range.
+and the named unit and time range. This block is a historical record as of
+the 2026-09-17 review of #7564: the user journal it was read from has since
+rotated — the retained journal on this host begins 2026-09-19 — so the cited
+stops, failure counts and green ticks cannot be re-read today and carry no
+live verification weight (fleet-ops#7571 receipt).
 
 - `fleet-litellm-proxy.service`, September 14 18:31:42: the service stopped.
   From 18:31:43 to 19:15:13, 20 starts failed at wrapper line 16 because
@@ -284,6 +288,13 @@ and command responsible for deleting the old directory remain unproven.
 The separate routing and audit-policy follow-ups in #7100 are not closed
 by this mapping. Failed attempts retained from #7028, #7030, #7061, #7088,
 #7056 and #7082 are not counted as successful repairs.
+
+Later states on this host (recorded 2026-09-22, after the block above was
+written): the `~/.local/bin/fleet-litellm-proxy-start` wrapper this block
+reconstructs was deleted in the 2026-09-19 glue sweep — §3a above is the
+reinstatement path — and the `fleet-litellm-health-canary.service` named
+here was deleted on 2026-09-18. The operating history is read-only
+record; §3a is the only runbook step (fleet-ops#7571 receipt).
 
 The inherited commits `9b8ef205b177fedebf7bbc83f81c3d02cc57642b` and
 `0b8ef1d031dd434e65e301a22c5267395f54d161` are rejected, not carried forward.
