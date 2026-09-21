@@ -662,7 +662,52 @@ $ PI_CODING_AGENT_DIR=$SCRATCH/pi-stock \
   | pi --print --session-dir $SCRATCH/pistocksess --provider litellm --model worker-cheap
 ```
 
-<!-- PROOF-RUN -->
+**Result — partial, and the gap is named rather than papered over.**
+
+The stock directory loads and the run answers correctly:
+
+```
+=== STDERR (first lines) ===
+EXTLOAD-OK extension=permission-gate guard=tool_call rules=6 worker_toolchain_ban=armed
+EXTLOAD-OK extension=protected-paths tools=write,edit
+
+=== STDOUT ===
+- alert-repair.md
+- daily-digest.md
+- intake.md
+- intake-repair.md
+- scout.md
+- scout-repair.md
+- worker.md
+```
+
+Session: `…/pistocksess/2026-09-21T16-28-37-840Z_01a0c4cc-4a4f-7755-a1f8-c812101df261.jsonl`.
+Note the stderr: with the stock directory in place `EXTLOAD-OK extension=subagent`
+is **absent** while the two guards still print — the scratch dir is genuinely
+loading stock, and stock is silent by design. The seven filenames are correct.
+
+**What this run does not prove.** The model answered by reading
+`~/.pi/agent/agents/scout.md` itself:
+
+```
+toolCall -> bash  {"command": "ls .../pi-stock/agents/ ; ls ~/.pi/agents ; ls .pi/agents"}
+toolCall -> read  {"path": ".../pi-stock/agents/scout.md"}
+```
+
+It never called the `subagent` tool. That is a `worker-cheap` behaviour, not
+evidence about the extension — but it is not the proof that was asked for, so
+**the delegation half stays open** and is written into the B1 packet as a
+required, non-optional gate: one run whose session JSONL contains a `toolCall`
+with `name: "subagent"`.
+
+Three forced-delegation retries and a deterministic
+`--tools subagent` registration probe were attempted and all returned
+`429: No deployments available for selected model` / `litellm.RateLimitError …
+Received Model Group=worker-cheap … Available Model Group Fallbacks=['worker-capable']`.
+Every rung in the router is the one Pareto upstream, and both worker rungs were
+walled for most of this pass. **Candidate A is therefore chosen on the evidence
+above plus the structural argument, and confirmed on the delegation gate before
+the fork is deleted, not after.**
 
 Note what the stderr shows even before the model answers: with the stock
 directory in place, `EXTLOAD-OK extension=subagent` is **absent** while
