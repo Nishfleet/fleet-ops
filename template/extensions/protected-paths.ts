@@ -24,6 +24,7 @@ export default function (pi: ExtensionAPI) {
 		"/.config/fleet-ops/seats",
 		"/etc/restic",
 		"/.pi/agent/auth.json",
+		"/fleet-ops-deploy-clone/",
 		".pem",
 	];
 
