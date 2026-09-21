@@ -118,6 +118,26 @@ groups:
           summary: "LiteLLM seat proxy is down or unscrapeable"
           description: "up{job=\"litellm\"} is 0 or absent. Every pi worker routes through this proxy, so the whole fleet is stalled. Repair: systemctl --user status fleet-litellm-proxy, then journalctl --user -u fleet-litellm-proxy -n 100."
 
+      # A deployment that stays unhealthy is the dead-credit/auth-wall bench
+      # class — fleet-ops#5792's drill ("re-adding a dead deployment fails
+      # loudly"), re-homed after the 2026-09-18 sweep retired the
+      # fleet-litellm-health-canary unit. litellm_deployment_state is the
+      # proxy's OWN metric (0 healthy, 1 partial, 2 complete). Raw health rows
+      # carry litellm_model_name = the provider/model string (always contains
+      # "/"); the group-alias rows (worker-cheap, senior, ...) flap with every
+      # request-path cooldown and are excluded by the regex. 10m `for` keeps
+      # a single 60s cooldown flap silent while a walled seat — which fails
+      # every background health check — fires.
+      - alert: FleetLitellmDeploymentUnhealthy
+        expr: max(litellm_deployment_state{model_id!="", litellm_model_name=~".*/.*"}) > 0
+        for: 10m
+        labels:
+          severity: critical
+          service: seat-proxy
+        annotations:
+          summary: "a routed litellm deployment has been unhealthy for 10m+"
+          description: "litellm_deployment_state > 0 sustained on a raw deployment row — the dead-credit/auth wall class (fleet-ops#5792). Repair: GET /health with the master key to name the rung (unhealthy_endpoints), probe it directly, bench it in config/litellm-proxy.yaml's benched: block with a dated reason, install, restart fleet-litellm-proxy. Restore only with a green probe cited in the PR."
+
   - name: fleet_backups
     rules:
       # Backups. Both series are written by /usr/local/sbin/restic-r2-restore-test
