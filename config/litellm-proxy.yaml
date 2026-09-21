@@ -153,7 +153,12 @@ model_list:
 # NOT in worker-private: OpenRouter Stealth terms = prompts retained by the provider (not trained on);
 # privacy placement is Nish's call. OpenCode Zen union-alpha: HTTP 500 x4 (both keys) -> benched below.
 # Cloudflare AI Gateway 402 insufficient balance (money) and AI/ML API (paid) deliberately NOT wired;
-# Kilo (stealth/union-alpha listed) has no account yet. Free-period cliff: if it turns paid, OpenRouter
+# Kilo listed stealth/union-alpha at fleet-ops#7369 filing (379-model catalog) but DELISTED it before
+# the seat work ran: GET api.kilo.ai/api/openrouter/models 2026-09-22 -> 380 models, zero 'union' ids
+# (stealth survivors: qwen3.6-plus, claude-opus-4.8/4.7/4.6, sonnet-4.6); the OpenRouter catalog has no
+# union/stealth ids the same day. The preview is over on all three gateways -> no account, no kilo.env,
+# no rungs; a catalog-absent id can never probe green (same terminal class as #7367). Free-period
+# cliff: if it turns paid, OpenRouter
 # self-walls (balance $0 -> 402 -> cooldown -> fallback) and Cline 4xx likewise; no metered spend path.
 benched:
 - benched_at: 2026-09-22
