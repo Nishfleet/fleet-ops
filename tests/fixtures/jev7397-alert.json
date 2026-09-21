@@ -1,0 +1,15 @@
+[
+  {
+    "labels": {
+      "alertname": "FleetMainRed",
+      "severity": "critical",
+      "service": "fleet",
+      "repo": "fleet-ops"
+    },
+    "annotations": {
+      "summary": "main branch CI red on fleet-ops for 30+ minutes",
+      "description": "Trunk is broken; merges/deploys unsafe."
+    },
+    "status": {"state": "active"}
+  }
+]
