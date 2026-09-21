@@ -16,48 +16,29 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
+  # ci: every step is one vendor command (Nish 2026-09-22: "wipe" the inline
+  # shell block that lived here). Dropped with it: the shellcheck loop (no
+  # systemd/*.sh remain) and the per-file yaml parse (the proxy and systemd
+  # load these files on deploy and fail loud). Required check by this name.
   ci:
     name: ci
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 15
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-
-      - name: Stock checks
-        run: |
-          set -euo pipefail
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends shellcheck prometheus python3-yaml python3-pip
-
-          shopt -s nullglob
-          systemd_shell=(systemd/*.sh)
-          if ((${#systemd_shell[@]})); then
-            shellcheck -x "${systemd_shell[@]}"
-          else
-            echo "no systemd/*.sh to shellcheck"
-          fi
-
-          promtool check rules config/fleet_rules.yml
-
-          python3 -m pip install --user --no-input "semgrep==1.170.0"
-          export PATH="${HOME}/.local/bin:${PATH}"
-          semgrep --config p/default --metrics=off
-
-          for f in config/*.yml; do
-            python3 -c "import yaml,sys; yaml.safe_load(open(sys.argv[1]))" "$f"
-          done
-
-          # fleet-ops#6793: fleet automation never rides a never-expiring
-          # classic PAT. Fail if any live workflow consumes a secrets.*PAT
-          # credential — the shape is a per-run App installation token minted
-          # via actions/create-github-app-token (≤1h expiry).
-          if grep -rEn 'secrets\.[A-Za-z_][A-Za-z0-9_]*PAT\b' .github/workflows/; then
-            echo "::error::a workflow consumes a secrets.*PAT credential — long-lived PATs are banned from fleet automation; mint a per-run App token instead (fleet-ops#6793)"
-            exit 1
-          fi
+      - run: sudo apt-get update
+      - run: sudo apt-get install -y --no-install-recommends prometheus
+      - run: promtool check rules config/fleet_rules.yml
+      - run: pipx install semgrep==1.170.0
+      # Parity with the block this replaced: it ran semgrep without --error, so
+      # findings were reported, never gating. Gating on p/default is a separate
+      # decision with the findings listed (fleet-ops issue filed by Fable).
+      - run: semgrep --config p/default --metrics=off
+      - name: No long-lived PAT in any workflow
+        run: "! grep -rEn 'secrets\\.[A-Za-z_][A-Za-z0-9_]*PAT\\b' .github/workflows/"
 
   # no-glue: the mechanical half of "no scripts, hooks, wrappers, helpers"
   # (Nish 2026-09-19, 2026-09-21). Fails on any ADDED file under a script
