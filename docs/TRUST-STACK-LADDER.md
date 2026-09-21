@@ -92,6 +92,8 @@ trying to build one would be the glue the house rules forbid.
 | blast-radius, why, session-pickup, pause-safely, review-adjudication, unslop | **4** | Correctly skills. They are methods, not constraints |
 | Prefer off-the-shelf; name what you searched and rejected | 3 | The naming requirement is the enforcement. A reviewer can check it, which is the point |
 | Proofs cite id/path/timestamp; invented samples never count | 3 → partly 2 | The `verdict` check makes the *behavioural* half mechanical (#8034). The "cite a real record" half stays a rule, because only a reader can tell a real id from a plausible one |
+| Jev gives the first opinion on every typed decision (choice, yes/no, score, rank, triage, needs-Nish), and a blocked run lands as a question with a second opinion | 3 → partly 2 | A first opinion exists to surface disagreement before a question reaches Nish; a gate that enforced it could only rubber-stamp. The pass-through is live and pinned: `POST /jev`, the second-opinion block in `prompts/worker.md` (fleet-ops#7429, `tests/jev-second-opinion.test.py`) and the severity cascade (`tests/jev-cascade.test.py`) |
+| Public repos stay clean in their text: no host names, home paths, credential file locations, provider account details or customer data in an issue, PR or commit message | 3 → partly 2 | The credential half is already rung 2 — the Gitleaks required check scans the diff (`tests/secret-scan-workflow.test.sh`, §A). The wording half stays a rule: PR text and commit messages could join the same required-check class as the agent-names row in §E, but issues have no check hook at all, so until that wave the worker audits its own `origin/main..HEAD` range and PR body before each push |
 
 ---
 
