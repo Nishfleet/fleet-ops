@@ -83,15 +83,19 @@ jobs:
   # worker's arm step already refuses (fleet-ops#4557); A to C removes it.
   # Advisory in the ruleset on purpose: it runs only on pull_request, and a
   # required check must also report on merge_group.
+  # Nish 2026-09-22: "you can't grade your own work. you grade opus." Opus
+  # grades only PRs opened by the worker app (GLM / DeepSeek packets). PRs by
+  # the Opus deputy or by Fable are reviewed by Fable, never by this job.
   opus-review:
     name: opus-review
-    if: github.event_name == 'pull_request'
+    if: github.event_name == 'pull_request' && github.event.pull_request.user.login == 'nishfleet-worker[bot]'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     permissions:
       contents: read
       pull-requests: write
       issues: write
+      id-token: write
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -99,6 +103,9 @@ jobs:
       - uses: anthropics/claude-code-action@v1
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          # The Claude GitHub App is not installed on the org; the workflow token
+          # carries the pull-requests/issues write scope this job declares.
+          github_token: ${{ secrets.GITHUB_TOKEN }}
           use_sticky_comment: true
           prompt: |
             REPO: ${{ github.repository }}
