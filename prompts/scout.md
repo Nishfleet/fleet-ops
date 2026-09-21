@@ -156,7 +156,7 @@ traffic must still produce a fed queue; a starved queue from a green Usage
 block is a supply bug, not a spec win.
 
 **No-reconsider loop (fleet-ops#4850):** once you name a candidate you will
-file, file it in the NEXT action (`fleet-issue-file file ...`) and move on. Do not
+file, file it in the NEXT action (`gh issue create ...`) and move on. Do not
 reconsider an already-decided candidate. Do not loop between "I'll file X"
 and "let me reconsider whether to file more." If you have filed fewer than 1
 research-grounded candidate under an all-green Usage block, your run is
@@ -233,7 +233,7 @@ Do not file candidates whose acceptance criteria ask a worker to bypass these ga
 
 For each chosen candidate (max 8):
 ```bash
-fleet-issue-file file -R Nishfleet/<repo> --title "<concise title>" --body "$(cat <<'EOF'
+gh issue create -R Nishfleet/<repo> --title "<concise title>" --body "$(cat <<'EOF'
 <full body>
 EOF
 )"
