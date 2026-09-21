@@ -22,7 +22,7 @@ def check(cond, msg):
 
 
 def extract_block(text):
-    m = re.search(r"python3 - [^\n]*<<'PY'\n(.*?)\nPY\n", text, re.S)
+    m = re.search(r'python3 - "<alertname>" "<unit-or-dash>" "<repo-or-dash>" <<\'PY\'\n(.*?)\nPY\n', text, re.S)
     return m.group(1) if m else None
 
 
@@ -33,13 +33,15 @@ def main():
           'shadow section heading present')
     lines = text.splitlines()
     steps = next((i for i, l in enumerate(lines) if l.startswith('Steps:')), -1)
-    shadow = next((i for i, l in enumerate(lines) if l.startswith('## Shadow Jev tier')), -1)
+    shadow = next((i for i, l in enumerate(lines)
+                   if l.startswith('## Shadow Jev tier — advisory, never a gate (fleet-ops#7392)')), -1)
     check(0 <= steps < shadow, 'shadow section follows the steps list')
-    check(shadow == max(i for i, l in enumerate(lines) if l.startswith('## ')),
-          'shadow section is the last section')
+    check(all(l.startswith('## Shadow Jev tier')
+              for l in lines[shadow:] if l.startswith('## ')),
+          'only shadow sections may follow the first shadow section')
 
-    blocks = re.findall(r"<<'PY'\n", text)
-    check(len(blocks) == 1, 'exactly one embedded python block, got %d' % len(blocks))
+    blocks = re.findall(r'python3 - "<alertname>" "<unit-or-dash>" "<repo-or-dash>" <<\'PY\'\n', text)
+    check(len(blocks) == 1, 'exactly one embedded python block for this site, got %d' % len(blocks))
     block = extract_block(text)
     check(block is not None, 'block extracted')
     try:
