@@ -39,6 +39,28 @@ jobs:
       - run: semgrep --config p/default --metrics=off
       - name: No long-lived PAT in any workflow
         run: "! grep -rEn 'secrets\\.[A-Za-z_][A-Za-z0-9_]*PAT\\b' .github/workflows/"
+      - name: No secret variable expanded into an output command
+        # fleet-ops#7381: a worker's improvised presence check carried the
+        #   "token: ${GH_TOKEN:+set}${GH_TOKEN:-EMPTY}"
+        # payload — the :- expansion yields the VALUE, so the live App token
+        # landed in the run transcript. The runtime block is
+        # permission-gate.ts; this step gates the committed surfaces an
+        # agent reads or runs (prompts, units, workflows, AGENTS.md).
+        # Secret names = the fleet's uppercase conventions plus LiteLLM SK_*
+        # vars and JS process.env.X. fleet-litellm-key is exempt: emitting
+        # a key IS its job. tests/ holds fixture drills that legitimately
+        # carry the runnable shape; .fleet/ is generated bench corpora — a
+        # stale quote there must not poison unrelated PRs (0509#1817 class).
+        # rc: 0 prints+ fails on match, 1 is clean, 2 is a grep error and
+        # must fail too — a broken pattern can never read as a clean scan.
+        run: |
+          rc=0
+          grep -rEn --exclude-dir=.git --exclude-dir=.fleet --exclude-dir=tests \
+            --exclude=fleet-litellm-key "$SPAT" \
+            AGENTS.md README.md prompts systemd bin libexec etc config template docs patches .github credentials || rc=$?
+          test "$rc" -eq 1
+        env:
+          SPAT: (echo|printf|printenv|console\.(log|error|warn|info))[^|;]*(\$\{?|process\.env\.)([A-Za-z_][A-Za-z0-9_]*(TOKEN|SECRET|PASS(WORD|WD)?|CREDENTIALS?|PRIVATE|_KEY)[A-Za-z0-9_]*|SK_[A-Z][A-Z0-9_]*)
 
   # no-glue: the mechanical half of "no scripts, hooks, wrappers, helpers"
   # (Nish 2026-09-19, 2026-09-21). Fails on any ADDED file under a script
