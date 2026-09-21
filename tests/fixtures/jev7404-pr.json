@@ -1,0 +1,16 @@
+{
+  "number": 999999,
+  "title": "feat(#7404): fixture PR for the claim-check shadow test",
+  "body": "## Summary\n\nAdds a fixture.\n\nVerification: CI is green and the fix is live in production.\nrun-proof: unit tests passed locally\n\nCloses #7404",
+  "state": "OPEN",
+  "isDraft": false,
+  "mergedAt": null,
+  "url": "https://github.com/Nishfleet/jev7404-nonexistent/pull/999999",
+  "headRefName": "claim/issue-7404",
+  "headRefOid": "0123456789abcdef0123456789abcdef01234567",
+  "statusCheckRollup": [
+    {"name": "ci", "status": "COMPLETED", "conclusion": "FAILURE"},
+    {"name": "no-glue", "status": "COMPLETED", "conclusion": "SUCCESS"}
+  ],
+  "autoMergeRequest": null
+}
