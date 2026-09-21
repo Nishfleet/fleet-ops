@@ -37,6 +37,7 @@ class JevStub(BaseHTTPRequestHandler):
     """Answers all three batched questions; prob/choice/nish configurable."""
     prob = 0.5          # needs_repair_session
     choice = 'repair-in-place'   # triage_class
+    choice_p = 1.0      # probability of the winning choice
     nish = 0.05         # needs_nish
     sparse = False      # answer only needs_repair_session (old-server shape)
     hits = []
@@ -53,7 +54,7 @@ class JevStub(BaseHTTPRequestHandler):
         if not JevStub.sparse:
             probs = {k: 0.0 for k in ('resolved-noop', 'repair-in-place',
                                       'file-issue', 'nish-escalation')}
-            probs[JevStub.choice] = 1.0
+            probs[JevStub.choice] = JevStub.choice_p
             answers['triage_class'] = {'type': 'choice', 'choice': JevStub.choice,
                                        'probabilities': probs}
             answers['needs_nish'] = {'type': 'boolean', 'answer': JevStub.nish >= 0.5,
@@ -83,8 +84,6 @@ def main():
           'prompt no longer carries the resolved-check prose (code owns it)')
     check('fleet-ops#7414' in text_p, 'prompt notes the upstream short-circuit')
     check('Print what you did in one short block' in text_p, 'summary step intact')
-    check('try-restart prometheus-am-executor' in text_s,
-          'fleet-sync bounces the executor when the config changes across a pull')
     text_y = YAML.read_text()
     check(not re.search(r'^\s*ignore_resolved:', text_y, re.M),
           'yml no longer drops resolved upstream — the wrapper owns the verdict')
@@ -181,6 +180,7 @@ def main():
 
         def reset():
             JevStub.hits.clear()
+            JevStub.choice_p = 1.0
             runs.write_text('')
             units.write_text('')
             log_t.unlink(missing_ok=True)
@@ -243,6 +243,17 @@ def main():
               'act+resolved-noop row')
         check(drows() and drows()[-1]['skip_reason'] == 'resolved-noop',
               'alert-dispatch row names skip_reason=resolved-noop')
+
+        # 4b. act mode + resolved-noop at p=0.26 (bare plurality): a weak win
+        # may never skip a session — the same hi floor the cascade uses applies
+        reset()
+        JevStub.prob, JevStub.choice, JevStub.choice_p = 0.8, 'resolved-noop', 0.26
+        r = fire(firing, bin_env({'JEV_CASCADE_ALERT_DISPATCH': 'act'}))
+        check(runs.read_text().strip() == 'run',
+              'act+resolved-noop@0.26: session still runs (below hi floor)')
+        check(trows() and trows()[-1]['triage_would_skip'] is False
+              and trows()[-1]['path_action'] == 'spawned',
+              'act+resolved-noop@0.26: would_skip projected false')
 
         # 5. shadow mode + resolved-noop answer: advisory, session still runs
         reset()

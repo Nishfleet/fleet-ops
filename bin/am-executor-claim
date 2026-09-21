@@ -58,7 +58,7 @@ triage_row() {
         --argjson alerts "$(printf '%s' "${payload:-}" | jq -c '[.alerts[]? | {alertname: .labels.alertname, status, severity: .labels.severity, instance: .labels.instance, fingerprint: .fingerprint}]' 2>/dev/null || printf '[]')" \
         '{ts:$ts, site:"alert-triage", ref:$ref, decision:$decision,
           decision_source:"code", jev_calls:0, path_action:$path_action,
-          acted:true, alertname:($alerts[0].alertname // null), alerts:$alerts}' \
+          alertname:($alerts[0].alertname // null), alerts:$alerts}' \
         >>"$TRIAGE_LOG" 2>/dev/null || true
 }
 
@@ -345,7 +345,7 @@ def main():
                 site=TRIAGE_SITE,
                 ref='alert-triage:%s:%s' % (alertname, datetime.datetime.now(datetime.timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')),
                 decision='severity-never-gated', decision_source='code', jev_calls=0,
-                path_action='spawned', acted=True, alertname=alertname, severity=severity))
+                path_action='spawned', alertname=alertname, severity=severity))
         except Exception:
             pass
         note('severity=%s is a boundary class; never gated' % severity)
@@ -445,9 +445,11 @@ def main():
     nn_ok = (isinstance(nn_p, (int, float)) and not isinstance(nn_p, bool)
              and math.isfinite(nn_p) and 0 <= nn_p <= 1)
     # resolved-noop is the only triage answer allowed to act, and only in act
-    # mode — its wrong answer is cheap and reversible. needs_nish is advisory
-    # forever; the out-of-band escalation path is unchanged.
-    triage_noop = triage_ok and triage_choice == 'resolved-noop'
+    # mode at the confident band (same hi floor the cascade uses) — a bare
+    # plurality never skips a session. needs_nish is advisory forever; the
+    # out-of-band escalation path is unchanged.
+    triage_noop = (triage_ok and triage_choice == 'resolved-noop'
+                   and tprobs.get('resolved-noop', 0) >= hi)
     skip_reason = 'band-lo' if would_skip else ('resolved-noop' if triage_noop else None)
     skipped = skip_reason is not None and mode() == 'act'
     path_action = 'skipped-no-session' if skipped else 'spawned'
