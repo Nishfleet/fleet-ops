@@ -1,7 +1,8 @@
 # Fleet alert repair
 
 A Prometheus alert fired. Its Alertmanager JSON payload follows this prompt on
-stdin. Root-cause it and repair it, or file it — then exit.
+stdin — all-resolved payloads never reach you (fleet-ops#7414). Root-cause it
+and repair it, or file it — then exit.
 
 You are the repair path, not a pager. Nish is never the destination for
 anything you can fix yourself.
@@ -19,30 +20,28 @@ Hard rules:
 Steps:
 1. Parse the payload. Take `alerts[].labels.alertname`, `severity`, the
    instance/unit labels and `annotations.description` / `.summary`.
-2. If every alert in the payload has `status: resolved`, print
-   `resolved, nothing to do` and exit 0.
-3. Reproduce before repairing. Read the real state the alert names — the unit
+2. Reproduce before repairing. Read the real state the alert names — the unit
    (`systemctl --user status`, `journalctl --user -u <unit> --since -1h`), the
    metric (`curl -s localhost:9090/api/v1/query?query=<expr>`), the file, the
    timer. An alert is a claim, not evidence; a fix built from the alert text
    alone is a guess.
-4. Repair what is safely repairable in place: restart a failed unit, re-arm a
+3. Repair what is safely repairable in place: restart a failed unit, re-arm a
    disarmed timer, clear a stale lock or state file, re-run a one-shot that
    died on a transient. Then PROVE it: re-run the thing and show it green.
    "Should be fixed" is not fixed.
-5. If it is not repairable in place, open one issue (dedupe first — search open
+4. If it is not repairable in place, open one issue (dedupe first — search open
    issues for the same alertname before filing) with the alert name, what you
    observed, and the smallest durable fix you can describe. Label it
    `agent-ready`.
-6. If the alert is a boundary class, escalate with `amtool alert add alertname=NishEscalation severity=nish --annotation=summary='<text>'` naming the class
+5. If the alert is a boundary class, escalate with `amtool alert add alertname=NishEscalation severity=nish --annotation=summary='<text>'` naming the class
    and one sentence, and stop.
-7. Print what you did in one short block: alert, root cause, action, proof.
+6. Print what you did in one short block: alert, root cause, action, proof.
    Then run the Shadow Jev tiers at the end of this file once each —
    they are advisory and can never change or block what you did — and exit.
 
 ## Shadow Jev tier — advisory, never a gate (fleet-ops#7392)
 
-Between step 3 (reproduce — you have just read the real state) and step 4
+Between step 2 (reproduce — you have just read the real state) and step 3
 (repair — which is where "re-run a one-shot that died on a transient" lives,
 the auto-rerun decision this site shadows), run the verbatim python block
 below once, in a single tool call. The named watcher from the original packet
@@ -57,7 +56,7 @@ CiMergeQueueHeadWaitHigh, FleetMainRed) — else `-`.
 
 The block prints exactly one line on stdout: `jev-class: <choice> p=<prob>`
 or `jev advisory unavailable (<reason>)`. When it prints a `jev-class:` line,
-quote it verbatim inside your step-7 summary block next to your own root-cause
+quote it verbatim inside your step-6 summary block next to your own root-cause
 line — that printed line is this organ's equivalent of the issue's "check-run
 summary line" (the worker App token carries no `checks:write` scope, and no
 surviving workflow posts check runs).
@@ -825,7 +824,7 @@ red run is a fail when the signature is in its failed log, a pass when the
 workflow failed elsewhere — and adds the diff touch: the changed files from the
 run's PR or commit, so Jev sees whether the change under test touched the test
 file. One `POST 127.0.0.1:4000/jev` carries one boolean per test; the block
-prints one `jev-flaky: <test> p=<p>` line per test to quote in the step-7
+prints one `jev-flaky: <test> p=<p>` line per test to quote in the step-6
 summary. Quote them; do not act on them.
 
 Real records only — no synthetic outcomes: they come from real run history. If the run history or failed log is missing, or Jev answers with an

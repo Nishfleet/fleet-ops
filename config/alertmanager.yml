@@ -98,4 +98,11 @@ receivers:
   - name: repair-dispatch
     webhook_configs:
       - url: 'http://127.0.0.1:9095/'
-        send_resolved: false
+        # fleet-ops#7414: resolved payloads now reach the wrapper, which
+        # short-circuits them in code and logs a real alert-triage row
+        # (jev_calls: 0) instead of this flag silently swallowing them.
+        # Apply ordering: merge am-executor-claim change -> fleet-sync pull ->
+        # executor restart -> copy this file -> reload alertmanager. Flipping
+        # this before the new wrapper is live would spawn repair sessions for
+        # resolved alerts (the old wrapper has no resolved check).
+        send_resolved: true
