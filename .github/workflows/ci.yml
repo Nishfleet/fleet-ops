@@ -33,7 +33,10 @@ jobs:
       - run: sudo apt-get install -y --no-install-recommends prometheus
       - run: promtool check rules config/fleet_rules.yml
       - run: pipx install semgrep==1.170.0
-      - run: semgrep --config p/default --metrics=off --error
+      # Parity with the block this replaced: it ran semgrep without --error, so
+      # findings were reported, never gating. Gating on p/default is a separate
+      # decision with the findings listed (fleet-ops issue filed by Fable).
+      - run: semgrep --config p/default --metrics=off
       - name: No long-lived PAT in any workflow
         run: "! grep -rEn 'secrets\\.[A-Za-z_][A-Za-z0-9_]*PAT\\b' .github/workflows/"
 
