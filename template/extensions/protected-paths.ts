@@ -25,6 +25,12 @@ export default function (pi: ExtensionAPI) {
 		"/etc/restic",
 		"/.pi/agent/auth.json",
 		"/fleet-ops-deploy-clone/",
+		"/scripts/",
+		"/libexec/",
+		"/ops/",
+		"/hooks/",
+		"/.github/scripts/",
+		"/.fleet/",
 		".pem",
 	];
 
