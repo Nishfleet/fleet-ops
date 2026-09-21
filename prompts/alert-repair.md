@@ -37,6 +37,8 @@ Steps:
 6. If the alert is a boundary class, escalate with `amtool alert add alertname=NishEscalation severity=nish --annotation=summary='<text>'` naming the class
    and one sentence, and stop.
 7. Print what you did in one short block: alert, root cause, action, proof.
+   Then run the fleet-ops#7394 Shadow Jev tier at the end of this file once —
+   it is advisory and can never change or block what you did — and exit.
 
 ## Shadow Jev tier — advisory, never a gate (fleet-ops#7392)
 
@@ -290,5 +292,266 @@ try:
     main()
 except Exception as exc:
     note('jev advisory unavailable (%s); repair rules unchanged' % type(exc).__name__)
+PY
+```
+
+## Shadow Jev tier — advisory, never a gate (fleet-ops#7394)
+
+This step adds an advisory Jev evaluation for each alert in the payload. It
+NEVER changes the repair, the filing, the escalation or the summary. It logs
+one JSONL row per alert to `~/.local/state/pi-packet/jev/alert-repair.jsonl`
+with `site=alert-repair` — the dedupe/flap evidence fleet-ops#7414's matrix
+split scores. Each row stores your final disposition beside Jev's class
+choice, duplicate_of probability and flap probability (same alertname
+re-firing without an underlying state change).
+
+Controls:
+- `JEV_ALERT_REPAIR=0` disables the call entirely (restores prior behaviour).
+- Any failure (missing key, timeout, malformed response, invalid probability)
+  prints a one-line "advisory unavailable" note and the packet ends unchanged.
+- The call is a single `POST 127.0.0.1:4000/jev` with the LiteLLM virtual key
+  `jev-eval` (max_budget 1.0 USD/mo, cost_per_request $0.000015). No raw
+  gateway key is used; the key is read from the seat file, never printed.
+
+Two steps, ONE TOOL CALL EACH:
+
+1. Write one compact metadata object per payload alert to the temp file —
+   `alertname`, `severity`, `status`, `instance` and YOUR final `disposition`
+   (`repaired`, `filed`, `escalated`, `resolved_only` or `skipped`). Metadata
+   only: never annotation prose, never secrets. Example shape:
+   ```bash
+   umask 077; printf '%s' '[{"alertname":"FleetMainRed","severity":"critical","status":"firing","instance":"","disposition":"filed"}]' > /tmp/alert-repair-jev.json
+   ```
+
+2. Run the verbatim python block below (single tool call). It re-derives the
+   per-alertname dispatch history from actions.log and the open-issue count
+   from `gh` search itself, calls Jev once, validates every probability,
+   appends the rows, and prints a one-line summary. On any error it prints
+   "advisory unavailable" and returns 0 — the packet outcome already stands.
+
+```bash
+python3 - <<'PY'
+import datetime, json, math, os, pathlib, re, subprocess, sys, time, uuid, urllib.request
+
+# --- Config (sanctioned pass-through; never inline the key) ---
+SEAT_KEY_FILE = os.path.expanduser('~/.config/fleet-ops/seats/typesafe-jev.env')
+JEV_ENDPOINT = os.environ.get('JEV_ALERT_REPAIR_ENDPOINT') or 'http://127.0.0.1:4000/jev'
+META_PATH = os.environ.get('JEV_ALERT_REPAIR_META') or '/tmp/alert-repair-jev.json'
+ACTIONS_LOG = pathlib.Path(os.environ.get('JEV_ALERT_REPAIR_ACTIONS_LOG') or '/home/nish/workspaces/agent-state/alert-repair/actions.log')
+LOG_PATH = os.environ.get('JEV_ALERT_REPAIR_LOG') or os.path.expanduser('~/.local/state/pi-packet/jev/alert-repair.jsonl')
+OFF = os.environ.get('JEV_ALERT_REPAIR') == '0'
+MAX_ALERTS = 8
+CLASS_OPTIONS = {
+    'repair_in_place': 'safely repairable in place (restart a failed unit, re-arm a timer, clear a stale lock, re-run a one-shot) and provable green',
+    'file_issue': 'needs real implementation work; file one agent-ready issue after dedupe',
+    'nish_boundary': 'a canonical reserved class (money, privacy, security, legal, brand, product direction, customer-data deletion, irreversible step) — escalate to Nish via amtool',
+    'no_action': 'resolved payload, transient, or otherwise nothing to do',
+}
+
+def log(line):
+    print(line, file=sys.stderr)
+
+def read_seat_key():
+    k = os.environ.get('LITELLM_JEV_KEY')
+    if k:
+        return k
+    try:
+        txt = pathlib.Path(SEAT_KEY_FILE).read_text()
+    except Exception:
+        return None
+    m = re.search(r'^\s*LITELLM_JEV_KEY="?([^"\s]+)"?\s*$', txt, re.M)
+    return m.group(1) if m else None
+
+def sha256_state(s):
+    import hashlib
+    return hashlib.sha256(json.dumps(s, sort_keys=True).encode()).hexdigest()
+
+def load_alerts():
+    try:
+        data = json.loads(pathlib.Path(META_PATH).read_text())
+    except Exception:
+        return None
+    if not isinstance(data, list):
+        return None
+    out = []
+    for a in data[:MAX_ALERTS]:
+        if not isinstance(a, dict):
+            continue
+        name = str(a.get('alertname') or '').strip()
+        if not name:
+            continue
+        out.append({
+            'alertname': name,
+            'severity': str(a.get('severity') or ''),
+            'status': str(a.get('status') or ''),
+            'instance': str(a.get('instance') or ''),
+            'disposition': str(a.get('disposition') or ''),
+        })
+    return out or None
+
+def dispatch_history(alertname):
+    # Prior dispatch-line events for this alertname. None = log unreadable
+    # (unknown, not zero).
+    try:
+        lines = ACTIONS_LOG.read_text(errors='replace').splitlines()
+    except Exception:
+        return {'prior_24h': None, 'prior_7d': None}
+    now = datetime.datetime.now(datetime.timezone.utc)
+    n24 = n7 = 0
+    needle = 'alertname=%s' % alertname
+    for line in lines:
+        if needle not in line:
+            continue
+        m = re.match(r'^\[([^\]]+)\]', line)
+        if not m:
+            continue
+        try:
+            t = datetime.datetime.fromisoformat(m.group(1).replace('Z', '+00:00'))
+        except Exception:
+            continue
+        age = (now - t).total_seconds()
+        if age <= 7 * 86400:
+            n7 += 1
+            if age <= 86400:
+                n24 += 1
+    return {'prior_24h': n24, 'prior_7d': n7}
+
+def open_issue_count(alertname):
+    try:
+        r = subprocess.run(
+            ['gh', 'api', '-X', 'GET', 'search/issues', '-f',
+             'q=org:Nishfleet is:issue is:open %s in:title' % alertname,
+             '--jq', '.total_count'],
+            capture_output=True, text=True, timeout=15)
+        v = int(r.stdout.strip())
+        return v if math.isfinite(v) else None
+    except Exception:
+        return None
+
+def valid_p(p):
+    return (not isinstance(p, bool)) and isinstance(p, (int, float)) and math.isfinite(p) and 0 <= p <= 1
+
+def main():
+    if OFF:
+        log('alert-repair: jev advisory off (JEV_ALERT_REPAIR=0); rules unchanged')
+        return
+
+    start = time.monotonic()
+    alerts = load_alerts()
+    if not alerts:
+        log('alert-repair: jev advisory unavailable (no alert metadata); rules unchanged')
+        return
+
+    now_iso = datetime.datetime.now(datetime.timezone.utc).isoformat()
+    ref = 'alert-repair:%s:%s' % (now_iso, uuid.uuid4())
+
+    states = []
+    for a in alerts:
+        hist = dispatch_history(a['alertname'])
+        states.append(dict(
+            alertname=a['alertname'], severity=a['severity'], status=a['status'],
+            instance=a['instance'], disposition_taken=a['disposition'],
+            open_issues_same_alertname=open_issue_count(a['alertname']),
+            prior_dispatch_events_24h=hist['prior_24h'],
+            prior_dispatch_events_7d=hist['prior_7d']))
+    state = dict(alerts=states, rule_tier='alert-repair',
+                 context='metadata only; alert annotation prose withheld')
+    state_hash = sha256_state(state)
+
+    questions = {}
+    for i, a in enumerate(alerts):
+        pfx = 'a%d_' % i
+        questions[pfx + 'class'] = dict(
+            type='choice',
+            instructions=('Alert %s fired on the fleet host; the repair agent disposition was "%s". '
+                          'Which action class is correct for this alert, judging only the supplied '
+                          'metadata? The existing rules stay authoritative; advice only, never a gate.'
+                          % (a['alertname'], a['disposition'] or 'unknown')),
+            criteria=CLASS_OPTIONS)
+        questions[pfx + 'duplicate_of'] = dict(
+            type='boolean',
+            instructions=('Does alert %s duplicate an already-open fleet issue for the same alertname '
+                          '(see open_issues_same_alertname)? Advice only, never a gate.' % a['alertname']))
+        questions[pfx + 'flap'] = dict(
+            type='boolean',
+            instructions=('Is alert %s a flap — the same alertname re-firing without an underlying state '
+                          'change since its previous dispatch (see prior_dispatch_events)? Withheld '
+                          'evidence is unknown, not clean. Advice only, never a gate.' % a['alertname']))
+
+    key = read_seat_key()
+    if not key:
+        log('alert-repair: jev advisory unavailable (no key); rules unchanged')
+        return
+
+    payload = dict(model='typesafe-ai/jev', state=state, questions=questions)
+    data = json.dumps(payload).encode()
+    req = urllib.request.Request(JEV_ENDPOINT, data=data, method='POST')
+    req.add_header('Authorization', 'Bearer ' + key)
+    req.add_header('Content-Type', 'application/json')
+
+    try:
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            raw = resp.read()
+        res = json.loads(raw)
+    except Exception as exc:
+        log('alert-repair: jev advisory unavailable (%s); rules unchanged' % type(exc).__name__)
+        return
+
+    elapsed_ms = int((time.monotonic() - start) * 1000)
+    ans = res.get('answers', {})
+    usage = res.get('usage', {})
+
+    # Validate ALL answers before writing any row.
+    rows = []
+    for i, a in enumerate(alerts):
+        pfx = 'a%d_' % i
+        ac = ans.get(pfx + 'class', {})
+        ad = ans.get(pfx + 'duplicate_of', {})
+        af = ans.get(pfx + 'flap', {})
+        probs = ac.get('probabilities', {})
+        if (ac.get('type') != 'choice' or ac.get('choice') not in CLASS_OPTIONS
+                or not isinstance(probs, dict)
+                or any(k not in CLASS_OPTIONS or not valid_p(v) for k, v in probs.items())
+                or not valid_p(ad.get('probability')) or not valid_p(af.get('probability'))):
+            log('alert-repair: jev advisory unavailable (invalid answer for %s); rules unchanged' % a['alertname'])
+            return
+        rows.append(dict(
+            ts=now_iso,
+            site='alert-repair',
+            ref=ref + '#' + a['alertname'],
+            item=a['alertname'],
+            state_sha256=state_hash,
+            answers={pfx + 'class': ac, pfx + 'duplicate_of': ad, pfx + 'flap': af},
+            probabilities={
+                'class': {k: float(v) for k, v in probs.items()},
+                'duplicate_of': float(ad['probability']),
+                'flap': float(af['probability'])},
+            rule_disposition=a['disposition'] or None,
+            advisory_only=True,
+            usage=usage,
+            ms=elapsed_ms,
+        ))
+
+    try:
+        path = pathlib.Path(LOG_PATH)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with os.fdopen(os.open(path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600), 'a') as f:
+            for row in rows:
+                f.write(json.dumps(row) + '\n')
+    except Exception as exc:
+        log('alert-repair: jev advisory unavailable (%s); rules unchanged' % type(exc).__name__)
+        return
+
+    try:
+        pathlib.Path(META_PATH).unlink(missing_ok=True)
+    except Exception:
+        pass
+
+    log('alert-repair: jev advisory logged n=%d; rules unchanged (advisory_only)' % len(rows))
+
+try:
+    main()
+except Exception as exc:
+    log('alert-repair: jev advisory unavailable (%s); rules unchanged' % type(exc).__name__)
 PY
 ```
