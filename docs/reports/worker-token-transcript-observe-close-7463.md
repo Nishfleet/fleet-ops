@@ -20,17 +20,17 @@ messages total, every one the presence check printing more than emptiness.
 Two shapes:
 
 1. **The `:-` expansion — twice, including the session the issue names.** The
-   unit's opening bash call (2026-09-17 first session) sent
-   `echo "token: ${GH_TOKEN:+set}${GH_TOKEN:-empty}" | sed 's/.*/&/'` — the
-   `:-` branch substitutes the value into the pipe. A repeat the next morning
-   (2026-09-18T09:57 session) sent the cleaned-up variant
-   `echo "token: ${GH_TOKEN:+set}${GH_TOKEN:-EMPTY}"`. Both are byte-for-byte
-   the shape of the fleet-ops#7072 leak that #7381 was filed for, which the
-   7438 worker had not seen yet: the leak predates the gate that landed
-   2026-09-21 by four days.
-2. **Bare echo of the whole variable.** The 2026-09-18T07:53 session ran
-   `echo "GH_TOKEN=$GH_TOKEN"` — the value printed without even the `:-`
-   indirection. The same call set also ran `gh auth status`.
+   unit's opening bash call (2026-09-17 first session) sent the payload
+   `token: ${GH_TOKEN:+set}${GH_TOKEN:-empty}` piped through `sed 's/.*/&/'` —
+   the `:-` branch substitutes the value into the pipe. A repeat the next
+   morning (2026-09-18T09:57 session) sent the cleaned-up variant
+   `token: ${GH_TOKEN:+set}${GH_TOKEN:-EMPTY}`. Both are byte-for-byte the
+   shape of the fleet-ops#7072 leak that #7381 was filed for, which the 7438
+   worker had not seen yet: the leak predates the gate that landed 2026-09-21
+   by four days.
+2. **The whole variable, unwrapped.** The 2026-09-18T07:53 session sent the
+   bare `GH_TOKEN=$GH_TOKEN` form — the value substituted with not even the
+   `:-` indirection. The same call set also ran `gh auth status`.
 
 Evidence (structures and counts only; the values are not reproduced here or
 anywhere in this record or the PR):
