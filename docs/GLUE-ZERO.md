@@ -667,57 +667,50 @@ $ PI_CODING_AGENT_DIR=$SCRATCH/pi-stock \
   | pi --print --session-dir $SCRATCH/pistocksess --provider litellm --model worker-cheap
 ```
 
-**Result — partial, and the gap is named rather than papered over.**
-
-The stock directory loads and the run answers correctly:
+**Result — the gate is closed.** Two runs, both against a scratch
+`PI_CODING_AGENT_DIR` whose `subagent` entry is a symlink to the shipped
+example. The live `~/.pi` was not touched.
 
 ```
-=== STDERR (first lines) ===
+$ readlink -f $SCRATCH/pi-stock/extensions/subagent
+/home/nish/.local/lib/node_modules/@earendil-works/pi-coding-agent/examples/extensions/subagent
+```
+
+**Run 1** answered correctly but did the work itself — `bash` then `read` on
+`~/.pi/agent/agents/scout.md` — so it proved loading, not delegation. Recorded
+because the distinction matters.
+
+**Run 2**, 2026-09-21T17:04:18.565Z, session
+`01a0c4ec-f484-777a-935f-7e3a4978719c`, with the instruction made explicit:
+
+```
+text     -> I'll delegate this to the scout agent.
+toolCall -> subagent {"agent": "scout", "task": "list the .md file names directly under .../prompts"}
+```
+
+The subagent returned the correct seven filenames and the parent relayed them.
+That is the delegation half, on `worker-cheap`, with no fleet file in the
+extension directory.
+
+Note the stderr of the same run:
+
+```
 EXTLOAD-OK extension=permission-gate guard=tool_call rules=6 worker_toolchain_ban=armed
 EXTLOAD-OK extension=protected-paths tools=write,edit
-
-=== STDOUT ===
-- alert-repair.md
-- daily-digest.md
-- intake.md
-- intake-repair.md
-- scout.md
-- scout-repair.md
-- worker.md
 ```
 
-Session: `…/pistocksess/2026-09-21T16-28-37-840Z_01a0c4cc-4a4f-7755-a1f8-c812101df261.jsonl`.
-Note the stderr: with the stock directory in place `EXTLOAD-OK extension=subagent`
-is **absent** while the two guards still print — the scratch dir is genuinely
-loading stock, and stock is silent by design. The seven filenames are correct.
+`EXTLOAD-OK extension=subagent` is **absent** — stock is silent by design —
+while the two declared-exception guards still print. So the run is genuinely
+against stock, and the handshake really was the only thing the fork added.
 
-**What this run does not prove.** The model answered by reading
-`~/.pi/agent/agents/scout.md` itself:
+The `agent=scout` definition resolved from `~/.pi/agent/agents/scout.md`, not
+from the extension's own `agents/` directory. That is why the fleet's four agent
+definitions keep working after the fork is deleted, and it is the load-bearing
+fact behind Candidate A.
 
-```
-toolCall -> bash  {"command": "ls .../pi-stock/agents/ ; ls ~/.pi/agents ; ls .pi/agents"}
-toolCall -> read  {"path": ".../pi-stock/agents/scout.md"}
-```
-
-It never called the `subagent` tool. That is a `worker-cheap` behaviour, not
-evidence about the extension — but it is not the proof that was asked for, so
-**the delegation half stays open** and is written into the B1 packet as a
-required, non-optional gate: one run whose session JSONL contains a `toolCall`
-with `name: "subagent"`.
-
-Three forced-delegation retries and a deterministic
-`--tools subagent` registration probe were attempted and all returned
-`429: No deployments available for selected model` / `litellm.RateLimitError …
-Received Model Group=worker-cheap … Available Model Group Fallbacks=['worker-capable']`.
-Every rung in the router is the one Pareto upstream, and both worker rungs were
-walled for most of this pass. **Candidate A is therefore chosen on the evidence
-above plus the structural argument, and confirmed on the delegation gate before
-the fork is deleted, not after.**
-
-Note what the stderr shows even before the model answers: with the stock
-directory in place, `EXTLOAD-OK extension=subagent` is **absent** while
-`permission-gate` and `protected-paths` still print — the scratch dir is
-genuinely loading stock, and stock is silent by design.
+Getting here needed several retries: every rung in the router is the one Pareto
+upstream, and `worker-cheap` / `worker-capable` were returning
+`litellm.RateLimitError` for most of this pass.
 
 ## Sequence
 
