@@ -10,3 +10,4 @@ out/
 
 # Per-job operational caches that workers sometimes leave behind.
 .cache/
+.pytest_cache/

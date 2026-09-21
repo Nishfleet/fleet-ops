@@ -47,7 +47,7 @@ cheaper than building, because prose bans lose to urgency at decision time.
 | Daily digest | daily-digest | `daily-digest.timer` | Pi-era data |
 | Product nightly site check | tinystudio-live-site-check | `tinystudio-live-site-check.timer` | product-ops |
 | Product cron | agent-cron-0509-* | `agent-cron-0509-*.timer` | product cron |
-| pi-packet log rotation | pi-packet-logrotate | `pi-packet-logrotate.timer` | #3272 |
+| ~~pi-packet log rotation~~ | DELETED 2026-09-22 (#7828) — `watch.log` producer is gone | — | #3272 |
 
 ## Job classes with NO existing organ — do not build, propose
 

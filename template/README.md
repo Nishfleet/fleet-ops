@@ -1,7 +1,6 @@
 # New Nishfleet repository
 
-Copy `template/.github/workflows/` into a new repo as `.github/workflows/`
-and `template/.fleet/gate-integrity.yml` to `.fleet/gate-integrity.yml`.
+Copy `template/.github/workflows/` into a new repo as `.github/workflows/`.
 
 Those callers point at the central reusable workflows in `Nishfleet/fleet-ops`
 at `@v1`. Do not copy the steps out of the reusable files. Change behaviour with
@@ -15,7 +14,6 @@ change gets a `v2` branch and a new pin.
 - Batched PR checks (install, test, secret scan) with a job timeout, caching,
   and path gating inside the job so required checks always report.
 - Auto-merge arm on every non-draft PR.
-- Gate integrity (CI-gaming detector) with per-repo globs in `.fleet/gate-integrity.yml`.
 - Surface audit (theme x auth-state x viewport matrix, fleet-ops#1198). The
   thin caller `surface-audit.yml` is shipped but disabled by default: copy
   `template/surface-audit.json` to the repo root, trim it to this product's

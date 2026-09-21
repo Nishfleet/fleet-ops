@@ -65,10 +65,10 @@ ln -sfn /home/nish/workspaces/tooling/fleet-ops-deploy-clone/systemd/<unit>.serv
         ~/.config/systemd/user/<unit>.service.d/<x>.conf
 ```
 
-Same idiom for a new `bin/` helper (`ln -sfn <repo>/bin/<x> ~/.local/bin/<x>`),
-a `lib/` module (`~/.local/lib/pi-packet/<x>`), a Pi prompt
-(`~/.pi/agent/prompts/<x>.md`), or a `libexec/` script
-(`~/.local/libexec/<x>`). One `ln -sfn`, once, and git owns it from then on.
+Same idiom for a new Pi prompt (`~/.pi/agent/prompts/<x>.md`). One `ln -sfn`,
+once, and git owns it from then on. New scripts are not added at all: the
+glue-zero rule (docs/GLUE-ZERO.md) allows config values, unit lines and
+prompt lines only — a stock feature replaces an organ or nothing does.
 
 ### The exceptions: files that must stay COPIES
 
@@ -221,42 +221,15 @@ worker is a no-op — systemd will not start a unit that is already running.
 ## Claim shared files before editing (interactive sessions)
 
 Queued work has an atomic lock — the `claim/issue-N` branch. Interactive
-sessions used to bypass it, so two agents could fix the same control-plane
-file minutes apart without either knowing (fleet-ops#55: two sessions
-fixed the same `seat-lib.sh` bug in one hour). `bin/fleet-claim` gives
-interactive work a claim path that is one command, agent-agnostic (git +
-gh, not a Claude hook), and visible before any PR exists — a pushed branch
-is the fleet-visible occupied sign.
-
-Before touching anything shared (`seat-lib.sh`, `seat-caps.json`, a systemd
-unit, a hook, this repo), run:
-
-```
-fleet-claim conflicts fleet-ops lib/seat-lib.sh   # pre-flight: anyone on it?
-fleet-claim start    fleet-ops lib/seat-lib.sh    # reserve it (one command)
-# ...edit, commit, push, open PR...
-fleet-claim release  fleet-ops lib/seat-lib.sh    # free it when done
-```
-
-- `start` pushes `claim/adhoc-<scope>` from `main` with a create-only
-  `--force-with-lease`, so two agents starting the same scope collide
-  atomically — the second gets `claimed-by-other` and stops. Convention:
-  **use the shared file path as the scope** so two agents on the same file
-  pick the same branch name.
-- `conflicts` is the pre-flight the standing rule asks for, made
-  agent-agnostic. It scans every live `claim/adhoc-*` branch whose scope
-  token matches the file path **or basename**, plus every open PR whose
-  file set overlaps (via `gh`, when available). Exit 1 if anything is
-  found. Basename matching catches the realistic case where two agents
-  name the same file differently (`lib/seat-lib.sh` vs `seat-lib.sh`).
-- `check <scope>` reports free/claimed for one scope; `release <scope>`
-  deletes the branch.
-
-It is warn-shaped, not a hard block: a second agent on the same file is
-sometimes legitimate, and a false block during control-plane repair is
-worse than a duplicated diff. The Claude-only `guard_shared_file_collision`
-hook covers the open-PR window; `fleet-claim` covers the pre-PR window that
-the hook cannot see.
+sessions claim the same way, with stock git only: push a
+`claim/adhoc-<scope>` branch from `main` before touching a shared file.
+A pushed branch is the fleet-visible occupied sign, and a create-only push
+collides atomically for a second claimant. Convention: **use the shared
+file path as the scope** so two agents on the same file pick the same
+branch name. `git ls-remote origin 'refs/heads/claim/*'` plus `gh pr list`
+is the pre-flight conflict check; delete the branch when done.
+`bin/fleet-claim`, the helper that wrapped this, was deleted in the glue
+sweep — the stock push is the whole mechanism.
 
 Stale interactive **sessions** are no longer reaped by a bespoke timer:
 `interactive-session-reap` was deleted on 2026-09-18 after 113 consecutive
@@ -267,69 +240,28 @@ of scope: they do not live in `session-*.scope`. `claim/issue-*` and
 
 ## CI
 
-`.github/workflows/ci.yml` runs four jobs on every PR and push to main:
+`.github/workflows/ci.yml` runs two jobs on every PR and push to main:
 
-1. **semgrep** — `--config p/default`. TODO: add the fleet's
-   `no-hand-built-orchestration.yml` ruleset from Nishfleet/siterep-public at
-   an exact commit SHA once packet p56 merges it. Until then the
-   orchestration-specific rules are NOT applied — flagged loudly.
-2. **shellcheck** — `bin/*` (pinned binary + sha256).
-3. **unit-verify** — `systemd-analyze verify --man=no` on every `systemd/*`
-   file. Proven to catch breakage: a malformed unit (bad section header,
-   missing `=`) makes verify exit nonzero with a clear message.
-4. **gitleaks** — full history secret scan (pinned binary + sha256, `--redact`).
+1. **ci** — stock checks: shellcheck on `systemd/*.sh` when any exist,
+   `promtool check rules config/fleet_rules.yml`, semgrep
+   `--config p/default`, a YAML parse of `config/*.yml`, and a fail on any
+   workflow consuming a `secrets.*PAT` credential (fleet-ops#6793).
+2. **no-glue** — rejects any added script/helper/hook file (`bin/`,
+   `scripts/`, `libexec/`, `ops/`, `hooks/`, `.github/scripts/`, `*.sh`,
+   `*.mjs`, `.fleet/`) and any added unit `Exec` line long enough to be a
+   program (fleet-ops#7828).
 
-All actions are pinned to exact commit SHAs. Every job has a timeout.
+`.github/workflows/secret-scan.yml` is the gitleaks scan (pinned binary +
+sha256, `--redact`). `.github/workflows/deploy-production.yml` is the
+shared deploy-on-green caller synced to every active repo — it self-skips
+on repos with no deploy target. All actions are pinned to exact commit
+SHAs; every job has a timeout.
 
-The tests job calls `.github/workflows/reusable-pr-checks.yml` (`workflow_call`).
-That file is the batched CI standard for every current and future repo: one
-job, `timeout-minutes`, PR concurrency, npm cache, job-level path gating, and
-gitleaks. Callers pass `inputs`; they do not copy the steps. The four required
-check names stay as local jobs because a `uses:` job reports as
-`caller / callee` and branch protection still lists `Gitleaks`, `semgrep`,
-`Shellcheck`, and `systemd-analyze`.
-
-New repos copy `template/.github/workflows/` (wired to this repo at `@v1`).
-
-A further reusable workflow, `.github/workflows/ci-failure-telemetry.yml`, is
-the central CI failure telemetry set. Other repos call it with
-`workflow_call`; it is an alert, not a required check. It runs two detectors:
-the merge-queue semantic-conflict detector (fires when the same check is
-green on `pull_request` and red on `merge_group`, names the check, and
-publishes the `pull_request` vs `merge_group` failure-rate split) and the
-repeat-deterministic detector (fires when the same
-`(workflow, job, step, assertion, event)` signature fails 3+ times within
-6h — an assertion failure is not retryable, so the alert says stop, do not
-re-arm). Both detectors also publish a headline decomposition: top failure
-signatures ranked by count (every distinct tuple, not just the ones that
-fired the alert) and the `pull_request` vs `merge_group` divergence in
-percentage points — the single most diagnostic number for whether failures
-are semantic merge conflicts (large divergence) or flaky tests (small
-divergence). A headline "21.8% CI failure rate" without this decomposition
-cannot drive any action (fleet-ops#21).
-
-A sixth, `.github/workflows/ci-required-check-purity.yml`, flags required
-checks that compare a computed value against a shared committed baseline
-with exact equality (or that fail unless the PR edits that baseline). It
-is advisory: warn, do not block. The rule itself is in `docs/ci-standard.md`.
-
-A seventh pair, `.github/workflows/red-on-main-detector.yml` (reusable) and
-`.github/workflows/red-on-main-watch.yml` (15-minute sweep, synced to other
-Nishfleet repos), watches **every** workflow on main — including ones that
-have never been green. Auto-revert still only watches proven-green
-workflows; this detector alerts, it does not revert. A workflow whose
-first ever main run fails is called out as merged untested against main.
-
-An eighth, `.github/workflows/ci-standards-audit.yml`, is the central
-conformance audit. It reads every non-archived repo from the GitHub API,
-resolves each repo's real default branch, then publishes a per-repo,
-per-workflow gap matrix for the CI standard: `timeout-minutes` on every
-job, `concurrency` with `cancel-in-progress` on PR-triggered workflows,
-dependency caching, job-level path filtering (with trigger-level path
-filters on required checks flagged as an error), and `auto-revert.yml`
-presence and eligibility. It can also open fix PRs for the one gap that is
-safe to fix mechanically: missing `auto-revert.yml` on repos that already
-have a green push-to-main CI workflow and required checks.
+`.github/workflows/reusable-pr-checks.yml` (`workflow_call`) is the batched
+CI standard for every current and future repo: one job, `timeout-minutes`,
+PR concurrency, npm cache, job-level path gating, and gitleaks. Callers
+pass `inputs`; they do not copy the steps. New repos copy
+`template/.github/workflows/` (wired to this repo at `@v1`).
 
 ## Allowlist
 
@@ -345,7 +277,9 @@ symlinks to it from `~/.config/systemd/user/`, `~/.local/bin/`, or
 did them: `pi-intake@<repo>.timer` picks up queued work, PR auto-merge is a
 GitHub workflow, and a failed unit pages through the `SystemUnitFailed` rule
 in `config/fleet_rules.yml`. Its healthchecks.io dead-man is superseded by
-`bin/keystone-hc-ping` (`~/.config/fleet-ops/keystone-hc.env`).
+the `10-keystone-hc.conf` drop-ins on `pi-intake@`/`pi-scout@` — stock
+`EnvironmentFile=` + `ExecStopPost=` curl against
+`~/.config/fleet-ops/keystone-hc.env`.
 
 ## Intake enrolment
 
@@ -355,8 +289,7 @@ enrolled — adding or removing a repo is a PR against that file, not a
 `systemctl enable`. This replaces the old imperative enrolment that was
 silently reverted without a record (fleet-ops#32).
 
-Each enrolled repo needs two preconditions, both verified by the reconciler
-before its unit is enabled:
+Each enrolled repo needs two preconditions:
 
 1. A git checkout at `/home/nish/workspaces/products/<name>` — intake does
    `git -C <checkout>/<name> fetch origin` and the worker creates its
@@ -373,193 +306,49 @@ before its unit is enabled:
 
 `fleet2` is permanently excluded (standing rule: no second dispatcher,
 ever). `siterep` is excluded (archived). Both are recorded in the file's
-`excluded` list with reasons, and `tests/intake-repos-shape.test.sh`
-fail-closes if `fleet2` ever reappears in `repos`.
+`excluded` list with reasons.
 
-The reconciler that converges systemd state to this file is fleet-ops#32;
-this file is the coverage decision (#25) it consumes. The reconciler is
-`bin/intake-reconcile`, triggered by `systemd/intake-reconcile.{path,
-service,timer}` (file-change trip + 30-minute sweep). Every enable, disable,
-mask-detect or precondition-fail writes one line to
-`$HOME/.local/state/intake-reconcile/audit.log` with
-`<iso8601> <unit> <action> actor=reconciler why=<reason>` so the four
-silent reversions that prompted this issue have no recurrence path.
+The `bin/intake-reconcile` reconciler and its `intake-reconcile.{path,
+service,timer}` units were deleted in the glue sweep — the file itself is
+the enrolment mechanism (fleet-ops#32, #25).
 
-### `depends-on:` in ticket bodies (fleet-ops#4808)
+### `depends-on:`, `collision-gate:`, spec judge — DELETED in the glue sweep
 
-An `agent-ready` issue can carry a `depends-on:` line naming issues or PRs
-that must be **DONE** before it is claimable. This is how a seam batch is
-sequenced — e.g. `0509#2218` must land before the six sources that depend on
-it, so those sources are not claimed (and their workers spawned) until the
-seam is merged. Without the gate, intake claims regardless and a human has to
-hand-gate by removing `agent-ready`.
-
-The line format is one `depends-on:` line in the body, naming each dependency
-as a same-repo `#<n>` or a cross-repo `owner/repo#<n>`:
-
-```
-depends-on: #2218, Nishfleet/0509#2181
-```
-
-Prose like `depends-on: none` or `depends-on: any of the above` yields no
-references and does not gate the claim.
-
-A dependency is **DONE** when the referenced issue is:
-
-- closed (any close reason), OR
-- has a merged PR whose branch is `claim/issue-<n>` or `fable/issue-<n>`, OR
-- has any merged PR linked via "closes #n" (a cross-referenced PR).
-
-If any named dependency is not DONE, intake skips the issue for that tick
-with the log line `skipped-depends-on:#<n>` (same shape as the other skip
-reasons) and leaves it `agent-ready` — it is re-checked next tick once the
-dependency lands. A dependency cycle (A depends on B depends on A) skips both
-with `depends-on-cycle` instead of a misleading `skipped-depends-on:#n`.
-Resolution is memoised per tick (one gh call per referenced issue per tick).
-
-### `collision-gate:` in ticket bodies (fleet-ops#5165)
-
-The 0509 ticket format carries a `collision-gate:` line naming tickets that
-share a file with it — the later ticket must not be claimed while an earlier
-same-file ticket is still open, or its worker produces a PR racing the
-blocker's. The same gate also lives in Fable's judge packet and
-`agent-state/fleet-landing-watch/ticket-gates.json`, but the body line is the
-ticket's own declaration and intake honours it even when the gate file is
-stale or absent.
-
-The line may carry a parenthetical annotation before the colon:
-
-```
-collision-gate (Fable 2026-09-10 09:40 IST): shares app/lib/x.ts with #2350, #2356
-```
-
-Each named ticket is resolved to DONE with exactly the `depends-on:` rules
-above. If any is not DONE, intake skips the issue for that tick with
-`skipped-collision-gate:#<n>` (first unmet ref named) and leaves it
-`agent-ready`. An org-less `repo#<n>` token on the line — e.g. the
-`permanent fix fleet-ops#4808` trailer — is not a ref and is ignored.
-Collision gates are one-directional, so no cycle detection applies.
-
-## Spec judge (fleet-ops#4801)
-
-Before a worker may claim an `agent-ready` ticket, the intake tick runs a
-**spec judge** over any batch of tickets that share files. The judge is
-Kimi K3 Max (`cursor`/`kimi-k3-max`), judge-only — it never implements.
-It reviews the batch for literal-worker ambiguity, cross-ticket
-ordering/ownership conflicts, budget math, false public claims / soft-404
-/ secret leaks, missing termination/accept, and scope to cut, and returns a
-verdict per ticket (`READY | EDIT | BLOCK`) plus a `## Cross-ticket`
-section with the landing order and shared-helper owners.
-
-**Flow (all inside the existing intake tick — no new timer/dispatcher):**
-
-1. **Detect.** Among open `agent-ready` issues, group those whose `files:`
-   lines share a path (exact path or same directory). A group of `>= 2`
-   without a `spec-judged: <sha-of-bodies>` marker comment is a batch that
-   needs judging; single tickets are exempt.
-2. **Gate.** For such a batch, intake does NOT claim any member. It
-   launches ONE judge run as a transient unit (`--provider cursor
-   --model kimi-k3-max`, prompt on stdin = `prompts/spec-judge.md` + the
-   batch bodies/comments, `RuntimeMaxSec=1800`, `DELIVERABLE=<verdict>`). At
-   most one judge run in flight per repo, never more than 3 per hour
-   fleet-wide (Cursor seat cap). While a batch is being judged the members
-   are skipped, not de-labelled.
-3. **Apply.** When the verdict file lands, the next intake tick applies it
-   mechanically: `READY` -> add the `spec-judged: <hash>` comment; `EDIT`
-   -> apply each quoted replacement with `gh issue edit` (exact-anchor
-   replace; if an anchor is not found verbatim, append a `## Judge edits
-   (binding)` section), add the marker comment, and rewrite `depends-on:`
-   lines from the Cross-ticket landing order; `BLOCK` -> remove
-   `agent-ready`, comment the reason, and file it to the nish-questions
-   pipeline ONLY if the reason is money/legal/product direction, otherwise
-   leave it for the next judge pass after a human or Fable fixes the spec.
-   Re-judge only when a member's body hash changes.
-4. **Failure.** A judge unit dead with an empty verdict is relaunched once;
-   a second failure comments `spec-judge unavailable: <reason>` on the
-   newest batch member and lets intake claim the batch unjudged after 2
-   hours (never block the fleet on the judge).
-
-**How to force a re-judge:** delete the `spec-judged: <sha>` marker comment
-on the batch's newest member (or edit a member body, which changes the sha).
-
-The judge prompt lives at `prompts/spec-judge.md`; the mechanical logic
-lives in `lib/spec-judge.sh` (sourced by `lib/pi-intake-tick.sh`); tests
-in `tests/spec-judge.test.sh`.
-
-## Excluded pending manual review
-
-- `backlog-console-refresh.service.retired-20260819`
+The intake tick no longer parses `depends-on:` or `collision-gate:` body
+lines, and the spec-judge pass (`lib/spec-judge.sh`, `prompts/spec-judge.md`)
+is gone. Ticket bodies may still carry the lines as human context, but no
+machinery reads them.
 
 ## Four-plane resilience drill — DELETED 2026-09-18 (was `fleet-resilience-drill`, issue #455)
 
 > Removed with the synthetic-drill sweep: 1474 lines of rehearsal whose stub units died
-> by design. The seat_sentinel live proof (#5106) went with it — see
-> `tests/fleet-seat-recovery-units.test.sh` section 4b/4c for the retired-assurance note.
-> The commands below no longer exist.
+> by design.
 
-Single-VPS resilience is detection + repair + a regular drill, not a second
-copy of a stateless thing. The adopted-delta list and specs live in
+Single-VPS resilience is detection + repair, not a second copy of a
+stateless thing. The adopted-delta list and specs live in
 [docs/resilience-blueprint.md](docs/resilience-blueprint.md). The VNC
 break-glass runbook is [docs/break-glass-access.md](docs/break-glass-access.md).
-
-```
-fleet-resilience-drill          # run the four-plane drill, print proof, exit 0/1
-fleet-resilience-drill --check  # report whether the repo files are present
-```
-
-The drill never kills live tailscaled or live heartbeat. Resurrection is an
-isolated `Restart=always` stub. State recovery reuses #388. Compute
-break-glass is GitHub-hosted runners. Keystone healthchecks.io URLs (intake,
-scout, reconcile, restore) live in `~/.config/fleet-ops/keystone-hc.env`
-and must be four distinct checks. Unset URLs
-are a LOUD skip. A shared URL is a LOUD fail.
+Keystone healthchecks.io URLs live in `~/.config/fleet-ops/keystone-hc.env`,
+consumed by the `10-keystone-hc.conf` drop-ins on `pi-intake@`/`pi-scout@`;
+an unset URL is a skip, a shared URL is a fail.
 
 ## Worker RAM admission (issue #45)
 
 Admission carries no RAM charge: the concurrency bound is
-`min(target_concurrent, Σ declared provider caps)` — `seat_max_concurrent()`/
-`admit_ceiling()` in `lib/litellm-seat.sh` read the provider-level `cap`
-fields of the cap map (fleet-ops#4263 deleted the hand-tuned
-`ram_gb_per_worker` charge together with `lib/seat-lib.sh`; the model rows
-of the map are the per-model lanes, not this bound) — and RAM safety is
-per-unit `MemoryMax` + systemd-oomd, not a governor division. Known repos
-override the per-unit limits via intake-written drop-ins: fleet-ops#3930 set
-`MemoryMax=4G` with **no `MemoryHigh`** for fleet-ops + 0509 (the throttle
-band is what makes oomd pressure-kill a random sibling, so it was removed;
-4G is now the hard stop with a clean local OOM at the cap), while the heavy
-class of #3281 writes 3G/2G for heavy|keystone packets — this proof's own
-unit (fleet-ops#5806) ran that heavy drop-in.
+`min(target_concurrent, Σ declared provider caps)` — the provider-level
+`cap` fields of `config/seat-caps.json` are the per-seat ceilings — and
+RAM safety is per-unit `MemoryMax` + systemd-oomd, not a governor
+division. Known repos override the per-unit limits via intake-written
+drop-ins: fleet-ops#3930 set `MemoryMax=4G` with **no `MemoryHigh`** for
+fleet-ops + 0509 (the throttle band is what makes oomd pressure-kill a
+random sibling, so it was removed; 4G is now the hard stop with a clean
+local OOM at the cap), while the heavy class of #3281 writes 3G/2G for
+heavy|keystone packets.
 
-`bin/ram-measure` and `bin/ram-metric-compare` are deleted along with the
+`bin/ram-measure` and `bin/ram-metric-compare` were deleted with the
 heartbeat that called them; their last samples remain under
-`~/.local/state/ram-measurement/` (live 2026-08-26: `pi-issue@` cgroup
-`memory.current` p95 822.6 MB — the 35 MB figure in older comments is VmRSS,
-not cgroup cost). Live RAM is now `systemctl --user show -p MemoryPeak
-<unit>` and `systemd-cgtop`.
-
-## Gap-closure loop (issue #180)
-
-The fleet closes its own gaps as a loop on top of the #157 blind audit (the
-audit engine is unchanged). Heartbeat tier1 starts
-`fleet-gap-closure-loop.service` once per tick. That oneshot does **one**
-phase transition and exits: audit → research (cycle 1 and every 4th) → fix →
-drill → measure → conference.
-
-A cycle with findings never convenes the conference. A clean cycle with green
-SLOs and passing drills does. Three senior auditors vote via
-`fleet-gap-closure-auditor@` (formerly a sibling of the deleted `pi-audit@` panel, which was the
-admission panel); only unanimous DONE closes the intensive loop (the daily
-blind-audit timer stays). Two-of-three continues and the dissent is filed as a
-`gap-audit` issue. A later finding or a quality-snapshot FAIL reopens the loop.
-
-While the loop is converging, intake prefers those gap-audit issues over
-product work (`fleet-gap-closure-yield`). `pi-intake-priority`, which treated
-`gap-audit` as critical until unanimous DONE, was deleted on 2026-09-18 — it
-had no caller and had never run.
-
-Live validation of a full cycle (real drill + real conference) is a follow-up
-once merge-to-live has installed these units. This repo ships the machinery
-and the stubbed acceptance tests.
+`~/.local/state/ram-measurement/`. Live RAM is `systemctl --user show
+-p MemoryPeak <unit>` and `systemd-cgtop`.
 
 
 

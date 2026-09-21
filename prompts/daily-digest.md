@@ -51,8 +51,6 @@ and the bin/hermes outbound shim. Same sections, same voice, gathered by you.
      and flag any key under 25%;
    - 24h spend: sum `litellm_spend_metric_total` via
      `curl -s -G 'http://127.0.0.1:9090/api/v1/query' --data-urlencode 'query=sum(increase(litellm_spend_metric_total[24h]))'`.
-   Also report prepaid credit from `fleet_prepaid_credits_usd` in the same
-   Prometheus (only metrics that still exist: query 127.0.0.1:9090/api/v1/series first; fleet_* textfile metrics are gone).
 
 7. **Disk on /.** `df -P /` — percent used.
 
