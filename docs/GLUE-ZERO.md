@@ -67,7 +67,7 @@ scope; it is why the design-it-twice proof below needed retries.
 | 3 | `bin/fleet-claim-release` | 276 L | `systemd/pi-issue-failed@.service:21`, `prompts/intake.md:40` | `prompts/claim-release.md` + `pi --print` (the shape `prometheus-am-executor.yml` already uses for alert repair) | 1 |
 | 4 | `bin/fleet-silent-pr-close-check` | 196 L | `systemd/pi-issue-failed@.service:29` | none. The class is **prevented** by #3 never deleting a branch; the detector and its Exec line both go | 2 |
 | 5 | `bin/fleet-litellm-key` | 35 L | `config/pi-models.json:413` (`!cmd` apiKey) | Pi's own `!cmd` apiKey form pointed at **one vendor command** over a one-key-per-file credential layout | 1 |
-| 6 | `libexec/fleet-metrics-probe.sh` | 214 L | `systemd/fleet-metrics-export.service:37`, 3 alert rules + 11 series in `config/fleet_rules.yml` | **nothing stock** for the GitHub/vendor gauges | 2 + Nish |
+| 6 | `libexec/fleet-metrics-probe.sh` | 214 L | `systemd/fleet-metrics-export.service:37`, 3 alert rules + 11 series in `config/fleet_rules.yml` | **promhippie/github_exporter** (decided 2026-09-22); merge-queue wait and Cursor credits lost | 1, with losses |
 | 7 | `tests/*.test.sh` | 15 files | **none** — `ci.yml` runs stock tools only | delete; there is no consumer to replace | 2 |
 | 8 | `template/extensions/subagent/index.ts` | 11 L | live `~/.pi/agent/extensions/subagent/index.ts` | symlink the whole `subagent/` dir to Pi's shipped example | 1 |
 | 9 | `template/extensions/{cursor-provider,devin-provider,seat-env.ts}` | ~830 L | **none** — deleted live 2026-09-19; the units call the vendor CLIs directly | delete; nothing to replace | 2 |
@@ -365,7 +365,7 @@ reachable again without the resolver's `case`. The existing
 `EnvironmentFile=` source for `fleet-litellm-proxy.service`; only the Pi-side
 read changes. **No key value appears in the repo or in any log.**
 
-### 6. Metrics probe → nothing stock; a decision for Nish
+### 6. Metrics probe → promhippie/github_exporter (decided)
 
 `libexec/fleet-metrics-probe.sh` writes `/var/lib/prometheus/node-exporter/fleet.prom`.
 Exactly what it carries, and who consumes it:
@@ -396,24 +396,29 @@ Three corrections to the assumption this design started from:
 - **Deletion fails loud, not silent.** `FleetProbeStale` alerts on this file's
   own `node_textfile_mtime_seconds` within 10 minutes, and `absent()` counts.
 
-What remains has **no stock exporter on this host or anywhere**: GitHub Actions
-conclusions, hosted-runner queue depth, merge-queue head wait, and Cursor's
-prepaid bucket. All are vendor APIs with no `/metrics` endpoint. The two honest
-options, and Nish picks:
+What remains had no stock exporter *on this host*. **Nish decided 2026-09-22:
+adopt an off-the-shelf one.** The choice is
+[promhippie/github_exporter](https://github.com/promhippie/github_exporter)
+(Apache-2.0, Go, v20.0.0 cut 2026-09-21, image pinned at
+`quay.io/promhippie/github-exporter:19.0.0`, the newest immutable tag), which is
+the only candidate that is both actively maintained and emits a workflow-run
+conclusion metric. The search and the eight rejections are recorded in #8060.
 
-- **(a) Adopt an off-the-shelf GitHub exporter** for the Actions and
-  merge-queue families. That is "prefer proven off-the-shelf", not glue — but it
-  is a new installed component with its own App credentials, and no exporter
-  covers Cursor's prepaid bucket, so that gauge dies either way.
-- **(b) Delete the probe, `fleet-metrics-export.{service,timer}`, and the three
-  alert rules.** Lost, plainly: automated notice that `main` went red, that the
-  hosted queue is backing up, and that the merge-queue head is stalled — the
-  2026-09-12 2h20m stall with 67 queued runs that motivated the probe would now
-  pass unnoticed. Prepaid credit draining becomes something a human notices.
+Two things go with that choice and are not negotiable away:
 
-This design does **not** choose. It is a cost-versus-blindness trade, which is a
-reserved class. Until Nish picks, the probe stays and is the last organ
-standing; it blocks nothing else in the sequence.
+- **The workflow collectors are webhook-fed, not polled.** From source, not from
+  the README: `pkg/exporter/workflow_run.go:117` reads
+  `c.db.GetWorkflowRuns(...)`, and that store is written only by the webhook
+  handler at `pkg/action/server.go:218`. So the exporter needs an inbound path
+  from GitHub. A Cloudflare Tunnel is outbound-only, so `ufw` stays closed — but
+  it is a new surface and #8060 requires it flagged in the PR body.
+- **`CiMergeQueueHeadWaitHigh` dies.** promhippie has no merge-queue metric and
+  neither does anything else. The 2026-09-12 merge-queue head stall (2h20m, 67
+  queued runs) would not alert today. The rule is deleted rather than faked with
+  a proxy series.
+
+**`fleet_prepaid_credits_usd` / `fleet_prepaid_used_usd` are accepted as lost** —
+no exporter reads Cursor's private dashboard API.
 
 ### 7. `tests/*.test.sh` → nothing, because nothing runs them
 
@@ -783,8 +788,8 @@ without its subject.
 
 | order | issue | scope | label |
 |---|---|---|---|
-| H1 | metrics probe | off-the-shelf GitHub exporter, or delete the probe and accept the blind spot | `agent-blocked`, `needs-nish-decision` |
-| H2 | the declared exception | confirm `permission-gate.ts` / `protected-paths.ts` stay, and whether they move to deploy-clone absolute paths in `settings.json` | `agent-blocked`, `needs-nish-decision` |
+| H1 | metrics probe | **decided**: promhippie/github_exporter (#8060) | `agent-ready` |
+| H2 | the declared exception | **decided yes on all points** (#8061) | armed |
 
 ### The dependency graph in one line
 
@@ -792,13 +797,14 @@ without its subject.
 A1 A2 A3 A4 B1 C1 D1 E1 F1 G1     (parallel, no blockers)
                     |  |  |  |  |
                    C2 D2 E2 F2 G2 -> G3
-H1 H2 wait on Nish; #8042 runs independently
+H1 (#8060) and H2 (#8061) both decided; #8042 runs independently
 ```
 
 ## What Nish decides
 
-1. **Organ 6** — adopt an off-the-shelf GitHub Actions exporter, or delete the
-   CI/merge-queue/prepaid gauges and their alert rules and accept the blind spot.
+1. ~~**Organ 6**~~ — **decided 2026-09-22: adopt promhippie/github_exporter.**
+   Cursor prepaid gauges and the merge-queue head-wait rule accepted as lost.
+   Packet: #8060, `agent-ready`.
 2. **Organ 10** — confirm `permission-gate.ts` / `protected-paths.ts` stay as
    declared exceptions under the three conditions above, given the README's own
    finding that pattern gating is defeated by rephrasing.
