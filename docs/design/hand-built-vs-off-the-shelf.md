@@ -1,7 +1,8 @@
 # Hand-built vs. off-the-shelf — replace/delete table
 
 Status: design doc for fleet-ops#4140 (umbrella). Companion to
-`docs/design/litellm-vs-seat-lib.md` (fleet-ops#4130). Nish 2026-09-07:
+the deleted `docs/design/litellm-vs-seat-lib.md` (fleet-ops#4130; removed in
+the #7828 glue sweep — git history holds it). Nish 2026-09-07:
 "queue all on priority. the retired stuff must be wiped and saved to memory to
 never build again unless a good reason exists." This doc is the inventory and
 verdict table; each GO row is filed as its own agent-ready issue referencing
@@ -59,7 +60,8 @@ Prometheus already holds. Replacement: PromQL recording rules (group
 hourly fleet judge (`fable-fleet-check.service`, packet
 `agent-state/fleet-landing-watch/fable-check.md`) which now queries
 `/api/v1/query` with an anti-fabrication rule. The 5 live scripts were
-archived to `archive/opus-heartbeat-retired-2026-09-07/` before deletion.
+deleted outright (the `archive/opus-heartbeat-retired-2026-09-07/` archive
+was itself swept in #7828 — git history holds them).
 
 ### Row 2 — repo-sync-snapshot.py → NO-GO (misdescribed seed map)
 

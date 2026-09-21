@@ -7,16 +7,8 @@ StartLimitBurst=2
 Type=oneshot
 Environment=PATH=/home/nish/.local/bin:/usr/local/bin:/usr/bin:/bin
 WorkingDirectory=/home/nish
-# Same wrapper as pi-scout@.service: pick_seat, fail loud when every seat
-# is walled. Do not pin --provider here — a hardcoded repair seat is how
-# this unit sat activating on quota_exhausted glm-5-2 (fleet-ops#130).
+# Seat rotation is the LiteLLM worker-cheap group. Do not pin --provider —
+# a hardcoded repair seat is how this unit sat activating on quota_exhausted
+# glm-5-2 (fleet-ops#130).
 ExecStart=/bin/sh -c '{ cat "$HOME/.pi/agent/prompts/scout-repair.md"; echo; echo "TARGET REPO: Nishfleet/%i"; } | exec pi --print --session-dir "$HOME/.pi/agent/sessions/pi-scout-repair-%i" --provider litellm --model worker-cheap'
-# code pi-scout@.service already carries. Without this the repair unit was
-# marked FAILED for a non-fault and the unit-escalation@%n drop-in wrote a
-# STOP-REASON per SKIP, which invited another retry into the same saturated
-# escalate.
-# fleet-ops second-cut-A (fa2f27bf9, 2026-09-18) deleted scout-futility-check;
-# its dead ExecStopPost reference was removed from this live file 2026-09-19
-# (fleet-ops issue files the incomplete sweep). No on-exit futility classifier
-# remains; pi-scout@ liveness is covered by the existing canary/timer path.
 TimeoutStartSec=3600

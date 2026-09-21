@@ -30,10 +30,10 @@
 
 **The 5-step fleet live-state check is canonical; the quick minimum below is a
 minimum, never a complete procedure.** Where any live-state wording drifts, the
-generated `idle-fleet-alarm` block in `~/.claude/CLAUDE.md`
-(`docs/standing-rules.md`, SECTION: idle-fleet-alarm) WINS — it is the single
-edit point (fleet-ops#5748). Its steps 3–5 are findings-grade duties and must be
-performed, not skipped:
+generated `idle-fleet-alarm` block in `~/.claude/CLAUDE.md` WINS (fleet-ops#5748).
+The wording authority is the vault `_system/shared-memory/global-standing-rules.md` —
+the repo's `docs/standing-rules.md` copy was deleted in the glue sweep. The
+block's steps 3–5 are findings-grade duties and must be performed, not skipped:
 
 3. `systemctl --user list-units --state=failed` — must be EMPTY (set
    `XDG_RUNTIME_DIR=/run/user/$(id -u)`, or it silently returns nothing).
@@ -71,7 +71,7 @@ Hard rules:
 - Mechanical-fix (fleet-ops#366): ship a detector/gate/test/observe-to-close, or declare `mechanism-impossible: <reason>`.
 - Maintain the todo list via the loaded todo extension, one item per acceptance bullet; if no item has been completed in 10 minutes, stop polishing, commit what works, and either open the PR or post a `blocked-on:` proposal.
 - The bar is 'extremely well', never 'perfect'. (69 hang-kills at 42 min; 27-min low-yield sessions. NOT adopted: agent-to-agent chat loops, 96 sub-agents.)
-- GEO/AEO (ledger 2026-08-27, fleet-ops#1245): measurement and owned-content tactics only; brand gate is preview-then-autonomous; Reddit/community and digital-PR are Nish-reserved (only with a grants[] row in config/geo-aeo-policy.json); llms.txt: skip except developer docs.
+- GEO/AEO (ledger 2026-08-27, fleet-ops#1245): measurement and owned-content tactics only; brand gate is preview-then-autonomous; Reddit/community and digital-PR are Nish-reserved (the grants[] config store was deleted in the glue sweep — Nish's word in the ledger is the only grant); llms.txt: skip except developer docs.
 pstack playbooks (fleet-ops#1260) at `~/.pi/agent/skills/poteto-mode/playbooks/`: bug-fix.md, feature.md, investigation.md, perf-issue.md, session-pickup.md, pause-safely.md; end with opening-a-pr.md. Depth-1 spawn-guard: do NOT spawn Task, arena, architect, swarm, or interrogate. Claim branch stays ours. Do NOT bank a dirty worktree: your unit removes the worktree in its own ExecStopPost, so uncommitted work did not happen — commit and push before you finish. Ignore pstack babysit, shipping, orchestrate, autopilot-* (Graphite).
 
 ### PR body contract — run these before `gh pr create`

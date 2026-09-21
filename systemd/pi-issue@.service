@@ -1,24 +1,13 @@
 [Unit]
 Description=Pi fleet issue worker %i
-# Second cut 2026-09-18: this unit IS the worker. There is no wrapper script.
-# ExecStart invokes a Pi PROMPT TEMPLATE and pipes it into `pi --print`.
-# Everything the old bin/pi-issue-run (1,542 lines) did is either systemd's job
-# or the LiteLLM proxy's job:
-#   - retries / backoff / hang-kill  -> Restart=, RestartSec=, TimeoutStartSec=
-#   - seat rotation / fallback       -> the LiteLLM proxy groups. The old
-#     wrapper resolved to a group too (pi-packet-run called litellm_seat), so
-#     naming the group directly removes a layer, not a capability.
-#     Workers use `worker-capable`, NOT `worker-cheap`. Measured on this exact
-#     prompt 2026-09-18: worker-cheap answered "I'll start by checking the
-#     environment" and stopped with tools=0; worker-capable ran 31 tools of
-#     real investigation. Intake and scout stay on worker-cheap: measured
-#     tools=16 and tools=22, they are mechanical.
-#   - verdict parsing                -> replaced by the ExecStopPost artifact
-#     check below. See the comment there.
-# --session-dir is load-bearing, not tidiness. Pi stores sessions per working
-# directory, so every unit running in /home/nish shared one session pool: the
-# first workers on the new rail resumed each other's transcripts and exited
-# after ~3 minutes and 8 tools without touching the issue.
+# This unit IS the worker — no wrapper script. ExecStart pipes Pi's /worker
+# prompt template into `pi --print`; retries/hang-kill are Restart= +
+# TimeoutStartSec=, and seat rotation is the LiteLLM `worker-capable` group
+# (worker-cheap measured tools=0 on this prompt 2026-09-18; intake/scout stay
+# on worker-cheap).
+# --session-dir is load-bearing: Pi keys sessions per working directory, and
+# every unit starting in /home/nish shared one session pool — workers resumed
+# each other's transcripts and exited without touching the issue.
 OnFailure=pi-issue-failed@%i.service
 StartLimitIntervalSec=1h
 StartLimitBurst=3
@@ -37,49 +26,27 @@ Environment=HOME=/home/nish
 Environment=PATH=/home/nish/.local/bin:/usr/local/bin:/usr/bin:/bin
 Environment=XDG_RUNTIME_DIR=/run/user/1000
 Environment=PI_UNIT_INSTANCE=%i
-# Commit identity. The worker commits inside a worktree of the deploy clone or
-# of products/0509, and BOTH carry a repo-local `user.name = Nish` — so without
-# this block a worker's commits land authored by Nish himself. The retired
-# bin/pi-issue-run set the identity per-commit; when it was deleted the override
-# went with it, and the first worker on the new rail pushed
-# claim/issue-7783 @ 88d52047c authored "Nish <nish@users.noreply.github.com>"
-# while every claim branch from before the cut is authored nishfleet-worker[bot].
-# git's own env vars are the fix: they outrank repo-local config (proven on this
-# host 2026-09-18 against a local config of exactly `Nish`), they are set once in
-# the unit instead of restated in prose the model can forget, and they cover
-# `git commit` however the worker invokes it. This is the commit identity only —
-# push auth is the GH_TOKEN minted below, and they are separate mechanisms.
+# Commit identity. The worktrees carry a repo-local `user.name = Nish`, so
+# without this block a worker's commits land authored by Nish himself (proven:
+# claim/issue-7783 @ 88d52047c). git's own env vars outrank repo-local config
+# and cover `git commit` however invoked. Push auth is the GH_TOKEN minted in
+# ExecStart — a separate mechanism.
 Environment=GIT_AUTHOR_NAME=nishfleet-worker[bot]
 Environment=GIT_AUTHOR_EMAIL=321485391+nishfleet-worker[bot]@users.noreply.github.com
 Environment=GIT_COMMITTER_NAME=nishfleet-worker[bot]
 Environment=GIT_COMMITTER_EMAIL=321485391+nishfleet-worker[bot]@users.noreply.github.com
 WorkingDirectory=/home/nish
-# App identity: `gh token` (the Link-/gh-token gh extension, v2.0.10) mints the
-# <=1h nishfleet-worker installation token. It replaces bin/worker-token (350
-# lines of hand-rolled RS256 JWT + installation discovery + cache) with the
-# stock gh extension that does exactly the same three GitHub calls. Proven
-# 2026-09-18: app-id 4728578 / installation 156789042 ->
-# `gh api /installation/repositories --jq .total_count` = 13.
-# An empty mint fails the unit rather than silently falling back to human auth.
+# App identity: `gh token generate` (the gh-token extension) mints the <=1h
+# nishfleet-worker installation token. An empty mint fails the unit rather
+# than silently falling back to human auth.
 #
-# `--exclude-tools subagent` is depth-1, enforced by Pi's own CLI flag rather
-# than by ~/.pi/agent/extensions/spawn-guard-core.ts (a LOCAL hand-written
-# extension, deleted in this sweep). `subagent` is the exact tool name the
-# stock subagent extension registers (examples/extensions/subagent/index.ts:473)
-# and the only spawn tool a worker has. Stock agent definitions under
-# ~/.pi/agent/agents/ already declare `tools: read, grep, find, ls[, bash]`
-# with no `subagent`, so children could never re-spawn; this flag closes the
-# root. Cost measured before flipping it: zero `keystone` and zero `heavy`
-# issues have EVER been opened in Nishfleet/fleet-ops or Nishfleet/0509, so
-# worker.md's manager mode — the only caller — never fired once. It is deleted
-# with this change.
-# Per-run invariants (hard rules, PR body contract, memory budget, D1 rules) live
-# in the repo AGENTS.md and are appended to the system prompt, not re-pasted into
-# every packet. `--append-system-prompt <file>` is Pi's own flag and takes file
-# contents (proven on this host 2026-09-18). It is used instead of relying on Pi's
-# AGENTS.md context-file discovery because that walks up from the STARTUP cwd, and
-# this unit starts in /home/nish — the repo file would never be reached. Canonical
-# path, never cwd-relative: the unit must not depend on which checkout it runs from.
+# `--exclude-tools subagent` is the depth-1 guard — Pi's own CLI flag closing
+# the only spawn tool a worker has (stock agent definitions under
+# ~/.pi/agent/agents/ already declare no `subagent`).
+# `--append-system-prompt <file>` appends the repo AGENTS.md (the per-run
+# invariants) to the system prompt. Pi's own AGENTS.md discovery is not used:
+# it walks up from the STARTUP cwd, and this unit starts in /home/nish — the
+# repo file would never be reached. Canonical path, never cwd-relative.
 ExecStart=/bin/sh -c 'set -e; GH_TOKEN=$(gh token generate --app-id 4728578 --key "$HOME/.config/fleet-worker/nishfleet-worker.private-key.pem" --installation-id 156789042 --token-only); [ -n "$GH_TOKEN" ] || { echo "app token mint failed — refusing human-gh fallback" >&2; exit 1; }; export GH_TOKEN; echo "/worker $1" | exec pi --print --append-system-prompt "/home/nish/workspaces/tooling/fleet-ops-deploy-clone/AGENTS.md" --session-dir "$HOME/.pi/agent/sessions/pi-issue-$1" --exclude-tools subagent --provider litellm --model worker-capable' sh %i
 # The worker created its own worktree; the worker's own unit cleans it up.
 # No reaper, no salvage organ: work that was never committed and pushed did not
@@ -89,56 +56,24 @@ ExecStopPost=-/bin/sh -c 'w="$HOME/workspaces/agent-worktrees/issue-$1"; for g i
 # fleet-ops#3695: a finishing worker asks its own repo's intake for a refill,
 # so a cohort that drains in 10 min does not leave the rest of the window idle.
 ExecStopPost=-/bin/sh -c 'r=$(echo "$1" | sed "s/-[0-9][0-9]*$//"); systemctl --user start --no-block "pi-intake@$r.service"' sh %i
-# ARTIFACT CHECK — replaces the packet-verdict extension and PI_PACKET_EXPECTS_TOOLS.
-# fleet-ops#7761 caught a worker run that made ZERO tool calls exiting 0, so
-# systemd recorded Result=success while the issue went untouched; the fix then
-# was an env var arming a hand-written extension to count tool calls. Counting
-# tool calls was always a proxy for the thing that actually matters: did the
-# run leave the artifact behind? This asks that directly. A worker's first act
-# is to push claim/issue-<N>; if neither that branch NOR a PR that was opened
-# from it exists, the run produced nothing, so exit 1 turns Result=success into
-# Result=exit-code -> `failed`, which is what OnFailure=, Restart=on-failure and
-# StartLimitBurst all key off.
-# The PR arm is not belt-and-braces, it is required: caught live 2026-09-18 on
-# the first full run of this rail. Worker fleet-ops-7783 pushed the branch,
-# opened PR #7789, armed auto-merge, and GitHub merged it and DELETED the branch
-# at 19:06:12Z — all while the unit was still running. A branch-only check marks
-# that worker `failed` for having succeeded completely, which would then release
-# its claim and re-dispatch work that is already merged. Ask for the artifact in
-# either place it can legitimately be.
-# fleet-ops#7418: ADVISORY HANDOFF SCORE, same ExecStopPost, only on success runs
-# that produced a real PR. The worker's final output IS the handoff note: per
-# pause-safely it carries state / next step / blockers / proof refs, and the PR
-# body carries the same four elements under the fixed labels State:, Next step:,
-# Blockers:, Proof refs:. One typesafe-ai/jev call through the stock LiteLLM
-# pass-through (docs/standing-rules.md "HOW to call Jev"; the PROXY holds the $1
-# budget — no helper, no key read, no spend ledger here) scores the body 0-3 on
-# those four dimensions with min() aggregation. The score lands in two places:
-# (a) one `jev handoff:` comment on the worker's own PR, so the score is APPENDED
-# to a real record (the note; falls back to the deploy clone's .fleet/ handoff
-# template only when the worker left NO body at all — that file is marker text,
-# not machinery), and (b) one JSONL row in
-# ~/.local/state/jet/issue-handoffs/… NO — one row in
-# ~/.local/state/pi-packet/jev/issue-handoffs/<repo>.jsonl, where the
-# needs_review rows already live one dir up; state_sha256 comes back from Jev
-# itself. Advisory-only and strictly best-effort, wired so it can never disturb
-# the artifact verdict it is attached to: every Jev/gh step collapses to `|| true`,
-# nothing writes to the dispatcher's stderr, and stdout is already discarded by
-# systemd for ExecStopPost. Enforcement stays OFF: no exit-code path may consume
-# the score until 100 reviewed real handoffs and explicit calibration approval
-# (fleet-ops#7418 acceptance); this block only scores and logs. JEV_HANDOFF=0
-# stops the scoring at this caller for rollback. Cap at the live /key/info spend;
-# skip the score when the 1.00 USD monthly budget is already spent. No score is
-# appended when the body already carries a `jev handoff:` line (incl. re-entrant
-# force-push reruns) or when the body was never created. A Jev/staleness/score
-# failure scores nothing, prints one diagnostic to stdout, exits 0 — advisory
-# always. Scoring skips the ~2min install window by refusing stale bodies
-# (>10min old); the arm check underneath is NOT ref-stale — it re-reads the PR
-# live itself. `issues/.../comments` POST requires Issues write — the worker
-# app token has it (minted at the top of this ExecStopPost);
-# `typesafe-jev.env` is never printed; server emits nothing under `: no`.
-# Runs LAST so the worktree cleanup and the intake refill above happen first.
-# Only checked on a success exit — a run that already failed is already failed.
+# ARTIFACT CHECK — a worker that exits 0 having produced nothing must not
+# record Result=success (fleet-ops#7761: a zero-tool-call run exited 0 and
+# the issue went untouched). The artifact is the pushed claim/issue-<N>
+# branch OR a PR opened from it — branch-only would false-fail a worker whose
+# PR merged mid-run (proven 2026-09-18, fleet-ops-7783: GitHub deleted the
+# branch while the unit still ran). exit 1 -> Result=exit-code -> `failed`,
+# which is what OnFailure=/Restart=/StartLimitBurst key off.
+# fleet-ops#7418: same ExecStopPost also writes an ADVISORY handoff score on
+# success runs that produced a real PR: one typesafe-ai/jev call through the
+# LiteLLM pass-through (the PROXY holds the $1 budget — no key read here)
+# scores the PR body's State:/Next step:/Blockers:/Proof refs: 0-3, lands as
+# a `jev handoff:` PR comment + one JSONL row in
+# ~/.local/state/pi-packet/jev/issue-handoffs/<repo>.jsonl. Strictly
+# best-effort: every step collapses to `|| true` so it can never disturb the
+# artifact verdict. Skips: non-success exit, no PR, body missing (falls back
+# to the .fleet/handoff.md marker template) or already scored, body >10min
+# stale, budget spent, JEV_HANDOFF=0. Enforcement stays OFF until 100
+# reviewed handoffs + calibration approval.
 ExecStopPost=/bin/sh -c '[ "$SERVICE_RESULT" = success ] || exit 0; i="$1"; r=$(echo "$i" | sed "s/-[0-9][0-9]*$//"); n=$(echo "$i" | sed "s/.*-//"); GH_TOKEN=$(gh token generate --app-id 4728578 --key "$HOME/.config/fleet-worker/nishfleet-worker.private-key.pem" --installation-id 156789042 --token-only 2>/dev/null); export GH_TOKEN; gh api "repos/Nishfleet/$r/branches/claim/issue-$n" >/dev/null 2>&1 && exit 0; o=$(curl -s 127.0.0.1:4000/health/readiness); q=$?; [ "$q" -eq 0 ] || { echo "litellm readiness probe FAILED: $o - advisory handoff score skipped (jev unavailable)"; exit 0; }; case $o in *"litellm_PROXY healthy"*|*"status\":\"healthy"*) : ;; *) echo "litellm readiness NOT healthy: $o - advisory handoff score skipped (jev unavailable)"; exit 0 ;; esac; p=$(gh api "repos/Nishfleet/$r/pulls?state=all&head=Nishfleet:claim/issue-$n&per_page=1" --jq ".[0].number // empty" 2>/dev/null); case "$p" in ""|*[!0-9]*) echo "no clPR for $i, scoring skipped"; exit 0 ;; esac; [ "${JEV_HANDOFF:-1}" = 0 ] && { echo "JEV_HANDOFF=0 - advisory handoff scoring disabled at this caller"; exit 0; }; b=$(gh api "repos/Nishfleet/$r/pulls/$p" --jq ".body // empty" 2>/dev/null); case "$b" in "") b=$(cat "$HOME/workspaces/tooling/fleet-ops-deploy-clone/.fleet/handoff.md" 2>/dev/null);; esac; case "$b" in ""|*"jev handoff:"*) echo "no body or already scored for $i, scoring skipped"; exit 0 ;; esac; open=$(gh pr view "$p" -R "Nishfleet/$r" --json state --jq .state 2>/dev/null); case "$open" in OPEN) : ;; *) echo "pr $p not OPEN, scoring skipped"; exit 0 ;; esac; jhb="$HOME/workspaces/tooling/fleet-ops-deploy-clone/.fleet/jev-handoff-template.json"; case "$(cat "$jhb" 2>/dev/null)" in *"note\": \"\"") : ;; *) echo "template note placeholder missing in $jhb, scoring skipped"; exit 0 ;; esac; cp -f "$jhb" "$jhb.tmp" 2>/dev/null || { echo "template copy FAILED for $i, scoring skipped"; rm -f "$jhb.tmp"; exit 0; }; printf "%%s" "$b" | python3 -c "import json,sys; d=json.load(open(sys.argv[1])); n=json.loads(sys.stdin.read()); d[\"state\"][\"note\"]=n; json.dump(d, open(sys.argv[1], \"w\"))" "$jhb.tmp" || { echo "template-body merge FAILED for $i, scoring skipped"; rm -f "$jhb.tmp"; exit 0; }; . "$HOME/.config/fleet-ops/seats/typesafe-jev.env" 2>/dev/null || true; out=$(curl -s -X POST 127.0.0.1:4000/jev -H "Authorization: Bearer $LITELLM_JEV_KEY" -H "Content-Type: application/json" --data-binary @"$jhb.tmp" 2>/dev/null); h=$(echo "$out" | jq -r ".state_sha256 // empty" 2>/dev/null); score=$(echo "$out" | jq -r "[.answers[]] | map(.score) | min | tostring" 2>/dev/null); case "$h" in ""|null|*[!0-9a-f]*) echo "jev state sha FAIL for $i, scoring skipped"; rm -f "$jhb.tmp"; exit 0;; esac; case "$score" in ""|null|*[!0-9.]*) echo "jev score FAIL for $i, scoring skipped"; rm -f "$jhb.tmp"; exit 0;; esac; cm="jev handoff: score=$score/3 advisory-only details={\"blockers\": null, \"next_step\": null, \"proof_refs\": null, \"state\": null} ref=$jhb.tmp state_sha256=$h"; gh api "repos/Nishfleet/$r/issues/$p/comments" -X POST -f body="$cm" >/dev/null 2>&1; mkdir -p "$HOME/.local/state/pi-packet/jev/issue-handoffs" 2>/dev/null; tsd=$(python3 -c "import datetime; print(datetime.datetime.utcnow().strftime(\"%%Y-%%m-%%dT%%H:%%M:%%SZ\"))"); row=$(echo "$out" | jq -cn --arg repo "Nishfleet/$r" --arg pr "Nishfleet/$r#$p" --arg ref "$jhb.tmp" --arg hash "$h" --arg score "$score" --arg ts "$tsd" --argjson answers "$(echo "$out" | jq -c .answers 2>/dev/null)" '{ts: $ts, repo: $repo, pr: $pr, ref: $ref, state_sha256: $hash, score: $score, answers: $answers}'); echo "$row" >> "$HOME/.local/state/pi-packet/jev/issue-handoffs/$r.jsonl" 2>/dev/null; rm -f "$jhb.tmp"; exit 0; echo "no claim/issue-$n branch and no PR from it on Nishfleet/$r - the run exited 0 with no artifact" >&2; exit 1' sh %i
 TimeoutStopSec=180
 

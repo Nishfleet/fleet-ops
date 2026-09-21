@@ -186,125 +186,66 @@ cp config/litellm-proxy.yaml ~/.config/fleet-ops/litellm-proxy.yaml
 # If a live config already exists, edit it in place instead of copying.
 ```
 
-### 3a. The start wrapper (`~/.local/bin/fleet-litellm-proxy-start`)
+### 3a. Credential environment — no wrapper
 
-The proxy unit's `ExecStart` IS this wrapper. It exists because two things
-LiteLLM needs cannot be expressed in the config file (fleet-ops#4174
-reopen — without it the installed organ dies at startup):
+The `~/.local/bin/fleet-litellm-proxy-start` wrapper was deleted in the
+2026-09-19 glue sweep. `systemd/fleet-litellm-proxy.service` now does the
+same job with stock directives: a glob of `EnvironmentFile=-%h/.config/fleet-ops/seats/*.env`
+plus the named seat files, `EnvironmentFile=` for the master key, and
+`Environment=DATABASE_URL=...`, then a direct `ExecStart` on the venv's
+litellm binary. The seat env files below are the ones that glob picks up —
+the list is the reference for what must exist under
+`~/.config/fleet-ops/seats/` on a rebuild, not a file to copy anywhere.
+
+Two things LiteLLM needs cannot be expressed in the config file
+(fleet-ops#4174 reopen — without them the organ dies at startup):
 
 1. Keys come from `os.environ/<NAME>`, so something has to export them.
-   The wrapper sources the credential env files that already exist on the
-   host and reads the xai OAuth access token out of Pi's `auth.json`. It
-   prints nothing, moves nothing, duplicates nothing — the stores stay
-   where they are.
+   The unit's `EnvironmentFile=` lines source the credential env files
+   that already exist on the host. Nothing is printed, moved or
+   duplicated — the stores stay where they are.
 2. LiteLLM's Prisma layer reads `DATABASE_URL` from the ENVIRONMENT, not
-   from `general_settings.database_url`. And the socket-less form
+   from `general_settings.database_url`. The socket-less form
    `postgresql:///litellm` is rejected by the query engine (P1012); the
-   working form is host-qualified.
+   unit's host-qualified `Environment=DATABASE_URL=...` is the working
+   form.
 
-It is operator-owned (it names secret-bearing paths) so it is NOT a MANIFEST
-entry; this runbook is its canonical copy, which is what makes a bare-metal
-rebuild complete. `tests/fleet-litellm-organ.test.sh` §5e pins that the unit
-and this section stay in sync.
-
-The unit invokes it through `/usr/bin/env` (`ExecStart=/usr/bin/env
-~/.local/bin/fleet-litellm-proxy-start`). That keeps the first ExecStart token
-runner-safe, so CI's `systemd-analyze` job and `p14-unstubbed-unit-verify` pass
-without a Workflows-scope ci.yml stub (fleet-ops#4398); `/usr/bin/env` execs the
-wrapper via its shebang, so the live organ is unchanged.
+The env files the unit loads (rebuild reference — each is a mode-0600
+`KEY=value` file created by hand, never committed):
 
 ```sh
-cat > ~/.local/bin/fleet-litellm-proxy-start <<'EOF'
-#!/bin/bash
-# fleet-litellm-proxy-start — resolve credentials into the environment at
-# runtime, then exec litellm. See docs/litellm-postgres-setup.md §3a.
-set -euo pipefail
-set -a
-
-# --- env-file providers (KEY=value format, safe to source) ---
-# fleet-ops#6748: use the seats directory from repair record #7100.
-# The old fleet2 directory was removed; see the incident note below.
-source /home/nish/.config/fleet-ops/seats/opencode.env
-source /home/nish/.config/fleet-ops/seats/commandcode.env
-source /home/nish/.config/fleet-ops/seats/hetzner.env
-source /home/nish/.config/fleet-ops/seats/devin.env
-source /home/nish/.config/fleet-ops/seats/cursor.env
-source /home/nish/.config/fleet-ops/seats/openrouter.env
-# fleet-ops#4219: P3a dual-run found the original pool walled/dead in seat-lib
-# (opencode-zen balance, commandcode model unsupported, hetzner corpse, straitly
-# credits exhausted, grok cli-chat-proxy 426). Source the credential env files of
-# the seats that are actually usable and OpenAI-compatible.
-source /home/nish/.config/fleet-ops/seats/alibaba-coding.env
-source /home/nish/.config/fleet-ops/seats/groq.env
-source /home/nish/.config/fleet-ops/seats/ollama.env
-source /home/nish/.config/fleet-ops/seats/cline.env
-source /home/nish/.config/fleet-ops/seats/paretoinference.env
-source /home/nish/.config/xkiro/.env
-source /home/nish/.config/fleet-ops/seats/runinfra.env
-source /home/nish/.config/fleet-ops/seats/entrim.env
-source /home/nish/.config/fleet-ops/seats/crof.env
-# 2026-09-11 seat wire-up: synthetic + llmgateway-devpass prepaid worker seats
-# (fleet-ops packet; env files mode 600 under ~/.config/fleet-ops/seats/).
-source /home/nish/.config/fleet-ops/seats/synthetic.env
-source /home/nish/.config/fleet-ops/seats/llmgateway-devpass.env
-# 2026-09-12 seat wire-up: nebius Token Factory metered worker seat (same
-# packet; env file mode 600 under ~/.config/fleet-ops/seats/).
-source /home/nish/.config/fleet-ops/seats/nebius.env
-
-# --- straitly (lives in ~/.config/straitly/) ---
-source /home/nish/.config/straitly/straitly.env
-
-# --- xai-oauth: OAuth access token from auth.json (refreshed every 4h by
-# grok-token-refresh). Read once at proxy start; grok-token-refresh restarts
-# this unit after a successful rotate so the new token is picked up
-# (fleet-ops#4629). cli-chat-proxy identity headers live on the grok-4.6
-# deployments as litellm_params.extra_headers in the live yaml, not here.
-export XAI_OAUTH_ACCESS_TOKEN=$(/usr/bin/python3 -c "
-import json, sys
-try:
-    a = json.load(open('/home/nish/.pi/agent/auth.json'))
-    sys.stdout.write(a.get('xai-oauth', {}).get('access', ''))
-except Exception:
-    sys.stdout.write('')
-")
-
-# --- MiniMax (fleet-ops#5788): the claude-minimax-key wrapper resolves
-# ~/.mmx/config.json into an access token, refreshing it transparently if
-# within 5 min of expiry. Captured once at proxy start.
-#
-# The minimax-token-refresh timer that used to compare this captured value
-# against a fresh wrapper key every 2h and bounce the proxy on a mismatch
-# was DELETED in the 2026-09-18 glue sweep: the live yaml carries no MiniMax
-# deployment any more (the key 401s "login fail" — see the yaml header), so
-# there was nothing left for a rotated key to reach. Its last 8 hours of runs
-# all logged "SKIP: no live fleet-litellm-proxy process to inspect" — its
-# /proc detection had stopped matching the running proxy too.
-# Restore the timer from git history if a MiniMax deployment ever returns.
-export MINIMAX_API_KEY=$(/home/nish/.local/bin/claude-minimax-key)
-
-# --- the proxy's own admin key (virtual-key minting). Generated once,
-# stored in a mode-0600 env file owned by the operator, never in the repo.
-source /home/nish/.config/fleet-ops/litellm-master-key.env
-
-# --- DATABASE_URL: Prisma reads this from the ENV, not the config file.
-# The fleet-owned cluster listens on loopback; the socket-only form is
-# rejected by the query engine (P1012).
-export DATABASE_URL=postgresql://litellm@localhost:5432/litellm
-# venv/bin first so `prisma` is on PATH (proxy_cli.py looks it up as a
-# bare binary). PYTHONPATH loads the prisma 0.15 _engine-setter compat
-# hook (fleet-ops#4628) so reconnect does not AttributeError on the
-# dropped _Prisma__engine mangled name.
-export PATH=/home/nish/.local/venvs/litellm/bin:$PATH
-export PYTHONPATH=/home/nish/.local/libexec/fleet-litellm-prisma-compat${PYTHONPATH:+:$PYTHONPATH}
-
-set +a
-exec /home/nish/.local/venvs/litellm/bin/litellm \
-  --config /home/nish/.config/fleet-ops/litellm-proxy.yaml \
-  --port 4000 \
-  --host 127.0.0.1
-EOF
-chmod 700 ~/.local/bin/fleet-litellm-proxy-start
+# ~/.config/fleet-ops/seats/*.env — every seat credential, globbed by the
+# unit's EnvironmentFile=-%h/.config/fleet-ops/seats/*.env
+~/.config/fleet-ops/seats/opencode.env
+~/.config/fleet-ops/seats/commandcode.env
+~/.config/fleet-ops/seats/hetzner.env
+~/.config/fleet-ops/seats/devin.env
+~/.config/fleet-ops/seats/cursor.env
+~/.config/fleet-ops/seats/openrouter.env
+~/.config/fleet-ops/seats/alibaba-coding.env
+~/.config/fleet-ops/seats/groq.env
+~/.config/fleet-ops/seats/ollama.env
+~/.config/fleet-ops/seats/cline.env
+~/.config/fleet-ops/seats/paretoinference.env
+~/.config/fleet-ops/seats/runinfra.env
+~/.config/fleet-ops/seats/entrim.env
+~/.config/fleet-ops/seats/crof.env
+~/.config/fleet-ops/seats/synthetic.env
+~/.config/fleet-ops/seats/llmgateway-devpass.env
+~/.config/fleet-ops/seats/nebius.env
+# seats that live outside the seats dir (named EnvironmentFile= lines)
+~/.config/xkiro/.env
+~/.config/straitly/straitly.env
+# the proxy's own admin key for virtual-key minting — generated once,
+# operator-owned, mode 0600; the live config's master_key is
+# os.environ/LITELLM_MASTER_KEY
+~/.config/fleet-ops/litellm-master-key.env
 ```
+
+Historical note: the seat set above was the live roster when the wrapper
+was deleted (fleet-ops#6748, #4219, #5788, and the 2026-09-11/12 seat
+wire-ups). Some seats have since been benched in the live yaml — the yaml
+header and `config/litellm-proxy.yaml` are the current roster of record.
 
 #### September 15–16 outage evidence, #6748
 

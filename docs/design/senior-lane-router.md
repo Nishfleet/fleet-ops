@@ -5,8 +5,8 @@ retry/cooldown/roster numbers landed via PR #5811 (2026-09-12); the roster
 collapsed to a single upstream per group during the 2026-09-18/19 seat
 failures (fleet-ops#7862) and the repo re-converged to the live file on
 2026-09-21 (the #6732 closed-incident posture). Companion doc:
-`docs/design/litellm-vs-seat-lib.md` (the P0 design record — historical, not
-a mirror).
+the former `docs/design/litellm-vs-seat-lib.md` (the P0 design record —
+deleted in the #7828 glue sweep; git history holds it).
 
 Source of truth: `config/litellm-proxy.yaml` on `main`. This doc mirrors that
 file; the file wins on any drift.
