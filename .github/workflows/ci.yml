@@ -82,6 +82,10 @@ jobs:
   # directory or with a script extension, and on any ADDED unit Exec line
   # long enough to be a program instead of a command. Existing offenders are
   # #7828's to delete; this stops new ones. Required check, empty bypass.
+  # Nish 2026-09-22 ("no glue anywhere, wipe all glue"): the organs slated for
+  # deletion also may not GROW. Overnight 2026-09-21/22 seven worker PRs added
+  # 359 KB to bin/, lib/, libexec/ and tests/ while the check only watched for
+  # new files. A diff that only deletes lines in those trees still passes.
   no-glue:
     name: no-glue
     runs-on: ubuntu-latest
@@ -90,8 +94,10 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
-      - name: No new script, helper or hook files
-        run: test -z "$(git diff --diff-filter=A --name-only origin/main...HEAD -- 'bin/**' 'scripts/**' 'libexec/**' 'ops/**' 'hooks/**' '.github/scripts/**' '**/*.sh' '**/*.mjs' '.fleet/**')"
+      - name: No new script, helper, hook, library, test or extension files
+        run: test -z "$(git diff --diff-filter=A --name-only origin/main...HEAD -- 'bin/**' 'lib/**' 'scripts/**' 'libexec/**' 'ops/**' 'hooks/**' '.github/scripts/**' 'tests/**' 'template/extensions/**' '**/*.sh' '**/*.py' '**/*.mjs' '**/*.ts' '.fleet/**')"
+      - name: No added lines in organs slated for deletion (glue is deleted, never tuned)
+        run: test -z "$(git diff --numstat origin/main...HEAD -- 'bin/**' 'lib/**' 'libexec/**' 'tests/**' 'template/extensions/**' '.fleet/**' | awk '$1 > 0')"
       - name: No new inline programs in unit Exec lines
         run: "! git diff origin/main...HEAD -- systemd/ | grep -E '^\\+Exec[A-Za-z]*=.{400,}'"
       - name: No unescaped ${...} inside sh -c programs on unit Exec lines (systemd expands it to empty before sh runs; #8204 stopped every worker start)
