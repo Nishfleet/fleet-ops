@@ -256,8 +256,11 @@ of scope: they do not live in `session-*.scope`. `claim/issue-*` and
 
 1. **ci** — stock checks: shellcheck on `systemd/*.sh` when any exist,
    `promtool check rules config/fleet_rules.yml`, semgrep
-   `--config p/default`, a YAML parse of `config/*.yml`, and a fail on any
-   workflow consuming a `secrets.*PAT` credential (fleet-ops#6793).
+   `--config p/default`, a YAML parse of `config/*.yml`, a fail on any
+   workflow consuming a `secrets.*PAT` credential (fleet-ops#6793), and a
+   grep gate on `template/cursor-rules/shared-memory.mdc` that rejects the
+   pre-#6610 universal approval gate and the deleted `memoryctl` mandate
+   (fleet-ops#7803).
 2. **no-glue** — rejects any added script/helper/hook file (`bin/`,
    `scripts/`, `libexec/`, `ops/`, `hooks/`, `.github/scripts/`, `*.sh`,
    `*.mjs`, `.fleet/`) and any added unit `Exec` line long enough to be a
