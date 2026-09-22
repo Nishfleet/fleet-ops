@@ -41,8 +41,18 @@
 #      commits ahead stays a plain delete. The ahead check is fail-closed
 #      like the PR check: unreadable compare -> HOLD. A preserve that cannot
 #      land -> HOLD, never delete.
+#   4. --require-artifact is the success-path verdict (fleet-ops#7745), not a
+#      release: read-only, exits non-zero when a worker exited 0 having
+#      produced nothing. The claim branch ALONE is not evidence — intake step
+#      5c force-pushes origin/main onto it before the worker starts, so it
+#      exists even after a zero-tool run (fleet-ops#7761, which this restores
+#      after the 2026-09-21 #8087 sweep deleted the last artifact check).
+#      Evidence is a PR from claim/issue-<N> that is open or merged, a
+#      worker-terminal label, or a closed issue. A run that only pushed a
+#      branch is a partial: it fails here so the OnFailure release preserves
+#      the commits to wip/issue-<N> (#8003) and re-queues.
 #
-# Usage: fleet-claim-release <repo>-<issue> [--dry-run]
+# Usage: fleet-claim-release <repo>-<issue> [--dry-run] [--require-artifact]
 #
 # Environment (tests override all of these):
 #   GH                 gh binary (test seam — a stub also skips the token mint)
@@ -51,8 +61,10 @@
 #   CLAIM_RELEASE_NOW  ISO-8601 UTC clock for trace timestamps
 #
 # Exit: 0 on every tolerated path (released, held, or deferred on gh
-# failure — a held claim is never fatal). Non-zero only on usage errors or
-# an App-token mint failure (auth is a hard precondition).
+# failure — a held claim is never fatal). Non-zero only on usage errors, an
+# App-token mint failure (auth is a hard precondition), or --require-artifact
+# finding no artifact on a success exit (which is the point: it fails the
+# unit so OnFailure= and StartLimitBurst= fire).
 
 set -euo pipefail
 
@@ -71,7 +83,7 @@ usage() {
     cat <<'EOF'
 fleet-claim-release — guarded claim release for pi-issue-failed@ (fleet-ops#6292)
 
-usage: fleet-claim-release <repo>-<issue> [--dry-run]
+usage: fleet-claim-release <repo>-<issue> [--dry-run] [--require-artifact]
 
 Releases a dead worker's claim without ever silently closing an open PR:
   - open PR on claim/issue-<N>  -> HOLD: no branch delete, no label flip;
@@ -83,14 +95,23 @@ Releases a dead worker's claim without ever silently closing an open PR:
     issue), trace line on the issue.
   - gh check failure            -> HOLD (fail-closed): loud log, exit 0.
 
+--require-artifact is the pi-issue@ ExecStopPost success-path verdict
+(fleet-ops#7745): read-only, exits 0 only when the run left a PR on
+claim/issue-<N> that is open or merged, a worker-terminal label
+(`agent-blocked`, `needs-nish-decision`, `needs-orchestrator`) or a closed
+issue; exits 1 otherwise so the unit records `failed`. Never releases, never
+writes. Skipped unless the service's main process exited 0.
+
 EOF
 }
 
 dry_run=0
+require_artifact=0
 instance=""
 for a in "$@"; do
     case "$a" in
         --dry-run) dry_run=1 ;;
+        --require-artifact) require_artifact=1 ;;
         -h|--help) usage; exit 0 ;;
         -*) echo "fleet-claim-release: unknown flag $a" >&2; usage; exit 2 ;;
         *) instance="$a" ;;
@@ -118,6 +139,51 @@ if [[ -z "${GH_TOKEN:-}" && "${GITHUB_ACTIONS:-}" != "true" && "$GH" == "gh" ]];
         exit 1
     }
     export GH_TOKEN
+fi
+
+# --- 0. success-path artifact check (fleet-ops#7745) --------------------------
+# The claim branch is NOT evidence: intake step 5c force-pushes origin/main
+# onto claim/issue-<N> before the worker starts, so the branch (and the
+# branch-exists probe the #7761 check used) survives a zero-tool run. The
+# real artifacts are a PR from that branch that is open or merged (a PR
+# merged mid-run still counts — GitHub may delete the branch but keeps the
+# PR), a worker-terminal label, or a closed issue. A pushed branch with no PR
+# is a partial: it FAILS here so the OnFailure release preserves it to
+# wip/issue-<N> (#8003) instead of stranding it on a ref intake will reset.
+# Read-only; only a clean exit (SERVICE_RESULT=success) is judged — a run
+# that already failed is the release path's business. Fail-closed: an
+# unreadable check fails the unit, and the release it triggers holds.
+if [[ "$require_artifact" == "1" ]]; then
+    if [[ "${SERVICE_RESULT:-success}" != "success" ]]; then
+        log "ARTIFACT-SKIP $full#$issue — SERVICE_RESULT=${SERVICE_RESULT:-unset}; the failure path owns the release"
+        exit 0
+    fi
+    artifact_prs=""
+    if ! artifact_prs=$("$GH" api "repos/$full/pulls?state=all&head=Nishfleet:${branch}&per_page=100" 2>/dev/null); then
+        log "ARTIFACT-CHECK-FAILED $full#$issue — pulls?state=all unreadable; treating the run as failed (fail-closed, fleet-ops#7745)"
+        exit 1
+    fi
+    if printf '%s' "$artifact_prs" | jq -e 'type == "array" and any(.[]; .state == "open" or .merged_at != null)' >/dev/null 2>&1; then
+        log "ARTIFACT-OK $full#$issue — an open/merged PR exists on $branch"
+        exit 0
+    fi
+    artifact_issue=""
+    if ! artifact_issue=$("$GH" issue view "$issue" -R "$full" --json state,labels 2>/dev/null); then
+        log "ARTIFACT-CHECK-FAILED $full#$issue — issue unreadable; treating the run as failed (fail-closed, fleet-ops#7745)"
+        exit 1
+    fi
+    artifact_terminal="$(printf '%s' "$artifact_issue" | jq -r '[.labels[]?.name] | any(. == "agent-blocked" or . == "needs-nish-decision" or . == "needs-orchestrator")')"
+    if [[ "$artifact_terminal" == "true" ]]; then
+        log "ARTIFACT-OK $full#$issue — worker-terminal label on the issue"
+        exit 0
+    fi
+    artifact_state="$(printf '%s' "$artifact_issue" | jq -r '.state // "unknown"')"
+    if [[ "$artifact_state" == "CLOSED" || "$artifact_state" == "closed" ]]; then
+        log "ARTIFACT-OK $full#$issue — issue is ${artifact_state}"
+        exit 0
+    fi
+    log "NO-ARTIFACT $full#$issue — ${unit} exited success with no open/merged PR on $branch, no terminal label and the issue still open; failing the run so the release path re-queues (fleet-ops#7745)"
+    exit 1
 fi
 
 comment_issue() {

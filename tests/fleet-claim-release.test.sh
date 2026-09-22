@@ -36,6 +36,7 @@ here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 repo_root="$(cd "$here/.." && pwd)"
 bin="$repo_root/bin/fleet-claim-release"
 unit="$repo_root/systemd/pi-issue-failed@.service"
+worker_unit="$repo_root/systemd/pi-issue@.service"
 
 fail() { echo "FAIL: $*" >&2; exit 1; }
 ok()   { echo "OK: $*"; }
@@ -69,6 +70,9 @@ case "$cmd" in
             "repos/"*"/pulls?state=open&head="*)
                 [ "${MOCK_PULLS_RC:-0}" != "0" ] && exit "$MOCK_PULLS_RC"
                 printf '%s' "${MOCK_OPEN_PRS:-[]}" ;;
+            "repos/"*"/pulls?state=all&head="*)
+                [ "${MOCK_ALL_PRS_RC:-0}" != "0" ] && exit "$MOCK_ALL_PRS_RC"
+                printf '%s' "${MOCK_ALL_PRS:-[]}" ;;
             "repos/"*"/git/refs/heads/wip/"*)
                 [ "${MOCK_WIP_EXISTS:-no}" = "yes" ] && printf '{"ref":"x","object":{"sha":"%s"}}' "${MOCK_WIP_SHA:-w1pw1pw1p}" || exit 1 ;;
             "repos/"*"/git/refs/heads/"*)
@@ -117,6 +121,7 @@ run_release() {
     [ -z "$mi" ] && mi='{"state":"OPEN","labels":[{"name":"agent-in-progress"}]}'
     MOCK_OPEN_PRS="${MOCK_OPEN_PRS:-[]}" MOCK_BRANCH_EXISTS="${MOCK_BRANCH_EXISTS:-yes}" \
     MOCK_PULLS_RC="${MOCK_PULLS_RC:-0}" MOCK_ISSUE_RC="${MOCK_ISSUE_RC:-0}" \
+    MOCK_ALL_PRS="${MOCK_ALL_PRS:-[]}" MOCK_ALL_PRS_RC="${MOCK_ALL_PRS_RC:-0}" \
     MOCK_ISSUE="$mi" \
         "$bin" "$@"
 }
@@ -223,11 +228,91 @@ if grep -q "issue edit" "$gh_log"; then fail "label flip ran on a held claim: $(
 grep -q "AHEAD-CHECK-FAILED" "$scratch/err.11" || fail "no loud flag on compare failure: $(cat "$scratch/err.11")"
 ok "compare failure -> fail-closed hold, loud flag"
 
-# --- 12. unit wiring --------------------------------------------------------------
+# --- 13. --require-artifact: open PR -> OK, read-only (fleet-ops#7745) -----------
+MOCK_ALL_PRS='[{"number":700,"state":"open","merged_at":null}]' \
+    run_release fleet-ops-6252 --require-artifact >/dev/null 2>"$scratch/err.13" \
+    || fail "--require-artifact rejected an open PR: $(cat "$scratch/err.13")"
+grep -q "ARTIFACT-OK" "$scratch/err.13" || fail "no ARTIFACT-OK for an open PR"
+if grep -Eq "DELETE|issue edit|issue comment|git/refs" "$gh_log"; then
+    fail "--require-artifact wrote on the OK path: $(cat "$gh_log")"
+fi
+ok "--require-artifact: open PR -> OK, no writes"
+
+# --- 14. --require-artifact: merged PR (branch deleted mid-run) -> OK -----------
+MOCK_ALL_PRS='[{"number":700,"state":"closed","merged_at":"2026-09-20T00:00:00Z"}]' \
+    run_release fleet-ops-6252 --require-artifact >/dev/null 2>"$scratch/err.14" \
+    || fail "--require-artifact rejected a merged PR: $(cat "$scratch/err.14")"
+grep -q "ARTIFACT-OK" "$scratch/err.14" || fail "no ARTIFACT-OK for a merged PR"
+ok "--require-artifact: merged PR -> OK"
+
+# --- 15. --require-artifact: closed-unmerged PR is NOT evidence -> exit 1 --------
+if MOCK_ALL_PRS='[{"number":700,"state":"closed","merged_at":null}]' \
+    run_release fleet-ops-6252 --require-artifact >/dev/null 2>"$scratch/err.15"; then
+    fail "a closed-unmerged PR counted as an artifact"
+fi
+grep -q "NO-ARTIFACT" "$scratch/err.15" || fail "no NO-ARTIFACT flag: $(cat "$scratch/err.15")"
+ok "--require-artifact: closed-unmerged PR -> exit 1"
+
+# --- 16. --require-artifact: no PR, no label, issue open -> exit 1 --------------
+if MOCK_ALL_PRS='[]' MOCK_ISSUE='{"state":"OPEN","labels":[{"name":"agent-in-progress"}]}' \
+    run_release fleet-ops-6252 --require-artifact >/dev/null 2>"$scratch/err.16"; then
+    fail "the zero-artifact run exited 0 (the #7745 wedge)"
+fi
+grep -q "NO-ARTIFACT" "$scratch/err.16" || fail "no NO-ARTIFACT flag: $(cat "$scratch/err.16")"
+if grep -Eq "DELETE|issue edit|issue comment|git/refs" "$gh_log"; then
+    fail "the no-artifact path wrote: $(cat "$gh_log")"
+fi
+ok "--require-artifact: zero-artifact exit 0 -> exit 1, no writes"
+
+# --- 17. --require-artifact: worker-terminal label -> OK ------------------------
+for lbl in agent-blocked needs-orchestrator needs-nish-decision; do
+    MOCK_ALL_PRS='[]' MOCK_ISSUE="{\"state\":\"OPEN\",\"labels\":[{\"name\":\"$lbl\"}]}" \
+        run_release fleet-ops-6252 --require-artifact >/dev/null 2>"$scratch/err.17" \
+        || fail "--require-artifact rejected terminal label $lbl: $(cat "$scratch/err.17")"
+done
+grep -q "ARTIFACT-OK" "$scratch/err.17" || fail "no ARTIFACT-OK for a terminal label"
+ok "--require-artifact: agent-blocked/needs-orchestrator/needs-nish-decision -> OK"
+
+# --- 18. --require-artifact: CLOSED issue with no PR -> OK ----------------------
+MOCK_ALL_PRS='[]' MOCK_ISSUE='{"state":"CLOSED","labels":[]}' \
+    run_release fleet-ops-6252 --require-artifact >/dev/null 2>"$scratch/err.18" \
+    || fail "--require-artifact rejected a closed issue: $(cat "$scratch/err.18")"
+grep -q "ARTIFACT-OK" "$scratch/err.18" || fail "no ARTIFACT-OK for a closed issue"
+ok "--require-artifact: closed issue -> OK"
+
+# --- 19. --require-artifact: a failed run is the release path's business ---------
+if ! MOCK_ALL_PRS='[]' SERVICE_RESULT=exit-code \
+    run_release fleet-ops-6252 --require-artifact >/dev/null 2>"$scratch/err.19"; then
+    fail "--require-artifact judged a run that already failed: $(cat "$scratch/err.19")"
+fi
+grep -q "ARTIFACT-SKIP" "$scratch/err.19" || fail "no ARTIFACT-SKIP on a non-success result"
+if grep -q "pulls?state=all" "$gh_log"; then
+    fail "--require-artifact queried GitHub on a non-success run: $(cat "$gh_log")"
+fi
+ok "--require-artifact: SERVICE_RESULT!=success -> skip, no queries"
+
+# --- 20. --require-artifact: unreadable checks fail the run (fail-closed) --------
+if MOCK_ALL_PRS_RC=1 run_release fleet-ops-6252 --require-artifact >/dev/null 2>"$scratch/err.20"; then
+    fail "an unreadable pulls?state=all did not fail the run"
+fi
+grep -q "ARTIFACT-CHECK-FAILED" "$scratch/err.20" || fail "no ARTIFACT-CHECK-FAILED flag: $(cat "$scratch/err.20")"
+if MOCK_ALL_PRS='[]' MOCK_ISSUE_RC=1 run_release fleet-ops-6252 --require-artifact >/dev/null 2>"$scratch/err.20b"; then
+    fail "an unreadable issue did not fail the run"
+fi
+grep -q "ARTIFACT-CHECK-FAILED" "$scratch/err.20b" || fail "no ARTIFACT-CHECK-FAILED on issue read"
+ok "--require-artifact: unreadable gh -> exit 1 (fail-closed)"
+
+# --- 21. unit wiring ------------------------------------------------------------
 grep -q "bin/fleet-claim-release %i" "$unit" \
     || fail "pi-issue-failed@.service does not call bin/fleet-claim-release"
 grep -q "bin/fleet-silent-pr-close-check" "$unit" \
     || fail "pi-issue-failed@.service does not run the silent-close check"
-ok "unit calls the guarded release and the detector"
+art_line="$(grep '^ExecStopPost=.*--require-artifact' "$worker_unit")"
+[ -n "$art_line" ] || fail "pi-issue@.service has no --require-artifact ExecStopPost"
+[ "${#art_line}" -lt 400 ] \
+    || fail "artifact ExecStopPost is ${#art_line} chars — the no-glue bound is 400"
+grep -q "fleet-claim-release %i --require-artifact" "$worker_unit" \
+    || fail "pi-issue@.service does not pass --require-artifact to the release script"
+ok "unit calls the guarded release, the detector, and the artifact check"
 
 echo "PASS: fleet-claim-release"

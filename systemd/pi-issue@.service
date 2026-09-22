@@ -76,24 +76,19 @@ ExecStopPost=-/bin/sh -c 'w="$HOME/workspaces/agent-worktrees/issue-$1"; for g i
 # fleet-ops#3695: a finishing worker asks its own repo's intake for a refill,
 # so a cohort that drains in 10 min does not leave the rest of the window idle.
 ExecStopPost=-/bin/sh -c 'r=$(echo "$1" | sed "s/-[0-9][0-9]*$//"); systemctl --user start --no-block "pi-intake@$r.service"' sh %i
-# ARTIFACT CHECK — a worker that exits 0 having produced nothing must not
-# record Result=success (fleet-ops#7761: a zero-tool-call run exited 0 and
-# the issue went untouched). The artifact is the pushed claim/issue-<N>
-# branch OR a PR opened from it — branch-only would false-fail a worker whose
-# PR merged mid-run (proven 2026-09-18, fleet-ops-7783: GitHub deleted the
-# branch while the unit still ran). exit 1 -> Result=exit-code -> `failed`,
-# which is what OnFailure=/Restart=/StartLimitBurst key off.
-# fleet-ops#7418: same ExecStopPost also writes an ADVISORY handoff score on
-# success runs that produced a real PR: one typesafe-ai/jev call through the
-# LiteLLM pass-through (the PROXY holds the $1 budget — no key read here)
-# scores the PR body's State:/Next step:/Blockers:/Proof refs: 0-3, lands as
-# a `jev handoff:` PR comment + one JSONL row in
-# ~/.local/state/pi-packet/jev/issue-handoffs/<repo>.jsonl. Strictly
-# best-effort: every step collapses to `|| true` so it can never disturb the
-# artifact verdict. Skips: non-success exit, no PR, body missing (falls back
-# to the .fleet/handoff.md marker template) or already scored, body >10min
-# stale, budget spent, JEV_HANDOFF=0. Enforcement stays OFF until 100
-# reviewed handoffs + calibration approval.
+# ARTIFACT CHECK (fleet-ops#7745) — a worker that exits 0 having produced
+# nothing must not record Result=success. The claim branch ALONE is not
+# evidence: intake step 5c force-pushes origin/main onto it before the
+# worker starts, so the #7761 branch-exists probe passed even zero-tool runs
+# — and #8087 deleted the check outright on 2026-09-21, leaving runs that
+# exited 0 empty as `success` (the #7745 wedge: three 60s–3.5min runs, no
+# comment, no PR, issue stuck `agent-in-progress`). The predicate lives in
+# bin/fleet-claim-release --require-artifact: a PR from claim/issue-<N> that
+# is open or merged, or a worker-terminal label. exit 1 -> Result=exit-code
+# -> `failed`, which OnFailure=/Restart=/StartLimitBurst key off; OnFailure
+# then runs the guarded release. Runs last so cleanup and the intake refill
+# run first.
+ExecStopPost=/home/nish/workspaces/tooling/fleet-ops-deploy-clone/bin/fleet-claim-release %i --require-artifact
 TimeoutStopSec=180
 
 # Retry policy — systemd's own, not a counter in bash.
