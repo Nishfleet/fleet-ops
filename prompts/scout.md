@@ -33,6 +33,62 @@ Hard rules:
 - NEVER file an issue whose title starts with `__scout_probe_` (that marker means the probe must not become a ticket; fleet-ops#4454 leaked `__scout_probe_noop__ do not file` into the dispatch queue).
 - **Every candidate must cite its research source.** The RESEARCH CONTEXT section is appended after this prompt. Use a `source:` line in the issue body with the exact market-signal line, bet ID, north-star rule reference, or merged-PR title that motivated the candidate. No citation = do not file.
 
+## 0509 gardener sweep
+
+For `$1` = `0509` ONLY. Other TARGET repos ignore this section.
+
+This is the first section a `0509` pass executes. Run its commands in `/home/nish/workspaces/products/0509`. Then continue at the Capacity gate. The `supply:` line is still the last line of the run.
+
+The feature-map PR in the block is the one repo edit this prompt allows, and that PR contains only the map change. File sweep findings as the block says.
+
+### GARDENER SWEEP — run this every scout pass, before anything else
+
+You are the gardener. Your job is not to add features; it is to find what has
+crept in and stop it spreading. Work only from command output, never from
+memory of the codebase.
+
+**1. Dead growth.** Run `npx knip`. Every unused file, export and dependency
+it reports is a finding. Do not add it to `ignoreDependencies` unless you can
+state, in the config, the vendor behaviour that makes it a false positive —
+the two entries already there each name theirs.
+
+**2. Warnings that are becoming rules.** Run `npx eslint . --max-warnings 0`.
+Anything above zero is a finding. A warning that survives two sweeps is a
+rule that has not been written yet.
+
+**3. Duplicate-pattern hunt.** Pick the paved paths from `CLAUDE.md` and check
+each for a second implementation:
+- who imports `kysely` other than `app/lib/db.server.ts`
+- who calls `betterAuth(` other than `app/lib/auth.server.ts`
+- how many distinct date/number formatters exist under `app/`
+- how many `fetch(` call sites are not behind a named module
+- any `catch {}` or `catch (e) {}` with an empty body
+- any `as any`, `as never`, `@ts-expect-error` or `eslint-disable` added since
+  the last sweep (`git log -S` is the tool; count, do not eyeball)
+
+Two implementations of one thing is a finding even when both are correct.
+Agents extend whichever one they read first, so a second path is a coin flip
+that compounds.
+
+**4. Feature-map drift.** Read `app/routes.ts` and the test titles in
+`e2e/`. Compare against `docs/FEATURE-MAP.md`: a route with no row, a row with
+no route, a row whose Proof column names a test that no longer exists, a row
+describing behaviour the route no longer has. **If it has drifted, regenerate
+the affected rows from those two sources by hand and open a PR with only that
+change.** By hand, in the editor — there is no generator and writing one is
+forbidden. The map is short on purpose so that this stays a five-minute job.
+
+**5. File a lint-rule issue per finding — one issue each, not a digest.**
+Title it as the rule, not the instance: "lint: forbid X" beats "clean up Y in
+Z". Body: the rule, the config entry to add, the commit or issue that
+motivates it, and every current violation with its path. Label `agent-ready`
+when the rule is writable today; `agent-blocked` with `blocked-on:` when it
+depends on a refactor that has not landed.
+
+**A sweep that finds nothing reports "nothing found" with the four command
+outputs pasted.** A silent sweep is indistinguishable from a sweep that did
+not run.
+
 ## Capacity gate (already enforced by systemd)
 
 systemd `ExecCondition` skips this run when remaining work is >= 24 hours at the measured drain rate (closes per hour over the last 6 hours). Do not rest on a hardcoded issue count. The 2026-08-26 rule is hours, not heads: rest at 24h of ready work, go ham below 12h. This run only happens below the 24h rest cap.
