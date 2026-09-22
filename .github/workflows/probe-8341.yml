@@ -1,0 +1,7 @@
+name: probe-8341
+on: workflow_dispatch
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo "${{ github.eventt.name }}"

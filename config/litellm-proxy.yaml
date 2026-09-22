@@ -255,7 +255,7 @@ benched:
   reason: "openai/deepseek-v4.1-flash @ https://ollama.com/v1 (OLLAMA_API_KEY) — chat OK + tool_choice=ping OK at 18:00 IST, then HTTP 429 'you (nishant345) have reached your weekly usage limit' after the five-rung /health burst (fleet-ops#7862). Restore ONLY with a green chat AND a green tool_choice probe cited in the PR, and do not replicate the rung across groups without health_check_concurrency: 1."
   was: [worker-cheap, worker-capable, senior, judge, worker-private]
   litellm_params:
-    model: openai/deepseek-v4.1-flash
+    model: openai/glm-5.3-flash
     api_base: https://ollama.com/v1
     api_key: os.environ/OLLAMA_API_KEY
     tags:
