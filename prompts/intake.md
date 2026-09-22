@@ -139,7 +139,19 @@ Steps:
    on. Do not claim, do not spawn. Otherwise:
    a. `git -C /home/nish/workspaces/products/<repo> fetch origin`
    b. `git -C ... ls-remote origin refs/heads/claim/issue-N` — a hash means
-      someone already holds it; skip.
+      the ref exists, not that a live worker holds it. A tick that died
+      between the c push and the f start leaves a claim ref no unit owns,
+      and skipping forever starves the issue every tick (fleet-ops#7796:
+      #6534/#5751/#6770 sat unclaimable at the queue head). Check the holder
+      first: `systemctl --user list-units '*-issue@<repo>-N.service'
+      --state=active,activating --no-legend` — any row means a live worker
+      owns the claim; skip. No rows → orphan: run
+      `CLAIM_RELEASE_UNIT_PREFIX=pi-intake
+      /home/nish/workspaces/tooling/fleet-ops-deploy-clone/bin/fleet-claim-release
+      <repo>-N` once — it re-checks open PRs fail-closed, preserves
+      ahead-of-main work to `wip/issue-N`, deletes the ref and posts the
+      trace line. Re-run the ls-remote: ref gone → continue to c and claim
+      this tick; still present (HELD on an open PR, gh error) → skip.
    c. `git -C ... push --force-with-lease=refs/heads/claim/issue-N: origin
       origin/main:refs/heads/claim/issue-N`. REJECTED means you lost the race; skip.
    d. `gh issue edit N -R Nishfleet/<repo> --remove-label agent-ready

@@ -91,4 +91,32 @@ for needle in 'agent-blocked' 'awaiting-runtime-gate'; do
   ok "pick-work drops '$needle'"
 done
 
+# --- orphan claim refs release instead of starving the issue (fleet-ops#7796) --
+# A claim ref with no live worker and no open PR used to be skipped every tick
+# forever: the 5b ls-remote treated ref-existence as held-by-someone. The claim
+# step must now distinguish a live holder (a *-issue@<repo>-N unit in
+# active/activating) from an orphan, release the orphan through the existing
+# guarded releaser (fail-closed open-PR check, wip/ preserve, trace line), and
+# only then attempt the claim push.
+claim_section="$(awk '/Claim, in order/{f=1} /Print one line|Jev cascade/{f=0} f' "$intake")"
+[[ -n "$claim_section" ]] || fail "cannot isolate the Claim step section"
+for needle in \
+  'ls-remote origin refs/heads/claim/issue-N' \
+  'fleet-claim-release' \
+  'active,activating' \
+  'wip/issue-'; do
+  grep -qF -- "$needle" <<< "$claim_section" \
+    || fail "claim step missing '$needle' — an orphan claim ref must be released via the guarded releaser, not skipped forever (fleet-ops#7796)"
+  ok "orphan-claim release carries '$needle'"
+done
+# The live-holder check must run BEFORE the releaser: deleting the claim ref of
+# a running worker destroys in-flight work (the #7816 live-worker shape).
+holder_line="$(grep -nF -- '-issue@<repo>-N.service' <<< "$claim_section" | head -1 | cut -d: -f1 || true)"
+release_line2="$(grep -nF -- 'fleet-claim-release' <<< "$claim_section" | head -1 | cut -d: -f1 || true)"
+[[ -n "$holder_line" && -n "$release_line2" ]] \
+  || fail "claim step lacks the live-holder probe or the releaser call (fleet-ops#7796)"
+(( holder_line < release_line2 )) \
+  || fail "live-holder check must precede the releaser — a live worker's claim ref is never orphaned (fleet-ops#7796)"
+ok "live-holder check precedes releaser (line $holder_line < $release_line2)"
+
 echo "PASS: intake-gate-release"
