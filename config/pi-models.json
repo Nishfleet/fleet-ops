@@ -377,15 +377,9 @@
           "name": "LiteLLM senior (ordered fallback ladder)",
           "contextWindow": 500000,
           "maxTokens": 131072
-        },
-        {
-          "id": "worker-private",
-          "name": "LiteLLM worker-private (paid only, private repos)",
-          "contextWindow": 256000,
-          "maxTokens": 32768
         }
       ],
-      "_comment_4219": "fleet-ops#4219 P3a: single provider, all five model groups. P2 pinned the apiKey to the judge-scoped virtual key; P3a's callers need the worker groups too and pi holds one apiKey per provider, so the resolver now emits the master key (fleet-litellm-key master) which accesses every group. Per-tier virtual keys (sk-fleet-worker/senior/private) return in P3b for per-tier spend attribution; group/tag spend tracking in the proxy Postgres is unaffected. The resolver reads the operator-owned env files; no key value is in this file."
+      "_comment_4219": "fleet-ops#4219 P3a: single provider, all four model groups. P2 pinned the apiKey to the judge-scoped virtual key; P3a's callers need the worker groups too and pi holds one apiKey per provider, so the resolver now emits the master key (fleet-litellm-key master) which accesses every group. Per-tier virtual keys (sk-fleet-worker/senior/private) return in P3b for per-tier spend attribution; group/tag spend tracking in the proxy Postgres is unaffected. The resolver reads the operator-owned env files; no key value is in this file. worker-private left the catalog in fleet-ops#8341 (no served rung — the proxy has no model_name for it; its cap-0 parking stays in seat-caps.json): re-add the id and a rung in the same PR when P3b wires the group."
     },
     "deepseek": {
       "name": "DeepSeek Direct (last-resort metered)",
