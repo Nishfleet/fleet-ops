@@ -161,4 +161,22 @@ RestartSec=240
 RestartSteps=3
 RestartMaxDelaySec=30min
 # Hang detection: a worker active longer than this is terminated into `failed`.
-TimeoutStartSec=45min
+# fleet-ops#8324 (population diagnosis, 2026-09-22): 45min is TOO SHORT for this
+# lane, which is why the router lane had the worst timeout rate (5/15 = 33%).
+# The controls settle the class: Finished-OK router sessions today ran
+# p50 25.7 min / p90 44.7 min / p95 44.9 min, and the timed-out units were
+# killed at exactly 45.0 min with 130-207 tool calls already on the clock --
+# MORE work than the median OK unit (128 calls), at the same ~4-5 tools/min
+# rate. The worker was still working at the wall, not idle. Its CPU was only
+# 1.0-11.3% of the 45min (max 299s) and its long blocks were local
+# `timeout vitest/playwright` and CI-polling `for i in $(seq 1 30); sleep 1`
+# loops -- wall-bound build steps, not seat cooldowns (zero 429/quota/walled
+# signatures in any timed-out unit's own transcript). Host load was 4.85 on
+# 8 vCPU with 5 GB MemAvailable at the same timestamp, so this is NOT a
+# concurrency-governor value either (true peak 17 workers vs the 25 ceiling).
+# 16 of 30 timed-out units across every lane completed on the restart, which
+# is the same work re-run to the end given more wall. 90min covers p95 of this
+# lane's own measured demand with headroom for the CI-poll loops; it is the
+# lowest rung because the wrong-lever alternatives (a governor value, a seat
+# cap) are contradicted by the measurements above.
+TimeoutStartSec=90min
