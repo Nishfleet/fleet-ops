@@ -49,6 +49,10 @@
 # issue workers on worker-capable. What actually protects the fleet: each group carries rungs
 # from TWO different upstreams, the groups fall back to each other, and cooldown 60 /
 # num_retries 0 / RateLimitErrorRetries 0 fails over on the first wall instead of retry-storming.
+# Caveat (#8199): the pareto z-ai/glm-5.3-flash rung still shares (model, api_base) with the
+# 2026-09-14 benched: entry below, so the router-groups guard currently reads it as a
+# silently-restored benched rung until #8199 lands — TWO upstreams is upstream DISTINCTNESS,
+# not a health verdict.
 # Named reason for the accepted residual single point (#7786 bullet 2): every upstream is ONE
 # prepaid account; a second account per provider is a purchase, and money is Nish's call, so
 # this config accepts account-level walls and relies on the failover above instead. The ollama
