@@ -130,7 +130,7 @@ Before filing anything, check every candidate against ALL open issue titles/bodi
 
 Work top-down. Stop adding candidates once you have more than 8 strong ones; you will trim in step 4.
 
-For `0509`, read the **RESEARCH CONTEXT** section appended after this prompt first. It contains today's market signal, the ranked transformation bets, the north-star rule, the **Direction** block (the current product-direction decision fed from the decisions ledger — see A.7), the live **Usage** telemetry block (cloudflare analytics, lp_run_audit, /search query log, inbound email, and the nightly money-path walk), and recent merged PRs. Candidates for `0509` must be grounded in one of those items or in a Nish-authored issue; if a candidate is purely code-shaped and not research/usage-shaped, drop it.
+For `0509`, read the **RESEARCH CONTEXT** section appended after this prompt first. It contains today's market signal, the ranked transformation bets, the north-star rule, the **Direction** block (the current product-direction decision fed from the decisions ledger — see A.7), the live **Usage** telemetry block (cloudflare analytics, lp_run_audit, /search query log, inbound email, and the nightly money-path walk), and recent merged PRs. Candidates for `0509` must be grounded in one of those items or in a Nish-authored issue; if a candidate is purely code-shaped and not research/usage-shaped, drop it. A 0509 gardener finding is the exception: file it even though it is code-shaped.
 
 ### A.7 Direction (0509 — authoritative until the metric moves)
 
@@ -140,7 +140,7 @@ The RESEARCH CONTEXT **Direction** block carries the current 0509 product-direct
 
 Origin: 2026-09-09 (fleet-ops#4657, 0509#2122). For `Nishfleet/0509` ONLY. Other TARGET repos ignore this section. Do not change `label_budget` itself.
 
-**Funnel-stage rule.** Every 0509 candidate that would receive `scout-candidate` MUST name the funnel stage it moves, as a `funnel_stage:` line in the body with exactly one of: `visit` / `signup` / `first watchlist` / `first proof` / `paid`. A candidate with no `funnel_stage:` line is tagged `usage-uncited` instead of `scout-candidate`. File it; do not drop it; do not spend a `label_budget` slot on it. A.6 research-floor candidates still need `funnel_stage:` to receive `scout-candidate`; without it they stay `usage-uncited` only.
+**Funnel-stage rule.** Every 0509 candidate that would receive `scout-candidate` MUST name the funnel stage it moves, as a `funnel_stage:` line in the body with exactly one of: `visit` / `signup` / `first watchlist` / `first proof` / `paid`. A candidate with no `funnel_stage:` line is tagged `usage-uncited` instead of `scout-candidate`. File it; do not drop it; do not spend a `label_budget` slot on it. A.6 research-floor candidates still need `funnel_stage:` to receive `scout-candidate`; without it they stay `usage-uncited` only. A 0509 gardener finding does not carry `funnel_stage:`. It still receives `scout-candidate` and counts toward `label_budget`.
 
 **Ranking rule.** While `signups-30d == 0` (source: `scripts/weekly-business-metrics.mjs` once it lands; until then the D1 `user` created_at count in 0509 `docs/ga-metrics.md`, also carried on the RESEARCH CONTEXT Direction block as `signups_30d`), acquisition-class candidates rank above fix/polish-class when applying `scout-candidate` inside `label_budget`. This ranks. It must NOT block or freeze fix/polish/design items (Nish, 2026-09-09T05:38Z, 0509#2122). File them. Label them after the acquisition-class slots are filled.
 
@@ -217,7 +217,7 @@ money-path walk finding), or a Nish-authored issue (`source: nish#<n>`).
 A code-shaped candidate whose `source:` cites none of these is **dropped** —
 the scout files what customers actually see, not work invented from code
 inspection alone. That "code inspection alone" prohibition STAYS even in
-the fallback below.
+the fallback below. A 0509 gardener finding is the exception. Its citation is `source: REBUILD-TRUST §C2`. Do not drop it.
 
 **Research floor (fleet-ops#4560, #4850):** if the Usage block reports every
 source empty or green (no signal either way — the normal state for a site
@@ -277,6 +277,8 @@ product_surface: <user-visible page or flow name>
 termination: <one exact verification command whose exit 0 means done; must be runnable locally in the repo checkout>
 ```
 
+A 0509 gardener finding uses this same field set. `termination:` is the sweep command that reported the finding. `metric:` is that command. `observed:` and `evidence:` are the command output and the paths. `accept:` is the rule and the config entry to add. `source:` is `REBUILD-TRUST §C2`. `dedupe:` names the open issue, or `none`. `impact:` is the paved path the finding splits. `product_surface:` is the path. `rollback:` is reverting that rule. `verify:` is the same command as `termination:`.
+
 **Quality gate:** If you cannot write `termination:` as a concrete command (not prose), drop the candidate.
 
 **Mechanical-fix rule (fleet-ops#366):** if the candidate is a failure-fix (incident, detector/canary/postmortem bug, revert follow-up), `accept:` MUST require a prevention mechanism (detector that auto-files the ticket, gate that rejects the pattern, regression test/drill that proves the guard fires, observe-to-close) or an explicit `mechanism-impossible: <reason>` the conference will judge. Do not file a fix-shaped issue whose acceptance is "change the code and merge".
@@ -333,7 +335,7 @@ FAILS fleet/CI tooling by design. Apply `agent-ready` there, still within
 `accept:` / `required:` / `metric:` line. A prose-only body stays
 unlabeled until it has a spec (fleet-ops#543).
 
-Prefer labeling the highest product-impact issues first. For `0509` while `signups-30d == 0`, that order is A.8: acquisition-class first, then fix/polish-class. A 0509 candidate with no `funnel_stage:` line gets `usage-uncited` instead of `scout-candidate`. Do not label more than `label_budget` total. Do not change `label_budget` itself.
+Prefer labeling the highest product-impact issues first. For `0509` while `signups-30d == 0`, that order is A.8: acquisition-class first, then fix/polish-class. A 0509 candidate with no `funnel_stage:` line gets `usage-uncited` instead of `scout-candidate`. A 0509 gardener finding does not carry `funnel_stage:` and still receives `scout-candidate`. Do not label more than `label_budget` total. Do not change `label_budget` itself.
 
 ## Step 5 — Summary (stdout)
 
