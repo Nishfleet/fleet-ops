@@ -222,8 +222,13 @@ Steps:
       2026-09-19); else if `systemctl --user list-units 'cursor-issue@*.service' --state=active,activating --no-legend | wc -l`
       is below 3 AND the Cursor seat is not walled (parked 2026-09-22 01:20 IST: four starts answered `ActionRequiredError: You're out of usage`; un-park only after one `cursor-agent -p` probe on grok-4.7-high returns text, then delete this clause), use `cursor-issue@<repo>-N` (Cursor Grok 4.6 High on Nish's prepaid Cursor seat,
       proven headless 2026-09-19 13:21 IST); otherwise `pi-issue@<repo>-N`. Then:
-      `systemctl --user is-active --quiet <engine>-issue@<repo>-N.service ||
+      `systemctl --user list-units '<engine>-issue@<repo>-N.service'
+       --state=active,activating --no-legend | grep -q . ||
        systemctl --user start --no-block <engine>-issue@<repo>-N.service`
+      — `is-active` reads an `activating` oneshot as not-live, so it would
+      issue a redundant start on a running worker; the list-units probe is
+      the same shape as the capacity and holder checks above
+      (fleet-ops#7805).
       Sleep 5 seconds before the next start — a cohort whose startup peaks
       coincide spikes the slice and trips systemd-oomd.
    g. One slot used.
