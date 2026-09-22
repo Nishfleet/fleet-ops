@@ -7,10 +7,10 @@
 # webhook receiver is down (the repair path itself is broken — the one
 # meta-alert that means Nish must be paged).
 #
-# The Debian package owns /etc/prometheus/prometheus.yml; a hand copy
-# deploys this as a copy (system-scope drop-in semantics, not a symlink,
-# because it crosses a privilege boundary). fleet-ops-deploy reloads prometheus
-# after the change.
+# The Debian package owns /etc/prometheus/prometheus.yml; fleet-sync.service
+# deploys this as a root-owned copy (not a symlink: prometheus cannot
+# traverse /home/nish) and reloads prometheus after the change
+# (fleet-ops#8084).
 global:
   scrape_interval: 30s
   scrape_timeout: 25s
