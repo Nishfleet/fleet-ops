@@ -21,9 +21,14 @@ Steps:
 1. **Label the invisible.** `gh issue list -R Nishfleet/<repo> --state open
    --json number,title,labels --limit 100`. Intake only sees `agent-ready`, so an open
    issue carrying none of `agent-ready` / `agent-in-progress` / `agent-blocked`
-   / `noise-class` / `superseded-by-rebuild` / `deputy` / `needs-nish-decision`
-   is invisible forever. Add `agent-ready` to each such issue.
-   Never add `agent-ready` to an issue that already carries `agent-blocked`,
+   / `noise-class` / `superseded-by-rebuild` / `deputy` / `needs-nish-decision` / `proposed`
+   is invisible forever. Add `agent-ready` to such an issue ONLY when its
+   author is `nish3451` (the owner's filing is the admission). Any other
+   author (the worker app, a scout, Devin, dependabot) gets `proposed`, never
+   `agent-ready`: workers do not admit their own work (Nish 2026-09-22,
+   fleet-ops#8304). A `proposed` issue becomes work only when Nish or Fable
+   adds `agent-ready` by hand.
+   Never add `agent-ready` to an issue that already carries `proposed`, `agent-blocked`,
    `awaiting-runtime-gate`, `noise-class`, `superseded-by-rebuild`, `deputy`,
    or `needs-nish-decision`. `noise-class` and `superseded-by-rebuild` are
    terminal: not work. `deputy` means the Opus deputy owns it, never the fleet.
