@@ -21,9 +21,32 @@ Steps:
 1. **Label the invisible.** `gh issue list -R Nishfleet/<repo> --state open
    --json number,title,labels --limit 100`. Intake only sees `agent-ready`, so an open
    issue carrying none of `agent-ready` / `agent-in-progress` / `agent-blocked`
-   / `noise-class` / `superseded-by-rebuild` / `deputy` / `needs-nish-decision`
-   is invisible forever. Add `agent-ready` to each such issue.
-   Never add `agent-ready` to an issue that already carries `agent-blocked`,
+   / `noise-class` / `superseded-by-rebuild` / `deputy` / `needs-nish-decision` / `proposed`
+   is invisible forever. Add `agent-ready` to such an issue ONLY when its
+   author is `nish3451` (the owner's filing is the admission). Any other
+   author (the worker app, a scout, Devin, dependabot) gets `proposed`, never
+   `agent-ready`: workers do not admit their own work (Nish 2026-09-22,
+   fleet-ops#8304). A `proposed` issue becomes work only when Nish or Fable
+   adds `agent-ready` by hand — or Jev does, once, with full context (Nish
+   2026-09-22: "have jev classify the ambiguous ones, with full context"):
+   for each issue you just labelled `proposed`, one POST and no code:
+   `curl -s 127.0.0.1:4000/jev -H "Authorization: Bearer $(grep -m1 '^LITELLM_JEV_KEY=' ~/.config/fleet-ops/seats/typesafe-jev.env | cut -d= -f2-)" -H 'content-type: application/json' -d @<state.json>`
+   where `state` is `{"issue": <ref, title and full body>, "author": <login>,
+   "admission_test": "Admit only if (a) a cheap fast model could fix it tonight,
+   correctly, without asking anyone, AND (b) it names a user-facing change or is
+   a repair directly upstream of one: a dead lane, red CI on the product repo, a
+   gate letting bad PRs merge. Control-plane self-work, advisory or shadow
+   tiers, docs about the fleet and stale-comment fixes are never admissible.",
+   "direction": <the repo's Direction block if the packet carries one>}` and
+   `questions` is `{"admit": {"type": "boolean", "instructions": "Should this
+   issue be admitted as worker-ready under the admission test?"}}`. Read
+   `.answers.admit.probability`; keep it only if it is a finite number in [0,1].
+   p >= 0.9: add `agent-ready`, remove `proposed`, comment `jev admit: p=<p>`.
+   p <= 0.1: leave `proposed`, comment `jev admit: p=<p>; not work`.
+   Otherwise, or on any failure: leave `proposed`, add `needs-orchestrator`,
+   comment `jev admit: p=<p or unavailable>; Fable decides`. First opinion
+   only; never re-ask, never invent a probability.
+   Never add `agent-ready` to an issue that already carries `proposed`, `agent-blocked`,
    `awaiting-runtime-gate`, `noise-class`, `superseded-by-rebuild`, `deputy`,
    or `needs-nish-decision`. `noise-class` and `superseded-by-rebuild` are
    terminal: not work. `deputy` means the Opus deputy owns it, never the fleet.
