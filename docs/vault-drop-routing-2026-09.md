@@ -66,11 +66,14 @@ frontmatter the capture writer stamps:
 
 Scopes are project ids, not area names, so the comparison maps them:
 
-- `projects/<name>` and `projects/<name>-<8+ hex>` map to `<name>` where
-  `<name>` is one of the nine projects.
-- `projects/agent-state-*`, `agent-worktrees-*`, `memory-*`,
-  `extensions-*`, `seats-*` map to `agent-infra`.
-- `projects/nish-*` maps to `nish`. `global` stays `global`.
+- Strip a leading `projects/` and a trailing `-<8 or more hex chars>`,
+  then take the first path segment. `projects/fleet-ops-a19da337d1` and a
+  bare `fleet-ops` both become `fleet-ops`; `fleet-ops/intake-park-scan`
+  becomes `fleet-ops` too.
+- That name maps to itself when it is one of the nine projects, to
+  `agent-infra` for `agent-state`, `agent-worktrees`, `memory`,
+  `extensions` and `seats`, and to `nish` for `nish`. `global` stays
+  `global`.
 - Anything else (`kb/...`, an unknown project slug) maps to `other`.
   Four captures land there.
 
@@ -129,14 +132,14 @@ No band edge is applied. `config/jev-bands.json` does not exist on main
 after the glue wipe, and nothing reads one. The 0.9 line used above is the
 confident-positive edge the issue's own gate states, not a value loaded
 from a table. Routing stays advisory: the report is the deliverable, and
-scoring of the site belongs to fleet-ops#7754.
+scoring of the site was owned by fleet-ops#7754, which closed without covering it, so the follow-up is fleet-ops#8289.
 
-The 15% gate is applied to disagreement with the stamped frontmatter, not
-to a second independent relabel. The redo rule limits the tier to one POST
-and a log line, so a second judging pass over the same captures is out of
-reach. The 18 confident area disagreements are listed above with their
-subjects so a person can check them; this report does not claim a measured
-precision against a human label.
+The verdict table's 15% column is disagreement with the stamped
+frontmatter, not precision against an independent relabel. The
+100-item relabel the issue asked for is not in this redo; it is
+named as open work in fleet-ops#8289. The 18 confident area
+disagreements are listed above with their subjects so a person can
+check them.
 
 ## Carried over from the reverted report
 
