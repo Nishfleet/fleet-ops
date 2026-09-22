@@ -1,0 +1,17 @@
+[Unit]
+Description=Fleet alert repair agent for %i
+# fleet-ops#8051 (design docs/GLUE-ZERO.md §2): the alert->dispatch
+# singleflight is systemd 255 job merging — one unit = at most one job, and a
+# `start` on an `activating`/`active` unit merges into the running job.
+# Type=oneshot without RemainAfterExit= goes activating -> dead, so the merge
+# holds only while the repair runs: ExecStart must stay synchronous. If
+# anything inside ever detaches (`systemd-run`, `&`), the unit goes dead while
+# the worker runs and the 2026-09-13 twin-spawn returns.
+
+[Service]
+Type=oneshot
+Environment=FLEET_ALERTNAME=%i
+Environment=HOME=/home/nish
+Environment=PATH=/home/nish/.local/bin:/usr/local/bin:/usr/bin:/bin
+ExecStart=/bin/sh -c 'exec pi --print --session-dir "$HOME/.pi/agent/sessions/alert-repair" --provider litellm --model worker-cheap < "$HOME/.pi/agent/prompts/alert-repair.md"'
+TimeoutStartSec=1800

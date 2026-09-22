@@ -1,7 +1,11 @@
 # Fleet alert repair
 
-A Prometheus alert fired. Its Alertmanager JSON payload follows this prompt on
-stdin — all-resolved payloads never reach you (fleet-ops#7414). Root-cause it
+A Prometheus alert fired. Its name is in `$FLEET_ALERTNAME` (the unit
+instance). Fetch the live alert from Alertmanager —
+`curl -s http://127.0.0.1:9093/api/v2/alerts` — and take the entry whose
+`labels.alertname` matches. Resolved-only payloads never reach you
+(fleet-ops#7414's short-circuit, now `ignore_resolved` in
+config/prometheus-am-executor.yml). Root-cause it
 and repair it, or file it — then exit.
 
 You are the repair path, not a pager. Nish is never the destination for
@@ -18,8 +22,11 @@ Hard rules:
   other work. Do not hand-roll a dispatcher.
 
 Steps:
-1. Parse the payload. Take `alerts[].labels.alertname`, `severity`, the
-   instance/unit labels and `annotations.description` / `.summary`.
+1. Fetch the live alert. `curl -s http://127.0.0.1:9093/api/v2/alerts`, pick
+   the entry whose `labels.alertname` is `$FLEET_ALERTNAME`, and take its
+   `severity`, the instance/unit labels and `annotations.description` /
+   `.summary`. The API is fresher than a webhook body — if no entry matches,
+   the alert already resolved: note that and exit.
 2. Reproduce before repairing. Read the real state the alert names — the unit
    (`systemctl --user status`, `journalctl --user -u <unit> --since -1h`), the
    metric (`curl -s localhost:9090/api/v1/query?query=<expr>`), the file, the
@@ -49,7 +56,7 @@ below once, in a single tool call. The named watcher from the original packet
 decision 2026-09-17 — so this tier rides inside the surviving organ that
 reads the failed run's log tail and makes the rerun call: this prompt.
 
-Pass three arguments: the alertname from the payload labels, the systemd unit
+Pass three arguments: the alertname (`$FLEET_ALERTNAME`), the systemd unit
 the alert names (or `-`), and the `Nishfleet/<repo>` when the alert concerns
 CI runs or queued GHA work (e.g. CiHostedQueueDepthHigh,
 CiMergeQueueHeadWaitHigh, FleetMainRed) — else `-`.
@@ -321,7 +328,7 @@ PY
 
 ## Shadow Jev tier — advisory, never a gate (fleet-ops#7394)
 
-This step adds an advisory Jev evaluation for each alert in the payload. It
+This step adds an advisory Jev evaluation for the alert. It
 NEVER changes the repair, the filing, the escalation or the summary. It logs
 one JSONL row per alert to `~/.local/state/pi-packet/jev/alert-repair.jsonl`
 with `site=alert-repair` — the dedupe/flap evidence fleet-ops#7414's matrix
@@ -339,7 +346,7 @@ Controls:
 
 Two steps, ONE TOOL CALL EACH:
 
-1. Write one compact metadata object per payload alert to the temp file —
+1. Write one compact metadata object for the alert to the temp file —
    `alertname`, `severity`, `status`, `instance` and YOUR final `disposition`
    (`repaired`, `filed`, `escalated`, `resolved_only` or `skipped`). Metadata
    only: never annotation prose, never secrets. Example shape:
@@ -369,7 +376,7 @@ CLASS_OPTIONS = {
     'repair_in_place': 'safely repairable in place (restart a failed unit, re-arm a timer, clear a stale lock, re-run a one-shot) and provable green',
     'file_issue': 'needs real implementation work; file one agent-ready issue after dedupe',
     'nish_boundary': 'a canonical reserved class (money, privacy, security, legal, brand, product direction, customer-data deletion, irreversible step) — escalate to Nish via amtool',
-    'no_action': 'resolved payload, transient, or otherwise nothing to do',
+    'no_action': 'resolved alert, transient, or otherwise nothing to do',
 }
 BANDS_PATH = os.environ.get('JEV_BANDS_FILE') or os.path.expanduser(
     '~/workspaces/tooling/fleet-ops-deploy-clone/config/jev-bands.json')
@@ -607,7 +614,7 @@ PY
 
 ## Shadow Jev tier — auto-revert attribution (fleet-ops#7397, advisory, never a gate)
 
-When the payload carries a red-main alert — alertname `FleetMainRed`, the
+When the alert is a red-main alert — alertname `FleetMainRed`, the
 alert that fed the deleted auto-revert organ — run the verbatim python block
 below once per red-main alert after your repair disposition is decided, in a
 single tool call, with three arguments: the alertname, the `Nishfleet/<repo>`

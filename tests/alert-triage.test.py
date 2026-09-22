@@ -85,11 +85,6 @@ def main():
     check('Print what you did in one short block' in text_p, 'summary step intact')
     check('try-restart prometheus-am-executor' in text_s,
           'fleet-sync bounces the executor when the config changes across a pull')
-    text_y = YAML.read_text()
-    check(not re.search(r'^\s*ignore_resolved:', text_y, re.M),
-          'yml no longer drops resolved upstream — the wrapper owns the verdict')
-    check('exec "$HOME/.local/bin/pi"' in text_y,
-          'dispatch command uses the absolute pi path (systemd PATH lacks ~/.local/bin)')
     am = (ROOT / 'config' / 'alertmanager.yml').read_text()
     check(re.search(r'repair-dispatch\n\s+webhook_configs:[\s\S]*?send_resolved: true', am)
           is not None,

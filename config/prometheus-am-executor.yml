@@ -2,37 +2,32 @@
 listen_address: "127.0.0.1:9095"
 verbose: true
 commands:
-  # Second cut 2026-09-18: the dispatcher IS this line. The 1,811-line
-  # libexec/alert-repair-dispatch classified the alert, picked a seat, applied
-  # skip/park/dedupe rules and then ran `pi --print` anyway; the seat it picked
-  # was the LiteLLM `worker-cheap` group, which this reaches directly. The
-  # classification and repair judgement now live in prompts/alert-repair.md,
-  # where they are readable and editable without a deploy of shell code.
+  # Third cut 2026-09-22 (fleet-ops#8051, design docs/GLUE-ZERO.md §2): the
+  # dispatcher is one vendor command and the singleflight is systemd's own
+  # job merging. A `start` on a unit that is `activating`/`active` merges
+  # into the running job, and alert-repair@.service is Type=oneshot with a
+  # synchronous ExecStart — the unit stays `activating` for the whole repair,
+  # so two webhooks for the same alertname can never run two repairs. That is
+  # the 2026-09-13 twin-spawn hole the 581-line bin/am-executor-claim
+  # flock+claim wrapper plugged; the job model closes it for free. The
+  # pre-wrapper history: the 1,811-line libexec/alert-repair-dispatch
+  # classified the alert, picked a seat, applied skip/park/dedupe rules and
+  # then ran `pi --print` anyway; the classification and repair judgement now
+  # live in prompts/alert-repair.md.
   #
-  # fleet-ops#6347: wrap the summons in am-executor-claim so two webhooks
-  # for the same alertname cannot start two repairs. max: 1 stays as the
-  # in-process fingerprint cap (glue sweep); the wrapper is the durable
-  # flock+claim that survives "command returned while the worker still
-  # ran" (the 2026-09-13 twin-spawn). The wrapper also feeds the webhook
-  # payload to stdin — prometheus-am-executor dispatches via AMX_* env,
-  # not stdin, so the inner `cat` only sees a body because the wrapper
-  # writes one.
+  # The `sh -c` is required: args: is a fixed argv with no templating of
+  # alert labels — the alert reaches the command only through AMX_LABEL_* /
+  # AMX_GLABEL_* environment variables (the binary's own string table).
+  # max: 1 stays as the in-process per-fingerprint cap layered underneath.
   #
-  # max: 1 — a webhook arriving while a repair is still deciding can never
-  # start a second one (parallel Alertmanager notifications for the same group
-  # land ~10s apart).
+  # ignore_resolved: a resolved-only payload never reaches the unit — the
+  # repair prompt reads the live alert from Alertmanager's API itself, so a
+  # resolved dispatch would only buy a session to learn nothing.
   #
-  # fleet-ops#7414: pi is an absolute path — systemd's PATH has no
-  # ~/.local/bin, which is why every wrapped spawn logged `pi: not found`
-  # since the wrap merged (the pre-wrap config never reloaded hid it).
-  - cmd: /home/nish/workspaces/tooling/fleet-ops-deploy-clone/bin/am-executor-claim
-    args:
-      - /bin/sh
-      - "-c"
-      - '{ cat "$HOME/.pi/agent/prompts/alert-repair.md"; echo; echo "--- ALERTMANAGER PAYLOAD ---"; cat; } | exec "$HOME/.local/bin/pi" --print --session-dir "$HOME/.pi/agent/sessions/alert-repair" --provider litellm --model worker-cheap'
+  # The webhook payload is not piped: prompts/alert-repair.md reads the live
+  # alert via $FLEET_ALERTNAME (the unit instance).
+  - cmd: /bin/sh
+    args: ["-c", 'exec systemctl --user start --no-block "alert-repair@${AMX_LABEL_alertname}.service"']
     max: 1
-    # fleet-ops#7414: resolved payloads reach the wrapper now — the resolved
-    # verdict is a code short-circuit in am-executor-claim (logs a real
-    # alert-triage row, jev_calls: 0), not a silent config drop, so #7754
-    # scoring can see it. Was: ignore_resolved: true.
+    ignore_resolved: true
     notify_on_failure: false

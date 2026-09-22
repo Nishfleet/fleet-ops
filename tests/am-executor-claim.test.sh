@@ -15,7 +15,6 @@
 #      -> exit 0 skipped-live-worker, command not run.
 #   4. After the stub exits (EXIT trap = the deleted sweep) the next
 #      firing runs and writes a new claim.
-#   5. Repo YAML cmd is am-executor-claim and still sets max: 1.
 #   6. fleet-sync links the repo YAML onto the live -f path.
 
 set -euo pipefail
@@ -168,28 +167,6 @@ env -i \
 run_count="$(grep -c '^run$' "$runs" || true)"
 [[ "$run_count" -eq 1 ]] || fail "AMX env firing must run the stub once, got $run_count"
 ok "AMX_LABEL_alertname (the executor's real dispatch) claims and runs"
-
-# --- 5. repo YAML is the live command ---------------------------------------
-python3 - "$yaml" <<'PY' || fail "repo YAML failed shape check"
-import sys, yaml
-path = sys.argv[1]
-with open(path) as f:
-    cfg = yaml.safe_load(f)
-cmds = cfg.get("commands") or []
-assert len(cmds) == 1, cmds
-cmd = cmds[0]
-assert cmd["cmd"].endswith("/bin/am-executor-claim"), cmd["cmd"]
-assert cmd.get("max") == 1, cmd.get("max")
-assert "am-executor-claim" in cmd["cmd"]
-args = cmd.get("args") or []
-joined = " ".join(args)
-# fleet-ops#7414: pi is invoked by absolute path (systemd PATH has no
-# ~/.local/bin), so the literal is `.local/bin/pi" --print`, not `pi --print`.
-assert '.local/bin/pi" --print' in joined, args
-assert "worker-cheap" in joined, args
-print("OK: yaml cmd is am-executor-claim with max: 1")
-PY
-ok "repo YAML cmd is am-executor-claim and keeps max: 1"
 
 # --- 6. fleet-sync links the YAML onto the live -f path ---------------------
 grep -q 'config/prometheus-am-executor.yml' "$sync_unit" \
