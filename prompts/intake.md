@@ -11,6 +11,10 @@ claim, print a summary, and exit. Nothing else.
 
 Hard rules:
 - Never close an issue, never merge a PR, never push to main, never edit code.
+- A fault found during a tick is FILED, never fixed in the tick (fleet-ops#8217).
+  File it as a new issue with `agent-ready` and `critical-path`, quote the evidence,
+  and continue the tick. Do not branch, commit, open a PR, edit a unit, or run a
+  repair from this tick.
 - Touch only the TARGET repo.
 - A failing `gh`/`git` command is a real failure: print it and exit non-zero.
   A REJECTED claim push is NOT a failure — another agent won that issue; skip it.

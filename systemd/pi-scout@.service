@@ -16,6 +16,16 @@ Type=oneshot
 Environment=HOME=/home/nish
 Environment=PATH=/home/nish/.local/bin:/usr/local/bin:/usr/bin:/bin
 Environment=XDG_RUNTIME_DIR=/run/user/1000
+# fleet-ops#8217: gh must not see ~/.config/gh/hosts.yml (nish3451). An empty
+# runtime dir is the whole config; identity is the App token minted below.
+RuntimeDirectory=fleet-gh-nohuman
+Environment=GH_CONFIG_DIR=%t/fleet-gh-nohuman
+# No ReadOnlyPaths on the deploy clone. This unit only reads it, but on
+# this host a user unit cannot mount namespaces: a probe unit with
+# ReadOnlyPaths= set the property and wrote the path anyway, and BindPaths=
+# failed the unit with status=226/NAMESPACE ("Failed to set up mount
+# namespacing: Operation not supported", kernel 6.8, AppArmor restricts
+# unprivileged user namespaces). Shipping the line would fail every tick.
 WorkingDirectory=/home/nish
 # App identity via the stock `gh token` extension (Link-/gh-token), not the
 # retired bin/worker-token. Prompt comes from the Pi prompt template

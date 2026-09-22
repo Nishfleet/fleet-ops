@@ -36,6 +36,14 @@ Environment=PATH=/home/nish/.local/bin:/usr/local/bin:/usr/bin:/bin
 Environment=XDG_RUNTIME_DIR=/run/user/1000
 # Shared App token file for the ExecStartPre claim gate (see pi-issue@).
 EnvironmentFile=-/run/user/%U/fleet-gh-token.env
+# fleet-ops#8217: gh must not see ~/.config/gh/hosts.yml (nish3451). An empty
+# runtime dir is the whole config; identity is the App token, or none.
+RuntimeDirectory=fleet-gh-nohuman
+Environment=GH_CONFIG_DIR=%t/fleet-gh-nohuman
+# No ReadOnlyPaths on the deploy clone. ExecStopPost's `git -C <clone>
+# worktree remove` writes the clone's worktree registry, and a user unit on
+# this host cannot mount namespaces anyway (probe: status=226/NAMESPACE).
+# prompts/worker.md step 3 already forbids working there.
 Environment=DEVIN_UNIT_INSTANCE=%i
 # fleet-ops#7773: shadow-only escalation-target log — see pi-issue@.service.
 Environment=JEV_WORKER_ESCALATION_TARGET=1
