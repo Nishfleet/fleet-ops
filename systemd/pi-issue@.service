@@ -4,7 +4,9 @@ Description=Pi fleet issue worker %i
 # prompt template into `pi --print`; retries/hang-kill are Restart= +
 # TimeoutStartSec=, and seat rotation is the LiteLLM `worker-capable` group
 # (worker-cheap measured tools=0 on this prompt 2026-09-18; intake/scout stay
-# on worker-cheap).
+# on worker-cheap). The cheap/capable split is prompt-fit navigation, not
+# upstream isolation: both groups share the same upstream accounts
+# (fleet-ops#7786).
 # --session-dir is load-bearing: Pi keys sessions per working directory, and
 # every unit starting in /home/nish shared one session pool — workers resumed
 # each other's transcripts and exited without touching the issue.
