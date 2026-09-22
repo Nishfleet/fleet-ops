@@ -299,6 +299,10 @@ Steps:
       (c)-(e) have each proven — the worker units' own ExecStartPre refuses
       an unclaimed start (claim-gate, fleet-ops#7790), and the ordering here
       keeps the tick honest instead of relying on that backstop:
+      Lane availability derives from systemd, not prose: `systemctl --user
+      is-enabled <engine>-issue@.service` printing `masked` gives that lane
+      cap 0 for this tick — it is skipped in the ladder and no start is
+      attempted on it (fleet-ops#8352).
       Engine: if `systemctl --user list-units 'devin-issue@*.service' --state=active,activating --no-legend | wc -l`
       is below 4 (Nish 2026-09-22 11:20 IST: the Devin account is capped at 4 concurrent; 5 was over the cap), use `devin-issue@<repo>-N` (Devin SWE-2 Max, $0 on the account, proven headless
       2026-09-19); else if `systemctl --user list-units 'cursor-issue@*.service' --state=active,activating --no-legend | wc -l`
