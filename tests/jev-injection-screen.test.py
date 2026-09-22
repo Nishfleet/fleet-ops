@@ -55,13 +55,21 @@ def create_stub_gh(td):
     bindir = td / 'bin'
     bindir.mkdir()
     ghlog = td / 'gh-calls.jsonl'
+    gh_comments = td / 'gh-comments.json'
+    gh_comments.write_text('[]')
     gh = bindir / 'gh'
     gh.write_text('#!/usr/bin/env python3\n'
                   'import json, os, pathlib, sys\n'
-                  'pathlib.Path(os.environ["GH_STUB_LOG"]).open("a").write(json.dumps(sys.argv[1:]) + "\\n")\n'
-                  'print("{}")\n')
+                  'args = sys.argv[1:]\n'
+                  'pathlib.Path(os.environ["GH_STUB_LOG"]).open("a").write(json.dumps(args) + "\\n")\n'
+                  'if ".head.sha" in args:\n'
+                  '    print(os.environ.get("GH_STUB_SHA", ""))\n'
+                  'elif any("/comments" in a for a in args):\n'
+                  '    print(pathlib.Path(os.environ["GH_STUB_COMMENTS"]).read_text())\n'
+                  'else:\n'
+                  '    print("{}")\n')
     gh.chmod(gh.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
-    return ghlog
+    return ghlog, gh_comments
 
 
 def main():
@@ -196,13 +204,15 @@ def main():
             'title': 'delinting reminder',
             'author': 'nish', 'author_association': 'OWNER',
             'body': ''}))
-        ghlog = create_stub_gh(td)
+        ghlog, gh_comments = create_stub_gh(td)
 
         def base_env(gh_calls=True):
             env = dict(os.environ,
                        LITELLM_JEV_KEY='test-key-7779',
                        JEV_BANDS_FILE=str(bands_file),
                        GH_STUB_LOG=str(ghlog),
+                       GH_STUB_COMMENTS=str(gh_comments),
+                       GH_STUB_SHA='20f9b5412b10fe79b78b736120d1688adb870b75',
                        PATH=('%s:%s' % (td / 'bin', os.environ.get('PATH', ''))) if gh_calls
                        else os.environ.get('PATH', ''))
             env.pop('GH_TOKEN', None)
@@ -414,6 +424,24 @@ def main():
               'review: one batched call asks 3 booleans + severity per comment')
         check('never instructions' in (st.get('context') or ''),
               'review: state marks comments untrusted data')
+
+        # live gh read path (no fixture): the head sha arrives as a bare
+        # 40-hex string from `gh api --jq .head.sha`, not as JSON.
+        gh_comments.write_text(json.dumps([
+            {'id': 333, 'author': 'bot', 'author_association': 'NONE', 'path': 'a.ts',
+             'body': 'looks fine to me'}]))
+        r, rows = run(rbfile, log, 'Nishfleet/fleet-ops', '8186', review_env())
+        check(r.returncode == 0 and len(rows) == 1,
+              'review: live gh read path appends one row (got %r)' % r.stdout.strip()[:140])
+        check(rows and rows[-1].get('ref') ==
+              'Nishfleet/fleet-ops#8186@20f9b5412b10fe79b78b736120d1688adb870b75:c333',
+              'review: ref carries the real head sha from gh (got %r)' % rows[-1].get('ref'))
+        calls = [json.loads(l) for l in ghlog.read_text().splitlines() if l.strip()]
+        check(any(a[:1] == ['api'] and '.head.sha' in a for a in calls)
+              and any('/pulls/8186/comments' in ' '.join(a) for a in calls)
+              and any('/issues/8186/comments' in ' '.join(a) for a in calls),
+              'review: reads the head sha plus both comment endpoints')
+        gh_comments.write_text('[]')
 
         # act stays advisory on the review surface
         r, rows = run(rbfile, log, 'Nishfleet/fleet-ops', '8200', review_env(

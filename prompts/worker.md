@@ -1137,20 +1137,29 @@ def read_comments(repo, pr):
         if not isinstance(doc, dict):
             return None
         return (str(doc.get('head_sha') or ''), doc.get('comments'))
-    head = gh_json(['api', 'repos/%s/pulls/%s' % (repo, pr), '--jq', '.head.sha']) or ''
-    if not isinstance(head, str):
+    head_raw = run(['gh', 'api', 'repos/%s/pulls/%s' % (repo, pr),
+                    '--jq', '.head.sha'])
+    head = str(head_raw or '').strip()
+    if not re.match(r'^[0-9a-f]{7,40}$', head):
         head = ''
     jq = ('[.[] | {"id": .id, "author": (.user.login // "unknown"), '
           '"author_association": (.author_association // "NONE"), "path": (.path // ""), '
           '"body": (.body // "")}]')
     out = []
+    seen = set()
     for url in ('repos/%s/pulls/%s/comments?per_page=100' % (repo, pr),
                 'repos/%s/issues/%s/comments?per_page=100' % (repo, pr)):
         page = gh_json(['api', url, '--jq', jq])
         if page is None:
             return None
         if isinstance(page, list):
-            out.extend(page)
+            for c in page:
+                cid = c.get('id') if isinstance(c, dict) else None
+                if cid is not None and cid in seen:
+                    continue
+                if cid is not None:
+                    seen.add(cid)
+                out.append(c)
     return (head, out)
 
 
