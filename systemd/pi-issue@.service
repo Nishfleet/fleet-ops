@@ -133,21 +133,17 @@ ExecStopPost=-/bin/sh -c 'w="$HOME/workspaces/agent-worktrees/issue-$1"; for g i
 # fleet-ops#3695: a finishing worker asks its own repo's intake for a refill,
 # so a cohort that drains in 10 min does not leave the rest of the window idle.
 ExecStopPost=-/bin/sh -c 'r=$(echo "$1" | sed "s/-[0-9][0-9]*$//"); systemctl --user start --no-block "pi-intake@$r.service"' sh %i
-# ARTIFACT CHECK (fleet-ops#7744) — a worker that exits 0 having produced
-# nothing must not record Result=success (fleet-ops#7761: a zero-tool-call
-# run exited 0 and the issue went untouched). bin/fleet-claim-release
-# --artifact-check is the dead-man gate: an artifact is an open or merged PR
-# on claim/issue-<N> — merged PRs can delete the branch mid-run
-# (fleet-ops#7783), so PRs are read first — or the claim branch ahead of the
-# default branch; a missing branch is a deliberate park and passes. exit 1 ->
-# Result=exit-code -> `failed`, which is what OnFailure=/Restart=/
-# StartLimitBurst key off, and one seat-attributed row lands in
-# ~/.local/state/fleet-ops/empty-runs.jsonl for FleetWorkerEmptyRun. Runs
-# LAST so cleanup and the intake refill run first; only checked on a success
-# exit. The logic lives in the bin file, not inline here: systemd expands
-# $VAR in Exec lines before /bin/sh sees them, so a multi-variable check
-# cannot fit the 400-char no-glue ceiling anyway — and the #8013/#8087
-# incident proved a long inline program breaks the whole stop path.
+# ARTIFACT CHECK (fleet-ops#7761). Dead-man for a run that exits 0 having
+# produced nothing (a zero-tool run left #7761 agent-in-progress with no
+# worker). Runs only on a success exit and LAST, after cleanup and the intake
+# refill. Artifact = a PR on claim/issue-<N> in any state (a merge can delete
+# the branch mid-run, #7783) OR the claim branch ahead of main. A 404 body on
+# the compare is a deliberate park (branch never pushed) and passes. Anything
+# else, including an unreadable PR list, is unverifiable: exit 1 -> failed ->
+# OnFailure=pi-issue-failed@ -> prompts/claim-release.md re-arms the issue.
+# Inline because no new scripts are allowed; ci's no-glue step caps the line
+# at 400 chars. NOT prefixed with `-`: a tolerated failure here is the bug.
+ExecStopPost=/bin/sh -c '[ "$SERVICE_RESULT" = success ]||exit 0;r=Nishfleet/$${1%-*};b=claim/issue-$${1##*-};p=$(gh api "repos/$r/pulls?state=all&head=Nishfleet:$b" --jq length)||exit 1;[ "$p" -gt 0 ]&&exit 0;a=$(gh api "repos/$r/compare/main...$b" --jq .ahead_by);case "$a" in [1-9]*) exit 0;; *"Not Found"*) exit 0;; esac;echo "artifact-check $b: $a" >&2;exit 1' sh %i
 TimeoutStopSec=180
 
 # Retry policy — systemd's own, not a counter in bash.
