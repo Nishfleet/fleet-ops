@@ -43,11 +43,13 @@
 # they are bookkeeping, not separate quota buckets. Quota walls are per ACCOUNT, so a wall on
 # either provider cools the matching rungs in BOTH groups together — the 2026-09-19
 # synthetic-wall record #7786 cites: the router cooled synthetic-glm53flash-worker-cheap and
-# synthetic-glm53flash-worker-capable together, and cheap-lane scouts failed on Connection
+# synthetic-glm53flash-worker-capable together (that day both names resolved to the same
+# deployment — a worse fault than isolated lanes), and cheap-lane scouts failed on Connection
 # error while a capable-lane issue worker kept running — shared-account contention, not
 # isolated lanes. Do not reason that intake/scout on worker-cheap cannot starve
 # issue workers on worker-capable. What actually protects the fleet: each group carries rungs
-# from TWO different upstreams, the groups fall back to each other, and cooldown 60 /
+# from TWO different upstreams (distinctness, not a standing health claim — gauges move), the
+# groups fall back to each other, and cooldown 60 /
 # num_retries 0 / RateLimitErrorRetries 0 fails over on the first wall instead of retry-storming.
 # Caveat (#8199): the pareto z-ai/glm-5.3-flash rung still shares (model, api_base) with the
 # 2026-09-14 benched: entry below, so the router-groups guard currently reads it as a
