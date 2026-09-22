@@ -27,13 +27,11 @@ what you change — and the prompt that applies it.
   delta at 0.1, 0.25 and 0.5, written into its own prompt rather than read
   from a file, and no edge decides anything: the tier is advisory and the
   packet is unchanged.
-- `vault-drop-routing` is log-only: it routes each agent-drop capture
-  into a project/area and a note type, and no band edge is applied yet
-  (fleet-ops#7766). The row stamps the `act_hi` a future flip would read;
-  the confident-disagreement list in
-  `docs/vault-drop-routing-2026-09.md` is the evidence base for that
-  flip. Site registration and later scoring are owned by
-  fleet-ops#7754.
+- `vault-drop-routing` is log-only and has no consumer. The glue wipe
+  deleted `config/jev-bands.json`, so there is no row to stamp and nothing
+  reads an edge. The site's shadow run and its confident-disagreement list
+  are in `docs/vault-drop-routing-2026-09.md` (fleet-ops#7766). Scoring
+  stays with fleet-ops#7754.
 - `scout` and `scout-rank` are log-only: they apply no edge today, so
   their band values are inert. The rows still stamp them — they are the
   edges a future flip (fleet-ops#7442, fleet-ops#7778) would read.
@@ -86,7 +84,7 @@ keeps an old constant.
 | `scout-rank` | `prompts/scout.md` | 0.9 | 0.1 |
 | `second-opinion` | `prompts/worker.md` | 0.5 | 0.5 |
 | `second-opinion-reserved` | `prompts/worker.md` | 0.5 | 0.5 |
-| `vault-drop-routing` | log-only shadow (fleet-ops#7766; scored by fleet-ops#7754) | 0.9 | 0.1 |
+| `vault-drop-routing` | none — log-only shadow, no row is read (fleet-ops#7766) | — | — |
 | `worker-context` | `prompts/worker.md` step 1c (advisory; sensitivity 0.1, 0.25, 0.5 written in the prompt; no edge acts) | 0.9 | 0.1 |
 | `worker-escalation-target` | `prompts/worker.md` step 4 | 0.5 | 0.5 |
 
