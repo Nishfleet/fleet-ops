@@ -27,6 +27,14 @@ conclusive, this file is the knob — edit it and nothing else.
 - `scout` is log-only: it applies no edge today, so its band values are
   inert. The row still stamps them — they are the edges a future flip
   (fleet-ops#7442) would read.
+- `intake-repair-seatfault` is log-only while the shadow tier is armed and
+  inert by default. It is a single-edge site: `act_hi` is the confidence
+  floor under which a Jev `choice(3)` answer is not conclusive enough to
+  steer a repair, so the classifier reports `park=yes` and the repair agent
+  parks the issue for the orchestrator instead (fleet-ops#7772). Arm it with
+  `systemctl --user set-environment JEV_SEATFAULT_SHADOW=1`, and check the
+  window with `python3 lib/seat_fault.py --replay
+  ~/.local/state/pi-packet/jev/intake-repair-seatfault.jsonl`.
 
 Every site row stamps the `act_hi`/`review_lo` it ran under, so any row
 can be replayed against the table value that produced it. A missing file,
@@ -50,6 +58,7 @@ keeps an old constant.
 | `flaky-test-quarantine` | `prompts/alert-repair.md` | 0.9 | 0.1 |
 | `gha-stuck-run-watch` | `prompts/alert-repair.md` | 0.9 | 0.1 |
 | `hermes-digest` | `prompts/daily-digest.md` | 0.5 | 0.5 |
+| `intake-repair-seatfault` | `lib/seat_fault.py` | 0.6 | 0.6 |
 | `intake-seat-smoke` | `prompts/intake.md` | 0.9 | 0.1 |
 | `merge-queue-batches` | `prompts/daily-digest.md` | 0.9 | 0.1 |
 | `merge-queue-enqueue` | `prompts/worker.md` | 0.9 | 0.1 |

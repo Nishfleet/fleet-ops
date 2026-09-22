@@ -11,6 +11,7 @@
     "gha-stuck-run-watch":     { "act_hi": 0.9, "review_lo": 0.1 },
     "alert-repair":            { "act_hi": 0.9, "review_lo": 0.1 },
     "hermes-digest":           { "act_hi": 0.5, "review_lo": 0.5 },
+    "intake-repair-seatfault": { "act_hi": 0.6, "review_lo": 0.6 },
     "intake-seat-smoke":       { "act_hi": 0.9, "review_lo": 0.1 },
     "merge-queue-batches":     { "act_hi": 0.9, "review_lo": 0.1 },
     "merge-queue-enqueue":     { "act_hi": 0.9, "review_lo": 0.1 },
