@@ -228,6 +228,10 @@ report changes a label, closes an issue, or claims work.
   highest-confidence slice, not a verdict.
 - Jev is a first opinion only. This run is advisory (`advisory_only: true`, band edges
   `null`) and scored later like the other shadow sites.
+- The highest-confidence slice is dominated by `security` (21 of the top 50) and
+  `destructive_irreversible` (8), the two classes most prone to over-attribution, so
+  read the top-50 as a triage queue, not a correction list. `authority_nish_reserved` is
+  the catch-all class and carries the long tail of the full list (70 of 351).
 
 ## Appendix — full mismatch list
 
@@ -588,3 +592,9 @@ All 351 mismatches, ordered by confidence. `text class` is the class the text ju
 | [fleet-ops#7459](https://github.com/Nishfleet/fleet-ops/issues/7459) | closed | `authority_nish_reserved` | `agent-in-progress`, `priority` | 0.62 | add `nish-reserved`; remove `agent-in-progress`, `priority` |
 | [fleet-ops#7416](https://github.com/Nishfleet/fleet-ops/issues/7416) | open | `authority_nish_reserved` | `agent-in-progress`, `priority` | 0.68 | add `nish-reserved`; remove `agent-in-progress`, `priority` |
 
+loose-ends: the 351 proposed corrections are unapplied by design — they land in a
+separate human-reviewed PR; this run changed no label, closed no issue and claimed no work.
+The site is registered with fleet-ops#7754 with its outcome definitions so it is scored
+like the other shadow sites. `config/jev-bands.json` is deliberately untouched: that table
+pins one row per consumer-emitted site, and adding a `label-sanity` row with no consumer
+literal would fail `tests/jev-bands.test.py`.
