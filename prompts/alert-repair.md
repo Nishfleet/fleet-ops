@@ -45,3 +45,52 @@ Steps:
 6. Print what you did in one short block: alert, root cause, action, proof.
    Then run the Shadow Jev tiers at the end of this file once each —
    they are advisory and can never change or block what you did — and exit.
+
+## Shadow Jev tier — alert-repair advisory (fleet-ops#7394)
+
+Run once, after your step-6 report block. Skip this whole tier when
+`JEV_ALERT_REPAIR=0`; unset or any other value runs it. Advisory only:
+nothing below changes, blocks or re-ranks the disposition you already
+reached. Every failure path — unreachable endpoint, non-2xx, unusable
+JSON — ends with the literal words `advisory unavailable` in your output
+and a normal exit. Never retry the call.
+
+Evidence is live state you can read now — never a log you fabricate:
+
+- Prior firings of THIS alert are its own unit's journal:
+  `journalctl --user -u "alert-repair@$FLEET_ALERTNAME" --since -7d --output=short-iso`
+  — count the unit start lines in the last 24 h and last 7 d.
+- Re-firing with no state change shows in Prometheus: query
+  `ALERTS{alertname="<the alertname>"}` through
+  `localhost:9090/api/v1/query_range` over the last 7 days at 1 h step and
+  count firing -> inactive -> firing transitions.
+- An already-filed duplicate is the open-issue search you ran in step 4 —
+  reuse those titles, do not search twice.
+
+Then make ONE call: POST to `http://127.0.0.1:4000/jev` with header
+`Authorization: Bearer $(grep '^LITELLM_JEV_KEY=' ~/.config/fleet-ops/seats/typesafe-jev.env | cut -d= -f2-)`
+— the seat file holds several keys, so name the line, and never print the
+key — plus `content-type: application/json`. The body has two keys:
+`state`, the serialized card text carrying the alertname, severity, your
+one-line disposition and the evidence above; and `questions`, three typed
+entries — `class` as a `choice` question whose `criteria` maps each of
+`repairable-in-place`, `needs-issue`, `boundary-class`,
+`already-resolved` to a one-line meaning, and `duplicate_of` and `flap`
+as `boolean` questions asking whether an open issue already covers this
+alert and whether it is the same fault re-firing with no state change.
+Every question also carries an `instructions` line stating what is being
+judged. The response's `answers.class.choice` and `.probabilities`,
+`answers.duplicate_of.probability` and `answers.flap.probability` are the
+advisory answers.
+
+Log one line: append one JSON object to
+`~/.local/state/pi-packet/jev/alert-repair.jsonl` — create the directory
+first — carrying `ts`, `site` = `alert-repair`, `alertname`, `disposition`
+(what you actually did), `state_sha256` (the sha256 of the exact body you
+posted), `answers`, `probabilities` and `usage` from the response. Then
+print one `jev-advisory:` line with the class and both probabilities, plus
+`would=dedupe` or `would=drop-as-flap` when a probability is high enough
+that enforcement WOULD have changed the outcome, `would=proceed`
+otherwise. The `would` is a log word only — you already acted, and this
+tier exists so the benchmark can score what enforcement would have done
+before anyone flips it on.
