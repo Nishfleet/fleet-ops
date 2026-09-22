@@ -133,21 +133,37 @@ ExecStopPost=-/bin/sh -c 'w="$HOME/workspaces/agent-worktrees/issue-$1"; for g i
 # fleet-ops#3695: a finishing worker asks its own repo's intake for a refill,
 # so a cohort that drains in 10 min does not leave the rest of the window idle.
 ExecStopPost=-/bin/sh -c 'r=$(echo "$1" | sed "s/-[0-9][0-9]*$//"); systemctl --user start --no-block "pi-intake@$r.service"' sh %i
-# ARTIFACT CHECK (fleet-ops#7744) — a worker that exits 0 having produced
-# nothing must not record Result=success (fleet-ops#7761: a zero-tool-call
-# run exited 0 and the issue went untouched). bin/fleet-claim-release
-# --artifact-check is the dead-man gate: an artifact is an open or merged PR
-# on claim/issue-<N> — merged PRs can delete the branch mid-run
-# (fleet-ops#7783), so PRs are read first — or the claim branch ahead of the
-# default branch; a missing branch is a deliberate park and passes. exit 1 ->
-# Result=exit-code -> `failed`, which is what OnFailure=/Restart=/
-# StartLimitBurst key off, and one seat-attributed row lands in
-# ~/.local/state/fleet-ops/empty-runs.jsonl for FleetWorkerEmptyRun. Runs
-# LAST so cleanup and the intake refill run first; only checked on a success
-# exit. The logic lives in the bin file, not inline here: systemd expands
-# $VAR in Exec lines before /bin/sh sees them, so a multi-variable check
-# cannot fit the 400-char no-glue ceiling anyway — and the #8013/#8087
-# incident proved a long inline program breaks the whole stop path.
+# ARTIFACT CHECK (fleet-ops#7761) — the dead-man that finally landed the
+# #7761 acceptance: a `tools=0 class=no-tools` run used to exit 0 with
+# Result=success, so OnFailure=/Restart= never fired and the issue sat
+# `agent-in-progress` on a claim with no live worker.
+#
+# The glue wipe (#8234 / d2614670) deleted bin/fleet-claim-release and the
+# ExecStopPost line that called `--artifact-check`, leaving ONLY this
+# comment behind — a dead-man named in prose and absent in the unit. #8177
+# offered to restore it as a bin call; closed unmerged. No new scripts are
+# allowed (no-glue), and the label reads land in prompts/claim-release.md
+# (#8053), so the check is a stock sh+gh predicate inline instead. It
+# fits the 400-char no-glue ceiling (361 chars) with no unescaped ${...}.
+#
+# An artifact is a PR on claim/issue-<N> in ANY state (an open or merged PR —
+# a merge can delete the head branch mid-run, #7783, so PRs are read first
+# and `state=all` covers both) OR the claim branch ahead of the default
+# branch. Anything else is a zero-tool run: exit 1 -> Result=exit-code ->
+# `failed`, which is exactly what OnFailure=pi-issue-failed@ (line 22) keys
+# off, and that unit runs prompts/claim-release.md, which flips
+# `agent-in-progress` -> `agent-ready` so intake re-dispatches.
+#
+# Fail-closed, never fail-open: `gh api --jq` writes a GitHub 404 body to
+# STDOUT, so a pipe-idiom like `| grep -qvx 0` reads that body as "present"
+# and passes a branch that no longer exists. Both values are captured into
+# variables and compared only with `-gt`, which is exit 2 on a non-numeric
+# operand (a 404 JSON body) — an unverifiable repo therefore FAILS and lets
+# the fail-closed claim-release path judge it.
+#
+# Runs LAST, so the worktree cleanup and the intake refill stop-path run
+# first. NOT prefixed with `-`: a tolerated failure here is the whole bug.
+ExecStopPost=/bin/sh -c 'r=Nishfleet/$${1%-*};n=$${1##*-};b=claim/issue-$n;p=$(gh api "repos/$r/pulls?state=all&head=Nishfleet:$b" --jq length 2>/dev/null);a=$(gh api "repos/$r/compare/main...$b" --jq .ahead_by 2>/dev/null);[ "$${p:-0}" -gt 0 ]&&exit 0;[ "$${a:-0}" -gt 0 ]&&exit 0;echo "artifact-check: no PR, no commit on claim/issue-$n (fleet-ops#7761)" >&2;exit 1' sh %i
 TimeoutStopSec=180
 
 # Retry policy — systemd's own, not a counter in bash.
