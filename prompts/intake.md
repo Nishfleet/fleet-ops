@@ -242,8 +242,9 @@ Steps:
    `agent-blocked` or `awaiting-runtime-gate`, or whose title starts with
    `__scout_probe_`, even if it also carries `agent-ready` (fleet-ops#4454:
    #4454 was re-armed three times after a worker labeled it noise-class; a
-   park label must gate claiming until step 2 releases it, fleet-ops#4626). Order them: issues labelled `critical-path` or
-   `escalate-senior` first, then oldest-first by `createdAt`. After two
+   park label must gate claiming until step 2 releases it, fleet-ops#4626). Order them: issues labelled `priority-now` first (Nish's
+   word, applied by him or by Fable on it; 2026-09-22 "please prioritise"),
+   then `critical-path` or `escalate-senior`, then oldest-first by `createdAt`. After two
    critical-path claims in a row, take the oldest plain issue next so the tail
    cannot starve. Do not sort by issue number and do not pick by vibes.
 
