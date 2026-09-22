@@ -103,8 +103,8 @@ result, not a failure to work around: the tier never goes hunting for a run.
    supports, since a green conclusion does not say the test existed yet or was
    not skipped; for `failure` or `timed_out`, read `gh run view <id> -R <repo>
    --log-failed` and record `fail` only when the signature text is in that log.
-   Read at most 20 failed logs in the whole tier; past that, stop reading and
-   omit the rest. A red run whose failed log you cannot read is unknown, and
+   Read at most 20 failed logs per signature, so no signature's reds are
+   dropped to pay for another's. A red run whose failed log you cannot read is unknown, and
    unknown is omitted, never counted as a pass. A red run whose log you did
    read and which lacks the signature is also omitted: the workflow failed
    somewhere else, which says nothing about this test. Fewer than 20 recorded
@@ -114,9 +114,11 @@ result, not a failure to work around: the tier never goes hunting for a run.
    `gh api repos/<repo>/commits/<headSha>/pulls` then
    `gh api repos/<repo>/pulls/<number>/files`; otherwise
    `gh api repos/<repo>/commits/<headSha>` and its `files`. A file counts as
-   touched only when its path equals the signature's file path or contains it
-   as a path segment. If the lookup fails, say the diff is unknown — do not
-   guess, and do not treat unknown as "not touched".
+   touched only when the signature carries a file path (pytest
+   `FAILED <path>::<test>`, vitest `FAIL <file> > <test>`) and that path equals
+   a changed file or contains it as a path segment. A Go, TAP or harness
+   signature has no file path, and a failed lookup has no file list: both are
+   `unknown`. Never guess, and never treat unknown as "not touched".
 5. One POST per test, no shared state. For each signature, POST once, with the
    JSON inline in the curl body (no state file, no heredoc):
 
@@ -140,8 +142,11 @@ result, not a failure to work around: the tier never goes hunting for a run.
    `~/.local/state/pi-packet/jev/flaky-test-quarantine.jsonl` (create the file
    mode 0600 if absent) carrying `ts`, `site`, `ref`
    (`alert-repair:<alertname>:<run-id>:<test>`), `advisory_only: true`,
-   `rule_tier` `alert-repair`, `repo`, `run_id`, `workflow`, `branch`, `test`,
-   `last_20_outcomes`, `diff_touches_test` and `probabilities.flaky`. The line
+   `mode` `shadow`, `rule_tier` `alert-repair`, `repo`, `run_id`, `workflow`,
+   `branch`, `test`, `last_20_outcomes`, `diff_touches_test`,
+   `probabilities.flaky`, and the band stamp `band` 0.9, `band_lo` 0.1,
+   `band_hi` 0.9 — the `act_hi`/`review_lo` the `flaky-test-quarantine` row in
+   `docs/jev-bands.md` ran under. The line
    records the question and the answer, never the seat key and never the raw
    log. Then print exactly `jev-flaky: <test> p=<probability>`. If the POST or
    the append fails, print `jev advisory unavailable (<reason>); repair rules
@@ -154,5 +159,5 @@ flaky — waits on a benchmark go row for this site (fleet-ops#7754 scores the
 shadow logs) landed in a separate PR. This packet's own acceptance names the
 comparison size: 100 real failures compared. The confident edges are the
 `flaky-test-quarantine` row in `docs/jev-bands.md`: p >= 0.9 or p <= 0.1.
-Until that row exists the existing repair rules are authoritative and
-unchanged.
+Until that benchmark go row exists the existing repair rules are authoritative
+and unchanged.
