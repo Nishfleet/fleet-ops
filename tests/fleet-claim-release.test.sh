@@ -69,6 +69,9 @@ case "$cmd" in
             "repos/"*"/pulls?state=open&head="*)
                 [ "${MOCK_PULLS_RC:-0}" != "0" ] && exit "$MOCK_PULLS_RC"
                 printf '%s' "${MOCK_OPEN_PRS:-[]}" ;;
+            "repos/"*"/pulls?state=all&head="*)
+                [ "${MOCK_PULLS_RC:-0}" != "0" ] && exit "$MOCK_PULLS_RC"
+                printf '%s' "${MOCK_ALL_PRS:-[]}" ;;
             "repos/"*"/git/refs/heads/wip/"*)
                 [ "${MOCK_WIP_EXISTS:-no}" = "yes" ] && printf '{"ref":"x","object":{"sha":"%s"}}' "${MOCK_WIP_SHA:-w1pw1pw1p}" || exit 1 ;;
             "repos/"*"/git/refs/heads/"*)
@@ -229,5 +232,109 @@ grep -q "bin/fleet-claim-release %i" "$unit" \
 grep -q "bin/fleet-silent-pr-close-check" "$unit" \
     || fail "pi-issue-failed@.service does not run the silent-close check"
 ok "unit calls the guarded release and the detector"
+
+# --- --artifact-check drills (fleet-ops#7744) --------------------------------------
+# The worker dead-man gate: a success-exit run with no open/merged PR and no
+# claim-branch commits ahead of the default branch is a PROVEN empty run —
+# exit 1 flips the unit to failed and one row lands in the empty-run ledger.
+# gh errors are UNKNOWN (exit 0, loud), never "empty".
+
+check_home="$scratch/check-home"
+check_state="$scratch/check-state"
+mkdir -p "$check_home" "$check_state"
+
+run_check() {
+    : >"$gh_log"
+    HOME="$check_home" FLEET_STATE_DIR="$check_state" \
+    SERVICE_RESULT="${CHECK_SERVICE_RESULT:-success}" \
+    MOCK_ALL_PRS="${MOCK_ALL_PRS:-[]}" MOCK_BRANCH_EXISTS="${MOCK_BRANCH_EXISTS:-yes}" \
+    MOCK_PULLS_RC="${MOCK_PULLS_RC:-0}" MOCK_COMPARE_RC="${MOCK_COMPARE_RC:-0}" \
+    MOCK_COMPARE="${MOCK_COMPARE:-}" MOCK_DEFAULT_BRANCH="${MOCK_DEFAULT_BRANCH:-main}" \
+        "$bin" "$@" --artifact-check --unit=pi-issue@fleet-ops-6252.service
+}
+
+# 13. open PR on the claim branch -> artifact, exit 0
+out="$(MOCK_ALL_PRS='[{"number":1,"state":"open","merged_at":null}]' \
+    run_check fleet-ops-6252 2>"$scratch/err.13")" || fail "open-PR check exited nonzero"
+ok "artifact-check: open PR -> pass"
+
+# 14. merged PR (branch deleted by GitHub, fleet-ops#7783) -> artifact, exit 0
+out="$(MOCK_ALL_PRS='[{"number":2,"state":"closed","merged_at":"2026-09-22T00:00:00Z"}]' \
+    MOCK_BRANCH_EXISTS=no run_check fleet-ops-6252 2>"$scratch/err.14")" || fail "merged-PR check exited nonzero"
+ok "artifact-check: merged PR + deleted branch -> pass"
+
+# 15. no PR, claim branch absent -> deliberate park, exit 0
+out="$(MOCK_BRANCH_EXISTS=no run_check fleet-ops-6252 2>"$scratch/err.15")" \
+    || fail "parked-branch check exited nonzero"
+ok "artifact-check: absent claim branch -> pass (park)"
+
+# 16. branch exists, ahead of main -> artifact, exit 0
+out="$(MOCK_COMPARE='{"ahead_by":3,"status":"ahead"}' run_check fleet-ops-6252 2>"$scratch/err.16")" \
+    || fail "ahead-branch check exited nonzero"
+grep -q "compare/main...claim/issue-6252" "$gh_log" \
+    || fail "ahead check did not compare default branch vs claim: $(cat "$gh_log")"
+ok "artifact-check: claim branch ahead -> pass"
+
+# 17. THE #7371 SHAPE: branch exists at main tip, no PR -> PROVEN empty, exit 1 + row
+: >"$check_state/empty-runs.jsonl" 2>/dev/null || true
+if MOCK_COMPARE='{"ahead_by":0,"status":"identical"}' \
+    run_check fleet-ops-6252 2>"$scratch/err.17"; then
+    fail "empty run did not exit nonzero"
+fi
+grep -q "EMPTY-RUN" "$scratch/err.17" || fail "empty run did not log EMPTY-RUN: $(cat "$scratch/err.17")"
+[ -s "$check_state/empty-runs.jsonl" ] || fail "empty run wrote no ledger row"
+jq -e '.repo == "fleet-ops" and .issue == 6252 and .unit == "pi-issue@fleet-ops-6252.service"' \
+    "$check_state/empty-runs.jsonl" >/dev/null || fail "ledger row missing repo/issue/unit: $(cat "$check_state/empty-runs.jsonl")"
+ok "artifact-check: success + no artifact -> exit 1, EMPTY-RUN logged, ledger row"
+
+# 18. seat attribution: a pi session's last responseModel lands in the row
+mkdir -p "$check_home/.pi/agent/sessions/pi-issue-fleet-ops-6252"
+printf '%s\n' \
+    '{"type":"message","role":"assistant","content":[{"type":"text","text":"Now gathering remaining data"}],"responseModel":"worker-capable-devin","rawStopReason":"stop","usage":{"input":49390,"output":93}}' \
+    > "$check_home/.pi/agent/sessions/pi-issue-fleet-ops-6252/sess.jsonl"
+: >"$check_state/empty-runs.jsonl"
+if MOCK_COMPARE='{"ahead_by":0,"status":"identical"}' \
+    run_check fleet-ops-6252 2>"$scratch/err.18"; then
+    fail "empty run with session did not exit nonzero"
+fi
+jq -e '.seat == "worker-capable-devin" and .last_turn_tool_calls == 0 and .input_tokens == 49390 and .stop_reason == "stop"' \
+    "$check_state/empty-runs.jsonl" >/dev/null || fail "seat/signature fields wrong: $(cat "$check_state/empty-runs.jsonl")"
+ok "artifact-check: responseModel/stopReason/input parsed from the session row"
+
+# 19. pulls lookup fails -> UNKNOWN, exit 0, no row, loud flag
+: >"$check_state/empty-runs.jsonl"
+out="$(MOCK_PULLS_RC=1 run_check fleet-ops-6252 2>"$scratch/err.19")" \
+    || fail "gh-failure path exited nonzero"
+grep -q "ARTIFACT-CHECK-UNKNOWN" "$scratch/err.19" \
+    || fail "no loud flag on pulls failure: $(cat "$scratch/err.19")"
+[ ! -s "$check_state/empty-runs.jsonl" ] || fail "ledger row written on unknown read"
+ok "artifact-check: gh failure -> fail-open, loud flag, no row"
+
+# 20. compare unreadable -> UNKNOWN, exit 0
+out="$(MOCK_COMPARE_RC=1 run_check fleet-ops-6252 2>"$scratch/err.20")" \
+    || fail "compare-failure path exited nonzero"
+grep -q "ARTIFACT-CHECK-UNKNOWN" "$scratch/err.20" \
+    || fail "no loud flag on compare failure: $(cat "$scratch/err.20")"
+ok "artifact-check: compare failure -> fail-open, loud flag"
+
+# 21. non-success main result -> the gate never evaluates (exit 0, zero api calls)
+out="$(CHECK_SERVICE_RESULT=exit-code run_check fleet-ops-6252 2>"$scratch/err.21")" \
+    || fail "failed-main-result path exited nonzero"
+if grep -q "gh api" "$gh_log"; then fail "gate evaluated gh on a non-success exit: $(cat "$gh_log")"; fi
+ok "artifact-check: SERVICE_RESULT!=success -> no-op"
+
+# 22. unit wiring: all three worker lanes run the gate as an ExecStopPost
+for u in pi-issue@ devin-issue@ cursor-issue@; do
+    grep -q "ExecStopPost=.*/bin/fleet-claim-release --artifact-check" "$repo_root/systemd/$u.service" \
+        || fail "$u.service missing the --artifact-check ExecStopPost"
+done
+grep -q -- "--seat=devin/" "$repo_root/systemd/devin-issue@.service" \
+    || fail "devin-issue@ does not pin its seat label"
+grep -q -- "--seat=cursor/" "$repo_root/systemd/cursor-issue@.service" \
+    || fail "cursor-issue@ does not pin its seat label"
+# the dead inline program must not come back (systemd blanks $r/$n in Exec lines)
+! grep -q 'gh api "repos/Nishfleet/\$r' "$repo_root/systemd/pi-issue@.service" \
+    || fail "pi-issue@ still carries the variable-eaten inline check"
+ok "artifact-check wired as ExecStopPost on pi/devin/cursor lanes"
 
 echo "PASS: fleet-claim-release"

@@ -268,6 +268,28 @@ groups:
         annotations:
           summary: "fleet.prom textfile stale or absent — probe has not written in >20m"
           description: "node_textfile_mtime_seconds for fleet.prom is over 1200s old or missing. Every fleet_* and ci_* rule reads series this file carries; while stale they are all silently unenforced. Repair: systemctl --user status fleet-metrics-export.timer and journalctl --user -u fleet-metrics-export.service -n 50; if the unit is uninstalled, re-wire per README Install (systemctl --user link + enable --now), then run it once and confirm fleet.prom updates."
+
+      # fleet-ops#7744: a deployment that returns HTTP 200 but produces zero
+      # tool calls is a dead seat wearing a healthy check — five clean
+      # no-deliverable stops on #7371 in one day while
+      # litellm_deployment_state read green. The unit-level flip lives in the
+      # worker units' last ExecStopPost (bin/fleet-claim-release
+      # --artifact-check): exit 0 + no open/merged PR + claim branch not
+      # ahead -> the unit records `failed` AND appends one seat-attributed
+      # row to ~/.local/state/fleet-ops/empty-runs.jsonl, which the probe
+      # counts into this counter. severity=warning -> repair-dispatch: the
+      # repair agent verifies the session signature (final assistant turn
+      # text-only at ~50k ctx naming tool work it never ran) before
+      # benching — the row is the dispatch trigger, not the bench verdict.
+      - alert: FleetWorkerEmptyRun
+        expr: increase(fleet_worker_empty_run_total[1h]) > 0
+        for: 0m
+        labels:
+          severity: warning
+          service: worker-rail
+        annotations:
+          summary: "worker exited 0 with no artifact — seat {{ $labels.seat }} on {{ $labels.repo }}"
+          description: "fleet_worker_empty_run_total rose on repo={{ $labels.repo }} seat={{ $labels.seat }}: a worker unit exited 0 and left no claim-branch commits and no PR (fleet-ops#7744; the #7371 signature was a ~50k-ctx final turn that named tool work it never made). Rows: ~/.local/state/fleet-ops/empty-runs.jsonl (unit + last_turn_tool_calls + input_tokens + stop_reason per row). Reproduce before benching: read the newest ~/.pi/agent/sessions/pi-issue-<repo>-<issue>/*.jsonl last assistant row — confirm responseModel={{ $labels.seat }}, rawStopReason=stop, and no toolCall content block. If the signature holds, bench the deployment in config/litellm-proxy.yaml's benched: block with a dated reason + restore condition, install, systemctl --user restart fleet-litellm-proxy, verify absence via /metrics litellm_deployment_state, and land the matching PR. A non-router seat (devin/*, cursor/*) means the lane engine itself is the suspect — file a plain agent-ready issue, no yaml bench."
   # ------------------------------------------------------------------------
   # Product public-surface canaries (glue sweep 2026-09-18, zero-scripts).
   # These replace two hand-written node canaries and their systemd

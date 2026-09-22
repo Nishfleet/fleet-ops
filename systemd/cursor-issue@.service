@@ -59,15 +59,18 @@ ExecStopPost=-/bin/sh -c 'w="$HOME/workspaces/agent-worktrees/issue-$1"; for g i
 # fleet-ops#3695: a finishing worker asks its own repo's intake for a refill,
 # so a cohort that drains in 10 min does not leave the rest of the window idle.
 ExecStopPost=-/bin/sh -c 'r=$(echo "$1" | sed "s/-[0-9][0-9]*$//"); systemctl --user start --no-block "pi-intake@$r.service"' sh %i
-# ARTIFACT CHECK — a worker that exits 0 having produced nothing must not
-# record Result=success (fleet-ops#7761: a zero-tool-call run exited 0 and
-# the issue went untouched). The artifact is the pushed claim/issue-<N>
-# branch OR a PR opened from it — branch-only would false-fail a worker whose
-# PR merged mid-run (proven 2026-09-18, fleet-ops-7783). exit 1 ->
-# Result=exit-code -> `failed`, which is what OnFailure=/Restart=/
-# StartLimitBurst key off. Runs LAST so cleanup and the intake refill run
-# first; only checked on a success exit.
-ExecStopPost=/bin/sh -c '[ "$SERVICE_RESULT" = success ] || exit 0; i="$1"; r=$(echo "$i" | sed "s/-[0-9][0-9]*$//"); n=$(echo "$i" | sed "s/.*-//"); GH_TOKEN=$(gh token generate --app-id 4728578 --key "$HOME/.config/fleet-worker/nishfleet-worker.private-key.pem" --installation-id 156789042 --token-only 2>/dev/null); export GH_TOKEN; gh api "repos/Nishfleet/$r/branches/claim/issue-$n" >/dev/null 2>&1 && exit 0; [ "$(gh api "repos/Nishfleet/$r/pulls?state=all&head=Nishfleet:claim/issue-$n&per_page=1" --jq length 2>/dev/null)" = 1 ] && exit 0; echo "no claim/issue-$n branch and no PR from it on Nishfleet/$r — the run exited 0 with no artifact" >&2; exit 1' sh %i
+# ARTIFACT CHECK (fleet-ops#7744) — a worker that exits 0 having produced
+# nothing must not record Result=success (fleet-ops#7761). The old inline
+# check was dead on arrival twice over: systemd expands $r/$n to empty before
+# sh runs (so the gh calls 404'd), and "branch exists" was vacuous anyway —
+# intake pre-pushes claim/issue-<N> at claim time. bin/fleet-claim-release
+# --artifact-check is the real gate: artifact = open/merged PR on
+# claim/issue-<N> (merged PRs can delete the branch mid-run, fleet-ops#7783)
+# or claim commits ahead of the default branch; a missing branch is a
+# deliberate park and passes. exit 1 -> Result=exit-code -> `failed`, which
+# is what OnFailure=/Restart=/StartLimitBurst key off. Runs LAST so cleanup
+# and the intake refill run first; only checked on a success exit.
+ExecStopPost=/home/nish/workspaces/tooling/fleet-ops-deploy-clone/bin/fleet-claim-release --artifact-check --unit=%n --seat=cursor/cursor-grok-4.6-high %i
 TimeoutStopSec=180
 
 # Retry policy — systemd's own, not a counter in bash.
