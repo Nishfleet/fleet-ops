@@ -170,6 +170,63 @@ model_list:
   model_info:
     mode: chat
     id: pareto-glm53flash-worker-private
+- model_name: worker-capable
+  # StepFun step-5-preview (Nish 2026-09-22: "prepaid, max 5 concurrent lanes - only step 5
+  # preview. pretty unlimited usage so use generously"). 600B-total / 27B-active MoE, 1,024,000
+  # input tokens, built for long-horizon agentic coding — the strongest builder rung the fleet has.
+  #
+  # BASE URL TRAP (cost 40 min on 2026-09-22): the Step Plan is served ONLY at
+  # /step_plan/v1 (OpenAI-compatible; /step_plan is the anthropic-compatible twin).
+  # The plain https://api.stepfun.ai/v1 path bills pay-as-you-go balance, which is
+  # empty on this account, so it answers 402 quota_exceeded with x-upstream-latency: 0
+  # on EVERY model — including a GET /v1/models that returns 200 — while the console
+  # shows "Credit usage: Remaining 100%". A 402 here means WRONG PATH, not no money.
+  # Probed from this host 2026-09-22 04:11-04:13Z on /step_plan/v1: chat 200, and
+  # tool_choice=auto -> finish_reason=tool_calls with a well-formed tool_calls array
+  # (the fleet-ops#7761 worker-group requirement).
+  #
+  # worker-capable ONLY, deliberately: judge and senior must stay a different model
+  # family from the builders (fleet-ops#8035, docs/TRUST-STACK.md §1), and putting
+  # step-5 in both places would let a step-5 build be step-5-reviewed under
+  # simple-shuffle. judge stays opencode-go deepseek-v4.1-flash; worker-cheap reaches
+  # step-5 through the existing worker-cheap -> worker-capable fallback.
+  litellm_params:
+    model: openai/step-5-preview
+    api_base: https://api.stepfun.ai/step_plan/v1
+    api_key: os.environ/STEPFUN_API_KEY
+    tags:
+    - prepaid
+    - stepfun
+    order: 1
+    # Nish's account cap is 5 concurrent lanes TOTAL. max_parallel_requests is per
+    # deployment, so this seat gets exactly one rung holding the whole cap — a second
+    # rung anywhere would multiply it past 5.
+    max_parallel_requests: 5
+  model_info:
+    mode: chat
+    id: stepfun-step5preview-worker-capable
+# fleet-ops#6054 (2026-09-12): benched = NOT routed, NOT in model_list, and NOT
+# counted by the health canary's fleet_litellm_model_list_expected (only
+# "- model_name:" lines count). Inert to the loader: ProxyConfig reads known
+# keys via .get(), so this top-level key never reaches the router. Restore a
+# deployment ONLY with a green /health probe cited in the PR — while any
+# DEPLOYED census entry is unhealthy the health canary fails loud
+# (health-deployment-unhealthy; #5792 accept-line drill).
+# 2026-09-17 (claude-mac; Nish: "wire up union alpha stealth model to the fleet from all these
+# providers"): Union Alpha = anonymous stealth preview, $0, 262K ctx, 131K max out, tools+images.
+# Probed 200 from THIS host 2026-09-17 ~19:05 IST via OpenRouter (stealth/union-alpha, usage.cost=0)
+# and Cline (stealth/union-alpha, SSE standard). worker-cheap/worker-capable order:1 (free, ahead of the
+# 429-bursting devin bridge); senior/judge order:2 (devin swe-2-max stays primary for judging).
+# NOT in worker-private: OpenRouter Stealth terms = prompts retained by the provider (not trained on);
+# privacy placement is Nish's call. OpenCode Zen union-alpha: HTTP 500 x4 (both keys) -> benched below.
+# Cloudflare AI Gateway 402 insufficient balance (money) and AI/ML API (paid) deliberately NOT wired;
+# Kilo listed stealth/union-alpha at fleet-ops#7369 filing (379-model catalog) but DELISTED it before
+# the seat work ran: GET api.kilo.ai/api/openrouter/models 2026-09-22 -> 380 models, zero 'union' ids
+# (stealth survivors: qwen3.6-plus, claude-opus-4.8/4.7/4.6, sonnet-4.6); the OpenRouter catalog has no
+# union/stealth ids the same day. The preview is over on all three gateways -> no account, no kilo.env,
+# no rungs; a catalog-absent id can never probe green (same terminal class as #7367). Free-period
+# cliff: if it turns paid, OpenRouter
+# self-walls (balance $0 -> 402 -> cooldown -> fallback) and Cline 4xx likewise; no metered spend path.
 # fleet-ops#6133 (2026-09-21): the devin/swe-2-max CustomLLM rows added by
 # #7895 are REMOVED. The #7907 no-glue sweep deleted the handler
 # (libexec/fleet-litellm-devin-adapter/) later the same day — a
@@ -416,24 +473,6 @@ benched:
     - zenmux
     order: 1
     max_parallel_requests: 4
-- benched_at: 2026-09-22
-  reason: "openai/step-5-preview @ https://api.stepfun.ai/v1 (STEPFUN_API_KEY, seats/stepfun.env, prepaid, Nish 2026-09-22 'max 5 concurrent lanes - only step 5 preview') — HTTP 402 quota_exceeded 'You exceeded your current quota, please check your plan and billing details' from THIS host at 04:00-04:02Z (09:30-09:32 IST). Key AUTHENTICATES: CONTROL bogus key on the same host+path = 401 invalid_api_key, real key on GET /v1/models = 200 with a 16-model catalog including step-5-preview (1,024,000 max_input_tokens). The wall is ACCOUNT-wide, not model-specific: step-3.5-flash 402 on the same key, and /v1/messages (anthropic protocol) 402 too; x-upstream-latency: 0 = the gateway rejects before a model is reached. Region note: api.stepfun.com (CN platform) returns 401 for this key — the account lives on the .ai (international) platform, so api.stepfun.ai/v1 is the only correct api_base. Dead-credit/money class (fleet-ops#6054): balance is Nish's call, NOT on this path. NOT placed live because a known-402 deployment row trips FleetLitellmDeploymentUnhealthy (litellm_deployment_state > 0) and dispatches repair against itself. Restore: balance topped up on platform.stepfun.ai, then a green direct /chat/completions 200 AND a tool_choice probe returning finish_reason=tool_calls cited in the PR — step-5-preview is a 600B-total/27B-active MoE and a DIFFERENT family from every builder rung (deepseek-v4.1-flash, glm-5.3-flash), so on restore it goes to worker-capable + judge (cross-family verifier, docs/TRUST-STACK.md §1) and senior, never above 5 concurrent lanes in total across rungs (Nish's account cap)."
-  was: []
-  litellm_params:
-    model: openai/step-5-preview
-    api_base: https://api.stepfun.ai/v1
-    api_key: os.environ/STEPFUN_API_KEY
-    tags:
-    - prepaid
-    - stepfun
-    order: 1
-    # Nish 2026-09-22: "max 5 concurrent lanes". One rung only while that cap is 5 —
-    # LiteLLM counts max_parallel_requests per deployment, so splitting the seat across
-    # groups would multiply the cap. Restore as ONE rung shared via group fallbacks.
-    max_parallel_requests: 5
-  model_info:
-    mode: chat
-    id: stepfun-step5preview-worker-capable
 router_settings:
   routing_strategy: simple-shuffle
   fallbacks:
