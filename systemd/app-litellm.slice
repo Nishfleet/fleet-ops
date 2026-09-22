@@ -1,13 +1,35 @@
 # fleet-ops#4130 P1: CPU/Memory ceiling for the LiteLLM proxy organ
 # (proxy + Postgres + Redis). The proxy is a long-running daemon in front
 # of every seat; a RAM runaway here starves the worker slice. 200% CPU =
-# 2 cores (the proxy is mostly I/O-bound on localhost upstreams);
-# MemoryMax=1G matches the P0 design doc §3 cap. Postgres and Redis get
-# their own slices below so a DB bloat cannot push the proxy past its
-# ceiling and vice versa.
+# 2 cores (the proxy is mostly I/O-bound on localhost upstreams).
+# Postgres and Redis get their own slices below so a DB bloat cannot push
+# the proxy past its ceiling and vice versa.
+#
+# MemoryMax 1G -> 2G, 2026-09-22: the P0 design doc §3 cap of 1G is BELOW
+# the proxy's own cold-start footprint, so every restart of the seat router
+# — by anyone, for any reason — was an outage waiting to happen. Kernel
+# record of the 09:43-09:46 IST crash loop (10 kills):
+#
+#   prisma invoked oom-killer: ... oom_score_adj=200
+#   oom-kill:constraint=CONSTRAINT_MEMCG, oom_memcg=.../app-litellm.slice,
+#     task_memcg=.../app-litellm.slice/fleet-litellm-proxy.service, task=litellm
+#   Memory cgroup out of memory: Killed process 2323176 (litellm)
+#     total-vm:741696kB, anon-rss:637756kB
+#
+# It is a memcg kill, not host pressure: the host had 10 GB available, and
+# the slice's other two members were innocent (postgres MemoryCurrent 6.7M,
+# redis 2.6M). litellm ~652M + its prisma child ~357M is simply more than
+# 1G. The process stopped at 09:42 had "1005.0M memory peak" over its life
+# — the daemon was already living ON the ceiling. After the raise the same
+# binary and the same config came up clean at MemoryPeak=1.37G, which is
+# the number the cap has to clear.
+#
+# 2G is a ceiling, not a target: it still bounds a genuine runaway well
+# below the worker slice's needs (host is 16 GB). Raise it again only with
+# a fresh MemoryPeak cited; lowering it back to 1G re-arms the crash loop.
 #
 # Drop-in-removable: delete this file + the three service unit files and
 # daemon-reload to revert. The live file is a symlink into this repo.
 [Slice]
 CPUQuota=200%
-MemoryMax=1G
+MemoryMax=2G
