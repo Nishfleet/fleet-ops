@@ -1,0 +1,19 @@
+[Unit]
+Description=Intake trigger for Nishfleet/%i
+# fleet-ops#8049 (GLUE-ZERO organ 1): one .path instance per enrolled repo in
+# config/intake-repos.json replaces the bin/pi-intake-trigger shell loop.
+# PathExists fires the moment a heartbeat drop lands and starts the intake tick
+# directly; the enrolment check the script did against intake-repos.json becomes
+# enrolment itself — only enrolled repos get an enabled instance, so a deferred
+# repo's trigger file is ignored by construction. %i carries the repo name;
+# $TRIGGER_PATH is coalesced/lossy (man systemd.exec) and is not used. The
+# trigger file is removed by pi-intake@.service itself (the ExecCondition rm —
+# see that file), which is what re-arms this watch instead of burning the
+# service start limit on the post-termination path recheck.
+
+[Path]
+PathExists=/home/nish/workspaces/agent-state/pi-intake-triggers/%i
+Unit=pi-intake@%i.service
+
+[Install]
+WantedBy=default.target

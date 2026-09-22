@@ -23,6 +23,17 @@ Environment=HOME=/home/nish
 Environment=PATH=/home/nish/.local/bin:/usr/local/bin:/usr/bin:/bin
 Environment=XDG_RUNTIME_DIR=/run/user/1000
 WorkingDirectory=/home/nish
+# fleet-ops#8049: the trigger-file rm must run BEFORE the ready-check below.
+# man systemd.service: ExecCondition= commands run before ExecStartPre=, so a
+# skipped tick (ready==0) never reaches an ExecStartPre rm — the file survives,
+# the path unit's post-termination recheck re-fires instantly, and the
+# trigger/start cycle loops until the StartLimit fails BOTH units (proven live
+# 2026-09-22 on a test unit: unit-start-limit-hit on the .path in ~8 s). As the
+# FIRST ExecCondition this rm runs on every activation attempt — skipped or
+# not — which is the ordering bin/pi-intake-trigger had (it rm'd before the
+# tick's own gate ever ran). '-' prefix: a missing file or rm fault must not
+# fail the tick.
+ExecCondition=-/bin/rm -f /home/nish/workspaces/agent-state/pi-intake-triggers/%i
 # One cheap gh call decides whether to spend a seat at all. Exit 255 on a gh
 # fault so systemd records a failure instead of skipping quietly.
 ExecCondition=/bin/sh -c 'out=$$(gh issue list -R Nishfleet/%i -l agent-ready --json number -L 1 2>&1) || { echo "gh failed: $$out" >&2; exit 255; }; [ "$$out" != "[]" ]'
@@ -36,6 +47,10 @@ ExecCondition=/bin/sh -c 'out=$$(gh issue list -R Nishfleet/%i -l agent-ready --
 # AGENTS.md context-file discovery because that walks up from the STARTUP cwd, and
 # this unit starts in /home/nish — the repo file would never be reached. Canonical
 # path, never cwd-relative: the unit must not depend on which checkout it runs from.
+# fleet-ops#8049's mandated ExecStartPre rm: the ExecCondition copy above
+# already clears the file on every real start; this second rm is the
+# adjacent-to-ExecStart guard the issue spells out, and is a no-op in practice.
+ExecStartPre=-/bin/rm -f /home/nish/workspaces/agent-state/pi-intake-triggers/%i
 ExecStart=/bin/sh -c 'echo "/intake %i" | exec pi --print --append-system-prompt "/home/nish/workspaces/tooling/fleet-ops-deploy-clone/AGENTS.md" --session-dir "$HOME/.pi/agent/sessions/pi-intake-%i" --provider litellm --model worker-cheap'
 # ARTIFACT CHECK. Intake's entire job is to turn agent-ready issues into
 # agent-in-progress claims with a worker spawned behind them. Two counts say
