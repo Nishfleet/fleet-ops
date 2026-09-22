@@ -61,9 +61,15 @@ default): when that variable is `0`, print `jev advisory off
 The tier is one `curl` POST to `127.0.0.1:4000/jev` per failing test, written
 here as prose. Do not write a program, a heredoc, a code fence or a helper
 file to run it; the only file you write is the JSONL log line in step 6. The
-bearer token is the value of `LITELLM_JEV_KEY` in
-`~/.config/fleet-ops/seats/typesafe-jev.env`; it goes only in the Authorization
-header and is never printed, logged or echoed.
+bearer is `Bearer $(cut -d= -f2- ~/.config/fleet-ops/seats/typesafe-jev.env)`
+exactly as `prompts/worker.md` writes it — the command substitution stays
+inside the curl line, so the key value is never printed, logged or echoed.
+Never substitute the key into the command text yourself.
+
+No alert in `config/fleet_rules.yml` carries a GitHub Actions run id, so on
+the alerts this file repairs today step 1 finds nothing and the tier prints
+`jev advisory unavailable (no failing run)` and stops. That is the correct
+result, not a failure to work around: the tier never goes hunting for a run.
 
 1. Name the run. Take the repo `Nishfleet/<repo>` and the numeric run id the
    alert or your own repair evidence already named. If you cannot name both
@@ -93,16 +99,17 @@ header and is never printed, logged or echoed.
    run's `createdAt` — history never includes the future, and a target run
    absent from the list does not license using the unfiltered list. Keep the
    20 most recent that remain, oldest first. Record an outcome only where you
-   have one: `success` is `pass`; for `failure` or `timed_out`, read
-   `gh run view <id> -R <repo> --log-failed` and record `fail` only when the
-   signature text is in that log. A green run is a pass because the workflow
-   ran and the test did not fail; a red run whose failed log you cannot read
-   is unknown, and unknown is omitted, never counted as a pass. A red run
-   whose log you did read and which lacks the signature is also omitted: the
-   workflow failed somewhere else, which says nothing about this test. Fewer
-   than 20 recorded outcomes is the honest answer. An empty `gh run list`
-   result is `jev advisory unavailable (no run history); repair rules
-   unchanged` — stop.
+   have one: `success` is `pass` — the strongest statement the run record
+   supports, since a green conclusion does not say the test existed yet or was
+   not skipped; for `failure` or `timed_out`, read `gh run view <id> -R <repo>
+   --log-failed` and record `fail` only when the signature text is in that log.
+   Read at most 20 failed logs in the whole tier; past that, stop reading and
+   omit the rest. A red run whose failed log you cannot read is unknown, and
+   unknown is omitted, never counted as a pass. A red run whose log you did
+   read and which lacks the signature is also omitted: the workflow failed
+   somewhere else, which says nothing about this test. Fewer than 20 recorded
+   outcomes is the honest answer. An empty `gh run list` result is `jev
+   advisory unavailable (no run history); repair rules unchanged` — stop.
 4. Diff touch. For a `pull_request` run, the changed files are
    `gh api repos/<repo>/commits/<headSha>/pulls` then
    `gh api repos/<repo>/pulls/<number>/files`; otherwise
@@ -113,7 +120,7 @@ header and is never printed, logged or echoed.
 5. One POST per test, no shared state. For each signature, POST once, with the
    JSON inline in the curl body (no state file, no heredoc):
 
-   `curl -s -X POST http://127.0.0.1:4000/jev -H "Authorization: Bearer <key>" -H 'content-type: application/json' -d '<json>'`
+   `curl -s -X POST http://127.0.0.1:4000/jev -H "Authorization: Bearer $(cut -d= -f2- ~/.config/fleet-ops/seats/typesafe-jev.env)" -H 'content-type: application/json' -d '<json>'`
 
    The body carries `model` `typesafe-ai/jev`, a `state` object with `site`
    `flaky-test-quarantine`, `repo`, `run_id`, `workflow`, `branch`, `test`
@@ -141,9 +148,11 @@ header and is never printed, logged or echoed.
    unchanged` and continue with the next test.
 
 What this tier never does: it never reruns anything, never flips a retry
-policy, and never treats its own output as a decision. The flip bar — acting
-on a flaky verdict, and then only as a targeted retry of the tests that read
-flaky — is >= 200 real failures compared against the actual rerun outcome and
-the confident bucket (p >= 0.9 or p <= 0.1) clearing its gate, which is a
-benchmark go row (fleet-ops#7754) landed in a separate PR. Until that row
-exists the existing repair rules are authoritative and unchanged.
+policy, and never treats its own output as a decision. The flip — acting on a
+flaky verdict, and then only as a targeted retry of the tests that read
+flaky — waits on a benchmark go row for this site (fleet-ops#7754 scores the
+shadow logs) landed in a separate PR. This packet's own acceptance names the
+comparison size: 100 real failures compared. The confident edges are the
+`flaky-test-quarantine` row in `docs/jev-bands.md`: p >= 0.9 or p <= 0.1.
+Until that row exists the existing repair rules are authoritative and
+unchanged.
