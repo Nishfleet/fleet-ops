@@ -1,7 +1,0 @@
-{
-  "number": 101,
-  "title": "signup CTA on /compare pages 404s — visit cannot become signup",
-  "state": "open",
-  "labels": [{"name": "scout-candidate"}],
-  "body": "funnel_stage: signup\nsource: direction#4518\n\nmetric: signup clicks on /compare/* reach the signup form\n\nobserved: 2026-09-22 the CTA href points at /signup which 404s\n\nevidence:\n- https://0509.io/compare/pulzifi\n- curl -o /dev/null -w '%{http_code}' https://0509.io/signup -> 404\n\naccept:\n- /signup resolves or the CTA points at the real signup route\n\nverify:\ncurl -s https://0509.io/compare/pulzifi | grep -o 'href=\"[^\"]*\"' | grep -i signup\n\nrollback: revert the CTA href\n\ndedupe: none\n\nimpact: every /compare visit dead-ends before signup\n\nproduct_surface: /compare/* CTA\n\ntermination: curl -fsS -o /dev/null https://0509.io/signup\n\nnote: earlier draft mentioned a migrations/** backfill for click tracking — descoped, see comments"
-}

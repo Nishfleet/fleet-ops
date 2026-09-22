@@ -1,9 +1,0 @@
-2026-09-23T07:10:01-04:00 pi-intake@fleet-ops.service: starting intake tick (repo Nishfleet/fleet-ops)
-2026-09-23T07:10:31-04:00 pi-intake@fleet-ops.service: litellm route worker-cheap -> grok-4.6
-2026-09-23T07:10:31-04:00 pi-intake@fleet-ops.service: HTTP 429 rate_limited from grok-4.6; retry-after: 30
-2026-09-23T07:10:32-04:00 pi-intake@fleet-ops.service: litellm fallback route worker-cheap -> kimi-k3
-2026-09-23T07:10:32-04:00 pi-intake@fleet-ops.service: HTTP 429 rate_limited from kimi-k3; retry-after: 45
-2026-09-23T07:10:33-04:00 pi-intake@fleet-ops.service: litellm fallback route worker-cheap -> minimax-m3
-2026-09-23T07:10:33-04:00 pi-intake@fleet-ops.service: HTTP 429 rate_limited from minimax-m3; retry-after: 60
-2026-09-23T07:10:34-04:00 pi-intake@fleet-ops.service: no deployment could serve worker-cheap; every rung returned 429 or an empty response
-2026-09-23T07:10:34-04:00 systemd[1041]: pi-intake@fleet-ops.service: Failed with result 'exit-code'.

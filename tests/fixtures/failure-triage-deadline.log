@@ -1,7 +1,0 @@
-2026-09-23T06:00:00-04:00 pi-issue@fleet-ops-4.service: Starting Fleet issue worker (fleet-ops#7601)
-2026-09-23T06:38:12-04:00 pi-issue@fleet-ops-4.service: vitest node suite started
-2026-09-23T06:41:03-04:00 pi-issue@fleet-ops-4.service: still running after 2460s (RuntimeMaxSec=2700)
-2026-09-23T06:45:00-04:00 systemd[1041]: pi-issue@fleet-ops-4.service: RuntimeMaxSec=2700s reached, stopping.
-2026-09-23T06:45:00-04:00 systemd[1041]: pi-issue@fleet-ops-4.service: Killing process 48211 (node) with signal SIGKILL.
-2026-09-23T06:45:01-04:00 systemd[1041]: pi-issue@fleet-ops-4.service: Main process exited, code=killed, status=9/KILL
-2026-09-23T06:45:01-04:00 systemd[1041]: pi-issue@fleet-ops-4.service: Failed with result 'timeout'.

@@ -4,7 +4,6 @@
 original is a symlink into
 `~/.local/lib/node_modules/@earendil-works/pi-coding-agent/examples/extensions/`,
 so a `pi` upgrade updates it for free. Pi's loader follows symlinks — proved
-live on pi 0.85.1, and pi's own `subagent/README.md` documents `ln -sf` as the
 install method.
 
 Do not replace a symlink with a copy. If a stock file must change, fork it with
@@ -45,7 +44,6 @@ Deleting it is strictly less machinery than symlinking it.
 ## Symlinked to stock (upstream pi 0.85.1)
 
 `confirm-destructive.ts`, `dirty-repo-guard.ts`, `handoff.ts`, `notify.ts`,
-`todo.ts`, `plan-mode/*`, `subagent/{agents.ts,README.md,agents/*,prompts/*}`.
 
 **`confirm-destructive.ts` cannot gate commands.** It hooks
 `session_before_switch` / `session_before_fork` only — session lifecycle, not

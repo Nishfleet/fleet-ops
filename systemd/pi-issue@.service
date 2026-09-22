@@ -13,7 +13,6 @@ Description=Pi fleet issue worker %i
 # --session-dir is load-bearing: Pi keys sessions per working directory, and
 # every unit starting in /home/nish shared one session pool — workers resumed
 # each other's transcripts and exited without touching the issue.
-OnFailure=pi-issue-failed@%i.service
 StartLimitIntervalSec=1h
 StartLimitBurst=3
 # The claim gate below authenticates with the shared App token env file —
@@ -143,7 +142,6 @@ ExecStopPost=-/bin/sh -c 'r=$(echo "$1" | sed "s/-[0-9][0-9]*$//"); systemctl --
 # $VAR in Exec lines before /bin/sh sees them, so a multi-variable check
 # cannot fit the 400-char no-glue ceiling anyway — and the #8013/#8087
 # incident proved a long inline program breaks the whole stop path.
-ExecStopPost=/home/nish/workspaces/tooling/fleet-ops-deploy-clone/bin/fleet-claim-release --artifact-check --unit=%n %i
 TimeoutStopSec=180
 
 # Retry policy — systemd's own, not a counter in bash.

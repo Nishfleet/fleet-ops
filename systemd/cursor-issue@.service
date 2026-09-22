@@ -9,7 +9,6 @@
 Description=Cursor fleet issue worker %i (Grok 4.6 High, headless cursor-agent CLI)
 # This unit IS the worker — no wrapper script. Same claim/PR/ExecStopPost
 # contract as pi-issue@.service; see that unit for the design comments.
-OnFailure=pi-issue-failed@%i.service
 StartLimitIntervalSec=1h
 StartLimitBurst=3
 # Claim gate auth comes from the shared App token env file — Requires+After
@@ -82,7 +81,6 @@ ExecStopPost=-/bin/sh -c 'r=$(echo "$1" | sed "s/-[0-9][0-9]*$//"); systemctl --
 # deliberate park and passes. exit 1 -> Result=exit-code -> `failed`, which
 # is what OnFailure=/Restart=/StartLimitBurst key off. Runs LAST so cleanup
 # and the intake refill run first; only checked on a success exit.
-ExecStopPost=/home/nish/workspaces/tooling/fleet-ops-deploy-clone/bin/fleet-claim-release --artifact-check --unit=%n --seat=cursor/cursor-grok-4.6-high %i
 TimeoutStopSec=180
 
 # Retry policy — systemd's own, not a counter in bash.
