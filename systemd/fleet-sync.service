@@ -37,9 +37,16 @@ ExecStart=/usr/bin/promtool check rules /home/nish/workspaces/tooling/fleet-ops-
 #    prometheus runs as user `prometheus` and /home/nish is 0750 nish:nish, so
 #    it cannot traverse into the repo (proved: `sudo -u prometheus test -r
 #    <repo>/config/fleet_rules.yml` fails). Copy only when the bytes changed,
-#    then HUP prometheus (ExecReload is kill -HUP; it re-reads rules only on
-#    reload).
+#    then HUP prometheus (ExecReload is kill -HUP; SIGHUP re-reads the whole
+#    config, rules and scrape jobs).
 ExecStart=/usr/bin/sh -c 'cmp -s /home/nish/workspaces/tooling/fleet-ops-deploy-clone/config/fleet_rules.yml /etc/prometheus/fleet_rules.yml || { sudo -n install -D -m 0644 -o root -g root /home/nish/workspaces/tooling/fleet-ops-deploy-clone/config/fleet_rules.yml /etc/prometheus/fleet_rules.yml && sudo -n systemctl reload prometheus; }'
+# 4b. /etc/prometheus/prometheus.yml is the same class of root-owned copy
+#     (fleet-ops#8084). The #7954 alertmanager scrape job reached the repo
+#     file and never the live one, so up{job="alertmanager"} stayed absent
+#     and FleetNishPageRailDown sat red. SIGHUP re-reads the whole file
+#     (scrape jobs included), not rules only. promtool check config runs
+#     first so a bad file never replaces the live one.
+ExecStart=/usr/bin/sh -c 'src=/home/nish/workspaces/tooling/fleet-ops-deploy-clone/config/prometheus.yml; dst=/etc/prometheus/prometheus.yml; cmp -s "$$src" "$$dst" || { promtool check config "$$src" && sudo -n install -D -m 0644 -o root -g root "$$src" "$$dst" && sudo -n systemctl reload prometheus; }'
 # 5. prometheus-am-executor -f path is user-scope, so it can be a symlink
 #    into the clone (house pattern). Relink when the live path is a regular
 #    file or points elsewhere.

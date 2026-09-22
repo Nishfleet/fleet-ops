@@ -15,9 +15,10 @@ script, or prompt lands unseen.
   pi-intake/pi-scout (see [Intake enrolment](#intake-enrolment)).
 - `systemd/fleet-sync.{service,timer}` — the whole deploy mechanism: every
   two minutes, `git pull --ff-only` + `systemctl --user daemon-reload`, plus
-  `promtool check rules` and a prometheus reload when the alert rules changed,
-  and a LINK-GUARD pass that fails the unit on a dangling or
-  throwaway-target live symlink (fleet-ops#7743).
+  `promtool check rules` / `promtool check config` and a prometheus reload
+  when the alert rules or the scrape config changed, and a LINK-GUARD pass
+  that fails the unit on a dangling or throwaway-target live symlink
+  (fleet-ops#7743).
 
 ## Install
 
@@ -80,6 +81,7 @@ NOT update them. Refresh by hand when the repo file changes:
 | live path | repo source | why a symlink is wrong |
 |---|---|---|
 | `/etc/prometheus/fleet_rules.yml` | `config/fleet_rules.yml` | prometheus runs as `prometheus`; `/home/nish` is `0750 nish:nish`, so it cannot traverse into the repo. **Handled automatically** by `fleet-sync.service` (promtool check + copy + reload). |
+| `/etc/prometheus/prometheus.yml` | `config/prometheus.yml` | same privilege boundary. **Handled automatically** by `fleet-sync.service` (promtool check config + copy + reload). The #7954 alertmanager scrape job drifted here and left `FleetNishPageRailDown` red (fleet-ops#8084); that drift class is closed by the deploy step. |
 | `~/.pi/agent/extensions/**.ts` | `template/extensions/**` | pi resolves a symlinked extension against its REAL path, so sibling imports would resolve into the repo (fleet-ops#3263). After the glue sweeps the only local files are the two stock forks (`permission-gate.ts`, `protected-paths.ts`) — everything else in `~/.pi/agent/extensions/` is a symlink straight into pi's shipped `examples/extensions/`. |
 | `~/.local/state/pi-packet/seat-caps.json`, `~/.pi/agent/models.json`, `~/.local/state/pi-packet/model-candidates.json` | `config/seat-caps.json`, `config/pi-models.json`, `config/model-candidates.json` | live state the git working tree must not rewrite on every checkout (fleet-ops#2910/#3722/#3322). |
 | `/etc/**` (systemd drop-ins, `sysctl.d`, `audit/rules.d`, `default/prometheus`, `prometheus/*.yml`) | `config/`, `etc/`, `systemd/system/` | cross a privilege boundary. |
