@@ -10,5 +10,5 @@ Environment=HOME=/home/nish
 Environment=PATH=/home/nish/.local/bin:/usr/local/bin:/usr/bin:/bin
 Environment=XDG_RUNTIME_DIR=/run/user/1000
 WorkingDirectory=/home/nish
-ExecStart=/bin/sh -c 'cat /home/nish/workspaces/tooling/fleet-ops-deploy-clone/prompts/gardener.md | exec claude -p --model claude-opus-5 --dangerously-skip-permissions'
+ExecStart=/bin/sh -c 'cat /home/nish/workspaces/tooling/fleet-ops-deploy-clone/prompts/gardener.md | exec claude -p --model claude-opus-5-5 --dangerously-skip-permissions'
 TimeoutStartSec=2700
