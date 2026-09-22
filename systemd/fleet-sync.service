@@ -59,6 +59,15 @@ ExecStart=/usr/bin/sh -c 'r=/home/nish/workspaces/tooling/fleet-ops-deploy-clone
 #    whose link text names a throwaway root — *worktrees/, agent-state
 #    (worktrees live there too), */tmp/. A failed unit is the page.
 ExecStart=/usr/bin/sh -c 'b=$$(find /home/nish/.config/systemd/user /home/nish/.local/bin /home/nish/.pi/agent /home/nish/workspaces/tooling/nish-vault -xtype l -o -type l -lname "*worktrees/*" -o -type l -lname "*/agent-state/*" -o -type l -lname "*/tmp/*" 2>/dev/null); [ -z "$$b" ] || { echo "[fleet-sync] LINK-GUARD live symlink -> dead/throwaway target: $$b"; exit 1; }'
+# 8. /etc/hosts gains EXACTLY one line, and this is what keeps it there
+#    (fleet-ops#8259, docs/CONTAINER-WORKER.md section 4). The litellm
+#    provider baseUrl in config/pi-models.json is
+#    http://litellm.fleet.local:4000 so ONE models.json serves both host-side
+#    Pi (name -> 127.0.0.1) and the container (name -> 10.0.2.2, injected by
+#    --add-host on systemd/pi-issue@.container). Append-only and idempotent:
+#    grep first, so the constant is never rewritten and every other line in
+#    /etc/hosts (localhost, the host's own name) is left untouched.
+ExecStart=/usr/bin/sh -c 'grep -qE "^127[.]0[.]0[.]1[[:space:]]+litellm[.]fleet[.]local" /etc/hosts || echo "127.0.0.1 litellm.fleet.local" | sudo -n tee -a /etc/hosts > /dev/null'
 TimeoutStartSec=300
 
 [Install]
