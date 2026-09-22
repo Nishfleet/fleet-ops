@@ -62,6 +62,7 @@ WorkingDirectory=/home/nish
 # ref on origin -> exit 1 -> failed unit. An unclaimed worker is a blind
 # worker. ExecStartPre because the no-glue check caps added Exec lines.
 ExecStartPre=/bin/sh -c 'r=$${1%-*}; n=$${1##*-}; gh api "repos/Nishfleet/$r/git/refs/heads/claim/issue-$n" >/dev/null || { echo "claim-gate: no claim/issue-$n on Nishfleet/$r — refusing unclaimed start (fleet-ops#7790)" >&2; exit 1; }' sh %i
+ExecStartPre=/bin/sh -c 'r=$${1%-*}; n=$${1##*-}; [ "$$(gh api repos/Nishfleet/$r/issues/$n --jq .state)" = open ] || { echo "open-gate: Nishfleet/$r#$n is not open — refusing dead work (Nish 2026-09-22)" >&2; exit 1; }' sh %i
 ExecStartPre=/bin/mkdir -p /home/nish/workspaces/agent-worktrees/issue-%i
 ExecStart=%h/.local/bin/cursor-agent -p --output-format text --model grok-4.7-xhigh --force --trust --workspace %h/workspaces/agent-worktrees/issue-%i "Fleet issue worker for instance %i. Follow %h/workspaces/tooling/fleet-ops-deploy-clone/prompts/worker.md (read AGENTS.md beside it first); every $$1 there means %i."
 # The worker created its own worktree; the worker's own unit cleans it up.

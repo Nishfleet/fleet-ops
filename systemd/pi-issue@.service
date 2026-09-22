@@ -118,6 +118,7 @@ WorkingDirectory=/home/nish
 # in `list-units --state=failed`, instead of a blind 45-minute run. Kept out
 # of ExecStart itself: the no-glue check caps added Exec lines at 400 chars.
 ExecStartPre=/bin/sh -c 'r=$${1%-*}; n=$${1##*-}; gh api "repos/Nishfleet/$r/git/refs/heads/claim/issue-$n" >/dev/null || { echo "claim-gate: no claim/issue-$n on Nishfleet/$r — refusing unclaimed start (fleet-ops#7790)" >&2; exit 1; }' sh %i
+ExecStartPre=/bin/sh -c 'r=$${1%-*}; n=$${1##*-}; [ "$$(gh api repos/Nishfleet/$r/issues/$n --jq .state)" = open ] || { echo "open-gate: Nishfleet/$r#$n is not open — refusing dead work (Nish 2026-09-22)" >&2; exit 1; }' sh %i
 ExecStart=/bin/sh -c 'set -e; export GH_TOKEN=$(gh token generate --app-id $GH_APP_ID --key $GH_APP_KEY --installation-id $GH_APP_INST --token-only); : "$${GH_TOKEN:?mint failed}"; echo "/worker $1" | exec pi --print --append-system-prompt $WORKER_PROMPT --session-dir "$HOME/.pi/agent/sessions/pi-issue-$1" --exclude-tools subagent --provider $PI_SEAT_PROVIDER --model $PI_SEAT_MODEL' sh %i
 # The worker created its own worktree; the worker's own unit cleans it up.
 # No reaper, no salvage organ: work that was never committed and pushed did not
