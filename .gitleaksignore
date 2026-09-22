@@ -1,4 +1,7 @@
 # gitleaks false positive: the fake dummy token quoted in Nishfleet/0509#1792's body,
 # captured verbatim in the #7371 benchmark corpus. Not a credential.
-60dd531cea6d3e1f2b8575a09ae05b5e8b5dfb13:.fleet/bench7371/b-labels.jsonl:stripe-access-token:218
-60dd531cea6d3e1f2b8575a09ae05b5e8b5dfb13:.fleet/bench7371/b-corpus.json:stripe-access-token:1
+# Fingerprints are keyed to the commit that introduced the content in main's
+# ancestry: #7746 squash-merged, so the findings attribute to the squash SHA
+# 3febb390d, not the branch commit 60dd531c the original entries named.
+3febb390d59da5ebbbd2cc57ef4486af37d84ba4:.fleet/bench7371/b-labels.jsonl:stripe-access-token:218
+3febb390d59da5ebbbd2cc57ef4486af37d84ba4:.fleet/bench7371/b-corpus.json:stripe-access-token:1
