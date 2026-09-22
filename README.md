@@ -15,7 +15,9 @@ script, or prompt lands unseen.
   pi-intake/pi-scout (see [Intake enrolment](#intake-enrolment)).
 - `systemd/fleet-sync.{service,timer}` — the whole deploy mechanism: every
   two minutes, `git pull --ff-only` + `systemctl --user daemon-reload`, plus
-  `promtool check rules` and a prometheus reload when the alert rules changed.
+  `promtool check rules` and a prometheus reload when the alert rules changed,
+  and a LINK-GUARD pass that fails the unit on a dangling or
+  throwaway-target live symlink (fleet-ops#7743).
 
 ## Install
 
@@ -124,8 +126,18 @@ deploy-clone (fleet-ops#410).
 The old non-canonical-checkout guard lived in `install.sh`: it refused a
 mutating install from any other tree, because an install from a worktree
 retargeted every live symlink at a tree that could be deleted. With no
-installer there is nothing to point the wrong way — the symlinks are set once
-and only `fleet-sync.service`, pinned to the canonical path, touches the tree.
+installer there is no mass-retarget path, but hand wiring can still point
+one link the wrong way — on 2026-09-18 a session linked the
+`standing-rules-render` units and the vault canonical rules file into a
+churning checkout, and they dangled when the files vanished, taking the
+standing-rules render down (fleet-ops#7743). The guard for that is in
+`fleet-sync.service`: the LINK-GUARD step fails the unit — visibly, every
+two minutes — while any symlink under `~/.config/systemd/user`,
+`~/.local/bin`, `~/.pi/agent` or `~/workspaces/tooling/nish-vault` is broken
+or resolves into a throwaway root (`*worktrees/*`, `agent-state`, `tmp`).
+Live links belong to the canonical checkout and the stable install dirs
+(`~/.local/share`, `~/.local/lib`), never to a tree a session can delete or
+re-clone.
 
 ## systemd by default
 

@@ -50,6 +50,15 @@ ExecStart=/usr/bin/sh -c 'src=/home/nish/workspaces/tooling/fleet-ops-deploy-clo
 #    wrap unloaded for days while every spawn logged `pi: not found`). Blob
 #    SHA vs a stamp file, so it restarts only on real drift.
 ExecStart=/usr/bin/sh -c 'r=/home/nish/workspaces/tooling/fleet-ops-deploy-clone; s=/home/nish/.config/prometheus-am-executor/.sha; h=$$(git -C "$$r" rev-parse HEAD:config/prometheus-am-executor.yml); [ "$$(cat "$$s" 2>/dev/null)" = "$$h" ] || { systemctl --user try-restart prometheus-am-executor.service && echo "$$h" > "$$s"; }'
+# 7. LINK-GUARD (fleet-ops#7743): machine wiring is hand-set symlinks, so a
+#    session CAN still point a live path at a throwaway checkout — the
+#    2026-09-18 incident linked standing-rules-render into a churning clone
+#    and it dangled when the files vanished. After every pull, fail LOUD on
+#    any symlink in the live wiring roots (README "Allowlist" set + the
+#    vault) that is broken (`-xtype l`: target missing or unreadable) or
+#    whose link text names a throwaway root — *worktrees/, agent-state
+#    (worktrees live there too), */tmp/. A failed unit is the page.
+ExecStart=/usr/bin/sh -c 'b=$$(find /home/nish/.config/systemd/user /home/nish/.local/bin /home/nish/.pi/agent /home/nish/workspaces/tooling/nish-vault -xtype l -o -type l -lname "*worktrees/*" -o -type l -lname "*/agent-state/*" -o -type l -lname "*/tmp/*" 2>/dev/null); [ -z "$$b" ] || { echo "[fleet-sync] LINK-GUARD live symlink -> dead/throwaway target: $$b"; exit 1; }'
 TimeoutStartSec=300
 
 [Install]
