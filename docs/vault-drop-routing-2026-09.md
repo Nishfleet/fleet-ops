@@ -5,9 +5,10 @@ capture, Jev answers **which project/area** the capture belongs to and
 **what note type** it is. Logged beside the deterministic path-rule
 placement, advisory only, no vault writes.
 
-- Run: 2026-09-22T01:19Z–01:22Z, last 500 agent-drop `.md` captures by mtime
-  (2026-09-11T07:48Z → 2026-09-22T~03:40Z IST), **499 scored, 1 transport
-  failure skipped** (no synthetic row).
+- Run: rows written 2026-09-22T01:19:13Z–01:22:35Z; the last 500 agent-drop
+  `.md` captures by mtime, spanning capture mtimes 2026-09-11T07:48Z →
+  2026-09-21T23:36Z. **499 scored, 1 transport failure skipped** (no
+  synthetic row).
 - Log: `~/.local/state/pi-packet/jev/vault-drop-routing.jsonl`, 499 rows,
   mode 0600, 607344 bytes,
   sha256 `81ea05ad04981dbbac918f87fa1685dde3bc2ff29ea5b9b9926d3eb76d28c333`.
