@@ -277,7 +277,7 @@ product_surface: <user-visible page or flow name>
 termination: <one exact verification command whose exit 0 means done; must be runnable locally in the repo checkout>
 ```
 
-A 0509 gardener finding uses this same field set. `termination:` is the sweep command that reported the finding. `metric:` is that command. `observed:` and `evidence:` are the command output and the paths. `accept:` is the rule and the config entry to add. `source:` is `REBUILD-TRUST §C2`. `dedupe:` names the open issue, or `none`. `impact:` is the paved path the finding splits. `product_surface:` is the path. `rollback:` is reverting that rule. `verify:` is the same command as `termination:`.
+A 0509 gardener finding uses this same field set. For knip and eslint, `termination:` is that command: exit 0 means the finding is gone. For a duplicate-pattern finding, `termination:` is `! rg -q '<pattern>' <paths>`, because `rg` exits 0 when the pattern is present and 1 when it is gone. For feature-map drift, `termination:` is a command that exits 0 when the named row and the named proof file agree, for example `rg -q '/app/alerts' docs/FEATURE-MAP.md && test -f e2e/the-spec.ts`. `metric:` is that same command. `observed:` and `evidence:` are the command output and the paths. `accept:` is the rule and the config entry to add, or the row the map is missing. `source:` is `REBUILD-TRUST §C2`. `dedupe:` names the open issue, or `none`. `impact:` is the paved path the finding splits. `product_surface:` is the path. `rollback:` is reverting that rule. `verify:` is the same command as `termination:`.
 
 **Quality gate:** If you cannot write `termination:` as a concrete command (not prose), drop the candidate.
 
