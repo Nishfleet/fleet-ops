@@ -52,6 +52,20 @@ must be performed, not skipped:
 exists the fleet is deliberately down — respect it; (2) otherwise
 `XDG_RUNTIME_DIR=/run/user/$(id -u) systemctl --user list-timers` is the truth.
 
+## Cloudflare credentials on this host (Fable, 2026-09-22)
+
+Workers run as `nish` with credential parity, so a packet whose acceptance needs
+the Cloudflare API is not blocked on anyone. Read the token from the file, never
+print it, never copy it into a repo, PR or issue:
+
+- `~/.config/cloudflare/deploy-ci.env` — user token, no expiry: Workers scripts,
+  D1, KV, Zone read, GraphQL analytics (proven 2026-09-22: workers list, D1 list,
+  KV list, `workersInvocationsAdaptive`). Use it for D1 drills, preview uploads
+  and analytics queries (0509#4179 #4180 #4182 #4183 #4184 #4186).
+- `~/.config/cloudflare/email.env` — `CLOUDFLARE_EMAIL_TOKEN`, the only token that
+  reads and writes Email Routing (0509#4181). It has no analytics read.
+- `~/.config/cloudflare/deploy.env` is IP-locked and expires 2026-09-23; do not use it.
+
 ## Per-run invariants for the Pi fleet issue worker
 
 Moved here from `prompts/worker.md` on 2026-09-18: these rules are the same on every
