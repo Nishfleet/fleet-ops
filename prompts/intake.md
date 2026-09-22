@@ -238,7 +238,7 @@ Steps:
       2026-09-19); else if `systemctl --user list-units 'cursor-issue@*.service' --state=active,activating --no-legend | wc -l`
       is below 3, use `cursor-issue@<repo>-N` (Cursor Grok 4.7 xhigh on Nish's Cursor seat; un-parked 2026-09-22 10:20 IST after `cursor-agent -p --model grok-4.7-xhigh` answered; Nish: only grok-4.7-xhigh and kimi-k3-max on Cursor,
       proven headless 2026-09-19 13:21 IST); else if `systemctl --user list-units 'pi-issue@*.service' --state=active,activating --no-legend | wc -l`
-      is below 8, use `pi-issue@<repo>-N` (SuperGrok grok-4.7 xhigh via Pi's xai-oauth provider, #8230; Nish 2026-09-22: max out the weekly quota; 4 concurrent probed OK 11:30 IST); otherwise `router-issue@<repo>-N` (LiteLLM worker-capable: Pareto 2 + Go 4 + Stepfun 5 parallel = about 6 workers; Nish 2026-09-22: Pareto and Stepfun must not sit unused). Then:
+      is below 8 AND `systemctl --user list-units 'router-issue@*.service' --state=active,activating --no-legend | wc -l` is not smaller, use `pi-issue@<repo>-N` (SuperGrok grok-4.7 xhigh via Pi's xai-oauth provider, #8230; Nish 2026-09-22: max out the weekly quota); else if the router count is below 6, use `router-issue@<repo>-N` (LiteLLM worker-capable: Pareto 2 + Go 4 + Stepfun 5 parallel; Nish 2026-09-22: Pareto and Stepfun must not sit unused); else `pi-issue@<repo>-N`. Net effect: the two Pi lanes alternate claim by claim, so short runs cannot starve the router seats (11:19 IST tick: 11 claims, 0 router, because pi never reached 8 live). Then:
       `systemctl --user list-units '<engine>-issue@<repo>-N.service'
        --state=active,activating --no-legend | grep -q . ||
        systemctl --user start --no-block <engine>-issue@<repo>-N.service`
