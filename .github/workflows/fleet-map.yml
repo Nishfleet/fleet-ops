@@ -42,11 +42,14 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           PR: ${{ github.event.pull_request.number }}
         run: |
+          set -eu
           changed=$(git diff --name-only origin/main...HEAD -- systemd prompts config)
           if [ -z "$changed" ]; then
             exit 0
           fi
-          gh pr view "$PR" --repo "$GITHUB_REPOSITORY" --json body --jq .body | grep -q '## Verification'
+          body=$(gh pr view "$PR" --repo "$GITHUB_REPOSITORY" --json body --jq .body)
+          printf '%s\n' "$body" | grep -q '## Verification'
+          printf '%s\n' "$body" | grep -qE '[0-9a-f]{32}'
 
   sync:
     name: sync
@@ -56,6 +59,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
           persist-credentials: true
 
       - name: Regenerate drifted fleet-map rows
@@ -83,15 +87,15 @@ jobs:
           set -eu
           sha=$(git rev-parse HEAD)
           map=.agents/skills/verify-fleet/fleet-map.md
-          if git diff --quiet -- "$map" && git diff --cached --quiet -- "$map"; then
-            echo "no drift at $sha" >> "$GITHUB_STEP_SUMMARY"
-            exit 0
-          fi
           others=$(git status --porcelain --untracked-files=all | awk '{print $NF}' | grep -vx "$map" || true)
           if [ -n "$others" ]; then
             echo "map sync edited files other than the map" >&2
             printf '%s\n' "$others" >&2
             exit 1
+          fi
+          if git diff --quiet -- "$map" && git diff --cached --quiet -- "$map"; then
+            echo "no drift at $sha" >> "$GITHUB_STEP_SUMMARY"
+            exit 0
           fi
           branch="fleet-map-sync-${sha}-${GITHUB_RUN_ID}"
           git checkout -B "$branch"
