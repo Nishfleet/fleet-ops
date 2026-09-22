@@ -29,23 +29,23 @@ Hard rules:
   comment.
 - Max **8 new issues** per run. If you cannot write a concrete `termination:` command for a candidate, **do not file it**.
 - Max **1 infra issue** per run, and only when it blocks a named product flow (cite the flow).
-- NEVER file: refactors for their own sake, CI/tooling polish, control-plane work, duplicate work already covered by an open issue or PR.
+- NEVER file: refactors for their own sake, CI/tooling polish, control-plane work, duplicate work already covered by an open issue or PR. Exception, `$1` = `0509` only: one lint-rule issue per gardener finding, each with `source: REBUILD-TRUST §C2`.
 - NEVER file an issue whose title starts with `__scout_probe_` (that marker means the probe must not become a ticket; fleet-ops#4454 leaked `__scout_probe_noop__ do not file` into the dispatch queue).
-- **Every candidate must cite its research source.** The RESEARCH CONTEXT section is appended after this prompt. Use a `source:` line in the issue body with the exact market-signal line, bet ID, north-star rule reference, or merged-PR title that motivated the candidate. No citation = do not file.
+- **Every candidate must cite its research source.** The RESEARCH CONTEXT section is appended after this prompt. Use a `source:` line in the issue body with the exact market-signal line, bet ID, north-star rule reference, or merged-PR title that motivated the candidate. A 0509 gardener finding cites `source: REBUILD-TRUST §C2`. No citation = do not file.
 
 ## 0509 gardener sweep
 
 For `$1` = `0509` ONLY. Other TARGET repos ignore this section.
 
-This is the first section a `0509` pass executes. Run its commands in `/home/nish/workspaces/products/0509`. Then continue at the Capacity gate. File sweep findings as the block says. The `supply:` line is still the last line of the run, and it is assistant text. A shell echo does not count.
+This is the first section a `0509` pass executes. Run its commands in `/home/nish/workspaces/products/0509`. Do not file from those outputs until Step 1 has the dedupe corpus. Skip a finding that Step 1 already has open. Then continue at the Capacity gate. The `supply:` line is still the last line of the run, and it is assistant text. A shell echo does not count.
 
-When the hard-rule exception fires, open that PR from a worktree so the product checkout stays on its current branch:
+When the hard-rule exception fires, open that PR from a worktree so the product checkout stays on its current branch. `git worktree add` writes `.git/worktrees/` and a branch ref in the product checkout. The file edit is only in the worktree.
 
 1. `git -C /home/nish/workspaces/products/0509 fetch origin`
-2. `git -C /home/nish/workspaces/products/0509 worktree add -B gardener-feature-map /tmp/0509-feature-map origin/main`. If that path is already a worktree, or `gardener-feature-map` already exists on origin, stop and report that. Do not force-push.
-3. Edit only `docs/FEATURE-MAP.md` in `/tmp/0509-feature-map`, by hand.
-4. Commit that file. `git -C /tmp/0509-feature-map push -u origin gardener-feature-map`, then `gh pr create -R Nishfleet/0509 --head gardener-feature-map --base main`.
-5. `git -C /home/nish/workspaces/products/0509 worktree remove /tmp/0509-feature-map`
+2. `git -C /home/nish/workspaces/products/0509 worktree add -B gardener-feature-map /home/nish/workspaces/agent-worktrees/0509-feature-map origin/main`. If that path is already a worktree, or `gardener-feature-map` already exists on origin, stop and report that. Do not force-push.
+3. Edit only `docs/FEATURE-MAP.md` in `/home/nish/workspaces/agent-worktrees/0509-feature-map`, by hand.
+4. Commit that file. `git -C /home/nish/workspaces/agent-worktrees/0509-feature-map push -u origin gardener-feature-map`, then `gh pr create -R Nishfleet/0509 --head gardener-feature-map --base main`.
+5. `git -C /home/nish/workspaces/products/0509 worktree remove /home/nish/workspaces/agent-worktrees/0509-feature-map`
 
 ### GARDENER SWEEP — run this every scout pass, before anything else
 
@@ -107,7 +107,7 @@ THIS run — derived from the drain rate at this repo, capped at 40 for
 product repos; fleet-ops stays at 8. If a run-specific line is present, use
 that number instead of the default. You may apply `scout-candidate` (or
 `agent-ready` on fleet-ops only) to at most `label_budget` issues this run
-(new or relabeled).
+(new or relabeled). A 0509 gardener finding uses `scout-candidate` where the sweep block says `agent-ready`, and that label counts toward the same cap. `agent-blocked` stays `agent-blocked`.
 
 ## Step 1 — Dedupe corpus (one gh batch, match locally)
 
@@ -164,7 +164,7 @@ This is filed. It is labeled `scout-candidate` only after every acquisition-clas
 
 ### A. Live product signals (FIRST — spend most effort here)
 
-Product checkout: `/home/nish/workspaces/products/<repo>` (read-only for inspection). The only write is the 0509 feature-map exception in the hard rules, and it uses its own worktree.
+Product checkout: `/home/nish/workspaces/products/<repo>` (read-only for inspection). The only source edit is the 0509 feature-map exception in the hard rules. `git worktree add` also writes `.git/worktrees/` and a branch ref in that checkout. The edited file lives in the worktree under `/home/nish/workspaces/agent-worktrees/0509-feature-map`.
 
 1. **Deployed site** (`https://0509.io` when repo is `0509`):
    - `/search?q=nike&country=all` — heading copy, country scope honesty
