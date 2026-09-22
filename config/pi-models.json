@@ -35,7 +35,7 @@
       "name": "MiniMax (fleet2)",
       "baseUrl": "https://api.minimax.io/anthropic",
       "api": "anthropic-messages",
-      "apiKey": "!/home/nish/.local/bin/claude-minimax-key",
+      "apiKey": "!cut -d= -f2- /home/nish/.config/fleet-ops/seats/minimax.env",
       "headers": {
         "anthropic-version": "2023-06-01"
       },
@@ -241,27 +241,6 @@
           "name": "DeepSeek V4.1 Flash via ClinePass (subscription)",
           "contextWindow": 131072,
           "maxTokens": 16384
-        },
-        {
-          "id": "cline-pass/minimax-m3",
-          "name": "MiniMax M3 via ClinePass (backup pipe, subscription)",
-          "contextWindow": 200000,
-          "maxTokens": 32000
-        },
-        {
-          "id": "z-ai/glm-5.3-flash",
-          "name": "GLM 5.3 Flash FREE via ClinePass (bypasses weekly cap)",
-          "contextWindow": 131072,
-          "maxTokens": 16384,
-          "input": [
-            "text"
-          ],
-          "cost": {
-            "input": 0,
-            "output": 0,
-            "cacheRead": 0,
-            "cacheWrite": 0
-          }
         }
       ]
     },
