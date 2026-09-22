@@ -739,6 +739,6 @@
       "description": "503 / upstream-overload storm (commandcode minimax-m3-free, fleet-ops#652). Bench until Retry-After or provider overload default."
     }
   },
-  "_comment_router_lane_cap": "The router lane (router-issue@) parallel ceiling = the sum of max_parallel_requests over the worker-capable rungs in the LIVE ~/.config/fleet-ops/litellm-proxy.yaml. Measured 2026-09-22 20:40 IST: OpenCode Go 4 + Stepfun 5 + MiniMax 4 + Synthetic 1 = 14 (xKiro not wired that hour, #8327). prompts/intake.md reads this key at tick time; a re-measure changes THIS number by PR and never a prose sentence (the previous 12-vs-17 restatement in intake.md left the operative clause stale, #8326). Live router units at the time of measurement: 16, i.e. already over the sum via direct dispatch.",
-  "router_lane_cap": 14
+  "_comment_router_lane_cap": "The router lane (router-issue@) parallel ceiling = the sum of max_parallel_requests over the worker-capable rungs in the LIVE ~/.config/fleet-ops/litellm-proxy.yaml. Measured 2026-09-22 23:30 IST: Ollama Cloud DS4.1 flash 4 (restored: chat + tool_choice probes green 17:57Z, router call served by ollama-ds41flash-worker-capable) + OpenCode Go 4 + Stepfun 5 + MiniMax 4 + Synthetic 1 = 18. Not wired: Pareto (401, #8310), Cline (response wrapped in a non-OpenAI {data:...} envelope), xKiro (#8327). prompts/intake.md reads this key at tick time; a re-measure changes THIS number by PR and never a prose sentence (#8326).",
+  "router_lane_cap": 18
 }
