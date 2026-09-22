@@ -135,86 +135,47 @@ jobs:
           grep -c 'nish-preimplementation-contract:start' "$f" | grep -qx 1
           grep -c 'nish-preimplementation-contract:end' "$f" | grep -qx 1
           grep -c 'nish-memory-compound' "$f" | grep -qx 0
-      - name: Install shellcheck (pinned binary + sha256)
-        run: |
-          set -euo pipefail
-          SHELLCHECK_VERSION="v0.11.0"
-          SHELLCHECK_SHA256="8c3be12b05d5c177a04c29e3c78ce89ac86f1595681cab149b65b97c4e227198"
-          ARCHIVE="shellcheck-v0.11.0.linux.x86_64.tar.xz"
-          URL="https://github.com/koalaman/shellcheck/releases/download/${SHELLCHECK_VERSION}/${ARCHIVE}"
-          curl -fsSL --retry 3 --retry-delay 2 -o "${ARCHIVE}" "${URL}"
-          echo "${SHELLCHECK_SHA256}  ${ARCHIVE}" | sha256sum -c -
-          install -d "${HOME}/.local/bin"
-          tar -xJf "${ARCHIVE}" -C "${HOME}/.local/bin" --strip-components=1 "shellcheck-v0.11.0/shellcheck"
-          echo "${HOME}/.local/bin" >> "$GITHUB_PATH"
       # the gates below are independent linters: `if: always()` so one red run
       # lists every violated gate instead of fail-fast hiding the rest.
       - name: actionlint over .github/workflows/
         if: always()
         uses: rhysd/actionlint@914e7df21a07ef503a81201c76d2b11c789d3fca # v1.7.12
-      - name: shellcheck tracked shell files
+      - name: shellcheck over shell files (extension + shebang discovery)
         if: always()
-        run: |
-          git ls-files -z -- '*.sh' '*.bash' '*.ksh' | xargs -0 -r shellcheck -x
-          git grep -lzIE '^#!.*\b(ba|da|k|mk)?sh\b' | xargs -0 -r shellcheck -x
+        uses: ludeeus/action-shellcheck@00cae500b08a931fb5698e11e79bfbd38e612a38 # v2.0.0
+        with:
+          version: v0.11.0
+      - name: apt binaries systemd-analyze verify needs (promtool, bwrap, redis-server)
+        if: always()
+        run: sudo apt-get install -y --no-install-recommends prometheus bubblewrap redis-server
+      # verify fails on a missing Exec path; host-only binaries get executable stubs.
+      - name: stub host-only binaries verify needs (pi, litellm, cursor-agent)
+        if: always()
+        run: printf '%s\0' /home/nish/.local/bin/pi /home/nish/.local/venvs/litellm/bin/litellm "$HOME/.local/bin/cursor-agent" | sudo xargs -0 -rI{} install -D -m0755 /bin/true {}
       - name: systemd-analyze verify over unit files
         if: always()
-        # verify has no flag or env that skips Exec binary existence
-        # (SYSTEMD_OFFLINE tested 2026-09-22: still exit 1), and the units
-        # point at this host's /home/nish paths. Packages provide what they
-        # can (bubblewrap, redis-server; postgresql-16 is preinstalled on the
-        # runner, so its line is a fallback guard only). The three
-        # fleet-local paths plus the postgres fallback get a real executable
-        # (/bin/true) — verify only checks the path exists and is executable,
-        # so a stale or misspelled NEW path still fails the step. The
-        # binaries' real contents are exercised on the host by the
-        # verify-fleet receipt. Adjacent <unit>.d/*.conf and the global
-        # service.d/*.conf load with each unit; drop-ins whose parent unit is
-        # not in the repo have no stock validator (verify refuses bare .conf:
-        # "Invalid argument").
-        run: |
-          sudo apt-get install -y --no-install-recommends bubblewrap redis-server
-          sudo install -D -m0755 /bin/true /home/nish/.local/bin/pi
-          sudo install -D -m0755 /bin/true /home/nish/.local/venvs/litellm/bin/litellm
-          install -D -m0755 /bin/true "$HOME/.local/bin/cursor-agent"
-          test -e /usr/lib/postgresql/16/bin/postgres || sudo install -D -m0755 /bin/true /usr/lib/postgresql/16/bin/postgres
-          systemd-analyze verify --man=no systemd/*.service systemd/*.timer systemd/*.path systemd/*.slice
+        run: systemd-analyze verify --man=no systemd/*.service systemd/*.timer systemd/*.path systemd/*.slice
       - name: pi seat ids resolve to litellm-proxy.yaml model_name (fleet-ops#8332)
         if: always()
-        run: |
-          jq -r '.providers.litellm.models[].id' config/pi-models.json | sort -u > "$RUNNER_TEMP/ids"
-          yq -r '.model_list[].model_name' config/litellm-proxy.yaml | sort -u > "$RUNNER_TEMP/names"
-          # repo grep idiom: a hit (0) prints the line and fails, 1 is clean,
-          # 2 is a grep error and must fail too.
-          rc=0
-          comm -23 "$RUNNER_TEMP/ids" "$RUNNER_TEMP/names" | grep . || rc=$?
-          test "$rc" -eq 1
+        run: yq eval-all -p yaml -o=json -e '[select(fileIndex == 1) | .model_list[].model_name] as $names | [select(fileIndex == 0) | .providers.litellm.models[].id] | map(. as $i | $names | contains([$i])) | all' config/pi-models.json config/litellm-proxy.yaml
       - name: Ollama rungs serve only the permitted slug (fleet-ops#8332)
         if: always()
-        run: |
-          yq -r '[(.model_list[], .benched[]?) | select((.litellm_params.api_base // "") | test("ollama")) | .litellm_params.model | select(. != "openai/deepseek-v4.1-flash")][]' config/litellm-proxy.yaml > "$RUNNER_TEMP/ollama-bad"
-          rc=0
-          grep . "$RUNNER_TEMP/ollama-bad" || rc=$?
-          test "$rc" -eq 1
+        run: yq -e '[(.model_list[], .benched[]?) | select((.litellm_params.api_base // "") | test("ollama")) | .litellm_params.model | select(. != "openai/deepseek-v4.1-flash")] | length == 0' config/litellm-proxy.yaml
       - name: No config/*.bak-* files
         if: always()
         run: "! git ls-files -- 'config/*.bak-*' | grep ."
-      - name: No agent attribution footers in commits or PR text (fleet-ops#1052)
+      - name: No agent attribution footers in commit messages (fleet-ops#1052)
         if: always()
         env:
+          PAT: 'co-authored-by:[[:space:]]|generated[[:space:]-]with[[:space:][]*(claude|devin|copilot|cursor|chatgpt|openai|anthropic|cognition|gpt|gemini|codex|ai)|generated-by:[[:space:]]'
+        run: "! git log --format=%B origin/main..HEAD | grep -Ein \"$PAT\""
+      - name: No agent attribution footers in PR title/body (fleet-ops#1052)
+        if: always()
+        env:
+          PAT: 'co-authored-by:[[:space:]]|generated[[:space:]-]with[[:space:][]*(claude|devin|copilot|cursor|chatgpt|openai|anthropic|cognition|gpt|gemini|codex|ai)|generated-by:[[:space:]]'
           PR_TITLE: ${{ github.event.pull_request.title }}
           PR_BODY: ${{ github.event.pull_request.body }}
-        run: |
-          PAT='co-authored-by:[[:space:]]|generated[[:space:]-]with[[:space:][]*(claude|devin|copilot|cursor|chatgpt|openai|anthropic|cognition|gpt|gemini|codex|ai)|generated-by:[[:space:]]'
-          git log --format=%B origin/main..HEAD > "$RUNNER_TEMP/commits.txt"
-          # repo grep idiom: a hit (0) prints the line and fails, 1 is clean,
-          # 2 is a grep error and must fail too.
-          rc=0
-          grep -Ein "$PAT" "$RUNNER_TEMP/commits.txt" || rc=$?
-          test "$rc" -eq 1
-          rc=0
-          printf '%s\n' "${PR_TITLE:-}" "${PR_BODY:-}" | grep -Ein "$PAT" || rc=$?
-          test "$rc" -eq 1
+        run: "! printf '%s\\n' \"$PR_TITLE\" \"$PR_BODY\" | grep -Ein \"$PAT\""
 
   # no-glue: the mechanical half of "no scripts, hooks, wrappers, helpers"
   # (Nish 2026-09-19, 2026-09-21). Fails on any ADDED file under a script

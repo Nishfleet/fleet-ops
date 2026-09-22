@@ -12,8 +12,6 @@ out/
 .cache/
 .pytest_cache/
 
-# fleet-ops#8341: .bak-* siblings of live configs are a sprawl class
-# (TRUST-STACK §3) — the versioned file plus its PR is the only record.
-# ci also rejects a tracked file matching this.
+# fleet-ops#8341: .bak-* config siblings are sprawl — versioned file + PR is the record. ci also rejects a tracked one.
 config/*.bak-*
 config/**/*.bak-*
