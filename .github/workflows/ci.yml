@@ -103,6 +103,31 @@ jobs:
             'timer-no-nex[t]|timer-manifes[t]' \
             AGENTS.md README.md prompts systemd etc config template patches .github credentials || rc=$?
           test "$rc" -eq 1
+      - name: Cursor shared-memory rule stays current (fleet-ops#7803)
+        # The always-on Cursor rule is repo-tracked at
+        # template/cursor-rules/shared-memory.mdc, the same directory as
+        # fleet-packet-verdict.mdc. The live ~/.cursor/rules/ copy is a
+        # regular file today; the symlink that would make this the served
+        # copy is fleet-ops#8277, so this step guards the repo copy only.
+        # These greps are the gate the deleted tests/rulebook-host-drift.test.sh
+        # used to be. Banned: the memoryctl mandate (binary deleted 2026-09-18)
+        # and the pre-#6610 universal approval sentence, matched by its unique
+        # tail "approval. Only the contract" so the post-#6610 sentence
+        # ("approval ONLY when ...") does not trip it. Required: the #6610
+        # reserved-class clause. rc 0 is a hit, 1 is clean, 2 is a grep error;
+        # a broken pattern can never read as a clean scan.
+        run: |
+          f=template/cursor-rules/shared-memory.mdc
+          test -f "$f"
+          rc=0
+          grep -nE 'memoryctl|approval\. Only the contract' "$f" || rc=$?
+          test "$rc" -eq 1
+          rc=0
+          grep -nF 'reserved class or is irreversible' "$f" || rc=$?
+          test "$rc" -eq 0
+          grep -c 'nish-preimplementation-contract:start' "$f" | grep -qx 1
+          grep -c 'nish-preimplementation-contract:end' "$f" | grep -qx 1
+          grep -c 'nish-memory-compound' "$f" | grep -qx 0
 
   # no-glue: the mechanical half of "no scripts, hooks, wrappers, helpers"
   # (Nish 2026-09-19, 2026-09-21). Fails on any ADDED file under a script
