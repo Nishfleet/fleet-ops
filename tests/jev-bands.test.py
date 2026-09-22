@@ -22,6 +22,7 @@ DOC = ROOT / 'docs' / 'jev-bands.md'
 CONSUMERS = [
     ROOT / 'bin' / 'am-executor-claim',
     ROOT / 'lib' / 'seat_fault.py',
+    ROOT / 'lib' / 'failure_triage.py',
     ROOT / 'prompts' / 'alert-repair.md',
     ROOT / 'prompts' / 'daily-digest.md',
     ROOT / 'prompts' / 'intake.md',
@@ -60,7 +61,7 @@ def check(cond, msg):
 EXPECTED = {
     'alert-dispatch', 'alert-repair', 'alert-triage', 'auto-revert',
     'claim-check-pr', 'claim-check-report', 'dependency-pr-arm',
-    'flaky-test-quarantine', 'gha-stuck-run-watch', 'hermes-digest',
+    'failure-triage', 'flaky-test-quarantine', 'gha-stuck-run-watch', 'hermes-digest',
     'intake-order', 'intake-repair-seatfault', 'intake-seat-smoke', 'merge-queue-batches', 'merge-queue-enqueue',
     'reviewer-needs-review', 'scout', 'scout-rank', 'second-opinion',
     'second-opinion-reserved', 'vault-drop-routing', 'worker-context', 'worker-escalation-target',

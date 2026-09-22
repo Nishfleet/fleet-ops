@@ -8,6 +8,7 @@
     "claim-check-report":      { "act_hi": 0.5, "review_lo": 0.5 },
     "dependency-pr-arm":       { "act_hi": 0.9, "review_lo": 0.1 },
     "flaky-test-quarantine":   { "act_hi": 0.9, "review_lo": 0.1 },
+    "failure-triage":          { "act_hi": 0.9, "review_lo": 0.1 },
     "gha-stuck-run-watch":     { "act_hi": 0.9, "review_lo": 0.1 },
     "alert-repair":            { "act_hi": 0.9, "review_lo": 0.1 },
     "hermes-digest":           { "act_hi": 0.5, "review_lo": 0.5 },
