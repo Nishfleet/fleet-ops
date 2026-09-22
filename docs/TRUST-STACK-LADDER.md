@@ -60,16 +60,16 @@ Ranked by recurrence, using the entries' own language ("recurred", "again",
 
 | # | Rule | Now | Target | Mechanism | Status |
 |---|---|---|---|---|---|
-| 1 | **No new scripts, anywhere, in any repo** — `scripts/`, `bin/`, `tools/`, `.github/scripts/`, `ops/`, `*.sh`, `*.mjs` | 3 (`prompts/worker.md` step 5, `CLAUDE.md`, standing rules) | **1 wanted, 2 available** | Rung 1 is a push ruleset `file_path_restriction` — **probed unavailable**, `422 Source public repos cannot have push rules`, and org rulesets `403 Upgrade to GitHub Team`. Rung 2 is a required status check on the added-path set | **packet #8034**; rung 1 parked for Nish |
+| 1 | **No new scripts, anywhere, in any repo** — `scripts/`, `bin/`, `tools/`, `.github/scripts/`, `ops/`, `*.sh`, `*.mjs` | 3 (`prompts/worker.md` step 5, `CLAUDE.md`, standing rules) | **1 wanted, 2 available** | Rung 1 is a push ruleset `file_path_restriction` — **probed unavailable**, `422 Source public repos cannot have push rules`, and org rulesets `403 Upgrade to GitHub Team`. Rung 2 is a required status check on the added-path set | **shipped (#8034)** — `no-glue` is a required status check on the added-path set; rung 1 parked for Nish |
 | 2 | Never work in the deploy clone; it stays clean on main | 3 (step 3, ×2 paragraphs) | 2 | Pi `protected-paths` — already installed and proven live — deny-write on `fleet-ops-deploy-clone` | **packet #8036** |
 | 3 | The worktree path must be the absolute `agent-worktrees/` path | 3 | 2 | Same `protected-paths` entry. A relative path resolves into the clone and is refused at the tool call | **packet #8036** |
-| 4 | Ollama serves DeepSeek 4.1 flash **only** — recurred 2026-09-19 via two consumers at once | 3 | 2 | The router config is the single consumer of record; `config/litellm-proxy.yaml` + `config/pi-models.json` must not disagree. A CI check comparing the two files is stock and is the class fix. The memory entry explicitly forbids a guard script — a test is not a script | **not yet packeted; see C** |
+| 4 | Ollama serves DeepSeek 4.1 flash **only** — recurred 2026-09-19 via two consumers at once | 3 | 2 | The router config is the single consumer of record; `config/litellm-proxy.yaml` + `config/pi-models.json` must not disagree. A CI check comparing the two files is stock and is the class fix. The memory entry explicitly forbids a guard script — a test is not a script | **shipped — `ci` job steps, PR #8358 (fleet-ops#8332)** |
 | 5 | Verification is prose in a PR body that Fable re-runs by hand | 5 | 2 | The `verdict` required check, keyed by head SHA, level from the path map | **packet #8034** |
 | 6 | A unit's verifier must be a different model family from its builder | 5 (nowhere stated; true only by accident) | 2 | Router group ordering: `judge`/`senior` resolve to a non-z-ai family first | **packet #8035** |
 | 7 | Every correction must be encoded at its lowest rung | did not exist | 3 + habit | The mandatory `encoded: <rung> — <mechanism>` line in every REPORT and reviewer report | **packet #8029** |
 | 8 | A worker must stop before systemd kills it | 2, but wrong: `RuntimeMaxSec` kills mid-thought and yields nothing | 3 **above** the gate | `TIMEBOX` in the packet, instructing return-partial-and-stop. The unit property stays as the backstop | **packet #8029** |
 | 9 | fleet-ops PRs are gated by no status checks at all | — | 2 | `required_status_checks` added to the `main-merge-queue` ruleset | **packet #8034** |
-| 10 | Config `.bak-*` siblings are the record | 5 (convention, unwritten) | 1 | Versioned `config/litellm-proxy.yaml` + PR is the only record; the `.bak-` convention is deleted so it cannot be copied | **packet #8032** |
+| 10 | Config `.bak-*` siblings are the record | 5 (convention, unwritten) | 1 | Versioned `config/litellm-proxy.yaml` + PR is the only record; the `.bak-` convention is deleted so it cannot be copied | **shipped** — `.gitignore` + `ci` step (PR #8358; fleet-ops#8341); the six host files were already absent at run time 2026-09-22 |
 | 11 | A machine-opened issue must not arrive armed | did not exist | 2 | A `machine-reported` label that the intake rail does not watch, plus Jev `repro_worthy` before relabelling | **packet #8031** |
 | 12 | `gh` CLI flag trivia (`--body`, `label` vs `labels`, `--sort`, `mergeQueueEntry`) | 3, ~5 dense lines in step 1 | **delete** | Not a fleet rule. A wrong field exits non-zero and the worker's own inner loop catches it. Keep only the *masked-failure* lessons (#1193, #5010), which the inner loop does **not** catch | **packet #8030** |
 
@@ -142,6 +142,21 @@ the next wave.
 | Never sync credentials, sessions, caches or runtime state to the vault | 3 | 1 | Syncthing `.stignore` patterns | A rule guarding secrets should never be a rule |
 | Never auto-reboot | 3 | 1 | Disable unattended-upgrades' auto-reboot at OS config level | Same reasoning |
 | Outbound email is never Resend; CF deploys are wrangler OAuth only | 3 ×2 | 1 ×2 | Do not provision the credential. A capability that does not exist cannot be used | The purest rung-1 move available: delete the key |
+
+**Status 2026-09-23, fleet-ops#8341 batch (PR #8358).** Shipped as `ci` job
+steps: the agent-attribution gate (commit range + PR title/body, re-checked on
+`edited`). Already shipped before the batch: the Actions `concurrency:` group
+at `ci.yml` head, and `etc/sysctl.d/90-fleet-inotify.conf` (#5839). Not
+encodable inside this repo's CI, each parked with its authority: the
+migrations-DDL lint and the migrations+`tests/integration/` pairing (this repo
+carries no `migrations/` and no-glue keeps `tests/` deleted — both gates belong
+to repos that carry those surfaces, 0509 first), `delete_branch_on_merge` off
+and GitHub Environment required reviewers (repo-admin scope — the worker token
+has none), Cloudflare budget alert and Resend credential deletion (Nish —
+money / security), free-tier privacy routing (a router design change, not a
+lint), vault `.stignore` and host auto-reboot (host configuration). The
+`blocked-by-judge` ordering clause stays rung 3: CI cannot observe the order
+of a worker's own comment-then-label steps.
 
 ## F. Dead mechanisms — the rules that outlived what they governed
 
