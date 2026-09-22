@@ -82,6 +82,27 @@ jobs:
         # also passes an explicitly nulled key — absent and null both mean
         # "no clamp" to the tick.
         run: jq -e '.tick_spawn_cap_by_repo == null or (.tick_spawn_cap_by_repo | type == "object" and (to_entries | all(.value | type == "number" and . == floor and . >= 0)))' config/seat-caps.json
+      - name: No timer-inventory signal emitters on committed surfaces
+        # fleet-ops#7711: the ghost-timer signal family is extinct — every
+        # emitter (the heartbeat tier-1 timer-arm pass, the drift canary, the
+        # reconciler that minted the ghost unit keys) was deleted in the
+        # 2026-09-18 sweep, and no-glue bars a code emitter returning as a
+        # file. The residual emission paths are non-code committed surfaces:
+        # a prompt line, a unit Exec, a config value. This gate fails if any
+        # of them carries a family name; an emitter's return must amend this
+        # step in the same PR — deliberate, never silent. docs/ and .fleet/
+        # are excluded for the same reason as the secret gate above: reports
+        # and bench corpora legitimately quote the retired names. The [t]
+        # class in the pattern keeps this file from matching itself — do not
+        # spell the names out in this comment either. rc: 0 prints+fails on
+        # match, 1 is clean, 2 is a grep error and must fail too — a broken
+        # pattern can never read as a clean scan.
+        run: |
+          rc=0
+          grep -rEin --exclude-dir=.git --exclude-dir=.fleet --exclude-dir=docs \
+            'timer-no-nex[t]|timer-manifes[t]' \
+            AGENTS.md README.md prompts systemd etc config template patches .github credentials || rc=$?
+          test "$rc" -eq 1
 
   # no-glue: the mechanical half of "no scripts, hooks, wrappers, helpers"
   # (Nish 2026-09-19, 2026-09-21). Fails on any ADDED file under a script
