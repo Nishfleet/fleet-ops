@@ -50,8 +50,12 @@ Steps:
    absent). A gh error or a non-array payload is UNKNOWN: print `LOUD
    open-pr-check-failed $full $branch`, hold everything, exit 0.
 
-3. Any open PR on `claim/issue-<N>` means HOLD — the work is in review, not
-   orphaned. Flip no labels, delete nothing. Post ONE comment on each such
+3. Any open PR on `claim/issue-<N>` means HOLD the branch — delete nothing —
+   but the label still flips in step 5. The worker that owned this claim ended
+   failed and is gone; an open PR with no worker is orphaned, and only a
+   re-claim (which reuses the branch, worker.md step 2) can finish it. Three
+   claims sat `agent-in-progress` for hours on 2026-09-22 this way (0509#3965
+   #3966 #3926) until Fable flipped them by hand. Post ONE comment on each such
    PR via `gh pr comment <pr> -R $full --body <text>` with the text:
    "silent-close guard (fleet-ops#6292): pi-issue-failed@<instance> fired
    after the worker for issue #<N> ended failed, and the claim-release path
@@ -62,8 +66,9 @@ Steps:
    not with the release path. Owning issue: #<N>." Then post ONE trace line
    on the issue via `gh issue comment <N> -R $full --body <text>`: "claim
    release held by pi-issue-failed@<instance> at <UTC> — worker ended failed
-   but open PR(s) exist on claim/issue-<N> (<numbers>); branch and labels
-   left intact (fleet-ops#6292)." Exit 0.
+   but open PR(s) exist on claim/issue-<N> (<numbers>); branch left intact
+   (fleet-ops#6292), label re-armed below so intake re-claims the branch."
+   Then continue to step 4.
 
 4. Read the issue: `gh issue view <N> -R $full --json state,labels`. A gh
    error is UNKNOWN: `LOUD issue-fetch-failed $full#<N>`, hold, exit 0.
