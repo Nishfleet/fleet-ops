@@ -31,7 +31,7 @@ what you change — and the prompt that applies it.
   deleted `config/jev-bands.json`, so there is no row to stamp and nothing
   reads an edge. The site's shadow run and its confident-disagreement list
   are in `docs/vault-drop-routing-2026-09.md` (fleet-ops#7766). Scoring
-  stays with fleet-ops#7754.
+  is filed as fleet-ops#8289, because #7754 closed without covering this site.
 - `scout` and `scout-rank` are log-only: they apply no edge today, so
   their band values are inert. The rows still stamp them — they are the
   edges a future flip (fleet-ops#7442, fleet-ops#7778) would read.
