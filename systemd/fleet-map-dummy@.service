@@ -1,0 +1,6 @@
+[Unit]
+Description=Fleet map sync drill, not a real unit
+
+[Service]
+Type=oneshot
+ExecStart=/bin/true
