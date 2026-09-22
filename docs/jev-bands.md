@@ -35,6 +35,15 @@ what you change — and the prompt that applies it.
 - `scout` and `scout-rank` are log-only: they apply no edge today, so
   their band values are inert. The rows still stamp them — they are the
   edges a future flip (fleet-ops#7442, fleet-ops#7778) would read.
+- `scout-admission` is acting, not advisory: it is the intake tick's
+  screen for `scout-candidate` issues (fleet-ops#7655), replacing the
+  deleted `pi-audit-run`/`pi-audit-tally` panel. Its edges are NOT the
+  fleet default: that panel admitted on a 2-of-3 seat PASS vote
+  (docs/ruthless-audit-2026-09.md:276), which mapped onto a single
+  probability is `act_hi` 0.67; `review_lo` 0.33 is the symmetric
+  confident-no (discard). Between the edges the verdict is pending — the
+  tally's no-quorum state — and the candidate re-screens after 24h.
+  `JEV_SCOUT_ADMISSION=off` (or `0`) disables the screen entirely.
 - `intake-repair-seatfault` is log-only while the shadow tier is armed and
   inert by default. It is a single-edge site: `act_hi` is the confidence
   floor under which a Jev `choice(3)` answer is not conclusive enough to
@@ -81,6 +90,7 @@ keeps an old constant.
 | `merge-queue-enqueue` | `prompts/worker.md` | 0.9 | 0.1 |
 | `reviewer-needs-review` | `prompts/worker.md` step 7 | 0.9 | 0.1 |
 | `scout` | `prompts/scout.md` | 0.9 | 0.1 |
+| `scout-admission` | `prompts/intake.md` | 0.67 | 0.33 |
 | `scout-rank` | `prompts/scout.md` | 0.9 | 0.1 |
 | `second-opinion` | `prompts/worker.md` | 0.5 | 0.5 |
 | `second-opinion-reserved` | `prompts/worker.md` | 0.5 | 0.5 |

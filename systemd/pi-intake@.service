@@ -34,9 +34,18 @@ WorkingDirectory=/home/nish
 # tick's own gate ever ran). '-' prefix: a missing file or rm fault must not
 # fail the tick.
 ExecCondition=-/bin/rm -f /home/nish/workspaces/agent-state/pi-intake-triggers/%i
-# One cheap gh call decides whether to spend a seat at all. Exit 255 on a gh
-# fault so systemd records a failure instead of skipping quietly.
-ExecCondition=/bin/sh -c 'out=$$(gh issue list -R Nishfleet/%i -l agent-ready --json number -L 1 2>&1) || { echo "gh failed: $$out" >&2; exit 255; }; [ "$$out" != "[]" ]'
+# Up to three cheap gh searches decide whether to spend a seat at all — one
+# per work class the tick has: agent-ready issues to claim, unscreened
+# scout-candidates (no admission-pending label), and pending candidates
+# whose verdict has aged past 24h and are due a re-screen. fleet-ops#7655:
+# gating on agent-ready alone never releases at ready==0 — the step that
+# CREATES ready issues lives inside the tick it gates, so an empty pool
+# starved forever (0509 sat at 91 candidates / 0 ready on 2026-09-22, every
+# tick "Skipped due to 'exec-condition'"). Gating on ANY scout-candidate is
+# the opposite defect: pending heads hold the gate open every tick while
+# their verdict is still fresh, burning a seat for nothing to screen. Exit
+# 255 on a gh fault so systemd records a failure instead of skipping quietly.
+ExecCondition=/bin/sh -c 'cut=$$(date -u -d "24 hours ago" +%%FT%%TZ); for q in "label:agent-ready" "label:scout-candidate -label:admission-pending" "label:admission-pending updated:<$$cut"; do o=$$(gh issue list -R Nishfleet/%i --search "$$q" --json number -L 1 2>&1) || { echo "gh failed: $$o" >&2; exit 255; }; [ "$$o" != "[]" ] && exit 0; done; exit 1'
 # The prompt is a Pi prompt template (~/.pi/agent/prompts/intake.md), invoked
 # as `/intake <repo>`. Pi expands `/name args` from stdin in --print mode and
 # substitutes $1 — verified 2026-09-18 on this host.

@@ -18,18 +18,127 @@ Hard rules:
 
 Steps:
 
-1. **Label the invisible.** `gh issue list -R Nishfleet/<repo> --state open
-   --json number,title,labels --limit 100`. Intake only sees `agent-ready`, so an open
-   issue carrying none of `agent-ready` / `agent-in-progress` / `agent-blocked`
-   / `noise-class` / `superseded-by-rebuild` / `deputy` / `needs-nish-decision`
-   is invisible forever. Add `agent-ready` to each such issue.
+1. **Label the invisible, then admit the candidates.** `gh issue list -R
+   Nishfleet/<repo> --state open --json number,title,labels,createdAt,updatedAt
+   --limit 400`.
+   The limit MUST cover every open issue: `gh issue list` returns
+   newest-first, so a limit smaller than the open-issue count hides the
+   OLDEST issues behind the page — the same fleet-ops#1377/#2924 shape step
+   4 guards, and the live one (fleet-ops#7655: on 2026-09-22 all 91
+   scout-candidates on 0509 sat past the 100-deep page). If the result
+   length equals the limit, raise it and list again. Intake only sees
+   `agent-ready`, so an open issue carrying none of `agent-ready` /
+   `agent-in-progress` / `agent-blocked` / `noise-class` /
+   `superseded-by-rebuild` / `deputy` / `needs-nish-decision` /
+   `scout-candidate` / `admission-pending` / `discarded` is invisible
+   forever. Add `agent-ready` to each such issue.
    Never add `agent-ready` to an issue that already carries `agent-blocked`,
    `awaiting-runtime-gate`, `noise-class`, `superseded-by-rebuild`, `deputy`,
-   or `needs-nish-decision`. `noise-class` and `superseded-by-rebuild` are
-   terminal: not work. `deputy` means the Opus deputy owns it, never the fleet.
-   `needs-nish-decision` waits for Nish. Leave those issues as they are. Also skip any issue whose title
+   `needs-nish-decision`, `scout-candidate`, `admission-pending`, or
+   `discarded`. `noise-class`, `superseded-by-rebuild` and `discarded` are
+   terminal: not work (`discarded` is the admission reject — re-labeling it
+   is the 0509#1140 requeue class). `scout-candidate` is the admission queue
+   and reaches `agent-ready` only through the screen below;
+   `admission-pending` is a `scout-candidate` whose last screen came back
+   pending (the no-quorum state) — the two always ride together, and a
+   pending issue is never claimable. `deputy` means the
+   Opus deputy owns it, never the fleet. `needs-nish-decision` waits for
+   Nish. Leave those issues as they are. Also skip any issue whose title
    starts with `__scout_probe_`. That marker means do not file, and a leaked
    probe must not be labeled agent-ready (fleet-ops#4454).
+
+   **Admit the candidates (fleet-ops#7655).** `scout-candidate` means
+   "queued for senior admission" (fleet-ops#457: admission, not blank
+   approval). The panel that screened it — `pi-audit-run` +
+   `pi-audit-tally`, a 2-of-3 seat PASS/FAIL vote — was deleted in the
+   2026-09-18 glue sweep; this tick is the surviving rail and the screen is
+   a typed decision, which is Jev's job. Off switch: `JEV_SCOUT_ADMISSION`
+   set to `off` or `0` skips this whole screen — print
+   `scout-admission: off`, leave every label as it is, and move to step 2.
+
+   Housekeeping first, no verdicts spent: an issue carrying BOTH
+   `scout-candidate` and `agent-ready` is already admitted — remove
+   `scout-candidate` (and `admission-pending` if present). An issue
+   carrying `discarded` AND `scout-candidate` is a terminal leftover —
+   remove `scout-candidate` (fleet-ops#2766). An issue carrying
+   `admission-pending` WITHOUT `scout-candidate` is an orphaned marker —
+   change nothing, print `LOUD admission-orphan <repo>#<N>` so it surfaces
+   instead of guessing which state wins.
+
+   A candidate is SCREENABLE when it carries `scout-candidate` and either
+   lacks `admission-pending` (never screened) or its `updatedAt` is older
+   than 24h (pending verdict gone stale). Screen at most 4 per tick,
+   oldest by `createdAt` — the deleted panel's own per-tick cap
+   (`AUDIT_TICK_MAX_START=4`, `bin/fleet-heartbeat-auditor` pre-sweep).
+   For each, `gh issue view <N> -R Nishfleet/<repo> --json title,body,labels`,
+   then ONE POST to `http://127.0.0.1:4000/jev` with header
+   `Authorization: Bearer $(grep '^LITELLM_JEV_KEY='
+   ~/.config/fleet-ops/seats/typesafe-jev.env | cut -d= -f2-)` — the seat
+   file holds several keys, so name the line, and never print the key —
+   and `content-type: application/json`. The body: `state` is
+   `ref=Nishfleet/<repo>#<N>` plus the title, labels and body, plus the
+   dedupe corpus (this repo's open issue numbers+titles from the step-1
+   list); `questions` carries one boolean `admit` whose `instructions` are
+   the panel's own bar — "Should this candidate be worked by a fleet lane?
+   PASS only if it is a non-duplicate, user-facing product improvement
+   with a concrete termination and a safe rollback, or a well-formed
+   research-delta; FAIL if it duplicates an open issue/PR or recent merge,
+   is pure tooling/infra, is a vague idea, or does not advance the north
+   star. 'The queue is thin' is never a reason to admit." Read
+   `answers.admit.probability`. The edges are the site `scout-admission`
+   row in `docs/jev-bands.md` — the deleted panel admitted on 2-of-3 seat
+   PASS votes (docs/ruthless-audit-2026-09.md:276), which mapped to one
+   probability is `p >= 0.67`, with `p <= 0.33` the symmetric confident-no:
+   - `p >= 0.67` → admit: `gh issue edit <N> -R Nishfleet/<repo>
+     --remove-label scout-candidate --remove-label admission-pending
+     --add-label agent-ready` plus ONE comment `admitted: scout-admission
+     p=<p>`.
+   - `p <= 0.33` → discard: `--remove-label scout-candidate --remove-label
+     admission-pending --add-label discarded` plus ONE comment
+     `admission-reject: scout-admission p=<p>
+     class=<duplicate|not-code|reserved|spec-incomplete|other>`.
+   - between → pending: the tally's no-quorum state. Ensure the marker
+     label exists once (`gh label create admission-pending -R
+     Nishfleet/<repo> --description "screened, verdict pending; re-screens
+     after 24h" --color FBCA04` — an already-exists error is fine), then
+     `gh issue edit <N> -R Nishfleet/<repo> --add-label admission-pending`
+     plus ONE comment `admission-pending: scout-admission p=<p>`. The
+     label or the comment refreshes `updatedAt`, which is what the unit's
+     ExecCondition reads to hold the gate shut until the verdict stales.
+   A failed POST, a missing `admit` answer, or a probability outside 0-1
+   is NO verdict: leave the labels and print `LOUD jev-admission-failed
+   <repo>#<N>`; never label on no verdict. Append one JSON object per POST
+   to `~/.local/state/pi-packet/jev/scout-admission.jsonl` (mkdir -p
+   first): `ts`, `site`=`scout-admission`, `ref`=`Nishfleet/<repo>#<N>`,
+   `state_sha256` of the exact body posted, `answers`, `probabilities`,
+   `usage`, `ms`, `verdict`=`admitted|discarded|pending|none`,
+   `band_lo`=0.33, `band_hi`=0.67 — the standing Jev-log convention every
+   other site follows, stamping the doc-row edges it ran under. When this
+   run read ≥1 verdict, print ONE `admission-eval: <repo> evaluated=<n>
+   admitted=<a> discarded=<d> pending=<p>` line.
+
+   **Ready-pool floor (fleet-ops#7655 do:5).** After the relabels above,
+   count the live pools: `gh api
+   "search/issues?q=repo:Nishfleet/<repo>+is:open+label:scout-candidate"
+   --jq .total_count` and the same for `label:agent-ready`. `last_applied`
+   is the newest `scout-admission.jsonl` entry for this repo whose
+   `verdict` is `admitted` or `discarded`. The floor is RED when
+   `cand > 5 × ready` AND `last_applied` is absent or older than 24h — an
+   eval that pends every head does not count, because "the screen ran" is
+   not "the queue drained" (91 candidates / 0 ready must not clear it).
+   On red, print `LOUD admission-floor <repo> cand=<c> ready=<r>
+   last-applied=<ts|never>` AND park it where a drain lists: one open
+   issue on THIS repo titled `admission-floor: <repo> scout-candidate
+   queue not draining` carrying `needs-orchestrator` (create the label
+   first if absent). Search first — `gh issue list -R Nishfleet/<repo> -l
+   needs-orchestrator --state open --search "admission-floor in:title"`;
+   create with the counts if absent; if already open, comment the current
+   counts only when its newest `admission-floor` comment is >24h old. On
+   green with the tracking issue still open, post `floor green: cand=<c>
+   ready=<r> last-applied=<ts>` under the same >24h dedupe. The red
+   surface is deliberately a parked issue, not a unit failure: this unit
+   has `Restart=on-failure`, so a failing Exec line would re-run the tick
+   every 20s and burn a seat each time instead of resting visibly.
 
 2. **Release the parked.** This tick is also the blocked-issue reconciler
    (fleet-ops#4626): `bin/blocked-reconcile` and both `awaiting-runtime-gate`
