@@ -1,8 +1,0 @@
-2026-09-23T08:00:01Z ci run 1234 attempt 1: queueing job build
-2026-09-23T08:00:01Z ##[group]Requesting a runner for this job
-2026-09-23T08:05:31Z ##[warning]Cancelling "build" because it exceeded the maximum execution time of 300s lined up behind the concurrency group refs/heads/main.
-2026-09-23T08:05:31Z The strategy configuration was cancelled because one of the jobs in your matrix exceeded the configured concurrency limits.
-2026-09-23T08:05:31Z This run was cancelled because it was waiting on a concurrency group that already had a run in progress: group "0509-main" holds 1 of 1 allowed.
-2026-09-23T08:06:02Z ##[error]The run was canceled by the concurrency group policy before the job could start.
-2026-09-23T08:07:10Z cancel requested by workflow concurrency policy; job build was never assigned to a runner
-2026-09-23T08:07:11Z Run canceled

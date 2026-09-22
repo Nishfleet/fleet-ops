@@ -55,9 +55,8 @@ jobs:
         # must fail too — a broken pattern can never read as a clean scan.
         run: |
           rc=0
-          grep -rEn --exclude-dir=.git --exclude-dir=.fleet --exclude-dir=tests \
-            --exclude=fleet-litellm-key "$SPAT" \
-            AGENTS.md README.md prompts systemd bin libexec etc config template docs patches .github credentials || rc=$?
+          grep -rEn --exclude-dir=.git "$SPAT" \
+            AGENTS.md README.md prompts systemd etc config template docs patches .github credentials || rc=$?
           test "$rc" -eq 1
         env:
           SPAT: (echo|printf|printenv|console\.(log|error|warn|info))[^|;]*(\$\{?|process\.env\.)([A-Za-z_][A-Za-z0-9_]*(TOKEN|SECRET|PASS(WORD|WD)?|CREDENTIALS?|PRIVATE|_KEY)[A-Za-z0-9_]*|SK_[A-Z][A-Z0-9_]*)
@@ -100,6 +99,10 @@ jobs:
         run: test -z "$(git diff --numstat origin/main...HEAD -- 'bin/**' 'lib/**' 'libexec/**' 'tests/**' 'template/extensions/**' '.fleet/**' | awk '$1 > 0')"
       - name: No new inline programs in unit Exec lines
         run: "! git diff origin/main...HEAD -- systemd/ | grep -E '^\\+Exec[A-Za-z]*=.{400,}'"
+      - name: No programs embedded in prompts (interpreter heredocs, code fences, run-this-file lines)
+        run: "! git diff origin/main...HEAD -- prompts/ | grep -E '^\\+.*((python3?|node|bun|deno|perl|ruby)[[:space:]]+-[[:space:]]*(<<|\"|$)|<<-?[[:space:]]*'\\''?[A-Z][A-Z_]*'\\''?[[:space:]]*$|^\\+```(python|py|js|javascript|ts|typescript|node)|(python3?|node)[[:space:]]+\\S+\\.(py|js|mjs|ts))'"
+      - name: The deleted trees stay deleted
+        run: test -z "$(git ls-tree -r --name-only HEAD -- bin lib libexec tests scripts hooks ops .fleet template/extensions/subagent)"
       - name: No unescaped ${...} inside sh -c programs on unit Exec lines (systemd expands it to empty before sh runs; #8204 stopped every worker start)
         run: "! git diff origin/main...HEAD -- systemd/ | grep -E '^\\+Exec[A-Za-z]*=.*-c .*[^$]\\$\\{'"
 

@@ -4,7 +4,6 @@
 
 - Alert rules: `promtool check rules config/fleet_rules.yml`
 - Diff-scoped semgrep: `semgrep --config p/default --baseline-commit "$(git merge-base HEAD origin/main)" --quiet --metrics=off`
-- Repo tests: `bash tests/<name>.test.sh` (the suite is being deleted under fleet-ops#7828; gates are GitHub built-ins)
 
 ## Hard lines
 

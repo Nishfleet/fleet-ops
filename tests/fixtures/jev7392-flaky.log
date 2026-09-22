@@ -1,5 +1,0 @@
-2026-09-21T20:03:40Z ##[group]Run npx playwright test
-2026-09-21T20:03:44Z FAIL e2e/search.spec.ts > renders the result card
-2026-09-21T20:03:44Z   Expected status: 200, Received: 503 (upstream timeout after 30000ms)
-2026-09-21T20:03:44Z 1 failed, 114 passed
-2026-09-21T20:03:44Z note: same spec passed on rerun of this SHA twice this week

@@ -1,9 +1,0 @@
-diff --git a/.github/workflows/reusable-pr-checks.yml b/.github/workflows/reusable-pr-checks.yml
-index 1111111..2222222 100644
---- a/.github/workflows/reusable-pr-checks.yml
-+++ b/.github/workflows/reusable-pr-checks.yml
-@@ -12,7 +12,7 @@ jobs:
-       - uses: actions/checkout@08eba0b27e618071cde726df4e311b8f51437102 # v5.0.0
-+      - uses: actions/checkout@ff7abcd0a3c05ccf6adc123a8cd1fd54804d9fed # v6.0.0
-       - uses: actions/setup-node@2028fbc5c25fe9cf00d9f06a71cc4710d4507903 # v4.3.1
-+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0

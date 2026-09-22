@@ -1,5 +1,0 @@
- ❯ tests/foo.test.ts (3 tests | 1 failed)
-   FAIL  tests/foo.test.ts > suite > alpha adds
-   × suite > beta subtracts
-FAILED tests/test_bar.py::test_gamma - AssertionError: boom
-Error: Process completed with exit code 1.

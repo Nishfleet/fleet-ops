@@ -1,6 +1,0 @@
-[
- {"databaseId": 9004, "workflowName": "ci", "status": "completed", "conclusion": "failure", "event": "pull_request", "headBranch": "feat/x", "headSha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "createdAt": "2026-09-21T20:00:00Z", "displayTitle": "fix foo"},
- {"databaseId": 9003, "workflowName": "ci", "status": "completed", "conclusion": "success", "event": "pull_request", "headBranch": "feat/x", "headSha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", "createdAt": "2026-09-21T19:00:00Z", "displayTitle": "wip"},
- {"databaseId": 9002, "workflowName": "ci", "status": "completed", "conclusion": "failure", "event": "pull_request", "headBranch": "feat/x", "headSha": "cccccccccccccccccccccccccccccccccccccccc", "createdAt": "2026-09-21T18:00:00Z", "displayTitle": "wip2"},
- {"databaseId": 9001, "workflowName": "ci", "status": "completed", "conclusion": "success", "event": "pull_request", "headBranch": "feat/x", "headSha": "dddddddddddddddddddddddddddddddddddddddd", "createdAt": "2026-09-21T17:00:00Z", "displayTitle": "wip3"}
-]

@@ -377,7 +377,7 @@
       "name": "LiteLLM proxy (fleet seat routing, fleet-ops#4130 P2+P3a)",
       "baseUrl": "http://127.0.0.1:4000",
       "api": "openai-completions",
-      "apiKey": "!/home/nish/.local/bin/fleet-litellm-key master",
+      "apiKey": "!cut -d= -f2- /home/nish/.config/fleet-ops/litellm-master-key.env",
       "models": [
         {
           "id": "judge",
