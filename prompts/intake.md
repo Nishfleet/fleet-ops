@@ -130,40 +130,12 @@ Steps:
      agent-ready, no live *-issue@ unit, age <h>` on the issue as the
      queued finding, and print the same `stale-claim-sweep` line.
 
-3. **Capacity.** Three limits, all hard:
-   - **Per tick: claim up to `slots` issues** (2026-09-22 10:25 IST, Nish: "6 workers, so many lanes, should be way more"; a tick that stops early leaves lanes idle for a whole tick). This tick is not responsible for
-     filling the fleet. A finishing worker starts the next tick itself
-     (pi-issue@.service ExecStopPost), and the timer ticks anyway, so the
-     queue drains continuously. Do not deliberate about the fleet-wide
-     number — take up to `slots` and stop.
-   - **Fleet-wide: 20 concurrent workers** (raised 2026-09-22 11:40 IST to 4 Devin + 3 Cursor + 8 SuperGrok + 5 router lanes, measured 8.4 GB MemAvailable with 11 live; 16 at 10:25 IST: 8.5 GB MemAvailable with 6 live, per-worker peaks 0.1-2.1 GB, the 4 GB floor below stays the governor; before that 10 at 01:40 IST, Nish: "Lot of free ram sir. Ramp tf up"; measured 9 GB free with 5 live, the 4 GB MemAvailable floor below stays the governor; was 7 (raised 2026-09-22, Nish: "keep it chugging at max lanes"; measured: 7 GB RAM free, 1.9 GB peak per Pi worker, worker-capable healthy max_parallel_requests 2+4 after the OpenCode Go rung; was 4 concurrent workers (fleet-ops#7820, 2026-09-19 15:30 IST: pareto
-     glm-5.3-flash is the only healthy rung (3 in flight); synthetic, ollama, zenmux, xkiro
-     and opencode-go are all quota- or credit-walled today. Raise this only from a measured
-     `max_parallel_requests` sum over rungs that `litellm_deployment_state` shows healthy).
-   - **Per-repo burst cap (fleet-ops#7482):** the optional map
-     `tick_spawn_cap_by_repo` in
-     `/home/nish/workspaces/tooling/fleet-ops-deploy-clone/config/seat-caps.json`
-     bounds THIS repo's claims in one tick. If that file is absent there is
-     no map — keep `slots` as computed. Otherwise read this repo's entry:
-     `jq -r '.tick_spawn_cap_by_repo["<repo>"] // empty' <file>`. Empty
-     output (no map, or no entry for `<repo>`) means no additional clamp.
-     A non-negative integer `cap` clamps `slots = min(slots, cap)` after the
-     fleet-wide computation below — an explicit `0` claims nothing this
-     tick. A jq failure on a present file, or a value that is not a
-     non-negative integer (negative, fractional or non-numeric), is a
-     broken control surface: print
-     `LOUD tick-spawn-cap-invalid <repo>: <the raw output>` and exit
-     non-zero — never expand capacity to work around it. The cap binds
-     every claim this tick, `critical-path` and `escalate-senior` included:
-     no bypass.
-   Also read MemAvailable from `/proc/meminfo`: under 4 GB, start nothing this
-   tick and say so — RAM is the binding resource and an OOM kill costs a whole
-   claim. `active` = `systemctl --user list-units '*-issue@*.service'
-   --state=active,activating --no-legend | wc -l` — every worker engine is
-   Type=oneshot, so its ActiveState is `activating` for the whole ExecStart
-   run and a `--state=active`-only count sees zero in-flight workers
-   (fleet-ops#7775). `slots = 20 - active`, then `min` with the per-repo
-   burst cap above when one is configured. If slots <= 0, print `at capacity` and exit 0.
+3. **Capacity.** Your message is `/intake <repo> SLOTS: <n>`. `<n>` is
+   `slots`: claim up to it, then stop. `0` means print `at capacity` and
+   exit 0. Do not count units, read `/proc/meminfo`, or recompute it.
+
+$@
+
 
 4. **Pick work.** `gh issue list -R Nishfleet/<repo> -l agent-ready --state open
    --json number,title,labels,createdAt --limit 200`. The limit MUST cover the

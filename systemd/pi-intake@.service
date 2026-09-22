@@ -51,7 +51,13 @@ ExecCondition=/bin/sh -c 'out=$$(gh issue list -R Nishfleet/%i -l agent-ready --
 # already clears the file on every real start; this second rm is the
 # adjacent-to-ExecStart guard the issue spells out, and is a no-op in practice.
 ExecStartPre=-/bin/rm -f /home/nish/workspaces/agent-state/pi-intake-triggers/%i
-ExecStart=/bin/sh -c 'echo "/intake %i" | exec pi --print --append-system-prompt "/home/nish/workspaces/tooling/fleet-ops-deploy-clone/AGENTS.md" --session-dir "$HOME/.pi/agent/sessions/pi-intake-%i" --provider litellm --model worker-cheap'
+# fleet-ops#7742: the shell computes capacity; the prompt is handed the
+# number. active counts activating oneshots (a --state=active filter sees 0).
+# MemAvailable under 4 GiB, a non-numeric reading, or a failed count yields
+# slots=0 — fail closed. At-capacity exits 0: it is a decision, not a failure.
+ExecStartPre=/bin/sh -c 'systemctl --user list-units "*-issue@*.service" --state=active,activating --no-legend > /run/user/%U/pi-intake-active; echo $?'
+ExecStartPre=/bin/sh -c 'a=$(wc -l < /run/user/%U/pi-intake-active); m=$(sed -n "s/^MemAvailable: *//p" /proc/meminfo | cut -d" " -f1); s=0; case "$a:$m" in *[!0-9:]*|:*|*:);; *) [ "$m" -ge 4194304 ] && [ "$a" -lt 20 ] && s=$((20-a));; esac; echo "$s" > /run/user/%U/pi-intake-slots; echo "intake-slots: slots=$s active=$a mem_kb=$m"'
+ExecStart=/bin/sh -c 's=$(cat /run/user/%U/pi-intake-slots); case "$s" in [0-9]|[0-9][0-9]);; *) s=0;; esac; printf "/intake %i\nSLOTS: %s\n" "$s" | exec pi --print --append-system-prompt /home/nish/workspaces/tooling/fleet-ops-deploy-clone/AGENTS.md --session-dir "$HOME/.pi/agent/sessions/pi-intake-%i" --provider litellm --model worker-cheap'
 # ARTIFACT CHECK. Intake's entire job is to turn agent-ready issues into
 # agent-in-progress claims with a worker spawned behind them. Two counts say
 # whether it did: if work was waiting (ready>0) and NOTHING is claimed
