@@ -74,15 +74,19 @@ prompt lines only — a stock feature replaces an organ or nothing does.
 
 ### The exceptions: files that must stay COPIES
 
-Four classes are deliberately copies, not symlinks, and a `git pull` does
-NOT update them. Refresh by hand when the repo file changes:
+Four classes are deliberately copies, not symlinks — a `git pull` alone does
+NOT update them. `fleet-sync.service` refreshes the user-scope rows on every
+pull (ExecStart step 4 for the prometheus rules, step 8 for the rest —
+cmp+install, which also restores the regular file over a stray symlink). The
+`/etc/**` row stays manual; the commands below are for it and for first-time
+installs:
 
 | live path | repo source | why a symlink is wrong |
 |---|---|---|
 | `/etc/prometheus/fleet_rules.yml` | `config/fleet_rules.yml` | prometheus runs as `prometheus`; `/home/nish` is `0750 nish:nish`, so it cannot traverse into the repo. **Handled automatically** by `fleet-sync.service` (promtool check + copy + reload). |
-| `~/.pi/agent/extensions/**.ts` | `template/extensions/**` | pi resolves a symlinked extension against its REAL path, so sibling imports would resolve into the repo (fleet-ops#3263). After the 2026-09-18 glue sweep the only local files are the two stock forks (`permission-gate.ts`, `protected-paths.ts`), the `subagent/index.ts` EXTLOAD handshake, and the `cursor-provider/` + `devin-provider/` shims — everything else in `~/.pi/agent/extensions/` is a symlink straight into pi's shipped `examples/extensions/`. |
-| `~/.local/state/pi-packet/seat-caps.json`, `~/.pi/agent/models.json`, `~/.local/state/pi-packet/model-candidates.json` | `config/seat-caps.json`, `config/pi-models.json`, `config/model-candidates.json` | live state the git working tree must not rewrite on every checkout (fleet-ops#2910/#3722/#3322). |
-| `/etc/**` (systemd drop-ins, `sysctl.d`, `audit/rules.d`, `default/prometheus`, `prometheus/*.yml`) | `config/`, `etc/`, `systemd/system/` | cross a privilege boundary. |
+| `~/.pi/agent/extensions/` local (non-symlink) files | `template/extensions/**` | pi resolves a symlinked extension against its REAL path, so sibling imports would resolve into the repo (fleet-ops#3263). The only local files are the stock forks (`permission-gate.ts`, `protected-paths.ts`), the `subagent/index.ts` EXTLOAD handshake, and `README.md` — everything else in `~/.pi/agent/extensions/` is a symlink straight into pi's shipped `examples/extensions/`. **Auto-refreshed** by `fleet-sync.service` step 8. |
+| `~/.local/state/pi-packet/seat-caps.json`, `~/.pi/agent/models.json`, `~/.local/state/pi-packet/model-candidates.json` | `config/seat-caps.json`, `config/pi-models.json`, `config/model-candidates.json` | live state the git working tree must not rewrite on every checkout (fleet-ops#2910/#3722/#3322). **Auto-refreshed** by `fleet-sync.service` step 8; a repo-deleted source is skipped (`model-candidates.json` is currently absent on both sides). |
+| `/etc/**` (systemd drop-ins, `sysctl.d`, `audit/rules.d`, `default/prometheus`, `prometheus/*.yml`) | `config/`, `etc/`, `systemd/system/` | cross a privilege boundary — stays manual: root ownership plus per-subsystem reloads, and `sysctl --system` is Nish-reserved. |
 
 ```
 # a changed pi extension:

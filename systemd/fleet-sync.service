@@ -3,9 +3,11 @@ Description=Sync the fleet-ops deploy clone and reload systemd (fleet-ops third 
 # Replaces install.sh + MANIFEST + bin/fleet-ops-deploy + bin/fleet-deploy-check
 # + bin/fleet-ops-drift.py (5,948 LOC). Those existed to COPY files from the
 # repo to their live paths and then to detect the drift that copying creates.
-# Every user-scope live path is already a symlink into this repo
-# (`systemctl --user list-unit-files` reports the units as `linked`), so there
-# is nothing to copy and nothing that can drift: a `git pull` IS the deploy.
+# Almost every user-scope live path is a symlink into this repo
+# (`systemctl --user list-unit-files` reports the units as `linked`), so a
+# `git pull` IS the deploy. The exceptions are the README's declared copies
+# (pi extension local files, the seat/model JSONs): step 8 refreshes them —
+# they drifted silently for days once install.sh was gone (fleet-ops#7810).
 #
 # man systemctl: "link PATH...  Link a unit file that is not in the unit file
 # search path into the unit file search path. This command expects an absolute
@@ -59,6 +61,21 @@ ExecStart=/usr/bin/sh -c 'r=/home/nish/workspaces/tooling/fleet-ops-deploy-clone
 #    whose link text names a throwaway root — *worktrees/, agent-state
 #    (worktrees live there too), */tmp/. A failed unit is the page.
 ExecStart=/usr/bin/sh -c 'b=$$(find /home/nish/.config/systemd/user /home/nish/.local/bin /home/nish/.pi/agent /home/nish/workspaces/tooling/nish-vault -xtype l -o -type l -lname "*worktrees/*" -o -type l -lname "*/agent-state/*" -o -type l -lname "*/tmp/*" 2>/dev/null); [ -z "$$b" ] || { echo "[fleet-sync] LINK-GUARD live symlink -> dead/throwaway target: $$b"; exit 1; }'
+# 8. The README's remaining declared user-scope copies (fleet-ops#7810 — they
+#    drifted silently for days once the sweeps removed install.sh; the live
+#    permission-gate was missing #7448's GH_AUTH_PRINT rule). cmp+install
+#    refreshes on byte drift only, and install also replaces a stray symlink
+#    with the regular file the class requires (fleet-ops#5912's re-symlink
+#    class; install never writes through a symlink — proven live). The
+#    extension line globs template/extensions/ so a new local file is covered
+#    without a list edit; the JSON lines carry the README's seat/model rows
+#    (the pi-packet pair skips a repo-deleted source). /etc stays manual — root
+#    ownership and
+#    the per-subsystem reloads (augenrules, sysctl — Nish-reserved) don't
+#    belong in a user unit.
+ExecStart=/usr/bin/sh -c 'r=/home/nish/workspaces/tooling/fleet-ops-deploy-clone/template/extensions; cd "$$r" && for f in $$(find . -type f); do cmp -s "$$r/$${f#./}" "/home/nish/.pi/agent/extensions/$${f#./}" || install -D -m 0644 "$$r/$${f#./}" "/home/nish/.pi/agent/extensions/$${f#./}" || exit 1; done'
+ExecStart=/usr/bin/sh -c 'cmp -s /home/nish/workspaces/tooling/fleet-ops-deploy-clone/config/pi-models.json /home/nish/.pi/agent/models.json || install -D -m 0644 /home/nish/workspaces/tooling/fleet-ops-deploy-clone/config/pi-models.json /home/nish/.pi/agent/models.json'
+ExecStart=/usr/bin/sh -c 'r=/home/nish/workspaces/tooling/fleet-ops-deploy-clone/config; for f in seat-caps.json model-candidates.json; do [ -f "$$r/$$f" ] || continue; cmp -s "$$r/$$f" "/home/nish/.local/state/pi-packet/$$f" || install -D -m 0644 "$$r/$$f" "/home/nish/.local/state/pi-packet/$$f" || exit 1; done'
 TimeoutStartSec=300
 
 [Install]
