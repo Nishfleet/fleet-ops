@@ -80,9 +80,9 @@ permissions:
 jobs:
   pr-checks:
     name: PR checks
-    # fleet-ci on merge_group/push only; pull_request stays on hosted
-    # ubuntu-latest so fork PRs never execute on the box (fleet-ops#5935).
-    runs-on: ${{ (github.event_name == 'merge_group' || github.event_name == 'push') && 'fleet-ci' || 'ubuntu-latest' }}
+    # Hosted for every event. Public repos: minutes are free and the hosted pool
+    # is wider than the 3 owned runners (#5935 reversed 2026-09-22).
+    runs-on: ubuntu-latest
     timeout-minutes: ${{ inputs.timeout-minutes }}
     steps:
       - name: Checkout
