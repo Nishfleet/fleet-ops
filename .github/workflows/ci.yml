@@ -187,7 +187,7 @@ jobs:
         if: github.event_name == 'pull_request'
         with:
           fetch-depth: 1
-      - uses: anthropics/claude-code-action@cfc3eb22bfed5c26ef66e3223c982af27e4524de # v1
+      - uses: anthropics/claude-code-action@9ca9355b36297178e28d37c799d1c9c8a28e6507 # main 2026-09-22, Claude Code 2.1.280 (first to know claude-opus-5-5)
         if: github.event_name == 'pull_request'
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
@@ -204,7 +204,7 @@ jobs:
 
             You are the grader. The author is a fleet worker model (GLM or DeepSeek) executing a packet; you are Claude Opus 5. Read the PR body and the issue it cites, then the diff. Grade the PR A to F on: does the change do what the packet asked and nothing more; is every claim in the body proven by something in the diff or a cited run; tests assert behaviour, not implementation; no scripts, hooks, wrappers, helpers or inline programs (the repo's no-glue rule); no comment that justifies a workaround; the `encoded:` line names a real rung. Post ONE top-level comment via `gh pr comment` that starts with `Opus grade: <letter>` followed by at most eight lines of reasons, each tied to a file and line. Use inline comments only for concrete defects. If the grade is D or F run `gh pr edit --add-label blocked-by-judge`; if A, B or C run `gh pr edit --remove-label blocked-by-judge` (ignore the error if absent). Do not edit files. Do not approve or request changes through the review API.
           claude_args: |
-            --model claude-opus-5
+            --model claude-opus-5-5
             --allowedTools "mcp__github_inline_comment__create_inline_comment,Bash(gh pr comment:*),Bash(gh pr diff:*),Bash(gh pr view:*),Bash(gh pr edit:*),Bash(gh issue view:*),Bash(git diff:*),Bash(git log:*),Bash(git show:*)"
       - name: A D or F grade fails this check (fail closed if the label read fails)
         if: github.event_name == 'pull_request'
