@@ -51,7 +51,21 @@ ExecCondition=/bin/sh -c 'out=$$(gh issue list -R Nishfleet/%i -l agent-ready --
 # already clears the file on every real start; this second rm is the
 # adjacent-to-ExecStart guard the issue spells out, and is a no-op in practice.
 ExecStartPre=-/bin/rm -f /home/nish/workspaces/agent-state/pi-intake-triggers/%i
-ExecStart=/bin/sh -c 'echo "/intake %i" | exec pi --print --append-system-prompt "/home/nish/workspaces/tooling/fleet-ops-deploy-clone/AGENTS.md" --session-dir "$HOME/.pi/agent/sessions/pi-intake-%i" --provider litellm --model worker-cheap'
+# fleet-ops#8282: a user unit cannot set up a mount namespace, so
+# ReadOnlyPaths= on the deploy clone is recorded and then ignored (probe:
+# touch succeeded, no mountinfo entry) and BindPaths= fails the unit with
+# status=226/NAMESPACE. bubblewrap is the stock tool Ubuntu exempts from
+# kernel.apparmor_restrict_unprivileged_userns (/etc/apparmor.d/bwrap grants
+# `userns`), so it does get a real mount namespace in a user unit: bind the
+# host root writable, re-bind /dev with device access, then re-mount the
+# deploy clone read-only. The tick keeps every other path (session dir,
+# agent-state, /run/user) and the mount namespace is the only difference; a
+# touch inside the clone now fails EROFS.
+ExecStart=/usr/bin/bwrap --bind / / \
+  --dev-bind /dev /dev \
+  --ro-bind /home/nish/workspaces/tooling/fleet-ops-deploy-clone /home/nish/workspaces/tooling/fleet-ops-deploy-clone \
+  --die-with-parent -- \
+  /bin/sh -c 'echo "/intake %i" | exec pi --print --append-system-prompt "/home/nish/workspaces/tooling/fleet-ops-deploy-clone/AGENTS.md" --session-dir "$HOME/.pi/agent/sessions/pi-intake-%i" --provider litellm --model worker-cheap'
 # ARTIFACT CHECK. Intake's entire job is to turn agent-ready issues into
 # agent-in-progress claims with a worker spawned behind them. Two counts say
 # whether it did: if work was waiting (ready>0) and NOTHING is claimed

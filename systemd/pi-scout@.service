@@ -27,7 +27,20 @@ WorkingDirectory=/home/nish
 # AGENTS.md context-file discovery because that walks up from the STARTUP cwd, and
 # this unit starts in /home/nish — the repo file would never be reached. Canonical
 # path, never cwd-relative: the unit must not depend on which checkout it runs from.
-ExecStart=/bin/sh -c 'set -e; GH_TOKEN=$(gh token generate --app-id 4728578 --key "$HOME/.config/fleet-worker/nishfleet-worker.private-key.pem" --installation-id 156789042 --token-only); export GH_TOKEN; echo "/scout %i" | exec pi --print --append-system-prompt "/home/nish/workspaces/tooling/fleet-ops-deploy-clone/AGENTS.md" --session-dir "$HOME/.pi/agent/sessions/pi-scout-%i" --provider litellm --model worker-cheap'
+# fleet-ops#8282: same deploy-clone lock as pi-intake@. A user unit cannot set up
+# a mount namespace (ReadOnlyPaths= is recorded and then ignored; BindPaths=
+# fails the unit with status=226/NAMESPACE), so the write protection is
+# bubblewrap's: it is the stock tool Ubuntu exempts from
+# kernel.apparmor_restrict_unprivileged_userns (/etc/apparmor.d/bwrap grants
+# `userns`), so it really does get a mount namespace in a user unit. The host
+# root is bound writable, /dev re-bound with device access, the deploy clone
+# re-mounted read-only; the token mint, the prompt, the session dir and every
+# other path are unchanged.
+ExecStart=/usr/bin/bwrap --bind / / \
+  --dev-bind /dev /dev \
+  --ro-bind /home/nish/workspaces/tooling/fleet-ops-deploy-clone /home/nish/workspaces/tooling/fleet-ops-deploy-clone \
+  --die-with-parent -- \
+  /bin/sh -c 'set -e; GH_TOKEN=$(gh token generate --app-id 4728578 --key "$HOME/.config/fleet-worker/nishfleet-worker.private-key.pem" --installation-id 156789042 --token-only); export GH_TOKEN; echo "/scout %i" | exec pi --print --append-system-prompt "/home/nish/workspaces/tooling/fleet-ops-deploy-clone/AGENTS.md" --session-dir "$HOME/.pi/agent/sessions/pi-scout-%i" --provider litellm --model worker-cheap'
 # ABORT GATE (fleet-ops#7524): an agent-decided abort ends `pi --print` at
 # exit 0, so Result=success alone cannot tell a finished run from an aborted
 # one — the 2026-09-17 fleet-ops scout aborted on a code-scanning 404 and
