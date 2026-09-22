@@ -119,4 +119,22 @@ release_line2="$(grep -nF -- 'fleet-claim-release' <<< "$claim_section" | head -
   || fail "live-holder check must precede the releaser — a live worker's claim ref is never orphaned (fleet-ops#7796)"
 ok "live-holder check precedes releaser (line $holder_line < $release_line2)"
 
+# --- capacity count includes activating oneshot workers (fleet-ops#7812) -----
+# pi-issue@/devin-issue@/cursor-issue@ are all Type=oneshot: ActiveState is
+# 'activating' for the whole ExecStart run, never 'active'. A --state=active
+# capacity count reads 0 with workers in flight, so the fleet-wide cap never
+# binds — the 2026-09-19 tick re-claimed a live worker off that zero. The fix
+# (fleet-ops#7775) spelled the count out over '*-issue@*.service' with
+# --state=active,activating; both halves are asserted so neither can regress.
+capacity_section="$(awk '/\*\*Capacity/{f=1} /Pick work/{f=0} f' "$intake")"
+[[ -n "$capacity_section" ]] || fail "cannot isolate the Capacity section"
+for needle in \
+  'list-units' \
+  '-issue@' \
+  '--state=active,activating'; do
+  grep -qF -- "$needle" <<< "$capacity_section" \
+    || fail "capacity count missing '$needle' — a --state=active-only count sees zero in-flight oneshot workers and the fleet cap unbinds (fleet-ops#7812)"
+  ok "capacity count carries '$needle'"
+done
+
 echo "PASS: intake-gate-release"
