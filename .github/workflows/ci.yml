@@ -148,19 +148,24 @@ jobs:
       - name: apt binaries systemd-analyze verify needs (promtool, bwrap, redis-server)
         if: always()
         run: sudo apt-get install -y --no-install-recommends prometheus bubblewrap redis-server
-      # verify fails on a missing Exec path; host-only binaries get executable stubs.
-      - name: stub host-only binaries verify needs (pi, litellm, cursor-agent)
+      - name: stub pi for systemd-analyze verify (host-only binary)
         if: always()
-        run: printf '%s\0' /home/nish/.local/bin/pi /home/nish/.local/venvs/litellm/bin/litellm "$HOME/.local/bin/cursor-agent" | sudo xargs -0 -rI{} install -D -m0755 /bin/true {}
+        run: sudo install -D -m0755 /bin/true /home/nish/.local/bin/pi
+      - name: stub litellm for systemd-analyze verify (host-only binary)
+        if: always()
+        run: sudo install -D -m0755 /bin/true /home/nish/.local/venvs/litellm/bin/litellm
+      - name: stub cursor-agent for systemd-analyze verify (host-only binary)
+        if: always()
+        run: install -D -m0755 /bin/true "$HOME/.local/bin/cursor-agent"
       - name: systemd-analyze verify over unit files
         if: always()
         run: systemd-analyze verify --man=no systemd/*.service systemd/*.timer systemd/*.path systemd/*.slice
       - name: pi seat ids resolve to litellm-proxy.yaml model_name (fleet-ops#8332)
         if: always()
-        run: yq eval-all -p yaml -o=json -e '[select(fileIndex == 1) | .model_list[].model_name] as $names | [select(fileIndex == 0) | .providers.litellm.models[].id] | map(. as $i | $names | contains([$i])) | all' config/pi-models.json config/litellm-proxy.yaml
+        run: jq -n -e --argjson ids "$(jq -c '[.providers.litellm.models[].id]' config/pi-models.json)" --argjson names "$(yq -o=json '[.model_list[].model_name]' config/litellm-proxy.yaml)" '($ids - $names) as $bad | if ($bad|length)==0 then true else error("unresolved pi seat ids - \($bad|join(","))") end'
       - name: Ollama rungs serve only the permitted slug (fleet-ops#8332)
         if: always()
-        run: yq -e '[(.model_list[], .benched[]?) | select((.litellm_params.api_base // "") | test("ollama")) | .litellm_params.model | select(. != "openai/deepseek-v4.1-flash")] | length == 0' config/litellm-proxy.yaml
+        run: yq -o=json '[(.model_list[], .benched[]?) | select((.litellm_params.api_base // "") | test("ollama")) | .litellm_params.model | select(. != "openai/deepseek-v4.1-flash")]' config/litellm-proxy.yaml | jq -e 'if length==0 then true else error("ollama non-flash rungs - \(join(","))") end'
       - name: No config/*.bak-* files
         if: always()
         run: "! git ls-files -- 'config/*.bak-*' | grep ."
