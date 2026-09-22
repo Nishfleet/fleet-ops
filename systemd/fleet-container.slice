@@ -1,0 +1,5 @@
+[Unit]
+Description=All containerized fleet workers
+[Slice]
+MemoryAccounting=yes
+MemoryMax=24G
