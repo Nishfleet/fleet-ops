@@ -48,7 +48,7 @@ EXPECTED = {
     'claim-check-pr', 'claim-check-report', 'dependency-pr-arm',
     'flaky-test-quarantine', 'gha-stuck-run-watch', 'hermes-digest',
     'intake-repair-seatfault', 'intake-seat-smoke', 'merge-queue-batches', 'merge-queue-enqueue',
-    'reviewer-needs-review', 'scout', 'second-opinion',
+    'reviewer-needs-review', 'scout', 'scout-rank', 'second-opinion',
     'second-opinion-reserved', 'worker-context',
 }
 

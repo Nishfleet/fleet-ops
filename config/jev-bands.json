@@ -17,6 +17,7 @@
     "merge-queue-enqueue":     { "act_hi": 0.9, "review_lo": 0.1 },
     "reviewer-needs-review":   { "act_hi": 0.9, "review_lo": 0.1 },
     "scout":                   { "act_hi": 0.9, "review_lo": 0.1 },
+    "scout-rank":              { "act_hi": 0.9, "review_lo": 0.1 },
     "second-opinion":          { "act_hi": 0.5, "review_lo": 0.5 },
     "second-opinion-reserved": { "act_hi": 0.5, "review_lo": 0.5 },
     "worker-context":          { "act_hi": 0.9, "review_lo": 0.1, "sensitivity": [0.1, 0.25, 0.5] }
