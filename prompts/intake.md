@@ -97,8 +97,9 @@ Steps:
    - **You never park.** This tick must not add `agent-blocked` or
      `awaiting-runtime-gate`, and must not remove `agent-ready` to hide an
      issue. The only sanctioned park registrations are a `blocked-on:`
-     comment (worker) or an owner-authored `termination:` clause; any other
-     state that hides an issue from the queue is the unknown-gate case above.
+     comment (worker), an owner-authored `termination:` clause, or the
+     delivered-owner skip in step 5. Any other state that hides an issue
+     from the queue is the unknown-gate case above.
    - **Stale-claim sweep (fleet-ops#7790).** A `claim/issue-N` branch whose
      issue sits `agent-ready` with no live worker clogs the head of the
      ready queue: the step-5 hash check reads it as "held" while nothing
@@ -169,7 +170,23 @@ Steps:
    what you would do, and do not stop to re-check capacity between issues; you
    computed slots in step 3. For each issue `N`, if it carries `noise-class` or
    its title starts with `__scout_probe_`, print `skipped-noise-class` and move
-   on. Do not claim, do not spawn. Otherwise:
+   on. Do not claim, do not spawn. Delivered-owner skip (fleet-ops#7582):
+   also skip when every check holds. `gh issue view N -R Nishfleet/<repo>
+   --json author --jq .author.is_bot` prints `false`. `gh pr list -R
+   Nishfleet/<repo> --state merged --search "<N> in:body" --json
+   number,mergeCommit,body --limit 20` includes a PR whose body contains
+   `Closes #<N>`, `Fixes #<N>`, or `Relates to #<N>`, and `gh api
+   repos/Nishfleet/<repo>/compare/main...<merge-sha> --jq .ahead_by` prints
+   `0`. `gh api --paginate repos/Nishfleet/<repo>/issues/N/comments --jq '.[] | . as $c | ($c.body | split("\n")[0]) as $first | if $first | startswith("decision-resolved:") then "\($c.created_at) dec" else empty end, if ($c.body | split("\n") | index("delivered-owner-stop")) != null then "\($c.created_at) stop" else empty end'` shows at least one `stop`
+   line, and every `dec` line is older than the newest `stop` line (no
+   `dec` line counts as older). Print `skipped-delivered-owner`. If the
+   issue carries `agent-ready`, run `gh issue edit N -R Nishfleet/<repo>
+   --remove-label agent-ready --add-label agent-blocked` and post one
+   comment that contains a line exactly `delivered-owner-stop` and ends
+   with `blocked-on: orchestrator`. Do not close the issue. This is the
+   only park this tick may apply. A `dec` line newer than the newest
+   `stop` line means the owner added scope: do not skip, claim as usual.
+   Otherwise:
    a. `git -C /home/nish/workspaces/products/<repo> fetch origin`
    b. `git -C ... ls-remote origin refs/heads/claim/issue-N` — a hash means
       the ref exists, not that a live worker holds it. A tick that died
@@ -234,5 +251,5 @@ Steps:
    g. One slot used.
 
 6. Print one line per issue (`claimed+spawned` / `skipped-claim-lost` /
-   `skipped-capacity` / `skipped-noise-class`) and quote the `jev-order:`
-   lines right after them, then exit 0.
+   `skipped-capacity` / `skipped-noise-class` / `skipped-delivered-owner`)
+   and quote the `jev-order:` lines right after them, then exit 0.
