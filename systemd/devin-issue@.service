@@ -88,4 +88,25 @@ RestartSec=240
 RestartSteps=3
 RestartMaxDelaySec=30min
 # Hang detection: a worker active longer than this is terminated into `failed`.
-TimeoutStartSec=45min
+# fleet-ops#8324: devin carried the largest share of the day's start-timeouts.
+# The class is the same as router-issue@ (full population analysis there), and
+# for devin it is joined from the devin CLI's own log, not guessed: every
+# timed-out devin unit's log for 2026-09-22 (matched by workspace path
+# `issue-<key>` under ~/.local/share/devin/cli/logs/) spans the full 45min wall
+# of real tool activity, e.g. 0509-3927 08:23:56->09:08:46 UTC with 43
+# vitest/playwright/npm/tsc command starts, 0509-3884 12:08:26->12:53:24 with
+# 17, 0509-3879 with 33 and 0509-3925 with 40. The time goes into the local
+# test/build loop, not into a seat cooldown (no 429/quota/walled signature in
+# any timed-out unit's own log). systemd's CPU accounting agrees: the lane's
+# timed-out units burn a small fraction of a core across the whole wall. SWE-2
+# runs a real toolchain loop here, so the wall, not a governor value, is the
+# binding constraint.
+#
+# WHY 55min AND NOT 90min: the worker's GH_TOKEN is minted in ExecStart at t=0
+# and is a <=1h GitHub App installation token, so a wall past ~60min runs the
+# worker with an expired token and the extra minutes buy a failed artifact
+# check rather than a landed PR. 55min clears the lane's measured demand
+# (devin units were killed at exactly 45.0 min, their logs spanning the whole
+# wall) while leaving the token alive for the final push/PR steps. Same bound
+# and same value as router-issue@ -- see the full analysis there.
+TimeoutStartSec=55min

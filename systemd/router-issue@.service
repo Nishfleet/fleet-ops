@@ -161,4 +161,30 @@ RestartSec=240
 RestartSteps=3
 RestartMaxDelaySec=30min
 # Hang detection: a worker active longer than this is terminated into `failed`.
-TimeoutStartSec=45min
+# fleet-ops#8324 (population diagnosis, 2026-09-22): 45min is TOO SHORT for
+# this lane. Every timed-out router unit on 2026-09-22 was joined to its own Pi
+# session transcript in ~/.pi/agent/sessions/router-issue-<key>/ (matched by
+# session start before the systemd stop timestamp): 21 of 24 timeout events are
+# sessions censored at the wall, span p50 44.2 min, p50 162 tool calls at
+# p50 3.75 tools/min -- actively working at the 45-minute mark, not idle. CPU
+# was 1.0-11.3% of the wall (max 299s) and host load 4.85 on 8 vCPU with ~5 GB
+# MemAvailable, so this is not a concurrency-governor value either. Zero
+# 429/quota/walled signatures in any timed-out unit's own transcript rules out
+# the seat-cooldown class. The decisive control: of 20 units whose first
+# session today was censored at the wall, 15 finished the same work on the
+# restart in a shorter session -- the same work re-run to the end given more
+# wall.
+#
+# WHY 55min AND NOT 90min: the worker's own GH_TOKEN is minted in ExecStart at
+# t=0 and is a <=1h GitHub App installation token (fleet-ops#8057; see the
+# ExecStart below). A wall past ~60min runs the worker with an expired token,
+# so the minutes it could not push or open a PR buy a failed artifact check
+# instead of a landed PR. 55min is the largest wall that (a) clears the lane's
+# measured demand -- censored p50 span 44.2 min, p90 45 min, all killed at
+# exactly 45.0 -- and (b) still leaves the token alive for the final
+# push/PR steps. A longer wall needs a token refresh inside the run, which
+# this one value cannot do.
+#
+# It is the lowest rung: the wrong-lever alternatives (a governor value, a
+# seat cap) are contradicted by the measurements above.
+TimeoutStartSec=55min
