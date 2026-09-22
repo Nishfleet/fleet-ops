@@ -46,6 +46,10 @@ Environment=HOME=/home/nish
 Environment=PATH=/home/nish/.local/bin:/usr/local/bin:/usr/bin:/bin
 Environment=XDG_RUNTIME_DIR=/run/user/1000
 Environment=PI_UNIT_INSTANCE=%i
+# fleet-ops#7773: shadow-only escalation-target log — the Jev call in
+# prompts/worker.md step 4 is flag-gated OFF by default; this turns it on
+# for logging only. The block never changes the worker's choice.
+Environment=JEV_WORKER_ESCALATION_TARGET=1
 # Commit identity. The worktrees carry a repo-local `user.name = Nish`, so
 # without this block a worker's commits land authored by Nish himself (proven:
 # claim/issue-7783 @ 88d52047c). git's own env vars outrank repo-local config

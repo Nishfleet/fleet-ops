@@ -14,7 +14,7 @@ Steps:
 1. `gh issue view <N> -R Nishfleet/<repo> --comments` (no `--body` → `unknown flag: --body`, fleet-ops#1055). `--json` fields must exist (`labels` not `label`; fleet-ops#1219 `Unknown JSON field`). Same class: `gh pr view --json mergedAt,merged` → `Unknown JSON field: "merged"` (fleet-ops#1244), and `mergeQueueEntry` is not a field — use `autoMergeRequest`/`mergeStateStatus` for merge-queue status (fleet-ops#4884); piping `2>&1 | head` masks the exit (`isError: false`, fleet-ops#1193), but piping a bad field to `python3 -c json.load` does NOT mask it — the `isInMergeQueue`/`mergeQueueEntry` field error leaves empty stdin, python raises `JSONDecodeError` and still exits 1 (isError: true), a real swallowed failure you must flag, not a probe (fleet-ops#5010). Merged-recent check (fleet-ops#1107): `gh pr list -R Nishfleet/<repo> --state merged --json number,title,headRefName,mergedAt --jq 'sort_by(.mergedAt) | reverse | .[:10][] | "\(.number)\t\(.title)"'` — `gh pr list` has NO `--sort` flag on this host's gh 2.93.0 (`gh pr list --sort -mergedAt` → `unknown flag: --sort`, exit 1); sort in jq or via `--search "sort:…"` qualifiers (fleet-ops#6206).
 2. Re-entrancy: reuse origin `claim/issue-<N>` if the latest claim names YOUR unit. A re-claim means the REMOTE half already ran — the claim step force-pushed `origin/main` onto `refs/heads/claim/issue-<N>` — and only the LOCAL half is yours. The deploy clone is shallow, so a leftover worktree's stale local claim branch can share no counted ancestry with freshly-fetched `origin/main`: `git merge-base HEAD origin/main` → `fatal: ... no merge base`, and rebase/3-dot diffs misbehave (fleet-ops#6206). Recover inside the worktree: `git -C <worktree> fetch origin`; `git checkout -B claim/issue-<N> origin/main` (equals `origin/claim/issue-<N>` post-claim-reset); `git cherry-pick <that issue's latest wip(salvage) commit>` — cherry-pick needs only the salvage commit and its direct parent, both local even in shallow history; conflicts only if main touched the same hunks.
 3. Workspace: never work in the deploy clone (`/home/nish/workspaces/tooling/fleet-ops-deploy-clone`) — it is the live install source and must stay on clean main (fleet-ops#3634). If you need to edit a tracked fleet-ops file, clone to a worktree — never the deploy clone (deploy-clone-readonly, fleet-ops#3758). A dirty deploy clone trips `DEPLOY-CHECK-DIRTY-CLONE` on the deploy-check tick; clean it with `git restore` when you caused it. A deliverable line may state a change is already in production or already serving on this host only when that same line cites a SHA already on origin/main (`git merge-base --is-ancestor` proves it) — a fix on a branch is a PR, not production, and the packet-verdict checker rejects the claim while the dead-man fails the unit (fleet-ops#5786). Create a worktree from origin/main: `git -C /home/nish/workspaces/tooling/fleet-ops-deploy-clone fetch origin`; `git -C /home/nish/workspaces/tooling/fleet-ops-deploy-clone worktree add /home/nish/workspaces/agent-worktrees/issue-<repo>-<N> origin/main` (or `claim/issue-<N>` for re-entrancy). The worktree path MUST be that absolute `/home/nish/workspaces/agent-worktrees/...` path — a relative path resolves inside the `-C` target, so `worktree add issue-<repo>-<N>` plants a live tree inside the deploy clone and trips DEPLOY-CHECK-DIRTY-CLONE (fleet-ops#5687). Else `products/<repo>` (not `products/fleet-ops` until fleet-ops#410). Never check out a feature branch on the deploy-clone (fleet-ops#477). Clone: `git clone --reference-if-able /home/nish/workspaces/.mirrors/<repo>.git https://github.com/Nishfleet/<repo>.git <dest>`. Never `git clone git@github.com:Nishfleet/fleet-ops.git` (fleet-ops#1185). Never `--dissociate`. Never push to a mirror.
-4. Build-shaped issue with no `Prior art` (fleet-ops#1250), or ambiguous: post a proposal, `agent-blocked`, end with `blocked-on: Nishfleet/<repo>#<n>` or `blocked-on: orchestrator`. The escalation default is `blocked-on: orchestrator` with the `needs-orchestrator` label (fleet-ops#4260 — the label is the drain-visible parked state; `gh issue list -l needs-orchestrator` is the queue the orchestrator reads). `blocked-on: nish-decision` is reserved: use it only when the blocker itself names money/pricing, legal, brand, product direction, customer-data deletion, or an authority Nish explicitly reserved — anything else belongs to `orchestrator` (the blocked-reconcile auto-rewrite was deleted 2026-09-18, so pick right the first time). One park target is pre-decided and needs no second opinion: a claimed issue whose delivery is already complete on origin/main — merged delivery PR, `gh api repos/Nishfleet/<repo>/compare/main...<merge-sha>` reports `ahead_by=0` — and whose close is owner-reserved (owner-authored; workers never `gh issue close`) is not a stall and is not worked again. Post the verification receipt and park it `blocked-on: nish-decision` + `needs-nish-decision`: only the owner closes it, and the label is terminal for intake — `prompts/intake.md` never re-labels it `agent-ready` and its pick list only reads `agent-ready`, so the issue waits in the queue Nish reads (`gh issue list -l needs-nish-decision`) instead of eating claims. Never park a delivered issue `orchestrator`: the drain reads a parked open issue as a stalled packet and requeues it, burning another worker turn (fleet-ops#7582 — #7400 was reclaimed twice after PR #7549 merged, once off an orchestrator requeue that mistook delivered-and-parked for stalled). When that `orchestrator`-vs-`nish-decision` choice is live, decide it with the second-opinion block below (fleet-ops#7429): write the blocker card to a scratch JSON file `{"item": <the blocker text>, "context": <the canonical reserved-class list and this step-4 rule>}` and run `python3 - second-opinion-reserved 'Nishfleet/<repo>#<N>' <card-path>`. `disagreement=true`/`null`, or either framing's `needsNish` probability above the site's `act_hi` edge in `config/jev-bands.json` (`second-opinion-reserved` row, 0.5 as shipped), parks `nish-decision`; clean agreement on not-reserved parks `orchestrator`; `unavailable` leaves this prose rule unchanged. Agreement never authorizes a reserved action. Answers need `decision-resolved:`. Strike `~~blocked-on: ...~~`. Then remove the worktree (`git worktree remove <path>`); delete the claim branch ON THE ISSUE'S REPO (never bare `git push origin` — cwd may be a different repo's clone): `gh api -X DELETE "repos/Nishfleet/<repo>/git/refs/heads/claim/issue-<N>"`; print "blocked: proposal posted"; exit 0.
+4. Build-shaped issue with no `Prior art` (fleet-ops#1250), or ambiguous: post a proposal, `agent-blocked`, end with `blocked-on: Nishfleet/<repo>#<n>` or `blocked-on: orchestrator`. The escalation default is `blocked-on: orchestrator` with the `needs-orchestrator` label (fleet-ops#4260 — the label is the drain-visible parked state; `gh issue list -l needs-orchestrator` is the queue the orchestrator reads). `blocked-on: nish-decision` is reserved: use it only when the blocker itself names money/pricing, legal, brand, product direction, customer-data deletion, or an authority Nish explicitly reserved — anything else belongs to `orchestrator` (the blocked-reconcile auto-rewrite was deleted 2026-09-18, so pick right the first time). One park target is pre-decided and needs no second opinion: a claimed issue whose delivery is already complete on origin/main — merged delivery PR, `gh api repos/Nishfleet/<repo>/compare/main...<merge-sha>` reports `ahead_by=0` — and whose close is owner-reserved (owner-authored; workers never `gh issue close`) is not a stall and is not worked again. Post the verification receipt and park it `blocked-on: nish-decision` + `needs-nish-decision`: only the owner closes it, and the label is terminal for intake — `prompts/intake.md` never re-labels it `agent-ready` and its pick list only reads `agent-ready`, so the issue waits in the queue Nish reads (`gh issue list -l needs-nish-decision`) instead of eating claims. Never park a delivered issue `orchestrator`: the drain reads a parked open issue as a stalled packet and requeues it, burning another worker turn (fleet-ops#7582 — #7400 was reclaimed twice after PR #7549 merged, once off an orchestrator requeue that mistook delivered-and-parked for stalled). When that `orchestrator`-vs-`nish-decision` choice is live, decide it with the second-opinion block below (fleet-ops#7429): write the blocker card to a scratch JSON file `{"item": <the blocker text>, "context": <the canonical reserved-class list and this step-4 rule>}` and run `python3 - second-opinion-reserved 'Nishfleet/<repo>#<N>' <card-path>`. `disagreement=true`/`null`, or either framing's `needsNish` probability above the site's `act_hi` edge in `config/jev-bands.json` (`second-opinion-reserved` row, 0.5 as shipped), parks `nish-decision`; clean agreement on not-reserved parks `orchestrator`; `unavailable` leaves this prose rule unchanged. Agreement never authorizes a reserved action. Either way — second-opinion run or the pre-decided park — log the choice once with the worker-escalation shadow block below (fleet-ops#7773, log-only): extend the card file with `"issue": <issue title + body excerpt>`, `"worker_choice": "<the blocked-on target being parked as>"` and `"reconcile_outcome": "<the second-opinion verdict line, or 'not-run'>"`, then run `python3 - 'Nishfleet/<repo>#<N>' <card-path>` — it appends one `worker-escalation-target` JSONL row and prints one `jev escalation-target:` line; it can never change or block the choice, and it only makes the Jev call when the worker unit sets `JEV_WORKER_ESCALATION_TARGET=1` (unset or `0`: prints `off`, no call, no row, exit 0). Answers need `decision-resolved:`. Strike `~~blocked-on: ...~~`. Then remove the worktree (`git worktree remove <path>`); delete the claim branch ON THE ISSUE'S REPO (never bare `git push origin` — cwd may be a different repo's clone): `gh api -X DELETE "repos/Nishfleet/<repo>/git/refs/heads/claim/issue-<N>"`; print "blocked: proposal posted"; exit 0.
 5. Implement the smallest durable fix. No new scripts, anywhere in any repo (Nish 2026-09-19, three times; 0509#3679): never add a file under `scripts/`, `bin/`, `tools/`, `.github/scripts/`, `ops/` or any `*.sh`/`*.mjs` helper, hook or wrapper. A package.json line, a workflow step or a config file calls the tool directly (`wrangler`, `playwright`, `vitest`, `gh`); data goes in `.sql`/`.json` files; logic that needs tests is app code under `app/` or a test under `tests/`. A PR that adds a script is a wrong answer even if it is green. Then run the Execution IS the review inner loop to green, then repo tests/semgrep.
 6. Commit; `git push origin claim/issue-<N>`.
 7. `gh pr create ... Verification: ... run-proof: ... research: ... help-first: ... Closes #<N>`
@@ -1084,5 +1084,191 @@ try:
     main()
 except Exception as exc:
     note('jev second-opinion: unavailable (%s)' % type(exc).__name__)
+PY
+```
+
+## Shadow Jev tier — worker escalation target (fleet-ops#7773, shadow, log-only)
+
+At step 4 — when the worker has picked its `blocked-on:` park target, however it picked it (second-opinion steered, clean prose pick, or the pre-decided delivered-issue park) — run the verbatim python block below once, in a single tool call, with two arguments: the issue ref `Nishfleet/<repo>#<N>` and the card path. The card is the step-4 blocker card (`{"item": <blocker>, "context": <rules>}`) extended with `"issue"` (the issue title plus a body excerpt), `"worker_choice"` (the `blocked-on:` target being parked as: `orchestrator`, `nish-decision`, `senior-conference`, or `Nishfleet/<repo>#<n>`), `"reconcile_outcome"` (the second-opinion block's verdict line when it ran, else `not-run` — `bin/blocked-reconcile` was deleted 2026-09-18, so no post-park rewrite exists to record), and optional `"event_source"`.
+
+The block builds the candidate framing in code — canonical reserved-class list, money-boundary definition, issue text, blocker — asks Jev ONE boolean (`nish_reserved`: is this blocker genuinely Nish-reserved?), appends ONE JSONL row `{ts, site, ref, state_sha256, p, worker_choice, reconcile_outcome, event_source, answers, probabilities, advisory_only, act_hi, review_lo, usage, ms}` to `~/.local/state/pi-packet/jev/worker-escalation-target.jsonl`, and prints one `jev escalation-target:` line for the transcript. It NEVER changes the park target, the labels, the proposal, or the exit code — the worker's own choice and the step-4 prose rule stay authoritative. The flip (letting the boolean steer the target) is a separate PR gated on fleet-ops#7762's measured label sanity and a 0% reserved false-negative rate; this site only logs. fleet-ops#7754 scores the site against real outcomes (was the parked label later corrected; did Nish actually answer it).
+
+Controls:
+- `JEV_WORKER_ESCALATION_TARGET=1` enables the call — the flag defaults OFF and the `pi-issue@`/`devin-issue@`/`cursor-issue@` units set it for shadow logging only. Unset, `0`, or `off` prints `jev escalation-target: off` and exits 0: no call, no row.
+- One `POST 127.0.0.1:4000/jev` per step-4 park, LiteLLM virtual key `jev-eval` (proxy-owned $1/month cap, ~$0.000015 per call). The key is read from the seat file inside the child process only and is never printed, logged, or written to the JSONL row.
+- Issue text, blocker text and the worker's choice are untrusted DATA: they reach Jev as state only and are never executed as instructions.
+- Any failure (missing key, bad card, network error, timeout, malformed response, invalid probability) prints `jev escalation-target: unavailable (<reason>)` and exits 0 — an escalation is never blocked by a classifier being down.
+
+```bash
+python3 - "Nishfleet/<repo>#<N>" "<card-path>" <<'PY'
+# jev worker-escalation-target shadow (fleet-ops#7773) — log-only.
+import datetime, hashlib, json, math, os, pathlib, re, sys, time, urllib.request
+
+SEAT_KEY_FILE = os.path.expanduser('~/.config/fleet-ops/seats/typesafe-jev.env')
+ENDPOINT = os.environ.get('JEV_WORKER_ESCALATION_ENDPOINT') or 'http://127.0.0.1:4000/jev'
+LOG_PATH = os.environ.get('JEV_WORKER_ESCALATION_LOG') or os.path.expanduser(
+    '~/.local/state/pi-packet/jev/worker-escalation-target.jsonl')
+SITE = 'worker-escalation-target'
+REF_RE = re.compile(r'^Nishfleet/[A-Za-z0-9._-]{1,100}#\d{1,7}$')
+# Canonical reserved classes (vault global-standing-rules.md "Only these
+# reach Nish") and the money boundary live here in code so every row is
+# scored against one fixed framing.
+RESERVED_CLASSES = ('money/pricing', 'privacy', 'security', 'legal', 'brand',
+                    'product direction', 'customer-data deletion',
+                    'destructive/irreversible steps',
+                    'authority Nish explicitly reserved')
+MONEY_BOUNDARY = ("Money is Nish's alone — no payments, cards, paid trials, "
+                  "or spend commitments of any size without him.")
+QUESTION_ID = 'nish_reserved'
+QUESTION = dict(
+    type='boolean',
+    instructions=('A fleet worker just parked an issue blocked-on the supplied target. Judging only '
+                  'the blocker, the issue text and the canonical reserved-class list, is this blocker '
+                  'genuinely Nish-reserved — money/pricing, privacy, security, legal, brand, product '
+                  'direction, customer-data deletion, destructive/irreversible steps, or authority '
+                  'Nish explicitly reserved — so that Nish must decide it? The worker choice is '
+                  'already made; this is a shadow read for later scoring and never changes it.'))
+BANDS_PATH = os.environ.get('JEV_BANDS_FILE') or os.path.expanduser(
+    '~/workspaces/tooling/fleet-ops-deploy-clone/config/jev-bands.json')
+
+def read_bands(site):
+    # fleet-ops#7439 — band edges live in config/jev-bands.json, the one
+    # table every jev site reads. Missing/invalid values surface as None:
+    # the row still lands and records the nulls so the gap is visible.
+    try:
+        entry = (json.load(open(BANDS_PATH)).get('sites') or {}).get(site) or {}
+    except Exception:
+        entry = {}
+    def num(k):
+        try:
+            v = float(entry.get(k))
+            return v if 0 <= v <= 1 else None
+        except (TypeError, ValueError):
+            return None
+    sens = entry.get('sensitivity')
+    return dict(act_hi=num('act_hi'), review_lo=num('review_lo'),
+                sensitivity=[float(x) for x in sens
+                             if isinstance(x, (int, float)) and not isinstance(x, bool)
+                             and 0 <= x <= 1] if isinstance(sens, list) else [])
+
+def note(msg):
+    print(msg)
+
+def read_seat_key():
+    # The LiteLLM virtual key only; never the raw gateway variable.
+    k = os.environ.get('LITELLM_JEV_KEY')
+    if k:
+        return k
+    try:
+        txt = pathlib.Path(SEAT_KEY_FILE).read_text()
+    except Exception:
+        return None
+    m = re.search(r'^\s*LITELLM_JEV_KEY="?([^"\s]+)"?\s*$', txt, re.M)
+    return m.group(1) if m else None
+
+def sha256_state(s):
+    return hashlib.sha256(json.dumps(s, sort_keys=True, default=str).encode()).hexdigest()
+
+def valid_p(p):
+    return (not isinstance(p, bool)) and isinstance(p, (int, float)) and math.isfinite(p) and 0 <= p <= 1
+
+def main():
+    if os.environ.get('JEV_WORKER_ESCALATION_TARGET', '') not in ('1', 'on', 'true'):
+        note('jev escalation-target: off (JEV_WORKER_ESCALATION_TARGET not enabled); '
+             'step-4 rule unchanged')
+        return
+    ref = sys.argv[1] if len(sys.argv) > 1 else '-'
+    card_path = sys.argv[2] if len(sys.argv) > 2 else '-'
+    if not REF_RE.match(ref):
+        note('jev escalation-target: unavailable (bad ref)')
+        return
+    try:
+        card = json.loads(pathlib.Path(card_path).read_text())
+    except Exception:
+        note('jev escalation-target: unavailable (bad card)')
+        return
+    if not isinstance(card, dict) or not card.get('item') or not card.get('worker_choice'):
+        note('jev escalation-target: unavailable (card needs item and worker_choice)')
+        return
+
+    key = read_seat_key()
+    if not key:
+        note('jev escalation-target: unavailable (no seat key)')
+        return
+
+    state = dict(
+        blocker=card['item'],
+        issue_text=str(card.get('issue') or '')[:4000],
+        worker_choice=str(card['worker_choice'])[:120],
+        reconcile_outcome=str(card.get('reconcile_outcome') or 'not-recorded')[:300],
+        event_source=str(card.get('event_source') or 'worker-step4')[:60],
+        reserved_classes=list(RESERVED_CLASSES),
+        money_boundary=MONEY_BOUNDARY,
+        decision_surface='worker step-4 blocked-on park target '
+                         '(orchestrator | nish-decision | senior-conference | issue ref)',
+        context='shadow log only — the worker choice stands; blocked-reconcile was '
+                'deleted 2026-09-18 so nothing rewrites the park target after the fact',
+    )
+    if 'context' in card:
+        state['card_context'] = card['context']
+    state_hash = sha256_state(state)
+
+    payload = dict(model='typesafe-ai/jev', state=state,
+                   questions={QUESTION_ID: QUESTION})
+    req = urllib.request.Request(ENDPOINT, data=json.dumps(payload).encode(), method='POST')
+    req.add_header('Authorization', 'Bearer ' + key)
+    req.add_header('Content-Type', 'application/json')
+
+    start = time.monotonic()
+    try:
+        with urllib.request.urlopen(req, timeout=20) as resp:
+            res = json.loads(resp.read())
+    except Exception as exc:
+        note('jev escalation-target: unavailable (%s)' % type(exc).__name__)
+        return
+    ms = int((time.monotonic() - start) * 1000)
+
+    p = ((res.get('answers') or {}).get(QUESTION_ID) or {}).get('probability')
+    if not valid_p(p):
+        note('jev escalation-target: unavailable (invalid probability)')
+        return
+    p = float(p)
+    bands = read_bands(SITE)
+
+    row = dict(
+        ts=datetime.datetime.now(datetime.timezone.utc).isoformat(),
+        site=SITE,
+        ref=ref,
+        state_sha256=state_hash,
+        p=p,
+        worker_choice=state['worker_choice'],
+        reconcile_outcome=state['reconcile_outcome'],
+        event_source=state['event_source'],
+        answers={QUESTION_ID: dict(type='boolean', probability=p)},
+        probabilities={QUESTION_ID: p},
+        advisory_only=True,
+        rule_tier='worker',
+        act_hi=bands['act_hi'],
+        review_lo=bands['review_lo'],
+        usage=res.get('usage'),
+        ms=ms,
+    )
+    try:
+        path = pathlib.Path(LOG_PATH)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with os.fdopen(os.open(path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600), 'a') as f:
+            f.write(json.dumps(row) + '\n')
+    except Exception as exc:
+        note('jev escalation-target: unavailable (%s)' % type(exc).__name__)
+        return
+
+    note('jev escalation-target: nish_reserved p=%.3f worker_choice=%s — shadow log-only '
+         '(fleet-ops#7773); the worker choice stands; ref=%s; state_sha256=%s'
+         % (p, state['worker_choice'], ref, state_hash))
+
+try:
+    main()
+except Exception as exc:
+    note('jev escalation-target: unavailable (%s)' % type(exc).__name__)
 PY
 ```

@@ -58,6 +58,7 @@ keeps an old constant.
 | `second-opinion` | `prompts/worker.md` | 0.5 | 0.5 |
 | `second-opinion-reserved` | `prompts/worker.md` | 0.5 | 0.5 |
 | `worker-context` | `prompts/intake.md` | 0.9 | 0.1 (+ `sensitivity` [0.1, 0.25, 0.5]) |
+| `worker-escalation-target` | `prompts/worker.md` step 4 | 0.5 | 0.5 |
 
 ## What tuning does and does not do
 
