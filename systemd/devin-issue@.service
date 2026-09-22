@@ -10,6 +10,9 @@ Description=Devin fleet issue worker %i (SWE-2 Max, headless devin CLI)
 # contract as pi-issue@.service; see that unit for the design comments.
 StartLimitIntervalSec=1h
 StartLimitBurst=3
+# Permanent failure releases the claim via pi-issue-failed@ —
+# prompts/claim-release.md (fleet-ops#6292); see pi-issue@.service.
+OnFailure=pi-issue-failed@%i.service
 # Claim gate auth comes from the shared App token env file — Requires+After
 # makes the mint part of this unit's start transaction, same as pi-intake@.
 Requires=fleet-gh-token.service
