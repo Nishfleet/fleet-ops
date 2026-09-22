@@ -63,7 +63,7 @@ EXPECTED = {
     'flaky-test-quarantine', 'gha-stuck-run-watch', 'hermes-digest',
     'intake-repair-seatfault', 'intake-seat-smoke', 'merge-queue-batches', 'merge-queue-enqueue',
     'reviewer-needs-review', 'scout', 'scout-rank', 'second-opinion',
-    'second-opinion-reserved', 'vault-drop-routing', 'worker-context',
+    'second-opinion-reserved', 'vault-drop-routing', 'worker-context', 'worker-escalation-target',
 }
 
 # Patterns that name a site literal in a consumer file.
