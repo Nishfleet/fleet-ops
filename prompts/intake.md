@@ -41,7 +41,9 @@ Steps:
    `questions` is `{"admit": {"type": "boolean", "instructions": "Should this
    issue be admitted as worker-ready under the admission test?"}}`. Read
    `.answers.admit.probability`; keep it only if it is a finite number in [0,1].
-   p >= 0.9: add `agent-ready`, remove `proposed`, comment `jev admit: p=<p>`.
+   p >= 0.6: add `agent-ready`, remove `proposed`, comment `jev admit: p=<p>`
+   (Nish 2026-09-22 15:05 IST: "below 0.6 comes to me" — 0.9 admitted nothing
+   across 162 real proposed issues, so the admit bar is 0.6 for this site).
    p <= 0.1: leave `proposed`, comment `jev admit: p=<p>; not work`.
    Otherwise, or on any failure: leave `proposed`, add `needs-orchestrator`,
    comment `jev admit: p=<p or unavailable>; Fable decides`. First opinion
