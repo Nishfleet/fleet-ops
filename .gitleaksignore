@@ -3,5 +3,3 @@
 # Fingerprints are keyed to the commit that introduced the content in main's
 # ancestry: #7746 squash-merged, so the findings attribute to the squash SHA
 # 3febb390d, not the branch commit 60dd531c the original entries named.
-3febb390d59da5ebbbd2cc57ef4486af37d84ba4:.fleet/bench7371/b-labels.jsonl:stripe-access-token:218
-3febb390d59da5ebbbd2cc57ef4486af37d84ba4:.fleet/bench7371/b-corpus.json:stripe-access-token:1
