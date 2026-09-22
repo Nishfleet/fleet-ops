@@ -42,6 +42,13 @@ conclusive, this file is the knob — edit it and nothing else.
   `systemctl --user set-environment JEV_SEATFAULT_SHADOW=1`, and check the
   window with `python3 lib/seat_fault.py --replay
   ~/.local/state/pi-packet/jev/intake-repair-seatfault.jsonl`.
+- `failure-triage` is log-only while the shadow tier is armed. It is
+  single-edge: `act_hi` is the `p >= 0.9` bar the flip will read once
+  fleet-ops#7754 has scored the rows (fleet-ops#7780). The tier is
+  advisory by construction and shipped on; disable it with
+  `JEV_FAILURE_TRIAGE=0`, and check the window with `python3
+  lib/failure_triage.py --replay
+  ~/.local/state/pi-packet/jev/failure-triage.jsonl`.
 
 Every site row stamps the `act_hi`/`review_lo` it ran under, so any row
 can be replayed against the table value that produced it. A missing file,
@@ -63,6 +70,7 @@ keeps an old constant.
 | `claim-check-report` | `prompts/worker.md` | 0.5 | 0.5 |
 | `dependency-pr-arm` | `prompts/worker.md` | 0.9 | 0.1 |
 | `flaky-test-quarantine` | `prompts/alert-repair.md` | 0.9 | 0.1 |
+| `failure-triage` | `lib/failure_triage.py` | 0.9 | 0.1 |
 | `gha-stuck-run-watch` | `prompts/alert-repair.md` | 0.9 | 0.1 |
 | `hermes-digest` | `prompts/daily-digest.md` | 0.5 | 0.5 |
 | `intake-repair-seatfault` | `lib/seat_fault.py` | 0.6 | 0.6 |
