@@ -41,9 +41,11 @@
 # prepaid accounts (the single OPENCODE_API_KEY subscription and the single PARETO_API_KEY
 # Pareto Pass). The x-opencode-session ids / model_info ids name seats in LiteLLM's census;
 # they are bookkeeping, not separate quota buckets. Quota walls are per ACCOUNT, so a wall on
-# either provider cools the matching rungs in BOTH groups together — the 2026-09-19 synthetic
-# wall stalled intake, scout and issue workers at once even though the split looked isolated
-# (that is #7786's diagnosis). Do not reason that intake/scout on worker-cheap cannot starve
+# either provider cools the matching rungs in BOTH groups together — the 2026-09-19
+# synthetic-wall record #7786 cites: the router cooled synthetic-glm53flash-worker-cheap and
+# synthetic-glm53flash-worker-capable together, and cheap-lane scouts failed on Connection
+# error while a capable-lane issue worker kept running — shared-account contention, not
+# isolated lanes. Do not reason that intake/scout on worker-cheap cannot starve
 # issue workers on worker-capable. What actually protects the fleet: each group carries rungs
 # from TWO different upstreams, the groups fall back to each other, and cooldown 60 /
 # num_retries 0 / RateLimitErrorRetries 0 fails over on the first wall instead of retry-storming.
@@ -52,7 +54,7 @@
 # this config accepts account-level walls and relies on the failover above instead. The ollama
 # V4.1-flash seat in benched: below is the one non-shared rung candidate found while fixing
 # #7786 (chat + tool_choice both green 2026-09-22); restoring it is a separate seat-policy
-# decision, tracked off #7786.
+# decision, filed as #8198 (probe evidence + prerequisites there).
 model_list:
 - model_name: worker-capable
   # OpenCode Go, same rung as worker-cheap; pi-issue@ workers run --model worker-capable (2026-09-22).
