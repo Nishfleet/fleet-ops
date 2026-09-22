@@ -37,11 +37,17 @@ Hard rules:
 
 For `$1` = `0509` ONLY. Other TARGET repos ignore this section.
 
-This is the first section a `0509` pass executes. Run it on a fresh shallow clone of `origin/main` that this pass owns, the same way a worker uses its own workspace. Never use `/home/nish/workspaces/products/0509` or any other checkout this pass does not own.
+This is the first section a `0509` pass executes. Run it on a clone of `origin/main` in a workspace this pass owns, using the same clone command a worker uses. Never use `/home/nish/workspaces/products/0509` or any other checkout this pass does not own.
 
-`git clone --depth 1 https://github.com/Nishfleet/0509.git /home/nish/workspaces/agent-worktrees/scout-0509-sweep`
+Workspace: `/home/nish/workspaces/agent-worktrees/scout-0509-sweep`
 
-Run the sweep commands in that clone. Do not file from those outputs until Step 1 has the dedupe corpus. Skip a finding that Step 1 already has open. Where the block says to open a feature-map PR, file an issue instead. Do not push, and do not open a PR. Remove the clone when the pass ends. Then continue at the Capacity gate. The `supply:` line is still the last line of the run, and it is assistant text. A shell echo does not count.
+If that path exists, delete it before cloning. A pass that dies mid-run leaves the directory behind, and the next clone fails while it is still there.
+
+`git clone --reference-if-able /home/nish/workspaces/.mirrors/0509.git https://github.com/Nishfleet/0509.git /home/nish/workspaces/agent-worktrees/scout-0509-sweep`
+
+Do not pass `--depth 1` and do not push to the mirror. Step 3 runs `git log -S`, which needs history past the tip commit. Then run `npm ci`, `npx wrangler types`, and `npx react-router typegen` in that clone. `npx knip` and `npx eslint` need `node_modules`. Knip reports `./+types/` imports as unresolved until typegen writes them, and eslint reports unresolved `Env` types until `wrangler types` writes `worker-configuration.d.ts`. A `--depth 1` clone also has no history for `git log -S`.
+
+Run the sweep commands in that clone. Do not file from those outputs until Step 1 has the dedupe corpus. Skip a finding that Step 1 already has open. The feature-map paragraph below says to file an issue and not to open a PR. Do not push. Delete the workspace directory before the pass stops, including when the pass aborts. Then continue at the Capacity gate. The `supply:` line is still the last line of the run, and it is assistant text. A shell echo does not count.
 
 ### GARDENER SWEEP — run this every scout pass, before anything else
 
@@ -75,10 +81,10 @@ that compounds.
 **4. Feature-map drift.** Read `app/routes.ts` and the test titles in
 `e2e/`. Compare against `docs/FEATURE-MAP.md`: a route with no row, a row with
 no route, a row whose Proof column names a test that no longer exists, a row
-describing behaviour the route no longer has. **If it has drifted, regenerate
-the affected rows from those two sources by hand and open a PR with only that
-change.** By hand, in the editor — there is no generator and writing one is
-forbidden. The map is short on purpose so that this stays a five-minute job.
+describing behaviour the route no longer has. **If it has drifted, file one
+issue that names each drifted row and the source it disagrees with. Do not
+edit the map and do not open a PR.** There is no generator and writing one is
+forbidden. The map is short on purpose so that the fix stays a five-minute job.
 
 **5. File a lint-rule issue per finding — one issue each, not a digest.**
 Title it as the rule, not the instance: "lint: forbid X" beats "clean up Y in
@@ -162,7 +168,7 @@ This is filed. It is labeled `scout-candidate` only after every acquisition-clas
 
 ### A. Live product signals (FIRST — spend most effort here)
 
-Product checkout: `/home/nish/workspaces/products/<repo>` (read-only for inspection). The 0509 gardener sweep does not use this checkout. It uses the shallow clone named in that section.
+Product checkout: `/home/nish/workspaces/products/<repo>` (read-only for inspection). The 0509 gardener sweep does not use this checkout. It uses the clone named in that section.
 
 1. **Deployed site** (`https://0509.io` when repo is `0509`):
    - `/search?q=nike&country=all` — heading copy, country scope honesty
