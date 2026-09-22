@@ -56,7 +56,9 @@ ExecStartPre=-/bin/rm -f /home/nish/workspaces/agent-state/pi-intake-triggers/%i
 # MemAvailable under 4 GiB, a non-numeric reading, or a failed count yields
 # slots=0 — fail closed. At-capacity exits 0: it is a decision, not a failure.
 ExecStartPre=/bin/sh -c 'systemctl --user list-units "*-issue@*.service" --state=active,activating --no-legend > /run/user/%U/pi-intake-active; echo $?'
-ExecStartPre=/bin/sh -c 'a=$(wc -l < /run/user/%U/pi-intake-active); m=$(sed -n "s/^MemAvailable: *//p" /proc/meminfo | cut -d" " -f1); s=0; case "$a:$m" in *[!0-9:]*|:*|*:);; *) [ "$m" -ge 4194304 ] && [ "$a" -lt 20 ] && s=$((20-a));; esac; echo "$s" > /run/user/%U/pi-intake-slots; echo "intake-slots: slots=$s active=$a mem_kb=$m"'
+ExecStartPre=/bin/sh -c 'a=$(wc -l < /run/user/%U/pi-intake-active); m=$(sed -n "s/^MemAvailable: *//p" /proc/meminfo | cut -d" " -f1); s=0; case "$a:$m" in *[!0-9:]*|:*|*:);; *) [ "$m" -ge 4194304 ] && [ "$a" -lt 20 ] && s=$((20-a));; esac; printf "%s %s %s\n" "$s" "$a" "$m" > /run/user/%U/pi-intake-slots'
+ExecStartPre=/bin/sh -c 'f=/home/nish/workspaces/tooling/fleet-ops-deploy-clone/config/seat-caps.json; c=$(jq -er ".tick_spawn_cap_by_repo[\"%i\"]" "$f" 2>/dev/null) || c=; printf "%s" "$c" > /run/user/%U/pi-intake-cap'
+ExecStartPre=/bin/sh -c 'read s a m < /run/user/%U/pi-intake-slots; c=$(cat /run/user/%U/pi-intake-cap); case "$c" in "") ;; *[!0-9]*) echo "LOUD tick-spawn-cap-invalid %i: $c" >&2; exit 1;; *) [ "$c" -lt "$s" ] && s=$c;; esac; echo "$s" > /run/user/%U/pi-intake-slots; echo "intake-slots: slots=$s active=$a mem_kb=$m cap=${c:-none}"'
 ExecStart=/bin/sh -c 's=$(cat /run/user/%U/pi-intake-slots); case "$s" in [0-9]|[0-9][0-9]);; *) s=0;; esac; printf "/intake %i SLOTS: %s\n" "$s" | exec pi --print --append-system-prompt /home/nish/workspaces/tooling/fleet-ops-deploy-clone/AGENTS.md --session-dir "$HOME/.pi/agent/sessions/pi-intake-%i" --provider litellm --model worker-cheap'
 # ARTIFACT CHECK. Intake's entire job is to turn agent-ready issues into
 # agent-in-progress claims with a worker spawned behind them. Two counts say
