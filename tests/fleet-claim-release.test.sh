@@ -19,8 +19,10 @@
 #   5. Closed issue, no PR -> branch DELETE but never --add-label agent-ready.
 #   6. Open agent-blocked issue, no PR -> branch DELETE, in-progress removed,
 #      agent-ready never re-added (fleet-ops#3763).
-#   7. systemd/pi-issue-failed@.service calls bin/fleet-claim-release and the
-#      silent-close check.
+#   7. Every terminal-for-intake label (needs-nish-decision,
+#      needs-orchestrator, awaiting-runtime-gate, noise-class,
+#      superseded-by-rebuild, deputy) -> same: DELETE, in-progress removed,
+#      agent-ready never re-added (fleet-ops#7739).
 #   8. THE #8003 SHAPE: no PR, claim branch AHEAD of main -> the branch is
 #      copied to wip/issue-<N> BEFORE the claim ref is deleted, and the trace
 #      line names the wip ref.
@@ -172,6 +174,24 @@ if grep -q "issue edit.*--add-label agent-ready" "$gh_log"; then
     fail "agent-ready re-added on an agent-blocked issue"
 fi
 ok "agent-blocked: DELETE + in-progress cleared, never re-queued"
+
+# --- 7. terminal-for-intake labels, no PR -> delete, no re-queue (fleet-ops#7739) --
+# The releaser's no-requeue set must match the labels intake never makes
+# agent-ready (prompts/intake.md step 1) plus needs-orchestrator: a released
+# claim on a needs-nish-decision park re-added agent-ready and re-dispatched
+# the delivered issue four times in one night.
+for lbl in needs-nish-decision needs-orchestrator awaiting-runtime-gate noise-class superseded-by-rebuild deputy; do
+    out="$(MOCK_ISSUE="{\"state\":\"OPEN\",\"labels\":[{\"name\":\"agent-in-progress\"},{\"name\":\"$lbl\"}]}" \
+        run_release fleet-ops-6252 2>"$scratch/err.7")" || fail "parked($lbl) path exited nonzero"
+    grep -q "DELETE repos/Nishfleet/fleet-ops/git/refs/heads/claim/issue-6252" "$gh_log" \
+        || fail "parked($lbl) path did not delete the branch: $(cat "$gh_log")"
+    if grep -q "issue edit.*--add-label agent-ready" "$gh_log"; then
+        fail "agent-ready re-added on a $lbl issue"
+    fi
+    grep -q "issue edit 6252 .*--remove-label agent-in-progress" "$gh_log" \
+        || fail "parked($lbl) path did not clear agent-in-progress: $(cat "$gh_log")"
+done
+ok "terminal labels: DELETE + in-progress cleared, never re-queued"
 
 # --- 8. #8003 shape: claim branch ahead of main -> preserve to wip, then delete ---
 out="$(MOCK_CLAIM_SHA='aa11bb22cc33dd44' MOCK_COMPARE='{"ahead_by":2,"status":"ahead"}' \

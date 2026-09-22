@@ -30,7 +30,8 @@
 #      line on the parent issue. That is the (a)+(b) evidence the class
 #      demands around any close — and here there is no close at all.
 #   3. No open PR -> release (flip agent-in-progress -> agent-ready on an
-#      open issue, agent-in-progress only on a closed or agent-blocked one)
+#      open issue, agent-in-progress only on a closed or terminally parked
+#      one — the intake never-ready label set plus needs-orchestrator)
 #      and post the trace line on the issue so the release is never silent.
 #      fleet-ops#8003: a claim branch AHEAD of the default branch holds pushed
 #      worker commits with no PR — deleting it orphans them until GitHub GC.
@@ -100,7 +101,7 @@ Releases a dead worker's claim without ever silently closing an open PR:
   - no open PR                  -> release: if claim/issue-<N> is ahead of the
     default branch, copy it to wip/issue-<N> first (fleet-ops#8003); then
     delete claim/issue-<N>, flip agent-in-progress -> agent-ready (open
-    issue), trace line on the issue.
+    issue, never on a terminal park label), trace line on the issue.
   - gh check failure            -> HOLD (fail-closed): loud log, exit 0.
 
 --artifact-check is the worker dead-man gate (fleet-ops#7744), run as the
@@ -302,7 +303,14 @@ if ! issue_json=$("$GH" issue view "$issue" -R "$full" --json state,labels 2>/de
 fi
 issue_state="$(printf '%s' "$issue_json" | jq -r '.state // "unknown"')"
 in_progress="$(printf '%s' "$issue_json" | jq -r '[.labels[]?.name] | any(. == "agent-in-progress")')"
-agent_blocked="$(printf '%s' "$issue_json" | jq -r '[.labels[]?.name] | any(. == "agent-blocked")')"
+# Terminal-for-intake labels: intake never labels these agent-ready
+# (prompts/intake.md step 1: agent-blocked, awaiting-runtime-gate,
+# noise-class, superseded-by-rebuild, deputy, needs-nish-decision), and
+# needs-orchestrator is the drain-owned park of fleet-ops#4260. Re-adding
+# agent-ready to any of them re-dispatches a parked issue into the same wait
+# — the fleet-ops#7739 loop: four worker claims in one night on a delivered
+# issue the releaser kept re-queueing off its needs-nish-decision park.
+parked="$(printf '%s' "$issue_json" | jq -r '[.labels[]?.name] | any(. == "agent-blocked" or . == "awaiting-runtime-gate" or . == "needs-orchestrator" or . == "needs-nish-decision" or . == "noise-class" or . == "superseded-by-rebuild" or . == "deputy")')"
 
 # --- 3. delete the claim branch if it still exists -----------------------------
 # fleet-ops#8003: the branch may hold pushed, unmerged commits from a worker
@@ -376,9 +384,10 @@ fi
 
 # --- 4. label flip + trace line ------------------------------------------------
 if [[ "$issue_state" == "OPEN" || "$issue_state" == "open" ]]; then
-    if [[ "$agent_blocked" == "true" ]]; then
-        # fleet-ops#3763: parked issue — clear the stale in-progress tag only;
-        # re-adding agent-ready would re-dispatch into the same block.
+    if [[ "$parked" == "true" ]]; then
+        # fleet-ops#3763 + #7739: terminally parked issue — clear the stale
+        # in-progress tag only; re-adding agent-ready re-dispatches into the
+        # same wait (or a park only the owner/orchestrator can resolve).
         flip_args=(--remove-label agent-in-progress)
     else
         flip_args=(--remove-label agent-in-progress --add-label agent-ready)
@@ -401,8 +410,8 @@ fi
 
 detail="no live worker, no open PR"
 [[ -n "$preserved_ref" ]] && detail="$detail; pushed work preserved at refs/heads/$preserved_ref ($claim_sha)"
-[[ "$agent_blocked" == "true" ]] && detail="$detail; agent-blocked held — not re-queued"
+[[ "$parked" == "true" ]] && detail="$detail; terminal label held — not re-queued"
 [[ "$issue_state" != "OPEN" && "$issue_state" != "open" ]] && detail="$detail; issue ${issue_state}"
 comment_issue "claim branch released by ${unit} at ${NOW} (${detail}; branch_deleted=${branch_deleted}; fleet-ops#6292)"
-log "RELEASED $full#$issue branch_deleted=$branch_deleted state=$issue_state blocked=$agent_blocked"
+log "RELEASED $full#$issue branch_deleted=$branch_deleted state=$issue_state parked=$parked"
 exit 0
