@@ -23,6 +23,15 @@
 - Money is Nish's alone. No payments, cards, or paid trials.
 - Secrets never get printed, moved, rotated, or committed.
 - `main`/`master` are protected. Branch or use a worktree.
+- Machine wiring — symlinks under `~/.config/systemd/user`, `~/.local/bin`,
+  `~/.pi/agent`, and the vault — resolves only into stable install trees
+  (`~/workspaces/tooling/fleet-ops-deploy-clone`, `~/.local/share`,
+  `~/.local/lib`), NEVER into `~/workspaces/agent-worktrees/`,
+  `~/workspaces/agent-state/`, `/tmp/` or any checkout a session can delete
+  or re-clone (fleet-ops#7743: hand-linked `standing-rules-render` units
+  pointed into a churning checkout and dangled, taking the render down).
+  `fleet-sync.service`'s LINK-GUARD ExecStart fails the unit on a dangling
+  or throwaway-target live link — wiring set this way is caught in ≤2 min.
 
 ## Live state
 
