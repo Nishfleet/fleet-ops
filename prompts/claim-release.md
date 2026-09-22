@@ -68,23 +68,44 @@ Steps:
 4. Read the issue: `gh issue view <N> -R $full --json state,labels`. A gh
    error is UNKNOWN: `LOUD issue-fetch-failed $full#<N>`, hold, exit 0.
 
-5. Flip the labels — the only state change this path makes:
-   - Open issue with no terminal park label → `gh issue edit <N> -R $full
-     --remove-label agent-in-progress --add-label agent-ready`.
-   - Open issue carrying a terminal park label — `agent-blocked`,
-     `awaiting-runtime-gate`, `needs-orchestrator`, `needs-nish-decision`,
-     `noise-class`, `superseded-by-rebuild` or `deputy` — remove
-     `agent-in-progress` ONLY (fleet-ops#3763 + #7739: re-adding agent-ready
-     re-dispatches a parked issue into the same wait — four worker claims in
-     one night on a delivered issue the releaser kept re-queueing).
+5. Release the lease, then flip labels. `gh issue view <N> -R $full
+   --comments`. A record line is `claim-record: ` plus JSON with `owner`,
+   `claimed_at`, `expires_at`, and `attempt`. A release line is
+   `claim-release: ` plus `owner`, `attempt`, and `released_at`. Times are
+   UTC `YYYY-MM-DDTHH:MM:SSZ`. `attempt` is a positive integer. Any other
+   line is ignored. A prefixed line that does not parse, or two records
+   with the same highest attempt, is unreadable: print
+   `LOUD claim-record-unreadable $full#<N>`, hold, exit 0. A `gh` error is
+   the same hold. When a highest record exists and no release names its
+   attempt, post one comment that contains
+   `claim-release: {"owner":"<that owner>","attempt":<that attempt>,"released_at":"<now UTC>"}`
+   and `attempt=<N>`. That post is the explicit release. Then the first
+   matching bullet wins:
    - Closed issue → remove `agent-in-progress` only.
+   - Open issue carrying `noise-class`, `superseded-by-rebuild`, `deputy`,
+     `needs-nish-decision`, or `needs-orchestrator` → remove
+     `agent-in-progress` only. Those marks are not the claim fence.
+     `needs-nish-decision` stays the owner queue (fleet-ops#7582). The
+     release above still posts when a record exists, so a restarted worker
+     sees it and does not resume.
+   - Open issue carrying `agent-blocked` or `awaiting-runtime-gate`, and a
+     claim record was released on this pass → remove `agent-in-progress`
+     and add `agent-ready`. The withhold that used to keep these two
+     labels off the ready queue (fleet-ops#3763, #7739) is deleted once a
+     lease exists (fleet-ops#5122). Intake then reclaims an expired or
+     released lease once, at attempt plus 1, and refuses a second claim
+     while that new lease is unexpired.
+   - Open issue carrying `agent-blocked` or `awaiting-runtime-gate`, and
+     there was no claim record → remove `agent-in-progress` only. Nothing
+     has expired, so there is nothing to reclaim.
+   - Any other open issue → remove `agent-in-progress` and add
+     `agent-ready`.
    A failed `gh issue edit` is logged `LOUD label-flip-failed $full#<N>` but
    still exits 0 — the next failure pass retries it.
 
 6. Post ONE trace line on the issue so the release is never silent: "claim
-   release by pi-issue-failed@<instance> at <UTC> (no live worker, no open
-   PR<; terminal label held — not re-queued when parked><; issue <state>
-   when not open>; fleet-ops#6292)". Exit 0.
+   release by pi-issue-failed@<instance> at <UTC> attempt=<N or none> (no
+   live worker, no open PR; fleet-ops#6292)". Exit 0.
 
 Every tolerated outcome — released, held, deferred on a gh error — exits 0.
 Non-zero is reserved for an unparseable instance or the auth precondition

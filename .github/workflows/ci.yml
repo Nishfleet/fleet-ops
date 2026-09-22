@@ -128,6 +128,139 @@ jobs:
           grep -c 'nish-preimplementation-contract:start' "$f" | grep -qx 1
           grep -c 'nish-preimplementation-contract:end' "$f" | grep -qx 1
           grep -c 'nish-memory-compound' "$f" | grep -qx 0
+      - name: Claim lease fences a stale holder and a protected re-claim
+        # fleet-ops#5122. tests/ cannot hold this: no-glue rejects a new
+        # test file. The step calls python3 directly. It is the acceptance
+        # fixture, and the greps pin the same rules in the prompts.
+        run: |
+          grep -q 'claim-record:' prompts/intake.md
+          grep -q '90 minutes' prompts/intake.md
+          grep -q 'claim refused: delivered by' prompts/intake.md
+          grep -q 'dropped only when it has no claim record' prompts/intake.md
+          grep -q 'claim-attempt:' prompts/worker.md
+          grep -q 'issue-$1' prompts/worker.md
+          grep -q 'claim-release:' prompts/claim-release.md
+          grep -q 'deleted once a lease exists' prompts/claim-release.md
+          if grep -q 're-adding agent-ready' prompts/claim-release.md; then
+            echo 'park re-claim withhold still in claim-release' >&2
+            exit 1
+          fi
+          python3 - <<'PY'
+          import re
+          from datetime import datetime, timedelta, timezone
+
+          TTL = timedelta(minutes=90)
+          DELIVERY = re.compile(r"(?i)\b(closes|fixes|resolves|delivered)\s+#(\d+)\b")
+
+          def parse_time(s):
+              return datetime.strptime(s, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
+
+          def expiry(claimed):
+              return (parse_time(claimed) + TTL).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+          def highest(records):
+              return max((r["attempt"] for r in records), default=0)
+
+          def current(records):
+              h = highest(records)
+              if h == 0:
+                  return None
+              hits = [r for r in records if r["attempt"] == h]
+              if len(hits) != 1:
+                  return "unreadable"
+              return hits[0]
+
+          def released(record, releases):
+              return record is not None and any(rel["attempt"] == record["attempt"] for rel in releases)
+
+          def other_pr(issue_n, prs):
+              own = "claim/issue-%d" % issue_n
+              for pr in prs:
+                  if pr.get("head") == own or pr.get("state") != "merged":
+                      continue
+                  for m in DELIVERY.finditer(pr.get("body") or ""):
+                      if int(m.group(2)) == issue_n:
+                          return pr["number"]
+              return None
+
+          def next_attempt(issue_n, records, releases, prs, now):
+              if other_pr(issue_n, prs):
+                  return None
+              cur = current(records)
+              if cur == "unreadable":
+                  return None
+              if cur is None:
+                  return 1
+              if released(cur, releases) or parse_time(cur["expires_at"]) <= now:
+                  return cur["attempt"] + 1
+              return None
+
+          def allow_mutation(actor_attempt, records, releases, now):
+              cur = current(records)
+              if cur == "unreadable" or cur is None:
+                  return False
+              if actor_attempt != cur["attempt"]:
+                  return False
+              if released(cur, releases) or parse_time(cur["expires_at"]) <= now:
+                  return False
+              return True
+
+          def intake(labels, records, releases, prs, issue_n, now):
+              if "noise-class" in labels or "scout-probe" in labels:
+                  return "drop"
+              if "needs-nish-decision" in labels or "needs-orchestrator" in labels:
+                  return "drop"
+              if other_pr(issue_n, prs):
+                  return "refuse-delivered"
+              parked = "agent-blocked" in labels or "awaiting-runtime-gate" in labels
+              if parked and not records:
+                  return "drop"
+              nxt = next_attempt(issue_n, records, releases, prs, now)
+              if nxt is None:
+                  return "skip-unexpired"
+              return nxt
+
+          def release_adds_ready(labels, had_record, state):
+              if state != "open":
+                  return False
+              terminal = {"noise-class", "superseded-by-rebuild", "deputy", "needs-nish-decision", "needs-orchestrator"}
+              if terminal & set(labels):
+                  return False
+              if "agent-blocked" in labels or "awaiting-runtime-gate" in labels:
+                  return had_record
+              return True
+
+          now = parse_time("2026-09-22T12:00:00Z")
+          expired = {"owner": "worker-A", "claimed_at": "2026-09-22T10:00:00Z", "expires_at": "2026-09-22T11:30:00Z", "attempt": 1}
+          assert expiry("2026-09-22T10:00:00Z") == "2026-09-22T11:30:00Z"
+          assert next_attempt(7, [expired], [], [], now) == 2
+          live_b = {"owner": "worker-B", "claimed_at": "2026-09-22T12:00:00Z", "expires_at": expiry("2026-09-22T12:00:00Z"), "attempt": 2}
+          both = [expired, live_b]
+          assert allow_mutation(1, both, [], now) is False
+          assert allow_mutation(2, both, [], now) is True
+          assert next_attempt(7, both, [], [], now) is None
+          assert intake(["awaiting-runtime-gate"], [expired], [], [], 7, now) == 2
+          assert intake(["agent-blocked"], [], [], [], 7, now) == "drop"
+          assert intake(["awaiting-runtime-gate"], both, [], [], 7, now) == "skip-unexpired"
+          prs = [{"number": 2641, "state": "merged", "head": "claim/issue-2363", "body": "Fixes #2369\n"}]
+          assert next_attempt(2369, [expired], [], prs, now) is None
+          assert intake([], [expired], [], prs, 2369, now) == "refuse-delivered"
+          own = [{"number": 9, "state": "merged", "head": "claim/issue-2369", "body": "Closes #2369\n"}]
+          assert next_attempt(2369, [], [], own, now) == 1
+          live = {"owner": "worker-A", "claimed_at": "2026-09-22T11:00:00Z", "expires_at": "2026-09-22T12:30:00Z", "attempt": 4}
+          assert next_attempt(1, [live], [], [], now) is None
+          rel = [{"owner": "worker-A", "attempt": 4, "released_at": "2026-09-22T11:30:00Z"}]
+          assert next_attempt(1, [live], rel, [], now) == 5
+          assert allow_mutation(4, [live], rel, now) is False
+          assert allow_mutation(1, [], [], now) is False
+          assert intake(["needs-nish-decision"], [expired], [], [], 1, now) == "drop"
+          assert release_adds_ready(["awaiting-runtime-gate"], True, "open") is True
+          assert release_adds_ready(["awaiting-runtime-gate"], False, "open") is False
+          assert release_adds_ready(["needs-nish-decision"], True, "open") is False
+          assert release_adds_ready([], False, "open") is True
+          assert release_adds_ready([], True, "closed") is False
+          print("claim-lease: ok")
+          PY
 
   # no-glue: the mechanical half of "no scripts, hooks, wrappers, helpers"
   # (Nish 2026-09-19, 2026-09-21). Fails on any ADDED file under a script

@@ -175,11 +175,18 @@ Steps:
    why the model intake path was switched off once before; the limit, not the
    model, was the bug). If the result length equals the limit, raise it and
    list again. Empty means print
-   `no ready issues` and exit 0. DROP any issue that carries `noise-class`,
-   `agent-blocked` or `awaiting-runtime-gate`, or whose title starts with
-   `__scout_probe_`, even if it also carries `agent-ready` (fleet-ops#4454:
-   #4454 was re-armed three times after a worker labeled it noise-class; a
-   park label must gate claiming until step 2 releases it, fleet-ops#4626). Order them: issues labelled `critical-path` or
+   `no ready issues` and exit 0. DROP any issue that carries `noise-class`
+   or `needs-nish-decision` or `needs-orchestrator`, or whose title starts
+   with `__scout_probe_`, even if it also carries `agent-ready`
+   (fleet-ops#4454: a noise-class issue was re-armed three times; those
+   marks are not work, and `needs-nish-decision` stays the owner queue,
+   fleet-ops#7582). An issue that carries `agent-blocked` or
+   `awaiting-runtime-gate` is dropped only when it has no claim record.
+   Read that issue's comments before deciding (the same record and release
+   lines step 5 parses). No parseable `claim-record:` line means drop.
+   An expired or released record keeps it in this list so step 5 can
+   reclaim it once (fleet-ops#5122). The unconditional park-label drop
+   (fleet-ops#4626) is deleted for those two labels. Order them: issues labelled `critical-path` or
    `escalate-senior` first, then oldest-first by `createdAt`. After two
    critical-path claims in a row, take the oldest plain issue next so the tail
    cannot starve. Do not sort by issue number and do not pick by vibes.
@@ -188,7 +195,35 @@ Steps:
    what you would do, and do not stop to re-check capacity between issues; you
    computed slots in step 3. For each issue `N`, if it carries `noise-class` or
    its title starts with `__scout_probe_`, print `skipped-noise-class` and move
-   on. Do not claim, do not spawn. Otherwise:
+   on. Do not claim, do not spawn. Otherwise read the claim lease before
+   any mutation (branch push, branch delete, label edit, claim comment).
+   `gh issue view N -R Nishfleet/<repo> --comments`. A record line is
+   `claim-record: ` plus one JSON object with `owner` (non-empty string),
+   `claimed_at`, `expires_at` (both UTC `YYYY-MM-DDTHH:MM:SSZ`), and
+   `attempt` (a positive integer). A release line is `claim-release: ` plus
+   `owner`, `attempt`, and `released_at` on that same clock. Ignore every
+   other line. A prefixed line that is not that JSON, or two records that
+   share the highest attempt, is unreadable: print
+   `LOUD claim-record-unreadable <repo>#<N>` and skip. Do not push.
+   Then `gh pr list -R Nishfleet/<repo> --state merged --search "#<N>"
+   --json number,body,headRefName --limit 30`. A merged PR whose
+   `headRefName` is not `claim/issue-<N>` and whose body matches
+   `(?i)\b(closes|fixes|resolves|delivered)\s+#<N>\b` already delivered this
+   issue. Comment `claim refused: delivered by #<pr> head <branch>` and
+   skip. Do not reclaim a protected issue another PR delivered
+   (fleet-ops#5082). A `gh` error on either read is a failure: print it and
+   exit non-zero. Do not treat it as "no record" or "no PR". The current
+   lease is the record with the highest attempt. It is released when a
+   release names that attempt. It is expired when `expires_at` is at or
+   before now, UTC. The next attempt is 1 when no record exists, otherwise
+   highest plus 1, and only when that lease is absent, expired, or
+   released. An unexpired unreleased lease is not claimable, including by
+   the owner who holds it: print
+   `skipped-unexpired-claim <repo>#<N> attempt=<attempt> owner=<owner>`
+   and skip. `agent-blocked` and `awaiting-runtime-gate` do not change
+   that result. When no record exists, those two labels still drop the
+   issue in step 4, because nothing has expired. When you do claim,
+   `expires_at` is `claimed_at` plus 90 minutes. Remember the attempt.
    a. `git -C /home/nish/workspaces/products/<repo> fetch origin`
    b. `git -C ... ls-remote origin refs/heads/claim/issue-N` — a hash means
       the ref exists, not that a live worker holds it. A tick that died
@@ -225,12 +260,11 @@ Steps:
       `LOUD claim-unlanded <repo>#<N> step=relabel` and exit non-zero.
       A pushed-but-unlabelled claim is exactly the stale-branch shape the
       step-2 sweep cleans; never leave one behind.
-   e. `gh issue comment N -R Nishfleet/<repo> --body "claimed by
-      <engine>-issue-<repo>-N at <UTC timestamp>. Re-claim = remote reset done;
-      locally: git checkout -B claim/issue-N origin/main, then cherry-pick
-      the latest wip(salvage) commit (fleet-ops#6206)."` — a failed comment
-      is the same half-claim: delete the ref, print `LOUD claim-unlanded
-      <repo>#<N> step=comment`, exit non-zero.
+   e. `gh issue comment N -R Nishfleet/<repo>` with a two-line body. Line
+      one: `claimed by <engine>-issue-<repo>-N at <UTC timestamp>. Re-claim = remote reset done; locally: git checkout -B claim/issue-N origin/main, then cherry-pick the latest wip(salvage) commit (fleet-ops#6206).`
+      Line two: `claim-record: {"owner":"<engine>-issue-<repo>-N","claimed_at":"<that same UTC>","expires_at":"<that UTC plus 90 minutes>","attempt":<the attempt chosen above>}`
+      A failed comment is the same half-claim: delete the ref, print
+      `LOUD claim-unlanded <repo>#<N> step=comment`, exit non-zero.
    f. Start the worker, but only if it is not already live, and ONLY after
       (c)-(e) have each proven — the worker units' own ExecStartPre refuses
       an unclaimed start (claim-gate, fleet-ops#7790), and the ordering here

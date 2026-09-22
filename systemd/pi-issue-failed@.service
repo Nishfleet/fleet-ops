@@ -6,9 +6,13 @@ Description=Release the claim after issue worker %i ends failed
 # open-PR check is fail-closed (a gh failure is unknown, never zero,
 # fleet-ops#6292 / the 2026-09-13 #6258 silent close); an open PR on
 # claim/issue-<N> means HOLD (one PR comment, one issue trace line, nothing
-# else moves); no open PR flips agent-in-progress -> agent-ready, except a
-# terminally parked or closed issue which loses agent-in-progress only
-# (#3763, #7739); and the claim branch is NEVER deleted —
+# else moves); no open PR releases the claim lease and returns an open
+# issue to agent-ready, including agent-blocked / awaiting-runtime-gate
+# once a record exists (fleet-ops#5122). needs-nish-decision,
+# needs-orchestrator, noise-class, superseded-by-rebuild, deputy, and a
+# closed issue only lose agent-in-progress. The #3763/#7739 withhold
+# remains only when no claim record exists. The claim branch is NEVER
+# deleted —
 # delete_branch_on_merge deletes head branches on merge only, which makes
 # the wip/issue-<N> preserve (#8003) and the old second ExecStart's
 # silent-PR-close detector both unneeded (organ 4: prevention, not
