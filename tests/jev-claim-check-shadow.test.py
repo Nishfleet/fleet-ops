@@ -68,8 +68,10 @@ def main():
     class Stub(BaseHTTPRequestHandler):
         prob = 0.42
         last_body = None
+        posts = 0
 
         def do_POST(self):
+            Stub.posts += 1
             n = int(self.headers.get('Content-Length') or 0)
             body = json.loads(self.rfile.read(n) or b'{}')
             Stub.last_body = body
@@ -159,6 +161,35 @@ def main():
               'pr site: request model id')
         check('claims_contradicted' in ((Stub.last_body or {}).get('questions') or {}),
               'pr site: request question id')
+        # fleet-ops#7767: ONE call carries the union of the two sibling step-7
+        # questions, and it is the only call the item makes.
+        check(set((Stub.last_body or {}).get('questions') or {}) ==
+              {'claims_contradicted', 'needs_review'},
+              'pr site: one POST carries both sibling questions (got %s)'
+              % sorted((Stub.last_body or {}).get('questions') or {}))
+        check(Stub.posts == 1, 'pr site: exactly one POST, got %d' % Stub.posts)
+        rv = (Stub.last_body or {}).get('state', {}).get('review') or {}
+        check(rv.get('review_rules'), 'pr site: needs_review state carries the review rules')
+        check(rv.get('files_complete') is False and rv.get('files') == [],
+              'pr site: unreadable file list is marked incomplete, never trivial')
+        check(row.get('probabilities', {}).get('needs_review') == 0.42,
+              'pr site: sibling answer logged on the claim-check row')
+        nrlog = logdir / 'reviewer-needs-review.jsonl'
+        check(nrlog.exists(), 'pr site: reviewer-needs-review receipt written')
+        nrrows = [json.loads(l) for l in nrlog.read_text().splitlines() if l.strip()]
+        check(len(nrrows) == 1, 'pr site: one reviewer-needs-review row, got %d' % len(nrrows))
+        nr = nrrows[0]
+        check(nr.get('site') == 'reviewer-needs-review' and nr.get('advisory_only') is True,
+              'pr site: reviewer-needs-review row site/advisory_only')
+        check(nr.get('probabilities', {}).get('needs_review') == 0.42,
+              'pr site: reviewer-needs-review row probability')
+        check(nr.get('probabilities', {}).get('claims_contradicted') == 0.42,
+              'pr site: sibling claim-check answer logged on the advice row')
+        check(nr.get('ref') == row.get('ref') and nr.get('state_sha256') == row.get('state_sha256'),
+              'pr site: both receipts share ref and state hash')
+        check(nr.get('act_hi') is None and nr.get('review_lo') is None,
+              'pr site: missing band row records null, never a guess')
+        check('test-key-7404' not in json.dumps(nr), 'pr site: advice row carries no key')
         check('Nishfleet/jev7404-nonexistent#999999@' in (row.get('ref') or ''),
               'pr site: ref names repo#pr@sha')
         check((Stub.last_body or {}).get('state', {}).get('evidence', {}).get('pr', {}).get('journal') == 'unknown',
@@ -171,6 +202,10 @@ def main():
         check(len(commented) == 1, 'pr site: exactly one gh pr comment call, got %d' % len(commented))
         check(commented and any('jev claim-check:' in a for a in commented[0]),
               'pr site: comment body carries the jev claim-check line')
+        check(commented and any('jev needs_review: p=0.420' in a for a in commented[0]),
+              'pr site: the SAME comment body carries the jev needs_review line')
+        check(commented and any('act_hi=null' in a for a in commented[0]),
+              'pr site: unreadable band table records act_hi=null')
 
         # --- report site: happy path, PR delivered ---
         ghlog.write_text('')
@@ -219,6 +254,24 @@ def main():
         check(r.returncode == 0 and 'jev advisory off' in r.stdout,
               'flag=0 disables and exits 0')
         check(len(prlog.read_text().splitlines()) == 1, 'flag=0 writes no row')
+
+        # --- JEV_REVIEWER_SKIP=0 drops only the sibling question ---
+        Stub.posts = 0
+        env = dict(base_env, JEV_CLAIM_CHECK_ENDPOINT=endpoint,
+                   JEV_CLAIM_CHECK_LOG_DIR=str(logdir),
+                   JEV_REVIEWER_SKIP='0',
+                   JEV_CC_FIXTURE_PR=str(FIXTURES / 'jev7404-pr.json'))
+        r = subprocess.run([sys.executable, str(bfile), 'pr', 'Nishfleet/jev7404-nonexistent',
+                            '7404', '999999'],
+                           capture_output=True, text=True, env=env, timeout=90)
+        check(r.returncode == 0, 'skip=0: exit 0')
+        check(set((Stub.last_body or {}).get('questions') or {}) == {'claims_contradicted'},
+              'skip=0: the claim-check question still rides the one call')
+        check(Stub.posts == 1, 'skip=0: still exactly one POST, got %d' % Stub.posts)
+        check('jev needs_review: disabled; advisory-only; review policy unchanged' in r.stdout,
+              'skip=0: records the disabled line')
+        check(len(nrlog.read_text().splitlines()) == 1,
+              'skip=0: no reviewer-needs-review row appended')
 
         # --- dead endpoint ---
         env = dict(base_env, JEV_CLAIM_CHECK_ENDPOINT='http://127.0.0.1:1/jev',

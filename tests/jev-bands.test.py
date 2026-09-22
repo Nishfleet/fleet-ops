@@ -21,6 +21,7 @@ TABLE = ROOT / 'config' / 'jev-bands.json'
 DOC = ROOT / 'docs' / 'jev-bands.md'
 CONSUMERS = [
     ROOT / 'bin' / 'am-executor-claim',
+    ROOT / 'lib' / 'seat_fault.py',
     ROOT / 'prompts' / 'alert-repair.md',
     ROOT / 'prompts' / 'daily-digest.md',
     ROOT / 'prompts' / 'intake.md',
@@ -46,8 +47,8 @@ EXPECTED = {
     'alert-dispatch', 'alert-repair', 'alert-triage', 'auto-revert',
     'claim-check-pr', 'claim-check-report', 'dependency-pr-arm',
     'flaky-test-quarantine', 'gha-stuck-run-watch', 'hermes-digest',
-    'intake-seat-smoke', 'merge-queue-batches', 'merge-queue-enqueue',
-    'reviewer-needs-review', 'scout', 'second-opinion',
+    'intake-repair-seatfault', 'intake-seat-smoke', 'merge-queue-batches', 'merge-queue-enqueue',
+    'reviewer-needs-review', 'scout', 'scout-rank', 'second-opinion',
     'second-opinion-reserved', 'worker-context', 'worker-escalation-target',
 }
 
