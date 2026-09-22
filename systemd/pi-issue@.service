@@ -2,11 +2,14 @@
 Description=Pi fleet issue worker %i
 # This unit IS the worker — no wrapper script. ExecStart pipes Pi's /worker
 # prompt template into `pi --print`; retries/hang-kill are Restart= +
-# TimeoutStartSec=, and seat rotation is the LiteLLM `worker-capable` group
-# (worker-cheap measured tools=0 on this prompt 2026-09-18; intake/scout stay
-# on worker-cheap). The cheap/capable split is prompt-fit navigation, not
-# upstream isolation: both groups share the same upstream accounts
-# (fleet-ops#7786).
+# TimeoutStartSec=, and the seat is the PI_SEAT_PROVIDER/PI_SEAT_MODEL pair
+# below (2026-09-22: xai-oauth grok-4.7:xhigh — see the SEAT block). Until
+# then it was the LiteLLM `worker-capable` group; that group is still what
+# intake/scout and every other Pi caller use, and putting this worker back on
+# it is a two-value edit (litellm / worker-capable). Notes that still hold for
+# the router path: worker-cheap measured tools=0 on this prompt 2026-09-18, and
+# the cheap/capable split is prompt-fit navigation, not upstream isolation —
+# both groups share the same upstream accounts (fleet-ops#7786).
 # --session-dir is load-bearing: Pi keys sessions per working directory, and
 # every unit starting in /home/nish shared one session pool — workers resumed
 # each other's transcripts and exited without touching the issue.
@@ -66,6 +69,33 @@ Environment=JEV_WORKER_ESCALATION_TARGET=1
 # claim/issue-7783 @ 88d52047c). git's own env vars outrank repo-local config
 # and cover `git commit` however invoked. Push auth is the GH_TOKEN minted in
 # ExecStart — a separate mechanism.
+# SEAT (Nish 2026-09-22, 09:5x IST: "this will expire unused unless we max out
+# grok 4.7 xhigh" — SuperGrok weekly showed 75% left, resetting in 18h). Grok
+# rides the SuperGrok SUBSCRIPTION through Pi's xai-oauth provider, which
+# refreshes its own OAuth token; it is NOT reachable through the LiteLLM
+# router, so the only lever on it is the worker's own --provider/--model.
+# Proven before this landed: `pi --print --provider xai-oauth --model
+# grok-4.7:xhigh` completed a real write-a-file task, and 5 of those run
+# CONCURRENTLY all returned rc=0 with no 429 — the lane tolerates the fleet's
+# pi-side concurrency. (Pi warns "Model grok-4.7 not found ... using custom
+# model id"; the OAuth proxy serves it anyway, per the #8066 reviewer pin.)
+#
+# The seat is Environment now, not a literal in the Exec line, so the next
+# seat swap is a one-value edit. That also ends a recurring collision: the
+# no-glue check fails any ADDED Exec line of 400+ chars, which made every edit
+# to this 552-char line illegal — it already blocked the Cursor rail's move to
+# grok-4.7-high (fleet-ops#8057). The constants below (prompt path, App id,
+# key path, installation id) moved out of the Exec line for the same reason,
+# and the token guard became `: "$${GH_TOKEN:?mint failed}"`; ExecStart is now
+# 391 chars and carries no inline program, which is what the rule actually
+# wants. Same behaviour: mint an <=1h App token, refuse to fall back to
+# Nish's own gh auth if the mint comes back empty.
+Environment=PI_SEAT_PROVIDER=xai-oauth
+Environment=PI_SEAT_MODEL=grok-4.7:xhigh
+Environment=WORKER_PROMPT=/home/nish/workspaces/tooling/fleet-ops-deploy-clone/AGENTS.md
+Environment=GH_APP_ID=4728578
+Environment=GH_APP_KEY=/home/nish/.config/fleet-worker/nishfleet-worker.private-key.pem
+Environment=GH_APP_INST=156789042
 Environment=GIT_AUTHOR_NAME=nishfleet-worker[bot]
 Environment=GIT_AUTHOR_EMAIL=321485391+nishfleet-worker[bot]@users.noreply.github.com
 Environment=GIT_COMMITTER_NAME=nishfleet-worker[bot]
@@ -89,7 +119,7 @@ WorkingDirectory=/home/nish
 # in `list-units --state=failed`, instead of a blind 45-minute run. Kept out
 # of ExecStart itself: the no-glue check caps added Exec lines at 400 chars.
 ExecStartPre=/bin/sh -c 'r=$${1%-*}; n=$${1##*-}; gh api "repos/Nishfleet/$r/git/refs/heads/claim/issue-$n" >/dev/null || { echo "claim-gate: no claim/issue-$n on Nishfleet/$r — refusing unclaimed start (fleet-ops#7790)" >&2; exit 1; }' sh %i
-ExecStart=/bin/sh -c 'set -e; GH_TOKEN=$(gh token generate --app-id 4728578 --key "$HOME/.config/fleet-worker/nishfleet-worker.private-key.pem" --installation-id 156789042 --token-only); [ -n "$GH_TOKEN" ] || { echo "app token mint failed — refusing human-gh fallback" >&2; exit 1; }; export GH_TOKEN; echo "/worker $1" | exec pi --print --append-system-prompt "/home/nish/workspaces/tooling/fleet-ops-deploy-clone/AGENTS.md" --session-dir "$HOME/.pi/agent/sessions/pi-issue-$1" --exclude-tools subagent --provider litellm --model worker-capable' sh %i
+ExecStart=/bin/sh -c 'set -e; export GH_TOKEN=$(gh token generate --app-id $GH_APP_ID --key $GH_APP_KEY --installation-id $GH_APP_INST --token-only); : "$${GH_TOKEN:?mint failed}"; echo "/worker $1" | exec pi --print --append-system-prompt $WORKER_PROMPT --session-dir "$HOME/.pi/agent/sessions/pi-issue-$1" --exclude-tools subagent --provider $PI_SEAT_PROVIDER --model $PI_SEAT_MODEL' sh %i
 # The worker created its own worktree; the worker's own unit cleans it up.
 # No reaper, no salvage organ: work that was never committed and pushed did not
 # happen, and the next dispatch starts from origin/main. Leading '-' so cleanup
