@@ -471,12 +471,12 @@ router_settings:
     # which beats a silent no-op that exits 0.
     - worker-cheap: [worker-capable]
     - worker-capable: [worker-cheap]
-    # senior/judge/worker-private consume prose (review, adjudication), not tool
-    # calls, so a prose-only rung is legal there — though today every group's
-    # only rung is pareto glm-5.3-flash (the #7862 roster collapse).
+    # senior/judge consume prose (review, adjudication), not tool calls, so a
+    # prose-only rung is legal there — though today every group's only rung is
+    # pareto glm-5.3-flash (the #7862 roster collapse). worker-private is not
+    # served (no model_list rung); its cap-0 parking lives in seat-caps.json.
     - senior: [worker-capable]
     - judge: [senior]
-    - worker-private: [worker-capable]
   # fleet-ops#6732 (CLOSED 2026-09-14): cooldown_time:60 / num_retries:0 /
   # RateLimitErrorRetries:0 is the standing posture, not an incident band. The
   # 2026-09-14 retry-storm showed why: a dead rung retried 3x per request
