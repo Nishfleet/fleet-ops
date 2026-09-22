@@ -49,12 +49,14 @@ Steps:
    `.answers.admit.probability`; keep it only if it is a finite number in [0,1].
    p >= 0.9: add `agent-ready`, remove `proposed`, comment `jev admit: p=<p>`.
    0.6 <= p < 0.9: leave `proposed`, add `needs-orchestrator`, comment
-   `jev admit: p=<p>; Fable decides` — Fable admits or closes it, and brings
-   it to Nish only when Fable itself cannot call it.
+   `jev admit: p=<p>; Opus vets` — the label fires the product repo's `opus-vet` job
+   (claude-code-action, Opus 5; Nish 2026-09-22 20:15 IST: "get opus 5 on jev's
+   fails"), which reads the issue against origin/main and admits, closes or parks it.
+   Fable never reads the band; it reads only `opus-vet:` escalations.
    p < 0.6, or any failure: leave `proposed`, add `needs-nish-decision`,
    comment `jev admit: p=<p or unavailable>; to Nish with Fable's suggestion`
-   — Fable appends its one-line keep/close suggestion before Nish reads the
-   `needs-nish-decision` queue. (Nish 2026-09-22 16:30 IST: "below 0.9 goes
+   — the same `opus-vet` job appends its one-line keep/close suggestion before
+   Nish reads the `needs-nish-decision` queue. (Nish 2026-09-22 16:30 IST: "below 0.9 goes
    to you, and if any ambiguity, you bring to me; below 0.6 comes to me direct
    with your suggestions".) First opinion only; never re-ask, never invent a
    probability.
