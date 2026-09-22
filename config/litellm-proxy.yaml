@@ -48,7 +48,8 @@
 # error while a capable-lane issue worker kept running — shared-account contention, not
 # isolated lanes. Do not reason that intake/scout on worker-cheap cannot starve
 # issue workers on worker-capable. What actually protects the fleet: each group carries rungs
-# from TWO different upstreams (distinctness, not a standing health claim — gauges move), the
+# from TWO different upstreams (distinctness, not a standing health claim — gauges move, and
+# revisit this line if #8199's fix drops the pareto rung), the
 # groups fall back to each other, and cooldown 60 /
 # num_retries 0 / RateLimitErrorRetries 0 fails over on the first wall instead of retry-storming.
 # Caveat (#8199): the pareto z-ai/glm-5.3-flash rung still shares (model, api_base) with the
