@@ -496,12 +496,12 @@ A deletion is `agent-blocked` until its replacement has run once for real.
 
 | order | issue | scope | label |
 |---|---|---|---|
-| K1 | image | add `containers/Containerfile`; build `localhost/fleet-worker:0.85.1`. **Proof: `pi --version`, `gh --version`, `git --version` from inside.** | `agent-ready` |
-| K2 | slice + firewall | add `systemd/fleet-container.slice`; add the `inet fleetworker` table to `/etc/nftables.conf`; `systemctl enable nftables.service`. **Proof: the four-line curl matrix + a non-zero reject counter.** | `agent-ready` |
-| K3 | one router name | `models.json` `baseUrl` -> `http://litellm.fleet.local:4000`; one `/etc/hosts` line. **Proof: one host-side `pi --print` tool call still routes.** | `agent-ready` |
-| K4 | prompt | `prompts/worker.md` step 3: clone, not `worktree add`. | `agent-blocked` on K1 |
-| K5 | the unit | add `systemd/pi-issue@.container`; delete `systemd/pi-issue@.service` and the live `~/.config/systemd/user/` copy. **Proof: one real `agent-ready` issue worked to a merged PR.** | `agent-blocked` on K1–K4 |
-| K6 | vendor lanes | `devin-issue@` / `cursor-issue@`, only after the ACL trade above is decided. | `agent-blocked` on K5 |
+| K1 | [#8257](https://github.com/Nishfleet/fleet-ops/issues/8257) image | add `containers/Containerfile`; build `localhost/fleet-worker:0.85.1`. **Proof: `pi --version`, `gh --version`, `git --version` from inside.** | `agent-ready` |
+| K2 | [#8258](https://github.com/Nishfleet/fleet-ops/issues/8258) slice + firewall | add `systemd/fleet-container.slice`; add the `inet fleetworker` table to `/etc/nftables.conf`; `systemctl enable nftables.service`. **Proof: the four-line curl matrix + a non-zero reject counter.** | `agent-ready` |
+| K3 | [#8259](https://github.com/Nishfleet/fleet-ops/issues/8259) one router name | `models.json` `baseUrl` -> `http://litellm.fleet.local:4000`; one `/etc/hosts` line. **Proof: one host-side `pi --print` tool call still routes.** | `agent-ready` |
+| K4 | [#8261](https://github.com/Nishfleet/fleet-ops/issues/8261) prompt | `prompts/worker.md` step 3: clone, not `worktree add`. | `agent-blocked` on K1 |
+| K5 | [#8262](https://github.com/Nishfleet/fleet-ops/issues/8262) the unit | add `systemd/pi-issue@.container`; delete `systemd/pi-issue@.service` and the live `~/.config/systemd/user/` copy. **Proof: one real `agent-ready` issue worked to a merged PR.** | `agent-blocked` on K1–K4 |
+| K6 | [#8263](https://github.com/Nishfleet/fleet-ops/issues/8263) vendor lanes | `devin-issue@` / `cursor-issue@`, only after the ACL trade above is decided. | `agent-blocked` on K5 |
 
 ```
 K1  K2  K3          (parallel, no blockers)
