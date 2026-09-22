@@ -1,0 +1,5 @@
+[Unit]
+Description=ci red probe - service with no Exec lines
+
+[Service]
+Type=oneshot
