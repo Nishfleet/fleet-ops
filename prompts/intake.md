@@ -91,6 +91,37 @@ Steps:
      issue. The only sanctioned park registrations are a `blocked-on:`
      comment (worker) or an owner-authored `termination:` clause; any other
      state that hides an issue from the queue is the unknown-gate case above.
+   - **Stale-claim sweep (fleet-ops#7790).** A `claim/issue-N` branch whose
+     issue sits `agent-ready` with no live worker clogs the head of the
+     ready queue: the step-5 hash check reads it as "held" while nothing
+     owns it — the 2026-09-19 tick found five parked on the oldest ready
+     issues (7742/7769/3350/3441/3455). `git -C
+     /home/nish/workspaces/products/<repo> ls-remote origin
+     'refs/heads/claim/issue-*'`; take N from each ref name, and treat the
+     branch as STALE only when every check passes — any unreadable check
+     HOLDS it (fail-closed, fleet-ops#6292):
+     * the issue is open and carries `agent-ready` — `agent-in-progress`
+       means a live claim owns it (fleet-claim-release's domain, never
+       yours);
+     * `systemctl --user list-units '*-issue@<repo>-N.service'
+       --state=active,activating --no-legend` is empty;
+     * `gh pr list -R Nishfleet/<repo> --head claim/issue-N --state open
+       --json number` is `[]` — a PR's head branch is never deleted;
+     * the claim is >= 2h old, proven by the newest `claimed by ... at
+       <UTC>` comment on the issue, else the newest PushEvent to
+       refs/heads/claim/issue-N in `gh api
+       repos/Nishfleet/<repo>/events?per_page=100 --paginate`. Neither
+       gives an age → do NOT delete; print `LOUD stale-claim-unaged
+       <repo>#<N>` so it surfaces instead of guessing.
+     Then `gh api repos/Nishfleet/<repo>/compare/main...claim/issue-N
+     --jq .ahead_by` — unreadable → hold. `>0` means the branch carries
+     pushed worker commits (fleet-ops#8003): land `git -C ... push origin
+     refs/heads/claim/issue-N:refs/heads/wip/issue-N` first — a failed
+     preserve holds the branch — then delete. `0` → delete directly:
+     `gh api -X DELETE repos/Nishfleet/<repo>/git/refs/heads/claim/issue-N`,
+     post `stale-claim-sweep: deleted claim/issue-N at <UTC>; issue
+     agent-ready, no live *-issue@ unit, age <h>` on the issue as the
+     queued finding, and print the same `stale-claim-sweep` line.
 
 3. **Capacity.** Two limits, both hard:
    - **Per tick: claim at most 5 issues** (was 3; 2026-09-22 01:55 IST, matches `slots = min(5, 10 - active)`; a tick that stops at 3 with 5 slots leaves two lanes idle). This tick is not responsible for
@@ -141,19 +172,39 @@ Steps:
    b. `git -C ... ls-remote origin refs/heads/claim/issue-N` — a hash means
       someone already holds it; skip.
    c. `git -C ... push --force-with-lease=refs/heads/claim/issue-N: origin
-      origin/main:refs/heads/claim/issue-N`. REJECTED means you lost the race; skip.
+      origin/main:refs/heads/claim/issue-N`, then PROVE the write landed:
+      `git -C ... ls-remote origin refs/heads/claim/issue-N` must return
+      the origin/main SHA you just pushed. REJECTED means you lost the
+      race; skip. Any other push failure, or an ls-remote that comes back
+      empty or with a different SHA, is a claim that did not land — print
+      `LOUD claim-unlanded <repo>#<N> step=push` and exit non-zero.
+      fleet-ops#7790: on 2026-09-19 four units were started while their
+      issues sat agent-ready with NO claim ref on origin at all — a tick
+      that cannot prove its claim never proceeds.
    d. `gh issue edit N -R Nishfleet/<repo> --remove-label agent-ready
-      --add-label agent-in-progress`
+      --add-label agent-in-progress`, then PROVE it: `gh issue view N
+      -R Nishfleet/<repo> --json labels` must list `agent-in-progress`.
+      A failed edit or a missing label means this tick just made a
+      half-claim — delete it (`gh api -X DELETE
+      repos/Nishfleet/<repo>/git/refs/heads/claim/issue-N`), print
+      `LOUD claim-unlanded <repo>#<N> step=relabel` and exit non-zero.
+      A pushed-but-unlabelled claim is exactly the stale-branch shape the
+      step-2 sweep cleans; never leave one behind.
    e. `gh issue comment N -R Nishfleet/<repo> --body "claimed by
-      pi-issue-<repo>-N at <UTC timestamp>. Re-claim = remote reset done;
+      <engine>-issue-<repo>-N at <UTC timestamp>. Re-claim = remote reset done;
       locally: git checkout -B claim/issue-N origin/main, then cherry-pick
-      the latest wip(salvage) commit (fleet-ops#6206)."`
+      the latest wip(salvage) commit (fleet-ops#6206)."` — a failed comment
+      is the same half-claim: delete the ref, print `LOUD claim-unlanded
+      <repo>#<N> step=comment`, exit non-zero.
    e2. Context advisory, best-effort: run the Jev worker-context block in
       "Jev worker-context economy (fleet-ops#7454)" once for this issue —
       `python3 - "<repo>" "N" <<'PY_WCX'` with the section's body. It always
       exits 0 and never delays or blocks the claim; it only logs relevance
       and a labelled token delta, the packet stays unchanged.
-   f. Start the worker, but only if it is not already live:
+   f. Start the worker, but only if it is not already live, and ONLY after
+      (c)-(e) have each proven — the worker units' own ExecStart refuses an
+      unclaimed start (claim-gate, fleet-ops#7790), and the ordering here
+      keeps the tick honest instead of relying on that backstop:
       Engine: if `systemctl --user list-units 'devin-issue@*.service' --state=active,activating --no-legend | wc -l`
       is below 5, use `devin-issue@<repo>-N` (Devin SWE-2 Max, $0 on the account, proven headless
       2026-09-19); else if `systemctl --user list-units 'cursor-issue@*.service' --state=active,activating --no-legend | wc -l`
