@@ -34,7 +34,8 @@ Type=oneshot
 Environment=HOME=/home/nish
 Environment=PATH=/home/nish/.local/bin:/usr/local/bin:/usr/bin:/bin
 Environment=XDG_RUNTIME_DIR=/run/user/1000
-# Shared App token file for the ExecStartPre claim gate (see pi-issue@).
+# Shared App token file, minted by fleet-gh-token.service (Requires= above).
+# ExecStart reads GH_TOKEN from this file. It does not mint a second token.
 EnvironmentFile=-/run/user/%U/fleet-gh-token.env
 Environment=DEVIN_UNIT_INSTANCE=%i
 # fleet-ops#7773: shadow-only escalation-target log — see pi-issue@.service.
@@ -42,22 +43,21 @@ Environment=JEV_WORKER_ESCALATION_TARGET=1
 # Commit identity. The worktrees carry a repo-local `user.name = Nish`, so
 # without this block a worker's commits land authored by Nish himself (proven:
 # claim/issue-7783 @ 88d52047c). git's own env vars outrank repo-local config
-# and cover `git commit` however invoked. Push auth is the GH_TOKEN minted in
-# ExecStart — a separate mechanism.
+# and cover `git commit` however invoked. Push auth is GH_TOKEN from
+# fleet-gh-token.env.
 Environment=GIT_AUTHOR_NAME=nishfleet-worker[bot]
 Environment=GIT_AUTHOR_EMAIL=321485391+nishfleet-worker[bot]@users.noreply.github.com
 Environment=GIT_COMMITTER_NAME=nishfleet-worker[bot]
 Environment=GIT_COMMITTER_EMAIL=321485391+nishfleet-worker[bot]@users.noreply.github.com
 WorkingDirectory=/home/nish
-# App identity: `gh token generate` (the gh-token extension) mints the <=1h
-# nishfleet-worker installation token. An empty mint fails the unit rather
-# than silently falling back to human auth.
+# App identity is GH_TOKEN from fleet-gh-token.env. An empty value fails
+# the unit rather than silently falling back to human auth.
 # CLAIM GATE (fleet-ops#7790): same gate as pi-issue@ — no claim/issue-<N>
 # ref on origin -> exit 1 -> failed unit. An unclaimed worker is a blind
 # worker. ExecStartPre because the no-glue check caps added Exec lines.
 ExecStartPre=/bin/sh -c 'r=$${1%-*}; n=$${1##*-}; gh api "repos/Nishfleet/$r/git/refs/heads/claim/issue-$n" >/dev/null || { echo "claim-gate: no claim/issue-$n on Nishfleet/$r — refusing unclaimed start (fleet-ops#7790)" >&2; exit 1; }' sh %i
 ExecStartPre=/bin/sh -c 'r=$${1%-*}; n=$${1##*-}; [ "$$(gh api repos/Nishfleet/$r/issues/$n --jq .state)" = open ] || { echo "open-gate: Nishfleet/$r#$n is not open — refusing dead work (Nish 2026-09-22)" >&2; exit 1; }' sh %i
-ExecStart=/bin/sh -c 'set -e; GH_TOKEN=$(gh token generate --app-id 4728578 --key "$HOME/.config/fleet-worker/nishfleet-worker.private-key.pem" --installation-id 156789042 --token-only); [ -n "$GH_TOKEN" ] || { echo "app token mint failed — refusing human-gh fallback" >&2; exit 1; }; export GH_TOKEN; { cat "$HOME/workspaces/tooling/fleet-ops-deploy-clone/AGENTS.md"; echo; sed -e "1,/^---$/d" -e "s/[$]1/$1/g" "$HOME/workspaces/tooling/fleet-ops-deploy-clone/prompts/worker.md"; } | exec devin --permission-mode dangerous --model swe-2-max -p --prompt-file /dev/stdin' sh %i
+ExecStart=/bin/sh -c 'set -e; : "$${GH_TOKEN:?mint failed}"; { cat "$HOME/workspaces/tooling/fleet-ops-deploy-clone/AGENTS.md"; echo; sed -e "1,/^---$/d" -e "s/[$]1/$1/g" "$HOME/workspaces/tooling/fleet-ops-deploy-clone/prompts/worker.md"; } | exec devin --permission-mode dangerous --model swe-2-max -p --prompt-file /dev/stdin' sh %i
 # The worker created its own worktree; the worker's own unit cleans it up.
 # No reaper, no salvage organ: work that was never committed and pushed did not
 # happen, and the next dispatch starts from origin/main. Leading '-' so cleanup

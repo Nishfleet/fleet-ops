@@ -1,5 +1,7 @@
 [Unit]
 Description=Pi fleet product scout for Nishfleet/%i (generates work supply)
+Requires=fleet-gh-token.service
+After=fleet-gh-token.service
 
 [Service]
 # Second cut 2026-09-18: the scout IS this unit. bin/pi-scout-run's packet
@@ -16,9 +18,10 @@ Type=oneshot
 Environment=HOME=/home/nish
 Environment=PATH=/home/nish/.local/bin:/usr/local/bin:/usr/bin:/bin
 Environment=XDG_RUNTIME_DIR=/run/user/1000
+# App token from fleet-gh-token.service (fleet-ops#8057). Empty GH_TOKEN fails the unit.
+EnvironmentFile=-/run/user/%U/fleet-gh-token.env
 WorkingDirectory=/home/nish
-# App identity via the stock `gh token` extension (Link-/gh-token), not the
-# retired bin/worker-token. Prompt comes from the Pi prompt template
+# Prompt comes from the Pi prompt template
 # ~/.pi/agent/prompts/scout.md, invoked as `/scout <repo>`.
 # Per-run invariants (hard rules, PR body contract, memory budget, D1 rules) live
 # in the repo AGENTS.md and are appended to the system prompt, not re-pasted into
@@ -27,7 +30,7 @@ WorkingDirectory=/home/nish
 # AGENTS.md context-file discovery because that walks up from the STARTUP cwd, and
 # this unit starts in /home/nish — the repo file would never be reached. Canonical
 # path, never cwd-relative: the unit must not depend on which checkout it runs from.
-ExecStart=/bin/sh -c 'set -e; GH_TOKEN=$(gh token generate --app-id 4728578 --key "$HOME/.config/fleet-worker/nishfleet-worker.private-key.pem" --installation-id 156789042 --token-only); export GH_TOKEN; echo "/scout %i" | exec pi --print --append-system-prompt "/home/nish/workspaces/tooling/fleet-ops-deploy-clone/AGENTS.md" --session-dir "$HOME/.pi/agent/sessions/pi-scout-%i" --provider litellm --model worker-cheap'
+ExecStart=/bin/sh -c 'set -e; : "$${GH_TOKEN:?mint failed}"; echo "/scout %i" | exec pi --print --append-system-prompt "/home/nish/workspaces/tooling/fleet-ops-deploy-clone/AGENTS.md" --session-dir "$HOME/.pi/agent/sessions/pi-scout-%i" --provider litellm --model worker-cheap'
 # ABORT GATE (fleet-ops#7524): an agent-decided abort ends `pi --print` at
 # exit 0, so Result=success alone cannot tell a finished run from an aborted
 # one — the 2026-09-17 fleet-ops scout aborted on a code-scanning 404 and

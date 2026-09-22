@@ -30,7 +30,8 @@ Type=oneshot
 Environment=HOME=/home/nish
 Environment=PATH=/home/nish/.local/bin:/usr/local/bin:/usr/bin:/bin
 Environment=XDG_RUNTIME_DIR=/run/user/1000
-# Shared App token file for the ExecStartPre claim gate (see pi-issue@).
+# Shared App token file, minted by fleet-gh-token.service (Requires= above).
+# This unit does not mint. GH_TOKEN comes from the file.
 EnvironmentFile=-/run/user/%U/fleet-gh-token.env
 Environment=CURSOR_UNIT_INSTANCE=%i
 # fleet-ops#7773: shadow-only escalation-target log — see pi-issue@.service.
@@ -39,16 +40,15 @@ EnvironmentFile=/home/nish/.config/fleet-ops/seats/cursor.env
 # Commit identity. The worktrees carry a repo-local `user.name = Nish`, so
 # without this block a worker's commits land authored by Nish himself (proven:
 # claim/issue-7783 @ 88d52047c). git's own env vars outrank repo-local config
-# and cover `git commit` however invoked. Push auth is the GH_TOKEN minted in
-# ExecStart — a separate mechanism.
+# and cover `git commit` however invoked. Push auth is GH_TOKEN from
+# fleet-gh-token.env.
 Environment=GIT_AUTHOR_NAME=nishfleet-worker[bot]
 Environment=GIT_AUTHOR_EMAIL=321485391+nishfleet-worker[bot]@users.noreply.github.com
 Environment=GIT_COMMITTER_NAME=nishfleet-worker[bot]
 Environment=GIT_COMMITTER_EMAIL=321485391+nishfleet-worker[bot]@users.noreply.github.com
 WorkingDirectory=/home/nish
-# App identity: `gh token generate` (the gh-token extension) mints the <=1h
-# nishfleet-worker installation token. An empty mint fails the unit rather
-# than silently falling back to human auth.
+# App identity is GH_TOKEN from fleet-gh-token.env. An empty file fails
+# the unit (AssertFileNotEmpty above) rather than falling back to human auth.
 #
 # --workspace is load-bearing. cursor-agent treats its workspace as the search root
 # for every read/grep tool call. The first proof run (cursor-issue@fleet-ops-7842,
