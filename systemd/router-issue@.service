@@ -22,6 +22,9 @@ Description=Pi fleet issue worker %i on the LiteLLM router (worker-capable: Pare
 # each other's transcripts and exited without touching the issue.
 StartLimitIntervalSec=1h
 StartLimitBurst=3
+# Permanent failure releases the claim via pi-issue-failed@ —
+# prompts/claim-release.md (fleet-ops#6292); see pi-issue@.service.
+OnFailure=pi-issue-failed@%i.service
 # The claim gate below authenticates with the shared App token env file —
 # Requires+After makes the mint part of this unit's start transaction, same
 # as pi-intake@.

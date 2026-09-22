@@ -1,0 +1,31 @@
+[Unit]
+Description=Release the claim after issue worker %i ends failed
+# OnFailure= path of pi-issue@/devin-issue@/cursor-issue@/router-issue@.
+# The judgement now lives in prompts/claim-release.md (GLUE-ZERO organ 3):
+# a pi --print run on worker-cheap applies the four paid-for rules — the
+# open-PR check is fail-closed (a gh failure is unknown, never zero,
+# fleet-ops#6292 / the 2026-09-13 #6258 silent close); an open PR on
+# claim/issue-<N> means HOLD (one PR comment, one issue trace line, nothing
+# else moves); no open PR flips agent-in-progress -> agent-ready, except a
+# terminally parked or closed issue which loses agent-in-progress only
+# (#3763, #7739); and the claim branch is NEVER deleted —
+# delete_branch_on_merge deletes head branches on merge only, which makes
+# the wip/issue-<N> preserve (#8003) and the old second ExecStart's
+# silent-PR-close detector both unneeded (organ 4: prevention, not
+# detection). The 2026-09-22 wipe (#8234) cut this unit ahead of its
+# replacement; this file is the replacement.
+
+[Service]
+Type=oneshot
+Environment=HOME=/home/nish
+Environment=PATH=/home/nish/.local/bin:/usr/local/bin:/usr/bin:/bin
+Environment=XDG_RUNTIME_DIR=/run/user/1000
+Environment=FLEET_INSTANCE=%i
+Environment=GH_APP_ID=4728578
+Environment=GH_APP_KEY=/home/nish/.config/fleet-worker/nishfleet-worker.private-key.pem
+Environment=GH_APP_INST=156789042
+WorkingDirectory=/home/nish
+# Same App-token mint as the worker units — an empty mint fails the unit
+# rather than silently falling back to Nish's gh login (trust-stack #8217).
+ExecStart=/bin/sh -c 'set -e; export GH_TOKEN=$(gh token generate --app-id $GH_APP_ID --key $GH_APP_KEY --installation-id $GH_APP_INST --token-only); : "$${GH_TOKEN:?mint failed}"; exec pi --print --session-dir "$HOME/.pi/agent/sessions/pi-issue-failed-$1" --provider litellm --model worker-cheap < "$HOME/.pi/agent/prompts/claim-release.md"' sh %i
+TimeoutStartSec=900

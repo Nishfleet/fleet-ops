@@ -37,7 +37,8 @@ Steps:
    organ that already lists every open issue and owns these labels. Parked =
    an open issue carrying `agent-blocked` or `awaiting-runtime-gate` in the
    step-1 list. Skip any issue also carrying `agent-in-progress` — a live
-   claim owns it. For each parked issue,
+   claim owns it (when its worker dies `pi-issue-failed@` releases it —
+   `prompts/claim-release.md`). For each parked issue,
    `gh issue view <N> -R Nishfleet/<repo> --comments`, find its gate, and
    evaluate it:
 
@@ -109,7 +110,8 @@ Steps:
      branch as STALE only when every check passes — any unreadable check
      HOLDS it (fail-closed, fleet-ops#6292):
      * the issue is open and carries `agent-ready` — `agent-in-progress`
-       means a live claim owns it (a live worker's domain, never yours);
+       means a live claim owns it (claim-release's domain —
+       `pi-issue-failed@`/`prompts/claim-release.md` — never yours);
      * `systemctl --user list-units '*-issue@<repo>-N.service'
        --state=active,activating --no-legend` is empty;
      * `gh pr list -R Nishfleet/<repo> --head claim/issue-N --state open

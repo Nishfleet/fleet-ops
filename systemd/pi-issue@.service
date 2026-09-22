@@ -15,6 +15,11 @@ Description=Pi fleet issue worker %i
 # each other's transcripts and exited without touching the issue.
 StartLimitIntervalSec=1h
 StartLimitBurst=3
+# Permanent failure releases the claim: pi-issue-failed@ runs
+# prompts/claim-release.md — fail-closed open-PR check, HOLD on an open PR,
+# else agent-in-progress -> agent-ready, never deletes the branch
+# (fleet-ops#6292). Cut with the 2026-09-22 wipe, restored by #8053.
+OnFailure=pi-issue-failed@%i.service
 # The claim gate below authenticates with the shared App token env file —
 # Requires+After makes the mint part of this unit's start transaction, same
 # as pi-intake@.
