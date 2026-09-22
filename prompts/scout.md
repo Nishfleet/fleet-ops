@@ -305,7 +305,7 @@ If you cannot decompose the candidate into phases, drop it.
 - If the worker is not sure the test is truly superseded or false, the `accept:` must say to keep the test and note the concern in the PR body instead.
 Do not file candidates whose acceptance criteria ask a worker to bypass these gates.
 
-**Infra cap:** Count infra-tagged candidates (`product_surface: fleet/CI` or pure workflow). Keep at most 1 per run.
+**Infra cap:** Count infra-tagged candidates (`product_surface: fleet/CI` or pure workflow). Keep at most 1 per run. A 0509 gardener lint-rule issue is not an infra-tagged candidate.
 
 ## Step 4 — File issues
 
