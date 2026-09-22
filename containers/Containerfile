@@ -1,0 +1,20 @@
+# containers/Containerfile
+FROM docker.io/library/node:22-bookworm
+
+ARG PI_VERSION=0.85.1
+ARG GH_VERSION=2.93.0
+
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends ripgrep jq less ca-certificates \
+ && rm -rf /var/lib/apt/lists/*
+
+RUN curl -fsSL "https://github.com/cli/cli/releases/download/v${GH_VERSION}/gh_${GH_VERSION}_linux_amd64.tar.gz" \
+      -o /tmp/gh.tgz \
+ && tar -xzf /tmp/gh.tgz -C /usr/local --strip-components=1 \
+      "gh_${GH_VERSION}_linux_amd64/bin/gh" \
+ && rm -f /tmp/gh.tgz
+
+RUN npm install -g --ignore-scripts "@earendil-works/pi-coding-agent@${PI_VERSION}"
+
+ENV HOME=/home/nish
+WORKDIR /home/nish
