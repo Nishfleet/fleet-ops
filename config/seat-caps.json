@@ -54,8 +54,8 @@
           "reason": "2026-09-11 Nish: \"switched exclusively to swe 2, swe 1.7 is retired - same as ds4 flash\". Devin lane is SWE-2 only (swe-2-max, swe-2-high). Never re-wire swe-1-7; a probe answering PONG does not un-retire it."
         },
         "swe-2-max": {
-          "cap": 5,
-          "max_probe_ceiling": 5,
+          "cap": 4,
+          "max_probe_ceiling": 4,
           "reason": "2026-09-10 (Nish, 21:40 IST): Devin shipped SWE-2 (trained on Kimi K3) \u2014 swe-2-high/medium/max all listed Free on our sub for at least 30 days; \"use it to the max\". glm-5-2 retired from the worker roster the same day. Smoke: `echo \"Reply with exactly: OK swe-2\" | pi --print --provider devin --model swe-2-max` -> \"OK swe-2\" (PACKET-VERDICT tools=0). Provider cap 4->6, tick_spawn_cap 2->3; the 429/15-min bench (quota_bench_default_s 900) is the brake if Devin rate-limits. 2026-09-10 17:05Z correction: provider cap 6 + tick_spawn_cap 3 tripped Devin's API rate limiter on the first burst (swe-2-max: HTTP 429 retry_after=480s at 16:49:36Z, 12 consecutive cli_spawn failures; glm-5-2 quota_bench to 22:52Z). \"Unlimited\" is tokens, not requests per 15 min. Back to the stable cap 4 / tick_spawn_cap 2 with swe-2-max cap 4; the retry_after bench is the brake.",
           "_note_2026_09_22": "Nish: ramp up; Devin quota 100% daily and weekly at 00:30 IST; runs are CLI-light on this host"
         },
