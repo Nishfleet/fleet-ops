@@ -1,9 +1,9 @@
 # Jev band edges — the one tuning knob (fleet-ops#7439)
 
-`config/jev-bands.json` is the single table every Jev site reads its band
-edges from. Site blocks carry no local threshold constants; if you are
-tuning how confident Jev must be before a site treats its answer as
-conclusive, this file is the knob — edit it and nothing else.
+`config/jev-bands.json` was deleted in fleet-ops#8234. The table below is
+the record of that file. Cascade sites `alert-dispatch` and
+`intake-seat-smoke` do not read it. Their lo/hi rule is
+docs/jev-cascade.md, and it ships with no default numbers.
 
 ```json
 {
@@ -62,7 +62,7 @@ keeps an old constant.
 
 | site | consumer | `act_hi` | `review_lo` |
 |---|---|---|---|
-| `alert-dispatch` | `bin/am-executor-claim` Jev cascade | 0.9 | 0.1 |
+| `alert-dispatch` | `prompts/alert-repair.md` (session already started; docs/jev-cascade.md) | 0.9 | 0.1 |
 | `alert-triage` | `bin/am-executor-claim` triage batch | 0.9 | 0.1 |
 | `alert-repair` | `prompts/alert-repair.md` | 0.9 | 0.1 |
 | `auto-revert` | `prompts/alert-repair.md` | 0.9 | 0.1 |
@@ -95,12 +95,13 @@ a site *does* — that is still the per-site mode flag:
 - `shadow` (the shipped default): call Jev, write the row, run the
   existing path regardless. Advisory by construction.
 - `off` / `0`: no Jev call, exact prior behaviour.
-- `act`: the confident bands may short-circuit the expensive call. Only
-  cascade sites have an `act` path today (`JEV_CASCADE_<SITE>=act` or the
-  global `JEV_CASCADE=act`), and flipping one requires a benchmark go row
-  (fleet-ops#7371). The September benchmark was NO-GO at every measured
-  threshold — see `docs/jev-benchmark-2026-09.md` — so the shipped values
-  are the fleet's standing bands, not measured ones.
+- `act`: the confident bands may short-circuit the expensive call. Cascade
+  sites take `JEV_CASCADE_<SITE>=act` or `JEV_CASCADE=act`, and only after
+  a benchmark go row (fleet-ops#7371). The September benchmark was NO-GO
+  at every measured threshold (docs/jev-benchmark-2026-09.md).
+  docs/jev-cascade.md ships no default lo or hi. The 0.9 and 0.1 figures
+  in the table above are the deleted file's historical values. A cascade
+  site does not act on them unless the env vars are set.
 
 Rollback ladder, unchanged: per-site env overrides
 (`JEV_CASCADE_<SITE>_LO`/`_HI`, `JEV_WORKER_CONTEXT_THRESHOLD`) beat the
