@@ -12,6 +12,10 @@ Description=Cursor fleet issue worker %i (Grok 4.6 High, headless cursor-agent C
 OnFailure=pi-issue-failed@%i.service
 StartLimitIntervalSec=1h
 StartLimitBurst=3
+# Claim gate auth comes from the shared App token env file — Requires+After
+# makes the mint part of this unit's start transaction, same as pi-intake@.
+Requires=fleet-gh-token.service
+After=fleet-gh-token.service
 
 [Service]
 # Per-worker memory caps (cgroup, systemd's own). Measured MemoryPeak n=14:
@@ -26,6 +30,8 @@ Type=oneshot
 Environment=HOME=/home/nish
 Environment=PATH=/home/nish/.local/bin:/usr/local/bin:/usr/bin:/bin
 Environment=XDG_RUNTIME_DIR=/run/user/1000
+# Shared App token file for the ExecStartPre claim gate (see pi-issue@).
+EnvironmentFile=-/run/user/%U/fleet-gh-token.env
 Environment=CURSOR_UNIT_INSTANCE=%i
 # fleet-ops#7773: shadow-only escalation-target log — see pi-issue@.service.
 Environment=JEV_WORKER_ESCALATION_TARGET=1
@@ -52,6 +58,10 @@ WorkingDirectory=/home/nish
 # path is pre-created EMPTY here so it can be the workspace from the first tool
 # call; `git worktree add` accepts an existing empty directory, so the worker's own
 # worktree step is unchanged, and the existing ExecStopPost removes the same path.
+# CLAIM GATE (fleet-ops#7790): same gate as pi-issue@ — no claim/issue-<N>
+# ref on origin -> exit 1 -> failed unit. An unclaimed worker is a blind
+# worker. ExecStartPre because the no-glue check caps added Exec lines.
+ExecStartPre=/bin/sh -c 'r=${1%-*}; n=${1##*-}; gh api "repos/Nishfleet/$r/git/refs/heads/claim/issue-$n" >/dev/null || { echo "claim-gate: no claim/issue-$n on Nishfleet/$r — refusing unclaimed start (fleet-ops#7790)" >&2; exit 1; }' sh %i
 ExecStart=/bin/sh -c 'set -e; mkdir -p "$HOME/workspaces/agent-worktrees/issue-$1"; GH_TOKEN=$(gh token generate --app-id 4728578 --key "$HOME/.config/fleet-worker/nishfleet-worker.private-key.pem" --installation-id 156789042 --token-only); [ -n "$GH_TOKEN" ] || { echo "app token mint failed — refusing human-gh fallback" >&2; exit 1; }; export GH_TOKEN; { cat "$HOME/workspaces/tooling/fleet-ops-deploy-clone/AGENTS.md"; echo; sed -e "1,/^---$/d" -e "s/[$]1/$1/g" "$HOME/workspaces/tooling/fleet-ops-deploy-clone/prompts/worker.md"; } | exec cursor-agent -p --output-format text --model cursor-grok-4.6-high --force --trust --workspace "$HOME/workspaces/agent-worktrees/issue-$1"' sh %i
 # The worker created its own worktree; the worker's own unit cleans it up.
 # No reaper, no salvage organ: work that was never committed and pushed did not
