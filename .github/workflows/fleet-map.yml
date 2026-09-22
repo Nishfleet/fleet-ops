@@ -49,7 +49,12 @@ jobs:
           fi
           body=$(gh pr view "$PR" --repo "$GITHUB_REPOSITORY" --json body --jq .body)
           printf '%s\n' "$body" | grep -q '## Verification'
-          printf '%s\n' "$body" | grep -qE '[0-9a-f]{32}'
+          # A 40-hex commit sha contains 32 hex chars. Bound the match so only
+          # an invocation id counts, and require the two show values the
+          # template names but does not fill in.
+          printf '%s\n' "$body" | grep -qE '(^|[^0-9a-fA-F])[0-9a-fA-F]{32}([^0-9a-fA-F]|$)'
+          printf '%s\n' "$body" | grep -qE 'CPUUsageNSec=[0-9]'
+          printf '%s\n' "$body" | grep -qE 'MemoryPeak=[0-9]'
 
   sync:
     name: sync
