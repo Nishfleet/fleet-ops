@@ -136,7 +136,7 @@ Steps:
      (pi-issue@.service ExecStopPost), and the timer ticks anyway, so the
      queue drains continuously. Do not deliberate about the fleet-wide
      number — take up to `slots` and stop.
-   - **Fleet-wide: 16 concurrent workers** (raised 2026-09-22 10:25 IST: 8.5 GB MemAvailable with 6 live, per-worker peaks 0.1-2.1 GB, the 4 GB floor below stays the governor; before that 10 at 01:40 IST, Nish: "Lot of free ram sir. Ramp tf up"; measured 9 GB free with 5 live, the 4 GB MemAvailable floor below stays the governor; was 7 (raised 2026-09-22, Nish: "keep it chugging at max lanes"; measured: 7 GB RAM free, 1.9 GB peak per Pi worker, worker-capable healthy max_parallel_requests 2+4 after the OpenCode Go rung; was 4 concurrent workers (fleet-ops#7820, 2026-09-19 15:30 IST: pareto
+   - **Fleet-wide: 20 concurrent workers** (raised 2026-09-22 11:40 IST to 4 Devin + 3 Cursor + 8 SuperGrok + 5 router lanes, measured 8.4 GB MemAvailable with 11 live; 16 at 10:25 IST: 8.5 GB MemAvailable with 6 live, per-worker peaks 0.1-2.1 GB, the 4 GB floor below stays the governor; before that 10 at 01:40 IST, Nish: "Lot of free ram sir. Ramp tf up"; measured 9 GB free with 5 live, the 4 GB MemAvailable floor below stays the governor; was 7 (raised 2026-09-22, Nish: "keep it chugging at max lanes"; measured: 7 GB RAM free, 1.9 GB peak per Pi worker, worker-capable healthy max_parallel_requests 2+4 after the OpenCode Go rung; was 4 concurrent workers (fleet-ops#7820, 2026-09-19 15:30 IST: pareto
      glm-5.3-flash is the only healthy rung (3 in flight); synthetic, ollama, zenmux, xkiro
      and opencode-go are all quota- or credit-walled today. Raise this only from a measured
      `max_parallel_requests` sum over rungs that `litellm_deployment_state` shows healthy).
@@ -146,7 +146,7 @@ Steps:
    --state=active,activating --no-legend | wc -l` — every worker engine is
    Type=oneshot, so its ActiveState is `activating` for the whole ExecStart
    run and a `--state=active`-only count sees zero in-flight workers
-   (fleet-ops#7775). `slots = 16 - active`. If slots <= 0, print `at capacity` and exit 0.
+   (fleet-ops#7775). `slots = 20 - active`. If slots <= 0, print `at capacity` and exit 0.
 
 4. **Pick work.** `gh issue list -R Nishfleet/<repo> -l agent-ready --state open
    --json number,title,labels,createdAt --limit 200`. The limit MUST cover the
@@ -220,7 +220,8 @@ Steps:
       is below 4 (Nish 2026-09-22 11:20 IST: the Devin account is capped at 4 concurrent; 5 was over the cap), use `devin-issue@<repo>-N` (Devin SWE-2 Max, $0 on the account, proven headless
       2026-09-19); else if `systemctl --user list-units 'cursor-issue@*.service' --state=active,activating --no-legend | wc -l`
       is below 3, use `cursor-issue@<repo>-N` (Cursor Grok 4.7 xhigh on Nish's Cursor seat; un-parked 2026-09-22 10:20 IST after `cursor-agent -p --model grok-4.7-xhigh` answered; Nish: only grok-4.7-xhigh and kimi-k3-max on Cursor,
-      proven headless 2026-09-19 13:21 IST); otherwise `pi-issue@<repo>-N`. Then:
+      proven headless 2026-09-19 13:21 IST); else if `systemctl --user list-units 'pi-issue@*.service' --state=active,activating --no-legend | wc -l`
+      is below 8, use `pi-issue@<repo>-N` (SuperGrok grok-4.7 xhigh via Pi's xai-oauth provider, #8230; Nish 2026-09-22: max out the weekly quota; 4 concurrent probed OK 11:30 IST); otherwise `router-issue@<repo>-N` (LiteLLM worker-capable: Pareto 2 + Go 4 + Stepfun 5 parallel = about 6 workers; Nish 2026-09-22: Pareto and Stepfun must not sit unused). Then:
       `systemctl --user list-units '<engine>-issue@<repo>-N.service'
        --state=active,activating --no-legend | grep -q . ||
        systemctl --user start --no-block <engine>-issue@<repo>-N.service`
