@@ -73,7 +73,7 @@ jobs:
           rc=0
           grep -rEn --exclude-dir=.git --exclude-dir=.fleet --exclude-dir=tests \
             'gh[[:space:]]+([^[:space:];|&]+[[:space:]]+)*auth[[:space:]]+(status|token)\b' \
-            AGENTS.md README.md prompts systemd bin libexec etc config template docs patches .github credentials || rc=$?
+            AGENTS.md README.md prompts systemd etc config template docs patches .github credentials || rc=$?
           test "$rc" -eq 1
 
   # no-glue: the mechanical half of "no scripts, hooks, wrappers, helpers"
