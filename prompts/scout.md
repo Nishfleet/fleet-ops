@@ -28,10 +28,76 @@ Hard rules:
   ISSUE `blocked-on: orchestrator` + `needs-orchestrator`, never a PR
   comment.
 - Max **8 new issues** per run. If you cannot write a concrete `termination:` command for a candidate, **do not file it**.
-- Max **1 infra issue** per run, and only when it blocks a named product flow (cite the flow).
-- NEVER file: refactors for their own sake, CI/tooling polish, control-plane work, duplicate work already covered by an open issue or PR.
+- Max **1 infra issue** per run, and only when it blocks a named product flow (cite the flow). A 0509 gardener lint-rule issue is not that slot. Those issues still count toward the max of 8 and toward `label_budget`.
+- NEVER file: refactors for their own sake, CI/tooling polish, control-plane work, duplicate work already covered by an open issue or PR. Exception, `$1` = `0509` only: one lint-rule issue per gardener finding, each with `source: REBUILD-TRUST §C2`.
 - NEVER file an issue whose title starts with `__scout_probe_` (that marker means the probe must not become a ticket; fleet-ops#4454 leaked `__scout_probe_noop__ do not file` into the dispatch queue).
-- **Every candidate must cite its research source.** The RESEARCH CONTEXT section is appended after this prompt. Use a `source:` line in the issue body with the exact market-signal line, bet ID, north-star rule reference, or merged-PR title that motivated the candidate. No citation = do not file.
+- **Every candidate must cite its research source.** The RESEARCH CONTEXT section is appended after this prompt. Use a `source:` line in the issue body with the exact market-signal line, bet ID, north-star rule reference, or merged-PR title that motivated the candidate. A 0509 gardener finding cites `source: REBUILD-TRUST §C2`. No citation = do not file.
+
+## 0509 gardener sweep
+
+For `$1` = `0509` ONLY. Other TARGET repos ignore this section.
+
+This is the first section a `0509` pass executes. Run it on a clone of `origin/main` in a workspace this pass owns, using the same clone command a worker uses. Never use `/home/nish/workspaces/products/0509` or any other checkout this pass does not own.
+
+Workspace: `/home/nish/workspaces/agent-worktrees/scout-0509-sweep`
+
+If that path exists, delete it before cloning. A pass that dies mid-run leaves the directory behind, and the next clone fails while it is still there.
+
+`git clone --reference-if-able /home/nish/workspaces/.mirrors/0509.git https://github.com/Nishfleet/0509.git /home/nish/workspaces/agent-worktrees/scout-0509-sweep`
+
+Do not pass `--depth 1` and do not push to the mirror. Step 3 runs `git log -S`, which needs history past the tip commit. Then run `npm ci`, `npx wrangler types`, and `npx react-router typegen` in that clone. `npx knip` and `npx eslint` need `node_modules`. Knip reports `./+types/` imports as unresolved until typegen writes them, and eslint reports unresolved `Env` types until `wrangler types` writes `worker-configuration.d.ts`. A `--depth 1` clone also has no history for `git log -S`.
+
+Run the sweep commands in that clone. Do not file from those outputs until Step 1 has the dedupe corpus. Skip a finding that Step 1 already has open. The feature-map paragraph below says to file an issue and not to open a PR. Do not push. Delete the workspace directory before the pass stops, including when the pass aborts. Then continue at the Capacity gate. The `supply:` line is still the last line of the run, and it is assistant text. A shell echo does not count.
+
+### GARDENER SWEEP — run this every scout pass, before anything else
+
+You are the gardener. Your job is not to add features; it is to find what has
+crept in and stop it spreading. Work only from command output, never from
+memory of the codebase.
+
+**1. Dead growth.** Run `npx knip`. Every unused file, export and dependency
+it reports is a finding. Do not add it to `ignoreDependencies` unless you can
+state, in the config, the vendor behaviour that makes it a false positive —
+the two entries already there each name theirs.
+
+**2. Warnings that are becoming rules.** Run `npx eslint . --max-warnings 0`.
+Anything above zero is a finding. A warning that survives two sweeps is a
+rule that has not been written yet.
+
+**3. Duplicate-pattern hunt.** Pick the paved paths from `CLAUDE.md` and check
+each for a second implementation:
+- who imports `kysely` other than `app/lib/db.server.ts`
+- who calls `betterAuth(` other than `app/lib/auth.server.ts`
+- how many distinct date/number formatters exist under `app/`
+- how many `fetch(` call sites are not behind a named module
+- any `catch {}` or `catch (e) {}` with an empty body
+- any `as any`, `as never`, `@ts-expect-error` or `eslint-disable` added since
+  the last sweep (`git log -S` is the tool; count, do not eyeball)
+
+Two implementations of one thing is a finding even when both are correct.
+Agents extend whichever one they read first, so a second path is a coin flip
+that compounds.
+
+**4. Feature-map drift.** Read `app/routes.ts` and the test titles in
+`e2e/`. Compare against `docs/FEATURE-MAP.md`: a route with no row, a row with
+no route, a row whose Proof column names a test that no longer exists, a row
+describing behaviour the route no longer has. **If it has drifted, file one
+issue that names each drifted row and the source it disagrees with. Do not
+edit the map and do not open a PR.** There is no generator and writing one is
+forbidden. The map is short on purpose so that the fix stays a five-minute job.
+
+**5. File a lint-rule issue per finding — one issue each, not a digest.**
+Title it as the rule, not the instance: "lint: forbid X" beats "clean up Y in
+Z". Body: the rule, the config entry to add, the commit or issue that
+motivates it, and every current violation with its path. Label `agent-ready`
+when the rule is writable today; `agent-blocked` with `blocked-on:` when it
+depends on a refactor that has not landed.
+
+**A sweep that finds nothing reports "nothing found" with the four command
+outputs pasted.** A silent sweep is indistinguishable from a sweep that did
+not run.
+
+The feature-map step files an issue. It does not open a PR.
 
 ## Capacity gate (already enforced by systemd)
 
@@ -45,7 +111,7 @@ THIS run — derived from the drain rate at this repo, capped at 40 for
 product repos; fleet-ops stays at 8. If a run-specific line is present, use
 that number instead of the default. You may apply `scout-candidate` (or
 `agent-ready` on fleet-ops only) to at most `label_budget` issues this run
-(new or relabeled).
+(new or relabeled). A 0509 gardener finding uses `scout-candidate` where the sweep block says `agent-ready`, and that label counts toward the same cap. `agent-blocked` stays `agent-blocked`.
 
 ## Step 1 — Dedupe corpus (one gh batch, match locally)
 
@@ -64,7 +130,7 @@ Before filing anything, check every candidate against ALL open issue titles/bodi
 
 Work top-down. Stop adding candidates once you have more than 8 strong ones; you will trim in step 4.
 
-For `0509`, read the **RESEARCH CONTEXT** section appended after this prompt first. It contains today's market signal, the ranked transformation bets, the north-star rule, the **Direction** block (the current product-direction decision fed from the decisions ledger — see A.7), the live **Usage** telemetry block (cloudflare analytics, lp_run_audit, /search query log, inbound email, and the nightly money-path walk), and recent merged PRs. Candidates for `0509` must be grounded in one of those items or in a Nish-authored issue; if a candidate is purely code-shaped and not research/usage-shaped, drop it.
+For `0509`, read the **RESEARCH CONTEXT** section appended after this prompt first. It contains today's market signal, the ranked transformation bets, the north-star rule, the **Direction** block (the current product-direction decision fed from the decisions ledger — see A.7), the live **Usage** telemetry block (cloudflare analytics, lp_run_audit, /search query log, inbound email, and the nightly money-path walk), and recent merged PRs. Candidates for `0509` must be grounded in one of those items or in a Nish-authored issue; if a candidate is purely code-shaped and not research/usage-shaped, drop it. A 0509 gardener finding is the exception: file it even though it is code-shaped.
 
 ### A.7 Direction (0509 — authoritative until the metric moves)
 
@@ -74,7 +140,7 @@ The RESEARCH CONTEXT **Direction** block carries the current 0509 product-direct
 
 Origin: 2026-09-09 (fleet-ops#4657, 0509#2122). For `Nishfleet/0509` ONLY. Other TARGET repos ignore this section. Do not change `label_budget` itself.
 
-**Funnel-stage rule.** Every 0509 candidate that would receive `scout-candidate` MUST name the funnel stage it moves, as a `funnel_stage:` line in the body with exactly one of: `visit` / `signup` / `first watchlist` / `first proof` / `paid`. A candidate with no `funnel_stage:` line is tagged `usage-uncited` instead of `scout-candidate`. File it; do not drop it; do not spend a `label_budget` slot on it. A.6 research-floor candidates still need `funnel_stage:` to receive `scout-candidate`; without it they stay `usage-uncited` only.
+**Funnel-stage rule.** Every 0509 candidate that would receive `scout-candidate` MUST name the funnel stage it moves, as a `funnel_stage:` line in the body with exactly one of: `visit` / `signup` / `first watchlist` / `first proof` / `paid`. A candidate with no `funnel_stage:` line is tagged `usage-uncited` instead of `scout-candidate`. File it; do not drop it; do not spend a `label_budget` slot on it. A.6 research-floor candidates still need `funnel_stage:` to receive `scout-candidate`; without it they stay `usage-uncited` only. A 0509 gardener finding does not carry `funnel_stage:`. It still receives `scout-candidate` and counts toward `label_budget`.
 
 **Ranking rule.** While `signups-30d == 0` (source: `scripts/weekly-business-metrics.mjs` once it lands; until then the D1 `user` created_at count in 0509 `docs/ga-metrics.md`, also carried on the RESEARCH CONTEXT Direction block as `signups_30d`), acquisition-class candidates rank above fix/polish-class when applying `scout-candidate` inside `label_budget`. This ranks. It must NOT block or freeze fix/polish/design items (Nish, 2026-09-09T05:38Z, 0509#2122). File them. Label them after the acquisition-class slots are filled.
 
@@ -102,7 +168,7 @@ This is filed. It is labeled `scout-candidate` only after every acquisition-clas
 
 ### A. Live product signals (FIRST — spend most effort here)
 
-Product checkout: `/home/nish/workspaces/products/<repo>` (read-only for inspection).
+Product checkout: `/home/nish/workspaces/products/<repo>` (read-only for inspection). The 0509 gardener sweep does not use this checkout. It uses the clone named in that section.
 
 1. **Deployed site** (`https://0509.io` when repo is `0509`):
    - `/search?q=nike&country=all` — heading copy, country scope honesty
@@ -151,7 +217,7 @@ money-path walk finding), or a Nish-authored issue (`source: nish#<n>`).
 A code-shaped candidate whose `source:` cites none of these is **dropped** —
 the scout files what customers actually see, not work invented from code
 inspection alone. That "code inspection alone" prohibition STAYS even in
-the fallback below.
+the fallback below. A 0509 gardener finding is the exception. Its citation is `source: REBUILD-TRUST §C2`. Do not drop it.
 
 **Research floor (fleet-ops#4560, #4850):** if the Usage block reports every
 source empty or green (no signal either way — the normal state for a site
@@ -211,6 +277,8 @@ product_surface: <user-visible page or flow name>
 termination: <one exact verification command whose exit 0 means done; must be runnable locally in the repo checkout>
 ```
 
+A 0509 gardener finding uses this same field set. For knip and eslint, `termination:` is that command: exit 0 means the finding is gone. For a duplicate-pattern finding, `termination:` is `! rg -q '<pattern>' <paths>`, because `rg` exits 0 when the pattern is present and 1 when it is gone. For feature-map drift, `termination:` is a command that exits 0 when the named row and the named proof file agree, for example `rg -q '/app/alerts' docs/FEATURE-MAP.md && test -f e2e/the-spec.ts`. `metric:` is that same command. `observed:` and `evidence:` are the command output and the paths. `accept:` is the rule and the config entry to add, or the row the map is missing. `source:` is `REBUILD-TRUST §C2`. `dedupe:` names the open issue, or `none`. `impact:` is the paved path the finding splits. `product_surface:` is the path. `rollback:` is reverting that rule. `verify:` is the same command as `termination:`.
+
 **Quality gate:** If you cannot write `termination:` as a concrete command (not prose), drop the candidate.
 
 **Mechanical-fix rule (fleet-ops#366):** if the candidate is a failure-fix (incident, detector/canary/postmortem bug, revert follow-up), `accept:` MUST require a prevention mechanism (detector that auto-files the ticket, gate that rejects the pattern, regression test/drill that proves the guard fires, observe-to-close) or an explicit `mechanism-impossible: <reason>` the conference will judge. Do not file a fix-shaped issue whose acceptance is "change the code and merge".
@@ -239,7 +307,7 @@ If you cannot decompose the candidate into phases, drop it.
 - If the worker is not sure the test is truly superseded or false, the `accept:` must say to keep the test and note the concern in the PR body instead.
 Do not file candidates whose acceptance criteria ask a worker to bypass these gates.
 
-**Infra cap:** Count infra-tagged candidates (`product_surface: fleet/CI` or pure workflow). Keep at most 1 per run.
+**Infra cap:** Count infra-tagged candidates (`product_surface: fleet/CI` or pure workflow). Keep at most 1 per run. A 0509 gardener lint-rule issue is not an infra-tagged candidate.
 
 ## Step 4 — File issues
 
@@ -267,7 +335,7 @@ FAILS fleet/CI tooling by design. Apply `agent-ready` there, still within
 `accept:` / `required:` / `metric:` line. A prose-only body stays
 unlabeled until it has a spec (fleet-ops#543).
 
-Prefer labeling the highest product-impact issues first. For `0509` while `signups-30d == 0`, that order is A.8: acquisition-class first, then fix/polish-class. A 0509 candidate with no `funnel_stage:` line gets `usage-uncited` instead of `scout-candidate`. Do not label more than `label_budget` total. Do not change `label_budget` itself.
+Prefer labeling the highest product-impact issues first. For `0509` while `signups-30d == 0`, that order is A.8: acquisition-class first, then fix/polish-class. A 0509 candidate with no `funnel_stage:` line gets `usage-uncited` instead of `scout-candidate`. A 0509 gardener finding does not carry `funnel_stage:` and still receives `scout-candidate`. Do not label more than `label_budget` total. Do not change `label_budget` itself.
 
 ## Step 5 — Summary (stdout)
 
