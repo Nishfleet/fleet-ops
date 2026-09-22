@@ -151,3 +151,10 @@ Nishfleet/fleet-ops#8161, not touched here. deploy-lag — the new send text is
 live only after the merge's next `fleet-sync` pull. judge-round-merge —
 #8162 merged 4m48s after the judge applied `blocked-by-judge` through the
 merge queue; the systemic gap is filed as Nishfleet/fleet-ops#8163.
+
+encoded: 5 — prose in prompts/daily-digest.md; the send contract is executed
+by an agent reading a prompt, not a binary the repo can gate, and tests/ is
+deleted fleet-wide (no-glue keeps it deleted), so no lower rung exists for
+this fix. The mechanism inside the prose is the block's non-zero exit plus
+the greppable `Telegram send failed` triage line, drill-verified in this
+report's Verification runs.
