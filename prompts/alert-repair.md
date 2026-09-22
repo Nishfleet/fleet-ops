@@ -67,6 +67,8 @@ Evidence is live state you can read now — never a log you fabricate:
 - An already-filed duplicate is the open-issue search you ran in step 4 —
   reuse those titles, do not search twice.
 
+Before the Jev POST, one web search per alert so Jev sees outside facts (Nish 2026-09-22: "use exa search wherever jev is used where relevant"): `curl -s --max-time 20 https://api.exa.ai/search -H "x-api-key: $EXA_API_KEY" -H 'content-type: application/json' -d '{"query": "<the alertname plus the failing component, e.g. the provider, unit or error text>", "numResults": 5, "type": "auto", "contents": {"highlights": {"maxCharacters": 300, "highlightsPerUrl": 1}}}'` — `EXA_API_KEY` is in the user environment; if unset or the call fails, continue without it and record `web: unavailable`. Put the results in `state.web_evidence` as a list of `{title, url, highlight}`.
+
 Then make ONE call: POST to `http://127.0.0.1:4000/jev` with header
 `Authorization: Bearer $(grep '^LITELLM_JEV_KEY=' ~/.config/fleet-ops/seats/typesafe-jev.env | cut -d= -f2-)`
 — the seat file holds several keys, so name the line, and never print the

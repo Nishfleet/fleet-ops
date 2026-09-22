@@ -29,7 +29,13 @@ Steps:
    fleet-ops#8304). A `proposed` issue becomes work only when Nish or Fable
    adds `agent-ready` by hand — or Jev does, once, with full context (Nish
    2026-09-22: "have jev classify the ambiguous ones, with full context"):
-   for each issue you just labelled `proposed`, one POST and no code:
+   for each issue you just labelled `proposed`, first ONE web search so Jev
+   sees outside facts (Nish 2026-09-22: "use exa search wherever jev is used
+   where relevant"): `curl -s --max-time 20 https://api.exa.ai/search -H "x-api-key: $EXA_API_KEY" -H 'content-type: application/json' -d '{"query": "<the issue title>", "numResults": 5, "type": "auto", "contents": {"highlights": {"maxCharacters": 300, "highlightsPerUrl": 1}}}'`
+   (`EXA_API_KEY` is in the user environment; if it is unset or the call
+   fails, continue without it and say `web: unavailable` in the comment).
+   Put the results in `state.web_evidence` as a list of `{title, url,
+   highlight}`. Then one POST to Jev and no code:
    `curl -s 127.0.0.1:4000/jev -H "Authorization: Bearer $(grep -m1 '^LITELLM_JEV_KEY=' ~/.config/fleet-ops/seats/typesafe-jev.env | cut -d= -f2-)" -H 'content-type: application/json' -d @<state.json>`
    where `state` is `{"issue": <ref, title and full body>, "author": <login>,
    "admission_test": "Admit only if (a) a cheap fast model could fix it tonight,
@@ -41,13 +47,17 @@ Steps:
    `questions` is `{"admit": {"type": "boolean", "instructions": "Should this
    issue be admitted as worker-ready under the admission test?"}}`. Read
    `.answers.admit.probability`; keep it only if it is a finite number in [0,1].
-   p >= 0.6: add `agent-ready`, remove `proposed`, comment `jev admit: p=<p>`
-   (Nish 2026-09-22 15:05 IST: "below 0.6 comes to me" — 0.9 admitted nothing
-   across 162 real proposed issues, so the admit bar is 0.6 for this site).
-   p <= 0.1: leave `proposed`, comment `jev admit: p=<p>; not work`.
-   Otherwise, or on any failure: leave `proposed`, add `needs-orchestrator`,
-   comment `jev admit: p=<p or unavailable>; Fable decides`. First opinion
-   only; never re-ask, never invent a probability.
+   p >= 0.9: add `agent-ready`, remove `proposed`, comment `jev admit: p=<p>`.
+   0.6 <= p < 0.9: leave `proposed`, add `needs-orchestrator`, comment
+   `jev admit: p=<p>; Fable decides` — Fable admits or closes it, and brings
+   it to Nish only when Fable itself cannot call it.
+   p < 0.6, or any failure: leave `proposed`, add `needs-nish-decision`,
+   comment `jev admit: p=<p or unavailable>; to Nish with Fable's suggestion`
+   — Fable appends its one-line keep/close suggestion before Nish reads the
+   `needs-nish-decision` queue. (Nish 2026-09-22 16:30 IST: "below 0.9 goes
+   to you, and if any ambiguity, you bring to me; below 0.6 comes to me direct
+   with your suggestions".) First opinion only; never re-ask, never invent a
+   probability.
    Never add `agent-ready` to an issue that already carries `proposed`, `agent-blocked`,
    `awaiting-runtime-gate`, `noise-class`, `superseded-by-rebuild`, `deputy`,
    or `needs-nish-decision`. `noise-class` and `superseded-by-rebuild` are
