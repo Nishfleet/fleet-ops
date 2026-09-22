@@ -1,0 +1,5 @@
+[
+  {"number": 55, "title": "feat(compare): sticky table header", "createdAt": "2026-09-10T00:00:00Z", "mergeable": "CONFLICTING"},
+  {"number": 61, "title": "fix(search): pagination off-by-one", "createdAt": "2026-09-01T00:00:00Z", "mergeable": "MERGEABLE"},
+  {"number": 70, "title": "chore(deps): bump eslint", "createdAt": "2099-01-01T00:00:00Z", "mergeable": "MERGEABLE"}
+]
