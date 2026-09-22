@@ -88,7 +88,7 @@ WorkingDirectory=/home/nish
 # claim/issue-<N> ref on origin -> exit 1 -> failed unit + OnFailure, loud
 # in `list-units --state=failed`, instead of a blind 45-minute run. Kept out
 # of ExecStart itself: the no-glue check caps added Exec lines at 400 chars.
-ExecStartPre=/bin/sh -c 'r=${1%-*}; n=${1##*-}; gh api "repos/Nishfleet/$r/git/refs/heads/claim/issue-$n" >/dev/null || { echo "claim-gate: no claim/issue-$n on Nishfleet/$r — refusing unclaimed start (fleet-ops#7790)" >&2; exit 1; }' sh %i
+ExecStartPre=/bin/sh -c 'r=$${1%-*}; n=$${1##*-}; gh api "repos/Nishfleet/$r/git/refs/heads/claim/issue-$n" >/dev/null || { echo "claim-gate: no claim/issue-$n on Nishfleet/$r — refusing unclaimed start (fleet-ops#7790)" >&2; exit 1; }' sh %i
 ExecStart=/bin/sh -c 'set -e; GH_TOKEN=$(gh token generate --app-id 4728578 --key "$HOME/.config/fleet-worker/nishfleet-worker.private-key.pem" --installation-id 156789042 --token-only); [ -n "$GH_TOKEN" ] || { echo "app token mint failed — refusing human-gh fallback" >&2; exit 1; }; export GH_TOKEN; echo "/worker $1" | exec pi --print --append-system-prompt "/home/nish/workspaces/tooling/fleet-ops-deploy-clone/AGENTS.md" --session-dir "$HOME/.pi/agent/sessions/pi-issue-$1" --exclude-tools subagent --provider litellm --model worker-capable' sh %i
 # The worker created its own worktree; the worker's own unit cleans it up.
 # No reaper, no salvage organ: work that was never committed and pushed did not
