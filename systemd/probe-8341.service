@@ -1,0 +1,6 @@
+[Unit]
+Description=probe
+[Service]
+ExecStart=/nonexistent-8341/bin/x
+[Install]
+WantedBy=default.target
