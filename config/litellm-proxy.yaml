@@ -416,6 +416,24 @@ benched:
     - zenmux
     order: 1
     max_parallel_requests: 4
+- benched_at: 2026-09-22
+  reason: "openai/step-5-preview @ https://api.stepfun.ai/v1 (STEPFUN_API_KEY, seats/stepfun.env, prepaid, Nish 2026-09-22 'max 5 concurrent lanes - only step 5 preview') — HTTP 402 quota_exceeded 'You exceeded your current quota, please check your plan and billing details' from THIS host at 04:00-04:02Z (09:30-09:32 IST). Key AUTHENTICATES: CONTROL bogus key on the same host+path = 401 invalid_api_key, real key on GET /v1/models = 200 with a 16-model catalog including step-5-preview (1,024,000 max_input_tokens). The wall is ACCOUNT-wide, not model-specific: step-3.5-flash 402 on the same key, and /v1/messages (anthropic protocol) 402 too; x-upstream-latency: 0 = the gateway rejects before a model is reached. Region note: api.stepfun.com (CN platform) returns 401 for this key — the account lives on the .ai (international) platform, so api.stepfun.ai/v1 is the only correct api_base. Dead-credit/money class (fleet-ops#6054): balance is Nish's call, NOT on this path. NOT placed live because a known-402 deployment row trips FleetLitellmDeploymentUnhealthy (litellm_deployment_state > 0) and dispatches repair against itself. Restore: balance topped up on platform.stepfun.ai, then a green direct /chat/completions 200 AND a tool_choice probe returning finish_reason=tool_calls cited in the PR — step-5-preview is a 600B-total/27B-active MoE and a DIFFERENT family from every builder rung (deepseek-v4.1-flash, glm-5.3-flash), so on restore it goes to worker-capable + judge (cross-family verifier, docs/TRUST-STACK.md §1) and senior, never above 5 concurrent lanes in total across rungs (Nish's account cap)."
+  was: []
+  litellm_params:
+    model: openai/step-5-preview
+    api_base: https://api.stepfun.ai/v1
+    api_key: os.environ/STEPFUN_API_KEY
+    tags:
+    - prepaid
+    - stepfun
+    order: 1
+    # Nish 2026-09-22: "max 5 concurrent lanes". One rung only while that cap is 5 —
+    # LiteLLM counts max_parallel_requests per deployment, so splitting the seat across
+    # groups would multiply the cap. Restore as ONE rung shared via group fallbacks.
+    max_parallel_requests: 5
+  model_info:
+    mode: chat
+    id: stepfun-step5preview-worker-capable
 router_settings:
   routing_strategy: simple-shuffle
   fallbacks:
