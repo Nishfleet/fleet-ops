@@ -60,6 +60,7 @@ keeps an old constant.
 | `hermes-digest` | `prompts/daily-digest.md` | 0.5 | 0.5 |
 | `intake-repair-seatfault` | `lib/seat_fault.py` | 0.6 | 0.6 |
 | `intake-seat-smoke` | `prompts/intake.md` | 0.9 | 0.1 |
+| `intake-order` | `prompts/intake.md` | 0.9 | 0.1 |
 | `merge-queue-batches` | `prompts/daily-digest.md` | 0.9 | 0.1 |
 | `merge-queue-enqueue` | `prompts/worker.md` | 0.9 | 0.1 |
 | `reviewer-needs-review` | `prompts/worker.md` step 7 | 0.9 | 0.1 |
