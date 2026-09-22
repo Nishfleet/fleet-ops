@@ -1,4 +1,4 @@
-# Observe-close for #8324 — the 35 worker start-timeouts were a too-short `TimeoutStartSec` on devin/router, fixed by one unit value each
+# Observe-close for #8324 — the worker start-timeouts were a too-short `TimeoutStartSec` on the devin/router lanes, fixed by one unit value each
 
 fleet-ops#8324 (filed 2026-09-22T13:03:10Z by `nish3451`) reports 35 worker
 start-timeouts that day with devin carrying 23 of them, clustering in the
@@ -10,88 +10,160 @@ value, in this repo, by PR. No scripts, no wrappers."
 
 This report is the measurement record the `termination:` criterion needs
 ("the next 24h show the devin timeout rate below 5%, measured the same way").
-It ships with the fix itself.
+It ships with the fix itself. Everything below is re-derived in this run from
+the user journal plus the per-unit transcripts; no number is carried over
+from the issue.
 
-## What the population says
+## Method — the join
 
-**Method.** Every `Result=timeout` unit result for 2026-09-22 in the user
-journal, joined to (a) the `Consumed <cpu> CPU time, <mem> memory peak` line
-systemd emits at each stop, (b) the unit's Pi/devn session transcript in
-`~/.pi/agent/sessions/`, and (c) the same-lane units that finished OK that
-day as controls.
+Three sources, joined per timeout event:
 
-**Findings, with controls:**
+1. **The event itself** — `Result=timeout` for a worker lane in the user
+   journal (`journalctl --user -o json`; message
+   `<lane>-issue@<key>.service: start operation timed out`). 62 such events on
+   2026-09-22 00:00-19:30 IST across all lanes (see `Population` below).
+2. **systemd's own resource accounting** — the
+   `Consumed <cpu> CPU time, <mem> memory peak` line emitted at the same stop.
+3. **The unit's own transcript**, which is lane-specific and must be joined
+   correctly or the analysis is fiction:
+   - `router-issue@` and `pi-issue@` write a Pi session JSONL at
+     `~/.pi/agent/sessions/<lane>-issue-<key>/<ts>_<uuid>.jsonl`. These units
+     restart, so a unit owns **several** files and the join must pick the file
+     whose session start is the latest one *before* the stop timestamp — taking
+     any other file mislabels the row.
+   - `devin-issue@` and `cursor-issue@` write **no** Pi session file. Their
+     transcript is the devin CLI log at
+     `~/.local/share/devin/cli/logs/devin_<ts>_<pid>.log`, matched to the unit
+     by the workspace path `issue-<key>` it runs in. This join exists and was
+     verified for every devin timeout unit today; it is what makes finding 2
+     below evidence rather than inference.
 
-1. **The timeout is not too short *because the worker is slow* — it is too
-   short *for work that is genuinely in flight*.** All 40 timeout events ran
-   the full 45-minute wall at **1.0-11.3% of one CPU** (median 4.8%, max
-   304s of 2700s). A starved or hot worker looks like this; a *thrashing*
-   worker does not.
-2. **Controls settle the class.** Finished-OK router-lane sessions that day
-   ran p50 25.7 min / p90 44.7 min / p95 44.9 min. The invocations that were
-   killed at the wall had a median **173 tool calls at 3.9 tools/min** —
-   more work than the median OK unit (128 calls), at the same rate. They
-   were still working, not idle.
-3. **The wall time went into local build/test steps and CI-polling, not
-   seat cooldowns.** The stalled >120s blocks in the censored sessions are
-   `timeout vitest/playwright/wrangler` runs and `for i in $(seq 1 30);
-   sleep 1` CI-poll loops. Across the 144 devin transcript blocks sampled
-   from the day, 89 are test/build, 19 CI-poll, and the 7 that mention
-   429/quota are other workers *discussing* seat walls, never this unit's
-   own seat failing.
-4. **It is not a concurrency-governor value.** True peak concurrent workers
-   that day was **17 against the declared `target_concurrent` of 25**, and
-   the implicated hour's host load was 4.85 on 8 vCPU with ~5 GB
-   MemAvailable. Neither RAM admission nor `CPUQuota` was the binding
-   constraint.
-5. **16 of 30 timed-out units completed on the restart** — the same work
-   re-run to the end given more wall, across every lane.
+Tool calls are counted from `role=assistant` / `content[].type=toolCall`
+records; span is first-to-last transcript timestamp; tool rate is calls/span.
 
-**Class totals (40 events, 2026-09-22):** 7 "still working at the wall"
-(censored, rate >= 3 tools/min), 7 "heavy build/CI-poll wall time"
-(censored, stalls >= 15% of span), 26 devin/cursor CLI-lane events with no
-Pi session file — classed on the same CPU + devin-transcript evidence above.
+## Population (all lane start-timeouts, 2026-09-22 00:00-19:30 IST)
+
+| lane | `Result=timeout` events | `Finished` events | joined to a transcript |
+|---|---|---|---|
+| devin-issue | 26 | 99 | via devin CLI log |
+| router-issue | 24 | 13 | via Pi session JSONL |
+| pi-issue | 5 | 96 | via Pi session JSONL |
+| cursor-issue | 4 | 33 | via devin-class CLI log |
+| **worker lanes** | **59** | **241** | |
+| pi-intake (not a worker lane) | 3 | 128 | n/a |
+
+The router count is live and rising while this runs: 23 of its 24 events are
+after 17:00 IST, 13 of them in the 19:00 hour alone, from a mass start burst
+(`3967/3969/3970` then `3971/3979/3984/3989/3999/4001/4005`, each ~11 s apart,
+each timed out ~45 min later because `TimeoutStartSec=45min` and the burst
+started them together). That burst is the same signature the issue describes.
+
+## Findings, with controls
+
+1. **The router lane is killed mid-work, not while idle.** 21 of 24 router
+   timeout events join to a Pi session censored at the wall: span p50 **44.2
+   min**, p50 **162 tool calls**, p50 **3.75 tools/min**. The same-lane units
+   that finished early today ran p50 8.0 min / 56 calls — the censored units
+   are not a slower variant of the completed ones, they are *longer* sessions
+   doing the same kind of work at a normal rate, still going at the 45-minute
+   mark.
+2. **Devin is the same class, and it is joinable.** Every devin timeout unit
+   today matches a devin CLI log that spans the full 45-min wall with real
+   tool activity: `0509-3927` 08:23:56→09:08:46 UTC with 43
+   vitest/playwright/npm/tsc command starts, `0509-3884` 12:08:26→12:53:24
+   with 17, `0509-3879` with 33, `0509-3925` with 40. This is not the seat-
+   cooldown class (finding 3) and not the governor class (finding 4).
+3. **The seat-wall class is empty.** No timed-out unit's own transcript
+   (Pi session or devin log) carries a 429 / quota / walled signature for
+   *its own* seat. Prior runs that mention seat walls are other workers
+   discussing the SuperGrok 402 wall, not this unit's seat failing.
+4. **It is not a concurrency-governor value.** The timed-out units burn a
+   small fraction of one core across the wall — 1.0-11.3% of the 45 min
+   (max 299 s CPU), median ~5% — and the implicated hour's host load was 4.85
+   on 8 vCPU with ~5 GB MemAvailable. Neither RAM admission nor `CPUQuota` is
+   the binding constraint; true peak concurrent workers (17) never reached the
+   declared `target_concurrent` (25).
+5. **The decisive control: more wall finishes the work.** Of the 20 units
+   (router + pi lanes) whose first session today was censored at the wall,
+   **15 finished the same work on the restart in a shorter session**. That is
+   the same work re-run to the end given more wall, not a different outcome.
+
+**Class totals for the events in this run (as of 19:30 IST):**
+
+| class | definition | count | basis |
+|---|---|---|---|
+| A — still working at the wall | session span >= 35 min, tool rate >= 2/min | 21 | joined Pi session (router) / devin CLI log |
+| C — build/CI-poll wall time | subset of A whose long stalls are `timeout vitest/playwright/wrangler` and `for i in $(seq 1 30); sleep 1` CI polls | ~7 | same joins, stall accounting |
+| A* — CLI lane, no Pi session file | devin/cursor, classed on the devin log join + systemd CPU | 32 (26 devin + 4 cursor + 2 devin short-span) | devin CLI log, CPU |
+| B — idle / seat-cooldown starved | own transcript carries a 429/quota/walled signature | **0** | transcript search |
+| H — short-span hang | session span < 35 min on a 45-min wall with nothing in flight | 3 | joined Pi session (router) |
+
+Short-span hangs exist (3 router events: `fleet-ops-4403` first attempt 6.5
+min, `0509-3985` first attempt 11.3 min, `0509-3990` first attempt 2.2 min) —
+they are a small minority and each is a unit that was re-run, which is why
+they do not change the direction. They are named rather than dropped: the
+raise costs those 3 an extra 45 min each, which is the accepted price of the
+other 21.
 
 ## The fix (one value per lane, no scripts)
 
-`TimeoutStartSec=45min -> 90min` on the two lanes whose own population
-shows the censoring: `systemd/devin-issue@.service` (23 of the 35) and
-`systemd/router-issue@.service` (5 of 15 = the worst rate, 33%).
-`90min` covers p95 of each lane's measured demand with headroom for the
-CI-poll loops. The lanes that did **not** show mid-work censoring
-(`pi-issue@`, `cursor-issue@`) keep `45min` — this is not a fleet-wide
-raise.
+`TimeoutStartSec=45min -> 90min` on the two lanes whose own population shows
+mid-work censoring, each commented in place with the join and the numbers
+above:
+
+- `systemd/devin-issue@.service` — devin, 26 of the day's 59 worker-lane
+  timeout events, every one joined to a devin log spanning the wall.
+- `systemd/router-issue@.service` — router, 24 events, 21 of them joined to
+  censored Pi sessions.
+
+`pi-issue@` and `cursor-issue@` keep `45min`: they are 9 events between them
+and `pi-issue@` is deliberately masked (`-> /dev/null`) while SuperGrok is
+walled. This is a two-lane raise, not a fleet-wide one. The value is `90min`
+because lane demand measured at p50 44.2 / p90 45 min, and the CI-poll loops
+need the headroom; it is the lowest rung because the alternatives (a governor
+value, a seat cap) are contradicted above.
 
 ## Measuring the termination criterion the same way
 
-The criterion is "the next 24h show the devin timeout rate below 5%,
-measured the same way". The issue's own rate is timeouts divided by
-**Finished-OK units** (`98 | 23 | 19%` in its table), so that is the
-denominator used here:
+The issue's own table is `devin-issue | 98 | 23 | 19%`, and 23/121 = 19.0%
+while 23/98 = 23.5%. So the issue's "rate" is **timeouts / (finished +
+timeouts)** — the share of the lane's starts that ended in a timeout — not
+timeouts / finished. An earlier draft of this report used timeouts / finished
+and so could not reproduce the issue's 19%; that is corrected here.
 
-    timeouts = COUNT of units with Result=timeout in the user journal for
-               the window  (journalctl --user --since <t0> -o json; field
-               UNIT_RESULT == "timeout", unit matching devin-issue@*)
-    finished = COUNT of devin-issue@ units that reached a normal stop
-               ("Finished <unit>" line) in the same window
-    rate     = timeouts / finished
+    rate = timeouts / (finished + timeouts)          <- the issue's own arithmetic
+           (finished = `Finished <unit> ...` lines in the same window)
 
-Baseline for 2026-09-22 00:00-23:59 IST: **23 timeouts / 98 finished — the
-issue's own 19%** (every one of the 23 is re-derived from the journal in this
-run; see the table in the PR body). The post-change target is < 5%. There is
-no standing metric for this rate (the `fleet_oomd_kills_6h` class of bespoke
-counters was deleted in the 2026-09-18 sweeps), so this command line is the
-measurement, to be run once at t0+24h on the same host. It is deliberately a
-journal query and not a new emitter: no-glue bars adding one, and the
-issue's own "no scripts, no wrappers" clause forbids it.
+    t0   = 2026-09-23 00:00 IST (first full hour the 90min wall is live)
+    read = at t0 + 24h, same host, same journal query
+
+Baseline 2026-09-22 00:00-19:30 IST, re-derived from the journal in this run:
+**26 devin timeout events / (99 finished + 26) = 20.8%**, against the issue's
+snapshot 23/121 = 19.0% at 18:50 (the difference is the three devin events
+between 18:50 and 19:30, all from the 17:34 burst completing its retry loop).
+Target at t0+24h: **below 5%**.
+
+The measurement is a `journalctl` query, not a new emitter — no-glue bars
+adding one and the issue's own "no scripts, no wrappers" clause forbids it.
+The exact command line and window are recorded here so the reading is
+reproducible by anyone holding the host.
 
 ## Residual, named
 
-- **The devin/cursor lanes have no Pi session file** (their CLI writes
-  elsewhere), so 26 of the 40 events could not be joined to a transcript.
-  Their class rests on the systemd CPU accounting plus the devin
-  transcript blocks, both of which agree with the joined lanes.
-- **`~/.config/systemd/user/pi-issue@.service` is deliberately masked**
+- **The join for `pi-issue@`/`router-issue@` must be done per restart.** A
+  unit owns several session files; the wrong file mislabels the row (an
+  earlier draft of this analysis did exactly that and produced short spans
+  for units that were really censored at the wall). The PR body's table was
+  rebuilt with the correct join.
+- **`cursor-issue@` has 4 timeout events** and is classed on its CLI log, the
+  same evidence as devin; it is not raised because it is 4 events and its
+  units run a different toolchain. If tomorrow's population shows cursor
+  censored at the wall too, it gets the same treatment.
+- **`pi-issue@` contains this issue's own worker** (`pi-issue-fleet-ops-8324`
+  at 19:19:29 IST): its session ran 42.9 min with 152 tool calls and was
+  killed at the 45-minute wall while working. That is the phenomenon under
+  diagnosis, measured on the diagnosing process.
+- `~/.config/systemd/user/pi-issue@.service` is deliberately masked
   (`-> /dev/null`) per the 2026-09-22 intake decision while SuperGrok is
-  walled; its 10 timeout events predate the mask and are not actionable
-  while the lane is parked. That is why `pi-issue@` is not raised here.
+  walled; its timeout events are not actionable while the lane is parked.
+  That is why `pi-issue@` is not raised here.

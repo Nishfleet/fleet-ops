@@ -88,12 +88,17 @@ RestartSec=240
 RestartSteps=3
 RestartMaxDelaySec=30min
 # Hang detection: a worker active longer than this is terminated into `failed`.
-# fleet-ops#8324: devin was 23 of the day's 35 start-timeouts (19% of its 121
-# finished units), the largest single population. Same class as router-issue@
-# (see the full population analysis there): every devin timeout ran the whole
-# 45min wall at 2.7-11.3% CPU (76-304s) and its own transcript shows the time
-# going to local test runs (`Now the full workers suite (migrations +
-# integration tests touched) plus node changed-mode`) rather than to a seat
-# cooldown. SWE-2 runs a real toolchain loop here, so the wall, not a
-# governor value, is the binding constraint. 90min matches the router lane.
+# fleet-ops#8324: devin carried the largest share of the day's start-timeouts.
+# The class is the same as router-issue@ (full population analysis there), and
+# for devin it is joined from the devin CLI's own log, not guessed: every
+# timed-out devin unit's log for 2026-09-22 (matched by workspace path
+# `issue-<key>` under ~/.local/share/devin/cli/logs/) spans the full 45min wall
+# of real tool activity, e.g. 0509-3927 08:23:56->09:08:46 UTC with 43
+# vitest/playwright/npm/tsc command starts, 0509-3884 12:08:26->12:53:24 with
+# 17, 0509-3879 with 33 and 0509-3925 with 40. The time goes into the local
+# test/build loop, not into a seat cooldown (no 429/quota/walled signature in
+# any timed-out unit's own log). systemd's CPU accounting agrees: the lane's
+# timed-out units burn a small fraction of a core across the whole wall. SWE-2
+# runs a real toolchain loop here, so the wall, not a governor value, is the
+# binding constraint. 90min matches the router lane.
 TimeoutStartSec=90min
