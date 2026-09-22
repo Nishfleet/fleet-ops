@@ -40,7 +40,7 @@ cheaper than building, because prose bans lose to urgency at decision time.
 | Intake repair | pi-intake-repair@ | `pi-intake-repair@<repo>.timer` | stock Pi |
 | Issue dispatch | pi-issue@ | `pi-issue@.service` | stock Pi |
 | Packet dispatch | pi-packet@ | `pi-packet@.service` | stock Pi |
-| Standing-rules render | standing-rules-render | `standing-rules-render.{path,service}` | vault |
+| ~~Standing-rules render~~ | DELETED 2026-09-18 (`f8b567588`) — the vault is the wording authority; surfaces are edited directly, no render step | — | vault |
 | Quality research (weekly) | quality-research-weekly | `quality-research-weekly.timer` | #457 |
 | Nish-reserved escalation (phone page) | alertmanager `severity="nish"` route | one stock amtool line, `config/alertmanager.yml` | #6845, `6fdd20ed1` |
 | Alert→repair bridge | prometheus-am-executor | `prometheus-am-executor.service` | alert pipeline |
