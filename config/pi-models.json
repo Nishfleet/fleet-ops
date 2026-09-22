@@ -1,5 +1,5 @@
 {
-  "_comment": "fleet2 / PI TUNING PACKET (2026-08-18) \u00a75: register endpoints properly. MiniMax is a custom provider not in the built-in catalog \u2014 register it explicitly so the cache prefix metadata is right. Groq and OpenRouter are built into pi, but we model-override the gpt-oss-20b entry Groq runs so the cacheRead price and 131k context are correct. 2026-09-06 fleet-ops#3722: this file is now MANIFEST-managed (config/pi-models.json -> ~/.pi/agent/models.json, installed as a copy by install.sh). Edit the repo copy, never this live file by hand. The four openrouter :free seats (minimax-m3, glm-5.2, nemotron-3-ultra-550b, gemma-4-31b-it) are registered in modelOverrides with cost 0 so enumerate_seats emits them; caps live in config/seat-caps.json. openrouter/xkiro apiKeys were literal secrets in this file \u2014 they are now !command refs like every other provider (no secret in the repo).",
+  "_comment": "fleet2 / PI TUNING PACKET (2026-08-18) §5: register endpoints properly. MiniMax is a custom provider not in the built-in catalog — register it explicitly so the cache prefix metadata is right. Groq and OpenRouter are built into pi, but we model-override the gpt-oss-20b entry Groq runs so the cacheRead price and 131k context are correct. 2026-09-06 fleet-ops#3722: this file is now MANIFEST-managed (config/pi-models.json -> ~/.pi/agent/models.json, installed as a copy by install.sh). Edit the repo copy, never this live file by hand. The four openrouter :free seats (minimax-m3, glm-5.2, nemotron-3-ultra-550b, gemma-4-31b-it) are registered in modelOverrides with cost 0 so enumerate_seats emits them; caps live in config/seat-caps.json. openrouter/xkiro apiKeys were literal secrets in this file — they are now !command refs like every other provider (no secret in the repo).",
   "providers": {
     "nebius": {
       "name": "Nebius Token Factory (metered PAYG)",
@@ -29,7 +29,7 @@
         "supportsDeveloperRole": false,
         "supportsReasoningEffort": true
       },
-      "_comment_nebius": "2026-09-12 seat wire-up (Nish packet, mirror of #5435 synthetic/devpass): Nebius Token Factory OpenAI-compatible PAYG endpoint (verified live 2026-09-12: GET /models HTTP 200 n=24 ids incl. zai-org/GLM-5.3-Flash; POST /chat/completions HTTP 200 1.16s, content 'PONG', reasoning_content present, usage total 79 of which 57 reasoning). compat.supportsDeveloperRole=false REQUIRED: pi sends role=developer for the system prompt on reasoning models and this endpoint literal-errors it (422), same alibaba-coding fix. reasoning_effort accepts none|minimal|low|medium|high|xhigh|max. class=metered (open-ended per-token billing, no fixed pool); cap 1 everywhere (paid lanes trickle, never flood). EXACTLY ONE wired id per the packet: zai-org/GLM-5.3-Flash ($0.15/M in / $0.50/M out per https://tokenfactory.nebius.com/model-catalog.md retrieved 2026-09-12; catalog lists context 1024K image2text \u2014 contextWindow pinned to the synthetic entry's proven 524288/65536 per packet). No published cache-hit rate: cacheRead carried at full input $0.15/M so spend is never under-reported. The catalog's deepseek-ai/DeepSeek-V4-Flash-0731 is BANNED fleet-wide (Nish 2026-09-10), deliberately not wired; all other catalog ids not wired. Provider sits FIRST in providers{} so enumerate_seats emits it at the head of the metered bucket \u2014 drawn right after the prepaid tail (synthetic, llmgateway-devpass) and before openrouter; deepseek direct stays LAST via product_only+last_resort."
+      "_comment_nebius": "2026-09-12 seat wire-up (Nish packet, mirror of #5435 synthetic/devpass): Nebius Token Factory OpenAI-compatible PAYG endpoint (verified live 2026-09-12: GET /models HTTP 200 n=24 ids incl. zai-org/GLM-5.3-Flash; POST /chat/completions HTTP 200 1.16s, content 'PONG', reasoning_content present, usage total 79 of which 57 reasoning). compat.supportsDeveloperRole=false REQUIRED: pi sends role=developer for the system prompt on reasoning models and this endpoint literal-errors it (422), same alibaba-coding fix. reasoning_effort accepts none|minimal|low|medium|high|xhigh|max. class=metered (open-ended per-token billing, no fixed pool); cap 1 everywhere (paid lanes trickle, never flood). EXACTLY ONE wired id per the packet: zai-org/GLM-5.3-Flash ($0.15/M in / $0.50/M out per https://tokenfactory.nebius.com/model-catalog.md retrieved 2026-09-12; catalog lists context 1024K image2text — contextWindow pinned to the synthetic entry's proven 524288/65536 per packet). No published cache-hit rate: cacheRead carried at full input $0.15/M so spend is never under-reported. The catalog's deepseek-ai/DeepSeek-V4-Flash-0731 is BANNED fleet-wide (Nish 2026-09-10), deliberately not wired; all other catalog ids not wired. Provider sits FIRST in providers{} so enumerate_seats emits it at the head of the metered bucket — drawn right after the prepaid tail (synthetic, llmgateway-devpass) and before openrouter; deepseek direct stays LAST via product_only+last_resort."
     },
     "minimax": {
       "name": "MiniMax (fleet2)",
@@ -286,26 +286,14 @@
       "baseUrl": "https://api2.cursor.sh",
       "models": [
         {
-          "id": "composer-2.5",
-          "name": "Composer 2.5",
-          "contextWindow": 128000,
-          "maxTokens": 64000
-        },
-        {
-          "id": "cursor-grok-4.6-high",
-          "name": "Cursor Grok 4.6 High",
+          "id": "grok-4.7-xhigh",
+          "name": "Cursor Grok 4.7 xhigh",
           "contextWindow": 500000,
           "maxTokens": 500000
         },
         {
-          "id": "kimi-k3-high",
-          "name": "Kimi K3 (High)",
-          "contextWindow": 256000,
-          "maxTokens": 128000
-        },
-        {
           "id": "kimi-k3-max",
-          "name": "Kimi K3",
+          "name": "Kimi K3 Max",
           "contextWindow": 256000,
           "maxTokens": 128000
         }
@@ -429,7 +417,7 @@
         {
           "id": "deepseek-flash",
           "name": "DeepSeek V4.1 Flash (direct, last-resort)",
-          "_comment_source": "Pricing pinned against DeepSeek published pricing, https://api-docs.deepseek.com/quick_start/pricing (retrieved 2026-09-12): PEAK rates for deepseek-flash are 1M input (cache miss) $0.30, 1M output $1.20, 1M input (cache hit) $0.006 \u2014 these values are the peak column; off-peak rates are half (input $0.15 / cache-hit $0.003 / output $0.60; peak hours 01:00-04:00 + 06:00-10:00 UTC Mon-Fri, all other hours off-peak). Values match the hot-patched numbers from fleet-ops#4712/#5601. The sibling deepseek-v4-pro pricing (1.32/3.96/0.044) also matches the same page's peak column, noted here for the next divergence check.",
+          "_comment_source": "Pricing pinned against DeepSeek published pricing, https://api-docs.deepseek.com/quick_start/pricing (retrieved 2026-09-12): PEAK rates for deepseek-flash are 1M input (cache miss) $0.30, 1M output $1.20, 1M input (cache hit) $0.006 — these values are the peak column; off-peak rates are half (input $0.15 / cache-hit $0.003 / output $0.60; peak hours 01:00-04:00 + 06:00-10:00 UTC Mon-Fri, all other hours off-peak). Values match the hot-patched numbers from fleet-ops#4712/#5601. The sibling deepseek-v4-pro pricing (1.32/3.96/0.044) also matches the same page's peak column, noted here for the next divergence check.",
           "contextWindow": 1000000,
           "maxTokens": 32768,
           "reasoning": false,
@@ -442,7 +430,7 @@
           "samplingParams": {
             "reasoning_effort": "none"
           },
-          "_comment_reasoning": "fleet-ops#4234/#4625: same treatment as the merged #4234 fix for crof/ollama \u2014 DeepSeek V4 Flash reasons by default and bills reasoning to the output budget; reasoning_effort:none is the only value that turns it off. Pi clamps this seat's thinkingLevel to off because reasoning is not declared here. This is a LAST-RESORT metered worker seat (fleet-ops#4625) \u2014 never waste reasoning tokens on volume work."
+          "_comment_reasoning": "fleet-ops#4234/#4625: same treatment as the merged #4234 fix for crof/ollama — DeepSeek V4 Flash reasons by default and bills reasoning to the output budget; reasoning_effort:none is the only value that turns it off. Pi clamps this seat's thinkingLevel to off because reasoning is not declared here. This is a LAST-RESORT metered worker seat (fleet-ops#4625) — never waste reasoning tokens on volume work."
         },
         {
           "id": "deepseek-v4-pro",
@@ -460,7 +448,7 @@
             "cacheRead": 0.044,
             "cacheWrite": 1.32
           },
-          "_comment_4625": "fleet-ops#4625: pro is keystone-class packets only (cap 1), never volume. Reasoning on \u2014 pro is the reasoning model. Last-resort metered seat; the 3-pass exhaustion gate (pick_seat) must clear before this is ever admitted."
+          "_comment_4625": "fleet-ops#4625: pro is keystone-class packets only (cap 1), never volume. Reasoning on — pro is the reasoning model. Last-resort metered seat; the 3-pass exhaustion gate (pick_seat) must clear before this is ever admitted."
         }
       ],
       "compat": {
@@ -488,7 +476,7 @@
       "compat": {
         "supportsReasoningEffort": true
       },
-      "_comment_synthetic": "2026-09-11 seat wire-up: synthetic.new flat $30/mo prepaid subscription, OpenAI-compatible (verified /models + /chat/completions HTTP 200). Quota 500 req/5h shared across the account, 1 concurrent request per model (cap 1 in seat-caps.json). EXACTLY ONE wired id per Nish 2026-09-11 ('glm 5.3 flash or ds4.1 flash whichever's cheaper' \u2014 Synthetic has no DeepSeek, so GLM-5.3-Flash); Kimi K3, GLM-5.2, Qwen, gpt-oss deliberately NOT wired. hf:zai-org/GLM-5.3-Flash returns reasoning_content -> reasoning:true; live /v1/models probe: context_length 524288, max_output_length 65536, input text+image, reasoning efforts [low,high,max]. No cost field: flat sub, zero marginal per-token price (opencode-go/devin shape). deepseek-v4-flash banned fleet-wide (Nish 2026-09-10) \u2014 no such id exists on this provider anyway."
+      "_comment_synthetic": "2026-09-11 seat wire-up: synthetic.new flat $30/mo prepaid subscription, OpenAI-compatible (verified /models + /chat/completions HTTP 200). Quota 500 req/5h shared across the account, 1 concurrent request per model (cap 1 in seat-caps.json). EXACTLY ONE wired id per Nish 2026-09-11 ('glm 5.3 flash or ds4.1 flash whichever's cheaper' — Synthetic has no DeepSeek, so GLM-5.3-Flash); Kimi K3, GLM-5.2, Qwen, gpt-oss deliberately NOT wired. hf:zai-org/GLM-5.3-Flash returns reasoning_content -> reasoning:true; live /v1/models probe: context_length 524288, max_output_length 65536, input text+image, reasoning efforts [low,high,max]. No cost field: flat sub, zero marginal per-token price (opencode-go/devin shape). deepseek-v4-flash banned fleet-wide (Nish 2026-09-10) — no such id exists on this provider anyway."
     },
     "llmgateway-devpass": {
       "name": "LLM Gateway DevPass ($29/mo = $87/mo metered credits)",
@@ -517,7 +505,7 @@
       "compat": {
         "supportsReasoningEffort": true
       },
-      "_comment_devpass": "2026-09-11 seat wire-up: llmgateway.io DevPass $29/mo subscription that mints $87/mo of METERED credits \u2014 a fixed credit pool that runs out (no open-ended billing), so class=prepaid-quota in seat-caps.json and max concurrency 1 everywhere (paid lanes trickle, never flood). EXACTLY ONE wired id per Nish 2026-09-11: glm-5.3-flash, the cheapest compliant flash on DevPass; kimi-k3, glm-5.2, minimax-m3 deliberately NOT wired. The catalog also lists deepseek-v4-flash \u2014 BANNED fleet-wide (Nish 2026-09-10), deliberately not wired. Live /v1/models probe 2026-09-11: context_length 1048576, max_output 131072, text+image, reasoning+reasoning_efforts supported; headline pricing $0.088/M in / $0.25/M out / $0.025/M cache-read (cheapest upstream scx-ai-gp; modal upstream zai/novita $0.15/$0.50/$0.03)."
+      "_comment_devpass": "2026-09-11 seat wire-up: llmgateway.io DevPass $29/mo subscription that mints $87/mo of METERED credits — a fixed credit pool that runs out (no open-ended billing), so class=prepaid-quota in seat-caps.json and max concurrency 1 everywhere (paid lanes trickle, never flood). EXACTLY ONE wired id per Nish 2026-09-11: glm-5.3-flash, the cheapest compliant flash on DevPass; kimi-k3, glm-5.2, minimax-m3 deliberately NOT wired. The catalog also lists deepseek-v4-flash — BANNED fleet-wide (Nish 2026-09-10), deliberately not wired. Live /v1/models probe 2026-09-11: context_length 1048576, max_output 131072, text+image, reasoning+reasoning_efforts supported; headline pricing $0.088/M in / $0.25/M out / $0.025/M cache-read (cheapest upstream scx-ai-gp; modal upstream zai/novita $0.15/$0.50/$0.03)."
     },
     "zenmux": {
       "baseUrl": "https://zenmux.ai/api/v1",
