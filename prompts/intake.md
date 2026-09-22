@@ -202,8 +202,8 @@ Steps:
       exits 0 and never delays or blocks the claim; it only logs relevance
       and a labelled token delta, the packet stays unchanged.
    f. Start the worker, but only if it is not already live, and ONLY after
-      (c)-(e) have each proven — the worker units' own ExecStart refuses an
-      unclaimed start (claim-gate, fleet-ops#7790), and the ordering here
+      (c)-(e) have each proven — the worker units' own ExecStartPre refuses
+      an unclaimed start (claim-gate, fleet-ops#7790), and the ordering here
       keeps the tick honest instead of relying on that backstop:
       Engine: if `systemctl --user list-units 'devin-issue@*.service' --state=active,activating --no-legend | wc -l`
       is below 5, use `devin-issue@<repo>-N` (Devin SWE-2 Max, $0 on the account, proven headless
