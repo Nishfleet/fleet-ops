@@ -22,10 +22,11 @@ what you change — and the prompt that applies it.
   comparison edge.
 - `review_lo` — `p <= review_lo` is the confident-negative edge. Cascade
   sites treat it as the "no" band.
-- `sensitivity` (optional, per-site) — extra comparison edges a site may
-  evaluate for telemetry only. `worker-context` (fleet-ops#7454) reports
-  its would-drop set and token delta at 0.1, 0.25 and 0.5, and no edge
-  decides anything: the tier is advisory and the packet is unchanged.
+- `sensitivity` — comparison edges a site reports for telemetry only.
+  `worker-context` (fleet-ops#7454) reports its would-drop set and token
+  delta at 0.1, 0.25 and 0.5, written into its own prompt rather than read
+  from a file, and no edge decides anything: the tier is advisory and the
+  packet is unchanged.
 - `vault-drop-routing` is log-only: it routes each agent-drop capture
   into a project/area and a note type, and no band edge is applied yet
   (fleet-ops#7766). The row stamps the `act_hi` a future flip would read;
@@ -86,7 +87,7 @@ keeps an old constant.
 | `second-opinion` | `prompts/worker.md` | 0.5 | 0.5 |
 | `second-opinion-reserved` | `prompts/worker.md` | 0.5 | 0.5 |
 | `vault-drop-routing` | log-only shadow (fleet-ops#7766; scored by fleet-ops#7754) | 0.9 | 0.1 |
-| `worker-context` | `prompts/worker.md` step 4b (advisory; reports sensitivity at 0.1, 0.25, 0.5; no edge acts) | 0.9 | 0.1 |
+| `worker-context` | `prompts/worker.md` step 4b (advisory; sensitivity 0.1, 0.25, 0.5 written in the prompt; no edge acts) | 0.9 | 0.1 |
 | `worker-escalation-target` | `prompts/worker.md` step 4 | 0.5 | 0.5 |
 
 ## What tuning does and does not do
@@ -104,6 +105,9 @@ a site *does* — that is still the per-site mode flag:
   threshold — see `docs/jev-benchmark-2026-09.md` — so the shipped values
   are the fleet's standing bands, not measured ones.
 
-Rollback is the per-site mode flag, which can always take a site to `off`.
-`worker-context` reads `JEV_WORKER_CONTEXT=off` (or `0`) and then makes no
-call and writes no row (fleet-ops#7454).
+Rollback ladder, unchanged: per-site env overrides
+(`JEV_CASCADE_<SITE>_LO`/`_HI`) beat the table, the global
+`JEV_CASCADE_LO`/`_HI` beat it next, and the mode flag can always take a
+site to `off` entirely. `worker-context` has no cascade ladder; it reads
+`JEV_WORKER_CONTEXT=off` (or `0`) and then makes no call and writes no row
+(fleet-ops#7454).
