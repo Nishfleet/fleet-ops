@@ -130,3 +130,18 @@ after the glue wipe, and nothing reads one. The 0.9 line used above is the
 confident-positive edge the issue's own gate states, not a value loaded
 from a table. Routing stays advisory: the report is the deliverable, and
 scoring of the site belongs to fleet-ops#7754.
+
+The 15% gate is applied to disagreement with the stamped frontmatter, not
+to a second independent relabel. The redo rule limits the tier to one POST
+and a log line, so a second judging pass over the same captures is out of
+reach. The 18 confident area disagreements are listed above with their
+subjects so a person can check them; this report does not claim a measured
+precision against a human label.
+
+## Carried over from the reverted report
+
+Out of scope, security class, not acted on: the capture
+`00 Inbox/agent-drop/claude/vps/2026-09-12T09-03-37Z-session-draft-615fa77b.md`
+records a session in which a raw provider key was pasted into the prompt.
+The value is not reproduced here. The file is still in the vault, so the
+agent-drop path does receive live credentials.
