@@ -1,10 +1,3 @@
-# Map membership sync. CLAUDE_CODE_OAUTH_TOKEN is already read by ci.yml
-# (opus-review), so this repo can use it. This job does not. Drift is the
-# set difference between systemd unit names and the fleet-map markers, plus
-# a backtick path under prompts/, config/, or systemd/ that is not on the
-# tree. A model rewrite of the map is not that check, and no-glue forbids a
-# helper script. No PAT.
-
 name: fleet-map
 
 on:
@@ -15,21 +8,50 @@ on:
       - 'systemd/**'
       - 'prompts/**'
       - 'config/**'
+  pull_request:
+    paths:
+      - 'systemd/**'
+      - 'prompts/**'
+      - 'config/**'
+      - '.github/workflows/fleet-map.yml'
+      - '.agents/skills/verify-fleet/**'
   workflow_dispatch:
 
 permissions:
   contents: write
   pull-requests: write
+  id-token: write
 
 concurrency:
   group: fleet-map-${{ github.ref }}
   cancel-in-progress: false
 
 jobs:
+  verification-section:
+    name: verification-section
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: A systemd, prompt, or config change needs a Verification section
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR: ${{ github.event.pull_request.number }}
+        run: |
+          changed=$(git diff --name-only origin/main...HEAD -- systemd prompts config)
+          if [ -z "$changed" ]; then
+            exit 0
+          fi
+          gh pr view "$PR" --repo "$GITHUB_REPOSITORY" --json body --jq .body | grep -q '## Verification'
+
   sync:
     name: sync
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 20
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -37,140 +59,22 @@ jobs:
           persist-credentials: true
 
       - name: Regenerate drifted fleet-map rows
-        run: |
-          python3 - << 'PY'
-          import pathlib
-          import re
-
-          ROOT = pathlib.Path(".").resolve()
-          MAP = ROOT / ".agents/skills/verify-fleet/fleet-map.md"
-          SDIR = ROOT / "systemd"
-          UNIT_SUFFIX = (
-              ".service",
-              ".timer",
-              ".path",
-              ".slice",
-              ".scope",
-              ".socket",
-              ".target",
-              ".mount",
-          )
-          MARKER = re.compile(r"<!-- fleet-map:([^ >]+) -->")
-          CITED = re.compile(r"`((?:prompts|config|systemd)/[^`]+)`")
-
-
-          def unescape(text):
-              return re.sub(
-                  r"\\x([0-9a-fA-F]{2})",
-                  lambda match: chr(int(match.group(1), 16)),
-                  text,
-              )
-
-
-          def unit_name(rel):
-              parts = unescape(rel).split("/")
-              for part in parts:
-                  if part.endswith(".d"):
-                      base = part[:-2]
-                      if base.endswith(UNIT_SUFFIX) or base.endswith(".conf"):
-                          return base
-              leaf = parts[-1]
-              if leaf.endswith(UNIT_SUFFIX):
-                  return leaf
-              if parts[0] == "service.d":
-                  return "service.d"
-              return None
-
-
-          def expected():
-              found = {}
-              for path in SDIR.rglob("*"):
-                  if not path.is_file():
-                      continue
-                  rel = path.relative_to(SDIR).as_posix()
-                  name = unit_name(rel)
-                  if name:
-                      found.setdefault(name, []).append(path)
-              return found
-
-
-          def description_of(paths):
-              for path in paths:
-                  for line in path.read_text(errors="replace").splitlines():
-                      if line.startswith("Description="):
-                          text = line.split("=", 1)[1].strip()
-                          text = text.replace("|", "/").replace("`", "'")
-                          return text[:180]
-              return "drop-in only, no Description= in the repo file"
-
-
-          def generated_row(name, paths):
-              rels = ", ".join(
-                  "`" + str(path.relative_to(ROOT)) + "`" for path in paths[:3]
-              )
-              desc = description_of(paths)
-              return (
-                  "| <!-- fleet-map:"
-                  + name
-                  + " --> `"
-                  + name
-                  + "` | sync-generated | "
-                  + rels
-                  + " — "
-                  + desc
-                  + " | confirm the artifact this unit must leave | `systemctl --user status "
-                  + name
-                  + "` (system units: systemctl without --user) | oneshot Result=success, or the daemon active; a unit that must fail shows Result=exit-code |"
-              )
-
-
-          def missing_citations(text):
-              missing = []
-              for cited in CITED.findall(text):
-                  if not (ROOT / cited).exists():
-                      missing.append(cited)
-              return missing
-
-
-          def annotate(text):
-              for cited in missing_citations(text):
-                  needle = "`" + cited + "`"
-                  replacement = "`" + cited + "` (missing on tree)"
-                  if needle in text and replacement not in text:
-                      text = text.replace(needle, replacement, 1)
-              return text
-
-
-          units = expected()
-          names = set(units)
-          old = MAP.read_text()
-          markers = MARKER.findall(old)
-          drifted = set(markers) != names or len(markers) != len(set(markers))
-          drifted = drifted or bool(missing_citations(old))
-          if not drifted:
-              print("drift: no")
-              raise SystemExit(0)
-          kept = []
-          for line in old.splitlines():
-              found = MARKER.search(line)
-              if found and found.group(1) not in names:
-                  continue
-              kept.append(line)
-          text = "\n".join(kept)
-          if not text.endswith("\n"):
-              text += "\n"
-          present = set(MARKER.findall(text))
-          for name in sorted(names - present):
-              text += generated_row(name, units[name]) + "\n"
-          text = annotate(text)
-          if not text.endswith("\n"):
-              text += "\n"
-          if text == old:
-              print("drift: no")
-              raise SystemExit(0)
-          MAP.write_text(text)
-          print("drift: yes")
-          PY
+        uses: anthropics/claude-code-action@cfc3eb22bfed5c26ef66e3223c982af27e4524de # v1
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          allowed_bots: nishfleet-worker
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          use_sticky_comment: false
+          prompt: |
+            Maintain `.agents/skills/verify-fleet/fleet-map.md` and no other file.
+            Inventory every unit, timer, path, slice, and template under `systemd/`. A `*.d` drop-in directory belongs to its unit (the directory name without `.d`). Decode systemd `\xNN` escapes in filenames. `systemd/service.d/` is the row id `service.d`. `*.conf.d` directories use the name without `.d` (for example `oomd.conf`).
+            Compare that set to the `<!-- fleet-map:NAME -->` markers in the map. Also check every backtick path that starts with `prompts/`, `config/`, or `systemd/`.
+            If the marker set equals the unit set, each marker appears once, and every cited path exists, do not edit anything.
+            Otherwise edit only the map: delete a row whose unit is gone, append one row for a missing unit using the file's Description= line, and mark a missing backtick path with `(missing on tree)`.
+            Do not commit, push, comment, or open a pull request.
+          claude_args: |
+            --model claude-opus-5
+            --allowedTools "Read,Edit,Bash(git status:*),Bash(git diff:*)"
 
       - name: Open a map-only pull request, or record no drift
         env:
@@ -178,15 +82,25 @@ jobs:
         run: |
           set -eu
           sha=$(git rev-parse HEAD)
-          if git diff --quiet -- .agents/skills/verify-fleet/fleet-map.md; then
+          map=.agents/skills/verify-fleet/fleet-map.md
+          if git diff --quiet -- "$map" && git diff --cached --quiet -- "$map"; then
             echo "no drift at $sha" >> "$GITHUB_STEP_SUMMARY"
             exit 0
           fi
-          extra=$(git status --porcelain --untracked-files=all | awk '{print $NF}' | grep -vx '.agents/skills/verify-fleet/fleet-map.md' || true)
-          test -z "$extra"
+          others=$(git status --porcelain --untracked-files=all | awk '{print $NF}' | grep -vx "$map" || true)
+          if [ -n "$others" ]; then
+            echo "map sync edited files other than the map" >&2
+            printf '%s\n' "$others" >&2
+            exit 1
+          fi
           branch="fleet-map-sync-${sha}-${GITHUB_RUN_ID}"
           git checkout -B "$branch"
-          git add -- .agents/skills/verify-fleet/fleet-map.md
+          git add -- "$map"
           git -c user.name='github-actions[bot]' -c user.email='41898282+github-actions[bot]@users.noreply.github.com' commit -m "sync the fleet map to the systemd tree"
           git push --set-upstream origin HEAD
-          gh pr create --repo "$GITHUB_REPOSITORY" --base "$GITHUB_REF_NAME" --head "$branch" --title "sync fleet map at ${sha}" --body "Map membership drifted at ${sha}. This pull request changes only .agents/skills/verify-fleet/fleet-map.md."
+          if [ "$GITHUB_EVENT_NAME" = "pull_request" ]; then
+            base="$GITHUB_HEAD_REF"
+          else
+            base="$GITHUB_REF_NAME"
+          fi
+          gh pr create --repo "$GITHUB_REPOSITORY" --base "$base" --head "$branch" --title "sync fleet map at ${sha}" --body "Map membership drifted at ${sha}. This pull request changes only .agents/skills/verify-fleet/fleet-map.md."

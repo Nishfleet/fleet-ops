@@ -25,12 +25,12 @@ Record every item:
 - Invocation id: `systemctl --user show <unit> -p InvocationID --value`
 - Journal for that id: `journalctl --user _SYSTEMD_INVOCATION_ID=<id> --no-pager -o short-iso`
 - The artifact the map says this unit must leave (pull request, comment, label, or file path, with a timestamp). Quote the URL or path. Do not `cat` a token file; a non-empty check is `test -s <path>` and nothing else.
-- Exit: `systemctl --user show <unit> -p ExecMainStatus -p Result --value`. When the journal for this invocation says `Failed with result`, that line is the result of the run even if a later `reset-failed` cleared `Result`.
+- Exit: paste the journal line for this invocation that contains `Failed with result` or `Consumed`, and paste `systemctl --user show <unit> -p ExecMainStatus -p Result --value` as a second line. If they disagree, keep both and do not guess why.
 - CPU and memory: `systemctl --user show <unit> -p CPUUsageNSec -p MemoryPeak --value`
 
 ## Failure proof
 
-When the map says the unit must fail on a bad outcome, show that failure. `pi-scout@` with no `supply: ready_count=` line exits through its abort gate: the journal contains `scout-abort-gate:` and systemd records `result 'exit-code'`. A `Result=success` on a case the map says must fail means the verification failed.
+When the map says the unit must fail on a bad outcome, show the journal for that invocation. `pi-scout@` with no `supply: ready_count=` line exits through its abort gate: the journal contains `scout-abort-gate:` and `Failed with result 'exit-code'`. That journal line is the result of the invocation. A later `systemctl show` that says `Result=success` does not turn it into a success.
 
 ## Healthy
 
