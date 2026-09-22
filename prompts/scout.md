@@ -253,6 +253,47 @@ EOF
 
 Record each new issue number.
 
+## Step 4a — Idea review (one call per filed set, advisory)
+
+After the set is filed and before any label is applied, ask Jev once about
+the whole set (fleet-ops#7442, fleet-ops#7767). One POST, no second call, no
+program. Skip it when nothing was filed. Any error, non-200, timeout or
+incomplete answer prints `idea-review: unavailable` in the step-5 summary and
+changes nothing: filing, labeling and the A.7/A.8 ranking proceed as written.
+
+Write the body to a file under /tmp first — a body inline is rejected before
+it is parsed. `state` holds the filed candidates (number, title, body), the
+A.7 direction, the North Star sentence in the header rules, the reserved
+classes named in the header rules, the step-1 shortlist, and the discards from
+the last weekly review. `questions` holds exactly seven typed objects: `value`
+and `effort` are scores with the four levels none/small/clear/large and
+trivial/small/medium/large; `duplicate_of`, `fits_direction` and `north_star`
+are booleans (the same work already in the shortlist; fits the A.7 direction;
+needs always-on infra, accumulated history or verified evidence rather than
+being reproducible by the customer's own chat prompt); `reserved_class` is a
+choice of none/money/privacy/security/legal/brand/product_direction/customer_data_deletion/destructive/reserved_authority;
+`recommend` is a choice of file/merge_into_existing/discard/ask_nish.
+
+```bash
+curl --http1.0 -sS --max-time 90 -o /tmp/idea-review.json -w '%{http_code}' 127.0.0.1:4000/jev -H "Authorization: Bearer $(cut -d= -f2- ~/.config/fleet-ops/seats/typesafe-jev.env)" -H 'content-type: application/json' --data-binary @/tmp/idea-review-body.json
+```
+
+A score answer carries `score` (0 to 3), a boolean carries `probability`
+(P(true)), a choice carries `choice`. Append one JSON line per filed candidate
+to `~/.local/state/pi-packet/jev/idea-review.jsonl` (`site: idea-review`,
+`ref: Nishfleet/<repo>#<N>`, the seven answers, `advisory_only: true`), then
+post it as the first comment on each issue this run filed, before the label:
+
+```bash
+gh issue comment <N> -R Nishfleet/<repo> --body "jev idea-review: value=<score> effort=<score> duplicate_of=<p> fits_direction=<p> north_star=<p> reserved_class=<choice> recommend=<choice>; advisory-only; ref=Nishfleet/<repo>#<N>"
+```
+
+That comment records the recommendation and never applies it. Do not discard,
+merge, relabel, reroute or withhold `scout-candidate` because of it. Nothing
+is discarded or merged until 200 distinct real ideas in that JSONL have cited
+outcomes and the orchestrator sets the threshold (fleet-ops#7754 scores them;
+fleet-ops#7417 and fleet-ops#7420 own the ask-Nish route).
+
 Apply `scout-candidate` (not `agent-ready`) within `label_budget`, so the
 senior admission panel judges the issue before intake can see it:
 ```bash
