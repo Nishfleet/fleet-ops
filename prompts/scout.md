@@ -361,6 +361,8 @@ this repo right now; and `c<i>_duplicate_of_open_issue`, a `boolean`
 question whose `instructions` asks whether an open issue or open PR titled
 in state already covers the signal — when in doubt, false.
 
+Before the Jev POST, one web search per candidate signal (cap 8 per run) so Jev sees outside facts (Nish 2026-09-22: "use exa search wherever jev is used where relevant"): `curl -s --max-time 20 https://api.exa.ai/search -H "x-api-key: $EXA_API_KEY" -H 'content-type: application/json' -d '{"query": "<the signal's source and text, 12 words max>", "numResults": 5, "type": "auto", "contents": {"highlights": {"maxCharacters": 300, "highlightsPerUrl": 1}}}'` — `EXA_API_KEY` is in the user environment; if unset or the call fails, continue without it and record `web: unavailable`. Put the results in `state.web_evidence` as a list of `{title, url, highlight}`.
+
 POST the file once:
 `curl -s --max-time 40 http://127.0.0.1:4000/jev -H "Authorization: Bearer $(awk -F= '$1=="LITELLM_JEV_KEY"{print $2}' ~/.config/fleet-ops/seats/typesafe-jev.env)" -H "content-type: application/json" -d @<that-file>`
 — the seat file has several lines, so name the `LITELLM_JEV_KEY` line and

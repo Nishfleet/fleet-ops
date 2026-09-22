@@ -29,7 +29,13 @@ Steps:
    fleet-ops#8304). A `proposed` issue becomes work only when Nish or Fable
    adds `agent-ready` by hand — or Jev does, once, with full context (Nish
    2026-09-22: "have jev classify the ambiguous ones, with full context"):
-   for each issue you just labelled `proposed`, one POST and no code:
+   for each issue you just labelled `proposed`, first ONE web search so Jev
+   sees outside facts (Nish 2026-09-22: "use exa search wherever jev is used
+   where relevant"): `curl -s --max-time 20 https://api.exa.ai/search -H "x-api-key: $EXA_API_KEY" -H 'content-type: application/json' -d '{"query": "<the issue title>", "numResults": 5, "type": "auto", "contents": {"highlights": {"maxCharacters": 300, "highlightsPerUrl": 1}}}'`
+   (`EXA_API_KEY` is in the user environment; if it is unset or the call
+   fails, continue without it and say `web: unavailable` in the comment).
+   Put the results in `state.web_evidence` as a list of `{title, url,
+   highlight}`. Then one POST to Jev and no code:
    `curl -s 127.0.0.1:4000/jev -H "Authorization: Bearer $(grep -m1 '^LITELLM_JEV_KEY=' ~/.config/fleet-ops/seats/typesafe-jev.env | cut -d= -f2-)" -H 'content-type: application/json' -d @<state.json>`
    where `state` is `{"issue": <ref, title and full body>, "author": <login>,
    "admission_test": "Admit only if (a) a cheap fast model could fix it tonight,
