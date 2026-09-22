@@ -1,7 +1,16 @@
 [Unit]
 Description=Pi fleet intake repair agent for Nishfleet/%i
-StartLimitIntervalSec=21600
-StartLimitBurst=2
+# fleet-ops#7800: this lane had no Restart= and allowed only 2 starts per 6h,
+# so its first 429 (a transient lane fault — lib/seat_fault.py maps 429 to
+# lane-fault, not money) left a `failed` unit and a second 429 inside the
+# window hit start-limit-hit for the rest of the 6h. The retry shape now
+# mirrors the pi-issue@.service family. The burst is sized so a flat 240s
+# retry runs the whole 1h window without exhausting it (16 x 240s = 3840s >=
+# 3600s), so a full provider-cooldown window (30 min observed 2026-09-19) can
+# never lock the lane out; RestartSec=240 sits inside the 5-min pi-intake@
+# tick cadence (systemd/pi-intake@.timer OnCalendar=*:00/5).
+StartLimitIntervalSec=1h
+StartLimitBurst=16
 
 [Service]
 Type=oneshot
@@ -22,3 +31,10 @@ TimeoutStartSec=1800
 RuntimeDirectory=pi-intake-repair-%i
 ExecStartPre=/bin/sh -c 'date +%%s > $$RUNTIME_DIRECTORY/start'
 ExecStopPost=-/bin/sh -c 'start=$$(cat "$$RUNTIME_DIRECTORY/start" 2>/dev/null || echo ""); now=$$(date +%%s); if [ -n "$$start" ]; then elapsed=$$((now-start)); else elapsed="?"; fi; echo "INTAKE-REPAIR-VERDICT repo=%i elapsed=$${elapsed}s budget=1800s result=$$SERVICE_RESULT exit=$${EXIT_STATUS:-} code=$${EXIT_CODE:-}" >&2'
+
+# Retry policy — systemd's own, not a counter in bash (fleet-ops#7800). A 429
+# exit is a transient lane fault (lib/seat_fault.py verdict=lane-fault) and
+# must be retried, not recorded as a permanent failure; a money-wall exit
+# still fails loud per prompts/intake-repair.md step 5, on the same cadence.
+Restart=on-failure
+RestartSec=240
