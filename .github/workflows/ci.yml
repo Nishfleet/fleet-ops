@@ -172,12 +172,12 @@ jobs:
       - name: No agent attribution footers in commit messages (fleet-ops#1052)
         if: always()
         env:
-          PAT: 'co-authored-by:.*(claude|devin|copilot|cursor|chatgpt|openai|anthropic|cognition|gpt|gemini|codex)|generated[[:space:]-]with[[:space:][]*(claude|devin|copilot|cursor|chatgpt|openai|anthropic|cognition|gpt|gemini|codex|ai)|generated-by:.*(claude|devin|copilot|cursor|chatgpt|openai|anthropic|cognition|gpt|gemini|codex|ai)'
+          PAT: 'co-authored-by:.*(claude|devin|copilot|cursor|chatgpt|openai|anthropic|cognition|gpt|gemini|codex)|generated[[:space:]-]with[[:space:][]*(claude|devin|copilot|cursor|chatgpt|openai|anthropic|cognition|gpt|gemini|codex|\bai\b)|generated-by:.*(claude|devin|copilot|cursor|chatgpt|openai|anthropic|cognition|gpt|gemini|codex|\bai\b)'
         run: "! git log --format=%B origin/main..HEAD | grep -Ein \"$PAT\""
       - name: No agent attribution footers in PR title/body (fleet-ops#1052)
         if: always()
         env:
-          PAT: 'co-authored-by:.*(claude|devin|copilot|cursor|chatgpt|openai|anthropic|cognition|gpt|gemini|codex)|generated[[:space:]-]with[[:space:][]*(claude|devin|copilot|cursor|chatgpt|openai|anthropic|cognition|gpt|gemini|codex|ai)|generated-by:.*(claude|devin|copilot|cursor|chatgpt|openai|anthropic|cognition|gpt|gemini|codex|ai)'
+          PAT: 'co-authored-by:.*(claude|devin|copilot|cursor|chatgpt|openai|anthropic|cognition|gpt|gemini|codex)|generated[[:space:]-]with[[:space:][]*(claude|devin|copilot|cursor|chatgpt|openai|anthropic|cognition|gpt|gemini|codex|\bai\b)|generated-by:.*(claude|devin|copilot|cursor|chatgpt|openai|anthropic|cognition|gpt|gemini|codex|\bai\b)'
           PR_TITLE: ${{ github.event.pull_request.title }}
           PR_BODY: ${{ github.event.pull_request.body }}
         run: "! printf '%s\\n' \"$PR_TITLE\" \"$PR_BODY\" | grep -Ein \"$PAT\""
