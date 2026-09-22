@@ -63,6 +63,54 @@ and the bin/hermes outbound shim. Same sections, same voice, gathered by you.
 9. **Close** — "Reply to this message if you want anything investigated.
    Otherwise, on to the day."
 
+## Shadow Jev tier — digest message advisory (fleet-ops#7393)
+
+Advisory only: this section scores the message you composed; it never
+changes the body, the send, or any delivery decision. If `JEV_HERMES` is
+`0`, skip the section and print
+`daily-digest: jev advisory off (JEV_HERMES=0); rules unchanged`.
+
+After composing the message into `$body` and before Send, take its byte
+count — `printf '%s' "$body" | wc -c` — and re-derive each counter below
+from the live command its gather section names, never from your composed
+text. A source that failed records null, not zero — withheld is unknown,
+not healthy.
+
+Build one JSON object in a temporary file: `model` `typesafe-ai/jev`; a
+`state` object with `site` `hermes-digest`, `rule_tier` `digest`,
+`context` "metadata only; digest prose and target withheld", and `items`
+carrying `merged_prs_24h_fleet_ops`, `merged_prs_24h_0509`,
+`failed_units`, `prom_alerts_firing`, `repair_dispatches_24h`,
+`seats_unhealthy`, `spend_24h_usd`, `disk_root_pct`,
+`nish_escalations_open` and `digest_body_bytes`; and a `questions` object
+with one `boolean` entry per item key plus `message_urgent_instant`, each
+carrying an `instructions` line asking whether that reading needs an
+instant urgent notification rather than waiting for the digest, judged
+only from the metadata in state — existing delivery rules stay
+authoritative and this advice is never a gate.
+
+POST it once —
+`curl -s --max-time 40 http://127.0.0.1:4000/jev -H "Authorization: Bearer $(awk -F= '$1=="LITELLM_JEV_KEY"{print $2}' ~/.config/fleet-ops/seats/typesafe-jev.env)" -H "content-type: application/json" -d @<that-file>`
+— the seat file holds other lines, so name the key line, and never print
+the key. Never retry the call. An unreachable endpoint, a non-2xx status,
+unusable JSON, or any probability missing or outside 0 to 1 ends the same
+way: print `daily-digest: jev advisory unavailable (<reason>); rules
+unchanged`, append nothing, and continue to Send.
+
+Otherwise append eleven JSON lines — one per question — to
+`~/.local/state/pi-packet/jev/hermes-digest.jsonl`, creating the
+directory first. Each row carries `ts` in UTC, `site` `hermes-digest`,
+`ref` `daily-digest:<UTC timestamp>:<fresh uuid>` (per-item rows append
+`#<item key>`), `item` (`_message` for `message_urgent_instant`),
+`state_sha256` the sha256 of the exact body posted, `answers` and
+`probabilities` for that question, `tier_p` its probability, `rule_tier`
+`digest`, `act_hi` 0.5 and `review_lo` 0.5 — the edges `docs/jev-bands.md`
+lists for `hermes-digest` — `disagree` true when `tier_p` is at or above
+0.5, `advisory_only` true, `usage` copied from the response, and `ms` the
+POST's elapsed milliseconds. Then print one line —
+`daily-digest: jev advisory logged n=11 tier_p(message)=<the message probability>; rules unchanged (advisory_only)`
+— and continue to Send.
+
 ## Merge-queue batch shadow
 
 Advisory only. This section does not change the Telegram message, does not
@@ -161,17 +209,22 @@ from the unit's EnvironmentFile — reference them as shell variables, never
 inline the values and never echo them:
 
 ```bash
-resp=""
+sent=""
 for attempt in 1 2 3; do
-  resp=$(curl -s --max-time 20 -X POST \
+  resp=$(curl -sS --max-time 20 -X POST \
     "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
     -d chat_id="${TELEGRAM_CHAT_ID}" \
-    --data-urlencode text="$body") || resp=""
-  if printf '%s' "$resp" | grep -q '"ok":true'; then break; fi
-  echo "send attempt ${attempt} not ok: ${resp:-<curl error>}" >&2
+    --data-urlencode text="$body" 2>&1) && rc=0 || rc=$?
+  if printf '%s' "$resp" | grep -q '"ok":true'; then sent=1; break; fi
+  echo "send attempt ${attempt} failed (curl rc=${rc}): ${resp:-<empty response>}" >&2
   if [ "$attempt" -lt 3 ]; then sleep 5; fi
 done
-printf '%s\n' "$resp" | tee /tmp/daily-digest-send.json
+if [ -n "$sent" ]; then
+  printf '%s\n' "$resp" | tee /tmp/daily-digest-send.json
+else
+  printf 'Telegram send failed after %s attempts: %s\n' "$attempt" "${resp:-<empty response>}" | tee /tmp/daily-digest-send.json
+  false
+fi
 ```
 
 Never run the loop a second time: if an attempt returned `"ok":true`, the
@@ -180,6 +233,10 @@ digest is delivered.
 Print the API response's `ok` field and `result.message_id` as your final line,
 so the systemd journal carries proof of delivery. The `tee` above writes the
 final response to `/tmp/daily-digest-send.json` and prints it, so the journal
-carries the result even when `pi --print` drops the final assistant text. If all
-three attempts failed, the printed response is the full error — print it and say
-so plainly; a digest that silently fails to send is worse than no digest.
+carries the result even when `pi --print` drops the final assistant text. When
+every attempt fails the block exits non-zero — the tool call reports failure,
+and the file and journal carry `Telegram send failed after 3 attempts:` plus
+the real curl or API error, never an empty line. Say plainly that the digest
+was NOT delivered and end the run there; a digest that silently fails to send
+is worse than no digest, and a failed send reported as delivered is worse than
+either.
