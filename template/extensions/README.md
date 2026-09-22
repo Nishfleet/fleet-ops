@@ -15,10 +15,8 @@ Deleted, with what replaced each (verified live, not assumed):
 
 | deleted | lines | replaced by |
 |---|---:|---|
-| `spawn-guard-core.ts` | 620 | `permission-gate.ts` patterns + `protected-paths.ts` paths (both stock forks) + systemd `TasksMax`. NOTE: the sweep dropped its `worker_toolchain_ban` rule as collateral — re-homed into `permission-gate.ts` 2026-09-21 (fleet-ops#4891). |
 | `seat-health.ts` | 1,472 | LiteLLM's own `/health/readiness` + `litellm_deployment_state`, already scraped by Prometheus |
 | `stop-judge.ts` | 404 | nothing — a stop policy the fleet no longer wants |
-| `bash-spawn-hook.ts` (fleet fork) | 90 | folded into `permission-gate.ts` |
 | `jev-decide.ts` | 77 | nothing here — Jev is being moved to a LiteLLM pass-through endpoint |
 | `packet-verdict.ts` | 89 | `pi-issue@.service` `ExecStopPost`: requires `claim/issue-<n>` on origin, else `Result=failed` (the rail unit's cut, landed d4a42ced6) |
 
@@ -38,8 +36,6 @@ Deleting it is strictly less machinery than symlinking it.
 
 | file | lines | what it does that stock does not |
 |---|---:|---|
-| `permission-gate.ts` | 375 | **fork of stock (pi 0.85.1).** Adds 3 fleet rules to stock's 3: `git stash` (not `list`/`show`), `systemctl … restart`, `wrangler … deploy`. Stock already blocks `rm -rf`, `sudo`, `chmod 777`. Also carries the worker-scoped `worker_toolchain_ban` (`tsc -b`, `vitest --coverage`, `npm run typecheck`/`test:coverage` blocked inside `*-issue@` cgroups; `FLEET_WORKER_CONTEXT` overrides for tests) — re-homed 2026-09-21 from the deleted `spawn-guard-core.ts`, which the sweep dropped as collateral while the AGENTS.md memory-budget rule it enforces stayed live (fleet-ops#4891). Plus `secret_print` (fleet-ops#7381): the 2026-09-17 pi-issue-fleet-ops-7072 run printed its App token via an improvised `"${GH_TOKEN:-EMPTY}"` presence check; now a bash call that expands a secret-named variable into a printed or logged line, runs printenv or a bare env/set/export/declare -p dump, traces with `set -x` while a secret expands, or embeds one in an unquoted heredoc body is blocked on every seat. Plus `secret_print cmd=gh-auth-*` (fleet-ops#7448): that same 2026-09-17 pi-issue-fleet-ops-7440 run leaked the live token a second way through the auth-status subcommand, whose env-var account line carries the token value, and the auth-token subcommand prints it outright — both are blocked now. Forked because pi's `settings.json` has no per-extension config key (`docs/settings.md:286`) — the pattern list only lives in the file. |
-| `protected-paths.ts` | 49 | **fork of stock (pi 0.85.1).** Adds the fleet credential paths (`~/.config/fleet-ops/seats`, `/etc/restic`, `~/.pi/agent/auth.json`, `*.pem`) to stock's `.env`/`.git/`/`node_modules/`. Same reason. |
 
 ## Symlinked to stock (upstream pi 0.85.1)
 
@@ -48,7 +44,6 @@ Deleting it is strictly less machinery than symlinking it.
 **`confirm-destructive.ts` cannot gate commands.** It hooks
 `session_before_switch` / `session_before_fork` only — session lifecycle, not
 bash — and returns early when `!ctx.hasUI`. Command rules belong in
-`permission-gate.ts`, which blocks by default with no UI. That is every
 `pi --print` fleet seat.
 
 ## What the guards actually guarantee (probed 2026-09-18, litellm/worker-cheap)
