@@ -28,6 +28,15 @@ CONSUMERS = [
     ROOT / 'prompts' / 'scout.md',
     ROOT / 'prompts' / 'worker.md',
 ]
+
+# fleet-ops#7766: a site whose emitter is a deliberate one-shot run — the
+# no-glue rule bans a persistent site organ — registers by naming the site
+# in a doc listed here. These docs count for the no-phantom-row check (3)
+# only: they are prose, not helpers, so the local band-constant scan (4)
+# still covers only consumer code.
+REGISTRATION_DOCS = [
+    ROOT / 'docs' / 'vault-drop-routing-2026-09.md',
+]
 FAILS = []
 
 
@@ -43,13 +52,18 @@ def check(cond, msg):
 # consumer file emits a JSONL row under that site name (SITE constant,
 # site= literal, or a parameterized argv like claim-check-%s /
 # second-opinion). Adding or renaming a site updates BOTH sides here.
+# fleet-ops#7766: vault-drop-routing's only emitter is the one-shot shadow
+# heredoc run that populated
+# ~/.local/state/pi-packet/jev/vault-drop-routing.jsonl (500 captures, 499
+# rows) — no-glue bans a persistent site organ, so it registers through
+# REGISTRATION_DOCS below.
 EXPECTED = {
     'alert-dispatch', 'alert-repair', 'alert-triage', 'auto-revert',
     'claim-check-pr', 'claim-check-report', 'dependency-pr-arm',
     'flaky-test-quarantine', 'gha-stuck-run-watch', 'hermes-digest',
     'intake-repair-seatfault', 'intake-seat-smoke', 'merge-queue-batches', 'merge-queue-enqueue',
     'reviewer-needs-review', 'scout', 'scout-rank', 'second-opinion',
-    'second-opinion-reserved', 'worker-context', 'worker-escalation-target',
+    'second-opinion-reserved', 'vault-drop-routing', 'worker-context', 'worker-escalation-target',
 }
 
 # Patterns that name a site literal in a consumer file.
@@ -110,7 +124,7 @@ def main():
     #    names a site that a consumer actually emits.
     emitted = set()
     texts = {}
-    for path in CONSUMERS:
+    for path in CONSUMERS + REGISTRATION_DOCS:
         text = path.read_text()
         texts[path.name] = text
         for pat in SITE_PATTERNS:

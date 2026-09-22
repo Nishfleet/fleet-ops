@@ -20,6 +20,7 @@
     "scout-rank":              { "act_hi": 0.9, "review_lo": 0.1 },
     "second-opinion":          { "act_hi": 0.5, "review_lo": 0.5 },
     "second-opinion-reserved": { "act_hi": 0.5, "review_lo": 0.5 },
+    "vault-drop-routing":      { "act_hi": 0.9, "review_lo": 0.1 },
     "worker-context":          { "act_hi": 0.9, "review_lo": 0.1, "sensitivity": [0.1, 0.25, 0.5] },
     "worker-escalation-target": { "act_hi": 0.5, "review_lo": 0.5 }
   }

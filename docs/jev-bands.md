@@ -24,6 +24,13 @@ conclusive, this file is the knob — edit it and nothing else.
 - `sensitivity` (optional, per-site) — extra comparison edges a site may
   evaluate for telemetry only. Today only `worker-context` reads it, for
   its `would_drop_by_threshold`/`token_delta_est_by_threshold` columns.
+- `vault-drop-routing` is log-only: it routes each agent-drop capture
+  into a project/area and a note type, and no band edge is applied yet
+  (fleet-ops#7766). The row stamps the `act_hi` a future flip would read;
+  the confident-disagreement list in
+  `docs/vault-drop-routing-2026-09.md` is the evidence base for that
+  flip. Site registration and later scoring are owned by
+  fleet-ops#7754.
 - `scout` and `scout-rank` are log-only: they apply no edge today, so
   their band values are inert. The rows still stamp them — they are the
   edges a future flip (fleet-ops#7442, fleet-ops#7778) would read.
@@ -67,6 +74,7 @@ keeps an old constant.
 | `scout-rank` | `prompts/scout.md` | 0.9 | 0.1 |
 | `second-opinion` | `prompts/worker.md` | 0.5 | 0.5 |
 | `second-opinion-reserved` | `prompts/worker.md` | 0.5 | 0.5 |
+| `vault-drop-routing` | log-only shadow (fleet-ops#7766; scored by fleet-ops#7754) | 0.9 | 0.1 |
 | `worker-context` | `prompts/intake.md` | 0.9 | 0.1 (+ `sensitivity` [0.1, 0.25, 0.5]) |
 | `worker-escalation-target` | `prompts/worker.md` step 4 | 0.5 | 0.5 |
 
