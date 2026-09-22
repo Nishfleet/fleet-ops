@@ -87,7 +87,7 @@ keeps an old constant.
 | `second-opinion` | `prompts/worker.md` | 0.5 | 0.5 |
 | `second-opinion-reserved` | `prompts/worker.md` | 0.5 | 0.5 |
 | `vault-drop-routing` | log-only shadow (fleet-ops#7766; scored by fleet-ops#7754) | 0.9 | 0.1 |
-| `worker-context` | `prompts/worker.md` step 4b (advisory; sensitivity 0.1, 0.25, 0.5 written in the prompt; no edge acts) | 0.9 | 0.1 |
+| `worker-context` | `prompts/worker.md` step 1c (advisory; sensitivity 0.1, 0.25, 0.5 written in the prompt; no edge acts) | 0.9 | 0.1 |
 | `worker-escalation-target` | `prompts/worker.md` step 4 | 0.5 | 0.5 |
 
 ## What tuning does and does not do
