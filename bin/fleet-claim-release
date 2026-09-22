@@ -43,16 +43,35 @@
 #      land -> HOLD, never delete.
 #
 # Usage: fleet-claim-release <repo>-<issue> [--dry-run]
+#        fleet-claim-release <repo>-<issue> --artifact-check [--unit=<u>] [--seat=<s>]
+#
+# --artifact-check is the worker dead-man gate (fleet-ops#7744), invoked as
+# the LAST ExecStopPost of pi-issue@/devin-issue@/cursor-issue@. A worker
+# that exits 0 but left no artifact — no open or merged PR on
+# claim/issue-<N>, no claim-branch commits ahead of the default branch —
+# produced nothing: exit 1 flips the unit to `failed` so Restart=/OnFailure=
+# engage, and one row lands in the empty-run ledger
+# (~/.local/state/fleet-ops/empty-runs.jsonl) that the metrics probe counts
+# for FleetWorkerEmptyRun -> alert-repair -> seat bench. An artifact is a PR
+# with head Nishfleet:claim/issue-<N> that is open or merged (merged PRs can
+# delete the branch mid-run, fleet-ops#7783, so PRs are read BEFORE the
+# branch), or the claim branch ahead of the default branch. A MISSING branch
+# is a deliberate park (the agent-blocked path deletes the claim ref) ->
+# pass. gh failures are UNKNOWN, never "empty": log LOUD and exit 0 — a
+# GitHub outage must not flip every worker to failed.
 #
 # Environment (tests override all of these):
 #   GH                 gh binary (test seam — a stub also skips the token mint)
 #   GH_TOKEN           preset token skips the App mint
 #   GITHUB_ACTIONS     skips the App mint (CI has no App key)
 #   CLAIM_RELEASE_NOW  ISO-8601 UTC clock for trace timestamps
+#   FLEET_STATE_DIR    empty-run ledger dir (--artifact-check; default
+#                      ~/.local/state/fleet-ops)
 #
-# Exit: 0 on every tolerated path (released, held, or deferred on gh
-# failure — a held claim is never fatal). Non-zero only on usage errors or
-# an App-token mint failure (auth is a hard precondition).
+# Exit: 0 on every tolerated path (released, held, deferred on gh failure, or
+# --artifact-check pass/unknown). Non-zero only on usage errors, an
+# App-token mint failure (auth is a hard precondition), or a PROVEN
+# empty run under --artifact-check.
 
 set -euo pipefail
 
@@ -72,6 +91,7 @@ usage() {
 fleet-claim-release — guarded claim release for pi-issue-failed@ (fleet-ops#6292)
 
 usage: fleet-claim-release <repo>-<issue> [--dry-run]
+       fleet-claim-release <repo>-<issue> --artifact-check [--unit=<u>] [--seat=<s>]
 
 Releases a dead worker's claim without ever silently closing an open PR:
   - open PR on claim/issue-<N>  -> HOLD: no branch delete, no label flip;
@@ -83,14 +103,28 @@ Releases a dead worker's claim without ever silently closing an open PR:
     issue), trace line on the issue.
   - gh check failure            -> HOLD (fail-closed): loud log, exit 0.
 
+--artifact-check is the worker dead-man gate (fleet-ops#7744), run as the
+worker units' last ExecStopPost. On a success main result it proves an
+artifact exists — an open or merged PR on claim/issue-<N>, or the claim
+branch ahead of the default branch — and exits 0; a missing branch is a
+deliberate park and passes. PROVEN empty (branch at the default tip, no
+PR) appends a seat row to $FLEET_STATE_DIR/empty-runs.jsonl and exits 1 so
+the unit records failed. gh failures are UNKNOWN: loud log, exit 0.
+
 EOF
 }
 
 dry_run=0
+check_mode=0
+seat=""
+calling_unit=""
 instance=""
 for a in "$@"; do
     case "$a" in
         --dry-run) dry_run=1 ;;
+        --artifact-check) check_mode=1 ;;
+        --seat=*) seat="${a#--seat=}" ;;
+        --unit=*) calling_unit="${a#--unit=}" ;;
         -h|--help) usage; exit 0 ;;
         -*) echo "fleet-claim-release: unknown flag $a" >&2; usage; exit 2 ;;
         *) instance="$a" ;;
@@ -130,6 +164,104 @@ comment_issue() {
     "$GH" issue comment "$issue" -R "$full" --body "$1" >/dev/null 2>&1 \
         || log "WARN: trace comment FAILED on $full#$issue (release note not recorded)"
 }
+
+# --- --artifact-check: the worker dead-man gate (fleet-ops#7744) --------------
+# Runs as the worker units' LAST ExecStopPost. Only a success main result is
+# examined (SERVICE_RESULT is systemd-set; unset = manual/test = proceed).
+# Exit 1 flips the unit to `failed` -> Restart=/OnFailure=/StartLimitBurst;
+# a fail-closed read on every hop would make a GitHub outage look like a
+# fleet-wide empty-run storm, so gh ERRORS are UNKNOWN -> exit 0, and only a
+# PROVEN empty (branch exists, zero ahead, no open/merged PR) exits 1.
+artifact_check() {
+    [[ "${SERVICE_RESULT:-success}" == "success" ]] || exit 0
+
+    # PRs first (fleet-ops#7783): a merged PR can delete the claim branch
+    # while the worker still runs, so branch-existence alone is not the
+    # artifact test. Open OR merged counts; a closed-unmerged PR leaves its
+    # work on the branch, which the ahead check below still credits.
+    pulls_json=""
+    if ! pulls_json=$("$GH" api "repos/$full/pulls?state=all&head=Nishfleet:${branch}&per_page=100" 2>/dev/null); then
+        log "ARTIFACT-CHECK-UNKNOWN $full#$issue — pulls lookup failed; success left standing (fail-open)"
+        exit 0
+    fi
+    if ! printf '%s' "$pulls_json" | jq -e 'type == "array"' >/dev/null 2>&1; then
+        log "ARTIFACT-CHECK-UNKNOWN $full#$issue — pulls payload not an array; success left standing (fail-open)"
+        exit 0
+    fi
+    live_prs="$(printf '%s' "$pulls_json" | jq '[.[] | select(.state == "open" or .merged_at != null)] | length' 2>/dev/null)"
+    if [[ "$live_prs" =~ ^[0-9]+$ && "$live_prs" -gt 0 ]]; then
+        log "artifact-check $full#$issue: $live_prs open/merged PR(s) from $branch — artifact present"
+        exit 0
+    fi
+
+    # A missing claim branch is a deliberate park: the agent-blocked /
+    # needs-nish-decision path deletes the ref so intake does not re-dispatch.
+    if ! "$GH" api "repos/$full/git/refs/heads/$branch" >/dev/null 2>&1; then
+        log "artifact-check $full#$issue: $branch absent — deliberate park or ref already gone; pass"
+        exit 0
+    fi
+
+    default_branch=""
+    if repo_json=$("$GH" api "repos/$full" 2>/dev/null); then
+        default_branch="$(printf '%s' "$repo_json" | jq -r '.default_branch // empty' 2>/dev/null)"
+    fi
+    ahead=""
+    if [[ -n "$default_branch" ]]; then
+        if cmp_json=$("$GH" api "repos/$full/compare/${default_branch}...${branch}" 2>/dev/null); then
+            ahead="$(printf '%s' "$cmp_json" | jq -r '.ahead_by // empty' 2>/dev/null)"
+        fi
+    fi
+    if [[ ! "$ahead" =~ ^[0-9]+$ ]]; then
+        log "ARTIFACT-CHECK-UNKNOWN $full#$issue — compare/default-branch unreadable; success left standing (fail-open)"
+        exit 0
+    fi
+    if (( ahead > 0 )); then
+        log "artifact-check $full#$issue: $branch is $ahead commit(s) ahead of $default_branch — artifact present"
+        exit 0
+    fi
+
+    # PROVEN EMPTY. Attribute the seat before failing: for the pi lane the
+    # serving deployment is the last assistant row's responseModel in the
+    # unit's session dir; devin/cursor pass --seat (their engines are direct,
+    # not router rungs). last_turn_tool_calls/input_tokens/stop_reason are the
+    # signature the bench agent verifies (~50k-ctx text-only final turn that
+    # names tool work it never made — the #7371 class).
+    last_tools=0
+    in_tok=""
+    stop_r=""
+    if [[ -z "$seat" ]]; then
+        sdir="$HOME/.pi/agent/sessions/pi-issue-$instance"
+        sf="$(ls -t "$sdir"/*.jsonl 2>/dev/null | head -1 || true)"
+        if [[ -n "${sf:-}" ]]; then
+            seat="$(grep -o '"responseModel":"[^"]*"' "$sf" 2>/dev/null | tail -1 | cut -d'"' -f4 || true)"
+            last_a="$(grep '"role":"assistant"' "$sf" 2>/dev/null | tail -1 || true)"
+            if printf '%s' "$last_a" | grep -q '"type":"toolCall"'; then last_tools=1; fi
+            in_tok="$(printf '%s' "$last_a" | grep -o '"input":[0-9]*' | tail -1 | cut -d: -f2 || true)"
+            stop_r="$(printf '%s' "$last_a" | grep -o '"rawStopReason":"[^"]*"\|"stopReason":"[^"]*"' | tail -1 | cut -d'"' -f4 || true)"
+        fi
+    fi
+    seat="${seat:-unknown}"
+    run_unit="${calling_unit:-${UNIT_PREFIX}@${instance}.service}"
+    if [[ "$dry_run" == "1" ]]; then
+        log "DRY empty-run: $full#$issue unit=$run_unit seat=$seat — would append ledger row and exit 1"
+        exit 0
+    fi
+    state_dir="${FLEET_STATE_DIR:-$HOME/.local/state/fleet-ops}"
+    mkdir -p "$state_dir" 2>/dev/null || true
+    jq -nc --arg ts "$NOW" --arg unit "$run_unit" --arg repo "$repo" \
+        --argjson issue "$issue" --arg seat "$seat" \
+        --argjson last_turn_tool_calls "$last_tools" \
+        --argjson input_tokens "${in_tok:-0}" --arg stop_reason "${stop_r:-}" \
+        '{ts:$ts,unit:$unit,repo:$repo,issue:$issue,seat:$seat,last_turn_tool_calls:$last_turn_tool_calls,input_tokens:$input_tokens,stop_reason:$stop_reason}' \
+        >> "$state_dir/empty-runs.jsonl" 2>/dev/null \
+        || log "WARN: empty-run ledger append failed ($state_dir/empty-runs.jsonl)"
+    log "EMPTY-RUN $full#$issue unit=$run_unit seat=$seat — worker exited 0 with $branch at the $default_branch tip and no PR; flipping unit to failed (fleet-ops#7744)"
+    exit 1
+}
+
+if [[ "$check_mode" == "1" ]]; then
+    artifact_check
+fi
 
 # --- 1. open-PR check, FAIL-CLOSED -------------------------------------------
 # REST pulls?head= takes owner:branch (Nishfleet:claim/issue-N), not

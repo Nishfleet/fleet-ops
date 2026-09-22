@@ -145,5 +145,23 @@ REPOS="${CI_PROBE_REPOS:-$(jq -r '.repos[].name' "$(dirname "$0")/../config/inta
                 end' 2>/dev/null
         done
     fi
+
+    # fleet-ops#7744: the worker dead-man gate (bin/fleet-claim-release
+    # --artifact-check, the worker units' last ExecStopPost) appends one row
+    # per run that exited 0 with no claim-branch commits and no PR — the
+    # "HTTP 200, zero tool calls" class that litellm_deployment_state cannot
+    # see (the seat answers; it just never does work). Counting ledger rows
+    # per repo+seat turns the unit-level flip into the seat-level bench
+    # signal FleetWorkerEmptyRun consumes.
+    echo '# HELP fleet_worker_empty_run_total Worker runs that exited success but left no artifact (no claim-branch commits, no PR) — seat-fault signal, fleet-ops#7744.'
+    echo '# TYPE fleet_worker_empty_run_total counter'
+    erl="${CI_EMPTY_RUNS_LOG:-$HOME/.local/state/fleet-ops/empty-runs.jsonl}"
+    if [ -f "$erl" ]; then
+        jq -rs '
+            [.[] | select(type == "object" and .repo != null)]
+            | group_by(.repo + "" + (.seat // "unknown"))[]
+            | "fleet_worker_empty_run_total{repo=\"\(.[0].repo | gsub("\\\\"; "\\\\") | gsub("\""; "\\\""))\",seat=\"\((.[0].seat // "unknown") | gsub("\\\\"; "\\\\") | gsub("\""; "\\\""))\"} \(length)"' \
+            "$erl" 2>/dev/null || true
+    fi
 # Atomic: node_exporter must never read a half-written textfile.
 } > "$N" && mv -f "$N" "$T"
