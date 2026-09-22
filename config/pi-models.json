@@ -365,7 +365,7 @@
       "name": "LiteLLM proxy (fleet seat routing, fleet-ops#4130 P2+P3a)",
       "baseUrl": "http://127.0.0.1:4000",
       "api": "openai-completions",
-      "apiKey": "!cut -d= -f2- /home/nish/.config/fleet-ops/litellm-master-key.env",
+      "apiKey": "!/bin/cat /home/nish/.config/fleet-ops/litellm-keys/master",
       "models": [
         {
           "id": "judge",
@@ -406,7 +406,7 @@
           "maxTokens": 32768
         }
       ],
-      "_comment_4219": "fleet-ops#4219 P3a: single provider, all five model groups. P2 pinned the apiKey to the judge-scoped virtual key; P3a's callers need the worker groups too and pi holds one apiKey per provider, so the resolver now emits the master key (fleet-litellm-key master) which accesses every group. Per-tier virtual keys (sk-fleet-worker/senior/private) return in P3b for per-tier spend attribution; group/tag spend tracking in the proxy Postgres is unaffected. The resolver reads the operator-owned env files; no key value is in this file."
+      "_comment_4219": "fleet-ops#4219 P3a / #8055: single provider, all five model groups. Pi holds one apiKey per provider, so this line is !/bin/cat of the operator-owned master file ~/.config/fleet-ops/litellm-keys/master (mode 600, one line, no newline), which accesses every group. Per-tier files worker, senior and private sit beside it. The proxy unit still loads litellm-master-key.env and litellm-virtual-keys.env via EnvironmentFile=; no key value is in this file."
     },
     "deepseek": {
       "name": "DeepSeek Direct (last-resort metered)",
