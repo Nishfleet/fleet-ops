@@ -1,0 +1,115 @@
+name: fleet-map
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - 'systemd/**'
+      - 'prompts/**'
+      - 'config/**'
+  pull_request:
+    paths:
+      - 'systemd/**'
+      - 'prompts/**'
+      - 'config/**'
+      - '.github/workflows/fleet-map.yml'
+      - '.agents/skills/verify-fleet/**'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+  id-token: write
+
+concurrency:
+  group: fleet-map-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  verification-section:
+    name: verification-section
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: A systemd, prompt, or config change needs a Verification section
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR: ${{ github.event.pull_request.number }}
+        run: |
+          set -eu
+          changed=$(git diff --name-only origin/main...HEAD -- systemd prompts config)
+          if [ -z "$changed" ]; then
+            exit 0
+          fi
+          body=$(gh pr view "$PR" --repo "$GITHUB_REPOSITORY" --json body --jq .body)
+          printf '%s\n' "$body" | grep -q '## Verification'
+          # A 40-hex commit sha contains 32 hex chars. Bound the match so only
+          # an invocation id counts, and require the two show values the
+          # template names but does not fill in.
+          printf '%s\n' "$body" | grep -qE '(^|[^0-9a-fA-F])[0-9a-fA-F]{32}([^0-9a-fA-F]|$)'
+          printf '%s\n' "$body" | grep -qE 'CPUUsageNSec=[0-9]'
+          printf '%s\n' "$body" | grep -qE 'MemoryPeak=[0-9]'
+
+  sync:
+    name: sync
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: true
+
+      - name: Regenerate drifted fleet-map rows
+        uses: anthropics/claude-code-action@cfc3eb22bfed5c26ef66e3223c982af27e4524de # v1
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          allowed_bots: nishfleet-worker
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          use_sticky_comment: false
+          prompt: |
+            Maintain `.agents/skills/verify-fleet/fleet-map.md` and no other file.
+            Inventory every unit, timer, path, slice, and template under `systemd/`. A `*.d` drop-in directory belongs to its unit (the directory name without `.d`). Decode systemd `\xNN` escapes in filenames. `systemd/service.d/` is the row id `service.d`. `*.conf.d` directories use the name without `.d` (for example `oomd.conf`).
+            Compare that set to the `<!-- fleet-map:NAME -->` markers in the map. Also check every backtick path that starts with `prompts/`, `config/`, or `systemd/`.
+            If the marker set equals the unit set, each marker appears once, and every cited path exists, do not edit anything.
+            Otherwise edit only the map: delete a row whose unit is gone, append one row for a missing unit using the file's Description= line, and mark a missing backtick path with `(missing on tree)`.
+            Do not commit, push, comment, or open a pull request.
+          claude_args: |
+            --model claude-opus-5
+            --allowedTools "Read,Edit,Bash(git status:*),Bash(git diff:*)"
+
+      - name: Open a map-only pull request, or record no drift
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -eu
+          sha=$(git rev-parse HEAD)
+          map=.agents/skills/verify-fleet/fleet-map.md
+          others=$(git status --porcelain --untracked-files=all | awk '{print $NF}' | grep -vx "$map" || true)
+          if [ -n "$others" ]; then
+            echo "map sync edited files other than the map" >&2
+            printf '%s\n' "$others" >&2
+            exit 1
+          fi
+          if git diff --quiet -- "$map" && git diff --cached --quiet -- "$map"; then
+            echo "no drift at $sha" >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          branch="fleet-map-sync-${sha}-${GITHUB_RUN_ID}"
+          git checkout -B "$branch"
+          git add -- "$map"
+          git -c user.name='github-actions[bot]' -c user.email='41898282+github-actions[bot]@users.noreply.github.com' commit -m "sync the fleet map to the systemd tree"
+          git push --set-upstream origin HEAD
+          if [ "$GITHUB_EVENT_NAME" = "pull_request" ]; then
+            base="$GITHUB_HEAD_REF"
+          else
+            base="$GITHUB_REF_NAME"
+          fi
+          gh pr create --repo "$GITHUB_REPOSITORY" --base "$base" --head "$branch" --title "sync fleet map at ${sha}" --body "Map membership drifted at ${sha}. This pull request changes only .agents/skills/verify-fleet/fleet-map.md."
