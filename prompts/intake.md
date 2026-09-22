@@ -136,7 +136,6 @@ Steps:
 
 $@
 
-
 4. **Pick work.** `gh issue list -R Nishfleet/<repo> -l agent-ready --state open
    --json number,title,labels,createdAt --limit 200`. The limit MUST cover the
    whole ready queue: `gh issue list` returns newest-first, so a limit smaller
