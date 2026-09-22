@@ -1286,3 +1286,44 @@ except Exception as exc:
 
 PY
 ```
+
+## Shadow Jev tier — failure triage, advisory, never a gate (fleet-ops#7780)
+
+The same failure pages a model for prose. The countable part is now code:
+`lib/failure_triage.py` tags the last <=255 lines of the evidence L001..L255,
+reads the band edges for site `failure-triage` from `config/jev-bands.json`,
+makes ONE POST to `127.0.0.1:4000/jev` asking `cause_line` (choice over the
+tagged line ids), `failure_class` (choice: runner-gone, concurrency-blocked,
+flaky-test, real-failure, seat-wall-429-or-empty, deadline) and
+`cause_visible_in_tail` (boolean), and writes one advisory row to
+`~/.local/state/pi-packet/jev/failure-triage.jsonl` carrying the unit/repo,
+the timestamp, the evidence-window stamps, the cause line, its probability
+and the test's own answer. Counting failures, ordering timestamps and
+duration maths stay in code on purpose — Jev never counts or orders dates.
+
+Run it once per repair, after you have reproduced the failure (step 2) — it
+pulls the journal tail for a systemd-unit alert or the failed CI run's log
+for a repo alert itself:
+
+```bash
+python3 "$HOME/workspaces/tooling/fleet-ops-deploy-clone/lib/failure_triage.py" \
+  --alertname "<alertname>" --unit "<unit-or-dash>" --repo "<repo-or-dash>" \
+  --decided "<your root-cause class in one word>"
+```
+
+It prints exactly one line on stdout —
+`failure-triage: class=<class> p=<p> cause_line=<Lnnn> cause_visible=<p> source=shadow`
+or `failure-triage: unavailable (<reason>); rules unchanged` — and nothing
+else. When it prints a `failure-triage:` line, quote it verbatim in your
+step-6 block beside the step-2 `jev-class:` line; this is #7754's evidence,
+so a missing line means no scoring row.
+
+It NEVER changes the repair choice, the rerun decision, the escalation or
+the exit code, and it is not a substitute for your step-2 root cause — the
+packet's own verdict stays authoritative and wins any disagreement
+(`--decided` records it in the row beside Jev's answer). `JEV_FAILURE_TRIAGE=0`
+disables it. The flip is deliberately not shipped here: once #7754 scores
+these rows against the real unit outcome, a later PR reads the site's
+`act_hi` edge from `config/jev-bands.json` to make the repair packet receive
+only the cause line +-20 lines (fleet-ops#7402) and routes a seat-wall class
+straight to the deterministic guard from fleet-ops#7776 instead of any packet.
