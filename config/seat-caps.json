@@ -82,9 +82,7 @@
       "class": "prepaid-quota",
       "reason": "2026-09-07 (fleet-ops#4206): cap raised 1->2 to spend the Cursor Ultra $400 'API Usage' on-demand pool (spendLimitUsage, untouched at observed_at 2026-09-07, expires at the billing cycle reset ~2026-09-22) on cursor/cursor-grok-4.6-high senior/keystone work \u2014 never worker-tier. The pool is read by bin/fleet-prepaid-util-canary via POST api2.cursor.sh/aiserver.v1.DashboardService/GetCurrentPeriodUsage (Bearer accessToken from ~/.config/cursor/auth.json) and emitted as fleet_prepaid_spend_usd{provider=cursor}; a Prometheus rule (FleetCursorPrepaidBurnPacingLow) files a repair packet that adds difficulty: senior-review to waiting heavy issues when the projected burn falls below pool/remaining-days. ETIMEDOUT watch in the same canary auto-files a 'lower cursor cap to 1' finding when a cli_timeout lands in the cursor seat ledger at cap 2 (fleet-ops#4206). Prior: 2026-08-26 cap 1 single-flight (fleet-ops#1167); raised after the seat stayed clean for >= 1 week since the 2026-08-25 ETIMEDOUT strike. 2026-09-08 (fleet-ops#4455, Nish 11:00 IST final): kimi-k3-max / kimi-k3-high are JUDGE/ORCHESTRATOR ONLY \u2014 never pi-issue worker-tier (the _provider_is_keystone_only gate keeps the whole cursor provider out of product/scout picks, so worker cap is 0 by construction). They draw the Cursor Ultra 'Other Models' $400/month bucket at API price (dashboard 'Other Models: N% used'), consumed through the hourly Kimi judge unit (fable-fleet-check-kimi) + senior-review/planner/spec/adjudication/conference packets. Model cap 4 = the judge unit + up to 3 concurrent senior packets against a measured ~$/run; pacing is days-left based (reset ~2026-09-22 04:02Z, so ~$28/day target) and rises to hit on-pace if behind. No fast/low variants (Nish 2026-09-07). Never spends the on-demand overage limit (Nish sets it to 0).",
       "models": {
-        "composer-2.5": 2,
-        "cursor-grok-4.6-high": 0,
-        "kimi-k3-high": 4,
+        "grok-4.7-xhigh": 3,
         "kimi-k3-max": 4
       }
     },
@@ -665,7 +663,7 @@
   ],
   "_comment_senior_order": "fleet-ops#3121: the senior (judge/orchestrator/reviewer) role's seat ladder. Replaces the dead straitly role and the old keystone_only_providers dual mechanism \u2014 ONE mechanism now. First usable seat in the list wins; a walled seat is skipped, not a unit failure; if the whole list is walled the resolver falls through to any usable capable seat. cursor cap 2 concurrent (fleet-ops#4206, raised 1->2 to spend the $400 API pool); senior draws count against the existing prepaid-usage/cursor.json weekly meter (ceiling 300/week), after which the list falls through to xai grok and then openrouter deepseek. Nish 2026-09-04: devin (devin/glm-5-2), free-glm (zenmux/z-ai/glm-5.3-free, cline/z-ai/glm-5.3-flash), senior (this list) are the three judge roles; senior replaces straitly everywhere. 2026-09-08 (Nish re-scope, #4445): alibaba-coding/qwen3.8-max is added as a judge on the roster. It is currently inert (model cap 0 \u2014 no worker use of any alibaba model) so find_senior_seat / senior_seat_available skip it silently until a config-driven judge_only gate lands (fleet-ops#4445 follow-up); it is listed LAST so it never displaces an already-usable senior seat.",
   "senior_seats_in_order": [
-    "cursor/cursor-grok-4.6-high",
+    "cursor/grok-4.7-xhigh",
     "xai-oauth/grok-4.6",
     "openrouter/deepseek/deepseek-v4.1-flash",
     "alibaba-coding/qwen3.8-max"
@@ -674,7 +672,7 @@
   "cursor_overage": {
     "_comment": "fleet-ops#1167: $400 extra-usage opens ONLY after included usage exhausts (Nish 2026-08-27). Target ~$16/day spent (floor, not ceiling) on keystone/senior-review/Weekly-Review. Overage model is cursor-grok-4.6-high \u2014 Nish named it as the cheapest strong Cursor model; this worker cannot read Cursor's live per-model price sheet without dashboard auth, so the pin is the directed slug, not a re-derived ranking. included_exhausted is flipped by a meter check (never guessed). #1177/#1179 own the enforcement-matrix rows for the $400 floor and sequencing.",
     "opens_after_included_exhausted": true,
-    "overage_model": "cursor-grok-4.6-high",
+    "overage_model": "grok-4.7-xhigh",
     "daily_spend_target_usd": 16,
     "included_exhausted": true
   },

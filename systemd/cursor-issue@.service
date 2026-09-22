@@ -1,12 +1,12 @@
 # cursor-issue@.service — pi-issue@.service twin with Cursor's headless CLI as
 # the engine (Cursor has no OpenAI-compatible API — api2.cursor.sh — so it is a
-# worker lane, not a router rung). Model lock: cursor-grok-4.6-high, never a
-# -fast variant (Nish; kimi-k3-max is the judge-only sibling). Key:
+# worker lane, not a router rung). Model lock: grok-4.7-xhigh, never an older
+# Grok or a -fast variant (Nish 2026-09-22; kimi-k3-max is the judge-only sibling). Key:
 # ~/.config/fleet-ops/seats/cursor.env (CURSOR_API_KEY, mode 600).
 # Proven 2026-09-19: piped packet -> file + commit + DONE.
 # Install: ln -sf <deploy-clone>/systemd/cursor-issue@.service ~/.config/systemd/user/ && systemctl --user daemon-reload
 [Unit]
-Description=Cursor fleet issue worker %i (Grok 4.6 High, headless cursor-agent CLI)
+Description=Cursor fleet issue worker %i (Grok 4.7 xhigh, headless cursor-agent CLI)
 # This unit IS the worker — no wrapper script. Same claim/PR/ExecStopPost
 # contract as pi-issue@.service; see that unit for the design comments.
 StartLimitIntervalSec=1h
@@ -61,7 +61,9 @@ WorkingDirectory=/home/nish
 # ref on origin -> exit 1 -> failed unit. An unclaimed worker is a blind
 # worker. ExecStartPre because the no-glue check caps added Exec lines.
 ExecStartPre=/bin/sh -c 'r=$${1%-*}; n=$${1##*-}; gh api "repos/Nishfleet/$r/git/refs/heads/claim/issue-$n" >/dev/null || { echo "claim-gate: no claim/issue-$n on Nishfleet/$r — refusing unclaimed start (fleet-ops#7790)" >&2; exit 1; }' sh %i
-ExecStart=/bin/sh -c 'set -e; mkdir -p "$HOME/workspaces/agent-worktrees/issue-$1"; GH_TOKEN=$(gh token generate --app-id 4728578 --key "$HOME/.config/fleet-worker/nishfleet-worker.private-key.pem" --installation-id 156789042 --token-only); [ -n "$GH_TOKEN" ] || { echo "app token mint failed — refusing human-gh fallback" >&2; exit 1; }; export GH_TOKEN; { cat "$HOME/workspaces/tooling/fleet-ops-deploy-clone/AGENTS.md"; echo; sed -e "1,/^---$/d" -e "s/[$]1/$1/g" "$HOME/workspaces/tooling/fleet-ops-deploy-clone/prompts/worker.md"; } | exec cursor-agent -p --output-format text --model cursor-grok-4.6-high --force --trust --workspace "$HOME/workspaces/agent-worktrees/issue-$1"' sh %i
+ExecStartPre=/bin/mkdir -p /home/nish/workspaces/agent-worktrees/issue-%i
+ExecStartPre=/bin/sh -c 'test -n "$$GH_TOKEN" || { echo "no App token in fleet-gh-token.env — refusing human-gh fallback" >&2; exit 1; }'
+ExecStart=/bin/sh -c '{ cat "$HOME/workspaces/tooling/fleet-ops-deploy-clone/AGENTS.md"; echo; sed -e "1,/^---$/d" -e "s/[$]1/$1/g" "$HOME/workspaces/tooling/fleet-ops-deploy-clone/prompts/worker.md"; } | exec cursor-agent -p --output-format text --model grok-4.7-xhigh --force --trust --workspace "$HOME/workspaces/agent-worktrees/issue-$1"' sh %i
 # The worker created its own worktree; the worker's own unit cleans it up.
 # No reaper, no salvage organ: work that was never committed and pushed did not
 # happen, and the next dispatch starts from origin/main. Leading '-' so cleanup
