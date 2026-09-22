@@ -133,44 +133,17 @@ ExecStopPost=-/bin/sh -c 'w="$HOME/workspaces/agent-worktrees/issue-$1"; for g i
 # fleet-ops#3695: a finishing worker asks its own repo's intake for a refill,
 # so a cohort that drains in 10 min does not leave the rest of the window idle.
 ExecStopPost=-/bin/sh -c 'r=$(echo "$1" | sed "s/-[0-9][0-9]*$//"); systemctl --user start --no-block "pi-intake@$r.service"' sh %i
-# ARTIFACT CHECK (fleet-ops#7761) — the dead-man that finally landed the
-# #7761 acceptance: a `tools=0 class=no-tools` run used to exit 0 with
-# Result=success, so OnFailure=/Restart= never fired and the issue sat
-# `agent-in-progress` on a claim with no live worker.
-#
-# The glue wipe (#8234 / d2614670) deleted bin/fleet-claim-release and the
-# ExecStopPost line that called `--artifact-check`, leaving ONLY this
-# comment behind — a dead-man named in prose and absent in the unit. #8177
-# offered to restore it as a bin call; closed unmerged. No new scripts are
-# allowed (no-glue), and the label reads land in prompts/claim-release.md
-# (#8053), so the check is a stock sh+gh predicate inline instead. It
-# fits the 400-char no-glue ceiling (370 chars) with no unescaped ${...}.
-#
-# An artifact is a PR on claim/issue-<N> in ANY state (an open or merged PR —
-# a merge can delete the head branch mid-run, #7783, so PRs are read first
-# and `state=all` covers both) OR the claim branch ahead of the default
-# branch OR the branch being ABSENT. A missing branch is a deliberate park
-# (`prompts/worker.md` step 4 blocks and deletes the claim branch), so it
-# must PASS — the original comment this diff repairs said exactly that, and
-# failing it would requeue every correct park through Restart=on-failure.
-# The check therefore fails on ONE state only: the branch still exists,
-# `compare` returns a real numeric 0 (== main), and there is no PR — i.e.
-# `tools=0 class=no-tools`: exit 1 -> Result=exit-code -> `failed`, which is
-# exactly what OnFailure=pi-issue-failed@ (line 22) keys off, and that unit
-# runs prompts/claim-release.md, which flips `agent-in-progress` ->
-# `agent-ready` so intake re-dispatches.
-#
-# Fail-closed, never fail-open, on the comparison itself: `gh api --jq`
-# writes a GitHub 404 body to STDOUT, so a `| grep -qvx 0` idiom reads the
-# error body as "artifact present". The compare value is matched with
-# `case`, which only treats a bare numeric `0` as the failure state and
-# sends every other value — including a 404 body — down the PASS branch;
-# an unverifiable repo therefore falls to the fail-closed claim-release
-# path rather than failing the unit.
-#
-# Runs LAST, so the worktree cleanup and the intake refill stop-path run
-# first. NOT prefixed with `-`: a tolerated failure here is the whole bug.
-ExecStopPost=/bin/sh -c 'r=Nishfleet/$${1%-*};n=$${1##*-};b=claim/issue-$n;p=$(gh api "repos/$r/pulls?state=all&head=Nishfleet:$b" --jq length 2>/dev/null);a=$(gh api "repos/$r/compare/main...$b" --jq .ahead_by 2>/dev/null);[ "$${p:-0}" -gt 0 ]&&exit 0;case "$a" in 0) ;; *) exit 0;; esac;echo "artifact-check: branch==main, no PR: zero-tool no-op (fleet-ops#7761)" >&2;exit 1' sh %i
+# ARTIFACT CHECK (fleet-ops#7761). Dead-man for a run that exits 0 having
+# produced nothing (a zero-tool run left #7761 agent-in-progress with no
+# worker). Runs only on a success exit and LAST, after cleanup and the intake
+# refill. Artifact = a PR on claim/issue-<N> in any state (a merge can delete
+# the branch mid-run, #7783) OR the claim branch ahead of main. A 404 body on
+# the compare is a deliberate park (branch never pushed) and passes. Anything
+# else, including an unreadable PR list, is unverifiable: exit 1 -> failed ->
+# OnFailure=pi-issue-failed@ -> prompts/claim-release.md re-arms the issue.
+# Inline because no new scripts are allowed; ci's no-glue step caps the line
+# at 400 chars. NOT prefixed with `-`: a tolerated failure here is the bug.
+ExecStopPost=/bin/sh -c '[ "$SERVICE_RESULT" = success ]||exit 0;r=Nishfleet/$${1%-*};b=claim/issue-$${1##*-};p=$(gh api "repos/$r/pulls?state=all&head=Nishfleet:$b" --jq length)||exit 1;[ "$p" -gt 0 ]&&exit 0;a=$(gh api "repos/$r/compare/main...$b" --jq .ahead_by);case "$a" in [1-9]*) exit 0;; *"Not Found"*) exit 0;; esac;echo "artifact-check $b: $a" >&2;exit 1' sh %i
 TimeoutStopSec=180
 
 # Retry policy — systemd's own, not a counter in bash.
