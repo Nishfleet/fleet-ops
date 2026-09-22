@@ -7,7 +7,9 @@ StartLimitBurst=2
 Type=oneshot
 Environment=PATH=/home/nish/.local/bin:/usr/local/bin:/usr/bin:/bin
 WorkingDirectory=/home/nish
-# Seat rotation is the LiteLLM worker-cheap group. A pinned --provider
+# Seat rotation is the LiteLLM worker-cheap group (cheap and capable share the
+# same upstream accounts, so the split is not isolation — fleet-ops#7786).
+# A pinned --provider
 # previously died with HTTP 429 while healthy seats sat unused (fleet-ops#138).
 # /bin/sh -c exec keeps systemd-analyze verify from needing a new CI stub
 # (same shape as pi-scout@.service / pi-scout-repair@.service).

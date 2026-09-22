@@ -15,7 +15,9 @@ EnvironmentFile=-/run/user/%U/fleet-gh-token.env
 # the same thing deterministically is gone, as is the bin/pi-intake-run flock
 # (systemd already refuses to run two starts of one unit instance at once) and
 # bin/pi-packet-run's seat rotation (the `worker-cheap` LiteLLM group is the
-# router, and it is the group pi-packet-run resolved to anyway).
+# router, and it is the group pi-packet-run resolved to anyway). The cheap and
+# capable groups share the same upstream accounts, so the split is not
+# isolation (fleet-ops#7786).
 Type=oneshot
 Environment=HOME=/home/nish
 Environment=PATH=/home/nish/.local/bin:/usr/local/bin:/usr/bin:/bin

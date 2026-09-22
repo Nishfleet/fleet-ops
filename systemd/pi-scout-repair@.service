@@ -7,7 +7,9 @@ StartLimitBurst=2
 Type=oneshot
 Environment=PATH=/home/nish/.local/bin:/usr/local/bin:/usr/bin:/bin
 WorkingDirectory=/home/nish
-# Seat rotation is the LiteLLM worker-cheap group. Do not pin --provider —
+# Seat rotation is the LiteLLM worker-cheap group (cheap and capable share the
+# same upstream accounts, so the split is not isolation — fleet-ops#7786).
+# Do not pin --provider —
 # a hardcoded repair seat is how this unit sat activating on quota_exhausted
 # glm-5-2 (fleet-ops#130).
 ExecStart=/bin/sh -c '{ cat "$HOME/.pi/agent/prompts/scout-repair.md"; echo; echo "TARGET REPO: Nishfleet/%i"; } | exec pi --print --session-dir "$HOME/.pi/agent/sessions/pi-scout-repair-%i" --provider litellm --model worker-cheap'

@@ -5,6 +5,8 @@ Description=Pi fleet product scout for Nishfleet/%i (generates work supply)
 # Second cut 2026-09-18: the scout IS this unit. bin/pi-scout-run's packet
 # assembly + pick-seat is replaced by piping prompts/scout.md into the
 # `worker-cheap` LiteLLM group directly — the same group pick-seat resolved to.
+# The cheap and capable groups share the same upstream accounts, so the split
+# is prompt-fit navigation, not isolation (fleet-ops#7786).
 # The old ExecCondition (fleet-work-supply-canary) and the
 # ExecStartPre/ExecStopPost pair (scout-futility-check) were fleet
 # self-monitoring wrapped around the scout; over 7 days they failed more often
