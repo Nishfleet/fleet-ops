@@ -34,7 +34,7 @@ cheaper than building, because prose bans lose to urgency at decision time.
 | Baseline-delta | fleet-baseline-delta | `fleet-baseline-delta.timer` | #1151 |
 | GEO/AEO probe | fleet-aeo-probe | `fleet-aeo-probe.timer` | #1245 |
 | Seat recovery | fleet-seat-recovery | `fleet-seat-recovery.{path,service}` | seat governor |
-| Metrics export | fleet-metrics-export | `fleet-metrics-export.timer` | organ: metrics-export |
+| GitHub repo metrics | fleet-github-exporter | `fleet-github-exporter.service` (promhippie/github_exporter 19.0.0, fleet-ops#8060) | organ: metrics-export |
 | Scout canary | pi-scout@ | `pi-scout@.timer` | organ: scout |
 | Intake (per repo) | pi-intake@ | `pi-intake@<repo>.timer` | intake-repos.json |
 | Intake repair | pi-intake-repair@ | `pi-intake-repair@<repo>.timer` | stock Pi |

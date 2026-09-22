@@ -1,0 +1,35 @@
+[Unit]
+Description=promhippie github_exporter 19.0.0 (fleet-ops#8060) — replaces fleet-metrics-export
+Documentation=https://promhippie.github.io/github_exporter/
+# Stock binary, pinned image quay.io/promhippie/github-exporter:19.0.0
+# (digest sha256:d3f23225fde995e0d095e6f065f5563d4362648c68c19d43cccd0d66ec7f6f9b,
+# binary version 2f861ad, built 20260907). The Cloudsmith DEB repo 404s, so the
+# pinned container is the fallback the issue names. No wrapper: docker runs the
+# image's own entrypoint and the exporter's own flags.
+#
+# Workflow collectors are webhook-fed (pkg/exporter/workflow_run.go reads a
+# store written only by the webhook handler), so they are NOT enabled here.
+# The Cloudflare API token on this host can list tunnels but cannot create one
+# (POST /cfd_tunnel -> error 10000), and the nishfleet-worker App subscribes to
+# no webhook events. The repo collector polls and needs no inbound path.
+# github_repo_pushed_timestamp is the evidence-as-of series until the webhook
+# surface exists; github_workflow_run_* stays absent and the rules that wanted
+# it are deleted rather than faked.
+After=docker.service
+Requires=docker.service
+
+[Service]
+Type=simple
+ExecStartPre=-/usr/bin/docker rm -f fleet-github-exporter
+ExecStart=/usr/bin/docker run --name fleet-github-exporter --rm \
+  -p 127.0.0.1:9504:9504 \
+  -e GITHUB_EXPORTER_COLLECTOR_REPOS=true \
+  -e GITHUB_EXPORTER_REPOS=Nishfleet/fleet-ops,Nishfleet/0509 \
+  -e GITHUB_EXPORTER_WEB_ADDRESS=0.0.0.0:9504 \
+  quay.io/promhippie/github-exporter:19.0.0
+ExecStop=/usr/bin/docker stop fleet-github-exporter
+Restart=on-failure
+RestartSec=10
+
+[Install]
+WantedBy=default.target

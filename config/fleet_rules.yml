@@ -16,17 +16,22 @@
 #   fleet_litellm_pgdump_*        restic-restore-test.prom (same writer)
 #   up{}                          prometheus scrape state
 #   probe_success                 blackbox_exporter (3 targets on 0509)
-#   fleet_main_ci_green, fleet_prepaid_credits_usd, fleet_prepaid_used_usd,
-#   fleet_main_ci_run_timestamp_seconds
-#   ci_merge_queue_entries, ci_merge_queue_head_wait_seconds,
-#   ci_hosted_runs_queued, ci_hosted_runs_in_progress,
-#   ci_hosted_runs_*_by_workflow, ci_workflow_run_median_seconds
-#                                 fleet-metrics-export.service — now a ~45-line
-#                                 curl/jq/gh probe, no Python. GitHub's CI
-#                                 conclusion, merge-queue state and Cursor's
-#                                 prepaid bucket live behind vendor APIs with
-#                                 no /metrics endpoint; this is the smallest
-#                                 reader for them.
+#   github_repo_*                 promhippie/github_exporter 19.0.0, repo
+#                                 collector, scraped at 127.0.0.1:9504
+#                                 (fleet-ops#8060). Replaces the deleted
+#                                 fleet-metrics-probe textfile.
+#
+# Lost with that probe, stated rather than faked (fleet-ops#8060):
+#   fleet_main_ci_green / fleet_main_ci_run_timestamp_seconds — the exporter's
+#     workflow collector is webhook-fed and this host has no inbound path, so
+#     github_workflow_run_* does not exist. FleetMainRed is deleted.
+#   ci_hosted_runs_queued — same: no workflow series, so no queued count.
+#     CiHostedQueueDepthHigh is deleted.
+#   ci_merge_queue_head_wait_seconds — promhippie has no merge-queue metric and
+#     no exporter does. CiMergeQueueHeadWaitHigh is deleted. The 2026-09-12
+#     merge-queue head stall (2h20m, 67 queued runs) would not alert.
+#   fleet_prepaid_credits_usd / fleet_prepaid_used_usd — no exporter reads
+#     Cursor's private dashboard API. Accepted as lost.
 #
 # probe_success was NOT available when these rules were first cut (no
 # blackbox_exporter, empty vector). Another lane of this same sweep installed
@@ -163,6 +168,25 @@ groups:
       # node_exporter's systemd collector (system units only) cannot see it --
       # this textfile metric is the only signal that the timer still runs, and
       # the seat 401s within 6h of it stopping.
+
+  - name: fleet_delivery
+    rules:
+      # Evidence-as-of for the two repos, on the exporter's polled series.
+      # github_repo_pushed_timestamp is unix seconds of the last push, so a
+      # push that never gets a follow-up goes stale here. It is NOT a CI
+      # verdict: the verdict series (github_workflow_run_status) is
+      # webhook-fed and absent, and the rule that read the verdict
+      # (FleetMainRed) is deleted rather than proxied onto this timestamp.
+      - alert: GithubRepoPushStale
+        expr: (time() - github_repo_pushed_timestamp{name=~"fleet-ops|0509"}) > 604800
+        for: 30m
+        labels:
+          severity: warning
+          service: delivery
+        annotations:
+          summary: "no push to {{ $labels.name }} in 7 days"
+          description: "github_repo_pushed_timestamp for {{ $labels.owner }}/{{ $labels.name }} is older than 7 days. The series label is name, not repo: that is what promhippie/github_exporter 19.0.0 emits. This is evidence-as-of only; it says nothing about CI conclusion. Repair: confirm the repo is still active and that the github-exporter scrape target (127.0.0.1:9504) is up."
+
   - name: fleet_host
     rules:
       # Host rules are here because a full disk or an exhausted machine takes
@@ -232,7 +256,9 @@ groups:
 
       # The three rules above can only fire while the blackbox exporter is
       # actually scraped. If it stops, they all read as healthy forever —
-      # the same blind spot FleetProbeStale closes for fleet.prom.
+      # the same blind spot a stale textfile used to close. fleet.prom and
+      # FleetProbeStale went with the probe (fleet-ops#8060); nothing writes
+      # that file any more.
       - alert: ProductCanaryProbeDown
         expr: min_over_time(up{job=~"blackbox-0509-.*"}[1h]) == 0
         for: 10m

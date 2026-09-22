@@ -65,6 +65,15 @@ scrape_configs:
   # LiteLLM mounts the endpoint at /metrics/, so a bare /metrics answers 307
   # with an empty body and Prometheus (follow_redirects: false) scrapes zero
   # samples while still reporting the target up (fleet-ops#4174 reopen).
+
+  # fleet-ops#8060: promhippie/github_exporter (pinned image 19.0.0) replaces
+  # the deleted fleet-metrics-probe textfile. Repo collector only — the
+  # workflow collectors are webhook-fed and no inbound path exists yet, so
+  # github_workflow_run_* is absent and the rules that wanted it are deleted.
+  - job_name: github-exporter
+    static_configs:
+      - targets: ['127.0.0.1:9504']
+
   - job_name: litellm
     metrics_path: /metrics/
     static_configs:
