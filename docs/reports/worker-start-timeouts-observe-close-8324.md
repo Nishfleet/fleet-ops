@@ -92,24 +92,33 @@ started them together). That burst is the same signature the issue describes.
 
 | class | definition | count | basis |
 |---|---|---|---|
-| A — still working at the wall | session span >= 35 min, tool rate >= 2/min | 21 | joined Pi session (router) / devin CLI log |
-| C — build/CI-poll wall time | subset of A whose long stalls are `timeout vitest/playwright/wrangler` and `for i in $(seq 1 30); sleep 1` CI polls | ~7 | same joins, stall accounting |
-| A* — CLI lane, no Pi session file | devin/cursor, classed on the devin log join + systemd CPU | 32 (26 devin + 4 cursor + 2 devin short-span) | devin CLI log, CPU |
+| A — still working at the wall | session span >= 35 min, tool rate >= 2/min | 26 | joined Pi session (router/pi) |
+| A* — CLI lane, log-joined to the wall | devin/cursor, classed on the devin CLI log join + systemd CPU | 30 | devin CLI log, CPU |
+| H — short-span hang | session span < 35 min on a 45-min wall | 3 | joined Pi session (router/pi) |
 | B — idle / seat-cooldown starved | own transcript carries a 429/quota/walled signature | **0** | transcript search |
-| H — short-span hang | session span < 35 min on a 45-min wall with nothing in flight | 3 | joined Pi session (router) |
 
-Short-span hangs exist (3 router events: `fleet-ops-4403` first attempt 6.5
-min, `0509-3985` first attempt 11.3 min, `0509-3990` first attempt 2.2 min) —
+The class-C subset (build/CI-poll wall time) is not a separate population
+count: it is the subset of A whose long stalls are `timeout
+vitest/playwright/wrangler` runs and `for i in $(seq 1 30); sleep 1` CI polls,
+and it is described in finding 3 rather than double-counted here.
+
+Short-span hangs exist (3 events: `fleet-ops-4403` first attempt 6.5 min,
+`0509-3985` first attempt 11.3 min, `0509-3990` first attempt 2.2 min) —
 they are a small minority and each is a unit that was re-run, which is why
 they do not change the direction. They are named rather than dropped: the
-raise costs those 3 an extra 45 min each, which is the accepted price of the
-other 21.
+raise costs those 3 an extra 10 min each, which is the accepted price of the
+other 26.
 
 ## The fix (one value per lane, no scripts)
 
-`TimeoutStartSec=45min -> 90min` on the two lanes whose own population shows
+`TimeoutStartSec=45min -> 55min` on the two lanes whose own population shows
 mid-work censoring, each commented in place with the join and the numbers
-above:
+above. **55min, not 90min, because the worker's own `GH_TOKEN` is minted in
+`ExecStart` at t=0 and is a <=1h GitHub App installation token**: a wall past
+~60min runs the worker with an expired token, so the extra minutes buy a
+failed artifact check instead of a landed PR. 55min clears the lane's measured
+demand and still leaves the token alive for the final push/PR steps. A longer
+wall needs a token refresh inside the run, which one unit value cannot do.
 
 - `systemd/devin-issue@.service` — devin, 26 of the day's 59 worker-lane
   timeout events, every one joined to a devin log spanning the wall.
@@ -118,7 +127,8 @@ above:
 
 `pi-issue@` and `cursor-issue@` keep `45min`: they are 9 events between them
 and `pi-issue@` is deliberately masked (`-> /dev/null`) while SuperGrok is
-walled. This is a two-lane raise, not a fleet-wide one. The value is `90min`
+walled. This is a two-lane raise, not a fleet-wide one. The value is `55min`
+(the token bound above), which clears the CI-poll headroom the lane needs.
 because lane demand measured at p50 44.2 / p90 45 min, and the CI-poll loops
 need the headroom; it is the lowest rung because the alternatives (a governor
 value, a seat cap) are contradicted above.
@@ -134,7 +144,7 @@ and so could not reproduce the issue's 19%; that is corrected here.
     rate = timeouts / (finished + timeouts)          <- the issue's own arithmetic
            (finished = `Finished <unit> ...` lines in the same window)
 
-    t0   = 2026-09-23 00:00 IST (first full hour the 90min wall is live)
+    t0   = 2026-09-23 00:00 IST (first full hour the 55min wall is live)
     read = at t0 + 24h, same host, same journal query
 
 Baseline 2026-09-22 00:00-19:30 IST, re-derived from the journal in this run:
@@ -151,10 +161,10 @@ reproducible by anyone holding the host.
 ## Residual, named
 
 - **The join for `pi-issue@`/`router-issue@` must be done per restart.** A
-  unit owns several session files; the wrong file mislabels the row (an
-  earlier draft of this analysis did exactly that and produced short spans
-  for units that were really censored at the wall). The PR body's table was
-  rebuilt with the correct join.
+  unit owns several session files; the wrong file mislabels the row (the
+  first draft of this analysis did exactly that and produced short spans for
+  units that were really censored at the wall). The PR body's table carries
+  the corrected join.
 - **`cursor-issue@` has 4 timeout events** and is classed on its CLI log, the
   same evidence as devin; it is not raised because it is 4 events and its
   units run a different toolchain. If tomorrow's population shows cursor

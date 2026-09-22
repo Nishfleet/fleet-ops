@@ -173,7 +173,18 @@ RestartMaxDelaySec=30min
 # the seat-cooldown class. The decisive control: of 20 units whose first
 # session today was censored at the wall, 15 finished the same work on the
 # restart in a shorter session -- the same work re-run to the end given more
-# wall. 90min covers this lane's measured demand (p50 span 44.2 min, p90 45
-# min) with headroom for the CI-poll loops; it is the lowest rung because the
-# wrong-lever alternatives (a governor value, a seat cap) are contradicted by
-# the measurements above.
+# wall.
+#
+# WHY 55min AND NOT 90min: the worker's own GH_TOKEN is minted in ExecStart at
+# t=0 and is a <=1h GitHub App installation token (fleet-ops#8057; see the
+# ExecStart below). A wall past ~60min runs the worker with an expired token,
+# so the minutes it could not push or open a PR buy a failed artifact check
+# instead of a landed PR. 55min is the largest wall that (a) clears the lane's
+# measured demand -- censored p50 span 44.2 min, p90 45 min, all killed at
+# exactly 45.0 -- and (b) still leaves the token alive for the final
+# push/PR steps. A longer wall needs a token refresh inside the run, which
+# this one value cannot do.
+#
+# It is the lowest rung: the wrong-lever alternatives (a governor value, a
+# seat cap) are contradicted by the measurements above.
+TimeoutStartSec=55min
