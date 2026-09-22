@@ -104,8 +104,12 @@ Steps:
      `max_parallel_requests` sum over rungs that `litellm_deployment_state` shows healthy).
    Also read MemAvailable from `/proc/meminfo`: under 4 GB, start nothing this
    tick and say so — RAM is the binding resource and an OOM kill costs a whole
-   claim. `slots = min(5, 10 - active)`. If slots <= 0, print `at capacity`
-   and exit 0.
+   claim. `active` = `systemctl --user list-units '*-issue@*.service'
+   --state=active,activating --no-legend | wc -l` — every worker engine is
+   Type=oneshot, so its ActiveState is `activating` for the whole ExecStart
+   run and a `--state=active`-only count sees zero in-flight workers
+   (fleet-ops#7775). `slots = min(5, 10 - active)`. If slots <= 0, print
+   `at capacity` and exit 0.
 
 4. **Pick work.** `gh issue list -R Nishfleet/<repo> -l agent-ready --state open
    --json number,title,labels,createdAt --limit 200`. The limit MUST cover the
