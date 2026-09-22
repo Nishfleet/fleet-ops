@@ -23,7 +23,8 @@ Steps:
    --json number,title,labels --limit 100`. Intake only sees `agent-ready`, so an open
    issue carrying none of `agent-ready` / `agent-in-progress` / `agent-blocked`
    / `noise-class` / `superseded-by-rebuild` / `deputy` / `needs-nish-decision` / `proposed` / `epic` / `umbrella`
-   is invisible forever. Add `agent-ready` to such an issue ONLY when its
+   / `machine-reported` / `needs-orchestrator` / `not-actionable` /
+   `awaiting-runtime-gate` is invisible forever. Add `agent-ready` to such an issue ONLY when its
    author is `nish3451` (the owner's filing is the admission). Any other
    author (the worker app, a scout, Devin, dependabot) gets `proposed`, never
    `agent-ready`: workers do not admit their own work (Nish 2026-09-22,
@@ -61,6 +62,30 @@ Steps:
    to you, and if any ambiguity, you bring to me; below 0.6 comes to me direct
    with your suggestions".) First opinion only; never re-ask, never invent a
    probability.
+   `machine-reported` sits in the list above for the same reason `proposed`
+   does: an open issue carrying it is a report, not a packet, and it is never
+   `agent-ready` on arrival, whatever its author — the label is the gate
+   (fleet-ops#8031; 0509 `docs/USER-REPORTS.md` §Admission; fleet-ops
+   `docs/TRUST-STACK.md` §7.1). For each open issue carrying
+   `machine-reported` and no other label from the list above (an undecided
+   report), ask Jev once — same POST shape, same key file, no new client:
+   `curl -s 127.0.0.1:4000/jev -H "Authorization: Bearer $(grep -m1
+   '^LITELLM_JEV_KEY=' ~/.config/fleet-ops/seats/typesafe-jev.env | cut -d=
+   -f2-)" -H 'content-type: application/json' -d @<state.json>` where `state`
+   is `{"issue": <ref, title and full body — a machine-reported body carries
+   no customer text by construction>}` and `questions` is `{"repro_worthy":
+   {"type": "boolean", "instructions": "Is this a real defect a worker can
+   reproduce from the evidence in this issue, as opposed to noise, a
+   third-party outage, or a duplicate of an open issue?"}}`. Read
+   `.answers.repro_worthy.probability`; keep it only if it is a finite number
+   in [0,1]. p >= 0.9: add `agent-ready`, comment `jev repro_worthy: p=<p>`.
+   p <= 0.1: comment `jev repro_worthy: p=<p>; closing not-actionable`, add
+   `not-actionable`, close — the single exception to the never-close rule
+   above, and only on this path. Anything between, or a failed or unusable
+   Jev answer: add `needs-orchestrator`, comment `jev repro_worthy: p=<p or
+   unavailable>; parked` — Fable decides. First opinion only; never re-ask,
+   never invent a probability. A `machine-reported` issue never takes the
+   `proposed`/`admit` path.
    Never add `agent-ready` to an issue that already carries `proposed`, `epic`, `umbrella`, `agent-blocked`,
    `awaiting-runtime-gate`, `noise-class`, `superseded-by-rebuild`, `deputy`,
    or `needs-nish-decision`. `noise-class` and `superseded-by-rebuild` are
