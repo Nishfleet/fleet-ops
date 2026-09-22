@@ -116,19 +116,6 @@ model_list:
     id: opencodego-ds41flash-judge
 # fleet-ops#4643 cache-affinity ladder still applies; routing_strategy is simple-shuffle so
 # order: is documentation, not a pick filter. Failover is cooldown + group fallbacks.
-- model_name: worker-cheap
-  litellm_params:
-    model: openai/z-ai/glm-5.3-flash
-    api_base: https://api.paretoinference.com/v1
-    api_key: os.environ/PARETO_API_KEY
-    tags:
-    - prepaid
-    - pareto
-    order: 1
-    max_parallel_requests: 2
-  model_info:
-    mode: chat
-    id: pareto-glm53flash-worker-cheap
 - model_name: worker-capable
   litellm_params:
     model: openai/z-ai/glm-5.3-flash
@@ -152,24 +139,10 @@ model_list:
     - pareto
     - senior
     order: 1
-    max_parallel_requests: 2
-  model_info:
-    mode: chat
-    id: pareto-glm53flash-senior
-- model_name: worker-private
-  litellm_params:
-    model: openai/z-ai/glm-5.3-flash
-    api_base: https://api.paretoinference.com/v1
-    api_key: os.environ/PARETO_API_KEY
-    tags:
-    - prepaid
-    - pareto
-    - private
-    order: 1
     max_parallel_requests: 1
   model_info:
     mode: chat
-    id: pareto-glm53flash-worker-private
+    id: pareto-glm53flash-senior
 - model_name: worker-capable
   # StepFun step-5-preview (Nish 2026-09-22: "prepaid, max 5 concurrent lanes - only step 5
   # preview. pretty unlimited usage so use generously"). 600B-total / 27B-active MoE, 1,024,000
@@ -528,7 +501,7 @@ router_settings:
     ContentPolicyViolationErrorRetries: 0
   allowed_fails_policy:
     AuthenticationErrorAllowedFails: 0
-    RateLimitErrorAllowedFails: 1
+    RateLimitErrorAllowedFails: 10  # 2026-09-22: Pareto key cap is 3 parallel (probed header); total Pareto mpr is 3, a stray 429 must not bench the seat 60 s
     TimeoutErrorAllowedFails: 1
     InternalServerErrorAllowedFails: 1
 litellm_settings:
