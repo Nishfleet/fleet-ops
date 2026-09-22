@@ -128,6 +128,20 @@ jobs:
           grep -c 'nish-preimplementation-contract:start' "$f" | grep -qx 1
           grep -c 'nish-preimplementation-contract:end' "$f" | grep -qx 1
           grep -c 'nish-memory-compound' "$f" | grep -qx 0
+      - name: nish-decision close-verdict stays parked (fleet-ops#5723)
+        # The intake tick is the reconciler. A decision-resolved comment
+        # that says close, subsumed, or do-not-requeue must not flip the
+        # issue back to agent-ready, and a stale marker must not clear a
+        # newer block. A missing phrase fails this step. grep exit 2
+        # (bad pattern) fails it too.
+        run: |
+          f=prompts/intake.md
+          test -f "$f"
+          grep -q 'close-verdict' "$f"
+          grep -q 'verdict-hold:' "$f"
+          grep -q 'strictly after the block' "$f"
+          grep -q 'clears nothing except this' "$f"
+          grep -q 'close-verdict on `nish-decision` is not a pass' "$f"
 
   # no-glue: the mechanical half of "no scripts, hooks, wrappers, helpers"
   # (Nish 2026-09-19, 2026-09-21). Fails on any ADDED file under a script
