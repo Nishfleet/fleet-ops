@@ -1,5 +1,14 @@
 # gitleaks false positive: the fake dummy token quoted in Nishfleet/0509#1792's body,
 # captured verbatim in the #7371 benchmark corpus. Not a credential.
-# Fingerprints are keyed to the commit that introduced the content in main's
-# ancestry: #7746 squash-merged, so the findings attribute to the squash SHA
-# 3febb390d, not the branch commit 60dd531c the original entries named.
+# The fixture files themselves are gone (#8225 deleted .fleet/bench7371/), but the
+# push-run scan walks FULL ancestry (`--log-opts --full-history HEAD`), so the two
+# findings still attribute to the squash commit that introduced them.
+# Entries are the COMMIT-LESS fingerprint form (<file>:<rule>:<line>), which matches
+# on file + rule + line. The previous sha-keyed form pinned the entries to one commit;
+# #7746's squash re-committed the identical content under a new SHA
+# (verified byte-identical before and after), and the allowlist silently stopped
+# matching, red-firing every push-run since. Commit-less entries cannot go stale that
+# way: they hold for as long as the finding exists, and expire on their own if the
+# underlying content is ever rewritten.
+.fleet/bench7371/b-labels.jsonl:stripe-access-token:218
+.fleet/bench7371/b-corpus.json:stripe-access-token:1
