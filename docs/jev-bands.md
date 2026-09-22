@@ -42,6 +42,14 @@ conclusive, this file is the knob — edit it and nothing else.
   `systemctl --user set-environment JEV_SEATFAULT_SHADOW=1`, and check the
   window with `python3 lib/seat_fault.py --replay
   ~/.local/state/pi-packet/jev/intake-repair-seatfault.jsonl`.
+- `intake-injection` is log-only in `shadow` (the default) and on the
+  review-comment surface in every mode. It is a single-edge site: any of the
+  three booleans at `p >= act_hi` is the confident-injection edge the intake
+  flip (fleet-ops#7754) would act on — `needs-human`, claim skipped, issue
+  never closed; `p <= review_lo` on all three is the confident-clean edge.
+  `JEV_INTAKE_INJECTION=act` exists for the flip and is never the default.
+  Planted/sandbox rows (`synthetic: true`) are excluded from that tally and
+  never drive an act label.
 
 Every site row stamps the `act_hi`/`review_lo` it ran under, so any row
 can be replayed against the table value that produced it. A missing file,
@@ -65,6 +73,7 @@ keeps an old constant.
 | `flaky-test-quarantine` | `prompts/alert-repair.md` | 0.9 | 0.1 |
 | `gha-stuck-run-watch` | `prompts/alert-repair.md` | 0.9 | 0.1 |
 | `hermes-digest` | `prompts/daily-digest.md` | 0.5 | 0.5 |
+| `intake-injection` | `prompts/intake.md` step 5, `prompts/worker.md` step 8 | 0.9 | 0.1 |
 | `intake-repair-seatfault` | `lib/seat_fault.py` | 0.6 | 0.6 |
 | `intake-seat-smoke` | `prompts/intake.md` | 0.9 | 0.1 |
 | `merge-queue-batches` | `prompts/daily-digest.md` | 0.9 | 0.1 |
@@ -88,7 +97,10 @@ a site *does* — that is still the per-site mode flag:
 - `act`: the confident bands may short-circuit the expensive call. Only
   cascade sites have an `act` path today (`JEV_CASCADE_<SITE>=act` or the
   global `JEV_CASCADE=act`), and flipping one requires a benchmark go row
-  (fleet-ops#7371). The September benchmark was NO-GO at every measured
+  (fleet-ops#7371). `JEV_INTAKE_INJECTION=act` (fleet-ops#7779) is the one
+  non-cascade act path and is inert until the fleet-ops#7754 flip; it parks
+  a screened-contested issue (`needs-human`, no claim, never a close) and
+  never arms itself. The September benchmark was NO-GO at every measured
   threshold — see `docs/jev-benchmark-2026-09.md` — so the shipped values
   are the fleet's standing bands, not measured ones.
 
