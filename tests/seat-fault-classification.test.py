@@ -130,6 +130,11 @@ def main():
     for path in PROMPTS:
         check('quota_exhausted' not in path.read_text(),
               '%s no longer restates the classification table' % path.name)
+        text = path.read_text()
+        check('lib/seat_fault.py' in text,
+              '%s invokes the helper the issue authorizes under lib/' % path.name)
+        check('park=yes' in text,
+              '%s carries the sub-floor park rule' % path.name)
 
     # 3. Deterministic evidence never reaches Jev, even with shadow armed.
     for evidence, expected in (
