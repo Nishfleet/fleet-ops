@@ -11,3 +11,6 @@ out/
 # Per-job operational caches that workers sometimes leave behind.
 .cache/
 .pytest_cache/
+
+# fleet-ops#8341: .bak-* config siblings are sprawl — versioned file + PR is the record. ci also rejects a tracked one.
+config/**/*.bak-*

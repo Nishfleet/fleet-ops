@@ -2,6 +2,9 @@ name: CI
 
 on:
   pull_request:
+    # edited: a body edited after the last push still carries the agent-name
+    # gate's PR-text half — re-check it rather than trusting the stale payload.
+    types: [opened, synchronize, reopened, edited]
   merge_group:
   push:
     branches:
@@ -24,11 +27,14 @@ jobs:
     name: ci
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    env:
+      PAT: 'co-authored-by:.*(claude|devin|copilot|cursor|chatgpt|openai|anthropic|cognition|gpt|gemini|codex)|generated[[:space:]-]with[[:space:][]*(claude|devin|copilot|cursor|chatgpt|openai|anthropic|cognition|gpt|gemini|codex|\bai\b)|generated-by:.*(claude|devin|copilot|cursor|chatgpt|openai|anthropic|cognition|gpt|gemini|codex|\bai\b)'
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+          fetch-depth: 0
       - run: sudo apt-get update
       - run: sudo apt-get install -y --no-install-recommends prometheus
       - run: promtool check rules config/fleet_rules.yml
@@ -131,6 +137,49 @@ jobs:
           grep -c 'nish-preimplementation-contract:start' "$f" | grep -qx 1
           grep -c 'nish-preimplementation-contract:end' "$f" | grep -qx 1
           grep -c 'nish-memory-compound' "$f" | grep -qx 0
+      # the gates below are independent linters: `if: always()` so one red run
+      # lists every violated gate instead of fail-fast hiding the rest.
+      - name: actionlint over .github/workflows/
+        if: always()
+        uses: rhysd/actionlint@914e7df21a07ef503a81201c76d2b11c789d3fca # v1.7.12
+      - name: shellcheck over shell files (extension + shebang discovery)
+        if: always()
+        uses: ludeeus/action-shellcheck@00cae500b08a931fb5698e11e79bfbd38e612a38 # v2.0.0
+        with:
+          version: v0.11.0
+      - name: apt binaries systemd-analyze verify needs (promtool, bwrap, redis-server)
+        if: always()
+        run: sudo apt-get install -y --no-install-recommends prometheus bubblewrap redis-server
+      - name: stub pi for systemd-analyze verify (host-only binary)
+        if: always()
+        run: sudo install -D -m0755 /bin/true /home/nish/.local/bin/pi
+      - name: stub litellm for systemd-analyze verify (host-only binary)
+        if: always()
+        run: sudo install -D -m0755 /bin/true /home/nish/.local/venvs/litellm/bin/litellm
+      - name: stub cursor-agent for systemd-analyze verify (host-only binary)
+        if: always()
+        run: install -D -m0755 /bin/true "$HOME/.local/bin/cursor-agent"
+      - name: systemd-analyze verify over unit files
+        if: always()
+        run: systemd-analyze verify --man=no systemd/*.service systemd/*.timer systemd/*.path systemd/*.slice
+      - name: pi seat ids resolve to litellm-proxy.yaml model_name (fleet-ops#8332)
+        if: always()
+        run: jq -n -e --argjson ids "$(jq -c '[.providers.litellm.models[].id]' config/pi-models.json)" --argjson names "$(yq -o=json '[.model_list[].model_name]' config/litellm-proxy.yaml)" '($ids - $names) as $bad | if ($bad|length)==0 then true else error("unresolved pi seat ids - \($bad|join(","))") end'
+      - name: Ollama rungs serve only the permitted slug (fleet-ops#8332)
+        if: always()
+        run: yq -o=json '[(.model_list[], .benched[]?) | select((.litellm_params.api_base // "") | test("ollama")) | .litellm_params.model | select(. != "openai/deepseek-v4.1-flash")]' config/litellm-proxy.yaml | jq -e 'if length==0 then true else error("ollama non-flash rungs - \(join(","))") end'
+      - name: No config/*.bak-* files
+        if: always()
+        run: "! git ls-files -- 'config/*.bak-*' | grep ."
+      - name: No agent attribution footers in commit messages (fleet-ops#1052)
+        if: always()
+        run: "! git log --format=%B origin/main..HEAD | grep -Ein \"$PAT\""
+      - name: No agent attribution footers in PR title/body (fleet-ops#1052)
+        if: always()
+        env:
+          PR_TITLE: ${{ github.event.pull_request.title }}
+          PR_BODY: ${{ github.event.pull_request.body }}
+        run: "! printf '%s\\n' \"$PR_TITLE\" \"$PR_BODY\" | grep -Ein \"$PAT\""
 
   # no-glue: the mechanical half of "no scripts, hooks, wrappers, helpers"
   # (Nish 2026-09-19, 2026-09-21). Fails on any ADDED file under a script
