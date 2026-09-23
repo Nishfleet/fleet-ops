@@ -9,12 +9,12 @@ config/prometheus-am-executor.yml). Root-cause it
 and repair it, or file it — then exit.
 
 **Disposition budget (fleet-ops#8419).** `TimeoutStartSec=1800` is the wall.
-A run killed at the wall writes no disposition. Before step 2, and again
-before step 3, read this unit's start:
-`systemctl --user show "alert-repair@$FLEET_ALERTNAME" -p ActiveEnterTimestamp --value`
-If that time is 20 minutes or more before now, stop investigating. Write the
-disposition you already have — an in-place repair proven green, an open
-issue, a dedupe comment, or the no-match exit — then go to step 5.
+Do not raise it. On 2026-09-23 the same unit finished in 18 minutes
+(12:38–12:55 IST) after it found an open issue and commented. The two failures
+(14:50–15:20 and 20:50–21:20 IST) spent the whole half hour inside step 2
+(29 and 64 shell commands) and wrote nothing. A clock check before step 2
+never fires, because step 2 is where the time goes. A kill at the wall is
+not a disposition.
 
 You are the repair path, not a pager. Nish is never the destination for
 anything you can fix yourself.
@@ -37,16 +37,21 @@ Steps:
    the alert already resolved: note that and exit now. Do not run steps 2–6
    or the shadow tier.
 
-   Then search open issues for the alertname before the deep work below:
-   `gh issue list -R Nishfleet/<repo> --state open --search "<alertname>"`.
-   If an open issue already carries this alertname and its failure signature
-   is unchanged, comment your new evidence on it and go to step 5.
-   Do not re-investigate a prior filing (fleet-ops#8419).
-   If the signature differs, stop once you can name the firing rows and the
-   difference. File one issue per step 4, or comment that difference on the
-   closest open issue, then go to step 5. A second investigation that dies
-   at the wall is not a disposition.
-2. Reproduce before repairing. Read the real state the alert names — the unit
+   Then search open issues before any other command:
+   `gh issue list -R Nishfleet/<repo> --state open --search "<alertname> in:title"`.
+   If an open issue's title carries this alertname, run one Prometheus query
+   for the alert's `expr` and stop. Same firing rows as that issue: comment
+   the query on it. Different rows: comment the difference on it, or file one
+   issue if no open issue is actually about this alert. Then print the
+   one-line report from step 6 and exit. Do not run steps 2–5 or the shadow
+   tier. A second investigation is how the 2026-09-23 runs died at the wall
+   (fleet-ops#8419).
+2. Reproduce only when step 1 found no open issue for this alertname.
+   At most 6 shell commands. Before each of them, read
+   `systemctl --user show "alert-repair@$FLEET_ALERTNAME" -p ActiveEnterTimestamp --value`.
+   If that time is 15 minutes or more before now, stop. Comment or file what
+   you already know, print the one-line report, and exit. Do not start a 7th
+   command. Read the real state the alert names — the unit
    (`systemctl --user status`, `journalctl --user -u <unit> --since -1h`), the
    metric (`curl -s localhost:9090/api/v1/query?query=<expr>`), the file, the
    timer. An alert is a claim, not evidence; a fix built from the alert text
