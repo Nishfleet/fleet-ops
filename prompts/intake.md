@@ -239,7 +239,7 @@ Steps:
    model, was the bug). If the result length equals the limit, raise it and
    list again. Empty means print
    `no ready issues` and exit 0. DROP any issue that carries `noise-class`,
-   `agent-blocked` or `awaiting-runtime-gate`, or whose title starts with
+   `agent-blocked`, `awaiting-runtime-gate` or `needs-split`, or whose title starts with
    `__scout_probe_`, even if it also carries `agent-ready` (fleet-ops#4454:
    #4454 was re-armed three times after a worker labeled it noise-class; a
    park label must gate claiming until step 2 releases it, fleet-ops#4626). Order them: issues labelled `priority-now` first (Nish's
@@ -250,7 +250,20 @@ Steps:
 
 5. **Claim, in order, while slots remain.** Do the commands — do not describe
    what you would do, and do not stop to re-check capacity between issues; you
-   computed slots in step 3. For each issue `N`, if it carries `noise-class` or
+   computed slots in step 3.
+   **Size gate first (Nish 2026-09-23: "smaller packets that don't require as much judgement" — more PRs, far fewer failures).**
+   An issue carrying `cheap-ok` or `strong-only` is already sized; go on. Otherwise ask Jev once — same key file and POST as step 1,
+   `state` = `{"issue": <ref, title and full body>}`, `questions` = `{"cheap_ok": {"type": "boolean", "instructions":
+   "Is this ONE small change (roughly 1-4 files, one behaviour, done in one sitting) whose steps and acceptance are already
+   spelled out, so the builder only has to follow them? Answer no if it bundles several deliverables, asks the builder to
+   discover or fix whatever turns up, depends on production after deploy, or leaves a design choice open."}}`
+   (measured 2026-09-23 on real issues: the four umbrellas that burned 7-10 runs each scored 0.08-0.21; their split children
+   0.15-0.86; nothing reached 0.9, so Jev only fast-tracks and Opus sizes the rest). Read `.answers.cheap_ok.probability`
+   (finite, in [0,1]). p >= 0.9: add `cheap-ok`, comment `jev cheap_ok: p=<p>`, claim it below. Anything else, including no
+   answer: add `needs-split`, comment `jev cheap_ok: p=<p or unavailable>; Opus sizes`, do NOT claim it this tick — the label
+   fires the product repo's `opus-vet` job, which does one of three things: marks it `cheap-ok` (already small), files
+   cheap-ok children and parks this issue as their umbrella, or marks it `strong-only` when it cannot be cut smaller.
+   Then, for each issue `N`, if it carries `noise-class` or
    its title starts with `__scout_probe_`, print `skipped-noise-class` and move
    on. Do not claim, do not spawn. Otherwise:
    a. `git -C /home/nish/workspaces/products/<repo> fetch origin`
@@ -299,6 +312,7 @@ Steps:
       (c)-(e) have each proven — the worker units' own ExecStartPre refuses
       an unclaimed start (claim-gate, fleet-ops#7790), and the ordering here
       keeps the tick honest instead of relying on that backstop:
+      Engine for a `strong-only` issue: the same Devin, then Cursor, then SuperGrok (`pi-issue@`) checks below, never `router-issue@`; if none of the three has a free slot, print `skipped-strong-only-full` and move on. Every other issue:
       Engine: if `systemctl --user list-units 'devin-issue@*.service' --state=active,activating --no-legend | wc -l`
       is below 4 (Nish 2026-09-22 11:20 IST: the Devin account is capped at 4 concurrent; 5 was over the cap), use `devin-issue@<repo>-N` (Devin SWE-2 Max, $0 on the account, proven headless
       2026-09-19); else if `systemctl --user list-units 'cursor-issue@*.service' --state=active,activating --no-legend | wc -l`
