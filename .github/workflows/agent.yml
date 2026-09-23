@@ -117,6 +117,31 @@ jobs:
           if gh pr view "$REF" -R "$REPO" --json state --jq .state | grep -qx OPEN; then
             gh pr merge "$REF" -R "$REPO" --auto
           fi
+      - name: Deliverable
+        if: steps.gate.outputs.go == 'true'
+        # A worker that exits 0 with no PR and no park leaves the issue claimed
+        # and this job green, so report never strikes it (fleet-ops#8461).
+        # Legit exit-0 paths in prompts/worker.md: closed (1b), parked with
+        # agent-blocked/needs-orchestrator/needs-nish-decision (2b, 4), a
+        # GitHub blocked_by dependency (4), or a PR on the claim branch.
+        run: |
+          t=$(gh token generate --app-id 4728578 --key "$HOME/.config/fleet-worker/nishfleet-worker.private-key.pem" --installation-id 156789042 --token-only)
+          echo "::add-mask::$t"
+          export GH_TOKEN=$t
+          i=${REF#claim/issue-}
+          issue=$(gh api "repos/$REPO/issues/$i")
+          [ "$(jq -r .state <<<"$issue")" = open ] || exit 0
+          [ "$(jq -r '.issue_dependencies_summary.blocked_by // 0' <<<"$issue")" = 0 ] || exit 0
+          labels=,$(jq -r '[.labels[].name]|join(",")' <<<"$issue"),
+          case $labels in *,agent-in-progress,*) ;; *) exit 0 ;; esac
+          for l in agent-blocked needs-orchestrator needs-nish-decision; do
+            case $labels in *",$l,"*) exit 0 ;; esac
+          done
+          if gh pr list -R "$REPO" --head "$REF" --state all --json state --jq '.[].state' | grep -qxE 'OPEN|MERGED'; then
+            exit 0
+          fi
+          echo "::error::worker exited 0 but #$i is still agent-in-progress with no open or merged PR and no park label"
+          exit 1
       - name: Clean workspace
         if: always()
         run: rm -rf "$HOME/workspaces/agent-worktrees/issue-${REPO#*/}-${REF#claim/issue-}"
