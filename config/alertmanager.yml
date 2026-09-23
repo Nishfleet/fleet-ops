@@ -8,11 +8,11 @@
 # Routing matrix (the contract this file locks):
 #   severity=nish      -> telegram (the phone), stop.   [Nish-reserved classes]
 #   severity=page      -> telegram (the phone), stop.   [e.g. RepairDispatchDown]
-#   severity=critical  -> repair-dispatch, continue.    [no phone]
-#   severity=warning   -> repair-dispatch, continue.    [no phone]
-#   severity=none      -> default receiver repair-dispatch (or 'null' for
+#   severity=critical  -> github-issues, continue.     [no phone]
+#   severity=warning   -> github-issues, continue.     [no phone]
+#   severity=none      -> default receiver github-issues (or 'null' for
 #                         Watchdog, which is matched first). [no phone]
-#   default (no match) -> repair-dispatch.
+#   default (no match) -> github-issues.
 #
 # Re-notification: group_interval 15m / repeat_interval 6h on every branch
 # except the phone (severity=page keeps group_interval 1m).
@@ -33,12 +33,7 @@
 # arrives with an empty body, and the changed fingerprint means the alert never
 # dedupes or resolves. Proven both ways 2026-09-18.
 #
-# Only severity=page and severity=nish reach the phone. critical/warning/none reach
-# repair path (am-executor runs `pi --print` with prompts/alert-repair.md), which repairs in place or
-# skips (SKIP_SET: Watchdog, FleetTestAlert, CanaryDrill,
-# WasteRatioRising). A repair worker never texts Nish; its outcome folds into
-# the daily digest. A page is reserved for the one meta-alert that means the
-# repair path itself is down (RepairDispatchDown) — the last resort.
+# Only severity=page and severity=nish reach the phone. Everything else becomes one GitHub issue per alertname in Nishfleet/fleet-ops, labelled from-alertmanager and closed on resolve (fleet-ops#8432). The orchestrator admits it like any other issue.
 #
 # Repo-ized so a hand-edit cannot drift the routing back to "everything pages"
 # (the 2026-08-28 leak this file replaced). copy it to /etc/prometheus/alertmanager.yml with
@@ -58,7 +53,7 @@ global:
 # The phone path keeps 1m: severity=page overrides group_interval below, so
 # RepairDispatchDown is never delayed by this budget.
 route:
-  receiver: repair-dispatch
+  receiver: github-issues
   group_by: ['alertname']
   group_wait: 10s
   group_interval: 15m
@@ -70,7 +65,7 @@ route:
       continue: false
     - matchers:
         - severity="critical"
-      receiver: repair-dispatch
+      receiver: github-issues
       continue: true
     - matchers:
         - severity="nish"
@@ -84,7 +79,7 @@ route:
       continue: false
     - matchers:
         - severity="warning"
-      receiver: repair-dispatch
+      receiver: github-issues
       continue: true
 
 receivers:
@@ -95,14 +90,7 @@ receivers:
         chat_id: 1144372019
         message: '[{{ .Status }}] {{ .CommonLabels.alertname }}: {{ .CommonAnnotations.summary }}'
         send_resolved: true
-  - name: repair-dispatch
+  - name: github-issues
     webhook_configs:
-      - url: 'http://127.0.0.1:9095/'
-        # fleet-ops#7414: resolved payloads now reach the wrapper, which
-        # short-circuits them in code and logs a real alert-triage row
-        # (jev_calls: 0) instead of this flag silently swallowing them.
-        # Apply ordering: merge am-executor-claim change -> fleet-sync pull ->
-        # executor restart -> copy this file -> reload alertmanager. Flipping
-        # this before the new wrapper is live would spawn repair sessions for
-        # resolved alerts (the old wrapper has no resolved check).
+      - url: 'http://127.0.0.1:9393/v1/receiver'
         send_resolved: true

@@ -102,6 +102,14 @@ Steps:
    `gh issue view <N> -R Nishfleet/<repo> --comments`, find its gate, and
    evaluate it:
 
+   - `agent-blocked` with no `blocked-on:` line, when
+     `issueDependenciesSummary.blockedBy > 0`: that GitHub dependency is the
+     gate. Read the count with `gh api graphql -f query='query($n:Int!){repository(owner:"Nishfleet",name:"<repo>"){issue(number:$n){issueDependenciesSummary{blockedBy}}}}' -F n=<N> --jq .data.repository.issue.issueDependenciesSummary.blockedBy`.
+     Greater than 0: release through the on-pass edit below,
+     evidence=`blockedBy=<count>`. Step 4 holds the `agent-ready` issue until
+     GitHub clears the count, which happens when the blocker closes. Do not
+     post `unparkable-gate` for a missing `blocked-on:` line in this case.
+     A count of 0, or a line that is present, falls through to the forms below.
    - `agent-blocked` → the latest unstruck `blocked-on:` line in the body or
      comments (`~~blocked-on: ...~~` is dead). Known forms:
      * An issue or PR ref — bare `#<n>`, `Nishfleet/<repo>#<n>` or a URL.
@@ -111,7 +119,9 @@ Steps:
        issue_id=<that id>` — and release; step 4's `blockedBy` filter holds
        it until GitHub clears the dependency (fleet-ops#8422). An open PR
        (GitHub refuses a PR as a blocker): stays parked until it merges.
-     * `re-open-<ISO8601>[-<smoke-name>]` — date gate. Future timestamp: stays
+     * `re-open-<ISO8601>[-<smoke-name>]` — the value writers post on a
+       `blocked-on: re-open-<ISO8601>[-<smoke-name>]` line. A comment whose
+       first token is `re-open-` does not match. Date gate. Future timestamp: stays
        parked, no comment. Past: run the named smoke if one is present —
        `<seat>-smoke-ok` passes when that seat's row in `curl -sL
        127.0.0.1:4000/metrics | grep litellm_deployment_state` reads 0 AND
@@ -153,7 +163,7 @@ Steps:
      returned>`.
    - **Unknown or missing gate → LOUD, never silent.** A `blocked-on:` value
      matching no form above, an `agent-blocked` issue with no `blocked-on:`
-     line, an `awaiting-runtime-gate` issue with an empty or absent
+     line and `blockedBy` of 0, an `awaiting-runtime-gate` issue with an empty or absent
      `termination:` clause, an unparseable `re-open-` timestamp, or a smoke
      name that maps to no live LiteLLM deployment: print `LOUD
      unparkable-gate <repo>#<N>: <the value>` AND post the same line as an
@@ -162,8 +172,9 @@ Steps:
      park forever.
    - **You never park.** This tick must not add `agent-blocked` or
      `awaiting-runtime-gate`, and must not remove `agent-ready` to hide an
-     issue. The only sanctioned park registrations are a `blocked-on:`
-     comment (worker) or an owner-authored `termination:` clause; any other
+     issue. The only sanctioned park registrations are a GitHub `blocked_by`
+     dependency (worker or opus-vet), a `blocked-on:` comment (legacy writer),
+     or an owner-authored `termination:` clause; any other
      state that hides an issue from the queue is the unknown-gate case above.
    - **Stale-claim sweep.** A `claim/issue-N` branch whose
      issue sits `agent-ready` with no live worker clogs the head of the
