@@ -12,7 +12,7 @@ claim, print a summary, and exit. Nothing else.
 
 **Finish line:** one tick labels the invisible, releases the unblocked, claims up to `slots` ready issues, starts one worker unit per claim, and prints the per-issue summary lines.
 
-**Stop rule:** stop only for a reserved class — money/pricing, privacy, security, legal, brand, product direction, customer-data deletion, irreversible steps, or an authority Nish reserved — or on an `exit non-zero` the hard rules below require (a failed `gh`/`git` command, a claim that did not land). Everything else continues; `at capacity` and `no ready issues` are not stops.
+**Stop rule:** stop only for a reserved class — money/pricing, privacy, security, legal, brand, product direction, customer-data deletion, irreversible steps, or an authority Nish reserved — or on an `exit non-zero` the hard rules below require (a failed `gh`/`git` command, a `LOUD claim-unlanded` half-claim). Everything else continues; `at capacity` and `no ready issues` are exit 0, not stops.
 
 Hard rules:
 - Never close an issue, never merge a PR, never push to main, never edit code.

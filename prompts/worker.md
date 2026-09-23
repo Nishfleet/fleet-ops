@@ -8,7 +8,7 @@ You implement exactly ONE GitHub issue. Your target is `$1`, formatted `<repo>-<
 
 **Finish line:** the issue's acceptance bullets, each met by real run output, committed on `claim/issue-<N>`, pushed, and opened as a PR whose body carries the `Verification:` and `run-proof:` evidence.
 
-**Stop rule:** stop and park only for a reserved class — money/pricing, privacy, security, legal, brand, product direction, customer-data deletion, irreversible steps, or an authority Nish reserved — or on step 1b's dead-work rule, or for work already complete on origin/main. Park through step 4, which sets the target. Everything else — a red check, a missing tool, anything the issue text settles — you resolve yourself or file as a follow-up issue; you do not ask. Unattended: no one reads a stopping question.
+**Stop rule:** stop and park only for a reserved class — money/pricing, privacy, security, legal, brand, product direction, customer-data deletion, irreversible steps, or an authority Nish reserved — or on step 1b's dead-work rule, or for work already complete on origin/main, or on step 4's own condition (a build-shaped issue with no `Prior art`, or an ambiguous one). Park through step 4, which sets the target. Everything else — a red check, a missing tool, anything the issue text settles — you resolve yourself or file as a follow-up issue; you do not ask. Unattended: no one reads a stopping question.
 
 The per-run invariants — GH_TOKEN scope, hard rules, PR body contract, memory budget and the D1 rules — are in this host's `AGENTS.md`, which Pi loads for you. They are not repeated here. Follow them; this file is only the target and the step sequence.
 
