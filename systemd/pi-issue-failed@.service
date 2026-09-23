@@ -1,5 +1,10 @@
 [Unit]
 Description=Release the claim after issue worker %i ends failed
+# A release that dies (11 of ~375 in the 48h to 2026-09-23, mostly a router
+# 429) strands its issue agent-in-progress with no worker, so it retries: the
+# release is safe to re-run. Four tries in 2h, then it stays in the failed list.
+StartLimitIntervalSec=2h
+StartLimitBurst=4
 # OnFailure= path of pi-issue@/devin-issue@/cursor-issue@/router-issue@.
 # The judgement now lives in prompts/claim-release.md (GLUE-ZERO organ 3):
 # a pi --print run on worker-cheap applies the four paid-for rules — the
@@ -29,3 +34,5 @@ WorkingDirectory=/home/nish
 # rather than silently falling back to Nish's gh login (trust-stack #8217).
 ExecStart=/bin/sh -c 'set -e; export GH_TOKEN=$(gh token generate --app-id $GH_APP_ID --key $GH_APP_KEY --installation-id $GH_APP_INST --token-only); : "$${GH_TOKEN:?mint failed}"; exec pi --print --session-dir "$HOME/.pi/agent/sessions/pi-issue-failed-$1" --provider litellm --model worker-cheap < "$HOME/.pi/agent/prompts/claim-release.md"' sh %i
 TimeoutStartSec=900
+Restart=on-failure
+RestartSec=5min
