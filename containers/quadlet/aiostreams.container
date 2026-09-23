@@ -1,0 +1,17 @@
+[Unit]
+Description=aiostreams (media streaming aggregator)
+
+[Container]
+Image=ghcr.io/viren070/aiostreams:latest
+ContainerName=aiostreams
+PublishPort=127.0.0.1:3000:3000
+Volume=/srv/aiostreams/data:/app/data
+EnvironmentFile=%h/.config/aiostreams/aiostreams.env
+
+[Service]
+MemoryMax=512M
+Restart=on-failure
+RestartSec=5s
+
+[Install]
+WantedBy=default.target

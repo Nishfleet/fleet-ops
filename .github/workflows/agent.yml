@@ -10,9 +10,17 @@ on:
         description: claim/issue-<N> branch the worker owns until merge
         type: string
         required: true
+
+  # Scheduled agents (fleet-ops#8433), replacing pi-scout@0509.timer and
+  # fleet-gardener.timer. Only fires on fleet-ops main; the jobs below tell a
+  # cron run from a workflow_call by the empty inputs.ref.
+  schedule:
+    - cron: '0 */4 * * *'   # scout, Nishfleet/0509
+    - cron: '0 4 * * 1'     # gardener, Mondays 09:30 IST
 permissions: {}
 jobs:
   work:
+    if: inputs.ref
     runs-on: [self-hosted, agent]
     timeout-minutes: 60
     concurrency:
@@ -145,6 +153,42 @@ jobs:
       - name: Clean workspace
         if: always()
         run: rm -rf "$HOME/workspaces/agent-worktrees/issue-${REPO#*/}-${REF#claim/issue-}"
+  scout:
+    if: ${{ !inputs.ref && github.event.schedule == '0 */4 * * *' }}
+    runs-on: [self-hosted, agent]
+    timeout-minutes: 180
+    concurrency:
+      group: scheduled-scout-0509
+      cancel-in-progress: false
+    steps:
+      - name: App token (key never leaves the VPS)
+        run: |
+          t=$(gh token generate --app-id 4728578 --key "$HOME/.config/fleet-worker/nishfleet-worker.private-key.pem" --installation-id 156789042 --token-only)
+          echo "::add-mask::$t"
+          echo "GH_TOKEN=$t" >> "$GITHUB_ENV"
+      - name: Scout 0509
+        # Transcript stays on the VPS. The supply:/scout-yield: lines are the
+        # completed-run signature (the old ExecStartPost abort gate,
+        # fleet-ops#7524); without one the job fails.
+        run: |
+          out="$RUNNER_TEMP/scout.out"
+          echo "/scout 0509" | pi --print \
+            --append-system-prompt "$HOME/workspaces/tooling/fleet-ops-deploy-clone/AGENTS.md" \
+            --session-dir "$HOME/.pi/agent/sessions/pi-scout-0509" \
+            --provider litellm --model worker-cheap > "$out"
+          grep -E 'supply:[[:space:]]*ready_count=[0-9]+|scout-yield:' "$out" ||
+            { echo "scout-abort-gate: no supply: line this run" >&2; exit 1; }
+  gardener:
+    if: ${{ !inputs.ref && github.event.schedule == '0 4 * * 1' }}
+    runs-on: [self-hosted, agent]
+    timeout-minutes: 45
+    env:
+      XDG_RUNTIME_DIR: /run/user/1000
+    steps:
+      - name: Gardener
+        # Same command as fleet-gardener.service: the box's own claude login
+        # and gh login, no App token. Transcript stays off the public log.
+        run: claude -p --model claude-opus-5-5 --dangerously-skip-permissions < "$HOME/workspaces/tooling/fleet-ops-deploy-clone/prompts/gardener.md" > /dev/null
   report:
     needs: work
     if: failure() || cancelled()
