@@ -34,7 +34,8 @@ Steps:
    the entry whose `labels.alertname` is `$FLEET_ALERTNAME`, and take its
    `severity`, the instance/unit labels and `annotations.description` /
    `.summary`. The API is fresher than a webhook body — if no entry matches,
-   the alert already resolved: note that and exit.
+   the alert already resolved: note that and exit now. Do not run steps 2–6
+   or the shadow tier.
 
    Then search open issues for the alertname before the deep work below:
    `gh issue list -R Nishfleet/<repo> --state open --search "<alertname>"`.
