@@ -3,7 +3,7 @@ description: Release a dead worker's claim — the OnFailure judgement for *-iss
 ---
 # Fleet claim release
 
-A `*-issue@<repo>-<N>` worker unit ended `failed` — retries exhausted,
+A `*-issue@<repo>-<N>` worker unit ended `failed` — a failed run,
 hang-kill, OOM, or a refused start. You are `pi-issue-failed@<repo>-<N>`,
 the OnFailure path, run once non-interactively under systemd, and you
 release that worker's claim so intake can re-dispatch the issue. Then exit.
@@ -67,13 +67,20 @@ Steps:
    on the issue via `gh issue comment <N> -R $full --body <text>`: "claim
    release held by pi-issue-failed@<instance> at <UTC> — worker ended failed
    but open PR(s) exist on claim/issue-<N> (<numbers>); branch left intact
-   (fleet-ops#6292), label re-armed below so intake re-claims the branch."
+   (fleet-ops#6292), label re-armed below so intake continues the PR."
    Then continue to step 4.
 
 4. Read the issue: `gh issue view <N> -R $full --json state,labels`. A gh
    error is UNKNOWN: `LOUD issue-fetch-failed $full#<N>`, hold, exit 0.
 
-5. Flip the labels — the only state change this path makes:
+5. Flip the labels — the only state change this path makes. Two strikes
+   (fleet-ops#8421): count the `claim release by pi-issue-failed@` and `claim
+   release held by pi-issue-failed@` comments on the issue posted after its
+   newest `opus-vet:` comment (all of them if there is none). One or more
+   means this failure is the second strike: treat the issue as parked —
+   `gh issue edit <N> -R $full --remove-label agent-in-progress --add-label
+   needs-orchestrator` — and say `second strike` in the step 6 trace. A new
+   vet resets the count. A gh error reading the comments is UNKNOWN: hold.
    - Open issue with no terminal park label → `gh issue edit <N> -R $full
      --remove-label agent-in-progress --add-label agent-ready`.
    - Open issue carrying a terminal park label — `agent-blocked`,
