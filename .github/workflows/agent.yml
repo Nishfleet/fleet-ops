@@ -1,0 +1,64 @@
+# The fleet's only dispatcher (fleet-ops#8429). GitHub owns the queue, the
+# per-issue lock (concurrency group), the timeout and the logs. Capacity is
+# the number of runners in the `agent` runner group, which only this workflow
+# may use.
+name: agent
+on:
+  workflow_call:
+    inputs:
+      ref:
+        description: claim/issue-<N> branch the worker owns until merge
+        type: string
+        required: true
+permissions: {}
+jobs:
+  work:
+    runs-on: [self-hosted, agent]
+    timeout-minutes: 60
+    concurrency:
+      group: agent-${{ github.repository }}-${{ inputs.ref }}
+      cancel-in-progress: false
+    env:
+      REPO: ${{ github.repository }}
+      REF: ${{ inputs.ref }}
+      GIT_AUTHOR_NAME: nishfleet-worker[bot]
+      GIT_AUTHOR_EMAIL: 321485391+nishfleet-worker[bot]@users.noreply.github.com
+      GIT_COMMITTER_NAME: nishfleet-worker[bot]
+      GIT_COMMITTER_EMAIL: 321485391+nishfleet-worker[bot]@users.noreply.github.com
+    steps:
+      - name: App token (key never leaves the VPS)
+        run: |
+          t=$(gh token generate --app-id 4728578 --key "$HOME/.config/fleet-worker/nishfleet-worker.private-key.pem" --installation-id 156789042 --token-only)
+          echo "::add-mask::$t"
+          echo "GH_TOKEN=$t" >> "$GITHUB_ENV"
+      - name: Branch
+        run: |
+          gh api "repos/$REPO/git/ref/heads/$REF" --silent 2>/dev/null ||
+            gh api "repos/$REPO/git/refs" -f ref="refs/heads/$REF" -f sha="$(gh api "repos/$REPO/git/ref/heads/main" --jq .object.sha)" --silent
+      - name: Worker
+        run: |
+          echo "/worker ${REPO#*/}-${REF#claim/issue-}" | pi --print \
+            --append-system-prompt "$HOME/workspaces/tooling/fleet-ops-deploy-clone/AGENTS.md" \
+            --session-dir "$HOME/.pi/agent/sessions/agent-${REPO#*/}-${REF#claim/issue-}" \
+            --exclude-tools subagent --provider litellm --model worker-capable
+      - name: Arm auto-merge as the App
+        run: |
+          if gh pr view "$REF" -R "$REPO" --json state --jq .state | grep -qx OPEN; then
+            gh pr merge "$REF" -R "$REPO" --auto
+          fi
+      - name: Clean workspace
+        if: always()
+        run: rm -rf "$HOME/workspaces/agent-worktrees/issue-${REPO#*/}-${REF#claim/issue-}"
+  report:
+    needs: work
+    if: failure() || cancelled()
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write
+    steps:
+      - env:
+          GH_TOKEN: ${{ github.token }}
+          N: ${{ inputs.ref }}
+        run: |
+          gh issue edit "${N#claim/issue-}" -R "$GITHUB_REPOSITORY" --add-label agent-failed
+          gh issue comment "${N#claim/issue-}" -R "$GITHUB_REPOSITORY" --body "agent run failed: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"

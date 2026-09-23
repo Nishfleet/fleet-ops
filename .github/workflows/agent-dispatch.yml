@@ -1,0 +1,30 @@
+# Events that put work on the agent queue. Repo variable AGENT_MODE:
+#   shadow (default) = only issues also labelled shadow-actions, no rework
+#   live             = every agent-ready issue, plus rework on red CI
+name: agent-dispatch
+on:
+  issues:
+    types: [labeled]
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
+permissions:
+  issues: write
+jobs:
+  new:
+    if: >-
+      github.event_name == 'issues' && github.event.label.name == 'agent-ready' &&
+      (vars.AGENT_MODE == 'live' || contains(github.event.issue.labels.*.name, 'shadow-actions'))
+    uses: Nishfleet/fleet-ops/.github/workflows/agent.yml@main
+    with:
+      ref: claim/issue-${{ github.event.issue.number }}
+  rework:
+    if: >-
+      vars.AGENT_MODE == 'live' && github.event_name == 'workflow_run' &&
+      github.event.workflow_run.conclusion == 'failure' &&
+      github.event.workflow_run.event == 'pull_request' &&
+      startsWith(github.event.workflow_run.head_branch, 'claim/issue-') &&
+      github.event.workflow_run.head_repository.full_name == github.repository
+    uses: Nishfleet/fleet-ops/.github/workflows/agent.yml@main
+    with:
+      ref: ${{ github.event.workflow_run.head_branch }}
