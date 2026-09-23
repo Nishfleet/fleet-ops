@@ -1,0 +1,29 @@
+# fleet-ops#8435: containerized twin of systemd/gh-runner@.service — the
+# official actions-runner image in ephemeral JIT mode. Additive pilot: the old
+# unit stays until Nish cuts over; nothing here is started or linked. The
+# host-side ExecStartPre mints the single-use JIT into the .jit.env file that
+# EnvironmentFile passes in; a fresh container needs no .runner cleanup and the
+# image ships run.sh. The token never echoes — written only to that env file.
+
+[Unit]
+Description=GitHub Actions ephemeral runner %i (Quadlet, fleet-ops#8435)
+StartLimitIntervalSec=120
+StartLimitBurst=4
+
+[Container]
+Image=ghcr.io/actions/actions-runner:2.337.0
+ContainerName=gh-runner-%i
+EnvironmentFile=%h/.local/share/actions-runner/%i/.jit.env
+Exec=/home/runner/run.sh
+
+[Service]
+ExecStartPre=/bin/bash -c 'd=%h/.local/share/actions-runner/%i; mkdir -p "$d"; tok=$(gh api -X POST orgs/Nishfleet/actions/runners/generate-jitconfig -f name=gh-runner-%i-$(date +%%s) -F runner_group_id=1 -f "labels[]=self-hosted" -f "labels[]=linux" -f "labels[]=x64" -f "labels[]=fleet-ci" --jq .encoded_jit_config) && { [ -n "$tok" ] && printf "ACTIONS_RUNNER_INPUT_JITCONFIG=%%s\n" "$tok" > "$d/.jit.env" && test -s "$d/.jit.env"; } || { echo "gh-runner: JIT registration failed (empty token / 422)" >&2; exit 1; }'
+Slice=fleet-ci.slice
+MemoryMax=3G
+Restart=always
+RestartSec=40
+TimeoutStartSec=300
+TimeoutStopSec=120
+
+[Install]
+WantedBy=default.target
