@@ -163,8 +163,14 @@ jobs:
         if: always()
         run: sudo install -D -m0755 /bin/true /home/nish/.local/bin/github_receiver
       - name: systemd-analyze verify over unit files
+        # nullglob: #8474 deleted the last systemd/*.path unit, and an unmatched
+        # glob reaches systemd-analyze as a literal filename -> rc 1. With
+        # nullglob an empty set expands to nothing and a future .path unit is
+        # verified again by this same line.
         if: always()
-        run: systemd-analyze verify --man=no systemd/*.service systemd/*.timer systemd/*.path systemd/*.slice
+        run: |
+          shopt -s nullglob
+          systemd-analyze verify --man=no systemd/*.service systemd/*.timer systemd/*.path systemd/*.slice
       - name: No shell ${...} or bare %s/%u/%h inside systemd Exec lines (fleet-ops#8382)
         # systemd expands ${...} and % specifiers itself, before any interpreter
         # runs, so the shell never sees them. Refused on Exec*= lines: `${` + a
