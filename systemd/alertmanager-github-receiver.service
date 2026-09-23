@@ -1,0 +1,11 @@
+[Unit]
+Description=Alertmanager -> GitHub issues receiver (fleet-ops#8432)
+After=fleet-gh-token.service
+
+[Service]
+ExecStart=/home/nish/.local/bin/github_receiver -authtoken-file=/run/user/1000/fleet-gh-token -org=Nishfleet -repo=fleet-ops -enable-auto-close -webhook.listen-address=127.0.0.1:9393 -prometheusx.listen-address=127.0.0.1:9990 -label=from-alertmanager
+Restart=on-failure
+RestartSec=30
+
+[Install]
+WantedBy=default.target
