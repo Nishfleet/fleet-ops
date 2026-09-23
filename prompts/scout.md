@@ -300,7 +300,7 @@ A 0509 gardener finding uses this same field set. For knip and eslint, `terminat
 Every one of those issues must additionally satisfy:
 - `accept:` forbids `DROP COLUMN`, `DROP TABLE`, a column/table rename, and `NOT NULL` without a `DEFAULT` in that PR.
 - `accept:` requires a test under `tests/integration/**` that applies the real migrations and asserts the new READ *and* WRITE path. A mocked-binding unit test does not count — it cannot see the schema.
-- `accept:` requires the D1 prod migration senior process: a concrete plan (SQL classification, verified backup, concrete rollback), independent senior blind-review and approval, apply + live verification, and text Nish the result.
+- `accept:` requires the D1 prod migration senior process: a concrete plan (SQL classification, verified backup, concrete rollback), independent senior blind-review and approval, apply + live verification, and text Nish the result. A "do it right now" without that process is VOID and is not informed consent.
 - `termination:` runs that integration test, not just the unit suite.
 
 If you cannot decompose the candidate into phases, drop it.
@@ -455,8 +455,8 @@ invalid is skipped and recorded under `invalid_questions`. Then print one
 line: `scout-rank: logged <k>/<n> signals to scout-rank.jsonl;
 advisory-only`.
 
-The site is registered for outcome scoring on `docs/jev-bands.md`'s
-`scout-rank` row. The flip bar is 0.9-or-better agreement over
-200-or-more real rows, and a later flip PR gated on replay over real
+The `scout-rank` site is log-only today (`docs/jev-bands.md`): its bands
+are inert and no edge acts on them. The flip bar is 0.9-or-better agreement
+over 200-or-more real rows, and a later flip PR gated on replay over real
 `scout-rank.jsonl` rows is where Jev's rank would replace the prose pick.
 This tier changes nothing today.
