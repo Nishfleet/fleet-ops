@@ -1,0 +1,20 @@
+# Fleet LiteLLM Redis, containerized (fleet-ops#8435). Additive twin of
+# systemd/fleet-litellm-redis.service: the live unit stays until the cutover.
+
+[Unit]
+Description=Fleet LiteLLM Redis (Quadlet, fleet-ops#8435)
+
+[Container]
+Image=docker.io/library/redis:7
+Network=host
+Volume=%h/.local/share/fleet-litellm-redis:/usr/local/etc/redis:ro,Z
+Exec=redis-server /usr/local/etc/redis/redis.conf
+
+[Service]
+Slice=app-litellm-redis.slice
+MemoryMax=256M
+Restart=on-failure
+RestartSec=2s
+
+[Install]
+WantedBy=default.target
