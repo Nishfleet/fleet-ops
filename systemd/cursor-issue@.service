@@ -10,7 +10,11 @@ AssertFileNotEmpty=/run/user/%U/fleet-gh-token.env
 Description=Cursor fleet issue worker %i (Grok 4.7 xhigh, headless cursor-agent CLI)
 # This unit IS the worker — no wrapper script. Same claim/PR/ExecStopPost
 # contract as pi-issue@.service; see that unit for the design comments.
-StartLimitIntervalSec=1h
+# 6h, not the 1h this lane kept (fleet-ops#8389): the 45min wall plus the
+# RestartSec steps puts three attempts ~109 min apart, so a 1h window never
+# counts 3 starts and StartLimitBurst=3 never fires. The window must exceed
+# 3 x wall for every lane, not just the Pi ones.
+StartLimitIntervalSec=6h
 StartLimitBurst=3
 # Permanent failure releases the claim via pi-issue-failed@ —
 # prompts/claim-release.md (fleet-ops#6292); see pi-issue@.service.
