@@ -17,7 +17,7 @@ The work loop: `pi-intake@<repo>.timer` and the `pi-intake-trigger@.path`
 units pick up `agent-ready` issues, spawn `pi-issue@<repo>-<N>` workers,
 workers open PRs on `claim/issue-<N>`, and the GitHub merge queue lands them.
 Alerts reach repair through `prometheus-am-executor` → `alert-repair@`.
-`daily-digest` and `fleet-gardener` are the scheduled read/janitor turns.
+The scout and `fleet-gardener` are scheduled jobs in `.github/workflows/agent.yml` (fleet-ops#8433); the daily view is the saved searches in the README.
 
 ## Model plane
 
