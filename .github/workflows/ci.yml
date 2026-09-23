@@ -162,6 +162,19 @@ jobs:
       - name: systemd-analyze verify over unit files
         if: always()
         run: systemd-analyze verify --man=no systemd/*.service systemd/*.timer systemd/*.path systemd/*.slice
+      - name: No shell ${...} or bare %s/%u/%h inside systemd Exec lines (fleet-ops#8382)
+        # systemd expands ${...} and % specifiers itself, before any interpreter
+        # runs, so the shell never sees them. Refused on Exec*= lines: `${` + a
+        # digit/#/% operator, and a bare %s, %u or %h in a `sh -c` string not
+        # written `%%`. `$VAR`, `${NAME}`, %i and `%h/` stay legal. rc: 0 is a
+        # match and 2 is a broken pattern — both fail; only rc 1 passes. Scope
+        # is #8382's: Exec*= lines only, continuation lines are #8393.
+        if: always()
+        run: |
+          rc=0
+          grep -rnE '^Exec[A-Za-z]*=(.*[^$]|)\$\{[0-9#%]|^Exec[A-Za-z]*=(.*[^A-Za-z0-9])?(sh|bash|zsh)[[:space:]]+-c[[:space:]].*([^%]%[su]|[^%]%h([^/]|$))' \
+            systemd || rc=$?
+          test "$rc" -eq 1
       - name: pi seat ids resolve to litellm-proxy.yaml model_name (fleet-ops#8332)
         if: always()
         run: jq -n -e --argjson ids "$(jq -c '[.providers.litellm.models[].id]' config/pi-models.json)" --argjson names "$(yq -o=json '[.model_list[].model_name]' config/litellm-proxy.yaml)" '($ids - $names) as $bad | if ($bad|length)==0 then true else error("unresolved pi seat ids - \($bad|join(","))") end'
