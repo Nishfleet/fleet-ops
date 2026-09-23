@@ -159,6 +159,9 @@ jobs:
       - name: stub cursor-agent for systemd-analyze verify (host-only binary)
         if: always()
         run: install -D -m0755 /bin/true "$HOME/.local/bin/cursor-agent"
+      - name: stub github_receiver for systemd-analyze verify (host-only binary)
+        if: always()
+        run: sudo install -D -m0755 /bin/true /home/nish/.local/bin/github_receiver
       - name: systemd-analyze verify over unit files
         if: always()
         run: systemd-analyze verify --man=no systemd/*.service systemd/*.timer systemd/*.path systemd/*.slice

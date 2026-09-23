@@ -10,3 +10,5 @@ Environment=HOME=/home/nish
 Environment=PATH=/home/nish/.local/bin:/usr/local/bin:/usr/bin:/bin
 UMask=0077
 ExecStart=/bin/sh -c 'printf "GH_TOKEN=%%s\n" "$(gh token generate --app-id 4728578 --key /home/nish/.config/fleet-worker/nishfleet-worker.private-key.pem --installation-id 156789042 --token-only)" > /run/user/1000/fleet-gh-token.env'
+ExecStartPost=/bin/sh -c 'sed -n "s/^GH_TOKEN=//p" /run/user/1000/fleet-gh-token.env > /run/user/1000/fleet-gh-token'
+ExecStartPost=/usr/bin/systemctl --user try-restart alertmanager-github-receiver.service
