@@ -19,6 +19,10 @@ on:
         description: 'TEMPORARY (fleet-ops#8475): runs the dispatch-proof job'
         required: false
         type: string
+      proof_done:
+        description: 'TEMPORARY (fleet-ops#8475): set by the probe so its own run skips it'
+        required: false
+        type: string
   # pull_request_target, not pull_request: pull_request never runs while a PR
   # has a merge conflict. No PR code is checked out or run here.
   pull_request_target:
