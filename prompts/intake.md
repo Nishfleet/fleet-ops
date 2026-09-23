@@ -1,4 +1,3 @@
-intake subs=1
 ---
 description: Label, order, claim and dispatch agent-ready issues for one Nishfleet repo
 argument-hint: "<repo>"
