@@ -223,23 +223,29 @@ groups:
       # Product0509* criticals fire continuously, masking real alerts. This
       # series exists for a probe target only while EVERY failed probe in
       # the last two hours answered 404 — positive proof that each failure
-      # is the route being absent, not a broken surface. The min/max pair
-      # requires all failure statuses in the window to be 404: a 5xx, the
-      # 410 proof-gate dark state, or a dead-ending 200 drops the park at
-      # once. The `unless` clause drops it too when a failure produced no
-      # status at all (transport/TLS/DNS failure — a real outage the
-      # exporter cannot explain away). The three alerts below `unless` on
-      # this series, so they park while the surface is deliberately gone
-      # and re-arm by themselves — including through a healthy re-ship,
-      # where stale 404-era zeros keep min_over_time true but every failure
-      # is still explained by absence. ProductCanaryProbeDown is not gated.
+      # is the route being absent (it does not prove the absence is
+      # deliberate — the time bound below is the off-switch for that).
+      # The min/max pair requires all failure statuses in the window to
+      # be 404: a 5xx, the 410 proof-gate dark state, or a dead-ending 200
+      # drops the park at once. The `unless` clause drops it too when a
+      # failure produced no status at all (transport/TLS/DNS failure — a
+      # real outage the exporter cannot explain away). The three alerts
+      # below `unless` on this series, so they park while the surface is
+      # deliberately gone and re-arm by themselves — including through a
+      # healthy re-ship, where stale 404-era zeros keep min_over_time true
+      # but every failure is still explained by absence. The park expires
+      # 2026-10-21T00:00Z: if the rebuild is still running then, the
+      # alerts resume and force a revisit rather than hiding an
+      # accidental route-drop forever. ProductCanaryProbeDown is not
+      # gated.
       - record: fleet0509_surface_absent
         expr: |
-          (min_over_time((probe_http_status_code{job=~"blackbox-0509-.*"} and on(instance, job) (probe_success{job=~"blackbox-0509-.*"} == 0))[2h:]) == 404
+          ((min_over_time((probe_http_status_code{job=~"blackbox-0509-.*"} and on(instance, job) (probe_success{job=~"blackbox-0509-.*"} == 0))[2h:]) == 404
           and
           max_over_time((probe_http_status_code{job=~"blackbox-0509-.*"} and on(instance, job) (probe_success{job=~"blackbox-0509-.*"} == 0))[2h:]) == 404)
           unless on(instance, job)
-          (sum_over_time(((probe_success{job=~"blackbox-0509-.*"} == bool 0) unless on(instance, job) probe_http_status_code{job=~"blackbox-0509-.*"})[2h:]) > 0)
+          (sum_over_time(((probe_success{job=~"blackbox-0509-.*"} == bool 0) unless on(instance, job) probe_http_status_code{job=~"blackbox-0509-.*"})[2h:]) > 0))
+          and on() (vector(time()) < 1792540800)
 
       - alert: Product0509TimelineDark
         expr: min_over_time(probe_success{job="blackbox-0509-timeline"}[1h]) == 0 unless on(instance, job) fleet0509_surface_absent{job="blackbox-0509-timeline"}
