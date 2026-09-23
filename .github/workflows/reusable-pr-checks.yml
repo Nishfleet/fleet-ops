@@ -113,20 +113,20 @@ jobs:
 
       - name: Set up Python
         if: inputs.python-version != '' && steps.changes.outputs.code == 'true'
-        uses: actions/setup-python@42375524e23c412d93fb67b49958b491fce71c38 # v5.4.0
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: ${{ inputs.python-version }}
 
       - name: Set up Node (with npm cache)
         if: inputs.node-version != '' && steps.changes.outputs.code == 'true' && inputs.install-command != ''
-        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: ${{ inputs.node-version }}
           cache: npm
 
       - name: Set up Node (no cache)
         if: inputs.node-version != '' && steps.changes.outputs.code == 'true' && inputs.install-command == ''
-        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: ${{ inputs.node-version }}
 
@@ -198,7 +198,7 @@ jobs:
 
       - name: Upload gitleaks SARIF (ephemeral)
         if: ${{ always() && inputs.scan-secrets }}
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: gitleaks-sarif
           path: results.sarif
