@@ -156,6 +156,22 @@ groups:
           summary: "a routed litellm deployment has been unhealthy for 10m+ and is not in a 429 cooldown the router is managing"
           description: "litellm_deployment_state > 0 sustained on a raw deployment row, with no 429 cooldown event in the last hour — a wall LiteLLM is not clearing by itself (fleet-ops#5792, #8398). Repair, in order: (1) GET /health with the master key to name the rung (unhealthy_endpoints) and probe it directly (chat AND tool_choice=required). (2) A 429 or quota wall that resets keeps its rung LIVE: put `cooldown_time` in that deployment's litellm_params, sized to the wall (parallel-cap 300, weekly trickle 900, hard daily/monthly reset 86400) so the router routes around it and re-probes it by itself. (3) Bench ONLY a wall that will not clear: 401, 402 with no stated renewal, 404, or model gone — add the entry to config/litellm-proxy.yaml's benched: block with a dated reason AND `retry_at:` (the provider's stated reset/renewal date, else now + 24h). (4) Arm the restore probe for that bench with the house one-shot pattern: systemd-run --user --collect --unit later-fleet-ops-<N> --on-calendar='<retry_at> Asia/Kolkata' -- gh issue edit <N> --repo Nishfleet/fleet-ops --add-label agent-ready, where <N> is a restore-probe issue filed at bench time. Restore only with a green probe cited in the PR."
 
+      # FleetWorkerLaneOutage (fleet-ops#7820): the whole worker lane is walled —
+      # no raw worker-cheap/worker-capable deployment row is healthy. Raw rows
+      # only (litellm_model_name contains "/"): alias rows pin at 2 after a
+      # cooldown and clear lazily (#7846), so they would lie. Unlike
+      # FleetLitellmDeploymentUnhealthy this does NOT exempt 429 cooldowns: a
+      # quota wall on every rung at once is exactly the outage (2026-09-19).
+      - alert: FleetWorkerLaneOutage
+        expr: min(litellm_deployment_state{model_id=~".+-worker-(cheap|capable)", litellm_model_name=~".*/.*"}) > 0
+        for: 30m
+        labels:
+          severity: critical
+          service: seat-proxy
+        annotations:
+          summary: "every worker-cheap/worker-capable deployment has been unhealthy for 30m+ — worker lane is down"
+          description: "min(litellm_deployment_state) over raw worker rows > 0 for 30m: no worker rung is healthy, so every pi-issue@ start dies on its first call (fleet-ops#7820). Repair, in order: (1) if ~/workspaces/agent-state/FLEET-PAUSED exists the fleet is deliberately down — stop. (2) GET /health with the master key and probe each worker rung directly (chat AND tool_choice=required); a green direct probe means the gauge is stale — never trust the gauge alone. (3) If every upstream answers a quota/subscription 429, seat supply is a money decision: record the probe results on the issue and route to Nish; do not add rungs or raise max_parallel_requests. (4) Once one rung is green again, XDG_RUNTIME_DIR=/run/user/$(id -u) systemctl --user reset-failed the pi-scout@/pi-intake-repair@ units that failed in the window."
+
   - name: fleet_backups
     rules:
       # Backups. Both series are written by /usr/local/sbin/restic-r2-restore-test

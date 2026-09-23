@@ -1,0 +1,39 @@
+# socat TCP 445 forward to the SMB Tailscale peer. Repo source of truth for
+# the live SMB forward unit on this box, renamed for what it does. Additive
+# only: this file changes nothing on the box — a later child does the cutover
+# (install to /etc/systemd/system/, enable, disable the old unit). Packet
+# fleet-ops#8490, parent #8435.
+#
+# Decision shipped with the packet: socat stays. Tailscale Serve/Funnel only
+# proxies backends on the local node, not another tailnet peer, and smbd runs
+# on the peer, not this VPS, so binding smbd to the tailnet address does not
+# apply. Only the name changes.
+[Unit]
+Description=socat TCP 445 forward to the SMB Tailscale peer
+After=network-online.target tailscaled.service smbd.service
+Wants=network-online.target tailscaled.service smbd.service
+
+[Service]
+Type=simple
+User=nobody
+Group=nogroup
+ExecStart=/usr/bin/socat TCP4-LISTEN:445,bind=100.108.184.97,reuseaddr,fork,range=100.120.128.16/32 TCP4:127.0.0.1:445
+Restart=on-failure
+RestartSec=5
+AmbientCapabilities=CAP_NET_BIND_SERVICE
+CapabilityBoundingSet=CAP_NET_BIND_SERVICE
+NoNewPrivileges=yes
+PrivateDevices=yes
+PrivateTmp=yes
+ProtectControlGroups=yes
+ProtectHome=yes
+ProtectKernelModules=yes
+ProtectKernelTunables=yes
+ProtectSystem=strict
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+RestrictAddressFamilies=AF_INET
+RestrictRealtime=yes
+
+[Install]
+WantedBy=multi-user.target
