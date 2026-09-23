@@ -28,29 +28,20 @@ jobs:
     steps:
       - name: Read App private key
         id: app-key
-        # The key file stays on the runner; it is not copied to an org secret.
-        # Mask each line first: the next step's public log prints action inputs.
         run: |
           keyfile="$HOME/.config/fleet-worker/nishfleet-worker.private-key.pem"
-          if [ ! -s "$keyfile" ]; then
-            echo "::error::app private key file missing on runner"
-            exit 1
-          fi
+          [ -s "$keyfile" ] || { echo "::error::app private key file missing on runner"; exit 1; }
           while IFS= read -r line || [ -n "$line" ]; do
-            if [ -n "$line" ]; then
-              printf '%s\n' "::add-mask::${line}"
-            fi
+            [ -n "$line" ] && echo "::add-mask::$line"
           done < "$keyfile"
-          delim="APP_PRIVATE_KEY_END"
+          delim=APP_PRIVATE_KEY_END
           {
-            printf '%s\n' "pem<<${delim}"
+            printf 'pem<<%s\n' "$delim"
             cat "$keyfile"
             printf '%s\n' "$delim"
           } >> "$GITHUB_OUTPUT"
       - name: App token
         id: app-token
-        # Installation-wide token: owner set, repositories unset. The post step
-        # revokes it after this job; the report job uses github.token.
         uses: actions/create-github-app-token@fee1f7d63c2ff003460e3d139729b119787bc349 # v2.2.2
         with:
           app-id: "4728578"
@@ -141,7 +132,6 @@ jobs:
       - name: App token for arm
         id: arm-token
         if: steps.gate.outputs.go == 'true'
-        # Fresh token: the first may be near its 1h expiry after a long run.
         uses: actions/create-github-app-token@fee1f7d63c2ff003460e3d139729b119787bc349 # v2.2.2
         with:
           app-id: "4728578"
@@ -163,10 +153,9 @@ jobs:
         # Legit exit-0 paths in prompts/worker.md: closed (1b), parked with
         # agent-blocked/needs-orchestrator/needs-nish-decision (2b, 4), a
         # GitHub blocked_by dependency (4), or a PR on the claim branch.
+        env:
+          GH_TOKEN: ${{ steps.arm-token.outputs.token }}
         run: |
-          t=$(gh token generate --app-id 4728578 --key "$HOME/.config/fleet-worker/nishfleet-worker.private-key.pem" --installation-id 156789042 --token-only)
-          echo "::add-mask::$t"
-          export GH_TOKEN=$t
           i=${REF#claim/issue-}
           issue=$(gh api "repos/$REPO/issues/$i")
           [ "$(jq -r .state <<<"$issue")" = open ] || exit 0
