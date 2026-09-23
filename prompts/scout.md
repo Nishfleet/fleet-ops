@@ -248,11 +248,11 @@ block is the supply bug this floor exists to prevent.
 
 ### B. Stale or conflicting PRs (SECOND)
 
-From the PR list: `mergeable:CONFLICTING` or open >3 days with clear product intent. Prefer "rebase-and-land or close with evidence" issues, not new implementation from scratch when a PR already exists.
+From the PR list: `mergeable:CONFLICTING` or open >3 days with clear product intent. Prefer "rebase-and-land or close with evidence" issues like #911–#916, not new implementation from scratch when a PR already exists.
 
 ## Step 3 — Issue body schema (every filed issue)
 
-Use this exact field set:
+Use this exact field set (quality bar: issues #911–#916 on Nishfleet/0509):
 
 ```
 metric: <what measurable thing must be true>
