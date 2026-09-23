@@ -448,14 +448,14 @@ one JSON object per signal as a single line to
 first, file mode 0600 — carrying `ts` (UTC), `site` `scout-rank`, `ref`
 `Nishfleet/<repo>:<signal-id>`, `state_sha256` (the sha256 of the posted
 body), `act_hi` 0.9 and `review_lo` 0.1 (the `scout-rank` row of
-`docs/jev-bands.md`), `answers` (the two answers that validated), `signal`,
+`docs/RUNBOOK.md`), `answers` (the two answers that validated), `signal`,
 `worker_picks`, `probes`, `advisory_only` true, `repo`, `run`, and `usage`
 and `ms` from the response. A signal whose two answers are both missing or
 invalid is skipped and recorded under `invalid_questions`. Then print one
 line: `scout-rank: logged <k>/<n> signals to scout-rank.jsonl;
 advisory-only`.
 
-The `scout-rank` site is log-only today (`docs/jev-bands.md`): its bands
+The `scout-rank` site is log-only today (`docs/RUNBOOK.md`): its bands
 are inert and no edge acts on them. The flip bar is 0.9-or-better agreement
 over 200-or-more real rows, and a later flip PR gated on replay over real
 `scout-rank.jsonl` rows is where Jev's rank would replace the prose pick.

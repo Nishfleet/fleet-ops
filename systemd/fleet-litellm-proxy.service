@@ -4,7 +4,7 @@ Documentation=https://github.com/Nishfleet/fleet-ops/issues/4130
 # Hard dependency: the venv + config must exist before we start, otherwise
 # the proxy exits at import time with a missing-config diagnostic. The
 # live install (apt + pip + start) is Nish-gated; this unit ships the
-# shape, the deploy is in docs/litellm-postgres-setup.md.
+# shape, the deploy is in docs/RUNBOOK.md.
 ConditionPathExists=%h/.config/fleet-ops/litellm-proxy.yaml
 # Hard dependency on the fleet-owned Postgres + Redis daemons (Nish,
 # 2026-09-07 reopen of fleet-ops#4174): the proxy is ordered After= both

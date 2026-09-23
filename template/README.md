@@ -19,7 +19,7 @@ change gets a `v2` branch and a new pin.
   `template/surface-audit.json` to the repo root, trim it to this product's
   matrix, and the reusable activates automatically. Repos without
   `surface-audit.json` self-skip with a notice, no Node install wasted.
-  See `docs/pending-surface-audit/README.md` for the design and
+  See `pending/surface-audit/README.md` for the design and
   Nishfleet/0509#1302 for the reference implementation.
 
 Replace the placeholder `verify-command` in `ci.yml` with this repo's real

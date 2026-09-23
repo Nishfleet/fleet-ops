@@ -169,7 +169,7 @@ model_list:
   # (the fleet-ops#7761 worker-group requirement).
   #
   # worker-capable ONLY, deliberately: judge and senior must stay a different model
-  # family from the builders (fleet-ops#8035, docs/TRUST-STACK.md §1), and putting
+  # family from the builders (fleet-ops#8035; docs/ARCHITECTURE.md), and putting
   # step-5 in both places would let a step-5 build be step-5-reviewed under
   # simple-shuffle. judge stays opencode-go deepseek-v4.1-flash; worker-cheap reaches
   # step-5 through the existing worker-cheap -> worker-capable fallback.

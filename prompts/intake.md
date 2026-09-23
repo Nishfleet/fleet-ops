@@ -65,7 +65,7 @@ Steps:
    `machine-reported` sits in the list above for the same reason `proposed`
    does: an open issue carrying it is a report, not a packet, and it is never
    `agent-ready` on arrival, whatever its author — the label is the gate
-   (0509 `docs/USER-REPORTS.md` §Admission; `docs/TRUST-STACK.md` §7.1). For each open issue carrying
+   (0509 `docs/USER-REPORTS.md` §Admission; the machine-reported rail below). For each open issue carrying
    `machine-reported` and no other label from the list above (an undecided
    report), ask Jev once — same POST shape, same key file, no new client:
    `curl -s 127.0.0.1:4000/jev -H "Authorization: Bearer $(grep -m1

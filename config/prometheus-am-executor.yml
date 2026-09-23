@@ -2,7 +2,7 @@
 listen_address: "127.0.0.1:9095"
 verbose: true
 commands:
-  # Third cut 2026-09-22 (fleet-ops#8051, design docs/GLUE-ZERO.md §2): the
+  # Third cut 2026-09-22 (fleet-ops#8051, design docs/ARCHITECTURE.md): the
   # dispatcher is one vendor command and the singleflight is systemd's own
   # job merging. A `start` on a unit that is `activating`/`active` merges
   # into the running job, and alert-repair@.service is Type=oneshot with a

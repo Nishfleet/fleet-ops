@@ -1,6 +1,6 @@
 [Unit]
 Description=Fleet alert repair agent for %i
-# fleet-ops#8051 (design docs/GLUE-ZERO.md §2): the alert->dispatch
+# fleet-ops#8051 (docs/ARCHITECTURE.md, GLUE-ZERO): the alert->dispatch
 # singleflight is systemd 255 job merging — one unit = at most one job, and a
 # `start` on an `activating`/`active` unit merges into the running job.
 # Type=oneshot without RemainAfterExit= goes activating -> dead, so the merge

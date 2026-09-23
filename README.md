@@ -70,7 +70,7 @@ ln -sfn /home/nish/workspaces/tooling/fleet-ops-deploy-clone/systemd/<unit>.serv
 
 Same idiom for a new Pi prompt (`~/.pi/agent/prompts/<x>.md`). One `ln -sfn`,
 once, and git owns it from then on. New scripts are not added at all: the
-glue-zero rule (docs/GLUE-ZERO.md) allows config values, unit lines and
+glue-zero rule (docs/ARCHITECTURE.md) allows config values, unit lines and
 prompt lines only — a stock feature replaces an organ or nothing does.
 
 ### The exceptions: files that must stay COPIES
@@ -256,11 +256,12 @@ of scope: they do not live in `session-*.scope`. `claim/issue-*` and
 
 `.github/workflows/ci.yml` runs two jobs on every PR and push to main:
 
-1. **ci** — stock checks: shellcheck on `systemd/*.sh` when any exist,
-   `promtool check rules config/fleet_rules.yml`, semgrep
-   `--config p/default`, a YAML parse of `config/*.yml`, a fail on any
-   workflow consuming a `secrets.*PAT` credential (fleet-ops#6793), and a
-   grep gate on `template/cursor-rules/shared-memory.mdc` that rejects the
+1. **ci** — stock checks: `promtool check rules config/fleet_rules.yml`, semgrep
+   `--config p/default`, the CI-gaming gates (agent attribution over the
+   commit range and PR text, the secret-expansion and auth-status greps),
+   `promtool`/`jq` config sanity, actionlint, shellcheck, systemd-analyze
+   verify over `systemd/`, and a grep gate on
+   `template/cursor-rules/shared-memory.mdc` that rejects the
    pre-#6610 universal approval gate and the deleted `memoryctl` mandate
    (fleet-ops#7803).
 2. **no-glue** — rejects any added script/helper/hook file (`bin/`,
@@ -342,9 +343,9 @@ machinery reads them.
 > by design.
 
 Single-VPS resilience is detection + repair, not a second copy of a
-stateless thing. The adopted-delta list and specs live in
-[docs/resilience-blueprint.md](docs/resilience-blueprint.md). The VNC
-break-glass runbook is [docs/break-glass-access.md](docs/break-glass-access.md).
+stateless thing; the rules are in
+[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md). The VNC
+break-glass runbook is [docs/RUNBOOK.md](docs/RUNBOOK.md).
 Keystone healthchecks.io URLs live in `~/.config/fleet-ops/keystone-hc.env`,
 consumed by the `10-keystone-hc.conf` drop-ins on `pi-intake@`/`pi-scout@`;
 an unset URL is a skip, a shared URL is a fail.
