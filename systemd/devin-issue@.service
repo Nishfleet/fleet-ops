@@ -92,15 +92,10 @@ ExecStopPost=-/bin/sh -c 'r=$(echo "$1" | sed "s/-[0-9][0-9]*$//"); systemctl --
 # claim/issue-<N> (merged PRs can delete the branch mid-run, fleet-ops#7783)
 # or claim commits ahead of the default branch; a missing branch is a
 # deliberate park and passes. exit 1 -> Result=exit-code -> `failed`, which
-# is what OnFailure=/Restart=/StartLimitBurst key off. Runs LAST so cleanup
+# is what OnFailure=/StartLimitBurst key off. Runs LAST so cleanup
 # and the intake refill run first; only checked on a success exit.
 TimeoutStopSec=180
 
-# Retry policy — systemd's own, not a counter in bash.
-Restart=on-failure
-RestartSec=240
-RestartSteps=3
-RestartMaxDelaySec=30min
 # Hang detection: a worker active longer than this is terminated into `failed`.
 # fleet-ops#8324: devin carried the largest share of the day's start-timeouts.
 # The class is the same as router-issue@ (full population analysis there), and

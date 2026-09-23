@@ -230,7 +230,10 @@ Steps:
    list again. Empty means print
    `no ready issues` and exit 0. DROP any issue that carries `noise-class`,
    `agent-blocked`, `awaiting-runtime-gate` or `needs-split`, or whose title starts with
-   `__scout_probe_`, even if it also carries `agent-ready`. Order them: issues labelled `priority-now` first (Nish's
+   `__scout_probe_`, even if it also carries `agent-ready`. Also DROP every issue
+   GitHub itself marks as waiting on an open blocker (fleet-ops#8422): one query,
+   `gh api graphql --paginate -f query='query($endCursor: String){repository(owner:"Nishfleet",name:"<repo>"){issues(labels:["agent-ready"],states:OPEN,first:100,after:$endCursor){nodes{number issueDependenciesSummary{blockedBy}} pageInfo{hasNextPage endCursor}}}}'`,
+   drops each node with `blockedBy > 0`. GitHub clears the count when the blocker closes, so no one releases it. Order them: issues labelled `priority-now` first (Nish's
    word, applied by him or by Fable on it),
    then `critical-path` or `escalate-senior`, then oldest-first by `createdAt`. After two
    critical-path claims in a row, take the oldest plain issue next so the tail
@@ -259,10 +262,14 @@ Steps:
       and skipping forever starves the issue every tick. Check the holder
       first: `systemctl --user list-units '*-issue@<repo>-N.service'
       --state=active,activating --no-legend` — any row means a live worker
-      owns the claim; skip. No rows → orphan: release it yourself, fail-closed:
-      `gh pr list -R Nishfleet/<repo> --head claim/issue-N --state open
-      --json number` must print `[]` (an open PR HOLDS the claim; skip);
-      if `gh api repos/Nishfleet/<repo>/compare/main...claim/issue-N --jq
+      owns the claim; skip. No rows → `gh pr list -R Nishfleet/<repo> --head
+      claim/issue-N --state open --json number`. An open PR means CONTINUE,
+      never skip and never reset: the issue is agent-ready again because its
+      PR needs more work (a D/F grade, a conflict, a dead worker). Skip c,
+      run d, run e with the body `continued by <engine>-issue-<repo>-N at
+      <UTC timestamp>; PR #<n>`, then f; the worker's step 2b continues that
+      PR (fleet-ops#8418). A gh error here is a real failure. `[]` → orphan:
+      release it yourself, fail-closed: if `gh api repos/Nishfleet/<repo>/compare/main...claim/issue-N --jq
       .ahead_by` is above 0, `git push origin
       refs/remotes/origin/claim/issue-N:refs/heads/wip/issue-N` first;
       then `git push origin --delete claim/issue-N` and post one comment
@@ -310,6 +317,6 @@ Steps:
       coincide spikes the slice and trips systemd-oomd.
    g. One slot used.
 
-6. Print one line per issue (`claimed+spawned` / `skipped-claim-lost` /
+6. Print one line per issue (`claimed+spawned` / `continued+spawned` / `skipped-claim-lost` /
    `skipped-capacity` / `skipped-noise-class`) and quote the `jev-order:`
    lines right after them, then exit 0.

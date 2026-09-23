@@ -1,7 +1,8 @@
 [Unit]
 Description=Pi fleet issue worker %i
 # This unit IS the worker — no wrapper script. ExecStart pipes Pi's /worker
-# prompt template into `pi --print`; retries/hang-kill are Restart= +
+# prompt template into `pi --print`; no Restart= (a failed run re-queues through
+# OnFailure and intake, fleet-ops#8421); hang-kill is
 # TimeoutStartSec=, and the seat is the PI_SEAT_PROVIDER/PI_SEAT_MODEL pair
 # below (2026-09-22: xai-oauth grok-4.7:xhigh — see the SEAT block). Until
 # then it was the LiteLLM `worker-capable` group; that group is still what
@@ -160,10 +161,5 @@ ExecStopPost=-/bin/sh -c 'r=$(echo "$1" | sed "s/-[0-9][0-9]*$//"); systemctl --
 ExecStopPost=/bin/sh -c '[ "$SERVICE_RESULT" = success ]||exit 0;r=Nishfleet/$${1%-*};b=claim/issue-$${1##*-};p=$(gh api "repos/$r/pulls?state=all&head=Nishfleet:$b" --jq length)||exit 1;[ "$p" -gt 0 ]&&exit 0;a=$(gh api "repos/$r/compare/main...$b" --jq .ahead_by);case "$a" in [1-9]*) exit 0;; *"Not Found"*) exit 0;; esac;echo "artifact-check $b: $a" >&2;exit 1' sh %i
 TimeoutStopSec=180
 
-# Retry policy — systemd's own, not a counter in bash.
-Restart=on-failure
-RestartSec=240
-RestartSteps=3
-RestartMaxDelaySec=30min
 # Hang detection: a worker active longer than this is terminated into `failed`.
 TimeoutStartSec=45min
