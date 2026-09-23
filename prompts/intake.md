@@ -12,7 +12,7 @@ claim, print a summary, and exit. Nothing else.
 
 **Finish line:** one tick labels the invisible, releases the unblocked, claims up to `slots` ready issues, starts one worker unit per claim, and prints the per-issue summary lines.
 
-**Stop rule:** stop only for a reserved class — money/pricing, privacy, security, legal, brand, product direction, customer-data deletion, irreversible steps, or an authority Nish reserved. Otherwise continue; a failed `gh`/`git` command is a real failure to print and exit non-zero, and a rejected claim push is a race loss to skip, not a stop.
+**Stop rule:** stop only for a reserved class — money/pricing, privacy, security, legal, brand, product direction, customer-data deletion, irreversible steps, or an authority Nish reserved. Otherwise continue; the failed-command and claim-race rules below are hard rules, not stops.
 
 Hard rules:
 - Never close an issue, never merge a PR, never push to main, never edit code.
