@@ -218,14 +218,8 @@
       "apiKey": "!cut -d= -f2- /home/nish/.config/fleet-ops/seats/opencode.env",
       "models": [
         {
-          "id": "claude-fable-5",
-          "name": "Claude Fable 5 via Zen",
-          "contextWindow": 200000,
-          "maxTokens": 32000
-        },
-        {
-          "id": "claude-opus-5",
-          "name": "Claude Opus 5 via Zen",
+          "id": "claude-opus-5-5",
+          "name": "Claude Opus 5.5 via Zen",
           "contextWindow": 200000,
           "maxTokens": 32000
         }
