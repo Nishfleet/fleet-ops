@@ -1,13 +1,15 @@
+# Fleet map maintenance.
+#
+# The regenerated map is published as a workflow artifact. It is never
+# committed and never becomes a pull request: a PR opened as github-actions
+# with GITHUB_TOKEN never enters the main merge queue, so map-sync PRs
+# stranded open forever (fleet-ops#8442). The push trigger is gone for the
+# same reason: claude-code-action rejects push outright
+# ("Unsupported event type: push", red on every push to main since
+# 2026-09-23), and drift no longer reaches main through this workflow.
 name: fleet-map
 
 on:
-  push:
-    branches:
-      - main
-    paths:
-      - 'systemd/**'
-      - 'prompts/**'
-      - 'config/**'
   pull_request:
     paths:
       - 'systemd/**'
@@ -65,7 +67,7 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
-          persist-credentials: true
+          persist-credentials: false
 
       - name: Regenerate drifted fleet-map rows
         uses: anthropics/claude-code-action@9ca9355b36297178e28d37c799d1c9c8a28e6507 # main 2026-09-22, Claude Code 2.1.280 (first to know claude-opus-5-5)
@@ -85,9 +87,8 @@ jobs:
             --model claude-opus-5-5
             --allowedTools "Read,Edit,Bash(git status:*),Bash(git diff:*)"
 
-      - name: Open a map-only pull request, or record no drift
-        env:
-          GH_TOKEN: ${{ github.token }}
+      - name: Record drift in the run summary, or record no drift
+        id: drift
         run: |
           set -eu
           sha=$(git rev-parse HEAD)
@@ -102,14 +103,14 @@ jobs:
             echo "no drift at $sha" >> "$GITHUB_STEP_SUMMARY"
             exit 0
           fi
-          branch="fleet-map-sync-${sha}-${GITHUB_RUN_ID}"
-          git checkout -B "$branch"
-          git add -- "$map"
-          git -c user.name='github-actions[bot]' -c user.email='41898282+github-actions[bot]@users.noreply.github.com' commit -m "sync the fleet map to the systemd tree"
-          git push --set-upstream origin HEAD
-          if [ "$GITHUB_EVENT_NAME" = "pull_request" ]; then
-            base="$GITHUB_HEAD_REF"
-          else
-            base="$GITHUB_REF_NAME"
-          fi
-          gh pr create --repo "$GITHUB_REPOSITORY" --base "$base" --head "$branch" --title "sync fleet map at ${sha}" --body "Map membership drifted at ${sha}. This pull request changes only .agents/skills/verify-fleet/fleet-map.md."
+          echo "map drift at $sha; the regenerated map is this run's artifact" >> "$GITHUB_STEP_SUMMARY"
+          echo "drift=true" >> "$GITHUB_OUTPUT"
+
+      - name: Publish the regenerated map as a workflow artifact
+        if: steps.drift.outputs.drift == 'true'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: fleet-map-drift
+          path: .agents/skills/verify-fleet/fleet-map.md
+          retention-days: 7
+          if-no-files-found: error
