@@ -15,6 +15,10 @@ on:
         description: 'Issue number to dispatch, overrides the sweep and its claim-PR append'
         required: false
         type: string
+      proof:
+        description: 'TEMPORARY (fleet-ops#8475): runs the dispatch-proof job'
+        required: false
+        type: string
   # pull_request_target, not pull_request: pull_request never runs while a PR
   # has a merge conflict. No PR code is checked out or run here.
   pull_request_target:
@@ -108,3 +112,22 @@ jobs:
     uses: Nishfleet/fleet-ops/.github/workflows/agent.yml@main
     with:
       ref: ${{ matrix.ref }}
+  # TEMPORARY: live proof for fleet-ops#8475, removed before its PR opens.
+  # This is the dispatch step opus-vet.yml's opus-size job runs, token class
+  # included (GH_TOKEN=github.token + actions: write), which is the stock
+  # exception the fix leans on: workflow_dispatch is the trigger GITHUB_TOKEN
+  # may start. The two gates make it non-recursive: the dispatch this job
+  # issues leaves `proof` unset, so the run it starts skips this job, and with
+  # --ref on the claim branch that run's list step takes the ISSUE path
+  # rather than sweeping main's agent-ready set.
+  dispatch-proof:
+    if: github.event_name == 'workflow_dispatch' && inputs.proof == 'yes' && inputs.proof_done != 'yes'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      actions: write
+    steps:
+      - name: Dispatch the issue the way opus-size does
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh workflow run agent-dispatch.yml -R "$GITHUB_REPOSITORY" --ref claim/issue-8475 -f issue=${{ inputs.issue }} -f proof_done=yes
