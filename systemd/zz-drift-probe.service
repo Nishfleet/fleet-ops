@@ -1,0 +1,5 @@
+[Unit]
+Description=Fleet-map drift probe for fleet-ops#8442: exists only so the map-sync run must append a row, deleted after the probe.
+[Service]
+Type=oneshot
+ExecStart=/bin/true
