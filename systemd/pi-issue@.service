@@ -13,11 +13,22 @@ Description=Pi fleet issue worker %i
 # --session-dir is load-bearing: Pi keys sessions per working directory, and
 # every unit starting in /home/nish shared one session pool — workers resumed
 # each other's transcripts and exited without touching the issue.
-# 6h, not 1h: three attempts of a 45-55min wall plus RestartSec steps span ~3h,
-# so a 1h window never saw 3 starts and a failing issue retried forever
-# (0509#3879 x7, #4251 x8 on 2026-09-23). The window must exceed 3 x wall.
-StartLimitIntervalSec=6h
-StartLimitBurst=3
+# Two strikes, absolute: StartLimitIntervalSec=infinity + StartLimitBurst=2.
+# A finite window is the wrong knob — its cap is "starts inside the window",
+# not a count of failures, so it neither bounds exactly nor holds across a
+# long retry span. Live 2026-09-23 (this fleet): under 1h/3 an ~85 min cycle
+# (55 min wall + RestartSec backoff) never put 3 starts inside 1h, and
+# router-issue@0509-4001 logged 14 starts between 2026-09-22 18:37 and
+# 2026-09-23 11:51 IST with no refusal at all; #8375's 6h window refused only
+# the 4th start inside it (13:16:26 IST) and re-arms after any 6h gap.
+# infinity makes the count permanent — man systemd.unit: infinity "limits the
+# total number of start attempts, even if they happen at large time
+# intervals" — so the 2nd failed attempt is the last: the unit lands in failed
+# and OnFailure=pi-issue-failed@%i takes over (claim release, then a flagship
+# re-dispatch or a park) instead of burning ~1 seat-hour per retry.
+# `systemctl --user reset-failed <unit>` re-arms it by hand.
+StartLimitIntervalSec=infinity
+StartLimitBurst=2
 # Permanent failure releases the claim: pi-issue-failed@ runs
 # prompts/claim-release.md — fail-closed open-PR check, HOLD on an open PR,
 # else agent-in-progress -> agent-ready, never deletes the branch
