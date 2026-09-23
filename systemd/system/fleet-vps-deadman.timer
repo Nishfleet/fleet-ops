@@ -1,0 +1,16 @@
+# Schedule for fleet-vps-deadman.service, the VPS dead-man ping to
+# healthchecks.io. Same cadence as the live unit it mirrors. The timer
+# triggers the service by name convention (fleet-vps-deadman.timer ->
+# fleet-vps-deadman.service), so no Unit= line is needed. Additive only: a
+# later child wires it at cutover. Packet fleet-ops#8490, parent #8435.
+[Unit]
+Description=Run the VPS dead-man ping every five minutes
+
+[Timer]
+OnBootSec=3min
+OnUnitActiveSec=5min
+RandomizedDelaySec=30s
+Persistent=true
+
+[Install]
+WantedBy=timers.target

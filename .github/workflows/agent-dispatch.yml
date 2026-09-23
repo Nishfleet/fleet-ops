@@ -108,3 +108,31 @@ jobs:
     uses: Nishfleet/fleet-ops/.github/workflows/agent.yml@main
     with:
       ref: ${{ matrix.ref }}
+  # A claim PR outlives its issue. Nothing closed the PR when the issue closed
+  # not-by-merge (0509 09-23: #4297 #4268 #4212 #4211 sat open until hand-closed),
+  # so those PRs blocked the queue noise for days. Close the open claim PR and
+  # delete its branch. Close-by-merge skips itself: a merged PR is not OPEN, so
+  # --state open finds nothing and the normal path is untouched. Not gated on
+  # AGENT_MODE: this removes work from the queue in every mode and dispatches
+  # nothing.
+  close-claim:
+    if: >-
+      github.event_name == 'issues' && github.event.action == 'closed'
+    runs-on: ubuntu-latest
+    permissions:
+      # pull-requests: write closes the PR; contents: write is what
+      # --delete-branch needs to delete the ref (fleet-ops#8457).
+      pull-requests: write
+      contents: write
+    steps:
+      - env:
+          GH_TOKEN: ${{ github.token }}
+          ISSUE: ${{ github.event.issue.number }}
+        run: |
+          for pr in $(gh pr list -R "$GITHUB_REPOSITORY" --head "claim/issue-$ISSUE" --state open --json number --jq '.[].number'); do
+            # Re-check: the one race this guards is a merge landing between the
+            # list and the close, which must skip, not fail.
+            gh pr view "$pr" -R "$GITHUB_REPOSITORY" --json state --jq .state | grep -qx OPEN || continue
+            gh pr close "$pr" -R "$GITHUB_REPOSITORY" --delete-branch \
+              --comment "issue #$ISSUE closed with this claim PR open; closing it here (fleet-ops#8457)"
+          done

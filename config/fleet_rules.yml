@@ -113,6 +113,22 @@ groups:
           summary: "LiteLLM seat proxy is down or unscrapeable"
           description: "up{job=\"litellm\"} is 0 or absent. Every pi worker routes through this proxy, so the whole fleet is stalled. Repair: systemctl --user status fleet-litellm-proxy, then journalctl --user -u fleet-litellm-proxy -n 100."
 
+      # FleetWorkerLaneOutage (fleet-ops#7820): the whole worker lane is walled —
+      # no raw worker-cheap/worker-capable deployment row is healthy. Raw rows
+      # only (litellm_model_name contains "/"): alias rows pin at 2 after a
+      # cooldown and clear lazily (#7846), so they would lie. Unlike
+      # FleetLitellmDeploymentUnhealthy this does NOT exempt 429 cooldowns: a
+      # quota wall on every rung at once is exactly the outage (2026-09-19).
+      - alert: FleetWorkerLaneOutage
+        expr: min(litellm_deployment_state{model_id=~".+-worker-(cheap|capable)", litellm_model_name=~".*/.*"}) > 0
+        for: 30m
+        labels:
+          severity: critical
+          service: seat-proxy
+        annotations:
+          summary: "every worker-cheap/worker-capable deployment has been unhealthy for 30m+ — worker lane is down"
+          description: "min(litellm_deployment_state) over raw worker rows > 0 for 30m: no worker rung is healthy, so every pi-issue@ start dies on its first call (fleet-ops#7820). Repair, in order: (1) if ~/workspaces/agent-state/FLEET-PAUSED exists the fleet is deliberately down — stop. (2) GET /health with the master key and probe each worker rung directly (chat AND tool_choice=required); a green direct probe means the gauge is stale — never trust the gauge alone. (3) If every upstream answers a quota/subscription 429, seat supply is a money decision: record the probe results on the issue and route to Nish; do not add rungs or raise max_parallel_requests. (4) Once one rung is green again, XDG_RUNTIME_DIR=/run/user/$(id -u) systemctl --user reset-failed the pi-scout@/pi-intake-repair@ units that failed in the window."
+
   - name: fleet_backups
     rules:
       # Backups. Both series are written by /usr/local/sbin/restic-r2-restore-test

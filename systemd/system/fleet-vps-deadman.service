@@ -1,0 +1,18 @@
+# VPS dead-man ping to healthchecks.io. Repo source of truth for the live
+# healthcheck unit on this box, renamed for what it does. Additive only: this
+# file changes nothing on the box — a later child does the cutover (install to
+# /etc/systemd/system/, enable, disable the old unit). Packet fleet-ops#8490,
+# parent #8435. The timer that drives it is fleet-vps-deadman.timer.
+#
+# The healthchecks.io ping URL / check UUID is secret-class and is never
+# committed: it lives in the EnvironmentFile. The cutover child provisions
+# /etc/fleet/deadman.env with HC_URL=<ping URL>, and systemd expands $HC_URL
+# into ExecStart below. The live unit already read its check URL from an env
+# file outside the repo, so nothing new is exposed and no value is copied here.
+[Unit]
+Description=VPS dead-man ping to healthchecks.io
+
+[Service]
+Type=oneshot
+EnvironmentFile=/etc/fleet/deadman.env
+ExecStart=/usr/bin/curl -fsS -m 10 --retry 3 $HC_URL
