@@ -55,7 +55,7 @@ MemorySwapMax=0
 # node_load15 sat at 16-17 against the 12 threshold with CPU 92% busy and
 # MemAvailable still a healthy 9-11 GiB. CPUQuota is the missing BOUND: it
 # caps one worker's aggregate CPU regardless of how many the RAM term admits.
-# Sizing from the declared ceiling in config/seat-caps.json (target_concurrent
+# Sizing from the declared ceiling (the runner count, #8429) (target_concurrent
 # 25): min(25, ram_governor) workers x quota <= nproc=8. 25% x 25 = 6.25 cores
 # (holds); 50% x 25 = 12.5 cores (still oversubscribed) so 50% was rejected.
 # This is a ceiling, not a serialiser: an idle box hands one worker a full

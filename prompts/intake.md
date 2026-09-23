@@ -206,7 +206,7 @@ Steps:
      `max_parallel_requests` sum over rungs that `litellm_deployment_state` shows healthy.
    - **Per-repo burst cap:** the optional map
      `tick_spawn_cap_by_repo` in
-     `/home/nish/workspaces/tooling/fleet-ops-deploy-clone/config/seat-caps.json`
+     `/home/nish/workspaces/tooling/fleet-ops-deploy-clone/config/intake-repos.json`
      bounds THIS repo's claims in one tick. If that file is absent there is
      no map — keep `slots` as computed. Otherwise read this repo's entry:
      `jq -r '.tick_spawn_cap_by_repo["<repo>"] // empty' <file>`. Empty
@@ -313,7 +313,7 @@ Steps:
       Engine: if `systemctl --user list-units 'devin-issue@*.service' --state=active,activating --no-legend | wc -l`
       is below 4 (the Devin account is capped at 4 concurrent), use `devin-issue@<repo>-N` (Devin SWE-2 Max, $0 on the account); else if `systemctl --user list-units 'cursor-issue@*.service' --state=active,activating --no-legend | wc -l`
       is below 1 (PACED: at 5 slots Cursor Ultra walls before its reset, so 1 slot stretches the quota), use `cursor-issue@<repo>-N` (Cursor Grok 4.7 xhigh; only grok-4.7-xhigh and kimi-k3-max on Cursor); else if `systemctl --user list-units 'pi-issue@*.service' --state=active,activating --no-legend | wc -l`
-      is below 10 (if a 402 "Grok Build usage balance exhausted" walls the lane, lower this number to 0 by PR until Nish restores the balance) AND `systemctl --user list-units 'router-issue@*.service' --state=active,activating --no-legend | wc -l` is not smaller, use `pi-issue@<repo>-N` (SuperGrok grok-4.7 xhigh via Pi's xai-oauth provider; max out the weekly quota); else if the router count is below `jq -r .router_lane_cap /home/nish/workspaces/tooling/fleet-ops-deploy-clone/config/seat-caps.json` (read it at tick time, never from memory: it is the sum of worker-capable max_parallel_requests in the live router yaml; a re-measure changes the JSON value, not this sentence), use `router-issue@<repo>-N` (LiteLLM worker-capable; Pareto and Stepfun must not sit unused); else `pi-issue@<repo>-N`. Net effect: the two Pi lanes alternate claim by claim, so short runs cannot starve the router seats. Then:
+      is below 10 (if a 402 "Grok Build usage balance exhausted" walls the lane, lower this number to 0 by PR until Nish restores the balance) AND `systemctl --user list-units 'router-issue@*.service' --state=active,activating --no-legend | wc -l` is not smaller, use `pi-issue@<repo>-N` (SuperGrok grok-4.7 xhigh via Pi's xai-oauth provider; max out the weekly quota); else if the router count is below `jq -r .router_lane_cap /home/nish/workspaces/tooling/fleet-ops-deploy-clone/config/intake-repos.json` (read it at tick time), use `router-issue@<repo>-N` (LiteLLM worker-capable; Pareto and Stepfun must not sit unused); else `pi-issue@<repo>-N`. Net effect: the two Pi lanes alternate claim by claim, so short runs cannot starve the router seats. Then:
       `systemctl --user list-units '<engine>-issue@<repo>-N.service'
        --state=active,activating --no-legend | grep -q . ||
        systemctl --user start --no-block <engine>-issue@<repo>-N.service`

@@ -87,11 +87,11 @@ jobs:
         # fail the tick LOUD at runtime; fail the PR here instead. `null`
         # also passes an explicitly nulled key — absent and null both mean
         # "no clamp" to the tick.
-        run: jq -e '.tick_spawn_cap_by_repo == null or (.tick_spawn_cap_by_repo | type == "object" and (to_entries | all(.value | type == "number" and . == floor and . >= 0)))' config/seat-caps.json
+        run: jq -e '.tick_spawn_cap_by_repo == null or (.tick_spawn_cap_by_repo | type == "object" and (to_entries | all(.value | type == "number" and . == floor and . >= 0)))' config/intake-repos.json
       - name: router_lane_cap is a whole number
         # prompts/intake.md reads this key at tick time to pick router-issue@; a
         # missing or malformed value would send every claim to the walled pi lane.
-        run: jq -e '.router_lane_cap | type == "number" and . == floor and . >= 0' config/seat-caps.json
+        run: jq -e '.router_lane_cap | type == "number" and . == floor and . >= 0' config/intake-repos.json
       - name: No timer-inventory signal emitters on committed surfaces
         # fleet-ops#7711: the ghost-timer signal family is extinct — every
         # emitter (the heartbeat tier-1 timer-arm pass, the drift canary, the
