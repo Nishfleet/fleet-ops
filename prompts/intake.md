@@ -55,8 +55,11 @@ Steps:
    `jev admit: p=<p>; Opus vets` — the label fires the product repo's `opus-vet` job
    (claude-code-action, Opus 5), which reads the issue against origin/main and admits, closes or parks it.
    Fable never reads the band; it reads only `opus-vet:` escalations.
-   p < 0.6, or any failure: leave `proposed`, add `needs-nish-decision`,
-   comment `jev admit: p=<p or unavailable>; to Nish with Fable's suggestion`
+   Any failure (no finite p): leave `proposed` and add nothing; the next tick
+   asks again, because an outage is not an opinion (2026-09-23: 4 issues sat
+   in Nish's queue as `p=unavailable` after /jev 503s).
+   p < 0.6: leave `proposed`, add `needs-nish-decision`,
+   comment `jev admit: p=<p>; to Nish with Fable's suggestion`
    — the same `opus-vet` job appends its one-line keep/close suggestion before
    Nish reads the `needs-nish-decision` queue. First opinion only; never re-ask, never invent a
    probability.
@@ -102,8 +105,13 @@ Steps:
 
    - `agent-blocked` → the latest unstruck `blocked-on:` line in the body or
      comments (`~~blocked-on: ...~~` is dead). Known forms:
-     * `Nishfleet/<repo>#<n>` / `owner/repo#n` / a GitHub issue-or-PR URL —
-       resolved when the target is CLOSED or MERGED.
+     * An issue or PR ref — bare `#<n>`, `Nishfleet/<repo>#<n>` or a URL.
+       CLOSED or MERGED: release. An open issue: move the wait into GitHub —
+       `gh api repos/Nishfleet/<repo>/issues/<n> --jq .id`, then `gh api
+       repos/Nishfleet/<repo>/issues/<N>/dependencies/blocked_by -F
+       issue_id=<that id>` — and release; step 4's `blockedBy` filter holds
+       it until GitHub clears the dependency (fleet-ops#8422). An open PR
+       (GitHub refuses a PR as a blocker): stays parked until it merges.
      * `re-open-<ISO8601>[-<smoke-name>]` — date gate. Future timestamp: stays
        parked, no comment. Past: run the named smoke if one is present —
        `<seat>-smoke-ok` passes when that seat's row in `curl -sL
