@@ -6,6 +6,10 @@ on:
   issues:
     types: [labeled, closed]
   workflow_dispatch:
+  # pull_request_target, not pull_request: pull_request never runs while a PR
+  # has a merge conflict. No PR code is checked out or run here.
+  pull_request_target:
+    types: [dequeued, auto_merge_disabled]
   workflow_run:
     workflows: [CI]
     types: [completed]
@@ -29,6 +33,17 @@ jobs:
     uses: Nishfleet/fleet-ops/.github/workflows/agent.yml@main
     with:
       ref: ${{ github.event.workflow_run.head_branch }}
+  # The merge queue ejected a claim PR (failed checks or a conflict), or its
+  # auto-merge was dropped: send the worker back to it.
+  ejected:
+    if: >-
+      vars.AGENT_MODE == 'live' && github.event_name == 'pull_request_target' &&
+      github.event.pull_request.state == 'open' &&
+      startsWith(github.event.pull_request.head.ref, 'claim/issue-') &&
+      github.event.pull_request.head.repo.full_name == github.repository
+    uses: Nishfleet/fleet-ops/.github/workflows/agent.yml@main
+    with:
+      ref: ${{ github.event.pull_request.head.ref }}
   # A closed blocker frees the issues it was blocking; a manual run sweeps
   # every ready, unblocked issue (cutover backfill and missed-event recovery).
   # Priority-now first, then oldest. The Gate step in agent.yml re-checks each.
