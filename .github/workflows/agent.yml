@@ -106,9 +106,9 @@ jobs:
         if: steps.gate.outputs.go == 'true'
         # Fresh token: the first one may be near its 1h expiry after a long run.
         run: |
-          GH_TOKEN=$(gh token generate --app-id 4728578 --key "$HOME/.config/fleet-worker/nishfleet-worker.private-key.pem" --installation-id 156789042 --token-only)
-          echo "::add-mask::$GH_TOKEN"
-          export GH_TOKEN
+          t=$(gh token generate --app-id 4728578 --key "$HOME/.config/fleet-worker/nishfleet-worker.private-key.pem" --installation-id 156789042 --token-only)
+          echo "::add-mask::$t"
+          export GH_TOKEN=$t
           if gh pr view "$REF" -R "$REPO" --json state --jq .state | grep -qx OPEN; then
             gh pr merge "$REF" -R "$REPO" --auto
           fi
