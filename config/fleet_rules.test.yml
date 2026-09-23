@@ -127,12 +127,16 @@ tests:
               summary: "0509 /search dead-ends entirely for known-alias-gap brand https://0509.io/search?q=oura&country=all"
               description: "Every probe in the last two hours of https://0509.io/search?q=oura&country=all returned no result row at all. These brands (oura Nishfleet/0509#1427, ridge Nishfleet/0509#2075) are KNOWN_ALIAS_GAPS: a blanket-Unmatched page is the named gap's expected symptom and deliberately does NOT alert. A DEAD-END does, because the guard's core promise is zero dead-end empty states. Repair: this is a recall regression, not the alias gap — check ad ingestion for the brand. A firing alert already excludes the rebuild's route-absent case: failures that are all 404s park this rule via fleet0509_surface_absent (Nishfleet/0509#4489), so if this fires some probe failed a different way and the dead-end is real."
 
-  # Test 7 — failure with no status sample at all: the gate's second
-  # clause drops the park on unexplained silence: must fire.
+  # Test 7 — 404 failures then failures with no status sample at all:
+  # clause A alone (all observed failure-statuses 404) would park this;
+  # only the second clause — dropping the park on unexplained silence —
+  # makes it fire.
   - interval: 30m
     input_series:
       - series: 'probe_success{instance="https://0509.io/search?q=oura&country=all",job="blackbox-0509-search-aliasgap"}'
         values: '0x5'
+      - series: 'probe_http_status_code{instance="https://0509.io/search?q=oura&country=all",job="blackbox-0509-search-aliasgap"}'
+        values: '404x3'
     alert_rule_test:
       - eval_time: 150m
         alertname: Product0509SearchAliasGapDeadEnd
