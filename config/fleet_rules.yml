@@ -218,8 +218,37 @@ groups:
 
   - name: product_surface
     rules:
+      # Rebuild park gate (Nishfleet/0509#4489): while the rebuild ships no
+      # /search or /timeline, every probe fails with a plain 404 and all 12
+      # Product0509* criticals fire continuously, masking real alerts. This
+      # series exists for a probe target only while EVERY failed probe in
+      # the last two hours answered 404 — positive proof that each failure
+      # is the route being absent (it does not prove the absence is
+      # deliberate — the time bound below is the off-switch for that).
+      # The min/max pair requires all failure statuses in the window to
+      # be 404: a 5xx, the 410 proof-gate dark state, or a dead-ending 200
+      # drops the park at once. The `unless` clause drops it too when a
+      # failure produced no status at all (transport/TLS/DNS failure — a
+      # real outage the exporter cannot explain away). The three alerts
+      # below `unless` on this series, so they park while the surface is
+      # deliberately gone and re-arm by themselves — including through a
+      # healthy re-ship, where stale 404-era zeros keep min_over_time true
+      # but every failure is still explained by absence. The park expires
+      # 2026-10-21T00:00Z: if the rebuild is still running then, the
+      # alerts resume and force a revisit rather than hiding an
+      # accidental route-drop forever. ProductCanaryProbeDown is not
+      # gated.
+      - record: fleet0509_surface_absent
+        expr: |
+          ((min_over_time((probe_http_status_code{job=~"blackbox-0509-.*"} and on(instance, job) (probe_success{job=~"blackbox-0509-.*"} == 0))[2h:]) == 404
+          and
+          max_over_time((probe_http_status_code{job=~"blackbox-0509-.*"} and on(instance, job) (probe_success{job=~"blackbox-0509-.*"} == 0))[2h:]) == 404)
+          unless on(instance, job)
+          (sum_over_time(((probe_success{job=~"blackbox-0509-.*"} == bool 0) unless on(instance, job) probe_http_status_code{job=~"blackbox-0509-.*"})[2h:]) > 0))
+          and on() (vector(time()) < 1792540800)
+
       - alert: Product0509TimelineDark
-        expr: min_over_time(probe_success{job="blackbox-0509-timeline"}[1h]) == 0
+        expr: min_over_time(probe_success{job="blackbox-0509-timeline"}[1h]) == 0 unless on(instance, job) fleet0509_surface_absent{job="blackbox-0509-timeline"}
         for: 5m
         labels:
           severity: critical
@@ -229,7 +258,7 @@ groups:
           description: "Every probe in the last hour of {{ $labels.instance }} failed: the page did not return 200 with BOTH the 'As of' retrieval affordance and a rendered f9-timeline-entry row. A 410 is the proof-gate dark state (rows stored but the public timeline filtered them out, issue #1284); a 200 with 'As of' but no entry row is the empty or D1-failure shell. This is the customer-visible promise of issue #1899 — a buyer follows a competitor and sees an empty ledger. Repair: check the nightly capture (runDemoBrandBackfill) and the proof gate."
 
       - alert: Product0509SearchTierRegression
-        expr: min_over_time(probe_success{job="blackbox-0509-search-tier"}[2h]) == 0
+        expr: min_over_time(probe_success{job="blackbox-0509-search-tier"}[2h]) == 0 unless on(instance, job) fleet0509_surface_absent{job="blackbox-0509-search-tier"}
         for: 5m
         labels:
           severity: critical
@@ -239,14 +268,14 @@ groups:
           description: "Every probe in the last two hours of {{ $labels.instance }} failed: the page rendered no 'f9-tier-badge is-verified' or 'is-likely' row. That is either a dead-end (no rows at all) or a blanket-Unmatched tier-label regression on a section 1.8 money-path brand (issue #1452). The free preview dead-ends for this brand. Repair: check search-v2 identity resolution and the tier-label path."
 
       - alert: Product0509SearchAliasGapDeadEnd
-        expr: min_over_time(probe_success{job="blackbox-0509-search-aliasgap"}[2h]) == 0
+        expr: min_over_time(probe_success{job="blackbox-0509-search-aliasgap"}[2h]) == 0 unless on(instance, job) fleet0509_surface_absent{job="blackbox-0509-search-aliasgap"}
         for: 5m
         labels:
           severity: critical
           service: 0509
         annotations:
           summary: "0509 /search dead-ends entirely for known-alias-gap brand {{ $labels.instance }}"
-          description: "Every probe in the last two hours of {{ $labels.instance }} returned no result row at all. These brands (oura Nishfleet/0509#1427, ridge Nishfleet/0509#2075) are KNOWN_ALIAS_GAPS: a blanket-Unmatched page is the named gap's expected symptom and deliberately does NOT alert. A DEAD-END does, because the guard's core promise is zero dead-end empty states. Repair: this is a recall regression, not the alias gap — check ad ingestion for the brand."
+          description: "Every probe in the last two hours of {{ $labels.instance }} returned no result row at all. These brands (oura Nishfleet/0509#1427, ridge Nishfleet/0509#2075) are KNOWN_ALIAS_GAPS: a blanket-Unmatched page is the named gap's expected symptom and deliberately does NOT alert. A DEAD-END does, because the guard's core promise is zero dead-end empty states. Repair: this is a recall regression, not the alias gap — check ad ingestion for the brand. A firing alert already excludes the rebuild's route-absent case: failures that are all 404s park this rule via fleet0509_surface_absent (Nishfleet/0509#4489), so if this fires some probe failed a different way and the dead-end is real."
 
       # The three rules above can only fire while the blackbox exporter is
       # actually scraped. If it stops, they all read as healthy forever —
