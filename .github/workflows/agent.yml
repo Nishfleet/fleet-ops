@@ -34,16 +34,35 @@ jobs:
       GIT_COMMITTER_NAME: nishfleet-worker[bot]
       GIT_COMMITTER_EMAIL: 321485391+nishfleet-worker[bot]@users.noreply.github.com
     steps:
-      - name: App token (key never leaves the VPS)
+      - name: Read App private key
+        id: app-key
         run: |
-          t=$(gh token generate --app-id 4728578 --key "$HOME/.config/fleet-worker/nishfleet-worker.private-key.pem" --installation-id 156789042 --token-only)
-          echo "::add-mask::$t"
-          echo "GH_TOKEN=$t" >> "$GITHUB_ENV"
+          keyfile="$HOME/.config/fleet-worker/nishfleet-worker.private-key.pem"
+          [ -s "$keyfile" ] || { echo "::error::app private key file missing on runner"; exit 1; }
+          while IFS= read -r line || [ -n "$line" ]; do
+            [ -n "$line" ] && echo "::add-mask::$line"
+          done < "$keyfile"
+          delim=APP_PRIVATE_KEY_END
+          {
+            printf 'pem<<%s\n' "$delim"
+            cat "$keyfile"
+            printf '%s\n' "$delim"
+          } >> "$GITHUB_OUTPUT"
+      - name: App token
+        id: app-token
+        uses: actions/create-github-app-token@fee1f7d63c2ff003460e3d139729b119787bc349 # v2.2.2
+        with:
+          app-id: "4728578"
+          private-key: ${{ steps.app-key.outputs.pem }}
+          owner: ${{ github.repository_owner }}
+          skip-token-revoke: "false"
       - name: Gate
         # The dispatch policy that prompts/intake.md used to carry, now in one
         # step: skip parked or blocked work, size unsized work (Jev first
         # opinion, else needs-split -> opus-vet), cap runs, then claim.
         id: gate
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
         run: |
           i=${REF#claim/issue-}
           skip() { echo "gate: skip ($1)"; echo go=false >> "$GITHUB_OUTPUT"; exit 0; }
@@ -87,6 +106,8 @@ jobs:
           echo go=true >> "$GITHUB_OUTPUT"
       - name: Branch
         if: steps.gate.outputs.go == 'true'
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
         run: |
           gh api "repos/$REPO/git/ref/heads/$REF" --silent 2>/dev/null ||
             gh api "repos/$REPO/git/refs" -f ref="refs/heads/$REF" -f sha="$(gh api "repos/$REPO/git/ref/heads/main" --jq .object.sha)" --silent
@@ -101,6 +122,7 @@ jobs:
         # Cursor lane, as cursor-issue@ did.
         env:
           ENGINE: ${{ steps.gate.outputs.engine }}
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
         run: |
           id=${REPO#*/}-${REF#claim/issue-}
           if [ "$ENGINE" = cursor ]; then
@@ -115,13 +137,20 @@ jobs:
               --session-dir "$HOME/.pi/agent/sessions/agent-$id" \
               --exclude-tools subagent --provider litellm --model worker-capable >/dev/null
           fi
+      - name: App token for arm
+        id: arm-token
+        if: steps.gate.outputs.go == 'true'
+        uses: actions/create-github-app-token@fee1f7d63c2ff003460e3d139729b119787bc349 # v2.2.2
+        with:
+          app-id: "4728578"
+          private-key: ${{ steps.app-key.outputs.pem }}
+          owner: ${{ github.repository_owner }}
+          skip-token-revoke: "false"
       - name: Arm auto-merge as the App
         if: steps.gate.outputs.go == 'true'
-        # Fresh token: the first one may be near its 1h expiry after a long run.
+        env:
+          GH_TOKEN: ${{ steps.arm-token.outputs.token }}
         run: |
-          t=$(gh token generate --app-id 4728578 --key "$HOME/.config/fleet-worker/nishfleet-worker.private-key.pem" --installation-id 156789042 --token-only)
-          echo "::add-mask::$t"
-          export GH_TOKEN=$t
           if gh pr view "$REF" -R "$REPO" --json state --jq .state | grep -qx OPEN; then
             gh pr merge "$REF" -R "$REPO" --auto
           fi
@@ -132,10 +161,9 @@ jobs:
         # Legit exit-0 paths in prompts/worker.md: closed (1b), parked with
         # agent-blocked/needs-orchestrator/needs-nish-decision (2b, 4), a
         # GitHub blocked_by dependency (4), or a PR on the claim branch.
+        env:
+          GH_TOKEN: ${{ steps.arm-token.outputs.token }}
         run: |
-          t=$(gh token generate --app-id 4728578 --key "$HOME/.config/fleet-worker/nishfleet-worker.private-key.pem" --installation-id 156789042 --token-only)
-          echo "::add-mask::$t"
-          export GH_TOKEN=$t
           i=${REF#claim/issue-}
           issue=$(gh api "repos/$REPO/issues/$i")
           [ "$(jq -r .state <<<"$issue")" = open ] || exit 0
