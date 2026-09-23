@@ -92,6 +92,7 @@ jobs:
         run: |
           id=${REPO#*/}-${REF#claim/issue-}
           if [ "$ENGINE" = cursor ]; then
+            set -a; . "$HOME/.config/fleet-ops/seats/cursor.env"; set +a
             mkdir -p "$HOME/workspaces/agent-worktrees/issue-$id"
             cursor-agent -p --output-format text --model grok-4.7-xhigh --force --trust \
               --workspace "$HOME/workspaces/agent-worktrees/issue-$id" \
