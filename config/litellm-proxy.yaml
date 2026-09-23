@@ -10,7 +10,7 @@
 #   ollama.com deepseek-v4-pro:0813 / kimi-k2.7-code    : 429 weekly usage limit (nishant345)
 #   alibaba qwen3.8-max                                 : 429 until 2026-09-14 (seat ledger) ; opencode-go : 402 until 2026-09-12T14:05Z ; mergegateway : quota_bench
 #   2026-09-13 (senior auditor, #6054 drill): openai/hf:zai-org/GLM-5.3-Flash @ api.synthetic.new : 429 subscription rate limits, ALL 4 deployments, 17:58Z→22:45Z+ (through the 03:32:59 IST reboot) — benched below.
-#   2026-09-14 (senior auditor, #6054 drill): openai/glm-5.3-flash @ api.llmgateway.io/v1 (DevPass) : BadRequestError "Dev Plan credit limit reached. Upgrade your plan or wait for renewal on 10/11/2026. Or enable pay-as-you-go overflow in your DevPass dashboard to keep going", BOTH deployments, continuous from 22:18Z (03:48 IST) — benched below.
+#   2026-09-23 (Nish, subscription cancelled, fleet-ops#8400): the DevPass metered-credit seat retired — every rung and bench entry dropped from this file and from the live config, and its credential file removed. Meet the retired-mechanisms ledger. Never re-wire.
 #   2026-09-14 (senior auditor, #6054 drill): openai/z-ai/glm-5.3-flash @ api.paretoinference.com : 503 ServiceUnavailableError "The model request failed." on /health AND 3x direct probe; CONTROL z-ai/glm-5.3 on the SAME account/key = 200 — model-specific upstream failure, not credit, not the #6427 1-3-tick burst class; continuous 23:34Z→ (05:04+ IST), #6427 300s hold crossed, canary trip 05:09 IST — benched below.
 #   2026-09-14 (fleet-ops#6732, pi-issue-fleet-ops-6732): RESTORED openai/hf:zai-org/GLM-5.3-Flash @ api.synthetic.new — direct chat/completions probes 6x HTTP 200 across 08:15-08:25Z (yesterday's 429 subscription wall cleared). Returns to its pre-#6193 placements (worker-cheap/worker-capable order:1, senior/worker-private order:2) so a single-upstream pareto wobble can no longer blank worker-cheap — the exact failure that killed agent-cron-0509-daily-market-signal 8x 12:00-13:46 IST.
 # 2026-09-19 (fleet-ops#7862): direct /chat/completions + tool_choice=ping against every live
@@ -338,18 +338,7 @@ benched:
     order: 3
     max_parallel_requests: 1
 - benched_at: 2026-09-14
-  reason: "openai/glm-5.3-flash @ https://api.llmgateway.io/v1 (LLMGATEWAY_DEVPASS_API_KEY, one account) — BadRequestError 'Dev Plan credit limit reached. Upgrade your plan or wait for renewal on 10/11/2026. Or enable pay-as-you-go overflow in your DevPass dashboard to keep going' on /health, BOTH deployments (the order:2 rungs of worker-cheap and worker-capable), continuous 22:18Z→ (2026-09-14 03:48-03:57+ IST, re-trip every tick). NOT the #6427 burst class: the zai burst holds at 00:42/01:04/03:42 IST each self-healed within 1-3 ticks; this is the #6054 dead-credit class — the canary's own 'bench them' verdict at 03:53 IST, 300s continuously-unhealthy tolerance crossed. Recipe = #6193. Renewal 10/11/2026 or pay-as-you-go overflow (money = Nish's call, NOT on this path). worker-cheap keeps nebius order:3 (caching, per #6436) + pareto order:4; worker-capable keeps pareto order:1 + nebius order:3; fallbacks intact. Restore ONLY with a green /health probe cited in the PR."
-  was: [worker-cheap, worker-capable]
-  litellm_params:
-    model: openai/glm-5.3-flash
-    api_base: https://api.llmgateway.io/v1
-    api_key: os.environ/LLMGATEWAY_DEVPASS_API_KEY
-    tags:
-    - prepaid
-    order: 2
-    max_parallel_requests: 1
-- benched_at: 2026-09-14
-  reason: "openai/z-ai/glm-5.3-flash @ https://api.paretoinference.com/v1 (PARETO_API_KEY, prepaid) — ServiceUnavailableError 503 'The model request failed.' on /health AND 3x direct probe (23:38-23:40Z), while the CONTROL z-ai/glm-5.3 on the SAME account/key returns 200 — model-specific upstream failure, NOT the account/credit class and NOT the #6427 1-3-tick burst class: continuously unhealthy from ~23:34Z (05:04 IST) through the #6427 300s tolerance, canary trip 05:09 IST (health-deployment-unhealthy 'bench them', fleet-ops#6054 drill, #5792 accept line). This was the LAST live glm-5.3-flash rung (the llmgateway DevPass rungs were benched earlier today, #6567). worker-cheap keeps nebius order:3 (caching, per #6436) as its only rung + fallbacks [worker-capable, senior] intact. Restore ONLY with a green /health probe cited in the PR (direct-probe z-ai/glm-5.3-flash @ pareto 200 first)."
+  reason: "openai/z-ai/glm-5.3-flash @ https://api.paretoinference.com/v1 (PARETO_API_KEY, prepaid) — ServiceUnavailableError 503 'The model request failed.' on /health AND 3x direct probe (23:38-23:40Z), while the CONTROL z-ai/glm-5.3 on the SAME account/key returns 200 — model-specific upstream failure, NOT the account/credit class and NOT the #6427 1-3-tick burst class: continuously unhealthy from ~23:34Z (05:04 IST) through the #6427 300s tolerance, canary trip 05:09 IST (health-deployment-unhealthy 'bench them', fleet-ops#6054 drill, #5792 accept line). This was the LAST live glm-5.3-flash rung once the retired DevPass rungs came off the worker-capable ladder (fleet-ops#8400). worker-cheap keeps nebius order:3 (caching, per #6436) as its only rung + fallbacks [worker-capable, senior] intact. Restore ONLY with a green /health probe cited in the PR (direct-probe z-ai/glm-5.3-flash @ pareto 200 first)."
   was: [worker-cheap]
   litellm_params:
     model: openai/z-ai/glm-5.3-flash
