@@ -1,5 +1,5 @@
 {
-  "description": "Declared set of Nishfleet repos enrolled in pi-intake/pi-scout. This is the single source of truth for which repos run intake — the intake reconciler (fleet-ops#32) converges systemd state to this file and only this file. A repo enrols by appearing in `repos`; the reconciler creates/enables its pi-intake@<repo>.timer + pi-scout@<repo>.timer. A repo leaves by being removed; the reconciler disables/masks-removes its units. No agent may enable or mask an intake unit directly — every change is a PR against this file, which is what makes enrolment legible instead of silent (the defect fleet-ops#32 was filed for). The optional `product` flag on a repos[] entry marks a repo as product work (customer-facing) as opposed to control plane; it is the gate lib/seat-lib.sh repo_is_product reads for seat-caps `product_only` seats (fleet-ops#3724). Absent or false means not-product — fail-closed, so a product_only metered seat can never serve fleet-ops or an unclassified repo.",
+  "description": "Declared set of Nishfleet repos enrolled in pi-intake/pi-scout. This is the single source of truth for which repos run intake — the intake reconciler (fleet-ops#32) converges systemd state to this file and only this file. A repo enrols by appearing in `repos`; the reconciler creates/enables its pi-intake@<repo>.timer + pi-scout@<repo>.timer. A repo leaves by being removed; the reconciler disables/masks-removes its units. No agent may enable or mask an intake unit directly — every change is a PR against this file, which is what makes enrolment legible instead of silent (the defect fleet-ops#32 was filed for). The optional `product` flag on a repos[] entry marks a repo as product work (customer-facing) as opposed to control plane. Absent or false means not-product.",
   "checkout_root": "/home/nish/workspaces/products",
   "required_labels": [
     "agent-ready",
@@ -78,5 +78,10 @@
       "name": "seo-fix-kit",
       "reason": "Campaign scope (decisions ledger 2026-08-25: '0509 gets all lanes for the transformation campaign; other repos maintenance-only'). Re-enrol via PR when Nish widens lanes. 0509-telemetry additionally: private DATA repo — enrolling a data sink in code intake is a category error. TinyStudio.io-public: legacy mirror. fleet-ops: control-plane work-generation paused (the 2026-08-25 evening produced 9 control-plane merges vs 0 product merges — the fleet2 self-maintenance pattern)."
     }
-  ]
+  ],
+  "tick_spawn_cap_by_repo": {
+    "fleet-ops": 12,
+    "0509": 12
+  },
+  "router_lane_cap": 22
 }
