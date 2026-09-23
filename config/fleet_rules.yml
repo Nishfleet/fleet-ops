@@ -2,10 +2,7 @@
 #
 # Glue sweep 2026-09-18 (exporter lane). This file went 67 rules -> 14.
 #
-# THE RULE FOR THIS FILE, and the only one: a rule lives here if and only if
-#   (a) it guards money, backups, the seat proxy, main-red, or product
-#       availability, AND
-#   (b) its expression is written on a metric a STOCK exporter already emits.
+# fleet-ops#8432: symptom alerts only - dead-man (Watchdog, receiver down, page rail down), money, router readiness, failed unit, disk above 85%, backup older than 26h, merge queue stalled. No cause-level or duplicate rules.
 #
 # Stock sources, proven present on this host 2026-09-18:
 #   litellm_*                     LiteLLM's own prometheus callback, 127.0.0.1:4000/metrics
@@ -102,8 +99,6 @@ groups:
           summary: "LiteLLM key {{ $labels.api_key_alias }} has under 10% of its budget left"
           description: "litellm_remaining_api_key_budget_metric for key alias {{ $labels.api_key_alias }} is below 10% of its max_budget. When it reaches zero LiteLLM hard-refuses the key and the fleet stalls. Money is Nish-reserved: raising a budget is his call, not the fleet's. Inspect with: curl -s 127.0.0.1:4000/key/info -H \"Authorization: Bearer $LITELLM_MASTER_KEY\"."
 
-      # Prepaid vendor credit is only visible through the vendor API, so it
-      # arrives via the one curl|jq textfile reader.
   - name: fleet_seat_proxy
     rules:
       # The seat proxy is the single routing organ. Nothing reaches a model
@@ -118,69 +113,21 @@ groups:
           summary: "LiteLLM seat proxy is down or unscrapeable"
           description: "up{job=\"litellm\"} is 0 or absent. Every pi worker routes through this proxy, so the whole fleet is stalled. Repair: systemctl --user status fleet-litellm-proxy, then journalctl --user -u fleet-litellm-proxy -n 100."
 
-      # FleetLitellmDeploymentUnhealthy fires only on a wall that will NOT
-      # clear by itself. litellm_deployment_state is the proxy's OWN metric
-      # (0 healthy, 1 partial, 2 complete). Raw health rows carry
-      # litellm_model_name = the provider/model string (always contains "/");
-      # the group-alias rows (worker-cheap, senior, ...) flap with every
-      # request-path cooldown and are excluded by the regex.
-      #
-      # fleet-ops#8398: a 429/quota wall resets (daily, or a 30-day cycle even
-      # if the day's budget was burned at once), so it must NOT page. The rung
-      # stays LIVE with its own `cooldown_time` in litellm_params; the router
-      # routes around it and re-probes it by itself. The `unless` matcher is
-      # the matcher-value fix (no new organ, stock metric): a deployment that
-      # produced a 429 cooldown event in the lookback window is already being
-      # handled by LiteLLM and is dropped from the alert. Two parts are
-      # load-bearing:
-      #   - exception_status="429" ONLY. LiteLLM cools a 401/404 down too
-      #     (router_utils/cooldown_handlers.py), so a cooldown-event match with
-      #     no status filter would silence every dead wall this alert exists to
-      #     catch. A dead 401/404 rung still pages.
-      #   - the window must be >= that deployment's cooldown_time, or the alert
-      #     re-fires between the cooldown's start and its expiry. The
-      #     alert-visible (slash-named) quota rungs carry cooldown_time 300s
-      #     (pareto) and 900s (synthetic); 1h is 4x the max. Widen this window
-      #     if a slash-named rung ever gets a longer cooldown_time.
-      #
-      # Bench only a wall that cannot clear by itself: 401, 402 with no stated
-      # renewal, 404, or model gone. Every bench entry records retry_at and
-      # arms a one-shot restore probe at retry_at (recipe in the description).
-      - alert: FleetLitellmDeploymentUnhealthy
-        expr: max((litellm_deployment_state{model_id!="", litellm_model_name=~".*/.*"} > 0) unless on(model_id) (increase(litellm_deployment_cooled_down_total{exception_status="429"}[1h]) > 0)) > 0
-        for: 10m
-        labels:
-          severity: critical
-          service: seat-proxy
-        annotations:
-          summary: "a routed litellm deployment has been unhealthy for 10m+ and is not in a 429 cooldown the router is managing"
-          description: "litellm_deployment_state > 0 sustained on a raw deployment row, with no 429 cooldown event in the last hour — a wall LiteLLM is not clearing by itself (fleet-ops#5792, #8398). Repair, in order: (1) GET /health with the master key to name the rung (unhealthy_endpoints) and probe it directly (chat AND tool_choice=required). (2) A 429 or quota wall that resets keeps its rung LIVE: put `cooldown_time` in that deployment's litellm_params, sized to the wall (parallel-cap 300, weekly trickle 900, hard daily/monthly reset 86400) so the router routes around it and re-probes it by itself. (3) Bench ONLY a wall that will not clear: 401, 402 with no stated renewal, 404, or model gone — add the entry to config/litellm-proxy.yaml's benched: block with a dated reason AND `retry_at:` (the provider's stated reset/renewal date, else now + 24h). (4) Arm the restore probe for that bench with the house one-shot pattern: systemd-run --user --collect --unit later-fleet-ops-<N> --on-calendar='<retry_at> Asia/Kolkata' -- gh issue edit <N> --repo Nishfleet/fleet-ops --add-label agent-ready, where <N> is a restore-probe issue filed at bench time. Restore only with a green probe cited in the PR."
-
   - name: fleet_backups
     rules:
       # Backups. Both series are written by /usr/local/sbin/restic-r2-restore-test
       # into restic-restore-test.prom — a restic textfile, independent of any
       # fleet exporter.
       - alert: ResticRestoreProofStale
-        expr: (time() - fleet_restore_drill_last_success_seconds > 28800) or absent(fleet_restore_drill_last_success_seconds)
+        expr: (time() - fleet_restore_drill_last_success_seconds > 93600) or absent(fleet_restore_drill_last_success_seconds)
         for: 15m
         labels:
           severity: critical
           service: backups
         annotations:
-          summary: "no proven restic restore in 8+ hours"
-          description: "restic-r2-restore-test.timer runs every 6h and only writes fleet_restore_drill_last_success_seconds after a --verify restore actually succeeds. Stale means the backup is unproven, which is the same risk as no backup. Repair: systemctl start restic-r2-restore-test.service and read its journal."
+          summary: "no proven restic restore in 26+ hours"
+          description: "fleet_restore_drill_last_success_seconds is older than 26h or absent, so the backup is unproven. Repair: systemctl start restic-r2-restore-test.service and read its journal."
 
-      # Restored 2026-09-19 (claude-vps "verify", glue sweep). f65e812c4 cut this
-      # with 52 others, but it belongs to the classes the exporter cut KEPT: it
-      # guards a live prepaid seat, and it rides a stock metric -- the script
-      # writes fleet_grok_token_refresh_last_success_seconds into node_exporter's
-      # textfile collector (/var/lib/prometheus/node-exporter/
-      # fleet-grok-token-refresh.prom), scraped and queryable now. No fleet
-      # exporter is involved. grok-token-refresh.service is a USER timer, so
-      # node_exporter's systemd collector (system units only) cannot see it --
-      # this textfile metric is the only signal that the timer still runs, and
-      # the seat 401s within 6h of it stopping.
   - name: fleet_host
     rules:
       # Host rules are here because a full disk or an exhausted machine takes
@@ -197,95 +144,23 @@ groups:
           description: "Root-level systemd unit {{ $labels.name }} is in failed state. Repair: systemctl status {{ $labels.name }} and journalctl -u {{ $labels.name }} -n 100."
 
       - alert: DiskAlmostFull
-        expr: (node_filesystem_avail_bytes{fstype!~"tmpfs|overlay"} / node_filesystem_size_bytes) < 0.10
+        expr: (node_filesystem_avail_bytes{fstype!~"tmpfs|overlay"} / node_filesystem_size_bytes) < 0.15
         for: 10m
         labels:
           severity: critical
           service: host
         annotations:
-          summary: "filesystem {{ $labels.mountpoint }} below 10% free"
+          summary: "filesystem {{ $labels.mountpoint }} above 85% used"
           description: "A full disk fails the restic backup and the LiteLLM postgres write path. Repair: reclaim space, starting with agent worktrees under ~/workspaces/agent-worktrees."
 
-      - alert: MemoryPressureHigh
-        expr: (node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes) < 0.08
+  - name: fleet_queue
+    rules:
+      - alert: FleetMergeQueueStalled
+        expr: max(ci_merge_queue_head_wait_seconds) > 3600
         for: 15m
         labels:
-          severity: critical
-          service: host
+          severity: warning
+          service: queue
         annotations:
-          summary: "under 8% memory available"
-          description: "systemd-oomd starts reaping at this point, and it does not preferentially spare the seat proxy or postgres. Repair: check the pi-issue@ worker count against the 25-worker cap in the intake prompt."
-
-  - name: product_surface
-    rules:
-      # Rebuild park gate (Nishfleet/0509#4489): while the rebuild ships no
-      # /search or /timeline, every probe fails with a plain 404 and all 12
-      # Product0509* criticals fire continuously, masking real alerts. This
-      # series exists for a probe target only while EVERY failed probe in
-      # the last two hours answered 404 — positive proof that each failure
-      # is the route being absent (it does not prove the absence is
-      # deliberate — the time bound below is the off-switch for that).
-      # The min/max pair requires all failure statuses in the window to
-      # be 404: a 5xx, the 410 proof-gate dark state, or a dead-ending 200
-      # drops the park at once. The `unless` clause drops it too when a
-      # failure produced no status at all (transport/TLS/DNS failure — a
-      # real outage the exporter cannot explain away). The three alerts
-      # below `unless` on this series, so they park while the surface is
-      # deliberately gone and re-arm by themselves — including through a
-      # healthy re-ship, where stale 404-era zeros keep min_over_time true
-      # but every failure is still explained by absence. The park expires
-      # 2026-10-21T00:00Z: if the rebuild is still running then, the
-      # alerts resume and force a revisit rather than hiding an
-      # accidental route-drop forever. ProductCanaryProbeDown is not
-      # gated.
-      - record: fleet0509_surface_absent
-        expr: |
-          ((min_over_time((probe_http_status_code{job=~"blackbox-0509-.*"} and on(instance, job) (probe_success{job=~"blackbox-0509-.*"} == 0))[2h:]) == 404
-          and
-          max_over_time((probe_http_status_code{job=~"blackbox-0509-.*"} and on(instance, job) (probe_success{job=~"blackbox-0509-.*"} == 0))[2h:]) == 404)
-          unless on(instance, job)
-          (sum_over_time(((probe_success{job=~"blackbox-0509-.*"} == bool 0) unless on(instance, job) probe_http_status_code{job=~"blackbox-0509-.*"})[2h:]) > 0))
-          and on() (vector(time()) < 1792540800)
-
-      - alert: Product0509TimelineDark
-        expr: min_over_time(probe_success{job="blackbox-0509-timeline"}[1h]) == 0 unless on(instance, job) fleet0509_surface_absent{job="blackbox-0509-timeline"}
-        for: 5m
-        labels:
-          severity: critical
-          service: 0509
-        annotations:
-          summary: "0509 /timeline is dark for {{ $labels.instance }}"
-          description: "Every probe in the last hour of {{ $labels.instance }} failed: the page did not return 200 with BOTH the 'As of' retrieval affordance and a rendered f9-timeline-entry row. A 410 is the proof-gate dark state (rows stored but the public timeline filtered them out, issue #1284); a 200 with 'As of' but no entry row is the empty or D1-failure shell. This is the customer-visible promise of issue #1899 — a buyer follows a competitor and sees an empty ledger. Repair: check the nightly capture (runDemoBrandBackfill) and the proof gate."
-
-      - alert: Product0509SearchTierRegression
-        expr: min_over_time(probe_success{job="blackbox-0509-search-tier"}[2h]) == 0 unless on(instance, job) fleet0509_surface_absent{job="blackbox-0509-search-tier"}
-        for: 5m
-        labels:
-          severity: critical
-          service: 0509
-        annotations:
-          summary: "0509 /search renders no verified/likely row for {{ $labels.instance }}"
-          description: "Every probe in the last two hours of {{ $labels.instance }} failed: the page rendered no 'f9-tier-badge is-verified' or 'is-likely' row. That is either a dead-end (no rows at all) or a blanket-Unmatched tier-label regression on a section 1.8 money-path brand (issue #1452). The free preview dead-ends for this brand. Repair: check search-v2 identity resolution and the tier-label path."
-
-      - alert: Product0509SearchAliasGapDeadEnd
-        expr: min_over_time(probe_success{job="blackbox-0509-search-aliasgap"}[2h]) == 0 unless on(instance, job) fleet0509_surface_absent{job="blackbox-0509-search-aliasgap"}
-        for: 5m
-        labels:
-          severity: critical
-          service: 0509
-        annotations:
-          summary: "0509 /search dead-ends entirely for known-alias-gap brand {{ $labels.instance }}"
-          description: "Every probe in the last two hours of {{ $labels.instance }} returned no result row at all. These brands (oura Nishfleet/0509#1427, ridge Nishfleet/0509#2075) are KNOWN_ALIAS_GAPS: a blanket-Unmatched page is the named gap's expected symptom and deliberately does NOT alert. A DEAD-END does, because the guard's core promise is zero dead-end empty states. Repair: this is a recall regression, not the alias gap — check ad ingestion for the brand. A firing alert already excludes the rebuild's route-absent case: failures that are all 404s park this rule via fleet0509_surface_absent (Nishfleet/0509#4489), so if this fires some probe failed a different way and the dead-end is real."
-
-      # The three rules above can only fire while the blackbox exporter is
-      # actually scraped. If it stops, they all read as healthy forever —
-      # the same blind spot FleetProbeStale closes for fleet.prom.
-      - alert: ProductCanaryProbeDown
-        expr: min_over_time(up{job=~"blackbox-0509-.*"}[1h]) == 0
-        for: 10m
-        labels:
-          severity: critical
-          service: 0509
-        annotations:
-          summary: "blackbox canary job {{ $labels.job }} has not scraped successfully in an hour"
-          description: "While this fires, Product0509TimelineDark, Product0509SearchTierRegression and Product0509SearchAliasGapDeadEnd cannot fire and the 0509 public surface is UNGUARDED. Repair: systemctl status prometheus-blackbox-exporter (listens on 127.0.0.1:9115)."
+          summary: "merge queue head has waited over 1h"
+          description: "ci_merge_queue_head_wait_seconds is above 3600 for 15m, so nothing is landing. Repair: open the merge queue for the repo and read the head PR's checks."
