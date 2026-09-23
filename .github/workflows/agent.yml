@@ -63,6 +63,7 @@ jobs:
         # (a fresh vet resets the count, same as prompts/claim-release.md step 5).
         run: |
           i=${N#claim/issue-}
+          # shellcheck disable=SC2016 # $v is a jq variable
           prior=$(gh issue view "$i" -R "$GITHUB_REPOSITORY" --json comments --jq '[.comments[].body] | (map(startswith("opus-vet:")) | rindex(true) // -1) as $v | .[$v+1:] | map(select(startswith("agent run failed:"))) | length')
           gh issue comment "$i" -R "$GITHUB_REPOSITORY" --body "agent run failed: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
           if [ "$prior" -ge 1 ]; then
