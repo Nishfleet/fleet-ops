@@ -239,14 +239,14 @@ Steps:
 5. **Claim, in order, while slots remain.** Do the commands — do not describe
    what you would do, and do not stop to re-check capacity between issues; you
    computed slots in step 3.
-   **Size gate first (Nish 2026-09-23: "smaller packets that don't require as much judgement" — more PRs, far fewer failures).**
+   **Size gate first (smaller packets that need less judgement — more PRs, far fewer failures).**
    An issue carrying `cheap-ok` or `strong-only` is already sized; go on. Otherwise ask Jev once — same key file and POST as step 1,
    `state` = `{"issue": <ref, title and full body>}`, `questions` = `{"cheap_ok": {"type": "boolean", "instructions":
    "Is this ONE small change (roughly 1-4 files, one behaviour, done in one sitting) whose steps and acceptance are already
    spelled out, so the builder only has to follow them? Answer no if it bundles several deliverables, asks the builder to
    discover or fix whatever turns up, depends on production after deploy, or leaves a design choice open."}}`
-   (measured 2026-09-23 on real issues: the four umbrellas that burned 7-10 runs each scored 0.08-0.21; their split children
-   0.15-0.86; nothing reached 0.9, so Jev only fast-tracks and Opus sizes the rest). Read `.answers.cheap_ok.probability`
+   (measured on real issues: umbrellas that burned 7-10 runs each scored 0.08-0.21; their split
+   children 0.15-0.86; nothing reached 0.9, so Jev only fast-tracks and Opus sizes the rest). Read `.answers.cheap_ok.probability`
    (finite, in [0,1]). p >= 0.9: add `cheap-ok`, comment `jev cheap_ok: p=<p>`, claim it below. Anything else, including no
    answer: add `needs-split`, comment `jev cheap_ok: p=<p or unavailable>; Opus sizes`, do NOT claim it this tick — the label
    fires the product repo's `opus-vet` job, which does one of three things: marks it `cheap-ok` (already small), files
@@ -301,7 +301,7 @@ Steps:
       Engine: if `systemctl --user list-units 'devin-issue@*.service' --state=active,activating --no-legend | wc -l`
       is below 4 (the Devin account is capped at 4 concurrent), use `devin-issue@<repo>-N` (Devin SWE-2 Max, $0 on the account); else if `systemctl --user list-units 'cursor-issue@*.service' --state=active,activating --no-legend | wc -l`
       is below 1 (PACED: at 5 slots Cursor Ultra walls before its reset, so 1 slot stretches the quota), use `cursor-issue@<repo>-N` (Cursor Grok 4.7 xhigh on Nish's Cursor seat; Nish: only grok-4.7-xhigh and kimi-k3-max on Cursor); else if `systemctl --user list-units 'pi-issue@*.service' --state=active,activating --no-legend | wc -l`
-      is below 10 (WALLED by a 402 "Grok Build usage balance exhausted" on the xAI account reads as 0; if that 402 returns, set this number back to 0 by PR, and Nish restoring the balance raises it again) AND `systemctl --user list-units 'router-issue@*.service' --state=active,activating --no-legend | wc -l` is not smaller, use `pi-issue@<repo>-N` (SuperGrok grok-4.7 xhigh via Pi's xai-oauth provider, #8230; Nish 2026-09-22: max out the weekly quota); else if the router count is below `jq -r .router_lane_cap /home/nish/workspaces/tooling/fleet-ops-deploy-clone/config/seat-caps.json` (read it at tick time, never from memory: it is the sum of worker-capable max_parallel_requests in the live router yaml, 14 on 2026-09-22; a re-measure changes the JSON value, not this sentence), use `router-issue@<repo>-N` (LiteLLM worker-capable; Nish 2026-09-22: Pareto and Stepfun must not sit unused); else `pi-issue@<repo>-N`. Net effect: the two Pi lanes alternate claim by claim, so short runs cannot starve the router seats (11:19 IST tick: 11 claims, 0 router, because pi never reached 8 live). Then:
+      is below 10 (if a 402 "Grok Build usage balance exhausted" walls the lane, lower this number to 0 by PR until Nish restores the balance) AND `systemctl --user list-units 'router-issue@*.service' --state=active,activating --no-legend | wc -l` is not smaller, use `pi-issue@<repo>-N` (SuperGrok grok-4.7 xhigh via Pi's xai-oauth provider, #8230; Nish: max out the weekly quota); else if the router count is below `jq -r .router_lane_cap /home/nish/workspaces/tooling/fleet-ops-deploy-clone/config/seat-caps.json` (read it at tick time, never from memory: it is the sum of worker-capable max_parallel_requests in the live router yaml; a re-measure changes the JSON value, not this sentence), use `router-issue@<repo>-N` (LiteLLM worker-capable; Nish: Pareto and Stepfun must not sit unused); else `pi-issue@<repo>-N`. Net effect: the two Pi lanes alternate claim by claim, so short runs cannot starve the router seats. Then:
       `systemctl --user list-units '<engine>-issue@<repo>-N.service'
        --state=active,activating --no-legend | grep -q . ||
        systemctl --user start --no-block <engine>-issue@<repo>-N.service`
