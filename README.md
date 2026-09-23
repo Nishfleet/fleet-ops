@@ -365,5 +365,13 @@ heartbeat that called them; their last samples remain under
 `~/.local/state/ram-measurement/`. Live RAM is `systemctl --user show
 -p MemoryPeak <unit>` and `systemd-cgtop`.
 
+## Daily view
+
+Replaces the daily-digest Telegram push (fleet-ops#8433).
+
+- Merged PRs, all repos: `https://github.com/pulls?q=org%3ANishfleet+is%3Apr+is%3Amerged+sort%3Aupdated-desc`
+- Failed agent runs on 0509: `https://github.com/Nishfleet/0509/actions/workflows/agent-dispatch.yml?query=is%3Afailure`
+- Issues parked by the agent queue: `https://github.com/issues?q=org%3ANishfleet+is%3Aopen+label%3Aagent-failed%2Cneeds-orchestrator`
+
 
 
