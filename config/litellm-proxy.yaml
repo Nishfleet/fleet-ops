@@ -361,23 +361,6 @@ model_list:
   model_info:
     mode: chat
     id: xkiro-qwen38max-worker-cheap
-- model_name: worker-capable
-  # 2026-09-23 ~14:00 IST direct probe with the provider-real id: chat 200 AND
-  # tool_choice=required 200 with a real tool_calls payload. Restored to its original
-  # worker-capable placement (fleet-ops#8398 item 2).
-  litellm_params:
-    model: openai/qwen/qwen3.8-max:free
-    api_base: https://api.xkiro.com/v1
-    api_key: os.environ/XKIRO_API_KEY
-    tags:
-    - free
-    - xkiro-free
-    order: 2
-    max_parallel_requests: 4
-    cooldown_time: 900
-  model_info:
-    mode: chat
-    id: xkiro-qwen38max-worker-capable
 # self-walls (balance $0 -> 402 -> cooldown -> fallback) and Cline 4xx likewise; no metered spend path.
 benched:
 - benched_at: 2026-09-22
