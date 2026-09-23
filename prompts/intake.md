@@ -245,8 +245,7 @@ Steps:
    "Is this ONE small change (roughly 1-4 files, one behaviour, done in one sitting) whose steps and acceptance are already
    spelled out, so the builder only has to follow them? Answer no if it bundles several deliverables, asks the builder to
    discover or fix whatever turns up, depends on production after deploy, or leaves a design choice open."}}`
-   Nothing has reached 0.9, so Jev only fast-tracks and Opus sizes the rest. Read `.answers.cheap_ok.probability`
-   (finite, in [0,1]). p >= 0.9: add `cheap-ok`, comment `jev cheap_ok: p=<p>`, claim it below. Anything else, including no
+   Read `.answers.cheap_ok.probability` (finite, in [0,1]). p >= 0.9: add `cheap-ok`, comment `jev cheap_ok: p=<p>`, claim it below. Anything else, including no
    answer: add `needs-split`, comment `jev cheap_ok: p=<p or unavailable>; Opus sizes`, do NOT claim it this tick — the label
    fires the product repo's `opus-vet` job, which does one of three things: marks it `cheap-ok` (already small), files
    cheap-ok children and parks this issue as their umbrella, or marks it `strong-only` when it cannot be cut smaller.
