@@ -219,19 +219,27 @@ groups:
   - name: product_surface
     rules:
       # Rebuild park gate (Nishfleet/0509#4489): while the rebuild ships no
-      # /search or /timeline, every target answers a uniform 404 + bare SPA
-      # shell and all 12 Product0509* criticals fire continuously, masking
-      # real alerts. This series exists for a probe target only while EVERY
-      # status code it returned in the last hour was a 404 — positive proof
-      # the route is absent, not merely that the content assertion failed.
-      # The three alerts below `unless` on it, so they park while the
-      # surface is deliberately gone and re-arm by themselves the moment a
-      # target sees any non-404 response — the re-ship, a 5xx, the 410
-      # proof-gate dark state or a content regression all still alert, and
-      # so does a connection failure, which produces no status samples at
-      # all. ProductCanaryProbeDown below is not gated.
+      # /search or /timeline, every probe fails with a plain 404 and all 12
+      # Product0509* criticals fire continuously, masking real alerts. This
+      # series exists for a probe target only while EVERY failed probe in
+      # the last two hours answered 404 — positive proof that each failure
+      # is the route being absent, not a broken surface. The min/max pair
+      # requires all failure statuses in the window to be 404: a 5xx, the
+      # 410 proof-gate dark state, or a dead-ending 200 drops the park at
+      # once. The `unless` clause drops it too when a failure produced no
+      # status at all (transport/TLS/DNS failure — a real outage the
+      # exporter cannot explain away). The three alerts below `unless` on
+      # this series, so they park while the surface is deliberately gone
+      # and re-arm by themselves — including through a healthy re-ship,
+      # where stale 404-era zeros keep min_over_time true but every failure
+      # is still explained by absence. ProductCanaryProbeDown is not gated.
       - record: fleet0509_surface_absent
-        expr: min_over_time(probe_http_status_code{job=~"blackbox-0509-.*"}[1h]) == 404 and max_over_time(probe_http_status_code{job=~"blackbox-0509-.*"}[1h]) == 404
+        expr: |
+          (min_over_time((probe_http_status_code{job=~"blackbox-0509-.*"} and on(instance, job) (probe_success{job=~"blackbox-0509-.*"} == 0))[2h:]) == 404
+          and
+          max_over_time((probe_http_status_code{job=~"blackbox-0509-.*"} and on(instance, job) (probe_success{job=~"blackbox-0509-.*"} == 0))[2h:]) == 404)
+          unless on(instance, job)
+          (sum_over_time(((probe_success{job=~"blackbox-0509-.*"} == bool 0) unless on(instance, job) probe_http_status_code{job=~"blackbox-0509-.*"})[2h:]) > 0)
 
       - alert: Product0509TimelineDark
         expr: min_over_time(probe_success{job="blackbox-0509-timeline"}[1h]) == 0 unless on(instance, job) fleet0509_surface_absent{job="blackbox-0509-timeline"}
@@ -261,7 +269,7 @@ groups:
           service: 0509
         annotations:
           summary: "0509 /search dead-ends entirely for known-alias-gap brand {{ $labels.instance }}"
-          description: "Every probe in the last two hours of {{ $labels.instance }} returned no result row at all. These brands (oura Nishfleet/0509#1427, ridge Nishfleet/0509#2075) are KNOWN_ALIAS_GAPS: a blanket-Unmatched page is the named gap's expected symptom and deliberately does NOT alert. A DEAD-END does, because the guard's core promise is zero dead-end empty states. Repair: this is a recall regression, not the alias gap — check ad ingestion for the brand. A firing alert already excludes the rebuild's route-absent case: a uniform /search 404 parks this rule via fleet0509_surface_absent (Nishfleet/0509#4489), so if this fires the route answered non-404 and the dead-end is real."
+          description: "Every probe in the last two hours of {{ $labels.instance }} returned no result row at all. These brands (oura Nishfleet/0509#1427, ridge Nishfleet/0509#2075) are KNOWN_ALIAS_GAPS: a blanket-Unmatched page is the named gap's expected symptom and deliberately does NOT alert. A DEAD-END does, because the guard's core promise is zero dead-end empty states. Repair: this is a recall regression, not the alias gap — check ad ingestion for the brand. A firing alert already excludes the rebuild's route-absent case: failures that are all 404s park this rule via fleet0509_surface_absent (Nishfleet/0509#4489), so if this fires some probe failed a different way and the dead-end is real."
 
       # The three rules above can only fire while the blackbox exporter is
       # actually scraped. If it stops, they all read as healthy forever —
