@@ -8,22 +8,9 @@
 Description=Devin fleet issue worker %i (SWE-2 Max, headless devin CLI)
 # This unit IS the worker — no wrapper script. Same claim/PR/ExecStopPost
 # contract as pi-issue@.service; see that unit for the design comments.
-# Two strikes, absolute: StartLimitIntervalSec=infinity + StartLimitBurst=2.
-# A finite window is the wrong knob — its cap is "starts inside the window",
-# not a count of failures, so it neither bounds exactly nor holds across a
-# long retry span. Live 2026-09-23 (this fleet): under 1h/3 an ~85 min cycle
-# (55 min wall + RestartSec backoff) never put 3 starts inside 1h, and
-# router-issue@0509-4001 logged 14 starts between 2026-09-22 18:37 and
-# 2026-09-23 11:51 IST with no refusal at all; #8375's 6h window refused only
-# the 4th start inside it (13:16:26 IST) and re-arms after any 6h gap.
-# infinity makes the count permanent — man systemd.unit: infinity "limits the
-# total number of start attempts, even if they happen at large time
-# intervals" — so the 2nd failed attempt is the last: the unit lands in failed
-# and OnFailure=pi-issue-failed@%i takes over (claim release, then a flagship
-# re-dispatch or a park) instead of burning ~1 seat-hour per retry.
-# `systemctl --user reset-failed <unit>` re-arms it by hand.
-StartLimitIntervalSec=infinity
-StartLimitBurst=2
+# Two strikes live in prompts/claim-release.md step 5 as a count of GitHub
+# release comments (fleet-ops#8421): a systemd start counter is in-memory,
+# counts continuations as retries, and its refusals re-fire OnFailure.
 # Permanent failure releases the claim via pi-issue-failed@ —
 # prompts/claim-release.md (fleet-ops#6292); see pi-issue@.service.
 OnFailure=pi-issue-failed@%i.service
@@ -92,15 +79,10 @@ ExecStopPost=-/bin/sh -c 'r=$(echo "$1" | sed "s/-[0-9][0-9]*$//"); systemctl --
 # claim/issue-<N> (merged PRs can delete the branch mid-run, fleet-ops#7783)
 # or claim commits ahead of the default branch; a missing branch is a
 # deliberate park and passes. exit 1 -> Result=exit-code -> `failed`, which
-# is what OnFailure=/Restart=/StartLimitBurst key off. Runs LAST so cleanup
+# is what OnFailure= keys off. Runs LAST so cleanup
 # and the intake refill run first; only checked on a success exit.
 TimeoutStopSec=180
 
-# Retry policy — systemd's own, not a counter in bash.
-Restart=on-failure
-RestartSec=240
-RestartSteps=3
-RestartMaxDelaySec=30min
 # Hang detection: a worker active longer than this is terminated into `failed`.
 # fleet-ops#8324: devin carried the largest share of the day's start-timeouts.
 # The class is the same as router-issue@ (full population analysis there), and

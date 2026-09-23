@@ -85,7 +85,7 @@ keeps an old constant.
 | `second-opinion` | `prompts/worker.md` | 0.5 | 0.5 |
 | `second-opinion-reserved` | `prompts/worker.md` | 0.5 | 0.5 |
 | `vault-drop-routing` | none — log-only shadow, no row is read (fleet-ops#7766) | — | — |
-| `worker-context` | `prompts/worker.md` step 1c (advisory; sensitivity 0.1, 0.25, 0.5 written in the prompt; no edge acts) | 0.9 | 0.1 |
+| `worker-context` | RETIRED 2026-09-23 (fleet-ops#8423): 306 of its 450 rows scored 0509 runs whose repo has neither candidate file | 0.9 | 0.1 |
 | `worker-escalation-target` | `prompts/worker.md` step 4 | 0.5 | 0.5 |
 
 ## What tuning does and does not do
