@@ -13,6 +13,11 @@ on:
   workflow_run:
     workflows: [CI]
     types: [completed]
+  # GitHub emits no event when a job queued for a self-hosted runner expires
+  # after 24h, or when a claim PR turns DIRTY outside the merge queue (0509#4373).
+  # The sweep below catches both; 6h stays well under the 24h expiry.
+  schedule:
+    - cron: '17 */6 * * *'
 permissions:
   issues: write
 jobs:
@@ -45,15 +50,19 @@ jobs:
     with:
       ref: ${{ github.event.pull_request.head.ref }}
   # A closed blocker frees the issues it was blocking; a manual run sweeps
-  # every ready, unblocked issue (cutover backfill and missed-event recovery).
-  # Priority-now first, then oldest. The Gate step in agent.yml re-checks each.
+  # every ready, unblocked issue (cutover backfill and missed-event recovery),
+  # then every open claim PR without auto-merge (conflicted or ejected).
+  # Priority-now first, then oldest. The Gate step in agent.yml re-checks each
+  # and its 3-run cap bounds any loop.
   list:
     if: >-
       vars.AGENT_MODE == 'live' &&
-      ((github.event_name == 'issues' && github.event.action == 'closed') || github.event_name == 'workflow_dispatch')
+      ((github.event_name == 'issues' && github.event.action == 'closed') ||
+       github.event_name == 'workflow_dispatch' || github.event_name == 'schedule')
     runs-on: ubuntu-latest
     permissions:
       issues: read
+      pull-requests: read
     outputs:
       refs: ${{ steps.list.outputs.refs }}
     steps:
@@ -66,11 +75,13 @@ jobs:
             nums=$(gh api "repos/$GITHUB_REPOSITORY/issues/$CLOSED/dependencies/blocking" --jq '.[]|select(.state=="open")|.number')
           else
             nums=$(gh issue list -R "$GITHUB_REPOSITORY" -l agent-ready -L 1000 --json number --jq '.[].number')
+            prs=$(gh pr list -R "$GITHUB_REPOSITORY" -L 1000 --json headRefName,autoMergeRequest,isDraft \
+              --jq '[.[] | select((.headRefName|startswith("claim/issue-")) and .autoMergeRequest == null and (.isDraft|not)) | .headRefName]')
           fi
           refs=$(for n in $nums; do gh api "repos/$GITHUB_REPOSITORY/issues/$n"; done |
-            jq -sc '[.[] | select(.issue_dependencies_summary.blocked_by == 0 and any(.labels[]; .name == "agent-ready"))]
+            jq -sc --argjson prs "${prs:-[]}" '[.[] | select(.issue_dependencies_summary.blocked_by == 0 and any(.labels[]; .name == "agent-ready"))]
               | sort_by((if any(.labels[]; .name == "priority-now") then 0 else 1 end), .created_at)
-              | map("claim/issue-\(.number)") | .[:256]')
+              | map("claim/issue-\(.number)") | . + ($prs - .) | .[:256]')
           echo "refs=${refs:-[]}" >> "$GITHUB_OUTPUT"
   unblocked:
     needs: list
