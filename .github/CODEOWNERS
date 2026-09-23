@@ -1,0 +1,11 @@
+# No-glue lock (fleet-ops#8459): scripts, wrappers and script dirs need Nish's review to merge.
+# Push rulesets are refused on public repos, so this uses CODEOWNERS + require_code_owner_review.
+*.sh @nish3451
+*.py @nish3451
+*.bash @nish3451
+*.zsh @nish3451
+/bin/ @nish3451
+/scripts/ @nish3451
+**/bin/ @nish3451
+**/scripts/ @nish3451
+/.github/CODEOWNERS @nish3451
