@@ -36,11 +36,13 @@ jobs:
           gh api "repos/$REPO/git/ref/heads/$REF" --silent 2>/dev/null ||
             gh api "repos/$REPO/git/refs" -f ref="refs/heads/$REF" -f sha="$(gh api "repos/$REPO/git/ref/heads/main" --jq .object.sha)" --silent
       - name: Worker
+        # Logs are public on public repos. The full transcript stays in the
+        # VPS session dir; only errors (stderr) reach the log.
         run: |
           echo "/worker ${REPO#*/}-${REF#claim/issue-}" | pi --print \
             --append-system-prompt "$HOME/workspaces/tooling/fleet-ops-deploy-clone/AGENTS.md" \
             --session-dir "$HOME/.pi/agent/sessions/agent-${REPO#*/}-${REF#claim/issue-}" \
-            --exclude-tools subagent --provider litellm --model worker-capable
+            --exclude-tools subagent --provider litellm --model worker-capable >/dev/null
       - name: Arm auto-merge as the App
         run: |
           if gh pr view "$REF" -R "$REPO" --json state --jq .state | grep -qx OPEN; then
