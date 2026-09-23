@@ -31,38 +31,79 @@ jobs:
           t=$(gh token generate --app-id 4728578 --key "$HOME/.config/fleet-worker/nishfleet-worker.private-key.pem" --installation-id 156789042 --token-only)
           echo "::add-mask::$t"
           echo "GH_TOKEN=$t" >> "$GITHUB_ENV"
-      - name: Attempt cap
-        # Hard stop for loops where a run "succeeds" but CI stays red: 3 runs
-        # per issue since the newest opus-vet, counted from these comments.
-        id: cap
+      - name: Gate
+        # The dispatch policy that prompts/intake.md used to carry, now in one
+        # step: skip parked or blocked work, size unsized work (Jev first
+        # opinion, else needs-split -> opus-vet), cap runs, then claim.
+        id: gate
         run: |
           i=${REF#claim/issue-}
+          skip() { echo "gate: skip ($1)"; echo go=false >> "$GITHUB_OUTPUT"; exit 0; }
+          issue=$(gh api "repos/$REPO/issues/$i")
+          labels=,$(jq -r '[.labels[].name]|join(",")' <<<"$issue"),
+          [ "$(jq -r .state <<<"$issue")" = open ] || skip closed
+          [ "$(jq -r '.issue_dependencies_summary.blocked_by // 0' <<<"$issue")" = 0 ] || skip blocked
+          if jq -e '.title|startswith("__scout_probe_")' <<<"$issue" >/dev/null; then skip probe; fi
+          for l in noise-class agent-blocked awaiting-runtime-gate needs-split needs-orchestrator needs-nish-decision nish-reserved deputy superseded-by-rebuild proposed epic umbrella; do
+            case $labels in *",$l,"*) skip "$l" ;; esac
+          done
+
+          case $labels in *,cheap-ok,*|*,strong-only,*) ;; *)
+            key=$(grep -m1 '^LITELLM_JEV_KEY=' "$HOME/.config/fleet-ops/seats/typesafe-jev.env" | cut -d= -f2-)
+            echo "::add-mask::$key"
+            p=$(jq -n --argjson s "$issue" '{state: {issue: {ref: $s.html_url, title: $s.title, body: $s.body}}, questions: {cheap_ok: {type: "boolean", instructions: "Is this ONE small change (roughly 1-4 files, one behaviour, done in one sitting) whose steps and acceptance are already spelled out, so the builder only has to follow them? Answer no if it bundles several deliverables, asks the builder to discover or fix whatever turns up, depends on production after deploy, or leaves a design choice open."}}}' |
+              curl -s --max-time 90 127.0.0.1:4000/jev -H "Authorization: Bearer $key" -H 'content-type: application/json' -d @- |
+              jq -r '.answers.cheap_ok.probability // "unavailable"' 2>/dev/null || echo unavailable)
+            if awk -v p="$p" 'BEGIN { exit !(p ~ /^[0-9.]+$/ && p + 0 >= 0.9) }'; then
+              gh issue edit "$i" -R "$REPO" --add-label cheap-ok
+              gh issue comment "$i" -R "$REPO" --body "jev cheap_ok: p=$p"
+            else
+              gh issue edit "$i" -R "$REPO" --add-label needs-split
+              gh issue comment "$i" -R "$REPO" --body "jev cheap_ok: p=$p; Opus sizes"
+              skip needs-split
+            fi ;;
+          esac
+
+          # Hard stop for loops where a run "succeeds" but CI stays red: 3 runs
+          # per issue since the newest opus-vet, counted from these comments.
           # shellcheck disable=SC2016 # $v is a jq variable
           runs=$(gh issue view "$i" -R "$REPO" --json comments --jq '[.comments[].body] | (map(startswith("opus-vet:")) | rindex(true) // -1) as $v | .[$v+1:] | map(select(startswith("agent run started:"))) | length')
           if [ "$runs" -ge 3 ]; then
             gh issue edit "$i" -R "$REPO" --add-label needs-orchestrator --remove-label agent-ready,agent-in-progress
             gh issue comment "$i" -R "$REPO" --body "agent attempt cap: $runs runs since the last opus-vet; parked for the orchestrator"
-            echo go=false >> "$GITHUB_OUTPUT"
-          else
-            gh issue comment "$i" -R "$REPO" --body "agent run started: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
-            echo go=true >> "$GITHUB_OUTPUT"
+            skip cap
           fi
+          gh issue edit "$i" -R "$REPO" --remove-label agent-ready --add-label agent-in-progress
+          gh issue comment "$i" -R "$REPO" --body "agent run started: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+          case $labels in *,strong-only,*) echo engine=cursor >> "$GITHUB_OUTPUT" ;; *) echo engine=pi >> "$GITHUB_OUTPUT" ;; esac
+          echo go=true >> "$GITHUB_OUTPUT"
       - name: Branch
-        if: steps.cap.outputs.go == 'true'
+        if: steps.gate.outputs.go == 'true'
         run: |
           gh api "repos/$REPO/git/ref/heads/$REF" --silent 2>/dev/null ||
             gh api "repos/$REPO/git/refs" -f ref="refs/heads/$REF" -f sha="$(gh api "repos/$REPO/git/ref/heads/main" --jq .object.sha)" --silent
       - name: Worker
-        if: steps.cap.outputs.go == 'true'
-        # Logs are public on public repos. The full transcript stays in the
-        # VPS session dir; only errors (stderr) reach the log.
+        if: steps.gate.outputs.go == 'true'
+        # Logs are public on public repos. The full transcript stays on the
+        # VPS; only errors (stderr) reach the log. strong-only issues use the
+        # Cursor lane, as cursor-issue@ did.
+        env:
+          ENGINE: ${{ steps.gate.outputs.engine }}
         run: |
-          echo "/worker ${REPO#*/}-${REF#claim/issue-}" | pi --print \
-            --append-system-prompt "$HOME/workspaces/tooling/fleet-ops-deploy-clone/AGENTS.md" \
-            --session-dir "$HOME/.pi/agent/sessions/agent-${REPO#*/}-${REF#claim/issue-}" \
-            --exclude-tools subagent --provider litellm --model worker-capable >/dev/null
+          id=${REPO#*/}-${REF#claim/issue-}
+          if [ "$ENGINE" = cursor ]; then
+            mkdir -p "$HOME/workspaces/agent-worktrees/issue-$id"
+            cursor-agent -p --output-format text --model grok-4.7-xhigh --force --trust \
+              --workspace "$HOME/workspaces/agent-worktrees/issue-$id" \
+              "Fleet issue worker for instance $id. Follow $HOME/workspaces/tooling/fleet-ops-deploy-clone/prompts/worker.md (read AGENTS.md beside it first); every \$1 there means $id." >/dev/null
+          else
+            echo "/worker $id" | pi --print \
+              --append-system-prompt "$HOME/workspaces/tooling/fleet-ops-deploy-clone/AGENTS.md" \
+              --session-dir "$HOME/.pi/agent/sessions/agent-$id" \
+              --exclude-tools subagent --provider litellm --model worker-capable >/dev/null
+          fi
       - name: Arm auto-merge as the App
-        if: steps.cap.outputs.go == 'true'
+        if: steps.gate.outputs.go == 'true'
         run: |
           if gh pr view "$REF" -R "$REPO" --json state --jq .state | grep -qx OPEN; then
             gh pr merge "$REF" -R "$REPO" --auto
