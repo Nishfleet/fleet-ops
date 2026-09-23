@@ -220,6 +220,48 @@ model_list:
   model_info:
     mode: chat
     id: pareto-glm53flash-senior
+- model_name: worker-cheap
+  litellm_params:
+    model: openai/qwen/qwen3-coder-plus:free
+    api_base: https://api.xkiro.com/v1
+    api_key: os.environ/XKIRO_API_KEY
+    tags:
+    - free
+    - xkiro-free
+    order: 2
+    max_parallel_requests: 4
+    cooldown_time: 900
+  model_info:
+    mode: chat
+    id: xkiro-qwen3coderplus-worker-cheap
+- model_name: worker-cheap
+  litellm_params:
+    model: openai/qwen/qwen3.8-max:free
+    api_base: https://api.xkiro.com/v1
+    api_key: os.environ/XKIRO_API_KEY
+    tags:
+    - free
+    - xkiro-free
+    order: 2
+    max_parallel_requests: 4
+    cooldown_time: 900
+  model_info:
+    mode: chat
+    id: xkiro-qwen38max-worker-cheap
+- model_name: worker-capable
+  litellm_params:
+    model: openai/qwen/qwen3.8-max:free
+    api_base: https://api.xkiro.com/v1
+    api_key: os.environ/XKIRO_API_KEY
+    tags:
+    - free
+    - xkiro-free
+    order: 2
+    max_parallel_requests: 4
+    cooldown_time: 900
+  model_info:
+    mode: chat
+    id: xkiro-qwen38max-worker-capable
 benched:
 - benched_at: 2026-09-22
   reason: pareto-glm53flash-judge — same model family as every builder rung; with simple-shuffle it still
@@ -242,46 +284,6 @@ benched:
   model_info:
     mode: chat
     id: pareto-glm53flash-judge
-  retry_at: '2026-09-24T12:30:00+05:30'
-- benched_at: 2026-09-19
-  reason: openai/qwen/qwen3-coder-plus:free @ https://api.xkiro.com/v1 (XKIRO_API_KEY) — Cloudflare 1010
-    Access denied (HTTP 403) on both probes without a User-Agent; with UA still not a passing tool-call
-    seat. Live yaml had this as a worker-cheap order:1 rung. Restore ONLY with a green chat AND a green
-    tool_choice probe cited in the PR (fleet-ops#7862).
-  was:
-  - worker-cheap
-  litellm_params:
-    model: openai/qwen/qwen3-coder-plus:free
-    api_base: https://api.xkiro.com/v1
-    api_key: os.environ/XKIRO_API_KEY
-    tags:
-    - free
-    - xkiro-free
-    order: 1
-    max_parallel_requests: 4
-  retry_at: '2026-09-24T12:30:00+05:30'
-- benched_at: 2026-09-22
-  reason: 'RE-BENCHED 2026-09-22 (alert-repair@FleetLitellmDeploymentUnhealthy): Fable re-probed xkiro
-    today and re-wired qwen/qwen3.8-max:free live as an order:2 rung in worker-cheap + worker-capable
-    (mpr 3, per fleet-ops#7912 close). The daily free-model quota drained over the day; direct POST https://api.xkiro.com/v1/chat/completions
-    with the live XKIRO_API_KEY returned HTTP 429 "You''ve reached today''s free-model token quota ...
-    wait for the daily reset" and litellm_deployment_state=1 on BOTH raw rows, tripping FleetLitellmDeploymentUnhealthy
-    (max(state)>0 for 10m). This is the #5792 dead-wall class applied to a time-gated free lane: the rung
-    is a daily quota cap (#3660/#4080), so it flaps this alert every day it is routed. Removed the two
-    live-only active rungs. Restore ONLY with a green chat AND a green tool_choice probe cited in the
-    PR (fleet-ops#7862), and only alongside a fix for the daily flap (see follow-up issue).'
-  was:
-  - worker-cheap
-  - worker-capable
-  litellm_params:
-    model: openai/qwen/qwen3.8-max:free
-    api_base: https://api.xkiro.com/v1
-    api_key: os.environ/XKIRO_API_KEY
-    tags:
-    - free
-    - xkiro-free
-    order: 1
-    max_parallel_requests: 4
   retry_at: '2026-09-24T12:30:00+05:30'
 - benched_at: 2026-09-21
   reason: 'openai/stealth/union-alpha @ https://api.cline.bot/api/v1 (CLINE_API_KEY) — Cline wraps NON-streaming
