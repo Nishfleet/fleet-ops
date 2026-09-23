@@ -5,7 +5,16 @@ name: agent-dispatch
 on:
   issues:
     types: [labeled, closed]
+  # issue=<number> dispatches only that issue's ref, the code path
+  # opus-vet.yml's opus-size job uses: an issue relabelled by GITHUB_TOKEN
+  # fires no workflow, and workflow_dispatch is the documented trigger
+  # GITHUB_TOKEN may start. No input sweeps exactly like the 6h schedule.
   workflow_dispatch:
+    inputs:
+      issue:
+        description: 'Issue number to dispatch, overrides the sweep and its claim-PR append'
+        required: false
+        type: string
   # pull_request_target, not pull_request: pull_request never runs while a PR
   # has a merge conflict. No PR code is checked out or run here.
   pull_request_target:
@@ -70,8 +79,14 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           CLOSED: ${{ github.event.issue.number }}
+          ISSUE: ${{ inputs.issue }}
         run: |
-          if [ -n "$CLOSED" ]; then
+          if [ -n "$ISSUE" ]; then
+            # One issue, no PR append: the jq below still re-checks agent-ready
+            # and blocked_by, and agent.yml's Gate re-checks again, so a
+            # dispatch of an issue that was split or parked is skipped.
+            nums=$ISSUE
+          elif [ -n "$CLOSED" ]; then
             nums=$(gh api "repos/$GITHUB_REPOSITORY/issues/$CLOSED/dependencies/blocking" --jq '.[]|select(.state=="open")|.number')
           else
             nums=$(gh issue list -R "$GITHUB_REPOSITORY" -l agent-ready -L 1000 --json number --jq '.[].number')
