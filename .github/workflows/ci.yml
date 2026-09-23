@@ -169,7 +169,9 @@ jobs:
         # is not written `%%` (covers sh, bash and zsh). Still legal: `$VAR`,
         # `${NAME}` and %i. `%h/` as a path prefix is a deliberate systemd home
         # expansion, so it is not a bare specifier here. rc: 0 is a match and
-        # 2 is a broken pattern — both fail; only rc 1 passes.
+        # 2 is a broken pattern — both fail; only rc 1 passes. Scope is the
+        # packet's: Exec*= lines only. Wrapped continuation lines
+        # (pi-scout@:43, pi-intake@:68) are NOT scanned — see #8393.
         if: always()
         run: |
           rc=0
