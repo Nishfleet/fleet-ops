@@ -1,0 +1,102 @@
+# deploy-box: the fleet-sync systemd unit replayed as an Actions workflow
+# (fleet-ops#8484). Additive by design: systemd/fleet-sync.service and
+# systemd/fleet-sync.timer stay; this workflow runs the SAME ExecStart steps,
+# in the SAME order, on push to main, so a merge applies to the box within
+# minutes instead of waiting for the next timer tick. Every run: block is the
+# unit's ExecStart verbatim with the systemd escaping undone ($$ -> $,
+# %% -> %, the /usr/bin/sh -c wrapper and its outer quotes stripped) — one
+# source of truth in systemd/fleet-sync.service, no second hand-rolled copy.
+#
+# Trigger safety (systemd/gh-runner@.service header): this workflow fires ONLY
+# on push to main and on workflow_dispatch, on the self-hosted fleet-ci
+# runner. There is no pull-request trigger, so fork code never executes on
+# the box. No checkout step: every command operates on absolute paths inside
+# /home/nish/workspaces/tooling/fleet-ops-deploy-clone, and step 1 fast-
+# forwards that clone itself — a `git pull` IS the deploy.
+name: deploy-box
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch: {}  # manual replay of main head; the unit's own guards still gate every step
+
+concurrency:
+  group: deploy-box
+  cancel-in-progress: false  # deploys queue, never cancel mid-flight
+
+permissions:
+  contents: read
+
+jobs:
+  apply:
+    name: apply
+    runs-on: [self-hosted, fleet-ci]
+    # The unit allows TimeoutStartSec=300 for the steps alone; 10 min leaves
+    # headroom without letting a hung step park a runner.
+    timeout-minutes: 10
+    env:
+      XDG_RUNTIME_DIR: /run/user/1000
+    steps:
+      # 1. Fast-forward the clone, and log what the pull did. A dirty tree or
+      #    a diverged branch fails LOUD here — the live source must be clean
+      #    origin/main, and the log line is the deploy record.
+      - name: "1. Fast-forward the deploy clone and log the deploy record"
+        run: |-
+          r=/home/nish/workspaces/tooling/fleet-ops-deploy-clone; b=$(git -C "$r" rev-parse HEAD); git -C "$r" pull --ff-only origin main || { echo "[$(date -u +%Y-%m-%dT%H:%M:%SZ)] [fleet-sync] DEPLOY-BLOCKED pull --ff-only refused (dirty or diverged clone)"; exit 1; }; a=$(git -C "$r" rev-parse HEAD); if [ "$b" != "$a" ]; then echo "[$(date -u +%Y-%m-%dT%H:%M:%SZ)] [fleet-sync] origin/main moved $b -> $a — invoking sanctioned deploy"; else echo "[$(date -u +%Y-%m-%dT%H:%M:%SZ)] [fleet-sync] origin/main unchanged (HEAD=$a) — nothing to do"; fi
+      # 2. Re-read the linked unit files. The symlinks never move; only their
+      #    contents changed with the pull.
+      - name: "2. Re-read the linked unit files (systemctl --user daemon-reload)"
+        run: /usr/bin/systemctl --user daemon-reload
+      # 3. Validate the alert rules before they can reach prometheus; a parse
+      #    error stops the job here instead of silently leaving prometheus on
+      #    the old rules.
+      - name: "3. Validate the alert rules with promtool"
+        run: /usr/bin/promtool check rules /home/nish/workspaces/tooling/fleet-ops-deploy-clone/config/fleet_rules.yml
+      # 4. /etc/prometheus/fleet_rules.yml is a root-owned COPY: prometheus
+      #    runs as user `prometheus` and cannot traverse into the repo (0750).
+      #    Copy only when the bytes changed, then HUP prometheus (SIGHUP
+      #    re-reads the whole config, rules and scrape jobs).
+      - name: "4. Install fleet_rules.yml into /etc/prometheus when changed, reload prometheus"
+        run: |-
+          cmp -s /home/nish/workspaces/tooling/fleet-ops-deploy-clone/config/fleet_rules.yml /etc/prometheus/fleet_rules.yml || { sudo -n install -D -m 0644 -o root -g root /home/nish/workspaces/tooling/fleet-ops-deploy-clone/config/fleet_rules.yml /etc/prometheus/fleet_rules.yml && sudo -n systemctl reload prometheus; }
+      # 4b. /etc/prometheus/prometheus.yml is the same class of root-owned
+      #     copy (fleet-ops#8084). SIGHUP re-reads the whole file (scrape jobs
+      #     included), not rules only. promtool check config runs first so a
+      #     bad file never replaces the live one.
+      - name: "4b. Install prometheus.yml into /etc/prometheus when changed, reload prometheus"
+        run: |-
+          src=/home/nish/workspaces/tooling/fleet-ops-deploy-clone/config/prometheus.yml; dst=/etc/prometheus/prometheus.yml; cmp -s "$src" "$dst" || { promtool check config "$src" && sudo -n install -D -m 0644 -o root -g root "$src" "$dst" && sudo -n systemctl reload prometheus; }
+      # 5. prometheus-am-executor -f path is user-scope, so it is a symlink
+      #    into the clone. Relink when the live path is a regular file or
+      #    points elsewhere.
+      - name: "5. Relink prometheus-am-executor config into the clone"
+        run: |-
+          src=/home/nish/workspaces/tooling/fleet-ops-deploy-clone/config/prometheus-am-executor.yml; dst=/home/nish/.config/prometheus-am-executor/config.yml; mkdir -p /home/nish/.config/prometheus-am-executor; if [ ! -L "$dst" ] || [ "$(readlink "$dst")" != "$src" ]; then ln -sfn "$src" "$dst"; echo "[$(date -u +%Y-%m-%dT%H:%M:%SZ)] [fleet-sync] linked prometheus-am-executor config -> $src"; fi
+      # 6. The executor reads its file once at start; a pull that changed it
+      #    must bounce the unit or the new command line never loads
+      #    (fleet-ops#7414). Blob SHA vs a stamp file, so it restarts only on
+      #    real drift.
+      - name: "6. Restart prometheus-am-executor when its config blob changed"
+        run: |-
+          r=/home/nish/workspaces/tooling/fleet-ops-deploy-clone; s=/home/nish/.config/prometheus-am-executor/.sha; h=$(git -C "$r" rev-parse HEAD:config/prometheus-am-executor.yml); [ "$(cat "$s" 2>/dev/null)" = "$h" ] || { systemctl --user try-restart prometheus-am-executor.service && echo "$h" > "$s"; }
+      # 7. user-tmpfiles.d is read by systemd-tmpfiles --user once per clean
+      #    pass — same symlink-into-clone pattern as step 5 (fleet-ops#4256).
+      #    ln -sfn is idempotent: relink every sync.
+      - name: "7. Relink user-tmpfiles.d agent-worktrees.conf"
+        run: |-
+          mkdir -p /home/nish/.config/user-tmpfiles.d && ln -sfn /home/nish/workspaces/tooling/fleet-ops-deploy-clone/config/user-tmpfiles.d/agent-worktrees.conf /home/nish/.config/user-tmpfiles.d/agent-worktrees.conf
+      # 8. LINK-GUARD (fleet-ops#7743): machine wiring is hand-set symlinks,
+      #    so a session CAN still point a live path at a throwaway checkout.
+      #    After every pull, fail LOUD on any symlink in the live wiring roots
+      #    that is broken (-xtype l) or whose link text names a throwaway
+      #    root — *worktrees/, agent-state, */tmp/. A failed unit is the page.
+      - name: "8. LINK-GUARD: fail on live symlinks pointing at dead or throwaway targets"
+        run: |-
+          b=$(find /home/nish/.config/systemd/user /home/nish/.local/bin /home/nish/.pi/agent /home/nish/workspaces/tooling/nish-vault -xtype l -o -type l -lname "*worktrees/*" -o -type l -lname "*/agent-state/*" -o -type l -lname "*/tmp/*" 2>/dev/null); [ -z "$b" ] || { echo "[fleet-sync] LINK-GUARD live symlink -> dead/throwaway target: $b"; exit 1; }
+      # 8. /etc/hosts gains EXACTLY one line, and this is what keeps it there
+      #    (fleet-ops#8259). Append-only and idempotent: grep first, so the
+      #    constant is never rewritten and every other line in /etc/hosts is
+      #    left untouched.
+      - name: "8. Keep the single litellm.fleet.local line in /etc/hosts"
+        run: |-
+          grep -qE "^127[.]0[.]0[.]1[[:space:]]+litellm[.]fleet[.]local" /etc/hosts || echo "127.0.0.1 litellm.fleet.local" | sudo -n tee -a /etc/hosts > /dev/null

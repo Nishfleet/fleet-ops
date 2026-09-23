@@ -10,9 +10,8 @@ script, or prompt lands unseen.
   `systemctl --user`.
 - `bin/` — shell scripts the units exec.
 - `prompts/` — Pi agent prompts fed to workers on stdin.
-- `config/` — fleet configuration. `seat-caps.json` is the per-seat ceiling
-  map; `intake-repos.json` is the declared set of repos enrolled in
-  pi-intake/pi-scout (see [Intake enrolment](#intake-enrolment)).
+- `config/` — fleet configuration. `intake-repos.json` is the declared set of
+  repos enrolled in pi-intake/pi-scout (see [Intake enrolment](#intake-enrolment)).
 - `systemd/fleet-sync.{service,timer}` — the whole deploy mechanism: every
   two minutes, `git pull --ff-only` + `systemctl --user daemon-reload`, plus
   `promtool check rules` / `promtool check config` and a prometheus reload
@@ -83,7 +82,7 @@ NOT update them. Refresh by hand when the repo file changes:
 | `/etc/prometheus/fleet_rules.yml` | `config/fleet_rules.yml` | prometheus runs as `prometheus`; `/home/nish` is `0750 nish:nish`, so it cannot traverse into the repo. **Handled automatically** by `fleet-sync.service` (promtool check + copy + reload). |
 | `/etc/prometheus/prometheus.yml` | `config/prometheus.yml` | same privilege boundary. **Handled automatically** by `fleet-sync.service` (promtool check config + copy + reload). The #7954 alertmanager scrape job drifted here and left `FleetNishPageRailDown` red (fleet-ops#8084); that drift class is closed by the deploy step. |
 | `~/.pi/agent/extensions/**.ts` | `template/extensions/**` | pi resolves a symlinked extension against its REAL path, so sibling imports would resolve into the repo (fleet-ops#3263). After the glue sweeps the only local files are the two stock forks (`permission-gate.ts`, `protected-paths.ts`) — everything else in `~/.pi/agent/extensions/` is a symlink straight into pi's shipped `examples/extensions/`. |
-| `~/.local/state/pi-packet/seat-caps.json`, `~/.pi/agent/models.json`, `~/.local/state/pi-packet/model-candidates.json` | `config/seat-caps.json`, `config/pi-models.json`, `config/model-candidates.json` | live state the git working tree must not rewrite on every checkout (fleet-ops#2910/#3722/#3322). |
+| `~/.pi/agent/models.json`, `~/.local/state/pi-packet/model-candidates.json` | `config/pi-models.json`, `config/model-candidates.json` | live state the git working tree must not rewrite on every checkout (fleet-ops#2910/#3722/#3322). |
 | `/etc/**` (systemd drop-ins, `sysctl.d`, `audit/rules.d`, `default/prometheus`, `prometheus/*.yml`) | `config/`, `etc/`, `systemd/system/` | cross a privilege boundary. |
 
 ```
@@ -352,10 +351,8 @@ an unset URL is a skip, a shared URL is a fail.
 
 ## Worker RAM admission (issue #45)
 
-Admission carries no RAM charge: the concurrency bound is
-`min(target_concurrent, Σ declared provider caps)` — the provider-level
-`cap` fields of `config/seat-caps.json` are the per-seat ceilings — and
-RAM safety is per-unit `MemoryMax` + systemd-oomd, not a governor
+Admission carries no RAM charge: the concurrency bound is the runner count
+(#8429), and RAM safety is per-unit `MemoryMax` + systemd-oomd, not a governor
 division. Known repos override the per-unit limits via intake-written
 drop-ins: fleet-ops#3930 set `MemoryMax=4G` with **no `MemoryHigh`** for
 fleet-ops + 0509 (the throttle band is what makes oomd pressure-kill a
