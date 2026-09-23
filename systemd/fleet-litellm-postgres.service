@@ -8,7 +8,7 @@ Documentation=https://github.com/Nishfleet/fleet-ops/issues/4130
 # postgresql@*-main system service is NOT used by this organ (it was
 # installed by an earlier live-install attempt and is now redundant; the
 # runbook disables it). Live install (initdb + role/DB) is in
-# docs/litellm-postgres-setup.md.
+# docs/RUNBOOK.md.
 ConditionPathExists=%h/.local/share/fleet-litellm-postgres/postgresql.conf
 
 [Service]

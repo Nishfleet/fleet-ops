@@ -104,7 +104,7 @@ directory first. Each row carries `ts` in UTC, `site` `hermes-digest`,
 `#<item key>`), `item` (`_message` for `message_urgent_instant`),
 `state_sha256` the sha256 of the exact body posted, `answers` and
 `probabilities` for that question, `tier_p` its probability, `rule_tier`
-`digest`, `act_hi` 0.5 and `review_lo` 0.5 — the edges `docs/jev-bands.md`
+`digest`, `act_hi` 0.5 and `review_lo` 0.5 — the edges `docs/RUNBOOK.md`
 lists for `hermes-digest` — `disagree` true when `tier_p` is at or above
 0.5, `advisory_only` true, `usage` copied from the response, and `ms` the
 POST's elapsed milliseconds. Then print one line —
@@ -157,7 +157,7 @@ that range, print one line and do not append a row.
 A pair is compatible only when its conflict probability is 0.1 or lower.
 Above 0.1 it is not compatible. Do not treat a middle value as compatible.
 The number 0.1 is the confident no-conflict edge for this site. The bands
-file is not in the tree. `docs/jev-bands.md` still lists `review_lo` 0.1
+file is not in the tree. `docs/RUNBOOK.md` still lists `review_lo` 0.1
 for `merge-queue-batches`.
 
 The proposed batch is a prefix of the queue, in queue order. Start with the
@@ -181,8 +181,8 @@ directory if needed. Include `ts` in UTC, `site` `merge-queue-batches`,
 `conflicts` mapping each pair key to its probability,
 `would_save_runs_if_batched`, `advisory_only` true,
 `counts_toward_flip_bar` false, and `calibration` `none`. This question
-has no measured threshold in `docs/jev-benchmark-2026-09.md`, so the row
-is not evidence for the 50-batch flip. Do not change the GitHub merge-queue
+has no measured threshold (the September benchmark was NO-GO at every
+threshold), so the row is not evidence for the 50-batch flip. Do not change the GitHub merge-queue
 batch size. Copy `usage` from the response when it is present. If the head
 SHA is missing, print one line and do not append a row.
 

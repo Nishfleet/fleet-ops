@@ -1,6 +1,6 @@
 [Unit]
 Description=Mint the nishfleet-worker App token into a runtime env file (read by intake and scout units)
-# fleet-ops#8057 (docs/GLUE-ZERO.md organ 12). pi-intake@ and pi-scout@ never minted a token;
+# fleet-ops#8057 (docs/ARCHITECTURE.md, GLUE-ZERO organ 12). pi-intake@ and pi-scout@ never minted a token;
 # since #8092 an empty GH_TOKEN is a hard stop, so every intake tick halted (2026-09-22 01:55 IST).
 # One sh -c with two vendor commands is the floor: nothing stock writes stdout as KEY=value.
 

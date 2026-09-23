@@ -71,7 +71,7 @@ ExecStart=/usr/bin/sh -c 'mkdir -p /home/nish/.config/user-tmpfiles.d && ln -sfn
 #    (worktrees live there too), */tmp/. A failed unit is the page.
 ExecStart=/usr/bin/sh -c 'b=$$(find /home/nish/.config/systemd/user /home/nish/.local/bin /home/nish/.pi/agent /home/nish/workspaces/tooling/nish-vault -xtype l -o -type l -lname "*worktrees/*" -o -type l -lname "*/agent-state/*" -o -type l -lname "*/tmp/*" 2>/dev/null); [ -z "$$b" ] || { echo "[fleet-sync] LINK-GUARD live symlink -> dead/throwaway target: $$b"; exit 1; }'
 # 8. /etc/hosts gains EXACTLY one line, and this is what keeps it there
-#    (fleet-ops#8259, docs/CONTAINER-WORKER.md section 4). The litellm
+#    (fleet-ops#8259, docs/ARCHITECTURE.md, worker isolation). The litellm
 #    provider baseUrl in config/pi-models.json is
 #    http://litellm.fleet.local:4000 so ONE models.json serves both host-side
 #    Pi (name -> 127.0.0.1) and the container (name -> 10.0.2.2, injected by

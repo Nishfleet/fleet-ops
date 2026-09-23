@@ -8,7 +8,7 @@ Documentation=https://github.com/Nishfleet/fleet-ops/issues/4130
 # probes it. The distro redis-server system service is NOT used by this
 # organ (it was installed by an earlier live-install attempt and is now
 # redundant; the runbook disables it). Live install is in
-# docs/litellm-postgres-setup.md (Redis section).
+# docs/RUNBOOK.md (LiteLLM stack section).
 ConditionPathExists=%h/.local/share/fleet-litellm-redis/redis.conf
 
 [Service]
