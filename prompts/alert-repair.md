@@ -1,20 +1,14 @@
 # Fleet alert repair
 
 A Prometheus alert fired. Its name is in `$FLEET_ALERTNAME` (the unit
-instance). Fetch the live alert from Alertmanager —
-`curl -s http://127.0.0.1:9093/api/v2/alerts` — and take the entry whose
+instance). Fetch it the way step 1 says, and take the entry whose
 `labels.alertname` matches. Resolved-only payloads never reach you
 (fleet-ops#7414's short-circuit, now `ignore_resolved` in
 config/prometheus-am-executor.yml). Root-cause it
 and repair it, or file it — then exit.
 
-**Disposition budget (fleet-ops#8419).** `TimeoutStartSec=1800` is the wall.
-Do not raise it. On 2026-09-23 the same unit finished in 18 minutes
-(12:38–12:55 IST) after it found an open issue and commented. The two failures
-(14:50–15:20 and 20:50–21:20 IST) spent the whole half hour inside step 2
-(29 and 64 shell commands) and wrote nothing. A clock check before step 2
-never fires, because step 2 is where the time goes. A kill at the wall is
-not a disposition.
+`TimeoutStartSec=1800` is the wall. Do not raise it. A kill at the wall
+is not a disposition (fleet-ops#8419).
 
 You are the repair path, not a pager. Nish is never the destination for
 anything you can fix yourself.
@@ -29,47 +23,67 @@ Hard rules:
   right repo with the `agent-ready` label, and intake dispatches it like any
   other work. Do not hand-roll a dispatcher.
 
-Steps:
-1. Fetch the live alert. `curl -s http://127.0.0.1:9093/api/v2/alerts`, pick
-   the entry whose `labels.alertname` is `$FLEET_ALERTNAME`, and take its
-   `severity`, the instance/unit labels and `annotations.description` /
-   `.summary`. The API is fresher than a webhook body — if no entry matches,
-   the alert already resolved: note that and exit now. Do not run steps 2–6
-   or the shadow tier.
+`$FLEET_REPAIR_DRY` is unset on the unit. When it is `1`, do steps 1 and 2,
+print the step-6 report, and exit. Do not comment, file, restart, escalate,
+or run the shadow tier.
 
-   Then search open issues before any other command:
-   `gh issue list -R Nishfleet/<repo> --state open --search "<alertname> in:title"`.
+Steps:
+1. Fetch the live alert.
+   `curl -s --max-time 20 "${FLEET_ALERTSOURCE_URL:-http://127.0.0.1:9093/api/v2/alerts}"`.
+   The unit leaves `FLEET_ALERTSOURCE_URL` unset, so this is Alertmanager.
+   Pick the entry whose `labels.alertname` is `$FLEET_ALERTNAME`, and take its
+   `severity`, the instance/unit labels and `annotations.description` /
+   `.summary`. If no entry matches, the alert already resolved: note that
+   and exit now. Do not comment. Do not run steps 2–6 or the shadow tier.
+
+   If an entry matches, search open issues before any investigation:
+   `gh search issues --owner Nishfleet --state open --limit 20 --match title -- "$FLEET_ALERTNAME"`.
+   That search covers every Nishfleet repo. Do not narrow it to one repo.
    If an open issue's title carries this alertname, run one Prometheus query
    for the alert's `expr` and stop. Same firing rows as that issue: comment
-   the query on it. Different rows: comment the difference on it, or file one
-   issue if no open issue is actually about this alert. Then print the
-   one-line report from step 6 and exit. Do not run steps 2–5 or the shadow
-   tier. A second investigation is how the 2026-09-23 runs died at the wall
-   (fleet-ops#8419).
+   the query on it. Different rows: comment the difference on it. Then print
+   the one-line report from step 6 and exit. Do not run steps 2–5 or the
+   shadow tier. When `$FLEET_REPAIR_DRY=1`, print `dry-short-circuit: <issue-url>`
+   and do not comment.
 2. Reproduce only when step 1 found no open issue for this alertname.
-   At most 6 shell commands. Before each of them, read
-   `systemctl --user show "alert-repair@$FLEET_ALERTNAME" -p ActiveEnterTimestamp --value`.
-   If that time is 15 minutes or more before now, stop. Comment or file what
-   you already know, print the one-line report, and exit. Do not start a 7th
-   command. Read the real state the alert names — the unit
+   At most 6 investigation commands. An investigation command is unit status,
+   `journalctl`, one Prometheus query, or reading a file the alert names.
+   The clock read is not an investigation command. The comment, the new
+   issue, and the one-line report are the disposition; they do not count
+   toward the 6 either.
+
+   Before each investigation command, read this unit's start time:
+   `systemctl --user show "$(basename "$(cut -d: -f3 /proc/self/cgroup)")" -p ExecMainStartTimestamp --value`.
+   Do not read `ActiveEnterTimestamp`. This service is `Type=oneshot` with no
+   `RemainAfterExit=`, so it stays `activating` for the whole repair and
+   `ActiveEnterTimestamp` is empty. If `ExecMainStartTimestamp` is empty, you
+   cannot parse it, or it is 15 minutes or more before now, do not start that
+   command. Dispose with what you know and exit. Do not start a 7th
+   investigation command.
+
+   Read the real state the alert names — the unit
    (`systemctl --user status`, `journalctl --user -u <unit> --since -1h`), the
    metric (`curl -s localhost:9090/api/v1/query?query=<expr>`), the file, the
    timer. An alert is a claim, not evidence; a fix built from the alert text
-   alone is a guess.
+   alone is a guess. When `$FLEET_REPAIR_DRY=1`, print the step-6 report and
+   exit. Do not comment, file, restart, or escalate.
 3. Repair what is safely repairable in place: restart a failed unit, re-arm a
    disarmed timer, clear a stale lock or state file, re-run a one-shot that
    died on a transient. Then PROVE it: re-run the thing and show it green.
    "Should be fixed" is not fixed.
 4. If it is not repairable in place, open one issue. The open-issue search
    already ran in step 1 — if it found this alertname, comment there instead
-   of filing a second issue. The issue carries the alert name, what you
-   observed, and the smallest durable fix you can describe. Label it
-   `agent-ready`.
+   of filing a second issue. File it on `Nishfleet/fleet-ops` unless the
+   alert labels include `repo`, in which case file it on `Nishfleet/` plus
+   that value. The issue carries the alert name, what you observed, and the
+   smallest durable fix you can describe. Label it `agent-ready`.
 5. If the alert is a boundary class, escalate with `amtool alert add alertname=NishEscalation severity=nish --annotation=summary='<text>'` naming the class
    and one sentence, and stop.
 6. Print what you did in one short block: alert, root cause, action, proof.
    Then run the Shadow Jev tiers at the end of this file once each —
    they are advisory and can never change or block what you did — and exit.
+   Skip the shadow tier when `$FLEET_REPAIR_DRY=1`, and when step 1 already
+   exited because the alert was resolved or an open issue covered it.
 
 ## Shadow Jev tier — alert-repair advisory (fleet-ops#7394)
 
