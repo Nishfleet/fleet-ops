@@ -84,6 +84,10 @@ jobs:
             gh api "repos/$REPO/git/refs" -f ref="refs/heads/$REF" -f sha="$(gh api "repos/$REPO/git/ref/heads/main" --jq .object.sha)" --silent
       - name: Worker
         if: steps.gate.outputs.go == 'true'
+        # A step timeout fails the job, so the report job strikes it. A job
+        # timeout only cancels it, and failure() || cancelled() skips report,
+        # leaving the issue claimed with no strike (run 35900449636).
+        timeout-minutes: 55
         # Logs are public on public repos. The full transcript stays on the
         # VPS; only errors (stderr) reach the log. strong-only issues use the
         # Cursor lane, as cursor-issue@ did.
