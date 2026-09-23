@@ -99,7 +99,7 @@ by each caller's own code (the config store was deleted in the glue-zero wipe;
 | `intake-repair-seatfault` | 0.6 / 0.6 |
 | `reviewer-needs-review` / `scout` / `scout-rank` | 0.9 / 0.1 |
 | `second-opinion` / `second-opinion-reserved` / `worker-escalation-target` | 0.5 / 0.5 |
-| `worker-context` (advisory; reports sensitivity at 0.1, 0.25, 0.5 — no edge acts) | 0.9 / 0.1 |
+| `worker-context` | RETIRED 2026-09-23 (fleet-ops#8423): 306 of its 450 rows scored 0509 runs whose repo has neither candidate file — 0.9 / 0.1 stamped on surviving rows
 | `vault-drop-routing` | log-only, no row read |
 
 (`act_hi` is the confident-positive edge, `review_lo` the confident-negative

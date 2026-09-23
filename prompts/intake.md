@@ -54,8 +54,11 @@ Steps:
    `jev admit: p=<p>; Opus vets` — the label fires the product repo's `opus-vet` job
    (claude-code-action, Opus 5), which reads the issue against origin/main and admits, closes or parks it.
    Fable never reads the band; it reads only `opus-vet:` escalations.
-   p < 0.6, or any failure: leave `proposed`, add `needs-nish-decision`,
-   comment `jev admit: p=<p or unavailable>; to Nish with Fable's suggestion`
+   Any failure (no finite p): leave `proposed` and add nothing; the next tick
+   asks again, because an outage is not an opinion (2026-09-23: 4 issues sat
+   in Nish's queue as `p=unavailable` after /jev 503s).
+   p < 0.6: leave `proposed`, add `needs-nish-decision`,
+   comment `jev admit: p=<p>; to Nish with Fable's suggestion`
    — the same `opus-vet` job appends its one-line keep/close suggestion before
    Nish reads the `needs-nish-decision` queue. First opinion only; never re-ask, never invent a
    probability.
@@ -101,8 +104,13 @@ Steps:
 
    - `agent-blocked` → the latest unstruck `blocked-on:` line in the body or
      comments (`~~blocked-on: ...~~` is dead). Known forms:
-     * `Nishfleet/<repo>#<n>` / `owner/repo#n` / a GitHub issue-or-PR URL —
-       resolved when the target is CLOSED or MERGED.
+     * An issue or PR ref — bare `#<n>`, `Nishfleet/<repo>#<n>` or a URL.
+       CLOSED or MERGED: release. An open issue: move the wait into GitHub —
+       `gh api repos/Nishfleet/<repo>/issues/<n> --jq .id`, then `gh api
+       repos/Nishfleet/<repo>/issues/<N>/dependencies/blocked_by -F
+       issue_id=<that id>` — and release; step 4's `blockedBy` filter holds
+       it until GitHub clears the dependency (fleet-ops#8422). An open PR
+       (GitHub refuses a PR as a blocker): stays parked until it merges.
      * `re-open-<ISO8601>[-<smoke-name>]` — date gate. Future timestamp: stays
        parked, no comment. Past: run the named smoke if one is present —
        `<seat>-smoke-ok` passes when that seat's row in `curl -sL
@@ -229,7 +237,10 @@ Steps:
    list again. Empty means print
    `no ready issues` and exit 0. DROP any issue that carries `noise-class`,
    `agent-blocked`, `awaiting-runtime-gate` or `needs-split`, or whose title starts with
-   `__scout_probe_`, even if it also carries `agent-ready`. Order them: issues labelled `priority-now` first (Nish's
+   `__scout_probe_`, even if it also carries `agent-ready`. Also DROP every issue
+   GitHub itself marks as waiting on an open blocker (fleet-ops#8422): one query,
+   `gh api graphql --paginate -f query='query($endCursor: String){repository(owner:"Nishfleet",name:"<repo>"){issues(labels:["agent-ready"],states:OPEN,first:100,after:$endCursor){nodes{number issueDependenciesSummary{blockedBy}} pageInfo{hasNextPage endCursor}}}}'`,
+   drops each node with `blockedBy > 0`. GitHub clears the count when the blocker closes, so no one releases it. Order them: issues labelled `priority-now` first (Nish's
    word, applied by him or by Fable on it),
    then `critical-path` or `escalate-senior`, then oldest-first by `createdAt`. After two
    critical-path claims in a row, take the oldest plain issue next so the tail
@@ -258,10 +269,14 @@ Steps:
       and skipping forever starves the issue every tick. Check the holder
       first: `systemctl --user list-units '*-issue@<repo>-N.service'
       --state=active,activating --no-legend` — any row means a live worker
-      owns the claim; skip. No rows → orphan: release it yourself, fail-closed:
-      `gh pr list -R Nishfleet/<repo> --head claim/issue-N --state open
-      --json number` must print `[]` (an open PR HOLDS the claim; skip);
-      if `gh api repos/Nishfleet/<repo>/compare/main...claim/issue-N --jq
+      owns the claim; skip. No rows → `gh pr list -R Nishfleet/<repo> --head
+      claim/issue-N --state open --json number`. An open PR means CONTINUE,
+      never skip and never reset: the issue is agent-ready again because its
+      PR needs more work (a D/F grade, a conflict, a dead worker). Skip c,
+      run d, run e with the body `continued by <engine>-issue-<repo>-N at
+      <UTC timestamp>; PR #<n>`, then f; the worker's step 2b continues that
+      PR (fleet-ops#8418). A gh error here is a real failure. `[]` → orphan:
+      release it yourself, fail-closed: if `gh api repos/Nishfleet/<repo>/compare/main...claim/issue-N --jq
       .ahead_by` is above 0, `git push origin
       refs/remotes/origin/claim/issue-N:refs/heads/wip/issue-N` first;
       then `git push origin --delete claim/issue-N` and post one comment
@@ -309,6 +324,6 @@ Steps:
       coincide spikes the slice and trips systemd-oomd.
    g. One slot used.
 
-6. Print one line per issue (`claimed+spawned` / `skipped-claim-lost` /
+6. Print one line per issue (`claimed+spawned` / `continued+spawned` / `skipped-claim-lost` /
    `skipped-capacity` / `skipped-noise-class`) and quote the `jev-order:`
    lines right after them, then exit 0.

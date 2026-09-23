@@ -31,17 +31,38 @@ jobs:
           t=$(gh token generate --app-id 4728578 --key "$HOME/.config/fleet-worker/nishfleet-worker.private-key.pem" --installation-id 156789042 --token-only)
           echo "::add-mask::$t"
           echo "GH_TOKEN=$t" >> "$GITHUB_ENV"
+      - name: Attempt cap
+        # Hard stop for loops where a run "succeeds" but CI stays red: 3 runs
+        # per issue since the newest opus-vet, counted from these comments.
+        id: cap
+        run: |
+          i=${REF#claim/issue-}
+          # shellcheck disable=SC2016 # $v is a jq variable
+          runs=$(gh issue view "$i" -R "$REPO" --json comments --jq '[.comments[].body] | (map(startswith("opus-vet:")) | rindex(true) // -1) as $v | .[$v+1:] | map(select(startswith("agent run started:"))) | length')
+          if [ "$runs" -ge 3 ]; then
+            gh issue edit "$i" -R "$REPO" --add-label needs-orchestrator --remove-label agent-ready,agent-in-progress
+            gh issue comment "$i" -R "$REPO" --body "agent attempt cap: $runs runs since the last opus-vet; parked for the orchestrator"
+            echo go=false >> "$GITHUB_OUTPUT"
+          else
+            gh issue comment "$i" -R "$REPO" --body "agent run started: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+            echo go=true >> "$GITHUB_OUTPUT"
+          fi
       - name: Branch
+        if: steps.cap.outputs.go == 'true'
         run: |
           gh api "repos/$REPO/git/ref/heads/$REF" --silent 2>/dev/null ||
             gh api "repos/$REPO/git/refs" -f ref="refs/heads/$REF" -f sha="$(gh api "repos/$REPO/git/ref/heads/main" --jq .object.sha)" --silent
       - name: Worker
+        if: steps.cap.outputs.go == 'true'
+        # Logs are public on public repos. The full transcript stays in the
+        # VPS session dir; only errors (stderr) reach the log.
         run: |
           echo "/worker ${REPO#*/}-${REF#claim/issue-}" | pi --print \
             --append-system-prompt "$HOME/workspaces/tooling/fleet-ops-deploy-clone/AGENTS.md" \
             --session-dir "$HOME/.pi/agent/sessions/agent-${REPO#*/}-${REF#claim/issue-}" \
-            --exclude-tools subagent --provider litellm --model worker-capable
+            --exclude-tools subagent --provider litellm --model worker-capable >/dev/null
       - name: Arm auto-merge as the App
+        if: steps.cap.outputs.go == 'true'
         run: |
           if gh pr view "$REF" -R "$REPO" --json state --jq .state | grep -qx OPEN; then
             gh pr merge "$REF" -R "$REPO" --auto
@@ -59,6 +80,15 @@ jobs:
       - env:
           GH_TOKEN: ${{ github.token }}
           N: ${{ inputs.ref }}
+        # Two strikes, counted from these comments since the newest opus-vet
+        # (a fresh vet resets the count, same as prompts/claim-release.md step 5).
         run: |
-          gh issue edit "${N#claim/issue-}" -R "$GITHUB_REPOSITORY" --add-label agent-failed
-          gh issue comment "${N#claim/issue-}" -R "$GITHUB_REPOSITORY" --body "agent run failed: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+          i=${N#claim/issue-}
+          # shellcheck disable=SC2016 # $v is a jq variable
+          prior=$(gh issue view "$i" -R "$GITHUB_REPOSITORY" --json comments --jq '[.comments[].body] | (map(startswith("opus-vet:")) | rindex(true) // -1) as $v | .[$v+1:] | map(select(startswith("agent run failed:"))) | length')
+          gh issue comment "$i" -R "$GITHUB_REPOSITORY" --body "agent run failed: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+          if [ "$prior" -ge 1 ]; then
+            gh issue edit "$i" -R "$GITHUB_REPOSITORY" --add-label needs-orchestrator --remove-label agent-ready,agent-in-progress,agent-failed
+          else
+            gh issue edit "$i" -R "$GITHUB_REPOSITORY" --add-label agent-failed --remove-label agent-in-progress
+          fi

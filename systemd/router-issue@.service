@@ -8,7 +8,8 @@
 [Unit]
 Description=Pi fleet issue worker %i on the LiteLLM router (worker-capable: Pareto GLM, OpenCode Go DS4.1, Stepfun step-5)
 # This unit IS the worker — no wrapper script. ExecStart pipes Pi's /worker
-# prompt template into `pi --print`; retries/hang-kill are Restart= +
+# prompt template into `pi --print`; no Restart= (a failed run re-queues through
+# OnFailure and intake, fleet-ops#8421); hang-kill is
 # TimeoutStartSec=, and the seat is the PI_SEAT_PROVIDER/PI_SEAT_MODEL pair
 # below (2026-09-22: xai-oauth grok-4.7:xhigh — see the SEAT block). Until
 # then it was the LiteLLM `worker-capable` group; that group is still what
@@ -20,22 +21,9 @@ Description=Pi fleet issue worker %i on the LiteLLM router (worker-capable: Pare
 # --session-dir is load-bearing: Pi keys sessions per working directory, and
 # every unit starting in /home/nish shared one session pool — workers resumed
 # each other's transcripts and exited without touching the issue.
-# Two strikes, absolute: StartLimitIntervalSec=infinity + StartLimitBurst=2.
-# A finite window is the wrong knob — its cap is "starts inside the window",
-# not a count of failures, so it neither bounds exactly nor holds across a
-# long retry span. Live 2026-09-23 on THIS lane: under 1h/3 an ~85 min cycle
-# (55 min wall + RestartSec backoff) never put 3 starts inside 1h, and
-# router-issue@0509-4001 logged 14 starts between 2026-09-22 18:37 and
-# 2026-09-23 11:51 IST with no refusal at all; #8375's 6h window refused only
-# the 4th start inside it (13:16:26 IST) and re-arms after any 6h gap.
-# infinity makes the count permanent — man systemd.unit: infinity "limits the
-# total number of start attempts, even if they happen at large time
-# intervals" — so the 2nd failed attempt is the last: the unit lands in failed
-# and OnFailure=pi-issue-failed@%i takes over (claim release, then a flagship
-# re-dispatch or a park) instead of burning ~1 seat-hour per retry.
-# `systemctl --user reset-failed <unit>` re-arms it by hand.
-StartLimitIntervalSec=infinity
-StartLimitBurst=2
+# Two strikes live in prompts/claim-release.md step 5 as a count of GitHub
+# release comments (fleet-ops#8421): a systemd start counter is in-memory,
+# counts continuations as retries, and its refusals re-fire OnFailure.
 # Permanent failure releases the claim via pi-issue-failed@ —
 # prompts/claim-release.md (fleet-ops#6292); see pi-issue@.service.
 OnFailure=pi-issue-failed@%i.service
@@ -159,8 +147,8 @@ ExecStopPost=-/bin/sh -c 'r=$(echo "$1" | sed "s/-[0-9][0-9]*$//"); systemctl --
 # on claim/issue-<N> — merged PRs can delete the branch mid-run
 # (fleet-ops#7783), so PRs are read first — or the claim branch ahead of the
 # default branch; a missing branch is a deliberate park and passes. exit 1 ->
-# Result=exit-code -> `failed`, which is what OnFailure=/Restart=/
-# StartLimitBurst key off, and one seat-attributed row lands in
+# Result=exit-code -> `failed`, which is what OnFailure= keys
+# off, and one seat-attributed row lands in
 # ~/.local/state/fleet-ops/empty-runs.jsonl for FleetWorkerEmptyRun. Runs
 # LAST so cleanup and the intake refill run first; only checked on a success
 # exit. The logic lives in the bin file, not inline here: systemd expands
@@ -169,11 +157,6 @@ ExecStopPost=-/bin/sh -c 'r=$(echo "$1" | sed "s/-[0-9][0-9]*$//"); systemctl --
 # incident proved a long inline program breaks the whole stop path.
 TimeoutStopSec=180
 
-# Retry policy — systemd's own, not a counter in bash.
-Restart=on-failure
-RestartSec=240
-RestartSteps=3
-RestartMaxDelaySec=30min
 # Hang detection: a worker active longer than this is terminated into `failed`.
 # fleet-ops#8324 (population diagnosis, 2026-09-22): 45min is TOO SHORT for
 # this lane. Every timed-out router unit on 2026-09-22 was joined to its own Pi
