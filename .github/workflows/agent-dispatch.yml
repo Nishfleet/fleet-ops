@@ -4,7 +4,8 @@
 name: agent-dispatch
 on:
   issues:
-    types: [labeled]
+    types: [labeled, closed]
+  workflow_dispatch:
   workflow_run:
     workflows: [CI]
     types: [completed]
@@ -28,3 +29,41 @@ jobs:
     uses: Nishfleet/fleet-ops/.github/workflows/agent.yml@main
     with:
       ref: ${{ github.event.workflow_run.head_branch }}
+  # A closed blocker frees the issues it was blocking; a manual run sweeps
+  # every ready, unblocked issue (cutover backfill and missed-event recovery).
+  # Priority-now first, then oldest. The Gate step in agent.yml re-checks each.
+  list:
+    if: >-
+      vars.AGENT_MODE == 'live' &&
+      ((github.event_name == 'issues' && github.event.action == 'closed') || github.event_name == 'workflow_dispatch')
+    runs-on: ubuntu-latest
+    permissions:
+      issues: read
+    outputs:
+      refs: ${{ steps.list.outputs.refs }}
+    steps:
+      - id: list
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CLOSED: ${{ github.event.issue.number }}
+        run: |
+          if [ -n "$CLOSED" ]; then
+            nums=$(gh api "repos/$GITHUB_REPOSITORY/issues/$CLOSED/dependencies/blocking" --jq '.[]|select(.state=="open")|.number')
+          else
+            nums=$(gh issue list -R "$GITHUB_REPOSITORY" -l agent-ready -L 1000 --json number --jq '.[].number')
+          fi
+          refs=$(for n in $nums; do gh api "repos/$GITHUB_REPOSITORY/issues/$n"; done |
+            jq -sc '[.[] | select(.issue_dependencies_summary.blocked_by == 0 and any(.labels[]; .name == "agent-ready"))]
+              | sort_by((if any(.labels[]; .name == "priority-now") then 0 else 1 end), .created_at)
+              | map("claim/issue-\(.number)") | .[:256]')
+          echo "refs=${refs:-[]}" >> "$GITHUB_OUTPUT"
+  unblocked:
+    needs: list
+    if: needs.list.outputs.refs != '[]'
+    strategy:
+      fail-fast: false
+      matrix:
+        ref: ${{ fromJSON(needs.list.outputs.refs) }}
+    uses: Nishfleet/fleet-ops/.github/workflows/agent.yml@main
+    with:
+      ref: ${{ matrix.ref }}
