@@ -23,6 +23,21 @@
       "name": "siterep",
       "permanent": true,
       "reason": "Archived repo (isArchived=true). No intake on archived repos."
+    },
+    {
+      "name": "TinyStudio.io",
+      "permanent": true,
+      "reason": "Archived 2026-09-23 in Nish's repo cleanup (isArchived=true). No intake on archived repos. Undo: gh repo unarchive, then move back to deferred via PR."
+    },
+    {
+      "name": "context-hub",
+      "permanent": true,
+      "reason": "Archived 2026-09-23 in Nish's repo cleanup (isArchived=true). No intake on archived repos. Undo: gh repo unarchive, then move back to deferred via PR."
+    },
+    {
+      "name": "egress-probe",
+      "permanent": true,
+      "reason": "Archived 2026-09-23 in Nish's repo cleanup (isArchived=true). No intake on archived repos. Undo: gh repo unarchive, then move back to deferred via PR."
     }
   ],
   "deferred": [
@@ -43,23 +58,11 @@
       "reason": "Campaign scope (decisions ledger 2026-08-25: '0509 gets all lanes for the transformation campaign; other repos maintenance-only'). Re-enrol via PR when Nish widens lanes. 0509-telemetry additionally: private DATA repo — enrolling a data sink in code intake is a category error. TinyStudio.io-public: legacy mirror. fleet-ops: control-plane work-generation paused (the 2026-08-25 evening produced 9 control-plane merges vs 0 product merges — the fleet2 self-maintenance pattern)."
     },
     {
-      "name": "TinyStudio.io",
-      "reason": "Campaign scope (decisions ledger 2026-08-25: '0509 gets all lanes for the transformation campaign; other repos maintenance-only'). Re-enrol via PR when Nish widens lanes. 0509-telemetry additionally: private DATA repo — enrolling a data sink in code intake is a category error. TinyStudio.io-public: legacy mirror. fleet-ops: control-plane work-generation paused (the 2026-08-25 evening produced 9 control-plane merges vs 0 product merges — the fleet2 self-maintenance pattern)."
-    },
-    {
       "name": "TinyStudio.io-public",
       "reason": "Campaign scope (decisions ledger 2026-08-25: '0509 gets all lanes for the transformation campaign; other repos maintenance-only'). Re-enrol via PR when Nish widens lanes. 0509-telemetry additionally: private DATA repo — enrolling a data sink in code intake is a category error. TinyStudio.io-public: legacy mirror. fleet-ops: control-plane work-generation paused (the 2026-08-25 evening produced 9 control-plane merges vs 0 product merges — the fleet2 self-maintenance pattern)."
     },
     {
       "name": "aiconverter-app",
-      "reason": "Campaign scope (decisions ledger 2026-08-25: '0509 gets all lanes for the transformation campaign; other repos maintenance-only'). Re-enrol via PR when Nish widens lanes. 0509-telemetry additionally: private DATA repo — enrolling a data sink in code intake is a category error. TinyStudio.io-public: legacy mirror. fleet-ops: control-plane work-generation paused (the 2026-08-25 evening produced 9 control-plane merges vs 0 product merges — the fleet2 self-maintenance pattern)."
-    },
-    {
-      "name": "context-hub",
-      "reason": "Campaign scope (decisions ledger 2026-08-25: '0509 gets all lanes for the transformation campaign; other repos maintenance-only'). Re-enrol via PR when Nish widens lanes. 0509-telemetry additionally: private DATA repo — enrolling a data sink in code intake is a category error. TinyStudio.io-public: legacy mirror. fleet-ops: control-plane work-generation paused (the 2026-08-25 evening produced 9 control-plane merges vs 0 product merges — the fleet2 self-maintenance pattern)."
-    },
-    {
-      "name": "egress-probe",
       "reason": "Campaign scope (decisions ledger 2026-08-25: '0509 gets all lanes for the transformation campaign; other repos maintenance-only'). Re-enrol via PR when Nish widens lanes. 0509-telemetry additionally: private DATA repo — enrolling a data sink in code intake is a category error. TinyStudio.io-public: legacy mirror. fleet-ops: control-plane work-generation paused (the 2026-08-25 evening produced 9 control-plane merges vs 0 product merges — the fleet2 self-maintenance pattern)."
     },
     {
