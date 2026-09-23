@@ -447,8 +447,8 @@ one JSON object per signal as a single line to
 `~/.local/state/pi-packet/jev/scout-rank.jsonl` — create the directory
 first, file mode 0600 — carrying `ts` (UTC), `site` `scout-rank`, `ref`
 `Nishfleet/<repo>:<signal-id>`, `state_sha256` (the sha256 of the posted
-body), `act_hi` 0.9 and `review_lo` 0.1 (the bands file `docs/jev-bands.md`
-row `scout-rank` is in the tree; the bound values are stated here too), `answers` (the two answers that validated), `signal`,
+body), `act_hi` 0.9 and `review_lo` 0.1 (the `scout-rank` row of
+`docs/jev-bands.md`), `answers` (the two answers that validated), `signal`,
 `worker_picks`, `probes`, `advisory_only` true, `repo`, `run`, and `usage`
 and `ms` from the response. A signal whose two answers are both missing or
 invalid is skipped and recorded under `invalid_questions`. Then print one
