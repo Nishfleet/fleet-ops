@@ -25,7 +25,7 @@
 # group so every alias has a passing seat; health_check_concurrency: 1 so /health
 # does not fire them all at once (that 429'd the account when 4 rungs ran
 # together). max_parallel_requests matches the pre-#7862 pareto split (workers 2,
-# senior/judge 2, private 1). pi-issue@ stays --provider litellm --model worker-capable.
+# senior/judge 2, private 1). agent workers stay --provider litellm --model worker-capable.
 # 2026-09-21 (fleet-ops#5792 converge): audited the live-only edits of
 # 2026-09-20 — synthetic worker-cheap + nemotron worker-capable re-benched
 # (evidence in their benched: entries). The cline/ union-alpha rungs +
@@ -64,7 +64,7 @@
 # decision, filed as #8198 (probe evidence + prerequisites there).
 model_list:
 - model_name: worker-capable
-  # OpenCode Go, same rung as worker-cheap; pi-issue@ workers run --model worker-capable (2026-09-22).
+  # OpenCode Go, same rung as worker-cheap; agent workers run --model worker-capable (2026-09-22).
   litellm_params:
     model: openai/deepseek-v4.1-flash
     api_base: https://opencode.ai/zen/go/v1
@@ -216,9 +216,9 @@ model_list:
 # custom_provider_map module is exactly the hand-built extension class that
 # sweep retired, and this shape reference must stay deployable as written
 # (a missing handler fails the proxy at import).
-# Devin capacity is live on the devin-issue@ worker lane instead
-# (systemd/devin-issue@.service; prompts/intake.md picks devin-issue@<repo>-N
-# while fewer than 3 are active). `devin --print` is an agent, not an HTTP
+# Devin capacity ran on a separate Devin worker lane instead
+# (deleted with the old dispatcher, fleet-ops#8449). `devin --print` is an agent,
+# not an HTTP
 # endpoint, and can never return tool_calls — so it can never be a router
 # rung (fleet-ops#7761). NEVER swe-1-7 (retired, cap 0) or swe-2-high
 # (parked to 2036).
@@ -476,7 +476,7 @@ benched:
 # bases 404 (live-proxied 2026-09-13). The #6228 CustomLLM wire
 # (devin/swe-2-max in senior/judge/worker-private, PR #7895) was retired
 # the same day by the #7907 no-glue sweep — devin seats now serve as the
-# devin-issue@ worker lane, not a router rung. Do NOT restore this openai/*
+# Devin worker lane, not a router rung. Do NOT restore this openai/*
 # row; do NOT add any devin bridge to worker-cheap/worker-capable
 # (fleet-ops#7761).
   retry_at: '2026-09-24T12:30:00+05:30'
@@ -561,7 +561,7 @@ router_settings:
     # was the `devin/swe-2-max` CustomLLM bridge (itself retired by the #7907
     # no-glue sweep): `devin --print` is an agent-in-a-box that returns final
     # prose, never a tool_calls response, and as a worker fallback it produced
-    # the 2026-09-18 outage — every pi-issue@ worker from ~16:30Z scored
+    # the 2026-09-18 outage — every issue worker from ~16:30Z scored
     # PACKET-VERDICT tools=0 and exited 0 while 100+ agent-ready issues sat
     # untouched. Re-proven 2026-09-21: openrouter nemotron-3-ultra-550b-a55b:free
     # returned the tool call as text content (tool_calls: null) on 5/5

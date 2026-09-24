@@ -34,7 +34,7 @@ Environment=HOME=/home/nish
 # fleet-ops#7907: the Devin CustomLLM handler (fleet_devin_adapter) was
 # deleted in the no-glue sweep — no PYTHONPATH and no custom_handler exist
 # for it; the proxy needs no provider module. Devin seats run on the
-# devin-issue@ worker lane, not the router (fleet-ops#6133).
+# Devin worker lane, not the router (fleet-ops#6133).
 Environment=PATH=/home/nish/.local/venvs/litellm/bin:/home/nish/.local/bin:/usr/local/bin:/usr/bin:/bin
 Environment=XDG_RUNTIME_DIR=/run/user/1000
 # The config is operator-owned (lives in ~/.config, not the repo) so keys

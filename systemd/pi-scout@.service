@@ -27,7 +27,7 @@ WorkingDirectory=/home/nish
 # AGENTS.md context-file discovery because that walks up from the STARTUP cwd, and
 # this unit starts in /home/nish — the repo file would never be reached. Canonical
 # path, never cwd-relative: the unit must not depend on which checkout it runs from.
-# fleet-ops#8282: same deploy-clone lock as pi-intake@. A user unit cannot set up
+# fleet-ops#8282: deploy-clone lock. A user unit cannot set up
 # a mount namespace (ReadOnlyPaths= is recorded and then ignored; BindPaths=
 # fails the unit with status=226/NAMESPACE), so the write protection is
 # bubblewrap's: it is the stock tool Ubuntu exempts from
@@ -46,7 +46,7 @@ ExecStart=/usr/bin/bwrap --bind / / \
 # one — the 2026-09-17 fleet-ops scout aborted on a code-scanning 404 and
 # still recorded green. The completed-run signature is the mandatory
 # `supply:` summary line: this check greps THIS invocation's journal for it
-# and fails the unit when it is absent. Same shape as the pi-issue@
+# and fails the unit when it is absent. Same shape as the old issue-worker
 # ExecStopPost artifact check — an artifact verdict, not a tool count.
 # ExecStartPost only runs when ExecStart succeeded, so a pi-level failure
 # (429 wall, token mint) keeps its real exit code untouched; and because a
