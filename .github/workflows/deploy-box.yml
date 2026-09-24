@@ -7,7 +7,7 @@
 # %% -> %, the /usr/bin/sh -c wrapper and its outer quotes stripped) — one
 # source of truth in systemd/fleet-sync.service, no second hand-rolled copy.
 #
-# Trigger safety (systemd/gh-runner@.service header): this workflow fires ONLY
+# Trigger safety: this workflow fires ONLY
 # on push to main and on workflow_dispatch, on the self-hosted fleet-ci
 # runner. There is no pull-request trigger, so fork code never executes on
 # the box. No checkout step: every command operates on absolute paths inside
