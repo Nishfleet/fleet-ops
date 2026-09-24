@@ -119,6 +119,16 @@ jobs:
     if: needs.list.outputs.refs != '[]'
     strategy:
       fail-fast: false
+      # Bound the sweep fan-out to live seat slots. The matrix starts one worker
+      # per listed ref at once; a 14-ref sweep put ~14 workers on the LiteLLM
+      # router against ~7 live parallel slots and 429'd them into strikes
+      # (fleet-ops#8553). Stock Actions knob, no new files: strategy.max-parallel,
+      # tunable per repo via vars.AGENT_MAX_PARALLEL (unset -> 6, ~7 slots).
+      # This bounds only this matrix. The new/rework/ejected jobs above are one
+      # dispatch per event and are NOT throttled by max-parallel; bounding that
+      # aggregate is host runner-count config (deploy is Nish-gated) or a
+      # workflow-level concurrency group that would serialize the 6h sweep.
+      max-parallel: ${{ fromJSON(vars.AGENT_MAX_PARALLEL || '6') }}
       matrix:
         ref: ${{ fromJSON(needs.list.outputs.refs) }}
     uses: Nishfleet/fleet-ops/.github/workflows/agent.yml@main
