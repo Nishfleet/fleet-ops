@@ -75,6 +75,15 @@ jobs:
             case $labels in *",$l,"*) skip "$l" ;; esac
           done
 
+          # Router seat wall (fleet-ops#8543): no raw worker-capable row healthy
+          # (same raw-row filter as FleetWorkerLaneOutage), so a worker would die on
+          # its first call. Leave the issue agent-ready: no claim, no strike. An
+          # empty or unreachable /metrics is not a wall.
+          if curl -sL --max-time 10 127.0.0.1:4000/metrics |
+            awk '/^litellm_deployment_state\{/ && /model_id="[^"]*-worker-capable"/ && /litellm_model_name="[^"]*\// { n++; if ($NF + 0 == 0) up++ } END { exit !(n > 0 && up == 0) }'; then
+            skip seats-out
+          fi
+
           case $labels in *,cheap-ok,*|*,strong-only,*) ;; *)
             key=$(grep -m1 '^LITELLM_JEV_KEY=' "$HOME/.config/fleet-ops/seats/typesafe-jev.env" | cut -d= -f2-)
             echo "::add-mask::$key"
