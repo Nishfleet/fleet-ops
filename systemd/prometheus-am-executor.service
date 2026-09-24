@@ -1,0 +1,12 @@
+# Versioned from the host copy (fleet-ops#8584).
+[Unit]
+Description=Prometheus Alertmanager webhook executor (alerts → repair dispatch)
+
+[Service]
+Type=simple
+ExecStart=/home/nish/.local/bin/prometheus-am-executor -f /home/nish/.config/prometheus-am-executor/config.yml
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target
