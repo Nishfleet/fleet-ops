@@ -47,10 +47,6 @@ ExecStart=/usr/bin/sh -c 'cmp -s /home/nish/workspaces/tooling/fleet-ops-deploy-
 #     (scrape jobs included), not rules only. promtool check config runs
 #     first so a bad file never replaces the live one.
 ExecStart=/usr/bin/sh -c 'src=/home/nish/workspaces/tooling/fleet-ops-deploy-clone/config/prometheus.yml; dst=/etc/prometheus/prometheus.yml; cmp -s "$$src" "$$dst" || { promtool check config "$$src" && sudo -n install -D -m 0644 -o root -g root "$$src" "$$dst" && sudo -n systemctl reload prometheus; }'
-# 5. prometheus-am-executor -f path is user-scope, so it can be a symlink
-#    into the clone (house pattern). Relink when the live path is a regular
-#    file or points elsewhere.
-ExecStart=/usr/bin/sh -c 'src=/home/nish/workspaces/tooling/fleet-ops-deploy-clone/config/prometheus-am-executor.yml; dst=/home/nish/.config/prometheus-am-executor/config.yml; mkdir -p /home/nish/.config/prometheus-am-executor; if [ ! -L "$$dst" ] || [ "$$(readlink "$$dst")" != "$$src" ]; then ln -sfn "$$src" "$$dst"; echo "[$$(date -u +%%Y-%%m-%%dT%%H:%%M:%%SZ)] [fleet-sync] linked prometheus-am-executor config -> $$src"; fi'
 # 6. The executor reads that file once at start; a pull that changed it must
 #    bounce the unit or the new command line never loads (fleet-ops#7414 —
 #    the loose-ends: am-executor-claim-reload gap that left the #6347 claim
@@ -61,6 +57,12 @@ ExecStart=/usr/bin/sh -c 'r=/home/nish/workspaces/tooling/fleet-ops-deploy-clone
 #    so it is a plain user-scope config — same symlink-into-clone pattern as
 #    step 5 (fleet-ops#4256). ln -sfn is idempotent: relink every sync.
 ExecStart=/usr/bin/sh -c 'mkdir -p /home/nish/.config/user-tmpfiles.d && ln -sfn /home/nish/workspaces/tooling/fleet-ops-deploy-clone/config/user-tmpfiles.d/agent-worktrees.conf /home/nish/.config/user-tmpfiles.d/agent-worktrees.conf'
+# 7a. Apply user-tmpfiles.d on every sync, not just at the next login
+#     (fleet-ops#8584). This creates the prometheus-am-executor config
+#     symlink from the L+ line in agent-worktrees.conf, replacing the old
+#     step-5 sh -c relink. man systemd-tmpfiles: --create creates and links;
+#     it leaves the age-only e lines alone.
+ExecStart=/usr/bin/systemd-tmpfiles --user --create
 # 7b. ~/.pi/agent/models.json is a user-scope COPY of config/pi-models.json
 #     (fleet-ops#8568: the 09-19 contextWindow 96000 fix lived only in the
 #     live file and was silently lost). Copy, not symlink: ~/.pi/agent is an
@@ -76,15 +78,9 @@ ExecStart=/usr/bin/sh -c 'cmp -s /home/nish/workspaces/tooling/fleet-ops-deploy-
 #    whose link text names a throwaway root — *worktrees/, agent-state
 #    (worktrees live there too), */tmp/. A failed unit is the page.
 ExecStart=/usr/bin/sh -c 'b=$$(find /home/nish/.config/systemd/user /home/nish/.local/bin /home/nish/.pi/agent /home/nish/workspaces/tooling/nish-vault -xtype l -o -type l -lname "*worktrees/*" -o -type l -lname "*/agent-state/*" -o -type l -lname "*/tmp/*" 2>/dev/null); [ -z "$$b" ] || { echo "[fleet-sync] LINK-GUARD live symlink -> dead/throwaway target: $$b"; exit 1; }'
-# 8. /etc/hosts gains EXACTLY one line, and this is what keeps it there
-#    (fleet-ops#8259, docs/ARCHITECTURE.md, worker isolation). The litellm
-#    provider baseUrl in config/pi-models.json is
-#    http://litellm.fleet.local:4000 so ONE models.json serves both host-side
-#    Pi (name -> 127.0.0.1) and the container (name -> 10.0.2.2, injected by
-#    --add-host on systemd/pi-issue@.container). Append-only and idempotent:
-#    grep first, so the constant is never rewritten and every other line in
-#    /etc/hosts (localhost, the host's own name) is left untouched.
-ExecStart=/usr/bin/sh -c 'grep -qE "^127[.]0[.]0[.]1[[:space:]]+litellm[.]fleet[.]local" /etc/hosts || echo "127.0.0.1 litellm.fleet.local" | sudo -n tee -a /etc/hosts > /dev/null'
+# /etc/hosts carries a static `127.0.0.1 litellm.fleet.local` line
+# (fleet-ops#8259). An earlier fleet-sync step appended it once; it is a
+# one-time host setting, not a per-tick deploy action (fleet-ops#8584).
 TimeoutStartSec=300
 
 [Install]
