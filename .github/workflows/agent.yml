@@ -177,7 +177,14 @@ jobs:
         env:
           GH_TOKEN: ${{ steps.arm-token.outputs.token }}
         run: |
+          # The merge closes the issue only through a closing keyword, and
+          # workers drop it often enough that merged work stayed claimed
+          # (0509 #4870 #4941 #4958 #5011 #5022 #5027 #5052, 2026-09-24).
           if gh pr view "$REF" -R "$REPO" --json state --jq .state | grep -qx OPEN; then
+            i=${REF#claim/issue-}
+            body=$(gh pr view "$REF" -R "$REPO" --json body --jq .body)
+            grep -qiE "(close[sd]?|fix(e[sd])?|resolve[sd]?) #$i\b" <<<"$body" ||
+              gh pr edit "$REF" -R "$REPO" --body "$body"$'\n\n'"Closes #$i"
             gh pr merge "$REF" -R "$REPO" --auto
           fi
       - name: Deliverable

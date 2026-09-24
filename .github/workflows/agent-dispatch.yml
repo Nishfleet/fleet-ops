@@ -187,7 +187,10 @@ jobs:
       - env:
           GH_TOKEN: ${{ github.token }}
           ISSUE: ${{ github.event.issue.number }}
+        # The event can be stale: a worker that closes and reopens its issue
+        # still fires this, and it closed a graded PR (0509 #4972/#5012).
         run: |
+          [ "$(gh issue view "$ISSUE" -R "$GITHUB_REPOSITORY" --json state --jq .state)" = CLOSED ] || exit 0
           for pr in $(gh pr list -R "$GITHUB_REPOSITORY" --head "claim/issue-$ISSUE" --state open --json number --jq '.[].number'); do
             # Re-check: the one race this guards is a merge landing between the
             # list and the close, which must skip, not fail.
