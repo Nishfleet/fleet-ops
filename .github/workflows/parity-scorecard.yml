@@ -1,0 +1,383 @@
+# Weekly scorecard on the caller's parity issue.
+# The four counts are GitHub data. Nothing in this file asks a model to count.
+name: Parity scorecard
+
+on:
+  # Nishfleet/0509 keeps the Monday schedule in a trigger stub and calls this
+  # file with the scorecard issue. github.* is the caller's, so REPO is the
+  # calling repo.
+  workflow_call:
+    inputs:
+      issue:
+        required: true
+        type: number
+
+permissions:
+  issues: write
+  actions: read
+  contents: read
+  pull-requests: read
+
+concurrency:
+  group: parity-scorecard
+  cancel-in-progress: false
+
+jobs:
+  scorecard:
+    name: scorecard
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      GH_TOKEN: ${{ github.token }}
+      REPO: ${{ github.repository }}
+      ISSUE: ${{ inputs.issue }}
+    steps:
+      - name: Window
+        id: window
+        run: |
+          set -euo pipefail
+          since=$(date -u -d '7 days ago' +%Y-%m-%dT%H:%M:%SZ)
+          until=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+          echo "since=${since}" >> "$GITHUB_OUTPUT"
+          echo "until=${until}" >> "$GITHUB_OUTPUT"
+
+      - name: Measure 1
+        id: m1
+        env:
+          SINCE: ${{ steps.window.outputs.since }}
+        run: |
+          set -euo pipefail
+          if [ -z "${SINCE}" ]; then
+            echo "missing window" >&2
+            exit 1
+          fi
+          tmp=$(mktemp)
+          gh api --paginate --slurp \
+            "repos/${REPO}/actions/workflows/ci.yml/runs?event=deployment_status&per_page=100&created=%3E%3D${SINCE}" \
+            | jq -c '
+                [.[].workflow_runs[] | select(.status == "completed" and .conclusion != "skipped")]
+                | {
+                    total: length,
+                    success: (map(select(.conclusion == "success")) | length),
+                    cancelled: (map(select(.conclusion == "cancelled")) | length),
+                    ids: (map(select(.conclusion != "success") | .id) | sort | map(tostring) | join(","))
+                  }
+                | . + {
+                    color: (
+                      if .total > 0 and .cancelled == 0 and (.success * 100 >= .total * 95)
+                      then "green" else "red" end
+                    )
+                  }
+              ' > "$tmp"
+          color=$(jq -r .color "$tmp")
+          success=$(jq -r .success "$tmp")
+          total=$(jq -r .total "$tmp")
+          cancelled=$(jq -r .cancelled "$tmp")
+          ids=$(jq -r .ids "$tmp")
+          case "$color" in
+            green|red) ;;
+            *) echo "measure 1 color missing" >&2; exit 1 ;;
+          esac
+          for n in "$success" "$total" "$cancelled"; do
+            case "$n" in
+              ''|*[!0-9]*) echo "measure 1 count missing" >&2; exit 1 ;;
+            esac
+          done
+          case "$ids" in
+            *[!0-9,]*) echo "measure 1 ids are not run ids" >&2; exit 1 ;;
+          esac
+          {
+            echo "color=${color}"
+            echo "success=${success}"
+            echo "total=${total}"
+            echo "cancelled=${cancelled}"
+            echo "ids=${ids}"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Measure 2
+        id: m2
+        env:
+          SINCE: ${{ steps.window.outputs.since }}
+          UNTIL: ${{ steps.window.outputs.until }}
+        run: |
+          set -euo pipefail
+          if [ -z "${SINCE}" ] || [ -z "${UNTIL}" ]; then
+            echo "missing window" >&2
+            exit 1
+          fi
+          tmp=$(mktemp)
+          # A failure counts once its 60-minute recovery window has closed.
+          # timed_out counts as a failure. Recovered means a success run was
+          # created at or after the failure and no later than 60 minutes after
+          # it finished. The list starts one hour early so a failure this card
+          # held back is still visible next week.
+          query_since=$(date -u -d "${SINCE} - 1 hour" +%Y-%m-%dT%H:%M:%SZ)
+          gh api --paginate --slurp \
+            "repos/${REPO}/actions/workflows/deploy-production.yml/runs?per_page=100&created=%3E%3D${query_since}" \
+            | jq -c --arg until "$UNTIL" '
+                def epoch: fromdateiso8601;
+                ($until | epoch) as $until_epoch
+                | [.[].workflow_runs[] | select(.status == "completed")]
+                | . as $all
+                | [$all[] | select(.conclusion == "success")] as $ok
+                | [$all[]
+                    | select(.conclusion == "failure" or .conclusion == "timed_out")
+                    | select(((.updated_at | epoch) + 3600) <= $until_epoch)
+                  ] as $bad
+                | [
+                    $bad[] | . as $f
+                    | select(
+                        [
+                          $ok[] | select(
+                            ((.created_at | epoch) >= ($f.created_at | epoch))
+                            and ((.created_at | epoch) <= (($f.updated_at | epoch) + 3600))
+                          )
+                        ] | length == 0
+                      )
+                    | .id
+                  ] as $unrec
+                | {
+                    failures: ($bad | length),
+                    unrecovered: ($unrec | length),
+                    ids: ($unrec | sort | map(tostring) | join(",")),
+                    color: (if ($unrec | length) == 0 then "green" else "red" end)
+                  }
+              ' > "$tmp"
+          color=$(jq -r .color "$tmp")
+          failures=$(jq -r .failures "$tmp")
+          unrecovered=$(jq -r .unrecovered "$tmp")
+          ids=$(jq -r .ids "$tmp")
+          case "$color" in
+            green|red) ;;
+            *) echo "measure 2 color missing" >&2; exit 1 ;;
+          esac
+          for n in "$failures" "$unrecovered"; do
+            case "$n" in
+              ''|*[!0-9]*) echo "measure 2 count missing" >&2; exit 1 ;;
+            esac
+          done
+          case "$ids" in
+            *[!0-9,]*) echo "measure 2 ids are not run ids" >&2; exit 1 ;;
+          esac
+          {
+            echo "color=${color}"
+            echo "failures=${failures}"
+            echo "unrecovered=${unrecovered}"
+            echo "ids=${ids}"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Measure 3
+        id: m3
+        env:
+          SINCE: ${{ steps.window.outputs.since }}
+        run: |
+          set -euo pipefail
+          if [ -z "${SINCE}" ]; then
+            echo "missing window" >&2
+            exit 1
+          fi
+          day=${SINCE%%T*}
+          tmp=$(mktemp)
+          gh pr list --repo "$REPO" --state merged --limit 1000 --search "merged:>=${day}" \
+            --json number,title,mergedAt \
+            --jq "if length >= 1000 then error(\"merged PR list hit the cap\") else . end | map(select(.mergedAt >= \"${SINCE}\")) | . as \$rows | [\$rows[] | select(.title | startswith(\"Revert\") or startswith(\"revert\"))] as \$revs | {merged: (\$rows|length), reverts: (\$revs|length), ids: (\$revs|map(.number)|sort|map(tostring)|join(\",\"))}" \
+            > "$tmp"
+          merged=$(jq -r .merged "$tmp")
+          reverts=$(jq -r .reverts "$tmp")
+          ids=$(jq -r .ids "$tmp")
+          for n in "$merged" "$reverts"; do
+            case "$n" in
+              ''|*[!0-9]*) echo "measure 3 count missing" >&2; exit 1 ;;
+            esac
+          done
+          case "$ids" in
+            *[!0-9,]*) echo "measure 3 ids are not pull numbers" >&2; exit 1 ;;
+          esac
+          if [ "$reverts" -eq 0 ] || { [ "$merged" -gt 0 ] && [ $((reverts * 100)) -lt $((merged * 2)) ]; }; then
+            color=green
+          else
+            color=red
+          fi
+          {
+            echo "color=${color}"
+            echo "merged=${merged}"
+            echo "reverts=${reverts}"
+            echo "ids=${ids}"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Measure 4
+        id: m4
+        env:
+          SINCE: ${{ steps.window.outputs.since }}
+        run: |
+          set -euo pipefail
+          if [ -z "${SINCE}" ]; then
+            echo "missing window" >&2
+            exit 1
+          fi
+          day=${SINCE%%T*}
+          machine_tmp=$(mktemp)
+          human_tmp=$(mktemp)
+          gh issue list --repo "$REPO" --state all --limit 200 \
+            --search "created:>=${day} (label:machine-reported OR label:deploy-regression)" \
+            --json number,author,labels,createdAt \
+            --jq "if length >= 200 then error(\"machine issue list hit the cap\") else . end | unique_by(.number) | map(select(.createdAt >= \"${SINCE}\")) | map(select(.author.login == \"app/sentry\" or .author.login == \"app/nishfleet-worker\")) | map(select(any(.labels[]?; .name == \"machine-reported\" or .name == \"deploy-regression\"))) | {machine: length, ids: (map(.number)|sort|map(tostring)|join(\",\"))}" \
+            > "$machine_tmp"
+          gh issue list --repo "$REPO" --state all --limit 200 \
+            --search "created:>=${day} label:bug author:nish3451" \
+            --json number,author,labels,createdAt \
+            --jq "if length >= 200 then error(\"human bug list hit the cap\") else . end | map(select(.createdAt >= \"${SINCE}\" and .author.login == \"nish3451\" and any(.labels[]?; .name == \"bug\"))) | {human: length, ids: (map(.number)|sort|map(tostring)|join(\",\"))}" \
+            > "$human_tmp"
+          machine=$(jq -r .machine "$machine_tmp")
+          human=$(jq -r .human "$human_tmp")
+          machine_ids=$(jq -r .ids "$machine_tmp")
+          person_ids=$(jq -r .ids "$human_tmp")
+          for n in "$machine" "$human"; do
+            case "$n" in
+              ''|*[!0-9]*) echo "measure 4 count missing" >&2; exit 1 ;;
+            esac
+          done
+          for ids in "$machine_ids" "$person_ids"; do
+            case "$ids" in
+              *[!0-9,]*) echo "measure 4 ids are not issue numbers" >&2; exit 1 ;;
+            esac
+          done
+          total=$((machine + human))
+          if [ "$total" -eq 0 ] || [ $((machine * 100)) -ge $((total * 80)) ]; then
+            color=green
+          else
+            color=red
+          fi
+          {
+            echo "color=${color}"
+            echo "machine=${machine}"
+            echo "human=${human}"
+            echo "machine_ids=${machine_ids}"
+            echo "person_ids=${person_ids}"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Post the scorecard
+        env:
+          SINCE: ${{ steps.window.outputs.since }}
+          UNTIL: ${{ steps.window.outputs.until }}
+          M1_COLOR: ${{ steps.m1.outputs.color }}
+          M1_SUCCESS: ${{ steps.m1.outputs.success }}
+          M1_TOTAL: ${{ steps.m1.outputs.total }}
+          M1_CANCELLED: ${{ steps.m1.outputs.cancelled }}
+          M1_IDS: ${{ steps.m1.outputs.ids }}
+          M2_COLOR: ${{ steps.m2.outputs.color }}
+          M2_FAILURES: ${{ steps.m2.outputs.failures }}
+          M2_UNRECOVERED: ${{ steps.m2.outputs.unrecovered }}
+          M2_IDS: ${{ steps.m2.outputs.ids }}
+          M3_COLOR: ${{ steps.m3.outputs.color }}
+          M3_MERGED: ${{ steps.m3.outputs.merged }}
+          M3_REVERTS: ${{ steps.m3.outputs.reverts }}
+          M3_IDS: ${{ steps.m3.outputs.ids }}
+          M4_COLOR: ${{ steps.m4.outputs.color }}
+          M4_MACHINE: ${{ steps.m4.outputs.machine }}
+          M4_HUMAN: ${{ steps.m4.outputs.human }}
+          M4_MACHINE_IDS: ${{ steps.m4.outputs.machine_ids }}
+          M4_PERSON_IDS: ${{ steps.m4.outputs.person_ids }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          EVENT: ${{ github.event_name }}
+        run: |
+          set -euo pipefail
+          for c in "$M1_COLOR" "$M2_COLOR" "$M3_COLOR" "$M4_COLOR"; do
+            case "$c" in
+              green|red) ;;
+              *) echo "a measure has no color" >&2; exit 1 ;;
+            esac
+          done
+          for n in "$M1_SUCCESS" "$M1_TOTAL" "$M1_CANCELLED" "$M2_FAILURES" "$M2_UNRECOVERED" "$M3_MERGED" "$M3_REVERTS" "$M4_MACHINE" "$M4_HUMAN"; do
+            case "$n" in
+              ''|*[!0-9]*) echo "a measure count is missing" >&2; exit 1 ;;
+            esac
+          done
+          for ids in "$M1_IDS" "$M2_IDS" "$M3_IDS" "$M4_MACHINE_IDS" "$M4_PERSON_IDS"; do
+            case "$ids" in
+              *[!0-9,]*) echo "an evidence list is not ids" >&2; exit 1 ;;
+            esac
+          done
+          comments=$(mktemp)
+          gh api --paginate "repos/${REPO}/issues/${ISSUE}/comments?per_page=100" \
+            --jq '.[] | select(.user.login == "github-actions[bot]") | select(.body | contains("parity-scorecard")) | .body' \
+            > "$comments"
+          prev=0
+          prev_anchor=""
+          last=$(grep -E '^streak=[0-9]+$' "$comments" | tail -1 || true)
+          last_anchor=$(grep -E '^schedule_until=[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$' "$comments" | tail -1 || true)
+          if [ -n "$last" ]; then
+            prev=${last#streak=}
+          fi
+          if [ -n "$last_anchor" ]; then
+            prev_anchor=${last_anchor#schedule_until=}
+          fi
+          case "$prev" in
+            ''|*[!0-9]*) echo "previous streak is not a number" >&2; exit 1 ;;
+          esac
+          advance=0
+          if [ "$EVENT" = "schedule" ]; then
+            if [ -z "$prev_anchor" ]; then
+              advance=1
+            else
+              prev_epoch=$(date -u -d "$prev_anchor" +%s)
+              this_epoch=$(date -u -d "$UNTIL" +%s)
+              if [ $((this_epoch - prev_epoch)) -ge $((6 * 24 * 3600)) ]; then
+                advance=1
+              fi
+            fi
+          fi
+          if [ "$M1_COLOR" = green ] && [ "$M2_COLOR" = green ] && [ "$M3_COLOR" = green ] && [ "$M4_COLOR" = green ]; then
+            if [ "$advance" -eq 1 ]; then
+              streak=$((prev + 1))
+            else
+              streak=$prev
+            fi
+          else
+            streak=0
+          fi
+          body=$(mktemp)
+          {
+            echo "## Parity scorecard"
+            echo
+            echo "Window: ${SINCE} .. ${UNTIL}"
+            echo "Scorecard run: ${RUN_URL}"
+            echo
+            echo "| # | Measure | This week | Result | Run ids |"
+            echo "| --- | --- | --- | --- | --- |"
+            echo "| 1 | Production verification | ${M1_SUCCESS}/${M1_TOTAL} succeeded, ${M1_CANCELLED} cancelled | ${M1_COLOR} | ${M1_IDS} |"
+            echo "| 2 | Deploy production | ${M2_UNRECOVERED} of ${M2_FAILURES} failures had no success within 60 min | ${M2_COLOR} | ${M2_IDS} |"
+            echo "| 3 | Reverts | ${M3_REVERTS}/${M3_MERGED} merged PRs | ${M3_COLOR} | ${M3_IDS} |"
+            echo "| 4 | Bugs the system caught | machine ${M4_MACHINE}, person ${M4_HUMAN} | ${M4_COLOR} | machine ${M4_MACHINE_IDS}; person ${M4_PERSON_IDS} |"
+            echo
+            echo "parity-scorecard"
+            if [ "$EVENT" = "schedule" ]; then
+              echo "schedule_until=${UNTIL}"
+            elif [ -n "$prev_anchor" ]; then
+              echo "schedule_until=${prev_anchor}"
+            fi
+            echo "streak=${streak}"
+          } > "$body"
+          if [ "$streak" -eq 0 ] && [ "$prev" -ge 2 ]; then
+            broken=()
+            [ "$M1_COLOR" = red ] && broken+=("measure 1")
+            [ "$M2_COLOR" = red ] && broken+=("measure 2")
+            [ "$M3_COLOR" = red ] && broken+=("measure 3")
+            [ "$M4_COLOR" = red ] && broken+=("measure 4")
+            names=$(printf '%s, ' "${broken[@]}")
+            names=${names%, }
+            printf '\n@nish3451 %s broke.\n' "$names" >> "$body"
+          fi
+          test -s "$body"
+          if ! grep -Eq '^streak=[0-9]+$' "$body"; then
+            echo "scorecard is missing its streak line" >&2
+            exit 1
+          fi
+          gh issue comment "$ISSUE" --repo "$REPO" --body-file "$body"
+          if [ "$streak" -ge 4 ]; then
+            issue_state=$(gh issue view "$ISSUE" --repo "$REPO" --json state --jq .state)
+            if [ "$issue_state" = "OPEN" ]; then
+              gh issue comment "$ISSUE" --repo "$REPO" --body "@nish3451 parity reached"
+              gh issue close "$ISSUE" --repo "$REPO" --reason completed
+            fi
+          fi
