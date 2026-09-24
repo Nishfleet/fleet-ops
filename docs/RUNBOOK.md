@@ -60,6 +60,15 @@ same way; `disable_prisma_schema_update: true` stays under `general_settings`
 socket-less form is rejected). Consumer credentials are per-group virtual keys
 minted via the admin API, never the master key.
 
+Edits to that file are applied automatically. `fleet-litellm-proxy-config.path`
+(`PathChanged=`) triggers `fleet-litellm-proxy-config.service`, which runs
+`systemctl --user try-restart fleet-litellm-proxy.service` — the proxy reads
+its config only at start, so the restart is the apply step, and `try-restart`
+means an edit never starts a proxy that was stopped on purpose. Every save
+restarts the proxy (~38 s), so batch edits into one write. Install it with
+`systemctl --user link` on the .service, then `systemctl --user enable --now`
+on the .path, both from the deploy clone (README "Install").
+
 Backup: `pg_dump -h "$HOME/.local/share/fleet-litellm-postgres/run" -U
 litellm litellm | gzip > .../litellm-<ts>.sql.gz` in the restic backup path.
 Rollback: stop + disable the three units, drop the fleet-owned cluster and

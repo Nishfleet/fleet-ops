@@ -23,6 +23,8 @@ jobs:
     if: inputs.ref
     runs-on: [self-hosted, agent]
     timeout-minutes: 60
+    outputs:
+      wall: ${{ steps.wall.outputs.wall }}
     concurrency:
       group: agent-${{ github.repository }}-${{ inputs.ref }}
       cancel-in-progress: false
@@ -75,6 +77,15 @@ jobs:
             case $labels in *",$l,"*) skip "$l" ;; esac
           done
 
+          # Router seat wall (fleet-ops#8543): no raw worker-capable row healthy
+          # (same raw-row filter as FleetWorkerLaneOutage), so a worker would die on
+          # its first call. Leave the issue agent-ready: no claim, no strike. An
+          # empty or unreachable /metrics is not a wall.
+          if curl -sL --max-time 10 127.0.0.1:4000/metrics |
+            awk '/^litellm_deployment_state\{/ && /model_id="[^"]*-worker-capable"/ && /litellm_model_name="[^"]*\// { n++; if ($NF + 0 == 0) up++ } END { exit !(n > 0 && up == 0) }'; then
+            skip seats-out
+          fi
+
           case $labels in *,cheap-ok,*|*,strong-only,*) ;; *)
             key=$(grep -m1 '^LITELLM_JEV_KEY=' "$HOME/.config/fleet-ops/seats/typesafe-jev.env" | cut -d= -f2-)
             echo "::add-mask::$key"
@@ -124,6 +135,7 @@ jobs:
           ENGINE: ${{ steps.gate.outputs.engine }}
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
         run: |
+          exec 2> >(tee "$RUNNER_TEMP/worker.err" >&2)
           id=${REPO#*/}-${REF#claim/issue-}
           if [ "$ENGINE" = cursor ]; then
             set -a; . "$HOME/.config/fleet-ops/seats/cursor.env"; set +a
@@ -139,13 +151,27 @@ jobs:
           fi
       - name: App token for arm
         id: arm-token
-        if: steps.gate.outputs.go == 'true'
+        if: ${{ !cancelled() && steps.gate.outputs.go == 'true' }}
         uses: actions/create-github-app-token@fee1f7d63c2ff003460e3d139729b119787bc349 # v2.2.2
         with:
           app-id: "4728578"
           private-key: ${{ steps.app-key.outputs.pem }}
           owner: ${{ github.repository_owner }}
           skip-token-revoke: "false"
+      - name: Router wall
+        id: wall
+        # A router seat wall is infra, not a bad packet (fleet-ops#8543): no
+        # strike, back to agent-ready. The Gate's 3-run cap bounds the loop.
+        if: failure() && steps.gate.outputs.go == 'true'
+        env:
+          GH_TOKEN: ${{ steps.arm-token.outputs.token }}
+        run: |
+          i=${REF#claim/issue-}
+          grep -qiE 'no deployments available|ratelimiterror|\b429\b' "$RUNNER_TEMP/worker.err" 2>/dev/null || exit 0
+          [ "$(gh api "repos/$REPO/compare/main...$REF" --jq .ahead_by)" = 0 ] || exit 0
+          gh issue comment "$i" -R "$REPO" --body "agent run infra-failed: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+          gh issue edit "$i" -R "$REPO" --add-label agent-ready --remove-label agent-in-progress
+          echo wall=true >> "$GITHUB_OUTPUT"
       - name: Arm auto-merge as the App
         if: steps.gate.outputs.go == 'true'
         env:
@@ -219,7 +245,7 @@ jobs:
         run: claude -p --model claude-opus-5-5 --dangerously-skip-permissions < "$HOME/workspaces/tooling/fleet-ops-deploy-clone/prompts/gardener.md" > /dev/null
   report:
     needs: work
-    if: failure() || cancelled()
+    if: (failure() || cancelled()) && needs.work.outputs.wall != 'true'
     runs-on: ubuntu-latest
     permissions:
       issues: write
