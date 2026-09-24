@@ -15,6 +15,19 @@ on:
         description: 'Issue number to dispatch, overrides the sweep and its claim-PR append'
         required: false
         type: string
+  # Nishfleet/0509 keeps only a trigger stub that calls this file, so the
+  # dispatch logic has one copy. github.* is the caller's, so every job below
+  # acts on the calling repo. agent_mode carries the caller's AGENT_MODE.
+  workflow_call:
+    inputs:
+      issue:
+        required: false
+        type: string
+        default: ''
+      agent_mode:
+        required: false
+        type: string
+        default: ''
   # pull_request_target, not pull_request: pull_request never runs while a PR
   # has a merge conflict. No PR code is checked out or run here.
   pull_request_target:
@@ -33,13 +46,13 @@ jobs:
   new:
     if: >-
       github.event_name == 'issues' && github.event.label.name == 'agent-ready' &&
-      (vars.AGENT_MODE == 'live' || contains(github.event.issue.labels.*.name, 'shadow-actions'))
+      ((inputs.agent_mode || vars.AGENT_MODE) == 'live' || contains(github.event.issue.labels.*.name, 'shadow-actions'))
     uses: Nishfleet/fleet-ops/.github/workflows/agent.yml@main
     with:
       ref: claim/issue-${{ github.event.issue.number }}
   rework:
     if: >-
-      vars.AGENT_MODE == 'live' && github.event_name == 'workflow_run' &&
+      (inputs.agent_mode || vars.AGENT_MODE) == 'live' && github.event_name == 'workflow_run' &&
       github.event.workflow_run.conclusion == 'failure' &&
       github.event.workflow_run.event == 'pull_request' &&
       startsWith(github.event.workflow_run.head_branch, 'claim/issue-') &&
@@ -51,7 +64,7 @@ jobs:
   # auto-merge was dropped: send the worker back to it.
   ejected:
     if: >-
-      vars.AGENT_MODE == 'live' && github.event_name == 'pull_request_target' &&
+      (inputs.agent_mode || vars.AGENT_MODE) == 'live' && github.event_name == 'pull_request_target' &&
       github.event.pull_request.state == 'open' &&
       startsWith(github.event.pull_request.head.ref, 'claim/issue-') &&
       github.event.pull_request.head.repo.full_name == github.repository
@@ -65,7 +78,7 @@ jobs:
   # and its 3-run cap bounds any loop.
   list:
     if: >-
-      vars.AGENT_MODE == 'live' &&
+      (inputs.agent_mode || vars.AGENT_MODE) == 'live' &&
       ((github.event_name == 'issues' && github.event.action == 'closed') ||
        github.event_name == 'workflow_dispatch' || github.event_name == 'schedule')
     runs-on: ubuntu-latest
