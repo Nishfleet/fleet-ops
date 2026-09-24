@@ -1,0 +1,31 @@
+# Claude Code Remote Control server for ~/workspaces
+# (https://code.claude.com/docs/en/remote-control, server mode). Replaces the
+# hand-started tmux session "rc": restarts on crash, after the ~10 min network
+# give-up the docs describe, and on reboot. Runs in claude.slice for CPU and
+# memory priority over runner jobs.
+# PATH is set here rather than from ~/.config/environment.d on purpose: that
+# directory also exports CLAUDE_CODE_OAUTH_TOKEN, and Remote Control needs the
+# claude.ai login instead.
+# Install:
+#   sudo install -m 0644 systemd/system/claude.slice systemd/system/claude-remote-control.service /etc/systemd/system/
+#   sudo systemctl daemon-reload && sudo systemctl enable --now claude-remote-control.service
+[Unit]
+Description=Claude Code Remote Control server (~/workspaces)
+Wants=network-online.target
+After=network-online.target user@1000.service
+
+[Service]
+User=nish
+Group=nish
+WorkingDirectory=/home/nish/workspaces
+Environment=HOME=/home/nish SHELL=/usr/bin/zsh LANG=en_US.UTF-8
+Environment=PATH=/home/nish/.local/bin:/usr/local/bin:/usr/bin:/bin
+Environment=XDG_RUNTIME_DIR=/run/user/1000 DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus
+ExecStart=/home/nish/.local/bin/claude remote-control --name vps-rc --spawn=same-dir
+Slice=claude.slice
+OOMScoreAdjust=-900
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target

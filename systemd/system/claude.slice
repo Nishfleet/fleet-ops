@@ -1,0 +1,10 @@
+# Top-level slice for the Claude Code Remote Control server and the sessions it
+# spawns. Sibling of agent.slice and user.slice, so runner test bursts can't
+# starve the link that connects this box to claude.ai projects.
+# Incident 2026-09-24: agent.slice (MemoryHigh 12G) + user-1000.slice (12G) on a
+# 16G box filled swap; the tmux-hosted server reconnected every 1-2 min and
+# every flap dropped the spawned sessions' workers.
+# MemoryMin holds because /sys/fs/cgroup is mounted with memory_recursiveprot.
+[Slice]
+CPUWeight=1000
+MemoryMin=2G
