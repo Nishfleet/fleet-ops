@@ -361,6 +361,106 @@ model_list:
   model_info:
     mode: chat
     id: xkiro-qwen38max-worker-cheap
+# 2026-09-24 (Nish: "cline = ds4.1 flash and stealth bunny alpha", "its prepaid, wire it up properly").
+# Cline streams standard OpenAI SSE but wraps NON-streamed replies in {data:...}; stock
+# model_info.disable_background_health_check keeps LiteLLM's non-streaming /health off those
+# rungs, and pi workers always stream. Proof 2026-09-24T04:40Z: litellm.completion(stream=True,
+# tool_choice=required) 5/5 finish_reason=tool_calls for BOTH Cline ids. Cline rungs sit only in
+# worker-capable (pi-only callers). The 2026-09-22 Cline rung (fleet-ops#8355) was live-only and
+# was dropped by the #8398 converge; it lives here now.
+# Space Bunny Alpha (stealth, $0 on OpenRouter/Zen/Cline, preview ends without notice; prompts may be
+# retained by the anonymous provider, so it stays OUT of worker-private and, as an unknown family, out
+# of senior/judge). Probe 2026-09-24T04:38Z: tool_choice=required -> tool_calls on OpenRouter, Cline,
+# Zen; 20/20 HTTP 200 at parallel 2 on OpenRouter and on Zen. OpenCode Go space-bunny-free = 429
+# GoUsageLimitError (monthly), not wired.
+- model_name: worker-capable
+  litellm_params:
+    model: openai/cline-pass/deepseek-v4.1-flash
+    api_base: https://api.cline.bot/api/v1
+    api_key: os.environ/CLINE_API_KEY
+    tags:
+    - prepaid
+    - cline
+    order: 1
+    max_parallel_requests: 4
+  model_info:
+    mode: chat
+    id: cline-ds41flash-worker-capable
+    disable_background_health_check: true
+- model_name: worker-capable
+  litellm_params:
+    model: openai/stealth/space-bunny-alpha
+    api_base: https://api.cline.bot/api/v1
+    api_key: os.environ/CLINE_API_KEY
+    tags:
+    - prepaid
+    - cline
+    - stealth
+    order: 1
+    max_parallel_requests: 2
+  model_info:
+    mode: chat
+    id: cline-spacebunny-worker-capable
+    disable_background_health_check: true
+- model_name: worker-capable
+  litellm_params:
+    model: openai/stealth/space-bunny-alpha
+    api_base: https://openrouter.ai/api/v1
+    # Money guard: listed at $0 prompt/completion; cap in case the preview flips to paid.
+    max_budget: 1.0
+    budget_duration: 1mo
+    api_key: os.environ/OPENROUTER_API_KEY
+    extra_headers: {HTTP-Referer: https://0509.io, X-Title: nish-fleet}
+    tags:
+    - free
+    - stealth
+    order: 1
+    max_parallel_requests: 2
+  model_info:
+    mode: chat
+    id: openrouter-spacebunny-worker-capable
+- model_name: worker-cheap
+  litellm_params:
+    model: openai/stealth/space-bunny-alpha
+    api_base: https://openrouter.ai/api/v1
+    max_budget: 1.0
+    budget_duration: 1mo
+    api_key: os.environ/OPENROUTER_API_KEY
+    extra_headers: {HTTP-Referer: https://0509.io, X-Title: nish-fleet}
+    tags:
+    - free
+    - stealth
+    order: 1
+    max_parallel_requests: 2
+  model_info:
+    mode: chat
+    id: openrouter-spacebunny-worker-cheap
+- model_name: worker-capable
+  litellm_params:
+    model: openai/space-bunny-free
+    api_base: https://opencode.ai/zen/v1
+    api_key: os.environ/OPENCODE_API_KEY
+    tags:
+    - free
+    - stealth
+    order: 1
+    max_parallel_requests: 2
+  model_info:
+    mode: chat
+    id: zen-spacebunny-worker-capable
+- model_name: worker-cheap
+  litellm_params:
+    model: openai/space-bunny-free
+    api_base: https://opencode.ai/zen/v1
+    api_key: os.environ/OPENCODE_API_KEY
+    tags:
+    - free
+    - stealth
+    order: 1
+    max_parallel_requests: 2
+  model_info:
+    mode: chat
+    id: zen-spacebunny-worker-cheap
 # self-walls (balance $0 -> 402 -> cooldown -> fallback) and Cline 4xx likewise; no metered spend path.
 benched:
 - benched_at: 2026-09-22
