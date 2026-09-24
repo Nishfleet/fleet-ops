@@ -260,6 +260,7 @@ jobs:
           N: ${{ inputs.ref }}
         # Two strikes, counted from these comments since the newest opus-vet
         # (a fresh vet resets the count, same as prompts/claim-release.md step 5).
+        # First strike re-queues via agent-ready (fleet-ops#8552); the second parks.
         run: |
           i=${N#claim/issue-}
           # shellcheck disable=SC2016 # $v is a jq variable
@@ -268,5 +269,5 @@ jobs:
           if [ "$prior" -ge 1 ]; then
             gh issue edit "$i" -R "$GITHUB_REPOSITORY" --add-label needs-orchestrator --remove-label agent-ready,agent-in-progress,agent-failed
           else
-            gh issue edit "$i" -R "$GITHUB_REPOSITORY" --add-label agent-failed --remove-label agent-in-progress
+            gh issue edit "$i" -R "$GITHUB_REPOSITORY" --add-label agent-ready --remove-label agent-in-progress,agent-failed
           fi
