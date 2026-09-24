@@ -71,6 +71,12 @@ Steps:
    disarmed timer, clear a stale lock or state file, re-run a one-shot that
    died on a transient. Then PROVE it: re-run the thing and show it green.
    "Should be fixed" is not fixed.
+
+   `fwupd-refresh.service` is not restart-transient when `fwupdmgr refresh`
+   prints `metadata checksum expected`. Do not restart that unit, and do not
+   delete `/var/lib/fwupd/metadata/lvfs/`. Go to step 4. A detector other
+   than this sentence is mechanism-impossible: `node_systemd_unit_state` has
+   no checksum label, and this prompt is the repair path.
 4. If it is not repairable in place, open one issue. The open-issue search
    already ran in step 1 — if it found this alertname, comment there instead
    of filing a second issue. File it on `Nishfleet/fleet-ops` unless the
