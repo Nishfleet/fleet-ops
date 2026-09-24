@@ -106,8 +106,26 @@ jobs:
             # CONFLICTING too: auto-merge stays armed on a PR that turns DIRTY
             # after arming, so it never enters the queue and no event fires
             # (0509#4384, armed and DIRTY since 09-23 19:00Z).
-            prs=$(gh pr list -R "$GITHUB_REPOSITORY" -L 1000 --json headRefName,autoMergeRequest,isDraft,mergeable \
-              --jq '[.[] | select((.headRefName|startswith("claim/issue-")) and (.autoMergeRequest == null or .mergeable == "CONFLICTING") and (.isDraft|not)) | .headRefName]')
+            # The bulk list returns mergeable UNKNOWN until GitHub recomputes a
+            # PR after a push to main, so each armed PR is re-read per PR to
+            # trigger that computation (fleet-ops#8557). A PR in the merge queue
+            # is dropped by ref below; a queued PR can have autoMergeRequest
+            # null (0509#4688), so the CONFLICTING test alone cannot drop it.
+            all=$(gh pr list -R "$GITHUB_REPOSITORY" -L 1000 --json number,headRefName,autoMergeRequest,isDraft,mergeable \
+              --jq '[.[] | select((.headRefName|startswith("claim/issue-")) and (.isDraft|not))]')
+            queued=$(gh api graphql -f query="query{repository(owner:\"${GITHUB_REPOSITORY%/*}\",name:\"${GITHUB_REPOSITORY#*/}\"){mergeQueue(branch:\"main\"){entries(first:100){nodes{pullRequest{headRefName}}}}}}" \
+              --jq '[.data.repository.mergeQueue.entries.nodes[]?.pullRequest.headRefName]')
+            unarmed=$(jq -c '[.[] | select(.autoMergeRequest == null) | .headRefName]' <<<"$all")
+            conflicted=$(for pr in $(jq -r '.[] | select(.autoMergeRequest != null and .mergeable != "MERGEABLE") | .number' <<<"$all"); do
+              for _ in 1 2 3; do
+                v=$(gh pr view "$pr" -R "$GITHUB_REPOSITORY" --json headRefName,mergeable)
+                [ "$(jq -r .mergeable <<<"$v")" != UNKNOWN ] && break
+                sleep 10
+              done
+              jq -c 'select(.mergeable == "CONFLICTING") | .headRefName' <<<"$v"
+            done | jq -sc .)
+            prs=$(jq -nc --argjson a "$unarmed" --argjson b "$conflicted" --argjson q "$queued" '$a + $b - $q')
+            echo "claim PRs picked by the sweep: $prs"
           fi
           refs=$(for n in $nums; do gh api "repos/$GITHUB_REPOSITORY/issues/$n"; done |
             jq -sc --argjson prs "${prs:-[]}" '[.[] | select(.issue_dependencies_summary.blocked_by == 0 and any(.labels[]; .name == "agent-ready"))]
