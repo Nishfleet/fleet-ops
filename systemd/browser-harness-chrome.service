@@ -1,0 +1,28 @@
+# Versioned from the host copy (fleet-ops#8584).
+[Unit]
+Description=Headless Chrome CDP endpoint for browser-harness (loopback only)
+
+[Service]
+Type=simple
+Environment=HOME=/home/nish
+ExecStart=/home/nish/.local/share/browser-harness-chrome/chrome \
+  --headless=new \
+  --no-sandbox \
+  --disable-dev-shm-usage \
+  --disable-gpu \
+  --no-first-run \
+  --no-default-browser-check \
+  --remote-debugging-address=127.0.0.1 \
+  --remote-debugging-port=9333 \
+  --user-data-dir=/home/nish/.local/share/browser-harness-chrome/user-data
+Restart=on-failure
+RestartSec=5
+KillMode=mixed
+TimeoutStopSec=20
+NoNewPrivileges=true
+MemoryHigh=2G
+MemoryMax=3G
+TasksMax=512
+
+[Install]
+WantedBy=default.target
