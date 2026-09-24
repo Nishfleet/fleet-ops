@@ -9,199 +9,352 @@ actually cut the token burn. #8567 went live on the proxy at
 is `2026-09-22 12:00` → `2026-09-23 12:00 UTC`, exactly as the issue
 specifies.
 
-This is the receipt — raw numbers and the verdict per the four bullets,
-plus the confound that makes metric 4 unfair to read as a #8567 result.
+This is the receipt — raw numbers and the verdict per the four bullets.
+Every number below is reproducible from the commands in the appendix.
+
+## Method and retention boundaries (read first)
+
+Three data sources, three different retention windows. A query that
+"reaches back" into a source's dead zone returns a row count of zero, not
+a measurement of zero — every window below is checked against these
+boundaries:
+
+| source | covers |
+|---|---|
+| `LiteLLM_SpendLogs` (psql) | earliest worker% row `2026-09-07 17:05:43 UTC` — both windows fully covered |
+| `~/.pi/agent/sessions/agent-*` | oldest session `2026-09-23T18:12:26 UTC` — the 09-22/23 baseline window is **not** retained |
+| proxy journal (`fleet-litellm-proxy.service`) | oldest line `2026-09-23T03:27:57 UTC` — most of the baseline window is **not** journalled |
 
 ## Metric 1 — prompt_tokens avg / p90 (`model_group like 'worker%'`)
 
 `psql -h 127.0.0.1 -U litellm -d litellm` against `LiteLLM_SpendLogs`,
-columns `prompt_tokens`, `startTime`, `model_group`, model
-`worker%`. The same query, with full per-window numbers, is in the
-appendix; the headline is below.
+columns `prompt_tokens`, `startTime`, `model_group`. Full SQL in the
+appendix; per-window numbers below.
 
 | window | rows | avg | p50 | p90 | p99 | max |
 |---|---:|---:|---:|---:|---:|---:|
 | baseline 24h (`09-22 12:00` → `09-23 12:00`) | 36,791 | **73,093** | 66,689 | 134,262 | 189,940 | 268,759 |
 | after 6h, all rows (`05:08:51` → `11:08:51`) | 486 | 59,668 | 60,178 | 90,598 | 131,959 | 134,725 |
-| after 6h, sub-window 06:00–11:08 (no contamination) | 90 | **53,066** | 58,240 | **82,152** | 85,896 | 87,446 |
+| after 6h, sub-window `06:00`–`11:08:51` (full hours only) | 90 | **53,066** | 58,240 | **82,152** | 85,896 | 87,446 |
+| controls (same shape, different days) | | | | | | |
+| same-clock `05:08:51`–`11:08:51` on 09-22 | 2,550 | 62,919 | 59,684 | 106,225 | 164,197 | 188,109 |
+| same-clock `05:08:51`–`11:08:51` on 09-23 | 4,451 | 80,358 | 71,067 | 163,256 | 213,957 | 268,759 |
+| previous 24h (`09-23 12:00` → `09-24 12:00`) | 12,147 | 46,792 | 43,454 | 87,439 | 161,909 | 221,754 |
 
-**Verdict: PARTIAL.** vs the measured 24h baseline: avg `73,093` → `59,668`
-(−18.4%) misses the ≥30% target; p90 `134,262` → `90,598` (−32.5%) passes.
+Failed rows carry `prompt_tokens = 0` (853 of 36,791 baseline, 17 of 486
+after, 1 of 90 in the sub-window), so they sit at the floor and slightly
+depress each average; at 2.3–3.5% they do not flip any verdict.
 
-The after 6h window is contaminated by sessions that started BEFORE
-#8567 took effect. Pi reads `contextWindow` from `~/.pi/agent/models.json`
-at session start, and #8567's value (96,000) was first applied to the
-running proxy at `05:09:25 UTC` and to the live Pi models file at
-`05:40 IST` the same morning. Any pre-05:09 session in flight retained
-the old `256,000 / 1,000,000` working set and never compacted: 396 of the
-486 after-window rows fall in the 05:08:51–06:00 hour (avg `61,169`,
-p90 `97,396`, max `134,725`). The clean 06:00–11:08 sub-window
-(`n=90`) drops to avg `53,066` (−27.4%) and p90 `82,152` (−38.8%),
-which passes the p90 target by 8.8 points and closes the avg gap to
-2.6 points short.
+**Verdict: p90 PASS, avg MISS — and the avg cannot be attributed to
+#8567 on this data.**
 
-**Confound on metric 1.** The post-window volume itself is not
-representative. Hourly worker request counts in the 24h before
-#8567 ranged `448` (00) → `1,811` (22); the post window tops out at
-`81/h`. The 06:00+ clean sub-window carries only `90` rows across 5h,
-so even the clean number is a noisy estimate of what the working set
-would average under full traffic. The avg-burn target should be
-re-measured at a representative hour count before declaring miss or
-hit (see follow-up issue, below).
+- Target is `≥30% lower`. Against the measured baseline:
+  avg `73,093` → `59,668` is −18.4% (miss); p90 `134,262` → `90,598`
+  is −32.5% (pass). The clean `06:00`+ sub-window is avg `53,066` (−27.4%,
+  still a miss) and p90 `82,152` (−38.8%, pass). Using the issue's own
+  "baseline about 68k" instead moves both percentages up ~7 points and
+  changes no verdict.
+- The after window is contaminated by sessions started before the 96k
+  cap was live: 396 of the 486 after-window rows fall in the
+  `05:08:51`–`06:00` hour (avg `61,169`, max `134,725`, impossible under
+  the cap). The sub-window's 90 rows are clean of that.
+- But the sub-window is a survivor series. Hourly request counts inside
+  the after window are `543` (05:00 hour, 51 min of it in-window) `0`
+  (06:00) `19` `53` `18` `0` (10:00) `149` (11:00 hour, 9 min
+  in-window) — the fleet was seat-walled (metric 4), so those averages
+  come from a tiny surviving population, not from full traffic.
+- The controls kill the clean story. The same clock window ran at
+  `62,919` (09-22) and `80,358` (09-23) — a ±28% day-to-day swing,
+  larger than the −18/−27% effect being claimed. The 24h immediately
+  before go-live averaged `46,792`, well **below** the after value, so
+  the burn was already falling before #8567 for reasons of its own.
+  Attributing the after number to the `contextWindow` change would
+  over-read a confounded record.
 
-## Metric 2 — share of `~/.pi/agent/sessions/agent-*` runs ending 429
+Follow-up for the avg: #8581 (re-measure over a clean, un-walled 24h).
+
+## Metric 2 — share of `agent-*` runs ending 429
 
 Sessions whose `startTime` is in the window, then the LAST assistant
-message has `stopReason == "error"` and `429` / `RateLimit` /
-`rate limit` appears anywhere in its serialized form. The full scan
-is in the appendix.
+message has `stopReason == "error"` and `429` / `RateLimit` / `rate
+limit` appears anywhere in its serialized form. The scan program is in
+the appendix.
 
 | window | sessions | ended 429 | share |
 |---|---:|---:|---:|
-| baseline 24h (`09-22 12:00` → `09-23 12:00`) | 0 | 0 | — |
-| pre-go-live (`09-23 00:00` → `05:08:51`) | 234 | 80 | **34.2%** |
+| issue baseline 24h (`09-22 12:00` → `09-23 12:00`) | 0 | 0 | not retained (store floor `09-23 18:12:26`) |
+| retained pre-go-live (`09-23 18:12:26` → `05:08:51`) | 234 | 80 | **34.2%** |
+| retained pre-go-live, issue-filed cut (`…` → `05:11:00`) | 237 | 80 | **33.8%** |
 | after 6h (`05:08:51` → `11:08:51`) | 4 | 0 | **0.0%** |
 
-**Verdict: PASS** (target <10%). The issue-cited baseline is
-`61/221 = 27.6%`; scanning the matching `agent-*` style window here
-(`09-23 18:00` → issue filed `05:11`) gives `80/237 = 33.8%`. The
-`agent-*` sessions whose first message was recorded BEFORE go-live
-show 429s overwhelmingly: `82.8%` in the pre-6h window. The after
-window's `n=4` is too small to be statistically firm, but it is
-directionally consistent with the proxy journal: `POST
-/chat/completions … 429` counts `1,707` baseline → `403` post 6h
-(`literate 1707 → 403`, hourly `146/89/93/162/183/157/89/55/0/46/82/1`
-across `00:00–11:00` on 09-24). The router's `RateLimitErrorRetries`
-was bumped `0 → 2`, and the proxy journal does show `LiteLLM Retried:
-2 times` records around `05:46` and `11:32 UTC`, evidence the retry
-policy is exercising the seat fallbacks instead of returning 429.
+stopReason distribution in the retained pre-go-live window: `stop` 102,
+`toolUse` 50, `error` 81 (80 of the 81 carry a 429), `length` 1. All 4
+after-window sessions ended `stop`.
+
+**Verdict: PASS on the target window, with the sample size named.**
+The target is about the post-go-live window only: `0/4 = 0%` is under
+the 10% line, but `n=4` cannot carry a claim on its own. The
+request-level journal corroborates it (see below), and the issue's own
+baseline `61/221 = 27.6%` sits in the same band as the retained pre-
+window's `34.2%`, so the baseline rate is plausible — the improvement
+is real in direction and far too small in sample to be called by the
+sessions alone.
+
+Request-level corroboration from the proxy journal (`POST
+/chat/completions` lines containing `429`), which covers 8.5h of the
+baseline window from `09-23 03:27:57`:
+
+| window | POST+429 lines | any `429` line |
+|---|---:|---:|
+| journalled part of baseline 24h | 482 | 2,731 |
+| 20h immediately before go-live (`09:09` → `05:08:51`) | 1,877 | 6,886 |
+| after 6h | **3** | **34** |
+
+The router's `RateLimitErrorRetries` is `2` as of #8567 and the journal
+shows `LiteLLM Retried: 2 times` 8 times inside the after window
+(first `05:11:01`, last `05:46:04 UTC`), against 15 in the journalled
+baseline — the retry policy is exercising the seat fallbacks instead of
+surfacing the 429 to the session, which is what the 0/4 sample shows.
 
 ## Metric 3 — health-check requests per hour (empty `model_group`, `prompt_tokens < 50`)
 
 | api_base | baseline 24h (`/h`) | after 6h (`/h`) | deployments | after `/h/deployment` |
 |---|---:|---:|---:|---:|
-| `opencode.ai/zen/go/v1` | 87.3 | 0.0 | 3 (benched post-go-live) | 0.0 |
-| `api.synthetic.new/openai/v1` | 65.5 | 16.7 | 5 (synthetic glm4.6 glm5.3 × cheap/capable) | 3.3 |
+| `opencode.ai/zen/go/v1` | 87.3 | 0.0 | benched post-go-live | 0.0 |
+| `api.synthetic.new/openai/v1` | 65.5 | 16.7 | 5 | 3.3 |
 | `ai-gateway.vercel.sh/...` | 47.8 | 1.8 | 2 | 0.9 |
 | `api.stepfun.ai/step_plan/v1` | 41.0 | 4.0 | 1 | **4.0** ✓ |
 | `(blank)` | 24.2 | 0.7 | – | – |
-| `api.paretoinference.com/v1` | 20.5 | 7.8 | 2 | 3.9 ✓ |
-| total | 286.3 | 31.0 | – | – |
+| `api.paretoinference.com/v1` | 20.5 | 7.8 | 2 | **3.9** ✓ |
+| the three the issue names | 127.0 | 28.5 | 8 | – |
 
 **Verdict: PASS.** The target "about 4 per hour per deployment" is met
-exactly on the two accounts the issue calls out — stepfun
-`4.0/h/deployment` and pareto `~3.9/h/deployment` — and on synthetic
-(≈3.3/h across 5 placements, `health_check_concurrency: 1` ×
-`health_check_interval: 900s = 4/h`, and one placement is in cooldown
-right now). The issue's headline number (~105/h aggregate) was the
-pre-#8567 `60s` interval multiplied by the deployed-aggregate count;
-the math collapses to ~4/h once the interval is 900s, exactly as
-designed.
+exactly on stepfun (`4.0`) and pareto (`3.9`), and met on synthetic
+(`3.3` across 5 placements with `health_check_concurrency: 1` ×
+`health_check_interval: 900s = 4/h`, one placement in cooldown). The
+issue's ~105/h aggregate was the pre-#8567 60s interval multiplied out;
+the math collapses to ~4/h per deployment once the interval is 900s,
+which is what the records show.
 
 ## Metric 4 — merged PRs per hour on 0509 + fleet-ops
 
-| window | fleet-ops `/h` | 0509 `/h` |
-|---|---:|---:|
-| baseline 24h | 1.46 | 2.33 |
-| after 6h | 0.67 | 1.33 |
+| window | fleet-ops merged | 0509 merged | fleet-ops `/h` | 0509 `/h` |
+|---|---:|---:|---:|---:|
+| baseline 24h | 35 | 56 | 1.46 | 2.33 |
+| after 6h | 4 | 8 | 0.67 | 1.33 |
 
-**Verdict: BOTH DOWN — but confounded.** The issue's own framing
-warns this is the cut-or-not cut work counter, and the throughput
-collapse has to be read against the seat-wall evidence below, not
-attributed to #8567.
+**Verdict: BOTH DOWN — and the cause is not #8567.**
 
 ## Confound on metric 4 — fleet-wide worker-capable seat wall
 
-The fleet has been on a single shared seat wall since at least the
-09-23 evening. The proxy journal shows
-`litellm.RateLimitError … You've reached today's free-model token
-quota` and `429 … GoUsageLimitError monthly (workspace
-wrk_01KQWNMA2W8DTN45AS7PF5KNHR)` starting `2026-09-23T14:00 UTC`
-(`245` mentions that hour, climbing to `1,274` by `23:00` and
-`843` at `00:00`). The proxy cools down worker-capable seats
-on these errors (`cooldown_time: 86400s` on opencode / xkiro).
-By the post-go-live window, seven worker-capable / cheap rows
-were in long cooldowns (≥86400s) and the dispatcher gate
-`gate: skip (seats-out)` was firing across `agent-dispatch`
-runs at `00:00–11:00 UTC` (e.g. `35958875132 05:11:50`, `35961534761
-05:47:52`, `35967269687 07:00:04`, `35967360644 07:01:00`, `35994749086
-11:44:07` — `seats-out` plus `needs-split` / `cap` /
-`proposed`). `agent-dispatch` runs since `00:00 UTC` on 09-24:
+The worker lane is on a shared seat wall (daily free-model token quota
+429s and `GoUsageLimitError` monthly). Corrected, UTC-labelled journal
+evidence, from the commands in the appendix:
 
-| repo | runs | success issues | skipped issues | workflow_run skipped |
-|---|---:|---:|---:|---:|
-| fleet-ops | 49 | 9 | 10 | 18 |
-| 0509 | 72 | 2 | 8 | 50 |
+- Earliest `free-model token quota` line: `2026-09-23T09:09:24 UTC`
+  (`GoUsageLimitError` one second later) — about **20h** before #8567
+  went live, not 8h as an earlier draft of this report had it. That
+  earlier draft also quoted the local (+05:30) journal timestamps as
+  UTC; every journal number here is bucketed in UTC.
+- Quota mentions per UTC hour on 09-23 climb from `445` (09:00) through
+  `872` (17:00) and `655` (23:00) to `506` at 09-24 `00:00`.
+- `No deployments available` events: `1,237` inside the baseline window
+  itself (`967` with `model=None`, `264` `worker-cheap`), `213` in the
+  20h before go-live (`52` `worker-capable`, `8` `worker-cheap`), and
+  `0` inside the after-6h window — the after window has essentially no
+  traffic to trip the gate. Full-retention totals by group: `None`
+  1,120, `worker-cheap` 272, `worker-capable` 52, `senior` 6. The
+  `86400s` cooldowns in `config/litellm-proxy.yaml` (3 of them) put the
+  benched seats on a day-scale timer.
+- The dispatcher gate: an earlier draft of this report claimed
+  `gate: skip (seats-out)` was firing on `agent-dispatch` runs. That is
+  not on the records. `seats-out` is a skip reason in `agent.yml` (the
+  issue worker), not in `agent-dispatch.yml`, and the literal string in
+  the `agent-dispatch` logs that matches `seats-out` is the
+  `skip() { echo "gate: skip ($1)"; … }` function definition, not an
+  event. Actual gate-skip reasons in the after-6h window:
+  `needs-split` ×3, `proposed` ×3, `agent-blocked` ×1 — on 45
+  `agent-dispatch` runs (`14` success, `31` skipped). Over the wider
+  `00:00`–`11:08` window: fleet-ops 184 runs (34 success, 125 skipped,
+  25 failure), 0509 199 runs (18 success, 158 skipped, 21 failure,
+  2 cancelled). `agent.yml` itself logged 2 runs all day (1 success,
+  1 failure).
 
-Compare baseline fleet-ops throughput: the `09-22` / `09-23`
-24h pair was averaging `1.46/h`. The 09-24 collapse to `0.67/h`
-is a **fleet-wide throughput regression**, not a per-PR slow-down,
-and the journal evidence pins its start to `2026-09-23T14:00`,
-*8 hours before #8567 went live*. The 0509 ratio of
-`workflow_run:success` (`50:2 = 25:1`) is the same shape as the
-fleet-ops `18:9 = 2:1` — both fleets are parked on the same seat
-wall.
-
-The metric-4 number belongs in the report as observed, but
-attributing the throughput drop to #8567 would misread the
-records. The follow-up issue tracks the quota-wall collapse.
+The metric-4 number is observed, not explained by #8567. This is the
+open class tracked in #7820 (worker-lane 429 wall); fresh evidence from
+this window is recorded there in the nishfleet-worker comment of
+`2026-09-24T12:18:12Z`. Follow-up for the metric-1 avg: #8581.
 
 ## Termination comment
 
-The issue's termination is the comment, which carries the same
-numbers in the format the issue asks for, with links to this
-report and the follow-up issues.
+The issue's termination is the comment, which carries the same numbers
+in the format the issue asks for, with links to this report and the
+follow-ups (#8581, #7820).
+
+## Appendix — exact commands
+
+All timestamps are UTC. `LiteLLM_SpendLogs.startTime` is
+`timestamp without time zone` and stores UTC (session `TimeZone` is
+`Asia/Kolkata`; `now()` returns `+05:30`, its `AT TIME ZONE 'UTC'`
+projection matches `startTime`'s latest rows).
+
+**Metric 1.**
+
+```sql
+WITH w(label, a, b) AS (VALUES
+ ('issue_baseline_24h', timestamp '2026-09-22 12:00:00', timestamp '2026-09-23 12:00:00'),
+ ('after_6h',           timestamp '2026-09-24 05:08:51', timestamp '2026-09-24 11:08:51'),
+ ('after_hour_0508_0600',timestamp '2026-09-24 05:08:51', timestamp '2026-09-24 06:00:00'),
+ ('after_sub_0600_1108',timestamp '2026-09-24 06:00:00', timestamp '2026-09-24 11:08:51'),
+ ('sameclock_0922',     timestamp '2026-09-22 05:08:51', timestamp '2026-09-22 11:08:51'),
+ ('sameclock_0923',     timestamp '2026-09-23 05:08:51', timestamp '2026-09-23 11:08:51'),
+ ('prev24h_0923_0924',  timestamp '2026-09-23 12:00:00', timestamp '2026-09-24 12:00:00')
+)
+SELECT w.label, count(*) n, round(avg(s."prompt_tokens")) avg,
+  round(percentile_cont(0.5) WITHIN GROUP (ORDER BY s."prompt_tokens")) p50,
+  round(percentile_cont(0.9) WITHIN GROUP (ORDER BY s."prompt_tokens")) p90,
+  round(percentile_cont(0.99) WITHIN GROUP (ORDER BY s."prompt_tokens")) p99,
+  max(s."prompt_tokens") mx,
+  count(*) FILTER (WHERE s.status='failure') failures,
+  round(sum(s."prompt_tokens")) sum_tok
+FROM w JOIN "LiteLLM_SpendLogs" s
+  ON s."startTime" >= w.a AND s."startTime" < w.b AND s."model_group" LIKE 'worker%'
+GROUP BY w.label ORDER BY 1;
+```
+
+Hourly rows (`hour_utc|n|avg|p50|p90|max|failures`):
+
+```sql
+SELECT date_trunc('hour', "startTime"), count(*), round(avg("prompt_tokens")),
+  round(percentile_cont(0.5) WITHIN GROUP (ORDER BY "prompt_tokens")),
+  round(percentile_cont(0.9) WITHIN GROUP (ORDER BY "prompt_tokens")),
+  max("prompt_tokens"), count(*) FILTER (WHERE status='failure')
+FROM "LiteLLM_SpendLogs"
+WHERE "model_group" LIKE 'worker%'
+  AND "startTime" >= '2026-09-22 11:00:00' AND "startTime" < '2026-09-24 12:00:00'
+GROUP BY 1 ORDER BY 1;
+```
+
+**Metric 2.** Session scan (the store's floor is
+`2026-09-23T18:12:26`, so any window before that reads 0 sessions):
+
+```python
+import json, glob, collections
+from datetime import datetime, timezone
+T = lambda *a: datetime(*a, tzinfo=timezone.utc).timestamp()
+windows = {
+  "issue_baseline_24h": (T(2026,9,22,12,0,0), T(2026,9,23,12,0,0)),
+  "retained_pre_golive": (T(2026,9,23,18,12,26), T(2026,9,24,5,8,51)),
+  "retained_pre_golive_issuestyle": (T(2026,9,23,18,12,26), T(2026,9,24,5,11,0)),
+  "after_6h": (T(2026,9,24,5,8,51), T(2026,9,24,11,8,51)),
+}
+stats = collections.defaultdict(collections.Counter)
+for f in glob.glob("/home/nish/.pi/agent/sessions/agent-*/*.jsonl"):
+    started = None; last = None
+    for line in open(f, errors="replace"):
+        try: o = json.loads(line)
+        except Exception: continue
+        if o.get("type") == "session" and started is None:
+            ts = o.get("timestamp")
+            if ts: started = datetime.fromisoformat(ts.replace("Z","+00:00")).timestamp()
+        elif o.get("type") == "message" and o.get("message",{}).get("role") == "assistant":
+            last = o["message"]
+    if started is None: continue
+    for name,(a,b) in windows.items():
+        if not (a <= started < b): continue
+        stats[name]["sessions"] += 1
+        if last is None: continue
+        sr = last.get("stopReason"); stats[name][sr or "null"] += 1
+        if sr == "error" and "429" in json.dumps(last):
+            stats[name]["ended_429"] += 1
+for name, s in stats.items():
+    print(name, "sessions", s["sessions"], "ended_429", s["ended_429"],
+          "stopReason", {k: v for k, v in s.items() if k not in ("sessions","ended_429")})
+```
+
+Journal corroboration (UTC-labelled, the retention floor is
+`2026-09-23T03:27:57`):
+
+```sh
+export XDG_RUNTIME_DIR=/run/user/$(id -u)
+journalctl --user -u fleet-litellm-proxy.service -o short-iso --no-pager > /tmp/j.txt
+# window counts (baseline part-journalled 03:27:57→12:00; pre 09:09→05:08:51; after 05:08:51→11:08:51)
+awk '$1 >= "2026-09-23T03:27:57" && $1 < "2026-09-23T12:00:00"' /tmp/j.txt | grep -c "429"          # 2731
+awk '$1 >= "2026-09-24T05:08:51" && $1 < "2026-09-24T11:08:51"' /tmp/j.txt | grep -c "429"          # 34
+awk '$1 >= "2026-09-23T03:27:57" && $1 < "2026-09-23T12:00:00" && /POST \/chat\/completions/' \
+  /tmp/j.txt | grep -c "429"                                                                        # 482
+awk '$1 >= "2026-09-24T05:08:51" && $1 < "2026-09-24T11:08:51" && /POST \/chat\/completions/' \
+  /tmp/j.txt | grep -c "429"                                                                        # 3
+```
+
+**Metric 3.**
+
+```sql
+WITH rows AS (
+  SELECT ("startTime" >= '2026-09-24 05:08:51') AS post, "api_base"
+  FROM "LiteLLM_SpendLogs"
+  WHERE "model_group" = '' AND "prompt_tokens" < 50
+    AND ( ("startTime" >= '2026-09-22 12:00:00' AND "startTime" < '2026-09-23 12:00:00')
+       OR ("startTime" >= '2026-09-24 05:08:51' AND "startTime" < '2026-09-24 11:08:51') )
+)
+SELECT "api_base",
+  round(count(*) FILTER (WHERE NOT post)::numeric/24.0,1) AS base_per_h,
+  round(count(*) FILTER (WHERE post)::numeric/6.0,1)      AS post_per_h
+FROM rows GROUP BY 1 ORDER BY 1;
+```
+
+**Metric 4.** Merged PRs per window, per repo:
+
+```sh
+gh pr list -R Nishfleet/fleet-ops --state merged --limit 200 --json mergedAt \
+  --jq '[.[]|select(.mergedAt>="2026-09-22T12:00:00Z" and .mergedAt<"2026-09-23T12:00:00Z")]|length'  # 35
+gh pr list -R Nishfleet/fleet-ops --state merged --limit 200 --json mergedAt \
+  --jq '[.[]|select(.mergedAt>="2026-09-24T05:08:51Z" and .mergedAt<"2026-09-24T11:08:51Z")]|length'  # 4
+# same two jq for -R Nishfleet/0509 with --limit 300                      → 56 and 8
+```
+
+Dispatch run counts and real gate-skip reasons (the literal `seats-out`
+in these logs is the `skip() { echo "gate: skip ($1)"; … }` definition,
+not an event — grep for `gate: skip (` to get the actual reasons):
+
+```sh
+gh run list -R Nishfleet/fleet-ops --workflow agent-dispatch.yml --limit 200 \
+  --json conclusion,createdAt --jq '[.[]|select(.createdAt>="2026-09-24T05:08:51Z" and .createdAt<"2026-09-24T11:08:51Z")]|group_by(.conclusion)|map({c:.[0].conclusion,n:length})'
+gh run view <run-id> -R Nishfleet/fleet-ops --log | grep -oE "gate: skip \([a-z-]+\)" | sort | uniq -c
+```
+
+Journal wall evidence:
+
+```sh
+export XDG_RUNTIME_DIR=/run/user/$(id -u)
+journalctl --user -u fleet-litellm-proxy.service -o short-iso | grep -m1 "free-model token quota"
+# 2026-09-23T09:09:24+05:30 → 09:09:24 UTC (GoUsageLimitError one second later)
+```
 
 ## Appendix — raw numbers
 
-`docs/reports/measure-8567-effect-8569-prompt.tsv` columns:
-`window|n|avg|p50|p90|p99|max|sum_tokens|4xx_status`.
+`docs/reports/measure-8567-effect-8569-prompt.tsv`
+columns: `window|n|avg|p50|p90|p99|max|failures|sum_tokens`.
 
-```
-after_6h|486|59668|60178|90598|131959|134725|29259029|536
-baseline_24h|36791|73093|66689|134262|189940|268759|2703308725|384
-after_sub_06_to_110851|90|53066|58240|82152|85896|87446|4775940|0
-after_hour_0500_0600|396|61169|63109|97396|0|134725|24207449|0
-sameclock_baseline_0922_0508_1108|2550|62919|0|106225|0|0|0|0
-sameclock_baseline_0923_0508_1108|4451|80358|0|163256|0|0|0|0
-```
-
-`docs/reports/measure-8567-effect-8569-hourly.tsv` columns:
-`hour_utc|n|avg|p90|p50|max`.
-
-Hourly worker-request counts (extracted from `LiteLLM_SpendLogs`,
-`model_group like 'worker%'`):
-
-| hour UTC | n | hour UTC | n |
-|---|---:|---|---:|
-| 09-23 14:00 | 190 | 09-24 00:00 | 448 |
-| 09-23 15:00 | 276 | 09-24 01:00 | 26 |
-| 09-23 16:00 | 136 | 09-24 02:00 | 214 |
-| 09-23 17:00 | 737 | 09-24 03:00 | 455 |
-| 09-23 18:00 | 629 | 09-24 04:00 | 248 |
-| 09-23 19:00 | 1,589 | 09-24 05:00 | 543 |
-| 09-23 20:00 | 1,723 | 09-24 06:00 | 0 (no rows) |
-| 09-23 21:00 | 1,811 | 09-24 07:00 | 19 |
-| 09-23 22:00 | 1,596 | 09-24 08:00 | 53 |
-| 09-23 23:00 | 948 | 09-24 09:00 | 18 |
-| | | 09-24 10:00 | 0 (no rows) |
-| | | 09-24 11:00 | 149 |
-
-The 09-24 hourly profile is consistent with the worker-capable
-seats being cooled or benched, not with #8567's config change.
+`docs/reports/measure-8567-effect-8569-hourly.tsv`
+columns: `hour_utc|n|avg|p50|p90|max|failures`, full coverage of the
+baseline window, the 24h before go-live, and the after window.
 
 ## run-proof
 
-- 1-hour pi worker unit `pi-issue-fleet-ops-8569` (claim branch
-  `claim/issue-8569`, HEAD `caebb171` = `origin/main`).
-- Live source data:
-  - `LiteLLM_SpendLogs` (psql, peer-table reads).
-  - `~/.pi/agent/sessions/agent-*/<id>.jsonl` (Python 3 scan;
-    `~/.local/share/agent-runner/` not consulted for jsonl scan).
-  - `journalctl --user -u fleet-litellm-proxy.service`.
-  - `gh api repos/Nishfleet/fleet-ops/actions/runs/{id}` for
-    `agent-dispatch` skip-reasons.
-- All numbers are reproducible by re-running the queries in
-  this report against the same windows.
+- 1-hour pi worker unit `pi-issue-fleet-ops-8569`, claim branch
+  `claim/issue-8569`, docs-only diff under `docs/reports/`.
+- Live sources: `LiteLLM_SpendLogs` via psql; `~/.pi/agent/sessions/agent-*/*.jsonl`
+  via the Python scan above; `journalctl --user -u
+  fleet-litellm-proxy.service` (UTC-labelled); `gh pr list` and
+  `gh run list/view` against Nishfleet/fleet-ops and Nishfleet/0509.
+- Every number in this report is re-derivable by running the appendix
+  commands; the two `.tsv` files are those queries' output.
+
+encoded: 5 — a one-off measurement receipt is prose by nature; the
+correction ladder's rungs 1–4 (structure, static gate, rule, skill)
+have nothing to enforce: there is no repeated behaviour to gate, only
+this report and the verdict comment, and the follow-ups (#8581, #7820)
+carry the open measurement work.
 
 loose-ends: none.
