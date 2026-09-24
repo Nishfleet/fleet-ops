@@ -33,7 +33,7 @@
 # fleet_cline_adapter.py exists on the host, so the first restart died on
 # ImportError. Removed from live the same day — fleet-ops#7366 must land
 # adapter + config together in one PR. router_settings converged to the
-# closed #6732 posture (cooldown 60 / num_retries 0 / RateLimitErrorRetries 0).
+# closed #6732 posture (cooldown 60 / num_retries 0); rate limits retry, see router_settings.
 # Router policy: a single deployment error must never reach the client while another deployment or fallback group is healthy.
 # 2026-09-22 (fleet-ops#7786, docs only — no routing change): the worker-group split
 # (`worker-cheap` vs `worker-capable`) is NAVIGATION, not upstream isolation. Both groups
@@ -50,8 +50,7 @@
 # issue workers on worker-capable. What actually protects the fleet: each group carries rungs
 # from TWO different upstreams (distinctness, not a standing health claim — gauges move, and
 # revisit this line if #8199's fix drops the pareto rung), the
-# groups fall back to each other, and cooldown 60 /
-# num_retries 0 / RateLimitErrorRetries 0 fails over on the first wall instead of retry-storming.
+# groups fall back to each other, and a 429 cools the walled rung and retries on another.
 # Caveat (#8199): the pareto z-ai/glm-5.3-flash rung still shares (model, api_base) with the
 # 2026-09-14 benched: entry below, so the router-groups guard currently reads it as a
 # silently-restored benched rung until #8199 lands — TWO upstreams is upstream DISTINCTNESS,
@@ -698,6 +697,10 @@ benched:
 
 router_settings:
   routing_strategy: simple-shuffle
+  # Pin a repeated prompt prefix to the deployment that already cached it, so
+  # simple-shuffle stops scattering one worker's turns across accounts and
+  # paying the full uncached prompt each hop (stock LiteLLM pre-call check).
+  optional_pre_call_checks: ["prompt_caching"]
   fallbacks:
     # every group has a terminal healthy route; worker-capable must not dead-end (fleet-ops#4404)
     #
@@ -727,16 +730,15 @@ router_settings:
     # served (no model_list rung); its cap-0 parking lives in seat-caps.json.
     - senior: [worker-capable]
     - judge: [senior]
-  # fleet-ops#6732 (CLOSED 2026-09-14): cooldown_time:60 / num_retries:0 /
-  # RateLimitErrorRetries:0 is the standing posture, not an incident band. The
-  # 2026-09-14 retry-storm showed why: a dead rung retried 3x per request
-  # flooded the next rung and cooled every group, and the 300/2/2 drift
-  # re-measured it — 588 RouterRateLimitError rejections in 88 min on
-  # 2026-09-20. Converged into the repo 2026-09-21 (fleet-ops#5792): with one
-  # upstream per group a same-group retry can only re-hit the same wall, and
-  # failover lives in `fallbacks`, which still fire on the first failure.
-  # If groups regain multiple healthy upstreams, num_retries>=2 becomes
-  # meaningful again (the #5792 router-policy spec).
+  # num_retries stays 0 for every error except rate limits: the 2026-09-14
+  # retry-storm was a dead (402) rung retried 3x per request (fleet-ops#6732).
+  # Rate limits are different now that worker groups carry 5+ upstreams: the
+  # first 429 cools that deployment (RateLimitErrorAllowedFails: 1, then its own
+  # cooldown_time), and LiteLLM's retry re-picks from the remaining healthy
+  # deployments, so a retry lands on a different account, not the same wall.
+  # With RateLimitErrorRetries: 0 + AllowedFails: 10, 61 of 221 agent-runner
+  # issue runs (2026-09-23/24, ~/.pi/agent/sessions/agent-*) died on a walled
+  # synthetic rung while other rungs were healthy.
   cooldown_time: 60
   allowed_fails: 1
   num_retries: 0
@@ -744,14 +746,14 @@ router_settings:
   enable_tag_filtering: false
   retry_policy:
     AuthenticationErrorRetries: 2
-    RateLimitErrorRetries: 0
+    RateLimitErrorRetries: 2
     TimeoutErrorRetries: 1
     InternalServerErrorRetries: 2
     BadRequestErrorRetries: 0
     ContentPolicyViolationErrorRetries: 0
   allowed_fails_policy:
     AuthenticationErrorAllowedFails: 0
-    RateLimitErrorAllowedFails: 10  # 2026-09-22: Pareto key cap is 3 parallel (probed header); total Pareto mpr is 3, a stray 429 must not bench the seat 60 s
+    RateLimitErrorAllowedFails: 1  # Pareto's 3-parallel key cap is already held by max_parallel_requests (total 3), so a Pareto 429 is a real wall too
     TimeoutErrorAllowedFails: 1
     InternalServerErrorAllowedFails: 1
 litellm_settings:
@@ -784,7 +786,10 @@ general_settings:
         ai-evaluation-model-specification-version: "4"
         ai-model-id: "typesafe-ai/jev"
   background_health_checks: true
-  health_check_interval: 60
+  # 900 s, not 60: each check is a real completion, and at 60 s they cost
+  # synthetic 2,518 and pareto 1,352 requests/24h (2026-09-24 spend log) against
+  # request-metered plans. Routing health comes from live traffic + cooldowns.
+  health_check_interval: 900
   # Serialise /health: five groups share one Pareto account (cap 4). A parallel
   # census 429'd the seat (fleet-ops#7862). One in-flight health check at a time.
   health_check_concurrency: 1
