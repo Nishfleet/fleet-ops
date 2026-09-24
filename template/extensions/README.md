@@ -20,10 +20,6 @@ Deleted, with what replaced each (verified live, not assumed):
 | `jev-decide.ts` | 77 | nothing here — Jev is being moved to a LiteLLM pass-through endpoint |
 | `packet-verdict.ts` | 89 | `pi-issue@.service` `ExecStopPost`: requires `claim/issue-<n>` on origin, else `Result=failed` (the rail unit's cut, landed d4a42ced6) |
 
-**2,752 lines removed.** The process ceiling is the per-unit `TasksMax=` and
-`MemoryMax=` on the worker units; the `fleet-work.slice` drop-in was deleted
-with its unused slice (fleet-ops#8584).
-
 `bash-spawn-hook.ts` was NOT symlinked to the stock example. The stock file is
 a demo that re-registers the built-in `bash` tool and prepends
 `source ~/.profile` to every command — a behaviour change with no fleet purpose,
