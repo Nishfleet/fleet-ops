@@ -20,12 +20,6 @@ Deleted, with what replaced each (verified live, not assumed):
 | `jev-decide.ts` | 77 | nothing here — Jev is being moved to a LiteLLM pass-through endpoint |
 | `packet-verdict.ts` | 89 | `pi-issue@.service` `ExecStopPost`: requires `claim/issue-<n>` on origin, else `Result=failed` (the rail unit's cut, landed d4a42ced6) |
 
-**2,752 lines removed.** The process ceiling is no longer userspace: it is
-`systemd.resource-control` `TasksMax=8000` on `fleet-work.slice`, from the
-linked drop-in `systemd/fleet-work.slice.d/10-tasksmax.conf`. Proved live:
-`systemctl --user show fleet-work.slice -p TasksMax -p DropInPaths`, and locked
-by `tests/fleet-work-slice-tasksmax.test.sh`.
-
 `bash-spawn-hook.ts` was NOT symlinked to the stock example. The stock file is
 a demo that re-registers the built-in `bash` tool and prepends
 `source ~/.profile` to every command — a behaviour change with no fleet purpose,
