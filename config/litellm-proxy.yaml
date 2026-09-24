@@ -509,25 +509,6 @@ model_list:
     id: ollama-ds41flash-worker-capable
 # self-walls (balance $0 -> 402 -> cooldown -> fallback) and Cline 4xx likewise; no metered spend path.
 benched:
-- benched_at: 2026-09-24
-  reason: "openai/deepseek-v4.1-flash @ https://opencode.ai/zen/go/v1 (OPENCODE_API_KEY), senior — live-only row (fleet-ops#8413) lost when the live file became a clone symlink 2026-09-24 07:41 IST. Re-probe 2026-09-24T04:46Z: 3/3 429 'Go usage limit exceeded' (monthly GoUsageLimitError, first seen 2026-09-23 06:34 IST). Restore with a green tool_choice probe once the Go month resets."
-  was: [senior]
-  litellm_params:
-    model: openai/deepseek-v4.1-flash
-    api_base: https://opencode.ai/zen/go/v1
-    api_key: os.environ/OPENCODE_API_KEY
-    reasoning_effort: max
-    extra_headers:
-      x-opencode-session: fleet-senior
-    tags:
-    - prepaid
-    - opencode-go
-    - senior
-    order: 1
-    max_parallel_requests: 1
-    cooldown_time: 86400
-  retry_at: '2026-10-01T09:00:00+05:30'
-
 - benched_at: 2026-09-22
   reason: "pareto-glm53flash-judge: same family as every builder; took 1 of 5 judge calls under simple-shuffle after the Go rung landed. Verifier must differ from builder (fleet-ops#8035). Fallback judge->senior stays visible in x-litellm-model-id."
   was: [judge]
