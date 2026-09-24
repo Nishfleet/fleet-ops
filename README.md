@@ -354,8 +354,9 @@ an unset URL is a skip, a shared URL is a fail.
 ## Worker RAM admission (issue #45)
 
 Admission carries no RAM charge: the concurrency bound is the runner count
-(#8429): 6 `agent` runners (`actions.runner.Nishfleet.netcup-agent-1..6`),
-all in `agent.slice` (`systemd/system/agent.slice`, 9G/10G). 32 runners on
+(#8429): 16 `agent` runners (`actions.runner.Nishfleet.netcup-agent-1..16`),
+all in `agent.slice` (`systemd/system/agent.slice`, 10G/11G), each with
+`VITEST_MAX_WORKERS=2`. 32 runners on
 this 16 GB host thrashed swap on 2026-09-24. RAM safety is per-unit `MemoryMax` + systemd-oomd, not a governor
 division. Known repos override the per-unit limits via intake-written
 drop-ins: fleet-ops#3930 set `MemoryMax=4G` with **no `MemoryHigh`** for

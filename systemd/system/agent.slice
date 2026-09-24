@@ -2,9 +2,11 @@
 # The host is 8 cores / 16 GB and also carries user-1000.slice (sessions,
 # router). On 2026-09-24, 32 runners under a 12G/13G slice pushed the box
 # into swap thrash (8 of 8 GB swap, 10k+ pages/s) and starved Remote Control.
-# The budget is 6 runners x ~1.5 G typical, with one ~3 G test peak.
+# Budget (audit 2026-09-24): ~10 G for agents after system (~1.2 G), user
+# sessions (~2.5 G) and page cache for node_modules (~2 G). With vitest
+# capped at 2 workers per job, 16 runners average ~0.5 G each.
 # Install: sudo install -m 0644 <this file> /etc/systemd/system/agent.slice
 #          && sudo systemctl daemon-reload
 [Slice]
-MemoryHigh=9G
-MemoryMax=10G
+MemoryHigh=10G
+MemoryMax=11G
