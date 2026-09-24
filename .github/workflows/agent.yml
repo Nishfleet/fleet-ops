@@ -246,12 +246,17 @@ jobs:
   report:
     needs: work
     if: (failure() || cancelled()) && needs.work.outputs.wall != 'true'
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, agent]
     permissions:
       issues: write
     steps:
+      # App token, not GITHUB_TOKEN: a GITHUB_TOKEN label fires no workflow, so opus-vet never ran on a park (fleet-ops#8552).
+      - name: App token (key never leaves the VPS)
+        run: |
+          t=$(gh token generate --app-id 4728578 --key "$HOME/.config/fleet-worker/nishfleet-worker.private-key.pem" --installation-id 156789042 --token-only)
+          echo "::add-mask::$t"
+          echo "GH_TOKEN=$t" >> "$GITHUB_ENV"
       - env:
-          GH_TOKEN: ${{ github.token }}
           N: ${{ inputs.ref }}
         # Two strikes, counted from these comments since the newest opus-vet
         # (a fresh vet resets the count, same as prompts/claim-release.md step 5).
