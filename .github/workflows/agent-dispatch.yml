@@ -60,7 +60,7 @@ jobs:
       ref: ${{ github.event.pull_request.head.ref }}
   # A closed blocker frees the issues it was blocking; a manual run sweeps
   # every ready, unblocked issue (cutover backfill and missed-event recovery),
-  # then every open claim PR without auto-merge (conflicted or ejected).
+  # then every open claim PR without auto-merge or with a conflict.
   # Priority-now first, then oldest. The Gate step in agent.yml re-checks each
   # and its 3-run cap bounds any loop.
   list:
@@ -90,8 +90,11 @@ jobs:
             nums=$(gh api "repos/$GITHUB_REPOSITORY/issues/$CLOSED/dependencies/blocking" --jq '.[]|select(.state=="open")|.number')
           else
             nums=$(gh issue list -R "$GITHUB_REPOSITORY" -l agent-ready -L 1000 --json number --jq '.[].number')
-            prs=$(gh pr list -R "$GITHUB_REPOSITORY" -L 1000 --json headRefName,autoMergeRequest,isDraft \
-              --jq '[.[] | select((.headRefName|startswith("claim/issue-")) and .autoMergeRequest == null and (.isDraft|not)) | .headRefName]')
+            # CONFLICTING too: auto-merge stays armed on a PR that turns DIRTY
+            # after arming, so it never enters the queue and no event fires
+            # (0509#4384, armed and DIRTY since 09-23 19:00Z).
+            prs=$(gh pr list -R "$GITHUB_REPOSITORY" -L 1000 --json headRefName,autoMergeRequest,isDraft,mergeable \
+              --jq '[.[] | select((.headRefName|startswith("claim/issue-")) and (.autoMergeRequest == null or .mergeable == "CONFLICTING") and (.isDraft|not)) | .headRefName]')
           fi
           refs=$(for n in $nums; do gh api "repos/$GITHUB_REPOSITORY/issues/$n"; done |
             jq -sc --argjson prs "${prs:-[]}" '[.[] | select(.issue_dependencies_summary.blocked_by == 0 and any(.labels[]; .name == "agent-ready"))]
