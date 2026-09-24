@@ -73,19 +73,10 @@ Steps:
    "Should be fixed" is not fixed.
 
    `fwupd-refresh.service` is not restart-transient when `fwupdmgr refresh`
-   prints `metadata checksum expected <hex> and got <other>`. Do not
-   `systemctl restart` it, and do not delete `/var/lib/fwupd/metadata/lvfs/`
-   — that directory is the last metadata that verified. The expected hex is
-   the jcat sha256; the rejected bytes are the versioned CDN object the jcat
-   names, which can differ from the alias
-   `https://cdn.fwupd.org/downloads/firmware.xml.zst`. Download that alias
-   and `https://cdn.fwupd.org/downloads/firmware.xml.zst.jcat`. If the alias
-   sha256 equals the expected hex, install it with
-   `fwupdmgr refresh <alias> <jcat> lvfs`, then start the unit once. This
-   unit's `SuccessExitStatus=2` means the signature is unchanged and the
-   refresh succeeded (`Result=success`, and the unit is absent from
-   `systemctl --failed`). If the alias sha256 is not the expected hex, do
-   not install it and do not restart; go to step 4.
+   prints `metadata checksum expected`. Do not restart that unit, and do not
+   delete `/var/lib/fwupd/metadata/lvfs/`. Go to step 4. A detector other
+   than this sentence is mechanism-impossible: `node_systemd_unit_state` has
+   no checksum label, and this prompt is the repair path.
 4. If it is not repairable in place, open one issue. The open-issue search
    already ran in step 1 — if it found this alertname, comment there instead
    of filing a second issue. File it on `Nishfleet/fleet-ops` unless the
