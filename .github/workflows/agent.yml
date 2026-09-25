@@ -193,7 +193,7 @@ jobs:
             esac
             set -a; . "$HOME/.config/fleet-ops/seats/$cursor_env"; set +a
             mkdir -p "$dir"
-            $jail cursor-agent -p --output-format text --model grok-4.7-xhigh --force --trust \
+            $jail cursor-agent -p --output-format text --model cursor-grok-4.6-high --force --trust \
               --workspace "$dir" "$packet" >/dev/null
           else
             echo "/worker $id" | $jail pi --print \
