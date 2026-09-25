@@ -33,6 +33,10 @@ the two `/etc/prometheus` files (fleet-sync does the copy + reload), the two
 Pi extension forks, the live-state JSON files under `~/.local/state/` and
 `~/.config/fleet-ops`-owned files that cross a privilege boundary.
 
+`~/.pi/agent/agents/` holds only the stock agents from `template/agents/`;
+per-issue copies (`reviewer-issue-<N>.md`, removed under fleet-ops#8659) are
+loaded by nothing — `grep -rln reviewer-issue- ~/.pi/agent/extensions ~/.pi/agent/settings.json ~/.config/systemd/user` returns no loader.
+
 ## LiteLLM stack (rebuild reference)
 
 Fleet-owned Postgres and Redis as user daemons — the distro packages are
