@@ -510,26 +510,27 @@ model_list:
     id: ollama-ds41flash-worker-capable
 # self-walls (balance $0 -> 402 -> cooldown -> fallback) and Cline 4xx likewise; no metered spend path.
 benched:
-# 2026-09-24 ~12:35 IST restore probe (fleet-ops#8404). Direct chat AND
+# 2026-09-25 ~12:35 IST restore probe (fleet-ops#8576). Direct chat AND
 # tool_choice=required with the provider-real id (no openai/ prefix) and a
 # User-Agent (bare urllib gets Cloudflare 1010 on xkiro and opencode; that
 # 1010 is a probe artifact). No rung returned to model_list:
-#   pareto z-ai/glm-5.3-flash — chat 200, tool 200 tool_calls. Stays out:
-#     judge is family isolation (fleet-ops#8035); a worker-cheap row would
-#     push the pareto key past max_parallel_requests 3 (live capable 2 + senior 1).
-#   ollama deepseek-v4.1-flash — chat 200, tool 200 tool_calls, and already
-#     live (deployment_state 0). Bench duplicate removed above.
+#   pareto z-ai/glm-5.3-flash — chat 200 finish=stop 'pong', tool 200
+#     tool_calls=1. Stays out: judge is family isolation (fleet-ops#8035);
+#     a worker-cheap row would push the pareto key past max_parallel_requests
+#     3 (live capable 2 + senior 1).
 #   cline stealth/union-alpha — 402 insufficient credits, balance $-0.00, no renewal.
 #   opencode union-alpha — 400 model unavailable; absent from the 34-id zen catalog.
 #   nebius GLM-5.3-Flash — 402 budget exhausted. Adding funds is Nish's; not restored.
-#   xkiro deepseek/deepseek-v4-pro — 404 model does not exist.
-#   devin glm-5-2 — 404. No /v1 wire; do not restore.
-#   openrouter nemotron-3-ultra — chat 200 wrapping Nvidia 503; tool finish=stop
-#     tool_calls=0. Not the real-packet tool-call bar.
-#   openrouter nemotron-3.5-lightning — read timeout on chat and on tool.
-#   zenmux glm-4.7-flash-free — one tool_calls, then finish=length / timeout
-#     with tool_calls=0. Not a clean green.
-# retry_at on the entries below is 2026-09-25T12:30:00+05:30 (no provider date).
+#   xkiro deepseek/deepseek-v4-pro — 403 paying customers only (2026-09-24 was
+#     404 model-gone). Paywall; do not top up on this path.
+#   devin glm-5-2 — 404 Not Found. No /v1 wire; do not restore.
+#   openrouter nemotron-3-ultra — chat 200 finish=length tool_calls=0; tool
+#     finish=stop tool_calls=0 (tool call returned as text). Not the real-packet bar.
+#   openrouter nemotron-3.5-lightning — chat and tool 200 finish=length
+#     tool_calls=0 (thinking text, no tool call). Stays benched.
+#   zenmux glm-4.7-flash-free — chat finish=length tool_calls=0; one tool_calls,
+#     then 429 rate limit. Not a clean green.
+# retry_at on the entries below is 2026-09-26T12:30:00+05:30 (no provider date).
 - benched_at: 2026-09-22
   reason: "pareto-glm53flash-judge: same family as every builder; took 1 of 5 judge calls under simple-shuffle after the Go rung landed. Verifier must differ from builder (fleet-ops#8035). Fallback judge->senior stays visible in x-litellm-model-id."
   was: [judge]
@@ -546,7 +547,7 @@ benched:
   model_info:
     mode: chat
     id: pareto-glm53flash-judge
-  retry_at: '2026-09-25T12:30:00+05:30'
+  retry_at: '2026-09-26T12:30:00+05:30'
 
 - benched_at: 2026-09-21
   reason: "openai/stealth/union-alpha @ https://api.cline.bot/api/v1 (CLINE_API_KEY) — Cline wraps NON-streaming responses in {data:{...},success:true}; LiteLLM /health (non-streaming) fails 'provider returned a response with no choices' on all 4 deployments while STREAMING routed calls succeed (worker-cheap -> x-litellm-model-id union-alpha-cline-worker-cheap, 'pong', 2026-09-17 19:00 IST). RE-BENCHED 2026-09-21: a live-only restore of 4 union-alpha rungs + custom_provider_map (2026-09-20) referenced fleet_cline_adapter.py, which exists nowhere on the host — the first proxy restart died on ImportError, a latent crash the whole time (fleet-ops#5792). Restore ONLY via fleet-ops#7366 landing the unwrap adapter AND this config in ONE PR — config alone is undeployable."
@@ -560,7 +561,7 @@ benched:
     - stealth
     order: 1
     max_parallel_requests: 2
-  retry_at: '2026-09-25T12:30:00+05:30'
+  retry_at: '2026-09-26T12:30:00+05:30'
 
 - benched_at: 2026-09-17
   reason: "openai/union-alpha @ https://opencode.ai/zen/v1 (OPENCODE_API_KEY) — HTTP 500 'Internal server error' on 4 direct probes 2026-09-17 ~18:55 IST (Mac key AND VPS key; control model on the same key returns a clean CreditsError, so auth is fine and the union-alpha upstream is broken/overloaded). Free until 2026-09-23 per OpenCode. EXPIRED 2026-09-21 (fleet-ops#7367): model DELISTED, not repaired — GET /models on zen/v1 returned HTTP 200 with a 30-model catalog containing no union-alpha (also absent from zen/go/v1's 31-model catalog; nearest is the different id omen-alpha), and 2x direct chat/completions probes returned HTTP 400 'Upstream request failed: Model is unavailable.' at ~18:16-18:18Z. The 500s ended by removal, so no probe can go green; closed early rather than watching a delisted id to 2026-09-23. If OpenCode re-adds the id, restore ONLY with a green direct probe cited in the PR. Successor candidate: omen-alpha @ zen/go/v1 (prepaid, needs x-opencode-session) probed 200 'pong' — placement decision filed as a separate issue."
@@ -574,7 +575,7 @@ benched:
     - stealth
     order: 1
     max_parallel_requests: 2
-  retry_at: '2026-09-25T12:30:00+05:30'
+  retry_at: '2026-09-26T12:30:00+05:30'
 
 - benched_at: 2026-09-14
   reason: "openai/zai-org/GLM-5.3-Flash @ https://api.tokenfactory.nebius.com/v1 (NEBIUS_API_KEY, metered) — HTTP 402 'Payment Required: You have exhausted your budget. Please add funds to continue using the API.' on routed calls AND /health, BOTH deployments (worker-cheap order:3, worker-capable order:3), continuous from ~02:41Z (08:11 IST). Dead-credit/money class (budget exhausted; renewal = Nish's call, NOT on this path). The 402 retry-storm (num_retries:2 = 3x per request) flooded the fallback chain worker-cheap -> worker-capable -> senior, all hitting pareto glm-5.3, which rate-limited (429) and put BOTH senior rungs in LiteLLM router cooldown -> pi-seat-health reported health_class=rate_limited for litellm/senior -> FleetPiSeatUnhealthy fired 30+ min. Repair (alert-repair-FleetPiSeatUnhealthy-20260914T031144Z): benched both nebius rungs; worker-cheap re-pointed at pareto glm-5.3 (prepaid, healthy, probed 200 direct) so it has a live rung and stops generating 402 fallback flood; proxy restarted to clear stale in-memory cooldown. Restore ONLY with a green /health probe cited in the PR (nebius budget topped up by Nish first)."
@@ -591,7 +592,7 @@ benched:
     - metered
     order: 3
     max_parallel_requests: 1
-  retry_at: '2026-09-25T12:30:00+05:30'
+  retry_at: '2026-09-26T12:30:00+05:30'
 
 - benched_at: 2026-09-14
   reason: "openai/z-ai/glm-5.3-flash @ https://api.paretoinference.com/v1 (PARETO_API_KEY, prepaid) — ServiceUnavailableError 503 'The model request failed.' on /health AND 3x direct probe (23:38-23:40Z), while the CONTROL z-ai/glm-5.3 on the SAME account/key returns 200 — model-specific upstream failure, NOT the account/credit class and NOT the #6427 1-3-tick burst class: continuously unhealthy from ~23:34Z (05:04 IST) through the #6427 300s tolerance, canary trip 05:09 IST (health-deployment-unhealthy 'bench them', fleet-ops#6054 drill, #5792 accept line). This was the LAST live glm-5.3-flash rung once the retired DevPass rungs came off the worker-capable ladder (fleet-ops#8400). worker-cheap keeps nebius order:3 (caching, per #6436) as its only rung + fallbacks [worker-capable, senior] intact. Restore ONLY with a green /health probe cited in the PR (direct-probe z-ai/glm-5.3-flash @ pareto 200 first)."
@@ -604,7 +605,7 @@ benched:
     - prepaid
     order: 4
     max_parallel_requests: 1
-  retry_at: '2026-09-25T12:30:00+05:30'
+  retry_at: '2026-09-26T12:30:00+05:30'
 
 - benched_at: 2026-09-12
   reason: "openai/deepseek/deepseek-v4-pro @ https://api.xkiro.com/v1 — 503 ServiceUnavailable 'A server error occurred' on /health and by direct probe by 15:47Z; dead-credit, fleet-ops#3284. #5811 wired it 06:15Z as the free rung of senior/judge (tags +senior/+judge, order:1) and worker-capable/worker-cheap (order:2); /health went unhealthy_count=4."
@@ -632,7 +633,7 @@ benched:
 # Devin worker lane, not a router rung. Do NOT restore this openai/*
 # row; do NOT add any devin bridge to worker-cheap/worker-capable
 # (fleet-ops#7761).
-  retry_at: '2026-09-25T12:30:00+05:30'
+  retry_at: '2026-09-26T12:30:00+05:30'
 
 - benched_at: 2026-09-13
   reason: "openai/glm-5-2 + openai/swe-2-max @ Devin/Windsurf — NO ROUTER WIRE: litellm->openai/* 404 on all four candidate bases (api.devin.ai/v1, api.devin.ai, server.codeium.com, windsurf.com/api/v1; live-proxied via a throwaway port-4321 litellm 2026-09-13; re-probed direct 2026-09-13T07:40Z: 3x 404 and windsurf.com/api/v1 200 = the Next.js marketing catch-all, not the API) and Windsurf/Exafunction inference is devin-CLI-only (signed Cascade client, pi ACP extension); litellm 1.98.0 and current upstream ship no windsurf/devin/codeium adapter (docs sitemap, 167 providers) — the #4263 verdict ('Cursor (api2.cursor.sh) and Devin (api.devin.ai) use proprietary protocols and do not expose /v1/chat/completions'). Seats themselves healthy via the devin CLI (cli_spawn ledger: devin/glm-5-2 200; swe-2-max bench expired 18:31Z at filing; today 2026-09-13: devin models list 48 families, exit 0). Creds plumbing already live: the deployed wrapper sources ~/.config/fleet-ops/seats/devin.env (fleet-litellm-proxy-start line 19), so unbenching after #6228 needs NO env work. Config-only wire: mechanism-impossible (the 404s). Unlock = the #6228 CustomLLM Windsurf/Devin adapter, mechanism approved by the orchestrator sweep 2026-09-13 (decision-resolved). NEVER swe-1-7 (retired, cap 0) or swe-2-high (parked to 2036)."
@@ -645,7 +646,7 @@ benched:
     - prepaid
     order: 2
     max_parallel_requests: 1
-  retry_at: '2026-09-25T12:30:00+05:30'
+  retry_at: '2026-09-26T12:30:00+05:30'
 
 - benched_at: 2026-09-21
   reason: "openai/nvidia/nemotron-3-ultra-550b-a55b:free @ https://openrouter.ai/api/v1 (OPENROUTER_API_KEY), worker-cheap + worker-capable — fleet-litellm-health-canary health-deployment-unhealthy: /health RateLimitError 'Rate limit exceeded: free-models-per-day-high-balance', continuously unhealthy 830s >= the #6427 300s hold. OpenRouter's free-models-per-day cap is per ACCOUNT, so every openrouter :free rung shares one daily bucket. Independently, the 2026-09-18 nemotron-out removal note (bak-nemotron-out-20260918T085208Z) stands: HTTP 200 with ZERO tool calls on real packets (PACKET-VERDICT 7d 966 no-tools vs 127 worked). Restore ONLY with BOTH a green /health probe AND a tool-call rate measured over real packets, cited in the PR (fleet-ops#6054 drill, #5792 accept line, #6427 hold; canary trip 2026-09-18 14:29 IST, re-confirmed by direct GET /health at 2026-09-18T09:00:04Z before benching). RE-BENCHED 2026-09-21: the live-only restore of 2026-09-20 00:30 IST put it at worker-capable order:2 citing one tool_choice=ping probe; on 2026-09-21 five consecutive tool_choice=required probes through this router returned the call as text content with tool_calls: null — the #7761 no-tool-call class. Removed live the same day (fleet-ops#5792)."
@@ -664,7 +665,7 @@ benched:
     - nemotron
     order: 1
     max_parallel_requests: 4
-  retry_at: '2026-09-25T12:30:00+05:30'
+  retry_at: '2026-09-26T12:30:00+05:30'
 
 - benched_at: 2026-09-18
   reason: "openai/nvidia/nemotron-3.5-lightning:free @ https://openrouter.ai/api/v1 (OPENROUTER_API_KEY), worker-cheap — fleet-litellm-health-canary health-deployment-unhealthy: /health RateLimitError 'Rate limit exceeded: free-models-per-day-high-balance', continuously unhealthy 830s >= the #6427 300s hold. OpenRouter's free-models-per-day cap is per ACCOUNT, so every openrouter :free rung shares one daily bucket. Independently, the 2026-09-18 nemotron-out removal note (bak-nemotron-out-20260918T085208Z) stands: HTTP 200 with ZERO tool calls on real packets (PACKET-VERDICT 7d 966 no-tools vs 127 worked). Restore ONLY with BOTH a green /health probe AND a tool-call rate measured over real packets, cited in the PR (fleet-ops#6054 drill, #5792 accept line, #6427 hold; canary trip 2026-09-18 14:29 IST, re-confirmed by direct GET /health at 2026-09-18T09:00:04Z before benching)."
@@ -683,7 +684,7 @@ benched:
     - nemotron
     order: 1
     max_parallel_requests: 4
-  retry_at: '2026-09-25T12:30:00+05:30'
+  retry_at: '2026-09-26T12:30:00+05:30'
 
 - benched_at: 2026-09-18
   reason: "openai/z-ai/glm-4.7-flash-free @ https://zenmux.ai/api/v1 (ZENMUX_API_KEY), worker-cheap — wired 2026-09-18 14:20 IST in the free-pool widening on a single PONG probe; within ~10 min of fleet load /health RateLimitError 'You have reached the usage limit for the current free model. Please try again later, or use a different model', continuously unhealthy 830s >= the #6427 300s hold. A one-shot PONG is not a capacity proof for a quota-capped free model. Restore ONLY with a green /health probe AND a sustained-load probe (>= 20 real packets without 429) cited in the PR (fleet-ops#6054 drill, #5792 accept line, #6427 hold; canary trip 2026-09-18 14:29 IST, re-confirmed by direct GET /health at 2026-09-18T09:00:04Z before benching)."
@@ -701,7 +702,7 @@ benched:
     - zenmux
     order: 1
     max_parallel_requests: 4
-  retry_at: '2026-09-25T12:30:00+05:30'
+  retry_at: '2026-09-26T12:30:00+05:30'
 
 router_settings:
   routing_strategy: simple-shuffle
