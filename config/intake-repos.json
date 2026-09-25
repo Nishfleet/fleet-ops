@@ -51,7 +51,8 @@
     {
       "name": "siterep-public",
       "product": true,
-      "reason": "0509-exclusive campaign (decisions ledger 2026-08-26): new product supply targets 0509 ONLY for the next days/weeks — 'big epic changes to make it undisputed segment best'. Existing PRs/issues drain normally; re-enrol via PR when Nish widens scope. fleet-ops stays enrolled solely to finish the mechanical stack + gap-closure loop, ratio line as tripwire."
+      "reason": "0509-exclusive campaign (decisions ledger 2026-08-26): new product supply targets 0509 ONLY for the next days/weeks — 'big epic changes to make it undisputed segment best'. Existing PRs/issues drain normally; re-enrol via PR when Nish widens scope. fleet-ops stays enrolled solely to finish the mechanical stack + gap-closure loop, ratio line as tripwire.",
+      "maintenance_queue": "AGENT_MODE=live since 2026-09-25 for the no-glue cleanup epics only (Nish: \"clean up everything then\"). Maintenance, which the 2026-08-25 ledger allows; product supply stays 0509-only."
     },
     {
       "name": "0509-telemetry",
@@ -59,20 +60,24 @@
     },
     {
       "name": "TinyStudio.io-public",
-      "reason": "Campaign scope (decisions ledger 2026-08-25: '0509 gets all lanes for the transformation campaign; other repos maintenance-only'). Re-enrol via PR when Nish widens lanes. 0509-telemetry additionally: private DATA repo — enrolling a data sink in code intake is a category error. TinyStudio.io-public: legacy mirror. fleet-ops: control-plane work-generation paused (the 2026-08-25 evening produced 9 control-plane merges vs 0 product merges — the fleet2 self-maintenance pattern)."
+      "reason": "Campaign scope (decisions ledger 2026-08-25: '0509 gets all lanes for the transformation campaign; other repos maintenance-only'). Re-enrol via PR when Nish widens lanes. 0509-telemetry additionally: private DATA repo — enrolling a data sink in code intake is a category error. TinyStudio.io-public: legacy mirror. fleet-ops: control-plane work-generation paused (the 2026-08-25 evening produced 9 control-plane merges vs 0 product merges — the fleet2 self-maintenance pattern).",
+      "maintenance_queue": "AGENT_MODE=live since 2026-09-25 for the no-glue cleanup epics only (Nish: \"clean up everything then\"). Maintenance, which the 2026-08-25 ledger allows; product supply stays 0509-only."
     },
     {
       "name": "aiconverter-app",
-      "reason": "Campaign scope (decisions ledger 2026-08-25: '0509 gets all lanes for the transformation campaign; other repos maintenance-only'). Re-enrol via PR when Nish widens lanes. 0509-telemetry additionally: private DATA repo — enrolling a data sink in code intake is a category error. TinyStudio.io-public: legacy mirror. fleet-ops: control-plane work-generation paused (the 2026-08-25 evening produced 9 control-plane merges vs 0 product merges — the fleet2 self-maintenance pattern)."
+      "reason": "Campaign scope (decisions ledger 2026-08-25: '0509 gets all lanes for the transformation campaign; other repos maintenance-only'). Re-enrol via PR when Nish widens lanes. 0509-telemetry additionally: private DATA repo — enrolling a data sink in code intake is a category error. TinyStudio.io-public: legacy mirror. fleet-ops: control-plane work-generation paused (the 2026-08-25 evening produced 9 control-plane merges vs 0 product merges — the fleet2 self-maintenance pattern).",
+      "maintenance_queue": "AGENT_MODE=live since 2026-09-25 for the no-glue cleanup epics only (Nish: \"clean up everything then\"). Maintenance, which the 2026-08-25 ledger allows; product supply stays 0509-only."
     },
     {
       "name": "inish-site",
       "product": true,
-      "reason": "Campaign scope (decisions ledger 2026-08-25: '0509 gets all lanes for the transformation campaign; other repos maintenance-only'). Re-enrol via PR when Nish widens lanes. 0509-telemetry additionally: private DATA repo — enrolling a data sink in code intake is a category error. TinyStudio.io-public: legacy mirror. fleet-ops: control-plane work-generation paused (the 2026-08-25 evening produced 9 control-plane merges vs 0 product merges — the fleet2 self-maintenance pattern)."
+      "reason": "Campaign scope (decisions ledger 2026-08-25: '0509 gets all lanes for the transformation campaign; other repos maintenance-only'). Re-enrol via PR when Nish widens lanes. 0509-telemetry additionally: private DATA repo — enrolling a data sink in code intake is a category error. TinyStudio.io-public: legacy mirror. fleet-ops: control-plane work-generation paused (the 2026-08-25 evening produced 9 control-plane merges vs 0 product merges — the fleet2 self-maintenance pattern).",
+      "maintenance_queue": "AGENT_MODE=live since 2026-09-25 for the no-glue cleanup epics only (Nish: \"clean up everything then\"). Maintenance, which the 2026-08-25 ledger allows; product supply stays 0509-only."
     },
     {
       "name": "tinystudio-in",
-      "reason": "Campaign scope (decisions ledger 2026-08-25: '0509 gets all lanes for the transformation campaign; other repos maintenance-only'). Re-enrol via PR when Nish widens lanes. 0509-telemetry additionally: private DATA repo — enrolling a data sink in code intake is a category error. TinyStudio.io-public: legacy mirror. fleet-ops: control-plane work-generation paused (the 2026-08-25 evening produced 9 control-plane merges vs 0 product merges — the fleet2 self-maintenance pattern)."
+      "reason": "Campaign scope (decisions ledger 2026-08-25: '0509 gets all lanes for the transformation campaign; other repos maintenance-only'). Re-enrol via PR when Nish widens lanes. 0509-telemetry additionally: private DATA repo — enrolling a data sink in code intake is a category error. TinyStudio.io-public: legacy mirror. fleet-ops: control-plane work-generation paused (the 2026-08-25 evening produced 9 control-plane merges vs 0 product merges — the fleet2 self-maintenance pattern).",
+      "maintenance_queue": "AGENT_MODE=live since 2026-09-25 for the no-glue cleanup epics only (Nish: \"clean up everything then\"). Maintenance, which the 2026-08-25 ledger allows; product supply stays 0509-only."
     },
     {
       "name": "seo-fix-kit",
