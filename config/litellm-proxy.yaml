@@ -244,25 +244,6 @@ model_list:
 # union/stealth ids the same day. The preview is over on all three gateways -> no account, no kilo.env,
 # no rungs; a catalog-absent id can never probe green (same terminal class as #7367). Free-period
 # cliff: if it turns paid, OpenRouter
-- model_name: worker-capable
-  # hf:deepseek-ai/DeepSeek-V4.1-Flash @ synthetic.new — restored live 2026-09-23 12:00 IST:
-  # Nish reset the subscription credits, then a chat AND a tool_choice=required probe both
-  # returned 200 on both benched models. A quota-class wall (the weekly bucket refills by tick
-  # and never resets in one go), so per fleet-ops#8398 it stays LIVE on its own cooldown_time
-  # instead of benching the refill away.
-  litellm_params:
-    model: openai/hf:deepseek-ai/DeepSeek-V4.1-Flash
-    api_base: https://api.synthetic.new/openai/v1
-    api_key: os.environ/SYNTHETIC_API_KEY
-    tags:
-    - prepaid
-    - synthetic
-    order: 1
-    max_parallel_requests: 1
-    cooldown_time: 900
-  model_info:
-    mode: chat
-    id: synthetic-ds41flash-worker-capable
 - model_name: worker-cheap
   # hf:zai-org/GLM-5.3-Flash @ synthetic.new — restored live 2026-09-23 12:00 IST together with
   # the deepseek-ai sibling above (chat AND tool_choice=required 200 on both).
@@ -278,51 +259,6 @@ model_list:
   model_info:
     mode: chat
     id: synthetic-glm53flash-worker-cheap
-- model_name: worker-capable
-  # hf:zai-org/GLM-5.3-Flash @ synthetic.new — restored live 2026-09-23 12:00 IST (see the
-  # worker-cheap row above for the probe and the policy).
-  litellm_params:
-    model: openai/hf:zai-org/GLM-5.3-Flash
-    api_base: https://api.synthetic.new/openai/v1
-    api_key: os.environ/SYNTHETIC_API_KEY
-    tags:
-    - prepaid
-    order: 1
-    max_parallel_requests: 1
-    cooldown_time: 900
-  model_info:
-    mode: chat
-    id: synthetic-glm53flash-worker-capable
-- model_name: senior
-  # hf:zai-org/GLM-5.3-Flash @ synthetic.new — restored live 2026-09-23 12:00 IST (see the
-  # worker-cheap row above for the probe and the policy).
-  litellm_params:
-    model: openai/hf:zai-org/GLM-5.3-Flash
-    api_base: https://api.synthetic.new/openai/v1
-    api_key: os.environ/SYNTHETIC_API_KEY
-    tags:
-    - prepaid
-    order: 1
-    max_parallel_requests: 1
-    cooldown_time: 900
-  model_info:
-    mode: chat
-    id: synthetic-glm53flash-senior
-- model_name: worker-private
-  # hf:zai-org/GLM-5.3-Flash @ synthetic.new — restored live 2026-09-23 12:00 IST (see the
-  # worker-cheap row above for the probe and the policy).
-  litellm_params:
-    model: openai/hf:zai-org/GLM-5.3-Flash
-    api_base: https://api.synthetic.new/openai/v1
-    api_key: os.environ/SYNTHETIC_API_KEY
-    tags:
-    - prepaid
-    order: 1
-    max_parallel_requests: 1
-    cooldown_time: 900
-  model_info:
-    mode: chat
-    id: synthetic-glm53flash-worker-private
 - model_name: worker-cheap
   # 2026-09-23 ~14:00 IST direct probe with the provider-real id (LiteLLM adapter prefix
   # stripped — the prior run's sweep table left `openai/` on and every provider 404s that):
@@ -744,7 +680,14 @@ router_settings:
   # Rate limits are different now that worker groups carry 5+ upstreams: the
   # first 429 cools that deployment (RateLimitErrorAllowedFails: 1, then its own
   # cooldown_time), and LiteLLM's retry re-picks from the remaining healthy
-  # deployments, so a retry lands on a different account, not the same wall.
+  # deployments, so a retry usually lands on a different account. Cooldown is
+  # keyed by deployment id, never by api_base or key, so sibling rungs on one
+  # walled account still look healthy. That is tolerable on seats with many
+  # slots, not on synthetic.new (1 slot per model, one 500 req/5h pool per
+  # key): it keeps exactly ONE rung, GLM-5.3-Flash in worker-cheap. On
+  # 2026-09-25 five synthetic rungs let one request fall back DS4.1 -> GLM into
+  # the same pool wall; 28 of ~26k calls returned 429 to the client (fleet-ops
+  # run 36106631667).
   # With RateLimitErrorRetries: 0 + AllowedFails: 10, 61 of 221 agent-runner
   # issue runs (2026-09-23/24, ~/.pi/agent/sessions/agent-*) died on a walled
   # synthetic rung while other rungs were healthy.
