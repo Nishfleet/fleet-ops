@@ -288,3 +288,16 @@ jobs:
       - name: merge_group reports the check so the queue can merge (the grade was enforced on the pull request)
         if: github.event_name == 'merge_group'
         run: "true"
+
+  # The shared A+ grader (fleet-ops#8655; rubric docs/quality-bar.md). Runs beside
+  # opus-review until the ruleset requires `grade / grade`; opus-review is then deleted.
+  grade:
+    if: github.event_name != 'push'
+    uses: Nishfleet/fleet-ops/.github/workflows/grade.yml@main
+    permissions:
+      contents: read
+      pull-requests: write
+      issues: write
+      id-token: write
+    secrets:
+      CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
