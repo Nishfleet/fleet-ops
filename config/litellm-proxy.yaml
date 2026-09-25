@@ -12,7 +12,7 @@ model_list:
     - opencode-go
     order: 1
     max_parallel_requests: 4
-    cooldown_time: 86400
+    cooldown_time: 900
 
   model_info:
     mode: chat
@@ -30,7 +30,7 @@ model_list:
     - opencode-go
     order: 1
     max_parallel_requests: 4
-    cooldown_time: 86400
+    cooldown_time: 900
 
   model_info:
     mode: chat
@@ -48,7 +48,7 @@ model_list:
     - opencode-go
     order: 1
     max_parallel_requests: 2
-    cooldown_time: 86400
+    cooldown_time: 900
 
   model_info:
     mode: chat
@@ -222,7 +222,7 @@ model_list:
     - minimax
     order: 1
     max_parallel_requests: 4
-    cooldown_time: 1800
+    cooldown_time: 900
   model_info:
     mode: chat
     id: minimax-m3-worker-capable
@@ -236,7 +236,7 @@ model_list:
     - minimax
     order: 1
     max_parallel_requests: 6
-    cooldown_time: 1800
+    cooldown_time: 900
   model_info:
     mode: chat
     id: minimax-m3-worker-cheap
@@ -269,6 +269,10 @@ model_list:
   model_info:
     mode: chat
     id: stepfun-step5preview-worker-capable
+# A 429 or quota wall is NOT a bench: the rung stays in model_list with cooldown_time: 900, whatever the
+# provider says its reset is. A walled rung then costs <=4 fast 429s an hour and is used again within 15 min of
+# refill, so prepaid credit is never left idle (Nish 2026-09-25; fleet-ops#8653, #8625). Bench only a wall that
+# cannot clear by itself (401, 402 with no renewal, 404, model gone) or a quality/wiring verdict.
 benched:
 - benched_at: 2026-09-22
   reason: "pareto-glm53flash-judge: same family as every builder; took 1 of 5 judge calls under simple-shuffle after the Go rung landed. Verifier must differ from builder (fleet-ops#8035). Fallback judge->senior stays visible in x-litellm-model-id."
