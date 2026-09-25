@@ -1,12 +1,12 @@
 {
-  "description": "Declared set of Nishfleet repos enrolled in pi-intake/pi-scout. This is the single source of truth for which repos run intake — the intake reconciler (fleet-ops#32) converges systemd state to this file and only this file. A repo enrols by appearing in `repos`; the reconciler creates/enables its pi-intake@<repo>.timer + pi-scout@<repo>.timer. A repo leaves by being removed; the reconciler disables/masks-removes its units. No agent may enable or mask an intake unit directly — every change is a PR against this file, which is what makes enrolment legible instead of silent (the defect fleet-ops#32 was filed for). The optional `product` flag on a repos[] entry marks a repo as product work (customer-facing) as opposed to control plane. Absent or false means not-product.",
+  "description": "Declared set of Nishfleet repos enrolled in the agent-ready queue (.github/workflows/agent-dispatch.yml and the scout job); a PR against this file is the enrolment.",
   "checkout_root": "/home/nish/workspaces/products",
   "required_labels": [
     "agent-ready",
     "agent-in-progress",
     "agent-blocked"
   ],
-  "preconditions": "Every enrolled repo MUST have (a) a git checkout at <checkout_root>/<name> — intake does `git -C <checkout_root>/<name> fetch origin` and the worker creates its worktree from it, and (b) all three `required_labels` present on the repo — the ExecCondition in pi-intake@.service silently no-ops (returns []) without them, so an agent-ready issue filed on a label-less repo looks queued and is actually inert (the exact gap fleet-ops#25 was filed for). The reconciler MUST verify both preconditions before enabling a unit and record (not silently skip) any repo that fails them.",
+  "preconditions": "Every enrolled repo MUST have (a) a git checkout at <checkout_root>/<name> and (b) all three `required_labels` present on the repo. `agent-dispatch` fires only on the `agent-ready` label.",
   "repos": [
     {
       "name": "0509",
@@ -46,7 +46,7 @@
       "product": false,
       "enrolled_by": "Nish, 2026-08-26",
       "deferred_by": "Fable for Nish, 2026-09-22 12:30 IST",
-      "reason": "Tripwire tripped. Nish 2026-09-22: 'protect compute. no bs should be built in the first place, rather than being blocked at gates.' Last 24h on fleet-ops: 149 merged PRs vs 45 on 0509; of the 149, 50 are docs/observe-close/reports the fleet writes about itself, 36 are Jev shadow/advisory tiers whose own text says they change nothing, 0 touch the product. 100 open agent-ready issues, all self-filed by the worker bot (worker files findings, intake labels them agent-ready, a worker claims them: a self-feeding loop). Control-plane work now enters ONLY as a packet scoped by Fable or Nish: a repair upstream of a product outcome (dead lane, seat wall, a gate that let a D-grade PR merge). No auto-intake, no scout, no worker-exit top-up on this repo. Re-enrol via PR when the fleet-ops:0509 merge ratio inverts on product supply, not before. The reconciler (fleet-ops#32) is deleted, so the units were disabled/masked by hand in the same change: pi-intake@fleet-ops.timer, pi-intake-trigger@fleet-ops.path, pi-scout@fleet-ops.timer disabled; pi-intake@fleet-ops.service masked so worker-exit ExecStopPost top-ups cannot restart it."
+      "reason": "Tripwire tripped. Nish 2026-09-22: 'protect compute. no bs should be built in the first place, rather than being blocked at gates.' Last 24h on fleet-ops: 149 merged PRs vs 45 on 0509; of the 149, 50 are docs/observe-close/reports the fleet writes about itself, 36 are Jev shadow/advisory tiers whose own text says they change nothing, 0 touch the product. 100 open agent-ready issues, all self-filed by the worker bot (worker files findings, intake labels them agent-ready, a worker claims them: a self-feeding loop). Control-plane work now enters ONLY as a packet scoped by Fable or Nish: a repair upstream of a product outcome (dead lane, seat wall, a gate that let a D-grade PR merge). No auto-intake, no scout, no worker-exit top-up on this repo. Re-enrol via PR when the fleet-ops:0509 merge ratio inverts on product supply, not before."
     },
     {
       "name": "siterep-public",
