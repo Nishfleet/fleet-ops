@@ -353,10 +353,15 @@ an unset URL is a skip, a shared URL is a fail.
 
 Admission carries no RAM charge: the concurrency bound is the runner count
 (#8429): 32 `agent` runners (`actions.runner.Nishfleet.netcup-agent-1..32`),
-all in `agent.slice` (`systemd/system/agent.slice`, 10G/11G), each with
+all in `agent.slice` (`systemd/system/agent.slice`, 10G/11G, `MemorySwapMax=1G`),
+each with
 `VITEST_MAX_WORKERS=2` (vitest's default of cores-1 workers per job thrashed
 swap on this 16 GB host on 2026-09-24). RAM safety is per-unit `MemoryMax` + systemd-oomd, not a governor
-division. Known repos override the per-unit limits via intake-written
+division. The slice's `MemorySwapMax` (fleet-ops#8638) is the swap half:
+on the 09-24/25 night the RAM caps alone let 32 runners fill all 8G of
+host swap (1000-2500 pages/s, 12 OOM kills, 14.6% iowait), so runner
+overflow is now killed inside the slice instead of being swapped onto
+the rest of the box. Known repos override the per-unit limits via intake-written
 drop-ins: fleet-ops#3930 set `MemoryMax=4G` with **no `MemoryHigh`** for
 fleet-ops + 0509 (the throttle band is what makes oomd pressure-kill a
 random sibling, so it was removed; 4G is now the hard stop with a clean
