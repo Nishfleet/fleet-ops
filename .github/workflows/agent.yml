@@ -59,7 +59,7 @@ jobs:
           owner: ${{ github.repository_owner }}
           skip-token-revoke: "false"
       - name: Gate
-        # The dispatch policy that prompts/intake.md used to carry, now in one
+        # The dispatch policy that the old intake prompt used to carry, now in one
         # step: skip parked or blocked work, size unsized work (Jev first
         # opinion, else needs-split -> opus-vet), cap runs, then claim.
         id: gate
@@ -301,7 +301,7 @@ jobs:
       - env:
           N: ${{ inputs.ref }}
         # Two strikes, counted from these comments since the newest opus-vet
-        # (a fresh vet resets the count, same as prompts/claim-release.md step 5).
+        # (a fresh vet resets the count, same as the old claim-release prompt).
         # First strike re-queues via agent-ready (fleet-ops#8552); the second parks.
         run: |
           i=${N#claim/issue-}
