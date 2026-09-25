@@ -195,7 +195,10 @@ jobs:
         run: "! git ls-files -- 'config/*.bak-*' | grep ."
       - name: No agent attribution footers in commit messages (fleet-ops#1052)
         if: always()
-        run: "! git log --format=%B origin/main..HEAD | grep -Ein \"$PAT\""
+        # One exact trailer is allowed: the merge queue's squash credits
+        # Claude-authored commits with it. Nish, 2026-09-25 05:14Z: "yes, let
+        # fleet-ops accept changes credited to Claude" (fleet-ops#8599).
+        run: "! git log --format=%B origin/main..HEAD | grep -vix 'co-authored-by: claude <noreply@anthropic.com>' | grep -Ein \"$PAT\""
       - name: No agent attribution footers in PR title/body (fleet-ops#1052)
         if: always()
         env:
