@@ -7,7 +7,7 @@ description: "Run one real fleet unit and collect proof: invocation id, journal,
 
 The fleet CLI is stock. Use `systemctl --user`, `systemd-run --user`, `journalctl --user`, and `gh`. Do not add a script, and do not print a token, a key file, or `fleet-gh-token.env`.
 
-Systemd-managed containers are controlled through their units only: restart is `systemctl --user restart <unit>`. Never `podman rm`, `podman stop`, `podman kill`, or signals to container/conmon PIDs — those go around the unit and can leave podman's stored state at `stopping` while the container keeps running (fleet-ops#8703). `podman ps`/`inspect` output is advisory, never the ground truth for unit health.
+Systemd-managed containers are controlled through their units only: restart is `systemctl --user restart <unit>`. Never `podman rm`, `podman stop`, `podman kill`, or signals to container/conmon PIDs — those go around the unit. `podman ps` and `podman inspect` are not a health check: on 2026-09-25 both reported `Stopping` for three live Quadlet containers for 78 minutes, with no stop, kill, pause or cleanup record in `podman events` for that window (fleet-ops#8703). Ground truth is the unit's row in `fleet-map.md`.
 
 Read `fleet-map.md` in this directory before deciding what a unit does. One row is one unit, timer, path, slice, or template. A drop-in belongs to its unit.
 
