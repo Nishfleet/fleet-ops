@@ -64,7 +64,8 @@ jobs:
           CURSOR_API_KEY: ${{ secrets.CURSOR_API_KEY }}
           GH_TOKEN: ${{ github.token }}
         run: |
-          curl https://cursor.com/install -fsS | bash
+          curl -fsS https://cursor.com/install -o "$RUNNER_TEMP/cursor-install.sh"
+          bash "$RUNNER_TEMP/cursor-install.sh"
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
           export PATH="$HOME/.local/bin:$PATH"
           mkdir -p "$HOME/.cursor"
