@@ -244,21 +244,20 @@ jobs:
       - name: No unescaped ${...} inside sh -c programs on unit Exec lines (systemd expands it to empty before sh runs; #8204 stopped every worker start)
         run: "! git diff origin/main...HEAD -- systemd/ | grep -E '^\\+Exec[A-Za-z]*=.*-c .*[^$]\\$\\{'"
 
-  # Grader engine follows vars.GRADER (claude or kimi). Nish 2026-09-22: "have
-  # opus 5 grade glm and ds4.1 flash"; 2026-09-25: Kimi K3 Max stand-in while
-  # Claude is at weekly cap. claude: stock anthropics/claude-code-action on the
+  # Grader engine, family-routed (fleet-ops#8757): Kimi when vars.GRADER is
+  # 'kimi' or the PR author is not nishfleet-worker[bot], Claude otherwise, so a
+  # Claude-built PR is never graded by Claude. claude: stock
+  # anthropics/claude-code-action on the
   # subscription token. kimi: stock Cursor CLI + org CURSOR_API_KEY. Any grade
   # below A+ adds the blocked-by-judge label, which the worker's arm step already
   # refuses (fleet-ops#4557); A+ removes it. Required check: the label alone lost
   # the race on 2026-09-21/22 (15 PRs graded D merged because auto-merge was armed
   # before the grade landed), so the job itself fails below A+ and reports success
-  # on merge_group. Nish 2026-09-22: "you can't grade your own work. you grade
-  # opus." The grader grades only PRs opened by the worker app (GLM / DeepSeek
-  # packets). PRs by the Opus deputy or by Fable are reviewed by Fable, never by
-  # this job.
+  # on merge_group. The job runs on every pull_request; the engine step is
+  # chosen from the author's family, not from whether it is a bot.
   opus-review:
     name: opus-review
-    if: github.event_name == 'merge_group' || (github.event_name == 'pull_request' && github.event.pull_request.user.login == 'nishfleet-worker[bot]')
+    if: github.event_name == 'merge_group' || github.event_name == 'pull_request'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     permissions:
@@ -271,14 +270,14 @@ jobs:
         REPO: ${{ github.repository }}
         PR NUMBER: ${{ github.event.pull_request.number }}
 
-        You are the grader. The author is a fleet worker model (GLM or DeepSeek) executing a packet; you are ${{ vars.GRADER == 'kimi' && 'Kimi K3 Max' || 'Claude Opus 5' }}. Read the PR body and the issue it cites, then the diff. Grade the PR A+ to F on: does the change do what the packet asked and nothing more; is every claim in the body proven by something in the diff or a cited run; tests assert behaviour, not implementation; no scripts, hooks, wrappers, helpers or inline programs (the repo's no-glue rule); no comment that justifies a workaround; the `encoded:` line names a real rung. A+ means every item is met with zero findings; any finding makes the grade A or lower. The pass bar is A+ (Nish 2026-09-25: "pass bar is A+"). Post ONE top-level comment via `gh pr comment` that starts with `${{ vars.GRADER == 'kimi' && 'Kimi' || 'Opus' }} grade: <letter>` followed by at most eight lines of reasons, each tied to a file and line. Use inline comments only for concrete defects. If the grade is anything but A+ run `gh pr edit --add-label blocked-by-judge`; if A+ run `gh pr edit --remove-label blocked-by-judge` (ignore the error if absent). Do not edit files. Do not approve or request changes through the review API.
+        You are the grader. The author is ${{ github.event.pull_request.user.login == 'nishfleet-worker[bot]' && 'a fleet worker model (Devin swe-2, Pi, or Cursor Grok) executing a packet' || 'a Claude session, or a Grok unit run under the owner' }}; you are ${{ (vars.GRADER == 'kimi' || github.event.pull_request.user.login != 'nishfleet-worker[bot]') && 'Kimi K3 Max' || 'Claude Opus 5' }}. Read the PR body and the issue it cites, then the diff. Grade the PR A+ to F on: does the change do what the packet asked and nothing more; is every claim in the body proven by something in the diff or a cited run; tests assert behaviour, not implementation; no scripts, hooks, wrappers, helpers or inline programs (the repo's no-glue rule); no comment that justifies a workaround; the `encoded:` line names a real rung. A+ means every item is met with zero findings; any finding makes the grade A or lower. The pass bar is A+ (Nish 2026-09-25: "pass bar is A+"). Post ONE top-level comment via `gh pr comment` that starts with `${{ (vars.GRADER == 'kimi' || github.event.pull_request.user.login != 'nishfleet-worker[bot]') && 'Kimi' || 'Opus' }} grade: <letter>` followed by at most eight lines of reasons, each tied to a file and line. Use inline comments only for concrete defects. If the grade is anything but A+ run `gh pr edit --add-label blocked-by-judge`; if A+ run `gh pr edit --remove-label blocked-by-judge` (ignore the error if absent). Do not edit files. Do not approve or request changes through the review API.
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         if: github.event_name == 'pull_request'
         with:
           fetch-depth: 1
       - uses: anthropics/claude-code-action@9ca9355b36297178e28d37c799d1c9c8a28e6507 # main 2026-09-22, Claude Code 2.1.280 (first to know claude-opus-5-5)
-        if: github.event_name == 'pull_request' && vars.GRADER != 'kimi'
+        if: github.event_name == 'pull_request' && vars.GRADER != 'kimi' && github.event.pull_request.user.login == 'nishfleet-worker[bot]'
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           # The action refuses bot-initiated runs by default; the grader exists
@@ -293,7 +292,7 @@ jobs:
             --model claude-opus-5-5
             --allowedTools "mcp__github_inline_comment__create_inline_comment,Bash(gh pr comment:*),Bash(gh pr diff:*),Bash(gh pr view:*),Bash(gh pr edit:*),Bash(gh issue view:*),Bash(git diff:*),Bash(git log:*),Bash(git show:*)"
       - name: Grade with Kimi K3 Max
-        if: github.event_name == 'pull_request' && vars.GRADER == 'kimi'
+        if: github.event_name == 'pull_request' && (vars.GRADER == 'kimi' || github.event.pull_request.user.login != 'nishfleet-worker[bot]')
         env:
           CURSOR_API_KEY: ${{ secrets.CURSOR_API_KEY }}
           GH_TOKEN: ${{ github.token }}
