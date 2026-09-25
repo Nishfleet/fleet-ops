@@ -34,10 +34,8 @@ ExecStart=/usr/bin/promtool check rules /home/nish/workspaces/tooling/fleet-ops-
 #    it cannot traverse into the repo (proved: `sudo -u prometheus test -r
 #    <repo>/config/fleet_rules.yml` fails). install -C skips the write when
 #    the bytes match; fleet-prometheus-reload.path sees a real write and
-#    reloads prometheus (SIGHUP re-reads rules and scrape jobs). The link line
-#    puts the reload service in the unit search path, so the .path unit has a
-#    target to trigger; the enable --now then links and starts the .path unit
-#    from the clone. Both lines are idempotent (re-runs print nothing new).
+#    reloads prometheus (SIGHUP re-reads rules and scrape jobs). The enable
+#    line links and starts that .path unit from the clone; it is idempotent.
 # 4b. /etc/prometheus/prometheus.yml is the same class of root-owned copy
 #     (fleet-ops#8084). The #7954 alertmanager scrape job reached the repo
 #     file and never the live one, so up{job="alertmanager"} stayed absent
