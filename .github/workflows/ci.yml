@@ -235,6 +235,8 @@ jobs:
         run: test -z "$(git diff --numstat origin/main...HEAD -- 'bin/**' 'lib/**' 'libexec/**' 'tests/**' 'template/extensions/**' '.fleet/**' | awk '$1 > 0')"
       - name: No new inline programs in unit Exec lines
         run: "! git diff origin/main...HEAD -- systemd/ | grep -E '^\\+Exec[A-Za-z]*=.{400,}'"
+      - name: No new sh -c / bash -c lines in units or the am-executor config (fleet-ops#8606)
+        run: "! git diff origin/main...HEAD -- systemd/ config/prometheus-am-executor.yml | grep -E '^\\+[^#]*sh -c'"
       - name: No programs embedded in prompts (interpreter heredocs, code fences, run-this-file lines)
         run: "! git diff origin/main...HEAD -- prompts/ | grep -E '^\\+.*((python3?|node|bun|deno|perl|ruby)[[:space:]]+-[[:space:]]*(<<|\"|$)|<<-?[[:space:]]*'\\''?[A-Z][A-Z_]*'\\''?[[:space:]]*$|^\\+```(python|py|js|javascript|ts|typescript|node)|(python3?|node)[[:space:]]+\\S+\\.(py|js|mjs|ts))'"
       - name: The deleted trees stay deleted
