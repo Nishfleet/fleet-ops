@@ -107,24 +107,29 @@ jobs:
           # 1 run at once. strong-only issues need a senior model other than
           # SWE-2, so they go only to Cursor; a full Cursor lane leaves them
           # agent-ready. Every other issue: Devin SWE-2 Max while fewer than 4
-          # run ($0), else pi, else Cursor when the router is walled too.
-          # A lane's live count is the distinct worker directories on its bwrap
-          # command lines, so it spans every runner and repo on this host.
-          live() { pgrep -af -- "^bwrap .* -- $1 " | grep -o 'agent-worktrees/issue-[^ ]*' | sort -u | wc -l; }
-          # Router seat wall (fleet-ops#8543): no raw worker-capable row healthy
-          # (same raw-row filter as FleetWorkerLaneOutage), so a pi worker would
-          # die on its first call. An empty or unreachable /metrics is not a wall.
-          walled() {
-            curl -sL --max-time 10 127.0.0.1:4000/metrics |
+          # run ($0), else pi while it has a free router slot, else Cursor.
+          # A lane's live count is the distinct worker directories (Devin,
+          # Cursor) or pi session directories on its bwrap command lines, so
+          # it spans every runner and repo on this host.
+          live() { pgrep -af -- "^bwrap .* -- $1 " | grep -oE 'agent-worktrees/issue-[^ ]*|sessions/agent-[^ ]*' | sort -u | wc -l; }
+          # pi has a free slot while its live workers are fewer than the summed
+          # max_parallel_requests of the router's worker-capable seats, and the
+          # router is not walled (fleet-ops#8543: no raw worker-capable row
+          # healthy, same filter as FleetWorkerLaneOutage; an empty or
+          # unreachable /metrics is not a wall).
+          pi_free() {
+            slots=$(python3 -c 'import sys, yaml; print(sum(m["litellm_params"].get("max_parallel_requests") or 0 for m in yaml.safe_load(open(sys.argv[1]))["model_list"] if m.get("model_name") == "worker-capable"))' "$HOME/.config/fleet-ops/litellm-proxy.yaml")
+            [ "$(live pi)" -lt "$slots" ] || return 1
+            ! curl -sL --max-time 10 127.0.0.1:4000/metrics |
               awk '/^litellm_deployment_state\{/ && /model_id="[^"]*-worker-capable"/ && /litellm_model_name="[^"]*\// { n++; if ($NF + 0 == 0) up++ } END { exit !(n > 0 && up == 0) }'
           }
           case $labels in
             *,strong-only,*) [ "$(live cursor-agent)" -lt 1 ] || skip lanes-full; engine=cursor ;;
             *)
               if [ "$(live devin)" -lt 4 ]; then engine=devin
-              elif ! walled; then engine=pi
+              elif pi_free; then engine=pi
               elif [ "$(live cursor-agent)" -lt 1 ]; then engine=cursor
-              else skip seats-out
+              else skip lanes-full
               fi ;;
           esac
           gh issue edit "$i" -R "$REPO" --remove-label agent-ready --add-label agent-in-progress
