@@ -11,7 +11,6 @@ script, or prompt lands unseen.
 - `bin/` — shell scripts the units exec.
 - `prompts/` — Pi agent prompts fed to workers on stdin.
 - `config/` — fleet configuration. `intake-repos.json` is the declared set of
-<<<<<<< HEAD
   repos enrolled in the agent-ready queue (see [Intake enrolment](#intake-enrolment)).
 - `systemd/fleet-sync.service` (started by
   `.github/workflows/deploy-box.yml` on push) — the whole deploy mechanism:
