@@ -1,0 +1,77 @@
+# Cross-family grade for pull requests opened by the worker app.
+#
+# Call from a consumer (the check GitHub reports is `opus-review / opus-review`,
+# because a reusable job is prefixed with the caller job name — put that
+# string in the ruleset, not the bare job name):
+#
+#   jobs:
+#     opus-review:
+#       permissions:
+#         contents: read
+#         pull-requests: write
+#         issues: write
+#         id-token: write
+#       uses: Nishfleet/fleet-ops/.github/workflows/opus-review.yml@main
+#       secrets:
+#         CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+#
+# Same-repo caller: ./.github/workflows/opus-review.yml (this commit).
+# Named secret, not `secrets: inherit` (same pass as opus-vet.yml).
+# The job always runs. Grading steps run only for nishfleet-worker[bot].
+# Everyone else, including merge_group, reports success without a grade:
+# a skipped required check freezes the pull request (reusable-pr-checks.yml).
+# A D or F fails the check. The label alone lost the race on 2026-09-21/22.
+
+name: opus-review
+
+on:
+  workflow_call:
+    secrets:
+      CLAUDE_CODE_OAUTH_TOKEN:
+        required: false
+
+permissions:
+  contents: read
+
+jobs:
+  opus-review:
+    name: opus-review
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      pull-requests: write
+      issues: write
+      id-token: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        if: github.event_name == 'pull_request' && github.event.pull_request.user.login == 'nishfleet-worker[bot]'
+        with:
+          fetch-depth: 1
+      - uses: anthropics/claude-code-action@9ca9355b36297178e28d37c799d1c9c8a28e6507 # main 2026-09-22, Claude Code 2.1.280 (first to know claude-opus-5-5)
+        if: github.event_name == 'pull_request' && github.event.pull_request.user.login == 'nishfleet-worker[bot]'
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          # The action refuses bot-initiated runs by default; the grader exists
+          # precisely for the worker app's PRs (first real run: fleet-ops#8098).
+          allowed_bots: nishfleet-worker
+          # The Claude GitHub App is not installed on the org; the workflow token
+          # carries the pull-requests/issues write scope this job declares.
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          use_sticky_comment: true
+          prompt: |
+            REPO: ${{ github.repository }}
+            PR NUMBER: ${{ github.event.pull_request.number }}
+
+            You are the grader. The author is a fleet worker model (GLM or DeepSeek) executing a packet; you are Claude Opus 5. Read the PR body and the issue it cites, then the diff. Grade the PR A to F on: does the change do what the packet asked and nothing more; is every claim in the body proven by something in the diff or a cited run; tests assert behaviour, not implementation; no scripts, hooks, wrappers, helpers or inline programs (the repo's no-glue rule); no comment that justifies a workaround; the `encoded:` line names a real rung. Post ONE top-level comment via `gh pr comment` that starts with `Opus grade: <letter>` followed by at most eight lines of reasons, each tied to a file and line. Use inline comments only for concrete defects. If the grade is D or F run `gh pr edit --add-label blocked-by-judge`; if A, B or C run `gh pr edit --remove-label blocked-by-judge` (ignore the error if absent). Do not edit files. Do not approve or request changes through the review API.
+          claude_args: |
+            --model claude-opus-5-5
+            --allowedTools "mcp__github_inline_comment__create_inline_comment,Bash(gh pr comment:*),Bash(gh pr diff:*),Bash(gh pr view:*),Bash(gh pr edit:*),Bash(gh issue view:*),Bash(git diff:*),Bash(git log:*),Bash(git show:*)"
+      - name: A D or F grade fails this check (fail closed if the label read fails)
+        if: github.event_name == 'pull_request' && github.event.pull_request.user.login == 'nishfleet-worker[bot]'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh pr view ${{ github.event.pull_request.number }} --repo ${{ github.repository }} --json labels --jq '.labels[].name' > "$RUNNER_TEMP/labels" && ! grep -qx blocked-by-judge "$RUNNER_TEMP/labels"
+      - name: Not a worker pull request; report success without a grade
+        if: github.event_name != 'pull_request' || github.event.pull_request.user.login != 'nishfleet-worker[bot]'
+        run: echo "opus-review grades only nishfleet-worker pull requests"

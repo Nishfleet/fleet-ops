@@ -255,7 +255,7 @@ of scope: they do not live in `session-*.scope`. `claim/issue-*` and
 
 ## CI
 
-`.github/workflows/ci.yml` runs two jobs on every PR and push to main:
+`.github/workflows/ci.yml` runs these jobs on every PR and push to main:
 
 1. **ci** — stock checks: `promtool check rules config/fleet_rules.yml`, semgrep
    `--config p/default`, the CI-gaming gates (agent attribution over the
@@ -269,6 +269,9 @@ of scope: they do not live in `session-*.scope`. `claim/issue-*` and
    `scripts/`, `libexec/`, `ops/`, `hooks/`, `.github/scripts/`, `*.sh`,
    `*.mjs`, `.fleet/`) and any added unit `Exec` line long enough to be a
    program (fleet-ops#7828).
+3. **opus-review** — on pull requests and merge-queue builds only. Calls
+   `.github/workflows/opus-review.yml`. Grades worker-app pull requests;
+   every other pull request reports success without a grade.
 
 `.github/workflows/secret-scan.yml` is the gitleaks scan (pinned binary +
 sha256, `--redact`). fleet-ops has no deploy target. All actions are pinned to exact commit
