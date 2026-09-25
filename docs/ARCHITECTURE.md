@@ -66,10 +66,9 @@ glue."* The rule, and it is enforced by the `no-glue` job in
   `sh -c` around one or two vendor commands (e.g. the gh-token mint). No
   program embedded in a prompt (interpreter heredoc, code fence, run-this-file
   line).
-- The only hand-built Pi extensions kept are the two declared exceptions —
-  `permission-gate.ts` and `protected-paths.ts`, data-only forks of Pi's
-  shipped examples. Everything else is a stock feature, or it is deleted and
-  what is lost is named.
+- No hand-built Pi extensions are kept. `permission-gate.ts` and
+  `protected-paths.ts` are gone; the heavy-command class is capped instead by
+  each runner's `MemoryMax=6G` in `agent.slice`.
 
 The design record with the full organ-by-organ reasoning is git history
 (fleet-ops#7828); this page keeps only what is enforced.

@@ -220,7 +220,7 @@ jobs:
         with:
           fetch-depth: 0
       - name: No new script, helper, hook, library, test or extension files
-        run: test -z "$(git diff --diff-filter=A --name-only origin/main...HEAD -- 'bin/**' 'lib/**' 'scripts/**' 'libexec/**' 'ops/**' 'hooks/**' '.github/scripts/**' 'tests/**' 'template/extensions/**' '**/*.sh' '**/*.py' '**/*.mjs' '**/*.ts' '.fleet/**')"
+        run: test -z "$(git diff --diff-filter=A --name-only origin/main...HEAD -- 'bin/**' 'lib/**' 'scripts/**' 'libexec/**' 'ops/**' 'tools/**' 'hooks/**' '.github/scripts/**' 'tests/**' 'template/extensions/**' '**/*.sh' '**/*.py' '**/*.mjs' '**/*.ts' '.fleet/**')"
       - name: No added lines in organs slated for deletion (glue is deleted, never tuned)
         run: test -z "$(git diff --numstat origin/main...HEAD -- 'bin/**' 'lib/**' 'libexec/**' 'tests/**' 'template/extensions/**' '.fleet/**' | awk '$1 > 0')"
       - name: No new inline programs in unit Exec lines

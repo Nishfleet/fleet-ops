@@ -1,0 +1,64 @@
+name: grade
+
+# One grader for every fleet PR (fleet-ops#8655): the rubric is docs/quality-bar.md
+# on fleet-ops@main, and only A+ passes. Callers: `uses: Nishfleet/fleet-ops/.github/workflows/grade.yml@main`.
+on:
+  workflow_call:
+    inputs:
+      trust-doc:
+        description: Path in the calling repo of its own trust doc, read with the bar ('' for none)
+        type: string
+        default: ''
+    secrets:
+      CLAUDE_CODE_OAUTH_TOKEN:
+        required: true
+
+permissions: {}
+
+jobs:
+  grade:
+    name: grade
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      pull-requests: write
+      issues: write
+      id-token: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        if: github.event_name == 'pull_request'
+        with:
+          fetch-depth: 1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        if: github.event_name == 'pull_request'
+        with:
+          repository: Nishfleet/fleet-ops
+          ref: main
+          path: .bar
+          fetch-depth: 1
+      - uses: anthropics/claude-code-action@9ca9355b36297178e28d37c799d1c9c8a28e6507 # main 2026-09-22, Claude Code 2.1.280 (first to know claude-opus-5-5)
+        if: github.event_name == 'pull_request'
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          allowed_bots: '*'
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          prompt: |
+            REPO: ${{ github.repository }}
+            PR NUMBER: ${{ github.event.pull_request.number }}
+            PR AUTHOR: ${{ github.event.pull_request.user.login }}
+            TRUST DOC: ${{ inputs.trust-doc }}
+
+            You are the grader, Claude Opus 5.5. Read the bar in .bar/docs/quality-bar.md. If TRUST DOC is not empty, read that file in the working tree too and apply it. Read the PR body and the issue it cites, then the diff. Grade the PR A+ or A to F against the bar: A+ only when all nine points are met with zero findings; any finding means it is not A+. Post ONE top-level comment via `gh pr comment` whose first line is exactly `Grade: <grade>`, with ` (same-family grade)` appended to that line unless PR AUTHOR is `nishfleet-worker[bot]`. Then list every finding, one per line, each with file:line. Use inline comments only for concrete defects. Do not edit files, do not add or remove labels, do not approve or request changes through the review API.
+          claude_args: |
+            --model claude-opus-5-5
+            --allowedTools "Read,mcp__github_inline_comment__create_inline_comment,Bash(gh pr comment:*),Bash(gh pr diff:*),Bash(gh pr view:*),Bash(gh issue view:*),Bash(git diff:*),Bash(git log:*),Bash(git show:*)"
+      - name: Only A+ passes (fails closed when there is no grade)
+        if: github.event_name == 'pull_request'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: >-
+          gh pr view ${{ github.event.pull_request.number }} --repo ${{ github.repository }} --json comments --jq '[.comments[] | select(.author.login == "github-actions" and (.body | startswith("Grade:")))] | last | .body | split("\n") | .[0]' > "$RUNNER_TEMP/grade" && grep -qxE 'Grade: A\+( \(same-family grade\))?' "$RUNNER_TEMP/grade"
+      - name: merge_group reports the check so the queue can merge (the grade was enforced on the pull request)
+        if: github.event_name == 'merge_group'
+        run: "true"
