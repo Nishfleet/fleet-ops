@@ -15,6 +15,7 @@
   surface is a pointer, not a second source (fleet-ops#5586). Stop for approval
   only for those classes or irreversible work — present the plan and begin
   everything else (fleet-ops#6610).
+- The quality bar your PR is graded on is `docs/quality-bar.md` (fleet-ops#8655): only A+ (all nine points, zero findings) passes the `grade` check.
 - Never deploy without Nish; agent-authored PRs self-land per
   `global-standing-rules.md` → "Agent-authored PRs land themselves"
   (fleet-ops#5715: the bare "never merge" wording contradicted the enforced
