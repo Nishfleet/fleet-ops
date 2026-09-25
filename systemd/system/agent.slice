@@ -1,0 +1,5 @@
+# All agent runners together. A single job may peak at ~3G (tests);
+# the slice throttles the group before it can starve the host.
+[Slice]
+MemoryHigh=10G
+MemoryMax=11G
