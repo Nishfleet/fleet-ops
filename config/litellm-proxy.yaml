@@ -84,19 +84,6 @@ model_list:
   model_info:
     mode: chat
     id: pareto-glm53flash-senior
-- model_name: worker-capable
-  litellm_params:
-    model: openai/step-5-preview
-    api_base: https://api.stepfun.ai/step_plan/v1
-    api_key: os.environ/STEPFUN_API_KEY
-    tags:
-    - prepaid
-    - stepfun
-    order: 1
-    max_parallel_requests: 5
-  model_info:
-    mode: chat
-    id: stepfun-step5preview-worker-capable
 - model_name: worker-cheap
   litellm_params:
     model: openai/hf:zai-org/GLM-5.3-Flash
@@ -268,6 +255,22 @@ model_list:
     id: ollama-ds41flash-worker-capable
 # benched: not routed, inert to the loader. Restore only with a green /health probe cited in the PR.
 benched:
+- benched_at: 2026-09-25
+  reason: "openai/step-5-preview @ api.stepfun.ai/step_plan (prepaid) — plan credit at 0% (dashboard, Nish 2026-09-25); last success 11:15 IST, then 100% RateLimitError (86/86 in 17:41-18:41 IST). Every hop was a wasted fallback. fleet-ops#8653. Restore ONLY after Nish tops up the plan AND a green direct probe is cited in the PR."
+  was: [worker-capable]
+  litellm_params:
+    model: openai/step-5-preview
+    api_base: https://api.stepfun.ai/step_plan/v1
+    api_key: os.environ/STEPFUN_API_KEY
+    tags:
+    - prepaid
+    - stepfun
+    order: 1
+    max_parallel_requests: 5
+  model_info:
+    mode: chat
+    id: stepfun-step5preview-worker-capable
+
 - benched_at: 2026-09-22
   reason: "pareto-glm53flash-judge: same family as every builder; took 1 of 5 judge calls under simple-shuffle after the Go rung landed. Verifier must differ from builder (fleet-ops#8035). Fallback judge->senior stays visible in x-litellm-model-id."
   was: [judge]
