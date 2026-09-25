@@ -21,6 +21,9 @@ WorkingDirectory=/home/nish/workspaces
 Environment=HOME=/home/nish SHELL=/usr/bin/zsh LANG=en_US.UTF-8
 Environment=PATH=/home/nish/.local/bin:/usr/local/bin:/usr/bin:/bin
 Environment=XDG_RUNTIME_DIR=/run/user/1000 DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus
+# The TUI redraws the status line to stdout (~2k journal lines an hour); errors go
+# to stderr and still reach the journal.
+StandardOutput=null
 ExecStart=/home/nish/.local/bin/claude remote-control --name vps-rc --spawn=same-dir
 Slice=claude.slice
 OOMScoreAdjust=-900
