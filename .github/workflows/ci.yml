@@ -211,14 +211,21 @@ jobs:
         run: "! printf '%s\\n' \"$PR_TITLE\" \"$PR_BODY\" | grep -Ein \"$PAT\""
 
   # no-glue: the mechanical half of "no scripts, hooks, wrappers, helpers"
-  # (Nish 2026-09-19, 2026-09-21, 2026-09-26), now the shared reusable gate
-  # in ./no-glue.yml — same steps live there, the fleet-ops organs guarded
-  # to this repo. The calling job's name is the check context, so `no-glue`
-  # stays the required check in the main-merge-queue ruleset. Required
-  # check, empty bypass.
+  # (Nish 2026-09-19, 2026-09-21, 2026-09-26), now the shared gate in
+  # ../actions/no-glue — a composite action, because a job that calls a
+  # reusable workflow reports "caller / called" and the required context
+  # `no-glue` could never be satisfied. A real job named `no-glue` that
+  # uses: the action reports exactly `no-glue`. Required check, empty
+  # bypass. Same steps as before, fleet-ops organs guarded to this repo.
   no-glue:
     name: no-glue
-    uses: ./.github/workflows/no-glue.yml
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+      - uses: ./.github/actions/no-glue
 
   # Grader engine follows vars.GRADER (claude or kimi). Nish 2026-09-22: "have
   # opus 5 grade glm and ds4.1 flash"; 2026-09-25: Kimi K3 Max stand-in while
