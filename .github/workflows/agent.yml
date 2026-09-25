@@ -111,9 +111,24 @@ jobs:
             gh issue comment "$i" -R "$REPO" --body "agent attempt cap: $runs runs since the last opus-vet; parked for the orchestrator"
             skip cap
           fi
+
+          # Engine (Nish, 2026-09-25): Devin SWE-2 Max first, 4 at once ($0,
+          # the account's concurrency). Cursor is paced: 1 at once, strong-only
+          # overflow only; a full strong-only lane stays agent-ready for the
+          # next sweep. Other overflow goes to pi. A lane's live count is the
+          # distinct worker directories on its bwrap command lines, so it spans
+          # every runner and repo on this host.
+          live() { pgrep -af -- "^bwrap .* -- $1 " | grep -o 'agent-worktrees/issue-[^ ]*' | sort -u | wc -l; }
+          if [ "$(live devin)" -lt 4 ]; then engine=devin
+          else
+            case $labels in
+              *,strong-only,*) [ "$(live cursor-agent)" -lt 1 ] || skip lanes-full; engine=cursor ;;
+              *) engine=pi ;;
+            esac
+          fi
           gh issue edit "$i" -R "$REPO" --remove-label agent-ready --add-label agent-in-progress
           gh issue comment "$i" -R "$REPO" --body "agent run started: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
-          case $labels in *,strong-only,*) echo engine=cursor >> "$GITHUB_OUTPUT" ;; *) echo engine=pi >> "$GITHUB_OUTPUT" ;; esac
+          echo "engine=$engine" >> "$GITHUB_OUTPUT"
           echo go=true >> "$GITHUB_OUTPUT"
       - name: Branch
         if: steps.gate.outputs.go == 'true'
@@ -129,8 +144,7 @@ jobs:
         # leaving the issue claimed with no strike (run 35900449636).
         timeout-minutes: 55
         # Logs are public on public repos. The full transcript stays on the
-        # VPS; only errors (stderr) reach the log. strong-only issues use the
-        # Cursor lane, as cursor-issue@ did.
+        # VPS; only errors (stderr) reach the log. The Gate picks the engine.
         env:
           ENGINE: ${{ steps.gate.outputs.engine }}
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
@@ -145,12 +159,19 @@ jobs:
           # node_modules so Clean workspace failed ENOTEMPTY (0509 run 36107401820).
           # Same cgroup, so agent.slice memory limits still apply.
           jail="bwrap --dev-bind / / --proc /proc --unshare-pid --die-with-parent --"
-          if [ "$ENGINE" = cursor ]; then
+          dir="$HOME/workspaces/agent-worktrees/issue-$id"
+          packet="Fleet issue worker for instance $id. Follow $HOME/workspaces/tooling/fleet-ops-deploy-clone/prompts/worker.md (read AGENTS.md beside it first); every \$1 there means $id."
+          if [ "$ENGINE" = devin ]; then
+            # --chdir puts the worker directory on the bwrap command line,
+            # which is what the Gate's lane count reads.
+            mkdir -p "$dir"
+            echo "$packet" | bwrap --dev-bind / / --proc /proc --unshare-pid --die-with-parent --chdir "$dir" -- \
+              devin -p --prompt-file /dev/stdin --permission-mode dangerous --model swe-2-max >/dev/null
+          elif [ "$ENGINE" = cursor ]; then
             set -a; . "$HOME/.config/fleet-ops/seats/cursor.env"; set +a
-            mkdir -p "$HOME/workspaces/agent-worktrees/issue-$id"
+            mkdir -p "$dir"
             $jail cursor-agent -p --output-format text --model grok-4.7-xhigh --force --trust \
-              --workspace "$HOME/workspaces/agent-worktrees/issue-$id" \
-              "Fleet issue worker for instance $id. Follow $HOME/workspaces/tooling/fleet-ops-deploy-clone/prompts/worker.md (read AGENTS.md beside it first); every \$1 there means $id." >/dev/null
+              --workspace "$dir" "$packet" >/dev/null
           else
             echo "/worker $id" | $jail pi --print \
               --append-system-prompt "$HOME/workspaces/tooling/fleet-ops-deploy-clone/AGENTS.md" \
