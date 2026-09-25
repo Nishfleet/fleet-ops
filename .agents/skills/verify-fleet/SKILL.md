@@ -11,7 +11,7 @@ Read `fleet-map.md` in this directory before deciding what a unit does. One row 
 
 ## When
 
-A pull request that touches `systemd/`, `prompts/`, or `config/` includes a `## Verification` section with one real run of this skill. Pick the unit that changed, or the unit that reads the prompt or config that changed. Templates take the instance from the issue (`pi-scout@0509`).
+A pull request that touches `systemd/`, `prompts/`, or `config/` includes a `## Verification` section with one real run of this skill. Pick the unit that changed, or the unit that reads the prompt or config that changed. Templates take the instance from the issue (`alert-repair@SystemUnitFailed`).
 
 ## Run
 
@@ -30,7 +30,7 @@ Record every item:
 
 ## Failure proof
 
-When the map says the unit must fail on a bad outcome, show the journal for that invocation. `pi-scout@` with no `supply: ready_count=` line exits through its abort gate: the journal contains `scout-abort-gate:` and `Failed with result 'exit-code'`. That journal line is the result of the invocation. A later `systemctl show` that says `Result=success` does not turn it into a success.
+When the map says the unit must fail on a bad outcome, show the journal for that invocation. That journal line is the result of the invocation. A later `systemctl show` that says `Result=success` does not turn it into a success.
 
 ## Healthy
 

@@ -1,71 +1,5 @@
-# fleet-ops litellm router — rewritten 2026-09-12 by claude-vps (Nish: "do the ones the fleet needs to do anything yourself on priority").
-# Source of truth: fleet-ops config/litellm-proxy.yaml (PR references fleet-ops#5792 / #5788). Backup: litellm-proxy.yaml.pre-router-401-fix-*.
-# BENCHED 2026-09-12 (live probes, /health at 10:45 IST) — restore only with a green probe cited in the PR:
-#   anthropic/MiniMax-M3 @ api.minimax.io/anthropic     : 401 "login fail" with BOTH Authorization and X-Api-Key forms -> dead key (killed 4 workers)
-#   openai/grok-4.6 @ cli-chat-proxy.grok.com           : 403 personal-team
-#   openai/deepseek/deepseek-v4.1-flash @ openrouter    : insufficient credits
-#   openai/deepseek/deepseek-v4.1-flash @ commandcode   : insufficient credits
-#   openai/Qwen3.6-35B-A3B-FP8 @ inference.hetzner.com  : 403
-#   openai/z-ai/glm-5.3-flash @ api.cline.bot           : 500 ; openai/cline-pass/deepseek-v4.1-flash @ api.cline.bot : 429
-#   ollama.com deepseek-v4-pro:0813 / kimi-k2.7-code    : 429 weekly usage limit (nishant345)
-#   alibaba qwen3.8-max                                 : 429 until 2026-09-14 (seat ledger) ; opencode-go : 402 until 2026-09-12T14:05Z ; mergegateway : quota_bench
-#   2026-09-13 (senior auditor, #6054 drill): openai/hf:zai-org/GLM-5.3-Flash @ api.synthetic.new : 429 subscription rate limits, ALL 4 deployments, 17:58Z→22:45Z+ (through the 03:32:59 IST reboot) — benched below.
-#   2026-09-23 (Nish, subscription cancelled, fleet-ops#8400): the DevPass metered-credit seat retired — every rung and bench entry dropped from this file and from the live config, and its credential file removed. Meet the retired-mechanisms ledger. Never re-wire.
-#   2026-09-14 (senior auditor, #6054 drill): openai/z-ai/glm-5.3-flash @ api.paretoinference.com : 503 ServiceUnavailableError "The model request failed." on /health AND 3x direct probe; CONTROL z-ai/glm-5.3 on the SAME account/key = 200 — model-specific upstream failure, not credit, not the #6427 1-3-tick burst class; continuous 23:34Z→ (05:04+ IST), #6427 300s hold crossed, canary trip 05:09 IST — benched below.
-#   2026-09-14 (fleet-ops#6732, pi-issue-fleet-ops-6732): RESTORED openai/hf:zai-org/GLM-5.3-Flash @ api.synthetic.new — direct chat/completions probes 6x HTTP 200 across 08:15-08:25Z (yesterday's 429 subscription wall cleared). Returns to its pre-#6193 placements (worker-cheap/worker-capable order:1, senior/worker-private order:2) so a single-upstream pareto wobble can no longer blank worker-cheap — the exact failure that killed agent-cron-0509-daily-market-signal 8x 12:00-13:46 IST.
-# 2026-09-19 (fleet-ops#7862): direct /chat/completions + tool_choice=ping against every live
-# worker-cheap/worker-capable/senior/judge api_base. KEEP only rungs that returned content AND
-# finish_reason=tool_calls. Dropped: synthetic GLM-5.3-Flash 429 subscription; zenmux
-# glm-4.7-flash-free 429 free-quota; xkiro qwen3-coder-plus:free Cloudflare 1010; xkiro
-# qwen3.8-max:free 429 daily free-token quota; pareto z-ai/glm-5.3 (full) is money_only cap 0
-# (35x flash, seat-caps.json) so it stays off workers even though the probe passed. Kept:
-# pareto z-ai/glm-5.3-flash (chat OK + tool_calls, prepaid flash cap 4). ollama
-# deepseek-v4.1-flash passed both probes then hit the weekly usage wall on the
-# five-rung /health burst (429 nishant345) and is benched. One pareto rung per
-# group so every alias has a passing seat; health_check_concurrency: 1 so /health
-# does not fire them all at once (that 429'd the account when 4 rungs ran
-# together). max_parallel_requests matches the pre-#7862 pareto split (workers 2,
-# senior/judge 2, private 1). agent workers stay --provider litellm --model worker-capable.
-# 2026-09-21 (fleet-ops#5792 converge): audited the live-only edits of
-# 2026-09-20 — synthetic worker-cheap + nemotron worker-capable re-benched
-# (evidence in their benched: entries). The cline/ union-alpha rungs +
-# custom_provider_map were live-only too and a LATENT CRASH: no
-# fleet_cline_adapter.py exists on the host, so the first restart died on
-# ImportError. Removed from live the same day — fleet-ops#7366 must land
-# adapter + config together in one PR. router_settings converged to the
-# closed #6732 posture (cooldown 60 / num_retries 0); rate limits retry, see router_settings.
-# Router policy: a single deployment error must never reach the client while another deployment or fallback group is healthy.
-# 2026-09-22 (fleet-ops#7786, docs only — no routing change): the worker-group split
-# (`worker-cheap` vs `worker-capable`) is NAVIGATION, not upstream isolation. Both groups
-# mirror each other: one OpenCode Go rung and one Pareto rung each, against the SAME two
-# prepaid accounts (the single OPENCODE_API_KEY subscription and the single PARETO_API_KEY
-# Pareto Pass). The x-opencode-session ids / model_info ids name seats in LiteLLM's census;
-# they are bookkeeping, not separate quota buckets. Quota walls are per ACCOUNT, so a wall on
-# either provider cools the matching rungs in BOTH groups together — the 2026-09-19
-# synthetic-wall record #7786 cites: the router cooled synthetic-glm53flash-worker-cheap and
-# synthetic-glm53flash-worker-capable together (that day both names resolved to the same
-# deployment — a worse fault than isolated lanes), and cheap-lane scouts failed on Connection
-# error while a capable-lane issue worker kept running — shared-account contention, not
-# isolated lanes. Do not reason that intake/scout on worker-cheap cannot starve
-# issue workers on worker-capable. What actually protects the fleet: each group carries rungs
-# from TWO different upstreams (distinctness, not a standing health claim — gauges move, and
-# revisit this line if #8199's fix drops the pareto rung), the
-# groups fall back to each other, and a 429 cools the walled rung and retries on another.
-# Caveat (#8199): the pareto z-ai/glm-5.3-flash rung still shares (model, api_base) with the
-# 2026-09-14 benched: entry below, so the router-groups guard currently reads it as a
-# silently-restored benched rung until #8199 lands — TWO upstreams is upstream DISTINCTNESS,
-# not a health verdict.
-# Named reason for the accepted residual single point (#7786 bullet 2): every upstream is ONE
-# prepaid account; a second account per provider is a purchase, and money is Nish's call, so
-# this config accepts account-level walls and relies on the failover above instead.
-# Ollama deepseek-v4.1-flash is live on worker-capable only (fleet-ops#8413, id
-# ollama-ds41flash-worker-capable). The bench duplicate of that same model was
-# removed 2026-09-24 after chat 200 and tool_choice=required tool_calls
-# (fleet-ops#8404). #8198 was closed in the 2026-09-22 tracker review and is
-# not a second placement.
 model_list:
 - model_name: worker-capable
-  # OpenCode Go, same rung as worker-cheap; agent workers run --model worker-capable (2026-09-22).
   litellm_params:
     model: openai/deepseek-v4.1-flash
     api_base: https://opencode.ai/zen/go/v1
@@ -84,7 +18,6 @@ model_list:
     mode: chat
     id: opencodego-ds41flash-worker-capable
 - model_name: worker-cheap
-  # OpenCode Go prepaid subscription, restored 2026-09-21 (fleet-ops#8035; memory opencode-go-seat-wiring).
   litellm_params:
     model: openai/deepseek-v4.1-flash
     api_base: https://opencode.ai/zen/go/v1
@@ -103,7 +36,6 @@ model_list:
     mode: chat
     id: opencodego-ds41flash-worker-cheap
 - model_name: judge
-  # OpenCode Go prepaid subscription, restored 2026-09-21 (fleet-ops#8035; memory opencode-go-seat-wiring).
   litellm_params:
     model: openai/deepseek-v4.1-flash
     api_base: https://opencode.ai/zen/go/v1
@@ -121,8 +53,6 @@ model_list:
   model_info:
     mode: chat
     id: opencodego-ds41flash-judge
-# fleet-ops#4643 cache-affinity ladder still applies; routing_strategy is simple-shuffle so
-# order: is documentation, not a pick filter. Failover is cooldown + group fallbacks.
 - model_name: worker-capable
   litellm_params:
     model: openai/z-ai/glm-5.3-flash
@@ -155,25 +85,6 @@ model_list:
     mode: chat
     id: pareto-glm53flash-senior
 - model_name: worker-capable
-  # StepFun step-5-preview (Nish 2026-09-22: "prepaid, max 5 concurrent lanes - only step 5
-  # preview. pretty unlimited usage so use generously"). 600B-total / 27B-active MoE, 1,024,000
-  # input tokens, built for long-horizon agentic coding — the strongest builder rung the fleet has.
-  #
-  # BASE URL TRAP (cost 40 min on 2026-09-22): the Step Plan is served ONLY at
-  # /step_plan/v1 (OpenAI-compatible; /step_plan is the anthropic-compatible twin).
-  # The plain https://api.stepfun.ai/v1 path bills pay-as-you-go balance, which is
-  # empty on this account, so it answers 402 quota_exceeded with x-upstream-latency: 0
-  # on EVERY model — including a GET /v1/models that returns 200 — while the console
-  # shows "Credit usage: Remaining 100%". A 402 here means WRONG PATH, not no money.
-  # Probed from this host 2026-09-22 04:11-04:13Z on /step_plan/v1: chat 200, and
-  # tool_choice=auto -> finish_reason=tool_calls with a well-formed tool_calls array
-  # (the fleet-ops#7761 worker-group requirement).
-  #
-  # worker-capable ONLY, deliberately: judge and senior must stay a different model
-  # family from the builders (fleet-ops#8035; docs/ARCHITECTURE.md), and putting
-  # step-5 in both places would let a step-5 build be step-5-reviewed under
-  # simple-shuffle. judge stays opencode-go deepseek-v4.1-flash; worker-cheap reaches
-  # step-5 through the existing worker-cheap -> worker-capable fallback.
   litellm_params:
     model: openai/step-5-preview
     api_base: https://api.stepfun.ai/step_plan/v1
@@ -182,71 +93,11 @@ model_list:
     - prepaid
     - stepfun
     order: 1
-    # Nish's account cap is 5 concurrent lanes TOTAL. max_parallel_requests is per
-    # deployment, so this seat gets exactly one rung holding the whole cap — a second
-    # rung anywhere would multiply it past 5.
     max_parallel_requests: 5
   model_info:
     mode: chat
     id: stepfun-step5preview-worker-capable
-# fleet-ops#6054 (2026-09-12): benched = NOT routed, NOT in model_list, and NOT
-# counted by the health canary's fleet_litellm_model_list_expected (only
-# "- model_name:" lines count). Inert to the loader: ProxyConfig reads known
-# keys via .get(), so this top-level key never reaches the router. Restore a
-# deployment ONLY with a green /health probe cited in the PR — while any
-# DEPLOYED census entry is unhealthy the health canary fails loud
-# (health-deployment-unhealthy; #5792 accept-line drill).
-# 2026-09-17 (claude-mac; Nish: "wire up union alpha stealth model to the fleet from all these
-# providers"): Union Alpha = anonymous stealth preview, $0, 262K ctx, 131K max out, tools+images.
-# Probed 200 from THIS host 2026-09-17 ~19:05 IST via OpenRouter (stealth/union-alpha, usage.cost=0)
-# and Cline (stealth/union-alpha, SSE standard). worker-cheap/worker-capable order:1 (free, ahead of the
-# 429-bursting devin bridge); senior/judge order:2 (devin swe-2-max stays primary for judging).
-# NOT in worker-private: OpenRouter Stealth terms = prompts retained by the provider (not trained on);
-# privacy placement is Nish's call. OpenCode Zen union-alpha: HTTP 500 x4 (both keys) -> benched below.
-# Cloudflare AI Gateway 402 insufficient balance (money) and AI/ML API (paid) deliberately NOT wired;
-# Kilo listed stealth/union-alpha at fleet-ops#7369 filing (379-model catalog) but DELISTED it before
-# the seat work ran: GET api.kilo.ai/api/openrouter/models 2026-09-22 -> 380 models, zero 'union' ids
-# (stealth survivors: qwen3.6-plus, claude-opus-4.8/4.7/4.6, sonnet-4.6); the OpenRouter catalog has no
-# union/stealth ids the same day. The preview is over on all three gateways -> no account, no kilo.env,
-# no rungs; a catalog-absent id can never probe green (same terminal class as #7367). Free-period
-# cliff: if it turns paid, OpenRouter
-# self-walls (balance $0 -> 402 -> cooldown -> fallback) and Cline 4xx likewise; no metered spend path.
-# fleet-ops#6133 (2026-09-21): the devin/swe-2-max CustomLLM rows added by
-# #7895 are REMOVED. The #7907 no-glue sweep deleted the handler
-# (libexec/fleet-litellm-devin-adapter/) later the same day — a
-# custom_provider_map module is exactly the hand-built extension class that
-# sweep retired, and this shape reference must stay deployable as written
-# (a missing handler fails the proxy at import).
-# Devin capacity ran on a separate Devin worker lane instead
-# (deleted with the old dispatcher, fleet-ops#8449). `devin --print` is an agent,
-# not an HTTP
-# endpoint, and can never return tool_calls — so it can never be a router
-# rung (fleet-ops#7761). NEVER swe-1-7 (retired, cap 0) or swe-2-high
-# (parked to 2036).
-# fleet-ops#6054 (2026-09-12): benched = NOT routed, NOT in model_list, and NOT
-# counted by the health canary's fleet_litellm_model_list_expected (only
-# "- model_name:" lines count). Inert to the loader: ProxyConfig reads known
-# keys via .get(), so this top-level key never reaches the router. Restore a
-# deployment ONLY with a green /health probe cited in the PR — while any
-# DEPLOYED census entry is unhealthy the health canary fails loud
-# (health-deployment-unhealthy; #5792 accept-line drill).
-# 2026-09-17 (claude-mac; Nish: "wire up union alpha stealth model to the fleet from all these
-# providers"): Union Alpha = anonymous stealth preview, $0, 262K ctx, 131K max out, tools+images.
-# Probed 200 from THIS host 2026-09-17 ~19:05 IST via OpenRouter (stealth/union-alpha, usage.cost=0)
-# and Cline (stealth/union-alpha, SSE standard). worker-cheap/worker-capable order:1 (free, ahead of the
-# 429-bursting devin bridge); senior/judge order:2 (devin swe-2-max stays primary for judging).
-# NOT in worker-private: OpenRouter Stealth terms = prompts retained by the provider (not trained on);
-# privacy placement is Nish's call. OpenCode Zen union-alpha: HTTP 500 x4 (both keys) -> benched below.
-# Cloudflare AI Gateway 402 insufficient balance (money) and AI/ML API (paid) deliberately NOT wired;
-# Kilo listed stealth/union-alpha at fleet-ops#7369 filing (379-model catalog) but DELISTED it before
-# the seat work ran: GET api.kilo.ai/api/openrouter/models 2026-09-22 -> 380 models, zero 'union' ids
-# (stealth survivors: qwen3.6-plus, claude-opus-4.8/4.7/4.6, sonnet-4.6); the OpenRouter catalog has no
-# union/stealth ids the same day. The preview is over on all three gateways -> no account, no kilo.env,
-# no rungs; a catalog-absent id can never probe green (same terminal class as #7367). Free-period
-# cliff: if it turns paid, OpenRouter
 - model_name: worker-cheap
-  # hf:zai-org/GLM-5.3-Flash @ synthetic.new — restored live 2026-09-23 12:00 IST together with
-  # the deepseek-ai sibling above (chat AND tool_choice=required 200 on both).
   litellm_params:
     model: openai/hf:zai-org/GLM-5.3-Flash
     api_base: https://api.synthetic.new/openai/v1
@@ -260,13 +111,6 @@ model_list:
     mode: chat
     id: synthetic-glm53flash-worker-cheap
 - model_name: worker-cheap
-  # 2026-09-23 ~14:00 IST direct probe with the provider-real id (LiteLLM adapter prefix
-  # stripped — the prior run's sweep table left `openai/` on and every provider 404s that):
-  # chat 200 AND tool_choice=required 200 with a real tool_calls payload. Restored out of the
-  # Cloudflare-1010 bench (fleet-ops#8398 item 2). A daily free-token quota is a 429 wall that
-  # resets, so per this issue's rule it stays LIVE with a per-deployment cooldown_time sized to
-  # the wall instead of benching every reset away. order 2, behind the paid rungs; mpr 4 as
-  # before.
   litellm_params:
     model: openai/qwen/qwen3-coder-plus:free
     api_base: https://api.xkiro.com/v1
@@ -281,10 +125,6 @@ model_list:
     mode: chat
     id: xkiro-qwen3coderplus-worker-cheap
 - model_name: worker-cheap
-  # 2026-09-23 ~13:59 IST direct probe with the provider-real id: chat 200 AND
-  # tool_choice=required 200 with a real tool_calls payload. Same 429 daily-quota wall the rung
-  # was benched for (#3660/#4080/#8327); per #8398's rule a resetting 429 keeps the rung LIVE
-  # on cooldown_time, so the sweep restores it instead of benching it.
   litellm_params:
     model: openai/qwen/qwen3.8-max:free
     api_base: https://api.xkiro.com/v1
@@ -298,18 +138,6 @@ model_list:
   model_info:
     mode: chat
     id: xkiro-qwen38max-worker-cheap
-# 2026-09-24 (Nish: "cline = ds4.1 flash and stealth bunny alpha", "its prepaid, wire it up properly").
-# Cline streams standard OpenAI SSE but wraps NON-streamed replies in {data:...}; stock
-# model_info.disable_background_health_check keeps LiteLLM's non-streaming /health off those
-# rungs, and pi workers always stream. Proof 2026-09-24T04:40Z: litellm.completion(stream=True,
-# tool_choice=required) 5/5 finish_reason=tool_calls for BOTH Cline ids. Cline rungs sit only in
-# worker-capable (pi-only callers). The 2026-09-22 Cline rung (fleet-ops#8355) was live-only and
-# was dropped by the #8398 converge; it lives here now.
-# Space Bunny Alpha (stealth, $0 on OpenRouter/Zen/Cline, preview ends without notice; prompts may be
-# retained by the anonymous provider, so it stays OUT of worker-private and, as an unknown family, out
-# of senior/judge). Probe 2026-09-24T04:38Z: tool_choice=required -> tool_calls on OpenRouter, Cline,
-# Zen; 20/20 HTTP 200 at parallel 2 on OpenRouter and on Zen. OpenCode Go space-bunny-free = 429
-# GoUsageLimitError (monthly), not wired.
 - model_name: worker-capable
   litellm_params:
     model: openai/cline-pass/deepseek-v4.1-flash
@@ -343,7 +171,6 @@ model_list:
   litellm_params:
     model: openai/stealth/space-bunny-alpha
     api_base: https://openrouter.ai/api/v1
-    # Money guard: listed at $0 prompt/completion; cap in case the preview flips to paid.
     max_budget: 1.0
     budget_duration: 1mo
     api_key: os.environ/OPENROUTER_API_KEY
@@ -398,11 +225,6 @@ model_list:
   model_info:
     mode: chat
     id: zen-spacebunny-worker-cheap
-# 2026-09-24 (fleet-ops#8413): live-only rows the #8398 converge left out on purpose, then lost for real when the
-# live file became a symlink to this clone (2026-09-24 07:41 IST). Nish's placements from 2026-09-22 (MiniMax =
-# tightly scoped worker only, order 1; Ollama DS4.1 flash "don't forget"). Re-probed 2026-09-24T04:46Z via
-# litellm.completion(stream=True, tool_choice=required): MiniMax-M3 3/3 tool_calls, Ollama DS4.1 flash 3/3.
-# MiniMax cooldown_time moves from model_info (ignored there) to litellm_params.
 - model_name: worker-capable
   litellm_params:
     model: anthropic/MiniMax-M3
@@ -444,29 +266,8 @@ model_list:
   model_info:
     mode: chat
     id: ollama-ds41flash-worker-capable
-# self-walls (balance $0 -> 402 -> cooldown -> fallback) and Cline 4xx likewise; no metered spend path.
+# benched: not routed, inert to the loader. Restore only with a green /health probe cited in the PR.
 benched:
-# 2026-09-25 ~12:35 IST restore probe (fleet-ops#8576). Direct chat AND
-# tool_choice=required with the provider-real id (no openai/ prefix) and a
-# User-Agent (bare urllib gets Cloudflare 1010 on xkiro and opencode; that
-# 1010 is a probe artifact). No rung returned to model_list:
-#   pareto z-ai/glm-5.3-flash — chat 200 finish=stop 'pong', tool 200
-#     tool_calls=1. Stays out: judge is family isolation (fleet-ops#8035);
-#     a worker-cheap row would push the pareto key past max_parallel_requests
-#     3 (live capable 2 + senior 1).
-#   cline stealth/union-alpha — 402 insufficient credits, balance $-0.00, no renewal.
-#   opencode union-alpha — 400 model unavailable; absent from the 34-id zen catalog.
-#   nebius GLM-5.3-Flash — 402 budget exhausted. Adding funds is Nish's; not restored.
-#   xkiro deepseek/deepseek-v4-pro — 403 paying customers only (2026-09-24 was
-#     404 model-gone). Paywall; do not top up on this path.
-#   devin glm-5-2 — 404 Not Found. No /v1 wire; do not restore.
-#   openrouter nemotron-3-ultra — chat 200 finish=length tool_calls=0; tool
-#     finish=stop tool_calls=0 (tool call returned as text). Not the real-packet bar.
-#   openrouter nemotron-3.5-lightning — chat and tool 200 finish=length
-#     tool_calls=0 (thinking text, no tool call). Stays benched.
-#   zenmux glm-4.7-flash-free — chat finish=length tool_calls=0; one tool_calls,
-#     then 429 rate limit. Not a clean green.
-# retry_at on the entries below is 2026-09-26T12:30:00+05:30 (no provider date).
 - benched_at: 2026-09-22
   reason: "pareto-glm53flash-judge: same family as every builder; took 1 of 5 judge calls under simple-shuffle after the Go rung landed. Verifier must differ from builder (fleet-ops#8035). Fallback judge->senior stays visible in x-litellm-model-id."
   was: [judge]
@@ -519,8 +320,6 @@ benched:
   litellm_params:
     model: openai/zai-org/GLM-5.3-Flash
     api_base: https://api.tokenfactory.nebius.com/v1
-    # Money guard (glue sweep 2026-09-18): METERED pay-as-you-go rung, benched
-    # today. Capped so a future restore comes back capped by default.
     max_budget: 5.0
     budget_duration: 1mo
     api_key: os.environ/NEBIUS_API_KEY
@@ -549,8 +348,6 @@ benched:
   litellm_params:
     model: openai/deepseek/deepseek-v4-pro
     api_base: https://api.xkiro.com/v1
-    # Money guard (glue sweep 2026-09-18): METERED pay-as-you-go rung, benched
-    # today. Capped so a future restore comes back capped by default.
     max_budget: 5.0
     budget_duration: 1mo
     api_key: os.environ/XKIRO_API_KEY
@@ -558,17 +355,6 @@ benched:
     - free
     order: 2
     max_parallel_requests: 1
-# synthetic GLM-5.3-Flash (api.synthetic.new) benched 2026-09-13 (429 subscription
-# rate limits, all 4 deployments) and RESTORED 2026-09-14 (fleet-ops#6732): 6x
-# direct-probe HTTP 200 08:15-08:25Z; back in model_list at its pre-#6193
-# placements (worker-cheap/worker-capable order:1, senior/worker-private order:2).
-# #6133 (2026-09-13): openai/* against api.devin.ai stays benched — those
-# bases 404 (live-proxied 2026-09-13). The #6228 CustomLLM wire
-# (devin/swe-2-max in senior/judge/worker-private, PR #7895) was retired
-# the same day by the #7907 no-glue sweep — devin seats now serve as the
-# Devin worker lane, not a router rung. Do NOT restore this openai/*
-# row; do NOT add any devin bridge to worker-cheap/worker-capable
-# (fleet-ops#7761).
   retry_at: '2026-09-26T12:30:00+05:30'
 
 - benched_at: 2026-09-13
@@ -590,8 +376,6 @@ benched:
   litellm_params:
     model: openai/nvidia/nemotron-3-ultra-550b-a55b:free
     api_base: https://openrouter.ai/api/v1
-    # Money guard (glue sweep 2026-09-18): METERED pay-as-you-go rung, benched
-    # today. Capped so a future restore comes back capped by default.
     max_budget: 5.0
     budget_duration: 1mo
     api_key: os.environ/OPENROUTER_API_KEY
@@ -609,8 +393,6 @@ benched:
   litellm_params:
     model: openai/nvidia/nemotron-3.5-lightning:free
     api_base: https://openrouter.ai/api/v1
-    # Money guard (glue sweep 2026-09-18): METERED pay-as-you-go rung, benched
-    # today. Capped so a future restore comes back capped by default.
     max_budget: 5.0
     budget_duration: 1mo
     api_key: os.environ/OPENROUTER_API_KEY
@@ -628,8 +410,6 @@ benched:
   litellm_params:
     model: openai/z-ai/glm-4.7-flash-free
     api_base: https://zenmux.ai/api/v1
-    # Money guard (glue sweep 2026-09-18): METERED pay-as-you-go rung, benched
-    # today. Capped so a future restore comes back capped by default.
     max_budget: 5.0
     budget_duration: 1mo
     api_key: os.environ/ZENMUX_API_KEY
@@ -642,57 +422,16 @@ benched:
 
 router_settings:
   routing_strategy: simple-shuffle
-  # Pin a repeated prompt prefix to the deployment that already cached it, so
-  # simple-shuffle stops scattering one worker's turns across accounts and
-  # paying the full uncached prompt each hop (stock LiteLLM pre-call check).
   optional_pre_call_checks: ["prompt_caching"]
+  # worker groups hold only rungs proven to return finish_reason=tool_calls (fleet-ops#7761); simple-shuffle ignores order:.
   fallbacks:
-    # every group has a terminal healthy route; worker-capable must not dead-end (fleet-ops#4404)
-    #
-    # 2026-09-18 (fleet-ops#7761) — STANDING RULE, not just today's bench list:
-    # a worker group (worker-cheap / worker-capable) may contain ONLY deployments
-    # that have been proven to return `finish_reason=tool_calls`. The proof case
-    # was the `devin/swe-2-max` CustomLLM bridge (itself retired by the #7907
-    # no-glue sweep): `devin --print` is an agent-in-a-box that returns final
-    # prose, never a tool_calls response, and as a worker fallback it produced
-    # the 2026-09-18 outage — every issue worker from ~16:30Z scored
-    # PACKET-VERDICT tools=0 and exited 0 while 100+ agent-ready issues sat
-    # untouched. Re-proven 2026-09-21: openrouter nemotron-3-ultra-550b-a55b:free
-    # returned the tool call as text content (tool_calls: null) on 5/5
-    # tool_choice=required probes through the live router — re-benched below.
-    # Note `order:` does NOT protect against this: routing_strategy is
-    # simple-shuffle, which ignores it (devin took 667 of 1835 worker-cheap calls
-    # from a lower-priority order). A non-tool-calling deployment has to be ABSENT
-    # from the group, not merely demoted.
-    # #4404 still holds: the two worker groups fall back to each other and both
-    # carry a proven tool-calling rung. If both are down the call errors LOUDLY,
-    # which beats a silent no-op that exits 0.
     - worker-cheap: [worker-capable]
     - worker-capable: [worker-cheap]
-    # senior/judge consume prose (review, adjudication), not tool calls, so a
-    # prose-only rung is legal there — though today every group's only rung is
-    # pareto glm-5.3-flash (the #7862 roster collapse). worker-private is not
-    # served (no model_list rung); its cap-0 parking lives in seat-caps.json.
     - senior: [worker-capable]
     - judge: [senior]
-  # num_retries stays 0 for every error except rate limits: the 2026-09-14
-  # retry-storm was a dead (402) rung retried 3x per request (fleet-ops#6732).
-  # Rate limits are different now that worker groups carry 5+ upstreams: the
-  # first 429 cools that deployment (RateLimitErrorAllowedFails: 1, then its own
-  # cooldown_time), and LiteLLM's retry re-picks from the remaining healthy
-  # deployments, so a retry usually lands on a different account. Cooldown is
-  # keyed by deployment id, never by api_base or key, so sibling rungs on one
-  # walled account still look healthy. That is tolerable on seats with many
-  # slots, not on synthetic.new (1 slot per model, one 500 req/5h pool per
-  # key): it keeps exactly ONE rung, GLM-5.3-Flash in worker-cheap. On
-  # 2026-09-25 five synthetic rungs let one request fall back DS4.1 -> GLM into
-  # the same pool wall; 28 of ~26k calls returned 429 to the client (fleet-ops
-  # run 36106631667).
-  # With RateLimitErrorRetries: 0 + AllowedFails: 10, 61 of 221 agent-runner
-  # issue runs (2026-09-23/24, ~/.pi/agent/sessions/agent-*) died on a walled
-  # synthetic rung while other rungs were healthy.
   cooldown_time: 60
   allowed_fails: 1
+  # a same-group retry re-hits the same wall; fallbacks fire on the first failure (fleet-ops#5792).
   num_retries: 0
   timeout: 1800
   enable_tag_filtering: false
@@ -705,7 +444,8 @@ router_settings:
     ContentPolicyViolationErrorRetries: 0
   allowed_fails_policy:
     AuthenticationErrorAllowedFails: 0
-    RateLimitErrorAllowedFails: 1  # Pareto's 3-parallel key cap is already held by max_parallel_requests (total 3), so a Pareto 429 is a real wall too
+    # one 429 benches the deployment: Pareto's 3-parallel cap is already held by max_parallel_requests.
+    RateLimitErrorAllowedFails: 1
     TimeoutErrorAllowedFails: 1
     InternalServerErrorAllowedFails: 1
 litellm_settings:
@@ -714,19 +454,6 @@ litellm_settings:
   - prometheus
   require_auth_for_metrics_endpoint: false
 general_settings:
-  # Jev (typesafe-ai/jev) as a pass-through endpoint — glue sweep 2026-09-18.
-  #
-  # Replaces bin/jev-eval.mjs + bin/jev-eval + ~/.local/lib/jev-eval: a Node
-  # helper with its own SDK install, its own key read, its own JSONL spend
-  # ledger and its own hand-rolled $1 cap. Jev's gateway endpoint is a plain
-  # JSON POST, so the proxy can forward it and the proxy's OWN budget engine
-  # does the cap — the same engine that caps every model seat.
-  #
-  # auth: true means a caller must present a LiteLLM virtual key. The key
-  # `jev-eval` carries max_budget 1.0 USD / budget_duration 1mo, so LiteLLM
-  # refuses the call itself once the month's dollar is spent.
-  # cost_per_request is Jev's measured cost: $0.042/MTok in, $0 out, ~350 input
-  # tokens on a real fleet question (#7371) = ~$0.0000147. Rounded up.
   pass_through_endpoints:
     - path: "/jev"
       target: "https://ai-gateway.vercel.sh/v4/ai/evaluation-model"
@@ -738,14 +465,11 @@ general_settings:
         ai-evaluation-model-specification-version: "4"
         ai-model-id: "typesafe-ai/jev"
   background_health_checks: true
-  # 900 s, not 60: each check is a real completion, and at 60 s they cost
-  # synthetic 2,518 and pareto 1,352 requests/24h (2026-09-24 spend log) against
-  # request-metered plans. Routing health comes from live traffic + cooldowns.
   health_check_interval: 900
-  # Serialise /health: five groups share one Pareto account (cap 4). A parallel
-  # census 429'd the seat (fleet-ops#7862). One in-flight health check at a time.
+  # serialise /health: a parallel census 429s shared accounts (fleet-ops#7862).
   health_check_concurrency: 1
   database_url: postgresql://litellm@127.0.0.1:5432/litellm
   redis_url: redis://127.0.0.1:6379
   master_key: os.environ/LITELLM_MASTER_KEY
+  # without this, startup prisma migrate deploy stalls every restart.
   disable_prisma_schema_update: true
