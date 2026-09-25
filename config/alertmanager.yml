@@ -10,12 +10,15 @@
 #   severity=page      -> telegram (the phone), stop.   [e.g. RepairDispatchDown]
 #   severity=critical  -> github-issues, continue.     [no phone]
 #   severity=warning   -> github-issues, continue.     [no phone]
-#   severity=none      -> default receiver github-issues (or 'null' for
-#                         Watchdog, which is matched first). [no phone]
+#   severity=none      -> default receiver github-issues (or the `deadman`
+#                         receiver for Watchdog, which is matched first:
+#                         healthchecks.io ping, fleet-ops#8667). [no phone]
 #   default (no match) -> github-issues.
 #
 # Re-notification: group_interval 15m / repeat_interval 6h on every branch
-# except the phone (severity=page keeps group_interval 1m).
+# except the phone (severity=page keeps group_interval 1m) and the Watchdog
+# dead-man (fleet-ops#8667), which overrides both to ping healthchecks.io
+# every 5m.
 #
 # severity=nish (2026-09-18) is the Nish-reserved paging path: any alert that
 # fires with severity="nish" pages immediately at group_interval 1m.
@@ -38,6 +41,9 @@
 # Repo-ized so a hand-edit cannot drift the routing back to "everything pages"
 # (the 2026-08-28 leak this file replaced). copy it to /etc/prometheus/alertmanager.yml with
 # `sudo -n install -D -m 0644 -o root -g root` and reload alertmanager (README).
+# The `deadman` receiver reads its webhook URL from /etc/prometheus/deadman_url,
+# a root-owned file with the same owner and mode as
+# /etc/prometheus/telegram_bot_token. It is provisioned once and never committed.
 global:
   resolve_timeout: 5m
 
@@ -61,7 +67,10 @@ route:
   routes:
     - matchers:
         - alertname="Watchdog"
-      receiver: 'null'
+      receiver: deadman
+      group_wait: 0s
+      group_interval: 1m
+      repeat_interval: 5m
       continue: false
     - matchers:
         - severity="critical"
@@ -83,7 +92,14 @@ route:
       continue: true
 
 receivers:
-  - name: 'null'
+  # Always-firing Watchdog -> the healthchecks.io VPS check. The URL is
+  # secret-class, so it is read from a root-owned file and never committed
+  # (fleet-ops#8667). repeat_interval is bounded by group_interval, so the
+  # route pins group_interval: 1m or pings space out to the inherited 15m.
+  - name: deadman
+    webhook_configs:
+      - url_file: /etc/prometheus/deadman_url
+        send_resolved: false
   - name: telegram
     telegram_configs:
       - bot_token_file: /etc/prometheus/telegram_bot_token
