@@ -102,6 +102,18 @@ jobs:
             'timer-no-nex[t]|timer-manifes[t]' \
             AGENTS.md README.md prompts systemd etc config template patches .github credentials || rc=$?
           test "$rc" -eq 1
+      - name: Every committed /jev caller sends custom_llm_provider (fleet-ops#8713)
+        # LiteLLM's budget_limiter raises 'custom_llm_provider is required' on
+        # every pass-through success, and endpoint config cannot supply the
+        # key — it must be in the request body. A committed file that POSTs to
+        # 4000/jev without naming the key is a caller that will log the raise
+        # on every call. This file self-matches: it contains both strings.
+        run: |
+          rc=0
+          for f in $(grep -rln --exclude-dir=.git '4000/jev' AGENTS.md README.md prompts systemd etc config template docs patches .github credentials pending 2>/dev/null); do
+            grep -q 'custom_llm_provider' "$f" || { echo "$f mentions 4000/jev but never sets custom_llm_provider"; rc=1; }
+          done
+          test "$rc" -eq 0
       - name: Cursor shared-memory rule stays current (fleet-ops#7803)
         # The always-on Cursor rule is repo-tracked at
         # template/cursor-rules/shared-memory.mdc. The live

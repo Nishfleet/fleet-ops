@@ -31,9 +31,7 @@ doc.** Group health is `litellm_deployment_state` on `/metrics` and
 / score questions with probabilities). Its one tuning knob — the per-site band
 edges — lives in RUNBOOK, and each caller's prompt carries the comparison it
 applies. Every /jev body carries `custom_llm_provider: "vercel_ai_gateway"`
-at top level: LiteLLM's budget limiter raises `custom_llm_provider is
-required` on pass-through successes without it, and config cannot supply it
-(fleet-ops#8713).
+at top level (fleet-ops#8713).
 
 ## Worker isolation (containers)
 
