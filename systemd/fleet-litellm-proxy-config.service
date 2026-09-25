@@ -1,0 +1,11 @@
+[Unit]
+Description=Apply the fleet LiteLLM proxy config by restarting the proxy (fleet-ops#8539)
+Documentation=https://github.com/Nishfleet/fleet-ops/issues/8539
+
+[Service]
+Type=oneshot
+# `try-restart` restarts only a running proxy, so an edit never starts a
+# proxy that was stopped on purpose. LiteLLM has no reload signal, so a
+# restart (~38 s, drained by the 30-graceful-stop.conf drop-in) is the
+# only way to apply the config.
+ExecStart=/usr/bin/systemctl --user try-restart fleet-litellm-proxy.service

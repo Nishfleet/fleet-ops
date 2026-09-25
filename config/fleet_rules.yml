@@ -9,8 +9,7 @@
 #   node_systemd_unit_state       node_exporter systemd collector
 #   node_filesystem_*, node_memory_*   node_exporter
 #   node_textfile_mtime_seconds   node_exporter textfile collector
-#   fleet_restore_drill_*         /usr/local/sbin/restic-r2-restore-test writes
-#   fleet_litellm_pgdump_*        restic-restore-test.prom (same writer)
+#   node_systemd_timer_*          node_exporter systemd collector (unit-include covers .timer)
 #   up{}                          prometheus scrape state
 #   probe_success                 blackbox_exporter (3 targets on 0509)
 #   fleet_main_ci_green, fleet_prepaid_credits_usd, fleet_prepaid_used_usd,
@@ -127,22 +126,23 @@ groups:
           service: seat-proxy
         annotations:
           summary: "every worker-cheap/worker-capable deployment has been unhealthy for 30m+ — worker lane is down"
-          description: "min(litellm_deployment_state) over raw worker rows > 0 for 30m: no worker rung is healthy, so every pi-issue@ start dies on its first call (fleet-ops#7820). Repair, in order: (1) if ~/workspaces/agent-state/FLEET-PAUSED exists the fleet is deliberately down — stop. (2) GET /health with the master key and probe each worker rung directly (chat AND tool_choice=required); a green direct probe means the gauge is stale — never trust the gauge alone. (3) If every upstream answers a quota/subscription 429, seat supply is a money decision: record the probe results on the issue and route to Nish; do not add rungs or raise max_parallel_requests. (4) Once one rung is green again, XDG_RUNTIME_DIR=/run/user/$(id -u) systemctl --user reset-failed the pi-scout@/pi-intake-repair@ units that failed in the window."
+          description: "min(litellm_deployment_state) over raw worker rows > 0 for 30m: no worker rung is healthy, so every issue-worker start dies on its first call (fleet-ops#7820). Repair, in order: (1) if ~/workspaces/agent-state/FLEET-PAUSED exists the fleet is deliberately down — stop. (2) GET /health with the master key and probe each worker rung directly (chat AND tool_choice=required); a green direct probe means the gauge is stale — never trust the gauge alone. (3) If every upstream answers a quota/subscription 429, seat supply is a money decision: record the probe results on the issue and route to Nish; do not add rungs or raise max_parallel_requests. (4) Once one rung is green again, XDG_RUNTIME_DIR=/run/user/$(id -u) systemctl --user reset-failed the pi-scout@ unit that failed in the window."
 
   - name: fleet_backups
     rules:
-      # Backups. Both series are written by /usr/local/sbin/restic-r2-restore-test
-      # into restic-restore-test.prom — a restic textfile, independent of any
-      # fleet exporter.
+      # Backups. restic-r2-restore-test.service is stock unit lines (restore
+      # --verify, cmp, test); a failed drill leaves the unit failed and fires
+      # SystemUnitFailed, so this rule only has to catch a drill that stopped
+      # running. Source: node_exporter's systemd timer series.
       - alert: ResticRestoreProofStale
-        expr: (time() - fleet_restore_drill_last_success_seconds > 93600) or absent(fleet_restore_drill_last_success_seconds)
+        expr: (time() - node_systemd_timer_last_trigger_seconds{name="restic-r2-restore-test.timer"} > 93600) or absent(node_systemd_timer_last_trigger_seconds{name="restic-r2-restore-test.timer"})
         for: 15m
         labels:
           severity: critical
           service: backups
         annotations:
           summary: "no proven restic restore in 26+ hours"
-          description: "fleet_restore_drill_last_success_seconds is older than 26h or absent, so the backup is unproven. Repair: systemctl start restic-r2-restore-test.service and read its journal."
+          description: "restic-r2-restore-test.timer last fired over 26h ago (or the series is absent), so the backup is unproven. Repair: systemctl status restic-r2-restore-test.timer, then systemctl start restic-r2-restore-test.service and read its journal."
 
   - name: fleet_host
     rules:

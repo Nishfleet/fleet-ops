@@ -1,0 +1,8 @@
+[Unit]
+Description=Apply a changed prometheus-am-executor config by restarting it (fleet-ops#8606)
+Documentation=https://github.com/Nishfleet/fleet-ops/issues/8606
+
+[Service]
+Type=oneshot
+# try-restart restarts only a running executor, never starts a stopped one.
+ExecStart=/usr/bin/systemctl --user try-restart prometheus-am-executor.service

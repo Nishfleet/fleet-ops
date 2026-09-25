@@ -15,8 +15,24 @@ on:
         description: 'Issue number to dispatch, overrides the sweep and its claim-PR append'
         required: false
         type: string
+  # Nishfleet/0509 keeps only a trigger stub that calls this file, so the
+  # dispatch logic has one copy. github.* is the caller's, so every job below
+  # acts on the calling repo. agent_mode carries the caller's AGENT_MODE.
+  workflow_call:
+    inputs:
+      issue:
+        required: false
+        type: string
+        default: ''
+      agent_mode:
+        required: false
+        type: string
+        default: ''
   # pull_request_target, not pull_request: pull_request never runs while a PR
-  # has a merge conflict. No PR code is checked out or run here.
+  # has a merge conflict. Invariant (Kimi K3 review L2, 2026-09-24): nothing in
+  # this file checks out PR code, and the one job this event reaches, ejected,
+  # only runs for a claim/issue-* branch whose head repo is this repository,
+  # so a fork's PR never reaches a runner or a token.
   pull_request_target:
     types: [dequeued, auto_merge_disabled]
   workflow_run:
@@ -33,44 +49,44 @@ jobs:
   new:
     if: >-
       github.event_name == 'issues' && github.event.label.name == 'agent-ready' &&
-      (vars.AGENT_MODE == 'live' || contains(github.event.issue.labels.*.name, 'shadow-actions'))
-    uses: Nishfleet/fleet-ops/.github/workflows/agent.yml@main
+      ((inputs.agent_mode || vars.AGENT_MODE) == 'live' || contains(github.event.issue.labels.*.name, 'shadow-actions'))
+    uses: Nishfleet/fleet-ops/.github/workflows/agent.yml@main # runner group 3 allows only agent.yml@refs/heads/main; a SHA pin strands every job
     with:
       ref: claim/issue-${{ github.event.issue.number }}
   rework:
     if: >-
-      vars.AGENT_MODE == 'live' && github.event_name == 'workflow_run' &&
-      github.event.workflow_run.conclusion == 'failure' &&
+      (inputs.agent_mode || vars.AGENT_MODE) == 'live' && github.event_name == 'workflow_run' &&
+      (github.event.workflow_run.conclusion == 'failure' || github.event.workflow_run.conclusion == 'timed_out') &&
       github.event.workflow_run.event == 'pull_request' &&
       startsWith(github.event.workflow_run.head_branch, 'claim/issue-') &&
       github.event.workflow_run.head_repository.full_name == github.repository
-    uses: Nishfleet/fleet-ops/.github/workflows/agent.yml@main
+    uses: Nishfleet/fleet-ops/.github/workflows/agent.yml@main # runner group 3 allows only agent.yml@refs/heads/main; a SHA pin strands every job
     with:
       ref: ${{ github.event.workflow_run.head_branch }}
   # The merge queue ejected a claim PR (failed checks or a conflict), or its
   # auto-merge was dropped: send the worker back to it.
   ejected:
     if: >-
-      vars.AGENT_MODE == 'live' && github.event_name == 'pull_request_target' &&
+      (inputs.agent_mode || vars.AGENT_MODE) == 'live' && github.event_name == 'pull_request_target' &&
       github.event.pull_request.state == 'open' &&
       startsWith(github.event.pull_request.head.ref, 'claim/issue-') &&
       github.event.pull_request.head.repo.full_name == github.repository
-    uses: Nishfleet/fleet-ops/.github/workflows/agent.yml@main
+    uses: Nishfleet/fleet-ops/.github/workflows/agent.yml@main # runner group 3 allows only agent.yml@refs/heads/main; a SHA pin strands every job
     with:
       ref: ${{ github.event.pull_request.head.ref }}
   # A closed blocker frees the issues it was blocking; a manual run sweeps
   # every ready, unblocked issue (cutover backfill and missed-event recovery),
-  # then every open claim PR without auto-merge (conflicted or ejected).
+  # then every open claim PR without auto-merge or with a conflict.
   # Priority-now first, then oldest. The Gate step in agent.yml re-checks each
   # and its 3-run cap bounds any loop.
   list:
     if: >-
-      vars.AGENT_MODE == 'live' &&
+      (inputs.agent_mode || vars.AGENT_MODE) == 'live' &&
       ((github.event_name == 'issues' && github.event.action == 'closed') ||
        github.event_name == 'workflow_dispatch' || github.event_name == 'schedule')
     runs-on: ubuntu-latest
     permissions:
-      issues: read
+      issues: write
       pull-requests: read
     outputs:
       refs: ${{ steps.list.outputs.refs }}
@@ -88,10 +104,43 @@ jobs:
             nums=$ISSUE
           elif [ -n "$CLOSED" ]; then
             nums=$(gh api "repos/$GITHUB_REPOSITORY/issues/$CLOSED/dependencies/blocking" --jq '.[]|select(.state=="open")|.number')
+            # A split parent never closed on its own, so everything blocked by
+            # it waited forever (0509, 2026-09-24: ~140 queued issues). Close
+            # each open ancestor whose sub-issues are now all closed, and
+            # release what it blocked. A GITHUB_TOKEN close fires no event,
+            # so the release happens here. /parent 404s at the top.
+            c=$CLOSED
+            while p=$(gh api "repos/$GITHUB_REPOSITORY/issues/$c/parent" --jq .number 2>/dev/null) &&
+              [ "$(gh api "repos/$GITHUB_REPOSITORY/issues/$p" --jq '"\(.state) \(.sub_issues_summary.total - .sub_issues_summary.completed)"')" = "open 0" ]; do
+              gh issue close "$p" -R "$GITHUB_REPOSITORY" -r completed -c "every sub-issue is closed, the last was #$c; closing the parent"
+              nums="$nums $(gh api "repos/$GITHUB_REPOSITORY/issues/$p/dependencies/blocking" --jq '.[]|select(.state=="open")|.number')"
+              c=$p
+            done
           else
             nums=$(gh issue list -R "$GITHUB_REPOSITORY" -l agent-ready -L 1000 --json number --jq '.[].number')
-            prs=$(gh pr list -R "$GITHUB_REPOSITORY" -L 1000 --json headRefName,autoMergeRequest,isDraft \
-              --jq '[.[] | select((.headRefName|startswith("claim/issue-")) and .autoMergeRequest == null and (.isDraft|not)) | .headRefName]')
+            # CONFLICTING too: auto-merge stays armed on a PR that turns DIRTY
+            # after arming, so it never enters the queue and no event fires
+            # (0509#4384, armed and DIRTY since 09-23 19:00Z).
+            # The bulk list returns mergeable UNKNOWN until GitHub recomputes a
+            # PR after a push to main, so each armed PR is re-read per PR to
+            # trigger that computation (fleet-ops#8557). A PR in the merge queue
+            # is dropped by ref below; a queued PR can have autoMergeRequest
+            # null (0509#4688), so the CONFLICTING test alone cannot drop it.
+            all=$(gh pr list -R "$GITHUB_REPOSITORY" -L 1000 --json number,headRefName,autoMergeRequest,isDraft,mergeable \
+              --jq '[.[] | select((.headRefName|startswith("claim/issue-")) and (.isDraft|not))]')
+            queued=$(gh api graphql -f query="query{repository(owner:\"${GITHUB_REPOSITORY%/*}\",name:\"${GITHUB_REPOSITORY#*/}\"){mergeQueue(branch:\"main\"){entries(first:100){nodes{pullRequest{headRefName}}}}}}" \
+              --jq '[.data.repository.mergeQueue.entries.nodes[]?.pullRequest.headRefName]')
+            unarmed=$(jq -c '[.[] | select(.autoMergeRequest == null) | .headRefName]' <<<"$all")
+            conflicted=$(for pr in $(jq -r '.[] | select(.autoMergeRequest != null and .mergeable != "MERGEABLE") | .number' <<<"$all"); do
+              for _ in 1 2 3; do
+                v=$(gh pr view "$pr" -R "$GITHUB_REPOSITORY" --json headRefName,mergeable)
+                [ "$(jq -r .mergeable <<<"$v")" != UNKNOWN ] && break
+                sleep 10
+              done
+              jq -c 'select(.mergeable == "CONFLICTING") | .headRefName' <<<"$v"
+            done | jq -sc .)
+            prs=$(jq -nc --argjson a "$unarmed" --argjson b "$conflicted" --argjson q "$queued" '$a + $b - $q')
+            echo "claim PRs picked by the sweep: $prs"
           fi
           refs=$(for n in $nums; do gh api "repos/$GITHUB_REPOSITORY/issues/$n"; done |
             jq -sc --argjson prs "${prs:-[]}" '[.[] | select(.issue_dependencies_summary.blocked_by == 0 and any(.labels[]; .name == "agent-ready"))]
@@ -103,9 +152,19 @@ jobs:
     if: needs.list.outputs.refs != '[]'
     strategy:
       fail-fast: false
+      # Bound the sweep fan-out to live seat slots. The matrix starts one worker
+      # per listed ref at once; a 14-ref sweep put ~14 workers on the LiteLLM
+      # router against ~7 live parallel slots and 429'd them into strikes
+      # (fleet-ops#8553). Stock Actions knob, no new files: strategy.max-parallel,
+      # tunable per repo via vars.AGENT_MAX_PARALLEL (unset -> 6, ~7 slots).
+      # This bounds only this matrix. The new/rework/ejected jobs above are one
+      # dispatch per event and are NOT throttled by max-parallel; bounding that
+      # aggregate is host runner-count config (deploy is Nish-gated) or a
+      # workflow-level concurrency group that would serialize the 6h sweep.
+      max-parallel: ${{ fromJSON(vars.AGENT_MAX_PARALLEL || '6') }}
       matrix:
         ref: ${{ fromJSON(needs.list.outputs.refs) }}
-    uses: Nishfleet/fleet-ops/.github/workflows/agent.yml@main
+    uses: Nishfleet/fleet-ops/.github/workflows/agent.yml@main # runner group 3 allows only agent.yml@refs/heads/main; a SHA pin strands every job
     with:
       ref: ${{ matrix.ref }}
   # A claim PR outlives its issue. Nothing closed the PR when the issue closed
@@ -116,8 +175,12 @@ jobs:
   # AGENT_MODE: this removes work from the queue in every mode and dispatches
   # nothing.
   close-claim:
+    # issue=<N> too: opus-vet closes with GITHUB_TOKEN, which fires no
+    # issues.closed, then dispatches the issue by number. Without this its
+    # claim PR stayed open (0509 #5081 #5019 #5010 #4922 #4902 #4683).
     if: >-
-      github.event_name == 'issues' && github.event.action == 'closed'
+      (github.event_name == 'issues' && github.event.action == 'closed') ||
+      inputs.issue != ''
     runs-on: ubuntu-latest
     permissions:
       # pull-requests: write closes the PR; contents: write is what
@@ -127,8 +190,11 @@ jobs:
     steps:
       - env:
           GH_TOKEN: ${{ github.token }}
-          ISSUE: ${{ github.event.issue.number }}
+          ISSUE: ${{ github.event.issue.number || inputs.issue }}
+        # The event can be stale: a worker that closes and reopens its issue
+        # still fires this, and it closed a graded PR (0509 #4972/#5012).
         run: |
+          [ "$(gh issue view "$ISSUE" -R "$GITHUB_REPOSITORY" --json state --jq .state)" = CLOSED ] || exit 0
           for pr in $(gh pr list -R "$GITHUB_REPOSITORY" --head "claim/issue-$ISSUE" --state open --json number --jq '.[].number'); do
             # Re-check: the one race this guards is a merge landing between the
             # list and the close, which must skip, not fail.

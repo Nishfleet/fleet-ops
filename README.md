@@ -11,9 +11,10 @@ script, or prompt lands unseen.
 - `bin/` — shell scripts the units exec.
 - `prompts/` — Pi agent prompts fed to workers on stdin.
 - `config/` — fleet configuration. `intake-repos.json` is the declared set of
-  repos enrolled in pi-intake/pi-scout (see [Intake enrolment](#intake-enrolment)).
-- `systemd/fleet-sync.{service,timer}` — the whole deploy mechanism: every
-  two minutes, `git pull --ff-only` + `systemctl --user daemon-reload`, plus
+  repos enrolled in the agent-ready queue (see [Intake enrolment](#intake-enrolment)).
+- `systemd/fleet-sync.service` (started by
+  `.github/workflows/deploy-box.yml` on push) — the whole deploy mechanism:
+  `git pull --ff-only` + `systemctl --user daemon-reload`, plus
   `promtool check rules` / `promtool check config` and a prometheus reload
   when the alert rules or the scrape config changed, and a LINK-GUARD pass
   that fails the unit on a dangling or throwaway-target live symlink
@@ -28,11 +29,11 @@ in git are the same inode. Nothing is copied, so nothing can drift, and the
 (`install.sh`, `MANIFEST`, `bin/fleet-ops-deploy`, `bin/fleet-deploy-check`,
 `bin/fleet-ops-drift.py`) were deleted on 2026-09-18.
 
-`systemd/fleet-sync.timer` keeps the clone current. It is the only deploy
-machinery on the box:
+`deploy-box.yml` starts `fleet-sync.service` on every push to main, which
+keeps the clone current. It is the only deploy machinery on the box:
 
 ```
-systemctl --user list-timers fleet-sync.timer
+systemctl --user status fleet-sync.service
 systemctl --user start fleet-sync.service   # force a sync now
 journalctl --user -u fleet-sync.service -n 50
 ```
@@ -82,7 +83,9 @@ NOT update them. Refresh by hand when the repo file changes:
 | `/etc/prometheus/fleet_rules.yml` | `config/fleet_rules.yml` | prometheus runs as `prometheus`; `/home/nish` is `0750 nish:nish`, so it cannot traverse into the repo. **Handled automatically** by `fleet-sync.service` (promtool check + copy + reload). |
 | `/etc/prometheus/prometheus.yml` | `config/prometheus.yml` | same privilege boundary. **Handled automatically** by `fleet-sync.service` (promtool check config + copy + reload). The #7954 alertmanager scrape job drifted here and left `FleetNishPageRailDown` red (fleet-ops#8084); that drift class is closed by the deploy step. |
 | `~/.pi/agent/extensions/**.ts` | `template/extensions/**` | pi resolves a symlinked extension against its REAL path, so sibling imports would resolve into the repo (fleet-ops#3263). After the glue sweeps the only local files are the two stock forks (`permission-gate.ts`, `protected-paths.ts`) — everything else in `~/.pi/agent/extensions/` is a symlink straight into pi's shipped `examples/extensions/`. |
-| `~/.pi/agent/models.json`, `~/.local/state/pi-packet/model-candidates.json` | `config/pi-models.json`, `config/model-candidates.json` | live state the git working tree must not rewrite on every checkout (fleet-ops#2910/#3722/#3322). |
+| `~/.pi/agent/models.json` | `config/pi-models.json` | **Handled automatically** by `fleet-sync.service` (cmp + install, fleet-ops#8568). A copy, not a symlink, because `~/.pi/agent` is an overlay mount in worker containers. |
+| `~/.local/state/pi-packet/model-candidates.json` | `config/model-candidates.json` | live state the git working tree must not rewrite on every checkout (fleet-ops#2910/#3722/#3322). |
+| `~/.pi/agent/settings.json` | `none (live-only)` | pi writes this file itself at runtime (provider/model switches and its own bookkeeping keys), so a repo copy would be overwritten and a symlink would fight pi. Every fleet caller passes `--provider litellm --model <group>`, so its `defaultProvider`/`defaultModel` affect only bare interactive `pi` runs (fleet-ops#8568). Its `compaction.reserveTokens: 40000` pairs with the worker `contextWindow: 296000` in `config/pi-models.json`: pi compacts at window − reserve = 256k (Nish 2026-09-25; was 88k under #8567), and pi sizes each reply as window − context − 4096, so a turn at 256k still gets its full 32k `maxTokens`. Every worker rung holds 256k+ (seat /models or spend-log prompts up to 416k). At 96000/8192 replies near 88k were cut to ~4.8k (fleet-ops#8634). The real model windows are ~1M; 128000 is a budget, not a limit. |
 | `/etc/**` (systemd drop-ins, `sysctl.d`, `audit/rules.d`, `default/prometheus`, `prometheus/*.yml`) | `config/`, `etc/`, `systemd/system/` | cross a privilege boundary. |
 
 ```
@@ -132,8 +135,8 @@ one link the wrong way — on 2026-09-18 a session linked the
 `standing-rules-render` units and the vault canonical rules file into a
 churning checkout, and they dangled when the files vanished, taking the
 standing-rules render down (fleet-ops#7743). The guard for that is in
-`fleet-sync.service`: the LINK-GUARD step fails the unit — visibly, every
-two minutes — while any symlink under `~/.config/systemd/user`,
+`fleet-sync.service`: the LINK-GUARD step fails the unit — on every deploy
+push to main and at boot — while any symlink under `~/.config/systemd/user`,
 `~/.local/bin`, `~/.pi/agent` or `~/workspaces/tooling/nish-vault` is broken
 or resolves into a throwaway root (`*worktrees/*`, `agent-state`, `tmp`).
 Live links belong to the canonical checkout and the stable install dirs
@@ -228,9 +231,6 @@ The Claude PostToolUse hook `~/.claude/hooks/guard_pi_packet.py` classifies
 these from the redirected packet log. Launcher faults advise the transient-unit
 one-liner above; lane faults advise seat rotation.
 
-Overlapping `systemctl start` of a live intake tick or of a live `pi-issue@`
-worker is a no-op — systemd will not start a unit that is already running.
-
 ## Claim shared files before editing (interactive sessions)
 
 Queued work has an atomic lock — the `claim/issue-N` branch. Interactive
@@ -247,7 +247,7 @@ sweep — the stock push is the whole mechanism.
 Stale interactive **sessions** are no longer reaped by a bespoke timer:
 `interactive-session-reap` was deleted on 2026-09-18 after 113 consecutive
 hourly runs that each reaped nothing. `systemd-oomd` is the native reaper
-under real memory pressure. sshd, tailscaled, and the intake timers are out
+under real memory pressure. sshd, tailscaled, and the runner services are out
 of scope: they do not live in `session-*.scope`. `claim/issue-*` and
 `claim/adhoc-*` branches are released by the agent that claimed them.
 
@@ -269,9 +269,7 @@ of scope: they do not live in `session-*.scope`. `claim/issue-*` and
    program (fleet-ops#7828).
 
 `.github/workflows/secret-scan.yml` is the gitleaks scan (pinned binary +
-sha256, `--redact`). `.github/workflows/deploy-production.yml` is the
-shared deploy-on-green caller synced to every active repo — it self-skips
-on repos with no deploy target. All actions are pinned to exact commit
+sha256, `--redact`). fleet-ops has no deploy target. All actions are pinned to exact commit
 SHAs; every job has a timeout.
 
 `.github/workflows/reusable-pr-checks.yml` (`workflow_call`) is the batched
@@ -291,35 +289,31 @@ symlinks to it from `~/.config/systemd/user/`, `~/.local/bin/`, or
 
 `fleet-heartbeat.timer`/`.service`, `bin/fleet-heartbeat-tier1` and
 `prompts/heartbeat.md` are gone. Their jobs live in the organs that already
-did them: `pi-intake@<repo>.timer` picks up queued work, PR auto-merge is a
-GitHub workflow, and a failed unit pages through the `SystemUnitFailed` rule
-in `config/fleet_rules.yml`. Its healthchecks.io dead-man is superseded by
-the `10-keystone-hc.conf` drop-ins on `pi-intake@`/`pi-scout@` — stock
-`EnvironmentFile=` + `ExecStopPost=` curl against
-`~/.config/fleet-ops/keystone-hc.env`.
+did them: `.github/workflows/agent-dispatch.yml` queues `agent-ready` work, PR
+auto-merge is a GitHub workflow, and a failed unit pages through the
+`SystemUnitFailed` rule in `config/fleet_rules.yml`. Its healthchecks.io
+dead-man is gone; the keystone URLs in `~/.config/fleet-ops/keystone-hc.env`
+now serve only the root `restic-r2-restore-test.service`.
 
 ## Intake enrolment
 
 `config/intake-repos.json` is the **declared set** of repos that run
-pi-intake/pi-scout. It is the single source of truth for which repos are
-enrolled — adding or removing a repo is a PR against that file, not a
+agent-dispatch and the scout job. It is the single source of truth for which
+repos are enrolled — adding or removing a repo is a PR against that file, not a
 `systemctl enable`. This replaces the old imperative enrolment that was
 silently reverted without a record (fleet-ops#32).
 
 Each enrolled repo needs two preconditions:
 
-1. A git checkout at `/home/nish/workspaces/products/<name>` — intake does
-   `git -C <checkout>/<name> fetch origin` and the worker creates its
-   worktree from it. Packet clones (when a worker clones instead of
-   worktree-add) use `git clone --reference-if-able
+1. A git checkout at `/home/nish/workspaces/products/<name>` — the worker
+   creates its worktree from it. Packet clones (when a worker clones instead
+   of worktree-add) use `git clone --reference-if-able
    /home/nish/workspaces/.mirrors/<name>.git
    https://github.com/Nishfleet/<name>.git <dest>` (fleet-ops#1213).
    Mirrors are read-only fetch targets; never push.
 2. The three labels `agent-ready`, `agent-in-progress`, `agent-blocked`
-   present on the repo — the `ExecCondition` in `pi-intake@.service`
-   silently no-ops without them, so an `agent-ready` issue on a label-less
-   repo looks queued and is actually inert (the gap fleet-ops#25 was filed
-   for).
+   present on the repo — agent-dispatch fires only on the `agent-ready` label,
+   so on a label-less repo an issue looks queued and is inert (fleet-ops#25).
 
 `fleet2` is permanently excluded (standing rule: no second dispatcher,
 ever). `siterep` is excluded (archived). Both are recorded in the file's
@@ -331,7 +325,7 @@ the enrolment mechanism (fleet-ops#32, #25).
 
 ### `depends-on:`, `collision-gate:`, spec judge — DELETED in the glue sweep
 
-The intake tick no longer parses `depends-on:` or `collision-gate:` body
+Nothing parses `depends-on:` or `collision-gate:` body
 lines, and the spec-judge pass (`lib/spec-judge.sh`, `prompts/spec-judge.md`)
 is gone. Ticket bodies may still carry the lines as human context, but no
 machinery reads them.
@@ -346,15 +340,24 @@ stateless thing; the rules are in
 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md). The VNC
 break-glass runbook is [docs/RUNBOOK.md](docs/RUNBOOK.md).
 Keystone healthchecks.io URLs live in `~/.config/fleet-ops/keystone-hc.env`,
-consumed by the `10-keystone-hc.conf` drop-ins on `pi-intake@`/`pi-scout@`;
-an unset URL is a skip, a shared URL is a fail.
+consumed by the root `restic-r2-restore-test.service`; an unset URL is a skip,
+a shared URL is a fail.
 
 ## Worker RAM admission (issue #45)
 
 Admission carries no RAM charge: the concurrency bound is the runner count
-(#8429), and RAM safety is per-unit `MemoryMax` + systemd-oomd, not a governor
-division. Known repos override the per-unit limits via intake-written
-drop-ins: fleet-ops#3930 set `MemoryMax=4G` with **no `MemoryHigh`** for
+(#8429): 32 `agent` runners (`actions.runner.Nishfleet.netcup-agent-1..32`),
+all in `agent.slice` (`systemd/system/agent.slice`, 10G/11G, `MemorySwapMax=1G`),
+each with
+`VITEST_MAX_WORKERS=2` (vitest's default of cores-1 workers per job thrashed
+swap on this 16 GB host on 2026-09-24). RAM safety is per-unit `MemoryMax` + systemd-oomd, not a governor
+division. The slice's `MemorySwapMax` (fleet-ops#8638) is the swap half:
+on the 09-24/25 night the RAM caps alone let 32 runners fill all 8G of
+host swap (1000-2500 pages/s, 12 OOM kills, 14.6% iowait), so runner
+overflow is now killed inside the slice instead of being swapped onto
+the rest of the box. Known repos overrode the per-unit limits via
+intake-written drop-ins (removed with the old dispatcher, fleet-ops#8449):
+fleet-ops#3930 set `MemoryMax=4G` with **no `MemoryHigh`** for
 fleet-ops + 0509 (the throttle band is what makes oomd pressure-kill a
 random sibling, so it was removed; 4G is now the hard stop with a clean
 local OOM at the cap), while the heavy class of #3281 writes 3G/2G for

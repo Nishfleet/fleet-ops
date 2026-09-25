@@ -1,0 +1,13 @@
+# All agent runners together. A single job may peak at ~3G (tests);
+# the slice throttles the group before it can starve the host.
+# MemorySwapMax is the swap half of that bargain (fleet-ops#8638): the two
+# RAM caps above say nothing about swap, so on 2026-09-24/25 32 runners
+# filled all 8G of host swap (1000-2500 pages/s in and out, 14.6% iowait,
+# 12 OOM kills) and the rest of the box paid for it. Capped at 1G, runner
+# overflow is killed inside agent.slice instead of being swapped onto the
+# host. Verify after install: systemctl show agent.slice -p MemorySwapMax
+# must read 1073741824, not infinity.
+[Slice]
+MemoryHigh=10G
+MemoryMax=11G
+MemorySwapMax=1G

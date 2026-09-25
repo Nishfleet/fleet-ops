@@ -1,0 +1,16 @@
+[Unit]
+Description=Restart the fleet LiteLLM proxy when its live config changes (fleet-ops#8539)
+Documentation=https://github.com/Nishfleet/fleet-ops/issues/8539
+# The proxy loads its config only at start, and on 2026-09-24 a cooldown
+# edit sat un-applied for 15+ hours because nothing restarted it. This
+# unit watches the live config and triggers a restart on every save.
+
+[Path]
+PathChanged=%h/.config/fleet-ops/litellm-proxy.yaml
+Unit=fleet-litellm-proxy-config.service
+# Storm cap for editors that save more than once.
+TriggerLimitIntervalSec=60s
+TriggerLimitBurst=3
+
+[Install]
+WantedBy=default.target

@@ -1,0 +1,7 @@
+[Unit]
+Description=Reload prometheus after a changed /etc/prometheus file (fleet-ops#8606)
+Documentation=https://github.com/Nishfleet/fleet-ops/issues/8606
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/sudo -n /usr/bin/systemctl reload prometheus

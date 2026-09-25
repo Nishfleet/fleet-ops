@@ -18,9 +18,9 @@ rail are in `README.md`; design and enforced rules are in
 
 ## Deploy and wiring
 
-`fleet-sync.timer` → `fleet-sync.service` runs `git pull --ff-only` +
-`daemon-reload` every two minutes and fails (`DEPLOY-BLOCKED`) on a dirty or
-diverged clone, so the canonical checkout
+`deploy-box.yml` (push to main) → `fleet-sync.service` runs
+`git pull --ff-only` + `daemon-reload` and fails (`DEPLOY-BLOCKED`) on a dirty
+or diverged clone, so the canonical checkout
 `/home/nish/workspaces/tooling/fleet-ops-deploy-clone` stays clean on `main`.
 Its LINK-GUARD passes fail the unit while any live symlink under
 `~/.config/systemd/user/`, `~/.local/bin/`, `~/.pi/agent/` or the vault is
@@ -59,6 +59,15 @@ same way; `disable_prisma_schema_update: true` stays under `general_settings`
 `DATABASE_URL` is a unit `Environment=` in host-qualified form (the
 socket-less form is rejected). Consumer credentials are per-group virtual keys
 minted via the admin API, never the master key.
+
+Edits to that file are applied automatically. `fleet-litellm-proxy-config.path`
+(`PathChanged=`) triggers `fleet-litellm-proxy-config.service`, which runs
+`systemctl --user try-restart fleet-litellm-proxy.service` — the proxy reads
+its config only at start, so the restart is the apply step, and `try-restart`
+means an edit never starts a proxy that was stopped on purpose. Every save
+restarts the proxy (~38 s), so batch edits into one write. Install it with
+`systemctl --user link` on the .service, then `systemctl --user enable --now`
+on the .path, both from the deploy clone (README "Install").
 
 Backup: `pg_dump -h "$HOME/.local/share/fleet-litellm-postgres/run" -U
 litellm litellm | gzip > .../litellm-<ts>.sql.gz` in the restic backup path.

@@ -23,6 +23,8 @@ jobs:
     if: inputs.ref
     runs-on: [self-hosted, agent]
     timeout-minutes: 60
+    outputs:
+      wall: ${{ steps.wall.outputs.wall }}
     concurrency:
       group: agent-${{ github.repository }}-${{ inputs.ref }}
       cancel-in-progress: false
@@ -57,7 +59,7 @@ jobs:
           owner: ${{ github.repository_owner }}
           skip-token-revoke: "false"
       - name: Gate
-        # The dispatch policy that prompts/intake.md used to carry, now in one
+        # The dispatch policy that the old intake prompt used to carry, now in one
         # step: skip parked or blocked work, size unsized work (Jev first
         # opinion, else needs-split -> opus-vet), cap runs, then claim.
         id: gate
@@ -100,9 +102,39 @@ jobs:
             gh issue comment "$i" -R "$REPO" --body "agent attempt cap: $runs runs since the last opus-vet; parked for the orchestrator"
             skip cap
           fi
+
+          # Engine (Nish, 2026-09-25). Cursor is the senior lane and is paced to
+          # 1 run at once. strong-only issues need a senior model other than
+          # SWE-2, so they go only to Cursor; a full Cursor lane leaves them
+          # agent-ready. Every other issue: Devin SWE-2 Max while fewer than 4
+          # run ($0), else pi while it has a free router slot, else Cursor.
+          # A lane's live count is the distinct worker directories (Devin,
+          # Cursor) or pi session directories on its bwrap command lines, so
+          # it spans every runner and repo on this host.
+          live() { pgrep -af -- "^bwrap .* -- $1 " | grep -oE 'agent-worktrees/issue-[^ ]*|sessions/agent-[^ ]*' | sort -u | wc -l; }
+          # pi has a free slot while its live workers are fewer than the summed
+          # max_parallel_requests of the router's worker-capable seats, and the
+          # router is not walled (fleet-ops#8543: no raw worker-capable row
+          # healthy, same filter as FleetWorkerLaneOutage; an empty or
+          # unreachable /metrics is not a wall).
+          pi_free() {
+            slots=$(python3 -c 'import sys, yaml; print(sum(m["litellm_params"].get("max_parallel_requests") or 0 for m in yaml.safe_load(open(sys.argv[1]))["model_list"] if m.get("model_name") == "worker-capable"))' "$HOME/.config/fleet-ops/litellm-proxy.yaml")
+            [ "$(live pi)" -lt "$slots" ] || return 1
+            ! curl -sL --max-time 10 127.0.0.1:4000/metrics |
+              awk '/^litellm_deployment_state\{/ && /model_id="[^"]*-worker-capable"/ && /litellm_model_name="[^"]*\// { n++; if ($NF + 0 == 0) up++ } END { exit !(n > 0 && up == 0) }'
+          }
+          case $labels in
+            *,strong-only,*) [ "$(live cursor-agent)" -lt 1 ] || skip lanes-full; engine=cursor ;;
+            *)
+              if [ "$(live devin)" -lt 4 ]; then engine=devin
+              elif pi_free; then engine=pi
+              elif [ "$(live cursor-agent)" -lt 1 ]; then engine=cursor
+              else skip lanes-full
+              fi ;;
+          esac
           gh issue edit "$i" -R "$REPO" --remove-label agent-ready --add-label agent-in-progress
           gh issue comment "$i" -R "$REPO" --body "agent run started: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
-          case $labels in *,strong-only,*) echo engine=cursor >> "$GITHUB_OUTPUT" ;; *) echo engine=pi >> "$GITHUB_OUTPUT" ;; esac
+          echo "engine=$engine" >> "$GITHUB_OUTPUT"
           echo go=true >> "$GITHUB_OUTPUT"
       - name: Branch
         if: steps.gate.outputs.go == 'true'
@@ -118,41 +150,77 @@ jobs:
         # leaving the issue claimed with no strike (run 35900449636).
         timeout-minutes: 55
         # Logs are public on public repos. The full transcript stays on the
-        # VPS; only errors (stderr) reach the log. strong-only issues use the
-        # Cursor lane, as cursor-issue@ did.
+        # VPS; only errors (stderr) reach the log. The Gate picks the engine.
         env:
           ENGINE: ${{ steps.gate.outputs.engine }}
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
         run: |
+          exec 2> >(tee "$RUNNER_TEMP/worker.err" >&2)
           id=${REPO#*/}-${REF#claim/issue-}
-          if [ "$ENGINE" = cursor ]; then
+          # The worker runs in its own PID namespace: when it exits (or this
+          # step is cancelled), the kernel kills every process it started,
+          # including ones that setsid/daemonize past the runner's snapshot-based
+          # orphan cleanup (actions/runner#4601). Before this, a headless Chrome
+          # outlived its job by 13h and a worker's gh-checks poller held
+          # node_modules so Clean workspace failed ENOTEMPTY (0509 run 36107401820).
+          # Same cgroup, so agent.slice memory limits still apply.
+          jail="bwrap --dev-bind / / --proc /proc --unshare-pid --die-with-parent --"
+          dir="$HOME/workspaces/agent-worktrees/issue-$id"
+          packet="Fleet issue worker for instance $id. Follow $HOME/workspaces/tooling/fleet-ops-deploy-clone/prompts/worker.md (read AGENTS.md beside it first); every \$1 there means $id."
+          if [ "$ENGINE" = devin ]; then
+            # --chdir puts the worker directory on the bwrap command line,
+            # which is what the Gate's lane count reads.
+            mkdir -p "$dir"
+            echo "$packet" | bwrap --dev-bind / / --proc /proc --unshare-pid --die-with-parent --chdir "$dir" -- \
+              devin -p --prompt-file /dev/stdin --permission-mode dangerous --model swe-2-max >/dev/null
+          elif [ "$ENGINE" = cursor ]; then
             set -a; . "$HOME/.config/fleet-ops/seats/cursor.env"; set +a
-            mkdir -p "$HOME/workspaces/agent-worktrees/issue-$id"
-            cursor-agent -p --output-format text --model grok-4.7-xhigh --force --trust \
-              --workspace "$HOME/workspaces/agent-worktrees/issue-$id" \
-              "Fleet issue worker for instance $id. Follow $HOME/workspaces/tooling/fleet-ops-deploy-clone/prompts/worker.md (read AGENTS.md beside it first); every \$1 there means $id." >/dev/null
+            mkdir -p "$dir"
+            $jail cursor-agent -p --output-format text --model grok-4.7-xhigh --force --trust \
+              --workspace "$dir" "$packet" >/dev/null
           else
-            echo "/worker $id" | pi --print \
+            echo "/worker $id" | $jail pi --print \
               --append-system-prompt "$HOME/workspaces/tooling/fleet-ops-deploy-clone/AGENTS.md" \
               --session-dir "$HOME/.pi/agent/sessions/agent-$id" \
               --exclude-tools subagent --provider litellm --model worker-capable >/dev/null
           fi
       - name: App token for arm
         id: arm-token
-        if: steps.gate.outputs.go == 'true'
+        if: ${{ !cancelled() && steps.gate.outputs.go == 'true' }}
         uses: actions/create-github-app-token@fee1f7d63c2ff003460e3d139729b119787bc349 # v2.2.2
         with:
           app-id: "4728578"
           private-key: ${{ steps.app-key.outputs.pem }}
           owner: ${{ github.repository_owner }}
           skip-token-revoke: "false"
+      - name: Router wall
+        id: wall
+        # A router seat wall is infra, not a bad packet (fleet-ops#8543): no
+        # strike, back to agent-ready. The Gate's 3-run cap bounds the loop.
+        if: failure() && steps.gate.outputs.go == 'true'
+        env:
+          GH_TOKEN: ${{ steps.arm-token.outputs.token }}
+        run: |
+          i=${REF#claim/issue-}
+          grep -qiE 'no deployments available|ratelimiterror|\b429\b' "$RUNNER_TEMP/worker.err" 2>/dev/null || exit 0
+          [ "$(gh api "repos/$REPO/compare/main...$REF" --jq .ahead_by)" = 0 ] || exit 0
+          gh issue comment "$i" -R "$REPO" --body "agent run infra-failed: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+          gh issue edit "$i" -R "$REPO" --add-label agent-ready --remove-label agent-in-progress
+          echo wall=true >> "$GITHUB_OUTPUT"
       - name: Arm auto-merge as the App
         if: steps.gate.outputs.go == 'true'
         env:
           GH_TOKEN: ${{ steps.arm-token.outputs.token }}
         run: |
+          # The merge closes the issue only through a closing keyword, and
+          # workers drop it often enough that merged work stayed claimed
+          # (0509 #4870 #4941 #4958 #5011 #5022 #5027 #5052, 2026-09-24).
           if gh pr view "$REF" -R "$REPO" --json state --jq .state | grep -qx OPEN; then
-            gh pr merge "$REF" -R "$REPO" --auto
+            i=${REF#claim/issue-}
+            body=$(gh pr view "$REF" -R "$REPO" --json body --jq .body)
+            grep -qiE "(close[sd]?|fix(e[sd])?|resolve[sd]?) #$i\b" <<<"$body" ||
+              gh pr edit "$REF" -R "$REPO" --body "$body"$'\n\n'"Closes #$i"
+            gh pr merge "$REF" -R "$REPO" --auto --squash  # a merge queue overrides the method; repos without one need it
           fi
       - name: Deliverable
         if: steps.gate.outputs.go == 'true'
@@ -219,16 +287,22 @@ jobs:
         run: claude -p --model claude-opus-5-5 --dangerously-skip-permissions < "$HOME/workspaces/tooling/fleet-ops-deploy-clone/prompts/gardener.md" > /dev/null
   report:
     needs: work
-    if: failure() || cancelled()
-    runs-on: ubuntu-latest
+    if: (failure() || cancelled()) && needs.work.outputs.wall != 'true'
+    runs-on: [self-hosted, agent]
     permissions:
       issues: write
     steps:
+      # App token, not GITHUB_TOKEN: a GITHUB_TOKEN label fires no workflow, so opus-vet never ran on a park (fleet-ops#8552).
+      - name: App token (key never leaves the VPS)
+        run: |
+          t=$(gh token generate --app-id 4728578 --key "$HOME/.config/fleet-worker/nishfleet-worker.private-key.pem" --installation-id 156789042 --token-only)
+          echo "::add-mask::$t"
+          echo "GH_TOKEN=$t" >> "$GITHUB_ENV"
       - env:
-          GH_TOKEN: ${{ github.token }}
           N: ${{ inputs.ref }}
         # Two strikes, counted from these comments since the newest opus-vet
-        # (a fresh vet resets the count, same as prompts/claim-release.md step 5).
+        # (a fresh vet resets the count, same as the old claim-release prompt).
+        # First strike re-queues via agent-ready (fleet-ops#8552); the second parks.
         run: |
           i=${N#claim/issue-}
           # shellcheck disable=SC2016 # $v is a jq variable
@@ -237,5 +311,5 @@ jobs:
           if [ "$prior" -ge 1 ]; then
             gh issue edit "$i" -R "$GITHUB_REPOSITORY" --add-label needs-orchestrator --remove-label agent-ready,agent-in-progress,agent-failed
           else
-            gh issue edit "$i" -R "$GITHUB_REPOSITORY" --add-label agent-failed --remove-label agent-in-progress
+            gh issue edit "$i" -R "$GITHUB_REPOSITORY" --add-label agent-ready --remove-label agent-in-progress,agent-failed
           fi

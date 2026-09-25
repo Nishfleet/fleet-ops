@@ -3,16 +3,18 @@
 # Call from a consumer:
 #   jobs:
 #     pr-checks:
-#       uses: Nishfleet/fleet-ops/.github/workflows/reusable-pr-checks.yml@main
+#       uses: Nishfleet/fleet-ops/.github/workflows/reusable-pr-checks.yml@<commit sha> # main <date>
 #       with:
 #         node-version: "24"
 #         install-command: npm ci
 #         verify-command: npm test && npm run build
-#       secrets: inherit
 #
+# Pin a commit SHA, never @main, and pass no secrets: this workflow reads none,
+# so `secrets: inherit` would only widen what a caller hands over (Kimi K3
+# review L2, 2026-09-24).
 # Same-repo callers use ./.github/workflows/reusable-pr-checks.yml (this commit).
 #
-# Updates on this file propagate to every consumer that pins a moving ref.
+# Updates on this file reach a consumer when it bumps its pinned SHA.
 # Never copy these steps into a caller; pass inputs instead.
 #
 # Standing CI standard (vault global-standing-rules.md), by construction:
