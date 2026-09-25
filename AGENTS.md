@@ -63,9 +63,11 @@ print it, never copy it into a repo, PR or issue:
   D1, KV, Zone read, GraphQL analytics (proven 2026-09-22: workers list, D1 list,
   KV list, `workersInvocationsAdaptive`). Use it for D1 drills, preview uploads
   and analytics queries (0509#4179 #4180 #4182 #4183 #4184 #4186).
-- `~/.config/cloudflare/email.env` — `CLOUDFLARE_EMAIL_TOKEN`, the only token that
-  reads and writes Email Routing (0509#4181). It has no analytics read.
-- `~/.config/cloudflare/deploy.env` is IP-locked and expires 2026-09-23; do not use it.
+- `~/.config/cloudflare/email.env` — `CLOUDFLARE_EMAIL_TOKEN`, narrowed 2026-09-25: Email
+  Routing (addresses, rules, suppressions), Email Sending, R2 storage and Turnstile only, and it
+  works only from this VPS's IPs. It cannot create tokens, touch DNS or Workers, or read analytics.
+  The old account-admin token (`c617a6f2…`) is disabled. No token on the VPS can mint tokens now,
+  so a new or wider token is Nish's call in the dashboard.
 
 ## Per-run invariants for the Pi fleet issue worker
 
