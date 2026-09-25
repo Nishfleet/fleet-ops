@@ -35,10 +35,9 @@ Pi extension forks, the live-state JSON files under `~/.local/state/` and
 
 `~/.pi/agent/agents/` holds only the stock agents from `template/agents/`;
 per-issue copies (`reviewer-issue-<N>.md`, removed under fleet-ops#8659) are
-loaded by nothing; the fleet-ops#8672 step 2 loader check covered
-`~/.pi/agent/extensions`, `~/.pi/agent/settings.json` and
-`~/.config/systemd/user`, plus
-`/home/nish/workspaces/tooling/fleet-ops-deploy-clone`; it returned no loader.
+loaded by nothing — the fleet-ops#8672 sweep of `~/.pi/agent/extensions`,
+`~/.pi/agent/settings.json`, `~/.config/systemd/user` and the deploy clone
+found no loader.
 
 ## LiteLLM stack (rebuild reference)
 
