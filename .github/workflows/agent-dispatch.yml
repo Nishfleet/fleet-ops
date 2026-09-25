@@ -50,7 +50,7 @@ jobs:
     if: >-
       github.event_name == 'issues' && github.event.label.name == 'agent-ready' &&
       ((inputs.agent_mode || vars.AGENT_MODE) == 'live' || contains(github.event.issue.labels.*.name, 'shadow-actions'))
-    uses: Nishfleet/fleet-ops/.github/workflows/agent.yml@5857ebb501a613c7b81f92805165b27fca157f86 # main 2026-09-24; bump when agent.yml changes
+    uses: Nishfleet/fleet-ops/.github/workflows/agent.yml@d532bef813a6df2ac2ff26618c0e735b9d6e2fc4 # main 2026-09-25; bump when agent.yml changes
     with:
       ref: claim/issue-${{ github.event.issue.number }}
   rework:
@@ -60,7 +60,7 @@ jobs:
       github.event.workflow_run.event == 'pull_request' &&
       startsWith(github.event.workflow_run.head_branch, 'claim/issue-') &&
       github.event.workflow_run.head_repository.full_name == github.repository
-    uses: Nishfleet/fleet-ops/.github/workflows/agent.yml@5857ebb501a613c7b81f92805165b27fca157f86 # main 2026-09-24; bump when agent.yml changes
+    uses: Nishfleet/fleet-ops/.github/workflows/agent.yml@d532bef813a6df2ac2ff26618c0e735b9d6e2fc4 # main 2026-09-25; bump when agent.yml changes
     with:
       ref: ${{ github.event.workflow_run.head_branch }}
   # The merge queue ejected a claim PR (failed checks or a conflict), or its
@@ -71,7 +71,7 @@ jobs:
       github.event.pull_request.state == 'open' &&
       startsWith(github.event.pull_request.head.ref, 'claim/issue-') &&
       github.event.pull_request.head.repo.full_name == github.repository
-    uses: Nishfleet/fleet-ops/.github/workflows/agent.yml@5857ebb501a613c7b81f92805165b27fca157f86 # main 2026-09-24; bump when agent.yml changes
+    uses: Nishfleet/fleet-ops/.github/workflows/agent.yml@d532bef813a6df2ac2ff26618c0e735b9d6e2fc4 # main 2026-09-25; bump when agent.yml changes
     with:
       ref: ${{ github.event.pull_request.head.ref }}
   # A closed blocker frees the issues it was blocking; a manual run sweeps
@@ -164,7 +164,7 @@ jobs:
       max-parallel: ${{ fromJSON(vars.AGENT_MAX_PARALLEL || '6') }}
       matrix:
         ref: ${{ fromJSON(needs.list.outputs.refs) }}
-    uses: Nishfleet/fleet-ops/.github/workflows/agent.yml@5857ebb501a613c7b81f92805165b27fca157f86 # main 2026-09-24; bump when agent.yml changes
+    uses: Nishfleet/fleet-ops/.github/workflows/agent.yml@d532bef813a6df2ac2ff26618c0e735b9d6e2fc4 # main 2026-09-25; bump when agent.yml changes
     with:
       ref: ${{ matrix.ref }}
   # A claim PR outlives its issue. Nothing closed the PR when the issue closed
