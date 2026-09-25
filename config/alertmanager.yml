@@ -17,8 +17,8 @@
 #
 # Re-notification: group_interval 15m / repeat_interval 6h on every branch
 # except the phone (severity=page keeps group_interval 1m) and the Watchdog
-# dead-man (fleet-ops#8667), which overrides both to ping healthchecks.io
-# every 5m.
+# dead-man (fleet-ops#8667). Its 5m repeat is checked on 1m group_interval
+# ticks, so pings land about every six minutes.
 #
 # severity=nish (2026-09-18) is the Nish-reserved paging path: any alert that
 # fires with severity="nish" pages immediately at group_interval 1m.
@@ -42,7 +42,7 @@
 # (the 2026-08-28 leak this file replaced). copy it to /etc/prometheus/alertmanager.yml with
 # `sudo -n install -D -m 0644 -o root -g root` and reload alertmanager (README).
 # The `deadman` receiver reads its webhook URL from /etc/prometheus/deadman_url,
-# a root-owned file with the same owner and mode as
+# provisioned with the same prometheus:prometheus owner and 0600 mode as
 # /etc/prometheus/telegram_bot_token. It is provisioned once and never committed.
 global:
   resolve_timeout: 5m
@@ -92,10 +92,6 @@ route:
       continue: true
 
 receivers:
-  # Always-firing Watchdog -> the healthchecks.io VPS check. The URL is
-  # secret-class, so it is read from a root-owned file and never committed
-  # (fleet-ops#8667). repeat_interval is bounded by group_interval, so the
-  # route pins group_interval: 1m or pings space out to the inherited 15m.
   - name: deadman
     webhook_configs:
       - url_file: /etc/prometheus/deadman_url
