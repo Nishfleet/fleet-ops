@@ -18,7 +18,6 @@ Deleted, with what replaced each (verified live, not assumed):
 | `seat-health.ts` | 1,472 | LiteLLM's own `/health/readiness` + `litellm_deployment_state`, already scraped by Prometheus |
 | `stop-judge.ts` | 404 | nothing — a stop policy the fleet no longer wants |
 | `jev-decide.ts` | 77 | nothing here — Jev is being moved to a LiteLLM pass-through endpoint |
-| `packet-verdict.ts` | 89 | `pi-issue@.service` `ExecStopPost`: requires `claim/issue-<n>` on origin, else `Result=failed` (the rail unit's cut, landed d4a42ced6) |
 
 `bash-spawn-hook.ts` was NOT symlinked to the stock example. The stock file is
 a demo that re-registers the built-in `bash` tool and prepends
