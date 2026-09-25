@@ -137,14 +137,22 @@ jobs:
         run: |
           exec 2> >(tee "$RUNNER_TEMP/worker.err" >&2)
           id=${REPO#*/}-${REF#claim/issue-}
+          # The worker runs in its own PID namespace: when it exits (or this
+          # step is cancelled), the kernel kills every process it started,
+          # including ones that setsid/daemonize past the runner's snapshot-based
+          # orphan cleanup (actions/runner#4601). Before this, a headless Chrome
+          # outlived its job by 13h and a worker's gh-checks poller held
+          # node_modules so Clean workspace failed ENOTEMPTY (0509 run 36107401820).
+          # Same cgroup, so agent.slice memory limits still apply.
+          jail="bwrap --dev-bind / / --proc /proc --unshare-pid --die-with-parent --"
           if [ "$ENGINE" = cursor ]; then
             set -a; . "$HOME/.config/fleet-ops/seats/cursor.env"; set +a
             mkdir -p "$HOME/workspaces/agent-worktrees/issue-$id"
-            cursor-agent -p --output-format text --model grok-4.7-xhigh --force --trust \
+            $jail cursor-agent -p --output-format text --model grok-4.7-xhigh --force --trust \
               --workspace "$HOME/workspaces/agent-worktrees/issue-$id" \
               "Fleet issue worker for instance $id. Follow $HOME/workspaces/tooling/fleet-ops-deploy-clone/prompts/worker.md (read AGENTS.md beside it first); every \$1 there means $id." >/dev/null
           else
-            echo "/worker $id" | pi --print \
+            echo "/worker $id" | $jail pi --print \
               --append-system-prompt "$HOME/workspaces/tooling/fleet-ops-deploy-clone/AGENTS.md" \
               --session-dir "$HOME/.pi/agent/sessions/agent-$id" \
               --exclude-tools subagent --provider litellm --model worker-capable >/dev/null
@@ -213,10 +221,6 @@ jobs:
           exit 1
       - name: Clean workspace
         if: always()
-        # A dev server still holding node_modules makes rm fail ENOTEMPTY after the
-        # PR is already open; that must not fail the job and re-dispatch the issue
-        # (0509#5025, run 36107401820). Leftovers age out via user-tmpfiles.d/agent-worktrees.conf.
-        continue-on-error: true
         run: rm -rf "$HOME/workspaces/agent-worktrees/issue-${REPO#*/}-${REF#claim/issue-}"
   scout:
     if: ${{ !inputs.ref && github.event.schedule == '0 */4 * * *' }}
