@@ -126,7 +126,14 @@ jobs:
           case $labels in
             *,strong-only,*) [ "$(live cursor-agent)" -lt 1 ] || skip lanes-full; engine=cursor ;;
             *)
-              if [ "$(live devin)" -lt 4 ]; then engine=devin
+              # Seat trial (fleet-ops#8659): even 0509 issues #5461-#5540 build on the Cursor lane, odd on Pi,
+              # so first-grade A+ share is compared on one issue mix. Ends by itself past #5540.
+              if [ "$REPO" = Nishfleet/0509 ] && [ "$i" -ge 5461 ] && [ "$i" -le 5540 ]; then
+                if [ $((i % 2)) -eq 0 ]; then [ "$(live cursor-agent)" -lt 1 ] || skip lanes-full; engine=cursor
+                elif pi_free; then engine=pi
+                else skip lanes-full
+                fi
+              elif [ "$(live devin)" -lt 4 ]; then engine=devin
               elif pi_free; then engine=pi
               elif [ "$(live cursor-agent)" -lt 1 ]; then engine=cursor
               else skip lanes-full
