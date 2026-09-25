@@ -10,12 +10,14 @@
 #   severity=page      -> telegram (the phone), stop.   [e.g. RepairDispatchDown]
 #   severity=critical  -> github-issues, continue.     [no phone]
 #   severity=warning   -> github-issues, continue.     [no phone]
-#   severity=none      -> default receiver github-issues (or 'null' for
-#                         Watchdog, which is matched first). [no phone]
+#   severity=none      -> default receiver github-issues (or the `deadman`
+#                         receiver for Watchdog, which is matched first:
+#                         healthchecks.io ping, fleet-ops#8667). [no phone]
 #   default (no match) -> github-issues.
 #
 # Re-notification: group_interval 15m / repeat_interval 6h on every branch
-# except the phone (severity=page keeps group_interval 1m).
+# except the phone (severity=page keeps group_interval 1m) and the Watchdog
+# deadman branch (group_interval 1m / repeat_interval 5m).
 #
 # severity=nish (2026-09-18) is the Nish-reserved paging path: any alert that
 # fires with severity="nish" pages immediately at group_interval 1m.
@@ -61,7 +63,10 @@ route:
   routes:
     - matchers:
         - alertname="Watchdog"
-      receiver: 'null'
+      receiver: deadman
+      group_wait: 0s
+      group_interval: 1m
+      repeat_interval: 5m
       continue: false
     - matchers:
         - severity="critical"
@@ -83,7 +88,10 @@ route:
       continue: true
 
 receivers:
-  - name: 'null'
+  - name: deadman
+    webhook_configs:
+      - url_file: /etc/prometheus/deadman_url
+        send_resolved: false
   - name: telegram
     telegram_configs:
       - bot_token_file: /etc/prometheus/telegram_bot_token
