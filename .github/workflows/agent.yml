@@ -80,7 +80,7 @@ jobs:
           case $labels in *,cheap-ok,*|*,strong-only,*) ;; *)
             key=$(grep -m1 '^LITELLM_JEV_KEY=' "$HOME/.config/fleet-ops/seats/typesafe-jev.env" | cut -d= -f2-)
             echo "::add-mask::$key"
-            p=$(jq -n --argjson s "$issue" '{state: {issue: {ref: $s.html_url, title: $s.title, body: $s.body}}, questions: {cheap_ok: {type: "boolean", instructions: "Is this ONE small change (roughly 1-4 files, one behaviour, done in one sitting) whose steps and acceptance are already spelled out, so the builder only has to follow them? Answer no if it bundles several deliverables, asks the builder to discover or fix whatever turns up, depends on production after deploy, or leaves a design choice open."}}}' |
+            p=$(jq -n --argjson s "$issue" '{custom_llm_provider: "vercel_ai_gateway", state: {issue: {ref: $s.html_url, title: $s.title, body: $s.body}}, questions: {cheap_ok: {type: "boolean", instructions: "Is this ONE small change (roughly 1-4 files, one behaviour, done in one sitting) whose steps and acceptance are already spelled out, so the builder only has to follow them? Answer no if it bundles several deliverables, asks the builder to discover or fix whatever turns up, depends on production after deploy, or leaves a design choice open."}}}' |
               curl -s --max-time 90 127.0.0.1:4000/jev -H "Authorization: Bearer $key" -H 'content-type: application/json' -d @- |
               jq -r '.answers.cheap_ok.probability // "unavailable"' 2>/dev/null || echo unavailable)
             if awk -v p="$p" 'BEGIN { exit !(p ~ /^[0-9.]+$/ && p + 0 >= 0.9) }'; then

@@ -461,6 +461,9 @@ litellm_settings:
   require_auth_for_metrics_endpoint: false
 general_settings:
   pass_through_endpoints:
+    # Callers must send "custom_llm_provider" in the request body — the
+    # budget_limiter success callback raises on pass-through calls without
+    # it, and this config model cannot supply it (fleet-ops#8713).
     - path: "/jev"
       target: "https://ai-gateway.vercel.sh/v4/ai/evaluation-model"
       cost_per_request: 0.000015

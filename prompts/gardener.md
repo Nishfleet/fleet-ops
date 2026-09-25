@@ -29,7 +29,10 @@ so name the line, and never print the key:
 
 `curl -s --max-time 40 http://127.0.0.1:4000/jev -H "Authorization: Bearer $(awk -F= '$1=="LITELLM_JEV_KEY"{print $2}' ~/.config/fleet-ops/seats/typesafe-jev.env)" -H "content-type: application/json" -d @<body-file>`
 
-The body has `state` and `questions`. `state` carries the capture's path
+The body has `custom_llm_provider` (always `vercel_ai_gateway` — top-level on
+every /jev body or the proxy's budget limiter raises `custom_llm_provider is
+required` on pass-through successes, fleet-ops#8713), `state` and
+`questions`. `state` carries the capture's path
 relative to the vault, its text capped at 5200 characters, and one sentence
 naming the vault's top level: `00 Inbox`, `01 Daily`, `02 Projects`
 (0509, babystoryapp, drishti, hermes, hoteldealsapp, promptly, siterep,
