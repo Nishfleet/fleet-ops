@@ -8,8 +8,8 @@
 # opus-size (Nish 2026-09-23: "smaller packets that don't require as much judgement
 # ... more PRs but hopefully much less failures"): intake labels `needs-split` on any
 # issue Jev does not score >= 0.9 as one small spelled-out change. Opus marks it
-# `cheap-ok`, cuts it into cheap-ok children, or marks it `strong-only` (Devin, Cursor,
-# SuperGrok lanes only). Cheap router seats then only ever get small packets.
+# `cheap-ok`, cuts it into cheap-ok children, or marks it `strong-only` (the paced
+# Cursor lane only). Cheap router seats then only ever get small packets.
 # fleet-ops copy (09-24): the shared agent.yml Gate labels needs-split here too, and
 # without this job 17 fleet-ops issues sat parked with no sizer (#8449 among them).
 # Same as Nishfleet/0509, minus the close-as-control-plane rule: here that is the work.
