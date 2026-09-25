@@ -1,0 +1,101 @@
+# no-glue, reusable (fleet-ops#8756): the mechanical half of "no scripts,
+# hooks, wrappers, helpers" (Nish 2026-09-19, 2026-09-21, 2026-09-26), moved
+# out of ci.yml so every Nishfleet repo calls the same gate. The job-level
+# check is named by the CALLER, not by this file — callers name the job
+# `no-glue` so the ruleset context stays `no-glue` everywhere.
+#
+# File gate, two lists:
+#   * banned everywhere — script/helper/hook dirs and shell-script
+#     extensions (sh, bash, zsh, ps1). No input can reopen these.
+#   * banned outside extra-allowed — *.py and *.mjs, the fleet's glue
+#     extensions. A product repo passes its own feature trees
+#     ("src/** tests/**"); a repo with no .py/.mjs product code (fleet-ops,
+#     0509) passes none and new ones stay banned.
+# Files that already exist are never flagged: the diff filter is A(dded)
+# only, so an inherited scripts/x.sh is grandfathered but its growth is
+# caught by the organs check below in the repo that owns organs.
+# Extension pathspecs are the bare '*.sh' form, not '**/*.sh': a '**/'
+# pathspec needs at least one directory, so the old form silently missed
+# root-level files like ./x.sh. Verified 2026-09-26.
+#
+# Every step after the file gate polices a tree that exists only in
+# fleet-ops (systemd/, prompts/, template/extensions/, .fleet/, the deleted
+# bin//lib/tests organs, the *.ts ban of a repo that is pure config). Each
+# carries `if: github.repository == 'Nishfleet/fleet-ops'`; product-repo
+# callers skip them because they legitimately grow tests/ and have no
+# systemd/ or prompts/.
+name: no-glue
+
+on:
+  workflow_call:
+    inputs:
+      extra-allowed:
+        description: >-
+          Space-separated repo-rooted pathspec globs for the calling repo's
+          own feature code, e.g. "src/** tests/**". New *.py and *.mjs files
+          under them pass; script dirs and shell-script extensions stay
+          banned everywhere.
+        required: false
+        type: string
+        default: ''
+
+jobs:
+  gate:
+    name: gate
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+      - name: No new script, helper, hook or library files
+        # BASE is the PR's target; on merge_group/push it resolves to main and
+        # origin/main...HEAD diffs exactly the arriving changes (empty on a
+        # main push, so a landed commit can't trip itself).
+        env:
+          EXTRA_ALLOWED: ${{ inputs.extra-allowed }}
+          BASE: ${{ github.event.pull_request.base.ref || 'main' }}
+        run: |
+          NEW=$(git diff --diff-filter=A --name-only "origin/$BASE...HEAD" -- \
+            'bin/**' 'lib/**' 'scripts/**' 'libexec/**' 'ops/**' 'tools/**' \
+            'hooks/**' '.husky/**' '.githooks/**' '.github/scripts/**' \
+            '*.sh' '*.bash' '*.zsh' '*.ps1')
+          test -z "$NEW" || { echo "new script/helper files:"; echo "$NEW"; exit 1; }
+          read -ra allowed <<< "$EXTRA_ALLOWED"
+          excl=()
+          for g in "${allowed[@]}"; do excl+=(":(exclude)$g"); done
+          NEW=$(git diff --diff-filter=A --name-only "origin/$BASE...HEAD" -- \
+            '*.py' '*.mjs' "${excl[@]}")
+          test -z "$NEW" || { echo "new program files outside extra-allowed:"; echo "$NEW"; exit 1; }
+
+      # Everything below is fleet-ops-only: the trees these steps police do
+      # not exist in the product repos.
+      - name: No new code files or tests (fleet-ops has no product trees)
+        if: github.repository == 'Nishfleet/fleet-ops'
+        run: test -z "$(git diff --diff-filter=A --name-only origin/main...HEAD -- 'tests/**' 'template/extensions/**' '.fleet/**' '*.ts')"
+      - name: No added lines in organs slated for deletion (glue is deleted, never tuned)
+        # Nish 2026-09-22 ("no glue anywhere, wipe all glue"): the organs
+        # slated for deletion also may not GROW. Overnight 2026-09-21/22
+        # seven worker PRs added 359 KB to bin/, lib/, libexec/ and tests/
+        # while the check only watched for new files. A diff that only
+        # deletes lines in those trees still passes.
+        if: github.repository == 'Nishfleet/fleet-ops'
+        run: test -z "$(git diff --numstat origin/main...HEAD -- 'bin/**' 'lib/**' 'libexec/**' 'tests/**' 'template/extensions/**' '.fleet/**' | awk '$1 > 0')"
+      - name: No new inline programs in unit Exec lines
+        if: github.repository == 'Nishfleet/fleet-ops'
+        run: "! git diff origin/main...HEAD -- systemd/ | grep -E '^\\+Exec[A-Za-z]*=.{400,}'"
+      - name: agent.yml is called at @main only (agent runner group allows only refs/heads/main)
+        if: github.repository == 'Nishfleet/fleet-ops'
+        run: "! grep -rnE 'workflows/agent\\.yml@' .github/workflows/ | grep -vE 'agent\\.yml@main( |$)'"
+      - name: No new sh -c / bash -c lines in units or the am-executor config (fleet-ops#8606)
+        if: github.repository == 'Nishfleet/fleet-ops'
+        run: "! git diff origin/main...HEAD -- systemd/ config/prometheus-am-executor.yml | grep -E '^\\+[^#]*sh -c'"
+      - name: No programs embedded in prompts (interpreter heredocs, code fences, run-this-file lines)
+        if: github.repository == 'Nishfleet/fleet-ops'
+        run: "! git diff origin/main...HEAD -- prompts/ | grep -E '^\\+.*((python3?|node|bun|deno|perl|ruby)[[:space:]]+-[[:space:]]*(<<|\"|$)|<<-?[[:space:]]*'\\''?[A-Z][A-Z_]*'\\''?[[:space:]]*$|^\\+```(python|py|js|javascript|ts|typescript|node)|(python3?|node)[[:space:]]+\\S+\\.(py|js|mjs|ts))'"
+      - name: The deleted trees stay deleted
+        if: github.repository == 'Nishfleet/fleet-ops'
+        run: test -z "$(git ls-tree -r --name-only HEAD -- bin lib libexec tests scripts hooks ops .fleet template/extensions/subagent)"
+      - name: No unescaped ${...} inside sh -c programs on unit Exec lines (systemd expands it to empty before sh runs; #8204 stopped every worker start)
+        if: github.repository == 'Nishfleet/fleet-ops'
+        run: "! git diff origin/main...HEAD -- systemd/ | grep -E '^\\+Exec[A-Za-z]*=.*-c .*[^$]\\$\\{'"
