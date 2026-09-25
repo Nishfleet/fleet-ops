@@ -150,7 +150,7 @@ jobs:
             }
           }
           EOF
-          cursor-agent -p --output-format text --model kimi-k3-max --force --trust "$GRADE_PROMPT"
+          cursor-agent -p --output-format text --model kimi-k3-max --trust "$GRADE_PROMPT"
       - name: Only A+ passes (fails closed when there is no grade)
         if: github.event_name == 'pull_request'
         env:
