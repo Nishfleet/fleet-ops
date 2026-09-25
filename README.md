@@ -135,8 +135,8 @@ one link the wrong way — on 2026-09-18 a session linked the
 `standing-rules-render` units and the vault canonical rules file into a
 churning checkout, and they dangled when the files vanished, taking the
 standing-rules render down (fleet-ops#7743). The guard for that is in
-`fleet-sync.service`: the LINK-GUARD step fails the unit — visibly, every
-two minutes — while any symlink under `~/.config/systemd/user`,
+`fleet-sync.service`: the LINK-GUARD step fails the unit — on every deploy
+push to main and at boot — while any symlink under `~/.config/systemd/user`,
 `~/.local/bin`, `~/.pi/agent` or `~/workspaces/tooling/nish-vault` is broken
 or resolves into a throwaway root (`*worktrees/*`, `agent-state`, `tmp`).
 Live links belong to the canonical checkout and the stable install dirs
