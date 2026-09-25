@@ -54,9 +54,11 @@ patch after every install or upgrade:** `patch -d
 — a plain `pip install` reverts it silently. On a version bump, first check
 whether upstream fixed the line; if so drop the patch and this step.
 
-The live config `~/.config/fleet-ops/litellm-proxy.yaml` is operator-owned and
-never seeded from the repo file (the repo file is a shape reference with
-`*.example` baseUrls). Keys resolve as `os.environ/<NAME>` from the seat env
+The live config `~/.config/fleet-ops/litellm-proxy.yaml` is a copy of
+`config/litellm-proxy.yaml`: `fleet-sync.service` installs it with `install -C`,
+which overwrites a hand edit, and `fleet-litellm-proxy-config.path` restarts the
+proxy only when the bytes change. Edit the repo file and nothing else; CI checks
+it against `config/litellm-proxy.schema.json` (fleet-ops#8724). Keys resolve as `os.environ/<NAME>` from the seat env
 files the unit globs (`~/.config/fleet-ops/seats/*.env`), the master key the
 same way; `disable_prisma_schema_update: true` stays under `general_settings`
 (startup `prisma migrate deploy` stalls every restart without it), and
