@@ -1,6 +1,6 @@
-# Fleet LiteLLM proxy, containerized (fleet-ops#8435). Additive twin of
-# systemd/fleet-litellm-proxy.service + its drop-ins; the live unit stays
-# until Nish runs the cutover.
+# Fleet LiteLLM proxy, containerized (fleet-ops#8435, cutover #8494).
+# The image is pinned to the version the venv ran (1.98.0), so the Prisma
+# schema and config semantics do not move with the cutover. Bump the tag in its own PR.
 
 [Unit]
 Description=Fleet LiteLLM proxy (Quadlet, fleet-ops#8435)
@@ -10,26 +10,32 @@ StartLimitIntervalSec=60s
 StartLimitBurst=5
 
 [Container]
-Image=ghcr.io/berriai/litellm:main-stable
+Image=ghcr.io/berriai/litellm:v1.98.0
 Network=host
-Volume=%h/.config/fleet-ops/litellm-proxy.yaml:/app/config.yaml:ro,Z
+Volume=%h/.config/fleet-ops/litellm-proxy.yaml:/app/config.yaml:ro
 Environment=DATABASE_URL=postgresql://litellm@localhost:5432/litellm
-# Quadlet's own EnvironmentFile= cannot glob, so the unit's [Service]
-# EnvironmentFile= lines feed the host env and this flag passes it in.
+# INFO, not DEBUG: DEBUG dumps full prompts into the journal (fleet-ops#4449).
+Environment=LITELLM_LOG=INFO
+# Quadlet's EnvironmentFile= cannot glob, so the [Service] EnvironmentFile=
+# lines below load the seat keys and this flag passes them into the container.
 EnvironmentHost=true
+# --env-host would also pass the host PATH and HOME, hiding the image's
+# /app/.venv/bin; --env outranks --env-host, so pin both back to the image values.
+Environment=PATH=/app/.venv/bin:/usr/local/sbin:/usr/local/bin:/usr/bin:/usr/sbin:/sbin:/bin
+Environment=HOME=/root
 Exec=--config /app/config.yaml --port 4000 --host 127.0.0.1
 
 [Service]
-# Same four operator-owned env files as systemd/fleet-litellm-proxy.service.
 EnvironmentFile=-%h/.config/fleet-ops/seats/*.env
 EnvironmentFile=-%h/.config/xkiro/.env
 EnvironmentFile=-%h/.config/straitly/straitly.env
-EnvironmentFile=/home/nish/.config/fleet-ops/litellm-master-key.env
+EnvironmentFile=%h/.config/fleet-ops/litellm-master-key.env
 Slice=app-litellm.slice
-MemoryMax=2G
+ManagedOOMPreference=avoid
 Restart=on-failure
 RestartSec=2s
-TimeoutStopSec=15
+# Let in-flight requests drain instead of being SIGKILLed at 15s (fleet-ops#4449).
+TimeoutStopSec=120
 
 [Install]
 WantedBy=default.target

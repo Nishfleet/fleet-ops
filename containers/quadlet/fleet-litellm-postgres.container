@@ -1,6 +1,7 @@
-# Fleet LiteLLM Postgres, containerized (fleet-ops#8435). Additive twin of
-# systemd/fleet-litellm-postgres.service: postgres:16 matches the live
-# /usr/lib/postgresql/16 cluster, so the existing data dir is reused as-is.
+# Fleet LiteLLM Postgres, containerized (fleet-ops#8435, cutover #8494).
+# postgres:16 matches the cluster's major version, so the existing data dir
+# is reused as-is. The data dir is mounted at its own host path because
+# postgresql.conf pins unix_socket_directories to <pgdata>/run by absolute path.
 
 [Unit]
 Description=Fleet LiteLLM Postgres (Quadlet, fleet-ops#8435)
@@ -8,15 +9,16 @@ Description=Fleet LiteLLM Postgres (Quadlet, fleet-ops#8435)
 [Container]
 Image=docker.io/library/postgres:16
 Network=host
-# Run as the postgres uid/gid 999 from the image instead of mapping to
-# the user id, so the bind-mounted data dir keeps its 999 ownership.
+# The host user maps to the image's postgres uid/gid 999, so the nish-owned
+# data dir is owned by postgres inside the container.
 UserNS=keep-id:uid=999,gid=999
-Volume=%h/.local/share/fleet-litellm-postgres:/var/lib/postgresql/data:Z
-Environment=PGDATA=/var/lib/postgresql/data
+Volume=%h/.local/share/fleet-litellm-postgres:%h/.local/share/fleet-litellm-postgres
+Environment=PGDATA=%h/.local/share/fleet-litellm-postgres
 
 [Service]
 Slice=app-litellm-postgres.slice
-MemoryMax=1G
+ManagedOOMPreference=avoid
+MemoryMin=256M
 Restart=on-failure
 RestartSec=3s
 TimeoutStopSec=30
