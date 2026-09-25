@@ -298,7 +298,19 @@ jobs:
       - name: Gardener
         # Same command as fleet-gardener.service: the box's own claude login
         # and gh login, no App token. Transcript stays off the public log.
+        # vars.GRADER names who stands in for Claude: while Claude's weekly
+        # limit is spent, the stand-in runs the Kimi step below instead.
+        if: vars.GRADER != 'kimi'
         run: claude -p --model claude-opus-5-5 --dangerously-skip-permissions < "$HOME/workspaces/tooling/fleet-ops-deploy-clone/prompts/gardener.md" > /dev/null
+      - name: Gardener (Kimi K3 Max stand-in)
+        # vars.GRADER=kimi while Claude's limit is spent (Nish, 2026-09-26):
+        # the same gardener.md prompt on cursor-agent, seat cursor-2 = live.com.
+        # The env file carries the key; nothing here prints it.
+        if: vars.GRADER == 'kimi'
+        run: |
+          set -a; . "$HOME/.config/fleet-ops/seats/cursor-2.env"; set +a
+          cursor-agent -p --output-format text --model kimi-k3-max --force --trust \
+            "$(cat "$HOME/workspaces/tooling/fleet-ops-deploy-clone/prompts/gardener.md")" > /dev/null
   report:
     needs: work
     if: (failure() || cancelled()) && needs.work.outputs.wall != 'true'
