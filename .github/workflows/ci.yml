@@ -173,10 +173,14 @@ jobs:
         # glob reaches systemd-analyze as a literal filename -> rc 1. With
         # nullglob an empty set expands to nothing and a future .path unit is
         # verified again by this same line.
+        # systemd/system/*.slice too (fleet-ops#8638): the root glob never
+        # matched systemd/system/, so agent.slice and claude.slice shipped
+        # unverified. Slices carry no Exec line, so they need none of the
+        # binary stubs above.
         if: always()
         run: |
           shopt -s nullglob
-          systemd-analyze verify --man=no systemd/*.service systemd/*.timer systemd/*.path systemd/*.slice
+          systemd-analyze verify --man=no systemd/*.service systemd/*.timer systemd/*.path systemd/*.slice systemd/system/*.slice
       - name: No shell ${...} or bare %s/%u/%h inside systemd Exec lines (fleet-ops#8382)
         # systemd expands ${...} and % specifiers itself, before any interpreter
         # runs, so the shell never sees them. Refused on Exec*= lines: `${` + a
