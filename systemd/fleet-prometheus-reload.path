@@ -1,0 +1,13 @@
+[Unit]
+Description=Reload prometheus when fleet-sync installs a changed /etc/prometheus file (fleet-ops#8606)
+Documentation=https://github.com/Nishfleet/fleet-ops/issues/8606
+
+[Path]
+PathChanged=/etc/prometheus/fleet_rules.yml
+PathChanged=/etc/prometheus/prometheus.yml
+Unit=fleet-prometheus-reload.service
+TriggerLimitIntervalSec=60s
+TriggerLimitBurst=3
+
+[Install]
+WantedBy=default.target
