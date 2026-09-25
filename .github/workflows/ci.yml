@@ -244,16 +244,18 @@ jobs:
       - name: No unescaped ${...} inside sh -c programs on unit Exec lines (systemd expands it to empty before sh runs; #8204 stopped every worker start)
         run: "! git diff origin/main...HEAD -- systemd/ | grep -E '^\\+Exec[A-Za-z]*=.*-c .*[^$]\\$\\{'"
 
-  # Opus 5 grades every PR (Nish 2026-09-22: "have opus 5 grade glm and ds4.1
-  # flash"). Stock anthropics/claude-code-action on the Claude subscription
-  # token; no API spend. Any grade below A+ adds the blocked-by-judge label, which the
-  # worker's arm step already refuses (fleet-ops#4557); A+ removes it.
-  # Required check: the label alone lost the race on 2026-09-21/22 (15 PRs
-  # graded D merged because auto-merge was armed before the grade landed),
-  # so the job itself fails below A+ and reports success on merge_group.
-  # Nish 2026-09-22: "you can't grade your own work. you grade opus." Opus
-  # grades only PRs opened by the worker app (GLM / DeepSeek packets). PRs by
-  # the Opus deputy or by Fable are reviewed by Fable, never by this job.
+  # Grader engine follows vars.GRADER (claude or kimi). Nish 2026-09-22: "have
+  # opus 5 grade glm and ds4.1 flash"; 2026-09-25: Kimi K3 Max stand-in while
+  # Claude is at weekly cap. claude: stock anthropics/claude-code-action on the
+  # subscription token. kimi: stock Cursor CLI + org CURSOR_API_KEY. Any grade
+  # below A+ adds the blocked-by-judge label, which the worker's arm step already
+  # refuses (fleet-ops#4557); A+ removes it. Required check: the label alone lost
+  # the race on 2026-09-21/22 (15 PRs graded D merged because auto-merge was armed
+  # before the grade landed), so the job itself fails below A+ and reports success
+  # on merge_group. Nish 2026-09-22: "you can't grade your own work. you grade
+  # opus." The grader grades only PRs opened by the worker app (GLM / DeepSeek
+  # packets). PRs by the Opus deputy or by Fable are reviewed by Fable, never by
+  # this job.
   opus-review:
     name: opus-review
     if: github.event_name == 'merge_group' || (github.event_name == 'pull_request' && github.event.pull_request.user.login == 'nishfleet-worker[bot]')
@@ -264,13 +266,19 @@ jobs:
       pull-requests: write
       issues: write
       id-token: write
+    env:
+      GRADE_PROMPT: |
+        REPO: ${{ github.repository }}
+        PR NUMBER: ${{ github.event.pull_request.number }}
+
+        You are the grader. The author is a fleet worker model (GLM or DeepSeek) executing a packet; you are ${{ vars.GRADER == 'kimi' && 'Kimi K3 Max' || 'Claude Opus 5' }}. Read the PR body and the issue it cites, then the diff. Grade the PR A+ to F on: does the change do what the packet asked and nothing more; is every claim in the body proven by something in the diff or a cited run; tests assert behaviour, not implementation; no scripts, hooks, wrappers, helpers or inline programs (the repo's no-glue rule); no comment that justifies a workaround; the `encoded:` line names a real rung. A+ means every item is met with zero findings; any finding makes the grade A or lower. The pass bar is A+ (Nish 2026-09-25: "pass bar is A+"). Post ONE top-level comment via `gh pr comment` that starts with `${{ vars.GRADER == 'kimi' && 'Kimi' || 'Opus' }} grade: <letter>` followed by at most eight lines of reasons, each tied to a file and line. Use inline comments only for concrete defects. If the grade is anything but A+ run `gh pr edit --add-label blocked-by-judge`; if A+ run `gh pr edit --remove-label blocked-by-judge` (ignore the error if absent). Do not edit files. Do not approve or request changes through the review API.
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         if: github.event_name == 'pull_request'
         with:
           fetch-depth: 1
       - uses: anthropics/claude-code-action@9ca9355b36297178e28d37c799d1c9c8a28e6507 # main 2026-09-22, Claude Code 2.1.280 (first to know claude-opus-5-5)
-        if: github.event_name == 'pull_request'
+        if: github.event_name == 'pull_request' && vars.GRADER != 'kimi'
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           # The action refuses bot-initiated runs by default; the grader exists
@@ -280,14 +288,103 @@ jobs:
           # carries the pull-requests/issues write scope this job declares.
           github_token: ${{ secrets.GITHUB_TOKEN }}
           use_sticky_comment: true
-          prompt: |
-            REPO: ${{ github.repository }}
-            PR NUMBER: ${{ github.event.pull_request.number }}
-
-            You are the grader. The author is a fleet worker model (GLM or DeepSeek) executing a packet; you are Claude Opus 5. Read the PR body and the issue it cites, then the diff. Grade the PR A+ to F on: does the change do what the packet asked and nothing more; is every claim in the body proven by something in the diff or a cited run; tests assert behaviour, not implementation; no scripts, hooks, wrappers, helpers or inline programs (the repo's no-glue rule); no comment that justifies a workaround; the `encoded:` line names a real rung. A+ means every item is met with zero findings; any finding makes the grade A or lower. The pass bar is A+ (Nish 2026-09-25: "pass bar is A+"). Post ONE top-level comment via `gh pr comment` that starts with `Opus grade: <letter>` followed by at most eight lines of reasons, each tied to a file and line. Use inline comments only for concrete defects. If the grade is anything but A+ run `gh pr edit --add-label blocked-by-judge`; if A+ run `gh pr edit --remove-label blocked-by-judge` (ignore the error if absent). Do not edit files. Do not approve or request changes through the review API.
+          prompt: ${{ env.GRADE_PROMPT }}
           claude_args: |
             --model claude-opus-5-5
             --allowedTools "mcp__github_inline_comment__create_inline_comment,Bash(gh pr comment:*),Bash(gh pr diff:*),Bash(gh pr view:*),Bash(gh pr edit:*),Bash(gh issue view:*),Bash(git diff:*),Bash(git log:*),Bash(git show:*)"
+      - name: Grade with Kimi K3 Max
+        if: github.event_name == 'pull_request' && vars.GRADER == 'kimi'
+        env:
+          CURSOR_API_KEY: ${{ secrets.CURSOR_API_KEY }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          curl https://cursor.com/install -fsS | bash
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+          export PATH="$HOME/.local/bin:$PATH"
+          mkdir -p "$HOME/.cursor"
+          cat > "$HOME/.cursor/cli-config.json" <<'EOF'
+          {
+            "version": 1,
+            "editor": {"vimMode": false},
+            "approvalMode": "allowlist",
+            "sandbox": {"mode": "disabled"},
+            "permissions": {
+              "allow": [
+                "Read(**)",
+                "Shell(gh:pr comment*)",
+                "Shell(gh:pr diff*)",
+                "Shell(gh:pr view*)",
+                "Shell(gh:pr edit*)",
+                "Shell(gh:issue view*)",
+                "Shell(gh:issue edit*)",
+                "Shell(git:diff*)",
+                "Shell(git:log*)",
+                "Shell(git:show*)"
+              ],
+              "deny": [
+                "Write(**)",
+                "Mcp(*:*)",
+                "WebFetch(*)",
+                "Shell(rm)",
+                "Shell(mv)",
+                "Shell(cp)",
+                "Shell(chmod)",
+                "Shell(chown)",
+                "Shell(sudo)",
+                "Shell(bash)",
+                "Shell(sh)",
+                "Shell(zsh)",
+                "Shell(python)",
+                "Shell(python3)",
+                "Shell(node)",
+                "Shell(perl)",
+                "Shell(ruby)",
+                "Shell(php)",
+                "Shell(curl)",
+                "Shell(wget)",
+                "Shell(npm)",
+                "Shell(npx)",
+                "Shell(pip)",
+                "Shell(pip3)",
+                "Shell(make)",
+                "Shell(dd)",
+                "Shell(tee)",
+                "Shell(install)",
+                "Shell(touch)",
+                "Shell(mkdir)",
+                "Shell(git:add*)",
+                "Shell(git:commit*)",
+                "Shell(git:checkout*)",
+                "Shell(git:switch*)",
+                "Shell(git:merge*)",
+                "Shell(git:rebase*)",
+                "Shell(git:reset*)",
+                "Shell(git:push*)",
+                "Shell(git:pull*)",
+                "Shell(git:stash*)",
+                "Shell(git:branch*)",
+                "Shell(git:worktree*)",
+                "Shell(git:config*)",
+                "Shell(git:remote*)",
+                "Shell(git:clone*)",
+                "Shell(git:tag*)",
+                "Shell(gh:api*)",
+                "Shell(gh:auth*)",
+                "Shell(gh:pr create*)",
+                "Shell(gh:pr merge*)",
+                "Shell(gh:pr close*)",
+                "Shell(gh:pr review*)",
+                "Shell(gh:pr ready*)",
+                "Shell(gh:workflow*)",
+                "Shell(gh:run*)",
+                "Shell(gh:secret*)",
+                "Shell(gh:repo*)",
+                "Shell(gh:release*)"
+              ]
+            }
+          }
+          EOF
+          cursor-agent -p --output-format text --model kimi-k3-max --force --trust "$GRADE_PROMPT"
       - name: A grade below A+ fails this check (fail closed if the label read fails)
         if: github.event_name == 'pull_request'
         env:
@@ -297,8 +394,9 @@ jobs:
         if: github.event_name == 'merge_group'
         run: "true"
 
-  # The shared A+ grader (fleet-ops#8655; rubric docs/quality-bar.md). Runs beside
-  # opus-review until the ruleset requires `grade / grade`; opus-review is then deleted.
+  # Shared A+ grader (fleet-ops#8655; rubric docs/quality-bar.md). Engine follows
+  # vars.GRADER. Runs beside opus-review until the ruleset requires `grade / grade`;
+  # opus-review is then deleted.
   grade:
     if: github.event_name != 'push'
     uses: Nishfleet/fleet-ops/.github/workflows/grade.yml@main
@@ -309,3 +407,4 @@ jobs:
       id-token: write
     secrets:
       CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+      CURSOR_API_KEY: ${{ secrets.CURSOR_API_KEY }}
