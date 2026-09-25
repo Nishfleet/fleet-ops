@@ -169,6 +169,18 @@ groups:
           summary: "filesystem {{ $labels.mountpoint }} above 85% used"
           description: "A full disk fails the restic backup and the LiteLLM postgres write path. Repair: reclaim space, starting with agent worktrees under ~/workspaces/agent-worktrees."
 
+      # fleet-ops#8678: 32 runners stalled memory 77% of the time on
+      # 2026-09-25 and nothing fired; a person noticed it by hand.
+      - alert: HostMemoryStalled
+        expr: rate(node_pressure_memory_stalled_seconds_total[5m]) > 0.2
+        for: 10m
+        labels:
+          severity: critical
+          service: host
+        annotations:
+          summary: "host memory fully stalled {{ $value | humanizePercentage }} of the time"
+          description: "PSI memory full above 20% for 10m: every runnable task is waiting on memory, so runners miss heartbeats and OOM kills follow. Repair: check the busy agent runners (systemd-cgtop agent.slice) and lower the runner count per fleet-ops#8678."
+
   - name: fleet_queue
     rules:
       - alert: FleetMergeQueueStalled

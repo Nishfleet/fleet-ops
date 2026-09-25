@@ -150,3 +150,29 @@ tests:
       - eval_time: 40m
         alertname: FleetWorkerLaneOutage
         exp_alerts: []
+
+  # Memory fully stalled ~50% of the time for over 10m fires (fleet-ops#8678).
+  - interval: 1m
+    input_series:
+      - series: 'node_pressure_memory_stalled_seconds_total'
+        values: '0+30x30'
+    alert_rule_test:
+      - eval_time: 20m
+        alertname: HostMemoryStalled
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              service: host
+            exp_annotations:
+              summary: "host memory fully stalled 50% of the time"
+              description: "PSI memory full above 20% for 10m: every runnable task is waiting on memory, so runners miss heartbeats and OOM kills follow. Repair: check the busy agent runners (systemd-cgtop agent.slice) and lower the runner count per fleet-ops#8678."
+
+  # Memory fully stalled ~10% of the time stays under the 20% threshold.
+  - interval: 1m
+    input_series:
+      - series: 'node_pressure_memory_stalled_seconds_total'
+        values: '0+6x30'
+    alert_rule_test:
+      - eval_time: 20m
+        alertname: HostMemoryStalled
+        exp_alerts: []
