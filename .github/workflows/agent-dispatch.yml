@@ -175,8 +175,12 @@ jobs:
   # AGENT_MODE: this removes work from the queue in every mode and dispatches
   # nothing.
   close-claim:
+    # issue=<N> too: opus-vet closes with GITHUB_TOKEN, which fires no
+    # issues.closed, then dispatches the issue by number. Without this its
+    # claim PR stayed open (0509 #5081 #5019 #5010 #4922 #4902 #4683).
     if: >-
-      github.event_name == 'issues' && github.event.action == 'closed'
+      (github.event_name == 'issues' && github.event.action == 'closed') ||
+      inputs.issue != ''
     runs-on: ubuntu-latest
     permissions:
       # pull-requests: write closes the PR; contents: write is what
@@ -186,7 +190,7 @@ jobs:
     steps:
       - env:
           GH_TOKEN: ${{ github.token }}
-          ISSUE: ${{ github.event.issue.number }}
+          ISSUE: ${{ github.event.issue.number || inputs.issue }}
         # The event can be stale: a worker that closes and reopens its issue
         # still fires this, and it closed a graded PR (0509 #4972/#5012).
         run: |
