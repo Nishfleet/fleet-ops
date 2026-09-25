@@ -17,9 +17,8 @@
 #
 # Same-repo caller: ./.github/workflows/opus-review.yml.
 # Named secret, not `secrets: inherit` (same pass as opus-vet.yml).
-# The job always runs. Grading steps run only for nishfleet-worker[bot].
-# Everyone else, including merge_group, reports success without a grade:
-# a skipped required check freezes the pull request (reusable-pr-checks.yml).
+# The job always runs. Grading steps run only for nishfleet-worker[bot];
+# every other event, including merge_group, reports success without a grade.
 # Anything below A+ fails the check. The label alone lost the race on 2026-09-21/22.
 
 name: opus-review
