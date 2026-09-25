@@ -110,16 +110,24 @@ jobs:
             'timer-no-nex[t]|timer-manifes[t]' \
             AGENTS.md README.md prompts systemd etc config template patches .github credentials || rc=$?
           test "$rc" -eq 1
-      - name: Every committed /jev caller sends custom_llm_provider (fleet-ops#8713)
-        # LiteLLM's budget_limiter raises 'custom_llm_provider is required' on
-        # every pass-through success, and endpoint config cannot supply the
-        # key — it must be in the request body. A committed file that POSTs to
-        # 4000/jev without naming the key is a caller that will log the raise
-        # on every call. This file self-matches: it contains both strings.
+      - name: Every committed /jev caller sets custom_llm_provider (fleet-ops#8713)
+        # fleet-ops#8713: a /jev body sets custom_llm_provider. Counted per
+        # call, not per file — a file naming the endpoint N times must name the
+        # key at least N times, so dropping it from one of several calls in
+        # prompts/worker.md fails instead of riding the other call. rc 0 is a
+        # hit, 1 is clean, 2 is a grep error and fails too, never reads as a
+        # clean scan. This file self-matches: it names both strings.
         run: |
           rc=0
-          for f in $(grep -rln --exclude-dir=.git '4000/jev' AGENTS.md README.md prompts systemd etc config template docs patches .github credentials pending 2>/dev/null); do
-            grep -q 'custom_llm_provider' "$f" || { echo "$f mentions 4000/jev but never sets custom_llm_provider"; rc=1; }
+          files=$(grep -rln --exclude-dir=.git '4000/jev' AGENTS.md README.md prompts systemd etc config template docs patches .github credentials pending) || rc=$?
+          test "$rc" -le 1 || { echo "rc=$rc grepping the tree for 4000/jev callers"; exit 1; }
+          for f in $files; do
+            calls=$(grep -c '4000/jev' "$f" || true)
+            keys=$(grep -c 'custom_llm_provider' "$f" || true)
+            if [ "$keys" -lt "$calls" ]; then
+              echo "$f names 4000/jev $calls time(s) and custom_llm_provider $keys time(s) (fleet-ops#8713)"
+              rc=1
+            fi
           done
           test "$rc" -eq 0
       - name: Cursor shared-memory rule stays current (fleet-ops#7803)
