@@ -1,0 +1,20 @@
+[Unit]
+Description=Restart prometheus-am-executor when its config changes in the deploy clone (fleet-ops#8606)
+Documentation=https://github.com/Nishfleet/fleet-ops/issues/8606
+# The executor reads its config once at start (fleet-ops#7414), so a changed
+# command line only loads on a restart. This watches the file inside the
+# deploy clone, which is the object systemd-tmpfiles links to
+# ~/.config/prometheus-am-executor/config.yml (step 7a): watching the clone
+# file keeps the watch independent of that symlink existing when the unit
+# starts. Same shape as fleet-prometheus-reload.path (fleet-ops#8606), which
+# watches the /etc/prometheus files fleet-sync installs by atomic replace.
+
+[Path]
+PathChanged=/home/nish/workspaces/tooling/fleet-ops-deploy-clone/config/prometheus-am-executor.yml
+Unit=prometheus-am-executor-config.service
+# Storm cap for a pull that rewrites several config files at once.
+TriggerLimitIntervalSec=60s
+TriggerLimitBurst=3
+
+[Install]
+WantedBy=default.target
