@@ -142,56 +142,6 @@ model_list:
     disable_background_health_check: true
 - model_name: worker-capable
   litellm_params:
-    model: openai/stealth/space-bunny-alpha
-    api_base: https://api.cline.bot/api/v1
-    api_key: os.environ/CLINE_API_KEY
-    tags:
-    - prepaid
-    - cline
-    - stealth
-    order: 1
-    max_parallel_requests: 2
-    cooldown_time: 900
-  model_info:
-    mode: chat
-    id: cline-spacebunny-worker-capable
-    disable_background_health_check: true
-- model_name: worker-capable
-  litellm_params:
-    model: openai/stealth/space-bunny-alpha
-    api_base: https://openrouter.ai/api/v1
-    max_budget: 1.0
-    budget_duration: 1mo
-    api_key: os.environ/OPENROUTER_API_KEY
-    extra_headers: {HTTP-Referer: https://0509.io, X-Title: nish-fleet}
-    tags:
-    - free
-    - stealth
-    order: 1
-    max_parallel_requests: 2
-    cooldown_time: 900
-  model_info:
-    mode: chat
-    id: openrouter-spacebunny-worker-capable
-- model_name: worker-cheap
-  litellm_params:
-    model: openai/stealth/space-bunny-alpha
-    api_base: https://openrouter.ai/api/v1
-    max_budget: 1.0
-    budget_duration: 1mo
-    api_key: os.environ/OPENROUTER_API_KEY
-    extra_headers: {HTTP-Referer: https://0509.io, X-Title: nish-fleet}
-    tags:
-    - free
-    - stealth
-    order: 1
-    max_parallel_requests: 2
-    cooldown_time: 900
-  model_info:
-    mode: chat
-    id: openrouter-spacebunny-worker-cheap
-- model_name: worker-capable
-  litellm_params:
     model: openai/space-bunny-free
     api_base: https://opencode.ai/zen/v1
     api_key: os.environ/OPENCODE_API_KEY
@@ -409,6 +359,61 @@ benched:
     order: 1
     max_parallel_requests: 4
   retry_at: '2026-09-26T12:30:00+05:30'
+
+- benched_at: 2026-09-25
+  wall: wiring
+  reason: "openai/stealth/space-bunny-alpha @ https://api.cline.bot/api/v1 (CLINE_API_KEY), worker-capable — baseline 30 min to 2026-09-25 22:41Z: 232 'JSON error injected into SSE stream' vs 2328 '200 OK' (~10% of calls); upstream attribution found no api_base in the traceback-only logs, so fleet-ops#8695 rule 3 benched all three space-bunny-alpha rungs. JSON error injected into SSE stream -> MidStreamFallbackError (fleet-ops#8679). Restore ONLY with a green /health probe cited in the PR."
+  was: [worker-capable]
+  litellm_params:
+    model: openai/stealth/space-bunny-alpha
+    api_base: https://api.cline.bot/api/v1
+    api_key: os.environ/CLINE_API_KEY
+    tags:
+    - prepaid
+    - cline
+    - stealth
+    order: 1
+    max_parallel_requests: 2
+    cooldown_time: 900
+  retry_at: '2026-10-02T12:30:00+05:30'
+
+- benched_at: 2026-09-25
+  wall: wiring
+  reason: "openai/stealth/space-bunny-alpha @ https://openrouter.ai/api/v1 (OPENROUTER_API_KEY), worker-capable — baseline 30 min to 2026-09-25 22:41Z: 232 'JSON error injected into SSE stream' vs 2328 '200 OK' (~10% of calls); upstream attribution found no api_base in the traceback-only logs, so fleet-ops#8695 rule 3 benched all three space-bunny-alpha rungs. JSON error injected into SSE stream -> MidStreamFallbackError (fleet-ops#8679). Restore ONLY with a green /health probe cited in the PR."
+  was: [worker-capable]
+  litellm_params:
+    model: openai/stealth/space-bunny-alpha
+    api_base: https://openrouter.ai/api/v1
+    max_budget: 1.0
+    budget_duration: 1mo
+    api_key: os.environ/OPENROUTER_API_KEY
+    extra_headers: {HTTP-Referer: https://0509.io, X-Title: nish-fleet}
+    tags:
+    - free
+    - stealth
+    order: 1
+    max_parallel_requests: 2
+    cooldown_time: 900
+  retry_at: '2026-10-02T12:30:00+05:30'
+
+- benched_at: 2026-09-25
+  wall: wiring
+  reason: "openai/stealth/space-bunny-alpha @ https://openrouter.ai/api/v1 (OPENROUTER_API_KEY), worker-cheap — baseline 30 min to 2026-09-25 22:41Z: 232 'JSON error injected into SSE stream' vs 2328 '200 OK' (~10% of calls); upstream attribution found no api_base in the traceback-only logs, so fleet-ops#8695 rule 3 benched all three space-bunny-alpha rungs. JSON error injected into SSE stream -> MidStreamFallbackError (fleet-ops#8679). Restore ONLY with a green /health probe cited in the PR."
+  was: [worker-cheap]
+  litellm_params:
+    model: openai/stealth/space-bunny-alpha
+    api_base: https://openrouter.ai/api/v1
+    max_budget: 1.0
+    budget_duration: 1mo
+    api_key: os.environ/OPENROUTER_API_KEY
+    extra_headers: {HTTP-Referer: https://0509.io, X-Title: nish-fleet}
+    tags:
+    - free
+    - stealth
+    order: 1
+    max_parallel_requests: 2
+    cooldown_time: 900
+  retry_at: '2026-10-02T12:30:00+05:30'
 
 router_settings:
   routing_strategy: simple-shuffle
