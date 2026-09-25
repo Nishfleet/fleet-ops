@@ -114,3 +114,39 @@ tests:
       - eval_time: 40m
         alertname: FleetWorkerLaneOutage
         exp_alerts: []
+
+  # Test 13 — short wall under 30m stays silent (FleetWorkerLaneOutage, fleet-ops#7820).
+  - interval: 1m
+    input_series:
+      - series: 'litellm_deployment_state{api_base="https://api.paretoinference.com/v1",api_provider="openai",litellm_model_name="z-ai/glm-5.3-flash",model_id="pareto-glm53flash-worker-capable"}'
+        values: '1x40'
+    alert_rule_test:
+      - eval_time: 25m
+        alertname: FleetWorkerLaneOutage
+        exp_alerts: []
+
+  # Test 14 — stale alias rows (no "/" in litellm_model_name, #7846) do not count.
+  - interval: 1m
+    input_series:
+      - series: 'litellm_deployment_state{api_base="https://api.paretoinference.com/v1",api_provider="openai",litellm_model_name="z-ai/glm-5.3-flash",model_id="pareto-glm53flash-worker-capable"}'
+        values: '0x40'
+      - series: 'litellm_deployment_state{api_base="https://api.paretoinference.com/v1",api_provider="openai",litellm_model_name="worker-capable",model_id="pareto-glm53flash-worker-capable-alias"}'
+        values: '2x40'
+    alert_rule_test:
+      - eval_time: 40m
+        alertname: FleetWorkerLaneOutage
+        exp_alerts: []
+
+  # Test 15 — senior/judge walls are not a worker-lane outage.
+  - interval: 1m
+    input_series:
+      - series: 'litellm_deployment_state{api_base="https://api.paretoinference.com/v1",api_provider="openai",litellm_model_name="z-ai/glm-5.3-flash",model_id="pareto-glm53flash-senior"}'
+        values: '2x40'
+      - series: 'litellm_deployment_state{api_base="https://opencode.ai/zen/go/v1",api_provider="openai",litellm_model_name="openai/deepseek-v4.1-flash",model_id="opencodego-ds41flash-judge"}'
+        values: '2x40'
+      - series: 'litellm_deployment_state{api_base="https://opencode.ai/zen/go/v1",api_provider="openai",litellm_model_name="openai/deepseek-v4.1-flash",model_id="opencodego-ds41flash-worker-cheap"}'
+        values: '0x40'
+    alert_rule_test:
+      - eval_time: 40m
+        alertname: FleetWorkerLaneOutage
+        exp_alerts: []
