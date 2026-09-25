@@ -18,9 +18,9 @@ rail are in `README.md`; design and enforced rules are in
 
 ## Deploy and wiring
 
-`fleet-sync.timer` → `fleet-sync.service` runs `git pull --ff-only` +
-`daemon-reload` every two minutes and fails (`DEPLOY-BLOCKED`) on a dirty or
-diverged clone, so the canonical checkout
+`deploy-box.yml` (push to main) → `fleet-sync.service` runs
+`git pull --ff-only` + `daemon-reload` and fails (`DEPLOY-BLOCKED`) on a dirty
+or diverged clone, so the canonical checkout
 `/home/nish/workspaces/tooling/fleet-ops-deploy-clone` stays clean on `main`.
 Its LINK-GUARD passes fail the unit while any live symlink under
 `~/.config/systemd/user/`, `~/.local/bin/`, `~/.pi/agent/` or the vault is
