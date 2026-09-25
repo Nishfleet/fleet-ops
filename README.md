@@ -12,8 +12,9 @@ script, or prompt lands unseen.
 - `prompts/` — Pi agent prompts fed to workers on stdin.
 - `config/` — fleet configuration. `intake-repos.json` is the declared set of
   repos enrolled in pi-intake/pi-scout (see [Intake enrolment](#intake-enrolment)).
-- `systemd/fleet-sync.{service,timer}` — the whole deploy mechanism: every
-  two minutes, `git pull --ff-only` + `systemctl --user daemon-reload`, plus
+- `systemd/fleet-sync.service` (started by
+  `.github/workflows/deploy-box.yml` on push) — the whole deploy mechanism:
+  `git pull --ff-only` + `systemctl --user daemon-reload`, plus
   `promtool check rules` / `promtool check config` and a prometheus reload
   when the alert rules or the scrape config changed, and a LINK-GUARD pass
   that fails the unit on a dangling or throwaway-target live symlink
@@ -28,11 +29,11 @@ in git are the same inode. Nothing is copied, so nothing can drift, and the
 (`install.sh`, `MANIFEST`, `bin/fleet-ops-deploy`, `bin/fleet-deploy-check`,
 `bin/fleet-ops-drift.py`) were deleted on 2026-09-18.
 
-`systemd/fleet-sync.timer` keeps the clone current. It is the only deploy
-machinery on the box:
+`deploy-box.yml` starts `fleet-sync.service` on every push to main, which
+keeps the clone current. It is the only deploy machinery on the box:
 
 ```
-systemctl --user list-timers fleet-sync.timer
+systemctl --user status fleet-sync.service
 systemctl --user start fleet-sync.service   # force a sync now
 journalctl --user -u fleet-sync.service -n 50
 ```
