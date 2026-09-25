@@ -7,6 +7,8 @@ description: "Run one real fleet unit and collect proof: invocation id, journal,
 
 The fleet CLI is stock. Use `systemctl --user`, `systemd-run --user`, `journalctl --user`, and `gh`. Do not add a script, and do not print a token, a key file, or `fleet-gh-token.env`.
 
+Router containers (`fleet-litellm-proxy`, `fleet-litellm-redis`, `fleet-litellm-postgres`) restart only through their unit (`systemctl --user restart fleet-litellm-<name>.service`). `podman rm`, `podman stop`, `podman kill` and signals to a container or conmon PID bypass systemd, and `podman ps` / `podman inspect` show podman's stored state, not the service (fleet-ops#8703).
+
 Read `fleet-map.md` in this directory before deciding what a unit does. One row is one unit, timer, path, slice, or template. A drop-in belongs to its unit.
 
 ## When
