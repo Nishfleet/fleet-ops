@@ -213,6 +213,10 @@ jobs:
           exit 1
       - name: Clean workspace
         if: always()
+        # A dev server still holding node_modules makes rm fail ENOTEMPTY after the
+        # PR is already open; that must not fail the job and re-dispatch the issue
+        # (0509#5025, run 36107401820). Leftovers age out via user-tmpfiles.d/agent-worktrees.conf.
+        continue-on-error: true
         run: rm -rf "$HOME/workspaces/agent-worktrees/issue-${REPO#*/}-${REF#claim/issue-}"
   scout:
     if: ${{ !inputs.ref && github.event.schedule == '0 */4 * * *' }}
