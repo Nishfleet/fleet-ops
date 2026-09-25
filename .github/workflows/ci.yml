@@ -252,9 +252,9 @@ jobs:
 
   # Cross-family grade. The steps live in opus-review.yml so the five
   # product repos call the same grader (fleet-ops#8621). Skipped on push to
-  # main: fleet-ops does not require this check, and a push has no PR to grade.
-  opus-review:
-    name: opus-review
+  # main: a push has no pull request to grade.
+  grade:
+    name: grade
     if: github.event_name == 'pull_request' || github.event_name == 'merge_group'
     permissions:
       contents: read
@@ -264,3 +264,15 @@ jobs:
     uses: ./.github/workflows/opus-review.yml
     secrets:
       CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+  # The ruleset context is the bare name `opus-review`. GitHub reports a
+  # reusable job as `grade / opus-review`, so this job is the context the
+  # ruleset requires and it fails unless that grade succeeded.
+  opus-review:
+    name: opus-review
+    needs: grade
+    if: always() && (github.event_name == 'pull_request' || github.event_name == 'merge_group')
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Require the reusable grade to have succeeded
+        run: test "${{ needs.grade.result }}" = "success"

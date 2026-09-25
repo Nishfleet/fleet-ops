@@ -269,9 +269,9 @@ of scope: they do not live in `session-*.scope`. `claim/issue-*` and
    `scripts/`, `libexec/`, `ops/`, `hooks/`, `.github/scripts/`, `*.sh`,
    `*.mjs`, `.fleet/`) and any added unit `Exec` line long enough to be a
    program (fleet-ops#7828).
-3. **opus-review** — on pull requests and merge-queue builds only. Calls
-   `.github/workflows/opus-review.yml`. Grades worker-app pull requests;
-   every other pull request reports success without a grade.
+3. **opus-review** — on pull requests and merge-queue builds only. `grade`
+   calls `.github/workflows/opus-review.yml`. The `opus-review` job fails
+   unless that grade succeeded, which is the context `main-merge-queue` requires.
 
 `.github/workflows/secret-scan.yml` is the gitleaks scan (pinned binary +
 sha256, `--redact`). fleet-ops has no deploy target. All actions are pinned to exact commit
