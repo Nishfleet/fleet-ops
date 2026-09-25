@@ -27,6 +27,10 @@ Its LINK-GUARD passes fail the unit while any live symlink under
 broken or resolves into a throwaway root (`*worktrees/*`, `agent-state`,
 `tmp`).
 
+`~/.pi/agent/agents/` holds only the stock agents from `template/agents/`;
+per-issue copies (`reviewer-issue-<N>.md`, removed under fleet-ops#8659) are
+loaded by nothing.
+
 Wiring a new unit or prompt is one `ln -sfn` into the deploy clone, once
 (full commands in README). Four classes stay copies rather than symlinks:
 the two `/etc/prometheus` files (fleet-sync does the copy + reload), the two
