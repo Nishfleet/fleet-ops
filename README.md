@@ -11,7 +11,7 @@ script, or prompt lands unseen.
 - `bin/` — shell scripts the units exec.
 - `prompts/` — Pi agent prompts fed to workers on stdin.
 - `config/` — fleet configuration. `intake-repos.json` is the declared set of
-  repos enrolled in pi-intake/pi-scout (see [Intake enrolment](#intake-enrolment)).
+  repos enrolled in the agent-ready queue (see [Intake enrolment](#intake-enrolment)).
 - `systemd/fleet-sync.{service,timer}` — the whole deploy mechanism: every
   two minutes, `git pull --ff-only` + `systemctl --user daemon-reload`, plus
   `promtool check rules` / `promtool check config` and a prometheus reload
@@ -230,9 +230,6 @@ The Claude PostToolUse hook `~/.claude/hooks/guard_pi_packet.py` classifies
 these from the redirected packet log. Launcher faults advise the transient-unit
 one-liner above; lane faults advise seat rotation.
 
-Overlapping `systemctl start` of a live intake tick or of a live `pi-issue@`
-worker is a no-op — systemd will not start a unit that is already running.
-
 ## Claim shared files before editing (interactive sessions)
 
 Queued work has an atomic lock — the `claim/issue-N` branch. Interactive
@@ -249,7 +246,7 @@ sweep — the stock push is the whole mechanism.
 Stale interactive **sessions** are no longer reaped by a bespoke timer:
 `interactive-session-reap` was deleted on 2026-09-18 after 113 consecutive
 hourly runs that each reaped nothing. `systemd-oomd` is the native reaper
-under real memory pressure. sshd, tailscaled, and the intake timers are out
+under real memory pressure. sshd, tailscaled, and the runner services are out
 of scope: they do not live in `session-*.scope`. `claim/issue-*` and
 `claim/adhoc-*` branches are released by the agent that claimed them.
 
@@ -294,35 +291,31 @@ symlinks to it from `~/.config/systemd/user/`, `~/.local/bin/`, or
 
 `fleet-heartbeat.timer`/`.service`, `bin/fleet-heartbeat-tier1` and
 `prompts/heartbeat.md` are gone. Their jobs live in the organs that already
-did them: `pi-intake@<repo>.timer` picks up queued work, PR auto-merge is a
-GitHub workflow, and a failed unit pages through the `SystemUnitFailed` rule
-in `config/fleet_rules.yml`. Its healthchecks.io dead-man is superseded by
-the `10-keystone-hc.conf` drop-ins on `pi-intake@`/`pi-scout@` — stock
-`EnvironmentFile=` + `ExecStopPost=` curl against
-`~/.config/fleet-ops/keystone-hc.env`.
+did them: `.github/workflows/agent-dispatch.yml` queues `agent-ready` work, PR
+auto-merge is a GitHub workflow, and a failed unit pages through the
+`SystemUnitFailed` rule in `config/fleet_rules.yml`. Its healthchecks.io
+dead-man is gone; the keystone URLs in `~/.config/fleet-ops/keystone-hc.env`
+now serve only the root `restic-r2-restore-test.service`.
 
 ## Intake enrolment
 
 `config/intake-repos.json` is the **declared set** of repos that run
-pi-intake/pi-scout. It is the single source of truth for which repos are
-enrolled — adding or removing a repo is a PR against that file, not a
+agent-dispatch and the scout job. It is the single source of truth for which
+repos are enrolled — adding or removing a repo is a PR against that file, not a
 `systemctl enable`. This replaces the old imperative enrolment that was
 silently reverted without a record (fleet-ops#32).
 
 Each enrolled repo needs two preconditions:
 
-1. A git checkout at `/home/nish/workspaces/products/<name>` — intake does
-   `git -C <checkout>/<name> fetch origin` and the worker creates its
-   worktree from it. Packet clones (when a worker clones instead of
-   worktree-add) use `git clone --reference-if-able
+1. A git checkout at `/home/nish/workspaces/products/<name>` — the worker
+   creates its worktree from it. Packet clones (when a worker clones instead
+   of worktree-add) use `git clone --reference-if-able
    /home/nish/workspaces/.mirrors/<name>.git
    https://github.com/Nishfleet/<name>.git <dest>` (fleet-ops#1213).
    Mirrors are read-only fetch targets; never push.
 2. The three labels `agent-ready`, `agent-in-progress`, `agent-blocked`
-   present on the repo — the `ExecCondition` in `pi-intake@.service`
-   silently no-ops without them, so an `agent-ready` issue on a label-less
-   repo looks queued and is actually inert (the gap fleet-ops#25 was filed
-   for).
+   present on the repo — agent-dispatch fires only on the `agent-ready` label,
+   so on a label-less repo an issue looks queued and is inert (fleet-ops#25).
 
 `fleet2` is permanently excluded (standing rule: no second dispatcher,
 ever). `siterep` is excluded (archived). Both are recorded in the file's
@@ -334,7 +327,7 @@ the enrolment mechanism (fleet-ops#32, #25).
 
 ### `depends-on:`, `collision-gate:`, spec judge — DELETED in the glue sweep
 
-The intake tick no longer parses `depends-on:` or `collision-gate:` body
+Nothing parses `depends-on:` or `collision-gate:` body
 lines, and the spec-judge pass (`lib/spec-judge.sh`, `prompts/spec-judge.md`)
 is gone. Ticket bodies may still carry the lines as human context, but no
 machinery reads them.
@@ -349,8 +342,8 @@ stateless thing; the rules are in
 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md). The VNC
 break-glass runbook is [docs/RUNBOOK.md](docs/RUNBOOK.md).
 Keystone healthchecks.io URLs live in `~/.config/fleet-ops/keystone-hc.env`,
-consumed by the `10-keystone-hc.conf` drop-ins on `pi-intake@`/`pi-scout@`;
-an unset URL is a skip, a shared URL is a fail.
+consumed by the root `restic-r2-restore-test.service`; an unset URL is a skip,
+a shared URL is a fail.
 
 ## Worker RAM admission (issue #45)
 
@@ -364,8 +357,9 @@ division. The slice's `MemorySwapMax` (fleet-ops#8638) is the swap half:
 on the 09-24/25 night the RAM caps alone let 32 runners fill all 8G of
 host swap (1000-2500 pages/s, 12 OOM kills, 14.6% iowait), so runner
 overflow is now killed inside the slice instead of being swapped onto
-the rest of the box. Known repos override the per-unit limits via intake-written
-drop-ins: fleet-ops#3930 set `MemoryMax=4G` with **no `MemoryHigh`** for
+the rest of the box. Known repos overrode the per-unit limits via
+intake-written drop-ins (removed with the old dispatcher, fleet-ops#8449):
+fleet-ops#3930 set `MemoryMax=4G` with **no `MemoryHigh`** for
 fleet-ops + 0509 (the throttle band is what makes oomd pressure-kill a
 random sibling, so it was removed; 4G is now the hard stop with a clean
 local OOM at the cap), while the heavy class of #3281 writes 3G/2G for

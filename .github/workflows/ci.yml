@@ -81,17 +81,6 @@ jobs:
             'gh[[:space:]]+([^[:space:];|&]+[[:space:]]+)*auth[[:space:]]+(status|token)\b' \
             AGENTS.md README.md prompts systemd etc config template docs patches .github credentials || rc=$?
           test "$rc" -eq 1
-      - name: tick_spawn_cap_by_repo is absent or all non-negative integers
-        # fleet-ops#7482: prompts/intake.md clamps each tick's claim slots to
-        # this per-repo map (absent map = no clamp). A malformed value would
-        # fail the tick LOUD at runtime; fail the PR here instead. `null`
-        # also passes an explicitly nulled key — absent and null both mean
-        # "no clamp" to the tick.
-        run: jq -e '.tick_spawn_cap_by_repo == null or (.tick_spawn_cap_by_repo | type == "object" and (to_entries | all(.value | type == "number" and . == floor and . >= 0)))' config/intake-repos.json
-      - name: router_lane_cap is a whole number
-        # prompts/intake.md reads this key at tick time to pick router-issue@; a
-        # missing or malformed value would send every claim to the walled pi lane.
-        run: jq -e '.router_lane_cap | type == "number" and . == floor and . >= 0' config/intake-repos.json
       - name: No timer-inventory signal emitters on committed surfaces
         # fleet-ops#7711: the ghost-timer signal family is extinct — every
         # emitter (the heartbeat tier-1 timer-arm pass, the drift canary, the
@@ -252,7 +241,7 @@ jobs:
 
   # Cross-family grade. The steps live in opus-review.yml so the five
   # product repos call the same grader (fleet-ops#8621). Skipped on push to
-  # main: a push has no pull request to grade.
+  # main: a push has no pull request to grade. Prompt and pass bar match main.
   grade:
     name: grade
     if: github.event_name == 'pull_request' || github.event_name == 'merge_group'

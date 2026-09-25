@@ -56,7 +56,7 @@ jobs:
   rework:
     if: >-
       (inputs.agent_mode || vars.AGENT_MODE) == 'live' && github.event_name == 'workflow_run' &&
-      github.event.workflow_run.conclusion == 'failure' &&
+      (github.event.workflow_run.conclusion == 'failure' || github.event.workflow_run.conclusion == 'timed_out') &&
       github.event.workflow_run.event == 'pull_request' &&
       startsWith(github.event.workflow_run.head_branch, 'claim/issue-') &&
       github.event.workflow_run.head_repository.full_name == github.repository

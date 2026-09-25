@@ -1,5 +1,6 @@
-# Fleet LiteLLM Redis, containerized (fleet-ops#8435). Additive twin of
-# systemd/fleet-litellm-redis.service: the live unit stays until the cutover.
+# Fleet LiteLLM Redis, containerized (fleet-ops#8435, cutover #8494).
+# Mounted at its own host path: redis.conf sets `dir` to that absolute path.
+# save "" and appendonly no, so nothing is written; the mount is read-only.
 
 [Unit]
 Description=Fleet LiteLLM Redis (Quadlet, fleet-ops#8435)
@@ -7,11 +8,12 @@ Description=Fleet LiteLLM Redis (Quadlet, fleet-ops#8435)
 [Container]
 Image=docker.io/library/redis:7
 Network=host
-Volume=%h/.local/share/fleet-litellm-redis:/usr/local/etc/redis:ro,Z
-Exec=redis-server /usr/local/etc/redis/redis.conf
+Volume=%h/.local/share/fleet-litellm-redis:%h/.local/share/fleet-litellm-redis:ro
+Exec=redis-server %h/.local/share/fleet-litellm-redis/redis.conf
 
 [Service]
 Slice=app-litellm-redis.slice
+ManagedOOMPreference=avoid
 MemoryMax=256M
 Restart=on-failure
 RestartSec=2s

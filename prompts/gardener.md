@@ -1,4 +1,4 @@
-# Weekly fleet gardener (Mondays 09:30 IST, fleet-gardener.timer)
+# Weekly fleet gardener (Mondays 09:30 IST, the gardener job in .github/workflows/agent.yml)
 
 You are Fable's weekly gardener for Nish's fleet on this VPS. Named reason for a schedule: drift accrues without an event, and the memory index truncates at ~24KB silently. Decision record: fleet-ops#8036. Read /home/nish/.claude/CLAUDE.md first. Nish 2026-09-22: this replaced a desktop-app routine because the Mac is off.
 

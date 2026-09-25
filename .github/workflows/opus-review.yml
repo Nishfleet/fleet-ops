@@ -20,7 +20,7 @@
 # The job always runs. Grading steps run only for nishfleet-worker[bot].
 # Everyone else, including merge_group, reports success without a grade:
 # a skipped required check freezes the pull request (reusable-pr-checks.yml).
-# A D or F fails the check. The label alone lost the race on 2026-09-21/22.
+# Anything below A+ fails the check. The label alone lost the race on 2026-09-21/22.
 
 name: opus-review
 
@@ -63,11 +63,11 @@ jobs:
             REPO: ${{ github.repository }}
             PR NUMBER: ${{ github.event.pull_request.number }}
 
-            You are the grader. The author is a fleet worker model (GLM or DeepSeek) executing a packet; you are Claude Opus 5. Read the PR body and the issue it cites, then the diff. Grade the PR A to F on: does the change do what the packet asked and nothing more; is every claim in the body proven by something in the diff or a cited run; tests assert behaviour, not implementation; no scripts, hooks, wrappers, helpers or inline programs (the repo's no-glue rule); no comment that justifies a workaround; the `encoded:` line names a real rung. Post ONE top-level comment via `gh pr comment` that starts with `Opus grade: <letter>` followed by at most eight lines of reasons, each tied to a file and line. Use inline comments only for concrete defects. If the grade is D or F run `gh pr edit --add-label blocked-by-judge`; if A, B or C run `gh pr edit --remove-label blocked-by-judge` (ignore the error if absent). Do not edit files. Do not approve or request changes through the review API.
+            You are the grader. The author is a fleet worker model (GLM or DeepSeek) executing a packet; you are Claude Opus 5. Read the PR body and the issue it cites, then the diff. Grade the PR A+ to F on: does the change do what the packet asked and nothing more; is every claim in the body proven by something in the diff or a cited run; tests assert behaviour, not implementation; no scripts, hooks, wrappers, helpers or inline programs (the repo's no-glue rule); no comment that justifies a workaround; the `encoded:` line names a real rung. A+ means every item is met with zero findings; any finding makes the grade A or lower. The pass bar is A+ (Nish 2026-09-25: "pass bar is A+"). Post ONE top-level comment via `gh pr comment` that starts with `Opus grade: <letter>` followed by at most eight lines of reasons, each tied to a file and line. Use inline comments only for concrete defects. If the grade is anything but A+ run `gh pr edit --add-label blocked-by-judge`; if A+ run `gh pr edit --remove-label blocked-by-judge` (ignore the error if absent). Do not edit files. Do not approve or request changes through the review API.
           claude_args: |
             --model claude-opus-5-5
             --allowedTools "mcp__github_inline_comment__create_inline_comment,Bash(gh pr comment:*),Bash(gh pr diff:*),Bash(gh pr view:*),Bash(gh pr edit:*),Bash(gh issue view:*),Bash(git diff:*),Bash(git log:*),Bash(git show:*)"
-      - name: A D or F grade fails this check (fail closed if the label read fails)
+      - name: A grade below A+ fails this check (fail closed if the label read fails)
         if: github.event_name == 'pull_request' && github.event.pull_request.user.login == 'nishfleet-worker[bot]'
         env:
           GH_TOKEN: ${{ github.token }}
