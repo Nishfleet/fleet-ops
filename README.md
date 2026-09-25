@@ -271,9 +271,7 @@ of scope: they do not live in `session-*.scope`. `claim/issue-*` and
    program (fleet-ops#7828).
 
 `.github/workflows/secret-scan.yml` is the gitleaks scan (pinned binary +
-sha256, `--redact`). `.github/workflows/deploy-production.yml` is the
-shared deploy-on-green caller synced to every active repo — it self-skips
-on repos with no deploy target. All actions are pinned to exact commit
+sha256, `--redact`). fleet-ops has no deploy target. All actions are pinned to exact commit
 SHAs; every job has a timeout.
 
 `.github/workflows/reusable-pr-checks.yml` (`workflow_call`) is the batched
