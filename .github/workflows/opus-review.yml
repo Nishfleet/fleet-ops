@@ -15,7 +15,7 @@
 #       secrets:
 #         CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
 #
-# Same-repo caller: ./.github/workflows/opus-review.yml (this commit).
+# Same-repo caller: ./.github/workflows/opus-review.yml.
 # Named secret, not `secrets: inherit` (same pass as opus-vet.yml).
 # The job always runs. Grading steps run only for nishfleet-worker[bot].
 # Everyone else, including merge_group, reports success without a grade:
