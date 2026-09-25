@@ -124,10 +124,12 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           N: ${{ github.event.issue.number }}
-        # A split parks the parent as epic and opens agent-ready children via
-        # GITHUB_TOKEN too, so a split runs the full sweep to reach them.
+        # A split opens agent-ready children via GITHUB_TOKEN too, so a split
+        # runs the full sweep to reach them. Split = the parent has sub-issues,
+        # not the epic label: fleet-ops had no epic label, the edit failed, and
+        # #8606's 4 children sat unstarted for 70 minutes (2026-09-25).
         run: |
-          if [ "$(gh issue view "$N" -R "$GITHUB_REPOSITORY" --json labels --jq 'any(.labels[]; .name == "epic")')" = true ]; then
+          if [ "$(gh api "repos/$GITHUB_REPOSITORY/issues/$N" --jq '.sub_issues_summary.total > 0')" = true ]; then
             gh workflow run agent-dispatch.yml -R "$GITHUB_REPOSITORY"
           else
             gh workflow run agent-dispatch.yml -R "$GITHUB_REPOSITORY" -f issue="$N"
