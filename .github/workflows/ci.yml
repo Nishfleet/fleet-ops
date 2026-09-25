@@ -38,6 +38,9 @@ jobs:
       - run: sudo apt-get update
       - run: sudo apt-get install -y --no-install-recommends prometheus
       - run: promtool check rules config/fleet_rules.yml
+      # fleet-ops#8653: the router config's hard rules (quota walls cool <=900 s,
+      # a bench names a wall that cannot clear by itself) live in the schema.
+      - run: pipx run check-jsonschema==0.38.2 --schemafile config/litellm-proxy.schema.json config/litellm-proxy.yaml
       - run: pipx install semgrep==1.170.0
       # Parity with the block this replaced: it ran semgrep without --error, so
       # findings were reported, never gating. Gating on p/default is a separate

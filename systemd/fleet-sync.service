@@ -65,6 +65,11 @@ ExecStart=/usr/bin/systemd-tmpfiles --user --create
 #     overlay mount in worker containers, where a link into the deploy clone
 #     would not resolve. install -C skips the write when the bytes already match.
 ExecStart=/usr/bin/install -C -D -m 0644 /home/nish/workspaces/tooling/fleet-ops-deploy-clone/config/pi-models.json /home/nish/.pi/agent/models.json
+# 7c. ~/.config/fleet-ops/litellm-proxy.yaml is a COPY of config/litellm-proxy.yaml,
+#     same class as 7b (fleet-ops#8653: rung edits made live only, then lost or
+#     never reviewed). The repo is the only way in: a hand edit is overwritten
+#     here, and fleet-litellm-proxy-config.path restarts the proxy on a real change.
+ExecStart=/usr/bin/install -C -D -m 0644 /home/nish/workspaces/tooling/fleet-ops-deploy-clone/config/litellm-proxy.yaml /home/nish/.config/fleet-ops/litellm-proxy.yaml
 # 8. LINK-GUARD (fleet-ops#7743): machine wiring is hand-set symlinks, so a
 #    session CAN still point a live path at a throwaway checkout — the
 #    2026-09-18 incident linked standing-rules-render into a churning clone
