@@ -185,7 +185,7 @@ jobs:
             body=$(gh pr view "$REF" -R "$REPO" --json body --jq .body)
             grep -qiE "(close[sd]?|fix(e[sd])?|resolve[sd]?) #$i\b" <<<"$body" ||
               gh pr edit "$REF" -R "$REPO" --body "$body"$'\n\n'"Closes #$i"
-            gh pr merge "$REF" -R "$REPO" --auto
+            gh pr merge "$REF" -R "$REPO" --auto --squash  # a merge queue overrides the method; repos without one need it
           fi
       - name: Deliverable
         if: steps.gate.outputs.go == 'true'
