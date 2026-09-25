@@ -160,6 +160,7 @@ model_list:
     api_base: https://openrouter.ai/api/v1
     max_budget: 1.0
     budget_duration: 1mo
+    custom_llm_provider: openai
     api_key: os.environ/OPENROUTER_API_KEY
     extra_headers: {HTTP-Referer: https://0509.io, X-Title: nish-fleet}
     tags:
@@ -176,6 +177,7 @@ model_list:
     api_base: https://openrouter.ai/api/v1
     max_budget: 1.0
     budget_duration: 1mo
+    custom_llm_provider: openai
     api_key: os.environ/OPENROUTER_API_KEY
     extra_headers: {HTTP-Referer: https://0509.io, X-Title: nish-fleet}
     tags:
@@ -325,6 +327,7 @@ benched:
     api_base: https://api.tokenfactory.nebius.com/v1
     max_budget: 5.0
     budget_duration: 1mo
+    custom_llm_provider: openai
     api_key: os.environ/NEBIUS_API_KEY
     tags:
     - metered
@@ -353,6 +356,7 @@ benched:
     api_base: https://api.xkiro.com/v1
     max_budget: 5.0
     budget_duration: 1mo
+    custom_llm_provider: openai
     api_key: os.environ/XKIRO_API_KEY
     tags:
     - free
@@ -381,6 +385,7 @@ benched:
     api_base: https://openrouter.ai/api/v1
     max_budget: 5.0
     budget_duration: 1mo
+    custom_llm_provider: openai
     api_key: os.environ/OPENROUTER_API_KEY
     extra_headers: {HTTP-Referer: https://0509.io, X-Title: nish-fleet}
     tags:
@@ -398,6 +403,7 @@ benched:
     api_base: https://openrouter.ai/api/v1
     max_budget: 5.0
     budget_duration: 1mo
+    custom_llm_provider: openai
     api_key: os.environ/OPENROUTER_API_KEY
     extra_headers: {HTTP-Referer: https://0509.io, X-Title: nish-fleet}
     tags:
@@ -415,6 +421,7 @@ benched:
     api_base: https://zenmux.ai/api/v1
     max_budget: 5.0
     budget_duration: 1mo
+    custom_llm_provider: openai
     api_key: os.environ/ZENMUX_API_KEY
     tags:
     - free
