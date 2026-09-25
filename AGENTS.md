@@ -64,7 +64,7 @@ print it, never copy it into a repo, PR or issue:
   KV list, `workersInvocationsAdaptive`). Use it for D1 drills, preview uploads
   and analytics queries (0509#4179 #4180 #4182 #4183 #4184 #4186).
 - `~/.config/cloudflare/email.env` — `CLOUDFLARE_EMAIL_TOKEN`, narrowed 2026-09-25: Email
-  Routing (addresses, rules, suppressions), Email Sending, R2 storage and Turnstile only, and it
+  Routing (addresses, rules, suppressions; 0509#4181), Email Sending, R2 storage and Turnstile only, and it
   works only from this VPS's IPs. It cannot create tokens, touch DNS or Workers, or read analytics.
   The old account-admin token (`c617a6f2…`) is disabled. No token on the VPS can mint tokens now,
   so a new or wider token is Nish's call in the dashboard.
