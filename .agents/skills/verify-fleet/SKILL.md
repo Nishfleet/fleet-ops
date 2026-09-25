@@ -7,7 +7,7 @@ description: "Run one real fleet unit and collect proof: invocation id, journal,
 
 The fleet CLI is stock. Use `systemctl --user`, `systemd-run --user`, `journalctl --user`, and `gh`. Do not add a script, and do not print a token, a key file, or `fleet-gh-token.env`.
 
-Systemd-managed containers are controlled through their units only: restart is `systemctl --user restart <unit>`. Never `podman rm`, `podman stop`, `podman kill`, or signals to container/conmon PIDs — those go around the unit. `podman ps` and `podman inspect` are not a health check: on 2026-09-25 `podman ps -a` reported `Stopping` for all three live Quadlet containers at 18:34:45, and `podman inspect` at 18:37:24 still read `state=stopping` with a live `pid` and `exit=0`, while `podman events` records no stop, kill, pause or cleanup between the 17:21:27 `container start` and the 18:39:22 `container remove` (fleet-ops#8703). Ground truth is the unit's row in `fleet-map.md`.
+Router containers (`fleet-litellm-proxy`, `fleet-litellm-redis`, `fleet-litellm-postgres`) restart only through their unit: `systemctl --user restart fleet-litellm-<name>.service`. `podman` is not a way in. `podman rm`, `podman stop`, `podman kill` and signals to a container or conmon PID bypass systemd, and `podman ps` / `podman inspect` report podman's stored state, not the service (fleet-ops#8703). A router is healthy when the Observe column's command in `fleet-map.md` says so.
 
 Read `fleet-map.md` in this directory before deciding what a unit does. One row is one unit, timer, path, slice, or template. A drop-in belongs to its unit.
 
