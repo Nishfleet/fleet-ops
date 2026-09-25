@@ -123,10 +123,16 @@ jobs:
             ! curl -sL --max-time 10 127.0.0.1:4000/metrics |
               awk '/^litellm_deployment_state\{/ && /model_id="[^"]*-worker-capable"/ && /litellm_model_name="[^"]*\// { n++; if ($NF + 0 == 0) up++ } END { exit !(n > 0 && up == 0) }'
           }
+          # Devin is free while fewer than 4 run and it has not answered
+          # "capacity issues" in the last 15 minutes (the Router wall step
+          # touches the marker); until then its turn falls through to pi.
+          devin_free() {
+            [ "$(live devin)" -lt 4 ] && [ -z "$(find "$HOME/.cache/fleet-ops/devin-wall" -mmin -15 2>/dev/null)" ]
+          }
           case $labels in
             *,strong-only,*) [ "$(live cursor-agent)" -lt 1 ] || skip lanes-full; engine=cursor ;;
             *)
-              if [ "$(live devin)" -lt 4 ]; then engine=devin
+              if devin_free; then engine=devin
               elif pi_free; then engine=pi
               elif [ "$(live cursor-agent)" -lt 1 ]; then engine=cursor
               else skip lanes-full
@@ -195,15 +201,23 @@ jobs:
           skip-token-revoke: "false"
       - name: Router wall
         id: wall
-        # A router seat wall is infra, not a bad packet (fleet-ops#8543): no
-        # strike, back to agent-ready. The Gate's 3-run cap bounds the loop.
+        # A router seat wall or a Devin capacity refusal is infra, not a bad
+        # packet (fleet-ops#8543): no strike, back to agent-ready. The Gate's
+        # 3-run cap bounds the loop. Devin fails before it writes anything, so
+        # a claim branch that is already ahead of main is requeued too.
         if: failure() && steps.gate.outputs.go == 'true'
         env:
+          ENGINE: ${{ steps.gate.outputs.engine }}
           GH_TOKEN: ${{ steps.arm-token.outputs.token }}
         run: |
           i=${REF#claim/issue-}
-          grep -qiE 'no deployments available|ratelimiterror|\b429\b' "$RUNNER_TEMP/worker.err" 2>/dev/null || exit 0
-          [ "$(gh api "repos/$REPO/compare/main...$REF" --jq .ahead_by)" = 0 ] || exit 0
+          if [ "$ENGINE" = devin ] && grep -qiE 'capacity issues|cognition\.ai/retryable": true' "$RUNNER_TEMP/worker.err" 2>/dev/null; then
+            mkdir -p "$HOME/.cache/fleet-ops"
+            touch "$HOME/.cache/fleet-ops/devin-wall"
+          else
+            grep -qiE 'no deployments available|ratelimiterror|\b429\b' "$RUNNER_TEMP/worker.err" 2>/dev/null || exit 0
+            [ "$(gh api "repos/$REPO/compare/main...$REF" --jq .ahead_by)" = 0 ] || exit 0
+          fi
           gh issue comment "$i" -R "$REPO" --body "agent run infra-failed: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
           gh issue edit "$i" -R "$REPO" --add-label agent-ready --remove-label agent-in-progress
           echo wall=true >> "$GITHUB_OUTPUT"
