@@ -38,10 +38,10 @@ tests:
         alertname: DiskAlmostFull
         exp_alerts: []
 
-  # Last proven restore ~28h old fires.
+  # Restore drill timer last fired ~28h ago fires.
   - interval: 1m
     input_series:
-      - series: 'fleet_restore_drill_last_success_seconds'
+      - series: 'node_systemd_timer_last_trigger_seconds{name="restic-r2-restore-test.timer"}'
         values: '-100000x30'
     alert_rule_test:
       - eval_time: 20m
@@ -50,14 +50,15 @@ tests:
           - exp_labels:
               severity: critical
               service: backups
+              name: restic-r2-restore-test.timer
             exp_annotations:
               summary: "no proven restic restore in 26+ hours"
-              description: "fleet_restore_drill_last_success_seconds is older than 26h or absent, so the backup is unproven. Repair: systemctl start restic-r2-restore-test.service and read its journal."
+              description: "restic-r2-restore-test.timer last fired over 26h ago (or the series is absent), so the backup is unproven. Repair: systemctl status restic-r2-restore-test.timer, then systemctl start restic-r2-restore-test.service and read its journal."
 
-  # Last proven restore ~25h old stays silent.
+  # Restore drill timer last fired ~25h ago stays silent.
   - interval: 1m
     input_series:
-      - series: 'fleet_restore_drill_last_success_seconds'
+      - series: 'node_systemd_timer_last_trigger_seconds{name="restic-r2-restore-test.timer"}'
         values: '-90000x30'
     alert_rule_test:
       - eval_time: 20m
@@ -98,7 +99,7 @@ tests:
               service: seat-proxy
             exp_annotations:
               summary: "every worker-cheap/worker-capable deployment has been unhealthy for 30m+ — worker lane is down"
-              description: "min(litellm_deployment_state) over raw worker rows > 0 for 30m: no worker rung is healthy, so every pi-issue@ start dies on its first call (fleet-ops#7820). Repair, in order: (1) if ~/workspaces/agent-state/FLEET-PAUSED exists the fleet is deliberately down — stop. (2) GET /health with the master key and probe each worker rung directly (chat AND tool_choice=required); a green direct probe means the gauge is stale — never trust the gauge alone. (3) If every upstream answers a quota/subscription 429, seat supply is a money decision: record the probe results on the issue and route to Nish; do not add rungs or raise max_parallel_requests. (4) Once one rung is green again, XDG_RUNTIME_DIR=/run/user/$(id -u) systemctl --user reset-failed the pi-scout@/pi-intake-repair@ units that failed in the window."
+              description: "min(litellm_deployment_state) over raw worker rows > 0 for 30m: no worker rung is healthy, so every issue-worker start dies on its first call (fleet-ops#7820). Repair, in order: (1) if ~/workspaces/agent-state/FLEET-PAUSED exists the fleet is deliberately down — stop. (2) GET /health with the master key and probe each worker rung directly (chat AND tool_choice=required); a green direct probe means the gauge is stale — never trust the gauge alone. (3) If every upstream answers a quota/subscription 429, seat supply is a money decision: record the probe results on the issue and route to Nish; do not add rungs or raise max_parallel_requests. (4) Once one rung is green again, XDG_RUNTIME_DIR=/run/user/$(id -u) systemctl --user reset-failed the pi-scout@ unit that failed in the window."
 
   # Test 12 — one healthy rung: the same two raw rows, but opencodego answers
   # 0, so min() over the raw worker rows is 0 and the lane is NOT walled.
