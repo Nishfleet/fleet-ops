@@ -393,9 +393,11 @@ jobs:
         if: github.event_name == 'merge_group'
         run: "true"
 
-  # Shared A+ grader (fleet-ops#8655; rubric docs/quality-bar.md). Engine follows
-  # vars.GRADER. Runs beside opus-review until the ruleset requires `grade / grade`;
-  # opus-review is then deleted.
+  # Shared A+ grader (fleet-ops#8655; rubric docs/quality-bar.md). Engine
+  # family-routed like opus-review: Kimi when vars.GRADER is 'kimi' or the PR
+  # author is not nishfleet-worker[bot], Claude otherwise. Runs beside
+  # opus-review until the ruleset requires `grade / grade`; opus-review is then
+  # deleted.
   grade:
     if: github.event_name != 'push'
     uses: Nishfleet/fleet-ops/.github/workflows/grade.yml@main
