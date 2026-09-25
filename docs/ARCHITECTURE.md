@@ -13,9 +13,7 @@ One VPS (netcup), one `nish` user. Everything the fleet runs is a
 (see README, and RUNBOOK for the wiring rules). GitHub is the durable copy of
 code and config.
 
-The work loop: `pi-intake@<repo>.timer` and the `pi-intake-trigger@.path`
-units pick up `agent-ready` issues, spawn `pi-issue@<repo>-<N>` workers,
-workers open PRs on `claim/issue-<N>`, and the GitHub merge queue lands them.
+The work loop: `.github/workflows/agent-dispatch.yml` queues `agent-ready` issues as `agent.yml` jobs on the VPS self-hosted runners, workers open PRs on `claim/issue-<N>`, and the GitHub merge queue lands them.
 Alerts reach repair through `prometheus-am-executor` → `alert-repair@`.
 The scout and `fleet-gardener` are scheduled jobs in `.github/workflows/agent.yml` (fleet-ops#8433); the daily view is the saved searches in the README.
 
@@ -118,7 +116,7 @@ Before building a retry loop, cooldown, poller, queue daemon, watchdog or
 dispatcher, find the existing owner. systemd primitives replace the bans:
 `Restart=`/`WatchdogSec=`/`StartLimitBurst=`, `RestartSec=`+`StartLimitInterval`,
 a `.path` unit or a named-reason timer, a `systemd-run --user` transient unit,
-or Pi's stock dispatch (`pi-issue@`, `pi-packet@`, `pi-scout@`). If no existing
+or Pi's stock dispatch (`.github/workflows/agent.yml`). If no existing
 owner fits, open a design proposal through the senior-conference channel — do
 not build by fiat.
 
