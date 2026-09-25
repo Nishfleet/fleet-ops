@@ -46,12 +46,13 @@ ExecStart=/usr/bin/sudo -n /usr/bin/install -C -D -m 0644 -o root -g root /home/
 ExecStart=/usr/bin/sudo -n /usr/bin/install -C -D -m 0644 -o root -g root /home/nish/workspaces/tooling/fleet-ops-deploy-clone/config/prometheus.yml /etc/prometheus/prometheus.yml
 ExecStart=/usr/bin/systemctl --user link /home/nish/workspaces/tooling/fleet-ops-deploy-clone/systemd/fleet-prometheus-reload.service
 ExecStart=/usr/bin/systemctl --user enable --now /home/nish/workspaces/tooling/fleet-ops-deploy-clone/systemd/fleet-prometheus-reload.path
-# 6. The executor reads that file once at start; a pull that changed it must
-#    bounce the unit or the new command line never loads (fleet-ops#7414 —
-#    the loose-ends: am-executor-claim-reload gap that left the #6347 claim
-#    wrap unloaded for days while every spawn logged `pi: not found`). Blob
-#    SHA vs a stamp file, so it restarts only on real drift.
-ExecStart=/usr/bin/sh -c 'r=/home/nish/workspaces/tooling/fleet-ops-deploy-clone; s=/home/nish/.config/prometheus-am-executor/.sha; h=$$(git -C "$$r" rev-parse HEAD:config/prometheus-am-executor.yml); [ "$$(cat "$$s" 2>/dev/null)" = "$$h" ] || { systemctl --user try-restart prometheus-am-executor.service && echo "$$h" > "$$s"; }'
+# 6. prometheus-am-executor reads its config once at start (fleet-ops#7414);
+#    prometheus-am-executor-config.path restarts it when the pull changes
+#    config/prometheus-am-executor.yml. The link line makes the trigger
+#    service findable in the user unit path; the second links and starts the
+#    .path unit from the clone. Both are idempotent. Same shape as step 4.
+ExecStart=/usr/bin/systemctl --user link /home/nish/workspaces/tooling/fleet-ops-deploy-clone/systemd/prometheus-am-executor-config.service
+ExecStart=/usr/bin/systemctl --user enable --now /home/nish/workspaces/tooling/fleet-ops-deploy-clone/systemd/prometheus-am-executor-config.path
 # 7a. Apply user-tmpfiles.d on every sync, not just at the next login
 #     (fleet-ops#8584). This creates the prometheus-am-executor config
 #     symlink from the L+ line in agent-worktrees.conf, replacing the old
