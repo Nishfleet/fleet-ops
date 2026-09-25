@@ -346,7 +346,8 @@ a shared URL is a fail.
 ## Worker RAM admission (issue #45)
 
 Admission carries no RAM charge: the concurrency bound is the runner count
-(#8429): 16 `agent` runners (`actions.runner.Nishfleet.netcup-agent-1..16`, sized from measured memory pressure, fleet-ops#8678),
+(#8429): 16 `agent` runners (`actions.runner.Nishfleet.netcup-agent-1..16`,
+sized from measured memory pressure, fleet-ops#8678),
 all in `agent.slice` (`systemd/system/agent.slice`, 10G/11G, `MemorySwapMax=1G`),
 each with
 `VITEST_MAX_WORKERS=2` (vitest's default of cores-1 workers per job thrashed
