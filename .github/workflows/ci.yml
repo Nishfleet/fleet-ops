@@ -247,7 +247,6 @@ jobs:
       contents: read
       pull-requests: write
       issues: write
-      actions: write
       id-token: write
     env:
       GRADE_PROMPT: |
@@ -373,27 +372,6 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: gh pr view ${{ github.event.pull_request.number }} --repo ${{ github.repository }} --json labels --jq '.labels[].name' > "$RUNNER_TEMP/labels" && ! grep -qx blocked-by-judge "$RUNNER_TEMP/labels"
-      # Below A+ the claim issue goes straight back to the queue and the worker
-      # continues this PR from the grade (prompts/worker.md 2b), fleet-ops#8787.
-      # A GITHUB_TOKEN relabel fires no workflow, so dispatch the issue by
-      # number (the documented workflow_dispatch exception). The run cap in
-      # agent.yml bounds the loop; past it, opus-vet writes a new brief.
-      - name: Below A+ goes back to the queue
-        if: failure() && github.event_name == 'pull_request' && startsWith(github.head_ref, 'claim/issue-')
-        env:
-          GH_TOKEN: ${{ github.token }}
-          REF: ${{ github.head_ref }}
-        run: |
-          grep -qx blocked-by-judge "$RUNNER_TEMP/labels" || exit 0
-          n=${REF#claim/issue-}; n=${n%%-*}
-          # Only a claim the fleet still owns: agent-in-progress and no park
-          # label (agent.yml's Deliverable list). A parked issue stays parked
-          # (0509#5619).
-          labels=,$(gh issue view "$n" -R "$GITHUB_REPOSITORY" --json labels --jq '[.labels[].name]|join(",")'),
-          case $labels in *,agent-in-progress,*) ;; *) exit 0 ;; esac
-          case $labels in *,agent-blocked,*|*,needs-orchestrator,*|*,needs-nish-decision,*) exit 0 ;; esac
-          gh issue edit "$n" -R "$GITHUB_REPOSITORY" --add-label agent-ready --remove-label agent-in-progress
-          gh workflow run agent-dispatch.yml -R "$GITHUB_REPOSITORY" -f issue="$n"
       - name: merge_group reports the check so the queue can merge (the grade was enforced on the pull request)
         if: github.event_name == 'merge_group'
         run: "true"
