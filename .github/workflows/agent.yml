@@ -68,6 +68,11 @@ jobs:
         run: |
           i=${REF#claim/issue-}
           skip() { echo "gate: skip ($1)"; echo go=false >> "$GITHUB_OUTPUT"; exit 0; }
+          # A claim ref can name a number that is not an issue in the calling
+          # repo (fleet-ops#8772: inish-site dispatched fleet-ops' #8136): a
+          # 404 is a skip, any other gh failure still fails the step.
+          err=$(gh api "repos/$REPO/issues/$i" --jq .number 2>&1 >/dev/null) ||
+            { case $err in *"HTTP 404"*) skip missing-issue ;; *) echo "$err" >&2; exit 1 ;; esac; }
           issue=$(gh api "repos/$REPO/issues/$i")
           labels=,$(jq -r '[.labels[].name]|join(",")' <<<"$issue"),
           [ "$(jq -r .state <<<"$issue")" = open ] || skip closed
@@ -331,6 +336,11 @@ jobs:
         # First strike re-queues via agent-ready (fleet-ops#8552); the second parks.
         run: |
           i=${N#claim/issue-}
+          # A ref can name a number that is not an issue in the calling repo
+          # (fleet-ops#8772): nothing to comment or relabel, exit clean. Any
+          # other gh failure still fails the step.
+          err=$(gh issue view "$i" -R "$GITHUB_REPOSITORY" --json number 2>&1 >/dev/null) ||
+            { case $err in *"Could not resolve"*) echo "report: #$i does not resolve in $GITHUB_REPOSITORY; skip"; exit 0 ;; *) echo "$err" >&2; exit 1 ;; esac; }
           # shellcheck disable=SC2016 # $v is a jq variable
           prior=$(gh issue view "$i" -R "$GITHUB_REPOSITORY" --json comments --jq '[.comments[].body] | (map(startswith("opus-vet:")) | rindex(true) // -1) as $v | .[$v+1:] | map(select(startswith("agent run failed:"))) | length')
           gh issue comment "$i" -R "$GITHUB_REPOSITORY" --body "agent run failed: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
