@@ -126,7 +126,7 @@ jobs:
             slots=$(python3 -c 'import sys, yaml; print(sum(m["litellm_params"].get("max_parallel_requests") or 0 for m in yaml.safe_load(open(sys.argv[1]))["model_list"] if m.get("model_name") == "worker-capable"))' "$HOME/.config/fleet-ops/litellm-proxy.yaml")
             [ "$(live pi)" -lt "$slots" ] || return 1
             ! curl -sL --max-time 10 127.0.0.1:4000/metrics |
-              awk '/^litellm_deployment_state\{/ && /model_id="[^"]*-worker-capable"/ && /litellm_model_name="[^"]*\// { n++; if ($NF + 0 == 0) up++ } END { exit !(n > 0 && up == 0) }'
+              awk '/^litellm_deployment_state\{/ && /model_id="[^"]*-worker-capable"/ && !/litellm_model_name="worker-/ { n++; if ($NF + 0 == 0) up++ } END { exit !(n > 0 && up == 0) }'
           }
           # Devin is free while fewer than 4 run and it has not answered
           # "capacity issues" in the last 15 minutes (the Router wall step

@@ -114,12 +114,13 @@ groups:
 
       # FleetWorkerLaneOutage (fleet-ops#7820): the whole worker lane is walled —
       # no raw worker-cheap/worker-capable deployment row is healthy. Raw rows
-      # only (litellm_model_name contains "/"): alias rows pin at 2 after a
+      # only (litellm_model_name is not the worker-* alias; raw names need not
+      # contain "/", e.g. "deepseek-v4.1-flash", 2026-09-26): alias rows pin at 2 after a
       # cooldown and clear lazily (#7846), so they would lie. Unlike
       # FleetLitellmDeploymentUnhealthy this does NOT exempt 429 cooldowns: a
       # quota wall on every rung at once is exactly the outage (2026-09-19).
       - alert: FleetWorkerLaneOutage
-        expr: min(litellm_deployment_state{model_id=~".+-worker-(cheap|capable)", litellm_model_name=~".*/.*"}) > 0
+        expr: min(litellm_deployment_state{model_id=~".+-worker-(cheap|capable)", litellm_model_name!~"worker-(cheap|capable)"}) > 0
         for: 30m
         labels:
           severity: critical
