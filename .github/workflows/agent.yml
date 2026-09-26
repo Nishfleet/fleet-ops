@@ -112,7 +112,9 @@ jobs:
           # 1 run at once. strong-only issues need a senior model other than
           # SWE-2, so they go only to Cursor; a full Cursor lane leaves them
           # agent-ready. Every other issue: Devin SWE-2 Max while fewer than 4
-          # run ($0), else pi while it has a free router slot, else Cursor.
+          # run ($0), else pi while it has a free router slot; when both are
+          # full the issue waits (lanes-full) — there is no Cursor fallback
+          # (fleet-ops#8740).
           # A lane's live count is the distinct worker directories (Devin,
           # Cursor) or pi session directories on its bwrap command lines, so
           # it spans every runner and repo on this host.
@@ -134,12 +136,15 @@ jobs:
           devin_free() {
             [ "$(live devin)" -lt 4 ] && [ -z "$(find "$HOME/.cache/fleet-ops/devin-wall" -mmin -15 2>/dev/null)" ]
           }
+          # Cursor is the strong-only lane only. A non-strong-only issue never
+          # falls back to it: with Devin and pi both full it waits
+          # (lanes-full) rather than burning the paced Cursor quota on work
+          # those seats can do (fleet-ops#8740). The cap stays 1.
           case $labels in
             *,strong-only,*) [ "$(live cursor-agent)" -lt 1 ] || skip lanes-full; engine=cursor ;;
             *)
               if devin_free; then engine=devin
               elif pi_free; then engine=pi
-              elif [ "$(live cursor-agent)" -lt 1 ]; then engine=cursor
               else skip lanes-full
               fi ;;
           esac
@@ -185,9 +190,20 @@ jobs:
             echo "$packet" | bwrap --dev-bind / / --proc /proc --unshare-pid --die-with-parent --chdir "$dir" -- \
               devin -p --prompt-file /dev/stdin --permission-mode dangerous --model swe-2-max >/dev/null
           elif [ "$ENGINE" = cursor ]; then
-            set -a; . "$HOME/.config/fleet-ops/seats/cursor.env"; set +a
+            # Alternate the two prepaid Cursor Ultra keys by issue number so
+            # neither stack is spent and both are paced (fleet-ops#8740):
+            # even $id -> cursor.env, odd $id -> cursor-2.env. $id's issue
+            # number is its last '-' field, so parity is on the issue number.
+            case ${id##*-} in
+              *[!0-9]*) cursor_env=cursor.env ;;   # not numeric: default to key 1
+              *) [ $(( ${id##*-} % 2 )) -eq 0 ] && cursor_env=cursor.env || cursor_env=cursor-2.env ;;
+            esac
+            set -a
+            # shellcheck disable=SC1090 # cursor_env is one of the two constant seat files set in the case just above
+            . "$HOME/.config/fleet-ops/seats/$cursor_env"
+            set +a
             mkdir -p "$dir"
-            $jail cursor-agent -p --output-format text --model grok-4.7-xhigh --force --trust \
+            $jail cursor-agent -p --output-format text --model cursor-grok-4.6-high --force --trust \
               --workspace "$dir" "$packet" >/dev/null
           else
             echo "/worker $id" | $jail pi --print \
