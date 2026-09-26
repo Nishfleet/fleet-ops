@@ -1,7 +1,10 @@
 name: grade
 
 # One grader for every fleet PR (fleet-ops#8655): the rubric is docs/quality-bar.md
-# on fleet-ops@main, and only A+ passes. Callers: `uses: Nishfleet/fleet-ops/.github/workflows/grade.yml@main`.
+# on fleet-ops@main, and only A+ passes. Engine, family-routed: Kimi when
+# vars.GRADER is 'kimi' or the PR author is not nishfleet-worker[bot]; Claude
+# otherwise, so a grader never grades its own family's PR.
+# Callers: `uses: Nishfleet/fleet-ops/.github/workflows/grade.yml@main`.
 on:
   workflow_call:
     inputs:
@@ -12,6 +15,8 @@ on:
     secrets:
       CLAUDE_CODE_OAUTH_TOKEN:
         required: true
+      CURSOR_API_KEY:
+        required: false
 
 permissions: {}
 
@@ -25,6 +30,14 @@ jobs:
       pull-requests: write
       issues: write
       id-token: write
+    env:
+      GRADE_PROMPT: |
+        REPO: ${{ github.repository }}
+        PR NUMBER: ${{ github.event.pull_request.number }}
+        PR AUTHOR: ${{ github.event.pull_request.user.login }}
+        TRUST DOC: ${{ inputs.trust-doc }}
+
+        You are the grader, ${{ (vars.GRADER == 'kimi' || github.event.pull_request.user.login != 'nishfleet-worker[bot]') && 'Kimi K3 Max' || 'Claude Opus 5' }}. Read the bar in .bar/docs/quality-bar.md. If TRUST DOC is not empty, read that file in the working tree too and apply it. Read the PR body and the issue it cites, then the diff. Grade the PR A+ or A to F against the bar: A+ only when all nine points are met with zero findings; any finding means it is not A+. Post ONE top-level comment via `gh pr comment` whose first line is exactly `${{ (vars.GRADER == 'kimi' || github.event.pull_request.user.login != 'nishfleet-worker[bot]') && 'Kimi' || 'Opus' }} grade: <grade>`. Then list every finding, one per line, each with file:line. Use inline comments only for concrete defects. Do not edit files, do not add or remove labels, do not approve or request changes through the review API.
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         if: github.event_name == 'pull_request'
@@ -38,27 +51,114 @@ jobs:
           path: .bar
           fetch-depth: 1
       - uses: anthropics/claude-code-action@9ca9355b36297178e28d37c799d1c9c8a28e6507 # main 2026-09-22, Claude Code 2.1.280 (first to know claude-opus-5-5)
-        if: github.event_name == 'pull_request'
+        if: github.event_name == 'pull_request' && vars.GRADER != 'kimi' && github.event.pull_request.user.login == 'nishfleet-worker[bot]'
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           allowed_bots: '*'
           github_token: ${{ secrets.GITHUB_TOKEN }}
-          prompt: |
-            REPO: ${{ github.repository }}
-            PR NUMBER: ${{ github.event.pull_request.number }}
-            PR AUTHOR: ${{ github.event.pull_request.user.login }}
-            TRUST DOC: ${{ inputs.trust-doc }}
-
-            You are the grader, Claude Opus 5.5. Read the bar in .bar/docs/quality-bar.md. If TRUST DOC is not empty, read that file in the working tree too and apply it. Read the PR body and the issue it cites, then the diff. Grade the PR A+ or A to F against the bar: A+ only when all nine points are met with zero findings; any finding means it is not A+. Post ONE top-level comment via `gh pr comment` whose first line is exactly `Grade: <grade>`, with ` (same-family grade)` appended to that line unless PR AUTHOR is `nishfleet-worker[bot]`. Then list every finding, one per line, each with file:line. Use inline comments only for concrete defects. Do not edit files, do not add or remove labels, do not approve or request changes through the review API.
+          prompt: ${{ env.GRADE_PROMPT }}
           claude_args: |
             --model claude-opus-5-5
             --allowedTools "Read,mcp__github_inline_comment__create_inline_comment,Bash(gh pr comment:*),Bash(gh pr diff:*),Bash(gh pr view:*),Bash(gh issue view:*),Bash(git diff:*),Bash(git log:*),Bash(git show:*)"
+      - name: Grade with Kimi K3 Max
+        if: github.event_name == 'pull_request' && (vars.GRADER == 'kimi' || github.event.pull_request.user.login != 'nishfleet-worker[bot]')
+        env:
+          CURSOR_API_KEY: ${{ secrets.CURSOR_API_KEY }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          curl https://cursor.com/install -fsS | bash
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+          export PATH="$HOME/.local/bin:$PATH"
+          mkdir -p "$HOME/.cursor"
+          cat > "$HOME/.cursor/cli-config.json" <<'EOF'
+          {
+            "version": 1,
+            "editor": {"vimMode": false},
+            "approvalMode": "allowlist",
+            "sandbox": {"mode": "disabled"},
+            "permissions": {
+              "allow": [
+                "Read(**)",
+                "Shell(gh:pr comment*)",
+                "Shell(gh:pr diff*)",
+                "Shell(gh:pr view*)",
+                "Shell(gh:issue view*)",
+                "Shell(git:diff*)",
+                "Shell(git:log*)",
+                "Shell(git:show*)"
+              ],
+              "deny": [
+                "Write(**)",
+                "Mcp(*:*)",
+                "WebFetch(*)",
+                "Shell(rm)",
+                "Shell(mv)",
+                "Shell(cp)",
+                "Shell(chmod)",
+                "Shell(chown)",
+                "Shell(sudo)",
+                "Shell(bash)",
+                "Shell(sh)",
+                "Shell(zsh)",
+                "Shell(python)",
+                "Shell(python3)",
+                "Shell(node)",
+                "Shell(perl)",
+                "Shell(ruby)",
+                "Shell(php)",
+                "Shell(curl)",
+                "Shell(wget)",
+                "Shell(npm)",
+                "Shell(npx)",
+                "Shell(pip)",
+                "Shell(pip3)",
+                "Shell(make)",
+                "Shell(dd)",
+                "Shell(tee)",
+                "Shell(install)",
+                "Shell(touch)",
+                "Shell(mkdir)",
+                "Shell(git:add*)",
+                "Shell(git:commit*)",
+                "Shell(git:checkout*)",
+                "Shell(git:switch*)",
+                "Shell(git:merge*)",
+                "Shell(git:rebase*)",
+                "Shell(git:reset*)",
+                "Shell(git:push*)",
+                "Shell(git:pull*)",
+                "Shell(git:stash*)",
+                "Shell(git:branch*)",
+                "Shell(git:worktree*)",
+                "Shell(git:config*)",
+                "Shell(git:remote*)",
+                "Shell(git:clone*)",
+                "Shell(git:tag*)",
+                "Shell(gh:api*)",
+                "Shell(gh:auth*)",
+                "Shell(gh:pr create*)",
+                "Shell(gh:pr merge*)",
+                "Shell(gh:pr close*)",
+                "Shell(gh:pr review*)",
+                "Shell(gh:pr ready*)",
+                "Shell(gh:pr edit*)",
+                "Shell(gh:issue edit*)",
+                "Shell(gh:workflow*)",
+                "Shell(gh:run*)",
+                "Shell(gh:secret*)",
+                "Shell(gh:repo*)",
+                "Shell(gh:release*)"
+              ]
+            }
+          }
+          EOF
+          cursor-agent -p --output-format text --model kimi-k3-max --force --trust "$GRADE_PROMPT"
       - name: Only A+ passes (fails closed when there is no grade)
         if: github.event_name == 'pull_request'
         env:
           GH_TOKEN: ${{ github.token }}
         run: >-
-          gh pr view ${{ github.event.pull_request.number }} --repo ${{ github.repository }} --json comments --jq '[.comments[] | select(.author.login == "github-actions" and (.body | startswith("Grade:")))] | last | .body | split("\n") | .[0]' > "$RUNNER_TEMP/grade" && grep -qxE 'Grade: A\+( \(same-family grade\))?' "$RUNNER_TEMP/grade"
+          gh pr view ${{ github.event.pull_request.number }} --repo ${{ github.repository }} --json comments --jq '[.comments[] | select(.author.login == "github-actions" and (.body | (startswith("Opus grade:") or startswith("Kimi grade:"))))] | sort_by(.createdAt) | last | .body | split("\n") | .[0]' > "$RUNNER_TEMP/grade" && grep -qxE '(Opus|Kimi) grade: A\+' "$RUNNER_TEMP/grade"
       - name: merge_group reports the check so the queue can merge (the grade was enforced on the pull request)
         if: github.event_name == 'merge_group'
         run: "true"
