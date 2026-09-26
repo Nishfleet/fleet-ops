@@ -117,7 +117,8 @@ Before the Jev POST, one web search per alert so Jev sees outside facts (Nish 20
 Then make ONE call: POST to `http://127.0.0.1:4000/jev` with header
 `Authorization: Bearer $(grep '^LITELLM_JEV_KEY=' ~/.config/fleet-ops/seats/typesafe-jev.env | cut -d= -f2-)`
 — the seat file holds several keys, so name the line, and never print the
-key — plus `content-type: application/json`. The body has two keys:
+key — plus `content-type: application/json`. The body has three keys:
+`custom_llm_provider`, always `vercel_ai_gateway`;
 `state`, the serialized card text carrying the alertname, severity, your
 one-line disposition and the evidence above; and `questions`, three typed
 entries — `class` as a `choice` question whose `criteria` maps each of

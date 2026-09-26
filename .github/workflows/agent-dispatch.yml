@@ -76,7 +76,8 @@ jobs:
       ref: ${{ github.event.pull_request.head.ref }}
   # A closed blocker frees the issues it was blocking; a manual run sweeps
   # every ready, unblocked issue (cutover backfill and missed-event recovery),
-  # then every open claim PR without auto-merge or with a conflict.
+  # then open claim PRs that are unarmed, conflicting, missing a required-check
+  # report, or still agent-in-progress with no live agent run.
   # Priority-now first, then oldest. The Gate step in agent.yml re-checks each
   # and its 3-run cap bounds any loop.
   list:
@@ -88,6 +89,11 @@ jobs:
     permissions:
       issues: write
       pull-requests: read
+      # actions: liveness is `gh run view` (fleet-ops#8777). checks and
+      # statuses: that same sweep reads the head's statusCheckRollup.
+      actions: read
+      checks: read
+      statuses: read
     outputs:
       refs: ${{ steps.list.outputs.refs }}
     steps:
@@ -139,7 +145,58 @@ jobs:
               done
               jq -c 'select(.mergeable == "CONFLICTING") | .headRefName' <<<"$v"
             done | jq -sc .)
-            prs=$(jq -nc --argjson a "$unarmed" --argjson b "$conflicted" --argjson q "$queued" '$a + $b - $q')
+            # Armed claim PRs whose required checks never reported (fleet-ops#8777).
+            # A pending required check is left: it is running, not missing. A
+            # completed report, including a failure, is left too; rework owns that.
+            req=$(gh api --paginate "repos/$GITHUB_REPOSITORY/rules/branches/main?per_page=100" | jq -c '[.[] | select(.type == "required_status_checks") | .parameters.required_status_checks[].context]')
+            missing=$(
+              for pr in $(jq -r '.[] | select(.autoMergeRequest != null) | .number' <<<"$all"); do
+                gh pr view "$pr" -R "$GITHUB_REPOSITORY" --json headRefName,statusCheckRollup || exit 1
+              done | jq -sc --argjson req "$req" '
+                def pending: (.status != null and .status != "COMPLETED") or .state == "PENDING";
+                def reported: .status == "COMPLETED" or ((.state != null) and .state != "PENDING" and .state != "EXPECTED");
+                [.[] | . as $pr
+                  | (if $pr.statusCheckRollup == null then [] else $pr.statusCheckRollup end
+                     | map({key: (if .name != null then .name elif .context != null then .context else "" end), status, state})) as $checks
+                  | [ $req[] as $name
+                      | [ $checks[] | select(.key == $name) ] as $hits
+                      | if any($hits[]; pending) then "pending"
+                        elif any($hits[]; reported) then "reported"
+                        else "absent" end
+                    ] as $kinds
+                  | select(($kinds | index("pending") | not) and ($kinds | index("absent")))
+                  | $pr.headRefName
+                ]'
+            )
+            # Claim PRs whose issue is still agent-in-progress after the worker
+            # is gone (fleet-ops#8777). Live means the newest "agent run started:"
+            # run is queued or in progress; `gh run view` is that read.
+            inprog=$(gh issue list -R "$GITHUB_REPOSITORY" -l agent-in-progress -L 1000 --json number --jq '[.[].number]')
+            orphans=$(
+              jq -r --argjson ip "$inprog" '.[] | .headRefName | capture("^claim/issue-(?<n>[0-9]+)$").n | tonumber as $i | select($ip | index($i)) | $i' <<<"$all" |
+              while IFS= read -r n; do
+                body=$(gh issue view "$n" -R "$GITHUB_REPOSITORY" --json comments --jq '[.comments[].body | select(startswith("agent run started:"))] | if length == 0 then "" else last end') || exit 1
+                if [ -z "$body" ]; then
+                  echo "claim/issue-$n"
+                  continue
+                fi
+                if [[ $body =~ actions/runs/([0-9]+) ]]; then
+                  id=${BASH_REMATCH[1]}
+                else
+                  echo "::error::agent run started comment on #$n has no run id" >&2
+                  exit 1
+                fi
+                status=$(gh run view "$id" -R "$GITHUB_REPOSITORY" --json status --jq .status) || exit 1
+                case $status in
+                  queued|in_progress|requested|waiting|pending) ;;
+                  *) echo "claim/issue-$n" ;;
+                esac
+              done | jq -Rsc 'split("\n") | map(select(length > 0))'
+            )
+            prs=$(jq -nc --argjson a "$unarmed" --argjson b "$conflicted" --argjson m "$missing" --argjson o "$orphans" --argjson q "$queued" '(reduce ($a[], $b[], $m[], $o[]) as $r ([]; if index($r) then . else . + [$r] end)) - $q')
+            echo "required checks: $req"
+            echo "claim PRs missing required checks: $missing"
+            echo "claim PRs with a dead agent run: $orphans"
             echo "claim PRs picked by the sweep: $prs"
           fi
           refs=$(for n in $nums; do gh api "repos/$GITHUB_REPOSITORY/issues/$n"; done |

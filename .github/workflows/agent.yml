@@ -85,7 +85,7 @@ jobs:
           case $labels in *,cheap-ok,*|*,strong-only,*) ;; *)
             key=$(grep -m1 '^LITELLM_JEV_KEY=' "$HOME/.config/fleet-ops/seats/typesafe-jev.env" | cut -d= -f2-)
             echo "::add-mask::$key"
-            p=$(jq -n --argjson s "$issue" '{state: {issue: {ref: $s.html_url, title: $s.title, body: $s.body}}, questions: {cheap_ok: {type: "boolean", instructions: "Is this ONE small change (roughly 1-4 files, one behaviour, done in one sitting) whose steps and acceptance are already spelled out, so the builder only has to follow them? Answer no if it bundles several deliverables, asks the builder to discover or fix whatever turns up, depends on production after deploy, or leaves a design choice open."}}}' |
+            p=$(jq -n --argjson s "$issue" '{custom_llm_provider: "vercel_ai_gateway", state: {issue: {ref: $s.html_url, title: $s.title, body: $s.body}}, questions: {cheap_ok: {type: "boolean", instructions: "Is this ONE small change (roughly 1-4 files, one behaviour, done in one sitting) whose steps and acceptance are already spelled out, so the builder only has to follow them? Answer no if it bundles several deliverables, asks the builder to discover or fix whatever turns up, depends on production after deploy, or leaves a design choice open."}}}' |
               curl -s --max-time 90 127.0.0.1:4000/jev -H "Authorization: Bearer $key" -H 'content-type: application/json' -d @- |
               jq -r '.answers.cheap_ok.probability // "unavailable"' 2>/dev/null || echo unavailable)
             if awk -v p="$p" 'BEGIN { exit !(p ~ /^[0-9.]+$/ && p + 0 >= 0.9) }'; then
@@ -115,7 +115,8 @@ jobs:
           # run ($0), else LongCat-2.5-Preview on the opencode CLI while fewer
           # than 2 run (free until ~2026-10-10, fleet-ops#8790; its free tier
           # answers only the opencode CLI), else pi while it has a free router
-          # slot, else Cursor.
+          # slot; when all three are full the issue waits (lanes-full) — there
+          # is no Cursor fallback (fleet-ops#8740).
           # A lane's live count is the distinct worker directories (Devin,
           # Cursor) or pi session directories on its bwrap command lines, so
           # it spans every runner and repo on this host.
@@ -129,7 +130,7 @@ jobs:
             slots=$(python3 -c 'import sys, yaml; print(sum(m["litellm_params"].get("max_parallel_requests") or 0 for m in yaml.safe_load(open(sys.argv[1]))["model_list"] if m.get("model_name") == "worker-capable"))' "$HOME/.config/fleet-ops/litellm-proxy.yaml")
             [ "$(live pi)" -lt "$slots" ] || return 1
             ! curl -sL --max-time 10 127.0.0.1:4000/metrics |
-              awk '/^litellm_deployment_state\{/ && /model_id="[^"]*-worker-capable"/ && /litellm_model_name="[^"]*\// { n++; if ($NF + 0 == 0) up++ } END { exit !(n > 0 && up == 0) }'
+              awk '/^litellm_deployment_state\{/ && /model_id="[^"]*-worker-capable"/ && !/litellm_model_name="worker-/ { n++; if ($NF + 0 == 0) up++ } END { exit !(n > 0 && up == 0) }'
           }
           # Devin is free while fewer than 4 run and it has not answered
           # "capacity issues" in the last 15 minutes (the Router wall step
@@ -137,13 +138,16 @@ jobs:
           devin_free() {
             [ "$(live devin)" -lt 4 ] && [ -z "$(find "$HOME/.cache/fleet-ops/devin-wall" -mmin -15 2>/dev/null)" ]
           }
+          # Cursor is the strong-only lane only. A non-strong-only issue never
+          # falls back to it: with Devin and pi both full it waits
+          # (lanes-full) rather than burning the paced Cursor quota on work
+          # those seats can do (fleet-ops#8740). The cap stays 1.
           case $labels in
             *,strong-only,*) [ "$(live cursor-agent)" -lt 1 ] || skip lanes-full; engine=cursor ;;
             *)
               if devin_free; then engine=devin
               elif [ "$(live opencode)" -lt 2 ]; then engine=opencode
               elif pi_free; then engine=pi
-              elif [ "$(live cursor-agent)" -lt 1 ]; then engine=cursor
               else skip lanes-full
               fi ;;
           esac
@@ -194,9 +198,20 @@ jobs:
             mkdir -p "$dir"
             $jail opencode run --dir "$dir" -m opencode/longcat-2.5-preview-free --auto "$packet" >/dev/null
           elif [ "$ENGINE" = cursor ]; then
-            set -a; . "$HOME/.config/fleet-ops/seats/cursor.env"; set +a
+            # Alternate the two prepaid Cursor Ultra keys by issue number so
+            # neither stack is spent and both are paced (fleet-ops#8740):
+            # even $id -> cursor.env, odd $id -> cursor-2.env. $id's issue
+            # number is its last '-' field, so parity is on the issue number.
+            case ${id##*-} in
+              *[!0-9]*) cursor_env=cursor.env ;;   # not numeric: default to key 1
+              *) [ $(( ${id##*-} % 2 )) -eq 0 ] && cursor_env=cursor.env || cursor_env=cursor-2.env ;;
+            esac
+            set -a
+            # shellcheck disable=SC1090 # cursor_env is one of the two constant seat files set in the case just above
+            . "$HOME/.config/fleet-ops/seats/$cursor_env"
+            set +a
             mkdir -p "$dir"
-            $jail cursor-agent -p --output-format text --model grok-4.7-xhigh --force --trust \
+            $jail cursor-agent -p --output-format text --model cursor-grok-4.6-high --force --trust \
               --workspace "$dir" "$packet" >/dev/null
           else
             echo "/worker $id" | $jail pi --print \
