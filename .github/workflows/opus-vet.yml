@@ -96,7 +96,7 @@ jobs:
             "sandbox": {"mode": "disabled"},
             "attribution": {"attributeCommitsToAgent": false, "attributePRsToAgent": false},
             "permissions": {
-              "allow": ["Read(**)", "Shell(gh:api repos/*)", "Shell(gh:issue view*)", "Shell(gh:issue comment*)", "Shell(gh:issue edit*)", "Shell(gh:issue list*)", "Shell(gh:pr list*)", "Shell(gh:pr view*)", "Shell(git:log*)", "Shell(git:show*)", "Shell(git:ls-files*)", "Shell(grep*)", "Shell(gh:issue close*)"],
+              "allow": ["Read(**)", "Shell(gh:api repos/${{ github.repository }}/issues/*)", "Shell(gh:issue view*)", "Shell(gh:issue comment*)", "Shell(gh:issue edit*)", "Shell(gh:issue list*)", "Shell(gh:pr list*)", "Shell(gh:pr view*)", "Shell(git:log*)", "Shell(git:show*)", "Shell(git:ls-files*)", "Shell(grep*)", "Shell(gh:issue close*)"],
               "deny": ["Write(**)", "WebFetch(*)", "Mcp(*:*)", "Shell(gh:api -X*)", "Shell(gh:api --method*)", "Shell(gh:pr merge*)", "Shell(gh:pr edit*)", "Shell(gh:workflow*)", "Shell(gh:secret*)", "Shell(gh:repo*)", "Shell(git:push*)", "Shell(bash)", "Shell(sh)", "Shell(python3)", "Shell(node)", "Shell(curl)"]
             }
           }
@@ -165,7 +165,7 @@ jobs:
             "sandbox": {"mode": "disabled"},
             "attribution": {"attributeCommitsToAgent": false, "attributePRsToAgent": false},
             "permissions": {
-              "allow": ["Read(**)", "Shell(gh:api repos/*)", "Shell(gh:issue view*)", "Shell(gh:issue comment*)", "Shell(gh:issue edit*)", "Shell(gh:issue list*)", "Shell(gh:pr list*)", "Shell(gh:pr view*)", "Shell(git:log*)", "Shell(git:show*)", "Shell(git:ls-files*)", "Shell(grep*)", "Shell(gh:issue create*)"],
+              "allow": ["Read(**)", "Shell(gh:api repos/${{ github.repository }}/issues/*)", "Shell(gh:issue view*)", "Shell(gh:issue comment*)", "Shell(gh:issue edit*)", "Shell(gh:issue list*)", "Shell(gh:pr list*)", "Shell(gh:pr view*)", "Shell(git:log*)", "Shell(git:show*)", "Shell(git:ls-files*)", "Shell(grep*)", "Shell(gh:issue create*)"],
               "deny": ["Write(**)", "WebFetch(*)", "Mcp(*:*)", "Shell(gh:pr merge*)", "Shell(gh:pr edit*)", "Shell(gh:workflow*)", "Shell(gh:secret*)", "Shell(gh:repo*)", "Shell(git:push*)", "Shell(bash)", "Shell(sh)", "Shell(python3)", "Shell(node)", "Shell(curl)"]
             }
           }

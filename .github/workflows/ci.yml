@@ -385,7 +385,13 @@ jobs:
           REF: ${{ github.head_ref }}
         run: |
           grep -qx blocked-by-judge "$RUNNER_TEMP/labels" || exit 0
-          n=${REF#claim/issue-}
+          n=${REF#claim/issue-}; n=${n%%-*}
+          # Only a claim the fleet still owns: agent-in-progress and no park
+          # label (agent.yml's Deliverable list). A parked issue stays parked
+          # (0509#5619).
+          labels=,$(gh issue view "$n" -R "$GITHUB_REPOSITORY" --json labels --jq '[.labels[].name]|join(",")'),
+          case $labels in *,agent-in-progress,*) ;; *) exit 0 ;; esac
+          case $labels in *,agent-blocked,*|*,needs-orchestrator,*|*,needs-nish-decision,*) exit 0 ;; esac
           gh issue edit "$n" -R "$GITHUB_REPOSITORY" --add-label agent-ready --remove-label agent-in-progress
           gh workflow run agent-dispatch.yml -R "$GITHUB_REPOSITORY" -f issue="$n"
       - name: merge_group reports the check so the queue can merge (the grade was enforced on the pull request)
