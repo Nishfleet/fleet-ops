@@ -141,8 +141,9 @@ jobs:
           }
           EOF
           cursor-agent -p --output-format text --model kimi-k3-max --force --trust "$GRADE_PROMPT"
-      - name: A grade below A+ fails this check (fail closed if the label read fails)
+      - name: Only A+ passes (fails closed when there is no grade)
         if: github.event_name == 'pull_request' && github.event.pull_request.user.login == 'nishfleet-worker[bot]'
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh pr view ${{ github.event.pull_request.number }} --repo ${{ github.repository }} --json labels --jq '.labels[].name' > "$RUNNER_TEMP/labels" && ! grep -qx blocked-by-judge "$RUNNER_TEMP/labels"
+        run: >-
+          gh pr view ${{ github.event.pull_request.number }} --repo ${{ github.repository }} --json comments --jq '[.comments[] | select(.author.login == "github-actions" and (.body | (startswith("Opus grade:") or startswith("Kimi grade:"))))] | sort_by(.createdAt) | last | .body | split("\n") | .[0]' > "$RUNNER_TEMP/grade" && grep -qxE '(Opus|Kimi) grade: A\+' "$RUNNER_TEMP/grade"
