@@ -6,8 +6,8 @@
       "baseUrl": "https://cli-chat-proxy.grok.com/v1",
       "models": [
         {
-          "id": "grok-4.7",
-          "name": "Grok 4.7",
+          "id": "grok-4.6",
+          "name": "Grok 4.6",
           "reasoning": true,
           "contextWindow": 500000,
           "maxTokens": 131072,
