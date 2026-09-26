@@ -125,12 +125,12 @@ tests:
         alertname: FleetWorkerLaneOutage
         exp_alerts: []
 
-  # Test 14 — stale alias rows (no "/" in litellm_model_name, #7846) do not count.
+  # Test 14 — a stale alias row (litellm_model_name="worker-capable", same
+  # model_id as its raw row, #7846) is excluded by name: alone at 2 it must not
+  # fire. Without the !~"worker-(cheap|capable)" matcher this test fails.
   - interval: 1m
     input_series:
-      - series: 'litellm_deployment_state{api_base="https://api.paretoinference.com/v1",api_provider="openai",litellm_model_name="z-ai/glm-5.3-flash",model_id="pareto-glm53flash-worker-capable"}'
-        values: '0x40'
-      - series: 'litellm_deployment_state{api_base="https://api.paretoinference.com/v1",api_provider="openai",litellm_model_name="worker-capable",model_id="pareto-glm53flash-worker-capable-alias"}'
+      - series: 'litellm_deployment_state{api_base="https://api.paretoinference.com/v1",api_provider="openai",litellm_model_name="worker-capable",model_id="pareto-glm53flash-worker-capable"}'
         values: '2x40'
     alert_rule_test:
       - eval_time: 40m
