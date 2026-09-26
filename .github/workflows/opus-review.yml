@@ -1,0 +1,25 @@
+# Product-repo grader (fleet-ops#8621).
+# A caller job named opus-review reports the check `opus-review / opus-review`.
+# CLAUDE_CODE_OAUTH_TOKEN is passed by name, the same way as opus-vet.yml.
+name: opus-review
+on:
+  workflow_call:
+    secrets:
+      CLAUDE_CODE_OAUTH_TOKEN:
+        required: true
+permissions: {}
+jobs:
+  opus-review:
+    name: opus-review
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      pull-requests: write
+      issues: write
+      id-token: write
+    steps:
+      - uses: ./.github/actions/opus-review
+        with:
+          grade-non-worker: 'false'
+          claude-token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
