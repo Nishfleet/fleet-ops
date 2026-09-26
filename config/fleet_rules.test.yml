@@ -137,6 +137,19 @@ tests:
         alertname: FleetWorkerLaneOutage
         exp_alerts: []
 
+  # Test 14b — raw rows without "/" count (live 2026-09-26: the only "/" row was
+  # partial while ollama and zen were healthy, and the "/" filter walled pi).
+  - interval: 1m
+    input_series:
+      - series: 'litellm_deployment_state{api_base="https://api.cline.bot/api/v1",api_provider="openai",litellm_model_name="stealth/space-bunny-alpha",model_id="cline-spacebunny-worker-capable"}'
+        values: '1x40'
+      - series: 'litellm_deployment_state{api_base="https://ollama.com/v1",api_provider="openai",litellm_model_name="deepseek-v4.1-flash",model_id="ollama-ds41flash-worker-capable"}'
+        values: '0x40'
+    alert_rule_test:
+      - eval_time: 40m
+        alertname: FleetWorkerLaneOutage
+        exp_alerts: []
+
   # Test 15 — senior/judge walls are not a worker-lane outage.
   - interval: 1m
     input_series:
