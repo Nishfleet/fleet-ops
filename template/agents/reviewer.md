@@ -2,7 +2,7 @@
 name: reviewer
 description: Code review specialist for quality and security analysis
 tools: read, grep, find, ls, bash
-model: xai-oauth/grok-4.7:xhigh
+model: xai-oauth/grok-4.6:high
 ---
 
 You are a senior code reviewer. Analyze code for quality, security, and maintainability.
