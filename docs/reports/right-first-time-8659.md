@@ -6,10 +6,14 @@ Parent: #8659. Requested by #8674.
 window opens at the later merge time of the two blocking deliveries:
 #8804 (issue #8670, the in-run stock reviewer) merged
 2026-09-27T08:37:15Z; #8687 (issue #8671, packet paved-path wording)
-merged 2026-09-25T12:56:37Z. At write time the window is minutes old,
-far under 24 h. The issue anticipated this case, so this report records
-the machinery read and the seat census, and a re-measure issue (#8805)
-was filed.
+merged 2026-09-25T12:56:37Z. Merge times are GitHub `mergedAt` (`gh pr
+view <N> --json mergedAt`), the clock the issue's `created:` search
+queries run on; git committer dates read earlier (bbefb59a
+2026-09-27T08:35:04Z, fe04e695 2026-09-25T12:47:23Z) because the merge
+queue creates the commit before the merge lands. At write time the
+window is minutes old, far under 24 h. The issue anticipated this case,
+so this report records the machinery read and the seat census, and a
+re-measure issue (#8805) was filed.
 
 ## Before/after first grades (0509)
 
@@ -27,11 +31,15 @@ Grades are PR comments whose first line starts `Opus grade:` or
 `Kimi grade:` (grade.yml posts under whichever grader the repo variable
 names; #8788 made Kimi the 0509 grader of record). The issue text also
 named a bare `Grade:` prefix for after #8655; zero comments in the
-census use it. Proof over the 306 PRs 0509 opened since 2026-09-25
-(`gh pr list -R Nishfleet/0509 --state all --search "created:>=2026-09-25" --limit 500 --json comments`):
-comment first-lines matching `^[A-Za-z]+ grade:` tally 367
-`Opus grade:` and 74 `Kimi grade:`. First grade = earliest such comment;
-a PR's grades = the count of them.
+census use it. Proof over the 306 PRs 0509 opened since 2026-09-25 —
+`gh pr list -R Nishfleet/0509 --state all --search
+"created:>=2026-09-25" --limit 500 --json comments`, first lines
+matched on `^[A-Za-z]+ grade:` and grouped by prefix, re-run
+2026-09-27T09:50Z: `Opus grade` 367, `Kimi grade` 76, ungrouped match
+total 443. 367+76=443 leaves no other first-line prefix, so zero bare
+`Grade:` comments exist (the Kimi tally read 74 at the 08:46Z write;
+grading is still landing). First grade = earliest such comment; a PR's
+grades = the count of them.
 
 ## Seat trial: the parity routing never shipped
 
@@ -41,9 +49,11 @@ The issue's premise was that sibling #8673 routes even issues
 - Issue #8673 (`agent.yml: seat trial, even 0509 issues #5461-#5540
   build on the Cursor lane`) is CLOSED with `stateReason: NOT_PLANNED`;
   its delivery PR #8696 (`claim/issue-8673`) closed unmerged after two
-  B grades.
+  B grades — `gh pr view 8696 -R Nishfleet/fleet-ops --json
+  state,mergedAt,comments` returns state CLOSED, mergedAt null, and
+  exactly two comment first lines, both `Opus grade: B`.
 - `git grep -n "5461\|5540" origin/main -- .github/workflows/agent.yml`
-  produces no match.
+  produces no match (exit 1, both patterns).
 
 So issue-number parity is not the seat that built each PR. The engine
 gate on origin/main today is: `strong-only` issues go to Cursor (paced
@@ -58,14 +68,16 @@ the new one.
 The census attributes each claim PR in range to the `ENGINE:` line of
 its `claim/issue-<N>` `work` job in the dispatch run that produced it:
 the run in that issue's `agent run started:` comment thread whose work
-ends at the PR's `createdAt` (equivalently, the latest listed run
-started before it). One dispatch run hosts many per-issue jobs with
-different engines (run 36148428291 alone has both pi and devin jobs), so
-the job, not the run, is the unit of attribution. 12 PRs over 9 distinct
-issues; no in-range claim PR predates 2026-09-25. A PR's ENGINE here is
-its creator run's: later rework pushes can come from a different engine
-(5662 was created by a devin run at 06:29Z, then reworked by an opencode
-run whose commit landed 06:53Z).
+ends at the PR's `createdAt` — approximated as the latest listed run
+started before it; a run still in flight at `createdAt` can diverge
+from that ordering, and 5662 below is exactly that case. One dispatch
+run hosts many per-issue jobs with different engines (run 36148428291
+alone has both pi and devin jobs), so the job, not the run, is the unit
+of attribution. 12 PRs over 9 distinct issues; no in-range claim PR
+predates 2026-09-25; all timestamps below are 2026 UTC. A PR's ENGINE
+here is its creator run's: later rework pushes can come from a
+different engine (5662 was created by a devin run at 06:29Z, then
+reworked by an opencode run whose commit landed 06:53Z).
 
 | PR | issue | building run | ENGINE (job log) | created | state | first grade | grades |
 |---|---|---|---|---|---|---|---|
@@ -110,7 +122,8 @@ in #8804 at the window's own start (2026-09-27T08:37:15Z).
 
 - Window < 24 h and every seat n<20, so #8805 `Re-measure right-first-time
   (fleet-ops#8659) once 0509 #5540 is graded` was filed (plain, no
-  labels) as the re-measure trigger; its body states the real gate
+  labels — `gh issue view 8805`: OPEN, created 2026-09-27T08:46:22Z,
+  labels none) as the re-measure trigger; its body states the real gate
   (>=24 h of after-window and n>=20 per seat, measuring parity only if
   parity routing has actually shipped by then).
 - Baseline letter scale predates #8655's A+ bar; after-window grades use
