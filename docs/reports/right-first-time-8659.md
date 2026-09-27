@@ -73,9 +73,9 @@ under the new packet could exist yet.
 
 ## Caveats
 
-- Window < 24 h and both seats n<20 → filed `Re-measure right-first-time
-  (fleet-ops#8659) once 0509 #5540 is graded` (plain, no labels) as the
-  re-measure trigger.
+- Window < 24 h and both seats n<20 → filed #8805 `Re-measure
+  right-first-time (fleet-ops#8659) once 0509 #5540 is graded` (plain, no
+  labels) as the re-measure trigger.
 - Baseline letter scale predates #8655's A+ bar; the after-window rows use
   the post-#8655 grades as posted.
 - No config change was made. If a seat ever wins at adequate n, the
