@@ -51,7 +51,7 @@ The issue's premise was that sibling #8673 routes even issues
   its delivery PR #8696 (`claim/issue-8673`) closed unmerged after two
   B grades — `gh pr view 8696 -R Nishfleet/fleet-ops --json
   state,mergedAt,comments` returns state CLOSED, mergedAt null, and
-  exactly two comment first lines, both `Opus grade: B`.
+  exactly two grade-comment first lines, both `Opus grade: B`.
 - `git grep -n "5461\|5540" origin/main -- .github/workflows/agent.yml`
   produces no match (exit 1, both patterns).
 
@@ -114,6 +114,9 @@ seat is far under n=20 and the trial the comparison was for never ran.
 The same correction was posted on #8659 at 2026-09-27T09:10:34Z.
 
 ### Evidence (re-run 2026-09-27T10:11Z)
+
+All re-runs postdate the 08:46Z write and are corroborative only; the
+counted numbers are the write-time ones.
 
 Per-row ENGINE reads —
 `gh api repos/Nishfleet/0509/actions/runs/<run>/jobs` to find the work
