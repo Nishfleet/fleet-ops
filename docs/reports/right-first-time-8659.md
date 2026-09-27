@@ -178,3 +178,5 @@ in #8804 at the window's own start (2026-09-27T08:37:15Z).
   #8788).
 - No config change was made. A seat choice moves spend and stays with
   Nish; nothing here proposes one.
+
+encoded: 5 — the corrections this run made are facts, not code: the seat-trial premise (parity routing shipped by #8673) was false, so the census attributes each PR by its building run's `ENGINE:` log line instead, and the re-measure trigger is filed issue #8805. No lower rung can hold a measurement: there is no structure to delete, no gate to add, no rule or skill to write — the record is this prose report and the two measurement comments on #8659.
