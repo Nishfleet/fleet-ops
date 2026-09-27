@@ -65,19 +65,19 @@ below ran under the previous gate (`strong-only` to Cursor, else
 devin / pi / cursor fallback); PR 5662 on 2026-09-27 already ran under
 the new one.
 
-The census attributes each claim PR in range to the `ENGINE:` line of
-its `claim/issue-<N>` `work` job in the dispatch run that produced it:
-the run in that issue's `agent run started:` comment thread whose work
-ends at the PR's `createdAt` — approximated as the latest listed run
-started before it; a run still in flight at `createdAt` can diverge
-from that ordering, and 5662 below is exactly that case. One dispatch
-run hosts many per-issue jobs with different engines (run 36148428291
-alone has both pi and devin jobs), so the job, not the run, is the unit
-of attribution. 12 PRs over 9 distinct issues; no in-range claim PR
-predates 2026-09-25; all timestamps below are 2026 UTC. A PR's ENGINE
-here is its creator run's: later rework pushes can come from a
-different engine (5662 was created by a devin run at 06:29Z, then
-reworked by an opencode run whose commit landed 06:53Z).
+How a PR gets its engine: take the newest `agent run started:` run on
+the issue that predates the PR's `createdAt`, open that run's work job
+(`dispatch / unblocked (claim/issue-<N>) / work`, or the run's single
+`dispatch / new / work` job when the job list carries no per-issue
+names — the log still names the issue), and read its `ENGINE:` log
+line. That ordering is an approximation: a run still in flight at
+`createdAt` can diverge from it, and 5662 below is exactly that case —
+created by a devin run at 06:29Z, then reworked by an opencode run
+whose commit landed 06:53Z. A PR's ENGINE here is its creator run's.
+Attribution is per job, not per run: run 36148428291 alone hosts both
+pi and devin work jobs (proof below). 12 PRs over 9 distinct issues; no
+in-range claim PR predates 2026-09-25; all timestamps below are 2026
+UTC.
 
 | PR | issue | building run | ENGINE (job log) | created | state | first grade | grades |
 |---|---|---|---|---|---|---|---|
@@ -111,6 +111,50 @@ only 5569 was actually cursor (5525, 5564, 5541, 5566, 5546 were pi);
 of the parity-"Pi" six, only 5543, 5544, 5572 were actually pi (5524
 was cursor; 5561, 5662 were devin). No engine winner is named: every
 seat is far under n=20 and the trial the comparison was for never ran.
+The same correction was posted on #8659 at 2026-09-27T09:10:34Z.
+
+### Evidence (re-run 2026-09-27T10:11Z)
+
+Per-row ENGINE reads —
+`gh api repos/Nishfleet/0509/actions/runs/<run>/jobs` to find the work
+job, then `gh api repos/Nishfleet/0509/actions/jobs/<job>/logs |
+grep -m1 'ENGINE:'`:
+
+    PR 5524  issue 5503  run 36147889770  job 108114549010  ENGINE: cursor
+    PR 5525  issue 5510  run 36148428291  job 108123720177  ENGINE: pi
+    PR 5541  issue 5534  run 36155658311  job 108139444453  ENGINE: pi
+    PR 5543  issue 5537  run 36156374620  job 108142244280  ENGINE: pi
+    PR 5544  issue 5539  run 36156709062  job 108143253003  ENGINE: pi
+    PR 5546  issue 5540  run 36156709062  job 108143253110  ENGINE: pi
+    PR 5561  issue 5539  run 36163081274  job 108164161766  ENGINE: devin
+    PR 5564  issue 5510  run 36163418643  job 108165277769  ENGINE: pi
+    PR 5566  issue 5538  run 36164091539  job 108167782910  ENGINE: pi
+    PR 5569  issue 5528  run 36169432908  job 108185123120  ENGINE: cursor
+    PR 5572  issue 5539  run 36176034334  job 108206741073  ENGINE: pi
+    PR 5662  issue 5483  run 36299924113  job 108565566927  ENGINE: devin
+
+Two caveats inside that paste: job 108114549010 (5524) ended
+`conclusion: failure` — the work job pushed the PR at 15:06:44Z and
+failed later — and the mixed-engine run claim is `36148428291` hosting
+`ENGINE: pi` jobs (108116614574 issue-5309, 108118540193 issue-5441,
+108123720177 issue-5510) beside `ENGINE: devin` jobs (108116614692
+issue-5411, 108125837543 issue-5423).
+
+Grade first lines per PR — `gh pr view <PR> -R Nishfleet/0509 --json
+comments`, bodies' first lines matching `^[A-Za-z]+ grade:`:
+
+    5524: Opus grade: C
+    5525: Opus grade: A+ | Opus grade: A- | Opus grade: A+ | Opus grade: A
+    5541: Opus grade: A | Opus grade: A+
+    5543: Opus grade: A- | Opus grade: A+
+    5544: Opus grade: B | Opus grade: B
+    5546: Opus grade: A | Opus grade: A+
+    5561: Opus grade: B | Opus grade: A
+    5564: Opus grade: A+ | Kimi grade: A+ | Kimi grade: A | Kimi grade: A+
+    5566: Opus grade: C | Opus grade: C
+    5569: Opus grade: C | Opus grade: B
+    5572: Opus grade: A+
+    5662: Kimi grade: A- | Kimi grade: A+
 
 ## `in-run review:` coverage
 
