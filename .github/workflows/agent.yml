@@ -20,7 +20,16 @@ on:
     - cron: '0 2 * * *'     # inish-daily, 07:30 IST
     - cron: '0 5 * * *'     # inish-daily catch-up, 10:30 IST (no-op when live)
     - cron: '37 * * * *'    # admit, Nishfleet/0509 scout-candidates
-  workflow_dispatch: {}
+  # A scheduled job must also be dispatchable, so a change to it is proven
+  # on demand, not the next morning: gh workflow run agent.yml -f job=inish-daily
+  workflow_dispatch:
+    inputs:
+      job:
+        description: scheduled job to run by hand (bare dispatch runs admit)
+        type: choice
+        options: [admit, scout, gardener, inish-daily]
+        default: admit
+        required: true
 permissions: {}
 jobs:
   work:
@@ -312,7 +321,7 @@ jobs:
         if: always()
         run: i=${REF#claim/issue-}; rm -rf "$HOME/workspaces/agent-worktrees/issue-${REPO#*/}-${i%%-*}"
   scout:
-    if: ${{ !inputs.ref && github.event.schedule == '0 */4 * * *' }}
+    if: ${{ !inputs.ref && (github.event.schedule == '0 */4 * * *' || inputs.job == 'scout') }}
     runs-on: [self-hosted, agent]
     timeout-minutes: 180
     concurrency:
@@ -363,7 +372,7 @@ jobs:
           grep -E 'supply:[[:space:]]*ready_count=[0-9]+|scout-yield:' "$out" ||
             { echo "scout-abort-gate: no supply: line this run" >&2; exit 1; }
   admit:
-    if: ${{ !inputs.ref && (github.event.schedule == '37 * * * *' || github.event_name == 'workflow_dispatch') }}
+    if: ${{ !inputs.ref && (github.event.schedule == '37 * * * *' || inputs.job == 'admit') }}
     runs-on: [self-hosted, agent]
     timeout-minutes: 45
     concurrency:
@@ -431,7 +440,7 @@ jobs:
           echo "admit: scored=$seen jev_unavailable=$fails"
           [ "$seen" -eq 0 ] || [ "$fails" -lt "$seen" ]
   gardener:
-    if: ${{ !inputs.ref && github.event.schedule == '0 4 * * 1' }}
+    if: ${{ !inputs.ref && (github.event.schedule == '0 4 * * 1' || inputs.job == 'gardener') }}
     runs-on: [self-hosted, agent]
     timeout-minutes: 45
     env:
@@ -459,7 +468,7 @@ jobs:
     # for 36 days. The runbook lives in the product repo.
     # The 10:30 IST catch-up covers a runner or host that was down at 07:30;
     # the runbook's first step stops at once when today's edition is live.
-    if: ${{ !inputs.ref && (github.event.schedule == '0 2 * * *' || github.event.schedule == '0 5 * * *') }}
+    if: ${{ !inputs.ref && (github.event.schedule == '0 2 * * *' || github.event.schedule == '0 5 * * *' || inputs.job == 'inish-daily') }}
     runs-on: [self-hosted, agent]
     timeout-minutes: 150
     concurrency:
