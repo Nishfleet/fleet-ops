@@ -7,11 +7,11 @@ name: grade
 # Dependabot PRs skip the model step and the A+ gate (fleet-ops#8812):
 # dependabot-triggered runs get no Actions secrets, so the grader dies on the
 # missing key, and the A+ bar cannot be met by a dependency bump. Bumps are
-# held to CI + Gitleaks + no-glue, the required checks once both graders skip
-# them; the grader is skipped, not fed the key (bump PRs run code from the
-# updated actions, so passing it the key is an exfil path). The guard spells
-# the bot the Actions way, `dependabot[bot]` (the PR author login); `gh`
-# renders the same bot as `app/dependabot`.
+# held to CI + CodeQL + Gitleaks + no-glue, the required checks once both
+# graders skip them; the grader is skipped, not fed the key (bump PRs run
+# code from the updated actions, so passing it the key is an exfil path).
+# The guard spells the bot the Actions way, `dependabot[bot]` (the PR author
+# login); `gh` renders the same bot as `app/dependabot`.
 # Callers: `uses: Nishfleet/fleet-ops/.github/workflows/grade.yml@main`.
 on:
   workflow_call:
