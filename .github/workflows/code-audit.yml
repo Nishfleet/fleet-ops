@@ -117,7 +117,7 @@ jobs:
         id: result
         run: |
           delim=$(uuidgen)
-          { echo "result<<$delim"; tr -d '\r' < "$RUNNER_TEMP/audit.txt" | head -c 60000; echo; echo "$delim"; } >> "$GITHUB_OUTPUT"
+          { echo "result<<$delim"; tr -d '\r' < "$RUNNER_TEMP/audit.txt" | head -c 500000; echo; echo "$delim"; } >> "$GITHUB_OUTPUT"
       - name: Check the glue findings against the schema
         # Nish 2026-09-28: hand-rolled code is fixed and wiped automatically.
         # The model's answer must be one JSON array the checked-in schema
@@ -160,8 +160,10 @@ jobs:
           } > "$RUNNER_TEMP/audit-post.md"
           gh issue comment "$UMBRELLA" --repo "$GITHUB_REPOSITORY" --body-file "$RUNNER_TEMP/audit-post.md"
       - name: File each glue finding for the orchestrator
-        # One issue per finding, labelled needs-orchestrator so opus-vet vets and
-        # sizes it (fleet-ops#8304) before a worker sees model-written text.
+        # One issue per finding, labelled needs-orchestrator: the orchestrator's
+        # decision sweep (fleet-ops#4260) reads and sizes it before it is ever
+        # agent-ready, so a worker never sees unvetted model-written text. A
+        # GITHUB_TOKEN label fires no workflow, so opus-vet does not run on it.
         # The key is path + replacement, hashed into a marker in the body and
         # searched over open and closed issues, so a fixed finding is never
         # filed again. The cap of 20 counts new issues only.
