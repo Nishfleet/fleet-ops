@@ -172,7 +172,7 @@ jobs:
           # ever counted out for failing (Nish 2026-09-28: no benching); a failed
           # request re-picks another seat inside the router.
           pi_free() {
-            slots=$(yq '[.model_list[] | select(.model_name == "worker-capable") | .litellm_params.max_parallel_requests // 0] | add' "$HOME/.config/fleet-ops/litellm-proxy.yaml")
+            slots=$(yq '[.model_list[] | select(.model_name == "worker-capable") | .litellm_params.max_parallel_requests // 0] | .[] as $n ireduce (0; . + $n)' "$HOME/.config/fleet-ops/litellm-proxy.yaml")
             [ "$(live pi)" -lt "$slots" ]
           }
           # Devin is free while fewer than 4 run.
