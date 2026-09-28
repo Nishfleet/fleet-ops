@@ -212,7 +212,6 @@ model_list:
   model_info:
     mode: chat
     id: cline-ds41flash-worker-capable
-    disable_background_health_check: true
 - model_name: worker-capable
   litellm_params:
     model: openai/space-bunny-free
