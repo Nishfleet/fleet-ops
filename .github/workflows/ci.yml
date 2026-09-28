@@ -237,7 +237,10 @@ jobs:
   # the race on 2026-09-21/22 (15 PRs graded D merged because auto-merge was armed
   # before the grade landed), so the job itself fails below A+ and reports success
   # on merge_group. The job runs on every pull_request; the engine step is
-  # chosen from the author's family, not from whether it is a bot.
+  # chosen from the author's family, not from whether it is a bot. Dependabot
+  # PRs skip the model step (fleet-ops#8812): dependabot-triggered runs get no
+  # Actions secrets and no bump can meet the A+ bar, so the check passes on
+  # CI + Gitleaks + no-glue.
   opus-review:
     name: opus-review
     if: github.event_name == 'merge_group' || github.event_name == 'pull_request'
@@ -275,7 +278,7 @@ jobs:
             --model claude-opus-5-5
             --allowedTools "mcp__github_inline_comment__create_inline_comment,Bash(gh pr comment:*),Bash(gh pr diff:*),Bash(gh pr view:*),Bash(gh pr edit:*),Bash(gh issue view:*),Bash(git diff:*),Bash(git log:*),Bash(git show:*)"
       - name: Grade with Kimi K3 Max
-        if: github.event_name == 'pull_request' && (vars.GRADER == 'kimi' || github.event.pull_request.user.login != 'nishfleet-worker[bot]')
+        if: github.event_name == 'pull_request' && github.event.pull_request.user.login != 'dependabot[bot]' && (vars.GRADER == 'kimi' || github.event.pull_request.user.login != 'nishfleet-worker[bot]')
         env:
           CURSOR_API_KEY: ${{ secrets.CURSOR_API_KEY }}
           GH_TOKEN: ${{ github.token }}
