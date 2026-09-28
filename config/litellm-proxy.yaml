@@ -235,7 +235,7 @@ model_list:
     cooldown_time: 900
   model_info:
     mode: chat
-    id: minimax-m3-worker-capable
+    id: minimax-m31-worker-capable
 - model_name: worker-cheap
   litellm_params:
     model: anthropic/MiniMax-M3.1-Flash-Preview
@@ -249,7 +249,7 @@ model_list:
     cooldown_time: 900
   model_info:
     mode: chat
-    id: minimax-m3-worker-cheap
+    id: minimax-m31-worker-cheap
 - model_name: worker-capable
   litellm_params:
     model: openai/deepseek-v4.1-flash
