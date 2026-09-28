@@ -108,9 +108,10 @@ jobs:
           case $labels in *,cheap-ok,*|*,strong-only,*) ;; *)
             key=$(grep -m1 '^LITELLM_JEV_KEY=' "$HOME/.config/fleet-ops/seats/typesafe-jev.env" | cut -d= -f2-)
             echo "::add-mask::$key"
-            # Full context plus one Exa search, per the standing Jev rule. Replay on
-            # 63 real 0509 issues against opus-size: 56 agree, 0 wrongly cheap
-            # (title+body alone: 42/45, 18 more unavailable) - fleet-ops#8894.
+            # Full context plus one Exa search, per the standing Jev rule. These
+            # exact lines, replayed on 63 real 0509 issues against opus-size, agree
+            # on 56 with 0 wrongly cheap (title+body alone: 42/45, 18 more
+            # unavailable) - fleet-ops#8894, #8905.
             files='{}'
             for f in $(jq -r '.body // ""' <<<"$issue" | grep -oE '(^|[^[:alnum:]_./-])(app|docs|e2e|tests?|migrations|workers?|scripts|src|public|prompts|config)/[[:alnum:]_./-]+\.[[:alnum:]]+' | sed -E 's#^[^[:alpha:]]##' | sort -u | head -8); do
               t=$(gh api "repos/$REPO/contents/$f" -H 'Accept: application/vnd.github.raw' 2>/dev/null) || t='missing on main'
@@ -118,11 +119,16 @@ jobs:
             done
             rules=$(gh api "repos/$REPO/contents/AGENTS.md" -H 'Accept: application/vnd.github.raw' 2>/dev/null) || rules=''
             blockers=$(gh api "repos/$REPO/issues/$i/dependencies/blocked_by" --jq '[.[] | {n: .number, title, state}]' 2>/dev/null) || blockers='[]'
-            exa=$(grep -m1 '^EXA_API_KEY=' "$HOME/.config/environment.d/50-agent-secrets.conf" | cut -d= -f2- | tr -d '"')
-            echo "::add-mask::$exa"
-            web=$(jq -n --argjson s "$issue" '{query: $s.title[:120], numResults: 5, type: "auto", contents: {highlights: {maxCharacters: 300, highlightsPerUrl: 1}}}' |
-              curl -s --max-time 20 https://api.exa.ai/search -H "x-api-key: $exa" -H 'content-type: application/json' -d @- |
-              jq -c '[.results[] | {title, url, highlight: (.highlights[0] // "")}]' 2>/dev/null) || web=''
+            # A missing key, an HTTP error or zero results all record "unavailable"
+            # and Jev still answers; nothing here may fail the step.
+            exa=$(grep -m1 '^EXA_API_KEY=' "$HOME/.config/environment.d/50-agent-secrets.conf" 2>/dev/null | cut -d= -f2- | tr -d '"') || exa=''
+            web=''
+            if [ -n "$exa" ]; then
+              echo "::add-mask::$exa"
+              web=$(jq -n --argjson s "$issue" '{query: $s.title[:120], numResults: 5, type: "auto", contents: {highlights: {maxCharacters: 300, highlightsPerUrl: 1}}}' |
+                curl -sf --max-time 20 https://api.exa.ai/search -H "x-api-key: $exa" -H 'content-type: application/json' -d @- |
+                jq -ce '[.results[]? | {title, url, highlight: (.highlights[0] // "")}] | select(length > 0)' 2>/dev/null) || web=''
+            fi
             [ -n "$web" ] || web='"unavailable"'
             p=$(jq -n --argjson s "$issue" --argjson files "$files" --arg rules "${rules:0:6000}" --argjson blockers "$blockers" --argjson web "$web" '{model: "jev-latest", state: {issue: {ref: $s.html_url, title: $s.title, body: $s.body, labels: [$s.labels[].name]}, blocked_by: $blockers, named_files_on_main: $files, repo_rules_AGENTS_md: $rules, web_evidence: $web}, questions: {cheap_ok: {type: "noul", instructions: "Is this ONE small change (roughly 1-4 files, one behaviour, done in one sitting) whose steps and acceptance are already spelled out, so the builder only has to follow them? Answer no if it bundles several deliverables, asks the builder to discover or fix whatever turns up, depends on production after deploy, or leaves a design choice open."}}}' |
               curl -s --max-time 90 127.0.0.1:4000/jev -H "Authorization: Bearer $key" -H 'content-type: application/json' -d @- |
