@@ -192,8 +192,9 @@ groups:
       # fleet-ops#8829: N=16 is already applied; the stall binds on commit
       # (Committed_AS vs CommitLimit), not free pages, so repair is not
       # "lower the runner count". Threshold 0.4 is the N=16 busy-hour
-      # hold (2026-09-28 15:21-15:37 IST: stall >0.4 for 8m, so for: 10m
-      # stays silent; >0.2 lasted 16m and fired).
+      # hold (2026-09-28: stall >0.4 from 15:24:00-15:31:45 IST = 7.8m, so
+      # for: 10m stays silent; >0.2 from 15:21:30-15:37:15 = 15.8m and the
+      # live 0.2 rule fired).
       - alert: HostMemoryStalled
         expr: rate(node_pressure_memory_stalled_seconds_total[5m]) > 0.4
         for: 10m
