@@ -350,7 +350,7 @@ jobs:
           git -C "$RUNNER_TEMP/base-src" fetch -q --depth 1 "https://github.com/$GITHUB_REPOSITORY" "$BASE_SHA"
           git -C "$RUNNER_TEMP/base-src" archive FETCH_HEAD | tar -x -C base
           find base -type l -delete
-          find base \( -name .cursor -o -name .cursorrules -o -name .cursorignore -o -name .cursorindexingignore \) -prune -exec rm -rf {} +
+          find base \( -name .cursor -o -name .cursorrules -o -name .cursorignore -o -name .cursorindexingignore -o -name AGENTS.md -o -name CLAUDE.md \) -prune -exec rm -rf {} +
           gh api -H "Accept: application/vnd.github.diff" "repos/$GITHUB_REPOSITORY/compare/$BASE_SHA...$HEAD_SHA" > pr.diff
           gh api --paginate "repos/$GITHUB_REPOSITORY/compare/$BASE_SHA...$HEAD_SHA?per_page=100" \
             --jq '.files[] | select(.status != "removed") | [.sha, .filename] | @tsv' > "$RUNNER_TEMP/changed.tsv"
@@ -408,7 +408,11 @@ jobs:
         if: github.event_name == 'pull_request' && github.event.pull_request.user.login != 'dependabot[bot]'
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh pr view ${{ github.event.pull_request.number }} --repo ${{ github.repository }} --json labels --jq '.labels[].name' > "$RUNNER_TEMP/labels" && ! grep -qx blocked-by-judge "$RUNNER_TEMP/labels"
+        # When Kimi graded, the grade it printed in this run decides, so no
+        # earlier or planted comment or label can pass this head.
+        run: |
+          if [ -f "$RUNNER_TEMP/kimi-post.txt" ]; then test "$(head -n1 "$RUNNER_TEMP/kimi-post.txt")" = "Kimi grade: A+"; fi
+          gh pr view ${{ github.event.pull_request.number }} --repo ${{ github.repository }} --json labels --jq '.labels[].name' > "$RUNNER_TEMP/labels" && ! grep -qx blocked-by-judge "$RUNNER_TEMP/labels"
       - name: merge_group reports the check so the queue can merge (the grade was enforced on the pull request)
         if: github.event_name == 'merge_group'
         run: "true"
@@ -426,5 +430,4 @@ jobs:
       pull-requests: write
       issues: write
     secrets:
-      CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
       CURSOR_API_KEY: ${{ secrets.CURSOR_API_KEY }}
