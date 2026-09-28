@@ -189,3 +189,84 @@ tests:
       - eval_time: 20m
         alertname: HostMemoryStalled
         exp_alerts: []
+
+  # FleetRolePoolDown (fleet-ops#8856) — today's fixture: the 2026-09-28
+  # outage series, senior's only rung and judge's opencode rung both at 2.
+  # Each walled pool fires with its own pool label.
+  - interval: 1m
+    input_series:
+      - series: 'litellm_deployment_state{api_base="https://api.paretoinference.com/v1",api_provider="openai",litellm_model_name="z-ai/glm-5.3-flash",model_id="pareto-glm53flash-senior"}'
+        values: '2x20'
+      - series: 'litellm_deployment_state{api_base="https://opencode.ai/zen/go/v1",api_provider="openai",litellm_model_name="openai/deepseek-v4.1-flash",model_id="opencodego-ds41flash-judge"}'
+        values: '2x20'
+    alert_rule_test:
+      - eval_time: 20m
+        alertname: FleetRolePoolDown
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              service: seat-proxy
+              pool: senior
+            exp_annotations:
+              summary: "no healthy senior rung for 15m+ — verifier pool is down"
+              description: "min(litellm_deployment_state) over raw senior rows has been above 0 for 15m: every senior rung is partial or out, so reviewer and judge calls stall or fall down the fallback ladder (fleet-ops#8856). Repair, in order: (1) GET /health with the master key and probe each senior rung directly; a green direct probe means the gauge is stale — never trust the gauge alone. (2) If every upstream answers a quota/subscription 429, seat supply is a money decision: record the probe results on the issue and route to Nish; do not add rungs or raise max_parallel_requests. (3) The alert clears itself once one rung is green again."
+          - exp_labels:
+              severity: critical
+              service: seat-proxy
+              pool: judge
+            exp_annotations:
+              summary: "no healthy judge rung for 15m+ — verifier pool is down"
+              description: "min(litellm_deployment_state) over raw judge rows has been above 0 for 15m: every judge rung is partial or out, so reviewer and judge calls stall or fall down the fallback ladder (fleet-ops#8856). Repair, in order: (1) GET /health with the master key and probe each judge rung directly; a green direct probe means the gauge is stale — never trust the gauge alone. (2) If every upstream answers a quota/subscription 429, seat supply is a money decision: record the probe results on the issue and route to Nish; do not add rungs or raise max_parallel_requests. (3) The alert clears itself once one rung is green again."
+
+  # One walled pool fires alone: senior at 2, judge healthy at 0 — only
+  # pool=senior alerts.
+  - interval: 1m
+    input_series:
+      - series: 'litellm_deployment_state{api_base="https://api.paretoinference.com/v1",api_provider="openai",litellm_model_name="z-ai/glm-5.3-flash",model_id="pareto-glm53flash-senior"}'
+        values: '2x20'
+      - series: 'litellm_deployment_state{api_base="https://opencode.ai/zen/go/v1",api_provider="openai",litellm_model_name="openai/deepseek-v4.1-flash",model_id="opencodego-ds41flash-judge"}'
+        values: '0x20'
+    alert_rule_test:
+      - eval_time: 20m
+        alertname: FleetRolePoolDown
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              service: seat-proxy
+              pool: senior
+            exp_annotations:
+              summary: "no healthy senior rung for 15m+ — verifier pool is down"
+              description: "min(litellm_deployment_state) over raw senior rows has been above 0 for 15m: every senior rung is partial or out, so reviewer and judge calls stall or fall down the fallback ladder (fleet-ops#8856). Repair, in order: (1) GET /health with the master key and probe each senior rung directly; a green direct probe means the gauge is stale — never trust the gauge alone. (2) If every upstream answers a quota/subscription 429, seat supply is a money decision: record the probe results on the issue and route to Nish; do not add rungs or raise max_parallel_requests. (3) The alert clears itself once one rung is green again."
+
+  # One healthy raw rung in each pool keeps both pools silent.
+  - interval: 1m
+    input_series:
+      - series: 'litellm_deployment_state{api_base="https://api.paretoinference.com/v1",api_provider="openai",litellm_model_name="z-ai/glm-5.3-flash",model_id="pareto-glm53flash-senior"}'
+        values: '0x20'
+      - series: 'litellm_deployment_state{api_base="https://opencode.ai/zen/go/v1",api_provider="openai",litellm_model_name="openai/deepseek-v4.1-flash",model_id="opencodego-ds41flash-judge"}'
+        values: '0x20'
+    alert_rule_test:
+      - eval_time: 20m
+        alertname: FleetRolePoolDown
+        exp_alerts: []
+
+  # A wall shorter than the 15m for: window stays silent.
+  - interval: 1m
+    input_series:
+      - series: 'litellm_deployment_state{api_base="https://api.paretoinference.com/v1",api_provider="openai",litellm_model_name="z-ai/glm-5.3-flash",model_id="pareto-glm53flash-senior"}'
+        values: '2x20'
+    alert_rule_test:
+      - eval_time: 10m
+        alertname: FleetRolePoolDown
+        exp_alerts: []
+
+  # An alias row (litellm_model_name is the group name, fleet-ops#7846) alone
+  # at 2 must not fire: the !~"senior|judge" matcher drops it.
+  - interval: 1m
+    input_series:
+      - series: 'litellm_deployment_state{api_base="https://api.paretoinference.com/v1",api_provider="openai",litellm_model_name="senior",model_id="pareto-glm53flash-senior"}'
+        values: '2x20'
+    alert_rule_test:
+      - eval_time: 20m
+        alertname: FleetRolePoolDown
+        exp_alerts: []

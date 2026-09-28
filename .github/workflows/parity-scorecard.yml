@@ -12,11 +12,7 @@ on:
         required: true
         type: number
 
-permissions:
-  issues: write
-  actions: read
-  contents: read
-  pull-requests: read
+permissions: {}
 
 concurrency:
   group: parity-scorecard
@@ -27,6 +23,11 @@ jobs:
     name: scorecard
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    permissions:
+      issues: write
+      actions: read
+      contents: read
+      pull-requests: read
     env:
       GH_TOKEN: ${{ github.token }}
       REPO: ${{ github.repository }}

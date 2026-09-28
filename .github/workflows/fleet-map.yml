@@ -19,10 +19,10 @@ on:
       - '.agents/skills/verify-fleet/**'
   workflow_dispatch:
 
+# Nothing here writes to the repo: the map is an artifact, and
+# claude-code-action is handed GITHUB_TOKEN, so it needs no id-token.
 permissions:
-  contents: write
-  pull-requests: write
-  id-token: write
+  contents: read
 
 concurrency:
   group: fleet-map-${{ github.ref }}
@@ -34,6 +34,10 @@ jobs:
     if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
     timeout-minutes: 5
+    # gh pr view reads the PR body.
+    permissions:
+      contents: read
+      pull-requests: read
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
