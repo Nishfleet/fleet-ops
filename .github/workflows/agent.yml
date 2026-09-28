@@ -18,6 +18,7 @@ on:
     - cron: '0 */4 * * *'   # scout, Nishfleet/0509
     - cron: '0 4 * * 1'     # gardener, Mondays 09:30 IST
     - cron: '0 2 * * *'     # inish-daily, 07:30 IST
+    - cron: '0 5 * * *'     # inish-daily catch-up, 10:30 IST (no-op when live)
     - cron: '37 * * * *'    # admit, Nishfleet/0509 scout-candidates
   workflow_dispatch: {}
 permissions: {}
@@ -456,9 +457,11 @@ jobs:
     # The inish.in daily edition. Its runner was a Hermes cron job, disabled
     # 2026-08-20 (seat quota) and never replaced: the site sat on 2026-08-23
     # for 36 days. The runbook lives in the product repo.
-    if: ${{ !inputs.ref && github.event.schedule == '0 2 * * *' }}
+    # The 10:30 IST catch-up covers a runner or host that was down at 07:30;
+    # the runbook's first step stops at once when today's edition is live.
+    if: ${{ !inputs.ref && (github.event.schedule == '0 2 * * *' || github.event.schedule == '0 5 * * *') }}
     runs-on: [self-hosted, agent]
-    timeout-minutes: 120
+    timeout-minutes: 150
     concurrency:
       group: scheduled-inish-daily
       cancel-in-progress: false
@@ -482,8 +485,8 @@ jobs:
             cat "$keyfile"
             printf '%s\n' "$delim"
           } >> "$GITHUB_OUTPUT"
-      # The runbook (inish-site automation/HERMES_DAILY.md steps 7-8) pushes
-      # daily/<date>, opens the PR and arms auto-merge on Nishfleet/inish-site.
+      # The runbook (inish-site automation/HERMES_DAILY.md steps 7-9) pushes
+      # the edition straight to inish-site main, whose CI tests and deploys it.
       - name: App token for Nishfleet/inish-site
         id: app-token
         uses: actions/create-github-app-token@fee1f7d63c2ff003460e3d139729b119787bc349 # v2.2.2
@@ -502,7 +505,8 @@ jobs:
           persist-credentials: false
       - name: Publish today's edition
         # The published: line is the completed-run signature; without it the
-        # job fails red. The checkout keeps no credential in .git/config;
+        # next model takes over the same checkout (the runbook resumes an
+        # earlier attempt's work), and after the last one the job fails red. The checkout keeps no credential in .git/config;
         # git gets the token here from the environment, for inish-site URLs
         # only, the same extraheader actions/checkout would have written.
         working-directory: inish-site
@@ -516,13 +520,19 @@ jobs:
           export GIT_CONFIG_VALUE_0="AUTHORIZATION: basic $basic"
           export GIT_CONFIG_KEY_1=http.https://github.com/Nishfleet/inish-site.git.extraheader
           export GIT_CONFIG_VALUE_1="AUTHORIZATION: basic $basic"
-          out="$RUNNER_TEMP/inish-daily.out"
-          echo "Publish today's inish.in edition (today = $(TZ=Asia/Kolkata date +%F), Asia/Kolkata). Read automation/HERMES_DAILY.md in this checkout and follow every step exactly." | pi --print \
-            --append-system-prompt "$HOME/workspaces/tooling/fleet-ops-deploy-clone/AGENTS.md" \
-            --session-dir "$HOME/.pi/agent/sessions/inish-daily" \
-            --provider litellm --model worker-capable > "$out"
-          grep -E '^publish(ed|-failed):' "$out" || true
-          grep -qE '^published: [0-9]{4}-[0-9]{2}-[0-9]{2} ' "$out"
+          today=$(TZ=Asia/Kolkata date +%F)
+          for model in worker-capable senior worker-capable; do
+            out="$RUNNER_TEMP/inish-daily-$model-$RANDOM.out"
+            echo "Publish today's inish.in edition (today = $today, Asia/Kolkata). Read automation/HERMES_DAILY.md in this checkout and follow every step exactly." \
+              | timeout 45m pi --print \
+                  --append-system-prompt "$HOME/workspaces/tooling/fleet-ops-deploy-clone/AGENTS.md" \
+                  --session-dir "$HOME/.pi/agent/sessions/inish-daily" \
+                  --provider litellm --model "$model" > "$out" || true
+            grep -E '^publish(ed|-failed):' "$out" || true
+            grep -qE '^published: [0-9]{4}-[0-9]{2}-[0-9]{2} ' "$out" && exit 0
+            echo "::warning::inish-daily: $model did not publish; handing the checkout to the next model"
+          done
+          exit 1
   report:
     needs: work
     if: (failure() || cancelled()) && needs.work.outputs.wall != 'true'
