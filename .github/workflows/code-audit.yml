@@ -64,7 +64,7 @@ jobs:
           fetch-depth: 1
       - name: Copy the area into an empty directory
         # The grader sees regular files only: no .git, no symlink, no project
-        # .cursor config, the same isolation as the grade.yml Kimi grader.
+        # .cursor config, the same isolation as the ci.yml opus-review Kimi grader.
         run: |
           case "$AREA" in
             workflows) set -- .github ;;
