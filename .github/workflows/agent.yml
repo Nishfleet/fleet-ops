@@ -18,6 +18,8 @@ on:
     - cron: '0 */4 * * *'   # scout, Nishfleet/0509
     - cron: '0 4 * * 1'     # gardener, Mondays 09:30 IST
     - cron: '0 2 * * *'     # inish-daily, 07:30 IST
+    - cron: '37 * * * *'    # admit, Nishfleet/0509 scout-candidates
+  workflow_dispatch: {}
 permissions: {}
 jobs:
   work:
@@ -320,6 +322,52 @@ jobs:
             --provider litellm --model worker-cheap > "$out"
           grep -E 'supply:[[:space:]]*ready_count=[0-9]+|scout-yield:' "$out" ||
             { echo "scout-abort-gate: no supply: line this run" >&2; exit 1; }
+  admit:
+    if: ${{ !inputs.ref && (github.event.schedule == '37 * * * *' || github.event_name == 'workflow_dispatch') }}
+    runs-on: [self-hosted, agent]
+    timeout-minutes: 45
+    concurrency:
+      group: scheduled-admit-0509
+      cancel-in-progress: false
+    steps:
+      - name: App token (key never leaves the VPS)
+        run: |
+          t=$(gh token generate --app-id 4728578 --key "$HOME/.config/fleet-worker/nishfleet-worker.private-key.pem" --installation-id 156789042 --token-only)
+          echo "::add-mask::$t"
+          echo "GH_TOKEN=$t" >> "$GITHUB_ENV"
+      - name: Admit 0509 scout-candidates
+        run: |
+          key=$(grep -m1 '^LITELLM_JEV_KEY=' "$HOME/.config/fleet-ops/seats/typesafe-jev.env" | cut -d= -f2-)
+          echo "::add-mask::$key"
+          if [ "$(gh issue view 4834 -R Nishfleet/0509 --json state --jq .state)" = OPEN ]; then core_open=yes; else core_open=no; fi
+          core_id=$(gh api repos/Nishfleet/0509/issues/4834 --jq .id)
+          seen=0; fails=0
+          for n in $(gh issue list -R Nishfleet/0509 -l scout-candidate --state open -L 200 --json number --jq '.[].number'); do
+            issue=$(gh api "repos/Nishfleet/0509/issues/$n")
+            case ",$(jq -r '[.labels[].name]|join(",")' <<<"$issue")," in
+              *,agent-ready,*|*,needs-orchestrator,*|*,needs-nish-decision,*) continue ;;
+            esac
+            seen=$((seen + 1))
+            out=$(jq -n --argjson s "$issue" '{custom_llm_provider: "vercel_ai_gateway", state: {issue: {ref: $s.html_url, title: $s.title, body: $s.body}}, questions: {admit: {type: "boolean", instructions: "Is this a well-formed Nishfleet/0509 slice a worker can ship now: prior art resolves on main, a runnable acceptance, no money or credential gate? While Nishfleet/0509#4834 is open, work outside the core loop (sign up -> input -> card -> competitors -> Home -> first brief) is still admitted on well-formedness; the caller holds it separately."}, in_core_loop: {type: "boolean", instructions: "Does this issue slice touch the 0509 core loop: sign up -> input -> card -> competitors -> Home -> first brief?"}}}' |
+              curl -s --max-time 90 127.0.0.1:4000/jev -H "Authorization: Bearer $key" -H 'content-type: application/json' -d @-)
+            p=$(jq -r '.answers.admit.probability // "unavailable"' <<<"$out" 2>/dev/null || echo unavailable)
+            awk -v p="$p" 'BEGIN { exit !(p ~ /^[0-9.]+$/) }' || { fails=$((fails + 1)); continue; }
+            gh issue comment "$n" -R Nishfleet/0509 --body "jev admit: p=$p" || continue
+            if awk -v p="$p" 'BEGIN { exit !(p + 0 >= 0.9) }'; then
+              q=$(jq -r '.answers.in_core_loop.probability // "0"' <<<"$out" 2>/dev/null || echo 0)
+              if [ "$core_open" = yes ] && ! awk -v q="$q" 'BEGIN { exit !(q ~ /^[0-9.]+$/ && q + 0 >= 0.5) }'; then
+                gh api "repos/Nishfleet/0509/issues/$n/dependencies/blocked_by" -F issue_id="$core_id" || { echo "::warning::admit: blocked_by #4834 not recorded for #$n; left for the next tick"; continue; }
+                gh issue edit "$n" -R Nishfleet/0509 --add-label after-core-loop
+              fi
+              gh issue edit "$n" -R Nishfleet/0509 --add-label agent-ready --remove-label scout-candidate --remove-label proposed
+            elif awk -v p="$p" 'BEGIN { exit !(p + 0 >= 0.6) }'; then
+              gh issue edit "$n" -R Nishfleet/0509 --add-label needs-orchestrator
+            else
+              gh issue edit "$n" -R Nishfleet/0509 --add-label needs-nish-decision
+            fi
+          done
+          echo "admit: scored=$seen jev_unavailable=$fails"
+          [ "$seen" -eq 0 ] || [ "$fails" -lt "$seen" ]
   gardener:
     if: ${{ !inputs.ref && github.event.schedule == '0 4 * * 1' }}
     runs-on: [self-hosted, agent]
