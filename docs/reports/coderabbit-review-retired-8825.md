@@ -126,6 +126,7 @@ Live configuration that names the gate, and what happened to each:
   which record past runs rather than schedule any; and vault or
   `fleet-knowledge-base` prose from August. History, logs and vendored code —
   none of them a launch path.
+
 ## Deletion + acceptance proof
 
 Pre-delete state — the dir held exactly one file, `SKILL.md` (the trailing
