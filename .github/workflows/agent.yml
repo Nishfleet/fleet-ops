@@ -53,13 +53,21 @@ jobs:
             cat "$keyfile"
             printf '%s\n' "$delim"
           } >> "$GITHUB_OUTPUT"
+      # No owner and no repositories: the action then scopes the token to
+      # GITHUB_REPOSITORY, the calling repo, which every caller event sets
+      # (github.event.repository is not in every event payload). The three
+      # writes are the App's whole grant (credentials/app-manifest.json): the
+      # Branch step and the worker push and delete claim refs, the Gate and the
+      # worker label and comment, the worker opens and arms its PR.
       - name: App token
         id: app-token
         uses: actions/create-github-app-token@fee1f7d63c2ff003460e3d139729b119787bc349 # v2.2.2
         with:
           app-id: "4728578"
           private-key: ${{ steps.app-key.outputs.pem }}
-          owner: ${{ github.repository_owner }}
+          permission-contents: write
+          permission-issues: write
+          permission-pull-requests: write
           skip-token-revoke: "false"
       - name: Gate
         # The dispatch policy that the old intake prompt used to carry, now in one
@@ -227,11 +235,16 @@ jobs:
       - name: App token for arm
         id: arm-token
         if: ${{ !cancelled() && steps.gate.outputs.go == 'true' }}
+        # Scoped like app-token above. Router wall comments and relabels,
+        # Arm auto-merge edits the PR body and runs gh pr merge --auto (a
+        # squash needs contents), Deliverable reads the issue and PR list.
         uses: actions/create-github-app-token@fee1f7d63c2ff003460e3d139729b119787bc349 # v2.2.2
         with:
           app-id: "4728578"
           private-key: ${{ steps.app-key.outputs.pem }}
-          owner: ${{ github.repository_owner }}
+          permission-contents: write
+          permission-issues: write
+          permission-pull-requests: write
           skip-token-revoke: "false"
       - name: Router wall
         id: wall
@@ -305,15 +318,41 @@ jobs:
       group: scheduled-scout-0509
       cancel-in-progress: false
     steps:
-      - name: App token (key never leaves the VPS)
+      - name: Read App private key
+        id: app-key
         run: |
-          t=$(gh token generate --app-id 4728578 --key "$HOME/.config/fleet-worker/nishfleet-worker.private-key.pem" --installation-id 156789042 --token-only)
-          echo "::add-mask::$t"
-          echo "GH_TOKEN=$t" >> "$GITHUB_ENV"
+          keyfile="$HOME/.config/fleet-worker/nishfleet-worker.private-key.pem"
+          [ -s "$keyfile" ] || { echo "::error::app private key file missing on runner"; exit 1; }
+          while IFS= read -r line || [ -n "$line" ]; do
+            [ -n "$line" ] && echo "::add-mask::$line"
+          done < "$keyfile"
+          delim=APP_PRIVATE_KEY_END
+          {
+            printf 'pem<<%s\n' "$delim"
+            cat "$keyfile"
+            printf '%s\n' "$delim"
+          } >> "$GITHUB_OUTPUT"
+      # The key is read on this runner and never leaves the VPS. Scout acts
+      # on Nishfleet/0509 only (prompts/scout.md: "Touch only the TARGET
+      # repo"): it creates and labels issues, reads the open PR list and
+      # clones the repo.
+      - name: App token for Nishfleet/0509
+        id: app-token
+        uses: actions/create-github-app-token@fee1f7d63c2ff003460e3d139729b119787bc349 # v2.2.2
+        with:
+          app-id: "4728578"
+          private-key: ${{ steps.app-key.outputs.pem }}
+          owner: Nishfleet
+          repositories: "0509"
+          permission-contents: read
+          permission-issues: write
+          permission-pull-requests: read
       - name: Scout 0509
         # Transcript stays on the VPS. The supply:/scout-yield: lines are the
         # completed-run signature (the old ExecStartPost abort gate,
         # fleet-ops#7524); without one the job fails.
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
         run: |
           out="$RUNNER_TEMP/scout.out"
           echo "/scout 0509" | pi --print \
@@ -330,12 +369,34 @@ jobs:
       group: scheduled-admit-0509
       cancel-in-progress: false
     steps:
-      - name: App token (key never leaves the VPS)
+      - name: Read App private key
+        id: app-key
         run: |
-          t=$(gh token generate --app-id 4728578 --key "$HOME/.config/fleet-worker/nishfleet-worker.private-key.pem" --installation-id 156789042 --token-only)
-          echo "::add-mask::$t"
-          echo "GH_TOKEN=$t" >> "$GITHUB_ENV"
+          keyfile="$HOME/.config/fleet-worker/nishfleet-worker.private-key.pem"
+          [ -s "$keyfile" ] || { echo "::error::app private key file missing on runner"; exit 1; }
+          while IFS= read -r line || [ -n "$line" ]; do
+            [ -n "$line" ] && echo "::add-mask::$line"
+          done < "$keyfile"
+          delim=APP_PRIVATE_KEY_END
+          {
+            printf 'pem<<%s\n' "$delim"
+            cat "$keyfile"
+            printf '%s\n' "$delim"
+          } >> "$GITHUB_OUTPUT"
+      # Admit reads, comments on and relabels Nishfleet/0509 issues and
+      # records blocked_by dependencies: issues is the only grant it uses.
+      - name: App token for Nishfleet/0509
+        id: app-token
+        uses: actions/create-github-app-token@fee1f7d63c2ff003460e3d139729b119787bc349 # v2.2.2
+        with:
+          app-id: "4728578"
+          private-key: ${{ steps.app-key.outputs.pem }}
+          owner: Nishfleet
+          repositories: "0509"
+          permission-issues: write
       - name: Admit 0509 scout-candidates
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
         run: |
           key=$(grep -m1 '^LITELLM_JEV_KEY=' "$HOME/.config/fleet-ops/seats/typesafe-jev.env" | cut -d= -f2-)
           echo "::add-mask::$key"
@@ -407,23 +468,54 @@ jobs:
       GIT_COMMITTER_NAME: nishfleet-worker[bot]
       GIT_COMMITTER_EMAIL: 321485391+nishfleet-worker[bot]@users.noreply.github.com
     steps:
-      - name: App token (key never leaves the VPS)
-        id: app-token
+      - name: Read App private key
+        id: app-key
         run: |
-          t=$(gh token generate --app-id 4728578 --key "$HOME/.config/fleet-worker/nishfleet-worker.private-key.pem" --installation-id 156789042 --token-only)
-          echo "::add-mask::$t"
-          echo "GH_TOKEN=$t" >> "$GITHUB_ENV"
-          echo "token=$t" >> "$GITHUB_OUTPUT"
+          keyfile="$HOME/.config/fleet-worker/nishfleet-worker.private-key.pem"
+          [ -s "$keyfile" ] || { echo "::error::app private key file missing on runner"; exit 1; }
+          while IFS= read -r line || [ -n "$line" ]; do
+            [ -n "$line" ] && echo "::add-mask::$line"
+          done < "$keyfile"
+          delim=APP_PRIVATE_KEY_END
+          {
+            printf 'pem<<%s\n' "$delim"
+            cat "$keyfile"
+            printf '%s\n' "$delim"
+          } >> "$GITHUB_OUTPUT"
+      # The runbook (inish-site automation/HERMES_DAILY.md steps 7-8) pushes
+      # daily/<date>, opens the PR and arms auto-merge on Nishfleet/inish-site.
+      - name: App token for Nishfleet/inish-site
+        id: app-token
+        uses: actions/create-github-app-token@fee1f7d63c2ff003460e3d139729b119787bc349 # v2.2.2
+        with:
+          app-id: "4728578"
+          private-key: ${{ steps.app-key.outputs.pem }}
+          owner: Nishfleet
+          repositories: inish-site
+          permission-contents: write
+          permission-pull-requests: write
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: Nishfleet/inish-site
           token: ${{ steps.app-token.outputs.token }}
           path: inish-site
+          persist-credentials: false
       - name: Publish today's edition
         # The published: line is the completed-run signature; without it the
-        # job fails red.
+        # job fails red. The checkout keeps no credential in .git/config;
+        # git gets the token here from the environment, for inish-site URLs
+        # only, the same extraheader actions/checkout would have written.
         working-directory: inish-site
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
         run: |
+          basic=$(tr -d '\n' <<<"x-access-token:$GH_TOKEN" | base64 -w0)
+          echo "::add-mask::$basic"
+          export GIT_CONFIG_COUNT=2
+          export GIT_CONFIG_KEY_0=http.https://github.com/Nishfleet/inish-site.extraheader
+          export GIT_CONFIG_VALUE_0="AUTHORIZATION: basic $basic"
+          export GIT_CONFIG_KEY_1=http.https://github.com/Nishfleet/inish-site.git.extraheader
+          export GIT_CONFIG_VALUE_1="AUTHORIZATION: basic $basic"
           out="$RUNNER_TEMP/inish-daily.out"
           echo "Publish today's inish.in edition (today = $(TZ=Asia/Kolkata date +%F), Asia/Kolkata). Read automation/HERMES_DAILY.md in this checkout and follow every step exactly." | pi --print \
             --append-system-prompt "$HOME/workspaces/tooling/fleet-ops-deploy-clone/AGENTS.md" \
@@ -439,12 +531,30 @@ jobs:
       issues: write
     steps:
       # App token, not GITHUB_TOKEN: a GITHUB_TOKEN label fires no workflow, so opus-vet never ran on a park (fleet-ops#8552).
-      - name: App token (key never leaves the VPS)
+      - name: Read App private key
+        id: app-key
         run: |
-          t=$(gh token generate --app-id 4728578 --key "$HOME/.config/fleet-worker/nishfleet-worker.private-key.pem" --installation-id 156789042 --token-only)
-          echo "::add-mask::$t"
-          echo "GH_TOKEN=$t" >> "$GITHUB_ENV"
+          keyfile="$HOME/.config/fleet-worker/nishfleet-worker.private-key.pem"
+          [ -s "$keyfile" ] || { echo "::error::app private key file missing on runner"; exit 1; }
+          while IFS= read -r line || [ -n "$line" ]; do
+            [ -n "$line" ] && echo "::add-mask::$line"
+          done < "$keyfile"
+          delim=APP_PRIVATE_KEY_END
+          {
+            printf 'pem<<%s\n' "$delim"
+            cat "$keyfile"
+            printf '%s\n' "$delim"
+          } >> "$GITHUB_OUTPUT"
+      # Scoped like the work job's token: the calling repo, issues only.
+      - name: App token
+        id: app-token
+        uses: actions/create-github-app-token@fee1f7d63c2ff003460e3d139729b119787bc349 # v2.2.2
+        with:
+          app-id: "4728578"
+          private-key: ${{ steps.app-key.outputs.pem }}
+          permission-issues: write
       - env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
           N: ${{ inputs.ref }}
         # Two strikes, counted from these comments since the newest opus-vet
         # (a fresh vet resets the count, same as the old claim-release prompt).
