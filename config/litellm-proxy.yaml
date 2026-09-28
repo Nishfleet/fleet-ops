@@ -1,6 +1,34 @@
 model_list:
 - model_name: worker-capable
   litellm_params:
+    model: openai/deepseek/deepseek-v4.1-flash
+    api_base: https://api.commandcode.ai/provider/v1
+    api_key: os.environ/COMMANDCODE_API_KEY
+    tags:
+    - prepaid
+    - commandcode
+    order: 1
+    max_parallel_requests: 4
+    cooldown_time: 900
+  model_info:
+    mode: chat
+    id: commandcode-ds41flash-worker-capable
+- model_name: worker-cheap
+  litellm_params:
+    model: openai/deepseek/deepseek-v4.1-flash
+    api_base: https://api.commandcode.ai/provider/v1
+    api_key: os.environ/COMMANDCODE_API_KEY
+    tags:
+    - prepaid
+    - commandcode
+    order: 1
+    max_parallel_requests: 4
+    cooldown_time: 900
+  model_info:
+    mode: chat
+    id: commandcode-ds41flash-worker-cheap
+- model_name: worker-capable
+  litellm_params:
     model: openai/deepseek-v4.1-flash
     api_base: https://opencode.ai/zen/go/v1
     api_key: os.environ/OPENCODE_API_KEY
@@ -533,14 +561,12 @@ litellm_settings:
 general_settings:
   pass_through_endpoints:
     - path: "/jev"
-      target: "https://ai-gateway.vercel.sh/v4/ai/evaluation-model"
+      # TypeSafe direct (Nish 2026-09-28): the Vercel AI Gateway key is used ONLY when Nish says so.
+      target: "https://api.typesafe.ai/v1/systemone"
       cost_per_request: 0.000015
       auth: true
       headers:
-        Authorization: "Bearer os.environ/VERCEL_AI_GATEWAY_JEV_KEY"
-        ai-gateway-protocol-version: "0.0.1"
-        ai-evaluation-model-specification-version: "4"
-        ai-model-id: "typesafe-ai/jev"
+        Authorization: "Bearer os.environ/TYPESAFE_API_KEY"
   background_health_checks: true
   health_check_interval: 900
   # serialise /health: a parallel census 429s shared accounts (fleet-ops#7862).
