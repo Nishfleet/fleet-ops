@@ -241,7 +241,7 @@ jobs:
             --ro-bind "$RUNNER_TEMP/case" /case --chdir /case \
             --unshare-pid --unshare-ipc --unshare-uts --new-session --die-with-parent --clearenv \
             --setenv HOME /home/grader --setenv PATH /usr/bin:/bin \
-            -- timeout 900 /devin-bin/devin --print --permission-mode auto --model swe-2-max -- "$DEVIN_PROMPT" > "$RUNNER_TEMP/devin.txt"
+            -- timeout 900 /devin-bin/devin --print --permission-mode auto --model swe-2-max -- "$DEVIN_PROMPT" > "$RUNNER_TEMP/devin.txt" 2> "$RUNNER_TEMP/devin.err"
       - name: Post the Devin grade
         if: github.event_name == 'pull_request' && inputs.engine == 'devin' && github.event.pull_request.user.login != 'dependabot[bot]' && github.event.pull_request.head.repo.full_name == github.repository
         env:
@@ -250,9 +250,9 @@ jobs:
           AUTHOR: ${{ github.event.pull_request.user.login }}
         shell: bash
         run: |
-          grep -rhoE '[A-Za-z0-9_+=-]{24,}' "$HOME/.config/devin" > "$RUNNER_TEMP/devin-login.txt"
+          grep -rhoE '[A-Za-z0-9_+=-]{16,}' "$HOME/.config/devin" "$RUNNER_TEMP/devin-home/.config/devin" > "$RUNNER_TEMP/devin-login.txt"
           test -s "$RUNNER_TEMP/devin-login.txt"
-          if grep -qFf "$RUNNER_TEMP/devin-login.txt" "$RUNNER_TEMP/devin.txt"; then exit 1; fi
+          if grep -qFf "$RUNNER_TEMP/devin-login.txt" "$RUNNER_TEMP/devin.txt" "$RUNNER_TEMP/devin.err"; then exit 1; fi
           tr -d '\r' < "$RUNNER_TEMP/devin.txt" > "$RUNNER_TEMP/devin-clean.txt"
           test "$(grep -cxE 'Devin grade: (A\+|A|A-|B\+|B|B-|C\+|C|C-|D|F)' "$RUNNER_TEMP/devin-clean.txt")" = 1
           sed -nE '/^Devin grade: (A\+|A|A-|B\+|B|B-|C\+|C|C-|D|F)$/,$p' "$RUNNER_TEMP/devin-clean.txt" | head -n 9 > "$RUNNER_TEMP/devin-post.txt"
@@ -267,13 +267,14 @@ jobs:
           fi
       - name: Remove the copied Devin login
         if: always() && github.event_name == 'pull_request' && inputs.engine == 'devin' && github.event.pull_request.user.login != 'dependabot[bot]' && github.event.pull_request.head.repo.full_name == github.repository
-        run: rm -rf "$RUNNER_TEMP/devin-home" "$RUNNER_TEMP/devin-login.txt" "$RUNNER_TEMP/case"
+        run: rm -rf "$RUNNER_TEMP/devin-home" "$RUNNER_TEMP/devin-login.txt" "$RUNNER_TEMP/devin.err" "$RUNNER_TEMP/case"
       - name: Only A+ passes (fails closed when there is no grade)
         if: github.event_name == 'pull_request' && github.event.pull_request.user.login != 'dependabot[bot]'
         env:
           GH_TOKEN: ${{ github.token }}
+          PR: ${{ github.event.pull_request.number }}
         run: >-
-          gh pr view ${{ github.event.pull_request.number }} --repo ${{ github.repository }} --json comments --jq '[.comments[] | select(.author.login == "github-actions" and (.body | (startswith("Opus grade:") or startswith("Kimi grade:") or startswith("Devin grade:"))))] | sort_by(.createdAt) | last | .body | split("\n") | .[0]' > "$RUNNER_TEMP/grade" && grep -qxE '(Opus|Kimi|Devin) grade: A\+' "$RUNNER_TEMP/grade"
+          gh pr view "$PR" --repo "$GITHUB_REPOSITORY" --json comments --jq '[.comments[] | select(.author.login == "github-actions" and (.body | (startswith("Opus grade:") or startswith("Kimi grade:") or startswith("Devin grade:"))))] | sort_by(.createdAt) | last | .body | split("\n") | .[0]' > "$RUNNER_TEMP/grade" && grep -qxE '(Opus|Kimi|Devin) grade: A\+' "$RUNNER_TEMP/grade"
       - name: merge_group reports the check so the queue can merge (the grade was enforced on the pull request)
         if: github.event_name == 'merge_group'
         run: "true"
