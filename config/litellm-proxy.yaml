@@ -135,21 +135,6 @@ model_list:
   model_info:
     mode: chat
     id: opencodego2-ds41flash-judge
-- model_name: judge
-  litellm_params:
-    model: anthropic/MiniMax-M3.1-Flash-Preview
-    api_base: https://api.minimax.io/anthropic
-    api_key: os.environ/MINIMAX_API_KEY
-    tags:
-    - prepaid
-    - minimax
-    - judge
-    order: 1
-    max_parallel_requests: 2
-    cooldown_time: 900
-  model_info:
-    mode: chat
-    id: minimax-m31-judge
 - model_name: worker-capable
   litellm_params:
     model: openai/z-ai/glm-5.3-flash
@@ -181,21 +166,6 @@ model_list:
   model_info:
     mode: chat
     id: pareto-glm53flash-senior
-- model_name: senior
-  litellm_params:
-    model: openai/step-5-preview
-    api_base: https://api.stepfun.ai/step_plan/v1
-    api_key: os.environ/STEPFUN_API_KEY
-    tags:
-    - prepaid
-    - stepfun
-    - senior
-    order: 1
-    max_parallel_requests: 2
-    cooldown_time: 900
-  model_info:
-    mode: chat
-    id: stepfun-step5preview-senior
 - model_name: worker-cheap
   litellm_params:
     model: openai/hf:zai-org/GLM-5.3-Flash
