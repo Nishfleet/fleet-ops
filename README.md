@@ -298,7 +298,9 @@ now serve only the root `restic-r2-restore-test.service`.
 ## Intake enrolment
 
 `config/intake-repos.json` is the **declared set** of repos that run
-agent-dispatch and the scout job. It is the single source of truth for which
+agent-dispatch and the scout job. An entry (enrolled or deferred) may also
+carry `"release_assets": true` — the one-line opt-in for the release-assets
+job (fleet-ops#8871). It is the single source of truth for which
 repos are enrolled — adding or removing a repo is a PR against that file, not a
 `systemctl enable`. This replaces the old imperative enrolment that was
 silently reverted without a record (fleet-ops#32).

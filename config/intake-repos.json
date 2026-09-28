@@ -10,7 +10,8 @@
   "repos": [
     {
       "name": "0509",
-      "product": true
+      "product": true,
+      "release_assets": true
     }
   ],
   "excluded": [

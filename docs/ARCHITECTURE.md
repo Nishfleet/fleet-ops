@@ -15,7 +15,7 @@ code and config.
 
 The work loop: `.github/workflows/agent-dispatch.yml` queues `agent-ready` issues as `agent.yml` jobs on the VPS self-hosted runners, workers open PRs on `claim/issue-<N>`, and the GitHub merge queue lands them.
 Alerts reach repair through `prometheus-am-executor` → `alert-repair@`.
-The scout, `fleet-gardener` and `inish-daily` (07:30 IST inish.in edition, fleet-ops#8811) are scheduled jobs in `.github/workflows/agent.yml` (fleet-ops#8433); the daily view is the saved searches in the README.
+The scout, `fleet-gardener` and `inish-daily` (07:30 IST inish.in edition, fleet-ops#8811) are scheduled jobs in `.github/workflows/agent.yml` (fleet-ops#8433); the daily view is the saved searches in the README. `release-assets` polls enrolled products' releases hourly and opens each new release its OG-card + changelog PR (fleet-ops#8871).
 
 ## Model plane
 

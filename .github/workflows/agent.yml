@@ -19,6 +19,7 @@ on:
     - cron: '0 4 * * 1'     # gardener, Mondays 09:30 IST
     - cron: '0 2 * * *'     # inish-daily, 07:30 IST
     - cron: '0 5 * * *'     # inish-daily catch-up, 10:30 IST (no-op when live)
+    - cron: '11 * * * *'    # release-assets poll, enrolled products (fleet-ops#8871)
     - cron: '37 * * * *'    # admit, Nishfleet/0509 scout-candidates
   workflow_dispatch: {}
 permissions: {}
@@ -533,6 +534,124 @@ jobs:
             echo "::warning::inish-daily: $model did not publish; handing the checkout to the next model"
           done
           exit 1
+  release-assets:
+    # One-off -> skill -> routine ladder, first pipeline (fleet-ops#8871): a
+    # release published in an enrolled product gets an OG/social card and a
+    # changelog post in the product's own look, opened as a PR on that repo.
+    # Named reason for a schedule (the ladder allows one): a release event
+    # fires only in the releasing repo, this runner group allows only
+    # agent.yml@main, and the worker App token is scoped to the calling repo,
+    # so no fleet-side actor can plant a trigger stub in a product (proven
+    # 2026-09-28). The hourly poll is what makes enrollment one
+    # config/intake-repos.json line. One release per run bounds cost;
+    # idempotency is the branch/changelog read. The assets PR is NOT armed or
+    # merged by the job: the card is brand-facing and brand is Nish's class
+    # (AGENTS.md hard lines) — the PR is his review gate.
+    if: ${{ !inputs.ref && (github.event.schedule == '11 * * * *' || github.event_name == 'workflow_dispatch') }}
+    runs-on: [self-hosted, agent]
+    timeout-minutes: 45
+    concurrency:
+      group: release-assets
+      cancel-in-progress: false
+    env:
+      GIT_AUTHOR_NAME: nishfleet-worker[bot]
+      GIT_AUTHOR_EMAIL: 321485391+nishfleet-worker[bot]@users.noreply.github.com
+      GIT_COMMITTER_NAME: nishfleet-worker[bot]
+      GIT_COMMITTER_EMAIL: 321485391+nishfleet-worker[bot]@users.noreply.github.com
+    steps:
+      - name: Read App private key
+        id: app-key
+        run: |
+          keyfile="$HOME/.config/fleet-worker/nishfleet-worker.private-key.pem"
+          [ -s "$keyfile" ] || { echo "::error::app private key file missing on runner"; exit 1; }
+          while IFS= read -r line || [ -n "$line" ]; do
+            [ -n "$line" ] && echo "::add-mask::$line"
+          done < "$keyfile"
+          delim=APP_PRIVATE_KEY_END
+          {
+            printf 'pem<<%s\n' "$delim"
+            cat "$keyfile"
+            printf '%s\n' "$delim"
+          } >> "$GITHUB_OUTPUT"
+      # Fleet-ops-scoped read token for the pick: installation tokens read the
+      # org's public repos cross-repo (proven 2026-09-28).
+      - name: App token for the poll
+        id: poll-token
+        uses: actions/create-github-app-token@fee1f7d63c2ff003460e3d139729b119787bc349 # v2.2.2
+        with:
+          app-id: "4728578"
+          private-key: ${{ steps.app-key.outputs.pem }}
+          permission-contents: read
+          skip-token-revoke: "false"
+      - name: Pick the newest unprocessed release
+        # Enrolled = "release_assets": true on the repo's entry (repos or
+        # deferred; excluded is never read) in the deploy clone's
+        # intake-repos.json. Unprocessed = no release-assets/<tag> branch and
+        # no docs/changelog/<tag>.md on the product's main. One per run.
+        id: pick
+        env:
+          GH_TOKEN: ${{ steps.poll-token.outputs.token }}
+        run: |
+          cfg="$HOME/workspaces/tooling/fleet-ops-deploy-clone/config/intake-repos.json"
+          for r in $(jq -r '[.repos[]?, .deferred[]? | select(.release_assets == true) | .name] | .[]' "$cfg"); do
+            tags=$(gh api "repos/Nishfleet/$r/releases" --jq '.[:5][].tag_name' 2>/dev/null) ||
+              { echo "::warning::release-assets: cannot read Nishfleet/$r releases (private repo or App not installed)"; continue; }
+            for tag in $tags; do
+              gh api "repos/Nishfleet/$r/branches/release-assets/$tag" --silent 2>/dev/null && continue
+              gh api "repos/Nishfleet/$r/contents/docs/changelog/$tag.md" --silent 2>/dev/null && continue
+              { echo "repo=$r"; echo "tag=$tag"; } >> "$GITHUB_OUTPUT"
+              exit 0
+            done
+          done
+          echo "release-assets: nothing new"
+      # Scoped to the releasing product (the inish-daily token shape):
+      # contents write pushes the assets branch, pull-requests write opens the
+      # PR. A failure here means the App is not installed on that repo — loud
+      # and red, and the fix is the installation, not this job.
+      - name: App token for the releasing repo
+        id: app-token
+        if: steps.pick.outputs.tag
+        uses: actions/create-github-app-token@fee1f7d63c2ff003460e3d139729b119787bc349 # v2.2.2
+        with:
+          app-id: "4728578"
+          private-key: ${{ steps.app-key.outputs.pem }}
+          owner: Nishfleet
+          repositories: ${{ steps.pick.outputs.repo }}
+          permission-contents: write
+          permission-pull-requests: write
+          skip-token-revoke: "false"
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        if: steps.pick.outputs.tag
+        with:
+          repository: Nishfleet/${{ steps.pick.outputs.repo }}
+          token: ${{ steps.app-token.outputs.token }}
+          ref: ${{ steps.pick.outputs.tag }}
+          persist-credentials: false
+      - name: Make the assets and open the PR
+        # The `release-assets: pr=` line is the completed-run signature (the
+        # scout job's supply:-line pattern); without it the job fails red.
+        # git gets the token from the environment for the product's URLs only,
+        # the same extraheader actions/checkout would have written.
+        if: steps.pick.outputs.tag
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          PRODUCT_REPO: ${{ steps.pick.outputs.repo }}
+          RELEASE_TAG: ${{ steps.pick.outputs.tag }}
+        run: |
+          basic=$(tr -d '\n' <<<"x-access-token:$GH_TOKEN" | base64 -w0)
+          echo "::add-mask::$basic"
+          export GIT_CONFIG_COUNT=2
+          export GIT_CONFIG_KEY_0=http.https://github.com/Nishfleet/${PRODUCT_REPO}.extraheader
+          export GIT_CONFIG_VALUE_0="AUTHORIZATION: basic $basic"
+          export GIT_CONFIG_KEY_1=http.https://github.com/Nishfleet/${PRODUCT_REPO}.git.extraheader
+          export GIT_CONFIG_VALUE_1="AUTHORIZATION: basic $basic"
+          out="$RUNNER_TEMP/release-assets.out"
+          echo "Release $RELEASE_TAG was just published in Nishfleet/$PRODUCT_REPO, checked out here at the tag. Follow $HOME/workspaces/tooling/fleet-ops-deploy-clone/prompts/release-assets.md exactly." \
+            | timeout 40m pi --print \
+                --append-system-prompt "$HOME/workspaces/tooling/fleet-ops-deploy-clone/AGENTS.md" \
+                --session-dir "$HOME/.pi/agent/sessions/release-assets" \
+                --provider litellm --model worker-capable > "$out"
+          grep -E '^release-assets: pr=' "$out"
   report:
     needs: work
     if: (failure() || cancelled()) && needs.work.outputs.wall != 'true'
