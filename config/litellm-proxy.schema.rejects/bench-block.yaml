@@ -5,5 +5,8 @@ model_list:
 router_settings:
   cooldown_time: 60
 benched:
-- litellm_params:
+- benched_at: 2026-09-22
+  wall: quality
+  reason: a bench entry the old schema accepted
+  litellm_params:
     model: openai/y
