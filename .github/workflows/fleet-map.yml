@@ -58,10 +58,10 @@ jobs:
           body=$(gh pr view "$PR" --repo "$GITHUB_REPOSITORY" --json body --jq .body)
           # A change that cannot alter runtime behaviour (a comment, a doc
           # string, a rename the tests cover) names why instead of pasting a
-          # run: `proof: not-needed - <reason>` (Nish 2026-09-28, "everything
-          # might not need proving every time"). Skip only with that line; the
-          # reason is three or more words, and the PR grader judges it.
-          if printf '%s\n' "$body" | grep -qiE '^proof: not-needed - [[:alpha:]][^ ]*( [^ ]+){2,}'; then
+          # run (Nish 2026-09-28, "everything might not need proving every
+          # time"). This checks the line's shape only; whether the reason is
+          # true is quality-bar point 7, judged by the required grade.
+          if printf '%s\n' "$body" | grep -qiE '^run-proof: not-needed - [[:alpha:]][^ ]*( [^ ]+){2,}'; then
             exit 0
           fi
           printf '%s\n' "$body" | grep -q '## Verification'

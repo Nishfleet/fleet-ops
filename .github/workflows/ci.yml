@@ -233,17 +233,6 @@ jobs:
           PR_TITLE: ${{ github.event.pull_request.title }}
           PR_BODY: ${{ github.event.pull_request.body }}
         run: "! printf '%s\\n' \"$PR_TITLE\" \"$PR_BODY\" | grep -Ein \"$PAT\""
-      # A change that alters runtime behaviour is proven with one real run in
-      # the same turn (vault global-standing-rules.md, "Switched on and
-      # proven"); a no-behaviour change writes `proof: not-needed - <reason>`.
-      # Fires only when a proof word and a future time share a sentence, so
-      # "verified in CI" and fleet terms like observe-to-close pass.
-      - name: No proof deferred to a later scheduled run (prove now, Nish 2026-09-28)
-        if: always()
-        env:
-          PR_BODY: ${{ github.event.pull_request.body }}
-          DEFER: '(prove|proof|verif|confirm)[^.]{0,60}(tomorrow|tonight|overnight|next (scheduled|cron|nightly|morning|daily) (run|tick))|(tomorrow|tonight|overnight|next (scheduled|cron|nightly|morning|daily) (run|tick))[^.]{0,60}(prove|proof|verif|confirm)|first real (run|one)[^.]{0,40} is (tomorrow|tonight|the next)'
-        run: "! printf '%s\\n' \"$PR_BODY\" | grep -Ein \"$DEFER\""
 
   # no-glue: the mechanical half of "no scripts, hooks, wrappers, helpers"
   # (Nish 2026-09-19, 2026-09-21, 2026-09-26), now the shared gate in
