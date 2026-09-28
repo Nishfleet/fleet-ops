@@ -16,14 +16,17 @@ that cannot run. Retired 2026-09-28.
 
 ## Sweep — no unit, timer, crontab entry, PATH binary or symlink invoked it
 
-This is a targeted sweep for the four invoker classes, not an exhaustive grep
-of the host. Its scope is `~/.config/systemd/user`, crontab, `~/.local/bin`,
-and symlinks under `~/.pi/agent`/`~/.claude`/`~/.cursor` — the places from
-which a command could actually be launched. It is not a claim that the string
-`coderabbit` appears nowhere: it appears in 2,043 files under `~/workspaces`,
+This is a targeted sweep for the five invoker classes the issue asks about, not
+an exhaustive grep of the host. Its scope is `~/.config/systemd/user`, crontab,
+`~/.local/bin`, and symlinks under `~/.pi/agent`/`~/.claude`/`~/.cursor` — the
+places from which a command could actually be launched. It is not a claim that
+the string `coderabbit` appears nowhere: a keyword sweep over `~/workspaces`,
 `~/.config/systemd/user`, `~/.hermes`, `~/.pi/agent`, `~/.claude`, `~/.cursor`
-and `~/.local/bin` (`rg -il --hidden --no-ignore`, `.git` and `node_modules`
-filtered), and those hits are classified at the end of this section.
+and `~/.local/bin`
+(`rg -il --hidden --no-ignore … | grep -v '/.git/' | wc -l`) returns just
+over two thousand files, and those hits are classified at the end of this
+section. The count drifts as agent sessions append, which is why it is carried
+as a magnitude and not a figure.
 
 ```
 $ command -v coderabbit; command -v cr; command -v crgate
@@ -42,18 +45,33 @@ $ find ~/.pi/agent ~/.claude ~/.cursor ~/.config/systemd/user -lname '*coderabbi
 (no hits)
 ```
 
-A keyword sweep over the agent roots, to catch a config that names the gate
+(That block is annotated — `(no hits)` and `(exit 1 each)` are the reader's
+notes on empty output; the command lines are exact.)
+
+Keyword sweep over the agent roots, to catch a config that names the gate
 without a unit or symlink:
 
 ```
 $ rg -il 'coderabbit|crgate' ~/.config/systemd/user/ ~/.hermes/ ~/.pi/agent/ | grep -v '^/home/nish/.pi/agent/sessions/'
-/home/nish/.hermes/state-snapshots/*/cron/jobs.json   — Aug-20 snapshot data
-/home/nish/.hermes/logs/errors.log, ~/.hermes/sessions/*.json, ~/.hermes/cache/**  — logs/dumps
-/home/nish/.pi/agent/AGENTS.md.folded-20260919      — folded backup of the old AGENTS.md,
-                                     one line listing it among review gates
-/home/nish/.hermes/hermes-agent/tests/*.py          — CodeRabbit GitHub-app docstrings
-site-packages fastapi METADATA             — sponsor-badge URL
+/home/nish/.hermes/cache/scratch/merged12h.out
+/home/nish/.hermes/cache/web/github.com-7e18454411.md
+/home/nish/.hermes/cache/uv/archive-v0/TCV7BDWwmR7kh0HX/fastapi-0.133.1.dist-info/METADATA
+/home/nish/.hermes/hermes-agent/tests/agent/test_bot_profile_prompt_isolation.py
+/home/nish/.hermes/hermes-agent/tests/gateway/test_resume_command.py
+/home/nish/.hermes/installs/e8462ad3c57e40e8/environments/8122eea1978b4e33bb7e51d74618b175/venv/lib/python3.14/site-packages/fastapi-0.133.1.dist-info/METADATA
+/home/nish/.hermes/logs/errors.log
+/home/nish/.hermes/sessions/request_dump_20260908_002705_2eb4953a_20260908_002716_866745.json
+/home/nish/.hermes/state-snapshots/20260820-143106-pre-update/cron/jobs.json
+/home/nish/.hermes/state-snapshots/20260820-172625-pre-update/cron/jobs.json
+/home/nish/.pi/agent/AGENTS.md.folded-20260919
 ```
+
+What those are: Aug-20 cron state snapshots, session/log/cache dumps, two
+vendored `site-packages` metadata files and hermes-agent's own checkout (its
+test docstrings describe the CodeRabbit GitHub app, not a local gate), and the
+folded backup of the old `~/.pi/agent/AGENTS.md`, whose line 197 listed the
+skill among the review gates. No systemd unit, no crontab line, nothing under
+`~/.local/bin`.
 
 Live configuration that names the gate, and what happened to each:
 
@@ -76,12 +94,13 @@ Live configuration that names the gate, and what happened to each:
   repos still tell a session that `crgate`/`sgscan` run locally. Out of this
   issue's scope, which names one skills dir, and filed as **#8838**. Untouched
   here.
-- `config/rule-enforcement.json:548` `led-coderabbit` in `inish-site`,
-  `aiconverter-app` and `siterep-public` — records `"mechanism": "none —
-  waiting on a Nish-reserved auth action"`, status "fleet is ordered to run
-  without the local gate until then". That status is already true; the
-  remaining decision is Nish's re-auth, which stays open and untouched. Part
-  of #8838.
+- `config/rule-enforcement.json:548` on each product repo's `origin/main`
+  (`inish-site`, `aiconverter-app`, `siterep-public`; `inish-site`'s working
+  tree sits at 547 on its `ci/deploy-noop` branch, so read `origin/main`) —
+  `led-coderabbit` records `"mechanism": "none — waiting on a Nish-reserved
+  auth action"`, status "fleet is ordered to run without the local gate until
+  then". That status is already true; the remaining decision is Nish's
+  re-auth, which stays open and untouched. Part of #8838.
 - `~/workspaces/tooling/nish-vault/_system/shared-memory/skills-library/review-adjudication/SKILL.md:12`
   — house skill giving "CodeRabbit locally AND Greptile on the PR" as an
   example of two engines agreeing; names no command, and the example still
@@ -92,45 +111,50 @@ Live configuration that names the gate, and what happened to each:
   live `~/.claude/CLAUDE.md:39` already forbids local review wrappers.
 - `.lane/pr-body-5782.md` (this repo, tracked) — merged-PR body record
   mentioning `crgate`; kept as history, invokes nothing. The same tracked file
-  appears in the other 11 fleet-ops worktrees on this host (`fable-8653`,
-  `fable-fo-rebase`, `fable-restore-proof-stock`, `fix-lane-wall-filter`,
-  `fleet-ops-agent-yml-main-ref`, `fleet-ops-grade-bar-only`,
-  `fleet-ops-issue-8677`, `fo-closes-own`, `fo-devin-lane`,
-  `fo-ram-limits-0925`, `issue-fleet-ops-8826`); all share md5 `8805db23` — the
-  same merged-PR snapshot — and none is an invoker.
+  is present in every fleet-ops worktree on this host — 12 at the time of the
+  sweep, all sharing md5 `8805db23`, i.e. the same merged-PR snapshot — and
+  none of them is an invoker.
 - `~/workspaces/fleet-knowledge-base/01-inbox/.queue/burndown.jsonl:4729,6898`
   — the kb-burndown append log (last written 2026-08-23), whose two hits are
   `source` paths of August vault notes about the old `crgate` quota guard and a
   CodeRabbit remediation product contract; data records, not configuration.
-- The rest of the 2,043 keyword hits: agent transcripts and session dumps under
+- The rest of the keyword hits: agent transcripts and session dumps under
   `~/.pi/agent/sessions/`, `~/.claude/projects/`, `~/.cursor/projects/`,
   `~/.hermes/{logs,sessions,cache}/`; vendored third-party code
-  (`site-packages` metadata, `hermes-agent` test docstrings); and vault or
+  (`site-packages` metadata, `hermes-agent` test docstrings); the Claude
+  resume notes and history (`~/.claude/resume-notes/`, `~/.claude/history.jsonl`)
+  which record past runs rather than schedule any; and vault or
   `fleet-knowledge-base` prose from August. History, logs and vendored code —
   none of them a launch path.
 ## Deletion + acceptance proof
 
-Pre-delete state (the file is gone now; this is the record):
+Pre-delete state — the dir held exactly one file, `SKILL.md` (the trailing
+comment is the reader's note, not command output):
 
 ```
 $ ls -la ~/.pi/agent/skills/coderabbit-review/
 total 28
 drwxr-xr-x   2 nish nish  4096 Sep 28 15:31 .
 drwxr-xr-x 116 nish nish 20480 Sep 28 15:31 ..
--rw-r--r--   1 nish nish  3415 Sep 28 15:31 SKILL.md    (the only file)
+-rw-r--r--   1 nish nish  3415 Sep 28 15:31 SKILL.md
 ```
 
-The deleted `SKILL.md`'s frontmatter, recorded before the delete (the
-`description` is elided here with `...`; the full text is not recoverable from
-the host after the delete, and the provenance survives in the vault row):
+The deleted `SKILL.md`'s frontmatter, in full, recovered verbatim from a
+pre-delete skill-index dump still on the host
+(`~/.cursor/projects/home-nish/agent-tools/*.txt`, which carries the whole
+`<available_skills>` block including `<location>…/skills/coderabbit-review/SKILL.md</location>`):
 
 ```
 name: coderabbit-review
-description: "Local pre-commit/pre-push code review using the CodeRabbit CLI. ... This is the LOCAL gate only — it does not replace ce-code-review or the /code-review plugin."
+description: "Local pre-commit/pre-push code review using the CodeRabbit CLI. Use before committing or pushing a non-trivial change, and when the user asks for a CodeRabbit review. This is the LOCAL gate only — it does not replace autoreview, ce-code-review, or the /code-review plugin."
 metadata:
   version: "0.1.1-nish"
   upstream: "coderabbitai/skills v1.1.1 (skills/code-review), adapted for CLI 0.7.x"
 ```
+
+The stale pointer the autoreview retirement left in this description — the
+`autoreview` sibling, retired hours earlier the same day and recorded at
+`retired-mechanisms.md:23` — died with the file.
 
 ```
 $ rm -rf ~/.pi/agent/skills/coderabbit-review
