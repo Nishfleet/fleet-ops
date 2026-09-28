@@ -17,6 +17,7 @@ on:
   schedule:
     - cron: '0 */4 * * *'   # scout, Nishfleet/0509
     - cron: '0 4 * * 1'     # gardener, Mondays 09:30 IST
+    - cron: '0 2 * * *'     # inish-daily, 07:30 IST
 permissions: {}
 jobs:
   work:
@@ -342,6 +343,40 @@ jobs:
           set -a; . "$HOME/.config/fleet-ops/seats/cursor-2.env"; set +a
           cursor-agent -p --output-format text --model kimi-k3-max --force --trust \
             "$(cat "$HOME/workspaces/tooling/fleet-ops-deploy-clone/prompts/gardener.md")" > /dev/null
+  inish-daily:
+    # The inish.in daily edition. Its runner was a Hermes cron job, disabled
+    # 2026-08-20 (seat quota) and never replaced: the site sat on 2026-08-23
+    # for 36 days. The runbook lives in the product repo.
+    if: ${{ !inputs.ref && github.event.schedule == '0 2 * * *' }}
+    runs-on: [self-hosted, agent]
+    timeout-minutes: 120
+    concurrency:
+      group: scheduled-inish-daily
+      cancel-in-progress: false
+    env:
+      GIT_AUTHOR_NAME: nishfleet-worker[bot]
+      GIT_AUTHOR_EMAIL: 321485391+nishfleet-worker[bot]@users.noreply.github.com
+      GIT_COMMITTER_NAME: nishfleet-worker[bot]
+      GIT_COMMITTER_EMAIL: 321485391+nishfleet-worker[bot]@users.noreply.github.com
+    steps:
+      - name: App token (key never leaves the VPS)
+        run: |
+          t=$(gh token generate --app-id 4728578 --key "$HOME/.config/fleet-worker/nishfleet-worker.private-key.pem" --installation-id 156789042 --token-only)
+          echo "::add-mask::$t"
+          echo "GH_TOKEN=$t" >> "$GITHUB_ENV"
+      - name: Publish today's edition
+        # The published: line is the completed-run signature; without it the
+        # job fails red.
+        run: |
+          gh repo clone Nishfleet/inish-site "$RUNNER_TEMP/inish-site" -- --depth 50
+          gh auth setup-git
+          cd "$RUNNER_TEMP/inish-site"
+          out="$RUNNER_TEMP/inish-daily.out"
+          echo "Publish today's inish.in edition (today = $(TZ=Asia/Kolkata date +%F), Asia/Kolkata). Read automation/HERMES_DAILY.md in this checkout and follow every step exactly." | pi --print \
+            --session-dir "$HOME/.pi/agent/sessions/inish-daily" \
+            --provider litellm --model worker-capable > "$out"
+          grep -E '^publish(ed|-failed):' "$out" || true
+          grep -qE '^published: [0-9]{4}-[0-9]{2}-[0-9]{2} ' "$out"
   report:
     needs: work
     if: (failure() || cancelled()) && needs.work.outputs.wall != 'true'
