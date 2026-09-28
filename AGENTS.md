@@ -103,7 +103,7 @@ pstack playbooks (fleet-ops#1260) at `~/.pi/agent/skills/poteto-mode/playbooks/`
 
 ### PR body contract — run these before `gh pr create`
 
-- `Verification:` (real run results) plus `run-proof:` (units/timers/workflows); every worker PR needs one. Armed without ran fails (fleet-ops#378).
+- `Verification:` (real run results) plus `run-proof:` (units/timers/workflows); every worker PR needs one. Armed without ran fails (fleet-ops#378). A change that cannot alter behaviour writes `run-proof: not-needed - <reason>` instead of a run; a proof put off to a later run is a finding (docs/quality-bar.md point 7).
 - New `bin/`/`scripts/` files are banned (no new scripts, anywhere in any repo); if you are ever asked to touch an existing one, the PR body carries `research:` + `help-first:` lines. Hand-building what already exists fails (fleet-ops#517). Skipping `--help` fails (fleet-ops#534).
 - Wipe safety: never `pgrep -f` to find or kill a worktree process. sr-nothing-half-done: include `loose-ends: <key>` (fleet-ops#528).
 
