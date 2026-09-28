@@ -10,7 +10,9 @@
 name: fleet-map
 
 on:
+  # edited: a body edited after the last push re-runs this check, as ci.yml does.
   pull_request:
+    types: [opened, synchronize, reopened, edited]
     paths:
       - 'systemd/**'
       - 'prompts/**'
@@ -54,6 +56,13 @@ jobs:
             exit 0
           fi
           body=$(gh pr view "$PR" --repo "$GITHUB_REPOSITORY" --json body --jq .body)
+          # A change that cannot alter runtime behaviour (a comment, a doc
+          # string, a rename the tests cover) names why instead of pasting a
+          # run: `proof: not-needed - <reason>` (Nish 2026-09-28, "everything
+          # might not need proving every time"). Skip only with that line.
+          if printf '%s\n' "$body" | grep -qE '^proof: not-needed - .{12,}'; then
+            exit 0
+          fi
           printf '%s\n' "$body" | grep -q '## Verification'
           # A 40-hex commit sha contains 32 hex chars. Bound the match so only
           # an invocation id counts, and require the two show values the
@@ -64,6 +73,8 @@ jobs:
 
   sync:
     name: sync
+    # A body edit changes no file, so the map cannot have drifted.
+    if: github.event.action != 'edited'
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:

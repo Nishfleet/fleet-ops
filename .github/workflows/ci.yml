@@ -233,6 +233,14 @@ jobs:
           PR_TITLE: ${{ github.event.pull_request.title }}
           PR_BODY: ${{ github.event.pull_request.body }}
         run: "! printf '%s\\n' \"$PR_TITLE\" \"$PR_BODY\" | grep -Ein \"$PAT\""
+      # A change that alters runtime behaviour is proven with one real run in
+      # the same turn (vault global-standing-rules.md, "Switched on and
+      # proven"); a no-behaviour change writes `proof: not-needed - <reason>`.
+      - name: No proof deferred to a later scheduled run (prove now, Nish 2026-09-28)
+        if: always()
+        env:
+          PR_BODY: ${{ github.event.pull_request.body }}
+        run: "! printf '%s\\n' \"$PR_BODY\" | grep -Ein \"(next|first|tomorrow'?s?) (scheduled|real|cron|nightly|morning) (run|one)|will be (proven|verified|confirmed) (on|by|at|in|when)|proven (tomorrow|tonight|overnight|on the next)|observe[- ]to[- ]close|verify (it )?(tomorrow|tonight|overnight)\""
 
   # no-glue: the mechanical half of "no scripts, hooks, wrappers, helpers"
   # (Nish 2026-09-19, 2026-09-21, 2026-09-26), now the shared gate in
