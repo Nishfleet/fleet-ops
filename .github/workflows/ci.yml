@@ -46,6 +46,14 @@ jobs:
           for f in config/litellm-proxy.schema.rejects/*.yaml; do
             ! pipx run check-jsonschema==0.38.2 --schemafile config/litellm-proxy.schema.json "$f" || { echo "schema accepted $f"; exit 1; }
           done
+      # The glue audit's schema decides what model-written text becomes issues
+      # (code-audit.yml). accepts/ must pass and each file under rejects/ must
+      # fail, so a loosened schema goes red.
+      - run: |
+          pipx run check-jsonschema==0.38.2 --schemafile .github/glue-findings.schema.json .github/glue-findings.schema.accepts/*.json
+          for f in .github/glue-findings.schema.rejects/*.json; do
+            ! pipx run check-jsonschema==0.38.2 --schemafile .github/glue-findings.schema.json "$f" || { echo "schema accepted $f"; exit 1; }
+          done
       - run: pipx install semgrep==1.170.0
       # Parity with the block this replaced: it ran semgrep without --error, so
       # findings were reported, never gating. Gating on p/default is a separate
