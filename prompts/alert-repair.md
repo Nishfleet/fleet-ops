@@ -118,17 +118,17 @@ Then make ONE call: POST to `http://127.0.0.1:4000/jev` with header
 `Authorization: Bearer $(grep '^LITELLM_JEV_KEY=' ~/.config/fleet-ops/seats/typesafe-jev.env | cut -d= -f2-)`
 — the seat file holds several keys, so name the line, and never print the
 key — plus `content-type: application/json`. The body has three keys:
-`custom_llm_provider`, always `vercel_ai_gateway`;
+`model`, always `jev-latest`;
 `state`, the serialized card text carrying the alertname, severity, your
 one-line disposition and the evidence above; and `questions`, three typed
 entries — `class` as a `choice` question whose `criteria` maps each of
 `repairable-in-place`, `needs-issue`, `boundary-class`,
 `already-resolved` to a one-line meaning, and `duplicate_of` and `flap`
-as `boolean` questions asking whether an open issue already covers this
+as `noul` questions asking whether an open issue already covers this
 alert and whether it is the same fault re-firing with no state change.
 Every question also carries an `instructions` line stating what is being
 judged. The response's `answers.class.choice` and `.probabilities`,
-`answers.duplicate_of.probability` and `answers.flap.probability` are the
+`answers.duplicate_of.noul` and `answers.flap.noul` are the
 advisory answers.
 
 Log one line: append one JSON object to
