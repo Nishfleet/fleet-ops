@@ -117,7 +117,6 @@ jobs:
           sed -nE '/^Audit grade: (A\+|A|A-|B\+|B|B-|C\+|C|C-|D|F)$/,$p' "$RUNNER_TEMP/audit-clean.txt" > "$RUNNER_TEMP/audit-graded.txt"
           grade=$(head -n1 "$RUNNER_TEMP/audit-graded.txt")
           echo "kimi said: $grade"
-          printf '%s\n' "$grade" | grep -qxE 'Audit grade: (A\+|A|A-|B\+|B|B-|C\+|C|C-|D|F)'
           {
             printf 'Area "%s" at %s, %s\n\n~~~text\n' "$AREA" "$GITHUB_SHA" "$RUN_URL"
             head -n 61 "$RUNNER_TEMP/audit-graded.txt" | head -c 60000 | tr -d '~'

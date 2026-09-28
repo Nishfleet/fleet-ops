@@ -165,6 +165,7 @@ jobs:
           args: --offline --format plain .github/workflows
       - name: jscpd over workflows, config and shell (lean-code block, 0509#5783)
         # .jscpd.json holds the measured baseline; it only ever goes down.
+        if: always()
         run: npx --yes jscpd@5.3.3
       - name: shellcheck over shell files (extension + shebang discovery)
         if: always()
