@@ -2,7 +2,7 @@
 
 Every PR from the fleet, for any repo and any author, is graded against this bar by the shared `grade` check (fleet-ops#8655).
 
-1. Does exactly what the issue asked and nothing more: only files in scope, no unrequested change.
+1. Does exactly what the issue asked and nothing more, as the smallest correct change: only files in scope, no unrequested change, no dead code, scaffolding, unused export or option, speculative generality or gold-plating.
 2. Reuses the existing paved path; never a second way to do a thing that has one.
 3. Fails loud: no swallowed error, no fallback that hides a missing case, no cast that silences a type, no retry around a thing that should not fail.
 4. No glue: no script, hook, wrapper, helper or inline program; a stock tool or the product's own code.
