@@ -122,9 +122,12 @@ jobs:
             # each open ancestor whose sub-issues are now all closed, and
             # release what it blocked. A GITHUB_TOKEN close fires no event,
             # so the release happens here. /parent 404s at the top.
+            # A critical-path or epic parent carries its own finish line (a
+            # production run, not its children), so it never closes here:
+            # 0509#5680 and #5736 were closed with production still red.
             c=$CLOSED
             while p=$(gh api "repos/$GITHUB_REPOSITORY/issues/$c/parent" --jq .number 2>/dev/null) &&
-              [ "$(gh api "repos/$GITHUB_REPOSITORY/issues/$p" --jq '"\(.state) \(.sub_issues_summary.total - .sub_issues_summary.completed)"')" = "open 0" ]; do
+              [ "$(gh api "repos/$GITHUB_REPOSITORY/issues/$p" --jq '"\(.state) \(.sub_issues_summary.total - .sub_issues_summary.completed)\(if any(.labels[].name; . == "critical-path" or . == "epic") then " own-finish-line" else "" end)"')" = "open 0" ]; do
               gh issue close "$p" -R "$GITHUB_REPOSITORY" -r completed -c "every sub-issue is closed, the last was #$c; closing the parent"
               nums="$nums $(gh api "repos/$GITHUB_REPOSITORY/issues/$p/dependencies/blocking" --jq '.[]|select(.state=="open")|.number')"
               c=$p
