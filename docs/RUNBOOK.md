@@ -115,7 +115,7 @@ by each caller's own code (the config store was deleted in the glue-zero wipe;
 | `reviewer-needs-review` / `scout` / `scout-rank` | 0.9 / 0.1 |
 | `second-opinion` / `second-opinion-reserved` / `worker-escalation-target` | 0.5 / 0.5 |
 | `worker-context` | RETIRED 2026-09-23 (fleet-ops#8423): 306 of its 450 rows scored 0509 runs whose repo has neither candidate file — 0.9 / 0.1 stamped on surviving rows
-| `vault-drop-routing` | log-only, no row read |
+| `vault-drop-routing` | RETIRED 2026-09-28 (fleet-ops#8826): site existed only for the gardener vault capture-routing tier, deleted with the lane wipe |
 
 (`act_hi` is the confident-positive edge, `review_lo` the confident-negative
 one; cascade sites act on a confident band, single-edge sites compare against
