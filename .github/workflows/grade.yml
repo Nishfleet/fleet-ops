@@ -247,6 +247,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           PR: ${{ github.event.pull_request.number }}
+          AUTHOR: ${{ github.event.pull_request.user.login }}
         shell: bash
         run: |
           grep -rhoE '[A-Za-z0-9_+=-]{24,}' "$HOME/.config/devin" > "$RUNNER_TEMP/devin-login.txt"
@@ -255,6 +256,14 @@ jobs:
           test "$(grep -cxE 'Devin grade: (A\+|A|A-|B\+|B|B-|C\+|C|C-|D|F)' "$RUNNER_TEMP/devin-clean.txt")" = 1
           sed -nE '/^Devin grade: (A\+|A|A-|B\+|B|B-|C\+|C|C-|D|F)$/,$p' "$RUNNER_TEMP/devin-clean.txt" | head -n 9 > "$RUNNER_TEMP/devin-post.txt"
           gh pr comment "$PR" --repo "$GITHUB_REPOSITORY" --body-file "$RUNNER_TEMP/devin-post.txt"
+          issues=$(jq -r '.closingIssuesReferences[].number' "$RUNNER_TEMP/case/pr.json")
+          if [ "$(head -n1 "$RUNNER_TEMP/devin-post.txt")" = "Devin grade: A+" ]; then
+            gh pr edit "$PR" --repo "$GITHUB_REPOSITORY" --remove-label blocked-by-judge || true
+            [ "$AUTHOR" != 'nishfleet-worker[bot]' ] || for n in $issues; do gh issue edit "$n" --repo "$GITHUB_REPOSITORY" --remove-label agent-ready || true; done
+          else
+            gh pr edit "$PR" --repo "$GITHUB_REPOSITORY" --add-label blocked-by-judge
+            [ "$AUTHOR" != 'nishfleet-worker[bot]' ] || for n in $issues; do gh issue edit "$n" --repo "$GITHUB_REPOSITORY" --add-label agent-ready --remove-label agent-in-progress; done
+          fi
       - name: Remove the copied Devin login
         if: always() && github.event_name == 'pull_request' && inputs.engine == 'devin' && github.event.pull_request.user.login != 'dependabot[bot]' && github.event.pull_request.head.repo.full_name == github.repository
         run: rm -rf "$RUNNER_TEMP/devin-home" "$RUNNER_TEMP/devin-login.txt" "$RUNNER_TEMP/case"
