@@ -32,6 +32,7 @@
   pointed into a churning checkout and dangled, taking the render down).
   `fleet-sync.service`'s LINK-GUARD ExecStart fails the unit on a dangling
   or throwaway-target live link — wiring set this way is caught in ≤2 min.
+- Memory = vault `_system/agent-memory/` plain files (one fact per file, true now, edit in place); search old sessions with `rg` over `~/.pi/agent/sessions` and `~/.claude/projects/*/*.jsonl` before re-deriving.
 
 ## Live state
 
