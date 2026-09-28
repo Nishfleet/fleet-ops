@@ -89,11 +89,15 @@ Live configuration that names the gate, and what happened to each:
   `_system/agent-memory/no-glue.md:14` lists `crgate` and `bugbot-gate` under
   "Never recreate"; the host copies had missed both.
 - `Nishfleet/inish-site` and `Nishfleet/aiconverter-app` `.coderabbit.yaml`
-  (blob `88c65c62`, on both `origin/main`) and `Nishfleet/siterep-public`
-  `.github/workflows/review-gate.yml:144` on `origin/main` — three product
-  repos still tell a session that `crgate`/`sgscan` run locally. Out of this
-  issue's scope, which names one skills dir, and filed as **#8838**. Untouched
-  here.
+  (blob `88c65c62`, on both `origin/main`) — two product repos still tell a
+  session that `crgate`/`sgscan` run locally. A third candidate,
+  `Nishfleet/siterep-public` `.github/workflows/review-gate.yml:144`, is **not**
+  a residue: siterep-public#110 (commit `03a877e6`, 2026-09-25) deleted the
+  hand-rolled watcher workflows, the recursive tree of `main` has no
+  `review-gate.yml`, and a code search for `crgate`/`sgscan` in that repo
+  returns 0 — verified against `origin/main` on 2026-09-28, not a stale host
+  checkout. Out of this issue's scope, which names one skills dir, and filed as
+  **#8838**. Untouched here.
 - `config/rule-enforcement.json:548` on each product repo's `origin/main`
   (`inish-site`, `aiconverter-app`, `siterep-public`; `inish-site`'s working
   tree sits at 547 on its `ci/deploy-noop` branch, so read `origin/main`) —
