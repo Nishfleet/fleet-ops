@@ -27,8 +27,8 @@ model groups are declared in `config/pi-models.json` and
 doc.** Group health is `litellm_deployment_state` on `/metrics` and
 `/health/readiness`.
 
-`POST 127.0.0.1:4000/jev` is the typed-decision pass-through (boolean / choice
-/ score questions with probabilities). Its one tuning knob — the per-site band
+`POST 127.0.0.1:4000/jev` is the typed-decision pass-through (noul / choice
+/ score questions). Its one tuning knob — the per-site band
 edges — lives in RUNBOOK, and each caller's prompt carries the comparison it
 applies.
 
