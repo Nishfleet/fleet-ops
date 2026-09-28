@@ -224,7 +224,7 @@ model_list:
     id: zen-spacebunny-worker-cheap
 - model_name: worker-capable
   litellm_params:
-    model: anthropic/MiniMax-M3
+    model: anthropic/MiniMax-M3.1-Flash-Preview
     api_base: https://api.minimax.io/anthropic
     api_key: os.environ/MINIMAX_API_KEY
     tags:
@@ -238,7 +238,7 @@ model_list:
     id: minimax-m3-worker-capable
 - model_name: worker-cheap
   litellm_params:
-    model: anthropic/MiniMax-M3
+    model: anthropic/MiniMax-M3.1-Flash-Preview
     api_base: https://api.minimax.io/anthropic
     api_key: os.environ/MINIMAX_API_KEY
     tags:
