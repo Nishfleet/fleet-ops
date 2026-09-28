@@ -178,13 +178,24 @@ tests:
               service: host
             exp_annotations:
               summary: "host memory fully stalled 50% of the time"
-              description: "PSI memory full above 20% for 10m: every runnable task is waiting on memory, so runners miss heartbeats and OOM kills follow. Repair: stall is on commit (Committed_AS vs CommitLimit), not free pages; check agent.slice MemorySwapMax (must be 1G, not infinity) and the non-runner consumers (litellm, opencode, workerd). N=16 is already applied (fleet-ops#8678); do not lower the runner count."
+              description: "PSI memory full above 40% for 10m: every runnable task is waiting on memory, so runners miss heartbeats and OOM kills follow. Repair: stall is on commit (Committed_AS vs CommitLimit), not free pages; check agent.slice MemorySwapMax (must be 1G, not infinity) and the non-runner consumers (litellm, opencode, workerd). N=16 is already applied (fleet-ops#8678); do not lower the runner count."
 
-  # Memory fully stalled ~10% of the time stays under the 20% threshold.
+  # Memory fully stalled ~10% of the time stays under the 40% threshold.
   - interval: 1m
     input_series:
       - series: 'node_pressure_memory_stalled_seconds_total'
         values: '0+6x30'
+    alert_rule_test:
+      - eval_time: 20m
+        alertname: HostMemoryStalled
+        exp_alerts: []
+
+  # N=16 busy-hour hold (fleet-ops#8829): 30% stall for 20m stays silent at
+  # 0.4. The same series fires on the old 0.2 threshold.
+  - interval: 1m
+    input_series:
+      - series: 'node_pressure_memory_stalled_seconds_total'
+        values: '0+18x30'
     alert_rule_test:
       - eval_time: 20m
         alertname: HostMemoryStalled

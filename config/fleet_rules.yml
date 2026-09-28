@@ -191,16 +191,18 @@ groups:
       # 2026-09-25 and nothing fired; a person noticed it by hand.
       # fleet-ops#8829: N=16 is already applied; the stall binds on commit
       # (Committed_AS vs CommitLimit), not free pages, so repair is not
-      # "lower the runner count".
+      # "lower the runner count". Threshold 0.4 is the N=16 busy-hour
+      # hold (2026-09-28 15:21-15:37 IST: stall >0.4 for 8m, so for: 10m
+      # stays silent; >0.2 lasted 16m and fired).
       - alert: HostMemoryStalled
-        expr: rate(node_pressure_memory_stalled_seconds_total[5m]) > 0.2
+        expr: rate(node_pressure_memory_stalled_seconds_total[5m]) > 0.4
         for: 10m
         labels:
           severity: critical
           service: host
         annotations:
           summary: "host memory fully stalled {{ $value | humanizePercentage }} of the time"
-          description: "PSI memory full above 20% for 10m: every runnable task is waiting on memory, so runners miss heartbeats and OOM kills follow. Repair: stall is on commit (Committed_AS vs CommitLimit), not free pages; check agent.slice MemorySwapMax (must be 1G, not infinity) and the non-runner consumers (litellm, opencode, workerd). N=16 is already applied (fleet-ops#8678); do not lower the runner count."
+          description: "PSI memory full above 40% for 10m: every runnable task is waiting on memory, so runners miss heartbeats and OOM kills follow. Repair: stall is on commit (Committed_AS vs CommitLimit), not free pages; check agent.slice MemorySwapMax (must be 1G, not infinity) and the non-runner consumers (litellm, opencode, workerd). N=16 is already applied (fleet-ops#8678); do not lower the runner count."
 
   - name: fleet_queue
     rules:
