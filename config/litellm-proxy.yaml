@@ -209,21 +209,6 @@ model_list:
     id: xkiro-qwen38max-worker-cheap
 - model_name: worker-capable
   litellm_params:
-    model: openai/cline-pass/deepseek-v4.1-flash
-    api_base: https://api.cline.bot/api/v1
-    api_key: os.environ/CLINE_API_KEY
-    tags:
-    - prepaid
-    - cline
-    order: 1
-    max_parallel_requests: 4
-    cooldown_time: 900
-  model_info:
-    mode: chat
-    id: cline-ds41flash-worker-capable
-    disable_background_health_check: true
-- model_name: worker-capable
-  litellm_params:
     model: openai/space-bunny-free
     api_base: https://opencode.ai/zen/v1
     api_key: os.environ/OPENCODE_API_KEY
@@ -339,6 +324,25 @@ model_list:
 # Enforced by config/litellm-proxy.schema.json in CI: a bench needs a `wall:` that cannot clear by itself, and no
 # live cooldown_time exceeds 900 s. A 429/quota wall stays live and cools (Nish 2026-09-25, fleet-ops#8724).
 benched:
+- benched_at: 2026-09-28
+  wall: wiring
+  reason: "openai/cline-pass/deepseek-v4.1-flash @ https://api.cline.bot/api/v1 (CLINE_API_KEY), worker-capable — the router cannot read Cline's non-streaming responses, so this rung's health row could never be set and its 4 admission slots were never earned. LiteLLM does NOT unwrap the {data:{...},success:true} envelope: 8 non-streaming calls through the router, 0 x 200 / 8 x 500; bare chat yields upstream 'empty response content' and tools+tool_choice=required yields \"LiteLLM: provider returned a response with no choices. Raw keys: [.., data, success]\" while the same upstream body read directly has top-level keys [data, success] and data.choices[0].message.tool_calls populated. model_info disable_background_health_check: true kept /health from probing it (absent from both healthy_endpoints and unhealthy_endpoints at 2026-09-28 20:16Z) yet litellm_deployment_state sat at 0.0 (healthy), so fleet-ops#8901's pi_free() counted all 4 max_parallel_requests into the worker-capable slot sum. The 6h before the bench: 5,762 x 200 vs 2 x 502 BadGateway (0.03%, 12:14:18Z and 19:09:00Z) with every one of the 26h window's 11 'empty response content' router exceptions coming from this rung. STREAMING does pass (8/8 x 200, tool_choice=required assembles finish_reason=tool_calls with {\"city\": \"Paris\"}), which is why the worker lane kept working: pi's OpenAI-compatible client hardcodes stream: true. A streaming-only rung buys capacity no non-streaming caller (health probe included) can spend, and no health signal to notice when it stops. Restore ONLY with a green non-streaming probe through the router cited in the PR; the unwrap adapter fleet-ops#7366 has not landed, and the stream-only 200s are not that proof."
+  was: [worker-capable]
+  litellm_params:
+    model: openai/cline-pass/deepseek-v4.1-flash
+    api_base: https://api.cline.bot/api/v1
+    api_key: os.environ/CLINE_API_KEY
+    tags:
+    - prepaid
+    - cline
+    order: 1
+    max_parallel_requests: 4
+    cooldown_time: 900
+  model_info:
+    mode: chat
+    id: cline-ds41flash-worker-capable
+  retry_at: '2026-10-02T12:30:00+05:30'
+
 - benched_at: 2026-09-22
   wall: quality
   reason: "pareto-glm53flash-judge: same family as every builder; took 1 of 5 judge calls under simple-shuffle after the Go rung landed. Verifier must differ from builder (fleet-ops#8035). Fallback judge->senior stays visible in x-litellm-model-id."
