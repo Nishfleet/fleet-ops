@@ -59,8 +59,9 @@ jobs:
           # A change that cannot alter runtime behaviour (a comment, a doc
           # string, a rename the tests cover) names why instead of pasting a
           # run: `proof: not-needed - <reason>` (Nish 2026-09-28, "everything
-          # might not need proving every time"). Skip only with that line.
-          if printf '%s\n' "$body" | grep -qE '^proof: not-needed - .{12,}'; then
+          # might not need proving every time"). Skip only with that line; the
+          # reason is three or more words, and the PR grader judges it.
+          if printf '%s\n' "$body" | grep -qiE '^proof: not-needed - [[:alpha:]][^ ]*( [^ ]+){2,}'; then
             exit 0
           fi
           printf '%s\n' "$body" | grep -q '## Verification'
