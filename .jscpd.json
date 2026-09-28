@@ -1,0 +1,9 @@
+{
+  "format": ["yaml", "bash"],
+  "ignore": ["docs/reports/**"],
+  "gitignore": true,
+  "minLines": 8,
+  "minTokens": 70,
+  "threshold": 4.21,
+  "reporters": ["console"]
+}
