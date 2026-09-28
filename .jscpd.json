@@ -4,6 +4,6 @@
   "gitignore": true,
   "minLines": 8,
   "minTokens": 70,
-  "threshold": 3.89,
+  "threshold": 4.08,
   "reporters": ["console"]
 }
