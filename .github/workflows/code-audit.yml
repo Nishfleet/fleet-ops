@@ -171,7 +171,8 @@ jobs:
           printf '%s' "$FINDINGS" | jq -c '.[]' | while read -r f; do
             test "$made" -lt 20 || break
             key=$(printf '%s' "$f" | jq -r '"\(.path):\(.replacement)"' | sha1sum | cut -c1-16)
-            test "$(gh issue list --repo "$GITHUB_REPOSITORY" --state all --search "glue-key-$key in:body" --json number --jq length)" = 0 || continue
+            filed=$(gh issue list --repo "$GITHUB_REPOSITORY" --state all --search "glue-key-$key in:body" --json number --jq length)
+            test "$filed" = 0 || continue
             printf '%s' "$f" | jq -r --arg key "$key" --arg run "$RUN_URL" '"<!-- glue-key-\($key) -->\nmetric: \(.path):\(.line) holds no hand-rolled code and \(.replacement) does the job.\n\nobserved: \(.what)\n\nevidence: found by the glue audit, \($run)\n\naccept:\n- \(.replacement) replaces it and the old code is deleted in the same PR.\n- No new script, helper or wrapper.\n\nverify: \(.verify)\n\ntermination: \(.termination)\n\nrollback: revert the PR.\n"' > "$RUNNER_TEMP/body.md"
             title=$(printf '%s' "$f" | jq -r '"glue: \(.path): \(.what)" | .[0:100]')
             gh issue create --repo "$GITHUB_REPOSITORY" --label needs-orchestrator --title "$title" --body-file "$RUNNER_TEMP/body.md"
