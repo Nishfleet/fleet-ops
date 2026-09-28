@@ -437,7 +437,7 @@ model_list:
     mode: chat
     id: cline-spacebunnyalpha-worker-capable
 - model_name: worker-capable
-  litellm_params:
+  litellm_params: &openrouter-spacebunny
     model: openai/stealth/space-bunny-alpha
     api_base: https://openrouter.ai/api/v1
     max_budget: 1.0
@@ -453,66 +453,29 @@ model_list:
     mode: chat
     id: openrouter-spacebunnyalpha-worker-capable
 - model_name: worker-cheap
-  litellm_params:
-    model: openai/stealth/space-bunny-alpha
-    api_base: https://openrouter.ai/api/v1
-    max_budget: 1.0
-    budget_duration: 1mo
-    api_key: os.environ/OPENROUTER_API_KEY
-    extra_headers: {HTTP-Referer: https://0509.io, X-Title: nish-fleet}
-    tags:
-    - free
-    - stealth
-    order: 1
-    max_parallel_requests: 2
+  litellm_params: {<<: *openrouter-spacebunny}
   model_info:
     mode: chat
     id: openrouter-spacebunnyalpha-worker-cheap
 - model_name: worker-cheap
-  litellm_params:
+  litellm_params: &openrouter-nemotron
+    <<: *openrouter-spacebunny
     model: openai/nvidia/nemotron-3-ultra-550b-a55b:free
-    api_base: https://openrouter.ai/api/v1
     max_budget: 5.0
-    budget_duration: 1mo
-    api_key: os.environ/OPENROUTER_API_KEY
-    extra_headers: {HTTP-Referer: https://0509.io, X-Title: nish-fleet}
-    tags:
-    - free
-    - nemotron
-    order: 1
+    tags: [free, nemotron]
     max_parallel_requests: 4
   model_info:
     mode: chat
     id: openrouter-nemotronultra-worker-cheap
 - model_name: worker-capable
-  litellm_params:
-    model: openai/nvidia/nemotron-3-ultra-550b-a55b:free
-    api_base: https://openrouter.ai/api/v1
-    max_budget: 5.0
-    budget_duration: 1mo
-    api_key: os.environ/OPENROUTER_API_KEY
-    extra_headers: {HTTP-Referer: https://0509.io, X-Title: nish-fleet}
-    tags:
-    - free
-    - nemotron
-    order: 1
-    max_parallel_requests: 4
+  litellm_params: {<<: *openrouter-nemotron}
   model_info:
     mode: chat
     id: openrouter-nemotronultra-worker-capable
 - model_name: worker-cheap
   litellm_params:
+    <<: *openrouter-nemotron
     model: openai/nvidia/nemotron-3.5-lightning:free
-    api_base: https://openrouter.ai/api/v1
-    max_budget: 5.0
-    budget_duration: 1mo
-    api_key: os.environ/OPENROUTER_API_KEY
-    extra_headers: {HTTP-Referer: https://0509.io, X-Title: nish-fleet}
-    tags:
-    - free
-    - nemotron
-    order: 1
-    max_parallel_requests: 4
   model_info:
     mode: chat
     id: openrouter-nemotronlightning-worker-cheap
