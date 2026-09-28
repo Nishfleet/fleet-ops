@@ -378,6 +378,7 @@ jobs:
         run: |
           out="$RUNNER_TEMP/inish-daily.out"
           echo "Publish today's inish.in edition (today = $(TZ=Asia/Kolkata date +%F), Asia/Kolkata). Read automation/HERMES_DAILY.md in this checkout and follow every step exactly." | pi --print \
+            --append-system-prompt "$HOME/workspaces/tooling/fleet-ops-deploy-clone/AGENTS.md" \
             --session-dir "$HOME/.pi/agent/sessions/inish-daily" \
             --provider litellm --model worker-capable > "$out"
           grep -E '^publish(ed|-failed):' "$out" || true
