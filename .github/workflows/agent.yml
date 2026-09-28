@@ -145,15 +145,17 @@ jobs:
           # it spans every runner and repo on this host.
           live() { pgrep -af -- "^bwrap .* -- $1 " | grep -oE 'agent-worktrees/issue-[^ ]*|sessions/agent-[^ ]*' | sort -u | wc -l; }
           # pi has a free slot while its live workers are fewer than the summed
-          # max_parallel_requests of the router's worker-capable seats, and the
-          # router is not walled (fleet-ops#8543: no raw worker-capable row
-          # healthy, same filter as FleetWorkerLaneOutage; an empty or
-          # unreachable /metrics is not a wall).
+          # max_parallel_requests of the router's HEALTHY worker-capable seats
+          # (raw litellm_deployment_state row at 0). Summing walled seats too
+          # admitted 24 workers onto ~12 live slots on 2026-09-28 and every run
+          # crawled through 429s. The router is walled when no raw row is
+          # healthy (fleet-ops#8543, same filter as FleetWorkerLaneOutage); an
+          # empty or unreachable /metrics is not a wall and counts every seat.
           pi_free() {
-            slots=$(python3 -c 'import sys, yaml; print(sum(m["litellm_params"].get("max_parallel_requests") or 0 for m in yaml.safe_load(open(sys.argv[1]))["model_list"] if m.get("model_name") == "worker-capable"))' "$HOME/.config/fleet-ops/litellm-proxy.yaml")
+            curl -sL --max-time 10 127.0.0.1:4000/metrics > "$RUNNER_TEMP/router.metrics" || : > "$RUNNER_TEMP/router.metrics"
+            slots=$(python3 -c 'import re, sys, yaml; up = set(re.findall(r"^litellm_deployment_state\{(?=[^}]*litellm_model_name=\"(?!worker-))[^}]*model_id=\"([^\"]+)\"[^}]*\} 0(?:\.0)?$", open(sys.argv[2]).read(), re.M)); seats = [m for m in yaml.safe_load(open(sys.argv[1]))["model_list"] if m.get("model_name") == "worker-capable"]; print(sum(m["litellm_params"].get("max_parallel_requests") or 0 for m in seats if not up or m.get("model_info", {}).get("id") in up))' "$HOME/.config/fleet-ops/litellm-proxy.yaml" "$RUNNER_TEMP/router.metrics")
             [ "$(live pi)" -lt "$slots" ] || return 1
-            ! curl -sL --max-time 10 127.0.0.1:4000/metrics |
-              awk '/^litellm_deployment_state\{/ && /model_id="[^"]*-worker-capable"/ && !/litellm_model_name="worker-/ { n++; if ($NF + 0 == 0) up++ } END { exit !(n > 0 && up == 0) }'
+            ! awk '/^litellm_deployment_state\{/ && /model_id="[^"]*-worker-capable"/ && !/litellm_model_name="worker-/ { n++; if ($NF + 0 == 0) up++ } END { exit !(n > 0 && up == 0) }' "$RUNNER_TEMP/router.metrics"
           }
           # Devin is free while fewer than 4 run and it has not answered
           # "capacity issues" in the last 15 minutes (the Router wall step
