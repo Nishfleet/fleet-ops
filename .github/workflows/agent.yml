@@ -147,9 +147,11 @@ jobs:
           # Hard stop for loops where a run "succeeds" but CI stays red: 3 runs
           # per issue since the newest opus-vet, counted from these comments.
           # A run the provider refused (429, capacity) comments infra-failed and
-          # is not counted: the worker never got to try.
+          # is not counted: the worker never got to try. A comment that starts
+          # `attempt-cap reset: <why>` from an owner, member or collaborator
+          # restarts the count like an opus-vet does; a bot cannot post one.
           # shellcheck disable=SC2016 # $v is a jq variable
-          runs=$(gh issue view "$i" -R "$REPO" --json comments --jq '[.comments[].body] | (map(startswith("opus-vet:")) | rindex(true) // -1) as $v | .[$v+1:] | (map(select(startswith("agent run started:"))) | length) - (map(select(startswith("agent run infra-failed:"))) | length)')
+          runs=$(gh issue view "$i" -R "$REPO" --json comments --jq '[.comments[] | if (.body | startswith("opus-vet:")) or ((.body | test("^attempt-cap reset: \\S")) and (.authorAssociation | IN("OWNER", "MEMBER", "COLLABORATOR"))) then "opus-vet:" else .body end] | (map(startswith("opus-vet:")) | rindex(true) // -1) as $v | .[$v+1:] | (map(select(startswith("agent run started:"))) | length) - (map(select(startswith("agent run infra-failed:"))) | length)')
           if [ "$runs" -ge 3 ]; then
             gh issue edit "$i" -R "$REPO" --add-label needs-orchestrator --remove-label agent-ready,agent-in-progress
             gh issue comment "$i" -R "$REPO" --body "agent attempt cap: $runs runs since the last opus-vet; parked for the orchestrator"
@@ -613,7 +615,7 @@ jobs:
           err=$(gh issue view "$i" -R "$GITHUB_REPOSITORY" --json number 2>&1 >/dev/null) ||
             { case $err in *"Could not resolve"*) echo "report: #$i does not resolve in $GITHUB_REPOSITORY; skip"; exit 0 ;; *) echo "$err" >&2; exit 1 ;; esac; }
           # shellcheck disable=SC2016 # $v is a jq variable
-          prior=$(gh issue view "$i" -R "$GITHUB_REPOSITORY" --json comments --jq '[.comments[].body] | (map(startswith("opus-vet:")) | rindex(true) // -1) as $v | .[$v+1:] | map(select(startswith("agent run failed:"))) | length')
+          prior=$(gh issue view "$i" -R "$GITHUB_REPOSITORY" --json comments --jq '[.comments[] | if (.body | startswith("opus-vet:")) or ((.body | test("^attempt-cap reset: \\S")) and (.authorAssociation | IN("OWNER", "MEMBER", "COLLABORATOR"))) then "opus-vet:" else .body end] | (map(startswith("opus-vet:")) | rindex(true) // -1) as $v | .[$v+1:] | map(select(startswith("agent run failed:"))) | length')
           gh issue comment "$i" -R "$GITHUB_REPOSITORY" --body "agent run failed: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
           if [ "$prior" -ge 1 ]; then
             gh issue edit "$i" -R "$GITHUB_REPOSITORY" --add-label needs-orchestrator --remove-label agent-ready,agent-in-progress,agent-failed
