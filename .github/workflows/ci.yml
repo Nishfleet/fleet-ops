@@ -239,8 +239,9 @@ jobs:
   # on merge_group. The job runs on every pull_request; the engine step is
   # chosen from the author's family, not from whether it is a bot. Dependabot
   # PRs skip the model step (fleet-ops#8812): dependabot-triggered runs get no
-  # Actions secrets and no bump can meet the A+ bar, so the check passes on
-  # CI + Gitleaks + no-glue.
+  # Actions secrets and no bump can meet the A+ bar, so this job passes as a
+  # no-op and the merge gate is CI + Gitleaks + no-glue. The shared grade
+  # caller below carries the same guard in grade.yml@main.
   opus-review:
     name: opus-review
     if: github.event_name == 'merge_group' || github.event_name == 'pull_request'
