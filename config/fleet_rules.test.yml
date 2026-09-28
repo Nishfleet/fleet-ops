@@ -178,7 +178,7 @@ tests:
               service: host
             exp_annotations:
               summary: "host memory fully stalled 50% of the time"
-              description: "PSI memory full above 20% for 10m: every runnable task is waiting on memory, so runners miss heartbeats and OOM kills follow. Repair: check the busy agent runners (systemd-cgtop agent.slice) and lower the runner count per fleet-ops#8678."
+              description: "PSI memory full above 20% for 10m: every runnable task is waiting on memory, so runners miss heartbeats and OOM kills follow. Repair: stall is on commit (Committed_AS vs CommitLimit), not free pages; check agent.slice MemorySwapMax (must be 1G, not infinity) and the non-runner consumers (litellm, opencode, workerd). N=16 is already applied (fleet-ops#8678); do not lower the runner count."
 
   # Memory fully stalled ~10% of the time stays under the 20% threshold.
   - interval: 1m

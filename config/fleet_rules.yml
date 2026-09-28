@@ -172,6 +172,9 @@ groups:
 
       # fleet-ops#8678: 32 runners stalled memory 77% of the time on
       # 2026-09-25 and nothing fired; a person noticed it by hand.
+      # fleet-ops#8829: N=16 is already applied; the stall binds on commit
+      # (Committed_AS vs CommitLimit), not free pages, so repair is not
+      # "lower the runner count".
       - alert: HostMemoryStalled
         expr: rate(node_pressure_memory_stalled_seconds_total[5m]) > 0.2
         for: 10m
@@ -180,7 +183,7 @@ groups:
           service: host
         annotations:
           summary: "host memory fully stalled {{ $value | humanizePercentage }} of the time"
-          description: "PSI memory full above 20% for 10m: every runnable task is waiting on memory, so runners miss heartbeats and OOM kills follow. Repair: check the busy agent runners (systemd-cgtop agent.slice) and lower the runner count per fleet-ops#8678."
+          description: "PSI memory full above 20% for 10m: every runnable task is waiting on memory, so runners miss heartbeats and OOM kills follow. Repair: stall is on commit (Committed_AS vs CommitLimit), not free pages; check agent.slice MemorySwapMax (must be 1G, not infinity) and the non-runner consumers (litellm, opencode, workerd). N=16 is already applied (fleet-ops#8678); do not lower the runner count."
 
   - name: fleet_queue
     rules:
