@@ -326,7 +326,8 @@ EOF
 Record each new issue number.
 
 Apply `scout-candidate` (not `agent-ready`) within `label_budget`, so the
-senior admission panel judges the issue before intake can see it:
+Jev admit job in Nishfleet/fleet-ops agent.yml (`admit`, hourly cron) judges
+the issue before intake can see it:
 ```bash
 gh issue edit <N> -R Nishfleet/<repo> --add-label scout-candidate
 ```
