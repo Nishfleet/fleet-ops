@@ -44,6 +44,14 @@ on:
   schedule:
     - cron: '17 */6 * * *'
 permissions: {}
+# One sweep running and one waiting per repo: a newer sweep replaces the waiting
+# one, and cancel-in-progress stays false so a running sweep finishes. 15 sweeps
+# queued behind 24 busy runners on 2026-09-28 (agent-dispatch #7798 since
+# 16:57Z), each listing the same issues. Every per-issue event (new, rework,
+# ejected, issue=<N> dispatch, a close) gets its own group and is not held back.
+concurrency:
+  group: agent-dispatch-${{ (github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.issue == '')) && 'sweep' || github.run_id }}
+  cancel-in-progress: false
 jobs:
   new:
     if: >-
@@ -226,8 +234,8 @@ jobs:
       # tunable per repo via vars.AGENT_MAX_PARALLEL (unset -> 6, ~7 slots).
       # This bounds only this matrix. The new/rework/ejected jobs above are one
       # dispatch per event and are NOT throttled by max-parallel; bounding that
-      # aggregate is host runner-count config (deploy is Nish-gated) or a
-      # workflow-level concurrency group that would serialize the 6h sweep.
+      # aggregate is host runner-count config (deploy is Nish-gated). Sweeps
+      # themselves are one running plus one waiting (concurrency above).
       max-parallel: ${{ fromJSON(vars.AGENT_MAX_PARALLEL || '6') }}
       matrix:
         ref: ${{ fromJSON(needs.list.outputs.refs) }}
