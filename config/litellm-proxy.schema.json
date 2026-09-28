@@ -1,11 +1,8 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$comment": "Hard gate for config/litellm-proxy.yaml (fleet-ops#8653, Nish 2026-09-25). A 429 or quota wall refills by itself, so the rung stays live and the router cools it for at most 900 s. A bench must name a wall that cannot clear by itself.",
+  "$comment": "Hard gate for config/litellm-proxy.yaml (fleet-ops#8653). Nish 2026-09-28: no benching unless he says so. A failed row is never taken out of rotation: no bench list, no per-row cooldown, and the router holds a failed row for at most 60 s.",
   "type": "object",
   "required": ["model_list", "router_settings"],
-  "$defs": {
-    "cooldown": { "type": "integer", "minimum": 1, "maximum": 900 }
-  },
   "properties": {
     "model_list": {
       "type": "array",
@@ -17,31 +14,22 @@
           "litellm_params": {
             "type": "object",
             "required": ["model"],
-            "properties": { "cooldown_time": { "$ref": "#/$defs/cooldown" } }
+            "properties": { "cooldown_time": false }
           },
           "model_info": {
             "type": "object",
-            "properties": { "cooldown_time": { "$ref": "#/$defs/cooldown" } }
+            "properties": { "cooldown_time": false }
           }
         }
       }
     },
-    "benched": {
-      "type": "array",
-      "items": {
-        "type": "object",
-        "required": ["benched_at", "wall", "reason", "litellm_params"],
-        "properties": {
-          "wall": {
-            "$comment": "auth = 401, payment = 402 with no stated renewal, model-gone = 404 or delisted, wiring = the router cannot speak to it correctly, quality = fails the tool-call or verifier-family bar. Quota and rate limits are not on this list.",
-            "enum": ["auth", "payment", "model-gone", "wiring", "quality"]
-          }
-        }
-      }
-    },
+    "benched": false,
     "router_settings": {
       "type": "object",
-      "properties": { "cooldown_time": { "$ref": "#/$defs/cooldown" } }
+      "properties": {
+        "cooldown_time": { "type": "integer", "minimum": 1, "maximum": 60 },
+        "allowed_fails_policy": false
+      }
     }
   }
 }

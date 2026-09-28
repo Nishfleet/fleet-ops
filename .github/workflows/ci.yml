@@ -38,8 +38,8 @@ jobs:
       - run: sudo apt-get update
       - run: sudo apt-get install -y --no-install-recommends prometheus
       - run: promtool check rules config/fleet_rules.yml
-      # fleet-ops#8724: the router config's hard rules (quota walls cool <=900 s,
-      # a bench names a wall that cannot clear by itself) live in the schema.
+      # fleet-ops#8724: the router config's hard rules (no bench list, no per-row
+      # cooldown, router cooldown <=60 s; Nish 2026-09-28) live in the schema.
       # Each file under rejects/ breaks one rule and must fail, so a loosened schema goes red.
       - run: |
           pipx run check-jsonschema==0.38.2 --schemafile config/litellm-proxy.schema.json config/litellm-proxy.yaml
@@ -221,7 +221,7 @@ jobs:
         run: jq -n -e --argjson ids "$(jq -c '[.providers.litellm.models[].id]' config/pi-models.json)" --argjson names "$(yq -o=json '[.model_list[].model_name]' config/litellm-proxy.yaml)" '($ids - $names) as $bad | if ($bad|length)==0 then true else error("unresolved pi seat ids - \($bad|join(","))") end'
       - name: Ollama rungs serve only the permitted slug (fleet-ops#8332)
         if: always()
-        run: yq -o=json '[(.model_list[], .benched[]?) | select((.litellm_params.api_base // "") | test("ollama")) | .litellm_params.model | select(. != "openai/deepseek-v4.1-flash")]' config/litellm-proxy.yaml | jq -e 'if length==0 then true else error("ollama non-flash rungs - \(join(","))") end'
+        run: yq -o=json '[.model_list[] | select((.litellm_params.api_base // "") | test("ollama")) | .litellm_params.model | select(. != "openai/deepseek-v4.1-flash")]' config/litellm-proxy.yaml | jq -e 'if length==0 then true else error("ollama non-flash rungs - \(join(","))") end'
       - name: No config/*.bak-* files
         if: always()
         run: "! git ls-files -- 'config/*.bak-*' | grep ."
