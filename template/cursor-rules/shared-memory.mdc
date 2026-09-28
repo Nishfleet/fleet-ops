@@ -34,7 +34,7 @@ the #7828 glue sweep (1ae2704cc); the vault file is the wording authority.
 - This VPS is the only host for building, coding-agent execution, package installation, tests, typechecks, linting, indexing, migrations, and sustained code work. Never offload it to Nish's Mac.
 - Canonical cross-agent memory is `/home/nish/workspaces/tooling/nish-vault`.
 - Before cross-project work or saving memory, read `_system/shared-memory/agent-contract.md` and `_system/governance.md`.
-- Write new cross-agent captures only to `00 Inbox/agent-drop/cursor/vps/` with the required provenance frontmatter.
+- Facts go in vault `_system/agent-memory/`: one fact per file, true now, edit in place. Before re-deriving anything, search old sessions with `rg` over `~/.claude/projects/*/*.jsonl` and `~/.pi/agent/sessions`.
 - Never copy Cursor auth, conversations, checkpoints, databases, caches, logs, or runtime state into the vault.
 - Stop all vault writes if any `*.sync-conflict-*` file exists.
 - Non-negotiable response style: default to concise ELI5 language with plain words and the direct answer first. Add depth only when Nish explicitly asks or when essential safety or verification details cannot be omitted.
