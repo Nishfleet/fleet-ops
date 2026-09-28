@@ -360,17 +360,22 @@ jobs:
       GIT_COMMITTER_EMAIL: 321485391+nishfleet-worker[bot]@users.noreply.github.com
     steps:
       - name: App token (key never leaves the VPS)
+        id: app-token
         run: |
           t=$(gh token generate --app-id 4728578 --key "$HOME/.config/fleet-worker/nishfleet-worker.private-key.pem" --installation-id 156789042 --token-only)
           echo "::add-mask::$t"
           echo "GH_TOKEN=$t" >> "$GITHUB_ENV"
+          echo "token=$t" >> "$GITHUB_OUTPUT"
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: Nishfleet/inish-site
+          token: ${{ steps.app-token.outputs.token }}
+          path: inish-site
       - name: Publish today's edition
         # The published: line is the completed-run signature; without it the
         # job fails red.
+        working-directory: inish-site
         run: |
-          gh repo clone Nishfleet/inish-site "$RUNNER_TEMP/inish-site" -- --depth 50
-          gh auth setup-git
-          cd "$RUNNER_TEMP/inish-site"
           out="$RUNNER_TEMP/inish-daily.out"
           echo "Publish today's inish.in edition (today = $(TZ=Asia/Kolkata date +%F), Asia/Kolkata). Read automation/HERMES_DAILY.md in this checkout and follow every step exactly." | pi --print \
             --session-dir "$HOME/.pi/agent/sessions/inish-daily" \
