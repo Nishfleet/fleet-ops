@@ -15,11 +15,13 @@
   surface is a pointer, not a second source (fleet-ops#5586). Stop for approval
   only for those classes or irreversible work — present the plan and begin
   everything else (fleet-ops#6610).
-- One-off -> skill -> routine ladder: the same hand task in 2+ sessions becomes a
-  vault skill; 3 clean one-shot runs become an `agent.yml` job on an event, and
-  products opt in with one `config/intake-repos.json` line. The criteria live in
-  the vault (`global-standing-rules.md` -> "Skill ladder", fleet-ops#8871); this
-  bullet is a pointer, not a second source.
+- One-off -> skill -> routine ladder: the same hand task in 2+ sessions is a
+  skill candidate, proposed by the weekly gardener and never admitted
+  agent-ready; a skill with 3 clean one-shot runs becomes an
+  `.github/workflows/agent.yml` job, on an event or on a schedule with a named
+  reason, and a product opts in with one `config/intake-repos.json` line. The
+  criteria live in the vault (`global-standing-rules.md` → "Skill ladder",
+  fleet-ops#8871); this bullet is a pointer, not a second source.
 - The quality bar your PR is graded on is `docs/quality-bar.md` (fleet-ops#8655): only A+ (all nine points, zero findings) passes the `grade` check.
 - Never deploy without Nish; agent-authored PRs self-land per
   `global-standing-rules.md` → "Agent-authored PRs land themselves"
