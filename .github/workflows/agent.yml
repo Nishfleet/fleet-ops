@@ -248,9 +248,9 @@ jobs:
               rc=0
               echo "$packet" | bwrap --dev-bind / / --proc /proc --unshare-pid --die-with-parent --chdir "$dir" -- \
                 devin -p --prompt-file /dev/stdin --permission-mode dangerous --model "$model" >/dev/null 2> "$RUNNER_TEMP/try.err" || rc=$?
+              [ "$rc" != 0 ] && [ "$model" = swe-2-max ] && grep -qi 'free model rate limit' "$RUNNER_TEMP/try.err" && [ "$(gh api "repos/$REPO/compare/main...$REF" --jq .ahead_by)" = 0 ] && continue
               cat "$RUNNER_TEMP/try.err" >&2
-              [ "$rc" = 0 ] && break
-              grep -qi 'free model rate limit' "$RUNNER_TEMP/try.err" && [ "$(gh api "repos/$REPO/compare/main...$REF" --jq .ahead_by)" = 0 ] || exit "$rc"
+              break
             done
             [ "$rc" = 0 ]
           elif [ "$ENGINE" = opencode ]; then
