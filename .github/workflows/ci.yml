@@ -36,8 +36,6 @@ jobs:
           persist-credentials: false
           fetch-depth: 0
       - run: sudo apt-get update
-      - run: sudo apt-get install -y --no-install-recommends prometheus
-      - run: promtool check rules config/fleet_rules.yml
       # fleet-ops#8724: the router config's hard rules (quota walls cool <=900 s,
       # a bench names a wall that cannot clear by itself) live in the schema.
       # Each file under rejects/ breaks one rule and must fail, so a loosened schema goes red.
@@ -184,12 +182,6 @@ jobs:
       - name: stub cursor-agent for systemd-analyze verify (host-only binary)
         if: always()
         run: install -D -m0755 /bin/true "$HOME/.local/bin/cursor-agent"
-      - name: stub github_receiver for systemd-analyze verify (host-only binary)
-        if: always()
-        run: sudo install -D -m0755 /bin/true /home/nish/.local/bin/github_receiver
-      - name: stub prometheus-am-executor for systemd-analyze verify (host-only binary)
-        if: always()
-        run: sudo install -D -m0755 /bin/true /home/nish/.local/bin/prometheus-am-executor
       - name: systemd-analyze verify over unit files
         # nullglob: #8474 deleted the last systemd/*.path unit, and an unmatched
         # glob reaches systemd-analyze as a literal filename -> rc 1. With

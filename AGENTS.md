@@ -2,7 +2,6 @@
 
 ## Verification commands
 
-- Alert rules: `promtool check rules config/fleet_rules.yml`
 - Diff-scoped semgrep: `semgrep --config p/default --baseline-commit "$(git merge-base HEAD origin/main)" --quiet --metrics=off`
 
 ## Hard lines

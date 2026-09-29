@@ -159,7 +159,7 @@ jobs:
           # (raw litellm_deployment_state row at 0). Summing walled seats too
           # admitted 24 workers onto ~12 live slots on 2026-09-28 and every run
           # crawled through 429s. The router is walled when no raw row is
-          # healthy (fleet-ops#8543, same filter as FleetWorkerLaneOutage); an
+          # healthy (fleet-ops#8543); an
           # empty or unreachable /metrics is not a wall and counts every seat.
           pi_free() {
             curl -sL --max-time 10 127.0.0.1:4000/metrics > "$RUNNER_TEMP/router.metrics" || : > "$RUNNER_TEMP/router.metrics"

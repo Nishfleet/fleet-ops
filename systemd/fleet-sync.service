@@ -25,52 +25,33 @@ ExecStart=/usr/bin/git -C /home/nish/workspaces/tooling/fleet-ops-deploy-clone p
 # 2. Re-read the linked unit files. The symlinks never move; only their
 #    contents changed with the pull.
 ExecStart=/usr/bin/systemctl --user daemon-reload
-# 3. Validate the alert rules before they can reach prometheus. promtool is
-#    the built-in checker; a parse error stops the unit here instead of
-#    silently leaving prometheus on the old rules.
-ExecStart=/usr/bin/promtool check rules /home/nish/workspaces/tooling/fleet-ops-deploy-clone/config/fleet_rules.yml
-# 4. /etc/prometheus/fleet_rules.yml stays a root-owned COPY, not a symlink:
+# 3. /etc/prometheus/prometheus.yml is a root-owned COPY, not a symlink:
 #    prometheus runs as user `prometheus` and /home/nish is 0750 nish:nish, so
-#    it cannot traverse into the repo (proved: `sudo -u prometheus test -r
-#    <repo>/config/fleet_rules.yml` fails). install -C skips the write when
-#    the bytes match; fleet-prometheus-reload.path sees a real write and
-#    reloads prometheus (SIGHUP re-reads rules and scrape jobs). The enable
-#    line links and starts that .path unit from the clone; it is idempotent.
-# 4b. /etc/prometheus/prometheus.yml is the same class of root-owned copy
-#     (fleet-ops#8084). The #7954 alertmanager scrape job reached the repo
-#     file and never the live one, so up{job="alertmanager"} stayed absent
-#     and FleetNishPageRailDown sat red. promtool check config runs first so
-#     a bad file never replaces the live one.
+#    it cannot traverse into the repo. promtool check config runs first so a
+#    bad file never replaces the live one; install -C skips the write when the
+#    bytes match; fleet-prometheus-reload.path sees a real write and reloads
+#    prometheus. The enable line links and starts that .path unit from the
+#    clone; it is idempotent (fleet-ops#8084).
 ExecStart=/usr/bin/promtool check config /home/nish/workspaces/tooling/fleet-ops-deploy-clone/config/prometheus.yml
-ExecStart=/usr/bin/sudo -n /usr/bin/install -C -D -m 0644 -o root -g root /home/nish/workspaces/tooling/fleet-ops-deploy-clone/config/fleet_rules.yml /etc/prometheus/fleet_rules.yml
 ExecStart=/usr/bin/sudo -n /usr/bin/install -C -D -m 0644 -o root -g root /home/nish/workspaces/tooling/fleet-ops-deploy-clone/config/prometheus.yml /etc/prometheus/prometheus.yml
 ExecStart=/usr/bin/systemctl --user link /home/nish/workspaces/tooling/fleet-ops-deploy-clone/systemd/fleet-prometheus-reload.service
 ExecStart=/usr/bin/systemctl --user enable --now /home/nish/workspaces/tooling/fleet-ops-deploy-clone/systemd/fleet-prometheus-reload.path
-# 6. prometheus-am-executor reads its config once at start (fleet-ops#7414);
-#    prometheus-am-executor-config.path restarts it when the pull changes
-#    config/prometheus-am-executor.yml. The link line makes the trigger
-#    service findable in the user unit path; the second links and starts the
-#    .path unit from the clone. Both are idempotent. Same shape as step 4.
-ExecStart=/usr/bin/systemctl --user link /home/nish/workspaces/tooling/fleet-ops-deploy-clone/systemd/prometheus-am-executor-config.service
-ExecStart=/usr/bin/systemctl --user enable --now /home/nish/workspaces/tooling/fleet-ops-deploy-clone/systemd/prometheus-am-executor-config.path
-# 7a. Apply user-tmpfiles.d on every sync, not just at the next login
-#     (fleet-ops#8584). This creates the prometheus-am-executor config
-#     symlink from the L+ line in agent-worktrees.conf, replacing the old
-#     step-5 relink. man systemd-tmpfiles: --create creates and links;
-#     it leaves the age-only e lines alone.
+# 4. Apply user-tmpfiles.d on every sync, not just at the next login
+#    (fleet-ops#8584). man systemd-tmpfiles: --create creates and links;
+#    it leaves the age-only e lines alone.
 ExecStart=/usr/bin/systemd-tmpfiles --user --create
-# 7b. ~/.pi/agent/models.json is a user-scope COPY of config/pi-models.json
+# 5. ~/.pi/agent/models.json is a user-scope COPY of config/pi-models.json
 #     (fleet-ops#8568: the 09-19 contextWindow 96000 fix lived only in the
 #     live file and was silently lost). Copy, not symlink: ~/.pi/agent is an
 #     overlay mount in worker containers, where a link into the deploy clone
 #     would not resolve. install -C skips the write when the bytes already match.
 ExecStart=/usr/bin/install -C -D -m 0644 /home/nish/workspaces/tooling/fleet-ops-deploy-clone/config/pi-models.json /home/nish/.pi/agent/models.json
-# 7c. ~/.config/fleet-ops/litellm-proxy.yaml is a COPY of config/litellm-proxy.yaml,
-#     same class as 7b (fleet-ops#8724: rung edits made live only, then lost or
+# 6. ~/.config/fleet-ops/litellm-proxy.yaml is a COPY of config/litellm-proxy.yaml,
+#     same class as 5 (fleet-ops#8724: rung edits made live only, then lost or
 #     never reviewed). The repo is the only way in: a hand edit is overwritten
 #     here, and fleet-litellm-proxy-config.path restarts the proxy on a real change.
 ExecStart=/usr/bin/install -C -D -m 0644 /home/nish/workspaces/tooling/fleet-ops-deploy-clone/config/litellm-proxy.yaml /home/nish/.config/fleet-ops/litellm-proxy.yaml
-# 8. LINK-GUARD (fleet-ops#7743): machine wiring is hand-set symlinks, so a
+# 7. LINK-GUARD (fleet-ops#7743): machine wiring is hand-set symlinks, so a
 #    session CAN still point a live path at a throwaway checkout — the
 #    2026-09-18 incident linked standing-rules-render into a churning clone
 #    and it dangled when the files vanished. After every pull, fail LOUD on
