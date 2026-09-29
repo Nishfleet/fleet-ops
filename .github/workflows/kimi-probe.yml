@@ -17,7 +17,7 @@ jobs:
   probe:
     name: probe
     if: vars.GRADER == 'kimi' && vars.GRADE_ENGINE != 'kimi'
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.CI_RUNNER || 'ubuntu-latest' }}
     timeout-minutes: 5
     permissions: {}
     steps:
