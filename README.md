@@ -272,12 +272,6 @@ of scope: they do not live in `session-*.scope`. `claim/issue-*` and
 sha256, `--redact`). fleet-ops has no deploy target. All actions are pinned to exact commit
 SHAs; every job has a timeout.
 
-`.github/workflows/reusable-pr-checks.yml` (`workflow_call`) is the batched
-CI standard for every current and future repo: one job, `timeout-minutes`,
-PR concurrency, npm cache, job-level path gating, and gitleaks. Callers
-pass `inputs`; they do not copy the steps. New repos copy
-`template/.github/workflows/` (wired to this repo at `@v1`).
-
 ## Allowlist
 
 There is no manifest and no installer. A path is live because something
@@ -298,7 +292,7 @@ now serve only the root `restic-r2-restore-test.service`.
 ## Intake enrolment
 
 `config/intake-repos.json` is the **declared set** of repos that run
-agent-dispatch and the scout job. It is the single source of truth for which
+agent-dispatch. It is the single source of truth for which
 repos are enrolled — adding or removing a repo is a PR against that file, not a
 `systemctl enable`. This replaces the old imperative enrolment that was
 silently reverted without a record (fleet-ops#32).
