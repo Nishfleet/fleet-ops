@@ -244,8 +244,15 @@ jobs:
             # --chdir puts the worker directory on the bwrap command line,
             # which is what the Gate's lane count reads.
             mkdir -p "$dir"
-            echo "$packet" | bwrap --dev-bind / / --proc /proc --unshare-pid --die-with-parent --chdir "$dir" -- \
-              devin -p --prompt-file /dev/stdin --permission-mode dangerous --model swe-2-max >/dev/null
+            for model in swe-2-max swe-2-high; do
+              rc=0
+              echo "$packet" | bwrap --dev-bind / / --proc /proc --unshare-pid --die-with-parent --chdir "$dir" -- \
+                devin -p --prompt-file /dev/stdin --permission-mode dangerous --model "$model" >/dev/null 2> "$RUNNER_TEMP/try.err" || rc=$?
+              [ "$rc" != 0 ] && [ "$model" = swe-2-max ] && grep -qi 'free model rate limit' "$RUNNER_TEMP/try.err" && [ "$(gh api "repos/$REPO/compare/main...$REF" --jq .ahead_by)" = 0 ] && continue
+              cat "$RUNNER_TEMP/try.err" >&2
+              break
+            done
+            [ "$rc" = 0 ]
           elif [ "$ENGINE" = opencode ]; then
             # --dir puts the worker directory on the bwrap command line; --auto
             # approves what the worker needs outside it (prompts, gh, the repo).
@@ -299,11 +306,11 @@ jobs:
           GH_TOKEN: ${{ steps.arm-token.outputs.token }}
         run: |
           i=${REF#claim/issue-}; i=${i%%-*}
-          if [ "$ENGINE" = devin ] && grep -qiE 'capacity issues|cognition\.ai/retryable": true' "$RUNNER_TEMP/worker.err" 2>/dev/null; then
+          if [ "$ENGINE" = devin ] && grep -qiE 'capacity issues|free model rate limit|cognition\.ai/retryable": true' "$RUNNER_TEMP/worker.err" 2>/dev/null; then
             mkdir -p "$HOME/.cache/fleet-ops"
             touch "$HOME/.cache/fleet-ops/devin-wall"
           else
-            grep -qiE 'no deployments available|ratelimiterror|\b429\b' "$RUNNER_TEMP/worker.err" 2>/dev/null || exit 0
+            grep -qiE 'no deployments available|ratelimiterror|rate limit exceeded|\b429\b' "$RUNNER_TEMP/worker.err" 2>/dev/null || exit 0
             [ "$(gh api "repos/$REPO/compare/main...$REF" --jq .ahead_by)" = 0 ] || exit 0
           fi
           gh issue comment "$i" -R "$REPO" --body "agent run infra-failed: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
