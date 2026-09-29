@@ -25,22 +25,51 @@ Exa: `query=title[:120], numResults=5, type=auto,
 contents.highlights.maxCharacters=300, highlightsPerUrl=1`. A missing key, an
 HTTP error or zero results record `"unavailable"` and Jev still answers.
 
-Two questions were replayed per issue, one Choice each: `lane`
-{small, split, strong_only} (candidate 1) and `vet` {keep, close, park}
-(candidate 2), plus the shipped `cheap_ok` Noul verbatim as the baseline.
+Two questions were replayed per issue, one Choice each, plus the shipped
+`cheap_ok` Noul verbatim as the baseline. Verbatim instructions:
+
+- `lane` (choice): "Which dispatch lane should take this packet?", criteria
+  `small` "One behaviour, already shaped, and a cheap worker finishes it in a
+  single run." / `split` "More than one independent behaviour, or enough work
+  that it must be cut into separate packets before anyone builds it." /
+  `strong_only` "The change cannot be designed without a senior reasoning model:
+  architecture, a migration plan, or a product judgement call."
+- `vet` (choice): "Is this issue a well-formed packet a worker can claim right
+  now?", criteria `keep` "Well formed: the named files and prior art resolve on
+  main, the acceptance is runnable, and nothing needs the owner. Claim it." /
+  `close` "Not worth doing: duplicate, superseded, already shipped, or the
+  requester is asking for something that will not exist." / `park` "Cannot be
+  started now: it waits on another issue or PR, on a runtime gate, or on the
+  owner. Leave it parked and do not claim it."
+- `cheap_ok` (noul): the exact string at
+  `git show 5f5c06a5:.github/workflows/agent.yml`, Gate step.
+
+Corpus membership is pinned two ways: the issue-number list is the `0509#N`
+refs extracted from the #8905 PR body
+(`gh pr view 8905 -R Nishfleet/fleet-ops --json body`), 63 numbers, and each
+issue's answer key is the newest `opus-size:` / `opus-vet:` comment at read time
+(2026-09-29T17:5xZ), with the comment timestamp recorded per row. Nothing is
+deduped or sampled. `~98/wk` is projected addressable volume from the timestamps
+of the 84 `opus-size:` verdicts in the corpus (6 days), not a measured saving.
 
 Corpus: the 63 0509 issues that carried an `opus-size:` verdict on 2026-09-28
 (the corpus #8905 used), 84 `opus-size:` comments, 32 with an `opus-vet:`
 verdict. Model: `jev-1.13.0` (the `/jev` response's `.model`), two runs.
-Harmful call = a `strong_only` packet answered `small` or `split` (senior work
-onto a cheap lane), or a `keep` answer key answered `park` (work stalled that a
-worker could have claimed).
+Two failure classes are counted separately, because only the first costs
+correctness:
+
+- **harmful**: `strong_only` answered `small`/`split` (senior work onto a cheap
+  lane) or `keep` answered `park` (work stalled that a worker could have
+  claimed).
+- **wasteful**: `split` answered `strong_only` (a paced senior seat spent on a
+  packet a cheap lane could have cut), or `small` answered `split` (a cheap
+  packet delayed a cut). Reported separately and never counted as harmful.
 
 ## Candidate table
 
 | # | Candidate | Population | Answer key | Replay agreement (run 1 / run 2) | Harmful calls | Paid calls saved/wk | Clears bar? |
 |---|---|---|---|---|---|---|---|
-| 1 | opus-size split vs strong-only (Choice) | 360 issues carry an `opus-size:` verdict (GitHub search `in:comments`); 84 verdicts over 6 days on the 63-issue corpus (~98/wk) | `opus-size:` comments | 29/63 (46%) / 28/63 (44%) | 1 (`strong_only`→`small`, 0509#5740); 9/10 `split`→`strong_only` (wastes the paced senior lane) | ~98 | **No** |
+| 1 | opus-size split vs strong-only (Choice) | 360 issues carry an `opus-size:` verdict (GitHub search `in:comments`); 84 verdicts over 6 days on the 63-issue corpus (projected ~98/wk) | `opus-size:` comments | 29/63 (46%) / 28/63 (44%) | harmful 1 (`strong_only`→`small`, 0509#5740); wasteful 9/10 `split`→`strong_only` | projected ~98 | **No** |
 | 2 | opus-vet keep/close/park (Choice) | 658 issues carry an `opus-vet:` verdict; 32 with an answer key in the corpus | `opus-vet:` comments | 9/32 (28%) / 10/32 (31%) | 23 / 22 `keep`→`park` | — | **No** |
 | 3 | pre-grade before a PR opens (Noul) | 350 PRs with an A+ grade; 888 issues carry `grade /` | `grade` comments | Not replayed — the grader and every grade check were deleted 2026-09-29 (#8953, #8959) | — | — | N/A — call site gone |
 | 4 | worker park decision (`needsNish`) | 27 fleet-ops / 45 0509 `jev needsNish` comments; 1 park body records `p(needsNish)` (0509#3990, p=0.84) | parks Nish later resolved or reversed | Not run — n=1 usable answer key | — | small | **Too little history** |
@@ -78,6 +107,13 @@ Nishfleet/fleet-ops#8983.
 ## Conclusion
 
 No candidate clears the bar, so no child issues are filed. The fleet's single
-live Jev call site (`prompts/worker.md` step 4 `needsNish`) has n=1 of usable
-answer-key history, so a full-context+Exa upgrade cannot be proven. Any future
-Jev wiring repeats this replay and clears the zero-harm bar first.
+live Jev decision call site (`prompts/worker.md` step 4 `needsNish`; the `/jev`
+pass-through in `config/litellm-proxy.yaml` is infrastructure, not a decision)
+has n=1 of usable answer-key history, so a full-context+Exa upgrade cannot be
+proven. Any future Jev wiring repeats this replay and clears the zero-harm bar
+first.
+
+Raw run evidence is kept for the PR's own verification: `/tmp/r2_1.json` and
+`/tmp/r2_2.json` hold one row per issue with the answer key, the recorded
+verdict comment text, the model string, the per-question choice, confidence and
+probability vector, the named-file count, the Exa hit and the token usage.
