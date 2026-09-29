@@ -1,3 +1,8 @@
+# Approved models per provider (Nish 2026-09-28: models are provider specific; a row outside this list needs his yes; no benching).
+# CommandCode, Cline, OpenCode Go, Ollama: deepseek-v4.1-flash. MiniMax: M3.1-Flash-Preview. StepFun: step-5-preview. Synthetic: GLM-5.3-Flash.
+# xkiro: qwen3-coder-plus:free, qwen3.8-max:free. OpenCode zen: space-bunny-free, union-alpha. Cline: stealth/union-alpha, stealth/space-bunny-alpha.
+# OpenRouter: stealth/space-bunny-alpha, nemotron-3-ultra, nemotron-3.5-lightning. Pareto: glm-5.3-flash, never in judge.
+# Devin: SWE 2 only, through the devin CLI lane in agent.yml (no router route: 404 on every base).
 model_list:
 - model_name: worker-capable
   litellm_params:
@@ -41,7 +46,6 @@ model_list:
     order: 1
     max_parallel_requests: 4
     cooldown_time: 900
-
   model_info:
     mode: chat
     id: opencodego-ds41flash-worker-capable
@@ -59,7 +63,6 @@ model_list:
     order: 1
     max_parallel_requests: 4
     cooldown_time: 900
-
   model_info:
     mode: chat
     id: opencodego-ds41flash-worker-cheap
@@ -77,7 +80,6 @@ model_list:
     order: 1
     max_parallel_requests: 2
     cooldown_time: 900
-
   model_info:
     mode: chat
     id: opencodego-ds41flash-judge
@@ -95,7 +97,6 @@ model_list:
     order: 1
     max_parallel_requests: 4
     cooldown_time: 900
-
   model_info:
     mode: chat
     id: opencodego2-ds41flash-worker-capable
@@ -113,7 +114,6 @@ model_list:
     order: 1
     max_parallel_requests: 4
     cooldown_time: 900
-
   model_info:
     mode: chat
     id: opencodego2-ds41flash-worker-cheap
@@ -131,7 +131,6 @@ model_list:
     order: 1
     max_parallel_requests: 2
     cooldown_time: 900
-
   model_info:
     mode: chat
     id: opencodego2-ds41flash-judge
@@ -162,7 +161,6 @@ model_list:
     order: 1
     max_parallel_requests: 1
     cooldown_time: 300
-
   model_info:
     mode: chat
     id: pareto-glm53flash-senior
@@ -237,6 +235,20 @@ model_list:
   model_info:
     mode: chat
     id: xkiro-qwen38max-worker-cheap
+- model_name: worker-capable
+  litellm_params:
+    model: openai/cline-pass/deepseek-v4.1-flash
+    api_base: https://api.cline.bot/api/v1
+    api_key: os.environ/CLINE_API_KEY
+    tags:
+    - prepaid
+    - cline
+    order: 1
+    max_parallel_requests: 4
+    cooldown_time: 900
+  model_info:
+    mode: chat
+    id: cline-ds41flash-worker-capable
 - model_name: worker-capable
   litellm_params:
     model: openai/space-bunny-free
@@ -335,7 +347,6 @@ model_list:
   model_info:
     mode: chat
     id: ollama-ds41flash-worker-capable
-# benched: not routed, inert to the loader. Restore only with a green /health probe cited in the PR.
 - model_name: worker-capable
   litellm_params:
     model: openai/step-5-preview
@@ -351,51 +362,7 @@ model_list:
   model_info:
     mode: chat
     id: stepfun-step5preview-worker-capable
-# Enforced by config/litellm-proxy.schema.json in CI: a bench needs a `wall:` that cannot clear by itself, and no
-# live cooldown_time exceeds 900 s. A 429/quota wall stays live and cools (Nish 2026-09-25, fleet-ops#8724).
-benched:
-- benched_at: 2026-09-28
-  wall: wiring
-  reason: "openai/cline-pass/deepseek-v4.1-flash @ https://api.cline.bot/api/v1 (CLINE_API_KEY), worker-capable — the router cannot read Cline's non-streaming responses, so this rung's health row could never be set and its 4 admission slots were never earned. LiteLLM does NOT unwrap the {data:{...},success:true} envelope: 8 non-streaming calls through the router, 0 x 200 / 8 x 500, every one of them upstream 'Error code: 500 - {'error': 'empty response content', 'success': False}'. The tools + tool_choice=required probe shows the same rung failing differently — 'LiteLLM: provider returned a response with no choices. Raw keys: [id, choices, created, model, object, service_tier, system_fingerprint, usage, data, success]' (a top-level choices that is empty, with the payload in data) — while the same upstream body read DIRECTLY is HTTP/2 200 with top-level keys [data, success], top-level choices None, and data.choices[0].message.tool_calls = get_weather {\"city\": \"Paris\"}: the rung serves the model and calls the tool, the router cannot read the answer. Bare non-streaming chat fails upstream on its own, with and without stream_options.include_usage, so restoring this needs the upstream to answer a non-streaming request at all. model_info disable_background_health_check: true kept /health from probing it (absent from both healthy_endpoints and unhealthy_endpoints at 2026-09-28 20:16Z) yet litellm_deployment_state sat at 0.0 (healthy) and that gauge is absent from the live scrape now that the rung is gone, so fleet-ops#8901's pi_free() counted all 4 max_parallel_requests into the worker-capable slot sum. In the 24h before the bench, 5,813 x 200 vs 2 x 502 BadGateway (0.03%, 12:14:18Z and 19:09:00Z) with every one of the window's 11 'empty response content' router exceptions coming from this rung. STREAMING does pass (8/8 x 200 at 20:16:31-20:16:39Z, tool_choice=required assembles finish_reason=tool_calls with {\"city\": \"Paris\"}), which is why the worker lane kept working: pi's OpenAI-compatible client hardcodes stream: true. A streaming-only rung buys capacity no non-streaming caller (health probe included) can spend, and no health signal to notice when it stops. Restore ONLY with a green non-streaming probe through the router cited in the PR; the unwrap adapter fleet-ops#7366 has not landed, and the stream-only 200s are not that proof."
-  was: [worker-capable]
-  litellm_params:
-    model: openai/cline-pass/deepseek-v4.1-flash
-    api_base: https://api.cline.bot/api/v1
-    api_key: os.environ/CLINE_API_KEY
-    tags:
-    - prepaid
-    - cline
-    order: 1
-    max_parallel_requests: 4
-    cooldown_time: 900
-  model_info:
-    mode: chat
-    id: cline-ds41flash-worker-capable
-  retry_at: '2026-10-02T12:30:00+05:30'
-
-- benched_at: 2026-09-22
-  wall: quality
-  reason: "pareto-glm53flash-judge: same family as every builder; took 1 of 5 judge calls under simple-shuffle after the Go rung landed. Verifier must differ from builder (fleet-ops#8035). Fallback judge->senior stays visible in x-litellm-model-id."
-  was: [judge]
-  litellm_params:
-    model: openai/z-ai/glm-5.3-flash
-    api_base: https://api.paretoinference.com/v1
-    api_key: os.environ/PARETO_API_KEY
-    tags:
-    - prepaid
-    - pareto
-    - judge
-    order: 1
-    max_parallel_requests: 2
-  model_info:
-    mode: chat
-    id: pareto-glm53flash-judge
-  retry_at: '2026-09-29T12:30:00+05:30'
-
-- benched_at: 2026-09-21
-  wall: wiring
-  reason: "openai/stealth/union-alpha @ https://api.cline.bot/api/v1 (CLINE_API_KEY) — Cline wraps NON-streaming responses in {data:{...},success:true}; LiteLLM /health (non-streaming) fails 'provider returned a response with no choices' on all 4 deployments while STREAMING routed calls succeed (worker-cheap -> x-litellm-model-id union-alpha-cline-worker-cheap, 'pong', 2026-09-17 19:00 IST). RE-BENCHED 2026-09-21: a live-only restore of 4 union-alpha rungs + custom_provider_map (2026-09-20) referenced fleet_cline_adapter.py, which exists nowhere on the host — the first proxy restart died on ImportError, a latent crash the whole time (fleet-ops#5792). Restore ONLY via fleet-ops#7366 landing the unwrap adapter AND this config in ONE PR — config alone is undeployable."
-  was: [worker-cheap, worker-capable, senior, judge]
+- model_name: worker-cheap
   litellm_params:
     model: openai/stealth/union-alpha
     api_base: https://api.cline.bot/api/v1
@@ -405,12 +372,49 @@ benched:
     - stealth
     order: 1
     max_parallel_requests: 2
-  retry_at: '2026-09-29T12:30:00+05:30'
-
-- benched_at: 2026-09-17
-  wall: model-gone
-  reason: "openai/union-alpha @ https://opencode.ai/zen/v1 (OPENCODE_API_KEY) — HTTP 500 'Internal server error' on 4 direct probes 2026-09-17 ~18:55 IST (Mac key AND VPS key; control model on the same key returns a clean CreditsError, so auth is fine and the union-alpha upstream is broken/overloaded). Free until 2026-09-23 per OpenCode. EXPIRED 2026-09-21 (fleet-ops#7367): model DELISTED, not repaired — GET /models on zen/v1 returned HTTP 200 with a 30-model catalog containing no union-alpha (also absent from zen/go/v1's 31-model catalog; nearest is the different id omen-alpha), and 2x direct chat/completions probes returned HTTP 400 'Upstream request failed: Model is unavailable.' at ~18:16-18:18Z. The 500s ended by removal, so no probe can go green; closed early rather than watching a delisted id to 2026-09-23. If OpenCode re-adds the id, restore ONLY with a green direct probe cited in the PR. Successor candidate: omen-alpha @ zen/go/v1 (prepaid, needs x-opencode-session) probed 200 'pong' — placement decision filed as a separate issue."
-  was: [worker-cheap, worker-capable, senior, judge]
+  model_info:
+    mode: chat
+    id: cline-unionalpha-worker-cheap
+- model_name: worker-capable
+  litellm_params:
+    model: openai/stealth/union-alpha
+    api_base: https://api.cline.bot/api/v1
+    api_key: os.environ/CLINE_API_KEY
+    tags:
+    - free
+    - stealth
+    order: 1
+    max_parallel_requests: 2
+  model_info:
+    mode: chat
+    id: cline-unionalpha-worker-capable
+- model_name: senior
+  litellm_params:
+    model: openai/stealth/union-alpha
+    api_base: https://api.cline.bot/api/v1
+    api_key: os.environ/CLINE_API_KEY
+    tags:
+    - free
+    - stealth
+    order: 1
+    max_parallel_requests: 2
+  model_info:
+    mode: chat
+    id: cline-unionalpha-senior
+- model_name: judge
+  litellm_params:
+    model: openai/stealth/union-alpha
+    api_base: https://api.cline.bot/api/v1
+    api_key: os.environ/CLINE_API_KEY
+    tags:
+    - free
+    - stealth
+    order: 1
+    max_parallel_requests: 2
+  model_info:
+    mode: chat
+    id: cline-unionalpha-judge
+- model_name: worker-cheap
   litellm_params:
     model: openai/union-alpha
     api_base: https://opencode.ai/zen/v1
@@ -420,94 +424,49 @@ benched:
     - stealth
     order: 1
     max_parallel_requests: 2
-  retry_at: '2026-09-29T12:30:00+05:30'
-
-- benched_at: 2026-09-14
-  wall: payment
-  reason: "openai/zai-org/GLM-5.3-Flash @ https://api.tokenfactory.nebius.com/v1 (NEBIUS_API_KEY, metered) — HTTP 402 'Payment Required: You have exhausted your budget. Please add funds to continue using the API.' on routed calls AND /health, BOTH deployments (worker-cheap order:3, worker-capable order:3), continuous from ~02:41Z (08:11 IST). Dead-credit/money class (budget exhausted; renewal = Nish's call, NOT on this path). The 402 retry-storm (num_retries:2 = 3x per request) flooded the fallback chain worker-cheap -> worker-capable -> senior, all hitting pareto glm-5.3, which rate-limited (429) and put BOTH senior rungs in LiteLLM router cooldown -> pi-seat-health reported health_class=rate_limited for litellm/senior -> FleetPiSeatUnhealthy fired 30+ min. Repair (alert-repair-FleetPiSeatUnhealthy-20260914T031144Z): benched both nebius rungs; worker-cheap re-pointed at pareto glm-5.3 (prepaid, healthy, probed 200 direct) so it has a live rung and stops generating 402 fallback flood; proxy restarted to clear stale in-memory cooldown. Restore ONLY with a green /health probe cited in the PR (nebius budget topped up by Nish first)."
-  was: [worker-cheap, worker-capable]
+  model_info:
+    mode: chat
+    id: opencode-unionalpha-worker-cheap
+- model_name: worker-capable
   litellm_params:
-    model: openai/zai-org/GLM-5.3-Flash
-    api_base: https://api.tokenfactory.nebius.com/v1
-    max_budget: 5.0
-    budget_duration: 1mo
-    api_key: os.environ/NEBIUS_API_KEY
-    tags:
-    - metered
-    order: 3
-    max_parallel_requests: 1
-  retry_at: '2026-09-29T12:30:00+05:30'
-
-- benched_at: 2026-09-12
-  wall: payment
-  reason: "openai/deepseek/deepseek-v4-pro @ https://api.xkiro.com/v1 — 503 ServiceUnavailable 'A server error occurred' on /health and by direct probe by 15:47Z; dead-credit, fleet-ops#3284. #5811 wired it 06:15Z as the free rung of senior/judge (tags +senior/+judge, order:1) and worker-capable/worker-cheap (order:2); /health went unhealthy_count=4."
-  was: [senior, judge, worker-capable, worker-cheap]
-  litellm_params:
-    model: openai/deepseek/deepseek-v4-pro
-    api_base: https://api.xkiro.com/v1
-    max_budget: 5.0
-    budget_duration: 1mo
-    api_key: os.environ/XKIRO_API_KEY
+    model: openai/union-alpha
+    api_base: https://opencode.ai/zen/v1
+    api_key: os.environ/OPENCODE_API_KEY
     tags:
     - free
-    order: 2
-    max_parallel_requests: 1
-  retry_at: '2026-09-29T12:30:00+05:30'
-
-- benched_at: 2026-09-13
-  wall: wiring
-  reason: "openai/glm-5-2 + openai/swe-2-max @ Devin/Windsurf — NO ROUTER WIRE: litellm->openai/* 404 on all four candidate bases (api.devin.ai/v1, api.devin.ai, server.codeium.com, windsurf.com/api/v1; live-proxied via a throwaway port-4321 litellm 2026-09-13; re-probed direct 2026-09-13T07:40Z: 3x 404 and windsurf.com/api/v1 200 = the Next.js marketing catch-all, not the API) and Windsurf/Exafunction inference is devin-CLI-only (signed Cascade client, pi ACP extension); litellm 1.98.0 and current upstream ship no windsurf/devin/codeium adapter (docs sitemap, 167 providers) — the #4263 verdict ('Cursor (api2.cursor.sh) and Devin (api.devin.ai) use proprietary protocols and do not expose /v1/chat/completions'). Seats themselves healthy via the devin CLI (cli_spawn ledger: devin/glm-5-2 200; swe-2-max bench expired 18:31Z at filing; today 2026-09-13: devin models list 48 families, exit 0). Creds plumbing already live: the deployed wrapper sources ~/.config/fleet-ops/seats/devin.env (fleet-litellm-proxy-start line 19), so unbenching after #6228 needs NO env work. Config-only wire: mechanism-impossible (the 404s). Unlock = the #6228 CustomLLM Windsurf/Devin adapter, mechanism approved by the orchestrator sweep 2026-09-13 (decision-resolved). NEVER swe-1-7 (retired, cap 0) or swe-2-high (parked to 2036)."
-  was: [worker-cheap, worker-capable]
-  litellm_params:
-    model: openai/glm-5-2
-    api_base: https://api.devin.ai/v1
-    api_key: os.environ/DEVIN_API_KEY
-    tags:
-    - prepaid
-    order: 2
-    max_parallel_requests: 1
-  retry_at: '2026-09-29T12:30:00+05:30'
-
-- benched_at: 2026-09-21
-  wall: quality
-  reason: "openai/nvidia/nemotron-3-ultra-550b-a55b:free @ https://openrouter.ai/api/v1 (OPENROUTER_API_KEY), worker-cheap + worker-capable — fleet-litellm-health-canary health-deployment-unhealthy: /health RateLimitError 'Rate limit exceeded: free-models-per-day-high-balance', continuously unhealthy 830s >= the #6427 300s hold. OpenRouter's free-models-per-day cap is per ACCOUNT, so every openrouter :free rung shares one daily bucket. Independently, the 2026-09-18 nemotron-out removal note (bak-nemotron-out-20260918T085208Z) stands: HTTP 200 with ZERO tool calls on real packets (PACKET-VERDICT 7d 966 no-tools vs 127 worked). Restore ONLY with BOTH a green /health probe AND a tool-call rate measured over real packets, cited in the PR (fleet-ops#6054 drill, #5792 accept line, #6427 hold; canary trip 2026-09-18 14:29 IST, re-confirmed by direct GET /health at 2026-09-18T09:00:04Z before benching). RE-BENCHED 2026-09-21: the live-only restore of 2026-09-20 00:30 IST put it at worker-capable order:2 citing one tool_choice=ping probe; on 2026-09-21 five consecutive tool_choice=required probes through this router returned the call as text content with tool_calls: null — the #7761 no-tool-call class. Removed live the same day (fleet-ops#5792)."
-  was: [worker-cheap, worker-capable]
-  litellm_params:
-    model: openai/nvidia/nemotron-3-ultra-550b-a55b:free
-    api_base: https://openrouter.ai/api/v1
-    max_budget: 5.0
-    budget_duration: 1mo
-    api_key: os.environ/OPENROUTER_API_KEY
-    extra_headers: {HTTP-Referer: https://0509.io, X-Title: nish-fleet}
-    tags:
-    - free
-    - nemotron
+    - stealth
     order: 1
-    max_parallel_requests: 4
-  retry_at: '2026-09-29T12:30:00+05:30'
-
-- benched_at: 2026-09-18
-  wall: quality
-  reason: "openai/nvidia/nemotron-3.5-lightning:free @ https://openrouter.ai/api/v1 (OPENROUTER_API_KEY), worker-cheap — fleet-litellm-health-canary health-deployment-unhealthy: /health RateLimitError 'Rate limit exceeded: free-models-per-day-high-balance', continuously unhealthy 830s >= the #6427 300s hold. OpenRouter's free-models-per-day cap is per ACCOUNT, so every openrouter :free rung shares one daily bucket. Independently, the 2026-09-18 nemotron-out removal note (bak-nemotron-out-20260918T085208Z) stands: HTTP 200 with ZERO tool calls on real packets (PACKET-VERDICT 7d 966 no-tools vs 127 worked). Restore ONLY with BOTH a green /health probe AND a tool-call rate measured over real packets, cited in the PR (fleet-ops#6054 drill, #5792 accept line, #6427 hold; canary trip 2026-09-18 14:29 IST, re-confirmed by direct GET /health at 2026-09-18T09:00:04Z before benching)."
-  was: [worker-cheap]
+    max_parallel_requests: 2
+  model_info:
+    mode: chat
+    id: opencode-unionalpha-worker-capable
+- model_name: senior
   litellm_params:
-    model: openai/nvidia/nemotron-3.5-lightning:free
-    api_base: https://openrouter.ai/api/v1
-    max_budget: 5.0
-    budget_duration: 1mo
-    api_key: os.environ/OPENROUTER_API_KEY
-    extra_headers: {HTTP-Referer: https://0509.io, X-Title: nish-fleet}
+    model: openai/union-alpha
+    api_base: https://opencode.ai/zen/v1
+    api_key: os.environ/OPENCODE_API_KEY
     tags:
     - free
-    - nemotron
+    - stealth
     order: 1
-    max_parallel_requests: 4
-  retry_at: '2026-09-29T12:30:00+05:30'
-
-- benched_at: 2026-09-25
-  wall: wiring
-  reason: "openai/stealth/space-bunny-alpha @ https://api.cline.bot/api/v1 (CLINE_API_KEY), worker-capable — baseline 30 min to 2026-09-25 22:41 IST: 232 'JSON error injected into SSE stream' vs 2328 '200 OK' (~10% of calls); upstream attribution found no api_base in the traceback-only logs, so fleet-ops#8695 rule 3 benched all three space-bunny-alpha rungs. JSON error injected into SSE stream -> MidStreamFallbackError (fleet-ops#8679). Restore ONLY with a green /health probe cited in the PR."
-  was: [worker-capable]
+    max_parallel_requests: 2
+  model_info:
+    mode: chat
+    id: opencode-unionalpha-senior
+- model_name: judge
+  litellm_params:
+    model: openai/union-alpha
+    api_base: https://opencode.ai/zen/v1
+    api_key: os.environ/OPENCODE_API_KEY
+    tags:
+    - free
+    - stealth
+    order: 1
+    max_parallel_requests: 2
+  model_info:
+    mode: chat
+    id: opencode-unionalpha-judge
+- model_name: worker-capable
   litellm_params:
     model: openai/stealth/space-bunny-alpha
     api_base: https://api.cline.bot/api/v1
@@ -519,13 +478,11 @@ benched:
     order: 1
     max_parallel_requests: 2
     cooldown_time: 900
-  retry_at: '2026-10-02T12:30:00+05:30'
-
-- benched_at: 2026-09-25
-  wall: wiring
-  reason: "openai/stealth/space-bunny-alpha @ https://openrouter.ai/api/v1 (OPENROUTER_API_KEY), worker-capable — baseline 30 min to 2026-09-25 22:41 IST: 232 'JSON error injected into SSE stream' vs 2328 '200 OK' (~10% of calls); upstream attribution found no api_base in the traceback-only logs, so fleet-ops#8695 rule 3 benched all three space-bunny-alpha rungs. JSON error injected into SSE stream -> MidStreamFallbackError (fleet-ops#8679). Restore ONLY with a green /health probe cited in the PR."
-  was: [worker-capable]
-  litellm_params:
+  model_info:
+    mode: chat
+    id: cline-spacebunnyalpha-worker-capable
+- model_name: worker-capable
+  litellm_params: &openrouter-spacebunny
     model: openai/stealth/space-bunny-alpha
     api_base: https://openrouter.ai/api/v1
     max_budget: 1.0
@@ -538,27 +495,37 @@ benched:
     order: 1
     max_parallel_requests: 2
     cooldown_time: 900
-  retry_at: '2026-10-02T12:30:00+05:30'
-
-- benched_at: 2026-09-25
-  wall: wiring
-  reason: "openai/stealth/space-bunny-alpha @ https://openrouter.ai/api/v1 (OPENROUTER_API_KEY), worker-cheap — baseline 30 min to 2026-09-25 22:41 IST: 232 'JSON error injected into SSE stream' vs 2328 '200 OK' (~10% of calls); upstream attribution found no api_base in the traceback-only logs, so fleet-ops#8695 rule 3 benched all three space-bunny-alpha rungs. JSON error injected into SSE stream -> MidStreamFallbackError (fleet-ops#8679). Restore ONLY with a green /health probe cited in the PR."
-  was: [worker-cheap]
+  model_info:
+    mode: chat
+    id: openrouter-spacebunnyalpha-worker-capable
+- model_name: worker-cheap
+  litellm_params: {<<: *openrouter-spacebunny}
+  model_info:
+    mode: chat
+    id: openrouter-spacebunnyalpha-worker-cheap
+- model_name: worker-cheap
+  litellm_params: &openrouter-nemotron
+    <<: *openrouter-spacebunny
+    model: openai/nvidia/nemotron-3-ultra-550b-a55b:free
+    max_budget: 5.0
+    tags: [free, nemotron]
+    max_parallel_requests: 4
+    cooldown_time: 60
+  model_info:
+    mode: chat
+    id: openrouter-nemotronultra-worker-cheap
+- model_name: worker-capable
+  litellm_params: {<<: *openrouter-nemotron}
+  model_info:
+    mode: chat
+    id: openrouter-nemotronultra-worker-capable
+- model_name: worker-cheap
   litellm_params:
-    model: openai/stealth/space-bunny-alpha
-    api_base: https://openrouter.ai/api/v1
-    max_budget: 1.0
-    budget_duration: 1mo
-    api_key: os.environ/OPENROUTER_API_KEY
-    extra_headers: {HTTP-Referer: https://0509.io, X-Title: nish-fleet}
-    tags:
-    - free
-    - stealth
-    order: 1
-    max_parallel_requests: 2
-    cooldown_time: 900
-  retry_at: '2026-10-02T12:30:00+05:30'
-
+    <<: *openrouter-nemotron
+    model: openai/nvidia/nemotron-3.5-lightning:free
+  model_info:
+    mode: chat
+    id: openrouter-nemotronlightning-worker-cheap
 router_settings:
   routing_strategy: simple-shuffle
   optional_pre_call_checks: ["prompt_caching"]
@@ -583,7 +550,7 @@ router_settings:
     ContentPolicyViolationErrorRetries: 0
   allowed_fails_policy:
     AuthenticationErrorAllowedFails: 0
-    # one 429 benches the deployment: Pareto's 3-parallel cap is already held by max_parallel_requests.
+    # one 429 cools the deployment: Pareto's 3-parallel cap is already held by max_parallel_requests.
     RateLimitErrorAllowedFails: 1
     TimeoutErrorAllowedFails: 1
     InternalServerErrorAllowedFails: 1
@@ -601,10 +568,8 @@ general_settings:
       auth: true
       headers:
         Authorization: "Bearer os.environ/TYPESAFE_API_KEY"
-  background_health_checks: true
-  health_check_interval: 900
-  # serialise /health: a parallel census 429s shared accounts (fleet-ops#7862).
-  health_check_concurrency: 1
+  # real traffic is the probe: the background checks spent the same free quota and cooled rows themselves (Nish 2026-09-28).
+  background_health_checks: false
   database_url: postgresql://litellm@127.0.0.1:5432/litellm
   redis_url: redis://127.0.0.1:6379
   master_key: os.environ/LITELLM_MASTER_KEY
