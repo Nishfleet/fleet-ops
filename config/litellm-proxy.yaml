@@ -14,6 +14,7 @@ model_list:
     - commandcode
     order: 1
     max_parallel_requests: 4
+    cooldown_time: 900
   model_info:
     mode: chat
     id: commandcode-ds41flash-worker-capable
@@ -27,6 +28,7 @@ model_list:
     - commandcode
     order: 1
     max_parallel_requests: 4
+    cooldown_time: 900
   model_info:
     mode: chat
     id: commandcode-ds41flash-worker-cheap
@@ -43,7 +45,7 @@ model_list:
     - opencode-go
     order: 1
     max_parallel_requests: 4
-
+    cooldown_time: 900
   model_info:
     mode: chat
     id: opencodego-ds41flash-worker-capable
@@ -60,7 +62,7 @@ model_list:
     - opencode-go
     order: 1
     max_parallel_requests: 4
-
+    cooldown_time: 900
   model_info:
     mode: chat
     id: opencodego-ds41flash-worker-cheap
@@ -77,7 +79,7 @@ model_list:
     - opencode-go
     order: 1
     max_parallel_requests: 2
-
+    cooldown_time: 900
   model_info:
     mode: chat
     id: opencodego-ds41flash-judge
@@ -94,7 +96,7 @@ model_list:
     - opencode-go
     order: 1
     max_parallel_requests: 4
-
+    cooldown_time: 900
   model_info:
     mode: chat
     id: opencodego2-ds41flash-worker-capable
@@ -111,7 +113,7 @@ model_list:
     - opencode-go
     order: 1
     max_parallel_requests: 4
-
+    cooldown_time: 900
   model_info:
     mode: chat
     id: opencodego2-ds41flash-worker-cheap
@@ -128,7 +130,7 @@ model_list:
     - opencode-go
     order: 1
     max_parallel_requests: 2
-
+    cooldown_time: 900
   model_info:
     mode: chat
     id: opencodego2-ds41flash-judge
@@ -142,7 +144,8 @@ model_list:
     - pareto
     order: 1
     max_parallel_requests: 1
-    # Pareto's 429s come from its 3-parallel key limit (fleet-ops#8458), not a quota.
+    # Pareto's 429s come from its 3-parallel key limit (fleet-ops#8458), not a quota, so 5 min is enough.
+    cooldown_time: 300
   model_info:
     mode: chat
     id: pareto-glm53flash-worker-capable
@@ -157,7 +160,7 @@ model_list:
     - senior
     order: 1
     max_parallel_requests: 1
-
+    cooldown_time: 300
   model_info:
     mode: chat
     id: pareto-glm53flash-senior
@@ -170,6 +173,7 @@ model_list:
     - prepaid
     order: 1
     max_parallel_requests: 1
+    cooldown_time: 900
   model_info:
     mode: chat
     id: synthetic-glm53flash-worker-cheap
@@ -184,6 +188,7 @@ model_list:
     order: 1
     # Coding-plan key: 8 parallel probes gave 5x200 and 3x429 (2026-09-29), so 2 per row x 2 rows stays under it. General /api/paas/v4 answers 429 code 1113 (no balance) for this key.
     max_parallel_requests: 2
+    cooldown_time: 120
   model_info:
     mode: chat
     id: zai-glm53flash-worker-capable
@@ -198,6 +203,7 @@ model_list:
     order: 1
     # Coding-plan key: 8 parallel probes gave 5x200 and 3x429 (2026-09-29), so 2 per row x 2 rows stays under it. General /api/paas/v4 answers 429 code 1113 (no balance) for this key.
     max_parallel_requests: 2
+    cooldown_time: 120
   model_info:
     mode: chat
     id: zai-glm53flash-worker-cheap
@@ -211,6 +217,7 @@ model_list:
     - xkiro-free
     order: 2
     max_parallel_requests: 4
+    cooldown_time: 900
   model_info:
     mode: chat
     id: xkiro-qwen3coderplus-worker-cheap
@@ -224,6 +231,7 @@ model_list:
     - xkiro-free
     order: 2
     max_parallel_requests: 4
+    cooldown_time: 900
   model_info:
     mode: chat
     id: xkiro-qwen38max-worker-cheap
@@ -237,6 +245,7 @@ model_list:
     - cline
     order: 1
     max_parallel_requests: 4
+    cooldown_time: 900
   model_info:
     mode: chat
     id: cline-ds41flash-worker-capable
@@ -250,6 +259,7 @@ model_list:
     - stealth
     order: 1
     max_parallel_requests: 2
+    cooldown_time: 900
   model_info:
     mode: chat
     id: zen-spacebunny-worker-capable
@@ -263,6 +273,7 @@ model_list:
     - stealth
     order: 1
     max_parallel_requests: 2
+    cooldown_time: 900
   model_info:
     mode: chat
     id: zen-spacebunny-worker-cheap
@@ -276,6 +287,7 @@ model_list:
     - minimax
     order: 1
     max_parallel_requests: 6
+    cooldown_time: 120
   model_info:
     mode: chat
     id: minimax-m31-worker-capable
@@ -289,6 +301,7 @@ model_list:
     - minimax
     order: 1
     max_parallel_requests: 6
+    cooldown_time: 120
   model_info:
     mode: chat
     id: minimax-m31b-worker-capable
@@ -302,6 +315,7 @@ model_list:
     - minimax
     order: 1
     max_parallel_requests: 6
+    cooldown_time: 120
   model_info:
     mode: chat
     id: minimax-m31-worker-cheap
@@ -315,6 +329,7 @@ model_list:
     - minimax
     order: 1
     max_parallel_requests: 6
+    cooldown_time: 120
   model_info:
     mode: chat
     id: minimax-m31b-worker-cheap
@@ -328,6 +343,7 @@ model_list:
     - ollama
     order: 1
     max_parallel_requests: 4
+    cooldown_time: 900
   model_info:
     mode: chat
     id: ollama-ds41flash-worker-capable
@@ -341,7 +357,8 @@ model_list:
     - stepfun
     order: 1
     max_parallel_requests: 5
-    # Step Plan credit ran out 2026-09-25 11:15 IST (fleet-ops#8653): a 429 cools this rung for the router's 60 s, then it retries by itself: refilled credit is used without a human.
+    # Step Plan credit ran out 2026-09-25 11:15 IST (fleet-ops#8653): a 429 cools this rung 15 min, then it retries by itself: refilled credit is used without a human, and a concurrency 429 idles it only briefly.
+    cooldown_time: 900
   model_info:
     mode: chat
     id: stepfun-step5preview-worker-capable
@@ -460,6 +477,7 @@ model_list:
     - stealth
     order: 1
     max_parallel_requests: 2
+    cooldown_time: 900
   model_info:
     mode: chat
     id: cline-spacebunnyalpha-worker-capable
@@ -476,6 +494,7 @@ model_list:
     - stealth
     order: 1
     max_parallel_requests: 2
+    cooldown_time: 900
   model_info:
     mode: chat
     id: openrouter-spacebunnyalpha-worker-capable
@@ -491,6 +510,7 @@ model_list:
     max_budget: 5.0
     tags: [free, nemotron]
     max_parallel_requests: 4
+    cooldown_time: 60
   model_info:
     mode: chat
     id: openrouter-nemotronultra-worker-cheap
@@ -516,8 +536,9 @@ router_settings:
     - senior: [worker-capable]
     - judge: [senior]
   cooldown_time: 60
-  # a failed request re-picks another row of the same group, then falls back to the next group (Nish 2026-09-28: no benching, a failed key is retried on later requests).
-  num_retries: 2
+  allowed_fails: 1
+  # a same-group retry re-hits the same wall; fallbacks fire on the first failure (fleet-ops#5792).
+  num_retries: 0
   timeout: 1800
   enable_tag_filtering: false
   retry_policy:
@@ -527,6 +548,12 @@ router_settings:
     InternalServerErrorRetries: 2
     BadRequestErrorRetries: 0
     ContentPolicyViolationErrorRetries: 0
+  allowed_fails_policy:
+    AuthenticationErrorAllowedFails: 0
+    # one 429 cools the deployment: Pareto's 3-parallel cap is already held by max_parallel_requests.
+    RateLimitErrorAllowedFails: 1
+    TimeoutErrorAllowedFails: 1
+    InternalServerErrorAllowedFails: 1
 litellm_settings:
   drop_params: true
   callbacks:

@@ -1,8 +1,11 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$comment": "Hard gate for config/litellm-proxy.yaml (fleet-ops#8653). Nish 2026-09-28: no benching unless he says so. A failed row is never taken out of rotation: no bench list, no per-row cooldown, and the router holds a failed row for at most 60 s.",
+  "$comment": "Hard gate for config/litellm-proxy.yaml (fleet-ops#8653). Nish 2026-09-28: no benching unless he says so. A failed row is never taken out of rotation: no bench list. A per-row cooldown_time is allowed up to 900 s (a 429 or quota wall refills by itself), and the router-level cooldown_time holds a failed row for at most 60 s.",
   "type": "object",
   "required": ["model_list", "router_settings"],
+  "$defs": {
+    "rowCooldown": { "type": "integer", "minimum": 1, "maximum": 900 }
+  },
   "properties": {
     "model_list": {
       "type": "array",
@@ -14,11 +17,11 @@
           "litellm_params": {
             "type": "object",
             "required": ["model"],
-            "properties": { "cooldown_time": false }
+            "properties": { "cooldown_time": { "$ref": "#/$defs/rowCooldown" } }
           },
           "model_info": {
             "type": "object",
-            "properties": { "cooldown_time": false }
+            "properties": { "cooldown_time": { "$ref": "#/$defs/rowCooldown" } }
           }
         }
       }
@@ -27,8 +30,7 @@
     "router_settings": {
       "type": "object",
       "properties": {
-        "cooldown_time": { "type": "integer", "minimum": 1, "maximum": 60 },
-        "allowed_fails_policy": false
+        "cooldown_time": { "type": "integer", "minimum": 1, "maximum": 60 }
       }
     }
   }

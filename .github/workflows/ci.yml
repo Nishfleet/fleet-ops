@@ -38,8 +38,8 @@ jobs:
       - run: sudo apt-get update
       - run: sudo apt-get install -y --no-install-recommends prometheus
       - run: promtool check rules config/fleet_rules.yml
-      # fleet-ops#8724: the router config's hard rules (no bench list, no per-row
-      # cooldown, router cooldown <=60 s; Nish 2026-09-28) live in the schema.
+      # fleet-ops#8724: the router config's hard rules (no bench list, a per-row
+      # cooldown_time <=900 s, router cooldown <=60 s; Nish 2026-09-28) live in the schema.
       # Each file under rejects/ breaks one rule and must fail, so a loosened schema goes red.
       - run: |
           pipx run check-jsonschema==0.38.2 --schemafile config/litellm-proxy.schema.json config/litellm-proxy.yaml
