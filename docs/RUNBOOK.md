@@ -138,21 +138,3 @@ permission. The verdict line and the verbatim python block live in
 `prompts/worker.md`; the bands row for `second-opinion` is 0.5/0.5 above.
 The proxy owns the spend cap (`jev` virtual key: `max_budget 1.0 USD / 1mo`);
 `JEV_SECOND_OPINION=0` rolls a caller back to one call.
-
-## Pending workflow drops
-
-Files under `pending/` are parked GitHub Actions workflows awaiting a token
-with the `workflows` scope (the nishfleet-worker App does not have it). Landing
-each is `git mv` into `.github/workflows/`, update the referenced callers,
-delete the directory:
-
-| dir | drop |
-|---|---|
-| `pending/p11b` | five reusable workflows (gitleaks, semgrep, review-gate, auto-enqueue, weekly standards apply) |
-| `pending/stale` | `stale.yml` triage-close sweep for unclaimed unlabeled issues (fleet-ops#3311) |
-| `pending/surface-audit` | the reusable `surface-audit.yml` matrix workflow fleet-ops#1198; `template/.github/workflows/surface-audit.yml` is the thin caller and `template/surface-audit.json` the config template, once that lands |
-
-`repo-standards-apply` (the weekly standards sweep) and its scripts were
-removed in fleet-ops#7861, so a new repo is not enrolled automatically while
-those drops wait; the exception file `.fleet/standards-exceptions.yml` honours
-only `decided_by: nish` entries.
