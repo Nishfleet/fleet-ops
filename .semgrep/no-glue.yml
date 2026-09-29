@@ -1,0 +1,44 @@
+# No glue (global-standing-rules.md "No glue"; Nish 2026-09-29: non-negotiable,
+# enforced by a machine, not by review). One file, read by every Nishfleet repo's
+# semgrep step, so the rule has one home. It replaces the cut no-glue job
+# (fleet-ops#8960) with stock semgrep config.
+rules:
+  - id: no-script-files
+    languages: [generic]
+    severity: ERROR
+    message: >-
+      No glue: no scripts, wrappers or script directories. Use a stock tool's own
+      config, a unit line, a prompt line, or the product's own code. A new organ
+      needs Nish's explicit yes.
+    pattern-regex: '(?s)\A.'
+    paths:
+      include:
+        - "*.sh"
+        - "*.bash"
+        - "*.zsh"
+        - "*.py"
+        - "*.pl"
+        - "*.rb"
+        - "/bin/"
+        - "/scripts/"
+        - "/libexec/"
+        - "/lib/"
+        - "/ops/"
+        - "/hooks/"
+        - "/.github/scripts/"
+        - "/tools/"
+        - "/.fleet/"
+        - "/template/extensions/"
+  - id: no-inline-program
+    languages: [generic]
+    severity: ERROR
+    message: >-
+      No glue: no interpreter program inline in a workflow, unit or prompt
+      (python -c, node -e, a heredoc fed to an interpreter). Use a stock tool's
+      flag or the product's own code.
+    pattern-regex: '(?m)^[ \t]*(?:-[ \t]+run:[ \t]*|run:[ \t]*|Exec\w*=[ \t]*|\$[ \t]+)?(?:python3?|node|perl|ruby|deno|bun)[ \t]+(?:-c|-e|-p|-)(?:[ \t]|$)|(?:python3?|node|perl|ruby|bash|sh)[ \t]+-?[ \t]*<<-?[ \t]*[''"]?\w+'
+    paths:
+      include:
+        - "/.github/workflows/"
+        - "/systemd/"
+        - "/prompts/"

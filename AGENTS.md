@@ -17,7 +17,7 @@
 - One-off -> skill -> routine ladder (fleet-ops#8871): the criteria live in the
   vault (`global-standing-rules.md` → "Skill ladder"); this bullet is a pointer,
   not a second source.
-- The quality bar your PR is held to is `docs/quality-bar.md` (all nine points, zero findings). CI is the merge gate; a PR that touches `.github/`, `migrations/`, `app/lib/auth*` or `app/lib/data/` is labelled `needs-coordinator` and the coordinator reviews it before it merges.
+- The quality bar your PR is held to is `docs/quality-bar.md` (all points met, zero findings). CI is the merge gate; a PR that touches `.github/`, `migrations/`, `app/lib/auth*` or `app/lib/data/` is labelled `needs-coordinator` and the coordinator reviews it before it merges.
 - Any change that adds or edits an AI decision (a Jev question, or a model prompt that decides something users see) ships with before/after numbers in the PR body, measured on cases held out from tuning. The builder never grades its own work: a different model family writes and labels the held-out cases before tuning starts, and runs the final score. Where the repo has `tests/evals/` (0509#6161), use it. Never add a script to run it.
 - Never deploy without Nish; agent-authored PRs self-land per
   `global-standing-rules.md` → "Agent-authored PRs land themselves"
@@ -34,7 +34,8 @@
   or re-clone (fleet-ops#7743: hand-linked `standing-rules-render` units
   pointed into a churning checkout and dangled, taking the render down).
   `fleet-sync.service`'s LINK-GUARD ExecStart fails the unit on a dangling
-  or throwaway-target live link — wiring set this way is caught in ≤2 min.
+  or throwaway-target live link — wiring set this way is caught on the next
+  deploy push or boot.
 - Memory = vault `_system/agent-memory/` plain files (one fact per file, true now, edit in place); search old sessions with `rg` over `~/.pi/agent/sessions` and `~/.claude/projects/*/*.jsonl` before re-deriving.
 
 ## Live state
