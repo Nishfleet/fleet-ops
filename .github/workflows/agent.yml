@@ -17,6 +17,9 @@ jobs:
     if: inputs.ref
     runs-on: [self-hosted, agent]
     timeout-minutes: 60
+    # Router wall relabels with GITHUB_TOKEN, and nothing else here uses it.
+    permissions:
+      issues: write
     outputs:
       wall: ${{ steps.wall.outputs.wall }}
     concurrency:
@@ -240,13 +243,17 @@ jobs:
       - name: Router wall
         id: wall
         # A router seat wall or a Devin capacity refusal is infra, not a bad
-        # packet (fleet-ops#8543): no strike, back to agent-ready. The Gate's
-        # 3-run cap bounds the loop. Devin fails before it writes anything, so
-        # a claim branch that is already ahead of main is requeued too.
+        # packet (fleet-ops#8543): no strike, back to agent-ready. Devin fails
+        # before it writes anything, so a claim branch that is already ahead of
+        # main is requeued too. GITHUB_TOKEN on purpose: its label fires no
+        # workflow, so the issue waits for the next sweep instead of going
+        # straight back to the lane that refused it (~50 runs an issue on
+        # 2026-09-29, 0509#6133). Walls are not counted, so the Gate cap never
+        # bounded that loop.
         if: failure() && steps.gate.outputs.go == 'true'
         env:
           ENGINE: ${{ steps.gate.outputs.engine }}
-          GH_TOKEN: ${{ steps.arm-token.outputs.token }}
+          GH_TOKEN: ${{ github.token }}
         run: |
           i=${REF#claim/issue-}; i=${i%%-*}
           if ! { [ "$ENGINE" = devin ] && grep -qiE 'capacity issues|free model rate limit|cognition\.ai/retryable": true' "$RUNNER_TEMP/worker.err" 2>/dev/null; }; then
