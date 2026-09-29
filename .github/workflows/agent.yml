@@ -275,6 +275,13 @@ jobs:
             $jail cursor-agent -p --output-format text --model cursor-grok-4.6-high --force --trust \
               --workspace "$dir" "$packet" >/dev/null
           else
+            # Mobbin MCP via the pi-mcp-adapter package (Pi has no built-in MCP).
+            # OAuth tokens sit in ~/.pi/agent/mcp-oauth-encrypted/; this is their
+            # file key. Without it only the lazy mobbin server fails, never the run.
+            set -a
+            # shellcheck disable=SC1091 # constant seat file, not in the repo
+            . "$HOME/.config/fleet-ops/seats/mobbin-mcp.env"
+            set +a
             echo "/worker $id" | $jail pi --print \
               --append-system-prompt "$HOME/workspaces/tooling/fleet-ops-deploy-clone/AGENTS.md" \
               --session-dir "$HOME/.pi/agent/sessions/agent-$id" \
