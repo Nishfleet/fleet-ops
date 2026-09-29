@@ -18,7 +18,7 @@
 - One-off -> skill -> routine ladder (fleet-ops#8871): the criteria live in the
   vault (`global-standing-rules.md` → "Skill ladder"); this bullet is a pointer,
   not a second source.
-- The quality bar your PR is graded on is `docs/quality-bar.md` (fleet-ops#8655): only A+ (all nine points, zero findings) passes the `grade` check.
+- The quality bar your PR is graded on is `docs/quality-bar.md` (fleet-ops#8655): only A+ (all ten points, zero findings) passes the `grade` check.
 - Never deploy without Nish; agent-authored PRs self-land per
   `global-standing-rules.md` → "Agent-authored PRs land themselves"
   (fleet-ops#5715: the bare "never merge" wording contradicted the enforced
