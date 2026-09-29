@@ -45,6 +45,8 @@ jobs:
       # findings were reported, never gating. Gating on p/default is a separate
       # decision with the findings listed (fleet-ops issue filed by Fable).
       - run: semgrep --config p/default --metrics=off
+      # No glue, held by a machine (Nish 2026-09-29). One rule file; 0509 reads it by URL.
+      - run: semgrep scan --config .semgrep/no-glue.yml --metrics=off --error
       - name: No long-lived PAT in any workflow
         run: "! grep -rEn 'secrets\\.[A-Za-z_][A-Za-z0-9_]*PAT\\b' .github/workflows/"
       - name: No secret variable expanded into an output command
