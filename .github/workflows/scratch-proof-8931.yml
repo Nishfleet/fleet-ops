@@ -1,0 +1,38 @@
+# Scratch: exercises the vet gates and the probe on this head, then is deleted with its branch.
+name: scratch-proof-8931
+on:
+  pull_request:
+    types: [labeled]
+permissions: {}
+concurrency:
+  group: scratch-proof-8931-probe
+  cancel-in-progress: false
+jobs:
+  probe:
+    name: probe
+    if: vars.GRADER == 'kimi' && vars.GRADE_ENGINE != 'kimi'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions: {}
+    steps:
+      - name: Install the Cursor CLI
+        run: |
+          curl -fsS https://cursor.com/install -o "$RUNNER_TEMP/cursor-install.sh"
+          bash "$RUNNER_TEMP/cursor-install.sh"
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+      - name: Ask Kimi K3 Max for one word
+        env:
+          CURSOR_API_KEY: ${{ secrets.CURSOR_API_KEY }}
+        run: |
+          out=$(cursor-agent -p --output-format text --model kimi-k3-max --trust "Reply with the single word: ok")
+          echo "$out"
+          grep -qixE '[[:space:]]*ok[[:punct:]]*[[:space:]]*' <<<"$out"
+  vet:
+    uses: ./.github/workflows/opus-vet.yml
+    permissions:
+      contents: read
+      issues: write
+      actions: write
+    secrets:
+      CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+      CURSOR_API_KEY: ${{ secrets.CURSOR_API_KEY }}
