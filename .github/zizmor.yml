@@ -9,8 +9,11 @@ rules:
         # agent.yml@refs/heads/main, and a SHA pin strands every job
         # (0509#5231, fleet-ops#8617). grade.yml: the grader comes from main,
         # so a PR is never graded by the grade.yml it changes (fleet-ops#8655).
+        # devin-grade: the same rule, and the 0509 calibration must run the
+        # action that grades pull requests (fleet-ops#8926).
         Nishfleet/fleet-ops/.github/workflows/agent.yml: ref-pin
         Nishfleet/fleet-ops/.github/workflows/grade.yml: ref-pin
+        Nishfleet/fleet-ops/.github/actions/devin-grade: ref-pin
         "*": hash-pin
   dangerous-triggers:
     ignore:
