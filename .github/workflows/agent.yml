@@ -86,6 +86,7 @@ jobs:
         id: gate
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          GRADE_ENGINE: ${{ vars.GRADE_ENGINE }}
         run: |
           # Suffixed rework refs carry a -<tag> tail (claim/issue-<N>-<tag>);
           # the issue number is the leading digits (fleet-ops#8793).
@@ -192,6 +193,11 @@ jobs:
           devin_free() {
             [ "$(live devin)" -lt 4 ] && [ -z "$(find "$HOME/.cache/fleet-ops/devin-wall" -mmin -15 2>/dev/null)" ]
           }
+          # While the grader is the free Devin login (GRADE_ENGINE unset or
+          # devin) at most 8 builders run across the Devin, opencode and pi
+          # lanes together: every PR they open needs a grade and every rework
+          # another, and the login sustained about 20 an hour before it
+          # tripped its limit (fleet-ops#8934, 2026-09-29). Kimi grades lift it.
           # Cursor is the strong-only lane only. A non-strong-only issue never
           # falls back to it: with Devin and pi both full it waits
           # (lanes-full) rather than burning the paced Cursor quota on work
@@ -199,6 +205,7 @@ jobs:
           case $labels in
             *,strong-only,*) [ "$(live cursor-agent)" -lt 1 ] || skip lanes-full; engine=cursor ;;
             *)
+              [ "$GRADE_ENGINE" = kimi ] || [ "$(( $(live devin) + $(live opencode) + $(live pi) ))" -lt 8 ] || skip lanes-full
               if devin_free; then engine=devin
               elif [ "$(live opencode)" -lt 2 ]; then engine=opencode
               elif pi_free; then engine=pi
