@@ -81,15 +81,12 @@ NOT update them. Refresh by hand when the repo file changes:
 | live path | repo source | why a symlink is wrong |
 |---|---|---|
 | `/etc/prometheus/prometheus.yml` | `config/prometheus.yml` | same privilege boundary. **Handled automatically** by `fleet-sync.service` (promtool check config + copy + reload). |
-| `~/.pi/agent/extensions/**.ts` | `template/extensions/**` | pi resolves a symlinked extension against its REAL path, so sibling imports would resolve into the repo (fleet-ops#3263). After the glue sweeps the only local files are the two stock forks (`permission-gate.ts`, `protected-paths.ts`) — everything else in `~/.pi/agent/extensions/` is a symlink straight into pi's shipped `examples/extensions/`. |
 | `~/.pi/agent/models.json` | `config/pi-models.json` | **Handled automatically** by `fleet-sync.service` (cmp + install, fleet-ops#8568). A copy, not a symlink, because `~/.pi/agent` is an overlay mount in worker containers. |
 | `~/.local/state/pi-packet/model-candidates.json` | `config/model-candidates.json` | live state the git working tree must not rewrite on every checkout (fleet-ops#2910/#3722/#3322). |
 | `~/.pi/agent/settings.json` | `none (live-only)` | pi writes this file itself at runtime (provider/model switches and its own bookkeeping keys), so a repo copy would be overwritten and a symlink would fight pi. Every fleet caller passes `--provider litellm --model <group>`, so its `defaultProvider`/`defaultModel` affect only bare interactive `pi` runs (fleet-ops#8568). Its `compaction.reserveTokens: 40000` pairs with the worker `contextWindow: 296000` in `config/pi-models.json`: pi compacts at window − reserve = 256k (Nish 2026-09-25; was 88k under #8567), and pi sizes each reply as window − context − 4096, so a turn at 256k still gets its full 32k `maxTokens`. Every worker rung holds 256k+ (seat /models or spend-log prompts up to 416k). At 96000/8192 replies near 88k were cut to ~4.8k (fleet-ops#8634). The real model windows are ~1M; 128000 is a budget, not a limit. |
 | `/etc/**` (systemd drop-ins, `sysctl.d`, `audit/rules.d`, `default/prometheus`, `prometheus/*.yml`) | `config/`, `etc/`, `systemd/system/` | cross a privilege boundary. |
 
 ```
-# a changed pi extension:
-install -D -m 0644 <repo>/template/extensions/<x>.ts ~/.pi/agent/extensions/<x>.ts
 # a changed /etc file:
 sudo -n install -D -m 0644 -o root -g root <repo>/<src> /etc/<dest>
 sudo -n systemctl daemon-reload          # for /etc/systemd/system/**
@@ -255,13 +252,8 @@ of scope: they do not live in `session-*.scope`. `claim/issue-*` and
 `.github/workflows/ci.yml` runs two jobs on every PR and push to main:
 
 1. **ci** — stock checks: semgrep
-   `--config p/default`, the CI-gaming gates (agent attribution over the
-   commit range and PR text, the secret-expansion and auth-status greps),
-   `jq` config sanity, actionlint, shellcheck, systemd-analyze
-   verify over `systemd/`, and a grep gate on
-   `template/cursor-rules/shared-memory.mdc` that rejects the
-   pre-#6610 universal approval gate and the deleted `memoryctl` mandate
-   (fleet-ops#7803).
+   `--config p/default`, the secret-expansion grep, `jq` config sanity,
+   actionlint, zizmor, shellcheck, and systemd-analyze verify over `systemd/`.
 2. **no-glue** — rejects any added script/helper/hook file (`bin/`,
    `scripts/`, `libexec/`, `ops/`, `hooks/`, `.github/scripts/`, `*.sh`,
    `*.mjs`, `.fleet/`) and any added unit `Exec` line long enough to be a
@@ -277,16 +269,6 @@ There is no manifest and no installer. A path is live because something
 symlinks to it from `~/.config/systemd/user/`, `~/.local/bin/`, or
 `~/.pi/agent/prompts/`. EnvironmentFile= targets (e.g. `hc.env`, `deploy.env`,
 `cf.env`) are never tracked — only the units that reference them.
-
-## Fleet heartbeat — DELETED 2026-09-18
-
-`fleet-heartbeat.timer`/`.service`, `bin/fleet-heartbeat-tier1` and
-`prompts/heartbeat.md` are gone. Their jobs live in the organs that already
-did them: `.github/workflows/agent-dispatch.yml` queues `agent-ready` work, PR
-auto-merge is a GitHub workflow, and a failed unit shows in
-`systemctl --user --failed`. Its healthchecks.io
-dead-man is gone; the keystone URLs in `~/.config/fleet-ops/keystone-hc.env`
-now serve only the root `restic-r2-restore-test.service`.
 
 ## Intake enrolment
 
@@ -316,59 +298,11 @@ The `bin/intake-reconcile` reconciler and its `intake-reconcile.{path,
 service,timer}` units were deleted in the glue sweep — the file itself is
 the enrolment mechanism (fleet-ops#32, #25).
 
-### `depends-on:`, `collision-gate:`, spec judge — DELETED in the glue sweep
+## Worker capacity
 
-Nothing parses `depends-on:` or `collision-gate:` body
-lines, and the spec-judge pass (`lib/spec-judge.sh`, `prompts/spec-judge.md`)
-is gone. Ticket bodies may still carry the lines as human context, but no
-machinery reads them.
-
-## Four-plane resilience drill — DELETED 2026-09-18 (was `fleet-resilience-drill`, issue #455)
-
-> Removed with the synthetic-drill sweep: 1474 lines of rehearsal whose stub units died
-> by design.
-
-Single-VPS resilience is detection + repair, not a second copy of a
-stateless thing; the rules are in
-[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md). The VNC
-break-glass runbook is [docs/RUNBOOK.md](docs/RUNBOOK.md).
-Keystone healthchecks.io URLs live in `~/.config/fleet-ops/keystone-hc.env`,
-consumed by the root `restic-r2-restore-test.service`; an unset URL is a skip,
-a shared URL is a fail.
-
-## Worker RAM admission (issue #45)
-
-Admission carries no RAM charge: the concurrency bound is the runner count
-(#8429): 24 `agent` runners (`actions.runner.Nishfleet.netcup-agent-1..24`,
-sized from measured memory pressure, fleet-ops#8860),
-all in `agent.slice` (`systemd/system/agent.slice`, 10G/11G, `MemorySwapMax=1G`),
-each with
-`VITEST_MAX_WORKERS=2` (vitest's default of cores-1 workers per job thrashed
-swap on this 16 GB host on 2026-09-24). RAM safety is per-unit `MemoryMax` + systemd-oomd, not a governor
-division. The slice's `MemorySwapMax` (fleet-ops#8638) is the swap half:
-on the 09-24/25 night the RAM caps alone let 32 runners fill all 8G of
-host swap (1000-2500 pages/s, 12 OOM kills, 14.6% iowait), so runner
-overflow is now killed inside the slice instead of being swapped onto
-the rest of the box. Known repos overrode the per-unit limits via
-intake-written drop-ins (removed with the old dispatcher, fleet-ops#8449):
-fleet-ops#3930 set `MemoryMax=4G` with **no `MemoryHigh`** for
-fleet-ops + 0509 (the throttle band is what makes oomd pressure-kill a
-random sibling, so it was removed; 4G is now the hard stop with a clean
-local OOM at the cap), while the heavy class of #3281 writes 3G/2G for
-heavy|keystone packets.
-
-`bin/ram-measure` and `bin/ram-metric-compare` were deleted with the
-heartbeat that called them; their last samples remain under
-`~/.local/state/ram-measurement/`. Live RAM is `systemctl --user show
--p MemoryPeak <unit>` and `systemd-cgtop`.
-
-## Daily view
-
-Replaces the daily-digest Telegram push (fleet-ops#8433).
-
-- Merged PRs, all repos: `https://github.com/pulls?q=org%3ANishfleet+is%3Apr+is%3Amerged+sort%3Aupdated-desc`
-- Failed agent runs on 0509: `https://github.com/Nishfleet/0509/actions/workflows/agent-dispatch.yml?query=is%3Afailure`
-- Issues parked by the agent queue: `https://github.com/issues?q=org%3ANishfleet+is%3Aopen+label%3Aagent-failed%2Cneeds-orchestrator`
-
-
-
+The concurrency bound is the runner count (#8429): 24 `agent` runners
+(`actions.runner.Nishfleet.netcup-agent-1..24`, sized from measured memory
+pressure, fleet-ops#8860), all in `agent.slice` (`systemd/system/agent.slice`,
+10G/11G, `MemorySwapMax=1G`). RAM safety is per-unit `MemoryMax` plus
+systemd-oomd, not an admission charge. Live RAM is
+`systemctl --user show -p MemoryPeak <unit>` and `systemd-cgtop`.

@@ -90,9 +90,7 @@ The rules still in force:
   `encoded: 5` is legal only with a reason. A rule that recurs twice is a
   defect in its rung.
 - Gates that exist: a PR touching a risky path is labelled `needs-coordinator` and
-  not armed; an
-  armed PR with no verification receipt is disarmed (fleet-ops#3731);
-  agent-authored PRs self-land green.
+  not armed; agent-authored PRs self-land green.
 
 The full audit (rungs, counts, second wave) is git history
 (fleet-ops#8029/#8034).

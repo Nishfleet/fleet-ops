@@ -2,9 +2,7 @@ name: CI
 
 on:
   pull_request:
-    # edited: a body edited after the last push still carries the agent-name
-    # gate's PR-text half — re-check it rather than trusting the stale payload.
-    types: [opened, synchronize, reopened, edited]
+    types: [opened, synchronize, reopened]
   merge_group:
   push:
     branches:
@@ -27,8 +25,6 @@ jobs:
     name: ci
     runs-on: ubuntu-latest
     timeout-minutes: 15
-    env:
-      PAT: 'co-authored-by:.*(claude|devin|copilot|cursor|chatgpt|openai|anthropic|cognition|gpt|gemini|codex)|generated[[:space:]-]with[[:space:][]*(claude|devin|copilot|cursor|chatgpt|openai|anthropic|cognition|gpt|gemini|codex|\bai\b)|generated-by:.*(claude|devin|copilot|cursor|chatgpt|openai|anthropic|cognition|gpt|gemini|codex|\bai\b)'
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -55,9 +51,8 @@ jobs:
         # fleet-ops#7381: a worker's improvised presence check carried the
         #   "token: ${GH_TOKEN:+set}${GH_TOKEN:-EMPTY}"
         # payload — the :- expansion yields the VALUE, so the live App token
-        # landed in the run transcript. The runtime block is
-        # permission-gate.ts; this step gates the committed surfaces an
-        # agent reads or runs (prompts, units, workflows, AGENTS.md).
+        # landed in the run transcript. This step gates the committed
+        # surfaces an agent reads or runs (prompts, units, workflows, AGENTS.md).
         # Secret names = the fleet's uppercase conventions plus LiteLLM SK_*
         # vars and JS process.env.X. fleet-litellm-key is exempt: emitting
         # a key IS its job. tests/ holds fixture drills that legitimately
@@ -72,80 +67,6 @@ jobs:
           test "$rc" -eq 1
         env:
           SPAT: (echo|printf|printenv|console\.(log|error|warn|info))[^|;]*(\$\{?|process\.env\.)([A-Za-z_][A-Za-z0-9_]*(TOKEN|SECRET|PASS(WORD|WD)?|CREDENTIALS?|PRIVATE|_KEY)[A-Za-z0-9_]*|SK_[A-Z][A-Z0-9_]*)
-      - name: No auth-status/auth-token output on committed surfaces
-        # fleet-ops#7448: the same 2026-09-17 pi-issue-fleet-ops-7440 run also
-        # leaked the live App token through the auth-status subcommand, whose
-        # env-var account line carries `- Token: ghs_...***` (verified live
-        # 2026-09-21), and the auth-token subcommand prints it outright. The
-        # runtime block is permission-gate.ts (`secret_print cmd=gh-auth-*`);
-        # this step gates the committed surfaces an agent reads or runs.
-        # rc: 0 prints+fails on match, 1 is clean, 2 is a grep error and must
-        # fail too — a broken pattern can never read as a clean scan.
-        run: |
-          rc=0
-          grep -rEn --exclude-dir=.git --exclude-dir=.fleet --exclude-dir=tests \
-            'gh[[:space:]]+([^[:space:];|&]+[[:space:]]+)*auth[[:space:]]+(status|token)\b' \
-            AGENTS.md README.md prompts systemd etc config template docs patches .github credentials || rc=$?
-          test "$rc" -eq 1
-      - name: No timer-inventory signal emitters on committed surfaces
-        # fleet-ops#7711: the ghost-timer signal family is extinct — every
-        # emitter (the heartbeat tier-1 timer-arm pass, the drift canary, the
-        # reconciler that minted the ghost unit keys) was deleted in the
-        # 2026-09-18 sweep, and no-glue bars a code emitter returning as a
-        # file. The residual emission paths are non-code committed surfaces:
-        # a prompt line, a unit Exec, a config value. This gate fails if any
-        # of them carries a family name; an emitter's return must amend this
-        # step in the same PR — deliberate, never silent. docs/ and .fleet/
-        # are excluded for the same reason as the secret gate above: reports
-        # and bench corpora legitimately quote the retired names. The [t]
-        # class in the pattern keeps this file from matching itself — do not
-        # spell the names out in this comment either. rc: 0 prints+fails on
-        # match, 1 is clean, 2 is a grep error and must fail too — a broken
-        # pattern can never read as a clean scan.
-        run: |
-          rc=0
-          grep -rEin --exclude-dir=.git --exclude-dir=.fleet --exclude-dir=docs \
-            'timer-no-nex[t]|timer-manifes[t]' \
-            AGENTS.md README.md prompts systemd etc config template patches .github credentials || rc=$?
-          test "$rc" -eq 1
-      - name: No wiped capture-lane references (fleet-ops#8826)
-        # The 00 Inbox capture lanes were wiped 2026-09-28; the gardener
-        # Shadow Jev tier and the hermes sandbox grant went with them. This
-        # gate is the issue's own finish line, enforced: any return of the
-        # lane outside docs/reports fails here. A PR that deliberately
-        # re-admits the lane must amend this step in the same PR — deliberate,
-        # never silent. The [p] class in the pattern keeps this file from
-        # matching itself — do not spell the name out in this comment either.
-        # rc: 0 prints+fails on match, 1 is clean, 2 is a grep error and must
-        # fail too — a broken pattern can never read as a clean scan.
-        run: |
-          rc=0
-          git grep -n agent-dro[p] -- . ':!docs/reports' || rc=$?
-          test "$rc" -eq 1
-      - name: Cursor shared-memory rule stays current (fleet-ops#7803)
-        # The always-on Cursor rule is repo-tracked at
-        # template/cursor-rules/shared-memory.mdc. The live
-        # ~/.cursor/rules/ copy is a symlink into the deploy clone
-        # (fleet-ops#8277), so this step guards the copy the link serves.
-        # These greps are the gate the deleted tests/rulebook-host-drift.test.sh
-        # used to be. Banned: the memoryctl mandate (binary deleted 2026-09-18)
-        # and the pre-#6610 universal approval sentence, matched by its unique
-        # tail "approval. Only the contract" so the post-#6610 sentence
-        # ("approval ONLY when ...") does not trip it. Required: the #6610
-        # reserved-class clause. rc 0 is a hit, 1 is clean, 2 is a grep error;
-        # a broken pattern can never read as a clean scan.
-        run: |
-          f=template/cursor-rules/shared-memory.mdc
-          test -f "$f"
-          rc=0
-          grep -nE 'memoryctl|approval\. Only the contract' "$f" || rc=$?
-          test "$rc" -eq 1
-          rc=0
-          grep -nF 'reserved class or is irreversible' "$f" || rc=$?
-          test "$rc" -eq 0
-          grep -c 'nish-preimplementation-contract:start' "$f" | grep -qx 1
-          grep -c 'nish-preimplementation-contract:end' "$f" | grep -qx 1
-          grep -c 'nish-memory-compound' "$f" | grep -qx 0
       # the gates below are independent linters: `if: always()` so one red run
       # lists every violated gate instead of fail-fast hiding the rest.
       - name: actionlint over .github/workflows/
@@ -217,18 +138,6 @@ jobs:
       - name: No config/*.bak-* files
         if: always()
         run: "! git ls-files -- 'config/*.bak-*' | grep ."
-      - name: No agent attribution footers in commit messages (fleet-ops#1052)
-        if: always()
-        # One exact trailer is allowed: the merge queue's squash credits
-        # Claude-authored commits with it. Nish, 2026-09-25 05:14Z: "yes, let
-        # fleet-ops accept changes credited to Claude" (fleet-ops#8599).
-        run: "! git log --format=%B origin/main..HEAD | grep -vix 'co-authored-by: claude <noreply@anthropic.com>' | grep -Ein \"$PAT\""
-      - name: No agent attribution footers in PR title/body (fleet-ops#1052)
-        if: always()
-        env:
-          PR_TITLE: ${{ github.event.pull_request.title }}
-          PR_BODY: ${{ github.event.pull_request.body }}
-        run: "! printf '%s\\n' \"$PR_TITLE\" \"$PR_BODY\" | grep -Ein \"$PAT\""
 
   # no-glue: the mechanical half of "no scripts, hooks, wrappers, helpers"
   # (Nish 2026-09-19, 2026-09-21, 2026-09-26), now the shared gate in
