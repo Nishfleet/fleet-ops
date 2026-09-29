@@ -50,8 +50,8 @@ Unit exit codes propagate, so `Restart=`, `StartLimitBurst=` and the
 ## GLUE-ZERO — no hand-rolled code
 
 Nish, 2026-09-21: *"wipe and replace with properly done up design with no
-glue."* The rule, held by review (`.github/CODEOWNERS` sends scripts and script
-dirs to Nish):
+glue."* The rule, held by the `ci` check (`.github/workflows/ci.yml` runs
+`.semgrep/no-glue.yml`; `.github/CODEOWNERS` also sends scripts to Nish):
 
 - **No new scripts, helpers, hooks or extensions anywhere** — no added file
   under `bin/`, `lib/`, `libexec/`, `scripts/`, `ops/`, `hooks/`,
