@@ -18,6 +18,7 @@
 # kimi, the same switch that returns the grade to Kimi (kimi-probe.yml is the
 # evidence to flip it on). Before, every label made a 16 second Kimi call that
 # failed and left a red job (0509 runs 36522881908 and 36521925544).
+# Until then a needs-split or needs-orchestrator issue gets no sizer or vet.
 name: opus-vet
 on:
   issues:

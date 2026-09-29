@@ -32,4 +32,4 @@ jobs:
         run: |
           out=$(cursor-agent -p --output-format text --model kimi-k3-max --trust "Reply with the single word: ok")
           echo "$out"
-          grep -qixE '[[:space:]]*ok[[:punct:]]*[[:space:]]*' <<<"$out"
+          [ "$(printf %s "$out" | tr -d '[:space:][:punct:]' | tr '[:upper:]' '[:lower:]')" = ok ]
