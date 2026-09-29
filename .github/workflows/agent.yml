@@ -124,9 +124,13 @@ jobs:
             slots=$(yq '[.model_list[] | select(.model_name == "worker-capable") | .litellm_params.max_parallel_requests // 0] | .[] as $n ireduce (0; . + $n)' "$HOME/.config/fleet-ops/litellm-proxy.yaml")
             [ "$(live pi)" -lt "$slots" ]
           }
-          # Devin is free while fewer than 4 run.
+          # Devin is free while fewer than 4 run and its free-tier limit has
+          # reset. Router wall writes the reset time Devin reports; without it a
+          # refused run went straight back to Devin and failed again, ~50 times
+          # an issue on 2026-09-29 (0509#6133).
           devin_free() {
-            [ "$(live devin)" -lt 4 ]
+            [ "$(date +%s)" -ge "$(cat "$HOME/.cache/fleet-ops/devin-free-after" 2>/dev/null || echo 0)" ] &&
+              [ "$(live devin)" -lt 4 ]
           }
           # Cursor is the strong-only lane only. A non-strong-only issue never
           # falls back to it: with Devin and pi both full it waits
@@ -252,6 +256,15 @@ jobs:
           if ! { [ "$ENGINE" = devin ] && grep -qiE 'capacity issues|free model rate limit|cognition\.ai/retryable": true' "$RUNNER_TEMP/worker.err" 2>/dev/null; }; then
             grep -qiE 'no deployments available|ratelimiterror|rate limit exceeded|\b429\b' "$RUNNER_TEMP/worker.err" 2>/dev/null || exit 0
             [ "$(gh api "repos/$REPO/compare/main...$REF" --jq .ahead_by)" = 0 ] || exit 0
+          fi
+          # Devin says when its limit resets ("Your limit will reset in 2 hours
+          # 43 minutes."). Keep Devin out of the Gate's pick until then, so the
+          # requeue below lands on another lane. No reset text: 10 minutes.
+          if [ "$ENGINE" = devin ]; then
+            reset=$(sed -nE 's/.*[Rr]eset in ([0-9a-z ]+)\..*/\1/p' "$RUNNER_TEMP/worker.err" | tail -1)
+            after=$(date -d "now + ${reset:-10 minutes}" +%s 2>/dev/null || date -d "now + 10 minutes" +%s)
+            mkdir -p "$HOME/.cache/fleet-ops"
+            echo "$after" > "$HOME/.cache/fleet-ops/devin-free-after"
           fi
           gh issue comment "$i" -R "$REPO" --body "agent run infra-failed: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
           gh issue edit "$i" -R "$REPO" --add-label agent-ready --remove-label agent-in-progress
