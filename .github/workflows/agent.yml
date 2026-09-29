@@ -329,8 +329,10 @@ jobs:
             body=$(gh pr view "$REF" -R "$REPO" --json body --jq .body)
             grep -qiE "(close[sd]?|fix(e[sd])?|resolve[sd]?) #$i\b" <<<"$body" ||
               gh pr edit "$REF" -R "$REPO" --body "$body"$'\n\n'"Closes #$i"
-            files=$(gh pr diff "$REF" -R "$REPO" --name-only)
-            if grep -qE '^(\.github/|migrations/|app/lib/auth|app/lib/data/)' <<<"$files"; then
+            n=$(gh pr view "$REF" -R "$REPO" --json number --jq .number)
+            changed=$(gh pr view "$REF" -R "$REPO" --json changedFiles --jq .changedFiles)
+            files=$(gh api --paginate "repos/$REPO/pulls/$n/files" --jq '.[] | .filename, (.previous_filename // empty)')
+            if [ "$changed" -ge 3000 ] || grep -qE '^(\.github/|migrations/|app/lib/auth|app/lib/data/)' <<<"$files"; then
               gh pr edit "$REF" -R "$REPO" --add-label needs-coordinator
             else
               gh pr merge "$REF" -R "$REPO" --auto --squash  # a merge queue overrides the method; repos without one need it
