@@ -23,7 +23,35 @@ EnvironmentHost=true
 # /app/.venv/bin; --env outranks --env-host, so pin both back to the image values.
 Environment=PATH=/app/.venv/bin:/usr/local/sbin:/usr/local/bin:/usr/bin:/usr/sbin:/sbin:/bin
 Environment=HOME=/root
-Exec=--config /app/config.yaml --port 4000 --host 127.0.0.1
+# --num_workers 2 (fleet-ops#8827). The default is 1, so /health/readiness,
+# /metrics and the /jev pass-through all ran on the ONE event loop that also
+# served every chat completion: 2026-09-28 ~15:20-15:35 IST, with eight
+# audit-0509 units plus normal workers running, readiness accepted the
+# connection and returned zero bytes even at -m 30 while the journal still
+# showed completions 200ing. A light endpoint cannot be served while a
+# long completion holds that loop, so the pool measured here is 2: a
+# cooldowned/streaming completion then occupies one worker and the health
+# and /jev endpoints answer from the other. The nginx-style headers are
+# dropped on purpose: keepalive needs no tune at 1s agent requests.
+#
+# Both are the stock vendor flags of the pinned image (proxy_cli.py:
+# --num_workers -> uvicorn.run(workers=...), and the same file starts
+# prometheus multiproc-dir setup + the query-engine reaper at
+# num_workers > 1, so the gauges stay correct and a force-killed worker's
+# Prisma engine is reaped). Cooldowns stay fleet-wide because the router's
+# CooldownCache is a DualCache over Redis (litellm/router_utils/
+# cooldown_cache.py), not per-process state.
+#
+# 2 is measured, not chosen: 4 on this 2-core CPUQuota=200% slice buys no
+# more throughput, and MemoryCurrent for --num_workers 2 is ~2.0G (786M at
+# 1, 2022M at 2: every worker opens its own Prisma connection pool), so the
+# slice cap was raised to clear it. 8 audit units on one host share that
+# pool, so the ceiling is what keeps 8. The admission gate in agent.yml
+# sums worker-capable max_parallel_requests (a per-process in-memory
+# semaphore, litellm/router.py _get_client local_only=True), so 2 workers
+# admit at most 2x that sum; over-admission lands on the 429 cooldown the
+# rows already carry rather than on a hung endpoint.
+Exec=--config /app/config.yaml --port 4000 --host 127.0.0.1 --num_workers 2
 
 [Service]
 EnvironmentFile=-%h/.config/fleet-ops/seats/*.env

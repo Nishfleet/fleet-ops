@@ -28,8 +28,23 @@
 # below the worker slice's needs (host is 16 GB). Raise it again only with
 # a fresh MemoryPeak cited; lowering it back to 1G re-arms the crash loop.
 #
+# MemoryMax 2G -> 3.5G, 2026-09-29 (fleet-ops#8827): the proxy moved to
+# --num_workers 2 (see containers/quadlet/fleet-litellm-proxy.container),
+# and each uvicorn worker is a separate process that opens its own Prisma
+# query-engine, so the second worker is not free. Measured on this host
+# with the pinned 1.98.0 and the live config, same cold-start conditions
+# (MemoryPeak of a /user.slice transient unit): 1 worker 786M (750 MiB),
+# 2 workers 2022M (1.8 GiB) -- a marginal 1236M for the second worker
+# (worker python + its Prisma engine; the process tree showed two engines).
+# The live container 1-worker peak is 1578M against the same venv 786M, so
+# container overhead (overlay page cache + conmon) is ~792M; the projected
+# container 2-worker peak is 2022M + 792M, or the live 1578M + the measured
+# 1236M marginal = ~2.8G, and 3.5G keeps the same headroom the 2G cap had
+# over the historical 1.37G peak. It bounds the 2-worker daemon, and a
+# runaway still dies well before it crowds the 4G worker slice (host 16G).
+#
 # Drop-in-removable: delete this file + the three service unit files and
 # daemon-reload to revert. The live file is a symlink into this repo.
 [Slice]
 CPUQuota=200%
-MemoryMax=2G
+MemoryMax=3.5G
