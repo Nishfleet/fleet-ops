@@ -244,7 +244,7 @@ jobs:
             # --chdir puts the worker directory on the bwrap command line,
             # which is what the Gate's lane count reads.
             mkdir -p "$dir"
-            for model in swe-2-max swe-2-high swe-2-medium; do
+            for model in swe-2-max swe-2-high; do
               rc=0
               echo "$packet" | bwrap --dev-bind / / --proc /proc --unshare-pid --die-with-parent --chdir "$dir" -- \
                 devin -p --prompt-file /dev/stdin --permission-mode dangerous --model "$model" >/dev/null 2> "$RUNNER_TEMP/try.err" || rc=$?
