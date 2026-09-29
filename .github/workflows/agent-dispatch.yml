@@ -169,13 +169,20 @@ jobs:
             # Free-org private repos 403 this paid rules endpoint. Treat as
             # no required checks so the sweep still lists unarmed / DIRTY /
             # orphan claim PRs (Nishfleet/drive, fleet-ops#8981).
-            req_json=$(gh api --paginate "repos/$GITHUB_REPOSITORY/rules/branches/main?per_page=100" 2>&1) || {
-              case $req_json in
-                *"HTTP 403"*) req='[]' ;;
-                *) echo "$req_json" >&2; exit 1 ;;
-              esac
+            req_from_403=
+            rules_err=$RUNNER_TEMP/rules.err
+            req_json=$(gh api --paginate "repos/$GITHUB_REPOSITORY/rules/branches/main?per_page=100" 2>"$rules_err") || {
+              if grep -q 'HTTP 403' "$rules_err" || grep -q '"status": *403' <<<"$req_json"; then
+                echo "rules/branches/main HTTP 403; treating as no required checks" >&2
+                req='[]'
+                req_from_403=1
+              else
+                cat "$rules_err" >&2
+                printf '%s\n' "$req_json" >&2
+                exit 1
+              fi
             }
-            [ -n "${req:-}" ] || req=$(jq -c '[.[] | select(.type == "required_status_checks") | .parameters.required_status_checks[].context]' <<<"$req_json")
+            [ -n "$req_from_403" ] || req=$(jq -c '[.[] | select(.type == "required_status_checks") | .parameters.required_status_checks[].context]' <<<"$req_json")
             missing=$(
               for pr in $(jq -r '.[] | select(.autoMergeRequest != null) | .number' <<<"$all"); do
                 gh pr view "$pr" -R "$GITHUB_REPOSITORY" --json headRefName,statusCheckRollup || exit 1
