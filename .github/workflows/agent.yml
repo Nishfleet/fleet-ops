@@ -122,28 +122,25 @@ jobs:
           pi_free() {
             # shellcheck disable=SC2016 # $n is yq's variable, not the shell's
             slots=$(yq '[.model_list[] | select(.model_name == "worker-capable") | .litellm_params.max_parallel_requests // 0] | .[] as $n ireduce (0; . + $n)' "$HOME/.config/fleet-ops/litellm-proxy.yaml")
-            rested pi && [ "$(live pi)" -lt "$slots" ]
+            [ "$(live pi)" -lt "$slots" ]
           }
-          # A lane is rested once the time Router wall wrote for it has passed.
-          # Without this a walled run went straight back to the same lane and
-          # was refused again: ~50 runs an issue on 2026-09-29, first on Devin,
-          # then on opencode once Devin rested (0509#6133).
-          rested() {
-            [ "$(date +%s)" -ge "$(cat "$HOME/.cache/fleet-ops/$1-free-after" 2>/dev/null || echo 0)" ]
-          }
-          # Devin is free while it is rested and fewer than 4 run.
+          # Devin is free while fewer than 4 run and its free-tier limit has
+          # reset. Router wall writes the reset time Devin reports; without it a
+          # refused run went straight back to Devin and failed again, ~50 times
+          # an issue on 2026-09-29 (0509#6133).
           devin_free() {
-            rested devin && [ "$(live devin)" -lt 4 ]
+            [ "$(date +%s)" -ge "$(cat "$HOME/.cache/fleet-ops/devin-free-after" 2>/dev/null || echo 0)" ] &&
+              [ "$(live devin)" -lt 4 ]
           }
           # Cursor is the strong-only lane only. A non-strong-only issue never
           # falls back to it: with Devin and pi both full it waits
           # (lanes-full) rather than burning the paced Cursor quota on work
           # those seats can do (fleet-ops#8740). The cap stays 1.
           case $labels in
-            *,strong-only,*) { rested cursor && [ "$(live cursor-agent)" -lt 1 ]; } || skip lanes-full; engine=cursor ;;
+            *,strong-only,*) [ "$(live cursor-agent)" -lt 1 ] || skip lanes-full; engine=cursor ;;
             *)
               if devin_free; then engine=devin
-              elif rested opencode && [ "$(live opencode)" -lt 2 ]; then engine=opencode
+              elif [ "$(live opencode)" -lt 2 ]; then engine=opencode
               elif pi_free; then engine=pi
               else skip lanes-full
               fi ;;
@@ -260,13 +257,15 @@ jobs:
             grep -qiE 'no deployments available|ratelimiterror|rate limit exceeded|\b429\b' "$RUNNER_TEMP/worker.err" 2>/dev/null || exit 0
             [ "$(gh api "repos/$REPO/compare/main...$REF" --jq .ahead_by)" = 0 ] || exit 0
           fi
-          # Rest the walled lane so the requeue below lands on another one.
           # Devin says when its limit resets ("Your limit will reset in 2 hours
-          # 43 minutes."); a lane that names no time rests 10 minutes.
-          reset=$(sed -nE 's/.*[Rr]eset in ([0-9a-z ]+)\..*/\1/p' "$RUNNER_TEMP/worker.err" | tail -1)
-          after=$(date -d "now + ${reset:-10 minutes}" +%s 2>/dev/null || date -d "now + 10 minutes" +%s)
-          mkdir -p "$HOME/.cache/fleet-ops"
-          echo "$after" > "$HOME/.cache/fleet-ops/$ENGINE-free-after"
+          # 43 minutes."). Keep Devin out of the Gate's pick until then, so the
+          # requeue below lands on another lane. No reset text: 10 minutes.
+          if [ "$ENGINE" = devin ]; then
+            reset=$(sed -nE 's/.*[Rr]eset in ([0-9a-z ]+)\..*/\1/p' "$RUNNER_TEMP/worker.err" | tail -1)
+            after=$(date -d "now + ${reset:-10 minutes}" +%s 2>/dev/null || date -d "now + 10 minutes" +%s)
+            mkdir -p "$HOME/.cache/fleet-ops"
+            echo "$after" > "$HOME/.cache/fleet-ops/devin-free-after"
+          fi
           gh issue comment "$i" -R "$REPO" --body "agent run infra-failed: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
           gh issue edit "$i" -R "$REPO" --add-label agent-ready --remove-label agent-in-progress
           echo wall=true >> "$GITHUB_OUTPUT"
