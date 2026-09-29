@@ -164,42 +164,20 @@ jobs:
               jq -c 'select(.mergeable == "CONFLICTING") | .headRefName' <<<"$v"
             done | jq -sc .)
             # Armed claim PRs whose required checks never reported (fleet-ops#8777).
-            # A pending required check is left: it is running, not missing. A
-            # completed report, including a failure, is left too; rework owns that.
-            # Free-org private repos 403 this paid rules endpoint. Treat as
-            # no required checks so the sweep still lists unarmed / DIRTY /
-            # orphan claim PRs (Nishfleet/drive, fleet-ops#8981).
-            req_from_403=
-            rules_err=$RUNNER_TEMP/rules.err
-            req_json=$(gh api --paginate "repos/$GITHUB_REPOSITORY/rules/branches/main?per_page=100" 2>"$rules_err") || {
-              if grep -q 'HTTP 403' "$rules_err" || grep -q '"status": *403' <<<"$req_json"; then
-                echo "rules/branches/main HTTP 403; treating as no required checks" >&2
-                req='[]'
-                req_from_403=1
-              else
-                cat "$rules_err" >&2
-                printf '%s\n' "$req_json" >&2
-                exit 1
-              fi
-            }
-            [ -n "$req_from_403" ] || req=$(jq -c '[.[] | select(.type == "required_status_checks") | .parameters.required_status_checks[].context]' <<<"$req_json")
+            # BLOCKED with nothing pending and nothing failed means a required
+            # check is absent. A pending check is left: it is running, not
+            # missing. A completed failure is left too; rework owns that. A repo
+            # with no required checks is never BLOCKED by them, so it lists none
+            # (Nishfleet/drive, fleet-ops#8981).
             missing=$(
               for pr in $(jq -r '.[] | select(.autoMergeRequest != null) | .number' <<<"$all"); do
-                gh pr view "$pr" -R "$GITHUB_REPOSITORY" --json headRefName,statusCheckRollup || exit 1
-              done | jq -sc --argjson req "$req" '
+                gh pr view "$pr" -R "$GITHUB_REPOSITORY" --json headRefName,statusCheckRollup,mergeStateStatus || exit 1
+              done | jq -sc '
                 def pending: (.status != null and .status != "COMPLETED") or .state == "PENDING";
-                def reported: .status == "COMPLETED" or ((.state != null) and .state != "PENDING" and .state != "EXPECTED");
-                [.[] | . as $pr
-                  | (if $pr.statusCheckRollup == null then [] else $pr.statusCheckRollup end
-                     | map({key: (if .name != null then .name elif .context != null then .context else "" end), status, state})) as $checks
-                  | [ $req[] as $name
-                      | [ $checks[] | select(.key == $name) ] as $hits
-                      | if any($hits[]; pending) then "pending"
-                        elif any($hits[]; reported) then "reported"
-                        else "absent" end
-                    ] as $kinds
-                  | select(($kinds | index("pending") | not) and ($kinds | index("absent")))
-                  | $pr.headRefName
+                def failed: (.conclusion | IN("FAILURE", "CANCELLED", "TIMED_OUT", "ACTION_REQUIRED", "STARTUP_FAILURE")) or (.state | IN("FAILURE", "ERROR"));
+                [.[] | (.statusCheckRollup // []) as $checks
+                  | select(.mergeStateStatus == "BLOCKED" and ($checks | any(pending) | not) and ($checks | any(failed) | not))
+                  | .headRefName
                 ]'
             )
             # Claim PRs whose issue is still agent-in-progress after the worker
@@ -228,7 +206,6 @@ jobs:
               done | jq -Rsc 'split("\n") | map(select(length > 0))'
             )
             prs=$(jq -nc --argjson a "$unarmed" --argjson b "$conflicted" --argjson m "$missing" --argjson o "$orphans" --argjson q "$queued" '(reduce ($a[], $b[], $m[], $o[]) as $r ([]; if index($r) then . else . + [$r] end)) - $q')
-            echo "required checks: $req"
             echo "claim PRs missing required checks: $missing"
             echo "claim PRs with a dead agent run: $orphans"
             echo "claim PRs picked by the sweep: $prs"
