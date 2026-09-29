@@ -18,8 +18,3 @@ rules:
       # claim/issue-* branch whose head repo is this repository
       # (fleet-ops#8457, fleet-ops#8608).
       - agent-dispatch.yml
-  self-repository:
-    ignore:
-      # The `$/` form fails actionlint 1.7.12, which gates this same job, and
-      # no-glue is a required check. Switch once actionlint accepts it.
-      - ci.yml

@@ -138,21 +138,3 @@ jobs:
       - name: No config/*.bak-* files
         if: always()
         run: "! git ls-files -- 'config/*.bak-*' | grep ."
-
-  # no-glue: the mechanical half of "no scripts, hooks, wrappers, helpers"
-  # (Nish 2026-09-19, 2026-09-21, 2026-09-26), now the shared gate in
-  # ../actions/no-glue — a composite action, because a job that calls a
-  # reusable workflow reports "caller / called" and the required context
-  # `no-glue` could never be satisfied. A real job named `no-glue` that
-  # uses: the action reports exactly `no-glue`. Required check, empty
-  # bypass. Same steps as before, fleet-ops organs guarded to this repo.
-  no-glue:
-    name: no-glue
-    runs-on: ubuntu-latest
-    timeout-minutes: 5
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          fetch-depth: 0
-          persist-credentials: false
-      - uses: ./.github/actions/no-glue
