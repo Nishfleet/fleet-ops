@@ -151,7 +151,7 @@ jobs:
           # only the start that carries the same run URL, so a late one from a run
           # begun before a reset cannot cancel a run begun after it. A comment that starts
           # `attempt-cap reset: <why>` from an owner, member or collaborator
-          # restarts the count like an opus-vet does; a bot cannot post one.
+          # restarts the count like an opus-vet does; a comment from any other association counts for nothing.
           # shellcheck disable=SC2016 # $v is a jq variable
           runs=$(gh issue view "$i" -R "$REPO" --json comments --jq '[.comments[] | if (.body | startswith("opus-vet:")) or ((.body | test("^attempt-cap reset: \\S")) and (.authorAssociation | IN("OWNER", "MEMBER", "COLLABORATOR"))) then "opus-vet:" else .body end] | (map(startswith("opus-vet:")) | rindex(true) // -1) as $v | .[$v+1:] as $t | [$t[] | select(startswith("agent run infra-failed: ")) | ltrimstr("agent run infra-failed: ")] as $f | [$t[] | select(startswith("agent run started: ")) | ltrimstr("agent run started: ") | select(. as $u | $f | index($u) | not)] | length')
           if [ "$runs" -ge 3 ]; then
