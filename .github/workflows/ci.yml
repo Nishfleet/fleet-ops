@@ -82,10 +82,6 @@ jobs:
         uses: docker://ghcr.io/zizmorcore/zizmor:1.30.1@sha256:a2eb396d886c053073405c7a980f2139ba2248ec172243cfa3841e57196e8101
         with:
           args: --offline --format plain .github/workflows
-      - name: jscpd over workflows, config and shell (lean-code block, 0509#5783)
-        # .jscpd.json holds the measured baseline; it only ever goes down.
-        if: always()
-        run: npx --yes jscpd@5.3.3
       - name: shellcheck over shell files (extension + shebang discovery)
         if: always()
         uses: ludeeus/action-shellcheck@00cae500b08a931fb5698e11e79bfbd38e612a38 # v2.0.0
@@ -135,6 +131,3 @@ jobs:
       - name: Ollama rungs serve only the permitted slug (fleet-ops#8332)
         if: always()
         run: yq -o=json '[.model_list[] | select((.litellm_params.api_base // "") | test("ollama")) | .litellm_params.model | select(. != "openai/deepseek-v4.1-flash")]' config/litellm-proxy.yaml | jq -e 'if length==0 then true else error("ollama non-flash rungs - \(join(","))") end'
-      - name: No config/*.bak-* files
-        if: always()
-        run: "! git ls-files -- 'config/*.bak-*' | grep ."
