@@ -191,7 +191,7 @@ jobs:
               cat "$RUNNER_TEMP/try.err" >&2
               break
             done
-            [ "$rc" = 0 ]
+            [ "$rc" = 0 ] || exit 1
           elif [ "$ENGINE" = opencode ]; then
             # --dir puts the worker directory on the bwrap command line; --auto
             # approves what the worker needs outside it (prompts, gh, the repo).
