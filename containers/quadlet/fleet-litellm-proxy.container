@@ -46,11 +46,11 @@ Environment=HOME=/root
 # more throughput, and MemoryCurrent for --num_workers 2 is ~2.0G (786M at
 # 1, 2022M at 2: every worker opens its own Prisma connection pool), so the
 # slice cap was raised to clear it. 8 audit units on one host share that
-# pool, so the ceiling is what keeps 8. The admission gate in agent.yml
-# sums worker-capable max_parallel_requests (a per-process in-memory
-# semaphore, litellm/router.py _get_client local_only=True), so 2 workers
-# admit at most 2x that sum; over-admission lands on the 429 cooldown the
-# rows already carry rather than on a hung endpoint.
+# pool, so the ceiling is what keeps 8. max_parallel_requests is a
+# per-process in-memory semaphore (litellm/router.py _get_client
+# local_only=True), so the second worker admits a second copy of the sum;
+# over-admission lands on the 429 cooldown the rows already carry rather
+# than on a hung endpoint.
 Exec=--config /app/config.yaml --port 4000 --host 127.0.0.1 --num_workers 2
 
 [Service]

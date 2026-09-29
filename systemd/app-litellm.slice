@@ -40,8 +40,11 @@
 # container overhead (overlay page cache + conmon) is ~792M; the projected
 # container 2-worker peak is 2022M + 792M, or the live 1578M + the measured
 # 1236M marginal = ~2.8G, and 3.5G keeps the same headroom the 2G cap had
-# over the historical 1.37G peak. It bounds the 2-worker daemon, and a
-# runaway still dies well before it crowds the 4G worker slice (host 16G).
+# over the historical 1.37G peak. Under load (8 concurrent completions,
+# then 8 more with /jev hammered 12x) the 2-worker probe held at 2022M-
+# 2115M peak -- the load adds ~90M over cold start, so 3.5G clears the
+# loaded peak by ~1.4G and a runaway still dies well before it crowds the
+# 4G worker slice (host 16G).
 #
 # Drop-in-removable: delete this file + the three service unit files and
 # daemon-reload to revert. The live file is a symlink into this repo.
