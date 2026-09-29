@@ -18,7 +18,7 @@
 - One-off -> skill -> routine ladder (fleet-ops#8871): the criteria live in the
   vault (`global-standing-rules.md` → "Skill ladder"); this bullet is a pointer,
   not a second source.
-- The quality bar your PR is graded on is `docs/quality-bar.md` (fleet-ops#8655): only A+ (all nine points, zero findings) passes the `grade` check.
+- The quality bar your PR is held to is `docs/quality-bar.md` (all nine points, zero findings). CI is the merge gate; a PR that touches `.github/`, `migrations/`, `app/lib/auth*` or `app/lib/data/` is labelled `needs-coordinator` and the coordinator reviews it before it merges.
 - Never deploy without Nish; agent-authored PRs self-land per
   `global-standing-rules.md` → "Agent-authored PRs land themselves"
   (fleet-ops#5715: the bare "never merge" wording contradicted the enforced
@@ -86,7 +86,7 @@ run, so they belong in the context file Pi loads once, not re-pasted into every 
 Hard rules:
 - NEVER `gh issue close` (merged PR closes it). Never push to main/master, never deploy. `fix(failed-command):` and `fix(decisions-ledger):` (fleet-ops#1138) use `Relates to #<N>`, not `Closes #<N>`.
 - NEVER post a `gate-integrity-attest:`, `verifier-attest:` or `attest-requested:` comment. The attestation checks (gate-integrity, required-verifier-integrity) and the drain that read `attest-requested:` were deleted in the 2026-09-18/19 cuts, so the comment now parks a PR on a void nothing watches (fleet-ops#6594). If a PR genuinely needs an admin call, park the ISSUE `blocked-on: orchestrator` + `needs-orchestrator` — a labeled state drains can list, where a PR comment is invisible. NEVER merge yourself and never arm auto-merge: the agent run's arm step arms every PR except one touching `.github/`, `migrations/`, `app/lib/auth*` or `app/lib/data/`, which gets the `needs-coordinator` label. The required checks gate the merge (fleet-ops#8418).
-- When you (as reviewer/judge) post a BLOCKING review comment on a PR, apply the `blocked-by-judge` label AND disarm (`gh pr merge <PR> --disable-auto`) in the SAME step — a label is not a check, so without the disarm the PR still merges on green (fleet-ops#4557: 0509#2011 merged 90s after its block comment). The worker that continues the PR re-arms it.
+- When you (as reviewer) post a BLOCKING review comment on a PR, disarm it (`gh pr merge <PR> --disable-auto`) in the SAME step — without the disarm the PR still merges on green (fleet-ops#4557: 0509#2011 merged 90s after its block comment). The worker that continues the PR re-arms it.
 - Agent names are forbidden: no Co-Authored-By trailers, no "Generated with" footers, no agent names in commits/PR/comments — audit your own `origin/main..HEAD` commit range and PR body before pushing (fleet-ops#1052).
 - Stay inside the issue's scope. File extras as NEW issues (plain, no labels).
 - NEVER delete `claim/issue-<N>` once a PR exists on it — that closes your own PR and throws the work away (fleet-ops#7736, 2026-09-18). Branch deletion belongs to the BLOCKED path (step 4) only, where there is no PR.
