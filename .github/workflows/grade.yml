@@ -58,7 +58,7 @@ jobs:
   grade:
     name: grade
     runs-on: ${{ fromJSON(inputs.engine == 'devin' && github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && github.event.pull_request.user.login != 'dependabot[bot]' && '["self-hosted","fleet-ci"]' || '"ubuntu-latest"') }}
-    timeout-minutes: 20
+    timeout-minutes: 34
     permissions:
       contents: read
       pull-requests: write
@@ -226,7 +226,7 @@ jobs:
       - name: Grade with Devin SWE 2 Max
         id: devin
         if: github.event_name == 'pull_request' && inputs.engine == 'devin' && github.event.pull_request.user.login != 'dependabot[bot]' && github.event.pull_request.head.repo.full_name == github.repository
-        timeout-minutes: 16
+        timeout-minutes: 30
         uses: Nishfleet/fleet-ops/.github/actions/devin-grade@main
         with:
           dir: ${{ runner.temp }}/devin-in
