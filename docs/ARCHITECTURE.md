@@ -90,7 +90,8 @@ The rules still in force:
   check, ruleset, systemd property, router config), 3 rule, 4 skill, 5 prose.
   `encoded: 5` is legal only with a reason. A rule that recurs twice is a
   defect in its rung.
-- Gates that exist: `blocked-by-judge` stops the arm (fleet-ops#4557); an
+- Gates that exist: a PR touching a risky path is labelled `needs-coordinator` and
+  not armed; an
   armed PR with no verification receipt is disarmed (fleet-ops#3731);
   agent-authored PRs self-land green.
 

@@ -60,7 +60,7 @@ jobs:
           # string, a rename the tests cover) names why instead of pasting a
           # run (Nish 2026-09-28, "everything might not need proving every
           # time"). This checks the line's shape only; whether the reason is
-          # true is quality-bar point 7, judged by the required grade.
+          # true is quality-bar point 7, the reviewer's call.
           if printf '%s\n' "$body" | grep -qiE '^run-proof: not-needed - [[:alpha:]][^ ]*( [^ ]+){2,}'; then
             exit 0
           fi
