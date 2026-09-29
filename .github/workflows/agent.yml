@@ -336,7 +336,15 @@ jobs:
             body=$(gh pr view "$REF" -R "$REPO" --json body --jq .body)
             grep -qiE "(close[sd]?|fix(e[sd])?|resolve[sd]?) #$i\b" <<<"$body" ||
               gh pr edit "$REF" -R "$REPO" --body "$body"$'\n\n'"Closes #$i"
-            gh pr merge "$REF" -R "$REPO" --auto --squash  # a merge queue overrides the method; repos without one need it
+            n=$(gh pr view "$REF" -R "$REPO" --json number --jq .number)
+            changed=$(gh pr view "$REF" -R "$REPO" --json changedFiles --jq .changedFiles)
+            files=$(gh api --paginate "repos/$REPO/pulls/$n/files" --jq '.[] | .filename, (.previous_filename // empty)')
+            if [ "$changed" -ge 3000 ] || grep -qE '^(\.github/|migrations/|app/lib/auth|app/lib/data/)|\.sql$' <<<"$files"; then
+              gh label create needs-coordinator -R "$REPO" --force --color B60205 --description "touches a risky path: the coordinator reviews and arms it"
+              gh pr edit "$REF" -R "$REPO" --add-label needs-coordinator
+            else
+              gh pr merge "$REF" -R "$REPO" --auto --squash  # a merge queue overrides the method; repos without one need it
+            fi
           fi
       - name: Deliverable
         if: steps.gate.outputs.go == 'true'
@@ -594,7 +602,7 @@ jobs:
     permissions:
       issues: write
     steps:
-      # App token, not GITHUB_TOKEN: a GITHUB_TOKEN label fires no workflow, so opus-vet never ran on a park (fleet-ops#8552).
+      # App token, not GITHUB_TOKEN: a GITHUB_TOKEN label fires no workflow, so a workflow listening for the label never ran on a park (fleet-ops#8552).
       - name: Read App private key
         id: app-key
         run: |
