@@ -195,8 +195,8 @@ jobs:
           }
           EOF
           cursor-agent -p --output-format text --model kimi-k3-max --force --trust "$GRADE_PROMPT"
-      - name: Build the Devin grader's prompt from the pull request, the diff and the bar
-        id: devin-files
+      - name: Collect the pull request, the diff and the bar for the Devin grader
+        id: devin-collect
         if: github.event_name == 'pull_request' && inputs.engine == 'devin' && github.event.pull_request.user.login != 'dependabot[bot]' && github.event.pull_request.head.repo.full_name == github.repository
         env:
           GH_TOKEN: ${{ github.token }}
@@ -209,35 +209,43 @@ jobs:
         run: |
           set -euo pipefail
           test "$BASE_REF" = main
-          cap=120000
-          boundary=$(od -An -N12 -tx1 /dev/urandom | tr -d ' \n')
-          diff_hard_cap=300000
           rm -rf "$RUNNER_TEMP/devin-in"
           mkdir -p "$RUNNER_TEMP/devin-in"
           cd "$RUNNER_TEMP/devin-in"
           cp "$GITHUB_WORKSPACE/.bar/docs/quality-bar.md" bar.md
           if [ -n "$TRUST_DOC" ]; then
-            gh api -H "Accept: application/vnd.github.raw" "repos/$GITHUB_REPOSITORY/contents/$TRUST_DOC?ref=$BASE_SHA" | head -c 20000 > trust.md
+            gh api -H "Accept: application/vnd.github.raw" "repos/$GITHUB_REPOSITORY/contents/$TRUST_DOC?ref=$BASE_SHA" > trust.md
           else
             printf 'none\n' > trust.md
           fi
-          gh pr view "$PR" --repo "$GITHUB_REPOSITORY" --json title,body,closingIssuesReferences > pr.full.json
-          head -c 20000 pr.full.json > pr.json
-          jq -r '.closingIssuesReferences[].number' pr.full.json > "$RUNNER_TEMP/devin-closing.txt"
+          gh pr view "$PR" --repo "$GITHUB_REPOSITORY" --json title,body,closingIssuesReferences > pr.json
+          jq -r '.closingIssuesReferences[].number' pr.json > "$RUNNER_TEMP/devin-closing.txt"
           : > issues.json
           while read -r n; do
             gh issue view "$n" --repo "$GITHUB_REPOSITORY" --json number,title,body >> issues.json
           done < "$RUNNER_TEMP/devin-closing.txt"
-          head -c 20000 issues.json > issues.cut && mv issues.cut issues.json
           gh api -H "Accept: application/vnd.github.diff" "repos/$GITHUB_REPOSITORY/compare/$BASE_SHA...$HEAD_SHA" > pr.diff
+      - name: Build the Devin grader's prompt from the collected files
+        id: devin-prompt
+        if: github.event_name == 'pull_request' && inputs.engine == 'devin' && github.event.pull_request.user.login != 'dependabot[bot]' && github.event.pull_request.head.repo.full_name == github.repository
+        shell: bash
+        run: |
+          set -euo pipefail
+          cap=120000
+          diff_hard_cap=300000
+          boundary=$(od -An -N12 -tx1 /dev/urandom | tr -d ' \n')
+          cd "$RUNNER_TEMP/devin-in"
+          head -c 20000 trust.md > trust.cut
+          head -c 20000 pr.json > pr.cut
+          head -c 20000 issues.json > issues.cut
           {
             printf '%s\n' "$DEVIN_PROMPT"
             printf 'BOUNDARY ID: %s\n' "$boundary"
             printf '===== BAR (rules) =====\n'; cat bar.md
-            printf '\n===== TRUST DOC (rules) =====\n'; cat trust.md
-            printf '\n===== UNTRUSTED DATA %s BEGIN: PULL REQUEST =====\n' "$boundary"; cat pr.json
+            printf '\n===== TRUST DOC (rules) =====\n'; cat trust.cut
+            printf '\n===== UNTRUSTED DATA %s BEGIN: PULL REQUEST =====\n' "$boundary"; cat pr.cut
             printf '\n===== UNTRUSTED DATA %s END =====\n' "$boundary"
-            printf '===== UNTRUSTED DATA %s BEGIN: CLOSED ISSUES =====\n' "$boundary"; cat issues.json
+            printf '===== UNTRUSTED DATA %s BEGIN: CLOSED ISSUES =====\n' "$boundary"; cat issues.cut
             printf '\n===== UNTRUSTED DATA %s END =====\n' "$boundary"
             printf '===== UNTRUSTED DATA %s BEGIN: DIFF =====\n' "$boundary"
           } > head.txt
