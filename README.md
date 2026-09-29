@@ -15,8 +15,8 @@ script, or prompt lands unseen.
 - `systemd/fleet-sync.service` (started by
   `.github/workflows/deploy-box.yml` on push) — the whole deploy mechanism:
   `git pull --ff-only` + `systemctl --user daemon-reload`, plus
-  `promtool check rules` / `promtool check config` and a prometheus reload
-  when the alert rules or the scrape config changed, and a LINK-GUARD pass
+  `promtool check config` and a prometheus reload when the scrape config
+  changed, and a LINK-GUARD pass
   that fails the unit on a dangling or throwaway-target live symlink
   (fleet-ops#7743).
 
@@ -80,8 +80,7 @@ NOT update them. Refresh by hand when the repo file changes:
 
 | live path | repo source | why a symlink is wrong |
 |---|---|---|
-| `/etc/prometheus/fleet_rules.yml` | `config/fleet_rules.yml` | prometheus runs as `prometheus`; `/home/nish` is `0750 nish:nish`, so it cannot traverse into the repo. **Handled automatically** by `fleet-sync.service` (promtool check + copy + reload). |
-| `/etc/prometheus/prometheus.yml` | `config/prometheus.yml` | same privilege boundary. **Handled automatically** by `fleet-sync.service` (promtool check config + copy + reload). The #7954 alertmanager scrape job drifted here and left `FleetNishPageRailDown` red (fleet-ops#8084); that drift class is closed by the deploy step. |
+| `/etc/prometheus/prometheus.yml` | `config/prometheus.yml` | same privilege boundary. **Handled automatically** by `fleet-sync.service` (promtool check config + copy + reload). |
 | `~/.pi/agent/extensions/**.ts` | `template/extensions/**` | pi resolves a symlinked extension against its REAL path, so sibling imports would resolve into the repo (fleet-ops#3263). After the glue sweeps the only local files are the two stock forks (`permission-gate.ts`, `protected-paths.ts`) — everything else in `~/.pi/agent/extensions/` is a symlink straight into pi's shipped `examples/extensions/`. |
 | `~/.pi/agent/models.json` | `config/pi-models.json` | **Handled automatically** by `fleet-sync.service` (cmp + install, fleet-ops#8568). A copy, not a symlink, because `~/.pi/agent` is an overlay mount in worker containers. |
 | `~/.local/state/pi-packet/model-candidates.json` | `config/model-candidates.json` | live state the git working tree must not rewrite on every checkout (fleet-ops#2910/#3722/#3322). |
@@ -255,10 +254,10 @@ of scope: they do not live in `session-*.scope`. `claim/issue-*` and
 
 `.github/workflows/ci.yml` runs two jobs on every PR and push to main:
 
-1. **ci** — stock checks: `promtool check rules config/fleet_rules.yml`, semgrep
+1. **ci** — stock checks: semgrep
    `--config p/default`, the CI-gaming gates (agent attribution over the
    commit range and PR text, the secret-expansion and auth-status greps),
-   `promtool`/`jq` config sanity, actionlint, shellcheck, systemd-analyze
+   `jq` config sanity, actionlint, shellcheck, systemd-analyze
    verify over `systemd/`, and a grep gate on
    `template/cursor-rules/shared-memory.mdc` that rejects the
    pre-#6610 universal approval gate and the deleted `memoryctl` mandate
@@ -284,8 +283,8 @@ symlinks to it from `~/.config/systemd/user/`, `~/.local/bin/`, or
 `fleet-heartbeat.timer`/`.service`, `bin/fleet-heartbeat-tier1` and
 `prompts/heartbeat.md` are gone. Their jobs live in the organs that already
 did them: `.github/workflows/agent-dispatch.yml` queues `agent-ready` work, PR
-auto-merge is a GitHub workflow, and a failed unit pages through the
-`SystemUnitFailed` rule in `config/fleet_rules.yml`. Its healthchecks.io
+auto-merge is a GitHub workflow, and a failed unit shows in
+`systemctl --user --failed`. Its healthchecks.io
 dead-man is gone; the keystone URLs in `~/.config/fleet-ops/keystone-hc.env`
 now serve only the root `restic-r2-restore-test.service`.
 

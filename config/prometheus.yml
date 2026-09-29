@@ -1,12 +1,5 @@
 # Prometheus configuration — repo-sourced (fleet-ops#1534).
 #
-# Adds an am-executor scrape job (127.0.0.1:9095) so the RepairDispatchDown
-# alert (config/fleet_rules.yml) has a metric to fire on. am-executor exports
-# am_executor_errors_total{stage=...} and an implicit `up` gauge; the alert
-# keys on `up{job="am-executor"} == 0` for 2m, which fires only when the
-# webhook receiver is down (the repair path itself is broken — the one
-# meta-alert that means Nish must be paged).
-#
 # The Debian package owns /etc/prometheus/prometheus.yml; fleet-sync.service
 # deploys this as a root-owned copy (not a symlink: prometheus cannot
 # traverse /home/nish) and reloads prometheus after the change
@@ -18,14 +11,6 @@ global:
   external_labels:
     monitor: fleet-netcup-rs2000
 
-alerting:
-  alertmanagers:
-    - static_configs:
-        - targets: ['127.0.0.1:9093']
-
-rule_files:
-  - /etc/prometheus/fleet_rules.yml
-
 scrape_configs:
   - job_name: prometheus
     static_configs:
@@ -34,27 +19,6 @@ scrape_configs:
   - job_name: node
     static_configs:
       - targets: ['127.0.0.1:9100']
-
-  # fleet-ops#1534: scrape am-executor so RepairDispatchDown can fire on
-  # up{job="am-executor"} == 0. The am-executor service
-  # (prometheus-am-executor.service) listens on 127.0.0.1:9095 and exports
-  # am_executor_errors_total{stage=...} plus the standard `up` gauge. When
-  # the service is down, `up` flips to 0 and the alert pages Nish (severity=page
-  # -> telegram, the only alertmanager route that reaches the phone).
-  - job_name: am-executor
-    static_configs:
-      - targets: ['127.0.0.1:9095']
-
-  # fleet-ops#6845: scrape alertmanager's own /metrics so
-  # alertmanager_notifications_failed_total{integration="telegram"} and
-  # up{job="alertmanager"} exist in Prometheus — FleetNishPageRailDown in
-  # config/fleet_rules.yml fires on them. Without this job a dead telegram
-  # sender or a down alertmanager leaves the severity=nish/page phone rail
-  # accepted-but-undelivered with no signal anywhere: the #6845 starvation
-  # class on the only escalation path that still exists.
-  - job_name: alertmanager
-    static_configs:
-      - targets: ['127.0.0.1:9093']
 
   # fleet-ops#4130 P1: scrape the LiteLLM proxy's /metrics endpoint so
   # the router's own gauges (litellm_deployment_success_rate,
@@ -85,8 +49,7 @@ scrape_configs:
   #   search    7 targets / 30m = 2.3 req per 10 min  (/search, counts against the 20)
   # That leaves the great majority of the anonymous budget free. Do NOT
   # shorten these intervals or add /search targets without redoing this
-  # arithmetic — overrunning the limiter turns every probe into a 429 and the
-  # alerts in config/fleet_rules.yml into permanent false positives.
+  # arithmetic — overrunning the limiter turns every probe into a 429.
   #
   # Detection latency still improves sharply: both canaries ran once daily,
   # so a dark page could hide for ~24h; these see it within 15-30 minutes.

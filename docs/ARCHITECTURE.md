@@ -14,7 +14,6 @@ One VPS (netcup), one `nish` user. Everything the fleet runs is a
 code and config.
 
 The work loop: `.github/workflows/agent-dispatch.yml` queues `agent-ready` issues as `agent.yml` jobs on the VPS self-hosted runners, workers open PRs on `claim/issue-<N>`, and the GitHub merge queue lands them.
-Alerts reach repair through `prometheus-am-executor` → `alert-repair@`.
 There are no scheduled agent jobs: issues come from people, red-main issues and dependabot.
 
 ## Model plane
@@ -104,8 +103,7 @@ Detection + repair, not blind duplication. `Restart=`/`OnFailure=`, the
 failed-unit sweep, and external healthchecks.io dead-men (URLs in
 `~/.config/fleet-ops/keystone-hc.env`; unset = LOUD skip, shared = LOUD fail)
 cover supervision. Restic R2 backup / verify / restore-test run as ROOT units
-and publish restore proofs; `ResticRestoreProofStale` and `LitellmPgDumpStale`
-(page `config/fleet_rules.yml`) make a stale proof reach the repair path.
+and publish restore proofs.
 SSH is Tailscale-only, so the out-of-band layer is the netcup VNC console
 (RUNBOOK). GitHub-hosted runners are the compute break-glass. No second box,
 no second dispatcher, no Kubernetes.

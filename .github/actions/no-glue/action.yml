@@ -93,10 +93,10 @@ runs:
       if: github.repository == 'Nishfleet/fleet-ops'
       shell: bash
       run: "! grep -rnE 'workflows/agent\\.yml@' .github/workflows/ | grep -vE 'agent\\.yml@main( |$)'"
-    - name: No new sh -c / bash -c lines in units or the am-executor config (fleet-ops#8606)
+    - name: No new sh -c / bash -c lines in units (fleet-ops#8606)
       if: github.repository == 'Nishfleet/fleet-ops'
       shell: bash
-      run: "! git diff origin/main...HEAD -- systemd/ config/prometheus-am-executor.yml | grep -E '^\\+[^#]*sh -c'"
+      run: "! git diff origin/main...HEAD -- systemd/ | grep -E '^\\+[^#]*sh -c'"
     - name: No programs embedded in prompts (interpreter heredocs, code fences, run-this-file lines)
       if: github.repository == 'Nishfleet/fleet-ops'
       shell: bash
