@@ -1,5 +1,5 @@
 {
-  "description": "Declared set of Nishfleet repos enrolled in the agent-ready queue (.github/workflows/agent-dispatch.yml and the scout job); a PR against this file is the enrolment.",
+  "description": "Declared set of Nishfleet repos enrolled in the agent-ready queue (.github/workflows/agent-dispatch.yml); a PR against this file is the enrolment.",
   "checkout_root": "/home/nish/workspaces/products",
   "required_labels": [
     "agent-ready",
