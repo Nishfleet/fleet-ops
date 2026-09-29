@@ -179,6 +179,7 @@ jobs:
           jail="bwrap --dev-bind / / --proc /proc --unshare-pid --die-with-parent --"
           dir="$HOME/workspaces/agent-worktrees/issue-$id"
           packet="Fleet issue worker for instance $id. Follow $HOME/workspaces/tooling/fleet-ops-deploy-clone/prompts/worker.md (read AGENTS.md beside it first); every \$1 there means $id."
+          fell=
           if [ "$ENGINE" = devin ]; then
             # --chdir puts the worker directory on the bwrap command line,
             # which is what the Gate's lane count reads.
@@ -191,13 +192,28 @@ jobs:
               cat "$RUNNER_TEMP/try.err" >&2
               break
             done
-            [ "$rc" = 0 ]
-          elif [ "$ENGINE" = opencode ]; then
+            # No bench: the next issue still tries Devin. This run only, with
+            # no claim commits, try opencode then pi (fleet-ops#8981).
+            if [ "$rc" != 0 ] && grep -qi 'free model rate limit' "$RUNNER_TEMP/try.err" && [ "$(gh api "repos/$REPO/compare/main...$REF" --jq .ahead_by)" = 0 ]; then
+              ENGINE=opencode
+              fell=1
+            else
+              [ "$rc" = 0 ]
+            fi
+          fi
+          if [ "$ENGINE" = opencode ]; then
             # --dir puts the worker directory on the bwrap command line; --auto
             # approves what the worker needs outside it (prompts, gh, the repo).
             mkdir -p "$dir"
-            $jail opencode run --dir "$dir" -m opencode/longcat-2.5-preview-free --auto "$packet" >/dev/null
-          elif [ "$ENGINE" = cursor ]; then
+            rc=0
+            $jail opencode run --dir "$dir" -m opencode/longcat-2.5-preview-free --auto "$packet" >/dev/null || rc=$?
+            if [ "$rc" != 0 ] && [ "$fell" = 1 ]; then
+              ENGINE=pi
+            else
+              [ "$rc" = 0 ]
+            fi
+          fi
+          if [ "$ENGINE" = cursor ]; then
             # Alternate the two prepaid Cursor Ultra keys by issue number so
             # neither stack is spent and both are paced (fleet-ops#8740):
             # even $id -> cursor.env, odd $id -> cursor-2.env. $id's issue
@@ -213,7 +229,7 @@ jobs:
             mkdir -p "$dir"
             $jail cursor-agent -p --output-format text --model cursor-grok-4.6-high --force --trust \
               --workspace "$dir" "$packet" >/dev/null
-          else
+          elif [ "$ENGINE" != opencode ] && [ "$ENGINE" != devin ]; then
             # Mobbin MCP via the pi-mcp-adapter package (Pi has no built-in MCP).
             # OAuth tokens sit in ~/.pi/agent/mcp-oauth-encrypted/; this is their
             # file key. Without it only the lazy mobbin server fails, never the run.

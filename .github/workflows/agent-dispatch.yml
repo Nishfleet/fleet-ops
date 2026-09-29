@@ -166,7 +166,16 @@ jobs:
             # Armed claim PRs whose required checks never reported (fleet-ops#8777).
             # A pending required check is left: it is running, not missing. A
             # completed report, including a failure, is left too; rework owns that.
-            req=$(gh api --paginate "repos/$GITHUB_REPOSITORY/rules/branches/main?per_page=100" | jq -c '[.[] | select(.type == "required_status_checks") | .parameters.required_status_checks[].context]')
+            # Free-org private repos 403 this paid rules endpoint. Treat as
+            # no required checks so the sweep still lists unarmed / DIRTY /
+            # orphan claim PRs (Nishfleet/drive, fleet-ops#8981).
+            req_json=$(gh api --paginate "repos/$GITHUB_REPOSITORY/rules/branches/main?per_page=100" 2>&1) || {
+              case $req_json in
+                *"HTTP 403"*) req='[]' ;;
+                *) echo "$req_json" >&2; exit 1 ;;
+              esac
+            }
+            [ -n "${req:-}" ] || req=$(jq -c '[.[] | select(.type == "required_status_checks") | .parameters.required_status_checks[].context]' <<<"$req_json")
             missing=$(
               for pr in $(jq -r '.[] | select(.autoMergeRequest != null) | .number' <<<"$all"); do
                 gh pr view "$pr" -R "$GITHUB_REPOSITORY" --json headRefName,statusCheckRollup || exit 1
