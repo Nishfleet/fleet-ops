@@ -5,10 +5,10 @@ name: agent-dispatch
 on:
   issues:
     types: [labeled, closed]
-  # issue=<number> dispatches only that issue's ref, the code path
-  # opus-vet.yml's opus-size job uses: an issue relabelled by GITHUB_TOKEN
-  # fires no workflow, and workflow_dispatch is the documented trigger
-  # GITHUB_TOKEN may start. No input sweeps exactly like the 6h schedule.
+  # issue=<number> dispatches only that issue's ref, for a caller that
+  # relabels or closes with GITHUB_TOKEN: that fires no workflow, and
+  # workflow_dispatch is the documented trigger GITHUB_TOKEN may start.
+  # No input sweeps exactly like the 6h schedule.
   workflow_dispatch:
     inputs:
       issue:
@@ -191,7 +191,7 @@ jobs:
             # run is queued or in progress; `gh run view` is that read.
             inprog=$(gh issue list -R "$GITHUB_REPOSITORY" -l agent-in-progress -L 1000 --json number --jq '[.[].number]')
             orphans=$(
-              jq -r --argjson ip "$inprog" '.[] | .headRefName | capture("^claim/issue-(?<n>[0-9]+)$").n | tonumber as $i | select($ip | index($i)) | $i' <<<"$all" |
+              jq -r --argjson ip "$inprog" '.[] | select(.labels | map(.name) | index("needs-coordinator") | not) | .headRefName | capture("^claim/issue-(?<n>[0-9]+)$").n | tonumber as $i | select($ip | index($i)) | $i' <<<"$all" |
               while IFS= read -r n; do
                 body=$(gh issue view "$n" -R "$GITHUB_REPOSITORY" --json comments --jq '[.comments[].body | select(startswith("agent run started:"))] | if length == 0 then "" else last end') || exit 1
                 if [ -z "$body" ]; then
@@ -252,8 +252,8 @@ jobs:
   # AGENT_MODE: this removes work from the queue in every mode and dispatches
   # nothing.
   close-claim:
-    # issue=<N> too: opus-vet closes with GITHUB_TOKEN, which fires no
-    # issues.closed, then dispatches the issue by number. Without this its
+    # issue=<N> too: a close made with GITHUB_TOKEN fires no
+    # issues.closed, and the caller then dispatches the issue by number. Without this its
     # claim PR stayed open (0509 #5081 #5019 #5010 #4922 #4902 #4683).
     if: >-
       (github.event_name == 'issues' && github.event.action == 'closed') ||

@@ -63,7 +63,7 @@ jobs:
       - name: Gate
         # The dispatch policy that the old intake prompt used to carry, now in one
         # step: skip parked or blocked work, size unsized work (Jev first
-        # opinion, else needs-split -> opus-vet), cap runs, then claim.
+        # opinion, else needs-split, which parks it for the coordinator), cap runs, then claim.
         id: gate
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
