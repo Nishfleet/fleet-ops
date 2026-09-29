@@ -2,8 +2,8 @@
 # usage limit on 2026-09-28 (grade.yml runs Devin until the cycle resets on
 # 2026-10-25). One tiny Kimi call a day: a green run means Kimi answers again,
 # so set vars.GRADE_ENGINE to kimi (opus-vet and opus-size follow it) and flip
-# grade.yml's engine default. Once vars.GRADE_ENGINE is kimi the real graders
-# are the evidence and this job stops calling.
+# grade.yml's engine default. The job stops calling once vars.GRADE_ENGINE is
+# kimi (the real graders are the evidence) or vars.GRADER is no longer kimi.
 name: kimi-probe
 on:
   schedule:
@@ -16,7 +16,7 @@ concurrency:
 jobs:
   probe:
     name: probe
-    if: vars.GRADE_ENGINE != 'kimi'
+    if: vars.GRADER == 'kimi' && vars.GRADE_ENGINE != 'kimi'
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions: {}
