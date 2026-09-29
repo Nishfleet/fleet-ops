@@ -106,7 +106,7 @@ by each caller's own code (the config store was deleted in the glue-zero wipe;
 
 | site | edges |
 |---|---|
-| `claim-check-pr` / `claim-check-report` / `hermes-digest` | 0.5 / 0.5 |
+| `hermes-digest` | 0.5 / 0.5 |
 | `dependency-pr-arm` / `merge-queue-batches` / `merge-queue-enqueue` | 0.9 / 0.1 |
 | `failure-triage` / `intake-order` / `intake-seat-smoke` | 0.9 / 0.1 |
 | `flaky-test-quarantine` / `gha-stuck-run-watch` | 0.9 / 0.1 |
