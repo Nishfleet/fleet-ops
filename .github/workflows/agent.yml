@@ -303,7 +303,7 @@ jobs:
             mkdir -p "$HOME/.cache/fleet-ops"
             touch "$HOME/.cache/fleet-ops/devin-wall"
           else
-            grep -qiE 'no deployments available|ratelimiterror|\b429\b' "$RUNNER_TEMP/worker.err" 2>/dev/null || exit 0
+            grep -qiE 'no deployments available|ratelimiterror|rate limit exceeded|\b429\b' "$RUNNER_TEMP/worker.err" 2>/dev/null || exit 0
             [ "$(gh api "repos/$REPO/compare/main...$REF" --jq .ahead_by)" = 0 ] || exit 0
           fi
           gh issue comment "$i" -R "$REPO" --body "agent run infra-failed: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
