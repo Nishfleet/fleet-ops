@@ -249,15 +249,10 @@ of scope: they do not live in `session-*.scope`. `claim/issue-*` and
 
 ## CI
 
-`.github/workflows/ci.yml` runs two jobs on every PR and push to main:
-
-1. **ci** — stock checks: semgrep
-   `--config p/default`, the secret-expansion grep, `jq` config sanity,
-   actionlint, zizmor, shellcheck, and systemd-analyze verify over `systemd/`.
-2. **no-glue** — rejects any added script/helper/hook file (`bin/`,
-   `scripts/`, `libexec/`, `ops/`, `hooks/`, `.github/scripts/`, `*.sh`,
-   `*.mjs`, `.fleet/`) and any added unit `Exec` line long enough to be a
-   program (fleet-ops#7828).
+`.github/workflows/ci.yml` runs one job, `ci`, on every PR and push to main. Its
+checks are stock: semgrep `--config p/default`, the secret-expansion grep,
+`jq` config sanity, actionlint, zizmor, shellcheck, and systemd-analyze verify
+over `systemd/`.
 
 `.github/workflows/secret-scan.yml` is the gitleaks scan (pinned binary +
 sha256, `--redact`). fleet-ops has no deploy target. All actions are pinned to exact commit
