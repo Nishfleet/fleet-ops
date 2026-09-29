@@ -18,6 +18,7 @@
   vault (`global-standing-rules.md` → "Skill ladder"); this bullet is a pointer,
   not a second source.
 - The quality bar your PR is held to is `docs/quality-bar.md` (all nine points, zero findings). CI is the merge gate; a PR that touches `.github/`, `migrations/`, `app/lib/auth*` or `app/lib/data/` is labelled `needs-coordinator` and the coordinator reviews it before it merges.
+- Any change that adds or edits an AI decision (a Jev question, or a model prompt that decides something users see) ships with before/after numbers in the PR body, measured on cases held out from tuning. The builder never grades its own work: a different model family writes and labels the held-out cases before tuning starts, and runs the final score. Where the repo has `tests/evals/` (0509#6161), use it. Never add a script to run it.
 - Never deploy without Nish; agent-authored PRs self-land per
   `global-standing-rules.md` → "Agent-authored PRs land themselves"
   (fleet-ops#5715: the bare "never merge" wording contradicted the enforced
