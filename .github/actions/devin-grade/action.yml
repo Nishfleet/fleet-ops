@@ -78,16 +78,36 @@ runs:
         mkdir -p "$RUNNER_TEMP/devin-home/.config"
         cp -r "$HOME/.config/devin" "$RUNNER_TEMP/devin-home/.config/devin"
         (umask 077; mkdir -p "$RUNNER_TEMP/devin-home/.local/share/devin"; cp "$HOME/.local/share/devin/credentials.toml" "$RUNNER_TEMP/devin-home/.local/share/devin/credentials.toml")
-        bwrap --ro-bind /usr /usr --ro-bind-try /bin /bin --ro-bind-try /sbin /sbin --ro-bind-try /lib /lib --ro-bind-try /lib64 /lib64 \
-          --ro-bind /etc/ssl /etc/ssl --ro-bind-try /etc/ca-certificates /etc/ca-certificates \
-          --ro-bind "$(readlink -f /etc/resolv.conf)" /etc/resolv.conf --ro-bind /etc/hosts /etc/hosts \
-          --ro-bind /etc/nsswitch.conf /etc/nsswitch.conf --ro-bind /etc/passwd /etc/passwd \
-          --ro-bind "$(readlink -f "$(command -v devin)")" /devin-bin/devin \
-          --bind "$RUNNER_TEMP/devin-home" /home/grader --tmpfs /tmp --dev /dev --proc /proc \
-          --chdir /tmp \
-          --unshare-pid --unshare-ipc --unshare-uts --new-session --die-with-parent --clearenv \
-          --setenv HOME /home/grader --setenv PATH /usr/bin:/bin \
-          -- timeout 900 /devin-bin/devin --print --permission-mode auto --model swe-2-max -- "$(cat "$RUNNER_TEMP/devin-prompt.txt")" > "$RUNNER_TEMP/devin.txt" 2> "$RUNNER_TEMP/devin.err"
+        attempt=0
+        for model in swe-2-max swe-2-high swe-2-max; do
+          attempt=$((attempt + 1))
+          rc=0
+          bwrap --ro-bind /usr /usr --ro-bind-try /bin /bin --ro-bind-try /sbin /sbin --ro-bind-try /lib /lib --ro-bind-try /lib64 /lib64 \
+            --ro-bind /etc/ssl /etc/ssl --ro-bind-try /etc/ca-certificates /etc/ca-certificates \
+            --ro-bind "$(readlink -f /etc/resolv.conf)" /etc/resolv.conf --ro-bind /etc/hosts /etc/hosts \
+            --ro-bind /etc/nsswitch.conf /etc/nsswitch.conf --ro-bind /etc/passwd /etc/passwd \
+            --ro-bind "$(readlink -f "$(command -v devin)")" /devin-bin/devin \
+            --bind "$RUNNER_TEMP/devin-home" /home/grader --tmpfs /tmp --dev /dev --proc /proc \
+            --chdir /tmp \
+            --unshare-pid --unshare-ipc --unshare-uts --new-session --die-with-parent --clearenv \
+            --setenv HOME /home/grader --setenv PATH /usr/bin:/bin \
+            -- timeout 900 /devin-bin/devin --print --permission-mode auto --model "$model" -- "$(cat "$RUNNER_TEMP/devin-prompt.txt")" > "$RUNNER_TEMP/devin.txt" 2> "$RUNNER_TEMP/devin.err" || rc=$?
+          [ "$rc" = 0 ] && break
+          mins=$(cat "$RUNNER_TEMP/devin.err" "$RUNNER_TEMP/devin.txt" | grep -oiE 'limit will reset in [0-9]{1,3} minute' | grep -oE '[0-9]+' | head -n1 || true)
+          [ -n "$mins" ] || exit "$rc"
+          if [ "$attempt" = 3 ]; then
+            echo "::error::Devin free rate limit hit on swe-2-max, swe-2-high and swe-2-max again (it reported a reset in $mins minutes): no grade."
+            exit 1
+          fi
+          if [ "$attempt" = 1 ]; then
+            echo "Devin free rate limit on $model (reset in $mins minutes): trying swe-2-high now."
+            continue
+          fi
+          wait_s=$(( (mins + 1) * 60 ))
+          [ "$wait_s" -le 720 ] || wait_s=720
+          echo "Devin free rate limit on $model (reset in $mins minutes): waiting $wait_s s, then one retry on swe-2-max."
+          sleep "$wait_s"
+        done
     - name: Look for the Devin login in the output
       id: leak
       shell: bash
