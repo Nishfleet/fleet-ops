@@ -226,6 +226,7 @@ jobs:
       - name: Grade with Devin SWE 2 Max
         id: devin
         if: github.event_name == 'pull_request' && inputs.engine == 'devin' && github.event.pull_request.user.login != 'dependabot[bot]' && github.event.pull_request.head.repo.full_name == github.repository
+        timeout-minutes: 16
         uses: Nishfleet/fleet-ops/.github/actions/devin-grade@main
         with:
           dir: ${{ runner.temp }}/devin-in

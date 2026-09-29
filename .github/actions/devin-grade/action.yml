@@ -104,4 +104,6 @@ runs:
     - name: Remove the copied Devin login and the raw output
       if: always()
       shell: bash
-      run: rm -rf "$RUNNER_TEMP/devin-home" "$RUNNER_TEMP/devin-login.txt" "$RUNNER_TEMP/devin.txt" "$RUNNER_TEMP/devin.err" "$RUNNER_TEMP/devin-prompt.txt"
+      env:
+        DIR: ${{ inputs.dir }}
+      run: rm -rf "$RUNNER_TEMP/devin-home" "$RUNNER_TEMP/devin-login.txt" "$RUNNER_TEMP/devin.txt" "$RUNNER_TEMP/devin.err" "$RUNNER_TEMP/devin-prompt.txt" "$DIR/head.txt" "$DIR/trust.cut" "$DIR/pr.cut" "$DIR/issues.cut"
