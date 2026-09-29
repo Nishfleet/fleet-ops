@@ -13,6 +13,12 @@
 # fleet-ops copy (09-24): the shared agent.yml Gate labels needs-split here too, and
 # without this job 17 fleet-ops issues sat parked with no sizer (#8449 among them).
 # Same as Nishfleet/0509, minus the close-as-control-plane rule: here that is the work.
+# Kimi is out of Cursor usage until its cycle resets (2026-10-25), so while
+# vars.GRADER is kimi both jobs run only once vars.GRADE_ENGINE is set to
+# kimi, the same switch that returns the grade to Kimi (kimi-probe.yml is the
+# evidence to flip it on). Before, every label made a 16 second Kimi call that
+# failed and left a red job (0509 runs 36522881908 and 36521925544).
+# Until then a needs-split or needs-orchestrator issue gets no sizer or vet.
 name: opus-vet
 on:
   issues:
@@ -41,7 +47,7 @@ permissions:
 jobs:
   opus-vet:
     name: opus-vet
-    if: github.event.label.name == 'needs-orchestrator' || github.event.label.name == 'needs-nish-decision'
+    if: (github.event.label.name == 'needs-orchestrator' || github.event.label.name == 'needs-nish-decision') && (vars.GRADER != 'kimi' || vars.GRADE_ENGINE == 'kimi')
     runs-on: ubuntu-latest
     timeout-minutes: 15
     permissions:
@@ -116,7 +122,7 @@ jobs:
 
   opus-size:
     name: opus-size
-    if: github.event.label.name == 'needs-split'
+    if: github.event.label.name == 'needs-split' && (vars.GRADER != 'kimi' || vars.GRADE_ENGINE == 'kimi')
     runs-on: ubuntu-latest
     timeout-minutes: 20
     permissions:
