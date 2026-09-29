@@ -147,11 +147,13 @@ jobs:
           # Hard stop for loops where a run "succeeds" but CI stays red: 3 runs
           # per issue since the newest opus-vet, counted from these comments.
           # A run the provider refused (429, capacity) comments infra-failed and
-          # is not counted: the worker never got to try. A comment that starts
+          # is not counted: the worker never got to try. Only an infra-failed
+          # that follows a counted start cancels it, so a late one from a run
+          # begun before a reset cannot cancel a run begun after it. A comment that starts
           # `attempt-cap reset: <why>` from an owner, member or collaborator
           # restarts the count like an opus-vet does; a bot cannot post one.
           # shellcheck disable=SC2016 # $v is a jq variable
-          runs=$(gh issue view "$i" -R "$REPO" --json comments --jq '[.comments[] | if (.body | startswith("opus-vet:")) or ((.body | test("^attempt-cap reset: \\S")) and (.authorAssociation | IN("OWNER", "MEMBER", "COLLABORATOR"))) then "opus-vet:" else .body end] | (map(startswith("opus-vet:")) | rindex(true) // -1) as $v | .[$v+1:] | (map(select(startswith("agent run started:"))) | length) - (map(select(startswith("agent run infra-failed:"))) | length)')
+          runs=$(gh issue view "$i" -R "$REPO" --json comments --jq '[.comments[] | if (.body | startswith("opus-vet:")) or ((.body | test("^attempt-cap reset: \\S")) and (.authorAssociation | IN("OWNER", "MEMBER", "COLLABORATOR"))) then "opus-vet:" else .body end] | (map(startswith("opus-vet:")) | rindex(true) // -1) as $v | .[$v+1:] | reduce .[] as $c (0; if ($c | startswith("agent run started:")) then . + 1 elif ($c | startswith("agent run infra-failed:")) and . > 0 then . - 1 else . end)')
           if [ "$runs" -ge 3 ]; then
             gh issue edit "$i" -R "$REPO" --add-label needs-orchestrator --remove-label agent-ready,agent-in-progress
             gh issue comment "$i" -R "$REPO" --body "agent attempt cap: $runs runs since the last opus-vet; parked for the orchestrator"
