@@ -191,7 +191,7 @@ jobs:
             # run is queued or in progress; `gh run view` is that read.
             inprog=$(gh issue list -R "$GITHUB_REPOSITORY" -l agent-in-progress -L 1000 --json number --jq '[.[].number]')
             orphans=$(
-              jq -r --argjson ip "$inprog" '.[] | .headRefName | capture("^claim/issue-(?<n>[0-9]+)$").n | tonumber as $i | select($ip | index($i)) | $i' <<<"$all" |
+              jq -r --argjson ip "$inprog" '.[] | select(.labels | map(.name) | index("needs-coordinator") | not) | .headRefName | capture("^claim/issue-(?<n>[0-9]+)$").n | tonumber as $i | select($ip | index($i)) | $i' <<<"$all" |
               while IFS= read -r n; do
                 body=$(gh issue view "$n" -R "$GITHUB_REPOSITORY" --json comments --jq '[.comments[].body | select(startswith("agent run started:"))] | if length == 0 then "" else last end') || exit 1
                 if [ -z "$body" ]; then
