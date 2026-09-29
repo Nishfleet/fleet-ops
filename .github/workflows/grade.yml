@@ -225,9 +225,9 @@ jobs:
           head -c 20000 pr.full.json > pr.json
           jq -r '.closingIssuesReferences[].number' pr.full.json > "$RUNNER_TEMP/devin-closing.txt"
           : > issues.json
-          for n in $(cat "$RUNNER_TEMP/devin-closing.txt"); do
+          while read -r n; do
             gh issue view "$n" --repo "$GITHUB_REPOSITORY" --json number,title,body >> issues.json
-          done
+          done < "$RUNNER_TEMP/devin-closing.txt"
           head -c 20000 issues.json > issues.cut && mv issues.cut issues.json
           gh api -H "Accept: application/vnd.github.diff" "repos/$GITHUB_REPOSITORY/compare/$BASE_SHA...$HEAD_SHA" > pr.diff
           {
