@@ -10,6 +10,6 @@ Every PR from the fleet, for any repo and any author, is held to this bar. CI is
 6. Tests assert behaviour through the public surface, fail on the old code and pass on the new.
 7. Every claim in the PR body is proven by a file:line in the diff or a run URL; every acceptance bullet carries real output. A change to what a running system does is proven by a run already done (run URL or invocation id); a proof put off to a later or scheduled run is a finding. A change that cannot alter behaviour (docs, comments, a rename the tests cover) says `not needed: <reason>` in the PR body instead, and a false reason is a finding.
 8. Reads like the surrounding code (naming, idiom, size limits); a stranger could maintain it.
-9. Product repos: follows the repo's DESIGN.md; user-facing text is plain and true.
+9. Product repos: follows the repo's DESIGN.md; user-facing text is plain and true. Where the repo has a feature map, every e2e spec the PR adds is named in its Proof column, and the map names no spec that does not exist.
 
 **A+ = all nine met with zero findings.** A worker checks its own PR against the nine before `gh pr ready`.
