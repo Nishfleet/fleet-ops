@@ -1,42 +1,83 @@
 # Jev call sites in fleet-ops (measured 2026-09-29)
 
-Live Jev call sites on origin/main as of 2026-09-29:
-- `prompts/worker.md` step 4: `needsNish` Noul (blocker text only, no Exa)
-- `config/litellm-proxy.yaml` `/jev` pass-through (infra)
+Live Jev call sites on origin/main:
+- `prompts/worker.md` step 4: the `needsNish` Noul (blocker text only, no Exa).
+- `config/litellm-proxy.yaml`: the `/jev` TypeSafe pass-through (infra, not a decision).
 
-Removed by lean sweep (#8959, 2026-09-29):
-- `agent.yml` Gate `cheap_ok` Noul with full context + Exa
-- `opus-vet.yml`, `fleet-map.yml`, `code-audit.yml`
-- AI grader (grade.yml, opus-review, devin-grade, kimi-probe)
+Removed by the lean sweep (#8959, 2026-09-29): the `agent.yml` Gate `cheap_ok`
+Noul with full context + Exa, `opus-vet.yml`, `fleet-map.yml`, `code-audit.yml`
+and the AI grader (grade.yml, opus-review, devin-grade, kimi-probe).
 
 ## Replay method
-State mirrors the shipped #8894/#8905 Gate state:
-```
-{issue: {ref, title, body, labels}, blocked_by: [...], named_files_on_main: {path: text|"missing on main"}, repo_rules_AGENTS_md: 0509's AGENTS.md (169 chars), web_evidence: Exa highlights array}
-```
-Exa: `query=title[:120], numResults=5, type=auto, contents.highlights.maxCharacters=300, highlightsPerUrl=1`.
 
-Run on the 63-issue corpus from #8905 (all 0509 issues with an `opus-size:` verdict at that date), against jev-1.13.0 on the VPS. Two runs.
+The state mirrors the shipped #8894/#8905 Gate builder
+(`git show 5f5c06a5:.github/workflows/agent.yml`, Gate step):
+
+```
+{issue: {ref, title, body, labels},
+ blocked_by: [{n, title, state}],
+ named_files_on_main: {path: text | "missing on main"},   # first 8 paths, 5k chars each
+ repo_rules_AGENTS_md: the sized repo's AGENTS.md,        # 0509's is 169 chars
+ web_evidence: [{title, url, highlight}] | "unavailable"}
+```
+
+Exa: `query=title[:120], numResults=5, type=auto,
+contents.highlights.maxCharacters=300, highlightsPerUrl=1`. A missing key, an
+HTTP error or zero results record `"unavailable"` and Jev still answers.
+
+Two questions were replayed per issue, one Choice each: `lane`
+{small, split, strong_only} (candidate 1) and `vet` {keep, close, park}
+(candidate 2), plus the shipped `cheap_ok` Noul verbatim as the baseline.
+
+Corpus: the 63 0509 issues that carried an `opus-size:` verdict on 2026-09-28
+(the corpus #8905 used), 84 `opus-size:` comments, 32 with an `opus-vet:`
+verdict. Model: `jev-1.13.0` (the `/jev` response's `.model`), two runs.
+Harmful call = a `strong_only` packet answered `small` or `split` (senior work
+onto a cheap lane), or a `keep` answer key answered `park` (work stalled that a
+worker could have claimed).
 
 ## Candidate table
 
-| # | Candidate | Population | Answer key | Replay agreement (run 1/2) | Harmful calls | Paid calls saved/week | Clears bar? |
+| # | Candidate | Population | Answer key | Replay agreement (run 1 / run 2) | Harmful calls | Paid calls saved/wk | Clears bar? |
 |---|---|---|---|---|---|---|---|
-| 1 | opus-size split vs strong-only (Choice) | 360 issues with an `opus-size:` verdict (search `in:comments`); 84 verdicts on the 63-issue corpus over 6 days (~98/wk) | `opus-size:` comments | lane Choice: 29/63 (46%) / 28/63 (44%) | 1 strong_only→small (0509#5740) | ~98 | **No** |
-| 2 | opus-vet keep/close/park (Choice) | 658 issues with `opus-vet:` verdict; 32 with a key in corpus | `opus-vet:` comments | vet Choice: 9/32 (28%) / 10/32 (31%) | 23 keep→park | — | **No** |
-| 3 | pre-grade before a PR opens (Noul) | 350 PRs with A+ grade; 888 issues carry `grade /` | `grade` comments | Not replayed — grader and every grade check deleted 2026-09-29 (#8953/#8959) | — | — | N/A — call site gone |
-| 4 | worker park decision (needsNish) | 27 fleet-ops / 45 0509 `jev needsNish` comments; only 1 park body records `p(needsNish)` | parks Nish later resolved/reversed | Not run — n=1 usable answer key | — | small | **Too little history** |
-| 5 | seat choice for a packet | 350 A+ PRs; grades name the grader ("Devin grade: A+"), not the building lane | measured first-try A+ by seat | Not run — no answer key; grade stream deleted | — | — | **Too little history** |
-| 6 | 0509 product decisions (D2/D5/D6/D8/D9) | prod `jev_verdict`: 15 rows, 3 question ids (is_competitor 5, public_subject 5, identity_field_confidence.name 5), 10 reasons null | prod `jev_verdict` | Not run — D2/D5/D6/D8/D9 have 0 rows, gated on 0509#4834 (open) | — | — | **Too little history** |
-| 7 | calibration from user corrections | `user_decision` table: 0 rows | prod `user_decision` | Not run — 0 user decisions recorded | — | — | **Too little history** |
+| 1 | opus-size split vs strong-only (Choice) | 360 issues carry an `opus-size:` verdict (GitHub search `in:comments`); 84 verdicts over 6 days on the 63-issue corpus (~98/wk) | `opus-size:` comments | 29/63 (46%) / 28/63 (44%) | 1 (`strong_only`→`small`, 0509#5740); 9/10 `split`→`strong_only` (wastes the paced senior lane) | ~98 | **No** |
+| 2 | opus-vet keep/close/park (Choice) | 658 issues carry an `opus-vet:` verdict; 32 with an answer key in the corpus | `opus-vet:` comments | 9/32 (28%) / 10/32 (31%) | 23 / 22 `keep`→`park` | — | **No** |
+| 3 | pre-grade before a PR opens (Noul) | 350 PRs with an A+ grade; 888 issues carry `grade /` | `grade` comments | Not replayed — the grader and every grade check were deleted 2026-09-29 (#8953, #8959) | — | — | N/A — call site gone |
+| 4 | worker park decision (`needsNish`) | 27 fleet-ops / 45 0509 `jev needsNish` comments; 1 park body records `p(needsNish)` (0509#3990, p=0.84) | parks Nish later resolved or reversed | Not run — n=1 usable answer key | — | small | **Too little history** |
+| 5 | seat choice for a packet | 350 A+ PRs, but the grades name the grader ("Devin grade: A+"), not the building lane | measured first-try A+ by seat | Not run — no answer key; the grade stream was deleted | — | — | **Too little history** |
+| 6 | 0509 product decisions (D2/D5/D6/D8/D9) | prod `jev_verdict`: 15 rows, 3 question ids (is_competitor 5, public_subject 5, identity_field_confidence.name 5), 10 reasons null | prod `jev_verdict` (D1 746c6e3d) | Not run — D2/D5/D6/D8/D9 have 0 rows; core-loop gate 0509#4834 is open | — | — | **Too little history** |
+| 7 | calibration from user corrections | prod `user_decision`: 0 rows (`entity` 6, `user` 6) | prod `user_decision` | Not run — 0 user decisions recorded | — | — | **Too little history** |
 
-## Baseline drift finding
-The shipped `cheap_ok` Noul (candidate 1's small-or-not half, #8894/#8905) re-measured today on jev-1.13.0:
-- 52/63 (83%) agreement = the always-"no" baseline (52 non-small of 63)
-- 0 wrongly cheap (safety holds)
-- 0 of 11 small caught — below #8905's 55–56/63 with 3–4/11 on 2026-09-28
+## Run detail
 
-The one shipped Jev decision has already drifted below its own acceptance bar on the same corpus and model version update. This validates the issue's "replay before wiring" discipline.
+Run-to-run stability (same item answered the same way): `lane` 61/63, `vet`
+62/63. `lane` confusion against the answer key, run 1: `small`→`small` 11/11,
+`strong_only`→`strong_only` 1/2, `split`→`split` 17/50, `split`→`small` 24,
+`split`→`strong_only` 9. The small class is perfect on this corpus; the whole
+loss is inside the `split` class, which Jev reads as either end of the scale.
+`vet` is the worst: it parks 23 of 29 issues the answer key says a worker
+should claim.
+
+### Baseline drift
+
+The shipped `cheap_ok` Noul (#8894, #8905) re-measured on the same corpus and
+builder:
+
+| run | agrees with opus-size | wrongly cheap | small caught | mean p on big | mean p on small |
+|---|---|---|---|---|---|
+| #8905 run 2, 2026-09-28 | 55/63 | 0 | 3 of 11 | 0.67 (highest) | — |
+| this replay run 1 | 52/63 | 0 | 0 of 11 | 0.227 (max 0.71) | 0.635 (max 0.88) |
+| this replay run 2 | 52/63 | 0 | 0 of 11 | 0.226 (max 0.72) | 0.629 (max 0.89) |
+
+52 is exactly the number of non-small issues in the corpus, so the shipped
+question is now the always-"no" baseline while the safety bar (nothing big
+called cheap) still holds. The one shipped Jev decision no longer reproduces
+its own acceptance numbers on jev-1.13.0; re-running it is
+Nishfleet/fleet-ops#8983.
 
 ## Conclusion
-No candidate clears the bar. No child issues will be filed. The fleet's single live Jev call site (`prompts/worker.md` step 4 `needsNish`) remains the only production Jev decision; its replay data is insufficient to prove a full-context+Exa upgrade. Any future Jev wiring must follow this replay method and clear the zero-harm bar per #8894's protocol.
+
+No candidate clears the bar, so no child issues are filed. The fleet's single
+live Jev call site (`prompts/worker.md` step 4 `needsNish`) has n=1 of usable
+answer-key history, so a full-context+Exa upgrade cannot be proven. Any future
+Jev wiring repeats this replay and clears the zero-harm bar first.
