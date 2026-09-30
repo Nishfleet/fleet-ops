@@ -6,7 +6,8 @@
     "agent-in-progress",
     "agent-blocked",
     "agent-failed",
-    "needs-orchestrator"
+    "needs-orchestrator",
+    "strong-only"
   ],
   "preconditions": "Every enrolled repo MUST have (a) a git checkout at <checkout_root>/<name> and (b) every `required_labels` name present on the repo. `agent-dispatch` fires only on the `agent-ready` label.",
   "repos": [

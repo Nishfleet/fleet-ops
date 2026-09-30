@@ -748,10 +748,10 @@ router_settings:
   # first row picked in each group until it has been idle for deployment_affinity_ttl_seconds (default 3600).
   optional_pre_call_checks: ["prompt_caching", "session_affinity"]
   # worker groups hold only rungs proven to return finish_reason=tool_calls (fleet-ops#7761); simple-shuffle ignores order:.
-  # A failed worker goes up to senior only, never sideways to the other worker group; senior never falls back down.
+  # Worker groups have no fallback: a failed request goes back to Pi, which retries its pinned model.
+  # A failed run escalates once, at task level, to the senior Cursor lane (agent.yml first strike adds
+  # strong-only). senior never falls back down.
   fallbacks:
-    - worker-cheap: [senior]
-    - worker-capable: [senior]
     - judge: [senior]
   cooldown_time: 60
   allowed_fails: 1
