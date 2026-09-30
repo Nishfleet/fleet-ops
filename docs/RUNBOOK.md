@@ -64,7 +64,16 @@ same way; `disable_prisma_schema_update: true` stays under `general_settings`
 (startup `prisma migrate deploy` stalls every restart without it), and
 `DATABASE_URL` is a unit `Environment=` in host-qualified form (the
 socket-less form is rejected). Consumer credentials are per-group virtual keys
-minted via the admin API, never the master key.
+minted via the admin API, never the master key. An admin-API call keeps the
+key out of argv — `curl -H "Authorization: Bearer $KEY"` leaves the key in
+`/proc/<pid>/cmdline` for the life of the curl (fleet-ops#8403) — by handing
+curl a config fd:
+`curl --config <(sed -n 's|^LITELLM_MASTER_KEY=\(.*\)|header = "Authorization: Bearer \1"|p' ~/.config/fleet-ops/litellm-master-key.env)`.
+`sed` rewrites the line into a header; the key never becomes an argument.
+`-H @<0600 headers file>` works too. Do not `printf`/`echo` a `$..._KEY`
+into the config instead: `printf` plus a key variable is what CI's
+secret-scan gate blocks, and the gate is right — the printf form puts the key
+back in argv.
 
 Edits to that file are applied automatically. `fleet-litellm-proxy-config.path`
 (`PathChanged=`) triggers `fleet-litellm-proxy-config.service`, which runs

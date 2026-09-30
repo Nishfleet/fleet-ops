@@ -24,7 +24,17 @@
   (fleet-ops#5715: the bare "never merge" wording contradicted the enforced
   self-land rule).
 - Money is Nish's alone. No payments, cards, or paid trials.
-- Secrets never get printed, moved, rotated, or committed.
+- Secrets never get printed, moved, rotated, or committed — and never sit in
+  argv: `/proc/<pid>/cmdline` is world-readable for the life of a call
+  (fleet-ops#8403: `curl -H "Authorization: Bearer $KEY"` leaks the key to
+  `ps`). Hand curl a config fd instead, so argv holds only the fd path:
+  `curl --config <(sed -n 's|^NAME=\(.*\)|header = "Authorization: Bearer \1"|p' <env file>)`
+  — never `printf`/`echo` a `$..._KEY` into it, which CI's secret-scan gate
+  reads as a secret expanded into an output command. `-H @<0600 headers file>`
+  or a call routed through pi also work. Agent shells
+  never source `~/.config/fleet-ops/litellm-master-key.env`: the master key is
+  the proxy's own admin credential — seat traffic uses the per-group virtual
+  keys and decisions go through `/jev` (RUNBOOK).
 - `main`/`master` are protected. Branch or use a worktree.
 - Machine wiring — symlinks under `~/.config/systemd/user`, `~/.local/bin`,
   `~/.pi/agent`, and the vault — resolves only into stable install trees
