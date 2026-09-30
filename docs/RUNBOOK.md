@@ -104,6 +104,45 @@ litellm litellm | gzip > .../litellm-<ts>.sql.gz` in the restic backup path.
 Rollback: stop + disable the three units, drop the fleet-owned cluster and
 `rm -rf` its two data dirs (no sudo needed — they are user-owned).
 
+## Claude session credentials (fleet-ops#9020)
+
+The systemd `--user` manager environment carries no Claude, Exa or Browser Use
+names. `~/.config/environment.d/50-agent-secrets.conf` is removed and
+`CLAUDE_CODE_OAUTH_TOKEN`, `EXA_API_KEY`, `BROWSER_USE_API_KEY` and
+`ANTHROPIC_BASE_URL` are unset from the manager
+(`systemctl --user unset-environment <NAME>...`), because the manager hands its
+environment to every user unit, every `systemd-run --user` transient and every
+quadlet container.
+
+A launcher that needs them reads one file, `~/.config/claude/oauth.env`, mode
+0600 (`install -m 0600`, owner `nish`), holding `NAME=value` lines for exactly
+these names: `CLAUDE_CODE_OAUTH_TOKEN`, `EXA_API_KEY`, `BROWSER_USE_API_KEY`,
+`ANTHROPIC_BASE_URL`. Never tracked, never printed; check it with `test -s`
+and `stat -c %a`.
+
+Loading it is the stock property, required (no `-` prefix) so a missing file
+fails the unit at start instead of running a session on the wrong login:
+
+```
+systemd-run --user --collect --unit <name> -p EnvironmentFile=%h/.config/claude/oauth.env \
+  -- claude -p ...
+```
+
+The same line in a unit is `EnvironmentFile=%h/.config/claude/oauth.env`. It
+is deliberately not among the optional (`-`) seat globs the proxy reads: a
+seat file may be absent, this one may not.
+
+Readers in this repo: none. The audit (grep of `systemd/`, `containers/`,
+`.github/`, `config/`, `prompts/`, `template/`, `docs/` for the four names and
+for `claude`, `systemd-run`, `EnvironmentFile=`, `PassEnvironment=`) found no
+unit, workflow or prompt that launches Claude or reads those names. pi workers
+use the `litellm` provider with the per-group keys, and `agent.yml` sources only
+`seats/cursor.env` and `seats/mobbin-mcp.env`. `claude-remote-control.service`
+is a system unit that never inherited the user manager environment and
+needs the claude.ai login, not the token, so it stays without
+`EnvironmentFile=`. A hand-run `claude -p` or `systemd-run --user` that needs
+the token passes the line above.
+
 ## Break-glass access (SSH is Tailscale-only)
 
 If tailscaled is down, SSH is gone. The out-of-band layer exists today at zero
