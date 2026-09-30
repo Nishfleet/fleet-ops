@@ -1,7 +1,7 @@
 # Approved models per provider (Nish 2026-09-28: models are provider specific; a row outside this list needs his yes; no benching).
 # CommandCode, Cline, OpenCode Go, Ollama: deepseek-v4.1-flash. MiniMax: M3.1-Flash-Preview. StepFun: step-5-preview. Synthetic: GLM-5.3-Flash.
 # xkiro: qwen3-coder-plus:free, qwen3.8-max:free. OpenCode zen: space-bunny-free, union-alpha. Cline: stealth/space-bunny-alpha.
-# Cline stealth/union-alpha stopped being free 2026-09-30 (402 "Insufficient balance", 397 errors and 0 answers in 5 h). LiteLLM never retries or cools a 402, so its rows could only fail a job; they are out until Nish funds Cline credits. Cline's other rows stay.
+# Cline stealth/union-alpha stopped being free 2026-09-30 (402 "Insufficient balance", 397 errors and 0 answers in 5 h). A 402 is neither retried nor cooled by LiteLLM v1.98.0 (no retry_policy key covers APIError; cooldown skips 4xx), so no setting below can move a job off such a row: its four rows are removed until Nish funds Cline credits. Cline's other rows stay. Any row that starts answering only 402 has to come out the same way.
 # OpenRouter: stealth/space-bunny-alpha, nemotron-3-ultra, nemotron-3.5-lightning. Pareto: glm-5.3-flash, never in judge.
 # Devin: SWE 2 only, through the devin CLI lane in agent.yml (no router route: 404 on every base).
 model_list:
@@ -495,7 +495,7 @@ router_settings:
     RateLimitErrorRetries: 2
     TimeoutErrorRetries: 1
     InternalServerErrorRetries: 2
-    # a 400 is never cooled by LiteLLM (cooldown_handlers._is_cooldown_required), so a row whose model is gone upstream stays in the shuffle; the retry moves the call to another row (zen union-alpha "Model is unavailable", 2026-09-30, stalled drive for an hour).
+    # 400 only (a separate fix from the 402 removal above): LiteLLM never cools a 400, so a row whose model is gone upstream stays in the shuffle (zen union-alpha "Model is unavailable", stalled drive for an hour on 2026-09-30). 3 retries = 4 picks. The retry re-shuffles and does not exclude the failed row, so escape is by odds: senior has 2 rows, one of them zen union-alpha, so 4 picks leave 6% before the fallback group; 1 of 15 in the worker groups leaves under 0.01%. ContentPolicyViolation is matched first and stays 0; a context-window 400 is retried too, which costs three fast failures.
     BadRequestErrorRetries: 3
     ContentPolicyViolationErrorRetries: 0
   allowed_fails_policy:
