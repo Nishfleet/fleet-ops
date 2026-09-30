@@ -229,17 +229,12 @@ jobs:
             fi
           fi
           if [ "$ENGINE" = cursor ]; then
-            # Alternate the two prepaid Cursor Ultra keys by issue number so
-            # neither stack is spent and both are paced (fleet-ops#8740):
-            # even $id -> cursor.env, odd $id -> cursor-2.env. $id's issue
-            # number is its last '-' field, so parity is on the issue number.
-            case ${id##*-} in
-              *[!0-9]*) cursor_env=cursor.env ;;   # not numeric: default to key 1
-              *) [ $(( ${id##*-} % 2 )) -eq 0 ] && cursor_env=cursor.env || cursor_env=cursor-2.env ;;
-            esac
+            # cursor-2.env (live.com) hit its weekly limit on 2026-09-29 and
+            # resets about 2026-10-05: use cursor.env only, then restore the
+            # odd/even alternation (fleet-ops#8740).
             set -a
-            # shellcheck disable=SC1090 # cursor_env is one of the two constant seat files set in the case just above
-            . "$HOME/.config/fleet-ops/seats/$cursor_env"
+            # shellcheck disable=SC1091 # the constant seat file on the VPS
+            . "$HOME/.config/fleet-ops/seats/cursor.env"
             set +a
             mkdir -p "$dir"
             $jail cursor-agent -p --output-format text --model cursor-grok-4.6-high --force --trust \
