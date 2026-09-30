@@ -366,7 +366,8 @@ jobs:
           # that held the group (agent-in-progress and agent-ready together on
           # 10 of 43 bare-branch issues in 0509).
           # shellcheck disable=SC2016 # $u is a jq variable
-          gh issue view "$i" -R "$GITHUB_REPOSITORY" --json comments | jq -e --arg u "/runs/$GITHUB_RUN_ID" '.comments | any(.body | startswith("agent run started:") and endswith($u))' >/dev/null ||
+          comments=$(gh issue view "$i" -R "$GITHUB_REPOSITORY" --json comments)
+          jq -e --arg u "/runs/$GITHUB_RUN_ID" '.comments | any(.body | startswith("agent run started:") and endswith($u))' <<<"$comments" >/dev/null ||
             { echo "report: run $GITHUB_RUN_ID never claimed #$i; skip"; exit 0; }
           # shellcheck disable=SC2016 # $v is a jq variable
           prior=$(gh issue view "$i" -R "$GITHUB_REPOSITORY" --json comments --jq '[.comments[] | if (.body | startswith("park:") or startswith("opus-vet:")) or ((.body | test("^attempt-cap reset: \\S")) and (.authorAssociation | IN("OWNER", "MEMBER", "COLLABORATOR"))) then "park:" else .body end] | (map(startswith("park:")) | rindex(true) // -1) as $v | .[$v+1:] | map(select(startswith("agent run failed:"))) | length')
