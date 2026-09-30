@@ -172,6 +172,8 @@ jobs:
         env:
           ENGINE: ${{ steps.gate.outputs.engine }}
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          # Pi sends this as x-litellm-session-id so the router keeps the whole run on one model (#9015).
+          FLEET_TASK_ID: run-${{ github.run_id }}-${{ github.run_attempt }}
         run: |
           exec 2> >(tee "$RUNNER_TEMP/worker.err" >&2)
           id=${REF#claim/issue-}; id=${REPO#*/}-${id%%-*}
