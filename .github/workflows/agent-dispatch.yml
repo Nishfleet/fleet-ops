@@ -164,26 +164,20 @@ jobs:
               jq -c 'select(.mergeable == "CONFLICTING") | .headRefName' <<<"$v"
             done | jq -sc .)
             # Armed claim PRs whose required checks never reported (fleet-ops#8777).
-            # A pending required check is left: it is running, not missing. A
-            # completed report, including a failure, is left too; rework owns that.
-            req=$(gh api --paginate "repos/$GITHUB_REPOSITORY/rules/branches/main?per_page=100" | jq -c '[.[] | select(.type == "required_status_checks") | .parameters.required_status_checks[].context]')
+            # BLOCKED with nothing pending and nothing failed means a required
+            # check is absent. A pending check is left: it is running, not
+            # missing. A completed failure is left too; rework owns that. A repo
+            # with no required checks is never BLOCKED by them, so it lists none
+            # (Nishfleet/drive, fleet-ops#8981).
             missing=$(
               for pr in $(jq -r '.[] | select(.autoMergeRequest != null) | .number' <<<"$all"); do
-                gh pr view "$pr" -R "$GITHUB_REPOSITORY" --json headRefName,statusCheckRollup || exit 1
-              done | jq -sc --argjson req "$req" '
+                gh pr view "$pr" -R "$GITHUB_REPOSITORY" --json headRefName,statusCheckRollup,mergeStateStatus || exit 1
+              done | jq -sc '
                 def pending: (.status != null and .status != "COMPLETED") or .state == "PENDING";
-                def reported: .status == "COMPLETED" or ((.state != null) and .state != "PENDING" and .state != "EXPECTED");
-                [.[] | . as $pr
-                  | (if $pr.statusCheckRollup == null then [] else $pr.statusCheckRollup end
-                     | map({key: (if .name != null then .name elif .context != null then .context else "" end), status, state})) as $checks
-                  | [ $req[] as $name
-                      | [ $checks[] | select(.key == $name) ] as $hits
-                      | if any($hits[]; pending) then "pending"
-                        elif any($hits[]; reported) then "reported"
-                        else "absent" end
-                    ] as $kinds
-                  | select(($kinds | index("pending") | not) and ($kinds | index("absent")))
-                  | $pr.headRefName
+                def failed: (.conclusion | IN("FAILURE", "CANCELLED", "TIMED_OUT", "ACTION_REQUIRED", "STARTUP_FAILURE")) or (.state | IN("FAILURE", "ERROR"));
+                [.[] | (.statusCheckRollup // []) as $checks
+                  | select(.mergeStateStatus == "BLOCKED" and ($checks | any(pending) | not) and ($checks | any(failed) | not))
+                  | .headRefName
                 ]'
             )
             # Claim PRs whose issue is still agent-in-progress after the worker
@@ -212,7 +206,6 @@ jobs:
               done | jq -Rsc 'split("\n") | map(select(length > 0))'
             )
             prs=$(jq -nc --argjson a "$unarmed" --argjson b "$conflicted" --argjson m "$missing" --argjson o "$orphans" --argjson q "$queued" '(reduce ($a[], $b[], $m[], $o[]) as $r ([]; if index($r) then . else . + [$r] end)) - $q')
-            echo "required checks: $req"
             echo "claim PRs missing required checks: $missing"
             echo "claim PRs with a dead agent run: $orphans"
             echo "claim PRs picked by the sweep: $prs"
@@ -231,12 +224,15 @@ jobs:
       # per listed ref at once; a 14-ref sweep put ~14 workers on the LiteLLM
       # router against ~7 live parallel slots and 429'd them into strikes
       # (fleet-ops#8553). Stock Actions knob, no new files: strategy.max-parallel,
-      # tunable per repo via vars.AGENT_MAX_PARALLEL (unset -> 6, ~7 slots).
+      # tunable per repo via vars.AGENT_MAX_PARALLEL (unset -> 4, the Devin lane's cap of 4).
+      # The Gate counts live Devin workers, but matrix jobs start in the same
+      # second and all read 0, so 9 of 10 hit Devin's rate limit on 2026-09-29
+      # (run 36621293000); a fan-out of 4 cannot exceed the cap.
       # This bounds only this matrix. The new/rework/ejected jobs above are one
       # dispatch per event and are NOT throttled by max-parallel; bounding that
       # aggregate is host runner-count config (deploy is Nish-gated). Sweeps
       # themselves are one running plus one waiting (concurrency above).
-      max-parallel: ${{ fromJSON(vars.AGENT_MAX_PARALLEL || '6') }}
+      max-parallel: ${{ fromJSON(vars.AGENT_MAX_PARALLEL || '4') }}
       matrix:
         ref: ${{ fromJSON(needs.list.outputs.refs) }}
     uses: Nishfleet/fleet-ops/.github/workflows/agent.yml@main # runner group 3 allows only agent.yml@refs/heads/main; a SHA pin strands every job

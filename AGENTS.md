@@ -42,7 +42,8 @@
   or re-clone (fleet-ops#7743: hand-linked `standing-rules-render` units
   pointed into a churning checkout and dangled, taking the render down).
   `fleet-sync.service`'s LINK-GUARD ExecStart fails the unit on a dangling
-  or throwaway-target live link — wiring set this way is caught in ≤2 min.
+  or throwaway-target live link — wiring set this way is caught on the next
+  deploy push or boot.
 - Memory = vault `_system/agent-memory/` plain files (one fact per file, true now, edit in place); search old sessions with `rg` over `~/.pi/agent/sessions` and `~/.claude/projects/*/*.jsonl` before re-deriving.
 
 ## Live state
