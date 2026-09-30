@@ -69,6 +69,7 @@ jobs:
         id: gate
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          DEVIN_MAX_LIVE: ${{ vars.DEVIN_MAX_LIVE || '0' }}
         run: |
           # Suffixed rework refs carry a -<tag> tail (claim/issue-<N>-<tag>);
           # the issue number is the leading digits (fleet-ops#8793).
@@ -127,9 +128,12 @@ jobs:
             slots=$(yq '[.model_list[] | select(.model_name == "worker-capable") | .litellm_params.max_parallel_requests // 0] | .[] as $n ireduce (0; . + $n)' "$HOME/.config/fleet-ops/litellm-proxy.yaml")
             [ "$(live pi)" -lt "$slots" ]
           }
-          # Devin is free while fewer than 4 run.
+          # Devin is free while fewer than DEVIN_MAX_LIVE run. The default 0
+          # pauses the lane while its free-model quota is out (infra-failed
+          # runs 2026-09-29); vars.DEVIN_MAX_LIVE or a one-line PR sets it
+          # back to 4.
           devin_free() {
-            [ "$(live devin)" -lt 4 ]
+            [ "$(live devin)" -lt "$DEVIN_MAX_LIVE" ]
           }
           # Cursor is the strong-only lane only. A non-strong-only issue never
           # falls back to it: with Devin and pi both full it waits
