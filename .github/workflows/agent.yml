@@ -194,16 +194,39 @@ jobs:
               echo "$packet" | bwrap --dev-bind / / --proc /proc --unshare-pid --die-with-parent --chdir "$dir" -- \
                 devin -p --prompt-file /dev/stdin --permission-mode dangerous --model "$model" >/dev/null 2> "$RUNNER_TEMP/try.err" || rc=$?
               [ "$rc" != 0 ] && [ "$model" = swe-2-max ] && grep -qi 'free model rate limit' "$RUNNER_TEMP/try.err" && [ "$(gh api "repos/$REPO/compare/main...$REF" --jq .ahead_by)" = 0 ] && continue
-              cat "$RUNNER_TEMP/try.err" >&2
               break
             done
-            [ "$rc" = 0 ] || exit 1
-          elif [ "$ENGINE" = opencode ]; then
+            # The refusal text reaches stderr (worker.err) only when the run
+            # ends here; after a fallthrough, the Router wall must judge the
+            # lane that actually ran.
+            if [ "$rc" != 0 ] && grep -qiE 'capacity issues|free model rate limit' "$RUNNER_TEMP/try.err" && [ "$(gh api "repos/$REPO/compare/main...$REF" --jq .ahead_by)" = 0 ]; then
+              live() { pgrep -af -- "^bwrap .* -- $1 " | grep -oE 'agent-worktrees/issue-[^ ]*|sessions/agent-[^ ]*' | sort -u | wc -l; }
+              if [ "$(live opencode)" -lt 2 ]; then ENGINE=opencode
+              else ENGINE=pi
+              fi
+              echo "fallthrough: $ENGINE"
+            else
+              cat "$RUNNER_TEMP/try.err" >&2
+              [ "$rc" = 0 ] || exit 1
+            fi
+          fi
+          if [ "$ENGINE" = opencode ]; then
             # --dir puts the worker directory on the bwrap command line; --auto
             # approves what the worker needs outside it (prompts, gh, the repo).
             mkdir -p "$dir"
-            $jail opencode run --dir "$dir" -m opencode/longcat-2.5-preview-free --auto "$packet" >/dev/null
-          elif [ "$ENGINE" = cursor ]; then
+            rc=0
+            $jail opencode run --dir "$dir" -m opencode/longcat-2.5-preview-free --auto "$packet" >/dev/null 2> "$RUNNER_TEMP/try.err" || rc=$?
+            # A refused free seat is not a failed packet: with nothing pushed
+            # yet, the same run moves to pi (no benching, fleet-ops#8993).
+            if [ "$rc" != 0 ] && grep -qi 'rate limit exceeded' "$RUNNER_TEMP/try.err" && [ "$(gh api "repos/$REPO/compare/main...$REF" --jq .ahead_by)" = 0 ]; then
+              ENGINE=pi
+              echo "fallthrough: $ENGINE"
+            else
+              cat "$RUNNER_TEMP/try.err" >&2
+              [ "$rc" = 0 ] || exit 1
+            fi
+          fi
+          if [ "$ENGINE" = cursor ]; then
             # Alternate the two prepaid Cursor Ultra keys by issue number so
             # neither stack is spent and both are paced (fleet-ops#8740):
             # even $id -> cursor.env, odd $id -> cursor-2.env. $id's issue
@@ -219,7 +242,7 @@ jobs:
             mkdir -p "$dir"
             $jail cursor-agent -p --output-format text --model cursor-grok-4.6-high --force --trust \
               --workspace "$dir" "$packet" >/dev/null
-          else
+          elif [ "$ENGINE" = pi ]; then
             # Mobbin MCP via the pi-mcp-adapter package (Pi has no built-in MCP).
             # OAuth tokens sit in ~/.pi/agent/mcp-oauth-encrypted/; this is their
             # file key. Without it only the lazy mobbin server fails, never the run.
@@ -231,6 +254,9 @@ jobs:
               --append-system-prompt "$HOME/workspaces/tooling/fleet-ops-deploy-clone/AGENTS.md" \
               --session-dir "$HOME/.pi/agent/sessions/agent-$id" \
               --exclude-tools subagent --provider litellm --model worker-capable >/dev/null
+          elif [ "$ENGINE" != devin ] && [ "$ENGINE" != opencode ]; then
+            echo "no lane for ENGINE='$ENGINE'" >&2
+            exit 1
           fi
       - name: App token for arm
         id: arm-token
