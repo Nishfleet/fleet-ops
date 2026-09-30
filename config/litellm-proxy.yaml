@@ -1,4 +1,6 @@
 # Approved models per provider (Nish 2026-09-28: models are provider specific; a row outside this list needs his yes; no benching).
+# Nish 2026-09-30 free rows: CommandCode: stealth/space-bunny-alpha, stealth/pixel-canary, poolside/laguna-s-2.1-free, inclusionai/ling-3.0-flash-sante:free, inclusionai/ling-3.1-flash:free. Cline: poolside/laguna-s-2.1:free, inclusionai/ling-3.0-flash-sante:free. xkiro: stealth/pixel-canary:free, stealth/space-bunny-alpha:free, inclusionai/ling-3.0-flash-sante:free.
+# MiniMax M3.1-Flash-Preview is free for every MiniMax Code subscriber until 2026-10-07 (Nish 2026-09-30); its four rows are tagged free until then.
 # CommandCode, Cline, OpenCode Go, Ollama: deepseek-v4.1-flash. MiniMax: M3.1-Flash-Preview. StepFun: step-5-preview. Synthetic: GLM-5.3-Flash.
 # xkiro: qwen3-coder-plus:free, qwen3.8-max:free. OpenCode zen: space-bunny-free, union-alpha. Cline: stealth/space-bunny-alpha.
 # Cline stealth/union-alpha stopped being free 2026-09-30 (402 "Insufficient balance", 397 errors and 0 answers in 5 h). A 402 is neither retried nor cooled by LiteLLM v1.98.0 (no retry_policy key covers APIError; cooldown skips 4xx), so no setting below can move a job off such a row: its four rows are removed until Nish funds Cline credits. Cline's other rows stay. Any row that starts answering only 402 has to come out the same way.
@@ -33,6 +35,80 @@ model_list:
   model_info:
     mode: chat
     id: commandcode-ds41flash-worker-cheap
+# Nish 2026-09-30 free rows (probe: all finish_reason=tool_calls). laguna-s-2.1-free answered 1 of 2 probe calls (1 upstream 429 "temporarily unavailable"): the row stays live and cools 900 s on a 429, never benched.
+- model_name: worker-capable
+  litellm_params: &commandcode-free
+    model: openai/stealth/space-bunny-alpha
+    api_base: https://api.commandcode.ai/provider/v1
+    api_key: os.environ/COMMANDCODE_API_KEY
+    tags: [free, commandcode]
+    order: 1
+    max_parallel_requests: 2
+    cooldown_time: 900
+  model_info:
+    mode: chat
+    id: commandcode-spacebunnyalpha-worker-capable
+- model_name: worker-cheap
+  litellm_params: {<<: *commandcode-free}
+  model_info:
+    mode: chat
+    id: commandcode-spacebunnyalpha-worker-cheap
+- model_name: worker-capable
+  litellm_params:
+    <<: *commandcode-free
+    model: openai/stealth/pixel-canary
+  model_info:
+    mode: chat
+    id: commandcode-pixelcanary-worker-capable
+- model_name: worker-cheap
+  litellm_params:
+    <<: *commandcode-free
+    model: openai/stealth/pixel-canary
+  model_info:
+    mode: chat
+    id: commandcode-pixelcanary-worker-cheap
+- model_name: worker-capable
+  litellm_params:
+    <<: *commandcode-free
+    model: openai/poolside/laguna-s-2.1-free
+  model_info:
+    mode: chat
+    id: commandcode-lagunas21free-worker-capable
+- model_name: worker-cheap
+  litellm_params:
+    <<: *commandcode-free
+    model: openai/poolside/laguna-s-2.1-free
+  model_info:
+    mode: chat
+    id: commandcode-lagunas21free-worker-cheap
+- model_name: worker-capable
+  litellm_params:
+    <<: *commandcode-free
+    model: openai/inclusionai/ling-3.0-flash-sante:free
+  model_info:
+    mode: chat
+    id: commandcode-ling30flashsante-worker-capable
+- model_name: worker-cheap
+  litellm_params:
+    <<: *commandcode-free
+    model: openai/inclusionai/ling-3.0-flash-sante:free
+  model_info:
+    mode: chat
+    id: commandcode-ling30flashsante-worker-cheap
+- model_name: worker-capable
+  litellm_params:
+    <<: *commandcode-free
+    model: openai/inclusionai/ling-3.1-flash:free
+  model_info:
+    mode: chat
+    id: commandcode-ling31flash-worker-capable
+- model_name: worker-cheap
+  litellm_params:
+    <<: *commandcode-free
+    model: openai/inclusionai/ling-3.1-flash:free
+  model_info:
+    mode: chat
+    id: commandcode-ling31flash-worker-cheap
 - model_name: worker-capable
   litellm_params:
     model: openai/deepseek-v4.1-flash
@@ -208,6 +284,52 @@ model_list:
   model_info:
     mode: chat
     id: zai-glm53flash-worker-cheap
+# Nish 2026-09-30 free rows (probe: pixel-canary and space-bunny finish_reason=tool_calls; ling-3.0-flash-sante 429 daily free-model quota at probe time = quota wall, not a bench).
+- model_name: worker-capable
+  litellm_params: &xkiro-free
+    model: openai/stealth/pixel-canary:free
+    api_base: https://api.xkiro.com/v1
+    api_key: os.environ/XKIRO_API_KEY
+    tags: [free, xkiro-free]
+    order: 2
+    max_parallel_requests: 2
+    cooldown_time: 900
+  model_info:
+    mode: chat
+    id: xkiro-pixelcanary-worker-capable
+- model_name: worker-cheap
+  litellm_params: {<<: *xkiro-free}
+  model_info:
+    mode: chat
+    id: xkiro-pixelcanary-worker-cheap
+- model_name: worker-capable
+  litellm_params:
+    <<: *xkiro-free
+    model: openai/stealth/space-bunny-alpha:free
+  model_info:
+    mode: chat
+    id: xkiro-spacebunnyalpha-worker-capable
+- model_name: worker-cheap
+  litellm_params:
+    <<: *xkiro-free
+    model: openai/stealth/space-bunny-alpha:free
+  model_info:
+    mode: chat
+    id: xkiro-spacebunnyalpha-worker-cheap
+- model_name: worker-capable
+  litellm_params:
+    <<: *xkiro-free
+    model: openai/inclusionai/ling-3.0-flash-sante:free
+  model_info:
+    mode: chat
+    id: xkiro-ling30flashsante-worker-capable
+- model_name: worker-cheap
+  litellm_params:
+    <<: *xkiro-free
+    model: openai/inclusionai/ling-3.0-flash-sante:free
+  model_info:
+    mode: chat
+    id: xkiro-ling30flashsante-worker-cheap
 - model_name: worker-cheap
   litellm_params:
     model: openai/qwen/qwen3-coder-plus:free
@@ -283,8 +405,9 @@ model_list:
     model: anthropic/MiniMax-M3.1-Flash-Preview
     api_base: https://api.minimax.io/anthropic
     api_key: os.environ/MINIMAX_API_KEY
+    # free until 2026-10-07 (Nish 2026-09-30), see follow-up issue
     tags:
-    - prepaid
+    - free
     - minimax
     order: 1
     max_parallel_requests: 6
@@ -297,8 +420,9 @@ model_list:
     model: anthropic/MiniMax-M3.1-Flash-Preview
     api_base: https://api.minimax.io/anthropic
     api_key: os.environ/MINIMAX_API_KEY
+    # free until 2026-10-07 (Nish 2026-09-30), see follow-up issue
     tags:
-    - prepaid
+    - free
     - minimax
     order: 1
     max_parallel_requests: 6
@@ -311,8 +435,9 @@ model_list:
     model: anthropic/MiniMax-M3.1-Flash-Preview
     api_base: https://api.minimax.io/anthropic
     api_key: os.environ/MINIMAX_API_KEY
+    # free until 2026-10-07 (Nish 2026-09-30), see follow-up issue
     tags:
-    - prepaid
+    - free
     - minimax
     order: 1
     max_parallel_requests: 6
@@ -325,8 +450,9 @@ model_list:
     model: anthropic/MiniMax-M3.1-Flash-Preview
     api_base: https://api.minimax.io/anthropic
     api_key: os.environ/MINIMAX_API_KEY
+    # free until 2026-10-07 (Nish 2026-09-30), see follow-up issue
     tags:
-    - prepaid
+    - free
     - minimax
     order: 1
     max_parallel_requests: 6
@@ -430,6 +556,38 @@ model_list:
   model_info:
     mode: chat
     id: cline-spacebunnyalpha-worker-capable
+# Nish 2026-09-30 free rows (probe: both finish_reason=tool_calls).
+- model_name: worker-capable
+  litellm_params: &cline-free
+    model: openai/poolside/laguna-s-2.1:free
+    api_base: https://api.cline.bot/api/v1
+    api_key: os.environ/CLINE_API_KEY
+    tags: [free, cline]
+    order: 1
+    max_parallel_requests: 2
+    cooldown_time: 900
+  model_info:
+    mode: chat
+    id: cline-lagunas21-worker-capable
+- model_name: worker-cheap
+  litellm_params: {<<: *cline-free}
+  model_info:
+    mode: chat
+    id: cline-lagunas21-worker-cheap
+- model_name: worker-capable
+  litellm_params:
+    <<: *cline-free
+    model: openai/inclusionai/ling-3.0-flash-sante:free
+  model_info:
+    mode: chat
+    id: cline-ling30flashsante-worker-capable
+- model_name: worker-cheap
+  litellm_params:
+    <<: *cline-free
+    model: openai/inclusionai/ling-3.0-flash-sante:free
+  model_info:
+    mode: chat
+    id: cline-ling30flashsante-worker-cheap
 - model_name: worker-capable
   litellm_params: &openrouter-spacebunny
     model: openai/stealth/space-bunny-alpha
