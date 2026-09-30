@@ -18,6 +18,8 @@ model_list:
   model_info:
     mode: chat
     id: commandcode-ds41flash-worker-capable
+    allowed_fails_policy:
+      BadRequestErrorAllowedFails: 1
 - model_name: worker-cheap
   litellm_params:
     model: openai/deepseek/deepseek-v4.1-flash
@@ -32,6 +34,8 @@ model_list:
   model_info:
     mode: chat
     id: commandcode-ds41flash-worker-cheap
+    allowed_fails_policy:
+      BadRequestErrorAllowedFails: 1
 - model_name: worker-capable
   litellm_params:
     model: openai/deepseek-v4.1-flash
@@ -49,6 +53,8 @@ model_list:
   model_info:
     mode: chat
     id: opencodego-ds41flash-worker-capable
+    allowed_fails_policy:
+      BadRequestErrorAllowedFails: 1
 - model_name: worker-cheap
   litellm_params:
     model: openai/deepseek-v4.1-flash
@@ -66,6 +72,8 @@ model_list:
   model_info:
     mode: chat
     id: opencodego-ds41flash-worker-cheap
+    allowed_fails_policy:
+      BadRequestErrorAllowedFails: 1
 - model_name: judge
   litellm_params:
     model: openai/deepseek-v4.1-flash
@@ -83,6 +91,8 @@ model_list:
   model_info:
     mode: chat
     id: opencodego-ds41flash-judge
+    allowed_fails_policy:
+      BadRequestErrorAllowedFails: 1
 - model_name: worker-capable
   litellm_params:
     model: openai/deepseek-v4.1-flash
@@ -100,6 +110,8 @@ model_list:
   model_info:
     mode: chat
     id: opencodego2-ds41flash-worker-capable
+    allowed_fails_policy:
+      BadRequestErrorAllowedFails: 1
 - model_name: worker-cheap
   litellm_params:
     model: openai/deepseek-v4.1-flash
@@ -117,6 +129,8 @@ model_list:
   model_info:
     mode: chat
     id: opencodego2-ds41flash-worker-cheap
+    allowed_fails_policy:
+      BadRequestErrorAllowedFails: 1
 - model_name: judge
   litellm_params:
     model: openai/deepseek-v4.1-flash
@@ -134,6 +148,8 @@ model_list:
   model_info:
     mode: chat
     id: opencodego2-ds41flash-judge
+    allowed_fails_policy:
+      BadRequestErrorAllowedFails: 1
 - model_name: worker-capable
   litellm_params:
     model: openai/z-ai/glm-5.3-flash
@@ -149,6 +165,8 @@ model_list:
   model_info:
     mode: chat
     id: pareto-glm53flash-worker-capable
+    allowed_fails_policy:
+      BadRequestErrorAllowedFails: 1
 - model_name: senior
   litellm_params:
     model: openai/z-ai/glm-5.3-flash
@@ -164,6 +182,8 @@ model_list:
   model_info:
     mode: chat
     id: pareto-glm53flash-senior
+    allowed_fails_policy:
+      BadRequestErrorAllowedFails: 1
 - model_name: worker-cheap
   litellm_params:
     model: openai/hf:zai-org/GLM-5.3-Flash
@@ -177,6 +197,8 @@ model_list:
   model_info:
     mode: chat
     id: synthetic-glm53flash-worker-cheap
+    allowed_fails_policy:
+      BadRequestErrorAllowedFails: 1
 - model_name: worker-capable
   litellm_params:
     model: openai/glm-5.3-flash
@@ -192,6 +214,8 @@ model_list:
   model_info:
     mode: chat
     id: zai-glm53flash-worker-capable
+    allowed_fails_policy:
+      BadRequestErrorAllowedFails: 1
 - model_name: worker-cheap
   litellm_params:
     model: openai/glm-5.3-flash
@@ -207,6 +231,8 @@ model_list:
   model_info:
     mode: chat
     id: zai-glm53flash-worker-cheap
+    allowed_fails_policy:
+      BadRequestErrorAllowedFails: 1
 - model_name: worker-cheap
   litellm_params:
     model: openai/qwen/qwen3-coder-plus:free
@@ -221,6 +247,8 @@ model_list:
   model_info:
     mode: chat
     id: xkiro-qwen3coderplus-worker-cheap
+    allowed_fails_policy:
+      BadRequestErrorAllowedFails: 1
 - model_name: worker-cheap
   litellm_params:
     model: openai/qwen/qwen3.8-max:free
@@ -235,6 +263,8 @@ model_list:
   model_info:
     mode: chat
     id: xkiro-qwen38max-worker-cheap
+    allowed_fails_policy:
+      BadRequestErrorAllowedFails: 1
 - model_name: worker-capable
   litellm_params:
     model: openai/cline-pass/deepseek-v4.1-flash
@@ -249,6 +279,8 @@ model_list:
   model_info:
     mode: chat
     id: cline-ds41flash-worker-capable
+    allowed_fails_policy:
+      BadRequestErrorAllowedFails: 1
 - model_name: worker-capable
   litellm_params:
     model: openai/space-bunny-free
@@ -263,6 +295,8 @@ model_list:
   model_info:
     mode: chat
     id: zen-spacebunny-worker-capable
+    allowed_fails_policy:
+      BadRequestErrorAllowedFails: 1
 - model_name: worker-cheap
   litellm_params:
     model: openai/space-bunny-free
@@ -277,6 +311,8 @@ model_list:
   model_info:
     mode: chat
     id: zen-spacebunny-worker-cheap
+    allowed_fails_policy:
+      BadRequestErrorAllowedFails: 1
 - model_name: worker-capable
   litellm_params:
     model: anthropic/MiniMax-M3.1-Flash-Preview
@@ -291,6 +327,8 @@ model_list:
   model_info:
     mode: chat
     id: minimax-m31-worker-capable
+    allowed_fails_policy:
+      BadRequestErrorAllowedFails: 1
 - model_name: worker-capable
   litellm_params:
     model: anthropic/MiniMax-M3.1-Flash-Preview
@@ -305,6 +343,8 @@ model_list:
   model_info:
     mode: chat
     id: minimax-m31b-worker-capable
+    allowed_fails_policy:
+      BadRequestErrorAllowedFails: 1
 - model_name: worker-cheap
   litellm_params:
     model: anthropic/MiniMax-M3.1-Flash-Preview
@@ -319,6 +359,8 @@ model_list:
   model_info:
     mode: chat
     id: minimax-m31-worker-cheap
+    allowed_fails_policy:
+      BadRequestErrorAllowedFails: 1
 - model_name: worker-cheap
   litellm_params:
     model: anthropic/MiniMax-M3.1-Flash-Preview
@@ -333,6 +375,8 @@ model_list:
   model_info:
     mode: chat
     id: minimax-m31b-worker-cheap
+    allowed_fails_policy:
+      BadRequestErrorAllowedFails: 1
 - model_name: worker-capable
   litellm_params:
     model: openai/deepseek-v4.1-flash
@@ -347,6 +391,8 @@ model_list:
   model_info:
     mode: chat
     id: ollama-ds41flash-worker-capable
+    allowed_fails_policy:
+      BadRequestErrorAllowedFails: 1
 - model_name: worker-capable
   litellm_params:
     model: openai/step-5-preview
@@ -362,6 +408,8 @@ model_list:
   model_info:
     mode: chat
     id: stepfun-step5preview-worker-capable
+    allowed_fails_policy:
+      BadRequestErrorAllowedFails: 1
 - model_name: worker-cheap
   litellm_params:
     model: openai/stealth/union-alpha
@@ -375,6 +423,8 @@ model_list:
   model_info:
     mode: chat
     id: cline-unionalpha-worker-cheap
+    allowed_fails_policy:
+      BadRequestErrorAllowedFails: 1
 - model_name: worker-capable
   litellm_params:
     model: openai/stealth/union-alpha
@@ -388,6 +438,8 @@ model_list:
   model_info:
     mode: chat
     id: cline-unionalpha-worker-capable
+    allowed_fails_policy:
+      BadRequestErrorAllowedFails: 1
 - model_name: senior
   litellm_params:
     model: openai/stealth/union-alpha
@@ -401,6 +453,8 @@ model_list:
   model_info:
     mode: chat
     id: cline-unionalpha-senior
+    allowed_fails_policy:
+      BadRequestErrorAllowedFails: 1
 - model_name: judge
   litellm_params:
     model: openai/stealth/union-alpha
@@ -414,6 +468,8 @@ model_list:
   model_info:
     mode: chat
     id: cline-unionalpha-judge
+    allowed_fails_policy:
+      BadRequestErrorAllowedFails: 1
 - model_name: worker-cheap
   litellm_params:
     model: openai/union-alpha
@@ -427,6 +483,8 @@ model_list:
   model_info:
     mode: chat
     id: opencode-unionalpha-worker-cheap
+    allowed_fails_policy:
+      BadRequestErrorAllowedFails: 1
 - model_name: worker-capable
   litellm_params:
     model: openai/union-alpha
@@ -440,6 +498,8 @@ model_list:
   model_info:
     mode: chat
     id: opencode-unionalpha-worker-capable
+    allowed_fails_policy:
+      BadRequestErrorAllowedFails: 1
 - model_name: senior
   litellm_params:
     model: openai/union-alpha
@@ -453,6 +513,8 @@ model_list:
   model_info:
     mode: chat
     id: opencode-unionalpha-senior
+    allowed_fails_policy:
+      BadRequestErrorAllowedFails: 1
 - model_name: judge
   litellm_params:
     model: openai/union-alpha
@@ -466,6 +528,8 @@ model_list:
   model_info:
     mode: chat
     id: opencode-unionalpha-judge
+    allowed_fails_policy:
+      BadRequestErrorAllowedFails: 1
 - model_name: worker-capable
   litellm_params:
     model: openai/stealth/space-bunny-alpha
@@ -481,6 +545,8 @@ model_list:
   model_info:
     mode: chat
     id: cline-spacebunnyalpha-worker-capable
+    allowed_fails_policy:
+      BadRequestErrorAllowedFails: 1
 - model_name: worker-capable
   litellm_params: &openrouter-spacebunny
     model: openai/stealth/space-bunny-alpha
@@ -498,11 +564,15 @@ model_list:
   model_info:
     mode: chat
     id: openrouter-spacebunnyalpha-worker-capable
+    allowed_fails_policy:
+      BadRequestErrorAllowedFails: 1
 - model_name: worker-cheap
   litellm_params: {<<: *openrouter-spacebunny}
   model_info:
     mode: chat
     id: openrouter-spacebunnyalpha-worker-cheap
+    allowed_fails_policy:
+      BadRequestErrorAllowedFails: 1
 - model_name: worker-cheap
   litellm_params: &openrouter-nemotron
     <<: *openrouter-spacebunny
@@ -514,11 +584,15 @@ model_list:
   model_info:
     mode: chat
     id: openrouter-nemotronultra-worker-cheap
+    allowed_fails_policy:
+      BadRequestErrorAllowedFails: 1
 - model_name: worker-capable
   litellm_params: {<<: *openrouter-nemotron}
   model_info:
     mode: chat
     id: openrouter-nemotronultra-worker-capable
+    allowed_fails_policy:
+      BadRequestErrorAllowedFails: 1
 - model_name: worker-cheap
   litellm_params:
     <<: *openrouter-nemotron
@@ -526,6 +600,8 @@ model_list:
   model_info:
     mode: chat
     id: openrouter-nemotronlightning-worker-cheap
+    allowed_fails_policy:
+      BadRequestErrorAllowedFails: 1
 router_settings:
   routing_strategy: simple-shuffle
   optional_pre_call_checks: ["prompt_caching"]
@@ -549,6 +625,20 @@ router_settings:
     BadRequestErrorRetries: 0
     ContentPolicyViolationErrorRetries: 0
   allowed_fails_policy:
+    # fleet-ops#9007: a withdrawn model answers 400 (BadRequestError) and a spent
+    # credit line answers 402 (APIError). _is_cooldown_required (pinned v1.98.0,
+    # unchanged through released v1.103.1) cools only 401/404/408/429, and no
+    # router-level value here can change that. The stock override is per
+    # deployment: model_info.allowed_fails_policy naming the exact exception
+    # type (cooldown_handlers._has_explicit_allowed_fails_policy_for_exception)
+    # makes _should_run_cooldown_logic accept the 4xx. Every row opts in below
+    # with BadRequestErrorAllowedFails: 1 - 2 bad answers in one worker cool the
+    # row for its cooldown_time, and it comes back when it answers 200. It also
+    # matches ContextWindowExceededError (a BadRequestError subclass), but the
+    # journal shows the real 400 traffic is dead models: 1239 x 400 in 24h,
+    # 0 context overflows. A 402 maps to litellm.APIError, which is NOT in the
+    # policy's nameable exception fields, so no config value can cool it -
+    # agent.yml's Router wall treats a run killed by one as infra instead.
     AuthenticationErrorAllowedFails: 0
     # one 429 cools the deployment: Pareto's 3-parallel cap is already held by max_parallel_requests.
     RateLimitErrorAllowedFails: 1
