@@ -19,9 +19,16 @@ rail are in `README.md`; design and enforced rules are in
 ## Deploy and wiring
 
 `deploy-box.yml` (push to main) → `fleet-sync.service` runs
-`git pull --ff-only` + `daemon-reload` and fails (`DEPLOY-BLOCKED`) on a dirty
+a `git fetch` of `main` into `refs/remotes/origin/main` + a
+`git merge --ff-only` of that named ref + `daemon-reload`, and fails
+(`DEPLOY-BLOCKED`) on a dirty
 or diverged clone, so the canonical checkout
 `/home/nish/workspaces/tooling/fleet-ops-deploy-clone` stays clean on `main`.
+It never uses `git pull`: a polluted `FETCH_HEAD` there merges into
+`fatal: Cannot fast-forward to multiple branches` and silently stops every
+deploy (fleet-ops#8893). A trailing `merge-base --is-ancestor` pair
+asserts `HEAD == origin/main`, so a stopped deploy is a failed unit rather
+than a lagging clone.
 Its LINK-GUARD passes fail the unit while any live symlink under
 `~/.config/systemd/user/`, `~/.local/bin/`, `~/.pi/agent/` or the vault is
 broken or resolves into a throwaway root (`*worktrees/*`, `agent-state`,

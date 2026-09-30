@@ -14,7 +14,7 @@ script, or prompt lands unseen.
   repos enrolled in the agent-ready queue (see [Intake enrolment](#intake-enrolment)).
 - `systemd/fleet-sync.service` (started by
   `.github/workflows/deploy-box.yml` on push) — the whole deploy mechanism:
-  `git pull --ff-only` + `systemctl --user daemon-reload`, plus
+  `git fetch` + `git merge --ff-only` + `systemctl --user daemon-reload`, plus
   `promtool check config` and a prometheus reload when the scrape config
   changed, and a LINK-GUARD pass
   that fails the unit on a dangling or throwaway-target live symlink
@@ -38,9 +38,18 @@ systemctl --user start fleet-sync.service   # force a sync now
 journalctl --user -u fleet-sync.service -n 50
 ```
 
-`git pull --ff-only` fails loudly on a dirty or diverged clone. That is
+The unit fails loudly on a dirty or diverged clone. That is
 correct: the live source must be clean `origin/main`, and a failed
 `fleet-sync.service` is visible to the failed-unit sweep.
+
+The sync is a `git fetch` of `main` into `refs/remotes/origin/main`
+followed by a `git merge --ff-only` of that named ref — never
+`git pull`, which merges the multi-entry `FETCH_HEAD` and dies with
+`Cannot fast-forward to multiple branches` when anything else in the
+clone has written that file (fleet-ops#8893). Two `merge-base
+--is-ancestor` lines then assert `HEAD == origin/main`, so a deploy
+window that ends a commit short fails the unit instead of leaving the
+live clone quietly behind.
 
 ### Wiring a NEW unit (one-time, by hand)
 
