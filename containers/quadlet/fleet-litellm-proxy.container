@@ -16,13 +16,25 @@ Volume=%h/.config/fleet-ops/litellm-proxy.yaml:/app/config.yaml:ro
 Environment=DATABASE_URL=postgresql://litellm@localhost:5432/litellm
 # INFO, not DEBUG: DEBUG dumps full prompts into the journal (fleet-ops#4449).
 Environment=LITELLM_LOG=INFO
-# Quadlet's EnvironmentFile= cannot glob, so the [Service] EnvironmentFile=
-# lines below load the seat keys and this flag passes them into the container.
-EnvironmentHost=true
-# --env-host would also pass the host PATH and HOME, hiding the image's
-# /app/.venv/bin; --env outranks --env-host, so pin both back to the image values.
-Environment=PATH=/app/.venv/bin:/usr/local/sbin:/usr/local/bin:/usr/bin:/usr/sbin:/sbin:/bin
-Environment=HOME=/root
+# Named pass-through, not --env-host (fleet-ops#9020): --env-host copied the whole
+# systemd --user manager environment into the container. Podman 4.9.3 (Ubuntu 24.04)
+# drops a bare `Environment=NAME` line, so each name is its own PodmanArgs=--env=NAME:
+# podman reads that one variable from its own environment, which the [Service]
+# EnvironmentFile= lines below fill. One line per os.environ/NAME in litellm-proxy.yaml.
+PodmanArgs=--env=CLINE_API_KEY
+PodmanArgs=--env=COMMANDCODE_API_KEY
+PodmanArgs=--env=LITELLM_MASTER_KEY
+PodmanArgs=--env=MINIMAX_API_KEY
+PodmanArgs=--env=OLLAMA_API_KEY
+PodmanArgs=--env=OPENCODE_API_KEY
+PodmanArgs=--env=OPENCODE_API_KEY_2
+PodmanArgs=--env=OPENROUTER_API_KEY
+PodmanArgs=--env=PARETO_API_KEY
+PodmanArgs=--env=STEPFUN_API_KEY
+PodmanArgs=--env=SYNTHETIC_API_KEY
+PodmanArgs=--env=TYPESAFE_API_KEY
+PodmanArgs=--env=XKIRO_API_KEY
+PodmanArgs=--env=ZAI_API_KEY
 # --num_workers 2 (fleet-ops#8827). The default is 1, so /health/readiness,
 # /metrics and the /jev pass-through all ran on the ONE event loop that also
 # served every chat completion: 2026-09-28 ~15:20-15:35 IST, with eight

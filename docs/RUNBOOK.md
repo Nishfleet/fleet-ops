@@ -75,7 +75,9 @@ which overwrites a hand edit, and `fleet-litellm-proxy-config.path` restarts the
 proxy only when the bytes change. Edit the repo file and nothing else; CI checks
 it against `config/litellm-proxy.schema.json` (fleet-ops#8724). Keys resolve as `os.environ/<NAME>` from the seat env
 files the unit globs (`~/.config/fleet-ops/seats/*.env`), the master key the
-same way; `disable_prisma_schema_update: true` stays under `general_settings`
+same way. The container receives only the names that have a `PodmanArgs=--env=<NAME>` line in
+`fleet-litellm-proxy.container` (fleet-ops#9020), so a new `os.environ/<NAME>` in the yaml needs a
+matching `PodmanArgs=--env=<NAME>` line; `disable_prisma_schema_update: true` stays under `general_settings`
 (startup `prisma migrate deploy` stalls every restart without it), and
 `DATABASE_URL` is a unit `Environment=` in host-qualified form (the
 socket-less form is rejected). Consumer credentials are per-group virtual keys
