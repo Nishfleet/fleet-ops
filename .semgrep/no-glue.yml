@@ -1,7 +1,7 @@
-# No glue (global-standing-rules.md "No glue"; Nish 2026-09-29: non-negotiable,
-# enforced by a machine, not by review). One file, read by every Nishfleet repo's
-# semgrep step, so the rule has one home. It replaces the cut no-glue job
-# (fleet-ops#8960) with stock semgrep config.
+# Fleet hard blocks. No glue (global-standing-rules.md "No glue"; Nish
+# 2026-09-29: non-negotiable, enforced by a machine, not by review) lands here,
+# so each rule has one home. It replaces the cut no-glue job (fleet-ops#8960)
+# with stock semgrep config; the required CI step runs this file with --error.
 rules:
   - id: no-script-files
     languages: [generic]
@@ -42,3 +42,21 @@ rules:
         - "/.github/workflows/"
         - "/systemd/"
         - "/prompts/"
+  # Reaching Nish. The alertmanager escalation stack was deleted 2026-09-29
+  # (fleet-ops#8958), taking its escalation command and alert with it; a
+  # reserved-class item now reaches Nish from the vault line "Only these reach
+  # Nish" (fleet-ops#9018) instead. A dangling reference is the dark channel
+  # this rule exists to stop.
+  - id: no-amtool-escalation
+    languages: [generic]
+    severity: ERROR
+    message: >-
+      The alertmanager escalation stack is deleted (fleet-ops#8958): its
+      escalation command and alert no longer exist on any host. Escalate a
+      reserved-class item as a fleet-ops issue labelled needs-nish-decision
+      and assigned to nish3451, per global-standing-rules.md "Only these reach
+      Nish".
+    pattern-regex: '(?i)amtool|NishEscalation'
+    paths:
+      exclude:
+        - /.semgrep/**
