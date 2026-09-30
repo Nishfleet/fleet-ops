@@ -6,6 +6,10 @@ Description=Sync the fleet-ops deploy clone and reload systemd (fleet-ops third 
 # Every user-scope live path is already a symlink into this repo
 # (`systemctl --user list-unit-files` reports the units as `linked`), so there
 # is nothing to copy and nothing that can drift: a `git pull` IS the deploy.
+# The exceptions are the root-owned files that cross a privilege boundary —
+# /etc/prometheus/prometheus.yml (step 3) and /etc/systemd/system/agent.slice
+# (step 4). Those are COPIES, and each is a step here, so `git pull` is still
+# the whole deploy (fleet-ops#8862).
 #
 # man systemctl: "link PATH...  Link a unit file that is not in the unit file
 # search path into the unit file search path. This command expects an absolute
@@ -36,22 +40,35 @@ ExecStart=/usr/bin/promtool check config /home/nish/workspaces/tooling/fleet-ops
 ExecStart=/usr/bin/sudo -n /usr/bin/install -C -D -m 0644 -o root -g root /home/nish/workspaces/tooling/fleet-ops-deploy-clone/config/prometheus.yml /etc/prometheus/prometheus.yml
 ExecStart=/usr/bin/systemctl --user link /home/nish/workspaces/tooling/fleet-ops-deploy-clone/systemd/fleet-prometheus-reload.service
 ExecStart=/usr/bin/systemctl --user enable --now /home/nish/workspaces/tooling/fleet-ops-deploy-clone/systemd/fleet-prometheus-reload.path
-# 4. Apply user-tmpfiles.d on every sync, not just at the next login
+# 4. /etc/systemd/system/agent.slice is a root-owned COPY, same class as 3
+#    and the reason this step exists (fleet-ops#8862): the swap cap from
+#    fleet-ops#8638 has been in the repo file since 2026-09-25 while the live
+#    unit kept `MemorySwapMax=infinity`, because nothing ever copied it there.
+#    install -C skips the write when the bytes already match, so a sync with no
+#    slice change costs one stat. The SYSTEM daemon-reload (step 2's is the
+#    user manager only) re-applies a changed slice limit to the running cgroup
+#    — no runner is restarted and the swap cap lands on a live box instead of
+#    waiting for the next boot. The unit file in the repo is also verified by
+#    CI (systemd-analyze verify over systemd/system/*.slice, fleet-ops#8638),
+#    so a bad file fails the PR, never this unit.
+ExecStart=/usr/bin/sudo -n /usr/bin/install -C -D -m 0644 -o root -g root /home/nish/workspaces/tooling/fleet-ops-deploy-clone/systemd/system/agent.slice /etc/systemd/system/agent.slice
+ExecStart=/usr/bin/sudo -n /usr/bin/systemctl daemon-reload
+# 5. Apply user-tmpfiles.d on every sync, not just at the next login
 #    (fleet-ops#8584). man systemd-tmpfiles: --create creates and links;
 #    it leaves the age-only e lines alone.
 ExecStart=/usr/bin/systemd-tmpfiles --user --create
-# 5. ~/.pi/agent/models.json is a user-scope COPY of config/pi-models.json
+# 6. ~/.pi/agent/models.json is a user-scope COPY of config/pi-models.json
 #     (fleet-ops#8568: the 09-19 contextWindow 96000 fix lived only in the
 #     live file and was silently lost). Copy, not symlink: ~/.pi/agent is an
 #     overlay mount in worker containers, where a link into the deploy clone
 #     would not resolve. install -C skips the write when the bytes already match.
 ExecStart=/usr/bin/install -C -D -m 0644 /home/nish/workspaces/tooling/fleet-ops-deploy-clone/config/pi-models.json /home/nish/.pi/agent/models.json
-# 6. ~/.config/fleet-ops/litellm-proxy.yaml is a COPY of config/litellm-proxy.yaml,
-#     same class as 5 (fleet-ops#8724: rung edits made live only, then lost or
+# 7. ~/.config/fleet-ops/litellm-proxy.yaml is a COPY of config/litellm-proxy.yaml,
+#     same class as 6 (fleet-ops#8724: rung edits made live only, then lost or
 #     never reviewed). The repo is the only way in: a hand edit is overwritten
 #     here, and fleet-litellm-proxy-config.path restarts the proxy on a real change.
 ExecStart=/usr/bin/install -C -D -m 0644 /home/nish/workspaces/tooling/fleet-ops-deploy-clone/config/litellm-proxy.yaml /home/nish/.config/fleet-ops/litellm-proxy.yaml
-# 7. LINK-GUARD (fleet-ops#7743): machine wiring is hand-set symlinks, so a
+# 8. LINK-GUARD (fleet-ops#7743): machine wiring is hand-set symlinks, so a
 #    session CAN still point a live path at a throwaway checkout — the
 #    2026-09-18 incident linked standing-rules-render into a churning clone
 #    and it dangled when the files vanished. After every pull, fail LOUD on

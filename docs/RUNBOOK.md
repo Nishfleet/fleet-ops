@@ -32,10 +32,12 @@ per-issue copies (`reviewer-issue-<N>.md`, removed under fleet-ops#8659) are
 loaded by nothing.
 
 Wiring a new unit or prompt is one `ln -sfn` into the deploy clone, once
-(full commands in README). Four classes stay copies rather than symlinks:
-the two `/etc/prometheus` files (fleet-sync does the copy + reload), the two
-Pi extension forks, the live-state JSON files under `~/.local/state/` and
-`~/.config/fleet-ops`-owned files that cross a privilege boundary.
+(full commands in README). The root-owned copies that cross a privilege
+boundary are `fleet-sync.service`'s job instead: `/etc/prometheus/prometheus.yml`
+and `/etc/systemd/system/agent.slice` (install -C; the slice also gets the
+system `daemon-reload`, fleet-ops#8862), alongside the two Pi extension
+forks, the live-state JSON files under `~/.local/state/` and
+`~/.config/fleet-ops`-owned files.
 
 ## LiteLLM stack (rebuild reference)
 

@@ -75,13 +75,15 @@ prompt lines only — a stock feature replaces an organ or nothing does.
 
 ### The exceptions: files that must stay COPIES
 
-Four classes are deliberately copies, not symlinks, and a `git pull` does
-NOT update them. Refresh by hand when the repo file changes:
+Five classes are deliberately copies, not symlinks, and a `git pull` does
+NOT update them — except for the three rows marked **Handled automatically**,
+which `fleet-sync.service` refreshes on every sync:
 
 | live path | repo source | why a symlink is wrong |
 |---|---|---|
 | `/etc/prometheus/prometheus.yml` | `config/prometheus.yml` | same privilege boundary. **Handled automatically** by `fleet-sync.service` (promtool check config + copy + reload). |
 | `~/.pi/agent/models.json` | `config/pi-models.json` | **Handled automatically** by `fleet-sync.service` (cmp + install, fleet-ops#8568). A copy, not a symlink, because `~/.pi/agent` is an overlay mount in worker containers. |
+| `/etc/systemd/system/agent.slice` | `systemd/system/agent.slice` | **Handled automatically** by `fleet-sync.service` (install -C + system `daemon-reload`, fleet-ops#8862). The repo cap `MemorySwapMax=1G` sat in the repo for 5 days while the live unit read `infinity`, so the runners could fill all host swap again. |
 | `~/.local/state/pi-packet/model-candidates.json` | `config/model-candidates.json` | live state the git working tree must not rewrite on every checkout (fleet-ops#2910/#3722/#3322). |
 | `~/.pi/agent/settings.json` | `none (live-only)` | pi writes this file itself at runtime (provider/model switches and its own bookkeeping keys), so a repo copy would be overwritten and a symlink would fight pi. Every fleet caller passes `--provider litellm --model <group>`, so its `defaultProvider`/`defaultModel` affect only bare interactive `pi` runs (fleet-ops#8568). Its `compaction.reserveTokens: 40000` pairs with the worker `contextWindow: 296000` in `config/pi-models.json`: pi compacts at window − reserve = 256k (Nish 2026-09-25; was 88k under #8567), and pi sizes each reply as window − context − 4096, so a turn at 256k still gets its full 32k `maxTokens`. Every worker rung holds 256k+ (seat /models or spend-log prompts up to 416k). At 96000/8192 replies near 88k were cut to ~4.8k (fleet-ops#8634). The real model windows are ~1M; 128000 is a budget, not a limit. |
 | `/etc/**` (systemd drop-ins, `sysctl.d`, `audit/rules.d`, `default/prometheus`, `prometheus/*.yml`) | `config/`, `etc/`, `systemd/system/` | cross a privilege boundary. |
