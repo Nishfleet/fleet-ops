@@ -32,10 +32,18 @@ per-issue copies (`reviewer-issue-<N>.md`, removed under fleet-ops#8659) are
 loaded by nothing.
 
 Wiring a new unit or prompt is one `ln -sfn` into the deploy clone, once
-(full commands in README). Four classes stay copies rather than symlinks:
-the two `/etc/prometheus` files (fleet-sync does the copy + reload), the two
-Pi extension forks, the live-state JSON files under `~/.local/state/` and
-`~/.config/fleet-ops`-owned files that cross a privilege boundary.
+(full commands in README). Two root-owned copies are `fleet-sync.service`'s
+job instead of the hand copy: `/etc/prometheus/prometheus.yml` (check config +
+copy + reload) and `/etc/systemd/system/agent.slice` (install -C + the system
+`daemon-reload`, which re-applies a changed cap to the running slice —
+fleet-ops#8862). Everything else that stays a copy — the two Pi extension
+forks, the live-state JSON files under `~/.local/state/`, the
+`~/.config/fleet-ops`-owned files and the other `/etc/**` paths — is still
+refreshed by hand.
+
+After a slice change, both the unit and the cgroup must read the new cap:
+`systemctl show agent.slice -p MemorySwapMax` and
+`cat /sys/fs/cgroup/agent.slice/memory.swap.max` (1073741824, not infinity).
 
 ## LiteLLM stack (rebuild reference)
 
