@@ -192,9 +192,11 @@ jobs:
               echo "$packet" | bwrap --dev-bind / / --proc /proc --unshare-pid --die-with-parent --chdir "$dir" -- \
                 devin -p --prompt-file /dev/stdin --permission-mode dangerous --model "$model" >/dev/null 2> "$RUNNER_TEMP/try.err" || rc=$?
               [ "$rc" != 0 ] && [ "$model" = swe-2-max ] && grep -qi 'free model rate limit' "$RUNNER_TEMP/try.err" && [ "$(gh api "repos/$REPO/compare/main...$REF" --jq .ahead_by)" = 0 ] && continue
-              cat "$RUNNER_TEMP/try.err" >&2
               break
             done
+            # The refusal text reaches stderr (worker.err) only when the run
+            # ends here; after a fallthrough, the Router wall must judge the
+            # lane that actually ran.
             if [ "$rc" != 0 ] && grep -qiE 'capacity issues|free model rate limit' "$RUNNER_TEMP/try.err" && [ "$(gh api "repos/$REPO/compare/main...$REF" --jq .ahead_by)" = 0 ]; then
               live() { pgrep -af -- "^bwrap .* -- $1 " | grep -oE 'agent-worktrees/issue-[^ ]*|sessions/agent-[^ ]*' | sort -u | wc -l; }
               if [ "$(live opencode)" -lt 2 ]; then ENGINE=opencode
@@ -202,6 +204,7 @@ jobs:
               fi
               echo "fallthrough: $ENGINE"
             else
+              cat "$RUNNER_TEMP/try.err" >&2
               [ "$rc" = 0 ] || exit 1
             fi
           fi
@@ -211,13 +214,13 @@ jobs:
             mkdir -p "$dir"
             rc=0
             $jail opencode run --dir "$dir" -m opencode/longcat-2.5-preview-free --auto "$packet" >/dev/null 2> "$RUNNER_TEMP/try.err" || rc=$?
-            cat "$RUNNER_TEMP/try.err" >&2
             # A refused free seat is not a failed packet: with nothing pushed
             # yet, the same run moves to pi (no benching, fleet-ops#8993).
             if [ "$rc" != 0 ] && grep -qi 'rate limit exceeded' "$RUNNER_TEMP/try.err" && [ "$(gh api "repos/$REPO/compare/main...$REF" --jq .ahead_by)" = 0 ]; then
               ENGINE=pi
               echo "fallthrough: $ENGINE"
             else
+              cat "$RUNNER_TEMP/try.err" >&2
               [ "$rc" = 0 ] || exit 1
             fi
           fi
@@ -249,6 +252,9 @@ jobs:
               --append-system-prompt "$HOME/workspaces/tooling/fleet-ops-deploy-clone/AGENTS.md" \
               --session-dir "$HOME/.pi/agent/sessions/agent-$id" \
               --exclude-tools subagent --provider litellm --model worker-capable >/dev/null
+          elif [ "$ENGINE" != devin ] && [ "$ENGINE" != opencode ]; then
+            echo "no lane for ENGINE='$ENGINE'" >&2
+            exit 1
           fi
       - name: App token for arm
         id: arm-token
