@@ -360,6 +360,14 @@ jobs:
           # other gh failure still fails the step.
           err=$(gh issue view "$i" -R "$GITHUB_REPOSITORY" --json number 2>&1 >/dev/null) ||
             { case $err in *"Could not resolve"*) echo "report: #$i does not resolve in $GITHUB_REPOSITORY; skip"; exit 0 ;; *) echo "$err" >&2; exit 1 ;; esac; }
+          # A run the concurrency group displaced never reached the Gate, so it
+          # never commented "agent run started:". Its cancelled work job still
+          # ran this job, which struck and relabelled the issue under the run
+          # that held the group (agent-in-progress and agent-ready together on
+          # 10 of 43 bare-branch issues in 0509).
+          # shellcheck disable=SC2016 # $u is a jq variable
+          gh issue view "$i" -R "$GITHUB_REPOSITORY" --json comments | jq -e --arg u "/runs/$GITHUB_RUN_ID" '.comments | any(.body | startswith("agent run started:") and endswith($u))' >/dev/null ||
+            { echo "report: run $GITHUB_RUN_ID never claimed #$i; skip"; exit 0; }
           # shellcheck disable=SC2016 # $v is a jq variable
           prior=$(gh issue view "$i" -R "$GITHUB_REPOSITORY" --json comments --jq '[.comments[] | if (.body | startswith("park:") or startswith("opus-vet:")) or ((.body | test("^attempt-cap reset: \\S")) and (.authorAssociation | IN("OWNER", "MEMBER", "COLLABORATOR"))) then "park:" else .body end] | (map(startswith("park:")) | rindex(true) // -1) as $v | .[$v+1:] | map(select(startswith("agent run failed:"))) | length')
           gh issue comment "$i" -R "$GITHUB_REPOSITORY" --body "agent run failed: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
