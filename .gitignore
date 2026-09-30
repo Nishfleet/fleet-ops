@@ -3,14 +3,12 @@ __pycache__/
 libexec/fleet-console-pi/data.json
 libexec/fleet-console-pi/.pushed-*.sha
 
-# Drift-report output from .github/scripts/repo-standards-apply.mjs +
-# .github/scripts/enqueue-green-prs.mjs. Always uploaded as a workflow
-# artifact; never committed.
+# Report output; never committed.
 out/
 
 # Per-job operational caches that workers sometimes leave behind.
 .cache/
 .pytest_cache/
 
-# fleet-ops#8341: .bak-* config siblings are sprawl — versioned file + PR is the record. ci also rejects a tracked one.
+# fleet-ops#8341: .bak-* config siblings are sprawl — versioned file + PR is the record.
 config/**/*.bak-*

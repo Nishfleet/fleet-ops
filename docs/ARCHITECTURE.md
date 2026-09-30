@@ -14,8 +14,7 @@ One VPS (netcup), one `nish` user. Everything the fleet runs is a
 code and config.
 
 The work loop: `.github/workflows/agent-dispatch.yml` queues `agent-ready` issues as `agent.yml` jobs on the VPS self-hosted runners, workers open PRs on `claim/issue-<N>`, and the GitHub merge queue lands them.
-Alerts reach repair through `prometheus-am-executor` → `alert-repair@`.
-The scout, `fleet-gardener` and `inish-daily` (07:30 IST inish.in edition, fleet-ops#8811) are scheduled jobs in `.github/workflows/agent.yml` (fleet-ops#8433); the daily view is the saved searches in the README.
+There are no scheduled agent jobs: issues come from people, red-main issues and dependabot.
 
 ## Model plane
 
@@ -51,8 +50,8 @@ Unit exit codes propagate, so `Restart=`, `StartLimitBurst=` and the
 ## GLUE-ZERO — no hand-rolled code
 
 Nish, 2026-09-21: *"wipe and replace with properly done up design with no
-glue."* The rule, and it is enforced by the `no-glue` job in
-`.github/workflows/ci.yml`:
+glue."* The rule, held by the `ci` check (`.github/workflows/ci.yml` runs
+`.semgrep/no-glue.yml`; `.github/CODEOWNERS` also sends scripts to Nish):
 
 - **No new scripts, helpers, hooks or extensions anywhere** — no added file
   under `bin/`, `lib/`, `libexec/`, `scripts/`, `ops/`, `hooks/`,
@@ -90,9 +89,8 @@ The rules still in force:
   check, ruleset, systemd property, router config), 3 rule, 4 skill, 5 prose.
   `encoded: 5` is legal only with a reason. A rule that recurs twice is a
   defect in its rung.
-- Gates that exist: `blocked-by-judge` stops the arm (fleet-ops#4557); an
-  armed PR with no verification receipt is disarmed (fleet-ops#3731);
-  agent-authored PRs self-land green.
+- Gates that exist: a PR touching a risky path is labelled `needs-coordinator` and
+  not armed; agent-authored PRs self-land green.
 
 The full audit (rungs, counts, second wave) is git history
 (fleet-ops#8029/#8034).
@@ -103,8 +101,7 @@ Detection + repair, not blind duplication. `Restart=`/`OnFailure=`, the
 failed-unit sweep, and external healthchecks.io dead-men (URLs in
 `~/.config/fleet-ops/keystone-hc.env`; unset = LOUD skip, shared = LOUD fail)
 cover supervision. Restic R2 backup / verify / restore-test run as ROOT units
-and publish restore proofs; `ResticRestoreProofStale` and `LitellmPgDumpStale`
-(page `config/fleet_rules.yml`) make a stale proof reach the repair path.
+and publish restore proofs.
 SSH is Tailscale-only, so the out-of-band layer is the netcup VNC console
 (RUNBOOK). GitHub-hosted runners are the compute break-glass. No second box,
 no second dispatcher, no Kubernetes.

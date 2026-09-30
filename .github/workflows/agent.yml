@@ -11,31 +11,15 @@ on:
         type: string
         required: true
 
-  # Scheduled agents (fleet-ops#8433), replacing pi-scout@0509.timer and
-  # fleet-gardener.timer. Only fires on fleet-ops main; the jobs below tell a
-  # cron run from a workflow_call by the empty inputs.ref.
-  schedule:
-    - cron: '0 */4 * * *'   # scout, Nishfleet/0509
-    - cron: '0 4 * * 1'     # gardener, Mondays 09:30 IST
-    - cron: '0 2 * * *'     # inish-daily, 07:30 IST
-    - cron: '0 5 * * *'     # inish-daily catch-up, 10:30 IST (no-op when live)
-    - cron: '37 * * * *'    # admit, Nishfleet/0509 scout-candidates
-  # A scheduled job must also be dispatchable, so a change to it is proven
-  # on demand, not the next morning: gh workflow run agent.yml -f job=inish-daily
-  workflow_dispatch:
-    inputs:
-      job:
-        description: scheduled job to run by hand (bare dispatch runs admit)
-        type: choice
-        options: [admit, scout, gardener, inish-daily]
-        default: admit
-        required: true
 permissions: {}
 jobs:
   work:
     if: inputs.ref
     runs-on: [self-hosted, agent]
     timeout-minutes: 60
+    # Router wall relabels with GITHUB_TOKEN, and nothing else here uses it.
+    permissions:
+      issues: write
     outputs:
       wall: ${{ steps.wall.outputs.wall }}
     concurrency:
@@ -81,11 +65,12 @@ jobs:
           skip-token-revoke: "false"
       - name: Gate
         # The dispatch policy that the old intake prompt used to carry, now in one
-        # step: skip parked or blocked work, size unsized work (Jev first
-        # opinion, else needs-split -> opus-vet), cap runs, then claim.
+        # step: skip parked or blocked work, cap runs, then claim.
         id: gate
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          DEVIN_MAX_LIVE: ${{ vars.DEVIN_MAX_LIVE || '0' }}
+          OPENCODE_MAX_LIVE: ${{ vars.OPENCODE_MAX_LIVE || '0' }}
         run: |
           # Suffixed rework refs carry a -<tag> tail (claim/issue-<N>-<tag>);
           # the issue number is the leading digits (fleet-ops#8793).
@@ -101,62 +86,24 @@ jobs:
           [ "$(jq -r .state <<<"$issue")" = open ] || skip closed
           [ "$(jq -r '.issue_dependencies_summary.blocked_by // 0' <<<"$issue")" = 0 ] || skip blocked
           if jq -e '.title|startswith("__scout_probe_")' <<<"$issue" >/dev/null; then skip probe; fi
-          for l in noise-class agent-blocked awaiting-runtime-gate needs-split needs-orchestrator needs-nish-decision nish-reserved deputy superseded-by-rebuild proposed epic umbrella; do
+          for l in agent-blocked needs-split needs-orchestrator needs-nish-decision epic; do
             case $labels in *",$l,"*) skip "$l" ;; esac
           done
 
-          case $labels in *,cheap-ok,*|*,strong-only,*) ;; *)
-            key=$(grep -m1 '^LITELLM_JEV_KEY=' "$HOME/.config/fleet-ops/seats/typesafe-jev.env" | cut -d= -f2-)
-            echo "::add-mask::$key"
-            # Full context plus one Exa search, per the standing Jev rule. These
-            # exact lines, replayed on 63 real 0509 issues against opus-size, agree
-            # on 56 with 0 wrongly cheap (title+body alone: 42/45, 18 more
-            # unavailable) - fleet-ops#8894, #8905.
-            files='{}'
-            for f in $(jq -r '.body // ""' <<<"$issue" | grep -oE '(^|[^[:alnum:]_./-])(app|docs|e2e|tests?|migrations|workers?|scripts|src|public|prompts|config)/[[:alnum:]_./-]+\.[[:alnum:]]+' | sed -E 's#^[^[:alpha:]]##' | sort -u | head -8); do
-              t=$(gh api "repos/$REPO/contents/$f" -H 'Accept: application/vnd.github.raw' 2>/dev/null) || t='missing on main'
-              files=$(jq --arg k "$f" --arg v "${t:0:5000}" '. + {($k): $v}' <<<"$files")
-            done
-            rules=$(gh api "repos/$REPO/contents/AGENTS.md" -H 'Accept: application/vnd.github.raw' 2>/dev/null) || rules=''
-            blockers=$(gh api "repos/$REPO/issues/$i/dependencies/blocked_by" --jq '[.[] | {n: .number, title, state}]' 2>/dev/null) || blockers='[]'
-            # A missing key, an HTTP error or zero results all record "unavailable"
-            # and Jev still answers; nothing here may fail the step.
-            exa=$(grep -m1 '^EXA_API_KEY=' "$HOME/.config/environment.d/50-agent-secrets.conf" 2>/dev/null | cut -d= -f2- | tr -d '"') || exa=''
-            web=''
-            if [ -n "$exa" ]; then
-              echo "::add-mask::$exa"
-              web=$(jq -n --argjson s "$issue" '{query: $s.title[:120], numResults: 5, type: "auto", contents: {highlights: {maxCharacters: 300, highlightsPerUrl: 1}}}' |
-                curl -sf --max-time 20 https://api.exa.ai/search -H "x-api-key: $exa" -H 'content-type: application/json' -d @- |
-                jq -ce '[.results[]? | {title, url, highlight: (.highlights[0] // "")}] | select(length > 0)' 2>/dev/null) || web=''
-            fi
-            [ -n "$web" ] || web='"unavailable"'
-            p=$(jq -n --argjson s "$issue" --argjson files "$files" --arg rules "${rules:0:6000}" --argjson blockers "$blockers" --argjson web "$web" '{model: "jev-latest", state: {issue: {ref: $s.html_url, title: $s.title, body: $s.body, labels: [$s.labels[].name]}, blocked_by: $blockers, named_files_on_main: $files, repo_rules_AGENTS_md: $rules, web_evidence: $web}, questions: {cheap_ok: {type: "noul", instructions: "Is this ONE small change (roughly 1-4 files, one behaviour, done in one sitting) whose steps and acceptance are already spelled out, so the builder only has to follow them? Answer no if it bundles several deliverables, asks the builder to discover or fix whatever turns up, depends on production after deploy, or leaves a design choice open."}}}' |
-              curl -s --max-time 90 127.0.0.1:4000/jev -H "Authorization: Bearer $key" -H 'content-type: application/json' -d @- |
-              jq -r '.answers.cheap_ok.noul // "unavailable"' 2>/dev/null || echo unavailable)
-            ctx="files=$(jq length <<<"$files") web=$(jq -r 'if type == "array" then "yes" else "no" end' <<<"$web")"
-            if awk -v p="$p" 'BEGIN { exit !(p ~ /^[0-9.]+$/ && p + 0 >= 0.9) }'; then
-              gh issue edit "$i" -R "$REPO" --add-label cheap-ok
-              gh issue comment "$i" -R "$REPO" --body "jev cheap_ok: p=$p; $ctx"
-            else
-              gh issue edit "$i" -R "$REPO" --add-label needs-split
-              gh issue comment "$i" -R "$REPO" --body "jev cheap_ok: p=$p; $ctx; Opus sizes"
-              skip needs-split
-            fi ;;
-          esac
-
           # Hard stop for loops where a run "succeeds" but CI stays red: 3 runs
-          # per issue since the newest opus-vet, counted from these comments.
+          # per issue since the newest park: comment (the old opus-vet: prefix still
+          # counts, so older issues keep their resets), counted from these comments.
           # A run the provider refused (429, capacity) comments infra-failed and
           # is not counted: the worker never got to try. An infra-failed cancels
           # only the start that carries the same run URL, so a late one from a run
           # begun before a reset cannot cancel a run begun after it. A comment that starts
           # `attempt-cap reset: <why>` from an owner, member or collaborator
-          # restarts the count like an opus-vet does; a comment from any other association counts for nothing.
+          # restarts the count like a park: comment does; a comment from any other association counts for nothing.
           # shellcheck disable=SC2016 # $v is a jq variable
-          runs=$(gh issue view "$i" -R "$REPO" --json comments --jq '[.comments[] | if (.body | startswith("opus-vet:")) or ((.body | test("^attempt-cap reset: \\S")) and (.authorAssociation | IN("OWNER", "MEMBER", "COLLABORATOR"))) then "opus-vet:" else .body end] | (map(startswith("opus-vet:")) | rindex(true) // -1) as $v | .[$v+1:] as $t | [$t[] | select(startswith("agent run infra-failed: ")) | ltrimstr("agent run infra-failed: ")] as $f | [$t[] | select(startswith("agent run started: ")) | ltrimstr("agent run started: ") | select(. as $u | $f | index($u) | not)] | length')
+          runs=$(gh issue view "$i" -R "$REPO" --json comments --jq '[.comments[] | if (.body | startswith("park:") or startswith("opus-vet:")) or ((.body | test("^attempt-cap reset: \\S")) and (.authorAssociation | IN("OWNER", "MEMBER", "COLLABORATOR"))) then "park:" else .body end] | (map(startswith("park:")) | rindex(true) // -1) as $v | .[$v+1:] as $t | [$t[] | select(startswith("agent run infra-failed: ")) | ltrimstr("agent run infra-failed: ")] as $f | [$t[] | select(startswith("agent run started: ")) | ltrimstr("agent run started: ") | select(. as $u | $f | index($u) | not)] | length')
           if [ "$runs" -ge 3 ]; then
             gh issue edit "$i" -R "$REPO" --add-label needs-orchestrator --remove-label agent-ready,agent-in-progress
-            gh issue comment "$i" -R "$REPO" --body "agent attempt cap: $runs runs since the last opus-vet or attempt-cap reset; parked for the orchestrator"
+            gh issue comment "$i" -R "$REPO" --body "agent attempt cap: $runs runs since the last park: comment or attempt-cap reset; parked for the orchestrator"
             skip cap
           fi
 
@@ -165,7 +112,8 @@ jobs:
           # SWE-2, so they go only to Cursor; a full Cursor lane leaves them
           # agent-ready. Every other issue: Devin SWE-2 Max while fewer than 4
           # run ($0), else LongCat-2.5-Preview on the opencode CLI while fewer
-          # than 2 run (free until ~2026-10-10, fleet-ops#8790; its free tier
+          # than OPENCODE_MAX_LIVE run (default 0 while its free quota is out,
+          # fleet-ops#9002; vars.OPENCODE_MAX_LIVE sets it back to 2; free until ~2026-10-10, fleet-ops#8790; its free tier
           # answers only the opencode CLI), else pi while it has a free router
           # slot; when all three are full the issue waits (lanes-full) — there
           # is no Cursor fallback (fleet-ops#8740).
@@ -174,23 +122,20 @@ jobs:
           # it spans every runner and repo on this host.
           live() { pgrep -af -- "^bwrap .* -- $1 " | grep -oE 'agent-worktrees/issue-[^ ]*|sessions/agent-[^ ]*' | sort -u | wc -l; }
           # pi has a free slot while its live workers are fewer than the summed
-          # max_parallel_requests of the router's HEALTHY worker-capable seats
-          # (raw litellm_deployment_state row at 0). Summing walled seats too
-          # admitted 24 workers onto ~12 live slots on 2026-09-28 and every run
-          # crawled through 429s. The router is walled when no raw row is
-          # healthy (fleet-ops#8543, same filter as FleetWorkerLaneOutage); an
-          # empty or unreachable /metrics is not a wall and counts every seat.
+          # max_parallel_requests of the router's worker-capable seats. No seat is
+          # ever counted out for failing (Nish 2026-09-28: no benching); a failed
+          # request re-picks another seat inside the router.
           pi_free() {
-            curl -sL --max-time 10 127.0.0.1:4000/metrics > "$RUNNER_TEMP/router.metrics" || : > "$RUNNER_TEMP/router.metrics"
-            slots=$(python3 -c 'import re, sys, yaml; up = set(re.findall(r"^litellm_deployment_state\{(?=[^}]*litellm_model_name=\"(?!worker-))[^}]*model_id=\"([^\"]+)\"[^}]*\} 0(?:\.0)?$", open(sys.argv[2]).read(), re.M)); seats = [m for m in yaml.safe_load(open(sys.argv[1]))["model_list"] if m.get("model_name") == "worker-capable"]; print(sum(m["litellm_params"].get("max_parallel_requests") or 0 for m in seats if not up or m.get("model_info", {}).get("id") in up))' "$HOME/.config/fleet-ops/litellm-proxy.yaml" "$RUNNER_TEMP/router.metrics")
-            [ "$(live pi)" -lt "$slots" ] || return 1
-            ! awk '/^litellm_deployment_state\{/ && /model_id="[^"]*-worker-capable"/ && !/litellm_model_name="worker-/ { n++; if ($NF + 0 == 0) up++ } END { exit !(n > 0 && up == 0) }' "$RUNNER_TEMP/router.metrics"
+            # shellcheck disable=SC2016 # $n is yq's variable, not the shell's
+            slots=$(yq '[.model_list[] | select(.model_name == "worker-capable") | .litellm_params.max_parallel_requests // 0] | .[] as $n ireduce (0; . + $n)' "$HOME/.config/fleet-ops/litellm-proxy.yaml")
+            [ "$(live pi)" -lt "$slots" ]
           }
-          # Devin is free while fewer than 4 run and it has not answered
-          # "capacity issues" in the last 15 minutes (the Router wall step
-          # touches the marker); until then its turn falls through to pi.
+          # Devin is free while fewer than DEVIN_MAX_LIVE run. The default 0
+          # pauses the lane while its free-model quota is out (infra-failed
+          # runs 2026-09-29); vars.DEVIN_MAX_LIVE or a one-line PR sets it
+          # back to 4.
           devin_free() {
-            [ "$(live devin)" -lt 4 ] && [ -z "$(find "$HOME/.cache/fleet-ops/devin-wall" -mmin -15 2>/dev/null)" ]
+            [ "$(live devin)" -lt "$DEVIN_MAX_LIVE" ]
           }
           # Cursor is the strong-only lane only. A non-strong-only issue never
           # falls back to it: with Devin and pi both full it waits
@@ -200,7 +145,7 @@ jobs:
             *,strong-only,*) [ "$(live cursor-agent)" -lt 1 ] || skip lanes-full; engine=cursor ;;
             *)
               if devin_free; then engine=devin
-              elif [ "$(live opencode)" -lt 2 ]; then engine=opencode
+              elif [ "$(live opencode)" -lt "$OPENCODE_MAX_LIVE" ]; then engine=opencode
               elif pi_free; then engine=pi
               else skip lanes-full
               fi ;;
@@ -227,6 +172,8 @@ jobs:
         env:
           ENGINE: ${{ steps.gate.outputs.engine }}
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          # Pi sends this as x-litellm-session-id so the router keeps the whole run on one model (#9015).
+          FLEET_TASK_ID: run-${{ github.run_id }}-${{ github.run_attempt }}
         run: |
           exec 2> >(tee "$RUNNER_TEMP/worker.err" >&2)
           id=${REF#claim/issue-}; id=${REPO#*/}-${id%%-*}
@@ -244,14 +191,44 @@ jobs:
             # --chdir puts the worker directory on the bwrap command line,
             # which is what the Gate's lane count reads.
             mkdir -p "$dir"
-            echo "$packet" | bwrap --dev-bind / / --proc /proc --unshare-pid --die-with-parent --chdir "$dir" -- \
-              devin -p --prompt-file /dev/stdin --permission-mode dangerous --model swe-2-max >/dev/null
-          elif [ "$ENGINE" = opencode ]; then
+            for model in swe-2-max swe-2-high; do
+              rc=0
+              echo "$packet" | bwrap --dev-bind / / --proc /proc --unshare-pid --die-with-parent --chdir "$dir" -- \
+                devin -p --prompt-file /dev/stdin --permission-mode dangerous --model "$model" >/dev/null 2> "$RUNNER_TEMP/try.err" || rc=$?
+              [ "$rc" != 0 ] && [ "$model" = swe-2-max ] && grep -qi 'free model rate limit' "$RUNNER_TEMP/try.err" && [ "$(gh api "repos/$REPO/compare/main...$REF" --jq .ahead_by)" = 0 ] && continue
+              break
+            done
+            # The refusal text reaches stderr (worker.err) only when the run
+            # ends here; after a fallthrough, the Router wall must judge the
+            # lane that actually ran.
+            if [ "$rc" != 0 ] && grep -qiE 'capacity issues|free model rate limit' "$RUNNER_TEMP/try.err" && [ "$(gh api "repos/$REPO/compare/main...$REF" --jq .ahead_by)" = 0 ]; then
+              live() { pgrep -af -- "^bwrap .* -- $1 " | grep -oE 'agent-worktrees/issue-[^ ]*|sessions/agent-[^ ]*' | sort -u | wc -l; }
+              if [ "$(live opencode)" -lt 2 ]; then ENGINE=opencode
+              else ENGINE=pi
+              fi
+              echo "fallthrough: $ENGINE"
+            else
+              cat "$RUNNER_TEMP/try.err" >&2
+              [ "$rc" = 0 ] || exit 1
+            fi
+          fi
+          if [ "$ENGINE" = opencode ]; then
             # --dir puts the worker directory on the bwrap command line; --auto
             # approves what the worker needs outside it (prompts, gh, the repo).
             mkdir -p "$dir"
-            $jail opencode run --dir "$dir" -m opencode/longcat-2.5-preview-free --auto "$packet" >/dev/null
-          elif [ "$ENGINE" = cursor ]; then
+            rc=0
+            $jail opencode run --dir "$dir" -m opencode/longcat-2.5-preview-free --auto "$packet" >/dev/null 2> "$RUNNER_TEMP/try.err" || rc=$?
+            # A refused free seat is not a failed packet: with nothing pushed
+            # yet, the same run moves to pi (no benching, fleet-ops#8993).
+            if [ "$rc" != 0 ] && grep -qi 'rate limit exceeded' "$RUNNER_TEMP/try.err" && [ "$(gh api "repos/$REPO/compare/main...$REF" --jq .ahead_by)" = 0 ]; then
+              ENGINE=pi
+              echo "fallthrough: $ENGINE"
+            else
+              cat "$RUNNER_TEMP/try.err" >&2
+              [ "$rc" = 0 ] || exit 1
+            fi
+          fi
+          if [ "$ENGINE" = cursor ]; then
             # cursor-2.env (live.com) hit its weekly limit on 2026-09-29 and
             # resets about 2026-10-05: use cursor.env only, then restore the
             # odd/even alternation (fleet-ops#8740).
@@ -262,11 +239,21 @@ jobs:
             mkdir -p "$dir"
             $jail cursor-agent -p --output-format text --model cursor-grok-4.6-high --force --trust \
               --workspace "$dir" "$packet" >/dev/null
-          else
+          elif [ "$ENGINE" = pi ]; then
+            # Mobbin MCP via the pi-mcp-adapter package (Pi has no built-in MCP).
+            # OAuth tokens sit in ~/.pi/agent/mcp-oauth-encrypted/; this is their
+            # file key. Without it only the lazy mobbin server fails, never the run.
+            set -a
+            # shellcheck disable=SC1091 # constant seat file, not in the repo
+            . "$HOME/.config/fleet-ops/seats/mobbin-mcp.env"
+            set +a
             echo "/worker $id" | $jail pi --print \
               --append-system-prompt "$HOME/workspaces/tooling/fleet-ops-deploy-clone/AGENTS.md" \
               --session-dir "$HOME/.pi/agent/sessions/agent-$id" \
               --exclude-tools subagent --provider litellm --model worker-capable >/dev/null
+          elif [ "$ENGINE" != devin ] && [ "$ENGINE" != opencode ]; then
+            echo "no lane for ENGINE='$ENGINE'" >&2
+            exit 1
           fi
       - name: App token for arm
         id: arm-token
@@ -285,20 +272,21 @@ jobs:
       - name: Router wall
         id: wall
         # A router seat wall or a Devin capacity refusal is infra, not a bad
-        # packet (fleet-ops#8543): no strike, back to agent-ready. The Gate's
-        # 3-run cap bounds the loop. Devin fails before it writes anything, so
-        # a claim branch that is already ahead of main is requeued too.
+        # packet (fleet-ops#8543): no strike, back to agent-ready. Devin fails
+        # before it writes anything, so a claim branch that is already ahead of
+        # main is requeued too. GITHUB_TOKEN on purpose: its label fires no
+        # workflow, so the issue waits for the next sweep instead of going
+        # straight back to the lane that refused it (~50 runs an issue on
+        # 2026-09-29, 0509#6133). Walls are not counted, so the Gate cap never
+        # bounded that loop.
         if: failure() && steps.gate.outputs.go == 'true'
         env:
           ENGINE: ${{ steps.gate.outputs.engine }}
-          GH_TOKEN: ${{ steps.arm-token.outputs.token }}
+          GH_TOKEN: ${{ github.token }}
         run: |
           i=${REF#claim/issue-}; i=${i%%-*}
-          if [ "$ENGINE" = devin ] && grep -qiE 'capacity issues|cognition\.ai/retryable": true' "$RUNNER_TEMP/worker.err" 2>/dev/null; then
-            mkdir -p "$HOME/.cache/fleet-ops"
-            touch "$HOME/.cache/fleet-ops/devin-wall"
-          else
-            grep -qiE 'no deployments available|ratelimiterror|\b429\b' "$RUNNER_TEMP/worker.err" 2>/dev/null || exit 0
+          if ! { [ "$ENGINE" = devin ] && grep -qiE 'capacity issues|free model rate limit|cognition\.ai/retryable": true' "$RUNNER_TEMP/worker.err" 2>/dev/null; }; then
+            grep -qiE 'no deployments available|ratelimiterror|rate limit exceeded|\b429\b' "$RUNNER_TEMP/worker.err" 2>/dev/null || exit 0
             [ "$(gh api "repos/$REPO/compare/main...$REF" --jq .ahead_by)" = 0 ] || exit 0
           fi
           gh issue comment "$i" -R "$REPO" --body "agent run infra-failed: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
@@ -317,7 +305,15 @@ jobs:
             body=$(gh pr view "$REF" -R "$REPO" --json body --jq .body)
             grep -qiE "(close[sd]?|fix(e[sd])?|resolve[sd]?) #$i\b" <<<"$body" ||
               gh pr edit "$REF" -R "$REPO" --body "$body"$'\n\n'"Closes #$i"
-            gh pr merge "$REF" -R "$REPO" --auto --squash  # a merge queue overrides the method; repos without one need it
+            n=$(gh pr view "$REF" -R "$REPO" --json number --jq .number)
+            changed=$(gh pr view "$REF" -R "$REPO" --json changedFiles --jq .changedFiles)
+            files=$(gh api --paginate "repos/$REPO/pulls/$n/files" --jq '.[] | .filename, (.previous_filename // empty)')
+            if [ "$changed" -ge 3000 ] || grep -qE '^(\.github/|migrations/|app/lib/auth|app/lib/data/)|\.sql$' <<<"$files"; then
+              gh label create needs-coordinator -R "$REPO" --force --color B60205 --description "touches a risky path: the coordinator reviews and arms it"
+              gh pr edit "$REF" -R "$REPO" --add-label needs-coordinator
+            else
+              gh pr merge "$REF" -R "$REPO" --auto --squash  # a merge queue overrides the method; repos without one need it
+            fi
           fi
       - name: Deliverable
         if: steps.gate.outputs.go == 'true'
@@ -346,228 +342,6 @@ jobs:
       - name: Clean workspace
         if: always()
         run: i=${REF#claim/issue-}; rm -rf "$HOME/workspaces/agent-worktrees/issue-${REPO#*/}-${i%%-*}"
-  scout:
-    if: ${{ !inputs.ref && (github.event.schedule == '0 */4 * * *' || inputs.job == 'scout') }}
-    runs-on: [self-hosted, agent]
-    timeout-minutes: 180
-    concurrency:
-      group: scheduled-scout-0509
-      cancel-in-progress: false
-    steps:
-      - name: Read App private key
-        id: app-key
-        run: |
-          keyfile="$HOME/.config/fleet-worker/nishfleet-worker.private-key.pem"
-          [ -s "$keyfile" ] || { echo "::error::app private key file missing on runner"; exit 1; }
-          while IFS= read -r line || [ -n "$line" ]; do
-            [ -n "$line" ] && echo "::add-mask::$line"
-          done < "$keyfile"
-          delim=APP_PRIVATE_KEY_END
-          {
-            printf 'pem<<%s\n' "$delim"
-            cat "$keyfile"
-            printf '%s\n' "$delim"
-          } >> "$GITHUB_OUTPUT"
-      # The key is read on this runner and never leaves the VPS. Scout acts
-      # on Nishfleet/0509 only (prompts/scout.md: "Touch only the TARGET
-      # repo"): it creates and labels issues, reads the open PR list and
-      # clones the repo.
-      - name: App token for Nishfleet/0509
-        id: app-token
-        uses: actions/create-github-app-token@fee1f7d63c2ff003460e3d139729b119787bc349 # v2.2.2
-        with:
-          app-id: "4728578"
-          private-key: ${{ steps.app-key.outputs.pem }}
-          owner: Nishfleet
-          repositories: "0509"
-          permission-contents: read
-          permission-issues: write
-          permission-pull-requests: read
-      - name: Scout 0509
-        # Transcript stays on the VPS. The supply:/scout-yield: lines are the
-        # completed-run signature (the old ExecStartPost abort gate,
-        # fleet-ops#7524); without one the job fails.
-        env:
-          GH_TOKEN: ${{ steps.app-token.outputs.token }}
-        run: |
-          out="$RUNNER_TEMP/scout.out"
-          echo "/scout 0509" | pi --print \
-            --append-system-prompt "$HOME/workspaces/tooling/fleet-ops-deploy-clone/AGENTS.md" \
-            --session-dir "$HOME/.pi/agent/sessions/pi-scout-0509" \
-            --provider litellm --model worker-cheap > "$out"
-          grep -E 'supply:[[:space:]]*ready_count=[0-9]+|scout-yield:' "$out" ||
-            { echo "scout-abort-gate: no supply: line this run" >&2; exit 1; }
-  admit:
-    if: ${{ !inputs.ref && (github.event.schedule == '37 * * * *' || inputs.job == 'admit') }}
-    runs-on: [self-hosted, agent]
-    timeout-minutes: 45
-    concurrency:
-      group: scheduled-admit-0509
-      cancel-in-progress: false
-    steps:
-      - name: Read App private key
-        id: app-key
-        run: |
-          keyfile="$HOME/.config/fleet-worker/nishfleet-worker.private-key.pem"
-          [ -s "$keyfile" ] || { echo "::error::app private key file missing on runner"; exit 1; }
-          while IFS= read -r line || [ -n "$line" ]; do
-            [ -n "$line" ] && echo "::add-mask::$line"
-          done < "$keyfile"
-          delim=APP_PRIVATE_KEY_END
-          {
-            printf 'pem<<%s\n' "$delim"
-            cat "$keyfile"
-            printf '%s\n' "$delim"
-          } >> "$GITHUB_OUTPUT"
-      # Admit reads, comments on and relabels Nishfleet/0509 issues and
-      # records blocked_by dependencies: issues is the only grant it uses.
-      - name: App token for Nishfleet/0509
-        id: app-token
-        uses: actions/create-github-app-token@fee1f7d63c2ff003460e3d139729b119787bc349 # v2.2.2
-        with:
-          app-id: "4728578"
-          private-key: ${{ steps.app-key.outputs.pem }}
-          owner: Nishfleet
-          repositories: "0509"
-          permission-issues: write
-      - name: Admit 0509 scout-candidates
-        env:
-          GH_TOKEN: ${{ steps.app-token.outputs.token }}
-        run: |
-          key=$(grep -m1 '^LITELLM_JEV_KEY=' "$HOME/.config/fleet-ops/seats/typesafe-jev.env" | cut -d= -f2-)
-          echo "::add-mask::$key"
-          if [ "$(gh issue view 4834 -R Nishfleet/0509 --json state --jq .state)" = OPEN ]; then core_open=yes; else core_open=no; fi
-          core_id=$(gh api repos/Nishfleet/0509/issues/4834 --jq .id)
-          seen=0; fails=0
-          for n in $(gh issue list -R Nishfleet/0509 -l scout-candidate --state open -L 200 --json number --jq '.[].number'); do
-            issue=$(gh api "repos/Nishfleet/0509/issues/$n")
-            case ",$(jq -r '[.labels[].name]|join(",")' <<<"$issue")," in
-              *,agent-ready,*|*,needs-orchestrator,*|*,needs-nish-decision,*) continue ;;
-            esac
-            seen=$((seen + 1))
-            out=$(jq -n --argjson s "$issue" '{model: "jev-latest", state: {issue: {ref: $s.html_url, title: $s.title, body: $s.body}}, questions: {admit: {type: "noul", instructions: "Is this a well-formed Nishfleet/0509 slice a worker can ship now: prior art resolves on main, a runnable acceptance, no money or credential gate? While Nishfleet/0509#4834 is open, work outside the core loop (sign up -> input -> card -> competitors -> Home -> first brief) is still admitted on well-formedness; the caller holds it separately."}, in_core_loop: {type: "noul", instructions: "Does this issue slice touch the 0509 core loop: sign up -> input -> card -> competitors -> Home -> first brief?"}}}' |
-              curl -s --max-time 90 127.0.0.1:4000/jev -H "Authorization: Bearer $key" -H 'content-type: application/json' -d @-)
-            p=$(jq -r '.answers.admit.noul // "unavailable"' <<<"$out" 2>/dev/null || echo unavailable)
-            awk -v p="$p" 'BEGIN { exit !(p ~ /^[0-9.]+$/) }' || { fails=$((fails + 1)); continue; }
-            gh issue comment "$n" -R Nishfleet/0509 --body "jev admit: p=$p" || continue
-            if awk -v p="$p" 'BEGIN { exit !(p + 0 >= 0.9) }'; then
-              q=$(jq -r '.answers.in_core_loop.noul // "0"' <<<"$out" 2>/dev/null || echo 0)
-              if [ "$core_open" = yes ] && ! awk -v q="$q" 'BEGIN { exit !(q ~ /^[0-9.]+$/ && q + 0 >= 0.5) }'; then
-                gh api "repos/Nishfleet/0509/issues/$n/dependencies/blocked_by" -F issue_id="$core_id" || { echo "::warning::admit: blocked_by #4834 not recorded for #$n; left for the next tick"; continue; }
-                gh issue edit "$n" -R Nishfleet/0509 --add-label after-core-loop
-              fi
-              gh issue edit "$n" -R Nishfleet/0509 --add-label agent-ready --remove-label scout-candidate --remove-label proposed
-            elif awk -v p="$p" 'BEGIN { exit !(p + 0 >= 0.6) }'; then
-              gh issue edit "$n" -R Nishfleet/0509 --add-label needs-orchestrator
-            else
-              gh issue edit "$n" -R Nishfleet/0509 --add-label needs-nish-decision
-            fi
-          done
-          echo "admit: scored=$seen jev_unavailable=$fails"
-          [ "$seen" -eq 0 ] || [ "$fails" -lt "$seen" ]
-  gardener:
-    if: ${{ !inputs.ref && (github.event.schedule == '0 4 * * 1' || inputs.job == 'gardener') }}
-    runs-on: [self-hosted, agent]
-    timeout-minutes: 45
-    env:
-      XDG_RUNTIME_DIR: /run/user/1000
-    steps:
-      - name: Gardener
-        # Same command as fleet-gardener.service: the box's own claude login
-        # and gh login, no App token. Transcript stays off the public log.
-        # vars.GRADER names who stands in for Claude: while Claude's weekly
-        # limit is spent, the stand-in runs the Kimi step below instead.
-        if: vars.GRADER != 'kimi'
-        run: claude -p --model claude-opus-5-5 --dangerously-skip-permissions < "$HOME/workspaces/tooling/fleet-ops-deploy-clone/prompts/gardener.md" > /dev/null
-      - name: Gardener (Kimi K3 Max stand-in)
-        # vars.GRADER=kimi while Claude's limit is spent (Nish, 2026-09-26):
-        # the same gardener.md prompt on cursor-agent, seat cursor-2 = live.com.
-        # The env file carries the key; nothing here prints it.
-        if: vars.GRADER == 'kimi'
-        run: |
-          set -a; . "$HOME/.config/fleet-ops/seats/cursor-2.env"; set +a
-          cursor-agent -p --output-format text --model kimi-k3-max --force --trust \
-            "$(cat "$HOME/workspaces/tooling/fleet-ops-deploy-clone/prompts/gardener.md")" > /dev/null
-  inish-daily:
-    # The inish.in daily edition. Its runner was a Hermes cron job, disabled
-    # 2026-08-20 (seat quota) and never replaced: the site sat on 2026-08-23
-    # for 36 days. The runbook lives in the product repo.
-    # The 10:30 IST catch-up covers a runner or host that was down at 07:30;
-    # the runbook's first step stops at once when today's edition is live.
-    if: ${{ !inputs.ref && (github.event.schedule == '0 2 * * *' || github.event.schedule == '0 5 * * *' || inputs.job == 'inish-daily') }}
-    runs-on: [self-hosted, agent]
-    timeout-minutes: 150
-    concurrency:
-      group: scheduled-inish-daily
-      cancel-in-progress: false
-    env:
-      GIT_AUTHOR_NAME: nishfleet-worker[bot]
-      GIT_AUTHOR_EMAIL: 321485391+nishfleet-worker[bot]@users.noreply.github.com
-      GIT_COMMITTER_NAME: nishfleet-worker[bot]
-      GIT_COMMITTER_EMAIL: 321485391+nishfleet-worker[bot]@users.noreply.github.com
-    steps:
-      - name: Read App private key
-        id: app-key
-        run: |
-          keyfile="$HOME/.config/fleet-worker/nishfleet-worker.private-key.pem"
-          [ -s "$keyfile" ] || { echo "::error::app private key file missing on runner"; exit 1; }
-          while IFS= read -r line || [ -n "$line" ]; do
-            [ -n "$line" ] && echo "::add-mask::$line"
-          done < "$keyfile"
-          delim=APP_PRIVATE_KEY_END
-          {
-            printf 'pem<<%s\n' "$delim"
-            cat "$keyfile"
-            printf '%s\n' "$delim"
-          } >> "$GITHUB_OUTPUT"
-      # The runbook (inish-site automation/HERMES_DAILY.md steps 7-9) pushes
-      # the edition straight to inish-site main, whose CI tests and deploys it.
-      - name: App token for Nishfleet/inish-site
-        id: app-token
-        uses: actions/create-github-app-token@fee1f7d63c2ff003460e3d139729b119787bc349 # v2.2.2
-        with:
-          app-id: "4728578"
-          private-key: ${{ steps.app-key.outputs.pem }}
-          owner: Nishfleet
-          repositories: inish-site
-          permission-contents: write
-          permission-pull-requests: write
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          repository: Nishfleet/inish-site
-          token: ${{ steps.app-token.outputs.token }}
-          path: inish-site
-          persist-credentials: false
-      - name: Publish today's edition
-        # The published: line is the completed-run signature; without it the
-        # next model takes over the same checkout (the runbook resumes an
-        # earlier attempt's work), and after the last one the job fails red. The checkout keeps no credential in .git/config;
-        # git gets the token here from the environment, for inish-site URLs
-        # only, the same extraheader actions/checkout would have written.
-        working-directory: inish-site
-        env:
-          GH_TOKEN: ${{ steps.app-token.outputs.token }}
-        run: |
-          basic=$(tr -d '\n' <<<"x-access-token:$GH_TOKEN" | base64 -w0)
-          echo "::add-mask::$basic"
-          export GIT_CONFIG_COUNT=2
-          export GIT_CONFIG_KEY_0=http.https://github.com/Nishfleet/inish-site.extraheader
-          export GIT_CONFIG_VALUE_0="AUTHORIZATION: basic $basic"
-          export GIT_CONFIG_KEY_1=http.https://github.com/Nishfleet/inish-site.git.extraheader
-          export GIT_CONFIG_VALUE_1="AUTHORIZATION: basic $basic"
-          today=$(TZ=Asia/Kolkata date +%F)
-          for model in worker-capable senior worker-capable; do
-            out="$RUNNER_TEMP/inish-daily-$model-$RANDOM.out"
-            echo "Publish today's inish.in edition (today = $today, Asia/Kolkata). Read automation/HERMES_DAILY.md in this checkout and follow every step exactly." \
-              | timeout 45m pi --print \
-                  --append-system-prompt "$HOME/workspaces/tooling/fleet-ops-deploy-clone/AGENTS.md" \
-                  --session-dir "$HOME/.pi/agent/sessions/inish-daily" \
-                  --provider litellm --model "$model" > "$out" || true
-            grep -E '^publish(ed|-failed):' "$out" || true
-            grep -qE '^published: [0-9]{4}-[0-9]{2}-[0-9]{2} ' "$out" && exit 0
-            echo "::warning::inish-daily: $model did not publish; handing the checkout to the next model"
-          done
-          exit 1
   report:
     needs: work
     if: (failure() || cancelled()) && needs.work.outputs.wall != 'true'
@@ -575,7 +349,7 @@ jobs:
     permissions:
       issues: write
     steps:
-      # App token, not GITHUB_TOKEN: a GITHUB_TOKEN label fires no workflow, so opus-vet never ran on a park (fleet-ops#8552).
+      # App token, not GITHUB_TOKEN: a GITHUB_TOKEN label fires no workflow, so a workflow listening for the label never ran on a park (fleet-ops#8552).
       - name: Read App private key
         id: app-key
         run: |
@@ -601,8 +375,8 @@ jobs:
       - env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
           N: ${{ inputs.ref }}
-        # Two strikes, counted from these comments since the newest opus-vet
-        # (a fresh vet resets the count, same as the old claim-release prompt).
+        # Two strikes, counted from these comments since the newest park: comment
+        # (opus-vet: still counts; a fresh one resets the count, same as the old claim-release prompt).
         # First strike re-queues via agent-ready (fleet-ops#8552); the second parks.
         run: |
           i=${N#claim/issue-}; i=${i%%-*}
@@ -611,8 +385,17 @@ jobs:
           # other gh failure still fails the step.
           err=$(gh issue view "$i" -R "$GITHUB_REPOSITORY" --json number 2>&1 >/dev/null) ||
             { case $err in *"Could not resolve"*) echo "report: #$i does not resolve in $GITHUB_REPOSITORY; skip"; exit 0 ;; *) echo "$err" >&2; exit 1 ;; esac; }
+          # A run the concurrency group displaced never reached the Gate, so it
+          # never commented "agent run started:". Its cancelled work job still
+          # ran this job, which struck and relabelled the issue under the run
+          # that held the group (agent-in-progress and agent-ready together on
+          # 10 of 43 bare-branch issues in 0509).
+          # shellcheck disable=SC2016 # $u is a jq variable
+          comments=$(gh issue view "$i" -R "$GITHUB_REPOSITORY" --json comments)
+          jq -e --arg u "/runs/$GITHUB_RUN_ID" '.comments | any(.body | startswith("agent run started:") and endswith($u))' <<<"$comments" >/dev/null ||
+            { echo "report: run $GITHUB_RUN_ID never claimed #$i; skip"; exit 0; }
           # shellcheck disable=SC2016 # $v is a jq variable
-          prior=$(gh issue view "$i" -R "$GITHUB_REPOSITORY" --json comments --jq '[.comments[] | if (.body | startswith("opus-vet:")) or ((.body | test("^attempt-cap reset: \\S")) and (.authorAssociation | IN("OWNER", "MEMBER", "COLLABORATOR"))) then "opus-vet:" else .body end] | (map(startswith("opus-vet:")) | rindex(true) // -1) as $v | .[$v+1:] | map(select(startswith("agent run failed:"))) | length')
+          prior=$(gh issue view "$i" -R "$GITHUB_REPOSITORY" --json comments --jq '[.comments[] | if (.body | startswith("park:") or startswith("opus-vet:")) or ((.body | test("^attempt-cap reset: \\S")) and (.authorAssociation | IN("OWNER", "MEMBER", "COLLABORATOR"))) then "park:" else .body end] | (map(startswith("park:")) | rindex(true) // -1) as $v | .[$v+1:] | map(select(startswith("agent run failed:"))) | length')
           gh issue comment "$i" -R "$GITHUB_REPOSITORY" --body "agent run failed: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
           if [ "$prior" -ge 1 ]; then
             gh issue edit "$i" -R "$GITHUB_REPOSITORY" --add-label needs-orchestrator --remove-label agent-ready,agent-in-progress,agent-failed

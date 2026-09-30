@@ -1,12 +1,14 @@
 {
-  "description": "Declared set of Nishfleet repos enrolled in the agent-ready queue (.github/workflows/agent-dispatch.yml and the scout job); a PR against this file is the enrolment.",
+  "description": "Declared set of Nishfleet repos enrolled in the agent-ready queue (.github/workflows/agent-dispatch.yml); a PR against this file is the enrolment.",
   "checkout_root": "/home/nish/workspaces/products",
   "required_labels": [
     "agent-ready",
     "agent-in-progress",
-    "agent-blocked"
+    "agent-blocked",
+    "agent-failed",
+    "needs-orchestrator"
   ],
-  "preconditions": "Every enrolled repo MUST have (a) a git checkout at <checkout_root>/<name> and (b) all three `required_labels` present on the repo. `agent-dispatch` fires only on the `agent-ready` label.",
+  "preconditions": "Every enrolled repo MUST have (a) a git checkout at <checkout_root>/<name> and (b) every `required_labels` name present on the repo. `agent-dispatch` fires only on the `agent-ready` label.",
   "repos": [
     {
       "name": "0509",

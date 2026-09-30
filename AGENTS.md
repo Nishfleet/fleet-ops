@@ -2,7 +2,6 @@
 
 ## Verification commands
 
-- Alert rules: `promtool check rules config/fleet_rules.yml`
 - Diff-scoped semgrep: `semgrep --config p/default --baseline-commit "$(git merge-base HEAD origin/main)" --quiet --metrics=off`
 
 ## Hard lines
@@ -18,13 +17,24 @@
 - One-off -> skill -> routine ladder (fleet-ops#8871): the criteria live in the
   vault (`global-standing-rules.md` → "Skill ladder"); this bullet is a pointer,
   not a second source.
-- The quality bar your PR is graded on is `docs/quality-bar.md` (fleet-ops#8655): only A+ (all nine points, zero findings) passes the `grade` check.
+- The quality bar your PR is held to is `docs/quality-bar.md` (all points met, zero findings). CI is the merge gate; a PR that touches `.github/`, `migrations/`, `app/lib/auth*` or `app/lib/data/` is labelled `needs-coordinator` and the coordinator reviews it before it merges.
+- Any change that adds or edits an AI decision (a Jev question, or a model prompt that decides something users see) ships with before/after numbers in the PR body, measured on cases held out from tuning. The builder never grades its own work: a different model family writes and labels the held-out cases before tuning starts, and runs the final score. Where the repo has `tests/evals/` (0509#6161), use it. Never add a script to run it.
 - Never deploy without Nish; agent-authored PRs self-land per
   `global-standing-rules.md` → "Agent-authored PRs land themselves"
   (fleet-ops#5715: the bare "never merge" wording contradicted the enforced
   self-land rule).
 - Money is Nish's alone. No payments, cards, or paid trials.
-- Secrets never get printed, moved, rotated, or committed.
+- Secrets never get printed, moved, rotated, or committed — and never sit in
+  argv: `/proc/<pid>/cmdline` is world-readable for the life of a call
+  (fleet-ops#8403: `curl -H "Authorization: Bearer $KEY"` leaks the key to
+  `ps`). Hand curl a config fd instead, so argv holds only the fd path:
+  `curl --config <(sed -n 's|^NAME=\(.*\)|header = "Authorization: Bearer \1"|p' <env file>)`
+  — never `printf`/`echo` a `$..._KEY` into it, which CI's secret-scan gate
+  reads as a secret expanded into an output command. `-H @<0600 headers file>`
+  or a call routed through pi also work. Agent shells
+  never source `~/.config/fleet-ops/litellm-master-key.env`: the master key is
+  the proxy's own admin credential — seat traffic uses the per-group virtual
+  keys and decisions go through `/jev` (RUNBOOK).
 - `main`/`master` are protected. Branch or use a worktree.
 - Machine wiring — symlinks under `~/.config/systemd/user`, `~/.local/bin`,
   `~/.pi/agent`, and the vault — resolves only into stable install trees
@@ -34,7 +44,8 @@
   or re-clone (fleet-ops#7743: hand-linked `standing-rules-render` units
   pointed into a churning checkout and dangled, taking the render down).
   `fleet-sync.service`'s LINK-GUARD ExecStart fails the unit on a dangling
-  or throwaway-target live link — wiring set this way is caught in ≤2 min.
+  or throwaway-target live link — wiring set this way is caught on the next
+  deploy push or boot.
 - Memory = vault `_system/agent-memory/` plain files (one fact per file, true now, edit in place); search old sessions with `rg` over `~/.pi/agent/sessions` and `~/.claude/projects/*/*.jsonl` before re-deriving.
 
 ## Live state
@@ -85,8 +96,8 @@ run, so they belong in the context file Pi loads once, not re-pasted into every 
 
 Hard rules:
 - NEVER `gh issue close` (merged PR closes it). Never push to main/master, never deploy. `fix(failed-command):` and `fix(decisions-ledger):` (fleet-ops#1138) use `Relates to #<N>`, not `Closes #<N>`.
-- NEVER post a `gate-integrity-attest:`, `verifier-attest:` or `attest-requested:` comment. The attestation checks (gate-integrity, required-verifier-integrity) and the drain that read `attest-requested:` were deleted in the 2026-09-18/19 cuts, so the comment now parks a PR on a void nothing watches (fleet-ops#6594). If a PR genuinely needs an admin call, park the ISSUE `blocked-on: orchestrator` + `needs-orchestrator` — a labeled state drains can list, where a PR comment is invisible. NEVER merge yourself — right after `gh pr create`, ARM `gh pr merge --auto -R Nishfleet/<repo> <pr-number>`. The required checks gate the merge; a `blocked-by-judge` PR stays armed because its failing `opus-review` check already blocks it (fleet-ops#8418).
-- When you (as reviewer/judge) post a BLOCKING review comment on a PR, apply the `blocked-by-judge` label AND disarm (`gh pr merge <PR> --disable-auto`) in the SAME step — a label is not a check, so without the disarm the PR still merges on green (fleet-ops#4557: 0509#2011 merged 90s after its block comment). The worker that continues the PR re-arms it.
+- NEVER merge yourself and never arm auto-merge: the agent run's arm step arms every PR except one touching `.github/`, `migrations/`, `app/lib/auth*` or `app/lib/data/`, which gets the `needs-coordinator` label. The required checks gate the merge (fleet-ops#8418). If a PR genuinely needs an admin call, park the ISSUE `blocked-on: orchestrator` + `needs-orchestrator` — a labeled state drains can list, where a PR comment is invisible.
+- When you (as reviewer) post a BLOCKING review comment on a PR, disarm it (`gh pr merge <PR> --disable-auto`) in the SAME step — without the disarm the PR still merges on green (fleet-ops#4557: 0509#2011 merged 90s after its block comment). Workers never arm: the next agent run's arm step re-arms it.
 - Agent names are forbidden: no Co-Authored-By trailers, no "Generated with" footers, no agent names in commits/PR/comments — audit your own `origin/main..HEAD` commit range and PR body before pushing (fleet-ops#1052).
 - Stay inside the issue's scope. File extras as NEW issues (plain, no labels).
 - NEVER delete `claim/issue-<N>` once a PR exists on it — that closes your own PR and throws the work away (fleet-ops#7736, 2026-09-18). Branch deletion belongs to the BLOCKED path (step 4) only, where there is no PR.
@@ -103,13 +114,13 @@ pstack playbooks (fleet-ops#1260) at `~/.pi/agent/skills/poteto-mode/playbooks/`
 
 ### PR body contract — run these before `gh pr create`
 
-- `Verification:` (real run results) plus `run-proof:` (units/timers/workflows); every worker PR needs one. Armed without ran fails (fleet-ops#378). A change that cannot alter behaviour writes `run-proof: not-needed - <reason>` instead of a run; a proof put off to a later run is a finding (docs/quality-bar.md point 7).
-- New `bin/`/`scripts/` files are banned (no new scripts, anywhere in any repo); if you are ever asked to touch an existing one, the PR body carries `research:` + `help-first:` lines. Hand-building what already exists fails (fleet-ops#517). Skipping `--help` fails (fleet-ops#534).
-- Wipe safety: never `pgrep -f` to find or kill a worktree process. sr-nothing-half-done: include `loose-ends: <key>` (fleet-ops#528).
+- `Verification:` carries real run results; every worker PR needs one, and a proof put off to a later run is a finding (docs/quality-bar.md point 7).
+- New `bin/`/`scripts/` files are banned (no new scripts, anywhere in any repo).
+- Wipe safety: never `pgrep -f` to find or kill a worktree process.
 
 ### Memory budget rule (fleet-ops#4891; blind POVs from Kimi K3 max + Grok 4.6 high agreed 2026-09-10) — applies to every worker, hardest on Nishfleet/0509:
 - Your unit runs under `MemoryMax=4G` and systemd-oomd. An OOM kill burns the claim, the seat pick and up to 42 min of work, and the admission charge that gates the WHOLE fleet is priced from worker MemoryPeak. 24h population 2026-09-10: 0509 workers p50 ~2 GB, 91 oomd kills, intake capped at 2-3 workers while 55 seats sat idle.
-- CI owns coverage and typecheck. Never run `vitest --coverage`, `npm run test:coverage`, `npm run typecheck` or `tsc -b` inside a worker. Nothing blocks these for you: the permission-gate extension that used to was deleted in the no-glue cut (#8238), so this line is the rule. A 55-minute worker wall does not fit typecheck + build + a full e2e run on a 25% CPU share; that is what timed out 0509 workers on 2026-09-23. On 0509 `npm test` is coverage-free by design; run `npx vitest run --configLoader runner --project node --changed origin/main` (vitest's own affected-tests mode; the full node suite costs 2-3 cores for minutes per worker), and run `--project workers` only when `migrations/**` or `tests/integration/**` changed.
+- CI owns coverage and typecheck. Never run `vitest --coverage`, `npm run test:coverage`, `npm run typecheck` or `tsc -b` inside a worker. Nothing blocks these for you, so this line is the rule. A 55-minute worker wall does not fit typecheck + build + a full e2e run on a 25% CPU share; that is what timed out 0509 workers on 2026-09-23. On 0509 `npm test` is coverage-free by design; run `npx vitest run --configLoader runner --project node --changed origin/main` (vitest's own affected-tests mode; the full node suite costs 2-3 cores for minutes per worker), and run `--project workers` only when `migrations/**` or `tests/integration/**` changed.
 - Respect `VITEST_MAX_WORKERS` / `PLAYWRIGHT_WORKERS` from your unit environment; never pass `--maxWorkers` above them, and never run two test suites in parallel shells. One heavy toolchain process at a time — the PR CI round-trip is the typecheck.
 - Lint only what you changed. Never `npm run lint`, `eslint .` or `knip` in a worker: a whole-repo eslint run peaks near 1 GB, and every worker running it at once thrashed the VPS on 2026-09-24. Run eslint on your diff, `git diff --name-only --diff-filter=ACMR -z origin/main...HEAD -- '*.ts' '*.tsx' '*.js' | xargs -0 -r npx eslint`; CI runs the whole-repo lint and knip on the PR. Nothing in a workflow sets `VITEST_MAX_WORKERS`; the runner environment on the VPS owns it.
 

@@ -19,9 +19,16 @@ rail are in `README.md`; design and enforced rules are in
 ## Deploy and wiring
 
 `deploy-box.yml` (push to main) → `fleet-sync.service` runs
-`git pull --ff-only` + `daemon-reload` and fails (`DEPLOY-BLOCKED`) on a dirty
+a `git fetch` of `main` into `refs/remotes/origin/main` + a
+`git merge --ff-only` of that named ref + `daemon-reload`, and fails
+(`DEPLOY-BLOCKED`) on a dirty
 or diverged clone, so the canonical checkout
 `/home/nish/workspaces/tooling/fleet-ops-deploy-clone` stays clean on `main`.
+It never uses `git pull`: a polluted `FETCH_HEAD` there merges into
+`fatal: Cannot fast-forward to multiple branches` and silently stops every
+deploy (fleet-ops#8893). A trailing `merge-base --is-ancestor` pair
+asserts `HEAD == origin/main`, so a stopped deploy is a failed unit rather
+than a lagging clone.
 Its LINK-GUARD passes fail the unit while any live symlink under
 `~/.config/systemd/user/`, `~/.local/bin/`, `~/.pi/agent/` or the vault is
 broken or resolves into a throwaway root (`*worktrees/*`, `agent-state`,
@@ -32,10 +39,18 @@ per-issue copies (`reviewer-issue-<N>.md`, removed under fleet-ops#8659) are
 loaded by nothing.
 
 Wiring a new unit or prompt is one `ln -sfn` into the deploy clone, once
-(full commands in README). Four classes stay copies rather than symlinks:
-the two `/etc/prometheus` files (fleet-sync does the copy + reload), the two
-Pi extension forks, the live-state JSON files under `~/.local/state/` and
-`~/.config/fleet-ops`-owned files that cross a privilege boundary.
+(full commands in README). Two root-owned copies are `fleet-sync.service`'s
+job instead of the hand copy: `/etc/prometheus/prometheus.yml` (check config +
+copy + reload) and `/etc/systemd/system/agent.slice` (install -C + the system
+`daemon-reload`, which re-applies a changed cap to the running slice —
+fleet-ops#8862). Everything else that stays a copy — the two Pi extension
+forks, the live-state JSON files under `~/.local/state/`, the
+`~/.config/fleet-ops`-owned files and the other `/etc/**` paths — is still
+refreshed by hand.
+
+After a slice change, both the unit and the cgroup must read the new cap:
+`systemctl show agent.slice -p MemorySwapMax` and
+`cat /sys/fs/cgroup/agent.slice/memory.swap.max` (1073741824, not infinity).
 
 ## LiteLLM stack (rebuild reference)
 
@@ -64,7 +79,16 @@ same way; `disable_prisma_schema_update: true` stays under `general_settings`
 (startup `prisma migrate deploy` stalls every restart without it), and
 `DATABASE_URL` is a unit `Environment=` in host-qualified form (the
 socket-less form is rejected). Consumer credentials are per-group virtual keys
-minted via the admin API, never the master key.
+minted via the admin API, never the master key. An admin-API call keeps the
+key out of argv — `curl -H "Authorization: Bearer $KEY"` leaves the key in
+`/proc/<pid>/cmdline` for the life of the curl (fleet-ops#8403) — by handing
+curl a config fd:
+`curl --config <(sed -n 's|^LITELLM_MASTER_KEY=\(.*\)|header = "Authorization: Bearer \1"|p' ~/.config/fleet-ops/litellm-master-key.env)`.
+`sed` rewrites the line into a header; the key never becomes an argument.
+`-H @<0600 headers file>` works too. Do not `printf`/`echo` a `$..._KEY`
+into the config instead: `printf` plus a key variable is what CI's
+secret-scan gate blocks, and the gate is right — the printf form puts the key
+back in argv.
 
 Edits to that file are applied automatically. `fleet-litellm-proxy-config.path`
 (`PathChanged=`) triggers `fleet-litellm-proxy-config.service`, which runs
@@ -96,63 +120,3 @@ cost: the netcup provider VNC console.
 - It is not a second SSH listener, not a standing open console, and not a
   live-tailscaled kill (a lockout, not an experiment — that stays a Nish
   game-day). Panel login lives in Nish's password manager; never here.
-
-## Jev bands and modes
-
-The band edges are the one tuning knob for how confident Jev must be before a
-caller treats an answer as conclusive. The edges are recorded here and applied
-by each caller's own code (the config store was deleted in the glue-zero wipe;
-`config/jev-bands.json` does not come back).
-
-| site | edges |
-|---|---|
-| `alert-dispatch` / `alert-triage` / `alert-repair` / `auto-revert` | 0.9 / 0.1 |
-| `claim-check-pr` / `claim-check-report` / `hermes-digest` | 0.5 / 0.5 |
-| `dependency-pr-arm` / `merge-queue-batches` / `merge-queue-enqueue` | 0.9 / 0.1 |
-| `failure-triage` / `intake-order` / `intake-seat-smoke` | 0.9 / 0.1 |
-| `flaky-test-quarantine` / `gha-stuck-run-watch` | 0.9 / 0.1 |
-| `intake-repair-seatfault` | 0.6 / 0.6 |
-| `reviewer-needs-review` / `scout` | 0.9 / 0.1 |
-| `second-opinion` / `second-opinion-reserved` / `worker-escalation-target` | 0.5 / 0.5 |
-| `worker-context` | RETIRED 2026-09-23 (fleet-ops#8423): 306 of its 450 rows scored 0509 runs whose repo has neither candidate file — 0.9 / 0.1 stamped on surviving rows
-| `vault-drop-routing` | RETIRED 2026-09-28 (fleet-ops#8826): site existed only for the gardener vault capture-routing tier, deleted with the lane wipe |
-
-(`act_hi` is the confident-positive edge, `review_lo` the confident-negative
-one; cascade sites act on a confident band, single-edge sites compare against
-one edge.)
-
-Modes: unset/`shadow` (default) calls Jev and logs a row but never changes what
-runs — advisory by construction. `off`/`0` makes no call, exact prior
-behaviour. `act` may short-circuit the big call at a confident band — only
-after a benchmark go row with measured thresholds; the September benchmark was
-NO-GO at every measured threshold, so shipped values are standing bands, not
-measured ones. Rollback ladder: per-site `JEV_CASCADE_<SITE>_LO`/`_HI`, then
-global `JEV_CASCADE_LO`/`_HI`; the mode flag can always take a site `off`.
-Failures (no key, timeout, malformed, probability out of [0,1]) fall through to
-the existing path; never invent a probability.
-
-Second opinions for reserved decisions run the same card twice with the state
-serialized in two orders; `disagreement=true` or `null` routes the card to the
-escalation path (step 4: `blocked-on: nish-decision`), agreement never grants
-permission. The verdict line and the verbatim python block live in
-`prompts/worker.md`; the bands row for `second-opinion` is 0.5/0.5 above.
-The proxy owns the spend cap (`jev` virtual key: `max_budget 1.0 USD / 1mo`);
-`JEV_SECOND_OPINION=0` rolls a caller back to one call.
-
-## Pending workflow drops
-
-Files under `pending/` are parked GitHub Actions workflows awaiting a token
-with the `workflows` scope (the nishfleet-worker App does not have it). Landing
-each is `git mv` into `.github/workflows/`, update the referenced callers,
-delete the directory:
-
-| dir | drop |
-|---|---|
-| `pending/p11b` | five reusable workflows (gitleaks, semgrep, review-gate, auto-enqueue, weekly standards apply) |
-| `pending/stale` | `stale.yml` triage-close sweep for unclaimed unlabeled issues (fleet-ops#3311) |
-| `pending/surface-audit` | the reusable `surface-audit.yml` matrix workflow fleet-ops#1198; `template/.github/workflows/surface-audit.yml` is the thin caller and `template/surface-audit.json` the config template, once that lands |
-
-`repo-standards-apply` (the weekly standards sweep) and its scripts were
-removed in fleet-ops#7861, so a new repo is not enrolled automatically while
-those drops wait; the exception file `.fleet/standards-exceptions.yml` honours
-only `decided_by: nish` entries.

@@ -13,7 +13,7 @@ Read `fleet-map.md` in this directory before deciding what a unit does. One row 
 
 ## When
 
-A pull request that touches `systemd/`, `prompts/`, or `config/` includes a `## Verification` section with one real run of this skill. Pick the unit that changed, or the unit that reads the prompt or config that changed. Templates take the instance from the issue (`alert-repair@SystemUnitFailed`).
+A pull request that touches `systemd/`, `prompts/`, or `config/` includes a `## Verification` section with one real run of this skill. Pick the unit that changed, or the unit that reads the prompt or config that changed.
 
 ## Run
 
