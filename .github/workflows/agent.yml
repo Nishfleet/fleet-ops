@@ -195,8 +195,17 @@ jobs:
               cat "$RUNNER_TEMP/try.err" >&2
               break
             done
-            [ "$rc" = 0 ] || exit 1
-          elif [ "$ENGINE" = opencode ]; then
+            if [ "$rc" != 0 ] && grep -qiE 'capacity issues|free model rate limit' "$RUNNER_TEMP/try.err" && [ "$(gh api "repos/$REPO/compare/main...$REF" --jq .ahead_by)" = 0 ]; then
+              live() { pgrep -af -- "^bwrap .* -- $1 " | grep -oE 'agent-worktrees/issue-[^ ]*|sessions/agent-[^ ]*' | sort -u | wc -l; }
+              if [ "$(live opencode)" -lt 2 ]; then ENGINE=opencode
+              else ENGINE=pi
+              fi
+              echo "fallthrough: $ENGINE"
+            else
+              [ "$rc" = 0 ] || exit 1
+            fi
+          fi
+          if [ "$ENGINE" = opencode ]; then
             # --dir puts the worker directory on the bwrap command line; --auto
             # approves what the worker needs outside it (prompts, gh, the repo).
             mkdir -p "$dir"
@@ -217,7 +226,7 @@ jobs:
             mkdir -p "$dir"
             $jail cursor-agent -p --output-format text --model cursor-grok-4.6-high --force --trust \
               --workspace "$dir" "$packet" >/dev/null
-          else
+          elif [ "$ENGINE" != opencode ] && [ "$ENGINE" != devin ]; then
             # Mobbin MCP via the pi-mcp-adapter package (Pi has no built-in MCP).
             # OAuth tokens sit in ~/.pi/agent/mcp-oauth-encrypted/; this is their
             # file key. Without it only the lazy mobbin server fails, never the run.
