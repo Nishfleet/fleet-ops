@@ -21,11 +21,25 @@ StartLimitBurst=100
 
 [Service]
 Type=oneshot
-# 1. Fast-forward the clone. A dirty tree or a diverged branch fails the unit
-#    loud, which is correct: the live source must be clean origin/main, and a
-#    failed unit is visible to the failed-unit sweep. git's own pull output in
-#    the journal is the deploy record.
-ExecStart=/usr/bin/git -C /home/nish/workspaces/tooling/fleet-ops-deploy-clone pull --ff-only origin main
+# 1. Fast-forward the clone deterministically (fleet-ops#8893).
+#    `git pull --ff-only origin main` delegates to `git merge --ff-only FETCH_HEAD`,
+#    and a multi-entry `FETCH_HEAD` (e.g. from a concurrent `git fetch` in the
+#    deploy clone, or a multi-valued `branch.main.merge` config) makes merge refuse
+#    with `fatal: Cannot fast-forward to multiple branches`, silently stopping the
+#    whole deploy. Fetch main into its remote-tracking ref explicitly, then merge
+#    that named ref — a single commit can never produce the multi-branch refusal.
+ExecStart=/usr/bin/git -C /home/nish/workspaces/tooling/fleet-ops-deploy-clone fetch --no-tags origin refs/heads/main:refs/remotes/origin/main
+ExecStart=/usr/bin/git -C /home/nish/workspaces/tooling/fleet-ops-deploy-clone merge --ff-only refs/remotes/origin/main
+#    Probe (fleet-ops#8893): the step above is now deterministic, but a deploy
+#    window that ever ends with HEAD not equal to origin/main is a silent stop.
+#    `git diff` would compare trees and miss an empty commit, so assert commit
+#    identity in both directions: origin/main is an ancestor of HEAD (HEAD is not
+#    behind) AND HEAD is an ancestor of origin/main (HEAD is not ahead). Together
+#    those are true only when HEAD == origin/main; either false exits non-zero and
+#    the unit fails loud, so the failed-unit sweep pages instead of the clone
+#    quietly lagging.
+ExecStart=/usr/bin/git -C /home/nish/workspaces/tooling/fleet-ops-deploy-clone merge-base --is-ancestor refs/remotes/origin/main HEAD
+ExecStart=/usr/bin/git -C /home/nish/workspaces/tooling/fleet-ops-deploy-clone merge-base --is-ancestor HEAD refs/remotes/origin/main
 # 2. Re-read the linked unit files. The symlinks never move; only their
 #    contents changed with the pull.
 ExecStart=/usr/bin/systemctl --user daemon-reload
