@@ -16,13 +16,36 @@ Volume=%h/.config/fleet-ops/litellm-proxy.yaml:/app/config.yaml:ro
 Environment=DATABASE_URL=postgresql://litellm@localhost:5432/litellm
 # INFO, not DEBUG: DEBUG dumps full prompts into the journal (fleet-ops#4449).
 Environment=LITELLM_LOG=INFO
-# Quadlet's EnvironmentFile= cannot glob, so the [Service] EnvironmentFile=
-# lines below load the seat keys and this flag passes them into the container.
-EnvironmentHost=true
-# --env-host would also pass the host PATH and HOME, hiding the image's
-# /app/.venv/bin; --env outranks --env-host, so pin both back to the image values.
+# The seat keys reach the container through the [Container] EnvironmentFile=
+# lines at the bottom of this file, NOT through --env-host.
+#
+# EnvironmentHost=true is what leaked every user unit's environment into this
+# container (fleet-ops#9020): --env-host copies the environment of the process
+# running podman, which is the systemd --user manager, and on 2026-09-30 that
+# manager's env held 33 CLAUDE_* vars (CLAUDE_CODE_OAUTH_TOKEN among them)
+# plus SSH_AUTH_SOCK/SSH_CLIENT/SSH_CONNECTION from an interactive Claude Code
+# session. Every unit started since inherited them. --env-host is a whole-env
+# copy, so there is no var-list form of it to narrow: the import is deleted,
+# not narrowed, and the keys the router actually needs are named explicitly.
+#
+# This also makes the PATH/HOME pins below a plain pin rather than an undo of
+# --env-host: they name the two values this container must run with either way.
 Environment=PATH=/app/.venv/bin:/usr/local/sbin:/usr/local/bin:/usr/bin:/usr/sbin:/sbin:/bin
 Environment=HOME=/root
+#
+# [Container] EnvironmentFile= is what Quadlet needs here: systemd reads its
+# [Service] EnvironmentFile= lines into the service's environment, but Quadlet
+# only turns its own [Container] EnvironmentFile= lines into podman's
+# --env-file, and podman --env-file outranks neither --env-host nor the image,
+# yet it does carry every key without copying the rest of the environment.
+# These are the 14 keys litellm-proxy.yaml reads as os.environ/NAME, each from
+# the file that already held it, in the precedence order the [Service] block
+# below has. podman's --env outranks --env-file, so the Environment= lines
+# above still win for the four names they set.
+EnvironmentFile=-%h/.config/fleet-ops/seats/*.env
+EnvironmentFile=-%h/.config/xkiro/.env
+EnvironmentFile=-%h/.config/straitly/straitly.env
+EnvironmentFile=%h/.config/fleet-ops/litellm-master-key.env
 # --num_workers 2 (fleet-ops#8827). The default is 1, so /health/readiness,
 # /metrics and the /jev pass-through all ran on the ONE event loop that also
 # served every chat completion: 2026-09-28 ~15:20-15:35 IST, with eight
