@@ -29,6 +29,7 @@
       "baseUrl": "http://litellm.fleet.local:4000",
       "api": "openai-completions",
       "apiKey": "!cut -d= -f2- /home/nish/.config/fleet-ops/litellm-master-key.env",
+      "headers": { "x-litellm-session-id": "$FLEET_TASK_ID" },
       "models": [
         {
           "id": "judge",

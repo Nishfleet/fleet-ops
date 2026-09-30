@@ -743,12 +743,15 @@ model_list:
       BadRequestErrorAllowedFails: 1
 router_settings:
   routing_strategy: simple-shuffle
-  optional_pre_call_checks: ["prompt_caching"]
+  # One task = one model (Nish 2026-10-01, fleet-ops#9015). Pi sends x-litellm-session-id=$FLEET_TASK_ID
+  # (config/pi-models.json; Pi refuses to call without it), and session_affinity pins that id to the
+  # first row picked in each group until it has been idle for deployment_affinity_ttl_seconds (default 3600).
+  optional_pre_call_checks: ["prompt_caching", "session_affinity"]
   # worker groups hold only rungs proven to return finish_reason=tool_calls (fleet-ops#7761); simple-shuffle ignores order:.
+  # Worker groups have no fallback: a failed request goes back to Pi, which retries its pinned model.
+  # A failed run escalates once, at task level, to the senior Cursor lane (agent.yml first strike adds
+  # strong-only). senior never falls back down.
   fallbacks:
-    - worker-cheap: [worker-capable]
-    - worker-capable: [worker-cheap]
-    - senior: [worker-capable]
     - judge: [senior]
   cooldown_time: 60
   allowed_fails: 1

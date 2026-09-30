@@ -172,6 +172,8 @@ jobs:
         env:
           ENGINE: ${{ steps.gate.outputs.engine }}
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          # Pi sends this as x-litellm-session-id so the router keeps the whole run on one model (#9015).
+          FLEET_TASK_ID: run-${{ github.run_id }}-${{ github.run_attempt }}
         run: |
           exec 2> >(tee "$RUNNER_TEMP/worker.err" >&2)
           id=${REF#claim/issue-}; id=${REPO#*/}-${id%%-*}
@@ -227,17 +229,12 @@ jobs:
             fi
           fi
           if [ "$ENGINE" = cursor ]; then
-            # Alternate the two prepaid Cursor Ultra keys by issue number so
-            # neither stack is spent and both are paced (fleet-ops#8740):
-            # even $id -> cursor.env, odd $id -> cursor-2.env. $id's issue
-            # number is its last '-' field, so parity is on the issue number.
-            case ${id##*-} in
-              *[!0-9]*) cursor_env=cursor.env ;;   # not numeric: default to key 1
-              *) [ $(( ${id##*-} % 2 )) -eq 0 ] && cursor_env=cursor.env || cursor_env=cursor-2.env ;;
-            esac
+            # cursor-2.env (live.com) hit its weekly limit on 2026-09-29 and
+            # resets about 2026-10-05: use cursor.env only, then restore the
+            # odd/even alternation (fleet-ops#8740).
             set -a
-            # shellcheck disable=SC1090 # cursor_env is one of the two constant seat files set in the case just above
-            . "$HOME/.config/fleet-ops/seats/$cursor_env"
+            # shellcheck disable=SC1091 # the constant seat file on the VPS
+            . "$HOME/.config/fleet-ops/seats/cursor.env"
             set +a
             mkdir -p "$dir"
             $jail cursor-agent -p --output-format text --model cursor-grok-4.6-high --force --trust \
@@ -380,7 +377,9 @@ jobs:
           N: ${{ inputs.ref }}
         # Two strikes, counted from these comments since the newest park: comment
         # (opus-vet: still counts; a fresh one resets the count, same as the old claim-release prompt).
-        # First strike re-queues via agent-ready (fleet-ops#8552); the second parks.
+        # First strike re-queues via agent-ready (fleet-ops#8552) with strong-only, so the retry
+        # goes to the senior Cursor lane with the issue thread and pushed branch as its context,
+        # never to another worker model (Nish 2026-10-01, #9015); the second parks.
         run: |
           i=${N#claim/issue-}; i=${i%%-*}
           # A ref can name a number that is not an issue in the calling repo
@@ -403,5 +402,5 @@ jobs:
           if [ "$prior" -ge 1 ]; then
             gh issue edit "$i" -R "$GITHUB_REPOSITORY" --add-label needs-orchestrator --remove-label agent-ready,agent-in-progress,agent-failed
           else
-            gh issue edit "$i" -R "$GITHUB_REPOSITORY" --add-label agent-ready --remove-label agent-in-progress,agent-failed
+            gh issue edit "$i" -R "$GITHUB_REPOSITORY" --add-label agent-ready,strong-only --remove-label agent-in-progress,agent-failed
           fi

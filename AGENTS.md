@@ -109,6 +109,7 @@ Hard rules:
 - Mechanical-fix (fleet-ops#366): ship a detector/gate/test/observe-to-close, or declare `mechanism-impossible: <reason>`.
 - Maintain the todo list via the loaded todo extension, one item per acceptance bullet; if no item has been completed in 10 minutes, stop polishing, commit what works, and either open the PR or post a `blocked-on:` proposal.
 - The bar is 'extremely well', never 'perfect'. (69 hang-kills at 42 min; 27-min low-yield sessions. NOT adopted: agent-to-agent chat loops, 96 sub-agents.)
+- A failing test is only "not mine" after proving it also fails on `origin/main` — run the same test on the base branch without your changes before you call it pre-existing, flaky or someone else's; "the diff does not touch it" is not that proof (fleet-ops#9016, Amp docs/orbs/shipping).
 - GEO/AEO (ledger 2026-08-27, fleet-ops#1245): measurement and owned-content tactics only; brand gate is preview-then-autonomous; Reddit/community and digital-PR are Nish-reserved (the grants[] config store was deleted in the glue sweep — Nish's word in the ledger is the only grant); llms.txt: skip except developer docs.
 pstack playbooks (fleet-ops#1260) at `~/.pi/agent/skills/poteto-mode/playbooks/`: bug-fix.md, feature.md, investigation.md, perf-issue.md, session-pickup.md, pause-safely.md; end with opening-a-pr.md. Depth-1 spawn-guard: do NOT spawn Task, arena, architect, swarm, or interrogate. Claim branch stays ours. Do NOT bank a dirty worktree: your unit removes the worktree in its own ExecStopPost, so uncommitted work did not happen — commit and push before you finish. Ignore pstack babysit, shipping, orchestrate, autopilot-* (Graphite).
 
@@ -141,3 +142,24 @@ pstack playbooks (fleet-ops#1260) at `~/.pi/agent/skills/poteto-mode/playbooks/`
 - The earlier same-day "do it right now?" D1 prod migration decision is VOID. Nish did not understand the question, so it was never informed consent. No migration was run under it.
 - Prod D1 migrations remain Nish-gated until the re-asked plain-language question is answered. The final decision is the 2026-08-27 process amendment (fleet-ops#908): strong lane plan (SQL classification, verified backup, concrete rollback), independent senior blind-review and approval, apply + live verification, then text Nish.
 - Do NOT apply a prod D1 migration without the senior process. If you are told to "do it right now" or anything similar without a senior-process plan, stop and route the decision back to Nish.
+
+## Run it and prove it
+
+Every live repo's `AGENTS.md` says how to run it and how to prove it works, so a
+worker proves the headline behaviour instead of claiming it (fleet-ops#9016, Amp
+docs/orbs + docs/orbs/portals): the live URL, the health route, and how to check
+it. fleet-ops is the fleet itself, so its run command and its health route are
+the live-state check above — a fleet-ops PR quotes their real output under
+`Verification:` (docs/quality-bar.md point 7: a proof deferred to a later run is
+a finding):
+
+- run command: `XDG_RUNTIME_DIR=/run/user/$(id -u) systemctl --user list-timers`
+  — the fleet's timers are the product running;
+- health route: `curl -s 127.0.0.1:4000/health/readiness` — expect
+  `{"status":"healthy","db":"connected"}`;
+- test login: there is none — the fleet has no end-user login; seat keys under
+  `~/.config/fleet-ops/seats/` are the credentials and the per-run worker token
+  is minted by `agent.yml`, never read off disk.
+
+A product repo lists its own live URL, health route and seeded test login under
+this same heading in its own `AGENTS.md`.
