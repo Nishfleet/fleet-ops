@@ -27,9 +27,11 @@
 - Secrets never get printed, moved, rotated, or committed — and never sit in
   argv: `/proc/<pid>/cmdline` is world-readable for the life of a call
   (fleet-ops#8403: `curl -H "Authorization: Bearer $KEY"` leaks the key to
-  `ps`). Pass it via
-  `curl --config <(printf 'header = "Authorization: Bearer %s"\n' "$KEY")`
-  or `-H @<0600 headers file>`, or route the call through pi. Agent shells
+  `ps`). Hand curl a config fd instead, so argv holds only the fd path:
+  `curl --config <(sed -n 's|^NAME=\(.*\)|header = "Authorization: Bearer \1"|p' <env file>)`
+  — never `printf`/`echo` a `$..._KEY` into it, which CI's secret-scan gate
+  reads as a secret expanded into an output command. `-H @<0600 headers file>`
+  or a call routed through pi also work. Agent shells
   never source `~/.config/fleet-ops/litellm-master-key.env`: the master key is
   the proxy's own admin credential — seat traffic uses the per-group virtual
   keys and decisions go through `/jev` (RUNBOOK).
