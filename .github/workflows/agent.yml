@@ -70,6 +70,7 @@ jobs:
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
           DEVIN_MAX_LIVE: ${{ vars.DEVIN_MAX_LIVE || '0' }}
+          OPENCODE_MAX_LIVE: ${{ vars.OPENCODE_MAX_LIVE || '0' }}
         run: |
           # Suffixed rework refs carry a -<tag> tail (claim/issue-<N>-<tag>);
           # the issue number is the leading digits (fleet-ops#8793).
@@ -111,7 +112,8 @@ jobs:
           # SWE-2, so they go only to Cursor; a full Cursor lane leaves them
           # agent-ready. Every other issue: Devin SWE-2 Max while fewer than 4
           # run ($0), else LongCat-2.5-Preview on the opencode CLI while fewer
-          # than 2 run (free until ~2026-10-10, fleet-ops#8790; its free tier
+          # than OPENCODE_MAX_LIVE run (default 0 while its free quota is out,
+          # fleet-ops#9002; vars.OPENCODE_MAX_LIVE sets it back to 2; free until ~2026-10-10, fleet-ops#8790; its free tier
           # answers only the opencode CLI), else pi while it has a free router
           # slot; when all three are full the issue waits (lanes-full) — there
           # is no Cursor fallback (fleet-ops#8740).
@@ -143,7 +145,7 @@ jobs:
             *,strong-only,*) [ "$(live cursor-agent)" -lt 1 ] || skip lanes-full; engine=cursor ;;
             *)
               if devin_free; then engine=devin
-              elif [ "$(live opencode)" -lt 2 ]; then engine=opencode
+              elif [ "$(live opencode)" -lt "$OPENCODE_MAX_LIVE" ]; then engine=opencode
               elif pi_free; then engine=pi
               else skip lanes-full
               fi ;;
