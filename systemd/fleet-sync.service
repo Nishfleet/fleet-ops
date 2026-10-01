@@ -18,9 +18,15 @@ Description=Sync the fleet-ops deploy clone and reload systemd (fleet-ops third 
 # There is no installer to run and no manifest to keep in step.
 StartLimitIntervalSec=1h
 StartLimitBurst=100
+OnFailure=fleet-unit-failed@%N.service
 
 [Service]
 Type=oneshot
+# 0. Dirty working tree (fleet-ops#9033): print DEPLOY-BLOCKED and fail
+#    before fetch/merge. git merge --ff-only already refuses a dirty tree,
+#    but its wording is quiet; this line is the loud journal marker the
+#    map and RUNBOOK name, and OnFailure= pages.
+ExecStart=/bin/sh -c 'git -C /home/nish/workspaces/tooling/fleet-ops-deploy-clone diff --quiet && git -C /home/nish/workspaces/tooling/fleet-ops-deploy-clone diff --cached --quiet || { echo DEPLOY-BLOCKED; exit 1; }'
 # 1. Fast-forward the clone deterministically (fleet-ops#8893).
 #    `git pull --ff-only origin main` delegates to `git merge --ff-only FETCH_HEAD`,
 #    and a multi-entry `FETCH_HEAD` (e.g. from a concurrent `git fetch` in the
@@ -36,13 +42,14 @@ ExecStart=/usr/bin/git -C /home/nish/workspaces/tooling/fleet-ops-deploy-clone m
 #    identity in both directions: origin/main is an ancestor of HEAD (HEAD is not
 #    behind) AND HEAD is an ancestor of origin/main (HEAD is not ahead). Together
 #    those are true only when HEAD == origin/main; either false exits non-zero and
-#    the unit fails loud, so the failed-unit sweep pages instead of the clone
+#    the unit fails loud, so OnFailure=fleet-unit-failed@ pages instead of the clone
 #    quietly lagging.
 ExecStart=/usr/bin/git -C /home/nish/workspaces/tooling/fleet-ops-deploy-clone merge-base --is-ancestor refs/remotes/origin/main HEAD
 ExecStart=/usr/bin/git -C /home/nish/workspaces/tooling/fleet-ops-deploy-clone merge-base --is-ancestor HEAD refs/remotes/origin/main
 # 2. Re-read the linked unit files. The symlinks never move; only their
 #    contents changed with the pull.
 ExecStart=/usr/bin/systemctl --user daemon-reload
+ExecStart=/usr/bin/systemctl --user link /home/nish/workspaces/tooling/fleet-ops-deploy-clone/systemd/fleet-unit-failed@.service
 # 3. /etc/prometheus/prometheus.yml is a root-owned COPY, not a symlink:
 #    prometheus runs as user `prometheus` and /home/nish is 0750 nish:nish, so
 #    it cannot traverse into the repo. promtool check config runs first so a

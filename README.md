@@ -40,7 +40,8 @@ journalctl --user -u fleet-sync.service -n 50
 
 The unit fails loudly on a dirty or diverged clone. That is
 correct: the live source must be clean `origin/main`, and a failed
-`fleet-sync.service` is visible to the failed-unit sweep.
+`fleet-sync.service` fires `OnFailure=fleet-unit-failed@` (healthchecks.io
+fail ping, fleet-ops#9033).
 
 The sync is a `git fetch` of `main` into `refs/remotes/origin/main`
 followed by a `git merge --ff-only` of that named ref — never

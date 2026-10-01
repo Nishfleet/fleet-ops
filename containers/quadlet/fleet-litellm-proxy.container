@@ -6,8 +6,11 @@
 Description=Fleet LiteLLM proxy (Quadlet, fleet-ops#8435)
 Requires=fleet-litellm-postgres.service fleet-litellm-redis.service
 After=fleet-litellm-postgres.service fleet-litellm-redis.service
-StartLimitIntervalSec=60s
-StartLimitBurst=5
+# Keep restarting for a few minutes, then enter failed and page
+# (OnFailure=, fleet-ops#9033). 5 bursts in 60s gave up in ~10s.
+StartLimitIntervalSec=5min
+StartLimitBurst=20
+OnFailure=fleet-unit-failed@%N.service
 
 [Container]
 Image=ghcr.io/berriai/litellm:v1.98.0
@@ -73,7 +76,7 @@ EnvironmentFile=%h/.config/fleet-ops/litellm-master-key.env
 Slice=app-litellm.slice
 ManagedOOMPreference=avoid
 Restart=on-failure
-RestartSec=2s
+RestartSec=10s
 # Let in-flight requests drain instead of being SIGKILLed at 15s (fleet-ops#4449).
 TimeoutStopSec=120
 

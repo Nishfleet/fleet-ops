@@ -97,8 +97,9 @@ The full audit (rungs, counts, second wave) is git history
 
 ## Resilience on one box
 
-Detection + repair, not blind duplication. `Restart=`/`OnFailure=`, the
-failed-unit sweep, and external healthchecks.io dead-men (URLs in
+Detection + repair, not blind duplication. `Restart=`/`OnFailure=`
+(`OnFailure=fleet-unit-failed@%N.service` → healthchecks.io fail ping),
+and external healthchecks.io dead-men (URLs in
 `~/.config/fleet-ops/keystone-hc.env`; unset = LOUD skip, shared = LOUD fail)
 cover supervision. Restic R2 backup / verify / restore-test run as ROOT units
 and publish restore proofs.
