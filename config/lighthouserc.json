@@ -1,6 +1,7 @@
 {
   "ci": {
     "assert": {
+      "aggregationMethod": "median-run",
       "assertions": {
         "largest-contentful-paint": ["error", { "maxNumericValue": 1500 }],
         "interactive": ["error", { "maxNumericValue": 3000 }],
