@@ -109,18 +109,26 @@ Rollback: stop + disable the three units, drop the fleet-owned cluster and
 ## Claude session credentials (fleet-ops#9020)
 
 The systemd `--user` manager environment carries no Claude, Exa or Browser Use
-names. `~/.config/environment.d/50-agent-secrets.conf` is removed and
-`CLAUDE_CODE_OAUTH_TOKEN`, `EXA_API_KEY`, `BROWSER_USE_API_KEY` and
-`ANTHROPIC_BASE_URL` are unset from the manager
-(`systemctl --user unset-environment <NAME>...`), because the manager hands its
-environment to every user unit, every `systemd-run --user` transient and every
-quadlet container.
+names. The manager hands its environment to every user unit, every
+`systemd-run --user` transient and every quadlet container, so the names were
+removed from it in this order:
+
+1. Delete `~/.config/environment.d/50-agent-secrets.conf`.
+2. `systemctl --user daemon-reload`. The manager reads `environment.d` through
+   its generator at startup and on reload, so without this the three names the
+   file defined stay in the manager environment: `unset-environment` alone did
+   not clear them.
+3. `systemctl --user unset-environment <NAME>...` for any name that is still
+   listed, `ANTHROPIC_BASE_URL` included.
+4. Check names only, never values:
+   `systemctl --user show-environment | cut -d= -f1 | grep -E '^(CLAUDE_CODE_OAUTH_TOKEN|EXA_API_KEY|BROWSER_USE_API_KEY|ANTHROPIC_BASE_URL)$'`
+   must print nothing (`grep` exits 1).
 
 A launcher that needs them reads one file, `~/.config/claude/oauth.env`, mode
 0600 (`install -m 0600`, owner `nish`), holding `NAME=value` lines for exactly
-these names: `CLAUDE_CODE_OAUTH_TOKEN`, `EXA_API_KEY`, `BROWSER_USE_API_KEY`,
-`ANTHROPIC_BASE_URL`. Never tracked, never printed; check it with `test -s`
-and `stat -c %a`.
+these names: `CLAUDE_CODE_OAUTH_TOKEN`, `EXA_API_KEY`, `BROWSER_USE_API_KEY`.
+`ANTHROPIC_BASE_URL` is not stored: nothing in the fleet needs it. Never
+tracked, never printed; check it with `test -s` and `stat -c %a`.
 
 Loading it is the stock property, required (no `-` prefix) so a missing file
 fails the unit at start instead of running a session on the wrong login:
@@ -130,20 +138,44 @@ systemd-run --user --collect --unit <name> -p EnvironmentFile=%h/.config/claude/
   -- claude -p ...
 ```
 
-The same line in a unit is `EnvironmentFile=%h/.config/claude/oauth.env`. It
-is deliberately not among the optional (`-`) seat globs the proxy reads: a
-seat file may be absent, this one may not.
+The same line in a user unit is `EnvironmentFile=%h/.config/claude/oauth.env`.
+It is deliberately not among the optional (`-`) seat globs the proxy reads: a
+seat file may be absent, this one may not. In a system unit `%h` is the home of
+the user running the manager, `/root` (`man systemd.unit`, Specifiers), not
+`User=`, so a system unit with `User=nish` writes
+`EnvironmentFile=/home/nish/.config/claude/oauth.env`.
+`EnvironmentFile=` loads the whole file: a unit that must not hold all three
+names gets its own file per need (`claude-token.env`, `exa.env`, ...), never
+the shared one.
 
-Readers in this repo: none. The audit (grep of `systemd/`, `containers/`,
-`.github/`, `config/`, `prompts/`, `template/`, `docs/` for the four names and
-for `claude`, `systemd-run`, `EnvironmentFile=`, `PassEnvironment=`) found no
-unit, workflow or prompt that launches Claude or reads those names. pi workers
-use the `litellm` provider with the per-group keys, and `agent.yml` sources only
-`seats/cursor.env` and `seats/mobbin-mcp.env`. `claude-remote-control.service`
-is a system unit that never inherited the user manager environment and
-needs the claude.ai login, not the token, so it stays without
-`EnvironmentFile=`. A hand-run `claude -p` or `systemd-run --user` that needs
-the token passes the line above.
+Readers in this repo: none (re-audited for every unit, drop-in, quadlet,
+workflow, prompt and recipe that starts `claude`, `pi`, `devin`, `opencode`,
+`cursor-agent` or a fleet worker):
+
+- `claude-remote-control.service` is a system unit. A system manager never saw
+  the user manager environment, so it never inherited these names. Its header
+  says why it must stay without them: "that directory also exports
+  CLAUDE_CODE_OAUTH_TOKEN, and Remote Control needs the claude.ai login
+  instead."
+- `agent.yml` jobs run in the `actions.runner.Nishfleet.netcup-agent-N`
+  system units (`runs-on: [self-hosted, agent]`), so they did not inherit the
+  user manager either. The worker engines read their own credentials: devin and
+  opencode their own logins, cursor `seats/cursor.env`, pi the `litellm`
+  provider with per-group keys plus `seats/mobbin-mcp.env`.
+- `fleet-litellm-proxy.container` took the whole manager environment through
+  `--env-host` until #9020; it now passes the named `PodmanArgs=--env=` list.
+  Its `anthropic/` rows set `api_base` explicitly and take `MINIMAX_API_KEY`,
+  so `ANTHROPIC_BASE_URL` is not read.
+- `fleet-sync`, `fleet-unit-failed@`, `fleet-prometheus-reload`,
+  `fleet-litellm-proxy-config`, the postgres, redis and aiostreams quadlets,
+  and the `hermes-`, `tailscaled`, `oomd` and slice drop-ins start no agent.
+
+The runner environment is the one thing the repo cannot show (the runner
+`.env` and the live `~/.pi/agent` extensions are outside it). If a worker
+engine ever needs one of these names, give that runner a drop-in with the line
+above for the single file it needs; nothing in this repo asks for it today. A
+hand-run `claude -p` or `systemd-run --user` that needs the token passes the
+line above.
 
 ## Break-glass access (SSH is Tailscale-only)
 
