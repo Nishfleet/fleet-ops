@@ -1,0 +1,14 @@
+{
+  "ci": {
+    "assert": {
+      "assertions": {
+        "largest-contentful-paint": ["error", { "maxNumericValue": 1500 }],
+        "interactive": ["error", { "maxNumericValue": 3000 }],
+        "cumulative-layout-shift": ["error", { "maxNumericValue": 0.05 }],
+        "resource-summary:script:size": ["error", { "maxNumericValue": 153600 }],
+        "resource-summary:total:size": ["error", { "maxNumericValue": 512000 }],
+        "errors-in-console": ["error", { "maxLength": 0 }]
+      }
+    }
+  }
+}
