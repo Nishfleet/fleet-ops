@@ -1,0 +1,58 @@
+# Blacksmith CI_RUNNER auto-flip (fleet-ops#8936). One hourly decision on a
+# cheap seat: does this calendar month still have Blacksmith free minutes left,
+# and does the org Actions variable CI_RUNNER point at Blacksmith accordingly?
+#
+# Stock only, no glue: one prompt file (prompts/blacksmith-flip.yml, installed to
+# the stable path fleet-sync's step 9 writes), piped into `pi --print` on the
+# cheap worker-cheap seat. The model runs `blacksmith usage`, compares the
+# largest of its three minute columns against 2,850 (95% of the 3,000 free
+# minutes, 4-vCPU minutes counting double), then runs exactly one of
+# `gh variable set CI_RUNNER --org Nishfleet --body blacksmith-4vcpu-ubuntu-2404`
+# or `gh variable delete CI_RUNNER --org Nishfleet`.
+#
+# Why a model rather than a shell script: "no glue or scripts" was Nish's
+# condition on approval (issue #8936), and the prompt is the whole decision.
+#
+# gh auth: this unit runs under the systemd --user manager, which has no
+# GH_TOKEN, so `gh` reads ~/.config/gh/hosts.yml and acts as the nish3451
+# account (admin:org) — the one identity allowed to write org variables. No
+# credential is in this file, in the prompt, or in argv.
+#
+# FLEET_TASK_ID: models.json's litellm provider sends it as the
+# x-litellm-session-id header, so without it every call fails with
+# "Failed to resolve provider litellm header" (proved 2026-10-01, first run).
+# A fixed id is correct here: this is a recurring check, not a per-task agent.
+#
+# --no-context-files and the trailing grep are the two halves of one fact
+# (proved on four live runs, 2026-10-01):
+#   * With AGENTS.md loaded, a run stopped itself and printed
+#     "BLOCKED: money/pricing reserved class (needs Nish approval) + GH_TOKEN
+#     empty (hard stop)" and FLIP: ERROR. AGENTS.md is the worker's own
+#     operating contract: a minutes guard with no human in the loop must not
+#     abstain on a rule about reaching a human, and `gh` here is
+#     authenticated from hosts.yml, not from GH_TOKEN. Loading the worker
+#     contract into a 40-second scheduled check imports those stop conditions
+#     and nothing else it needs.
+#   * The prompt's last line is FLIP: SET or FLIP: DELETE, and nothing else is
+#     accepted. `pi --print` exits 0 whatever the model decides, so without
+#     this check a failed CLI call, an unparseable JSON body or a refusal all
+#     recorded a SUCCESSFUL hourly flip while leaving the variable stale.
+#     Exiting 1 is what puts the unit in `systemctl --user list-units
+#     --state=failed` (issue #8936 bullet 5).
+#
+# %%s, not %s: systemd expands %s itself, in the Exec line and before any
+# shell runs, so a bare %s arrives here as the value of $SHELL — the loaded
+# unit read `printf "/usr/bin/zsh\n" "$out"`, which printed one line and
+# failed every run (caught by reading back `systemctl --user show -p
+# ExecStart`, 2026-10-01). This is the rule in ci.yml's "No shell ${...} or
+# bare %s/%u/%h inside systemd Exec lines" gate (fleet-ops#8382).
+[Unit]
+Description=Blacksmith CI_RUNNER auto-flip (hourly)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+Environment=FLEET_TASK_ID=blacksmith-flip-hourly
+ExecStart=/bin/sh -c 'out=$(cat /home/nish/.local/share/blacksmith-flip/prompt.yml | /home/nish/.local/bin/pi --print --provider litellm --model worker-cheap --no-context-files); printf "%%s\n" "$out"; printf "%%s\n" "$out" | grep -qE "^FLIP: (SET|DELETE)$" || exit 1'
+TimeoutStartSec=300
