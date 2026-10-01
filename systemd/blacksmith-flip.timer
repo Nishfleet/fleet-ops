@@ -1,9 +1,14 @@
 [Unit]
-Description=Hourly Blacksmith CI_RUNNER auto-flip timer
+Description=Hourly Blacksmith CI_RUNNER auto-flip (fleet-ops#8936)
+# Persistent=true: the VPS was down at an hourly boundary, the missed run is
+# the most stale reading of the month's usage, so it fires on the next boot.
+# RandomizedDelaySec spreads the fleet's hourly ticks so every repo's flip does
+# not read usage in the same second.
 
 [Timer]
 OnCalendar=hourly
 Persistent=true
+RandomizedDelaySec=120
 
 [Install]
 WantedBy=timers.target
