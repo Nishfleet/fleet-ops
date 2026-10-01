@@ -91,14 +91,14 @@ ExecStart=/usr/bin/install -C -D -m 0644 /home/nish/workspaces/tooling/fleet-ops
 #     never reviewed). The repo is the only way in: a hand edit is overwritten
 #     here, and fleet-litellm-proxy-config.path restarts the proxy on a real change.
 ExecStart=/usr/bin/install -C -D -m 0644 /home/nish/workspaces/tooling/fleet-ops-deploy-clone/config/litellm-proxy.yaml /home/nish/.config/fleet-ops/litellm-proxy.yaml
-# 9. ~/.local/share/blacksmith-flip/prompt.yml is a COPY of
-#     prompts/blacksmith-flip.yml, same class as 6 and 7 (fleet-ops#8936): the
-#     hourly blacksmith-flip.service cats it into `pi --print`, so a prompt
-#     edit that stayed only on a branch would leave the hourly flip deciding
-#     on the previous text. The repo is the only way in. ~/.local/share is an
-#     allowlisted stable tree, so the link and unit survive a re-clone.
+# 8. ~/.local/share/blacksmith-flip/prompt.yml is a COPY of
+#    prompts/blacksmith-flip.yml, same class as 6 and 7 (fleet-ops#8936): the
+#    hourly blacksmith-flip.service cats it into `pi --print`, so a prompt edit
+#    that stayed only on a branch would leave the hourly flip deciding on the
+#    previous text. The repo is the only way in. ~/.local/share is an
+#    allowlisted stable tree, so the installed prompt outlives a re-clone.
 ExecStart=/usr/bin/install -C -D -m 0644 /home/nish/workspaces/tooling/fleet-ops-deploy-clone/prompts/blacksmith-flip.yml /home/nish/.local/share/blacksmith-flip/prompt.yml
-# 8. LINK-GUARD (fleet-ops#7743): machine wiring is hand-set symlinks, so a
+# 9. LINK-GUARD (fleet-ops#7743): machine wiring is hand-set symlinks, so a
 #    session CAN still point a live path at a throwaway checkout — the
 #    2026-09-18 incident linked standing-rules-render into a churning clone
 #    and it dangled when the files vanished. After every pull, fail LOUD on
