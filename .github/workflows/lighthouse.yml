@@ -51,6 +51,10 @@ jobs:
               "  element: \(.audits["largest-contentful-paint-element"].details.items[0].items[0].node.snippet // "n/a")",
               "  phases: \([.audits["largest-contentful-paint-element"].details.items[1].items[]? | "\(.phase) \(.timing | round) ms"] | join(", "))",
               "  render-blocking: \([.audits["render-blocking-resources"].details.items[]? | "\(.url) \(.wastedMs | round) ms"] | join(", "))",
-              "  font-display score: \(.audits["font-display"].score)"
+              "  font-display score: \(.audits["font-display"].score)",
+              (
+                [.audits["errors-in-console"].details.items[]? | "  console errors: \(.source // "n/a"): \((.description // "n/a") | gsub("\\s*\n\\s*"; " ")) (\(.sourceLocation.url // .url // "n/a"))"]
+                | if length == 0 then "  console errors: none" else .[] end
+              )
             ' "$report" | tee -a "$GITHUB_STEP_SUMMARY"
           done
