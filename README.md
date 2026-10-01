@@ -142,8 +142,11 @@ worktree. `products/fleet-ops` still points at the worktree parent
 (`/home/nish/workspaces/tooling/fleet-ops`) until no linked worktrees remain
 there; that parent carries the pre-rewrite init history (16 commits with no
 merge-base against `origin/main`). Do not deploy from it and do not delete it
-while worktrees are attached. New fleet-ops worktrees are created from the
-deploy-clone (fleet-ops#410).
+while worktrees are attached. Workers do not create worktrees from the
+deploy-clone: each `git clone`s into its own
+`agent-worktrees/issue-<repo>-<N>` directory (`.mirrors` as an optional
+reference), and the deploy clone is mounted read-only in the worker jail
+(fleet-ops#410).
 
 The old non-canonical-checkout guard lived in `install.sh`: it refused a
 mutating install from any other tree, because an install from a worktree
