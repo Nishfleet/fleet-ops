@@ -63,6 +63,566 @@
           "maxTokens": 131072
         }
       ]
+    },
+    "minimax": {
+      "models": [
+        {
+          "id": "MiniMax-M3.1-Flash-Preview",
+          "name": "MiniMax M3.1 Flash Preview (Token Plan)",
+          "reasoning": true,
+          "input": [
+            "text"
+          ],
+          "contextWindow": 1000000,
+          "maxTokens": 131072,
+          "cost": {
+            "input": 0,
+            "output": 0,
+            "cacheRead": 0,
+            "cacheWrite": 0
+          }
+        }
+      ]
+    },
+    "opencode-go": {
+      "models": [
+        {
+          "id": "deepseek-v4.1-flash",
+          "name": "DeepSeek V4.1 Flash (Go key 1)",
+          "reasoning": true,
+          "input": [
+            "text"
+          ],
+          "contextWindow": 1000000,
+          "maxTokens": 384000,
+          "cost": {
+            "input": 0,
+            "output": 0,
+            "cacheRead": 0,
+            "cacheWrite": 0
+          },
+          "compat": {
+            "supportsStore": false,
+            "supportsDeveloperRole": false,
+            "maxTokensField": "max_tokens",
+            "requiresReasoningContentOnAssistantMessages": true,
+            "thinkingFormat": "deepseek"
+          },
+          "thinkingLevelMap": {
+            "minimal": null,
+            "low": "low",
+            "medium": null,
+            "high": "high",
+            "max": "max"
+          }
+        }
+      ]
+    },
+    "opencode": {
+      "models": [
+        {
+          "id": "space-bunny-free",
+          "name": "Space Bunny (Zen free)",
+          "reasoning": true,
+          "input": [
+            "text"
+          ],
+          "contextWindow": 1000000,
+          "maxTokens": 65536,
+          "cost": {
+            "input": 0,
+            "output": 0,
+            "cacheRead": 0,
+            "cacheWrite": 0
+          },
+          "compat": {
+            "supportsStore": false,
+            "supportsDeveloperRole": false,
+            "maxTokensField": "max_tokens"
+          }
+        }
+      ]
+    },
+    "openrouter": {
+      "models": [
+        {
+          "id": "stealth/space-bunny-alpha",
+          "name": "Space Bunny Alpha (free)",
+          "reasoning": true,
+          "input": [
+            "text",
+            "image"
+          ],
+          "contextWindow": 1000000,
+          "maxTokens": 65536,
+          "cost": {
+            "input": 0,
+            "output": 0,
+            "cacheRead": 0,
+            "cacheWrite": 0
+          },
+          "compat": {
+            "supportsDeveloperRole": false,
+            "thinkingFormat": "openrouter",
+            "requiresReasoningContentOnAssistantMessages": true
+          }
+        }
+      ]
+    },
+    "opencode-go-2": {
+      "name": "OpenCode Go (key 2)",
+      "baseUrl": "https://opencode.ai/zen/go/v1",
+      "api": "openai-completions",
+      "apiKey": "!sed -n 's/^OPENCODE_API_KEY_2=//p' /home/nish/.config/fleet-ops/seats/opencode-2.env",
+      "models": [
+        {
+          "id": "deepseek-v4.1-flash",
+          "name": "DeepSeek V4.1 Flash (Go key 2)",
+          "reasoning": true,
+          "input": [
+            "text"
+          ],
+          "contextWindow": 1000000,
+          "maxTokens": 384000,
+          "cost": {
+            "input": 0,
+            "output": 0,
+            "cacheRead": 0,
+            "cacheWrite": 0
+          },
+          "compat": {
+            "supportsStore": false,
+            "supportsDeveloperRole": false,
+            "maxTokensField": "max_tokens",
+            "requiresReasoningContentOnAssistantMessages": true,
+            "thinkingFormat": "deepseek"
+          },
+          "thinkingLevelMap": {
+            "minimal": null,
+            "low": "low",
+            "medium": null,
+            "high": "high",
+            "max": "max"
+          }
+        }
+      ]
+    },
+    "stepfun": {
+      "name": "StepFun Step Plan",
+      "baseUrl": "https://api.stepfun.ai/step_plan/v1",
+      "api": "openai-completions",
+      "apiKey": "!sed -n 's/^STEPFUN_API_KEY=//p' /home/nish/.config/fleet-ops/seats/stepfun.env",
+      "compat": {
+        "supportsStore": false,
+        "supportsDeveloperRole": false,
+        "maxTokensField": "max_tokens"
+      },
+      "models": [
+        {
+          "id": "step-5-preview",
+          "name": "Step 5 Preview",
+          "reasoning": true,
+          "input": [
+            "text",
+            "image"
+          ],
+          "contextWindow": 1000000,
+          "maxTokens": 131072,
+          "cost": {
+            "input": 0,
+            "output": 0,
+            "cacheRead": 0,
+            "cacheWrite": 0
+          },
+          "thinkingLevelMap": {
+            "off": null,
+            "minimal": null,
+            "low": "low",
+            "medium": "medium",
+            "high": "high",
+            "xhigh": null,
+            "max": null
+          }
+        }
+      ]
+    },
+    "pareto": {
+      "name": "Pareto Inference",
+      "baseUrl": "https://api.paretoinference.com/v1",
+      "api": "openai-completions",
+      "apiKey": "!sed -n 's/^PARETO_API_KEY=//p' /home/nish/.config/fleet-ops/seats/pareto.env",
+      "compat": {
+        "supportsStore": false,
+        "supportsDeveloperRole": false,
+        "maxTokensField": "max_tokens"
+      },
+      "models": [
+        {
+          "id": "z-ai/glm-5.3-flash",
+          "name": "GLM 5.3 Flash (Pareto)",
+          "reasoning": true,
+          "input": [
+            "text"
+          ],
+          "contextWindow": 1000000,
+          "maxTokens": 131072,
+          "cost": {
+            "input": 0,
+            "output": 0,
+            "cacheRead": 0,
+            "cacheWrite": 0
+          }
+        }
+      ]
+    },
+    "cline": {
+      "name": "Cline",
+      "baseUrl": "https://api.cline.bot/api/v1",
+      "api": "openai-completions",
+      "apiKey": "!sed -n 's/^CLINE_API_KEY=//p' /home/nish/.config/fleet-ops/seats/cline.env",
+      "compat": {
+        "supportsDeveloperRole": false,
+        "thinkingFormat": "openrouter",
+        "requiresReasoningContentOnAssistantMessages": true
+      },
+      "models": [
+        {
+          "id": "cline-pass/deepseek-v4.1-flash",
+          "name": "DeepSeek V4.1 Flash (Cline Pass)",
+          "reasoning": true,
+          "input": [
+            "text"
+          ],
+          "contextWindow": 1000000,
+          "maxTokens": 384000,
+          "cost": {
+            "input": 0,
+            "output": 0,
+            "cacheRead": 0,
+            "cacheWrite": 0
+          },
+          "compat": {
+            "supportsDeveloperRole": false,
+            "thinkingFormat": "openrouter",
+            "requiresReasoningContentOnAssistantMessages": true
+          },
+          "thinkingLevelMap": {
+            "minimal": null,
+            "low": "low",
+            "medium": null,
+            "high": "high",
+            "max": null
+          }
+        },
+        {
+          "id": "stealth/space-bunny-alpha",
+          "name": "Space Bunny Alpha (Cline)",
+          "reasoning": true,
+          "input": [
+            "text"
+          ],
+          "contextWindow": 1000000,
+          "maxTokens": 65536,
+          "cost": {
+            "input": 0,
+            "output": 0,
+            "cacheRead": 0,
+            "cacheWrite": 0
+          }
+        },
+        {
+          "id": "poolside/laguna-s-2.1:free",
+          "name": "Laguna S 2.1 (free)",
+          "reasoning": true,
+          "input": [
+            "text"
+          ],
+          "contextWindow": 262144,
+          "maxTokens": 32768,
+          "cost": {
+            "input": 0,
+            "output": 0,
+            "cacheRead": 0,
+            "cacheWrite": 0
+          }
+        },
+        {
+          "id": "inclusionai/ling-3.0-flash-sante:free",
+          "name": "Ling 3.0 Flash Sante (free)",
+          "reasoning": true,
+          "input": [
+            "text"
+          ],
+          "contextWindow": 262144,
+          "maxTokens": 32768,
+          "cost": {
+            "input": 0,
+            "output": 0,
+            "cacheRead": 0,
+            "cacheWrite": 0
+          }
+        }
+      ]
+    },
+    "commandcode": {
+      "name": "Command Code (models.json until Pi >=0.86 can load @commandcode/pi-commandcode-provider)",
+      "baseUrl": "https://api.commandcode.ai/provider/v1",
+      "api": "openai-completions",
+      "apiKey": "!sed -n 's/^COMMANDCODE_API_KEY=//p' /home/nish/.config/fleet-ops/seats/commandcode.env",
+      "compat": {
+        "supportsStore": false,
+        "supportsDeveloperRole": false,
+        "maxTokensField": "max_tokens"
+      },
+      "models": [
+        {
+          "id": "deepseek/deepseek-v4.1-flash",
+          "name": "DeepSeek V4.1 Flash (Command Code)",
+          "reasoning": true,
+          "input": [
+            "text"
+          ],
+          "contextWindow": 1000000,
+          "maxTokens": 384000,
+          "cost": {
+            "input": 0,
+            "output": 0,
+            "cacheRead": 0,
+            "cacheWrite": 0
+          },
+          "compat": {
+            "supportsStore": false,
+            "supportsDeveloperRole": false,
+            "maxTokensField": "max_tokens"
+          },
+          "thinkingLevelMap": {
+            "minimal": null,
+            "low": "low",
+            "medium": null,
+            "high": "high",
+            "max": null
+          }
+        },
+        {
+          "id": "stealth/space-bunny-alpha",
+          "name": "Space Bunny Alpha (Command Code)",
+          "reasoning": true,
+          "input": [
+            "text"
+          ],
+          "contextWindow": 1000000,
+          "maxTokens": 65536,
+          "cost": {
+            "input": 0,
+            "output": 0,
+            "cacheRead": 0,
+            "cacheWrite": 0
+          }
+        },
+        {
+          "id": "poolside/laguna-s-2.1-free",
+          "name": "Laguna S 2.1 (free)",
+          "reasoning": true,
+          "input": [
+            "text"
+          ],
+          "contextWindow": 256000,
+          "maxTokens": 32768,
+          "cost": {
+            "input": 0,
+            "output": 0,
+            "cacheRead": 0,
+            "cacheWrite": 0
+          }
+        },
+        {
+          "id": "inclusionai/ling-3.0-flash-sante:free",
+          "name": "Ling 3.0 Flash Sante (free)",
+          "reasoning": true,
+          "input": [
+            "text"
+          ],
+          "contextWindow": 262144,
+          "maxTokens": 32768,
+          "cost": {
+            "input": 0,
+            "output": 0,
+            "cacheRead": 0,
+            "cacheWrite": 0
+          }
+        },
+        {
+          "id": "inclusionai/ling-3.1-flash:free",
+          "name": "Ling 3.1 Flash (free)",
+          "reasoning": true,
+          "input": [
+            "text"
+          ],
+          "contextWindow": 262144,
+          "maxTokens": 32768,
+          "cost": {
+            "input": 0,
+            "output": 0,
+            "cacheRead": 0,
+            "cacheWrite": 0
+          }
+        }
+      ]
+    },
+    "ollama-cloud": {
+      "name": "Ollama Cloud",
+      "baseUrl": "https://ollama.com/v1",
+      "api": "openai-completions",
+      "apiKey": "!sed -n 's/^OLLAMA_API_KEY=//p' /home/nish/.config/fleet-ops/seats/ollama.env",
+      "models": [
+        {
+          "id": "deepseek-v4.1-flash",
+          "name": "DeepSeek V4.1 Flash (Ollama Cloud)",
+          "reasoning": true,
+          "input": [
+            "text"
+          ],
+          "contextWindow": 1000000,
+          "maxTokens": 384000,
+          "cost": {
+            "input": 0,
+            "output": 0,
+            "cacheRead": 0,
+            "cacheWrite": 0
+          },
+          "compat": {
+            "supportsStore": false,
+            "supportsDeveloperRole": false,
+            "maxTokensField": "max_tokens"
+          },
+          "thinkingLevelMap": {
+            "minimal": null,
+            "low": "low",
+            "medium": "medium",
+            "high": "high",
+            "max": null
+          }
+        }
+      ]
+    },
+    "xkiro": {
+      "name": "xKiro (free tier)",
+      "baseUrl": "https://api.xkiro.com/v1",
+      "api": "openai-completions",
+      "apiKey": "!sed -n 's/^XKIRO_API_KEY=//p' /home/nish/.config/fleet-ops/seats/xkiro.env",
+      "compat": {
+        "supportsStore": false,
+        "supportsDeveloperRole": false,
+        "maxTokensField": "max_tokens"
+      },
+      "models": [
+        {
+          "id": "stealth/space-bunny-alpha:free",
+          "name": "Space Bunny Alpha (xKiro free)",
+          "reasoning": true,
+          "input": [
+            "text",
+            "image"
+          ],
+          "contextWindow": 1000000,
+          "maxTokens": 65536,
+          "cost": {
+            "input": 0,
+            "output": 0,
+            "cacheRead": 0,
+            "cacheWrite": 0
+          }
+        },
+        {
+          "id": "inclusionai/ling-3.0-flash-sante:free",
+          "name": "Ling 3.0 Flash Sante (xKiro free)",
+          "reasoning": true,
+          "input": [
+            "text"
+          ],
+          "contextWindow": 262144,
+          "maxTokens": 32768,
+          "cost": {
+            "input": 0,
+            "output": 0,
+            "cacheRead": 0,
+            "cacheWrite": 0
+          }
+        },
+        {
+          "id": "qwen/qwen3-coder-plus:free",
+          "name": "Qwen3 Coder Plus (xKiro free)",
+          "reasoning": true,
+          "input": [
+            "text",
+            "image"
+          ],
+          "contextWindow": 1048576,
+          "maxTokens": 65536,
+          "cost": {
+            "input": 0,
+            "output": 0,
+            "cacheRead": 0,
+            "cacheWrite": 0
+          }
+        },
+        {
+          "id": "qwen/qwen3.8-max:free",
+          "name": "Qwen3.8 Max (xKiro free)",
+          "reasoning": true,
+          "input": [
+            "text",
+            "image"
+          ],
+          "contextWindow": 1000000,
+          "maxTokens": 65536,
+          "cost": {
+            "input": 0,
+            "output": 0,
+            "cacheRead": 0,
+            "cacheWrite": 0
+          }
+        }
+      ]
+    },
+    "synthetic": {
+      "name": "Synthetic (cancelled, lapses ~2026-10-11, fleet-ops#9048)",
+      "baseUrl": "https://api.synthetic.new/openai/v1",
+      "api": "openai-completions",
+      "apiKey": "!sed -n 's/^SYNTHETIC_API_KEY=//p' /home/nish/.config/fleet-ops/seats/synthetic.env",
+      "compat": {
+        "supportsStore": false,
+        "supportsDeveloperRole": false,
+        "maxTokensField": "max_tokens"
+      },
+      "models": [
+        {
+          "id": "hf:zai-org/GLM-5.3-Flash",
+          "name": "GLM 5.3 Flash (Synthetic)",
+          "reasoning": true,
+          "input": [
+            "text",
+            "image"
+          ],
+          "contextWindow": 524288,
+          "maxTokens": 65536,
+          "cost": {
+            "input": 0,
+            "output": 0,
+            "cacheRead": 0,
+            "cacheWrite": 0
+          },
+          "thinkingLevelMap": {
+            "off": null,
+            "minimal": null,
+            "low": "low",
+            "medium": null,
+            "high": "high",
+            "xhigh": null,
+            "max": "max"
+          }
+        }
+      ]
     }
   }
 }
