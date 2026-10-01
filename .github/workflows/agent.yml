@@ -110,7 +110,8 @@ jobs:
           # SWE-2, so they go only to Cursor; a full Cursor lane leaves them
           # agent-ready. Every other issue: Devin SWE-2 Max while fewer than 4
           # run ($0), else LongCat-2.5-Preview on the opencode CLI while fewer
-          # than 2 run (free until ~2026-10-10, fleet-ops#8790; its free tier
+          # than 0 run (off while its free quota is out, fleet-ops#9002; free
+          # until ~2026-10-10, fleet-ops#8790; its free tier
           # answers only the opencode CLI), else pi while it has a free router
           # slot; when all three are full the issue waits (lanes-full) — there
           # is no Cursor fallback (fleet-ops#8740).
@@ -139,7 +140,8 @@ jobs:
             *,strong-only,*) [ "$(live cursor-agent)" -lt 1 ] || skip lanes-full; engine=cursor ;;
             *)
               if devin_free; then engine=devin
-              elif [ "$(live opencode)" -lt 2 ]; then engine=opencode
+              # opencode stays off (limit 0) while its free quota is out, fleet-ops#9002; raise to 2 once it resets.
+              elif [ "$(live opencode)" -lt 0 ]; then engine=opencode
               elif pi_free; then engine=pi
               else skip lanes-full
               fi ;;
@@ -223,17 +225,12 @@ jobs:
             fi
           fi
           if [ "$ENGINE" = cursor ]; then
-            # Alternate the two prepaid Cursor Ultra keys by issue number so
-            # neither stack is spent and both are paced (fleet-ops#8740):
-            # even $id -> cursor.env, odd $id -> cursor-2.env. $id's issue
-            # number is its last '-' field, so parity is on the issue number.
-            case ${id##*-} in
-              *[!0-9]*) cursor_env=cursor.env ;;   # not numeric: default to key 1
-              *) [ $(( ${id##*-} % 2 )) -eq 0 ] && cursor_env=cursor.env || cursor_env=cursor-2.env ;;
-            esac
+            # cursor-2.env (live.com) hit its weekly limit on 2026-09-29 and
+            # resets about 2026-10-05: use cursor.env only, then restore the
+            # odd/even alternation (fleet-ops#8740).
             set -a
-            # shellcheck disable=SC1090 # cursor_env is one of the two constant seat files set in the case just above
-            . "$HOME/.config/fleet-ops/seats/$cursor_env"
+            # shellcheck disable=SC1091 # the constant seat file on the VPS
+            . "$HOME/.config/fleet-ops/seats/cursor.env"
             set +a
             mkdir -p "$dir"
             $jail cursor-agent -p --output-format text --model cursor-grok-4.6-high --force --trust \
