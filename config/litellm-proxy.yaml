@@ -1,9 +1,10 @@
 # Approved models per provider (Nish 2026-09-28: models are provider specific; a row outside this list needs his yes; no benching).
-# Nish 2026-09-30 free rows: CommandCode: stealth/space-bunny-alpha, stealth/pixel-canary, poolside/laguna-s-2.1-free, inclusionai/ling-3.0-flash-sante:free, inclusionai/ling-3.1-flash:free. Cline: poolside/laguna-s-2.1:free, inclusionai/ling-3.0-flash-sante:free. xkiro: stealth/pixel-canary:free, stealth/space-bunny-alpha:free, inclusionai/ling-3.0-flash-sante:free.
+# Nish 2026-09-30 free rows: CommandCode: stealth/space-bunny-alpha, poolside/laguna-s-2.1-free, inclusionai/ling-3.0-flash-sante:free, inclusionai/ling-3.1-flash:free. Cline: poolside/laguna-s-2.1:free, inclusionai/ling-3.0-flash-sante:free. xkiro: stealth/space-bunny-alpha:free, inclusionai/ling-3.0-flash-sante:free.
 # MiniMax M3.1-Flash-Preview is free for every MiniMax Code subscriber until 2026-10-07 (Nish 2026-09-30); its four rows are tagged free until then.
 # CommandCode, Cline, OpenCode Go, Ollama: deepseek-v4.1-flash. MiniMax: M3.1-Flash-Preview. StepFun: step-5-preview. Synthetic: GLM-5.3-Flash.
 # xkiro: qwen3-coder-plus:free, qwen3.8-max:free. OpenCode zen: space-bunny-free, union-alpha. Cline: stealth/space-bunny-alpha.
 # Cline stealth/union-alpha stopped being free 2026-09-30 (402 "Insufficient balance", 397 errors and 0 answers in 5 h). A 402 is neither retried nor cooled by LiteLLM v1.98.0 (no retry_policy key covers APIError; cooldown skips 4xx), so no setting below can move a job off such a row: its four rows are removed until Nish funds Cline credits. Cline's other rows stay. Any row that starts answering only 402 has to come out the same way.
+# CommandCode stealth/pixel-canary and xkiro stealth/pixel-canary:free ended 2026-09-30 (403 "no longer available", 404 "does not exist"). openai-compatible 403 maps to APIError (no retry_policy key, same as 402); 404 maps to NotFoundError, which should_retry_this_error hard-raises on v1.98.0. Their four rows are removed.
 # OpenRouter: stealth/space-bunny-alpha, nemotron-3-ultra, nemotron-3.5-lightning. Pareto: glm-5.3-flash, never in judge.
 # Devin: SWE 2 only, through the devin CLI lane in agent.yml (no router route: 404 on every base).
 model_list:
@@ -59,24 +60,6 @@ model_list:
   model_info:
     mode: chat
     id: commandcode-spacebunnyalpha-worker-cheap
-    allowed_fails_policy:
-      BadRequestErrorAllowedFails: 1
-- model_name: worker-capable
-  litellm_params:
-    <<: *commandcode-free
-    model: openai/stealth/pixel-canary
-  model_info:
-    mode: chat
-    id: commandcode-pixelcanary-worker-capable
-    allowed_fails_policy:
-      BadRequestErrorAllowedFails: 1
-- model_name: worker-cheap
-  litellm_params:
-    <<: *commandcode-free
-    model: openai/stealth/pixel-canary
-  model_info:
-    mode: chat
-    id: commandcode-pixelcanary-worker-cheap
     allowed_fails_policy:
       BadRequestErrorAllowedFails: 1
 - model_name: worker-capable
@@ -330,10 +313,10 @@ model_list:
     id: zai-glm53flash-worker-cheap
     allowed_fails_policy:
       BadRequestErrorAllowedFails: 1
-# Nish 2026-09-30 free rows (probe: pixel-canary and space-bunny finish_reason=tool_calls; ling-3.0-flash-sante 429 daily free-model quota at probe time = quota wall, not a bench).
+# Nish 2026-09-30 free rows (probe: space-bunny finish_reason=tool_calls; ling-3.0-flash-sante 429 daily free-model quota at probe time = quota wall, not a bench).
 - model_name: worker-capable
   litellm_params: &xkiro-free
-    model: openai/stealth/pixel-canary:free
+    model: openai/stealth/space-bunny-alpha:free
     api_base: https://api.xkiro.com/v1
     api_key: os.environ/XKIRO_API_KEY
     tags: [free, xkiro-free]
@@ -342,29 +325,11 @@ model_list:
     cooldown_time: 900
   model_info:
     mode: chat
-    id: xkiro-pixelcanary-worker-capable
-    allowed_fails_policy:
-      BadRequestErrorAllowedFails: 1
-- model_name: worker-cheap
-  litellm_params: {<<: *xkiro-free}
-  model_info:
-    mode: chat
-    id: xkiro-pixelcanary-worker-cheap
-    allowed_fails_policy:
-      BadRequestErrorAllowedFails: 1
-- model_name: worker-capable
-  litellm_params:
-    <<: *xkiro-free
-    model: openai/stealth/space-bunny-alpha:free
-  model_info:
-    mode: chat
     id: xkiro-spacebunnyalpha-worker-capable
     allowed_fails_policy:
       BadRequestErrorAllowedFails: 1
 - model_name: worker-cheap
-  litellm_params:
-    <<: *xkiro-free
-    model: openai/stealth/space-bunny-alpha:free
+  litellm_params: {<<: *xkiro-free}
   model_info:
     mode: chat
     id: xkiro-spacebunnyalpha-worker-cheap
