@@ -32,5 +32,5 @@ Type=oneshot
 Environment=FLEET_TASK_ID=blacksmith-flip-hourly
 # Absolute paths: a --user unit has no ~/.local/bin on PATH (environment.d
 # adds it, but name it anyway so the line reads the same anywhere).
-ExecStart=/bin/sh -c 'cat /home/nish/.local/share/blacksmith-flip/prompt.yml | /home/nish/.local/bin/pi --print --provider litellm --model worker-cheap'
+ExecStart=/bin/sh -c 'out=$(cat /home/nish/.local/share/blacksmith-flip/prompt.yml | /home/nish/.local/bin/pi --print --provider litellm --model worker-cheap); printf "%s\n" "$out"; printf "%s\n" "$out" | grep -qE "^FLIP: (SET|DELETE)$" || exit 1'
 TimeoutStartSec=300
