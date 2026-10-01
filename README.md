@@ -283,10 +283,12 @@ over `systemd/`.
 sha256, `--redact`). fleet-ops has no deploy target. All actions are pinned to exact commit
 SHAs; every job has a timeout.
 
-`.github/workflows/lighthouse.yml` is the fleet's one Lighthouse speed budget
-(`config/lighthouse-budget.json`). A web repo calls it with
+`.github/workflows/lighthouse.yml` is the fleet's one Lighthouse speed budget, stock LHCI
+assertions in `config/lighthouserc.json` (LCP 1500 ms, interactive 3000 ms, CLS
+0.05, script 150 KB, total 500 KB, no console errors; sizes are bytes there,
+153600 and 512000). A web repo calls it with
 `uses: Nishfleet/fleet-ops/.github/workflows/lighthouse.yml@main` and
-`with: urls:` (one page URL per line); callers cannot change the budget.
+`with: urls:` (one page URL per line); callers cannot change the assertions.
 
 ## Allowlist
 
