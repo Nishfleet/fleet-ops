@@ -46,10 +46,12 @@ ExecStart=/usr/bin/git -C /home/nish/workspaces/tooling/fleet-ops-deploy-clone m
 #    quietly lagging.
 ExecStart=/usr/bin/git -C /home/nish/workspaces/tooling/fleet-ops-deploy-clone merge-base --is-ancestor refs/remotes/origin/main HEAD
 ExecStart=/usr/bin/git -C /home/nish/workspaces/tooling/fleet-ops-deploy-clone merge-base --is-ancestor HEAD refs/remotes/origin/main
-# 2. Re-read the linked unit files. The symlinks never move; only their
-#    contents changed with the pull.
-ExecStart=/usr/bin/systemctl --user daemon-reload
+# 2. Link the OnFailure handler, then re-read unit files. Link first so
+#    daemon-reload loads fleet-unit-failed@.service (fleet-ops#9033).
+#    systemctl link of an already-linked unit is idempotent (exit 0, twice,
+#    2026-10-01 on fleet-prometheus-reload.service).
 ExecStart=/usr/bin/systemctl --user link /home/nish/workspaces/tooling/fleet-ops-deploy-clone/systemd/fleet-unit-failed@.service
+ExecStart=/usr/bin/systemctl --user daemon-reload
 # 3. /etc/prometheus/prometheus.yml is a root-owned COPY, not a symlink:
 #    prometheus runs as user `prometheus` and /home/nish is 0750 nish:nish, so
 #    it cannot traverse into the repo. promtool check config runs first so a
