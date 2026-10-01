@@ -39,6 +39,13 @@
 #     recorded a SUCCESSFUL hourly flip while leaving the variable stale.
 #     Exiting 1 is what puts the unit in `systemctl --user list-units
 #     --state=failed` (issue #8936 bullet 5).
+#
+# %%s, not %s: systemd expands %s itself, in the Exec line and before any
+# shell runs, so a bare %s arrives here as the value of $SHELL — the loaded
+# unit read `printf "/usr/bin/zsh\n" "$out"`, which printed one line and
+# failed every run (caught by reading back `systemctl --user show -p
+# ExecStart`, 2026-10-01). This is the rule in ci.yml's "No shell ${...} or
+# bare %s/%u/%h inside systemd Exec lines" gate (fleet-ops#8382).
 [Unit]
 Description=Blacksmith CI_RUNNER auto-flip (hourly)
 After=network-online.target
@@ -47,5 +54,5 @@ Wants=network-online.target
 [Service]
 Type=oneshot
 Environment=FLEET_TASK_ID=blacksmith-flip-hourly
-ExecStart=/bin/sh -c 'out=$(cat /home/nish/.local/share/blacksmith-flip/prompt.yml | /home/nish/.local/bin/pi --print --provider litellm --model worker-cheap --no-context-files); printf "%s\n" "$out"; printf "%s\n" "$out" | grep -qE "^FLIP: (SET|DELETE)$" || exit 1'
+ExecStart=/bin/sh -c 'out=$(cat /home/nish/.local/share/blacksmith-flip/prompt.yml | /home/nish/.local/bin/pi --print --provider litellm --model worker-cheap --no-context-files); printf "%%s\n" "$out"; printf "%%s\n" "$out" | grep -qE "^FLIP: (SET|DELETE)$" || exit 1'
 TimeoutStartSec=300
