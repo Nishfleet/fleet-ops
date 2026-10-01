@@ -1,0 +1,41 @@
+# The fleet's Lighthouse speed budget, defined once. A web repo calls this and
+# passes only the URLs; the budget is config/lighthouse-budget.json in this
+# repo, so no caller can loosen it. Same action and pin as 0509's lighthouse job.
+name: Lighthouse
+
+on:
+  workflow_call:
+    inputs:
+      urls:
+        description: Page URLs to audit, one per line.
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  lighthouse:
+    name: lighthouse
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    steps:
+      # A reusable workflow cannot see the ref it was called at, so the budget
+      # is read from main: callers pinned to an older SHA still get today's budget.
+      - name: Fetch the budget
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: Nishfleet/fleet-ops
+          ref: main
+          path: fleet-ops
+          sparse-checkout: config/lighthouse-budget.json
+          persist-credentials: false
+      - name: Audit the URLs against the budget
+        uses: treosh/lighthouse-ci-action@3e7e23fb74242897f95c0ba9cabad3d0227b9b18 # v12
+        with:
+          urls: ${{ inputs.urls }}
+          budgetPath: ./fleet-ops/config/lighthouse-budget.json
+          uploadArtifacts: false
+          temporaryPublicStorage: false

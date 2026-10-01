@@ -283,6 +283,11 @@ over `systemd/`.
 sha256, `--redact`). fleet-ops has no deploy target. All actions are pinned to exact commit
 SHAs; every job has a timeout.
 
+`.github/workflows/lighthouse.yml` is the fleet's one Lighthouse speed budget
+(`config/lighthouse-budget.json`). A web repo calls it with
+`uses: Nishfleet/fleet-ops/.github/workflows/lighthouse.yml@main` and
+`with: urls:` (one page URL per line); callers cannot change the budget.
+
 ## Allowlist
 
 There is no manifest and no installer. A path is live because something
