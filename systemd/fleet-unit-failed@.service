@@ -1,0 +1,14 @@
+# OnFailure= target: healthchecks.io fail ping (fleet-ops#9033).
+# man systemd.unit example 3 is this shape (failure-handler@%N.service).
+# HC_URL_RECONCILE is the leftover keystone dead-man whose caller was deleted
+# with the dispatcher; this unit is its only pinger (fail only, not a
+# success heartbeat). A later success ping re-arms; until then HC stays
+# down. Unset URL = SKIP exit 0. Do not OnFailure= this unit (recursive
+# chain, same man page). curl --config <(sed ...) keeps the UUID out of
+# argv (fleet-ops#8403).
+[Unit]
+Description=Healthchecks.io fail ping for %i (fleet-ops#9033)
+
+[Service]
+Type=oneshot
+ExecStart=/bin/bash -c 'if ! grep -q "^HC_URL_RECONCILE=." /home/nish/.config/fleet-ops/keystone-hc.env; then echo SKIP: HC_URL_RECONCILE unset; exit 0; fi; exec /usr/bin/curl -fsS -m 10 --retry 3 -o /dev/null --data-raw "$1" --config <(sed -n "s|^HC_URL_RECONCILE=\\(.*\\)|url = \\1/fail|p" /home/nish/.config/fleet-ops/keystone-hc.env)' bash %i

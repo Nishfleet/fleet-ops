@@ -6,8 +6,14 @@
 Description=Fleet LiteLLM proxy (Quadlet, fleet-ops#8435)
 Requires=fleet-litellm-postgres.service fleet-litellm-redis.service
 After=fleet-litellm-postgres.service fleet-litellm-redis.service
-StartLimitIntervalSec=60s
-StartLimitBurst=5
+# Keep restarting for a few minutes, then enter failed and page
+# (OnFailure=, fleet-ops#9033). Measured 2026-10-01: podman exit 125
+# dies in ~2s; a healthy start reaches uvicorn in ~38s and readiness
+# in ~75s. Burst 20 × (RestartSec 10s + 75s) = 1700s, so the window
+# must be 1h or the burst never fills and OnFailure never fires.
+StartLimitIntervalSec=1h
+StartLimitBurst=20
+OnFailure=fleet-unit-failed@%N.service
 
 [Container]
 Image=ghcr.io/berriai/litellm:v1.98.0
@@ -73,7 +79,7 @@ EnvironmentFile=%h/.config/fleet-ops/litellm-master-key.env
 Slice=app-litellm.slice
 ManagedOOMPreference=avoid
 Restart=on-failure
-RestartSec=2s
+RestartSec=10s
 # Let in-flight requests drain instead of being SIGKILLed at 15s (fleet-ops#4449).
 TimeoutStopSec=120
 
