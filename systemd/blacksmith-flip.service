@@ -1,0 +1,12 @@
+[Unit]
+Description=Blacksmith CI_RUNNER auto-flip (hourly)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/bin/sh -c 'cat /home/nish/workspaces/tooling/fleet-ops-deploy-clone/prompts/blacksmith-flip.yml | /home/nish/.local/bin/pi --print --provider litellm --model worker-cheap'
+TimeoutStartSec=300
+
+[Install]
+WantedBy=default.target
