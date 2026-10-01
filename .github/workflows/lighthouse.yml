@@ -36,16 +36,18 @@ jobs:
         uses: treosh/lighthouse-ci-action@3e7e23fb74242897f95c0ba9cabad3d0227b9b18 # v12
         with:
           urls: ${{ inputs.urls }}
+          runs: 5
           configPath: ./fleet-ops/config/lighthouserc.json
           uploadArtifacts: false
           temporaryPublicStorage: false
       # Diagnostics only: never changes the audit's result and loosens nothing.
-      # The action writes its reports to .lighthouseci/ in the workspace.
+      # The action writes its reports to .lighthouseci/ in the workspace; with 5
+      # runs per URL, manifest.json marks the median run that the verdict uses.
       - name: Print the LCP breakdown of every audited URL
         if: always()
         continue-on-error: true
         run: |
-          for report in .lighthouseci/lhr-*.json; do
+          for report in $(jq -r '.[] | select(.isRepresentativeRun) | .jsonPath' .lighthouseci/manifest.json); do
             jq -r '
               "\(.finalDisplayedUrl // .finalUrl): LCP \(.audits["largest-contentful-paint"].numericValue | round) ms, server \(.audits["server-response-time"].numericValue | round) ms",
               "  element: \(.audits["largest-contentful-paint-element"].details.items[0].items[0].node.snippet // "n/a")",
