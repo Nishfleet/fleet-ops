@@ -527,7 +527,8 @@ model_list:
     - prepaid
     - stepfun
     order: 1
-    max_parallel_requests: 5
+    # Step Plan Pro (2026-10-01) account cap is 15 concurrent: 20- and 40-way bursts answered 14 x 200 and 429 "concurrency reached, current: 16, limit: 15". 13 leaves 2 for direct `pi --provider stepfun` use, because a concurrency 429 cools this rung for cooldown_time.
+    max_parallel_requests: 13
     # Step Plan credit ran out 2026-09-25 11:15 IST (fleet-ops#8653): a 429 cools this rung 15 min, then it retries by itself: refilled credit is used without a human, and a concurrency 429 idles it only briefly.
     cooldown_time: 900
   model_info:
