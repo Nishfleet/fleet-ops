@@ -2,6 +2,6 @@ model_list:
 - model_name: worker-cheap
   litellm_params:
     model: openai/x
-    cooldown_time: 86401
+    cooldown_time: 0
 router_settings:
   cooldown_time: 60
