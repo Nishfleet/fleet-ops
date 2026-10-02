@@ -811,7 +811,7 @@
       "type": "table",
       "id": 17,
       "title": "Running now",
-      "description": "agent-dispatch runs started in the last 3 hours that have not finished (0509, fleet-ops, TinyStudio.io-public). Click a row to open the run.",
+      "description": "agent-dispatch runs started in the last 3 hours that have not finished (0509, fleet-ops, TinyStudio.io-public, drive). Click a row to open the run.",
       "timeFrom": "3h",
       "hideTimeOverride": true,
       "datasource": {
@@ -863,6 +863,22 @@
           "options": {
             "owner": "Nishfleet",
             "repository": "TinyStudio.io-public",
+            "workflow": "agent-dispatch.yml",
+            "branch": ""
+          }
+        },
+        {
+          "refId": "D",
+          "datasource": {
+            "type": "grafana-github-datasource",
+            "uid": "fleet-github-personal"
+          },
+          "queryType": "Workflow_Runs",
+          "owner": "nish3451",
+          "repository": "drive",
+          "options": {
+            "owner": "nish3451",
+            "repository": "drive",
             "workflow": "agent-dispatch.yml",
             "branch": ""
           }
