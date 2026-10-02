@@ -1,5 +1,7 @@
-# deploy-box: push-triggered. Starts the fleet-sync.service oneshot unit,
-# which is the single copy of the deploy steps; its exit code is the verdict.
+# deploy-box: push-triggered. Starts the fleet-sync.service user oneshot (the
+# user-scope deploy steps), then the fleet-host-config.service system oneshot
+# (Ansible applies rootfs/ as root); each exit code is a verdict. polkit lets
+# this runner's user start that one system unit, so no step uses sudo.
 # The unit's own guards still gate every step. fleet-ops#8519
 name: deploy-box
 
@@ -25,5 +27,7 @@ jobs:
     env:
       XDG_RUNTIME_DIR: /run/user/1000
     steps:
-      - name: Start fleet-sync.service (the single copy of the deploy steps)
+      - name: Start fleet-sync.service (user-scope deploy steps)
         run: /usr/bin/systemctl --user start fleet-sync.service
+      - name: Start fleet-host-config.service (Ansible applies rootfs/ as root)
+        run: /usr/bin/systemctl start fleet-host-config.service

@@ -6,10 +6,8 @@ Description=Sync the fleet-ops deploy clone and reload systemd (fleet-ops third 
 # Every user-scope live path is already a symlink into this repo
 # (`systemctl --user list-unit-files` reports the units as `linked`), so there
 # is nothing to copy and nothing that can drift: a `git pull` IS the deploy.
-# The exceptions are the root-owned files that cross a privilege boundary —
-# /etc/prometheus/prometheus.yml (step 3) and /etc/systemd/system/agent.slice
-# (step 4). Those are COPIES, and each is a step here, so `git pull` is still
-# the whole deploy (fleet-ops#8862).
+# Root-owned files that cross a privilege boundary are fleet-host-config.service's
+# job (Ansible, rootfs/), not this unit's: see steps 3-4.
 #
 # man systemctl: "link PATH...  Link a unit file that is not in the unit file
 # search path into the unit file search path. This command expects an absolute
@@ -55,43 +53,13 @@ ExecStart=/usr/bin/git -C /home/nish/workspaces/tooling/fleet-ops-deploy-clone m
 ExecStart=/usr/bin/systemctl --user link /home/nish/workspaces/tooling/fleet-ops-deploy-clone/systemd/fleet-unit-failed@.service
 ExecStart=/bin/rm -f /home/nish/.config/systemd/user/fleet-prometheus-reload.path /home/nish/.config/systemd/user/fleet-prometheus-reload.service /home/nish/.config/systemd/user/default.target.wants/fleet-prometheus-reload.path
 ExecStart=/usr/bin/systemctl --user daemon-reload
-# 3. /etc/prometheus/prometheus.yml is a root-owned COPY, not a symlink:
-#    prometheus runs as user `prometheus` and /home/nish is 0750 nish:nish, so
-#    it cannot traverse into the repo. promtool check config runs first so a
-#    bad file never replaces the live one; install -C skips the write when the
-#    bytes match. The reload that used to live in fleet-prometheus-reload.path
-#    + .service is this unit's own line now (fleet-ops#9088): a path watcher
-#    whose only writer is a step in this same unit is one more unit of latency
-#    between the write and the reload. One reload line after the install keeps
-#    the ordering (the new config is on disk before prometheus re-reads it) and
-#    deletes both files plus the link + enable lines that wired them.
-ExecStart=/usr/bin/promtool check config /home/nish/workspaces/tooling/fleet-ops-deploy-clone/config/prometheus.yml
-#    cmp guards the install (fleet-ops speed pass, 2026-10-02): GNU install -C
-#    still calls fchmodat() on an identical file (strace, coreutils 9.4), and
-#    that IN_ATTRIB used to fire the PathChanged= watcher on EVERY sync, not
-#    only on a real change. The watcher is gone now, so the guard saves the
-#    redundant mtime write and nothing else. It costs one stat, so it stays.
-#    Same guard on step 7, whose fleet-litellm-proxy-config.path watcher is real.
-ExecStart=/bin/sh -c 'cmp -s /home/nish/workspaces/tooling/fleet-ops-deploy-clone/config/prometheus.yml /etc/prometheus/prometheus.yml || /usr/bin/sudo -n /usr/bin/install -C -D -m 0644 -o root -g root /home/nish/workspaces/tooling/fleet-ops-deploy-clone/config/prometheus.yml /etc/prometheus/prometheus.yml'
-#    Reload prometheus here, in the same cgroup as the write it depends on.
-#    `systemctl reload prometheus` is a SIGHUP, so an unchanged file costs a
-#    re-read of the same rules — harmless, and nothing else writes that path.
-#    This replaces --user link .../fleet-prometheus-reload.service and
-#    --user enable --now .../fleet-prometheus-reload.path.
-ExecStart=/usr/bin/sudo -n /usr/bin/systemctl reload prometheus
-# 4. /etc/systemd/system/agent.slice is a root-owned COPY, same class as 3
-#    and the reason this step exists (fleet-ops#8862): the swap cap from
-#    fleet-ops#8638 has been in the repo file since 2026-09-25 while the live
-#    unit kept `MemorySwapMax=infinity`, because nothing ever copied it there.
-#    install -C skips the write when the bytes already match, so a sync with no
-#    slice change costs one stat. The SYSTEM daemon-reload (step 2's is the
-#    user manager only) re-applies a changed slice limit to the running cgroup
-#    — no runner is restarted and the swap cap lands on a live box instead of
-#    waiting for the next boot. The unit file in the repo is also verified by
-#    CI (systemd-analyze verify over systemd/system/*.slice, fleet-ops#8638),
-#    so a bad file fails the PR, never this unit.
-ExecStart=/usr/bin/sudo -n /usr/bin/install -C -D -m 0644 -o root -g root /home/nish/workspaces/tooling/fleet-ops-deploy-clone/systemd/system/agent.slice /etc/systemd/system/agent.slice
-ExecStart=/usr/bin/sudo -n /usr/bin/systemctl daemon-reload
+# 3-4. Root-owned files (/etc/prometheus/*.yml, agent.slice and every other
+#    file under rootfs/) are no longer this unit's job. fleet-host-config.service
+#    (rootfs/etc/systemd/system/, Ansible's ansible-pull of ansible/host.yml)
+#    installs them as root from its own clone, and deploy-box.yml starts it right
+#    after this unit. That removed the two `sudo -n` steps that lived here, so
+#    this user unit needs no sudo (thread "fix everything like pro devs",
+#    Nish 2026-10-03).
 # 5. Apply user-tmpfiles.d on every sync, not just at the next login
 #    (fleet-ops#8584). man systemd-tmpfiles: --create creates and links;
 #    it leaves the age-only e lines alone.

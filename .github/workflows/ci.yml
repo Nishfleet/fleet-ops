@@ -65,7 +65,7 @@ jobs:
         run: |
           rc=0
           grep -rEn --exclude-dir=.git "$SPAT" \
-            AGENTS.md README.md prompts systemd etc config template docs patches .github credentials || rc=$?
+            AGENTS.md README.md prompts systemd rootfs ansible config template docs patches .github credentials || rc=$?
           test "$rc" -eq 1
         env:
           SPAT: (echo|printf|printenv|console\.(log|error|warn|info))[^|;]*(\$\{?|process\.env\.)([A-Za-z_][A-Za-z0-9_]*(TOKEN|SECRET|PASS(WORD|WD)?|CREDENTIALS?|PRIVATE|_KEY)[A-Za-z0-9_]*|SK_[A-Z][A-Z0-9_]*)
@@ -89,9 +89,9 @@ jobs:
         uses: ludeeus/action-shellcheck@00cae500b08a931fb5698e11e79bfbd38e612a38 # v2.0.0
         with:
           version: v0.11.0
-      - name: apt binaries systemd-analyze verify needs (promtool, bwrap, redis-server)
+      - name: apt binaries systemd-analyze verify needs (promtool, bwrap, redis-server, ansible-pull)
         if: always()
-        run: sudo apt-get install -y --no-install-recommends prometheus bubblewrap redis-server
+        run: sudo apt-get install -y --no-install-recommends prometheus bubblewrap redis-server ansible-core
       - name: stub pi for systemd-analyze verify (host-only binary)
         if: always()
         run: sudo install -D -m0755 /bin/true /home/nish/.local/bin/pi
@@ -109,18 +109,25 @@ jobs:
         # systemd/system/*.slice too (fleet-ops#8638): the root glob never
         # matched systemd/system/, so agent.slice and claude.slice shipped
         # unverified. Slices carry no Exec line, so they need none of the
-        # binary stubs above.
+        # binary stubs above. Root-owned units moved to rootfs/etc/systemd/system/
+        # (fleet-host-config, thread "fix everything like pro devs"); the
+        # host-config service and timer are verified with the slices.
         if: always()
         run: |
           shopt -s nullglob
-          systemd-analyze verify --man=no systemd/*.service systemd/*.timer systemd/*.path systemd/*.slice systemd/system/*.slice
-      - name: etc/nftables.conf loads on a fresh boot (nft -c)
+          systemd-analyze verify --man=no systemd/*.service systemd/*.timer systemd/*.path systemd/*.slice rootfs/etc/systemd/system/*.slice rootfs/etc/systemd/system/fleet-host-config.service rootfs/etc/systemd/system/fleet-host-config.timer
+      - name: ansible/host.yml parses (ansible-playbook --syntax-check)
+        # fleet-host-config.service runs this playbook as root on every merge;
+        # a parse error would stop every root config change at deploy time.
+        if: always()
+        run: ansible-playbook --syntax-check -i localhost, ansible/host.yml
+      - name: rootfs/etc/nftables.conf loads on a fresh boot (nft -c)
         # nft refuses the whole file when a rule names a cgroup path that does
         # not exist yet, as at boot before user@1000 starts: the 2026-09-22
         # container-slice rule would have dropped every table on the next
         # reboot. This runner has no such cgroups, so the same rule fails here.
         if: always()
-        run: sudo apt-get install -y --no-install-recommends nftables && sudo nft -c -f etc/nftables.conf
+        run: sudo apt-get install -y --no-install-recommends nftables && sudo nft -c -f rootfs/etc/nftables.conf
       - name: No shell ${...} or bare %s/%u/%h inside systemd Exec lines (fleet-ops#8382)
         # systemd expands ${...} and % specifiers itself, before any interpreter
         # runs, so the shell never sees them. Refused on Exec*= lines: `${` + a
@@ -132,7 +139,7 @@ jobs:
         run: |
           rc=0
           grep -rnE '^Exec[A-Za-z]*=(.*[^$]|)\$\{[0-9#%]|^Exec[A-Za-z]*=(.*[^A-Za-z0-9])?(sh|bash|zsh)[[:space:]]+-c[[:space:]].*([^%]%[su]|[^%]%h([^/]|$))' \
-            systemd || rc=$?
+            systemd rootfs || rc=$?
           test "$rc" -eq 1
       - name: pi seat ids resolve to litellm-proxy.yaml model_name (fleet-ops#8332)
         if: always()

@@ -1,0 +1,39 @@
+# The one deploy path for root-owned host config: Ansible's own ansible-pull
+# applies ansible/host.yml, which installs rootfs/ (rootfs/etc/X -> /etc/X).
+# Nish 2026-10-03: "yes" to Ansible as the standard tool, instead of a
+# hand-written copy step (thread "fix everything like pro devs").
+#
+# Runs as root from its OWN clone in /var/lib/fleet-ops/repo, fetched
+# anonymously from GitHub main (the repo is public), so nothing a user-level
+# process writes on this box reaches root: not the deploy clone, not its refs.
+# Only reviewed, merged main gets applied. --clean throws away any local edit
+# in that clone before each run.
+#
+# Started by:
+#   - .github/workflows/deploy-box.yml on every push to main, via
+#     `systemctl start fleet-host-config.service`. polkit
+#     (rootfs/etc/polkit-1/rules.d/50-fleet-host-config.rules) lets user nish
+#     start THIS unit and nothing else, so the deploy job needs no sudo.
+#   - fleet-host-config.timer once a day. The named reason for a schedule: a
+#     hand edit or a hand-installed file in /etc has no event to react to.
+#     The daily run puts a hand edit back and fails on a hand-installed file.
+#
+# Bootstrap, once per box (the unit cannot install itself the first time):
+#   sudo apt-get install -y ansible-core
+#   sudo ansible-pull --url https://github.com/Nishfleet/fleet-ops.git --checkout main \
+#     --directory /var/lib/fleet-ops/repo --clean --inventory localhost, ansible/host.yml
+#   sudo systemctl enable --now fleet-host-config.timer
+[Unit]
+Description=Apply fleet-ops host config (ansible-pull of ansible/host.yml)
+Wants=network-online.target
+After=network-online.target
+# A failed run pings the healthchecks.io fail URL, same handler as the user units.
+OnFailure=fleet-unit-failed@%N.service
+
+[Service]
+Type=oneshot
+StateDirectory=fleet-ops
+Environment=ANSIBLE_HOME=/var/lib/fleet-ops/ansible
+Environment=ANSIBLE_NOCOLOR=1
+ExecStart=/usr/bin/ansible-pull --url https://github.com/Nishfleet/fleet-ops.git --checkout main --directory /var/lib/fleet-ops/repo --clean --inventory localhost, --diff ansible/host.yml
+TimeoutStartSec=600

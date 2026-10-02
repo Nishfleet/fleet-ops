@@ -7,11 +7,15 @@ script, or prompt lands unseen.
 ## What lives here
 
 - `systemd/` — user units (services + timers) the fleet runs under
-  `systemctl --user`; root-scope units, slices and drop-ins live under
-  `systemd/system/` (installed with a root `install` plus `daemon-reload`).
+  `systemctl --user`.
+- `rootfs/` — root-owned host config, laid out like `/` (`rootfs/etc/X` is
+  installed at `/etc/X`): system units, slices and drop-ins, `nftables.conf`,
+  `sysctl.d/`, `audit/rules.d/`, polkit rules and the prometheus config.
+- `ansible/host.yml` — the Ansible playbook that installs `rootfs/`.
+  `fleet-host-config.service` runs it as root (`ansible-pull`) on every merge
+  and once a day, and fails on a hand-installed file.
 - `containers/quadlet/` — `*.container` Podman quadlet units for the
   LiteLLM proxy, its Postgres and Redis, Grafana and aiostreams.
-- `etc/` — `nftables.conf` and `sysctl.d/`, host system config applied by hand.
 - `patches/` — `litellm-1.98.0-gchunk-usage-union.patch`, a proxy source patch
   reapplied after every proxy upgrade (see [RUNBOOK](docs/RUNBOOK.md)).
 - `docs/` — `ARCHITECTURE.md`, `RUNBOOK.md`, `jev-call-sites.md` and
@@ -99,29 +103,28 @@ prompt lines only — a stock feature replaces an organ or nothing does.
 
 ### The exceptions: files that must stay COPIES
 
-Five classes are deliberately copies, not symlinks, and a `git pull` does
-NOT update them. The three rows marked **Handled automatically** are refreshed
-by `fleet-sync.service` instead — a hand copy of one of those is wasted work,
+These classes are deliberately copies, not symlinks, and a `git pull` does
+NOT update them. The rows marked **Handled automatically** are refreshed by
+`fleet-sync.service` (user files) or `fleet-host-config.service` (root files)
+instead — a hand copy of one of those is wasted work,
 the next sync overwrites it. The rest are refreshed by hand.
 
 | live path | repo source | why a symlink is wrong |
 |---|---|---|
-| `/etc/prometheus/prometheus.yml` | `config/prometheus.yml` | same privilege boundary. **Handled automatically** by `fleet-sync.service` (promtool check config + copy + reload). |
 | `~/.pi/agent/models.json` | `config/pi-models.json` | **Handled automatically** by `fleet-sync.service` (cmp + install, fleet-ops#8568). A copy, not a symlink, because `~/.pi/agent` is an overlay mount in worker containers. |
-| `/etc/systemd/system/agent.slice` | `systemd/system/agent.slice` | **Handled automatically** by `fleet-sync.service` (install -C + system `daemon-reload`, fleet-ops#8862). The repo cap `MemorySwapMax=1G` sat in the repo for 5 days while the live unit read `infinity`, so the runners could fill all host swap again. |
 | `~/.local/state/pi-packet/model-candidates.json` | `none (live-only)` | live state the git working tree must not rewrite on every checkout (fleet-ops#2910/#3722/#3322). |
 | `~/.pi/agent/settings.json` | `none (live-only)` | pi writes this file itself at runtime (provider/model switches and its own bookkeeping keys), so a repo copy would be overwritten and a symlink would fight pi. Every fleet caller passes `--provider litellm --model <group>`, so its `defaultProvider`/`defaultModel` affect only bare interactive `pi` runs (fleet-ops#8568). Its `compaction.reserveTokens: 40000` pairs with the worker `contextWindow: 296000` in `config/pi-models.json`: pi compacts at window − reserve = 256k (Nish 2026-09-25; was 88k under #8567), and pi sizes each reply as window − context − 4096, so a turn at 256k still gets its full 32k `maxTokens`. Every worker rung holds 256k+ (seat /models or spend-log prompts up to 416k). At 96000/8192 replies near 88k were cut to ~4.8k (fleet-ops#8634). The real model windows are ~1M; 128000 is a budget, not a limit. |
-| `/etc/**` (systemd drop-ins, `sysctl.d`, `audit/rules.d`, `default/prometheus`, `prometheus/*.yml`) | `config/`, `etc/`, `systemd/system/` | cross a privilege boundary. The two rows above are also `/etc/**` files, but fleet-sync owns those copies; every other one is by hand. |
+| `/etc/**` (system units and drop-ins, `sysctl.d`, `audit/rules.d`, `polkit-1/rules.d`, `prometheus/*.yml`, `nftables.conf`) | `rootfs/etc/**` | cross a privilege boundary. **Handled automatically** by `fleet-host-config.service`: Ansible (`ansible/host.yml`) checks the prometheus and nftables files, installs every file under `rootfs/` as root, and reloads only the daemon whose file changed. A new root file is a new file under `rootfs/`; nothing is installed by hand. |
 
 ```
-# a changed /etc file:
-sudo -n install -D -m 0644 -o root -g root <repo>/<src> /etc/<dest>
-sudo -n systemctl daemon-reload          # for /etc/systemd/system/**
-sudo -n augenrules --load                # for /etc/audit/rules.d/**
-sudo -n sysctl --system                  # for /etc/sysctl.d/**   (Nish-reserved)
-# a changed root unit:
-sudo -n systemctl link /home/nish/workspaces/tooling/fleet-ops-deploy-clone/systemd/system/<unit>
+# a changed /etc file: merge it under rootfs/etc/. deploy-box.yml then runs
+systemctl start fleet-host-config.service    # polkit allows user nish; no sudo
+journalctl -u fleet-host-config.service -n 60 --no-pager   # PLAY RECAP failed=0
 ```
+
+Files kept off GitHub on purpose (they reveal access paths or backup targets)
+are listed in `/etc/fleet-ops/box-only` on the box, so the drift check skips
+them. That list is the only hand-kept root file.
 
 For `agent.slice` specifically, a hand copy is not enough to check the change
 landed: `daemon-reload` re-applies the limit to the running slice, so confirm
@@ -293,7 +296,7 @@ checks are stock: semgrep `--config p/default`, the secret-expansion grep,
 `jq` config sanity, actionlint, zizmor, shellcheck, and systemd-analyze verify
 over `systemd/`. The stock linters are joined by repo-specific gates: a no-glue
 semgrep rule at `.semgrep/no-glue.yml`, a no long-lived personal-access-token
-(PAT) grep, `nft -c` over `etc/nftables.conf`, a no shell `${...}` or bare
+(PAT) grep, `nft -c` over `rootfs/etc/nftables.conf`, `ansible-playbook --syntax-check` over `ansible/host.yml`, a no shell `${...}` or bare
 `%s/%u/%h` check inside systemd Exec lines (fleet-ops#8382), pi seat ids
 resolving to `config/litellm-proxy.yaml` `model_name` (fleet-ops#8332), and
 Ollama rungs serving only the permitted slug (fleet-ops#8332).
@@ -350,7 +353,7 @@ the enrolment mechanism (fleet-ops#32, #25).
 
 The concurrency bound is the runner count (#8429): 24 `agent` runners
 (`actions.runner.Nishfleet.netcup-agent-1..24`, sized from measured memory
-pressure, fleet-ops#8860), all in `agent.slice` (`systemd/system/agent.slice`,
+pressure, fleet-ops#8860), all in `agent.slice` (`rootfs/etc/systemd/system/agent.slice`,
 10G/11G, `MemorySwapMax=1G`). RAM safety is per-unit `MemoryMax` plus
 systemd-oomd, not an admission charge. Live RAM is
 `systemctl --user show -p MemoryPeak <unit>` and `systemd-cgtop`.
