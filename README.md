@@ -313,9 +313,11 @@ Each enrolled repo needs two preconditions:
    /home/nish/workspaces/.mirrors/<name>.git
    https://github.com/Nishfleet/<name>.git <dest>` (fleet-ops#1213).
    Mirrors are read-only fetch targets; never push.
-2. The three labels `agent-ready`, `agent-in-progress`, `agent-blocked`
-   present on the repo — agent-dispatch fires only on the `agent-ready` label,
-   so on a label-less repo an issue looks queued and is inert (fleet-ops#25).
+2. The six labels listed in `required_labels` in `config/intake-repos.json`
+   — `agent-ready`, `agent-in-progress`, `agent-blocked`, `agent-failed`,
+   `needs-orchestrator`, `strong-only` — must be present on the repo —
+   agent-dispatch fires only on the `agent-ready` label, so on a repo missing
+   any required label an issue looks queued and is inert (fleet-ops#25).
 
 `fleet2` is permanently excluded (standing rule: no second dispatcher,
 ever). `siterep` is excluded (archived). Both are recorded in the file's
