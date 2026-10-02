@@ -22,7 +22,11 @@ Environment=XDG_RUNTIME_DIR=/run/user/1000 DBUS_SESSION_BUS_ADDRESS=unix:path=/r
 # The TUI redraws the status line to stdout (~2k journal lines an hour); errors go
 # to stderr and still reach the journal.
 StandardOutput=null
-ExecStart=/home/nish/.local/bin/claude remote-control --name vps-rc --spawn=same-dir
+# Nish 2026-10-03: sessions get full permissions (no prompts). Without the flag
+# the server starts every session in "auto" mode, which raises prompts with no
+# "always allow" option. permissions.ask/deny in ~/.claude/settings.json still
+# gate force-push, reboot and deletes.
+ExecStart=/home/nish/.local/bin/claude remote-control --name vps-rc --spawn=same-dir --permission-mode bypassPermissions
 Slice=claude.slice
 OOMScoreAdjust=-900
 Restart=always
