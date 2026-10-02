@@ -1,0 +1,214 @@
+# Root-owned host config for the fleet box. rootfs/ mirrors / : the file at
+# rootfs/etc/X is installed at /etc/X. fleet-host-config.service runs this
+# through ansible-pull as root, on every push to main and once a day.
+#
+# Every task is a stock ansible-core module. Validation runs first, so a file
+# the daemon would refuse never reaches /etc. Each area gets its own copy
+# task so a change reloads only the daemon that reads it. copy never deletes:
+# removing a live file is a reviewed PR that deletes it here and adds a
+# `state: absent` task for it.
+#
+# Owner and mode: every file is root:root with its mode from git (0644, or
+# 0755 for a directory). copy follows symlinks in rootfs/, so a link to a
+# file elsewhere in the repo installs the real file (one source of truth for
+# fleet-unit-failed@.service, which the user units use too).
+- name: Install fleet-ops rootfs/ onto this host
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  vars:
+    rootfs: "{{ (playbook_dir ~ '/../rootfs') | realpath }}"
+    # Directories this repo owns. A regular file in one of them that rootfs/
+    # does not ship is a hand install, and the run fails on it (last task).
+    # /etc/prometheus is left out: it also holds alertmanager credentials.
+    owned_dirs:
+      - /etc/systemd/system
+      - /etc/systemd/system.control
+      - /etc/systemd/user
+      - /etc/systemd/oomd.conf.d
+      - /etc/systemd/journald.conf.d
+      - /etc/sysctl.d
+      - /etc/tmpfiles.d
+      - /etc/audit/rules.d
+      - /etc/polkit-1/rules.d
+    # Files Ubuntu packages ship, or the GitHub runner's own svc.sh writes, in
+    # those directories. Matched against the full path.
+    package_files:
+      - '^/etc/systemd/system/actions\.runner\..*\.service$'
+      - '/README[^/]*$'
+      - '^/etc/tmpfiles\.d/screen-cleanup\.conf$'
+      - '^/etc/sysctl\.d/99-sysctl\.conf$'
+      - '^/etc/sysctl\.d/10-[^/]*\.conf$'
+      - '^/etc/audit/rules\.d/audit\.rules$'
+    # Files kept off GitHub on purpose (they reveal access paths or backup
+    # targets) are listed, one path per line, in /etc/fleet-ops/box-only on
+    # the box itself. That one file is the only hand-kept list.
+    box_only: >-
+      {{ (lookup('ansible.builtin.file', '/etc/fleet-ops/box-only', errors='ignore')
+         | default('', true)).splitlines() | map('trim')
+         | reject('match', '^(#|$)') | list }}
+
+  tasks:
+    - name: Check the prometheus config before installing it
+      ansible.builtin.command: /usr/bin/promtool check config {{ rootfs }}/etc/prometheus/prometheus.yml
+      changed_when: false
+      check_mode: false  # read-only; runs under --check too
+
+    - name: Check the nftables ruleset before installing it
+      ansible.builtin.command: /usr/sbin/nft -c -f {{ rootfs }}/etc/nftables.conf
+      changed_when: false
+      check_mode: false  # read-only; runs under --check too
+
+    - name: Install systemd units, slices and drop-ins
+      ansible.builtin.copy:
+        src: "{{ rootfs }}/etc/systemd/system/"
+        dest: /etc/systemd/system/
+        owner: root
+        group: root
+        mode: preserve
+      notify: Reload systemd
+
+    - name: Install systemd-oomd config
+      ansible.builtin.copy:
+        src: "{{ rootfs }}/etc/systemd/oomd.conf.d/"
+        dest: /etc/systemd/oomd.conf.d/
+        owner: root
+        group: root
+        mode: preserve
+      notify: Restart systemd-oomd
+
+    - name: Install sysctl settings
+      ansible.builtin.copy:
+        src: "{{ item }}"
+        dest: /etc/sysctl.d/
+        owner: root
+        group: root
+        mode: preserve
+      loop: "{{ query('ansible.builtin.fileglob', rootfs ~ '/etc/sysctl.d/*.conf') }}"
+      register: sysctl_files
+
+    # Applies only the file that changed. `sysctl --system` would also re-apply
+    # the provider image's files, which README keeps a Nish-only action.
+    - name: Apply a changed sysctl file
+      ansible.builtin.command: /usr/sbin/sysctl -p /etc/sysctl.d/{{ item.item | basename }}
+      loop: "{{ sysctl_files.results | selectattr('changed') | list }}"
+      loop_control:
+        label: "{{ item.item | basename }}"
+
+    - name: Install audit rules
+      ansible.builtin.copy:
+        src: "{{ rootfs }}/etc/audit/rules.d/"
+        dest: /etc/audit/rules.d/
+        owner: root
+        group: root
+        mode: preserve
+      notify: Load audit rules
+
+    - name: Install the nftables ruleset
+      ansible.builtin.copy:
+        src: "{{ rootfs }}/etc/nftables.conf"
+        dest: /etc/nftables.conf
+        owner: root
+        group: root
+        mode: preserve
+      notify: Reload nftables
+
+    - name: Install prometheus and blackbox exporter config
+      ansible.builtin.copy:
+        src: "{{ rootfs }}/etc/prometheus/"
+        dest: /etc/prometheus/
+        owner: root
+        group: root
+        mode: preserve
+      notify:
+        - Reload prometheus
+        - Reload blackbox exporter
+
+    # polkitd watches rules.d itself; no reload needed.
+    - name: Install polkit rules
+      ansible.builtin.copy:
+        src: "{{ rootfs }}/etc/polkit-1/rules.d/"
+        dest: /etc/polkit-1/rules.d/
+        owner: root
+        group: root
+        mode: preserve
+
+    # enabled only: never restarts the Remote Control link this playbook may run under.
+    - name: Enable Remote Control at boot
+      ansible.builtin.systemd_service:
+        name: claude-remote-control.service
+        enabled: true
+
+    - name: Enable the daily drift run
+      ansible.builtin.systemd_service:
+        name: fleet-host-config.timer
+        enabled: true
+        state: started
+        daemon_reload: true
+      # Under --check the copy above did not really install the timer yet.
+      ignore_errors: "{{ ansible_check_mode }}"
+
+    # Drift: the copy tasks above already put back any hand edit to a file the
+    # repo ships. What is left is a file on the box that the repo does not
+    # ship: a hand install. Fail on it, so it pages instead of living on
+    # unreviewed. /etc/systemd/system.control must stay empty, because
+    # `systemctl set-property` without --runtime writes there and bypasses
+    # the repo. Symlinks are enable/mask state, not config, so only regular
+    # files count.
+    - name: List config files on the box in the directories the repo owns
+      ansible.builtin.find:
+        paths: "{{ owned_dirs }}"
+        recurse: true
+        file_type: file
+        hidden: true
+      register: live
+
+    - name: List the files rootfs/ ships
+      ansible.builtin.find:
+        paths: "{{ rootfs }}/etc"
+        recurse: true
+        file_type: any
+        hidden: true
+      register: shipped
+
+    - name: Fail on a hand-installed file
+      ansible.builtin.assert:
+        that: unmanaged | length == 0
+        fail_msg: "Hand-installed, not in fleet-ops rootfs/ (add it to the repo, delete it, or list it in /etc/fleet-ops/box-only): {{ unmanaged | join(', ') }}"
+        quiet: true
+      vars:
+        shipped_paths: "{{ shipped.files | rejectattr('isdir') | map(attribute='path') | map('replace', rootfs, '') | list }}"
+        unmanaged: >-
+          {{ live.files | map(attribute='path')
+             | difference(shipped_paths) | difference(box_only)
+             | reject('search', package_files | join('|')) | sort }}
+
+  handlers:
+    - name: Reload systemd
+      ansible.builtin.systemd_service:
+        daemon_reload: true
+
+    - name: Restart systemd-oomd
+      ansible.builtin.systemd_service:
+        name: systemd-oomd.service
+        state: restarted
+
+    - name: Load audit rules
+      ansible.builtin.command: /usr/sbin/augenrules --load
+
+    # nftables.service's ExecReload re-runs `nft -f /etc/nftables.conf`, and
+    # its drop-in re-runs `ufw reload` right after (fleet-ops#8258).
+    - name: Reload nftables
+      ansible.builtin.systemd_service:
+        name: nftables.service
+        state: reloaded
+
+    - name: Reload prometheus
+      ansible.builtin.systemd_service:
+        name: prometheus.service
+        state: reloaded
+
+    - name: Reload blackbox exporter
+      ansible.builtin.systemd_service:
+        name: prometheus-blackbox-exporter.service
+        state: restarted

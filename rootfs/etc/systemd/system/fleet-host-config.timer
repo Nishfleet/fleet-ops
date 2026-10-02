@@ -1,0 +1,13 @@
+# Daily drift run of fleet-host-config.service. Merges apply at once through
+# deploy-box.yml; this timer only catches what has no event: a hand edit or a
+# hand-installed file under /etc (see the service's comment).
+[Unit]
+Description=Daily fleet-ops host config apply and drift check
+
+[Timer]
+OnCalendar=daily
+RandomizedDelaySec=1h
+Persistent=true
+
+[Install]
+WantedBy=timers.target

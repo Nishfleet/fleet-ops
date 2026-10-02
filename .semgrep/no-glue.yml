@@ -42,6 +42,8 @@ rules:
         - "/.github/workflows/"
         - "/systemd/"
         - "/prompts/"
+        - "/rootfs/"
+        - "/ansible/"
   # Reaching Nish. The alertmanager escalation stack was deleted 2026-09-29
   # (fleet-ops#8958), taking its escalation command and alert with it. The
   # replacement path lives in one place only — the vault line "Only these

@@ -6,9 +6,7 @@
 # PATH is set here rather than from ~/.config/environment.d on purpose: that
 # directory also exports CLAUDE_CODE_OAUTH_TOKEN, and Remote Control needs the
 # claude.ai login instead.
-# Install:
-#   sudo install -m 0644 systemd/system/claude.slice systemd/system/claude-remote-control.service /etc/systemd/system/
-#   sudo systemctl daemon-reload && sudo systemctl enable --now claude-remote-control.service
+# Installed and enabled at boot by fleet-host-config.service (ansible/host.yml).
 [Unit]
 Description=Claude Code Remote Control server (~/workspaces)
 Wants=network-online.target

@@ -14,9 +14,8 @@
 # are visible in the same records anyway via exe, and -F auid=1000 keeps
 # the noise down to the fleet user's own stopping commands.
 #
-# Install: sudo -n install -D -m 0644 -o root -g root this file to /etc/audit/rules.d/ and
-# reloads via `sudo augenrules --load` (idempotent; auditd must be
-# installed).
+# Installed by fleet-host-config.service (ansible/host.yml), which runs
+# `augenrules --load` when the file changes (auditd must be installed).
 #
 # Query (fleet-ops#5918): run as root, with the absolute path —
 #   /usr/sbin/ausearch -k fleet-unit-stop -ts yesterday -i

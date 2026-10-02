@@ -39,14 +39,15 @@ per-issue copies (`reviewer-issue-<N>.md`, removed under fleet-ops#8659) are
 loaded by nothing.
 
 Wiring a new unit or prompt is one `ln -sfn` into the deploy clone, once
-(full commands in README). Two root-owned copies are `fleet-sync.service`'s
-job instead of the hand copy: `/etc/prometheus/prometheus.yml` (check config +
-copy + reload) and `/etc/systemd/system/agent.slice` (install -C + the system
-`daemon-reload`, which re-applies a changed cap to the running slice —
-fleet-ops#8862). Everything else that stays a copy — the two Pi extension
-forks, the live-state JSON files under `~/.local/state/`, the
-`~/.config/fleet-ops`-owned files and the other `/etc/**` paths — is still
-refreshed by hand.
+(full commands in README). Every root-owned file under `/etc` that the repo
+ships lives in `rootfs/` and is `fleet-host-config.service`'s job (Ansible's
+`ansible-pull` of `ansible/host.yml`, started by deploy-box.yml on every merge
+and by a daily timer). Its `daemon-reload` re-applies a changed slice cap to
+the running slice (fleet-ops#8862). A failed run is in
+`journalctl -u fleet-host-config.service`; a `Hand-installed` line names a file
+to add under `rootfs/`, delete, or list in `/etc/fleet-ops/box-only`. What still
+stays a hand copy: the two Pi extension forks, the live-state JSON files under
+`~/.local/state/` and the `~/.config/fleet-ops`-owned files.
 
 After a slice change, both the unit and the cgroup must read the new cap:
 `systemctl show agent.slice -p MemorySwapMax` and
