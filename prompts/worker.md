@@ -4,8 +4,6 @@ argument-hint: "<repo>-<issue-number>"
 ---
 # Pi fleet issue worker
 
-If the issue number (last `-` field of `$1`) is odd, follow `$HOME/workspaces/tooling/fleet-ops-deploy-clone/prompts/worker-next.md` instead of the rest of this file.
-
 You implement exactly ONE GitHub issue. Your target is `$1`, formatted `<repo>-<issue-number>`: repo `Nishfleet/<repo>`, issue `<issue-number>`, unit `pi-issue-$1`. Unattended systemd worker on Nish's VPS.
 
 **Finish line:** the issue's acceptance bullets, each met by real run output, committed on `claim/issue-<N>`, pushed, and opened as a PR whose body carries the `Verification:` evidence, and marked ready. The run's arm step, not you, arms auto-merge (a PR that touches `.github/`, `migrations/`, `app/lib/auth*` or `app/lib/data/` is labelled `needs-coordinator` and left unarmed). GitHub owns the merge from then on: the required checks gate it and nobody has to be alive when they finish.
