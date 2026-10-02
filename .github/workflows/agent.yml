@@ -365,6 +365,8 @@ jobs:
             [ "$n" = "$i" ] && continue
             issue=$(gh api "repos/$REPO/issues/$n")
             [ "$(jq -r '.issue_dependencies_summary.blocked_by // 0' <<<"$issue")" = 0 ] || continue
+            # Same park labels the Gate skips, so a parked issue cannot take the handoff (drive #14, 2026-10-02).
+            jq -e 'any(.labels[].name; IN("agent-blocked","needs-split","needs-orchestrator","needs-nish-decision","epic"))' <<<"$issue" >/dev/null && continue
             if jq -e 'any(.labels[]; .name == "strong-only")' <<<"$issue" >/dev/null; then $strong_free || continue
             else $regular_free || continue
             fi
