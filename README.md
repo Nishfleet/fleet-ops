@@ -8,7 +8,16 @@ script, or prompt lands unseen.
 
 - `systemd/` — user units (services + timers) the fleet runs under
   `systemctl --user`.
-- `bin/` — shell scripts the units exec.
+- `containers/quadlet/` — `*.container` Podman quadlet units for the
+  LiteLLM proxy, its Postgres and Redis, Grafana and aiostreams.
+- `etc/` — `nftables.conf` and `sysctl.d/`, host system config applied by hand.
+- `patches/` — `litellm-1.98.0-gchunk-usage-union.patch`, a proxy source patch
+  reapplied after every proxy upgrade (see [RUNBOOK](docs/RUNBOOK.md)).
+- `docs/` — `ARCHITECTURE.md`, `RUNBOOK.md`, `jev-call-sites.md` and
+  `quality-bar.md`.
+- `template/` — `agents/`, `cursor-rules/`, `devin-config.json` and
+  `README.md`, source files the live host links or copies by hand (see
+  [template/README.md](template/README.md)).
 - `prompts/` — Pi agent prompts fed to workers on stdin.
 - `config/` — fleet configuration. `intake-repos.json` is the declared set of
   repos enrolled in the agent-ready queue (see [Intake enrolment](#intake-enrolment)).
