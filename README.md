@@ -15,8 +15,8 @@ script, or prompt lands unseen.
 - `systemd/fleet-sync.service` (started by
   `.github/workflows/deploy-box.yml` on push) — the whole deploy mechanism:
   `git fetch` + `git merge --ff-only` + `systemctl --user daemon-reload`, plus
-  `promtool check config` and a prometheus reload when the scrape config
-  changed, and a LINK-GUARD pass
+  `promtool check config`, the `/etc/prometheus/prometheus.yml` copy and its
+  reload, and a LINK-GUARD pass
   that fails the unit on a dangling or throwaway-target live symlink
   (fleet-ops#7743).
 

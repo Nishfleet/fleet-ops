@@ -46,27 +46,39 @@ ExecStart=/usr/bin/git -C /home/nish/workspaces/tooling/fleet-ops-deploy-clone m
 #    quietly lagging.
 ExecStart=/usr/bin/git -C /home/nish/workspaces/tooling/fleet-ops-deploy-clone merge-base --is-ancestor refs/remotes/origin/main HEAD
 ExecStart=/usr/bin/git -C /home/nish/workspaces/tooling/fleet-ops-deploy-clone merge-base --is-ancestor HEAD refs/remotes/origin/main
-# 2. Link the OnFailure handler, then re-read unit files. Link first so
-#    daemon-reload loads fleet-unit-failed@.service (fleet-ops#9033).
-#    systemctl link of an already-linked unit is idempotent (exit 0, twice,
-#    2026-10-01 on fleet-prometheus-reload.service).
+# 2. Link the OnFailure handler, drop the retired prometheus-reload live
+#    links, then re-read unit files. Link first so daemon-reload loads
+#    fleet-unit-failed@.service (fleet-ops#9033). The pull above deleted
+#    fleet-prometheus-reload.path/.service (fleet-ops#9088); README
+#    "Retiring a unit" is `rm` of the live path. rm -f is a no-op once
+#    they are gone, and without it LINK-GUARD fails on the dangling links.
 ExecStart=/usr/bin/systemctl --user link /home/nish/workspaces/tooling/fleet-ops-deploy-clone/systemd/fleet-unit-failed@.service
+ExecStart=/bin/rm -f /home/nish/.config/systemd/user/fleet-prometheus-reload.path /home/nish/.config/systemd/user/fleet-prometheus-reload.service /home/nish/.config/systemd/user/default.target.wants/fleet-prometheus-reload.path
 ExecStart=/usr/bin/systemctl --user daemon-reload
 # 3. /etc/prometheus/prometheus.yml is a root-owned COPY, not a symlink:
 #    prometheus runs as user `prometheus` and /home/nish is 0750 nish:nish, so
 #    it cannot traverse into the repo. promtool check config runs first so a
 #    bad file never replaces the live one; install -C skips the write when the
-#    bytes match; fleet-prometheus-reload.path sees a real write and reloads
-#    prometheus. The enable line links and starts that .path unit from the
-#    clone; it is idempotent (fleet-ops#8084).
+#    bytes match. The reload that used to live in fleet-prometheus-reload.path
+#    + .service is this unit's own line now (fleet-ops#9088): a path watcher
+#    whose only writer is a step in this same unit is one more unit of latency
+#    between the write and the reload. One reload line after the install keeps
+#    the ordering (the new config is on disk before prometheus re-reads it) and
+#    deletes both files plus the link + enable lines that wired them.
 ExecStart=/usr/bin/promtool check config /home/nish/workspaces/tooling/fleet-ops-deploy-clone/config/prometheus.yml
 #    cmp guards the install (fleet-ops speed pass, 2026-10-02): GNU install -C
 #    still calls fchmodat() on an identical file (strace, coreutils 9.4), and
-#    that IN_ATTRIB fires the PathChanged= watcher on EVERY sync, not only on a
-#    real change. Same guard on step 7.
+#    that IN_ATTRIB used to fire the PathChanged= watcher on EVERY sync, not
+#    only on a real change. The watcher is gone now, so the guard saves the
+#    redundant mtime write and nothing else. It costs one stat, so it stays.
+#    Same guard on step 7, whose fleet-litellm-proxy-config.path watcher is real.
 ExecStart=/bin/sh -c 'cmp -s /home/nish/workspaces/tooling/fleet-ops-deploy-clone/config/prometheus.yml /etc/prometheus/prometheus.yml || /usr/bin/sudo -n /usr/bin/install -C -D -m 0644 -o root -g root /home/nish/workspaces/tooling/fleet-ops-deploy-clone/config/prometheus.yml /etc/prometheus/prometheus.yml'
-ExecStart=/usr/bin/systemctl --user link /home/nish/workspaces/tooling/fleet-ops-deploy-clone/systemd/fleet-prometheus-reload.service
-ExecStart=/usr/bin/systemctl --user enable --now /home/nish/workspaces/tooling/fleet-ops-deploy-clone/systemd/fleet-prometheus-reload.path
+#    Reload prometheus here, in the same cgroup as the write it depends on.
+#    `systemctl reload prometheus` is a SIGHUP, so an unchanged file costs a
+#    re-read of the same rules — harmless, and nothing else writes that path.
+#    This replaces --user link .../fleet-prometheus-reload.service and
+#    --user enable --now .../fleet-prometheus-reload.path.
+ExecStart=/usr/bin/sudo -n /usr/bin/systemctl reload prometheus
 # 4. /etc/systemd/system/agent.slice is a root-owned COPY, same class as 3
 #    and the reason this step exists (fleet-ops#8862): the swap cap from
 #    fleet-ops#8638 has been in the repo file since 2026-09-25 while the live

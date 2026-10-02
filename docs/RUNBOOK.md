@@ -166,7 +166,7 @@ workflow, prompt and recipe that starts `claude`, `pi`, `devin`, `opencode`,
   `--env-host` until #9020; it now passes the named `PodmanArgs=--env=` list.
   Its `anthropic/` rows set `api_base` explicitly and take `MINIMAX_API_KEY`,
   so `ANTHROPIC_BASE_URL` is not read.
-- `fleet-sync`, `fleet-unit-failed@`, `fleet-prometheus-reload`,
+- `fleet-sync`, `fleet-unit-failed@`,
   `fleet-litellm-proxy-config`, the postgres, redis and aiostreams quadlets,
   and the `hermes-`, `tailscaled`, `oomd` and slice drop-ins start no agent.
 
