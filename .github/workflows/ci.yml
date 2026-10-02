@@ -65,7 +65,7 @@ jobs:
         run: |
           rc=0
           grep -rEn --exclude-dir=.git "$SPAT" \
-            AGENTS.md README.md prompts systemd etc config template docs patches .github credentials || rc=$?
+            AGENTS.md README.md prompts systemd rootfs ansible config template docs patches .github credentials || rc=$?
           test "$rc" -eq 1
         env:
           SPAT: (echo|printf|printenv|console\.(log|error|warn|info))[^|;]*(\$\{?|process\.env\.)([A-Za-z_][A-Za-z0-9_]*(TOKEN|SECRET|PASS(WORD|WD)?|CREDENTIALS?|PRIVATE|_KEY)[A-Za-z0-9_]*|SK_[A-Z][A-Z0-9_]*)
