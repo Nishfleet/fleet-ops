@@ -9,8 +9,9 @@ operator sequence. Where this page and a live file disagree, the live file wins
 
 One VPS (netcup), one `nish` user. Everything the fleet runs is a
 `systemctl --user` unit whose file lives in `systemd/` and is linked into
-`~/.config/systemd/user/` by hand once; a `git pull` is the deploy
-(see README, and RUNBOOK for the wiring rules). GitHub is the durable copy of
+`~/.config/systemd/user/` by hand once; a push to `main` is the deploy:
+`deploy-box.yml` runs `fleet-sync.service`, a fetch plus `--ff-only` merge,
+never `git pull` (RUNBOOK, fleet-ops#8893). GitHub is the durable copy of
 code and config.
 
 The work loop: `.github/workflows/agent-dispatch.yml` queues `agent-ready` issues as `agent.yml` jobs on the VPS self-hosted runners, workers open PRs on `claim/issue-<N>`, and the GitHub merge queue lands them.
