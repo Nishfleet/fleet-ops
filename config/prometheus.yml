@@ -44,3 +44,20 @@ scrape_configs:
   # own-site-check, nightly) and the post-deploy e2e (0509#5736). The three
   # module definitions these jobs used were removed from config/blackbox.yml
   # in the same change.
+
+  # 0509 homepage up/down for the fleet view (fleet-grafana, Nish 2026-10-03).
+  # Display only: the alert stack stays cut (fleet-ops#8958). One target, the
+  # stock http_2xx module, via the blackbox exporter already running on :9115.
+  - job_name: site-0509
+    metrics_path: /probe
+    params:
+      module: [http_2xx]
+    static_configs:
+      - targets: [https://0509.io/]
+    relabel_configs:
+      - source_labels: [__address__]
+        target_label: __param_target
+      - source_labels: [__param_target]
+        target_label: instance
+      - target_label: __address__
+        replacement: 127.0.0.1:9115
