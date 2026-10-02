@@ -26,6 +26,11 @@ script, or prompt lands unseen.
 - `prompts/` — Pi agent prompts fed to workers on stdin.
 - `config/` — fleet configuration. `intake-repos.json` is the declared set of
   repos enrolled in the agent-ready queue (see [Intake enrolment](#intake-enrolment)).
+  `config/litellm-proxy.schema.rejects/` holds one YAML per rule
+  `config/litellm-proxy.schema.json` must refuse (bench block, router
+  cooldown over 60, row cooldown zero, row cooldown). CI validates every file
+  in the directory against the schema and each must fail, so a loosened schema
+  goes red. A new schema rule gets a reject file in the same PR.
 - `credentials/` — `app-manifest.json`, the worker GitHub App manifest
   (`.github/workflows/agent.yml:53` cites it for the App's grant).
 - `.semgrep/` — `no-glue.yml`, the no-glue rule `ci.yml:49` runs
@@ -299,7 +304,11 @@ semgrep rule at `.semgrep/no-glue.yml`, a no long-lived personal-access-token
 (PAT) grep, `nft -c` over `rootfs/etc/nftables.conf`, `ansible-playbook --syntax-check` over `ansible/host.yml`, a no shell `${...}` or bare
 `%s/%u/%h` check inside systemd Exec lines (fleet-ops#8382), pi seat ids
 resolving to `config/litellm-proxy.yaml` `model_name` (fleet-ops#8332), and
-Ollama rungs serving only the permitted slug (fleet-ops#8332).
+Ollama rungs serving only the permitted slug (fleet-ops#8332), the litellm-proxy
+schema gate: `config/litellm-proxy.yaml` must validate against
+`config/litellm-proxy.schema.json`, and every
+`config/litellm-proxy.schema.rejects/*.yaml` must fail the same check
+(fleet-ops#8653), so a loosened schema goes red.
 
 `.github/workflows/secret-scan.yml` is the gitleaks scan (pinned binary +
 sha256, `--redact`). fleet-ops has no deploy target. All actions are pinned to exact commit
