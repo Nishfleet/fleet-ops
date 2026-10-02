@@ -284,13 +284,14 @@ of scope: they do not live in `session-*.scope`. `claim/issue-*` and
 ## CI
 
 `.github/workflows/ci.yml` runs one job, `ci`, on every PR and push to main. Its
-stock linters are joined by repo-specific gates: semgrep `--config p/default`,
-the no-glue rule at `.semgrep/no-glue.yml`, the secret-expansion grep, the
-no long-lived PAT grep, `jq` config sanity, actionlint, zizmor, shellcheck,
-systemd-analyze verify over `systemd/`, `nft -c` over `etc/nftables.conf`, the
-no shell `${...}` or bare `%s/%u/%h` in systemd Exec lines check
-(fleet-ops#8382), the pi seat-id resolution against `config/litellm-proxy.yaml`
-(fleet-ops#8332), and the Ollama permitted-slug check (fleet-ops#8332).
+checks are stock: semgrep `--config p/default`, the secret-expansion grep,
+`jq` config sanity, actionlint, zizmor, shellcheck, and systemd-analyze verify
+over `systemd/`. The stock linters are joined by repo-specific gates: a no-glue
+semgrep rule at `.semgrep/no-glue.yml`, a no long-lived personal-access-token
+(PAT) grep, `nft -c` over `etc/nftables.conf`, a no shell `${...}` or bare
+`%s/%u/%h` check inside systemd Exec lines (fleet-ops#8382), pi seat ids
+resolving to `config/litellm-proxy.yaml` `model_name` (fleet-ops#8332), and
+Ollama rungs serving only the permitted slug (fleet-ops#8332).
 
 `.github/workflows/secret-scan.yml` is the gitleaks scan (pinned binary +
 sha256, `--redact`). fleet-ops has no deploy target. All actions are pinned to exact commit
