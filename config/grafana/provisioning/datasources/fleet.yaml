@@ -24,3 +24,17 @@ datasources:
       githubPlan: github-basic
     secureJsonData:
       privateKey: $__file{/run/secrets/github-app.pem}
+
+  # Same App, installation on the nish3451 personal account (selected repos,
+  # incl. drive). One data source per installation.
+  - name: GitHub (nish3451)
+    uid: fleet-github-personal
+    type: grafana-github-datasource
+    editable: false
+    jsonData:
+      selectedAuthType: github-app
+      appId: "4728578"
+      installationId: "166603018"
+      githubPlan: github-basic
+    secureJsonData:
+      privateKey: $__file{/run/secrets/github-app.pem}

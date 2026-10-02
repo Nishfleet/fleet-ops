@@ -120,8 +120,8 @@
       "timeFrom": "5y",
       "hideTimeOverride": true,
       "datasource": {
-        "type": "grafana-github-datasource",
-        "uid": "fleet-github"
+        "type": "datasource",
+        "uid": "-- Mixed --"
       },
       "targets": [
         {
@@ -137,9 +137,27 @@
             "query": "is:open label:needs-nish-decision",
             "timeField": 0
           }
+        },
+        {
+          "refId": "B",
+          "datasource": {
+            "type": "grafana-github-datasource",
+            "uid": "fleet-github-personal"
+          },
+          "queryType": "Issues",
+          "owner": "nish3451",
+          "repository": "",
+          "options": {
+            "query": "is:open label:needs-nish-decision",
+            "timeField": 0
+          }
         }
       ],
       "transformations": [
+        {
+          "id": "merge",
+          "options": {}
+        },
         {
           "id": "organize",
           "options": {
@@ -257,8 +275,8 @@
       "timeFrom": "5y",
       "hideTimeOverride": true,
       "datasource": {
-        "type": "grafana-github-datasource",
-        "uid": "fleet-github"
+        "type": "datasource",
+        "uid": "-- Mixed --"
       },
       "targets": [
         {
@@ -269,6 +287,20 @@
           },
           "queryType": "Issues",
           "owner": "Nishfleet",
+          "repository": "",
+          "options": {
+            "query": "is:open label:agent-ready",
+            "timeField": 0
+          }
+        },
+        {
+          "refId": "B",
+          "datasource": {
+            "type": "grafana-github-datasource",
+            "uid": "fleet-github-personal"
+          },
+          "queryType": "Issues",
+          "owner": "nish3451",
           "repository": "",
           "options": {
             "query": "is:open label:agent-ready",
@@ -302,7 +334,13 @@
           }
         },
         "overrides": []
-      }
+      },
+      "transformations": [
+        {
+          "id": "merge",
+          "options": {}
+        }
+      ]
     },
     {
       "type": "stat",
@@ -312,8 +350,8 @@
       "timeFrom": "5y",
       "hideTimeOverride": true,
       "datasource": {
-        "type": "grafana-github-datasource",
-        "uid": "fleet-github"
+        "type": "datasource",
+        "uid": "-- Mixed --"
       },
       "targets": [
         {
@@ -324,6 +362,20 @@
           },
           "queryType": "Issues",
           "owner": "Nishfleet",
+          "repository": "",
+          "options": {
+            "query": "is:open label:agent-in-progress",
+            "timeField": 0
+          }
+        },
+        {
+          "refId": "B",
+          "datasource": {
+            "type": "grafana-github-datasource",
+            "uid": "fleet-github-personal"
+          },
+          "queryType": "Issues",
+          "owner": "nish3451",
           "repository": "",
           "options": {
             "query": "is:open label:agent-in-progress",
@@ -363,7 +415,13 @@
         "y": 10,
         "w": 3,
         "h": 4
-      }
+      },
+      "transformations": [
+        {
+          "id": "merge",
+          "options": {}
+        }
+      ]
     },
     {
       "type": "stat",
@@ -427,8 +485,8 @@
       "timeFrom": "5y",
       "hideTimeOverride": true,
       "datasource": {
-        "type": "grafana-github-datasource",
-        "uid": "fleet-github"
+        "type": "datasource",
+        "uid": "-- Mixed --"
       },
       "targets": [
         {
@@ -439,6 +497,20 @@
           },
           "queryType": "Issues",
           "owner": "Nishfleet",
+          "repository": "",
+          "options": {
+            "query": "is:open label:strong-only \"agent run failed\" in:comments",
+            "timeField": 0
+          }
+        },
+        {
+          "refId": "B",
+          "datasource": {
+            "type": "grafana-github-datasource",
+            "uid": "fleet-github-personal"
+          },
+          "queryType": "Issues",
+          "owner": "nish3451",
           "repository": "",
           "options": {
             "query": "is:open label:strong-only \"agent run failed\" in:comments",
@@ -482,7 +554,13 @@
         "y": 10,
         "w": 4,
         "h": 4
-      }
+      },
+      "transformations": [
+        {
+          "id": "merge",
+          "options": {}
+        }
+      ]
     },
     {
       "type": "stat",
@@ -498,8 +576,8 @@
       "timeFrom": "5y",
       "hideTimeOverride": true,
       "datasource": {
-        "type": "grafana-github-datasource",
-        "uid": "fleet-github"
+        "type": "datasource",
+        "uid": "-- Mixed --"
       },
       "targets": [
         {
@@ -510,6 +588,20 @@
           },
           "queryType": "Issues",
           "owner": "Nishfleet",
+          "repository": "",
+          "options": {
+            "query": "is:open label:agent-blocked,needs-orchestrator",
+            "timeField": 0
+          }
+        },
+        {
+          "refId": "B",
+          "datasource": {
+            "type": "grafana-github-datasource",
+            "uid": "fleet-github-personal"
+          },
+          "queryType": "Issues",
+          "owner": "nish3451",
           "repository": "",
           "options": {
             "query": "is:open label:agent-blocked,needs-orchestrator",
@@ -547,13 +639,19 @@
           }
         },
         "overrides": []
-      }
+      },
+      "transformations": [
+        {
+          "id": "merge",
+          "options": {}
+        }
+      ]
     },
     {
       "type": "stat",
       "id": 15,
       "title": "To merge",
-      "description": "Open pull requests across Nishfleet.",
+      "description": "Open pull requests across Nishfleet and Drive.",
       "gridPos": {
         "x": 17,
         "y": 10,
@@ -561,8 +659,8 @@
         "h": 4
       },
       "datasource": {
-        "type": "grafana-github-datasource",
-        "uid": "fleet-github"
+        "type": "datasource",
+        "uid": "-- Mixed --"
       },
       "targets": [
         {
@@ -574,6 +672,20 @@
           "queryType": "Pull_Requests",
           "owner": "Nishfleet",
           "repository": "",
+          "options": {
+            "query": "is:open",
+            "timeField": 4
+          }
+        },
+        {
+          "refId": "B",
+          "datasource": {
+            "type": "grafana-github-datasource",
+            "uid": "fleet-github-personal"
+          },
+          "queryType": "Pull_Requests",
+          "owner": "nish3451",
+          "repository": "drive",
           "options": {
             "query": "is:open",
             "timeField": 4
@@ -606,13 +718,19 @@
           }
         },
         "overrides": []
-      }
+      },
+      "transformations": [
+        {
+          "id": "merge",
+          "options": {}
+        }
+      ]
     },
     {
       "type": "stat",
       "id": 16,
       "title": "Shipped",
-      "description": "Pull requests merged across Nishfleet in the last 24 hours.",
+      "description": "Pull requests merged across Nishfleet and Drive in the last 24 hours.",
       "gridPos": {
         "x": 20,
         "y": 10,
@@ -622,8 +740,8 @@
       "timeFrom": "24h",
       "hideTimeOverride": true,
       "datasource": {
-        "type": "grafana-github-datasource",
-        "uid": "fleet-github"
+        "type": "datasource",
+        "uid": "-- Mixed --"
       },
       "targets": [
         {
@@ -635,6 +753,20 @@
           "queryType": "Pull_Requests",
           "owner": "Nishfleet",
           "repository": "",
+          "options": {
+            "query": "is:merged",
+            "timeField": 2
+          }
+        },
+        {
+          "refId": "B",
+          "datasource": {
+            "type": "grafana-github-datasource",
+            "uid": "fleet-github-personal"
+          },
+          "queryType": "Pull_Requests",
+          "owner": "nish3451",
+          "repository": "drive",
           "options": {
             "query": "is:merged",
             "timeField": 2
@@ -667,7 +799,13 @@
           }
         },
         "overrides": []
-      }
+      },
+      "transformations": [
+        {
+          "id": "merge",
+          "options": {}
+        }
+      ]
     },
     {
       "type": "table",
@@ -677,8 +815,8 @@
       "timeFrom": "3h",
       "hideTimeOverride": true,
       "datasource": {
-        "type": "grafana-github-datasource",
-        "uid": "fleet-github"
+        "type": "datasource",
+        "uid": "-- Mixed --"
       },
       "targets": [
         {
@@ -869,8 +1007,8 @@
       "timeFrom": "5y",
       "hideTimeOverride": true,
       "datasource": {
-        "type": "grafana-github-datasource",
-        "uid": "fleet-github"
+        "type": "datasource",
+        "uid": "-- Mixed --"
       },
       "targets": [
         {
@@ -886,9 +1024,27 @@
             "query": "is:open label:agent-blocked,needs-orchestrator,strong-only",
             "timeField": 0
           }
+        },
+        {
+          "refId": "B",
+          "datasource": {
+            "type": "grafana-github-datasource",
+            "uid": "fleet-github-personal"
+          },
+          "queryType": "Issues",
+          "owner": "nish3451",
+          "repository": "",
+          "options": {
+            "query": "is:open label:agent-blocked,needs-orchestrator,strong-only",
+            "timeField": 0
+          }
         }
       ],
       "transformations": [
+        {
+          "id": "merge",
+          "options": {}
+        },
         {
           "id": "organize",
           "options": {
