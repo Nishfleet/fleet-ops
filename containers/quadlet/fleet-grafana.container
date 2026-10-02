@@ -43,7 +43,9 @@ Environment=GF_PLUGINS_PREINSTALL_SYNC=grafana-github-datasource@2.9.2
 Environment=GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH=/etc/grafana/dashboards/fleet.json
 
 [Service]
-MemoryMax=400M
+# Measured 2026-10-02: ~240 MB anon + ~160 MB file cache; 400M kept it in
+# constant reclaim (memory.events max=669 in minutes).
+MemoryMax=512M
 Restart=on-failure
 RestartSec=5s
 
