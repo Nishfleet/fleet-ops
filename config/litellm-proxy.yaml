@@ -8,6 +8,7 @@
 # OpenCode zen union-alpha answered 0 of 68 calls in the last 7 days (last attempt 2026-09-30 16:30 UTC, LiteLLM_SpendLogs); a direct probe on 2026-10-01 returns 400 "Upstream request failed: Model is unavailable." That 400 maps to BadRequestError, which v1.98.0 never cools, so no setting below can move a job off such a row: its four rows are removed. The opencodego-ds41flash rows on the Go endpoint (same key) stay: they are walled by a monthly quota (429 GoUsageLimitError, limitName monthly), not dead.
 # OpenRouter: stealth/space-bunny-alpha, nemotron-3-ultra, nemotron-3.5-lightning. Pareto: glm-5.3-flash, never in judge.
 # Devin: SWE 2 only, through the devin CLI lane in agent.yml (no router route: 404 on every base).
+# Cline/Pareto "You've reached today's free-model token quota" 429s are a day-long wall, not a transient (fleet-ops#9075, 2026-10-02): a 900 s cool re-failed into worker groups every ~15 min - 13 of 60 probe calls at 09:53 UTC, ~14 quota-429s reached workers in 24 h. Quota-dominated rows now cool 21600 s: the cline :free rows and spacebunnyalpha park on the first 429 (RateLimitErrorAllowedFails: 0); prepaid cline-ds41flash's 429s mix the daily wall with per-minute bursts, so it parks after 4 in the 6 h window (RateLimitErrorAllowedFails: 3); pareto keeps 300 s (its 429s are the 3-parallel key cap, fleet-ops#8458) but parks on the first. Cline and Pareto answer only stream:true upstream (fleet-ops#8923) and LiteLLM v1.98.0 cannot force a stream a caller did not ask for (the request's stream flag always overrides litellm_params; LiteLLM_Params has no stream field), so a non-streaming caller still 400/500s on those rows - every fleet caller (Pi) streams.
 model_list:
 - model_name: worker-capable
   litellm_params:
@@ -248,6 +249,7 @@ model_list:
     id: pareto-glm53flash-worker-capable
     allowed_fails_policy:
       BadRequestErrorAllowedFails: 1
+      RateLimitErrorAllowedFails: 0
 - model_name: senior
   litellm_params:
     model: openai/z-ai/glm-5.3-flash
@@ -396,12 +398,15 @@ model_list:
     - cline
     order: 1
     max_parallel_requests: 4
-    cooldown_time: 900
+    # 6 h, sized to the daily free-model quota wall it also hits (fleet-ops#9075).
+    cooldown_time: 21600
   model_info:
     mode: chat
     id: cline-ds41flash-worker-capable
     allowed_fails_policy:
       BadRequestErrorAllowedFails: 1
+      # Its 429s mix the daily quota with per-minute bursts; 4 in the window is a sustained wall, not a burst.
+      RateLimitErrorAllowedFails: 3
 - model_name: worker-capable
   litellm_params:
     model: openai/space-bunny-free
@@ -640,12 +645,14 @@ model_list:
     - stealth
     order: 1
     max_parallel_requests: 2
-    cooldown_time: 900
+    # 6 h: Cline meters it under the free-model daily quota (5 quota-429s in 24 h, fleet-ops#9075).
+    cooldown_time: 21600
   model_info:
     mode: chat
     id: cline-spacebunnyalpha-worker-capable
     allowed_fails_policy:
       BadRequestErrorAllowedFails: 1
+      RateLimitErrorAllowedFails: 0
 # Nish 2026-09-30 free rows (probe: both finish_reason=tool_calls).
 - model_name: worker-capable
   litellm_params: &cline-free
@@ -655,12 +662,15 @@ model_list:
     tags: [free, cline]
     order: 1
     max_parallel_requests: 2
-    cooldown_time: 900
+    # 6 h, sized to Cline's daily free-model token quota (fleet-ops#9075).
+    cooldown_time: 21600
   model_info:
     mode: chat
     id: cline-lagunas21-worker-capable
     allowed_fails_policy:
       BadRequestErrorAllowedFails: 1
+      # A daily-quota 429 parks the row on the first failure instead of needing 2.
+      RateLimitErrorAllowedFails: 0
 - model_name: worker-cheap
   litellm_params: {<<: *cline-free}
   model_info:
@@ -668,6 +678,7 @@ model_list:
     id: cline-lagunas21-worker-cheap
     allowed_fails_policy:
       BadRequestErrorAllowedFails: 1
+      RateLimitErrorAllowedFails: 0
 - model_name: worker-capable
   litellm_params:
     <<: *cline-free
@@ -677,6 +688,7 @@ model_list:
     id: cline-ling30flashsante-worker-capable
     allowed_fails_policy:
       BadRequestErrorAllowedFails: 1
+      RateLimitErrorAllowedFails: 0
 - model_name: worker-cheap
   litellm_params:
     <<: *cline-free
@@ -686,6 +698,7 @@ model_list:
     id: cline-ling30flashsante-worker-cheap
     allowed_fails_policy:
       BadRequestErrorAllowedFails: 1
+      RateLimitErrorAllowedFails: 0
 - model_name: worker-capable
   litellm_params: &openrouter-spacebunny
     model: openai/stealth/space-bunny-alpha
