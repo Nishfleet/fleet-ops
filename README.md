@@ -7,7 +7,8 @@ script, or prompt lands unseen.
 ## What lives here
 
 - `systemd/` — user units (services + timers) the fleet runs under
-  `systemctl --user`.
+  `systemctl --user`; root-scope units, slices and drop-ins live under
+  `systemd/system/` (installed with a root `install` plus `daemon-reload`).
 - `containers/quadlet/` — `*.container` Podman quadlet units for the
   LiteLLM proxy, its Postgres and Redis, Grafana and aiostreams.
 - `etc/` — `nftables.conf` and `sysctl.d/`, host system config applied by hand.
@@ -21,6 +22,10 @@ script, or prompt lands unseen.
 - `prompts/` — Pi agent prompts fed to workers on stdin.
 - `config/` — fleet configuration. `intake-repos.json` is the declared set of
   repos enrolled in the agent-ready queue (see [Intake enrolment](#intake-enrolment)).
+- `credentials/` — `app-manifest.json`, the worker GitHub App manifest
+  (`.github/workflows/agent.yml:53` cites it for the App's grant).
+- `.semgrep/` — `no-glue.yml`, the no-glue rule `ci.yml:49` runs
+  (`docs/ARCHITECTURE.md:45` already names it).
 - `systemd/fleet-sync.service` (started by
   `.github/workflows/deploy-box.yml` on push) — the whole deploy mechanism:
   `git fetch` + `git merge --ff-only` + `systemctl --user daemon-reload`, plus
