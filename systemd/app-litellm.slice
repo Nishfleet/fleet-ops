@@ -47,7 +47,7 @@
 # 4G worker slice (host 16G).
 #
 # MemoryMax 3.5G -> 5G, 2026-10-03: the slice lives ON the 3.5G ceiling.
-# Read from the live cgroup (memory.events, memory.peak) at 00:20 IST
+# Read from the live cgroup (memory.events, memory.peak) at 00:03 IST
 # 10-03, proxy up since 18:58 IST 10-02: slice MemoryPeak=3440148480
 # (3.2 GiB, 98% of the cap), memory.events max=1536007 (the kernel hit the
 # limit and reclaimed 1.5M times), and the proxy service held 867M in swap
