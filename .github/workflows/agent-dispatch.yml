@@ -141,6 +141,21 @@ jobs:
               c=$p
             done
           else
+            # An issue left agent-in-progress by a run that died with its runner
+            # (a host or service restart sends no event) and no claim PR yet
+            # goes back to agent-ready, so this sweep lists it (fleet-ops#9063:
+            # drive #200 #34 #99 #60 #75 sat claimed with no live run, 2026-10-02).
+            # One with a claim PR is the orphans case below.
+            for n in $(gh issue list -R "$GITHUB_REPOSITORY" -l agent-in-progress -L 1000 --json number --jq '.[].number'); do
+              gh pr list -R "$GITHUB_REPOSITORY" --head "claim/issue-$n" --state open --json number --jq 'length' | grep -qx 0 || continue
+              body=$(gh issue view "$n" -R "$GITHUB_REPOSITORY" --json comments --jq '[.comments[].body | select(startswith("agent run started:"))] | last // ""')
+              [[ $body =~ actions/runs/([0-9]+) ]] || continue
+              case $(gh run view "${BASH_REMATCH[1]}" -R "$GITHUB_REPOSITORY" --json status --jq .status) in
+                queued|in_progress|requested|waiting|pending) ;;
+                *) gh issue edit "$n" -R "$GITHUB_REPOSITORY" --remove-label agent-in-progress --add-label agent-ready
+                   echo "requeued #$n: claimed with no live run and no claim PR" ;;
+              esac
+            done
             nums=$(gh issue list -R "$GITHUB_REPOSITORY" -l agent-ready -L 1000 --json number --jq '.[].number')
             # CONFLICTING too: auto-merge stays armed on a PR that turns DIRTY
             # after arming, so it never enters the queue and no event fires
