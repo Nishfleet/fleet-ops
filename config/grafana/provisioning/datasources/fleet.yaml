@@ -1,0 +1,26 @@
+# Fleet view data sources (containers/quadlet/fleet-grafana.container).
+apiVersion: 1
+prune: true
+
+datasources:
+  - name: Prometheus
+    uid: fleet-prometheus
+    type: prometheus
+    access: proxy
+    url: http://127.0.0.1:9090
+    isDefault: true
+    editable: false
+
+  # nishfleet-worker App, installation on Nishfleet (all repos). The plugin
+  # only issues read queries; the key never reaches the browser.
+  - name: GitHub
+    uid: fleet-github
+    type: grafana-github-datasource
+    editable: false
+    jsonData:
+      selectedAuthType: github-app
+      appId: "4728578"
+      installationId: "156789042"
+      githubPlan: github-basic
+    secureJsonData:
+      privateKey: $__file{/run/secrets/github-app.pem}
