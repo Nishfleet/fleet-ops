@@ -1,0 +1,51 @@
+# Fleet view: Grafana, tailnet-only, read-only for every viewer (Nish 2026-10-02).
+# One screen for box health, the 21 runner units, LiteLLM spend (Prometheus)
+# and the agent issue/PR queue (GitHub, via the nishfleet-worker App; the
+# GitHub data source only reads). Data sources and the dashboard are
+# provisioned from config/grafana in the deploy clone; the UI cannot save edits
+# and the login form is off, so anonymous viewers are the only users.
+#
+# Reach: https://netcup-rs2000.tailc0f05f.ts.net:8443 — one-time
+# `tailscale serve --bg --https=8443 http://127.0.0.1:3001`, which tailscaled
+# persists across reboots.
+
+[Unit]
+Description=Fleet view (Grafana, Quadlet)
+
+[Container]
+Image=docker.io/grafana/grafana:13.2.3
+ContainerName=fleet-grafana
+Network=host
+# The host user maps to the image's grafana uid 472, so the nish-owned data
+# dir and the 0600 App key are readable inside the container.
+UserNS=keep-id:uid=472,gid=472
+Volume=%h/.local/share/fleet-grafana:/var/lib/grafana
+# Mount only the two provisioning kinds we use; the image's other empty
+# provisioning dirs (alerting, plugins) stay, so startup logs no errors.
+Volume=%h/workspaces/tooling/fleet-ops-deploy-clone/config/grafana/provisioning/datasources:/etc/grafana/provisioning/datasources:ro
+Volume=%h/workspaces/tooling/fleet-ops-deploy-clone/config/grafana/provisioning/dashboards:/etc/grafana/provisioning/dashboards:ro
+Volume=%h/workspaces/tooling/fleet-ops-deploy-clone/config/grafana/dashboards:/etc/grafana/dashboards:ro
+Volume=%h/.config/fleet-worker/nishfleet-worker.private-key.pem:/run/secrets/github-app.pem:ro
+Volume=%h/.config/fleet-ops/grafana-admin-password:/run/secrets/grafana-admin-password:ro
+Environment=GF_SERVER_HTTP_ADDR=127.0.0.1
+Environment=GF_SERVER_HTTP_PORT=3001
+Environment=GF_SERVER_ROOT_URL=https://netcup-rs2000.tailc0f05f.ts.net:8443/
+Environment=GF_AUTH_ANONYMOUS_ENABLED=true
+Environment=GF_AUTH_ANONYMOUS_ORG_ROLE=Viewer
+Environment=GF_AUTH_DISABLE_LOGIN_FORM=true
+Environment=GF_USERS_ALLOW_SIGN_UP=false
+Environment=GF_SECURITY_ADMIN_PASSWORD__FILE=/run/secrets/grafana-admin-password
+Environment=GF_ANALYTICS_REPORTING_ENABLED=false
+Environment=GF_ANALYTICS_CHECK_FOR_UPDATES=false
+Environment=GF_ANALYTICS_CHECK_FOR_PLUGIN_UPDATES=false
+Environment=GF_NEWS_NEWS_FEED_ENABLED=false
+Environment=GF_PLUGINS_PREINSTALL_SYNC=grafana-github-datasource@2.9.2
+Environment=GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH=/etc/grafana/dashboards/fleet.json
+
+[Service]
+MemoryMax=400M
+Restart=on-failure
+RestartSec=5s
+
+[Install]
+WantedBy=default.target
