@@ -31,21 +31,12 @@ doc.** Group health is `litellm_deployment_state` on `/metrics` and
 edges — lives in RUNBOOK, and each caller's prompt carries the comparison it
 applies.
 
-## Worker isolation (containers)
+## Worker isolation
 
-Each Pi worker runs in a rootless-podman container generated from a Quadlet
-file under `systemd/` (`fleet-container.slice`). The image tag pins the Pi
-version; the only writable host bind is that worker's issue worktree, the
-mirror is read-only, and `~/.pi/agent` is an overlay mount. Network is host
-loopback only (`slirp4netns:allow_host_loopback`); the model is reached as
-`litellm.fleet.local:4000`, and an nftables table keyed on the container
-slice's cgroup rejects egress except loopback, GitHub's published CIDRs and
-the slirp subnet. Named loss: a containerized worker routes models through
-LiteLLM only — a direct-provider seat would need that provider's CDN ranges
-opened, so it is not containerized.
-
-Unit exit codes propagate, so `Restart=`, `StartLimitBurst=` and the
-`ExecStopPost` artifact check (`test -s "$DELIVERABLE"`) all still work.
+Each worker runs under `bwrap` on a self-hosted runner (`.github/workflows/agent.yml`):
+its own PID namespace, so every process it starts dies with it, and the
+fleet-ops checkout bound read-only. It stays in the runner's cgroup, so the
+`agent.slice` memory caps still apply.
 
 ## GLUE-ZERO — no hand-rolled code
 
