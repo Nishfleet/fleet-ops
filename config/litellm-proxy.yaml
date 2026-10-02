@@ -528,12 +528,87 @@ model_list:
     - stepfun
     order: 1
     # Step Plan Pro (2026-10-01) account cap is 15 concurrent: 20- and 40-way bursts answered 14 x 200 and 429 "concurrency reached, current: 16, limit: 15". 13 leaves 2 for direct `pi --provider stepfun` use, because a concurrency 429 cools this rung for cooldown_time.
-    max_parallel_requests: 13
+    # Nish 2026-10-02: StepFun gets 5 slots. simple-shuffle picks among rows, and one row got 562 of 10,512 worker calls (5%),
+    # 58M tokens = ~22% of the Pro plan's pace (8000M/month), in the 24 h to 15:00 IST. Five rows give it ~5x the share of new tasks.
+    # max_parallel_requests is per row, so the account's 13 router lanes are split 3 + 3 + 3 + 2 + 2 across the rows.
+    max_parallel_requests: 3
     # Step Plan credit ran out 2026-09-25 11:15 IST (fleet-ops#8653): a 429 cools this rung 15 min, then it retries by itself: refilled credit is used without a human, and a concurrency 429 idles it only briefly.
     cooldown_time: 900
   model_info:
     mode: chat
     id: stepfun-step5preview-worker-capable
+    allowed_fails_policy:
+      BadRequestErrorAllowedFails: 1
+- model_name: worker-capable
+  litellm_params:
+    model: openai/step-5-preview
+    api_base: https://api.stepfun.ai/step_plan/v1
+    api_key: os.environ/STEPFUN_API_KEY
+    tags:
+    - prepaid
+    - stepfun
+    order: 1
+    # Step Plan Pro (2026-10-01) account cap is 15 concurrent: 20- and 40-way bursts answered 14 x 200 and 429 "concurrency reached, current: 16, limit: 15". 13 leaves 2 for direct `pi --provider stepfun` use, because a concurrency 429 cools this rung for cooldown_time.
+    max_parallel_requests: 3
+    # Step Plan credit ran out 2026-09-25 11:15 IST (fleet-ops#8653): a 429 cools this rung 15 min, then it retries by itself: refilled credit is used without a human, and a concurrency 429 idles it only briefly.
+    cooldown_time: 900
+  model_info:
+    mode: chat
+    id: stepfun-step5previewb-worker-capable
+    allowed_fails_policy:
+      BadRequestErrorAllowedFails: 1
+- model_name: worker-capable
+  litellm_params:
+    model: openai/step-5-preview
+    api_base: https://api.stepfun.ai/step_plan/v1
+    api_key: os.environ/STEPFUN_API_KEY
+    tags:
+    - prepaid
+    - stepfun
+    order: 1
+    # Step Plan Pro (2026-10-01) account cap is 15 concurrent: 20- and 40-way bursts answered 14 x 200 and 429 "concurrency reached, current: 16, limit: 15". 13 leaves 2 for direct `pi --provider stepfun` use, because a concurrency 429 cools this rung for cooldown_time.
+    max_parallel_requests: 3
+    # Step Plan credit ran out 2026-09-25 11:15 IST (fleet-ops#8653): a 429 cools this rung 15 min, then it retries by itself: refilled credit is used without a human, and a concurrency 429 idles it only briefly.
+    cooldown_time: 900
+  model_info:
+    mode: chat
+    id: stepfun-step5previewc-worker-capable
+    allowed_fails_policy:
+      BadRequestErrorAllowedFails: 1
+- model_name: worker-capable
+  litellm_params:
+    model: openai/step-5-preview
+    api_base: https://api.stepfun.ai/step_plan/v1
+    api_key: os.environ/STEPFUN_API_KEY
+    tags:
+    - prepaid
+    - stepfun
+    order: 1
+    # Step Plan Pro (2026-10-01) account cap is 15 concurrent: 20- and 40-way bursts answered 14 x 200 and 429 "concurrency reached, current: 16, limit: 15". 13 leaves 2 for direct `pi --provider stepfun` use, because a concurrency 429 cools this rung for cooldown_time.
+    max_parallel_requests: 2
+    # Step Plan credit ran out 2026-09-25 11:15 IST (fleet-ops#8653): a 429 cools this rung 15 min, then it retries by itself: refilled credit is used without a human, and a concurrency 429 idles it only briefly.
+    cooldown_time: 900
+  model_info:
+    mode: chat
+    id: stepfun-step5previewd-worker-capable
+    allowed_fails_policy:
+      BadRequestErrorAllowedFails: 1
+- model_name: worker-capable
+  litellm_params:
+    model: openai/step-5-preview
+    api_base: https://api.stepfun.ai/step_plan/v1
+    api_key: os.environ/STEPFUN_API_KEY
+    tags:
+    - prepaid
+    - stepfun
+    order: 1
+    # Step Plan Pro (2026-10-01) account cap is 15 concurrent: 20- and 40-way bursts answered 14 x 200 and 429 "concurrency reached, current: 16, limit: 15". 13 leaves 2 for direct `pi --provider stepfun` use, because a concurrency 429 cools this rung for cooldown_time.
+    max_parallel_requests: 2
+    # Step Plan credit ran out 2026-09-25 11:15 IST (fleet-ops#8653): a 429 cools this rung 15 min, then it retries by itself: refilled credit is used without a human, and a concurrency 429 idles it only briefly.
+    cooldown_time: 900
+  model_info:
+    mode: chat
+    id: stepfun-step5previewe-worker-capable
     allowed_fails_policy:
       BadRequestErrorAllowedFails: 1
 - model_name: worker-capable
