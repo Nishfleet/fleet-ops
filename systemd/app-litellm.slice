@@ -46,8 +46,22 @@
 # loaded peak by ~1.4G and a runaway still dies well before it crowds the
 # 4G worker slice (host 16G).
 #
+# MemoryMax 3.5G -> 5G, 2026-10-03: the slice lives ON the 3.5G ceiling.
+# Read from the live cgroup (memory.events, memory.peak) at 00:20 IST
+# 10-03, proxy up since 18:58 IST 10-02: slice MemoryPeak=3440148480
+# (3.2 GiB, 98% of the cap), memory.events max=1536007 (the kernel hit the
+# limit and reclaimed 1.5M times), and the proxy service held 867M in swap
+# against 1.9G resident. That reclaim is the proxy paging its own working
+# set to swap, and the box's 8G swap is the shared pool that ran out on 4 of
+# the 9 days to 09-30. Working set = 1.9G resident + 0.87G swapped + postgres
+# 95M + 132M swapped = ~3.0G steady, 3.44G peak. 5G clears the peak by ~1.5G
+# so the reclaim stops, and still sits well inside user-1000.slice's
+# MemoryHigh=12G (host 16G), so a runaway still dies here first.
+# oom_kill=10 in memory.events is the 09-22 crash loop above (same count,
+# boot 09-13), not a new event.
+#
 # Drop-in-removable: delete this file + the three service unit files and
 # daemon-reload to revert. The live file is a symlink into this repo.
 [Slice]
 CPUQuota=200%
-MemoryMax=3.5G
+MemoryMax=5G
