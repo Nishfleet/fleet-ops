@@ -46,11 +46,14 @@ ExecStart=/usr/bin/git -C /home/nish/workspaces/tooling/fleet-ops-deploy-clone m
 #    quietly lagging.
 ExecStart=/usr/bin/git -C /home/nish/workspaces/tooling/fleet-ops-deploy-clone merge-base --is-ancestor refs/remotes/origin/main HEAD
 ExecStart=/usr/bin/git -C /home/nish/workspaces/tooling/fleet-ops-deploy-clone merge-base --is-ancestor HEAD refs/remotes/origin/main
-# 2. Link the OnFailure handler, then re-read unit files. Link first so
-#    daemon-reload loads fleet-unit-failed@.service (fleet-ops#9033).
-#    systemctl link of an already-linked unit is idempotent (exit 0, twice,
-#    2026-10-01 on the since-deleted fleet-prometheus-reload.service).
+# 2. Link the OnFailure handler, drop the retired prometheus-reload live
+#    links, then re-read unit files. Link first so daemon-reload loads
+#    fleet-unit-failed@.service (fleet-ops#9033). The pull above deleted
+#    fleet-prometheus-reload.path/.service (fleet-ops#9088); README
+#    "Retiring a unit" is `rm` of the live path. rm -f is a no-op once
+#    they are gone, and without it LINK-GUARD fails on the dangling links.
 ExecStart=/usr/bin/systemctl --user link /home/nish/workspaces/tooling/fleet-ops-deploy-clone/systemd/fleet-unit-failed@.service
+ExecStart=/bin/rm -f /home/nish/.config/systemd/user/fleet-prometheus-reload.path /home/nish/.config/systemd/user/fleet-prometheus-reload.service /home/nish/.config/systemd/user/default.target.wants/fleet-prometheus-reload.path
 ExecStart=/usr/bin/systemctl --user daemon-reload
 # 3. /etc/prometheus/prometheus.yml is a root-owned COPY, not a symlink:
 #    prometheus runs as user `prometheus` and /home/nish is 0750 nish:nish, so
