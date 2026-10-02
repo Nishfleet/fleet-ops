@@ -65,8 +65,10 @@ ExecStart=/usr/bin/systemctl --user daemon-reload
 ExecStart=/usr/bin/promtool check config /home/nish/workspaces/tooling/fleet-ops-deploy-clone/config/prometheus.yml
 #    cmp guards the install (fleet-ops speed pass, 2026-10-02): GNU install -C
 #    still calls fchmodat() on an identical file (strace, coreutils 9.4), and
-#    that IN_ATTRIB fires the PathChanged= watcher on EVERY sync, not only on a
-#    real change. Same guard on step 7.
+#    that IN_ATTRIB used to fire the PathChanged= watcher on EVERY sync, not
+#    only on a real change. The watcher is gone now, so the guard saves the
+#    redundant mtime write and nothing else. It costs one stat, so it stays.
+#    Same guard on step 7, whose fleet-litellm-proxy-config.path watcher is real.
 ExecStart=/bin/sh -c 'cmp -s /home/nish/workspaces/tooling/fleet-ops-deploy-clone/config/prometheus.yml /etc/prometheus/prometheus.yml || /usr/bin/sudo -n /usr/bin/install -C -D -m 0644 -o root -g root /home/nish/workspaces/tooling/fleet-ops-deploy-clone/config/prometheus.yml /etc/prometheus/prometheus.yml'
 #    Reload prometheus here, in the same cgroup as the write it depends on.
 #    `systemctl reload prometheus` is a SIGHUP, so an unchanged file costs a
