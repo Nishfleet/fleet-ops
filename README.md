@@ -284,9 +284,13 @@ of scope: they do not live in `session-*.scope`. `claim/issue-*` and
 ## CI
 
 `.github/workflows/ci.yml` runs one job, `ci`, on every PR and push to main. Its
-checks are stock: semgrep `--config p/default`, the secret-expansion grep,
-`jq` config sanity, actionlint, zizmor, shellcheck, and systemd-analyze verify
-over `systemd/`.
+stock linters are joined by repo-specific gates: semgrep `--config p/default`,
+the no-glue rule at `.semgrep/no-glue.yml`, the secret-expansion grep, the
+no long-lived PAT grep, `jq` config sanity, actionlint, zizmor, shellcheck,
+systemd-analyze verify over `systemd/`, `nft -c` over `etc/nftables.conf`, the
+no shell `${...}` or bare `%s/%u/%h` in systemd Exec lines check
+(fleet-ops#8382), the pi seat-id resolution against `config/litellm-proxy.yaml`
+(fleet-ops#8332), and the Ollama permitted-slug check (fleet-ops#8332).
 
 `.github/workflows/secret-scan.yml` is the gitleaks scan (pinned binary +
 sha256, `--redact`). fleet-ops has no deploy target. All actions are pinned to exact commit
