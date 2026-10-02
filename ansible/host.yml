@@ -87,6 +87,15 @@
         mode: preserve
       notify: Reload systemd
 
+    - name: Install systemd user-manager drop-ins
+      ansible.builtin.copy:
+        src: "{{ rootfs }}/etc/systemd/user/"
+        dest: /etc/systemd/user/
+        owner: root
+        group: root
+        mode: preserve
+      notify: Reload nish's user manager
+
     - name: Install systemd-oomd config
       ansible.builtin.copy:
         src: "{{ rootfs }}/etc/systemd/oomd.conf.d/"
@@ -239,6 +248,10 @@
     - name: Reload systemd
       ansible.builtin.systemd_service:
         daemon_reload: true
+
+    # systemd_service scope=user would reload root's user manager, not nish's.
+    - name: Reload nish's user manager
+      ansible.builtin.command: /usr/bin/systemctl --user --machine=nish@.host daemon-reload
 
     - name: Restart systemd-oomd
       ansible.builtin.systemd_service:
