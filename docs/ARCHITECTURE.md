@@ -31,21 +31,12 @@ doc.** Group health is `litellm_deployment_state` on `/metrics` and
 edges — lives in RUNBOOK, and each caller's prompt carries the comparison it
 applies.
 
-## Worker isolation (containers)
+## Worker isolation
 
-Each Pi worker runs in a rootless-podman container generated from a Quadlet
-file under `systemd/` (`fleet-container.slice`). The image tag pins the Pi
-version; the only writable host bind is that worker's issue worktree, the
-mirror is read-only, and `~/.pi/agent` is an overlay mount. Network is host
-loopback only (`slirp4netns:allow_host_loopback`); the model is reached as
-`litellm.fleet.local:4000`, and an nftables table keyed on the container
-slice's cgroup rejects egress except loopback, GitHub's published CIDRs and
-the slirp subnet. Named loss: a containerized worker routes models through
-LiteLLM only — a direct-provider seat would need that provider's CDN ranges
-opened, so it is not containerized.
-
-Unit exit codes propagate, so `Restart=`, `StartLimitBurst=` and the
-`ExecStopPost` artifact check (`test -s "$DELIVERABLE"`) all still work.
+Each worker runs under `bwrap` on a self-hosted runner (`.github/workflows/agent.yml`):
+its own PID namespace, so every process it starts dies with it, and the
+fleet-ops checkout bound read-only. It stays in the runner's cgroup, so the
+`agent.slice` memory caps still apply.
 
 ## GLUE-ZERO — no hand-rolled code
 
@@ -67,7 +58,8 @@ glue."* The rule, held by the `ci` check (`.github/workflows/ci.yml` runs
   line).
 - No hand-built Pi extensions are kept. `permission-gate.ts` and
   `protected-paths.ts` are gone; the heavy-command class is capped instead by
-  each runner's `MemoryMax=6G` in `agent.slice`.
+  each runner service's `MemoryMax=6G` (`MemoryHigh=3G`) in its
+  `10-agent.conf` drop-in, inside `agent.slice` (`MemoryMax=11G`).
 
 The design record with the full organ-by-organ reasoning is git history
 (fleet-ops#7828); this page keeps only what is enforced.
@@ -102,6 +94,7 @@ Detection + repair, not blind duplication. `Restart=`/`OnFailure=`
 and external healthchecks.io dead-men (URLs in
 `~/.config/fleet-ops/keystone-hc.env`; unset = LOUD skip, shared = LOUD fail)
 cover supervision. Restic R2 backup / verify / restore-test run as ROOT units
+on the host (`/etc/systemd/system/restic-r2-*`, installed outside this repo)
 and publish restore proofs.
 SSH is Tailscale-only, so the out-of-band layer is the netcup VNC console
 (RUNBOOK). GitHub-hosted runners are the compute break-glass. No second box,

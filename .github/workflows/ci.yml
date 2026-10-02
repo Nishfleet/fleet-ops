@@ -114,6 +114,13 @@ jobs:
         run: |
           shopt -s nullglob
           systemd-analyze verify --man=no systemd/*.service systemd/*.timer systemd/*.path systemd/*.slice systemd/system/*.slice
+      - name: etc/nftables.conf loads on a fresh boot (nft -c)
+        # nft refuses the whole file when a rule names a cgroup path that does
+        # not exist yet, as at boot before user@1000 starts: the 2026-09-22
+        # container-slice rule would have dropped every table on the next
+        # reboot. This runner has no such cgroups, so the same rule fails here.
+        if: always()
+        run: sudo apt-get install -y --no-install-recommends nftables && sudo nft -c -f etc/nftables.conf
       - name: No shell ${...} or bare %s/%u/%h inside systemd Exec lines (fleet-ops#8382)
         # systemd expands ${...} and % specifiers itself, before any interpreter
         # runs, so the shell never sees them. Refused on Exec*= lines: `${` + a

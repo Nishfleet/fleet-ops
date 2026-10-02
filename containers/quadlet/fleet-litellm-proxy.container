@@ -22,6 +22,19 @@ Volume=%h/.config/fleet-ops/litellm-proxy.yaml:/app/config.yaml:ro
 Environment=DATABASE_URL=postgresql://litellm@localhost:5432/litellm
 # INFO, not DEBUG: DEBUG dumps full prompts into the journal (fleet-ops#4449).
 Environment=LITELLM_LOG=INFO
+# Podman's default stop timeout is 10 s, so `podman rm -f` SIGKILLed the
+# proxy at 10 s whatever TimeoutStopSec says: exit 137, unit failed, and
+# OnFailure= sent a false fail ping on every restart (10-02 11:16:41 journal:
+# "StopSignal SIGTERM failed to stop container ... in 10 seconds"). 110 s stays
+# under TimeoutStopSec=120 so in-flight requests drain (fleet-ops#4449).
+PodmanArgs=--stop-timeout=110
+# Bytecode cache that outlives the --rm container. Each start re-compiled
+# litellm+prisma into a throwaway layer; measured 2026-10-02 on the pinned
+# image, `import litellm.proxy.proxy_server` 24.6/26.0 s cold vs 20.4/18.2 s
+# warm, paid by the parent and each worker. Python revalidates every .pyc
+# against its source mtime, so an image bump just recompiles.
+Volume=fleet-litellm-pycache:/pycache
+Environment=PYTHONPYCACHEPREFIX=/pycache
 # Named pass-through, not --env-host (fleet-ops#9020): --env-host copied the whole
 # systemd --user manager environment into the container. Podman 4.9.3 (Ubuntu 24.04)
 # drops a bare `Environment=NAME` line, so each name is its own PodmanArgs=--env=NAME:
