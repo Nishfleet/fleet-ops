@@ -74,9 +74,16 @@ The rules still in force:
   reaches `main` without its required checks.
 - **CI green is an input to a verdict, not a verdict.** A behavioural change
   needs a live or test-verified proof; a docs change does not.
-- **A unit's verifier runs on a different model family from its builder.**
-  Where the router cannot supply one, the packet says so rather than claiming
-  a review it did not get.
+- **The in-run reviewer is same-family and advisory; the required checks are
+  the gate.** `prompts/worker.md` step 7 runs the stock reviewer on the
+  worker's own lane, so a fresh context is not an outside pair of eyes, and CI
+  is what gates the merge. A different model family is still required where it
+  decides something: a change that adds or edits an AI decision (`AGENTS.md`,
+  "Any change that adds or edits an AI decision") is scored by a different
+  model family, which writes and labels the held-out cases and runs the final
+  score. Where a review does not happen, the record says so rather than
+  claiming a review it did not get: the `in-run review: unavailable -
+  <reason>` line.
 - **The correction ladder.** A correction is encoded at the lowest rung that
   holds it: 1 structure (no file to put the mistake in), 2 static gate (CI
   check, ruleset, systemd property, router config), 3 rule, 4 skill, 5 prose.
