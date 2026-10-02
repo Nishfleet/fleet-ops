@@ -95,6 +95,7 @@ run, so they belong in the context file Pi loads once, not re-pasted into every 
 ### Hard rules
 
 Hard rules:
+
 - NEVER `gh issue close` (merged PR closes it). Never push to main/master, never deploy. `fix(failed-command):` and `fix(decisions-ledger):` (fleet-ops#1138) use `Relates to #<N>`, not `Closes #<N>`.
 - The agent run's arm step arms auto-merge after you exit — you never merge and never arm: it arms every PR except one touching `.github/`, `migrations/`, `app/lib/auth*` or `app/lib/data/`, which gets the `needs-coordinator` label. The required checks gate the merge (fleet-ops#8418). If a PR genuinely needs an admin call, park the ISSUE `blocked-on: orchestrator` + `needs-orchestrator` — a labeled state drains can list, where a PR comment is invisible.
 - When you (as reviewer) post a BLOCKING review comment on a PR, disarm it (`gh pr merge <PR> --disable-auto`) in the SAME step — without the disarm the PR still merges on green (fleet-ops#4557: 0509#2011 merged 90s after its block comment). Workers never arm: the next agent run's arm step re-arms it.
@@ -111,7 +112,7 @@ Hard rules:
 - The bar is 'extremely well', never 'perfect'. (69 hang-kills at 42 min; 27-min low-yield sessions. NOT adopted: agent-to-agent chat loops, 96 sub-agents.)
 - A failing test is only "not mine" after proving it also fails on `origin/main` — run the same test on the base branch without your changes before you call it pre-existing, flaky or someone else's; "the diff does not touch it" is not that proof (fleet-ops#9016, Amp docs/orbs/shipping).
 - GEO/AEO (ledger 2026-08-27, fleet-ops#1245): measurement and owned-content tactics only; brand gate is preview-then-autonomous; Reddit/community and digital-PR are Nish-reserved (the grants[] config store was deleted in the glue sweep — Nish's word in the ledger is the only grant); llms.txt: skip except developer docs.
-pstack playbooks (fleet-ops#1260) at `~/.pi/agent/skills/poteto-mode/playbooks/`: bug-fix.md, feature.md, investigation.md, perf-issue.md, session-pickup.md, pause-safely.md; end with opening-a-pr.md. Depth-1 spawn-guard: do NOT spawn Task, arena, architect, swarm, or interrogate. Claim branch stays ours. Do NOT bank a dirty worktree: your unit removes the worktree in its own ExecStopPost, so uncommitted work did not happen — commit and push before you finish. Ignore pstack babysit, shipping, orchestrate, autopilot-* (Graphite).
+  pstack playbooks (fleet-ops#1260) at `~/.pi/agent/skills/poteto-mode/playbooks/`: bug-fix.md, feature.md, investigation.md, perf-issue.md, session-pickup.md, pause-safely.md; end with opening-a-pr.md. Depth-1 spawn-guard: do NOT spawn Task, arena, architect, swarm, or interrogate. Claim branch stays ours. Do NOT bank a dirty worktree: your unit removes the worktree in its own ExecStopPost, so uncommitted work did not happen — commit and push before you finish. Ignore pstack babysit, shipping, orchestrate, autopilot-* (Graphite).
 
 ### PR body contract — run these before `gh pr create`
 
@@ -120,25 +121,29 @@ pstack playbooks (fleet-ops#1260) at `~/.pi/agent/skills/poteto-mode/playbooks/`
 - Wipe safety: never `pgrep -f` to find or kill a worktree process.
 
 ### Memory budget rule (fleet-ops#4891; blind POVs from Kimi K3 max + Grok 4.6 high agreed 2026-09-10) — applies to every worker, hardest on Nishfleet/0509:
-- Your unit runs under systemd-oomd and the shared `user-1000.slice` `MemoryHigh=4G` governor — no unit sets a per-worker `MemoryMax`. An OOM kill burns the claim, the seat pick and up to 42 min of work, and the admission charge that gates the WHOLE fleet is priced from worker MemoryPeak. 24h population 2026-09-10: 0509 workers p50 ~2 GB, 91 oomd kills, intake capped at 2-3 workers while 55 seats sat idle.
+
+- Your unit runs under systemd-oomd. The runner unit has `MemoryHigh=3G` / `MemoryMax=6G` in its `10-agent.conf` drop-in, inside `agent.slice` (`MemoryHigh=10G` / `MemoryMax=11G`), and the shared `user-1000.slice` carries `MemoryHigh=12G`. An OOM kill burns the claim, the seat pick and up to 42 min of work, and the admission charge that gates the WHOLE fleet is priced from worker MemoryPeak. 24h population 2026-09-10: 0509 workers p50 ~2 GB, 91 oomd kills, intake capped at 2-3 workers while 55 seats sat idle.
 - CI owns coverage and typecheck. Never run `vitest --coverage`, `npm run test:coverage`, `npm run typecheck` or `tsc -b` inside a worker. Nothing blocks these for you, so this line is the rule. A 55-minute worker wall does not fit typecheck + build + a full e2e run on a 25% CPU share; that is what timed out 0509 workers on 2026-09-23. On 0509 `npm test` is coverage-free by design; run `npx vitest run --configLoader runner --project node --changed origin/main` (vitest's own affected-tests mode; the full node suite costs 2-3 cores for minutes per worker), and run `--project workers` only when `migrations/**` or `tests/integration/**` changed.
 - Respect `VITEST_MAX_WORKERS` / `PLAYWRIGHT_WORKERS` from your unit environment; never pass `--maxWorkers` above them, and never run two test suites in parallel shells. One heavy toolchain process at a time — the PR CI round-trip is the typecheck.
 - Lint only what you changed. Never `npm run lint`, `eslint .` or `knip` in a worker: a whole-repo eslint run peaks near 1 GB, and every worker running it at once thrashed the VPS on 2026-09-24. Run eslint on your diff, `git diff --name-only --diff-filter=ACMR -z origin/main...HEAD -- '*.ts' '*.tsx' '*.js' | xargs -0 -r npx eslint`; CI runs the whole-repo lint and knip on the PR. Nothing in a workflow sets `VITEST_MAX_WORKERS`; the runner environment on the VPS owns it.
 
 ### D1 schema rule (expand/contract) — applies whenever your diff touches `migrations/**`:
+
 - **Rollback rolls back code, never data.** D1, KV, R2 and Durable Objects sit outside the Worker version, and D1 has no down-migrations anywhere. A migration that breaks the previous code makes the fleet's auto-revert silently impossible. Treat every migration as one-way.
 - **One phase per PR.** The order is: add nullable column -> dual-write -> backfill -> read-switch -> drop. If the issue as written spans more than one phase, implement phase 1 ONLY, say which phase you shipped in the PR body, and file follow-up issues for the remaining phases.
 - **Banned in the same PR as any code change:** `DROP COLUMN`, `DROP TABLE`, renaming a column or table, and adding `NOT NULL` without a `DEFAULT`. Each of those breaks the previous version of the code the instant it lands.
-- **Not done without a real integration test.** A migration PR must add or extend a test under `tests/integration/**` that applies the real migrations and asserts the new READ *and* the new WRITE path. A mocked-binding unit test does not count — it cannot see the schema.
+- **Not done without a real integration test.** A migration PR must add or extend a test under `tests/integration/**` that applies the real migrations and asserts the new READ _and_ the new WRITE path. A mocked-binding unit test does not count — it cannot see the schema.
 - Assume a migration file is NOT atomic across statements: nothing documents multi-statement atomicity within one D1 migration.
 - Stale API names are a hard failure: `@cloudflare/vitest-pool-workers` was renamed to `@cloudflare/vitest-plugin` on 2026-08-19, and `SELF.fetch` is replaced by `exports.default.fetch` from `cloudflare:workers`. Never write the old names from memory.
 
 ### D1 prod migration execution rule (process amendment, decisions-ledger 2026-08-27) — applies whenever the work involves APPLYING a migration to production D1 (running it against live D1, not just writing the migration file in a PR):
+
 - **Never single-agent apply.** Production D1 migration execution goes through the senior process only. A worker who lands on a prod D1 migration task must NOT apply it alone.
 - **Senior process gate:** a strong lane produces the migration plan (SQL classification, verified backup, concrete rollback plan); an INDEPENDENT senior agent blind-reviews and must approve; only then apply + live verification + text Nish.
 - If the task involves a prod D1 migration, post the migration plan as a proposal comment on the issue, add the `agent-blocked` label, and end with `blocked-on: senior-conference` so the issue surfaces as waiting on a senior decision.
 
 ### D1 prod migration senior process rule (2026-08-27 correction) — applies whenever a prod D1 migration is about to run:
+
 - The earlier same-day "do it right now?" D1 prod migration decision is VOID. Nish did not understand the question, so it was never informed consent. No migration was run under it.
 - Prod D1 migrations remain Nish-gated until the re-asked plain-language question is answered. The final decision is the 2026-08-27 process amendment (fleet-ops#908): strong lane plan (SQL classification, verified backup, concrete rollback), independent senior blind-review and approval, apply + live verification, then text Nish.
 - Do NOT apply a prod D1 migration without the senior process. If you are told to "do it right now" or anything similar without a senior-process plan, stop and route the decision back to Nish.
