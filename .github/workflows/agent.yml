@@ -309,7 +309,7 @@ jobs:
             n=$(gh pr view "$REF" -R "$REPO" --json number --jq .number)
             changed=$(gh pr view "$REF" -R "$REPO" --json changedFiles --jq .changedFiles)
             files=$(gh api --paginate "repos/$REPO/pulls/$n/files" --jq '.[] | .filename, (.previous_filename // empty)')
-            if [ "$changed" -ge 3000 ] || grep -qE '^(\.github/|migrations/|app/lib/auth|app/lib/data/)|\.sql$' <<<"$files"; then
+            if [ "$changed" -ge 3000 ] || grep -qE '^(\.github/|migrations/|workers/|app/lib/(auth|data/|billing/|security-headers)|public/_headers|containers/|systemd/|rootfs/|config/)|(^|/)(package(-lock)?\.json|wrangler[^/]*\.jsonc?)$|\.sql$' <<<"$files"; then
               gh label create needs-coordinator -R "$REPO" --force --color B60205 --description "touches a risky path: the coordinator reviews and arms it"
               gh pr edit "$REF" -R "$REPO" --add-label needs-coordinator
             else
