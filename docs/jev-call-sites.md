@@ -116,4 +116,6 @@ first.
 Per-issue run rows (`/tmp/r2_1.json`, `/tmp/r2_2.json`) were scratch files on
 the host that ran the replay and were not committed, so the tables above are
 the only record; a reader who needs the rows reruns the replay using the
-"Replay method" section.
+"Replay method" section. A rerun uses the current model and Exa results and
+will differ from the original runs; the tables above reflect the original
+measured values.
