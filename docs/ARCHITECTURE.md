@@ -41,8 +41,8 @@ fleet-ops checkout bound read-only. It stays in the runner's cgroup, so the
 
 ## GLUE-ZERO — no hand-rolled code
 
-Nish, 2026-09-21: *"wipe and replace with properly done up design with no
-glue."* The rule, held by the `ci` check (`.github/workflows/ci.yml` runs
+Nish, 2026-09-21: _"wipe and replace with properly done up design with no
+glue."_ The rule, held by the `ci` check (`.github/workflows/ci.yml` runs
 `.semgrep/no-glue.yml`; `.github/CODEOWNERS` also sends scripts to Nish):
 
 - **No new scripts, helpers, hooks or extensions anywhere** — no added file
@@ -50,7 +50,7 @@ glue."* The rule, held by the `ci` check (`.github/workflows/ci.yml` runs
   `.github/scripts/`, `tests/`, `template/extensions/subagent/`, and no added
   `*.sh` / `*.py` / `*.mjs` / `*.ts` or `.fleet/**` file.
 - The deleted trees stay deleted (`bin lib libexec tests scripts hooks ops
-  .fleet template/extensions/subagent`), and glue is deleted, never tuned: no
+.fleet template/extensions/subagent`), and glue is deleted, never tuned: no
   added lines in `bin/`, `lib/`, `libexec/`, `tests/`, `template/extensions/`,
   `.fleet/`.
 - A unit `Exec` line is one vendor command; the accepted floor is a single
@@ -85,7 +85,7 @@ The rules still in force:
   model family, which writes and labels the held-out cases and runs the final
   score. Where a review does not happen, the record says so rather than
   claiming a review it did not get: the `in-run review: unavailable -
-  <reason>` line.
+<reason>` line.
 - **The correction ladder.** A correction is encoded at the lowest rung that
   holds it: 1 structure (no file to put the mistake in), 2 static gate (CI
   check, ruleset, systemd property, router config), 3 rule, 4 skill, 5 prose.
