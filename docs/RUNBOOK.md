@@ -53,6 +53,22 @@ After a slice change, both the unit and the cgroup must read the new cap:
 `systemctl show agent.slice -p MemorySwapMax` and
 `cat /sys/fs/cgroup/agent.slice/memory.swap.max` (1073741824, not infinity).
 
+## Dashboards and the CI runner flip
+
+`systemctl --user is-active fleet-grafana.service` prints `active`. The view is
+`fleet-grafana.service` from the Quadlet `containers/quadlet/fleet-grafana.container`
+(image `docker.io/grafana/grafana:13.2.3`). Dashboards and datasources are
+provisioned from `config/grafana/dashboards/` and `config/grafana/provisioning/`,
+edited in this repo only.
+
+`systemctl --user list-timers blacksmith-flip.timer` (hourly,
+`Persistent=true`) triggers `blacksmith-flip.service`, a oneshot that pipes
+`prompts/blacksmith-flip.yml` through `pi --print`. Read the last result with
+`systemctl --user show blacksmith-flip.service -p Result -p ExecMainStatus`;
+the journal ends `FLIP: SET` or `FLIP: DELETE`. That single hourly decision
+sets or deletes the org `CI_RUNNER` Actions variable at 95% of free Blacksmith
+minutes (fleet-ops#8936).
+
 ## LiteLLM stack (rebuild reference)
 
 Postgres, Redis and the proxy are Podman Quadlet containers defined in
@@ -188,7 +204,7 @@ cost: the netcup provider VNC console.
   Tailscale addresses. Never for routine work.
 - Steps: netcup panel from a machine that does not depend on this VPS → VNC
   console → login as `nish` → `systemctl restart tailscaled` → `ss -ltn |
-  grep ':22'` must show only `100.*`/`fd7a:*` — a `0.0.0.0:22` or `[::]:22`
+grep ':22'` must show only `100.*`/`fd7a:*` — a `0.0.0.0:22` or `[::]:22`
   line is a public SSH bind, fix it before disconnecting → verify Tailscale
   SSH from another machine, then leave VNC.
 - It is not a second SSH listener, not a standing open console, and not a
