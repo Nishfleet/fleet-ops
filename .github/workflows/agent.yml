@@ -309,8 +309,10 @@ jobs:
             n=$(gh pr view "$REF" -R "$REPO" --json number --jq .number)
             changed=$(gh pr view "$REF" -R "$REPO" --json changedFiles --jq .changedFiles)
             files=$(gh api --paginate "repos/$REPO/pulls/$n/files" --jq '.[] | .filename, (.previous_filename // empty)')
-            if [ "$changed" -ge 3000 ] || grep -qE '^(\.github/|migrations/|app/lib/auth|app/lib/data/)|\.sql$' <<<"$files"; then
-              gh label create needs-coordinator -R "$REPO" --force --color B60205 --description "touches a risky path: the coordinator reviews and arms it"
+            safe='^(app/(routes|components)/|app/lib/(competitor|feeds|hiring|mentions|site|onboarding)/|tests/.*\.test\.tsx?$|e2e/[^/]+\.spec\.ts$|docs/)'
+            policy='^docs/(REBUILD-|engines/|quality-bar\.md)'
+            if [ "$changed" -ge 3000 ] || [ -z "$files" ] || grep -qvE "$safe" <<<"$files" || grep -qE "$policy" <<<"$files"; then
+              gh label create needs-coordinator -R "$REPO" --force --color B60205 --description "touches a path outside the arm allowlist: the coordinator reviews and arms it"
               gh pr edit "$REF" -R "$REPO" --add-label needs-coordinator
             else
               gh pr merge "$REF" -R "$REPO" --auto --squash  # a merge queue overrides the method; repos without one need it
