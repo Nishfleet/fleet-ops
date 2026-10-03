@@ -74,7 +74,7 @@ ExecStart=/usr/bin/install -C -D -m 0644 /home/nish/workspaces/tooling/fleet-ops
 #     same class as 6 (fleet-ops#8724: rung edits made live only, then lost or
 #     never reviewed). The repo is the only way in: a hand edit is overwritten
 #     here, and fleet-litellm-proxy-config.path restarts the proxy on a real change.
-#     cmp guard (see step 3): without it the attribute touch restarted the proxy
+#     cmp guard (the cmp -s on the ExecStart line below): without it the attribute touch restarted the proxy
 #     on every sync. 2026-09-28..10-02: 28 restarts, ~6 from real config edits,
 #     each ~60 s with no router (11:16 IST 10-02 came from a prompt-only merge).
 ExecStart=/bin/sh -c 'cmp -s /home/nish/workspaces/tooling/fleet-ops-deploy-clone/config/litellm-proxy.yaml /home/nish/.config/fleet-ops/litellm-proxy.yaml || /usr/bin/install -C -D -m 0644 /home/nish/workspaces/tooling/fleet-ops-deploy-clone/config/litellm-proxy.yaml /home/nish/.config/fleet-ops/litellm-proxy.yaml'
