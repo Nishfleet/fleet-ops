@@ -350,9 +350,10 @@ Each enrolled repo needs two preconditions:
    agent-dispatch fires only on the `agent-ready` label, so on a repo missing
    any required label an issue looks queued and is inert (fleet-ops#25).
 
-`fleet2` is permanently excluded (standing rule: no second dispatcher,
-ever). `siterep` is excluded (archived). Both are recorded in the file's
-`excluded` list with reasons.
+`excluded` in the file lists repos that are never enrolled (fleet2: no
+second dispatcher, ever; archived repos). `deferred` lists repos paused with
+the reason and the condition to re-enrol, and `fleet-ops` itself is in it.
+Only `repos` is enrolled.
 
 The `bin/intake-reconcile` reconciler and its `intake-reconcile.{path,
 service,timer}` units were deleted in the glue sweep — the file itself is
