@@ -12,23 +12,17 @@ Before implementation work, automatically read and follow `/home/nish/workspaces
 <!-- nish-fleet-model-routing:start -->
 ## Fleet model routing (mandatory)
 
-Everything runs through Pi, directly. No launchers. The fleet control plane and
-the `implementation-worker-*` launcher layer are deleted; `governed-run` and
-`~/.local/share/implementation-worker-routing/` are retired for Pi dispatch.
+Everything runs through Pi, directly. No launchers.
 Call `pi --print --provider <provider> --model <model>` with the prompt on
 stdin. Delegated work uses Pi's stock `subagent` extension.
 Check seat health before routing:
 `curl -sL 127.0.0.1:4000/metrics | grep litellm_deployment_state`
 (0 = healthy, 1 = partial outage, 2 = complete outage).
-The old DeepSeek/MiniMax/Luna launcher ladder and
-`_system/shared-memory/codex-model-routing.md` are superseded — history only.
-Sol is retired (fleet-ops#4148): do not launch `gpt-5.6-sol`.
 Exact model/effort identity is fail-closed: prove host, provider, model, role
 and effort from runtime evidence before launch. Missing proof means no launch.
 No silent substitution.
 Canonical block: vault `_system/shared-memory/global-standing-rules.md` →
-`shared-fleet-routing`. The repo copy `docs/standing-rules.md` was deleted in
-the #7828 glue sweep (1ae2704cc); the vault file is the wording authority.
+`shared-fleet-routing`.
 <!-- nish-fleet-model-routing:end -->
 
 - This VPS is the only host for building, coding-agent execution, package installation, tests, typechecks, linting, indexing, migrations, and sustained code work. Never offload it to Nish's Mac.
