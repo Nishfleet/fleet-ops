@@ -120,8 +120,22 @@ on the .path, both from the deploy clone (README "Install").
 
 Backup: `pg_dump -h "$HOME/.local/share/fleet-litellm-postgres/run" -U
 litellm litellm | gzip > .../litellm-<ts>.sql.gz` in the restic backup path.
-Rollback: stop + disable the three units, drop the fleet-owned cluster and
-`rm -rf` its two data dirs (no sudo needed — they are user-owned).
+The restic backup, verify and restore-test jobs are root units installed
+outside this repo (under `/etc/systemd/system/restic-r2-*`), so this section
+does not schedule them.
+
+Rollback (immediate): `systemctl --user stop fleet-litellm-postgres.service
+fleet-litellm-redis.service fleet-litellm-proxy.service`, then `rm -rf` the
+two `Volume=` data dirs named in
+`containers/quadlet/fleet-litellm-postgres.container` and
+`containers/quadlet/fleet-litellm-redis.container`
+(`~/.local/share/fleet-litellm-postgres`, `~/.local/share/fleet-litellm-redis`,
+no sudo needed — they are user-owned). Quadlet generates each `.service`
+file from its `.container` file, so stopping the units and removing the two
+data dirs is the whole state removal.
+
+Rollback (follow-up): delete the three `.container` files in
+`containers/quadlet/` in a normal PR.
 
 ## Claude session credentials (fleet-ops#9020)
 
