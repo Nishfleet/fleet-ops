@@ -3,7 +3,7 @@
 # and does the org Actions variable CI_RUNNER point at Blacksmith accordingly?
 #
 # Stock only, no glue: one prompt file (prompts/blacksmith-flip.yml, installed to
-# the stable path fleet-sync's step 9 writes), piped into `pi --print` on the
+# the stable path fleet-sync's step 8 writes), piped into `pi --print` on the
 # cheap worker-cheap seat. The model runs `blacksmith usage`, compares the
 # largest of its three minute columns against 2,850 (95% of the 3,000 free
 # minutes, 4-vCPU minutes counting double), then runs exactly one of
