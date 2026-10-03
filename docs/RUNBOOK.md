@@ -90,9 +90,10 @@ The live config `~/.config/fleet-ops/litellm-proxy.yaml` is a copy of
 `config/litellm-proxy.yaml`: `fleet-sync.service` installs it with `install -C`,
 which overwrites a hand edit, and `fleet-litellm-proxy-config.path` restarts the
 proxy only when the bytes change. Edit the repo file and nothing else; CI checks
-it against `config/litellm-proxy.schema.json` (fleet-ops#8724). Keys resolve as `os.environ/<NAME>` from the seat env
-files the unit globs (`~/.config/fleet-ops/seats/*.env`), the master key the
-same way. The container receives only the names that have a `PodmanArgs=--env=<NAME>` line in
+it against `config/litellm-proxy.schema.json` (fleet-ops#8724). Keys resolve as `os.environ/<NAME>` from the four
+`EnvironmentFile=` sources in `fleet-litellm-proxy.container`: the optional `-%h/.config/fleet-ops/seats/*.env`,
+`-%h/.config/xkiro/.env` and `-%h/.config/straitly/straitly.env` (the leading `-` marks an optional file), and the
+required `%h/.config/fleet-ops/litellm-master-key.env`. The container receives only the names that have a `PodmanArgs=--env=<NAME>` line in
 `fleet-litellm-proxy.container` (fleet-ops#9020), so a new `os.environ/<NAME>` in the yaml needs a
 matching `PodmanArgs=--env=<NAME>` line; `disable_prisma_schema_update: true` stays under `general_settings`
 (startup `prisma migrate deploy` stalls every restart without it), and
