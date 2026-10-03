@@ -53,6 +53,22 @@ After a slice change, both the unit and the cgroup must read the new cap:
 `systemctl show agent.slice -p MemorySwapMax` and
 `cat /sys/fs/cgroup/agent.slice/memory.swap.max` (1073741824, not infinity).
 
+## Dashboards and the CI runner flip
+
+`systemctl --user is-active fleet-grafana.service` prints `active`. The service is
+the Quadlet `containers/quadlet/fleet-grafana.container`, read-only for every
+viewer. Dashboards and datasources come from `config/grafana/dashboards/` and
+`config/grafana/provisioning/`, edited in this repo only.
+
+`systemctl --user list-timers blacksmith-flip.timer` (hourly,
+`Persistent=true`) triggers `blacksmith-flip.service`, a oneshot piping
+`prompts/blacksmith-flip.yml` through `pi --print`. Read one run with
+`systemctl --user show blacksmith-flip.service -p Result -p ExecMainStatus
+-p InvocationID`: the first two read `success`/`0` before the first run, so the
+journal at that `InvocationID` is the proof, ending `FLIP: SET` or `FLIP: DELETE`.
+That hourly decision sets org `CI_RUNNER` to `blacksmith-4vcpu-ubuntu-2404` below
+2,850 minutes (95% of the 3,000 free), deleted at or above (fleet-ops#8936).
+
 ## LiteLLM stack (rebuild reference)
 
 Postgres, Redis and the proxy are Podman Quadlet containers defined in
@@ -187,8 +203,8 @@ cost: the netcup provider VNC console.
   when the Tailscale interface is absent, or to confirm sshd still binds only
   Tailscale addresses. Never for routine work.
 - Steps: netcup panel from a machine that does not depend on this VPS → VNC
-  console → login as `nish` → `systemctl restart tailscaled` → `ss -ltn |
-  grep ':22'` must show only `100.*`/`fd7a:*` — a `0.0.0.0:22` or `[::]:22`
+  console → login as `nish` → `systemctl restart tailscaled` → `ss -ltn |`
+  `grep ':22'` must show only `100.*`/`fd7a:*` — a `0.0.0.0:22` or `[::]:22`
   line is a public SSH bind, fix it before disconnecting → verify Tailscale
   SSH from another machine, then leave VNC.
 - It is not a second SSH listener, not a standing open console, and not a
