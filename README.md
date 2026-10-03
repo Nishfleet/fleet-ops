@@ -6,8 +6,9 @@ script, or prompt lands unseen.
 
 ## What lives here
 
-- `systemd/` — user units (services + timers) the fleet runs under
-  `systemctl --user`.
+- `systemd/` — the user units the fleet runs under `systemctl --user`:
+  services, timers, slices, one `.path` unit (`fleet-litellm-proxy-config.path`)
+  and one `.scope.d` drop-in (`tmux-spawn-.scope.d`).
 - `rootfs/` — root-owned host config, laid out like `/` (`rootfs/etc/X` is
   installed at `/etc/X`): system units, slices and drop-ins, `nftables.conf`,
   `sysctl.d/`, `audit/rules.d/`, polkit rules and the prometheus config.
@@ -58,11 +59,20 @@ script, or prompt lands unseen.
   "no glue or scripts" was Nish's condition on approval.
 - `systemd/fleet-sync.service` (started by
   `.github/workflows/deploy-box.yml` on push) — the whole deploy mechanism:
-  `git fetch` + `git merge --ff-only` + `systemctl --user daemon-reload`, plus
-  `promtool check config`, the `/etc/prometheus/prometheus.yml` copy and its
-  reload, and a LINK-GUARD pass
+  a clean-clone check that prints
+  `DEPLOY-BLOCKED` and fails, `git fetch` + `git merge --ff-only` plus two
+  `git merge-base --is-ancestor` probes that fail unless `HEAD` equals
+  `origin/main`, `systemctl --user link` of `fleet-unit-failed@.service` and
+  `systemctl --user daemon-reload`, `systemd-tmpfiles --user --create`, three
+  user-scope `install -C` copies (`config/pi-models.json` to
+  `~/.pi/agent/models.json`, `config/litellm-proxy.yaml` to
+  `~/.config/fleet-ops/litellm-proxy.yaml` behind a `cmp` guard, and
+  `prompts/blacksmith-flip.yml` to `~/.local/share/blacksmith-flip/prompt.yml`),
+  and a LINK-GUARD pass
   that fails the unit on a dangling or throwaway-target live symlink
-  (fleet-ops#7743).
+  (fleet-ops#7743). Root-owned files (`/etc/**`, `agent.slice`, everything under
+  `rootfs/`) are not this unit's job: `fleet-host-config.service` installs them
+  as root from its own clone.
 
 ## Install
 
