@@ -15,7 +15,7 @@ never `git pull` (RUNBOOK, fleet-ops#8893). GitHub is the durable copy of
 code and config.
 
 The work loop: `.github/workflows/agent-dispatch.yml` queues `agent-ready` issues as `agent.yml` jobs on the VPS self-hosted runners, workers open PRs on `claim/issue-<N>`, and the GitHub merge queue lands them.
-No scheduled job opens issues or PRs: issues come from people, red-main issues and dependabot. The one scheduled model call is `systemd/blacksmith-flip.timer` (hourly): `prompts/blacksmith-flip.yml` runs through `pi --print` on the `worker-cheap` seat and sets or deletes the org `CI_RUNNER` variable at 95% of the free Blacksmith minutes (fleet-ops#8936).
+No scheduled fleet job opens issues or PRs: issues come from people, red-main issues and dependabot, which runs weekly. The one scheduled model call is `systemd/blacksmith-flip.timer` (hourly): `prompts/blacksmith-flip.yml` runs through `pi --print` on the `worker-cheap` seat and sets or deletes the org `CI_RUNNER` variable at 95% of the free Blacksmith minutes (fleet-ops#8936).
 
 ## Model plane
 
