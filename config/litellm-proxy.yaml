@@ -859,8 +859,8 @@ router_settings:
     RateLimitErrorRetries: 2
     TimeoutErrorRetries: 1
     InternalServerErrorRetries: 2
-    # 400 only (a separate fix from the 402 removal above): LiteLLM never cools a 400, so a row whose model is gone upstream stays in the shuffle (zen union-alpha "Model is unavailable", stalled drive for an hour on 2026-09-30; its rows are removed since, so this guards against any future dead-model 400). 3 retries = 4 picks. The retry re-shuffles and does not exclude the failed row, so escape is by odds: a dead row's share of its group decides - tiny in the many-row worker groups, but all of senior's single remaining row, where 4 picks cannot escape. ContentPolicyViolation is matched first and stays 0; a context-window 400 is retried too, which costs three fast failures.
-    BadRequestErrorRetries: 3
+    # 400 only (a separate fix from the 402 removal above): LiteLLM never cools a 400, so a row whose model is gone upstream stays in the shuffle (zen union-alpha "Model is unavailable", stalled drive for an hour on 2026-09-30; its rows are removed since, so this guards against any future dead-model 400). 1 retry = 2 picks. The retry re-shuffles and does not exclude the failed row, so escape is by odds: a dead row's share of its group decides - tiny in the many-row worker groups, but all of senior's single remaining row, where 2 picks cannot escape. ContentPolicyViolation is matched first and stays 0; a context-window 400 is retried too, which costs one fast failure.
+    BadRequestErrorRetries: 1
     ContentPolicyViolationErrorRetries: 0
   allowed_fails_policy:
     # fleet-ops#9007: a withdrawn model answers 400 (BadRequestError) and a spent
