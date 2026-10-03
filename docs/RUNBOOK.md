@@ -91,7 +91,7 @@ The live config `~/.config/fleet-ops/litellm-proxy.yaml` is a copy of
 which overwrites a hand edit, and `fleet-litellm-proxy-config.path` restarts the
 proxy only when the bytes change. Edit the repo file and nothing else; CI checks
 it against `config/litellm-proxy.schema.json` (fleet-ops#8724). Keys resolve as `os.environ/<NAME>` from the four
-`EnvironmentFile=` sources in `fleet-litellm-proxy.container`: the optional `-%h/.config/fleet-ops/seats/*.env`,
+`EnvironmentFile=` entries in `fleet-litellm-proxy.container`: the optional `-%h/.config/fleet-ops/seats/*.env`,
 `-%h/.config/xkiro/.env` and `-%h/.config/straitly/straitly.env` (the leading `-` marks an optional file), and the
 required `%h/.config/fleet-ops/litellm-master-key.env`. The container receives only the names that have a `PodmanArgs=--env=<NAME>` line in
 `fleet-litellm-proxy.container` (fleet-ops#9020), so a new `os.environ/<NAME>` in the yaml needs a
