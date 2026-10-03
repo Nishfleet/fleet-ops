@@ -203,8 +203,8 @@ cost: the netcup provider VNC console.
   when the Tailscale interface is absent, or to confirm sshd still binds only
   Tailscale addresses. Never for routine work.
 - Steps: netcup panel from a machine that does not depend on this VPS → VNC
-  console → login as `nish` → `systemctl restart tailscaled` → `ss -ltn |
-grep ':22'` must show only `100.*`/`fd7a:*` — a `0.0.0.0:22` or `[::]:22`
+  console → login as `nish` → `systemctl restart tailscaled` → `ss -ltn |`
+  `grep ':22'` must show only `100.*`/`fd7a:*` — a `0.0.0.0:22` or `[::]:22`
   line is a public SSH bind, fix it before disconnecting → verify Tailscale
   SSH from another machine, then leave VNC.
 - It is not a second SSH listener, not a standing open console, and not a
