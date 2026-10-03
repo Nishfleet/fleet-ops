@@ -32,10 +32,30 @@ script, or prompt lands unseen.
   cooldown over 60, row cooldown zero, row cooldown). CI validates every file
   in the directory against the schema and each must fail, so a loosened schema
   goes red. A new schema rule gets a reject file in the same PR.
+- `config/grafana/` — the fleet-view Grafana provisioning
+  (`provisioning/datasources/`, `provisioning/dashboards/`) and
+  `dashboards/fleet.json`. `containers/quadlet/fleet-grafana.container` mounts
+  all three read-only, so the UI cannot save edits.
+- `config/user-tmpfiles.d/agent-worktrees.conf` — the `systemd-tmpfiles`
+  age-out rules `fleet-sync.service` applies on every sync: an
+  `agent-worktrees/` dir untouched for 3 days goes, and so do the dated files
+  under `.pi/agent/sessions`, `.cursor/chats/*/` and
+  `.local/state/pi-issues`.
 - `credentials/` — `app-manifest.json`, the worker GitHub App manifest
-  (`.github/workflows/agent.yml:53` cites it for the App's grant).
-- `.semgrep/` — `no-glue.yml`, the no-glue rule `ci.yml:49` runs
-  (`docs/ARCHITECTURE.md:45` already names it).
+  (`.github/workflows/agent.yml` cites it for the App's grant).
+- `.agents/skills/verify-fleet/` — the verify-fleet skill. `SKILL.md` says how
+  to run one real fleet unit and collect proof (invocation id, journal,
+  artifact, exit, CPU and memory peak); `fleet-map.md` holds one row per unit,
+  timer, path, slice or template.
+- `.semgrep/` — `no-glue.yml`, the no-glue rule `ci.yml` runs
+  (`docs/ARCHITECTURE.md` already names it).
+- `systemd/blacksmith-flip.service` and `systemd/blacksmith-flip.timer` — one
+  hourly decision on the cheap seat: does this calendar month still have
+  Blacksmith free minutes, and does the org Actions variable `CI_RUNNER` point
+  at Blacksmith accordingly (fleet-ops#8936). The decision lives in
+  `prompts/blacksmith-flip.yml`, which `fleet-sync.service` installs, and a
+  model runs `blacksmith usage` rather than a checked-in script, because
+  "no glue or scripts" was Nish's condition on approval.
 - `systemd/fleet-sync.service` (started by
   `.github/workflows/deploy-box.yml` on push) — the whole deploy mechanism:
   `git fetch` + `git merge --ff-only` + `systemctl --user daemon-reload`, plus
@@ -80,9 +100,9 @@ live clone quietly behind.
 
 ### Wiring a NEW unit (one-time, by hand)
 
-`man systemctl`: *"link PATH... Link a unit file that is not in the unit file
+`man systemctl`: _"link PATH... Link a unit file that is not in the unit file
 search path into the unit file search path. This command expects an absolute
-path to a unit file."* Add the unit file to `systemd/`, merge it, then once:
+path to a unit file."_ Add the unit file to `systemd/`, merge it, then once:
 
 ```
 systemctl --user link  /home/nish/workspaces/tooling/fleet-ops-deploy-clone/systemd/<unit>
@@ -117,12 +137,12 @@ NOT update them. The rows marked **Handled automatically** are refreshed by
 instead — a hand copy of one of those is wasted work,
 the next sync overwrites it. The rest are refreshed by hand.
 
-| live path | repo source | why a symlink is wrong |
-|---|---|---|
-| `~/.pi/agent/models.json` | `config/pi-models.json` | **Handled automatically** by `fleet-sync.service` (cmp + install, fleet-ops#8568). A copy, not a symlink, because `~/.pi/agent` is an overlay mount in worker containers. |
-| `~/.local/state/pi-packet/model-candidates.json` | `none (live-only)` | live state the git working tree must not rewrite on every checkout (fleet-ops#2910/#3722/#3322). |
-| `~/.pi/agent/settings.json` | `none (live-only)` | pi writes this file itself at runtime (provider/model switches and its own bookkeeping keys), so a repo copy would be overwritten and a symlink would fight pi. Every fleet caller passes `--provider litellm --model <group>`, so its `defaultProvider`/`defaultModel` affect only bare interactive `pi` runs (fleet-ops#8568). Its `compaction.reserveTokens: 40000` pairs with the worker `contextWindow: 296000` in `config/pi-models.json`: pi compacts at window − reserve = 256k (Nish 2026-09-25; was 88k under #8567), and pi sizes each reply as window − context − 4096, so a turn at 256k still gets its full 32k `maxTokens`. Every worker rung holds 256k+ (seat /models or spend-log prompts up to 416k). At 96000/8192 replies near 88k were cut to ~4.8k (fleet-ops#8634). The real model windows are ~1M; 128000 is a budget, not a limit. |
-| `/etc/**` (system units and drop-ins, `sysctl.d`, `audit/rules.d`, `polkit-1/rules.d`, `prometheus/*.yml`, `nftables.conf`) | `rootfs/etc/**` | cross a privilege boundary. **Handled automatically** by `fleet-host-config.service`: Ansible (`ansible/host.yml`) checks the prometheus and nftables files, installs every file under `rootfs/` as root, and reloads only the daemon whose file changed. A new root file is a new file under `rootfs/`; nothing is installed by hand. |
+| live path                                                                                                                   | repo source             | why a symlink is wrong                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
+| --------------------------------------------------------------------------------------------------------------------------- | ----------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `~/.pi/agent/models.json`                                                                                                   | `config/pi-models.json` | **Handled automatically** by `fleet-sync.service` (cmp + install, fleet-ops#8568). A copy, not a symlink, because `~/.pi/agent` is an overlay mount in worker containers.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
+| `~/.local/state/pi-packet/model-candidates.json`                                                                            | `none (live-only)`      | live state the git working tree must not rewrite on every checkout (fleet-ops#2910/#3722/#3322).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
+| `~/.pi/agent/settings.json`                                                                                                 | `none (live-only)`      | pi writes this file itself at runtime (provider/model switches and its own bookkeeping keys), so a repo copy would be overwritten and a symlink would fight pi. Every fleet caller passes `--provider litellm --model <group>`, so its `defaultProvider`/`defaultModel` affect only bare interactive `pi` runs (fleet-ops#8568). Its `compaction.reserveTokens: 40000` pairs with the worker `contextWindow: 296000` in `config/pi-models.json`: pi compacts at window − reserve = 256k (Nish 2026-09-25; was 88k under #8567), and pi sizes each reply as window − context − 4096, so a turn at 256k still gets its full 32k `maxTokens`. Every worker rung holds 256k+ (seat /models or spend-log prompts up to 416k). At 96000/8192 replies near 88k were cut to ~4.8k (fleet-ops#8634). The real model windows are ~1M; 128000 is a budget, not a limit. |
+| `/etc/**` (system units and drop-ins, `sysctl.d`, `audit/rules.d`, `polkit-1/rules.d`, `prometheus/*.yml`, `nftables.conf`) | `rootfs/etc/**`         | cross a privilege boundary. **Handled automatically** by `fleet-host-config.service`: Ansible (`ansible/host.yml`) checks the prometheus and nftables files, installs every file under `rootfs/` as root, and reloads only the daemon whose file changed. A new root file is a new file under `rootfs/`; nothing is installed by hand.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
 
 ```
 # a changed /etc file: merge it under rootfs/etc/. deploy-box.yml then runs
@@ -149,7 +169,7 @@ cat /sys/fs/cgroup/agent.slice/memory.swap.max   # same number
 `~/.config/devin/config.json` on every deploy, so a Devin auto-update that
 rewrote the config could not silently wall the seat. That merge is gone with
 the installer. The live config carries the key today; if the Devin CLI ever
-refuses with *"Refusing to run in an untrusted workspace"*, re-apply it once:
+refuses with _"Refusing to run in an untrusted workspace"_, re-apply it once:
 
 ```
 jq '. * ($o[0]) | del(.respect_workspace_trust)' --slurpfile o <repo>/template/devin-config.json \
@@ -315,7 +335,10 @@ schema gate: `config/litellm-proxy.yaml` must validate against
 
 `.github/workflows/secret-scan.yml` is the gitleaks scan (pinned binary +
 sha256, `--redact`). fleet-ops has no deploy target. All actions are pinned to exact commit
-SHAs; every job has a timeout.
+SHAs. `agent.yml`, `ci.yml`, `deploy-box.yml`, `lighthouse.yml` and
+`secret-scan.yml` set `timeout-minutes` on their jobs. `agent-dispatch.yml`
+sets none, because its `new`, `rework`, `ejected` and `unblocked` jobs call
+`agent.yml` through `uses:` and inherit its limits.
 
 `.github/workflows/lighthouse.yml` is the fleet's one Lighthouse speed budget, stock LHCI
 assertions in `config/lighthouserc.json` (LCP 1500 ms, interactive 3000 ms, CLS
@@ -344,8 +367,8 @@ Each enrolled repo needs two preconditions:
 1. A git checkout at `/home/nish/workspaces/products/<name>` — the worker
    creates its worktree from it. Packet clones (when a worker clones instead
    of worktree-add) use `git clone --reference-if-able
-   /home/nish/workspaces/.mirrors/<name>.git
-   https://github.com/Nishfleet/<name>.git <dest>` (fleet-ops#1213).
+/home/nish/workspaces/.mirrors/<name>.git
+https://github.com/Nishfleet/<name>.git <dest>` (fleet-ops#1213).
    Mirrors are read-only fetch targets; never push.
 2. The six labels listed in `required_labels` in `config/intake-repos.json`
    — `agent-ready`, `agent-in-progress`, `agent-blocked`, `agent-failed`,
