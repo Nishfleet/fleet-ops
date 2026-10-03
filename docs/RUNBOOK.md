@@ -55,20 +55,20 @@ After a slice change, both the unit and the cgroup must read the new cap:
 
 ## LiteLLM stack (rebuild reference)
 
-Fleet-owned Postgres and Redis as user daemons — the distro packages are
-stopped/disabled, they are never the fleet's. Cluster at
-`~/.local/share/fleet-litellm-postgres` (loopback 127.0.0.1:5432 only, trust
-auth, user-owned), Redis at `~/.local/share/fleet-litellm-redis`
-(`bind 127.0.0.1`, maxmemory 128mb). `pg_isready` against the socket dir
-before enabling the units; a correct deployment shows `active (running)`,
-not `active (exited)`.
+Postgres, Redis and the proxy are Podman Quadlet containers defined in
+`containers/quadlet/fleet-litellm-{postgres,redis,proxy}.container` (images
+`postgres:16`, `redis:7`, `ghcr.io/berriai/litellm:v1.98.0`, all
+`Network=host`), run as `fleet-litellm-postgres.service`,
+`fleet-litellm-redis.service` and `fleet-litellm-proxy.service`. Healthy
+check: `systemctl --user is-active fleet-litellm-postgres.service
+fleet-litellm-redis.service fleet-litellm-proxy.service` prints `active`
+three times. Host data directories stay at
+`~/.local/share/fleet-litellm-postgres` and
+`~/.local/share/fleet-litellm-redis`.
 
-The proxy runs from `~/.local/venvs/litellm` on a pinned version. **Required
-patch after every install or upgrade:** `patch -d
-~/.local/venvs/litellm/lib/python3.12/site-packages -p1 <
-/home/nish/workspaces/tooling/fleet-ops-deploy-clone/patches/litellm-1.98.0-gchunk-usage-union.patch`
-— a plain `pip install` reverts it silently. On a version bump, first check
-whether upstream fixed the line; if so drop the patch and this step.
+The proxy version is the image tag in `fleet-litellm-proxy.container`,
+bumped in its own PR. `patches/litellm-1.98.0-gchunk-usage-union.patch` is
+not applied by any unit in this repo.
 
 The live config `~/.config/fleet-ops/litellm-proxy.yaml` is a copy of
 `config/litellm-proxy.yaml`: `fleet-sync.service` installs it with `install -C`,
