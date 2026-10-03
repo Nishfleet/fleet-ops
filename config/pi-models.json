@@ -47,13 +47,13 @@
         {
           "id": "worker-cheap",
           "name": "LiteLLM worker-cheap (free lanes first)",
-          "contextWindow": 296000,
+          "contextWindow": 140000,
           "maxTokens": 32768
         },
         {
           "id": "worker-capable",
           "name": "LiteLLM worker-capable (strong models)",
-          "contextWindow": 296000,
+          "contextWindow": 140000,
           "maxTokens": 32768
         },
         {
