@@ -55,19 +55,19 @@ After a slice change, both the unit and the cgroup must read the new cap:
 
 ## Dashboards and the CI runner flip
 
-`systemctl --user is-active fleet-grafana.service` prints `active`. The view is
-`fleet-grafana.service` from the Quadlet `containers/quadlet/fleet-grafana.container`
-(image `docker.io/grafana/grafana:13.2.3`). Dashboards and datasources are
-provisioned from `config/grafana/dashboards/` and `config/grafana/provisioning/`,
-edited in this repo only.
+`systemctl --user is-active fleet-grafana.service` prints `active`. The service is
+the Quadlet `containers/quadlet/fleet-grafana.container`, read-only for every
+viewer. Dashboards and datasources come from `config/grafana/dashboards/` and
+`config/grafana/provisioning/`, edited in this repo only.
 
 `systemctl --user list-timers blacksmith-flip.timer` (hourly,
-`Persistent=true`) triggers `blacksmith-flip.service`, a oneshot that pipes
-`prompts/blacksmith-flip.yml` through `pi --print`. Read the last result with
-`systemctl --user show blacksmith-flip.service -p Result -p ExecMainStatus`;
-the journal ends `FLIP: SET` or `FLIP: DELETE`. That single hourly decision
-sets or deletes the org `CI_RUNNER` Actions variable at 95% of free Blacksmith
-minutes (fleet-ops#8936).
+`Persistent=true`) triggers `blacksmith-flip.service`, a oneshot piping
+`prompts/blacksmith-flip.yml` through `pi --print`. Read one run with
+`systemctl --user show blacksmith-flip.service -p Result -p ExecMainStatus
+-p InvocationID`: the first two read `success`/`0` before the first run, so the
+journal at that `InvocationID` is the proof, ending `FLIP: SET` or `FLIP: DELETE`.
+That hourly decision sets org `CI_RUNNER` to `blacksmith-4vcpu-ubuntu-2404` below
+2,850 minutes (95% of the 3,000 free), deleted at or above (fleet-ops#8936).
 
 ## LiteLLM stack (rebuild reference)
 
