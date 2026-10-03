@@ -113,7 +113,7 @@ has n=1 of usable answer-key history, so a full-context+Exa upgrade cannot be
 proven. Any future Jev wiring repeats this replay and clears the zero-harm bar
 first.
 
-Raw run evidence is kept for the PR's own verification: `/tmp/r2_1.json` and
-`/tmp/r2_2.json` hold one row per issue with the answer key, the recorded
-verdict comment text, the model string, the per-question choice, confidence and
-probability vector, the named-file count, the Exa hit and the token usage.
+Per-issue run rows (`/tmp/r2_1.json`, `/tmp/r2_2.json`) were scratch files on
+the host that ran the replay and were not committed, so the tables above are
+the only record; a reader who needs the rows reruns the replay using the
+"Replay method" section.
