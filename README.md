@@ -16,8 +16,9 @@ script, or prompt lands unseen.
   and once a day, and fails on a hand-installed file.
 - `containers/quadlet/` — `*.container` Podman quadlet units for the
   LiteLLM proxy, its Postgres and Redis, Grafana and aiostreams.
-- `patches/` — `litellm-1.98.0-gchunk-usage-union.patch`, a proxy source patch
-  reapplied after every proxy upgrade (see [RUNBOOK](docs/RUNBOOK.md)).
+- `patches/` — `litellm-1.98.0-gchunk-usage-union.patch`, a source patch for
+  LiteLLM 1.98.0 that no unit in this repo applies (the proxy runs a pinned
+  container image).
 - `docs/` — `ARCHITECTURE.md`, `RUNBOOK.md`, `jev-call-sites.md` and
   `quality-bar.md`.
 - `template/` — `agents/`, `cursor-rules/`, `devin-config.json` and
@@ -46,8 +47,10 @@ script, or prompt lands unseen.
 ## Install
 
 There is no installer. Every live user-scope path is a **symlink into this
-repo**, so a `git pull` is the deploy — the file the fleet runs and the file
-in git are the same inode. Nothing is copied, so nothing can drift, and the
+repo**, so a push to `main` is the deploy (`deploy-box.yml` runs
+`fleet-sync.service`, a fetch plus `--ff-only` merge, described below) — the
+file the fleet runs and the file in git are the same inode. Nothing is copied,
+so nothing can drift, and the
 5,948 LOC that used to copy files and then hunt for the drift copying caused
 (`install.sh`, `MANIFEST`, `bin/fleet-ops-deploy`, `bin/fleet-deploy-check`,
 `bin/fleet-ops-drift.py`) were deleted on 2026-09-18.
