@@ -377,6 +377,15 @@ jobs:
             exit 0
           done
           echo "next: none ready for a free lane"
+          # Nothing ready can still mean stuck work: an issue left
+          # agent-in-progress whose claim PR is red or conflicting after its run
+          # ended sends no event, and only the 6h sweep re-lists it (drive #106
+          # #117 #298, all 10 builders idle at 06:36Z on 2026-10-03). Run that
+          # sweep now. It starts no worker when nothing is stuck, so the chain
+          # ends, and the sweep concurrency group keeps one waiting at most.
+          # The runner user's own gh login dispatches it, as the runner-start
+          # refill does, because the App token may lack actions: write.
+          env -u GH_TOKEN gh workflow run agent-dispatch.yml -R "$REPO" || echo "::warning::sweep dispatch failed"
       - name: Clean workspace
         if: always()
         run: i=${REF#claim/issue-}; rm -rf "$HOME/workspaces/agent-worktrees/issue-${REPO#*/}-${i%%-*}"
