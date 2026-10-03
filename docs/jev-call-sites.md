@@ -11,7 +11,10 @@ and the AI grader (grade.yml, opus-review, devin-grade, kimi-probe).
 ## Replay method
 
 The state mirrors the shipped #8894/#8905 Gate builder
-(`git show 5f5c06a5:.github/workflows/agent.yml`, Gate step):
+(`git show 5f5c06a5:.github/workflows/agent.yml`, Gate step), and that commit is
+reachable: `git cat-file -t 5f5c06a5` prints `commit` and
+`git merge-base --is-ancestor 5f5c06a5 origin/main` exits 0, so `5f5c06a5` is an
+ancestor of `origin/main` and no PR or tag has to keep it alive:
 
 ```
 {issue: {ref, title, body, labels},
