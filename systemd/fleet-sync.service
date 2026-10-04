@@ -52,6 +52,10 @@ ExecStart=/usr/bin/git -C /home/nish/workspaces/tooling/fleet-ops-deploy-clone m
 #    they are gone, and without it LINK-GUARD fails on the dangling links.
 ExecStart=/usr/bin/systemctl --user link /home/nish/workspaces/tooling/fleet-ops-deploy-clone/systemd/fleet-unit-failed@.service
 ExecStart=/bin/rm -f /home/nish/.config/systemd/user/fleet-prometheus-reload.path /home/nish/.config/systemd/user/fleet-prometheus-reload.service /home/nish/.config/systemd/user/default.target.wants/fleet-prometheus-reload.path
+# 2b. ~/.config/environment.d/60-pi-xai-client-version.conf is a COPY of
+#     config/environment.d/ (fleet-ops#9219), installed before the daemon-reload
+#     so the user manager reads it on this run.
+ExecStart=/usr/bin/install -C -D -m 0644 /home/nish/workspaces/tooling/fleet-ops-deploy-clone/config/environment.d/60-pi-xai-client-version.conf /home/nish/.config/environment.d/60-pi-xai-client-version.conf
 ExecStart=/usr/bin/systemctl --user daemon-reload
 # 3-4. Root-owned files (/etc/prometheus/*.yml, agent.slice and every other
 #    file under rootfs/) are no longer this unit's job. fleet-host-config.service
