@@ -13,7 +13,8 @@
 #   3. update  Every Ubuntu package (apt dist-upgrade), old kernels and unused
 #              packages after it, a service restart for what still runs old
 #              libraries (needrestart), then each user-level tool through its
-#              own official updater.
+#              own official updater and the redis container through
+#              `podman auto-update`.
 #   4. resume  In `always:`, so it runs even when a step above failed: start the
 #              runners, re-enable only the dispatch workflows this run turned
 #              off, restart the timers it stopped, sweep each queue.
@@ -27,8 +28,15 @@
 # chat (rootfs/etc/needrestart/conf.d/50-fleet.conf). Its new libraries and a
 # new Claude version take effect at the next reboot.
 #
-# Skipped on purpose: container images (pinned in containers/quadlet/, they
-# move by PR), GitHub runners (they update themselves), syncthing (built-in
+# Container images move two ways. A tag changes in a PR, and that covers
+# postgres (it holds the LiteLLM keys and spend, and no quadlet has a HealthCmd,
+# so a rollback would only catch a start failure), the proxy, grafana and
+# aiostreams. Only fleet-litellm-redis (a cache) carries AutoUpdate=registry, so
+# `podman auto-update` below moves it inside this paused window. podman reads
+# that label from the running container, so redis needs one restart in this
+# window before the first weekly run does anything:
+# `systemctl --user restart fleet-litellm-redis.service` as nish. Skipped on
+# purpose: GitHub runners (they update themselves), syncthing (built-in
 # auto-upgrade), and the raw binaries in ~/.local/bin that have no updater.
 - name: Pause the fleet, prune, update everything, resume
   hosts: localhost
@@ -232,6 +240,51 @@
           register: tool_results
           ignore_errors: true
 
+        # The redis quadlet carries AutoUpdate=registry, so this pulls its newer
+        # image and restarts the unit; a unit that fails to start is rolled
+        # back, and podman auto-update then exits non-zero (the assert at the
+        # end of the run fails loud on it). A unit that starts but is broken is
+        # not rolled back: no quadlet has a HealthCmd. As nish, because the
+        # quadlets are systemd user units. The dry-run on either side shows the
+        # pending updates in the report; the real check runs on the box, not in
+        # a workspace harness where newuidmap is blocked (fleet-ops#9254).
+        - name: Record container images podman can auto-update, before
+          become: true
+          become_user: nish
+          environment: "{{ nish_env }}"
+          ansible.builtin.command:
+            argv: [podman, auto-update, --dry-run]
+          register: podman_autoupdate_before
+          changed_when: false
+          # A recording probe: a transient registry outage must not abort the
+          # update block before the tools and plugin steps run. The real task
+          # below is the gate.
+          failed_when: false
+
+        - name: Update the redis container image
+          become: true
+          become_user: nish
+          environment: "{{ nish_env }}"
+          ansible.builtin.command:
+            argv: [podman, auto-update]
+          register: podman_autoupdate
+          # No image moved when every row reads `registry false`; a moved row
+          # reads `registry true`. A failed restart reads `registry failed`
+          # and the assert below fails loud on it.
+          changed_when: "podman_autoupdate.stdout is search('registry\\s+(true|failed)')"
+          ignore_errors: true
+          timeout: 900
+
+        - name: Record container images podman can auto-update, after
+          become: true
+          become_user: nish
+          environment: "{{ nish_env }}"
+          ansible.builtin.command:
+            argv: [podman, auto-update, --dry-run]
+          register: podman_autoupdate_after
+          changed_when: false
+          failed_when: false
+
         # No --yes: a plugin whose update needs a new marketplace command
         # fails here (and in the final assert) instead of being accepted blind.
         - name: Update every installed Claude Code plugin
@@ -415,6 +468,9 @@
               apt_upgrade: "{{ (apt_upgrade | default({})).stdout_lines | default([]) | select('match', '^(Inst|Setting up) ') | list }}"
               apt_autoremove: "{{ (apt_autoremove | default({})).stdout_lines | default([]) | select('match', '^Removing ') | list }}"
               needrestart: "{{ (needrestart_run | default({})).stdout_lines | default([]) }}"
+              podman_autoupdate_before: "{{ (podman_autoupdate_before | default({})).stdout_lines | default([]) }}"
+              podman_autoupdate: "{{ (podman_autoupdate | default({})).stdout_lines | default([]) }}"
+              podman_autoupdate_after: "{{ (podman_autoupdate_after | default({})).stdout_lines | default([]) }}"
               versions_before: "{{ (versions_before | default({'results': []})).results | map(attribute='stdout') | map('default', '') | list }}"
               versions_after: "{{ (versions_after | default({'results': []})).results | map(attribute='stdout') | map('default', '') | list }}"
               sweeps: "{{ (sweep_result | default({'results': []})).results | map(attribute='stdout') | list }}"
@@ -427,6 +483,7 @@
             quiet: true
             that:
               - "(tool_results | default({'results': []})).results | selectattr('failed', 'defined') | selectattr('failed') | list | length == 0"
+              - "not ((podman_autoupdate | default({})).failed | default(false))"
               - "not (plugin_results | default({})).failed | default(false)"
               - "(versions_after | default({'results': []})).results | selectattr('failed', 'defined') | selectattr('failed') | list | length == 0"
               - "(dispatch_resumed | default({'results': []})).results | selectattr('failed', 'defined') | selectattr('failed') | list | length == 0"
@@ -440,6 +497,7 @@
             fail_msg: >-
               fleet-update finished with problems (fleet resumed). Failed tools:
               {{ (tool_results | default({'results': []})).results | selectattr('failed', 'defined') | selectattr('failed') | map(attribute='item') | map('join', ' ') | list }};
+              podman auto-update: {{ (podman_autoupdate | default({})).stdout_lines | default(['ok']) }} {{ (podman_autoupdate | default({})).stderr | default('') }};
               failed units: {{ failed_system.stdout_lines + failed_user.stdout_lines }};
               sweeps: {{ (sweep_result | default({'results': []})).results | map(attribute='stdout') | list }};
               Remote Control: {{ rc_state.stdout }}
