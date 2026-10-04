@@ -25,6 +25,16 @@
   (fleet-ops#5715: the bare "never merge" wording contradicted the enforced
   self-land rule).
 - Money is Nish's alone. No payments, cards, or paid trials.
+- Paid `/jev` and eval or judge calls: a run makes only the ones its own task
+  calls for. `/jev` is read by worker.md step 4, only when its
+  orchestrator-versus-nish-decision choice is live, and by miss-review. A
+  report-only or check-only issue makes none, and no run re-asks a judge or
+  eval for a second read: 16 rows x 3 questions x 3 repeats was 144 paid calls
+  nobody asked for (0509#6967, 2026-10-04). worker.md's own planner
+  (`pi --model senior`) and in-run reviewer calls are not covered by this
+  rule. `/jev` bills real credit and every worker key can reach it, so this
+  rule is the only per-run limit until the capped `fleet-jev` key (RUNBOOK) is
+  minted and the seat file points at it.
 - Secrets never get printed, moved, rotated, or committed — and never sit in
   argv: `/proc/<pid>/cmdline` is world-readable for the life of a call
   (fleet-ops#8403: `curl -H "Authorization: Bearer $KEY"` leaks the key to
@@ -35,7 +45,7 @@
   or a call routed through pi also work. Agent shells
   never source `~/.config/fleet-ops/litellm-master-key.env`: the master key is
   the proxy's own admin credential — seat traffic uses the per-group virtual
-  keys and decisions go through `/jev` (RUNBOOK).
+  keys; `/jev` only where worker.md step 4 or miss-review say so (RUNBOOK).
 - `main`/`master` are protected. Branch or use a worktree.
 - Machine wiring — symlinks under `~/.config/systemd/user`, `~/.local/bin`,
   `~/.pi/agent`, and the vault — resolves only into stable install trees
