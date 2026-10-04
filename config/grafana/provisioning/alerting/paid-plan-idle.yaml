@@ -523,7 +523,7 @@ groups:
           group_interval: 1m
           repeat_interval: 24h
       - uid: ppi-alibaba
-        title: Alibaba token-plan idle
+        title: Alibaba token-plan SG idle
         condition: C
         data:
           - refId: A
