@@ -57,8 +57,8 @@ After a slice change, both the unit and the cgroup must read the new cap:
 
 `systemctl --user is-active fleet-grafana.service` prints `active`. The service is
 the Quadlet `containers/quadlet/fleet-grafana.container`, read-only for every
-viewer. Dashboards and datasources come from `config/grafana/dashboards/` and
-`config/grafana/provisioning/`, edited in this repo only.
+viewer. Dashboards, datasources and alerting come from `config/grafana/dashboards/`
+and `config/grafana/provisioning/`, edited in this repo only.
 
 `systemctl --user list-timers blacksmith-flip.timer` (hourly,
 `Persistent=true`) triggers `blacksmith-flip.service`, a oneshot piping

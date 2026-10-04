@@ -20,13 +20,19 @@ Network=host
 # dir and the 0600 App key are readable inside the container.
 UserNS=keep-id:uid=472,gid=472
 Volume=%h/.local/share/fleet-grafana:/var/lib/grafana
-# Mount only the two provisioning kinds we use; the image's other empty
-# provisioning dirs (alerting, plugins) stay, so startup logs no errors.
+# Mount datasources, dashboards, and alerting. The image's unused
+# provisioning dir (plugins) stays empty, so startup logs no errors.
 Volume=%h/workspaces/tooling/fleet-ops-deploy-clone/config/grafana/provisioning/datasources:/etc/grafana/provisioning/datasources:ro
 Volume=%h/workspaces/tooling/fleet-ops-deploy-clone/config/grafana/provisioning/dashboards:/etc/grafana/provisioning/dashboards:ro
+Volume=%h/workspaces/tooling/fleet-ops-deploy-clone/config/grafana/provisioning/alerting:/etc/grafana/provisioning/alerting:ro
 Volume=%h/workspaces/tooling/fleet-ops-deploy-clone/config/grafana/dashboards:/etc/grafana/dashboards:ro
 Volume=%h/.config/fleet-worker/nishfleet-worker.private-key.pem:/run/secrets/github-app.pem:ro
 Volume=%h/.config/fleet-ops/grafana-admin-password:/run/secrets/grafana-admin-password:ro
+# Named pass-through, not --env-host (fleet-ops#9020): only the Hermes
+# Telegram names the alerting contact point expands ($TELEGRAM_BOT_TOKEN,
+# $TELEGRAM_HOME_CHANNEL). EnvironmentFile= below fills them for podman.
+PodmanArgs=--env=TELEGRAM_BOT_TOKEN
+PodmanArgs=--env=TELEGRAM_HOME_CHANNEL
 Environment=GF_SERVER_HTTP_ADDR=127.0.0.1
 Environment=GF_SERVER_HTTP_PORT=3001
 Environment=GF_SERVER_ROOT_URL=https://netcup-rs2000.tailc0f05f.ts.net:8443/
@@ -43,6 +49,7 @@ Environment=GF_PLUGINS_PREINSTALL_SYNC=grafana-github-datasource@2.9.2
 Environment=GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH=/etc/grafana/dashboards/fleet.json
 
 [Service]
+EnvironmentFile=-%h/.hermes/.env
 # Measured 2026-10-02: ~240 MB anon + ~160 MB file cache; 400M kept it in
 # constant reclaim (memory.events max=669 in minutes).
 MemoryMax=512M
