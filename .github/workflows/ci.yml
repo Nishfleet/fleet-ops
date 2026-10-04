@@ -147,8 +147,7 @@ jobs:
       - name: Every paid plan keeps a router row and every prepaid row is a listed plan (fleet-ops#9224)
         if: always()
         run: |
-          rows="$(yq -o=json '[.model_list[].litellm_params | {"b": (.api_base // ""), "t": (.tags // [])}]' config/litellm-proxy.yaml)"
-          jq -n -e --slurpfile plans config/paid-plans.json --argjson rows "$rows" '
+          jq -n -e --slurpfile plans config/paid-plans.json --argjson rows "$(yq -o=json '[.model_list[].litellm_params | {"b": (.api_base // ""), "t": (.tags // [])}]' config/litellm-proxy.yaml)" '
             ($plans[0] | map(select(.rows_pending == null))) as $live
             | ($live | map(.api_base as $p | select([$rows[].b | startswith($p)] | any | not) | .name)) as $gone
             | ($rows | map(select(.t | index("prepaid")) | .b as $b | select([$plans[0][].api_base as $p | $b | startswith($p)] | any | not) | $b) | unique) as $unlisted
