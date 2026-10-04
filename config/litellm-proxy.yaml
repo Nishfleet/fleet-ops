@@ -313,12 +313,65 @@ model_list:
     - prepaid
     - zai
     order: 1
-    # Coding-plan key: 8 parallel probes gave 5x200 and 3x429 (2026-09-29), so 2 per row x 2 rows stays under it. General /api/paas/v4 answers 429 code 1113 (no balance) for this key.
-    max_parallel_requests: 2
-    cooldown_time: 120
+    # Nish 2026-10-04: use the z.ai Coding Plan. One row per group got ~126 of ~6,500 worker calls (2%) in the 24 h to 22:30 IST,
+    # and the plan dashboard showed 25% of the weekly 10K credits used with 5 days left (resets 2026-10-09 22:22 IST).
+    # simple-shuffle picks uniformly among rows, so five rows give it ~4x the share of new tasks (the StepFun pattern above).
+    # Coding-plan key: 8 parallel probes gave 5x200 and 3x429 (2026-09-29), so 1 per row x 5 rows stays at the cap.
+    # General /api/paas/v4 answers 429 code 1113 (no balance) for this key.
+    # A 5-hour or weekly plan-limit 429 cools a row 15 min, then it retries by itself, so the reset is used without a human.
+    max_parallel_requests: 1
+    cooldown_time: 900
   model_info:
     mode: chat
     id: zai-glm53flash-worker-capable
+    allowed_fails_policy:
+      BadRequestErrorAllowedFails: 1
+- model_name: worker-capable
+  litellm_params:
+    model: openai/glm-5.3-flash
+    api_base: https://api.z.ai/api/coding/paas/v4
+    api_key: os.environ/ZAI_API_KEY
+    tags:
+    - prepaid
+    - zai
+    order: 1
+    max_parallel_requests: 1
+    cooldown_time: 900
+  model_info:
+    mode: chat
+    id: zai-glm53flashb-worker-capable
+    allowed_fails_policy:
+      BadRequestErrorAllowedFails: 1
+- model_name: worker-capable
+  litellm_params:
+    model: openai/glm-5.3-flash
+    api_base: https://api.z.ai/api/coding/paas/v4
+    api_key: os.environ/ZAI_API_KEY
+    tags:
+    - prepaid
+    - zai
+    order: 1
+    max_parallel_requests: 1
+    cooldown_time: 900
+  model_info:
+    mode: chat
+    id: zai-glm53flashc-worker-capable
+    allowed_fails_policy:
+      BadRequestErrorAllowedFails: 1
+- model_name: worker-capable
+  litellm_params:
+    model: openai/glm-5.3-flash
+    api_base: https://api.z.ai/api/coding/paas/v4
+    api_key: os.environ/ZAI_API_KEY
+    tags:
+    - prepaid
+    - zai
+    order: 1
+    max_parallel_requests: 1
+    cooldown_time: 900
+  model_info:
+    mode: chat
+    id: zai-glm53flashd-worker-capable
     allowed_fails_policy:
       BadRequestErrorAllowedFails: 1
 - model_name: worker-cheap
@@ -330,9 +383,8 @@ model_list:
     - prepaid
     - zai
     order: 1
-    # Coding-plan key: 8 parallel probes gave 5x200 and 3x429 (2026-09-29), so 2 per row x 2 rows stays under it. General /api/paas/v4 answers 429 code 1113 (no balance) for this key.
-    max_parallel_requests: 2
-    cooldown_time: 120
+    max_parallel_requests: 1
+    cooldown_time: 900
   model_info:
     mode: chat
     id: zai-glm53flash-worker-cheap
