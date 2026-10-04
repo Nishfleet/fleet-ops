@@ -2,6 +2,9 @@
 # The paid-plan list lives in this file. A plan Nish cancels is removed here
 # in the same PR that removes its router rows.
 # Contact point: existing Hermes Telegram bot + TELEGRAM_HOME_CHANNEL.
+# Grafana file provisioning has no shared/foreach rule form (docs: groups[].rules
+# is a list of full rules). One rule per plan so absent_over_time matches that
+# api_base. disableResolveMessage is true: Hermes urgent is firing-only.
 apiVersion: 1
 
 contactPoints:
@@ -10,7 +13,7 @@ contactPoints:
     receivers:
       - uid: hermes-urgent-tg
         type: telegram
-        disableResolveMessage: false
+        disableResolveMessage: true
         settings:
           bottoken: $TELEGRAM_BOT_TOKEN
           chatid: |
@@ -77,10 +80,10 @@ groups:
         for: 0s
         annotations:
           summary: Cline served zero fleet calls for 24 hours (or vanished from the router).
-          description: '{{ if eq $labels.quota_wall "true" }}Used to the max (quota wall), not idle.{{ else }}Idle or missing from the router.{{ end }}'
+          description: '{{ with index $values "B" }}{{ if gt .Value 0.0 }}Used to the max (quota wall), not idle.{{ else }}Idle or missing from the router.{{ end }}{{ else }}Idle or missing from the router.{{ end }}'
         labels:
           plan: cline
-          quota_wall: '{{ with index $values "B" }}{{ if gt .Value 0.0 }}true{{ else }}false{{ end }}{{ else }}false{{ end }}'
+          quota_wall: '{{ with index $$values "B" }}{{ if gt .Value 0.0 }}true{{ else }}false{{ end }}{{ else }}false{{ end }}'
         isPaused: false
         notification_settings:
           receiver: hermes-urgent
@@ -139,10 +142,10 @@ groups:
         for: 0s
         annotations:
           summary: CommandCode served zero fleet calls for 24 hours (or vanished from the router).
-          description: '{{ if eq $labels.quota_wall "true" }}Used to the max (quota wall), not idle.{{ else }}Idle or missing from the router.{{ end }}'
+          description: '{{ with index $values "B" }}{{ if gt .Value 0.0 }}Used to the max (quota wall), not idle.{{ else }}Idle or missing from the router.{{ end }}{{ else }}Idle or missing from the router.{{ end }}'
         labels:
           plan: commandcode
-          quota_wall: '{{ with index $values "B" }}{{ if gt .Value 0.0 }}true{{ else }}false{{ end }}{{ else }}false{{ end }}'
+          quota_wall: '{{ with index $$values "B" }}{{ if gt .Value 0.0 }}true{{ else }}false{{ end }}{{ else }}false{{ end }}'
         isPaused: false
         notification_settings:
           receiver: hermes-urgent
@@ -201,10 +204,10 @@ groups:
         for: 0s
         annotations:
           summary: MiniMax served zero fleet calls for 24 hours (or vanished from the router).
-          description: '{{ if eq $labels.quota_wall "true" }}Used to the max (quota wall), not idle.{{ else }}Idle or missing from the router.{{ end }}'
+          description: '{{ with index $values "B" }}{{ if gt .Value 0.0 }}Used to the max (quota wall), not idle.{{ else }}Idle or missing from the router.{{ end }}{{ else }}Idle or missing from the router.{{ end }}'
         labels:
           plan: minimax
-          quota_wall: '{{ with index $values "B" }}{{ if gt .Value 0.0 }}true{{ else }}false{{ end }}{{ else }}false{{ end }}'
+          quota_wall: '{{ with index $$values "B" }}{{ if gt .Value 0.0 }}true{{ else }}false{{ end }}{{ else }}false{{ end }}'
         isPaused: false
         notification_settings:
           receiver: hermes-urgent
@@ -263,10 +266,10 @@ groups:
         for: 0s
         annotations:
           summary: StepFun served zero fleet calls for 24 hours (or vanished from the router).
-          description: '{{ if eq $labels.quota_wall "true" }}Used to the max (quota wall), not idle.{{ else }}Idle or missing from the router.{{ end }}'
+          description: '{{ with index $values "B" }}{{ if gt .Value 0.0 }}Used to the max (quota wall), not idle.{{ else }}Idle or missing from the router.{{ end }}{{ else }}Idle or missing from the router.{{ end }}'
         labels:
           plan: stepfun
-          quota_wall: '{{ with index $values "B" }}{{ if gt .Value 0.0 }}true{{ else }}false{{ end }}{{ else }}false{{ end }}'
+          quota_wall: '{{ with index $$values "B" }}{{ if gt .Value 0.0 }}true{{ else }}false{{ end }}{{ else }}false{{ end }}'
         isPaused: false
         notification_settings:
           receiver: hermes-urgent
@@ -325,10 +328,10 @@ groups:
         for: 0s
         annotations:
           summary: z.ai served zero fleet calls for 24 hours (or vanished from the router).
-          description: '{{ if eq $labels.quota_wall "true" }}Used to the max (quota wall), not idle.{{ else }}Idle or missing from the router.{{ end }}'
+          description: '{{ with index $values "B" }}{{ if gt .Value 0.0 }}Used to the max (quota wall), not idle.{{ else }}Idle or missing from the router.{{ end }}{{ else }}Idle or missing from the router.{{ end }}'
         labels:
           plan: zai
-          quota_wall: '{{ with index $values "B" }}{{ if gt .Value 0.0 }}true{{ else }}false{{ end }}{{ else }}false{{ end }}'
+          quota_wall: '{{ with index $$values "B" }}{{ if gt .Value 0.0 }}true{{ else }}false{{ end }}{{ else }}false{{ end }}'
         isPaused: false
         notification_settings:
           receiver: hermes-urgent
@@ -387,10 +390,10 @@ groups:
         for: 0s
         annotations:
           summary: Ollama served zero fleet calls for 24 hours (or vanished from the router).
-          description: '{{ if eq $labels.quota_wall "true" }}Used to the max (quota wall), not idle.{{ else }}Idle or missing from the router.{{ end }}'
+          description: '{{ with index $values "B" }}{{ if gt .Value 0.0 }}Used to the max (quota wall), not idle.{{ else }}Idle or missing from the router.{{ end }}{{ else }}Idle or missing from the router.{{ end }}'
         labels:
           plan: ollama
-          quota_wall: '{{ with index $values "B" }}{{ if gt .Value 0.0 }}true{{ else }}false{{ end }}{{ else }}false{{ end }}'
+          quota_wall: '{{ with index $$values "B" }}{{ if gt .Value 0.0 }}true{{ else }}false{{ end }}{{ else }}false{{ end }}'
         isPaused: false
         notification_settings:
           receiver: hermes-urgent
@@ -449,10 +452,10 @@ groups:
         for: 0s
         annotations:
           summary: OpenCode Go served zero fleet calls for 24 hours (or vanished from the router).
-          description: '{{ if eq $labels.quota_wall "true" }}Used to the max (quota wall), not idle.{{ else }}Idle or missing from the router.{{ end }}'
+          description: '{{ with index $values "B" }}{{ if gt .Value 0.0 }}Used to the max (quota wall), not idle.{{ else }}Idle or missing from the router.{{ end }}{{ else }}Idle or missing from the router.{{ end }}'
         labels:
           plan: opencode-go
-          quota_wall: '{{ with index $values "B" }}{{ if gt .Value 0.0 }}true{{ else }}false{{ end }}{{ else }}false{{ end }}'
+          quota_wall: '{{ with index $$values "B" }}{{ if gt .Value 0.0 }}true{{ else }}false{{ end }}{{ else }}false{{ end }}'
         isPaused: false
         notification_settings:
           receiver: hermes-urgent
@@ -511,10 +514,10 @@ groups:
         for: 0s
         annotations:
           summary: Pareto served zero fleet calls for 24 hours (or vanished from the router).
-          description: '{{ if eq $labels.quota_wall "true" }}Used to the max (quota wall), not idle.{{ else }}Idle or missing from the router.{{ end }}'
+          description: '{{ with index $values "B" }}{{ if gt .Value 0.0 }}Used to the max (quota wall), not idle.{{ else }}Idle or missing from the router.{{ end }}{{ else }}Idle or missing from the router.{{ end }}'
         labels:
           plan: pareto
-          quota_wall: '{{ with index $values "B" }}{{ if gt .Value 0.0 }}true{{ else }}false{{ end }}{{ else }}false{{ end }}'
+          quota_wall: '{{ with index $$values "B" }}{{ if gt .Value 0.0 }}true{{ else }}false{{ end }}{{ else }}false{{ end }}'
         isPaused: false
         notification_settings:
           receiver: hermes-urgent
@@ -573,10 +576,10 @@ groups:
         for: 0s
         annotations:
           summary: Alibaba token-plan SG served zero fleet calls for 24 hours (or vanished from the router).
-          description: '{{ if eq $labels.quota_wall "true" }}Used to the max (quota wall), not idle.{{ else }}Idle or missing from the router.{{ end }}'
+          description: '{{ with index $values "B" }}{{ if gt .Value 0.0 }}Used to the max (quota wall), not idle.{{ else }}Idle or missing from the router.{{ end }}{{ else }}Idle or missing from the router.{{ end }}'
         labels:
           plan: alibaba-token-plan-sg
-          quota_wall: '{{ with index $values "B" }}{{ if gt .Value 0.0 }}true{{ else }}false{{ end }}{{ else }}false{{ end }}'
+          quota_wall: '{{ with index $$values "B" }}{{ if gt .Value 0.0 }}true{{ else }}false{{ end }}{{ else }}false{{ end }}'
         isPaused: false
         notification_settings:
           receiver: hermes-urgent
