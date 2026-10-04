@@ -40,6 +40,10 @@ Environment=PYTHONPYCACHEPREFIX=/pycache
 # drops a bare `Environment=NAME` line, so each name is its own PodmanArgs=--env=NAME:
 # podman reads that one variable from its own environment, which the [Service]
 # EnvironmentFile= lines below fill. One line per os.environ/NAME in litellm-proxy.yaml.
+# Alibaba Model Studio Token Plan (fleet-ops#9220, judge row only): os.environ/ALIBABA_CODING_API_KEY in
+# config/litellm-proxy.yaml needs its own line, and the seat file ~/.config/fleet-ops/seats/alibaba-coding.env
+# is already covered by the seats/*.env EnvironmentFile below.
+PodmanArgs=--env=ALIBABA_CODING_API_KEY
 PodmanArgs=--env=CLINE_API_KEY
 PodmanArgs=--env=COMMANDCODE_API_KEY
 PodmanArgs=--env=LITELLM_MASTER_KEY
