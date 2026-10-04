@@ -34,9 +34,10 @@ script, or prompt lands unseen.
   in the directory against the schema and each must fail, so a loosened schema
   goes red. A new schema rule gets a reject file in the same PR.
 - `config/grafana/` — the fleet-view Grafana provisioning
-  (`provisioning/datasources/`, `provisioning/dashboards/`) and
-  `dashboards/fleet.json`. `containers/quadlet/fleet-grafana.container` mounts
-  all three read-only, so the UI cannot save edits.
+  (`provisioning/datasources/`, `provisioning/dashboards/`,
+  `provisioning/alerting/`) and `dashboards/fleet.json`.
+  `containers/quadlet/fleet-grafana.container` mounts all four read-only, so
+  the UI cannot save edits.
 - `config/user-tmpfiles.d/agent-worktrees.conf` — the `systemd-tmpfiles`
   age-out rules `fleet-sync.service` applies on every sync: an
   `agent-worktrees/` dir untouched for 3 days goes, and so do the dated files
