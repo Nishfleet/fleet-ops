@@ -188,6 +188,15 @@
         group: root
         mode: preserve
 
+    # No handler: needrestart reads conf.d on every run.
+    - name: Install needrestart config
+      ansible.builtin.copy:
+        src: "{{ rootfs }}/etc/needrestart/conf.d/"
+        dest: /etc/needrestart/conf.d/
+        owner: root
+        group: root
+        mode: preserve
+
     # enabled only: never restarts the Remote Control link this playbook may run under.
     - name: Enable Remote Control at boot
       ansible.builtin.systemd_service:
@@ -201,6 +210,15 @@
         state: started
         daemon_reload: true
       # Under --check the copy above did not really install the timer yet.
+      ignore_errors: "{{ ansible_check_mode }}"
+
+    # Starting the timer only schedules ansible/update.yml; it never runs it now.
+    - name: Enable the weekly update
+      ansible.builtin.systemd_service:
+        name: fleet-update.timer
+        enabled: true
+        state: started
+        daemon_reload: true
       ignore_errors: "{{ ansible_check_mode }}"
 
     # Files the repo used to leave live and now removes. Each path is named,
