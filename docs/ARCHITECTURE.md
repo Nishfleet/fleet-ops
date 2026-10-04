@@ -27,8 +27,8 @@ model groups are declared in `config/pi-models.json` and
 doc.** Group health is `litellm_deployment_state` on `/metrics` and
 `/health/readiness`.
 
-`POST 127.0.0.1:4000/jev` is the typed-decision pass-through (noul / choice
-/ score questions). The one live decision caller is `prompts/worker.md`
+`POST 127.0.0.1:4000/jev` is the typed-decision pass-through (boolean / choice
+/ score questions), served by the Vercel AI Gateway. The one live decision caller is `prompts/worker.md`
 step 4 (`needsNish`), which carries its own threshold;
 `docs/jev-call-sites.md` lists the call sites.
 

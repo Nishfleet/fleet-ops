@@ -993,12 +993,16 @@ litellm_settings:
 general_settings:
   pass_through_endpoints:
     - path: "/jev"
-      # TypeSafe direct (Nish 2026-09-28): the Vercel AI Gateway key is used ONLY when Nish says so.
-      target: "https://api.typesafe.ai/v1/systemone"
+      # Vercel AI Gateway (Nish 2026-10-04 "vercel"): TypeSafe direct ran out of credits.
+      target: "https://ai-gateway.vercel.sh/v4/ai/evaluation-model"
       cost_per_request: 0.000015
       auth: true
       headers:
-        Authorization: "Bearer os.environ/TYPESAFE_API_KEY"
+        Authorization: "Bearer os.environ/VERCEL_AI_GATEWAY_JEV_KEY"
+        ai-model-id: "typesafe-ai/jev"
+        ai-evaluation-model-specification-version: "4"
+        ai-gateway-protocol-version: "0.0.1"
+        ai-gateway-auth-method: "api-key"
   # real traffic is the probe: the background checks spent the same free quota and cooled rows themselves (Nish 2026-09-28).
   background_health_checks: false
   database_url: postgresql://litellm@127.0.0.1:5432/litellm
