@@ -36,6 +36,7 @@ If the deliverable touches `.github/workflows/**`, run `actionlint` on the chang
 1. Commit and `git push origin orch/issue-<N>`.
 2. `gh pr create -R <owner>/<repo> --head orch/issue-<N> --title "<issue title>" --body "<see below>"`.
 3. PR body, in this order: what changed, why, `Verification:` with the last lines of each command's real output (or `not run: <reason>`), and `Closes #<N>` naming only your own issue.
+3a. Get a review from a different model family before you arm: you are Claude, and Claude never grades Claude. Run `git diff -w origin/main...HEAD | /home/nish/.local/bin/pi --print --provider litellm --model worker-capable --no-tools --no-session --append-system-prompt /home/nish/.pi/agent/agents/reviewer.md` (retry once with `--model worker-cheap`). Fix every real defect it names. Paste its verdict under `Reviewer:` in the PR body. If both seats fail, write `Reviewer: none available (<the error>)` and replace it with a deterministic proof that runs the changed path for real; never arm on a missing review with no proof.
 4. `gh pr merge <PR> -R <owner>/<repo> --auto`. Arm auto-merge: the required checks gate it, and the coordinator's merge is not waiting on a human. Never merge by hand.
 5. Finish the park: `gh issue edit <N> -R <owner>/<repo> --remove-label needs-orchestrator` and `gh issue comment <N> -R <owner>/<repo> --body "orchestrator: picked up, PR <link>"`. The PR closes the issue on merge.
 6. Print the PR URL and exit 0.
