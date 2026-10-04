@@ -28,6 +28,14 @@ on:
         required: false
         type: string
         default: ''
+      # JSON runs-on for the two GitHub-side jobs. A private caller whose
+      # hosted minutes ran out passes its own runners, e.g.
+      # '["self-hosted","Linux","X64"]' (drive, 2026-10-04: hosted jobs
+      # refused for billing, so the sweep never ran).
+      runner:
+        required: false
+        type: string
+        default: '"ubuntu-latest"'
   # pull_request_target, not pull_request: pull_request never runs while a PR
   # has a merge conflict. Invariant (Kimi K3 review L2, 2026-09-24): nothing in
   # this file checks out PR code, and the one job this event reaches, ejected,
@@ -100,7 +108,7 @@ jobs:
       (inputs.agent_mode || vars.AGENT_MODE) == 'live' &&
       ((github.event_name == 'issues' && github.event.action == 'closed') ||
        github.event_name == 'workflow_dispatch' || github.event_name == 'schedule')
-    runs-on: ubuntu-latest
+    runs-on: ${{ fromJSON(inputs.runner || '"ubuntu-latest"') }}
     permissions:
       issues: write
       pull-requests: read
@@ -269,7 +277,7 @@ jobs:
     if: >-
       (github.event_name == 'issues' && github.event.action == 'closed') ||
       inputs.issue != ''
-    runs-on: ubuntu-latest
+    runs-on: ${{ fromJSON(inputs.runner || '"ubuntu-latest"') }}
     permissions:
       # pull-requests: write closes the PR; contents: write is what
       # --delete-branch needs to delete the ref (fleet-ops#8457).
