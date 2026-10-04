@@ -460,10 +460,12 @@ jobs:
           env -u GH_TOKEN gh workflow run agent-dispatch.yml -R "$REPO" || echo "::warning::sweep dispatch failed"
       - name: Clean workspace
         if: always()
+        env:
+          MISS: ${{ steps.gate.outputs.miss }}
         run: |
           i=${REF#claim/issue-}
           id=${REPO#*/}-${i%%-*}
-          if [ "${{ steps.gate.outputs.miss }}" = true ]; then
+          if [ "$MISS" = true ]; then
             rm -rf "$HOME/workspaces/agent-worktrees/issue-$id-miss"
           else
             rm -rf "$HOME/workspaces/agent-worktrees/issue-$id"
