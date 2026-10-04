@@ -20,6 +20,10 @@ model_list:
     - prepaid
     - commandcode
     order: 1
+    input_cost_per_token: 3e-07
+    output_cost_per_token: 1.2e-06
+    max_budget: 10.0
+    budget_duration: 1d
     max_parallel_requests: 4
     cooldown_time: 900
   model_info:
@@ -36,6 +40,10 @@ model_list:
     - prepaid
     - commandcode
     order: 1
+    input_cost_per_token: 3e-07
+    output_cost_per_token: 1.2e-06
+    max_budget: 10.0
+    budget_duration: 1d
     max_parallel_requests: 4
     cooldown_time: 900
   model_info:
@@ -242,6 +250,10 @@ model_list:
     - prepaid
     - pareto
     order: 1
+    input_cost_per_token: 9e-08
+    output_cost_per_token: 3e-07
+    max_budget: 10.0
+    budget_duration: 1d
     max_parallel_requests: 1
     # Pareto's 429s come from its 3-parallel key limit (fleet-ops#8458), not a quota, so 5 min is enough.
     cooldown_time: 300
@@ -261,6 +273,10 @@ model_list:
     - pareto
     - senior
     order: 1
+    input_cost_per_token: 9e-08
+    output_cost_per_token: 3e-07
+    max_budget: 10.0
+    budget_duration: 1d
     max_parallel_requests: 1
     cooldown_time: 300
   model_info:
@@ -398,6 +414,10 @@ model_list:
     - prepaid
     - cline
     order: 1
+    input_cost_per_token: 3e-07
+    output_cost_per_token: 1.2e-06
+    max_budget: 10.0
+    budget_duration: 1d
     max_parallel_requests: 4
     # 6 h, sized to the daily free-model quota wall it also hits (fleet-ops#9075).
     cooldown_time: 21600
@@ -518,6 +538,10 @@ model_list:
     - prepaid
     - ollama
     order: 1
+    input_cost_per_token: 3e-07
+    output_cost_per_token: 1.2e-06
+    max_budget: 10.0
+    budget_duration: 1d
     max_parallel_requests: 4
     cooldown_time: 900
   model_info:
