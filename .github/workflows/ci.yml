@@ -147,3 +147,22 @@ jobs:
       - name: Ollama rungs serve only the permitted slug (fleet-ops#8332)
         if: always()
         run: yq -o=json '[.model_list[] | select((.litellm_params.api_base // "") | test("ollama")) | .litellm_params.model | select(. != "openai/deepseek-v4.1-flash")]' config/litellm-proxy.yaml | jq -e 'if length==0 then true else error("ollama non-flash rungs - \(join(","))") end'
+      - name: Miss-review event filter
+        if: always()
+        run: |
+          jq -e '
+            def fire:
+              (.miss_review == "live") and (
+                (.event_name == "issues" and .action == "labeled" and .label == "agent-failed")
+                or (.event_name == "issues" and .action == "reopened")
+                or (.event_name == "issue_comment" and .action == "created" and ((.body // "") | startswith("park:") or startswith("opus-vet:")) and ((.author_association // "") | IN("OWNER","MEMBER","COLLABORATOR")))
+                or (.event_name == "pull_request_target" and .action == "closed" and (.merged == false) and ((.head_ref // "") | startswith("claim/issue-")) and .head_repo == .repository)
+                or (.event_name == "pull_request_target" and .action == "closed" and (.merged == true) and ((.title // "") | startswith("Revert")) and .head_repo == .repository)
+                or (.event_name == "workflow_dispatch" and .task == "miss-review" and ((.issue // "") | length) > 0)
+                or (.event_name == "schedule" and .requeued == true)
+              );
+            (.cases | map(select(.want != fire)) | if length == 0 then true else error("filter mismatch: \(map(.id)|join(","))") end)
+          ' config/miss-review-events.json
+          jq -r '.needles[]' config/miss-review-events.json | while IFS= read -r n; do
+            grep -F -- "$n" .github/workflows/agent-dispatch.yml >/dev/null || { echo "missing needle: $n"; exit 1; }
+          done
