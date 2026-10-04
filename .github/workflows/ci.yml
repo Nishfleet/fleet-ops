@@ -190,7 +190,7 @@ jobs:
           # The orchestrate job's if:, in the order the workflow writes it.
           jq -e '
             def fire:
-              ((.orchestrate // "off") == "live") and (
+              ((.orchestrate // "") != "off") and (
                 (.event_name == "issues" and .action == "labeled" and .label == "needs-orchestrator" and
                   ((.sender // "") == "nish3451" or
                    (((.sender // "") | endswith("[bot]")) and ((.sender // "") == "nishfleet-worker[bot]" or (.sender // "") == "github-actions[bot]"))))
