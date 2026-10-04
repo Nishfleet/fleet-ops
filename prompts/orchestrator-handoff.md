@@ -31,6 +31,8 @@ The issue's acceptance bullets are your spec, and `AGENTS.md` is your contract: 
 
 If the deliverable touches `.github/workflows/**`, run every offline workflow gate the target repo's CI runs, before you push and before you read the diff as a reviewer: `actionlint`, `uvx zizmor@<CI's version> --offline .github/workflows`, and `shellcheck` on changed shell (fleet-ops lists the exact commands in `AGENTS.md`). Paste each result into `Verification:`, and name a gate that did not run as `not run: <reason>`. actionlint alone missed a zizmor template-injection finding that turned the required `ci` check red after a merge was claimed (fleet-ops#9214). Your push is allowed to carry workflow changes; a worker's was not, so your run is where the proof has to land.
 
+Production reads: `wrangler` is denied on this host, because the `cf` CLI replaces it, and routing around that denial through a CI job is wrong. A read-only production D1 query is not a reserved class, so run it here: `set -a; . ~/.config/cloudflare/deploy-ci.env; set +a; cf d1 query <database-id> --sql "SELECT ..." -q` (0509 production D1 is `746c6e3d-782e-443a-82d6-28ca93a16294`, proven 2026-10-04). SELECT only: a write, delete or migration is the Needs Nish path. When the issue's deliverable is evidence and not code, post the evidence (query, row counts or ids, timestamp) as an `orchestrator:` issue comment and exit 0 without a PR.
+
 ## 4. Deliver
 
 1. Commit and `git push origin orch/issue-<N>`.
