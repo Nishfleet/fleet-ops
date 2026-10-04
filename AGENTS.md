@@ -3,6 +3,7 @@
 ## Verification commands
 
 - Diff-scoped semgrep: `semgrep --config p/default --baseline-commit "$(git merge-base HEAD origin/main)" --quiet --metrics=off`
+- Any diff under `.github/workflows/`: the three offline gates the required `ci` check runs, all before the push — `actionlint .github/workflows/*.yml`, `uvx zizmor@1.30.1 --offline --format plain .github/workflows` (picks up `.github/zizmor.yml`, same pin as `ci.yml`), and `shellcheck` on every changed shell file. semgrep does not cover this surface: a zizmor-only finding turned `ci` red on PR 9212 (fleet-ops#9214). Put all three results in the PR body, and name a gate that did not run.
 
 ## Hard lines
 
