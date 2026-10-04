@@ -47,6 +47,21 @@ jobs:
       - run: semgrep --config p/default --metrics=off
       # No glue, held by a machine (Nish 2026-09-29). One rule file; 0509 reads it by URL.
       - run: semgrep scan --config .semgrep/no-glue.yml --metrics=off --error
+      - name: No agent attribution in the PR's commits or body
+        # AGENTS.md "Agent names are forbidden" was prose only; agent
+        # trailers reached main (#9205, #9240). A pull_request check, not
+        # merge_group: GitHub's own squash adds a Co-authored-by line when the
+        # commit author is not the PR opener, so a merge_group check would fail
+        # every agent PR. This gates what a session writes, not what GitHub adds.
+        if: github.event_name == 'pull_request'
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          PR_BODY: ${{ github.event.pull_request.body }}
+        shell: bash
+        run: |
+          log=$(git log --format=%B "$BASE_SHA..$HEAD_SHA")
+          ! printf '%s\n%s\n' "$log" "$PR_BODY" | grep -iEn '^(co-authored-by|claude-session):|^[^[:alpha:]]*generated with'
       - name: No long-lived PAT in any workflow
         run: "! grep -rEn 'secrets\\.[A-Za-z_][A-Za-z0-9_]*PAT\\b' .github/workflows/"
       - name: No secret variable expanded into an output command
