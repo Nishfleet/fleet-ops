@@ -138,6 +138,29 @@ jobs:
             case $labels in *",$l,"*) skip "$l" ;; esac
           done
 
+          # A deliverable that edits .github/workflows/** is one no worker can ever
+          # land: the worker App has no workflows permission by design (Nish,
+          # 2026-10-04), so every push is refused with
+          # "refusing to allow a GitHub App to create or update workflow ...
+          # without 'workflows' permission". Two runs each burned their walls
+          # hitting that refusal before the cap parked them (fleet-ops #8877,
+          # #8861, #8902, #8990, #8995, #9211; 0509#4259). Detect and route it
+          # instead of retrying it (fleet-ops#8900): the orchestrate job in
+          # agent-dispatch.yml runs the orchestrator, which pushes as the runner
+          # user's own gh login, and that login CAN push workflow files.
+          # The park loop above already skipped an issue that carries the label,
+          # so this only re-routes one a worker claimed by mistake.
+          # Substring, not a parse: the acceptance is "title/body contains
+          # .github/workflows/". That over-matches a body that only *mentions* a
+          # workflow file in prose (a docs issue quoting a CI path). Tolerable
+          # here because the cost is one orchestrator run, not a wrong push; a
+          # narrower "Files in scope" test is a follow-up issue.
+          if jq -e --arg p '.github/workflows/' '((.title // "") + "\n" + (.body // "")) | contains($p)' <<<"$issue" >/dev/null; then
+            gh issue edit "$i" -R "$REPO" --add-label needs-orchestrator --remove-label agent-ready,agent-in-progress
+            gh issue comment "$i" -R "$REPO" --body "routed: the deliverable edits .github/workflows/**, which the worker App cannot push; handed to the orchestrator"
+            skip workflow-files
+          fi
+
           # Hard stop for loops where a run "succeeds" but CI stays red: 3 runs
           # per issue since the newest park: comment (the old opus-vet: prefix still
           # counts, so older issues keep their resets), counted from these comments.

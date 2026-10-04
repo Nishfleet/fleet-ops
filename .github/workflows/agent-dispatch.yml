@@ -7,6 +7,13 @@
 # To switch miss-review off: set MISS_REVIEW to off, or delete the variable.
 # To delete it: revert the miss-review jobs in this file and the miss-review
 # path in agent.yml (Gate, Worker, Arm, Deliverable, Clean).
+# Repo variable ORCHESTRATE:
+#   off (default, unset) = the orchestrate job never starts
+#   live                 = a needs-orchestrator label starts one hand-off run
+# To switch orchestration off: set ORCHESTRATE to off, or delete the variable.
+# To delete it: revert the orchestrate job in this file, the workflow-path
+# detector in agent.yml's Gate, and prompts/orchestrator-handoff.md. A run
+# already in flight finishes: the label gate only stops new ones.
 name: agent-dispatch
 on:
   issues:
@@ -26,7 +33,7 @@ on:
         required: false
         type: string
       task:
-        description: 'miss-review to replay a miss on issue, empty for a normal sweep'
+        description: 'miss-review to replay a miss on issue, orchestrate to hand a parked issue to the orchestrator, empty for a normal sweep'
         required: false
         type: string
   # Nishfleet/0509 keeps only a trigger stub that calls this file, so the
@@ -381,3 +388,202 @@ jobs:
       issues: write
     with:
       ref: ${{ matrix.ref }}
+  # A parked issue is one the fleet cannot finish: the attempt cap, two failed
+  # runs, or a worker parking it. The label was the whole hand-off and nothing
+  # read it, so parked work sat (fleet-ops #9211 #9063 #9055 #9015 #8973 #8574
+  # #8561 #8444 open, 0509 7). This job picks the issue up and runs the
+  # orchestrator, which is a Claude Code session on the runner user's OWN gh
+  # login, not the worker App: that login can push .github/workflows/**, which
+  # the App cannot by design (Nish 2026-10-04). Most parked work is exactly that
+  # class, and agent.yml's Gate now routes it here instead of burning a run.
+  # Not a reusable call to agent.yml on purpose: agent.yml is the worker (App
+  # token, bwrap jail, one claim branch), and this is the hand-off (runner
+  # login, plain worktree, branch orch/issue-<N>).
+  orchestrate:
+    # A bot sender alone is not trust: any GitHub App in the org can label an
+    # issue and would start a session with bypassPermissions. The login must be
+    # Nish, or the fleet App / github-actions (the Gate's workflow-path route
+    # and agent.yml's attempt-cap park label). workflow_dispatch needs no sender
+    # test: it is already write-access only.
+    if: >-
+      vars.ORCHESTRATE == 'live' && (
+        (github.event_name == 'issues' && github.event.action == 'labeled' && github.event.label.name == 'needs-orchestrator' &&
+          (github.event.sender.login == 'nish3451' ||
+           (endsWith(github.event.sender.login, '[bot]') &&
+            (github.event.sender.login == 'nishfleet-worker[bot]' || github.event.sender.login == 'github-actions[bot]')))) ||
+        (github.event_name == 'workflow_dispatch' && inputs.task == 'orchestrate' && inputs.issue != '')
+      )
+    concurrency:
+      group: orchestrate-${{ github.repository }}
+      cancel-in-progress: false
+    runs-on: [self-hosted, agent]
+    timeout-minutes: 60
+    # issues: read is the whole grant: the steps read the issue, and the
+    # orchestrator session does its own writes as the runner login. The GITHUB_TOKEN
+    # is never handed to claude (step work unsets GH_TOKEN and GITHUB_TOKEN), so
+    # this token cannot reach the session that pushes workflow files.
+    permissions:
+      # issues: read is the job's own grant (steps read the issue), contents:
+      # read is added because steps a and d read git refs and PR lists through
+      # the API, which GitHub scopes to contents even for a read.
+      issues: read
+      contents: read
+    env:
+      REPO: ${{ github.repository }}
+      # An issues.labeled event has no inputs.issue, so a 0509 stub that calls
+      # this file for a label-only trigger passes '' and the event number is read.
+      ISSUE: ${{ github.event.issue.number || inputs.issue }}
+    steps:
+      - name: Check the issue is still parked
+        id: issue
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          [ -n "$ISSUE" ] || { echo "orchestrate: no issue number on this event; skip"; exit 0; }
+          state=$(gh issue view "$ISSUE" -R "$REPO" --json state --jq .state)
+          labels=,$(gh issue view "$ISSUE" -R "$REPO" --json labels --jq '[.labels[].name]|join(",")'),
+          [ "$state" = OPEN ] || { echo "orchestrate: #$ISSUE is $state; skip"; exit 0; }
+          # Relabelled back to agent-ready (someone picked it up), or a previous
+          # hand-off already ran and produced no PR: both end the loop here
+          # rather than in the always() step, so nothing is built.
+          case $labels in *,needs-orchestrator,*) ;; *) echo "orchestrate: #$ISSUE no longer has needs-orchestrator; skip"; exit 0 ;; esac
+          case $labels in *,orchestrator-tried,*) echo "orchestrate: #$ISSUE already has orchestrator-tried; skip"; exit 0 ;; esac
+          branch="orch/issue-$ISSUE"
+          if gh api "repos/$REPO/git/ref/heads/$branch" --silent 2>/dev/null; then
+            echo "orchestrate: $branch exists on origin; another hand-off owns #$ISSUE; skip"
+            exit 0
+          fi
+          echo "go=true" >> "$GITHUB_OUTPUT"
+      - name: Fresh worktree on origin/main
+        id: worktree
+        if: steps.issue.outputs.go == 'true'
+        # No GH_TOKEN: every git call here authenticates as the runner user.
+        run: |
+          set -euo pipefail
+          # The mirror lives under $HOME/workspaces/agent-worktrees, beside the
+          # worker worktrees, never in /tmp or inside the deploy clone: a
+          # checkout a session can re-clone is not a base to branch from.
+          # A bare repo needs no checkout of its own, and `git worktree add`
+          # works from one (git 2.43 proven).
+          # shellcheck disable=SC2153 # REPO is the job-level env, not a misspelling
+          repo=${REPO#*/}
+          mirror="$HOME/workspaces/agent-worktrees/.orch-mirror/$repo.git"
+          wt="$HOME/workspaces/agent-worktrees/orch-$repo-$ISSUE"
+          if [ ! -d "$mirror" ]; then
+            mkdir -p "$(dirname "$mirror")"
+            git init -q --bare "$mirror"
+            git -C "$mirror" remote add origin "https://github.com/$REPO.git"
+          fi
+          # No GH_TOKEN on the fetch either: the App token cannot read a private
+          # repo and has no workflows scope. The runner user's own gh login is the
+          # credential (~/.gitconfig -> gh auth git-credential), and a repo it
+          # cannot read fails this step loudly instead of claiming an issue it
+          # cannot build.
+          # The refspec maps into refs/remotes/origin/*, NOT into refs/heads/*:
+          # with prune, a heads->heads refspec deletes every local branch that is
+          # not on origin, which is exactly the branch holding a hand-off that
+          # died before its push (proven live: --prune removed
+          # refs/heads/orch/issue-localonly). Pruning only refs/remotes is safe.
+          # It also gives the worktree a real origin/main, which the prompt's
+          # "git log --oneline origin/main..HEAD" reuse step needs.
+          env -u GH_TOKEN -u GITHUB_TOKEN git -C "$mirror" fetch -q --prune origin '+refs/heads/*:refs/remotes/origin/*'
+          # A killed run can leave the worktree registered, and a bare repo
+          # refuses to check one branch out in two worktrees at once. Remove it
+          # through git first, so the registration goes with the directory.
+          git -C "$mirror" worktree prune
+          git -C "$mirror" worktree remove --force "$wt" 2>/dev/null || rm -rf "$wt"
+          git -C "$mirror" worktree prune
+          branch_ref="refs/heads/orch/issue-$ISSUE"
+          if git -C "$mirror" show-ref --verify --quiet "$branch_ref"; then
+            # A hand-off that died before its push: its branch holds its commits,
+            # so start from it instead of failing on "branch already exists".
+            # Step "issue" already bailed when that branch is on origin, so this
+            # is only the local half.
+            while IFS= read -r line; do
+              case $line in
+                "worktree "*) wdir=${line#worktree } ;;
+                "  branch $branch_ref")
+                  env -u GH_TOKEN -u GITHUB_TOKEN git -C "$mirror" worktree remove --force "$wdir" 2>/dev/null || rm -rf "$wdir"
+                  git -C "$mirror" worktree prune ;;
+              esac
+            done < <(git -C "$mirror" worktree list --porcelain)
+            env -u GH_TOKEN -u GITHUB_TOKEN git -C "$mirror" worktree add -q "$wt" "$branch_ref"
+          else
+            env -u GH_TOKEN -u GITHUB_TOKEN git -C "$mirror" worktree add -q -b "orch/issue-$ISSUE" "$wt" refs/remotes/origin/main
+          fi
+          echo "worktree=$wt" >> "$GITHUB_OUTPUT"
+      - name: Run the orchestrator session
+        if: steps.issue.outputs.go == 'true' && steps.worktree.outputs.worktree != ''
+        env:
+          # The prompt is a file, not a ${{ }} inline: zizmor's
+          # template-injection rule fails the workflow otherwise.
+          ISSUE_N: ${{ github.event.issue.number || inputs.issue }}
+          REPO_NAME: ${{ github.repository }}
+          WORKTREE: ${{ steps.worktree.outputs.worktree }}
+        run: |
+          set -euo pipefail
+          cd "$WORKTREE"
+          # The prompt is the file from THIS checkout (origin/main of the repo
+          # under hand-off). A hand-off on a repo that has no such file falls
+          # back to the fleet's live copy, never a stale branch copy.
+          prompt="prompts/orchestrator-handoff.md"
+          if [ ! -f "$prompt" ]; then
+            echo "::warning::$REPO_NAME@main has no $prompt; using the fleet copy"
+            prompt="$HOME/workspaces/tooling/fleet-ops-deploy-clone/prompts/orchestrator-handoff.md"
+          fi
+          { cat "$prompt"; printf '\n\nTarget: %s#%s\nBranch: orch/issue-%s. It is checked out already; run git log --oneline origin/main..HEAD before you build, because an earlier hand-off may have left commits here.\n' "$REPO_NAME" "$ISSUE_N" "$ISSUE_N"; } > "$RUNNER_TEMP/orchestrator-prompt.md"
+          # Stock CLI, no --model: the session default model is the rule (the
+          # agent.yml Worker lane picks worker-capable; this one is the
+          # orchestrator, not a seat). GH_TOKEN and GITHUB_TOKEN are unset so the
+          # session authenticates as the runner user, whose gh login can push
+          # .github/workflows/** -- the whole reason this job exists.
+          env -u GH_TOKEN -u GITHUB_TOKEN timeout 3000 /home/nish/.local/bin/claude -p \
+            --permission-mode bypassPermissions \
+            --max-turns 80 \
+            "$(cat "$RUNNER_TEMP/orchestrator-prompt.md")"
+      - name: Clean up and mark a PR-less hand-off
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+          # steps.* goes through env, never into the run block directly
+          # (zizmor template-injection; the same reason WORKTREE above is an
+          # env var).
+          GO: ${{ steps.issue.outputs.go }}
+        run: |
+          set -euo pipefail
+          # shellcheck disable=SC2153 # REPO is the job-level env, not a misspelling
+          repo=${REPO#*/}
+          mirror="$HOME/workspaces/agent-worktrees/.orch-mirror/$repo.git"
+          wt="$HOME/workspaces/agent-worktrees/orch-$repo-$ISSUE"
+          # Worktree removal first and unconditional: a session cut at the job
+          # wall can leave the worktree, and a leftover checkout costs the next
+          # hand-off a clone. remove --force is how a dirty tree goes, and this
+          # is never a pgrep-kill of anything (a wrong pattern there can take a
+          # worker's process with it, fleet-ops#7743).
+          if [ -d "$mirror" ]; then
+            env -u GH_TOKEN -u GITHUB_TOKEN git -C "$mirror" worktree remove --force "$wt" 2>/dev/null || rm -rf "$wt"
+            env -u GH_TOKEN -u GITHUB_TOKEN git -C "$mirror" worktree prune || true
+          fi
+          # Nothing was built: the session step was skipped or the issue check
+          # bailed. No PR exists and none is coming, but this run never started
+          # work, so it does not park the issue.
+          [ "$GO" = true ] || {
+            echo "orchestrate: nothing was built on this run; no park mark"
+            exit 0
+          }
+          [ -n "$ISSUE" ] || exit 0
+          # No PR for this head: mark it, so the label loop stops. The next
+          # orchestrate event (a re-label, or a replay dispatch) sees
+          # orchestrator-tried and skips; only a person clears the label.
+          if gh pr list -R "$REPO" --head "orch/issue-$ISSUE" --state all --json number --jq 'length' | grep -qxE '[1-9][0-9]*'; then
+            echo "orchestrate: #$ISSUE has a PR on orch/issue-$ISSUE; nothing to mark"
+            exit 0
+          fi
+          # The writes need issues: write, which this job deliberately does not
+          # hold: the orchestrator session, not this job, owns pushing. So the
+          # mark is posted as the runner user's own login (gh's stored host
+          # credential, the same one the session pushes with).
+          env -u GH_TOKEN -u GITHUB_TOKEN gh issue edit "$ISSUE" -R "$REPO" --add-label orchestrator-tried --remove-label needs-orchestrator
+          env -u GH_TOKEN -u GITHUB_TOKEN gh issue comment "$ISSUE" -R "$REPO" --body "orchestrator hand-off ended without a PR: $GITHUB_SERVER_URL/$REPO/actions/runs/$GITHUB_RUN_ID"
+          echo "orchestrate: #$ISSUE marked orchestrator-tried (no PR)"
