@@ -14,6 +14,9 @@
 # To delete it: revert the orchestrate job in this file, the workflow-path
 # detector in agent.yml's Gate, and prompts/orchestrator-handoff.md. A run
 # already in flight finishes: the label gate only stops new ones.
+# The orchestrate job is the one self-hosted job here: org runner group
+# `agent` (id 3) must list this file @refs/heads/main in selected_workflows,
+# or the job queues forever next to idle runners. Delete that entry with it.
 name: agent-dispatch
 on:
   issues:
@@ -503,7 +506,7 @@ jobs:
             while IFS= read -r line; do
               case $line in
                 "worktree "*) wdir=${line#worktree } ;;
-                "  branch $branch_ref")
+                "branch $branch_ref")
                   env -u GH_TOKEN -u GITHUB_TOKEN git -C "$mirror" worktree remove --force "$wdir" 2>/dev/null || rm -rf "$wdir"
                   git -C "$mirror" worktree prune ;;
               esac
@@ -538,10 +541,13 @@ jobs:
           # orchestrator, not a seat). GH_TOKEN and GITHUB_TOKEN are unset so the
           # session authenticates as the runner user, whose gh login can push
           # .github/workflows/** -- the whole reason this job exists.
+          # The prompt goes on stdin: it opens with `---` front matter, and as
+          # an argument the CLI parses that as an option and exits 1 (run
+          # 37207149948: "error: unknown option '---").
           env -u GH_TOKEN -u GITHUB_TOKEN timeout 3000 /home/nish/.local/bin/claude -p \
             --permission-mode bypassPermissions \
             --max-turns 80 \
-            "$(cat "$RUNNER_TEMP/orchestrator-prompt.md")"
+            < "$RUNNER_TEMP/orchestrator-prompt.md"
       - name: Clean up and mark a PR-less hand-off
         if: always()
         env:
