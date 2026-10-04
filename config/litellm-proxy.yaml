@@ -3,6 +3,7 @@
 # MiniMax M3.1-Flash-Preview is free for every MiniMax Code subscriber until 2026-10-07 (Nish 2026-09-30); its four rows are tagged free until then.
 # CommandCode, Cline, OpenCode Go, Ollama: deepseek-v4.1-flash. MiniMax: M3.1-Flash-Preview. StepFun: step-5-preview. Synthetic: GLM-5.3-Flash.
 # xkiro: qwen3-coder-plus:free, qwen3.8-max:free. OpenCode zen: space-bunny-free. Cline: stealth/space-bunny-alpha.
+# Alibaba Model Studio Token Plan (fleet-ops#9220): qwen3.8-max is a judge/orchestrator row only, never a worker rung (Nish 2026-09-08, #4445). The plan holds 10,000 credits per 7-day window, so the row's rpm and parallel limits are both 3 (plan cap 3-4 concurrent).
 # Cline stealth/union-alpha stopped being free 2026-09-30 (402 "Insufficient balance", 397 errors and 0 answers in 5 h). A 402 is neither retried nor cooled by LiteLLM v1.98.0 (no retry_policy key covers APIError; cooldown skips 4xx), so no setting below can move a job off such a row: its four rows are removed until Nish funds Cline credits. Cline's other rows stay. Any row that starts answering only 402 goes to Nish the same way (needs-nish-decision issue): it comes out only on his yes.
 # CommandCode stealth/pixel-canary and xkiro stealth/pixel-canary:free ended 2026-09-30 (403 "no longer available", 404 "does not exist"). openai-compatible 403 maps to APIError (no retry_policy key, same as 402); 404 maps to NotFoundError, which should_retry_this_error hard-raises on v1.98.0. Their four rows are removed.
 # OpenCode zen union-alpha answered 0 of 68 calls in the last 7 days (last attempt 2026-09-30 16:30 UTC, LiteLLM_SpendLogs); a direct probe on 2026-10-01 returns 400 "Upstream request failed: Model is unavailable." That 400 maps to BadRequestError, which v1.98.0 never cools, so no setting below can move a job off such a row: its four rows are removed. The opencodego-ds41flash rows on the Go endpoint (same key) stay: they are walled by a monthly quota (429 GoUsageLimitError, limitName monthly), not dead.
@@ -898,6 +899,31 @@ model_list:
   model_info:
     mode: chat
     id: openrouter-lagunas21free-worker-cheap
+    allowed_fails_policy:
+      BadRequestErrorAllowedFails: 1
+# Alibaba Model Studio Token Plan (Personal Standard, SG, $18/mo, 10,000 credits per 7-day window), re-wired
+# 2026-10-04 with a fresh console key (fleet-ops#9220). Nish 2026-09-08 (#4445): "only use qwen 3.8 max as
+# another judge / orchestrator on the roster. this token plan isn't for use with other models." The 09-08 seat
+# burned the whole window in ~11h across 7 worker sessions (~234 calls), so this row has no worker rung at all:
+# one judge row, and the only rung that can call this seat. The :free xkiro qwen rows above are the same model
+# on a different key (XKIRO_API_KEY) and stay worker rows.
+# The plan allows 3-4 concurrent, so rpm and max_parallel_requests are both 3: the row leaves the other two
+# judge rows room. Prepaid, so no max_budget wall - the window is the wall.
+- model_name: judge
+  litellm_params:
+    model: openai/qwen3.8-max
+    api_base: https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1
+    api_key: os.environ/ALIBABA_CODING_API_KEY
+    tags:
+    - prepaid
+    - alibaba
+    rpm: 3
+    order: 1
+    max_parallel_requests: 3
+    cooldown_time: 900
+  model_info:
+    mode: chat
+    id: alibaba-qwen38max-judge
     allowed_fails_policy:
       BadRequestErrorAllowedFails: 1
 router_settings:
