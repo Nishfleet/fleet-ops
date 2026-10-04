@@ -46,7 +46,7 @@ If the acceptance is already met on `origin/main` — a merged delivery PR, or `
 
 ## Needs Nish
 
-Stop and hand back only for a reserved class: money/pricing, privacy, security, legal, brand, product direction, customer-data deletion, destructive or irreversible steps, or an authority Nish explicitly reserved. Comment `orchestrator: needs Nish — <the decision, in one line, and the options>`, keep `needs-orchestrator` on the issue (it is what the drain reads), and exit 0. Every other blocker — a red check, a missing tool, an ambiguous packet — is yours to resolve or to file as a follow-up issue.
+Stop and hand back only for a reserved class: money/pricing, privacy, security, legal, brand, product direction, customer-data deletion, destructive or irreversible steps, or an authority Nish explicitly reserved. Comment `orchestrator: needs Nish — <the decision, in one line, and the options>`, add the `needs-nish-decision` label, and exit 0 with no PR (the job then marks the issue `orchestrator-tried`, so it is not retried). Every other blocker — a red check, a missing tool, an ambiguous packet — is yours to resolve or to file as a follow-up issue.
 
 ## Forbidden
 

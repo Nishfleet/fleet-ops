@@ -441,8 +441,8 @@ jobs:
         run: |
           set -euo pipefail
           [ -n "$ISSUE" ] || { echo "orchestrate: no issue number on this event; skip"; exit 0; }
-          state=$(gh issue view "$ISSUE" -R "$REPO" --json state,labels --jq '[.state, ([.labels[].name]|join(","))] | @tsv')
-          state=${state%%$'\t'*}; labels=",${state#*$'\t'},"
+          state=$(gh issue view "$ISSUE" -R "$REPO" --json state --jq .state)
+          labels=,$(gh issue view "$ISSUE" -R "$REPO" --json labels --jq '[.labels[].name]|join(",")'),
           [ "$state" = OPEN ] || { echo "orchestrate: #$ISSUE is $state; skip"; exit 0; }
           # Relabelled back to agent-ready (someone picked it up), or a previous
           # hand-off already ran and produced no PR: both end the loop here
