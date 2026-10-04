@@ -51,7 +51,7 @@ groups:
             model:
               datasource: {type: prometheus, uid: fleet-prometheus}
               editorMode: code
-              expr: sum(increase(litellm_deployment_failure_responses_total{api_base=~"https://api.cline.bot/api/v1.*",exception_status="429"}[24h]))
+              expr: sum(increase(litellm_deployment_failure_responses_total{api_base=~"https://api.cline.bot/api/v1.*",exception_status="429"}[24h])) or vector(0)
               instant: true
               intervalMs: 1000
               maxDataPoints: 43200
@@ -113,7 +113,7 @@ groups:
             model:
               datasource: {type: prometheus, uid: fleet-prometheus}
               editorMode: code
-              expr: sum(increase(litellm_deployment_failure_responses_total{api_base=~"https://api.commandcode.ai/provider/v1.*",exception_status="429"}[24h]))
+              expr: sum(increase(litellm_deployment_failure_responses_total{api_base=~"https://api.commandcode.ai/provider/v1.*",exception_status="429"}[24h])) or vector(0)
               instant: true
               intervalMs: 1000
               maxDataPoints: 43200
@@ -175,7 +175,7 @@ groups:
             model:
               datasource: {type: prometheus, uid: fleet-prometheus}
               editorMode: code
-              expr: sum(increase(litellm_deployment_failure_responses_total{api_base=~"https://api.minimax.io/anthropic.*",exception_status="429"}[24h]))
+              expr: sum(increase(litellm_deployment_failure_responses_total{api_base=~"https://api.minimax.io/anthropic.*",exception_status="429"}[24h])) or vector(0)
               instant: true
               intervalMs: 1000
               maxDataPoints: 43200
@@ -237,7 +237,7 @@ groups:
             model:
               datasource: {type: prometheus, uid: fleet-prometheus}
               editorMode: code
-              expr: sum(increase(litellm_deployment_failure_responses_total{api_base=~"https://api.stepfun.ai/step_plan/v1.*",exception_status="429"}[24h]))
+              expr: sum(increase(litellm_deployment_failure_responses_total{api_base=~"https://api.stepfun.ai/step_plan/v1.*",exception_status="429"}[24h])) or vector(0)
               instant: true
               intervalMs: 1000
               maxDataPoints: 43200
@@ -299,7 +299,7 @@ groups:
             model:
               datasource: {type: prometheus, uid: fleet-prometheus}
               editorMode: code
-              expr: sum(increase(litellm_deployment_failure_responses_total{api_base=~"https://api.z.ai/api/coding/paas/v4.*",exception_status="429"}[24h]))
+              expr: sum(increase(litellm_deployment_failure_responses_total{api_base=~"https://api.z.ai/api/coding/paas/v4.*",exception_status="429"}[24h])) or vector(0)
               instant: true
               intervalMs: 1000
               maxDataPoints: 43200
@@ -361,7 +361,7 @@ groups:
             model:
               datasource: {type: prometheus, uid: fleet-prometheus}
               editorMode: code
-              expr: sum(increase(litellm_deployment_failure_responses_total{api_base=~"https://ollama.com/v1.*",exception_status="429"}[24h]))
+              expr: sum(increase(litellm_deployment_failure_responses_total{api_base=~"https://ollama.com/v1.*",exception_status="429"}[24h])) or vector(0)
               instant: true
               intervalMs: 1000
               maxDataPoints: 43200
@@ -423,7 +423,7 @@ groups:
             model:
               datasource: {type: prometheus, uid: fleet-prometheus}
               editorMode: code
-              expr: sum(increase(litellm_deployment_failure_responses_total{api_base=~"https://opencode.ai/zen/go/v1.*",exception_status="429"}[24h]))
+              expr: sum(increase(litellm_deployment_failure_responses_total{api_base=~"https://opencode.ai/zen/go/v1.*",exception_status="429"}[24h])) or vector(0)
               instant: true
               intervalMs: 1000
               maxDataPoints: 43200
@@ -485,7 +485,7 @@ groups:
             model:
               datasource: {type: prometheus, uid: fleet-prometheus}
               editorMode: code
-              expr: sum(increase(litellm_deployment_failure_responses_total{api_base=~"https://api.paretoinference.com/v1.*",exception_status="429"}[24h]))
+              expr: sum(increase(litellm_deployment_failure_responses_total{api_base=~"https://api.paretoinference.com/v1.*",exception_status="429"}[24h])) or vector(0)
               instant: true
               intervalMs: 1000
               maxDataPoints: 43200
@@ -547,7 +547,7 @@ groups:
             model:
               datasource: {type: prometheus, uid: fleet-prometheus}
               editorMode: code
-              expr: sum(increase(litellm_deployment_failure_responses_total{api_base=~"https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1.*",exception_status="429"}[24h]))
+              expr: sum(increase(litellm_deployment_failure_responses_total{api_base=~"https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1.*",exception_status="429"}[24h])) or vector(0)
               instant: true
               intervalMs: 1000
               maxDataPoints: 43200
