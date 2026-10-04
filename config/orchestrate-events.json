@@ -1,0 +1,196 @@
+{
+  "description": "Payloads that must and must not start an orchestrate hand-off, and payloads the agent.yml Gate must park for the workflow-path route. CI jq evaluates fire() and parks() against each case; needles must appear in the named workflow so the if: and the Gate jq cannot drift from this file.",
+  "needles": {
+    "agent-dispatch.yml": [
+      "ORCHESTRATE",
+      "needs-orchestrator",
+      "orchestrate",
+      "nish3451",
+      "nishfleet-worker[bot]",
+      "github-actions[bot]",
+      "orchestrator-tried",
+      "orch/issue-",
+      "--max-turns 80",
+      "--permission-mode bypassPermissions",
+      "cancel-in-progress: false",
+      "vars.ORCHESTRATE == 'live' && (",
+      "github.event.label.name == 'needs-orchestrator'",
+      "github.event.sender.login == 'nish3451'",
+      "inputs.task == 'orchestrate' && inputs.issue != ''"
+    ],
+    "agent.yml": [
+      ".github/workflows/",
+      "needs-orchestrator",
+      "agent-ready,agent-in-progress",
+      "workflow-files",
+      "routed: the deliverable edits .github/workflows/**, which the worker App cannot push; handed to the orchestrator",
+      "if jq -e --arg p '.github/workflows/' '((.title // \"\") + \"\\n\" + (.body // \"\")) | contains($p)' <<<\"$issue\" >/dev/null; then"
+    ]
+  },
+  "orchestrate_cases": [
+    {
+      "id": "label-trusted-nish",
+      "want": true,
+      "orchestrate": "live",
+      "event_name": "issues",
+      "action": "labeled",
+      "label": "needs-orchestrator",
+      "sender": "nish3451"
+    },
+    {
+      "id": "label-trusted-worker-bot",
+      "want": true,
+      "orchestrate": "live",
+      "event_name": "issues",
+      "action": "labeled",
+      "label": "needs-orchestrator",
+      "sender": "nishfleet-worker[bot]"
+    },
+    {
+      "id": "label-trusted-gh-actions",
+      "want": true,
+      "orchestrate": "live",
+      "event_name": "issues",
+      "action": "labeled",
+      "label": "needs-orchestrator",
+      "sender": "github-actions[bot]"
+    },
+    {
+      "id": "label-untrusted-bot",
+      "want": false,
+      "orchestrate": "live",
+      "event_name": "issues",
+      "action": "labeled",
+      "label": "needs-orchestrator",
+      "sender": "evil-app[bot]"
+    },
+    {
+      "id": "label-untrusted-human",
+      "want": false,
+      "orchestrate": "live",
+      "event_name": "issues",
+      "action": "labeled",
+      "label": "needs-orchestrator",
+      "sender": "random-user"
+    },
+    {
+      "id": "label-other",
+      "want": false,
+      "orchestrate": "live",
+      "event_name": "issues",
+      "action": "labeled",
+      "label": "agent-ready",
+      "sender": "nish3451"
+    },
+    {
+      "id": "label-unlabeled",
+      "want": false,
+      "orchestrate": "live",
+      "event_name": "issues",
+      "action": "unlabeled",
+      "label": "needs-orchestrator",
+      "sender": "nish3451"
+    },
+    {
+      "id": "off",
+      "want": false,
+      "orchestrate": "off",
+      "event_name": "issues",
+      "action": "labeled",
+      "label": "needs-orchestrator",
+      "sender": "nish3451"
+    },
+    {
+      "id": "unset",
+      "want": false,
+      "orchestrate": "",
+      "event_name": "issues",
+      "action": "labeled",
+      "label": "needs-orchestrator",
+      "sender": "nish3451"
+    },
+    {
+      "id": "dispatch-orchestrate",
+      "want": true,
+      "orchestrate": "live",
+      "event_name": "workflow_dispatch",
+      "task": "orchestrate",
+      "issue": "9211"
+    },
+    {
+      "id": "dispatch-no-issue",
+      "want": false,
+      "orchestrate": "live",
+      "event_name": "workflow_dispatch",
+      "task": "orchestrate",
+      "issue": ""
+    },
+    {
+      "id": "dispatch-miss-review",
+      "want": false,
+      "orchestrate": "live",
+      "event_name": "workflow_dispatch",
+      "task": "miss-review",
+      "issue": "9211"
+    },
+    {
+      "id": "dispatch-sweep",
+      "want": false,
+      "orchestrate": "live",
+      "event_name": "workflow_dispatch",
+      "task": "",
+      "issue": ""
+    },
+    {
+      "id": "schedule",
+      "want": false,
+      "orchestrate": "live",
+      "event_name": "schedule",
+      "requeued": true
+    }
+  ],
+  "gate_cases": [
+    {
+      "id": "workflow-file-body",
+      "want_park": true,
+      "title": "add a CI check",
+      "body": "Add a step to .github/workflows/ci.yml that runs the linter."
+    },
+    {
+      "id": "no-workflow",
+      "want_park": false,
+      "title": "fix the login button",
+      "body": "The button does nothing on mobile."
+    },
+    {
+      "id": "workflow-file-title",
+      "want_park": true,
+      "title": "ci: edit .github/workflows/deploy.yml",
+      "body": "Bump the Node version."
+    },
+    {
+      "id": "bare-workflows-path",
+      "want_park": false,
+      "title": "fix the button",
+      "body": "See workflows/ci.yml for the pattern."
+    },
+    {
+      "id": "other-dotgithub-path",
+      "want_park": false,
+      "title": "issue template",
+      "body": "Add .github/ISSUE_TEMPLATE/bug.yml."
+    },
+    {
+      "id": "workflow-path-in-fence",
+      "want_park": true,
+      "title": "document the pipeline",
+      "body": "The file lives at `.github/workflows/ci.yml`."
+    },
+    {
+      "id": "existing-label-no-path",
+      "want_park": false,
+      "title": "relabel me",
+      "body": "Remove the parked label from this issue."
+    }
+  ]
+}
