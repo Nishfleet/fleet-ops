@@ -511,6 +511,18 @@ jobs:
           # The runner user's own gh login dispatches it, as the runner-start
           # refill does, because the App token may lack actions: write.
           env -u GH_TOKEN gh workflow run agent-dispatch.yml -R "$REPO" || echo "::warning::sweep dispatch failed"
+          # Lane counts above are host-wide but the listing is this repo's
+          # only: a strong-only issue waiting in another repo sat until that
+          # repo's own sweep, which GitHub delays by hours. Sweep every other
+          # enrolled repo too; its Gate admits only a lane that is free, and
+          # the sweep concurrency group keeps one waiting at most per repo.
+          # Only .repos[] is swept: fleet-ops is deferred in the intake file.
+          others=$(jq -r '.repos[].name' "$HOME/workspaces/tooling/fleet-ops-deploy-clone/config/intake-repos.json") || others=
+          [ -n "$others" ] || echo "::warning::intake-repos.json lists no repos"
+          for other in $others; do
+            [ "${REPO%/*}/$other" = "$REPO" ] && continue
+            env -u GH_TOKEN gh workflow run agent-dispatch.yml -R "${REPO%/*}/$other" || echo "::warning::sweep dispatch on $other failed"
+          done
       - name: Clean workspace
         if: always()
         env:
