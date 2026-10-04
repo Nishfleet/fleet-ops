@@ -144,6 +144,16 @@ jobs:
       - name: pi seat ids resolve to litellm-proxy.yaml model_name (fleet-ops#8332)
         if: always()
         run: jq -n -e --argjson ids "$(jq -c '[.providers.litellm.models[].id]' config/pi-models.json)" --argjson names "$(yq -o=json '[.model_list[].model_name]' config/litellm-proxy.yaml)" '($ids - $names) as $bad | if ($bad|length)==0 then true else error("unresolved pi seat ids - \($bad|join(","))") end'
+      - name: Every paid plan keeps a router row and every prepaid row is a listed plan (fleet-ops#9224)
+        if: always()
+        run: |
+          rows="$(yq -o=json '[.model_list[].litellm_params | {"b": (.api_base // ""), "t": (.tags // [])}]' config/litellm-proxy.yaml)"
+          jq -n -e --slurpfile plans config/paid-plans.json --argjson rows "$rows" '
+            ($plans[0] | map(select(.rows_pending == null))) as $live
+            | ($live | map(.api_base as $p | select([$rows[].b | startswith($p)] | any | not) | .name)) as $gone
+            | ($rows | map(select(.t | index("prepaid")) | .b as $b | select([$plans[0][].api_base as $p | $b | startswith($p)] | any | not) | $b) | unique) as $unlisted
+            | if ($gone + $unlisted | length) == 0 then true
+              else error("paid plans with no router row: \($gone | join(", ")); prepaid rows not in config/paid-plans.json: \($unlisted | join(", ")). Changing config/paid-plans.json needs Nish (CODEOWNERS)") end'
       - name: Ollama rungs serve only the permitted slug (fleet-ops#8332)
         if: always()
         run: yq -o=json '[.model_list[] | select((.litellm_params.api_base // "") | test("ollama")) | .litellm_params.model | select(. != "openai/deepseek-v4.1-flash")]' config/litellm-proxy.yaml | jq -e 'if length==0 then true else error("ollama non-flash rungs - \(join(","))") end'

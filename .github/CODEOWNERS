@@ -9,3 +9,5 @@
 **/bin/ @nish3451
 **/scripts/ @nish3451
 /.github/CODEOWNERS @nish3451
+# Paid-plan lock (fleet-ops#9224): removing a paid plan from the router needs Nish's yes. CI fails when a listed plan loses its last row.
+/config/paid-plans.json @nish3451
