@@ -668,8 +668,19 @@ model_list:
     id: minimax-m31b-worker-cheap
     allowed_fails_policy:
       BadRequestErrorAllowedFails: 1
+# Ollama DeepSeek V4.1 Flash only (CI + vault). Nish 2026-10-04: can take more lanes.
+# Direct key probe 2026-10-04 23:20 IST: 12 parallel 12x200; 24 parallel 13x200 and
+# 11x429 "too many concurrent requests", so the key cap is ~12. simple-shuffle picks
+# uniformly among rows, and one row among ~40 capable rungs was ~2% of new tasks
+# (the StepFun / z.ai pattern: ten rows). 1 per row x 10 rows = 10 router lanes,
+# leaving 2 of the ~12 cap for direct `pi --provider ollama-cloud` and bursts,
+# because a concurrency 429 cools this rung for cooldown_time. Per-token $10/1d
+# stays on every row (#9209). SpendLogs under-count this api_base: Ollama Cloud
+# returns `chatcmpl-<n>` ids that collide with LiteLLM_SpendLogs.request_id
+# (chatcmpl-0..998 already taken, 1013 rows); Redis deployment_spend and
+# prometheus still record the traffic (fleet-ops#9253).
 - model_name: worker-capable
-  litellm_params:
+  litellm_params: &ollama-ds41flash
     model: openai/deepseek-v4.1-flash
     api_base: https://ollama.com/v1
     api_key: os.environ/OLLAMA_API_KEY
@@ -682,11 +693,74 @@ model_list:
     output_cost_per_token: 1.2e-06
     max_budget: 10.0
     budget_duration: 1d
-    max_parallel_requests: 4
+    max_parallel_requests: 1
     cooldown_time: 900
   model_info:
     mode: chat
     id: ollama-ds41flash-worker-capable
+    allowed_fails_policy:
+      BadRequestErrorAllowedFails: 1
+- model_name: worker-capable
+  litellm_params: {<<: *ollama-ds41flash}
+  model_info:
+    mode: chat
+    id: ollama-ds41flashb-worker-capable
+    allowed_fails_policy:
+      BadRequestErrorAllowedFails: 1
+- model_name: worker-capable
+  litellm_params: {<<: *ollama-ds41flash}
+  model_info:
+    mode: chat
+    id: ollama-ds41flashc-worker-capable
+    allowed_fails_policy:
+      BadRequestErrorAllowedFails: 1
+- model_name: worker-capable
+  litellm_params: {<<: *ollama-ds41flash}
+  model_info:
+    mode: chat
+    id: ollama-ds41flashd-worker-capable
+    allowed_fails_policy:
+      BadRequestErrorAllowedFails: 1
+- model_name: worker-capable
+  litellm_params: {<<: *ollama-ds41flash}
+  model_info:
+    mode: chat
+    id: ollama-ds41flashe-worker-capable
+    allowed_fails_policy:
+      BadRequestErrorAllowedFails: 1
+- model_name: worker-capable
+  litellm_params: {<<: *ollama-ds41flash}
+  model_info:
+    mode: chat
+    id: ollama-ds41flashf-worker-capable
+    allowed_fails_policy:
+      BadRequestErrorAllowedFails: 1
+- model_name: worker-capable
+  litellm_params: {<<: *ollama-ds41flash}
+  model_info:
+    mode: chat
+    id: ollama-ds41flashg-worker-capable
+    allowed_fails_policy:
+      BadRequestErrorAllowedFails: 1
+- model_name: worker-capable
+  litellm_params: {<<: *ollama-ds41flash}
+  model_info:
+    mode: chat
+    id: ollama-ds41flashh-worker-capable
+    allowed_fails_policy:
+      BadRequestErrorAllowedFails: 1
+- model_name: worker-capable
+  litellm_params: {<<: *ollama-ds41flash}
+  model_info:
+    mode: chat
+    id: ollama-ds41flashi-worker-capable
+    allowed_fails_policy:
+      BadRequestErrorAllowedFails: 1
+- model_name: worker-capable
+  litellm_params: {<<: *ollama-ds41flash}
+  model_info:
+    mode: chat
+    id: ollama-ds41flashj-worker-capable
     allowed_fails_policy:
       BadRequestErrorAllowedFails: 1
 - model_name: worker-capable
