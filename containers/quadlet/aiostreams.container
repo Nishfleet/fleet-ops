@@ -3,9 +3,6 @@ Description=aiostreams (media streaming aggregator)
 
 [Container]
 Image=ghcr.io/viren070/aiostreams:latest
-# Floating tag, so `podman auto-update` moves it inside the weekly paused window
-# (ansible/update.yml). A pinned tag must not carry this line (fleet-ops#9254).
-AutoUpdate=registry
 ContainerName=aiostreams
 PublishPort=127.0.0.1:3000:3000
 Volume=/srv/aiostreams/data:/app/data
