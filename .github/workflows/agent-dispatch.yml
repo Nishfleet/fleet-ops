@@ -541,10 +541,13 @@ jobs:
           # orchestrator, not a seat). GH_TOKEN and GITHUB_TOKEN are unset so the
           # session authenticates as the runner user, whose gh login can push
           # .github/workflows/** -- the whole reason this job exists.
+          # The prompt goes on stdin: it opens with `---` front matter, and as
+          # an argument the CLI parses that as an option and exits 1 (run
+          # 37207149948: "error: unknown option '---").
           env -u GH_TOKEN -u GITHUB_TOKEN timeout 3000 /home/nish/.local/bin/claude -p \
             --permission-mode bypassPermissions \
             --max-turns 80 \
-            "$(cat "$RUNNER_TEMP/orchestrator-prompt.md")"
+            < "$RUNNER_TEMP/orchestrator-prompt.md"
       - name: Clean up and mark a PR-less hand-off
         if: always()
         env:
