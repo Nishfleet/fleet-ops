@@ -166,3 +166,30 @@ jobs:
           jq -r '.needles[]' config/miss-review-events.json | while IFS= read -r n; do
             grep -F -- "$n" .github/workflows/agent-dispatch.yml >/dev/null || { echo "missing needle: $n"; exit 1; }
           done
+      - name: Orchestrate event filter
+        if: always()
+        run: |
+          # The orchestrate job's if:, in the order the workflow writes it.
+          jq -e '
+            def fire:
+              ((.orchestrate // "off") == "live") and (
+                (.event_name == "issues" and .action == "labeled" and .label == "needs-orchestrator" and
+                  ((.sender // "") == "nish3451" or
+                   (((.sender // "") | endswith("[bot]")) and ((.sender // "") == "nishfleet-worker[bot]" or (.sender // "") == "github-actions[bot]"))))
+                or (.event_name == "workflow_dispatch" and .task == "orchestrate" and ((.issue // "") | length) > 0)
+              );
+            (.orchestrate_cases | map(select(.want != fire)) | if length == 0 then true else error("orchestrate filter mismatch: \(map(.id)|join(","))") end)
+          ' config/orchestrate-events.json
+          # The Gate detector in agent.yml, verbatim: an issue whose title or
+          # body names a workflow file is parked for the orchestrator, because
+          # no worker App can push one.
+          jq -e '
+            def parks: (((.title // "") + "\n" + (.body // "")) | contains(".github/workflows/"));
+            (.gate_cases | map(select(.want_park != parks)) | if length == 0 then true else error("gate detector mismatch: \(map(.id)|join(","))") end)
+          ' config/orchestrate-events.json
+          jq -r '.needles["agent-dispatch.yml"][]' config/orchestrate-events.json | while IFS= read -r n; do
+            grep -F -- "$n" .github/workflows/agent-dispatch.yml >/dev/null || { echo "missing dispatch needle: $n"; exit 1; }
+          done
+          jq -r '.needles["agent.yml"][]' config/orchestrate-events.json | while IFS= read -r n; do
+            grep -F -- "$n" .github/workflows/agent.yml >/dev/null || { echo "missing gate needle: $n"; exit 1; }
+          done
