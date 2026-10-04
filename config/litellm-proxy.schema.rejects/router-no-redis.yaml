@@ -3,5 +3,4 @@ model_list:
   litellm_params:
     model: openai/x
 router_settings:
-  redis_url: redis://127.0.0.1:6379
-  cooldown_time: 900
+  cooldown_time: 60

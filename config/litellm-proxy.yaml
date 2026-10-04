@@ -906,6 +906,12 @@ router_settings:
   # (config/pi-models.json; Pi refuses to call without it), and session_affinity pins that id to the
   # first row picked in each group until it has been idle for deployment_affinity_ttl_seconds (default 3600).
   optional_pre_call_checks: ["prompt_caching", "session_affinity"]
+  # The pin store. Without this the Router keeps pins in each worker process's own memory, and the proxy
+  # runs --num_workers 2, so a session flips between 2 rows with no failure (fleet-ops#9015: 6,188 of 6,473
+  # worker-row switches from 2026-10-02 19:30 to 2026-10-04 15:45 UTC followed a success). general_settings
+  # has no redis_url key in v1.98.0 (proxy_server never reads it), so the Redis below sat empty (dbsize 0).
+  # Cooldowns and usage counters now share it too, as fleet-ops#4174 P1 intended.
+  redis_url: redis://127.0.0.1:6379
   # worker groups hold only rungs proven to return finish_reason=tool_calls (fleet-ops#7761); simple-shuffle ignores order:.
   # Worker groups fall back to each other (fleet-ops#9015 finish line: "unless that model fails, then fall back").
   # 24h to 2026-10-02 19:05 UTC: 313 of 11,144 worker calls failed at the caller, and 1,345 of the journal's
@@ -970,7 +976,6 @@ general_settings:
   # real traffic is the probe: the background checks spent the same free quota and cooled rows themselves (Nish 2026-09-28).
   background_health_checks: false
   database_url: postgresql://litellm@127.0.0.1:5432/litellm
-  redis_url: redis://127.0.0.1:6379
   master_key: os.environ/LITELLM_MASTER_KEY
   # without this, startup prisma migrate deploy stalls every restart.
   disable_prisma_schema_update: true
