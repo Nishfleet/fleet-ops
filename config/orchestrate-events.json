@@ -13,7 +13,7 @@
       "--max-turns 80",
       "--permission-mode bypassPermissions",
       "cancel-in-progress: false",
-      "vars.ORCHESTRATE == 'live' && (",
+      "vars.ORCHESTRATE != 'off' && (",
       "github.event.label.name == 'needs-orchestrator'",
       "github.event.sender.login == 'nish3451'",
       "inputs.task == 'orchestrate' && inputs.issue != ''"
@@ -102,12 +102,21 @@
     },
     {
       "id": "unset",
-      "want": false,
+      "want": true,
       "orchestrate": "",
       "event_name": "issues",
       "action": "labeled",
       "label": "needs-orchestrator",
       "sender": "nish3451"
+    },
+    {
+      "id": "unset-untrusted-human",
+      "want": false,
+      "orchestrate": "",
+      "event_name": "issues",
+      "action": "labeled",
+      "label": "needs-orchestrator",
+      "sender": "someone-else"
     },
     {
       "id": "dispatch-orchestrate",
