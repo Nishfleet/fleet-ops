@@ -15,7 +15,7 @@ Jev picks the class. One POST, no code:
 
 `curl -s 127.0.0.1:4000/jev --config <(sed -n 's|^LITELLM_JEV_KEY=\(.*\)|header = "Authorization: Bearer \1"|p' ~/.config/fleet-ops/seats/typesafe-jev.env) -H 'content-type: application/json' -d '{"model": "jev-latest", "state": {"item": <issue title and the miss evidence>, "context": "packet-unclear = the issue was not a well-formed packet; rule-gap = a worker rule or prompt line caused the miss and will cause it again; infra = runners, seats, GitHub, or the host; one-off = this instance only"}, "questions": {"class": {"type": "choice", "instructions": "Which miss class is this?", "criteria": {"packet-unclear": "The issue was not a well-formed packet a worker could finish.", "rule-gap": "A worker rule or prompt line caused this miss and will cause the same miss again.", "infra": "Runners, seats, GitHub, or the host failed the worker.", "one-off": "This instance only; the same packet would succeed on a retry."}}}}'`
 
-Read `.answers.class`. Act on that class when its probability is >= 0.9. Otherwise pick the class yourself and the comment says `class by reviewer (jev p<0.9)`.
+Read `.answers.class.choice` and its probability `.answers.class.probabilities[<choice>]`. Act on that class when that probability is >= 0.9. Otherwise pick the class yourself and the comment says `class by reviewer (jev p<0.9)`.
 
 Never open a new issue. Never close the issue.
 
