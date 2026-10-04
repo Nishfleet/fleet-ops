@@ -95,6 +95,9 @@ jobs:
       - name: stub pi for systemd-analyze verify (host-only binary)
         if: always()
         run: sudo install -D -m0755 /bin/true /home/nish/.local/bin/pi
+      - name: stub tincan for systemd-analyze verify (host-only binary)
+        if: always()
+        run: sudo install -D -m0755 /bin/true /home/nish/.local/bin/tincan
       - name: stub litellm for systemd-analyze verify (host-only binary)
         if: always()
         run: sudo install -D -m0755 /bin/true /home/nish/.local/venvs/litellm/bin/litellm
