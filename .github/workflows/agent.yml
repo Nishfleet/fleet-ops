@@ -430,11 +430,44 @@ jobs:
           for l in agent-blocked needs-orchestrator needs-nish-decision; do
             case $labels in *",$l,"*) exit 0 ;; esac
           done
-          if gh pr list -R "$REPO" --head "$REF" --state all --json state --jq '.[].state' | grep -qxE 'OPEN|MERGED'; then
-            exit 0
+          states=$(gh pr list -R "$REPO" --head "$REF" --state all --json state --jq '.[].state')
+          grep -qx MERGED <<<"$states" && exit 0
+          if ! grep -qx OPEN <<<"$states"; then
+            echo "::error::worker exited 0 but #$i is still agent-in-progress with no open or merged PR and no park label"
+            exit 1
           fi
-          echo "::error::worker exited 0 but #$i is still agent-in-progress with no open or merged PR and no park label"
-          exit 1
+          # An open PR is not a delivery while its head is still red or
+          # conflicting: the run ended success and the issue kept
+          # agent-in-progress with nothing live (fleet-ops#9063: drive #200
+          # #180 #136). Fail it, so report strikes and requeues it. Pending
+          # checks pass here: a fresh push's CI is still running, and its red
+          # result fires rework on its own. The runner user's own gh login
+          # reads the checks, because the App token has no checks: read.
+          pr=$(gh pr view "$REF" -R "$REPO" --json number,mergeable)
+          n=$(jq -r .number <<<"$pr")
+          if [ "$(jq -r .mergeable <<<"$pr")" = CONFLICTING ]; then
+            echo "::error::claim PR #$n conflicts with main after this run; merge main"
+            exit 1
+          fi
+          rc=0
+          checks=$(env -u GH_TOKEN -u GITHUB_TOKEN gh pr checks "$n" -R "$REPO" --required --json name,bucket 2>&1) || rc=$?
+          # A repo with no required checks judges all of them; no checks
+          # reported yet is pending, not red. Exit 8 is gh's pending code.
+          if [ "$rc" != 0 ] && [ "$rc" != 8 ]; then
+            case ${checks,,} in
+              *"no required checks reported"*) rc=0; checks=$(env -u GH_TOKEN -u GITHUB_TOKEN gh pr checks "$n" -R "$REPO" --json name,bucket 2>&1) || rc=$? ;;
+            esac
+          fi
+          case ${checks,,} in *"no checks reported"*) exit 0 ;; esac
+          if [ "$rc" != 0 ] && [ "$rc" != 8 ] && ! jq -e . <<<"$checks" >/dev/null 2>&1; then
+            echo "::error::could not read checks on claim PR #$n: $checks"
+            exit 1
+          fi
+          red=$(jq -r '[.[] | select(.bucket == "fail") | .name] | join(", ")' <<<"$checks")
+          if [ -n "$red" ]; then
+            echo "::error::claim PR #$n head is still red after this run: $red"
+            exit 1
+          fi
       - name: Start the next ready issue
         # A builder that finishes frees a lane, and GitHub sends no event for
         # that, so ready work sat until the 6h sweep (fleet-ops#9063: drive
