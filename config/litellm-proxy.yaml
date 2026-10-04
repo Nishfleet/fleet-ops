@@ -11,895 +11,711 @@
 # Cline/Pareto "You've reached today's free-model token quota" 429s are a day-long wall, not a transient (fleet-ops#9075, 2026-10-02): a 900 s cool re-failed into worker groups every ~15 min - 13 of 60 probe calls at 09:53 UTC, ~14 quota-429s reached workers in 24 h. Quota-dominated rows now cool 21600 s, a quarter-day park that re-probes ~4x/day so a quota reset is picked up within hours. The cline :free rows and spacebunnyalpha park on the first 429 (RateLimitErrorAllowedFails: 0; LiteLLM resolves the field via `is not None`, so 0 means immediate). Prepaid cline-ds41flash mixes the daily wall with per-minute bursts, and LiteLLM's fail counter TTL is the row's own cooldown_time (21600 s), so RateLimitErrorAllowedFails: 3 parks it on the 4th 429 inside any 6 h window - a per-minute burst rarely totals 4 in 6 h, while a quota wall 429s every call and reaches 4 quickly. pareto keeps 300 s (its 429s are the 3-parallel key cap, fleet-ops#8458) but parks on the first: a 5-min park costs less than leaking a saturated key's 429s to callers. Cline and Pareto answer only stream:true upstream (fleet-ops#8923) and LiteLLM v1.98.0 cannot force a stream a caller did not ask for (the request's stream flag always overrides litellm_params; LiteLLM_Params has no stream field), so a non-streaming caller still 400/500s on those rows - every fleet caller (Pi) streams.
 # Nish 2026-10-02: removing or benching any provider, model or row needs his explicit yes first. Provider quotas refresh hourly, daily, weekly or monthly, so a quota or limit error never justifies it. When a provider has ended a model, open an issue labelled needs-nish-decision with the evidence: the 8am and 8pm digests ask him again every day until he answers. The removals recorded above each had his yes.
 model_list:
-- model_name: worker-capable
-  litellm_params:
-    model: openai/deepseek/deepseek-v4.1-flash
-    api_base: https://api.commandcode.ai/provider/v1
-    api_key: os.environ/COMMANDCODE_API_KEY
-    tags:
-    - prepaid
-    - commandcode
-    order: 1
-    input_cost_per_token: 3e-07
-    cache_read_input_token_cost: 6e-09
-    output_cost_per_token: 1.2e-06
-    max_budget: 10.0
-    budget_duration: 1d
-    max_parallel_requests: 4
-    cooldown_time: 900
-  model_info:
-    mode: chat
-    id: commandcode-ds41flash-worker-capable
-    allowed_fails_policy:
-      BadRequestErrorAllowedFails: 1
-- model_name: worker-cheap
-  litellm_params:
-    model: openai/deepseek/deepseek-v4.1-flash
-    api_base: https://api.commandcode.ai/provider/v1
-    api_key: os.environ/COMMANDCODE_API_KEY
-    tags:
-    - prepaid
-    - commandcode
-    order: 1
-    input_cost_per_token: 3e-07
-    cache_read_input_token_cost: 6e-09
-    output_cost_per_token: 1.2e-06
-    max_budget: 10.0
-    budget_duration: 1d
-    max_parallel_requests: 4
-    cooldown_time: 900
-  model_info:
-    mode: chat
-    id: commandcode-ds41flash-worker-cheap
-    allowed_fails_policy:
-      BadRequestErrorAllowedFails: 1
-# Nish 2026-09-30 free rows (probe: all finish_reason=tool_calls). laguna-s-2.1-free answered 1 of 2 probe calls (1 upstream 429 "temporarily unavailable"): the row stays live and cools 900 s on a 429, never benched.
-- model_name: worker-capable
-  litellm_params: &commandcode-free
-    model: openai/stealth/space-bunny-alpha
-    api_base: https://api.commandcode.ai/provider/v1
-    api_key: os.environ/COMMANDCODE_API_KEY
-    tags: [free, commandcode]
-    order: 1
-    max_parallel_requests: 2
-    cooldown_time: 900
-  model_info:
-    mode: chat
-    id: commandcode-spacebunnyalpha-worker-capable
-    allowed_fails_policy:
-      BadRequestErrorAllowedFails: 1
-- model_name: worker-cheap
-  litellm_params: {<<: *commandcode-free}
-  model_info:
-    mode: chat
-    id: commandcode-spacebunnyalpha-worker-cheap
-    allowed_fails_policy:
-      BadRequestErrorAllowedFails: 1
-- model_name: worker-capable
-  litellm_params:
-    <<: *commandcode-free
-    model: openai/poolside/laguna-s-2.1-free
-  model_info:
-    mode: chat
-    id: commandcode-lagunas21free-worker-capable
-    allowed_fails_policy:
-      BadRequestErrorAllowedFails: 1
-- model_name: worker-cheap
-  litellm_params:
-    <<: *commandcode-free
-    model: openai/poolside/laguna-s-2.1-free
-  model_info:
-    mode: chat
-    id: commandcode-lagunas21free-worker-cheap
-    allowed_fails_policy:
-      BadRequestErrorAllowedFails: 1
-- model_name: worker-capable
-  litellm_params:
-    <<: *commandcode-free
-    model: openai/inclusionai/ling-3.0-flash-sante:free
-  model_info:
-    mode: chat
-    id: commandcode-ling30flashsante-worker-capable
-    allowed_fails_policy:
-      BadRequestErrorAllowedFails: 1
-- model_name: worker-cheap
-  litellm_params:
-    <<: *commandcode-free
-    model: openai/inclusionai/ling-3.0-flash-sante:free
-  model_info:
-    mode: chat
-    id: commandcode-ling30flashsante-worker-cheap
-    allowed_fails_policy:
-      BadRequestErrorAllowedFails: 1
-- model_name: worker-capable
-  litellm_params:
-    <<: *commandcode-free
-    model: openai/inclusionai/ling-3.1-flash:free
-  model_info:
-    mode: chat
-    id: commandcode-ling31flash-worker-capable
-    allowed_fails_policy:
-      BadRequestErrorAllowedFails: 1
-- model_name: worker-cheap
-  litellm_params:
-    <<: *commandcode-free
-    model: openai/inclusionai/ling-3.1-flash:free
-  model_info:
-    mode: chat
-    id: commandcode-ling31flash-worker-cheap
-    allowed_fails_policy:
-      BadRequestErrorAllowedFails: 1
-- model_name: worker-capable
-  litellm_params:
-    model: openai/deepseek-v4.1-flash
-    api_base: https://opencode.ai/zen/go/v1
-    api_key: os.environ/OPENCODE_API_KEY
-    reasoning_effort: max
-    extra_headers:
-      x-opencode-session: fleet-worker-capable
-    tags:
-    - prepaid
-    - opencode-go
-    order: 1
-    max_parallel_requests: 4
-    cooldown_time: 900
-  model_info:
-    mode: chat
-    id: opencodego-ds41flash-worker-capable
-    allowed_fails_policy:
-      BadRequestErrorAllowedFails: 1
-- model_name: worker-cheap
-  litellm_params:
-    model: openai/deepseek-v4.1-flash
-    api_base: https://opencode.ai/zen/go/v1
-    api_key: os.environ/OPENCODE_API_KEY
-    reasoning_effort: max
-    extra_headers:
-      x-opencode-session: fleet-worker-cheap
-    tags:
-    - prepaid
-    - opencode-go
-    order: 1
-    max_parallel_requests: 4
-    cooldown_time: 900
-  model_info:
-    mode: chat
-    id: opencodego-ds41flash-worker-cheap
-    allowed_fails_policy:
-      BadRequestErrorAllowedFails: 1
-- model_name: judge
-  litellm_params:
-    model: openai/deepseek-v4.1-flash
-    api_base: https://opencode.ai/zen/go/v1
-    api_key: os.environ/OPENCODE_API_KEY
-    reasoning_effort: max
-    extra_headers:
-      x-opencode-session: fleet-judge
-    tags:
-    - prepaid
-    - opencode-go
-    order: 1
-    max_parallel_requests: 2
-    cooldown_time: 900
-  model_info:
-    mode: chat
-    id: opencodego-ds41flash-judge
-    allowed_fails_policy:
-      BadRequestErrorAllowedFails: 1
-- model_name: worker-capable
-  litellm_params:
-    model: openai/deepseek-v4.1-flash
-    api_base: https://opencode.ai/zen/go/v1
-    api_key: os.environ/OPENCODE_API_KEY_2
-    reasoning_effort: max
-    extra_headers:
-      x-opencode-session: fleet2-worker-capable
-    tags:
-    - prepaid
-    - opencode-go
-    order: 1
-    max_parallel_requests: 4
-    cooldown_time: 900
-  model_info:
-    mode: chat
-    id: opencodego2-ds41flash-worker-capable
-    allowed_fails_policy:
-      BadRequestErrorAllowedFails: 1
-- model_name: worker-cheap
-  litellm_params:
-    model: openai/deepseek-v4.1-flash
-    api_base: https://opencode.ai/zen/go/v1
-    api_key: os.environ/OPENCODE_API_KEY_2
-    reasoning_effort: max
-    extra_headers:
-      x-opencode-session: fleet2-worker-cheap
-    tags:
-    - prepaid
-    - opencode-go
-    order: 1
-    max_parallel_requests: 4
-    cooldown_time: 900
-  model_info:
-    mode: chat
-    id: opencodego2-ds41flash-worker-cheap
-    allowed_fails_policy:
-      BadRequestErrorAllowedFails: 1
-- model_name: judge
-  litellm_params:
-    model: openai/deepseek-v4.1-flash
-    api_base: https://opencode.ai/zen/go/v1
-    api_key: os.environ/OPENCODE_API_KEY_2
-    reasoning_effort: max
-    extra_headers:
-      x-opencode-session: fleet2-judge
-    tags:
-    - prepaid
-    - opencode-go
-    order: 1
-    max_parallel_requests: 2
-    cooldown_time: 900
-  model_info:
-    mode: chat
-    id: opencodego2-ds41flash-judge
-    allowed_fails_policy:
-      BadRequestErrorAllowedFails: 1
-- model_name: worker-capable
-  litellm_params:
-    model: openai/z-ai/glm-5.3-flash
-    api_base: https://api.paretoinference.com/v1
-    api_key: os.environ/PARETO_API_KEY
-    tags:
-    - prepaid
-    - pareto
-    order: 1
-    input_cost_per_token: 9e-08
-    cache_read_input_token_cost: 1.8e-08
-    output_cost_per_token: 3e-07
-    max_budget: 10.0
-    budget_duration: 1d
-    max_parallel_requests: 1
-    # Pareto's 429s come from its 3-parallel key limit (fleet-ops#8458), not a quota, so 5 min is enough.
-    cooldown_time: 300
-  model_info:
-    mode: chat
-    id: pareto-glm53flash-worker-capable
-    allowed_fails_policy:
-      BadRequestErrorAllowedFails: 1
-      RateLimitErrorAllowedFails: 0
-- model_name: senior
-  litellm_params:
-    model: openai/z-ai/glm-5.3-flash
-    api_base: https://api.paretoinference.com/v1
-    api_key: os.environ/PARETO_API_KEY
-    tags:
-    - prepaid
-    - pareto
-    - senior
-    order: 1
-    input_cost_per_token: 9e-08
-    cache_read_input_token_cost: 1.8e-08
-    output_cost_per_token: 3e-07
-    max_budget: 10.0
-    budget_duration: 1d
-    max_parallel_requests: 1
-    cooldown_time: 300
-  model_info:
-    mode: chat
-    id: pareto-glm53flash-senior
-    allowed_fails_policy:
-      BadRequestErrorAllowedFails: 1
-- model_name: worker-cheap
-  litellm_params:
-    model: openai/hf:zai-org/GLM-5.3-Flash
-    api_base: https://api.synthetic.new/openai/v1
-    api_key: os.environ/SYNTHETIC_API_KEY
-    tags:
-    - prepaid
-    order: 1
-    max_parallel_requests: 1
-    cooldown_time: 900
-  model_info:
-    mode: chat
-    id: synthetic-glm53flash-worker-cheap
-    allowed_fails_policy:
-      BadRequestErrorAllowedFails: 1
-- model_name: worker-capable
-  litellm_params:
-    model: openai/glm-5.3-flash
-    api_base: https://api.z.ai/api/coding/paas/v4
-    api_key: os.environ/ZAI_API_KEY
-    tags:
-    - prepaid
-    - zai
-    order: 1
-    # Coding-plan key: 8 parallel probes gave 5x200 and 3x429 (2026-09-29), so 2 per row x 2 rows stays under it. General /api/paas/v4 answers 429 code 1113 (no balance) for this key.
-    max_parallel_requests: 2
-    cooldown_time: 120
-  model_info:
-    mode: chat
-    id: zai-glm53flash-worker-capable
-    allowed_fails_policy:
-      BadRequestErrorAllowedFails: 1
-- model_name: worker-cheap
-  litellm_params:
-    model: openai/glm-5.3-flash
-    api_base: https://api.z.ai/api/coding/paas/v4
-    api_key: os.environ/ZAI_API_KEY
-    tags:
-    - prepaid
-    - zai
-    order: 1
-    # Coding-plan key: 8 parallel probes gave 5x200 and 3x429 (2026-09-29), so 2 per row x 2 rows stays under it. General /api/paas/v4 answers 429 code 1113 (no balance) for this key.
-    max_parallel_requests: 2
-    cooldown_time: 120
-  model_info:
-    mode: chat
-    id: zai-glm53flash-worker-cheap
-    allowed_fails_policy:
-      BadRequestErrorAllowedFails: 1
-# Nish 2026-09-30 free rows (probe: space-bunny finish_reason=tool_calls; ling-3.0-flash-sante 429 daily free-model quota at probe time = quota wall, not a bench).
-- model_name: worker-capable
-  litellm_params: &xkiro-free
-    model: openai/stealth/space-bunny-alpha:free
-    api_base: https://api.xkiro.com/v1
-    api_key: os.environ/XKIRO_API_KEY
-    tags: [free, xkiro-free]
-    order: 2
-    max_parallel_requests: 2
-    cooldown_time: 900
-  model_info:
-    mode: chat
-    id: xkiro-spacebunnyalpha-worker-capable
-    allowed_fails_policy:
-      BadRequestErrorAllowedFails: 1
-- model_name: worker-cheap
-  litellm_params: {<<: *xkiro-free}
-  model_info:
-    mode: chat
-    id: xkiro-spacebunnyalpha-worker-cheap
-    allowed_fails_policy:
-      BadRequestErrorAllowedFails: 1
-- model_name: worker-capable
-  litellm_params:
-    <<: *xkiro-free
-    model: openai/inclusionai/ling-3.0-flash-sante:free
-  model_info:
-    mode: chat
-    id: xkiro-ling30flashsante-worker-capable
-    allowed_fails_policy:
-      BadRequestErrorAllowedFails: 1
-- model_name: worker-cheap
-  litellm_params:
-    <<: *xkiro-free
-    model: openai/inclusionai/ling-3.0-flash-sante:free
-  model_info:
-    mode: chat
-    id: xkiro-ling30flashsante-worker-cheap
-    allowed_fails_policy:
-      BadRequestErrorAllowedFails: 1
-- model_name: worker-cheap
-  litellm_params:
-    model: openai/qwen/qwen3-coder-plus:free
-    api_base: https://api.xkiro.com/v1
-    api_key: os.environ/XKIRO_API_KEY
-    tags:
-    - free
-    - xkiro-free
-    order: 2
-    max_parallel_requests: 4
-    cooldown_time: 900
-  model_info:
-    mode: chat
-    id: xkiro-qwen3coderplus-worker-cheap
-    allowed_fails_policy:
-      BadRequestErrorAllowedFails: 1
-- model_name: worker-cheap
-  litellm_params:
-    model: openai/qwen/qwen3.8-max:free
-    api_base: https://api.xkiro.com/v1
-    api_key: os.environ/XKIRO_API_KEY
-    tags:
-    - free
-    - xkiro-free
-    order: 2
-    max_parallel_requests: 4
-    cooldown_time: 900
-  model_info:
-    mode: chat
-    id: xkiro-qwen38max-worker-cheap
-    allowed_fails_policy:
-      BadRequestErrorAllowedFails: 1
-- model_name: worker-capable
-  litellm_params:
-    model: openai/cline-pass/deepseek-v4.1-flash
-    api_base: https://api.cline.bot/api/v1
-    api_key: os.environ/CLINE_API_KEY
-    tags:
-    - prepaid
-    - cline
-    order: 1
-    input_cost_per_token: 3e-07
-    cache_read_input_token_cost: 6e-09
-    output_cost_per_token: 1.2e-06
-    max_budget: 10.0
-    budget_duration: 1d
-    max_parallel_requests: 4
-    # 6 h, sized to the daily free-model quota wall it also hits (fleet-ops#9075).
-    cooldown_time: 21600
-  model_info:
-    mode: chat
-    id: cline-ds41flash-worker-capable
-    allowed_fails_policy:
-      BadRequestErrorAllowedFails: 1
-      # Fail counter TTL = this row's cooldown_time (6 h): parks on the 4th 429 in the window.
-      # A per-minute burst rarely totals 4 in 6 h; a quota wall 429s every call, so it does.
-      RateLimitErrorAllowedFails: 3
-- model_name: worker-capable
-  litellm_params:
-    model: openai/space-bunny-free
-    api_base: https://opencode.ai/zen/v1
-    api_key: os.environ/OPENCODE_API_KEY
-    tags:
-    - free
-    - stealth
-    order: 1
-    max_parallel_requests: 2
-    cooldown_time: 900
-  model_info:
-    mode: chat
-    id: zen-spacebunny-worker-capable
-    allowed_fails_policy:
-      BadRequestErrorAllowedFails: 1
-- model_name: worker-cheap
-  litellm_params:
-    model: openai/space-bunny-free
-    api_base: https://opencode.ai/zen/v1
-    api_key: os.environ/OPENCODE_API_KEY
-    tags:
-    - free
-    - stealth
-    order: 1
-    max_parallel_requests: 2
-    cooldown_time: 900
-  model_info:
-    mode: chat
-    id: zen-spacebunny-worker-cheap
-    allowed_fails_policy:
-      BadRequestErrorAllowedFails: 1
-- model_name: worker-capable
-  litellm_params:
-    model: anthropic/MiniMax-M3.1-Flash-Preview
-    api_base: https://api.minimax.io/anthropic
-    api_key: os.environ/MINIMAX_API_KEY
-    # free until 2026-10-07 (Nish 2026-09-30), see follow-up issue
-    tags:
-    - free
-    - minimax
-    order: 1
-    max_parallel_requests: 6
-    cooldown_time: 120
-  model_info:
-    mode: chat
-    id: minimax-m31-worker-capable
-    allowed_fails_policy:
-      BadRequestErrorAllowedFails: 1
-- model_name: worker-capable
-  litellm_params:
-    model: anthropic/MiniMax-M3.1-Flash-Preview
-    api_base: https://api.minimax.io/anthropic
-    api_key: os.environ/MINIMAX_API_KEY
-    # free until 2026-10-07 (Nish 2026-09-30), see follow-up issue
-    tags:
-    - free
-    - minimax
-    order: 1
-    max_parallel_requests: 6
-    cooldown_time: 120
-  model_info:
-    mode: chat
-    id: minimax-m31b-worker-capable
-    allowed_fails_policy:
-      BadRequestErrorAllowedFails: 1
-- model_name: worker-cheap
-  litellm_params:
-    model: anthropic/MiniMax-M3.1-Flash-Preview
-    api_base: https://api.minimax.io/anthropic
-    api_key: os.environ/MINIMAX_API_KEY
-    # free until 2026-10-07 (Nish 2026-09-30), see follow-up issue
-    tags:
-    - free
-    - minimax
-    order: 1
-    max_parallel_requests: 6
-    cooldown_time: 120
-  model_info:
-    mode: chat
-    id: minimax-m31-worker-cheap
-    allowed_fails_policy:
-      BadRequestErrorAllowedFails: 1
-- model_name: worker-cheap
-  litellm_params:
-    model: anthropic/MiniMax-M3.1-Flash-Preview
-    api_base: https://api.minimax.io/anthropic
-    api_key: os.environ/MINIMAX_API_KEY
-    # free until 2026-10-07 (Nish 2026-09-30), see follow-up issue
-    tags:
-    - free
-    - minimax
-    order: 1
-    max_parallel_requests: 6
-    cooldown_time: 120
-  model_info:
-    mode: chat
-    id: minimax-m31b-worker-cheap
-    allowed_fails_policy:
-      BadRequestErrorAllowedFails: 1
-- model_name: worker-capable
-  litellm_params:
-    model: openai/deepseek-v4.1-flash
-    api_base: https://ollama.com/v1
-    api_key: os.environ/OLLAMA_API_KEY
-    tags:
-    - prepaid
-    - ollama
-    order: 1
-    input_cost_per_token: 3e-07
-    cache_read_input_token_cost: 6e-09
-    output_cost_per_token: 1.2e-06
-    max_budget: 10.0
-    budget_duration: 1d
-    max_parallel_requests: 4
-    cooldown_time: 900
-  model_info:
-    mode: chat
-    id: ollama-ds41flash-worker-capable
-    allowed_fails_policy:
-      BadRequestErrorAllowedFails: 1
-- model_name: worker-capable
-  litellm_params:
-    model: openai/step-5-preview
-    api_base: https://api.stepfun.ai/step_plan/v1
-    api_key: os.environ/STEPFUN_API_KEY
-    tags:
-    - prepaid
-    - stepfun
-    order: 1
-    # Step Plan Pro (2026-10-01) account cap is 15 concurrent: 20- and 40-way bursts answered 14 x 200 and 429 "concurrency reached, current: 16, limit: 15". 13 leaves 2 for direct `pi --provider stepfun` use, because a concurrency 429 cools this rung for cooldown_time.
-    # Nish 2026-10-02: StepFun gets 10 slots. simple-shuffle picks among rows, and one row got 562 of 10,512 worker calls (5%),
-    # 58M tokens = ~22% of the Pro plan's pace (8000M/month), in the 24 h to 15:00 IST. Ten rows give it ~10x the share of new tasks.
-    # Nish: using the month's credit before the reset is fine; tokens must go to productive work.
-    # max_parallel_requests is per row, so the account's 13 router lanes are split 2 + 2 + 2 + 1 + 1 + 1 + 1 + 1 + 1 + 1 across the rows.
-    max_parallel_requests: 2
-    # Step Plan credit ran out 2026-09-25 11:15 IST (fleet-ops#8653): a 429 cools this rung 15 min, then it retries by itself: refilled credit is used without a human, and a concurrency 429 idles it only briefly.
-    cooldown_time: 900
-  model_info:
-    mode: chat
-    id: stepfun-step5preview-worker-capable
-    allowed_fails_policy:
-      BadRequestErrorAllowedFails: 1
-- model_name: worker-capable
-  litellm_params:
-    model: openai/step-5-preview
-    api_base: https://api.stepfun.ai/step_plan/v1
-    api_key: os.environ/STEPFUN_API_KEY
-    tags:
-    - prepaid
-    - stepfun
-    order: 1
-    # Step Plan Pro (2026-10-01) account cap is 15 concurrent: 20- and 40-way bursts answered 14 x 200 and 429 "concurrency reached, current: 16, limit: 15". 13 leaves 2 for direct `pi --provider stepfun` use, because a concurrency 429 cools this rung for cooldown_time.
-    max_parallel_requests: 2
-    # Step Plan credit ran out 2026-09-25 11:15 IST (fleet-ops#8653): a 429 cools this rung 15 min, then it retries by itself: refilled credit is used without a human, and a concurrency 429 idles it only briefly.
-    cooldown_time: 900
-  model_info:
-    mode: chat
-    id: stepfun-step5previewb-worker-capable
-    allowed_fails_policy:
-      BadRequestErrorAllowedFails: 1
-- model_name: worker-capable
-  litellm_params:
-    model: openai/step-5-preview
-    api_base: https://api.stepfun.ai/step_plan/v1
-    api_key: os.environ/STEPFUN_API_KEY
-    tags:
-    - prepaid
-    - stepfun
-    order: 1
-    # Step Plan Pro (2026-10-01) account cap is 15 concurrent: 20- and 40-way bursts answered 14 x 200 and 429 "concurrency reached, current: 16, limit: 15". 13 leaves 2 for direct `pi --provider stepfun` use, because a concurrency 429 cools this rung for cooldown_time.
-    max_parallel_requests: 2
-    # Step Plan credit ran out 2026-09-25 11:15 IST (fleet-ops#8653): a 429 cools this rung 15 min, then it retries by itself: refilled credit is used without a human, and a concurrency 429 idles it only briefly.
-    cooldown_time: 900
-  model_info:
-    mode: chat
-    id: stepfun-step5previewc-worker-capable
-    allowed_fails_policy:
-      BadRequestErrorAllowedFails: 1
-- model_name: worker-capable
-  litellm_params:
-    model: openai/step-5-preview
-    api_base: https://api.stepfun.ai/step_plan/v1
-    api_key: os.environ/STEPFUN_API_KEY
-    tags:
-    - prepaid
-    - stepfun
-    order: 1
-    # Step Plan Pro (2026-10-01) account cap is 15 concurrent: 20- and 40-way bursts answered 14 x 200 and 429 "concurrency reached, current: 16, limit: 15". 13 leaves 2 for direct `pi --provider stepfun` use, because a concurrency 429 cools this rung for cooldown_time.
-    max_parallel_requests: 1
-    # Step Plan credit ran out 2026-09-25 11:15 IST (fleet-ops#8653): a 429 cools this rung 15 min, then it retries by itself: refilled credit is used without a human, and a concurrency 429 idles it only briefly.
-    cooldown_time: 900
-  model_info:
-    mode: chat
-    id: stepfun-step5previewd-worker-capable
-    allowed_fails_policy:
-      BadRequestErrorAllowedFails: 1
-- model_name: worker-capable
-  litellm_params:
-    model: openai/step-5-preview
-    api_base: https://api.stepfun.ai/step_plan/v1
-    api_key: os.environ/STEPFUN_API_KEY
-    tags:
-    - prepaid
-    - stepfun
-    order: 1
-    # Step Plan Pro (2026-10-01) account cap is 15 concurrent: 20- and 40-way bursts answered 14 x 200 and 429 "concurrency reached, current: 16, limit: 15". 13 leaves 2 for direct `pi --provider stepfun` use, because a concurrency 429 cools this rung for cooldown_time.
-    max_parallel_requests: 1
-    # Step Plan credit ran out 2026-09-25 11:15 IST (fleet-ops#8653): a 429 cools this rung 15 min, then it retries by itself: refilled credit is used without a human, and a concurrency 429 idles it only briefly.
-    cooldown_time: 900
-  model_info:
-    mode: chat
-    id: stepfun-step5previewe-worker-capable
-    allowed_fails_policy:
-      BadRequestErrorAllowedFails: 1
-- model_name: worker-capable
-  litellm_params:
-    model: openai/step-5-preview
-    api_base: https://api.stepfun.ai/step_plan/v1
-    api_key: os.environ/STEPFUN_API_KEY
-    tags:
-    - prepaid
-    - stepfun
-    order: 1
-    # Step Plan Pro (2026-10-01) account cap is 15 concurrent: 20- and 40-way bursts answered 14 x 200 and 429 "concurrency reached, current: 16, limit: 15". 13 leaves 2 for direct `pi --provider stepfun` use, because a concurrency 429 cools this rung for cooldown_time.
-    max_parallel_requests: 1
-    # Step Plan credit ran out 2026-09-25 11:15 IST (fleet-ops#8653): a 429 cools this rung 15 min, then it retries by itself: refilled credit is used without a human, and a concurrency 429 idles it only briefly.
-    cooldown_time: 900
-  model_info:
-    mode: chat
-    id: stepfun-step5previewf-worker-capable
-    allowed_fails_policy:
-      BadRequestErrorAllowedFails: 1
-- model_name: worker-capable
-  litellm_params:
-    model: openai/step-5-preview
-    api_base: https://api.stepfun.ai/step_plan/v1
-    api_key: os.environ/STEPFUN_API_KEY
-    tags:
-    - prepaid
-    - stepfun
-    order: 1
-    # Step Plan Pro (2026-10-01) account cap is 15 concurrent: 20- and 40-way bursts answered 14 x 200 and 429 "concurrency reached, current: 16, limit: 15". 13 leaves 2 for direct `pi --provider stepfun` use, because a concurrency 429 cools this rung for cooldown_time.
-    max_parallel_requests: 1
-    # Step Plan credit ran out 2026-09-25 11:15 IST (fleet-ops#8653): a 429 cools this rung 15 min, then it retries by itself: refilled credit is used without a human, and a concurrency 429 idles it only briefly.
-    cooldown_time: 900
-  model_info:
-    mode: chat
-    id: stepfun-step5previewg-worker-capable
-    allowed_fails_policy:
-      BadRequestErrorAllowedFails: 1
-- model_name: worker-capable
-  litellm_params:
-    model: openai/step-5-preview
-    api_base: https://api.stepfun.ai/step_plan/v1
-    api_key: os.environ/STEPFUN_API_KEY
-    tags:
-    - prepaid
-    - stepfun
-    order: 1
-    # Step Plan Pro (2026-10-01) account cap is 15 concurrent: 20- and 40-way bursts answered 14 x 200 and 429 "concurrency reached, current: 16, limit: 15". 13 leaves 2 for direct `pi --provider stepfun` use, because a concurrency 429 cools this rung for cooldown_time.
-    max_parallel_requests: 1
-    # Step Plan credit ran out 2026-09-25 11:15 IST (fleet-ops#8653): a 429 cools this rung 15 min, then it retries by itself: refilled credit is used without a human, and a concurrency 429 idles it only briefly.
-    cooldown_time: 900
-  model_info:
-    mode: chat
-    id: stepfun-step5previewh-worker-capable
-    allowed_fails_policy:
-      BadRequestErrorAllowedFails: 1
-- model_name: worker-capable
-  litellm_params:
-    model: openai/step-5-preview
-    api_base: https://api.stepfun.ai/step_plan/v1
-    api_key: os.environ/STEPFUN_API_KEY
-    tags:
-    - prepaid
-    - stepfun
-    order: 1
-    # Step Plan Pro (2026-10-01) account cap is 15 concurrent: 20- and 40-way bursts answered 14 x 200 and 429 "concurrency reached, current: 16, limit: 15". 13 leaves 2 for direct `pi --provider stepfun` use, because a concurrency 429 cools this rung for cooldown_time.
-    max_parallel_requests: 1
-    # Step Plan credit ran out 2026-09-25 11:15 IST (fleet-ops#8653): a 429 cools this rung 15 min, then it retries by itself: refilled credit is used without a human, and a concurrency 429 idles it only briefly.
-    cooldown_time: 900
-  model_info:
-    mode: chat
-    id: stepfun-step5previewi-worker-capable
-    allowed_fails_policy:
-      BadRequestErrorAllowedFails: 1
-- model_name: worker-capable
-  litellm_params:
-    model: openai/step-5-preview
-    api_base: https://api.stepfun.ai/step_plan/v1
-    api_key: os.environ/STEPFUN_API_KEY
-    tags:
-    - prepaid
-    - stepfun
-    order: 1
-    # Step Plan Pro (2026-10-01) account cap is 15 concurrent: 20- and 40-way bursts answered 14 x 200 and 429 "concurrency reached, current: 16, limit: 15". 13 leaves 2 for direct `pi --provider stepfun` use, because a concurrency 429 cools this rung for cooldown_time.
-    max_parallel_requests: 1
-    # Step Plan credit ran out 2026-09-25 11:15 IST (fleet-ops#8653): a 429 cools this rung 15 min, then it retries by itself: refilled credit is used without a human, and a concurrency 429 idles it only briefly.
-    cooldown_time: 900
-  model_info:
-    mode: chat
-    id: stepfun-step5previewj-worker-capable
-    allowed_fails_policy:
-      BadRequestErrorAllowedFails: 1
-- model_name: worker-capable
-  litellm_params:
-    model: openai/stealth/space-bunny-alpha
-    api_base: https://api.cline.bot/api/v1
-    api_key: os.environ/CLINE_API_KEY
-    tags:
-    - prepaid
-    - cline
-    - stealth
-    order: 1
-    max_parallel_requests: 2
-    # 6 h: Cline meters it under the free-model daily quota (5 quota-429s in 24 h, fleet-ops#9075).
-    cooldown_time: 21600
-  model_info:
-    mode: chat
-    id: cline-spacebunnyalpha-worker-capable
-    allowed_fails_policy:
-      BadRequestErrorAllowedFails: 1
-      RateLimitErrorAllowedFails: 0
-# Nish 2026-09-30 free rows (probe: both finish_reason=tool_calls).
-- model_name: worker-capable
-  litellm_params: &cline-free
-    model: openai/poolside/laguna-s-2.1:free
-    api_base: https://api.cline.bot/api/v1
-    api_key: os.environ/CLINE_API_KEY
-    tags: [free, cline]
-    order: 1
-    max_parallel_requests: 2
-    # 6 h, sized to Cline's daily free-model token quota (fleet-ops#9075).
-    cooldown_time: 21600
-  model_info:
-    mode: chat
-    id: cline-lagunas21-worker-capable
-    allowed_fails_policy:
-      BadRequestErrorAllowedFails: 1
-      # A daily-quota 429 parks the row on the first failure instead of needing 2.
-      RateLimitErrorAllowedFails: 0
-- model_name: worker-cheap
-  litellm_params: {<<: *cline-free}
-  model_info:
-    mode: chat
-    id: cline-lagunas21-worker-cheap
-    allowed_fails_policy:
-      BadRequestErrorAllowedFails: 1
-      RateLimitErrorAllowedFails: 0
-- model_name: worker-capable
-  litellm_params:
-    <<: *cline-free
-    model: openai/inclusionai/ling-3.0-flash-sante:free
-  model_info:
-    mode: chat
-    id: cline-ling30flashsante-worker-capable
-    allowed_fails_policy:
-      BadRequestErrorAllowedFails: 1
-      RateLimitErrorAllowedFails: 0
-- model_name: worker-cheap
-  litellm_params:
-    <<: *cline-free
-    model: openai/inclusionai/ling-3.0-flash-sante:free
-  model_info:
-    mode: chat
-    id: cline-ling30flashsante-worker-cheap
-    allowed_fails_policy:
-      BadRequestErrorAllowedFails: 1
-      RateLimitErrorAllowedFails: 0
-- model_name: worker-capable
-  litellm_params: &openrouter-spacebunny
-    model: openai/stealth/space-bunny-alpha
-    api_base: https://openrouter.ai/api/v1
-    max_budget: 1.0
-    budget_duration: 1mo
-    api_key: os.environ/OPENROUTER_API_KEY
-    extra_headers: {HTTP-Referer: https://0509.io, X-Title: nish-fleet}
-    tags:
-    - free
-    - stealth
-    order: 1
-    max_parallel_requests: 2
-    cooldown_time: 900
-  model_info:
-    mode: chat
-    id: openrouter-spacebunnyalpha-worker-capable
-    allowed_fails_policy:
-      BadRequestErrorAllowedFails: 1
-- model_name: worker-cheap
-  litellm_params: {<<: *openrouter-spacebunny}
-  model_info:
-    mode: chat
-    id: openrouter-spacebunnyalpha-worker-cheap
-    allowed_fails_policy:
-      BadRequestErrorAllowedFails: 1
-- model_name: worker-cheap
-  litellm_params: &openrouter-nemotron
-    <<: *openrouter-spacebunny
-    model: openai/nvidia/nemotron-3-ultra-550b-a55b:free
-    max_budget: 5.0
-    tags: [free, nemotron]
-    max_parallel_requests: 4
-    cooldown_time: 60
-  model_info:
-    mode: chat
-    id: openrouter-nemotronultra-worker-cheap
-    allowed_fails_policy:
-      BadRequestErrorAllowedFails: 1
-- model_name: worker-capable
-  litellm_params: {<<: *openrouter-nemotron}
-  model_info:
-    mode: chat
-    id: openrouter-nemotronultra-worker-capable
-    allowed_fails_policy:
-      BadRequestErrorAllowedFails: 1
-- model_name: worker-cheap
-  litellm_params:
-    <<: *openrouter-nemotron
-    model: openai/nvidia/nemotron-3.5-lightning:free
-  model_info:
-    mode: chat
-    id: openrouter-nemotronlightning-worker-cheap
-    allowed_fails_policy:
-      BadRequestErrorAllowedFails: 1
-# Nish 2026-10-04 free rows (probe 2026-10-04 03:48 UTC: both 200 and finish_reason=tool_calls; OpenRouter :free costs $0, max_budget stays the spend wall).
-- model_name: worker-capable
-  litellm_params:
-    <<: *openrouter-spacebunny
-    model: openai/inclusionai/ling-3.0-flash-sante:free
-    tags: [free, openrouter]
-  model_info:
-    mode: chat
-    id: openrouter-ling30flashsante-worker-capable
-    allowed_fails_policy:
-      BadRequestErrorAllowedFails: 1
-- model_name: worker-cheap
-  litellm_params:
-    <<: *openrouter-spacebunny
-    model: openai/inclusionai/ling-3.0-flash-sante:free
-    tags: [free, openrouter]
-  model_info:
-    mode: chat
-    id: openrouter-ling30flashsante-worker-cheap
-    allowed_fails_policy:
-      BadRequestErrorAllowedFails: 1
-- model_name: worker-capable
-  litellm_params:
-    <<: *openrouter-spacebunny
-    model: openai/poolside/laguna-s-2.1:free
-    tags: [free, openrouter]
-  model_info:
-    mode: chat
-    id: openrouter-lagunas21free-worker-capable
-    allowed_fails_policy:
-      BadRequestErrorAllowedFails: 1
-- model_name: worker-cheap
-  litellm_params:
-    <<: *openrouter-spacebunny
-    model: openai/poolside/laguna-s-2.1:free
-    tags: [free, openrouter]
-  model_info:
-    mode: chat
-    id: openrouter-lagunas21free-worker-cheap
-    allowed_fails_policy:
-      BadRequestErrorAllowedFails: 1
+  - model_name: worker-capable
+    litellm_params:
+      model: openai/deepseek/deepseek-v4.1-flash
+      api_base: https://api.commandcode.ai/provider/v1
+      api_key: os.environ/COMMANDCODE_API_KEY
+      tags:
+        - prepaid
+        - commandcode
+      order: 1
+      input_cost_per_token: 3e-07
+      cache_read_input_token_cost: 6e-09
+      output_cost_per_token: 1.2e-06
+      max_budget: 10.0
+      budget_duration: 1d
+      max_parallel_requests: 4
+      cooldown_time: 900
+    model_info:
+      mode: chat
+      id: commandcode-ds41flash-worker-capable
+      allowed_fails_policy:
+        BadRequestErrorAllowedFails: 1
+  - model_name: worker-cheap
+    litellm_params:
+      model: openai/deepseek/deepseek-v4.1-flash
+      api_base: https://api.commandcode.ai/provider/v1
+      api_key: os.environ/COMMANDCODE_API_KEY
+      tags:
+        - prepaid
+        - commandcode
+      order: 1
+      input_cost_per_token: 3e-07
+      cache_read_input_token_cost: 6e-09
+      output_cost_per_token: 1.2e-06
+      max_budget: 10.0
+      budget_duration: 1d
+      max_parallel_requests: 4
+      cooldown_time: 900
+    model_info:
+      mode: chat
+      id: commandcode-ds41flash-worker-cheap
+      allowed_fails_policy:
+        BadRequestErrorAllowedFails: 1
+  # Nish 2026-09-30 free rows (probe: all finish_reason=tool_calls). laguna-s-2.1-free answered 1 of 2 probe calls (1 upstream 429 "temporarily unavailable"): the row stays live and cools 900 s on a 429, never benched.
+  - model_name: worker-capable
+    litellm_params: &commandcode-free
+      model: openai/stealth/space-bunny-alpha
+      api_base: https://api.commandcode.ai/provider/v1
+      api_key: os.environ/COMMANDCODE_API_KEY
+      tags: [free, commandcode]
+      order: 1
+      max_parallel_requests: 2
+      cooldown_time: 900
+    model_info:
+      mode: chat
+      id: commandcode-spacebunnyalpha-worker-capable
+      allowed_fails_policy:
+        BadRequestErrorAllowedFails: 1
+  - model_name: worker-cheap
+    litellm_params: {!!merge <<: *commandcode-free}
+    model_info:
+      mode: chat
+      id: commandcode-spacebunnyalpha-worker-cheap
+      allowed_fails_policy:
+        BadRequestErrorAllowedFails: 1
+  - model_name: worker-capable
+    litellm_params:
+      !!merge <<: *commandcode-free
+      model: openai/poolside/laguna-s-2.1-free
+    model_info:
+      mode: chat
+      id: commandcode-lagunas21free-worker-capable
+      allowed_fails_policy:
+        BadRequestErrorAllowedFails: 1
+  - model_name: worker-cheap
+    litellm_params:
+      !!merge <<: *commandcode-free
+      model: openai/poolside/laguna-s-2.1-free
+    model_info:
+      mode: chat
+      id: commandcode-lagunas21free-worker-cheap
+      allowed_fails_policy:
+        BadRequestErrorAllowedFails: 1
+  - model_name: worker-capable
+    litellm_params:
+      !!merge <<: *commandcode-free
+      model: openai/inclusionai/ling-3.0-flash-sante:free
+    model_info:
+      mode: chat
+      id: commandcode-ling30flashsante-worker-capable
+      allowed_fails_policy:
+        BadRequestErrorAllowedFails: 1
+  - model_name: worker-cheap
+    litellm_params:
+      !!merge <<: *commandcode-free
+      model: openai/inclusionai/ling-3.0-flash-sante:free
+    model_info:
+      mode: chat
+      id: commandcode-ling30flashsante-worker-cheap
+      allowed_fails_policy:
+        BadRequestErrorAllowedFails: 1
+  - model_name: worker-capable
+    litellm_params:
+      !!merge <<: *commandcode-free
+      model: openai/inclusionai/ling-3.1-flash:free
+    model_info:
+      mode: chat
+      id: commandcode-ling31flash-worker-capable
+      allowed_fails_policy:
+        BadRequestErrorAllowedFails: 1
+  - model_name: worker-cheap
+    litellm_params:
+      !!merge <<: *commandcode-free
+      model: openai/inclusionai/ling-3.1-flash:free
+    model_info:
+      mode: chat
+      id: commandcode-ling31flash-worker-cheap
+      allowed_fails_policy:
+        BadRequestErrorAllowedFails: 1
+  - model_name: worker-capable
+    litellm_params:
+      model: openai/deepseek-v4.1-flash
+      api_base: https://opencode.ai/zen/go/v1
+      api_key: os.environ/OPENCODE_API_KEY
+      reasoning_effort: max
+      extra_headers:
+        x-opencode-session: fleet-worker-capable
+      tags:
+        - prepaid
+        - opencode-go
+      order: 1
+      max_parallel_requests: 4
+      cooldown_time: 900
+    model_info:
+      mode: chat
+      id: opencodego-ds41flash-worker-capable
+      allowed_fails_policy:
+        BadRequestErrorAllowedFails: 1
+  - model_name: worker-cheap
+    litellm_params:
+      model: openai/deepseek-v4.1-flash
+      api_base: https://opencode.ai/zen/go/v1
+      api_key: os.environ/OPENCODE_API_KEY
+      reasoning_effort: max
+      extra_headers:
+        x-opencode-session: fleet-worker-cheap
+      tags:
+        - prepaid
+        - opencode-go
+      order: 1
+      max_parallel_requests: 4
+      cooldown_time: 900
+    model_info:
+      mode: chat
+      id: opencodego-ds41flash-worker-cheap
+      allowed_fails_policy:
+        BadRequestErrorAllowedFails: 1
+  - model_name: judge
+    litellm_params:
+      model: openai/deepseek-v4.1-flash
+      api_base: https://opencode.ai/zen/go/v1
+      api_key: os.environ/OPENCODE_API_KEY
+      reasoning_effort: max
+      extra_headers:
+        x-opencode-session: fleet-judge
+      tags:
+        - prepaid
+        - opencode-go
+      order: 1
+      max_parallel_requests: 2
+      cooldown_time: 900
+    model_info:
+      mode: chat
+      id: opencodego-ds41flash-judge
+      allowed_fails_policy:
+        BadRequestErrorAllowedFails: 1
+  - model_name: worker-capable
+    litellm_params:
+      model: openai/deepseek-v4.1-flash
+      api_base: https://opencode.ai/zen/go/v1
+      api_key: os.environ/OPENCODE_API_KEY_2
+      reasoning_effort: max
+      extra_headers:
+        x-opencode-session: fleet2-worker-capable
+      tags:
+        - prepaid
+        - opencode-go
+      order: 1
+      max_parallel_requests: 4
+      cooldown_time: 900
+    model_info:
+      mode: chat
+      id: opencodego2-ds41flash-worker-capable
+      allowed_fails_policy:
+        BadRequestErrorAllowedFails: 1
+  - model_name: worker-cheap
+    litellm_params:
+      model: openai/deepseek-v4.1-flash
+      api_base: https://opencode.ai/zen/go/v1
+      api_key: os.environ/OPENCODE_API_KEY_2
+      reasoning_effort: max
+      extra_headers:
+        x-opencode-session: fleet2-worker-cheap
+      tags:
+        - prepaid
+        - opencode-go
+      order: 1
+      max_parallel_requests: 4
+      cooldown_time: 900
+    model_info:
+      mode: chat
+      id: opencodego2-ds41flash-worker-cheap
+      allowed_fails_policy:
+        BadRequestErrorAllowedFails: 1
+  - model_name: judge
+    litellm_params:
+      model: openai/deepseek-v4.1-flash
+      api_base: https://opencode.ai/zen/go/v1
+      api_key: os.environ/OPENCODE_API_KEY_2
+      reasoning_effort: max
+      extra_headers:
+        x-opencode-session: fleet2-judge
+      tags:
+        - prepaid
+        - opencode-go
+      order: 1
+      max_parallel_requests: 2
+      cooldown_time: 900
+    model_info:
+      mode: chat
+      id: opencodego2-ds41flash-judge
+      allowed_fails_policy:
+        BadRequestErrorAllowedFails: 1
+  - model_name: worker-capable
+    litellm_params:
+      model: openai/z-ai/glm-5.3-flash
+      api_base: https://api.paretoinference.com/v1
+      api_key: os.environ/PARETO_API_KEY
+      tags:
+        - prepaid
+        - pareto
+      order: 1
+      input_cost_per_token: 9e-08
+      cache_read_input_token_cost: 1.8e-08
+      output_cost_per_token: 3e-07
+      max_budget: 10.0
+      budget_duration: 1d
+      max_parallel_requests: 1
+      # Pareto's 429s come from its 3-parallel key limit (fleet-ops#8458), not a quota, so 5 min is enough.
+      cooldown_time: 300
+    model_info:
+      mode: chat
+      id: pareto-glm53flash-worker-capable
+      allowed_fails_policy:
+        BadRequestErrorAllowedFails: 1
+        RateLimitErrorAllowedFails: 0
+  - model_name: senior
+    litellm_params:
+      model: openai/z-ai/glm-5.3-flash
+      api_base: https://api.paretoinference.com/v1
+      api_key: os.environ/PARETO_API_KEY
+      tags:
+        - prepaid
+        - pareto
+        - senior
+      order: 1
+      input_cost_per_token: 9e-08
+      cache_read_input_token_cost: 1.8e-08
+      output_cost_per_token: 3e-07
+      max_budget: 10.0
+      budget_duration: 1d
+      max_parallel_requests: 1
+      cooldown_time: 300
+    model_info:
+      mode: chat
+      id: pareto-glm53flash-senior
+      allowed_fails_policy:
+        BadRequestErrorAllowedFails: 1
+  - model_name: worker-cheap
+    litellm_params:
+      model: openai/hf:zai-org/GLM-5.3-Flash
+      api_base: https://api.synthetic.new/openai/v1
+      api_key: os.environ/SYNTHETIC_API_KEY
+      tags:
+        - prepaid
+      order: 1
+      max_parallel_requests: 1
+      cooldown_time: 900
+    model_info:
+      mode: chat
+      id: synthetic-glm53flash-worker-cheap
+      allowed_fails_policy:
+        BadRequestErrorAllowedFails: 1
+  - model_name: worker-capable
+    litellm_params:
+      model: openai/glm-5.3-flash
+      api_base: https://api.z.ai/api/coding/paas/v4
+      api_key: os.environ/ZAI_API_KEY
+      tags:
+        - prepaid
+        - zai
+      order: 1
+      # Coding-plan key: 8 parallel probes gave 5x200 and 3x429 (2026-09-29), so 2 per row x 2 rows stays under it. General /api/paas/v4 answers 429 code 1113 (no balance) for this key.
+      max_parallel_requests: 2
+      cooldown_time: 120
+    model_info:
+      mode: chat
+      id: zai-glm53flash-worker-capable
+      allowed_fails_policy:
+        BadRequestErrorAllowedFails: 1
+  - model_name: worker-cheap
+    litellm_params:
+      model: openai/glm-5.3-flash
+      api_base: https://api.z.ai/api/coding/paas/v4
+      api_key: os.environ/ZAI_API_KEY
+      tags:
+        - prepaid
+        - zai
+      order: 1
+      # Coding-plan key: 8 parallel probes gave 5x200 and 3x429 (2026-09-29), so 2 per row x 2 rows stays under it. General /api/paas/v4 answers 429 code 1113 (no balance) for this key.
+      max_parallel_requests: 2
+      cooldown_time: 120
+    model_info:
+      mode: chat
+      id: zai-glm53flash-worker-cheap
+      allowed_fails_policy:
+        BadRequestErrorAllowedFails: 1
+  # Nish 2026-09-30 free rows (probe: space-bunny finish_reason=tool_calls; ling-3.0-flash-sante 429 daily free-model quota at probe time = quota wall, not a bench).
+  - model_name: worker-capable
+    litellm_params: &xkiro-free
+      model: openai/stealth/space-bunny-alpha:free
+      api_base: https://api.xkiro.com/v1
+      api_key: os.environ/XKIRO_API_KEY
+      tags: [free, xkiro-free]
+      order: 2
+      max_parallel_requests: 2
+      cooldown_time: 900
+    model_info:
+      mode: chat
+      id: xkiro-spacebunnyalpha-worker-capable
+      allowed_fails_policy:
+        BadRequestErrorAllowedFails: 1
+  - model_name: worker-cheap
+    litellm_params: {!!merge <<: *xkiro-free}
+    model_info:
+      mode: chat
+      id: xkiro-spacebunnyalpha-worker-cheap
+      allowed_fails_policy:
+        BadRequestErrorAllowedFails: 1
+  - model_name: worker-capable
+    litellm_params:
+      !!merge <<: *xkiro-free
+      model: openai/inclusionai/ling-3.0-flash-sante:free
+    model_info:
+      mode: chat
+      id: xkiro-ling30flashsante-worker-capable
+      allowed_fails_policy:
+        BadRequestErrorAllowedFails: 1
+  - model_name: worker-cheap
+    litellm_params:
+      !!merge <<: *xkiro-free
+      model: openai/inclusionai/ling-3.0-flash-sante:free
+    model_info:
+      mode: chat
+      id: xkiro-ling30flashsante-worker-cheap
+      allowed_fails_policy:
+        BadRequestErrorAllowedFails: 1
+  - model_name: worker-cheap
+    litellm_params:
+      model: openai/qwen/qwen3-coder-plus:free
+      api_base: https://api.xkiro.com/v1
+      api_key: os.environ/XKIRO_API_KEY
+      tags:
+        - free
+        - xkiro-free
+      order: 2
+      max_parallel_requests: 4
+      cooldown_time: 900
+    model_info:
+      mode: chat
+      id: xkiro-qwen3coderplus-worker-cheap
+      allowed_fails_policy:
+        BadRequestErrorAllowedFails: 1
+  - model_name: worker-cheap
+    litellm_params:
+      model: openai/qwen/qwen3.8-max:free
+      api_base: https://api.xkiro.com/v1
+      api_key: os.environ/XKIRO_API_KEY
+      tags:
+        - free
+        - xkiro-free
+      order: 2
+      max_parallel_requests: 4
+      cooldown_time: 900
+    model_info:
+      mode: chat
+      id: xkiro-qwen38max-worker-cheap
+      allowed_fails_policy:
+        BadRequestErrorAllowedFails: 1
+  - model_name: worker-capable
+    litellm_params:
+      model: openai/cline-pass/deepseek-v4.1-flash
+      api_base: https://api.cline.bot/api/v1
+      api_key: os.environ/CLINE_API_KEY
+      tags:
+        - prepaid
+        - cline
+      order: 1
+      input_cost_per_token: 3e-07
+      cache_read_input_token_cost: 6e-09
+      output_cost_per_token: 1.2e-06
+      max_budget: 10.0
+      budget_duration: 1d
+      max_parallel_requests: 4
+      # 6 h, sized to the daily free-model quota wall it also hits (fleet-ops#9075).
+      cooldown_time: 21600
+    model_info:
+      mode: chat
+      id: cline-ds41flash-worker-capable
+      allowed_fails_policy:
+        BadRequestErrorAllowedFails: 1
+        # Fail counter TTL = this row's cooldown_time (6 h): parks on the 4th 429 in the window.
+        # A per-minute burst rarely totals 4 in 6 h; a quota wall 429s every call, so it does.
+        RateLimitErrorAllowedFails: 3
+  - model_name: worker-capable
+    litellm_params:
+      model: openai/space-bunny-free
+      api_base: https://opencode.ai/zen/v1
+      api_key: os.environ/OPENCODE_API_KEY
+      tags:
+        - free
+        - stealth
+      order: 1
+      max_parallel_requests: 2
+      cooldown_time: 900
+    model_info:
+      mode: chat
+      id: zen-spacebunny-worker-capable
+      allowed_fails_policy:
+        BadRequestErrorAllowedFails: 1
+  - model_name: worker-cheap
+    litellm_params:
+      model: openai/space-bunny-free
+      api_base: https://opencode.ai/zen/v1
+      api_key: os.environ/OPENCODE_API_KEY
+      tags:
+        - free
+        - stealth
+      order: 1
+      max_parallel_requests: 2
+      cooldown_time: 900
+    model_info:
+      mode: chat
+      id: zen-spacebunny-worker-cheap
+      allowed_fails_policy:
+        BadRequestErrorAllowedFails: 1
+  - model_name: worker-capable
+    litellm_params:
+      model: anthropic/MiniMax-M3.1-Flash-Preview
+      api_base: https://api.minimax.io/anthropic
+      api_key: os.environ/MINIMAX_API_KEY
+      # free until 2026-10-07 (Nish 2026-09-30), see follow-up issue
+      tags:
+        - free
+        - minimax
+      order: 1
+      max_parallel_requests: 6
+      cooldown_time: 120
+    model_info:
+      mode: chat
+      id: minimax-m31-worker-capable
+      allowed_fails_policy:
+        BadRequestErrorAllowedFails: 1
+  - model_name: worker-capable
+    litellm_params:
+      model: anthropic/MiniMax-M3.1-Flash-Preview
+      api_base: https://api.minimax.io/anthropic
+      api_key: os.environ/MINIMAX_API_KEY
+      # free until 2026-10-07 (Nish 2026-09-30), see follow-up issue
+      tags:
+        - free
+        - minimax
+      order: 1
+      max_parallel_requests: 6
+      cooldown_time: 120
+    model_info:
+      mode: chat
+      id: minimax-m31b-worker-capable
+      allowed_fails_policy:
+        BadRequestErrorAllowedFails: 1
+  - model_name: worker-cheap
+    litellm_params:
+      model: anthropic/MiniMax-M3.1-Flash-Preview
+      api_base: https://api.minimax.io/anthropic
+      api_key: os.environ/MINIMAX_API_KEY
+      # free until 2026-10-07 (Nish 2026-09-30), see follow-up issue
+      tags:
+        - free
+        - minimax
+      order: 1
+      max_parallel_requests: 6
+      cooldown_time: 120
+    model_info:
+      mode: chat
+      id: minimax-m31-worker-cheap
+      allowed_fails_policy:
+        BadRequestErrorAllowedFails: 1
+  - model_name: worker-cheap
+    litellm_params:
+      model: anthropic/MiniMax-M3.1-Flash-Preview
+      api_base: https://api.minimax.io/anthropic
+      api_key: os.environ/MINIMAX_API_KEY
+      # free until 2026-10-07 (Nish 2026-09-30), see follow-up issue
+      tags:
+        - free
+        - minimax
+      order: 1
+      max_parallel_requests: 6
+      cooldown_time: 120
+    model_info:
+      mode: chat
+      id: minimax-m31b-worker-cheap
+      allowed_fails_policy:
+        BadRequestErrorAllowedFails: 1
+  - model_name: worker-capable
+    litellm_params:
+      model: openai/deepseek-v4.1-flash
+      api_base: https://ollama.com/v1
+      api_key: os.environ/OLLAMA_API_KEY
+      tags:
+        - prepaid
+        - ollama
+      order: 1
+      input_cost_per_token: 3e-07
+      cache_read_input_token_cost: 6e-09
+      output_cost_per_token: 1.2e-06
+      max_budget: 10.0
+      budget_duration: 1d
+      max_parallel_requests: 4
+      cooldown_time: 900
+    model_info:
+      mode: chat
+      id: ollama-ds41flash-worker-capable
+      allowed_fails_policy:
+        BadRequestErrorAllowedFails: 1
+  - model_name: worker-capable
+    litellm_params:
+      model: openai/stealth/space-bunny-alpha
+      api_base: https://api.cline.bot/api/v1
+      api_key: os.environ/CLINE_API_KEY
+      tags:
+        - prepaid
+        - cline
+        - stealth
+      order: 1
+      max_parallel_requests: 2
+      # 6 h: Cline meters it under the free-model daily quota (5 quota-429s in 24 h, fleet-ops#9075).
+      cooldown_time: 21600
+    model_info:
+      mode: chat
+      id: cline-spacebunnyalpha-worker-capable
+      allowed_fails_policy:
+        BadRequestErrorAllowedFails: 1
+        RateLimitErrorAllowedFails: 0
+  # Nish 2026-09-30 free rows (probe: both finish_reason=tool_calls).
+  - model_name: worker-capable
+    litellm_params: &cline-free
+      model: openai/poolside/laguna-s-2.1:free
+      api_base: https://api.cline.bot/api/v1
+      api_key: os.environ/CLINE_API_KEY
+      tags: [free, cline]
+      order: 1
+      max_parallel_requests: 2
+      # 6 h, sized to Cline's daily free-model token quota (fleet-ops#9075).
+      cooldown_time: 21600
+    model_info:
+      mode: chat
+      id: cline-lagunas21-worker-capable
+      allowed_fails_policy:
+        BadRequestErrorAllowedFails: 1
+        # A daily-quota 429 parks the row on the first failure instead of needing 2.
+        RateLimitErrorAllowedFails: 0
+  - model_name: worker-cheap
+    litellm_params: {!!merge <<: *cline-free}
+    model_info:
+      mode: chat
+      id: cline-lagunas21-worker-cheap
+      allowed_fails_policy:
+        BadRequestErrorAllowedFails: 1
+        RateLimitErrorAllowedFails: 0
+  - model_name: worker-capable
+    litellm_params:
+      !!merge <<: *cline-free
+      model: openai/inclusionai/ling-3.0-flash-sante:free
+    model_info:
+      mode: chat
+      id: cline-ling30flashsante-worker-capable
+      allowed_fails_policy:
+        BadRequestErrorAllowedFails: 1
+        RateLimitErrorAllowedFails: 0
+  - model_name: worker-cheap
+    litellm_params:
+      !!merge <<: *cline-free
+      model: openai/inclusionai/ling-3.0-flash-sante:free
+    model_info:
+      mode: chat
+      id: cline-ling30flashsante-worker-cheap
+      allowed_fails_policy:
+        BadRequestErrorAllowedFails: 1
+        RateLimitErrorAllowedFails: 0
+  - model_name: worker-capable
+    litellm_params: &openrouter-spacebunny
+      model: openai/stealth/space-bunny-alpha
+      api_base: https://openrouter.ai/api/v1
+      max_budget: 1.0
+      budget_duration: 1mo
+      api_key: os.environ/OPENROUTER_API_KEY
+      extra_headers: {HTTP-Referer: 'https://0509.io', X-Title: nish-fleet}
+      tags:
+        - free
+        - stealth
+      order: 1
+      max_parallel_requests: 2
+      cooldown_time: 900
+    model_info:
+      mode: chat
+      id: openrouter-spacebunnyalpha-worker-capable
+      allowed_fails_policy:
+        BadRequestErrorAllowedFails: 1
+  - model_name: worker-cheap
+    litellm_params: {!!merge <<: *openrouter-spacebunny}
+    model_info:
+      mode: chat
+      id: openrouter-spacebunnyalpha-worker-cheap
+      allowed_fails_policy:
+        BadRequestErrorAllowedFails: 1
+  - model_name: worker-cheap
+    litellm_params: &openrouter-nemotron
+      !!merge <<: *openrouter-spacebunny
+      model: openai/nvidia/nemotron-3-ultra-550b-a55b:free
+      max_budget: 5.0
+      tags: [free, nemotron]
+      max_parallel_requests: 4
+      cooldown_time: 60
+    model_info:
+      mode: chat
+      id: openrouter-nemotronultra-worker-cheap
+      allowed_fails_policy:
+        BadRequestErrorAllowedFails: 1
+  - model_name: worker-capable
+    litellm_params: {!!merge <<: *openrouter-nemotron}
+    model_info:
+      mode: chat
+      id: openrouter-nemotronultra-worker-capable
+      allowed_fails_policy:
+        BadRequestErrorAllowedFails: 1
+  - model_name: worker-cheap
+    litellm_params:
+      !!merge <<: *openrouter-nemotron
+      model: openai/nvidia/nemotron-3.5-lightning:free
+    model_info:
+      mode: chat
+      id: openrouter-nemotronlightning-worker-cheap
+      allowed_fails_policy:
+        BadRequestErrorAllowedFails: 1
+  # Nish 2026-10-04 free rows (probe 2026-10-04 03:48 UTC: both 200 and finish_reason=tool_calls; OpenRouter :free costs $0, max_budget stays the spend wall).
+  - model_name: worker-capable
+    litellm_params:
+      !!merge <<: *openrouter-spacebunny
+      model: openai/inclusionai/ling-3.0-flash-sante:free
+      tags: [free, openrouter]
+    model_info:
+      mode: chat
+      id: openrouter-ling30flashsante-worker-capable
+      allowed_fails_policy:
+        BadRequestErrorAllowedFails: 1
+  - model_name: worker-cheap
+    litellm_params:
+      !!merge <<: *openrouter-spacebunny
+      model: openai/inclusionai/ling-3.0-flash-sante:free
+      tags: [free, openrouter]
+    model_info:
+      mode: chat
+      id: openrouter-ling30flashsante-worker-cheap
+      allowed_fails_policy:
+        BadRequestErrorAllowedFails: 1
+  - model_name: worker-capable
+    litellm_params:
+      !!merge <<: *openrouter-spacebunny
+      model: openai/poolside/laguna-s-2.1:free
+      tags: [free, openrouter]
+    model_info:
+      mode: chat
+      id: openrouter-lagunas21free-worker-capable
+      allowed_fails_policy:
+        BadRequestErrorAllowedFails: 1
+  - model_name: worker-cheap
+    litellm_params:
+      !!merge <<: *openrouter-spacebunny
+      model: openai/poolside/laguna-s-2.1:free
+      tags: [free, openrouter]
+    model_info:
+      mode: chat
+      id: openrouter-lagunas21free-worker-cheap
+      allowed_fails_policy:
+        BadRequestErrorAllowedFails: 1
 router_settings:
   routing_strategy: simple-shuffle
   # One task = one model (Nish 2026-10-01, fleet-ops#9015). Pi sends x-litellm-session-id=$FLEET_TASK_ID
@@ -956,7 +772,7 @@ router_settings:
 litellm_settings:
   drop_params: true
   callbacks:
-  - prometheus
+    - prometheus
   require_auth_for_metrics_endpoint: false
 general_settings:
   pass_through_endpoints:
