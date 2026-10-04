@@ -1,7 +1,7 @@
 # Jev call sites in fleet-ops (measured 2026-09-29)
 
 Live Jev call sites on origin/main:
-- `prompts/worker.md` step 4: the `needsNish` Noul (blocker text only, no Exa).
+- `prompts/worker.md` step 4: the `needsNish` boolean (blocker text only, no Exa).
 - `config/litellm-proxy.yaml`: the /jev Vercel AI Gateway pass-through (typesafe-ai/jev) (infra, not a decision).
 
 Removed by the lean sweep (#8959, 2026-09-29): the `agent.yml` Gate `cheap_ok`
