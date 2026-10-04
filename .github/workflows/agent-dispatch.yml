@@ -538,8 +538,12 @@ jobs:
       # issues: read is the job's own grant (steps read the issue), contents:
       # read is added because steps a and d read git refs and PR lists through
       # the API, which GitHub scopes to contents even for a read.
+      # pull-requests: read, because on a private repo (nish3451/drive) the
+      # cleanup step's PR list fails without it ("Resource not accessible by
+      # integration"), and a failed list reads as "no PR".
       issues: read
       contents: read
+      pull-requests: read
     env:
       REPO: ${{ github.repository }}
       # An issues.labeled event has no inputs.issue, so a 0509 stub that calls
@@ -699,6 +703,9 @@ jobs:
           # hold: the orchestrator session, not this job, owns pushing. So the
           # mark is posted as the runner user's own login (gh's stored host
           # credential, the same one the session pushes with).
+          # --force makes the label idempotent, so a newly stubbed repo without
+          # it does not fail the mark (drive#199, 2026-10-04).
+          env -u GH_TOKEN -u GITHUB_TOKEN gh label create orchestrator-tried -R "$REPO" --force --color BFD4F2 --description "Orchestrator hand-off ended without a PR; a person clears it to retry"
           env -u GH_TOKEN -u GITHUB_TOKEN gh issue edit "$ISSUE" -R "$REPO" --add-label orchestrator-tried --remove-label needs-orchestrator
           env -u GH_TOKEN -u GITHUB_TOKEN gh issue comment "$ISSUE" -R "$REPO" --body "orchestrator hand-off ended without a PR: $GITHUB_SERVER_URL/$REPO/actions/runs/$GITHUB_RUN_ID"
           echo "orchestrate: #$ISSUE marked orchestrator-tried (no PR)"
