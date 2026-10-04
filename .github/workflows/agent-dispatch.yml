@@ -8,9 +8,11 @@
 # To delete it: revert the miss-review jobs in this file and the miss-review
 # path in agent.yml (Gate, Worker, Arm, Deliverable, Clean).
 # Repo variable ORCHESTRATE:
-#   off (default, unset) = the orchestrate job never starts
-#   live                 = a needs-orchestrator label starts one hand-off run
-# To switch orchestration off: set ORCHESTRATE to off, or delete the variable.
+#   off                  = the orchestrate job never starts
+#   live (default, unset) = a needs-orchestrator label starts one hand-off run.
+#   Default on (Nish 2026-10-04, "on for everything the fleet touches"), so a
+#   newly stubbed repo cannot sit off by omission.
+# To switch orchestration off: set ORCHESTRATE to off.
 # To delete it: revert the orchestrate job in this file, the workflow-path
 # detector in agent.yml's Gate, and prompts/orchestrator-handoff.md. A run
 # already in flight finishes: the label gate only stops new ones.
@@ -518,7 +520,7 @@ jobs:
     # and agent.yml's attempt-cap park label). workflow_dispatch needs no sender
     # test: it is already write-access only.
     if: >-
-      vars.ORCHESTRATE == 'live' && (
+      vars.ORCHESTRATE != 'off' && (
         (github.event_name == 'issues' && github.event.action == 'labeled' && github.event.label.name == 'needs-orchestrator' &&
           (github.event.sender.login == 'nish3451' ||
            (endsWith(github.event.sender.login, '[bot]') &&
