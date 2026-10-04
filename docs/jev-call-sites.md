@@ -2,7 +2,7 @@
 
 Live Jev call sites on origin/main:
 - `prompts/worker.md` step 4: the `needsNish` Noul (blocker text only, no Exa).
-- `config/litellm-proxy.yaml`: the `/jev` TypeSafe pass-through (infra, not a decision).
+- `config/litellm-proxy.yaml`: the /jev Vercel AI Gateway pass-through (typesafe-ai/jev) (infra, not a decision).
 
 Removed by the lean sweep (#8959, 2026-09-29): the `agent.yml` Gate `cheap_ok`
 Noul with full context + Exa, `opus-vet.yml`, `fleet-map.yml`, `code-audit.yml`

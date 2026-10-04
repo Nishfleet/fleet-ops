@@ -55,7 +55,7 @@ PodmanArgs=--env=OPENROUTER_API_KEY
 PodmanArgs=--env=PARETO_API_KEY
 PodmanArgs=--env=STEPFUN_API_KEY
 PodmanArgs=--env=SYNTHETIC_API_KEY
-PodmanArgs=--env=TYPESAFE_API_KEY
+PodmanArgs=--env=VERCEL_AI_GATEWAY_JEV_KEY
 PodmanArgs=--env=XKIRO_API_KEY
 PodmanArgs=--env=ZAI_API_KEY
 # --num_workers 2 (fleet-ops#8827). The default is 1, so /health/readiness,
