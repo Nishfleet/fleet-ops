@@ -127,12 +127,15 @@ jobs:
           SHA: ${{ github.event.workflow_run.head_sha }}
         run: |
           i=${REF#claim/issue-}; i=${i%%-*}
-          # A log that cannot be read still leaves a note with the run link,
-          # so the worker knows where to look.
-          errors=$(gh run view "$RUN_ID" -R "$GITHUB_REPOSITORY" --log-failed 2>/dev/null |
-            grep -F '##[error]' | sed 's/.*##\[error\]//' | grep -vx 'Process completed with exit code [0-9]*\.' |
+          # A tool that prints errors as plain text leaves only the generic
+          # exit-code ##[error] line, so the failed log's last 30 lines stand
+          # in. A log that cannot be read still leaves a note with the run
+          # link, so the worker knows where to look.
+          log=$(gh run view "$RUN_ID" -R "$GITHUB_REPOSITORY" --log-failed 2>/dev/null) || log=
+          errors=$(grep -F '##[error]' <<<"$log" | sed 's/.*##\[error\]//' | grep -vx 'Process completed with exit code [0-9]*\.' |
             cut -c1-300 | awk '!seen[$0]++' | head -n 30) || true
-          [ -n "$errors" ] || errors="(no ##[error] lines in the failed log; open the run)"
+          [ -n "$errors" ] || errors=$(cut -f3- <<<"$log" | cut -c1-300 | tail -n 30)
+          [ -n "$errors" ] || errors="(the failed log could not be read; open the run)"
           # shellcheck disable=SC2016 # the backticks are a literal markdown fence
           body=$(printf 'rework: CI run %s failed on %s. Fix these errors, then push to %s:\n\n```\n%s\n```' "$RUN_URL" "${SHA:0:7}" "$REF" "$errors")
           gh issue comment "$i" -R "$GITHUB_REPOSITORY" --body "$body"
@@ -177,8 +180,9 @@ jobs:
           # Only PRs the bulk list does not call MERGEABLE are re-read: the
           # bulk list says UNKNOWN until GitHub recomputes a PR after a push
           # to main, and a per-PR read triggers that (fleet-ops#8557).
-          for pr in $(gh pr list -R "$GITHUB_REPOSITORY" -L 1000 --json number,headRefName,isDraft,mergeable \
-              --jq '.[] | select((.headRefName | test("^claim/issue-[0-9]+$")) and (.isDraft | not) and .mergeable != "MERGEABLE") | .number'); do
+          prs=$(gh pr list -R "$GITHUB_REPOSITORY" -L 1000 --json number,headRefName,isDraft,mergeable \
+            --jq '.[] | select((.headRefName | test("^claim/issue-[0-9]+$")) and (.isDraft | not) and .mergeable != "MERGEABLE") | .number')
+          for pr in $prs; do
             for _ in 1 2 3; do
               v=$(gh pr view "$pr" -R "$GITHUB_REPOSITORY" --json headRefName,mergeable)
               [ "$(jq -r .mergeable <<<"$v")" != UNKNOWN ] && break
@@ -186,7 +190,9 @@ jobs:
             done
             [ "$(jq -r .mergeable <<<"$v")" = CONFLICTING ] || continue
             ref=$(jq -r .headRefName <<<"$v"); i=${ref#claim/issue-}
-            [ "$(gh issue view "$i" -R "$GITHUB_REPOSITORY" --json state --jq .state)" = OPEN ] || continue
+            # Same skips as the Gate: closed, blocked or parked work gets no note.
+            gh api "repos/$GITHUB_REPOSITORY/issues/$i" --jq '.state == "open" and (.issue_dependencies_summary.blocked_by // 0) == 0 and
+              (any(.labels[].name; IN("agent-blocked","needs-split","needs-orchestrator","needs-nish-decision","epic")) | not)' | grep -qx true || continue
             body=$(gh issue view "$i" -R "$GITHUB_REPOSITORY" --json comments --jq '[.comments[].body | select(startswith("agent run started:"))] | last // ""')
             if [[ $body =~ actions/runs/([0-9]+) ]]; then
               case $(gh run view "${BASH_REMATCH[1]}" -R "$GITHUB_REPOSITORY" --json status --jq .status) in
