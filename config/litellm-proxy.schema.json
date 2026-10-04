@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$comment": "Hard gate for config/litellm-proxy.yaml (fleet-ops#8653). Nish 2026-09-28: no benching unless he says so. A failed row is never taken out of rotation: no bench list. Row cooldown_time: <=900 s is for ordinary transients. Values over 900 s, up to the 86400 s cap, are reserved for rows with a named, self-refilling wall (a daily or monthly quota that outlasts 900 s) - the row stays live, parked, and re-probes itself; each such row cites its issue in a comment (fleet-ops#8398/#9075). Router-level cooldown_time holds a failed row for at most 60 s. router_settings.redis_url is required: session_affinity pins live in the Router cache, and without Redis each of the proxy's 2 worker processes keeps its own pin, so a session flips between rows with no failure (fleet-ops#9015). LiteLLM v1.98.0 never reads a redis_url under general_settings.",
+  "$comment": "Hard gate for config/litellm-proxy.yaml (fleet-ops#8653). Nish 2026-09-28: no benching unless he says so. A failed row is never taken out of rotation: no bench list. Row cooldown_time: <=900 s is for ordinary transients. Values over 900 s, up to the 86400 s cap, are reserved for rows with a named, self-refilling wall (a daily or monthly quota that outlasts 900 s) - the row stays live, parked, and re-probes itself; each such row cites its issue in a comment (fleet-ops#8398/#9075). A row on openrouter.ai/api/v1 must set model_info.allowed_fails_policy.RateLimitErrorAllowedFails: 0, because its 429s are OpenRouter's named daily free-tier wall and the row has to park on the first one (fleet-ops#9248). Router-level cooldown_time holds a failed row for at most 60 s. router_settings.redis_url is required: session_affinity pins live in the Router cache, and without Redis each of the proxy's 2 worker processes keeps its own pin, so a session flips between rows with no failure (fleet-ops#9015). LiteLLM v1.98.0 never reads a redis_url under general_settings.",
   "type": "object",
   "required": ["model_list", "router_settings"],
   "$defs": {
@@ -13,6 +13,34 @@
       "items": {
         "type": "object",
         "required": ["model_name", "litellm_params"],
+        "allOf": [
+          {
+            "$comment": "fleet-ops#9248: a row on openrouter.ai/api/v1 is metered by OpenRouter's free-tier DAILY quota, so its RateLimitError must park the row on the first failure. Without RateLimitErrorAllowedFails the router-level default of 1 needs a second 429, and the wall leaks to the caller: 4 of 30 parallel worker-capable calls on 2026-10-04.",
+            "if": {
+              "required": ["litellm_params"],
+              "properties": {
+                "litellm_params": {
+                  "required": ["api_base"],
+                  "properties": { "api_base": { "const": "https://openrouter.ai/api/v1" } }
+                }
+              }
+            },
+            "then": {
+              "required": ["model_info"],
+              "properties": {
+                "model_info": {
+                  "required": ["allowed_fails_policy"],
+                  "properties": {
+                    "allowed_fails_policy": {
+                      "required": ["RateLimitErrorAllowedFails"],
+                      "properties": { "RateLimitErrorAllowedFails": { "const": 0 } }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        ],
         "properties": {
           "litellm_params": {
             "type": "object",

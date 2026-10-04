@@ -10,6 +10,7 @@
 # OpenRouter: stealth/space-bunny-alpha, nemotron-3-ultra, nemotron-3.5-lightning, inclusionai/ling-3.0-flash-sante:free, poolside/laguna-s-2.1:free (Nish 2026-10-04: 2 lanes per free model per provider). Pareto: glm-5.3-flash, never in judge.
 # Devin: SWE 2 only, through the devin CLI lane in agent.yml (no router route: 404 on every base).
 # Cline/Pareto "You've reached today's free-model token quota" 429s are a day-long wall, not a transient (fleet-ops#9075, 2026-10-02): a 900 s cool re-failed into worker groups every ~15 min - 13 of 60 probe calls at 09:53 UTC, ~14 quota-429s reached workers in 24 h. Quota-dominated rows now cool 21600 s, a quarter-day park that re-probes ~4x/day so a quota reset is picked up within hours. The cline :free rows and spacebunnyalpha park on the first 429 (RateLimitErrorAllowedFails: 0; LiteLLM resolves the field via `is not None`, so 0 means immediate). Prepaid cline-ds41flash mixes the daily wall with per-minute bursts, and LiteLLM's fail counter TTL is the row's own cooldown_time (21600 s), so RateLimitErrorAllowedFails: 3 parks it on the 4th 429 inside any 6 h window - a per-minute burst rarely totals 4 in 6 h, while a quota wall 429s every call and reaches 4 quickly. pareto keeps 300 s (its 429s are the 3-parallel key cap, fleet-ops#8458) but parks on the first: a 5-min park costs less than leaking a saturated key's 429s to callers. Cline and Pareto answer only stream:true upstream (fleet-ops#8923) and LiteLLM v1.98.0 cannot force a stream a caller did not ask for (the request's stream flag always overrides litellm_params; LiteLLM_Params has no stream field), so a non-streaming caller still 400/500s on those rows - every fleet caller (Pi) streams.
+# OpenRouter rows answer on one key over OpenRouter's free tier, and their daily wall is named in the provider's own body (fleet-ops#9248, seen 2026-10-04 22:00-23:00 IST): `Rate limit exceeded: free-models-per-day-high-balance`, `"limit_source": "openrouter_free_tier_daily"`, `X-RateLimit-Reset` at the next 00:00 UTC. It outlasts 900 s the same way Cline's does, and a 900 s cool re-probed every ~15 min (the 22:41/22:51/22:52/22:54 journal lines) while a 60 s cool (the nemotron rows) never let the fail counter expire. Every OpenRouter row below now cools 21600 s and parks on the first 429 (RateLimitErrorAllowedFails: 0), which the schema requires of any row on openrouter.ai/api/v1. The rows stay live and re-probe ~4x/day, so a quota reset is picked up within hours. Manual probe 2026-10-04 ~23:00 IST: 30 parallel worker-capable calls gave 26x200 and 4x429 at the caller, 13 journal lines of the daily wall - 22% of the burst leaked, from a wall LiteLLM could already see.
 # Nish 2026-10-02: removing or benching any provider, model or row needs his explicit yes first. Provider quotas refresh hourly, daily, weekly or monthly, so a quota or limit error never justifies it. When a provider has ended a model, open an issue labelled needs-nish-decision with the evidence: the 8am and 8pm digests ask him again every day until he answers. The removals recorded above each had his yes.
 model_list:
 - model_name: worker-capable
@@ -950,12 +951,15 @@ model_list:
     - stealth
     order: 1
     max_parallel_requests: 2
-    cooldown_time: 900
+    # 6 h, sized to OpenRouter's free-tier daily quota wall (fleet-ops#9248): a 900 s cool re-probed every ~15 min, so the same 429 kept reaching callers.
+    cooldown_time: 21600
   model_info:
     mode: chat
     id: openrouter-spacebunnyalpha-worker-capable
     allowed_fails_policy:
       BadRequestErrorAllowedFails: 1
+      # A daily-quota 429 parks the row on the first failure instead of needing 2.
+      RateLimitErrorAllowedFails: 0
 - model_name: worker-cheap
   litellm_params: {<<: *openrouter-spacebunny}
   model_info:
@@ -963,6 +967,7 @@ model_list:
     id: openrouter-spacebunnyalpha-worker-cheap
     allowed_fails_policy:
       BadRequestErrorAllowedFails: 1
+      RateLimitErrorAllowedFails: 0
 - model_name: worker-cheap
   litellm_params: &openrouter-nemotron
     <<: *openrouter-spacebunny
@@ -970,12 +975,16 @@ model_list:
     max_budget: 5.0
     tags: [free, nemotron]
     max_parallel_requests: 4
-    cooldown_time: 60
+    # 6 h, the same daily free-model wall as the anchor (fleet-ops#9248). 60 s was never
+    # enough: the row re-entered the shuffle before its own fail counter expired, so the
+    # same 429 repeated inside one minute.
+    cooldown_time: 21600
   model_info:
     mode: chat
     id: openrouter-nemotronultra-worker-cheap
     allowed_fails_policy:
       BadRequestErrorAllowedFails: 1
+      RateLimitErrorAllowedFails: 0
 - model_name: worker-capable
   litellm_params: {<<: *openrouter-nemotron}
   model_info:
@@ -983,6 +992,7 @@ model_list:
     id: openrouter-nemotronultra-worker-capable
     allowed_fails_policy:
       BadRequestErrorAllowedFails: 1
+      RateLimitErrorAllowedFails: 0
 - model_name: worker-cheap
   litellm_params:
     <<: *openrouter-nemotron
@@ -992,6 +1002,7 @@ model_list:
     id: openrouter-nemotronlightning-worker-cheap
     allowed_fails_policy:
       BadRequestErrorAllowedFails: 1
+      RateLimitErrorAllowedFails: 0
 # Nish 2026-10-04 free rows (probe 2026-10-04 03:48 UTC: both 200 and finish_reason=tool_calls; OpenRouter :free costs $0, max_budget stays the spend wall).
 - model_name: worker-capable
   litellm_params:
@@ -1003,6 +1014,7 @@ model_list:
     id: openrouter-ling30flashsante-worker-capable
     allowed_fails_policy:
       BadRequestErrorAllowedFails: 1
+      RateLimitErrorAllowedFails: 0
 - model_name: worker-cheap
   litellm_params:
     <<: *openrouter-spacebunny
@@ -1013,6 +1025,7 @@ model_list:
     id: openrouter-ling30flashsante-worker-cheap
     allowed_fails_policy:
       BadRequestErrorAllowedFails: 1
+      RateLimitErrorAllowedFails: 0
 - model_name: worker-capable
   litellm_params:
     <<: *openrouter-spacebunny
@@ -1023,6 +1036,7 @@ model_list:
     id: openrouter-lagunas21free-worker-capable
     allowed_fails_policy:
       BadRequestErrorAllowedFails: 1
+      RateLimitErrorAllowedFails: 0
 - model_name: worker-cheap
   litellm_params:
     <<: *openrouter-spacebunny
@@ -1033,6 +1047,7 @@ model_list:
     id: openrouter-lagunas21free-worker-cheap
     allowed_fails_policy:
       BadRequestErrorAllowedFails: 1
+      RateLimitErrorAllowedFails: 0
 # Alibaba Model Studio Token Plan (Personal Standard, SG, $18/mo, 45,000 credits per 30-day month, no weekly cap,
 # unused credits do not roll over - Nish from the console 2026-10-04, #9220), re-wired 2026-10-04 with a fresh key
 # (fleet-ops#9220). Nish 2026-09-08 (#4445): "only use qwen 3.8 max as another judge / orchestrator on the roster.

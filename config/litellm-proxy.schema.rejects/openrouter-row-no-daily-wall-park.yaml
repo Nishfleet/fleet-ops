@@ -1,0 +1,15 @@
+model_list:
+- model_name: worker-capable
+  litellm_params:
+    model: openai/stealth/space-bunny-alpha
+    api_base: https://openrouter.ai/api/v1
+    api_key: os.environ/OPENROUTER_API_KEY
+    tags: [free, openrouter]
+  model_info:
+    mode: chat
+    id: openrouter-spacebunnyalpha-worker-capable
+    allowed_fails_policy:
+      BadRequestErrorAllowedFails: 1
+router_settings:
+  redis_url: redis://127.0.0.1:6379
+  cooldown_time: 60
