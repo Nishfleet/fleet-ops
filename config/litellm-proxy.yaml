@@ -829,7 +829,7 @@ model_list:
     id: openrouter-nemotronlightning-worker-cheap
     allowed_fails_policy:
       BadRequestErrorAllowedFails: 1
-# Nish 2026-10-04 free rows (probe 2026-10-04 03:5x UTC: both 200 and finish_reason=tool_calls; OpenRouter :free costs $0, max_budget stays the spend wall).
+# Nish 2026-10-04 free rows (probe 2026-10-04 03:48 UTC: both 200 and finish_reason=tool_calls; OpenRouter :free costs $0, max_budget stays the spend wall).
 - model_name: worker-capable
   litellm_params:
     <<: *openrouter-spacebunny
