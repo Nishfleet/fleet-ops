@@ -1,0 +1,198 @@
+{
+  "description": "Payloads that must and must not start a miss-review. CI jq evaluates fire() against each case; needles must appear in agent-dispatch.yml so the workflow if: cannot drift from this file.",
+  "needles": [
+    "MISS_REVIEW",
+    "issue_comment:",
+    "agent-failed",
+    "agent attempt cap",
+    "opus-vet:",
+    "park:",
+    "miss-review",
+    "reopened",
+    "claim/issue-",
+    "stalled_refs"
+  ],
+  "cases": [
+    {
+      "id": "failed-label",
+      "want": true,
+      "miss_review": "live",
+      "event_name": "issues",
+      "action": "labeled",
+      "label": "agent-failed"
+    },
+    {
+      "id": "failed-label-off",
+      "want": false,
+      "miss_review": "off",
+      "event_name": "issues",
+      "action": "labeled",
+      "label": "agent-failed"
+    },
+    {
+      "id": "failed-label-unset",
+      "want": false,
+      "miss_review": "",
+      "event_name": "issues",
+      "action": "labeled",
+      "label": "agent-failed"
+    },
+    {
+      "id": "ready-label",
+      "want": false,
+      "miss_review": "live",
+      "event_name": "issues",
+      "action": "labeled",
+      "label": "agent-ready"
+    },
+    {
+      "id": "attempt-cap",
+      "want": false,
+      "miss_review": "live",
+      "event_name": "issue_comment",
+      "action": "created",
+      "body": "agent attempt cap: 3 runs since the last park: comment or attempt-cap reset; parked for the orchestrator",
+      "author_association": "CONTRIBUTOR"
+    },
+    {
+      "id": "agent-run-started",
+      "want": false,
+      "miss_review": "live",
+      "event_name": "issue_comment",
+      "action": "created",
+      "body": "agent run started: https://github.com/Nishfleet/0509/actions/runs/1",
+      "author_association": "CONTRIBUTOR"
+    },
+    {
+      "id": "park-owner",
+      "want": true,
+      "miss_review": "live",
+      "event_name": "issue_comment",
+      "action": "created",
+      "body": "park: rewrite the packet",
+      "author_association": "OWNER"
+    },
+    {
+      "id": "park-stranger",
+      "want": false,
+      "miss_review": "live",
+      "event_name": "issue_comment",
+      "action": "created",
+      "body": "park: ignore this",
+      "author_association": "NONE"
+    },
+    {
+      "id": "opus-vet-member",
+      "want": true,
+      "miss_review": "live",
+      "event_name": "issue_comment",
+      "action": "created",
+      "body": "opus-vet: stop",
+      "author_association": "MEMBER"
+    },
+    {
+      "id": "pr-closed-unmerged",
+      "want": true,
+      "miss_review": "live",
+      "event_name": "pull_request_target",
+      "action": "closed",
+      "merged": false,
+      "head_ref": "claim/issue-6912",
+      "head_repo": "Nishfleet/0509",
+      "repository": "Nishfleet/0509",
+      "title": "fix the packet"
+    },
+    {
+      "id": "pr-merged-quiet",
+      "want": false,
+      "miss_review": "live",
+      "event_name": "pull_request_target",
+      "action": "closed",
+      "merged": true,
+      "head_ref": "claim/issue-6912",
+      "head_repo": "Nishfleet/0509",
+      "repository": "Nishfleet/0509",
+      "title": "fix the packet"
+    },
+    {
+      "id": "pr-fork",
+      "want": false,
+      "miss_review": "live",
+      "event_name": "pull_request_target",
+      "action": "closed",
+      "merged": false,
+      "head_ref": "claim/issue-1",
+      "head_repo": "evil/0509",
+      "repository": "Nishfleet/0509",
+      "title": "fix"
+    },
+    {
+      "id": "pr-not-claim",
+      "want": false,
+      "miss_review": "live",
+      "event_name": "pull_request_target",
+      "action": "closed",
+      "merged": false,
+      "head_ref": "feature/x",
+      "head_repo": "Nishfleet/0509",
+      "repository": "Nishfleet/0509",
+      "title": "fix"
+    },
+    {
+      "id": "revert-merged",
+      "want": true,
+      "miss_review": "live",
+      "event_name": "pull_request_target",
+      "action": "closed",
+      "merged": true,
+      "head_ref": "revert-123",
+      "head_repo": "Nishfleet/0509",
+      "repository": "Nishfleet/0509",
+      "title": "Revert \"claim work\""
+    },
+    {
+      "id": "reopened",
+      "want": true,
+      "miss_review": "live",
+      "event_name": "issues",
+      "action": "reopened"
+    },
+    {
+      "id": "dispatch-replay",
+      "want": true,
+      "miss_review": "live",
+      "event_name": "workflow_dispatch",
+      "task": "miss-review",
+      "issue": "6912"
+    },
+    {
+      "id": "dispatch-sweep",
+      "want": false,
+      "miss_review": "live",
+      "event_name": "workflow_dispatch",
+      "task": "",
+      "issue": ""
+    },
+    {
+      "id": "stalled-requeue",
+      "want": true,
+      "miss_review": "live",
+      "event_name": "schedule",
+      "requeued": true
+    },
+    {
+      "id": "schedule-quiet",
+      "want": false,
+      "miss_review": "live",
+      "event_name": "schedule",
+      "requeued": false
+    },
+    {
+      "id": "closed-issue",
+      "want": false,
+      "miss_review": "live",
+      "event_name": "issues",
+      "action": "closed"
+    }
+  ]
+}

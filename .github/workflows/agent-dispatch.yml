@@ -1,18 +1,32 @@
 # Events that put work on the agent queue. Repo variable AGENT_MODE:
 #   shadow (default) = only issues also labelled shadow-actions, no rework
 #   live             = every agent-ready issue, plus rework on red CI
+# Repo variable MISS_REVIEW:
+#   off (default, unset) = miss-review jobs never start
+#   live                 = a miss event starts one different-family review
+# To switch miss-review off: set MISS_REVIEW to off, or delete the variable.
+# To delete it: revert the miss-review jobs in this file and the miss-review
+# path in agent.yml (Gate, Worker, Arm, Deliverable, Clean).
 name: agent-dispatch
 on:
   issues:
-    types: [labeled, closed]
+    types: [labeled, closed, reopened]
+  issue_comment:
+    types: [created]
   # issue=<number> dispatches only that issue's ref, for a caller that
   # relabels or closes with GITHUB_TOKEN: that fires no workflow, and
   # workflow_dispatch is the documented trigger GITHUB_TOKEN may start.
   # No input sweeps exactly like the 6h schedule.
+  # task=miss-review with issue=<N> replays a miss review on that issue
+  # (0509#6912 class) without claiming it as a builder run.
   workflow_dispatch:
     inputs:
       issue:
         description: 'Issue number to dispatch, overrides the sweep and its claim-PR append'
+        required: false
+        type: string
+      task:
+        description: 'miss-review to replay a miss on issue, empty for a normal sweep'
         required: false
         type: string
   # Nishfleet/0509 keeps only a trigger stub that calls this file, so the
@@ -28,6 +42,10 @@ on:
         required: false
         type: string
         default: ''
+      task:
+        required: false
+        type: string
+        default: ''
       # JSON runs-on for the two GitHub-side jobs. A private caller whose
       # hosted minutes ran out passes its own runners, e.g.
       # '["self-hosted","Linux","X64"]' (drive, 2026-10-04: hosted jobs
@@ -38,11 +56,11 @@ on:
         default: '"ubuntu-latest"'
   # pull_request_target, not pull_request: pull_request never runs while a PR
   # has a merge conflict. Invariant (Kimi K3 review L2, 2026-09-24): nothing in
-  # this file checks out PR code, and the one job this event reaches, ejected,
-  # only runs for a claim/issue-* branch whose head repo is this repository,
+  # this file checks out PR code. ejected and miss-review-pr only run for a
+  # claim/issue-* (or a same-repo Revert) whose head repo is this repository,
   # so a fork's PR never reaches a runner or a token.
   pull_request_target:
-    types: [dequeued, auto_merge_disabled]
+    types: [dequeued, auto_merge_disabled, closed]
   workflow_run:
     workflows: [CI]
     types: [completed]
@@ -106,6 +124,7 @@ jobs:
   list:
     if: >-
       (inputs.agent_mode || vars.AGENT_MODE) == 'live' &&
+      inputs.task != 'miss-review' &&
       ((github.event_name == 'issues' && github.event.action == 'closed') ||
        github.event_name == 'workflow_dispatch' || github.event_name == 'schedule')
     runs-on: ${{ fromJSON(inputs.runner || '"ubuntu-latest"') }}
@@ -119,6 +138,7 @@ jobs:
       statuses: read
     outputs:
       refs: ${{ steps.list.outputs.refs }}
+      stalled_refs: ${{ steps.list.outputs.stalled_refs }}
     steps:
       - id: list
         env:
@@ -126,6 +146,7 @@ jobs:
           CLOSED: ${{ github.event.issue.number }}
           ISSUE: ${{ inputs.issue }}
         run: |
+          stalled_refs='[]'
           if [ -n "$ISSUE" ]; then
             # One issue, no PR append: the jq below still re-checks agent-ready
             # and blocked_by, and agent.yml's Gate re-checks again, so a
@@ -161,7 +182,8 @@ jobs:
               case $(gh run view "${BASH_REMATCH[1]}" -R "$GITHUB_REPOSITORY" --json status --jq .status) in
                 queued|in_progress|requested|waiting|pending) ;;
                 *) gh issue edit "$n" -R "$GITHUB_REPOSITORY" --remove-label agent-in-progress --add-label agent-ready
-                   echo "requeued #$n: claimed with no live run and no claim PR" ;;
+                   echo "requeued #$n: claimed with no live run and no claim PR"
+                   stalled_refs=$(jq -nc --argjson s "$stalled_refs" --arg r "claim/issue-$n-miss-review" '$s + [$r]') ;;
               esac
             done
             nums=$(gh issue list -R "$GITHUB_REPOSITORY" -l agent-ready -L 1000 --json number --jq '.[].number')
@@ -238,6 +260,7 @@ jobs:
               | sort_by((if any(.labels[]; .name == "priority-now") then 0 else 1 end), .created_at)
               | map("claim/issue-\(.number)") | . + ($prs - .) | .[:256]')
           echo "refs=${refs:-[]}" >> "$GITHUB_OUTPUT"
+          echo "stalled_refs=$stalled_refs" >> "$GITHUB_OUTPUT"
   unblocked:
     needs: list
     if: needs.list.outputs.refs != '[]'
@@ -276,7 +299,7 @@ jobs:
     # claim PR stayed open (0509 #5081 #5019 #5010 #4922 #4902 #4683).
     if: >-
       (github.event_name == 'issues' && github.event.action == 'closed') ||
-      inputs.issue != ''
+      (inputs.issue != '' && inputs.task != 'miss-review')
     runs-on: ${{ fromJSON(inputs.runner || '"ubuntu-latest"') }}
     permissions:
       # pull-requests: write closes the PR; contents: write is what
@@ -298,3 +321,63 @@ jobs:
             gh pr close "$pr" -R "$GITHUB_REPOSITORY" --delete-branch \
               --comment "issue #$ISSUE closed with this claim PR open; closing it here (fleet-ops#8457)"
           done
+  # Miss review. Off unless vars.MISS_REVIEW is live. One review per issue
+  # (concurrency group); a second event inside 1 h is skipped in agent.yml's
+  # Gate. Design A (winner): stock GitHub events, one uses: agent.yml job.
+  # Design B (rejected): classify misses inside the 6 h sweep. That waits on a
+  # clock, and Nish 2026-10-04 said a review starts when something goes wrong,
+  # never on a clock. Graft: stalled still uses the existing sweep, because
+  # that requeue is the miss event and GitHub emits no other signal for it.
+  # failed / agent attempt cap is owned by agent.yml's Gate (the same run that
+  # posts the cap comment), so an issue_comment cannot start a second review.
+  miss-review:
+    if: >-
+      vars.MISS_REVIEW == 'live' && (
+        (github.event_name == 'issues' && github.event.action == 'labeled' && github.event.label.name == 'agent-failed') ||
+        (github.event_name == 'issues' && github.event.action == 'reopened') ||
+        (github.event_name == 'issue_comment' && github.event.action == 'created' &&
+          (startsWith(github.event.comment.body, 'park:') || startsWith(github.event.comment.body, 'opus-vet:')) &&
+          (github.event.comment.author_association == 'OWNER' ||
+           github.event.comment.author_association == 'MEMBER' ||
+           github.event.comment.author_association == 'COLLABORATOR')) ||
+        (github.event_name == 'workflow_dispatch' && inputs.task == 'miss-review' && inputs.issue != '')
+      )
+    concurrency:
+      group: miss-review-${{ github.repository }}-${{ github.event.issue.number || inputs.issue }}
+      cancel-in-progress: false
+    uses: Nishfleet/fleet-ops/.github/workflows/agent.yml@main # runner group 3 allows only agent.yml@refs/heads/main; a SHA pin strands every job
+    permissions:
+      issues: write
+    with:
+      ref: claim/issue-${{ github.event.issue.number || inputs.issue }}-miss-review
+  miss-review-pr:
+    if: >-
+      vars.MISS_REVIEW == 'live' && github.event_name == 'pull_request_target' &&
+      github.event.action == 'closed' &&
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      ((github.event.pull_request.merged == false && startsWith(github.event.pull_request.head.ref, 'claim/issue-')) ||
+       (github.event.pull_request.merged == true && startsWith(github.event.pull_request.title, 'Revert')))
+    concurrency:
+      group: miss-review-${{ github.repository }}-${{ github.event.pull_request.head.ref }}
+      cancel-in-progress: false
+    uses: Nishfleet/fleet-ops/.github/workflows/agent.yml@main # runner group 3 allows only agent.yml@refs/heads/main; a SHA pin strands every job
+    permissions:
+      issues: write
+    with:
+      ref: ${{ startsWith(github.event.pull_request.head.ref, 'claim/issue-') && format('{0}-miss-review', github.event.pull_request.head.ref) || format('claim/issue-{0}-miss-review', github.event.pull_request.number) }}
+  miss-stalled:
+    needs: list
+    if: vars.MISS_REVIEW == 'live' && needs.list.outputs.stalled_refs != '' && needs.list.outputs.stalled_refs != '[]'
+    strategy:
+      fail-fast: false
+      max-parallel: ${{ fromJSON(vars.AGENT_MAX_PARALLEL || '4') }}
+      matrix:
+        ref: ${{ fromJSON(needs.list.outputs.stalled_refs) }}
+    concurrency:
+      group: miss-review-${{ github.repository }}-${{ matrix.ref }}
+      cancel-in-progress: false
+    uses: Nishfleet/fleet-ops/.github/workflows/agent.yml@main # runner group 3 allows only agent.yml@refs/heads/main; a SHA pin strands every job
+    permissions:
+      issues: write
+    with:
+      ref: ${{ matrix.ref }}

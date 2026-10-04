@@ -22,6 +22,7 @@ jobs:
       issues: write
     outputs:
       wall: ${{ steps.wall.outputs.wall }}
+      miss: ${{ steps.gate.outputs.miss }}
     concurrency:
       group: agent-${{ github.repository }}-${{ inputs.ref }}
       cancel-in-progress: false
@@ -71,18 +72,62 @@ jobs:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
           DEVIN_MAX_LIVE: ${{ vars.DEVIN_MAX_LIVE || '0' }}
           OPENCODE_MAX_LIVE: ${{ vars.OPENCODE_MAX_LIVE || '0' }}
+          MISS_REVIEW: ${{ vars.MISS_REVIEW }}
         run: |
           # Suffixed rework refs carry a -<tag> tail (claim/issue-<N>-<tag>);
           # the issue number is the leading digits (fleet-ops#8793).
           i=${REF#claim/issue-}; i=${i%%-*}
           skip() { echo "gate: skip ($1)"; echo go=false >> "$GITHUB_OUTPUT"; exit 0; }
+          miss=false
+          case $REF in *-miss-review) miss=true ;; esac
+          live() { pgrep -af -- "^bwrap .* -- $1 " | grep -oE 'agent-worktrees/issue-[^ ]*|sessions/agent-[^ ]*' | sort -u | wc -l; }
+          miss_engine() {
+            case $1 in
+              *,strong-only,*) echo pi ;;
+              *) echo cursor ;;
+            esac
+          }
+          miss_go() {
+            [ "$MISS_REVIEW" = live ] || skip miss-review-off
+            last=$(gh issue view "$i" -R "$REPO" --json comments --jq '[.comments[] | select(.body | startswith("miss-review:")) | .createdAt] | last // empty')
+            if [ -n "$last" ]; then
+              last_s=$(date -d "$last" +%s)
+              now_s=$(date +%s)
+              [ $((now_s - last_s)) -lt 3600 ] && skip debounce
+            fi
+            engine=$(miss_engine "$labels")
+            if [ "$engine" = cursor ]; then
+              [ "$(live cursor-agent)" -lt 1 ] || skip lanes-full
+            else
+              # shellcheck disable=SC2016 # $n is yq's variable, not the shell's
+              slots=$(yq '[.model_list[] | select(.model_name == "worker-capable") | .litellm_params.max_parallel_requests // 0] | .[] as $n ireduce (0; . + $n)' "$HOME/.config/fleet-ops/litellm-proxy.yaml")
+              [ "$(live pi)" -lt "$slots" ] || skip lanes-full
+            fi
+            echo miss=true >> "$GITHUB_OUTPUT"
+            echo "issue=$i" >> "$GITHUB_OUTPUT"
+            echo "engine=$engine" >> "$GITHUB_OUTPUT"
+            echo go=true >> "$GITHUB_OUTPUT"
+            exit 0
+          }
           # A claim ref can name a number that is not an issue in the calling
           # repo (fleet-ops#8772: inish-site dispatched fleet-ops' #8136): a
           # 404 is a skip, any other gh failure still fails the step.
           err=$(gh api "repos/$REPO/issues/$i" --jq .number 2>&1 >/dev/null) ||
             { case $err in *"HTTP 404"*) skip missing-issue ;; *) echo "$err" >&2; exit 1 ;; esac; }
           issue=$(gh api "repos/$REPO/issues/$i")
+          if [ "$miss" = true ] && jq -e '.pull_request' <<<"$issue" >/dev/null; then
+            orig=$(jq -r '.body // ""' <<<"$issue" | grep -oE 'Reverts [^[:space:]]*#[0-9]+' | grep -oE '[0-9]+$' | head -1)
+            if [ -n "$orig" ]; then
+              i=$(gh pr view "$orig" -R "$REPO" --json closingIssuesReferences --jq '.[0].number // empty')
+              [ -n "$i" ] || i=$orig
+            else
+              i=$(gh pr view "$i" -R "$REPO" --json closingIssuesReferences --jq '.[0].number // empty')
+              [ -n "$i" ] || skip missing-issue
+            fi
+            issue=$(gh api "repos/$REPO/issues/$i")
+          fi
           labels=,$(jq -r '[.labels[].name]|join(",")' <<<"$issue"),
+          if [ "$miss" = true ]; then miss_go; fi
           [ "$(jq -r .state <<<"$issue")" = open ] || skip closed
           [ "$(jq -r '.issue_dependencies_summary.blocked_by // 0' <<<"$issue")" = 0 ] || skip blocked
           if jq -e '.title|startswith("__scout_probe_")' <<<"$issue" >/dev/null; then skip probe; fi
@@ -104,6 +149,7 @@ jobs:
           if [ "$runs" -ge 3 ]; then
             gh issue edit "$i" -R "$REPO" --add-label needs-orchestrator --remove-label agent-ready,agent-in-progress
             gh issue comment "$i" -R "$REPO" --body "agent attempt cap: $runs runs since the last park: comment or attempt-cap reset; parked for the orchestrator"
+            if [ "$MISS_REVIEW" = live ]; then miss_go; fi
             skip cap
           fi
 
@@ -156,7 +202,7 @@ jobs:
           echo "engine=$engine" >> "$GITHUB_OUTPUT"
           echo go=true >> "$GITHUB_OUTPUT"
       - name: Branch
-        if: steps.gate.outputs.go == 'true'
+        if: steps.gate.outputs.go == 'true' && steps.gate.outputs.miss != 'true'
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
         run: |
@@ -172,12 +218,14 @@ jobs:
         # VPS; only errors (stderr) reach the log. The Gate picks the engine.
         env:
           ENGINE: ${{ steps.gate.outputs.engine }}
+          MISS: ${{ steps.gate.outputs.miss }}
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
           # Pi sends this as x-litellm-session-id so the router keeps the whole run on one model (#9015).
           FLEET_TASK_ID: run-${{ github.run_id }}-${{ github.run_attempt }}
         run: |
           exec 2> >(tee "$RUNNER_TEMP/worker.err" >&2)
           id=${REF#claim/issue-}; id=${REPO#*/}-${id%%-*}
+          [ "$MISS" = true ] && id=$id-miss
           # The worker runs in its own PID namespace: when it exits (or this
           # step is cancelled), the kernel kills every process it started,
           # including ones that setsid/daemonize past the runner's snapshot-based
@@ -187,7 +235,11 @@ jobs:
           # Same cgroup, so agent.slice memory limits still apply.
           jail="bwrap --dev-bind / / --ro-bind $HOME/workspaces/tooling/fleet-ops-deploy-clone $HOME/workspaces/tooling/fleet-ops-deploy-clone --proc /proc --unshare-pid --die-with-parent --"
           dir="$HOME/workspaces/agent-worktrees/issue-$id"
-          packet="Fleet issue worker for instance $id. Follow $HOME/workspaces/tooling/fleet-ops-deploy-clone/prompts/worker.md (read AGENTS.md beside it first); every \$1 there means $id."
+          if [ "$MISS" = true ]; then
+            packet="Miss review for instance $id. Follow $HOME/workspaces/tooling/fleet-ops-deploy-clone/prompts/miss-review.md (read AGENTS.md beside worker.md first); every \$1 there means $id."
+          else
+            packet="Fleet issue worker for instance $id. Follow $HOME/workspaces/tooling/fleet-ops-deploy-clone/prompts/worker.md (read AGENTS.md beside it first); every \$1 there means $id."
+          fi
           if [ "$ENGINE" = devin ]; then
             # --chdir puts the worker directory on the bwrap command line,
             # which is what the Gate's lane count reads.
@@ -248,10 +300,18 @@ jobs:
             # shellcheck disable=SC1091 # constant seat file, not in the repo
             . "$HOME/.config/fleet-ops/seats/mobbin-mcp.env"
             set +a
-            echo "/worker $id" | $jail pi --print \
-              --append-system-prompt "$HOME/workspaces/tooling/fleet-ops-deploy-clone/AGENTS.md" \
-              --session-dir "$HOME/.pi/agent/sessions/agent-$id" \
-              --exclude-tools subagent --provider litellm --model worker-capable >/dev/null
+            if [ "$MISS" = true ]; then
+              echo "$packet" | $jail pi --print \
+                --append-system-prompt "$HOME/workspaces/tooling/fleet-ops-deploy-clone/AGENTS.md" \
+                --append-system-prompt "$HOME/workspaces/tooling/fleet-ops-deploy-clone/prompts/miss-review.md" \
+                --session-dir "$HOME/.pi/agent/sessions/agent-$id" \
+                --exclude-tools subagent --provider litellm --model worker-capable >/dev/null
+            else
+              echo "/worker $id" | $jail pi --print \
+                --append-system-prompt "$HOME/workspaces/tooling/fleet-ops-deploy-clone/AGENTS.md" \
+                --session-dir "$HOME/.pi/agent/sessions/agent-$id" \
+                --exclude-tools subagent --provider litellm --model worker-capable >/dev/null
+            fi
           elif [ "$ENGINE" != devin ] && [ "$ENGINE" != opencode ]; then
             echo "no lane for ENGINE='$ENGINE'" >&2
             exit 1
@@ -294,7 +354,7 @@ jobs:
           gh issue edit "$i" -R "$REPO" --add-label agent-ready --remove-label agent-in-progress
           echo wall=true >> "$GITHUB_OUTPUT"
       - name: Arm auto-merge as the App
-        if: steps.gate.outputs.go == 'true'
+        if: steps.gate.outputs.go == 'true' && steps.gate.outputs.miss != 'true'
         env:
           GH_TOKEN: ${{ steps.arm-token.outputs.token }}
         run: |
@@ -327,8 +387,15 @@ jobs:
         # GitHub blocked_by dependency (4), or a PR on the claim branch.
         env:
           GH_TOKEN: ${{ steps.arm-token.outputs.token }}
+          MISS: ${{ steps.gate.outputs.miss }}
+          ISSUE_N: ${{ steps.gate.outputs.issue }}
         run: |
-          i=${REF#claim/issue-}; i=${i%%-*}
+          i=${ISSUE_N:-}
+          [ -n "$i" ] || { i=${REF#claim/issue-}; i=${i%%-*}; }
+          if [ "$MISS" = true ]; then
+            gh issue view "$i" -R "$REPO" --json comments --jq '[.comments[].body | select(startswith("miss-review:"))] | length' | grep -qxE '[1-9][0-9]*'
+            exit $?
+          fi
           issue=$(gh api "repos/$REPO/issues/$i")
           [ "$(jq -r .state <<<"$issue")" = open ] || exit 0
           [ "$(jq -r '.issue_dependencies_summary.blocked_by // 0' <<<"$issue")" = 0 ] || exit 0
@@ -350,7 +417,7 @@ jobs:
         # Gate would admit, so a lanes-full skip never chains. Re-adding
         # agent-ready as the App fires `issues: labeled`, the same event a
         # person's label sends; the Gate still decides.
-        if: always() && steps.gate.outputs.go == 'true'
+        if: always() && steps.gate.outputs.go == 'true' && steps.gate.outputs.miss != 'true'
         env:
           GH_TOKEN: ${{ steps.arm-token.outputs.token || steps.app-token.outputs.token }}
           DEVIN_MAX_LIVE: ${{ vars.DEVIN_MAX_LIVE || '0' }}
@@ -390,7 +457,14 @@ jobs:
           env -u GH_TOKEN gh workflow run agent-dispatch.yml -R "$REPO" || echo "::warning::sweep dispatch failed"
       - name: Clean workspace
         if: always()
-        run: i=${REF#claim/issue-}; rm -rf "$HOME/workspaces/agent-worktrees/issue-${REPO#*/}-${i%%-*}"
+        run: |
+          i=${REF#claim/issue-}
+          id=${REPO#*/}-${i%%-*}
+          if [ "${{ steps.gate.outputs.miss }}" = true ]; then
+            rm -rf "$HOME/workspaces/agent-worktrees/issue-$id-miss"
+          else
+            rm -rf "$HOME/workspaces/agent-worktrees/issue-$id"
+          fi
   report:
     needs: work
     if: (failure() || cancelled()) && needs.work.outputs.wall != 'true'
