@@ -205,7 +205,7 @@ jobs:
             all=$(gh pr list -R "$GITHUB_REPOSITORY" -L 1000 --json number,headRefName,autoMergeRequest,isDraft,mergeable,labels \
               --jq '[.[] | select((.headRefName|startswith("claim/issue-")) and (.isDraft|not))]')
             if queued=$(gh api graphql -f query="query{repository(owner:\"${GITHUB_REPOSITORY%/*}\",name:\"${GITHUB_REPOSITORY#*/}\"){mergeQueue{entries(first:100){nodes{pullRequest{headRefName}}}}}}" \
-              --jq '[.data.repository.mergeQueue.entries.nodes[]?.pullRequest.headRefName]' 2>/dev/null); then
+              --jq '[.data.repository.mergeQueue.entries.nodes[]?.pullRequest.headRefName]'); then
               unarmed=$(jq -c '[.[] | select(.autoMergeRequest == null and (.labels | map(.name) | index("needs-coordinator") | not)) | .headRefName]' <<<"$all")
               conflicted=$(for pr in $(jq -r '.[] | select(.autoMergeRequest != null and .mergeable != "MERGEABLE") | .number' <<<"$all"); do
                 for _ in 1 2 3; do
