@@ -6,7 +6,7 @@
 # Cline stealth/union-alpha stopped being free 2026-09-30 (402 "Insufficient balance", 397 errors and 0 answers in 5 h). A 402 is neither retried nor cooled by LiteLLM v1.98.0 (no retry_policy key covers APIError; cooldown skips 4xx), so no setting below can move a job off such a row: its four rows are removed until Nish funds Cline credits. Cline's other rows stay. Any row that starts answering only 402 goes to Nish the same way (needs-nish-decision issue): it comes out only on his yes.
 # CommandCode stealth/pixel-canary and xkiro stealth/pixel-canary:free ended 2026-09-30 (403 "no longer available", 404 "does not exist"). openai-compatible 403 maps to APIError (no retry_policy key, same as 402); 404 maps to NotFoundError, which should_retry_this_error hard-raises on v1.98.0. Their four rows are removed.
 # OpenCode zen union-alpha answered 0 of 68 calls in the last 7 days (last attempt 2026-09-30 16:30 UTC, LiteLLM_SpendLogs); a direct probe on 2026-10-01 returns 400 "Upstream request failed: Model is unavailable." That 400 maps to BadRequestError, which v1.98.0 never cools, so no setting below can move a job off such a row: its four rows are removed. The opencodego-ds41flash rows on the Go endpoint (same key) stay: they are walled by a monthly quota (429 GoUsageLimitError, limitName monthly), not dead.
-# OpenRouter: stealth/space-bunny-alpha, nemotron-3-ultra, nemotron-3.5-lightning. Pareto: glm-5.3-flash, never in judge.
+# OpenRouter: stealth/space-bunny-alpha, nemotron-3-ultra, nemotron-3.5-lightning, inclusionai/ling-3.0-flash-sante:free, poolside/laguna-s-2.1:free (Nish 2026-10-04: 2 lanes per free model per provider). Pareto: glm-5.3-flash, never in judge.
 # Devin: SWE 2 only, through the devin CLI lane in agent.yml (no router route: 404 on every base).
 # Cline/Pareto "You've reached today's free-model token quota" 429s are a day-long wall, not a transient (fleet-ops#9075, 2026-10-02): a 900 s cool re-failed into worker groups every ~15 min - 13 of 60 probe calls at 09:53 UTC, ~14 quota-429s reached workers in 24 h. Quota-dominated rows now cool 21600 s, a quarter-day park that re-probes ~4x/day so a quota reset is picked up within hours. The cline :free rows and spacebunnyalpha park on the first 429 (RateLimitErrorAllowedFails: 0; LiteLLM resolves the field via `is not None`, so 0 means immediate). Prepaid cline-ds41flash mixes the daily wall with per-minute bursts, and LiteLLM's fail counter TTL is the row's own cooldown_time (21600 s), so RateLimitErrorAllowedFails: 3 parks it on the 4th 429 inside any 6 h window - a per-minute burst rarely totals 4 in 6 h, while a quota wall 429s every call and reaches 4 quickly. pareto keeps 300 s (its 429s are the 3-parallel key cap, fleet-ops#8458) but parks on the first: a 5-min park costs less than leaking a saturated key's 429s to callers. Cline and Pareto answer only stream:true upstream (fleet-ops#8923) and LiteLLM v1.98.0 cannot force a stream a caller did not ask for (the request's stream flag always overrides litellm_params; LiteLLM_Params has no stream field), so a non-streaming caller still 400/500s on those rows - every fleet caller (Pi) streams.
 # Nish 2026-10-02: removing or benching any provider, model or row needs his explicit yes first. Provider quotas refresh hourly, daily, weekly or monthly, so a quota or limit error never justifies it. When a provider has ended a model, open an issue labelled needs-nish-decision with the evidence: the 8am and 8pm digests ask him again every day until he answers. The removals recorded above each had his yes.
@@ -857,6 +857,47 @@ model_list:
   model_info:
     mode: chat
     id: openrouter-nemotronlightning-worker-cheap
+    allowed_fails_policy:
+      BadRequestErrorAllowedFails: 1
+# Nish 2026-10-04 free rows (probe 2026-10-04 03:48 UTC: both 200 and finish_reason=tool_calls; OpenRouter :free costs $0, max_budget stays the spend wall).
+- model_name: worker-capable
+  litellm_params:
+    <<: *openrouter-spacebunny
+    model: openai/inclusionai/ling-3.0-flash-sante:free
+    tags: [free, openrouter]
+  model_info:
+    mode: chat
+    id: openrouter-ling30flashsante-worker-capable
+    allowed_fails_policy:
+      BadRequestErrorAllowedFails: 1
+- model_name: worker-cheap
+  litellm_params:
+    <<: *openrouter-spacebunny
+    model: openai/inclusionai/ling-3.0-flash-sante:free
+    tags: [free, openrouter]
+  model_info:
+    mode: chat
+    id: openrouter-ling30flashsante-worker-cheap
+    allowed_fails_policy:
+      BadRequestErrorAllowedFails: 1
+- model_name: worker-capable
+  litellm_params:
+    <<: *openrouter-spacebunny
+    model: openai/poolside/laguna-s-2.1:free
+    tags: [free, openrouter]
+  model_info:
+    mode: chat
+    id: openrouter-lagunas21free-worker-capable
+    allowed_fails_policy:
+      BadRequestErrorAllowedFails: 1
+- model_name: worker-cheap
+  litellm_params:
+    <<: *openrouter-spacebunny
+    model: openai/poolside/laguna-s-2.1:free
+    tags: [free, openrouter]
+  model_info:
+    mode: chat
+    id: openrouter-lagunas21free-worker-cheap
     allowed_fails_policy:
       BadRequestErrorAllowedFails: 1
 router_settings:
