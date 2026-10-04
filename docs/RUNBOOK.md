@@ -119,6 +119,15 @@ restarts the proxy (~38 s), so batch edits into one write. Install it with
 `systemctl --user link` on the .service, then `systemctl --user enable --now`
 on the .path, both from the deploy clone (README "Install").
 
+`/jev` is a pass-through with `auth: true`, so any valid virtual key reaches it
+and each call books `cost_per_request` against the calling key. Its cap is a
+`fleet-jev` virtual key (`POST /key/generate` with `max_budget`,
+`budget_duration` `1d` and `rpm_limit`). Today worker.md step 4 and
+miss-review still read `LITELLM_JEV_KEY` from `seats/typesafe-jev.env`, which is
+not that key; the cap takes effect when the key is minted and that seat file
+holds it. LiteLLM v1.98 has no declarative key list, so minting is one
+admin-API call, not a config edit.
+
 Backup: `pg_dump -h "$HOME/.local/share/fleet-litellm-postgres/run" -U
 litellm litellm | gzip > .../litellm-<ts>.sql.gz` in the restic backup path.
 The restic backup, verify and restore-test jobs are root units installed
