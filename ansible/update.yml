@@ -13,7 +13,7 @@
 #   3. update  Every Ubuntu package (apt dist-upgrade), old kernels and unused
 #              packages after it, a service restart for what still runs old
 #              libraries (needrestart), then each user-level tool through its
-#              own official updater and the floating-tag containers through
+#              own official updater and the redis container through
 #              `podman auto-update`.
 #   4. resume  In `always:`, so it runs even when a step above failed: start the
 #              runners, re-enable only the dispatch workflows this run turned
@@ -28,12 +28,16 @@
 # chat (rootfs/etc/needrestart/conf.d/50-fleet.conf). Its new libraries and a
 # new Claude version take effect at the next reboot.
 #
-# Container images move two ways. A pinned tag changes only in a PR. A
-# floating tag (postgres:16, redis:7, aiostreams:latest) carries
-# AutoUpdate=registry in its quadlet, so `podman auto-update` below moves it
-# inside this paused window. Skipped on purpose: GitHub runners (they update
-# themselves), syncthing (built-in auto-upgrade), and the raw binaries in
-# ~/.local/bin that have no updater.
+# Container images move two ways. A tag changes in a PR, and that covers
+# postgres (it holds the LiteLLM keys and spend, and no quadlet has a HealthCmd,
+# so a rollback would only catch a start failure), the proxy, grafana and
+# aiostreams. Only fleet-litellm-redis (a cache) carries AutoUpdate=registry, so
+# `podman auto-update` below moves it inside this paused window. podman reads
+# that label from the running container, so redis needs one restart in this
+# window before the first weekly run does anything:
+# `systemctl --user restart fleet-litellm-redis.service` as nish. Skipped on
+# purpose: GitHub runners (they update themselves), syncthing (built-in
+# auto-upgrade), and the raw binaries in ~/.local/bin that have no updater.
 - name: Pause the fleet, prune, update everything, resume
   hosts: localhost
   connection: local
@@ -236,10 +240,11 @@
           register: tool_results
           ignore_errors: true
 
-        # The floating-tag quadlets carry AutoUpdate=registry, so this pulls
-        # their newer image and restarts the unit; a unit that fails to start
-        # is rolled back, and podman auto-update then exits non-zero (the
-        # assert at the end of the run fails loud on it). As nish, because the
+        # The redis quadlet carries AutoUpdate=registry, so this pulls its newer
+        # image and restarts the unit; a unit that fails to start is rolled
+        # back, and podman auto-update then exits non-zero (the assert at the
+        # end of the run fails loud on it). A unit that starts but is broken is
+        # not rolled back: no quadlet has a HealthCmd. As nish, because the
         # quadlets are systemd user units. The dry-run on either side shows the
         # pending updates in the report; the real check runs on the box, not in
         # a workspace harness where newuidmap is blocked (fleet-ops#9254).
@@ -256,7 +261,7 @@
           # below is the gate.
           failed_when: false
 
-        - name: Update the floating-tag container images
+        - name: Update the redis container image
           become: true
           become_user: nish
           environment: "{{ nish_env }}"

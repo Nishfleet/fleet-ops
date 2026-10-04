@@ -8,9 +8,6 @@ Description=Fleet LiteLLM Postgres (Quadlet, fleet-ops#8435)
 
 [Container]
 Image=docker.io/library/postgres:16
-# Floating tag, so `podman auto-update` moves it inside the weekly paused window
-# (ansible/update.yml). A pinned tag must not carry this line (fleet-ops#9254).
-AutoUpdate=registry
 Network=host
 # The host user maps to the image's postgres uid/gid 999, so the nish-owned
 # data dir is owned by postgres inside the container.
