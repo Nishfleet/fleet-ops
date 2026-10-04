@@ -251,6 +251,10 @@
             argv: [podman, auto-update, --dry-run]
           register: podman_autoupdate_before
           changed_when: false
+          # A recording probe: a transient registry outage must not abort the
+          # update block before the tools and plugin steps run. The real task
+          # below is the gate.
+          failed_when: false
 
         - name: Update the floating-tag container images
           become: true
@@ -259,6 +263,10 @@
           ansible.builtin.command:
             argv: [podman, auto-update]
           register: podman_autoupdate
+          # No image moved when every row reads `registry false`; a moved row
+          # reads `registry true`. A failed restart reads `registry failed`
+          # and the assert below fails loud on it.
+          changed_when: "podman_autoupdate.stdout is search('registry\\s+(true|failed)')"
           ignore_errors: true
           timeout: 900
 
@@ -270,6 +278,7 @@
             argv: [podman, auto-update, --dry-run]
           register: podman_autoupdate_after
           changed_when: false
+          failed_when: false
 
         # No --yes: a plugin whose update needs a new marketplace command
         # fails here (and in the final assert) instead of being accepted blind.
@@ -469,7 +478,7 @@
             quiet: true
             that:
               - "(tool_results | default({'results': []})).results | selectattr('failed', 'defined') | selectattr('failed') | list | length == 0"
-              - "not (podman_autoupdate | default({})).failed | default(false)"
+              - "not ((podman_autoupdate | default({})).failed | default(false))"
               - "not (plugin_results | default({})).failed | default(false)"
               - "(versions_after | default({'results': []})).results | selectattr('failed', 'defined') | selectattr('failed') | list | length == 0"
               - "(dispatch_resumed | default({'results': []})).results | selectattr('failed', 'defined') | selectattr('failed') | list | length == 0"
@@ -483,7 +492,7 @@
             fail_msg: >-
               fleet-update finished with problems (fleet resumed). Failed tools:
               {{ (tool_results | default({'results': []})).results | selectattr('failed', 'defined') | selectattr('failed') | map(attribute='item') | map('join', ' ') | list }};
-              podman auto-update: {{ (podman_autoupdate | default({})).stdout_lines | default(['ok']) }};
+              podman auto-update: {{ (podman_autoupdate | default({})).stdout_lines | default(['ok']) }} {{ (podman_autoupdate | default({})).stderr | default('') }};
               failed units: {{ failed_system.stdout_lines + failed_user.stdout_lines }};
               sweeps: {{ (sweep_result | default({'results': []})).results | map(attribute='stdout') | list }};
               Remote Control: {{ rc_state.stdout }}
