@@ -345,8 +345,11 @@ It runs `ansible/update.yml` as root through `ansible-pull`:
    plugins, cursor-agent, devin, uv, bun, rclone).
 4. Resume, even when a step failed: start the runners, turn `agent-dispatch`
    back on where this run turned it off, restart the timers, sweep each queue.
-5. Verify: runners online, sweeps green, no failed unit, router ready, Remote
-   Control up. Any problem fails the unit, which pages.
+5. Verify: the netcup runners online, each queue's sweep run accepted by
+   GitHub, pi answering a real call with its extensions loaded and every
+   extension in `~/.pi/agent/settings.json` pinned (full SHA for `git:`, exact
+   version for `npm:`), no failed unit, router ready, Remote Control up. Any
+   problem fails the unit, which pages.
 
 It never reboots. When a package needs a reboot, it opens one
 `needs-nish-decision` issue. The daily security updates (`unattended-upgrades`)
