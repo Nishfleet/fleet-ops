@@ -20,24 +20,6 @@ contactPoints:
             {{ .Annotations.summary }} {{ .Annotations.description }}
             {{ end }}
 
-policies:
-  - orgId: 1
-    receiver: empty
-    group_by:
-      - grafana_folder
-      - alertname
-    routes:
-      - receiver: hermes-urgent
-        object_matchers:
-          - ['grafana_folder', '=', 'fleet']
-        group_by:
-          - alertname
-          - grafana_folder
-          - plan
-        group_wait: 0s
-        group_interval: 1m
-        repeat_interval: 24h
-
 groups:
   - orgId: 1
     name: paid-plan-idle
@@ -100,6 +82,12 @@ groups:
           plan: cline
           quota_wall: '{{ with index $values "B" }}{{ if gt .Value 0.0 }}true{{ else }}false{{ end }}{{ else }}false{{ end }}'
         isPaused: false
+        notification_settings:
+          receiver: hermes-urgent
+          group_by: [alertname, grafana_folder, plan]
+          group_wait: 0s
+          group_interval: 1m
+          repeat_interval: 24h
       - uid: ppi-commandcode
         title: CommandCode idle
         condition: C
@@ -156,6 +144,12 @@ groups:
           plan: commandcode
           quota_wall: '{{ with index $values "B" }}{{ if gt .Value 0.0 }}true{{ else }}false{{ end }}{{ else }}false{{ end }}'
         isPaused: false
+        notification_settings:
+          receiver: hermes-urgent
+          group_by: [alertname, grafana_folder, plan]
+          group_wait: 0s
+          group_interval: 1m
+          repeat_interval: 24h
       - uid: ppi-minimax
         title: MiniMax idle
         condition: C
@@ -212,6 +206,12 @@ groups:
           plan: minimax
           quota_wall: '{{ with index $values "B" }}{{ if gt .Value 0.0 }}true{{ else }}false{{ end }}{{ else }}false{{ end }}'
         isPaused: false
+        notification_settings:
+          receiver: hermes-urgent
+          group_by: [alertname, grafana_folder, plan]
+          group_wait: 0s
+          group_interval: 1m
+          repeat_interval: 24h
       - uid: ppi-stepfun
         title: StepFun idle
         condition: C
@@ -268,6 +268,12 @@ groups:
           plan: stepfun
           quota_wall: '{{ with index $values "B" }}{{ if gt .Value 0.0 }}true{{ else }}false{{ end }}{{ else }}false{{ end }}'
         isPaused: false
+        notification_settings:
+          receiver: hermes-urgent
+          group_by: [alertname, grafana_folder, plan]
+          group_wait: 0s
+          group_interval: 1m
+          repeat_interval: 24h
       - uid: ppi-zai
         title: z.ai idle
         condition: C
@@ -324,6 +330,12 @@ groups:
           plan: zai
           quota_wall: '{{ with index $values "B" }}{{ if gt .Value 0.0 }}true{{ else }}false{{ end }}{{ else }}false{{ end }}'
         isPaused: false
+        notification_settings:
+          receiver: hermes-urgent
+          group_by: [alertname, grafana_folder, plan]
+          group_wait: 0s
+          group_interval: 1m
+          repeat_interval: 24h
       - uid: ppi-ollama
         title: Ollama idle
         condition: C
@@ -380,6 +392,12 @@ groups:
           plan: ollama
           quota_wall: '{{ with index $values "B" }}{{ if gt .Value 0.0 }}true{{ else }}false{{ end }}{{ else }}false{{ end }}'
         isPaused: false
+        notification_settings:
+          receiver: hermes-urgent
+          group_by: [alertname, grafana_folder, plan]
+          group_wait: 0s
+          group_interval: 1m
+          repeat_interval: 24h
       - uid: ppi-opencode-go
         title: OpenCode Go idle
         condition: C
@@ -436,6 +454,12 @@ groups:
           plan: opencode-go
           quota_wall: '{{ with index $values "B" }}{{ if gt .Value 0.0 }}true{{ else }}false{{ end }}{{ else }}false{{ end }}'
         isPaused: false
+        notification_settings:
+          receiver: hermes-urgent
+          group_by: [alertname, grafana_folder, plan]
+          group_wait: 0s
+          group_interval: 1m
+          repeat_interval: 24h
       - uid: ppi-pareto
         title: Pareto idle
         condition: C
@@ -492,6 +516,12 @@ groups:
           plan: pareto
           quota_wall: '{{ with index $values "B" }}{{ if gt .Value 0.0 }}true{{ else }}false{{ end }}{{ else }}false{{ end }}'
         isPaused: false
+        notification_settings:
+          receiver: hermes-urgent
+          group_by: [alertname, grafana_folder, plan]
+          group_wait: 0s
+          group_interval: 1m
+          repeat_interval: 24h
       - uid: ppi-alibaba
         title: Alibaba token-plan idle
         condition: C
@@ -548,3 +578,9 @@ groups:
           plan: alibaba-token-plan-sg
           quota_wall: '{{ with index $values "B" }}{{ if gt .Value 0.0 }}true{{ else }}false{{ end }}{{ else }}false{{ end }}'
         isPaused: false
+        notification_settings:
+          receiver: hermes-urgent
+          group_by: [alertname, grafana_folder, plan]
+          group_wait: 0s
+          group_interval: 1m
+          repeat_interval: 24h
