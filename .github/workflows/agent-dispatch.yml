@@ -14,6 +14,9 @@
 # To delete it: revert the orchestrate job in this file, the workflow-path
 # detector in agent.yml's Gate, and prompts/orchestrator-handoff.md. A run
 # already in flight finishes: the label gate only stops new ones.
+# The orchestrate job is the one self-hosted job here: org runner group
+# `agent` (id 3) must list this file @refs/heads/main in selected_workflows,
+# or the job queues forever next to idle runners. Delete that entry with it.
 name: agent-dispatch
 on:
   issues:
