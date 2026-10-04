@@ -1,0 +1,15 @@
+# htpdate keeps the clock right over HTTPS, because this host's provider
+# blocks NTP (UDP/123). It replaced the hand-written chrony-https-feeder
+# (fleet-ops#8444). fleet-host-config.service installs this file and restarts
+# htpdate.service when it changes (ansible/host.yml).
+#
+# -D daemon, -s step the clock on the first poll, -x correct the clock
+# frequency for drift, -c verify the server certificate.
+# -M 3600 caps the poll interval at one hour. The stock maximum is 32 hours,
+# and on 2026-10-04 the clock had drifted 3.1 s after one long gap (about
+# 40 ppm), so an hourly poll keeps the offset well under a second.
+HTP_OPTIONS="-D -s -x -c -M 3600"
+
+# www.microsoft.com was swapped for www.apple.com: on 2026-10-04 one
+# microsoft query hung past 20 s from this host.
+HTP_SERVERS="https://www.google.com https://www.amazon.com https://ubuntu.com https://www.apple.com"

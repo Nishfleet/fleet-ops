@@ -159,6 +159,15 @@
         mode: preserve
       notify: Reload nftables
 
+    - name: Install the htpdate options
+      ansible.builtin.copy:
+        src: "{{ rootfs }}/etc/default/htpdate"
+        dest: /etc/default/htpdate
+        owner: root
+        group: root
+        mode: preserve
+      notify: Restart htpdate
+
     - name: Install prometheus and blackbox exporter config
       ansible.builtin.copy:
         src: "{{ rootfs }}/etc/prometheus/"
@@ -276,6 +285,12 @@
       ansible.builtin.systemd_service:
         name: nftables.service
         state: reloaded
+
+    # htpdate reads /etc/default/htpdate only at start.
+    - name: Restart htpdate
+      ansible.builtin.systemd_service:
+        name: htpdate.service
+        state: restarted
 
     - name: Reload prometheus
       ansible.builtin.systemd_service:

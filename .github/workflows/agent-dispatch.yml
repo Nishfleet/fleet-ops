@@ -100,8 +100,49 @@ jobs:
       issues: write
     with:
       ref: claim/issue-${{ github.event.issue.number }}
-  rework:
+  # Red CI on a claim PR: post the failed run's ##[error] lines on the issue
+  # before the rework run starts, so the worker reads what broke instead of
+  # re-deriving it (fleet-ops#9063: drive #200 and #180 reworks ended green
+  # with TS errors still red and nothing on the issue said which). The
+  # rework run's own "agent run started:" comment is what counts toward the
+  # Gate's 3-run cap; this note starts with "rework:", which the cap and
+  # park counters ignore.
+  rework-note:
     if: >-
+      (inputs.agent_mode || vars.AGENT_MODE) == 'live' && github.event_name == 'workflow_run' &&
+      (github.event.workflow_run.conclusion == 'failure' || github.event.workflow_run.conclusion == 'timed_out') &&
+      github.event.workflow_run.event == 'pull_request' &&
+      startsWith(github.event.workflow_run.head_branch, 'claim/issue-') &&
+      github.event.workflow_run.head_repository.full_name == github.repository
+    runs-on: ${{ fromJSON(inputs.runner || '"ubuntu-latest"') }}
+    permissions:
+      actions: read
+      issues: write
+    steps:
+      - env:
+          GH_TOKEN: ${{ github.token }}
+          REF: ${{ github.event.workflow_run.head_branch }}
+          RUN_ID: ${{ github.event.workflow_run.id }}
+          RUN_URL: ${{ github.event.workflow_run.html_url }}
+          SHA: ${{ github.event.workflow_run.head_sha }}
+        run: |
+          i=${REF#claim/issue-}; i=${i%%-*}
+          # A tool that prints errors as plain text leaves only the generic
+          # exit-code ##[error] line, so the failed log's last 30 lines stand
+          # in. A log that cannot be read still leaves a note with the run
+          # link, so the worker knows where to look.
+          log=$(gh run view "$RUN_ID" -R "$GITHUB_REPOSITORY" --log-failed 2>/dev/null) || log=
+          errors=$(grep -F '##[error]' <<<"$log" | sed 's/.*##\[error\]//' | grep -vx 'Process completed with exit code [0-9]*\.' |
+            cut -c1-300 | awk '!seen[$0]++' | head -n 30) || true
+          [ -n "$errors" ] || errors=$(cut -f3- <<<"$log" | cut -c1-300 | tail -n 30)
+          [ -n "$errors" ] || errors="(the failed log could not be read; open the run)"
+          # shellcheck disable=SC2016 # the backticks are a literal markdown fence
+          body=$(printf 'rework: CI run %s failed on %s. Fix these errors, then push to %s:\n\n```\n%s\n```' "$RUN_URL" "${SHA:0:7}" "$REF" "$errors")
+          gh issue comment "$i" -R "$GITHUB_REPOSITORY" --body "$body"
+  rework:
+    needs: rework-note
+    if: >-
+      !cancelled() &&
       (inputs.agent_mode || vars.AGENT_MODE) == 'live' && github.event_name == 'workflow_run' &&
       (github.event.workflow_run.conclusion == 'failure' || github.event.workflow_run.conclusion == 'timed_out') &&
       github.event.workflow_run.event == 'pull_request' &&
@@ -112,6 +153,70 @@ jobs:
       issues: write
     with:
       ref: ${{ github.event.workflow_run.head_branch }}
+  # main moved (CI finished on a push to the default branch): a claim PR it
+  # left CONFLICTING sends no event of its own, so its issue sat
+  # agent-in-progress with no run (fleet-ops#9063: drive #136 / PR #174).
+  # Requeue each one with a "merge main" note, the same way red CI is.
+  # Skipped while that issue's newest agent run is still live: the run in
+  # flight will see the conflict itself.
+  conflicts:
+    if: >-
+      (inputs.agent_mode || vars.AGENT_MODE) == 'live' && github.event_name == 'workflow_run' &&
+      github.event.workflow_run.event == 'push' &&
+      github.event.workflow_run.head_branch == github.event.repository.default_branch
+    runs-on: ${{ fromJSON(inputs.runner || '"ubuntu-latest"') }}
+    permissions:
+      actions: read
+      issues: write
+      pull-requests: read
+    outputs:
+      refs: ${{ steps.find.outputs.refs }}
+    steps:
+      - id: find
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          refs='[]'
+          # Only PRs the bulk list does not call MERGEABLE are re-read: the
+          # bulk list says UNKNOWN until GitHub recomputes a PR after a push
+          # to main, and a per-PR read triggers that (fleet-ops#8557).
+          prs=$(gh pr list -R "$GITHUB_REPOSITORY" -L 1000 --json number,headRefName,isDraft,mergeable \
+            --jq '.[] | select((.headRefName | test("^claim/issue-[0-9]+$")) and (.isDraft | not) and .mergeable != "MERGEABLE") | .number')
+          for pr in $prs; do
+            for _ in 1 2 3; do
+              v=$(gh pr view "$pr" -R "$GITHUB_REPOSITORY" --json headRefName,mergeable)
+              [ "$(jq -r .mergeable <<<"$v")" != UNKNOWN ] && break
+              sleep 10
+            done
+            [ "$(jq -r .mergeable <<<"$v")" = CONFLICTING ] || continue
+            ref=$(jq -r .headRefName <<<"$v"); i=${ref#claim/issue-}
+            # Same skips as the Gate: closed, blocked or parked work gets no note.
+            gh api "repos/$GITHUB_REPOSITORY/issues/$i" --jq '.state == "open" and (.issue_dependencies_summary.blocked_by // 0) == 0 and
+              (any(.labels[].name; IN("agent-blocked","needs-split","needs-orchestrator","needs-nish-decision","epic")) | not)' | grep -qx true || continue
+            body=$(gh issue view "$i" -R "$GITHUB_REPOSITORY" --json comments --jq '[.comments[].body | select(startswith("agent run started:"))] | last // ""')
+            if [[ $body =~ actions/runs/([0-9]+) ]]; then
+              case $(gh run view "${BASH_REMATCH[1]}" -R "$GITHUB_REPOSITORY" --json status --jq .status) in
+                queued|in_progress|requested|waiting|pending) echo "#$i: run live, skip"; continue ;;
+              esac
+            fi
+            gh issue comment "$i" -R "$GITHUB_REPOSITORY" --body "rework: claim PR #$pr conflicts with main. Merge main: git merge origin/main into $ref, resolve the conflicts, run the checks, push."
+            echo "requeue #$i: PR #$pr is CONFLICTING"
+            refs=$(jq -nc --argjson r "$refs" --arg x "$ref" '$r + [$x]')
+          done
+          echo "refs=$refs" >> "$GITHUB_OUTPUT"
+  remerge:
+    needs: conflicts
+    if: needs.conflicts.outputs.refs != '' && needs.conflicts.outputs.refs != '[]'
+    strategy:
+      fail-fast: false
+      max-parallel: ${{ fromJSON(vars.AGENT_MAX_PARALLEL || '4') }}
+      matrix:
+        ref: ${{ fromJSON(needs.conflicts.outputs.refs) }}
+    uses: Nishfleet/fleet-ops/.github/workflows/agent.yml@main # runner group 3 allows only agent.yml@refs/heads/main; a SHA pin strands every job
+    permissions:
+      issues: write
+    with:
+      ref: ${{ matrix.ref }}
   # The merge queue ejected a claim PR (failed checks or a conflict), or its
   # auto-merge was dropped: send the worker back to it.
   ejected:

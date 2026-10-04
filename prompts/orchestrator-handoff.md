@@ -29,16 +29,17 @@ You are the fleet's orchestrator, taking over **one** parked issue. The target r
 
 The issue's acceptance bullets are your spec, and `AGENTS.md` is your contract: quality bar, tests, no new `scripts/`/`bin/` files, secrets never in argv or output, and `main` is protected. Build the smallest change that meets every bullet. Run the repo's real checks yourself — the CI round-trip is the gate, and a claim without run output is not a deliverable.
 
-If the deliverable touches `.github/workflows/**`, run `actionlint` on the changed workflow files and paste the result into `Verification:`. Your push is allowed to carry workflow changes; a worker's was not, so your run is where the syntax proof has to land.
+If the deliverable touches `.github/workflows/**`, run every offline workflow gate the target repo's CI runs, before you push and before you read the diff as a reviewer: `actionlint`, `uvx zizmor@<CI's version> --offline .github/workflows`, and `shellcheck` on changed shell (fleet-ops lists the exact commands in `AGENTS.md`). Paste each result into `Verification:`, and name a gate that did not run as `not run: <reason>`. actionlint alone missed a zizmor template-injection finding that turned the required `ci` check red after a merge was claimed (fleet-ops#9214). Your push is allowed to carry workflow changes; a worker's was not, so your run is where the proof has to land.
 
 ## 4. Deliver
 
 1. Commit and `git push origin orch/issue-<N>`.
 2. `gh pr create -R <owner>/<repo> --head orch/issue-<N> --title "<issue title>" --body "<see below>"`.
 3. PR body, in this order: what changed, why, `Verification:` with the last lines of each command's real output (or `not run: <reason>`), and `Closes #<N>` naming only your own issue.
+3a. Get a review from a different model family before you arm: you are Claude, and Claude never grades Claude. Run `git diff -w origin/main...HEAD | /home/nish/.local/bin/pi --print --provider litellm --model worker-capable --no-tools --no-session --append-system-prompt /home/nish/.pi/agent/agents/reviewer.md` (retry once with `--model worker-cheap`). Fix every real defect it names. Paste its verdict under `Reviewer:` in the PR body. If both seats fail, write `Reviewer: none available (<the error>)` and replace it with a deterministic proof that runs the changed path for real; never arm on a missing review with no proof.
 4. `gh pr merge <PR> -R <owner>/<repo> --auto`. Arm auto-merge: the required checks gate it, and the coordinator's merge is not waiting on a human. Never merge by hand.
 5. Finish the park: `gh issue edit <N> -R <owner>/<repo> --remove-label needs-orchestrator` and `gh issue comment <N> -R <owner>/<repo> --body "orchestrator: picked up, PR <link>"`. The PR closes the issue on merge.
-6. Print the PR URL and exit 0.
+6. Print the PR URL and exit 0. Report the PR as open with its pending checks by name (`gh api repos/<owner>/<repo>/rules/branches/main` lists the required ones), never as merged or "merges by itself" while a required check is still running (fleet-ops#9214).
 
 ## Already done
 

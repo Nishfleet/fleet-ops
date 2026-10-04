@@ -1,0 +1,33 @@
+# Wake claude-vps when an Agent Tincan teammate (claude-mac, hermes) sends it a
+# request. Before this, claude-vps had wake=none: a request sat queued until a
+# person happened to open a VPS Claude session that checked its inbox.
+#
+# Stock only, no glue: `tincan listen --exec` is the vendor's own wake for
+# agents without channels (tincan onboard, "Fallback without channels"). It
+# long-polls the relay and runs one headless `claude -p` that drains the inbox;
+# nothing is claimed until that session calls check_inbox. Each run reads the
+# user-scope agent-tincan MCP entry in ~/.claude.json (TINCAN_CONFIG=claude-vps).
+#
+# Install (after merge, from the deploy clone):
+#   systemctl --user link   /home/nish/workspaces/tooling/fleet-ops-deploy-clone/systemd/tincan-listen-claude-vps.service
+#   systemctl --user enable --now tincan-listen-claude-vps.service
+# Switch off: systemctl --user disable --now tincan-listen-claude-vps.service
+#   (requests to claude-vps then queue again until a session checks its inbox).
+# Delete: switch off, `systemctl --user unlink tincan-listen-claude-vps.service`,
+#   then delete this file in a PR.
+[Unit]
+Description=Agent Tincan wake for claude-vps (tincan listen -> claude -p drains the inbox)
+Wants=network-online.target
+After=network-online.target
+OnFailure=fleet-unit-failed@%N.service
+
+[Service]
+Environment=TINCAN_CONFIG=/home/nish/.config/tincan/claude-vps.json
+Environment=FLEET_TASK_ID=tincan-claude-vps
+WorkingDirectory=/home/nish
+ExecStart=/home/nish/.local/bin/tincan listen --exec '/home/nish/.local/bin/claude -p --permission-mode bypassPermissions --max-turns 60 "You are claude-vps on the Agent Tincan team, started because teammates sent requests or replies. Call check_inbox. Handle each request as you would one from Nish and answer it with reply. Call check_inbox again until it returns nothing, then stop."'
+Restart=always
+RestartSec=30
+
+[Install]
+WantedBy=default.target

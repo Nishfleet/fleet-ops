@@ -70,8 +70,6 @@ jobs:
         id: gate
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
-          DEVIN_MAX_LIVE: ${{ vars.DEVIN_MAX_LIVE || '0' }}
-          OPENCODE_MAX_LIVE: ${{ vars.OPENCODE_MAX_LIVE || '0' }}
           MISS_REVIEW: ${{ vars.MISS_REVIEW }}
         run: |
           # Suffixed rework refs carry a -<tag> tail (claim/issue-<N>-<tag>);
@@ -185,10 +183,9 @@ jobs:
           # agent-ready. Every other issue: pi while it has a free router slot
           # (first-try clean 85% tune, 5/5 held-out vs Devin 73%, 1/3;
           # fleet-ops#8975), else LongCat-2.5-Preview on the opencode CLI while
-          # fewer than OPENCODE_MAX_LIVE run (default 0 while its free quota is
-          # out, fleet-ops#9002; vars.OPENCODE_MAX_LIVE sets it back to 2; free until ~2026-10-10, fleet-ops#8790; its free tier
-          # answers only the opencode CLI), else Devin SWE-2 Max while fewer
-          # than DEVIN_MAX_LIVE run ($0); when all three are full the issue
+          # fewer than 2 run (free until ~2026-10-10, fleet-ops#8790; its free
+          # tier answers only the opencode CLI), else Devin SWE-2 Max while
+          # fewer than 4 run ($0); when all three are full the issue
           # waits (lanes-full) — there is no Cursor fallback (fleet-ops#8740).
           # A lane's live count is the distinct worker directories (Devin,
           # Cursor) or pi session directories on its bwrap command lines, so
@@ -203,12 +200,9 @@ jobs:
             slots=$(yq '[.model_list[] | select(.model_name == "worker-capable") | .litellm_params.max_parallel_requests // 0] | .[] as $n ireduce (0; . + $n)' "$HOME/.config/fleet-ops/litellm-proxy.yaml")
             [ "$(live pi)" -lt "$slots" ]
           }
-          # Devin is free while fewer than DEVIN_MAX_LIVE run. The default 0
-          # pauses the lane while its free-model quota is out (infra-failed
-          # runs 2026-09-29); vars.DEVIN_MAX_LIVE or a one-line PR sets it
-          # back to 4.
+          # Devin is free while fewer than 4 run.
           devin_free() {
-            [ "$(live devin)" -lt "$DEVIN_MAX_LIVE" ]
+            [ "$(live devin)" -lt 4 ]
           }
           # Cursor is the strong-only lane only. A non-strong-only issue never
           # falls back to it: with Devin and pi both full it waits
@@ -218,7 +212,7 @@ jobs:
             *,strong-only,*) [ "$(live cursor-agent)" -lt 1 ] || skip lanes-full; engine=cursor ;;
             *)
               if pi_free; then engine=pi
-              elif [ "$(live opencode)" -lt "$OPENCODE_MAX_LIVE" ]; then engine=opencode
+              elif [ "$(live opencode)" -lt 2 ]; then engine=opencode
               elif devin_free; then engine=devin
               else skip lanes-full
               fi ;;
@@ -308,12 +302,17 @@ jobs:
             fi
           fi
           if [ "$ENGINE" = cursor ]; then
-            # cursor-2.env (live.com) hit its weekly limit on 2026-09-29 and
-            # resets about 2026-10-05: use cursor.env only, then restore the
-            # odd/even alternation (fleet-ops#8740).
+            # Alternate the two prepaid Cursor Ultra keys by issue number so
+            # neither stack is spent and both are paced (fleet-ops#8740):
+            # even $id -> cursor.env, odd $id -> cursor-2.env. $id's issue
+            # number is its last '-' field, so parity is on the issue number.
+            case ${id##*-} in
+              *[!0-9]*) cursor_env=cursor.env ;;   # not numeric: default to key 1
+              *) [ $(( ${id##*-} % 2 )) -eq 0 ] && cursor_env=cursor.env || cursor_env=cursor-2.env ;;
+            esac
             set -a
-            # shellcheck disable=SC1091 # the constant seat file on the VPS
-            . "$HOME/.config/fleet-ops/seats/cursor.env"
+            # shellcheck disable=SC1090 # cursor_env is one of the two constant seat files set in the case just above
+            . "$HOME/.config/fleet-ops/seats/$cursor_env"
             set +a
             mkdir -p "$dir"
             $jail cursor-agent -p --output-format text --model cursor-grok-4.6-high --force --trust \
@@ -430,11 +429,44 @@ jobs:
           for l in agent-blocked needs-orchestrator needs-nish-decision; do
             case $labels in *",$l,"*) exit 0 ;; esac
           done
-          if gh pr list -R "$REPO" --head "$REF" --state all --json state --jq '.[].state' | grep -qxE 'OPEN|MERGED'; then
-            exit 0
+          states=$(gh pr list -R "$REPO" --head "$REF" --state all --json state --jq '.[].state')
+          grep -qx MERGED <<<"$states" && exit 0
+          if ! grep -qx OPEN <<<"$states"; then
+            echo "::error::worker exited 0 but #$i is still agent-in-progress with no open or merged PR and no park label"
+            exit 1
           fi
-          echo "::error::worker exited 0 but #$i is still agent-in-progress with no open or merged PR and no park label"
-          exit 1
+          # An open PR is not a delivery while its head is still red or
+          # conflicting: the run ended success and the issue kept
+          # agent-in-progress with nothing live (fleet-ops#9063: drive #200
+          # #180 #136). Fail it, so report strikes and requeues it. Pending
+          # checks pass here: a fresh push's CI is still running, and its red
+          # result fires rework on its own. The runner user's own gh login
+          # reads the checks, because the App token has no checks: read.
+          pr=$(gh pr view "$REF" -R "$REPO" --json number,mergeable)
+          n=$(jq -r .number <<<"$pr")
+          if [ "$(jq -r .mergeable <<<"$pr")" = CONFLICTING ]; then
+            echo "::error::claim PR #$n conflicts with main after this run; merge main"
+            exit 1
+          fi
+          rc=0
+          checks=$(env -u GH_TOKEN -u GITHUB_TOKEN gh pr checks "$n" -R "$REPO" --required --json name,bucket 2>&1) || rc=$?
+          # A repo with no required checks judges all of them; no checks
+          # reported yet is pending, not red. Exit 8 is gh's pending code.
+          if [ "$rc" != 0 ] && [ "$rc" != 8 ]; then
+            case ${checks,,} in
+              *"no required checks reported"*) rc=0; checks=$(env -u GH_TOKEN -u GITHUB_TOKEN gh pr checks "$n" -R "$REPO" --json name,bucket 2>&1) || rc=$? ;;
+            esac
+          fi
+          case ${checks,,} in *"no checks reported"*) exit 0 ;; esac
+          if [ "$rc" != 0 ] && [ "$rc" != 8 ] && ! jq -e . <<<"$checks" >/dev/null 2>&1; then
+            echo "::error::could not read checks on claim PR #$n: $checks"
+            exit 1
+          fi
+          red=$(jq -r '[.[] | select(.bucket == "fail") | .name] | join(", ")' <<<"$checks")
+          if [ -n "$red" ]; then
+            echo "::error::claim PR #$n head is still red after this run: $red"
+            exit 1
+          fi
       - name: Start the next ready issue
         # A builder that finishes frees a lane, and GitHub sends no event for
         # that, so ready work sat until the 6h sweep (fleet-ops#9063: drive
@@ -446,8 +478,6 @@ jobs:
         if: always() && steps.gate.outputs.go == 'true' && steps.gate.outputs.miss != 'true'
         env:
           GH_TOKEN: ${{ steps.arm-token.outputs.token || steps.app-token.outputs.token }}
-          DEVIN_MAX_LIVE: ${{ vars.DEVIN_MAX_LIVE || '0' }}
-          OPENCODE_MAX_LIVE: ${{ vars.OPENCODE_MAX_LIVE || '0' }}
         run: |
           i=${REF#claim/issue-}; i=${i%%-*}
           live() { pgrep -af -- "^bwrap .* -- $1 " | grep -oE 'agent-worktrees/issue-[^ ]*|sessions/agent-[^ ]*' | sort -u | wc -l; }
@@ -455,7 +485,7 @@ jobs:
           slots=$(yq '[.model_list[] | select(.model_name == "worker-capable") | .litellm_params.max_parallel_requests // 0] | .[] as $n ireduce (0; . + $n)' "$HOME/.config/fleet-ops/litellm-proxy.yaml")
           strong_free=false; regular_free=false
           [ "$(live cursor-agent)" -lt 1 ] && strong_free=true
-          if [ "$(live devin)" -lt "$DEVIN_MAX_LIVE" ] || [ "$(live opencode)" -lt "$OPENCODE_MAX_LIVE" ] || [ "$(live pi)" -lt "$slots" ]; then regular_free=true; fi
+          if [ "$(live devin)" -lt 4 ] || [ "$(live opencode)" -lt 2 ] || [ "$(live pi)" -lt "$slots" ]; then regular_free=true; fi
           for n in $(gh issue list -R "$REPO" -l agent-ready -L 200 --json number,labels,createdAt \
               --jq 'sort_by((if any(.labels[]; .name == "priority-now") then 0 else 1 end), .createdAt) | .[].number'); do
             [ "$n" = "$i" ] && continue

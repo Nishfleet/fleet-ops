@@ -4,4 +4,5 @@ model_list:
     model: openai/x
     cooldown_time: 86401
 router_settings:
+  redis_url: redis://127.0.0.1:6379
   cooldown_time: 60
