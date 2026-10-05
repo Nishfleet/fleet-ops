@@ -1,0 +1,883 @@
+{
+  "description": "Infra-wall classifier cases (fleet-ops#9291). Each case runs the report job's own run block from .github/workflows/agent.yml against a fake gh. Fixtures timeout-cap and runner-lost carry the real jobs-API payloads of the 2026-10-05 overload (runs 37267338065 and 37276581999, public on fleet-ops), trimmed to the fields the classifier reads. want: infra | strike | park | skip.",
+  "fixtures": {
+    "timeout-cap": [
+      {
+        "total_count": 1,
+        "jobs": [
+          {
+            "name": "new / work",
+            "conclusion": "failure",
+            "steps": [
+              {
+                "name": "Set up job",
+                "conclusion": "success",
+                "started_at": "2026-10-05T05:26:36Z",
+                "completed_at": "2026-10-05T05:26:37Z"
+              },
+              {
+                "name": "Read App private key",
+                "conclusion": "success",
+                "started_at": "2026-10-05T05:26:37Z",
+                "completed_at": "2026-10-05T05:26:37Z"
+              },
+              {
+                "name": "App token",
+                "conclusion": "success",
+                "started_at": "2026-10-05T05:26:37Z",
+                "completed_at": "2026-10-05T05:26:38Z"
+              },
+              {
+                "name": "Gate",
+                "conclusion": "success",
+                "started_at": "2026-10-05T05:26:38Z",
+                "completed_at": "2026-10-05T05:26:42Z"
+              },
+              {
+                "name": "Branch",
+                "conclusion": "success",
+                "started_at": "2026-10-05T05:26:42Z",
+                "completed_at": "2026-10-05T05:26:44Z"
+              },
+              {
+                "name": "Worker",
+                "conclusion": "failure",
+                "started_at": "2026-10-05T05:26:44Z",
+                "completed_at": "2026-10-05T06:21:52Z"
+              },
+              {
+                "name": "App token for arm",
+                "conclusion": "success",
+                "started_at": "2026-10-05T06:21:52Z",
+                "completed_at": "2026-10-05T06:21:54Z"
+              },
+              {
+                "name": "Router wall",
+                "conclusion": "success",
+                "started_at": "2026-10-05T06:21:54Z",
+                "completed_at": "2026-10-05T06:21:54Z"
+              },
+              {
+                "name": "Arm auto-merge as the App",
+                "conclusion": "skipped",
+                "started_at": "2026-10-05T06:21:54Z",
+                "completed_at": "2026-10-05T06:21:54Z"
+              },
+              {
+                "name": "Deliverable",
+                "conclusion": "skipped",
+                "started_at": "2026-10-05T06:21:54Z",
+                "completed_at": "2026-10-05T06:21:54Z"
+              },
+              {
+                "name": "Start the next ready issue",
+                "conclusion": "success",
+                "started_at": "2026-10-05T06:21:54Z",
+                "completed_at": "2026-10-05T06:22:06Z"
+              },
+              {
+                "name": "Clean workspace",
+                "conclusion": "success",
+                "started_at": "2026-10-05T06:22:06Z",
+                "completed_at": "2026-10-05T06:22:06Z"
+              },
+              {
+                "name": "Post App token for arm",
+                "conclusion": "success",
+                "started_at": "2026-10-05T06:22:06Z",
+                "completed_at": "2026-10-05T06:22:08Z"
+              },
+              {
+                "name": "Post App token",
+                "conclusion": "success",
+                "started_at": "2026-10-05T06:22:08Z",
+                "completed_at": "2026-10-05T06:22:09Z"
+              },
+              {
+                "name": "Complete job",
+                "conclusion": "success",
+                "started_at": "2026-10-05T06:22:09Z",
+                "completed_at": "2026-10-05T06:22:11Z"
+              }
+            ]
+          }
+        ]
+      }
+    ],
+    "runner-lost": [
+      {
+        "total_count": 3,
+        "jobs": [
+          {
+            "name": "unblocked (claim/issue-9264) / work",
+            "conclusion": "failure",
+            "steps": [
+              {
+                "name": "Set up job",
+                "conclusion": "success",
+                "started_at": "2026-10-05T07:17:28Z",
+                "completed_at": "2026-10-05T07:17:34Z"
+              },
+              {
+                "name": "Read App private key",
+                "conclusion": "success",
+                "started_at": "2026-10-05T07:17:34Z",
+                "completed_at": "2026-10-05T07:17:35Z"
+              },
+              {
+                "name": "App token",
+                "conclusion": "success",
+                "started_at": "2026-10-05T07:17:35Z",
+                "completed_at": "2026-10-05T07:17:40Z"
+              },
+              {
+                "name": "Gate",
+                "conclusion": "success",
+                "started_at": "2026-10-05T07:17:40Z",
+                "completed_at": "2026-10-05T07:17:47Z"
+              },
+              {
+                "name": "Branch",
+                "conclusion": "success",
+                "started_at": "2026-10-05T07:17:47Z",
+                "completed_at": "2026-10-05T07:17:48Z"
+              },
+              {
+                "name": "Worker",
+                "conclusion": "cancelled",
+                "started_at": "2026-10-05T07:17:48Z",
+                "completed_at": "2026-10-05T07:37:02Z"
+              },
+              {
+                "name": "App token for arm",
+                "conclusion": "skipped",
+                "started_at": "2026-10-05T07:37:02Z",
+                "completed_at": "2026-10-05T07:37:02Z"
+              },
+              {
+                "name": "Router wall",
+                "conclusion": "skipped",
+                "started_at": "2026-10-05T07:37:02Z",
+                "completed_at": "2026-10-05T07:37:02Z"
+              },
+              {
+                "name": "Arm auto-merge as the App",
+                "conclusion": "skipped",
+                "started_at": "2026-10-05T07:37:02Z",
+                "completed_at": "2026-10-05T07:37:02Z"
+              },
+              {
+                "name": "Deliverable",
+                "conclusion": "skipped",
+                "started_at": "2026-10-05T07:37:02Z",
+                "completed_at": "2026-10-05T07:37:02Z"
+              },
+              {
+                "name": "Start the next ready issue",
+                "conclusion": "success",
+                "started_at": "2026-10-05T07:37:02Z",
+                "completed_at": "2026-10-05T07:37:10Z"
+              },
+              {
+                "name": "Clean workspace",
+                "conclusion": "success",
+                "started_at": "2026-10-05T07:37:10Z",
+                "completed_at": "2026-10-05T07:37:10Z"
+              },
+              {
+                "name": "Post App token",
+                "conclusion": "success",
+                "started_at": "2026-10-05T07:37:10Z",
+                "completed_at": "2026-10-05T07:37:11Z"
+              },
+              {
+                "name": "Complete job",
+                "conclusion": "success",
+                "started_at": "2026-10-05T07:37:11Z",
+                "completed_at": "2026-10-05T07:37:11Z"
+              }
+            ]
+          },
+          {
+            "name": "unblocked (claim/issue-9267) / work",
+            "conclusion": "success",
+            "steps": [
+              {
+                "name": "Set up job",
+                "conclusion": "success",
+                "started_at": "2026-10-05T07:17:27Z",
+                "completed_at": "2026-10-05T07:17:34Z"
+              },
+              {
+                "name": "Read App private key",
+                "conclusion": "success",
+                "started_at": "2026-10-05T07:17:35Z",
+                "completed_at": "2026-10-05T07:17:36Z"
+              },
+              {
+                "name": "App token",
+                "conclusion": "success",
+                "started_at": "2026-10-05T07:17:36Z",
+                "completed_at": "2026-10-05T07:17:41Z"
+              },
+              {
+                "name": "Gate",
+                "conclusion": "success",
+                "started_at": "2026-10-05T07:17:41Z",
+                "completed_at": "2026-10-05T07:17:45Z"
+              },
+              {
+                "name": "Branch",
+                "conclusion": "skipped",
+                "started_at": "2026-10-05T07:17:45Z",
+                "completed_at": "2026-10-05T07:17:45Z"
+              },
+              {
+                "name": "Worker",
+                "conclusion": "skipped",
+                "started_at": "2026-10-05T07:17:45Z",
+                "completed_at": "2026-10-05T07:17:45Z"
+              },
+              {
+                "name": "App token for arm",
+                "conclusion": "skipped",
+                "started_at": "2026-10-05T07:17:45Z",
+                "completed_at": "2026-10-05T07:17:45Z"
+              },
+              {
+                "name": "Router wall",
+                "conclusion": "skipped",
+                "started_at": "2026-10-05T07:17:45Z",
+                "completed_at": "2026-10-05T07:17:45Z"
+              },
+              {
+                "name": "Arm auto-merge as the App",
+                "conclusion": "skipped",
+                "started_at": "2026-10-05T07:17:45Z",
+                "completed_at": "2026-10-05T07:17:45Z"
+              },
+              {
+                "name": "Deliverable",
+                "conclusion": "skipped",
+                "started_at": "2026-10-05T07:17:45Z",
+                "completed_at": "2026-10-05T07:17:46Z"
+              },
+              {
+                "name": "Start the next ready issue",
+                "conclusion": "skipped",
+                "started_at": "2026-10-05T07:17:46Z",
+                "completed_at": "2026-10-05T07:17:46Z"
+              },
+              {
+                "name": "Clean workspace",
+                "conclusion": "success",
+                "started_at": "2026-10-05T07:17:46Z",
+                "completed_at": "2026-10-05T07:17:46Z"
+              },
+              {
+                "name": "Post App token",
+                "conclusion": "success",
+                "started_at": "2026-10-05T07:17:46Z",
+                "completed_at": "2026-10-05T07:17:48Z"
+              },
+              {
+                "name": "Complete job",
+                "conclusion": "success",
+                "started_at": "2026-10-05T07:17:48Z",
+                "completed_at": "2026-10-05T07:17:51Z"
+              }
+            ]
+          },
+          {
+            "name": "unblocked (claim/issue-9268) / work",
+            "conclusion": "failure",
+            "steps": [
+              {
+                "name": "Set up job",
+                "conclusion": "success",
+                "started_at": "2026-10-05T07:17:20Z",
+                "completed_at": "2026-10-05T07:17:29Z"
+              },
+              {
+                "name": "Read App private key",
+                "conclusion": "success",
+                "started_at": "2026-10-05T07:17:30Z",
+                "completed_at": "2026-10-05T07:17:31Z"
+              },
+              {
+                "name": "App token",
+                "conclusion": "success",
+                "started_at": "2026-10-05T07:17:31Z",
+                "completed_at": "2026-10-05T07:17:37Z"
+              },
+              {
+                "name": "Gate",
+                "conclusion": "success",
+                "started_at": "2026-10-05T07:17:37Z",
+                "completed_at": "2026-10-05T07:17:45Z"
+              },
+              {
+                "name": "Branch",
+                "conclusion": "success",
+                "started_at": "2026-10-05T07:17:45Z",
+                "completed_at": "2026-10-05T07:17:46Z"
+              },
+              {
+                "name": "Worker",
+                "conclusion": "cancelled",
+                "started_at": "2026-10-05T07:17:46Z",
+                "completed_at": "2026-10-05T07:37:01Z"
+              },
+              {
+                "name": "App token for arm",
+                "conclusion": "skipped",
+                "started_at": "2026-10-05T07:37:01Z",
+                "completed_at": "2026-10-05T07:37:01Z"
+              },
+              {
+                "name": "Router wall",
+                "conclusion": "skipped",
+                "started_at": "2026-10-05T07:37:01Z",
+                "completed_at": "2026-10-05T07:37:01Z"
+              },
+              {
+                "name": "Arm auto-merge as the App",
+                "conclusion": "skipped",
+                "started_at": "2026-10-05T07:37:01Z",
+                "completed_at": "2026-10-05T07:37:01Z"
+              },
+              {
+                "name": "Deliverable",
+                "conclusion": "skipped",
+                "started_at": "2026-10-05T07:37:01Z",
+                "completed_at": "2026-10-05T07:37:01Z"
+              },
+              {
+                "name": "Start the next ready issue",
+                "conclusion": "success",
+                "started_at": "2026-10-05T07:37:01Z",
+                "completed_at": "2026-10-05T07:37:08Z"
+              },
+              {
+                "name": "Clean workspace",
+                "conclusion": "success",
+                "started_at": "2026-10-05T07:37:08Z",
+                "completed_at": "2026-10-05T07:37:08Z"
+              },
+              {
+                "name": "Post App token",
+                "conclusion": "success",
+                "started_at": "2026-10-05T07:37:08Z",
+                "completed_at": "2026-10-05T07:37:09Z"
+              },
+              {
+                "name": "Complete job",
+                "conclusion": "success",
+                "started_at": "2026-10-05T07:37:09Z",
+                "completed_at": "2026-10-05T07:37:09Z"
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "total_count": 2,
+        "jobs": [
+          {
+            "name": "unblocked (claim/issue-9273) / work",
+            "conclusion": "failure",
+            "steps": [
+              {
+                "name": "Set up job",
+                "conclusion": "success",
+                "started_at": "2026-10-05T07:17:20Z",
+                "completed_at": "2026-10-05T07:17:25Z"
+              },
+              {
+                "name": "Read App private key",
+                "conclusion": "success",
+                "started_at": "2026-10-05T07:17:25Z",
+                "completed_at": "2026-10-05T07:17:27Z"
+              },
+              {
+                "name": "App token",
+                "conclusion": "success",
+                "started_at": "2026-10-05T07:17:27Z",
+                "completed_at": "2026-10-05T07:17:31Z"
+              },
+              {
+                "name": "Gate",
+                "conclusion": "success",
+                "started_at": "2026-10-05T07:17:31Z",
+                "completed_at": "2026-10-05T07:17:42Z"
+              },
+              {
+                "name": "Branch",
+                "conclusion": "success",
+                "started_at": "2026-10-05T07:17:42Z",
+                "completed_at": "2026-10-05T07:17:44Z"
+              },
+              {
+                "name": "Worker",
+                "conclusion": null,
+                "started_at": "2026-10-05T07:17:44Z",
+                "completed_at": null
+              },
+              {
+                "name": "App token for arm",
+                "conclusion": null,
+                "started_at": null,
+                "completed_at": null
+              },
+              {
+                "name": "Router wall",
+                "conclusion": null,
+                "started_at": null,
+                "completed_at": null
+              },
+              {
+                "name": "Arm auto-merge as the App",
+                "conclusion": null,
+                "started_at": null,
+                "completed_at": null
+              },
+              {
+                "name": "Deliverable",
+                "conclusion": null,
+                "started_at": null,
+                "completed_at": null
+              },
+              {
+                "name": "Start the next ready issue",
+                "conclusion": null,
+                "started_at": null,
+                "completed_at": null
+              },
+              {
+                "name": "Clean workspace",
+                "conclusion": null,
+                "started_at": null,
+                "completed_at": null
+              },
+              {
+                "name": "Post App token",
+                "conclusion": null,
+                "started_at": null,
+                "completed_at": null
+              }
+            ]
+          },
+          {
+            "name": "unblocked (claim/issue-9278) / work",
+            "conclusion": "success",
+            "steps": [
+              {
+                "name": "Set up job",
+                "conclusion": "success",
+                "started_at": "2026-10-05T07:19:00Z",
+                "completed_at": "2026-10-05T07:19:04Z"
+              },
+              {
+                "name": "Read App private key",
+                "conclusion": "success",
+                "started_at": "2026-10-05T07:19:05Z",
+                "completed_at": "2026-10-05T07:19:05Z"
+              },
+              {
+                "name": "App token",
+                "conclusion": "success",
+                "started_at": "2026-10-05T07:19:05Z",
+                "completed_at": "2026-10-05T07:19:10Z"
+              },
+              {
+                "name": "Gate",
+                "conclusion": "success",
+                "started_at": "2026-10-05T07:19:10Z",
+                "completed_at": "2026-10-05T07:19:13Z"
+              },
+              {
+                "name": "Branch",
+                "conclusion": "skipped",
+                "started_at": "2026-10-05T07:19:13Z",
+                "completed_at": "2026-10-05T07:19:13Z"
+              },
+              {
+                "name": "Worker",
+                "conclusion": "skipped",
+                "started_at": "2026-10-05T07:19:13Z",
+                "completed_at": "2026-10-05T07:19:14Z"
+              },
+              {
+                "name": "App token for arm",
+                "conclusion": "skipped",
+                "started_at": "2026-10-05T07:19:14Z",
+                "completed_at": "2026-10-05T07:19:15Z"
+              },
+              {
+                "name": "Router wall",
+                "conclusion": "skipped",
+                "started_at": "2026-10-05T07:19:15Z",
+                "completed_at": "2026-10-05T07:19:15Z"
+              },
+              {
+                "name": "Arm auto-merge as the App",
+                "conclusion": "skipped",
+                "started_at": "2026-10-05T07:19:15Z",
+                "completed_at": "2026-10-05T07:19:15Z"
+              },
+              {
+                "name": "Deliverable",
+                "conclusion": "skipped",
+                "started_at": "2026-10-05T07:19:15Z",
+                "completed_at": "2026-10-05T07:19:15Z"
+              },
+              {
+                "name": "Start the next ready issue",
+                "conclusion": "skipped",
+                "started_at": "2026-10-05T07:19:15Z",
+                "completed_at": "2026-10-05T07:19:22Z"
+              },
+              {
+                "name": "Clean workspace",
+                "conclusion": "success",
+                "started_at": "2026-10-05T07:19:22Z",
+                "completed_at": "2026-10-05T07:19:23Z"
+              },
+              {
+                "name": "Post App token",
+                "conclusion": "success",
+                "started_at": "2026-10-05T07:19:23Z",
+                "completed_at": "2026-10-05T07:19:45Z"
+              },
+              {
+                "name": "Complete job",
+                "conclusion": "success",
+                "started_at": "2026-10-05T07:19:45Z",
+                "completed_at": "2026-10-05T07:19:47Z"
+              }
+            ]
+          }
+        ]
+      }
+    ],
+    "worker-failed-early": [
+      {
+        "total_count": 1,
+        "jobs": [
+          {
+            "name": "new / work",
+            "conclusion": "failure",
+            "steps": [
+              {
+                "name": "Set up job",
+                "conclusion": "success",
+                "started_at": "2026-10-05T08:00:00Z",
+                "completed_at": "2026-10-05T08:00:05Z"
+              },
+              {
+                "name": "Worker",
+                "conclusion": "failure",
+                "started_at": "2026-10-05T08:00:06Z",
+                "completed_at": "2026-10-05T08:20:30Z"
+              },
+              {
+                "name": "Clean workspace",
+                "conclusion": "success",
+                "started_at": "2026-10-05T08:20:31Z",
+                "completed_at": "2026-10-05T08:20:32Z"
+              }
+            ]
+          }
+        ]
+      }
+    ],
+    "later-step-failed": [
+      {
+        "total_count": 1,
+        "jobs": [
+          {
+            "name": "new / work",
+            "conclusion": "failure",
+            "steps": [
+              {
+                "name": "Set up job",
+                "conclusion": "success",
+                "started_at": "2026-10-05T08:00:00Z",
+                "completed_at": "2026-10-05T08:00:05Z"
+              },
+              {
+                "name": "Worker",
+                "conclusion": "success",
+                "started_at": "2026-10-05T08:00:06Z",
+                "completed_at": "2026-10-05T08:40:00Z"
+              },
+              {
+                "name": "Arm auto-merge as the App",
+                "conclusion": "failure",
+                "started_at": "2026-10-05T08:40:01Z",
+                "completed_at": "2026-10-05T08:41:00Z"
+              }
+            ]
+          }
+        ]
+      }
+    ],
+    "no-matching-leg": [
+      {
+        "total_count": 2,
+        "jobs": [
+          {
+            "name": "unblocked (claim/issue-1) / work",
+            "conclusion": "failure",
+            "steps": [
+              {
+                "name": "Worker",
+                "conclusion": "failure",
+                "started_at": "2026-10-05T08:00:00Z",
+                "completed_at": "2026-10-05T08:55:01Z"
+              }
+            ]
+          },
+          {
+            "name": "unblocked (claim/issue-2) / work",
+            "conclusion": "failure",
+            "steps": [
+              {
+                "name": "Worker",
+                "conclusion": "failure",
+                "started_at": "2026-10-05T08:00:00Z",
+                "completed_at": "2026-10-05T08:55:01Z"
+              }
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "cases": [
+    {
+      "name": "timeout-overloaded-load",
+      "fixture": "timeout-cap",
+      "ref": "claim/issue-9268",
+      "env": {
+        "LOAD1": "57.43",
+        "CORES": "8",
+        "SWAP_USED_KB": "1048576"
+      },
+      "prior_failed_comment": 0,
+      "started_comment": true,
+      "want": "infra",
+      "note": "real run 37267338065: Worker failed at 55m08s (the cap) while load1 was 57.43; this misstrike hit #9268"
+    },
+    {
+      "name": "timeout-overloaded-swap",
+      "fixture": "timeout-cap",
+      "ref": "claim/issue-9268",
+      "env": {
+        "LOAD1": "6.18",
+        "CORES": "8",
+        "SWAP_USED_KB": "7864320"
+      },
+      "prior_failed_comment": 0,
+      "started_comment": true,
+      "want": "infra",
+      "note": "same cap death with a healthy load1 but 7.5G swap in use"
+    },
+    {
+      "name": "runner-lost-midworker",
+      "fixture": "runner-lost",
+      "ref": "claim/issue-9273",
+      "env": {
+        "LOAD1": "90",
+        "CORES": "8",
+        "SWAP_USED_KB": "7864320"
+      },
+      "prior_failed_comment": 0,
+      "started_comment": true,
+      "want": "infra",
+      "note": "real run 37276581999: Worker started 07:17:44, never completed; this misstrike hit #9273"
+    },
+    {
+      "name": "runner-lost-shutdown",
+      "fixture": "runner-lost",
+      "ref": "claim/issue-9264",
+      "env": {
+        "LOAD1": "6",
+        "CORES": "8",
+        "SWAP_USED_KB": "0"
+      },
+      "prior_failed_comment": 0,
+      "started_comment": true,
+      "want": "infra",
+      "note": "real run 37276581999: Worker cancelled 07:37:02 inside a failed job (runner shutdown signal); hit #9264"
+    },
+    {
+      "name": "runner-lost-many-legs",
+      "fixture": "runner-lost",
+      "ref": "claim/issue-9268",
+      "env": {
+        "LOAD1": "6",
+        "CORES": "8",
+        "SWAP_USED_KB": "0"
+      },
+      "prior_failed_comment": 0,
+      "started_comment": true,
+      "want": "infra",
+      "note": "same run, the cancelled leg picked by ref among five work jobs; hit #9268"
+    },
+    {
+      "name": "timeout-healthy",
+      "fixture": "timeout-cap",
+      "ref": "claim/issue-9268",
+      "env": {
+        "LOAD1": "6.18",
+        "CORES": "8",
+        "SWAP_USED_KB": "2097152"
+      },
+      "prior_failed_comment": 0,
+      "started_comment": true,
+      "want": "strike",
+      "note": "cap death on a healthy host is still a strike"
+    },
+    {
+      "name": "timeout-no-guard-sample",
+      "fixture": "timeout-cap",
+      "ref": "claim/issue-9268",
+      "env": {
+        "LOAD1": "",
+        "CORES": "",
+        "SWAP_USED_KB": ""
+      },
+      "prior_failed_comment": 0,
+      "started_comment": true,
+      "want": "strike",
+      "note": "runner died before the Host sample: guard unknown, strike (fail-safe)"
+    },
+    {
+      "name": "worker-failed-early-overloaded",
+      "fixture": "worker-failed-early",
+      "ref": "claim/issue-9291",
+      "env": {
+        "LOAD1": "90",
+        "CORES": "8",
+        "SWAP_USED_KB": "7864320"
+      },
+      "prior_failed_comment": 0,
+      "started_comment": true,
+      "want": "strike",
+      "note": "a real early worker failure stays a strike even under overload"
+    },
+    {
+      "name": "later-step-failed",
+      "fixture": "later-step-failed",
+      "ref": "claim/issue-9291",
+      "env": {
+        "LOAD1": "90",
+        "CORES": "8",
+        "SWAP_USED_KB": "7864320"
+      },
+      "prior_failed_comment": 0,
+      "started_comment": true,
+      "want": "strike",
+      "note": "Worker succeeded; a later step failed is out of scope, strike"
+    },
+    {
+      "name": "jobs-api-fails",
+      "fixture": "timeout-cap",
+      "ref": "claim/issue-9268",
+      "env": {
+        "LOAD1": "57.43",
+        "CORES": "8",
+        "SWAP_USED_KB": "1048576"
+      },
+      "prior_failed_comment": 0,
+      "started_comment": true,
+      "want": "strike",
+      "note": "api read fails -> strike (fail-safe)"
+    },
+    {
+      "name": "no-matching-leg",
+      "fixture": "no-matching-leg",
+      "ref": "claim/issue-3",
+      "env": {
+        "LOAD1": "57.43",
+        "CORES": "8",
+        "SWAP_USED_KB": "1048576"
+      },
+      "prior_failed_comment": 0,
+      "started_comment": true,
+      "want": "strike",
+      "note": "this report's work job is not in the run -> strike (fail-safe)"
+    },
+    {
+      "name": "second-infra-still-requeues",
+      "fixture": "runner-lost",
+      "ref": "claim/issue-9273",
+      "env": {
+        "LOAD1": "90",
+        "CORES": "8",
+        "SWAP_USED_KB": "7864320"
+      },
+      "prior_failed_comment": 1,
+      "started_comment": true,
+      "want": "infra",
+      "note": "infra says nothing about the packet, so a second infra death requeues instead of parking"
+    },
+    {
+      "name": "second-strike-parks",
+      "fixture": "timeout-cap",
+      "ref": "claim/issue-9268",
+      "env": {
+        "LOAD1": "6.18",
+        "CORES": "8",
+        "SWAP_USED_KB": "2097152"
+      },
+      "prior_failed_comment": 1,
+      "started_comment": true,
+      "want": "park",
+      "note": "existing behavior: the second strike parks with needs-orchestrator"
+    },
+    {
+      "name": "infra-cap-strikes",
+      "fixture": "runner-lost",
+      "ref": "claim/issue-9273",
+      "env": {
+        "LOAD1": "90",
+        "CORES": "8",
+        "SWAP_USED_KB": "7864320"
+      },
+      "prior_failed_comment": 0,
+      "prior_infra_comments": 3,
+      "started_comment": true,
+      "want": "strike"
+    },
+    {
+      "name": "infra-under-cap-requeues",
+      "fixture": "runner-lost",
+      "ref": "claim/issue-9273",
+      "env": {
+        "LOAD1": "90",
+        "CORES": "8",
+        "SWAP_USED_KB": "7864320"
+      },
+      "prior_failed_comment": 0,
+      "prior_infra_comments": 2,
+      "started_comment": true,
+      "want": "infra"
+    },
+    {
+      "name": "displaced-run-skips",
+      "fixture": "runner-lost",
+      "ref": "claim/issue-9273",
+      "env": {
+        "LOAD1": "90",
+        "CORES": "8",
+        "SWAP_USED_KB": "7864320"
+      },
+      "prior_failed_comment": 0,
+      "started_comment": false,
+      "want": "skip",
+      "note": "existing behavior: a run that never claimed the issue is skipped"
+    }
+  ]
+}

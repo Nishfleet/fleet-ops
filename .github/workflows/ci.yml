@@ -467,3 +467,96 @@ jobs:
           safe-control|||1|no|0
           CASES
           test "$bad" -eq 0
+      - name: Infra-wall classifier (fake gh)
+        # Runs the report job's own run block, read out of agent.yml, against a
+        # fake gh. Cases in config/infra-wall-events.json carry the real
+        # jobs-API payloads of the 2026-10-05 overload (runs 37267338065 and
+        # 37276581999, public on fleet-ops): the 55-minute cap death and the
+        # mid-worker runner deaths that were wrongly struck into the
+        # strong-only lane (fleet-ops#9291). Controls prove the strike path is
+        # unchanged: a healthy host, a missing guard sample, an early worker
+        # failure, a later-step failure, a failed jobs read and an unmatchable
+        # ref all still strike, the second strike still parks, and a fourth
+        # infra death in a row strikes (the requeue cap).
+        if: always()
+        run: |
+          set -euo pipefail
+          t=$RUNNER_TEMP/infra-mock
+          mkdir -p "$t/bin"
+          block() { yq ".jobs.report.steps[] | select(.name == \"Strike or requeue\") | .$1" .github/workflows/agent.yml; }
+          block run > "$t/report.sh"
+          for v in LOAD1 CORES SWAP_USED_KB WORKER_TIMEOUT_SECS CPU_LOAD_FACTOR SWAP_GUARD_KB INFRA_REQUEUE_CAP; do
+            val=$(block "env.$v")
+            [ -n "$val" ] && [ "$val" != null ] || { echo "report env $v missing"; exit 1; }
+          done
+          # The guard constants ship with the block; the Host sample values are
+          # per case (a runner that died records none).
+          WORKER_TIMEOUT_SECS=$(block env.WORKER_TIMEOUT_SECS)
+          CPU_LOAD_FACTOR=$(block env.CPU_LOAD_FACTOR)
+          SWAP_GUARD_KB=$(block env.SWAP_GUARD_KB)
+          INFRA_REQUEUE_CAP=$(block env.INFRA_REQUEUE_CAP)
+          export WORKER_TIMEOUT_SECS CPU_LOAD_FACTOR SWAP_GUARD_KB INFRA_REQUEUE_CAP
+          # The work job must sample the host at the death moment and hand the
+          # numbers to report through the job outputs.
+          yq '.jobs.work.steps[] | select(.id == "host") | .run' .github/workflows/agent.yml > "$t/sample.sh"
+          sample_out=$t/sample.out
+          GITHUB_OUTPUT="$sample_out" bash "$t/sample.sh"
+          for k in load1 cores swap_used_kb; do
+            grep -Eq "^$k=[0-9]+(\\.[0-9]+)?$" "$sample_out" || { echo "host sample: $k missing or malformed"; exit 1; }
+          done
+          yq '.jobs.work.outputs.load1' .github/workflows/agent.yml | grep -F 'steps.host.outputs.load1' >/dev/null || { echo "work outputs.load1 not wired"; exit 1; }
+          yq '.jobs.work.outputs.cores' .github/workflows/agent.yml | grep -F 'steps.host.outputs.cores' >/dev/null || { echo "work outputs.cores not wired"; exit 1; }
+          yq '.jobs.work.outputs.swap_used_kb' .github/workflows/agent.yml | grep -F 'steps.host.outputs.swap_used_kb' >/dev/null || { echo "work outputs.swap_used_kb not wired"; exit 1; }
+          cat > "$t/bin/gh" <<'MOCK'
+          #!/usr/bin/env bash
+          prog=""; jqnext=0; args=()
+          for a in "$@"; do
+            if [ "$jqnext" = 1 ]; then prog=$a; jqnext=0; continue; fi
+            if [ "$a" = "--jq" ]; then jqnext=1; continue; fi
+            args+=("$a")
+          done
+          joined="${args[*]}"
+          case $joined in
+            *"--json number"*) exit 0 ;;
+            *"--paginate"*"/jobs"*)
+              if [ -n "${API_FAIL:-}" ]; then echo "mock gh: jobs api fails" >&2; exit 1; fi
+              cat "$FIXTURE" ;;
+            *"--json comments"*)
+              if [ -n "$prog" ]; then jq "$prog" "$COMMENTS"; else cat "$COMMENTS"; fi ;;
+            *"issue comment"*) printf '%s\n' "$joined" >> "$STATE/commented" ;;
+            *"issue edit"*) printf '%s\n' "$joined" >> "$STATE/edited" ;;
+            *) echo "mock gh: unexpected call: $joined" >&2; exit 1 ;;
+          esac
+          MOCK
+          chmod +x "$t/bin/gh"
+          export GITHUB_RUN_ID=4242424242 GITHUB_REPOSITORY=Nishfleet/fleet-ops GITHUB_SERVER_URL=https://github.com
+          bad=0
+          while IFS='|' read -r name fixture ref l1 co sw prior infra started want; do
+            export STATE=$t/$name FIXTURE=$t/$name-jobs.json COMMENTS=$t/$name-comments.json
+            mkdir -p "$STATE"
+            : > "$STATE/commented"; : > "$STATE/edited"
+            jq -c --arg f "$fixture" '.fixtures[$f][]' config/infra-wall-events.json > "$FIXTURE"
+            jq -n --arg u "https://github.com/Nishfleet/fleet-ops/actions/runs/$GITHUB_RUN_ID" --argjson s "$started" --argjson p "$prior" --argjson n "$infra" \
+              '{comments: ([if $s == 1 then {body: ("agent run started: " + $u), authorAssociation: "NONE"} else empty end]
+                + [if $p == 1 then {body: "agent run failed: https://github.com/Nishfleet/fleet-ops/actions/runs/111", authorAssociation: "NONE"} else empty end]
+                + [range($n) | {body: "agent run infra-failed: https://github.com/Nishfleet/fleet-ops/actions/runs/222", authorAssociation: "NONE"}])}' > "$COMMENTS"
+            export N=$ref LOAD1=$l1 CORES=$co SWAP_USED_KB=$sw
+            API_FAIL=
+            if [ "$name" = jobs-api-fails ]; then API_FAIL=1; fi
+            export API_FAIL
+            rc=0
+            PATH="$t/bin:$PATH" bash "$t/report.sh" > "$STATE/out" 2>&1 || rc=$?
+            got=none
+            if grep -q "agent run infra-failed: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" "$STATE/commented" \
+               && grep -q -- "--add-label agent-ready --remove-label agent-in-progress" "$STATE/edited" \
+               && ! grep -q "agent run failed:" "$STATE/commented" \
+               && ! grep -qE 'strong-only|needs-orchestrator' "$STATE/edited"; then got=infra; fi
+            if grep -q "agent run failed: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" "$STATE/commented" \
+               && ! grep -q infra-failed "$STATE/commented" && grep -q strong-only "$STATE/edited"; then got=strike; fi
+            if grep -q "agent run failed:" "$STATE/commented" && grep -q needs-orchestrator "$STATE/edited"; then got=park; fi
+            if [ ! -s "$STATE/commented" ] && [ ! -s "$STATE/edited" ]; then got=skip; fi
+            if [ "$got" != "$want" ] || [ "$rc" != 0 ]; then
+              echo "case $name: got=$got (want $want) exit=$rc"; cat "$STATE/out"; bad=1
+            fi
+          done < <(jq -r '.cases[] | [.name, .fixture, .ref, .env.LOAD1, .env.CORES, .env.SWAP_USED_KB, (.prior_failed_comment|tostring), (.prior_infra_comments // 0 | tostring), (if .started_comment then 1 else 0 end), .want] | map(tostring) | join("|")' config/infra-wall-events.json)
+          test "$bad" -eq 0
