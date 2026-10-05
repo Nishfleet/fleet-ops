@@ -92,7 +92,10 @@ The rules still in force:
   `encoded: 5` is legal only with a reason. A rule that recurs twice is a
   defect in its rung.
 - Gates that exist: a PR touching a risky path is labelled `needs-coordinator` and
-  not armed; agent-authored PRs self-land green.
+  not armed; agent-dispatch.yml's `hold-risky` job disarms, dequeues and labels
+  any PR whose changed paths match `config/risky-paths.json` until its exact
+  head sha carries a `coordinator-approval=success` status (0509#7092);
+  agent-authored PRs self-land green.
 
 The full audit (rungs, counts, second wave) is git history
 (fleet-ops#8029/#8034).

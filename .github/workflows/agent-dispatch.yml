@@ -70,9 +70,11 @@ on:
   # has a merge conflict. Invariant (Kimi K3 review L2, 2026-09-24): nothing in
   # this file checks out PR code. ejected and miss-review-pr only run for a
   # claim/issue-* (or a same-repo Revert) whose head repo is this repository,
-  # so a fork's PR never reaches a runner or a token.
+  # so a fork's PR never reaches a runner or a token. hold-risky runs for every
+  # PR on the last five types but only calls the API: it reads file names as
+  # data and never checks out or runs the head.
   pull_request_target:
-    types: [dequeued, auto_merge_disabled, closed]
+    types: [dequeued, auto_merge_disabled, closed, auto_merge_enabled, synchronize, labeled, opened, reopened]
   workflow_run:
     workflows: [CI]
     types: [completed]
@@ -219,11 +221,15 @@ jobs:
       issues: write
     with:
       ref: ${{ matrix.ref }}
-  # The merge queue ejected a claim PR (failed checks or a conflict), or its
-  # auto-merge was dropped: send the worker back to it.
+  # The merge queue ejected a claim PR (failed checks or a conflict): send the
+  # worker back to it. dequeued only: auto_merge_disabled is what hold-risky
+  # (or the coordinator) does on purpose, and the other pull_request_target
+  # types are hold-risky's. A dropped arm on a safe claim PR is the sweep's
+  # unarmed case, which re-arms it.
   ejected:
     if: >-
       (inputs.agent_mode || vars.AGENT_MODE) == 'live' && github.event_name == 'pull_request_target' &&
+      github.event.action == 'dequeued' &&
       github.event.pull_request.state == 'open' &&
       startsWith(github.event.pull_request.head.ref, 'claim/issue-') &&
       github.event.pull_request.head.repo.full_name == github.repository
@@ -232,6 +238,122 @@ jobs:
       issues: write
     with:
       ref: ${{ github.event.pull_request.head.ref }}
+  # Approved-head merge guard (0509#7092: a risky PR was armed by the
+  # orchestrator, gained commits after the coordinator approved a different
+  # head, and merged on ci-ok alone; its needs-coordinator label came 8 s after
+  # the arm). Risk is read from the changed paths, not only the label, so an
+  # unlabelled risky PR is caught too. The path list is config/risky-paths.json
+  # on fleet-ops main, read by URL so every caller repo uses the same copy; an
+  # unreadable list holds every PR. A risky PR whose CURRENT head sha has no
+  # coordinator-approval=success commit status from an approver loses its arm,
+  # leaves the merge queue and gets the label. A status belongs to one sha, so
+  # every push needs a fresh approval. GITHUB_TOKEN writes fire no workflow, so
+  # the hold does not re-trigger itself or the ejected job. ci.yml runs CLASSIFY
+  # and APPROVAL below against every case in config/risky-paths.json.
+  hold-risky:
+    if: >-
+      github.event_name == 'pull_request_target' &&
+      contains(fromJSON('["auto_merge_enabled","synchronize","labeled","opened","reopened"]'), github.event.action)
+    runs-on: ${{ fromJSON(inputs.runner || '"ubuntu-latest"') }}
+    timeout-minutes: 10
+    concurrency:
+      group: hold-risky-${{ github.repository }}-${{ github.event.pull_request.number }}
+      cancel-in-progress: false
+    # pull-requests: write labels the PR and disables auto-merge. contents:
+    # write is what GitHub asks of a merge-queue dequeue (it acts on the merge,
+    # like arming does). statuses: read reads the approval. Nothing here checks
+    # out code, so contents: write never meets PR head code.
+    permissions:
+      contents: write
+      pull-requests: write
+      statuses: read
+    env:
+      LABEL: needs-coordinator
+      CONTEXT: coordinator-approval
+      # Space-separated logins whose status counts. Any token with statuses:
+      # write can post a status, a workflow's GITHUB_TOKEN included, so the
+      # context name alone is not an approval.
+      APPROVERS: nish3451
+      RISKY_PATHS_URL: https://raw.githubusercontent.com/Nishfleet/fleet-ops/main/config/risky-paths.json
+      # stdin: {repo, labels, files, changed_files}; $cfg: risky-paths.json or
+      # null. A list cut at 3000 files, an empty list or an unreadable path
+      # list all count as risky.
+      CLASSIFY: |
+        . as $pr
+        | (($cfg // {}).paths // null) as $p
+        | (if ($p | type) == "object" and ($p["*"] | type) == "array"
+           then $p["*"] + [$p | to_entries[] | select(.key != "*" and (.key | ascii_downcase) == ($pr.repo | ascii_downcase)) | .value[]]
+           else ["."] end) as $pats
+        | [$pr.files[] | . as $f | select(any($pats[]; . as $re | $f | test($re; "i")))] as $hits
+        | ([if any($pr.labels[]; . == $label) then "label \($label)" else empty end]
+           + [if ($p | type) != "object" then "risky-path list unreadable" else empty end]
+           + [if ($pr.files | length) == 0 then "no changed files listed" else empty end]
+           + [if $pr.changed_files >= 3000 then "\($pr.changed_files) changed files, list cut at 3000" else empty end]
+           + ($hits | unique | .[:10] | map("path \(.)"))) as $why
+        | {risky: ($why | length > 0), why: $why}
+      # stdin: the head sha's statuses, newest first (GitHub's order). Only the
+      # newest status for CONTEXT counts, so a later failure revokes an approval.
+      APPROVAL: |
+        ([.[] | select(.context == $c)] | .[0] // {}) as $s
+        | $s.state == "success" and any($who | split(" ")[]; . == ($s.creator.login // ""))
+    steps:
+      - name: Hold a risky PR whose head has no coordinator approval
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR: ${{ github.event.pull_request.number }}
+        run: |
+          set -euo pipefail
+          # The live PR, not the event payload: a push after the event moves the head.
+          pr=$(gh api "repos/$GITHUB_REPOSITORY/pulls/$PR")
+          [ "$(jq -r .state <<<"$pr")" = open ] || { echo "hold-risky: #$PR is not open; skip"; exit 0; }
+          sha=$(jq -r .head.sha <<<"$pr")
+          # Old and new name of a rename both count. Files go through a file,
+          # not argv: 3000 paths can pass the 128 KiB single-argument limit.
+          gh api --paginate "repos/$GITHUB_REPOSITORY/pulls/$PR/files?per_page=100" --jq '.[] | .filename, (.previous_filename // empty)' |
+            jq -Rsc 'split("\n") | map(select(length > 0))' > "$RUNNER_TEMP/files.json"
+          jq -c --arg repo "$GITHUB_REPOSITORY" --slurpfile files "$RUNNER_TEMP/files.json" \
+            '{repo: $repo, labels: [.labels[].name], files: $files[0], changed_files: .changed_files}' <<<"$pr" > "$RUNNER_TEMP/facts.json"
+          if ! cfg=$(curl -fsSL --retry 3 "$RISKY_PATHS_URL" | jq -c .); then
+            echo "::warning::could not read $RISKY_PATHS_URL; holding as risky"
+            cfg=null
+          fi
+          verdict=$(jq -c --argjson cfg "$cfg" --arg label "$LABEL" "$CLASSIFY" < "$RUNNER_TEMP/facts.json")
+          echo "hold-risky: #$PR at $sha: $verdict"
+          jq -e .risky <<<"$verdict" >/dev/null || exit 0
+          approved=$(gh api --paginate "repos/$GITHUB_REPOSITORY/commits/$sha/statuses?per_page=100" --jq '.[]' |
+            jq -sr --arg c "$CONTEXT" --arg who "$APPROVERS" "$APPROVAL")
+          if [ "$approved" = true ]; then
+            echo "hold-risky: #$PR is risky and $sha carries $CONTEXT=success; no hold"
+            exit 0
+          fi
+          # Label first, so a dequeued event raised by the steps below already
+          # sees it.
+          gh api -X POST "repos/$GITHUB_REPOSITORY/issues/$PR/labels" -f "labels[]=$LABEL" --silent
+          # shellcheck disable=SC2016 # $o $n $p $id are GraphQL variables, not shell
+          q='query($o:String!,$n:String!,$p:Int!){repository(owner:$o,name:$n){pullRequest(number:$p){id isInMergeQueue autoMergeRequest{enabledAt}}}}'
+          read_pr() { gh api graphql -f query="$q" -f o="${GITHUB_REPOSITORY%/*}" -f n="${GITHUB_REPOSITORY#*/}" -F p="$PR" --jq .data.repository.pullRequest; }
+          live=$(read_pr)
+          id=$(jq -r .id <<<"$live")
+          if [ "$(jq -r '.autoMergeRequest != null' <<<"$live")" = true ]; then
+            # shellcheck disable=SC2016
+            gh api graphql -f query='mutation($id:ID!){disablePullRequestAutoMerge(input:{pullRequestId:$id}){clientMutationId}}' -f id="$id" --silent
+            echo "hold-risky: disabled auto-merge on #$PR"
+          fi
+          if [ "$(jq -r .isInMergeQueue <<<"$live")" = true ]; then
+            # A PR that left the queue between the read and the call ("not
+            # queued") is fine; one still queued after a failed call is not.
+            # shellcheck disable=SC2016
+            if ! gh api graphql -f query='mutation($id:ID!){dequeuePullRequest(input:{id:$id}){clientMutationId}}' -f id="$id" --silent; then
+              [ "$(read_pr | jq -r .isInMergeQueue)" != true ] || { echo "::error::#$PR is still in the merge queue"; exit 1; }
+            fi
+            echo "hold-risky: dequeued #$PR"
+          fi
+          {
+            echo "### hold-risky: #$PR held at \`$sha\`"
+            jq -r '.why[] | "- \(.)"' <<<"$verdict"
+            echo
+            echo "Approve this exact head with a \`$CONTEXT\` commit status (prompts/orchestrator-handoff.md step 4)."
+          } >> "$GITHUB_STEP_SUMMARY"
   # A closed blocker frees the issues it was blocking; a manual run sweeps
   # every ready, unblocked issue (cutover backfill and missed-event recovery),
   # then open claim PRs that are unarmed, conflicting, missing a required-check

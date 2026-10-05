@@ -16,5 +16,8 @@ rules:
       # and workflow_run carries CI results for claim PRs. Nothing in the file
       # checks out PR code, and the jobs those events reach run only for a
       # claim/issue-* branch whose head repo is this repository
-      # (fleet-ops#8457, fleet-ops#8608).
+      # (fleet-ops#8457, fleet-ops#8608). The exception is hold-risky, which
+      # runs for every PR on auto_merge_enabled/synchronize/labeled/opened/
+      # reopened but only calls the API: file names are read as data and no
+      # head code is checked out or run (0509#7092).
       - agent-dispatch.yml
