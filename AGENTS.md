@@ -86,7 +86,7 @@ worker jail in `agent.yml` mounts an empty tmpfs over `~/.config/cloudflare` and
 `~/.config/gh`, because a worker reads outsider comments and a fooled model must
 not reach Nish's admin GitHub login or a no-expiry deploy token. A jailed worker's
 GitHub access is `GH_TOKEN`, the App token, and nothing else; ci.yml fails if the
-jail line ever shows either path again. Credential parity still holds for
+jail line, run against planted files, can read either path. Credential parity still holds for
 sessions outside the jail (the orchestrator hand-off, interactive sessions). A
 scoped Cloudflare token for worker duties (D1 drills, preview uploads,
 analytics) is not minted yet: no token on the VPS can mint tokens (Cloudflare

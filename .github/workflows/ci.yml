@@ -163,15 +163,20 @@ jobs:
           line=$(sed -n 's/^ *jail_base="\(.*\)"$/\1/p' .github/workflows/agent.yml)
           test -n "$line"
           sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          # Plant only where nothing exists, so a real login is never overwritten.
+          test ! -e "$HOME/.config/gh/hosts.yml"
+          test ! -e "$HOME/.config/cloudflare/deploy-ci.env"
           mkdir -p "$HOME/workspaces/tooling/fleet-ops-deploy-clone" "$HOME/.config/gh" "$HOME/.config/cloudflare"
           echo 'oauth_token: planted' > "$HOME/.config/gh/hosts.yml"
           echo 'CLOUDFLARE_API_TOKEN=planted' > "$HOME/.config/cloudflare/deploy-ci.env"
           echo visible > "$HOME/.config/control"
-          eval "jail=($line --)"
+          # $HOME is the line's only expansion; no eval of file text.
+          read -ra jail <<< "${line//\$HOME/$HOME} --"
           "${jail[@]}" test -r "$HOME/.config/control"
           "${jail[@]}" test ! -e "$HOME/.config/gh/hosts.yml"
           "${jail[@]}" test ! -e "$HOME/.config/cloudflare/deploy-ci.env"
           test -r "$HOME/.config/gh/hosts.yml"
+          rm -f "$HOME/.config/gh/hosts.yml" "$HOME/.config/cloudflare/deploy-ci.env" "$HOME/.config/control"
       - name: No shell ${...} or bare %s/%u/%h inside systemd Exec lines (fleet-ops#8382)
         # systemd expands ${...} and % specifiers itself, before any interpreter
         # runs, so the shell never sees them. Refused on Exec*= lines: `${` + a
