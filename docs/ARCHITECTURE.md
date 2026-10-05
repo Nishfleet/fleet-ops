@@ -94,7 +94,9 @@ The rules still in force:
 - Gates that exist: a PR touching a risky path is labelled `needs-coordinator` and
   not armed; agent-dispatch.yml's `hold-risky` job disarms, dequeues and labels
   any PR whose changed paths match `config/risky-paths.json` until its exact
-  head sha carries a `coordinator-approval=success` status (0509#7092);
+  head sha is approved: an approver's unedited PR comment with the line
+  `coordinator-approval: <full head sha>`, or a `coordinator-approval=success`
+  status on it (0509#7092);
   agent-authored PRs self-land green.
 
 The full audit (rungs, counts, second wave) is git history

@@ -248,7 +248,9 @@ jobs:
         # Runs agent-dispatch.yml's own CLASSIFY and APPROVAL programs, read out
         # of the workflow, against every case in config/risky-paths.json, so the list
         # and the program cannot drift from what the hold job runs. A case with
-        # "paths": null stands for an unreadable list, which must hold.
+        # "paths": null stands for an unreadable list, which must hold. An
+        # approval case feeds APPROVAL {sha, statuses, comments}, the shape the
+        # job builds from the head sha, its statuses and the PR's comments.
         if: always()
         run: |
           prog=$(yq '.jobs.hold-risky.env.CLASSIFY' .github/workflows/agent-dispatch.yml)
@@ -265,7 +267,7 @@ jobs:
           ctx=$(yq '.jobs.hold-risky.env.CONTEXT' .github/workflows/agent-dispatch.yml)
           [ -n "$approved" ] && [ "$approved" != null ] && [ "$ctx" = coordinator-approval ]
           while IFS= read -r c; do
-            got=$(jq -r --arg c "$ctx" --arg who "$(jq -r '.approvers | join(" ")' <<<"$c")" "$approved" <<<"$(jq -c .statuses <<<"$c")")
+            got=$(jq -r --arg c "$ctx" --arg who "$(jq -r '.approvers | join(" ")' <<<"$c")" "$approved" <<<"$(jq -c '{sha, statuses, comments}' <<<"$c")")
             [ "$got" = "$(jq -r .want <<<"$c")" ] || { echo "approval case $(jq -r .id <<<"$c"): got $got"; bad=1; }
           done < <(jq -c '.approval_cases[]' config/risky-paths.json)
           test "$bad" -eq 0
