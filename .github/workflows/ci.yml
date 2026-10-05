@@ -315,7 +315,8 @@ jobs:
           | "Read the pause flag back on each repo this run paused" as $r
           | "Name every repo whose dispatch is still paused" as $n
           | "Drop the pause marker once every flag it lists is clear" as $d
-          | [$main, $sc, $sd, $w, $p, $c, $r, $n, $d] as $all
+          | "Fail loudly if any step or check went wrong" as $fa
+          | [$main, $sc, $sd, $w, $p, $c, $r, $n, $d, $fa] as $all
           | [ ($all[] | select(at(.) | length != 1) | "want exactly one task named \"\(.)\""),
               (if any($all[]; at(.) | length != 1) then empty else
                 (if [idx($sc), idx($sd), idx($w), idx($p), idx($c), idx($r), idx($n), idx($d)] | . != sort
@@ -337,19 +338,34 @@ jobs:
                 (if argv($p) == "variable set {{ pause_variable }} --body true" then empty else "pause: want a set to true" end),
                 ([$c, $r, $n, $d][] | select(top(.) != top($main) or part(.) != "always") | "\(.): want it in the main block's always:"),
                 (if argv($c) == "variable set {{ pause_variable }} --body false" then empty else "always clear: want a set to false" end),
-                (if argv($r) | tostring | test("^api repos/") then empty else "read back: want a gh api read of the variable" end),
+                # The clear retries before it gives up: one API blip must not
+                # leave a queue paused.
+                (task($c) as $t
+                 | if (($t.until // "") | tostring | test("^\\s*" + ($t.register // "-") + " is succeeded\\s*$")) and $t.retries == 3
+                   then empty else "always clear: want until: <its register> is succeeded and retries: 3" end),
+                # The read-back reads the flag itself, by name, and only a 404
+                # (unset) is allowed to pass as not paused.
+                (task($r) as $t | ($t["ansible.builtin.command"].argv // []) as $a
+                 | if $a == ["gh", "api", "repos/{{ item }}/actions/variables/{{ pause_variable }}", "--jq", ".value"]
+                      and $doc[0].vars.pause_variable == "FLEET_DISPATCH_PAUSED"
+                   then empty else "read back: want gh api repos/{{ item }}/actions/variables/{{ pause_variable }} --jq .value, with pause_variable FLEET_DISPATCH_PAUSED" end),
+                (task($r) as $t
+                 | if ($t.register // "") != "" and (($t.failed_when // "") | tostring) == "\($t.register).rc != 0 and 'HTTP 404' not in \($t.register).stderr"
+                   then empty else "read back: want failed_when: <register>.rc != 0 and 'HTTP 404' not in <register>.stderr" end),
                 (if task($d)["ansible.builtin.file"] == {"path": "{{ pause_marker }}", "state": "absent"} and ((task($d).when // "") | tostring | test("dispatch_still_paused"))
                  then empty else "always drop: want a marker delete gated on dispatch_still_paused" end),
                 # The point of the read-back: a repo left paused pages, instead
                 # of sitting paused until the next weekly run.
-                (if [$doc | .. | objects | .["ansible.builtin.assert"]? | objects | .that[] | select(test("dispatch_still_paused"))] | length > 0
-                 then empty else "the final assert does not fail on dispatch_still_paused" end)
+                (task($fa)["ansible.builtin.assert"] as $as
+                 | (if [($as.that // [])[] | tostring | select(test("dispatch_still_paused"))] | length > 0
+                    then empty else "the final assert does not fail on dispatch_still_paused" end),
+                   (if ($as.fail_msg // "") | tostring | test("DISPATCH STILL PAUSED")
+                    then empty else "the final assert's fail_msg does not name a still-paused queue (DISPATCH STILL PAUSED)" end))
               end)
             ] | .[]
           JQ
           yq -o=json "$u" | jq -r -f "$RUNNER_TEMP/pause.jq" > "$RUNNER_TEMP/pause-problems.txt"
           if [ -s "$RUNNER_TEMP/pause-problems.txt" ]; then sed "s|^|$u: |" "$RUNNER_TEMP/pause-problems.txt"; bad=1; fi
-          grep -q 'DISPATCH STILL PAUSED' "$u" || { echo "$u: the assert fail_msg does not name a still-paused queue"; bad=1; }
           test "$bad" -eq 0
       - name: Risky-path hold classifier (hold-risky)
         # Runs agent-dispatch.yml's own CLASSIFY and APPROVAL programs, read out
