@@ -197,7 +197,7 @@ jobs:
       # chatcmpl-<0..999> that collide in LiteLLM_SpendLogs, so its calls never log.
       - name: Ollama rungs serve only the permitted slug on the native provider (fleet-ops#8332, fleet-ops#9253)
         if: always()
-        run: yq -o=json '[.model_list[] | select(((.litellm_params.api_base // "") | test("ollama")) or ((.litellm_params.model // "") | test("^ollama"))) | .litellm_params.model | select(. != "ollama_chat/deepseek-v4.1-flash")]' config/litellm-proxy.yaml | jq -e 'if length==0 then true else error("ollama rungs must be ollama_chat/deepseek-v4.1-flash - \(join(","))") end'
+        run: yq -o=json '[.model_list[] | select(((.litellm_params.api_base // "") | test("ollama")) or ((.litellm_params.model // "") | test("^ollama"))) | "\(.litellm_params.model) @ \(.litellm_params.api_base)" | select(. != "ollama_chat/deepseek-v4.1-flash @ https://ollama.com")]' config/litellm-proxy.yaml | jq -e 'if length==0 then true else error("ollama rungs must be ollama_chat/deepseek-v4.1-flash @ https://ollama.com - \(join(","))") end'
       - name: Miss-review event filter
         if: always()
         run: |
