@@ -838,6 +838,34 @@
       "note": "existing behavior: the second strike parks with needs-orchestrator"
     },
     {
+      "name": "infra-cap-strikes",
+      "fixture": "runner-lost",
+      "ref": "claim/issue-9273",
+      "env": {
+        "LOAD1": "90",
+        "CORES": "8",
+        "SWAP_USED_KB": "7864320"
+      },
+      "prior_failed_comment": 0,
+      "prior_infra_comments": 3,
+      "started_comment": true,
+      "want": "strike"
+    },
+    {
+      "name": "infra-under-cap-requeues",
+      "fixture": "runner-lost",
+      "ref": "claim/issue-9273",
+      "env": {
+        "LOAD1": "90",
+        "CORES": "8",
+        "SWAP_USED_KB": "7864320"
+      },
+      "prior_failed_comment": 0,
+      "prior_infra_comments": 2,
+      "started_comment": true,
+      "want": "infra"
+    },
+    {
       "name": "displaced-run-skips",
       "fixture": "runner-lost",
       "ref": "claim/issue-9273",
