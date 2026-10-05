@@ -81,9 +81,20 @@ exists the fleet is deliberately down — respect it; (2) otherwise
 
 ## Cloudflare credentials on this host (Fable, 2026-09-22)
 
-Workers run as `nish` with credential parity, so a packet whose acceptance needs
-the Cloudflare API is not blocked on anyone. Read the token from the file, never
-print it, never copy it into a repo, PR or issue:
+Jailed workers do NOT see these files (Nish, 2026-10-05, fleet-ops#9274). The
+worker jail in `agent.yml` mounts an empty tmpfs over `~/.config/cloudflare` and
+`~/.config/gh`, because a worker reads outsider comments and a fooled model must
+not reach Nish's admin GitHub login or a no-expiry deploy token. A jailed worker's
+GitHub access is `GH_TOKEN`, the App token, and nothing else; ci.yml fails if the
+jail line ever shows either path again. Credential parity still holds for
+sessions outside the jail (the orchestrator hand-off, interactive sessions). A
+scoped Cloudflare token for worker duties (D1 drills, preview uploads,
+analytics) is not minted yet: no token on the VPS can mint tokens (Cloudflare
+`/user/tokens/permission_groups` answers 9109 for both, 2026-10-05), so it is
+Nish's to mint.
+Until it exists, a worker packet whose acceptance needs the Cloudflare API parks
+with `blocked-on: orchestrator`. Outside the jail, read the token from the file,
+never print it, never copy it into a repo, PR or issue:
 
 - `~/.config/cloudflare/deploy-ci.env` — user token, no expiry: Workers scripts,
   D1, KV, Zone read, GraphQL analytics (proven 2026-09-22: workers list, D1 list,
