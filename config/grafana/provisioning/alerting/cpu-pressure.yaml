@@ -1,14 +1,18 @@
 # CPU pressure alert (fleet-ops#9304).
 # The signal is node_exporter's node_pressure_cpu_waiting_seconds_total, the
 # wait side of /proc/pressure/cpu: the fraction of wall time runnable work was
-# ready and still had no core. A rate over 15m is the closest Prometheus-side
-# equivalent of PSI's avg300, which is the window the dashboard's second line
-# plots and the one this threshold is quoted against.
+# ready and still had no core.
+#
+# The window is 15m on purpose, and it is NOT PSI's avg300. PSI avg300 is 300
+# seconds, so the 5-minute average is the one that matches it. This rule wants
+# the slower 15-minute average: sustained queueing is the signal, and a 5-minute
+# rate flickers on every burst of runner churn. Combined with `for: 15m` the
+# alert needs roughly 30 minutes of real queueing before it fires.
 #
 # On 2026-10-05 the box ran load 21 on 12 cores with nothing on the fleet view
-# showing where the time went (fleet-ops#9304). 25% for 15m is above the
-# 11.4% measured idle and far below the ~100% a fully saturated box reads, so a
-# real queue for cores trips it and ordinary runner churn does not.
+# showing where the time went (fleet-ops#9304). Measured on this box: pressure
+# sits near 2% when idle and reads 33% when the cores are saturated, so 25% is
+# above ordinary churn and well below a genuinely blocked box.
 #
 # Contact point: the existing hermes-urgent Telegram contact point from
 # paid-plan-idle.yaml, referenced by name. Grafana merges every file in
@@ -71,7 +75,7 @@ groups:
         execErrState: Error
         annotations:
           summary: CPU pressure above 25% for 15 minutes, so work is queueing for cores.
-          description: 'Pressure has held at {{ $values.A.Value | printf "%.1f" }}% for 15 minutes while the processor read {{ $values.B.Value | printf "%.1f" }}% busy. Runners per repo, the router and sessions all share this host, so the fleet view CPU row shows which of them is spending it.'
+          description: 'Pressure has held at {{ $values.A.Value | printf "%.1f" }}% for 15 minutes while the processor read {{ $values.B.Value | printf "%.1f" }}% busy. Busy is the share of all cores in use; pressure is the share of time runnable work could not get a core. Runners per repo, the router and sessions all share this host, and none of them is named by this rule, so use `systemctl status` on the host to find the unit. See #9306 for per-unit and per-container CPU, which no exporter on this box publishes yet.'
         labels:
           signal: cpu-pressure
         isPaused: false

@@ -2368,10 +2368,10 @@
       }
     },
     {
-      "type": "gauge",
+      "type": "stat",
       "id": 72,
-      "title": "Processor busy",
-      "description": "Whole-host processor busy percent, the denominator the pressure above is measured against.",
+      "title": "Cores in use",
+      "description": "Whole-host cores busy, expressed as a count of cores rather than a percent. The Processor busy gauge above already shows the same signal as a percent, so this answers the other half of the question: on a 12-core box, 11 cores in use is near saturation and 2 cores in use is not, even though the two percentages are 91% and 16%.",
       "gridPos": {
         "h": 5,
         "w": 6,
@@ -2389,8 +2389,8 @@
             "type": "prometheus",
             "uid": "fleet-prometheus"
           },
-          "expr": "100 * (1 - avg(rate(node_cpu_seconds_total{mode=\"idle\"}[5m])))",
-          "legendFormat": "Busy"
+          "expr": "count(count by (cpu) (node_cpu_seconds_total{mode=\"idle\"})) * (1 - avg(rate(node_cpu_seconds_total{mode=\"idle\"}[5m])))",
+          "legendFormat": "Cores in use"
         }
       ],
       "options": {
@@ -2401,15 +2401,19 @@
           "fields": "",
           "values": false
         },
-        "showThresholdLabels": false,
-        "showThresholdMarkers": true
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "percentChangeColorMode": "standard",
+        "showPercentChange": false,
+        "textMode": "auto",
+        "wideLayout": true
       },
       "fieldConfig": {
         "defaults": {
-          "unit": "percent",
-          "min": 0,
-          "max": 100,
-          "decimals": 1,
+          "unit": "none",
+          "decimals": 2,
           "color": {
             "mode": "thresholds"
           },
@@ -2422,11 +2426,11 @@
               },
               {
                 "color": "orange",
-                "value": 70
+                "value": 8
               },
               {
                 "color": "red",
-                "value": 90
+                "value": 11
               }
             ]
           }
