@@ -80,7 +80,7 @@
         stdin: ""
       - argv: [cursor-agent, update]
         stdin: ""
-      - argv: [bash, -o, pipefail, -c, "curl -fsSL https://cli.devin.ai/install.sh | bash"]
+      - argv: [bash, -o, pipefail, -c, "curl -fsSL --retry 3 https://cli.devin.ai/install.sh | bash"]
         stdin: ""
       - argv: [uv, self, update]
         stdin: ""
