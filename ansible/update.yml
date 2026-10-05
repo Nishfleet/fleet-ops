@@ -63,10 +63,12 @@
       XDG_RUNTIME_DIR: /run/user/1000
       PATH: /home/nish/.local/bin:/usr/local/bin:/usr/bin:/bin
     # Each runs as nish with its own stdin; a failure is reported at the end,
-    # never skipped quietly. devin update has no --yes flag and exits 130 on an
-    # empty stdin, because it asks for confirmation, so it answers "y" (the
-    # same thing `echo y | devin update` does, fleet-ops#9262). Every other
-    # updater here ignores stdin.
+    # never skipped quietly. devin is updated by its official installer, the
+    # same script that installed it (the version dir's `distribution` file
+    # says curl-bash): `devin update` asks for confirmation on a terminal and
+    # exits 130 without one, even with "y" on stdin. The installer verifies
+    # the bundle's sha256 and needs no terminal. Every updater here ignores
+    # stdin.
     tool_updates:
       - argv: [npm, update, --global]
         stdin: ""
@@ -78,8 +80,8 @@
         stdin: ""
       - argv: [cursor-agent, update]
         stdin: ""
-      - argv: [devin, update]
-        stdin: "y\n"
+      - argv: [bash, -o, pipefail, -c, "curl -fsSL https://cli.devin.ai/install.sh | bash"]
+        stdin: ""
       - argv: [uv, self, update]
         stdin: ""
       - argv: [uv, tool, upgrade, --all]
@@ -321,6 +323,10 @@
 
         # No --yes: a plugin whose update needs a new marketplace command
         # fails here (and in the final assert) instead of being accepted blind.
+        # Only marketplace installs (they carry installedAt) can update.
+        # Plugins loaded with --plugin-dir (scope "session") or from
+        # ~/.claude/skills/ have no marketplace, and `claude plugin update`
+        # refuses them by design.
         - name: Update every installed Claude Code plugin
           become: true
           become_user: nish
@@ -328,7 +334,7 @@
           ansible.builtin.shell:
             cmd: >-
               set -o pipefail;
-              claude plugin list --json | jq -r '.[].id' |
+              claude plugin list --json | jq -r '.[] | select(.installedAt != null) | .id' |
               xargs -r -n1 claude plugin update
             executable: /bin/bash
           timeout: 600
