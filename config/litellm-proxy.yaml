@@ -773,10 +773,15 @@ model_list:
 # direct `pi --provider ollama-cloud` (a 429 cools 900 s). DS4.1 Flash only.
 # max_budget 1.0 per row: budgets are per deployment, so 10 x 1.0 keeps the
 # key at $10/day (the #9209 cap). Peak token rates from ollama.com/pricing.
+# Native ollama_chat/, not openai/ on /v1 (fleet-ops#9253): Ollama's /v1 reply ids
+# are chatcmpl-<0..999>, all 1,000 were in LiteLLM_SpendLogs by 2026-09-19, and
+# SpendLogs keys on the reply id, so every Ollama success was dropped as a
+# duplicate (0 rows in 7 days while Prometheus counted them). ollama_chat/ gets
+# a uuid id from LiteLLM; tool calls and streaming checked 2026-10-05.
 - model_name: worker-capable
   litellm_params:
-    model: openai/deepseek-v4.1-flash
-    api_base: https://ollama.com/v1
+    model: ollama_chat/deepseek-v4.1-flash
+    api_base: https://ollama.com
     api_key: os.environ/OLLAMA_API_KEY
     tags:
     - prepaid
@@ -796,8 +801,8 @@ model_list:
       BadRequestErrorAllowedFails: 1
 - model_name: worker-capable
   litellm_params:
-    model: openai/deepseek-v4.1-flash
-    api_base: https://ollama.com/v1
+    model: ollama_chat/deepseek-v4.1-flash
+    api_base: https://ollama.com
     api_key: os.environ/OLLAMA_API_KEY
     tags:
     - prepaid
@@ -817,8 +822,8 @@ model_list:
       BadRequestErrorAllowedFails: 1
 - model_name: worker-capable
   litellm_params:
-    model: openai/deepseek-v4.1-flash
-    api_base: https://ollama.com/v1
+    model: ollama_chat/deepseek-v4.1-flash
+    api_base: https://ollama.com
     api_key: os.environ/OLLAMA_API_KEY
     tags:
     - prepaid
@@ -838,8 +843,8 @@ model_list:
       BadRequestErrorAllowedFails: 1
 - model_name: worker-capable
   litellm_params:
-    model: openai/deepseek-v4.1-flash
-    api_base: https://ollama.com/v1
+    model: ollama_chat/deepseek-v4.1-flash
+    api_base: https://ollama.com
     api_key: os.environ/OLLAMA_API_KEY
     tags:
     - prepaid
@@ -859,8 +864,8 @@ model_list:
       BadRequestErrorAllowedFails: 1
 - model_name: worker-capable
   litellm_params:
-    model: openai/deepseek-v4.1-flash
-    api_base: https://ollama.com/v1
+    model: ollama_chat/deepseek-v4.1-flash
+    api_base: https://ollama.com
     api_key: os.environ/OLLAMA_API_KEY
     tags:
     - prepaid
@@ -880,8 +885,8 @@ model_list:
       BadRequestErrorAllowedFails: 1
 - model_name: worker-capable
   litellm_params:
-    model: openai/deepseek-v4.1-flash
-    api_base: https://ollama.com/v1
+    model: ollama_chat/deepseek-v4.1-flash
+    api_base: https://ollama.com
     api_key: os.environ/OLLAMA_API_KEY
     tags:
     - prepaid
@@ -901,8 +906,8 @@ model_list:
       BadRequestErrorAllowedFails: 1
 - model_name: worker-capable
   litellm_params:
-    model: openai/deepseek-v4.1-flash
-    api_base: https://ollama.com/v1
+    model: ollama_chat/deepseek-v4.1-flash
+    api_base: https://ollama.com
     api_key: os.environ/OLLAMA_API_KEY
     tags:
     - prepaid
@@ -922,8 +927,8 @@ model_list:
       BadRequestErrorAllowedFails: 1
 - model_name: worker-capable
   litellm_params:
-    model: openai/deepseek-v4.1-flash
-    api_base: https://ollama.com/v1
+    model: ollama_chat/deepseek-v4.1-flash
+    api_base: https://ollama.com
     api_key: os.environ/OLLAMA_API_KEY
     tags:
     - prepaid
@@ -943,8 +948,8 @@ model_list:
       BadRequestErrorAllowedFails: 1
 - model_name: worker-capable
   litellm_params:
-    model: openai/deepseek-v4.1-flash
-    api_base: https://ollama.com/v1
+    model: ollama_chat/deepseek-v4.1-flash
+    api_base: https://ollama.com
     api_key: os.environ/OLLAMA_API_KEY
     tags:
     - prepaid
@@ -964,8 +969,8 @@ model_list:
       BadRequestErrorAllowedFails: 1
 - model_name: worker-capable
   litellm_params:
-    model: openai/deepseek-v4.1-flash
-    api_base: https://ollama.com/v1
+    model: ollama_chat/deepseek-v4.1-flash
+    api_base: https://ollama.com
     api_key: os.environ/OLLAMA_API_KEY
     tags:
     - prepaid
