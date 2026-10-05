@@ -486,6 +486,16 @@ jobs:
           strong_free=false; regular_free=false
           [ "$(live cursor-agent)" -lt 1 ] && strong_free=true
           if [ "$(live devin)" -lt 4 ] || [ "$(live opencode)" -lt 2 ] || [ "$(live pi)" -lt "$slots" ]; then regular_free=true; fi
+          # An issue whose labeled run still waits for a runner must not be
+          # poked again: the new run displaces the waiting one in the
+          # agent-<repo>-<ref> group, and GitHub cancels it (fleet-ops#9269:
+          # 0509#7005 re-labeled six times in 28 min, 258 cancelled drive runs
+          # in 3 days). An issues-event run's title is the issue title. The
+          # runner user's own gh login reads runs, because the App token has
+          # no actions: read.
+          waiting=$(for s in queued pending waiting requested in_progress; do
+            env -u GH_TOKEN gh api "repos/$REPO/actions/workflows/agent-dispatch.yml/runs?event=issues&status=$s&per_page=100" --jq '.workflow_runs[].display_title'
+          done) || { echo "::warning::could not list waiting dispatch runs"; waiting=; }
           for n in $(gh issue list -R "$REPO" -l agent-ready -L 200 --json number,labels,createdAt \
               --jq 'sort_by((if any(.labels[]; .name == "priority-now") then 0 else 1 end), .createdAt) | .[].number'); do
             [ "$n" = "$i" ] && continue
@@ -496,6 +506,7 @@ jobs:
             if jq -e 'any(.labels[]; .name == "strong-only")' <<<"$issue" >/dev/null; then $strong_free || continue
             else $regular_free || continue
             fi
+            if grep -qxF -- "$(jq -r .title <<<"$issue")" <<<"$waiting"; then echo "skip #$n: its dispatch run already waits"; continue; fi
             gh issue edit "$n" -R "$REPO" --remove-label agent-ready
             gh issue edit "$n" -R "$REPO" --add-label agent-ready
             echo "next: #$n"
