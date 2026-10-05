@@ -271,3 +271,76 @@ jobs:
             [ "$got" = "$(jq -r .want <<<"$c")" ] || { echo "approval case $(jq -r .id <<<"$c"): got $got"; bad=1; }
           done < <(jq -c '.approval_cases[]' config/risky-paths.json)
           test "$bad" -eq 0
+      - name: hold-risky fails closed (fake gh)
+        # Runs hold-risky's own run block, read out of agent-dispatch.yml,
+        # against a fake gh and curl. Each read fails in turn, and every run
+        # must still label, disarm and dequeue a risky PR; a failed approval
+        # read must not approve even when the other read would. Controls: an
+        # approved risky PR and an unread-free safe PR are not held.
+        if: always()
+        run: |
+          set -euo pipefail
+          t=$RUNNER_TEMP/hold-mock
+          mkdir -p "$t/bin"
+          yq '.jobs.hold-risky.steps[0].run' .github/workflows/agent-dispatch.yml > "$t/hold.sh"
+          for v in LABEL CONTEXT APPROVERS RISKY_PATHS_URL CLASSIFY APPROVAL; do
+            val=$(yq ".jobs.hold-risky.env.$v" .github/workflows/agent-dispatch.yml)
+            [ -n "$val" ] && [ "$val" != null ] || { echo "hold-risky env $v missing"; exit 1; }
+            export "$v=$val"
+          done
+          cat > "$t/bin/gh" <<'MOCK'
+          #!/usr/bin/env bash
+          args="$*"
+          if [ -n "${FAIL:-}" ] && grep -qE -- "$FAIL" <<<"gh $args"; then echo "mock gh fails: $args" >&2; exit 1; fi
+          case $args in
+            *"query=query("*)
+              q=true; a='{"enabledAt":"x"}'
+              [ ! -f "$STATE/dequeued" ] || q=false
+              [ ! -f "$STATE/disarmed" ] || a=null
+              echo "{\"id\":\"PR_n\",\"isInMergeQueue\":$q,\"autoMergeRequest\":$a}" ;;
+            *disablePullRequestAutoMerge*) touch "$STATE/disarmed" ;;
+            *dequeuePullRequest*) touch "$STATE/dequeued" ;;
+            *"/labels"*) touch "$STATE/labelled" ;;
+            *"/files?"*) if [ -n "${SAFE:-}" ]; then echo app/routes/home.tsx; else echo workers/app.ts; fi ;;
+            *"/statuses?"*) ;;
+            *"/comments?"*) [ -z "${APPROVE:-}" ] || echo "{\"user\":{\"login\":\"nish3451\"},\"body\":\"coordinator-approval: $SHA\",\"created_at\":\"t\",\"updated_at\":\"t\"}" ;;
+            *"/pulls/7") echo "{\"state\":\"open\",\"head\":{\"sha\":\"$SHA\"},\"labels\":[],\"changed_files\":1,\"node_id\":\"PR_n\"}" ;;
+            *) echo "mock gh: unexpected call: $args" >&2; exit 1 ;;
+          esac
+          MOCK
+          cat > "$t/bin/curl" <<'MOCK'
+          #!/usr/bin/env bash
+          if [ -n "${FAIL:-}" ] && grep -qE -- "$FAIL" <<<"curl $*"; then exit 22; fi
+          cat config/risky-paths.json
+          MOCK
+          chmod +x "$t/bin/gh" "$t/bin/curl"
+          export SHA=3f9c2a1b7d4e5f60718293a4b5c6d7e8f9012345 GITHUB_REPOSITORY=Nishfleet/0509 PR=7
+          bad=0
+          # case: name|FAIL regex|APPROVE|SAFE|want held (yes/no)|want exit (0/1)
+          while IFS='|' read -r name fail approve safe held code; do
+            export STATE=$t/$name RUNNER_TEMP=$t/$name/tmp GITHUB_STEP_SUMMARY=$t/$name/summary FAIL=$fail APPROVE=$approve SAFE=$safe
+            mkdir -p "$RUNNER_TEMP"
+            rc=0
+            PATH="$t/bin:$PATH" bash "$t/hold.sh" > "$t/$name/out" 2>&1 || rc=$?
+            got=no
+            # Held = disarmed, dequeued and labelled (the label write itself
+            # fails in label-write-fails, which must still disarm and dequeue).
+            [ -f "$STATE/disarmed" ] && [ -f "$STATE/dequeued" ] && { [ -f "$STATE/labelled" ] || [ "$name" = label-write-fails ]; } && got=yes
+            if [ "$held" = no ] && { [ -f "$STATE/labelled" ] || [ -f "$STATE/disarmed" ] || [ -f "$STATE/dequeued" ]; }; then got=partial; fi
+            if [ "$got" != "$held" ] || [ "$rc" != "$code" ]; then
+              echo "case $name: held=$got (want $held) exit=$rc (want $code)"; cat "$t/$name/out"; bad=1
+            fi
+          done <<'CASES'
+          risky-unapproved||||yes|0
+          pr-read-fails|pulls/7$|||yes|0
+          pr-read-fails-safe-files|pulls/7$||1|yes|0
+          files-read-fails|/files\?|||yes|0
+          path-list-fails|^curl|||yes|0
+          statuses-read-fails|/statuses\?|1||yes|0
+          comments-read-fails|/comments\?|||yes|0
+          merge-state-read-fails|query=query\(|||yes|1
+          label-write-fails|/labels|||yes|1
+          approved-control||1||no|0
+          safe-control|||1|no|0
+          CASES
+          test "$bad" -eq 0

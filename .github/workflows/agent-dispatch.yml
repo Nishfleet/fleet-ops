@@ -320,58 +320,109 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           PR: ${{ github.event.pull_request.number }}
+        # Fails closed: a read that fails (the PR, its files, the path list,
+        # its statuses or comments, the merge state) never skips the hold. It
+        # counts as risky or not approved, gets a ::warning:: naming the read,
+        # and the label, disarm and dequeue still run. The job only goes red
+        # when it cannot confirm the PR is disarmed and out of the queue.
+        # ci.yml runs this block against a fake gh with each read failing.
         run: |
           set -euo pipefail
           # The live PR, not the event payload: a push after the event moves the head.
-          pr=$(gh api "repos/$GITHUB_REPOSITORY/pulls/$PR")
-          [ "$(jq -r .state <<<"$pr")" = open ] || { echo "hold-risky: #$PR is not open; skip"; exit 0; }
-          sha=$(jq -r .head.sha <<<"$pr")
+          if pr=$(gh api "repos/$GITHUB_REPOSITORY/pulls/$PR"); then
+            [ "$(jq -r .state <<<"$pr")" = open ] || { echo "hold-risky: #$PR is not open; skip"; exit 0; }
+            sha=$(jq -r .head.sha <<<"$pr")
+          else
+            echo "::warning::hold-risky: PR read failed for #$PR; holding as risky and not approved"
+            pr=null
+            sha=unknown
+          fi
           # Old and new name of a rename both count. Files go through a file,
           # not argv: 3000 paths can pass the 128 KiB single-argument limit.
-          gh api --paginate "repos/$GITHUB_REPOSITORY/pulls/$PR/files?per_page=100" --jq '.[] | .filename, (.previous_filename // empty)' |
-            jq -Rsc 'split("\n") | map(select(length > 0))' > "$RUNNER_TEMP/files.json"
+          # A failed read leaves the list empty, which CLASSIFY holds.
+          if ! gh api --paginate "repos/$GITHUB_REPOSITORY/pulls/$PR/files?per_page=100" --jq '.[] | .filename, (.previous_filename // empty)' > "$RUNNER_TEMP/files.txt"; then
+            echo "::warning::hold-risky: changed-files read failed for #$PR; holding as risky"
+            : > "$RUNNER_TEMP/files.txt"
+          fi
+          jq -Rsc 'split("\n") | map(select(length > 0))' < "$RUNNER_TEMP/files.txt" > "$RUNNER_TEMP/files.json"
           jq -c --arg repo "$GITHUB_REPOSITORY" --slurpfile files "$RUNNER_TEMP/files.json" \
-            '{repo: $repo, labels: [.labels[].name], files: $files[0], changed_files: .changed_files}' <<<"$pr" > "$RUNNER_TEMP/facts.json"
+            '{repo: $repo, labels: [(.labels // [])[].name], files: $files[0], changed_files: (.changed_files // 0)}' <<<"$pr" > "$RUNNER_TEMP/facts.json"
           if ! cfg=$(curl -fsSL --retry 3 "$RISKY_PATHS_URL" | jq -c .); then
             echo "::warning::could not read $RISKY_PATHS_URL; holding as risky"
             cfg=null
           fi
-          verdict=$(jq -c --argjson cfg "$cfg" --arg label "$LABEL" "$CLASSIFY" < "$RUNNER_TEMP/facts.json")
+          verdict=$(jq -c --argjson cfg "$cfg" --arg label "$LABEL" "$CLASSIFY" < "$RUNNER_TEMP/facts.json") ||
+            { echo "::warning::hold-risky: classifier failed for #$PR; holding as risky"; verdict='{"risky":true,"why":["classifier failed"]}'; }
+          # An unread PR has no labels or file count to classify, so it holds.
+          [ "$pr" != null ] || verdict=$(jq -c '.risky = true | .why += ["PR read failed"]' <<<"$verdict")
           echo "hold-risky: #$PR at $sha: $verdict"
           jq -e .risky <<<"$verdict" >/dev/null || exit 0
-          gh api --paginate "repos/$GITHUB_REPOSITORY/commits/$sha/statuses?per_page=100" --jq '.[]' |
-            jq -sc . > "$RUNNER_TEMP/statuses.json"
-          gh api --paginate "repos/$GITHUB_REPOSITORY/issues/$PR/comments?per_page=100" \
-            --jq '.[] | {user: {login: .user.login}, body, created_at, updated_at}' |
-            jq -sc . > "$RUNNER_TEMP/comments.json"
-          approved=$(jq -nc --arg sha "$sha" --slurpfile s "$RUNNER_TEMP/statuses.json" --slurpfile m "$RUNNER_TEMP/comments.json" \
-            '{sha: $sha, statuses: $s[0], comments: $m[0]}' |
-            jq -r --arg c "$CONTEXT" --arg who "$APPROVERS" "$APPROVAL")
+          # Either approval read failing means not approved, even if the other
+          # read alone would approve.
+          approved=false
+          if [ "$sha" = unknown ]; then
+            echo "::warning::hold-risky: no head sha for #$PR; not approved"
+          elif ! gh api --paginate "repos/$GITHUB_REPOSITORY/commits/$sha/statuses?per_page=100" --jq '.[]' > "$RUNNER_TEMP/statuses.txt"; then
+            echo "::warning::hold-risky: statuses read failed for $sha; not approved"
+          elif ! gh api --paginate "repos/$GITHUB_REPOSITORY/issues/$PR/comments?per_page=100" \
+            --jq '.[] | {user: {login: .user.login}, body, created_at, updated_at}' > "$RUNNER_TEMP/comments.txt"; then
+            echo "::warning::hold-risky: comments read failed for #$PR; not approved"
+          else
+            approved=$(jq -n --arg sha "$sha" --slurpfile s "$RUNNER_TEMP/statuses.txt" --slurpfile m "$RUNNER_TEMP/comments.txt" \
+              '{sha: $sha, statuses: $s, comments: $m}' |
+              jq -r --arg c "$CONTEXT" --arg who "$APPROVERS" "$APPROVAL") || approved=false
+          fi
           if [ "$approved" = true ]; then
             echo "hold-risky: #$PR is risky and $sha carries an approver's $CONTEXT; no hold"
             exit 0
           fi
           # Label first, so a dequeued event raised by the steps below already
-          # sees it.
-          gh api -X POST "repos/$GITHUB_REPOSITORY/issues/$PR/labels" -f "labels[]=$LABEL" --silent
+          # sees it. A failed label does not stop the disarm and dequeue.
+          ok=true
+          gh api -X POST "repos/$GITHUB_REPOSITORY/issues/$PR/labels" -f "labels[]=$LABEL" --silent ||
+            { echo "::error::hold-risky: could not label #$PR $LABEL"; ok=false; }
           # shellcheck disable=SC2016 # $o $n $p $id are GraphQL variables, not shell
           q='query($o:String!,$n:String!,$p:Int!){repository(owner:$o,name:$n){pullRequest(number:$p){id isInMergeQueue autoMergeRequest{enabledAt}}}}'
           read_pr() { gh api graphql -f query="$q" -f o="${GITHUB_REPOSITORY%/*}" -f n="${GITHUB_REPOSITORY#*/}" -F p="$PR" --jq .data.repository.pullRequest; }
-          live=$(read_pr)
-          id=$(jq -r .id <<<"$live")
-          if [ "$(jq -r '.autoMergeRequest != null' <<<"$live")" = true ]; then
-            # shellcheck disable=SC2016
-            gh api graphql -f query='mutation($id:ID!){disablePullRequestAutoMerge(input:{pullRequestId:$id}){clientMutationId}}' -f id="$id" --silent
-            echo "hold-risky: disabled auto-merge on #$PR"
+          # A failed merge-state read does not skip the hold: both mutations
+          # run blind (with the REST node_id), and the re-read below confirms.
+          if live=$(read_pr); then
+            id=$(jq -r .id <<<"$live")
+            armed=$(jq -r '.autoMergeRequest != null' <<<"$live")
+            queued=$(jq -r .isInMergeQueue <<<"$live")
+          else
+            echo "::warning::hold-risky: merge-state read failed for #$PR; disarming and dequeuing blind"
+            id=$(jq -r '.node_id // empty' <<<"$pr")
+            armed=unknown
+            queued=unknown
           fi
-          if [ "$(jq -r .isInMergeQueue <<<"$live")" = true ]; then
-            # A PR that left the queue between the read and the call ("not
-            # queued") is fine; one still queued after a failed call is not.
+          [ -n "$id" ] || { echo "::error::hold-risky: no node id for #$PR; cannot disarm or dequeue"; exit 1; }
+          if [ "$armed" != false ]; then
             # shellcheck disable=SC2016
-            if ! gh api graphql -f query='mutation($id:ID!){dequeuePullRequest(input:{id:$id}){clientMutationId}}' -f id="$id" --silent; then
-              [ "$(read_pr | jq -r .isInMergeQueue)" != true ] || { echo "::error::#$PR is still in the merge queue"; exit 1; }
+            if gh api graphql -f query='mutation($id:ID!){disablePullRequestAutoMerge(input:{pullRequestId:$id}){clientMutationId}}' -f id="$id" --silent; then
+              echo "hold-risky: disabled auto-merge on #$PR"
+            else
+              echo "::warning::hold-risky: disable auto-merge call failed on #$PR; checked below"
             fi
-            echo "hold-risky: dequeued #$PR"
+          fi
+          if [ "$queued" != false ]; then
+            # A PR that left the queue between the read and the call ("not
+            # queued") is fine; the re-read below catches one still queued.
+            # shellcheck disable=SC2016
+            if gh api graphql -f query='mutation($id:ID!){dequeuePullRequest(input:{id:$id}){clientMutationId}}' -f id="$id" --silent; then
+              echo "hold-risky: dequeued #$PR"
+            else
+              echo "::warning::hold-risky: dequeue call failed on #$PR; checked below"
+            fi
+          fi
+          if [ "$armed$queued" != falsefalse ]; then
+            if after=$(read_pr); then
+              [ "$(jq -r '.autoMergeRequest != null' <<<"$after")" != true ] || { echo "::error::#$PR is still armed"; ok=false; }
+              [ "$(jq -r .isInMergeQueue <<<"$after")" != true ] || { echo "::error::#$PR is still in the merge queue"; ok=false; }
+            else
+              echo "::error::hold-risky: cannot confirm #$PR is disarmed and out of the queue"
+              ok=false
+            fi
           fi
           {
             echo "### hold-risky: #$PR held at \`$sha\`"
@@ -379,6 +430,7 @@ jobs:
             echo
             echo "Approve this exact head with an approver's PR comment line \`$CONTEXT: $sha\` (prompts/orchestrator-handoff.md step 4)."
           } >> "$GITHUB_STEP_SUMMARY"
+          [ "$ok" = true ]
   # A closed blocker frees the issues it was blocking; a manual run sweeps
   # every ready, unblocked issue (cutover backfill and missed-event recovery),
   # then open claim PRs that are unarmed, conflicting, missing a required-check
