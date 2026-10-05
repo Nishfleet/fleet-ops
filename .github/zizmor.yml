@@ -21,5 +21,8 @@ rules:
       # this repository (fleet-ops#8457, fleet-ops#8608). The exception is hold-risky, which
       # runs for every PR on auto_merge_enabled/synchronize/labeled/opened/
       # reopened but only calls the API: file names are read as data and no
-      # head code is checked out or run (0509#7092).
+      # head code is checked out or run (0509#7092). hold-risky never reads the
+      # FLEET_DISPATCH_PAUSED pause flag, so it runs while dispatch is paused
+      # (ci.yml asserts it). The paused job that logs a pause reads only the
+      # event name and action, through env, and has no permissions.
       - agent-dispatch.yml

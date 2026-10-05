@@ -244,6 +244,68 @@ jobs:
           jq -r '.needles["agent.yml"][]' config/orchestrate-events.json | while IFS= read -r n; do
             grep -F -- "$n" .github/workflows/agent.yml >/dev/null || { echo "missing gate needle: $n"; exit 1; }
           done
+      - name: Dispatch pause flag skips dispatch, never the guards
+        # A paused queue must still hold risky PRs: the weekly update once
+        # disabled agent-dispatch, and hold-risky could not run in that window
+        # (2026-10-05). Every job is classed here, so a new job forces the
+        # choice. A dispatch job carries the flag as a top-level conjunct of its
+        # if:, so no || branch can start a worker while paused; a guard job
+        # never reads the flag. update.yml must pause through the variable,
+        # clear it in always:, and never disable the workflow.
+        if: always()
+        run: |
+          set -euo pipefail
+          f=.github/workflows/agent-dispatch.yml
+          gated="new rework conflicts remerge ejected list unblocked miss-review miss-review-pr miss-stalled orchestrate"
+          guards="hold-risky close-claim rework-note"
+          bad=0
+          for j in $(yq '.jobs | keys | .[]' "$f"); do
+            cond=$(yq ".jobs.\"$j\".if // \"\"" "$f" | tr -s ' \n' '  ' | sed 's/ $//')
+            case " $gated " in
+              *" $j "*)
+                [[ $cond =~ ^(!cancelled\(\)\ \&\&\ )?vars\.FLEET_DISPATCH_PAUSED\ !=\ \'true\'\ \&\&\  ]] ||
+                  { echo "dispatch job $j does not skip on FLEET_DISPATCH_PAUSED: $cond"; bad=1; }
+                continue ;;
+            esac
+            case " $guards " in
+              *" $j "*)
+                ! yq ".jobs.\"$j\"" "$f" | grep -q FLEET_DISPATCH_PAUSED ||
+                  { echo "guard job $j reads FLEET_DISPATCH_PAUSED; it must run while paused"; bad=1; }
+                ! yq ".jobs.\"$j\" | has(\"uses\")" "$f" | grep -qx true ||
+                  { echo "guard job $j starts a worker"; bad=1; }
+                continue ;;
+            esac
+            if [ "$j" = paused ]; then
+              [[ $cond == "vars.FLEET_DISPATCH_PAUSED == 'true' && "* ]] || { echo "paused job runs unpaused: $cond"; bad=1; }
+              [ "$(yq '.jobs.paused.permissions | length' "$f")" = 0 ] || { echo "paused job has permissions"; bad=1; }
+              continue
+            fi
+            echo "job $j is not classed as dispatch or guard in this check"; bad=1
+          done
+          u=ansible/update.yml
+          ! grep -nE 'gh, *workflow, *(disable|enable)' "$u" || { echo "$u disables or enables a workflow"; bad=1; }
+          [ "$(yq '.[0].vars.pause_variable' "$u")" = FLEET_DISPATCH_PAUSED ] || { echo "$u pause_variable is not FLEET_DISPATCH_PAUSED"; bad=1; }
+          set_true=$(yq '[.. | select(tag == "!!map" and has("ansible.builtin.command")) | .["ansible.builtin.command"].argv | select(.[1] == "variable" and .[2] == "set" and .[5] == "true")] | length' "$u")
+          clear=$(yq '[.[0].tasks[] | select(has("always")) | .always[] | .. | select(tag == "!!map" and has("ansible.builtin.command")) | .["ansible.builtin.command"].argv | select(.[1] == "variable" and .[2] == "set" and .[5] == "false")] | length' "$u")
+          [ "$set_true" = 1 ] && [ "$clear" = 1 ] || { echo "$u: want one set to true and one clear in always:, got $set_true and $clear"; bad=1; }
+          # A run killed before always: (TimeoutStartSec, SIGKILL) must not
+          # leave dispatch paused for good. In file order: clear the flags the
+          # marker lists and drop it, before the pause; write the marker before
+          # the set; in always:, clear, then drop the marker only when every
+          # clear worked. A hand-set flag has no marker line, so no run clears it.
+          [ "$(yq '.[0].vars.pause_marker' "$u")" = /var/lib/fleet-ops/dispatch-paused-by-update ] || { echo "$u pause_marker moved"; bad=1; }
+          order=$(yq -o=json "$u" | jq -r '[.. | objects |
+            ((.["ansible.builtin.command"].argv? // null) | if type == "array" then . else [] end) as $a |
+            if (.["ansible.builtin.copy"].dest? // "") == "{{ pause_marker }}" then "write"
+            elif $a[2] == "set" and $a[3] == "{{ pause_variable }}" then "set-\($a[5])"
+            elif (.["ansible.builtin.file"].path? // "") == "{{ pause_marker }}" and .["ansible.builtin.file"].state == "absent" then "drop"
+            else empty end] | join(" ")')
+          [ "$order" = "set-false drop write set-true set-false drop" ] || { echo "$u pause marker order: $order"; bad=1; }
+          [ "$(yq '.[0].tasks[] | select(.block[0]["ansible.builtin.slurp"].src == "{{ pause_marker }}") | .when' "$u")" = stale_pause.stat.exists ] ||
+            { echo "$u: the stale-marker clear is not a top-level task gated on the marker"; bad=1; }
+          yq '.[0].tasks[] | select(has("always")) | .always[] | .. | select(tag == "!!map" and has("ansible.builtin.file")) | select(.["ansible.builtin.file"].path == "{{ pause_marker }}") | .when' "$u" | grep -q dispatch_resumed ||
+            { echo "$u: always: drops the marker without checking the clears"; bad=1; }
+          test "$bad" -eq 0
       - name: Risky-path hold classifier (hold-risky)
         # Runs agent-dispatch.yml's own CLASSIFY and APPROVAL programs, read out
         # of the workflow, against every case in config/risky-paths.json, so the list

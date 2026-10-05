@@ -16,6 +16,16 @@
 # To delete it: revert the orchestrate job in this file, the workflow-path
 # detector in agent.yml's Gate, and prompts/orchestrator-handoff.md. A run
 # already in flight finishes: the label gate only stops new ones.
+# Repo variable FLEET_DISPATCH_PAUSED (the caller repo's, like the others):
+#   true                   = every job that starts a worker or picks work to
+#                            start skips, and the paused job logs one summary
+#                            line per skipped event
+#   anything else or unset = not paused
+# ansible/update.yml sets it to true for the weekly update and back to false in
+# its always: block, then sweeps. It replaces `gh workflow disable`: a disabled
+# workflow drops every trigger, so hold-risky could not hold a PR armed in that
+# window (2026-10-05, 08:11-10:47Z). hold-risky and close-claim never read it;
+# ci.yml fails if a guard job gains the condition or a dispatch job loses it.
 # The orchestrate job is the one self-hosted job here: org runner group
 # `agent` (id 3) must list this file @refs/heads/main in selected_workflows,
 # or the job queues forever next to idle runners. Delete that entry with it.
@@ -93,9 +103,33 @@ concurrency:
   group: agent-dispatch-${{ (github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.issue == '')) && 'sweep' || github.run_id }}
   cancel-in-progress: false
 jobs:
+  # FLEET_DISPATCH_PAUSED is true: say so, once per event that a dispatch job
+  # would have acted on, so a skipped run is not silent. It starts nothing and
+  # writes nothing. The plain PR events (hold-risky's) and ordinary comments
+  # and labels are left out, so a pause does not fill the runners with notices.
+  # Work skipped here is not lost: the sweep update.yml runs after clearing the
+  # flag lists every agent-ready issue and stalled claim PR again.
+  paused:
+    if: >-
+      vars.FLEET_DISPATCH_PAUSED == 'true' &&
+      (github.event_name != 'pull_request_target' || github.event.action == 'dequeued' || github.event.action == 'closed') &&
+      (github.event_name != 'issue_comment' || startsWith(github.event.comment.body, 'park:') || startsWith(github.event.comment.body, 'opus-vet:')) &&
+      (github.event_name != 'issues' || github.event.action != 'labeled' ||
+       contains(fromJSON('["agent-ready","agent-failed","needs-orchestrator"]'), github.event.label.name))
+    runs-on: ${{ fromJSON(inputs.runner || '"ubuntu-latest"') }}
+    timeout-minutes: 5
+    permissions: {}
+    steps:
+      - env:
+          EVENT: ${{ github.event_name }}
+          ACTION: ${{ github.event.action }}
+        run: |
+          msg="agent-dispatch paused: FLEET_DISPATCH_PAUSED=true on $GITHUB_REPOSITORY, so no dispatch job ran for this $EVENT${ACTION:+ ($ACTION)} event. hold-risky and close-claim still run; the sweep after the flag clears picks up waiting work."
+          echo "::notice::$msg"
+          echo "$msg" >> "$GITHUB_STEP_SUMMARY"
   new:
     if: >-
-      github.event_name == 'issues' && github.event.label.name == 'agent-ready' &&
+      vars.FLEET_DISPATCH_PAUSED != 'true' && github.event_name == 'issues' && github.event.label.name == 'agent-ready' &&
       ((inputs.agent_mode || vars.AGENT_MODE) == 'live' || contains(github.event.issue.labels.*.name, 'shadow-actions'))
     uses: Nishfleet/fleet-ops/.github/workflows/agent.yml@main # runner group 3 allows only agent.yml@refs/heads/main; a SHA pin strands every job
     # issues: write is what agent.yml's report job asks for; its other jobs
@@ -146,7 +180,7 @@ jobs:
   rework:
     needs: rework-note
     if: >-
-      !cancelled() &&
+      !cancelled() && vars.FLEET_DISPATCH_PAUSED != 'true' &&
       (inputs.agent_mode || vars.AGENT_MODE) == 'live' && github.event_name == 'workflow_run' &&
       (github.event.workflow_run.conclusion == 'failure' || github.event.workflow_run.conclusion == 'timed_out') &&
       github.event.workflow_run.event == 'pull_request' &&
@@ -165,6 +199,7 @@ jobs:
   # flight will see the conflict itself.
   conflicts:
     if: >-
+      vars.FLEET_DISPATCH_PAUSED != 'true' &&
       (inputs.agent_mode || vars.AGENT_MODE) == 'live' && github.event_name == 'workflow_run' &&
       github.event.workflow_run.event == 'push' &&
       github.event.workflow_run.head_branch == github.event.repository.default_branch
@@ -210,7 +245,7 @@ jobs:
           echo "refs=$refs" >> "$GITHUB_OUTPUT"
   remerge:
     needs: conflicts
-    if: needs.conflicts.outputs.refs != '' && needs.conflicts.outputs.refs != '[]'
+    if: vars.FLEET_DISPATCH_PAUSED != 'true' && needs.conflicts.outputs.refs != '' && needs.conflicts.outputs.refs != '[]'
     strategy:
       fail-fast: false
       max-parallel: ${{ fromJSON(vars.AGENT_MAX_PARALLEL || '4') }}
@@ -228,6 +263,7 @@ jobs:
   # unarmed case, which re-arms it.
   ejected:
     if: >-
+      vars.FLEET_DISPATCH_PAUSED != 'true' &&
       (inputs.agent_mode || vars.AGENT_MODE) == 'live' && github.event_name == 'pull_request_target' &&
       github.event.action == 'dequeued' &&
       github.event.pull_request.state == 'open' &&
@@ -439,6 +475,7 @@ jobs:
   # and its 3-run cap bounds any loop.
   list:
     if: >-
+      vars.FLEET_DISPATCH_PAUSED != 'true' &&
       (inputs.agent_mode || vars.AGENT_MODE) == 'live' &&
       inputs.task != 'miss-review' &&
       ((github.event_name == 'issues' && github.event.action == 'closed') ||
@@ -583,7 +620,7 @@ jobs:
           echo "stalled_refs=$stalled_refs" >> "$GITHUB_OUTPUT"
   unblocked:
     needs: list
-    if: needs.list.outputs.refs != '[]'
+    if: vars.FLEET_DISPATCH_PAUSED != 'true' && needs.list.outputs.refs != '[]'
     strategy:
       fail-fast: false
       # Bound the sweep fan-out to live seat slots. The matrix starts one worker
@@ -652,7 +689,7 @@ jobs:
   # posts the cap comment), so an issue_comment cannot start a second review.
   miss-review:
     if: >-
-      vars.MISS_REVIEW == 'live' && (
+      vars.FLEET_DISPATCH_PAUSED != 'true' && vars.MISS_REVIEW == 'live' && (
         (github.event_name == 'issues' && github.event.action == 'labeled' && github.event.label.name == 'agent-failed') ||
         (github.event_name == 'issues' && github.event.action == 'reopened') ||
         (github.event_name == 'issue_comment' && github.event.action == 'created' &&
@@ -672,7 +709,7 @@ jobs:
       ref: claim/issue-${{ github.event.issue.number || inputs.issue }}-miss-review
   miss-review-pr:
     if: >-
-      vars.MISS_REVIEW == 'live' && github.event_name == 'pull_request_target' &&
+      vars.FLEET_DISPATCH_PAUSED != 'true' && vars.MISS_REVIEW == 'live' && github.event_name == 'pull_request_target' &&
       github.event.action == 'closed' &&
       github.event.pull_request.head.repo.full_name == github.repository &&
       ((github.event.pull_request.merged == false && startsWith(github.event.pull_request.head.ref, 'claim/issue-')) ||
@@ -687,7 +724,7 @@ jobs:
       ref: ${{ startsWith(github.event.pull_request.head.ref, 'claim/issue-') && format('{0}-miss-review', github.event.pull_request.head.ref) || format('claim/issue-{0}-miss-review', github.event.pull_request.number) }}
   miss-stalled:
     needs: list
-    if: vars.MISS_REVIEW == 'live' && needs.list.outputs.stalled_refs != '' && needs.list.outputs.stalled_refs != '[]'
+    if: vars.FLEET_DISPATCH_PAUSED != 'true' && vars.MISS_REVIEW == 'live' && needs.list.outputs.stalled_refs != '' && needs.list.outputs.stalled_refs != '[]'
     strategy:
       fail-fast: false
       max-parallel: ${{ fromJSON(vars.AGENT_MAX_PARALLEL || '4') }}
@@ -719,6 +756,7 @@ jobs:
     # and agent.yml's attempt-cap park label). workflow_dispatch needs no sender
     # test: it is already write-access only.
     if: >-
+      vars.FLEET_DISPATCH_PAUSED != 'true' &&
       vars.ORCHESTRATE != 'off' && (
         (github.event_name == 'issues' && github.event.action == 'labeled' && github.event.label.name == 'needs-orchestrator' &&
           (github.event.sender.login == 'nish3451' ||

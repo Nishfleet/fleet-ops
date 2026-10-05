@@ -336,15 +336,24 @@ of scope: they do not live in `session-*.scope`. `claim/issue-*` and
 `fleet-update.timer` starts `fleet-update.service` every Sunday at 03:30 IST.
 It runs `ansible/update.yml` as root through `ansible-pull`:
 
-1. Pause: turn off `agent-dispatch` in each queue repo, stop the work timers,
-   wait until no runner has a job (up to 150 min), stop the runner services.
+1. Pause: set the repo variable `FLEET_DISPATCH_PAUSED=true` in each queue
+   repo, stop the work timers, wait until no runner has a job (up to 150 min),
+   stop the runner services. `agent-dispatch` stays enabled: only its
+   worker-starting jobs skip, and `hold-risky` keeps holding risky PRs. (It was
+   `gh workflow disable` until 2026-10-05; a disabled workflow drops every
+   trigger, the guard included.)
 2. Prune: apt cache, Docker containers stopped for a day, dangling Docker and
    Podman images, old build cache, the npm and uv caches.
 3. Update: `apt dist-upgrade`, `autoremove`, `needrestart -r a`, then each
    user-level tool through its own updater (npm globals, pi, claude and its
    plugins, cursor-agent, devin, uv, bun, rclone).
-4. Resume, even when a step failed: start the runners, turn `agent-dispatch`
-   back on where this run turned it off, restart the timers, sweep each queue.
+4. Resume, even when a step failed: start the runners, set
+   `FLEET_DISPATCH_PAUSED=false` where this run set it, restart the timers,
+   sweep each queue. The repos it paused are listed in
+   `/var/lib/fleet-ops/dispatch-paused-by-update` from before the first set
+   until every flag is clear again, so a run killed before this step (timeout,
+   SIGKILL) is undone by the next run, which clears those flags first. A flag
+   set by hand is never in that file and stays set.
 5. Verify: the netcup runners online, each queue's sweep run accepted by
    GitHub, pi answering a real call with its extensions loaded and every
    extension in `~/.pi/agent/settings.json` pinned (full SHA for `git:`, exact
