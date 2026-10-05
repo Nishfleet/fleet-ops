@@ -2,10 +2,12 @@
 # through ansible-pull, the same way fleet-host-config.service runs host.yml.
 #
 # Order, and why:
-#   1. pause   Stop new agent jobs (disable agent-dispatch in each repo), stop
-#              the user timers that start work, wait until no runner has a job
-#              (agent jobs time out at 60 min), then stop the runner services
-#              so no CI job lands on a half-upgraded box.
+#   1. pause   Stop new agent jobs (set the FLEET_DISPATCH_PAUSED variable
+#              to true in each queue repo; agent-dispatch stays enabled, so
+#              its hold-risky guard keeps running), stop the user timers that
+#              start work, wait until no runner has a job (agent jobs time out
+#              at 60 min), then stop the runner services so no CI job lands
+#              on a half-upgraded box.
 #   2. prune   apt's download cache, Docker containers stopped for a day,
 #              dangling images and old build cache, the npm and uv caches.
 #              Before the update, so the downloads have room. Volumes, repos,
@@ -16,8 +18,8 @@
 #              own official updater and the redis container through
 #              `podman auto-update`.
 #   4. resume  In `always:`, so it runs even when a step above failed: start the
-#              runners, re-enable only the dispatch workflows this run turned
-#              off, restart the timers it stopped, sweep each queue.
+#              runners, clear the pause flag only where this run set it,
+#              restart the timers it stopped, sweep each queue.
 #   5. verify  Every netcup runner online at GitHub, every queue sweep run
 #              accepted by GitHub, pi answering a real call with its
 #              extensions loaded and every one of them pinned, no failed
@@ -46,6 +48,9 @@
   gather_facts: false
   vars:
     paused_flag: /home/nish/workspaces/agent-state/FLEET-PAUSED
+    # Repo variable agent-dispatch.yml reads: "true" skips every job that
+    # starts a worker; hold-risky and close-claim run regardless.
+    pause_variable: FLEET_DISPATCH_PAUSED
     # Every repo with an agent-dispatch workflow (the agent-ready queue).
     dispatch_repos:
       - Nishfleet/fleet-ops
@@ -111,17 +116,28 @@
           become_user: nish
           environment: "{{ nish_env }}"
           block:
-            - name: Read each repo's agent-dispatch state
+            # The pause is a repo variable, not `gh workflow disable`: a
+            # disabled workflow drops every trigger, hold-risky included, so no
+            # risky PR armed in the window could be held (2026-10-05,
+            # 08:11-10:47Z). With the flag set, agent-dispatch still runs and
+            # only its dispatch jobs skip. Per repo, not org: nish3451/drive is
+            # a user repo, which has no org variables, and nish's gh login
+            # needs only repo access for this. An unset variable (HTTP 404)
+            # reads as not paused; any other failed read stops the pause here.
+            - name: Read each repo's dispatch pause flag
               ansible.builtin.command:
-                argv: [gh, api, "repos/{{ item }}/actions/workflows/agent-dispatch.yml", --jq, .state]
+                argv: [gh, api, "repos/{{ item }}/actions/variables/{{ pause_variable }}", --jq, .value]
               loop: "{{ dispatch_repos }}"
-              register: dispatch_state
+              register: dispatch_flag
               changed_when: false
+              failed_when: dispatch_flag.rc != 0 and 'HTTP 404' not in dispatch_flag.stderr
 
-            - name: Turn agent-dispatch off where it is on (no new agent jobs)
+            # A flag already true was set by someone else on purpose, so this
+            # run neither sets nor clears it.
+            - name: Pause agent dispatch where it is not paused (no new agent jobs)
               ansible.builtin.command:
-                argv: [gh, workflow, disable, agent-dispatch.yml, --repo, "{{ item.item }}"]
-              loop: "{{ dispatch_state.results | selectattr('stdout', 'equalto', 'active') | list }}"
+                argv: [gh, variable, set, "{{ pause_variable }}", --body, "true", --repo, "{{ item.item }}"]
+              loop: "{{ dispatch_flag.results | rejectattr('stdout', 'equalto', 'true') | list }}"
               loop_control:
                 label: "{{ item.item }}"
               register: dispatch_paused
@@ -403,9 +419,11 @@
           become_user: nish
           environment: "{{ nish_env }}"
           block:
-            - name: Turn agent-dispatch back on where this run turned it off
+            # false, not a delete: setting is idempotent, and false and unset
+            # both read as not paused.
+            - name: Clear the dispatch pause flag where this run set it
               ansible.builtin.command:
-                argv: [gh, workflow, enable, agent-dispatch.yml, --repo, "{{ item }}"]
+                argv: [gh, variable, set, "{{ pause_variable }}", --body, "false", --repo, "{{ item }}"]
               loop: "{{ (dispatch_paused | default({'results': []})).results | map(attribute='item.item') | list }}"
               register: dispatch_resumed
               ignore_errors: true
