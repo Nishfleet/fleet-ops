@@ -43,7 +43,7 @@ If the deliverable touches `.github/workflows/**`, run every offline workflow ga
 
 ## Already done
 
-If the acceptance is already met on `origin/main` — a merged delivery PR, or `gh api repos/<owner>/<repo>/compare/main...<sha>` reporting `ahead_by=0` — do not rebuild it. Post the receipt (`orchestrator: already delivered by <PR or sha>`), remove `needs-orchestrator`, and exit 0 with no PR.
+If the acceptance is already met on `origin/main` — a merged delivery PR, or `gh api repos/<owner>/<repo>/compare/main...<sha>` reporting `ahead_by=0` — do not rebuild it. Post the receipt (`orchestrator: already delivered by <PR or sha>`), remove `needs-orchestrator`, remove the issue's other labels, and close the issue — a delivered issue is closed and unlabelled in the same run, never parked (fleet-ops#9268) — then exit 0 with no PR.
 
 ## Needs Nish
 
@@ -51,7 +51,7 @@ Stop and hand back only for a reserved class: money/pricing, privacy, security, 
 
 ## Forbidden
 
-- Never `gh issue close`; the merged PR closes it.
+- Never `gh issue close`; the merged PR closes it. The one exception is the already-done path above, which closes a delivered issue with its receipt.
 - Never push to `main`/`master` and never force-push.
 - Never deploy, and never rotate or move a secret.
 - Never merge by hand, and never disable a required check.
