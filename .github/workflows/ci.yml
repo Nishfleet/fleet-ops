@@ -288,6 +288,23 @@ jobs:
           set_true=$(yq '[.. | select(tag == "!!map" and has("ansible.builtin.command")) | .["ansible.builtin.command"].argv | select(.[1] == "variable" and .[2] == "set" and .[5] == "true")] | length' "$u")
           clear=$(yq '[.[0].tasks[] | select(has("always")) | .always[] | .. | select(tag == "!!map" and has("ansible.builtin.command")) | .["ansible.builtin.command"].argv | select(.[1] == "variable" and .[2] == "set" and .[5] == "false")] | length' "$u")
           [ "$set_true" = 1 ] && [ "$clear" = 1 ] || { echo "$u: want one set to true and one clear in always:, got $set_true and $clear"; bad=1; }
+          # A run killed before always: (TimeoutStartSec, SIGKILL) must not
+          # leave dispatch paused for good. In file order: clear the flags the
+          # marker lists and drop it, before the pause; write the marker before
+          # the set; in always:, clear, then drop the marker only when every
+          # clear worked. A hand-set flag has no marker line, so no run clears it.
+          [ "$(yq '.[0].vars.pause_marker' "$u")" = /var/lib/fleet-ops/dispatch-paused-by-update ] || { echo "$u pause_marker moved"; bad=1; }
+          order=$(yq -o=json "$u" | jq -r '[.. | objects |
+            ((.["ansible.builtin.command"].argv? // null) | if type == "array" then . else [] end) as $a |
+            if (.["ansible.builtin.copy"].dest? // "") == "{{ pause_marker }}" then "write"
+            elif $a[2] == "set" and $a[3] == "{{ pause_variable }}" then "set-\($a[5])"
+            elif (.["ansible.builtin.file"].path? // "") == "{{ pause_marker }}" and .["ansible.builtin.file"].state == "absent" then "drop"
+            else empty end] | join(" ")')
+          [ "$order" = "set-false drop write set-true set-false drop" ] || { echo "$u pause marker order: $order"; bad=1; }
+          [ "$(yq '.[0].tasks[] | select(.block[0]["ansible.builtin.slurp"].src == "{{ pause_marker }}") | .when' "$u")" = stale_pause.stat.exists ] ||
+            { echo "$u: the stale-marker clear is not a top-level task gated on the marker"; bad=1; }
+          yq '.[0].tasks[] | select(has("always")) | .always[] | .. | select(tag == "!!map" and has("ansible.builtin.file")) | select(.["ansible.builtin.file"].path == "{{ pause_marker }}") | .when' "$u" | grep -q dispatch_resumed ||
+            { echo "$u: always: drops the marker without checking the clears"; bad=1; }
           test "$bad" -eq 0
       - name: Risky-path hold classifier (hold-risky)
         # Runs agent-dispatch.yml's own CLASSIFY and APPROVAL programs, read out

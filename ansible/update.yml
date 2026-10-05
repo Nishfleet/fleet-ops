@@ -19,7 +19,9 @@
 #              `podman auto-update`.
 #   4. resume  In `always:`, so it runs even when a step above failed: start the
 #              runners, clear the pause flag only where this run set it,
-#              restart the timers it stopped, sweep each queue.
+#              restart the timers it stopped, sweep each queue. A run killed
+#              before this step leaves its pause marker, and the next run
+#              clears the flags it lists before step 1.
 #   5. verify  Every netcup runner online at GitHub, every queue sweep run
 #              accepted by GitHub, pi answering a real call with its
 #              extensions loaded and every one of them pinned, no failed
@@ -51,6 +53,13 @@
     # Repo variable agent-dispatch.yml reads: "true" skips every job that
     # starts a worker; hold-risky and close-claim run regardless.
     pause_variable: FLEET_DISPATCH_PAUSED
+    # The repos this run set the flag on, one per line, written before the
+    # first set and removed once every flag is clear again. A run killed
+    # before its always: block (TimeoutStartSec, SIGKILL) leaves the file, and
+    # the next run clears those flags first. A flag set by hand has no line
+    # here, so no run touches it. Root-owned in the unit's StateDirectory: a
+    # job running as nish cannot write a repo into it.
+    pause_marker: /var/lib/fleet-ops/dispatch-paused-by-update
     # Every repo with an agent-dispatch workflow (the agent-ready queue).
     dispatch_repos:
       - Nishfleet/fleet-ops
@@ -109,6 +118,35 @@
       ansible.builtin.meta: end_play
       when: fleet_paused.stat.exists
 
+    - name: Look for a dispatch pause an earlier run left behind
+      ansible.builtin.stat:
+        path: "{{ pause_marker }}"
+      register: stale_pause
+
+    # Before the pause below, so its read sees the flags as people left them.
+    # A failed clear fails the run here and keeps the file for the next one.
+    - name: Clear the flags a killed earlier run left set
+      when: stale_pause.stat.exists
+      block:
+        - name: Read the repos it paused
+          ansible.builtin.slurp:
+            src: "{{ pause_marker }}"
+          register: stale_pause_repos
+
+        - name: Clear the pause flag on each of them
+          become: true
+          become_user: nish
+          environment: "{{ nish_env }}"
+          ansible.builtin.command:
+            argv: [gh, variable, set, "{{ pause_variable }}", --body, "false", --repo, "{{ item }}"]
+          loop: "{{ (stale_pause_repos.content | b64decode).splitlines() | map('trim') | select | list }}"
+          register: stale_cleared
+
+        - name: Drop the stale marker
+          ansible.builtin.file:
+            path: "{{ pause_marker }}"
+            state: absent
+
     - name: Pause, prune and update
       block:
         - name: Pause steps that act as nish (GitHub CLI)
@@ -131,6 +169,18 @@
               register: dispatch_flag
               changed_when: false
               failed_when: dispatch_flag.rc != 0 and 'HTTP 404' not in dispatch_flag.stderr
+
+            # Written before the first set, so a kill at any point after it
+            # still leaves the list. Listing a repo whose set then fails is
+            # harmless: clearing it writes false where it was not true.
+            - name: Record which repos this run pauses, before pausing them
+              become: false
+              ansible.builtin.copy:
+                dest: "{{ pause_marker }}"
+                content: "{{ dispatch_flag.results | rejectattr('stdout', 'equalto', 'true') | map(attribute='item') | join('\n') }}\n"
+                owner: root
+                group: root
+                mode: "0600"
 
             # A flag already true was set by someone else on purpose, so this
             # run neither sets nor clears it.
@@ -428,6 +478,15 @@
               register: dispatch_resumed
               ignore_errors: true
 
+            # Only once every flag is clear: a failed clear keeps the file, so
+            # the next run retries it before it pauses anything.
+            - name: Drop the pause marker once every flag it lists is clear
+              become: false
+              ansible.builtin.file:
+                path: "{{ pause_marker }}"
+                state: absent
+              when: "(dispatch_resumed | default({'results': []})).results | selectattr('failed', 'defined') | selectattr('failed') | list | length == 0"
+
             - name: Sweep each queue now, so waiting work starts at once
               ansible.builtin.command:
                 argv: [gh, workflow, run, agent-dispatch.yml, --repo, "{{ item }}"]
@@ -566,6 +625,7 @@
         - name: Report the run
           ansible.builtin.debug:
             msg:
+              stale_pause_cleared: "{{ (stale_cleared | default({'results': []})).results | map(attribute='item') | list }}"
               dispatch_paused: "{{ (dispatch_paused | default({'results': []})).results | map(attribute='item.item') | list }}"
               runners_restarted: "{{ (runners_stopped | default({'results': []})).results | length }}"
               apt_upgrade: "{{ (apt_upgrade | default({})).stdout_lines | default([]) | select('match', '^(Inst|Setting up) ') | list }}"

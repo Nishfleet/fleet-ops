@@ -349,7 +349,11 @@ It runs `ansible/update.yml` as root through `ansible-pull`:
    plugins, cursor-agent, devin, uv, bun, rclone).
 4. Resume, even when a step failed: start the runners, set
    `FLEET_DISPATCH_PAUSED=false` where this run set it, restart the timers,
-   sweep each queue.
+   sweep each queue. The repos it paused are listed in
+   `/var/lib/fleet-ops/dispatch-paused-by-update` from before the first set
+   until every flag is clear again, so a run killed before this step (timeout,
+   SIGKILL) is undone by the next run, which clears those flags first. A flag
+   set by hand is never in that file and stays set.
 5. Verify: the netcup runners online, each queue's sweep run accepted by
    GitHub, pi answering a real call with its extensions loaded and every
    extension in `~/.pi/agent/settings.json` pinned (full SHA for `git:`, exact
