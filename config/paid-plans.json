@@ -1,0 +1,12 @@
+[
+  {"name": "Cline", "api_base": "https://api.cline.bot/api/v1", "billing": "prepaid", "source": "seat-roster (Nish 2026-09-22)"},
+  {"name": "CommandCode", "api_base": "https://api.commandcode.ai/provider/v1", "billing": "prepaid", "source": "fleet-ops#8855 (recharged by Nish 2026-09-28)"},
+  {"name": "MiniMax Token Plan", "api_base": "https://api.minimax.io/anthropic", "billing": "subscription", "source": "fleet-ops#8828, #9009"},
+  {"name": "Pareto", "api_base": "https://api.paretoinference.com/v1", "billing": "prepaid", "source": "fleet-ops#8458"},
+  {"name": "StepFun Step Plan Pro", "api_base": "https://api.stepfun.ai/step_plan/v1", "billing": "subscription", "source": "fleet-ops#9060 (Pro since 2026-10-01)"},
+  {"name": "Synthetic", "api_base": "https://api.synthetic.new/openai/v1", "billing": "subscription", "source": "cancelled 2026-10-01, rows leave when it lapses (fleet-ops#9048)"},
+  {"name": "z.ai coding plan", "api_base": "https://api.z.ai/api/coding/paas/v4", "billing": "subscription", "source": "fleet-ops#8929"},
+  {"name": "Ollama Cloud", "api_base": "https://ollama.com/v1", "billing": "subscription", "source": "seat-roster (Nish 2026-09-22)"},
+  {"name": "OpenCode Go", "api_base": "https://opencode.ai/zen/go/v1", "billing": "subscription", "source": "fleet-ops#8035"},
+  {"name": "Alibaba Token Plan (SG)", "api_base": "https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1", "billing": "subscription", "source": "fleet-ops#4329, #4445 (judge only)", "rows_pending": "fleet-ops#9220"}
+]
