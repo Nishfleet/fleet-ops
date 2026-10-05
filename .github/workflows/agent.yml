@@ -210,6 +210,7 @@ jobs:
           # those seats can do (fleet-ops#8740). The cap stays 1.
           # needs-desktop gets the cua MCP server, which only the pi lane wires
           # (fleet-ops#9297), so it waits for pi rather than run without it.
+          # strong-only wins when both are set: Cursor runs it, with no Spaces.
           case $labels in
             *,strong-only,*) [ "$(live cursor-agent)" -lt 1 ] || skip lanes-full; engine=cursor ;;
             *,needs-desktop,*) pi_free || skip lanes-full; engine=pi; echo desktop=true >> "$GITHUB_OUTPUT" ;;
@@ -264,6 +265,9 @@ jobs:
           # The worker's gh and git push use GH_TOKEN, the App token. ci.yml
           # runs this exact line and fails if either path can be read.
           jail_base="bwrap --dev-bind / / --ro-bind $HOME/workspaces/tooling/fleet-ops-deploy-clone $HOME/workspaces/tooling/fleet-ops-deploy-clone --tmpfs $HOME/.config/gh --tmpfs $HOME/.config/cloudflare --proc /proc --unshare-pid --die-with-parent"
+          # Only a needs-desktop worker sees ~/.cua (Nish's cua.ai login and the
+          # daemon socket), so a coding worker cannot reach Spaces even by shell.
+          [ "$DESKTOP" = true ] || jail_base="$jail_base --tmpfs $HOME/.cua"
           jail="$jail_base --"
           dir="$HOME/workspaces/agent-worktrees/issue-$id"
           if [ "$MISS" = true ]; then
@@ -340,7 +344,7 @@ jobs:
             # host:netcup, a throwaway Linux desktop with Chromium (fleet-ops#9297).
             # --mcp-config replaces the adapter's global file, so it is that file
             # plus cua. The allowlist leaves out teleport, hotspot, volume, share,
-            # cloud and host-desktop tools; ~/.cua auth is visible in the jail.
+            # cloud and host-desktop tools. The jail shows ~/.cua to this run only.
             set --
             if [ "$DESKTOP" = true ]; then
               jq --arg cua "$HOME/.local/bin/cua" '.mcpServers.cua = {command: $cua, args: ["mcp", "--permissions",
