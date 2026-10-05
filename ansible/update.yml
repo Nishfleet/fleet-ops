@@ -18,7 +18,9 @@
 #   4. resume  In `always:`, so it runs even when a step above failed: start the
 #              runners, re-enable only the dispatch workflows this run turned
 #              off, restart the timers it stopped, sweep each queue.
-#   5. verify  Every runner online at GitHub, each queue sweep green, no failed
+#   5. verify  Every netcup runner online at GitHub, every queue sweep run
+#              accepted by GitHub, pi answering a real call with its
+#              extensions loaded and every one of them pinned, no failed
 #              unit, router ready, Remote Control up. One assert at the end
 #              fails the unit (and pages) if any check or tool update failed.
 #
@@ -60,19 +62,37 @@
       HOME: /home/nish
       XDG_RUNTIME_DIR: /run/user/1000
       PATH: /home/nish/.local/bin:/usr/local/bin:/usr/bin:/bin
-    # Each runs as nish; a failure is reported at the end, never skipped quietly.
+    # Each runs as nish with its own stdin; a failure is reported at the end,
+    # never skipped quietly. devin update has no --yes flag and exits 130 on an
+    # empty stdin, because it asks for confirmation, so it answers "y" (the
+    # same thing `echo y | devin update` does, fleet-ops#9262). Every other
+    # updater here ignores stdin.
     tool_updates:
-      - [npm, update, --global]
-      - [pi, update, --all]
-      - [claude, update]
-      - [claude, plugin, marketplace, update]
-      - [cursor-agent, update]
-      - [devin, update]
-      - [uv, self, update]
-      - [uv, tool, upgrade, --all]
-      - [bun, upgrade]
-      - [rclone, selfupdate]
-    version_checks: [claude, pi, node, npm, gh, uv, bun, cursor-agent, devin, opencode, rclone]
+      - argv: [npm, update, --global]
+        stdin: ""
+      - argv: [pi, update, --all]
+        stdin: ""
+      - argv: [claude, update]
+        stdin: ""
+      - argv: [claude, plugin, marketplace, update]
+        stdin: ""
+      - argv: [cursor-agent, update]
+        stdin: ""
+      - argv: [devin, update]
+        stdin: "y\n"
+      - argv: [uv, self, update]
+        stdin: ""
+      - argv: [uv, tool, upgrade, --all]
+        stdin: ""
+      - argv: [bun, upgrade]
+        stdin: ""
+      - argv: [rclone, selfupdate]
+        stdin: ""
+    # Versioned before and after the update, and the report pairs the two
+    # lists by position. pi is not in this list on purpose: `pi --version`
+    # passes even when every pi start dies on a broken extension
+    # (fleet-ops#9262), so pi's check is the real call below.
+    version_checks: [claude, node, npm, gh, uv, bun, cursor-agent, devin, opencode, rclone]
 
   tasks:
     - name: Check for Nish's deliberate fleet pause
@@ -156,6 +176,14 @@
           changed_when: false
           failed_when: false
 
+        # Bytes before anything is pruned, so the report can show what the
+        # prune freed next to what was pruned (fleet-ops#9262).
+        - name: Record free disk space before the prune
+          ansible.builtin.command:
+            argv: [df, --output=avail, -B1, /]
+          register: disk_before
+          changed_when: false
+
         - name: Prune apt's cache of packages it no longer offers
           ansible.builtin.apt:
             autoclean: true
@@ -214,6 +242,12 @@
             purge: true
           register: apt_autoremove
 
+        - name: Record free disk space after the autoremove
+          ansible.builtin.command:
+            argv: [df, --output=avail, -B1, /]
+          register: disk_after
+          changed_when: false
+
         # needrestart only lists after apt (50-fleet.conf), so the daily
         # security patches never restart a service mid-job. Here the fleet is
         # paused, so restart what still runs old libraries, except the
@@ -231,11 +265,11 @@
           become_user: nish
           environment: "{{ nish_env }}"
           ansible.builtin.command:
-            argv: "{{ item }}"
-            stdin: ""
+            argv: "{{ item.argv }}"
+            stdin: "{{ item.stdin }}"
           loop: "{{ tool_updates }}"
           loop_control:
-            label: "{{ item | join(' ') }}"
+            label: "{{ item.argv | join(' ') }}"
           timeout: 600
           register: tool_results
           ignore_errors: true
@@ -312,6 +346,44 @@
           changed_when: false
           ignore_errors: true
 
+        # A real call, not a version read: `pi update --all` moved an unpinned
+        # extension and every pi start then died with "Cannot find module"
+        # while `pi --version` still passed (fleet-ops#9262). Only a call that
+        # loads the extensions proves pi works, and it must answer OK.
+        # FLEET_TASK_ID is what the litellm provider needs to sign the call
+        # (see systemd/blacksmith-flip.service).
+        - name: Call pi for real, so a broken extension fails here
+          become: true
+          become_user: nish
+          environment: "{{ nish_env | combine({'FLEET_TASK_ID': 'fleet-update-smoke'}) }}"
+          ansible.builtin.command:
+            argv: [pi, --print, --provider, litellm, --model, worker-cheap]
+            stdin: "Reply with exactly: OK"
+          register: pi_smoke
+          changed_when: false
+          ignore_errors: true
+          timeout: 300
+
+        # `pi update --all` moves any extension whose pin is not exact, and a
+        # moved git or npm version broke every pi start (fleet-ops#9262, the
+        # same failure as the call above). So every `git:` entry in pi's
+        # settings must end in the full 40-char SHA (an abbreviated SHA cannot
+        # even be fetched) and every `npm:` entry in an exact version. The
+        # assert below prints the offenders, so a bad pin is fixed by hand.
+        - name: Check every pi extension in settings.json is pinned
+          become: true
+          become_user: nish
+          environment: "{{ nish_env }}"
+          ansible.builtin.command:
+            argv:
+              - jq
+              - --raw-output
+              - '[.packages[] | select((startswith("git:") and (test("@[0-9a-f]{40}$") | not)) or (startswith("npm:") and (test("@[0-9]+[.][0-9]+[.][0-9]+$") | not)))] | .[]'
+              - /home/nish/.pi/agent/settings.json
+          register: unpinned_extensions
+          changed_when: false
+          ignore_errors: true
+
       always:
         - name: Start the runner services this run stopped
           ansible.builtin.systemd_service:
@@ -345,21 +417,34 @@
               register: sweeps
               ignore_errors: true
 
-            - name: Wait for each sweep to finish
+            # agent-dispatch runs behind its workflow's concurrency group, so a
+            # sweep can stay queued or in_progress for hours and "wait until
+            # completed" timed out on every run (fleet-ops#9262). A sweep did
+            # its job once GitHub accepted the run, so poll briefly until the
+            # run exists; the assert at the end fails only on a conclusion
+            # other than success, or no run at all.
+            - name: Check each sweep run was accepted
               ansible.builtin.command:
                 argv: [gh, run, list, --repo, "{{ item }}", --workflow, agent-dispatch.yml, --event, workflow_dispatch,
-                       --limit, "1", --json, "status,conclusion", --jq, '.[0].status + " " + .[0].conclusion']
+                       --limit, "1", --json, "status,conclusion",
+                       --jq, 'if length == 0 then "no sweep run" elif .[0].status == "completed" then (.[0].conclusion // "no-conclusion") else "accepted: " + .[0].status end']
               loop: "{{ (dispatch_paused | default({'results': []})).results | map(attribute='item.item') | list }}"
               register: sweep_result
-              until: sweep_result.stdout.startswith('completed')
-              retries: 30
-              delay: 20
+              until: sweep_result.stdout != 'no sweep run'
+              retries: 20
+              delay: 10
               changed_when: false
               ignore_errors: true
 
-            - name: Count runners GitHub sees online
+            # --paginate: the org endpoint pages at 30 registrations, so reading
+            # one page alone undercounted the online runners (35 registrations,
+            # 20 of them ephemeral Blacksmith ones, reported 10 when all 15
+            # netcup runners were online, fleet-ops#9262). Only the netcup
+            # runners are counted: they are the fleet's own machines.
+            - name: Count the netcup runners GitHub sees online
               ansible.builtin.command:
-                argv: [gh, api, "{{ item }}", --jq, '[.runners[] | select(.status == "online")] | length']
+                argv: [gh, api, "{{ item }}", --paginate, --jq,
+                       '[.runners[] | select(.status == "online" and (.name | startswith("netcup-")))] | length']
               loop:
                 - orgs/Nishfleet/actions/runners
                 - repos/nish3451/drive/actions/runners
@@ -468,6 +553,14 @@
               apt_upgrade: "{{ (apt_upgrade | default({})).stdout_lines | default([]) | select('match', '^(Inst|Setting up) ') | list }}"
               apt_autoremove: "{{ (apt_autoremove | default({})).stdout_lines | default([]) | select('match', '^Removing ') | list }}"
               needrestart: "{{ (needrestart_run | default({})).stdout_lines | default([]) }}"
+              disk_free_before_bytes: "{{ (disk_before | default({})).stdout_lines | default([]) | last | default('unknown') }}"
+              disk_free_after_bytes: "{{ (disk_after | default({})).stdout_lines | default([]) | last | default('unknown') }}"
+              disk_freed_bytes: "{{ ((disk_after | default({})).stdout_lines | default(['0']) | last | default('0') | int) - ((disk_before | default({})).stdout_lines | default(['0']) | last | default('0') | int) }}"
+              # What the Docker prunes freed, one line per prune.
+              docker_prune_reclaimed:
+                containers: "{{ (prune_containers | default({})).stdout_lines | default([]) | select('match', '^Total') | list }}"
+                images: "{{ (prune_images | default({})).stdout_lines | default([]) | select('match', '^Total') | list }}"
+                build_cache: "{{ (prune_builder | default({})).stdout_lines | default([]) | select('match', '^Total') | list }}"
               podman_autoupdate_before: "{{ (podman_autoupdate_before | default({})).stdout_lines | default([]) }}"
               podman_autoupdate: "{{ (podman_autoupdate | default({})).stdout_lines | default([]) }}"
               podman_autoupdate_after: "{{ (podman_autoupdate_after | default({})).stdout_lines | default([]) }}"
@@ -486,8 +579,11 @@
               - "not ((podman_autoupdate | default({})).failed | default(false))"
               - "not (plugin_results | default({})).failed | default(false)"
               - "(versions_after | default({'results': []})).results | selectattr('failed', 'defined') | selectattr('failed') | list | length == 0"
+              - "(pi_smoke | default({})).stdout | default('') is search('OK')"
+              - "(unpinned_extensions | default({})).rc | default(0) == 0"
+              - "(unpinned_extensions | default({'stdout_lines': []})).stdout_lines | default([]) | length == 0"
               - "(dispatch_resumed | default({'results': []})).results | selectattr('failed', 'defined') | selectattr('failed') | list | length == 0"
-              - "(sweep_result | default({'results': []})).results | map(attribute='stdout') | reject('equalto', 'completed success') | list | length == 0"
+              - "(sweep_result | default({'results': []})).results | map(attribute='stdout') | reject('match', '^accepted: ') | reject('equalto', 'success') | list | length == 0"
               - "(online | default({'results': []})).results | selectattr('failed', 'defined') | selectattr('failed') | list | length == 0"
               - "not (runners_up | default({})).failed | default(false)"
               - "failed_system.stdout_lines | length == 0"
@@ -496,7 +592,9 @@
               - "rc_state.stdout == 'active'"
             fail_msg: >-
               fleet-update finished with problems (fleet resumed). Failed tools:
-              {{ (tool_results | default({'results': []})).results | selectattr('failed', 'defined') | selectattr('failed') | map(attribute='item') | map('join', ' ') | list }};
+              {{ (tool_results | default({'results': []})).results | selectattr('failed', 'defined') | selectattr('failed') | map(attribute='item') | map(attribute='argv') | map('join', ' ') | list }};
+              pi smoke reply: {{ (pi_smoke | default({})).stdout | default('no result', true) }};
+              unpinned pi extensions: {{ (unpinned_extensions | default({'stdout_lines': []})).stdout_lines | default([]) | join(', ') | default('none', true) }};
               podman auto-update: {{ (podman_autoupdate | default({})).stdout_lines | default(['ok']) }} {{ (podman_autoupdate | default({})).stderr | default('') }};
               failed units: {{ failed_system.stdout_lines + failed_user.stdout_lines }};
               sweeps: {{ (sweep_result | default({'results': []})).results | map(attribute='stdout') | list }};
