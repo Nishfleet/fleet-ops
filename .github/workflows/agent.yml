@@ -692,7 +692,7 @@ jobs:
               end' <<<"$jobs_json") || verdict=strike
           if [ "$verdict" = infra ]; then
             # shellcheck disable=SC2016 # $v is a jq variable
-            infra_prior=$(jq '[.comments[] | if (.body | startswith("park:") or startswith("opus-vet:")) then "park:" else .body end] | (map(startswith("park:")) | rindex(true) // -1) as $v | .[$v+1:] | map(select(startswith("agent run infra-failed:"))) | length' <<<"$comments")
+            infra_prior=$(jq '[.comments[] | if (.body | startswith("park:") or startswith("opus-vet:")) or ((.body | test("^attempt-cap reset: \\S")) and (.authorAssociation | IN("OWNER", "MEMBER", "COLLABORATOR"))) then "park:" else .body end] | (map(startswith("park:")) | rindex(true) // -1) as $v | .[$v+1:] | map(select(startswith("agent run infra-failed:"))) | length' <<<"$comments")
             if [ "$infra_prior" -ge "$INFRA_REQUEUE_CAP" ]; then
               echo "::warning::#$i already has $infra_prior infra requeues since its last park; striking (fleet-ops#9291)"
               verdict=strike
