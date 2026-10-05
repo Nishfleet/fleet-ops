@@ -289,22 +289,83 @@ jobs:
           clear=$(yq '[.[0].tasks[] | select(has("always")) | .always[] | .. | select(tag == "!!map" and has("ansible.builtin.command")) | .["ansible.builtin.command"].argv | select(.[1] == "variable" and .[2] == "set" and .[5] == "false")] | length' "$u")
           [ "$set_true" = 1 ] && [ "$clear" = 1 ] || { echo "$u: want one set to true and one clear in always:, got $set_true and $clear"; bad=1; }
           # A run killed before always: (TimeoutStartSec, SIGKILL) must not
-          # leave dispatch paused for good. In file order: clear the flags the
-          # marker lists and drop it, before the pause; write the marker before
-          # the set; in always:, clear, then drop the marker only when every
-          # clear worked. A hand-set flag has no marker line, so no run clears it.
+          # leave dispatch paused for good, and a failed clear must page
+          # instead of waiting for next Sunday. Structural, by task name: each
+          # named task must exist exactly once, in this order, in the right
+          # block, with the right command or file state. A renamed or moved
+          # task fails here instead of passing a string match by luck.
           [ "$(yq '.[0].vars.pause_marker' "$u")" = /var/lib/fleet-ops/dispatch-paused-by-update ] || { echo "$u pause_marker moved"; bad=1; }
-          order=$(yq -o=json "$u" | jq -r '[.. | objects |
-            ((.["ansible.builtin.command"].argv? // null) | if type == "array" then . else [] end) as $a |
-            if (.["ansible.builtin.copy"].dest? // "") == "{{ pause_marker }}" then "write"
-            elif $a[2] == "set" and $a[3] == "{{ pause_variable }}" then "set-\($a[5])"
-            elif (.["ansible.builtin.file"].path? // "") == "{{ pause_marker }}" and .["ansible.builtin.file"].state == "absent" then "drop"
-            else empty end] | join(" ")')
-          [ "$order" = "set-false drop write set-true set-false drop" ] || { echo "$u pause marker order: $order"; bad=1; }
-          [ "$(yq '.[0].tasks[] | select(.block[0]["ansible.builtin.slurp"].src == "{{ pause_marker }}") | .when' "$u")" = stale_pause.stat.exists ] ||
-            { echo "$u: the stale-marker clear is not a top-level task gated on the marker"; bad=1; }
-          yq '.[0].tasks[] | select(has("always")) | .always[] | .. | select(tag == "!!map" and has("ansible.builtin.file")) | select(.["ansible.builtin.file"].path == "{{ pause_marker }}") | .when' "$u" | grep -q dispatch_resumed ||
-            { echo "$u: always: drops the marker without checking the clears"; bad=1; }
+          cat > "$RUNNER_TEMP/pause.jq" <<'JQ'
+          . as $doc
+          # Every task and block in the play, in file order, as paths.
+          | [paths(objects and has("name") and (has("block") or (keys | any(startswith("ansible.builtin."))))) | select(.[0] == 0 and .[1] == "tasks")] as $ps
+          | def at($n): [range(0; $ps | length) | . as $i | select(($doc | getpath($ps[$i])).name == $n)];
+            def task($n): $doc | getpath($ps[at($n)[0]]);
+            # argv[1:6] is the gh call without the binary: "variable set <var> --body <value>".
+            def argv($n): (task($n)["ansible.builtin.command"].argv // []) as $a | if ($a | type) == "array" then $a[1:6] | join(" ") else "" end;
+            def top($n): $ps[at($n)[0]][2];
+            def part($n): $ps[at($n)[0]][3];
+            def idx($n): at($n)[0];
+            "Pause, prune and update" as $main
+          | "Clear the pause flag on each of them" as $sc
+          | "Drop the stale marker" as $sd
+          | "Record which repos this run pauses, before pausing them" as $w
+          | "Pause agent dispatch where it is not paused (no new agent jobs)" as $p
+          | "Clear the dispatch pause flag where this run set it" as $c
+          | "Read the pause flag back on each repo this run paused" as $r
+          | "Name every repo whose dispatch is still paused" as $n
+          | "Drop the pause marker once every flag it lists is clear" as $d
+          | "Fail loudly if any step or check went wrong" as $fa
+          | [$main, $sc, $sd, $w, $p, $c, $r, $n, $d, $fa] as $all
+          | [ ($all[] | select(at(.) | length != 1) | "want exactly one task named \"\(.)\""),
+              (if any($all[]; at(.) | length != 1) then empty else
+                (if [idx($sc), idx($sd), idx($w), idx($p), idx($c), idx($r), idx($n), idx($d)] | . != sort
+                 then "pause tasks out of order: want stale clear, stale drop, write, set, clear, read back, name, drop" else empty end),
+                (if top($sc) == top($sd) and top($sc) < top($main) and (($doc[0].tasks[top($sc)].when // "") | tostring) == "stale_pause.stat.exists"
+                 then empty else "stale clear and drop: want one top-level block gated on stale_pause.stat.exists, before the main block" end),
+                (if argv($sc) == "variable set {{ pause_variable }} --body false" and ((task($sc).loop // "") | tostring | test("stale_pause_repos"))
+                 then empty else "stale clear: want a set to false over the marker file's repos" end),
+                (if task($sd)["ansible.builtin.file"] == {"path": "{{ pause_marker }}", "state": "absent"}
+                 then empty else "stale drop: want a delete of the marker" end),
+                (if top($w) == top($main) and top($p) == top($main) and part($w) == "block" and part($p) == "block"
+                 then empty else "write and set: want both inside the main block" end),
+                # Root-owned and 0600: a job running as nish must not be able to
+                # list a repo for the next run to unpause.
+                (task($w) as $t
+                 | if $t["ansible.builtin.copy"].dest == "{{ pause_marker }}" and $t["ansible.builtin.copy"].mode == "0600"
+                      and $t["ansible.builtin.copy"].owner == "root" and $t.become == false and ($t | has("become_user") | not)
+                   then empty else "marker write: want dest pause_marker, mode \"0600\", owner root, become: false, no become_user (so it runs as root)" end),
+                (if argv($p) == "variable set {{ pause_variable }} --body true" then empty else "pause: want a set to true" end),
+                ([$c, $r, $n, $d][] | select(top(.) != top($main) or part(.) != "always") | "\(.): want it in the main block's always:"),
+                (if argv($c) == "variable set {{ pause_variable }} --body false" then empty else "always clear: want a set to false" end),
+                # The clear retries before it gives up: one API blip must not
+                # leave a queue paused.
+                (task($c) as $t
+                 | if (($t.until // "") | tostring | test("^\\s*" + ($t.register // "-") + " is succeeded\\s*$")) and $t.retries == 3
+                   then empty else "always clear: want until: <its register> is succeeded and retries: 3" end),
+                # The read-back reads the flag itself, by name, and only a 404
+                # (unset) is allowed to pass as not paused.
+                (task($r) as $t | ($t["ansible.builtin.command"].argv // []) as $a
+                 | if $a == ["gh", "api", "repos/{{ item }}/actions/variables/{{ pause_variable }}", "--jq", ".value"]
+                      and $doc[0].vars.pause_variable == "FLEET_DISPATCH_PAUSED"
+                   then empty else "read back: want gh api repos/{{ item }}/actions/variables/{{ pause_variable }} --jq .value, with pause_variable FLEET_DISPATCH_PAUSED" end),
+                (task($r) as $t
+                 | if ($t.register // "") != "" and (($t.failed_when // "") | tostring) == "\($t.register).rc != 0 and 'HTTP 404' not in \($t.register).stderr"
+                   then empty else "read back: want failed_when: <register>.rc != 0 and 'HTTP 404' not in <register>.stderr" end),
+                (if task($d)["ansible.builtin.file"] == {"path": "{{ pause_marker }}", "state": "absent"} and ((task($d).when // "") | tostring | test("dispatch_still_paused"))
+                 then empty else "always drop: want a marker delete gated on dispatch_still_paused" end),
+                # The point of the read-back: a repo left paused pages, instead
+                # of sitting paused until the next weekly run.
+                (task($fa)["ansible.builtin.assert"] as $as
+                 | (if [($as.that // [])[] | tostring | select(test("dispatch_still_paused"))] | length > 0
+                    then empty else "the final assert does not fail on dispatch_still_paused" end),
+                   (if ($as.fail_msg // "") | tostring | test("DISPATCH STILL PAUSED")
+                    then empty else "the final assert's fail_msg does not name a still-paused queue (DISPATCH STILL PAUSED)" end))
+              end)
+            ] | .[]
+          JQ
+          yq -o=json "$u" | jq -r -f "$RUNNER_TEMP/pause.jq" > "$RUNNER_TEMP/pause-problems.txt"
+          if [ -s "$RUNNER_TEMP/pause-problems.txt" ]; then sed "s|^|$u: |" "$RUNNER_TEMP/pause-problems.txt"; bad=1; fi
           test "$bad" -eq 0
       - name: Risky-path hold classifier (hold-risky)
         # Runs agent-dispatch.yml's own CLASSIFY and APPROVAL programs, read out
