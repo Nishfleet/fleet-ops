@@ -440,6 +440,6 @@ the enrolment mechanism (fleet-ops#32, #25).
 The concurrency bound is the runner count (#8429): 24 `agent` runners
 (`actions.runner.Nishfleet.netcup-agent-1..24`, sized from measured memory
 pressure, fleet-ops#8860), all in `agent.slice` (`rootfs/etc/systemd/system/agent.slice`,
-20G/22G, `MemorySwapMax=1G`). RAM safety is per-unit `MemoryMax` plus
+26G/28G, `MemorySwapMax=1G`). RAM safety is per-unit `MemoryMax` plus
 systemd-oomd, not an admission charge. Live RAM is
 `systemctl --user show -p MemoryPeak <unit>` and `systemd-cgtop`.
