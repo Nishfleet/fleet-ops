@@ -51,7 +51,7 @@ Stop and hand back only for a reserved class: money/pricing, privacy, security, 
 
 ## Forbidden
 
-- Never `gh issue close`; the merged PR closes it.
+- Never `gh issue close`; the merged PR closes it. The one exception is the already-done path above, which closes a delivered issue with its receipt.
 - Never push to `main`/`master` and never force-push.
 - Never deploy, and never rotate or move a secret.
 - Never merge by hand, and never disable a required check.
