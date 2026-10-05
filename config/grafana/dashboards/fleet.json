@@ -405,7 +405,7 @@
       "type": "stat",
       "id": 12,
       "title": "Claimed",
-      "description": "Open issues labelled agent-in-progress. A claim can outlive its run; \"Running now\" is the live count.",
+      "description": "Counts the Being worked on now table. A claim can outlive its run; \"Running now\" is the live count.",
       "datasource": {
         "type": "datasource",
         "uid": "-- Dashboard --"
@@ -1140,8 +1140,7 @@
             "renameByName": {
               "event": "Started by",
               "status": "State",
-              "run_started_at": "Started",
-              "html_url": "Open"
+              "run_started_at": "Started"
             }
           }
         }
@@ -1211,6 +1210,10 @@
               "options": "html_url"
             },
             "properties": [
+              {
+                "id": "displayName",
+                "value": "Open"
+              },
               {
                 "id": "custom.cellOptions",
                 "value": {
