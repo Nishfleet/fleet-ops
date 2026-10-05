@@ -765,6 +765,8 @@ model_list:
 # Nish 2026-10-04: Ollama can take more lanes. Probe 12 parallel 12x200; 24
 # parallel 13x200 11x429, cap ~12. Ten rows x mpr 1 = 10 lanes, leaving 2 for
 # direct `pi --provider ollama-cloud` (a 429 cools 900 s). DS4.1 Flash only.
+# max_budget 1.0 per row: budgets are per deployment, so 10 x 1.0 keeps the
+# key at $10/day (the #9209 cap). Peak token rates from ollama.com/pricing.
 - model_name: worker-capable
   litellm_params:
     model: openai/deepseek-v4.1-flash
@@ -777,7 +779,7 @@ model_list:
     input_cost_per_token: 3e-07
     cache_read_input_token_cost: 6e-09
     output_cost_per_token: 1.2e-06
-    max_budget: 10.0
+    max_budget: 1.0
     budget_duration: 1d
     max_parallel_requests: 1
     cooldown_time: 900
@@ -798,7 +800,7 @@ model_list:
     input_cost_per_token: 3e-07
     cache_read_input_token_cost: 6e-09
     output_cost_per_token: 1.2e-06
-    max_budget: 10.0
+    max_budget: 1.0
     budget_duration: 1d
     max_parallel_requests: 1
     cooldown_time: 900
@@ -819,7 +821,7 @@ model_list:
     input_cost_per_token: 3e-07
     cache_read_input_token_cost: 6e-09
     output_cost_per_token: 1.2e-06
-    max_budget: 10.0
+    max_budget: 1.0
     budget_duration: 1d
     max_parallel_requests: 1
     cooldown_time: 900
@@ -840,7 +842,7 @@ model_list:
     input_cost_per_token: 3e-07
     cache_read_input_token_cost: 6e-09
     output_cost_per_token: 1.2e-06
-    max_budget: 10.0
+    max_budget: 1.0
     budget_duration: 1d
     max_parallel_requests: 1
     cooldown_time: 900
@@ -861,7 +863,7 @@ model_list:
     input_cost_per_token: 3e-07
     cache_read_input_token_cost: 6e-09
     output_cost_per_token: 1.2e-06
-    max_budget: 10.0
+    max_budget: 1.0
     budget_duration: 1d
     max_parallel_requests: 1
     cooldown_time: 900
@@ -882,7 +884,7 @@ model_list:
     input_cost_per_token: 3e-07
     cache_read_input_token_cost: 6e-09
     output_cost_per_token: 1.2e-06
-    max_budget: 10.0
+    max_budget: 1.0
     budget_duration: 1d
     max_parallel_requests: 1
     cooldown_time: 900
@@ -903,7 +905,7 @@ model_list:
     input_cost_per_token: 3e-07
     cache_read_input_token_cost: 6e-09
     output_cost_per_token: 1.2e-06
-    max_budget: 10.0
+    max_budget: 1.0
     budget_duration: 1d
     max_parallel_requests: 1
     cooldown_time: 900
@@ -924,7 +926,7 @@ model_list:
     input_cost_per_token: 3e-07
     cache_read_input_token_cost: 6e-09
     output_cost_per_token: 1.2e-06
-    max_budget: 10.0
+    max_budget: 1.0
     budget_duration: 1d
     max_parallel_requests: 1
     cooldown_time: 900
@@ -945,7 +947,7 @@ model_list:
     input_cost_per_token: 3e-07
     cache_read_input_token_cost: 6e-09
     output_cost_per_token: 1.2e-06
-    max_budget: 10.0
+    max_budget: 1.0
     budget_duration: 1d
     max_parallel_requests: 1
     cooldown_time: 900
@@ -966,7 +968,7 @@ model_list:
     input_cost_per_token: 3e-07
     cache_read_input_token_cost: 6e-09
     output_cost_per_token: 1.2e-06
-    max_budget: 10.0
+    max_budget: 1.0
     budget_duration: 1d
     max_parallel_requests: 1
     cooldown_time: 900
