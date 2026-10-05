@@ -150,6 +150,33 @@ jobs:
         # reboot. This runner has no such cgroups, so the same rule fails here.
         if: always()
         run: sudo apt-get install -y --no-install-recommends nftables && sudo nft -c -f rootfs/etc/nftables.conf
+      - name: Worker jail hides the gh login and Cloudflare tokens (fleet-ops#9274)
+        # Runs agent.yml's own jail_base line, so a change there is what is
+        # tested. Workers read outsider comments; only the filesystem view
+        # keeps Nish's admin login and the deploy token out of their reach.
+        # One bwrap line only: a second inline jail would skip these mounts.
+        # Ubuntu 24.04 blocks unprivileged user namespaces by default; the
+        # VPS allows them, so the runner is set to match.
+        if: always()
+        run: |
+          test "$(grep -c 'bwrap --dev-bind' .github/workflows/agent.yml)" -eq 1
+          line=$(sed -n 's/^ *jail_base="\(.*\)"$/\1/p' .github/workflows/agent.yml)
+          test -n "$line"
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          # Plant only where nothing exists, so a real login is never overwritten.
+          test ! -e "$HOME/.config/gh/hosts.yml"
+          test ! -e "$HOME/.config/cloudflare/deploy-ci.env"
+          mkdir -p "$HOME/workspaces/tooling/fleet-ops-deploy-clone" "$HOME/.config/gh" "$HOME/.config/cloudflare"
+          echo 'oauth_token: planted' > "$HOME/.config/gh/hosts.yml"
+          echo 'CLOUDFLARE_API_TOKEN=planted' > "$HOME/.config/cloudflare/deploy-ci.env"
+          echo visible > "$HOME/.config/control"
+          # $HOME is the line's only expansion; no eval of file text.
+          read -ra jail <<< "${line//\$HOME/$HOME} --"
+          "${jail[@]}" test -r "$HOME/.config/control"
+          "${jail[@]}" test ! -e "$HOME/.config/gh/hosts.yml"
+          "${jail[@]}" test ! -e "$HOME/.config/cloudflare/deploy-ci.env"
+          test -r "$HOME/.config/gh/hosts.yml"
+          rm -f "$HOME/.config/gh/hosts.yml" "$HOME/.config/cloudflare/deploy-ci.env" "$HOME/.config/control"
       - name: No shell ${...} or bare %s/%u/%h inside systemd Exec lines (fleet-ops#8382)
         # systemd expands ${...} and % specifiers itself, before any interpreter
         # runs, so the shell never sees them. Refused on Exec*= lines: `${` + a

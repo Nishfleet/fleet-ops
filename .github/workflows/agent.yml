@@ -253,7 +253,14 @@ jobs:
           # outlived its job by 13h and a worker's gh-checks poller held
           # node_modules so Clean workspace failed ENOTEMPTY (0509 run 36107401820).
           # Same cgroup, so agent.slice memory limits still apply.
-          jail="bwrap --dev-bind / / --ro-bind $HOME/workspaces/tooling/fleet-ops-deploy-clone $HOME/workspaces/tooling/fleet-ops-deploy-clone --proc /proc --unshare-pid --die-with-parent --"
+          # The empty tmpfs mounts hide Nish's own gh login (admin:org,
+          # delete_repo, workflow; backups included) and every Cloudflare
+          # token from the worker, which reads outsider comments: a fooled
+          # model cannot read what the jail does not show (fleet-ops#9274).
+          # The worker's gh and git push use GH_TOKEN, the App token. ci.yml
+          # runs this exact line and fails if either path can be read.
+          jail_base="bwrap --dev-bind / / --ro-bind $HOME/workspaces/tooling/fleet-ops-deploy-clone $HOME/workspaces/tooling/fleet-ops-deploy-clone --tmpfs $HOME/.config/gh --tmpfs $HOME/.config/cloudflare --proc /proc --unshare-pid --die-with-parent"
+          jail="$jail_base --"
           dir="$HOME/workspaces/agent-worktrees/issue-$id"
           if [ "$MISS" = true ]; then
             packet="Miss review for instance $id. Follow $HOME/workspaces/tooling/fleet-ops-deploy-clone/prompts/miss-review.md (read AGENTS.md beside worker.md first); every \$1 there means $id."
@@ -266,7 +273,7 @@ jobs:
             mkdir -p "$dir"
             for model in swe-2-max swe-2-high; do
               rc=0
-              echo "$packet" | bwrap --dev-bind / / --ro-bind "$HOME/workspaces/tooling/fleet-ops-deploy-clone" "$HOME/workspaces/tooling/fleet-ops-deploy-clone" --proc /proc --unshare-pid --die-with-parent --chdir "$dir" -- \
+              echo "$packet" | $jail_base --chdir "$dir" -- \
                 devin -p --prompt-file /dev/stdin --permission-mode dangerous --model "$model" >/dev/null 2> "$RUNNER_TEMP/try.err" || rc=$?
               [ "$rc" != 0 ] && [ "$model" = swe-2-max ] && grep -qi 'free model rate limit' "$RUNNER_TEMP/try.err" && [ "$(gh api "repos/$REPO/compare/main...$REF" --jq .ahead_by)" = 0 ] && continue
               break
