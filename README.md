@@ -15,6 +15,9 @@ script, or prompt lands unseen.
 - `ansible/host.yml` — the Ansible playbook that installs `rootfs/`.
   `fleet-host-config.service` runs it as root (`ansible-pull`) on every merge
   and once a day, and fails on a hand-installed file.
+- `ansible/update.yml` — the weekly safe full update of the box (see
+  [Weekly update](#weekly-update)). `fleet-update.service` runs it as root
+  (`ansible-pull`).
 - `containers/quadlet/` — `*.container` Podman quadlet units for the
   LiteLLM proxy, its Postgres and Redis, Grafana and aiostreams.
 - `patches/` — `litellm-1.98.0-gchunk-usage-union.patch`, a source patch for
@@ -328,6 +331,37 @@ under real memory pressure. sshd, tailscaled, and the runner services are out
 of scope: they do not live in `session-*.scope`. `claim/issue-*` and
 `claim/adhoc-*` branches are released by the agent that claimed them.
 
+## Weekly update
+
+`fleet-update.timer` starts `fleet-update.service` every Sunday at 03:30 IST.
+It runs `ansible/update.yml` as root through `ansible-pull`:
+
+1. Pause: turn off `agent-dispatch` in each queue repo, stop the work timers,
+   wait until no runner has a job (up to 150 min), stop the runner services.
+2. Prune: apt cache, Docker containers stopped for a day, dangling Docker and
+   Podman images, old build cache, the npm and uv caches.
+3. Update: `apt dist-upgrade`, `autoremove`, `needrestart -r a`, then each
+   user-level tool through its own updater (npm globals, pi, claude and its
+   plugins, cursor-agent, devin, uv, bun, rclone).
+4. Resume, even when a step failed: start the runners, turn `agent-dispatch`
+   back on where this run turned it off, restart the timers, sweep each queue.
+5. Verify: runners online, sweeps green, no failed unit, router ready, Remote
+   Control up. Any problem fails the unit, which pages.
+
+It never reboots. When a package needs a reboot, it opens one
+`needs-nish-decision` issue. The daily security updates (`unattended-upgrades`)
+stay on; `rootfs/etc/needrestart/conf.d/50-fleet.conf` makes them only list
+services on old libraries, so they never restart a service mid-job.
+`claude-remote-control.service` is never restarted, by either path.
+
+- Run it now: `sudo systemctl start --no-block fleet-update.service`, then
+  `journalctl -u fleet-update -f`.
+- Switch it off: a PR that drops "Enable the weekly update" in
+  `ansible/host.yml` and adds a task with `state: stopped, enabled: false`.
+  In an emergency: `sudo systemctl disable --now fleet-update.timer`.
+- Delete it: remove `ansible/update.yml`, the two `fleet-update` units and
+  `50-fleet.conf`, and add their `/etc` paths to `retired` in `ansible/host.yml`.
+
 ## CI
 
 `.github/workflows/ci.yml` runs one job, `ci`, on every PR and push to main. Its
@@ -335,7 +369,7 @@ checks are stock: semgrep `--config p/default`, the secret-expansion grep,
 `jq` config sanity, actionlint, zizmor, shellcheck, and systemd-analyze verify
 over `systemd/`. The stock linters are joined by repo-specific gates: a no-glue
 semgrep rule at `.semgrep/no-glue.yml`, a no long-lived personal-access-token
-(PAT) grep, `nft -c` over `rootfs/etc/nftables.conf`, `ansible-playbook --syntax-check` over `ansible/host.yml`, a no shell `${...}` or bare
+(PAT) grep, `nft -c` over `rootfs/etc/nftables.conf`, `ansible-playbook --syntax-check` over `ansible/host.yml` and `ansible/update.yml`, a no shell `${...}` or bare
 `%s/%u/%h` check inside systemd Exec lines (fleet-ops#8382), pi seat ids
 resolving to `config/litellm-proxy.yaml` `model_name` (fleet-ops#8332), and
 Ollama rungs serving only the permitted slug (fleet-ops#8332), the litellm-proxy

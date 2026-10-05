@@ -1,0 +1,19 @@
+# Weekly safe full update: ansible-pull of ansible/update.yml as root, from its
+# own clone (same trust model as fleet-host-config.service). See the playbook
+# header for the steps. Run now: sudo systemctl start --no-block fleet-update.service
+[Unit]
+Description=Weekly safe full update of the fleet box (ansible-pull of ansible/update.yml)
+Wants=network-online.target
+After=network-online.target
+OnFailure=fleet-unit-failed@%N.service
+
+[Service]
+Type=oneshot
+StateDirectory=fleet-ops
+Environment=ANSIBLE_HOME=/var/lib/fleet-ops/ansible
+Environment=ANSIBLE_NOCOLOR=1
+# become_user nish with pipelining needs no world-readable temp files.
+Environment=ANSIBLE_PIPELINING=1
+ExecStart=/usr/bin/ansible-pull --url https://github.com/Nishfleet/fleet-ops.git --checkout main --directory /var/lib/fleet-ops/update-repo --clean --inventory localhost, ansible/update.yml
+# Drain (up to 150 min) + apt (up to 60) + tools + resume checks.
+TimeoutStartSec=6h
