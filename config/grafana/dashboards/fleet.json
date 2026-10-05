@@ -159,19 +159,35 @@
           "options": {}
         },
         {
+          "id": "calculateField",
+          "options": {
+            "mode": "reduceRow",
+            "reduce": {
+              "include": [
+                "number"
+              ],
+              "reducer": "lastNotNull"
+            },
+            "replaceFields": false,
+            "alias": "Open"
+          }
+        },
+        {
           "id": "organize",
           "options": {
             "includeByName": {
               "repo": true,
               "number": true,
               "title": true,
-              "created_at": true
+              "created_at": true,
+              "Open": true
             },
             "indexByName": {
               "title": 0,
               "repo": 1,
               "number": 2,
-              "created_at": 3
+              "created_at": 3,
+              "Open": 4
             },
             "renameByName": {
               "title": "Question",
@@ -244,6 +260,34 @@
                 "value": 140
               }
             ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Open"
+            },
+            "properties": [
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "type": "data-links"
+                }
+              },
+              {
+                "id": "links",
+                "value": [
+                  {
+                    "title": "Open",
+                    "url": "https://github.com/${__data.fields.repo}/issues/${__data.fields.number}",
+                    "targetBlank": true
+                  }
+                ]
+              },
+              {
+                "id": "custom.width",
+                "value": 80
+              }
+            ]
           }
         ]
       }
@@ -262,13 +306,28 @@
       "panels": []
     },
     {
+      "type": "text",
+      "id": 4,
+      "title": "",
+      "gridPos": {
+        "x": 0,
+        "y": 10,
+        "w": 24,
+        "h": 3
+      },
+      "options": {
+        "mode": "markdown",
+        "content": "Open a row to stop, redo or comment on GitHub.\nTo give an order in words, use the Fleet control chat in the Claude app.\nA click on Open opens that issue or run in a new tab."
+      }
+    },
+    {
       "type": "stat",
       "id": 11,
       "title": "Waiting",
       "description": "Open issues labelled agent-ready.",
       "gridPos": {
         "x": 0,
-        "y": 10,
+        "y": 13,
         "w": 3,
         "h": 4
       },
@@ -346,41 +405,20 @@
       "type": "stat",
       "id": 12,
       "title": "Claimed",
-      "description": "Open issues labelled agent-in-progress. A claim can outlive its run; \"Running now\" is the live count.",
-      "timeFrom": "5y",
-      "hideTimeOverride": true,
+      "description": "Counts the Being worked on now table. A claim can outlive its run; \"Running now\" is the live count.",
       "datasource": {
         "type": "datasource",
-        "uid": "-- Mixed --"
+        "uid": "-- Dashboard --"
       },
       "targets": [
         {
           "refId": "A",
           "datasource": {
-            "type": "grafana-github-datasource",
-            "uid": "fleet-github"
+            "type": "datasource",
+            "uid": "-- Dashboard --"
           },
-          "queryType": "Issues",
-          "owner": "Nishfleet",
-          "repository": "",
-          "options": {
-            "query": "is:open label:agent-in-progress",
-            "timeField": 0
-          }
-        },
-        {
-          "refId": "B",
-          "datasource": {
-            "type": "grafana-github-datasource",
-            "uid": "fleet-github-personal"
-          },
-          "queryType": "Issues",
-          "owner": "nish3451",
-          "repository": "",
-          "options": {
-            "query": "is:open label:agent-in-progress",
-            "timeField": 0
-          }
+          "panelId": 5,
+          "withTransforms": true
         }
       ],
       "options": {
@@ -412,16 +450,10 @@
       },
       "gridPos": {
         "x": 3,
-        "y": 10,
+        "y": 13,
         "w": 3,
         "h": 4
-      },
-      "transformations": [
-        {
-          "id": "merge",
-          "options": {}
-        }
-      ]
+      }
     },
     {
       "type": "stat",
@@ -472,7 +504,7 @@
       },
       "gridPos": {
         "x": 6,
-        "y": 10,
+        "y": 13,
         "w": 4,
         "h": 4
       }
@@ -551,7 +583,7 @@
       },
       "gridPos": {
         "x": 10,
-        "y": 10,
+        "y": 13,
         "w": 4,
         "h": 4
       },
@@ -569,7 +601,7 @@
       "description": "Open issues labelled agent-blocked or needs-orchestrator.",
       "gridPos": {
         "x": 14,
-        "y": 10,
+        "y": 13,
         "w": 3,
         "h": 4
       },
@@ -654,7 +686,7 @@
       "description": "Open pull requests across Nishfleet and Drive.",
       "gridPos": {
         "x": 17,
-        "y": 10,
+        "y": 13,
         "w": 3,
         "h": 4
       },
@@ -733,7 +765,7 @@
       "description": "Pull requests merged across Nishfleet and Drive in the last 24 hours.",
       "gridPos": {
         "x": 20,
-        "y": 10,
+        "y": 13,
         "w": 4,
         "h": 4
       },
@@ -806,6 +838,189 @@
           "options": {}
         }
       ]
+    },
+    {
+      "type": "table",
+      "id": 5,
+      "title": "Being worked on now",
+      "description": "Open issues labelled agent-in-progress. Claimed counts this table.",
+      "gridPos": {
+        "x": 0,
+        "y": 17,
+        "w": 24,
+        "h": 8
+      },
+      "timeFrom": "5y",
+      "hideTimeOverride": true,
+      "datasource": {
+        "type": "datasource",
+        "uid": "-- Mixed --"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "grafana-github-datasource",
+            "uid": "fleet-github"
+          },
+          "queryType": "Issues",
+          "owner": "Nishfleet",
+          "repository": "",
+          "options": {
+            "query": "is:open label:agent-in-progress",
+            "timeField": 0
+          }
+        },
+        {
+          "refId": "B",
+          "datasource": {
+            "type": "grafana-github-datasource",
+            "uid": "fleet-github-personal"
+          },
+          "queryType": "Issues",
+          "owner": "nish3451",
+          "repository": "",
+          "options": {
+            "query": "is:open label:agent-in-progress",
+            "timeField": 0
+          }
+        }
+      ],
+      "transformations": [
+        {
+          "id": "merge",
+          "options": {}
+        },
+        {
+          "id": "calculateField",
+          "options": {
+            "mode": "reduceRow",
+            "reduce": {
+              "include": [
+                "number"
+              ],
+              "reducer": "lastNotNull"
+            },
+            "replaceFields": false,
+            "alias": "Open"
+          }
+        },
+        {
+          "id": "organize",
+          "options": {
+            "includeByName": {
+              "repo": true,
+              "title": true,
+              "updated_at": true,
+              "number": true,
+              "Open": true
+            },
+            "indexByName": {
+              "title": 0,
+              "repo": 1,
+              "updated_at": 2,
+              "Open": 3,
+              "number": 4
+            },
+            "renameByName": {
+              "updated_at": "minutes since last update"
+            }
+          }
+        }
+      ],
+      "options": {
+        "showHeader": true,
+        "cellHeight": "sm",
+        "sortBy": [
+          {
+            "displayName": "minutes since last update",
+            "desc": true
+          }
+        ]
+      },
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "align": "auto"
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "title"
+            },
+            "properties": [
+              {
+                "id": "links",
+                "value": [
+                  {
+                    "title": "Open on GitHub",
+                    "url": "https://github.com/${__data.fields.repo}/issues/${__data.fields.number}",
+                    "targetBlank": true
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Open"
+            },
+            "properties": [
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "type": "data-links"
+                }
+              },
+              {
+                "id": "links",
+                "value": [
+                  {
+                    "title": "Open",
+                    "url": "https://github.com/${__data.fields.repo}/issues/${__data.fields.number}",
+                    "targetBlank": true
+                  }
+                ]
+              },
+              {
+                "id": "custom.width",
+                "value": 80
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "number"
+            },
+            "properties": [
+              {
+                "id": "custom.hidden",
+                "value": true
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "updated_at"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "dateTimeFromNow"
+              },
+              {
+                "id": "custom.width",
+                "value": 180
+              }
+            ]
+          }
+        ]
+      }
     },
     {
       "type": "table",
@@ -964,18 +1179,6 @@
           {
             "matcher": {
               "id": "byName",
-              "options": "html_url"
-            },
-            "properties": [
-              {
-                "id": "custom.hidden",
-                "value": true
-              }
-            ]
-          },
-          {
-            "matcher": {
-              "id": "byName",
               "options": "run_started_at"
             },
             "properties": [
@@ -1000,12 +1203,44 @@
                 "value": 110
               }
             ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "html_url"
+            },
+            "properties": [
+              {
+                "id": "displayName",
+                "value": "Open"
+              },
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "type": "data-links"
+                }
+              },
+              {
+                "id": "links",
+                "value": [
+                  {
+                    "title": "Open",
+                    "url": "${__data.fields.html_url}",
+                    "targetBlank": true
+                  }
+                ]
+              },
+              {
+                "id": "custom.width",
+                "value": 80
+              }
+            ]
           }
         ]
       },
       "gridPos": {
         "x": 0,
-        "y": 14,
+        "y": 25,
         "w": 12,
         "h": 8
       }
@@ -1016,7 +1251,7 @@
       "title": "Failed, retrying or stuck",
       "gridPos": {
         "x": 12,
-        "y": 14,
+        "y": 25,
         "w": 12,
         "h": 8
       },
@@ -1062,19 +1297,35 @@
           "options": {}
         },
         {
+          "id": "calculateField",
+          "options": {
+            "mode": "reduceRow",
+            "reduce": {
+              "include": [
+                "number"
+              ],
+              "reducer": "lastNotNull"
+            },
+            "replaceFields": false,
+            "alias": "Open"
+          }
+        },
+        {
           "id": "organize",
           "options": {
             "includeByName": {
               "repo": true,
               "number": true,
               "title": true,
-              "updated_at": true
+              "updated_at": true,
+              "Open": true
             },
             "indexByName": {
               "title": 0,
               "repo": 1,
               "number": 2,
-              "updated_at": 3
+              "updated_at": 3,
+              "Open": 4
             },
             "renameByName": {
               "title": "Job",
@@ -1143,6 +1394,34 @@
                 "value": 130
               }
             ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Open"
+            },
+            "properties": [
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "type": "data-links"
+                }
+              },
+              {
+                "id": "links",
+                "value": [
+                  {
+                    "title": "Open",
+                    "url": "https://github.com/${__data.fields.repo}/issues/${__data.fields.number}",
+                    "targetBlank": true
+                  }
+                ]
+              },
+              {
+                "id": "custom.width",
+                "value": 80
+              }
+            ]
           }
         ]
       }
@@ -1153,7 +1432,7 @@
       "collapsed": false,
       "gridPos": {
         "x": 0,
-        "y": 22,
+        "y": 33,
         "w": 24,
         "h": 1
       },
@@ -1166,7 +1445,7 @@
       "title": "Agent workers online (of 12)",
       "gridPos": {
         "x": 0,
-        "y": 23,
+        "y": 34,
         "w": 6,
         "h": 5
       },
@@ -1227,7 +1506,7 @@
       "title": "All runners online (of 21)",
       "gridPos": {
         "x": 6,
-        "y": 23,
+        "y": 34,
         "w": 6,
         "h": 5
       },
@@ -1289,7 +1568,7 @@
       "description": "systemd units in the failed state.",
       "gridPos": {
         "x": 12,
-        "y": 23,
+        "y": 34,
         "w": 4,
         "h": 5
       },
@@ -1346,7 +1625,7 @@
       "title": "Which services are broken",
       "gridPos": {
         "x": 16,
-        "y": 23,
+        "y": 34,
         "w": 8,
         "h": 5
       },
@@ -1402,7 +1681,7 @@
       "panels": [],
       "gridPos": {
         "x": 0,
-        "y": 28,
+        "y": 39,
         "w": 24,
         "h": 1
       }
@@ -1462,7 +1741,7 @@
       "description": "LiteLLM deployments answering normally.",
       "gridPos": {
         "x": 0,
-        "y": 29,
+        "y": 40,
         "w": 4,
         "h": 5
       }
@@ -1522,7 +1801,7 @@
       "description": "Deployments with some failures (LiteLLM partial outage).",
       "gridPos": {
         "x": 4,
-        "y": 29,
+        "y": 40,
         "w": 4,
         "h": 5
       }
@@ -1582,7 +1861,7 @@
       "description": "Deployments LiteLLM marks as a full outage.",
       "gridPos": {
         "x": 8,
-        "y": 29,
+        "y": 40,
         "w": 4,
         "h": 5
       }
@@ -1682,7 +1961,7 @@
       },
       "gridPos": {
         "x": 12,
-        "y": 29,
+        "y": 40,
         "w": 12,
         "h": 5
       }
@@ -1693,7 +1972,7 @@
       "collapsed": false,
       "gridPos": {
         "x": 0,
-        "y": 34,
+        "y": 45,
         "w": 24,
         "h": 1
       },
@@ -1706,7 +1985,7 @@
       "title": "Processor busy",
       "gridPos": {
         "x": 0,
-        "y": 35,
+        "y": 46,
         "w": 6,
         "h": 5
       },
@@ -1768,7 +2047,7 @@
       "title": "Memory used",
       "gridPos": {
         "x": 6,
-        "y": 35,
+        "y": 46,
         "w": 6,
         "h": 5
       },
@@ -1830,7 +2109,7 @@
       "title": "Disk used",
       "gridPos": {
         "x": 12,
-        "y": 35,
+        "y": 46,
         "w": 6,
         "h": 5
       },
@@ -1892,7 +2171,7 @@
       "title": "Swap used",
       "gridPos": {
         "x": 18,
-        "y": 35,
+        "y": 46,
         "w": 6,
         "h": 5
       },
@@ -1955,7 +2234,7 @@
       "title": "Processor and memory over time",
       "gridPos": {
         "x": 0,
-        "y": 40,
+        "y": 51,
         "w": 24,
         "h": 7
       },
@@ -2016,7 +2295,7 @@
       "panels": [],
       "gridPos": {
         "x": 0,
-        "y": 47,
+        "y": 58,
         "w": 24,
         "h": 1
       }
@@ -2091,7 +2370,7 @@
       "description": "Homepage answers with a 2xx every 30s (blackbox exporter).",
       "gridPos": {
         "x": 0,
-        "y": 48,
+        "y": 59,
         "w": 4,
         "h": 5
       }
@@ -2154,7 +2433,7 @@
       },
       "gridPos": {
         "x": 4,
-        "y": 48,
+        "y": 59,
         "w": 4,
         "h": 5
       }
@@ -2240,7 +2519,7 @@
       },
       "gridPos": {
         "x": 8,
-        "y": 48,
+        "y": 59,
         "w": 16,
         "h": 5
       }
@@ -2251,7 +2530,7 @@
       "collapsed": false,
       "gridPos": {
         "x": 0,
-        "y": 53,
+        "y": 64,
         "w": 24,
         "h": 1
       },
@@ -2265,7 +2544,7 @@
       "description": "LiteLLM's cost estimate for model calls in the last 24 hours. Prepaid and free seats count as $0.",
       "gridPos": {
         "x": 0,
-        "y": 54,
+        "y": 65,
         "w": 6,
         "h": 4
       },
@@ -2320,7 +2599,7 @@
       "title": "AI calls, 24h",
       "gridPos": {
         "x": 6,
-        "y": 54,
+        "y": 65,
         "w": 6,
         "h": 4
       },
@@ -2375,7 +2654,7 @@
       "title": "AI calls failed, 24h",
       "gridPos": {
         "x": 12,
-        "y": 54,
+        "y": 65,
         "w": 6,
         "h": 4
       },
@@ -2430,7 +2709,7 @@
       "title": "AI failure rate, 24h",
       "gridPos": {
         "x": 18,
-        "y": 54,
+        "y": 65,
         "w": 6,
         "h": 4
       },
@@ -2493,7 +2772,7 @@
       "title": "AI spend per hour, by model",
       "gridPos": {
         "x": 0,
-        "y": 58,
+        "y": 69,
         "w": 24,
         "h": 8
       },
