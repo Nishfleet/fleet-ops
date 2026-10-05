@@ -60,8 +60,8 @@ glue."_ The rule, held by the `ci` check (`.github/workflows/ci.yml` runs
 - No hand-built Pi extensions are kept. `permission-gate.ts` and
   `protected-paths.ts` are gone; the heavy-command class is capped instead by
   the agent runner services' `MemoryHigh=3G` / `MemoryMax=6G` in
-  `10-agent.conf`, inside `agent.slice` (`MemoryHigh=10G` /
-  `MemoryMax=11G`). The fleet-ci runners carry `MemoryMax=3G` in
+  `10-agent.conf`, inside `agent.slice` (`MemoryHigh=20G` /
+  `MemoryMax=22G`). The fleet-ci runners carry `MemoryMax=3G` in
   `10-fleet-ci.conf`.
 
 The design record with the full organ-by-organ reasoning is git history

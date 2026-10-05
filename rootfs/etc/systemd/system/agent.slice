@@ -1,5 +1,11 @@
 # All agent runners together. A single job may peak at ~3G (tests);
 # the slice throttles the group before it can starve the host.
+# Size (2026-10-05, host upgraded to netcup RS 4000: 12 vCPU, 31.3G RAM, 8G
+# swap): 10G/11G -> 20G/22G, the old caps scaled with RAM. Measured 18 min
+# after the upgrade boot with the old caps: MemoryPeak 10746388480 (on the
+# 10G line), memory.events high=127557 (the kernel throttled the 22 runners
+# 127k times), swap at its 1G cap (memory.swap.events max=931). The ratio to
+# host RAM stays where #8860 measured it safe (10/15.6 = 64%, 20/31.3 = 64%).
 # MemorySwapMax is the swap half of that bargain (fleet-ops#8638): the two
 # RAM caps above say nothing about swap, so on 2026-09-24/25 32 runners
 # filled all 8G of host swap (1000-2500 pages/s in and out, 14.6% iowait,
@@ -8,6 +14,6 @@
 # host. Verify after install: systemctl show agent.slice -p MemorySwapMax
 # must read 1073741824, not infinity.
 [Slice]
-MemoryHigh=10G
-MemoryMax=11G
+MemoryHigh=20G
+MemoryMax=22G
 MemorySwapMax=1G
