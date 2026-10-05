@@ -1,0 +1,83 @@
+# CPU pressure alert (fleet-ops#9304).
+# The signal is node_exporter's node_pressure_cpu_waiting_seconds_total, the
+# wait side of /proc/pressure/cpu: the fraction of wall time runnable work was
+# ready and still had no core. A rate over 15m is the closest Prometheus-side
+# equivalent of PSI's avg300, which is the window the dashboard's second line
+# plots and the one this threshold is quoted against.
+#
+# On 2026-10-05 the box ran load 21 on 12 cores with nothing on the fleet view
+# showing where the time went (fleet-ops#9304). 25% for 15m is above the
+# 11.4% measured idle and far below the ~100% a fully saturated box reads, so a
+# real queue for cores trips it and ordinary runner churn does not.
+#
+# Contact point: the existing hermes-urgent Telegram contact point from
+# paid-plan-idle.yaml, referenced by name. Grafana merges every file in
+# /etc/grafana/provisioning/alerting, so this file adds a rule and reuses that
+# receiver rather than declaring a second one.
+apiVersion: 1
+
+groups:
+  - orgId: 1
+    name: cpu-pressure
+    folder: fleet
+    interval: 1m
+    rules:
+      - uid: cpu-pressure-avg300
+        title: CPU pressure avg300 over 25%
+        condition: C
+        data:
+          - refId: A
+            relativeTimeRange: {from: 900, to: 0}
+            datasourceUid: fleet-prometheus
+            model:
+              datasource: {type: prometheus, uid: fleet-prometheus}
+              editorMode: code
+              expr: rate(node_pressure_cpu_waiting_seconds_total[15m]) * 100
+              instant: true
+              intervalMs: 1000
+              maxDataPoints: 43200
+              range: false
+              refId: A
+          - refId: B
+            relativeTimeRange: {from: 900, to: 0}
+            datasourceUid: fleet-prometheus
+            model:
+              datasource: {type: prometheus, uid: fleet-prometheus}
+              editorMode: code
+              expr: 100 * (1 - avg(rate(node_cpu_seconds_total{mode="idle"}[15m])))
+              instant: true
+              intervalMs: 1000
+              maxDataPoints: 43200
+              range: false
+              refId: B
+          - refId: C
+            datasourceUid: __expr__
+            model:
+              conditions:
+                - evaluator: {params: [25], type: gt}
+                  operator: {type: and}
+                  query: {params: [C]}
+                  reducer: {params: [], type: last}
+                  type: query
+              datasource: {type: __expr__, uid: __expr__}
+              expression: A
+              intervalMs: 1000
+              maxDataPoints: 43200
+              refId: C
+              type: threshold
+        # 15m at a 1m interval, the window the issue asked for.
+        for: 15m
+        noDataState: OK
+        execErrState: Error
+        annotations:
+          summary: CPU pressure above 25% for 15 minutes, so work is queueing for cores.
+          description: 'Pressure has held at {{ $values.A.Value | printf "%.1f" }}% for 15 minutes while the processor read {{ $values.B.Value | printf "%.1f" }}% busy. Runners per repo, the router and sessions all share this host, so the fleet view CPU row shows which of them is spending it.'
+        labels:
+          signal: cpu-pressure
+        isPaused: false
+        notification_settings:
+          receiver: hermes-urgent
+          group_by: [alertname, grafana_folder]
+          group_wait: 0s
+          group_interval: 5m
+          repeat_interval: 4h

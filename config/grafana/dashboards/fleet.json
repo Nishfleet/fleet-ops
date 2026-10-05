@@ -2289,13 +2289,229 @@
     },
     {
       "type": "row",
+      "id": 70,
+      "title": "Where the CPU goes",
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 58
+      },
+      "panels": []
+    },
+    {
+      "type": "gauge",
+      "id": 71,
+      "title": "CPU pressure",
+      "description": "Percentage of wall time runnable tasks waited for a CPU, from node_exporter's node_pressure_cpu_waiting_seconds_total. This is the pressure stall signal from /proc/pressure/cpu: how much of the time work that wanted a core was waiting for one.",
+      "gridPos": {
+        "h": 5,
+        "w": 6,
+        "x": 0,
+        "y": 59
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "fleet-prometheus"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "fleet-prometheus"
+          },
+          "expr": "rate(node_pressure_cpu_waiting_seconds_total[5m]) * 100",
+          "legendFormat": "CPU pressure, last 5 min"
+        }
+      ],
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "showThresholdLabels": false,
+        "showThresholdMarkers": true
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent",
+          "min": 0,
+          "max": 100,
+          "decimals": 1,
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "orange",
+                "value": 15
+              },
+              {
+                "color": "red",
+                "value": 25
+              }
+            ]
+          }
+        },
+        "overrides": []
+      }
+    },
+    {
+      "type": "gauge",
+      "id": 72,
+      "title": "Processor busy",
+      "description": "Whole-host processor busy percent, the denominator the pressure above is measured against.",
+      "gridPos": {
+        "h": 5,
+        "w": 6,
+        "x": 6,
+        "y": 59
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "fleet-prometheus"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "fleet-prometheus"
+          },
+          "expr": "100 * (1 - avg(rate(node_cpu_seconds_total{mode=\"idle\"}[5m])))",
+          "legendFormat": "Busy"
+        }
+      ],
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "showThresholdLabels": false,
+        "showThresholdMarkers": true
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent",
+          "min": 0,
+          "max": 100,
+          "decimals": 1,
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "orange",
+                "value": 70
+              },
+              {
+                "color": "red",
+                "value": 90
+              }
+            ]
+          }
+        },
+        "overrides": []
+      }
+    },
+    {
+      "type": "timeseries",
+      "id": 73,
+      "title": "CPU pressure over time",
+      "description": "The pressure alert fires when the 15-minute line stays above 25% for 15 minutes. The host was last measured at load 21 on 12 cores (2026-10-05) with nothing showing where the time went.",
+      "gridPos": {
+        "h": 7,
+        "w": 24,
+        "x": 0,
+        "y": 64
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "fleet-prometheus"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "fleet-prometheus"
+          },
+          "expr": "rate(node_pressure_cpu_waiting_seconds_total[5m]) * 100",
+          "legendFormat": "Pressure, last 5 min"
+        },
+        {
+          "refId": "B",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "fleet-prometheus"
+          },
+          "expr": "rate(node_pressure_cpu_waiting_seconds_total[15m]) * 100",
+          "legendFormat": "Pressure, last 15 min (alert basis)"
+        },
+        {
+          "refId": "C",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "fleet-prometheus"
+          },
+          "expr": "100 * (1 - avg(rate(node_cpu_seconds_total{mode=\"idle\"}[5m])))",
+          "legendFormat": "Processor busy"
+        }
+      ],
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "none"
+        }
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent",
+          "min": 0,
+          "max": 100,
+          "custom": {
+            "lineWidth": 2,
+            "fillOpacity": 10,
+            "showPoints": "never"
+          }
+        },
+        "overrides": []
+      }
+    },
+    {
+      "type": "row",
       "id": 60,
       "title": "Website and backups",
       "collapsed": false,
       "panels": [],
       "gridPos": {
         "x": 0,
-        "y": 58,
+        "y": 71,
         "w": 24,
         "h": 1
       }
@@ -2370,7 +2586,7 @@
       "description": "Homepage answers with a 2xx every 30s (blackbox exporter).",
       "gridPos": {
         "x": 0,
-        "y": 59,
+        "y": 72,
         "w": 4,
         "h": 5
       }
@@ -2433,7 +2649,7 @@
       },
       "gridPos": {
         "x": 4,
-        "y": 59,
+        "y": 72,
         "w": 4,
         "h": 5
       }
@@ -2519,7 +2735,7 @@
       },
       "gridPos": {
         "x": 8,
-        "y": 59,
+        "y": 72,
         "w": 16,
         "h": 5
       }
@@ -2530,7 +2746,7 @@
       "collapsed": false,
       "gridPos": {
         "x": 0,
-        "y": 64,
+        "y": 77,
         "w": 24,
         "h": 1
       },
@@ -2544,7 +2760,7 @@
       "description": "LiteLLM's cost estimate for model calls in the last 24 hours. Prepaid and free seats count as $0.",
       "gridPos": {
         "x": 0,
-        "y": 65,
+        "y": 78,
         "w": 6,
         "h": 4
       },
@@ -2599,7 +2815,7 @@
       "title": "AI calls, 24h",
       "gridPos": {
         "x": 6,
-        "y": 65,
+        "y": 78,
         "w": 6,
         "h": 4
       },
@@ -2654,7 +2870,7 @@
       "title": "AI calls failed, 24h",
       "gridPos": {
         "x": 12,
-        "y": 65,
+        "y": 78,
         "w": 6,
         "h": 4
       },
@@ -2709,7 +2925,7 @@
       "title": "AI failure rate, 24h",
       "gridPos": {
         "x": 18,
-        "y": 65,
+        "y": 78,
         "w": 6,
         "h": 4
       },
@@ -2772,7 +2988,7 @@
       "title": "AI spend per hour, by model",
       "gridPos": {
         "x": 0,
-        "y": 69,
+        "y": 82,
         "w": 24,
         "h": 8
       },
