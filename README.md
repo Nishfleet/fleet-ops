@@ -23,8 +23,9 @@ script, or prompt lands unseen.
 - `patches/` — `litellm-1.98.0-gchunk-usage-union.patch`, a source patch for
   LiteLLM 1.98.0 that no unit in this repo applies (the proxy runs a pinned
   container image).
-- `docs/` — `ARCHITECTURE.md`, `RUNBOOK.md`, `jev-call-sites.md` and
-  `quality-bar.md`.
+- `docs/` — `ARCHITECTURE.md`, `RUNBOOK.md`, `jev-call-sites.md`,
+  `quality-bar.md` and `incidents/` (one blameless write-up per outage,
+  named `YYYY-MM-DD-<slug>.md`).
 - `template/` — `agents/`, `cursor-rules/`, `devin-config.json` and
   `README.md`, source files the live host links or copies by hand (see
   [template/README.md](template/README.md)).

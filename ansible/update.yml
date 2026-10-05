@@ -476,16 +476,42 @@
                 argv: [gh, variable, set, "{{ pause_variable }}", --body, "false", --repo, "{{ item }}"]
               loop: "{{ (dispatch_paused | default({'results': []})).results | map(attribute='item.item') | list }}"
               register: dispatch_resumed
+              # A blip in the API must not leave a queue paused for a week.
+              until: dispatch_resumed is succeeded
+              retries: 3
+              delay: 20
+              # ignore_errors only so the sweeps and checks below still run.
+              # The flag is read back next, and a repo still paused fails the
+              # unit (the assert at the end), which pages.
               ignore_errors: true
 
-            # Only once every flag is clear: a failed clear keeps the file, so
-            # the next run retries it before it pauses anything.
+            # The real state, not only the set's exit code. 404 (unset) is not
+            # paused; any other failed read counts as still paused.
+            - name: Read the pause flag back on each repo this run paused
+              ansible.builtin.command:
+                argv: [gh, api, "repos/{{ item }}/actions/variables/{{ pause_variable }}", --jq, .value]
+              loop: "{{ (dispatch_paused | default({'results': []})).results | map(attribute='item.item') | list }}"
+              register: dispatch_flag_after
+              changed_when: false
+              failed_when: dispatch_flag_after.rc != 0 and 'HTTP 404' not in dispatch_flag_after.stderr
+              ignore_errors: true
+
+            - name: Name every repo whose dispatch is still paused
+              ansible.builtin.set_fact:
+                dispatch_still_paused: >-
+                  {{ ((dispatch_resumed | default({'results': []})).results | selectattr('failed', 'defined') | selectattr('failed') | map(attribute='item') | list
+                     + (dispatch_flag_after | default({'results': []})).results | selectattr('failed', 'defined') | selectattr('failed') | map(attribute='item') | list
+                     + (dispatch_flag_after | default({'results': []})).results | selectattr('stdout', 'defined') | selectattr('stdout', 'equalto', 'true') | map(attribute='item') | list)
+                     | unique }}
+
+            # Only once every flag is clear: a still-paused repo keeps the
+            # file, so the next run clears it before it pauses anything.
             - name: Drop the pause marker once every flag it lists is clear
               become: false
               ansible.builtin.file:
                 path: "{{ pause_marker }}"
                 state: absent
-              when: "(dispatch_resumed | default({'results': []})).results | selectattr('failed', 'defined') | selectattr('failed') | list | length == 0"
+              when: dispatch_still_paused | length == 0
 
             - name: Sweep each queue now, so waiting work starts at once
               ansible.builtin.command:
@@ -625,6 +651,7 @@
         - name: Report the run
           ansible.builtin.debug:
             msg:
+              dispatch_still_paused: "{{ dispatch_still_paused | default('unknown: the resume block did not finish') }}"
               stale_pause_cleared: "{{ (stale_cleared | default({'results': []})).results | map(attribute='item') | list }}"
               dispatch_paused: "{{ (dispatch_paused | default({'results': []})).results | map(attribute='item.item') | list }}"
               runners_restarted: "{{ (runners_stopped | default({'results': []})).results | length }}"
@@ -661,6 +688,7 @@
               - "(unpinned_extensions | default({})).rc | default(0) == 0"
               - "(unpinned_extensions | default({'stdout_lines': []})).stdout_lines | default([]) | length == 0"
               - "(dispatch_resumed | default({'results': []})).results | selectattr('failed', 'defined') | selectattr('failed') | list | length == 0"
+              - "dispatch_still_paused is defined and dispatch_still_paused | length == 0"
               - "(sweep_result | default({'results': []})).results | map(attribute='stdout') | reject('match', '^accepted: ') | reject('equalto', 'success') | list | length == 0"
               - "(online | default({'results': []})).results | selectattr('failed', 'defined') | selectattr('failed') | list | length == 0"
               - "not (runners_up | default({})).failed | default(false)"
@@ -669,7 +697,9 @@
               - "not (router | default({})).failed | default(false)"
               - "rc_state.stdout == 'active'"
             fail_msg: >-
-              fleet-update finished with problems (fleet resumed). Failed tools:
+              {{ 'DISPATCH STILL PAUSED (FLEET_DISPATCH_PAUSED is not cleared) on: ' ~ (dispatch_still_paused | default(['unknown, the resume block did not finish']) | join(', '))
+                 ~ '. Clear it with gh variable set FLEET_DISPATCH_PAUSED --body false --repo <repo>. '
+                 if (dispatch_still_paused | default(['unknown']) | length > 0) else '' }}fleet-update finished with problems (runners resumed). Failed tools:
               {{ (tool_results | default({'results': []})).results | selectattr('failed', 'defined') | selectattr('failed') | map(attribute='item') | map(attribute='argv') | map('join', ' ') | list }};
               pi smoke reply: {{ (pi_smoke | default({})).stdout | default('no result', true) }};
               unpinned pi extensions: {{ (unpinned_extensions | default({'stdout_lines': []})).stdout_lines | default([]) | join(', ') | default('none', true) }};
