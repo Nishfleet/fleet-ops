@@ -427,7 +427,30 @@ jobs:
               gh label create needs-coordinator -R "$REPO" --force --color B60205 --description "touches a path outside the arm allowlist: the coordinator reviews and arms it"
               gh pr edit "$REF" -R "$REPO" --add-label needs-coordinator
             else
-              gh pr merge "$REF" -R "$REPO" --auto --squash  # a merge queue overrides the method; repos without one need it
+              # Skip the arm on a head whose required checks are red, the same
+              # test Deliverable fails on, so the run fails, report requeues
+              # it, and the next run arms the fixed head (fleet-ops#9315).
+              # Pending checks
+              # still arm: nothing re-arms a head that later goes green, and
+              # the required checks hold the merge. A repo with no required
+              # checks judges all of them, as Deliverable does. The runner
+              # user's own gh login reads the checks: the App token has no
+              # checks: read. A read error warns and arms, as before.
+              q='[.[] | select(.bucket == "fail") | .name] | join(", ")'
+              red=$(env -u GH_TOKEN -u GITHUB_TOKEN gh pr checks "$n" -R "$REPO" --required --json name,bucket --jq "$q" 2>&1) || case $? in
+                8) ;; # gh's pending exit: --jq already printed the red names
+                *) case ${red,,} in
+                     *"no required checks reported"*)
+                       red=$(env -u GH_TOKEN -u GITHUB_TOKEN gh pr checks "$n" -R "$REPO" --json name,bucket --jq "$q" 2>&1) || [ $? = 8 ] || red= ;;
+                     *"no checks reported"*) red= ;;
+                     *) echo "::warning::could not read checks on claim PR #$n, arming anyway: $red"; red= ;;
+                   esac ;;
+              esac
+              if [ -n "$red" ]; then
+                echo "::warning::claim PR #$n not armed: red checks on its head: $red"
+              else
+                gh pr merge "$REF" -R "$REPO" --auto --squash  # a merge queue overrides the method; repos without one need it
+              fi
             fi
           fi
       - name: Deliverable
@@ -466,8 +489,11 @@ jobs:
           # conflicting: the run ended success and the issue kept
           # agent-in-progress with nothing live (fleet-ops#9063: drive #200
           # #180 #136). Fail it, so report strikes and requeues it. Pending
-          # checks pass here: a fresh push's CI is still running, and its red
-          # result fires rework on its own. The runner user's own gh login
+          # checks pass here: a fresh push's CI is still running. A red result
+          # from the workflow named CI fires rework, because agent-dispatch's
+          # workflow_run trigger lists only CI. A red check from any other
+          # workflow (fleet-ops' Gitleaks) fires nothing, and holds the merge
+          # only if that check is required (fleet-ops#9315). The runner user's own gh login
           # reads the checks, because the App token has no checks: read.
           pr=$(gh pr view "$REF" -R "$REPO" --json number,mergeable)
           n=$(jq -r .number <<<"$pr")
