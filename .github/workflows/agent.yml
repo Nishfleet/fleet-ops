@@ -427,16 +427,17 @@ jobs:
               gh label create needs-coordinator -R "$REPO" --force --color B60205 --description "touches a path outside the arm allowlist: the coordinator reviews and arms it"
               gh pr edit "$REF" -R "$REPO" --add-label needs-coordinator
             else
-              # Skip the arm on a head whose required checks are red, the same
-              # test Deliverable fails on, so the run fails, report requeues
-              # it, and the next run arms the fixed head (fleet-ops#9315).
-              # Pending checks
-              # still arm: nothing re-arms a head that later goes green, and
-              # the required checks hold the merge. A repo with no required
-              # checks judges all of them, as Deliverable does. The runner
+              # A head whose required checks are red is not armed, the same
+              # test Deliverable fails on (fleet-ops#9315). The step disarms
+              # an arm left by an earlier run, so a mid-rework push cannot
+              # merge before a run has judged it, and fails, so report
+              # requeues the issue and the next run arms the fixed head.
+              # Pending checks still arm: nothing re-arms a head that later
+              # goes green, and the required checks hold the merge. A repo
+              # with no required checks judges all of them, as Deliverable
+              # does. An unreadable result is treated as red. The runner
               # user's own gh login reads the checks: the App token has no
-              # checks: read. A read error skips the arm too: Deliverable
-              # fails on it as well, so the issue is requeued, not stranded.
+              # checks: read.
               q='[.[] | select(.bucket == "fail") | .name] | join(", ")'
               red=$(env -u GH_TOKEN -u GITHUB_TOKEN gh pr checks "$n" -R "$REPO" --required --json name,bucket --jq "$q" 2>&1) || case $? in
                 8) ;; # gh's pending exit: --jq already printed the red names
@@ -449,7 +450,9 @@ jobs:
                    esac ;;
               esac
               if [ -n "$red" ]; then
-                echo "::warning::claim PR #$n not armed, red required checks on its head: $red"
+                gh pr merge "$REF" -R "$REPO" --disable-auto 2>/dev/null || true  # errors when it was not armed
+                echo "::error::claim PR #$n not armed, red required checks on its head: $red"
+                exit 1
               else
                 gh pr merge "$REF" -R "$REPO" --auto --squash  # a merge queue overrides the method; repos without one need it
               fi
