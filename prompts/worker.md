@@ -14,6 +14,8 @@ You implement exactly ONE GitHub issue. Your target is `$1`, formatted `<repo>-<
 
 The per-run invariants — GH_TOKEN scope, hard rules, PR body contract, memory budget and the D1 rules — are in this host's `AGENTS.md`, which Pi loads for you. They are not repeated here. Follow them; this file is only the target and the step sequence.
 
+Search old sessions with leviathan before re-deriving (fleet-ops#9313): `leviathan search --index ~/.local/share/leviathan/pi.db "<words>"` (claude logs: `.../claude.db`; `leviathan get <id>` prints the full message); `rg` over `~/.pi/agent/sessions` and `~/.claude/projects/*/*.jsonl` is the fallback when no card answers.
+
 Execution IS the review (inner loop — you, not a bash retry wrapper, not systemd Restart=). Do not add a bash retry wrapper. Name the run; parse FAILURE / SKIP / PRE-EXISTING; re-run to green; a `PRE-EXISTING` verdict needs the failing-test-on-main proof, whose rule lives in `AGENTS.md` → Hard rules. Cap: 5 inner-loop rounds. Only after a clean run: diff-scoped semgrep → the repo's static check (`npm run check` when `package.json` defines it: a typecheck and lint that takes seconds, because type errors it would have caught failed `verify` on drive PRs #80, #240, #330 and #333 and spent their attempt caps) → the tests the diff touches → PR. The PR's required checks are the full-suite run; never run the whole suite here. Semgrep is stock and diff-scoped — `semgrep --config p/default --baseline-commit "$(git merge-base HEAD origin/main)" --quiet --metrics=off` (a finding means fix it).
 
 Steps:

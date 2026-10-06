@@ -56,6 +56,21 @@ ExecStart=/bin/rm -f /home/nish/.config/systemd/user/fleet-prometheus-reload.pat
 #     config/environment.d/ (fleet-ops#9219), installed before the daemon-reload
 #     so the user manager reads it on this run.
 ExecStart=/usr/bin/install -C -D -m 0644 /home/nish/workspaces/tooling/fleet-ops-deploy-clone/config/environment.d/60-pi-xai-client-version.conf /home/nish/.config/environment.d/60-pi-xai-client-version.conf
+# 2c. The leviathan index units, their configs and the tmpfiles rule are
+#     user-scope COPYs (fleet-ops#9313), same class as 2b/6/7/8: the
+#     leviathan-index@.timer runs every 15 minutes, so the config must exist
+#     before the PR that ships the units merges (a git merge refuses a clone
+#     with untracked files in the way, so no unit may read its config from the
+#     deploy clone). Live links are hand-set once into ~/.local/share/leviathan/
+#     and ~/.config/systemd/user (a stable tree, so LINK-GUARD passes); the
+#     installs here keep the bytes on main, before the daemon-reload so an
+#     edited unit reloads in this run. systemd-tmpfiles (step 5) then enforces
+#     the index dir's 0700 mode on every sync.
+ExecStart=/usr/bin/install -C -D -m 0644 /home/nish/workspaces/tooling/fleet-ops-deploy-clone/systemd/leviathan-index@.service /home/nish/.local/share/leviathan/leviathan-index@.service
+ExecStart=/usr/bin/install -C -D -m 0644 /home/nish/workspaces/tooling/fleet-ops-deploy-clone/systemd/leviathan-index@.timer /home/nish/.local/share/leviathan/leviathan-index@.timer
+ExecStart=/usr/bin/install -C -D -m 0644 /home/nish/workspaces/tooling/fleet-ops-deploy-clone/config/leviathan/claude.toml /home/nish/.local/share/leviathan/claude.toml
+ExecStart=/usr/bin/install -C -D -m 0644 /home/nish/workspaces/tooling/fleet-ops-deploy-clone/config/leviathan/pi.toml /home/nish/.local/share/leviathan/pi.toml
+ExecStart=/usr/bin/install -C -D -m 0644 /home/nish/workspaces/tooling/fleet-ops-deploy-clone/config/user-tmpfiles.d/leviathan.conf /home/nish/.config/user-tmpfiles.d/leviathan.conf
 ExecStart=/usr/bin/systemctl --user daemon-reload
 # 3-4. Root-owned files (/etc/prometheus/*.yml, agent.slice and every other
 #    file under rootfs/) are no longer this unit's job. fleet-host-config.service
