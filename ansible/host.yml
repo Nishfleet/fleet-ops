@@ -213,6 +213,14 @@
         mode: "0644"
         checksum: sha256:9ddbae3b70afeaa1f638effaffdb5f49fb1a6651a99d3450d2af584938eee3cd
 
+    # unarchive fails with "must be an existing dir" when dest is missing, and
+    # the drop task below deletes /tmp/leviathan every run, so create it first.
+    - name: Create the Leviathan unpack directory
+      ansible.builtin.file:
+        path: /tmp/leviathan
+        state: directory
+        mode: "0755"
+
     - name: Unpack the pinned Leviathan release
       ansible.builtin.unarchive:
         src: /tmp/leviathan.tar.gz
