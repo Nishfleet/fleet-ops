@@ -262,17 +262,33 @@ jobs:
           session=$(find "$sessdir" -maxdepth 1 -name '*.jsonl' -printf '%T@ %p\n' 2>/dev/null | sort -rn | head -n1 | cut -d' ' -f2-)
           [ -n "$session" ] || { echo "resume: no session file; fresh start"; exit 0; }
           comments=$(env -u GH_TOKEN -u GITHUB_TOKEN gh issue view "$i" -R "$REPO" --json comments) || { echo "resume: comments read failed; fresh start"; exit 0; }
-          prev=$(jq -r --arg u "/runs/$GITHUB_RUN_ID" '[.comments[].body | select(startswith("agent run started: ")) | ltrimstr("agent run started: ") | select(endswith($u) | not)] | last // empty' <<<"$comments") || prev=
-          case $prev in
-            "$GITHUB_SERVER_URL/$REPO/actions/runs/"[0-9]*) ;;
-            *) echo "resume: no earlier run; fresh start"; exit 0 ;;
-          esac
-          if jq -e --arg p "agent run infra-failed: $prev" '.comments | any(.body == $p)' <<<"$comments" >/dev/null; then
+          # Only the App, or the workflow's own token (the infra-failed comments
+          # are posted as github-actions), count. A stranger's comment never does.
+          trusted='["nishfleet-worker","app/nishfleet-worker","github-actions"]'
+          if [ "${GITHUB_RUN_ATTEMPT:-1}" -gt 1 ]; then
+            # Re-running failed jobs keeps the run id: the dead run is this
+            # run's attempt N-1, and its comments carry this run's URL.
+            prev=$GITHUB_SERVER_URL/$REPO/actions/runs/$GITHUB_RUN_ID
+            runpath=actions/runs/$GITHUB_RUN_ID/attempts/$((GITHUB_RUN_ATTEMPT - 1))
+          else
+            prev=$(jq -r --arg u "/runs/$GITHUB_RUN_ID" --argjson t "$trusted" '[.comments[] | select(.author.login | IN($t[])) | .body | select(startswith("agent run started: ")) | ltrimstr("agent run started: ") | select(endswith($u) | not)] | last // empty' <<<"$comments") || prev=
+            case $prev in
+              "$GITHUB_SERVER_URL/$REPO/actions/runs/"[0-9]*) ;;
+              *) echo "resume: no earlier run; fresh start"; exit 0 ;;
+            esac
+            runpath=actions/runs/${prev##*/}
+          fi
+          # The session must belong to the dead run: a file older than that
+          # run's start means pi never started in it.
+          started=$(env -u GH_TOKEN -u GITHUB_TOKEN gh api "repos/$REPO/$runpath" --jq .run_started_at) || { echo "resume: run read failed; fresh start"; exit 0; }
+          started_s=$(date -d "$started" +%s) || { echo "resume: bad run start; fresh start"; exit 0; }
+          [ "$(stat -c %Y "$session")" -ge "$started_s" ] || { echo "resume: session is older than $prev; fresh start"; exit 0; }
+          if jq -e --arg p "agent run infra-failed: $prev" --argjson t "$trusted" '.comments | any(.body == $p and (.author.login | IN($t[])))' <<<"$comments" >/dev/null; then
             echo "resume: $prev died as infra; continue"
             echo "session=$session" >> "$GITHUB_OUTPUT"
             exit 0
           fi
-          jobs_json=$(env -u GH_TOKEN -u GITHUB_TOKEN gh api --paginate "repos/$REPO/actions/runs/${prev##*/}/jobs?per_page=100") || { echo "resume: jobs read failed; fresh start"; exit 0; }
+          jobs_json=$(env -u GH_TOKEN -u GITHUB_TOKEN gh api --paginate "repos/$REPO/$runpath/jobs?per_page=100") || { echo "resume: jobs read failed; fresh start"; exit 0; }
           # shellcheck disable=SC2016 # $ref is a jq variable
           verdict=$(jq -rs --arg ref "$REF" --argjson timeout_secs "$WORKER_TIMEOUT_SECS" '
             [.[].jobs[]] as $all
@@ -640,16 +656,19 @@ jobs:
           # existed in this directory. Commit them as wip(salvage) and push to
           # the claim ref before the delete; worker.md step 2 cherry-picks that
           # commit on the retry. Fail open: any error here still deletes the tree.
+          # Hooks stay ON: the repo's pre-commit secret scan is the guard
+          # against pushing a token the worker left in the tree. A rejecting or
+          # hanging hook (120 s cap) falls through to the warning and the delete.
           # The push authenticates through the host's gh credential helper and
           # GH_TOKEN, the same way the worker's own push does.
           if git -C "$dir" rev-parse --is-inside-work-tree >/dev/null 2>&1 &&
              { [ -n "$(git -C "$dir" status --porcelain 2>/dev/null)" ] || [ "$(git -C "$dir" rev-list --count HEAD --not --remotes 2>/dev/null)" != 0 ]; }; then
             (
               cd "$dir" &&
-              git -c core.hooksPath=/dev/null add --all -- . &&
-              { git diff --cached --quiet || git -c core.hooksPath=/dev/null commit --no-verify -q -m "wip(salvage)"; } &&
-              timeout 120 git -c core.hooksPath=/dev/null push -q origin "HEAD:refs/heads/$REF"
-            ) || echo "::warning::salvage push failed; deleting the tree anyway (fleet-ops#9326)"
+              git add --all -- . &&
+              { git diff --cached --quiet || timeout 120 git commit -q -m "wip(salvage)"; } &&
+              timeout 120 git push -q origin "HEAD:refs/heads/$REF"
+            ) || echo "::warning::salvage failed; deleting the tree anyway (fleet-ops#9326)"
           fi
           rm -rf "$dir"
   report:

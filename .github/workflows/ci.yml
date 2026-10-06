@@ -586,11 +586,14 @@ jobs:
           worker run | grep -F 'cont=(--session "$RESUME_SESSION")' >/dev/null || { echo "Worker has no --session"; exit 1; }
           cat > "$t/bin/gh" <<'MOCK'
           #!/usr/bin/env bash
+          # RUN_PATH is the only run the block may read: runs/111 on a new run,
+          # runs/222/attempts/1 when the same run id is re-run (attempt 2).
           case "$*" in
             *"issue view"*"--json comments"*) cat "$COMMENTS" ;;
-            *"api --paginate"*"/runs/111/jobs"*)
+            *"api --paginate"*"/$RUN_PATH/jobs?"*)
               if [ -n "${API_FAIL:-}" ]; then echo "mock gh: jobs api fails" >&2; exit 1; fi
               cat "$JOBS" ;;
+            *"api repos/"*"/$RUN_PATH --jq .run_started_at") echo "$RUN_STARTED" ;;
             *) echo "mock gh: unexpected call: $*" >&2; exit 1 ;;
           esac
           MOCK
@@ -598,18 +601,22 @@ jobs:
           export REPO=Nishfleet/fleet-ops REF=claim/issue-77 GITHUB_RUN_ID=222 GITHUB_SERVER_URL=https://github.com
           export WORKER_TIMEOUT_SECS
           bad=0
-          # name|session (0 none, 1 one file, 2 two files)|end|conclusion|infra comment|jobs api fails|want (fresh, or the session file pi must open)
-          while IFS='|' read -r name session end concl infra apifail want; do
-            export HOME=$t/home-$name COMMENTS=$t/$name-comments.json JOBS=$t/$name-jobs.json GITHUB_OUTPUT=$t/$name.out
+          # name|session (0 none, 1 one file at 00:00 UTC, 2 two files, the newer at 01:00)|Worker end|Worker conclusion|infra comment (0 none, 1 github-actions, 2 stranger)|jobs api fails|dead run started after the session file|GITHUB_RUN_ATTEMPT|want (fresh, or the session file pi must open)
+          while IFS='|' read -r name session end concl infra apifail stale attempt want; do
+            export HOME=$t/home-$name COMMENTS=$t/$name-comments.json JOBS=$t/$name-jobs.json GITHUB_OUTPUT=$t/$name.out GITHUB_RUN_ATTEMPT=$attempt
             : > "$GITHUB_OUTPUT"
             mkdir -p "$HOME/.pi/agent/sessions/agent-fleet-ops-77"
             sd=$HOME/.pi/agent/sessions/agent-fleet-ops-77
-            if [ "$session" -ge 1 ]; then : > "$sd/old.jsonl"; touch -d '2026-10-06 00:00:00' "$sd/old.jsonl"; fi
-            if [ "$session" = 2 ]; then : > "$sd/new.jsonl"; touch -d '2026-10-06 01:00:00' "$sd/new.jsonl"; fi
-            jq -n --arg u "https://github.com/Nishfleet/fleet-ops/actions/runs" --argjson i "$infra" \
-              '{comments: ([{body: ("agent run started: " + $u + "/111")}]
-                + [if $i == 1 then {body: ("agent run infra-failed: " + $u + "/111")} else empty end]
-                + [{body: ("agent run started: " + $u + "/222")}])}' > "$COMMENTS"
+            if [ "$session" -ge 1 ]; then : > "$sd/old.jsonl"; touch -d '2026-10-06 00:00:00 UTC' "$sd/old.jsonl"; fi
+            if [ "$session" = 2 ]; then : > "$sd/new.jsonl"; touch -d '2026-10-06 01:00:00 UTC' "$sd/new.jsonl"; fi
+            export RUN_PATH=actions/runs/111 RUN_STARTED=2026-10-05T23:00:00Z prevrun=111
+            if [ "$attempt" -gt 1 ]; then RUN_PATH=actions/runs/222/attempts/$((attempt - 1)); prevrun=222; fi
+            if [ "$stale" = 1 ]; then RUN_STARTED=2026-10-06T00:30:00Z; fi
+            jq -n --arg u "https://github.com/Nishfleet/fleet-ops/actions/runs" --argjson i "$infra" --arg p "$prevrun" \
+              '{comments: ([{author: {login: "nishfleet-worker"}, body: ("agent run started: " + $u + "/" + $p)}]
+                + [if $i == 1 then {author: {login: "github-actions"}, body: ("agent run infra-failed: " + $u + "/" + $p)} else empty end]
+                + [if $i == 2 then {author: {login: "stranger"}, body: ("agent run infra-failed: " + $u + "/" + $p)} else empty end]
+                + [{author: {login: "nishfleet-worker"}, body: ("agent run started: " + $u + "/222")}])}' > "$COMMENTS"
             jq -nc --arg end "$end" --arg c "$concl" \
               '{jobs: [{name: "new / work", conclusion: "failure",
                 steps: [{name: "Gate", conclusion: "success", started_at: "2026-10-06T00:00:00Z", completed_at: "2026-10-06T00:00:30Z"},
@@ -623,22 +630,29 @@ jobs:
             if grep -q "^session=$HOME/.pi/agent/sessions/agent-fleet-ops-77/[a-z]*\.jsonl$" "$GITHUB_OUTPUT"; then got=$(sed -n 's|^session=.*/||p' "$GITHUB_OUTPUT"); fi
             if [ "$got" != "$want" ] || [ "$rc" != 0 ]; then echo "case $name: got=$got (want $want) exit=$rc"; cat "$t/$name.log"; bad=1; else echo "case $name: $got ok"; fi
           done <<'CASES'
-          wall-death|1|2026-10-06T00:56:00Z|failure|0|0|old.jsonl
-          two-sessions|2|2026-10-06T00:56:00Z|failure|0|0|new.jsonl
-          early-failure|1|2026-10-06T00:04:00Z|failure|0|0|fresh
-          normal-finish|1|2026-10-06T00:40:00Z|success|0|0|fresh
-          wall-no-session|0|2026-10-06T00:56:00Z|failure|0|0|fresh
-          cancelled-worker|1|2026-10-06T00:10:00Z|cancelled|0|0|old.jsonl
-          never-completed|1||failure|0|0|old.jsonl
-          infra-comment|1|2026-10-06T00:04:00Z|failure|1|0|old.jsonl
-          jobs-api-fails|1|2026-10-06T00:56:00Z|failure|0|1|fresh
+          wall-death|1|2026-10-06T00:56:00Z|failure|0|0|0|1|old.jsonl
+          two-sessions|2|2026-10-06T00:56:00Z|failure|0|0|0|1|new.jsonl
+          early-failure|1|2026-10-06T00:04:00Z|failure|0|0|0|1|fresh
+          normal-finish|1|2026-10-06T00:40:00Z|success|0|0|0|1|fresh
+          wall-no-session|0|2026-10-06T00:56:00Z|failure|0|0|0|1|fresh
+          cancelled-worker|1|2026-10-06T00:10:00Z|cancelled|0|0|0|1|old.jsonl
+          never-completed|1||failure|0|0|0|1|old.jsonl
+          infra-comment|1|2026-10-06T00:04:00Z|failure|1|0|0|1|old.jsonl
+          jobs-api-fails|1|2026-10-06T00:56:00Z|failure|0|1|0|1|fresh
+          stale-session|1|2026-10-06T00:56:00Z|failure|0|0|1|1|fresh
+          stranger-infra-comment|1|2026-10-06T00:04:00Z|failure|2|0|0|1|fresh
+          rerun-wall-death|1|2026-10-06T00:56:00Z|failure|0|0|0|2|old.jsonl
+          rerun-early-failure|1|2026-10-06T00:04:00Z|failure|0|0|0|2|fresh
+          rerun-infra-comment|1|2026-10-06T00:04:00Z|failure|1|0|0|2|old.jsonl
+          rerun-stale-session|1|2026-10-06T00:56:00Z|failure|0|0|1|2|fresh
           CASES
           test "$bad" -eq 0
       - name: Clean workspace salvage (fake remote)
         # fleet-ops#9326: runs agent.yml's Clean workspace block against a bare
         # repo standing in for origin. A dirty tree, or commits that no remote
         # holds, land on the claim ref as wip(salvage) and the directory is
-        # deleted. A clean tree pushes nothing. A failing push still deletes.
+        # deleted. A clean tree pushes nothing. A failing push or a rejecting
+        # pre-commit hook pushes nothing and still deletes.
         if: always()
         run: |
           set -euo pipefail
@@ -651,7 +665,7 @@ jobs:
           export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@example.com GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@example.com
           export REPO=Nishfleet/fleet-ops REF=claim/issue-77 MISS=false
           bad=0
-          for name in dirty clean unpushed-commit push-fails; do
+          for name in dirty clean unpushed-commit push-fails hook-rejects; do
             export HOME=$t/home-$name
             r=$t/$name-remote.git; dir=$HOME/workspaces/agent-worktrees/issue-fleet-ops-77
             mkdir -p "$HOME/workspaces/agent-worktrees"
@@ -666,6 +680,8 @@ jobs:
               dirty) echo edit >> "$dir/a.txt"; echo new > "$dir/b.txt" ;;
               unpushed-commit) echo more > "$dir/c.txt"; git -C "$dir" add c.txt; git -C "$dir" commit -q -m local-work ;;
               push-fails) echo edit >> "$dir/a.txt"; git -C "$dir" remote set-url origin "$t/does-not-exist.git" ;;
+              # the repo's pre-commit secret scan must still run on the salvage commit
+              hook-rejects) echo "token=x" > "$dir/b.txt"; printf '#!/bin/sh\nexit 1\n' > "$dir/.git/hooks/pre-commit"; chmod +x "$dir/.git/hooks/pre-commit" ;;
             esac
             rc=0
             bash "$t/clean.sh" > "$t/$name.log" 2>&1 || rc=$?
