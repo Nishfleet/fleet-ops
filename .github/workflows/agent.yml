@@ -435,19 +435,21 @@ jobs:
               # the required checks hold the merge. A repo with no required
               # checks judges all of them, as Deliverable does. The runner
               # user's own gh login reads the checks: the App token has no
-              # checks: read. A read error warns and arms, as before.
+              # checks: read. A read error skips the arm too: Deliverable
+              # fails on it as well, so the issue is requeued, not stranded.
               q='[.[] | select(.bucket == "fail") | .name] | join(", ")'
               red=$(env -u GH_TOKEN -u GITHUB_TOKEN gh pr checks "$n" -R "$REPO" --required --json name,bucket --jq "$q" 2>&1) || case $? in
                 8) ;; # gh's pending exit: --jq already printed the red names
                 *) case ${red,,} in
                      *"no required checks reported"*)
-                       red=$(env -u GH_TOKEN -u GITHUB_TOKEN gh pr checks "$n" -R "$REPO" --json name,bucket --jq "$q" 2>&1) || [ $? = 8 ] || red= ;;
+                       red=$(env -u GH_TOKEN -u GITHUB_TOKEN gh pr checks "$n" -R "$REPO" --json name,bucket --jq "$q" 2>&1) || [ $? = 8 ] ||
+                         case ${red,,} in *"no checks reported"*) red= ;; *) red="unreadable ($red)" ;; esac ;;
                      *"no checks reported"*) red= ;;
-                     *) echo "::warning::could not read checks on claim PR #$n, arming anyway: $red"; red= ;;
+                     *) red="unreadable ($red)" ;;
                    esac ;;
               esac
               if [ -n "$red" ]; then
-                echo "::warning::claim PR #$n not armed: red checks on its head: $red"
+                echo "::warning::claim PR #$n not armed, red required checks on its head: $red"
               else
                 gh pr merge "$REF" -R "$REPO" --auto --squash  # a merge queue overrides the method; repos without one need it
               fi
