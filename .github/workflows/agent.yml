@@ -440,7 +440,7 @@ jobs:
               # checks: read.
               q='[.[] | select(.bucket == "fail") | .name] | join(", ")'
               red=$(env -u GH_TOKEN -u GITHUB_TOKEN gh pr checks "$n" -R "$REPO" --required --json name,bucket --jq "$q" 2>&1) || case $? in
-                8) ;; # gh's pending exit: --jq already printed the red names
+                8) ;; # gh's pending exit: --jq still printed any red names, empty if none
                 *) case ${red,,} in
                      *"no required checks reported"*)
                        red=$(env -u GH_TOKEN -u GITHUB_TOKEN gh pr checks "$n" -R "$REPO" --json name,bucket --jq "$q" 2>&1) || [ $? = 8 ] ||
