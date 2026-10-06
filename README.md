@@ -67,8 +67,10 @@ script, or prompt lands unseen.
   through `pi --print` on `stepfun/step-5-preview`, reads one week of fleet
   sessions, writes `retro-week-<date>.md` to
   `/home/nish/workspaces/agent-state/retro/`, and files one fleet-ops issue
-  labelled `retro` + `needs-orchestrator`. Same shape and the same reason as
-  the flip: the prompt is the whole job and there is no checked-in script.
+  labelled `retro` + `needs-orchestrator` whose public body is only the six
+  class counts and the report path (the report stays local). Same shape and
+  the same reason as the flip: the prompt is the whole job and there is no
+  checked-in script.
   README "Weekly retro" has the run, off and delete steps.
 - `systemd/leviathan-index@.service` and `systemd/leviathan-index@.timer` —
   the Leviathan session-log search index, refreshed every 15 minutes per
@@ -414,12 +416,14 @@ pilot report in 28.4 minutes on 2026-10-06. The model reads one week of fleet
 sessions, writes `retro-week-<YYYY-MM-DD>.md` to
 `/home/nish/workspaces/agent-state/retro/`, skips what a previous
 `retro`-labelled issue already reports, then files exactly one fleet-ops issue
-titled `Retro week <start>..<end>`, labelled `retro` + `needs-orchestrator`.
-It never labels one `agent-ready`: workers must not admit fleet-ops work, so a
-retro finding waits for a person. `TimeoutStartSec=3600` is the deadline, and
-`ExecStopPost` fails the unit when the report is missing or empty, so a run
-that stops without writing one shows up in `systemctl --user list-units
---state=failed` (fleet-ops#9314).
+titled `Retro week <start>..<end>`, labelled `retro` + `needs-orchestrator`,
+with only the six class counts and the report path in the public body
+(`Nishfleet/fleet-ops` is public; the 5-line summary stays in the local
+report). It never labels one `agent-ready`: workers must not admit fleet-ops
+work, so a retro finding waits for a person. `TimeoutStartSec=3600` is the
+deadline, and `ExecStopPost` fails the unit when the report is missing or
+empty, so a run that stops without writing one shows up in
+`systemctl --user list-units --state=failed` (fleet-ops#9314).
 
 - Run it now: `systemctl --user start retro-weekly.service`, then
   `journalctl --user -u retro-weekly -f`. A run takes about 30 minutes.
@@ -430,6 +434,14 @@ that stops without writing one shows up in `systemctl --user list-units
   `~/.local/share/retro-weekly`, delete `prompts/retro-weekly.md`, the two
   `systemd/retro-weekly.*` files and step 8b of `systemd/fleet-sync.service`,
   and run `systemctl --user daemon-reload`.
+
+The live timer was disabled at 12:54 IST on 2026-10-06 by the #9321 rework
+run (`systemctl --user disable --now retro-weekly.timer`), because the
+review named a reserved-class exposure on a copy that was already
+installed. `UnitFileState=disabled`, `ActiveState=inactive`,
+`NextElapseUSecRealtime=` empty. The service file is still on disk. The
+commands below re-enable it after merge, as a symlink into
+`fleet-ops-deploy-clone` so LINK-GUARD stays happy.
 
 Post-merge the two new units are wired once by hand, like every other unit in
 `systemd/`. Until that merge the live paths are real-file copies (the deploy

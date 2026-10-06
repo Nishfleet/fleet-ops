@@ -17,11 +17,16 @@
 # nish3451's gh login and the no-expiry Cloudflare token. That is a known,
 # named risk, not an oversight, and the bound is the prompt plus the loaded
 # ~/AGENTS.md: read-only sources, "do not edit any file except $DELIVERABLE",
-# exactly ONE issue with no `agent-ready`, no PRs, no deploy. Hardening it
-# properly needs a jail that still allows ~ (pi writes its own session log),
-# which ProtectHome cannot give — tracked in fleet-ops#9339, which spells out the
-# narrowing (an issues-only token plus GH_CONFIG_DIR) once Nish mints the token.
-# Do not "fix" it with a half-sandbox that breaks the proven run.
+# exactly ONE issue with no `agent-ready`, no PRs, no deploy.
+# InaccessiblePaths= does not fence this under the --user manager on this
+# host (systemd 255.4). A oneshot run 2026-10-06 12:53 IST with
+# InaccessiblePaths=/home/nish/.config/cloudflare /home/nish/.config/fleet-ops/litellm-master-key.env
+# showed the property set (`systemctl --user show -p InaccessiblePaths`) and
+# `systemd-analyze --user verify` accepted the file, but the unit's own
+# `test -e` still printed cf=yes and key=yes. Shipping the line would look
+# like a fence and not be one. The remaining exposure is the gh login;
+# fleet-ops#9339 is the narrowing (an issues-only token plus GH_CONFIG_DIR)
+# once Nish mints the token.
 #
 # Why stepfun/step-5-preview and no --no-context-files: that seat read a full
 # week of sessions and wrote the pilot report in 28.4 min on 2026-10-06
@@ -56,6 +61,8 @@
 # line is `RETRO_ISSUE_URL: https://github.com/Nishfleet/fleet-ops/issues/N`
 # (or `RETRO_ISSUE_URL:` on failure) and a check that is absent fails the unit.
 # A failure is a failed unit someone can list, not a silent week with no retro.
+# `out=$(… | pi …)` discarding pi's exit is intentional: the last-line grep
+# is the gate. Do not wrap the substitution in `set -e` or `pipefail`.
 #
 # ExecStartPre deletes today's report BEFORE anything else, then resolves the
 # date into the state file, then checks the prompt:

@@ -19,8 +19,8 @@ Dispatch pauses through the repo variable `FLEET_DISPATCH_PAUSED`, never by disa
 No scheduled fleet job opens PRs, and only one opens issues: the
 weekly /retro (`retro-weekly.timer`, Monday 07:00 IST, fleet-ops#9314)
 files one issue titled `Retro week <start>..<end>`, labelled `retro`
-+ `needs-orchestrator` — never `agent-ready`, so a worker never queues
-fleet-ops work for itself. Otherwise issues come from people,
++ `needs-orchestrator`, public body counts-and-path only — never
+`agent-ready`, so a worker never queues fleet-ops work for itself. Otherwise issues come from people,
 red-main issues and dependabot, which runs weekly. The scheduled model
 calls are `systemd/blacksmith-flip.timer` (hourly): `prompts/blacksmith-flip.yml` runs through `pi --print` on the `worker-cheap` seat and sets or deletes the org `CI_RUNNER` variable at 95% of the free Blacksmith minutes (fleet-ops#8936); and `retro-weekly.timer` (weekly): `prompts/retro-weekly.md` runs through `pi --print` on `stepfun/step-5-preview`, writes the retro report and files that issue.
 

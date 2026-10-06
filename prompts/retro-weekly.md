@@ -58,11 +58,14 @@ file except $DELIVERABLE.
 Then file the report, exactly once: after the report file is written, open ONE
 fleet-ops issue by piping the body into
 `gh issue create -R Nishfleet/fleet-ops --title "Retro week <start>..<end>" --label retro,needs-orchestrator --body-file -`,
-where <start>..<end> are this run's real window dates. The body carries the
-5-line summary and the report path. Never label it `agent-ready`: workers must
+where <start>..<end> are this run's real window dates. Nishfleet/fleet-ops is
+public, so the body is ONLY the six class counts as integers and the report
+path. No quotes, no transcript words, no 5-line summary — those stay in
+$DELIVERABLE, which is local. Never label it `agent-ready`: workers must
 never queue fleet-ops work for themselves, so a retro finding waits for a
-person. If an issue with that exact title already exists, post the summary as a
-comment on it instead of opening a second one. Open no other issues or PRs.
+person. If an issue with that exact title already exists, post the same
+counts-and-path body as a comment on it instead of opening a second one.
+Open no other issues or PRs.
 
 Both labels already exist (retro 5319E7, needs-orchestrator D93F0B). If the
 create fails because one is missing, create that label with
