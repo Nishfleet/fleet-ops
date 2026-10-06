@@ -4,17 +4,38 @@
 # blacksmith-flip.service (fleet-ops#8936): one prompt file installed by
 # fleet-sync, piped into `pi --print`; no glue, the prompt is the whole job.
 #
+# gh auth: this unit runs under the systemd --user manager, which has no
+# GH_TOKEN, so `gh` reads ~/.config/gh/hosts.yml and acts as the nish3451
+# account, which can open a fleet-ops issue. No credential is in this file, in
+# the prompt, or in argv. Proved on the live run: issue #9332 was opened at
+# 2026-10-06 11:36 IST.
+#
+# This unit is NOT in the worker jail (agent.yml's empty-tmpfs over
+# ~/.config/gh and ~/.config/cloudflare, fleet-ops#9274), and unlike
+# blacksmith-flip it does read untrusted text: the week's sessions carry
+# outsider issue bodies and PR reviews. So a fooled model here can reach
+# nish3451's gh login and the no-expiry Cloudflare token. That is a known,
+# named risk, not an oversight, and the bound is the prompt plus the loaded
+# ~/AGENTS.md: read-only sources, "do not edit any file except $DELIVERABLE",
+# exactly ONE issue with no `agent-ready`, no PRs, no deploy. Hardening it
+# properly needs a jail that still allows ~ (pi writes its own session log),
+# which ProtectHome cannot give — tracked in the follow-up filed with this
+# PR. Do not "fix" it with a half-sandbox that breaks the proven run.
+#
 # Why stepfun/step-5-preview and no --no-context-files: that seat read a full
 # week of sessions and wrote the pilot report in 23.5 min on 2026-10-06
 # (retro-week-2026-10-06.md, 25,805 bytes), and ~/AGENTS.md must stay loaded —
 # it is what makes the report plain English. FLEET_TASK_ID is a fixed id on
 # purpose: a recurring check, not a per-task agent (blacksmith-flip comment).
 #
-# DELIVERABLE carries the date, so ExecStart computes it (date +%%F is IST —
-# the host clock is IST — and a 07:00 run can never cross midnight) and
-# exports it for the model; ExecStopPost recomputes the same path for the
-# deliverable dead-man from the host rules: a stop with no non-empty report is
-# a failed unit, visible in `systemctl --user list-units --state=failed`.
+# DELIVERABLE carries the date, and the date is computed ONCE. ExecStartPre writes
+# today's IST date to ~/workspaces/agent-state/retro/.retro-weekly-date, and
+# both ExecStart and ExecStopPost read that file back. Three `date +%%F` calls
+# (start, stop, and the grep) would disagree on a Persistent=true catch-up run
+# that starts before midnight IST and stops after it: the report is named with
+# the start date and the dead-man check would look for the stop date. One
+# write makes the start date, the model's $DELIVERABLE and the dead-man check
+# the same string. The report filename stays retro-week-<date>.md.
 #
 # Deadline: the issue text names RuntimeMaxSec=3600, but for Type=oneshot
 # systemd ignores RuntimeMaxSec — `systemd-analyze --user verify` prints
@@ -26,16 +47,47 @@
 # (`systemctl --user list-units --state=failed`), with ExecStopPost still
 # running the deliverable check.
 #
+# Two gates, one for each thing this run promises. ExecStopPost checks the
+# report file, and ExecStart checks that the run actually filed the issue
+# (fleet-ops#9327: a litellm 403 killed a run mid-flight and the unit stopped
+# with exit 0, because `out=$(...)` swallowed pi's status and the last command
+# was a printf). Same shape as blacksmith-flip's FLIP: trap: the prompt's last
+# line is `RETRO_ISSUE_URL: https://github.com/Nishfleet/fleet-ops/issues/N`
+# (or `RETRO_ISSUE_URL:` on failure) and a check that is absent fails the unit.
+# A failure is a failed unit someone can list, not a silent week with no retro.
+#
+# ExecStartPre deletes today's report BEFORE anything else, then resolves the
+# date into the state file, then checks the prompt:
+# - without the delete, a manual run earlier the same day leaves a non-empty
+#   file that a later failed run then passes the ExecStopPost check on;
+# - without the prompt check, `pi` starts with stdin closed and writes nothing,
+#   and the report the prompt file cannot reach stays silently stale.
+# The delete runs first so a half-finished pre-step cannot leave a stale file.
+# If ExecStartPre fails, ExecStart does not run but ExecStopPost does, and it
+# reads the state file, so the date must be written even on the failure path.
+#
+# After=fleet-litellm-proxy.service because the model call goes through the
+# proxy on 127.0.0.1:4000: a Persistent=true catch-up run can start while the
+# proxy is still coming up. No Wants=, so the retro never starts a proxy that
+# was deliberately stopped. The ExecStart gate above turns a too-early run
+# into a loud failure rather than a fake clean week.
+#
+# WorkingDirectory=/home/nish is the documented default (`systemctl --user show`
+# prints `!/home/nish`), written out: pi's project context discovery and the
+# report's plain-English rule both assume ~ (the model must load ~/AGENTS.md).
+#
 # %%F, not %F: systemd expands % specifiers itself, before any shell runs
 # (same rule as the %%s in blacksmith-flip.service, ci.yml gate fleet-ops#8382).
 [Unit]
 Description=Weekly /retro over one week of fleet sessions (Monday 07:00 IST)
-After=network-online.target
+After=network-online.target fleet-litellm-proxy.service
 Wants=network-online.target
 
 [Service]
 Type=oneshot
 Environment=FLEET_TASK_ID=retro-weekly
-ExecStart=/bin/sh -c 'DELIVERABLE=/home/nish/workspaces/agent-state/retro/retro-week-$(date +%%F).md; export DELIVERABLE; mkdir -p /home/nish/workspaces/agent-state/retro; out=$(cat /home/nish/.local/share/retro-weekly/prompt.md | /home/nish/.local/bin/pi --print --provider stepfun --model step-5-preview); printf "%%s\n" "$out"'
-ExecStopPost=/bin/sh -c 'test -s /home/nish/workspaces/agent-state/retro/retro-week-$(date +%%F).md || { echo no-deliverable >&2; exit 1; }'
+WorkingDirectory=/home/nish
+ExecStartPre=/bin/sh -c 'd=$(date +%%F); /bin/rm -f /home/nish/workspaces/agent-state/retro/retro-week-$d.md; mkdir -p /home/nish/workspaces/agent-state/retro; printf %%s "$d" > /home/nish/workspaces/agent-state/retro/.retro-weekly-date; /bin/test -s /home/nish/.local/share/retro-weekly/prompt.md || { echo no-prompt >&2; exit 1; }'
+ExecStart=/bin/sh -c 'd=$(cat /home/nish/workspaces/agent-state/retro/.retro-weekly-date); DELIVERABLE=/home/nish/workspaces/agent-state/retro/retro-week-$d.md; export DELIVERABLE; out=$(cat /home/nish/.local/share/retro-weekly/prompt.md | /home/nish/.local/bin/pi --print --provider stepfun --model step-5-preview); printf "%%s\n" "$out"; printf "%%s\n" "$out" | grep -qE "^RETRO_ISSUE_URL: https://github[.]com/Nishfleet/fleet-ops/issues/[0-9]+$" || exit 1'
+ExecStopPost=/bin/sh -c 'd=$(cat /home/nish/workspaces/agent-state/retro/.retro-weekly-date); test -s /home/nish/workspaces/agent-state/retro/retro-week-$d.md || { echo no-deliverable >&2; exit 1; }'
 TimeoutStartSec=3600

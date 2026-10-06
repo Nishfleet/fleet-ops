@@ -17,6 +17,11 @@ and counts, then read only the slices you cite):
 - Repos: ~/workspaces/products/{0509,fleet-ops,drive,inish-site,tinystudio-in} at
   origin/main (git show, do not check out).
 
+Redaction rule for every quote: cite a session id and a timestamp and at most a
+few words. Never paste a raw transcript line, a tool result or a config value
+into the report or the issue body, and never copy a token, key, bearer header,
+env dump, curl argv or a path that holds one, even truncated.
+
 Count these classes across the week (each with the number, 2-3 example session
 ids + timestamps, and the fix rung):
 1. Main red after merge: a session merged or reported "done" while the required
@@ -57,5 +62,17 @@ where <start>..<end> are this run's real window dates. The body carries the
 5-line summary and the report path. Never label it `agent-ready`: workers must
 never queue fleet-ops work for themselves, so a retro finding waits for a
 person. If an issue with that exact title already exists, post the summary as a
-comment on it instead of opening a second one. Open no other issues or PRs, and
-print the issue URL as the last line of your reply so the journal keeps it.
+comment on it instead of opening a second one. Open no other issues or PRs.
+
+Both labels already exist (retro 5319E7, needs-orchestrator D93F0B). If the
+create fails because one is missing, create that label with
+`gh label create <name> -R Nishfleet/fleet-ops --color <hex> --description "Found by the weekly /retro run"`
+and retry the create once. Do not retry past that.
+
+The unit gates on your last line, so end your reply with exactly one line in
+this form and nothing after it:
+
+`RETRO_ISSUE_URL: https://github.com/Nishfleet/fleet-ops/issues/<number>`
+
+If the report or the issue could not be written, end with `RETRO_ISSUE_URL:`
+and nothing else, so the unit fails loudly instead of recording a clean run.

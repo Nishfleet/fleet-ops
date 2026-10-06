@@ -2,9 +2,9 @@
 # sessions per run. Same shape as blacksmith-flip.timer (fleet-ops#8936).
 #
 # Persistent=true: a timer slot the host missed (power cut, fleet update pause,
-# a 07:00 run killed by RuntimeMaxSec) catches up on the next boot or manager
-# reload instead of being dropped, so the weekly retro never silently skips a
-# week.
+# a 07:00 run killed by the service's TimeoutStartSec) catches up on the next
+# boot or manager reload instead of being dropped, so the weekly retro never
+# silently skips a week.
 #
 # Nothing to order against: retro-weekly.service takes no lock and holds no
 # CI minutes, so it may run beside the other user units (fleet-update, the
