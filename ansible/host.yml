@@ -45,6 +45,8 @@
     # run, which removes nothing, still passes.
     retired:
       - /etc/systemd/system/actions.runner.Nishfleet.netcup-fleet-ci-.service.d/10-restart.conf
+      # drive moved to Nishfleet (2026-10-06): its runners are org agent runners now.
+      - /etc/systemd/system/actions.runner.nish3451-drive.netcup-agent-drive-.service.d
       - /etc/systemd/system.control/actions.runner.Nishfleet.netcup-fleet-ci-1.service.d
       - /etc/systemd/system.control/actions.runner.Nishfleet.netcup-fleet-ci-2.service.d
       - /etc/systemd/system.control/actions.runner.Nishfleet.netcup-fleet-ci-3.service.d
@@ -196,6 +198,45 @@
         owner: root
         group: root
         mode: preserve
+
+    # Leviathan is the session-log search the agents are told to run first
+    # (AGENTS.md, prompts/worker.md). The release is pinned: a bump is a PR
+    # that changes the URL and the checksum together, and this block's
+    # extracted path (the tarball's one top dir carries the version). Runs as
+    # root but installs into nish's ~/.local/bin, because the binary reads
+    # only nish's session logs. update.yml versions it weekly; like the other
+    # raw binaries in ~/.local/bin it has no updater.
+    - name: Download the pinned Leviathan release
+      ansible.builtin.get_url:
+        url: https://github.com/elstongun/leviathan/releases/download/v0.1.0/leviathan-v0.1.0-x86_64-unknown-linux-gnu.tar.gz
+        dest: /tmp/leviathan.tar.gz
+        mode: "0644"
+        checksum: sha256:9ddbae3b70afeaa1f638effaffdb5f49fb1a6651a99d3450d2af584938eee3cd
+
+    - name: Unpack the pinned Leviathan release
+      ansible.builtin.unarchive:
+        src: /tmp/leviathan.tar.gz
+        dest: /tmp/leviathan/
+        remote_src: true
+        include:
+          - leviathan-v0.1.0-x86_64-unknown-linux-gnu/leviathan
+
+    - name: Install the Leviathan binary for nish
+      ansible.builtin.copy:
+        src: /tmp/leviathan/leviathan-v0.1.0-x86_64-unknown-linux-gnu/leviathan
+        dest: /home/nish/.local/bin/leviathan
+        owner: nish
+        group: nish
+        mode: "0755"
+        remote_src: true
+
+    - name: Drop the Leviathan download and unpack tree
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: absent
+      loop:
+        - /tmp/leviathan.tar.gz
+        - /tmp/leviathan
 
     # enabled only: never restarts the Remote Control link this playbook may run under.
     - name: Enable Remote Control at boot

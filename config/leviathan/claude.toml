@@ -1,0 +1,17 @@
+[about]
+name = "Claude Code session logs"
+description = "Every user and assistant message from Claude Code sessions on this host"
+record = "message"
+group = "session"
+
+[source]
+paths = ["/home/nish/.claude/projects"]
+format = "jsonl"
+
+[fields]
+id = "uuid"
+text = ["message.content", "message.content[].text", "message.content[].content", "message.content[].content[].text", "message.content[].input.command", "message.content[].input.description", "message.content[].input.prompt"]
+group = "sessionId"
+date = "timestamp"
+filters = ["type"]
+display = ["cwd", "type"]
