@@ -237,21 +237,30 @@ jobs:
         id: resume
         if: steps.gate.outputs.go == 'true' && steps.gate.outputs.miss != 'true' && steps.gate.outputs.engine == 'pi'
         # fleet-ops#9326: a retry after a wall or infra death resumes the dead
-        # run's pi conversation (pi --continue); every other retry starts fresh,
+        # run's pi conversation; every other retry starts fresh,
         # because an early packet failure should not inherit a bad conversation.
         # The previous run is the newest earlier "agent run started:" comment.
         # It died at the wall or as infra when its Worker step never completed,
         # ended cancelled, ran >= WORKER_TIMEOUT_SECS without success, or left an
         # "agent run infra-failed:" comment. Nish's gh login reads the jobs API
         # (the App token cannot). Any lookup error leaves the output unset, so
-        # the run starts fresh.
+        # the run starts fresh. The output is session=<abs path of the newest
+        # session file> and the Worker passes it as pi --session. Not
+        # --continue: with --session-dir, pi's continueRecent filters sessions
+        # by cwd, and the cwd is the runner's work dir, which differs per
+        # runner (drive#563's sessions sit under .../agent-runner/15/_work/drive/drive
+        # and .../agent-runner/14/_work/drive/drive), so a retry on another
+        # runner would silently start fresh. --session with an absolute .jsonl
+        # path opens that file with no cwd check (pi main.js resolveSessionPath).
         env:
           WORKER_TIMEOUT_SECS: '3240'
         run: |
           i=${REF#claim/issue-}; i=${i%%-*}
           id=${REPO#*/}-$i
           sessdir="$HOME/.pi/agent/sessions/agent-$id"
-          [ -n "$(find "$sessdir" -maxdepth 1 -name '*.jsonl' -print -quit 2>/dev/null)" ] || { echo "resume: no session file; fresh start"; exit 0; }
+          # Newest by mtime, the order pi itself uses.
+          session=$(find "$sessdir" -maxdepth 1 -name '*.jsonl' -printf '%T@ %p\n' 2>/dev/null | sort -rn | head -n1 | cut -d' ' -f2-)
+          [ -n "$session" ] || { echo "resume: no session file; fresh start"; exit 0; }
           comments=$(env -u GH_TOKEN -u GITHUB_TOKEN gh issue view "$i" -R "$REPO" --json comments) || { echo "resume: comments read failed; fresh start"; exit 0; }
           prev=$(jq -r --arg u "/runs/$GITHUB_RUN_ID" '[.comments[].body | select(startswith("agent run started: ")) | ltrimstr("agent run started: ") | select(endswith($u) | not)] | last // empty' <<<"$comments") || prev=
           case $prev in
@@ -260,7 +269,7 @@ jobs:
           esac
           if jq -e --arg p "agent run infra-failed: $prev" '.comments | any(.body == $p)' <<<"$comments" >/dev/null; then
             echo "resume: $prev died as infra; continue"
-            echo continue=true >> "$GITHUB_OUTPUT"
+            echo "session=$session" >> "$GITHUB_OUTPUT"
             exit 0
           fi
           jobs_json=$(env -u GH_TOKEN -u GITHUB_TOKEN gh api --paginate "repos/$REPO/actions/runs/${prev##*/}/jobs?per_page=100") || { echo "resume: jobs read failed; fresh start"; exit 0; }
@@ -278,7 +287,7 @@ jobs:
               else "fresh"
               end' <<<"$jobs_json") || verdict=fresh
           echo "resume: $prev -> $verdict"
-          [ "$verdict" = continue ] && echo continue=true >> "$GITHUB_OUTPUT"
+          [ "$verdict" = continue ] && echo "session=$session" >> "$GITHUB_OUTPUT"
           exit 0
       - name: Worker
         if: steps.gate.outputs.go == 'true'
@@ -291,7 +300,7 @@ jobs:
         env:
           ENGINE: ${{ steps.gate.outputs.engine }}
           MISS: ${{ steps.gate.outputs.miss }}
-          RESUME: ${{ steps.resume.outputs.continue }}
+          RESUME_SESSION: ${{ steps.resume.outputs.session }}
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
           # Pi sends this as x-litellm-session-id so the router keeps the whole run on one model (#9015).
           FLEET_TASK_ID: run-${{ github.run_id }}-${{ github.run_attempt }}
@@ -392,9 +401,9 @@ jobs:
                 --session-dir "$HOME/.pi/agent/sessions/agent-$id" \
                 --exclude-tools subagent --provider litellm --model worker-capable >/dev/null
             else
-              # --continue only when the Resume check found a wall or infra death.
+              # --session only when the Resume check found a wall or infra death.
               cont=()
-              [ "$RESUME" = true ] && cont=(--continue)
+              [ -n "$RESUME_SESSION" ] && cont=(--session "$RESUME_SESSION")
               echo "/worker $id" | $jail pi --print "${cont[@]}" \
                 --append-system-prompt "$HOME/workspaces/tooling/fleet-ops-deploy-clone/AGENTS.md" \
                 --session-dir "$HOME/.pi/agent/sessions/agent-$id" \

@@ -579,10 +579,11 @@ jobs:
           WORKER_TIMEOUT_SECS=$(step env.WORKER_TIMEOUT_SECS)
           [ "$WORKER_TIMEOUT_SECS" = 3240 ] || { echo "resume WORKER_TIMEOUT_SECS is '$WORKER_TIMEOUT_SECS'"; exit 1; }
           worker() { yq ".jobs.work.steps[] | select(.name == \"Worker\") | .$1" .github/workflows/agent.yml; }
-          worker env.RESUME | grep -F 'steps.resume.outputs.continue' >/dev/null || { echo "Worker RESUME not wired"; exit 1; }
+          worker env.RESUME_SESSION | grep -F 'steps.resume.outputs.session' >/dev/null || { echo "Worker RESUME_SESSION not wired"; exit 1; }
           # shellcheck disable=SC2016 # the literal text of the pi launch
           [ "$(worker run | grep -cF '$jail pi --print "${cont[@]}"')" = 1 ] || { echo "Worker pi launch does not pass cont"; exit 1; }
-          worker run | grep -F 'cont=(--continue)' >/dev/null || { echo "Worker has no --continue"; exit 1; }
+          # shellcheck disable=SC2016 # the literal text of the pi launch
+          worker run | grep -F 'cont=(--session "$RESUME_SESSION")' >/dev/null || { echo "Worker has no --session"; exit 1; }
           cat > "$t/bin/gh" <<'MOCK'
           #!/usr/bin/env bash
           case "$*" in
@@ -597,12 +598,14 @@ jobs:
           export REPO=Nishfleet/fleet-ops REF=claim/issue-77 GITHUB_RUN_ID=222 GITHUB_SERVER_URL=https://github.com
           export WORKER_TIMEOUT_SECS
           bad=0
-          # name|session|end|conclusion|infra comment|jobs api fails|want
+          # name|session (0 none, 1 one file, 2 two files)|end|conclusion|infra comment|jobs api fails|want (fresh, or the session file pi must open)
           while IFS='|' read -r name session end concl infra apifail want; do
             export HOME=$t/home-$name COMMENTS=$t/$name-comments.json JOBS=$t/$name-jobs.json GITHUB_OUTPUT=$t/$name.out
             : > "$GITHUB_OUTPUT"
             mkdir -p "$HOME/.pi/agent/sessions/agent-fleet-ops-77"
-            [ "$session" = 1 ] && : > "$HOME/.pi/agent/sessions/agent-fleet-ops-77/2026-10-06T00-00-00-000Z_abc.jsonl"
+            sd=$HOME/.pi/agent/sessions/agent-fleet-ops-77
+            if [ "$session" -ge 1 ]; then : > "$sd/old.jsonl"; touch -d '2026-10-06 00:00:00' "$sd/old.jsonl"; fi
+            if [ "$session" = 2 ]; then : > "$sd/new.jsonl"; touch -d '2026-10-06 01:00:00' "$sd/new.jsonl"; fi
             jq -n --arg u "https://github.com/Nishfleet/fleet-ops/actions/runs" --argjson i "$infra" \
               '{comments: ([{body: ("agent run started: " + $u + "/111")}]
                 + [if $i == 1 then {body: ("agent run infra-failed: " + $u + "/111")} else empty end]
@@ -615,16 +618,19 @@ jobs:
             if [ "$apifail" = 1 ]; then export API_FAIL=1; fi
             rc=0
             PATH="$t/bin:$PATH" bash "$t/resume.sh" > "$t/$name.log" 2>&1 || rc=$?
-            got=fresh; grep -qx 'continue=true' "$GITHUB_OUTPUT" && got='continue'
+            got=fresh
+            # the output must be the absolute path inside this case's session dir
+            if grep -q "^session=$HOME/.pi/agent/sessions/agent-fleet-ops-77/[a-z]*\.jsonl$" "$GITHUB_OUTPUT"; then got=$(sed -n 's|^session=.*/||p' "$GITHUB_OUTPUT"); fi
             if [ "$got" != "$want" ] || [ "$rc" != 0 ]; then echo "case $name: got=$got (want $want) exit=$rc"; cat "$t/$name.log"; bad=1; else echo "case $name: $got ok"; fi
           done <<'CASES'
-          wall-death|1|2026-10-06T00:56:00Z|failure|0|0|continue
+          wall-death|1|2026-10-06T00:56:00Z|failure|0|0|old.jsonl
+          two-sessions|2|2026-10-06T00:56:00Z|failure|0|0|new.jsonl
           early-failure|1|2026-10-06T00:04:00Z|failure|0|0|fresh
           normal-finish|1|2026-10-06T00:40:00Z|success|0|0|fresh
           wall-no-session|0|2026-10-06T00:56:00Z|failure|0|0|fresh
-          cancelled-worker|1|2026-10-06T00:10:00Z|cancelled|0|0|continue
-          never-completed|1||failure|0|0|continue
-          infra-comment|1|2026-10-06T00:04:00Z|failure|1|0|continue
+          cancelled-worker|1|2026-10-06T00:10:00Z|cancelled|0|0|old.jsonl
+          never-completed|1||failure|0|0|old.jsonl
+          infra-comment|1|2026-10-06T00:04:00Z|failure|1|0|old.jsonl
           jobs-api-fails|1|2026-10-06T00:56:00Z|failure|0|1|fresh
           CASES
           test "$bad" -eq 0
