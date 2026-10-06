@@ -421,11 +421,65 @@ jobs:
             n=$(gh pr view "$REF" -R "$REPO" --json number --jq .number)
             changed=$(gh pr view "$REF" -R "$REPO" --json changedFiles --jq .changedFiles)
             files=$(gh api --paginate "repos/$REPO/pulls/$n/files" --jq '.[] | .filename, (.previous_filename // empty)')
+            # Arm only on a head whose required checks have all already
+            # succeeded. GitHub's auto-merge does wait for required checks, but
+            # only where they are actually required, and only once they report
+            # (measured 2026-10-06, #9315): fleet-ops requires `ci` and
+            # `Gitleaks`, 0509 requires `ci-ok` alone, and drive requires
+            # `verify` and `go`, with drive the only one of the three holding no
+            # merge queue, so there the arm itself decides when the merge goes.
+            # drive#148 merged 12:08:24 IST on 2026-10-01, 26 s after `go`
+            # turned green on the worker's own last push, and drive#604 sits
+            # armed today with `verify` and `go` both FAILURE on its head. On
+            # 0509 the gap runs the other way: `ci-ok` never reported on the
+            # head of #5944 at its merge, so an armed PR there waits for
+            # nothing. So read the head's required checks here instead of
+            # trusting the branch to hold the merge. A head that is red or
+            # still running is left unarmed and unlabelled: agent-dispatch.yml's
+            # rework job dispatches a worker on the failed run, and its sweep's
+            # `unarmed` list re-dispatches any claim PR carrying no
+            # auto-merge, so a pending head gets a second arm attempt without
+            # this one guessing. No needs-coordinator label in that case,
+            # because that label is exactly what the sweep's unarmed list and
+            # hold-risky both skip, so it would pin a PR that only needed its
+            # CI to finish. The label is added instead when the state cannot be
+            # read at all, or when this branch requires no checks: nothing
+            # retries either, so a person has to arm it. The runner user's own
+            # gh login reads both, because the App token has neither
+            # checks: read nor administration.
+            verdict='{"arm":false,"label":true,"why":"could not read the checks on this head or the rules of this branch"}'
+            rollup=$(env -u GH_TOKEN -u GITHUB_TOKEN gh pr view "$REF" -R "$REPO" --json statusCheckRollup 2>&1) || rollup=
+            rules=$(env -u GH_TOKEN -u GITHUB_TOKEN gh api "repos/$REPO/rules/branches/main" 2>&1) || rules=
+            if [ -n "$rollup" ] && [ -n "$rules" ] && jq -e . <<<"$rollup" >/dev/null 2>&1 && jq -e . <<<"$rules" >/dev/null 2>&1; then
+              verdict=$(jq -cn --argjson rollup "$rollup" --argjson rules "$rules" '
+                [ $rules[]? | select(.type == "required_status_checks") | .parameters.required_status_checks[].context ] | unique as $c
+                | if ($c | length) == 0 then
+                    {arm: false, label: true, why: "this branch requires no checks, so an armed PR waits for nothing"}
+                  else
+                    ([ $c[] as $ctx
+                       | ([ $rollup.statusCheckRollup[]? | select((.name // .context) == $ctx) | (.conclusion // .status // .state) ] | .[0] // "NOT REPORTED") as $s
+                       | select($s != "SUCCESS" and $s != "NEUTRAL" and $s != "SKIPPED")
+                       | "\($ctx)=\($s)" ] | join(", ")) as $bad
+                    | if ($bad | length) > 0 then
+                        {arm: false, label: false, why: "required checks not all green: \($bad)"}
+                      else
+                        {arm: true, label: false, why: ""}
+                      end
+                  end')
+            fi
+            gate=$(jq -r .why <<<"$verdict" 2>/dev/null) || gate="could not judge the checks on this head"
+            label=$(jq -r .label <<<"$verdict" 2>/dev/null) || label=true
             safe='^(app/(routes|components)/|app/lib/(competitor|feeds|hiring|mentions|site|onboarding)/|tests/.*\.test\.tsx?$|e2e/[^/]+\.spec\.ts$|docs/)'
             policy='^docs/(REBUILD-|engines/|quality-bar\.md)'
             if [ "$changed" -ge 3000 ] || [ -z "$files" ] || grep -qvE "$safe" <<<"$files" || grep -qE "$policy" <<<"$files"; then
               gh label create needs-coordinator -R "$REPO" --force --color B60205 --description "touches a path outside the arm allowlist: the coordinator reviews and arms it"
               gh pr edit "$REF" -R "$REPO" --add-label needs-coordinator
+            elif [ -n "$gate" ]; then
+              echo "::notice::$REF is left unarmed on $REPO: $gate"
+              if [ "$label" = true ]; then
+                gh label create needs-coordinator -R "$REPO" --force --color B60205 --description "touches a path outside the arm allowlist: the coordinator reviews and arms it"
+                gh pr edit "$REF" -R "$REPO" --add-label needs-coordinator
+              fi
             else
               gh pr merge "$REF" -R "$REPO" --auto --squash  # a merge queue overrides the method; repos without one need it
             fi
@@ -465,10 +519,22 @@ jobs:
           # An open PR is not a delivery while its head is still red or
           # conflicting: the run ended success and the issue kept
           # agent-in-progress with nothing live (fleet-ops#9063: drive #200
-          # #180 #136). Fail it, so report strikes and requeues it. Pending
-          # checks pass here: a fresh push's CI is still running, and its red
-          # result fires rework on its own. The runner user's own gh login
-          # reads the checks, because the App token has no checks: read.
+          # #180 #136). Fail it, so report strikes and requeues it.
+          # Pending checks pass here, and not for the reason this comment used
+          # to give. agent-dispatch.yml's rework job fires on a `workflow_run`
+          # that completed failed or timed out, so a red CI run does dispatch a
+          # rework worker. It does not fire for a required check that never
+          # reports at all (0509#5944: `ci-ok` had no run on that head), for a
+          # run GitHub cancels, or for an external check, and each of those
+          # leaves nothing but an open PR. With auto-merge armed it is the
+          # pending state that is dangerous, not the red one: GitHub merges the
+          # instant the last required check turns green, and nothing reads the
+          # checks again afterwards (drive#148, 12:08:24 IST on 2026-10-01,
+          # 26 s after `go` turned green). The arm step now refuses a head whose
+          # required checks have not all already succeeded, so a pending head
+          # is never armed and this job never has to judge one.
+          # The runner user's own gh login reads the checks, because the App
+          # token has no checks: read.
           pr=$(gh pr view "$REF" -R "$REPO" --json number,mergeable)
           n=$(jq -r .number <<<"$pr")
           if [ "$(jq -r .mergeable <<<"$pr")" = CONFLICTING ]; then
