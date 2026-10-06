@@ -267,7 +267,7 @@ jobs:
           done
           bad=0
           while IFS= read -r c; do
-            in=$(jq -c --argjson c "$c" '.base * $c.set | {pr, issue, comments, now}' config/sweep-rework-cases.json)
+            in=$(jq -c --argjson c "$c" '.base * $c.set | {pr, issue, comments}' config/sweep-rework-cases.json)
             got=$(jq -r "$defs $prog | .reason" <<<"$in")
             [ "$got" = "$(jq -r .want <<<"$c")" ] || { echo "case $(jq -r .id <<<"$c"): got $got, want $(jq -r .want <<<"$c")"; bad=1; }
           done < <(jq -c '.cases[]' config/sweep-rework-cases.json)

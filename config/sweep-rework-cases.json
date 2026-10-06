@@ -1,73 +1,359 @@
 {
-  "_": "Cases for the RED_REWORK program in agent-dispatch.yml's list job (ci.yml runs them). Each case merges its `set` over `base` (objects merge, arrays replace) and names the reason the program must return. now = 2026-10-06T10:00:00Z; the base CI failure completed at 05:47:44Z, the newest agent run started at 05:00:00Z, so the base case is a go.",
-  "base": {
-    "now": 1791280800,
-    "pr": {
-      "headRefName": "claim/issue-765",
-      "mergeStateStatus": "BLOCKED",
-      "statusCheckRollup": [
-        {"__typename": "CheckRun", "name": "ci", "status": "COMPLETED", "conclusion": "FAILURE", "startedAt": "2026-10-06T05:40:00Z", "completedAt": "2026-10-06T05:47:44Z"},
-        {"__typename": "CheckRun", "name": "lint", "status": "COMPLETED", "conclusion": "SUCCESS", "startedAt": "2026-10-06T05:40:00Z", "completedAt": "2026-10-06T05:41:00Z"}
-      ]
+ "_": "Cases for the RED_REWORK program in agent-dispatch.yml's list job (ci.yml runs them). Each case merges its `set` over `base` (objects merge, arrays replace) and names the reason the program must return. the base CI failure completed at 05:47:44Z, the newest agent run started at 05:00:00Z, so the base case is a go.",
+ "base": {
+  "pr": {
+   "headRefName": "claim/issue-765",
+   "mergeStateStatus": "BLOCKED",
+   "statusCheckRollup": [
+    {
+     "__typename": "CheckRun",
+     "name": "ci",
+     "status": "COMPLETED",
+     "conclusion": "FAILURE",
+     "startedAt": "2026-10-06T05:40:00Z",
+     "completedAt": "2026-10-06T05:47:44Z"
     },
-    "issue": {"state": "open", "issue_dependencies_summary": {"blocked_by": 0}, "labels": [{"name": "agent-in-progress"}]},
-    "comments": [
-      {"body": "agent run started: https://github.com/Nishfleet/drive/actions/runs/37400000000", "createdAt": "2026-10-06T05:00:00Z", "authorAssociation": "CONTRIBUTOR"}
-    ]
+    {
+     "__typename": "CheckRun",
+     "name": "lint",
+     "status": "COMPLETED",
+     "conclusion": "SUCCESS",
+     "startedAt": "2026-10-06T05:40:00Z",
+     "completedAt": "2026-10-06T05:41:00Z"
+    }
+   ]
   },
-  "cases": [
-    {"id": "drive-765-missed-event", "want": "go", "set": {}},
-    {"id": "never-started", "want": "go", "set": {"comments": []}},
-    {"id": "timed-out-check", "want": "go", "set": {"pr": {"statusCheckRollup": [{"name": "ci", "status": "COMPLETED", "conclusion": "TIMED_OUT", "completedAt": "2026-10-06T05:47:44Z"}]}}},
-    {"id": "failed-status-context", "want": "go", "set": {"pr": {"statusCheckRollup": [{"__typename": "StatusContext", "context": "ci", "state": "ERROR", "startedAt": "2026-10-06T05:47:44Z"}]}}},
-    {"id": "all-green", "want": "not-red", "set": {"pr": {"statusCheckRollup": [{"name": "ci", "status": "COMPLETED", "conclusion": "SUCCESS", "completedAt": "2026-10-06T05:47:44Z"}]}}},
-    {"id": "no-checks", "want": "not-red", "set": {"pr": {"statusCheckRollup": []}}},
-    {"id": "failure-without-time", "want": "not-red", "set": {"pr": {"statusCheckRollup": [{"name": "ci", "status": "COMPLETED", "conclusion": "FAILURE"}]}}},
-    {"id": "another-check-still-running", "want": "pending", "set": {"pr": {"statusCheckRollup": [{"name": "ci", "status": "COMPLETED", "conclusion": "FAILURE", "completedAt": "2026-10-06T05:47:44Z"}, {"name": "e2e", "status": "IN_PROGRESS", "conclusion": null}]}}},
-    {"id": "dirty-is-the-conflicts-job", "want": "conflicting", "set": {"pr": {"mergeStateStatus": "DIRTY"}}},
-    {"id": "issue-closed", "want": "closed", "set": {"issue": {"state": "closed"}}},
-    {"id": "issue-blocked", "want": "blocked", "set": {"issue": {"issue_dependencies_summary": {"blocked_by": 1}}}},
-    {"id": "agent-blocked", "want": "label", "set": {"issue": {"labels": [{"name": "agent-blocked"}]}}},
-    {"id": "needs-split", "want": "label", "set": {"issue": {"labels": [{"name": "needs-split"}]}}},
-    {"id": "needs-orchestrator", "want": "label", "set": {"issue": {"labels": [{"name": "needs-orchestrator"}]}}},
-    {"id": "needs-nish-decision", "want": "label", "set": {"issue": {"labels": [{"name": "needs-nish-decision"}]}}},
-    {"id": "epic", "want": "label", "set": {"issue": {"labels": [{"name": "epic"}]}}},
-    {"id": "other-label-is-fine", "want": "go", "set": {"issue": {"labels": [{"name": "priority-now"}]}}},
-    {"id": "at-cap", "want": "cap", "set": {"comments": [
-      {"body": "agent run started: https://github.com/x/actions/runs/1", "createdAt": "2026-10-06T01:00:00Z"},
-      {"body": "agent run started: https://github.com/x/actions/runs/2", "createdAt": "2026-10-06T02:00:00Z"},
-      {"body": "agent run started: https://github.com/x/actions/runs/3", "createdAt": "2026-10-06T03:00:00Z"}]}},
-    {"id": "park-resets-the-cap", "want": "go", "set": {"comments": [
-      {"body": "agent run started: https://github.com/x/actions/runs/1", "createdAt": "2026-10-06T01:00:00Z"},
-      {"body": "agent run started: https://github.com/x/actions/runs/2", "createdAt": "2026-10-06T02:00:00Z"},
-      {"body": "agent run started: https://github.com/x/actions/runs/3", "createdAt": "2026-10-06T03:00:00Z"},
-      {"body": "park: handed back", "createdAt": "2026-10-06T03:30:00Z"}]}},
-    {"id": "owner-cap-reset", "want": "go", "set": {"comments": [
-      {"body": "agent run started: https://github.com/x/actions/runs/1", "createdAt": "2026-10-06T01:00:00Z"},
-      {"body": "agent run started: https://github.com/x/actions/runs/2", "createdAt": "2026-10-06T02:00:00Z"},
-      {"body": "agent run started: https://github.com/x/actions/runs/3", "createdAt": "2026-10-06T03:00:00Z"},
-      {"body": "attempt-cap reset: flaky seat", "createdAt": "2026-10-06T03:30:00Z", "authorAssociation": "OWNER"}]}},
-    {"id": "stranger-cap-reset-counts-nothing", "want": "cap", "set": {"comments": [
-      {"body": "agent run started: https://github.com/x/actions/runs/1", "createdAt": "2026-10-06T01:00:00Z"},
-      {"body": "agent run started: https://github.com/x/actions/runs/2", "createdAt": "2026-10-06T02:00:00Z"},
-      {"body": "agent run started: https://github.com/x/actions/runs/3", "createdAt": "2026-10-06T03:00:00Z"},
-      {"body": "attempt-cap reset: please", "createdAt": "2026-10-06T03:30:00Z", "authorAssociation": "NONE"}]}},
-    {"id": "infra-failed-run-not-counted", "want": "go", "set": {"comments": [
-      {"body": "agent run started: https://github.com/x/actions/runs/1", "createdAt": "2026-10-06T01:00:00Z"},
-      {"body": "agent run started: https://github.com/x/actions/runs/2", "createdAt": "2026-10-06T02:00:00Z"},
-      {"body": "agent run started: https://github.com/x/actions/runs/3", "createdAt": "2026-10-06T03:00:00Z"},
-      {"body": "agent run infra-failed: https://github.com/x/actions/runs/3", "createdAt": "2026-10-06T03:05:00Z"}]}},
-    {"id": "rework-note-30-min-ago", "want": "rework-note", "set": {"comments": [
-      {"body": "agent run started: https://github.com/x/actions/runs/1", "createdAt": "2026-10-06T05:00:00Z"},
-      {"body": "rework: CI run failed", "createdAt": "2026-10-06T09:30:00Z"}]}},
-    {"id": "rework-note-2-h-ago-lanes-full", "want": "go", "set": {"comments": [
-      {"body": "agent run started: https://github.com/x/actions/runs/1", "createdAt": "2026-10-06T05:00:00Z"},
-      {"body": "rework: CI run failed", "createdAt": "2026-10-06T07:50:00Z"}]}},
-    {"id": "run-started-after-the-failure", "want": "run-after-failure", "set": {"comments": [
-      {"body": "agent run started: https://github.com/x/actions/runs/1", "createdAt": "2026-10-06T06:00:00Z"}]}},
-    {"id": "infra-failed-run-after-failure-retries", "want": "go", "set": {"comments": [
-      {"body": "agent run started: https://github.com/x/actions/runs/1", "createdAt": "2026-10-06T05:00:00Z"},
-      {"body": "agent run started: https://github.com/x/actions/runs/2", "createdAt": "2026-10-06T06:00:00Z"},
-      {"body": "agent run infra-failed: https://github.com/x/actions/runs/2", "createdAt": "2026-10-06T06:05:00Z"}]}}
+  "issue": {
+   "state": "open",
+   "issue_dependencies_summary": {
+    "blocked_by": 0
+   },
+   "labels": [
+    {
+     "name": "agent-in-progress"
+    }
+   ]
+  },
+  "comments": [
+   {
+    "body": "agent run started: https://github.com/Nishfleet/drive/actions/runs/37400000000",
+    "createdAt": "2026-10-06T05:00:00Z",
+    "authorAssociation": "CONTRIBUTOR"
+   }
   ]
+ },
+ "cases": [
+  {
+   "id": "drive-765-missed-event",
+   "want": "go",
+   "set": {}
+  },
+  {
+   "id": "never-started",
+   "want": "go",
+   "set": {
+    "comments": []
+   }
+  },
+  {
+   "id": "timed-out-check",
+   "want": "go",
+   "set": {
+    "pr": {
+     "statusCheckRollup": [
+      {
+       "name": "ci",
+       "status": "COMPLETED",
+       "conclusion": "TIMED_OUT",
+       "completedAt": "2026-10-06T05:47:44Z"
+      }
+     ]
+    }
+   }
+  },
+  {
+   "id": "failed-status-context",
+   "want": "go",
+   "set": {
+    "pr": {
+     "statusCheckRollup": [
+      {
+       "__typename": "StatusContext",
+       "context": "ci",
+       "state": "ERROR",
+       "startedAt": "2026-10-06T05:47:44Z"
+      }
+     ]
+    }
+   }
+  },
+  {
+   "id": "all-green",
+   "want": "not-red",
+   "set": {
+    "pr": {
+     "statusCheckRollup": [
+      {
+       "name": "ci",
+       "status": "COMPLETED",
+       "conclusion": "SUCCESS",
+       "completedAt": "2026-10-06T05:47:44Z"
+      }
+     ]
+    }
+   }
+  },
+  {
+   "id": "no-checks",
+   "want": "not-red",
+   "set": {
+    "pr": {
+     "statusCheckRollup": []
+    }
+   }
+  },
+  {
+   "id": "failure-without-time",
+   "want": "not-red",
+   "set": {
+    "pr": {
+     "statusCheckRollup": [
+      {
+       "name": "ci",
+       "status": "COMPLETED",
+       "conclusion": "FAILURE"
+      }
+     ]
+    }
+   }
+  },
+  {
+   "id": "another-check-still-running",
+   "want": "pending",
+   "set": {
+    "pr": {
+     "statusCheckRollup": [
+      {
+       "name": "ci",
+       "status": "COMPLETED",
+       "conclusion": "FAILURE",
+       "completedAt": "2026-10-06T05:47:44Z"
+      },
+      {
+       "name": "e2e",
+       "status": "IN_PROGRESS",
+       "conclusion": null
+      }
+     ]
+    }
+   }
+  },
+  {
+   "id": "dirty-is-the-conflicts-job",
+   "want": "conflicting",
+   "set": {
+    "pr": {
+     "mergeStateStatus": "DIRTY"
+    }
+   }
+  },
+  {
+   "id": "issue-closed",
+   "want": "closed",
+   "set": {
+    "issue": {
+     "state": "closed"
+    }
+   }
+  },
+  {
+   "id": "issue-blocked",
+   "want": "blocked",
+   "set": {
+    "issue": {
+     "issue_dependencies_summary": {
+      "blocked_by": 1
+     }
+    }
+   }
+  },
+  {
+   "id": "agent-blocked",
+   "want": "label",
+   "set": {
+    "issue": {
+     "labels": [
+      {
+       "name": "agent-blocked"
+      }
+     ]
+    }
+   }
+  },
+  {
+   "id": "needs-split",
+   "want": "label",
+   "set": {
+    "issue": {
+     "labels": [
+      {
+       "name": "needs-split"
+      }
+     ]
+    }
+   }
+  },
+  {
+   "id": "needs-orchestrator",
+   "want": "label",
+   "set": {
+    "issue": {
+     "labels": [
+      {
+       "name": "needs-orchestrator"
+      }
+     ]
+    }
+   }
+  },
+  {
+   "id": "needs-nish-decision",
+   "want": "label",
+   "set": {
+    "issue": {
+     "labels": [
+      {
+       "name": "needs-nish-decision"
+      }
+     ]
+    }
+   }
+  },
+  {
+   "id": "epic",
+   "want": "label",
+   "set": {
+    "issue": {
+     "labels": [
+      {
+       "name": "epic"
+      }
+     ]
+    }
+   }
+  },
+  {
+   "id": "other-label-is-fine",
+   "want": "go",
+   "set": {
+    "issue": {
+     "labels": [
+      {
+       "name": "priority-now"
+      }
+     ]
+    }
+   }
+  },
+  {
+   "id": "recent-rework-note-no-start-after-failure",
+   "want": "go",
+   "set": {
+    "comments": [
+     {
+      "body": "agent run started: https://github.com/x/actions/runs/1",
+      "createdAt": "2026-10-06T05:00:00Z"
+     },
+     {
+      "body": "rework: CI run failed",
+      "createdAt": "2026-10-06T09:30:00Z"
+     }
+    ]
+   }
+  },
+  {
+   "id": "run-started-after-the-failure",
+   "want": "run-after-failure",
+   "set": {
+    "comments": [
+     {
+      "body": "agent run started: https://github.com/x/actions/runs/1",
+      "createdAt": "2026-10-06T06:00:00Z"
+     }
+    ]
+   }
+  },
+  {
+   "id": "infra-failed-run-after-failure-retries",
+   "want": "go",
+   "set": {
+    "comments": [
+     {
+      "body": "agent run started: https://github.com/x/actions/runs/1",
+      "createdAt": "2026-10-06T05:00:00Z"
+     },
+     {
+      "body": "agent run started: https://github.com/x/actions/runs/2",
+      "createdAt": "2026-10-06T06:00:00Z"
+     },
+     {
+      "body": "agent run infra-failed: https://github.com/x/actions/runs/2",
+      "createdAt": "2026-10-06T06:05:00Z"
+     }
+    ]
+   }
+  },
+  {
+   "id": "at-cap-still-goes-so-gate-parks",
+   "want": "go",
+   "set": {
+    "comments": [
+     {
+      "body": "agent run started: https://github.com/x/actions/runs/1",
+      "createdAt": "2026-10-06T01:00:00Z"
+     },
+     {
+      "body": "agent run started: https://github.com/x/actions/runs/2",
+      "createdAt": "2026-10-06T02:00:00Z"
+     },
+     {
+      "body": "agent run started: https://github.com/x/actions/runs/3",
+      "createdAt": "2026-10-06T03:00:00Z"
+     }
+    ]
+   }
+  },
+  {
+   "id": "recent-rework-note-after-pause",
+   "want": "go",
+   "set": {
+    "comments": [
+     {
+      "body": "agent run started: https://github.com/Nishfleet/drive/actions/runs/37400000000",
+      "createdAt": "2026-10-06T05:00:00Z"
+     },
+     {
+      "body": "rework: CI run failed",
+      "createdAt": "2026-10-06T09:55:00Z"
+     }
+    ]
+   }
+  },
+  {
+   "id": "recent-rework-note-then-run-started",
+   "want": "run-after-failure",
+   "set": {
+    "comments": [
+     {
+      "body": "rework: CI run failed",
+      "createdAt": "2026-10-06T09:30:00Z"
+     },
+     {
+      "body": "agent run started: https://github.com/x/actions/runs/9",
+      "createdAt": "2026-10-06T09:31:00Z"
+     }
+    ]
+   }
+  }
+ ]
 }
