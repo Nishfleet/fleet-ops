@@ -45,6 +45,8 @@
     # run, which removes nothing, still passes.
     retired:
       - /etc/systemd/system/actions.runner.Nishfleet.netcup-fleet-ci-.service.d/10-restart.conf
+      # drive moved to Nishfleet (2026-10-06): its runners are org agent runners now.
+      - /etc/systemd/system/actions.runner.nish3451-drive.netcup-agent-drive-.service.d
       - /etc/systemd/system.control/actions.runner.Nishfleet.netcup-fleet-ci-1.service.d
       - /etc/systemd/system.control/actions.runner.Nishfleet.netcup-fleet-ci-2.service.d
       - /etc/systemd/system.control/actions.runner.Nishfleet.netcup-fleet-ci-3.service.d

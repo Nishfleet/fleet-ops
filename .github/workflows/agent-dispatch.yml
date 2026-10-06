@@ -777,9 +777,11 @@ jobs:
       # issues: read is the job's own grant (steps read the issue), contents:
       # read is added because steps a and d read git refs and PR lists through
       # the API, which GitHub scopes to contents even for a read.
-      # pull-requests: read, because on a private repo (nish3451/drive) the
-      # cleanup step's PR list fails without it ("Resource not accessible by
-      # integration"), and a failed list reads as "no PR".
+      # pull-requests: read, because on a private repo the cleanup step's PR
+      # list fails without it ("Resource not accessible by integration"), and a
+      # failed list reads as "no PR". First seen on drive while it was private;
+      # drive is public in Nishfleet since 2026-10-06, and the grant stays for
+      # any private caller.
       issues: read
       contents: read
       pull-requests: read
