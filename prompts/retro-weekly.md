@@ -1,4 +1,5 @@
-/skill:retro
+This prompt is the whole weekly job. Do not follow the one-session `/retro`
+skill: that skill defaults to the current session, and this run is seven days.
 
 Run the retro over ONE WEEK of sessions on this VPS, not one session. The window
 is the seven days ending at run time: compute it from today's date first

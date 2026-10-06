@@ -435,14 +435,6 @@ empty, so a run that stops without writing one shows up in
   `systemd/retro-weekly.*` files and step 8b of `systemd/fleet-sync.service`,
   and run `systemctl --user daemon-reload`.
 
-The live timer was disabled at 12:54 IST on 2026-10-06 by the #9321 rework
-run (`systemctl --user disable --now retro-weekly.timer`), because the
-review named a reserved-class exposure on a copy that was already
-installed. `UnitFileState=disabled`, `ActiveState=inactive`,
-`NextElapseUSecRealtime=` empty. The service file is still on disk. The
-commands below re-enable it after merge, as a symlink into
-`fleet-ops-deploy-clone` so LINK-GUARD stays happy.
-
 Post-merge the two new units are wired once by hand, like every other unit in
 `systemd/`. Until that merge the live paths are real-file copies (the deploy
 clone does not carry the files yet), so a unit edit on main would not reach
