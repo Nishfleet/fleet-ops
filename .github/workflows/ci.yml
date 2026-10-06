@@ -247,6 +247,31 @@ jobs:
           jq -r '.needles["agent.yml"][]' config/orchestrate-events.json | while IFS= read -r n; do
             grep -F -- "$n" .github/workflows/agent.yml >/dev/null || { echo "missing gate needle: $n"; exit 1; }
           done
+      - name: Sweep re-sends red claim PRs (RED_REWORK)
+        # Runs the list job's own RED_REWORK program, read out of the workflow
+        # with the CHECK_DEFS it shares with the missing-checks case, against
+        # every case in config/sweep-rework-cases.json. The grep lines pin the
+        # wiring: the program's verdict feeds the sweep's pick list, and a
+        # live newest run is still skipped.
+        if: always()
+        run: |
+          set -euo pipefail
+          f=.github/workflows/agent-dispatch.yml
+          defs=$(yq '.jobs.list.steps[0].env.CHECK_DEFS' "$f")
+          prog=$(yq '.jobs.list.steps[0].env.RED_REWORK' "$f")
+          [ -n "$defs" ] && [ "$defs" != null ] && [ -n "$prog" ] && [ "$prog" != null ]
+          run=$(yq '.jobs.list.steps[0].run' "$f")
+          # shellcheck disable=SC2016 # the needles are literal workflow text
+          for n in '"$CHECK_DEFS $RED_REWORK"' '--argjson d "$red"' '$o[], $d[]' 'run live, skip'; do
+            grep -F -- "$n" <<<"$run" >/dev/null || { echo "missing sweep wiring: $n"; exit 1; }
+          done
+          bad=0
+          while IFS= read -r c; do
+            in=$(jq -c --argjson c "$c" '.base * $c.set | {pr, issue, comments}' config/sweep-rework-cases.json)
+            got=$(jq -r "$defs $prog | .reason" <<<"$in")
+            [ "$got" = "$(jq -r .want <<<"$c")" ] || { echo "case $(jq -r .id <<<"$c"): got $got, want $(jq -r .want <<<"$c")"; bad=1; }
+          done < <(jq -c '.cases[]' config/sweep-rework-cases.json)
+          test "$bad" -eq 0
       - name: Dispatch pause flag skips dispatch, never the guards
         # A paused queue must still hold risky PRs: the weekly update once
         # disabled agent-dispatch, and hold-risky could not run in that window
