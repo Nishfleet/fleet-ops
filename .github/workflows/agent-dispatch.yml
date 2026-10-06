@@ -127,17 +127,9 @@ jobs:
           msg="agent-dispatch paused: FLEET_DISPATCH_PAUSED=true on $GITHUB_REPOSITORY, so no dispatch job ran for this $EVENT${ACTION:+ ($ACTION)} event. hold-risky and close-claim still run; the sweep after the flag clears picks up waiting work."
           echo "::notice::$msg"
           echo "$msg" >> "$GITHUB_STEP_SUMMARY"
-  new:
-    if: >-
-      vars.FLEET_DISPATCH_PAUSED != 'true' && github.event_name == 'issues' && github.event.label.name == 'agent-ready' &&
-      ((inputs.agent_mode || vars.AGENT_MODE) == 'live' || contains(github.event.issue.labels.*.name, 'shadow-actions'))
-    uses: Nishfleet/fleet-ops/.github/workflows/agent.yml@main # runner group 3 allows only agent.yml@refs/heads/main; a SHA pin strands every job
-    # issues: write is what agent.yml's report job asks for; its other jobs
-    # ask for nothing and act with the App token.
-    permissions:
-      issues: write
-    with:
-      ref: claim/issue-${{ github.event.issue.number }}
+  # An agent-ready label no longer starts a worker job of its own: the list
+  # job below lists that one issue, so the same closed, blocked, parked and
+  # strong-only-lane checks hold it before any runner starts (fleet-ops#9303).
   # Red CI on a claim PR: post the failed run's ##[error] lines on the issue
   # before the rework run starts, so the worker reads what broke instead of
   # re-deriving it (fleet-ops#9063: drive #200 and #180 reworks ended green
@@ -476,10 +468,12 @@ jobs:
   list:
     if: >-
       vars.FLEET_DISPATCH_PAUSED != 'true' &&
-      (inputs.agent_mode || vars.AGENT_MODE) == 'live' &&
-      inputs.task != 'miss-review' &&
-      ((github.event_name == 'issues' && github.event.action == 'closed') ||
-       github.event_name == 'workflow_dispatch' || github.event_name == 'schedule')
+      inputs.task != 'miss-review' && (
+        ((inputs.agent_mode || vars.AGENT_MODE) == 'live' &&
+         ((github.event_name == 'issues' && github.event.action == 'closed') ||
+          github.event_name == 'workflow_dispatch' || github.event_name == 'schedule')) ||
+        (github.event_name == 'issues' && github.event.action == 'labeled' && github.event.label.name == 'agent-ready' &&
+         ((inputs.agent_mode || vars.AGENT_MODE) == 'live' || contains(github.event.issue.labels.*.name, 'shadow-actions'))))
     runs-on: ${{ fromJSON(inputs.runner || '"ubuntu-latest"') }}
     permissions:
       issues: write
@@ -489,6 +483,38 @@ jobs:
       actions: read
       checks: read
       statuses: read
+    env:
+      # The one "nothing to do" decision, made before any runner starts
+      # (fleet-ops#9303). On 2026-10-05 the 0509 sweeps emitted every
+      # agent-ready issue: in run 37331034150 all 19 work jobs were
+      # strong-only issues, and all 19 ended in ~11 s on the Gate's
+      # "skip (lanes-full)", because the Cursor lane runs one worker at a
+      # time. ADMIT drops what the Gate would skip anyway: a closed, blocked
+      # or parked issue, a ref with no issue, and every strong-only ref past
+      # the one free Cursor slot. A held issue keeps agent-ready, so the next
+      # sweep lists it again.
+      # stdin: {issues: [issue objects], prs: [claim refs], cursor_live: n}.
+      # Out: {refs: [claim refs in dispatch order], held: [{ref, why}]}.
+      # ci.yml runs it against config/dispatch-admit-cases.json.
+      ADMIT: |
+        def has_label($l): any(.labels[]; .name == $l);
+        def parked: any(.labels[].name; IN("agent-blocked", "needs-split", "needs-orchestrator", "needs-nish-decision", "epic"));
+        def num: ltrimstr("claim/issue-") | capture("^(?<n>[0-9]+)").n;
+        (.issues | map(select(type == "object" and has("number"))) | map({key: (.number | tostring), value: .}) | from_entries) as $by
+        | ([$by[] | select(has_label("agent-ready"))]
+           | sort_by((if has_label("priority-now") then 0 else 1 end), .created_at)
+           | map("claim/issue-\(.number)")) as $ready
+        | reduce ($ready + (.prs - $ready))[] as $r ({refs: [], held: [], cursor: .cursor_live};
+            $by[$r | num] as $i
+            | (if $i == null then "no such issue"
+               elif $i.state != "open" then "closed"
+               elif ($i.issue_dependencies_summary.blocked_by // 0) != 0 then "blocked"
+               elif ($i | parked) then "parked"
+               elif ($i | has_label("strong-only")) and .cursor >= 1 then "strong-only lane (Cursor, one at a time) is busy"
+               else null end) as $why
+            | if $why != null then .held += [{ref: $r, why: $why}]
+              else .refs += [$r] | if ($i | has_label("strong-only")) then .cursor += 1 else . end end)
+        | {refs, held}
     outputs:
       refs: ${{ steps.list.outputs.refs }}
       stalled_refs: ${{ steps.list.outputs.stalled_refs }}
@@ -496,8 +522,8 @@ jobs:
       - id: list
         env:
           GH_TOKEN: ${{ github.token }}
-          CLOSED: ${{ github.event.issue.number }}
-          ISSUE: ${{ inputs.issue }}
+          CLOSED: ${{ github.event.action == 'closed' && github.event.issue.number || '' }}
+          ISSUE: ${{ inputs.issue || (github.event.action == 'labeled' && github.event.issue.number) || '' }}
         run: |
           stalled_refs='[]'
           if [ -n "$ISSUE" ]; then
@@ -612,10 +638,28 @@ jobs:
               prs='[]'
             fi
           fi
-          refs=$(for n in $nums; do gh api "repos/$GITHUB_REPOSITORY/issues/$n"; done |
-            jq -sc --argjson prs "${prs:-[]}" '[.[] | select(.issue_dependencies_summary.blocked_by == 0 and any(.labels[]; .name == "agent-ready"))]
-              | sort_by((if any(.labels[]; .name == "priority-now") then 0 else 1 end), .created_at)
-              | map("claim/issue-\(.number)") | . + ($prs - .) | .[:256]')
+          # The Cursor lane (strong-only issues) runs one worker at a time on
+          # the whole host. Count this repo's live one: an agent-in-progress
+          # strong-only issue whose newest "agent run started:" run is live.
+          cursor_live=0
+          for n in $(gh issue list -R "$GITHUB_REPOSITORY" -l agent-in-progress -l strong-only -L 100 --json number --jq '.[].number'); do
+            body=$(gh issue view "$n" -R "$GITHUB_REPOSITORY" --json comments --jq '[.comments[].body | select(startswith("agent run started:"))] | last // ""')
+            [[ $body =~ actions/runs/([0-9]+) ]] || continue
+            case $(gh run view "${BASH_REMATCH[1]}" -R "$GITHUB_REPOSITORY" --json status --jq .status) in
+              queued|in_progress|requested|waiting|pending) cursor_live=$((cursor_live + 1)) ;;
+            esac
+          done
+          # Every listed issue plus the issue behind each claim PR, so ADMIT
+          # can hold a ref the Gate would skip at once. A 404 body has no
+          # number, so ADMIT holds that ref as "no such issue".
+          pr_nums=$(jq -r '.[] | ltrimstr("claim/issue-") | capture("^(?<n>[0-9]+)").n' <<<"${prs:-[]}")
+          # shellcheck disable=SC2086 # word-split on purpose: one number per word
+          verdict=$(for n in $(printf '%s\n' $nums $pr_nums | sort -un); do gh api "repos/$GITHUB_REPOSITORY/issues/$n" || true; done |
+            jq -sc --argjson prs "${prs:-[]}" --argjson cursor "$cursor_live" '{issues: ., prs: $prs, cursor_live: $cursor}' |
+            jq -c "$ADMIT")
+          echo "cursor lane live in this repo: $cursor_live"
+          jq -r '.held[] | "held \(.ref): \(.why)"' <<<"$verdict"
+          refs=$(jq -c '.refs | .[:256]' <<<"$verdict")
           echo "refs=${refs:-[]}" >> "$GITHUB_OUTPUT"
           echo "stalled_refs=$stalled_refs" >> "$GITHUB_OUTPUT"
   unblocked:

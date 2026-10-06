@@ -247,6 +247,28 @@ jobs:
           jq -r '.needles["agent.yml"][]' config/orchestrate-events.json | while IFS= read -r n; do
             grep -F -- "$n" .github/workflows/agent.yml >/dev/null || { echo "missing gate needle: $n"; exit 1; }
           done
+      - name: Dispatch list holds what the Gate would skip (fleet-ops#9303)
+        # The ADMIT jq is read out of the list job itself, so this checks the
+        # filter that runs, not a copy of it.
+        if: always()
+        run: |
+          set -euo pipefail
+          admit=$(yq '.jobs.list.env.ADMIT' .github/workflows/agent-dispatch.yml)
+          [ -n "$admit" ] && [ "$admit" != null ] || { echo "list job has no ADMIT filter"; exit 1; }
+          bad=0
+          while IFS= read -r c; do
+            id=$(jq -r .id <<<"$c")
+            got=$(jq -c '.input' <<<"$c" | jq -c "$admit")
+            jq -e --argjson got "$got" '.want_refs == $got.refs and .want_held == [$got.held[].ref]' <<<"$c" >/dev/null ||
+              { echo "ADMIT case $id: got $got"; bad=1; }
+          done < <(jq -c '.cases[]' config/dispatch-admit-cases.json)
+          # No job may hand a bare agent-ready label straight to agent.yml: it
+          # would start a runner the Gate then skips.
+          if yq -o=json '.jobs' .github/workflows/agent-dispatch.yml |
+            jq -e 'to_entries[] | select(.value.uses != null and ((.value.if // "") | contains("agent-ready")))' >/dev/null; then
+            echo "a uses: agent.yml job fires on an agent-ready label; route it through list"; bad=1
+          fi
+          [ "$bad" = 0 ]
       - name: Dispatch pause flag skips dispatch, never the guards
         # A paused queue must still hold risky PRs: the weekly update once
         # disabled agent-dispatch, and hold-risky could not run in that window
@@ -259,7 +281,7 @@ jobs:
         run: |
           set -euo pipefail
           f=.github/workflows/agent-dispatch.yml
-          gated="new rework conflicts remerge ejected list unblocked miss-review miss-review-pr miss-stalled orchestrate"
+          gated="rework conflicts remerge ejected list unblocked miss-review miss-review-pr miss-stalled orchestrate"
           guards="hold-risky close-claim rework-note"
           bad=0
           for j in $(yq '.jobs | keys | .[]' "$f"); do
