@@ -19,8 +19,9 @@
 # ~/AGENTS.md: read-only sources, "do not edit any file except $DELIVERABLE",
 # exactly ONE issue with no `agent-ready`, no PRs, no deploy. Hardening it
 # properly needs a jail that still allows ~ (pi writes its own session log),
-# which ProtectHome cannot give — tracked in the follow-up filed with this
-# PR. Do not "fix" it with a half-sandbox that breaks the proven run.
+# which ProtectHome cannot give — tracked in fleet-ops#9339, which spells out the
+# narrowing (an issues-only token plus GH_CONFIG_DIR) once Nish mints the token.
+# Do not "fix" it with a half-sandbox that breaks the proven run.
 #
 # Why stepfun/step-5-preview and no --no-context-files: that seat read a full
 # week of sessions and wrote the pilot report in 23.5 min on 2026-10-06
@@ -72,6 +73,15 @@
 # was deliberately stopped. The ExecStart gate above turns a too-early run
 # into a loud failure rather than a fake clean week.
 #
+# Environment=TZ=Asia/Kolkata: one timezone governs the calendar spec, the
+# report filename and the model's "today". The timer is Asia/Kolkata, so pin
+# TZ to the same zone instead of inheriting the host clock — on a catch-up run
+# starting just after 00:00 IST the window the model computes and the date in
+# the filename must not be able to disagree. A comment explaining a directive
+# goes ABOVE [Unit]: systemd parses every line inside a section as a directive
+# and prints "Missing '=', ignoring line." for prose (this was caught here by
+# `systemd-analyze verify` while writing it).
+#
 # WorkingDirectory=/home/nish is the documented default (`systemctl --user show`
 # prints `!/home/nish`), written out: pi's project context discovery and the
 # report's plain-English rule both assume ~ (the model must load ~/AGENTS.md).
@@ -86,6 +96,7 @@ Wants=network-online.target
 [Service]
 Type=oneshot
 Environment=FLEET_TASK_ID=retro-weekly
+Environment=TZ=Asia/Kolkata
 WorkingDirectory=/home/nish
 ExecStartPre=/bin/sh -c 'd=$(date +%%F); /bin/rm -f /home/nish/workspaces/agent-state/retro/retro-week-$d.md; mkdir -p /home/nish/workspaces/agent-state/retro; printf %%s "$d" > /home/nish/workspaces/agent-state/retro/.retro-weekly-date; /bin/test -s /home/nish/.local/share/retro-weekly/prompt.md || { echo no-prompt >&2; exit 1; }'
 ExecStart=/bin/sh -c 'd=$(cat /home/nish/workspaces/agent-state/retro/.retro-weekly-date); DELIVERABLE=/home/nish/workspaces/agent-state/retro/retro-week-$d.md; export DELIVERABLE; out=$(cat /home/nish/.local/share/retro-weekly/prompt.md | /home/nish/.local/bin/pi --print --provider stepfun --model step-5-preview); printf "%%s\n" "$out"; printf "%%s\n" "$out" | grep -qE "^RETRO_ISSUE_URL: https://github[.]com/Nishfleet/fleet-ops/issues/[0-9]+$" || exit 1'
