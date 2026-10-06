@@ -17,17 +17,11 @@ jobs:
     if: inputs.ref
     runs-on: [self-hosted, agent]
     timeout-minutes: 60
-    # Router wall relabels with GITHUB_TOKEN, and nothing else here uses it.
+    # Router wall and the strike step relabel with GITHUB_TOKEN, and nothing
+    # else here uses it. No job outputs: the strike runs in this job (below),
+    # so nothing reads them across jobs (fleet-ops#9275).
     permissions:
       issues: write
-    outputs:
-      wall: ${{ steps.wall.outputs.wall }}
-      miss: ${{ steps.gate.outputs.miss }}
-      # fleet-ops#9291: the Host sample below, taken at the Worker step's death
-      # moment, for the report job's host-overload classifier.
-      load1: ${{ steps.host.outputs.load1 }}
-      cores: ${{ steps.host.outputs.cores }}
-      swap_used_kb: ${{ steps.host.outputs.swap_used_kb }}
     concurrency:
       group: agent-${{ github.repository }}-${{ inputs.ref }}
       cancel-in-progress: false
@@ -158,7 +152,14 @@ jobs:
           # workflow file in prose (a docs issue quoting a CI path). Tolerable
           # here because the cost is one orchestrator run, not a wrong push; a
           # narrower "Files in scope" test is a follow-up issue.
-          if jq -e --arg p '.github/workflows/' '((.title // "") + "\n" + (.body // "")) | contains($p)' <<<"$issue" >/dev/null; then
+          # fleet-ops itself is the one repo whose issues name its workflows by
+          # bare file name ("fix agent.yml"), with no .github/workflows/ in the
+          # text, and #9275 slipped onto a worker that way. There a whole-word
+          # file name of one of its own workflows counts too. Other repos keep
+          # the path test only: their file names are not fleet-ops'.
+          fleet_ops=false
+          case $REPO in */fleet-ops) fleet_ops=true ;; esac
+          if jq -e --arg p '.github/workflows/' --argjson fo "$fleet_ops" '((.title // "") + "\n" + (.body // "")) as $t | ($t | contains($p)) or ($fo and ($t | test("(^|[^A-Za-z0-9_.-])(agent|agent-dispatch|ci|deploy-box|lighthouse|secret-scan)\\.yml($|[^A-Za-z0-9_-])")))' <<<"$issue" >/dev/null; then
             gh issue edit "$i" -R "$REPO" --add-label needs-orchestrator --remove-label agent-ready,agent-in-progress
             gh issue comment "$i" -R "$REPO" --body "routed: the deliverable edits .github/workflows/**, which the worker App cannot push; handed to the orchestrator"
             skip workflow-files
@@ -233,11 +234,20 @@ jobs:
         run: |
           gh api "repos/$REPO/git/ref/heads/$REF" --silent 2>/dev/null ||
             gh api "repos/$REPO/git/refs" -f ref="refs/heads/$REF" -f sha="$(gh api "repos/$REPO/git/ref/heads/main" --jq .object.sha)" --silent
-      - name: Worker
+      - name: Worker clock
+        id: clock
         if: steps.gate.outputs.go == 'true'
-        # A step timeout fails the job, so the report job strikes it. A job
-        # timeout only cancels it, and failure() || cancelled() skips report,
-        # leaving the issue claimed with no strike (run 35900449636).
+        # The Worker step's start time for the strike step's timeout test
+        # (fleet-ops#9291). A separate step, because a step killed at its
+        # timeout may not flush its own outputs.
+        run: echo "started=$(date +%s)" >> "$GITHUB_OUTPUT"
+      - name: Worker
+        id: worker
+        if: steps.gate.outputs.go == 'true'
+        # A step timeout fails the job, and the strike steps below (after
+        # Deliverable) strike it. A job timeout only cancels the job, which
+        # leaves the issue claimed with no strike (run 35900449636), so the
+        # step cap sits below the job's 60 minutes.
         timeout-minutes: 55
         # Logs are public on public repos. The full transcript stays on the
         # VPS; only errors (stderr) reach the log. The Gate picks the engine.
@@ -355,15 +365,15 @@ jobs:
           fi
       - name: Host sample
         id: host
-        # fleet-ops#9291: report classifies a Worker death as host-overload
-        # infra only if the host was overloaded at that moment, so sample NOW,
-        # seconds after the death, and hand the numbers to report through the
-        # job outputs. A sample taken minutes later, when report's own runner
-        # starts, can miss a short spike. A runner that died records no sample;
-        # report then treats the guard as unknown and strikes as before.
+        # fleet-ops#9291: the strike step classifies a Worker death as
+        # host-overload infra only if the host was overloaded at that moment,
+        # so sample NOW, seconds after the death. A step that never ran
+        # records no sample, and the strike step then treats the guard as
+        # unknown and strikes.
         if: failure() && steps.gate.outputs.go == 'true'
         run: |
           {
+            echo "ended=$(date +%s)"
             echo "load1=$(cut -d' ' -f1 /proc/loadavg)"
             echo "cores=$(nproc)"
             echo "swap_used_kb=$(awk '/^SwapTotal:/{t=$2} /^SwapFree:/{f=$2} END{print t-f}' /proc/meminfo)"
@@ -399,7 +409,15 @@ jobs:
         run: |
           i=${REF#claim/issue-}; i=${i%%-*}
           if ! { [ "$ENGINE" = devin ] && grep -qiE 'capacity issues|free model rate limit|cognition\.ai/retryable": true' "$RUNNER_TEMP/worker.err" 2>/dev/null; }; then
-            grep -qiE 'no deployments available|ratelimiterror|rate limit exceeded|\b429\b' "$RUNNER_TEMP/worker.err" 2>/dev/null || exit 0
+            # Cursor's own stall (fleet-ops#9275, 0509 run 37258485360: "Connection
+            # lost, reconnecting" x2, then "RetriableError: Connection stalled
+            # repeatedly", exit 1, and the packet was struck). The cursor-agent
+            # line in Worker discards stdout only, so this stderr reaches
+            # worker.err through the exec/tee at the top of Worker. Like a router
+            # 429 it is the provider, not the packet, so it needs the same
+            # 0-ahead proof that nothing was pushed. The Cursor cap stays 1.
+            { grep -qiE 'no deployments available|ratelimiterror|rate limit exceeded|\b429\b' "$RUNNER_TEMP/worker.err" 2>/dev/null ||
+              { [ "$ENGINE" = cursor ] && grep -qi 'RetriableError: Connection stalled' "$RUNNER_TEMP/worker.err" 2>/dev/null; }; } || exit 0
             [ "$(gh api "repos/$REPO/compare/main...$REF" --jq .ahead_by)" = 0 ] || exit 0
           fi
           gh issue comment "$i" -R "$REPO" --body "agent run infra-failed: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
@@ -433,7 +451,7 @@ jobs:
       - name: Deliverable
         if: steps.gate.outputs.go == 'true'
         # A worker that exits 0 with no PR and no park leaves the issue claimed
-        # and this job green, so report never strikes it (fleet-ops#8461).
+        # and this job green, so the strike step never fires on it (fleet-ops#8461).
         # Legit exit-0 paths in prompts/worker.md: closed (1b), parked with
         # agent-blocked/needs-orchestrator/needs-nish-decision (2b, 4), a
         # GitHub blocked_by dependency (4), or a PR on the claim branch.
@@ -465,7 +483,7 @@ jobs:
           # An open PR is not a delivery while its head is still red or
           # conflicting: the run ended success and the issue kept
           # agent-in-progress with nothing live (fleet-ops#9063: drive #200
-          # #180 #136). Fail it, so report strikes and requeues it. Pending
+          # #180 #136). Fail it, so the strike step strikes and requeues it. Pending
           # checks pass here: a fresh push's CI is still running, and its red
           # result fires rework on its own. The runner user's own gh login
           # reads the checks, because the App token has no checks: read.
@@ -493,6 +511,122 @@ jobs:
           if [ -n "$red" ]; then
             echo "::error::claim PR #$n head is still red after this run: $red"
             exit 1
+          fi
+      # The strike used to be a separate `report` job (needs: work) on
+      # [self-hosted, agent]. After a failed run it queued behind busy runners
+      # for up to an hour, with the issue claimed and nothing live (fleet-ops#9275,
+      # 0509 run 37258490012). It runs here now, on the runner this job already
+      # holds. A run the concurrency group displaced never starts these steps
+      # (its job is cancelled while queued), and the never-claimed guard below
+      # covers one that starts anyway. A runner that dies (systemd-oomd, a lost
+      # runner) runs no further steps at all, so no strike is written and no
+      # infra-failed comment either: the sweep's stalled (no claim PR) and
+      # orphans (claim PR) paths in agent-dispatch.yml find the issue still
+      # agent-in-progress with a dead run, and requeue it without a strike.
+      # App token, not GITHUB_TOKEN: a GITHUB_TOKEN label fires no workflow, so a workflow listening for the label never ran on a park (fleet-ops#8552).
+      # Minted fresh: the first token is an hour old after a 55-minute Worker
+      # step, and arm-token above skips on cancel.
+      - name: App token for strike
+        id: strike-token
+        if: (failure() || cancelled()) && steps.wall.outputs.wall != 'true'
+        uses: actions/create-github-app-token@fee1f7d63c2ff003460e3d139729b119787bc349 # v2.2.2
+        with:
+          app-id: "4728578"
+          private-key: ${{ steps.app-key.outputs.pem }}
+          permission-issues: write
+          skip-token-revoke: "false"
+      - name: Strike or requeue
+        if: (failure() || cancelled()) && steps.wall.outputs.wall != 'true' && steps.strike-token.outcome == 'success'
+        env:
+          GH_TOKEN: ${{ steps.strike-token.outputs.token }}
+          # GITHUB_TOKEN for the infra-failed comment and relabel below, for the
+          # same reason Router wall uses it: its label fires no workflow. Every
+          # other gh call here passes GH_TOKEN, which gh prefers.
+          GITHUB_TOKEN: ${{ github.token }}
+          # fleet-ops#9291: the Worker step's outcome and clock (start from the
+          # Worker clock step, end from the Host sample taken at its death),
+          # and the classifier's guard constants. The Worker step caps at
+          # timeout-minutes: 55, so a cap death ends within seconds of 55 min
+          # and 54 min (3240s) separates it from an early failure. CPU guard:
+          # healthy load1 averages ~6 on the host (fleet-ops#8860) and the
+          # 2026-10-05 overload ran 50-374 (fleet-ops#9264), so 5x cores sits
+          # between. RAM guard: the sessions' designed swap paging stays under
+          # ~4G (user-1000.slice MemoryHigh) and the overload crossed 7G of 8G.
+          WORKER_OUTCOME: ${{ steps.worker.outcome }}
+          STARTED: ${{ steps.clock.outputs.started }}
+          ENDED: ${{ steps.host.outputs.ended }}
+          LOAD1: ${{ steps.host.outputs.load1 }}
+          CORES: ${{ steps.host.outputs.cores }}
+          SWAP_USED_KB: ${{ steps.host.outputs.swap_used_kb }}
+          WORKER_TIMEOUT_SECS: '3240'
+          CPU_LOAD_FACTOR: '5'
+          SWAP_GUARD_KB: '4194304'
+          # Infra requeues since the newest park before a death strikes anyway,
+          # so a host that stays overloaded cannot requeue one issue forever.
+          INFRA_REQUEUE_CAP: '3'
+        # Two strikes, counted from these comments since the newest park: comment
+        # (opus-vet: still counts; a fresh one resets the count, same as the old claim-release prompt).
+        # First strike re-queues via agent-ready (fleet-ops#8552) with strong-only, so the retry
+        # goes to the senior Cursor lane with the issue thread and pushed branch as its context,
+        # never to another worker model (Nish 2026-10-01, #9015); the second parks.
+        run: |
+          i=${REF#claim/issue-}; i=${i%%-*}
+          # A ref can name a number that is not an issue in the calling repo
+          # (fleet-ops#8772): nothing to comment or relabel, exit clean. Any
+          # other gh failure still fails the step.
+          err=$(gh issue view "$i" -R "$GITHUB_REPOSITORY" --json number 2>&1 >/dev/null) ||
+            { case $err in *"Could not resolve"*) echo "strike: #$i does not resolve in $GITHUB_REPOSITORY; skip"; exit 0 ;; *) echo "$err" >&2; exit 1 ;; esac; }
+          # A run the concurrency group displaced never reached the Gate, so it
+          # never commented "agent run started:". Its cancelled job could still
+          # reach this step and strike and relabel the issue under the run that
+          # held the group (agent-in-progress and agent-ready together on 10 of
+          # 43 bare-branch issues in 0509).
+          # shellcheck disable=SC2016 # $u is a jq variable
+          comments=$(gh issue view "$i" -R "$GITHUB_REPOSITORY" --json comments)
+          jq -e --arg u "/runs/$GITHUB_RUN_ID" '.comments | any(.body | startswith("agent run started:") and endswith($u))' <<<"$comments" >/dev/null ||
+            { echo "strike: run $GITHUB_RUN_ID never claimed #$i; skip"; exit 0; }
+          # fleet-ops#9291: a Worker death under host overload is infra, not a
+          # bad packet. In the 2026-10-05 overload (load 50-374, 7-8G swap,
+          # fleet-ops#9264) 52 drive fixes hit the 55-minute step cap, and each
+          # was struck as a normal `agent run failed:` into the 1-slot
+          # strong-only lane while 93 pi slots sat free. One signature counts
+          # as infra here: the Worker step failed after running to its
+          # 55-minute cap (elapsed >= 54 min) while load1 was above 5x cores or
+          # swap in use was above 4G (the numbers' provenance is in the env
+          # above). A runner that died mid-worker never gets here (see the
+          # comment above the App token step). Everything else strikes: an
+          # early worker failure, a cancelled Worker, a timeout with no guard
+          # sample.
+          verdict=strike
+          if [ "$WORKER_OUTCOME" = failure ] && [[ $STARTED =~ ^[0-9]+$ ]] && [[ $ENDED =~ ^[0-9]+$ ]] &&
+             [ $((ENDED - STARTED)) -ge "$WORKER_TIMEOUT_SECS" ]; then
+            overloaded=$(awk -v l="$LOAD1" -v c="$CORES" -v f="$CPU_LOAD_FACTOR" -v s="$SWAP_USED_KB" -v g="$SWAP_GUARD_KB" \
+              'BEGIN { print ((c + 0 > 0 && l + 0 > f * c) || s + 0 > g + 0) ? "yes" : "no" }')
+            [ "$overloaded" = yes ] && verdict=infra
+          fi
+          if [ "$verdict" = infra ]; then
+            # shellcheck disable=SC2016 # $v is a jq variable
+            infra_prior=$(jq '[.comments[] | if (.body | startswith("park:") or startswith("opus-vet:")) or ((.body | test("^attempt-cap reset: \\S")) and (.authorAssociation | IN("OWNER", "MEMBER", "COLLABORATOR"))) then "park:" else .body end] | (map(startswith("park:")) | rindex(true) // -1) as $v | .[$v+1:] | map(select(startswith("agent run infra-failed:"))) | length' <<<"$comments")
+            if [ "$infra_prior" -ge "$INFRA_REQUEUE_CAP" ]; then
+              echo "::warning::#$i already has $infra_prior infra requeues since its last park; striking (fleet-ops#9291)"
+              verdict=strike
+            fi
+          fi
+          if [ "$verdict" = infra ]; then
+            # Router wall parity: GITHUB_TOKEN labels fire no workflow, so the
+            # issue waits for the sweep or the next free worker instead of
+            # re-entering the same overloaded host immediately.
+            env -u GH_TOKEN gh issue comment "$i" -R "$GITHUB_REPOSITORY" --body "agent run infra-failed: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+            env -u GH_TOKEN gh issue edit "$i" -R "$GITHUB_REPOSITORY" --add-label agent-ready --remove-label agent-in-progress
+            exit 0
+          fi
+          # shellcheck disable=SC2016 # $v is a jq variable
+          prior=$(gh issue view "$i" -R "$GITHUB_REPOSITORY" --json comments --jq '[.comments[] | if (.body | startswith("park:") or startswith("opus-vet:")) or ((.body | test("^attempt-cap reset: \\S")) and (.authorAssociation | IN("OWNER", "MEMBER", "COLLABORATOR"))) then "park:" else .body end] | (map(startswith("park:")) | rindex(true) // -1) as $v | .[$v+1:] | map(select(startswith("agent run failed:"))) | length')
+          gh issue comment "$i" -R "$GITHUB_REPOSITORY" --body "agent run failed: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+          if [ "$prior" -ge 1 ]; then
+            gh issue edit "$i" -R "$GITHUB_REPOSITORY" --add-label needs-orchestrator --remove-label agent-ready,agent-in-progress,agent-failed
+          else
+            gh issue edit "$i" -R "$GITHUB_REPOSITORY" --add-label agent-ready,strong-only --remove-label agent-in-progress,agent-failed
           fi
       - name: Start the next ready issue
         # A builder that finishes frees a lane, and GitHub sends no event for
@@ -572,145 +706,4 @@ jobs:
             rm -rf "$HOME/workspaces/agent-worktrees/issue-$id-miss"
           else
             rm -rf "$HOME/workspaces/agent-worktrees/issue-$id"
-          fi
-  report:
-    needs: work
-    if: (failure() || cancelled()) && needs.work.outputs.wall != 'true'
-    runs-on: [self-hosted, agent]
-    permissions:
-      issues: write
-    steps:
-      # App token, not GITHUB_TOKEN: a GITHUB_TOKEN label fires no workflow, so a workflow listening for the label never ran on a park (fleet-ops#8552).
-      - name: Read App private key
-        id: app-key
-        run: |
-          keyfile="$HOME/.config/fleet-worker/nishfleet-worker.private-key.pem"
-          [ -s "$keyfile" ] || { echo "::error::app private key file missing on runner"; exit 1; }
-          while IFS= read -r line || [ -n "$line" ]; do
-            [ -n "$line" ] && echo "::add-mask::$line"
-          done < "$keyfile"
-          delim=APP_PRIVATE_KEY_END
-          {
-            printf 'pem<<%s\n' "$delim"
-            cat "$keyfile"
-            printf '%s\n' "$delim"
-          } >> "$GITHUB_OUTPUT"
-      # Scoped like the work job's token: the calling repo, issues only.
-      - name: App token
-        id: app-token
-        uses: actions/create-github-app-token@fee1f7d63c2ff003460e3d139729b119787bc349 # v2.2.2
-        with:
-          app-id: "4728578"
-          private-key: ${{ steps.app-key.outputs.pem }}
-          permission-issues: write
-      - name: Strike or requeue
-        env:
-          GH_TOKEN: ${{ steps.app-token.outputs.token }}
-          # GITHUB_TOKEN for the infra-failed comment and relabel below, for the
-          # same reason Router wall uses it: its label fires no workflow. Every
-          # other gh call here passes GH_TOKEN, which gh prefers.
-          GITHUB_TOKEN: ${{ github.token }}
-          N: ${{ inputs.ref }}
-          # fleet-ops#9291: the work job's Host sample, taken at the Worker
-          # step's death moment, and the classifier's guard constants. The
-          # Worker step caps at timeout-minutes: 55, so a cap death completes
-          # within seconds of 55 min and 54 min (3240s) separates it from an
-          # early failure. CPU guard: healthy load1 averages ~6 on the host
-          # (fleet-ops#8860) and the 2026-10-05 overload ran 50-374
-          # (fleet-ops#9264), so 5x cores sits between. RAM guard: the
-          # sessions' designed swap paging stays under ~4G (user-1000.slice
-          # MemoryHigh) and the overload crossed 7G of 8G.
-          LOAD1: ${{ needs.work.outputs.load1 }}
-          CORES: ${{ needs.work.outputs.cores }}
-          SWAP_USED_KB: ${{ needs.work.outputs.swap_used_kb }}
-          WORKER_TIMEOUT_SECS: '3240'
-          CPU_LOAD_FACTOR: '5'
-          SWAP_GUARD_KB: '4194304'
-          # Infra requeues since the newest park before a death strikes anyway,
-          # so a host that stays overloaded cannot requeue one issue forever.
-          INFRA_REQUEUE_CAP: '3'
-        # Two strikes, counted from these comments since the newest park: comment
-        # (opus-vet: still counts; a fresh one resets the count, same as the old claim-release prompt).
-        # First strike re-queues via agent-ready (fleet-ops#8552) with strong-only, so the retry
-        # goes to the senior Cursor lane with the issue thread and pushed branch as its context,
-        # never to another worker model (Nish 2026-10-01, #9015); the second parks.
-        run: |
-          i=${N#claim/issue-}; i=${i%%-*}
-          # A ref can name a number that is not an issue in the calling repo
-          # (fleet-ops#8772): nothing to comment or relabel, exit clean. Any
-          # other gh failure still fails the step.
-          err=$(gh issue view "$i" -R "$GITHUB_REPOSITORY" --json number 2>&1 >/dev/null) ||
-            { case $err in *"Could not resolve"*) echo "report: #$i does not resolve in $GITHUB_REPOSITORY; skip"; exit 0 ;; *) echo "$err" >&2; exit 1 ;; esac; }
-          # A run the concurrency group displaced never reached the Gate, so it
-          # never commented "agent run started:". Its cancelled work job still
-          # ran this job, which struck and relabelled the issue under the run
-          # that held the group (agent-in-progress and agent-ready together on
-          # 10 of 43 bare-branch issues in 0509).
-          # shellcheck disable=SC2016 # $u is a jq variable
-          comments=$(gh issue view "$i" -R "$GITHUB_REPOSITORY" --json comments)
-          jq -e --arg u "/runs/$GITHUB_RUN_ID" '.comments | any(.body | startswith("agent run started:") and endswith($u))' <<<"$comments" >/dev/null ||
-            { echo "report: run $GITHUB_RUN_ID never claimed #$i; skip"; exit 0; }
-          # fleet-ops#9291: a Worker death under host overload is infra, not a
-          # bad packet. In the 2026-10-05 overload (load 50-374, 7-8G swap,
-          # fleet-ops#9264) 52 drive fixes hit the 55-minute step cap and other
-          # runners died mid-worker, and each death was struck as a normal
-          # `agent run failed:` into the 1-slot strong-only lane while 93 pi
-          # slots sat free. Two signatures count as infra, read off this run's
-          # jobs API (Nish's own gh login reads actions; the App token cannot)
-          # plus the Host sample the work job took at the death moment:
-          #   runner lost — the Worker step started and never completed, or
-          #     ended cancelled inside a failed job (the runner's shutdown
-          #     signal; systemd-oomd kills a runner unit at 80% memory
-          #     pressure, 10-agent.conf).
-          #   timed out overloaded — the Worker step ran to its 55-minute cap
-          #     (elapsed >= 54 min) while load1 was above 5x cores or swap in
-          #     use was above 4G (the numbers' provenance is in the env above).
-          # Everything else strikes as before: an early worker failure, a
-          # timeout with no guard sample, a failed jobs read (fail-safe).
-          jobs_json=$(env -u GH_TOKEN -u GITHUB_TOKEN gh api --paginate "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/jobs?per_page=100" 2>/dev/null) || jobs_json=
-          [ -n "$jobs_json" ] || echo "::warning::jobs API read failed; striking as before (fleet-ops#9291)"
-          # shellcheck disable=SC2016 # $v is a jq variable
-          verdict=$(jq -rs --arg ref "$N" --arg load1 "$LOAD1" --arg cores "$CORES" --arg swap_kb "$SWAP_USED_KB" \
-            --argjson timeout_secs "$WORKER_TIMEOUT_SECS" --argjson cpu_factor "$CPU_LOAD_FACTOR" --argjson swap_guard_kb "$SWAP_GUARD_KB" '
-            [.[].jobs[]] as $all
-            | [$all[] | select(.name | endswith("/ work"))] as $w
-            | ([$w[] | select(.name | contains("(" + $ref + ")"))]) as $mine
-            | (if ($mine | length) == 1 then $mine[0] elif ($w | length) == 1 then $w[0] else null end) as $job
-            | if $job == null then "strike"
-              else
-                ([($job.steps // [])[] | select(.name == "Worker")] | .[0]) as $s
-                | if $s == null or $s.started_at == null then "strike"
-                  elif $s.completed_at == null and $job.conclusion == "failure" then "infra"
-                  elif $s.conclusion == "cancelled" and $job.conclusion == "failure" then "infra"
-                  elif $s.conclusion == "failure"
-                       and (($s.completed_at | fromdateiso8601) - ($s.started_at | fromdateiso8601)) >= $timeout_secs
-                       and ((($cores | tonumber? // 0) > 0 and (($load1 | tonumber? // 0) > $cpu_factor * ($cores | tonumber? // 0)))
-                            or (($swap_kb | tonumber? // 0) > $swap_guard_kb))
-                  then "infra"
-                  else "strike"
-                  end
-              end' <<<"$jobs_json") || verdict=strike
-          if [ "$verdict" = infra ]; then
-            # shellcheck disable=SC2016 # $v is a jq variable
-            infra_prior=$(jq '[.comments[] | if (.body | startswith("park:") or startswith("opus-vet:")) or ((.body | test("^attempt-cap reset: \\S")) and (.authorAssociation | IN("OWNER", "MEMBER", "COLLABORATOR"))) then "park:" else .body end] | (map(startswith("park:")) | rindex(true) // -1) as $v | .[$v+1:] | map(select(startswith("agent run infra-failed:"))) | length' <<<"$comments")
-            if [ "$infra_prior" -ge "$INFRA_REQUEUE_CAP" ]; then
-              echo "::warning::#$i already has $infra_prior infra requeues since its last park; striking (fleet-ops#9291)"
-              verdict=strike
-            fi
-          fi
-          if [ "$verdict" = infra ]; then
-            # Router wall parity: GITHUB_TOKEN labels fire no workflow, so the
-            # issue waits for the sweep or the next free worker instead of
-            # re-entering the same overloaded host immediately.
-            env -u GH_TOKEN gh issue comment "$i" -R "$GITHUB_REPOSITORY" --body "agent run infra-failed: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
-            env -u GH_TOKEN gh issue edit "$i" -R "$GITHUB_REPOSITORY" --add-label agent-ready --remove-label agent-in-progress
-            exit 0
-          fi
-          # shellcheck disable=SC2016 # $v is a jq variable
-          prior=$(gh issue view "$i" -R "$GITHUB_REPOSITORY" --json comments --jq '[.comments[] | if (.body | startswith("park:") or startswith("opus-vet:")) or ((.body | test("^attempt-cap reset: \\S")) and (.authorAssociation | IN("OWNER", "MEMBER", "COLLABORATOR"))) then "park:" else .body end] | (map(startswith("park:")) | rindex(true) // -1) as $v | .[$v+1:] | map(select(startswith("agent run failed:"))) | length')
-          gh issue comment "$i" -R "$GITHUB_REPOSITORY" --body "agent run failed: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
-          if [ "$prior" -ge 1 ]; then
-            gh issue edit "$i" -R "$GITHUB_REPOSITORY" --add-label needs-orchestrator --remove-label agent-ready,agent-in-progress,agent-failed
-          else
-            gh issue edit "$i" -R "$GITHUB_REPOSITORY" --add-label agent-ready,strong-only --remove-label agent-in-progress,agent-failed
           fi

@@ -24,7 +24,7 @@
       "agent-ready,agent-in-progress",
       "workflow-files",
       "routed: the deliverable edits .github/workflows/**, which the worker App cannot push; handed to the orchestrator",
-      "if jq -e --arg p '.github/workflows/' '((.title // \"\") + \"\\n\" + (.body // \"\")) | contains($p)' <<<\"$issue\" >/dev/null; then"
+      "fleet_ops=false"
     ]
   },
   "orchestrate_cases": [
@@ -194,6 +194,41 @@
       "want_park": true,
       "title": "document the pipeline",
       "body": "The file lives at `.github/workflows/ci.yml`."
+    },
+    {
+      "id": "fleet-ops-names-agent-yml",
+      "want_park": true,
+      "repo": "Nishfleet/fleet-ops",
+      "title": "move the report job into agent.yml",
+      "body": "The worker App cannot push it. See agent-dispatch.yml sweep too."
+    },
+    {
+      "id": "fleet-ops-names-agent-dispatch-only",
+      "want_park": true,
+      "repo": "Nishfleet/fleet-ops",
+      "title": "sweep liveness",
+      "body": "Edit (agent-dispatch.yml), around the orphans job."
+    },
+    {
+      "id": "fleet-ops-no-workflow-name",
+      "want_park": false,
+      "repo": "Nishfleet/fleet-ops",
+      "title": "tidy the runbook",
+      "body": "Reword RUNBOOK.md and the intake-repos.json notes. Mention reagent.yml-style names are fine, and my-agent.yml.bak too."
+    },
+    {
+      "id": "other-repo-names-agent-yml",
+      "want_park": false,
+      "repo": "Nishfleet/0509",
+      "title": "our agent.yml mention",
+      "body": "A docs issue that quotes agent.yml in prose."
+    },
+    {
+      "id": "workflow-path-on-fleet-ops",
+      "want_park": true,
+      "repo": "Nishfleet/fleet-ops",
+      "title": "edit .github/workflows/lighthouse.yml",
+      "body": "Bump it."
     },
     {
       "id": "existing-label-no-path",

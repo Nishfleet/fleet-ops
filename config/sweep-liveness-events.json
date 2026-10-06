@@ -1,0 +1,174 @@
+{
+ "description": "Sweep liveness cases (fleet-ops#9275). Each case feeds the RUN_LIVE_JQ filter from agent-dispatch.yml a `gh run view --json status,jobs` payload (job names, statuses and the run status as GitHub reports them; the name shape is from 0509 run 37258490012). want is whether the sweep counts the run as live. jobs are [name, status] pairs.",
+ "cases": [
+  {
+   "name": "queued-run-work-completed",
+   "ref": "claim/issue-7005",
+   "run_status": "queued",
+   "jobs": [
+    [
+     "dispatch / new / work",
+     "completed"
+    ],
+    [
+     "dispatch / rework-note",
+     "completed"
+    ]
+   ],
+   "want": false,
+   "note": "the #9275 bug: the run still reads queued while its work job ended, so the sweep waited an hour behind busy runners"
+  },
+  {
+   "name": "run-queued-work-queued",
+   "ref": "claim/issue-7005",
+   "run_status": "queued",
+   "jobs": [
+    [
+     "dispatch / new / work",
+     "queued"
+    ],
+    [
+     "dispatch / rework-note",
+     "completed"
+    ]
+   ],
+   "want": true
+  },
+  {
+   "name": "run-in-progress-work-in-progress",
+   "ref": "claim/issue-7005",
+   "run_status": "in_progress",
+   "jobs": [
+    [
+     "dispatch / new / work",
+     "in_progress"
+    ]
+   ],
+   "want": true
+  },
+  {
+   "name": "run-waiting-work-waiting",
+   "ref": "claim/issue-7005",
+   "run_status": "waiting",
+   "jobs": [
+    [
+     "dispatch / new / work",
+     "waiting"
+    ]
+   ],
+   "want": true,
+   "note": "waiting on the concurrency group is still live"
+  },
+  {
+   "name": "run-queued-no-jobs-yet",
+   "ref": "claim/issue-7005",
+   "run_status": "queued",
+   "jobs": [],
+   "want": true,
+   "note": "a run dispatched a second ago has no jobs yet: live, so it is not requeued twice"
+  },
+  {
+   "name": "run-pending-only-skipped-callers",
+   "ref": "claim/issue-7005",
+   "run_status": "pending",
+   "jobs": [
+    [
+     "dispatch / rework-note",
+     "completed"
+    ]
+   ],
+   "want": true,
+   "note": "no work job listed yet: fall back to the run's own status"
+  },
+  {
+   "name": "run-completed-work-failed",
+   "ref": "claim/issue-7005",
+   "run_status": "completed",
+   "jobs": [
+    [
+     "dispatch / new / work",
+     "completed"
+    ],
+    [
+     "dispatch / new / report",
+     "completed"
+    ]
+   ],
+   "want": false,
+   "note": "real shape of 0509 run 37258490012: completed, work job failed"
+  },
+  {
+   "name": "run-completed-no-jobs",
+   "ref": "claim/issue-7005",
+   "run_status": "completed",
+   "jobs": [],
+   "want": false
+  },
+  {
+   "name": "matrix-own-leg-done-other-leg-running",
+   "ref": "claim/issue-7005",
+   "run_status": "in_progress",
+   "jobs": [
+    [
+     "dispatch / remerge (claim/issue-7005) / work",
+     "completed"
+    ],
+    [
+     "dispatch / remerge (claim/issue-7006) / work",
+     "in_progress"
+    ]
+   ],
+   "want": false,
+   "note": "another issue's leg in the same run does not keep this issue live"
+  },
+  {
+   "name": "matrix-own-leg-running",
+   "ref": "claim/issue-7006",
+   "run_status": "in_progress",
+   "jobs": [
+    [
+     "dispatch / remerge (claim/issue-7005) / work",
+     "completed"
+    ],
+    [
+     "dispatch / remerge (claim/issue-7006) / work",
+     "in_progress"
+    ]
+   ],
+   "want": true
+  },
+  {
+   "name": "matrix-ref-prefix-not-confused",
+   "ref": "claim/issue-70",
+   "run_status": "in_progress",
+   "jobs": [
+    [
+     "dispatch / remerge (claim/issue-7005) / work",
+     "in_progress"
+    ],
+    [
+     "dispatch / remerge (claim/issue-70) / work",
+     "completed"
+    ]
+   ],
+   "want": false
+  },
+  {
+   "name": "many-legs-none-named-one-running",
+   "ref": "claim/issue-9",
+   "run_status": "in_progress",
+   "jobs": [
+    [
+     "dispatch / list / work",
+     "completed"
+    ],
+    [
+     "dispatch / unblocked / work",
+     "in_progress"
+    ]
+   ],
+   "want": true,
+   "note": "no leg carries the ref: any running work job keeps it live (fail toward not requeueing)"
+  }
+ ]
+}
