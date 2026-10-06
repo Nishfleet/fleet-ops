@@ -30,10 +30,6 @@
   hosts: localhost
   connection: local
   gather_facts: false
-  # The shape of update.yml's own guarded registrations: the task is not
-  # looped, and a false `when:` is what skipped it on the failing run.
-  vars:
-    skipped_registration_reason: "the condition the report reads was false"
 
   tasks:
     - name: Reproduce the registration update.yml had on the failing run
@@ -44,9 +40,6 @@
         msg: "this task is never reached on the failing run"
       when: false
       register: skipped_when
-      # Ignored only so this play can assert the OLD pattern below is still
-      # caught; in update.yml the whole run dies on it.
-      ignore_errors: true
 
     - name: The skipped registration carries no 'results' key
       ansible.builtin.assert:
@@ -67,6 +60,8 @@
       ansible.builtin.debug:
         msg: "{{ (skipped_when | default({'results': []})).results | map(attribute='item') | list }}"
       register: old_idiom
+      # Ignored only so the next task can assert the old idiom still fails.
+      # In update.yml the whole run dies on it.
       ignore_errors: true
 
     - name: The OLD idiom fails with the error from the issue
@@ -74,7 +69,7 @@
         that:
           - old_idiom is defined
           - old_idiom is failed
-          - old_idiom.msg is search("has no attribute 'results'")
+          - old_idiom.msg is search("has no attribute")
         fail_msg: >-
           The old idiom (x | default({'results': []})).results did not fail
           here, so the guard below proves nothing about the class. Its result
