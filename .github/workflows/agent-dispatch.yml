@@ -470,7 +470,8 @@ jobs:
   # A closed blocker frees the issues it was blocking; a manual run sweeps
   # every ready, unblocked issue (cutover backfill and missed-event recovery),
   # then open claim PRs that are unarmed, conflicting, missing a required-check
-  # report, or still agent-in-progress with no live agent run.
+  # report, red with no rework since the failure, or still agent-in-progress
+  # with no live agent run.
   # Priority-now first, then oldest. The Gate step in agent.yml re-checks each
   # and its 3-run cap bounds any loop.
   list:
@@ -498,6 +499,36 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           CLOSED: ${{ github.event.issue.number }}
           ISSUE: ${{ inputs.issue }}
+          # jq defs shared by the missing-checks and red-PR cases below.
+          CHECK_DEFS: |
+            def pending: (.status != null and .status != "COMPLETED") or .state == "PENDING";
+            def failed: (.conclusion | IN("FAILURE", "CANCELLED", "TIMED_OUT", "ACTION_REQUIRED", "STARTUP_FAILURE")) or (.state | IN("FAILURE", "ERROR"));
+          # One red claim PR in, a verdict out: {reason, run}. Input is
+          # {pr: gh pr view, issue: the issue API object, comments: gh issue
+          # view comments, now: epoch seconds}. reason is "go" or the skip
+          # reason; run is the newest counted "agent run started:" body.
+          # The label list, 3-run cap and infra-failed rule are agent.yml's
+          # Gate, copied. config/sweep-rework-cases.json runs this program in CI.
+          RED_REWORK: |
+            .now as $now
+            | (.pr.statusCheckRollup // []) as $checks
+            | ([$checks[] | select(failed) | (.completedAt // .startedAt // empty) | fromdateiso8601] | max) as $failed_at
+            | (.issue.labels | map(.name)) as $labels
+            | [.comments[] | if (.body | startswith("park:") or startswith("opus-vet:")) or ((.body | test("^attempt-cap reset: \\S")) and (.authorAssociation | IN("OWNER", "MEMBER", "COLLABORATOR"))) then (.body = "park:") else . end] as $cs
+            | ($cs | (map(.body | startswith("park:")) | rindex(true) // -1) as $v | .[$v+1:]) as $t
+            | [$t[] | select(.body | startswith("agent run infra-failed: ")) | .body | ltrimstr("agent run infra-failed: ")] as $infra
+            | [$t[] | select(.body | startswith("agent run started: ")) | select(.body | ltrimstr("agent run started: ") | . as $u | $infra | index($u) | not)] as $started
+            | (if $failed_at == null then "not-red"
+               elif ($checks | any(pending)) then "pending"
+               elif .pr.mergeStateStatus == "DIRTY" then "conflicting"
+               elif .issue.state != "open" then "closed"
+               elif (.issue.issue_dependencies_summary.blocked_by // 0) != 0 then "blocked"
+               elif ($labels | any(IN("agent-blocked", "needs-split", "needs-orchestrator", "needs-nish-decision", "epic"))) then "label"
+               elif ($started | length) >= 3 then "cap"
+               elif any(.comments[]; (.body | startswith("rework:")) and (.createdAt | fromdateiso8601) > ($now - 3600)) then "rework-note"
+               elif ($started | length) > 0 and ($started[-1].createdAt | fromdateiso8601) >= $failed_at then "run-after-failure"
+               else "go" end) as $reason
+            | {reason: $reason, run: ($started[-1].body // "")}
         run: |
           stalled_refs='[]'
           if [ -n "$ISSUE" ]; then
@@ -548,7 +579,7 @@ jobs:
             # trigger that computation (fleet-ops#8557). A PR in the merge queue
             # is dropped by ref below; a queued PR can have autoMergeRequest
             # null (0509#4688), so the CONFLICTING test alone cannot drop it.
-            all=$(gh pr list -R "$GITHUB_REPOSITORY" -L 1000 --json number,headRefName,autoMergeRequest,isDraft,mergeable,labels \
+            all=$(gh pr list -R "$GITHUB_REPOSITORY" -L 1000 --json number,headRefName,autoMergeRequest,isDraft,isCrossRepository,mergeable,labels \
               --jq '[.[] | select((.headRefName|startswith("claim/issue-")) and (.isDraft|not))]')
             if queued=$(gh api graphql -f query="query{repository(owner:\"${GITHUB_REPOSITORY%/*}\",name:\"${GITHUB_REPOSITORY#*/}\"){mergeQueue{entries(first:100){nodes{pullRequest{headRefName}}}}}}" \
               --jq '[.data.repository.mergeQueue.entries.nodes[]?.pullRequest.headRefName]'); then
@@ -564,15 +595,13 @@ jobs:
               # Armed claim PRs whose required checks never reported (fleet-ops#8777).
               # BLOCKED with nothing pending and nothing failed means a required
               # check is absent. A pending check is left: it is running, not
-              # missing. A completed failure is left too; rework owns that. A repo
-              # with no required checks is never BLOCKED by them, so it lists none
-              # (Nishfleet/drive, fleet-ops#8981).
+              # missing. A completed failure is left too: the red PRs case below
+              # owns that. A repo with no required checks is never BLOCKED by
+              # them, so it lists none (Nishfleet/drive, fleet-ops#8981).
               missing=$(
                 for pr in $(jq -r '.[] | select(.autoMergeRequest != null) | .number' <<<"$all"); do
                   gh pr view "$pr" -R "$GITHUB_REPOSITORY" --json headRefName,statusCheckRollup,mergeStateStatus || exit 1
-                done | jq -sc '
-                  def pending: (.status != null and .status != "COMPLETED") or .state == "PENDING";
-                  def failed: (.conclusion | IN("FAILURE", "CANCELLED", "TIMED_OUT", "ACTION_REQUIRED", "STARTUP_FAILURE")) or (.state | IN("FAILURE", "ERROR"));
+                done | jq -sc "$CHECK_DEFS"'
                   [.[] | (.statusCheckRollup // []) as $checks
                     | select(.mergeStateStatus == "BLOCKED" and ($checks | any(pending) | not) and ($checks | any(failed) | not))
                     | .headRefName
@@ -603,9 +632,36 @@ jobs:
                   esac
                 done | jq -Rsc 'split("\n") | map(select(length > 0))'
               )
-              prs=$(jq -nc --argjson a "$unarmed" --argjson b "$conflicted" --argjson m "$missing" --argjson o "$orphans" --argjson q "$queued" '(reduce ($a[], $b[], $m[], $o[]) as $r ([]; if index($r) then . else . + [$r] end)) - $q')
+              # Red claim PRs the rework event missed (drive#765: no run fired;
+              # 0509#7182 #7172: rework hit lanes-full and nothing retried; every
+              # failure while FLEET_DISPATCH_PAUSED is true). The event path
+              # owns a failure it saw: a "rework:" note in the last 60 minutes,
+              # or an "agent run started:" newer than the failure, leaves the PR
+              # alone, so the two never dispatch the same failure twice. The
+              # verdict is the RED_REWORK program above; liveness is `gh run view`
+              # on its newest counted run. A DIRTY PR is the conflicts job's.
+              red=$(
+                for pr in $(jq -r '.[] | select((.isCrossRepository | not) and (.headRefName | test("^claim/issue-[0-9]+$"))) | .number' <<<"$all"); do
+                  v=$(gh pr view "$pr" -R "$GITHUB_REPOSITORY" --json headRefName,statusCheckRollup,mergeStateStatus) || exit 1
+                  ref=$(jq -r .headRefName <<<"$v"); n=${ref#claim/issue-}
+                  jq -e --argjson q "$queued" '.headRefName | IN($q[]) | not' <<<"$v" >/dev/null || continue
+                  verdict=$(jq -nc --argjson pr "$v" --argjson now "$(date +%s)" \
+                    --argjson issue "$(gh api "repos/$GITHUB_REPOSITORY/issues/$n")" \
+                    --argjson comments "$(gh issue view "$n" -R "$GITHUB_REPOSITORY" --json comments --jq .comments)" \
+                    '{pr: $pr, issue: $issue, comments: $comments, now: $now}' | jq -c "$CHECK_DEFS $RED_REWORK") || exit 1
+                  [ "$(jq -r .reason <<<"$verdict")" = go ] || continue
+                  if [[ $(jq -r .run <<<"$verdict") =~ actions/runs/([0-9]+) ]]; then
+                    case $(gh run view "${BASH_REMATCH[1]}" -R "$GITHUB_REPOSITORY" --json status --jq .status) in
+                      queued|in_progress|requested|waiting|pending) echo "#$n: run live, skip" >&2; continue ;;
+                    esac
+                  fi
+                  echo "$ref"
+                done | jq -Rsc 'split("\n") | map(select(length > 0))'
+              )
+              prs=$(jq -nc --argjson a "$unarmed" --argjson b "$conflicted" --argjson m "$missing" --argjson o "$orphans" --argjson d "$red" --argjson q "$queued" '(reduce ($a[], $b[], $m[], $o[], $d[]) as $r ([]; if index($r) then . else . + [$r] end)) - $q')
               echo "claim PRs missing required checks: $missing"
               echo "claim PRs with a dead agent run: $orphans"
+              echo "claim PRs red with no rework since: $red"
               echo "claim PRs picked by the sweep: $prs"
             else
               echo "::warning::merge-queue read failed; skipping all claim-PR re-dispatch this run"
