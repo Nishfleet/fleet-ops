@@ -73,7 +73,10 @@ script, or prompt lands unseen.
   then `rm ~/.local/bin/leviathan && rm -rf ~/.local/share/leviathan` —
   `host.yml`/`update.yml` only install and version the binary and
   `fleet-sync.service` only refreshes unit and config bytes, so no fleet unit
-  ever re-enables a timer.
+  ever re-enables a timer. Wire new instances only after `fleet-sync.service`
+  has run once with the configs merged (the 15-minute tick pages on a missing
+  config). The index outlives the 7-day age-out of `~/.pi/agent/sessions` on
+  purpose: it is the searchable archive of what the logs said.
 - `systemd/fleet-sync.service` (started by
   `.github/workflows/deploy-box.yml` on push) — the whole deploy mechanism:
   a clean-clone check that prints

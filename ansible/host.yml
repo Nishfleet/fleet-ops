@@ -228,6 +228,14 @@
         mode: "0755"
         remote_src: true
 
+    - name: Drop the Leviathan download and unpack tree
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: absent
+      loop:
+        - /tmp/leviathan.tar.gz
+        - /tmp/leviathan
+
     # enabled only: never restarts the Remote Control link this playbook may run under.
     - name: Enable Remote Control at boot
       ansible.builtin.systemd_service:

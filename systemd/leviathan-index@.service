@@ -18,6 +18,12 @@ Environment=LEV_DIR=/home/nish/.local/share/leviathan
 ExecStart=/bin/sh -c 'exec "$LEV_BIN" index -c "$LEV_DIR/%i.toml" --index "$LEV_DIR/%i.db"'
 Nice=19
 IOSchedulingClass=idle
+# Measured 2026-10-06: the pi scan peaks at 1.1G RAM (claude is smaller), so
+# the caps sit ~2x over the real peak. MemoryHigh throttles first and a
+# throttled run that outlives TimeoutStartSec fails and pages — the intended
+# signal when the logs outgrow the caps.
+MemoryHigh=2G
+MemoryMax=3G
 RuntimeMaxSec=600
 # systemd 255 ignores RuntimeMaxSec= for Type=oneshot (measured: verify
 # prints "has no effect ... Ignoring", and a sleep-30 oneshot with
