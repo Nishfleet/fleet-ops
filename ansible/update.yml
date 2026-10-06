@@ -64,7 +64,7 @@
     dispatch_repos:
       - Nishfleet/fleet-ops
       - Nishfleet/0509
-      - nish3451/drive
+      - Nishfleet/drive
     # Persistent user timers whose job calls a model or a CLI this run updates.
     # The transient later-* reminder timers only add a label, and stopping a
     # transient timer deletes it, so they stay untouched.
@@ -158,9 +158,9 @@
             # disabled workflow drops every trigger, hold-risky included, so no
             # risky PR armed in the window could be held (2026-10-05,
             # 08:11-10:47Z). With the flag set, agent-dispatch still runs and
-            # only its dispatch jobs skip. Per repo, not org: nish3451/drive is
-            # a user repo, which has no org variables, and nish's gh login
-            # needs only repo access for this. An unset variable (HTTP 404)
+            # only its dispatch jobs skip. Per repo, not org: a repo-level flag
+            # pauses each queue alone, and nish's gh login needs only repo
+            # access for this. An unset variable (HTTP 404)
             # reads as not paused; any other failed read stops the pause here.
             - name: Read each repo's dispatch pause flag
               ansible.builtin.command:
@@ -549,8 +549,9 @@
                 argv: [gh, api, "{{ item }}", --paginate, --jq,
                        '[.runners[] | select(.status == "online" and (.name | startswith("netcup-")))] | length']
               loop:
+                # drive's runners are org runners since it moved to Nishfleet
+                # (2026-10-06); its repo endpoint now lists 0 and would fail this.
                 - orgs/Nishfleet/actions/runners
-                - repos/nish3451/drive/actions/runners
               register: online
               until: online.stdout | int > 0
               retries: 20
