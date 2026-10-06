@@ -14,6 +14,13 @@ Environment=ANSIBLE_HOME=/var/lib/fleet-ops/ansible
 Environment=ANSIBLE_NOCOLOR=1
 # become_user nish with pipelining needs no world-readable temp files.
 Environment=ANSIBLE_PIPELINING=1
+# Ansible's own log of the run, because the journal cannot hold this one:
+# journald.conf.d/99-cap.conf caps the journal at 300M, and on 2026-10-05 the
+# 6h run's log rotated out before anyone read why it exited 2 (fleet-ops#9334).
+# StateDirectory=fleet-ops above creates the directory, so the path is always
+# writable; a missing parent makes ansible warn and write no log, not fail.
+# This is in addition to stdout, so the journal keeps its own record too.
+Environment=ANSIBLE_LOG_PATH=/var/lib/fleet-ops/fleet-update.log
 ExecStart=/usr/bin/ansible-pull --url https://github.com/Nishfleet/fleet-ops.git --checkout main --directory /var/lib/fleet-ops/update-repo --clean --inventory localhost, ansible/update.yml
 # Drain (up to 150 min) + apt (up to 60) + tools + resume checks.
 TimeoutStartSec=6h
