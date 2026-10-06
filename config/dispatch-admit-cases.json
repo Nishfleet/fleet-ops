@@ -1,0 +1,88 @@
+{
+  "description": "Inputs the list job's ADMIT jq (agent-dispatch.yml) must hold or dispatch (fleet-ops#9303). CI reads ADMIT out of the workflow with yq and checks each case's refs and held refs, so the filter and this file cannot drift. Case shapes follow 0509 run 37331034150, where 19 strong-only issues each started a runner and skipped lanes-full.",
+  "cases": [
+    {
+      "id": "strong-only-fan-out-keeps-one",
+      "input": {
+        "cursor_live": 0,
+        "prs": [],
+        "issues": [
+          {"number": 7011, "state": "open", "created_at": "2026-10-04T10:00:00Z", "issue_dependencies_summary": {"blocked_by": 0}, "labels": [{"name": "agent-ready"}, {"name": "strong-only"}]},
+          {"number": 7014, "state": "open", "created_at": "2026-10-04T11:00:00Z", "issue_dependencies_summary": {"blocked_by": 0}, "labels": [{"name": "agent-ready"}, {"name": "strong-only"}]},
+          {"number": 7026, "state": "open", "created_at": "2026-10-04T12:00:00Z", "issue_dependencies_summary": {"blocked_by": 0}, "labels": [{"name": "agent-ready"}, {"name": "strong-only"}]},
+          {"number": 7100, "state": "open", "created_at": "2026-10-04T13:00:00Z", "issue_dependencies_summary": {"blocked_by": 0}, "labels": [{"name": "agent-ready"}]}
+        ]
+      },
+      "want_refs": ["claim/issue-7011", "claim/issue-7100"],
+      "want_held": ["claim/issue-7014", "claim/issue-7026"]
+    },
+    {
+      "id": "strong-only-lane-busy-holds-all",
+      "input": {
+        "cursor_live": 1,
+        "prs": [],
+        "issues": [
+          {"number": 7011, "state": "open", "created_at": "2026-10-04T10:00:00Z", "issue_dependencies_summary": {"blocked_by": 0}, "labels": [{"name": "agent-ready"}, {"name": "strong-only"}]},
+          {"number": 7100, "state": "open", "created_at": "2026-10-04T13:00:00Z", "issue_dependencies_summary": {"blocked_by": 0}, "labels": [{"name": "agent-ready"}]}
+        ]
+      },
+      "want_refs": ["claim/issue-7100"],
+      "want_held": ["claim/issue-7011"]
+    },
+    {
+      "id": "priority-now-strong-only-wins-the-slot",
+      "input": {
+        "cursor_live": 0,
+        "prs": [],
+        "issues": [
+          {"number": 7011, "state": "open", "created_at": "2026-10-04T10:00:00Z", "issue_dependencies_summary": {"blocked_by": 0}, "labels": [{"name": "agent-ready"}, {"name": "strong-only"}]},
+          {"number": 7200, "state": "open", "created_at": "2026-10-05T10:00:00Z", "issue_dependencies_summary": {"blocked_by": 0}, "labels": [{"name": "agent-ready"}, {"name": "strong-only"}, {"name": "priority-now"}]}
+        ]
+      },
+      "want_refs": ["claim/issue-7200"],
+      "want_held": ["claim/issue-7011"]
+    },
+    {
+      "id": "parked-blocked-closed-and-missing-are-held",
+      "input": {
+        "cursor_live": 0,
+        "prs": ["claim/issue-7300", "claim/issue-7301-rework"],
+        "issues": [
+          {"number": 7101, "state": "open", "created_at": "2026-10-04T10:00:00Z", "issue_dependencies_summary": {"blocked_by": 0}, "labels": [{"name": "agent-ready"}, {"name": "needs-orchestrator"}]},
+          {"number": 7102, "state": "open", "created_at": "2026-10-04T10:00:00Z", "issue_dependencies_summary": {"blocked_by": 2}, "labels": [{"name": "agent-ready"}]},
+          {"number": 7103, "state": "open", "created_at": "2026-10-04T10:00:00Z", "issue_dependencies_summary": {"blocked_by": 0}, "labels": [{"name": "agent-ready"}, {"name": "epic"}]},
+          {"number": 7300, "state": "closed", "created_at": "2026-10-04T10:00:00Z", "issue_dependencies_summary": {"blocked_by": 0}, "labels": [{"name": "agent-in-progress"}]},
+          {"message": "Not Found", "status": "404"}
+        ]
+      },
+      "want_refs": [],
+      "want_held": ["claim/issue-7101", "claim/issue-7102", "claim/issue-7103", "claim/issue-7300", "claim/issue-7301-rework"]
+    },
+    {
+      "id": "claim-pr-of-a-live-issue-still-dispatches",
+      "input": {
+        "cursor_live": 0,
+        "prs": ["claim/issue-7400", "claim/issue-7401"],
+        "issues": [
+          {"number": 7400, "state": "open", "created_at": "2026-10-04T10:00:00Z", "issue_dependencies_summary": {"blocked_by": 0}, "labels": [{"name": "agent-in-progress"}]},
+          {"number": 7401, "state": "open", "created_at": "2026-10-04T10:00:00Z", "issue_dependencies_summary": {"blocked_by": 0}, "labels": [{"name": "agent-in-progress"}, {"name": "strong-only"}]},
+          {"number": 7402, "state": "open", "created_at": "2026-10-04T10:00:00Z", "issue_dependencies_summary": {"blocked_by": 0}, "labels": [{"name": "agent-ready"}, {"name": "strong-only"}]}
+        ]
+      },
+      "want_refs": ["claim/issue-7402", "claim/issue-7400"],
+      "want_held": ["claim/issue-7401"]
+    },
+    {
+      "id": "agent-ready-issue-without-a-label-is-not-listed",
+      "input": {
+        "cursor_live": 0,
+        "prs": [],
+        "issues": [
+          {"number": 7500, "state": "open", "created_at": "2026-10-04T10:00:00Z", "issue_dependencies_summary": {"blocked_by": 0}, "labels": [{"name": "bug"}]}
+        ]
+      },
+      "want_refs": [],
+      "want_held": []
+    }
+  ]
+}
