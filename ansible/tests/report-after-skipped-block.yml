@@ -1,0 +1,146 @@
+---
+# The `Report the run` task of ansible/update.yml crashed on the 2026-10-06
+# weekly run with "'dict object' has no attribute 'results'".
+#
+# Why: the report read every registered variable through the idiom
+#
+#     (some_registered_var | default({'results': []})).results
+#
+# `default()` only fires when the variable is undefined. A registering task
+# that was skipped by its own `when:` still leaves the variable defined, but
+# as {'changed': False, 'skipped': True, 'skip_reason': ...} with NO
+# 'results' key, so `default()` never applies and the attribute lookup dies.
+# update.yml guards several registering tasks with a `when:` (the stale-pause
+# marker, the reboot flag), so on any run where those conditions were false
+# the final task could not render the report and the unit failed.
+#
+# The fix is the tolerant idiom, applied to every occurrence in update.yml:
+#
+#     (some_registered_var | default({})).results | default([])
+#
+# where the inner `default({})` covers an undefined variable and the outer
+# `default([])` covers a skipped registration that has no 'results' key.
+#
+# This play is the regression gate. It fails if the class comes back, either
+# because the pattern reappears in update.yml (the source-of-truth assert
+# below) or because the tolerant idiom stops rendering a report expression
+# against a skipped registration.
+
+- name: A skipped registration does not break the run report (fleet-ops#9340)
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  # The shape of update.yml's own guarded registrations: the task is not
+  # looped, and a false `when:` is what skipped it on the failing run.
+  vars:
+    skipped_registration_reason: "the condition the report reads was false"
+
+  tasks:
+    - name: Reproduce the registration update.yml had on the failing run
+      # A non-looped registering task killed by its own `when:`. That is the
+      # shape that registers without a 'results' key, which is what made the
+      # report's (x | default({'results': []})).results raise the error.
+      ansible.builtin.debug:
+        msg: "this task is never reached on the failing run"
+      when: false
+      register: skipped_when
+      # Ignored only so this play can assert the OLD pattern below is still
+      # caught; in update.yml the whole run dies on it.
+      ignore_errors: true
+
+    - name: The skipped registration carries no 'results' key
+      ansible.builtin.assert:
+        that:
+          - skipped_when is defined
+          - skipped_when is skipped
+          # The precondition of the whole regression: no 'results' key is
+          # exactly what makes the old pattern crash.
+          - skipped_when.results is not defined
+        fail_msg: >-
+          The reproduced registration now carries a 'results' key
+          ({{ skipped_when | default({}) }}), so this play no longer
+          reproduces the fleet-ops#9340 failure mode. Fix this gate first.
+
+    - name: The OLD report idiom still crashes on that registration
+      # The negative guard: proves the class this gate catches is live in this
+      # Ansible version, so the tolerant idiom below is what makes it pass.
+      ansible.builtin.debug:
+        msg: "{{ (skipped_when | default({'results': []})).results | map(attribute='item') | list }}"
+      register: old_idiom
+      ignore_errors: true
+
+    - name: The OLD idiom fails with the error from the issue
+      ansible.builtin.assert:
+        that:
+          - old_idiom is defined
+          - old_idiom is failed
+          - old_idiom.msg is search("has no attribute 'results'")
+        fail_msg: >-
+          The old idiom (x | default({'results': []})).results did not fail
+          here, so the guard below proves nothing about the class. Its result
+          was {{ old_idiom | default('missing') }}.
+
+    # The shapes below are the exact expressions the `Report the run` task and
+    # the closing assert render, evaluated against the skipped registration.
+    # Each is the tolerant idiom update.yml now uses.
+    - name: The tolerant report expressions all render on a skipped registration
+      ansible.builtin.assert:
+        that:
+          # `Report the run` lines (ansible/update.yml).
+          - "((skipped_when | default({})).results | default([]) | map(attribute='item') | list) == []"
+          - "((skipped_when | default({})).results | default([]) | length) == 0"
+          - "((skipped_when | default({})).results | default([]) | map(attribute='item.item') | list) == []"
+          - "((skipped_when | default({})).results | default([]) | map(attribute='stdout') | list) == []"
+          - "((skipped_when | default({})).results | default([]) | map(attribute='stdout') | map('default', '') | list) == []"
+          # Closing `assert` and its fail_msg (ansible/update.yml).
+          - "((skipped_when | default({})).results | default([]) | selectattr('failed', 'defined') | selectattr('failed') | list | length) == 0"
+          - "((skipped_when | default({})).results | default([]) | selectattr('failed', 'defined') | selectattr('failed') | map(attribute='item') | map(attribute='argv') | map('join', ' ') | list) == []"
+          - "((skipped_when | default({})).results | default([]) | map(attribute='stdout') | reject('match', '^accepted: ') | reject('equalto', 'success') | list | length) == 0"
+        fail_msg: >-
+          A tolerant report expression no longer renders against a skipped
+          registration, so ansible/update.yml's `Report the run` can crash
+          again.
+
+    - name: Report the healthy shape this gate protects
+      ansible.builtin.debug:
+        msg:
+          dispatch_still_paused: []
+          stale_pause_cleared: []
+          dispatch_paused: []
+          runners_restarted: 0
+          versions_before: []
+          versions_after: []
+          sweeps: []
+          runners_online: []
+
+    # The class gate on the real file: every occurrence of the old idiom in
+    # ansible/update.yml must be gone, and every `.results` read must use the
+    # tolerant idiom. This is what fails CI if the bug is reintroduced
+    # anywhere in the playbook, not just in the shapes modelled above.
+    - name: Read ansible/update.yml so its report idiom can be checked
+      ansible.builtin.slurp:
+        src: "{{ playbook_dir }}/../update.yml"
+      register: update_playbook
+
+    - name: Hold the substrings the update.yml assert counts
+      ansible.builtin.set_fact:
+        # The exact substring the crashing idiom always contained.
+        old_report_idiom: "default({'results': []})).results"
+        # Every guarded read of `.results` on a registered var, and the
+        # tolerant form each of those reads must take. Counting the bare
+        # `)).results` read is what catches a removed outer default too: the
+        # count stays while the tolerant count falls.
+        results_read: ")).results"
+        tolerant_read: ")).results | default([])"
+
+    - name: The old crashing report idiom is gone from update.yml
+      ansible.builtin.assert:
+        that:
+          - (update_playbook.content | b64decode).count(old_report_idiom) == 0
+          # Each such read is followed by the outer default filter, so the two
+          # counts are equal only when every read is tolerant.
+          - (update_playbook.content | b64decode).count(results_read)
+            == (update_playbook.content | b64decode).count(tolerant_read)
+        fail_msg: >-
+          ansible/update.yml still uses the fleet-ops#9340 crashing idiom, or
+          a `.results` read that does not tolerate a skipped registration.
