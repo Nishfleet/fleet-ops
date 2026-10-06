@@ -62,6 +62,14 @@ script, or prompt lands unseen.
   `prompts/blacksmith-flip.yml`, which `fleet-sync.service` installs, and a
   model runs `blacksmith usage` rather than a checked-in script, because
   "no glue or scripts" was Nish's condition on approval.
+- `systemd/retro-weekly.service` and `systemd/retro-weekly.timer` — the weekly
+  /retro, Monday 07:00 IST (fleet-ops#9314): `prompts/retro-weekly.md` runs
+  through `pi --print` on `stepfun/step-5-preview`, reads one week of fleet
+  sessions, writes `retro-week-<date>.md` to
+  `/home/nish/workspaces/agent-state/retro/`, and files one fleet-ops issue
+  labelled `retro` + `needs-orchestrator`. Same shape and the same reason as
+  the flip: the prompt is the whole job and there is no checked-in script.
+  README "Weekly retro" has the run, off and delete steps.
 - `systemd/fleet-sync.service` (started by
   `.github/workflows/deploy-box.yml` on push) — the whole deploy mechanism:
   a clean-clone check that prints
@@ -71,8 +79,10 @@ script, or prompt lands unseen.
   `systemctl --user daemon-reload`, `systemd-tmpfiles --user --create`, three
   user-scope `install -C` copies (`config/pi-models.json` to
   `~/.pi/agent/models.json`, `config/litellm-proxy.yaml` to
-  `~/.config/fleet-ops/litellm-proxy.yaml` behind a `cmp` guard, and
-  `prompts/blacksmith-flip.yml` to `~/.local/share/blacksmith-flip/prompt.yml`),
+  `~/.config/fleet-ops/litellm-proxy.yaml` behind a `cmp` guard, and the two
+  scheduled prompts `prompts/blacksmith-flip.yml` to
+  `~/.local/share/blacksmith-flip/prompt.yml` and
+  `prompts/retro-weekly.md` to `~/.local/share/retro-weekly/prompt.md`),
   and a LINK-GUARD pass
   that fails the unit on a dangling or throwaway-target live symlink
   (fleet-ops#7743). Root-owned files (`/etc/**`, `agent.slice`, everything under
@@ -374,6 +384,38 @@ services on old libraries, so they never restart a service mid-job.
   In an emergency: `sudo systemctl disable --now fleet-update.timer`.
 - Delete it: remove `ansible/update.yml`, the two `fleet-update` units and
   `50-fleet.conf`, and add their `/etc` paths to `retired` in `ansible/host.yml`.
+
+## Weekly retro
+
+`retro-weekly.timer` starts `retro-weekly.service` every Monday at 07:00 IST.
+The service cats `prompts/retro-weekly.md` (fleet-sync step 8b installs it to
+`~/.local/share/retro-weekly/prompt.md`) into `pi --print` on the
+`stepfun/step-5-preview` seat, which read a full week of sessions and wrote the
+pilot report in 23.5 minutes on 2026-10-06. The model reads one week of fleet
+sessions, writes `retro-week-<YYYY-MM-DD>.md` to
+`/home/nish/workspaces/agent-state/retro/`, skips what a previous
+`retro`-labelled issue already reports, then files exactly one fleet-ops issue
+titled `Retro week <start>..<end>`, labelled `retro` + `needs-orchestrator`.
+It never labels one `agent-ready`: workers must not admit fleet-ops work, so a
+retro finding waits for a person. `TimeoutStartSec=3600` is the deadline, and
+`ExecStopPost` fails the unit when the report is missing or empty, so a run
+that stops without writing one shows up in `systemctl --user list-units
+--state=failed` (fleet-ops#9314).
+
+- Run it now: `systemctl --user start retro-weekly.service`, then
+  `journalctl --user -u retro-weekly -f`. A run takes about 25 minutes.
+- Switch it off: `systemctl --user disable --now retro-weekly.timer`.
+- Delete it: `systemctl --user disable --now retro-weekly.timer`, then drop the
+  two live units (`systemctl --user unlink retro-weekly.service
+  retro-weekly.timer`, or `rm ~/.config/systemd/user/retro-weekly.*`), remove
+  `~/.local/share/retro-weekly`, delete `prompts/retro-weekly.md`, the two
+  `systemd/retro-weekly.*` files and step 8b of `systemd/fleet-sync.service`,
+  and run `systemctl --user daemon-reload`.
+
+Post-merge the two new units are wired once by hand, like every other unit in
+`systemd/`: `systemctl --user link` from the deploy clone, then
+`systemctl --user enable --now retro-weekly.timer` ("Install" above). The
+prompt needs no such step: fleet-sync installs it on its next 20-minute tick.
 
 ## CI
 

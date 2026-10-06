@@ -1,0 +1,41 @@
+# Weekly /retro (fleet-ops#9314). One scheduled run a week, Monday 07:00 IST:
+# pi reads one week of fleet sessions, writes the retro report, and files one
+# needs-orchestrator issue so a person triages the findings. Shape copied from
+# blacksmith-flip.service (fleet-ops#8936): one prompt file installed by
+# fleet-sync, piped into `pi --print`; no glue, the prompt is the whole job.
+#
+# Why stepfun/step-5-preview and no --no-context-files: that seat read a full
+# week of sessions and wrote the pilot report in 23.5 min on 2026-10-06
+# (retro-week-2026-10-06.md, 25,805 bytes), and ~/AGENTS.md must stay loaded —
+# it is what makes the report plain English. FLEET_TASK_ID is a fixed id on
+# purpose: a recurring check, not a per-task agent (blacksmith-flip comment).
+#
+# DELIVERABLE carries the date, so ExecStart computes it (date +%%F is IST —
+# the host clock is IST — and a 07:00 run can never cross midnight) and
+# exports it for the model; ExecStopPost recomputes the same path for the
+# deliverable dead-man from the host rules: a stop with no non-empty report is
+# a failed unit, visible in `systemctl --user list-units --state=failed`.
+#
+# Deadline: the issue text names RuntimeMaxSec=3600, but for Type=oneshot
+# systemd ignores RuntimeMaxSec — `systemd-analyze --user verify` prints
+# "RuntimeMaxSec= has no effect in combination with Type=oneshot. Ignoring.",
+# so shipping it would be dead config. The working deadline knob for a oneshot
+# is TimeoutStartSec, which defaults to infinity for oneshot: left alone, a
+# wedged model call hangs the unit forever. 3600 s covers the proven 23.5 min
+# pilot with headroom, and the kill lands as Result=timeout -> a failed unit
+# (`systemctl --user list-units --state=failed`), with ExecStopPost still
+# running the deliverable check.
+#
+# %%F, not %F: systemd expands % specifiers itself, before any shell runs
+# (same rule as the %%s in blacksmith-flip.service, ci.yml gate fleet-ops#8382).
+[Unit]
+Description=Weekly /retro over one week of fleet sessions (Monday 07:00 IST)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+Environment=FLEET_TASK_ID=retro-weekly
+ExecStart=/bin/sh -c 'DELIVERABLE=/home/nish/workspaces/agent-state/retro/retro-week-$(date +%%F).md; export DELIVERABLE; mkdir -p /home/nish/workspaces/agent-state/retro; out=$(cat /home/nish/.local/share/retro-weekly/prompt.md | /home/nish/.local/bin/pi --print --provider stepfun --model step-5-preview); printf "%%s\n" "$out"'
+ExecStopPost=/bin/sh -c 'test -s /home/nish/workspaces/agent-state/retro/retro-week-$(date +%%F).md || { echo no-deliverable >&2; exit 1; }'
+TimeoutStartSec=3600
