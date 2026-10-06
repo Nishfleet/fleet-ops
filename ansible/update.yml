@@ -106,7 +106,7 @@
     # lists by position. pi is not in this list on purpose: `pi --version`
     # passes even when every pi start dies on a broken extension
     # (fleet-ops#9262), so pi's check is the real call below.
-    version_checks: [claude, node, npm, gh, uv, bun, cursor-agent, devin, opencode, rclone]
+    version_checks: [claude, node, npm, gh, uv, bun, cursor-agent, devin, opencode, rclone, leviathan]
 
   tasks:
     - name: Check for Nish's deliberate fleet pause

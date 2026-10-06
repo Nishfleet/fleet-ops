@@ -1,0 +1,14 @@
+[Unit]
+Description=Refresh the Leviathan %i session-log index every 15 minutes
+# Persistent=true: a missed tick (box asleep or down) fires on the next boot,
+# so the index is never stale after downtime. RandomizedDelaySec spreads the
+# two instances' ticks so the claude and pi scans do not start in the same
+# second.
+
+[Timer]
+OnCalendar=*:0/15
+Persistent=true
+RandomizedDelaySec=60
+
+[Install]
+WantedBy=timers.target
