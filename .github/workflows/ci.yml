@@ -256,7 +256,7 @@ jobs:
         run: |
           set -euo pipefail
           f=.github/workflows/agent-dispatch.yml
-          gated="new rework conflicts remerge ejected list unblocked miss-review miss-review-pr miss-stalled orchestrate"
+          gated="new rework conflicts remerge ejected list unblocked miss-review miss-review-pr miss-stalled orchestrate review-risky"
           guards="hold-risky close-claim rework-note"
           bad=0
           for j in $(yq '.jobs | keys | .[]' "$f"); do
@@ -441,7 +441,7 @@ jobs:
           bad=0
           # case: name|FAIL regex|APPROVE|SAFE|want held (yes/no)|want exit (0/1)
           while IFS='|' read -r name fail approve safe held code; do
-            export STATE=$t/$name RUNNER_TEMP=$t/$name/tmp GITHUB_STEP_SUMMARY=$t/$name/summary FAIL=$fail APPROVE=$approve SAFE=$safe
+            export STATE=$t/$name RUNNER_TEMP=$t/$name/tmp GITHUB_STEP_SUMMARY=$t/$name/summary GITHUB_OUTPUT=$t/$name/output FAIL=$fail APPROVE=$approve SAFE=$safe
             mkdir -p "$RUNNER_TEMP"
             rc=0
             PATH="$t/bin:$PATH" bash "$t/hold.sh" > "$t/$name/out" 2>&1 || rc=$?

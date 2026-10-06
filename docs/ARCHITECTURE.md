@@ -97,7 +97,12 @@ The rules still in force:
   any PR whose changed paths match `config/risky-paths.json` until its exact
   head sha is approved: an approver's unedited PR comment with the line
   `coordinator-approval: <full head sha>`, or a `coordinator-approval=success`
-  status on it (0509#7092);
+  status on it (0509#7092). agent.yml's `review` job (called by
+  `review-risky`) is the independent approver: it reads the held head's diff
+  through the API, asks a no-tools model for findings and Jev for approve or
+  block (p >= 0.9), and posts that status as `nishfleet-reviewer[bot]`, a
+  separate App that never authors a PR. A PR that edits the guard itself
+  (`guard` in risky-paths.json) stays with a person;
   agent-authored PRs self-land green.
 
 The full audit (rungs, counts, second wave) is git history
