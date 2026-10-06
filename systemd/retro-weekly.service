@@ -24,8 +24,8 @@
 # Do not "fix" it with a half-sandbox that breaks the proven run.
 #
 # Why stepfun/step-5-preview and no --no-context-files: that seat read a full
-# week of sessions and wrote the pilot report in 23.5 min on 2026-10-06
-# (retro-week-2026-10-06.md, 25,805 bytes), and ~/AGENTS.md must stay loaded —
+# week of sessions and wrote the pilot report in 28.4 min on 2026-10-06
+# (retro-week-2026-10-06.md, 18,952 bytes), and ~/AGENTS.md must stay loaded —
 # it is what makes the report plain English. FLEET_TASK_ID is a fixed id on
 # purpose: a recurring check, not a per-task agent (blacksmith-flip comment).
 #
@@ -43,7 +43,7 @@
 # "RuntimeMaxSec= has no effect in combination with Type=oneshot. Ignoring.",
 # so shipping it would be dead config. The working deadline knob for a oneshot
 # is TimeoutStartSec, which defaults to infinity for oneshot: left alone, a
-# wedged model call hangs the unit forever. 3600 s covers the proven 23.5 min
+# wedged model call hangs the unit forever. 3600 s covers the proven 28.4 min
 # pilot with headroom, and the kill lands as Result=timeout -> a failed unit
 # (`systemctl --user list-units --state=failed`), with ExecStopPost still
 # running the deliverable check.

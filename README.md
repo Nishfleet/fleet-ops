@@ -410,7 +410,7 @@ services on old libraries, so they never restart a service mid-job.
 The service cats `prompts/retro-weekly.md` (fleet-sync step 8b installs it to
 `~/.local/share/retro-weekly/prompt.md`) into `pi --print` on the
 `stepfun/step-5-preview` seat, which read a full week of sessions and wrote the
-pilot report in 23.5 minutes on 2026-10-06. The model reads one week of fleet
+pilot report in 28.4 minutes on 2026-10-06. The model reads one week of fleet
 sessions, writes `retro-week-<YYYY-MM-DD>.md` to
 `/home/nish/workspaces/agent-state/retro/`, skips what a previous
 `retro`-labelled issue already reports, then files exactly one fleet-ops issue
@@ -422,7 +422,7 @@ that stops without writing one shows up in `systemctl --user list-units
 --state=failed` (fleet-ops#9314).
 
 - Run it now: `systemctl --user start retro-weekly.service`, then
-  `journalctl --user -u retro-weekly -f`. A run takes about 25 minutes.
+  `journalctl --user -u retro-weekly -f`. A run takes about 30 minutes.
 - Switch it off: `systemctl --user disable --now retro-weekly.timer`.
 - Delete it: `systemctl --user disable --now retro-weekly.timer`, then drop the
   two live units (`systemctl --user unlink retro-weekly.service
