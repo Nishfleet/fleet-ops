@@ -413,9 +413,21 @@ that stops without writing one shows up in `systemctl --user list-units
   and run `systemctl --user daemon-reload`.
 
 Post-merge the two new units are wired once by hand, like every other unit in
-`systemd/`: `systemctl --user link` from the deploy clone, then
-`systemctl --user enable --now retro-weekly.timer` ("Install" above). The
-prompt needs no such step: fleet-sync installs it on its next 20-minute tick.
+`systemd/`. Until that merge the live paths are real-file copies (the deploy
+clone does not carry the files yet), so a unit edit on main would not reach
+them — the same drift fleet-ops#7743's LINK-GUARD exists for. Replace them
+with the blessed symlink form after the merge:
+
+```
+rm ~/.config/systemd/user/retro-weekly.service \
+   ~/.config/systemd/user/retro-weekly.timer
+systemctl --user link /home/nish/workspaces/tooling/fleet-ops-deploy-clone/systemd/retro-weekly.service \
+                      /home/nish/workspaces/tooling/fleet-ops-deploy-clone/systemd/retro-weekly.timer
+systemctl --user daemon-reload && systemctl --user enable --now retro-weekly.timer
+```
+
+The prompt needs no such step: fleet-sync installs it on its next 20-minute
+tick.
 
 ## CI
 
