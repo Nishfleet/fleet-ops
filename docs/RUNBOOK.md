@@ -46,12 +46,33 @@ and by a daily timer). Its `daemon-reload` re-applies a changed slice cap to
 the running slice (fleet-ops#8862). A failed run is in
 `journalctl -u fleet-host-config.service`; a `Hand-installed` line names a file
 to add under `rootfs/`, delete, or list in `/etc/fleet-ops/box-only`. What still
-stays a hand copy: the two Pi extension forks, the live-state JSON files under
-`~/.local/state/` and the `~/.config/fleet-ops`-owned files.
+stays a hand copy: the live-state JSON files under `~/.local/state/` and the
+`~/.config/fleet-ops`-owned files. The two hand-written Pi extension forks are
+gone (fleet-ops#8238).
 
 After a slice change, both the unit and the cgroup must read the new cap:
 `systemctl show agent.slice -p MemorySwapMax` and
 `cat /sys/fs/cgroup/agent.slice/memory.swap.max` (1073741824, not infinity).
+
+## Runner guard (fleet-ops#9317)
+
+A guard against habit, not a security boundary. The refusal names the tool to
+use instead.
+- Pi: the package [`Nishfleet/pi-runner-guard`](https://github.com/Nishfleet/pi-runner-guard),
+  pinned by sha in the `~/.pi/agent/settings.json` `packages` list. It refuses
+  `sed -i`, `perl -i`, redirects and `tee` into a repo file, python file
+  writes, bare `git add -A`/`--all`/`.`, and scratch files in a worktree.
+  One-run off switch `PI_RUNNER_GUARD=off`. Its README says how to remove it.
+- Claude Code: stock `permissions.deny` in `~/.claude/settings.json`:
+  `Bash(sed -i:*)`, `Bash(sed --in-place:*)`, `Bash(perl -i:*)`,
+  `Bash(perl -pi:*)`, `Bash(git add -A)`, `Bash(git add --all)`,
+  `Bash(git add .)`. The `git add` rules are exact matches, because a prefix
+  rule would also block `git add .github/x`, so `git add -A .` still passes.
+  Redirects, python writes and scratch files have no stock rule and pass.
+  To switch it off, delete those seven lines.
+- Check both are on: `jq -r '.packages[]' ~/.pi/agent/settings.json | grep runner-guard`
+  and `jq -r '.permissions.deny[]' ~/.claude/settings.json | grep -cE '^Bash\((sed|perl|git add)'`
+  (prints 7).
 
 ## Dashboards and the CI runner flip
 

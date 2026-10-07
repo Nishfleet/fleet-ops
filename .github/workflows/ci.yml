@@ -119,6 +119,9 @@ jobs:
       - name: stub cursor-agent for systemd-analyze verify (host-only binary)
         if: always()
         run: install -D -m0755 /bin/true "$HOME/.local/bin/cursor-agent"
+      - name: stub leviathan for systemd-analyze verify (host-only binary)
+        if: always()
+        run: install -D -m0755 /bin/true "$HOME/.local/bin/leviathan"
       - name: systemd-analyze verify over unit files
         # nullglob: #8474 deleted the last systemd/*.path unit, and an unmatched
         # glob reaches systemd-analyze as a literal filename -> rc 1. With
@@ -244,6 +247,138 @@ jobs:
           jq -r '.needles["agent.yml"][]' config/orchestrate-events.json | while IFS= read -r n; do
             grep -F -- "$n" .github/workflows/agent.yml >/dev/null || { echo "missing gate needle: $n"; exit 1; }
           done
+      - name: Orchestrate cap and session args (fleet-ops#9351)
+        # Runs the orchestrate job's own scripts, read out of the workflow with
+        # yq, never a copy: the "Check the issue is still parked" step against
+        # a fake gh that serves each cap_cases entry's runs and jobs, and the
+        # "Run the orchestrator session" step against a fake claude that
+        # records its argv. Remove the daily cap, the model or turns pin, or
+        # --settings disableAllHooks from the workflow and a case here fails.
+        # The fakes live in a temp dir and are not repo files.
+        if: always()
+        run: |
+          set -euo pipefail
+          f=.github/workflows/agent-dispatch.yml
+          cfg="$PWD/config/orchestrate-events.json"
+          chk=$(yq '.jobs.orchestrate.steps[] | select(.id == "issue") | .run' "$f")
+          cap=$(yq '.jobs.orchestrate.steps[] | select(.id == "issue") | .env.CAP_COUNT' "$f")
+          ses=$(yq '.jobs.orchestrate.steps[] | select(.name == "Run the orchestrator session") | .run' "$f")
+          for v in "$chk" "$cap" "$ses"; do [ -n "$v" ] && [ "$v" != null ]; done
+          t=$(mktemp -d)
+          mkdir "$t/bin"
+          cat > "$t/bin/gh" <<'FAKE'
+          #!/usr/bin/env bash
+          # Fake gh: answers from $FAKE_DIR and applies the caller's --jq.
+          q=; ev=
+          for ((i = 1; i <= $#; i++)); do
+            a=${!i}
+            case $a in
+              --jq) j=$((i + 1)); q=${!j} ;;
+              event=*) ev=${a#event=} ;;
+            esac
+          done
+          case "$*" in
+            "issue view"*) jq -r "$q" "$FAKE_DIR/issue.json" ;;
+            *git/ref/heads/*) exit 1 ;;
+            *actions/runs/*/jobs*) all="$*"; id=${all#*actions/runs/}; id=${id%%/*}
+              if [ -f "$FAKE_DIR/jobs-$id.json" ]; then jq -c "$q" "$FAKE_DIR/jobs-$id.json"; else echo '{"jobs":[]}' | jq -c "$q"; fi ;;
+            *actions/workflows/*/runs*) jq -c --arg ev "$ev" '.workflow_runs |= map(select(.event == $ev))' "$FAKE_DIR/runs.json" | jq -c "$q" ;;
+            *actions/runs/*) echo '{"workflow_id":7}' | jq -r "$q" ;;
+            *) echo "fake gh: unexpected call: $*" >&2; exit 99 ;;
+          esac
+          FAKE
+          chmod +x "$t/bin/gh"
+          today=$(date -u +%FT%TZ)
+          old=$(date -u -d '2 days ago' +%FT%TZ)
+          bad=0
+          while IFS= read -r c; do
+            id=$(jq -r .id <<<"$c")
+            d="$t/$id"
+            mkdir "$d"
+            jq -c --arg t "$today" --arg o "$old" '{workflow_runs: ([.runs[] | {id, event: (.event // "issues"), created_at: (if .when == "YESTERDAY" then $o else $t end)}] + [range(0; (.extra_runs // 0)) | {id: (1000 + .), event: "issues", created_at: $t}])}' <<<"$c" > "$d/runs.json"
+            jq -c '{state: "OPEN", labels: ([.labels[], "needs-orchestrator"] | map({name: .}))}' <<<"$c" > "$d/issue.json"
+            while IFS= read -r r; do
+              jq -c '{jobs: [{name: (.job // "orchestrate"), steps: ([{name: "Set up job", conclusion: "success"}] + (if .session == "absent" then [] else [{name: "Run the orchestrator session", conclusion: (if .session == "null" then null else .session end)}] end))}]}' <<<"$r" > "$d/jobs-$(jq -r .id <<<"$r").json"
+            done < <(jq -c '.runs[]' <<<"$c")
+            : > "$d/out"
+            rc=0
+            log=$(env PATH="$t/bin:$PATH" FAKE_DIR="$d" GITHUB_OUTPUT="$d/out" REPO=o/r ISSUE=5 GH_TOKEN=x RUN_ID=1 CAP_COUNT="$cap" \
+              DAILY_MAX="$(jq -r '.daily_max // ""' <<<"$c")" MODEL_VAR="$(jq -r '.model_var // ""' <<<"$c")" \
+              bash -c "$chk" 2>&1) || rc=$?
+            if [ "$(jq -r '.want_fail // false' <<<"$c")" = true ]; then
+              [ "$rc" -ne 0 ] || { echo "cap case $id: want failure, got rc 0"; bad=1; }
+              continue
+            fi
+            [ "$rc" -eq 0 ] || { echo "cap case $id: rc $rc: $log"; bad=1; continue; }
+            go=false; if grep -qx 'go=true' "$d/out"; then go=true; fi
+            [ "$go" = "$(jq -r .want_go <<<"$c")" ] || { echo "cap case $id: go=$go: $log"; bad=1; continue; }
+            if [ "$go" = true ]; then
+              [ "$(sed -n 's/^model=//p' "$d/out")" = "$(jq -r .want_model <<<"$c")" ] || { echo "cap case $id: model $(sed -n 's/^model=//p' "$d/out")"; bad=1; }
+              [ "$(sed -n 's/^turns=//p' "$d/out")" = "$(jq -r .want_turns <<<"$c")" ] || { echo "cap case $id: turns $(sed -n 's/^turns=//p' "$d/out")"; bad=1; }
+            else
+              grep -q 'daily cap' <<<"$log" || { echo "cap case $id: capped without the cap log line: $log"; bad=1; }
+            fi
+          done < <(jq -c '.cap_cases[]' "$cfg")
+          # The session step: the real run block, with the claude path swapped
+          # for a fake that records argv, one argument per line. The settings
+          # JSON must reach claude as one argument that parses.
+          # shellcheck disable=SC2016 # the fake's body is literal script text
+          printf '#!/usr/bin/env bash\nprintf "%%s\\n" "$@" > "$FAKE_ARGV"\ncat > /dev/null\n' > "$t/claude"
+          chmod +x "$t/claude"
+          grep -qF /home/nish/.local/bin/claude <<<"$ses"
+          ses=${ses//\/home\/nish\/.local\/bin\/claude/$t\/claude}
+          mkdir -p "$t/wt/prompts"
+          echo '---' > "$t/wt/prompts/orchestrator-handoff.md"
+          while IFS= read -r c; do
+            id=$(jq -r .id <<<"$c")
+            : > "$t/argv"
+            env FAKE_ARGV="$t/argv" WORKTREE="$t/wt" RUNNER_TEMP="$t" REPO_NAME=o/r ISSUE_N=5 \
+              MODEL="$(jq -r .model <<<"$c")" TURNS="$(jq -r .turns <<<"$c")" HOOKS="$(jq -r .hooks <<<"$c")" \
+              bash -c "$ses" > /dev/null 2>&1 || { echo "session case $id: step failed"; bad=1; continue; }
+            mapfile -t argv < "$t/argv"
+            got_model=; got_turns=; got_settings=
+            for ((i = 0; i < ${#argv[@]}; i++)); do
+              case ${argv[i]} in
+                --model) got_model=${argv[i+1]} ;;
+                --max-turns) got_turns=${argv[i+1]} ;;
+                --settings) got_settings=${argv[i+1]} ;;
+              esac
+            done
+            [ "$got_model" = "$(jq -r .want_model <<<"$c")" ] || { echo "session case $id: model '$got_model'"; bad=1; }
+            [ "$got_turns" = "$(jq -r .want_turns <<<"$c")" ] || { echo "session case $id: turns '$got_turns'"; bad=1; }
+            if [ "$(jq -r .want_settings <<<"$c")" = true ]; then
+              jq -e '.disableAllHooks == true' <<<"$got_settings" > /dev/null || { echo "session case $id: --settings is '$got_settings'"; bad=1; }
+            else
+              [ -z "$got_settings" ] || { echo "session case $id: unexpected --settings"; bad=1; }
+            fi
+          done < <(jq -c '.session_cases[]' "$cfg")
+          rm -rf "$t"
+          test "$bad" -eq 0
+      - name: Sweep re-sends red claim PRs (RED_REWORK)
+        # Runs the list job's own RED_REWORK program, read out of the workflow
+        # with the CHECK_DEFS it shares with the missing-checks case, against
+        # every case in config/sweep-rework-cases.json. The grep lines pin the
+        # wiring: the program's verdict feeds the sweep's pick list, and a
+        # live newest run is still skipped.
+        if: always()
+        run: |
+          set -euo pipefail
+          f=.github/workflows/agent-dispatch.yml
+          defs=$(yq '.jobs.list.steps[0].env.CHECK_DEFS' "$f")
+          prog=$(yq '.jobs.list.steps[0].env.RED_REWORK' "$f")
+          [ -n "$defs" ] && [ "$defs" != null ] && [ -n "$prog" ] && [ "$prog" != null ]
+          run=$(yq '.jobs.list.steps[0].run' "$f")
+          # shellcheck disable=SC2016 # the needles are literal workflow text
+          for n in '"$CHECK_DEFS $RED_REWORK"' '--argjson d "$red"' '$o[], $d[]' 'run live, skip'; do
+            grep -F -- "$n" <<<"$run" >/dev/null || { echo "missing sweep wiring: $n"; exit 1; }
+          done
+          bad=0
+          while IFS= read -r c; do
+            in=$(jq -c --argjson c "$c" '.base * $c.set | {pr, issue, comments}' config/sweep-rework-cases.json)
+            got=$(jq -r "$defs $prog | .reason" <<<"$in")
+            [ "$got" = "$(jq -r .want <<<"$c")" ] || { echo "case $(jq -r .id <<<"$c"): got $got, want $(jq -r .want <<<"$c")"; bad=1; }
+          done < <(jq -c '.cases[]' config/sweep-rework-cases.json)
+          test "$bad" -eq 0
       - name: Dispatch pause flag skips dispatch, never the guards
         # A paused queue must still hold risky PRs: the weekly update once
         # disabled agent-dispatch, and hold-risky could not run in that window

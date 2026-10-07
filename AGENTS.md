@@ -57,7 +57,7 @@
   `fleet-sync.service`'s LINK-GUARD ExecStart fails the unit on a dangling
   or throwaway-target live link — wiring set this way is caught on the next
   deploy push or boot.
-- Memory = vault `_system/agent-memory/` plain files (one fact per file, true now, edit in place); search old sessions with `rg` over `~/.pi/agent/sessions` and `~/.claude/projects/*/*.jsonl` before re-deriving.
+- Memory = vault `_system/agent-memory/` plain files (one fact per file, true now, edit in place); search old sessions with leviathan first — `leviathan search --index ~/.local/share/leviathan/pi.db "<words>"` (claude logs: `.../claude.db`; `leviathan get <id>` prints the full message) — before re-deriving; `rg` over `~/.pi/agent/sessions` and `~/.claude/projects/*/*.jsonl` is the fallback when no card answers.
 
 ## Live state
 
