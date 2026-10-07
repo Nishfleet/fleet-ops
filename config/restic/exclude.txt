@@ -87,7 +87,5 @@
 /etc/group-
 /etc/subuid-
 /etc/subgid-
-/etc/.*secret*
-/etc/.*key*
-/etc/*secret*
-/etc/*key*
+/etc/**/*secret*
+/etc/**/*key*

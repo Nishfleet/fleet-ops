@@ -1,7 +1,7 @@
 # Copy the encrypted Restic repository into 30-day-locked R2 storage
 # Deployed from fleet-ops rootfs/etc/systemd/system/
-# copy -> checksum check -> reclaim objects older than the 30-day lock (reclaim may fail).
-# Timer runs weekly (Sat 06:15) to match --min-age 31d reclaim cadence.
+# copy -> checksum check -> reclaim objects in locked older than 30 days that
+# no longer exist in live. Timer runs weekly (Sat 06:15) to match reclaim cadence.
 [Unit]
 Description=Copy the encrypted Restic repository into 30-day-locked R2 storage
 Wants=network-online.target
@@ -12,9 +12,12 @@ ConditionPathExists=/etc/rclone/tiny-studio-r2.conf
 Type=oneshot
 Environment=RCLONE_CONFIG=/etc/rclone/tiny-studio-r2.conf
 EnvironmentFile=/etc/tiny-studio/heartbeats.env
-ExecStart=/usr/bin/flock -E 75 -w 900 /run/lock/restic-r2-backup.lock /usr/bin/rclone copy --disable Copy --size-only --immutable --exclude /locks/** --transfers 4 --checkers 8 live:nish-netcup-rs2000-backups/netcup-rs2000 locked:nish-netcup-rs2000-backups-locked/netcup-rs2000
+# Copy new/changed files from live to locked (immutable, size-only for speed)
+ExecStart=/usr/bin/flock -E 75 -w 900 /run/lock/restic-r2-backup.lock /usr/bin/rclone copy --disable-copy --size-only --immutable --exclude /locks/** --transfers 4 --checkers 8 live:nish-netcup-rs2000-backups/netcup-rs2000 locked:nish-netcup-rs2000-backups-locked/netcup-rs2000
+# Verify checksums match
 ExecStart=/usr/bin/flock -E 75 -w 900 /run/lock/restic-r2-backup.lock /usr/bin/rclone check --checksum --one-way --exclude /locks/** live:nish-netcup-rs2000-backups/netcup-rs2000 locked:nish-netcup-rs2000-backups-locked/netcup-rs2000
-ExecStart=-/usr/bin/flock -E 75 -w 900 /run/lock/restic-r2-backup.lock /usr/bin/rclone sync --disable Copy --size-only --min-age 31d --exclude /locks/** --transfers 4 --checkers 8 live:nish-netcup-rs2000-backups/netcup-rs2000 locked:nish-netcup-rs2000-backups-locked/netcup-rs2000
+# Reclaim: delete objects in locked that are older than 31 days AND not in live
+ExecStart=-/usr/bin/flock -E 75 -w 900 /run/lock/restic-r2-backup.lock /usr/bin/rclone delete --min-age 31d --exclude /locks/** locked:nish-netcup-rs2000-backups-locked/netcup-rs2000
 ExecStartPost=/usr/bin/curl -fsS -m 10 --retry 3 -o /dev/null ${HC_LOCKED_COPY_URL}
 Nice=19
 IOSchedulingClass=best-effort

@@ -8,18 +8,20 @@ After=network-online.target
 ConditionPathExists=/etc/restic/netcup-r2.env
 ConditionPathExists=/etc/restic/include.txt
 ConditionPathExists=/etc/restic/exclude.txt
+ConditionPathExists=/home/nish/.local/share/fleet-litellm-postgres/run/.s.PGSQL.5432
 
 [Service]
 Type=oneshot
 EnvironmentFile=/etc/restic/netcup-r2.env
 Environment=RESTIC_CACHE_DIR=/var/cache/restic-live
 EnvironmentFile=/etc/tiny-studio/heartbeats.env
-ExecStartPre=+/usr/sbin/runuser -u nish -- /usr/lib/postgresql/16/bin/pg_dump -h /home/nish/.local/share/fleet-litellm-postgres/run -U litellm -Fc -f /home/nish/workspaces/agent-state/backups/.litellm.dump.new litellm
-ExecStartPre=+/usr/sbin/runuser -u nish -- /usr/bin/mv -f /home/nish/workspaces/agent-state/backups/.litellm.dump.new /home/nish/workspaces/agent-state/backups/litellm.dump
+# pg_dump only runs if socket exists; chain with && so mv only happens on success.
+# If pg_dump fails, the backup still runs (it just won't have a fresh dump).
+ExecStartPre=+/usr/sbin/runuser -u nish -- sh -c '/usr/lib/postgresql/16/bin/pg_dump -h /home/nish/.local/share/fleet-litellm-postgres/run -U litellm -Fc -f /home/nish/workspaces/agent-state/backups/.litellm.dump.new litellm && mv -f /home/nish/workspaces/agent-state/backups/.litellm.dump.new /home/nish/workspaces/agent-state/backups/litellm.dump'
 ExecStartPre=/usr/bin/restic unlock
 # Backup using include list (--files-from) and exclude list (--exclude-file)
+# Prune is handled by the weekly maintenance service (authoritative policy).
 ExecStart=/usr/bin/flock -E 75 -w 900 /run/lock/restic-r2-backup.lock /usr/bin/restic backup --files-from=/etc/restic/include.txt --exclude-file=/etc/restic/exclude.txt --exclude-caches --host netcup-rs2000 --tag netcup-rs2000 --json
-ExecStartPost=-/usr/bin/flock -E 75 -w 900 /run/lock/restic-r2-backup.lock /usr/bin/restic forget --keep-daily 7 --keep-weekly 4 --prune
 ExecStartPost=/usr/bin/curl -fsS -m 10 --retry 3 -o /dev/null ${HC_BACKUP_URL}
 Nice=19
 IOSchedulingClass=best-effort
@@ -34,7 +36,7 @@ ProtectControlGroups=true
 LockPersonality=true
 MemoryDenyWriteExecute=true
 ProtectHome=read-only
-ReadWritePaths=/var/cache/restic-live /run/lock
+ReadWritePaths=/var/cache/restic-live /run/lock /home/nish/workspaces/agent-state/backups
 
 [Install]
 WantedBy=multi-user.target

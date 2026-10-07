@@ -11,9 +11,9 @@ This directory contains the restic backup include and exclude lists for the netc
 
 1. Edit `include.txt` and add the absolute path on a new line
 2. If the path contains caches or rebuildable files, add exclude patterns to `exclude.txt`
-3. Test with a dry run:
+3. Test with a dry run (matches the actual backup command):
    ```bash
-   restic backup --files-from /etc/restic/include.txt --exclude-file /etc/restic/exclude.txt --dry-run
+   restic backup --files-from /etc/restic/include.txt --exclude-file /etc/restic/exclude.txt --exclude-caches --host netcup-rs2000 --tag netcup-rs2000 --dry-run
    ```
 4. Commit and push. The fleet-host-config ansible playbook will deploy the changes to `/etc/restic/`
 
@@ -36,6 +36,15 @@ The guard runs during `restic backup --json` and checks the `data_added` field f
 The threshold is configurable via the `SIZE_GUARD_MAX_BYTES` environment variable.
 
 This prevents unnoticed growth like the 9 GiB → 56 GiB incident in September 2026.
+
+## External dependencies (not in this repo)
+
+The following files must exist on the host but are NOT deployed by ansible (secrets/credentials):
+
+- `/etc/restic/netcup-r2.env` — R2 credentials (RESTIC_REPOSITORY, RESTIC_PASSWORD, AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY)
+- `/etc/tiny-studio/heartbeats.env` — Healthchecks.io URLs (HC_BACKUP_URL, HC_LOCKED_COPY_URL, HC_MAINTENANCE_URL, HC_URL_RESTORE)
+- `/etc/rclone/tiny-studio-r2.conf` — Rclone config for locked copy
+- `/home/nish/.config/fleet-ops/keystone-hc.env` — Optional: HC_URL_RESTORE for restore test
 
 ## Deploying changes
 
