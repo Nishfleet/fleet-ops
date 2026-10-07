@@ -510,6 +510,8 @@ jobs:
     if: vars.FLEET_DISPATCH_PAUSED != 'true' && needs.hold-risky.outputs.review_sha != ''
     permissions:
       pull-requests: write
+      # agent.yml's work and report jobs ask for issues: write; a caller job must grant every permission the called workflow requests, or the run dies at startup.
+      issues: write
     uses: Nishfleet/fleet-ops/.github/workflows/agent.yml@main # runner group 3 allows only agent.yml@refs/heads/main; a SHA pin strands every job
     with:
       review_pr: ${{ github.event.pull_request.number }}
