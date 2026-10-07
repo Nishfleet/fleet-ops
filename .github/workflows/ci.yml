@@ -239,8 +239,13 @@ jobs:
           [ -z "$missing" ] || { printf '%s\n' "$missing" | sed 's/^/FAIL /'; rc=1; }
           # AGENTS.md reaches the prompt once, at the constant deploy-clone path.
           # shellcheck disable=SC2016 # the searched-for text sits in single quotes on purpose
-          bad=$(printf '%s\n' "$pi" | grep -oE -- '--append-system-prompt +"[^"]*"' | grep -vE '^--append-system-prompt +"\$HOME/workspaces/tooling/fleet-ops-deploy-clone/[^$"]*"$' || true)
+          bad=$(printf '%s\n' "$pi" | grep -oE -- '--append-system-prompt +"[^"]*"' | grep -vE '^--append-system-prompt +"\$HOME/(AGENTS\.md|workspaces/tooling/fleet-ops-deploy-clone/[^$"]*)"$' || true)
           [ -z "$bad" ] || { echo "FAIL --append-system-prompt not at the constant deploy-clone path:"; echo "$bad"; rc=1; }
+          # --no-context-files also drops Nish's ~/AGENTS.md (the writing rules); it comes back, once,
+          # as content with no path header, so it adds no per-run text to the prefix.
+          # shellcheck disable=SC2016 # the searched-for text sits in single quotes on purpose
+          missing=$(printf '%s\n' "$pi" | grep -vF -- '--append-system-prompt "$HOME/AGENTS.md"' | cut -c1-80 || true)
+          [ -z "$missing" ] || { printf '%s\n' "$missing" | sed 's/^/FAIL no ~\/AGENTS.md append: /'; rc=1; }
           # Tool flags are literal and, where a list, sorted: a stable tool order.
           printf '%s\n' "$pi" | grep -oE -- '--(tools|exclude-tools|mcp-config) +[^ ]+' | while read -r flag val; do
             # shellcheck disable=SC2016 # the searched-for text sits in single quotes on purpose

@@ -343,12 +343,14 @@ jobs:
             if [ "$MISS" = true ]; then
               echo "$packet" | $jail pi --print --no-context-files \
                 --append-system-prompt "$HOME/workspaces/tooling/fleet-ops-deploy-clone/AGENTS.md" \
+                --append-system-prompt "$HOME/AGENTS.md" \
                 --append-system-prompt "$HOME/workspaces/tooling/fleet-ops-deploy-clone/prompts/miss-review.md" \
                 --session-dir "$HOME/.pi/agent/sessions/agent-$id" \
                 --exclude-tools subagent --provider litellm --model worker-capable >/dev/null
             else
               echo "/worker $id" | $jail pi --print --no-context-files \
                 --append-system-prompt "$HOME/workspaces/tooling/fleet-ops-deploy-clone/AGENTS.md" \
+                --append-system-prompt "$HOME/AGENTS.md" \
                 --session-dir "$HOME/.pi/agent/sessions/agent-$id" \
                 --exclude-tools subagent --provider litellm --model worker-capable >/dev/null
             fi
