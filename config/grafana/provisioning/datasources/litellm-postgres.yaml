@@ -1,0 +1,46 @@
+# LiteLLM spend log data source (fleet-ops#9361). Stock Grafana only, no scripts.
+#
+# Why PostgreSQL and not Prometheus: the session-hop rule
+# (alerting/session-hop.yaml) needs the session id, and Prometheus carries no
+# session id anywhere - LiteLLM's metrics export model id, alias and token
+# counts, but the x-litellm-session-id a pin is keyed on never reaches
+# /metrics. It IS a SpendLogs column, and SpendLogs is the PostgreSQL database
+# the proxy already writes (DATABASE_URL in
+# containers/quadlet/fleet-litellm-proxy.container), so the hop rate is read
+# where it is stored.
+#
+# Credentials: no password and no env reference. The proxy's own
+# DATABASE_URL (containers/quadlet/fleet-litellm-proxy.container) is
+# postgresql://litellm@localhost:5432/litellm and reaches this server with no
+# password; proven on this host 2026-10-07 with `psql
+# postgresql://litellm@localhost:5432/litellm -tAc "select count(*) ..."`
+# returning a real row count. Grafana runs with Network=host in the same
+# quadlet (fleet-grafana.container), so 127.0.0.1 reaches the same server the
+# same way. The pg_hba.conf line that allows it is 0640 root:postgres and not
+# readable without sudo, so this file states the proven fact rather than
+# quoting a rule it cannot read. The litellm login is not a superuser (verified:
+# pg_roles.rolsuper = false), and it owns the tables the proxy writes.
+apiVersion: 1
+
+datasources:
+  - name: LiteLLM Postgres
+    uid: fleet-litellm-postgres
+    type: postgres
+    access: proxy
+    url: 127.0.0.1:5432
+    user: litellm
+    database: litellm
+    editable: false
+    isDefault: false
+    jsonData:
+      sslmode: disable
+      postgresVersion: 1500
+      # A long hop query over 6 hours of SpendLogs is fine at the default
+      # connection limits, so nothing here raises them.
+      maxOpenConns: 5
+      maxIdleConns: 5
+      connMaxLifetime: 14400
+      # SpendLogs is append-only and has no session_id column index, so a
+      # scan is expected; give the rule's evaluation room rather than timing
+      # the alert out on a busy hour.
+      timeInterval: 1h

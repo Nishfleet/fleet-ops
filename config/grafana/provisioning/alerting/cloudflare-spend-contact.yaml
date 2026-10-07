@@ -101,3 +101,17 @@ policies:
         group_wait: 0s
         group_interval: 5m
         repeat_interval: 12h
+      # A session hop is a routing leak, not a task for a worker: no router row
+      # may be removed or benched without Nish's explicit yes (2026-10-02 rule),
+      # so this routes straight to the urgent Telegram channel and opens no
+      # issue. The DatasourceError/DatasourceNoData exclusion matches the two
+      # routes above: a rule that cannot evaluate has no hop number to report,
+      # so it falls to the policy root and pages here on its own.
+      - receiver: hermes-urgent
+        object_matchers:
+          - [signal, "=", session-hop]
+          - [alertname, "!~", "DatasourceError|DatasourceNoData"]
+        group_by: [alertname]
+        group_wait: 0s
+        group_interval: 5m
+        repeat_interval: 12h

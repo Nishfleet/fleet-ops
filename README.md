@@ -53,7 +53,13 @@ script, or prompt lands unseen.
   files go under `provisioning/` (Grafana loads every file there and stops on
   a bad one); promtool fixtures live in `config/grafana/tests/`.
   `containers/quadlet/fleet-grafana.container` mounts all four read-only, so
-  the UI cannot save edits.
+  the UI cannot save edits. An alerting rule carries a `labels.signal` and
+  `cloudflare-spend-contact.yaml` owns the one notification policy tree that
+  routes every signal; a new rule adds its route there rather than a second
+  contact point. A PostgreSQL rule (session-hop) reads `LiteLLM_SpendLogs`
+  through `provisioning/datasources/litellm-postgres.yaml`, because the session
+  id a pin is keyed on exists only in the database and never in the Prometheus
+  metrics.
 - `config/user-tmpfiles.d/agent-worktrees.conf` — the `systemd-tmpfiles`
   age-out rules `fleet-sync.service` applies on every sync: an
   `agent-worktrees/` dir untouched for 3 days goes, and so do the dated files

@@ -1,0 +1,136 @@
+# Session-hop alarm (fleet-ops#9361). Stock Grafana only, no scripts.
+#
+# Why: LiteLLM's session pin is first-writer-wins and is refreshed only when
+# the row it names is chosen again (deployment_affinity_check._claim_pin in the
+# pinned v1.98.0 image). A pin that lands on a row which then hits a quota wall
+# is never refreshed, so it holds for the whole deployment_affinity_ttl_seconds
+# while async_filter_deployments returns the whole group unfiltered and every
+# later call in that session re-shuffles the group. Each hop throws away the
+# prompt cache the previous call built. Measured on this host 2026-10-02 to
+# 10-07 (LiteLLM_SpendLogs, acompletion, status success): 17.1% of non-first
+# calls hopped, hop calls read 52.1% from cache against 76.4% on the row they
+# stayed on, and 90.1M already-cached tokens were re-read in 5.6 days.
+#
+# The pin is a routing decision, so this rule measures routing, not answers:
+# a session that stays on one row is healthy, a session that changes vendor
+# mid-run has lost its cache and is the incident.
+#
+# The session id and the answering row both live only in PostgreSQL
+# (LiteLLM_SpendLogs.session_id, model_id). LiteLLM's Prometheus metrics carry
+# model id, alias and token counts and no session id at all, so a Prometheus
+# rule cannot express "the same session's previous call". That is why this file
+# uses the fleet-litellm-postgres data source
+# (provisioning/datasources/litellm-postgres.yaml) and #9357's
+# prompt-cache-hit.yaml stays on Prometheus: they measure different things from
+# different stores and neither subsumes the other.
+#
+# Rule: per clock hour, the share of non-first calls whose answering vendor
+# differs from the same session's previous call (gap under 5 minutes, so an
+# idle session that resumed later is not a hop). Hours with fewer than 50
+# non-first calls are dropped by the HAVING floor: a 2-hourly probe lane would
+# otherwise read 0 calls one hour and 1 hop the next, and 100% would page. Fire
+# above 2%.
+#
+# Why 2%: a healthy session hops once when it loses its row to a cooldown and
+# then re-pins on the fallback, which is the behaviour the upstream fix is meant
+# to give. That single hop is a rounding error on a run of 151 calls; 17.1% is
+# the leak this issue measures. 2% leaves the single-hop case silent and the
+# leak deafening.
+#
+# Lookback is 6 hours (relativeTimeRange 21600s and the SQL's INTERVAL match
+# on purpose: the query hard-codes its own window, so both must be edited
+# together). The lookback trades up to 6 hours of recovery lag for a rule that
+# cannot miss a bad hour: an hourly bucket needs a full hour of traffic to be
+# meaningful, and a 1-hour lookback would drop the newest bucket from under the
+# floor at any evaluation minute. Recovery is at most 6 hours, which is what the
+# fix's own 3-day measurement window comfortably covers.
+#
+# Contact point: the existing hermes-urgent Telegram receiver, routed by
+# cloudflare-spend-contact.yaml, exactly as cpu-pressure.yaml and
+# paid-plan-idle.yaml do. No new contact point and no new issue route: a hop
+# rate is a page for Nish, not a task for a worker (no router row may be
+# removed or benched without his explicit yes, 2026-10-02 rule).
+apiVersion: 1
+
+groups:
+  - orgId: 1
+    name: session-hop
+    folder: fleet
+    interval: 5m
+    rules:
+      - uid: session-hop-rate
+        title: Session hop rate above 2%
+        condition: C
+        data:
+          - refId: A
+            datasourceUid: fleet-litellm-postgres
+            relativeTimeRange: {from: 21600, to: 0}
+            model:
+              datasource: {type: postgres, uid: fleet-litellm-postgres}
+              editorMode: code
+              format: table
+              # One row per clock hour. hop_pct is the metric; nonfirst and
+              # hops are carried so the alert can say what the number rests on.
+              # The "time" alias keeps Grafana's own frame time field, and the
+              # threshold below reads hop_pct either way.
+              rawSql: |-
+                SELECT bucket AS "time", hop_pct, nonfirst, hops
+                FROM (
+                  WITH calls AS (
+                    SELECT session_id, model_id, "startTime",
+                           lag(split_part(model_id, '-', 1)) OVER w AS prev_vendor,
+                           lag("startTime") OVER w AS prev_ts
+                    FROM "LiteLLM_SpendLogs"
+                    WHERE call_type = 'acompletion'
+                      AND status = 'success'
+                      AND "startTime" > NOW() - INTERVAL '6 hours'
+                    WINDOW w AS (PARTITION BY session_id ORDER BY "startTime")
+                  )
+                  SELECT date_trunc('hour', "startTime") AS bucket,
+                         count(*) AS nonfirst,
+                         count(*) FILTER (
+                           WHERE prev_vendor IS DISTINCT FROM split_part(model_id, '-', 1)
+                             AND "startTime" - prev_ts < INTERVAL '5 minutes'
+                         ) AS hops,
+                         round(100.0 * count(*) FILTER (
+                           WHERE prev_vendor IS DISTINCT FROM split_part(model_id, '-', 1)
+                             AND "startTime" - prev_ts < INTERVAL '5 minutes'
+                         ) / count(*), 1) AS hop_pct
+                  FROM calls
+                  WHERE prev_vendor IS NOT NULL
+                  GROUP BY 1
+                  HAVING count(*) >= 50
+                  ORDER BY 1
+                ) per_hour
+                ORDER BY 1;
+              refId: A
+              intervalMs: 1000
+              maxDataPoints: 43200
+              range: false
+              hide: false
+          # C reads the worst hour in the lookback, not the newest one: a
+          # partial hour sits under the 50-call floor and vanishes, and the
+          # rule's job is "an hour of this traffic hopped", so max over A.
+          - refId: C
+            datasourceUid: __expr__
+            model:
+              datasource: {type: __expr__, uid: __expr__}
+              type: threshold
+              refId: C
+              expression: A
+              conditions:
+                - evaluator: {params: [2], type: gt}
+                  operator: {type: and}
+                  query: {params: [C]}
+                  reducer: {params: [], type: max}
+                  type: query
+        noDataState: OK
+        execErrState: Error
+        for: 0s
+        annotations:
+          summary: 'Session hop rate {{ $values.C.Value | printf "%.1f" }}% in the worst hour of the last 6 h'
+          description: 'A router session is answering on a different vendor than its previous call. A session pin is first-writer-wins and is refreshed only when the row it names is chosen again, so a pin held by a row in cooldown scatters every later call in that session across the group and throws away the prompt cache the previous call built. This is the fleet-ops#9361 leak: 17.1% of non-first calls, 90.4M cached tokens re-read in 5.6 days. Replay the SQL in config/grafana/provisioning/alerting/session-hop.yaml against LiteLLM_SpendLogs for the session ids, and check the live pins with `redis-cli --scan --pattern "deployment_affinity:*" | head` (read-only). Do NOT remove or bench a router row without Nish''s explicit yes (2026-10-02 rule). Re-ordering rows needs Nish.'
+          value: '{{ $values.C.Value | printf "%.1f" }}% of non-first calls'
+          threshold: 'more than 2% in any hour with 50 or more non-first calls'
+        labels: {signal: session-hop}
+        isPaused: false
