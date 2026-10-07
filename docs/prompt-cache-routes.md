@@ -138,8 +138,8 @@ psql "postgresql://litellm@localhost:5432/litellm" -At -F'|' -c \
 | 3 | 29107 | cline-lagunas21-worker-capable | null |
 
 Session `01a11520-f75c-77aa-99c4-37f7f74add55`, directory
-`agent-0509-7233-miss`, segment `2026-10-07T06-50-44-445Z`, 60 turns,
-4,448,781 input tokens, `cacheRead: 0` on every turn, also pinned to
+`agent-0509-7233-miss`, segment `2026-10-07T06-50-44-445Z`, 66 turns,
+4,839,636 input tokens, `cacheRead: 0` on every turn, also pinned to
 `cline-lagunas21-worker-capable` (turns at 24399 / 25214 / 25416 / 31396 all
 match that rung, under the same time-bounded join between 06:50:44 and
 06:51:15).
@@ -152,10 +152,20 @@ fine: `input` rises monotonically (28836 -> 28986 -> 29107 -> 94526) and
 `cacheWrite` is 0 because an OpenAI-compatible provider does not report a
 cache write either. Nothing about these sessions' prompts broke caching.
 
-For contrast, the sibling segment `agent-0509-7247/2026-10-07T07-23-22-020Z`
-in the **same directory, same `worker-capable` model** reads
-`cacheRead: 3,397,888`, because it was routed to a caching rung. The model
-alias is not the variable; the rung is.
+The pinning is visible inside `agent-0509-7247` itself. Its two segments, same
+directory and same `worker-capable` model, split cleanly by rung:
+
+| segment | turns | input | cacheRead |
+| --- | --- | --- | --- |
+| 2026-10-07T06-27-15-979Z | 159 | 9,993,133 | 0 |
+| 2026-10-07T07-23-22-020Z | 78 | 185,897 | 4,980,992 |
+
+The 06:27 segment is pinned to the Cline rung and caches nothing; the 07:23
+segment lands on caching rungs and reads 4,980,992 cached tokens. The model
+alias is not the variable, the rung is.
+
+The issue recorded these sessions mid-flight (156 and 43 turns); the counts
+above are final, read after the sessions ended on 2026-10-07.
 
 ## 5. What the alert does and does not cover
 
