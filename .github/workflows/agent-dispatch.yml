@@ -17,6 +17,7 @@
 #   Model/turns pin: Sonnet (ORCHESTRATE_MODEL, default claude-sonnet-5-5), 40 turns. Off: label the issue needs-opus (Opus, 80 turns), or set ORCHESTRATE_MODEL to off for all.
 #   Hook skip: the session runs with --settings '{"disableAllHooks":true}'. Off: set ORCHESTRATE_HOOKS to on.
 #   Runner: pi on a LiteLLM seat (ORCHESTRATE_SEAT, default worker-capable), fleet-ops#9407. Off: set ORCHESTRATE_RUNNER to claude, or label the issue needs-opus.
+#     ORCHESTRATE_MODEL, ORCHESTRATE_HOOKS and the 40/80 turn pin apply to the claude runner only; pi has no turn cap, and the 3000 s timeout is its wall.
 #   Delete all three: revert the cap and pick blocks of the "Check the issue" step and the model/--settings lines of the session step here,
 #     the "Orchestrate cap and session args" step in ci.yml, and cap_cases and session_cases in config/orchestrate-events.json (or revert the merge commit).
 # To switch orchestration off: set ORCHESTRATE to off.
@@ -1063,7 +1064,7 @@ jobs:
           WORKTREE: ${{ steps.worktree.outputs.worktree }}
           MODEL: ${{ steps.issue.outputs.model }}
           TURNS: ${{ steps.issue.outputs.turns }}
-          RUNNER: ${{ steps.issue.outputs.runner }}
+          ORCH_RUNNER: ${{ steps.issue.outputs.runner }}
           SEAT: ${{ vars.ORCHESTRATE_SEAT }}
           HOOKS: ${{ vars.ORCHESTRATE_HOOKS }}
         run: |
@@ -1087,7 +1088,7 @@ jobs:
           # The prompt goes on stdin: it opens with `---` front matter, and as
           # an argument the CLI parses that as an option and exits 1 (run
           # 37207149948: "error: unknown option '---").
-          if [ "$RUNNER" = pi ]; then
+          if [ "$ORCH_RUNNER" = pi ]; then
             # Pi on a LiteLLM seat: no Claude spend. Pi has no turn cap, so
             # the timeout below is the wall. The litellm provider reads
             # FLEET_TASK_ID for its session-id header and exits 1 without it.

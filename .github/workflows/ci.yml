@@ -409,7 +409,7 @@ jobs:
           while IFS= read -r c; do
             id=$(jq -r .id <<<"$c")
             : > "$t/argv"
-            env FAKE_ARGV="$t/argv" RUNNER="$(jq -r .runner <<<"$c")" SEAT="$(jq -r '.seat // ""' <<<"$c")" WORKTREE="$t/wt" RUNNER_TEMP="$t" REPO_NAME=o/r ISSUE_N=5 \
+            env FAKE_ARGV="$t/argv" ORCH_RUNNER="$(jq -r .runner <<<"$c")" SEAT="$(jq -r '.seat // ""' <<<"$c")" WORKTREE="$t/wt" RUNNER_TEMP="$t" REPO_NAME=o/r ISSUE_N=5 \
               MODEL="$(jq -r .model <<<"$c")" TURNS="$(jq -r .turns <<<"$c")" HOOKS="$(jq -r .hooks <<<"$c")" \
               bash -c "$ses" > /dev/null 2>&1 || { echo "session case $id: step failed"; bad=1; continue; }
             mapfile -t argv < "$t/argv"
