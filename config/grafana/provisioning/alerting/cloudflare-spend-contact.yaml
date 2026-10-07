@@ -22,7 +22,13 @@
 #      PR; minting the token is Nish's call.
 #   2. telegram -> the hermes-urgent wiring from paid-plan-idle.yaml
 #      (bottoken/chatid via the same env references), kept verbatim so the
-#      fallback message format matches the existing urgent channel.
+#      fallback message format matches the existing urgent channel, with one
+#      extra closing line. That line matters: Grafana's telegram notifier
+#      routes by the bot's direct-message chat id, so a text posted to the
+#      channel chat is stored but never delivered to the bot's owner and the
+#      sending fails with "can't parse entities" (measured 2026-10-07). The
+#      closing line makes the message self-identifying so the bare-send case
+#      is at least recognizable in the channel history.
 #
 # Rules carry notification_settings.receiver = cloudflare-spend-dispatch with
 # repeat_interval 12h (one leak = one issue, not one an hour).
@@ -38,17 +44,21 @@ contactPoints:
         settings:
           url: https://api.github.com/repos/Nishfleet/fleet-ops/issues
           httpMethod: POST
+          authorization_scheme: Bearer
           authorization_credentials: $GITHUB_ISSUES_TOKEN
           maxAlerts: "0"
+          # The payload template replaces the whole request body, so it must
+          # emit the complete GitHub issues-API JSON (title, body, labels) at
+          # the top level - a template that only emits a string, or one that
+          # starts with a sprig assignment, fails the POST (measured:
+          # 'template: :1: unexpected ":=" in command' and a 422 from GitHub).
           payload:
             template: |-
-              {{- $title := printf "cost alarm: %s %s" (index .Alerts 0).Labels.alertname (index .Alerts 0).Labels.product -}}
-              {{- $body := "Auto-created by the Grafana cloudflare-spend watch (fleet-ops#9355).\n\n" -}}
-              {{- range .Alerts -}}
-              {{- $body = printf "%s- **%s**\n%s\n" $body .Annotations.summary .Annotations.description -}}
+              {{- with index .Alerts 0 -}}
+              {{- dict "title" (printf "cost alarm: %s %s" .Labels.alertname .Labels.product)
+                     "body" (printf "Auto-created by the Grafana cloudflare-spend watch (fleet-ops#9355).\n\n**%s**\n\n%s\n\nRule `%s` in group %s fired at %s." .Annotations.summary .Annotations.description .Labels.alertname .GroupLabels.grafana_folder (.StartsAt | date "2006-01-02 15:04:05 Z07:00"))
+                     "labels" (list "agent-ready" "priority-now") | toJson -}}
               {{- end -}}
-              {{- $body = printf "%s\n---\nRule: %s (group %s). Alerts in this notification: %d. Evaluated: %s." $body (index .Alerts 0).Labels.alertname .GroupLabels.grafana_folder (len .Alerts) (now | date "2006-01-02 15:04:05 Z07:00") -}}
-              {{- dict "title" $title "body" $body "labels" (list "agent-ready" "priority-now") | toJson -}}
       - uid: cf-spend-tg-fallback
         type: telegram
         disableResolveMessage: true

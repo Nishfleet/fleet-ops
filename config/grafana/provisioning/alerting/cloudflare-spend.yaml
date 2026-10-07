@@ -25,13 +25,17 @@
 # ghost bucket is InfrequentAccess and stays out of these rules; its cleanup
 # is tracked in #9359.
 #
-# Escaping note: provisioning expands $VAR and $$ in labels and in the query
-# model (every string passes os.ExpandEnv; annotations are stored raw). So
-# inside `model` every Grafana-side dollar is doubled: $${__timeFrom:date:iso}
-# in the GraphQL text (the Infinity data source interpolates that macro from
-# the query's relativeTimeRange at evaluation time) and $$D / $$C in math
-# expressions. Annotations keep single dollars, which is why cpu-pressure.yaml
-# templates work as written.
+# Dollar note: alert-rule provisioning does NOT expand environment variables
+# ($VAR survives verbatim in the stored rule), so every Grafana-side dollar
+# here is a single one: ${__timeFrom:date:iso} in the GraphQL text (the Infinity
+# data source interpolates that macro from the query's relativeTimeRange at
+# evaluation time) and $D / $C in the math expressions (SSE refIds). Doubling
+# them was tried and broke rule build: Grafana's math parser read the literal
+# '$$C' as an empty variable and every rule in the group errored with
+# "invalid math command: expr: unexpected incomplete variable" (measured in
+# the replay instance, 2026-10-07). Only data sources and contact points get
+# env expansion (that is why $CLOUDFLARE_API_TOKEN and $TELEGRAM_BOT_TOKEN
+# work in cloudflare.yaml / cloudflare-spend-contact.yaml).
 #
 # Groups: the hourly group carries D1, email, Workers and Durable Objects;
 # the 5m group carries Workers AI and R2 (Nish: "5m for the R2 and AI rules
@@ -70,7 +74,7 @@ groups:
               query {
                 viewer {
                   accounts(filter: {accountTag: "f670a698e17bf160c8e4679823e68916"}) {
-                    d1AnalyticsAdaptiveGroups(limit: 10000, filter: {datetime_geq: "$${__timeFrom:date:iso}", datetime_lt: "$${__timeTo:date:iso}"}, orderBy: [datetime_ASC]) {
+                    d1AnalyticsAdaptiveGroups(limit: 10000, filter: {datetime_geq: "${__timeFrom:date:iso}", datetime_lt: "${__timeTo:date:iso}"}, orderBy: [datetime_ASC]) {
                       dimensions { datetime }
                       sum { rowsWritten }
                     }
@@ -108,7 +112,7 @@ groups:
               query {
                 viewer {
                   accounts(filter: {accountTag: "f670a698e17bf160c8e4679823e68916"}) {
-                    d1AnalyticsAdaptiveGroups(limit: 10000, filter: {datetime_geq: "$${__timeFrom:date:iso}", datetime_lt: "$${__timeTo:date:iso}"}, orderBy: [datetime_ASC]) {
+                    d1AnalyticsAdaptiveGroups(limit: 10000, filter: {datetime_geq: "${__timeFrom:date:iso}", datetime_lt: "${__timeTo:date:iso}"}, orderBy: [datetime_ASC]) {
                       dimensions { datetime }
                       sum { rowsWritten }
                     }
@@ -159,7 +163,7 @@ groups:
           datasource:
             type: __expr__
             uid: __expr__
-          expression: (($$C > 0) && ($$D > 3 * $$C)) || ($$D > 3 * 68493)
+          expression: (($C > 0) && ($D > 3 * $C)) || ($D > 3 * 68493)
           intervalMs: 1000
           maxDataPoints: 43200
           refId: E
@@ -232,7 +236,7 @@ groups:
               query {
                 viewer {
                   accounts(filter: {accountTag: "f670a698e17bf160c8e4679823e68916"}) {
-                    d1AnalyticsAdaptiveGroups(limit: 10000, filter: {datetime_geq: "$${__timeFrom:date:iso}", datetime_lt: "$${__timeTo:date:iso}"}, orderBy: [datetime_ASC]) {
+                    d1AnalyticsAdaptiveGroups(limit: 10000, filter: {datetime_geq: "${__timeFrom:date:iso}", datetime_lt: "${__timeTo:date:iso}"}, orderBy: [datetime_ASC]) {
                       dimensions { datetime }
                       sum { rowsRead }
                     }
@@ -270,7 +274,7 @@ groups:
               query {
                 viewer {
                   accounts(filter: {accountTag: "f670a698e17bf160c8e4679823e68916"}) {
-                    d1AnalyticsAdaptiveGroups(limit: 10000, filter: {datetime_geq: "$${__timeFrom:date:iso}", datetime_lt: "$${__timeTo:date:iso}"}, orderBy: [datetime_ASC]) {
+                    d1AnalyticsAdaptiveGroups(limit: 10000, filter: {datetime_geq: "${__timeFrom:date:iso}", datetime_lt: "${__timeTo:date:iso}"}, orderBy: [datetime_ASC]) {
                       dimensions { datetime }
                       sum { rowsRead }
                     }
@@ -321,7 +325,7 @@ groups:
           datasource:
             type: __expr__
             uid: __expr__
-          expression: (($$C > 0) && ($$D > 3 * $$C)) || ($$D > 3 * 34246575)
+          expression: (($C > 0) && ($D > 3 * $C)) || ($D > 3 * 34246575)
           intervalMs: 1000
           maxDataPoints: 43200
           refId: E
@@ -394,7 +398,7 @@ groups:
               query {
                 viewer {
                   accounts(filter: {accountTag: "f670a698e17bf160c8e4679823e68916"}) {
-                    emailSendingAdaptiveGroups(limit: 10000, filter: {datetime_geq: "$${__timeFrom:date:iso}", datetime_lt: "$${__timeTo:date:iso}"}, orderBy: [datetime_ASC]) {
+                    emailSendingAdaptiveGroups(limit: 10000, filter: {datetime_geq: "${__timeFrom:date:iso}", datetime_lt: "${__timeTo:date:iso}"}, orderBy: [datetime_ASC]) {
                       dimensions { datetime }
                       sum { sent }
                     }
@@ -432,7 +436,7 @@ groups:
               query {
                 viewer {
                   accounts(filter: {accountTag: "f670a698e17bf160c8e4679823e68916"}) {
-                    emailSendingAdaptiveGroups(limit: 10000, filter: {datetime_geq: "$${__timeFrom:date:iso}", datetime_lt: "$${__timeTo:date:iso}"}, orderBy: [datetime_ASC]) {
+                    emailSendingAdaptiveGroups(limit: 10000, filter: {datetime_geq: "${__timeFrom:date:iso}", datetime_lt: "${__timeTo:date:iso}"}, orderBy: [datetime_ASC]) {
                       dimensions { datetime }
                       sum { sent }
                     }
@@ -483,7 +487,7 @@ groups:
           datasource:
             type: __expr__
             uid: __expr__
-          expression: (($$C > 0) && ($$D > 3 * $$C)) || ($$D > 3 * 4.11)
+          expression: (($C > 0) && ($D > 3 * $C)) || ($D > 3 * 4.11)
           intervalMs: 1000
           maxDataPoints: 43200
           refId: E
@@ -556,7 +560,7 @@ groups:
               query {
                 viewer {
                   accounts(filter: {accountTag: "f670a698e17bf160c8e4679823e68916"}) {
-                    workersInvocationsAdaptive(limit: 10000, filter: {datetime_geq: "$${__timeFrom:date:iso}", datetime_lt: "$${__timeTo:date:iso}"}, orderBy: [datetime_ASC]) {
+                    workersInvocationsAdaptive(limit: 10000, filter: {datetime_geq: "${__timeFrom:date:iso}", datetime_lt: "${__timeTo:date:iso}"}, orderBy: [datetime_ASC]) {
                       dimensions { datetime }
                       sum { requests }
                     }
@@ -594,7 +598,7 @@ groups:
               query {
                 viewer {
                   accounts(filter: {accountTag: "f670a698e17bf160c8e4679823e68916"}) {
-                    workersInvocationsAdaptive(limit: 10000, filter: {datetime_geq: "$${__timeFrom:date:iso}", datetime_lt: "$${__timeTo:date:iso}"}, orderBy: [datetime_ASC]) {
+                    workersInvocationsAdaptive(limit: 10000, filter: {datetime_geq: "${__timeFrom:date:iso}", datetime_lt: "${__timeTo:date:iso}"}, orderBy: [datetime_ASC]) {
                       dimensions { datetime }
                       sum { requests }
                     }
@@ -645,7 +649,7 @@ groups:
           datasource:
             type: __expr__
             uid: __expr__
-          expression: (($$C > 0) && ($$D > 3 * $$C)) || ($$D > 3 * 13699)
+          expression: (($C > 0) && ($D > 3 * $C)) || ($D > 3 * 13699)
           intervalMs: 1000
           maxDataPoints: 43200
           refId: E
@@ -718,7 +722,7 @@ groups:
               query {
                 viewer {
                   accounts(filter: {accountTag: "f670a698e17bf160c8e4679823e68916"}) {
-                    durableObjectsAdaptiveGroups(limit: 10000, filter: {datetime_geq: "$${__timeFrom:date:iso}", datetime_lt: "$${__timeTo:date:iso}"}, orderBy: [datetime_ASC]) {
+                    durableObjectsAdaptiveGroups(limit: 10000, filter: {datetime_geq: "${__timeFrom:date:iso}", datetime_lt: "${__timeTo:date:iso}"}, orderBy: [datetime_ASC]) {
                       dimensions { datetime }
                       sum { requests }
                     }
@@ -756,7 +760,7 @@ groups:
               query {
                 viewer {
                   accounts(filter: {accountTag: "f670a698e17bf160c8e4679823e68916"}) {
-                    durableObjectsAdaptiveGroups(limit: 10000, filter: {datetime_geq: "$${__timeFrom:date:iso}", datetime_lt: "$${__timeTo:date:iso}"}, orderBy: [datetime_ASC]) {
+                    durableObjectsAdaptiveGroups(limit: 10000, filter: {datetime_geq: "${__timeFrom:date:iso}", datetime_lt: "${__timeTo:date:iso}"}, orderBy: [datetime_ASC]) {
                       dimensions { datetime }
                       sum { requests }
                     }
@@ -807,7 +811,7 @@ groups:
           datasource:
             type: __expr__
             uid: __expr__
-          expression: (($$C > 0) && ($$D > 3 * $$C)) || ($$D > 3 * 1370)
+          expression: (($C > 0) && ($D > 3 * $C)) || ($D > 3 * 1370)
           intervalMs: 1000
           maxDataPoints: 43200
           refId: E
@@ -880,7 +884,7 @@ groups:
               query {
                 viewer {
                   accounts(filter: {accountTag: "f670a698e17bf160c8e4679823e68916"}) {
-                    d1AnalyticsAdaptiveGroups(limit: 10000, filter: {datetime_geq: "$${__timeFrom:date:iso}", datetime_lt: "$${__timeTo:date:iso}"}, orderBy: [datetime_ASC]) {
+                    d1AnalyticsAdaptiveGroups(limit: 10000, filter: {datetime_geq: "${__timeFrom:date:iso}", datetime_lt: "${__timeTo:date:iso}"}, orderBy: [datetime_ASC]) {
                       dimensions { datetime databaseId }
                       sum { rowsWritten }
                     }
@@ -921,7 +925,7 @@ groups:
               query {
                 viewer {
                   accounts(filter: {accountTag: "f670a698e17bf160c8e4679823e68916"}) {
-                    d1AnalyticsAdaptiveGroups(limit: 10000, filter: {datetime_geq: "$${__timeFrom:date:iso}", datetime_lt: "$${__timeTo:date:iso}"}, orderBy: [datetime_ASC]) {
+                    d1AnalyticsAdaptiveGroups(limit: 10000, filter: {datetime_geq: "${__timeFrom:date:iso}", datetime_lt: "${__timeTo:date:iso}"}, orderBy: [datetime_ASC]) {
                       dimensions { datetime databaseId }
                       sum { rowsWritten }
                     }
@@ -975,7 +979,7 @@ groups:
           datasource:
             type: __expr__
             uid: __expr__
-          expression: (($$C > 0) && ($$D > 3 * $$C)) || ($$D > 3 * 68493)
+          expression: (($C > 0) && ($D > 3 * $C)) || ($D > 3 * 68493)
           intervalMs: 1000
           maxDataPoints: 43200
           refId: E
@@ -1048,7 +1052,7 @@ groups:
               query {
                 viewer {
                   accounts(filter: {accountTag: "f670a698e17bf160c8e4679823e68916"}) {
-                    d1AnalyticsAdaptiveGroups(limit: 10000, filter: {datetime_geq: "$${__timeFrom:date:iso}", datetime_lt: "$${__timeTo:date:iso}"}, orderBy: [datetime_ASC]) {
+                    d1AnalyticsAdaptiveGroups(limit: 10000, filter: {datetime_geq: "${__timeFrom:date:iso}", datetime_lt: "${__timeTo:date:iso}"}, orderBy: [datetime_ASC]) {
                       dimensions { datetime databaseId }
                       sum { rowsRead }
                     }
@@ -1089,7 +1093,7 @@ groups:
               query {
                 viewer {
                   accounts(filter: {accountTag: "f670a698e17bf160c8e4679823e68916"}) {
-                    d1AnalyticsAdaptiveGroups(limit: 10000, filter: {datetime_geq: "$${__timeFrom:date:iso}", datetime_lt: "$${__timeTo:date:iso}"}, orderBy: [datetime_ASC]) {
+                    d1AnalyticsAdaptiveGroups(limit: 10000, filter: {datetime_geq: "${__timeFrom:date:iso}", datetime_lt: "${__timeTo:date:iso}"}, orderBy: [datetime_ASC]) {
                       dimensions { datetime databaseId }
                       sum { rowsRead }
                     }
@@ -1143,7 +1147,7 @@ groups:
           datasource:
             type: __expr__
             uid: __expr__
-          expression: (($$C > 0) && ($$D > 3 * $$C)) || ($$D > 3 * 34246575)
+          expression: (($C > 0) && ($D > 3 * $C)) || ($D > 3 * 34246575)
           intervalMs: 1000
           maxDataPoints: 43200
           refId: E
@@ -1216,7 +1220,7 @@ groups:
               query {
                 viewer {
                   accounts(filter: {accountTag: "f670a698e17bf160c8e4679823e68916"}) {
-                    emailSendingAdaptiveGroups(limit: 10000, filter: {datetime_geq: "$${__timeFrom:date:iso}", datetime_lt: "$${__timeTo:date:iso}"}, orderBy: [datetime_ASC]) {
+                    emailSendingAdaptiveGroups(limit: 10000, filter: {datetime_geq: "${__timeFrom:date:iso}", datetime_lt: "${__timeTo:date:iso}"}, orderBy: [datetime_ASC]) {
                       dimensions { datetime fromAddress }
                       sum { sent }
                     }
@@ -1257,7 +1261,7 @@ groups:
               query {
                 viewer {
                   accounts(filter: {accountTag: "f670a698e17bf160c8e4679823e68916"}) {
-                    emailSendingAdaptiveGroups(limit: 10000, filter: {datetime_geq: "$${__timeFrom:date:iso}", datetime_lt: "$${__timeTo:date:iso}"}, orderBy: [datetime_ASC]) {
+                    emailSendingAdaptiveGroups(limit: 10000, filter: {datetime_geq: "${__timeFrom:date:iso}", datetime_lt: "${__timeTo:date:iso}"}, orderBy: [datetime_ASC]) {
                       dimensions { datetime fromAddress }
                       sum { sent }
                     }
@@ -1311,7 +1315,7 @@ groups:
           datasource:
             type: __expr__
             uid: __expr__
-          expression: (($$C > 0) && ($$D > 3 * $$C)) || ($$D > 3 * 4.11)
+          expression: (($C > 0) && ($D > 3 * $C)) || ($D > 3 * 4.11)
           intervalMs: 1000
           maxDataPoints: 43200
           refId: E
@@ -1384,7 +1388,7 @@ groups:
               query {
                 viewer {
                   accounts(filter: {accountTag: "f670a698e17bf160c8e4679823e68916"}) {
-                    workersInvocationsAdaptive(limit: 10000, filter: {datetime_geq: "$${__timeFrom:date:iso}", datetime_lt: "$${__timeTo:date:iso}"}, orderBy: [datetime_ASC]) {
+                    workersInvocationsAdaptive(limit: 10000, filter: {datetime_geq: "${__timeFrom:date:iso}", datetime_lt: "${__timeTo:date:iso}"}, orderBy: [datetime_ASC]) {
                       dimensions { datetime scriptName }
                       sum { requests }
                     }
@@ -1425,7 +1429,7 @@ groups:
               query {
                 viewer {
                   accounts(filter: {accountTag: "f670a698e17bf160c8e4679823e68916"}) {
-                    workersInvocationsAdaptive(limit: 10000, filter: {datetime_geq: "$${__timeFrom:date:iso}", datetime_lt: "$${__timeTo:date:iso}"}, orderBy: [datetime_ASC]) {
+                    workersInvocationsAdaptive(limit: 10000, filter: {datetime_geq: "${__timeFrom:date:iso}", datetime_lt: "${__timeTo:date:iso}"}, orderBy: [datetime_ASC]) {
                       dimensions { datetime scriptName }
                       sum { requests }
                     }
@@ -1479,7 +1483,7 @@ groups:
           datasource:
             type: __expr__
             uid: __expr__
-          expression: (($$C > 0) && ($$D > 3 * $$C)) || ($$D > 3 * 13699)
+          expression: (($C > 0) && ($D > 3 * $C)) || ($D > 3 * 13699)
           intervalMs: 1000
           maxDataPoints: 43200
           refId: E
@@ -1552,7 +1556,7 @@ groups:
               query {
                 viewer {
                   accounts(filter: {accountTag: "f670a698e17bf160c8e4679823e68916"}) {
-                    durableObjectsAdaptiveGroups(limit: 10000, filter: {datetime_geq: "$${__timeFrom:date:iso}", datetime_lt: "$${__timeTo:date:iso}"}, orderBy: [datetime_ASC]) {
+                    durableObjectsAdaptiveGroups(limit: 10000, filter: {datetime_geq: "${__timeFrom:date:iso}", datetime_lt: "${__timeTo:date:iso}"}, orderBy: [datetime_ASC]) {
                       dimensions { datetime scriptName }
                       sum { requests }
                     }
@@ -1593,7 +1597,7 @@ groups:
               query {
                 viewer {
                   accounts(filter: {accountTag: "f670a698e17bf160c8e4679823e68916"}) {
-                    durableObjectsAdaptiveGroups(limit: 10000, filter: {datetime_geq: "$${__timeFrom:date:iso}", datetime_lt: "$${__timeTo:date:iso}"}, orderBy: [datetime_ASC]) {
+                    durableObjectsAdaptiveGroups(limit: 10000, filter: {datetime_geq: "${__timeFrom:date:iso}", datetime_lt: "${__timeTo:date:iso}"}, orderBy: [datetime_ASC]) {
                       dimensions { datetime scriptName }
                       sum { requests }
                     }
@@ -1647,7 +1651,7 @@ groups:
           datasource:
             type: __expr__
             uid: __expr__
-          expression: (($$C > 0) && ($$D > 3 * $$C)) || ($$D > 3 * 1370)
+          expression: (($C > 0) && ($D > 3 * $C)) || ($D > 3 * 1370)
           intervalMs: 1000
           maxDataPoints: 43200
           refId: E
@@ -1725,7 +1729,7 @@ groups:
               query {
                 viewer {
                   accounts(filter: {accountTag: "f670a698e17bf160c8e4679823e68916"}) {
-                    aiInferenceAdaptiveGroups(limit: 10000, filter: {datetime_geq: "$${__timeFrom:date:iso}", datetime_lt: "$${__timeTo:date:iso}"}, orderBy: [datetime_ASC]) {
+                    aiInferenceAdaptiveGroups(limit: 10000, filter: {datetime_geq: "${__timeFrom:date:iso}", datetime_lt: "${__timeTo:date:iso}"}, orderBy: [datetime_ASC]) {
                       dimensions { datetime }
                       sum { neurons }
                     }
@@ -1763,7 +1767,7 @@ groups:
               query {
                 viewer {
                   accounts(filter: {accountTag: "f670a698e17bf160c8e4679823e68916"}) {
-                    aiInferenceAdaptiveGroups(limit: 10000, filter: {datetime_geq: "$${__timeFrom:date:iso}", datetime_lt: "$${__timeTo:date:iso}"}, orderBy: [datetime_ASC]) {
+                    aiInferenceAdaptiveGroups(limit: 10000, filter: {datetime_geq: "${__timeFrom:date:iso}", datetime_lt: "${__timeTo:date:iso}"}, orderBy: [datetime_ASC]) {
                       dimensions { datetime }
                       sum { neurons }
                     }
@@ -1814,7 +1818,7 @@ groups:
           datasource:
             type: __expr__
             uid: __expr__
-          expression: (($$C > 0) && ($$D > 3 * $$C)) || ($$D > 3 * 416.67)
+          expression: (($C > 0) && ($D > 3 * $C)) || ($D > 3 * 416.67)
           intervalMs: 1000
           maxDataPoints: 43200
           refId: E
@@ -1887,7 +1891,7 @@ groups:
               query {
                 viewer {
                   accounts(filter: {accountTag: "f670a698e17bf160c8e4679823e68916"}) {
-                    aiInferenceAdaptiveGroups(limit: 10000, filter: {datetime_geq: "$${__timeFrom:date:iso}", datetime_lt: "$${__timeTo:date:iso}"}, orderBy: [datetime_ASC]) {
+                    aiInferenceAdaptiveGroups(limit: 10000, filter: {datetime_geq: "${__timeFrom:date:iso}", datetime_lt: "${__timeTo:date:iso}"}, orderBy: [datetime_ASC]) {
                       dimensions { datetime model }
                       sum { neurons }
                     }
@@ -1928,7 +1932,7 @@ groups:
               query {
                 viewer {
                   accounts(filter: {accountTag: "f670a698e17bf160c8e4679823e68916"}) {
-                    aiInferenceAdaptiveGroups(limit: 10000, filter: {datetime_geq: "$${__timeFrom:date:iso}", datetime_lt: "$${__timeTo:date:iso}"}, orderBy: [datetime_ASC]) {
+                    aiInferenceAdaptiveGroups(limit: 10000, filter: {datetime_geq: "${__timeFrom:date:iso}", datetime_lt: "${__timeTo:date:iso}"}, orderBy: [datetime_ASC]) {
                       dimensions { datetime model }
                       sum { neurons }
                     }
@@ -1982,7 +1986,7 @@ groups:
           datasource:
             type: __expr__
             uid: __expr__
-          expression: (($$C > 0) && ($$D > 3 * $$C)) || ($$D > 3 * 416.67)
+          expression: (($C > 0) && ($D > 3 * $C)) || ($D > 3 * 416.67)
           intervalMs: 1000
           maxDataPoints: 43200
           refId: E
@@ -2055,7 +2059,7 @@ groups:
               query {
                 viewer {
                   accounts(filter: {accountTag: "f670a698e17bf160c8e4679823e68916"}) {
-                    r2StorageAdaptiveGroups(limit: 10000, filter: {datetime_geq: "$${__timeFrom:date:iso}", datetime_lt: "$${__timeTo:date:iso}", storageClass: "Standard"}, orderBy: [datetime_ASC]) {
+                    r2StorageAdaptiveGroups(limit: 10000, filter: {datetime_geq: "${__timeFrom:date:iso}", datetime_lt: "${__timeTo:date:iso}", storageClass: "Standard"}, orderBy: [datetime_ASC]) {
                       dimensions { datetime }
                       sum { payloadSize }
                     }
@@ -2154,7 +2158,7 @@ groups:
               query {
                 viewer {
                   accounts(filter: {accountTag: "f670a698e17bf160c8e4679823e68916"}) {
-                    r2StorageAdaptiveGroups(limit: 10000, filter: {datetime_geq: "$${__timeFrom:date:iso}", datetime_lt: "$${__timeTo:date:iso}", storageClass: "Standard"}, orderBy: [datetime_ASC]) {
+                    r2StorageAdaptiveGroups(limit: 10000, filter: {datetime_geq: "${__timeFrom:date:iso}", datetime_lt: "${__timeTo:date:iso}", storageClass: "Standard"}, orderBy: [datetime_ASC]) {
                       dimensions { datetime bucketName }
                       sum { payloadSize }
                     }
@@ -2195,7 +2199,7 @@ groups:
               query {
                 viewer {
                   accounts(filter: {accountTag: "f670a698e17bf160c8e4679823e68916"}) {
-                    r2StorageAdaptiveGroups(limit: 10000, filter: {datetime_geq: "$${__timeFrom:date:iso}", datetime_lt: "$${__timeTo:date:iso}", storageClass: "Standard"}, orderBy: [datetime_ASC]) {
+                    r2StorageAdaptiveGroups(limit: 10000, filter: {datetime_geq: "${__timeFrom:date:iso}", datetime_lt: "${__timeTo:date:iso}", storageClass: "Standard"}, orderBy: [datetime_ASC]) {
                       dimensions { datetime bucketName }
                       sum { payloadSize }
                     }
@@ -2249,7 +2253,7 @@ groups:
           datasource:
             type: __expr__
             uid: __expr__
-          expression: $$C - $$D
+          expression: $C - $D
           intervalMs: 1000
           maxDataPoints: 43200
           refId: E
@@ -2322,7 +2326,7 @@ groups:
               query {
                 viewer {
                   accounts(filter: {accountTag: "f670a698e17bf160c8e4679823e68916"}) {
-                    r2StorageAdaptiveGroups(limit: 10000, filter: {datetime_geq: "$${__timeFrom:date:iso}", datetime_lt: "$${__timeTo:date:iso}", storageClass: "Standard"}, orderBy: [datetime_ASC]) {
+                    r2StorageAdaptiveGroups(limit: 10000, filter: {datetime_geq: "${__timeFrom:date:iso}", datetime_lt: "${__timeTo:date:iso}", storageClass: "Standard"}, orderBy: [datetime_ASC]) {
                       dimensions { datetime }
                       sum { payloadSize }
                     }
@@ -2360,7 +2364,7 @@ groups:
               query {
                 viewer {
                   accounts(filter: {accountTag: "f670a698e17bf160c8e4679823e68916"}) {
-                    r2StorageAdaptiveGroups(limit: 10000, filter: {datetime_geq: "$${__timeFrom:date:iso}", datetime_lt: "$${__timeTo:date:iso}", storageClass: "Standard", bucketName_in: ["nish-netcup-rs2000-backups", "nish-netcup-rs2000-backups-locked", "0509-snapshots", "0509-snapshots-backup", "0509-landing-page-artifacts"]}, orderBy: [datetime_ASC]) {
+                    r2StorageAdaptiveGroups(limit: 10000, filter: {datetime_geq: "${__timeFrom:date:iso}", datetime_lt: "${__timeTo:date:iso}", storageClass: "Standard", bucketName_in: ["nish-netcup-rs2000-backups", "nish-netcup-rs2000-backups-locked", "0509-snapshots", "0509-snapshots-backup", "0509-landing-page-artifacts"]}, orderBy: [datetime_ASC]) {
                       dimensions { datetime }
                       sum { payloadSize }
                     }
@@ -2411,7 +2415,7 @@ groups:
           datasource:
             type: __expr__
             uid: __expr__
-          expression: $$C - $$D
+          expression: $C - $D
           intervalMs: 1000
           maxDataPoints: 43200
           refId: E
