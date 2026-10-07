@@ -39,6 +39,9 @@ jobs:
       load1: ${{ steps.host.outputs.load1 }}
       cores: ${{ steps.host.outputs.cores }}
       swap_used_kb: ${{ steps.host.outputs.swap_used_kb }}
+      # fleet-ops#9372: whether worker.err shows a router 429/500, for the
+      # report job's short-run classifier (worker.err stays on this runner).
+      router_err: ${{ steps.host.outputs.router_err }}
     concurrency:
       group: agent-${{ github.repository }}-${{ inputs.ref }}
       cancel-in-progress: false
@@ -278,10 +281,13 @@ jobs:
           jail_base="bwrap --dev-bind / / --ro-bind $HOME/workspaces/tooling/fleet-ops-deploy-clone $HOME/workspaces/tooling/fleet-ops-deploy-clone --tmpfs $HOME/.config/gh --tmpfs $HOME/.config/cloudflare --proc /proc --unshare-pid --die-with-parent"
           jail="$jail_base --"
           dir="$HOME/workspaces/agent-worktrees/issue-$id"
+          # Static text, the marker line, then the target id: the id is the only
+          # per-run text, so the prompt-cache prefix is shared (fleet-ops#9363).
+          nl=$'\n'
           if [ "$MISS" = true ]; then
-            packet="Miss review for instance $id. Follow $HOME/workspaces/tooling/fleet-ops-deploy-clone/prompts/miss-review.md (read AGENTS.md beside worker.md first); every \$1 there means $id."
+            packet="Miss review. Follow $HOME/workspaces/tooling/fleet-ops-deploy-clone/prompts/miss-review.md (read AGENTS.md beside worker.md first); every \$1 there means the id after the marker.${nl}=== FLEET-DYNAMIC-BELOW ===${nl}Target: $id"
           else
-            packet="Fleet issue worker for instance $id. Follow $HOME/workspaces/tooling/fleet-ops-deploy-clone/prompts/worker.md (read AGENTS.md beside it first); every \$1 there means $id."
+            packet="Fleet issue worker. Follow $HOME/workspaces/tooling/fleet-ops-deploy-clone/prompts/worker.md (read AGENTS.md beside it first); every \$1 there means the id after the marker.${nl}=== FLEET-DYNAMIC-BELOW ===${nl}Target: $id"
           fi
           if [ "$ENGINE" = devin ]; then
             # --chdir puts the worker directory on the bwrap command line,
@@ -349,14 +355,16 @@ jobs:
             . "$HOME/.config/fleet-ops/seats/mobbin-mcp.env"
             set +a
             if [ "$MISS" = true ]; then
-              echo "$packet" | $jail pi --print \
+              echo "$packet" | $jail pi --print --no-context-files \
                 --append-system-prompt "$HOME/workspaces/tooling/fleet-ops-deploy-clone/AGENTS.md" \
+                --append-system-prompt "$HOME/AGENTS.md" \
                 --append-system-prompt "$HOME/workspaces/tooling/fleet-ops-deploy-clone/prompts/miss-review.md" \
                 --session-dir "$HOME/.pi/agent/sessions/agent-$id" \
                 --exclude-tools subagent --provider litellm --model worker-capable >/dev/null
             else
-              echo "/worker $id" | $jail pi --print \
+              echo "/worker $id" | $jail pi --print --no-context-files \
                 --append-system-prompt "$HOME/workspaces/tooling/fleet-ops-deploy-clone/AGENTS.md" \
+                --append-system-prompt "$HOME/AGENTS.md" \
                 --session-dir "$HOME/.pi/agent/sessions/agent-$id" \
                 --exclude-tools subagent --provider litellm --model worker-capable >/dev/null
             fi
@@ -378,6 +386,8 @@ jobs:
             echo "load1=$(cut -d' ' -f1 /proc/loadavg)"
             echo "cores=$(nproc)"
             echo "swap_used_kb=$(awk '/^SwapTotal:/{t=$2} /^SwapFree:/{f=$2} END{print t-f}' /proc/meminfo)"
+            # fleet-ops#9372: the Router wall pattern plus HTTP 500.
+            if grep -qiE 'no deployments available|ratelimiterror|rate limit exceeded|\b429\b|http[ /0-9.]*500\b|status(code)?[\": ]*500\b|internal ?server ?error' "$RUNNER_TEMP/worker.err" 2>/dev/null; then echo router_err=true; else echo router_err=false; fi
           } >> "$GITHUB_OUTPUT"
       - name: App token for arm
         id: arm-token
@@ -718,6 +728,10 @@ jobs:
           LOAD1: ${{ needs.work.outputs.load1 }}
           CORES: ${{ needs.work.outputs.cores }}
           SWAP_USED_KB: ${{ needs.work.outputs.swap_used_kb }}
+          # fleet-ops#9372: a Worker step under SHORT_RUN_SECS that ended on a
+          # router 429/500 is infra, whether or not the branch has commits.
+          ROUTER_ERR: ${{ needs.work.outputs.router_err }}
+          SHORT_RUN_SECS: '600'
           WORKER_TIMEOUT_SECS: '3240'
           CPU_LOAD_FACTOR: '5'
           SWAP_GUARD_KB: '4194304'
@@ -760,12 +774,15 @@ jobs:
           #   timed out overloaded — the Worker step ran to its 55-minute cap
           #     (elapsed >= 54 min) while load1 was above 5x cores or swap in
           #     use was above 4G (the numbers' provenance is in the env above).
+          #   short router death (fleet-ops#9372) — the Worker step failed in
+          #     under 10 minutes and worker.err shows a router 429/500.
           # Everything else strikes as before: an early worker failure, a
           # timeout with no guard sample, a failed jobs read (fail-safe).
           jobs_json=$(env -u GH_TOKEN -u GITHUB_TOKEN gh api --paginate "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/jobs?per_page=100" 2>/dev/null) || jobs_json=
           [ -n "$jobs_json" ] || echo "::warning::jobs API read failed; striking as before (fleet-ops#9291)"
           # shellcheck disable=SC2016 # $v is a jq variable
           verdict=$(jq -rs --arg ref "$N" --arg load1 "$LOAD1" --arg cores "$CORES" --arg swap_kb "$SWAP_USED_KB" \
+            --arg router_err "$ROUTER_ERR" --argjson short_secs "$SHORT_RUN_SECS" \
             --argjson timeout_secs "$WORKER_TIMEOUT_SECS" --argjson cpu_factor "$CPU_LOAD_FACTOR" --argjson swap_guard_kb "$SWAP_GUARD_KB" '
             [.[].jobs[]] as $all
             | [$all[] | select(.name | endswith("/ work"))] as $w
@@ -777,6 +794,9 @@ jobs:
                 | if $s == null or $s.started_at == null then "strike"
                   elif $s.completed_at == null and $job.conclusion == "failure" then "infra"
                   elif $s.conclusion == "cancelled" and $job.conclusion == "failure" then "infra"
+                  elif $s.conclusion == "failure" and $router_err == "true"
+                       and (($s.completed_at | fromdateiso8601) - ($s.started_at | fromdateiso8601)) < $short_secs
+                  then "infra"
                   elif $s.conclusion == "failure"
                        and (($s.completed_at | fromdateiso8601) - ($s.started_at | fromdateiso8601)) >= $timeout_secs
                        and ((($cores | tonumber? // 0) > 0 and (($load1 | tonumber? // 0) > $cpu_factor * ($cores | tonumber? // 0)))

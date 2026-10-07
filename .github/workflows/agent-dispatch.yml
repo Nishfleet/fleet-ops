@@ -329,21 +329,35 @@ jobs:
       # person's typed approval.
       APPROVERS: nish3451 github-actions[bot]
       RISKY_PATHS_URL: https://raw.githubusercontent.com/Nishfleet/fleet-ops/main/config/risky-paths.json
-      # stdin: {repo, labels, files, changed_files}; $cfg: risky-paths.json or
-      # null. A list cut at 3000 files, an empty list or an unreadable path
-      # list all count as risky.
+      # stdin: {repo, labels, files, patches, changed_files}; $cfg:
+      # risky-paths.json or null. patches is [{file, patch}] with patch null
+      # when the API sent none (large or binary). Risky is a path hit (under
+      # "*", minus the "safe" docs patterns, or under the PR's own repo) or an
+      # added diff line matching a "diff" entry for that file, or a file such
+      # an entry covers with no patch. A list cut at 3000 files, an empty
+      # list or an unreadable path list all count as risky.
       CLASSIFY: |
         . as $pr
         | (($cfg // {}).paths // null) as $p
-        | (if ($p | type) == "object" and ($p["*"] | type) == "array"
-           then $p["*"] + [$p | to_entries[] | select(.key != "*" and (.key | ascii_downcase) == ($pr.repo | ascii_downcase)) | .value[]]
-           else ["."] end) as $pats
-        | [$pr.files[] | . as $f | select(any($pats[]; . as $re | $f | test($re; "i")))] as $hits
+        | (($cfg // {}).safe // []) as $safe
+        | (($cfg // {}).diff // []) as $diff
+        | (if ($p | type) == "object" and ($p["*"] | type) == "array" then $p["*"] else ["."] end) as $star
+        | (if ($p | type) == "object" then [$p | to_entries[] | select(.key != "*" and (.key | ascii_downcase) == ($pr.repo | ascii_downcase)) | .value[]] else [] end) as $own
+        | [$pr.files[] | . as $f
+            | select((any($safe[]; . as $re | $f | test($re; "i")) | not) and any($star[]; . as $re | $f | test($re; "i"))
+                     or any($own[]; . as $re | $f | test($re; "i")))] as $hits
+        | [($pr.patches // [])[] | . as $x
+            | $diff[] | . as $d
+            | select(($x.file | test($d.files; "i")) and (if $d.not_files == null then true else ($x.file | test($d.not_files; "i") | not) end))
+            | if $x.patch == null then (if $d.hold_no_patch == true then "no diff for \($x.file) (\($d.id))" else empty end)
+              elif ([$x.patch | split("\n")[] | select(startswith("+") and (startswith("+++") | not))] | join(" ") | test($d.pattern; "i")) then "diff \($d.id) in \($x.file)"
+              else empty end] as $dhits
         | ([if any($pr.labels[]; . == $label) then "label \($label)" else empty end]
            + [if ($p | type) != "object" then "risky-path list unreadable" else empty end]
            + [if ($pr.files | length) == 0 then "no changed files listed" else empty end]
            + [if $pr.changed_files >= 3000 then "\($pr.changed_files) changed files, list cut at 3000" else empty end]
-           + ($hits | unique | .[:10] | map("path \(.)"))) as $why
+           + ($hits | unique | .[:10] | map("path \(.)"))
+           + ($dhits | unique | .[:10])) as $why
         | {risky: ($why | length > 0), why: $why}
       # stdin: {sha, statuses, comments}. sha is the current head; statuses
       # are that sha's, newest first (GitHub's order); comments are the PR's
@@ -390,13 +404,14 @@ jobs:
           # Old and new name of a rename both count. Files go through a file,
           # not argv: 3000 paths can pass the 128 KiB single-argument limit.
           # A failed read leaves the list empty, which CLASSIFY holds.
-          if ! gh api --paginate "repos/$GITHUB_REPOSITORY/pulls/$PR/files?per_page=100" --jq '.[] | .filename, (.previous_filename // empty)' > "$RUNNER_TEMP/files.txt"; then
+          # patch is null when GitHub sends none (large or binary files).
+          if ! gh api --paginate "repos/$GITHUB_REPOSITORY/pulls/$PR/files?per_page=100" --jq '.[] | {f: .filename, p: (.previous_filename // null), patch: (.patch // null)}' > "$RUNNER_TEMP/files.txt"; then
             echo "::warning::hold-risky: changed-files read failed for #$PR; holding as risky"
             : > "$RUNNER_TEMP/files.txt"
           fi
-          jq -Rsc 'split("\n") | map(select(length > 0))' < "$RUNNER_TEMP/files.txt" > "$RUNNER_TEMP/files.json"
-          jq -c --arg repo "$GITHUB_REPOSITORY" --slurpfile files "$RUNNER_TEMP/files.json" \
-            '{repo: $repo, labels: [(.labels // [])[].name], files: $files[0], changed_files: (.changed_files // 0)}' <<<"$pr" > "$RUNNER_TEMP/facts.json"
+          jq -sc '{files: [.[] | .f, (.p // empty)], patches: [.[] | {file: .f, patch}]}' < "$RUNNER_TEMP/files.txt" > "$RUNNER_TEMP/files.json"
+          jq -c --arg repo "$GITHUB_REPOSITORY" --slurpfile d "$RUNNER_TEMP/files.json" \
+            '{repo: $repo, labels: [(.labels // [])[].name], files: $d[0].files, patches: $d[0].patches, changed_files: (.changed_files // 0)}' <<<"$pr" > "$RUNNER_TEMP/facts.json"
           if ! cfg=$(curl -fsSL --retry 3 "$RISKY_PATHS_URL" | jq -c .); then
             echo "::warning::could not read $RISKY_PATHS_URL; holding as risky"
             cfg=null
