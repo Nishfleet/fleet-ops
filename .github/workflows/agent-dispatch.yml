@@ -12,6 +12,9 @@
 #   live (default, unset) = a needs-orchestrator label starts one hand-off run.
 #   Default on (Nish 2026-10-04, "on for everything the fleet touches"), so a
 #   newly stubbed repo cannot sit off by omission.
+# Repo variable ORCHESTRATE_DAILY_MAX: hand-off sessions per repo per UTC day
+# (default 5); 0 stops new ones. A needs-opus issue label runs the session on
+# Opus with 80 turns, otherwise Sonnet with 40 (fleet-ops#9351).
 # To switch orchestration off: set ORCHESTRATE to off.
 # To delete it: revert the orchestrate job in this file, the workflow-path
 # detector in agent.yml's Gate, and prompts/orchestrator-handoff.md. A run
@@ -855,6 +858,7 @@ jobs:
         id: issue
         env:
           GH_TOKEN: ${{ github.token }}
+          DAILY_MAX: ${{ vars.ORCHESTRATE_DAILY_MAX || '5' }}
         run: |
           set -euo pipefail
           [ -n "$ISSUE" ] || { echo "orchestrate: no issue number on this event; skip"; exit 0; }
@@ -870,6 +874,36 @@ jobs:
           if gh api "repos/$REPO/git/ref/heads/$branch" --silent 2>/dev/null; then
             echo "orchestrate: $branch exists on origin; another hand-off owns #$ISSUE; skip"
             exit 0
+          fi
+          # Daily cap (fleet-ops#9351): a 2026-10-06 day of 26 Opus hand-offs
+          # used ~31% of Nish's weekly Claude limit. It counts distinct issues
+          # labelled needs-orchestrator today, not runs: a per-run jobs scan
+          # would cost hundreds of API calls a day on drive. Overcounting a
+          # trigger that was skipped is the safe direction. Events come newest
+          # first, so the scan stops at the first page that reaches yesterday.
+          case $DAILY_MAX in
+            ''|*[!0-9]*) echo "::error::orchestrate: ORCHESTRATE_DAILY_MAX must be a non-negative integer, got '$DAILY_MAX'"; exit 1 ;;
+          esac
+          today=$(date -u +%FT00:00:00Z)
+          seen=
+          for p in $(seq 1 30); do
+            page=$(gh api "repos/$REPO/issues/events?per_page=100&page=$p")
+            [ "$(jq length <<<"$page")" -gt 0 ] || break
+            seen+=$(jq -r --arg t "$today" '.[] | select(.event=="labeled" and .label.name=="needs-orchestrator" and .created_at >= $t) | .issue.number' <<<"$page")$'\n'
+            [ "$(jq -r --arg t "$today" '.[-1].created_at < $t' <<<"$page")" = true ] && break
+          done
+          count=$(printf '%s' "$seen" | grep -vx -e "$ISSUE" -e '' | sort -u | wc -l || true)
+          if [ "$count" -ge "$DAILY_MAX" ]; then
+            echo "::warning::orchestrate: daily cap reached ($count/$DAILY_MAX hand-offs today in $REPO); #$ISSUE stays parked"
+            echo "capped=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          # Sonnet unless the issue asks for Opus. An empty model leaves the
+          # session default (Opus) in place.
+          if [[ $labels == *,needs-opus,* ]]; then
+            { echo "model="; echo "turns=80"; } >> "$GITHUB_OUTPUT"
+          else
+            { echo "model=claude-sonnet-5-5"; echo "turns=40"; } >> "$GITHUB_OUTPUT"
           fi
           echo "go=true" >> "$GITHUB_OUTPUT"
       - name: Fresh worktree on origin/main
@@ -938,6 +972,8 @@ jobs:
           ISSUE_N: ${{ github.event.issue.number || inputs.issue }}
           REPO_NAME: ${{ github.repository }}
           WORKTREE: ${{ steps.worktree.outputs.worktree }}
+          MODEL: ${{ steps.issue.outputs.model }}
+          TURNS: ${{ steps.issue.outputs.turns }}
         run: |
           set -euo pipefail
           cd "$WORKTREE"
@@ -950,17 +986,22 @@ jobs:
             prompt="$HOME/workspaces/tooling/fleet-ops-deploy-clone/prompts/orchestrator-handoff.md"
           fi
           { cat "$prompt"; printf '\n\nTarget: %s#%s\nBranch: orch/issue-%s. It is checked out already; run git log --oneline origin/main..HEAD before you build, because an earlier hand-off may have left commits here.\n' "$REPO_NAME" "$ISSUE_N" "$ISSUE_N"; } > "$RUNNER_TEMP/orchestrator-prompt.md"
-          # Stock CLI, no --model: the session default model is the rule (the
-          # agent.yml Worker lane picks worker-capable; this one is the
-          # orchestrator, not a seat). GH_TOKEN and GITHUB_TOKEN are unset so the
+          # Sonnet by default; the session default (Opus) only for a needs-opus
+          # issue, where MODEL is empty (fleet-ops#9351: Opus on every hand-off
+          # burned the weekly limit). --output-format json puts modelUsage in
+          # the log, the proof of which model ran. GH_TOKEN and GITHUB_TOKEN are unset so the
           # session authenticates as the runner user, whose gh login can push
           # .github/workflows/** -- the whole reason this job exists.
           # The prompt goes on stdin: it opens with `---` front matter, and as
           # an argument the CLI parses that as an option and exits 1 (run
           # 37207149948: "error: unknown option '---").
+          model_args=()
+          [ -z "$MODEL" ] || model_args=(--model "$MODEL")
           env -u GH_TOKEN -u GITHUB_TOKEN timeout 3000 /home/nish/.local/bin/claude -p \
+            "${model_args[@]}" \
+            --output-format json \
             --permission-mode bypassPermissions \
-            --max-turns 80 \
+            --max-turns "$TURNS" \
             < "$RUNNER_TEMP/orchestrator-prompt.md"
       - name: Clean up and mark a PR-less hand-off
         if: always()
@@ -970,6 +1011,7 @@ jobs:
           # (zizmor template-injection; the same reason WORKTREE above is an
           # env var).
           GO: ${{ steps.issue.outputs.go }}
+          CAPPED: ${{ steps.issue.outputs.capped }}
         run: |
           set -euo pipefail
           # shellcheck disable=SC2153 # REPO is the job-level env, not a misspelling
@@ -984,6 +1026,12 @@ jobs:
           if [ -d "$mirror" ]; then
             env -u GH_TOKEN -u GITHUB_TOKEN git -C "$mirror" worktree remove --force "$wt" 2>/dev/null || rm -rf "$wt"
             env -u GH_TOKEN -u GITHUB_TOKEN git -C "$mirror" worktree prune || true
+          fi
+          # Capped: the label stays and no run is coming, so say so on the
+          # issue; without it a capped issue would stall silently.
+          if [ "$CAPPED" = true ] && [ -n "$ISSUE" ]; then
+            env -u GH_TOKEN -u GITHUB_TOKEN gh issue comment "$ISSUE" -R "$REPO" --body "orchestrate: daily hand-off cap reached for $REPO (ORCHESTRATE_DAILY_MAX); this issue stays parked with needs-orchestrator. Re-run with workflow_dispatch task=orchestrate issue=$ISSUE after 00:00 UTC: $GITHUB_SERVER_URL/$REPO/actions/runs/$GITHUB_RUN_ID"
+            exit 0
           fi
           # Nothing was built: the session step was skipped or the issue check
           # bailed. No PR exists and none is coming, but this run never started
