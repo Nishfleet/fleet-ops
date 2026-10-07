@@ -180,6 +180,34 @@ jobs:
           "${jail[@]}" test ! -e "$HOME/.config/cloudflare/deploy-ci.env"
           test -r "$HOME/.config/gh/hosts.yml"
           rm -f "$HOME/.config/gh/hosts.yml" "$HOME/.config/cloudflare/deploy-ci.env" "$HOME/.config/control"
+      - name: Prompt prefix is static (fleet-ops#9363)
+        # Dynamic text before static text breaks the shared prompt prefix, so
+        # the first model call of a run pays full price (4% to 36% cached).
+        # Rule: static text, one marker line, then all dynamic text.
+        if: always()
+        run: |
+          m='=== FLEET-DYNAMIC-BELOW ==='
+          bad=0
+          for f in prompts/worker.md prompts/miss-review.md; do
+            n=$(grep -c -x -F "$m" "$f" || true)
+            [ "$n" = 1 ] || { echo "FAIL $f: marker count $n"; bad=1; continue; }
+            sed "/^$m\$/q" "$f" | grep -nE '[$][0-9@*]|[$][{][0-9@*]|[$]ARGUMENTS' && { echo "FAIL $f: argument before marker"; bad=1; }
+            for id in fleet-ops-9361 drive-503; do
+              sed "s/\\\$1/$id/g" "$f" | sed "/^$m\$/q" > "$RUNNER_TEMP/pre-$id.txt"
+            done
+            cmp "$RUNNER_TEMP/pre-fleet-ops-9361.txt" "$RUNNER_TEMP/pre-drive-503.txt" || { echo "FAIL $f: prefix differs by id"; bad=1; }
+          done
+          # Every pi --print line drops runner-path context files; the
+          # appended prompt paths are the constant deploy-clone path.
+          while IFS=: read -r ln text; do
+            case $text in *--no-context-files*) ;; *) echo "FAIL $ln: pi --print without --no-context-files"; bad=1 ;; esac
+          done < <(grep -n 'pi --print' .github/workflows/agent.yml)
+          while IFS=: read -r ln text; do
+            case $text in *\$HOME/workspaces/tooling/fleet-ops-deploy-clone/*) ;; *) echo "FAIL $ln: append-system-prompt path is not the deploy clone"; bad=1 ;; esac
+          done < <(grep -n -e '--append-system-prompt' .github/workflows/agent.yml)
+          # Tool flags are literals, never a variable.
+          if grep -nE -e '--(tools|exclude-tools|mcp-config)[ =]+"?\$' .github/workflows/agent.yml; then echo "FAIL: tool flag is not literal"; bad=1; fi
+          exit "$bad"
       - name: No shell ${...} or bare %s/%u/%h inside systemd Exec lines (fleet-ops#8382)
         # systemd expands ${...} and % specifiers itself, before any interpreter
         # runs, so the shell never sees them. Refused on Exec*= lines: `${` + a
