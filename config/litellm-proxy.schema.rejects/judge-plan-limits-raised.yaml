@@ -1,0 +1,28 @@
+# fleet-ops#9374: raising the paid row past what the Token Plan allows (3 per
+# minute, 3 at once) is a deliberate change with its own issue, not an edit to
+# the schema. The schema must refuse this so the numbers cannot drift upward in
+# a PR that only meant to reorder the group.
+model_list:
+- model_name: judge
+  litellm_params:
+    model: openai/qwen3.8-max
+    rpm: 6
+    order: 1
+    max_parallel_requests: 6
+  model_info:
+    id: alibaba-qwen38max-judge
+- model_name: judge
+  litellm_params:
+    model: openai/deepseek-v4.1-flash
+    order: 2
+  model_info:
+    id: opencodego-ds41flash-judge
+- model_name: judge
+  litellm_params:
+    model: openai/deepseek-v4.1-flash
+    order: 2
+  model_info:
+    id: opencodego2-ds41flash-judge
+router_settings:
+  redis_url: redis://127.0.0.1:6379
+  cooldown_time: 60
