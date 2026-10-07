@@ -158,6 +158,8 @@ above, because a total-zero cache for a vendor that reports no cache field is
 not a regression. If a vendor that does report caching today stops, the share
 for its alias falls and the rule fires.
 
-The rule is unit-tested with `promtool` against three cases: a high-volume
-lane whose cache broke (fires), a healthy high-volume lane (silent), and a
-low-volume probe lane with zero cache (silent, held off by the volume floor).
+The rule is unit-tested with `promtool` against four cases: a high-volume
+lane whose cache broke (fires), a healthy high-volume lane (silent), a
+low-volume probe lane with zero cache (silent, held off by the volume floor),
+and a broken lane beside a healthy one in the same scrape (fires for the
+broken one only, so the `and on(requested_model)` does not cross lanes).
