@@ -1559,10 +1559,13 @@ router_settings:
   timeout: 1800
   enable_tag_filtering: false
   retry_policy:
-    AuthenticationErrorRetries: 2
-    RateLimitErrorRetries: 2
+    # fleet-ops#9375: keep a mid-session 429/500 re-send on the SAME seat so the session pin holds for Pi's own retry (Pi keeps x-litellm-session-id). 0 for 401 (a bad key can never recover on retry), 1 for 429/500 (one same-row retry, then the call falls through to the fallback group - never a second in-group hop that re-sends the whole prompt to a fresh seat). Bounded by the schema and locked by tests/test_router_retry_policy_no_cross_seat.py.
+    # Drilled on litellm 1.98.0, pinned seat that 429s every attempt: shipped (2/2/2) -> 3 upstream picks [seat-a, seat-c, seat-b]; proposed (0/1/1) -> 2 picks [seat-a, seat-b].
+    # Note: litellm 1.98.0 has no InternalServerError branch in get_num_retries_from_retry_policy, so InternalServerErrorRetries is inert until litellm adds the handler; 1 is the intended forward behavior and is asserted as such in the test.
+    AuthenticationErrorRetries: 0
+    RateLimitErrorRetries: 1
     TimeoutErrorRetries: 1
-    InternalServerErrorRetries: 2
+    InternalServerErrorRetries: 1
     # 400 only (a separate fix from the 402 removal above): LiteLLM never cools a 400, so a row whose model is gone upstream stays in the shuffle (zen union-alpha "Model is unavailable", stalled drive for an hour on 2026-09-30; its rows are removed since, so this guards against any future dead-model 400). 1 retry = 2 picks. The retry re-shuffles and does not exclude the failed row, so escape is by odds: a dead row's share of its group decides - tiny in the many-row worker groups, but all of senior's single remaining row, where 2 picks cannot escape. ContentPolicyViolation is matched first and stays 0; a context-window 400 is retried too, which costs one fast failure.
     BadRequestErrorRetries: 1
     ContentPolicyViolationErrorRetries: 0

@@ -1,0 +1,21 @@
+# fleet-ops#9375: the shipped retry budget, refused. 2 in-group retries re-send
+# a worker prompt to a second (and third) seat; the schema caps the count at 1
+# so a retry can never hop the session pin off its seat. This fixture is CI's
+# proof the cap is real: one value over it and the config is rejected.
+model_list:
+- model_name: worker-cheap
+  litellm_params:
+    model: openai/x
+  model_info:
+    supports_prompt_caching: true
+    cache_proof: "fixture row: only the rule named in this file is under test (#9375)."
+router_settings:
+  redis_url: redis://127.0.0.1:6379
+  cooldown_time: 60
+  retry_policy:
+    AuthenticationErrorRetries: 0
+    RateLimitErrorRetries: 2
+    TimeoutErrorRetries: 1
+    InternalServerErrorRetries: 1
+    BadRequestErrorRetries: 1
+    ContentPolicyViolationErrorRetries: 0

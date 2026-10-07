@@ -88,6 +88,27 @@
           }
         }
       ]
+    },
+    "retryPolicy": {
+      "$comment": "fleet-ops#9375: in-router retries must not re-send a worker prompt to a different seat. The values are locked by tests/test_router_retry_policy_no_cross_seat.py: shipped (2,2,2) produced a 3rd in-group pick that re-sent the whole prompt cold; proposed (0,1,1) confines it to one same-row retry then the fallback group (or Pi's own retry, which keeps the session id and therefore the pin). ContentPolicyViolationErrorRetries is 0 because context-window 400s are cheap fast failures that re-send; AuthenticationErrorRetries is 0 because a bad key can never recover on retry. RateLimitErrorRetries/TimeoutErrorRetries/InternalServerErrorRetries/BadRequestErrorRetries are capped at 1. All keys are required; unknown keys are forbidden.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "AuthenticationErrorRetries",
+        "RateLimitErrorRetries",
+        "TimeoutErrorRetries",
+        "InternalServerErrorRetries",
+        "BadRequestErrorRetries",
+        "ContentPolicyViolationErrorRetries"
+      ],
+      "properties": {
+        "AuthenticationErrorRetries": { "type": "integer", "minimum": 0, "maximum": 0 },
+        "RateLimitErrorRetries": { "type": "integer", "minimum": 0, "maximum": 1 },
+        "TimeoutErrorRetries": { "type": "integer", "minimum": 0, "maximum": 1 },
+        "InternalServerErrorRetries": { "type": "integer", "minimum": 0, "maximum": 1 },
+        "BadRequestErrorRetries": { "type": "integer", "minimum": 0, "maximum": 1 },
+        "ContentPolicyViolationErrorRetries": { "type": "integer", "minimum": 0, "maximum": 0 }
+      }
     }
   },
   "properties": {
@@ -196,10 +217,11 @@
     "benched": false,
     "router_settings": {
       "type": "object",
-      "required": ["redis_url"],
+      "required": ["redis_url", "retry_policy"],
       "properties": {
         "cooldown_time": { "type": "integer", "minimum": 1, "maximum": 60 },
-        "redis_url": { "type": "string", "pattern": "^redis://" }
+        "redis_url": { "type": "string", "pattern": "^redis://" },
+        "retry_policy": { "$ref": "#/$defs/retryPolicy" }
       }
     }
   }
