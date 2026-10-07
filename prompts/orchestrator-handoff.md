@@ -72,3 +72,4 @@ Stop and hand back only for a reserved class: money/pricing, privacy, security, 
 - Never add a `scripts/`, `bin/`, `ops/` or `.github/scripts/` file. A package.json line, a workflow step or a config file calls the tool directly.
 - Never write an agent name into a commit message, a PR body or a comment: no `Co-Authored-By` trailer, no "Generated with" footer.
 - Never work in the deploy clone at `/home/nish/workspaces/tooling/fleet-ops-deploy-clone`; stay in the directory you were started in.
+<!-- gate proof 9383: throwaway, do not merge -->
