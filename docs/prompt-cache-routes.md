@@ -22,7 +22,14 @@ cached part:
   `cache_creation_input_tokens` + fresh input.
 
 Measured share per requested model (so every value is <= 1, which is what makes
-this safe as a share):
+this safe as a share). This PromQL, against the live Prometheus, is what
+produces the share column:
+
+```
+sum by (requested_model) (rate(litellm_input_cached_tokens_metric_total[1h]))
+  /
+sum by (requested_model) (rate(litellm_input_tokens_metric_total[1h]))
+```
 
 | requested_model | input tokens | cached tokens | share |
 | --- | --- | --- | --- |
@@ -31,7 +38,7 @@ this safe as a share):
 | senior         | 4.700e6 | 3.816e6 | 0.812 |
 | judge          | 1.836e6 | 1.530e6 | 0.833 |
 
-Read with:
+The raw per-deployment counters behind that table, straight off the proxy:
 
 ```
 curl -sL 127.0.0.1:4000/metrics | grep -E '^litellm_(input_tokens|input_cached_tokens)_metric_total'
@@ -158,8 +165,33 @@ above, because a total-zero cache for a vendor that reports no cache field is
 not a regression. If a vendor that does report caching today stops, the share
 for its alias falls and the rule fires.
 
-The rule is unit-tested with `promtool` against four cases: a high-volume
-lane whose cache broke (fires), a healthy high-volume lane (silent), a
-low-volume probe lane with zero cache (silent, held off by the volume floor),
-and a broken lane beside a healthy one in the same scrape (fires for the
-broken one only, so the `and on(requested_model)` does not cross lanes).
+The rule is unit-tested with `promtool`. The fixture
+`config/grafana/provisioning/alerting/prompt-cache-hit.test.yml` carries the
+exact A expression from `prompt-cache-hit.yaml` inlined in
+`prompt-cache-hit.test.rules.yml`, so the test cannot drift from the deployed
+query. Run it with:
+
+```
+promtool test rules config/grafana/provisioning/alerting/prompt-cache-hit.test.yml
+```
+
+It covers six cases, all passing:
+
+1. a high-volume lane whose cache dropped to ~0.2 fires;
+2. a healthy high-volume lane is silent;
+3. a low-volume probe lane with zero cache is silent, held off by the volume
+   floor;
+4. a broken lane beside a healthy one in the same scrape fires for the broken
+   one only, so the `and on (requested_model)` does not cross lanes;
+5. a **total** cache failure (cached series present and exactly 0) fires;
+6. a lane whose **cached series vanished entirely** while input kept flowing
+   fires, via the `or (0 * input)` branch.
+
+Cases 5 and 6 are the regression tests the first in-run review asked for. They
+are load-bearing: replayed against the pre-fix expression (no `or` branch),
+case 5 returns no alert at all, which is exactly the bug that was fixed.
+
+```
+# old expression, case 5 -> got:[]   (no alert: total cache failure was silent)
+# new expression, all six cases -> SUCCESS
+```

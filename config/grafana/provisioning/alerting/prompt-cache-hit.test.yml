@@ -1,0 +1,86 @@
+evaluation_interval: 5m
+rule_files:
+- prompt-cache-hit.test.rules.yml
+tests:
+- alert_rule_test:
+  - alertname: PromptCacheHitLow
+    eval_time: 100m
+    exp_alerts:
+    - exp_labels:
+        grafana_folder: fleet
+        requested_model: worker-capable
+        severity: urgent
+        signal: prompt-cache-hit
+  input_series:
+  - series: litellm_input_tokens_metric_total{requested_model="worker-capable"}
+    values: 0+6000000x20
+  - series: litellm_input_cached_tokens_metric_total{requested_model="worker-capable"}
+    values: '0x20'
+  interval: 5m
+- alert_rule_test:
+  - alertname: PromptCacheHitLow
+    eval_time: 100m
+    exp_alerts: []
+  input_series:
+  - series: litellm_input_tokens_metric_total{requested_model="worker-capable"}
+    values: 0+6000000x20
+  - series: litellm_input_cached_tokens_metric_total{requested_model="worker-capable"}
+    values: 0+4680000x20
+  interval: 5m
+- alert_rule_test:
+  - alertname: PromptCacheHitLow
+    eval_time: 100m
+    exp_alerts: []
+  input_series:
+  - series: litellm_input_tokens_metric_total{requested_model="senior"}
+    values: 0+1200x20
+  - series: litellm_input_cached_tokens_metric_total{requested_model="senior"}
+    values: '0x20'
+  interval: 5m
+- alert_rule_test:
+  - alertname: PromptCacheHitLow
+    eval_time: 100m
+    exp_alerts:
+    - exp_labels:
+        grafana_folder: fleet
+        requested_model: worker-capable
+        severity: urgent
+        signal: prompt-cache-hit
+  input_series:
+  - series: litellm_input_tokens_metric_total{requested_model="worker-capable"}
+    values: 0+6000000x20
+  - series: litellm_input_cached_tokens_metric_total{requested_model="worker-capable"}
+    values: '0x20'
+  - series: litellm_input_tokens_metric_total{requested_model="worker-cheap"}
+    values: 0+6000000x20
+  - series: litellm_input_cached_tokens_metric_total{requested_model="worker-cheap"}
+    values: 0+4700000x20
+  interval: 5m
+- alert_rule_test:
+  - alertname: PromptCacheHitLow
+    eval_time: 100m
+    exp_alerts:
+    - exp_labels:
+        grafana_folder: fleet
+        requested_model: worker-capable
+        severity: urgent
+        signal: prompt-cache-hit
+  input_series:
+  - series: litellm_input_tokens_metric_total{requested_model="worker-capable"}
+    values: 0+6000000x20
+  - series: litellm_input_cached_tokens_metric_total{requested_model="worker-capable"}
+    values: '0x20'
+  interval: 5m
+- alert_rule_test:
+  - alertname: PromptCacheHitLow
+    eval_time: 100m
+    exp_alerts:
+    - exp_labels:
+        grafana_folder: fleet
+        requested_model: worker-capable
+        severity: urgent
+        signal: prompt-cache-hit
+  input_series:
+  - series: litellm_input_tokens_metric_total{requested_model="worker-capable"}
+    values: 0+6000000x20
+  interval: 5m

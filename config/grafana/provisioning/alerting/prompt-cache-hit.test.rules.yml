@@ -1,0 +1,15 @@
+groups:
+- interval: 1m
+  name: prompt-cache-hit
+  rules:
+  - alert: PromptCacheHitLow
+    expr: "(\n  sum by (requested_model) (rate(litellm_input_cached_tokens_metric_total[1h]))\n\
+      \  or\n  0 * sum by (requested_model) (rate(litellm_input_tokens_metric_total[1h]))\n\
+      )\n/\nsum by (requested_model) (rate(litellm_input_tokens_metric_total[1h]))\n\
+      < 0.5\nand on (requested_model)\nsum by (requested_model) (rate(litellm_input_tokens_metric_total[1h]))\
+      \ > 1000"
+    for: 30m
+    labels:
+      grafana_folder: fleet
+      severity: urgent
+      signal: prompt-cache-hit

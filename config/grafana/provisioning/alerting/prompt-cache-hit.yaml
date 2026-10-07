@@ -40,6 +40,18 @@
 # reads per requested_model, where those rows share an alias with the caching
 # lanes, and never fires on a total-zero cache for its own sake.
 #
+# Known coverage limits, stated rather than hidden:
+#  - It is per requested_model (the alias), as the issue asked. A single broken
+#    deployment under an alias whose other deployments still cache is averaged
+#    into that alias's share, so it fires only if the alias as a whole drops
+#    below the threshold. Drill down by model_id with the PromQL in
+#    docs/prompt-cache-routes.md when it does.
+#  - The volume floor covers lanes with real traffic. On this fleet that is
+#    worker-capable (~25,000 input tok/s); worker-cheap (~20) and senior (~4)
+#    run far below the floor, so a regression confined to those two is not
+#    covered by this rule. Lowering the floor to reach them would let a single
+#    probe call page, which is the reason the floor exists.
+#
 # Contact point: the existing hermes-urgent Telegram contact point, declared in
 # paid-plan-idle.yaml and referenced by name here, exactly as cpu-pressure.yaml
 # does. Grafana merges every file under the alerting provisioning dir, so this
@@ -56,10 +68,24 @@ groups:
         title: Prompt-cache read share below 50%
         condition: C
         data:
-          # A: the cache-read share per requested model. No `bool` on either
-          # side, so only breaching series survive and the `and` below is a
-          # plain label match (with `bool` the comparison becomes a 0/1 value
-          # and the floor would be ignored).
+          # A: the cache-read share per requested model, kept as the ratio's own
+          # numeric value (no `bool`). When cache rate is exactly 0 the ratio is
+          # the number 0, which is < 0.5, so a TOTAL cache failure on a busy
+          # lane is the worst case this fires on. A comparison against 0.5 with
+          # `bool` would turn the ratio into 0/1 and destroy the value, so the
+          # breach itself is expressed in the query and C only tests presence.
+          #
+          # The numerator is `cached OR (0 * input)`. Without the `or`, a
+          # deployment that keeps sending input tokens but STOPS exporting a
+          # cached-token series makes the whole ratio vanish, which Grafana
+          # reports as NoData and this rule treats as OK (no data is not an
+          # incident). The `or (0 * input)` branch re-introduces that lane at a
+          # share of exactly 0, so "the provider stopped reporting cache" fires
+          # the same way a real 0% share does. The trailing volume gate still
+          # requires real input traffic, so a genuinely idle lane stays silent.
+          #
+          # The `and on (requested_model)` volume gate is a plain label match;
+          # with `bool` on the comparison the gate would be ignored.
           - refId: A
             relativeTimeRange: {from: 3600, to: 0}
             datasourceUid: fleet-prometheus
@@ -69,9 +95,12 @@ groups:
               expr: |-
                 (
                   sum by (requested_model) (rate(litellm_input_cached_tokens_metric_total[1h]))
-                  /
-                  sum by (requested_model) (rate(litellm_input_tokens_metric_total[1h]))
-                ) < 0.5
+                  or
+                  0 * sum by (requested_model) (rate(litellm_input_tokens_metric_total[1h]))
+                )
+                /
+                sum by (requested_model) (rate(litellm_input_tokens_metric_total[1h]))
+                < 0.5
                 and on (requested_model)
                 sum by (requested_model) (rate(litellm_input_tokens_metric_total[1h])) > 1000
               instant: true
@@ -93,6 +122,11 @@ groups:
               maxDataPoints: 43200
               range: false
               refId: B
+          # C: fire when A produced ANY value (presence), including the numeric
+          # 0 of a total cache failure. A `> 0` here would only ever see a
+          # positive share and would silently swallow the exact-zero case, so
+          # presence is the whole verdict. A is already the "below 50% AND
+          # above the volume floor" series, so nothing else is needed.
           - refId: C
             datasourceUid: __expr__
             model:
