@@ -213,8 +213,12 @@ jobs:
           # falls back to it: with Devin and pi both full it waits
           # (lanes-full) rather than burning the paced Cursor quota on work
           # those seats can do (fleet-ops#8740). The cap stays 1.
+          # needs-desktop gets the cua MCP server, which only the pi lane wires
+          # (fleet-ops#9297), so it waits for pi rather than run without it.
+          # strong-only wins when both are set: Cursor runs it, with no Spaces.
           case $labels in
             *,strong-only,*) [ "$(live cursor-agent)" -lt 1 ] || skip lanes-full; engine=cursor ;;
+            *,needs-desktop,*) pi_free || skip lanes-full; engine=pi; echo desktop=true >> "$GITHUB_OUTPUT" ;;
             *)
               if pi_free; then engine=pi
               elif [ "$(live opencode)" -lt 2 ]; then engine=opencode
@@ -244,6 +248,7 @@ jobs:
         env:
           ENGINE: ${{ steps.gate.outputs.engine }}
           MISS: ${{ steps.gate.outputs.miss }}
+          DESKTOP: ${{ steps.gate.outputs.desktop }}
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
           # Pi sends this as x-litellm-session-id so the router keeps the whole run on one model (#9015).
           FLEET_TASK_ID: run-${{ github.run_id }}-${{ github.run_attempt }}
@@ -265,6 +270,9 @@ jobs:
           # The worker's gh and git push use GH_TOKEN, the App token. ci.yml
           # runs this exact line and fails if either path can be read.
           jail_base="bwrap --dev-bind / / --ro-bind $HOME/workspaces/tooling/fleet-ops-deploy-clone $HOME/workspaces/tooling/fleet-ops-deploy-clone --tmpfs $HOME/.config/gh --tmpfs $HOME/.config/cloudflare --proc /proc --unshare-pid --die-with-parent"
+          # Only a needs-desktop worker sees ~/.cua (Nish's cua.ai login and the
+          # daemon socket), so a coding worker cannot reach Spaces even by shell.
+          [ "$DESKTOP" = true ] || jail_base="$jail_base --tmpfs $HOME/.cua"
           jail="$jail_base --"
           dir="$HOME/workspaces/agent-worktrees/issue-$id"
           if [ "$MISS" = true ]; then
@@ -337,14 +345,26 @@ jobs:
             # shellcheck disable=SC1091 # constant seat file, not in the repo
             . "$HOME/.config/fleet-ops/seats/mobbin-mcp.env"
             set +a
+            # A needs-desktop issue also gets the cua MCP server: Cua Spaces on
+            # host:netcup, a throwaway Linux desktop with Chromium (fleet-ops#9297).
+            # --mcp-config replaces the adapter's global file, so it is that file
+            # plus cua. The allowlist leaves out teleport, hotspot, volume, share,
+            # cloud and host-desktop tools. The jail shows ~/.cua to this run only.
+            set --
+            if [ "$DESKTOP" = true ]; then
+              jq --arg cua "$HOME/.local/bin/cua" '.mcpServers.cua = {command: $cua, args: ["mcp", "--permissions",
+                "spaces:list_spaces,spaces:create_space,spaces:delete_space,spaces:space_bash,spaces:space_write,spaces:download,spaces:list_space_windows,spaces:list_tools,spaces:call_tool"]}' \
+                "$HOME/.pi/agent/mcp-adapter.json" > "$RUNNER_TEMP/mcp-desktop.json"
+              set -- --mcp-config "$RUNNER_TEMP/mcp-desktop.json"
+            fi
             if [ "$MISS" = true ]; then
-              echo "$packet" | $jail pi --print \
+              echo "$packet" | $jail pi --print "$@" \
                 --append-system-prompt "$HOME/workspaces/tooling/fleet-ops-deploy-clone/AGENTS.md" \
                 --append-system-prompt "$HOME/workspaces/tooling/fleet-ops-deploy-clone/prompts/miss-review.md" \
                 --session-dir "$HOME/.pi/agent/sessions/agent-$id" \
                 --exclude-tools subagent --provider litellm --model worker-capable >/dev/null
             else
-              echo "/worker $id" | $jail pi --print \
+              echo "/worker $id" | $jail pi --print "$@" \
                 --append-system-prompt "$HOME/workspaces/tooling/fleet-ops-deploy-clone/AGENTS.md" \
                 --session-dir "$HOME/.pi/agent/sessions/agent-$id" \
                 --exclude-tools subagent --provider litellm --model worker-capable >/dev/null
