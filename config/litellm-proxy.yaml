@@ -1,6 +1,6 @@
 # Approved models per provider (Nish 2026-09-28: models are provider specific; a row outside this list needs his yes; no benching).
 # Nish 2026-09-30 free rows: CommandCode: stealth/space-bunny-alpha, poolside/laguna-s-2.1-free, inclusionai/ling-3.0-flash-sante:free, inclusionai/ling-3.1-flash:free. Cline: poolside/laguna-s-2.1:free, inclusionai/ling-3.0-flash-sante:free. xkiro: stealth/space-bunny-alpha:free, inclusionai/ling-3.0-flash-sante:free.
-# MiniMax M3.1-Flash-Preview is free for every MiniMax Code subscriber until 2026-10-07 (Nish 2026-09-30); its four rows are tagged free until then.
+# MiniMax M3.1-Flash-Preview free promo ended 2026-10-07 (free for every MiniMax Code subscriber through then, Nish 2026-09-30, #9008/#9009); its four rows are tagged prepaid again.
 # CommandCode, Cline, OpenCode Go, Ollama: deepseek-v4.1-flash. MiniMax: M3.1-Flash-Preview. StepFun: step-5-preview. Synthetic: GLM-5.3-Flash.
 # xkiro: qwen3-coder-plus:free, qwen3.8-max:free. OpenCode zen: space-bunny-free. Cline: stealth/space-bunny-alpha.
 # Alibaba Model Studio Token Plan (fleet-ops#9220): qwen3.8-max is a judge/orchestrator row only, never a worker rung (Nish 2026-09-08, #4445), so the row below is the only way that seat answers.
@@ -785,9 +785,8 @@ model_list:
     model: anthropic/MiniMax-M3.1-Flash-Preview
     api_base: https://api.minimax.io/anthropic
     api_key: os.environ/MINIMAX_API_KEY
-    # free until 2026-10-07 (Nish 2026-09-30), see follow-up issue
     tags:
-    - free
+    - prepaid
     - minimax
     order: 1
     max_parallel_requests: 6
@@ -804,9 +803,8 @@ model_list:
     model: anthropic/MiniMax-M3.1-Flash-Preview
     api_base: https://api.minimax.io/anthropic
     api_key: os.environ/MINIMAX_API_KEY
-    # free until 2026-10-07 (Nish 2026-09-30), see follow-up issue
     tags:
-    - free
+    - prepaid
     - minimax
     order: 1
     max_parallel_requests: 6
@@ -823,9 +821,8 @@ model_list:
     model: anthropic/MiniMax-M3.1-Flash-Preview
     api_base: https://api.minimax.io/anthropic
     api_key: os.environ/MINIMAX_API_KEY
-    # free until 2026-10-07 (Nish 2026-09-30), see follow-up issue
     tags:
-    - free
+    - prepaid
     - minimax
     order: 1
     max_parallel_requests: 6
@@ -842,9 +839,8 @@ model_list:
     model: anthropic/MiniMax-M3.1-Flash-Preview
     api_base: https://api.minimax.io/anthropic
     api_key: os.environ/MINIMAX_API_KEY
-    # free until 2026-10-07 (Nish 2026-09-30), see follow-up issue
     tags:
-    - free
+    - prepaid
     - minimax
     order: 1
     max_parallel_requests: 6
