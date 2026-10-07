@@ -97,7 +97,9 @@ The rules still in force:
   any PR whose changed paths or added diff lines match `config/risky-paths.json` until its exact
   head sha is approved: an approver's unedited PR comment with the line
   `coordinator-approval: <full head sha>`, or a `coordinator-approval=success`
-  status on it (0509#7092);
+  status on it (0509#7092). ci.yml's `coordinator-approval` job applies the same
+  test on `merge_group`, so once it is a required check (fleet-ops#9383) a hand
+  enqueue is rejected too; the ruleset's admin bypass actor can still skip it;
   agent-authored PRs self-land green.
 
 The full audit (rungs, counts, second wave) is git history
