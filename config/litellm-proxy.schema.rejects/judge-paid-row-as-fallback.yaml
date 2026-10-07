@@ -1,8 +1,9 @@
 # fleet-ops#9374: the paid row duplicated as its own order-2 fallback. Three
-# rows, two orders, every count satisfied - and the fallback is the same seat,
-# so a cooldown on the paid row still leaves judge traffic on the paid row and
-# the OpenCode Go pair never answers. The two named fallback rows are pinned to
-# be present exactly once each, so a duplicate has to take one of their slots.
+# rows, two orders, every count satisfied - and the second copy is still the
+# paid seat, so a cooldown on that seat leaves judge traffic on the same seat
+# with the OpenCode Go rows queued behind it and never reached. The two named
+# fallback rows are pinned to be present exactly once each, so a duplicate has
+# to take one of their slots, and the group is refused for losing it.
 model_list:
 - model_name: judge
   litellm_params:

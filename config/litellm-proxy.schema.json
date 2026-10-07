@@ -11,16 +11,17 @@
       "properties": { "model_name": { "const": "judge" } }
     },
     "judgePaidRow": {
-      "$comment": "fleet-ops#9374: the paid row, on the Token Plan's own numbers. rpm and max_parallel_requests are what the plan allows (3 per minute, 3 at once); neither was raised when the row became the judge primary, and raising either is a deliberate change with its own issue, not an edit to this file. model and api_base pin the seat, so a judge row cannot point the order-1 rung at another provider.",
+      "$comment": "fleet-ops#9374: the paid row, on the Token Plan's own numbers. rpm and max_parallel_requests are what the plan allows (3 per minute, 3 at once); neither was raised when the row became the judge primary, and raising either is a deliberate change with its own issue, not an edit to this file. model, api_base and api_key pin the seat, so a judge row cannot point the order-1 rung at another provider or spend another seat's key.",
       "allOf": [
         { "$ref": "#/$defs/judgeRow" },
         {
           "properties": {
             "litellm_params": {
-              "required": ["model", "api_base", "order", "rpm", "max_parallel_requests"],
+              "required": ["model", "api_base", "api_key", "order", "rpm", "max_parallel_requests"],
               "properties": {
                 "model": { "const": "openai/qwen3.8-max" },
                 "api_base": { "const": "https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1" },
+                "api_key": { "const": "os.environ/ALIBABA_CODING_API_KEY" },
                 "order": { "const": 1 },
                 "rpm": { "const": 3 },
                 "max_parallel_requests": { "const": 3 }
@@ -31,7 +32,7 @@
       ]
     },
     "judgeFallbackRow": {
-      "$comment": "fleet-ops#9374: whatever else answers a judge call answers after the paid row, never beside it, and it is an OpenCode Go row: the paid row duplicated as an order-2 fallback would pass a count-only rule and quietly keep judge traffic on the one seat the fallback exists to take off.",
+      "$comment": "fleet-ops#9374: whatever else answers a judge call answers after the paid row, never beside it, and it is an OpenCode Go row on the OpenCode Go key. The paid row duplicated as an order-2 fallback would pass a count-only rule and quietly keep judge traffic on the one seat the fallback exists to take off.",
       "allOf": [
         { "$ref": "#/$defs/judgeRow" },
         {
@@ -48,6 +49,7 @@
       ]
     },
     "judgeFallbackKey1": {
+      "$comment": "fleet-ops#9374: the first OpenCode Go fallback, down to the key. Two rows on one key are one fallback with two names: a key limit or a ban on it takes both at once, which is what the second key is for.",
       "allOf": [
         { "$ref": "#/$defs/judgeFallbackRow" },
         {
@@ -55,6 +57,13 @@
             "model_info": {
               "required": ["id"],
               "properties": { "id": { "const": "opencodego-ds41flash-judge" } }
+            },
+            "litellm_params": {
+              "required": ["model", "api_key"],
+              "properties": {
+                "model": { "const": "openai/deepseek-v4.1-flash" },
+                "api_key": { "const": "os.environ/OPENCODE_API_KEY" }
+              }
             }
           }
         }
@@ -68,6 +77,13 @@
             "model_info": {
               "required": ["id"],
               "properties": { "id": { "const": "opencodego2-ds41flash-judge" } }
+            },
+            "litellm_params": {
+              "required": ["model", "api_key"],
+              "properties": {
+                "model": { "const": "openai/deepseek-v4.1-flash" },
+                "api_key": { "const": "os.environ/OPENCODE_API_KEY_2" }
+              }
             }
           }
         }
