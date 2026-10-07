@@ -9,7 +9,18 @@ on:
       ref:
         description: claim/issue-<N> branch the worker owns until merge
         type: string
-        required: true
+        required: false
+        default: ''
+      review_pr:
+        description: risky PR number for the independent review job (agent-dispatch review-risky)
+        type: string
+        required: false
+        default: ''
+      review_sha:
+        description: head sha hold-risky held; the review approves or blocks exactly this sha
+        type: string
+        required: false
+        default: ''
 
 permissions: {}
 jobs:
@@ -437,7 +448,35 @@ jobs:
               gh label create needs-coordinator -R "$REPO" --force --color B60205 --description "touches a path outside the arm allowlist: the coordinator reviews and arms it"
               gh pr edit "$REF" -R "$REPO" --add-label needs-coordinator
             else
-              gh pr merge "$REF" -R "$REPO" --auto --squash  # a merge queue overrides the method; repos without one need it
+              # A head whose required checks are red is not armed, the same
+              # test Deliverable fails on (fleet-ops#9315). The step disarms
+              # an arm left by an earlier run, so a mid-rework push cannot
+              # merge before a run has judged it, and fails, so report
+              # requeues the issue and the next run arms the fixed head.
+              # Pending checks still arm: nothing re-arms a head that later
+              # goes green, and the required checks hold the merge. A repo
+              # with no required checks judges all of them, as Deliverable
+              # does. An unreadable result is treated as red. The runner
+              # user's own gh login reads the checks: the App token has no
+              # checks: read.
+              q='[.[] | select(.bucket == "fail") | .name] | join(", ")'
+              red=$(env -u GH_TOKEN -u GITHUB_TOKEN gh pr checks "$n" -R "$REPO" --required --json name,bucket --jq "$q" 2>&1) || case $? in
+                8) ;; # gh's pending exit: --jq still printed any red names, empty if none
+                *) case ${red,,} in
+                     *"no required checks reported"*)
+                       red=$(env -u GH_TOKEN -u GITHUB_TOKEN gh pr checks "$n" -R "$REPO" --json name,bucket --jq "$q" 2>&1) || [ $? = 8 ] ||
+                         case ${red,,} in *"no checks reported"*) red= ;; *) red="unreadable ($red)" ;; esac ;;
+                     *"no checks reported"*) red= ;;
+                     *) red="unreadable ($red)" ;;
+                   esac ;;
+              esac
+              if [ -n "$red" ]; then
+                gh pr merge "$REF" -R "$REPO" --disable-auto 2>/dev/null || true  # errors when it was not armed
+                echo "::error::claim PR #$n not armed, red required checks on its head: $red"
+                exit 1
+              else
+                gh pr merge "$REF" -R "$REPO" --auto --squash  # a merge queue overrides the method; repos without one need it
+              fi
             fi
           fi
       - name: Deliverable
@@ -476,8 +515,11 @@ jobs:
           # conflicting: the run ended success and the issue kept
           # agent-in-progress with nothing live (fleet-ops#9063: drive #200
           # #180 #136). Fail it, so report strikes and requeues it. Pending
-          # checks pass here: a fresh push's CI is still running, and its red
-          # result fires rework on its own. The runner user's own gh login
+          # checks pass here: a fresh push's CI is still running. A red result
+          # from the workflow named CI fires rework, because agent-dispatch's
+          # workflow_run trigger lists only CI. A red check from any other
+          # workflow (fleet-ops' Gitleaks) fires nothing, and holds the merge
+          # only if that check is required (fleet-ops#9315). The runner user's own gh login
           # reads the checks, because the App token has no checks: read.
           pr=$(gh pr view "$REF" -R "$REPO" --json number,mergeable)
           n=$(jq -r .number <<<"$pr")
@@ -582,6 +624,91 @@ jobs:
             rm -rf "$HOME/workspaces/agent-worktrees/issue-$id-miss"
           else
             rm -rf "$HOME/workspaces/agent-worktrees/issue-$id"
+          fi
+  review:
+    if: inputs.review_pr != '' && inputs.review_sha != ''
+    runs-on: [self-hosted, agent]
+    timeout-minutes: 20
+    # The approval is a PR comment written with the job's own GITHUB_TOKEN, so
+    # github-actions[bot] is the approver: no PR author uses it, and a PR can
+    # only borrow it by adding a workflow, which the guard list sends to a
+    # person (config/risky-paths.json "guard" has ^.github/).
+    permissions:
+      pull-requests: write
+    # A newer head starts its own review; the older one stops.
+    concurrency:
+      group: review-${{ github.repository }}-${{ inputs.review_pr }}
+      cancel-in-progress: true
+    env:
+      REPO: ${{ github.repository }}
+      PR: ${{ inputs.review_pr }}
+      SHA: ${{ inputs.review_sha }}
+      RISKY_PATHS_URL: https://raw.githubusercontent.com/Nishfleet/fleet-ops/main/config/risky-paths.json
+    steps:
+      - name: Read App private key
+        id: app-key
+        run: |
+          keyfile="$HOME/.config/fleet-worker/nishfleet-worker.private-key.pem"
+          [ -s "$keyfile" ] || { echo "::error::app private key file missing on runner"; exit 1; }
+          while IFS= read -r line || [ -n "$line" ]; do
+            [ -n "$line" ] && echo "::add-mask::$line"
+          done < "$keyfile"
+          {
+            printf 'pem<<APP_PRIVATE_KEY_END\n'
+            cat "$keyfile"
+            printf 'APP_PRIVATE_KEY_END\n'
+          } >> "$GITHUB_OUTPUT"
+      # Arming is mechanical, so the worker App does it; the approval is the
+      # review's, and hold-risky checks it again on the arm.
+      - name: Arm token
+        id: arm-token
+        uses: actions/create-github-app-token@fee1f7d63c2ff003460e3d139729b119787bc349 # v2.2.2
+        with:
+          app-id: "4728578"
+          private-key: ${{ steps.app-key.outputs.pem }}
+          permission-contents: write
+          permission-pull-requests: write
+      - name: Review the held head
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ARM_TOKEN: ${{ steps.arm-token.outputs.token }}
+        run: |
+          set -euo pipefail
+          say() { gh pr comment "$PR" -R "$REPO" --body "$1"; }
+          pr=$(gh api "repos/$REPO/pulls/$PR")
+          [ "$(jq -r .state <<<"$pr")" = open ] && [ "$(jq -r .head.sha <<<"$pr")" = "$SHA" ] || { echo "head moved or PR closed; the newer event reviews it"; exit 0; }
+          seen=$(gh api --paginate "repos/$REPO/issues/$PR/comments?per_page=100" --jq "[.[] | select(.user.login == \"github-actions[bot]\" and (.body | contains(\"reviewer: $SHA\")))] | length" | paste -sd+ | bc)
+          [ "$seen" = 0 ] || { echo "$SHA already reviewed"; exit 0; }
+          gh api --paginate "repos/$REPO/pulls/$PR/files?per_page=100" --jq '.[] | .filename, (.previous_filename // empty)' > "$RUNNER_TEMP/files.txt"
+          cfg=$(curl -fsSL --retry 3 "$RISKY_PATHS_URL" | jq -c .) || cfg=null
+          hits=$(jq -Rsc --argjson cfg "$cfg" '(split("\n") | map(select(length > 0))) as $f | ($cfg.guard // ["."]) as $g | [$f[] | . as $x | select(any($g[]; . as $re | $x | test($re; "i")))] | unique | length' < "$RUNNER_TEMP/files.txt")
+          if [ "$hits" != 0 ]; then
+            say "reviewer: $SHA edits the merge guard or a workflow (or the guard list could not be read), so a person approves it. Nothing was approved or blocked automatically."
+            exit 0
+          fi
+          gh api -H 'Accept: application/vnd.github.diff' "repos/$REPO/pulls/$PR" > "$RUNNER_TEMP/diff.txt"
+          if [ "$(wc -c < "$RUNNER_TEMP/diff.txt")" -gt 250000 ]; then
+            say "reviewer: $SHA blocked. The diff is over 250 KB, too large to review whole. Split it into smaller PRs."
+            exit 0
+          fi
+          review=$(pi --print --no-context-files --no-tools --no-session \
+            --append-system-prompt "$HOME/AGENTS.md" \
+            --append-system-prompt "$HOME/workspaces/tooling/fleet-ops-deploy-clone/prompts/risky-review.md" \
+            --provider litellm --model worker-capable < "$RUNNER_TEMP/diff.txt")
+          body=$(jq -nc --arg item "$review" '{model: "jev-latest",
+            state: {item: $item, context: "Independent review findings for one risky pull request. approve = no blockers and no risks that would hurt customers, data, money or the fleet after merge. block = any blocker or risk."},
+            questions: {verdict: {type: "choice", instructions: "Is this pull request safe to merge?",
+              criteria: {approve: "The review found no blockers and no risks that would hurt customers, data, money or the fleet after merge.", block: "The review names a blocker or a risk that would hurt customers, data, money or the fleet after merge, or the review is empty or unclear."}}}}')
+          resp=$(curl -s 127.0.0.1:4000/jev --config <(sed -n 's|^LITELLM_JEV_KEY=\(.*\)|header = "Authorization: Bearer \1"|p' "$HOME/.config/fleet-ops/seats/typesafe-jev.env") -H 'content-type: application/json' -d "$body")
+          choice=$(jq -r '.answers.verdict.choice // "block"' <<<"$resp")
+          p=$(jq -r --arg c "$choice" '.answers.verdict.probabilities[$c] // 0' <<<"$resp")
+          [ "$(gh api "repos/$REPO/pulls/$PR" --jq .head.sha)" = "$SHA" ] || { echo "head moved during review; the newer event reviews it"; exit 0; }
+          text=$(printf '%s' "$review" | head -c 3500)
+          if [ "$choice" = approve ] && jq -en --argjson p "$p" '$p >= 0.9' >/dev/null; then
+            say "$(printf 'coordinator-approval: %s\n\nreviewer: %s approved. CI still has to pass before it merges.\n\n%s' "$SHA" "$SHA" "$text")"
+            [ "$(jq -r .draft <<<"$pr")" = true ] || GH_TOKEN=$ARM_TOKEN gh pr merge "$PR" -R "$REPO" --auto --match-head-commit "$SHA"
+          else
+            say "$(printf 'reviewer: %s blocked. Fix these and push; a new head gets a fresh review.\n\n%s' "$SHA" "$text")"
           fi
   report:
     needs: work

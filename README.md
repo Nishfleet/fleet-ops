@@ -39,16 +39,19 @@ script, or prompt lands unseen.
   raised, its concurrency raised, a fourth judge row, the paid row doubled
   as its own fallback, a fallback row renamed, both fallbacks on one key, and
   a swap of the paid row's model, host or key, or of a fallback's model or
-  host), a router affinity TTL below 300 and a router affinity TTL above 600.
-  CI
-  validates every file
-  in the directory against the schema and each must fail, so a loosened schema
-  goes red. A new schema rule gets a reject file in the same PR.
-  in the directory against the schema and each must fail, so a loosened schema
-  goes red. A new schema rule gets a reject file in the same PR.
+  host), a router with no Redis pin store, a router affinity TTL below 300 and
+  a router affinity TTL above 600, an `optional_pre_call_checks` list without
+  `session_affinity`, one case per cache-declaration rule (a row with no
+  `supports_prompt_caching` flag, a row with no `cache_proof`, a
+  non-cacheable worker row not on `order: 2`, and a worker row forced onto
+  `order: 1`). CI validates every file in the directory against the schema
+  and each must fail, so a loosened schema goes red. A new schema rule gets a
+  reject file in the same PR.
 - `config/grafana/` — the fleet-view Grafana provisioning
   (`provisioning/datasources/`, `provisioning/dashboards/`,
-  `provisioning/alerting/`) and `dashboards/fleet.json`.
+  `provisioning/alerting/`) and `dashboards/fleet.json`. Only provisioning
+  files go under `provisioning/` (Grafana loads every file there and stops on
+  a bad one); promtool fixtures live in `config/grafana/tests/`.
   `containers/quadlet/fleet-grafana.container` mounts all four read-only, so
   the UI cannot save edits.
 - `config/user-tmpfiles.d/agent-worktrees.conf` — the `systemd-tmpfiles`

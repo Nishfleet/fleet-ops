@@ -34,6 +34,13 @@ scrape_configs:
     static_configs:
       - targets: ['127.0.0.1:4000']
 
+  # fleet-ops#9355: Grafana's own /metrics (anonymous, loopback), so the
+  # cost-alarm delivery rule can read grafana_alerting_notifications_failed_total
+  # and page hermes-urgent when the GitHub-issue webhook fails.
+  - job_name: grafana
+    static_configs:
+      - targets: ['127.0.0.1:3001']
+
   # --- 0509 blackbox probes removed 2026-10-01 (fleet-ops#9014) -----------
   # Deleted, not repointed. All 12 targets of the three blackbox-0509-* jobs
   # (/timeline/*, /search?...) answer 404 after the 0509 rebuild (0509#3842),

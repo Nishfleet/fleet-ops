@@ -8,6 +8,8 @@ model_list:
   model_info:
     mode: chat
     id: openrouter-spacebunnyalpha-worker-capable
+    supports_prompt_caching: true
+    cache_proof: "fixture row: only the rule named in this file is under test (#9365)."
     allowed_fails_policy:
       BadRequestErrorAllowedFails: 1
 router_settings:

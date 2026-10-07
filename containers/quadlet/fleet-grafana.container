@@ -4,6 +4,10 @@
 # GitHub data source only reads). Data sources and the dashboard are
 # provisioned from config/grafana in the deploy clone; the UI cannot save edits
 # and the login form is off, so anonymous viewers are the only users.
+# fleet-ops#9355 adds the Cloudflare cost alarm: the Infinity data source
+# (preinstalled below) calls the Cloudflare GraphQL analytics API with the
+# deploy-ci token; a firing rule opens a priority-now fleet-ops issue through
+# the cloudflare-spend-dispatch webhook, and hermes-urgent is the fallback.
 #
 # Reach: https://netcup-rs2000.tailc0f05f.ts.net:8443 — one-time
 # `tailscale serve --bg --https=8443 http://127.0.0.1:3001`, which tailscaled
@@ -28,11 +32,16 @@ Volume=%h/workspaces/tooling/fleet-ops-deploy-clone/config/grafana/provisioning/
 Volume=%h/workspaces/tooling/fleet-ops-deploy-clone/config/grafana/dashboards:/etc/grafana/dashboards:ro
 Volume=%h/.config/fleet-worker/nishfleet-worker.private-key.pem:/run/secrets/github-app.pem:ro
 Volume=%h/.config/fleet-ops/grafana-admin-password:/run/secrets/grafana-admin-password:ro
-# Named pass-through, not --env-host (fleet-ops#9020): only the Hermes
-# Telegram names the alerting contact point expands ($TELEGRAM_BOT_TOKEN,
-# $TELEGRAM_HOME_CHANNEL). EnvironmentFile= below fills them for podman.
+# Named pass-through, not --env-host (fleet-ops#9020): only the names the
+# provisioned files' env references expand ($TELEGRAM_BOT_TOKEN,
+# $TELEGRAM_HOME_CHANNEL, $CLOUDFLARE_API_TOKEN, $GITHUB_ISSUES_TOKEN).
+# EnvironmentFile= below fills them for podman.
 PodmanArgs=--env=TELEGRAM_BOT_TOKEN
 PodmanArgs=--env=TELEGRAM_HOME_CHANNEL
+# Cost alarm (fleet-ops#9355): the two names below come from the two
+# EnvironmentFile= lines in [Service].
+PodmanArgs=--env=CLOUDFLARE_API_TOKEN
+PodmanArgs=--env=GITHUB_ISSUES_TOKEN
 Environment=GF_SERVER_HTTP_ADDR=127.0.0.1
 Environment=GF_SERVER_HTTP_PORT=3001
 Environment=GF_SERVER_ROOT_URL=https://netcup-rs2000.tailc0f05f.ts.net:8443/
@@ -45,11 +54,18 @@ Environment=GF_ANALYTICS_REPORTING_ENABLED=false
 Environment=GF_ANALYTICS_CHECK_FOR_UPDATES=false
 Environment=GF_ANALYTICS_CHECK_FOR_PLUGIN_UPDATES=false
 Environment=GF_NEWS_NEWS_FEED_ENABLED=false
-Environment=GF_PLUGINS_PREINSTALL_SYNC=grafana-github-datasource@2.9.2
+Environment=GF_PLUGINS_PREINSTALL_SYNC=grafana-github-datasource@2.9.2,yesoreyeram-infinity-datasource@4.1.1
 Environment=GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH=/etc/grafana/dashboards/fleet.json
 
 [Service]
 EnvironmentFile=%h/.hermes/.env
+# Cloudflare analytics-read token for the cost-alarm data source (the file
+# exists; $CLOUDFLARE_API_TOKEN is expanded in datasources/cloudflare.yaml).
+EnvironmentFile=%h/.config/cloudflare/deploy-ci.env
+# issues:write token for the cost-alarm webhook, mode 0600, one line
+# GITHUB_ISSUES_TOKEN=. The leading dash lets the unit start without it; the
+# webhook then fails and cloudflare-spend-delivery.yaml pages hermes-urgent.
+EnvironmentFile=-%h/.config/fleet-ops/github-issues.env
 # Measured 2026-10-02: ~240 MB anon + ~160 MB file cache; 400M kept it in
 # constant reclaim (memory.events max=669 in minutes).
 MemoryMax=512M

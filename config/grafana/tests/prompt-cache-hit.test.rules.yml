@@ -1,0 +1,25 @@
+# The deployed rule's A expression, inlined verbatim from
+# prompt-cache-hit.yaml, wrapped in `> 0`.
+#
+# That wrapper is the part promtool cannot see on its own: Grafana's C step is a
+# threshold of `> 0` over A, while the Prometheus alert engine fires on any
+# series a rule returns whatever its value. Adding `> 0` here reproduces the
+# threshold, so a case that fires here is a case Grafana calls Alerting, and a
+# healthy lane that reads 0 is dropped here exactly as it is Normal there. The
+# promql_expr_test cases in prompt-cache-hit.test.yml pin the values A returns,
+# which is what that wrapper reads.
+#
+# The closing paren sits directly after the volume gate's `> 1000` on purpose:
+# comparison operators chain left to right, so `(...)> 1000 > 0` would compare
+# the gate's own 0/1 against 0 and return the volume gate alone.
+groups:
+- interval: 1m
+  name: prompt-cache-hit
+  rules:
+  - alert: PromptCacheHitLow
+    expr: "(\n(\n  sum by (requested_model) (rate(litellm_input_cached_tokens_metric_total[1h]))\n  or\n  0 * sum by (requested_model) (rate(litellm_input_tokens_metric_total[1h]))\n)\n/\nsum by (requested_model) (rate(litellm_input_tokens_metric_total[1h]))\n< bool 0.5\nand on (requested_model)\nsum by (requested_model) (rate(litellm_input_tokens_metric_total[1h])) > 1000\n)\n> 0"
+    for: 30m
+    labels:
+      grafana_folder: fleet
+      severity: urgent
+      signal: prompt-cache-hit
