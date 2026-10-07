@@ -14,6 +14,7 @@
       "ORCHESTRATE_DAILY_MAX",
       "claude-sonnet-5-5",
       "needs-opus",
+      "--output-format json",
       "--permission-mode bypassPermissions",
       "cancel-in-progress: false",
       "vars.ORCHESTRATE != 'off' && (",

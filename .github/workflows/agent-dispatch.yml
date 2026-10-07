@@ -12,8 +12,8 @@
 #   live (default, unset) = a needs-orchestrator label starts one hand-off run.
 #   Default on (Nish 2026-10-04, "on for everything the fleet touches"), so a
 #   newly stubbed repo cannot sit off by omission.
-# Repo variable ORCHESTRATE_DAILY_MAX: hand-off sessions per repo per UTC day
-# (default 5); 0 stops new ones. A needs-opus issue label runs the session on
+# Repo variable ORCHESTRATE_DAILY_MAX: distinct issues labelled
+# needs-orchestrator per UTC day, not runs (default 5); 0 stops new ones. A needs-opus issue label runs the session on
 # Opus with 80 turns, otherwise Sonnet with 40 (fleet-ops#9351).
 # To switch orchestration off: set ORCHESTRATE to off.
 # To delete it: revert the orchestrate job in this file, the workflow-path
@@ -886,18 +886,27 @@ jobs:
           esac
           today=$(date -u +%FT00:00:00Z)
           seen=
+          reached=
           for p in $(seq 1 30); do
             page=$(gh api "repos/$REPO/issues/events?per_page=100&page=$p")
-            [ "$(jq length <<<"$page")" -gt 0 ] || break
+            [ "$(jq length <<<"$page")" -gt 0 ] || { reached=1; break; }
             seen+=$(jq -r --arg t "$today" '.[] | select(.event=="labeled" and .label.name=="needs-orchestrator" and .created_at >= $t) | .issue.number' <<<"$page")$'\n'
-            [ "$(jq -r --arg t "$today" '.[-1].created_at < $t' <<<"$page")" = true ] && break
+            if [ "$(jq -r --arg t "$today" '.[-1].created_at < $t' <<<"$page")" = true ]; then reached=1; break; fi
           done
+          # Page ceiling hit before yesterday: the count is unknown, so cap
+          # rather than let a busy repo run uncounted.
+          if [ -z "$reached" ]; then
+            echo "::warning::orchestrate: 30 event pages did not reach yesterday in $REPO; capping to stay safe"
+            echo "capped=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
           count=$(printf '%s' "$seen" | grep -vx -e "$ISSUE" -e '' | sort -u | wc -l || true)
           if [ "$count" -ge "$DAILY_MAX" ]; then
             echo "::warning::orchestrate: daily cap reached ($count/$DAILY_MAX hand-offs today in $REPO); #$ISSUE stays parked"
             echo "capped=true" >> "$GITHUB_OUTPUT"
             exit 0
           fi
+          echo "orchestrate: $count/$DAILY_MAX hand-offs counted today in $REPO"
           # Sonnet unless the issue asks for Opus. An empty model leaves the
           # session default (Opus) in place.
           if [[ $labels == *,needs-opus,* ]]; then
