@@ -184,7 +184,15 @@ model_list:
     tags:
     - prepaid
     - opencode-go
-    order: 1
+    # order 2 (fleet-ops#9374, 2026-10-07): fallback behind the paid Alibaba
+    # qwen3.8-max judge row, which is order 1. v1.98.0 keeps only the lowest order
+    # group and does it after the cooldown filter (router.py _async_get_available_deployment
+    # -> utils._get_order_filtered_deployments), so this pair answers only while that row
+    # is cooled down or out of budget. config/litellm-proxy.schema.json pins the
+    # layout (one paid judge row on order 1 with the plan's rpm 3 and concurrency 3,
+    # two named OpenCode Go judge rows on order 2) and its rejects/ directory holds
+    # one case per shape the schema must refuse.
+    order: 2
     max_parallel_requests: 2
     # 6 h, sized to OpenCode Go's monthly quota wall (fleet-ops#9122).
     cooldown_time: 21600
@@ -243,7 +251,8 @@ model_list:
     tags:
     - prepaid
     - opencode-go
-    order: 1
+    # order 2 (fleet-ops#9374): same fallback role as the OPENCODE_API_KEY judge row.
+    order: 2
     max_parallel_requests: 2
     cooldown_time: 900
   model_info:
@@ -1349,7 +1358,14 @@ model_list:
       RateLimitErrorAllowedFails: 0
 # Alibaba Model Studio Token Plan (Personal Standard, SG, $18/mo, 45,000 credits per 30-day month, no weekly cap,
 # unused credits do not roll over - Nish from the console 2026-10-04, #9220), re-wired 2026-10-04 with a fresh key
-# (fleet-ops#9220). Nish 2026-09-08 (#4445): "only use qwen 3.8 max as another judge / orchestrator on the roster.
+# (fleet-ops#9220). fleet-ops#9374 (2026-10-07) made this row the judge PRIMARY (order 1) and put the two OpenCode
+# Go judge rows on order 2: the plan is paid for and idle (22 of 1054 judge calls in 14 days) while the OpenCode
+# Go rows carried the builder family, which memory grader-never-builder-family forbids for the grader. 14 days of
+# LiteLLM_SpendLogs to 2026-10-07: peak 3 judge calls in flight at once, mean 1.05, so the plan's 3-4 concurrent
+# covers the traffic; rpm and max_parallel_requests stay 3 and were not raised. v1.98.0 does not read either value
+# on the request path (no enable_max_parallel_requests_limit, no rpm limiter), so a burst past 3/min is not queued
+# here: it passes to the provider, and a 429 cools this row for cooldown_time (900s) while the order-2 pair answers.
+# Nish 2026-09-08 (#4445): "only use qwen 3.8 max as another judge / orchestrator on the roster.
 # this token plan isn't for use with other models." The 09-08 seat never shipped that judge timer and its rows
 # went away in #7666, #8515 and #8521, so this row has no worker rung: one judge row, the only rung that can
 # call this seat. The :free xkiro qwen rows above are the same model on a different key (XKIRO_API_KEY) and stay
@@ -1384,7 +1400,13 @@ router_settings:
   # has no redis_url key in v1.98.0 (proxy_server never reads it), so the Redis below sat empty (dbsize 0).
   # Cooldowns and usage counters now share it too, as fleet-ops#4174 P1 intended.
   redis_url: redis://127.0.0.1:6379
-  # worker groups hold only rungs proven to return finish_reason=tool_calls (fleet-ops#7761); simple-shuffle ignores order:.
+  # worker groups hold only rungs proven to return finish_reason=tool_calls (fleet-ops#7761); every worker row is
+  # order 1 because a worker group is a peer set, not a preference order. The judge group is the exception
+  # (fleet-ops#9374): order 1 alibaba-qwen38max-judge, order 2 the two OpenCode Go judge rows. The stale note here
+  # ("simple-shuffle ignores order") was wrong for v1.98.0 - the order filter runs for every routing strategy,
+  # after the cooldown filter. config/litellm-proxy.schema.json pins the layout - the seat, key and
+  # plan limits of the order-1 row, and the model, api_base, key and order of each named fallback -
+  # and its rejects/ cases hold one case per shape it must refuse.
   # Worker groups fall back to each other (fleet-ops#9015 finish line: "unless that model fails, then fall back").
   # 24h to 2026-10-02 19:05 UTC: 313 of 11,144 worker calls failed at the caller, and 1,345 of the journal's
   # errors were "JSON error injected into SSE stream" (OpenRouter/Cline/CommandCode space-bunny-alpha, 38-92%

@@ -1,0 +1,34 @@
+# fleet-ops#9374: both named fallback rows on one key. Everything else is
+# right, both ids are present, both rows are on order 2 - and the group is one
+# fallback wearing two names: a rate limit or a ban on OPENCODE_API_KEY_2 takes
+# both rows at once, which is the whole reason the second key exists.
+model_list:
+- model_name: judge
+  litellm_params:
+    model: openai/qwen3.8-max
+    api_base: https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1
+    api_key: os.environ/ALIBABA_CODING_API_KEY
+    rpm: 3
+    order: 1
+    max_parallel_requests: 3
+  model_info:
+    id: alibaba-qwen38max-judge
+- model_name: judge
+  litellm_params:
+    model: openai/deepseek-v4.1-flash
+    api_base: https://opencode.ai/zen/go/v1
+    api_key: os.environ/OPENCODE_API_KEY_2
+    order: 2
+  model_info:
+    id: opencodego-ds41flash-judge
+- model_name: judge
+  litellm_params:
+    model: openai/deepseek-v4.1-flash
+    api_base: https://opencode.ai/zen/go/v1
+    api_key: os.environ/OPENCODE_API_KEY_2
+    order: 2
+  model_info:
+    id: opencodego2-ds41flash-judge
+router_settings:
+  redis_url: redis://127.0.0.1:6379
+  cooldown_time: 60
