@@ -176,14 +176,20 @@ not a regression. If a vendor that does report caching today stops, the share
 for its alias falls and the rule fires.
 
 The rule is unit-tested with `promtool`. The fixture
-`config/grafana/provisioning/alerting/prompt-cache-hit.test.yml` carries the
+`config/grafana/tests/prompt-cache-hit.test.yml` carries the
 exact A expression from `prompt-cache-hit.yaml` inlined in
 `prompt-cache-hit.test.rules.yml`, so the test cannot drift from the deployed
 query. Run it with:
 
 ```
-promtool test rules config/grafana/provisioning/alerting/prompt-cache-hit.test.yml
+promtool test rules config/grafana/tests/prompt-cache-hit.test.yml
 ```
+
+The fixture lives outside `config/grafana/provisioning/` on purpose: Grafana
+loads every file in the mounted `provisioning/alerting/` directory as alert
+provisioning, so a promtool file there stops Grafana at startup ("failure to map
+file ... rule group has no folder set"). CI runs this test in the `ci` job and
+boots the quadlet's Grafana in the `grafana-boot` job.
 
 It covers nine cases in two kinds, because they check different things. The
 six `alert_rule_test` cases run the rule through the Prometheus alert engine,

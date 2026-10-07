@@ -107,6 +107,9 @@ jobs:
       - name: apt binaries systemd-analyze verify needs (promtool, bwrap, redis-server, ansible-pull)
         if: always()
         run: sudo apt-get install -y --no-install-recommends prometheus bubblewrap redis-server ansible-core
+      - name: promtool test rules (config/grafana/tests, outside the provisioning dirs Grafana loads)
+        if: always()
+        run: promtool test rules config/grafana/tests/*.test.yml
       - name: stub pi for systemd-analyze verify (host-only binary)
         if: always()
         run: sudo install -D -m0755 /bin/true /home/nish/.local/bin/pi

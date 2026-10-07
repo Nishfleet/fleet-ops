@@ -135,7 +135,7 @@ groups:
           # lane pages, a healthy lane reads 0 and stays Normal, and a lane
           # below the floor is not in A at all. promtool asserts those three
           # values against this exact expression (the promql_expr_test cases in
-          # prompt-cache-hit.test.yml), because the alert_rule_test cases above
+          # config/grafana/tests/prompt-cache-hit.test.yml), because the alert_rule_test cases above
           # only prove which series appear, not what Grafana's threshold then
           # reads.
           - refId: C

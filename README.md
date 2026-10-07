@@ -45,7 +45,9 @@ script, or prompt lands unseen.
   goes red. A new schema rule gets a reject file in the same PR.
 - `config/grafana/` — the fleet-view Grafana provisioning
   (`provisioning/datasources/`, `provisioning/dashboards/`,
-  `provisioning/alerting/`) and `dashboards/fleet.json`.
+  `provisioning/alerting/`) and `dashboards/fleet.json`. Only provisioning
+  files go under `provisioning/` (Grafana loads every file there and stops on
+  a bad one); promtool fixtures live in `config/grafana/tests/`.
   `containers/quadlet/fleet-grafana.container` mounts all four read-only, so
   the UI cannot save edits.
 - `config/user-tmpfiles.d/agent-worktrees.conf` — the `systemd-tmpfiles`
