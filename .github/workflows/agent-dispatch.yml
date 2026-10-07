@@ -323,10 +323,11 @@ jobs:
       # statuses: write can post a status, and anyone who can comment can
       # write the approval line, so the context name or line alone is not an
       # approval.
-      # nishfleet-reviewer[bot] is the independent reviewer (review-risky
-      # below): its own App, never a PR's author, whose key only the runner
-      # holds. nish3451 stays for a person's typed approval.
-      APPROVERS: nish3451 nishfleet-reviewer[bot]
+      # github-actions[bot] is the independent reviewer (review-risky below):
+      # its approval comment is written by agent.yml's review job with
+      # GITHUB_TOKEN, an identity no PR author uses. nish3451 stays for a
+      # person's typed approval.
+      APPROVERS: nish3451 github-actions[bot]
       RISKY_PATHS_URL: https://raw.githubusercontent.com/Nishfleet/fleet-ops/main/config/risky-paths.json
       # stdin: {repo, labels, files, changed_files}; $cfg: risky-paths.json or
       # null. A list cut at 3000 files, an empty list or an unreadable path
@@ -485,13 +486,15 @@ jobs:
   # themselves, no pasted approval lines). agent.yml's review job reads the
   # head's diff through the API, never checks out PR code, asks a model with no
   # tools for findings and Jev for approve or block, then posts the
-  # coordinator-approval status as nishfleet-reviewer[bot] and arms the PR.
-  # hold-risky stays the only door: it reads that status like any other.
+  # coordinator-approval comment as github-actions[bot] and arms the PR.
+  # hold-risky stays the only door: it reads that comment like any other.
   # A PR that edits the guard itself (risky-paths.json "guard") is never
   # approved here; a person approves it. Paused fleets do not review.
   review-risky:
     needs: hold-risky
     if: vars.FLEET_DISPATCH_PAUSED != 'true' && needs.hold-risky.outputs.review_sha != ''
+    permissions:
+      pull-requests: write
     uses: Nishfleet/fleet-ops/.github/workflows/agent.yml@main # runner group 3 allows only agent.yml@refs/heads/main; a SHA pin strands every job
     with:
       review_pr: ${{ github.event.pull_request.number }}

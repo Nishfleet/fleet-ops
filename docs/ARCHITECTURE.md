@@ -100,8 +100,8 @@ The rules still in force:
   status on it (0509#7092). agent.yml's `review` job (called by
   `review-risky`) is the independent approver: it reads the held head's diff
   through the API, asks a no-tools model for findings and Jev for approve or
-  block (p >= 0.9), and posts that status as `nishfleet-reviewer[bot]`, a
-  separate App that never authors a PR. A PR that edits the guard itself
+  block (p >= 0.9), and posts that approval as `github-actions[bot]` (an
+  approval comment written with GITHUB_TOKEN, an identity no PR author uses). A PR that edits the guard itself
   (`guard` in risky-paths.json) stays with a person;
   agent-authored PRs self-land green.
 

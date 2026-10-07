@@ -37,7 +37,7 @@
     ]
   },
   "guard": [
-    "^\\.github/workflows/(agent-dispatch|agent|ci)\\.yml$",
+    "^\\.github/",
     "^config/risky-paths\\.json$",
     "^prompts/risky-review\\.md$",
     "^credentials/"
@@ -98,9 +98,9 @@
     {"id": "newest-success-wins", "want": true, "approvers": ["nish3451"], "statuses": [{"context": "coordinator-approval", "state": "success", "creator": {"login": "nish3451"}}, {"context": "coordinator-approval", "state": "pending", "creator": {"login": "nish3451"}}]},
     {"id": "pending", "want": false, "approvers": ["nish3451"], "statuses": [{"context": "coordinator-approval", "state": "pending", "creator": {"login": "nish3451"}}]},
     {"id": "not-an-approver", "want": false, "approvers": ["nish3451"], "statuses": [{"context": "coordinator-approval", "state": "success", "creator": {"login": "github-actions[bot]"}}]},
-    {"id": "reviewer-bot", "want": true, "approvers": ["nish3451", "nishfleet-reviewer[bot]"], "statuses": [{"context": "coordinator-approval", "state": "success", "creator": {"login": "nishfleet-reviewer[bot]"}}]},
-    {"id": "reviewer-bot-blocked-after-approve", "want": false, "approvers": ["nish3451", "nishfleet-reviewer[bot]"], "statuses": [{"context": "coordinator-approval", "state": "failure", "creator": {"login": "nishfleet-reviewer[bot]"}}, {"context": "coordinator-approval", "state": "success", "creator": {"login": "nishfleet-reviewer[bot]"}}]},
-    {"id": "worker-bot-not-approver", "want": false, "approvers": ["nish3451", "nishfleet-reviewer[bot]"], "statuses": [{"context": "coordinator-approval", "state": "success", "creator": {"login": "nishfleet-worker[bot]"}}]},
+    {"id": "reviewer-bot", "want": true, "approvers": ["nish3451", "github-actions[bot]"], "statuses": [{"context": "coordinator-approval", "state": "success", "creator": {"login": "github-actions[bot]"}}]},
+    {"id": "reviewer-bot-blocked-after-approve", "want": false, "approvers": ["nish3451", "github-actions[bot]"], "statuses": [{"context": "coordinator-approval", "state": "failure", "creator": {"login": "github-actions[bot]"}}, {"context": "coordinator-approval", "state": "success", "creator": {"login": "github-actions[bot]"}}]},
+    {"id": "worker-bot-not-approver", "want": false, "approvers": ["nish3451", "github-actions[bot]"], "statuses": [{"context": "coordinator-approval", "state": "success", "creator": {"login": "nishfleet-worker[bot]"}}]},
     {"id": "second-approver", "want": true, "approvers": ["nish3451", "other"], "statuses": [{"context": "coordinator-approval", "state": "success", "creator": {"login": "other"}}]},
     {"id": "comment-right-sha", "want": true, "approvers": ["nish3451"], "sha": "3f9c2a1b7d4e5f60718293a4b5c6d7e8f9012345", "statuses": [], "comments": [{"user": {"login": "nish3451"}, "body": "Reviewed the diff.\ncoordinator-approval: 3f9c2a1b7d4e5f60718293a4b5c6d7e8f9012345", "created_at": "2026-10-05T09:00:00Z", "updated_at": "2026-10-05T09:00:00Z"}]},
     {"id": "comment-crlf", "want": true, "approvers": ["nish3451"], "sha": "3f9c2a1b7d4e5f60718293a4b5c6d7e8f9012345", "statuses": [], "comments": [{"user": {"login": "nish3451"}, "body": "coordinator-approval: 3f9c2a1b7d4e5f60718293a4b5c6d7e8f9012345\r\nlooks fine", "created_at": "2026-10-05T09:00:00Z", "updated_at": "2026-10-05T09:00:00Z"}]},
