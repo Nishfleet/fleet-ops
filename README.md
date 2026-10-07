@@ -34,9 +34,10 @@ script, or prompt lands unseen.
   repos enrolled in the agent-ready queue (see [Intake enrolment](#intake-enrolment)).
   `config/litellm-proxy.schema.rejects/` holds one YAML per rule
   `config/litellm-proxy.schema.json` must refuse (bench block, router
-  cooldown over 60, row cooldown zero, row cooldown, the judge group's
-  fallback rows on order 1, the paid judge row above the Token Plan's own
-  limits). CI validates every file
+  cooldown over 60, row cooldown zero, row cooldown, and six judge-group
+  shapes: the fallback rows on order 1, the paid row's rpm raised, its
+  concurrency raised, a fourth judge row, the paid row doubled as its own
+  fallback, and a fallback row renamed). CI validates every file
   in the directory against the schema and each must fail, so a loosened schema
   goes red. A new schema rule gets a reject file in the same PR.
 - `config/grafana/` — the fleet-view Grafana provisioning

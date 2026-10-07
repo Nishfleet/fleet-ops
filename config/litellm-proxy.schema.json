@@ -11,15 +11,16 @@
       "properties": { "model_name": { "const": "judge" } }
     },
     "judgePaidRow": {
-      "$comment": "fleet-ops#9374: the paid row, on the Token Plan's own numbers. rpm and max_parallel_requests are what the plan allows (3 per minute, 3 at once); neither was raised when the row became the judge primary, and raising either is a deliberate change with its own issue, not an edit to this file.",
+      "$comment": "fleet-ops#9374: the paid row, on the Token Plan's own numbers. rpm and max_parallel_requests are what the plan allows (3 per minute, 3 at once); neither was raised when the row became the judge primary, and raising either is a deliberate change with its own issue, not an edit to this file. model and api_base pin the seat, so a judge row cannot point the order-1 rung at another provider.",
       "allOf": [
         { "$ref": "#/$defs/judgeRow" },
         {
           "properties": {
             "litellm_params": {
-              "required": ["model", "order", "rpm", "max_parallel_requests"],
+              "required": ["model", "api_base", "order", "rpm", "max_parallel_requests"],
               "properties": {
                 "model": { "const": "openai/qwen3.8-max" },
+                "api_base": { "const": "https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1" },
                 "order": { "const": 1 },
                 "rpm": { "const": 3 },
                 "max_parallel_requests": { "const": 3 }
@@ -30,14 +31,43 @@
       ]
     },
     "judgeFallbackRow": {
-      "$comment": "fleet-ops#9374: whatever else answers a judge call answers after the paid row, never beside it.",
+      "$comment": "fleet-ops#9374: whatever else answers a judge call answers after the paid row, never beside it, and it is an OpenCode Go row: the paid row duplicated as an order-2 fallback would pass a count-only rule and quietly keep judge traffic on the one seat the fallback exists to take off.",
       "allOf": [
         { "$ref": "#/$defs/judgeRow" },
         {
           "properties": {
             "litellm_params": {
-              "required": ["order"],
-              "properties": { "order": { "const": 2 } }
+              "required": ["api_base", "order"],
+              "properties": {
+                "api_base": { "const": "https://opencode.ai/zen/go/v1" },
+                "order": { "const": 2 }
+              }
+            }
+          }
+        }
+      ]
+    },
+    "judgeFallbackKey1": {
+      "allOf": [
+        { "$ref": "#/$defs/judgeFallbackRow" },
+        {
+          "properties": {
+            "model_info": {
+              "required": ["id"],
+              "properties": { "id": { "const": "opencodego-ds41flash-judge" } }
+            }
+          }
+        }
+      ]
+    },
+    "judgeFallbackKey2": {
+      "allOf": [
+        { "$ref": "#/$defs/judgeFallbackRow" },
+        {
+          "properties": {
+            "model_info": {
+              "required": ["id"],
+              "properties": { "id": { "const": "opencodego2-ds41flash-judge" } }
             }
           }
         }
@@ -56,9 +86,19 @@
           "maxContains": 1
         },
         {
-          "contains": { "$ref": "#/$defs/judgeFallbackRow" },
-          "minContains": 2,
-          "maxContains": 2
+          "$comment": "the two named OpenCode Go fallback rows, each present exactly once and on order 2, so a fourth judge row cannot arrive by renaming or by copying one of them",
+          "allOf": [
+            {
+              "contains": { "$ref": "#/$defs/judgeFallbackKey1" },
+              "minContains": 1,
+              "maxContains": 1
+            },
+            {
+              "contains": { "$ref": "#/$defs/judgeFallbackKey2" },
+              "minContains": 1,
+              "maxContains": 1
+            }
+          ]
         },
         {
           "contains": { "$ref": "#/$defs/judgeRow" },

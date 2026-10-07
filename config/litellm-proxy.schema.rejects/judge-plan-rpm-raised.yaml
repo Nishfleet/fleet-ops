@@ -1,15 +1,14 @@
-# fleet-ops#9374: the shape this PR removed. Every judge row on order 1 means
-# simple-shuffle spreads judge calls over the paid row and the builders' family
-# alike, which is how the paid Token Plan seat answered 22 of 1,054 judge calls
-# in 14 days to 2026-10-07. Nothing else here is wrong, so this file is refused
-# by the fallback order rule alone.
+# fleet-ops#9374: raising the paid row's rpm past what the Token Plan allows
+# (3 a minute) is a deliberate change with its own issue, not an edit to the
+# schema. Only rpm moves here, so a schema that relaxed the rpm constant and
+# left max_parallel_requests alone still refuses this file.
 model_list:
 - model_name: judge
   litellm_params:
     model: openai/qwen3.8-max
     api_base: https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1
     api_key: os.environ/ALIBABA_CODING_API_KEY
-    rpm: 3
+    rpm: 6
     order: 1
     max_parallel_requests: 3
   model_info:
@@ -19,7 +18,7 @@ model_list:
     model: openai/deepseek-v4.1-flash
     api_base: https://opencode.ai/zen/go/v1
     api_key: os.environ/OPENCODE_API_KEY
-    order: 1
+    order: 2
   model_info:
     id: opencodego-ds41flash-judge
 - model_name: judge
@@ -27,7 +26,7 @@ model_list:
     model: openai/deepseek-v4.1-flash
     api_base: https://opencode.ai/zen/go/v1
     api_key: os.environ/OPENCODE_API_KEY_2
-    order: 1
+    order: 2
   model_info:
     id: opencodego2-ds41flash-judge
 router_settings:

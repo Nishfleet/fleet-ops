@@ -1,0 +1,35 @@
+# fleet-ops#9374: the paid row duplicated as its own order-2 fallback. Three
+# rows, two orders, every count satisfied - and the fallback is the same seat,
+# so a cooldown on the paid row still leaves judge traffic on the paid row and
+# the OpenCode Go pair never answers. The two named fallback rows are pinned to
+# be present exactly once each, so a duplicate has to take one of their slots.
+model_list:
+- model_name: judge
+  litellm_params:
+    model: openai/qwen3.8-max
+    api_base: https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1
+    api_key: os.environ/ALIBABA_CODING_API_KEY
+    rpm: 3
+    order: 1
+    max_parallel_requests: 3
+  model_info:
+    id: alibaba-qwen38max-judge
+- model_name: judge
+  litellm_params:
+    model: openai/qwen3.8-max
+    api_base: https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1
+    api_key: os.environ/ALIBABA_CODING_API_KEY
+    order: 2
+  model_info:
+    id: alibaba-qwen38max-judge
+- model_name: judge
+  litellm_params:
+    model: openai/deepseek-v4.1-flash
+    api_base: https://opencode.ai/zen/go/v1
+    api_key: os.environ/OPENCODE_API_KEY
+    order: 2
+  model_info:
+    id: opencodego-ds41flash-judge
+router_settings:
+  redis_url: redis://127.0.0.1:6379
+  cooldown_time: 60

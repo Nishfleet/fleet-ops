@@ -1,8 +1,8 @@
-# fleet-ops#9374: the shape this PR removed. Every judge row on order 1 means
-# simple-shuffle spreads judge calls over the paid row and the builders' family
-# alike, which is how the paid Token Plan seat answered 22 of 1,054 judge calls
-# in 14 days to 2026-10-07. Nothing else here is wrong, so this file is refused
-# by the fallback order rule alone.
+# fleet-ops#9374: a fallback row renamed out from under the group. The
+# behaviour would be identical, but the gate cannot see that two OpenCode Go
+# rows are still there once the name moves, so the second named row is pinned to
+# be present: renaming one is a deliberate change with its own issue, in the same
+# PR that edits the schema.
 model_list:
 - model_name: judge
   litellm_params:
@@ -19,17 +19,17 @@ model_list:
     model: openai/deepseek-v4.1-flash
     api_base: https://opencode.ai/zen/go/v1
     api_key: os.environ/OPENCODE_API_KEY
-    order: 1
+    order: 2
   model_info:
     id: opencodego-ds41flash-judge
 - model_name: judge
   litellm_params:
     model: openai/deepseek-v4.1-flash
     api_base: https://opencode.ai/zen/go/v1
-    api_key: os.environ/OPENCODE_API_KEY_2
-    order: 1
+    api_key: os.environ/OPENCODE_API_KEY_3
+    order: 2
   model_info:
-    id: opencodego2-ds41flash-judge
+    id: opencodego3-ds41flash-judge
 router_settings:
   redis_url: redis://127.0.0.1:6379
   cooldown_time: 60
