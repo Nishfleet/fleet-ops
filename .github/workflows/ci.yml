@@ -401,6 +401,7 @@ jobs:
           # shellcheck disable=SC2016 # the needle is literal workflow text
           grep -F -- 'needs-orchestrator issues this sweep starts a hand-off for: $orch_nums' <<<"$run" >/dev/null ||
             { echo "the list job does not log the issues it re-dispatches"; exit 1; }
+          jq -e '.sweep_cases | length > 0' config/orchestrate-events.json >/dev/null
           bad=0
           while IFS= read -r c; do
             issues=$(jq -c '[.issues[] | {number, state: (.state // "open"), created_at, labels: [.labels[] | {name: .}]}]' <<<"$c")
