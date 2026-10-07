@@ -34,9 +34,9 @@ contactPoints:
           payload:
             template: |-
               {{- with index .Alerts 0 -}}
-              {{- dict "title" (printf "cost alarm: %s %s" .Labels.alertname .Labels.product)
-                     "body" (printf "%s\n\n%s\n\nValue: %s. Threshold: %s. Top resource: %s.\n\nRule `%s` (uid `%s`), fired %s UTC. Source: Grafana cloudflare-spend rules, fleet-ops#9355. Dashboard: https://netcup-rs2000.tailc0f05f.ts.net:8443/alerting/grafana/%s/view" .Annotations.summary .Annotations.description .Annotations.value .Annotations.threshold .Annotations.top .Labels.alertname .Labels.__alert_rule_uid__ (.StartsAt | date "2006-01-02 15:04:05") .Labels.__alert_rule_uid__)
-                     "labels" (list "agent-ready" "priority-now") | toJson -}}
+              {{- coll.Dict "title" (printf "cost alarm: %s %s" .Labels.alertname .Labels.resource)
+                     "body" (printf "%s.\n\nValue: %s. Threshold: %s. Top resource: %s.\n\n%s\n\nRule `%s`, started firing %s UTC (%s). Source: the Grafana cloudflare-spend rules, fleet-ops#9355. Find the leak, stop it, then close this issue." .Annotations.summary .Annotations.value .Annotations.threshold .Annotations.top .Annotations.description .Labels.alertname (.StartsAt.Format "2006-01-02 15:04:05") .GeneratorURL)
+                     "labels" (coll.Slice "agent-ready" "priority-now") | data.ToJSON -}}
               {{- end -}}
 
 policies:

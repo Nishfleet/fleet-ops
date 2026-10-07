@@ -32,7 +32,7 @@ groups:
   - orgId: 1
     name: cloudflare-spend
     folder: fleet
-    interval: 1m
+    interval: 1h
     rules:
       - uid: cf-ai-neurons
         title: Cloudflare Workers AI neurons
