@@ -1376,7 +1376,7 @@ router_settings:
   routing_strategy: simple-shuffle
   # One task = one model (Nish 2026-10-01, fleet-ops#9015). Pi sends x-litellm-session-id=$FLEET_TASK_ID
   # (config/pi-models.json; Pi refuses to call without it), and session_affinity pins that id to the
-  # first row picked in each group until it has been idle for deployment_affinity_ttl_seconds (600 s below).
+  # first row picked in each group until it has been idle for deployment_affinity_ttl_seconds (600 s, see below).
   optional_pre_call_checks: ["prompt_caching", "session_affinity"]
   # The pin store. Without this the Router keeps pins in each worker process's own memory, and the proxy
   # runs --num_workers 2, so a session flips between 2 rows with no failure (fleet-ops#9015: 6,188 of 6,473
