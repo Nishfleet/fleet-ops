@@ -261,7 +261,7 @@ jobs:
           f=.github/workflows/agent-dispatch.yml
           cfg="$PWD/config/orchestrate-events.json"
           chk=$(yq '.jobs.orchestrate.steps[] | select(.id == "issue") | .run' "$f")
-          cap=$(yq '.jobs.orchestrate.steps[] | select(.id == "issue") | .env.CAP_COUNT' "$f")
+          cap=$(yq '.env.CAP_COUNT' "$f")
           ses=$(yq '.jobs.orchestrate.steps[] | select(.name == "Run the orchestrator session") | .run' "$f")
           for v in "$chk" "$cap" "$ses"; do [ -n "$v" ] && [ "$v" != null ]; done
           t=$(mktemp -d)
@@ -378,6 +378,35 @@ jobs:
             got=$(jq -r "$defs $prog | .reason" <<<"$in")
             [ "$got" = "$(jq -r .want <<<"$c")" ] || { echo "case $(jq -r .id <<<"$c"): got $got, want $(jq -r .want <<<"$c")"; bad=1; }
           done < <(jq -c '.cases[]' config/sweep-rework-cases.json)
+          test "$bad" -eq 0
+      - name: Sweep re-dispatches a stranded needs-orchestrator issue (ORCH_SWEEP)
+        # An issue the daily cap held keeps needs-orchestrator and loses
+        # orchestrator-tried: the hand-off never ran, so nothing but that label
+        # event or a person's dispatch starts one again. The sweep must start it
+        # the next day (fleet-ops#9354). This runs the list job's own ORCH_SWEEP
+        # program, read out of agent-dispatch.yml, against every case in
+        # sweep_cases, so the program cannot drift from what the sweep runs. The
+        # needles pin the rest: the block only reads the ORCHESTRATE_SWEEP
+        # variable, and it dispatches with the same task=orchestrate inputs a
+        # person uses. The grep line pins the wiring: the sweep logs the list it
+        # is about to re-dispatch, and that list is what the loop below it acts
+        # on.
+        if: always()
+        run: |
+          set -euo pipefail
+          f=.github/workflows/agent-dispatch.yml
+          prog=$(yq '.jobs.list.steps[0].env.ORCH_SWEEP' "$f")
+          [ -n "$prog" ] && [ "$prog" != null ]
+          run=$(yq '.jobs.list.steps[0].run' "$f")
+          # shellcheck disable=SC2016 # the needle is literal workflow text
+          grep -F -- 'needs-orchestrator issues this sweep starts a hand-off for: $orch_nums' <<<"$run" >/dev/null ||
+            { echo "the list job does not log the issues it re-dispatches"; exit 1; }
+          bad=0
+          while IFS= read -r c; do
+            issues=$(jq -c '[.issues[] | {number, state: (.state // "open"), created_at, labels: [.labels[] | {name: .}]}]' <<<"$c")
+            got=$(jq -c -n --argjson issues "$issues" --argjson refs "$(jq -c .refs <<<"$c")" --argjson remaining "$(jq -c .remaining <<<"$c")" "$prog")
+            [ "$got" = "$(jq -c .want <<<"$c")" ] || { echo "case $(jq -r .id <<<"$c"): got $got, want $(jq -r .want <<<"$c")"; bad=1; }
+          done < <(jq -c '.sweep_cases[]' config/orchestrate-events.json)
           test "$bad" -eq 0
       - name: Dispatch pause flag skips dispatch, never the guards
         # A paused queue must still hold risky PRs: the weekly update once
