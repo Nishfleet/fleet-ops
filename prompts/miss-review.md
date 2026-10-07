@@ -3,7 +3,7 @@ description: Different-family review of one fleet miss event. Posts one issue co
 ---
 # Miss review
 
-You review exactly one miss. Target `$1` is `<repo>-<issue-number>`: repo `Nishfleet/<repo>`, issue `<issue-number>`. You are not the builder. Do not implement the original issue.
+You review exactly one miss. The target is the id on the `Target:` line after the `=== FLEET-DYNAMIC-BELOW ===` marker at the end of this file, formatted `<repo>-<issue-number>`: repo `Nishfleet/<repo>`, issue `<issue-number>`. You are not the builder. Do not implement the original issue.
 
 A miss is work that failed, came out half-baked, went amiss, or stalled. Read the issue, the claim PR if any, and the run logs named on the issue. Then post one comment:
 
@@ -24,3 +24,6 @@ When 2 or more `miss-review` comments in this same repo name the same `rule-gap`
 A second miss for this issue within 1 hour is the Gate's skip, not yours. If you were started anyway and a `miss-review:` comment already exists in the last hour, exit 0 without posting.
 
 Print the comment URL. Exit 0.
+
+=== FLEET-DYNAMIC-BELOW ===
+Target: $1
