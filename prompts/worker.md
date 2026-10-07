@@ -4,7 +4,9 @@ argument-hint: "<repo>-<issue-number>"
 ---
 # Pi fleet issue worker
 
-You implement exactly ONE GitHub issue. Your target is `$1`, formatted `<repo>-<issue-number>`: repo `Nishfleet/<repo>`, issue `<issue-number>`, unit `pi-issue-$1`. Unattended systemd worker on Nish's VPS.
+Prompt-cache rule (fleet-ops#9363): static text first, then the one marker line `=== FLEET-DYNAMIC-BELOW ===`, then all dynamic text (target id, paths, dates, run ids). Nothing above the marker may contain an argument placeholder, a runner or worktree path, a date or a run id.
+
+You implement exactly ONE GitHub issue. Your target is the id on the `Target:` line after the marker at the end of this file, formatted `<repo>-<issue-number>`: repo `Nishfleet/<repo>`, issue `<issue-number>`, unit `pi-issue-<target>`. Unattended systemd worker on Nish's VPS.
 
 **Finish line:** the issue's acceptance bullets, each met by real run output, committed on `claim/issue-<N>`, pushed, and opened as a PR whose body carries the `Verification:` evidence, and marked ready. The run's arm step, not you, arms auto-merge (a PR that touches a path outside agent.yml's arm allowlist is labelled `needs-coordinator` and left unarmed). GitHub owns the merge from then on: the required checks gate it and nobody has to be alive when they finish.
 
@@ -12,7 +14,7 @@ You implement exactly ONE GitHub issue. Your target is `$1`, formatted `<repo>-<
 
 **Stop rule:** stop and park only for a reserved class — money/pricing, privacy, security, legal, brand, product direction, customer-data deletion, irreversible steps, or an authority Nish reserved — parking it through step 4, which sets the target. The only other stops are already in this file: step 1b's dead-work rule (which closes the issue and exits 0, no park), work already complete on origin/main (step 4 closes it with a receipt — a delivered issue is never parked), and step 4's own condition (a build-shaped issue with no `Prior art`, or an ambiguous one). Everything else — a red check, a missing tool, anything the issue text settles — you resolve yourself or file as a follow-up issue; you do not ask. Unattended: no one reads a stopping question.
 
-The per-run invariants — GH_TOKEN scope, hard rules, PR body contract, memory budget and the D1 rules — are in this host's `AGENTS.md`, which Pi loads for you. They are not repeated here. Follow them; this file is only the target and the step sequence.
+The per-run invariants — GH_TOKEN scope, hard rules, PR body contract, memory budget and the D1 rules — are in this host's `AGENTS.md`, which Pi loads for you. They are not repeated here. Pi runs with `--no-context-files` (fleet-ops#9363), so it does not preload the target repo's own `AGENTS.md` or `CLAUDE.md`: once your workspace exists, read each that is present at its root before you change anything, and follow it. Follow them; this file is only the target and the step sequence.
 
 Search old sessions with leviathan before re-deriving (fleet-ops#9313): `leviathan search --index ~/.local/share/leviathan/pi.db "<words>"` (claude logs: `.../claude.db`; `leviathan get <id>` prints the full message); `rg` over `~/.pi/agent/sessions` and `~/.claude/projects/*/*.jsonl` is the fallback when no card answers.
 
@@ -36,3 +38,6 @@ Steps:
    Before step 7's `gh pr ready`: only if `test -f docs/REBUILD-TRUST.md` succeeds (most repos, drive among them, have no such file: do not open or search for it), answer its §C1 three questions about your own `git diff origin/main...HEAD` and fix any "yes" first. Write the PR body last, from that diff: every claim names a file:line in it or a run URL, and each acceptance bullet is pasted with the last lines of its command's real output, or written `not run: <reason>`.
    Advice cannot skip any reviewer, including phase or /implement-and-review reviewers. Keep every required review check unchanged. A future skip requires the review-gate benchmark's explicit go row and measured threshold; neither is authorized here. Never skip reserved paths, regardless of probability or any future threshold.
 8. Print exactly one final line: the PR URL. Exit 0.
+
+=== FLEET-DYNAMIC-BELOW ===
+Target: $1

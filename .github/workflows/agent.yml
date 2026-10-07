@@ -267,10 +267,13 @@ jobs:
           jail_base="bwrap --dev-bind / / --ro-bind $HOME/workspaces/tooling/fleet-ops-deploy-clone $HOME/workspaces/tooling/fleet-ops-deploy-clone --tmpfs $HOME/.config/gh --tmpfs $HOME/.config/cloudflare --proc /proc --unshare-pid --die-with-parent"
           jail="$jail_base --"
           dir="$HOME/workspaces/agent-worktrees/issue-$id"
+          # Static text, the marker line, then the target id: the id is the only
+          # per-run text, so the prompt-cache prefix is shared (fleet-ops#9363).
+          nl=$'\n'
           if [ "$MISS" = true ]; then
-            packet="Miss review for instance $id. Follow $HOME/workspaces/tooling/fleet-ops-deploy-clone/prompts/miss-review.md (read AGENTS.md beside worker.md first); every \$1 there means $id."
+            packet="Miss review. Follow $HOME/workspaces/tooling/fleet-ops-deploy-clone/prompts/miss-review.md (read AGENTS.md beside worker.md first); every \$1 there means the id after the marker.${nl}=== FLEET-DYNAMIC-BELOW ===${nl}Target: $id"
           else
-            packet="Fleet issue worker for instance $id. Follow $HOME/workspaces/tooling/fleet-ops-deploy-clone/prompts/worker.md (read AGENTS.md beside it first); every \$1 there means $id."
+            packet="Fleet issue worker. Follow $HOME/workspaces/tooling/fleet-ops-deploy-clone/prompts/worker.md (read AGENTS.md beside it first); every \$1 there means the id after the marker.${nl}=== FLEET-DYNAMIC-BELOW ===${nl}Target: $id"
           fi
           if [ "$ENGINE" = devin ]; then
             # --chdir puts the worker directory on the bwrap command line,
@@ -338,13 +341,13 @@ jobs:
             . "$HOME/.config/fleet-ops/seats/mobbin-mcp.env"
             set +a
             if [ "$MISS" = true ]; then
-              echo "$packet" | $jail pi --print \
+              echo "$packet" | $jail pi --print --no-context-files \
                 --append-system-prompt "$HOME/workspaces/tooling/fleet-ops-deploy-clone/AGENTS.md" \
                 --append-system-prompt "$HOME/workspaces/tooling/fleet-ops-deploy-clone/prompts/miss-review.md" \
                 --session-dir "$HOME/.pi/agent/sessions/agent-$id" \
                 --exclude-tools subagent --provider litellm --model worker-capable >/dev/null
             else
-              echo "/worker $id" | $jail pi --print \
+              echo "/worker $id" | $jail pi --print --no-context-files \
                 --append-system-prompt "$HOME/workspaces/tooling/fleet-ops-deploy-clone/AGENTS.md" \
                 --session-dir "$HOME/.pi/agent/sessions/agent-$id" \
                 --exclude-tools subagent --provider litellm --model worker-capable >/dev/null
