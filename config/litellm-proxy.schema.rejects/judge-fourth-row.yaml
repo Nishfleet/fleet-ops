@@ -1,0 +1,44 @@
+# fleet-ops#9374: a fourth judge row nobody approved. An order-2 row still
+# answers only after the paid row is cooled, so this is not about load beside
+# the paid row; it is that a group of three is a deliberate shape (one paid row
+# first, two named fallbacks after it, no judge row deleted or benched) and a
+# fourth one changes it on someone's own edit. The schema refuses it, so a group
+# that grows needs its own issue.
+model_list:
+- model_name: judge
+  litellm_params:
+    model: openai/qwen3.8-max
+    api_base: https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1
+    api_key: os.environ/ALIBABA_CODING_API_KEY
+    rpm: 3
+    order: 1
+    max_parallel_requests: 3
+  model_info:
+    id: alibaba-qwen38max-judge
+- model_name: judge
+  litellm_params:
+    model: openai/deepseek-v4.1-flash
+    api_base: https://opencode.ai/zen/go/v1
+    api_key: os.environ/OPENCODE_API_KEY
+    order: 2
+  model_info:
+    id: opencodego-ds41flash-judge
+- model_name: judge
+  litellm_params:
+    model: openai/deepseek-v4.1-flash
+    api_base: https://opencode.ai/zen/go/v1
+    api_key: os.environ/OPENCODE_API_KEY_2
+    order: 2
+  model_info:
+    id: opencodego2-ds41flash-judge
+- model_name: judge
+  litellm_params:
+    model: openai/deepseek-v4.1-flash
+    api_base: https://opencode.ai/zen/go/v1
+    api_key: os.environ/OPENCODE_API_KEY_3
+    order: 2
+  model_info:
+    id: opencodego3-ds41flash-judge
+router_settings:
+  redis_url: redis://127.0.0.1:6379
+  cooldown_time: 60
