@@ -59,6 +59,56 @@ model_list:
     id: commandcode-ds41flash-worker-cheap
     allowed_fails_policy:
       BadRequestErrorAllowedFails: 1
+# fleet-ops#9378 3-day A/B: a second DeepSeek V4.1 Flash lane on the prepaid
+# CommandCode seat, same shape as the existing lane, so simple-shuffle gives this
+# 8%-failed-run seat more of the worker share. Additive only, the existing lane is
+# untouched. Metrics scrape 2026-10-08: 0 429-wall on CommandCode DS-Flash rows.
+- model_name: worker-capable
+  litellm_params:
+    model: openai/deepseek/deepseek-v4.1-flash
+    api_base: https://api.commandcode.ai/provider/v1
+    api_key: os.environ/COMMANDCODE_API_KEY
+    tags:
+    - prepaid
+    - commandcode
+    order: 1
+    input_cost_per_token: 3e-07
+    cache_read_input_token_cost: 6e-09
+    output_cost_per_token: 1.2e-06
+    max_budget: 10.0
+    budget_duration: 1d
+    max_parallel_requests: 4
+    cooldown_time: 900
+  model_info:
+    mode: chat
+    supports_prompt_caching: true
+    cache_proof: "2026-10-07 #9357 scoreboard: 82.9% (89.4% 48h) cache-read 7d on real router traffic."
+    id: commandcode-ds41flashb-worker-capable
+    allowed_fails_policy:
+      BadRequestErrorAllowedFails: 1
+- model_name: worker-cheap
+  litellm_params:
+    model: openai/deepseek/deepseek-v4.1-flash
+    api_base: https://api.commandcode.ai/provider/v1
+    api_key: os.environ/COMMANDCODE_API_KEY
+    tags:
+    - prepaid
+    - commandcode
+    order: 1
+    input_cost_per_token: 3e-07
+    cache_read_input_token_cost: 6e-09
+    output_cost_per_token: 1.2e-06
+    max_budget: 10.0
+    budget_duration: 1d
+    max_parallel_requests: 4
+    cooldown_time: 900
+  model_info:
+    mode: chat
+    supports_prompt_caching: true
+    cache_proof: "2026-10-07 #9357 scoreboard: 82.9% (89.4% 48h) cache-read 7d on real router traffic."
+    id: commandcode-ds41flashb-worker-cheap
+    allowed_fails_policy:
+      BadRequestErrorAllowedFails: 1
 # Nish 2026-09-30 free rows (probe: all finish_reason=tool_calls). laguna-s-2.1-free answered 1 of 2 probe calls (1 upstream 429 "temporarily unavailable"): the row stays live and cools 900 s on a 429, never benched.
 # 2026-10-07 prompt-cache verdict, #9362: all three models cache upstream with NO hint. Two-call probe, same ~21K prefix 5 s apart, no cache_control anywhere: ling-3.0 21440/21474 prompt tokens cached (calls c92bc949..4fe6db50), ling-3.1 30592/30634 (8207f8dc..accc6461), laguna 32416/32427 (ed93cdb5..303f9a68). The stock cache_control_injection_points hint changes nothing on these openai/* rows (LiteLLM 1.98.0 strips cache_control before the upstream call), so it is NOT added. The low ledger cache share on laguna (0.7%) and ling-3.0 (0.4%) is a reporting artifact, not a cache miss: 94-98% of their 7-day responses carry no prompt_tokens_details, and the calls that do report read 58-59% of prompt tokens from cache. ling-3.1 reports on 91% of calls and reads 80.9%. No bench, no hint, no litellm_params change.
 # CommandCode stealth/space-bunny-alpha ended upstream (403 "no longer available"); its two rows removed on Nish's yes 2026-10-07 ~15:35 IST, fleet-ops#9312.
@@ -739,6 +789,38 @@ model_list:
     supports_prompt_caching: true
     cache_proof: "Caches: direct probe 2026-10-07 through cline, cached_tokens 0->5888 of 6025 (#9365). The router path drops the field: LiteLLM v1.98.0 stream bug."
     id: cline-ds41flash-worker-capable
+    allowed_fails_policy:
+      BadRequestErrorAllowedFails: 1
+      # Fail counter TTL = this row's cooldown_time (6 h): parks on the 4th 429 in the window.
+      # A per-minute burst rarely totals 4 in 6 h; a quota wall 429s every call, so it does.
+      RateLimitErrorAllowedFails: 3
+# fleet-ops#9378 3-day A/B: the worker-cheap lane of the prepaid Cline seat (same
+# shape as its proven worker-capable lane, one seat one key one budget), so Cline
+# contributes both worker rungs. Additive only. Its daily quota wall remains
+# (#9075): this lane also parks on the 4th 429 in a 6h window, so the lane count
+# stays modest. cache_proof is the same seat's proven probe (same model+key+budget).
+- model_name: worker-cheap
+  litellm_params:
+    model: openai/cline-pass/deepseek-v4.1-flash
+    api_base: https://api.cline.bot/api/v1
+    api_key: os.environ/CLINE_API_KEY
+    tags:
+    - prepaid
+    - cline
+    order: 1
+    input_cost_per_token: 3e-07
+    cache_read_input_token_cost: 6e-09
+    output_cost_per_token: 1.2e-06
+    max_budget: 10.0
+    budget_duration: 1d
+    max_parallel_requests: 4
+    # 6 h, sized to the daily free-model quota wall it also hits (fleet-ops#9075).
+    cooldown_time: 21600
+  model_info:
+    mode: chat
+    supports_prompt_caching: true
+    cache_proof: "Caches: direct probe 2026-10-07 through cline, cached_tokens 0->5888 of 6025 (#9365). The router path drops the field: LiteLLM v1.98.0 stream bug."
+    id: cline-ds41flash-worker-cheap
     allowed_fails_policy:
       BadRequestErrorAllowedFails: 1
       # Fail counter TTL = this row's cooldown_time (6 h): parks on the 4th 429 in the window.
