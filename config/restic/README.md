@@ -128,62 +128,91 @@ If a path is missing from the kept table and it cannot be rebuilt, add it to
    `exclude.txt`.
 3. Commit and push. The next `fleet-host-config` run puts the file on the box.
 
-## The size guard
+## The size guard (hard stop)
 
-`rootfs/etc/systemd/system/restic-r2-backup.service.d/10-size-guard.conf` adds
-an `ExecStartPre` that runs the same backup as a **dry run** and reads
-`data_added` from its JSON summary:
+`restic-r2-size-guard.service` runs the same backup as a **dry run**
+(`restic backup --dry-run --json`, which uploads nothing) and `jq` reads its
+summary. The unit fails with exit **78** when either limit is crossed:
 
-```
-ExecStartPre=… restic backup --dry-run --json --files-from=… | jq -s '… halt_error(78) …'
-```
+| Limit | Default | Summary field |
+| --- | --- | --- |
+| New data this run | `SIZE_GUARD_MAX_BYTES=2147483648` (2 GiB) | `data_added` |
+| Snapshot restored size | `SIZE_GUARD_MAX_RESTORED_BYTES=10737418240` (10 GiB) | `total_bytes_processed` |
 
-- Over `SIZE_GUARD_MAX_BYTES` (default `2147483648` = 2 GiB) the unit exits
-  **78** before `ExecStart` runs, so nothing is uploaded and the weekly
-  `restic-r2-locked-copy.service` has nothing new to copy.
-- A dry run uploads no data and computes `data_added` against the repository's
-  existing blobs, so the number it prints is the dedup-aware amount of *new*
-  data. A run whose data is already in the bucket reports 0 and passes.
-- The guard is a pre-flight, not a post-hoc check. restic has no
-  `--max-repo-size`, `--exclude-larger-than` is per-file, and `restic --json`'s
-  status lines carry no `data_added` (only the final summary does), so a dry
-  run is the only stock way to know the size *before* uploading. That is why
-  the unit checks first and uploads second.
-- The guard is fail-closed on read errors. If restic cannot read a path on the
-  include list its exit status is 3, and because the pipeline keeps stderr out
-  of jq the pipeline returns 3, so the unit fails and no backup is taken. That
-  is the safe direction: a snapshot that silently skipped a kept path is not a
-  backup. A jailed worker cannot read `/root`, `/var/spool/cron` and about 37
-  root-only files under `/etc`, so its dry run fails with exit 3 even when the
-  size is fine. A local dry run therefore adds those paths to an extra local
-  exclude file, never to the shipped list.
-- The `ExecStart` is overridden so the unit reads the tracked lists instead of
-  the retired `/etc/restic/netcup-r2-excludes`. Change the paths in
+- `restic-r2-backup.service.d/10-size-guard.conf` gives the backup unit
+  a last `ExecStartPre=/usr/bin/systemctl start restic-r2-size-guard.service`
+  (a oneshot start waits and returns the guard's exit status). A failed guard
+  fails the backup unit **before** its `ExecStart`, so nothing over the limit
+  is uploaded and the heartbeat ping is not sent. It runs after the pg_dump
+  line, so the fresh dump is part of what is measured.
+- `restic-r2-locked-copy.service.d/10-needs-backup.conf` gives the locked copy
+  `Requires=restic-r2-backup.service`, so the copy into the `-locked` bucket is
+  **skipped** when the backup fails. A locked-copy run now starts a guarded
+  backup first.
+- The failed unit is the signal: `systemctl list-units --state=failed` shows
+  `restic-r2-size-guard.service` and `restic-r2-backup.service`. Find out what
+  grew (`journalctl -u restic-r2-size-guard`), fix the include or exclude list,
+  then `systemctl reset-failed 'restic-r2-*'` and start the backup again. These
+  are system units, so `systemctl --user list-units --state=failed` shows
+  nothing even when both of them failed.
+- The guard is a pre-flight because restic has no repository size limit and
+  its `--json` status lines carry no `data_added`; only the final summary
+  does. `data_added` from a dry run is dedup-aware: it counts only the blobs
+  the repository does not have yet, so a run whose data is already in the
+  bucket reports 0 and passes both limits.
+- The guard is fail-closed. If the dry run itself fails, the guard unit stops
+  before its `ExecStartPost`, no verdict is written and the unit fails, so the
+  backup unit's `ExecStartPre` fails and nothing is uploaded. That is the safe
+  direction: a snapshot that silently skipped a kept path is not a backup. A
+  jailed worker cannot read `/root`, `/var/spool/cron` and about 37 root-only
+  files under `/etc`, so its dry run fails even when the size is fine, which is
+  why a local dry run adds those paths to an extra local exclude file instead
+  of weakening the shipped list.
+- The `ExecStart` override makes the backup unit read the tracked lists
+  instead of the retired `/etc/restic/netcup-r2-excludes`. Change the paths in
   `include.txt`, not in the unit.
 
-A guard trip is a **failed unit**. That is the point: it is the urgent signal.
-Check it with `systemctl --failed` (these are system units, not user units, so
-`--user` shows nothing) or `systemctl status restic-r2-backup.service`, then
-`journalctl -u restic-r2-backup.service -b`. A failed backup unit must be
-repaired in the same turn by fleet rule, exactly like any other failed unit.
+- `restic-r2-backup.service.d/10-size-guard.conf` gives the backup unit
+  a last `ExecStartPre=systemctl start restic-r2-size-guard.service` (a oneshot
+  start waits and returns the guard's exit status). A failed guard fails the
+  backup unit before `ExecStart`, so **nothing over the limit is uploaded** and
+  the heartbeat ping is not sent. It runs after the pg_dump line, so the fresh
+  dump is part of what is measured.
+- `restic-r2-locked-copy.service.d/10-needs-backup.conf` gives the locked copy
+  `Requires=` the backup unit, so the copy into the `-locked` bucket is
+  **skipped** when the backup fails. A locked-copy run now starts a guarded
+  backup first.
+- The failed unit is the signal: `systemctl list-units --state=failed` shows
+  `restic-r2-size-guard.service` and `restic-r2-backup.service`. Find out what
+  grew (`journalctl -u restic-r2-size-guard`), fix the include/exclude list,
+  then `systemctl reset-failed 'restic-r2-*'` and start the backup again.
+- The guard is a pre-flight because restic has no repository size limit and
+  its `--json` status lines carry no `data_added`; only the final summary
+  does. `data_added` from a dry run is dedup-aware: it counts only blobs the
+  repository does not have yet.
 
-### Switching it off
+### Changing a limit
 
-For one run, on the box:
+Never edit the `jq` line. Override the number with a drop-in:
 
 ```bash
-systemctl edit restic-r2-backup.service      # add
+systemctl edit restic-r2-size-guard.service
 #   [Service]
-#   Environment=SIZE_GUARD_MAX_BYTES=0
-systemctl start restic-r2-backup.service
+#   Environment=SIZE_GUARD_MAX_BYTES=4294967296
+systemctl revert restic-r2-size-guard.service   # back to the defaults
 ```
 
-`SIZE_GUARD_MAX_BYTES=0` disables the check, so the unit backs up
-unconditionally. `systemctl revert restic-r2-backup.service` removes the
-override again. This edits the unit's own environment, so there is no way to
-turn the guard off by pointing the unit at a different list or a different
-repository: a temporary 1 MiB limit for a drill is `systemctl edit` plus a
-`systemctl revert`, and nothing else.
+There is no "off" setting. The limit is compared with `>`, so
+`SIZE_GUARD_MAX_BYTES=0` means "no new data at all", not "no check". To run
+once without the new-data limit, set the number to something the box will never
+cross (for example `1099511627776`) and `revert` it after the run.
+
+A first-ever backup trips the guard: an empty repository holds no blobs, so
+`data_added` is the whole 3.8 GiB and that is over the 2 GiB limit. Run the
+first backup of a new repository with a raised limit, or let the box's existing
+repository carry the history, where `data_added` is only what changed since the
+last snapshot. The local proof on the PR ran its first backup with the limit
+raised to 4 GiB and every later run at the shipped 2 GiB.
 
 The companion alarm is the Cloudflare R2 bucket-size alarm (#9355). The guard
 is the cheap stop before the upload; the alarm catches a repository that grew
@@ -194,10 +223,19 @@ over many runs, each of them under the threshold.
 The restic units themselves are box-only, installed by root under
 `/etc/systemd/system/restic-r2-*` and deliberately not tracked here: the
 tracked copies had silently diverged from what runs on the box, and a
-`fleet-host-config` run would then "fix" live behaviour. The only unit file
-this repo ships is the additive `10-size-guard.conf` drop-in, which keeps the
-box-only unit's pg_dump, unlock, flock, hardening and heartbeat and adds the
-guard.
+`fleet-host-config` run would then "fix" live behaviour. The unit files this
+repo ships are additive, and each one keeps what the box-only units already do
+and changes one thing:
+
+- `restic-r2-backup.service.d/10-size-guard.conf` adds the guard
+  `ExecStartPre` and makes the backup unit read the tracked lists instead of
+  the retired exclude file. The box-only unit's pg_dump, unlock, flock,
+  hardening and heartbeat stay.
+- `restic-r2-size-guard.service` is the dry run and the two limits. It is
+  started by the drop-in, never by a timer.
+- `restic-r2-locked-copy.service.d/10-needs-backup.conf` makes the locked copy
+  `Requires=` the backup unit. The box-only unit's own `After=` still sets the
+  order.
 
 These must already exist on the box; they hold credentials and stay
 hand-installed:
