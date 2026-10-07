@@ -92,16 +92,24 @@ class _Handler(http.server.BaseHTTPRequestHandler):
             _CURRENT_SERVER[0].hits.append(self.path)
         path = self.path
         if "/fail" in path:
-            body = json.dumps({"error": {
-                "message": "rate limit reached", "type": "rate_limit_error",
-                "code": "rate_limit_exceeded",
-            }}).encode()
-            self.send_response(429)
-            self.send_header("Content-Type", "application/json")
-            self.send_header("Content-Length", str(len(body)))
-            self.end_headers()
-            self.wfile.write(body)
-            return
+            server = _CURRENT_SERVER[0] if _CURRENT_SERVER else None
+            # fail_first_only: the /fail row 429s once then answers 200, to probe
+            # whether litellm retries the same row. /failcapable always 429s.
+            transient = bool(server and getattr(server, "fail_first_only", False)
+                             and path.startswith("/fail/") and "failcapable" not in path)
+            fail_hits = sum(1 for h in server.hits
+                            if h.startswith("/fail/") and "failcapable" not in h) if server else 0
+            if not transient or fail_hits == 1:
+                body = json.dumps({"error": {
+                    "message": "rate limit reached", "type": "rate_limit_error",
+                    "code": "rate_limit_exceeded",
+                }}).encode()
+                self.send_response(429)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+                return
         body = json.dumps({
             "id": "x", "object": "chat.completion", "created": 0,
             "choices": [{"index": 0, "message": {"role": "assistant", "content": "ok"}, "finish_reason": "stop"}],
@@ -126,6 +134,7 @@ class _Server:
         threading.Thread(target=srv.serve_forever, daemon=True).start()
         self.port = srv.server_address[1]
         self.hits: List[str] = []
+        self.fail_first_only = False
         self._srv = srv
 
     def close(self):
@@ -164,9 +173,12 @@ async def _run(server, retry_policy, sid):
             deployment_affinity_ttl_seconds=3600,
             retry_policy=retry_policy,
         )
-        # Pin seat-a the way a first successful call does. This router is
-        # in-memory (no redis_url) while prod uses redis_url, but the affinity
-        # lookup the routing decision depends on is the same.
+        # Pin seat-a the way a first successful call does. These Router values
+        # mirror prod router_settings: num_retries 0, allowed_fails 1,
+        # cooldown_time 60, optional_pre_call_checks ["prompt_caching",
+        # "session_affinity"], and the default deployment_affinity_ttl_seconds
+        # (3600). The one difference is redis_url (prod uses it, this test does
+        # not); the affinity lookup the routing decision depends on is the same.
         await router.cache.async_set_cache(
             key=_pin_key(sid), value={"model_id": "seat-a"}, ttl=3600)
         outcome = "ok"
@@ -265,6 +277,24 @@ def test_proposed_policy_makes_one_in_group_pick_on_a_429_wall():
     assert pin == {"model_id": "seat-a"}, pin
 
 
+def test_a_transient_429_does_not_return_to_the_pinned_seat():
+    # Pins the honest limit in the module docstring with direct evidence: even when
+    # the pinned seat's 429 would clear on a second call, litellm 1.98.0 sends the
+    # retry to the fallback group, not back to seat-a. If a future litellm changes
+    # that, this test fails and the claim must be revisited.
+    server = _Server()
+    server.fail_first_only = True
+    try:
+        attempts, outcome, _ = asyncio.run(_run(server, RP_PROPOSED, "s-transient-429"))
+    finally:
+        server.close()
+    assert _counts(attempts) == {
+        "/fail/chat/completions": 1,
+        "/okcheap/chat/completions": 1,
+    }, attempts
+    assert outcome == "ok"
+
+
 def test_pin_survives_a_failed_then_fallback_success():
     # First-writer-wins: the fallback success on seat-b must NOT overwrite the pin
     # (seat-a). Pi's own retry keeps the session id, so the next call re-pins to
@@ -285,6 +315,7 @@ if __name__ == "__main__":
         test_internal_server_error_is_inert_on_litellm_1_98_0,
         test_shipped_policy_makes_two_in_group_picks_on_a_429_wall,
         test_proposed_policy_makes_one_in_group_pick_on_a_429_wall,
+        test_a_transient_429_does_not_return_to_the_pinned_seat,
         test_pin_survives_a_failed_then_fallback_success,
     ]
     failures = 0
