@@ -119,6 +119,9 @@ jobs:
       - name: stub cursor-agent for systemd-analyze verify (host-only binary)
         if: always()
         run: install -D -m0755 /bin/true "$HOME/.local/bin/cursor-agent"
+      - name: stub leviathan for systemd-analyze verify (host-only binary)
+        if: always()
+        run: install -D -m0755 /bin/true "$HOME/.local/bin/leviathan"
       - name: systemd-analyze verify over unit files
         # nullglob: #8474 deleted the last systemd/*.path unit, and an unmatched
         # glob reaches systemd-analyze as a literal filename -> rc 1. With
@@ -198,6 +201,63 @@ jobs:
       - name: Ollama rungs serve only the permitted slug on the native provider (fleet-ops#8332, fleet-ops#9253)
         if: always()
         run: yq -o=json '[.model_list[] | select(((.litellm_params.api_base // "") | test("ollama")) or ((.litellm_params.model // "") | test("^ollama"))) | "\(.litellm_params.model) @ \(.litellm_params.api_base)" | select(. != "ollama_chat/deepseek-v4.1-flash @ https://ollama.com")]' config/litellm-proxy.yaml | jq -e 'if length==0 then true else error("ollama rungs must be ollama_chat/deepseek-v4.1-flash @ https://ollama.com - \(join(","))") end'
+      # Dynamic text before static text breaks the shared prompt-cache prefix, so
+      # the first call of every run pays full price (fleet-ops#9363). Static
+      # first, then the marker line, then everything dynamic. To switch this
+      # gate off, delete this step (the next line down to the one before
+      # "Miss-review event filter").
+      - name: Static prompt prefix before the dynamic marker (fleet-ops#9363)
+        if: always()
+        shell: bash
+        run: |
+          # shellcheck disable=SC2016 # the searched-for text sits in single quotes on purpose
+          marker='=== FLEET-DYNAMIC-BELOW ==='
+          rc=0
+          for f in prompts/worker.md prompts/miss-review.md; do
+            n=$(grep -c -x -F -- "$marker" "$f" || true)
+            echo "marker count in $f: $n"
+            [ "$n" = 1 ] || rc=1
+            # No argument or runner/worktree path before the marker.
+            # shellcheck disable=SC2016 # the searched-for text sits in single quotes on purpose
+            if sed -n "1,/^$marker\$/p" "$f" | grep -nE '\$[0-9@]|\$ARGUMENTS|/_work/|agent-runner/[0-9]|agent-worktrees/[A-Za-z-]*[0-9]'; then
+              echo "FAIL dynamic text before the marker in $f"; rc=1
+            fi
+          done
+          # Render AGENTS.md + the worker packet for two real issues in two
+          # different worktree paths; the bytes before the marker must match.
+          t="$RUNNER_TEMP/prefix"; rm -rf "$t"
+          for pair in fleet-ops-9361:wt-1 drive-503:wt-2; do
+            id=${pair%%:*}; wt="$t/${pair##*:}/issue-$id"
+            mkdir -p "$wt"; cp AGENTS.md "$wt/AGENTS.md"
+            { cat "$wt/AGENTS.md"; sed "s/\$1/$id/g" prompts/worker.md; } | sed -n "1,/^$marker\$/p" > "$t/pre-$id.txt"
+          done
+          cmp "$t/pre-fleet-ops-9361.txt" "$t/pre-drive-503.txt" || rc=1
+          # Same rule at the source: the pi command lines (continuations joined).
+          pi=$(sed -e ':a' -e '/\\$/{N;s/\\\n[[:space:]]*/ /;ba}' .github/workflows/agent.yml | grep -F 'pi --print')
+          echo "pi --print lines without --no-context-files:"
+          missing=$(printf '%s\n' "$pi" | grep -vF -- '--no-context-files' | cut -c1-80 || true)
+          [ -z "$missing" ] || { printf '%s\n' "$missing" | sed 's/^/FAIL /'; rc=1; }
+          # AGENTS.md reaches the prompt once, at the constant deploy-clone path.
+          # shellcheck disable=SC2016 # the searched-for text sits in single quotes on purpose
+          bad=$(printf '%s\n' "$pi" | grep -oE -- '--append-system-prompt +"[^"]*"' | grep -vE '^--append-system-prompt +"\$HOME/(AGENTS\.md|workspaces/tooling/fleet-ops-deploy-clone/[^$"]*)"$' || true)
+          [ -z "$bad" ] || { echo "FAIL --append-system-prompt not at the constant deploy-clone path:"; echo "$bad"; rc=1; }
+          # --no-context-files also drops Nish's ~/AGENTS.md (the writing rules); it comes back, once,
+          # as content with no path header, so it adds no per-run text to the prefix.
+          # shellcheck disable=SC2016 # the searched-for text sits in single quotes on purpose
+          missing=$(printf '%s\n' "$pi" | grep -vF -- '--append-system-prompt "$HOME/AGENTS.md"' | cut -c1-80 || true)
+          [ -z "$missing" ] || { printf '%s\n' "$missing" | sed 's/^/FAIL no ~\/AGENTS.md append: /'; rc=1; }
+          # Tool flags are literal and, where a list, sorted: a stable tool order.
+          printf '%s\n' "$pi" | grep -oE -- '--(tools|exclude-tools|mcp-config) +[^ ]+' | while read -r flag val; do
+            # shellcheck disable=SC2016 # the searched-for text sits in single quotes on purpose
+            case $val in *'$'*) echo "FAIL $flag value not literal: $val"; exit 1 ;; esac
+            printf '%s\n' "$val" | tr ',' '\n' | sort -c || { echo "FAIL $flag list not sorted: $val"; exit 1; }
+          done || rc=1
+          # The packet strings (cursor, devin, opencode, pi miss lane) put $id after the marker.
+          # shellcheck disable=SC2016 # the searched-for text sits in single quotes on purpose
+          if grep -F 'packet="' .github/workflows/agent.yml | sed "s/$marker.*//" | grep -nF '$id'; then
+            echo "FAIL \$id before the marker in a packet string"; rc=1
+          fi
+          exit "$rc"
       - name: Miss-review event filter
         if: always()
         run: |
@@ -244,6 +304,261 @@ jobs:
           jq -r '.needles["agent.yml"][]' config/orchestrate-events.json | while IFS= read -r n; do
             grep -F -- "$n" .github/workflows/agent.yml >/dev/null || { echo "missing gate needle: $n"; exit 1; }
           done
+      - name: Orchestrate cap and session args (fleet-ops#9351)
+        # Runs the orchestrate job's own scripts, read out of the workflow with
+        # yq, never a copy: the "Check the issue is still parked" step against
+        # a fake gh that serves each cap_cases entry's runs and jobs, and the
+        # "Run the orchestrator session" step against a fake claude that
+        # records its argv. Remove the daily cap, the model or turns pin, or
+        # --settings disableAllHooks from the workflow and a case here fails.
+        # The fakes live in a temp dir and are not repo files.
+        if: always()
+        run: |
+          set -euo pipefail
+          f=.github/workflows/agent-dispatch.yml
+          cfg="$PWD/config/orchestrate-events.json"
+          chk=$(yq '.jobs.orchestrate.steps[] | select(.id == "issue") | .run' "$f")
+          cap=$(yq '.jobs.orchestrate.steps[] | select(.id == "issue") | .env.CAP_COUNT' "$f")
+          ses=$(yq '.jobs.orchestrate.steps[] | select(.name == "Run the orchestrator session") | .run' "$f")
+          for v in "$chk" "$cap" "$ses"; do [ -n "$v" ] && [ "$v" != null ]; done
+          t=$(mktemp -d)
+          mkdir "$t/bin"
+          cat > "$t/bin/gh" <<'FAKE'
+          #!/usr/bin/env bash
+          # Fake gh: answers from $FAKE_DIR and applies the caller's --jq.
+          q=; ev=
+          for ((i = 1; i <= $#; i++)); do
+            a=${!i}
+            case $a in
+              --jq) j=$((i + 1)); q=${!j} ;;
+              event=*) ev=${a#event=} ;;
+            esac
+          done
+          case "$*" in
+            "issue view"*) jq -r "$q" "$FAKE_DIR/issue.json" ;;
+            *git/ref/heads/*) exit 1 ;;
+            *actions/runs/*/jobs*) all="$*"; id=${all#*actions/runs/}; id=${id%%/*}
+              if [ -f "$FAKE_DIR/jobs-$id.json" ]; then jq -c "$q" "$FAKE_DIR/jobs-$id.json"; else echo '{"jobs":[]}' | jq -c "$q"; fi ;;
+            *actions/workflows/*/runs*) jq -c --arg ev "$ev" '.workflow_runs |= map(select(.event == $ev))' "$FAKE_DIR/runs.json" | jq -c "$q" ;;
+            *actions/runs/*) echo '{"workflow_id":7}' | jq -r "$q" ;;
+            *) echo "fake gh: unexpected call: $*" >&2; exit 99 ;;
+          esac
+          FAKE
+          chmod +x "$t/bin/gh"
+          today=$(date -u +%FT%TZ)
+          old=$(date -u -d '2 days ago' +%FT%TZ)
+          bad=0
+          while IFS= read -r c; do
+            id=$(jq -r .id <<<"$c")
+            d="$t/$id"
+            mkdir "$d"
+            jq -c --arg t "$today" --arg o "$old" '{workflow_runs: ([.runs[] | {id, event: (.event // "issues"), created_at: (if .when == "YESTERDAY" then $o else $t end)}] + [range(0; (.extra_runs // 0)) | {id: (1000 + .), event: "issues", created_at: $t}])}' <<<"$c" > "$d/runs.json"
+            jq -c '{state: "OPEN", labels: ([.labels[], "needs-orchestrator"] | map({name: .}))}' <<<"$c" > "$d/issue.json"
+            while IFS= read -r r; do
+              jq -c '{jobs: [{name: (.job // "orchestrate"), steps: ([{name: "Set up job", conclusion: "success"}] + (if .session == "absent" then [] else [{name: "Run the orchestrator session", conclusion: (if .session == "null" then null else .session end)}] end))}]}' <<<"$r" > "$d/jobs-$(jq -r .id <<<"$r").json"
+            done < <(jq -c '.runs[]' <<<"$c")
+            : > "$d/out"
+            rc=0
+            log=$(env PATH="$t/bin:$PATH" FAKE_DIR="$d" GITHUB_OUTPUT="$d/out" REPO=o/r ISSUE=5 GH_TOKEN=x RUN_ID=1 CAP_COUNT="$cap" \
+              DAILY_MAX="$(jq -r '.daily_max // ""' <<<"$c")" MODEL_VAR="$(jq -r '.model_var // ""' <<<"$c")" \
+              bash -c "$chk" 2>&1) || rc=$?
+            if [ "$(jq -r '.want_fail // false' <<<"$c")" = true ]; then
+              [ "$rc" -ne 0 ] || { echo "cap case $id: want failure, got rc 0"; bad=1; }
+              continue
+            fi
+            [ "$rc" -eq 0 ] || { echo "cap case $id: rc $rc: $log"; bad=1; continue; }
+            go=false; if grep -qx 'go=true' "$d/out"; then go=true; fi
+            [ "$go" = "$(jq -r .want_go <<<"$c")" ] || { echo "cap case $id: go=$go: $log"; bad=1; continue; }
+            if [ "$go" = true ]; then
+              [ "$(sed -n 's/^model=//p' "$d/out")" = "$(jq -r .want_model <<<"$c")" ] || { echo "cap case $id: model $(sed -n 's/^model=//p' "$d/out")"; bad=1; }
+              [ "$(sed -n 's/^turns=//p' "$d/out")" = "$(jq -r .want_turns <<<"$c")" ] || { echo "cap case $id: turns $(sed -n 's/^turns=//p' "$d/out")"; bad=1; }
+            else
+              grep -q 'daily cap' <<<"$log" || { echo "cap case $id: capped without the cap log line: $log"; bad=1; }
+            fi
+          done < <(jq -c '.cap_cases[]' "$cfg")
+          # The session step: the real run block, with the claude path swapped
+          # for a fake that records argv, one argument per line. The settings
+          # JSON must reach claude as one argument that parses.
+          # shellcheck disable=SC2016 # the fake's body is literal script text
+          printf '#!/usr/bin/env bash\nprintf "%%s\\n" "$@" > "$FAKE_ARGV"\ncat > /dev/null\n' > "$t/claude"
+          chmod +x "$t/claude"
+          grep -qF /home/nish/.local/bin/claude <<<"$ses"
+          ses=${ses//\/home\/nish\/.local\/bin\/claude/$t\/claude}
+          mkdir -p "$t/wt/prompts"
+          echo '---' > "$t/wt/prompts/orchestrator-handoff.md"
+          while IFS= read -r c; do
+            id=$(jq -r .id <<<"$c")
+            : > "$t/argv"
+            env FAKE_ARGV="$t/argv" WORKTREE="$t/wt" RUNNER_TEMP="$t" REPO_NAME=o/r ISSUE_N=5 \
+              MODEL="$(jq -r .model <<<"$c")" TURNS="$(jq -r .turns <<<"$c")" HOOKS="$(jq -r .hooks <<<"$c")" \
+              bash -c "$ses" > /dev/null 2>&1 || { echo "session case $id: step failed"; bad=1; continue; }
+            mapfile -t argv < "$t/argv"
+            got_model=; got_turns=; got_settings=
+            for ((i = 0; i < ${#argv[@]}; i++)); do
+              case ${argv[i]} in
+                --model) got_model=${argv[i+1]} ;;
+                --max-turns) got_turns=${argv[i+1]} ;;
+                --settings) got_settings=${argv[i+1]} ;;
+              esac
+            done
+            [ "$got_model" = "$(jq -r .want_model <<<"$c")" ] || { echo "session case $id: model '$got_model'"; bad=1; }
+            [ "$got_turns" = "$(jq -r .want_turns <<<"$c")" ] || { echo "session case $id: turns '$got_turns'"; bad=1; }
+            if [ "$(jq -r .want_settings <<<"$c")" = true ]; then
+              jq -e '.disableAllHooks == true' <<<"$got_settings" > /dev/null || { echo "session case $id: --settings is '$got_settings'"; bad=1; }
+            else
+              [ -z "$got_settings" ] || { echo "session case $id: unexpected --settings"; bad=1; }
+            fi
+          done < <(jq -c '.session_cases[]' "$cfg")
+          rm -rf "$t"
+          test "$bad" -eq 0
+      - name: Sweep re-sends red claim PRs (RED_REWORK)
+        # Runs the list job's own RED_REWORK program, read out of the workflow
+        # with the CHECK_DEFS it shares with the missing-checks case, against
+        # every case in config/sweep-rework-cases.json. The grep lines pin the
+        # wiring: the program's verdict feeds the sweep's pick list, and a
+        # live newest run is still skipped.
+        if: always()
+        run: |
+          set -euo pipefail
+          f=.github/workflows/agent-dispatch.yml
+          defs=$(yq '.jobs.list.steps[0].env.CHECK_DEFS' "$f")
+          prog=$(yq '.jobs.list.steps[0].env.RED_REWORK' "$f")
+          [ -n "$defs" ] && [ "$defs" != null ] && [ -n "$prog" ] && [ "$prog" != null ]
+          run=$(yq '.jobs.list.steps[0].run' "$f")
+          # shellcheck disable=SC2016 # the needles are literal workflow text
+          for n in '"$CHECK_DEFS $RED_REWORK"' '--argjson d "$red"' '$o[], $d[]' 'run live, skip'; do
+            grep -F -- "$n" <<<"$run" >/dev/null || { echo "missing sweep wiring: $n"; exit 1; }
+          done
+          bad=0
+          while IFS= read -r c; do
+            in=$(jq -c --argjson c "$c" '.base * $c.set | {pr, issue, comments}' config/sweep-rework-cases.json)
+            got=$(jq -r "$defs $prog | .reason" <<<"$in")
+            [ "$got" = "$(jq -r .want <<<"$c")" ] || { echo "case $(jq -r .id <<<"$c"): got $got, want $(jq -r .want <<<"$c")"; bad=1; }
+          done < <(jq -c '.cases[]' config/sweep-rework-cases.json)
+          test "$bad" -eq 0
+      - name: Dispatch pause flag skips dispatch, never the guards
+        # A paused queue must still hold risky PRs: the weekly update once
+        # disabled agent-dispatch, and hold-risky could not run in that window
+        # (2026-10-05). Every job is classed here, so a new job forces the
+        # choice. A dispatch job carries the flag as a top-level conjunct of its
+        # if:, so no || branch can start a worker while paused; a guard job
+        # never reads the flag. update.yml must pause through the variable,
+        # clear it in always:, and never disable the workflow.
+        if: always()
+        run: |
+          set -euo pipefail
+          f=.github/workflows/agent-dispatch.yml
+          gated="new rework conflicts remerge ejected list unblocked miss-review miss-review-pr miss-stalled orchestrate"
+          guards="hold-risky close-claim rework-note"
+          bad=0
+          for j in $(yq '.jobs | keys | .[]' "$f"); do
+            cond=$(yq ".jobs.\"$j\".if // \"\"" "$f" | tr -s ' \n' '  ' | sed 's/ $//')
+            case " $gated " in
+              *" $j "*)
+                [[ $cond =~ ^(!cancelled\(\)\ \&\&\ )?vars\.FLEET_DISPATCH_PAUSED\ !=\ \'true\'\ \&\&\  ]] ||
+                  { echo "dispatch job $j does not skip on FLEET_DISPATCH_PAUSED: $cond"; bad=1; }
+                continue ;;
+            esac
+            case " $guards " in
+              *" $j "*)
+                ! yq ".jobs.\"$j\"" "$f" | grep -q FLEET_DISPATCH_PAUSED ||
+                  { echo "guard job $j reads FLEET_DISPATCH_PAUSED; it must run while paused"; bad=1; }
+                ! yq ".jobs.\"$j\" | has(\"uses\")" "$f" | grep -qx true ||
+                  { echo "guard job $j starts a worker"; bad=1; }
+                continue ;;
+            esac
+            if [ "$j" = paused ]; then
+              [[ $cond == "vars.FLEET_DISPATCH_PAUSED == 'true' && "* ]] || { echo "paused job runs unpaused: $cond"; bad=1; }
+              [ "$(yq '.jobs.paused.permissions | length' "$f")" = 0 ] || { echo "paused job has permissions"; bad=1; }
+              continue
+            fi
+            echo "job $j is not classed as dispatch or guard in this check"; bad=1
+          done
+          u=ansible/update.yml
+          ! grep -nE 'gh, *workflow, *(disable|enable)' "$u" || { echo "$u disables or enables a workflow"; bad=1; }
+          [ "$(yq '.[0].vars.pause_variable' "$u")" = FLEET_DISPATCH_PAUSED ] || { echo "$u pause_variable is not FLEET_DISPATCH_PAUSED"; bad=1; }
+          set_true=$(yq '[.. | select(tag == "!!map" and has("ansible.builtin.command")) | .["ansible.builtin.command"].argv | select(.[1] == "variable" and .[2] == "set" and .[5] == "true")] | length' "$u")
+          clear=$(yq '[.[0].tasks[] | select(has("always")) | .always[] | .. | select(tag == "!!map" and has("ansible.builtin.command")) | .["ansible.builtin.command"].argv | select(.[1] == "variable" and .[2] == "set" and .[5] == "false")] | length' "$u")
+          [ "$set_true" = 1 ] && [ "$clear" = 1 ] || { echo "$u: want one set to true and one clear in always:, got $set_true and $clear"; bad=1; }
+          # A run killed before always: (TimeoutStartSec, SIGKILL) must not
+          # leave dispatch paused for good, and a failed clear must page
+          # instead of waiting for next Sunday. Structural, by task name: each
+          # named task must exist exactly once, in this order, in the right
+          # block, with the right command or file state. A renamed or moved
+          # task fails here instead of passing a string match by luck.
+          [ "$(yq '.[0].vars.pause_marker' "$u")" = /var/lib/fleet-ops/dispatch-paused-by-update ] || { echo "$u pause_marker moved"; bad=1; }
+          cat > "$RUNNER_TEMP/pause.jq" <<'JQ'
+          . as $doc
+          # Every task and block in the play, in file order, as paths.
+          | [paths(objects and has("name") and (has("block") or (keys | any(startswith("ansible.builtin."))))) | select(.[0] == 0 and .[1] == "tasks")] as $ps
+          | def at($n): [range(0; $ps | length) | . as $i | select(($doc | getpath($ps[$i])).name == $n)];
+            def task($n): $doc | getpath($ps[at($n)[0]]);
+            # argv[1:6] is the gh call without the binary: "variable set <var> --body <value>".
+            def argv($n): (task($n)["ansible.builtin.command"].argv // []) as $a | if ($a | type) == "array" then $a[1:6] | join(" ") else "" end;
+            def top($n): $ps[at($n)[0]][2];
+            def part($n): $ps[at($n)[0]][3];
+            def idx($n): at($n)[0];
+            "Pause, prune and update" as $main
+          | "Clear the pause flag on each of them" as $sc
+          | "Drop the stale marker" as $sd
+          | "Record which repos this run pauses, before pausing them" as $w
+          | "Pause agent dispatch where it is not paused (no new agent jobs)" as $p
+          | "Clear the dispatch pause flag where this run set it" as $c
+          | "Read the pause flag back on each repo this run paused" as $r
+          | "Name every repo whose dispatch is still paused" as $n
+          | "Drop the pause marker once every flag it lists is clear" as $d
+          | "Fail loudly if any step or check went wrong" as $fa
+          | [$main, $sc, $sd, $w, $p, $c, $r, $n, $d, $fa] as $all
+          | [ ($all[] | select(at(.) | length != 1) | "want exactly one task named \"\(.)\""),
+              (if any($all[]; at(.) | length != 1) then empty else
+                (if [idx($sc), idx($sd), idx($w), idx($p), idx($c), idx($r), idx($n), idx($d)] | . != sort
+                 then "pause tasks out of order: want stale clear, stale drop, write, set, clear, read back, name, drop" else empty end),
+                (if top($sc) == top($sd) and top($sc) < top($main) and (($doc[0].tasks[top($sc)].when // "") | tostring) == "stale_pause.stat.exists"
+                 then empty else "stale clear and drop: want one top-level block gated on stale_pause.stat.exists, before the main block" end),
+                (if argv($sc) == "variable set {{ pause_variable }} --body false" and ((task($sc).loop // "") | tostring | test("stale_pause_repos"))
+                 then empty else "stale clear: want a set to false over the marker file's repos" end),
+                (if task($sd)["ansible.builtin.file"] == {"path": "{{ pause_marker }}", "state": "absent"}
+                 then empty else "stale drop: want a delete of the marker" end),
+                (if top($w) == top($main) and top($p) == top($main) and part($w) == "block" and part($p) == "block"
+                 then empty else "write and set: want both inside the main block" end),
+                # Root-owned and 0600: a job running as nish must not be able to
+                # list a repo for the next run to unpause.
+                (task($w) as $t
+                 | if $t["ansible.builtin.copy"].dest == "{{ pause_marker }}" and $t["ansible.builtin.copy"].mode == "0600"
+                      and $t["ansible.builtin.copy"].owner == "root" and $t.become == false and ($t | has("become_user") | not)
+                   then empty else "marker write: want dest pause_marker, mode \"0600\", owner root, become: false, no become_user (so it runs as root)" end),
+                (if argv($p) == "variable set {{ pause_variable }} --body true" then empty else "pause: want a set to true" end),
+                ([$c, $r, $n, $d][] | select(top(.) != top($main) or part(.) != "always") | "\(.): want it in the main block's always:"),
+                (if argv($c) == "variable set {{ pause_variable }} --body false" then empty else "always clear: want a set to false" end),
+                # The clear retries before it gives up: one API blip must not
+                # leave a queue paused.
+                (task($c) as $t
+                 | if (($t.until // "") | tostring | test("^\\s*" + ($t.register // "-") + " is succeeded\\s*$")) and $t.retries == 3
+                   then empty else "always clear: want until: <its register> is succeeded and retries: 3" end),
+                # The read-back reads the flag itself, by name, and only a 404
+                # (unset) is allowed to pass as not paused.
+                (task($r) as $t | ($t["ansible.builtin.command"].argv // []) as $a
+                 | if $a == ["gh", "api", "repos/{{ item }}/actions/variables/{{ pause_variable }}", "--jq", ".value"]
+                      and $doc[0].vars.pause_variable == "FLEET_DISPATCH_PAUSED"
+                   then empty else "read back: want gh api repos/{{ item }}/actions/variables/{{ pause_variable }} --jq .value, with pause_variable FLEET_DISPATCH_PAUSED" end),
+                (task($r) as $t
+                 | if ($t.register // "") != "" and (($t.failed_when // "") | tostring) == "\($t.register).rc != 0 and 'HTTP 404' not in \($t.register).stderr"
+                   then empty else "read back: want failed_when: <register>.rc != 0 and 'HTTP 404' not in <register>.stderr" end),
+                (if task($d)["ansible.builtin.file"] == {"path": "{{ pause_marker }}", "state": "absent"} and ((task($d).when // "") | tostring | test("dispatch_still_paused"))
+                 then empty else "always drop: want a marker delete gated on dispatch_still_paused" end),
+                # The point of the read-back: a repo left paused pages, instead
+                # of sitting paused until the next weekly run.
+                (task($fa)["ansible.builtin.assert"] as $as
+                 | (if [($as.that // [])[] | tostring | select(test("dispatch_still_paused"))] | length > 0
+                    then empty else "the final assert does not fail on dispatch_still_paused" end),
+                   (if ($as.fail_msg // "") | tostring | test("DISPATCH STILL PAUSED")
+                    then empty else "the final assert's fail_msg does not name a still-paused queue (DISPATCH STILL PAUSED)" end))
+              end)
+            ] | .[]
+          JQ
+          yq -o=json "$u" | jq -r -f "$RUNNER_TEMP/pause.jq" > "$RUNNER_TEMP/pause-problems.txt"
+          if [ -s "$RUNNER_TEMP/pause-problems.txt" ]; then sed "s|^|$u: |" "$RUNNER_TEMP/pause-problems.txt"; bad=1; fi
+          test "$bad" -eq 0
       - name: Risky-path hold classifier (hold-risky)
         # Runs agent-dispatch.yml's own CLASSIFY and APPROVAL programs, read out
         # of the workflow, against every case in config/risky-paths.json, so the list
@@ -301,7 +616,7 @@ jobs:
             *disablePullRequestAutoMerge*) touch "$STATE/disarmed" ;;
             *dequeuePullRequest*) touch "$STATE/dequeued" ;;
             *"/labels"*) touch "$STATE/labelled" ;;
-            *"/files?"*) if [ -n "${SAFE:-}" ]; then echo app/routes/home.tsx; else echo workers/app.ts; fi ;;
+            *"/files?"*) if [ -n "${SAFE:-}" ]; then echo '{"f":"app/routes/home.tsx","p":null,"patch":"@@ -1 +1 @@\n+x"}'; else echo '{"f":".github/workflows/deploy-production.yml","p":null,"patch":"@@ -1 +1 @@\n+x"}'; fi ;;
             *"/statuses?"*) ;;
             *"/comments?"*) [ -z "${APPROVE:-}" ] || echo "{\"user\":{\"login\":\"nish3451\"},\"body\":\"coordinator-approval: $SHA\",\"created_at\":\"t\",\"updated_at\":\"t\"}" ;;
             *"/pulls/7") echo "{\"state\":\"open\",\"head\":{\"sha\":\"$SHA\"},\"labels\":[],\"changed_files\":1,\"node_id\":\"PR_n\"}" ;;
@@ -343,4 +658,278 @@ jobs:
           approved-control||1||no|0
           safe-control|||1|no|0
           CASES
+          test "$bad" -eq 0
+      - name: coordinator-approval fails closed in the queue (fake gh)
+        # Runs the coordinator-approval job's own run block, read out of this
+        # file, against a fake gh, with the programs and path list read from
+        # this checkout (BASE_DIR=.). A risky PR with no approval of its exact
+        # head fails, whether it is the entry's own PR or one ahead of it in
+        # the group; every failed read fails; controls pass (approved, safe).
+        if: always()
+        run: |
+          set -euo pipefail
+          t=$RUNNER_TEMP/gate-mock
+          mkdir -p "$t/bin"
+          yq '.jobs.coordinator-approval.steps[] | select(.name == "Fail a risky PR in the queue whose head has no coordinator approval") | .run' .github/workflows/ci.yml > "$t/gate.sh"
+          [ -s "$t/gate.sh" ] && ! grep -qx null "$t/gate.sh"
+          cat > "$t/bin/gh" <<'MOCK'
+          #!/usr/bin/env bash
+          args="$*"
+          if [ -n "${FAIL:-}" ] && grep -qE -- "$FAIL" <<<"gh $args"; then echo "mock gh fails: $args" >&2; exit 1; fi
+          sha() { printf '%040d' "$1"; }
+          has() { [[ " $1 " == *" $2 "* ]]; }
+          case $args in
+            *"/compare/"*) tr ';' '\n' <<<"$SUBJECTS" ;;
+            *"/pulls/"*"/files?"*) n=${args#*pulls/}; n=${n%%/*}; if has "$RISKY" "$n"; then echo '{"f":".github/workflows/deploy-production.yml","p":null,"patch":"@@ -1 +1 @@\n+x"}'; else echo '{"f":"app/routes/home.tsx","p":null,"patch":"@@ -1 +1 @@\n+x"}'; fi ;;
+            *"/pulls/"*) n=${args##*pulls/}; l='[]'; ! has "$LABELED" "$n" || l='[{"name":"needs-coordinator"}]'; echo "{\"state\":\"open\",\"head\":{\"sha\":\"$(sha "$n")\"},\"labels\":$l,\"changed_files\":1}" ;;
+            *"/statuses?"*) ;;
+            *"/issues/"*"/comments?"*) n=${args#*issues/}; n=${n%%/*}
+              if has "$APPROVED" "$n"; then s=$(sha "$n"); [ -z "${STALE:-}" ] || s=$(sha 999); echo "{\"user\":{\"login\":\"nish3451\"},\"body\":\"coordinator-approval: $s\",\"created_at\":\"t\",\"updated_at\":\"t\"}"; fi ;;
+            *) echo "mock gh: unexpected call: $args" >&2; exit 1 ;;
+          esac
+          MOCK
+          chmod +x "$t/bin/gh"
+          export GITHUB_REPOSITORY=Nishfleet/fleet-ops BASE_DIR=. BASE_SHA=b GROUP_SHA=g GH_TOKEN=x
+          bad=0
+          # case: name|head ref PR|commit subjects (;)|risky PRs|labelled PRs|approved PRs|stale approval|FAIL regex|want exit
+          while IFS='|' read -r name pr subjects risky labeled approved stale fail want; do
+            export RUNNER_TEMP=$t/$name GITHUB_STEP_SUMMARY=$t/$name/summary SUBJECTS=$subjects RISKY=$risky LABELED=$labeled APPROVED=$approved STALE=$stale FAIL=$fail
+            export HEAD_REF=refs/heads/gh-readonly-queue/main/pr-$pr-0123456789abcdef0123456789abcdef01234567
+            [ "$pr" != badref ] || HEAD_REF=refs/heads/feature
+            mkdir -p "$RUNNER_TEMP"
+            rc=0
+            PATH="$t/bin:$PATH" bash "$t/gate.sh" > "$t/$name/out" 2>&1 || rc=$?
+            if [ "$rc" != "$want" ]; then echo "case $name: exit=$rc (want $want)"; cat "$t/$name/out"; bad=1; fi
+          done <<'CASES'
+          risky-unapproved|7|Add x (#7)|7|||||1
+          label-only-unapproved|7|Add x (#7)||7||||1
+          risky-approved|7|Add x (#7)|7||7|||0
+          risky-approval-for-old-head|7|Add x (#7)|7||7|1||1
+          safe-control|7|Add x (#7)||||||0
+          group-ahead-unapproved|8|a (#7);b (#8)|7|||||1
+          group-ahead-approved|8|a (#7);b (#8)|7||7|||0
+          group-unmappable-commit|8|a;b (#8)||||||1
+          bad-ref|badref|Add x (#7)||||||1
+          pr-read-fails|7|Add x (#7)|||||pulls/7$|1
+          files-read-fails|7|Add x (#7)|||||/files\?|1
+          statuses-read-fails|7|Add x (#7)|7||7||/statuses\?|1
+          comments-read-fails|7|Add x (#7)|7||7||/comments\?|1
+          compare-read-fails|7|Add x (#7)|||||/compare/|1
+          CASES
+          test "$bad" -eq 0
+      - name: Infra-wall classifier (fake gh)
+        # Runs the report job's own run block, read out of agent.yml, against a
+        # fake gh. Cases in config/infra-wall-events.json carry the real
+        # jobs-API payloads of the 2026-10-05 overload (runs 37267338065 and
+        # 37276581999, public on fleet-ops): the 55-minute cap death and the
+        # mid-worker runner deaths that were wrongly struck into the
+        # strong-only lane (fleet-ops#9291). Controls prove the strike path is
+        # unchanged: a healthy host, a missing guard sample, an early worker
+        # failure, a later-step failure, a failed jobs read and an unmatchable
+        # ref all still strike, the second strike still parks, and a fourth
+        # infra death in a row strikes (the requeue cap).
+        if: always()
+        run: |
+          set -euo pipefail
+          t=$RUNNER_TEMP/infra-mock
+          mkdir -p "$t/bin"
+          block() { yq ".jobs.report.steps[] | select(.name == \"Strike or requeue\") | .$1" .github/workflows/agent.yml; }
+          block run > "$t/report.sh"
+          for v in LOAD1 CORES SWAP_USED_KB ROUTER_ERR SHORT_RUN_SECS WORKER_TIMEOUT_SECS CPU_LOAD_FACTOR SWAP_GUARD_KB INFRA_REQUEUE_CAP; do
+            val=$(block "env.$v")
+            [ -n "$val" ] && [ "$val" != null ] || { echo "report env $v missing"; exit 1; }
+          done
+          # The guard constants ship with the block; the Host sample values are
+          # per case (a runner that died records none).
+          WORKER_TIMEOUT_SECS=$(block env.WORKER_TIMEOUT_SECS)
+          CPU_LOAD_FACTOR=$(block env.CPU_LOAD_FACTOR)
+          SWAP_GUARD_KB=$(block env.SWAP_GUARD_KB)
+          INFRA_REQUEUE_CAP=$(block env.INFRA_REQUEUE_CAP)
+          SHORT_RUN_SECS=$(block env.SHORT_RUN_SECS)
+          export WORKER_TIMEOUT_SECS CPU_LOAD_FACTOR SWAP_GUARD_KB INFRA_REQUEUE_CAP SHORT_RUN_SECS
+          # The work job must sample the host at the death moment and hand the
+          # numbers to report through the job outputs.
+          yq '.jobs.work.steps[] | select(.id == "host") | .run' .github/workflows/agent.yml > "$t/sample.sh"
+          sample_out=$t/sample.out
+          # The sample also greps worker.err for a router 429/500 (fleet-ops#9372).
+          printf 'litellm: HTTP 429 RateLimitError\n' > "$RUNNER_TEMP/worker.err"
+          GITHUB_OUTPUT="$sample_out" bash "$t/sample.sh"
+          grep -qx 'router_err=true' "$sample_out" || { echo "host sample: router 429 in worker.err not detected"; exit 1; }
+          for e in 'HTTP 500 Internal Server Error' 'no deployments available' 'status: 500'; do
+            printf '%s\n' "$e" > "$RUNNER_TEMP/worker.err"; : > "$sample_out"
+            GITHUB_OUTPUT="$sample_out" bash "$t/sample.sh"
+            grep -qx 'router_err=true' "$sample_out" || { echo "host sample: '$e' not detected"; exit 1; }
+          done
+          printf 'tests passed in 1500 ms, 5000 tokens\n' > "$RUNNER_TEMP/worker.err"; : > "$sample_out"
+          GITHUB_OUTPUT="$sample_out" bash "$t/sample.sh"
+          grep -qx 'router_err=false' "$sample_out" || { echo "host sample: false positive on a non-router line"; exit 1; }
+          rm -f "$RUNNER_TEMP/worker.err"; : > "$sample_out"
+          GITHUB_OUTPUT="$sample_out" bash "$t/sample.sh"
+          for k in load1 cores swap_used_kb; do
+            grep -Eq "^$k=[0-9]+(\\.[0-9]+)?$" "$sample_out" || { echo "host sample: $k missing or malformed"; exit 1; }
+          done
+          yq '.jobs.work.outputs.load1' .github/workflows/agent.yml | grep -F 'steps.host.outputs.load1' >/dev/null || { echo "work outputs.load1 not wired"; exit 1; }
+          yq '.jobs.work.outputs.cores' .github/workflows/agent.yml | grep -F 'steps.host.outputs.cores' >/dev/null || { echo "work outputs.cores not wired"; exit 1; }
+          yq '.jobs.work.outputs.swap_used_kb' .github/workflows/agent.yml | grep -F 'steps.host.outputs.swap_used_kb' >/dev/null || { echo "work outputs.swap_used_kb not wired"; exit 1; }
+          yq '.jobs.work.outputs.router_err' .github/workflows/agent.yml | grep -F 'steps.host.outputs.router_err' >/dev/null || { echo "work outputs.router_err not wired"; exit 1; }
+          cat > "$t/bin/gh" <<'MOCK'
+          #!/usr/bin/env bash
+          prog=""; jqnext=0; args=()
+          for a in "$@"; do
+            if [ "$jqnext" = 1 ]; then prog=$a; jqnext=0; continue; fi
+            if [ "$a" = "--jq" ]; then jqnext=1; continue; fi
+            args+=("$a")
+          done
+          joined="${args[*]}"
+          case $joined in
+            *"--json number"*) exit 0 ;;
+            *"--paginate"*"/jobs"*)
+              if [ -n "${API_FAIL:-}" ]; then echo "mock gh: jobs api fails" >&2; exit 1; fi
+              cat "$FIXTURE" ;;
+            *"--json comments"*)
+              if [ -n "$prog" ]; then jq "$prog" "$COMMENTS"; else cat "$COMMENTS"; fi ;;
+            *"issue comment"*) printf '%s\n' "$joined" >> "$STATE/commented" ;;
+            *"issue edit"*) printf '%s\n' "$joined" >> "$STATE/edited" ;;
+            *) echo "mock gh: unexpected call: $joined" >&2; exit 1 ;;
+          esac
+          MOCK
+          chmod +x "$t/bin/gh"
+          export GITHUB_RUN_ID=4242424242 GITHUB_REPOSITORY=Nishfleet/fleet-ops GITHUB_SERVER_URL=https://github.com
+          bad=0
+          while IFS='|' read -r name fixture ref l1 co sw rerr prior infra started want; do
+            export STATE=$t/$name FIXTURE=$t/$name-jobs.json COMMENTS=$t/$name-comments.json
+            mkdir -p "$STATE"
+            : > "$STATE/commented"; : > "$STATE/edited"
+            jq -c --arg f "$fixture" '.fixtures[$f][]' config/infra-wall-events.json > "$FIXTURE"
+            jq -n --arg u "https://github.com/Nishfleet/fleet-ops/actions/runs/$GITHUB_RUN_ID" --argjson s "$started" --argjson p "$prior" --argjson n "$infra" \
+              '{comments: ([if $s == 1 then {body: ("agent run started: " + $u), authorAssociation: "NONE"} else empty end]
+                + [if $p == 1 then {body: "agent run failed: https://github.com/Nishfleet/fleet-ops/actions/runs/111", authorAssociation: "NONE"} else empty end]
+                + [range($n) | {body: "agent run infra-failed: https://github.com/Nishfleet/fleet-ops/actions/runs/222", authorAssociation: "NONE"}])}' > "$COMMENTS"
+            export N=$ref LOAD1=$l1 CORES=$co SWAP_USED_KB=$sw ROUTER_ERR=$rerr
+            API_FAIL=
+            if [ "$name" = jobs-api-fails ]; then API_FAIL=1; fi
+            export API_FAIL
+            rc=0
+            PATH="$t/bin:$PATH" bash "$t/report.sh" > "$STATE/out" 2>&1 || rc=$?
+            got=none
+            if grep -q "agent run infra-failed: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" "$STATE/commented" \
+               && grep -q -- "--add-label agent-ready --remove-label agent-in-progress" "$STATE/edited" \
+               && ! grep -q "agent run failed:" "$STATE/commented" \
+               && ! grep -qE 'strong-only|needs-orchestrator' "$STATE/edited"; then got=infra; fi
+            if grep -q "agent run failed: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" "$STATE/commented" \
+               && ! grep -q infra-failed "$STATE/commented" && grep -q strong-only "$STATE/edited"; then got=strike; fi
+            if grep -q "agent run failed:" "$STATE/commented" && grep -q needs-orchestrator "$STATE/edited"; then got=park; fi
+            if [ ! -s "$STATE/commented" ] && [ ! -s "$STATE/edited" ]; then got=skip; fi
+            if [ "$got" != "$want" ] || [ "$rc" != 0 ]; then
+              echo "case $name: got=$got (want $want) exit=$rc"; cat "$STATE/out"; bad=1
+            fi
+          done < <(jq -r '.cases[] | [.name, .fixture, .ref, .env.LOAD1, .env.CORES, .env.SWAP_USED_KB, (.env.ROUTER_ERR // ""), (.prior_failed_comment|tostring), (.prior_infra_comments // 0 | tostring), (if .started_comment then 1 else 0 end), .want] | map(tostring) | join("|")' config/infra-wall-events.json)
+          test "$bad" -eq 0
+
+  # Coordinator approval as a required status check (fleet-ops#9383).
+  # hold-risky (agent-dispatch.yml) disarms a risky PR on a few PR events, so a
+  # direct enqueue or merge got past it (#9371 merged with no approval). A
+  # required check is the one thing the merge queue cannot skip. On merge_group
+  # this job resolves the PR(s) in the queue entry, classifies each one's
+  # changed files and fails when a risky PR's CURRENT head sha has no
+  # `coordinator-approval: <sha>` comment (or success status) from an approver.
+  # On pull_request and push it passes, so a PR can be enqueued and the queue
+  # does the rejecting. The CLASSIFY and APPROVAL programs, APPROVERS and the
+  # path list are read from the BASE commit's agent-dispatch.yml and
+  # config/risky-paths.json, so ci.yml's case tests over them keep covering
+  # what this job runs and a PR cannot loosen the list it is judged by.
+  # Every failed read fails the check. Ruleset bypass actors (repository admin)
+  # can still skip a required check.
+  coordinator-approval:
+    name: coordinator-approval
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      pull-requests: read
+      statuses: read
+    steps:
+      - name: Pass outside the merge queue
+        if: github.event_name != 'merge_group'
+        run: echo "coordinator-approval is enforced on merge_group; this run is informational."
+      - name: Checkout the base commit (programs and path list)
+        if: github.event_name == 'merge_group'
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.merge_group.base_sha }}
+          path: base
+          persist-credentials: false
+          sparse-checkout: |
+            .github/workflows/agent-dispatch.yml
+            config/risky-paths.json
+          sparse-checkout-cone-mode: false
+      - name: Fail a risky PR in the queue whose head has no coordinator approval
+        if: github.event_name == 'merge_group'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          HEAD_REF: ${{ github.event.merge_group.head_ref }}
+          BASE_SHA: ${{ github.event.merge_group.base_sha }}
+          GROUP_SHA: ${{ github.event.merge_group.head_sha }}
+          BASE_DIR: base
+        run: |
+          set -euo pipefail
+          # Programs, approvers and path list: the base commit's, not the PR's.
+          for v in LABEL CONTEXT APPROVERS CLASSIFY APPROVAL; do
+            val=$(yq ".jobs.hold-risky.env.$v" "$BASE_DIR/.github/workflows/agent-dispatch.yml")
+            [ -n "$val" ] && [ "$val" != null ] || { echo "::error::coordinator-approval: hold-risky env $v unreadable"; exit 1; }
+            export "$v=$val"
+          done
+          cfg=$(jq -c . "$BASE_DIR/config/risky-paths.json") || { echo "::error::coordinator-approval: risky-path list unreadable"; exit 1; }
+          # The queue branch is gh-readonly-queue/<base>/pr-<N>-<sha>; <N> is
+          # the entry's own PR. Entries ahead of it in the same group are
+          # commits below the tip, each titled "... (#<M>)" by the squash.
+          [[ "$HEAD_REF" =~ gh-readonly-queue/.+/pr-([0-9]+)-[0-9a-f]{40}$ ]] ||
+            { echo "::error::coordinator-approval: cannot read a PR number from $HEAD_REF"; exit 1; }
+          nums=${BASH_REMATCH[1]}
+          gh api --paginate "repos/$GITHUB_REPOSITORY/compare/$BASE_SHA...$GROUP_SHA?per_page=100" \
+            --jq '.commits[].commit.message | split("\n")[0]' > "$RUNNER_TEMP/subjects.txt" ||
+            { echo "::error::coordinator-approval: commit list read failed for $BASE_SHA...$GROUP_SHA"; exit 1; }
+          total=$(grep -c '' "$RUNNER_TEMP/subjects.txt" || true)
+          # One commit is the entry's own PR (named by the ref). More than one:
+          # every commit must map to a PR, or the check fails.
+          if [ "$total" -gt 1 ]; then
+            while IFS= read -r subject; do
+              if [[ "$subject" =~ \(#([0-9]+)\)$ ]] || [[ "$subject" =~ ^Merge\ pull\ request\ \#([0-9]+)\  ]]; then
+                nums="$nums ${BASH_REMATCH[1]}"
+              else
+                echo "::error::coordinator-approval: cannot map commit \"$subject\" to a PR in a group of $total"; exit 1
+              fi
+            done < "$RUNNER_TEMP/subjects.txt"
+          fi
+          bad=0
+          for n in $(tr ' ' '\n' <<<"$nums" | sort -un); do
+            # The live PR: a head moved after approval has no approval.
+            pr=$(gh api "repos/$GITHUB_REPOSITORY/pulls/$n") || { echo "::error::coordinator-approval: PR read failed for #$n"; bad=1; continue; }
+            sha=$(jq -r .head.sha <<<"$pr")
+            gh api --paginate "repos/$GITHUB_REPOSITORY/pulls/$n/files?per_page=100" --jq '.[] | {f: .filename, p: (.previous_filename // null), patch: (.patch // null)}' > "$RUNNER_TEMP/files.txt" ||
+              { echo "::error::coordinator-approval: changed-files read failed for #$n"; bad=1; continue; }
+            jq -sc '{files: [.[] | .f, (.p // empty)], patches: [.[] | {file: .f, patch}]}' < "$RUNNER_TEMP/files.txt" > "$RUNNER_TEMP/files.json"
+            jq -c --arg repo "$GITHUB_REPOSITORY" --slurpfile d "$RUNNER_TEMP/files.json" \
+              '{repo: $repo, labels: [(.labels // [])[].name], files: $d[0].files, patches: $d[0].patches, changed_files: (.changed_files // 0)}' <<<"$pr" > "$RUNNER_TEMP/facts.json"
+            verdict=$(jq -c --argjson cfg "$cfg" --arg label "$LABEL" "$CLASSIFY" < "$RUNNER_TEMP/facts.json") ||
+              { echo "::error::coordinator-approval: classifier failed for #$n"; bad=1; continue; }
+            echo "coordinator-approval: #$n at $sha: $verdict"
+            jq -e .risky <<<"$verdict" >/dev/null || continue
+            gh api --paginate "repos/$GITHUB_REPOSITORY/commits/$sha/statuses?per_page=100" --jq '.[]' > "$RUNNER_TEMP/statuses.txt" ||
+              { echo "::error::coordinator-approval: statuses read failed for $sha"; bad=1; continue; }
+            gh api --paginate "repos/$GITHUB_REPOSITORY/issues/$n/comments?per_page=100" \
+              --jq '.[] | {user: {login: .user.login}, body, created_at, updated_at}' > "$RUNNER_TEMP/comments.txt" ||
+              { echo "::error::coordinator-approval: comments read failed for #$n"; bad=1; continue; }
+            approved=$(jq -n --arg sha "$sha" --slurpfile s "$RUNNER_TEMP/statuses.txt" --slurpfile m "$RUNNER_TEMP/comments.txt" \
+              '{sha: $sha, statuses: $s, comments: $m}' |
+              jq -r --arg c "$CONTEXT" --arg who "$APPROVERS" "$APPROVAL") || approved=false
+            if [ "$approved" = true ]; then
+              echo "coordinator-approval: #$n is risky and $sha carries an approver's $CONTEXT"
+            else
+              echo "::error::coordinator-approval: #$n is risky and $sha has no $CONTEXT from $APPROVERS"
+              jq -r '.why[] | "- \(.)"' <<<"$verdict" >> "$GITHUB_STEP_SUMMARY"
+              echo "Approve this exact head with an approver's PR comment line \`$CONTEXT: $sha\`." >> "$GITHUB_STEP_SUMMARY"
+              bad=1
+            fi
+          done
           test "$bad" -eq 0

@@ -15,6 +15,7 @@ never `git pull` (RUNBOOK, fleet-ops#8893). GitHub is the durable copy of
 code and config.
 
 The work loop: `.github/workflows/agent-dispatch.yml` queues `agent-ready` issues as `agent.yml` jobs on the VPS self-hosted runners, workers open PRs on `claim/issue-<N>`, and the GitHub merge queue lands them.
+Dispatch pauses through the repo variable `FLEET_DISPATCH_PAUSED`, never by disabling the workflow: with it `true`, every job that starts a worker skips and logs one summary line, while `hold-risky` and `close-claim` keep running (a disabled workflow drops every trigger, guards included; 2026-10-05). Unset or any other value is not paused. The weekly `ansible/update.yml` sets it per repo and clears it in its `always:` block, then sweeps; it lists the repos it paused in `/var/lib/fleet-ops/dispatch-paused-by-update`, so a run killed before `always:` is undone at the start of the next, and a flag set by hand is left alone; ci.yml fails if a guard job gains the condition or a dispatch job loses it.
 No scheduled fleet job opens issues or PRs: issues come from people, red-main issues and dependabot, which runs weekly. The one scheduled model call is `systemd/blacksmith-flip.timer` (hourly): `prompts/blacksmith-flip.yml` runs through `pi --print` on the `worker-cheap` seat and sets or deletes the org `CI_RUNNER` variable at 95% of the free Blacksmith minutes (fleet-ops#8936).
 
 ## Model plane
@@ -59,9 +60,9 @@ glue."_ The rule, held by the `ci` check (`.github/workflows/ci.yml` runs
   line).
 - No hand-built Pi extensions are kept. `permission-gate.ts` and
   `protected-paths.ts` are gone; the heavy-command class is capped instead by
-  the agent runner services' `MemoryHigh=3G` / `MemoryMax=6G` in
-  `10-agent.conf`, inside `agent.slice` (`MemoryHigh=10G` /
-  `MemoryMax=11G`). The fleet-ci runners carry `MemoryMax=3G` in
+  the agent runner services' `MemoryHigh=4G` / `MemoryMax=8G` in
+  `10-agent.conf`, inside `agent.slice` (`MemoryHigh=26G` /
+  `MemoryMax=28G`). The fleet-ci runners carry `MemoryMax=3G` in
   `10-fleet-ci.conf`.
 
 The design record with the full organ-by-organ reasoning is git history
@@ -93,7 +94,7 @@ The rules still in force:
   defect in its rung.
 - Gates that exist: a PR touching a risky path is labelled `needs-coordinator` and
   not armed; agent-dispatch.yml's `hold-risky` job disarms, dequeues and labels
-  any PR whose changed paths match `config/risky-paths.json` until its exact
+  any PR whose changed paths or added diff lines match `config/risky-paths.json` until its exact
   head sha is approved: an approver's unedited PR comment with the line
   `coordinator-approval: <full head sha>`, or a `coordinator-approval=success`
   status on it (0509#7092);

@@ -5,6 +5,10 @@
 - Diff-scoped semgrep: `semgrep --config p/default --baseline-commit "$(git merge-base HEAD origin/main)" --quiet --metrics=off`
 - Any diff under `.github/workflows/`: the three offline gates the required `ci` check runs, all before the push — `actionlint .github/workflows/*.yml`, `uvx zizmor@1.30.1 --offline --format plain .github/workflows` (picks up `.github/zizmor.yml`, same pin as `ci.yml`), and `shellcheck` on every changed shell file. semgrep does not cover this surface: a zizmor-only finding turned `ci` red on PR 9212 (fleet-ops#9214). Put all three results in the PR body, and name a gate that did not run.
 
+## Prompt prefix
+
+- Any prompt we build puts static text first, then the one marker line `=== FLEET-DYNAMIC-BELOW ===`, then all dynamic text (target id, issue text, paths, dates, run ids), so the prompt-cache prefix is shared across runs (fleet-ops#9363). The `ci` check "Static prompt prefix before the dynamic marker" enforces it on `prompts/` and `agent.yml`.
+
 ## Hard lines
 
 - **Canonical reserved-classes list** — the only things that reach Nish:
@@ -57,7 +61,7 @@
   `fleet-sync.service`'s LINK-GUARD ExecStart fails the unit on a dangling
   or throwaway-target live link — wiring set this way is caught on the next
   deploy push or boot.
-- Memory = vault `_system/agent-memory/` plain files (one fact per file, true now, edit in place); search old sessions with `rg` over `~/.pi/agent/sessions` and `~/.claude/projects/*/*.jsonl` before re-deriving.
+- Memory = vault `_system/agent-memory/` plain files (one fact per file, true now, edit in place); search old sessions with leviathan first — `leviathan search --index ~/.local/share/leviathan/pi.db "<words>"` (claude logs: `.../claude.db`; `leviathan get <id>` prints the full message) — before re-deriving; `rg` over `~/.pi/agent/sessions` and `~/.claude/projects/*/*.jsonl` is the fallback when no card answers.
 
 ## Live state
 
@@ -144,7 +148,7 @@ Hard rules:
 
 ### Memory budget rule (fleet-ops#4891; blind POVs from Kimi K3 max + Grok 4.6 high agreed 2026-09-10) — applies to every worker, hardest on Nishfleet/0509:
 
-- Your unit runs under systemd-oomd. The runner unit has `MemoryHigh=3G` / `MemoryMax=6G` in its `10-agent.conf` drop-in, inside `agent.slice` (`MemoryHigh=10G` / `MemoryMax=11G`), and the shared `user-1000.slice` carries `MemoryHigh=12G`. An OOM kill burns the claim, the seat pick and up to 42 min of work.
+- Your unit runs under systemd-oomd. The runner unit has `MemoryHigh=4G` / `MemoryMax=8G` in its `10-agent.conf` drop-in, inside `agent.slice` (`MemoryHigh=26G` / `MemoryMax=28G`), and the shared `user-1000.slice` carries `MemoryHigh=28G` (host: 12 vCPU, 32G RAM since 2026-10-05). An OOM kill burns the claim, the seat pick and up to 42 min of work.
 - CI owns coverage and typecheck. Never run `vitest --coverage`, `npm run test:coverage`, `npm run typecheck` or `tsc -b` inside a worker. Nothing blocks these for you, so this line is the rule. A 55-minute worker wall does not fit typecheck + build + a full e2e run on a 25% CPU share; that is what timed out 0509 workers on 2026-09-23. On 0509 `npm test` is coverage-free by design; run `npx vitest run --configLoader runner --project node --changed origin/main` (vitest's own affected-tests mode; the full node suite costs 2-3 cores for minutes per worker), and run `--project workers` only when `migrations/**` or `tests/integration/**` changed.
 - Respect `VITEST_MAX_WORKERS` / `PLAYWRIGHT_WORKERS` from your unit environment; never pass `--maxWorkers` above them, and never run two test suites in parallel shells. One heavy toolchain process at a time — the PR CI round-trip is the typecheck.
 - Lint only what you changed. Never `npm run lint`, `eslint .` or `knip` in a worker: a whole-repo eslint run peaks near 1 GB, and every worker running it at once thrashed the VPS on 2026-09-24. Run eslint on your diff, `git diff --name-only --diff-filter=ACMR -z origin/main...HEAD -- '*.ts' '*.tsx' '*.js' | xargs -0 -r npx eslint`; CI runs the whole-repo lint and knip on the PR. Nothing in a workflow sets `VITEST_MAX_WORKERS`; the runner environment on the VPS owns it.

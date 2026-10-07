@@ -23,8 +23,9 @@ script, or prompt lands unseen.
 - `patches/` — `litellm-1.98.0-gchunk-usage-union.patch`, a source patch for
   LiteLLM 1.98.0 that no unit in this repo applies (the proxy runs a pinned
   container image).
-- `docs/` — `ARCHITECTURE.md`, `RUNBOOK.md`, `jev-call-sites.md` and
-  `quality-bar.md`.
+- `docs/` — `ARCHITECTURE.md`, `RUNBOOK.md`, `jev-call-sites.md`,
+  `quality-bar.md` and `incidents/` (one blameless write-up per outage,
+  named `YYYY-MM-DD-<slug>.md`).
 - `template/` — `agents/`, `cursor-rules/`, `devin-config.json` and
   `README.md`, source files the live host links or copies by hand (see
   [template/README.md](template/README.md)).
@@ -32,8 +33,14 @@ script, or prompt lands unseen.
 - `config/` — fleet configuration. `intake-repos.json` is the declared set of
   repos enrolled in the agent-ready queue (see [Intake enrolment](#intake-enrolment)).
   `config/litellm-proxy.schema.rejects/` holds one YAML per rule
-  `config/litellm-proxy.schema.json` must refuse (bench block, router
-  cooldown over 60, row cooldown zero, row cooldown). CI validates every file
+  `config/litellm-proxy.schema.json` must refuse: the bench block, a router
+  cooldown over 60, a zero row cooldown, a row cooldown, and one case per
+  judge-group rule (the fallback rows back on order 1, the paid row's rpm
+  raised, its concurrency raised, a fourth judge row, the paid row doubled
+  as its own fallback, a fallback row renamed, both fallbacks on one key, and
+  a swap of the paid row's model, host or key, or of a fallback's model or
+  host). CI
+  validates every file
   in the directory against the schema and each must fail, so a loosened schema
   goes red. A new schema rule gets a reject file in the same PR.
 - `config/grafana/` — the fleet-view Grafana provisioning
@@ -61,17 +68,35 @@ script, or prompt lands unseen.
   `prompts/blacksmith-flip.yml`, which `fleet-sync.service` installs, and a
   model runs `blacksmith usage` rather than a checked-in script, because
   "no glue or scripts" was Nish's condition on approval.
+- `systemd/leviathan-index@.service` and `systemd/leviathan-index@.timer` —
+  the Leviathan session-log search index, refreshed every 15 minutes per
+  instance (`claude`, `pi`): an FTS5 index over the session JSONLs that
+  answers "what did an old session say about X" in milliseconds (fleet-ops#9313).
+  Config and index live in `~/.local/share/leviathan/` (0700), installed from
+  `config/leviathan/` by `fleet-sync.service`; the binary is installed by
+  `ansible/host.yml` from a pinned release. Off switch, under 2 minutes and
+  nothing re-enables it: `systemctl --user disable --now leviathan-index@claude.timer leviathan-index@pi.timer`,
+  then `rm ~/.local/bin/leviathan && rm -rf ~/.local/share/leviathan` —
+  `host.yml`/`update.yml` only install and version the binary and
+  `fleet-sync.service` only refreshes unit and config bytes, so no fleet unit
+  ever re-enables a timer. Wire new instances only after `fleet-sync.service`
+  has run once with the configs merged (the 15-minute tick pages on a missing
+  config). Each run rebuilds the index from the files on disk, so it mirrors
+  the logs and keeps the same retention; the index never holds more than the
+  logs do.
 - `systemd/fleet-sync.service` (started by
   `.github/workflows/deploy-box.yml` on push) — the whole deploy mechanism:
   a clean-clone check that prints
   `DEPLOY-BLOCKED` and fails, `git fetch` + `git merge --ff-only` plus two
   `git merge-base --is-ancestor` probes that fail unless `HEAD` equals
   `origin/main`, `systemctl --user link` of `fleet-unit-failed@.service` and
-  `systemctl --user daemon-reload`, `systemd-tmpfiles --user --create`, three
+  `systemctl --user daemon-reload`, `systemd-tmpfiles --user --create`,
   user-scope `install -C` copies (`config/pi-models.json` to
   `~/.pi/agent/models.json`, `config/litellm-proxy.yaml` to
-  `~/.config/fleet-ops/litellm-proxy.yaml` behind a `cmp` guard, and
-  `prompts/blacksmith-flip.yml` to `~/.local/share/blacksmith-flip/prompt.yml`),
+  `~/.config/fleet-ops/litellm-proxy.yaml` behind a `cmp` guard,
+  `prompts/blacksmith-flip.yml` to `~/.local/share/blacksmith-flip/prompt.yml`,
+  and the leviathan index units, their configs and the tmpfiles rule to
+  `~/.local/share/leviathan/` and `~/.config/user-tmpfiles.d/`, fleet-ops#9313),
   and a LINK-GUARD pass
   that fails the unit on a dangling or throwaway-target live symlink
   (fleet-ops#7743). Root-owned files (`/etc/**`, `agent.slice`, everything under
@@ -156,7 +181,8 @@ the next sync overwrites it. The rest are refreshed by hand.
 | `~/.pi/agent/models.json`                                                                                                   | `config/pi-models.json` | **Handled automatically** by `fleet-sync.service` (install -C, fleet-ops#8568). A copy, not a symlink, because `~/.pi/agent` is an overlay mount in worker containers.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
 | `~/.local/state/pi-packet/model-candidates.json`                                                                            | `none (live-only)`      | live state the git working tree must not rewrite on every checkout (fleet-ops#2910/#3722/#3322).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
 | `~/.pi/agent/settings.json`                                                                                                 | `none (live-only)`      | pi writes this file itself at runtime (provider/model switches and its own bookkeeping keys), so a repo copy would be overwritten and a symlink would fight pi. Every fleet caller passes `--provider litellm --model <group>`, so its `defaultProvider`/`defaultModel` affect only bare interactive `pi` runs (fleet-ops#8568). Its `compaction.reserveTokens: 40000` pairs with the worker `contextWindow: 140000` in `config/pi-models.json`: pi compacts at window − reserve = 100k (fleet-ops#9081: spend-log worker prompts averaged 71k and p90 was 141k, so a 256k compact point never fired). Reply budget is window − context − 4096, so a turn at the compact point still gets the full 32k `maxTokens` (140000 − 100000 − 4096 = 35904). The 96000/8192 pairing cut replies to ~4.8k (fleet-ops#8634) and is not used. The real model windows are ~1M; 140000 is a budget, not a limit. |
-| `/etc/**` (system units and drop-ins, `sysctl.d`, `audit/rules.d`, `polkit-1/rules.d`, `prometheus/*.yml`, `nftables.conf`) | `rootfs/etc/**`         | cross a privilege boundary. **Handled automatically** by `fleet-host-config.service`: Ansible (`ansible/host.yml`) checks the prometheus and nftables files, installs every file under `rootfs/` as root, and reloads only the daemon whose file changed. A new root file is a new file under `rootfs/`; nothing is installed by hand.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
+| `/etc/**` (system units and drop-ins, `sysctl.d`, `audit/rules.d`, `polkit-1/rules.d`, `prometheus/*.yml`, `nftables.conf`) | `rootfs/etc/**`         | cross a privilege boundary. **Handled automatically** by `fleet-host-config.service`: Ansible (`ansible/host.yml`) checks the prometheus and nftables files, installs every file under `rootfs/` as root, and reloads only the daemon whose file changed. A new root file is a new file under `rootfs/`; nothing is installed by hand.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
+| `~/.local/share/leviathan/` (`leviathan-index@.service`, `leviathan-index@.timer`, `claude.toml`, `pi.toml`) and `~/.config/user-tmpfiles.d/leviathan.conf` | `systemd/leviathan-index@.timer`, `config/leviathan/*.toml`, `config/user-tmpfiles.d/leviathan.conf` | **Handled automatically** by `fleet-sync.service` (install -C before the daemon-reload, fleet-ops#9313). The timer fires every 15 minutes, so the unit and config bytes must exist on the box before the PR that ships them merges — a git merge refuses a clone with untracked files in the way, so nothing may read these from the deploy clone. The live unit links are hand-set once (`systemctl --user link ~/.local/share/leviathan/...`); a `user-tmpfiles.d` symlink would dangle pre-merge and be read dead by `systemd-tmpfiles --create` on every sync. Each run rebuilds the index from the files on disk, so the index mirrors the logs and never holds more than the logs do. |
 
 ```
 # a changed /etc file: merge it under rootfs/etc/. deploy-box.yml then runs
@@ -336,15 +362,24 @@ of scope: they do not live in `session-*.scope`. `claim/issue-*` and
 `fleet-update.timer` starts `fleet-update.service` every Sunday at 03:30 IST.
 It runs `ansible/update.yml` as root through `ansible-pull`:
 
-1. Pause: turn off `agent-dispatch` in each queue repo, stop the work timers,
-   wait until no runner has a job (up to 150 min), stop the runner services.
+1. Pause: set the repo variable `FLEET_DISPATCH_PAUSED=true` in each queue
+   repo, stop the work timers, wait until no runner has a job (up to 150 min),
+   stop the runner services. `agent-dispatch` stays enabled: only its
+   worker-starting jobs skip, and `hold-risky` keeps holding risky PRs. (It was
+   `gh workflow disable` until 2026-10-05; a disabled workflow drops every
+   trigger, the guard included.)
 2. Prune: apt cache, Docker containers stopped for a day, dangling Docker and
    Podman images, old build cache, the npm and uv caches.
 3. Update: `apt dist-upgrade`, `autoremove`, `needrestart -r a`, then each
    user-level tool through its own updater (npm globals, pi, claude and its
    plugins, cursor-agent, devin, uv, bun, rclone).
-4. Resume, even when a step failed: start the runners, turn `agent-dispatch`
-   back on where this run turned it off, restart the timers, sweep each queue.
+4. Resume, even when a step failed: start the runners, set
+   `FLEET_DISPATCH_PAUSED=false` where this run set it, restart the timers,
+   sweep each queue. The repos it paused are listed in
+   `/var/lib/fleet-ops/dispatch-paused-by-update` from before the first set
+   until every flag is clear again, so a run killed before this step (timeout,
+   SIGKILL) is undone by the next run, which clears those flags first. A flag
+   set by hand is never in that file and stays set.
 5. Verify: the netcup runners online, each queue's sweep run accepted by
    GitHub, pi answering a real call with its extensions loaded and every
    extension in `~/.pi/agent/settings.json` pinned (full SHA for `git:`, exact
@@ -437,9 +472,11 @@ the enrolment mechanism (fleet-ops#32, #25).
 
 ## Worker capacity
 
-The concurrency bound is the runner count (#8429): 24 `agent` runners
-(`actions.runner.Nishfleet.netcup-agent-1..24`, sized from measured memory
-pressure, fleet-ops#8860), all in `agent.slice` (`rootfs/etc/systemd/system/agent.slice`,
-10G/11G, `MemorySwapMax=1G`). RAM safety is per-unit `MemoryMax` plus
+The concurrency bound is the runner count (#8429): 22 `agent` runners
+(`actions.runner.Nishfleet.netcup-agent-1..22` in org runner group 3, shared
+by every enrolled repo including drive since 2026-10-06; live count:
+`gh api orgs/Nishfleet/actions/runner-groups/3/runners --jq .total_count`;
+sized from measured memory pressure, fleet-ops#8860), all in `agent.slice` (`rootfs/etc/systemd/system/agent.slice`,
+26G/28G, `MemorySwapMax=1G`). RAM safety is per-unit `MemoryMax` plus
 systemd-oomd, not an admission charge. Live RAM is
 `systemctl --user show -p MemoryPeak <unit>` and `systemd-cgtop`.

@@ -1,0 +1,35 @@
+# fleet-ops#9374: a fallback row carrying a model its name does not claim. The id
+# says ds41flash and the key is right, so nothing else in the file is wrong; only
+# model moves, and this file is refused by the first fallback's model pin alone.
+# memory card grader-never-builder-family depends on which family grades, so a
+# model swap under a stale id is exactly the drift to catch here.
+model_list:
+- model_name: judge
+  litellm_params:
+    model: openai/qwen3.8-max
+    api_base: https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1
+    api_key: os.environ/ALIBABA_CODING_API_KEY
+    rpm: 3
+    order: 1
+    max_parallel_requests: 3
+  model_info:
+    id: alibaba-qwen38max-judge
+- model_name: judge
+  litellm_params:
+    model: openai/qwen3.8-max
+    api_base: https://opencode.ai/zen/go/v1
+    api_key: os.environ/OPENCODE_API_KEY
+    order: 2
+  model_info:
+    id: opencodego-ds41flash-judge
+- model_name: judge
+  litellm_params:
+    model: openai/deepseek-v4.1-flash
+    api_base: https://opencode.ai/zen/go/v1
+    api_key: os.environ/OPENCODE_API_KEY_2
+    order: 2
+  model_info:
+    id: opencodego2-ds41flash-judge
+router_settings:
+  redis_url: redis://127.0.0.1:6379
+  cooldown_time: 60
