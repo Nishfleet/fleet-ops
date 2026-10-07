@@ -1376,7 +1376,7 @@ router_settings:
   routing_strategy: simple-shuffle
   # One task = one model (Nish 2026-10-01, fleet-ops#9015). Pi sends x-litellm-session-id=$FLEET_TASK_ID
   # (config/pi-models.json; Pi refuses to call without it), and session_affinity pins that id to the
-  # first row picked in each group until it has been idle for deployment_affinity_ttl_seconds (default 3600).
+  # first row picked in each group until it has been idle for deployment_affinity_ttl_seconds (600 s below).
   optional_pre_call_checks: ["prompt_caching", "session_affinity"]
   # The pin store. Without this the Router keeps pins in each worker process's own memory, and the proxy
   # runs --num_workers 2, so a session flips between 2 rows with no failure (fleet-ops#9015: 6,188 of 6,473
@@ -1384,6 +1384,18 @@ router_settings:
   # has no redis_url key in v1.98.0 (proxy_server never reads it), so the Redis below sat empty (dbsize 0).
   # Cooldowns and usage counters now share it too, as fleet-ops#4174 P1 intended.
   redis_url: redis://127.0.0.1:6379
+  # The pin survives only while its row keeps being picked: the claim script refreshes the TTL when
+  # the stored row equals the row just chosen, and a row in cooldown makes async_filter_deployments
+  # return the whole group unfiltered. So a pin that lands on a row then hits a quota wall (zai, cline
+  # and commandcode free models all 429 "free-model token quota") is never refreshed and holds the
+  # session to a dead row for the full TTL, while every call re-shuffles the group. That scatter was
+  # 17.1% of non-first calls (16,706 of 97,545, 2026-10-02 to 10-07 07:55 UTC) and cost 90.4M
+  # already-cached tokens in 5.6 days (fleet-ops#9361). 600 s is the tested value: the p99 gap between
+  # consecutive calls in one session is 214 s and 99.7% of gaps are under 600 s, so a live session keeps
+  # its pin, and a pin on a dead row is dropped after 10 minutes instead of 60. The floor of 300 s (held
+  # in the schema) is the gap window the hop metric counts: a shorter TTL could expire a healthy pin inside
+  # a hop the metric would count, manufacturing the hops this value exists to remove.
+  deployment_affinity_ttl_seconds: 600
   # worker groups hold only rungs proven to return finish_reason=tool_calls (fleet-ops#7761); simple-shuffle ignores order:.
   # Worker groups fall back to each other (fleet-ops#9015 finish line: "unless that model fails, then fall back").
   # 24h to 2026-10-02 19:05 UTC: 313 of 11,144 worker calls failed at the caller, and 1,345 of the journal's

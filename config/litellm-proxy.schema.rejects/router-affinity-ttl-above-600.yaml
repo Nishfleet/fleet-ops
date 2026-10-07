@@ -1,0 +1,9 @@
+model_list:
+- model_name: worker-cheap
+  litellm_params:
+    model: openai/x
+router_settings:
+  cooldown_time: 60
+  redis_url: redis://127.0.0.1:6379
+  # fleet-ops#9361: 3600 s is the pinned default the stale-pin scatter was measured against.
+  deployment_affinity_ttl_seconds: 3600
