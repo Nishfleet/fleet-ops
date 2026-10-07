@@ -1329,14 +1329,17 @@ model_list:
     allowed_fails_policy:
       BadRequestErrorAllowedFails: 1
       RateLimitErrorAllowedFails: 0
-# Nish 2026-09-30 free rows (probe: both finish_reason=tool_calls). order: 2 here is the pre-#9365 demotion on main, left as it is: #9365's own-path probe (cached_tokens 0/20000/20000/0/20000/0 of 20017) shows cline caches laguna, so the row is no longer demoted *because it cannot cache*, and this PR does not put live traffic back on a row the reviewer has not re-checked.
+# Nish 2026-09-30 free rows (probe: both finish_reason=tool_calls).
+# order stays 1 here, as on main. The earlier #9365 commit set order 2 on this anchor on a
+# false verdict; the own-path probe (cached_tokens 0/20000/20000/0/20000/0 of 20017) shows cline
+# caches laguna, so the demotion is reverted rather than left in place.
 - model_name: worker-capable
   litellm_params: &cline-free
     model: openai/poolside/laguna-s-2.1:free
     api_base: https://api.cline.bot/api/v1
     api_key: os.environ/CLINE_API_KEY
     tags: [free, cline]
-    order: 2
+    order: 1
     max_parallel_requests: 2
     # 6 h, sized to Cline's daily free-model token quota (fleet-ops#9075).
     cooldown_time: 21600
@@ -1420,7 +1423,7 @@ model_list:
 - model_name: worker-cheap
   litellm_params: &openrouter-nemotron
     <<: *openrouter-spacebunny
-    order: 2
+    order: 1
     model: openai/nvidia/nemotron-3-ultra-550b-a55b:free
     max_budget: 5.0
     tags: [free, nemotron]

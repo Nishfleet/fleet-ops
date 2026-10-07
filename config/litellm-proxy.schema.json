@@ -70,6 +70,7 @@
           },
           "model_info": {
             "type": "object",
+            "$comment": "fleet-ops#9365: cache_proof is checked for presence and non-emptiness only, so the gate catches a missing verdict but does not read the text - 'unknown' would pass. That is deliberate: a pattern demanding a date and a token count would reject the legitimate 'cannot cache, here is the vendor doc' proof. What holds a hollow claim down is the proof line being a real measurement a reviewer can re-derive, and the probe behind it being quoted on the PR.",
             "required": ["supports_prompt_caching", "cache_proof"],
             "properties": {
               "cooldown_time": { "$ref": "#/$defs/rowCooldown" },

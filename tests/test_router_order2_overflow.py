@@ -23,7 +23,7 @@ from litellm import Router
 from litellm.router_utils.cooldown_handlers import _set_cooldown_deployments
 
 
-def _row(mid, order):
+def _row(mid, order, cache):
     return {
         "model_name": "worker-capable",
         "litellm_params": {
@@ -32,16 +32,22 @@ def _row(mid, order):
             "api_key": "k",
             "order": order,
         },
-        "model_info": {"id": mid},
+        "model_info": {
+            "id": mid,
+            # carried so the fixture matches the production shape: a worker-group
+            # row whose verdict is false sits at order 2 (fleet-ops#9365).
+            "supports_prompt_caching": cache,
+            "cache_proof": f"probe recorded for {mid} (fleet-ops#9365)",
+        },
     }
 
 
 def _router():
     return Router(
         model_list=[
-            _row("cache-true-a", 1),
-            _row("cache-true-b", 1),
-            _row("cache-false-overflow", 2),
+            _row("cache-true-a", 1, True),
+            _row("cache-true-b", 1, True),
+            _row("cache-false-overflow", 2, False),
         ],
         cooldown_time=60,
         allowed_fails=1,
@@ -50,7 +56,12 @@ def _router():
     )
 
 
-def _cooldown(router, deployment_id):
+def _cool(router, deployment_id):
+    """Raise one 429 against a row through LiteLLM's own cooldown handler.
+
+    _set_cooldown_deployments applies the router's allowed_fails threshold, so one
+    call does not necessarily park the row; see the caller's double call.
+    """
     exc = litellm.RateLimitError(message="429 rate limited", model="worker-capable", llm_provider="openai")
     return _set_cooldown_deployments(
         litellm_router_instance=router,
@@ -77,8 +88,8 @@ async def _cool_then_pick():
     dep_id, order = await _pick(router)
     assert order == 1
     for mid in ("cache-true-a", "cache-true-b"):
-        _cooldown(router, mid)
-        _cooldown(router, mid)  # allowed_fails=1: the second failure cools the row
+        _cool(router, mid)
+        _cool(router, mid)  # allowed_fails=1: the first 429 only counts, the second cools
     return await _pick(router)
 
 
