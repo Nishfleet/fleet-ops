@@ -1,9 +1,8 @@
-# fleet-ops#9374: a fallback row renamed out from under the group. Only the id
-# moves - the model and the key stay exactly as the shipped row has them - so
-# this file is refused by the id pin alone. The behaviour would be identical,
-# but the gate cannot see that two OpenCode Go rows are still there once the
-# name moves, so each named row is pinned to be present: renaming one is a
-# deliberate change with its own issue, in the same PR that edits the schema.
+# fleet-ops#9374: a named fallback row pointed off OpenCode Go. The id, the key
+# and the model are all right, so only api_base moves and this file is refused
+# by the fallback api_base pin alone. It is the shape where a fallback quietly
+# stops being a fallback: an OpenCode key billing a third provider, or an order-2
+# row that can only fail.
 model_list:
 - model_name: judge
   litellm_params:
@@ -18,7 +17,7 @@ model_list:
 - model_name: judge
   litellm_params:
     model: openai/deepseek-v4.1-flash
-    api_base: https://opencode.ai/zen/go/v1
+    api_base: https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1
     api_key: os.environ/OPENCODE_API_KEY
     order: 2
   model_info:
@@ -30,7 +29,7 @@ model_list:
     api_key: os.environ/OPENCODE_API_KEY_2
     order: 2
   model_info:
-    id: opencodego3-ds41flash-judge
+    id: opencodego2-ds41flash-judge
 router_settings:
   redis_url: redis://127.0.0.1:6379
   cooldown_time: 60

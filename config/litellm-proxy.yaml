@@ -191,7 +191,7 @@ model_list:
     # is cooled down or out of budget. config/litellm-proxy.schema.json pins the
     # layout (one paid judge row on order 1 with the plan's rpm 3 and concurrency 3,
     # two named OpenCode Go judge rows on order 2) and its rejects/ directory holds
-    # the six shapes the schema must refuse.
+    # one case per shape the schema must refuse.
     order: 2
     max_parallel_requests: 2
     # 6 h, sized to OpenCode Go's monthly quota wall (fleet-ops#9122).
@@ -1406,7 +1406,7 @@ router_settings:
   # ("simple-shuffle ignores order") was wrong for v1.98.0 - the order filter runs for every routing strategy,
   # after the cooldown filter. config/litellm-proxy.schema.json pins the layout - the seat, key and
   # plan limits of the order-1 row, and the model, api_base, key and order of each named fallback -
-  # and its rejects/ cases hold the seven shapes it must refuse.
+  # and its rejects/ cases hold one case per shape it must refuse.
   # Worker groups fall back to each other (fleet-ops#9015 finish line: "unless that model fails, then fall back").
   # 24h to 2026-10-02 19:05 UTC: 313 of 11,144 worker calls failed at the caller, and 1,345 of the journal's
   # errors were "JSON error injected into SSE stream" (OpenRouter/Cline/CommandCode space-bunny-alpha, 38-92%

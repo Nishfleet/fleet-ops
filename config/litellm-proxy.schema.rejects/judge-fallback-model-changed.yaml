@@ -1,9 +1,8 @@
-# fleet-ops#9374: a fallback row renamed out from under the group. Only the id
-# moves - the model and the key stay exactly as the shipped row has them - so
-# this file is refused by the id pin alone. The behaviour would be identical,
-# but the gate cannot see that two OpenCode Go rows are still there once the
-# name moves, so each named row is pinned to be present: renaming one is a
-# deliberate change with its own issue, in the same PR that edits the schema.
+# fleet-ops#9374: a fallback row carrying a model its name does not claim. The id
+# says ds41flash and the key is right, so nothing else in the file is wrong; only
+# model moves, and this file is refused by the first fallback's model pin alone.
+# memory card grader-never-builder-family depends on which family grades, so a
+# model swap under a stale id is exactly the drift to catch here.
 model_list:
 - model_name: judge
   litellm_params:
@@ -17,7 +16,7 @@ model_list:
     id: alibaba-qwen38max-judge
 - model_name: judge
   litellm_params:
-    model: openai/deepseek-v4.1-flash
+    model: openai/qwen3.8-max
     api_base: https://opencode.ai/zen/go/v1
     api_key: os.environ/OPENCODE_API_KEY
     order: 2
@@ -30,7 +29,7 @@ model_list:
     api_key: os.environ/OPENCODE_API_KEY_2
     order: 2
   model_info:
-    id: opencodego3-ds41flash-judge
+    id: opencodego2-ds41flash-judge
 router_settings:
   redis_url: redis://127.0.0.1:6379
   cooldown_time: 60

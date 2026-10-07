@@ -1,15 +1,13 @@
-# fleet-ops#9374: a fallback row renamed out from under the group. Only the id
-# moves - the model and the key stay exactly as the shipped row has them - so
-# this file is refused by the id pin alone. The behaviour would be identical,
-# but the gate cannot see that two OpenCode Go rows are still there once the
-# name moves, so each named row is pinned to be present: renaming one is a
-# deliberate change with its own issue, in the same PR that edits the schema.
+# fleet-ops#9374: the paid row spending the builders' key. Only api_key moves, so
+# this file is refused by the paid row's api_key pin alone. The order-1 judge
+# rung would then bill a DeepSeek seat Nish is already paying for twice, which is
+# the opposite of putting an idle paid seat to work.
 model_list:
 - model_name: judge
   litellm_params:
     model: openai/qwen3.8-max
     api_base: https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1
-    api_key: os.environ/ALIBABA_CODING_API_KEY
+    api_key: os.environ/OPENCODE_API_KEY
     rpm: 3
     order: 1
     max_parallel_requests: 3
@@ -30,7 +28,7 @@ model_list:
     api_key: os.environ/OPENCODE_API_KEY_2
     order: 2
   model_info:
-    id: opencodego3-ds41flash-judge
+    id: opencodego2-ds41flash-judge
 router_settings:
   redis_url: redis://127.0.0.1:6379
   cooldown_time: 60
