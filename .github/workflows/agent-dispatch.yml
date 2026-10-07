@@ -342,9 +342,9 @@ jobs:
                      or any($own[]; . as $re | $f | test($re; "i")))] as $hits
         | [($pr.patches // [])[] | . as $x
             | $diff[] | . as $d
-            | select(($x.file | test($d.files; "i")) and (($d.not_files // null) == null or ($x.file | test($d.not_files; "i") | not)))
-            | if $x.patch == null then "no diff for \($x.file) (\($d.id))"
-              elif any($x.patch | split("\n")[] | select(startswith("+") and (startswith("+++") | not)); test($d.pattern; "i")) then "diff \($d.id) in \($x.file)"
+            | select(($x.file | test($d.files; "i")) and (if $d.not_files == null then true else ($x.file | test($d.not_files; "i") | not) end))
+            | if $x.patch == null then (if $d.hold_no_patch == true then "no diff for \($x.file) (\($d.id))" else empty end)
+              elif ([$x.patch | split("\n")[] | select(startswith("+") and (startswith("+++") | not))] | join(" ") | test($d.pattern; "i")) then "diff \($d.id) in \($x.file)"
               else empty end] as $dhits
         | ([if any($pr.labels[]; . == $label) then "label \($label)" else empty end]
            + [if ($p | type) != "object" then "risky-path list unreadable" else empty end]

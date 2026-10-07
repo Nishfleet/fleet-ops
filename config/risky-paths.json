@@ -4,17 +4,17 @@
     "*": [
       "(^|/)\\.env",
       "(^|/)\\.dev\\.vars",
-      "(^|/)[^/]*(secret|credential|api-?key)[^/]*$",
+      "(^|/)[^/]*(secret|credential|api[_-]?key)[^/]*$",
       "billing",
       "entitlement",
       "pricing",
       "payments?([/._-]|$)",
       "(^|[/._-])top-?up([/._-]|$)",
       "(^|[/._-])meter(s|ing)?([/._-]|$)",
-      "(^|/)(dodo|stripe)[^/]*\\.",
+      "(^|/)(dodo|stripe|checkout|invoice|refund|subscription|wallet)[^/]*([/.]|$)",
       "^\\.github/workflows/[^/]*(deploy|release|publish|prod)[^/]*\\.ya?ml$",
       "(^|/)wrangler[^/]*\\.(json|jsonc|toml)$",
-      "(^|/)[^/]*prod(uction)?[^/]*\\.(json|jsonc|ya?ml|toml|env)$"
+      "(^|[/._-])prod(uction)?[._-][^/]*\\.(json|jsonc|ya?ml|toml|env)$|(^|/)prod(uction)?/"
     ],
     "Nishfleet/fleet-ops": [
       "^\\.github/",
@@ -34,14 +34,14 @@
       "security"
     ]
   },
-  "safe": ["\\.mdx?$", "\\.txt$"],
+  "safe": ["^docs/", "^docs-site/.*\\.mdx?$", "(^|/)(README|CHANGELOG|CONTRIBUTING|LICENSE)[^/]*$"],
   "diff": [
-    {"id": "data-delete", "files": "\\.sql$|^migrations/", "pattern": "\\b(drop|delete|truncate)\\b"},
-    {"id": "row-rewrite", "files": "\\.sql$|^migrations/", "pattern": "\\b(update\\b[^;]*\\bset\\b|alter\\s+table|rename\\s+(to|column))"},
-    {"id": "object-purge", "files": "\\.(js|jsx|ts|tsx|mjs|cjs|go|py|sh|ya?ml|json|jsonc|toml)$", "not_files": "(^|/)(tests?|__tests__|evals?)/|\\.(test|spec)\\.", "pattern": "(deleteObjects?\\b|\\bpurge|emptyBucket|deleteBucket|bucket\\.delete)"},
-    {"id": "workflow-secrets", "files": "^\\.github/", "pattern": "\\bsecrets(\\.|\\[)"},
+    {"id": "data-delete", "hold_no_patch": true, "files": "\\.sql$|^migrations/", "pattern": "\\b(drop|delete|truncate)\\b"},
+    {"id": "row-rewrite", "hold_no_patch": true, "files": "\\.sql$|^migrations/", "pattern": "\\b(update\\b[^;]*\\bset\\b|alter\\s+table|rename\\s+(to|column))"},
+    {"id": "object-purge", "files": "\\.(js|jsx|ts|tsx|mjs|cjs|go|py|sh|ya?ml|json|jsonc|toml)$", "not_files": "(^|/)(tests?|__tests__|evals?)/|\\.(test|spec)\\.", "pattern": "(deleteObjects?\\b|purge(Bucket|Objects?|All|Data)|emptyBucket|deleteBucket|bucket\\.delete)"},
+    {"id": "workflow-secrets", "hold_no_patch": true, "files": "^\\.github/", "pattern": "\\bsecrets(\\.|\\[)"},
     {"id": "secret-handling", "files": "\\.(js|jsx|ts|tsx|mjs|cjs|go|py|sh|ya?ml|json|jsonc|toml)$", "not_files": "(^|/)(tests?|__tests__|evals?)/|\\.(test|spec)\\.", "pattern": "(api_?key|secret|private_?key|access_?token|auth_?token|credential|password|process\\.env\\.\\w*(key|token))"},
-    {"id": "prod-deploy", "files": "^\\.github/|^(wrangler|infra|deploy)", "pattern": "(wrangler\\s+(deploy|publish)|environment:\\s*\\W*prod|--env\\s+prod|d1 (execute|migrations apply)[^\\n]*--remote)"}
+    {"id": "prod-deploy", "hold_no_patch": true, "files": "^\\.github/|(^|/)(wrangler|infra|deploy)[^/]*", "pattern": "(wrangler(@\\S+)?\\s+(deploy|publish)|cloudflare/wrangler-action|environment:\\s*\\W*prod|--env\\s+prod|d1 (execute|migrations apply)[^\\n]*--remote)"}
   ],
   "cases": [
     {"id": "drive-docs-only", "want": false, "repo": "Nishfleet/drive", "labels": [], "changed_files": 2, "files": ["docs/guide.md", "README.md"], "patches": [{"file": "docs/guide.md", "patch": "@@ -1 +1 @@\n-a\n+b"}, {"file": "README.md", "patch": "@@ -1 +1 @@\n+x"}]},
@@ -102,7 +102,14 @@
     {"id": "rename-into-risky-path", "want": true, "repo": "Nishfleet/0509", "labels": [], "changed_files": 2, "files": ["app/routes/x.ts", "core/billing.js"], "patches": [{"file": "app/routes/x.ts", "patch": "@@ -1 +1 @@\n+x"}]},
     {"id": "mixed-one-risky", "want": true, "repo": "Nishfleet/0509", "labels": [], "changed_files": 3, "files": ["app/routes/a.tsx", "app/components/b.tsx", "core/billing.js"], "patches": [{"file": "app/routes/a.tsx", "patch": "+x"}, {"file": "app/components/b.tsx", "patch": "+x"}]},
     {"id": "fleet-ops-policy-doc", "want": true, "repo": "Nishfleet/fleet-ops", "labels": [], "changed_files": 1, "files": ["docs/quality-bar.md"]},
-    {"id": "fleet-ops-github-dir", "want": true, "repo": "Nishfleet/fleet-ops", "labels": [], "changed_files": 1, "files": [".github/workflows/ci.yml"]}
+    {"id": "fleet-ops-github-dir", "want": true, "repo": "Nishfleet/fleet-ops", "labels": [], "changed_files": 1, "files": [".github/workflows/ci.yml"]},
+    {"id": "drive-multiline-update", "want": true, "repo": "Nishfleet/drive", "labels": [], "changed_files": 1, "files": ["migrations/drive/0110_x.sql"], "patches": [{"file": "migrations/drive/0110_x.sql", "patch": "@@ -0,0 +1,2 @@\n+UPDATE users\n+SET plan = 'free';"}]},
+    {"id": "drive-stripe-dir", "want": true, "repo": "Nishfleet/drive", "labels": [], "changed_files": 1, "files": ["src/stripe/webhook.ts"], "patches": [{"file": "src/stripe/webhook.ts", "patch": "@@ -1 +1 @@\n+x"}]},
+    {"id": "drive-wrangler-action", "want": true, "repo": "Nishfleet/drive", "labels": [], "changed_files": 1, "files": [".github/workflows/cd.yml"], "patches": [{"file": ".github/workflows/cd.yml", "patch": "@@ -1 +1 @@\n+      - uses: cloudflare/wrangler-action@v3"}]},
+    {"id": "drive-secrets-md-named", "want": true, "repo": "Nishfleet/drive", "labels": [], "changed_files": 1, "files": ["docs-extra/secrets.md"], "patches": [{"file": "docs-extra/secrets.md", "patch": "@@ -1 +1 @@\n+x"}]},
+    {"id": "drive-products-json-safe", "want": false, "repo": "Nishfleet/drive", "labels": [], "changed_files": 1, "files": ["data/products.json"], "patches": [{"file": "data/products.json", "patch": "@@ -1 +1 @@\n+{}"}]},
+    {"id": "drive-purge-cache-safe", "want": false, "repo": "Nishfleet/drive", "labels": [], "changed_files": 1, "files": ["src/cdn.js"], "patches": [{"file": "src/cdn.js", "patch": "@@ -1 +1 @@\n+purgeCache()"}]},
+    {"id": "drive-large-ts-no-patch-safe", "want": false, "repo": "Nishfleet/drive", "labels": [], "changed_files": 1, "files": ["src/big.ts"], "patches": [{"file": "src/big.ts", "patch": null}]}
   ],
   "approval_cases": [
     {"id": "no-status", "want": false, "approvers": ["nish3451"], "statuses": []},
