@@ -1,0 +1,129 @@
+# Prompt-cache read-share alert (fleet-ops#9357).
+#
+# The signal is the share of a model's input tokens that came back from the
+# provider's prompt cache:
+#
+#   rate(litellm_input_cached_tokens_metric_total[1h])
+#     / rate(litellm_input_tokens_metric_total[1h])
+#
+# grouped by requested_model (the fleet alias: worker-capable, worker-cheap,
+# senior, judge), so one broken route is named instead of the whole proxy.
+#
+# The denominator is correct as written because LiteLLM feeds
+# litellm_input_tokens_metric from the provider usage's prompt_tokens, and
+# prompt_tokens already CONTAINS the cached part on both shapes we see:
+# OpenAI's prompt_tokens_details.cached_tokens is a subset of prompt_tokens,
+# and Anthropic's prompt_tokens is cache_read + cache_creation + fresh.
+# Measured on this box 2026-10-07: every share is <= 1 and the busy lanes sit
+# at 0.66-0.83, so the cached part is inside the denominator.
+#
+# Two deliberate choices, both from the #4977 postmortem:
+#
+#  - rate over [1h], not increase over [24h]. A trailing-24h ratio cannot
+#    recover for ~24h after a correct fix, so a daily alert page stays red for
+#    a day after the fix lands. A 1h rate recovers inside an hour.
+#  - a minimum input-token rate (the floor below), because a low-volume probe
+#    lane is legitimately ~100% uncached and would fire the rule on its own.
+#    Measured 2026-10-07: worker-capable runs ~25,000 input tok/s, while
+#    worker-cheap runs ~20 and senior ~4 in the same window. A 1000 tok/s floor
+#    sits three orders of magnitude above a probe lane and far below the busy
+#    lane, so a real route losing its cache still fires and a single probe call
+#    does not.
+#
+# for: 30m on top of the 1h window: a route has to stay broken across half an
+# hour of steady traffic before this pages, so one bad upstream reply does not.
+#
+# The four vendors that report no cache field at all (cline, zai, ollama,
+# openrouter) are NOT an incident here: their providers return a usage block
+# with prompt_tokens_details null, so there is no cache number to report. See
+# docs/prompt-cache-routes.md for that per-vendor proof. The rule therefore
+# reads per requested_model, where those rows share an alias with the caching
+# lanes, and never fires on a total-zero cache for its own sake.
+#
+# Contact point: the existing hermes-urgent Telegram contact point, declared in
+# paid-plan-idle.yaml and referenced by name here, exactly as cpu-pressure.yaml
+# does. Grafana merges every file under the alerting provisioning dir, so this
+# adds a rule and reuses that receiver rather than declaring a second one.
+apiVersion: 1
+
+groups:
+  - orgId: 1
+    name: prompt-cache-hit
+    folder: fleet
+    interval: 1m
+    rules:
+      - uid: prompt-cache-hit-low
+        title: Prompt-cache read share below 50%
+        condition: C
+        data:
+          # A: the cache-read share per requested model. No `bool` on either
+          # side, so only breaching series survive and the `and` below is a
+          # plain label match (with `bool` the comparison becomes a 0/1 value
+          # and the floor would be ignored).
+          - refId: A
+            relativeTimeRange: {from: 3600, to: 0}
+            datasourceUid: fleet-prometheus
+            model:
+              datasource: {type: prometheus, uid: fleet-prometheus}
+              editorMode: code
+              expr: |-
+                (
+                  sum by (requested_model) (rate(litellm_input_cached_tokens_metric_total[1h]))
+                  /
+                  sum by (requested_model) (rate(litellm_input_tokens_metric_total[1h]))
+                ) < 0.5
+                and on (requested_model)
+                sum by (requested_model) (rate(litellm_input_tokens_metric_total[1h])) > 1000
+              instant: true
+              intervalMs: 1000
+              maxDataPoints: 43200
+              range: false
+              refId: A
+          # B: the input-token rate that carried the verdict, so the alert can
+          # say how much traffic the number rests on.
+          - refId: B
+            relativeTimeRange: {from: 3600, to: 0}
+            datasourceUid: fleet-prometheus
+            model:
+              datasource: {type: prometheus, uid: fleet-prometheus}
+              editorMode: code
+              expr: sum by (requested_model) (rate(litellm_input_tokens_metric_total[1h]))
+              instant: true
+              intervalMs: 1000
+              maxDataPoints: 43200
+              range: false
+              refId: B
+          - refId: C
+            datasourceUid: __expr__
+            model:
+              conditions:
+                - evaluator: {params: [0], type: gt}
+                  operator: {type: and}
+                  query: {params: [C]}
+                  reducer: {params: [], type: last}
+                  type: query
+              datasource: {type: __expr__, uid: __expr__}
+              expression: A
+              intervalMs: 1000
+              maxDataPoints: 43200
+              refId: C
+              type: threshold
+        # 30m of steady traffic on top of the 1h window.
+        for: 30m
+        # No data is not an incident: a lane with no traffic has no cache share
+        # to be low. Execution errors stay Error so a broken query is visible.
+        noDataState: OK
+        execErrState: Error
+        annotations:
+          summary: 'Prompt-cache read share below 50% on {{ $labels.requested_model }}, so fleet requests are paying full input price.'
+          description: 'Less than half of this model''s input tokens came back from the provider prompt cache for an hour, on {{ $values.B.Value | printf "%.0f" }} input tokens/s. Every cache miss is billed at the full input price, so a route that stopped caching is a cost incident, not a latency one. Check whether the deployment still reports usage.prompt_tokens_details.cached_tokens (an OpenAI-compatible vendor that stops sending it looks exactly like this), and whether a prefix change broke the provider-side cache. Per-vendor verdicts: docs/prompt-cache-routes.md.'
+        labels:
+          signal: prompt-cache-hit
+          requested_model: '{{ $labels.requested_model }}'
+        isPaused: false
+        notification_settings:
+          receiver: hermes-urgent
+          group_by: [alertname, grafana_folder, requested_model]
+          group_wait: 0s
+          group_interval: 5m
+          repeat_interval: 4h
