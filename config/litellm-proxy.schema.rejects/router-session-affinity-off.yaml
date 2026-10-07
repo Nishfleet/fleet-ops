@@ -1,0 +1,12 @@
+model_list:
+- model_name: worker-cheap
+  litellm_params:
+    model: openai/x
+router_settings:
+  cooldown_time: 60
+  redis_url: redis://127.0.0.1:6379
+  deployment_affinity_ttl_seconds: 600
+  # fleet-ops#9361: session_affinity is what pins a session to a row. Without it
+  # the affinity check never runs, so the session pin cannot hold and the
+  # prompt cache never hits, which is the scatter this issue measures.
+  optional_pre_call_checks: []
