@@ -94,7 +94,7 @@ The rules still in force:
   defect in its rung.
 - Gates that exist: a PR touching a risky path is labelled `needs-coordinator` and
   not armed; agent-dispatch.yml's `hold-risky` job disarms, dequeues and labels
-  any PR whose changed paths match `config/risky-paths.json` until its exact
+  any PR whose changed paths or added diff lines match `config/risky-paths.json` until its exact
   head sha is approved: an approver's unedited PR comment with the line
   `coordinator-approval: <full head sha>`, or a `coordinator-approval=success`
   status on it (0509#7092);

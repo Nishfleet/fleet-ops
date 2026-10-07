@@ -1,5 +1,5 @@
 {
-  "description": "Payloads that must and must not start an orchestrate hand-off, and payloads the agent.yml Gate must park for the workflow-path route. CI jq evaluates fire() and parks() against each case; needles must appear in the named workflow so the if: and the Gate jq cannot drift from this file.",
+  "description": "Payloads that must and must not start an orchestrate hand-off, and payloads the agent.yml Gate must park for the workflow-path route. CI jq evaluates fire() and parks() against each case; needles must appear in the named workflow so the if: and the Gate jq cannot drift from this file. cap_cases run the orchestrate job's real 'Check the issue is still parked' script against a fake gh serving each case's runs and jobs (session is the conclusion of the 'Run the orchestrator session' step: success, failure, skipped, null for in progress, absent); CI asserts go, model and turns, so removing the cap, the model pin or the turns pin fails it. session_cases run the real session step against a fake claude and assert its argv, so removing --settings disableAllHooks fails it.",
   "needles": {
     "agent-dispatch.yml": [
       "ORCHESTRATE",
@@ -10,7 +10,15 @@
       "github-actions[bot]",
       "orchestrator-tried",
       "orch/issue-",
-      "--max-turns 80",
+      "--max-turns \"$TURNS\"",
+      "ORCHESTRATE_DAILY_MAX",
+      "claude-sonnet-5-5",
+      "needs-opus",
+      "ORCHESTRATE_MODEL",
+      "ORCHESTRATE_HOOKS",
+      "actions: read",
+      "disableAllHooks",
+      "--output-format json",
       "--permission-mode bypassPermissions",
       "cancel-in-progress: false",
       "vars.ORCHESTRATE != 'off' && (",
@@ -200,6 +208,499 @@
       "want_park": false,
       "title": "relabel me",
       "body": "Remove the parked label from this issue."
+    }
+  ],
+  "cap_cases": [
+    {
+      "id": "under-cap",
+      "daily_max": "2",
+      "model_var": null,
+      "labels": [],
+      "runs": [
+        {
+          "id": 101,
+          "session": "success"
+        }
+      ],
+      "want_go": true,
+      "want_model": "claude-sonnet-5-5",
+      "want_turns": "40"
+    },
+    {
+      "id": "at-cap-runs-not-issues",
+      "daily_max": "2",
+      "model_var": null,
+      "labels": [],
+      "runs": [
+        {
+          "id": 101,
+          "session": "success"
+        },
+        {
+          "id": 102,
+          "session": "failure"
+        }
+      ],
+      "want_go": false
+    },
+    {
+      "id": "over-cap-default-10",
+      "daily_max": null,
+      "model_var": null,
+      "labels": [],
+      "runs": [
+        {
+          "id": 101,
+          "session": "success"
+        },
+        {
+          "id": 102,
+          "session": "success"
+        },
+        {
+          "id": 103,
+          "session": "success"
+        },
+        {
+          "id": 104,
+          "session": "success"
+        },
+        {
+          "id": 105,
+          "session": "success"
+        },
+        {
+          "id": 106,
+          "session": "success"
+        },
+        {
+          "id": 107,
+          "session": "success"
+        },
+        {
+          "id": 108,
+          "session": "success"
+        },
+        {
+          "id": 109,
+          "session": "success"
+        },
+        {
+          "id": 110,
+          "session": "success"
+        }
+      ],
+      "want_go": false
+    },
+    {
+      "id": "under-default-10",
+      "daily_max": null,
+      "model_var": null,
+      "labels": [],
+      "runs": [
+        {
+          "id": 101,
+          "session": "success"
+        },
+        {
+          "id": 102,
+          "session": "success"
+        },
+        {
+          "id": 103,
+          "session": "success"
+        },
+        {
+          "id": 104,
+          "session": "success"
+        },
+        {
+          "id": 105,
+          "session": "success"
+        },
+        {
+          "id": 106,
+          "session": "success"
+        },
+        {
+          "id": 107,
+          "session": "success"
+        },
+        {
+          "id": 108,
+          "session": "success"
+        },
+        {
+          "id": 109,
+          "session": "success"
+        }
+      ],
+      "want_go": true,
+      "want_model": "claude-sonnet-5-5",
+      "want_turns": "40"
+    },
+    {
+      "id": "yesterday-not-counted",
+      "daily_max": "1",
+      "model_var": null,
+      "labels": [],
+      "runs": [
+        {
+          "id": 101,
+          "session": "success",
+          "when": "YESTERDAY"
+        }
+      ],
+      "want_go": true,
+      "want_model": "claude-sonnet-5-5",
+      "want_turns": "40"
+    },
+    {
+      "id": "skipped-session-not-counted",
+      "daily_max": "1",
+      "model_var": null,
+      "labels": [],
+      "runs": [
+        {
+          "id": 101,
+          "session": "skipped"
+        }
+      ],
+      "want_go": true,
+      "want_model": "claude-sonnet-5-5",
+      "want_turns": "40"
+    },
+    {
+      "id": "in-progress-session-not-counted",
+      "daily_max": "1",
+      "model_var": null,
+      "labels": [],
+      "runs": [
+        {
+          "id": 101,
+          "session": "null"
+        }
+      ],
+      "want_go": true,
+      "want_model": "claude-sonnet-5-5",
+      "want_turns": "40"
+    },
+    {
+      "id": "no-session-step-not-counted",
+      "daily_max": "1",
+      "model_var": null,
+      "labels": [],
+      "runs": [
+        {
+          "id": 101,
+          "session": "absent"
+        }
+      ],
+      "want_go": true,
+      "want_model": "claude-sonnet-5-5",
+      "want_turns": "40"
+    },
+    {
+      "id": "failure-counts",
+      "daily_max": "1",
+      "model_var": null,
+      "labels": [],
+      "runs": [
+        {
+          "id": 101,
+          "session": "failure"
+        }
+      ],
+      "want_go": false
+    },
+    {
+      "id": "other-job-not-counted",
+      "daily_max": "1",
+      "model_var": null,
+      "labels": [],
+      "runs": [
+        {
+          "id": 101,
+          "session": "success",
+          "job": "list"
+        }
+      ],
+      "want_go": true,
+      "want_model": "claude-sonnet-5-5",
+      "want_turns": "40"
+    },
+    {
+      "id": "caller-stub-job-counts",
+      "daily_max": "1",
+      "model_var": null,
+      "labels": [],
+      "runs": [
+        {
+          "id": 101,
+          "session": "success",
+          "job": "stub / orchestrate"
+        }
+      ],
+      "want_go": false
+    },
+    {
+      "id": "other-event-not-counted",
+      "daily_max": "1",
+      "model_var": null,
+      "labels": [],
+      "runs": [
+        {
+          "id": 101,
+          "session": "success",
+          "event": "schedule"
+        }
+      ],
+      "want_go": true,
+      "want_model": "claude-sonnet-5-5",
+      "want_turns": "40"
+    },
+    {
+      "id": "dispatch-run-counts",
+      "daily_max": "1",
+      "model_var": null,
+      "labels": [],
+      "runs": [
+        {
+          "id": 101,
+          "session": "success",
+          "event": "workflow_dispatch"
+        }
+      ],
+      "want_go": false
+    },
+    {
+      "id": "zero-is-no-cap",
+      "daily_max": "0",
+      "model_var": null,
+      "labels": [],
+      "runs": [
+        {
+          "id": 101,
+          "session": "success"
+        },
+        {
+          "id": 102,
+          "session": "success"
+        },
+        {
+          "id": 103,
+          "session": "success"
+        },
+        {
+          "id": 104,
+          "session": "success"
+        },
+        {
+          "id": 105,
+          "session": "success"
+        },
+        {
+          "id": 106,
+          "session": "success"
+        },
+        {
+          "id": 107,
+          "session": "success"
+        },
+        {
+          "id": 108,
+          "session": "success"
+        },
+        {
+          "id": 109,
+          "session": "success"
+        },
+        {
+          "id": 110,
+          "session": "success"
+        },
+        {
+          "id": 111,
+          "session": "success"
+        },
+        {
+          "id": 112,
+          "session": "success"
+        },
+        {
+          "id": 113,
+          "session": "success"
+        },
+        {
+          "id": 114,
+          "session": "success"
+        },
+        {
+          "id": 115,
+          "session": "success"
+        },
+        {
+          "id": 116,
+          "session": "success"
+        },
+        {
+          "id": 117,
+          "session": "success"
+        },
+        {
+          "id": 118,
+          "session": "success"
+        },
+        {
+          "id": 119,
+          "session": "success"
+        },
+        {
+          "id": 120,
+          "session": "success"
+        },
+        {
+          "id": 121,
+          "session": "success"
+        },
+        {
+          "id": 122,
+          "session": "success"
+        },
+        {
+          "id": 123,
+          "session": "success"
+        },
+        {
+          "id": 124,
+          "session": "success"
+        },
+        {
+          "id": 125,
+          "session": "success"
+        },
+        {
+          "id": 126,
+          "session": "success"
+        },
+        {
+          "id": 127,
+          "session": "success"
+        },
+        {
+          "id": 128,
+          "session": "success"
+        },
+        {
+          "id": 129,
+          "session": "success"
+        },
+        {
+          "id": 130,
+          "session": "success"
+        }
+      ],
+      "want_go": true,
+      "want_model": "claude-sonnet-5-5",
+      "want_turns": "40"
+    },
+    {
+      "id": "bad-max-fails",
+      "daily_max": "ten",
+      "model_var": null,
+      "labels": [],
+      "runs": [],
+      "want_fail": true
+    },
+    {
+      "id": "needs-opus-label",
+      "daily_max": "5",
+      "model_var": null,
+      "labels": [
+        "needs-opus"
+      ],
+      "runs": [
+        {
+          "id": 101,
+          "session": "success"
+        }
+      ],
+      "want_go": true,
+      "want_model": "",
+      "want_turns": "80"
+    },
+    {
+      "id": "model-var-off",
+      "daily_max": null,
+      "model_var": "off",
+      "labels": [],
+      "runs": [],
+      "want_go": true,
+      "want_model": "",
+      "want_turns": "80"
+    },
+    {
+      "id": "model-var-override",
+      "daily_max": null,
+      "model_var": "claude-opus-4-1",
+      "labels": [],
+      "runs": [],
+      "want_go": true,
+      "want_model": "claude-opus-4-1",
+      "want_turns": "40"
+    },
+    {
+      "id": "needs-opus-but-capped",
+      "daily_max": "1",
+      "model_var": null,
+      "labels": [
+        "needs-opus"
+      ],
+      "runs": [
+        {
+          "id": 101,
+          "session": "success"
+        }
+      ],
+      "want_go": false
+    },
+    {
+      "id": "too-many-runs-fails-closed",
+      "daily_max": "10",
+      "model_var": null,
+      "labels": [],
+      "runs": [],
+      "extra_runs": 401,
+      "want_go": false
+    }
+  ],
+  "session_cases": [
+    {
+      "id": "sonnet-hooks-off",
+      "model": "claude-sonnet-5-5",
+      "turns": "40",
+      "hooks": "",
+      "want_model": "claude-sonnet-5-5",
+      "want_turns": "40",
+      "want_settings": true
+    },
+    {
+      "id": "opus-hooks-off",
+      "model": "",
+      "turns": "80",
+      "hooks": "",
+      "want_model": "",
+      "want_turns": "80",
+      "want_settings": true
+    },
+    {
+      "id": "hooks-kept",
+      "model": "claude-sonnet-5-5",
+      "turns": "40",
+      "hooks": "on",
+      "want_model": "claude-sonnet-5-5",
+      "want_turns": "40",
+      "want_settings": false
     }
   ]
 }

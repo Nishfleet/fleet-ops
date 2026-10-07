@@ -1,0 +1,25 @@
+[Unit]
+# Re-reads every log line in the %i source paths, then leaves the new or
+# changed ones in the FTS5 index. The first run per instance is the slow one
+# (minutes); later runs are the same scan over the files on disk, so the index
+# mirrors the logs and never holds more than the logs do. Nice and idle I/O
+# keep it out of the way of agent work. Config and index live in
+# ~/.local/share/leviathan/, installed from config/leviathan/ by
+# fleet-sync.service (the config must exist before this unit can run, so it is
+# never read from the deploy clone, which only has it after the merge that
+# ships this unit).
+Description=Refresh the Leviathan session-log search index for %i
+OnFailure=fleet-unit-failed@%n.service
+
+[Service]
+Type=oneshot
+ExecStart=%h/.local/bin/leviathan index -c %h/.local/share/leviathan/%i.toml --index %h/.local/share/leviathan/%i.db
+Nice=19
+IOSchedulingClass=idle
+# Measured 2026-10-06: the pi scan peaks at 1.1G RAM (claude is smaller), so
+# the caps sit ~2x over the real peak. MemoryHigh throttles first and a
+# throttled run that outlives TimeoutStartSec fails and pages — the intended
+# signal when the logs outgrow the caps.
+MemoryHigh=2G
+MemoryMax=3G
+TimeoutStartSec=600
