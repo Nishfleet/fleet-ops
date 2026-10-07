@@ -109,6 +109,22 @@ permissions: {}
 concurrency:
   group: agent-dispatch-${{ (github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.issue == '')) && 'sweep' || github.run_id }}
   cancel-in-progress: false
+# Sweep liveness (fleet-ops#9275): a run counts as live only while its `work`
+# job (the reusable-workflow job whose name ends in "/ work") is queued or
+# running. A run that is queued as a whole while its work job already ended is
+# a run whose claim died, and was read as live for up to an hour behind busy
+# runners. With several work jobs in one run, the one whose name carries the
+# claim ref decides; none named, all count. A run with no work job listed yet
+# (jobs not created) falls back to the run's own status, so a run dispatched a
+# second ago is not requeued twice. Input: `gh run view <id> --json status,jobs`
+# on stdin, `--arg ref <claim ref>`. Output: true or false.
+env:
+  RUN_LIVE_JQ: >-
+    def live: IN("queued", "in_progress", "waiting", "pending", "requested");
+    [.jobs[]? | select(.name | endswith("/ work"))] as $w
+    | [$w[] | select(.name | contains("(" + $ref + ")"))] as $mine
+    | (if ($mine | length) > 0 then $mine else $w end) as $j
+    | if ($j | length) > 0 then ($j | any(.[]; .status | live)) else (.status | live) end
 jobs:
   # FLEET_DISPATCH_PAUSED is true: say so, once per event that a dispatch job
   # would have acted on, so a skipped run is not silent. It starts nothing and
@@ -139,8 +155,8 @@ jobs:
       vars.FLEET_DISPATCH_PAUSED != 'true' && github.event_name == 'issues' && github.event.label.name == 'agent-ready' &&
       ((inputs.agent_mode || vars.AGENT_MODE) == 'live' || contains(github.event.issue.labels.*.name, 'shadow-actions'))
     uses: Nishfleet/fleet-ops/.github/workflows/agent.yml@main # runner group 3 allows only agent.yml@refs/heads/main; a SHA pin strands every job
-    # issues: write is what agent.yml's report job asks for; its other jobs
-    # ask for nothing and act with the App token.
+    # issues: write is what agent.yml's work job asks for (Router wall and the
+    # strike step relabel with GITHUB_TOKEN).
     permissions:
       issues: write
     with:
@@ -241,9 +257,9 @@ jobs:
               (any(.labels[].name; IN("agent-blocked","needs-split","needs-orchestrator","needs-nish-decision","epic")) | not)' | grep -qx true || continue
             body=$(gh issue view "$i" -R "$GITHUB_REPOSITORY" --json comments --jq '[.comments[].body | select(startswith("agent run started:"))] | last // ""')
             if [[ $body =~ actions/runs/([0-9]+) ]]; then
-              case $(gh run view "${BASH_REMATCH[1]}" -R "$GITHUB_REPOSITORY" --json status --jq .status) in
-                queued|in_progress|requested|waiting|pending) echo "#$i: run live, skip"; continue ;;
-              esac
+              # A failed read is not proof the run died: skip, never requeue a live worker.
+              rv=$(gh run view "${BASH_REMATCH[1]}" -R "$GITHUB_REPOSITORY" --json status,jobs) || { echo "::warning::#$i: run read failed, skip"; continue; }
+              if [ "$(jq -r --arg ref "$ref" "$RUN_LIVE_JQ" <<<"$rv")" != false ]; then echo "#$i: run live, skip"; continue; fi
             fi
             gh issue comment "$i" -R "$GITHUB_REPOSITORY" --body "rework: claim PR #$pr conflicts with main. Merge main: git merge origin/main into $ref, resolve the conflicts, run the checks, push."
             echo "requeue #$i: PR #$pr is CONFLICTING"
@@ -570,12 +586,13 @@ jobs:
               gh pr list -R "$GITHUB_REPOSITORY" --head "claim/issue-$n" --state open --json number --jq 'length' | grep -qx 0 || continue
               body=$(gh issue view "$n" -R "$GITHUB_REPOSITORY" --json comments --jq '[.comments[].body | select(startswith("agent run started:"))] | last // ""')
               [[ $body =~ actions/runs/([0-9]+) ]] || continue
-              case $(gh run view "${BASH_REMATCH[1]}" -R "$GITHUB_REPOSITORY" --json status --jq .status) in
-                queued|in_progress|requested|waiting|pending) ;;
-                *) gh issue edit "$n" -R "$GITHUB_REPOSITORY" --remove-label agent-in-progress --add-label agent-ready
-                   echo "requeued #$n: claimed with no live run and no claim PR"
-                   stalled_refs=$(jq -nc --argjson s "$stalled_refs" --arg r "claim/issue-$n-miss-review" '$s + [$r]') ;;
-              esac
+              # A failed read is not proof the run died: skip, never requeue a live worker.
+              rv=$(gh run view "${BASH_REMATCH[1]}" -R "$GITHUB_REPOSITORY" --json status,jobs) || { echo "::warning::#$n: run read failed, skip"; continue; }
+              if [ "$(jq -r --arg ref "claim/issue-$n" "$RUN_LIVE_JQ" <<<"$rv")" = false ]; then
+                gh issue edit "$n" -R "$GITHUB_REPOSITORY" --remove-label agent-in-progress --add-label agent-ready
+                echo "requeued #$n: claimed with no live run and no claim PR"
+                stalled_refs=$(jq -nc --argjson s "$stalled_refs" --arg r "claim/issue-$n-miss-review" '$s + [$r]')
+              fi
             done
             nums=$(gh issue list -R "$GITHUB_REPOSITORY" -l agent-ready -L 1000 --json number --jq '.[].number')
             # CONFLICTING too: auto-merge stays armed on a PR that turns DIRTY
@@ -616,7 +633,8 @@ jobs:
               )
               # Claim PRs whose issue is still agent-in-progress after the worker
               # is gone (fleet-ops#8777). Live means the newest "agent run started:"
-              # run is queued or in progress; `gh run view` is that read.
+              # run is queued or in progress; `gh run view` is that read, judged by its work
+              # job (RUN_LIVE_JQ at the top of this file).
               inprog=$(gh issue list -R "$GITHUB_REPOSITORY" -l agent-in-progress -L 1000 --json number --jq '[.[].number]')
               orphans=$(
                 jq -r --argjson ip "$inprog" '.[] | select(.labels | map(.name) | index("needs-coordinator") | not) | .headRefName | capture("^claim/issue-(?<n>[0-9]+)$").n | tonumber as $i | select($ip | index($i)) | $i' <<<"$all" |
@@ -632,11 +650,9 @@ jobs:
                     echo "::error::agent run started comment on #$n has no run id" >&2
                     exit 1
                   fi
-                  status=$(gh run view "$id" -R "$GITHUB_REPOSITORY" --json status --jq .status) || exit 1
-                  case $status in
-                    queued|in_progress|requested|waiting|pending) ;;
-                    *) echo "claim/issue-$n" ;;
-                  esac
+                  rv=$(gh run view "$id" -R "$GITHUB_REPOSITORY" --json status,jobs) || exit 1
+                  live=$(jq -r --arg ref "claim/issue-$n" "$RUN_LIVE_JQ" <<<"$rv") || exit 1
+                  [ "$live" = true ] || echo "claim/issue-$n"
                 done | jq -Rsc 'split("\n") | map(select(length > 0))'
               )
               # Red claim PRs the rework event missed (drive#765: no run fired;

@@ -234,13 +234,23 @@ jobs:
               );
             (.orchestrate_cases | map(select(.want != fire)) | if length == 0 then true else error("orchestrate filter mismatch: \(map(.id)|join(","))") end)
           ' config/orchestrate-events.json
-          # The Gate detector in agent.yml, verbatim: an issue whose title or
-          # body names a workflow file is parked for the orchestrator, because
-          # no worker App can push one.
-          jq -e '
-            def parks: (((.title // "") + "\n" + (.body // "")) | contains(".github/workflows/"));
-            (.gate_cases | map(select(.want_park != parks)) | if length == 0 then true else error("gate detector mismatch: \(map(.id)|join(","))") end)
-          ' config/orchestrate-events.json
+          # The Gate detector, taken out of agent.yml itself (not a copy): an
+          # issue whose title or body names a workflow file is parked for the
+          # orchestrator, because no worker App can push one. On fleet-ops the
+          # bare file names of its own workflows count too (fleet-ops#9275).
+          line=$(grep -m1 -E '^ *if jq -e --arg p .\.github/workflows/. --argjson fo' .github/workflows/agent.yml)
+          [ -n "$line" ] || { echo "Gate detector line not found in agent.yml"; exit 1; }
+          detector=${line#*if }; detector=${detector% <<<*}
+          bad=0
+          while IFS= read -r c; do
+            id=$(jq -r .id <<<"$c"); want=$(jq -r .want_park <<<"$c"); repo=$(jq -r '.repo // "Nishfleet/0509"' <<<"$c")
+            fleet_ops=false; case $repo in */fleet-ops) fleet_ops=true ;; esac
+            export fleet_ops  # read by the eval'd detector
+            got=false
+            if jq -c '{title, body}' <<<"$c" | eval "$detector" >/dev/null; then got=true; fi
+            [ "$got" = "$want" ] || { echo "gate detector mismatch: $id parks=$got want=$want"; bad=1; }
+          done < <(jq -c '.gate_cases[]' config/orchestrate-events.json)
+          test "$bad" -eq 0
           jq -r '.needles["agent-dispatch.yml"][]' config/orchestrate-events.json | while IFS= read -r n; do
             grep -F -- "$n" .github/workflows/agent-dispatch.yml >/dev/null || { echo "missing dispatch needle: $n"; exit 1; }
           done
@@ -603,45 +613,63 @@ jobs:
           CASES
           test "$bad" -eq 0
       - name: Infra-wall classifier (fake gh)
-        # Runs the report job's own run block, read out of agent.yml, against a
-        # fake gh. Cases in config/infra-wall-events.json carry the real
-        # jobs-API payloads of the 2026-10-05 overload (runs 37267338065 and
-        # 37276581999, public on fleet-ops): the 55-minute cap death and the
-        # mid-worker runner deaths that were wrongly struck into the
-        # strong-only lane (fleet-ops#9291). Controls prove the strike path is
-        # unchanged: a healthy host, a missing guard sample, an early worker
-        # failure, a later-step failure, a failed jobs read and an unmatchable
-        # ref all still strike, the second strike still parks, and a fourth
-        # infra death in a row strikes (the requeue cap).
+        # Runs the work job's own `Strike or requeue` run block, read out of
+        # agent.yml, against a fake gh. Cases in config/infra-wall-events.json
+        # carry the real Worker times of the 2026-10-05 overload (runs
+        # 37267338065 and 37276581999, public on fleet-ops): the 55-minute cap
+        # death that was wrongly struck into the strong-only lane
+        # (fleet-ops#9291). Controls prove the strike path is unchanged: a
+        # healthy host, a missing guard sample, an early worker failure, a
+        # cancelled Worker, a later-step failure all still strike, the second
+        # strike still parks, and a fourth infra death in a row strikes (the
+        # requeue cap). The strike runs inside the work job, not a separate
+        # report job that queues behind busy runners (fleet-ops#9275).
         if: always()
         run: |
           set -euo pipefail
           t=$RUNNER_TEMP/infra-mock
           mkdir -p "$t/bin"
-          block() { yq ".jobs.report.steps[] | select(.name == \"Strike or requeue\") | .$1" .github/workflows/agent.yml; }
+          f=.github/workflows/agent.yml
+          [ "$(yq '.jobs.report' "$f")" = null ] || { echo "a separate report job is back: the strike must run in the work job"; exit 1; }
+          block() { yq ".jobs.work.steps[] | select(.name == \"Strike or requeue\") | .$1" "$f"; }
           block run > "$t/report.sh"
-          for v in LOAD1 CORES SWAP_USED_KB WORKER_TIMEOUT_SECS CPU_LOAD_FACTOR SWAP_GUARD_KB INFRA_REQUEUE_CAP; do
-            val=$(block "env.$v")
-            [ -n "$val" ] && [ "$val" != null ] || { echo "report env $v missing"; exit 1; }
+          [ -s "$t/report.sh" ] || { echo "work job has no Strike or requeue step"; exit 1; }
+          # Both strike steps run on a failed or cancelled job, never on a
+          # Router wall (that one is already requeued), and mint their own token.
+          for sel in '.name == "App token for strike"' '.name == "Strike or requeue"'; do
+            cond=$(yq ".jobs.work.steps[] | select($sel) | .if" "$f")
+            for need in 'failure() || cancelled()' "steps.wall.outputs.wall != 'true'"; do
+              grep -qF -- "$need" <<<"$cond" || { echo "step ($sel) lacks: $need"; exit 1; }
+            done
           done
-          # The guard constants ship with the block; the Host sample values are
-          # per case (a runner that died records none).
+          for v in WORKER_OUTCOME STARTED ENDED LOAD1 CORES SWAP_USED_KB WORKER_TIMEOUT_SECS CPU_LOAD_FACTOR SWAP_GUARD_KB INFRA_REQUEUE_CAP; do
+            val=$(block "env.$v")
+            [ -n "$val" ] && [ "$val" != null ] || { echo "strike env $v missing"; exit 1; }
+          done
+          # The guard constants ship with the block; the Worker outcome, clock
+          # and Host sample values are per case.
           WORKER_TIMEOUT_SECS=$(block env.WORKER_TIMEOUT_SECS)
           CPU_LOAD_FACTOR=$(block env.CPU_LOAD_FACTOR)
           SWAP_GUARD_KB=$(block env.SWAP_GUARD_KB)
           INFRA_REQUEUE_CAP=$(block env.INFRA_REQUEUE_CAP)
           export WORKER_TIMEOUT_SECS CPU_LOAD_FACTOR SWAP_GUARD_KB INFRA_REQUEUE_CAP
-          # The work job must sample the host at the death moment and hand the
-          # numbers to report through the job outputs.
-          yq '.jobs.work.steps[] | select(.id == "host") | .run' .github/workflows/agent.yml > "$t/sample.sh"
+          # The classifier reads the Worker step's own outcome and two clocks,
+          # not the jobs API (the job conclusion is still null while the job runs).
+          block env.WORKER_OUTCOME | grep -qF 'steps.worker.outcome' || { echo "WORKER_OUTCOME not wired to steps.worker.outcome"; exit 1; }
+          [ "$(yq '.jobs.work.steps[] | select(.id == "worker") | .name' "$f")" = Worker ] || { echo "Worker step lost its id"; exit 1; }
+          yq '.jobs.work.steps[] | select(.id == "clock") | .run' "$f" > "$t/clock.sh"
+          clock_out=$t/clock.out
+          GITHUB_OUTPUT="$clock_out" bash "$t/clock.sh"
+          grep -Eq '^started=[0-9]+$' "$clock_out" || { echo "Worker clock: started missing or malformed"; exit 1; }
+          block env.STARTED | grep -qF 'steps.clock.outputs.started' || { echo "STARTED not wired to the Worker clock"; exit 1; }
+          # The work job must sample the host at the death moment.
+          yq '.jobs.work.steps[] | select(.id == "host") | .run' "$f" > "$t/sample.sh"
           sample_out=$t/sample.out
           GITHUB_OUTPUT="$sample_out" bash "$t/sample.sh"
-          for k in load1 cores swap_used_kb; do
+          for k in ended load1 cores swap_used_kb; do
             grep -Eq "^$k=[0-9]+(\\.[0-9]+)?$" "$sample_out" || { echo "host sample: $k missing or malformed"; exit 1; }
+            block "env.${k^^}" | grep -qF "steps.host.outputs.$k" || { echo "strike env for $k not wired to the Host sample"; exit 1; }
           done
-          yq '.jobs.work.outputs.load1' .github/workflows/agent.yml | grep -F 'steps.host.outputs.load1' >/dev/null || { echo "work outputs.load1 not wired"; exit 1; }
-          yq '.jobs.work.outputs.cores' .github/workflows/agent.yml | grep -F 'steps.host.outputs.cores' >/dev/null || { echo "work outputs.cores not wired"; exit 1; }
-          yq '.jobs.work.outputs.swap_used_kb' .github/workflows/agent.yml | grep -F 'steps.host.outputs.swap_used_kb' >/dev/null || { echo "work outputs.swap_used_kb not wired"; exit 1; }
           cat > "$t/bin/gh" <<'MOCK'
           #!/usr/bin/env bash
           prog=""; jqnext=0; args=()
@@ -653,9 +681,6 @@ jobs:
           joined="${args[*]}"
           case $joined in
             *"--json number"*) exit 0 ;;
-            *"--paginate"*"/jobs"*)
-              if [ -n "${API_FAIL:-}" ]; then echo "mock gh: jobs api fails" >&2; exit 1; fi
-              cat "$FIXTURE" ;;
             *"--json comments"*)
               if [ -n "$prog" ]; then jq "$prog" "$COMMENTS"; else cat "$COMMENTS"; fi ;;
             *"issue comment"*) printf '%s\n' "$joined" >> "$STATE/commented" ;;
@@ -666,19 +691,15 @@ jobs:
           chmod +x "$t/bin/gh"
           export GITHUB_RUN_ID=4242424242 GITHUB_REPOSITORY=Nishfleet/fleet-ops GITHUB_SERVER_URL=https://github.com
           bad=0
-          while IFS='|' read -r name fixture ref l1 co sw prior infra started want; do
-            export STATE=$t/$name FIXTURE=$t/$name-jobs.json COMMENTS=$t/$name-comments.json
+          while IFS='|' read -r name ref outcome started ended l1 co sw prior infra started_comment want; do
+            export STATE=$t/$name COMMENTS=$t/$name-comments.json
             mkdir -p "$STATE"
             : > "$STATE/commented"; : > "$STATE/edited"
-            jq -c --arg f "$fixture" '.fixtures[$f][]' config/infra-wall-events.json > "$FIXTURE"
-            jq -n --arg u "https://github.com/Nishfleet/fleet-ops/actions/runs/$GITHUB_RUN_ID" --argjson s "$started" --argjson p "$prior" --argjson n "$infra" \
+            jq -n --arg u "https://github.com/Nishfleet/fleet-ops/actions/runs/$GITHUB_RUN_ID" --argjson s "$started_comment" --argjson p "$prior" --argjson n "$infra" \
               '{comments: ([if $s == 1 then {body: ("agent run started: " + $u), authorAssociation: "NONE"} else empty end]
                 + [if $p == 1 then {body: "agent run failed: https://github.com/Nishfleet/fleet-ops/actions/runs/111", authorAssociation: "NONE"} else empty end]
                 + [range($n) | {body: "agent run infra-failed: https://github.com/Nishfleet/fleet-ops/actions/runs/222", authorAssociation: "NONE"}])}' > "$COMMENTS"
-            export N=$ref LOAD1=$l1 CORES=$co SWAP_USED_KB=$sw
-            API_FAIL=
-            if [ "$name" = jobs-api-fails ]; then API_FAIL=1; fi
-            export API_FAIL
+            export REF=$ref WORKER_OUTCOME=$outcome STARTED=$started ENDED=$ended LOAD1=$l1 CORES=$co SWAP_USED_KB=$sw
             rc=0
             PATH="$t/bin:$PATH" bash "$t/report.sh" > "$STATE/out" 2>&1 || rc=$?
             got=none
@@ -693,5 +714,81 @@ jobs:
             if [ "$got" != "$want" ] || [ "$rc" != 0 ]; then
               echo "case $name: got=$got (want $want) exit=$rc"; cat "$STATE/out"; bad=1
             fi
-          done < <(jq -r '.cases[] | [.name, .fixture, .ref, .env.LOAD1, .env.CORES, .env.SWAP_USED_KB, (.prior_failed_comment|tostring), (.prior_infra_comments // 0 | tostring), (if .started_comment then 1 else 0 end), .want] | map(tostring) | join("|")' config/infra-wall-events.json)
+          done < <(jq -r '.cases[] | [.name, .ref, .env.WORKER_OUTCOME, .env.STARTED, .env.ENDED, .env.LOAD1, .env.CORES, .env.SWAP_USED_KB, (.prior_failed_comment|tostring), (.prior_infra_comments // 0 | tostring), (if .started_comment then 1 else 0 end), .want] | map(tostring) | join("|")' config/infra-wall-events.json)
+          test "$bad" -eq 0
+      - name: Sweep liveness reads the work job (fleet-ops#9275)
+        # A run is live only while its `work` job is queued or running, not
+        # while the run as a whole reads queued. Runs the RUN_LIVE_JQ filter
+        # out of agent-dispatch.yml against the cases in
+        # config/sweep-liveness-events.json, and checks that all three sweep
+        # reads (conflicts, stalled, orphans) use it and none still reads the
+        # run status alone.
+        if: always()
+        run: |
+          set -euo pipefail
+          f=.github/workflows/agent-dispatch.yml
+          filter=$(yq '.env.RUN_LIVE_JQ' "$f")
+          [ -n "$filter" ] && [ "$filter" != null ] || { echo "RUN_LIVE_JQ missing from $f"; exit 1; }
+          [ "$(grep -cE '^ *rv=\$\(gh run view .*--json status,jobs\)' "$f")" -eq 3 ] || { echo "expected 3 sweep reads of status,jobs"; exit 1; }
+          # shellcheck disable=SC2016 # the literal text "$RUN_LIVE_JQ" is the needle
+          [ "$(grep -c -- '"$RUN_LIVE_JQ"' "$f")" -eq 3 ] || { echo "expected 3 sweep reads judged by RUN_LIVE_JQ"; exit 1; }
+          ! grep -n -- '--json status --jq' "$f" || { echo "a sweep read still judges the run status alone"; exit 1; }
+          bad=0
+          while IFS= read -r c; do
+            name=$(jq -r .name <<<"$c"); want=$(jq -r .want <<<"$c"); ref=$(jq -r .ref <<<"$c")
+            got=$(jq -c '{status: .run_status, jobs: [.jobs[] | {name: .[0], status: .[1]}]}' <<<"$c" | jq -r --arg ref "$ref" "$filter")
+            [ "$got" = "$want" ] || { echo "case $name: live=$got (want $want)"; bad=1; }
+          done < <(jq -c '.cases[]' config/sweep-liveness-events.json)
+          test "$bad" -eq 0
+      - name: Router wall treats a Cursor stall as infra (fake gh)
+        # Runs the Router wall step's own run block, read out of agent.yml,
+        # against a fake gh and a worker.err. The Cursor line is the real one
+        # from 0509 run 37258485360 (fleet-ops#9275). A stall with the claim
+        # branch 0 ahead of main is infra: infra-failed comment, agent-ready,
+        # wall=true. With a commit already pushed, or on another engine, it is
+        # not a wall and the strike step handles it. The router 429 and Devin
+        # paths are controls.
+        if: always()
+        run: |
+          set -euo pipefail
+          t=$RUNNER_TEMP/wall-mock
+          mkdir -p "$t/bin"
+          yq '.jobs.work.steps[] | select(.id == "wall") | .run' .github/workflows/agent.yml > "$t/wall.sh"
+          [ -s "$t/wall.sh" ] || { echo "Router wall step not found"; exit 1; }
+          cat > "$t/bin/gh" <<'MOCK'
+          #!/usr/bin/env bash
+          case "$*" in
+            *"compare/main..."*) echo "$AHEAD"; echo called >> "$STATE/compared" ;;
+            *"issue comment"*) echo "$*" >> "$STATE/commented" ;;
+            *"issue edit"*) echo "$*" >> "$STATE/edited" ;;
+            *) echo "mock gh: unexpected call: $*" >&2; exit 1 ;;
+          esac
+          MOCK
+          chmod +x "$t/bin/gh"
+          export GITHUB_RUN_ID=4242424242 GITHUB_REPOSITORY=Nishfleet/fleet-ops REPO=Nishfleet/fleet-ops REF=claim/issue-9275 GITHUB_SERVER_URL=https://github.com
+          cursor_stall=$'Connection lost, reconnecting to https://agentn.global.api5.cursor.sh (attempt 1)...\nRetry attempt 1...\nRetriableError: Connection stalled repeatedly'
+          bad=0
+          # name|engine|worker.err|ahead|want wall (yes/no)
+          while IFS='|' read -r name engine err ahead want; do
+            export STATE=$t/$name AHEAD=$ahead ENGINE=$engine GITHUB_OUTPUT=$t/$name/out
+            rm -rf "$STATE"; mkdir -p "$STATE"; : > "$GITHUB_OUTPUT"
+            export RUNNER_TEMP=$STATE
+            printf '%b\n' "${err//@CURSOR@/$cursor_stall}" > "$RUNNER_TEMP/worker.err"
+            rc=0
+            PATH="$t/bin:$PATH" bash "$t/wall.sh" > "$STATE/log" 2>&1 || rc=$?
+            got=no
+            if grep -qx 'wall=true' "$GITHUB_OUTPUT" && grep -q "agent run infra-failed: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" "$STATE/commented" \
+               && grep -q -- '--add-label agent-ready --remove-label agent-in-progress' "$STATE/edited"; then got=yes; fi
+            if [ "$want" = no ] && { [ -s "$STATE/commented" ] || [ -s "$STATE/edited" ]; }; then got=partial; fi
+            if [ "$got" != "$want" ] || [ "$rc" != 0 ]; then echo "case $name: wall=$got (want $want) exit=$rc"; cat "$STATE/log"; bad=1; fi
+          done <<'CASES'
+          cursor-stall-unpushed|cursor|@CURSOR@|0|yes
+          cursor-stall-pushed|cursor|@CURSOR@|1|no
+          pi-with-cursor-text|pi|@CURSOR@|0|no
+          cursor-other-failure|cursor|error: tool call failed|0|no
+          cursor-stall-then-429-pushed|cursor|@CURSOR@\nHTTP 429|1|no
+          router-429-unpushed|pi|litellm RateLimitError: no deployments available|0|yes
+          router-429-pushed|pi|litellm RateLimitError: no deployments available|1|no
+          devin-capacity-pushed|devin|capacity issues|1|yes
+          CASES
           test "$bad" -eq 0
