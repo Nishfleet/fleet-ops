@@ -689,8 +689,8 @@
               {
                 "name": "Set up job",
                 "conclusion": "success",
-                "started_at": "2026-10-04T03:50:00Z",
-                "completed_at": "2026-10-04T03:50:05Z"
+                "started_at": "2026-10-04T03:39:50Z",
+                "completed_at": "2026-10-04T03:39:55Z"
               },
               {
                 "name": "Worker",
@@ -972,7 +972,7 @@
       "prior_failed_comment": 0,
       "started_comment": true,
       "want": "strike",
-      "note": "exactly 600 s with a router error keeps today's rules: strike"
+      "note": "exactly 600 s with a router error keeps today's rules: strike (the boundary is exclusive, < 600)"
     },
     {
       "name": "short-router-unknown-strikes",
