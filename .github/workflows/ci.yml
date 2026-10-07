@@ -201,6 +201,53 @@ jobs:
       - name: Ollama rungs serve only the permitted slug on the native provider (fleet-ops#8332, fleet-ops#9253)
         if: always()
         run: yq -o=json '[.model_list[] | select(((.litellm_params.api_base // "") | test("ollama")) or ((.litellm_params.model // "") | test("^ollama"))) | "\(.litellm_params.model) @ \(.litellm_params.api_base)" | select(. != "ollama_chat/deepseek-v4.1-flash @ https://ollama.com")]' config/litellm-proxy.yaml | jq -e 'if length==0 then true else error("ollama rungs must be ollama_chat/deepseek-v4.1-flash @ https://ollama.com - \(join(","))") end'
+      # Dynamic text before static text breaks the shared prompt-cache prefix, so
+      # the first call of every run pays full price (fleet-ops#9363). Static
+      # first, then the marker line, then everything dynamic. To switch this
+      # gate off, delete this step (the next line down to the one before
+      # "Miss-review event filter").
+      - name: Static prompt prefix before the dynamic marker (fleet-ops#9363)
+        if: always()
+        shell: bash
+        run: |
+          # shellcheck disable=SC2016 # the $1, $@ and $id inside single quotes are literal text being searched for
+          marker='=== FLEET-DYNAMIC-BELOW ==='
+          rc=0
+          for f in prompts/worker.md prompts/miss-review.md; do
+            n=$(grep -c -x -F -- "$marker" "$f" || true)
+            echo "marker count in $f: $n"
+            [ "$n" = 1 ] || rc=1
+            # No argument or runner/worktree path before the marker.
+            if sed -n "1,/^$marker\$/p" "$f" | grep -nE '\$[0-9@]|\$ARGUMENTS|/_work/|agent-runner/[0-9]|agent-worktrees/[A-Za-z-]*[0-9]'; then
+              echo "FAIL dynamic text before the marker in $f"; rc=1
+            fi
+          done
+          # Render AGENTS.md + the worker packet for two real issues in two
+          # different worktree paths; the bytes before the marker must match.
+          t="$RUNNER_TEMP/prefix"; rm -rf "$t"
+          for pair in fleet-ops-9361:wt-1 drive-503:wt-2; do
+            id=${pair%%:*}; wt="$t/${pair##*:}/issue-$id"
+            mkdir -p "$wt"; cp AGENTS.md "$wt/AGENTS.md"
+            { cat "$wt/AGENTS.md"; sed "s/\$1/$id/g" prompts/worker.md; } | sed -n "1,/^$marker\$/p" > "$t/pre-$id.txt"
+          done
+          cmp "$t/pre-fleet-ops-9361.txt" "$t/pre-drive-503.txt" || rc=1
+          # Same rule at the source: the pi command lines (continuations joined).
+          pi=$(sed -e ':a' -e '/\\$/{N;s/\\\n[[:space:]]*/ /;ba}' .github/workflows/agent.yml | grep -F 'pi --print')
+          echo "pi --print lines without --no-context-files:"
+          if printf '%s\n' "$pi" | grep -vF -- '--no-context-files' | cut -c1-80 | sed 's/^/FAIL /'; then rc=1; fi
+          # AGENTS.md reaches the prompt once, at the constant deploy-clone path.
+          bad=$(printf '%s\n' "$pi" | grep -oE -- '--append-system-prompt +"[^"]*"' | grep -vE '^--append-system-prompt +"\$HOME/workspaces/tooling/fleet-ops-deploy-clone/[^$"]*"$' || true)
+          [ -z "$bad" ] || { echo "FAIL --append-system-prompt not at the constant deploy-clone path:"; echo "$bad"; rc=1; }
+          # Tool flags are literal and, where a list, sorted: a stable tool order.
+          printf '%s\n' "$pi" | grep -oE -- '--(tools|exclude-tools|mcp-config) +[^ ]+' | while read -r flag val; do
+            case $val in *'$'*) echo "FAIL $flag value not literal: $val"; exit 1 ;; esac
+            printf '%s\n' "$val" | tr ',' '\n' | sort -c || { echo "FAIL $flag list not sorted: $val"; exit 1; }
+          done || rc=1
+          # The packet strings (cursor, devin, opencode, pi miss lane) put $id after the marker.
+          if grep -F 'packet="' .github/workflows/agent.yml | sed "s/$marker.*//" | grep -nF '$id'; then
+            echo "FAIL \$id before the marker in a packet string"; rc=1
+          fi
+          exit "$rc"
       - name: Miss-review event filter
         if: always()
         run: |
