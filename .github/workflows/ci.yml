@@ -210,7 +210,7 @@ jobs:
         if: always()
         shell: bash
         run: |
-          # shellcheck disable=SC2016 # the $1, $@ and $id inside single quotes are literal text being searched for
+          # shellcheck disable=SC2016 # the searched-for text sits in single quotes on purpose
           marker='=== FLEET-DYNAMIC-BELOW ==='
           rc=0
           for f in prompts/worker.md prompts/miss-review.md; do
@@ -218,6 +218,7 @@ jobs:
             echo "marker count in $f: $n"
             [ "$n" = 1 ] || rc=1
             # No argument or runner/worktree path before the marker.
+            # shellcheck disable=SC2016 # the searched-for text sits in single quotes on purpose
             if sed -n "1,/^$marker\$/p" "$f" | grep -nE '\$[0-9@]|\$ARGUMENTS|/_work/|agent-runner/[0-9]|agent-worktrees/[A-Za-z-]*[0-9]'; then
               echo "FAIL dynamic text before the marker in $f"; rc=1
             fi
@@ -234,16 +235,20 @@ jobs:
           # Same rule at the source: the pi command lines (continuations joined).
           pi=$(sed -e ':a' -e '/\\$/{N;s/\\\n[[:space:]]*/ /;ba}' .github/workflows/agent.yml | grep -F 'pi --print')
           echo "pi --print lines without --no-context-files:"
-          if printf '%s\n' "$pi" | grep -vF -- '--no-context-files' | cut -c1-80 | sed 's/^/FAIL /'; then rc=1; fi
+          missing=$(printf '%s\n' "$pi" | grep -vF -- '--no-context-files' | cut -c1-80 || true)
+          [ -z "$missing" ] || { printf '%s\n' "$missing" | sed 's/^/FAIL /'; rc=1; }
           # AGENTS.md reaches the prompt once, at the constant deploy-clone path.
+          # shellcheck disable=SC2016 # the searched-for text sits in single quotes on purpose
           bad=$(printf '%s\n' "$pi" | grep -oE -- '--append-system-prompt +"[^"]*"' | grep -vE '^--append-system-prompt +"\$HOME/workspaces/tooling/fleet-ops-deploy-clone/[^$"]*"$' || true)
           [ -z "$bad" ] || { echo "FAIL --append-system-prompt not at the constant deploy-clone path:"; echo "$bad"; rc=1; }
           # Tool flags are literal and, where a list, sorted: a stable tool order.
           printf '%s\n' "$pi" | grep -oE -- '--(tools|exclude-tools|mcp-config) +[^ ]+' | while read -r flag val; do
+            # shellcheck disable=SC2016 # the searched-for text sits in single quotes on purpose
             case $val in *'$'*) echo "FAIL $flag value not literal: $val"; exit 1 ;; esac
             printf '%s\n' "$val" | tr ',' '\n' | sort -c || { echo "FAIL $flag list not sorted: $val"; exit 1; }
           done || rc=1
           # The packet strings (cursor, devin, opencode, pi miss lane) put $id after the marker.
+          # shellcheck disable=SC2016 # the searched-for text sits in single quotes on purpose
           if grep -F 'packet="' .github/workflows/agent.yml | sed "s/$marker.*//" | grep -nF '$id'; then
             echo "FAIL \$id before the marker in a packet string"; rc=1
           fi
