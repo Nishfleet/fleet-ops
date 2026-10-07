@@ -38,7 +38,7 @@ LockPersonality=true
 MemoryDenyWriteExecute=true
 ProtectHome=read-only
 ReadWritePaths=/var/cache/restic-live /run/lock /var/tmp
-TimeoutStartSec=15min
+TimeoutStartSec=30min
 
 [Install]
 WantedBy=multi-user.target

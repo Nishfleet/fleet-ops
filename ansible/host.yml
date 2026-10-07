@@ -209,7 +209,7 @@
         dest: /etc/restic/
         owner: root
         group: root
-        mode: preserve
+        mode: '0644'
 
     # Leviathan is the session-log search the agents are told to run first
     # (AGENTS.md, prompts/worker.md). The release is pinned: a bump is a PR

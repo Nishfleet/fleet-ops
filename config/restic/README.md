@@ -21,18 +21,19 @@ This directory contains the restic backup include and exclude lists for the netc
 
 The backup unit has a size guard that fails when `data_added` exceeds 2 GiB. To disable it:
 
-1. Edit `/etc/systemd/system/restic-r2-backup.service.d/10-size-guard.conf` (created by ansible)
-2. Change `SizeGuard=yes` to `SizeGuard=no`
-3. Run `systemctl daemon-reload`
+1. Set the environment variable `SIZE_GUARD_MAX_BYTES=0` in the service drop-in or via `systemd-run`
+2. Run `systemctl daemon-reload`
 
 Or temporarily for one run:
 ```bash
-systemd-run --property=Environment=SIZE_GUARD=no --user /usr/bin/restic backup ...
+systemd-run --property=Environment=SIZE_GUARD_MAX_BYTES=0 --user /usr/bin/restic backup ...
 ```
 
 ## Size guard details
 
-The guard runs after `restic backup --json` and checks the `data_added` field. If it exceeds 2 GiB, the unit exits with code 78 (configuration error), which appears in `systemctl --user --failed`.
+The guard runs during `restic backup --json` and checks the `data_added` field from the summary. If it exceeds the threshold (default 2 GiB = 2147483648 bytes), the unit exits with code 78 (configuration error), which appears in `systemctl --user --failed`.
+
+The threshold is configurable via the `SIZE_GUARD_MAX_BYTES` environment variable.
 
 This prevents unnoticed growth like the 9 GiB → 56 GiB incident in September 2026.
 
@@ -68,7 +69,7 @@ restic -r r2:netcup-backups check
 - `/home/nish/.config/systemd` — User systemd units
 - `/home/nish/nish-vault` — Vault and agent memory
 - `/home/nish/workspaces/agent-state/_system` — Agent memory
-- `/etc` — System configuration
+- `/etc` — System configuration (sensitive files excluded via exclude.txt)
 - `/root` — Root home directory
 - `/var/spool/cron` — Cron jobs
 - `/home/nish/.local/share/containers/storage/volumes` — Podman volumes

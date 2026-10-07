@@ -60,7 +60,6 @@
 /home/nish/.cache/pnpm
 
 # Python caches
-/home/nish/.cache/pip
 /home/nish/__pycache__
 /home/nish/**/__pycache__
 
@@ -74,3 +73,21 @@
 /home/nish/scratch
 /var/tmp
 /tmp
+
+# Sensitive system files in /etc (backed up via /etc include but excluded here)
+/etc/shadow
+/etc/shadow-
+/etc/gshadow
+/etc/gshadow-
+/etc/ssl/private/
+/etc/ssh/ssh_host_*_key
+/etc/ssh/ssh_host_*_key.pub
+/etc/sudoers.d/
+/etc/passwd-
+/etc/group-
+/etc/subuid-
+/etc/subgid-
+/etc/.*secret*
+/etc/.*key*
+/etc/*secret*
+/etc/*key*

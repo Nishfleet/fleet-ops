@@ -1,5 +1,10 @@
 # Prune and verify the Cloudflare R2 restic repository
 # Deployed from fleet-ops rootfs/etc/systemd/system/
+# Retention: 7 daily, 5 weekly, 12 monthly. The backup service uses
+# --keep-daily 7 --keep-weekly 4 (no monthly). Maintenance keeps more
+# weeklies and adds monthly for long-term history; backup service just
+# controls snapshot creation. The mismatch is intentional: maintenance
+# is the authoritative prune policy.
 [Unit]
 Description=Prune and verify the Cloudflare R2 restic repository
 Wants=network-online.target

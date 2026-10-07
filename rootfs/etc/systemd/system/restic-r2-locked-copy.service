@@ -1,6 +1,7 @@
 # Copy the encrypted Restic repository into 30-day-locked R2 storage
 # Deployed from fleet-ops rootfs/etc/systemd/system/
 # copy -> checksum check -> reclaim objects older than the 30-day lock (reclaim may fail).
+# Timer runs weekly (Sat 06:15) to match --min-age 31d reclaim cadence.
 [Unit]
 Description=Copy the encrypted Restic repository into 30-day-locked R2 storage
 Wants=network-online.target

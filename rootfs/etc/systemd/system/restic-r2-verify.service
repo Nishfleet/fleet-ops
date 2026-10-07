@@ -11,7 +11,7 @@ Type=oneshot
 EnvironmentFile=/etc/restic/netcup-r2.env
 Environment=RESTIC_CACHE_DIR=/var/cache/restic-live
 ExecStartPre=/usr/bin/restic unlock
-ExecStart=/usr/bin/flock -E 75 -w 900 /run/lock/restic-r2-backup.lock /usr/bin/restic check --read-data-subset=5%% --with-cache
+ExecStart=/usr/bin/flock -E 75 -w 900 /run/lock/restic-r2-backup.lock /usr/bin/restic check --read-data-subset=5%%
 Nice=19
 IOSchedulingClass=best-effort
 IOSchedulingPriority=7
