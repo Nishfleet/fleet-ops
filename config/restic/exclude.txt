@@ -48,9 +48,9 @@
 /home/nish/workspaces/agent-state/tools
 /home/nish/.local/bin
 
-# Old backups and retired checkouts
-/home/nish/workspaces/agent-state/backups
+# Old backups, retired checkouts, and rebuildable agent state
 /home/nish/workspaces/agent-state/retired-checkouts*
+/home/nish/workspaces/agent-state/tools
 
 # Node modules and package caches
 /home/nish/node_modules

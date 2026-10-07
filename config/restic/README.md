@@ -1,85 +1,146 @@
-# Restic Backup Configuration
+# Restic backup include list
 
-This directory contains the restic backup include and exclude lists for the netcup VPS backup to Cloudflare R2.
+The netcup VPS backup (`restic-r2-backup.service`, a box-only unit) used to
+back up `/home/nish /etc /root /srv /usr/local /var/spool/cron` minus a
+hand-written exclude file at `/etc/restic/netcup-r2-excludes`. Every new thing
+under `/home/nish` was in scope until someone remembered to exclude it, which
+is how the snapshot grew from 9 GiB to 56 GiB.
+
+The path list is now the other way round: `include.txt` is the whole list, and
+anything not on it is not backed up. New junk cannot grow the backup, because
+nothing under an included directory is picked up unless it is on the list.
+
+`exclude.txt` is deliberately short. It only drops caches *inside* included
+directories (`--exclude-caches` already handles the well-known ones) plus the
+unreadable-by-restic secrets that would otherwise fail the run.
 
 ## Files
 
-- `include.txt` — Paths to back up (used with `restic backup --files-from`)
-- `exclude.txt` — Exclude patterns for caches and rebuildable artifacts (used with `restic backup --exclude-file`)
+- `include.txt` — the backup list, read by `restic backup --files-from`
+- `exclude.txt` — short list of patterns dropped inside included directories,
+  read by `restic backup --exclude-file`
 
-## How to add a path to the backup
+Both are deployed to `/etc/restic/` by `ansible/host.yml` in
+`fleet-host-config.service` (on every push to `main` and daily). No restart or
+daemon-reload needed: the backup unit reads them fresh on every run.
 
-1. Edit `include.txt` and add the absolute path on a new line
-2. If the path contains caches or rebuildable files, add exclude patterns to `exclude.txt`
-3. Test with a dry run (matches the actual backup command):
+`/etc/restic` is *not* in the playbook's `owned_dirs`: the R2 credentials
+(`netcup-r2.env`) and the retired `netcup-r2-excludes` are hand-installed there
+and the drift check would fail on them every day.
+
+## What is in the list, and why
+
+| Path | Why |
+| --- | --- |
+| `/home/nish/.config/fleet-ops` | seat keys, LiteLLM config, keystone healthcheck URL |
+| `/home/nish/.config/fleet-worker` | worker prompts and config |
+| `/home/nish/.config/gh` | GitHub auth state |
+| `/home/nish/.config/cloudflare` | Cloudflare tokens (worker/cloudflare API) |
+| `/home/nish/.config/rclone` | rclone remote definitions |
+| `/home/nish/.config/systemd` | nish's own units (blacksmith-flip, leviathan, fleet timers) |
+| `/home/nish/nish-vault` | vault and agent memory |
+| `/home/nish/workspaces/agent-state/_system` | shared agent memory |
+| `/home/nish/workspaces/agent-state/backups` | `litellm.dump`, the pg_dump the unit takes before every run |
+| `/etc` | system configuration, ssh keys, units, polkit, sysctl |
+| `/root` | root's scripts and keys |
+| `/var/spool/cron` | cron jobs (no other cron spool on Ubuntu) |
+| `/usr/local` | hand-installed `gh` and `node` |
+| `/home/nish/.local/share/containers/storage/volumes` | podman container data |
+| `/srv/aiostreams` | application data |
+
+Dropped from the old coverage, and why:
+
+- `/home/nish/workspaces`, `/home/nish/worktrees`, `node_modules`,
+  `go-mod-cache`, `gopath` — code, rebuildable by `git clone` and
+  `go mod download`, and the largest reason for the growth
+- `/home/nish/.cache`, `.npm`, `.local/share/leviathan`, `.pi/agent/sessions` —
+  caches and transcripts, rebuilt constantly
+- `/home/nish/backups` (127 MiB) and `Downloads`, `Desktop`, `Music`,
+  `Videos`, `Pictures`, `scratch` — personal scratch, not fleet state
+- `/var/lib` (postgres data), `/var/log`, `/var/tmp` — rebuildable or duplicated
+  by the `litellm.dump` the unit already takes
+
+If a path is missing from this table and it cannot be rebuilt, add it to
+`include.txt` (below). If it is fleet state and you are unsure, ask.
+
+## Adding a path
+
+1. Add the absolute path on its own line in `include.txt`.
+2. Dry-run against a scratch repository before it goes anywhere near R2:
+
    ```bash
-   restic backup --files-from /etc/restic/include.txt --exclude-file /etc/restic/exclude.txt --exclude-caches --host netcup-rs2000 --tag netcup-rs2000 --dry-run
+   export RESTIC_PASSWORD=$(mktemp -u)          # scratch repo, throw away after
+   export RESTIC_REPOSITORY=/tmp/restic-check
+   restic init
+   restic backup --dry-run --json \
+     --files-from=config/restic/include.txt \
+     --exclude-file=config/restic/exclude.txt \
+     --exclude-caches | jq '{data_added, total_bytes_processed, total_files_processed}'
    ```
-4. Commit and push. The fleet-host-config ansible playbook will deploy the changes to `/etc/restic/`
 
-## How to switch off the size guard
+   Read `total_bytes_processed` as the size of everything, `data_added` as the
+   size that would be new. Add exclude patterns to `exclude.txt` if the path
+   brings caches with it.
+3. Commit and push. The next `fleet-host-config` run puts the file on the box.
 
-The backup unit has a size guard that fails when `data_added` exceeds 2 GiB. To disable it:
+## The size guard
 
-1. Set the environment variable `SIZE_GUARD_MAX_BYTES=0` in the service drop-in or via `systemd-run`
-2. Run `systemctl daemon-reload`
+`rootfs/etc/systemd/system/restic-r2-backup.service.d/10-size-guard.conf` adds
+an `ExecStartPre` that runs the same backup as a **dry run** and reads
+`data_added` from its JSON summary:
 
-Or temporarily for one run:
-```bash
-systemd-run --property=Environment=SIZE_GUARD_MAX_BYTES=0 --user /usr/bin/restic backup ...
+```
+ExecStartPre=… restic backup --dry-run --json --files-from=… | jq -s -e '… halt_error(78) …'
 ```
 
-## Size guard details
+- Over `SIZE_GUARD_MAX_BYTES` (default `2147483648` = 2 GiB) the unit exits
+  **78** before `ExecStart`, so nothing is uploaded and the weekly
+  `restic-r2-locked-copy.service` (which is a separate timer, not chained to
+  this unit) has nothing new to copy.
+- A dry run uploads no data, so the guard costs one local read pass and no
+  bytes. `restic backup --dry-run` needs no `data_added` from a live run: the
+  value it prints is computed against the repository's existing blobs, so it is
+  the dedup-aware amount of *new* data. Verified: 30 MB of new files reported
+  `data_added: 30003177`, a second dry run over the same tree reported
+  `data_added: 0`.
+- The guard is a pre-flight, not a post-hoc check. restic has no
+  `--max-repo-size`, and its `--json` status lines carry no `data_added` (only
+  the final summary does), so the only way to know the size *before* uploading
+  is a dry run. That is why the unit checks first and uploads second.
 
-The guard runs during `restic backup --json` and checks the `data_added` field from the summary. If it exceeds the threshold (default 2 GiB = 2147483648 bytes), the unit exits with code 78 (configuration error), which appears in `systemctl --user --failed`.
+### Switching it off
 
-The threshold is configurable via the `SIZE_GUARD_MAX_BYTES` environment variable.
-
-This prevents unnoticed growth like the 9 GiB → 56 GiB incident in September 2026.
-
-## External dependencies (not in this repo)
-
-The following files must exist on the host but are NOT deployed by ansible (secrets/credentials):
-
-- `/etc/restic/netcup-r2.env` — R2 credentials (RESTIC_REPOSITORY, RESTIC_PASSWORD, AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY)
-- `/etc/tiny-studio/heartbeats.env` — Healthchecks.io URLs (HC_BACKUP_URL, HC_LOCKED_COPY_URL, HC_MAINTENANCE_URL, HC_URL_RESTORE)
-- `/etc/rclone/tiny-studio-r2.conf` — Rclone config for locked copy
-- `/home/nish/.config/fleet-ops/keystone-hc.env` — Optional: HC_URL_RESTORE for restore test
-
-## Deploying changes
-
-Changes to this directory are deployed by the `fleet-host-config` ansible playbook (runs on every push to main and daily). The playbook copies `config/restic/` to `/etc/restic/` on the host.
-
-To force a deploy:
-```bash
-systemctl start fleet-host-config.service
-```
-
-## Restoring files
-
-To restore a file from the latest snapshot:
-```bash
-restic -r r2:netcup-backups restore latest --target /tmp/restore --include /path/to/file
-```
-
-## Checking repository integrity
+Temporarily, for one run:
 
 ```bash
-restic -r r2:netcup-backups check
+systemctl edit restic-r2-backup.service      # add, or override, Environment:
+#   [Service]
+#   Environment=SIZE_GUARD_MAX_BYTES=0
 ```
 
-## Current backup targets (from include.txt)
+`SIZE_GUARD_MAX_BYTES=0` disables the check (the unit runs the backup
+unconditionally); `systemctl daemon-reload` is not needed for a value set in
+the unit file itself. `systemctl revert restic-r2-backup.service` removes the
+override. This is the same knob the guard reads, so an operator can turn it
+off without editing fleet-ops.
 
-- `/home/nish/.config/fleet-ops` — Credentials, keys, LiteLLM config
-- `/home/nish/.config/fleet-worker` — Worker configuration
-- `/home/nish/.config/gh` — GitHub CLI config
-- `/home/nish/.config/cloudflare` — Cloudflare credentials
-- `/home/nish/.config/rclone` — Rclone config
-- `/home/nish/.config/systemd` — User systemd units
-- `/home/nish/nish-vault` — Vault and agent memory
-- `/home/nish/workspaces/agent-state/_system` — Agent memory
-- `/etc` — System configuration (sensitive files excluded via exclude.txt)
-- `/root` — Root home directory
-- `/var/spool/cron` — Cron jobs
-- `/home/nish/.local/share/containers/storage/volumes` — Podman volumes
-- `/srv/aiostreams` — Application data
+The companion alarm is the Cloudflare R2 bucket-size alarm (#9355). The guard is
+the cheap stop before the upload; the alarm catches a repository that grew over
+many runs, each under the threshold.
+
+## Not deployed from here
+
+These must already exist on the box; they hold credentials and stay
+hand-installed:
+
+- `/etc/restic/netcup-r2.env` — `RESTIC_REPOSITORY`, `RESTIC_PASSWORD`,
+  `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`
+- `/etc/restic/netcup-r2-excludes` — retired, kept until the next restore test
+  proves the new lists
+- `/etc/tiny-studio/heartbeats.env` — `HC_BACKUP_URL`, `HC_LOCKED_COPY_URL`,
+  `HC_MAINTAINANCE_URL`
+- `/etc/rclone/tiny-studio-r2.conf` — the `live:` and `locked:` remotes
+
+If `/etc/restic/netcup-r2.env` goes missing the unit does not run at all
+(`ConditionPathExists`), which is the intended failure mode: no credentials, no
+backup, no silent empty snapshot.

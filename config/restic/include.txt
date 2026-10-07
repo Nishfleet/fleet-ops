@@ -1,6 +1,8 @@
 # Restic backup include list (--files-from)
 # One path per line. Paths are relative to / or absolute.
 # Directories are backed up recursively.
+# Order matches the live unit's coverage; gaps from the old exclude list
+# are intentional (new junk can't grow the backup).
 
 # Credentials and configuration that cannot be rebuilt
 /home/nish/.config/fleet-ops
@@ -10,14 +12,18 @@
 /home/nish/.config/rclone
 /home/nish/.config/systemd
 
-# Agent memory and vault
+# Agent memory, vault, and pg_dump output
 /home/nish/nish-vault
 /home/nish/workspaces/agent-state/_system
+/home/nish/workspaces/agent-state/backups
 
 # System configuration
 /etc
 /root
 /var/spool/cron
+
+# Hand-installed binaries
+/usr/local
 
 # Podman volumes (container data)
 /home/nish/.local/share/containers/storage/volumes
