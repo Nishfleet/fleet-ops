@@ -1,14 +1,16 @@
 # Size guard for the restic backup (fleet-ops#9360). Hard stop, before upload.
 # restic-r2-backup.service starts this unit in an ExecStartPre (its drop-in
 # 10-size-guard.conf), so a failure here fails the backup unit and nothing
-# reaches R2. The weekly
+# reaches R2. The daily
 # restic-r2-locked-copy.service Requires= the backup unit, so the second copy
 # is skipped too.
 # Step 1: restic backup --dry-run --json computes data_added (new, dedup-aware
 # bytes) and total_bytes_processed (the restored size of the snapshot) without
 # uploading anything. StandardOutput=append: puts that JSON in a file.
 # Step 2: jq reads the summary and exits 78 when either limit is crossed.
-# Raise a limit with a drop-in (systemctl edit), never by editing the jq line.
+# Raise a limit, or switch one off with 0, with a systemctl edit drop-in
+# (README: "Changing a limit, and switching the guard off"), never by editing
+# the jq line.
 [Unit]
 Description=Restic size guard: dry run, fail if the backup would grow past the limit
 Wants=network-online.target
@@ -17,8 +19,8 @@ After=network-online.target
 [Service]
 Type=oneshot
 # 2 GiB of new data per run; 10 GiB restored size for the whole snapshot.
-# 0 switches a limit off (README: "Switching the guard off"); a dropped
-# Environment= line in a systemctl edit drop-in restores the shipped number.
+# 0 switches a limit off; a dropped Environment= line in a drop-in falls back
+# to the number shipped here.
 Environment=SIZE_GUARD_MAX_BYTES=2147483648
 Environment=SIZE_GUARD_MAX_RESTORED_BYTES=10737418240
 EnvironmentFile=/etc/restic/netcup-r2.env
@@ -31,7 +33,7 @@ StandardOutput=append:/var/cache/restic-live/size-guard-dry-run.json
 StandardError=journal
 ExecStartPre=/usr/bin/rm -f /var/cache/restic-live/size-guard-dry-run.json
 ExecStart=/usr/bin/flock -E 75 -w 900 /run/lock/restic-r2-backup.lock /usr/bin/restic backup --dry-run --json --quiet --files-from=/etc/restic/include.txt --exclude-file=/etc/restic/exclude.txt --exclude-caches --host netcup-rs2000 --tag netcup-rs2000
-ExecStartPost=/usr/bin/jq -s --argjson max ${SIZE_GUARD_MAX_BYTES} --argjson maxr ${SIZE_GUARD_MAX_RESTORED_BYTES} 'map(select(.message_type == "summary")) | last as $$s | if $$s == null then ("size guard: no summary in dry run" | halt_error(1)) elif ($$max > 0 and $$s.data_added > $$max) or ($$maxr > 0 and $$s.total_bytes_processed > $$maxr) then ("SIZE GUARD TRIPPED: data_added=" + ($$s.data_added | tostring) + " (max " + ($$max | tostring) + ") restored=" + ($$s.total_bytes_processed | tostring) + " (max " + ($$maxr | tostring) + ")" | halt_error(78)) else ("size guard ok: data_added=" + ($$s.data_added | tostring) + " restored=" + ($$s.total_bytes_processed | tostring) | halt_error(0)) end' /var/cache/restic-live/size-guard-dry-run.json
+ExecStartPost=/usr/bin/jq -s --argjson max ${SIZE_GUARD_MAX_BYTES} --argjson maxr ${SIZE_GUARD_MAX_RESTORED_BYTES} 'map(select(.message_type == "summary")) | last as $$s | if $$s == null then ("size guard: no summary in dry run" | halt_error(1)) else ([(if $$max > 0 then "new-data=" + ($$s.data_added | tostring) + " (max " + ($$max | tostring) + ")" else empty end), (if $$maxr > 0 then "restored=" + ($$s.total_bytes_processed | tostring) + " (max " + ($$maxr | tostring) + ")" else empty end)] | join(" ")) as $$on | if ($$max > 0 and $$s.data_added > $$max) or ($$maxr > 0 and $$s.total_bytes_processed > $$maxr) then ("SIZE GUARD TRIPPED: " + $$on | halt_error(78)) else ("size guard ok: new-data=" + ($$s.data_added | tostring) + " restored=" + ($$s.total_bytes_processed | tostring) | halt_error(0)) end end' /var/cache/restic-live/size-guard-dry-run.json
 Nice=19
 IOSchedulingClass=best-effort
 IOSchedulingPriority=7
