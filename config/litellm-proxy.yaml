@@ -1545,12 +1545,13 @@ router_settings:
   # in the schema) is the gap window the hop metric counts: a shorter TTL could expire a healthy pin inside
   # a hop the metric would count, manufacturing the hops this value exists to remove.
   # INTERIM ONLY (Nish 2026-10-07, fleet-ops#9361 scope change): this TTL caps the blast radius of a
-  # stale pin. It is not the fix. LiteLLM has no stock re-pin in our version or in the newest release:
-  # deployment_affinity_check.claim_affinity_pin takes eligible_values upstream, but only the complexity
-  # router passes it, so a fallback row never takes the pin. The fix is an upstream issue + PR that
-  # passes the healthy set as eligible_values, then an image bump. Until that image is deployed the TTL
-  # above and the session-hop Grafana alert (config/grafana/provisioning/alerting/session-hop.yaml)
-  # bound the damage.
+  # stale pin. It is not the fix. LiteLLM has no stock re-pin in the pinned image (v1.98.0) nor in the
+  # newest release: deployment_affinity_check.claim_affinity_pin takes eligible_values upstream, but only
+  # the complexity router passes it, so a fallback row never takes the pin. The fix is the upstream issue
+  # BerriAI/litellm#45145 (repro: first-writer-wins _claim_pin refreshes only when the row it names is
+  # re-selected, so a pin held by a row in cooldown can never move) plus its PR and a second image bump,
+  # tracked as fleet-ops#9411, until which the TTL above and the session-hop Grafana alert
+  # (config/grafana/provisioning/alerting/session-hop.yaml) bound the damage.
   deployment_affinity_ttl_seconds: 600
   # worker groups hold only rungs proven to return finish_reason=tool_calls (fleet-ops#7761); every worker row is
   # order 1 because a worker group is a peer set, not a preference order. The judge group is the exception
