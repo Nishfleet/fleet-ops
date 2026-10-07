@@ -4,6 +4,10 @@
 # GitHub data source only reads). Data sources and the dashboard are
 # provisioned from config/grafana in the deploy clone; the UI cannot save edits
 # and the login form is off, so anonymous viewers are the only users.
+# fleet-ops#9355 adds the Cloudflare spend watch: the Infinity data source
+# (preinstalled below) calls the Cloudflare GraphQL analytics API with the
+# deploy-ci token, and the spend rules dispatch to the cloudflare-spend-dispatch
+# contact point (GitHub issue webhook + hermes-urgent Telegram fallback).
 #
 # Reach: https://netcup-rs2000.tailc0f05f.ts.net:8443 — one-time
 # `tailscale serve --bg --https=8443 http://127.0.0.1:3001`, which tailscaled
@@ -28,11 +32,24 @@ Volume=%h/workspaces/tooling/fleet-ops-deploy-clone/config/grafana/provisioning/
 Volume=%h/workspaces/tooling/fleet-ops-deploy-clone/config/grafana/dashboards:/etc/grafana/dashboards:ro
 Volume=%h/.config/fleet-worker/nishfleet-worker.private-key.pem:/run/secrets/github-app.pem:ro
 Volume=%h/.config/fleet-ops/grafana-admin-password:/run/secrets/grafana-admin-password:ro
-# Named pass-through, not --env-host (fleet-ops#9020): only the Hermes
-# Telegram names the alerting contact point expands ($TELEGRAM_BOT_TOKEN,
-# $TELEGRAM_HOME_CHANNEL). EnvironmentFile= below fills them for podman.
+# Named pass-through, not --env-host (fleet-ops#9020): only the names the
+# provisioned files' env references expand ($TELEGRAM_BOT_TOKEN,
+# $TELEGRAM_HOME_CHANNEL, $CLOUDFLARE_API_TOKEN, $GITHUB_ISSUES_TOKEN).
+# EnvironmentFile= below fills them for podman.
 PodmanArgs=--env=TELEGRAM_BOT_TOKEN
 PodmanArgs=--env=TELEGRAM_HOME_CHANNEL
+# Cloudflare analytics-read token for the spend-watch data source
+# (config/grafana/provisioning/datasources/cloudflare.yaml expands
+# $CLOUDFLARE_API_TOKEN; fleet-ops#9355). The file already exists.
+EnvironmentFile=%h/.config/cloudflare/deploy-ci.env
+PodmanArgs=--env=CLOUDFLARE_API_TOKEN
+# Issues-write token for the spend-watch GitHub-issue webhook (fleet-ops#9355).
+# The leading dash is deliberate: until Nish mints the standing fine-grained
+# issues:write token and saves it as ~/.config/fleet-ops/github-issues.env
+# (0600, GITHUB_ISSUES_TOKEN=), the unit still starts and the webhook delivery
+# fails auth while the hermes-urgent fallback keeps firing.
+EnvironmentFile=-%h/.config/fleet-ops/github-issues.env
+PodmanArgs=--env=GITHUB_ISSUES_TOKEN
 Environment=GF_SERVER_HTTP_ADDR=127.0.0.1
 Environment=GF_SERVER_HTTP_PORT=3001
 Environment=GF_SERVER_ROOT_URL=https://netcup-rs2000.tailc0f05f.ts.net:8443/
@@ -45,7 +62,7 @@ Environment=GF_ANALYTICS_REPORTING_ENABLED=false
 Environment=GF_ANALYTICS_CHECK_FOR_UPDATES=false
 Environment=GF_ANALYTICS_CHECK_FOR_PLUGIN_UPDATES=false
 Environment=GF_NEWS_NEWS_FEED_ENABLED=false
-Environment=GF_PLUGINS_PREINSTALL_SYNC=grafana-github-datasource@2.9.2
+Environment=GF_PLUGINS_PREINSTALL_SYNC=grafana-github-datasource@2.9.2,yesoreyeram-infinity-datasource@4.1.1
 Environment=GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH=/etc/grafana/dashboards/fleet.json
 
 [Service]

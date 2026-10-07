@@ -1,0 +1,505 @@
+# Cloudflare cost alarm (fleet-ops#9355). Stock Grafana only, no scripts.
+#
+# Why: two leaks hit invoice IN-82380534 (D1 restore drills wrote ~145M rows,
+# 0509 sign-in e2e sent ~15,300 emails) and R2 grew 3 GB to 24 GB. The budget
+# emails sat unread. Cloudflare has no push event for usage, so Grafana asks
+# the Cloudflare GraphQL analytics API (Infinity data source fleet-cloudflare,
+# datasources/cloudflare.yaml) every hour. A firing rule opens a fleet-ops
+# issue labelled agent-ready + priority-now through the contact point and
+# policy in cloudflare-spend-contact.yaml; hermes-urgent is the fallback.
+#
+# Thresholds (Nish, 2026-10-07):
+#   AI neurons, D1 rows read and written, email sends: the last hour is more
+#   than 3x the pro-rated hourly allowance, or more than 3x the 7-day hourly
+#   median of the hours that had any usage. Allowances per hour:
+#     Workers AI 10,000 neurons/day free -> 416.67
+#     D1 reads 25B/month, writes 50M/month (Workers Paid) -> 34,246,575 and 68,493
+#     email 3,000/month (Workers Paid) -> 4.11
+#   R2: total Standard storage over 20 GB, or a bucket up 2 GB within 24h
+#   (last value minus the 24h low, so a prune followed by regrowth still counts).
+#
+# Query shape per rule: A = last-hour total (one number), B = 7-day hourly
+# series, T = the top resource in the last hour (its string column becomes the
+# label `resource` in the alert and in the issue body). The ${__timeFrom} and
+# ${__timeTo} macros are expanded by the Infinity backend from each query's
+# relativeTimeRange, so a replay is the same rule with the two dates typed in.
+# A rule with no usage in the hour has no rows, which is Normal (noDataState OK).
+# Provisioned alert rules do not expand $VAR, so every dollar here is a single
+# one and belongs to Grafana (macros, SSE refIds).
+apiVersion: 1
+
+groups:
+  - orgId: 1
+    name: cloudflare-spend
+    folder: fleet
+    interval: 1m
+    rules:
+      - uid: cf-ai-neurons
+        title: Cloudflare Workers AI neurons
+        condition: F
+        data:
+          - refId: A
+            relativeTimeRange: {from: 3600, to: 0}
+            datasourceUid: fleet-cloudflare
+            model: &cf-last-hour-total
+              refId: A
+              datasource: {type: yesoreyeram-infinity-datasource, uid: fleet-cloudflare}
+              type: graphql
+              source: url
+              url: https://api.cloudflare.com/client/v4/graphql
+              parser: backend
+              format: table
+              root_selector: data.viewer.accounts[0].aiInferenceAdaptiveGroups
+              columns: [{selector: sum.totalNeurons, text: value, type: number}]
+              url_options:
+                method: POST
+                body_type: graphql
+                body_content_type: application/json
+                body_graphql_query: |-
+                  query { viewer { accounts(filter: {accountTag: "f670a698e17bf160c8e4679823e68916"}) {
+                    aiInferenceAdaptiveGroups(limit: 10000, filter: {datetime_geq: "${__timeFrom:date:iso}", datetime_lt: "${__timeTo:date:iso}"}) { sum { totalNeurons } }
+                  } } }
+          - refId: B
+            relativeTimeRange: {from: 604800, to: 0}
+            datasourceUid: fleet-cloudflare
+            model:
+              <<: *cf-last-hour-total
+              refId: B
+              columns:
+                - {selector: dimensions.datetimeHour, text: time, type: timestamp}
+                - {selector: sum.totalNeurons, text: value, type: number}
+              url_options:
+                method: POST
+                body_type: graphql
+                body_content_type: application/json
+                body_graphql_query: |-
+                  query { viewer { accounts(filter: {accountTag: "f670a698e17bf160c8e4679823e68916"}) {
+                    aiInferenceAdaptiveGroups(limit: 10000, filter: {datetime_geq: "${__timeFrom:date:iso}", datetime_lt: "${__timeTo:date:iso}"}) { dimensions { datetimeHour } sum { totalNeurons } }
+                  } } }
+          - refId: T
+            relativeTimeRange: {from: 3600, to: 0}
+            datasourceUid: fleet-cloudflare
+            model:
+              <<: *cf-last-hour-total
+              refId: T
+              columns:
+                - {selector: dimensions.modelId, text: resource, type: string}
+                - {selector: sum.totalNeurons, text: value, type: number}
+              url_options:
+                method: POST
+                body_type: graphql
+                body_content_type: application/json
+                body_graphql_query: |-
+                  query { viewer { accounts(filter: {accountTag: "f670a698e17bf160c8e4679823e68916"}) {
+                    aiInferenceAdaptiveGroups(limit: 1, orderBy: [sum_totalNeurons_DESC], filter: {datetime_geq: "${__timeFrom:date:iso}", datetime_lt: "${__timeTo:date:iso}"}) { dimensions { modelId } sum { totalNeurons } }
+                  } } }
+          - refId: C
+            datasourceUid: __expr__
+            model: &cf-median
+              datasource: {type: __expr__, uid: __expr__}
+              type: reduce
+              refId: C
+              expression: B
+              reducer: median
+              settings: {mode: dropNN}
+          - refId: D
+            datasourceUid: __expr__
+            model: &cf-last
+              datasource: {type: __expr__, uid: __expr__}
+              type: reduce
+              refId: D
+              expression: A
+              reducer: last
+              settings: {mode: dropNN}
+          - refId: E
+            datasourceUid: __expr__
+            model:
+              datasource: {type: __expr__, uid: __expr__}
+              type: math
+              refId: E
+              expression: ($D > 3 * 416.67) || ($C > 0 && $D > 3 * $C)
+          - refId: R
+            datasourceUid: __expr__
+            model:
+              datasource: {type: __expr__, uid: __expr__}
+              type: math
+              refId: R
+              expression: $T * 0 + $E
+          - refId: F
+            datasourceUid: __expr__
+            model: &cf-threshold
+              datasource: {type: __expr__, uid: __expr__}
+              type: threshold
+              refId: F
+              expression: R
+              conditions: [{evaluator: {params: [0.5], type: gt}, operator: {type: and}, query: {params: [F]}, reducer: {params: [], type: last}, type: query}]
+        noDataState: OK
+        execErrState: Error
+        for: 0s
+        annotations:
+          summary: 'Workers AI used {{ $values.D.Value | printf "%.0f" }} neurons in the last hour'
+          description: 'The 3x line is the larger signal of 1250 neurons/h (3 x the 416.67/h free allowance) and 3 x the 7-day hourly median ({{ $values.C.Value | printf "%.0f" }}). On 2026-10-02 this product burned 1,113,645 neurons in one day.'
+          value: '{{ $values.D.Value | printf "%.0f" }} neurons in the last hour'
+          threshold: 'over 1250 neurons/h (3 x free allowance) or over 3 x the 7-day hourly median'
+          top: '{{ $labels.resource }}'
+        labels: {signal: cloudflare-spend, product: workers-ai}
+        isPaused: false
+      - uid: cf-d1-rows-read
+        title: Cloudflare D1 rows read
+        condition: F
+        data:
+          - refId: A
+            relativeTimeRange: {from: 3600, to: 0}
+            datasourceUid: fleet-cloudflare
+            model:
+              <<: *cf-last-hour-total
+              refId: A
+              root_selector: data.viewer.accounts[0].d1AnalyticsAdaptiveGroups
+              columns: [{selector: sum.rowsRead, text: value, type: number}]
+              url_options:
+                method: POST
+                body_type: graphql
+                body_content_type: application/json
+                body_graphql_query: |-
+                  query { viewer { accounts(filter: {accountTag: "f670a698e17bf160c8e4679823e68916"}) {
+                    d1AnalyticsAdaptiveGroups(limit: 10000, filter: {datetime_geq: "${__timeFrom:date:iso}", datetime_lt: "${__timeTo:date:iso}"}) { sum { rowsRead } }
+                  } } }
+          - refId: B
+            relativeTimeRange: {from: 604800, to: 0}
+            datasourceUid: fleet-cloudflare
+            model:
+              <<: *cf-last-hour-total
+              refId: B
+              root_selector: data.viewer.accounts[0].d1AnalyticsAdaptiveGroups
+              columns:
+                - {selector: dimensions.datetimeHour, text: time, type: timestamp}
+                - {selector: sum.rowsRead, text: value, type: number}
+              url_options:
+                method: POST
+                body_type: graphql
+                body_content_type: application/json
+                body_graphql_query: |-
+                  query { viewer { accounts(filter: {accountTag: "f670a698e17bf160c8e4679823e68916"}) {
+                    d1AnalyticsAdaptiveGroups(limit: 10000, filter: {datetime_geq: "${__timeFrom:date:iso}", datetime_lt: "${__timeTo:date:iso}"}) { dimensions { datetimeHour } sum { rowsRead } }
+                  } } }
+          - refId: T
+            relativeTimeRange: {from: 3600, to: 0}
+            datasourceUid: fleet-cloudflare
+            model:
+              <<: *cf-last-hour-total
+              refId: T
+              root_selector: data.viewer.accounts[0].d1AnalyticsAdaptiveGroups
+              columns:
+                - {selector: dimensions.databaseId, text: resource, type: string}
+                - {selector: sum.rowsRead, text: value, type: number}
+              url_options:
+                method: POST
+                body_type: graphql
+                body_content_type: application/json
+                body_graphql_query: |-
+                  query { viewer { accounts(filter: {accountTag: "f670a698e17bf160c8e4679823e68916"}) {
+                    d1AnalyticsAdaptiveGroups(limit: 1, orderBy: [sum_rowsRead_DESC], filter: {datetime_geq: "${__timeFrom:date:iso}", datetime_lt: "${__timeTo:date:iso}"}) { dimensions { databaseId } sum { rowsRead } }
+                  } } }
+          - {refId: C, datasourceUid: __expr__, model: {<<: *cf-median}}
+          - {refId: D, datasourceUid: __expr__, model: {<<: *cf-last}}
+          - refId: E
+            datasourceUid: __expr__
+            model:
+              datasource: {type: __expr__, uid: __expr__}
+              type: math
+              refId: E
+              expression: ($D > 3 * 34246575) || ($C > 0 && $D > 3 * $C)
+          - refId: R
+            datasourceUid: __expr__
+            model: {datasource: {type: __expr__, uid: __expr__}, type: math, refId: R, expression: $T * 0 + $E}
+          - {refId: F, datasourceUid: __expr__, model: {<<: *cf-threshold}}
+        noDataState: OK
+        execErrState: Error
+        for: 0s
+        annotations:
+          summary: 'D1 read {{ $values.D.Value | printf "%.0f" }} rows in the last hour'
+          description: 'The 3x line is the larger signal of 102,739,725 rows/h (3 x the pro-rated 25B/month allowance) and 3 x the 7-day hourly median ({{ $values.C.Value | printf "%.0f" }}).'
+          value: '{{ $values.D.Value | printf "%.0f" }} rows read in the last hour'
+          threshold: 'over 102,739,725 rows/h (3 x allowance) or over 3 x the 7-day hourly median'
+          top: 'D1 database {{ $labels.resource }}'
+        labels: {signal: cloudflare-spend, product: d1-rows-read}
+        isPaused: false
+      - uid: cf-d1-rows-written
+        title: Cloudflare D1 rows written
+        condition: F
+        data:
+          - refId: A
+            relativeTimeRange: {from: 3600, to: 0}
+            datasourceUid: fleet-cloudflare
+            model:
+              <<: *cf-last-hour-total
+              refId: A
+              root_selector: data.viewer.accounts[0].d1AnalyticsAdaptiveGroups
+              columns: [{selector: sum.rowsWritten, text: value, type: number}]
+              url_options:
+                method: POST
+                body_type: graphql
+                body_content_type: application/json
+                body_graphql_query: |-
+                  query { viewer { accounts(filter: {accountTag: "f670a698e17bf160c8e4679823e68916"}) {
+                    d1AnalyticsAdaptiveGroups(limit: 10000, filter: {datetime_geq: "${__timeFrom:date:iso}", datetime_lt: "${__timeTo:date:iso}"}) { sum { rowsWritten } }
+                  } } }
+          - refId: B
+            relativeTimeRange: {from: 604800, to: 0}
+            datasourceUid: fleet-cloudflare
+            model:
+              <<: *cf-last-hour-total
+              refId: B
+              root_selector: data.viewer.accounts[0].d1AnalyticsAdaptiveGroups
+              columns:
+                - {selector: dimensions.datetimeHour, text: time, type: timestamp}
+                - {selector: sum.rowsWritten, text: value, type: number}
+              url_options:
+                method: POST
+                body_type: graphql
+                body_content_type: application/json
+                body_graphql_query: |-
+                  query { viewer { accounts(filter: {accountTag: "f670a698e17bf160c8e4679823e68916"}) {
+                    d1AnalyticsAdaptiveGroups(limit: 10000, filter: {datetime_geq: "${__timeFrom:date:iso}", datetime_lt: "${__timeTo:date:iso}"}) { dimensions { datetimeHour } sum { rowsWritten } }
+                  } } }
+          - refId: T
+            relativeTimeRange: {from: 3600, to: 0}
+            datasourceUid: fleet-cloudflare
+            model:
+              <<: *cf-last-hour-total
+              refId: T
+              root_selector: data.viewer.accounts[0].d1AnalyticsAdaptiveGroups
+              columns:
+                - {selector: dimensions.databaseId, text: resource, type: string}
+                - {selector: sum.rowsWritten, text: value, type: number}
+              url_options:
+                method: POST
+                body_type: graphql
+                body_content_type: application/json
+                body_graphql_query: |-
+                  query { viewer { accounts(filter: {accountTag: "f670a698e17bf160c8e4679823e68916"}) {
+                    d1AnalyticsAdaptiveGroups(limit: 1, orderBy: [sum_rowsWritten_DESC], filter: {datetime_geq: "${__timeFrom:date:iso}", datetime_lt: "${__timeTo:date:iso}"}) { dimensions { databaseId } sum { rowsWritten } }
+                  } } }
+          - {refId: C, datasourceUid: __expr__, model: {<<: *cf-median}}
+          - {refId: D, datasourceUid: __expr__, model: {<<: *cf-last}}
+          - refId: E
+            datasourceUid: __expr__
+            model:
+              datasource: {type: __expr__, uid: __expr__}
+              type: math
+              refId: E
+              expression: ($D > 3 * 68493) || ($C > 0 && $D > 3 * $C)
+          - refId: R
+            datasourceUid: __expr__
+            model: {datasource: {type: __expr__, uid: __expr__}, type: math, refId: R, expression: $T * 0 + $E}
+          - {refId: F, datasourceUid: __expr__, model: {<<: *cf-threshold}}
+        noDataState: OK
+        execErrState: Error
+        for: 0s
+        annotations:
+          summary: 'D1 wrote {{ $values.D.Value | printf "%.0f" }} rows in the last hour'
+          description: 'The 3x line is the larger signal of 205,479 rows/h (3 x the pro-rated 50M/month allowance) and 3 x the 7-day hourly median ({{ $values.C.Value | printf "%.0f" }}). The 2026-09-13 restore drills wrote about 145M rows in a day.'
+          value: '{{ $values.D.Value | printf "%.0f" }} rows written in the last hour'
+          threshold: 'over 205,479 rows/h (3 x allowance) or over 3 x the 7-day hourly median'
+          top: 'D1 database {{ $labels.resource }}'
+        labels: {signal: cloudflare-spend, product: d1-rows-written}
+        isPaused: false
+      - uid: cf-email-sends
+        title: Cloudflare email sends
+        condition: F
+        data:
+          - refId: A
+            relativeTimeRange: {from: 3600, to: 0}
+            datasourceUid: fleet-cloudflare
+            model:
+              <<: *cf-last-hour-total
+              refId: A
+              root_selector: data.viewer.accounts[0].emailSendingAdaptiveGroups
+              columns: [{selector: count, text: value, type: number}]
+              url_options:
+                method: POST
+                body_type: graphql
+                body_content_type: application/json
+                body_graphql_query: |-
+                  query { viewer { accounts(filter: {accountTag: "f670a698e17bf160c8e4679823e68916"}) {
+                    emailSendingAdaptiveGroups(limit: 10000, filter: {datetime_geq: "${__timeFrom:date:iso}", datetime_lt: "${__timeTo:date:iso}"}) { count }
+                  } } }
+          - refId: B
+            relativeTimeRange: {from: 604800, to: 0}
+            datasourceUid: fleet-cloudflare
+            model:
+              <<: *cf-last-hour-total
+              refId: B
+              root_selector: data.viewer.accounts[0].emailSendingAdaptiveGroups
+              columns:
+                - {selector: dimensions.datetimeHour, text: time, type: timestamp}
+                - {selector: count, text: value, type: number}
+              url_options:
+                method: POST
+                body_type: graphql
+                body_content_type: application/json
+                body_graphql_query: |-
+                  query { viewer { accounts(filter: {accountTag: "f670a698e17bf160c8e4679823e68916"}) {
+                    emailSendingAdaptiveGroups(limit: 10000, filter: {datetime_geq: "${__timeFrom:date:iso}", datetime_lt: "${__timeTo:date:iso}"}) { dimensions { datetimeHour } count }
+                  } } }
+          - refId: T
+            relativeTimeRange: {from: 3600, to: 0}
+            datasourceUid: fleet-cloudflare
+            model:
+              <<: *cf-last-hour-total
+              refId: T
+              root_selector: data.viewer.accounts[0].emailSendingAdaptiveGroups
+              columns:
+                - {selector: dimensions.sendingDomain, text: resource, type: string}
+                - {selector: count, text: value, type: number}
+              url_options:
+                method: POST
+                body_type: graphql
+                body_content_type: application/json
+                body_graphql_query: |-
+                  query { viewer { accounts(filter: {accountTag: "f670a698e17bf160c8e4679823e68916"}) {
+                    emailSendingAdaptiveGroups(limit: 1, orderBy: [count_DESC], filter: {datetime_geq: "${__timeFrom:date:iso}", datetime_lt: "${__timeTo:date:iso}"}) { dimensions { sendingDomain } count }
+                  } } }
+          - {refId: C, datasourceUid: __expr__, model: {<<: *cf-median}}
+          - {refId: D, datasourceUid: __expr__, model: {<<: *cf-last}}
+          - refId: E
+            datasourceUid: __expr__
+            model:
+              datasource: {type: __expr__, uid: __expr__}
+              type: math
+              refId: E
+              expression: ($D > 3 * 4.11) || ($C > 0 && $D > 3 * $C)
+          - refId: R
+            datasourceUid: __expr__
+            model: {datasource: {type: __expr__, uid: __expr__}, type: math, refId: R, expression: $T * 0 + $E}
+          - {refId: F, datasourceUid: __expr__, model: {<<: *cf-threshold}}
+        noDataState: OK
+        execErrState: Error
+        for: 0s
+        annotations:
+          summary: 'Cloudflare sent {{ $values.D.Value | printf "%.0f" }} emails in the last hour'
+          description: 'The 3x line is the larger signal of 12.3 emails/h (3 x the pro-rated 3,000/month allowance) and 3 x the 7-day hourly median ({{ $values.C.Value | printf "%.0f" }}). The 2026-09-28 sign-in e2e sent about 5,976 emails in a day.'
+          value: '{{ $values.D.Value | printf "%.0f" }} emails in the last hour'
+          threshold: 'over 12.3 emails/h (3 x allowance) or over 3 x the 7-day hourly median'
+          top: 'sending domain {{ $labels.resource }}'
+        labels: {signal: cloudflare-spend, product: email-sends}
+        isPaused: false
+      - uid: cf-r2-standard-total
+        title: Cloudflare R2 Standard storage total
+        condition: F
+        data:
+          - refId: A
+            relativeTimeRange: {from: 3600, to: 0}
+            datasourceUid: fleet-cloudflare
+            model:
+              <<: *cf-last-hour-total
+              refId: A
+              root_selector: '$map([data.viewer.accounts[0]], function($a){{"total": $sum($a.r2StorageAdaptiveGroups.max.payloadSize)}})'
+              columns: [{selector: total, text: value, type: number}]
+              url_options:
+                method: POST
+                body_type: graphql
+                body_content_type: application/json
+                body_graphql_query: |-
+                  query { viewer { accounts(filter: {accountTag: "f670a698e17bf160c8e4679823e68916"}) {
+                    r2StorageAdaptiveGroups(limit: 10000, filter: {storageClass: "Standard", datetime_geq: "${__timeFrom:date:iso}", datetime_lt: "${__timeTo:date:iso}"}) { dimensions { bucketName } max { payloadSize } }
+                  } } }
+          - refId: T
+            relativeTimeRange: {from: 3600, to: 0}
+            datasourceUid: fleet-cloudflare
+            model:
+              <<: *cf-last-hour-total
+              refId: T
+              root_selector: data.viewer.accounts[0].r2StorageAdaptiveGroups
+              columns:
+                - {selector: dimensions.bucketName, text: resource, type: string}
+                - {selector: max.payloadSize, text: value, type: number}
+              url_options:
+                method: POST
+                body_type: graphql
+                body_content_type: application/json
+                body_graphql_query: |-
+                  query { viewer { accounts(filter: {accountTag: "f670a698e17bf160c8e4679823e68916"}) {
+                    r2StorageAdaptiveGroups(limit: 1, orderBy: [max_payloadSize_DESC], filter: {storageClass: "Standard", datetime_geq: "${__timeFrom:date:iso}", datetime_lt: "${__timeTo:date:iso}"}) { dimensions { bucketName } max { payloadSize } }
+                  } } }
+          - {refId: D, datasourceUid: __expr__, model: {<<: *cf-last}}
+          - refId: E
+            datasourceUid: __expr__
+            model: {datasource: {type: __expr__, uid: __expr__}, type: math, refId: E, expression: $D > 20000000000}
+          - refId: R
+            datasourceUid: __expr__
+            model: {datasource: {type: __expr__, uid: __expr__}, type: math, refId: R, expression: $T * 0 + $E}
+          - {refId: F, datasourceUid: __expr__, model: {<<: *cf-threshold}}
+        noDataState: OK
+        execErrState: Error
+        for: 0s
+        annotations:
+          summary: 'R2 Standard storage is {{ $values.D.Value | humanize }}B'
+          description: 'Total R2 Standard storage is over 20 GB; 16.06 GB was the 2026-10-07 baseline at about $0.09/month. Between 2026-09-22 and 2026-10-07 0509-landing-page-artifacts grew about 36 GB.'
+          value: '{{ $values.D.Value | humanize }}B Standard in total'
+          threshold: 'over 20 GB Standard in total'
+          top: 'bucket {{ $labels.resource }}'
+        labels: {signal: cloudflare-spend, product: r2-storage}
+        isPaused: false
+      - uid: cf-r2-bucket-growth
+        title: Cloudflare R2 bucket growth
+        condition: F
+        data:
+          - refId: A
+            relativeTimeRange: {from: 3600, to: 0}
+            datasourceUid: fleet-cloudflare
+            model:
+              <<: *cf-last-hour-total
+              refId: A
+              root_selector: data.viewer.accounts[0].r2StorageAdaptiveGroups
+              columns:
+                - {selector: dimensions.bucketName, text: resource, type: string}
+                - {selector: max.payloadSize, text: value, type: number}
+              url_options:
+                method: POST
+                body_type: graphql
+                body_content_type: application/json
+                body_graphql_query: |-
+                  query { viewer { accounts(filter: {accountTag: "f670a698e17bf160c8e4679823e68916"}) {
+                    r2StorageAdaptiveGroups(limit: 10000, filter: {storageClass: "Standard", datetime_geq: "${__timeFrom:date:iso}", datetime_lt: "${__timeTo:date:iso}"}) { dimensions { bucketName } max { payloadSize } }
+                  } } }
+          - refId: B
+            relativeTimeRange: {from: 90000, to: 86400}
+            datasourceUid: fleet-cloudflare
+            model:
+              <<: *cf-last-hour-total
+              refId: B
+              root_selector: data.viewer.accounts[0].r2StorageAdaptiveGroups
+              columns:
+                - {selector: dimensions.bucketName, text: resource, type: string}
+                - {selector: max.payloadSize, text: value, type: number}
+              url_options:
+                method: POST
+                body_type: graphql
+                body_content_type: application/json
+                body_graphql_query: |-
+                  query { viewer { accounts(filter: {accountTag: "f670a698e17bf160c8e4679823e68916"}) {
+                    r2StorageAdaptiveGroups(limit: 10000, filter: {storageClass: "Standard", datetime_geq: "${__timeFrom:date:iso}", datetime_lt: "${__timeTo:date:iso}"}) { dimensions { bucketName } max { payloadSize } }
+                  } } }
+          - refId: E
+            datasourceUid: __expr__
+            model: {datasource: {type: __expr__, uid: __expr__}, type: math, refId: E, expression: $A - $B}
+          - refId: F
+            datasourceUid: __expr__
+            model:
+              datasource: {type: __expr__, uid: __expr__}
+              type: threshold
+              refId: F
+              expression: E
+              conditions: [{evaluator: {params: [2000000000], type: gt}, operator: {type: and}, query: {params: [F]}, reducer: {params: [], type: last}, type: query}]
+        noDataState: OK
+        execErrState: Error
+        for: 0s
+        annotations:
+          summary: 'R2 bucket {{ $labels.resource }} grew {{ $values.E.Value | humanize }}B in 24 hours'
+          description: 'A bucket grew by more than 2 GB against its size 24 hours ago. 0509-landing-page-artifacts grew about 36 GB over 2026-09-22 to 2026-10-07 and the restic repo went from 3 GB to 24 GB.'
+          value: '{{ $values.E.Value | humanize }}B in 24 hours'
+          threshold: 'over 2 GB growth in 24 hours'
+          top: 'bucket {{ $labels.resource }}'
+        labels: {signal: cloudflare-spend, product: r2-storage}
+        isPaused: false
