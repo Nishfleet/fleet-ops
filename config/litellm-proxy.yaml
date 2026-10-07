@@ -31,6 +31,8 @@ model_list:
     cooldown_time: 900
   model_info:
     mode: chat
+    supports_prompt_caching: true
+    cache_proof: "2026-10-07 #9357 scoreboard: 82.9% (89.4% 48h) cache-read 7d on real router traffic."
     id: commandcode-ds41flash-worker-capable
     allowed_fails_policy:
       BadRequestErrorAllowedFails: 1
@@ -52,6 +54,8 @@ model_list:
     cooldown_time: 900
   model_info:
     mode: chat
+    supports_prompt_caching: true
+    cache_proof: "2026-10-07 #9357 scoreboard: 82.9% (89.4% 48h) cache-read 7d on real router traffic."
     id: commandcode-ds41flash-worker-cheap
     allowed_fails_policy:
       BadRequestErrorAllowedFails: 1
@@ -67,6 +71,8 @@ model_list:
     cooldown_time: 900
   model_info:
     mode: chat
+    supports_prompt_caching: true
+    cache_proof: "Provider ended this model 2026-10-05 (#9312); last live week read 1.7% cache (#9357 scoreboard); the same model caches on xkiro at 20.1% (#9362)."
     id: commandcode-spacebunnyalpha-worker-capable
     allowed_fails_policy:
       BadRequestErrorAllowedFails: 1
@@ -74,24 +80,32 @@ model_list:
   litellm_params: {<<: *commandcode-free}
   model_info:
     mode: chat
+    supports_prompt_caching: true
+    cache_proof: "Provider ended this model 2026-10-05 (#9312); last live week read 1.7% cache (#9357 scoreboard); the same model caches on xkiro at 20.1% (#9362)."
     id: commandcode-spacebunnyalpha-worker-cheap
     allowed_fails_policy:
       BadRequestErrorAllowedFails: 1
 - model_name: worker-capable
   litellm_params:
     <<: *commandcode-free
+    order: 2
     model: openai/poolside/laguna-s-2.1-free
   model_info:
     mode: chat
+    supports_prompt_caching: false
+    cache_proof: "Cannot cache: spend-log record gen_01M4AMN2265PBSZ64NYCVYTJDT 2026-10-07 shows 63,223 prompt tokens with prompt_tokens_details null (#9362); cline direct probe of the same model 0->0 with the field present (#9365); 1.3% 7d -> 0.0% 48h (#9357)."
     id: commandcode-lagunas21free-worker-capable
     allowed_fails_policy:
       BadRequestErrorAllowedFails: 1
 - model_name: worker-cheap
   litellm_params:
     <<: *commandcode-free
+    order: 2
     model: openai/poolside/laguna-s-2.1-free
   model_info:
     mode: chat
+    supports_prompt_caching: false
+    cache_proof: "Cannot cache: spend-log record gen_01M4AMN2265PBSZ64NYCVYTJDT 2026-10-07 shows 63,223 prompt tokens with prompt_tokens_details null (#9362); cline direct probe of the same model 0->0 with the field present (#9365); 1.3% 7d -> 0.0% 48h (#9357)."
     id: commandcode-lagunas21free-worker-cheap
     allowed_fails_policy:
       BadRequestErrorAllowedFails: 1
@@ -101,6 +115,8 @@ model_list:
     model: openai/inclusionai/ling-3.0-flash-sante:free
   model_info:
     mode: chat
+    supports_prompt_caching: true
+    cache_proof: "Caches: direct probe 2026-10-07 through commandcode, cached_tokens 0->7872 of 7915 (#9365). The router path drops the field: LiteLLM v1.98.0 stream bug, tracked in the follow-up issue."
     id: commandcode-ling30flashsante-worker-capable
     allowed_fails_policy:
       BadRequestErrorAllowedFails: 1
@@ -110,6 +126,8 @@ model_list:
     model: openai/inclusionai/ling-3.0-flash-sante:free
   model_info:
     mode: chat
+    supports_prompt_caching: true
+    cache_proof: "Caches: direct probe 2026-10-07 through commandcode, cached_tokens 0->7872 of 7915 (#9365). The router path drops the field: LiteLLM v1.98.0 stream bug, tracked in the follow-up issue."
     id: commandcode-ling30flashsante-worker-cheap
     allowed_fails_policy:
       BadRequestErrorAllowedFails: 1
@@ -119,6 +137,8 @@ model_list:
     model: openai/inclusionai/ling-3.1-flash:free
   model_info:
     mode: chat
+    supports_prompt_caching: true
+    cache_proof: "2026-10-07 #9357 scoreboard: 79.9% cache-read 7d on real router traffic."
     id: commandcode-ling31flash-worker-capable
     allowed_fails_policy:
       BadRequestErrorAllowedFails: 1
@@ -128,6 +148,8 @@ model_list:
     model: openai/inclusionai/ling-3.1-flash:free
   model_info:
     mode: chat
+    supports_prompt_caching: true
+    cache_proof: "2026-10-07 #9357 scoreboard: 79.9% cache-read 7d on real router traffic."
     id: commandcode-ling31flash-worker-cheap
     allowed_fails_policy:
       BadRequestErrorAllowedFails: 1
@@ -148,6 +170,8 @@ model_list:
     cooldown_time: 21600
   model_info:
     mode: chat
+    supports_prompt_caching: true
+    cache_proof: "Same gateway and model as opencodego2 (88.4% cache-read 7d, #9357 scoreboard); this row is the monthly-quota-walled Go endpoint (#9122) with little traffic of its own."
     id: opencodego-ds41flash-worker-capable
     allowed_fails_policy:
       BadRequestErrorAllowedFails: 1
@@ -169,6 +193,8 @@ model_list:
     cooldown_time: 21600
   model_info:
     mode: chat
+    supports_prompt_caching: true
+    cache_proof: "Same gateway and model as opencodego2 (88.4% cache-read 7d, #9357 scoreboard); this row is the monthly-quota-walled Go endpoint (#9122) with little traffic of its own."
     id: opencodego-ds41flash-worker-cheap
     allowed_fails_policy:
       BadRequestErrorAllowedFails: 1
@@ -190,6 +216,8 @@ model_list:
     cooldown_time: 21600
   model_info:
     mode: chat
+    supports_prompt_caching: true
+    cache_proof: "Same gateway and model as opencodego2 (88.4% cache-read 7d, #9357 scoreboard); this row is the monthly-quota-walled Go endpoint (#9122) with little traffic of its own."
     id: opencodego-ds41flash-judge
     allowed_fails_policy:
       BadRequestErrorAllowedFails: 1
@@ -210,6 +238,8 @@ model_list:
     cooldown_time: 900
   model_info:
     mode: chat
+    supports_prompt_caching: true
+    cache_proof: "2026-10-07 #9357 scoreboard (opencodego2): 88.4% cache-read 7d on real router traffic."
     id: opencodego2-ds41flash-worker-capable
     allowed_fails_policy:
       BadRequestErrorAllowedFails: 1
@@ -229,6 +259,8 @@ model_list:
     cooldown_time: 900
   model_info:
     mode: chat
+    supports_prompt_caching: true
+    cache_proof: "2026-10-07 #9357 scoreboard (opencodego2): 88.4% cache-read 7d on real router traffic."
     id: opencodego2-ds41flash-worker-cheap
     allowed_fails_policy:
       BadRequestErrorAllowedFails: 1
@@ -248,6 +280,8 @@ model_list:
     cooldown_time: 900
   model_info:
     mode: chat
+    supports_prompt_caching: true
+    cache_proof: "2026-10-07 #9357 scoreboard (opencodego2): 88.4% cache-read 7d on real router traffic."
     id: opencodego2-ds41flash-judge
     allowed_fails_policy:
       BadRequestErrorAllowedFails: 1
@@ -270,6 +304,8 @@ model_list:
     cooldown_time: 300
   model_info:
     mode: chat
+    supports_prompt_caching: true
+    cache_proof: "2026-10-07 #9357 scoreboard: 81.5% cache-read 7d on real router traffic."
     id: pareto-glm53flash-worker-capable
     allowed_fails_policy:
       BadRequestErrorAllowedFails: 1
@@ -293,6 +329,8 @@ model_list:
     cooldown_time: 300
   model_info:
     mode: chat
+    supports_prompt_caching: true
+    cache_proof: "2026-10-07 #9357 scoreboard: 81.5% cache-read 7d on real router traffic."
     id: pareto-glm53flash-senior
     allowed_fails_policy:
       BadRequestErrorAllowedFails: 1
@@ -312,6 +350,8 @@ model_list:
     cooldown_time: 900
   model_info:
     mode: chat
+    supports_prompt_caching: true
+    cache_proof: "2026-10-07 #9357 scoreboard: 89.5% cache-read 7d on real router traffic."
     id: synthetic-glm53flash-worker-cheap
     allowed_fails_policy:
       BadRequestErrorAllowedFails: 1
@@ -327,6 +367,8 @@ model_list:
     cooldown_time: 900
   model_info:
     mode: chat
+    supports_prompt_caching: true
+    cache_proof: "2026-10-07 #9357 scoreboard: 89.5% cache-read 7d on real router traffic."
     id: synthetic-glm53flashb-worker-cheap
     allowed_fails_policy:
       BadRequestErrorAllowedFails: 1
@@ -342,6 +384,8 @@ model_list:
     cooldown_time: 900
   model_info:
     mode: chat
+    supports_prompt_caching: true
+    cache_proof: "2026-10-07 #9357 scoreboard: 89.5% cache-read 7d on real router traffic."
     id: synthetic-glm53flashc-worker-cheap
     allowed_fails_policy:
       BadRequestErrorAllowedFails: 1
@@ -357,6 +401,8 @@ model_list:
     cooldown_time: 900
   model_info:
     mode: chat
+    supports_prompt_caching: true
+    cache_proof: "2026-10-07 #9357 scoreboard: 89.5% cache-read 7d on real router traffic."
     id: synthetic-glm53flash-worker-capable
     allowed_fails_policy:
       BadRequestErrorAllowedFails: 1
@@ -372,6 +418,8 @@ model_list:
     cooldown_time: 900
   model_info:
     mode: chat
+    supports_prompt_caching: true
+    cache_proof: "2026-10-07 #9357 scoreboard: 89.5% cache-read 7d on real router traffic."
     id: synthetic-glm53flashb-worker-capable
     allowed_fails_policy:
       BadRequestErrorAllowedFails: 1
@@ -387,6 +435,8 @@ model_list:
     cooldown_time: 900
   model_info:
     mode: chat
+    supports_prompt_caching: true
+    cache_proof: "2026-10-07 #9357 scoreboard: 89.5% cache-read 7d on real router traffic."
     id: synthetic-glm53flashc-worker-capable
     allowed_fails_policy:
       BadRequestErrorAllowedFails: 1
@@ -402,6 +452,8 @@ model_list:
     cooldown_time: 900
   model_info:
     mode: chat
+    supports_prompt_caching: true
+    cache_proof: "2026-10-07 #9357 scoreboard: 89.5% cache-read 7d on real router traffic."
     id: synthetic-glm53flashd-worker-capable
     allowed_fails_policy:
       BadRequestErrorAllowedFails: 1
@@ -424,6 +476,8 @@ model_list:
     cooldown_time: 900
   model_info:
     mode: chat
+    supports_prompt_caching: true
+    cache_proof: "Z.AI caches automatically and reports cached_tokens (https://docs.z.ai/guides/capabilities/cache); 202 of 302 non-Pi callers show cached_tokens>0 (10048 of 10124 on 2026-10-03) while Pi's streamed replies carry no prompt_tokens_details (0 of 7652): LiteLLM v1.98.0 drops it (#9357). Direct probe blocked by the 429 code 1310 weekly limit until 2026-10-09."
     id: zai-glm53flash-worker-capable
     allowed_fails_policy:
       BadRequestErrorAllowedFails: 1
@@ -440,6 +494,8 @@ model_list:
     cooldown_time: 900
   model_info:
     mode: chat
+    supports_prompt_caching: true
+    cache_proof: "Z.AI caches automatically and reports cached_tokens (https://docs.z.ai/guides/capabilities/cache); 202 of 302 non-Pi callers show cached_tokens>0 (10048 of 10124 on 2026-10-03) while Pi's streamed replies carry no prompt_tokens_details (0 of 7652): LiteLLM v1.98.0 drops it (#9357). Direct probe blocked by the 429 code 1310 weekly limit until 2026-10-09."
     id: zai-glm53flashb-worker-capable
     allowed_fails_policy:
       BadRequestErrorAllowedFails: 1
@@ -456,6 +512,8 @@ model_list:
     cooldown_time: 900
   model_info:
     mode: chat
+    supports_prompt_caching: true
+    cache_proof: "Z.AI caches automatically and reports cached_tokens (https://docs.z.ai/guides/capabilities/cache); 202 of 302 non-Pi callers show cached_tokens>0 (10048 of 10124 on 2026-10-03) while Pi's streamed replies carry no prompt_tokens_details (0 of 7652): LiteLLM v1.98.0 drops it (#9357). Direct probe blocked by the 429 code 1310 weekly limit until 2026-10-09."
     id: zai-glm53flashc-worker-capable
     allowed_fails_policy:
       BadRequestErrorAllowedFails: 1
@@ -472,6 +530,8 @@ model_list:
     cooldown_time: 900
   model_info:
     mode: chat
+    supports_prompt_caching: true
+    cache_proof: "Z.AI caches automatically and reports cached_tokens (https://docs.z.ai/guides/capabilities/cache); 202 of 302 non-Pi callers show cached_tokens>0 (10048 of 10124 on 2026-10-03) while Pi's streamed replies carry no prompt_tokens_details (0 of 7652): LiteLLM v1.98.0 drops it (#9357). Direct probe blocked by the 429 code 1310 weekly limit until 2026-10-09."
     id: zai-glm53flashd-worker-capable
     allowed_fails_policy:
       BadRequestErrorAllowedFails: 1
@@ -488,6 +548,8 @@ model_list:
     cooldown_time: 900
   model_info:
     mode: chat
+    supports_prompt_caching: true
+    cache_proof: "Z.AI caches automatically and reports cached_tokens (https://docs.z.ai/guides/capabilities/cache); 202 of 302 non-Pi callers show cached_tokens>0 (10048 of 10124 on 2026-10-03) while Pi's streamed replies carry no prompt_tokens_details (0 of 7652): LiteLLM v1.98.0 drops it (#9357). Direct probe blocked by the 429 code 1310 weekly limit until 2026-10-09."
     id: zai-glm53flashe-worker-capable
     allowed_fails_policy:
       BadRequestErrorAllowedFails: 1
@@ -504,6 +566,8 @@ model_list:
     cooldown_time: 900
   model_info:
     mode: chat
+    supports_prompt_caching: true
+    cache_proof: "Z.AI caches automatically and reports cached_tokens (https://docs.z.ai/guides/capabilities/cache); 202 of 302 non-Pi callers show cached_tokens>0 (10048 of 10124 on 2026-10-03) while Pi's streamed replies carry no prompt_tokens_details (0 of 7652): LiteLLM v1.98.0 drops it (#9357). Direct probe blocked by the 429 code 1310 weekly limit until 2026-10-09."
     id: zai-glm53flashf-worker-capable
     allowed_fails_policy:
       BadRequestErrorAllowedFails: 1
@@ -520,6 +584,8 @@ model_list:
     cooldown_time: 900
   model_info:
     mode: chat
+    supports_prompt_caching: true
+    cache_proof: "Z.AI caches automatically and reports cached_tokens (https://docs.z.ai/guides/capabilities/cache); 202 of 302 non-Pi callers show cached_tokens>0 (10048 of 10124 on 2026-10-03) while Pi's streamed replies carry no prompt_tokens_details (0 of 7652): LiteLLM v1.98.0 drops it (#9357). Direct probe blocked by the 429 code 1310 weekly limit until 2026-10-09."
     id: zai-glm53flashg-worker-capable
     allowed_fails_policy:
       BadRequestErrorAllowedFails: 1
@@ -536,6 +602,8 @@ model_list:
     cooldown_time: 900
   model_info:
     mode: chat
+    supports_prompt_caching: true
+    cache_proof: "Z.AI caches automatically and reports cached_tokens (https://docs.z.ai/guides/capabilities/cache); 202 of 302 non-Pi callers show cached_tokens>0 (10048 of 10124 on 2026-10-03) while Pi's streamed replies carry no prompt_tokens_details (0 of 7652): LiteLLM v1.98.0 drops it (#9357). Direct probe blocked by the 429 code 1310 weekly limit until 2026-10-09."
     id: zai-glm53flashh-worker-capable
     allowed_fails_policy:
       BadRequestErrorAllowedFails: 1
@@ -552,6 +620,8 @@ model_list:
     cooldown_time: 900
   model_info:
     mode: chat
+    supports_prompt_caching: true
+    cache_proof: "Z.AI caches automatically and reports cached_tokens (https://docs.z.ai/guides/capabilities/cache); 202 of 302 non-Pi callers show cached_tokens>0 (10048 of 10124 on 2026-10-03) while Pi's streamed replies carry no prompt_tokens_details (0 of 7652): LiteLLM v1.98.0 drops it (#9357). Direct probe blocked by the 429 code 1310 weekly limit until 2026-10-09."
     id: zai-glm53flash-worker-cheap
     allowed_fails_policy:
       BadRequestErrorAllowedFails: 1
@@ -568,6 +638,8 @@ model_list:
     cooldown_time: 900
   model_info:
     mode: chat
+    supports_prompt_caching: true
+    cache_proof: "Z.AI caches automatically and reports cached_tokens (https://docs.z.ai/guides/capabilities/cache); 202 of 302 non-Pi callers show cached_tokens>0 (10048 of 10124 on 2026-10-03) while Pi's streamed replies carry no prompt_tokens_details (0 of 7652): LiteLLM v1.98.0 drops it (#9357). Direct probe blocked by the 429 code 1310 weekly limit until 2026-10-09."
     id: zai-glm53flashb-worker-cheap
     allowed_fails_policy:
       BadRequestErrorAllowedFails: 1
@@ -583,6 +655,8 @@ model_list:
     cooldown_time: 900
   model_info:
     mode: chat
+    supports_prompt_caching: true
+    cache_proof: "#9362 real-traffic measurement: 20.1% cache-read 7d."
     id: xkiro-spacebunnyalpha-worker-capable
     allowed_fails_policy:
       BadRequestErrorAllowedFails: 1
@@ -590,6 +664,8 @@ model_list:
   litellm_params: {<<: *xkiro-free}
   model_info:
     mode: chat
+    supports_prompt_caching: true
+    cache_proof: "#9362 real-traffic measurement: 20.1% cache-read 7d."
     id: xkiro-spacebunnyalpha-worker-cheap
     allowed_fails_policy:
       BadRequestErrorAllowedFails: 1
@@ -599,6 +675,8 @@ model_list:
     model: openai/inclusionai/ling-3.0-flash-sante:free
   model_info:
     mode: chat
+    supports_prompt_caching: true
+    cache_proof: "#9362 real-traffic measurement: 52.3% cache-read 7d."
     id: xkiro-ling30flashsante-worker-capable
     allowed_fails_policy:
       BadRequestErrorAllowedFails: 1
@@ -608,6 +686,8 @@ model_list:
     model: openai/inclusionai/ling-3.0-flash-sante:free
   model_info:
     mode: chat
+    supports_prompt_caching: true
+    cache_proof: "#9362 real-traffic measurement: 52.3% cache-read 7d."
     id: xkiro-ling30flashsante-worker-cheap
     allowed_fails_policy:
       BadRequestErrorAllowedFails: 1
@@ -624,6 +704,8 @@ model_list:
     cooldown_time: 900
   model_info:
     mode: chat
+    supports_prompt_caching: true
+    cache_proof: "#9362 real-traffic measurement: 59% cache-read 7d."
     id: xkiro-qwen3coderplus-worker-cheap
     allowed_fails_policy:
       BadRequestErrorAllowedFails: 1
@@ -640,6 +722,8 @@ model_list:
     cooldown_time: 900
   model_info:
     mode: chat
+    supports_prompt_caching: true
+    cache_proof: "#9362 real-traffic measurement: 26% cache-read 7d."
     id: xkiro-qwen38max-worker-cheap
     allowed_fails_policy:
       BadRequestErrorAllowedFails: 1
@@ -662,6 +746,8 @@ model_list:
     cooldown_time: 21600
   model_info:
     mode: chat
+    supports_prompt_caching: true
+    cache_proof: "Caches: direct probe 2026-10-07 through cline, cached_tokens 0->5888 of 6025 (#9365). The router path drops the field: LiteLLM v1.98.0 stream bug."
     id: cline-ds41flash-worker-capable
     allowed_fails_policy:
       BadRequestErrorAllowedFails: 1
@@ -681,6 +767,8 @@ model_list:
     cooldown_time: 900
   model_info:
     mode: chat
+    supports_prompt_caching: true
+    cache_proof: "2026-10-07 #9357 scoreboard: 84.5% cache-read 7d (86.6% 48h)."
     id: zen-spacebunny-worker-capable
     allowed_fails_policy:
       BadRequestErrorAllowedFails: 1
@@ -697,6 +785,8 @@ model_list:
     cooldown_time: 900
   model_info:
     mode: chat
+    supports_prompt_caching: true
+    cache_proof: "2026-10-07 #9357 scoreboard: 84.5% cache-read 7d (86.6% 48h)."
     id: zen-spacebunny-worker-cheap
     allowed_fails_policy:
       BadRequestErrorAllowedFails: 1
@@ -714,6 +804,8 @@ model_list:
     cooldown_time: 120
   model_info:
     mode: chat
+    supports_prompt_caching: true
+    cache_proof: "2026-10-07 #9357 scoreboard: 93.4% cache-read 7d on real router traffic."
     id: minimax-m31-worker-capable
     allowed_fails_policy:
       BadRequestErrorAllowedFails: 1
@@ -731,6 +823,8 @@ model_list:
     cooldown_time: 120
   model_info:
     mode: chat
+    supports_prompt_caching: true
+    cache_proof: "2026-10-07 #9357 scoreboard: 93.4% cache-read 7d on real router traffic."
     id: minimax-m31b-worker-capable
     allowed_fails_policy:
       BadRequestErrorAllowedFails: 1
@@ -748,6 +842,8 @@ model_list:
     cooldown_time: 120
   model_info:
     mode: chat
+    supports_prompt_caching: true
+    cache_proof: "2026-10-07 #9357 scoreboard: 93.4% cache-read 7d on real router traffic."
     id: minimax-m31-worker-cheap
     allowed_fails_policy:
       BadRequestErrorAllowedFails: 1
@@ -765,6 +861,8 @@ model_list:
     cooldown_time: 120
   model_info:
     mode: chat
+    supports_prompt_caching: true
+    cache_proof: "2026-10-07 #9357 scoreboard: 93.4% cache-read 7d on real router traffic."
     id: minimax-m31b-worker-cheap
     allowed_fails_policy:
       BadRequestErrorAllowedFails: 1
@@ -796,6 +894,8 @@ model_list:
     cooldown_time: 900
   model_info:
     mode: chat
+    supports_prompt_caching: true
+    cache_proof: "Caches: direct probe 2026-10-07, native prompt_eval_cached_count 0->6016 of 6024 and /v1 cached_tokens 0->6016 (#9365). LiteLLM v1.98.0 ollama_chat reads prompt_eval_count only and drops it."
     id: ollama-ds41flash-worker-capable
     allowed_fails_policy:
       BadRequestErrorAllowedFails: 1
@@ -817,6 +917,8 @@ model_list:
     cooldown_time: 900
   model_info:
     mode: chat
+    supports_prompt_caching: true
+    cache_proof: "Caches: direct probe 2026-10-07, native prompt_eval_cached_count 0->6016 of 6024 and /v1 cached_tokens 0->6016 (#9365). LiteLLM v1.98.0 ollama_chat reads prompt_eval_count only and drops it."
     id: ollama-ds41flashb-worker-capable
     allowed_fails_policy:
       BadRequestErrorAllowedFails: 1
@@ -838,6 +940,8 @@ model_list:
     cooldown_time: 900
   model_info:
     mode: chat
+    supports_prompt_caching: true
+    cache_proof: "Caches: direct probe 2026-10-07, native prompt_eval_cached_count 0->6016 of 6024 and /v1 cached_tokens 0->6016 (#9365). LiteLLM v1.98.0 ollama_chat reads prompt_eval_count only and drops it."
     id: ollama-ds41flashc-worker-capable
     allowed_fails_policy:
       BadRequestErrorAllowedFails: 1
@@ -859,6 +963,8 @@ model_list:
     cooldown_time: 900
   model_info:
     mode: chat
+    supports_prompt_caching: true
+    cache_proof: "Caches: direct probe 2026-10-07, native prompt_eval_cached_count 0->6016 of 6024 and /v1 cached_tokens 0->6016 (#9365). LiteLLM v1.98.0 ollama_chat reads prompt_eval_count only and drops it."
     id: ollama-ds41flashd-worker-capable
     allowed_fails_policy:
       BadRequestErrorAllowedFails: 1
@@ -880,6 +986,8 @@ model_list:
     cooldown_time: 900
   model_info:
     mode: chat
+    supports_prompt_caching: true
+    cache_proof: "Caches: direct probe 2026-10-07, native prompt_eval_cached_count 0->6016 of 6024 and /v1 cached_tokens 0->6016 (#9365). LiteLLM v1.98.0 ollama_chat reads prompt_eval_count only and drops it."
     id: ollama-ds41flashe-worker-capable
     allowed_fails_policy:
       BadRequestErrorAllowedFails: 1
@@ -901,6 +1009,8 @@ model_list:
     cooldown_time: 900
   model_info:
     mode: chat
+    supports_prompt_caching: true
+    cache_proof: "Caches: direct probe 2026-10-07, native prompt_eval_cached_count 0->6016 of 6024 and /v1 cached_tokens 0->6016 (#9365). LiteLLM v1.98.0 ollama_chat reads prompt_eval_count only and drops it."
     id: ollama-ds41flashf-worker-capable
     allowed_fails_policy:
       BadRequestErrorAllowedFails: 1
@@ -922,6 +1032,8 @@ model_list:
     cooldown_time: 900
   model_info:
     mode: chat
+    supports_prompt_caching: true
+    cache_proof: "Caches: direct probe 2026-10-07, native prompt_eval_cached_count 0->6016 of 6024 and /v1 cached_tokens 0->6016 (#9365). LiteLLM v1.98.0 ollama_chat reads prompt_eval_count only and drops it."
     id: ollama-ds41flashg-worker-capable
     allowed_fails_policy:
       BadRequestErrorAllowedFails: 1
@@ -943,6 +1055,8 @@ model_list:
     cooldown_time: 900
   model_info:
     mode: chat
+    supports_prompt_caching: true
+    cache_proof: "Caches: direct probe 2026-10-07, native prompt_eval_cached_count 0->6016 of 6024 and /v1 cached_tokens 0->6016 (#9365). LiteLLM v1.98.0 ollama_chat reads prompt_eval_count only and drops it."
     id: ollama-ds41flashh-worker-capable
     allowed_fails_policy:
       BadRequestErrorAllowedFails: 1
@@ -964,6 +1078,8 @@ model_list:
     cooldown_time: 900
   model_info:
     mode: chat
+    supports_prompt_caching: true
+    cache_proof: "Caches: direct probe 2026-10-07, native prompt_eval_cached_count 0->6016 of 6024 and /v1 cached_tokens 0->6016 (#9365). LiteLLM v1.98.0 ollama_chat reads prompt_eval_count only and drops it."
     id: ollama-ds41flashi-worker-capable
     allowed_fails_policy:
       BadRequestErrorAllowedFails: 1
@@ -985,6 +1101,8 @@ model_list:
     cooldown_time: 900
   model_info:
     mode: chat
+    supports_prompt_caching: true
+    cache_proof: "Caches: direct probe 2026-10-07, native prompt_eval_cached_count 0->6016 of 6024 and /v1 cached_tokens 0->6016 (#9365). LiteLLM v1.98.0 ollama_chat reads prompt_eval_count only and drops it."
     id: ollama-ds41flashj-worker-capable
     allowed_fails_policy:
       BadRequestErrorAllowedFails: 1
@@ -1007,6 +1125,8 @@ model_list:
     cooldown_time: 900
   model_info:
     mode: chat
+    supports_prompt_caching: true
+    cache_proof: "2026-10-07 #9357 scoreboard: 94.8% cache-read 7d on real router traffic."
     id: stepfun-step5preview-worker-capable
     allowed_fails_policy:
       BadRequestErrorAllowedFails: 1
@@ -1025,6 +1145,8 @@ model_list:
     cooldown_time: 900
   model_info:
     mode: chat
+    supports_prompt_caching: true
+    cache_proof: "2026-10-07 #9357 scoreboard: 94.8% cache-read 7d on real router traffic."
     id: stepfun-step5previewb-worker-capable
     allowed_fails_policy:
       BadRequestErrorAllowedFails: 1
@@ -1043,6 +1165,8 @@ model_list:
     cooldown_time: 900
   model_info:
     mode: chat
+    supports_prompt_caching: true
+    cache_proof: "2026-10-07 #9357 scoreboard: 94.8% cache-read 7d on real router traffic."
     id: stepfun-step5previewc-worker-capable
     allowed_fails_policy:
       BadRequestErrorAllowedFails: 1
@@ -1061,6 +1185,8 @@ model_list:
     cooldown_time: 900
   model_info:
     mode: chat
+    supports_prompt_caching: true
+    cache_proof: "2026-10-07 #9357 scoreboard: 94.8% cache-read 7d on real router traffic."
     id: stepfun-step5previewd-worker-capable
     allowed_fails_policy:
       BadRequestErrorAllowedFails: 1
@@ -1079,6 +1205,8 @@ model_list:
     cooldown_time: 900
   model_info:
     mode: chat
+    supports_prompt_caching: true
+    cache_proof: "2026-10-07 #9357 scoreboard: 94.8% cache-read 7d on real router traffic."
     id: stepfun-step5previewe-worker-capable
     allowed_fails_policy:
       BadRequestErrorAllowedFails: 1
@@ -1097,6 +1225,8 @@ model_list:
     cooldown_time: 900
   model_info:
     mode: chat
+    supports_prompt_caching: true
+    cache_proof: "2026-10-07 #9357 scoreboard: 94.8% cache-read 7d on real router traffic."
     id: stepfun-step5previewf-worker-capable
     allowed_fails_policy:
       BadRequestErrorAllowedFails: 1
@@ -1115,6 +1245,8 @@ model_list:
     cooldown_time: 900
   model_info:
     mode: chat
+    supports_prompt_caching: true
+    cache_proof: "2026-10-07 #9357 scoreboard: 94.8% cache-read 7d on real router traffic."
     id: stepfun-step5previewg-worker-capable
     allowed_fails_policy:
       BadRequestErrorAllowedFails: 1
@@ -1133,6 +1265,8 @@ model_list:
     cooldown_time: 900
   model_info:
     mode: chat
+    supports_prompt_caching: true
+    cache_proof: "2026-10-07 #9357 scoreboard: 94.8% cache-read 7d on real router traffic."
     id: stepfun-step5previewh-worker-capable
     allowed_fails_policy:
       BadRequestErrorAllowedFails: 1
@@ -1151,6 +1285,8 @@ model_list:
     cooldown_time: 900
   model_info:
     mode: chat
+    supports_prompt_caching: true
+    cache_proof: "2026-10-07 #9357 scoreboard: 94.8% cache-read 7d on real router traffic."
     id: stepfun-step5previewi-worker-capable
     allowed_fails_policy:
       BadRequestErrorAllowedFails: 1
@@ -1169,6 +1305,8 @@ model_list:
     cooldown_time: 900
   model_info:
     mode: chat
+    supports_prompt_caching: true
+    cache_proof: "2026-10-07 #9357 scoreboard: 94.8% cache-read 7d on real router traffic."
     id: stepfun-step5previewj-worker-capable
     allowed_fails_policy:
       BadRequestErrorAllowedFails: 1
@@ -1187,6 +1325,8 @@ model_list:
     cooldown_time: 21600
   model_info:
     mode: chat
+    supports_prompt_caching: true
+    cache_proof: "Provisional true: the model caches on xkiro (20.1% 7d, #9362) and reports 2.1% via OpenRouter (#9357); cline forwards cache fields (direct probe 2026-10-07 shows prompt_tokens_details on a cline reply); the 0.0% cline reading is the LiteLLM v1.98.0 stream drop proven on cline deepseek. Direct probe of this row blocked by 402 insufficient_credits (no spend). Re-check at the #9365 after-measurement."
     id: cline-spacebunnyalpha-worker-capable
     allowed_fails_policy:
       BadRequestErrorAllowedFails: 1
@@ -1198,12 +1338,14 @@ model_list:
     api_base: https://api.cline.bot/api/v1
     api_key: os.environ/CLINE_API_KEY
     tags: [free, cline]
-    order: 1
+    order: 2
     max_parallel_requests: 2
     # 6 h, sized to Cline's daily free-model token quota (fleet-ops#9075).
     cooldown_time: 21600
   model_info:
     mode: chat
+    supports_prompt_caching: false
+    cache_proof: "Cannot cache: direct probe 2026-10-07 through cline, cached_tokens 0->0 with the field present (#9365); OpenRouter endpoint list supports_implicit_caching false; 0.0% 7d on 341.5M input (#9357)."
     id: cline-lagunas21-worker-capable
     allowed_fails_policy:
       BadRequestErrorAllowedFails: 1
@@ -1213,6 +1355,8 @@ model_list:
   litellm_params: {<<: *cline-free}
   model_info:
     mode: chat
+    supports_prompt_caching: false
+    cache_proof: "Cannot cache: direct probe 2026-10-07 through cline, cached_tokens 0->0 with the field present (#9365); OpenRouter endpoint list supports_implicit_caching false; 0.0% 7d on 341.5M input (#9357)."
     id: cline-lagunas21-worker-cheap
     allowed_fails_policy:
       BadRequestErrorAllowedFails: 1
@@ -1223,6 +1367,8 @@ model_list:
     model: openai/inclusionai/ling-3.0-flash-sante:free
   model_info:
     mode: chat
+    supports_prompt_caching: false
+    cache_proof: "Cannot cache on cline: direct probe 2026-10-07, call 2 cached_tokens 0 of 7915, field present (#9365); 0.0% 7d on 307.3M input (#9357). The same model caches 7872 of 7915 direct on commandcode - that route is true."
     id: cline-ling30flashsante-worker-capable
     allowed_fails_policy:
       BadRequestErrorAllowedFails: 1
@@ -1233,6 +1379,8 @@ model_list:
     model: openai/inclusionai/ling-3.0-flash-sante:free
   model_info:
     mode: chat
+    supports_prompt_caching: false
+    cache_proof: "Cannot cache on cline: direct probe 2026-10-07, call 2 cached_tokens 0 of 7915, field present (#9365); 0.0% 7d on 307.3M input (#9357). The same model caches 7872 of 7915 direct on commandcode - that route is true."
     id: cline-ling30flashsante-worker-cheap
     allowed_fails_policy:
       BadRequestErrorAllowedFails: 1
@@ -1254,6 +1402,8 @@ model_list:
     cooldown_time: 21600
   model_info:
     mode: chat
+    supports_prompt_caching: true
+    cache_proof: "2026-10-07 #9357 scoreboard: 2.1% cache-read 7d reported through the router; non-zero, so the route caches and reports."
     id: openrouter-spacebunnyalpha-worker-capable
     allowed_fails_policy:
       BadRequestErrorAllowedFails: 1
@@ -1263,6 +1413,8 @@ model_list:
   litellm_params: {<<: *openrouter-spacebunny}
   model_info:
     mode: chat
+    supports_prompt_caching: true
+    cache_proof: "2026-10-07 #9357 scoreboard: 2.1% cache-read 7d reported through the router; non-zero, so the route caches and reports."
     id: openrouter-spacebunnyalpha-worker-cheap
     allowed_fails_policy:
       BadRequestErrorAllowedFails: 1
@@ -1270,6 +1422,7 @@ model_list:
 - model_name: worker-cheap
   litellm_params: &openrouter-nemotron
     <<: *openrouter-spacebunny
+    order: 2
     model: openai/nvidia/nemotron-3-ultra-550b-a55b:free
     max_budget: 5.0
     tags: [free, nemotron]
@@ -1280,6 +1433,8 @@ model_list:
     cooldown_time: 21600
   model_info:
     mode: chat
+    supports_prompt_caching: false
+    cache_proof: "Cannot cache: OpenRouter endpoint list supports_implicit_caching false (fetched 2026-10-07); 0.2% 7d trace (#9357); direct probe 0->0 with the field present (#9365)."
     id: openrouter-nemotronultra-worker-cheap
     allowed_fails_policy:
       BadRequestErrorAllowedFails: 1
@@ -1288,6 +1443,8 @@ model_list:
   litellm_params: {<<: *openrouter-nemotron}
   model_info:
     mode: chat
+    supports_prompt_caching: false
+    cache_proof: "Cannot cache: OpenRouter endpoint list supports_implicit_caching false (fetched 2026-10-07); 0.2% 7d trace (#9357); direct probe 0->0 with the field present (#9365)."
     id: openrouter-nemotronultra-worker-capable
     allowed_fails_policy:
       BadRequestErrorAllowedFails: 1
@@ -1298,6 +1455,8 @@ model_list:
     model: openai/nvidia/nemotron-3.5-lightning:free
   model_info:
     mode: chat
+    supports_prompt_caching: false
+    cache_proof: "Cannot cache: OpenRouter endpoint list supports_implicit_caching false (fetched 2026-10-07)."
     id: openrouter-nemotronlightning-worker-cheap
     allowed_fails_policy:
       BadRequestErrorAllowedFails: 1
@@ -1306,10 +1465,13 @@ model_list:
 - model_name: worker-capable
   litellm_params:
     <<: *openrouter-spacebunny
+    order: 2
     model: openai/inclusionai/ling-3.0-flash-sante:free
     tags: [free, openrouter]
   model_info:
     mode: chat
+    supports_prompt_caching: false
+    cache_proof: "Cannot cache on openrouter: endpoint list supports_implicit_caching false (Novita, fetched 2026-10-07); 0.0% 7d (#9357)."
     id: openrouter-ling30flashsante-worker-capable
     allowed_fails_policy:
       BadRequestErrorAllowedFails: 1
@@ -1317,10 +1479,13 @@ model_list:
 - model_name: worker-cheap
   litellm_params:
     <<: *openrouter-spacebunny
+    order: 2
     model: openai/inclusionai/ling-3.0-flash-sante:free
     tags: [free, openrouter]
   model_info:
     mode: chat
+    supports_prompt_caching: false
+    cache_proof: "Cannot cache on openrouter: endpoint list supports_implicit_caching false (Novita, fetched 2026-10-07); 0.0% 7d (#9357)."
     id: openrouter-ling30flashsante-worker-cheap
     allowed_fails_policy:
       BadRequestErrorAllowedFails: 1
@@ -1328,10 +1493,13 @@ model_list:
 - model_name: worker-capable
   litellm_params:
     <<: *openrouter-spacebunny
+    order: 2
     model: openai/poolside/laguna-s-2.1:free
     tags: [free, openrouter]
   model_info:
     mode: chat
+    supports_prompt_caching: false
+    cache_proof: "Cannot cache: OpenRouter endpoint list supports_implicit_caching false (fetched 2026-10-07); 0.0% 7d (#9357)."
     id: openrouter-lagunas21free-worker-capable
     allowed_fails_policy:
       BadRequestErrorAllowedFails: 1
@@ -1339,10 +1507,13 @@ model_list:
 - model_name: worker-cheap
   litellm_params:
     <<: *openrouter-spacebunny
+    order: 2
     model: openai/poolside/laguna-s-2.1:free
     tags: [free, openrouter]
   model_info:
     mode: chat
+    supports_prompt_caching: false
+    cache_proof: "Cannot cache: OpenRouter endpoint list supports_implicit_caching false (fetched 2026-10-07); 0.0% 7d (#9357)."
     id: openrouter-lagunas21free-worker-cheap
     allowed_fails_policy:
       BadRequestErrorAllowedFails: 1
@@ -1369,6 +1540,8 @@ model_list:
     cooldown_time: 900
   model_info:
     mode: chat
+    supports_prompt_caching: true
+    cache_proof: "Caches: direct probe 2026-10-07 on compatible-mode, call 2 cached_tokens 7168 of 7967 (90%); the endpoint reports prompt_tokens_details.cached_tokens. Judge group: one-shot calls only, order unchanged."
     id: alibaba-qwen38max-judge
     allowed_fails_policy:
       BadRequestErrorAllowedFails: 1
