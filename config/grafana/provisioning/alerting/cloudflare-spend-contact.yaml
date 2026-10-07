@@ -52,3 +52,14 @@ policies:
         group_wait: 0s
         group_interval: 5m
         repeat_interval: 12h
+        continue: true
+      # Same matcher again: a spend alert also pages hermes-urgent, so a dead
+      # or missing GITHUB_ISSUES_TOKEN never silences it.
+      - receiver: hermes-urgent
+        object_matchers:
+          - [signal, "=", cloudflare-spend]
+          - [alertname, "!~", "DatasourceError|DatasourceNoData"]
+        group_by: [alertname, product, resource]
+        group_wait: 0s
+        group_interval: 5m
+        repeat_interval: 12h

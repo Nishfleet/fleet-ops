@@ -92,6 +92,8 @@ rising pages hermes-urgent through `cloudflare-spend-delivery.yaml`. Replay a ru
 window into its GraphQL `filter:` in place of the `${__timeFrom:date:iso}` and `${__timeTo:date:iso}`
 macros, run it, then restore the file; close the test issue at once, the dispatcher claims it.
 
+GITHUB_ISSUES_TOKEN lives in ~/.config/fleet-ops/github-issues.env (fine-grained, issues:write on Nishfleet/fleet-ops only). Spend alerts also go to hermes-urgent, so a dead token never silences them.
+
 `systemctl --user list-timers blacksmith-flip.timer` (hourly,
 `Persistent=true`) triggers `blacksmith-flip.service`, a oneshot piping
 `prompts/blacksmith-flip.yml` through `pi --print`. Read one run with
