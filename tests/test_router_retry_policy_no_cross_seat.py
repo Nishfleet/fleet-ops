@@ -2,16 +2,34 @@
 
 Before the change the `retry_policy` block shipped AuthenticationErrorRetries:2 /
 RateLimitErrorRetries:2 / InternalServerErrorRetries:2. On a pinned seat that
-fail-fast 429s, the router spent a second (and third) in-group attempt on a fresh
-seat, re-sending the whole cold prompt. The fix cuts the counts to 0 (401, which
-can never recover) / 1 (429, 500) so the worker group spends at most one attempt
+fail-fast 429s, the router then spent its second in-group attempt on a *different*
+seat, re-sending the whole cold prompt, and a third after that. The fix cuts the
+counts to 0 (401, which can never recover) / 1 (429), so the worker group spends
+exactly one in-group retry - which litellm sends back to the row that just failed -
 before the call reaches the fallback group or Pi's own retry. Pi keeps
 x-litellm-session-id and the session pin is first-writer-wins, so a pinned seat
 that recovers is re-picked on the next call.
 
-What this does NOT do: stock litellm 1.98.0 runs the fallback group on the first
-retryable error, so a briefly-failing pinned seat is not guaranteed a same-row
-retry. These tests measure the in-group pick count, not a same-seat retry.
+What this does NOT do (the honest limits, each pinned by a test below):
+
+- Backoff. `Router._time_to_sleep_before_retry` returns 0 as soon as the group has
+  one healthy row left, so the same-row retry is instant. "retry the same row once
+  after the backoff" is met in *which row*, not in *when*.
+- A hard-down row. Once the in-group budget is spent, litellm 1.98.0 runs the
+  fallback group on the same call, so one cold re-send on the fallback seat stays.
+  Cutting it needs litellm to suppress the fallback for a retryable error.
+- 500. `RetryPolicy` ships `InternalServerErrorRetries`, but 1.98.0's
+  `get_num_retries_from_retry_policy` has no `InternalServerError` branch, so that
+  field is dead config until litellm adds the handler.
+
+Measured on this host, litellm 1.98.0, one call into a pinned seat that 429s:
+
+  shipped 2/2/2 -> 3 in-group picks (/fail, /fail, /failcapable) + 1 fallback
+  fixed   0/1/1 -> 2 in-group picks (/fail, /fail - the same row) + 1 fallback
+  fixed, the 429 clears on the 2nd call -> 2 in-group picks, 0 fallbacks
+
+Two cross-seat re-sends become one, and a briefly-limited row is no longer kicked
+to another seat at all.
 
 These tests run in-process against litellm 1.98.0 (the version pinned for prod)
 and need no Redis: with `optional_pre_call_checks: ["session_affinity"]` and no
@@ -27,11 +45,12 @@ or under pytest from the repo root if litellm is on the path.
 from __future__ import annotations
 
 import asyncio
+import http.client
 import http.server
 import json
 import socketserver
 import threading
-from typing import List
+from typing import Dict, List
 
 import litellm
 from litellm import Router
@@ -63,6 +82,13 @@ RP_PROPOSED = {
     "ContentPolicyViolationErrorRetries": 0,
 }
 
+# A zeroed-out budget, for the contrast tests only.
+RP_ZERO = {k: 0 for k in RP_PROPOSED}
+
+
+def _rp(name: str) -> Dict[str, int]:
+    return {"shipped": RP_SHIPPED, "fixed": RP_PROPOSED, "zero": RP_ZERO}[name]
+
 def _pin_key(session_id: str) -> str:
     """The exact pin key litellm's DeploymentAffinityCheck reads and writes, taken
     from litellm itself so a key-shape change cannot silently pass this test."""
@@ -88,6 +114,16 @@ class _Handler(http.server.BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
 
     def do_POST(self):
+        # The body must be read before the response is written. litellm holds the
+        # connection open (HTTP/1.1), so if those bytes stay in the socket buffer
+        # the next request on this connection is parsed as
+        # '<body>POST /path HTTP/1.1' and the stdlib answers 501 'Unsupported
+        # method' - no hit is recorded, so a real retry is silently dropped from
+        # the count these tests are built on. See
+        # test_the_mock_reads_the_request_body.
+        length = int(self.headers.get("Content-Length") or 0)
+        if length:
+            self.rfile.read(length)
         if _CURRENT_SERVER:
             _CURRENT_SERVER[0].hits.append(self.path)
         path = self.path
@@ -229,6 +265,44 @@ def test_rate_limit_gets_one_retry():
     assert get_num_retries_from_retry_policy(exc, rp) == 1
 
 
+def test_the_same_row_retry_has_no_backoff():
+    # Router._time_to_sleep_before_retry returns 0 the moment the group still has
+    # one healthy row (litellm/router.py: "return 0" when healthy_deployments is
+    # non-empty), so the retry the issue asks for lands immediately. That is why
+    # the fix counts rows and not seconds, and why "after the backoff" is only
+    # half satisfied: the backoff sits in Pi's own retry, not in the router.
+    router = Router(model_list=_rows(0), routing_strategy="simple-shuffle", num_retries=0,
+                    retry_policy=RP_PROPOSED)
+    exc = RateLimitError(message="x", llm_provider="openai", model="m")
+    sleep = router._time_to_sleep_before_retry(
+        e=exc, remaining_retries=1, num_retries=1,
+        healthy_deployments=_rows(0), all_deployments=_rows(0))
+    assert sleep == 0, sleep
+
+
+def test_the_mock_reads_the_request_body():
+    # Pin the bug this file shipped with once already. A handler that never reads
+    # the request body leaves it in the socket buffer and the next request on the
+    # same keep-alive connection is answered 501 with no hit recorded, so the
+    # router's real in-group pick count came out one lower than it is.
+    server = _Server()
+    try:
+        _CURRENT_SERVER.append(server)
+        conn = http.client.HTTPConnection("127.0.0.1", server.port, timeout=30)
+        payload = json.dumps({"messages": [{"role": "user", "content": "hi"}], "model": "seat-a"})
+        for _ in range(2):
+            conn.request("POST", "/fail/chat/completions", body=payload,
+                         headers={"Content-Type": "application/json"})
+            resp = conn.getresponse()
+            assert resp.status == 429, (resp.status, resp.read())
+            resp.read()
+        conn.close()
+        assert server.hits == ["/fail/chat/completions", "/fail/chat/completions"], server.hits
+    finally:
+        _CURRENT_SERVER.pop()
+        server.close()
+
+
 def test_internal_server_error_is_inert_on_litellm_1_98_0():
     # litellm 1.98.0's get_num_retries_from_retry_policy has no InternalServerError
     # branch (litellm.types.router.RetryPolicy ships the field but the lookup omits
@@ -243,56 +317,78 @@ def test_internal_server_error_is_inert_on_litellm_1_98_0():
 # --------------------------------------------------------------------------- #
 # End-to-end: a pinned seat that 429s on every attempt (a rate-limited wall).
 # --------------------------------------------------------------------------- #
-def test_shipped_policy_makes_two_in_group_picks_on_a_429_wall():
+def _in_group(attempts):
+    """Picks that stayed in the worker-capable group (seat-a / seat-c) as opposed to
+    the worker-cheap fallback."""
+    return [p for p in attempts if "/fail" in p]
+
+
+def test_shipped_policy_spends_two_retries_on_two_seats_on_a_429_wall():
     server = _Server()
     try:
         attempts, outcome, pin = asyncio.run(_run(server, RP_SHIPPED, "s-shipped-wall"))
     finally:
         server.close()
-    # shipped: the pinned seat 429s, the router spends a second in-group attempt on
-    # seat-c (another cold re-send), then the worker-cheap fallback answers. Counts,
-    # not order, are asserted because the in-group pick is a shuffle.
-    assert _counts(attempts) == {
-        "/fail/chat/completions": 1,
-        "/failcapable/chat/completions": 1,
-        "/okcheap/chat/completions": 1,
-    }, attempts
+    # shipped: the pinned seat 429s, litellm spends retry #1 back on the same row,
+    # then retry #2 hops to seat-c - a second seat, a second cold re-send - before
+    # the worker-cheap fallback answers. Counts, not order, are asserted because
+    # the in-group pick is a shuffle.
+    ing = _in_group(attempts)
+    assert len(ing) == 3, attempts
+    assert len(set(ing)) == 2, attempts          # two different seats attempted
+    assert attempts.count("/okcheap/chat/completions") == 1, attempts
     assert outcome == "ok"
     assert pin == {"model_id": "seat-a"}, pin
 
 
-def test_proposed_policy_makes_one_in_group_pick_on_a_429_wall():
+def test_the_fix_retries_the_row_that_failed_not_a_peer():
     server = _Server()
     try:
         attempts, outcome, pin = asyncio.run(_run(server, RP_PROPOSED, "s-proposed-wall"))
     finally:
         server.close()
-    # proposed: the capped budget leaves a single in-group attempt (the pinned seat)
-    # before the worker-cheap fallback. One fewer in-group pick -> one fewer cold re-send.
-    assert _counts(attempts) == {
-        "/fail/chat/completions": 1,
-        "/okcheap/chat/completions": 1,
-    }, attempts
+    # proposed: the capped budget leaves exactly one retry and litellm sends it back
+    # to the row that just 429d, so only the fallback hop is a cross-seat re-send.
+    ing = _in_group(attempts)
+    assert len(ing) == 2, attempts
+    assert len(set(ing)) == 1, attempts          # one seat, retried
+    assert attempts.count("/okcheap/chat/completions") == 1, attempts
     assert outcome == "ok"
     assert pin == {"model_id": "seat-a"}, pin
 
 
-def test_a_transient_429_does_not_return_to_the_pinned_seat():
-    # Pins the honest limit in the module docstring with direct evidence: even when
-    # the pinned seat's 429 would clear on a second call, litellm 1.98.0 sends the
-    # retry to the fallback group, not back to seat-a. If a future litellm changes
-    # that, this test fails and the claim must be revisited.
+def test_a_transient_429_recovers_on_the_row_it_hit():
+    # The headline the issue asks for. When the pinned seat's 429 clears on the
+    # second call, the single retry the fix allows lands on that same row and
+    # answers 200, so the worker-cheap fallback never fires and no cold prompt is
+    # re-sent to another seat. Zero retries (not the fix) would kick the call to
+    # the fallback instead - see test_zero_retries_hit_the_fallback_on_a_transient_429.
     server = _Server()
     server.fail_first_only = True
     try:
-        attempts, outcome, _ = asyncio.run(_run(server, RP_PROPOSED, "s-transient-429"))
+        attempts, outcome, pin = asyncio.run(_run(server, RP_PROPOSED, "s-transient-429"))
     finally:
         server.close()
-    assert _counts(attempts) == {
-        "/fail/chat/completions": 1,
-        "/okcheap/chat/completions": 1,
-    }, attempts
+    assert _in_group(attempts) == [
+        "/fail/chat/completions", "/fail/chat/completions"], attempts
+    assert attempts.count("/okcheap/chat/completions") == 0, attempts
     assert outcome == "ok"
+    assert pin == {"model_id": "seat-a"}, pin
+
+
+def test_zero_retries_hit_the_fallback_on_a_transient_429():
+    # The contrast that shows the retry is doing the work: with no retry at all the
+    # one transient 429 costs a cold re-send on the fallback seat.
+    server = _Server()
+    server.fail_first_only = True
+    try:
+        attempts, outcome, pin = asyncio.run(_run(server, _rp("zero"), "s-transient-zero"))
+    finally:
+        server.close()
+    assert _in_group(attempts) == ["/fail/chat/completions"], attempts
+    assert attempts.count("/okcheap/chat/completions") == 1, attempts
+    assert outcome == "ok"
+    assert pin == {"model_id": "seat-a"}, pin
 
 
 def test_pin_survives_a_failed_then_fallback_success():
@@ -313,9 +409,12 @@ if __name__ == "__main__":
         test_authentication_error_gets_zero_retries,
         test_rate_limit_gets_one_retry,
         test_internal_server_error_is_inert_on_litellm_1_98_0,
-        test_shipped_policy_makes_two_in_group_picks_on_a_429_wall,
-        test_proposed_policy_makes_one_in_group_pick_on_a_429_wall,
-        test_a_transient_429_does_not_return_to_the_pinned_seat,
+        test_the_same_row_retry_has_no_backoff,
+        test_the_mock_reads_the_request_body,
+        test_shipped_policy_spends_two_retries_on_two_seats_on_a_429_wall,
+        test_the_fix_retries_the_row_that_failed_not_a_peer,
+        test_a_transient_429_recovers_on_the_row_it_hit,
+        test_zero_retries_hit_the_fallback_on_a_transient_429,
         test_pin_survives_a_failed_then_fallback_success,
     ]
     failures = 0
