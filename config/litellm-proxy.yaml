@@ -1558,11 +1558,38 @@ router_settings:
   num_retries: 0
   timeout: 1800
   enable_tag_filtering: false
+  # One failed call re-sends the whole prompt on every retry, because a 429 or a 5XX cools
+  # the pinned row (allowed_fails: 1, cooldown_time: 60) and the session filter then returns
+  # every row in the group ("pinned deployment not found in healthy_deployments") - the retry
+  # re-shuffles onto another seat with the full prompt and no backoff. The pin itself does not
+  # move, so the session goes back to the seat it warmed once the 60 s cool-down lapses.
+  # 7 days to 2026-10-07: 1,314 failed router calls (696x HTTP 500, 493x 429),
+  # 1,276 of them (99%) had their next successful call in the same session on a
+  # different seat, which re-sent 90M prompt tokens (43M uncached) - about $13
+  # list-equivalent a week of context nobody asked to pay for twice.
+  # A retry_policy entry overrides num_retries per error class, so the 0 above never applies
+  # to these headers; cooldown_time cannot help (a row that leaves cooldown is healthy again,
+  # and the 60 s is what lets the session come back); and the fallbacks above cross worker
+  # groups, which is for a dead row, not for one error. fleet-ops#9375 caps the classes.
   retry_policy:
-    AuthenticationErrorRetries: 2
-    RateLimitErrorRetries: 2
+    # a 401 is a credential the row keeps refusing: litellm retries it, the row 401s again,
+    # the full prompt goes out twice more to two other seats, and the error still ends with
+    # the caller. 0.
+    AuthenticationErrorRetries: 0
+    # a 429 is the row's own quota wall, and it lasts longer than 2 picks can bridge: 1,314
+    # failed calls, and 73 of the session switches that follow a logged failure. One retry
+    # keeps a single transient 429 from costing the caller, and anything beyond that has to
+    # reach Pi's own retry (host ~/.pi/agent/settings.json, retry.maxRetries: 6,
+    # retry.baseDelayMs: 10000), which keeps x-litellm-session-id and so keeps the session on
+    # the seat the previous call warmed. Was 2.
+    RateLimitErrorRetries: 1
     TimeoutErrorRetries: 1
-    InternalServerErrorRetries: 2
+    # Inert on the pinned v1.98.0: router_utils/get_retry_from_policy.py matches only
+    # Authentication/Timeout/RateLimit/ContentPolicy/BadRequest, so a 5XX returns None from
+    # it, num_retries: 0 applies, and a 500 never retries today (tests/
+    # test_retry_policy_no_cross_seat.py drills that). Kept at 1 so the intent is written
+    # down: one retry if a pin-up ever wires the key. Was 2.
+    InternalServerErrorRetries: 1
     # 400 only (a separate fix from the 402 removal above): LiteLLM never cools a 400, so a row whose model is gone upstream stays in the shuffle (zen union-alpha "Model is unavailable", stalled drive for an hour on 2026-09-30; its rows are removed since, so this guards against any future dead-model 400). 1 retry = 2 picks. The retry re-shuffles and does not exclude the failed row, so escape is by odds: a dead row's share of its group decides - tiny in the many-row worker groups, but all of senior's single remaining row, where 2 picks cannot escape. ContentPolicyViolation is matched first and stays 0; a context-window 400 is retried too, which costs one fast failure.
     BadRequestErrorRetries: 1
     ContentPolicyViolationErrorRetries: 0
