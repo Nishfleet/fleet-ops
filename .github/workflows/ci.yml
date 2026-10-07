@@ -159,6 +159,11 @@ jobs:
         # asserts no old pattern is left in ansible/update.yml.
         if: always()
         run: ansible-playbook -i localhost, ansible/tests/report-after-skipped-block.yml
+      - name: orchestrator hand-off cleanup keeps a worktree a running unit uses (fleet-ops#9377)
+        # Runs the real cleanup step from agent-dispatch.yml against a real git
+        # worktree with a stub systemctl: busy tree survives, idle tree goes.
+        if: always()
+        run: uvx --with pytest --with pyyaml pytest -q -p no:cacheprovider tests/test_orch_cleanup_keeps_busy_worktree.py
       - name: rootfs/etc/nftables.conf loads on a fresh boot (nft -c)
         # nft refuses the whole file when a rule names a cgroup path that does
         # not exist yet, as at boot before user@1000 starts: the 2026-09-22

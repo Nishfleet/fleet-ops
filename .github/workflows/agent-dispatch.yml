@@ -1108,7 +1108,33 @@ jobs:
           # hand-off a clone. remove --force is how a dirty tree goes, and this
           # is never a pgrep-kill of anything (a wrong pattern there can take a
           # worker's process with it, fleet-ops#7743).
-          if [ -d "$mirror" ]; then
+          # Skip the removal while a running user unit has this worktree as its
+          # WorkingDirectory: the session hands its build to a detached unit
+          # (orch-<repo>-<N>-build) that outlives it, and removing the tree
+          # under that unit killed orch-drive-642-build on 2026-10-07
+          # (status=200/CHDIR, uncommitted edits lost, fleet-ops#9377). If the
+          # unit list cannot be read, keep the tree too: systemd-tmpfiles ages
+          # it out after 3 days and the next hand-off rebuilds it anyway.
+          busy=0
+          if [ -d "$wt" ]; then
+            XDG_RUNTIME_DIR="/run/user/$(id -u)"
+            export XDG_RUNTIME_DIR
+            if units=$(systemctl --user list-units --type=service --state=active,activating,deactivating,reloading --plain --no-legend --no-pager 'orch-*'); then
+              while read -r unit _; do
+                [ -n "$unit" ] || continue
+                if wd=$(systemctl --user show -p WorkingDirectory --value "$unit"); then
+                  [ "$wd" = "$wt" ] && busy=1
+                else
+                  busy=1
+                fi
+              done <<< "$units"
+            else
+              busy=1
+            fi
+          fi
+          if [ "$busy" = 1 ]; then
+            echo "orchestrate: a running unit uses $wt; keeping the worktree"
+          elif [ -d "$mirror" ]; then
             env -u GH_TOKEN -u GITHUB_TOKEN git -C "$mirror" worktree remove --force "$wt" 2>/dev/null || rm -rf "$wt"
             env -u GH_TOKEN -u GITHUB_TOKEN git -C "$mirror" worktree prune || true
           fi
