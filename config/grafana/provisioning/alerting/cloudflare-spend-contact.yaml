@@ -1,0 +1,62 @@
+# Cloudflare spend-watch dispatch contact point (fleet-ops#9355).
+#
+# Nish's finish-line change (2026-10-07 07:57): every firing rule opens a
+# fleet-ops issue (labels agent-ready + priority-now) via a stock Grafana
+# webhook posting to the GitHub issues API, and Nish's phone is the FALLBACK,
+# not the primary. This file declares one receiver with both integrations so
+# each rule's notification reaches both destinations as one grouped
+# notification:
+#
+#   1. webhook -> POST https://api.github.com/repos/Nishfleet/fleet-ops/issues
+#      authenticated with a Bearer token from the provisioning env reference
+#      $GITHUB_ISSUES_TOKEN (expanded at load from the unit environment; the
+#      quadlet passes it from %h/.config/fleet-ops/github-issues.env, 0600).
+#      The custom payload template (sprig dict/list + toJson) emits the exact
+#      GitHub issues-API body - title "cost alarm: <rule> <product>", body
+#      holding value/threshold/top resource per firing alert, labels fixed.
+#      Stock Grafana cannot condition the Telegram send on the webhook result,
+#      so the telegram integration below fires in parallel: that IS the loud
+#      failure guarantee - if the GitHub POST fails, Nish still gets the
+#      hermes-urgent ping. Until the standing token is minted the webhook
+#      fails auth (delivery error, Telegram still fires) - documented in the
+#      PR; minting the token is Nish's call.
+#   2. telegram -> the hermes-urgent wiring from paid-plan-idle.yaml
+#      (bottoken/chatid via the same env references), kept verbatim so the
+#      fallback message format matches the existing urgent channel.
+#
+# Rules carry notification_settings.receiver = cloudflare-spend-dispatch with
+# repeat_interval 12h (one leak = one issue, not one an hour).
+apiVersion: 1
+
+contactPoints:
+  - orgId: 1
+    name: cloudflare-spend-dispatch
+    receivers:
+      - uid: cf-spend-gh-issues
+        type: webhook
+        disableResolveMessage: true
+        settings:
+          url: https://api.github.com/repos/Nishfleet/fleet-ops/issues
+          httpMethod: POST
+          authorization_credentials: $GITHUB_ISSUES_TOKEN
+          maxAlerts: "0"
+          payload:
+            template: |-
+              {{- $title := printf "cost alarm: %s %s" (index .Alerts 0).Labels.alertname (index .Alerts 0).Labels.product -}}
+              {{- $body := "Auto-created by the Grafana cloudflare-spend watch (fleet-ops#9355).\n\n" -}}
+              {{- range .Alerts -}}
+              {{- $body = printf "%s- **%s**\n%s\n" $body .Annotations.summary .Annotations.description -}}
+              {{- end -}}
+              {{- $body = printf "%s\n---\nRule: %s (group %s). Alerts in this notification: %d. Evaluated: %s." $body (index .Alerts 0).Labels.alertname .GroupLabels.grafana_folder (len .Alerts) (now | date "2006-01-02 15:04:05 Z07:00") -}}
+              {{- dict "title" $title "body" $body "labels" (list "agent-ready" "priority-now") | toJson -}}
+      - uid: cf-spend-tg-fallback
+        type: telegram
+        disableResolveMessage: true
+        settings:
+          bottoken: $TELEGRAM_BOT_TOKEN
+          chatid: |
+            $TELEGRAM_HOME_CHANNEL
+          message: |
+            {{ range .Alerts.Firing }}
+            {{ .Annotations.summary }} {{ .Annotations.description }}
+            {{ end }}
