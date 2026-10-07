@@ -844,7 +844,7 @@ jobs:
   # provisioning dirs mounted exactly as the quadlet mounts them (dummy values
   # for the secrets and tokens), waits for /api/health, and fails when Grafana
   # exits or logs a provisioning error. Pull requests run it only when a path
-  # under config/grafana/ or the quadlet changed; push and merge_group runs
+  # under config/grafana/, the quadlet or this workflow changed; push and merge_group runs
   # always run it.
   grafana-boot:
     name: grafana-boot
@@ -865,7 +865,7 @@ jobs:
         run: |
           run=true
           if [ "$EVENT" = pull_request ]; then
-            if git diff --name-only "$BASE_SHA" "$HEAD_SHA" | grep -qE '^(config/grafana/|containers/quadlet/fleet-grafana\.container$)'; then
+            if git diff --name-only "$BASE_SHA" "$HEAD_SHA" | grep -qE '^(config/grafana/|containers/quadlet/fleet-grafana\.container$|\.github/workflows/ci\.yml$)'; then
               run=true
             else
               run=false
@@ -900,7 +900,7 @@ jobs:
             --env CLOUDFLARE_API_TOKEN=dummy --env GITHUB_ISSUES_TOKEN=dummy \
             "docker.io/$image"
           port=$(sed -n 's/^Environment=GF_SERVER_HTTP_PORT=//p' "$q")
-          for i in $(seq 1 90); do
+          for _ in $(seq 1 90); do
             if [ "$(docker inspect -f '{{.State.Running}}' grafana)" != true ]; then
               echo "::error::Grafana exited before /api/health answered"
               docker logs grafana 2>&1 | grep -E 'level=(error|crit)|^Error' | cut -c1-400 | head -n 8
