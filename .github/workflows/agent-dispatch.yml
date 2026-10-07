@@ -12,6 +12,12 @@
 #   live (default, unset) = a needs-orchestrator label starts one hand-off run.
 #   Default on (Nish 2026-10-04, "on for everything the fleet touches"), so a
 #   newly stubbed repo cannot sit off by omission.
+# Cost controls on the orchestrate job (fleet-ops#9351), one line per part:
+#   Daily cap: ORCHESTRATE_DAILY_MAX hand-off runs per IST day, default 10. Off: set the variable to 0.
+#   Model/turns pin: Sonnet (ORCHESTRATE_MODEL, default claude-sonnet-5-5), 40 turns. Off: label the issue needs-opus (Opus, 80 turns), or set ORCHESTRATE_MODEL to off for all.
+#   Hook skip: the session runs with --settings '{"disableAllHooks":true}'. Off: set ORCHESTRATE_HOOKS to on.
+#   Delete all three: revert the cap and pick blocks of the "Check the issue" step and the model/--settings lines of the session step here,
+#     the "Orchestrate cap and session args" step in ci.yml, and cap_cases and session_cases in config/orchestrate-events.json (or revert the merge commit).
 # To switch orchestration off: set ORCHESTRATE to off.
 # To delete it: revert the orchestrate job in this file, the workflow-path
 # detector in agent.yml's Gate, and prompts/orchestrator-handoff.md. A run
@@ -842,9 +848,12 @@ jobs:
       # failed list reads as "no PR". First seen on drive while it was private;
       # drive is public in Nishfleet since 2026-10-06, and the grant stays for
       # any private caller.
+      # actions: read, because the daily cap lists this workflow's runs and
+      # their jobs; without it that call is a 403 under GITHUB_TOKEN.
       issues: read
       contents: read
       pull-requests: read
+      actions: read
     env:
       REPO: ${{ github.repository }}
       # An issues.labeled event has no inputs.issue, so a 0509 stub that calls
@@ -855,6 +864,18 @@ jobs:
         id: issue
         env:
           GH_TOKEN: ${{ github.token }}
+          # Raw values: the defaults live in bash, so a literal 0 survives.
+          DAILY_MAX: ${{ vars.ORCHESTRATE_DAILY_MAX }}
+          MODEL_VAR: ${{ vars.ORCHESTRATE_MODEL }}
+          RUN_ID: ${{ github.run_id }}
+          # Counts the jobs of earlier runs whose session step ended (success
+          # or failure). Input: a slurped array of job objects from the
+          # actions jobs API. The name match covers a caller stub, whose job
+          # reads "<stub job> / orchestrate".
+          CAP_COUNT: >-
+            [.[] | select(.name == "orchestrate" or (.name | endswith(" / orchestrate")))
+              | select(any(.steps[]?; .name == "Run the orchestrator session" and (.conclusion == "success" or .conclusion == "failure")))]
+            | length
         run: |
           set -euo pipefail
           [ -n "$ISSUE" ] || { echo "orchestrate: no issue number on this event; skip"; exit 0; }
@@ -870,6 +891,49 @@ jobs:
           if gh api "repos/$REPO/git/ref/heads/$branch" --silent 2>/dev/null; then
             echo "orchestrate: $branch exists on origin; another hand-off owns #$ISSUE; skip"
             exit 0
+          fi
+          # Daily cap (fleet-ops#9351): a 2026-10-06 day of 26 Opus hand-offs
+          # used ~31% of Nish's weekly Claude limit. It counts hand-off RUNS
+          # since 00:00 IST, whose session step concluded, over this workflow's
+          # `issues` and `workflow_dispatch` runs (the only events that can
+          # start this job). Over the cap the run skips and the issue keeps
+          # needs-orchestrator for a later dispatch. 0 = no cap.
+          DAILY_MAX=${DAILY_MAX:-10}
+          case $DAILY_MAX in
+            ''|*[!0-9]*) echo "::error::orchestrate: ORCHESTRATE_DAILY_MAX must be a non-negative integer, got '$DAILY_MAX'"; exit 1 ;;
+          esac
+          if [ "$DAILY_MAX" -gt 0 ]; then
+            since=$(date -u -d "$(TZ=Asia/Kolkata date +%F) 00:00 +0530" +%FT%TZ)
+            wid=$(gh api "repos/$REPO/actions/runs/$RUN_ID" --jq .workflow_id)
+            ids=
+            for ev in issues workflow_dispatch; do
+              ids+=$(gh api --method GET --paginate "repos/$REPO/actions/workflows/$wid/runs" -f event="$ev" -f created=">=${since%%T*}" -f per_page=100 --jq ".workflow_runs[] | select(.created_at >= \"$since\") | .id")$'\n'
+            done
+            ids=$(printf '%s' "$ids" | grep -E '^[0-9]+$' | sort -u || true)
+            nruns=$(printf '%s' "$ids" | grep -c . || true)
+            # More runs than this: the count is unknown, so cap rather than
+            # let a busy repo run uncounted.
+            if [ "$nruns" -gt 400 ]; then
+              echo "::warning::orchestrate: $nruns runs since 00:00 IST in $REPO, too many to count; daily cap holds #$ISSUE (keeps needs-orchestrator)"
+              exit 0
+            fi
+            jobs_json=$(for id in $ids; do gh api "repos/$REPO/actions/runs/$id/jobs?filter=latest&per_page=100" --jq '.jobs[] | {name, steps: [.steps[]? | {name, conclusion}]}'; done | jq -s .)
+            count=$(jq "$CAP_COUNT" <<<"$jobs_json")
+            if [ "$count" -ge "$DAILY_MAX" ]; then
+              echo "::warning::orchestrate: daily cap reached ($count/$DAILY_MAX hand-off runs since 00:00 IST in $REPO); #$ISSUE keeps needs-orchestrator; dispatch task=orchestrate issue=$ISSUE after midnight IST"
+              exit 0
+            fi
+            echo "orchestrate: $count/$DAILY_MAX hand-off runs since 00:00 IST in $REPO"
+          else
+            echo "orchestrate: daily cap off (ORCHESTRATE_DAILY_MAX=0)"
+          fi
+          # Sonnet unless the issue asks for Opus or ORCHESTRATE_MODEL is off.
+          # An empty model leaves the session default (Opus) in place.
+          MODEL_VAR=${MODEL_VAR:-claude-sonnet-5-5}
+          if [[ $labels == *,needs-opus,* || $MODEL_VAR == off ]]; then
+            { echo "model="; echo "turns=80"; } >> "$GITHUB_OUTPUT"
+          else
+            { echo "model=$MODEL_VAR"; echo "turns=40"; } >> "$GITHUB_OUTPUT"
           fi
           echo "go=true" >> "$GITHUB_OUTPUT"
       - name: Fresh worktree on origin/main
@@ -938,6 +1002,9 @@ jobs:
           ISSUE_N: ${{ github.event.issue.number || inputs.issue }}
           REPO_NAME: ${{ github.repository }}
           WORKTREE: ${{ steps.worktree.outputs.worktree }}
+          MODEL: ${{ steps.issue.outputs.model }}
+          TURNS: ${{ steps.issue.outputs.turns }}
+          HOOKS: ${{ vars.ORCHESTRATE_HOOKS }}
         run: |
           set -euo pipefail
           cd "$WORKTREE"
@@ -950,17 +1017,27 @@ jobs:
             prompt="$HOME/workspaces/tooling/fleet-ops-deploy-clone/prompts/orchestrator-handoff.md"
           fi
           { cat "$prompt"; printf '\n\nTarget: %s#%s\nBranch: orch/issue-%s. It is checked out already; run git log --oneline origin/main..HEAD before you build, because an earlier hand-off may have left commits here.\n' "$REPO_NAME" "$ISSUE_N" "$ISSUE_N"; } > "$RUNNER_TEMP/orchestrator-prompt.md"
-          # Stock CLI, no --model: the session default model is the rule (the
-          # agent.yml Worker lane picks worker-capable; this one is the
-          # orchestrator, not a seat). GH_TOKEN and GITHUB_TOKEN are unset so the
+          # Sonnet by default; the session default (Opus) only for a needs-opus
+          # issue, where MODEL is empty (fleet-ops#9351: Opus on every hand-off
+          # burned the weekly limit). --output-format json puts modelUsage in
+          # the log, the proof of which model ran. GH_TOKEN and GITHUB_TOKEN are unset so the
           # session authenticates as the runner user, whose gh login can push
           # .github/workflows/** -- the whole reason this job exists.
           # The prompt goes on stdin: it opens with `---` front matter, and as
           # an argument the CLI parses that as an option and exits 1 (run
           # 37207149948: "error: unknown option '---").
+          model_args=()
+          [ -z "$MODEL" ] || model_args=(--model "$MODEL")
+          # The repo's hooks are for interactive and worker sessions; here they
+          # only spend turns. ORCHESTRATE_HOOKS=on keeps them.
+          hook_args=(--settings '{"disableAllHooks":true}')
+          [ "$HOOKS" != on ] || hook_args=()
           env -u GH_TOKEN -u GITHUB_TOKEN timeout 3000 /home/nish/.local/bin/claude -p \
+            "${model_args[@]}" \
+            "${hook_args[@]}" \
+            --output-format json \
             --permission-mode bypassPermissions \
-            --max-turns 80 \
+            --max-turns "$TURNS" \
             < "$RUNNER_TEMP/orchestrator-prompt.md"
       - name: Clean up and mark a PR-less hand-off
         if: always()
