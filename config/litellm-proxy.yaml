@@ -61,35 +61,16 @@ model_list:
       BadRequestErrorAllowedFails: 1
 # Nish 2026-09-30 free rows (probe: all finish_reason=tool_calls). laguna-s-2.1-free answered 1 of 2 probe calls (1 upstream 429 "temporarily unavailable"): the row stays live and cools 900 s on a 429, never benched.
 # 2026-10-07 prompt-cache verdict, #9362: all three models cache upstream with NO hint. Two-call probe, same ~21K prefix 5 s apart, no cache_control anywhere: ling-3.0 21440/21474 prompt tokens cached (calls c92bc949..4fe6db50), ling-3.1 30592/30634 (8207f8dc..accc6461), laguna 32416/32427 (ed93cdb5..303f9a68). The stock cache_control_injection_points hint changes nothing on these openai/* rows (LiteLLM 1.98.0 strips cache_control before the upstream call), so it is NOT added. The low ledger cache share on laguna (0.7%) and ling-3.0 (0.4%) is a reporting artifact, not a cache miss: 94-98% of their 7-day responses carry no prompt_tokens_details, and the calls that do report read 58-59% of prompt tokens from cache. ling-3.1 reports on 91% of calls and reads 80.9%. No bench, no hint, no litellm_params change.
+# CommandCode stealth/space-bunny-alpha ended upstream (403 "no longer available"); its two rows removed on Nish's yes 2026-10-07 ~15:35 IST, fleet-ops#9312.
 - model_name: worker-capable
   litellm_params: &commandcode-free
-    model: openai/stealth/space-bunny-alpha
+    model: openai/poolside/laguna-s-2.1-free
     api_base: https://api.commandcode.ai/provider/v1
     api_key: os.environ/COMMANDCODE_API_KEY
     tags: [free, commandcode]
     order: 1
     max_parallel_requests: 2
     cooldown_time: 900
-  model_info:
-    mode: chat
-    supports_prompt_caching: true
-    cache_proof: "Provider ended this model 2026-10-05 (#9312); last live week read 1.7% cache (#9357 scoreboard); the same model caches on xkiro at 20.1% (#9362)."
-    id: commandcode-spacebunnyalpha-worker-capable
-    allowed_fails_policy:
-      BadRequestErrorAllowedFails: 1
-- model_name: worker-cheap
-  litellm_params: {<<: *commandcode-free}
-  model_info:
-    mode: chat
-    supports_prompt_caching: true
-    cache_proof: "Provider ended this model 2026-10-05 (#9312); last live week read 1.7% cache (#9357 scoreboard); the same model caches on xkiro at 20.1% (#9362)."
-    id: commandcode-spacebunnyalpha-worker-cheap
-    allowed_fails_policy:
-      BadRequestErrorAllowedFails: 1
-- model_name: worker-capable
-  litellm_params:
-    <<: *commandcode-free
-    model: openai/poolside/laguna-s-2.1-free
   model_info:
     mode: chat
     supports_prompt_caching: true
