@@ -70,3 +70,5 @@ contactPoints:
             {{ range .Alerts.Firing }}
             {{ .Annotations.summary }} {{ .Annotations.description }}
             {{ end }}
+            --
+            cloudflare-spend watch fallback (fleet-ops#9355): a spend rule fired and the GitHub issue webhook may have failed. Check fleet-ops for a matching 'cost alarm' issue.

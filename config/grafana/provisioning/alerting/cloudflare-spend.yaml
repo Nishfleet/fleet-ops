@@ -18,7 +18,22 @@
 # parser turns the long series into one labelled series per resource, and the
 # label reaches the Telegram text as {{ $labels... }}.
 #
-# R2 rules use absolute thresholds from the same comment: total R2 Standard
+# Bucket shape (fixed after coordinator review): both usage queries in every
+# rule group by the datetimeHour dimension, not raw per-event datetime. D is
+# the SUM over the hour buckets inside the query's rolling last-hour window
+# (relativeTimeRange 3600s to now), i.e. the hour's total rather than the
+# newest single bucket; C is the MEDIAN of one hour bucket per hour over the
+# 7-day window (168 buckets per resource, far inside limit: 10000). Before
+# the fix the queries grouped by raw datetime with orderBy datetime_ASC, so
+# limit: 10000 grabbed the earliest 10k per-event rows of the week and
+# 'last' read one per-event bucket - an hour-long leak spread over many rows
+# never crossed the line.
+#
+# Durable Objects queries read durableObjectsInvocationsAdaptiveGroups
+# (sum { requests }), the dataset documented in the Cloudflare GraphQL
+# schema for DO request metrics; durableObjectsAdaptiveGroups (the name the
+# first draft used) does not exist, so those rules errored every evaluation.
+## R2 rules use absolute thresholds from the same comment: total R2 Standard
 # storage over 20 GB, any bucket growing over 2 GB in ~24h, and any Standard
 # data in a bucket outside the known list (the known list is baked into the
 # cf-r2-unknown GraphQL filter). The 10.35 GB nish-hostinger-kvm4-backups-locked
@@ -75,7 +90,7 @@ groups:
                 viewer {
                   accounts(filter: {accountTag: "f670a698e17bf160c8e4679823e68916"}) {
                     d1AnalyticsAdaptiveGroups(limit: 10000, filter: {datetime_geq: "${__timeFrom:date:iso}", datetime_lt: "${__timeTo:date:iso}"}, orderBy: [datetime_ASC]) {
-                      dimensions { datetime }
+                      dimensions { datetimeHour }
                       sum { rowsWritten }
                     }
                   }
@@ -84,7 +99,7 @@ groups:
           parser: backend
           root_selector: data.viewer.accounts.0.d1AnalyticsAdaptiveGroups
           columns:
-          - selector: dimensions.datetime
+          - selector: dimensions.datetimeHour
             text: time
             type: timestamp
           - selector: sum.rowsWritten
@@ -113,7 +128,7 @@ groups:
                 viewer {
                   accounts(filter: {accountTag: "f670a698e17bf160c8e4679823e68916"}) {
                     d1AnalyticsAdaptiveGroups(limit: 10000, filter: {datetime_geq: "${__timeFrom:date:iso}", datetime_lt: "${__timeTo:date:iso}"}, orderBy: [datetime_ASC]) {
-                      dimensions { datetime }
+                      dimensions { datetimeHour }
                       sum { rowsWritten }
                     }
                   }
@@ -122,7 +137,7 @@ groups:
           parser: backend
           root_selector: data.viewer.accounts.0.d1AnalyticsAdaptiveGroups
           columns:
-          - selector: dimensions.datetime
+          - selector: dimensions.datetimeHour
             text: time
             type: timestamp
           - selector: sum.rowsWritten
@@ -152,7 +167,7 @@ groups:
           expression: A
           intervalMs: 1000
           maxDataPoints: 43200
-          reducer: last
+          reducer: sum
           settings:
             mode: dropNN
           refId: D
@@ -237,7 +252,7 @@ groups:
                 viewer {
                   accounts(filter: {accountTag: "f670a698e17bf160c8e4679823e68916"}) {
                     d1AnalyticsAdaptiveGroups(limit: 10000, filter: {datetime_geq: "${__timeFrom:date:iso}", datetime_lt: "${__timeTo:date:iso}"}, orderBy: [datetime_ASC]) {
-                      dimensions { datetime }
+                      dimensions { datetimeHour }
                       sum { rowsRead }
                     }
                   }
@@ -246,7 +261,7 @@ groups:
           parser: backend
           root_selector: data.viewer.accounts.0.d1AnalyticsAdaptiveGroups
           columns:
-          - selector: dimensions.datetime
+          - selector: dimensions.datetimeHour
             text: time
             type: timestamp
           - selector: sum.rowsRead
@@ -275,7 +290,7 @@ groups:
                 viewer {
                   accounts(filter: {accountTag: "f670a698e17bf160c8e4679823e68916"}) {
                     d1AnalyticsAdaptiveGroups(limit: 10000, filter: {datetime_geq: "${__timeFrom:date:iso}", datetime_lt: "${__timeTo:date:iso}"}, orderBy: [datetime_ASC]) {
-                      dimensions { datetime }
+                      dimensions { datetimeHour }
                       sum { rowsRead }
                     }
                   }
@@ -284,7 +299,7 @@ groups:
           parser: backend
           root_selector: data.viewer.accounts.0.d1AnalyticsAdaptiveGroups
           columns:
-          - selector: dimensions.datetime
+          - selector: dimensions.datetimeHour
             text: time
             type: timestamp
           - selector: sum.rowsRead
@@ -314,7 +329,7 @@ groups:
           expression: A
           intervalMs: 1000
           maxDataPoints: 43200
-          reducer: last
+          reducer: sum
           settings:
             mode: dropNN
           refId: D
@@ -399,7 +414,7 @@ groups:
                 viewer {
                   accounts(filter: {accountTag: "f670a698e17bf160c8e4679823e68916"}) {
                     emailSendingAdaptiveGroups(limit: 10000, filter: {datetime_geq: "${__timeFrom:date:iso}", datetime_lt: "${__timeTo:date:iso}"}, orderBy: [datetime_ASC]) {
-                      dimensions { datetime }
+                      dimensions { datetimeHour }
                       sum { sent }
                     }
                   }
@@ -408,7 +423,7 @@ groups:
           parser: backend
           root_selector: data.viewer.accounts.0.emailSendingAdaptiveGroups
           columns:
-          - selector: dimensions.datetime
+          - selector: dimensions.datetimeHour
             text: time
             type: timestamp
           - selector: sum.sent
@@ -437,7 +452,7 @@ groups:
                 viewer {
                   accounts(filter: {accountTag: "f670a698e17bf160c8e4679823e68916"}) {
                     emailSendingAdaptiveGroups(limit: 10000, filter: {datetime_geq: "${__timeFrom:date:iso}", datetime_lt: "${__timeTo:date:iso}"}, orderBy: [datetime_ASC]) {
-                      dimensions { datetime }
+                      dimensions { datetimeHour }
                       sum { sent }
                     }
                   }
@@ -446,7 +461,7 @@ groups:
           parser: backend
           root_selector: data.viewer.accounts.0.emailSendingAdaptiveGroups
           columns:
-          - selector: dimensions.datetime
+          - selector: dimensions.datetimeHour
             text: time
             type: timestamp
           - selector: sum.sent
@@ -476,7 +491,7 @@ groups:
           expression: A
           intervalMs: 1000
           maxDataPoints: 43200
-          reducer: last
+          reducer: sum
           settings:
             mode: dropNN
           refId: D
@@ -561,7 +576,7 @@ groups:
                 viewer {
                   accounts(filter: {accountTag: "f670a698e17bf160c8e4679823e68916"}) {
                     workersInvocationsAdaptive(limit: 10000, filter: {datetime_geq: "${__timeFrom:date:iso}", datetime_lt: "${__timeTo:date:iso}"}, orderBy: [datetime_ASC]) {
-                      dimensions { datetime }
+                      dimensions { datetimeHour }
                       sum { requests }
                     }
                   }
@@ -570,7 +585,7 @@ groups:
           parser: backend
           root_selector: data.viewer.accounts.0.workersInvocationsAdaptive
           columns:
-          - selector: dimensions.datetime
+          - selector: dimensions.datetimeHour
             text: time
             type: timestamp
           - selector: sum.requests
@@ -599,7 +614,7 @@ groups:
                 viewer {
                   accounts(filter: {accountTag: "f670a698e17bf160c8e4679823e68916"}) {
                     workersInvocationsAdaptive(limit: 10000, filter: {datetime_geq: "${__timeFrom:date:iso}", datetime_lt: "${__timeTo:date:iso}"}, orderBy: [datetime_ASC]) {
-                      dimensions { datetime }
+                      dimensions { datetimeHour }
                       sum { requests }
                     }
                   }
@@ -608,7 +623,7 @@ groups:
           parser: backend
           root_selector: data.viewer.accounts.0.workersInvocationsAdaptive
           columns:
-          - selector: dimensions.datetime
+          - selector: dimensions.datetimeHour
             text: time
             type: timestamp
           - selector: sum.requests
@@ -638,7 +653,7 @@ groups:
           expression: A
           intervalMs: 1000
           maxDataPoints: 43200
-          reducer: last
+          reducer: sum
           settings:
             mode: dropNN
           refId: D
@@ -722,17 +737,17 @@ groups:
               query {
                 viewer {
                   accounts(filter: {accountTag: "f670a698e17bf160c8e4679823e68916"}) {
-                    durableObjectsAdaptiveGroups(limit: 10000, filter: {datetime_geq: "${__timeFrom:date:iso}", datetime_lt: "${__timeTo:date:iso}"}, orderBy: [datetime_ASC]) {
-                      dimensions { datetime }
+                    durableObjectsInvocationsAdaptiveGroups(limit: 10000, filter: {datetime_geq: "${__timeFrom:date:iso}", datetime_lt: "${__timeTo:date:iso}"}, orderBy: [datetime_ASC]) {
+                      dimensions { datetimeHour }
                       sum { requests }
                     }
                   }
                 }
               }
           parser: backend
-          root_selector: data.viewer.accounts.0.durableObjectsAdaptiveGroups
+          root_selector: data.viewer.accounts.0.durableObjectsInvocationsAdaptiveGroups
           columns:
-          - selector: dimensions.datetime
+          - selector: dimensions.datetimeHour
             text: time
             type: timestamp
           - selector: sum.requests
@@ -760,17 +775,17 @@ groups:
               query {
                 viewer {
                   accounts(filter: {accountTag: "f670a698e17bf160c8e4679823e68916"}) {
-                    durableObjectsAdaptiveGroups(limit: 10000, filter: {datetime_geq: "${__timeFrom:date:iso}", datetime_lt: "${__timeTo:date:iso}"}, orderBy: [datetime_ASC]) {
-                      dimensions { datetime }
+                    durableObjectsInvocationsAdaptiveGroups(limit: 10000, filter: {datetime_geq: "${__timeFrom:date:iso}", datetime_lt: "${__timeTo:date:iso}"}, orderBy: [datetime_ASC]) {
+                      dimensions { datetimeHour }
                       sum { requests }
                     }
                   }
                 }
               }
           parser: backend
-          root_selector: data.viewer.accounts.0.durableObjectsAdaptiveGroups
+          root_selector: data.viewer.accounts.0.durableObjectsInvocationsAdaptiveGroups
           columns:
-          - selector: dimensions.datetime
+          - selector: dimensions.datetimeHour
             text: time
             type: timestamp
           - selector: sum.requests
@@ -800,7 +815,7 @@ groups:
           expression: A
           intervalMs: 1000
           maxDataPoints: 43200
-          reducer: last
+          reducer: sum
           settings:
             mode: dropNN
           refId: D
@@ -885,7 +900,7 @@ groups:
                 viewer {
                   accounts(filter: {accountTag: "f670a698e17bf160c8e4679823e68916"}) {
                     d1AnalyticsAdaptiveGroups(limit: 10000, filter: {datetime_geq: "${__timeFrom:date:iso}", datetime_lt: "${__timeTo:date:iso}"}, orderBy: [datetime_ASC]) {
-                      dimensions { datetime databaseId }
+                      dimensions { datetimeHour databaseId }
                       sum { rowsWritten }
                     }
                   }
@@ -894,7 +909,7 @@ groups:
           parser: backend
           root_selector: data.viewer.accounts.0.d1AnalyticsAdaptiveGroups
           columns:
-          - selector: dimensions.datetime
+          - selector: dimensions.datetimeHour
             text: time
             type: timestamp
           - selector: dimensions.databaseId
@@ -926,7 +941,7 @@ groups:
                 viewer {
                   accounts(filter: {accountTag: "f670a698e17bf160c8e4679823e68916"}) {
                     d1AnalyticsAdaptiveGroups(limit: 10000, filter: {datetime_geq: "${__timeFrom:date:iso}", datetime_lt: "${__timeTo:date:iso}"}, orderBy: [datetime_ASC]) {
-                      dimensions { datetime databaseId }
+                      dimensions { datetimeHour databaseId }
                       sum { rowsWritten }
                     }
                   }
@@ -935,7 +950,7 @@ groups:
           parser: backend
           root_selector: data.viewer.accounts.0.d1AnalyticsAdaptiveGroups
           columns:
-          - selector: dimensions.datetime
+          - selector: dimensions.datetimeHour
             text: time
             type: timestamp
           - selector: dimensions.databaseId
@@ -968,7 +983,7 @@ groups:
           expression: A
           intervalMs: 1000
           maxDataPoints: 43200
-          reducer: last
+          reducer: sum
           settings:
             mode: dropNN
           refId: D
@@ -1053,7 +1068,7 @@ groups:
                 viewer {
                   accounts(filter: {accountTag: "f670a698e17bf160c8e4679823e68916"}) {
                     d1AnalyticsAdaptiveGroups(limit: 10000, filter: {datetime_geq: "${__timeFrom:date:iso}", datetime_lt: "${__timeTo:date:iso}"}, orderBy: [datetime_ASC]) {
-                      dimensions { datetime databaseId }
+                      dimensions { datetimeHour databaseId }
                       sum { rowsRead }
                     }
                   }
@@ -1062,7 +1077,7 @@ groups:
           parser: backend
           root_selector: data.viewer.accounts.0.d1AnalyticsAdaptiveGroups
           columns:
-          - selector: dimensions.datetime
+          - selector: dimensions.datetimeHour
             text: time
             type: timestamp
           - selector: dimensions.databaseId
@@ -1094,7 +1109,7 @@ groups:
                 viewer {
                   accounts(filter: {accountTag: "f670a698e17bf160c8e4679823e68916"}) {
                     d1AnalyticsAdaptiveGroups(limit: 10000, filter: {datetime_geq: "${__timeFrom:date:iso}", datetime_lt: "${__timeTo:date:iso}"}, orderBy: [datetime_ASC]) {
-                      dimensions { datetime databaseId }
+                      dimensions { datetimeHour databaseId }
                       sum { rowsRead }
                     }
                   }
@@ -1103,7 +1118,7 @@ groups:
           parser: backend
           root_selector: data.viewer.accounts.0.d1AnalyticsAdaptiveGroups
           columns:
-          - selector: dimensions.datetime
+          - selector: dimensions.datetimeHour
             text: time
             type: timestamp
           - selector: dimensions.databaseId
@@ -1136,7 +1151,7 @@ groups:
           expression: A
           intervalMs: 1000
           maxDataPoints: 43200
-          reducer: last
+          reducer: sum
           settings:
             mode: dropNN
           refId: D
@@ -1221,7 +1236,7 @@ groups:
                 viewer {
                   accounts(filter: {accountTag: "f670a698e17bf160c8e4679823e68916"}) {
                     emailSendingAdaptiveGroups(limit: 10000, filter: {datetime_geq: "${__timeFrom:date:iso}", datetime_lt: "${__timeTo:date:iso}"}, orderBy: [datetime_ASC]) {
-                      dimensions { datetime fromAddress }
+                      dimensions { datetimeHour fromAddress }
                       sum { sent }
                     }
                   }
@@ -1230,7 +1245,7 @@ groups:
           parser: backend
           root_selector: data.viewer.accounts.0.emailSendingAdaptiveGroups
           columns:
-          - selector: dimensions.datetime
+          - selector: dimensions.datetimeHour
             text: time
             type: timestamp
           - selector: dimensions.fromAddress
@@ -1262,7 +1277,7 @@ groups:
                 viewer {
                   accounts(filter: {accountTag: "f670a698e17bf160c8e4679823e68916"}) {
                     emailSendingAdaptiveGroups(limit: 10000, filter: {datetime_geq: "${__timeFrom:date:iso}", datetime_lt: "${__timeTo:date:iso}"}, orderBy: [datetime_ASC]) {
-                      dimensions { datetime fromAddress }
+                      dimensions { datetimeHour fromAddress }
                       sum { sent }
                     }
                   }
@@ -1271,7 +1286,7 @@ groups:
           parser: backend
           root_selector: data.viewer.accounts.0.emailSendingAdaptiveGroups
           columns:
-          - selector: dimensions.datetime
+          - selector: dimensions.datetimeHour
             text: time
             type: timestamp
           - selector: dimensions.fromAddress
@@ -1304,7 +1319,7 @@ groups:
           expression: A
           intervalMs: 1000
           maxDataPoints: 43200
-          reducer: last
+          reducer: sum
           settings:
             mode: dropNN
           refId: D
@@ -1389,7 +1404,7 @@ groups:
                 viewer {
                   accounts(filter: {accountTag: "f670a698e17bf160c8e4679823e68916"}) {
                     workersInvocationsAdaptive(limit: 10000, filter: {datetime_geq: "${__timeFrom:date:iso}", datetime_lt: "${__timeTo:date:iso}"}, orderBy: [datetime_ASC]) {
-                      dimensions { datetime scriptName }
+                      dimensions { datetimeHour scriptName }
                       sum { requests }
                     }
                   }
@@ -1398,7 +1413,7 @@ groups:
           parser: backend
           root_selector: data.viewer.accounts.0.workersInvocationsAdaptive
           columns:
-          - selector: dimensions.datetime
+          - selector: dimensions.datetimeHour
             text: time
             type: timestamp
           - selector: dimensions.scriptName
@@ -1430,7 +1445,7 @@ groups:
                 viewer {
                   accounts(filter: {accountTag: "f670a698e17bf160c8e4679823e68916"}) {
                     workersInvocationsAdaptive(limit: 10000, filter: {datetime_geq: "${__timeFrom:date:iso}", datetime_lt: "${__timeTo:date:iso}"}, orderBy: [datetime_ASC]) {
-                      dimensions { datetime scriptName }
+                      dimensions { datetimeHour scriptName }
                       sum { requests }
                     }
                   }
@@ -1439,7 +1454,7 @@ groups:
           parser: backend
           root_selector: data.viewer.accounts.0.workersInvocationsAdaptive
           columns:
-          - selector: dimensions.datetime
+          - selector: dimensions.datetimeHour
             text: time
             type: timestamp
           - selector: dimensions.scriptName
@@ -1472,7 +1487,7 @@ groups:
           expression: A
           intervalMs: 1000
           maxDataPoints: 43200
-          reducer: last
+          reducer: sum
           settings:
             mode: dropNN
           refId: D
@@ -1556,17 +1571,17 @@ groups:
               query {
                 viewer {
                   accounts(filter: {accountTag: "f670a698e17bf160c8e4679823e68916"}) {
-                    durableObjectsAdaptiveGroups(limit: 10000, filter: {datetime_geq: "${__timeFrom:date:iso}", datetime_lt: "${__timeTo:date:iso}"}, orderBy: [datetime_ASC]) {
-                      dimensions { datetime scriptName }
+                    durableObjectsInvocationsAdaptiveGroups(limit: 10000, filter: {datetime_geq: "${__timeFrom:date:iso}", datetime_lt: "${__timeTo:date:iso}"}, orderBy: [datetime_ASC]) {
+                      dimensions { datetimeHour scriptName }
                       sum { requests }
                     }
                   }
                 }
               }
           parser: backend
-          root_selector: data.viewer.accounts.0.durableObjectsAdaptiveGroups
+          root_selector: data.viewer.accounts.0.durableObjectsInvocationsAdaptiveGroups
           columns:
-          - selector: dimensions.datetime
+          - selector: dimensions.datetimeHour
             text: time
             type: timestamp
           - selector: dimensions.scriptName
@@ -1597,17 +1612,17 @@ groups:
               query {
                 viewer {
                   accounts(filter: {accountTag: "f670a698e17bf160c8e4679823e68916"}) {
-                    durableObjectsAdaptiveGroups(limit: 10000, filter: {datetime_geq: "${__timeFrom:date:iso}", datetime_lt: "${__timeTo:date:iso}"}, orderBy: [datetime_ASC]) {
-                      dimensions { datetime scriptName }
+                    durableObjectsInvocationsAdaptiveGroups(limit: 10000, filter: {datetime_geq: "${__timeFrom:date:iso}", datetime_lt: "${__timeTo:date:iso}"}, orderBy: [datetime_ASC]) {
+                      dimensions { datetimeHour scriptName }
                       sum { requests }
                     }
                   }
                 }
               }
           parser: backend
-          root_selector: data.viewer.accounts.0.durableObjectsAdaptiveGroups
+          root_selector: data.viewer.accounts.0.durableObjectsInvocationsAdaptiveGroups
           columns:
-          - selector: dimensions.datetime
+          - selector: dimensions.datetimeHour
             text: time
             type: timestamp
           - selector: dimensions.scriptName
@@ -1640,7 +1655,7 @@ groups:
           expression: A
           intervalMs: 1000
           maxDataPoints: 43200
-          reducer: last
+          reducer: sum
           settings:
             mode: dropNN
           refId: D
@@ -1730,7 +1745,7 @@ groups:
                 viewer {
                   accounts(filter: {accountTag: "f670a698e17bf160c8e4679823e68916"}) {
                     aiInferenceAdaptiveGroups(limit: 10000, filter: {datetime_geq: "${__timeFrom:date:iso}", datetime_lt: "${__timeTo:date:iso}"}, orderBy: [datetime_ASC]) {
-                      dimensions { datetime }
+                      dimensions { datetimeHour }
                       sum { neurons }
                     }
                   }
@@ -1739,7 +1754,7 @@ groups:
           parser: backend
           root_selector: data.viewer.accounts.0.aiInferenceAdaptiveGroups
           columns:
-          - selector: dimensions.datetime
+          - selector: dimensions.datetimeHour
             text: time
             type: timestamp
           - selector: sum.neurons
@@ -1768,7 +1783,7 @@ groups:
                 viewer {
                   accounts(filter: {accountTag: "f670a698e17bf160c8e4679823e68916"}) {
                     aiInferenceAdaptiveGroups(limit: 10000, filter: {datetime_geq: "${__timeFrom:date:iso}", datetime_lt: "${__timeTo:date:iso}"}, orderBy: [datetime_ASC]) {
-                      dimensions { datetime }
+                      dimensions { datetimeHour }
                       sum { neurons }
                     }
                   }
@@ -1777,7 +1792,7 @@ groups:
           parser: backend
           root_selector: data.viewer.accounts.0.aiInferenceAdaptiveGroups
           columns:
-          - selector: dimensions.datetime
+          - selector: dimensions.datetimeHour
             text: time
             type: timestamp
           - selector: sum.neurons
@@ -1807,7 +1822,7 @@ groups:
           expression: A
           intervalMs: 1000
           maxDataPoints: 43200
-          reducer: last
+          reducer: sum
           settings:
             mode: dropNN
           refId: D
@@ -1892,7 +1907,7 @@ groups:
                 viewer {
                   accounts(filter: {accountTag: "f670a698e17bf160c8e4679823e68916"}) {
                     aiInferenceAdaptiveGroups(limit: 10000, filter: {datetime_geq: "${__timeFrom:date:iso}", datetime_lt: "${__timeTo:date:iso}"}, orderBy: [datetime_ASC]) {
-                      dimensions { datetime model }
+                      dimensions { datetimeHour model }
                       sum { neurons }
                     }
                   }
@@ -1901,7 +1916,7 @@ groups:
           parser: backend
           root_selector: data.viewer.accounts.0.aiInferenceAdaptiveGroups
           columns:
-          - selector: dimensions.datetime
+          - selector: dimensions.datetimeHour
             text: time
             type: timestamp
           - selector: dimensions.model
@@ -1933,7 +1948,7 @@ groups:
                 viewer {
                   accounts(filter: {accountTag: "f670a698e17bf160c8e4679823e68916"}) {
                     aiInferenceAdaptiveGroups(limit: 10000, filter: {datetime_geq: "${__timeFrom:date:iso}", datetime_lt: "${__timeTo:date:iso}"}, orderBy: [datetime_ASC]) {
-                      dimensions { datetime model }
+                      dimensions { datetimeHour model }
                       sum { neurons }
                     }
                   }
@@ -1942,7 +1957,7 @@ groups:
           parser: backend
           root_selector: data.viewer.accounts.0.aiInferenceAdaptiveGroups
           columns:
-          - selector: dimensions.datetime
+          - selector: dimensions.datetimeHour
             text: time
             type: timestamp
           - selector: dimensions.model
@@ -1975,7 +1990,7 @@ groups:
           expression: A
           intervalMs: 1000
           maxDataPoints: 43200
-          reducer: last
+          reducer: sum
           settings:
             mode: dropNN
           refId: D
