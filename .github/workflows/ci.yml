@@ -295,7 +295,7 @@ jobs:
             id=$(jq -r .id <<<"$c")
             d="$t/$id"
             mkdir "$d"
-            jq -c --arg t "$today" --arg o "$old" '{workflow_runs: [.runs[] | {id, event: (.event // "issues"), created_at: (if .when == "YESTERDAY" then $o else $t end)}]}' <<<"$c" > "$d/runs.json"
+            jq -c --arg t "$today" --arg o "$old" '{workflow_runs: ([.runs[] | {id, event: (.event // "issues"), created_at: (if .when == "YESTERDAY" then $o else $t end)}] + [range(0; (.extra_runs // 0)) | {id: (1000 + .), event: "issues", created_at: $t}])}' <<<"$c" > "$d/runs.json"
             jq -c '{state: "OPEN", labels: ([.labels[], "needs-orchestrator"] | map({name: .}))}' <<<"$c" > "$d/issue.json"
             while IFS= read -r r; do
               jq -c '{jobs: [{name: (.job // "orchestrate"), steps: ([{name: "Set up job", conclusion: "success"}] + (if .session == "absent" then [] else [{name: "Run the orchestrator session", conclusion: (if .session == "null" then null else .session end)}] end))}]}' <<<"$r" > "$d/jobs-$(jq -r .id <<<"$r").json"
@@ -316,7 +316,7 @@ jobs:
               [ "$(sed -n 's/^model=//p' "$d/out")" = "$(jq -r .want_model <<<"$c")" ] || { echo "cap case $id: model $(sed -n 's/^model=//p' "$d/out")"; bad=1; }
               [ "$(sed -n 's/^turns=//p' "$d/out")" = "$(jq -r .want_turns <<<"$c")" ] || { echo "cap case $id: turns $(sed -n 's/^turns=//p' "$d/out")"; bad=1; }
             else
-              grep -q 'daily cap reached' <<<"$log" || { echo "cap case $id: capped without the cap log line: $log"; bad=1; }
+              grep -q 'daily cap' <<<"$log" || { echo "cap case $id: capped without the cap log line: $log"; bad=1; }
             fi
           done < <(jq -c '.cap_cases[]' "$cfg")
           # The session step: the real run block, with the claude path swapped

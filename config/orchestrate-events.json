@@ -663,6 +663,15 @@
         }
       ],
       "want_go": false
+    },
+    {
+      "id": "too-many-runs-fails-closed",
+      "daily_max": "10",
+      "model_var": null,
+      "labels": [],
+      "runs": [],
+      "extra_runs": 401,
+      "want_go": false
     }
   ],
   "session_cases": [
