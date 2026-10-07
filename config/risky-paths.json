@@ -89,7 +89,10 @@
     {"id": "script-shell", "want": true, "repo": "Nishfleet/0509", "labels": [], "changed_files": 1, "files": ["scripts/foo.sh"]},
     {"id": "script-python-bin", "want": true, "repo": "Nishfleet/0509", "labels": [], "changed_files": 1, "files": ["bin/foo.py"]},
     {"id": "script-python-lib", "want": true, "repo": "Nishfleet/0509", "labels": [], "changed_files": 1, "files": ["app/lib/foo.py"]},
-    {"id": "script-nested-run", "want": true, "repo": "Nishfleet/0509", "labels": [], "changed_files": 1, "files": ["tools/x/run.sh"]}
+    {"id": "script-nested-run", "want": true, "repo": "Nishfleet/0509", "labels": [], "changed_files": 1, "files": ["tools/x/run.sh"]},
+    {"id": "script-backup-not-ext", "want": false, "repo": "Nishfleet/0509", "labels": [], "changed_files": 1, "files": ["tool.py.bak"]},
+    {"id": "bin-word-doc", "want": false, "repo": "Nishfleet/0509", "labels": [], "changed_files": 1, "files": ["cabin/config.json"]},
+    {"id": "scripts-word-doc", "want": false, "repo": "Nishfleet/0509", "labels": [], "changed_files": 1, "files": ["javascript/app.ts"]}
   ],
   "approval_cases": [
     {"id": "no-status", "want": false, "approvers": ["nish3451"], "statuses": []},
