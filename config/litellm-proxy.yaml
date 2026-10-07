@@ -60,6 +60,7 @@ model_list:
     allowed_fails_policy:
       BadRequestErrorAllowedFails: 1
 # Nish 2026-09-30 free rows (probe: all finish_reason=tool_calls). laguna-s-2.1-free answered 1 of 2 probe calls (1 upstream 429 "temporarily unavailable"): the row stays live and cools 900 s on a 429, never benched.
+# 2026-10-07 prompt-cache verdict, #9362: all three models cache upstream with NO hint. Two-call probe, same ~21K prefix 5 s apart, no cache_control anywhere: ling-3.0 21440/21474 prompt tokens cached (calls c92bc949..4fe6db50), ling-3.1 30592/30634 (8207f8dc..accc6461), laguna 32416/32427 (ed93cdb5..303f9a68). The stock cache_control_injection_points hint changes nothing on these openai/* rows (LiteLLM 1.98.0 strips cache_control before the upstream call), so it is NOT added. The low ledger cache share on laguna (0.7%) and ling-3.0 (0.4%) is a reporting artifact, not a cache miss: 94-98% of their 7-day responses carry no prompt_tokens_details, and the calls that do report read 58-59% of prompt tokens from cache. ling-3.1 reports on 91% of calls and reads 80.9%. No bench, no hint, no litellm_params change.
 - model_name: worker-capable
   litellm_params: &commandcode-free
     model: openai/stealth/space-bunny-alpha
@@ -651,6 +652,7 @@ model_list:
     allowed_fails_policy:
       BadRequestErrorAllowedFails: 1
 # Nish 2026-09-30 free rows (probe: space-bunny finish_reason=tool_calls; ling-3.0-flash-sante 429 daily free-model quota at probe time = quota wall, not a bench).
+# 2026-10-07 prompt-cache verdict, #9362: probe calls 429'd on the daily free-model token quota for all four models, so no lab probe; the 7-day ledger shows every row caches upstream (ling-3.0 46.6% share, 72% on calls that report prompt_tokens_details; qwen3-coder-plus 52.4%, 83% on reporting calls; space-bunny 20.3%; qwen3.8-max 78% on its one reporting call). Shares below 95% are the providers' own per-call reporting and replica behaviour, not something a LiteLLM setting reaches; cache_control_injection_points is stripped for openai/* rows, so no hint is added. Do not bench these rows for cache share.
 - model_name: worker-capable
   litellm_params: &xkiro-free
     model: openai/stealth/space-bunny-alpha:free

@@ -146,6 +146,16 @@ jobs:
         # fleet-update.service runs this playbook as root once a week.
         if: always()
         run: ansible-playbook --syntax-check -i localhost, ansible/update.yml
+      - name: The report survives a skipped registration (fleet-ops#9340)
+        # The report task renders every registered var with the idiom
+        # (var | default({})).results | default([]). A skipped non-looped
+        # registration carries no 'results' key, so the old pattern
+        # (x | default({'results': []})).results raised "'dict object' has no
+        # attribute 'results'" and the run died at its last task. This play
+        # reproduces that registration, renders the report expressions, and
+        # asserts no old pattern is left in ansible/update.yml.
+        if: always()
+        run: ansible-playbook -i localhost, ansible/tests/report-after-skipped-block.yml
       - name: rootfs/etc/nftables.conf loads on a fresh boot (nft -c)
         # nft refuses the whole file when a rule names a cgroup path that does
         # not exist yet, as at boot before user@1000 starts: the 2026-09-22
