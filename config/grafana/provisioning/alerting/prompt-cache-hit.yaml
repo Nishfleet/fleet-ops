@@ -68,12 +68,15 @@ groups:
         title: Prompt-cache read share below 50%
         condition: C
         data:
-          # A: the cache-read share per requested model, kept as the ratio's own
-          # numeric value (no `bool`). When cache rate is exactly 0 the ratio is
-          # the number 0, which is < 0.5, so a TOTAL cache failure on a busy
-          # lane is the worst case this fires on. A comparison against 0.5 with
-          # `bool` would turn the ratio into 0/1 and destroy the value, so the
-          # breach itself is expressed in the query and C only tests presence.
+          # A: the breach verdict per requested model, as 1 (breached) or 0
+          # (healthy). `bool` is load-bearing, not cosmetic: C tests `> 0`, so a
+          # lane has to read 1 to page. A TOTAL cache failure, the case this
+          # rule exists for, has a share of exactly 0, and without `bool` A
+          # would hand that 0 to C, `0 > 0` is false, and Grafana would hold the
+          # rule Normal while every request paid full input price. With `bool`
+          # the 0% share becomes a 1 and pages. paid-plan-idle.yaml uses this
+          # same shape (`== bool 0` in the query, `gt 0` at the threshold), so
+          # the verdict lives in the query and C only has to read it.
           #
           # The numerator is `cached OR (0 * input)`. Without the `or`, a
           # deployment that keeps sending input tokens but STOPS exporting a
@@ -84,8 +87,11 @@ groups:
           # the same way a real 0% share does. The trailing volume gate still
           # requires real input traffic, so a genuinely idle lane stays silent.
           #
-          # The `and on (requested_model)` volume gate is a plain label match;
-          # with `bool` on the comparison the gate would be ignored.
+          # The `and on (requested_model)` volume gate is a plain label match,
+          # so it drops a sub-floor lane from the result instead of leaving it
+          # as a 0. That is why noDataState: OK is the right NoData policy: an
+          # entire fleet below the floor returns nothing, which is silence by
+          # design rather than a series that reads Normal by accident.
           - refId: A
             relativeTimeRange: {from: 3600, to: 0}
             datasourceUid: fleet-prometheus
@@ -100,7 +106,7 @@ groups:
                 )
                 /
                 sum by (requested_model) (rate(litellm_input_tokens_metric_total[1h]))
-                < 0.5
+                < bool 0.5
                 and on (requested_model)
                 sum by (requested_model) (rate(litellm_input_tokens_metric_total[1h])) > 1000
               instant: true
@@ -122,11 +128,14 @@ groups:
               maxDataPoints: 43200
               range: false
               refId: B
-          # C: fire when A produced ANY value (presence), including the numeric
-          # 0 of a total cache failure. A `> 0` here would only ever see a
-          # positive share and would silently swallow the exact-zero case, so
-          # presence is the whole verdict. A is already the "below 50% AND
-          # above the volume floor" series, so nothing else is needed.
+          # C: fire when A reads 1. A is already "below 50% AND above the volume
+          # floor" as a 0/1 series, so `gt 0` is the whole verdict: a breached
+          # lane pages, a healthy lane reads 0 and stays Normal, and a lane
+          # below the floor is not in A at all. promtool asserts those three
+          # values against this exact expression (the promql_expr_test cases in
+          # prompt-cache-hit.test.yml), because the alert_rule_test cases above
+          # only prove which series appear, not what Grafana's threshold then
+          # reads.
           - refId: C
             datasourceUid: __expr__
             model:

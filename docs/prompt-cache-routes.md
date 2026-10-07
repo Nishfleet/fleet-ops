@@ -185,7 +185,10 @@ query. Run it with:
 promtool test rules config/grafana/provisioning/alerting/prompt-cache-hit.test.yml
 ```
 
-It covers six cases, all passing:
+It covers nine cases in two kinds, because they check different things. The
+six `alert_rule_test` cases run the rule through the Prometheus alert engine,
+which fires on any series the expression returns, so they answer "which lanes are
+in the result":
 
 1. a high-volume lane whose cache dropped to ~0.2 fires;
 2. a healthy high-volume lane is silent;
@@ -197,11 +200,28 @@ It covers six cases, all passing:
 6. a lane whose **cached series vanished entirely** while input kept flowing
    fires, via the `or (0 * input)` branch.
 
-Cases 5 and 6 are the regression tests the first in-run review asked for. They
-are load-bearing: replayed against the pre-fix expression (no `or` branch),
-case 5 returns no alert at all, which is exactly the bug that was fixed.
+The three `promql_expr_test` cases answer what the alert_rule_test cases cannot:
+not which series appear, but **what Grafana's threshold step then reads**.
+Grafana's C is a threshold of `> 0` over A, so a lane reads Alerting at 1 and
+Normal at 0:
+
+7. a total cache failure, share exactly 0, returns **1**, so it pages;
+8. a healthy busy lane returns **0** beside a broken one at **1**, and a
+   sub-floor lane is absent from the result entirely (which is what makes
+   `noDataState: OK` the right policy for an idle fleet);
+9. a vanished cached series with input still flowing returns **1**.
+
+That split is load-bearing. Query A ends in `bool`, so it returns the 0/1 breach
+verdict rather than the ratio, and the inlined test rule wraps it in `> 0` to
+reproduce the threshold the Prometheus engine does not have. The `bool` is what
+makes case 7 fire at all:
 
 ```
-# old expression, case 5 -> got:[]   (no alert: total cache failure was silent)
-# new expression, all six cases -> SUCCESS
+# pre-fix A (no `bool`), case 7's series, threshold applied by hand (fires iff > 0):
+#   exp 1E+00   got 0E+00        -> a 0% share read 0, `0 > 0` is false, Grafana held it Normal
+# current A, all nine cases -> SUCCESS
 ```
+
+Without `bool` only shares strictly between 0 and 0.5 would have paged, and the
+case this rule exists for, a route that cached nothing at all, would have stayed
+silent while every request paid full input price.
