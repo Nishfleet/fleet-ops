@@ -1,0 +1,40 @@
+# Size guard for the restic backup (fleet-ops#9360). Hard stop, before upload.
+# restic-r2-backup.service Requires= this unit (its drop-in 10-size-guard.conf),
+# so a failure here fails the backup unit and nothing reaches R2. The weekly
+# restic-r2-locked-copy.service Requires= the backup unit, so the second copy
+# is skipped too.
+# Step 1: restic backup --dry-run --json computes data_added (new, dedup-aware
+# bytes) and total_bytes_processed (the restored size of the snapshot) without
+# uploading anything. StandardOutput=truncate: puts that JSON in a file.
+# Step 2: jq reads the summary and exits 78 when either limit is crossed.
+# Raise a limit with a drop-in (systemctl edit), never by editing the jq line.
+[Unit]
+Description=Restic size guard: dry run, fail if the backup would grow past the limit
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+# 2 GiB of new data per run; 10 GiB restored size for the whole snapshot.
+Environment=SIZE_GUARD_MAX_BYTES=2147483648
+Environment=SIZE_GUARD_MAX_RESTORED_BYTES=10737418240
+EnvironmentFile=/etc/restic/netcup-r2.env
+Environment=RESTIC_CACHE_DIR=/var/cache/restic-live
+RuntimeDirectory=restic-size-guard
+StandardOutput=truncate:/run/restic-size-guard/dry-run.json
+ExecStart=/usr/bin/flock -E 75 -w 900 /run/lock/restic-r2-backup.lock /usr/bin/restic backup --dry-run --json --quiet --files-from=/etc/restic/include.txt --exclude-file=/etc/restic/exclude.txt --exclude-caches --host netcup-rs2000 --tag netcup-rs2000
+ExecStartPost=/usr/bin/jq -s --argjson max ${SIZE_GUARD_MAX_BYTES} --argjson maxr ${SIZE_GUARD_MAX_RESTORED_BYTES} 'map(select(.message_type == "summary")) | last as $$s | if $$s == null then ("size guard: no summary in dry run" | halt_error(1)) elif $$s.data_added > $$max or $$s.total_bytes_processed > $$maxr then ("SIZE GUARD TRIPPED: data_added=" + ($$s.data_added | tostring) + " (max " + ($$max | tostring) + ") restored=" + ($$s.total_bytes_processed | tostring) + " (max " + ($$maxr | tostring) + ")" | halt_error(78)) else ("size guard ok: data_added=" + ($$s.data_added | tostring) + " restored=" + ($$s.total_bytes_processed | tostring) | halt_error(0)) end' /run/restic-size-guard/dry-run.json
+Nice=19
+IOSchedulingClass=best-effort
+IOSchedulingPriority=7
+PrivateTmp=true
+ProtectSystem=strict
+NoNewPrivileges=true
+PrivateDevices=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+ProtectHome=read-only
+ReadWritePaths=/var/cache/restic-live /run/lock
