@@ -34,24 +34,27 @@ to another seat at all.
 These tests run in-process against litellm 1.98.0 (the version pinned for prod)
 and need no Redis: with `optional_pre_call_checks: ["session_affinity"]` and no
 redis_url the DeploymentAffinityCheck degrades to a pod-local pin. The affinity
-lookup is the same code path the proxy uses; only the Redis Lua-script claim
-differs, not the routing decision. They also run without a network - a plain
+lookup the routing decision depends on is the same code path the proxy uses, and
+the routing decision itself is what these tests assert; the Redis Lua-script
+claim (first-writer-wins across proxy replicas) is NOT exercised here, so nothing
+below is a claim about it. They also run without a network - a plain
 http.server answers one row 429 and the peers 200.
 
-Run with the interpreter that has litellm 1.98.0 installed. On the fleet
-VPS that is the dedicated venv (/home/nish/.local/venvs/litellm). CI does not
-run these tests - https://github.com/Nishfleet/fleet-ops/issues/9427 files that
-gap - so the numbers in this file are only as live as the last hand run:
+CI does not run this file yet: https://github.com/Nishfleet/fleet-ops/issues/9427
+carries the job, and the worker App token has no Workflows permission, so a
+worker cannot push the ci.yml change that would run it. Until that lands, the
+pick counts below are only as live as the last hand run, and the run command is:
 
   /home/nish/.local/venvs/litellm/bin/python tests/test_router_retry_policy_no_cross_seat.py
 
-or under pytest from the repo root with that interpreter on the path.
+It runs under pytest from the repo root too, with that interpreter on the path.
 """
 from __future__ import annotations
 
 import asyncio
 import http.client
 import http.server
+import importlib.metadata
 import json
 import socketserver
 import threading
@@ -67,6 +70,17 @@ from litellm.types.router import RetryPolicy
 import yaml
 
 CONFIG_PATH = "config/litellm-proxy.yaml"
+
+# The litellm the proxy runs, as of this commit. Every behavioural number in this
+# file and in the retry_policy comment in config/litellm-proxy.yaml is a
+# measurement of this version, so the version is asserted rather than described:
+# a bump that changes the same-row retry, the fallback timing, or the inert
+# InternalServerErrorRetries field fails here instead of quietly making those
+# comments wrong. Bump it in the same PR that re-measures, never on its own.
+# This constant is also the one home for the version: the CI job that will run
+# this file reads the pin from here (issue 9427), so the pin and the test cannot
+# drift apart.
+PINNED_LITELLM = "1.98.0"
 
 # fleet-ops#9375 as written in this PR (the "old" values the audit measured).
 RP_SHIPPED = {
@@ -221,7 +235,9 @@ async def _run(server, retry_policy, sid):
         # cooldown_time 60, optional_pre_call_checks ["prompt_caching",
         # "session_affinity"], and the default deployment_affinity_ttl_seconds
         # (3600). The one difference is redis_url (prod uses it, this test does
-        # not); the affinity lookup the routing decision depends on is the same.
+        # not), so what is exercised is the affinity lookup the routing decision
+        # depends on and the routing decision itself - not the Redis Lua-script
+        # claim, which is out of scope for these tests.
         await router.cache.async_set_cache(
             key=_pin_key(sid), value={"model_id": "seat-a"}, ttl=3600)
         outcome = "ok"
@@ -255,6 +271,16 @@ def test_config_retry_policy_is_the_fleet_ops_9375_fix():
     InternalServerError back to 2, the audit numbers regress and this gate fails."""
     rp = _load_retry_policy()
     assert rp == RP_PROPOSED, rp
+
+
+def test_the_pinned_litellm_is_the_one_these_numbers_were_measured_on():
+    # The behavioural tests below assert pick counts and a same-row retry, which
+    # are litellm-version facts. A silent bump invalidates every number in this
+    # file and in the retry_policy comment in config/litellm-proxy.yaml, so the
+    # version is a gate, not prose.
+    assert importlib.metadata.version("litellm") == PINNED_LITELLM, (
+        f"litellm {importlib.metadata.version('litellm')} != {PINNED_LITELLM}; "
+        "re-measure the picks and update PINNED_LITELLM in the same PR")
 
 
 # --------------------------------------------------------------------------- #
@@ -420,6 +446,7 @@ def test_pin_survives_a_failed_then_fallback_success():
 
 if __name__ == "__main__":
     fns = [
+        test_the_pinned_litellm_is_the_one_these_numbers_were_measured_on,
         test_config_retry_policy_is_the_fleet_ops_9375_fix,
         test_authentication_error_gets_zero_retries,
         test_rate_limit_gets_one_retry,
