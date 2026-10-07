@@ -1,0 +1,30 @@
+# fleet-ops#9375: an unknown key inside retry_policy must be refused. The block
+# ships additionalProperties: false on purpose, so a new litellm retry knob
+# arrives as a reviewed schema change with a fixture, not as a silent config
+# edit that re-opens the cross-seat re-send this issue closed. This fixture is
+# CI's proof the floor is real: .github/workflows/ci.yml runs check-jsonschema
+# over config/litellm-proxy.schema.rejects/*.yaml and requires every file to
+# fail. check-jsonschema reports
+#   $.router_settings.retry_policy: Additional properties are not allowed ('MockTestingFallbackRetries' was unexpected)
+# Like every rejects fixture this is a fragment, so it also trips the model_list
+# judge-row `contains` rule; the unknown-key refusal is the named error line,
+# not the file's only error. Both required top-level keys (model_list,
+# router_settings) are present.
+model_list:
+- model_name: worker-cheap
+  litellm_params:
+    model: openai/x
+  model_info:
+    supports_prompt_caching: true
+    cache_proof: "fixture row: only the rule named in this file is under test (#9375)."
+router_settings:
+  redis_url: redis://127.0.0.1:6379
+  cooldown_time: 60
+  retry_policy:
+    AuthenticationErrorRetries: 0
+    RateLimitErrorRetries: 1
+    TimeoutErrorRetries: 1
+    InternalServerErrorRetries: 1
+    BadRequestErrorRetries: 1
+    ContentPolicyViolationErrorRetries: 0
+    MockTestingFallbackRetries: 1

@@ -38,9 +38,14 @@ lookup is the same code path the proxy uses; only the Redis Lua-script claim
 differs, not the routing decision. They also run without a network - a plain
 http.server answers one row 429 and the peers 200.
 
-Run with the interpreter that has litellm 1.98.0 installed:
-  <litellm-python> tests/test_router_retry_policy_no_cross_seat.py
-or under pytest from the repo root if litellm is on the path.
+Run with the interpreter that has litellm 1.98.0 installed. On the fleet
+VPS that is the dedicated venv (/home/nish/.local/venvs/litellm). CI does not
+run these tests - https://github.com/Nishfleet/fleet-ops/issues/9427 files that
+gap - so the numbers in this file are only as live as the last hand run:
+
+  /home/nish/.local/venvs/litellm/bin/python tests/test_router_retry_policy_no_cross_seat.py
+
+or under pytest from the repo root with that interpreter on the path.
 """
 from __future__ import annotations
 
@@ -50,7 +55,7 @@ import http.server
 import json
 import socketserver
 import threading
-from typing import Dict, List
+from typing import List
 
 import litellm
 from litellm import Router
@@ -86,9 +91,6 @@ RP_PROPOSED = {
 RP_ZERO = {k: 0 for k in RP_PROPOSED}
 
 
-def _rp(name: str) -> Dict[str, int]:
-    return {"shipped": RP_SHIPPED, "fixed": RP_PROPOSED, "zero": RP_ZERO}[name]
-
 def _pin_key(session_id: str) -> str:
     """The exact pin key litellm's DeploymentAffinityCheck reads and writes, taken
     from litellm itself so a key-shape change cannot silently pass this test."""
@@ -114,6 +116,12 @@ class _Handler(http.server.BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
 
     def do_POST(self):
+        # No server registered: a future test that forgets the push would watch
+        # its assertions pass against a mock that answers everything 200, which
+        # is the quiet way to prove nothing.
+        if not _CURRENT_SERVER:
+            raise RuntimeError("_Handler fired with no _CURRENT_SERVER registered; "
+                               "append the server in the test's try block")
         # The body must be read before the response is written. litellm holds the
         # connection open (HTTP/1.1), so if those bytes stay in the socket buffer
         # the next request on this connection is parsed as
@@ -124,17 +132,16 @@ class _Handler(http.server.BaseHTTPRequestHandler):
         length = int(self.headers.get("Content-Length") or 0)
         if length:
             self.rfile.read(length)
-        if _CURRENT_SERVER:
-            _CURRENT_SERVER[0].hits.append(self.path)
+        _CURRENT_SERVER[0].hits.append(self.path)
         path = self.path
         if "/fail" in path:
-            server = _CURRENT_SERVER[0] if _CURRENT_SERVER else None
+            server = _CURRENT_SERVER[0]
             # fail_first_only: the /fail row 429s once then answers 200, to probe
             # whether litellm retries the same row. /failcapable always 429s.
-            transient = bool(server and getattr(server, "fail_first_only", False)
+            transient = bool(getattr(server, "fail_first_only", False)
                              and path.startswith("/fail/") and "failcapable" not in path)
             fail_hits = sum(1 for h in server.hits
-                            if h.startswith("/fail/") and "failcapable" not in h) if server else 0
+                            if h.startswith("/fail/") and "failcapable" not in h)
             if not transient or fail_hits == 1:
                 body = json.dumps({"error": {
                     "message": "rate limit reached", "type": "rate_limit_error",
@@ -242,13 +249,12 @@ def _load_retry_policy():
 
 
 def test_config_retry_policy_is_the_fleet_ops_9375_fix():
-    """The production retry_policy must carry the fleet-ops#9375 values; if someone
-    flips AuthenticationErrorRetries back to >=1 or RateLimit/InternalServerError
-    back to 2, the audit numbers regress and this gate fails."""
+    """The production retry_policy must carry the fleet-ops#9375 values; the schema
+    bounds the whole block and this gate holds the actual numbers. If someone
+    flips AuthenticationErrorRetries back to >=1, or RateLimit / Timeout /
+    InternalServerError back to 2, the audit numbers regress and this gate fails."""
     rp = _load_retry_policy()
-    assert rp["AuthenticationErrorRetries"] == 0
-    assert rp["RateLimitErrorRetries"] == 1
-    assert rp["InternalServerErrorRetries"] == 1
+    assert rp == RP_PROPOSED, rp
 
 
 # --------------------------------------------------------------------------- #
@@ -309,6 +315,10 @@ def test_internal_server_error_is_inert_on_litellm_1_98_0():
     # it), so InternalServerErrorRetries is dead config until litellm adds the handler:
     # it resolves to None and the Router falls back to num_retries (0) -> exactly one
     # attempt before the fallback group, never an in-group hop.
+    #
+    # This and the no-backoff test below read litellm internals, so both are the
+    # litellm upgrade tripwires: a litellm bump that changes either shape fails CI
+    # and the numbers in this file and in the config comment must be re-measured.
     rp = RetryPolicy(**RP_PROPOSED)
     exc = InternalServerError(message="x", llm_provider="openai", model="m", response=None)
     assert get_num_retries_from_retry_policy(exc, rp) is None
@@ -351,7 +361,12 @@ def test_the_fix_retries_the_row_that_failed_not_a_peer():
     # to the row that just 429d, so only the fallback hop is a cross-seat re-send.
     ing = _in_group(attempts)
     assert len(ing) == 2, attempts
-    assert len(set(ing)) == 1, attempts          # one seat, retried
+    assert len(set(ing)) == 1, attempts
+    # Held over 30 runs: the worker-capable group is a shuffle over seat-a and
+    # seat-c, so which row the first (pinned) attempt picks is not fixed, but the
+    # retry came back to the row that just failed in every one of them - the
+    # affinity check re-scores the row in flight. Assert the property, not the
+    # seat name, so a red CI here means the router really changed.
     assert attempts.count("/okcheap/chat/completions") == 1, attempts
     assert outcome == "ok"
     assert pin == {"model_id": "seat-a"}, pin
@@ -382,7 +397,7 @@ def test_zero_retries_hit_the_fallback_on_a_transient_429():
     server = _Server()
     server.fail_first_only = True
     try:
-        attempts, outcome, pin = asyncio.run(_run(server, _rp("zero"), "s-transient-zero"))
+        attempts, outcome, pin = asyncio.run(_run(server, RP_ZERO, "s-transient-zero"))
     finally:
         server.close()
     assert _in_group(attempts) == ["/fail/chat/completions"], attempts

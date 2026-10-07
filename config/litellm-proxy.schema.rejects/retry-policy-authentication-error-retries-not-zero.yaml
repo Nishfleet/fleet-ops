@@ -1,0 +1,29 @@
+# fleet-ops#9375: AuthenticationErrorRetries must be 0. A 401 is a bad or a
+# revoked key: it cannot recover on any retry, so every attempt is a cold
+# re-send of the whole worker prompt to another seat for a result that is
+# already decided. This fixture is CI's proof the floor is real:
+# .github/workflows/ci.yml runs check-jsonschema over
+# config/litellm-proxy.schema.rejects/*.yaml and requires every file to fail.
+# check-jsonschema reports
+#   $.router_settings.retry_policy.AuthenticationErrorRetries: 1 is greater than the maximum of 0
+# Like every rejects fixture this is a fragment, so it also trips the model_list
+# judge-row `contains` rule; the floor is the named error line, not the file's
+# only error. Both required top-level keys (model_list, router_settings) are
+# present.
+model_list:
+- model_name: worker-cheap
+  litellm_params:
+    model: openai/x
+  model_info:
+    supports_prompt_caching: true
+    cache_proof: "fixture row: only the rule named in this file is under test (#9375)."
+router_settings:
+  redis_url: redis://127.0.0.1:6379
+  cooldown_time: 60
+  retry_policy:
+    AuthenticationErrorRetries: 1
+    RateLimitErrorRetries: 1
+    TimeoutErrorRetries: 1
+    InternalServerErrorRetries: 1
+    BadRequestErrorRetries: 1
+    ContentPolicyViolationErrorRetries: 0
