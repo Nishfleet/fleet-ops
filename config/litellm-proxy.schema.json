@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$comment": "Hard gate for config/litellm-proxy.yaml (fleet-ops#8653). Nish 2026-09-28: no benching unless he says so. A failed row is never taken out of rotation: no bench list. Row cooldown_time: <=900 s is for ordinary transients. Values over 900 s, up to the 86400 s cap, are reserved for rows with a named, self-refilling wall (a daily or monthly quota that outlasts 900 s) - the row stays live, parked, and re-probes itself; each such row cites its issue in a comment (fleet-ops#8398/#9075). A row on openrouter.ai/api/v1 must set model_info.allowed_fails_policy.RateLimitErrorAllowedFails: 0, because its 429s are OpenRouter's named daily free-tier wall and the row has to park on the first one (fleet-ops#9248). Router-level cooldown_time holds a failed row for at most 60 s. router_settings.redis_url is required: session_affinity pins live in the Router cache, and without Redis each of the proxy's 2 worker processes keeps its own pin, so a session flips between rows with no failure (fleet-ops#9015). LiteLLM v1.98.0 never reads a redis_url under general_settings.",
+  "$comment": "Hard gate for config/litellm-proxy.yaml (fleet-ops#8653). Nish 2026-09-28: no benching unless he says so. A failed row is never taken out of rotation: no bench list. Row cooldown_time: <=900 s is for ordinary transients. Values over 900 s, up to the 86400 s cap, are reserved for rows with a named, self-refilling wall (a daily or monthly quota that outlasts 900 s) - the row stays live, parked, and re-probes itself; each such row cites its issue in a comment (fleet-ops#8398/#9075). A row on openrouter.ai/api/v1 must set model_info.allowed_fails_policy.RateLimitErrorAllowedFails: 0, because its 429s are OpenRouter's named daily free-tier wall and the row has to park on the first one (fleet-ops#9248). Router-level cooldown_time holds a failed row for at most 60 s. Every model_list row must declare its cache capability: model_info.supports_prompt_caching (boolean) and model_info.cache_proof (non-empty string, date plus measured cached tokens or a doc link), because ~0% cache-read on four provider groups was 70% of uncached router tokens and no rule forced a new seat to say which case it is (fleet-ops#9365). A worker-group row whose supports_prompt_caching is false must set litellm_params.order: 2 so long sessions fall to it only as overflow (order filtering is applied after the cooldown filter in LiteLLM v1.98.0 router.py, proven by tests/test_router_order2_overflow.py). router_settings.redis_url is required: session_affinity pins live in the Router cache, and without Redis each of the proxy's 2 worker processes keeps its own pin, so a session flips between rows with no failure (fleet-ops#9015). LiteLLM v1.98.0 never reads a redis_url under general_settings.",
   "type": "object",
   "required": ["model_list", "router_settings"],
   "$defs": {
@@ -124,8 +124,29 @@
       ],
       "items": {
         "type": "object",
-        "required": ["model_name", "litellm_params"],
+        "required": ["model_name", "litellm_params", "model_info"],
         "allOf": [
+          {
+            "$comment": "fleet-ops#9365: a worker-group row proven unable to cache (supports_prompt_caching false) must sit at order 2, so long-session traffic stays on cache-capable rows and the false row serves only as overflow when order-1 rows are in cooldown.",
+            "if": {
+              "required": ["model_name", "model_info"],
+              "properties": {
+                "model_name": { "pattern": "^worker" },
+                "model_info": {
+                  "required": ["supports_prompt_caching"],
+                  "properties": { "supports_prompt_caching": { "const": false } }
+                }
+              }
+            },
+            "then": {
+              "properties": {
+                "litellm_params": {
+                  "required": ["order"],
+                  "properties": { "order": { "const": 2 } }
+                }
+              }
+            }
+          },
           {
             "$comment": "fleet-ops#9248: a row on openrouter.ai/api/v1 is metered by OpenRouter's free-tier DAILY quota, so its RateLimitError must park the row on the first failure. Without RateLimitErrorAllowedFails the router-level default of 1 needs a second 429, and the wall leaks to the caller: 4 of 30 parallel worker-capable calls on 2026-10-04.",
             "if": {
@@ -161,7 +182,13 @@
           },
           "model_info": {
             "type": "object",
-            "properties": { "cooldown_time": { "$ref": "#/$defs/rowCooldown" } }
+            "$comment": "fleet-ops#9365: cache_proof is checked for presence and non-emptiness only, so the gate catches a missing verdict but does not read the text - 'unknown' would pass. That is deliberate: a pattern demanding a date and a token count would reject the legitimate 'cannot cache, here is the vendor doc' proof. What holds a hollow claim down is the proof line being a real measurement a reviewer can re-derive, and the probe behind it being quoted on the PR.",
+            "required": ["supports_prompt_caching", "cache_proof"],
+            "properties": {
+              "cooldown_time": { "$ref": "#/$defs/rowCooldown" },
+              "supports_prompt_caching": { "type": "boolean" },
+              "cache_proof": { "type": "string", "minLength": 1 }
+            }
           }
         }
       }

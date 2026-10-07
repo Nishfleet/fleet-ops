@@ -1,0 +1,13 @@
+# fleet-ops#9365: every row must declare its cache capability and prove it. This
+# row carries supports_prompt_caching but no cache_proof, so a seat could merge
+# with a verdict nobody measured. It is the half of the gate that
+# row-no-cache-verdict.yaml cannot show on its own, which omits both keys at once.
+model_list:
+- model_name: worker-capable
+  litellm_params:
+    model: openai/x
+  model_info:
+    supports_prompt_caching: true
+router_settings:
+  redis_url: redis://127.0.0.1:6379
+  cooldown_time: 60
