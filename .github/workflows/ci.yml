@@ -695,3 +695,137 @@ jobs:
             fi
           done < <(jq -r '.cases[] | [.name, .fixture, .ref, .env.LOAD1, .env.CORES, .env.SWAP_USED_KB, (.prior_failed_comment|tostring), (.prior_infra_comments // 0 | tostring), (if .started_comment then 1 else 0 end), .want] | map(tostring) | join("|")' config/infra-wall-events.json)
           test "$bad" -eq 0
+      - name: Resume check (fake gh)
+        # fleet-ops#9326: runs agent.yml's Resume check block against a fake gh
+        # and a fake session dir. A wall death, a cancelled Worker or an
+        # infra-failed comment resumes (continue=true); an early failure, a
+        # normal finish, a missing session file and a failed lookup start fresh.
+        # The Worker step must pass the decision on to both pi launches.
+        if: always()
+        run: |
+          set -euo pipefail
+          t=$RUNNER_TEMP/resume-mock
+          rm -rf "$t"; mkdir -p "$t/bin"
+          step() { yq ".jobs.work.steps[] | select(.id == \"resume\") | .$1" .github/workflows/agent.yml; }
+          step run > "$t/resume.sh"
+          WORKER_TIMEOUT_SECS=$(step env.WORKER_TIMEOUT_SECS)
+          [ "$WORKER_TIMEOUT_SECS" = 3240 ] || { echo "resume WORKER_TIMEOUT_SECS is '$WORKER_TIMEOUT_SECS'"; exit 1; }
+          worker() { yq ".jobs.work.steps[] | select(.name == \"Worker\") | .$1" .github/workflows/agent.yml; }
+          worker env.RESUME_SESSION | grep -F 'steps.resume.outputs.session' >/dev/null || { echo "Worker RESUME_SESSION not wired"; exit 1; }
+          # shellcheck disable=SC2016 # the literal text of the pi launch
+          [ "$(worker run | grep -cF '$jail pi --print "${cont[@]}"')" = 1 ] || { echo "Worker pi launch does not pass cont"; exit 1; }
+          # shellcheck disable=SC2016 # the literal text of the pi launch
+          worker run | grep -F 'cont=(--session "$RESUME_SESSION")' >/dev/null || { echo "Worker has no --session"; exit 1; }
+          cat > "$t/bin/gh" <<'MOCK'
+          #!/usr/bin/env bash
+          # RUN_PATH is the only run the block may read: runs/111 on a new run,
+          # runs/222/attempts/1 when the same run id is re-run (attempt 2).
+          case "$*" in
+            *"issue view"*"--json comments"*) cat "$COMMENTS" ;;
+            *"api --paginate"*"/$RUN_PATH/jobs?"*)
+              if [ -n "${API_FAIL:-}" ]; then echo "mock gh: jobs api fails" >&2; exit 1; fi
+              cat "$JOBS" ;;
+            *"api repos/"*"/$RUN_PATH --jq .run_started_at") echo "$RUN_STARTED" ;;
+            *) echo "mock gh: unexpected call: $*" >&2; exit 1 ;;
+          esac
+          MOCK
+          chmod +x "$t/bin/gh"
+          export REPO=Nishfleet/fleet-ops REF=claim/issue-77 GITHUB_RUN_ID=222 GITHUB_SERVER_URL=https://github.com
+          export WORKER_TIMEOUT_SECS
+          bad=0
+          # name|session (0 none, 1 one file at 00:00 UTC, 2 two files, the newer at 01:00)|Worker end|Worker conclusion|infra comment (0 none, 1 github-actions, 2 stranger)|jobs api fails|dead run started after the session file|GITHUB_RUN_ATTEMPT|want (fresh, or the session file pi must open)
+          while IFS='|' read -r name session end concl infra apifail stale attempt want; do
+            export HOME=$t/home-$name COMMENTS=$t/$name-comments.json JOBS=$t/$name-jobs.json GITHUB_OUTPUT=$t/$name.out GITHUB_RUN_ATTEMPT=$attempt
+            : > "$GITHUB_OUTPUT"
+            mkdir -p "$HOME/.pi/agent/sessions/agent-fleet-ops-77"
+            sd=$HOME/.pi/agent/sessions/agent-fleet-ops-77
+            if [ "$session" -ge 1 ]; then : > "$sd/old.jsonl"; touch -d '2026-10-06 00:00:00 UTC' "$sd/old.jsonl"; fi
+            if [ "$session" = 2 ]; then : > "$sd/new.jsonl"; touch -d '2026-10-06 01:00:00 UTC' "$sd/new.jsonl"; fi
+            export RUN_PATH=actions/runs/111 RUN_STARTED=2026-10-05T23:00:00Z prevrun=111
+            if [ "$attempt" -gt 1 ]; then RUN_PATH=actions/runs/222/attempts/$((attempt - 1)); prevrun=222; fi
+            if [ "$stale" = 1 ]; then RUN_STARTED=2026-10-06T00:30:00Z; fi
+            jq -n --arg u "https://github.com/Nishfleet/fleet-ops/actions/runs" --argjson i "$infra" --arg p "$prevrun" \
+              '{comments: ([{author: {login: "nishfleet-worker"}, body: ("agent run started: " + $u + "/" + $p)}]
+                + [if $i == 1 then {author: {login: "github-actions"}, body: ("agent run infra-failed: " + $u + "/" + $p)} else empty end]
+                + [if $i == 2 then {author: {login: "stranger"}, body: ("agent run infra-failed: " + $u + "/" + $p)} else empty end]
+                + [{author: {login: "nishfleet-worker"}, body: ("agent run started: " + $u + "/222")}])}' > "$COMMENTS"
+            jq -nc --arg end "$end" --arg c "$concl" \
+              '{jobs: [{name: "new / work", conclusion: "failure",
+                steps: [{name: "Gate", conclusion: "success", started_at: "2026-10-06T00:00:00Z", completed_at: "2026-10-06T00:00:30Z"},
+                        {name: "Worker", conclusion: (if $c == "" then null else $c end), started_at: "2026-10-06T00:01:00Z", completed_at: (if $end == "" then null else $end end)}]}]}' > "$JOBS"
+            export API_FAIL=
+            if [ "$apifail" = 1 ]; then export API_FAIL=1; fi
+            rc=0
+            PATH="$t/bin:$PATH" bash "$t/resume.sh" > "$t/$name.log" 2>&1 || rc=$?
+            got=fresh
+            # the output must be the absolute path inside this case's session dir
+            if grep -q "^session=$HOME/.pi/agent/sessions/agent-fleet-ops-77/[a-z]*\.jsonl$" "$GITHUB_OUTPUT"; then got=$(sed -n 's|^session=.*/||p' "$GITHUB_OUTPUT"); fi
+            if [ "$got" != "$want" ] || [ "$rc" != 0 ]; then echo "case $name: got=$got (want $want) exit=$rc"; cat "$t/$name.log"; bad=1; else echo "case $name: $got ok"; fi
+          done <<'CASES'
+          wall-death|1|2026-10-06T00:56:00Z|failure|0|0|0|1|old.jsonl
+          two-sessions|2|2026-10-06T00:56:00Z|failure|0|0|0|1|new.jsonl
+          early-failure|1|2026-10-06T00:04:00Z|failure|0|0|0|1|fresh
+          normal-finish|1|2026-10-06T00:40:00Z|success|0|0|0|1|fresh
+          wall-no-session|0|2026-10-06T00:56:00Z|failure|0|0|0|1|fresh
+          cancelled-worker|1|2026-10-06T00:10:00Z|cancelled|0|0|0|1|old.jsonl
+          never-completed|1||failure|0|0|0|1|old.jsonl
+          infra-comment|1|2026-10-06T00:04:00Z|failure|1|0|0|1|old.jsonl
+          jobs-api-fails|1|2026-10-06T00:56:00Z|failure|0|1|0|1|fresh
+          stale-session|1|2026-10-06T00:56:00Z|failure|0|0|1|1|fresh
+          stranger-infra-comment|1|2026-10-06T00:04:00Z|failure|2|0|0|1|fresh
+          rerun-wall-death|1|2026-10-06T00:56:00Z|failure|0|0|0|2|old.jsonl
+          rerun-early-failure|1|2026-10-06T00:04:00Z|failure|0|0|0|2|fresh
+          rerun-infra-comment|1|2026-10-06T00:04:00Z|failure|1|0|0|2|old.jsonl
+          rerun-stale-session|1|2026-10-06T00:56:00Z|failure|0|0|1|2|fresh
+          CASES
+          test "$bad" -eq 0
+      - name: Clean workspace salvage (fake remote)
+        # fleet-ops#9326: runs agent.yml's Clean workspace block against a bare
+        # repo standing in for origin. A dirty tree, or commits that no remote
+        # holds, land on the claim ref as wip(salvage) and the directory is
+        # deleted. A clean tree pushes nothing. A failing push or a rejecting
+        # pre-commit hook pushes nothing and still deletes.
+        if: always()
+        run: |
+          set -euo pipefail
+          t=$RUNNER_TEMP/salvage-mock
+          rm -rf "$t"; mkdir -p "$t"
+          step() { yq ".jobs.work.steps[] | select(.name == \"Clean workspace\") | .$1" .github/workflows/agent.yml; }
+          step run > "$t/clean.sh"
+          step env.GH_TOKEN | grep -F 'steps.arm-token.outputs.token' >/dev/null || { echo "Clean workspace has no token"; exit 1; }
+          export GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null
+          export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@example.com GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@example.com
+          export REPO=Nishfleet/fleet-ops REF=claim/issue-77 MISS=false
+          bad=0
+          for name in dirty clean unpushed-commit push-fails hook-rejects; do
+            export HOME=$t/home-$name
+            r=$t/$name-remote.git; dir=$HOME/workspaces/agent-worktrees/issue-fleet-ops-77
+            mkdir -p "$HOME/workspaces/agent-worktrees"
+            git init -q --bare -b main "$r"
+            git clone -q "$r" "$t/$name-seed" 2>/dev/null
+            git -C "$t/$name-seed" checkout -q -b main
+            echo base > "$t/$name-seed/a.txt"; git -C "$t/$name-seed" add a.txt; git -C "$t/$name-seed" commit -q -m base
+            git -C "$t/$name-seed" push -q origin main
+            git -C "$t/$name-seed" push -q origin main:claim/issue-77
+            git clone -q "$r" "$dir"; git -C "$dir" checkout -q -B claim/issue-77 origin/claim/issue-77
+            case $name in
+              dirty) echo edit >> "$dir/a.txt"; echo new > "$dir/b.txt" ;;
+              unpushed-commit) echo more > "$dir/c.txt"; git -C "$dir" add c.txt; git -C "$dir" commit -q -m local-work ;;
+              push-fails) echo edit >> "$dir/a.txt"; git -C "$dir" remote set-url origin "$t/does-not-exist.git" ;;
+              # the repo's pre-commit secret scan must still run on the salvage commit
+              hook-rejects) echo "token=x" > "$dir/b.txt"; printf '#!/bin/sh\nexit 1\n' > "$dir/.git/hooks/pre-commit"; chmod +x "$dir/.git/hooks/pre-commit" ;;
+            esac
+            rc=0
+            bash "$t/clean.sh" > "$t/$name.log" 2>&1 || rc=$?
+            n=$(git -C "$r" rev-list --count main..claim/issue-77)
+            subj=$(git -C "$r" log -1 --format=%s claim/issue-77)
+            case $name in
+              dirty) ok=0; [ "$n" = 1 ] && [ "$subj" = "wip(salvage)" ] && git -C "$r" cat-file -e claim/issue-77:b.txt && ok=1 ;;
+              unpushed-commit) ok=0; [ "$n" = 1 ] && [ "$subj" = local-work ] && ok=1 ;;
+              *) ok=0; [ "$n" = 0 ] && ok=1 ;;
+            esac
+            if [ "$ok" != 1 ] || [ "$rc" != 0 ] || [ -e "$dir" ]; then
+              echo "case $name: ok=$ok exit=$rc dir_exists=$([ -e "$dir" ] && echo yes || echo no) commits_ahead=$n subject=$subj"; cat "$t/$name.log"; bad=1
+            else echo "case $name: ok (ahead=$n subject=$subj, dir gone)"; fi
+          done
+          test "$bad" -eq 0

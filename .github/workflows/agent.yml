@@ -233,6 +233,78 @@ jobs:
         run: |
           gh api "repos/$REPO/git/ref/heads/$REF" --silent 2>/dev/null ||
             gh api "repos/$REPO/git/refs" -f ref="refs/heads/$REF" -f sha="$(gh api "repos/$REPO/git/ref/heads/main" --jq .object.sha)" --silent
+      - name: Resume check
+        id: resume
+        if: steps.gate.outputs.go == 'true' && steps.gate.outputs.miss != 'true' && steps.gate.outputs.engine == 'pi'
+        # fleet-ops#9326: a retry after a wall or infra death resumes the dead
+        # run's pi conversation; every other retry starts fresh,
+        # because an early packet failure should not inherit a bad conversation.
+        # The previous run is the newest earlier "agent run started:" comment.
+        # It died at the wall or as infra when its Worker step never completed,
+        # ended cancelled, ran >= WORKER_TIMEOUT_SECS without success, or left an
+        # "agent run infra-failed:" comment. Nish's gh login reads the jobs API
+        # (the App token cannot). Any lookup error leaves the output unset, so
+        # the run starts fresh. The output is session=<abs path of the newest
+        # session file> and the Worker passes it as pi --session. Not
+        # --continue: with --session-dir, pi's continueRecent filters sessions
+        # by cwd, and the cwd is the runner's work dir, which differs per
+        # runner (drive#563's sessions sit under .../agent-runner/15/_work/drive/drive
+        # and .../agent-runner/14/_work/drive/drive), so a retry on another
+        # runner would silently start fresh. --session with an absolute .jsonl
+        # path opens that file with no cwd check (pi main.js resolveSessionPath).
+        env:
+          WORKER_TIMEOUT_SECS: '3240'
+        run: |
+          i=${REF#claim/issue-}; i=${i%%-*}
+          id=${REPO#*/}-$i
+          sessdir="$HOME/.pi/agent/sessions/agent-$id"
+          # Newest by mtime, the order pi itself uses.
+          session=$(find "$sessdir" -maxdepth 1 -name '*.jsonl' -printf '%T@ %p\n' 2>/dev/null | sort -rn | head -n1 | cut -d' ' -f2-)
+          [ -n "$session" ] || { echo "resume: no session file; fresh start"; exit 0; }
+          comments=$(env -u GH_TOKEN -u GITHUB_TOKEN gh issue view "$i" -R "$REPO" --json comments) || { echo "resume: comments read failed; fresh start"; exit 0; }
+          # Only the App, or the workflow's own token (the infra-failed comments
+          # are posted as github-actions), count. A stranger's comment never does.
+          trusted='["nishfleet-worker","app/nishfleet-worker","github-actions"]'
+          if [ "${GITHUB_RUN_ATTEMPT:-1}" -gt 1 ]; then
+            # Re-running failed jobs keeps the run id: the dead run is this
+            # run's attempt N-1, and its comments carry this run's URL.
+            prev=$GITHUB_SERVER_URL/$REPO/actions/runs/$GITHUB_RUN_ID
+            runpath=actions/runs/$GITHUB_RUN_ID/attempts/$((GITHUB_RUN_ATTEMPT - 1))
+          else
+            prev=$(jq -r --arg u "/runs/$GITHUB_RUN_ID" --argjson t "$trusted" '[.comments[] | select(.author.login | IN($t[])) | .body | select(startswith("agent run started: ")) | ltrimstr("agent run started: ") | select(endswith($u) | not)] | last // empty' <<<"$comments") || prev=
+            case $prev in
+              "$GITHUB_SERVER_URL/$REPO/actions/runs/"[0-9]*) ;;
+              *) echo "resume: no earlier run; fresh start"; exit 0 ;;
+            esac
+            runpath=actions/runs/${prev##*/}
+          fi
+          # The session must belong to the dead run: a file older than that
+          # run's start means pi never started in it.
+          started=$(env -u GH_TOKEN -u GITHUB_TOKEN gh api "repos/$REPO/$runpath" --jq .run_started_at) || { echo "resume: run read failed; fresh start"; exit 0; }
+          started_s=$(date -d "$started" +%s) || { echo "resume: bad run start; fresh start"; exit 0; }
+          [ "$(stat -c %Y "$session")" -ge "$started_s" ] || { echo "resume: session is older than $prev; fresh start"; exit 0; }
+          if jq -e --arg p "agent run infra-failed: $prev" --argjson t "$trusted" '.comments | any(.body == $p and (.author.login | IN($t[])))' <<<"$comments" >/dev/null; then
+            echo "resume: $prev died as infra; continue"
+            echo "session=$session" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          jobs_json=$(env -u GH_TOKEN -u GITHUB_TOKEN gh api --paginate "repos/$REPO/$runpath/jobs?per_page=100") || { echo "resume: jobs read failed; fresh start"; exit 0; }
+          # shellcheck disable=SC2016 # $ref is a jq variable
+          verdict=$(jq -rs --arg ref "$REF" --argjson timeout_secs "$WORKER_TIMEOUT_SECS" '
+            [.[].jobs[]] as $all
+            | [$all[] | select(.name | endswith("/ work"))] as $w
+            | ([$w[] | select(.name | contains("(" + $ref + ")"))]) as $mine
+            | (if ($mine | length) == 1 then $mine[0] elif ($w | length) == 1 then $w[0] else null end) as $job
+            | ([($job.steps // [])[] | select(.name == "Worker")] | .[0]) as $s
+            | if $job == null or $s == null or $s.started_at == null then "fresh"
+              elif $s.completed_at == null and $job.conclusion != null then "continue"
+              elif $s.conclusion == "cancelled" then "continue"
+              elif $s.conclusion != "success" and (($s.completed_at | fromdateiso8601) - ($s.started_at | fromdateiso8601)) >= $timeout_secs then "continue"
+              else "fresh"
+              end' <<<"$jobs_json") || verdict=fresh
+          echo "resume: $prev -> $verdict"
+          [ "$verdict" = continue ] && echo "session=$session" >> "$GITHUB_OUTPUT"
+          exit 0
       - name: Worker
         if: steps.gate.outputs.go == 'true'
         # A step timeout fails the job, so the report job strikes it. A job
@@ -244,6 +316,7 @@ jobs:
         env:
           ENGINE: ${{ steps.gate.outputs.engine }}
           MISS: ${{ steps.gate.outputs.miss }}
+          RESUME_SESSION: ${{ steps.resume.outputs.session }}
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
           # Pi sends this as x-litellm-session-id so the router keeps the whole run on one model (#9015).
           FLEET_TASK_ID: run-${{ github.run_id }}-${{ github.run_attempt }}
@@ -344,7 +417,10 @@ jobs:
                 --session-dir "$HOME/.pi/agent/sessions/agent-$id" \
                 --exclude-tools subagent --provider litellm --model worker-capable >/dev/null
             else
-              echo "/worker $id" | $jail pi --print \
+              # --session only when the Resume check found a wall or infra death.
+              cont=()
+              [ -n "$RESUME_SESSION" ] && cont=(--session "$RESUME_SESSION")
+              echo "/worker $id" | $jail pi --print "${cont[@]}" \
                 --append-system-prompt "$HOME/workspaces/tooling/fleet-ops-deploy-clone/AGENTS.md" \
                 --session-dir "$HOME/.pi/agent/sessions/agent-$id" \
                 --exclude-tools subagent --provider litellm --model worker-capable >/dev/null
@@ -565,14 +641,36 @@ jobs:
         if: always()
         env:
           MISS: ${{ steps.gate.outputs.miss }}
+          # The arm token is the newest (minted after the Worker); the first
+          # token can be past its hour on a run that hit the wall.
+          GH_TOKEN: ${{ steps.arm-token.outputs.token || steps.app-token.outputs.token }}
         run: |
           i=${REF#claim/issue-}
           id=${REPO#*/}-${i%%-*}
           if [ "$MISS" = true ]; then
             rm -rf "$HOME/workspaces/agent-worktrees/issue-$id-miss"
-          else
-            rm -rf "$HOME/workspaces/agent-worktrees/issue-$id"
+            exit 0
           fi
+          dir="$HOME/workspaces/agent-worktrees/issue-$id"
+          # fleet-ops#9326: a worker killed at the wall left edits that only
+          # existed in this directory. Commit them as wip(salvage) and push to
+          # the claim ref before the delete; worker.md step 2 cherry-picks that
+          # commit on the retry. Fail open: any error here still deletes the tree.
+          # Hooks stay ON: the repo's pre-commit secret scan is the guard
+          # against pushing a token the worker left in the tree. A rejecting or
+          # hanging hook (120 s cap) falls through to the warning and the delete.
+          # The push authenticates through the host's gh credential helper and
+          # GH_TOKEN, the same way the worker's own push does.
+          if git -C "$dir" rev-parse --is-inside-work-tree >/dev/null 2>&1 &&
+             { [ -n "$(git -C "$dir" status --porcelain 2>/dev/null)" ] || [ "$(git -C "$dir" rev-list --count HEAD --not --remotes 2>/dev/null)" != 0 ]; }; then
+            (
+              cd "$dir" &&
+              git add --all -- . &&
+              { git diff --cached --quiet || timeout 120 git commit -q -m "wip(salvage)"; } &&
+              timeout 120 git push -q origin "HEAD:refs/heads/$REF"
+            ) || echo "::warning::salvage failed; deleting the tree anyway (fleet-ops#9326)"
+          fi
+          rm -rf "$dir"
   report:
     needs: work
     if: (failure() || cancelled()) && needs.work.outputs.wall != 'true'
