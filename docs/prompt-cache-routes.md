@@ -225,3 +225,41 @@ makes case 7 fire at all:
 Without `bool` only shares strictly between 0 and 0.5 would have paged, and the
 case this rule exists for, a route that cached nothing at all, would have stayed
 silent while every request paid full input price.
+
+### It fires on this box's own data
+
+Rule `prompt-cache-hit-low` was replayed over the last 24h of the live
+Prometheus at 5-minute steps, running the deployed expression as of each step.
+52 steps read 1, all on `worker-capable`, in five runs. The longest held 125
+minutes:
+
+```
+2026-10-06T14:39:13Z .. 16:39:13Z   125 min (25 steps of A=1, for: 30m clears at 90 min in)
+2026-10-06T10:24:13Z .. 11:29:13Z    70 min
+2026-10-07T02:54:13Z .. 03:34:13Z    45 min
+```
+
+At the midpoint of the longest run, 2026-10-06T15:30:00Z, the input was:
+
+```
+worker-capable   share=0.206   input_tok/s=5357.8
+worker-cheap     share=0.263   input_tok/s=240.8    (under the 1000 floor, held off)
+```
+
+So the condition this rule pages on is not hypothetical, and it is worth
+knowing what caused that dip before treating a page as a regression. At that
+instant 43.8% of worker input ran on `cline-ds41flash-worker-capable` and about
+15% on the `ollama-*` rows, both of section 3's no-cache-field vendors, so the
+alias's share fell because the **mix** leaned on vendors that cannot report a
+cache number, not because a caching route broke. A page therefore wants the
+per-model drill-down first:
+
+```
+sum by (model_id) (rate(litellm_input_cached_tokens_metric_total[1h]))
+  / sum by (model_id) (rate(litellm_input_tokens_metric_total[1h]))
+```
+
+One deployment that stops caching shows as a `model_id` whose share drops while
+the rest hold. A fleet-wide mix shift toward section 3's vendors shows as
+several of them rising at once, which is a routing question rather than a cache
+regression.

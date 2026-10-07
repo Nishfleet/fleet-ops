@@ -41,11 +41,13 @@
 # lanes, and never fires on a total-zero cache for its own sake.
 #
 # Known coverage limits, stated rather than hidden:
-#  - It is per requested_model (the alias), as the issue asked. A single broken
-#    deployment under an alias whose other deployments still cache is averaged
-#    into that alias's share, so it fires only if the alias as a whole drops
-#    below the threshold. Drill down by model_id with the PromQL in
-#    docs/prompt-cache-routes.md when it does.
+#  - A dip is a dip in the alias's share, not proof that a caching route broke.
+#    Replayed over 24h of live data 2026-10-07, the rule reads 1 on
+#    worker-capable for 125 straight minutes (2026-10-06T14:39Z-16:39Z, share
+#    0.206 at 5358 input tok/s), and 43.8% of that traffic was on a cline row
+#    that reports no cache field at all. So a page can be a mix shift toward
+#    those vendors. Drill down by model_id with the PromQL in
+#    docs/prompt-cache-routes.md before calling it a regression.
 #  - The volume floor covers lanes with real traffic. On this fleet that is
 #    worker-capable (~25,000 input tok/s); worker-cheap (~20) and senior (~4)
 #    run far below the floor, so a regression confined to those two is not
