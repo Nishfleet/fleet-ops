@@ -1130,6 +1130,8 @@ jobs:
           yq '.router_settings' "$RUNNER_TEMP/drill.yaml" > "$RUNNER_TEMP/rs-drill.txt"
           diff -u "$RUNNER_TEMP/rs-shipped.txt" "$RUNNER_TEMP/rs-drill.txt" ||
             { echo "::error::the drill changed router_settings, so it no longer tests the shipped router"; exit 1; }
+          yq -e '.router_settings.redis_url == "redis://127.0.0.1:6379"' "$RUNNER_TEMP/drill.yaml" >/dev/null ||
+            { echo "::error::router_settings.redis_url is not the Redis this job starts"; exit 1; }
           echo "drill: $(grep -c 'model_name:' "$RUNNER_TEMP/drill.yaml") mock rows, router_settings as shipped"
       - name: Install the proxy version the quadlet pins
         if: steps.gate.outputs.run == 'true'
@@ -1200,7 +1202,7 @@ jobs:
         if: steps.gate.outputs.run == 'true'
         run: |
           set -euo pipefail
-          calls=$(grep -c '' "$RUNNER_TEMP/codes.txt")
+          calls=$(grep -c '' "$RUNNER_TEMP/codes.txt" || true)
           # Every call must answer. A pin held by a row that is down fails the
           # caller, which is the same bug wearing a worse hat.
           ok=$(grep -c '^200$' "$RUNNER_TEMP/codes.txt" || true)
@@ -1222,16 +1224,13 @@ jobs:
           # pin that a fixed image claims on that row has to hold from then on.
           hops=0
           prev=""
-          n=0
           while read -r row; do
-            n=$((n + 1))
-            [ "$n" -gt 1 ] || continue
             if [ -n "$prev" ] && [ "$row" != "$prev" ]; then
               hops=$((hops + 1))
             fi
             prev=$row
           done < "$RUNNER_TEMP/rows.txt"
-          handoffs=$((calls - 2))
+          handoffs=$((calls - 1))
           pct=$((hops * 100 / handoffs))
           echo "drill: $hops row hops over $handoffs hand-offs after the wall's fallback = ${pct}% (limit 2%)"
           if [ "$pct" -gt 2 ]; then
