@@ -1300,27 +1300,7 @@ model_list:
     id: stepfun-step5previewj-worker-capable
     allowed_fails_policy:
       BadRequestErrorAllowedFails: 1
-- model_name: worker-capable
-  litellm_params:
-    model: openai/stealth/space-bunny-alpha
-    api_base: https://api.cline.bot/api/v1
-    api_key: os.environ/CLINE_API_KEY
-    tags:
-    - prepaid
-    - cline
-    - stealth
-    order: 1
-    max_parallel_requests: 2
-    # 6 h: Cline meters it under the free-model daily quota (5 quota-429s in 24 h, fleet-ops#9075).
-    cooldown_time: 21600
-  model_info:
-    mode: chat
-    supports_prompt_caching: true
-    cache_proof: "Provisional true: the model caches on xkiro (20.1% 7d, #9362) and reports 2.1% via OpenRouter (#9357); cline forwards cache fields (direct probe 2026-10-07 shows prompt_tokens_details on a cline reply); the 0.0% cline reading is the LiteLLM v1.98.0 stream drop proven on cline deepseek. Direct probe of this row blocked by 402 insufficient_credits (no spend). Re-check at the #9365 after-measurement."
-    id: cline-spacebunnyalpha-worker-capable
-    allowed_fails_policy:
-      BadRequestErrorAllowedFails: 1
-      RateLimitErrorAllowedFails: 0
+# Cline stealth/space-bunny-alpha answers 402 "Insufficient balance" (no longer free on Cline; LiteLLM v1.98.0 cannot cool a 402). Row removed on Nish's yes 2026-10-07 ~21:30 IST, fleet-ops#9312.
 # Nish 2026-09-30 free rows (probe: both finish_reason=tool_calls).
 # order stays 1 here, as on main. The earlier #9365 commit set order 2 on this anchor on a
 # false verdict; the own-path probe (cached_tokens 0/20000/20000/0/20000/0 of 20017) shows cline
