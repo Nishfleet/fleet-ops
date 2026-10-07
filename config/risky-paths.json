@@ -18,7 +18,10 @@
       "(^|/)wrangler[^/]*\\.(json|jsonc|toml)$",
       "(^|/)\\.dev\\.vars",
       "(^|/)\\.env",
-      "^workers/"
+      "^workers/",
+      "\\.(sh|py|bash|zsh)$",
+      "(^|/)bin/",
+      "(^|/)scripts/"
     ],
     "Nishfleet/fleet-ops": [
       "(^|/)AGENTS\\.md$",
@@ -82,7 +85,11 @@
     {"id": "fleet-ops-nftables", "want": true, "repo": "Nishfleet/fleet-ops", "labels": [], "changed_files": 1, "files": ["rootfs/etc/nftables.conf"]},
     {"id": "fleet-ops-repo-name-case", "want": true, "repo": "nishfleet/FLEET-OPS", "labels": [], "changed_files": 1, "files": ["prompts/worker.md"]},
     {"id": "fleet-ops-safe-doc", "want": false, "repo": "Nishfleet/fleet-ops", "labels": [], "changed_files": 1, "files": ["docs/RUNBOOK.md"]},
-    {"id": "fleet-only-path-on-0509", "want": false, "repo": "Nishfleet/0509", "labels": [], "changed_files": 1, "files": ["prompts/system.md"]}
+    {"id": "fleet-only-path-on-0509", "want": false, "repo": "Nishfleet/0509", "labels": [], "changed_files": 1, "files": ["prompts/system.md"]},
+    {"id": "script-shell", "want": true, "repo": "Nishfleet/0509", "labels": [], "changed_files": 1, "files": ["scripts/foo.sh"]},
+    {"id": "script-python-bin", "want": true, "repo": "Nishfleet/0509", "labels": [], "changed_files": 1, "files": ["bin/foo.py"]},
+    {"id": "script-python-lib", "want": true, "repo": "Nishfleet/0509", "labels": [], "changed_files": 1, "files": ["app/lib/foo.py"]},
+    {"id": "script-nested-run", "want": true, "repo": "Nishfleet/0509", "labels": [], "changed_files": 1, "files": ["tools/x/run.sh"]}
   ],
   "approval_cases": [
     {"id": "no-status", "want": false, "approvers": ["nish3451"], "statuses": []},
