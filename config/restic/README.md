@@ -18,10 +18,52 @@ in the list.
 directories, the root-only `/etc` secrets that no run should store in an
 off-site backup, and the restic repository password itself.
 
-Sizes below are `du -sh` on the netcup box, 2026-10-07. The reference snapshot
-(`c3bca658`) cannot be read from a worker: `/etc/restic` is mode 0700
-root-owned and holds `RESTIC_PASSWORD`, so the numbers are the live
-filesystem, which is what the next snapshot is taken from.
+The first table below, "Inventory of snapshot c3bca658", is measured from the
+reference snapshot itself (`restic ls --json --recursive c3bca658`, run as root
+on the box on 2026-10-07, summing file sizes per path). The "kept" and
+"dropped" tables after it carry live `du -sh` sizes, which is what the next
+snapshot is taken from.
+
+## Inventory of snapshot c3bca658
+
+Snapshot `c3bca658` (2026-10-07 12:38:43 IST, after the hand-fix to the old
+exclude file): 123,634 files, 6.425 GiB restore size
+(`restic stats c3bca658 --mode restore-size`). Every top-level path in it, with
+its size in that snapshot, and what this list does with it. A path that is not
+in `include.txt` is dropped.
+
+| Top-level path in `c3bca658` | Files | Size | Verdict | Reason |
+| --- | --- | --- | --- | --- |
+| `/home/nish/workspaces/agent-state` | 15,338 | 1,763.5 MiB | keep `backups` (1,362.5 MiB) and `_system` (3 files); drop the rest | `litellm.dump` and the rollback dumps are not rebuildable; the rest is per-run work dirs |
+| `/home/nish/workspaces/products` | 19,139 | 535.0 MiB | drop | `git clone` from a remote |
+| `/home/nish/workspaces/tooling` | 14,493 | 391.1 MiB | keep `nish-vault` (30.4 MiB); drop the rest | the vault is the durable memory; the rest is checkouts |
+| `/home/nish/workspaces/fleet-knowledge-base` | 9,997 | 32.8 MiB | drop | `git clone` from a remote |
+| `/home/nish/workspaces/{shared-workflows,agent-runner,node-repo-template}` | 246 | 0.2 MiB | drop | `git clone` from a remote |
+| `/home/nish/workspaces/agent-memory` | 3 | ~0 | keep | one-fact-per-file agent memory |
+| `/home/nish/.local` (`share` 532.7 MiB, `bin` 356.3 MiB, `lib` 23.2 MiB, `state` 9.9 MiB, `go-dl` 67.3 MiB) | 11,191 | 989.4 MiB | keep `share/fleet-grafana` (395.0 MiB, of which `grafana.db` is the part that matters), `share/drive` (52.3 MiB), `share/fleet-litellm-*`; drop the rest | `bin`, `lib`, `go-dl`, `state`, `share/gh`, `share/tirith` and friends are installed binaries and caches |
+| `/home/nish/.claude` | 8,471 | 598.4 MiB | drop | session transcripts, plugins and skills; the vault is the memory |
+| `/home/nish/.dotnet` | 4,756 | 582.6 MiB | drop | SDK, reinstalled |
+| `/home/nish/.promptfoo` | 46 | 336.4 MiB | drop | eval results, reproducible from `share/drive` |
+| `/home/nish/.hermes` | 2,938 | 239.5 MiB | keep (trimmed by `exclude.txt`) | `state.db`, `skills/`, `kanban.db`; `bin/`, `installs/` and logs are dropped |
+| `/home/nish/.config` | 2,164 | 229.4 MiB | keep (trimmed by `exclude.txt`) | seat keys, gh, Cloudflare, rclone; `google-chrome-headless` (170.0 MiB) and `syncthing` (53.5 MiB) caches are dropped |
+| `/home/nish/.nvm` | 3,195 | 211.9 MiB | drop | node versions, reinstalled |
+| `/srv/aiostreams` | 24 | 184.1 MiB | keep | application data |
+| `/usr/local` | 3 | 157.1 MiB | keep | hand-installed `gh` and `node` |
+| `/home/nish/.cua` | 24 | 107.4 MiB | drop | host tool binaries |
+| `/home/nish/.pi` | 2,305 | 69.7 MiB | keep `agent` (trimmed by `exclude.txt`) | local skills, prompts, extensions |
+| `/home/nish/.codex` | 1,050 | 59.6 MiB | drop | session state and caches |
+| `/home/nish/gopath`, `worktrees`, `.zcode`, `.cursor`, `.npm`, `.wix` | 10,157 | ~66 MiB | drop | module caches, checkouts, tool caches |
+| `/home/nish/backups` | 13 | 6.6 MiB | drop | old dump, superseded by `agent-state/backups` |
+| `/etc` | 1,408 | 4.0 MiB | keep (minus the secrets in `exclude.txt`) | system config |
+| `/root` | 21 | ~0 | keep | root's keys and scripts |
+| `/home/nish/.ssh`, `.gnupg`, `.git-credentials`, `.netrc` | 14 | ~0 | keep | credentials, not regenerable |
+| `/home/nish/nish-vault` | 6 | ~0 | keep | agent drop inbox |
+| `/home/nish` dotfiles and scratch (`.bashrc`, `.zshrc`, `.viminfo`, `dba-groups.html` 1.4 MiB, `Documents`, `Downloads`, `.claude.json*`, ...) | few | about 2 MiB | drop | part of the OS image or scratch |
+| `/var/spool/cron` | 0 | 0 | keep | cron spool (empty `crontabs/` dir) |
+| `/home/nish/.local/share/containers/storage/volumes` | 0 | 0 | keep | holds no files in `c3bca658`; the path stays on the list for the container data that lands there |
+
+The live proof run on this list is in the PR comments, not here: a number in
+this file goes stale at the next backup.
 
 ## Files
 
