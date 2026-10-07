@@ -143,6 +143,7 @@ jobs:
     # ask for nothing and act with the App token.
     permissions:
       issues: write
+      pull-requests: write
     with:
       ref: claim/issue-${{ github.event.issue.number }}
   # Red CI on a claim PR: post the failed run's ##[error] lines on the issue
@@ -196,6 +197,7 @@ jobs:
     uses: Nishfleet/fleet-ops/.github/workflows/agent.yml@main # runner group 3 allows only agent.yml@refs/heads/main; a SHA pin strands every job
     permissions:
       issues: write
+      pull-requests: write
     with:
       ref: ${{ github.event.workflow_run.head_branch }}
   # main moved (CI finished on a push to the default branch): a claim PR it
@@ -261,6 +263,7 @@ jobs:
     uses: Nishfleet/fleet-ops/.github/workflows/agent.yml@main # runner group 3 allows only agent.yml@refs/heads/main; a SHA pin strands every job
     permissions:
       issues: write
+      pull-requests: write
     with:
       ref: ${{ matrix.ref }}
   # The merge queue ejected a claim PR (failed checks or a conflict): send the
@@ -279,6 +282,7 @@ jobs:
     uses: Nishfleet/fleet-ops/.github/workflows/agent.yml@main # runner group 3 allows only agent.yml@refs/heads/main; a SHA pin strands every job
     permissions:
       issues: write
+      pull-requests: write
     with:
       ref: ${{ github.event.pull_request.head.ref }}
   # Approved-head merge guard (0509#7092: a risky PR was armed by the
@@ -749,6 +753,7 @@ jobs:
     uses: Nishfleet/fleet-ops/.github/workflows/agent.yml@main # runner group 3 allows only agent.yml@refs/heads/main; a SHA pin strands every job
     permissions:
       issues: write
+      pull-requests: write
     with:
       ref: ${{ matrix.ref }}
   # A claim PR outlives its issue. Nothing closed the PR when the issue closed
@@ -813,6 +818,7 @@ jobs:
     uses: Nishfleet/fleet-ops/.github/workflows/agent.yml@main # runner group 3 allows only agent.yml@refs/heads/main; a SHA pin strands every job
     permissions:
       issues: write
+      pull-requests: write
     with:
       ref: claim/issue-${{ github.event.issue.number || inputs.issue }}-miss-review
   miss-review-pr:
@@ -828,6 +834,7 @@ jobs:
     uses: Nishfleet/fleet-ops/.github/workflows/agent.yml@main # runner group 3 allows only agent.yml@refs/heads/main; a SHA pin strands every job
     permissions:
       issues: write
+      pull-requests: write
     with:
       ref: ${{ startsWith(github.event.pull_request.head.ref, 'claim/issue-') && format('{0}-miss-review', github.event.pull_request.head.ref) || format('claim/issue-{0}-miss-review', github.event.pull_request.number) }}
   miss-stalled:
@@ -844,6 +851,7 @@ jobs:
     uses: Nishfleet/fleet-ops/.github/workflows/agent.yml@main # runner group 3 allows only agent.yml@refs/heads/main; a SHA pin strands every job
     permissions:
       issues: write
+      pull-requests: write
     with:
       ref: ${{ matrix.ref }}
   # A parked issue is one the fleet cannot finish: the attempt cap, two failed
