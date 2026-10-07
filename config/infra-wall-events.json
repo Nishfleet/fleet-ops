@@ -652,6 +652,56 @@
           }
         ]
       }
+    ],
+    "worker-failed-short": [
+      {
+        "total_count": 1,
+        "jobs": [
+          {
+            "name": "new / work",
+            "conclusion": "failure",
+            "steps": [
+              {
+                "name": "Set up job",
+                "conclusion": "success",
+                "started_at": "2026-10-04T03:50:00Z",
+                "completed_at": "2026-10-04T03:50:05Z"
+              },
+              {
+                "name": "Worker",
+                "conclusion": "failure",
+                "started_at": "2026-10-04T03:53:04Z",
+                "completed_at": "2026-10-04T03:57:28Z"
+              }
+            ]
+          }
+        ]
+      }
+    ],
+    "worker-failed-ten-min": [
+      {
+        "total_count": 1,
+        "jobs": [
+          {
+            "name": "new / work",
+            "conclusion": "failure",
+            "steps": [
+              {
+                "name": "Set up job",
+                "conclusion": "success",
+                "started_at": "2026-10-04T03:50:00Z",
+                "completed_at": "2026-10-04T03:50:05Z"
+              },
+              {
+                "name": "Worker",
+                "conclusion": "failure",
+                "started_at": "2026-10-04T03:40:00Z",
+                "completed_at": "2026-10-04T03:50:00Z"
+              }
+            ]
+          }
+        ]
+      }
     ]
   },
   "cases": [
@@ -878,6 +928,66 @@
       "started_comment": false,
       "want": "skip",
       "note": "existing behavior: a run that never claimed the issue is skipped"
+    },
+    {
+      "name": "short-router-429-infra",
+      "fixture": "worker-failed-short",
+      "ref": "claim/issue-6924",
+      "env": {
+        "LOAD1": "6",
+        "CORES": "8",
+        "SWAP_USED_KB": "0",
+        "ROUTER_ERR": "true"
+      },
+      "prior_failed_comment": 0,
+      "started_comment": true,
+      "want": "infra",
+      "note": "4.4 min Worker death on a router 429/500 (shape of 0509#6924, 2026-10-04 03:57:28Z) is infra"
+    },
+    {
+      "name": "short-other-error-strikes",
+      "fixture": "worker-failed-short",
+      "ref": "claim/issue-6924",
+      "env": {
+        "LOAD1": "6",
+        "CORES": "8",
+        "SWAP_USED_KB": "0",
+        "ROUTER_ERR": "false"
+      },
+      "prior_failed_comment": 0,
+      "started_comment": true,
+      "want": "strike",
+      "note": "same short death with no router error in worker.err still strikes"
+    },
+    {
+      "name": "ten-min-router-429-strikes",
+      "fixture": "worker-failed-ten-min",
+      "ref": "claim/issue-6924",
+      "env": {
+        "LOAD1": "6",
+        "CORES": "8",
+        "SWAP_USED_KB": "0",
+        "ROUTER_ERR": "true"
+      },
+      "prior_failed_comment": 0,
+      "started_comment": true,
+      "want": "strike",
+      "note": "exactly 600 s with a router error keeps today's rules: strike"
+    },
+    {
+      "name": "short-router-unknown-strikes",
+      "fixture": "worker-failed-short",
+      "ref": "claim/issue-6924",
+      "env": {
+        "LOAD1": "6",
+        "CORES": "8",
+        "SWAP_USED_KB": "0",
+        "ROUTER_ERR": ""
+      },
+      "prior_failed_comment": 0,
+      "started_comment": true,
+      "want": "strike",
+      "note": "runner died before the sample (router_err empty): strike, fail-safe"
     }
   ]
 }
