@@ -107,6 +107,9 @@ jobs:
       - name: apt binaries systemd-analyze verify needs (promtool, bwrap, redis-server, ansible-pull)
         if: always()
         run: sudo apt-get install -y --no-install-recommends prometheus bubblewrap redis-server ansible-core
+      - name: promtool test rules (config/grafana/tests, outside the provisioning dirs Grafana loads)
+        if: always()
+        run: promtool test rules config/grafana/tests/*.test.yml
       - name: stub pi for systemd-analyze verify (host-only binary)
         if: always()
         run: sudo install -D -m0755 /bin/true /home/nish/.local/bin/pi
@@ -835,6 +838,100 @@ jobs:
             fi
           done < <(jq -r '.cases[] | [.name, .fixture, .ref, .env.LOAD1, .env.CORES, .env.SWAP_USED_KB, (.env.ROUTER_ERR // ""), (.prior_failed_comment|tostring), (.prior_infra_comments // 0 | tostring), (if .started_comment then 1 else 0 end), .want] | map(tostring) | join("|")' config/infra-wall-events.json)
           test "$bad" -eq 0
+
+  # grafana-boot (fleet-ops#9358 follow-up): Grafana loads EVERY file under
+  # config/grafana/provisioning/alerting as alert provisioning, so a promtool
+  # fixture dropped there crash-looped fleet-grafana ("failure to map file ...
+  # rule group has no folder set"). This job starts the image tag and plugin
+  # versions pinned in containers/quadlet/fleet-grafana.container with the
+  # provisioning dirs mounted exactly as the quadlet mounts them (dummy values
+  # for the secrets and tokens), waits for /api/health, and fails when Grafana
+  # exits or logs a provisioning error. Pull requests run it only when a path
+  # under config/grafana/, the quadlet or this workflow changed; push and merge_group runs
+  # always run it.
+  grafana-boot:
+    name: grafana-boot
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - name: Path gate (pull requests only)
+        id: gate
+        env:
+          EVENT: ${{ github.event_name }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          run=true
+          if [ "$EVENT" = pull_request ]; then
+            if git diff --name-only "$BASE_SHA" "$HEAD_SHA" | grep -qE '^(config/grafana/|containers/quadlet/fleet-grafana\.container$|\.github/workflows/ci\.yml$)'; then
+              run=true
+            else
+              run=false
+            fi
+          fi
+          echo "run=$run" >> "$GITHUB_OUTPUT"
+          echo "grafana-boot run=$run"
+      - name: Start the quadlet's Grafana with the quadlet's mounts and wait for /api/health
+        if: steps.gate.outputs.run == 'true'
+        run: |
+          q=containers/quadlet/fleet-grafana.container
+          image=$(sed -n 's/^Image=docker\.io\///p' "$q")
+          test -n "$image"
+          # Dummy secrets, readable by the image's grafana uid 472.
+          mkdir -p "$RUNNER_TEMP/secrets"
+          openssl genrsa -out "$RUNNER_TEMP/secrets/github-app.pem" 2048
+          echo dummy-admin-password > "$RUNNER_TEMP/secrets/grafana-admin-password"
+          chmod 0644 "$RUNNER_TEMP/secrets/"*
+          # Every Environment=GF_* line and every Volume= under config/grafana,
+          # taken from the quadlet itself so the two cannot drift.
+          args=()
+          while IFS= read -r l; do args+=(--env "$l"); done < <(sed -n 's/^Environment=//p' "$q")
+          while IFS= read -r l; do
+            l=${l//%h\/workspaces\/tooling\/fleet-ops-deploy-clone/$PWD}
+            args+=(-v "$l")
+          done < <(sed -n 's/^Volume=//p' "$q" | grep 'config/grafana')
+          docker run -d --name grafana --network host \
+            "${args[@]}" \
+            -v "$RUNNER_TEMP/secrets/github-app.pem:/run/secrets/github-app.pem:ro" \
+            -v "$RUNNER_TEMP/secrets/grafana-admin-password:/run/secrets/grafana-admin-password:ro" \
+            --env TELEGRAM_BOT_TOKEN=dummy --env TELEGRAM_HOME_CHANNEL=dummy \
+            --env CLOUDFLARE_API_TOKEN=dummy --env GITHUB_ISSUES_TOKEN=dummy \
+            "docker.io/$image"
+          port=$(sed -n 's/^Environment=GF_SERVER_HTTP_PORT=//p' "$q")
+          for _ in $(seq 1 90); do
+            if [ "$(docker inspect -f '{{.State.Running}}' grafana)" != true ]; then
+              echo "::error::Grafana exited before /api/health answered"
+              docker logs grafana 2>&1 | grep -E 'level=(error|crit)|^Error' | cut -c1-400 | head -n 8
+              exit 1
+            fi
+            if curl -fsS "http://127.0.0.1:$port/api/health"; then
+              echo
+              break
+            fi
+            sleep 2
+          done
+          curl -fsS "http://127.0.0.1:$port/api/health" | jq -e '.database == "ok"'
+          # Stay up past provisioning, then require no provisioning error.
+          sleep 10
+          if [ "$(docker inspect -f '{{.State.Running}}' grafana)" != true ]; then
+            echo "::error::Grafana exited after /api/health"
+            docker logs grafana 2>&1 | grep -E 'level=(error|crit)|^Error' | cut -c1-400 | head -n 8
+            exit 1
+          fi
+          if docker logs grafana 2>&1 | grep -E 'logger=provisioning[^ ]* .*level=(error|crit)|level=(error|crit) .*(rovisioning|failure to map file|Failed to start grafana)|Failed to start grafana' > "$RUNNER_TEMP/perr.txt"; then
+            cut -c1-400 "$RUNNER_TEMP/perr.txt" | head -n 8
+            echo "::error::Grafana logged a provisioning error"
+            exit 1
+          fi
+          echo "grafana-boot: $image healthy, no provisioning error"
+      - name: Grafana log on failure
+        if: failure()
+        run: docker logs grafana 2>&1 | cut -c1-400 | tail -n 40 || true
 
   # Coordinator approval as a required status check (fleet-ops#9383).
   # hold-risky (agent-dispatch.yml) disarms a risky PR on a few PR events, so a
