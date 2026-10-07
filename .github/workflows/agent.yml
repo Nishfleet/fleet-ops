@@ -643,7 +643,6 @@ jobs:
           ARM_TOKEN: ${{ steps.arm-token.outputs.token }}
         run: |
           set -euo pipefail
-          clone="$HOME/workspaces/tooling/fleet-ops-deploy-clone"
           say() { gh pr comment "$PR" -R "$REPO" --body "$1"; }
           pr=$(gh api "repos/$REPO/pulls/$PR")
           [ "$(jq -r .state <<<"$pr")" = open ] && [ "$(jq -r .head.sha <<<"$pr")" = "$SHA" ] || { echo "head moved or PR closed; the newer event reviews it"; exit 0; }
@@ -661,8 +660,10 @@ jobs:
             say "reviewer: $SHA blocked. The diff is over 250 KB, too large to review whole. Split it into smaller PRs."
             exit 0
           fi
-          review=$(pi --print --provider litellm --model worker-capable --no-tools --no-session \
-            --append-system-prompt "$clone/prompts/risky-review.md" < "$RUNNER_TEMP/diff.txt")
+          review=$(pi --print --no-context-files --no-tools --no-session \
+            --append-system-prompt "$HOME/AGENTS.md" \
+            --append-system-prompt "$HOME/workspaces/tooling/fleet-ops-deploy-clone/prompts/risky-review.md" \
+            --provider litellm --model worker-capable < "$RUNNER_TEMP/diff.txt")
           body=$(jq -nc --arg item "$review" '{model: "jev-latest",
             state: {item: $item, context: "Independent review findings for one risky pull request. approve = no blockers and no risks that would hurt customers, data, money or the fleet after merge. block = any blocker or risk."},
             questions: {verdict: {type: "choice", instructions: "Is this pull request safe to merge?",
