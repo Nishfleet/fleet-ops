@@ -81,6 +81,19 @@ the Quadlet `containers/quadlet/fleet-grafana.container`, read-only for every
 viewer. Dashboards, datasources and alerting come from `config/grafana/dashboards/`
 and `config/grafana/provisioning/`, edited in this repo only.
 
+Cloudflare cost alarm (fleet-ops#9355): `config/grafana/provisioning/alerting/cloudflare-spend.yaml`
+evaluates hourly through the Infinity data source `fleet-cloudflare` (the deploy-ci
+analytics token, from `~/.config/cloudflare/deploy-ci.env`). A firing rule opens a fleet-ops
+issue labelled `agent-ready` and `priority-now` through the webhook contact point
+`cloudflare-spend-dispatch`; `hermes-urgent` is the policy root and the fallback. The webhook
+needs `GITHUB_ISSUES_TOKEN` (issues:write on Nishfleet/fleet-ops) in
+`~/.config/fleet-ops/github-issues.env`, mode 0600. `grafana_alerting_notifications_failed_total`
+rising pages hermes-urgent through `cloudflare-spend-delivery.yaml`. Replay a rule by typing a past
+window into its GraphQL `filter:` in place of the `${__timeFrom:date:iso}` and `${__timeTo:date:iso}`
+macros, run it, then restore the file; close the test issue at once, the dispatcher claims it.
+
+GITHUB_ISSUES_TOKEN lives in ~/.config/fleet-ops/github-issues.env (fine-grained, issues:write on Nishfleet/fleet-ops only). Spend alerts also go to hermes-urgent, so a dead token never silences them.
+
 `systemctl --user list-timers blacksmith-flip.timer` (hourly,
 `Persistent=true`) triggers `blacksmith-flip.service`, a oneshot piping
 `prompts/blacksmith-flip.yml` through `pi --print`. Read one run with

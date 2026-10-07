@@ -1,0 +1,54 @@
+# Cost alarm delivery watch (fleet-ops#9355). "A failed alert delivery must
+# itself be loud": stock Grafana cannot fall back from a failed webhook to
+# another integration, but it counts every failed notification per integration
+# (grafana_alerting_notifications_failed_total). Prometheus scrapes Grafana
+# (job grafana in rootfs/etc/prometheus/prometheus.yml), and this rule pages
+# hermes-urgent when the GitHub-issue webhook failed in the last hour, for
+# example an expired or revoked GITHUB_ISSUES_TOKEN. Until the first failure
+# the series does not exist, so `or vector(0)` keeps the rule Normal.
+apiVersion: 1
+
+groups:
+  - orgId: 1
+    name: cloudflare-spend-delivery
+    folder: fleet
+    interval: 5m
+    rules:
+      - uid: cf-spend-delivery-failed
+        title: Cost alarm GitHub issue delivery failed
+        condition: C
+        data:
+          - refId: A
+            relativeTimeRange: {from: 3600, to: 0}
+            datasourceUid: fleet-prometheus
+            model:
+              datasource: {type: prometheus, uid: fleet-prometheus}
+              editorMode: code
+              expr: sum(increase(grafana_alerting_notifications_failed_total{integration="webhook"}[1h])) or vector(0)
+              instant: true
+              intervalMs: 1000
+              maxDataPoints: 43200
+              range: false
+              refId: A
+          - refId: C
+            datasourceUid: __expr__
+            model:
+              datasource: {type: __expr__, uid: __expr__}
+              type: threshold
+              refId: C
+              expression: A
+              conditions: [{evaluator: {params: [0], type: gt}, operator: {type: and}, query: {params: [C]}, reducer: {params: [], type: last}, type: query}]
+        noDataState: OK
+        execErrState: Error
+        for: 0s
+        annotations:
+          summary: The cost alarm could not open its GitHub issue.
+          description: 'Grafana failed {{ with index $values "A" }}{{ .Value | printf "%.0f" }}{{ end }} webhook deliveries to the GitHub issues API in the last hour. A cost rule fired and no priority-now issue exists; check the Grafana log and the GITHUB_ISSUES_TOKEN in ~/.config/fleet-ops/github-issues.env.'
+        labels: {signal: cloudflare-spend-delivery}
+        isPaused: false
+        notification_settings:
+          receiver: hermes-urgent
+          group_by: [alertname, grafana_folder]
+          group_wait: 0s
+          group_interval: 5m
+          repeat_interval: 12h

@@ -1,0 +1,65 @@
+# Cloudflare cost alarm: contact point and notification policy (fleet-ops#9355).
+#
+# Nish (2026-10-07, "make it urgent for us to address urgently"): a firing
+# cost-alarm rule opens a fleet-ops issue labelled agent-ready + priority-now,
+# so the fleet picks it up first. Nish reads it in the normal Hermes digest.
+# hermes-urgent (paid-plan-idle.yaml) is the fallback, and it fires directly
+# when the alarm cannot do its job:
+#   - the rule cannot evaluate (alertname DatasourceError / DatasourceNoData
+#     skips the issue route and lands on the policy root, hermes-urgent);
+#   - the GitHub POST fails (the rule in cloudflare-spend-delivery.yaml reads
+#     Grafana's own webhook failure counter and routes to hermes-urgent).
+#
+# The webhook posts the GitHub issues API body from the payload template. The
+# token is an env reference, never a literal: $GITHUB_ISSUES_TOKEN expands at
+# provisioning load from the quadlet environment
+# (~/.config/fleet-ops/github-issues.env, mode 0600). It needs issues:write on
+# Nishfleet/fleet-ops only. Rules carry label signal=cloudflare-spend and the
+# policy below picks them up, so there is one place that decides the route.
+apiVersion: 1
+
+contactPoints:
+  - orgId: 1
+    name: cloudflare-spend-dispatch
+    receivers:
+      - uid: cf-spend-gh-issues
+        type: webhook
+        disableResolveMessage: true
+        settings:
+          url: https://api.github.com/repos/Nishfleet/fleet-ops/issues
+          httpMethod: POST
+          authorization_scheme: Bearer
+          authorization_credentials: $GITHUB_ISSUES_TOKEN
+          maxAlerts: 1
+          payload:
+            template: |-
+              {{- with index .Alerts 0 -}}
+              {{- coll.Dict "title" (printf "cost alarm: %s %s" .Labels.alertname .Labels.resource)
+                     "body" (printf "%s.\n\nValue: %s. Threshold: %s. Top resource: %s.\n\n%s\n\nRule `%s`, started firing %s UTC (%s). Source: the Grafana cloudflare-spend rules, fleet-ops#9355. Find the leak, stop it, then close this issue." .Annotations.summary .Annotations.value .Annotations.threshold .Annotations.top .Annotations.description .Labels.alertname (.StartsAt.Format "2006-01-02 15:04:05") .GeneratorURL)
+                     "labels" (coll.Slice "agent-ready" "priority-now") | data.ToJSON -}}
+              {{- end -}}
+
+policies:
+  - orgId: 1
+    receiver: hermes-urgent
+    group_by: [grafana_folder, alertname]
+    routes:
+      - receiver: cloudflare-spend-dispatch
+        object_matchers:
+          - [signal, "=", cloudflare-spend]
+          - [alertname, "!~", "DatasourceError|DatasourceNoData"]
+        group_by: [alertname, product, resource]
+        group_wait: 0s
+        group_interval: 5m
+        repeat_interval: 12h
+        continue: true
+      # Same matcher again: a spend alert also pages hermes-urgent, so a dead
+      # or missing GITHUB_ISSUES_TOKEN never silences it.
+      - receiver: hermes-urgent
+        object_matchers:
+          - [signal, "=", cloudflare-spend]
+          - [alertname, "!~", "DatasourceError|DatasourceNoData"]
+        group_by: [alertname, product, resource]
+        group_wait: 0s
+        group_interval: 5m
+        repeat_interval: 12h
