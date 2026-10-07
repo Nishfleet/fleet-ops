@@ -1,0 +1,34 @@
+# Copy the encrypted Restic repository into 30-day-locked R2 storage
+# Deployed from fleet-ops rootfs/etc/systemd/system/
+# copy -> checksum check -> reclaim objects older than the 30-day lock (reclaim may fail).
+[Unit]
+Description=Copy the encrypted Restic repository into 30-day-locked R2 storage
+Wants=network-online.target
+After=network-online.target restic-r2-backup.service
+ConditionPathExists=/etc/rclone/tiny-studio-r2.conf
+
+[Service]
+Type=oneshot
+Environment=RCLONE_CONFIG=/etc/rclone/tiny-studio-r2.conf
+EnvironmentFile=/etc/tiny-studio/heartbeats.env
+ExecStart=/usr/bin/flock -E 75 -w 900 /run/lock/restic-r2-backup.lock /usr/bin/rclone copy --disable Copy --size-only --immutable --exclude /locks/** --transfers 4 --checkers 8 live:nish-netcup-rs2000-backups/netcup-rs2000 locked:nish-netcup-rs2000-backups-locked/netcup-rs2000
+ExecStart=/usr/bin/flock -E 75 -w 900 /run/lock/restic-r2-backup.lock /usr/bin/rclone check --checksum --one-way --exclude /locks/** live:nish-netcup-rs2000-backups/netcup-rs2000 locked:nish-netcup-rs2000-backups-locked/netcup-rs2000
+ExecStart=-/usr/bin/flock -E 75 -w 900 /run/lock/restic-r2-backup.lock /usr/bin/rclone sync --disable Copy --size-only --min-age 31d --exclude /locks/** --transfers 4 --checkers 8 live:nish-netcup-rs2000-backups/netcup-rs2000 locked:nish-netcup-rs2000-backups-locked/netcup-rs2000
+ExecStartPost=/usr/bin/curl -fsS -m 10 --retry 3 -o /dev/null ${HC_LOCKED_COPY_URL}
+Nice=19
+IOSchedulingClass=best-effort
+IOSchedulingPriority=7
+PrivateTmp=true
+ProtectSystem=strict
+NoNewPrivileges=true
+PrivateDevices=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+ProtectHome=true
+ReadWritePaths=/var/cache/restic-live /run/lock
+
+[Install]
+WantedBy=multi-user.target

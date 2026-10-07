@@ -1,0 +1,12 @@
+[Unit]
+Description=Weekly integrity check of Cloudflare R2 restic repo — p64
+
+[Timer]
+OnCalendar=Wed *-*-* 03:00:00 Asia/Kolkata
+OnBootSec=20min
+RandomizedDelaySec=2h
+Persistent=true
+Unit=restic-r2-verify.service
+
+[Install]
+WantedBy=timers.target

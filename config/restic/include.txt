@@ -1,0 +1,26 @@
+# Restic backup include list (--files-from)
+# One path per line. Paths are relative to / or absolute.
+# Directories are backed up recursively.
+
+# Credentials and configuration that cannot be rebuilt
+/home/nish/.config/fleet-ops
+/home/nish/.config/fleet-worker
+/home/nish/.config/gh
+/home/nish/.config/cloudflare
+/home/nish/.config/rclone
+/home/nish/.config/systemd
+
+# Agent memory and vault
+/home/nish/nish-vault
+/home/nish/workspaces/agent-state/_system
+
+# System configuration
+/etc
+/root
+/var/spool/cron
+
+# Podman volumes (container data)
+/home/nish/.local/share/containers/storage/volumes
+
+# Application data
+/srv/aiostreams

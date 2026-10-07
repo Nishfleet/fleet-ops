@@ -1,0 +1,11 @@
+[Unit]
+Description=Daily encrypted Hostinger VPS backup to Cloudflare R2
+
+[Timer]
+OnCalendar=*-*-* 04:15:00 Asia/Kolkata
+RandomizedDelaySec=45m
+Persistent=true
+Unit=restic-r2-backup.service
+
+[Install]
+WantedBy=timers.target

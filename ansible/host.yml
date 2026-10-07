@@ -31,6 +31,7 @@
       - /etc/tmpfiles.d
       - /etc/audit/rules.d
       - /etc/polkit-1/rules.d
+      - /etc/restic
     # Files Ubuntu packages ship, or the GitHub runner's own svc.sh writes, in
     # those directories. Matched against the full path.
     package_files:
@@ -195,6 +196,17 @@
       ansible.builtin.copy:
         src: "{{ rootfs }}/etc/needrestart/conf.d/"
         dest: /etc/needrestart/conf.d/
+        owner: root
+        group: root
+        mode: preserve
+
+    # Restic backup include and exclude lists (config/restic/). The backup unit
+    # reads them from /etc/restic/ on every run; a change here is live after
+    # the next fleet-host-config run, no restart needed.
+    - name: Install restic include and exclude lists
+      ansible.builtin.copy:
+        src: "{{ playbook_dir }}/../config/restic/"
+        dest: /etc/restic/
         owner: root
         group: root
         mode: preserve

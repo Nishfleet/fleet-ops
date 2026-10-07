@@ -1,0 +1,12 @@
+[Unit]
+Description=Weekly retention and integrity check for Cloudflare R2 backups
+
+[Timer]
+OnCalendar=Sun *-*-* 05:30:00 Asia/Kolkata
+OnBootSec=15min
+RandomizedDelaySec=60m
+Persistent=true
+Unit=restic-r2-maintenance.service
+
+[Install]
+WantedBy=timers.target

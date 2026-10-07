@@ -1,0 +1,32 @@
+# Verify Cloudflare R2 restic repo integrity (5% data subset)
+# Deployed from fleet-ops rootfs/etc/systemd/system/
+[Unit]
+Description=Verify Cloudflare R2 restic repo integrity (5% data subset)
+Wants=network-online.target
+After=network-online.target
+ConditionPathExists=/etc/restic/netcup-r2.env
+
+[Service]
+Type=oneshot
+EnvironmentFile=/etc/restic/netcup-r2.env
+Environment=RESTIC_CACHE_DIR=/var/cache/restic-live
+ExecStartPre=/usr/bin/restic unlock
+ExecStart=/usr/bin/flock -E 75 -w 900 /run/lock/restic-r2-backup.lock /usr/bin/restic check --read-data-subset=5%% --with-cache
+Nice=19
+IOSchedulingClass=best-effort
+IOSchedulingPriority=7
+PrivateTmp=true
+ProtectSystem=strict
+NoNewPrivileges=true
+PrivateDevices=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+ProtectHome=read-only
+ReadWritePaths=/var/cache/restic-live /run/lock /var/tmp
+TimeoutStartSec=30min
+
+[Install]
+WantedBy=multi-user.target

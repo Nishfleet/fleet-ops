@@ -1,0 +1,76 @@
+# Restic backup exclude patterns (--exclude-file)
+# Patterns are matched against full paths relative to the filesystem root.
+# These exclude caches and rebuildable artifacts inside included directories.
+
+# Go build cache
+/home/nish/.cache/go-build
+
+# Browser and tool caches
+/home/nish/.cache/cursor-compile-cache
+/home/nish/.cache/ms-playwright
+/home/nish/.cache/uv
+/home/nish/.cache/hyperframes
+/home/nish/.cache/huggingface
+/home/nish/.cache/gh
+/home/nish/.cache/claude-cli-nodejs
+/home/nish/.cache/pip
+/home/nish/.cache/restic
+/home/nish/.cache/rclone
+/home/nish/.cache/google-chrome*
+/home/nish/.cache/staticcheck
+/home/nish/.cache/node-gyp
+/home/nish/.cache/prisma*
+/home/nish/.cache/chrome-devtools-mcp-cli
+/home/nish/.cache/swc-native-1000
+/home/nish/.cache/google-chrome-for-testing*
+
+# Syncthing database (can be resynced)
+/home/nish/.config/syncthing
+
+# Opencode cache
+/home/nish/.config/opencode
+
+# Go toolchain and workspace (rebuildable)
+/home/nish/go
+/home/nish/gopath
+/home/nish/gopath-go
+/home/nish/go-workspace
+/home/nish/go-mod-cache
+
+# Agent worktrees and product checkouts (rebuildable from git)
+/home/nish/workspaces/agent-worktrees
+/home/nish/workspaces/products
+/home/nish/workspaces/tooling
+/home/nish/worktrees
+
+# Tool downloads and binaries (reinstallable)
+/home/nish/tool
+/home/nish/workspaces/agent-state/tools
+/home/nish/.local/bin
+
+# Old backups and retired checkouts
+/home/nish/workspaces/agent-state/backups
+/home/nish/workspaces/agent-state/retired-checkouts*
+
+# Node modules and package caches
+/home/nish/node_modules
+/home/nish/.npm
+/home/nish/.cache/npm
+/home/nish/.cache/bun
+/home/nish/.cache/pnpm
+
+# Python caches
+/home/nish/.cache/pip
+/home/nish/__pycache__
+/home/nish/**/__pycache__
+
+# Rust cargo cache
+/home/nish/.cargo/registry
+/home/nish/.cargo/git
+
+# Temporary and scratch files
+/home/nish/.tmp
+/home/nish/tmp
+/home/nish/scratch
+/var/tmp
+/tmp
