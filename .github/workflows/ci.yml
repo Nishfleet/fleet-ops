@@ -616,7 +616,7 @@ jobs:
             *disablePullRequestAutoMerge*) touch "$STATE/disarmed" ;;
             *dequeuePullRequest*) touch "$STATE/dequeued" ;;
             *"/labels"*) touch "$STATE/labelled" ;;
-            *"/files?"*) if [ -n "${SAFE:-}" ]; then echo app/routes/home.tsx; else echo workers/app.ts; fi ;;
+            *"/files?"*) if [ -n "${SAFE:-}" ]; then echo '{"f":"app/routes/home.tsx","p":null,"patch":"@@ -1 +1 @@\n+x"}'; else echo '{"f":".github/workflows/deploy-production.yml","p":null,"patch":"@@ -1 +1 @@\n+x"}'; fi ;;
             *"/statuses?"*) ;;
             *"/comments?"*) [ -z "${APPROVE:-}" ] || echo "{\"user\":{\"login\":\"nish3451\"},\"body\":\"coordinator-approval: $SHA\",\"created_at\":\"t\",\"updated_at\":\"t\"}" ;;
             *"/pulls/7") echo "{\"state\":\"open\",\"head\":{\"sha\":\"$SHA\"},\"labels\":[],\"changed_files\":1,\"node_id\":\"PR_n\"}" ;;
@@ -680,7 +680,7 @@ jobs:
           has() { [[ " $1 " == *" $2 "* ]]; }
           case $args in
             *"/compare/"*) tr ';' '\n' <<<"$SUBJECTS" ;;
-            *"/pulls/"*"/files?"*) n=${args#*pulls/}; n=${n%%/*}; if has "$RISKY" "$n"; then echo workers/app.ts; else echo app/routes/home.tsx; fi ;;
+            *"/pulls/"*"/files?"*) n=${args#*pulls/}; n=${n%%/*}; if has "$RISKY" "$n"; then echo '{"f":".github/workflows/deploy-production.yml","p":null,"patch":"@@ -1 +1 @@\n+x"}'; else echo '{"f":"app/routes/home.tsx","p":null,"patch":"@@ -1 +1 @@\n+x"}'; fi ;;
             *"/pulls/"*) n=${args##*pulls/}; l='[]'; ! has "$LABELED" "$n" || l='[{"name":"needs-coordinator"}]'; echo "{\"state\":\"open\",\"head\":{\"sha\":\"$(sha "$n")\"},\"labels\":$l,\"changed_files\":1}" ;;
             *"/statuses?"*) ;;
             *"/issues/"*"/comments?"*) n=${args#*issues/}; n=${n%%/*}
@@ -891,11 +891,11 @@ jobs:
             # The live PR: a head moved after approval has no approval.
             pr=$(gh api "repos/$GITHUB_REPOSITORY/pulls/$n") || { echo "::error::coordinator-approval: PR read failed for #$n"; bad=1; continue; }
             sha=$(jq -r .head.sha <<<"$pr")
-            gh api --paginate "repos/$GITHUB_REPOSITORY/pulls/$n/files?per_page=100" --jq '.[] | .filename, (.previous_filename // empty)' > "$RUNNER_TEMP/files.txt" ||
+            gh api --paginate "repos/$GITHUB_REPOSITORY/pulls/$n/files?per_page=100" --jq '.[] | {f: .filename, p: (.previous_filename // null), patch: (.patch // null)}' > "$RUNNER_TEMP/files.txt" ||
               { echo "::error::coordinator-approval: changed-files read failed for #$n"; bad=1; continue; }
-            jq -Rsc 'split("\n") | map(select(length > 0))' < "$RUNNER_TEMP/files.txt" > "$RUNNER_TEMP/files.json"
-            jq -c --arg repo "$GITHUB_REPOSITORY" --slurpfile files "$RUNNER_TEMP/files.json" \
-              '{repo: $repo, labels: [(.labels // [])[].name], files: $files[0], changed_files: (.changed_files // 0)}' <<<"$pr" > "$RUNNER_TEMP/facts.json"
+            jq -sc '{files: [.[] | .f, (.p // empty)], patches: [.[] | {file: .f, patch}]}' < "$RUNNER_TEMP/files.txt" > "$RUNNER_TEMP/files.json"
+            jq -c --arg repo "$GITHUB_REPOSITORY" --slurpfile d "$RUNNER_TEMP/files.json" \
+              '{repo: $repo, labels: [(.labels // [])[].name], files: $d[0].files, patches: $d[0].patches, changed_files: (.changed_files // 0)}' <<<"$pr" > "$RUNNER_TEMP/facts.json"
             verdict=$(jq -c --argjson cfg "$cfg" --arg label "$LABEL" "$CLASSIFY" < "$RUNNER_TEMP/facts.json") ||
               { echo "::error::coordinator-approval: classifier failed for #$n"; bad=1; continue; }
             echo "coordinator-approval: #$n at $sha: $verdict"
