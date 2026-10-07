@@ -1099,9 +1099,14 @@ jobs:
         if: steps.gate.outputs.run == 'true'
         run: |
           set -euo pipefail
+          # The runner image ships no redis-server (job at line 107 installs it too).
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends redis-server
           # router_settings.redis_url is the shipped one, so the drill's Redis
-          # has to be the one listening on that port, which on a runner it is.
-          redis-server --daemonize yes --save '' --appendonly no --port 6379
+          # has to be the one listening on that port.
+          # The apt package may already have started its own service on 6379.
+          redis-cli -p 6379 ping || redis-server --daemonize yes --save '' --appendonly no --port 6379
+          sleep 1
           redis-cli -p 6379 ping
       - name: Rewrite every row to a mock deployment, keep router_settings
         if: steps.gate.outputs.run == 'true'
