@@ -97,9 +97,11 @@ summary. The unit fails with exit **78** when either limit is crossed:
 How it stops the growth:
 
 - `restic-r2-backup.service.d/10-size-guard.conf` gives the backup unit
-  `Requires=` and `After=` the guard. A failed guard fails the backup unit
-  (`Result=dependency`) before `ExecStart`, so **nothing over the limit is
-  uploaded** and the heartbeat ping is not sent.
+  a last `ExecStartPre=systemctl start restic-r2-size-guard.service` (a oneshot
+  start waits and returns the guard's exit status). A failed guard fails the
+  backup unit before `ExecStart`, so **nothing over the limit is uploaded** and
+  the heartbeat ping is not sent. It runs after the pg_dump line, so the fresh
+  dump is part of what is measured.
 - `restic-r2-locked-copy.service.d/10-needs-backup.conf` gives the locked copy
   `Requires=` the backup unit, so the copy into the `-locked` bucket is
   **skipped** when the backup fails. A locked-copy run now starts a guarded
