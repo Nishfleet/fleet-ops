@@ -88,24 +88,22 @@ model_list:
 - model_name: worker-capable
   litellm_params:
     <<: *commandcode-free
-    order: 2
     model: openai/poolside/laguna-s-2.1-free
   model_info:
     mode: chat
-    supports_prompt_caching: false
-    cache_proof: "Cannot cache: spend-log record gen_01M4AMN2265PBSZ64NYCVYTJDT 2026-10-07 shows 63,223 prompt tokens with prompt_tokens_details null (#9362); cline direct probe of the same model 0->0 with the field present (#9365); 1.3% 7d -> 0.0% 48h (#9357)."
+    supports_prompt_caching: true
+    cache_proof: "Caches: own-path direct probe 2026-10-07 through commandcode, 6 streamed calls on a ~20k prefix, cached_tokens 0/20000/0/20000/429/0 of 20017 prompt tokens (#9365); the #9362 probe measured 32416/32427 on calls ed93cdb5/303f9a68. The earlier false verdict rested on a cline probe, a different provider, and on a null-field spend log, which is a missing field rather than a measured 0."
     id: commandcode-lagunas21free-worker-capable
     allowed_fails_policy:
       BadRequestErrorAllowedFails: 1
 - model_name: worker-cheap
   litellm_params:
     <<: *commandcode-free
-    order: 2
     model: openai/poolside/laguna-s-2.1-free
   model_info:
     mode: chat
-    supports_prompt_caching: false
-    cache_proof: "Cannot cache: spend-log record gen_01M4AMN2265PBSZ64NYCVYTJDT 2026-10-07 shows 63,223 prompt tokens with prompt_tokens_details null (#9362); cline direct probe of the same model 0->0 with the field present (#9365); 1.3% 7d -> 0.0% 48h (#9357)."
+    supports_prompt_caching: true
+    cache_proof: "Caches: own-path direct probe 2026-10-07 through commandcode, 6 streamed calls on a ~20k prefix, cached_tokens 0/20000/0/20000/429/0 of 20017 prompt tokens (#9365); the #9362 probe measured 32416/32427 on calls ed93cdb5/303f9a68. The earlier false verdict rested on a cline probe, a different provider, and on a null-field spend log, which is a missing field rather than a measured 0."
     id: commandcode-lagunas21free-worker-cheap
     allowed_fails_policy:
       BadRequestErrorAllowedFails: 1
@@ -1331,7 +1329,7 @@ model_list:
     allowed_fails_policy:
       BadRequestErrorAllowedFails: 1
       RateLimitErrorAllowedFails: 0
-# Nish 2026-09-30 free rows (probe: both finish_reason=tool_calls).
+# Nish 2026-09-30 free rows (probe: both finish_reason=tool_calls). order: 2 here is the pre-#9365 demotion on main, left as it is: #9365's own-path probe (cached_tokens 0/20000/20000/0/20000/0 of 20017) shows cline caches laguna, so the row is no longer demoted *because it cannot cache*, and this PR does not put live traffic back on a row the reviewer has not re-checked.
 - model_name: worker-capable
   litellm_params: &cline-free
     model: openai/poolside/laguna-s-2.1:free
@@ -1344,8 +1342,8 @@ model_list:
     cooldown_time: 21600
   model_info:
     mode: chat
-    supports_prompt_caching: false
-    cache_proof: "Cannot cache: direct probe 2026-10-07 through cline, cached_tokens 0->0 with the field present (#9365); OpenRouter endpoint list supports_implicit_caching false; 0.0% 7d on 341.5M input (#9357)."
+    supports_prompt_caching: true
+    cache_proof: "Caches: own-path direct probe 2026-10-07 through cline, 6 streamed calls on a ~20k prefix, cached_tokens 0/20000/20000/0/20000/0 of 20017 prompt tokens (#9365). The earlier false verdict read one 0->0 pair, which is a cold prefix read and not a measurement of the provider."
     id: cline-lagunas21-worker-capable
     allowed_fails_policy:
       BadRequestErrorAllowedFails: 1
@@ -1355,8 +1353,8 @@ model_list:
   litellm_params: {<<: *cline-free}
   model_info:
     mode: chat
-    supports_prompt_caching: false
-    cache_proof: "Cannot cache: direct probe 2026-10-07 through cline, cached_tokens 0->0 with the field present (#9365); OpenRouter endpoint list supports_implicit_caching false; 0.0% 7d on 341.5M input (#9357)."
+    supports_prompt_caching: true
+    cache_proof: "Caches: own-path direct probe 2026-10-07 through cline, 6 streamed calls on a ~20k prefix, cached_tokens 0/20000/20000/0/20000/0 of 20017 prompt tokens (#9365). The earlier false verdict read one 0->0 pair, which is a cold prefix read and not a measurement of the provider."
     id: cline-lagunas21-worker-cheap
     allowed_fails_policy:
       BadRequestErrorAllowedFails: 1
@@ -1367,8 +1365,8 @@ model_list:
     model: openai/inclusionai/ling-3.0-flash-sante:free
   model_info:
     mode: chat
-    supports_prompt_caching: false
-    cache_proof: "Cannot cache on cline: direct probe 2026-10-07, call 2 cached_tokens 0 of 7915, field present (#9365); 0.0% 7d on 307.3M input (#9357). The same model caches 7872 of 7915 direct on commandcode - that route is true."
+    supports_prompt_caching: true
+    cache_proof: "Caches: own-path direct probe 2026-10-07 through cline, 6 streamed calls on a ~20k prefix, cached_tokens 0/stream_error/0/19968/19968/19968 of 20023 prompt tokens (#9365). The earlier false verdict read one 0->0 pair, which is a cold prefix read and not a measurement of the provider."
     id: cline-ling30flashsante-worker-capable
     allowed_fails_policy:
       BadRequestErrorAllowedFails: 1
@@ -1379,8 +1377,8 @@ model_list:
     model: openai/inclusionai/ling-3.0-flash-sante:free
   model_info:
     mode: chat
-    supports_prompt_caching: false
-    cache_proof: "Cannot cache on cline: direct probe 2026-10-07, call 2 cached_tokens 0 of 7915, field present (#9365); 0.0% 7d on 307.3M input (#9357). The same model caches 7872 of 7915 direct on commandcode - that route is true."
+    supports_prompt_caching: true
+    cache_proof: "Caches: own-path direct probe 2026-10-07 through cline, 6 streamed calls on a ~20k prefix, cached_tokens 0/stream_error/0/19968/19968/19968 of 20023 prompt tokens (#9365). The earlier false verdict read one 0->0 pair, which is a cold prefix read and not a measurement of the provider."
     id: cline-ling30flashsante-worker-cheap
     allowed_fails_policy:
       BadRequestErrorAllowedFails: 1
@@ -1433,8 +1431,8 @@ model_list:
     cooldown_time: 21600
   model_info:
     mode: chat
-    supports_prompt_caching: false
-    cache_proof: "Cannot cache: OpenRouter endpoint list supports_implicit_caching false (fetched 2026-10-07); 0.2% 7d trace (#9357); direct probe 0->0 with the field present (#9365)."
+    supports_prompt_caching: true
+    cache_proof: "Caches: own-path direct probe 2026-10-07 through openrouter, 8 streamed calls on a ~20k prefix, cached_tokens 12960 on 4 of the 5 completed calls of 20018 prompt tokens (#9365); the other 3 are Nvidia 503 Service temporarily overloaded. The OpenRouter endpoint list reports supports_implicit_caching false for this model and is wrong here: the provider serves cached tokens anyway."
     id: openrouter-nemotronultra-worker-cheap
     allowed_fails_policy:
       BadRequestErrorAllowedFails: 1
@@ -1443,8 +1441,8 @@ model_list:
   litellm_params: {<<: *openrouter-nemotron}
   model_info:
     mode: chat
-    supports_prompt_caching: false
-    cache_proof: "Cannot cache: OpenRouter endpoint list supports_implicit_caching false (fetched 2026-10-07); 0.2% 7d trace (#9357); direct probe 0->0 with the field present (#9365)."
+    supports_prompt_caching: true
+    cache_proof: "Caches: own-path direct probe 2026-10-07 through openrouter, 8 streamed calls on a ~20k prefix, cached_tokens 12960 on 4 of the 5 completed calls of 20018 prompt tokens (#9365); the other 3 are Nvidia 503 Service temporarily overloaded. The OpenRouter endpoint list reports supports_implicit_caching false for this model and is wrong here: the provider serves cached tokens anyway."
     id: openrouter-nemotronultra-worker-capable
     allowed_fails_policy:
       BadRequestErrorAllowedFails: 1
@@ -1455,8 +1453,8 @@ model_list:
     model: openai/nvidia/nemotron-3.5-lightning:free
   model_info:
     mode: chat
-    supports_prompt_caching: false
-    cache_proof: "Cannot cache: OpenRouter endpoint list supports_implicit_caching false (fetched 2026-10-07)."
+    supports_prompt_caching: true
+    cache_proof: "Caches: own-path direct probe 2026-10-07 through openrouter, 6 streamed calls on a ~20k prefix, cached_tokens 0/19584/19584/19584/19584/19584 of 20018 prompt tokens (#9365). The earlier false verdict rested on the OpenRouter endpoint list and one 0->0 pair, a cold prefix read rather than a measurement of the provider."
     id: openrouter-nemotronlightning-worker-cheap
     allowed_fails_policy:
       BadRequestErrorAllowedFails: 1
@@ -1465,13 +1463,12 @@ model_list:
 - model_name: worker-capable
   litellm_params:
     <<: *openrouter-spacebunny
-    order: 2
     model: openai/inclusionai/ling-3.0-flash-sante:free
     tags: [free, openrouter]
   model_info:
     mode: chat
-    supports_prompt_caching: false
-    cache_proof: "Cannot cache on openrouter: endpoint list supports_implicit_caching false (Novita, fetched 2026-10-07); 0.0% 7d (#9357)."
+    supports_prompt_caching: true
+    cache_proof: "Caches: own-path direct probe 2026-10-07 through openrouter, 6 streamed calls on a ~20k prefix, cached_tokens 19968 on 5 of 6 calls of 20023 prompt tokens (#9365), the sixth a 429. The OpenRouter endpoint list reports supports_implicit_caching false for the Novita endpoint and is wrong here: the provider serves cached tokens anyway."
     id: openrouter-ling30flashsante-worker-capable
     allowed_fails_policy:
       BadRequestErrorAllowedFails: 1
@@ -1479,13 +1476,12 @@ model_list:
 - model_name: worker-cheap
   litellm_params:
     <<: *openrouter-spacebunny
-    order: 2
     model: openai/inclusionai/ling-3.0-flash-sante:free
     tags: [free, openrouter]
   model_info:
     mode: chat
-    supports_prompt_caching: false
-    cache_proof: "Cannot cache on openrouter: endpoint list supports_implicit_caching false (Novita, fetched 2026-10-07); 0.0% 7d (#9357)."
+    supports_prompt_caching: true
+    cache_proof: "Caches: own-path direct probe 2026-10-07 through openrouter, 6 streamed calls on a ~20k prefix, cached_tokens 19968 on 5 of 6 calls of 20023 prompt tokens (#9365), the sixth a 429. The OpenRouter endpoint list reports supports_implicit_caching false for the Novita endpoint and is wrong here: the provider serves cached tokens anyway."
     id: openrouter-ling30flashsante-worker-cheap
     allowed_fails_policy:
       BadRequestErrorAllowedFails: 1
@@ -1493,13 +1489,12 @@ model_list:
 - model_name: worker-capable
   litellm_params:
     <<: *openrouter-spacebunny
-    order: 2
     model: openai/poolside/laguna-s-2.1:free
     tags: [free, openrouter]
   model_info:
     mode: chat
-    supports_prompt_caching: false
-    cache_proof: "Cannot cache: OpenRouter endpoint list supports_implicit_caching false (fetched 2026-10-07); 0.0% 7d (#9357)."
+    supports_prompt_caching: true
+    cache_proof: "Caches: own-path direct probe 2026-10-07 through openrouter, 8 streamed calls on a ~20k prefix, cached_tokens 20000 on 3 of the 4 completed calls of 20017 prompt tokens (#9365), the rest upstream 429s. The OpenRouter endpoint list reports supports_implicit_caching false for this model and is wrong here: the provider serves cached tokens anyway."
     id: openrouter-lagunas21free-worker-capable
     allowed_fails_policy:
       BadRequestErrorAllowedFails: 1
@@ -1507,13 +1502,12 @@ model_list:
 - model_name: worker-cheap
   litellm_params:
     <<: *openrouter-spacebunny
-    order: 2
     model: openai/poolside/laguna-s-2.1:free
     tags: [free, openrouter]
   model_info:
     mode: chat
-    supports_prompt_caching: false
-    cache_proof: "Cannot cache: OpenRouter endpoint list supports_implicit_caching false (fetched 2026-10-07); 0.0% 7d (#9357)."
+    supports_prompt_caching: true
+    cache_proof: "Caches: own-path direct probe 2026-10-07 through openrouter, 8 streamed calls on a ~20k prefix, cached_tokens 20000 on 3 of the 4 completed calls of 20017 prompt tokens (#9365), the rest upstream 429s. The OpenRouter endpoint list reports supports_implicit_caching false for this model and is wrong here: the provider serves cached tokens anyway."
     id: openrouter-lagunas21free-worker-cheap
     allowed_fails_policy:
       BadRequestErrorAllowedFails: 1

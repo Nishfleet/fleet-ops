@@ -1,6 +1,9 @@
 # fleet-ops#9365: a worker-group row proven unable to cache must sit at order 2.
 # This row carries a valid false verdict with proof but stays at order 1, so it
-# would take long-session traffic away from cache-capable rows.
+# would take long-session traffic away from cache-capable rows. The rule is dormant
+# today (#9365's own-path probes found every free row caching); it stays for the next
+# row a probe genuinely shows cannot cache. The proof below is a plausible false
+# verdict, not a real measurement.
 model_list:
 - model_name: worker-capable
   litellm_params:
@@ -8,7 +11,7 @@ model_list:
     order: 1
   model_info:
     supports_prompt_caching: false
-    cache_proof: "2026-10-07 probe: cached_tokens 0 of 7915 on both calls (https://github.com/Nishfleet/fleet-ops/issues/9365)"
+    cache_proof: "Cannot cache: own-path probe 2026-10-07, 8 streamed calls on a ~20k prefix, cached_tokens 0 on all 8 completed calls (https://github.com/Nishfleet/fleet-ops/issues/9365)"
 router_settings:
   redis_url: redis://127.0.0.1:6379
   cooldown_time: 60

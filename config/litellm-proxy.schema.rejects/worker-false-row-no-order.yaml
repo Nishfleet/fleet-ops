@@ -1,13 +1,16 @@
 # fleet-ops#9365: a worker-group row proven unable to cache must sit at order 2.
 # This row carries a valid false verdict with proof but no order key at all, so
 # merge-key defaults (order 1 from an anchor) would leave it ahead of cache-true rows.
+# The rule is dormant today: #9365's own-path probes found every free row caching, so
+# no real row is false. It stays for the next row that a probe genuinely shows cannot
+# cache. The proof below is a plausible false verdict, not a real measurement.
 model_list:
 - model_name: worker-capable
   litellm_params:
     model: openai/x
   model_info:
     supports_prompt_caching: false
-    cache_proof: "2026-10-07 probe: cached_tokens 0 of 7915 twice (https://github.com/Nishfleet/fleet-ops/issues/9365)"
+    cache_proof: "Cannot cache: own-path probe 2026-10-07, 8 streamed calls on a ~20k prefix, cached_tokens 0 on all 8 completed calls (https://github.com/Nishfleet/fleet-ops/issues/9365)"
 router_settings:
   redis_url: redis://127.0.0.1:6379
   cooldown_time: 60
