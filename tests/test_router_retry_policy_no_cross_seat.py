@@ -1,24 +1,27 @@
-"""fleet-ops#9375: confine in-router retries to the same seat.
+"""fleet-ops#9375: cut the in-router retry budget for a pinned worker session.
 
-Before the change (`retry_policy` shipped with AuthenticationErrorRetries:2 /
-RateLimitErrorRetries:2 / InternalServerErrorRetries:2) a mid-session 429/500
-spun back up within the request and hopped to a different seat on the 2nd (or 3rd)
-attempt, re-sending the whole prompt cold. The fix cuts the retry counts to
-0 (401, which can never recover) / 1 (429, 500) so the router retries the pinned
-seat at most once before the call falls back to Pi's own retry, which keeps the
-session id and therefore the session pin - so the next pick still routes back to
-the pinned seat once that seat is healthy again.
+Before the change the `retry_policy` block shipped AuthenticationErrorRetries:2 /
+RateLimitErrorRetries:2 / InternalServerErrorRetries:2. On a pinned seat that
+fail-fast 429s, the router spent a second (and third) in-group attempt on a fresh
+seat, re-sending the whole cold prompt. The fix cuts the counts to 0 (401, which
+can never recover) / 1 (429, 500) so the worker group spends at most one attempt
+before the call reaches the fallback group or Pi's own retry. Pi keeps
+x-litellm-session-id and the session pin is first-writer-wins, so a pinned seat
+that recovers is re-picked on the next call.
 
-These tests run in-process against litellm 1.98.0 (the version pinned in this
-repo's wheel cache / prod) and need no Redis: with `optional_pre_call_checks:
-["session_affinity"]` and no redis_url the DeploymentAffinityCheck degrades to a
-pod-local pin (the same code path the proxy uses; only the Lua-script claim
-differs, not the routing decision). They also run without a network - a plain
+What this does NOT do: stock litellm 1.98.0 runs the fallback group on the first
+retryable error, so a briefly-failing pinned seat is not guaranteed a same-row
+retry. These tests measure the in-group pick count, not a same-seat retry.
+
+These tests run in-process against litellm 1.98.0 (the version pinned for prod)
+and need no Redis: with `optional_pre_call_checks: ["session_affinity"]` and no
+redis_url the DeploymentAffinityCheck degrades to a pod-local pin. The affinity
+lookup is the same code path the proxy uses; only the Redis Lua-script claim
+differs, not the routing decision. They also run without a network - a plain
 http.server answers one row 429 and the peers 200.
 
-Run directly with the pinned venv (no pytest there):
-  /home/nish/.local/venvs/litellm/bin/python \
-      tests/test_router_retry_policy_no_cross_seat.py
+Run with the interpreter that has litellm 1.98.0 installed:
+  <litellm-python> tests/test_router_retry_policy_no_cross_seat.py
 or under pytest from the repo root if litellm is on the path.
 """
 from __future__ import annotations
@@ -34,6 +37,7 @@ import litellm
 from litellm import Router
 from litellm.exceptions import AuthenticationError, InternalServerError, RateLimitError
 from litellm.router_utils.get_retry_from_policy import get_num_retries_from_retry_policy
+from litellm.router_utils.pre_call_checks.deployment_affinity_check import DeploymentAffinityCheck
 from litellm.types.router import RetryPolicy
 
 import yaml
@@ -59,7 +63,18 @@ RP_PROPOSED = {
     "ContentPolicyViolationErrorRetries": 0,
 }
 
-PIN_KEY = "deployment_affinity:v1:session:worker-capable:unscoped:{sid}"
+def _pin_key(session_id: str) -> str:
+    """The exact pin key litellm's DeploymentAffinityCheck reads and writes, taken
+    from litellm itself so a key-shape change cannot silently pass this test."""
+    return DeploymentAffinityCheck.get_session_affinity_cache_key(
+        model_group="worker-capable", session_id=session_id, user_key=None)
+
+
+def _counts(paths: List[str]) -> dict:
+    counts: dict = {}
+    for path in paths:
+        counts[path] = counts.get(path, 0) + 1
+    return counts
 
 
 # --------------------------------------------------------------------------- #
@@ -149,8 +164,11 @@ async def _run(server, retry_policy, sid):
             deployment_affinity_ttl_seconds=3600,
             retry_policy=retry_policy,
         )
+        # Pin seat-a the way a first successful call does. This router is
+        # in-memory (no redis_url) while prod uses redis_url, but the affinity
+        # lookup the routing decision depends on is the same.
         await router.cache.async_set_cache(
-            key=PIN_KEY.format(sid=sid), value={"model_id": "seat-a"}, ttl=3600)
+            key=_pin_key(sid), value={"model_id": "seat-a"}, ttl=3600)
         outcome = "ok"
         try:
             await router.acompletion(model="worker-capable",
@@ -159,7 +177,7 @@ async def _run(server, retry_policy, sid):
         except Exception as e:  # noqa: BLE001
             outcome = type(e).__name__
         attempts = list(server.hits)
-        pin = router.cache.in_memory_cache.cache_dict.get(PIN_KEY.format(sid=sid))
+        pin = await router.cache.async_get_cache(key=_pin_key(sid))
         return attempts, outcome, pin
     finally:
         _CURRENT_SERVER.pop()
@@ -213,36 +231,44 @@ def test_internal_server_error_is_inert_on_litellm_1_98_0():
 # --------------------------------------------------------------------------- #
 # End-to-end: a pinned seat that 429s on every attempt (a rate-limited wall).
 # --------------------------------------------------------------------------- #
-def test_shipped_policy_makes_three_upstream_picks_on_a_429_wall():
+def test_shipped_policy_makes_two_in_group_picks_on_a_429_wall():
     server = _Server()
     try:
         attempts, outcome, pin = asyncio.run(_run(server, RP_SHIPPED, "s-shipped-wall"))
     finally:
         server.close()
-    # shipped: attempt-2 re-routes off the pinned seat after the 429 cooldown lands,
-    # attempt-3 hops again; the request only survives via the worker-cheap fallback.
-    assert attempts == ["/fail/chat/completions", "/failcapable/chat/completions", "/okcheap/chat/completions"], attempts
+    # shipped: the pinned seat 429s, the router spends a second in-group attempt on
+    # seat-c (another cold re-send), then the worker-cheap fallback answers. Counts,
+    # not order, are asserted because the in-group pick is a shuffle.
+    assert _counts(attempts) == {
+        "/fail/chat/completions": 1,
+        "/failcapable/chat/completions": 1,
+        "/okcheap/chat/completions": 1,
+    }, attempts
     assert outcome == "ok"
     assert pin == {"model_id": "seat-a"}, pin
 
 
-def test_proposed_policy_makes_two_upstream_picks_on_a_429_wall():
+def test_proposed_policy_makes_one_in_group_pick_on_a_429_wall():
     server = _Server()
     try:
         attempts, outcome, pin = asyncio.run(_run(server, RP_PROPOSED, "s-proposed-wall"))
     finally:
         server.close()
-    # proposed: the single same-row retry is exhausted; the only remaining hop is the
-    # single fallback to worker-cheap. One fewer in-group pick -> one fewer re-sent prompt.
-    assert attempts == ["/fail/chat/completions", "/okcheap/chat/completions"], attempts
+    # proposed: the capped budget leaves a single in-group attempt (the pinned seat)
+    # before the worker-cheap fallback. One fewer in-group pick -> one fewer cold re-send.
+    assert _counts(attempts) == {
+        "/fail/chat/completions": 1,
+        "/okcheap/chat/completions": 1,
+    }, attempts
     assert outcome == "ok"
     assert pin == {"model_id": "seat-a"}, pin
 
 
 def test_pin_survives_a_failed_then_fallback_success():
-    # First-writer-wins: the successful fallback attempt (seat-b) must NOT overwrite
-    # the original pin (seat-a). Pi's own retry keeps the session id, so the next call
-    # re-pinned to seat-a and, once it is healthy again, lands on the same seat.
+    # First-writer-wins: the fallback success on seat-b must NOT overwrite the pin
+    # (seat-a). Pi's own retry keeps the session id, so the next call re-pins to
+    # seat-a and, once it is healthy, lands on the same seat again.
     server = _Server()
     try:
         _, _, pin = asyncio.run(_run(server, RP_PROPOSED, "s-pin-survives"))
@@ -257,8 +283,8 @@ if __name__ == "__main__":
         test_authentication_error_gets_zero_retries,
         test_rate_limit_gets_one_retry,
         test_internal_server_error_is_inert_on_litellm_1_98_0,
-        test_shipped_policy_makes_three_upstream_picks_on_a_429_wall,
-        test_proposed_policy_makes_two_upstream_picks_on_a_429_wall,
+        test_shipped_policy_makes_two_in_group_picks_on_a_429_wall,
+        test_proposed_policy_makes_one_in_group_pick_on_a_429_wall,
         test_pin_survives_a_failed_then_fallback_success,
     ]
     failures = 0

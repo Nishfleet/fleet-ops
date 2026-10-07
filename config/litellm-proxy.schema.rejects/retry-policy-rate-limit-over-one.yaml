@@ -1,7 +1,13 @@
 # fleet-ops#9375: the shipped retry budget, refused. 2 in-group retries re-send
-# a worker prompt to a second (and third) seat; the schema caps the count at 1
-# so a retry can never hop the session pin off its seat. This fixture is CI's
-# proof the cap is real: one value over it and the config is rejected.
+# a worker prompt to a second (and third) seat; the schema caps the count at 1 so
+# the second in-group pick is gone. This fixture is CI's proof the cap is real:
+# .github/workflows/ci.yml runs check-jsonschema over
+# config/litellm-proxy.schema.rejects/*.yaml and requires every file to fail.
+# check-jsonschema reports
+#   $.router_settings.retry_policy.RateLimitErrorRetries: 2 is greater than the maximum of 1
+# Like every rejects fixture this is a fragment, so it also trips the model_list
+# judge-row `contains` rule; the cap is the named error line, not the file's only error.
+# Both required top-level keys (model_list, router_settings) are present.
 model_list:
 - model_name: worker-cheap
   litellm_params:
