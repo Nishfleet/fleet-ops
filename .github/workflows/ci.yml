@@ -735,7 +735,7 @@ jobs:
           mkdir -p "$t/bin"
           block() { yq ".jobs.report.steps[] | select(.name == \"Strike or requeue\") | .$1" .github/workflows/agent.yml; }
           block run > "$t/report.sh"
-          for v in LOAD1 CORES SWAP_USED_KB WORKER_TIMEOUT_SECS CPU_LOAD_FACTOR SWAP_GUARD_KB INFRA_REQUEUE_CAP; do
+          for v in LOAD1 CORES SWAP_USED_KB ROUTER_ERR SHORT_RUN_SECS WORKER_TIMEOUT_SECS CPU_LOAD_FACTOR SWAP_GUARD_KB INFRA_REQUEUE_CAP; do
             val=$(block "env.$v")
             [ -n "$val" ] && [ "$val" != null ] || { echo "report env $v missing"; exit 1; }
           done
@@ -745,11 +745,25 @@ jobs:
           CPU_LOAD_FACTOR=$(block env.CPU_LOAD_FACTOR)
           SWAP_GUARD_KB=$(block env.SWAP_GUARD_KB)
           INFRA_REQUEUE_CAP=$(block env.INFRA_REQUEUE_CAP)
-          export WORKER_TIMEOUT_SECS CPU_LOAD_FACTOR SWAP_GUARD_KB INFRA_REQUEUE_CAP
+          SHORT_RUN_SECS=$(block env.SHORT_RUN_SECS)
+          export WORKER_TIMEOUT_SECS CPU_LOAD_FACTOR SWAP_GUARD_KB INFRA_REQUEUE_CAP SHORT_RUN_SECS
           # The work job must sample the host at the death moment and hand the
           # numbers to report through the job outputs.
           yq '.jobs.work.steps[] | select(.id == "host") | .run' .github/workflows/agent.yml > "$t/sample.sh"
           sample_out=$t/sample.out
+          # The sample also greps worker.err for a router 429/500 (fleet-ops#9372).
+          printf 'litellm: HTTP 429 RateLimitError\n' > "$RUNNER_TEMP/worker.err"
+          GITHUB_OUTPUT="$sample_out" bash "$t/sample.sh"
+          grep -qx 'router_err=true' "$sample_out" || { echo "host sample: router 429 in worker.err not detected"; exit 1; }
+          for e in 'HTTP 500 Internal Server Error' 'no deployments available' 'status: 500'; do
+            printf '%s\n' "$e" > "$RUNNER_TEMP/worker.err"; : > "$sample_out"
+            GITHUB_OUTPUT="$sample_out" bash "$t/sample.sh"
+            grep -qx 'router_err=true' "$sample_out" || { echo "host sample: '$e' not detected"; exit 1; }
+          done
+          printf 'tests passed in 1500 ms, 5000 tokens\n' > "$RUNNER_TEMP/worker.err"; : > "$sample_out"
+          GITHUB_OUTPUT="$sample_out" bash "$t/sample.sh"
+          grep -qx 'router_err=false' "$sample_out" || { echo "host sample: false positive on a non-router line"; exit 1; }
+          rm -f "$RUNNER_TEMP/worker.err"; : > "$sample_out"
           GITHUB_OUTPUT="$sample_out" bash "$t/sample.sh"
           for k in load1 cores swap_used_kb; do
             grep -Eq "^$k=[0-9]+(\\.[0-9]+)?$" "$sample_out" || { echo "host sample: $k missing or malformed"; exit 1; }
@@ -757,6 +771,7 @@ jobs:
           yq '.jobs.work.outputs.load1' .github/workflows/agent.yml | grep -F 'steps.host.outputs.load1' >/dev/null || { echo "work outputs.load1 not wired"; exit 1; }
           yq '.jobs.work.outputs.cores' .github/workflows/agent.yml | grep -F 'steps.host.outputs.cores' >/dev/null || { echo "work outputs.cores not wired"; exit 1; }
           yq '.jobs.work.outputs.swap_used_kb' .github/workflows/agent.yml | grep -F 'steps.host.outputs.swap_used_kb' >/dev/null || { echo "work outputs.swap_used_kb not wired"; exit 1; }
+          yq '.jobs.work.outputs.router_err' .github/workflows/agent.yml | grep -F 'steps.host.outputs.router_err' >/dev/null || { echo "work outputs.router_err not wired"; exit 1; }
           cat > "$t/bin/gh" <<'MOCK'
           #!/usr/bin/env bash
           prog=""; jqnext=0; args=()
@@ -781,7 +796,7 @@ jobs:
           chmod +x "$t/bin/gh"
           export GITHUB_RUN_ID=4242424242 GITHUB_REPOSITORY=Nishfleet/fleet-ops GITHUB_SERVER_URL=https://github.com
           bad=0
-          while IFS='|' read -r name fixture ref l1 co sw prior infra started want; do
+          while IFS='|' read -r name fixture ref l1 co sw rerr prior infra started want; do
             export STATE=$t/$name FIXTURE=$t/$name-jobs.json COMMENTS=$t/$name-comments.json
             mkdir -p "$STATE"
             : > "$STATE/commented"; : > "$STATE/edited"
@@ -790,7 +805,7 @@ jobs:
               '{comments: ([if $s == 1 then {body: ("agent run started: " + $u), authorAssociation: "NONE"} else empty end]
                 + [if $p == 1 then {body: "agent run failed: https://github.com/Nishfleet/fleet-ops/actions/runs/111", authorAssociation: "NONE"} else empty end]
                 + [range($n) | {body: "agent run infra-failed: https://github.com/Nishfleet/fleet-ops/actions/runs/222", authorAssociation: "NONE"}])}' > "$COMMENTS"
-            export N=$ref LOAD1=$l1 CORES=$co SWAP_USED_KB=$sw
+            export N=$ref LOAD1=$l1 CORES=$co SWAP_USED_KB=$sw ROUTER_ERR=$rerr
             API_FAIL=
             if [ "$name" = jobs-api-fails ]; then API_FAIL=1; fi
             export API_FAIL
@@ -808,7 +823,7 @@ jobs:
             if [ "$got" != "$want" ] || [ "$rc" != 0 ]; then
               echo "case $name: got=$got (want $want) exit=$rc"; cat "$STATE/out"; bad=1
             fi
-          done < <(jq -r '.cases[] | [.name, .fixture, .ref, .env.LOAD1, .env.CORES, .env.SWAP_USED_KB, (.prior_failed_comment|tostring), (.prior_infra_comments // 0 | tostring), (if .started_comment then 1 else 0 end), .want] | map(tostring) | join("|")' config/infra-wall-events.json)
+          done < <(jq -r '.cases[] | [.name, .fixture, .ref, .env.LOAD1, .env.CORES, .env.SWAP_USED_KB, (.env.ROUTER_ERR // ""), (.prior_failed_comment|tostring), (.prior_infra_comments // 0 | tostring), (if .started_comment then 1 else 0 end), .want] | map(tostring) | join("|")' config/infra-wall-events.json)
           test "$bad" -eq 0
 
   # Coordinator approval as a required status check (fleet-ops#9383).
