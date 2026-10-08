@@ -1,0 +1,40 @@
+# Agent Tincan relay on the VPS. Before this, the relay ran on the Mac (LaunchDaemon, tsnet node
+# `tincan-relay`), so every Tincan message stopped whenever the Mac was down (fleet-ops#9455).
+# The Mac was chosen only so VPS agents could not approve held requests. Nish dropped that gate on
+# 2026-10-04 (no approval.json), so the reason is gone.
+#
+# Stock only, no glue: the vendor's own `tincan relay` in its default mode, as its own tailnet node
+# (tsnet, hostname tincan-relay-vps, port 80). Not `--listen`: with --listen the relay binds the
+# host's tailnet IP, and this host drops non-root connections to its own tailnet IP
+# (tailscale-peerapi-uid-filter), so VPS agents could not reach it. Proven 2026-10-08.
+# No approval.json is created, so there is no gate.
+#
+# First start needs a one-time login: the journal prints "go to: https://login.tailscale.com/a/..."
+# Open it signed in as Nish and approve. State then lives in ~/.local/state/tincan-relay/tsnet.
+#
+# Install (after merge, from the deploy clone):
+#   systemctl --user link   /home/nish/workspaces/tooling/fleet-ops-deploy-clone/systemd/tincan-relay.service
+#   systemctl --user enable --now tincan-relay.service
+# Admin (invite, agents, trace): tincan <cmd> --socket ~/.local/state/tincan-relay/admin.sock
+# Switch off: systemctl --user disable --now tincan-relay.service
+#   (every Tincan agent then loses its relay until it is started again).
+# Delete: switch off, `systemctl --user unlink tincan-relay.service`, then delete this file in a PR.
+# State: ~/.local/state/tincan-relay (relay.db, wake.json, admin.sock, tsnet/). Back it up with ~/.local/state.
+[Unit]
+Description=Agent Tincan relay (tincan relay, own tailnet node)
+Wants=network-online.target tailscaled.service
+After=network-online.target tailscaled.service
+OnFailure=fleet-unit-failed@%N.service
+
+[Service]
+Environment=FLEET_TASK_ID=tincan-relay
+StateDirectory=tincan-relay
+StateDirectoryMode=0700
+ExecStart=/home/nish/.local/bin/tincan relay --hostname tincan-relay-vps --state-dir %S/tincan-relay --no-auto-rebind --release-url https://github.com/mvanhorn/agent-tincan/releases/download --upgrade-exit
+Restart=always
+RestartSec=10
+# --upgrade-exit leaves with status 75 for the supervisor to restart the relay.
+SuccessExitStatus=75
+
+[Install]
+WantedBy=default.target
