@@ -1,227 +1,555 @@
-"""fleet-ops#9469: a 404 lane drops out of rotation on the first 404 and the
-call falls through to the next lane in the group.
+"""fleet-ops#9469: a 404 lane parks on the FIRST 404 and the job falls through.
 
-Runs against the pinned LiteLLM v1.98.0 Router with the proxy's production
-router settings (cooldown_time 60, allowed_fails 1, num_retries 0,
-simple-shuffle). LiteLLM v1.98.0's `_is_cooldown_required`
-(litellm/router_utils/cooldown_handlers.py) accepts 404, so the failure
-callback runs, but `should_cooldown_based_on_allowed_fails_policy` resolves the
-threshold from `router_settings.allowed_fails_policy`. With the key unset it
-falls back to the router-level `allowed_fails` (1) and the lane needs TWO 404s
-to park; `router_settings.allowed_fails_policy.NotFoundErrorAllowedFails: 0`
-parks it on the FIRST. The `dead_hits == 2` count below depends on that v1.98.0
-rule (`updated_fails > allowed_fails`); a LiteLLM bump that changes it moves the
-number. `test_production_config_parks_on_first_404` reads the shipped config so
-the drill cannot pass on a policy the config does not carry.
+The failure this guards (2026-10-08 23:03 IST, fo9459-approver.service): a pi job
+picked a CommandCode ling-3.0-flash-sante:free row whose free tier had ended. The
+provider answered 404 "This model is unavailable for free. The paid version is
+available now - use this slug instead: inclusionai/ling-3.0-flash-sante". LiteLLM
+v1.98.0 maps 404 to NotFoundError, which Router.should_retry_this_error
+hard-raises on and no retry_policy key covers, so the call itself still leaves the
+group - it falls through via router_settings.fallbacks. What did not happen is the
+DEAD ROW leaving rotation: without a matching allowed_fails_policy entry the
+per-exception threshold falls back to the router-level allowed_fails (1), so the
+row needed a SECOND 404 to park and leaked one 404 to a caller on every other
+pick.
 
-The failure does not retry in-group: `Router.should_retry_this_error` hard-raises
-on `litellm.NotFoundError` and `retry_policy` has no 404 field in v1.98.0. The
-job leaves the group through the order-based fallback
-(`Router.async_function_with_fallbacks_common_utils`, "ORDER-BASED FALLBACKS"),
-which retargets the same model group to the next order level. That is the
-production path: `worker-capable` has 49 order-1 rows and 2 order-2 rows, so a
-404 on an order-1 free lane retargets to an order-2 paid lane; the explicit
-`router_settings.fallbacks` (`worker-capable -> worker-cheap`) is the
-cross-group net behind it. This test pins the order shape: a dead order-1 lane,
-a live order-2 lane, and real `router.acompletion` calls through LiteLLM's own
-failure path.
+This test pins the mechanism against the pinned proxy image
+(ghcr.io/berriai/litellm:v1.98.0, containers/quadlet/fleet-litellm-proxy.container),
+not against a mock of it:
 
-The upstream is a local HTTP server so the drill is deterministic and spends
-nothing. It answers `/dead/chat/completions` with the OpenAI 404 body and
-`/ok/chat/completions` with a valid chat completion, and counts hits. The lane
-being "out of rotation" is measured the only way that matters: the next real
-call does not reach the dead path again.
+  * _should_cooldown_based_on_deployment_policy returns None when the policy
+    covers neither the exception type nor the model, which makes
+    _should_cooldown_deployment fall through to the router-level policy
+    (types/router.py, Router.get_allowed_fails_from_policy). That fall-through is
+    what lets one router-level key reach all 81 rows, every one of which carries
+    its own deployment-level allowed_fails_policy.
+  * The cooldown a 404 applies is the ROW's own cooldown_time
+    (_first_present(model_info, litellm_params, key="cooldown_time")), not the
+    router-level 60 s - measured below on a row set to 21600 s.
+  * The cooldown is written inside the failing acompletion call, before it
+    raises, so the test reads it back with the router's own reader
+    (CooldownCache.get_active_cooldowns) instead of sleeping on a clock.
+  * The row stays in the router. It comes back when the cooldown expires and
+    re-probes itself, which is what picks up a quota reset or a restored model.
+
+Shape: the dead lane is the group's only order-1 row and the live lane is its
+order-2 overflow row, so the first call deterministically picks the dead lane and
+every later call falls to the overflow - the same "cooled row leaves the
+candidate list, the next row in the group takes the job" path the fleet gets.
+With two rows on the same order, simple-shuffle picks between them and the test
+would be a coin flip.
+
+No network beyond 127.0.0.1, no Redis, no API key. Run:
+    python tests/test_router_404_fallthrough.py
 """
+
+from __future__ import annotations
+
 import asyncio
 import json
+import os
+import sys
 import threading
+import time
+import warnings
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-from litellm import Router
+import pytest
 
-DEAD_MODEL = "fleet-ops-9469-promo-ended-probe"
-LIVE_MODEL = "fleet-ops-9469-live-lane"
-CALLS = 3
+pytest.importorskip("litellm")
 
+import litellm  # noqa: E402
+import yaml  # noqa: E402
+from litellm import Router  # noqa: E402
+from litellm.router_utils.cooldown_handlers import (  # noqa: E402
+    _resolve_allowed_fails_from_policy,
+)
 
-class _Upstream:
-    """Local OpenAI-compatible upstream: one 404 path and one 200 path."""
+ROOT = Path(__file__).resolve().parents[1]
+CONFIG_PATH = ROOT / "config" / "litellm-proxy.yaml"
 
-    def __init__(self):
-        self.hits = {"dead": 0, "ok": 0}
-        self._server = None
-        self._thread = None
-        self.port = None
+DEAD_MODEL = "dead-lane"
+LIVE_MODEL = "live-lane"
 
-    def start(self):
-        upstream = self
+# The router-level policy config/litellm-proxy.yaml ships, minus the key under
+# test. #9468, #9122 and #9248 set the other four.
+BASE_POLICY = {
+    "AuthenticationErrorAllowedFails": 0,
+    "RateLimitErrorAllowedFails": 1,
+    "TimeoutErrorAllowedFails": 1,
+    "InternalServerErrorAllowedFails": 1,
+}
 
-        class Handler(BaseHTTPRequestHandler):
-            def log_message(self, *args):  # keep the drill output clean
-                pass
+# A worker call as the fleet makes it (Pi always streams upstream, but the
+# parking decision is taken before the body is read, so a plain call exercises it).
+MESSAGES = [{"role": "user", "content": "hello"}]
 
-            def _reply(self, status, payload):
-                body = json.dumps(payload).encode()
-                self.send_response(status)
-                self.send_header("Content-Type", "application/json")
-                self.send_header("Content-Length", str(len(body)))
-                self.end_headers()
-                self.wfile.write(body)
-
-            def do_POST(self):
-                self.rfile.read(int(self.headers.get("Content-Length", 0) or 0))
-                if "/dead/" in self.path:
-                    upstream.hits["dead"] += 1
-                    self._reply(
-                        404,
-                        {
-                            "error": {
-                                "message": "This model is unavailable for free. The paid version is available now.",
-                                "type": "invalid_request_error",
-                                "code": "model_not_found",
-                            }
-                        },
-                    )
-                elif "/ok/" in self.path:
-                    upstream.hits["ok"] += 1
-                    self._reply(
-                        200,
-                        {
-                            "id": "chatcmpl-9469",
-                            "object": "chat.completion",
-                            "created": 0,
-                            "model": LIVE_MODEL,
-                            "choices": [
-                                {
-                                    "index": 0,
-                                    "message": {"role": "assistant", "content": "ok"},
-                                    "finish_reason": "stop",
-                                }
-                            ],
-                            "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2},
-                        },
-                    )
-                else:
-                    self._reply(500, {"error": {"message": f"unexpected path {self.path}"}})
-
-        self._server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
-        self.port = self._server.server_address[1]
-        self._thread = threading.Thread(target=self._server.serve_forever, daemon=True)
-        self._thread.start()
-        return self
-
-    def stop(self):
-        if self._server is not None:
-            self._server.shutdown()
-            self._server.server_close()
+_LOCK = threading.Lock()
+_HITS: dict[str, int] = {"dead": 0, "live": 0}
 
 
-def _row(mid, order, path, port):
+class _Handler(BaseHTTPRequestHandler):
+    """A dead lane (404) and a live lane (200) on one loopback server."""
+
+    def log_message(self, *args):  # keep the drill output readable
+        pass
+
+    def _reply(self, status: int, payload: dict) -> None:
+        body = json.dumps(payload).encode()
+        self.send_response(status)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def do_POST(self):
+        self.rfile.read(int(self.headers.get("Content-Length", 0) or 0))
+        if "/dead/" in self.path:
+            with _LOCK:
+                _HITS["dead"] += 1
+            # The exact shape a provider answers when a free tier has ended
+            # (CommandCode, 2026-10-08): HTTP 404, model_not_found in the body.
+            self._reply(
+                404,
+                {
+                    "error": {
+                        "message": "This model is unavailable for free. The paid "
+                        "version is available now - use this slug instead: "
+                        "inclusionai/ling-3.0-flash-sante",
+                        "type": "invalid_request_error",
+                        "code": "model_not_found",
+                    }
+                },
+            )
+            return
+        with _LOCK:
+            _HITS["live"] += 1
+        self._reply(
+            200,
+            {
+                "id": "chatcmpl-test",
+                "object": "chat.completion",
+                "created": 0,
+                "model": LIVE_MODEL,
+                "choices": [
+                    {
+                        "index": 0,
+                        "message": {"role": "assistant", "content": "ok"},
+                        "finish_reason": "stop",
+                    }
+                ],
+                "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2},
+            },
+        )
+
+
+@pytest.fixture(scope="module")
+def server() -> ThreadingHTTPServer:
+    """One loopback server with a dead lane and a live lane."""
+    server = ThreadingHTTPServer(("127.0.0.1", 0), _Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    yield server
+    server.shutdown()
+    server.server_close()
+
+
+@pytest.fixture(autouse=True)
+def _reset_hits():
+    _HITS["dead"] = 0
+    _HITS["live"] = 0
+    yield
+
+
+def _port(server: ThreadingHTTPServer) -> int:
+    return server.server_address[1]
+
+
+def _production_router_settings(policy: dict) -> dict:
+    """router_settings as the shipped config sets them, with one policy."""
+    config = yaml.safe_load(CONFIG_PATH.read_text())
+    settings = config["router_settings"]
     return {
-        "model_name": "worker-capable",
-        "litellm_params": {
-            "model": f"openai/{mid}",
-            "api_base": f"http://127.0.0.1:{port}/{path}",
-            "api_key": "k",
-            "order": order,
-        },
-        "model_info": {"id": mid},
+        "routing_strategy": settings["routing_strategy"],
+        "cooldown_time": settings["cooldown_time"],
+        "allowed_fails": settings["allowed_fails"],
+        "num_retries": settings["num_retries"],
+        "allowed_fails_policy": policy,
+        # The shipped fallbacks, so the test exercises the same fall-through the
+        # fleet gets: worker-capable -> worker-cheap -> worker-capable.
+        "fallbacks": settings["fallbacks"],
     }
 
 
-def _router(port, not_found_policy):
-    """Production router settings, plus the #9469 knob when asked for."""
-    policy = {
-        "AuthenticationErrorAllowedFails": 0,
-        "RateLimitErrorAllowedFails": 1,
-        "TimeoutErrorAllowedFails": 1,
-        "InternalServerErrorAllowedFails": 1,
+def _production_row_policy() -> dict:
+    """The deployment-level allowed_fails_policy a real row carries.
+
+    All 81 rows in config/litellm-proxy.yaml carry one. If a future row does
+    not, the test says so instead of silently testing an empty policy.
+    """
+    config = yaml.safe_load(CONFIG_PATH.read_text())
+    policies = [
+        (row.get("model_info") or {}).get("allowed_fails_policy")
+        for row in config["model_list"]
+    ]
+    assert all(policies), "every row is expected to carry an allowed_fails_policy"
+    return policies[0]
+
+
+def _router(server, *, policy, deployment_policy, cooldown_time=None):
+    """One group, two rows: the dead lane first (order 1), the live lane second."""
+    litellm_params_dead = {
+        "model": f"openai/{DEAD_MODEL}",
+        "api_base": f"http://127.0.0.1:{_port(server)}/dead/",
+        "api_key": "not-used",
+        "order": 1,
     }
-    if not_found_policy is not None:
-        policy["NotFoundErrorAllowedFails"] = not_found_policy
+    model_info_dead = {"id": DEAD_MODEL}
+    if deployment_policy is not None:
+        model_info_dead["allowed_fails_policy"] = deployment_policy
+    if cooldown_time is not None:
+        litellm_params_dead["cooldown_time"] = cooldown_time
     return Router(
         model_list=[
-            _row(DEAD_MODEL, 1, "dead", port),
-            _row(LIVE_MODEL, 2, "ok", port),
+            {
+                "model_name": "worker-capable",
+                "litellm_params": litellm_params_dead,
+                "model_info": model_info_dead,
+            },
+            {
+                "model_name": "worker-capable",
+                "litellm_params": {
+                    "model": f"openai/{LIVE_MODEL}",
+                    "api_base": f"http://127.0.0.1:{_port(server)}/live/",
+                    "api_key": "not-used",
+                    "order": 2,
+                },
+                "model_info": {"id": LIVE_MODEL},
+            },
         ],
-        routing_strategy="simple-shuffle",
-        cooldown_time=60,
-        allowed_fails=1,
-        num_retries=0,
-        allowed_fails_policy=policy,
+        **_production_router_settings(policy),
     )
 
 
-async def _calls(router, upstream, n):
-    """N real calls in one event loop, so cooldown tasks finish before the next."""
-    answered = []
-    for _ in range(n):
-        try:
-            resp = await router.acompletion(
-                model="worker-capable",
-                messages=[{"role": "user", "content": "reply with the single word: ok"}],
-                stream=False,
-                timeout=30,
-            )
-            answered.append(resp.model)
-        except Exception as exc:  # a failed job is the bug: record, do not raise
-            answered.append(f"{type(exc).__name__}: {str(exc)[:80]}")
-        # 0.2s was measured sufficient on v1.98.0 for the failure callback's
-        # cooldown task to land before the next pick.
-        await asyncio.sleep(0.2)
-    return answered
+def _cooldown(router, deployment_id: str, timeout: float = 10.0):
+    """LiteLLM's own cooldown reader - the sync point this test waits on.
+
+    CooldownCache.get_active_cooldowns is the read the next call makes, so
+    waiting on it is waiting on the router's state rather than on a clock. The
+    write lands inside the failing acompletion call, so the first read normally
+    already sees it; the poll is a deadline, not a sleep.
+    """
+    deadline = time.monotonic() + timeout
+    while True:
+        active = router.cooldown_cache.get_active_cooldowns(
+            [deployment_id], parent_otel_span=None
+        )
+        if active:
+            return active[0][1]
+        if time.monotonic() >= deadline:
+            raise AssertionError(f"no cooldown for {deployment_id} within {timeout} s")
+        time.sleep(0.01)
 
 
-def _run_case(not_found_policy):
-    upstream = _Upstream().start()
-    try:
-        router = _router(upstream.port, not_found_policy)
-        answered = asyncio.run(_calls(router, upstream, CALLS))
-        return {"answered": answered, "dead_hits": upstream.hits["dead"], "ok_hits": upstream.hits["ok"]}
-    finally:
-        upstream.stop()
+def _cooldown_cleared(router, deployment_id: str, timeout: float = 10.0) -> None:
+    """Wait until the router no longer reports this lane as parked."""
+    deadline = time.monotonic() + timeout
+    while True:
+        if not router.cooldown_cache.get_active_cooldowns(
+            [deployment_id], parent_otel_span=None
+        ):
+            return
+        if time.monotonic() >= deadline:
+            raise AssertionError(f"{deployment_id} stayed parked for {timeout} s")
+        time.sleep(0.01)
 
 
-def test_one_404_parks_the_lane_and_the_call_falls_through():
-    """Origin/main leaks a 404 on the 2nd call; the branch parks on the first."""
-    before = _run_case(not_found_policy=None)
-    after = _run_case(not_found_policy=0)
+def _calls(router, count: int) -> list[str]:
+    """`count` calls, each 200 or the raised exception name."""
+    outcomes: list[str] = []
 
-    # Every call answers from the live order-2 lane: the order-based fallback
-    # carries the job there after the dead order-1 lane 404s. LiteLLM may
-    # prefix the id, so match on the lane name, not the exact string.
-    for case in (before, after):
-        assert all(LIVE_MODEL in a for a in case["answered"]), case
-        assert not any(DEAD_MODEL in a for a in case["answered"]), case
+    async def _run() -> None:
+        for _ in range(count):
+            try:
+                response = await router.acompletion(
+                    model="worker-capable",
+                    messages=MESSAGES,
+                    stream=False,
+                    timeout=30,
+                )
+                outcomes.append(str(response.model))
+            except Exception as exc:  # noqa: BLE001 - the outcome IS the exception
+                outcomes.append(type(exc).__name__)
 
-    # Origin/main: the lane stays in rotation until its second 404, so the 2nd
-    # call reaches the dead path again; only then does it park.
-    assert before["dead_hits"] == 2, before
-    assert before["ok_hits"] == CALLS, before
-
-    # Branch: the first 404 parks the lane, so calls 2 and 3 never reach it.
-    assert after["dead_hits"] == 1, after
-    assert after["ok_hits"] == CALLS, after
+    asyncio.run(_run())
+    return outcomes
 
 
-def test_production_config_parks_on_first_404():
-    """The shipped config carries the key, so the drill above matches it."""
-    import yaml
+def _dead_hits(router, calls: int, deployment_id: str = DEAD_MODEL) -> tuple[int, list]:
+    """Call `calls` times and wait for the dead lane's cooldown to land."""
+    outcomes = _calls(router, calls)
+    cooldown = _cooldown(router, deployment_id)
+    return _HITS["dead"], (outcomes, cooldown)
 
-    config = yaml.safe_load(
-        (Path(__file__).resolve().parent.parent / "config" / "litellm-proxy.yaml").read_text()
+
+# --------------------------------------------------------------------------- #
+# the mechanism
+# --------------------------------------------------------------------------- #
+
+
+def test_one_404_parks_the_lane_and_the_call_falls_through(server):
+    """The shipped policy parks on the first 404; the call still gets a 200."""
+    router = _router(
+        server,
+        policy={**BASE_POLICY, "NotFoundErrorAllowedFails": 0},
+        deployment_policy=None,
     )
+    dead, (outcomes, cooldown) = _dead_hits(router, calls=3)
+
+    assert dead == 1, f"the dead lane was picked {dead} times, expected 1"
+    assert outcomes == [LIVE_MODEL] * 3, outcomes
+    assert _HITS["live"] == 3
+    # The parked row records the 404 it was parked for.
+    assert cooldown["status_code"] == "404"
+
+
+def test_two_404s_when_the_threshold_is_one(server):
+    """Before #9469 the key was unset, so the router default of 1 applied."""
+    router = _router(
+        server,
+        policy={**BASE_POLICY, "NotFoundErrorAllowedFails": 1},
+        deployment_policy=None,
+    )
+    dead, (outcomes, cooldown) = _dead_hits(router, calls=3)
+
+    assert dead == 2, f"the dead lane was picked {dead} times, expected 2"
+    assert outcomes == [LIVE_MODEL] * 3
+    assert cooldown["status_code"] == "404"
+
+
+def test_the_router_key_reaches_a_row_with_its_own_deployment_policy(server):
+    """Every production row carries a deployment-level policy.
+
+    That is the merge-vs-replace question: if a deployment policy replaced the
+    router policy, one router-level key could not reach any production row and
+    the fix would be a no-op. v1.98.0 resolves the threshold PER EXCEPTION TYPE
+    (Router.get_allowed_fails_from_policy reads _should_cooldown_based_on_deployment_policy
+    first, then the router policy), so the row's own keys still apply and the
+    router-level NotFoundErrorAllowedFails reaches the row.
+    """
+    deployment_policy = _production_row_policy()
+    assert "NotFoundErrorAllowedFails" not in deployment_policy, (
+        "the fixture must match production: no row names NotFoundError"
+    )
+
+    router = _router(
+        server,
+        policy={**BASE_POLICY, "NotFoundErrorAllowedFails": 0},
+        deployment_policy=deployment_policy,
+    )
+    dead, (outcomes, cooldown) = _dead_hits(router, calls=3)
+    assert dead == 1, f"the dead lane was picked {dead} times, expected 1"
+    assert outcomes == [LIVE_MODEL] * 3
+    assert cooldown["status_code"] == "404"
+
+    # The row's policy is not discarded, it is read PER EXCEPTION TYPE: a 400 is
+    # still the row's own threshold, and only a 404 (which the row does not name)
+    # falls through to the router policy.
+    assert _resolve_allowed_fails_from_policy(
+        deployment_policy, litellm.BadRequestError(message="x", model="y", llm_provider="z")
+    ) == 1
+    assert _resolve_allowed_fails_from_policy(
+        deployment_policy, litellm.NotFoundError(message="x", model="y", llm_provider="z")
+    ) is None
+    assert router.get_allowed_fails_from_policy(
+        litellm.NotFoundError(message="x", model="y", llm_provider="z")
+    ) == 0
+
+    _HITS["dead"] = 0
+    _HITS["live"] = 0
+    router_one = _router(
+        server,
+        policy={**BASE_POLICY, "NotFoundErrorAllowedFails": 1},
+        deployment_policy=deployment_policy,
+    )
+    dead_one, _ = _dead_hits(router_one, calls=3)
+    assert dead_one == 2, (
+        f"with NotFoundErrorAllowedFails: 1 the dead lane was picked "
+        f"{dead_one} times, expected 2 - the deployment policy would be "
+        "replacing the router policy"
+    )
+
+
+def test_a_404_cooldown_lasts_the_rows_own_cooldown_time(server):
+    """The cooldown is the row's, not the router-level 60 s.
+
+    fleet-ops#9122 and #9248 park quota-walled rows for 21600 s so a daily or
+    monthly wall outlasts the park. A 404 on such a row therefore parks it for
+    6 h. That is the measured consequence of #9469: a 404 on a row with a long
+    cooldown_time keeps that row out of rotation for that long. It is the same
+    trade the 429 rows already make, and the row stays live and re-probes
+    (test_the_lane_comes_back_after_its_cooldown_and_re_probes), so a model that
+    comes back is picked up again. The alternative - two 404s - is the bug.
+    """
+    router = _router(
+        server,
+        policy={**BASE_POLICY, "NotFoundErrorAllowedFails": 0},
+        deployment_policy=None,
+        cooldown_time=21600,
+    )
+    dead, (outcomes, cooldown) = _dead_hits(router, calls=1)
+
+    assert dead == 1
+    assert cooldown["cooldown_time"] == 21600
+    assert cooldown["status_code"] == "404"
+    # The row is parked, not deleted: it is still a deployment of the group.
+    assert DEAD_MODEL in [mid for mid in router.get_model_ids()]
+
+
+def test_the_lane_comes_back_after_its_cooldown_and_re_probes(server):
+    """A parked lane re-probes when its cooldown expires.
+
+    This is the path that picks up a restored model or a reset quota, and the
+    reason a long park is not a removal. Both waits are on the router's own
+    cooldown cache: parked, then cleared.
+    """
+    router = _router(
+        server,
+        policy={**BASE_POLICY, "NotFoundErrorAllowedFails": 0},
+        deployment_policy=None,
+        cooldown_time=1,
+    )
+
+    async def _run() -> tuple[list[str], list[int]]:
+        outcomes: list[str] = []
+        parks: list[int] = []
+        for _ in range(2):
+            try:
+                response = await router.acompletion(
+                    model="worker-capable", messages=MESSAGES, stream=False, timeout=30
+                )
+                outcomes.append(str(response.model))
+            except Exception as exc:  # noqa: BLE001 - the outcome IS the exception
+                outcomes.append(type(exc).__name__)
+            # Parked (the router's own reader), then the park expired (a clock,
+            # because expiry is the one thing about a cooldown that is one).
+            parks.append(_cooldown(router, DEAD_MODEL)["cooldown_time"])
+            deadline = time.monotonic() + 10.0
+            while router.cooldown_cache.get_active_cooldowns(
+                [DEAD_MODEL], parent_otel_span=None
+            ):
+                assert time.monotonic() < deadline, f"{DEAD_MODEL} stayed parked"
+                await asyncio.sleep(0.02)
+        return outcomes, parks
+
+    outcomes, parks = asyncio.run(_run())
+
+    assert _HITS["dead"] == 2, (
+        f"the lane was probed {_HITS['dead']} times, expected 2 - it did not "
+        "come back after its cooldown"
+    )
+    assert outcomes == [LIVE_MODEL, LIVE_MODEL]
+    # Each 404 parked it again, for the row's own cooldown_time.
+    assert parks == [1, 1]
+
+
+# --------------------------------------------------------------------------- #
+# the shipped configuration
+# --------------------------------------------------------------------------- #
+
+
+def test_production_config_parks_on_the_first_404():
+    """config/litellm-proxy.yaml ships the key that does this."""
+    config = yaml.safe_load(CONFIG_PATH.read_text())
     policy = config["router_settings"]["allowed_fails_policy"]
-    assert policy["NotFoundErrorAllowedFails"] == 0, policy
+    assert policy["NotFoundErrorAllowedFails"] == 0, (
+        "router_settings.allowed_fails_policy.NotFoundErrorAllowedFails must be 0: "
+        "a 404 is a withdrawn model and must park the row on the first one"
+    )
 
 
-if __name__ == "__main__":
-    for label, policy in (("origin/main (no NotFoundErrorAllowedFails)", None), ("branch (NotFoundErrorAllowedFails: 0)", 0)):
-        case = _run_case(policy)
-        print(f"{label}:")
-        print(f"  answered by:   {case['answered']}")
-        print(f"  dead-path hits: {case['dead_hits']} of {CALLS} calls")
-    test_one_404_parks_the_lane_and_the_call_falls_through()
-    test_production_config_parks_on_first_404()
-    print("PASS one 404 parks the lane and the call falls through")
+def test_production_config_keeps_the_fallthrough_shape():
+    """The parked lane's job has somewhere to go.
+
+    A parked row only helps if the group has another row: worker-capable and
+    worker-cheap each need at least one order-2 overflow row (order filtering is
+    applied after the cooldown filter in v1.98.0 router.py, proven by
+    tests/test_router_order2_overflow.py) and router_settings.fallbacks must
+    carry the worker net both ways so a parked lane is left, not retried.
+    """
+    config = yaml.safe_load(CONFIG_PATH.read_text())
+    rows = config["model_list"]
+
+    for group in ("worker-capable", "worker-cheap"):
+        overflow = [
+            row
+            for row in rows
+            if row["model_name"] == group
+            and (row.get("litellm_params") or {}).get("order") == 2
+        ]
+        assert overflow, f"no order-2 row in the {group} group"
+
+    fallbacks = config["router_settings"]["fallbacks"]
+    assert {"worker-capable": ["worker-cheap"]} in fallbacks
+    assert {"worker-cheap": ["worker-capable"]} in fallbacks
+
+
+if __name__ == "__main__":  # the drill: python tests/test_router_404_fallthrough.py
+    # litellm's global logging worker is bound to the first event loop in the
+    # process, so the second asyncio.run in one process leaves one coroutine
+    # un-awaited. It is litellm's, not this test's, and it is noise here.
+    warnings.filterwarnings("ignore", message="coroutine .* was never awaited")
+
+    failures = 0
+    server = ThreadingHTTPServer(("127.0.0.1", 0), _Handler)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+
+    def check(label: str, fn) -> tuple[int, int]:
+        global failures
+        _HITS["dead"] = 0
+        _HITS["live"] = 0
+        try:
+            fn(server)
+            print(f"PASS  {label}")
+        except AssertionError as exc:
+            failures += 1
+            print(f"FAIL  {label}: {exc}")
+        return _HITS["dead"], _HITS["live"]
+
+    picks = {}
+    picks["one 404"] = check(
+        "one 404 parks the lane and the call falls through",
+        test_one_404_parks_the_lane_and_the_call_falls_through,
+    )
+    picks["two 404s (before #9469)"] = check(
+        "two 404s when the threshold is 1",
+        test_two_404s_when_the_threshold_is_one,
+    )
+    picks["router key + row policy"] = check(
+        "the router key reaches a row with its own deployment policy",
+        test_the_router_key_reaches_a_row_with_its_own_deployment_policy,
+    )
+    check(
+        "a 404 cooldown lasts the row's own cooldown_time",
+        test_a_404_cooldown_lasts_the_rows_own_cooldown_time,
+    )
+    picks["re-probe after cooldown"] = check(
+        "the lane comes back after its cooldown and re-probes",
+        test_the_lane_comes_back_after_its_cooldown_and_re_probes,
+    )
+    check(
+        "production config parks on the first 404",
+        lambda _s: test_production_config_parks_on_the_first_404(),
+    )
+    check(
+        "production config keeps the fallthrough shape",
+        lambda _s: test_production_config_keeps_the_fallthrough_shape(),
+    )
+
+    for label, (dead, live) in picks.items():
+        print(f"  {label}: dead-lane picks={dead} live-lane calls={live}")
+    print(f"file: {os.path.relpath(CONFIG_PATH, ROOT)}")
+    print("DRILL FAILED" if failures else "ALL PASS")
+    server.shutdown()
+    server.server_close()
+    sys.exit(1 if failures else 0)
