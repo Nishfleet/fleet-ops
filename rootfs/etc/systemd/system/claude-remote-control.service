@@ -26,7 +26,16 @@ StandardOutput=null
 # the server starts every session in "auto" mode, which raises prompts with no
 # "always allow" option. permissions.ask/deny in ~/.claude/settings.json still
 # gate force-push, reboot and deletes.
-ExecStart=/home/nish/.local/bin/claude remote-control --name vps-rc --spawn=same-dir --permission-mode bypassPermissions
+# Nish 2026-10-08 (#9425): --no-create-session-in-dir, so relayed coordinator
+# work is fresh-per-task instead of piling into one standing session that only
+# grows. The measurements, the cost and the session-file consequence are in the
+# README, under the weekly-update heading, which is the source.
+# Staged, not live: ansible/host.yml installs and enables this unit and never
+# restarts it, so a merge leaves the old server and its old session running.
+# Only Nish restarts it, because that cuts his phone link. The restart starts
+# with `systemctl daemon-reload`, without which systemd keeps the ExecStart line
+# it already loaded and the flag never takes effect.
+ExecStart=/home/nish/.local/bin/claude remote-control --name vps-rc --spawn=same-dir --permission-mode bypassPermissions --no-create-session-in-dir
 Slice=claude.slice
 OOMScoreAdjust=-900
 Restart=always

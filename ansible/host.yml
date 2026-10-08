@@ -266,7 +266,10 @@
         - /tmp/leviathan.tar.gz
         - /tmp/leviathan
 
-    # enabled only: never restarts the Remote Control link this playbook may run under.
+    # enabled only: never restarts the Remote Control link this playbook may run
+    # under, so a change to the unit file it installs is staged, not applied.
+    # This task adds no reload of its own. The restart, and the reload before
+    # it, are one deliberate step by Nish, in the README under the same heading.
     - name: Enable Remote Control at boot
       ansible.builtin.systemd_service:
         name: claude-remote-control.service
