@@ -502,4 +502,4 @@ by every enrolled repo including drive since 2026-10-06; live count:
 sized from measured memory pressure, fleet-ops#8860), all in `agent.slice` (`rootfs/etc/systemd/system/agent.slice`,
 26G/28G, `MemorySwapMax=1G`). RAM safety is per-unit `MemoryMax` plus
 systemd-oomd, not an admission charge. Live RAM is
-`systemctl --user show -p MemoryPeak <unit>` and `systemctl --user show -p MemoryPeak <unit>` and `systemd-cgtop`.
+`systemctl --user show -p MemoryPeak <unit>` and `systemd-cgtop`.
