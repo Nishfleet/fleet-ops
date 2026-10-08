@@ -17,4 +17,4 @@ This diff touches a path that can change production, billing, customer data, sec
 - Spend with no cap: a loop, retry, fan-out or paid call without a hard limit.
 - Writes on read paths, a second writer for a table, or logic that changes behavior the PR text does not mention.
 
-Answer in plain text, at most 40 lines. One line per finding: `blocker`, `risk` or `nit`, the file, and what breaks and when. If you find no blockers or risks, say `No blockers.` and name the three riskiest lines you checked and why they hold. Do not restate the diff. Do not pad.
+Answer in plain text, at most 40 lines. One line per finding: `blocker`, `risk` or `nit`, the file, and what breaks and when. `blocker` means it will hurt customers, data, money or the fleet after merge, or it removes a gate. `risk` means it could hurt only if another fault happens first or the diff itself calls it unlikely. `nit` is style or a missing test. Only a `blocker` stops the merge, so label honestly. If you find no blockers or risks, say `No blockers.` and name the three riskiest lines you checked and why they hold. Do not restate the diff. Do not pad.
