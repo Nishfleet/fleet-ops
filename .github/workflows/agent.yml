@@ -644,6 +644,8 @@ jobs:
       PR: ${{ inputs.review_pr }}
       SHA: ${{ inputs.review_sha }}
       RISKY_PATHS_URL: https://raw.githubusercontent.com/Nishfleet/fleet-ops/main/config/risky-paths.json
+      # Pi sends this as x-litellm-session-id and exits 1 without it (the work job sets it the same way, #9015).
+      FLEET_TASK_ID: run-${{ github.run_id }}-${{ github.run_attempt }}
     steps:
       - name: Read App private key
         id: app-key
