@@ -66,17 +66,21 @@ model_list:
 # order: 1 on every DeepSeek V4.1 Flash row of this seat, so the new lanes are
 # peers of the existing ones in the shuffle, not fallbacks.
 #
-# No max_budget on the two new rows, on purpose. LiteLLM enforces max_budget per
-# deployment, so a third and a fourth $10/day wall on this one key is more
-# allowance, not a copy: the seat's allowed daily spend would go from $20 to $40
-# against a single prepaid wallet. Re-splitting $20/day over all four lanes
-# (each $5) is the only other way to hold the old ceiling, and it lowers the two
-# existing lanes, which #9378 forbids. So the seat's allowance stays $20/day and
-# the new rows carry no wall, exactly like the nine budget-less rows already on
-# this key. The wallet and the ppi-commandcode 429 alert are the guard for them.
+# No max_budget on the two new rows. This head's budget decision, in one line:
+# the seat's allowance stays $20/day.
+#
+# Why. LiteLLM enforces max_budget per deployment, so a budget is per-lane
+# allowance, not a copy of the neighbouring lane's. Adding $10/day to each of
+# two rows on this one key would have taken the seat from $20/day to $40/day
+# against a single prepaid wallet, and holding $20/day by re-splitting it over
+# all four lanes (each $5) lowers the two existing lanes, which #9378 forbids.
+# So the new rows carry no wall, exactly like the nine budget-less rows already
+# on this key, and the wallet plus the ppi-commandcode 429 alert are the guard
+# for them.
+#
 # Measured LiteLLM_SpendLogs, 2026-10-01..08: openai/deepseek/deepseek-v4.1-flash,
-# 5,438 calls, $12.67 spend = $1.81/day, which is 18% of the existing per-lane
-# wall of $10/day. Doubling the lane count doubles that draw to about $3.63/day.
+# 5,438 calls, $12.67 spend = $1.81/day, which is 18% of the existing $10/day
+# per-lane wall. Doubling the lane count doubles that draw to about $3.63/day.
 #
 # To take one lane out of the shuffle without a config change, a proxy restart or
 # a rollback: POST /model/block with
@@ -821,16 +825,23 @@ model_list:
 # order: 1 on both DeepSeek V4.1 Flash rows of this seat, so the new row is a peer
 # of the proven lane in the shuffle, not a fallback.
 #
-# No max_budget on the new row, on purpose. LiteLLM enforces max_budget per
-# deployment, so a second $10/day wall on this key is more allowance, not a copy:
-# the seat's allowed daily spend would go from $10 to $20 against a single
-# prepaid wallet. Splitting $10 over the two lanes (each $5) is the only other
-# way to hold the old ceiling, and it lowers the existing lane, which #9378
-# forbids. So the seat's allowance stays $10/day and the new row carries no wall,
-# like the three budget-less rows already on this key. The wallet and the
-# ppi-cline 429 alert are the guard for it. Measured LiteLLM_SpendLogs,
-# 2026-10-01..08: openai/cline-pass/deepseek-v4.1-flash, 2,756 calls, $28.75
-# spend = $4.11/day, which is 41% of the existing per-lane wall of $10/day.
+# No max_budget on the new row. This head's budget decision, in one line: the
+# seat's allowance stays $10/day.
+#
+# Why. LiteLLM enforces max_budget per deployment, so a budget is per-lane
+# allowance, not a copy of the neighbouring lane's. Adding $10/day to this row
+# would have taken the seat from $10/day to $20/day against a single prepaid
+# wallet, and splitting $10 over the two lanes (each $5) lowers the existing
+# lane, which #9378 forbids. So the new row carries no wall, like the three
+# budget-less rows already on this key, and the wallet plus the ppi-cline 429
+# alert are the guard for it.
+#
+# Measured LiteLLM_SpendLogs, 2026-10-01..08:
+# openai/cline-pass/deepseek-v4.1-flash, 2,756 calls, $28.75 spend = $4.11/day,
+# which is 41% of the existing $10/day per-lane wall. If the seat goes fully
+# dark on one bad hour (three fail-counted rows on the wall's 6 h TTL), raising
+# this row's RateLimitErrorAllowedFails is a one-line change through the same
+# deploy loop, about 101 s to apply on this host.
 #
 # To take this lane out of the shuffle without a config change, a proxy restart or
 # a rollback: POST /model/block with
