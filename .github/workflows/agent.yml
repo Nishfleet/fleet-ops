@@ -674,12 +674,14 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           ARM_TOKEN: ${{ steps.arm-token.outputs.token }}
+          # Pi sends this as x-litellm-session-id; without it the litellm provider refuses to start (0509 run 37676671633).
+          FLEET_TASK_ID: review-${{ github.run_id }}-${{ github.run_attempt }}
         run: |
           set -euo pipefail
           say() { gh pr comment "$PR" -R "$REPO" --body "$1"; }
           pr=$(gh api "repos/$REPO/pulls/$PR")
           [ "$(jq -r .state <<<"$pr")" = open ] && [ "$(jq -r .head.sha <<<"$pr")" = "$SHA" ] || { echo "head moved or PR closed; the newer event reviews it"; exit 0; }
-          seen=$(gh api --paginate "repos/$REPO/issues/$PR/comments?per_page=100" --jq "[.[] | select(.user.login == \"github-actions[bot]\" and (.body | contains(\"reviewer: $SHA\")))] | length" | paste -sd+ | bc)
+          seen=$(gh api --paginate "repos/$REPO/issues/$PR/comments?per_page=100" --jq "[.[] | select(.user.login == \"github-actions[bot]\" and (.body | contains(\"reviewer: $SHA\")))] | length" | awk '{n+=$1} END{print n+0}')
           [ "$seen" = 0 ] || { echo "$SHA already reviewed"; exit 0; }
           gh api --paginate "repos/$REPO/pulls/$PR/files?per_page=100" --jq '.[] | .filename, (.previous_filename // empty)' > "$RUNNER_TEMP/files.txt"
           cfg=$(curl -fsSL --retry 3 "$RISKY_PATHS_URL" | jq -c .) || cfg=null
