@@ -29,8 +29,8 @@ StandardOutput=null
 # Nish 2026-10-08 (#9425): no pre-created session, so relay work is
 # fresh-per-task. The stock default (--create-session-in-dir) starts one standing
 # session in ~/workspaces that every relayed coordinator message lands in, so it
-# only grows: session a11f73e7 carried a 73k average context over 707 turns and
-# cost $51.9 in 20.9 h, $2.48/h, with a $4.3/h peak in its busiest 3 h (#9407's
+# only grows: session a11f73e7 carried a 73k average context over 708 turns and
+# cost $52.0 in 21.0 h, $2.47/h, with a $4.3/h peak in its busiest 3 h (#9407's
 # measurement). With the flag off, each request from the phone or a claude.ai/code
 # project relay gets its own session that starts and ends with a fresh context.
 # Cost: opening the relay from the phone now creates the session instead of
