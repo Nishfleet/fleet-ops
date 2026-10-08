@@ -36,10 +36,13 @@ StandardOutput=null
 # Cost: opening the relay from the phone now creates the session instead of
 # typing into one that is already there. The flag is stock: it is the
 # --[no-]create-session-in-dir option that `claude remote-control --help`
-# documents as on by default.
+# documents as on by default. The installed build parses it directly, so it is
+# not a typo risk. It conflicts with --continue, --capacity and --spawn, and this
+# unit passes --spawn=same-dir and neither of the others, which is what the
+# binary allows.
 # Staged, not live: ansible/host.yml enables this unit and never restarts it, so
-# a merge leaves the old session running. Only Nish restarts it, in a window he
-# picks, because a restart cuts his phone link.
+# a merge leaves the old session running. Only Nish restarts it, because a
+# restart cuts his phone link (#9425, README).
 ExecStart=/home/nish/.local/bin/claude remote-control --name vps-rc --spawn=same-dir --permission-mode bypassPermissions --no-create-session-in-dir
 Slice=claude.slice
 OOMScoreAdjust=-900

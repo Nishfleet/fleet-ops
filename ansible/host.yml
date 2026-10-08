@@ -247,9 +247,8 @@
         - /tmp/leviathan
 
     # enabled only: never restarts the Remote Control link this playbook may run
-    # under. The unit file it installs is therefore staged, not live: the running
-    # vps-rc server keeps its old session until Nish restarts it in a window he
-    # picks, because that restart cuts his phone link (#9425).
+    # under, so a change to the unit file it installs is staged, not applied.
+    # The rule and its reason are in the README, under the same heading.
     - name: Enable Remote Control at boot
       ansible.builtin.systemd_service:
         name: claude-remote-control.service
