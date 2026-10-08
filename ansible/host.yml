@@ -268,11 +268,16 @@
 
     # enabled only: never restarts the Remote Control link this playbook may run
     # under, so a change to the unit file it installs is staged, not applied.
-    # The rule and its reason are in the README, under the same heading.
+    # daemon_reload is the one safe half of applying it: it loads the new file
+    # without starting or stopping anything, so the staged ExecStart takes effect
+    # at Nish's restart instead of being ignored by the copy systemd already has.
+    # The restart itself, and its reason, are in the README under the same
+    # heading.
     - name: Enable Remote Control at boot
       ansible.builtin.systemd_service:
         name: claude-remote-control.service
         enabled: true
+        daemon_reload: true
 
     - name: Enable the daily drift run
       ansible.builtin.systemd_service:

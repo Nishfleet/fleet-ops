@@ -397,7 +397,19 @@ it is therefore staged on merge: the file is copied in and the running server
 keeps its old session until Nish restarts it, because that restart cuts his
 phone link (#9425). The staged file as of 2026-10-08 adds
 `--no-create-session-in-dir`, so relayed coordinator work no longer piles into
-one standing session; each request gets its own session with a fresh context.
+one standing session. Each request from the phone or a claude.ai/code project
+relay then gets its own session with a fresh context. The one standing session
+it replaces was measured at $52.0 over 21.0 h with a 69k average context; the
+number after the restart is the real test.
+
+- Apply a staged change to it. Nish does this, because it cuts the phone link
+  for about a minute:
+  1. `sudo systemctl daemon-reload` — without it systemd keeps the `ExecStart`
+     line it already loaded, so the new flag never takes effect.
+  2. `sudo systemctl restart claude-remote-control.service`.
+  3. `systemctl --no-pager status claude-remote-control.service` shows
+     `active (running)` with no restart loop, and one message sent from the
+     phone is answered by a session with a fresh context.
 
 - Run it now: `sudo systemctl start --no-block fleet-update.service`, then
   `journalctl -u fleet-update -f`.
