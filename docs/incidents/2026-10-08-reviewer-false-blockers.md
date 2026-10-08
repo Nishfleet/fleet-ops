@@ -10,7 +10,7 @@ The review job gives the model only the PR diff, with `--no-tools --no-context-f
 SELF-MERGE compared each claim against the code on main. Cases are in the reviewer false-blockers log.
 
 ## Fix
-`prompts/risky-review.md` now tells the reviewer it sees only the diff, forbids reporting something as missing because the diff omits it, and requires a blocker to name a concrete input that reaches the faulty line, else it is a `risk`.
+The review job now appends base-tree files to the diff as text: the changed files, files whose exact path the diff names, and modules that import a changed one (capped at 120 KB). The model still has no tools. A tool route was rejected: pi's read tool opens any path, so a PR could steer it to the runner's key files, and the review is posted publicly. `prompts/risky-review.md` now tells the reviewer it sees only the diff, forbids reporting something as missing because the diff omits it, and requires a blocker to name a concrete input that reaches the faulty line, else it is a `risk`.
 
 ## Prevention
-Held-out scoring is still owed (AGENTS.md line 21): run the bot on past risky PRs, including 0509#7092 which must still block, and count false blockers against real ones. If false blocks continue, give the job read access to the base tree instead of prompt rules.
+Held-out scoring is still owed (AGENTS.md line 21): run the bot on past risky PRs, including 0509#7092 which must still block, and count false blockers against real ones. If false blocks continue, widen the context selection before adding rules to the prompt.
