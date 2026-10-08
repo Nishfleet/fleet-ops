@@ -9,15 +9,22 @@ callback runs, but `should_cooldown_based_on_allowed_fails_policy` resolves the
 threshold from `router_settings.allowed_fails_policy`. With the key unset it
 falls back to the router-level `allowed_fails` (1) and the lane needs TWO 404s
 to park; `router_settings.allowed_fails_policy.NotFoundErrorAllowedFails: 0`
-parks it on the FIRST.
+parks it on the FIRST. The `dead_hits == 2` count below depends on that v1.98.0
+rule (`updated_fails > allowed_fails`); a LiteLLM bump that changes it moves the
+number. `test_production_config_parks_on_first_404` reads the shipped config so
+the drill cannot pass on a policy the config does not carry.
 
 The failure does not retry in-group: `Router.should_retry_this_error` hard-raises
 on `litellm.NotFoundError` and `retry_policy` has no 404 field in v1.98.0. The
 job leaves the group through the order-based fallback
 (`Router.async_function_with_fallbacks_common_utils`, "ORDER-BASED FALLBACKS"),
-which retargets the same model group to the next order level. This test pins
-that shape: a dead order-1 lane, a live order-2 lane, and real
-`router.acompletion` calls through LiteLLM's own failure path.
+which retargets the same model group to the next order level. That is the
+production path: `worker-capable` has 49 order-1 rows and 2 order-2 rows, so a
+404 on an order-1 free lane retargets to an order-2 paid lane; the explicit
+`router_settings.fallbacks` (`worker-capable -> worker-cheap`) is the
+cross-group net behind it. This test pins the order shape: a dead order-1 lane,
+a live order-2 lane, and real `router.acompletion` calls through LiteLLM's own
+failure path.
 
 The upstream is a local HTTP server so the drill is deterministic and spends
 nothing. It answers `/dead/chat/completions` with the OpenAI 404 body and
@@ -29,8 +36,8 @@ import asyncio
 import json
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
 
-import litellm
 from litellm import Router
 
 DEAD_MODEL = "fleet-ops-9469-promo-ended-probe"
@@ -119,11 +126,7 @@ def _row(mid, order, path, port):
             "api_key": "k",
             "order": order,
         },
-        "model_info": {
-            "id": mid,
-            "supports_prompt_caching": True,
-            "cache_proof": f"drill row, no cache traffic ({mid})",
-        },
+        "model_info": {"id": mid},
     }
 
 
@@ -164,7 +167,9 @@ async def _calls(router, upstream, n):
             answered.append(resp.model)
         except Exception as exc:  # a failed job is the bug: record, do not raise
             answered.append(f"{type(exc).__name__}: {str(exc)[:80]}")
-        await asyncio.sleep(0.2)  # let the failure callback's cooldown task land
+        # 0.2s was measured sufficient on v1.98.0 for the failure callback's
+        # cooldown task to land before the next pick.
+        await asyncio.sleep(0.2)
     return answered
 
 
@@ -184,9 +189,11 @@ def test_one_404_parks_the_lane_and_the_call_falls_through():
     after = _run_case(not_found_policy=0)
 
     # Every call answers from the live order-2 lane: the order-based fallback
-    # carries the job there after the dead order-1 lane 404s.
-    assert before["answered"] == [LIVE_MODEL] * CALLS, before
-    assert after["answered"] == [LIVE_MODEL] * CALLS, after
+    # carries the job there after the dead order-1 lane 404s. LiteLLM may
+    # prefix the id, so match on the lane name, not the exact string.
+    for case in (before, after):
+        assert all(LIVE_MODEL in a for a in case["answered"]), case
+        assert not any(DEAD_MODEL in a for a in case["answered"]), case
 
     # Origin/main: the lane stays in rotation until its second 404, so the 2nd
     # call reaches the dead path again; only then does it park.
@@ -198,6 +205,17 @@ def test_one_404_parks_the_lane_and_the_call_falls_through():
     assert after["ok_hits"] == CALLS, after
 
 
+def test_production_config_parks_on_first_404():
+    """The shipped config carries the key, so the drill above matches it."""
+    import yaml
+
+    config = yaml.safe_load(
+        (Path(__file__).resolve().parent.parent / "config" / "litellm-proxy.yaml").read_text()
+    )
+    policy = config["router_settings"]["allowed_fails_policy"]
+    assert policy["NotFoundErrorAllowedFails"] == 0, policy
+
+
 if __name__ == "__main__":
     for label, policy in (("origin/main (no NotFoundErrorAllowedFails)", None), ("branch (NotFoundErrorAllowedFails: 0)", 0)):
         case = _run_case(policy)
@@ -205,4 +223,5 @@ if __name__ == "__main__":
         print(f"  answered by:   {case['answered']}")
         print(f"  dead-path hits: {case['dead_hits']} of {CALLS} calls")
     test_one_404_parks_the_lane_and_the_call_falls_through()
+    test_production_config_parks_on_first_404()
     print("PASS one 404 parks the lane and the call falls through")
