@@ -1,0 +1,55 @@
+# Restic backup include list (--files-from), fleet-ops#9360.
+# One path per line. Directories are backed up recursively.
+#
+# This list IS the backup. Anything not listed here is not backed up, so a new
+# 50 GiB build cache somewhere under /home/nish cannot grow the snapshot. The
+# old list was the other way round (back up /home/nish /etc /root /srv
+# /usr/local /var/spool/cron, minus a hand-written exclude file), and that is
+# how the source grew from 9 GiB to 56 GiB.
+#
+# Every kept path has a keep reason and every dropped top-level path has a
+# drop reason in the inventory table in README.md. Add a path only there and
+# here, together.
+
+# Keys and credentials. None of these can be regenerated: losing them locks
+# Nish out of the box, GitHub, Cloudflare and R2 itself.
+/home/nish/.config
+/home/nish/.ssh
+/home/nish/.gnupg
+/home/nish/.git-credentials
+/home/nish/.netrc
+
+# Vault and agent memory. The standing rules name the vault as the durable
+# memory: one fact per file, edited in place. tooling/nish-vault is that vault
+# (35 MiB); the ~/nish-vault beside it is only the agent drop inbox.
+# workspaces/agent-memory is the one-line-per-fact memory dir, and the
+# nightly LiteLLM pg_dump lands in agent-state/backups.
+/home/nish/workspaces/tooling/nish-vault
+/home/nish/workspaces/agent-memory
+/home/nish/nish-vault
+/home/nish/workspaces/agent-state/_system
+/home/nish/workspaces/agent-state/backups
+/home/nish/.hermes
+/home/nish/.pi/agent
+
+# Service state with no git remote for its data. The restic unit pg_dumps
+# LiteLLM first (restic-r2-backup.service ExecStartPre), but a raw copy of the
+# data dir is what survives a corrupt or failing dump.
+/home/nish/.local/share/fleet-litellm-postgres
+/home/nish/.local/share/fleet-litellm-redis
+/home/nish/.local/share/fleet-grafana
+/home/nish/.local/share/drive
+
+# System configuration: units, ssh keys, polkit, sysctl, cron entries.
+/etc
+/root
+/var/spool/cron
+
+# Hand-installed binaries that no package owns.
+/usr/local
+
+# Podman container volumes (real container data).
+/home/nish/.local/share/containers/storage/volumes
+
+# Application data.
+/srv/aiostreams

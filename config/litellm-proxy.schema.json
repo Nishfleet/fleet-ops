@@ -11,20 +11,29 @@
       "properties": { "model_name": { "const": "judge" } }
     },
     "judgePaidRow": {
-      "$comment": "fleet-ops#9374: the paid row, on the Token Plan's own numbers. rpm and max_parallel_requests are what the plan allows (3 per minute, 3 at once); neither was raised when the row became the judge primary, and raising either is a deliberate change with its own issue, not an edit to this file. model, api_base and api_key pin the seat, so a judge row cannot point the order-1 rung at another provider or spend another seat's key.",
+      "$comment": "fleet-ops#9374: the paid row, on the Token Plan's own numbers. rpm and max_parallel_requests are what the plan allows (3 per minute, 3 at once); neither was raised when the row became the judge primary, and raising either is a deliberate change with its own issue, not an edit to this file. model, api_base and api_key pin the seat, so a judge row cannot point the order-1 rung at another provider or spend another seat's key. fleet-ops#9405: extra_body.enable_thinking and extra_body.thinking_budget 2048 are required, because without a thinking budget this row spent the whole completion on reasoning and returned an empty body on a 40 KB diff. Sibling keys on the row never reach the DashScope compatible-mode endpoint (LiteLLM only forwards them through extra_body), so the pair lives here, not as litellm_params siblings and not as pi samplingParams.",
       "allOf": [
         { "$ref": "#/$defs/judgeRow" },
         {
           "properties": {
             "litellm_params": {
-              "required": ["model", "api_base", "api_key", "order", "rpm", "max_parallel_requests"],
+              "required": ["model", "api_base", "api_key", "order", "rpm", "max_parallel_requests", "extra_body"],
               "properties": {
                 "model": { "const": "openai/qwen3.8-max" },
                 "api_base": { "const": "https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1" },
                 "api_key": { "const": "os.environ/ALIBABA_CODING_API_KEY" },
                 "order": { "const": 1 },
                 "rpm": { "const": 3 },
-                "max_parallel_requests": { "const": 3 }
+                "max_parallel_requests": { "const": 3 },
+                "extra_body": {
+                  "type": "object",
+                  "required": ["enable_thinking", "thinking_budget"],
+                  "additionalProperties": false,
+                  "properties": {
+                    "enable_thinking": { "const": true },
+                    "thinking_budget": { "const": 2048 }
+                  }
+                }
               }
             }
           }

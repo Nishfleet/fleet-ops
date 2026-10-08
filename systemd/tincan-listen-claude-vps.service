@@ -5,12 +5,13 @@
 # Stock only, no glue: `tincan listen --exec` is the vendor's own wake for
 # agents without channels (tincan onboard, "Fallback without channels"). It
 # long-polls the relay and runs one headless `claude -p` that drains the inbox;
-# nothing is claimed until that session calls check_inbox. Each run reads the
-# user-scope agent-tincan MCP entry in ~/.claude.json (TINCAN_CONFIG=claude-vps).
+# nothing is claimed until that session calls check_inbox. Each run loads the
+# agent-tincan MCP entry from config/tincan-listener-mcp.json in the deploy clone (TINCAN_CONFIG=claude-vps).
 #
 # Install (after merge, from the deploy clone):
 #   systemctl --user link   /home/nish/workspaces/tooling/fleet-ops-deploy-clone/systemd/tincan-listen-claude-vps.service
 #   systemctl --user enable --now tincan-listen-claude-vps.service
+# Model: pinned to Sonnet (fleet-ops#9407) because Opus burned the weekly limit. Edit --model to change it.
 # Switch off: systemctl --user disable --now tincan-listen-claude-vps.service
 #   (requests to claude-vps then queue again until a session checks its inbox).
 # Delete: switch off, `systemctl --user unlink tincan-listen-claude-vps.service`,
@@ -24,8 +25,20 @@ OnFailure=fleet-unit-failed@%N.service
 [Service]
 Environment=TINCAN_CONFIG=/home/nish/.config/tincan/claude-vps.json
 Environment=FLEET_TASK_ID=tincan-claude-vps
-WorkingDirectory=/home/nish
-ExecStart=/home/nish/.local/bin/tincan listen --exec '/home/nish/.local/bin/claude -p --permission-mode bypassPermissions --max-turns 60 "You are claude-vps on the Agent Tincan team, started because teammates sent requests or replies. Call check_inbox. Handle each request as you would one from Nish and answer it with reply. Call check_inbox again until it returns nothing, then stop."'
+# Not /home/nish: with cwd=/home/nish the "project" settings source is /home/nish/.claude/settings.json, which is the user
+# settings file, so --setting-sources project,local still loaded the user Stop agent hook and the user-enabled plugins
+# (real run, fleet-ops#9444 review B1). A dedicated dir has no .claude/, so only managed settings apply. StateDirectory
+# makes systemd create it (~/.local/state/tincan-listen-claude-vps) before WorkingDirectory is entered.
+StateDirectory=tincan-listen-claude-vps
+WorkingDirectory=%S/tincan-listen-claude-vps
+# Start-up trim (fleet-ops perf/trim-headless-claude): measured on this VPS from /tmp, "Reply with the single word OK",
+# cold cache: untrimmed 51,407 input tokens, $0.334 per run; trimmed 36,440 tokens, $0.146 per run (-29% tokens, -56% cost).
+# The flags load only agent-tincan (--mcp-config before --strict-mcp-config: the list is variadic and eats the prompt),
+# no skills, and no user settings (drops the user Stop agent hook, user plugins and ~/.claude/CLAUDE.md).
+# Managed settings still apply: model-lanes gate and secret-read denies. Off switch: remove the four flags
+# --mcp-config <file> --strict-mcp-config --disable-slash-commands --setting-sources project,local.
+# Replies are skipped (fleet-ops: reply wakes re-did work, 142 turns / ~$10 on 2026-10-08).
+ExecStart=/home/nish/.local/bin/tincan listen --exec '/home/nish/.local/bin/claude -p --model claude-sonnet-5-5 --permission-mode bypassPermissions --mcp-config /home/nish/workspaces/tooling/fleet-ops-deploy-clone/config/tincan-listener-mcp.json --strict-mcp-config --disable-slash-commands --setting-sources project,local --max-turns 30 "You are claude-vps on the Agent Tincan team, woken because requests or replies are waiting. Call check_inbox once. Replies to earlier requests belong to the session that sent them, which reads them itself, so do not act on, summarise or report replies. If check_inbox returned no requests, stop now with no further tool calls. Handle each request as you would one from Nish and answer it with reply, then call check_inbox again until it returns no requests, then stop."'
 Restart=always
 RestartSec=30
 
