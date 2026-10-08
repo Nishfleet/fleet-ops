@@ -8,6 +8,10 @@ model_list:
 router_settings:
   redis_url: redis://127.0.0.1:6379
   cooldown_time: 60
+  # Set so this file fails on the missing 404 key alone, not on the affinity
+  # rules fleet-ops#9473 added.
+  optional_pre_call_checks: ["prompt_caching", "session_affinity"]
+  deployment_affinity_ttl_seconds: 600
   # The router-level policy names four exception types but not NotFoundError, so a
   # 404 falls back to the router-level allowed_fails (1) and the row needs TWO
   # 404s to park: a dead lane is picked again and leaks the 404 to the next

@@ -205,7 +205,7 @@
     "benched": false,
     "router_settings": {
       "type": "object",
-      "required": ["redis_url"],
+      "required": ["redis_url", "deployment_affinity_ttl_seconds", "optional_pre_call_checks"],
       "properties": {
         "cooldown_time": { "type": "integer", "minimum": 1, "maximum": 60 },
         "allowed_fails_policy": {
@@ -221,7 +221,13 @@
             "NotFoundErrorAllowedFails": { "type": "integer", "const": 0 }
           }
         },
-        "redis_url": { "type": "string", "pattern": "^redis://" }
+        "redis_url": { "type": "string", "pattern": "^redis://" },
+        "deployment_affinity_ttl_seconds": { "type": "integer", "minimum": 300, "maximum": 600 },
+        "optional_pre_call_checks": {
+          "type": "array",
+          "contains": { "const": "session_affinity" },
+          "description": "Must contain session_affinity. Without that pre-call check the router never runs DeploymentAffinityCheck, so a session pin cannot exist, every call in a session shuffles across vendors and the prompt cache never hits (fleet-ops#9361)."
+        }
       }
     }
   }

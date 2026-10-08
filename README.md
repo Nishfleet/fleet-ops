@@ -34,15 +34,21 @@ script, or prompt lands unseen.
   repos enrolled in the agent-ready queue (see [Intake enrolment](#intake-enrolment)).
   `config/litellm-proxy.schema.rejects/` holds one YAML per rule
   `config/litellm-proxy.schema.json` must refuse: the bench block, a router
-  cooldown over 60, a zero row cooldown, a row cooldown, and one case per
+  cooldown over 60, a zero row cooldown, a row cooldown, one case per
   judge-group rule (the fallback rows back on order 1, the paid row's rpm
   raised, its concurrency raised, a fourth judge row, the paid row doubled
   as its own fallback, a fallback row renamed, both fallbacks on one key, and
   a swap of the paid row's model, host or key, or of a fallback's model or
-  host). CI
-  validates every file
-  in the directory against the schema and each must fail, so a loosened schema
-  goes red. A new schema rule gets a reject file in the same PR.
+  host), a router with no Redis pin store, a router affinity TTL below 300 and
+  a router affinity TTL above 600, an `optional_pre_call_checks` list without
+  `session_affinity`, one case per cache-declaration rule (a row with no
+  `supports_prompt_caching` flag, a row with no `cache_proof`, a
+  non-cacheable worker row not on `order: 2`, and a worker row forced onto
+  `order: 1`), a router whose `allowed_fails_policy` drops
+  `NotFoundErrorAllowedFails`, and a router whose `NotFoundErrorAllowedFails` is
+  not 0. CI validates every file in the directory against the schema
+  and each must fail, so a loosened schema goes red. A new schema rule gets a
+  reject file in the same PR.
 - `config/grafana/` — the fleet-view Grafana provisioning
   (`provisioning/datasources/`, `provisioning/dashboards/`,
   `provisioning/alerting/`) and `dashboards/fleet.json`. Only provisioning

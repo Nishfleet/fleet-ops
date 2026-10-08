@@ -8,6 +8,10 @@ model_list:
 router_settings:
   redis_url: redis://127.0.0.1:6379
   cooldown_time: 60
+  # Set so this file fails on the 404 value alone, not on the affinity rules
+  # fleet-ops#9473 added.
+  optional_pre_call_checks: ["prompt_caching", "session_affinity"]
+  deployment_affinity_ttl_seconds: 600
   # 1 is the router-level default the key exists to override: two 404s park the
   # row, so a withdrawn free model is picked again in between and leaks the 404.
   allowed_fails_policy:
