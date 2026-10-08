@@ -63,6 +63,26 @@ model_list:
 # CommandCode seat, same shape as the existing lane, so simple-shuffle gives this
 # 8%-failed-run seat more of the worker share. Additive only, the existing lane is
 # untouched. Metrics scrape 2026-10-08: 0 429-wall on CommandCode DS-Flash rows.
+# order: 1 on every DeepSeek V4.1 Flash row of this seat, so the new lanes are
+# peers of the existing ones in the shuffle, not fallbacks.
+#
+# Review nish3451 2026-10-08 on PR #9416, item 1, budget. LiteLLM enforces
+# max_budget per deployment, so a third and a fourth $10/day wall on this one key
+# would raise the seat's allowed daily spend from $20 to $40 against one wallet.
+# Re-splitting the seat's $20/day over four lanes (each $5) lowers the two
+# existing lanes, which #9378 forbids. So the two new rows carry no max_budget,
+# exactly like the nine budget-less rows already on this key, and the seat's
+# allowance stays $20/day. Measured LiteLLM_SpendLogs, 2026-10-01..08:
+# openai/deepseek/deepseek-v4.1-flash, 5,438 calls, $12.67 spend = $1.81/day,
+# which is 9% of the existing per-lane wall. The prepaid wallet stays the real
+# cap, and the ppi-commandcode alert pages hermes-urgent on its 429 wall.
+#
+# Review item 3, switch a lane off without a config rollback. POST /model/block
+# with {"model_id":"commandcode-ds41flashb-worker-capable"} on the proxy admin API
+# (RUNBOOK keeps the key out of argv with a curl --config fd). LiteLLM v1.98.0
+# carries that route, /model/block is in the live proxy's /openapi.json, and it
+# drops that one deployment in both uvicorn workers at once. /model/unblock
+# restores it. No file edit, no proxy restart, no PR.
 - model_name: worker-capable
   litellm_params:
     model: openai/deepseek/deepseek-v4.1-flash
@@ -75,8 +95,6 @@ model_list:
     input_cost_per_token: 3e-07
     cache_read_input_token_cost: 6e-09
     output_cost_per_token: 1.2e-06
-    max_budget: 10.0
-    budget_duration: 1d
     max_parallel_requests: 4
     cooldown_time: 900
   model_info:
@@ -86,6 +104,7 @@ model_list:
     id: commandcode-ds41flashb-worker-capable
     allowed_fails_policy:
       BadRequestErrorAllowedFails: 1
+# Its own /model/block id is commandcode-ds41flashb-worker-cheap.
 - model_name: worker-cheap
   litellm_params:
     model: openai/deepseek/deepseek-v4.1-flash
@@ -98,8 +117,6 @@ model_list:
     input_cost_per_token: 3e-07
     cache_read_input_token_cost: 6e-09
     output_cost_per_token: 1.2e-06
-    max_budget: 10.0
-    budget_duration: 1d
     max_parallel_requests: 4
     cooldown_time: 900
   model_info:
@@ -799,6 +816,25 @@ model_list:
 # contributes both worker rungs. Additive only. Its daily quota wall remains
 # (#9075): this lane also parks on the 4th 429 in a 6h window, so the lane count
 # stays modest. cache_proof is the same seat's proven probe (same model+key+budget).
+# order: 1 on both DeepSeek V4.1 Flash rows of this seat, so the new row is a peer
+# of the proven lane in the shuffle, not a fallback.
+#
+# Review nish3451 2026-10-08 on PR #9416, item 1, budget. LiteLLM enforces
+# max_budget per deployment, so a second $10/day wall on this key would raise the
+# seat's allowed daily spend from $10 to $20 against one wallet. Splitting $10
+# over two lanes (each $5) lowers the existing lane, which #9378 forbids. So the
+# new row carries no max_budget, like the three budget-less rows already on this
+# key, and the seat's allowance stays $10/day. Measured LiteLLM_SpendLogs,
+# 2026-10-01..08: openai/cline-pass/deepseek-v4.1-flash, 2,756 calls, $28.75
+# spend = $4.11/day, 41% of the existing per-lane wall. The prepaid wallet stays
+# the real cap, and the ppi-cline alert pages hermes-urgent on its 429 wall.
+#
+# Review item 3, switch this lane off without a config rollback. POST /model/block
+# with {"model_id":"cline-ds41flash-worker-cheap"} on the proxy admin API (RUNBOOK
+# keeps the key out of argv with a curl --config fd). LiteLLM v1.98.0 carries
+# that route, /model/block is in the live proxy's /openapi.json, and it drops
+# that one deployment in both uvicorn workers at once. /model/unblock restores
+# it. No file edit, no proxy restart, no PR.
 - model_name: worker-cheap
   litellm_params:
     model: openai/cline-pass/deepseek-v4.1-flash
@@ -811,8 +847,6 @@ model_list:
     input_cost_per_token: 3e-07
     cache_read_input_token_cost: 6e-09
     output_cost_per_token: 1.2e-06
-    max_budget: 10.0
-    budget_duration: 1d
     max_parallel_requests: 4
     # 6 h, sized to the daily free-model quota wall it also hits (fleet-ops#9075).
     cooldown_time: 21600
