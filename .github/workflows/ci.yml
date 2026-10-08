@@ -462,6 +462,12 @@ jobs:
             grep -qF -- "$n" <<<"$exec_line" || { echo "$u: ExecStart is missing: $n"; exit 1; }
           done
           jq -e '.mcpServers | keys == ["agent-tincan"]' config/tincan-listener-mcp.json > /dev/null
+          # cwd must be a dedicated dir: with WorkingDirectory=/home/nish, the project
+          # settings source is ~/.claude/settings.json (the user file) and
+          # --setting-sources project,local still loads the user Stop hook and plugins.
+          grep -qx 'StateDirectory=tincan-listen-claude-vps' "$u" || { echo "$u: StateDirectory is not tincan-listen-claude-vps"; exit 1; }
+          grep -qx 'WorkingDirectory=%S/tincan-listen-claude-vps' "$u" || { echo "$u: WorkingDirectory is not the dedicated state dir"; exit 1; }
+          ! grep -E '^WorkingDirectory=(/home/nish/?|~|%h/?)$' "$u" || { echo "$u: WorkingDirectory must not be the home dir"; exit 1; }
       - name: Sweep re-sends red claim PRs (RED_REWORK)
         # Runs the list job's own RED_REWORK program, read out of the workflow
         # with the CHECK_DEFS it shares with the missing-checks case, against

@@ -5,8 +5,8 @@
 # Stock only, no glue: `tincan listen --exec` is the vendor's own wake for
 # agents without channels (tincan onboard, "Fallback without channels"). It
 # long-polls the relay and runs one headless `claude -p` that drains the inbox;
-# nothing is claimed until that session calls check_inbox. Each run reads the
-# user-scope agent-tincan MCP entry in ~/.claude.json (TINCAN_CONFIG=claude-vps).
+# nothing is claimed until that session calls check_inbox. Each run loads the
+# agent-tincan MCP entry from config/tincan-listener-mcp.json in the deploy clone (TINCAN_CONFIG=claude-vps).
 #
 # Install (after merge, from the deploy clone):
 #   systemctl --user link   /home/nish/workspaces/tooling/fleet-ops-deploy-clone/systemd/tincan-listen-claude-vps.service
@@ -25,7 +25,12 @@ OnFailure=fleet-unit-failed@%N.service
 [Service]
 Environment=TINCAN_CONFIG=/home/nish/.config/tincan/claude-vps.json
 Environment=FLEET_TASK_ID=tincan-claude-vps
-WorkingDirectory=/home/nish
+# Not /home/nish: with cwd=/home/nish the "project" settings source is /home/nish/.claude/settings.json, which is the user
+# settings file, so --setting-sources project,local still loaded the user Stop agent hook and the user-enabled plugins
+# (real run, fleet-ops#9444 review B1). A dedicated dir has no .claude/, so only managed settings apply. StateDirectory
+# makes systemd create it (~/.local/state/tincan-listen-claude-vps) before WorkingDirectory is entered.
+StateDirectory=tincan-listen-claude-vps
+WorkingDirectory=%S/tincan-listen-claude-vps
 # Start-up trim (fleet-ops perf/trim-headless-claude): measured on this VPS from /tmp, "Reply with the single word OK",
 # cold cache: untrimmed 51,407 input tokens, $0.334 per run; trimmed 36,440 tokens, $0.146 per run (-29% tokens, -56% cost).
 # The flags load only agent-tincan (--mcp-config before --strict-mcp-config: the list is variadic and eats the prompt),
