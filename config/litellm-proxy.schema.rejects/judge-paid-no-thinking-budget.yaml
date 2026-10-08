@@ -1,9 +1,9 @@
-# fleet-ops#9405: the paid judge row without extra_body thinking budget.
-# Everything else is right: the order-1 rung, the Alibaba api_base, the
-# plan's rpm 3 and concurrency 3, cache_proof on every row. Only the
-# budget is missing, so this file is refused by the paid row's extra_body
-# pin alone - a 40 KB empty-body regression belongs in its own evidence,
-# not in a silent edit to the judge seat.
+# fleet-ops#9405: the paid judge row without extra_body. Everything else
+# is right: the order-1 rung, the Alibaba api_base, the plan's rpm 3 and
+# concurrency 3, cache_proof on every row. extra_body (enable_thinking
+# and thinking_budget 2048) is missing, so this file is refused by the
+# paid row's extra_body pin alone - a 40 KB empty-body regression belongs
+# in its own evidence, not in a silent edit to the judge seat.
 model_list:
 - model_name: judge
   litellm_params:
