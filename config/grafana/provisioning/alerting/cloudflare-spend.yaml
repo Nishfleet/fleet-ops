@@ -15,6 +15,12 @@
 #     Workers AI 10,000 neurons/day free -> 416.67
 #     D1 reads 25B/month, writes 50M/month (Workers Paid) -> 34,246,575 and 68,493
 #     email 3,000/month (Workers Paid) -> 4.11
+#   D1 rows written only: the median clause also needs the last hour over an
+#   absolute 10,000 rows/h (fleet-ops#9446: a 2,478-row hour tripped a tiny
+#   median with no leak; normal peaks are ~4,110 rows/h, drill peaks ~6M/h).
+#   Accepted blind spot: a real leak that stays under 10,000 rows/h on a
+#   near-zero median stays silent; bounded at ~7.3M rows/month, about 15%
+#   of the 50M monthly allowance.
 #   R2: total Standard storage over 20 GB, or a bucket up 2 GB within 24h
 #   (last value minus the 24h low, so a prune followed by regrowth still counts).
 #
@@ -288,7 +294,10 @@ groups:
               datasource: {type: __expr__, uid: __expr__}
               type: math
               refId: E
-              expression: ($D > 3 * 68493) || ($C > 0 && $D > 3 * $C)
+              # The 10,000 floor (fleet-ops#9446): a 2,478-row hour on a
+              # 2-row/h median tripped the clause with no real leak. Normal
+              # peaks are ~4,110 rows/h; the 2026-09-13 drill peak was ~6M/h.
+              expression: ($D > 3 * 68493) || ($C > 0 && $D > 3 * $C && $D > 10000)
           - refId: R
             datasourceUid: __expr__
             model: {datasource: {type: __expr__, uid: __expr__}, type: math, refId: R, expression: $T * 0 + $E}
@@ -298,9 +307,9 @@ groups:
         for: 0s
         annotations:
           summary: 'D1 wrote {{ $values.D.Value | printf "%.0f" }} rows in the last hour'
-          description: 'The 3x line is the larger signal of 205,479 rows/h (3 x the pro-rated 50M/month allowance) and 3 x the 7-day hourly median ({{ $values.C.Value | printf "%.0f" }}). The 2026-09-13 restore drills wrote about 145M rows in a day.'
+          description: 'The 3x line is the larger signal of 205,479 rows/h (3 x the pro-rated 50M/month allowance) and 3 x the 7-day hourly median ({{ $values.C.Value | printf "%.0f" }}) above an absolute 10,000 rows/h floor. The 2026-09-13 restore drills wrote about 145M rows in a day.'
           value: '{{ $values.D.Value | printf "%.0f" }} rows written in the last hour'
-          threshold: 'over 205,479 rows/h (3 x allowance) or over 3 x the 7-day hourly median'
+          threshold: 'over 205,479 rows/h (3 x allowance), or over 3 x the 7-day hourly median when that is also over 10,000 rows/h'
           top: 'D1 database {{ $labels.resource }}'
         labels: {signal: cloudflare-spend, product: d1-rows-written}
         isPaused: false
