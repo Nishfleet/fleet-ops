@@ -104,8 +104,8 @@ The rules still in force:
   approval comment written with GITHUB_TOKEN, an identity no PR author uses). A PR that edits the guard itself
   (`guard` in risky-paths.json) stays with a person;
   agent-authored PRs self-land green. The in-session held-PR approver loop (a
-  coordinator subagent polling every 20 minutes) is retired: the decision is
-  the `review-risky` event, and no session polls for it
+  coordinator subagent polling every 20 minutes) is retired: the
+  `review-risky` event's review job decides it, and no session polls for it
   (docs/incidents/2026-10-08-held-pr-approver-loop-retired.md, fleet-ops#9459).
 
 The full audit (rungs, counts, second wave) is git history
