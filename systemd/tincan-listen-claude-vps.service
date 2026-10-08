@@ -26,8 +26,14 @@ OnFailure=fleet-unit-failed@%N.service
 Environment=TINCAN_CONFIG=/home/nish/.config/tincan/claude-vps.json
 Environment=FLEET_TASK_ID=tincan-claude-vps
 WorkingDirectory=/home/nish
+# Start-up trim (fleet-ops perf/trim-headless-claude): measured on this VPS from /tmp, "Reply with the single word OK",
+# cold cache: untrimmed 51,407 input tokens, $0.334 per run; trimmed 36,440 tokens, $0.146 per run (-29% tokens, -56% cost).
+# The flags load only agent-tincan (--mcp-config before --strict-mcp-config: the list is variadic and eats the prompt),
+# no skills, and no user settings (drops the user Stop agent hook, user plugins and ~/.claude/CLAUDE.md).
+# Managed settings still apply: model-lanes gate and secret-read denies. Off switch: remove the four flags
+# --mcp-config <file> --strict-mcp-config --disable-slash-commands --setting-sources project,local.
 # Replies are skipped (fleet-ops: reply wakes re-did work, 142 turns / ~$10 on 2026-10-08).
-ExecStart=/home/nish/.local/bin/tincan listen --exec '/home/nish/.local/bin/claude -p --model claude-sonnet-5-5 --permission-mode bypassPermissions --max-turns 30 "You are claude-vps on the Agent Tincan team, woken because requests or replies are waiting. Call check_inbox once. Replies to earlier requests belong to the session that sent them, which reads them itself, so do not act on, summarise or report replies. If check_inbox returned no requests, stop now with no further tool calls. Handle each request as you would one from Nish and answer it with reply, then call check_inbox again until it returns no requests, then stop."'
+ExecStart=/home/nish/.local/bin/tincan listen --exec '/home/nish/.local/bin/claude -p --model claude-sonnet-5-5 --permission-mode bypassPermissions --mcp-config /home/nish/workspaces/tooling/fleet-ops-deploy-clone/config/tincan-listener-mcp.json --strict-mcp-config --disable-slash-commands --setting-sources project,local --max-turns 30 "You are claude-vps on the Agent Tincan team, woken because requests or replies are waiting. Call check_inbox once. Replies to earlier requests belong to the session that sent them, which reads them itself, so do not act on, summarise or report replies. If check_inbox returned no requests, stop now with no further tool calls. Handle each request as you would one from Nish and answer it with reply, then call check_inbox again until it returns no requests, then stop."'
 Restart=always
 RestartSec=30
 

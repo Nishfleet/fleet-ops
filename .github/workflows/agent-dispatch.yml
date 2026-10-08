@@ -1106,9 +1106,17 @@ jobs:
           # only spend turns. ORCHESTRATE_HOOKS=on keeps them.
           hook_args=(--settings '{"disableAllHooks":true}')
           [ "$HOOKS" != on ] || hook_args=()
+          # Start-up trim (measured on the VPS, bare "OK" prompt, cold cache: 51,407 input
+          # tokens and $0.334 untrimmed, 36,440 and $0.146 trimmed): no MCP servers, no
+          # skills, no user settings (drops the user Stop agent hook, user plugins, user env).
+          # Managed settings still apply (model-lanes gate, secret-read denies). Off switch:
+          # delete the three flags below.
           env -u GH_TOKEN -u GITHUB_TOKEN timeout 3000 /home/nish/.local/bin/claude -p \
             "${model_args[@]}" \
             "${hook_args[@]}" \
+            --strict-mcp-config \
+            --disable-slash-commands \
+            --setting-sources project,local \
             --output-format json \
             --permission-mode bypassPermissions \
             --max-turns "$TURNS" \

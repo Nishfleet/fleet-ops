@@ -423,14 +423,21 @@ jobs:
               [ "$got_seat" = "$(jq -r .want_seat <<<"$c")" ] || { echo "session case $id: seat '$got_seat'"; bad=1; }
               continue
             fi
-            got_model=; got_turns=; got_settings=
+            got_model=; got_turns=; got_settings=; got_sources=; got_strict=; got_noslash=
             for ((i = 0; i < ${#argv[@]}; i++)); do
               case ${argv[i]} in
                 --model) got_model=${argv[i+1]} ;;
                 --max-turns) got_turns=${argv[i+1]} ;;
                 --settings) got_settings=${argv[i+1]} ;;
+                --setting-sources) got_sources=${argv[i+1]} ;;
+                --strict-mcp-config) got_strict=1 ;;
+                --disable-slash-commands) got_noslash=1 ;;
               esac
             done
+            # Start-up trim flags: deleting any of them fails CI.
+            [ "$got_strict" = 1 ] || { echo "session case $id: --strict-mcp-config missing"; bad=1; }
+            [ "$got_noslash" = 1 ] || { echo "session case $id: --disable-slash-commands missing"; bad=1; }
+            [ "$got_sources" = project,local ] || { echo "session case $id: --setting-sources '$got_sources'"; bad=1; }
             [ "$got_model" = "$(jq -r .want_model <<<"$c")" ] || { echo "session case $id: model '$got_model'"; bad=1; }
             [ "$got_turns" = "$(jq -r .want_turns <<<"$c")" ] || { echo "session case $id: turns '$got_turns'"; bad=1; }
             if [ "$(jq -r .want_settings <<<"$c")" = true ]; then
@@ -441,6 +448,20 @@ jobs:
           done < <(jq -c '.session_cases[]' "$cfg")
           rm -rf "$t"
           test "$bad" -eq 0
+      - name: Tincan listener keeps its start-up trim flags
+        # The headless claude in systemd/tincan-listen-claude-vps.service loads only
+        # agent-tincan, no skills and no user settings. Delete a flag, or the MCP
+        # file it names, and this fails. --mcp-config must come before
+        # --strict-mcp-config: its value list is variadic and would eat the prompt.
+        if: always()
+        run: |
+          set -euo pipefail
+          u=systemd/tincan-listen-claude-vps.service
+          exec_line=$(grep '^ExecStart=' "$u")
+          for n in '--strict-mcp-config' '--disable-slash-commands' '--setting-sources project,local' '--mcp-config /home/nish/workspaces/tooling/fleet-ops-deploy-clone/config/tincan-listener-mcp.json --strict-mcp-config'; do
+            grep -qF -- "$n" <<<"$exec_line" || { echo "$u: ExecStart is missing: $n"; exit 1; }
+          done
+          jq -e '.mcpServers | keys == ["agent-tincan"]' config/tincan-listener-mcp.json > /dev/null
       - name: Sweep re-sends red claim PRs (RED_REWORK)
         # Runs the list job's own RED_REWORK program, read out of the workflow
         # with the CHECK_DEFS it shares with the missing-checks case, against

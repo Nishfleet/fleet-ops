@@ -1,5 +1,5 @@
 {
-  "description": "Payloads that must and must not start an orchestrate hand-off, and payloads the agent.yml Gate must park for the workflow-path route. CI jq evaluates fire() and parks() against each case; needles must appear in the named workflow so the if: and the Gate jq cannot drift from this file. cap_cases run the orchestrate job's real 'Check the issue is still parked' script against a fake gh serving each case's runs and jobs (session is the conclusion of the 'Run the orchestrator session' step: success, failure, skipped, null for in progress, absent); CI asserts go, model and turns, so removing the cap, the model pin or the turns pin fails it. session_cases run the real session step against a fake claude and assert its argv, so removing --settings disableAllHooks fails it. Runner (fleet-ops#9407): cap_cases assert want_runner (pi or claude) from the issue step; session_cases with runner pi run the real step against a fake pi and assert provider litellm, the seat, and FLEET_TASK_ID.",
+  "description": "Payloads that must and must not start an orchestrate hand-off, and payloads the agent.yml Gate must park for the workflow-path route. CI jq evaluates fire() and parks() against each case; needles must appear in the named workflow so the if: and the Gate jq cannot drift from this file. cap_cases run the orchestrate job's real 'Check the issue is still parked' script against a fake gh serving each case's runs and jobs (session is the conclusion of the 'Run the orchestrator session' step: success, failure, skipped, null for in progress, absent); CI asserts go, model and turns, so removing the cap, the model pin or the turns pin fails it. session_cases run the real session step against a fake claude and assert its argv, so removing --settings disableAllHooks fails it. Every claude session case also asserts the start-up trim flags --strict-mcp-config, --disable-slash-commands and --setting-sources project,local (the pi cases are exempt), so deleting one fails CI. Runner (fleet-ops#9407): cap_cases assert want_runner (pi or claude) from the issue step; session_cases with runner pi run the real step against a fake pi and assert provider litellm, the seat, and FLEET_TASK_ID.",
   "needles": {
     "agent-dispatch.yml": [
       "ORCHESTRATE",
@@ -20,6 +20,9 @@
       "disableAllHooks",
       "--output-format json",
       "--permission-mode bypassPermissions",
+      "--strict-mcp-config",
+      "--disable-slash-commands",
+      "--setting-sources project,local",
       "cancel-in-progress: false",
       "vars.ORCHESTRATE != 'off' && (",
       "github.event.label.name == 'needs-orchestrator'",
