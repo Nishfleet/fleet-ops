@@ -1,0 +1,153 @@
+# MiniMax spend alarm (fleet-ops#9470): warn at 80% of the daily cap.
+#
+# Why: the four MiniMax M3.1-Flash-Preview rows in config/litellm-proxy.yaml were
+# free until 2026-10-07 and then became paid, and they had no per-token price, no
+# budget and no alarm, so a card that ran hot for a week did it unseen. #9470
+# gives them MiniMax's published pay-as-you-go rates and a cap of $1.25/day per
+# row - $5/day for the four, the #9470 default, all four rows together. LiteLLM
+# enforces the cap itself (RouterBudgetLimiting.async_filter_deployments drops
+# an over-budget row out of healthy_deployments BEFORE the routing decision, so
+# it is never picked and never re-tried; when every row of a group is over
+# budget the router raises instead of calling the provider). This rule is the
+# early warning: it fires at $4 in a rolling 24h, which is 80% of $5, while the
+# caller is still being served.
+#
+# Signal: sum of the rolling-24h increase of litellm_spend_metric_total over the
+# four row ids. The metric is a counter of real spend on the LiteLLM /metrics
+# endpoint Prometheus already scrapes; model_id is the row id set in
+# config/litellm-proxy.yaml. The ids are listed by name rather than by a
+# minimax-m31.* pattern so a future row with a similar id does not silently
+# inherit this rule, and so the rule's own text stays the list of what it
+# watches.
+#
+# The 24h window is the closest Prometheus analogue of LiteLLM's budget window:
+# litellm_params.budget_duration is 1d, and the budget key
+# (deployment_spend:{model_id}:1d) is a rolling window that starts at the row's
+# first spend of the day, not at midnight UTC. So the alert can fire slightly
+# early or slightly late against the actual reset; the cap, not this rule, is
+# what stops the money.
+#
+# Two numbers the rule does not read, stated rather than hidden:
+#   - Per-row spend. A single row can only ever carry $1.25/day, so a $4 total
+#     always means at least three of the four rows are nearly full. A second
+#     rule per row would add four alerts that all say the same thing. The top
+#     row is still named, through the B series and the R combine step below.
+#   - The cache-write price is M2.7's published $0.375/M, not M3.1's own rate,
+#     because MiniMax publishes none for M3.1-Flash-Preview. It is deliberately
+#     the higher of the two candidate rates, so the count leans conservative.
+#
+# Route: label signal=minimax-spend. cloudflare-spend-contact.yaml owns the one
+# notification policy tree; the route there opens a fleet-ops issue
+# (agent-ready + priority-now) with hermes-urgent as the continue fallback, the
+# same treatment as every other spend alarm. Provisioned alert rules do not
+# expand $VAR, so every dollar below is a single one and belongs to Grafana.
+apiVersion: 1
+
+groups:
+  - orgId: 1
+    name: minimax-spend
+    folder: fleet
+    interval: 5m
+    rules:
+      - uid: minimax-spend
+        title: MiniMax spend at 80% of the daily cap
+        condition: F
+        data:
+          # A: rolling-24h spend across the four MiniMax M3.1 rows, in dollars.
+          # increase() over a counter, so a proxy restart that resets the
+          # counter to 0 does not read as a negative spend and cancel the day.
+          - refId: A
+            relativeTimeRange: {from: 86400, to: 0}
+            datasourceUid: fleet-prometheus
+            model:
+              datasource: {type: prometheus, uid: fleet-prometheus}
+              editorMode: code
+              expr: |-
+                sum(
+                  increase(litellm_spend_metric_total{
+                    model_id=~"minimax-m31-worker-capable|minimax-m31b-worker-capable|minimax-m31-worker-cheap|minimax-m31b-worker-cheap"
+                  }[24h])
+                )
+              instant: true
+              intervalMs: 1000
+              maxDataPoints: 43200
+              range: false
+              refId: A
+          # B: the row that is spending the most, so the alarm can name it
+          # instead of naming the group. `topk(1)` over the same 24h increase
+          # per model_id; its model_id label is what reaches the alert through R.
+          - refId: B
+            relativeTimeRange: {from: 86400, to: 0}
+            datasourceUid: fleet-prometheus
+            model:
+              datasource: {type: prometheus, uid: fleet-prometheus}
+              editorMode: code
+              expr: |-
+                topk(
+                  1,
+                  sum by (model_id) (
+                    increase(litellm_spend_metric_total{
+                      model_id=~"minimax-m31-worker-capable|minimax-m31b-worker-capable|minimax-m31-worker-cheap|minimax-m31b-worker-cheap"
+                    }[24h])
+                  )
+                )
+              instant: true
+              intervalMs: 1000
+              maxDataPoints: 43200
+              range: false
+              refId: B
+          # C: the verdict, `A > 4` as 1 or 0. 4 is 80% of the $5/day cap the
+          # four rows share ($1.25 each). Grafana's threshold step cannot see
+          # the per-row split, so the number lives here and the fixture in
+          # config/grafana/tests/minimax-spend.test.rules.yml reproduces this
+          # exact threshold.
+          - refId: C
+            datasourceUid: __expr__
+            model:
+              datasource: {type: __expr__, uid: __expr__}
+              type: math
+              refId: C
+              expression: $A > 4
+          # R: `B * 0 + C` carries B's model_id label onto C's verdict, so the
+          # firing alert names the busiest row in $labels.model_id (the same
+          # combine step cloudflare-spend.yaml uses with its top-resource
+          # series). A series with no model_id cannot name a row. B selects the
+          # same four rows over the same window as A, so A non-empty
+          # (the only state in which the rule can fire) means B is non-empty
+          # too: model_id is present exactly when there is something to name.
+          - refId: R
+            datasourceUid: __expr__
+            model:
+              datasource: {type: __expr__, uid: __expr__}
+              type: math
+              refId: R
+              expression: $B * 0 + $C
+          # F: threshold over R, `gt 0.5`. R is C's 1-or-0 verdict with B's
+          # labels, so 1 fires and 0 stays Normal; 0.5 is the midpoint of the
+          # only two values R can take.
+          - refId: F
+            datasourceUid: __expr__
+            model:
+              datasource: {type: __expr__, uid: __expr__}
+              type: threshold
+              refId: F
+              expression: R
+              conditions: [{evaluator: {params: [0.5], type: gt}, operator: {type: and}, query: {params: [F]}, reducer: {params: [], type: last}, type: query}]
+        # 5m of the same reading: the 24h sum is a slow quantity, so a single
+        # scrape blip should not page. A real run to $4 stays above the line
+        # for far longer than 5 minutes.
+        for: 5m
+        # No MiniMax traffic in 24h is not an incident: the series does not
+        # exist yet, which is silence by design.
+        noDataState: OK
+        execErrState: Error
+        annotations:
+          summary: 'MiniMax M3.1 spend is {{ $values.A.Value | printf "%.2f" }} of the $5/day cap'
+          description: 'The four MiniMax M3.1-Flash-Preview rows (minimax-m31-worker-capable, minimax-m31b-worker-capable, minimax-m31-worker-cheap, minimax-m31b-worker-cheap) have spent {{ $values.A.Value | printf "%.2f" }} in the last 24 hours, which is over 80% of the $5/day cap of $1.25 per row (config/litellm-proxy.yaml, fleet-ops#9470). The busiest row is {{ $labels.model_id }} at {{ $values.B.Value | printf "%.2f" }} in 24 hours. The cap is enforced by LiteLLM per row: an over-budget row is filtered out of the routing decision before any call, so a call is never re-tried against it. When a row hits its cap the group keeps serving from its other rows, and the work continues. Check what is driving the draw (journalctl --user -u fleet-litellm-proxy | grep {{ $labels.model_id }}), then decide with Nish whether to raise the cap or move the traffic.'
+          value: '{{ $values.A.Value | printf "%.2f" }} spent in 24 hours'
+          threshold: 'over 4.00 in 24 hours (80% of the $5/day cap across 4 rows)'
+          top: 'busiest row {{ $labels.model_id }} at {{ $values.B.Value | printf "%.2f" }} in 24 hours'
+        labels:
+          signal: minimax-spend
+          model_id: '{{ $labels.model_id }}'
+        isPaused: false
