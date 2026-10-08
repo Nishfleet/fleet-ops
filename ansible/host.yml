@@ -246,7 +246,10 @@
         - /tmp/leviathan.tar.gz
         - /tmp/leviathan
 
-    # enabled only: never restarts the Remote Control link this playbook may run under.
+    # enabled only: never restarts the Remote Control link this playbook may run
+    # under. The unit file it installs is therefore staged, not live: the running
+    # vps-rc server keeps its old session until Nish restarts it in a window he
+    # picks, because that restart cuts his phone link (#9425).
     - name: Enable Remote Control at boot
       ansible.builtin.systemd_service:
         name: claude-remote-control.service

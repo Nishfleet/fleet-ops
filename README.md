@@ -392,7 +392,14 @@ It never reboots. When a package needs a reboot, it opens one
 `needs-nish-decision` issue. The daily security updates (`unattended-upgrades`)
 stay on; `rootfs/etc/needrestart/conf.d/50-fleet.conf` makes them only list
 services on old libraries, so they never restart a service mid-job.
-`claude-remote-control.service` is never restarted, by either path.
+`claude-remote-control.service` is never restarted, by either path. That also
+means a change to it is staged and not applied: `ansible/host.yml` enables the
+unit and copies the file in, and the running server keeps its old session until
+a person restarts it. Restarting it cuts the phone link to `vps-rc`, so the
+restart window is Nish's call (#9425). Since 2026-10-08 the unit starts with
+`--no-create-session-in-dir`, so no standing session is pre-created for relayed
+coordinator work to pile into: each phone or claude.ai/code request gets its own
+session that starts and ends with a fresh context.
 
 - Run it now: `sudo systemctl start --no-block fleet-update.service`, then
   `journalctl -u fleet-update -f`.
