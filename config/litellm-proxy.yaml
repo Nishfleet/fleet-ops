@@ -1818,7 +1818,7 @@ router_settings:
     # key unset the router-level allowed_fails (1) needs two 404s before the lane parks, so a
     # dead lane leaks a 404 to every other caller. 0 parks it on the first one; it comes back
     # after its cooldown_time and re-probes. The failed call itself still raises NotFoundError
-    # (should_retry_this_error hard-raises), and the worker-group fallbacks carry the job on.
+    # (should_retry_this_error hard-raises), and the group's own order-2 row takes the job.
     NotFoundErrorAllowedFails: 0
 litellm_settings:
   drop_params: true

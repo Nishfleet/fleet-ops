@@ -84,6 +84,11 @@ BASE_POLICY = {
 # parking decision is taken before the body is read, so a plain call exercises it).
 MESSAGES = [{"role": "user", "content": "hello"}]
 
+# How often the two cooldown polls below look again. Both are deadlines, not
+# sleeps: the write lands inside the failing acompletion call, so the first read
+# normally already sees it.
+POLL_INTERVAL = 0.01
+
 _LOCK = threading.Lock()
 _HITS: dict[str, int] = {"dead": 0, "live": 0}
 
@@ -156,9 +161,15 @@ def server() -> ThreadingHTTPServer:
 
 @pytest.fixture(autouse=True)
 def _reset_hits():
+    _reset()
+    yield
+
+
+# Both the pytest path (the fixture above) and the drill at the bottom of this
+# file go through _reset, so the two cannot drift apart.
+def _reset() -> None:
     _HITS["dead"] = 0
     _HITS["live"] = 0
-    yield
 
 
 def _port(server: ThreadingHTTPServer) -> int:
@@ -166,17 +177,27 @@ def _port(server: ThreadingHTTPServer) -> int:
 
 
 def _production_router_settings(policy: dict) -> dict:
-    """router_settings as the shipped config sets them, with one policy."""
+    """router_settings as the shipped config sets them, with one policy.
+
+    Read from the file rather than written out again, so the test follows the
+    config: if a key is renamed or dropped, the test says which one instead of
+    testing a setting the fleet no longer runs.
+    """
     config = yaml.safe_load(CONFIG_PATH.read_text())
     settings = config["router_settings"]
+    for key in ("routing_strategy", "cooldown_time", "allowed_fails", "num_retries", "fallbacks"):
+        assert key in settings, f"router_settings.{key} is gone from {CONFIG_PATH.name}"
     return {
         "routing_strategy": settings["routing_strategy"],
         "cooldown_time": settings["cooldown_time"],
         "allowed_fails": settings["allowed_fails"],
         "num_retries": settings["num_retries"],
         "allowed_fails_policy": policy,
-        # The shipped fallbacks, so the test exercises the same fall-through the
-        # fleet gets: worker-capable -> worker-cheap -> worker-capable.
+        # The shipped fallbacks, so the test runs the same fall-through the fleet
+        # gets: worker-capable -> worker-cheap -> worker-capable. They never fire
+        # here - the group's own order-2 row catches every call before the group
+        # can be exhausted - and this router defines no worker-cheap group, so
+        # they are carried for shape only and must stay unreachable.
         "fallbacks": settings["fallbacks"],
     }
 
@@ -185,14 +206,16 @@ def _production_row_policy() -> dict:
     """The deployment-level allowed_fails_policy a real row carries.
 
     All 81 rows in config/litellm-proxy.yaml carry one. If a future row does
-    not, the test says so instead of silently testing an empty policy.
+    not, the test names that row instead of silently testing an empty policy.
     """
     config = yaml.safe_load(CONFIG_PATH.read_text())
+    rows = config["model_list"]
     policies = [
-        (row.get("model_info") or {}).get("allowed_fails_policy")
-        for row in config["model_list"]
+        (row.get("model_info") or {}).get("allowed_fails_policy") for row in rows
     ]
-    assert all(policies), "every row is expected to carry an allowed_fails_policy"
+    for row, policy in zip(rows, policies):
+        name = (row.get("model_info") or {}).get("id", "<no id>")
+        assert policy, f"row {name} carries no allowed_fails_policy"
     return policies[0]
 
 
@@ -248,7 +271,7 @@ def _cooldown(router, deployment_id: str, timeout: float = 10.0):
             return active[0][1]
         if time.monotonic() >= deadline:
             raise AssertionError(f"no cooldown for {deployment_id} within {timeout} s")
-        time.sleep(0.01)
+        time.sleep(POLL_INTERVAL)
 
 
 def _cooldown_cleared(router, deployment_id: str, timeout: float = 10.0) -> None:
@@ -261,11 +284,17 @@ def _cooldown_cleared(router, deployment_id: str, timeout: float = 10.0) -> None
             return
         if time.monotonic() >= deadline:
             raise AssertionError(f"{deployment_id} stayed parked for {timeout} s")
-        time.sleep(0.01)
+        time.sleep(POLL_INTERVAL)
 
 
 def _calls(router, count: int) -> list[str]:
-    """`count` calls, each 200 or the raised exception name."""
+    """`count` calls, each 200 or the raised exception name.
+
+    The exception is the outcome under test, so a bare except is the point: the
+    normal results are the live lane's name, and the abnormal one litellm raises
+    when the group has no healthy row left (a 429 on an exhausted group, since
+    NotFoundError itself is caught inside the group and falls through).
+    """
     outcomes: list[str] = []
 
     async def _run() -> None:
@@ -365,8 +394,7 @@ def test_the_router_key_reaches_a_row_with_its_own_deployment_policy(server):
         litellm.NotFoundError(message="x", model="y", llm_provider="z")
     ) == 0
 
-    _HITS["dead"] = 0
-    _HITS["live"] = 0
+    _reset()
     router_one = _router(
         server,
         policy={**BASE_POLICY, "NotFoundErrorAllowedFails": 1},
@@ -506,8 +534,7 @@ if __name__ == "__main__":  # the drill: python tests/test_router_404_fallthroug
 
     def check(label: str, fn) -> tuple[int, int]:
         global failures
-        _HITS["dead"] = 0
-        _HITS["live"] = 0
+        _reset()
         try:
             fn(server)
             print(f"PASS  {label}")
