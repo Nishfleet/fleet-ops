@@ -496,6 +496,30 @@ def test_production_config_parks_on_the_first_404():
     )
 
 
+def test_no_production_row_overrides_the_router_404_threshold():
+    """No row's own allowed_fails_policy re-opens the two-404 leak.
+
+    v1.98.0 resolves the threshold per exception type, row first, router second
+    (Router.get_allowed_fails_from_policy), so a row naming
+    NotFoundErrorAllowedFails: 1 needs two 404s to park and re-opens the leak on
+    that row even with the router-level 0 (PR 9472 coordinator risk). The
+    schema pins the row-level key to 0; this test pins the shipped config to
+    the same rule for every row, not just the first one.
+    """
+    config = yaml.safe_load(CONFIG_PATH.read_text())
+    for row in config["model_list"]:
+        info = row.get("model_info") or {}
+        name = info.get("id", "<no id>")
+        policy = info.get("allowed_fails_policy")
+        assert policy, f"row {name} carries no allowed_fails_policy"
+        value = policy.get("NotFoundErrorAllowedFails")
+        assert value in (None, 0), (
+            f"row {name} sets NotFoundErrorAllowedFails: {value}: a row-level "
+            "threshold resolves before the router policy, so only 0 keeps the "
+            "first-404 park on that row"
+        )
+
+
 def test_production_config_keeps_the_fallthrough_shape():
     """The parked lane's job has somewhere to go.
 
@@ -567,6 +591,10 @@ if __name__ == "__main__":  # the drill: python tests/test_router_404_fallthroug
     check(
         "production config parks on the first 404",
         lambda _s: test_production_config_parks_on_the_first_404(),
+    )
+    check(
+        "no production row overrides the router 404 threshold",
+        lambda _s: test_no_production_row_overrides_the_router_404_threshold(),
     )
     check(
         "production config keeps the fallthrough shape",

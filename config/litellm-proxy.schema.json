@@ -196,7 +196,14 @@
             "properties": {
               "cooldown_time": { "$ref": "#/$defs/rowCooldown" },
               "supports_prompt_caching": { "type": "boolean" },
-              "cache_proof": { "type": "string", "minLength": 1 }
+              "cache_proof": { "type": "string", "minLength": 1 },
+              "allowed_fails_policy": {
+                "$comment": "fleet-ops#9469 (PR 9472 coordinator risk): a row-level allowed_fails_policy resolves per exception type BEFORE the router policy (Router.get_allowed_fails_from_policy), so a row naming NotFoundErrorAllowedFails: 1 needs two 404s to park and re-opens the leak the router-level 0 closes. If a row names the key at all, it must be 0.",
+                "type": "object",
+                "properties": {
+                  "NotFoundErrorAllowedFails": { "const": 0 }
+                }
+              }
             }
           }
         }
@@ -205,7 +212,7 @@
     "benched": false,
     "router_settings": {
       "type": "object",
-      "required": ["redis_url", "deployment_affinity_ttl_seconds", "optional_pre_call_checks"],
+      "required": ["redis_url", "deployment_affinity_ttl_seconds", "optional_pre_call_checks", "allowed_fails_policy"],
       "properties": {
         "cooldown_time": { "type": "integer", "minimum": 1, "maximum": 60 },
         "allowed_fails_policy": {
