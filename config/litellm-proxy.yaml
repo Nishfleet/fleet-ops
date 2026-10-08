@@ -66,23 +66,25 @@ model_list:
 # order: 1 on every DeepSeek V4.1 Flash row of this seat, so the new lanes are
 # peers of the existing ones in the shuffle, not fallbacks.
 #
-# Review nish3451 2026-10-08 on PR #9416, item 1, budget. LiteLLM enforces
-# max_budget per deployment, so a third and a fourth $10/day wall on this one key
-# would raise the seat's allowed daily spend from $20 to $40 against one wallet.
-# Re-splitting the seat's $20/day over four lanes (each $5) lowers the two
-# existing lanes, which #9378 forbids. So the two new rows carry no max_budget,
-# exactly like the nine budget-less rows already on this key, and the seat's
-# allowance stays $20/day. Measured LiteLLM_SpendLogs, 2026-10-01..08:
-# openai/deepseek/deepseek-v4.1-flash, 5,438 calls, $12.67 spend = $1.81/day,
-# which is 9% of the existing per-lane wall. The prepaid wallet stays the real
-# cap, and the ppi-commandcode alert pages hermes-urgent on its 429 wall.
+# No max_budget on the two new rows, on purpose. LiteLLM enforces max_budget per
+# deployment, so a third and a fourth $10/day wall on this one key is more
+# allowance, not a copy: the seat's allowed daily spend would go from $20 to $40
+# against a single prepaid wallet. Re-splitting $20/day over all four lanes
+# (each $5) is the only other way to hold the old ceiling, and it lowers the two
+# existing lanes, which #9378 forbids. So the seat's allowance stays $20/day and
+# the new rows carry no wall, exactly like the nine budget-less rows already on
+# this key. The wallet and the ppi-commandcode 429 alert are the guard for them.
+# Measured LiteLLM_SpendLogs, 2026-10-01..08: openai/deepseek/deepseek-v4.1-flash,
+# 5,438 calls, $12.67 spend = $1.81/day, which is 18% of the existing per-lane
+# wall of $10/day. Doubling the lane count doubles that draw to about $3.63/day.
 #
-# Review item 3, switch a lane off without a config rollback. POST /model/block
-# with {"model_id":"commandcode-ds41flashb-worker-capable"} on the proxy admin API
-# (RUNBOOK keeps the key out of argv with a curl --config fd). LiteLLM v1.98.0
-# carries that route, /model/block is in the live proxy's /openapi.json, and it
-# drops that one deployment in both uvicorn workers at once. /model/unblock
-# restores it. No file edit, no proxy restart, no PR.
+# To take one lane out of the shuffle without a config change, a proxy restart or
+# a rollback: POST /model/block with
+# {"model_id":"commandcode-ds41flashb-worker-capable"} on the proxy admin API
+# (the RUNBOOK's curl --config fd keeps the admin key out of argv).
+# /model/unblock with the same body puts it back. Verified on the live proxy's
+# /openapi.json: both routes are present and both take BlockModelRequest, whose
+# only required field is model_id. Not run against a production lane.
 - model_name: worker-capable
   litellm_params:
     model: openai/deepseek/deepseek-v4.1-flash
@@ -819,22 +821,24 @@ model_list:
 # order: 1 on both DeepSeek V4.1 Flash rows of this seat, so the new row is a peer
 # of the proven lane in the shuffle, not a fallback.
 #
-# Review nish3451 2026-10-08 on PR #9416, item 1, budget. LiteLLM enforces
-# max_budget per deployment, so a second $10/day wall on this key would raise the
-# seat's allowed daily spend from $10 to $20 against one wallet. Splitting $10
-# over two lanes (each $5) lowers the existing lane, which #9378 forbids. So the
-# new row carries no max_budget, like the three budget-less rows already on this
-# key, and the seat's allowance stays $10/day. Measured LiteLLM_SpendLogs,
+# No max_budget on the new row, on purpose. LiteLLM enforces max_budget per
+# deployment, so a second $10/day wall on this key is more allowance, not a copy:
+# the seat's allowed daily spend would go from $10 to $20 against a single
+# prepaid wallet. Splitting $10 over the two lanes (each $5) is the only other
+# way to hold the old ceiling, and it lowers the existing lane, which #9378
+# forbids. So the seat's allowance stays $10/day and the new row carries no wall,
+# like the three budget-less rows already on this key. The wallet and the
+# ppi-cline 429 alert are the guard for it. Measured LiteLLM_SpendLogs,
 # 2026-10-01..08: openai/cline-pass/deepseek-v4.1-flash, 2,756 calls, $28.75
-# spend = $4.11/day, 41% of the existing per-lane wall. The prepaid wallet stays
-# the real cap, and the ppi-cline alert pages hermes-urgent on its 429 wall.
+# spend = $4.11/day, which is 41% of the existing per-lane wall of $10/day.
 #
-# Review item 3, switch this lane off without a config rollback. POST /model/block
-# with {"model_id":"cline-ds41flash-worker-cheap"} on the proxy admin API (RUNBOOK
-# keeps the key out of argv with a curl --config fd). LiteLLM v1.98.0 carries
-# that route, /model/block is in the live proxy's /openapi.json, and it drops
-# that one deployment in both uvicorn workers at once. /model/unblock restores
-# it. No file edit, no proxy restart, no PR.
+# To take this lane out of the shuffle without a config change, a proxy restart or
+# a rollback: POST /model/block with
+# {"model_id":"cline-ds41flash-worker-cheap"} on the proxy admin API (the
+# RUNBOOK's curl --config fd keeps the admin key out of argv). /model/unblock with
+# the same body puts it back. Verified on the live proxy's /openapi.json: both
+# routes are present and both take BlockModelRequest, whose only required field is
+# model_id. Not run against a production lane.
 - model_name: worker-cheap
   litellm_params:
     model: openai/cline-pass/deepseek-v4.1-flash
