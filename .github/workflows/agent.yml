@@ -736,6 +736,8 @@ jobs:
           if [ "$choice" = approve ] && jq -en --argjson p "$p" '$p >= 0.9' >/dev/null; then
             say "$(printf 'coordinator-approval: %s\n\nreviewer: %s approved. CI still has to pass before it merges.\n\n%s' "$SHA" "$SHA" "$text")"
             [ "$(jq -r .draft <<<"$pr")" = true ] || GH_TOKEN=$ARM_TOKEN gh pr merge "$PR" -R "$REPO" --auto --match-head-commit "$SHA"
+          elif [ "$choice" = approve ]; then
+            say "$(printf 'reviewer: %s not approved. The judge found no blocker line but was only %s%% sure, and approval needs 90%%. Push a new head for a fresh review.\n\n%s' "$SHA" "$(jq -rn --argjson p "$p" '$p * 100 | floor')" "$text")"
           else
             say "$(printf 'reviewer: %s blocked. Fix these and push; a new head gets a fresh review.\n\n%s' "$SHA" "$text")"
           fi
