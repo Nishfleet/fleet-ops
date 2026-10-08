@@ -1,0 +1,74 @@
+# Agent Tincan relay on the VPS (fleet-ops#9455). Moved off the Mac so
+# inter-agent messaging survives Mac downtime: claude-vps and hermes both live
+# on this box (netcup-rs2000 = 100.108.184.97), and while the relay ran on the
+# Mac (LaunchDaemon com.agenttincan.relay, user _tincan, tsnet node
+# "tincan-relay" = 100.79.246.95) a down Mac took the relay down and the two
+# could not reach each other.
+#
+# Stock `tincan relay` (agent-tincan v0.9.0), no wrapper. The flags replicate
+# the Mac relay:
+#   --listen 100.108.184.97   bind this host's tailnet IP and use the host's
+#                             tailscaled, instead of joining the tailnet as its
+#                             own tsnet node. Chosen over tsnet because the Mac
+#                             already owns the tsnet node name "tincan-relay";
+#                             a second node of that name would collide. Tradeoff
+#                             the relay prints at start: with --listen the
+#                             relay's address IS this host's tailnet address, so
+#                             it changes if the host re-joins Tailscale. Agents
+#                             with tailscale re-find it on their own; a
+#                             proxy-only agent would need `tincan rejoin`. The
+#                             new relay URL is http://100.108.184.97. A stable
+#                             dedicated node name (tsnet) is the alternative if
+#                             that tradeoff ever bites, but it needs a
+#                             non-colliding node name and a TS_AUTHKEY.
+#   --no-auto-rebind          a rebuilt machine needs a fresh invite; it is not
+#                             re-admitted silently (same as the Mac).
+#   --release-url ...         lets `tincan relay-upgrade --from-github` fetch
+#                             releases (same as the Mac).
+#   --upgrade-exit            after relay-upgrade, exit 75 so this supervisor
+#                             restarts the relay into the new binary (same as
+#                             the Mac; Restart=always below restarts on any
+#                             exit, including 75).
+#   --state-dir /var/lib/tincan-relay   the issue's state dir. StateDirectory=
+#                             below makes systemd create and own it (0700), so
+#                             no tmpfiles.d entry is needed.
+# Admin is socket-only (no --admin), same as the Mac: the admin socket lives in
+# the state dir and is root-owned, so agents running as nish cannot reach it.
+# Nish reaches it with `sudo tincan ... --socket /var/lib/tincan-relay/admin.sock`.
+#
+# This unit is INSTALLED by ansible/host.yml (it copies everything under
+# rootfs/etc/systemd/system/), but it is NOT enabled there. Enabling and
+# starting the relay is the cutover, a deliberate step Nish runs (the runbook in
+# the #9455 PR and in memory agent-tincan-relay). Merging this file only stages
+# the unit, exactly like claude-remote-control.service: nothing starts on merge.
+#
+# The relay binary is not in this repo and is not managed by ansible (the Mac
+# kept its own copy at /usr/local/libexec/tincan-relay/tincan and upgraded it
+# with relay-upgrade --from-github). Cutover step 0 places the v0.9.0
+# linux_amd64 binary at the ExecStart path below, root-owned; relay-upgrade
+# --from-github handles later upgrades. `systemd-analyze verify` passes once that
+# binary is present (validated here against the v0.9.0 binary at
+# ~/.local/bin/tincan).
+[Unit]
+Description=Agent Tincan relay (moved off the Mac, fleet-ops#9455)
+Wants=network-online.target tailscaled.service
+After=network-online.target tailscaled.service
+# Page on failure, like the other root units: no silent relay outage.
+OnFailure=fleet-unit-failed@%N.service
+
+[Service]
+Type=simple
+StateDirectory=tincan-relay
+StateDirectoryMode=0700
+ExecStart=/usr/local/libexec/tincan-relay/tincan relay --listen 100.108.184.97 --state-dir /var/lib/tincan-relay --no-auto-rebind --release-url https://github.com/mvanhorn/agent-tincan/releases/download --upgrade-exit
+Restart=always
+RestartSec=5
+# Hardening is deliberately minimal: this unit cannot be exercised before the
+# cutover, and a wrong directive here would only surface as a failed start on
+# Nish's box. PrivateTmp is safe because --listen uses the host tailscaled and
+# writes only its state dir (no /tmp tsnet state). Tighten after the cutover has
+# run once.
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target
