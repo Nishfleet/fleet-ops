@@ -35,9 +35,9 @@ non-Claude seat (pi via LiteLLM), with no session polling.
 
 | Step | Time (UTC) | Evidence |
 |---|---|---|
-| `review-risky / review` | 2026-10-08T16:00:41Z | run `37805367880`, job `113408212775`, success |
-| approval comment | 2026-10-08T16:01:34Z | `github-actions[bot]` on #9456: `coordinator-approval: 66c780318c9bb30f00b9896946a76fa3bec26c` |
-| merged | 2026-10-08T16:07:34Z | #9456, merge commit `738f3fde` |
+| `review-risky / review` | 2026-10-08T16:01:41Z | run `37805367880`, job `113408212775`, success (started 16:00:41Z) |
+| approval comment | 2026-10-08T16:01:34Z | `github-actions[bot]` on #9456: `coordinator-approval: 66c780318c9bb30f00b9896946a76fa3bec26ce1` |
+| merged | 2026-10-08T16:07:34Z | #9456, merge commit `738f3fde0b09aefc678ab6224b71a6d6e8812743` |
 
 The same path approved and merged #9452, #9448, #9449 and #9453 on
 2026-10-08.
