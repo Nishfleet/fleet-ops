@@ -1,0 +1,42 @@
+# fleet-ops#9405: the paid judge row without extra_body thinking budget.
+# Everything else is right: the order-1 rung, the Alibaba api_base, the
+# plan's rpm 3 and concurrency 3, cache_proof on every row. Only the
+# budget is missing, so this file is refused by the paid row's extra_body
+# pin alone - a 40 KB empty-body regression belongs in its own evidence,
+# not in a silent edit to the judge seat.
+model_list:
+- model_name: judge
+  litellm_params:
+    model: openai/qwen3.8-max
+    api_base: https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1
+    api_key: os.environ/ALIBABA_CODING_API_KEY
+    rpm: 3
+    order: 1
+    max_parallel_requests: 3
+  model_info:
+    id: alibaba-qwen38max-judge
+    supports_prompt_caching: true
+    cache_proof: "test"
+- model_name: judge
+  litellm_params:
+    model: openai/deepseek-v4.1-flash
+    api_base: https://opencode.ai/zen/go/v1
+    api_key: os.environ/OPENCODE_API_KEY
+    order: 2
+  model_info:
+    id: opencodego-ds41flash-judge
+    supports_prompt_caching: true
+    cache_proof: "test"
+- model_name: judge
+  litellm_params:
+    model: openai/deepseek-v4.1-flash
+    api_base: https://opencode.ai/zen/go/v1
+    api_key: os.environ/OPENCODE_API_KEY_2
+    order: 2
+  model_info:
+    id: opencodego2-ds41flash-judge
+    supports_prompt_caching: true
+    cache_proof: "test"
+router_settings:
+  redis_url: redis://127.0.0.1:6379
+  cooldown_time: 60
