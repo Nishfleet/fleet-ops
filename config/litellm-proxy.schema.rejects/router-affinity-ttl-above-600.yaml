@@ -9,7 +9,7 @@ router_settings:
   cooldown_time: 60
   redis_url: redis://127.0.0.1:6379
   # fleet-ops#9365/#9361: session_affinity is present, so this file fails on the
-  # TTL bound it names and on nothing else.
+  # TTL bound it names.
   optional_pre_call_checks: ["prompt_caching", "session_affinity"]
   # fleet-ops#9361: 3600 s is the pinned default the stale-pin scatter was measured against.
   deployment_affinity_ttl_seconds: 3600

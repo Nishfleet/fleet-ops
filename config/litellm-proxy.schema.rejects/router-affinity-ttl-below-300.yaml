@@ -9,7 +9,7 @@ router_settings:
   cooldown_time: 60
   redis_url: redis://127.0.0.1:6379
   # fleet-ops#9365/#9361: session_affinity is present, so this file fails on the
-  # TTL floor it names and on nothing else.
+  # TTL floor it names.
   optional_pre_call_checks: ["prompt_caching", "session_affinity"]
   # fleet-ops#9361: 299 s falls inside the 300 s gap window the hop metric
   # counts, so it could expire a healthy pin inside a hop the TTL is meant
