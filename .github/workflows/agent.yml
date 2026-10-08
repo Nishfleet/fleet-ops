@@ -700,9 +700,9 @@ jobs:
             --append-system-prompt "$HOME/workspaces/tooling/fleet-ops-deploy-clone/prompts/risky-review.md" \
             --provider litellm --model worker-capable < "$RUNNER_TEMP/diff.txt")
           body=$(jq -nc --arg item "$review" '{model: "jev-latest",
-            state: {item: $item, context: "Independent review findings for one risky pull request. approve = no blockers and no risks that would hurt customers, data, money or the fleet after merge. block = any blocker or risk."},
+            state: {item: $item, context: "Independent review findings for one risky pull request. approve = the review lists no blocker line (risk and nit lines alone are not a reason to block). block = the review lists a blocker line, or it is empty or unclear."},
             questions: {verdict: {type: "choice", instructions: "Is this pull request safe to merge?",
-              criteria: {approve: "The review found no blockers and no risks that would hurt customers, data, money or the fleet after merge.", block: "The review names a blocker or a risk that would hurt customers, data, money or the fleet after merge, or the review is empty or unclear."}}}}')
+              criteria: {approve: "The review lists no blocker line. Risk and nit lines alone do not block.", block: "The review lists at least one blocker line, or the review is empty or unclear."}}}}')
           resp=$(curl -s 127.0.0.1:4000/jev --config <(sed -n 's|^LITELLM_JEV_KEY=\(.*\)|header = "Authorization: Bearer \1"|p' "$HOME/.config/fleet-ops/seats/typesafe-jev.env") -H 'content-type: application/json' -d "$body")
           choice=$(jq -r '.answers.verdict.choice // "block"' <<<"$resp")
           p=$(jq -r --arg c "$choice" '.answers.verdict.probabilities[$c] // 0' <<<"$resp")
