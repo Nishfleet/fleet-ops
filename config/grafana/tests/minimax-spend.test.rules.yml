@@ -1,0 +1,33 @@
+# Fixture for the minimax-spend rule (fleet-ops#9470).
+#
+# The deployed A expression, verbatim, wrapped to reproduce Grafana's threshold
+# step: the rule fires on `> 4` (80% of the $5/day cap that four $1.25 rows
+# share), so this fixture evaluates the same wrapped expression and the alert
+# engine reads it exactly as Grafana's threshold does. `for: 0s` here while the
+# deployed rule holds `for: 5m`: the `for` is a delay on the same verdict, not a
+# different one, and the delay is not what this fixture pins.
+#
+# The series are hourly-sampled counters of dollars, so a 24h increase is a
+# row's draw for a day. Two samples inside the window is enough for increase(),
+# and it is what keeps these numbers exact: no extrapolation, no float drift.
+# The boundary case at exactly $4.00 is left to the alert_rule_test cases in
+# minimax-spend.test.yml, which sit $0.75 clear of the line on either side.
+groups:
+  - name: minimax-spend-fixture
+    interval: 1h
+    rules:
+      - alert: MiniMaxSpend
+        expr: |-
+          (
+            sum(
+              increase(litellm_spend_metric_total{
+                model_id=~"minimax-m31-worker-capable|minimax-m31b-worker-capable|minimax-m31-worker-cheap|minimax-m31b-worker-cheap"
+              }[24h])
+            )
+          ) > 4
+        for: 0s
+        labels:
+          grafana_folder: fleet
+          signal: minimax-spend
+        annotations:
+          summary: 'MiniMax M3.1 spend at the daily cap'

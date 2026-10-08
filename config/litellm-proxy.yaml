@@ -1,7 +1,7 @@
 # Approved models per provider (Nish 2026-09-28: models are provider specific; a row outside this list needs his yes; no benching).
 # Nish 2026-09-30 free rows: CommandCode: stealth/space-bunny-alpha, poolside/laguna-s-2.1-free, inclusionai/ling-3.0-flash-sante:free, inclusionai/ling-3.1-flash:free. Cline: poolside/laguna-s-2.1:free, inclusionai/ling-3.0-flash-sante:free. xkiro: stealth/space-bunny-alpha:free, inclusionai/ling-3.0-flash-sante:free.
 # Nish 2026-10-08 free rows: OpenCode Go endpoint (OPENCODE_API_KEY and OPENCODE_API_KEY_2): step-5-preview-free, "free on OpenCode for a limited time" (opencode.ai/docs/zen, no end date published; Go "Unlimited" allowance, opencode.ai/docs/go). 2 lanes per key. Checked and NOT free: CommandCode stepfun/Step-5-Preview (spends plan credits), Vercel AI Gateway (billed), OpenRouter and ZenMux (paid, 402), Cline (402), OpenCode Zen endpoint (403 FreeTierError).
-# MiniMax M3.1-Flash-Preview is free for every MiniMax Code subscriber until 2026-10-07 (Nish 2026-09-30); its four rows are tagged free until then.
+# MiniMax M3.1-Flash-Preview. Free on the subscriber's M Plan until 2026-10-07 (fleet-ops#9470): after that the four rows below carry pay-as-you-go pricing (source: platform.minimax.io/docs/guides/pricing-paygo, platform.minimax.io/docs/guides/models-intro), each capped at $1.25/day via max_budget+budget_duration 1d so 4 x 1.25 = $5/day (the #9470 default), and watched by the grafana minimax-spend alert at 80% ($4 in 24h). MiniMax publishes no per-token price for M3.1-Flash-Preview itself (subscription-only); M3 Standard rates are the conservative accounting proxy. Over-budget rows are filtered pre-call by RouterBudgetLimiting.async_filter_deployments and are never retried; a 402 is still not retried (router_settings.num_retries: 0, no retry_policy key covers APIError).
 # CommandCode, Cline, OpenCode Go, Ollama: deepseek-v4.1-flash. MiniMax: M3.1-Flash-Preview. StepFun: step-5-preview. Synthetic: GLM-5.3-Flash.
 # xkiro: qwen3-coder-plus:free, qwen3.8-max:free. OpenCode zen: space-bunny-free. Cline: stealth/space-bunny-alpha.
 # Alibaba Model Studio Token Plan (fleet-ops#9220): qwen3.8-max is a judge/orchestrator row only, never a worker rung (Nish 2026-09-08, #4445), so the row below is the only way that seat answers.
@@ -887,12 +887,28 @@ model_list:
     id: zen-spacebunny-worker-cheap
     allowed_fails_policy:
       BadRequestErrorAllowedFails: 1
+# fleet-ops#9470: real per-token prices now that the M Plan free window ended 2026-10-07.
+# Pricing (platform.minimax.io/docs/guides/pricing-paygo): M3 Standard <=512k
+# input $0.30/M + output $1.20/M + cache read $0.06/M (permanent 50% off);
+# cache write $0.375/M is M2.7's published rate (the only MiniMax cache-write
+# rate published for a current text model; overstated so the $5/day cap leans
+# conservative). MiniMax publishes no per-token price for M3.1-Flash-Preview
+# itself (platform.minimax.io/docs/guides/models-intro: M Plan / MiniMax Code
+# only), so M3's rates are used as the accounting proxy. Cap: $1.25/day per
+# row (4 rows = $5/day, the #9470 default); budgets are per deployment. An
+# over-budget row is filtered out of healthy_deployments before selection and
+# is never re-tried; see grafana minimax-spend.alert for the 80% warning.
 - model_name: worker-capable
   litellm_params:
     model: anthropic/MiniMax-M3.1-Flash-Preview
     api_base: https://api.minimax.io/anthropic
     api_key: os.environ/MINIMAX_API_KEY
-    # free until 2026-10-07 (Nish 2026-09-30), see follow-up issue
+    input_cost_per_token: 3e-07
+    output_cost_per_token: 1.2e-06
+    cache_read_input_token_cost: 6e-08
+    cache_creation_input_token_cost: 3.75e-07
+    max_budget: 1.25
+    budget_duration: 1d
     tags:
     - free
     - minimax
@@ -911,7 +927,12 @@ model_list:
     model: anthropic/MiniMax-M3.1-Flash-Preview
     api_base: https://api.minimax.io/anthropic
     api_key: os.environ/MINIMAX_API_KEY
-    # free until 2026-10-07 (Nish 2026-09-30), see follow-up issue
+    input_cost_per_token: 3e-07
+    output_cost_per_token: 1.2e-06
+    cache_read_input_token_cost: 6e-08
+    cache_creation_input_token_cost: 3.75e-07
+    max_budget: 1.25
+    budget_duration: 1d
     tags:
     - free
     - minimax
@@ -930,7 +951,12 @@ model_list:
     model: anthropic/MiniMax-M3.1-Flash-Preview
     api_base: https://api.minimax.io/anthropic
     api_key: os.environ/MINIMAX_API_KEY
-    # free until 2026-10-07 (Nish 2026-09-30), see follow-up issue
+    input_cost_per_token: 3e-07
+    output_cost_per_token: 1.2e-06
+    cache_read_input_token_cost: 6e-08
+    cache_creation_input_token_cost: 3.75e-07
+    max_budget: 1.25
+    budget_duration: 1d
     tags:
     - free
     - minimax
@@ -949,7 +975,12 @@ model_list:
     model: anthropic/MiniMax-M3.1-Flash-Preview
     api_base: https://api.minimax.io/anthropic
     api_key: os.environ/MINIMAX_API_KEY
-    # free until 2026-10-07 (Nish 2026-09-30), see follow-up issue
+    input_cost_per_token: 3e-07
+    output_cost_per_token: 1.2e-06
+    cache_read_input_token_cost: 6e-08
+    cache_creation_input_token_cost: 3.75e-07
+    max_budget: 1.25
+    budget_duration: 1d
     tags:
     - free
     - minimax
