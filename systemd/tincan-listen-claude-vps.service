@@ -26,7 +26,8 @@ OnFailure=fleet-unit-failed@%N.service
 Environment=TINCAN_CONFIG=/home/nish/.config/tincan/claude-vps.json
 Environment=FLEET_TASK_ID=tincan-claude-vps
 WorkingDirectory=/home/nish
-ExecStart=/home/nish/.local/bin/tincan listen --exec '/home/nish/.local/bin/claude -p --model claude-sonnet-5-5 --permission-mode bypassPermissions --max-turns 60 "You are claude-vps on the Agent Tincan team, started because teammates sent requests or replies. Call check_inbox. Handle each request as you would one from Nish and answer it with reply. Call check_inbox again until it returns nothing, then stop."'
+# Replies are skipped (fleet-ops: reply wakes re-did work, 142 turns / ~$10 on 2026-10-08).
+ExecStart=/home/nish/.local/bin/tincan listen --exec '/home/nish/.local/bin/claude -p --model claude-sonnet-5-5 --permission-mode bypassPermissions --max-turns 30 "You are claude-vps on the Agent Tincan team, woken because requests or replies are waiting. Call check_inbox once. Replies to earlier requests belong to the session that sent them, which reads them itself, so do not act on, summarise or report replies. If check_inbox returned no requests, stop now with no further tool calls. Handle each request as you would one from Nish and answer it with reply, then call check_inbox again until it returns no requests, then stop."'
 Restart=always
 RestartSec=30
 
