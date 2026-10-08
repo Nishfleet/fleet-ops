@@ -7,6 +7,7 @@
 # Alibaba Model Studio Token Plan (fleet-ops#9220): qwen3.8-max is a judge/orchestrator row only, never a worker rung (Nish 2026-09-08, #4445), so the row below is the only way that seat answers.
 # Cline stealth/union-alpha stopped being free 2026-09-30 (402 "Insufficient balance", 397 errors and 0 answers in 5 h). A 402 is neither retried nor cooled by LiteLLM v1.98.0 (no retry_policy key covers APIError; cooldown skips 4xx), so no setting below can move a job off such a row: its four rows are removed until Nish funds Cline credits. Cline's other rows stay. Any row that starts answering only 402 goes to Nish the same way (needs-nish-decision issue): it comes out only on his yes.
 # CommandCode stealth/pixel-canary and xkiro stealth/pixel-canary:free ended 2026-09-30 (403 "no longer available", 404 "does not exist"). openai-compatible 403 maps to APIError (no retry_policy key, same as 402); 404 maps to NotFoundError, which should_retry_this_error hard-raises on v1.98.0. Their four rows are removed.
+# Free inclusionai/ling-3.0-flash-sante:free ended on CommandCode, Cline and OpenRouter (checked 2026-10-08 by direct calls: 404 "This model is unavailable for free. The paid version is available now - use this slug instead: inclusionai/ling-3.0-flash-sante"; a pi job through worker-capable got that 404 at 23:03 IST). 404 maps to NotFoundError, which Router.should_retry_this_error hard-raises on v1.98.0, and no retry_policy key covers it, so no setting can move a job off such a row. Those six rows are removed (Nish asked for the removal 2026-10-08); the paid slug is NOT wired because that spends money and needs his yes. The xkiro ling-3.0 rows stay (still listed by /v1/models, answers 429 daily free-model quota) and the CommandCode ling-3.1-flash:free rows stay (200 on 3 of 4 probes).
 # OpenCode zen union-alpha answered 0 of 68 calls in the last 7 days (last attempt 2026-09-30 16:30 UTC, LiteLLM_SpendLogs); a direct probe on 2026-10-01 returns 400 "Upstream request failed: Model is unavailable." That 400 maps to BadRequestError, which v1.98.0 never cools, so no setting below can move a job off such a row: its four rows are removed. The opencodego-ds41flash rows on the Go endpoint (same key) stay: they are walled by a monthly quota (429 GoUsageLimitError, limitName monthly), not dead. A 900 s cool re-failed into worker groups every 15 min (0 of 68 calls in the 24 h to 2026-10-02 19:05 UTC). Those three rows now cool 21600 s and park on the first 429 (RateLimitErrorAllowedFails: 0), the same treatment #9075 gave the daily-quota rows (fleet-ops#9122). The opencodego2 rows on the second key stay at 900 s.
 # OpenRouter: stealth/space-bunny-alpha, nemotron-3-ultra, nemotron-3.5-lightning, inclusionai/ling-3.0-flash-sante:free, poolside/laguna-s-2.1:free (Nish 2026-10-04: 2 lanes per free model per provider). Pareto: glm-5.3-flash, never in judge.
 # Devin: SWE 2 only, through the devin CLI lane in agent.yml (no router route: 404 on every base).
@@ -160,28 +161,6 @@ model_list:
     supports_prompt_caching: true
     cache_proof: "Caches: own-path direct probe 2026-10-07 through commandcode, 6 streamed calls on a ~20k prefix, cached_tokens 0/20000/0/20000/429/0 of 20017 prompt tokens (#9365); the #9362 probe measured 32416/32427 on calls ed93cdb5/303f9a68. The earlier false verdict rested on a cline probe, a different provider, and on a null-field spend log, which is a missing field rather than a measured 0."
     id: commandcode-lagunas21free-worker-cheap
-    allowed_fails_policy:
-      BadRequestErrorAllowedFails: 1
-- model_name: worker-capable
-  litellm_params:
-    <<: *commandcode-free
-    model: openai/inclusionai/ling-3.0-flash-sante:free
-  model_info:
-    mode: chat
-    supports_prompt_caching: true
-    cache_proof: "Caches: direct probe 2026-10-07 through commandcode, cached_tokens 0->7872 of 7915 (#9365). The router path drops the field: LiteLLM v1.98.0 stream bug, tracked in the follow-up issue."
-    id: commandcode-ling30flashsante-worker-capable
-    allowed_fails_policy:
-      BadRequestErrorAllowedFails: 1
-- model_name: worker-cheap
-  litellm_params:
-    <<: *commandcode-free
-    model: openai/inclusionai/ling-3.0-flash-sante:free
-  model_info:
-    mode: chat
-    supports_prompt_caching: true
-    cache_proof: "Caches: direct probe 2026-10-07 through commandcode, cached_tokens 0->7872 of 7915 (#9365). The router path drops the field: LiteLLM v1.98.0 stream bug, tracked in the follow-up issue."
-    id: commandcode-ling30flashsante-worker-cheap
     allowed_fails_policy:
       BadRequestErrorAllowedFails: 1
 - model_name: worker-capable
@@ -1463,30 +1442,6 @@ model_list:
       BadRequestErrorAllowedFails: 1
       RateLimitErrorAllowedFails: 0
 - model_name: worker-capable
-  litellm_params:
-    <<: *cline-free
-    model: openai/inclusionai/ling-3.0-flash-sante:free
-  model_info:
-    mode: chat
-    supports_prompt_caching: true
-    cache_proof: "Caches: own-path direct probe 2026-10-07 through cline, 6 streamed calls on a ~20k prefix, cached_tokens 0/stream_error/0/19968/19968/19968 of 20023 prompt tokens (#9365). The earlier false verdict read one 0->0 pair, which is a cold prefix read and not a measurement of the provider."
-    id: cline-ling30flashsante-worker-capable
-    allowed_fails_policy:
-      BadRequestErrorAllowedFails: 1
-      RateLimitErrorAllowedFails: 0
-- model_name: worker-cheap
-  litellm_params:
-    <<: *cline-free
-    model: openai/inclusionai/ling-3.0-flash-sante:free
-  model_info:
-    mode: chat
-    supports_prompt_caching: true
-    cache_proof: "Caches: own-path direct probe 2026-10-07 through cline, 6 streamed calls on a ~20k prefix, cached_tokens 0/stream_error/0/19968/19968/19968 of 20023 prompt tokens (#9365). The earlier false verdict read one 0->0 pair, which is a cold prefix read and not a measurement of the provider."
-    id: cline-ling30flashsante-worker-cheap
-    allowed_fails_policy:
-      BadRequestErrorAllowedFails: 1
-      RateLimitErrorAllowedFails: 0
-- model_name: worker-capable
   litellm_params: &openrouter-spacebunny
     model: openai/stealth/space-bunny-alpha
     api_base: https://openrouter.ai/api/v1
@@ -1563,32 +1518,6 @@ model_list:
       BadRequestErrorAllowedFails: 1
       RateLimitErrorAllowedFails: 0
 # Nish 2026-10-04 free rows (probe 2026-10-04 03:48 UTC: both 200 and finish_reason=tool_calls; OpenRouter :free costs $0, max_budget stays the spend wall).
-- model_name: worker-capable
-  litellm_params:
-    <<: *openrouter-spacebunny
-    model: openai/inclusionai/ling-3.0-flash-sante:free
-    tags: [free, openrouter]
-  model_info:
-    mode: chat
-    supports_prompt_caching: true
-    cache_proof: "Caches: own-path direct probe 2026-10-07 through openrouter, 6 streamed calls on a ~20k prefix, cached_tokens 19968 on 5 of 6 calls of 20023 prompt tokens (#9365), the sixth a 429. The OpenRouter endpoint list reports supports_implicit_caching false for the Novita endpoint and is wrong here: the provider serves cached tokens anyway."
-    id: openrouter-ling30flashsante-worker-capable
-    allowed_fails_policy:
-      BadRequestErrorAllowedFails: 1
-      RateLimitErrorAllowedFails: 0
-- model_name: worker-cheap
-  litellm_params:
-    <<: *openrouter-spacebunny
-    model: openai/inclusionai/ling-3.0-flash-sante:free
-    tags: [free, openrouter]
-  model_info:
-    mode: chat
-    supports_prompt_caching: true
-    cache_proof: "Caches: own-path direct probe 2026-10-07 through openrouter, 6 streamed calls on a ~20k prefix, cached_tokens 19968 on 5 of 6 calls of 20023 prompt tokens (#9365), the sixth a 429. The OpenRouter endpoint list reports supports_implicit_caching false for the Novita endpoint and is wrong here: the provider serves cached tokens anyway."
-    id: openrouter-ling30flashsante-worker-cheap
-    allowed_fails_policy:
-      BadRequestErrorAllowedFails: 1
-      RateLimitErrorAllowedFails: 0
 - model_name: worker-capable
   litellm_params:
     <<: *openrouter-spacebunny
