@@ -7,8 +7,9 @@
 # deployed rule holds `for: 5m`: the `for` is a delay on the same verdict, not a
 # different one, and the delay is not what this fixture pins.
 #
-# The series are hourly-sampled counters of dollars, so a 24h increase is a
-# row's draw for a day. Two samples inside the window is enough for increase(),
+# The series are day-spaced counter samples of dollars (the alert_rule_test
+# cases below set `interval: 24h`), so a 24h increase is a row's draw for a day.
+# The two samples that sit at the window's two ends are enough for increase(),
 # and it is what keeps these numbers exact: no extrapolation, no float drift.
 # The boundary case at exactly $4.00 is left to the alert_rule_test cases in
 # minimax-spend.test.yml, which sit $0.75 clear of the line on either side.

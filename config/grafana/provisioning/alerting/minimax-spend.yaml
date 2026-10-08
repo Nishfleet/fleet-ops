@@ -111,7 +111,10 @@ groups:
           # R: `B * 0 + C` carries B's model_id label onto C's verdict, so the
           # firing alert names the busiest row in $labels.model_id (the same
           # combine step cloudflare-spend.yaml uses with its top-resource
-          # series). A series with no model_id cannot name a row.
+          # series). A series with no model_id cannot name a row. B selects the
+          # same four rows over the same window as A, so A non-empty
+          # (the only state in which the rule can fire) means B is non-empty
+          # too: model_id is present exactly when there is something to name.
           - refId: R
             datasourceUid: __expr__
             model:

@@ -891,8 +891,9 @@ model_list:
 # Pricing (platform.minimax.io/docs/guides/pricing-paygo): M3 Standard <=512k
 # input $0.30/M + output $1.20/M + cache read $0.06/M (permanent 50% off);
 # cache write $0.375/M is M2.7's published rate (the only MiniMax cache-write
-# rate published for a current text model; overstated so the $5/day cap leans
-# conservative). MiniMax publishes no per-token price for M3.1-Flash-Preview
+# rate published for a current text model; M3.1's own cache-write behaviour is
+# unconfirmed, so this is an upper bound and the $5/day cap leans conservative).
+# MiniMax publishes no per-token price for M3.1-Flash-Preview
 # itself (platform.minimax.io/docs/guides/models-intro: M Plan / MiniMax Code
 # only), so M3's rates are used as the accounting proxy. Cap: $1.25/day per
 # row (4 rows = $5/day, the #9470 default); budgets are per deployment. An
