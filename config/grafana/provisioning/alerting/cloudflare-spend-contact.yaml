@@ -16,6 +16,10 @@
 # (~/.config/fleet-ops/github-issues.env, mode 0600). It needs issues:write on
 # Nishfleet/fleet-ops only. Rules carry label signal=cloudflare-spend and the
 # policy below picks them up, so there is one place that decides the route.
+#
+# fleet-ops#9470 adds a third signal to the same tree: signal=minimax-spend
+# opens the same agent-ready + priority-now issue from the MiniMax daily-cap
+# rule, with hermes-urgent as the same continue fallback.
 apiVersion: 1
 
 contactPoints:
@@ -55,6 +59,26 @@ contactPoints:
               {{- with index .Alerts 0 -}}
               {{- coll.Dict "title" (printf "router dead row: %s" .Labels.model_id)
                      "body" (printf "%s.\n\nValue: %s. Threshold: %s.\n\n%s\n\nRule `%s`, started firing %s UTC (%s). Source: the Grafana router-dead-row rule (config/grafana/provisioning/alerting/router-dead-row.yaml), fleet-ops#9312 class fix. Do not remove or bench the row without Nish's yes: open a needs-nish-decision issue with the evidence." .Annotations.summary .Annotations.value .Annotations.threshold .Annotations.description .Labels.alertname (.StartsAt.Format "2006-01-02 15:04:05") .GeneratorURL)
+                     "labels" (coll.Slice "agent-ready" "priority-now") | data.ToJSON -}}
+              {{- end -}}
+
+  - orgId: 1
+    name: minimax-spend-dispatch
+    receivers:
+      - uid: minimax-spend-gh-issues
+        type: webhook
+        disableResolveMessage: true
+        settings:
+          url: https://api.github.com/repos/Nishfleet/fleet-ops/issues
+          httpMethod: POST
+          authorization_scheme: Bearer
+          authorization_credentials: $GITHUB_ISSUES_TOKEN
+          maxAlerts: 1
+          payload:
+            template: |-
+              {{- with index .Alerts 0 -}}
+              {{- coll.Dict "title" (printf "minimax spend: %s of the $5/day cap" .Labels.model_id)
+                     "body" (printf "%s.\n\nValue: %s. Threshold: %s. Top row: %s.\n\n%s\n\nRule `%s`, started firing %s UTC (%s). Source: the Grafana minimax-spend rule (config/grafana/provisioning/alerting/minimax-spend.yaml), fleet-ops#9470. The four MiniMax M3.1 rows are capped at $1.25/day each and the alarm fires at 80%% of that $5. Find what is drawing the spend, then raise or lower the cap with Nish: do not raise it on your own." .Annotations.summary .Annotations.value .Annotations.threshold .Annotations.top .Annotations.description .Labels.alertname (.StartsAt.Format "2006-01-02 15:04:05") .GeneratorURL)
                      "labels" (coll.Slice "agent-ready" "priority-now") | data.ToJSON -}}
               {{- end -}}
 
@@ -101,17 +125,22 @@ policies:
         group_wait: 0s
         group_interval: 5m
         repeat_interval: 12h
-      # A session hop is a routing leak, not a task for a worker: no router row
-      # may be removed or benched without Nish's explicit yes (2026-10-02 rule),
-      # so this routes straight to the urgent Telegram channel and opens no
-      # issue. The DatasourceError/DatasourceNoData exclusion matches the two
-      # routes above: a rule that cannot evaluate has no hop number to report,
-      # so it falls to the policy root and pages here on its own.
+      - receiver: minimax-spend-dispatch
+        object_matchers:
+          - [signal, "=", minimax-spend]
+          - [alertname, "!~", "DatasourceError|DatasourceNoData"]
+        group_by: [alertname, model_id]
+        group_wait: 0s
+        group_interval: 5m
+        repeat_interval: 12h
+        continue: true
+      # Same matcher again: a spend alarm also pages hermes-urgent, so a dead
+      # or missing GITHUB_ISSUES_TOKEN never silences it.
       - receiver: hermes-urgent
         object_matchers:
-          - [signal, "=", session-hop]
+          - [signal, "=", minimax-spend]
           - [alertname, "!~", "DatasourceError|DatasourceNoData"]
-        group_by: [alertname]
+        group_by: [alertname, model_id]
         group_wait: 0s
         group_interval: 5m
         repeat_interval: 12h
