@@ -1641,6 +1641,29 @@ model_list:
     order: 1
     max_parallel_requests: 3
     cooldown_time: 900
+    # fleet-ops#9405: qwen3.8-max reasons before it answers. With no thinking
+    # budget the model spent the whole completion on reasoning and returned an
+    # empty body on a 40 KB diff (completion_tokens pinned to the cap: 8192,
+    # 14449, 28888, 43470; content 0 bytes; the 2026-10-07 `pi --model judge`
+    # call stopped at its 8192-token cap with empty stdout). The DashScope
+    # compatible-mode endpoint that this row pins takes enable_thinking and
+    # thinking_budget; LiteLLM's openai-compatible path only forwards those
+    # through extra_body (utils.py + openai_like/chat/handler.py), so they
+    # live here, not as sibling keys and not as pi samplingParams. The
+    # schema pins extra_body on this row (config/litellm-proxy.schema.json).
+    # This row is model_name: judge only (Nish #4445: Token Plan is
+    # judge/orchestrator, no worker rung). The xkiro :free qwen3.8-max
+    # worker rows use a different key and do not get this budget. 2048
+    # caps the reasoning and the row answers in about 50 s with a verdict
+    # (proof on the #9393 diff in #9405). A larger diff that still returns
+    # empty content after 2048 is a seat failure for the retry ladder, not
+    # a reason to widen the budget here. max_tokens is respected once the
+    # budget is bounded, so no max_completion_tokens change is needed, and
+    # the two order-2 deepseek-v4.1-flash rows keep their reasoning_effort
+    # and already return text.
+    extra_body:
+      enable_thinking: true
+      thinking_budget: 2048
   model_info:
     mode: chat
     supports_prompt_caching: true
