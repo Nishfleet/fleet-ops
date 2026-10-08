@@ -1,29 +1,21 @@
-# 2026-10-08: the Photon iMessage stream never goes live, and the watchdog that should restart it is blind
+# 2026-10-08: the Photon iMessage stream never went live, and the watchdog that should restart it is blind
 
-Blameless. Times are IST unless marked UTC. The finding is from live reads on this VPS
-against the running gateway, the running sidecar, and Photon's own API. No iMessage was sent
-as Nish.
+Blameless. Times are IST unless a value is quoted in UTC. Every figure below is from live
+reads on this VPS against the running gateway, the running sidecar and Photon's own API.
+Phone numbers are redacted. No iMessage was sent as Nish.
 
-## Summary
+## Impact
 
-Nish's iMessage at about 23:37 IST on 2026-10-08 never reached Hermes. The inbound gRPC
-stream is not alive, and the mechanism built to detect exactly this failure cannot ever fire,
-so nothing restarted it. The stream has never yielded a single event since the gateway started
-at 23:33:44.
+Nish's iMessage at about 23:37 IST on 2026-10-08 never reached Hermes, so nothing replied.
+The inbound gRPC stream has not delivered a single event since the gateway started at
+23:33:44, and `/healthz` still reports `state: "starting"` with `lastHealthyAt: null`.
 
-The watchdog is blind for a structural reason: its liveness probe asks the server for a
-message id the server refuses to parse. The rejection is not transient, so the probe can
-never succeed, and the watchdog's own rules say it must do nothing when the probe is
-inconclusive. Silence plus a permanently inconclusive probe is exactly the state it is built
-to ignore.
+This is a diagnostic write-up, not a fix. The failing code is the `hermes-agent` Photon sidecar
+in a third-party checkout, which this repo does not own and this run did not modify.
 
-This is not a fleet-ops defect. fleet-ops ships no Photon code and installs
-`hermes-gateway.service` as a unit file; the failing code is the `hermes-agent` sidecar in a
-third-party checkout.
+## The live state
 
-## What the live system says
-
-`hermes-gateway.service` is running and has not restarted:
+The unit is running and has never restarted, so nothing recovered it on its own:
 
 ```
 $ systemctl show hermes-gateway.service -p ActiveState -p SubState -p NRestarts -p ExecMainStartTimestamp -p Result
@@ -34,10 +26,11 @@ ActiveState=active
 SubState=running
 ```
 
-The sidecar's own health endpoint reports a stream that never went live:
+The sidecar's health endpoint reports a stream that never went live. The token is passed in a
+header file so it never reaches process arguments:
 
 ```
-$ curl -s -X POST http://127.0.0.1:8789/healthz -H "X-Hermes-Sidecar-Token: ..."
+$ curl -s -X POST http://127.0.0.1:8789/healthz -H @/run/hermes/hermes-sidecar-headers
 {
   "ok": true,
   "stream": {
@@ -48,7 +41,7 @@ $ curl -s -X POST http://127.0.0.1:8789/healthz -H "X-Hermes-Sidecar-Token: ..."
     "lastIssueAt": null,
     "staleness": {
       "lastInboundAt": "2026-10-08T18:03:49.024Z",
-      "silentForMs": 906333,
+      "silentForMs": 1122598,
       "silenceThresholdMs": 600000,
       "lastProbeAt": "2026-10-08T18:18:50.593Z",
       "lastProbeOutcome": "inconclusive",
@@ -58,22 +51,22 @@ $ curl -s -X POST http://127.0.0.1:8789/healthz -H "X-Hermes-Sidecar-Token: ..."
 }
 ```
 
-Four lines of that carry the whole story:
+Five lines carry the story:
 
-- `state` is still `starting` and `lastHealthyAt` is `null`. In the sidecar the healthy
-  callback only fires inside the inbound iterator body, so the stream has never produced one
-  event since boot.
+- `state` is still `starting` and `lastHealthyAt` is `null`. The healthy callback only fires
+  inside the inbound iterator body, so the stream has never produced one event since boot.
 - `silentForMs` has passed `silenceThresholdMs`, so the watchdog is awake and probing.
 - `lastProbeOutcome` is `inconclusive`, every time.
 - `zombieSuspected` is `false`, and it cannot become `true`.
 
-`lastInboundAt` is set to the process start time and only moves when the inbound iterator
-yields. Its value, 23:33:49 IST, is one second after the unit started, which is itself the
-proof that no event has ever been yielded.
+`lastInboundAt` is initialized to the process start time and only moves when the iterator
+yields. Its value, 18:03:49 UTC, is five seconds after the unit started at 18:03:44 UTC. That
+five-second offset is the process start, not traffic, and it is the proof that no event has
+ever been yielded.
 
-The gateway log agrees, and the absence is the evidence. There is not one `[spectrum.stream]`
-line on 2026-10-08. The last one anywhere is 2026-10-03 15:26, the earlier outage that this
-same watchdog also failed to act on:
+The log agrees, and the absence is the evidence. There is not one `[spectrum.stream]` line on
+2026-10-08. The last one anywhere is 2026-10-03 15:26, the earlier outage that this same
+watchdog also failed to act on:
 
 ```
 $ awk '$1=="2026-10-08"' ~/.hermes/logs/gateway.log | grep -c 'spectrum.stream'
@@ -82,11 +75,39 @@ $ grep 'spectrum.stream' ~/.hermes/logs/gateway.log | tail -1 | cut -c1-19
 2026-10-03 15:26:03
 ```
 
-## Root cause
+The behaviour is not pinned to this host's checkout. It was reproduced at this revision:
 
-The watchdog exists to catch a half-open socket, where the iterator hangs without erroring.
-When the stream has been silent past `STREAM_SILENCE_PROBE_MS` (10 min by default) it calls
-`probeUpstream()` in `sidecar/index.mjs`, which does a cheap unary read over the same channel:
+```
+$ git -C ~/.hermes/hermes-agent rev-parse --short HEAD
+ec24378   # NousResearch/hermes-agent
+           # @spectrum-ts/core 12.7.0, @photon-ai/advanced-imessage 2.1.0 (sidecar install)
+```
+
+## Root cause, stated precisely
+
+There are two separate failures and they must not be merged.
+
+**1. The stream never opened. Cause unknown.** This is the outage. Nothing in the available
+evidence says why. The stream is quiet rather than erroring, so a hung subscription and a
+Photon-side relay outage look identical from here, and the only instrument that could tell
+them apart is broken. The last recorded upstream error, from 2026-10-03, was
+`ConnectionError: upstream connect error or disconnect/reset before headers`. No such error
+exists for 2026-10-08. Any of the three candidate causes below would explain the evidence and
+none is confirmed:
+
+- a Photon-side shared-line relay outage,
+- a provider-side subscription defect on this project,
+- the subscription silently failing to establish at connect time.
+
+This cannot be resolved from this host. The discriminator is a live iMessage from Nish, which
+is his to send and was not sent on this run.
+
+**2. The recovery path is broken. Cause proven.** The watchdog exists to catch a half-open
+stream, and it can never fire, so failure 1 has no path out.
+
+`zombieWatchdogTick()` in `sidecar/index.mjs` wakes once silence passes
+`STREAM_SILENCE_PROBE_MS` (10 min by default) and calls `probeUpstream()`, a cheap unary read
+over the same channel:
 
 ```js
 const probeId = createProbeMessageId();
@@ -94,9 +115,9 @@ const space = await im.space.get(PROBE_SPACE_ID);
 await space.getMessage(probeId);
 ```
 
-`createProbeMessageId()` in `sidecar/stream-staleness.mjs` returns a bare `randomUUID()`.
-That id is not accepted by the server. Reproduced against the real credentials, on the real
-production code path:
+`createProbeMessageId()` in `sidecar/stream-staleness.mjs` returns a bare `randomUUID()`. The
+server does not accept it. Reproduced against the real credentials, on the real production code
+path:
 
 ```
 probe id shape : 5158c071-df45-4641-90a8-eb98da9ec4f2
@@ -105,49 +126,52 @@ message        : [spectrum-imessage] Expected message resource GUID
 watchdog verdict: {"alive":false,"inconclusive":true,...}
 ```
 
-gRPC status 3 is `INVALID_ARGUMENT`, raised server-side by
-`MessagesResource.get` in `@photon-ai/advanced-imessage`. It is not a network fault and not a
-timeout, so it is permanent rather than transient.
-
-Then the decision rule does the rest. `classifyProbeRejection()` only treats a not-found as
-proof the wire is alive, and `zombieWatchdogTick()` documents the consequence in its own
-comment: an inconclusive probe means do nothing, because the network may simply be down.
-
-So the chain is closed:
+gRPC status 3 is `INVALID_ARGUMENT`, raised server-side, so it is permanent rather than
+transient. Then the decision rule closes the chain:
 
 1. The probe asks for a synthetic guid.
 2. The server rejects that guid as invalid input.
-3. The rejection classifies as inconclusive, never alive.
-4. Inconclusive means take no action.
-5. The stream stays dead, and the next probe rejects the same way.
+3. `classifyProbeRejection()` only credits a not-found as proof the wire is alive, so this is
+   inconclusive, never alive.
+4. Inconclusive means take no action. The comment at `index.mjs:789` says it outright:
+   `// Inconclusive: deliberately no action (see block comment above).`
+5. Silence keeps waking the watchdog, every probe rejects the same way, and nothing restarts.
 
-A probe whose id the server refuses can never produce the round-trip the watchdog needs. The
-only evidence it accepts is unreachable by construction. This is why the failure has been
-silent since 23:33 rather than self-healing.
+A probe whose id the server refuses can never produce the round-trip the watchdog accepts, so
+the only evidence it will ever look for is unreachable by construction.
 
-The probe id is not the only shape that fails. All of these are rejected identically:
-
-```
-uuid-v4           -> ValidationError | Expected message resource GUID
-spc-uuid          -> ValidationError | Expected message resource GUID
-msgs/prefix       -> ValidationError | Expected message resource GUID
-iMessage-prefixed -> ValidationError | Expected message resource GUID
-uuid v1           -> ValidationError | Expected message resource GUID
-nil uuid          -> ValidationError | Expected message resource GUID
-chat-prefixed nil -> ValidationError | Expected message resource GUID
-```
-
-The same uuid accepted over Photon's HTTP twin, which is worth recording because it shows the
-credential and the id shape are both fine and the gRPC validator is the odd one out:
+Not every id shape fails, and that is what makes this an SDK bug rather than a guess. All of
+these are rejected identically with `Expected message resource GUID`: uuid-v4, `spc-`-prefixed,
+`messages/`-prefixed, iMessage-prefixed, uuid-v1, nil uuid, chat-prefixed nil. Meanwhile the
+*same* uuid is accepted over Photon's HTTP twin, which returns a clean 404 rather than a
+validation error:
 
 ```
-$ GET https://spectrum.photon.codes/v1/messages/79a62dfd-97d5-4909-9be9-b29145e70cd2
+$ GET https://spectrum.photon.codes/v1/messages/79a62dfd-...-b29145e70cd2
 HTTP 404  {"succeed":false,"data":null,"code":"NOT_FOUND","message":"Not found"}
 ```
 
-The classifier is not at fault. Run against the error shapes the SDK actually raises, it
-returns alive for both a genuine `NotFoundError` and a NOT_FOUND carrying
-`code:"notFound"`. Fixing the probe id is sufficient.
+So the credential and the id shape are both fine and the gRPC validator disagrees with the
+REST validator about what a message guid is.
+
+The classifier is not at fault. Run against the error shapes the SDK actually raises:
+
+```
+real SDK NotFoundError        -> {"alive":true,"inconclusive":false,...}
+grpc NOT_FOUND (code string)  -> {"alive":true,"inconclusive":false,...}
+grpc NOT_FOUND (numeric only)-> {"alive":false,"inconclusive":true,...}
+live probe failure            -> {"alive":false,"inconclusive":true,...}
+```
+
+**What a fixed probe would and would not buy.** Being exact here, because it changes the
+recommendation. `isZombieSuspect()` firing leads to `markStreamDegraded()`, which schedules
+`process.exit(75)` 90 s later so systemd restarts the adapter. That is a restart on
+*suspicion of a half-open socket*, not a verified stream recovery: a unary probe proves API
+reachability, it does not prove the subscription is healthy. So fixing the probe id restores the
+**recovery path**, and for this particular outage the stream never opened in the first place,
+so the probe proves reachability and the exit-75 restart is what would actually retry the
+subscription. A working probe is necessary but not sufficient on its own, and it should not be
+sold as the complete fix.
 
 ## What is not the cause
 
@@ -160,52 +184,63 @@ randomUUID -> ValidationError | grpcCode: 3 | [spectrum-imessage] Expected messa
 nil-uuid   -> ValidationError | grpcCode: 3 | [spectrum-imessage] Expected message resource GUID
 ```
 
-Identical. An upgrade will not restore the stream.
+Identical. An upgrade will not restore the stream, and this is not a missed upgrade.
 
 **Credentials and project registration.** Both work. `Spectrum()` starts cleanly against the
-stored project id and secret, and the project's user and assigned line are intact:
+stored project id and secret, and the project's user and assigned line are intact (numbers
+redacted):
 
 ```
 $ GET https://spectrum.photon.codes/projects/<id>/users/
-{"succeed":true,"data":{"users":[{"phoneNumber":"+919873730902",
-  "assignedPhoneNumber":"+16282647704","meta":{"opt_in":true,"project_owner":true},...}]}}
+{"succeed":true,"data":{"users":[{"phoneNumber":"+91…7902",
+  "assignedPhoneNumber":"+1…7704","meta":{"opt_in":true,"project_owner":true},...}]}}
 
 $ GET https://spectrum.photon.codes/projects/<id>/lines/
 {"succeed":true,"data":{"lines":[]}}
 ```
 
-The empty `lines` array is expected for a shared-number plan and is not the fault. The
-operator number is registered, opted in, and owns the project.
+The empty `lines` array is expected for a shared-number plan and is not the fault. The operator
+number is registered, opted in, and owns the project.
 
-**The Tincan move.** Not implicated. The failure is a rejected unary RPC and a stream that
-never opened, with a project that authenticates fine.
+**The classifier.** Sound, as shown above.
+
+**The model 429.** A separate cause at 23:35, reported in the same issue. A free-quota 429
+blocks a reply even when a message does arrive. It is not the reason the message was missed.
 
 ## Where the fix belongs
 
-Not in this repo. fleet-ops has no Photon reference at all, and owns only the systemd unit
-that starts the gateway. The two files that need to change are in the `hermes-agent`
-checkout, a third-party repository with no Nishfleet fork, so this run did not modify them.
+Not in this repo. fleet-ops has no Photon reference at all and owns only the systemd unit that
+starts the gateway. The files needing a change are in the `hermes-agent` checkout, a
+third-party repository with no Nishfleet fork, so this run did not modify them.
 
-The minimal durable fix is to give the probe an id the server will parse, so a round-trip
-completes and the existing decision rules work as designed. The probe only needs a
-well-formed read against a message that certainly does not exist; it does not need the
-`randomUUID()` shape. Failing that, the watchdog needs a second liveness signal that is not
-itself a synthetic-guid read, because any probe the server refuses cannot drive it.
+The work splits the same way the two failures do:
 
-Two things make this durable rather than a one-off: the sidecar already has a unit test for
-these exact helpers (`tests/plugins/platforms/photon/test_zombie_stream_watchdog.py`), and
-the watchdog's silence threshold is configurable. Until the probe is fixed, the only way to
-recover this gateway is a manual restart, which clears the hung stream and starts a fresh
-subscription.
+- **For failure 1**, nothing to fix locally. It needs either an authorised test iMessage from
+  Nish, which is his to send, or Photon-side shared-line relay and subscription diagnostics from
+  the vendor. Until one of those lands, the cause stays unknown.
+- **For failure 2**, the minimal durable fix is to give the probe an id the server will parse,
+  so a round-trip completes and the existing decision rules work as designed. Note the
+  evidence above does *not* identify such an id; that has to be established against the SDK or
+  with Photon before the change is written. Failing that, the watchdog needs a liveness signal
+  that is not a synthetic-guid read, because any probe the server refuses cannot drive it.
+  Whoever writes it should cover it with the existing unit tests at
+  `tests/plugins/platforms/photon/test_zombie_stream_watchdog.py`.
+
+**Expected behaviour of a manual restart, not a measurement.** Until the probe is fixed, the
+way out is a manual restart of `hermes-gateway.service`. That is the designed recovery path:
+the unit exits 75, systemd restarts the adapter, and the subscription is retried from a fresh
+process. This run did not restart the gateway, so no before-and-after measurement exists and
+none is claimed here. Restarting clears the current hang but not the watchdog defect, so the
+same failure can recur.
 
 ## Note on the model 429
 
-Separate cause, reported in the same issue. A model free-quota 429 at 23:35 blocks replies
-even when a message does arrive. It is not the reason the message was missed, and fixing it
-would not have restored this stream.
+Covered above under "What is not the cause". It is a distinct problem from the stream failure
+and fixing it would not have restored this stream.
 
 ## What was not done
 
 No iMessage was sent as Nish. His test message is the one that was already missed, and
-re-sending it is his call. The sidecar was not restarted, so the evidence above is the state
-as found and is still live for confirmation.
+re-sending it is his call. The sidecar was not restarted, so the evidence above is the state as
+found and remains reproducible. No credential was printed, and the sidecar token in the health
+example is read from a protected header file rather than from process arguments.
