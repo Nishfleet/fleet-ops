@@ -34,12 +34,19 @@ StandardOutput=null
 # measurement). With the flag off, each request from the phone or a claude.ai/code
 # project relay gets its own session that starts and ends with a fresh context.
 # Cost: opening the relay from the phone now creates the session instead of
-# typing into one that is already there. The flag is stock: it is the
-# --[no-]create-session-in-dir option that `claude remote-control --help`
-# documents as on by default. The installed build parses it directly, so it is
-# not a typo risk. It conflicts with --continue, --capacity and --spawn, and this
-# unit passes --spawn=same-dir and neither of the others, which is what the
-# binary allows.
+# typing into one that is already there, because the docs say the pre-created
+# session is there "so you have somewhere to type immediately".
+# The flag is stock: `claude remote-control --help` documents it as on by
+# default, and the installed build parses it. The build rejects it only alongside
+# --session-id or --continue (its check reads "--session-id and --continue cannot
+# be used with --spawn, --capacity, or --create-session-in-dir"), and this unit
+# passes --name, --spawn and --permission-mode with none of --session-id,
+# --continue, --capacity or --allow-unattended-tool-calls. Concurrent sessions
+# still stop at the --capacity default of 32.
+# Consequence: instead of one session that only grows, each relayed request
+# leaves one bounded session in ~/.claude/projects. Nothing in the fleet prunes
+# them and remote-control has no retention flag, so the file count grows with
+# use.
 # Staged, not live: ansible/host.yml enables this unit and never restarts it, so
 # a merge leaves the old session running. Only Nish restarts it, because a
 # restart cuts his phone link (#9425, README).
