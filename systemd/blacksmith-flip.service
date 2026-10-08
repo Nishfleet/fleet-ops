@@ -34,7 +34,10 @@
 #     contract into a 40-second scheduled check imports those stop conditions
 #     and nothing else it needs.
 #   * The prompt's last line is FLIP: SET or FLIP: DELETE, and nothing else is
-#     accepted. `pi --print` exits 0 whatever the model decides, so without
+#     accepted, after the check strips markdown emphasis (* and _) and the
+#     whitespace around the line: a model that ends with **FLIP: SET** still
+#     did the flip, and the exact token is still required (fleet-ops incident
+#     2026-10-08-flip-markdown). `pi --print` exits 0 whatever the model decides, so without
 #     this check a failed CLI call, an unparseable JSON body or a refusal all
 #     recorded a SUCCESSFUL hourly flip while leaving the variable stale.
 #     Exiting 1 is what puts the unit in `systemctl --user list-units
@@ -54,5 +57,5 @@ Wants=network-online.target
 [Service]
 Type=oneshot
 Environment=FLEET_TASK_ID=blacksmith-flip-hourly
-ExecStart=/bin/sh -c 'out=$(cat /home/nish/.local/share/blacksmith-flip/prompt.yml | /home/nish/.local/bin/pi --print --provider litellm --model worker-cheap --no-context-files); printf "%%s\n" "$out"; printf "%%s\n" "$out" | grep -qE "^FLIP: (SET|DELETE)$" || exit 1'
+ExecStart=/bin/sh -c 'out=$(cat /home/nish/.local/share/blacksmith-flip/prompt.yml | /home/nish/.local/bin/pi --print --provider litellm --model worker-cheap --no-context-files); printf "%%s\n" "$out"; printf "%%s\n" "$out" | tr -d "*_" | sed -E "s/^[[:space:]]+//; s/[[:space:]]+$//" | grep -qxE "FLIP: (SET|DELETE)" || exit 1'
 TimeoutStartSec=300

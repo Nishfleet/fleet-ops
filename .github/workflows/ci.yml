@@ -373,7 +373,7 @@ jobs:
             : > "$d/out"
             rc=0
             log=$(env PATH="$t/bin:$PATH" FAKE_DIR="$d" GITHUB_OUTPUT="$d/out" REPO=o/r ISSUE=5 GH_TOKEN=x RUN_ID=1 CAP_COUNT="$cap" \
-              DAILY_MAX="$(jq -r '.daily_max // ""' <<<"$c")" MODEL_VAR="$(jq -r '.model_var // ""' <<<"$c")" \
+              DAILY_MAX="$(jq -r '.daily_max // ""' <<<"$c")" MODEL_VAR="$(jq -r '.model_var // ""' <<<"$c")" RUNNER_VAR="$(jq -r '.runner_var // ""' <<<"$c")" \
               bash -c "$chk" 2>&1) || rc=$?
             if [ "$(jq -r '.want_fail // false' <<<"$c")" = true ]; then
               [ "$rc" -ne 0 ] || { echo "cap case $id: want failure, got rc 0"; bad=1; }
@@ -385,6 +385,8 @@ jobs:
             if [ "$go" = true ]; then
               [ "$(sed -n 's/^model=//p' "$d/out")" = "$(jq -r .want_model <<<"$c")" ] || { echo "cap case $id: model $(sed -n 's/^model=//p' "$d/out")"; bad=1; }
               [ "$(sed -n 's/^turns=//p' "$d/out")" = "$(jq -r .want_turns <<<"$c")" ] || { echo "cap case $id: turns $(sed -n 's/^turns=//p' "$d/out")"; bad=1; }
+              want_runner=$(jq -r '.want_runner // empty' <<<"$c")
+              [ -z "$want_runner" ] || [ "$(sed -n 's/^runner=//p' "$d/out")" = "$want_runner" ] || { echo "cap case $id: runner $(sed -n 's/^runner=//p' "$d/out")"; bad=1; }
             else
               grep -q 'daily cap' <<<"$log" || { echo "cap case $id: capped without the cap log line: $log"; bad=1; }
             fi
@@ -395,25 +397,47 @@ jobs:
           # shellcheck disable=SC2016 # the fake's body is literal script text
           printf '#!/usr/bin/env bash\nprintf "%%s\\n" "$@" > "$FAKE_ARGV"\ncat > /dev/null\n' > "$t/claude"
           chmod +x "$t/claude"
+          # shellcheck disable=SC2016 # the fake's body is literal script text
+          printf '#!/usr/bin/env bash\nprintf "%%s\\n" "$FLEET_TASK_ID" "$@" > "$FAKE_ARGV"\ncat > /dev/null\n' > "$t/pi"
+          chmod +x "$t/pi"
           grep -qF /home/nish/.local/bin/claude <<<"$ses"
+          grep -qF /home/nish/.local/bin/pi <<<"$ses"
           ses=${ses//\/home\/nish\/.local\/bin\/claude/$t\/claude}
+          ses=${ses//\/home\/nish\/.local\/bin\/pi/$t\/pi}
           mkdir -p "$t/wt/prompts"
           echo '---' > "$t/wt/prompts/orchestrator-handoff.md"
           while IFS= read -r c; do
             id=$(jq -r .id <<<"$c")
             : > "$t/argv"
-            env FAKE_ARGV="$t/argv" WORKTREE="$t/wt" RUNNER_TEMP="$t" REPO_NAME=o/r ISSUE_N=5 \
+            env FAKE_ARGV="$t/argv" ORCH_RUNNER="$(jq -r .runner <<<"$c")" SEAT="$(jq -r '.seat // ""' <<<"$c")" WORKTREE="$t/wt" RUNNER_TEMP="$t" REPO_NAME=o/r ISSUE_N=5 \
               MODEL="$(jq -r .model <<<"$c")" TURNS="$(jq -r .turns <<<"$c")" HOOKS="$(jq -r .hooks <<<"$c")" \
               bash -c "$ses" > /dev/null 2>&1 || { echo "session case $id: step failed"; bad=1; continue; }
             mapfile -t argv < "$t/argv"
-            got_model=; got_turns=; got_settings=
+            if [ "$(jq -r .want_runner <<<"$c")" = pi ]; then
+              [ "${argv[0]}" = "orch-r-5" ] || { echo "session case $id: FLEET_TASK_ID '${argv[0]}'"; bad=1; }
+              got_seat=; got_prov=
+              for ((i = 1; i < ${#argv[@]}; i++)); do
+                case ${argv[i]} in --model) got_seat=${argv[i+1]} ;; --provider) got_prov=${argv[i+1]} ;; esac
+              done
+              [ "$got_prov" = litellm ] || { echo "session case $id: provider '$got_prov'"; bad=1; }
+              [ "$got_seat" = "$(jq -r .want_seat <<<"$c")" ] || { echo "session case $id: seat '$got_seat'"; bad=1; }
+              continue
+            fi
+            got_model=; got_turns=; got_settings=; got_sources=; got_strict=; got_noslash=
             for ((i = 0; i < ${#argv[@]}; i++)); do
               case ${argv[i]} in
                 --model) got_model=${argv[i+1]} ;;
                 --max-turns) got_turns=${argv[i+1]} ;;
                 --settings) got_settings=${argv[i+1]} ;;
+                --setting-sources) got_sources=${argv[i+1]} ;;
+                --strict-mcp-config) got_strict=1 ;;
+                --disable-slash-commands) got_noslash=1 ;;
               esac
             done
+            # Start-up trim flags: deleting any of them fails CI.
+            [ "$got_strict" = 1 ] || { echo "session case $id: --strict-mcp-config missing"; bad=1; }
+            [ "$got_noslash" = 1 ] || { echo "session case $id: --disable-slash-commands missing"; bad=1; }
+            [ "$got_sources" = project,local ] || { echo "session case $id: --setting-sources '$got_sources'"; bad=1; }
             [ "$got_model" = "$(jq -r .want_model <<<"$c")" ] || { echo "session case $id: model '$got_model'"; bad=1; }
             [ "$got_turns" = "$(jq -r .want_turns <<<"$c")" ] || { echo "session case $id: turns '$got_turns'"; bad=1; }
             if [ "$(jq -r .want_settings <<<"$c")" = true ]; then
@@ -424,6 +448,26 @@ jobs:
           done < <(jq -c '.session_cases[]' "$cfg")
           rm -rf "$t"
           test "$bad" -eq 0
+      - name: Tincan listener keeps its start-up trim flags
+        # The headless claude in systemd/tincan-listen-claude-vps.service loads only
+        # agent-tincan, no skills and no user settings. Delete a flag, or the MCP
+        # file it names, and this fails. --mcp-config must come before
+        # --strict-mcp-config: its value list is variadic and would eat the prompt.
+        if: always()
+        run: |
+          set -euo pipefail
+          u=systemd/tincan-listen-claude-vps.service
+          exec_line=$(grep '^ExecStart=' "$u")
+          for n in '--strict-mcp-config' '--disable-slash-commands' '--setting-sources project,local' '--mcp-config /home/nish/workspaces/tooling/fleet-ops-deploy-clone/config/tincan-listener-mcp.json --strict-mcp-config'; do
+            grep -qF -- "$n" <<<"$exec_line" || { echo "$u: ExecStart is missing: $n"; exit 1; }
+          done
+          jq -e '.mcpServers | keys == ["agent-tincan"]' config/tincan-listener-mcp.json > /dev/null
+          # cwd must be a dedicated dir: with WorkingDirectory=/home/nish, the project
+          # settings source is ~/.claude/settings.json (the user file) and
+          # --setting-sources project,local still loads the user Stop hook and plugins.
+          grep -qx 'StateDirectory=tincan-listen-claude-vps' "$u" || { echo "$u: StateDirectory is not tincan-listen-claude-vps"; exit 1; }
+          grep -qx 'WorkingDirectory=%S/tincan-listen-claude-vps' "$u" || { echo "$u: WorkingDirectory is not the dedicated state dir"; exit 1; }
+          ! grep -E '^WorkingDirectory=(/home/nish/?|~|%h/?)$' "$u" || { echo "$u: WorkingDirectory must not be the home dir"; exit 1; }
       - name: Sweep re-sends red claim PRs (RED_REWORK)
         # Runs the list job's own RED_REWORK program, read out of the workflow
         # with the CHECK_DEFS it shares with the missing-checks case, against

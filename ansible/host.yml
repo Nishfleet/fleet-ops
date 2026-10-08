@@ -31,6 +31,11 @@
       - /etc/tmpfiles.d
       - /etc/audit/rules.d
       - /etc/polkit-1/rules.d
+    # /etc/restic is deliberately NOT in owned_dirs: it also holds the
+    # hand-installed R2 credentials (/etc/restic/netcup-r2.env) and the old
+    # box-only exclude list, which the drift check would fail on. The tracked
+    # include/exclude lists in config/restic/ are copied there (see below)
+    # without making the whole directory repo-owned.
     # Files Ubuntu packages ship, or the GitHub runner's own svc.sh writes, in
     # those directories. Matched against the full path.
     package_files:
@@ -199,6 +204,21 @@
         group: root
         mode: preserve
 
+    # Restic backup include and exclude lists (config/restic/). The backup unit
+    # reads them from /etc/restic/ on every run; a change here is live after
+    # the next fleet-host-config run, no daemon-reload needed. README.md is not
+    # copied: it is repo documentation, not box config.
+    - name: Install restic include and exclude lists
+      ansible.builtin.copy:
+        src: "{{ playbook_dir }}/../config/restic/{{ item }}"
+        dest: /etc/restic/{{ item }}
+        owner: root
+        group: root
+        mode: '0644'
+      loop:
+        - include.txt
+        - exclude.txt
+
     # Leviathan is the session-log search the agents are told to run first
     # (AGENTS.md, prompts/worker.md). The release is pinned: a bump is a PR
     # that changes the URL and the checksum together, and this block's
@@ -246,7 +266,10 @@
         - /tmp/leviathan.tar.gz
         - /tmp/leviathan
 
-    # enabled only: never restarts the Remote Control link this playbook may run under.
+    # enabled only: never restarts the Remote Control link this playbook may run
+    # under, so a change to the unit file it installs is staged, not applied.
+    # This task adds no reload of its own. The restart, and the reload before
+    # it, are one deliberate step by Nish, in the README under the same heading.
     - name: Enable Remote Control at boot
       ansible.builtin.systemd_service:
         name: claude-remote-control.service
