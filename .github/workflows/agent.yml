@@ -690,7 +690,8 @@ jobs:
             say "reviewer: $SHA edits the merge guard or a workflow (or the guard list could not be read), so a person approves it. Nothing was approved or blocked automatically."
             exit 0
           fi
-          gh api -H 'Accept: application/vnd.github.diff' "repos/$REPO/pulls/$PR" > "$RUNNER_TEMP/diff.txt"
+          gh api -H 'Accept: application/vnd.github.diff' "repos/$REPO/pulls/$PR" \
+            | awk '/^diff --git/ {n = 0; cut = 0; md = ($0 ~ /\.md b\//)} md && (n += length($0) + 1) > 20000 {if (!cut) print "[review note: the rest of this markdown file diff was cut at 20000 bytes]"; cut = 1; next} {print}' > "$RUNNER_TEMP/diff.txt"
           if [ "$(wc -c < "$RUNNER_TEMP/diff.txt")" -gt 250000 ]; then
             say "reviewer: $SHA blocked. The diff is over 250 KB, too large to review whole. Split it into smaller PRs."
             exit 0
