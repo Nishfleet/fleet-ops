@@ -1,0 +1,24 @@
+# fleet-ops#9375: a bad key can never recover on retry, so AuthenticationErrorRetries back at the shipped 2 is refused.
+model_list:
+- model_name: worker-cheap
+  litellm_params:
+    model: openai/x
+  model_info:
+    supports_prompt_caching: true
+    cache_proof: 'fixture row: only the rule named in this file is under test (fleet-ops#9375).'
+router_settings:
+  cooldown_time: 60
+  redis_url: redis://127.0.0.1:6379
+  optional_pre_call_checks:
+  - prompt_caching
+  - session_affinity
+  deployment_affinity_ttl_seconds: 600
+  allowed_fails_policy:
+    NotFoundErrorAllowedFails: 0
+  retry_policy:
+    AuthenticationErrorRetries: 2
+    RateLimitErrorRetries: 1
+    TimeoutErrorRetries: 1
+    InternalServerErrorRetries: 1
+    BadRequestErrorRetries: 1
+    ContentPolicyViolationErrorRetries: 0

@@ -1799,10 +1799,13 @@ router_settings:
   timeout: 1800
   enable_tag_filtering: false
   retry_policy:
-    AuthenticationErrorRetries: 2
-    RateLimitErrorRetries: 2
+    # fleet-ops#9375: cut the in-router retry budget so a mid-session failure spends at most one attempt inside the worker group before the fallback group answers or the call reaches Pi's own retry. Pi keeps x-litellm-session-id, and the session pin is first-writer-wins, so a pinned seat that recovers is re-picked on the next call. Drilled on litellm 1.98.0 with a pinned seat whose first attempt 429s: shipped (2/2/2) made 4 upstream picks [seat-a, seat-a, seat-c, seat-b]; proposed (0/1/1) makes 3 [seat-a, seat-a, seat-b], where the retry lands back on the row that failed. When the 429 clears on that second call, proposed spends 2 picks on seat-a alone and no fallback fires, where a zeroed budget would kick the call to the fallback seat. The schema bounds this block and tests/test_router_retry_policy_no_cross_seat.py locks it.
+    # 0 for 401: a bad key can never recover on retry. 1 for 429 bounds the in-group attempts to one, and litellm 1.98.0 sends that retry back to the row that just failed, so a briefly-limited pinned seat is not kicked to another seat. The retry is instant - Router._time_to_sleep_before_retry returns 0 while the group still has a healthy row - so the backoff itself stays in Pi's own retry, not here.
+    # Note: litellm 1.98.0's get_num_retries_from_retry_policy has no InternalServerError branch, so InternalServerErrorRetries resolves to None (num_retries 0 -> one attempt) until litellm adds the handler; 1 is the intended forward value and the test asserts the current inert behavior.
+    AuthenticationErrorRetries: 0
+    RateLimitErrorRetries: 1
     TimeoutErrorRetries: 1
-    InternalServerErrorRetries: 2
+    InternalServerErrorRetries: 1
     # 400 only (a separate fix from the 402 removal above): LiteLLM never cools a 400, so a row whose model is gone upstream stays in the shuffle (zen union-alpha "Model is unavailable", stalled drive for an hour on 2026-09-30; its rows are removed since, so this guards against any future dead-model 400). 1 retry = 2 picks. The retry re-shuffles and does not exclude the failed row, so escape is by odds: a dead row's share of its group decides - tiny in the many-row worker groups, but all of senior's single remaining row, where 2 picks cannot escape. ContentPolicyViolation is matched first and stays 0; a context-window 400 is retried too, which costs one fast failure.
     BadRequestErrorRetries: 1
     ContentPolicyViolationErrorRetries: 0
