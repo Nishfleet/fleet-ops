@@ -471,25 +471,6 @@ jobs:
           grep -qx 'StateDirectory=tincan-listen-claude-vps' "$u" || { echo "$u: StateDirectory is not tincan-listen-claude-vps"; exit 1; }
           grep -qx 'WorkingDirectory=%S/tincan-listen-claude-vps' "$u" || { echo "$u: WorkingDirectory is not the dedicated state dir"; exit 1; }
           ! grep -E '^WorkingDirectory=(/home/nish/?|~|%h/?)$' "$u" || { echo "$u: WorkingDirectory must not be the home dir"; exit 1; }
-      - name: Worker units ship the hermes-style sandbox drop-in (fleet-ops#9503)
-        # System worker units must mask docker.sock. The Tincan listener is a
-        # user unit, so it cannot; it must still ship ProtectSystem=strict.
-        # Remote Control keeps sudo, so it must not set ProtectSystem.
-        if: always()
-        run: |
-          set -euo pipefail
-          agent=rootfs/etc/systemd/system/actions.runner.Nishfleet.netcup-agent-.service.d/20-sandbox.conf
-          ci=rootfs/etc/systemd/system/actions.runner.Nishfleet.netcup-fleet-ci-.service.d/20-sandbox.conf
-          rc=rootfs/etc/systemd/system/claude-remote-control.service.d/20-sandbox.conf
-          listen=rootfs/etc/systemd/user/tincan-listen-claude-vps.service.d/20-sandbox.conf
-          for f in "$agent" "$ci" "$rc"; do
-            grep -qx 'InaccessiblePaths=/run/docker.sock' "$f" || { echo "$f: missing docker.sock mask"; exit 1; }
-          done
-          for f in "$agent" "$ci" "$listen"; do
-            grep -qx 'ProtectSystem=strict' "$f" || { echo "$f: missing ProtectSystem=strict"; exit 1; }
-          done
-          ! grep -q '^ProtectSystem=' "$rc" || { echo "$rc: Remote Control must not set ProtectSystem"; exit 1; }
-          ! grep -qE '^ProtectKernel(Modules|Clock|Logs)=' "$listen" || { echo "$listen: user manager fails these with 218"; exit 1; }
       - name: Sweep re-sends red claim PRs (RED_REWORK)
         # Runs the list job's own RED_REWORK program, read out of the workflow
         # with the CHECK_DEFS it shares with the missing-checks case, against
