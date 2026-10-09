@@ -74,6 +74,40 @@ use instead.
   and `jq -r '.permissions.deny[]' ~/.claude/settings.json | grep -cE '^Bash\((sed|perl|git add)'`
   (prints 7).
 
+## Worker sandbox (fleet-ops#9503)
+
+systemd drop-ins under `rootfs/etc/systemd/` (copied by `fleet-host-config.service`)
+sandbox the worker units: `ProtectSystem=strict`, `PrivateTmp`, the hermes
+kernel/personality set, and `InaccessiblePaths=/run/docker.sock` on the
+system units (Pi runners, fleet-ci, Remote Control). They are staged: a
+merge reloads systemd and does not restart a runner or RC, so the lines
+take effect at the next restart of that unit.
+
+`SupplementaryGroups=` cannot drop docker. It only adds groups (man
+systemd.exec). A user-manager unit also cannot mask `/run/docker.sock`
+(`InaccessiblePaths=` is accepted and silently ignored). Those units keep
+the docker GID until nish leaves the group on the host.
+
+Warning: removing nish from the docker group needs root and a re-login,
+and it would stop Drive MinIO (`docker ps` as nish) until MinIO has another
+owner or rootless Podman. Do not run the host group step while MinIO still
+runs as nish. The per-unit socket mask already cuts docker off for the
+system worker units.
+
+Host group step, only after MinIO has another owner:
+1. `sudo gpasswd -d nish docker`
+2. nish logs out and in (or reboot), so existing sessions drop the GID.
+3. `id -nG` must not list `docker`. Restart the system runners and
+   `systemctl --user restart tincan-listen-claude-vps.service` so they
+   pick up the new groups and the drop-ins if they have not yet.
+
+Rollback:
+- Drop-ins: revert the `20-sandbox.conf` files, re-run host-config, restart
+  the unit (`sudo systemctl restart claude-remote-control.service` for RC;
+  a runner restarts itself on `Restart=on-failure` or at the nightly
+  fleet-update pause).
+- Group: `sudo gpasswd -a nish docker`, then nish logs out and in.
+
 ## Dashboards and the CI runner flip
 
 `systemctl --user is-active fleet-grafana.service` prints `active`. The service is
