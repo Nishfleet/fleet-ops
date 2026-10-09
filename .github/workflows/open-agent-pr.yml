@@ -1,0 +1,153 @@
+# Agent-opened PRs are authored by the fleet's GitHub App, not by a person.
+# GitHub forbids a PR author from approving their own PR, so a PR that an
+# interactive session opened with Nish's own login could not take his one-tap
+# Approve (fleet-ops#9506). The push to a branch is the signal: this workflow
+# opens the draft PR with the App token, and the agent fills it with
+# `gh pr edit` (AGENTS.md "Open PRs"; the README section has the long form).
+#
+# Two jobs, because the `agent` runner group (which holds the App key) lists
+# only workflow files at refs/heads/main, and a push runs the file at the
+# pushed branch:
+#   decide  runs on every push (GitHub-hosted, no key, no write). If the branch
+#           is ahead of main and has no open PR, it dispatches this file at main.
+#   open    runs from that dispatch, on the `agent` group like agent.yml, mints
+#           the App token, re-checks, and runs `gh pr create --draft`.
+#
+# Needs: the App installed on the repo (it is installed on every Nishfleet
+# repo) and this file listed in the runner group as
+# <owner>/<repo>/.github/workflows/open-agent-pr.yml@refs/heads/main.
+# Other repos call the `open` job as a reusable workflow (inputs.branch); see
+# the README.
+#
+# To switch it off: set the repo variable OPEN_AGENT_PR to off, or disable the
+# workflow. To remove it: delete this file, the "Open-agent-PR decision" step in
+# ci.yml, the runner-group entry, and the AGENTS.md rule. Nothing else reads it.
+name: open-agent-pr
+on:
+  push:
+    branches-ignore:
+      - main
+      - gh-readonly-queue/**
+      - claim/**
+      - dependabot/**
+      - renovate/**
+  workflow_dispatch:
+    inputs:
+      branch:
+        description: Branch to open a draft PR for (set by the decide job)
+        type: string
+        required: true
+  workflow_call:
+    inputs:
+      branch:
+        description: Branch to open a draft PR for
+        type: string
+        required: true
+
+permissions: {}
+jobs:
+  decide:
+    if: github.event_name == 'push' && !github.event.deleted && inputs.branch == '' && vars.OPEN_AGENT_PR != 'off'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      pull-requests: read
+      actions: write
+    concurrency:
+      group: open-agent-pr-decide-${{ github.repository }}-${{ github.ref_name }}
+      cancel-in-progress: true
+    env:
+      REPO: ${{ github.repository }}
+      BRANCH: ${{ github.ref_name }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: Decide
+        id: decide
+        run: |
+          set -euo pipefail
+          skip() { echo "open-agent-pr: skip ($1)"; echo open=false >> "$GITHUB_OUTPUT"; exit 0; }
+          case $BRANCH in
+            main | gh-readonly-queue/* | claim/* | dependabot/* | renovate/*) skip excluded-branch ;;
+          esac
+          [[ $BRANCH =~ ^[A-Za-z0-9._/-]+$ ]] || skip unusual-branch-name
+          # A failed read exits here (set -e), so the job fails and opens nothing.
+          open=$(gh pr list -R "$REPO" --head "$BRANCH" --state open --json number --jq length)
+          [[ $open =~ ^[0-9]+$ ]] || { echo "::error::open-agent-pr: unreadable PR count"; exit 1; }
+          [ "$open" -eq 0 ] || skip pr-exists
+          ahead=$(gh api "repos/$REPO/compare/main...$BRANCH" --jq .ahead_by)
+          [[ $ahead =~ ^[0-9]+$ ]] || { echo "::error::open-agent-pr: unreadable ahead count"; exit 1; }
+          [ "$ahead" -gt 0 ] || skip no-commits-ahead
+          echo "open-agent-pr: $BRANCH is $ahead ahead of main with no open PR"
+          echo open=true >> "$GITHUB_OUTPUT"
+      - name: Dispatch the open job at main
+        if: steps.decide.outputs.open == 'true'
+        run: gh workflow run open-agent-pr.yml -R "$REPO" --ref main -f branch="$BRANCH"
+
+  open:
+    if: inputs.branch != '' && vars.OPEN_AGENT_PR != 'off'
+    runs-on: [self-hosted, agent]
+    timeout-minutes: 5
+    permissions: {}
+    concurrency:
+      group: open-agent-pr-${{ github.repository }}-${{ inputs.branch }}
+      cancel-in-progress: false
+    env:
+      REPO: ${{ github.repository }}
+      BRANCH: ${{ inputs.branch }}
+    steps:
+      - name: Read App private key
+        id: app-key
+        run: |
+          keyfile="$HOME/.config/fleet-worker/nishfleet-worker.private-key.pem"
+          [ -s "$keyfile" ] || { echo "::error::app private key file missing on runner"; exit 1; }
+          while IFS= read -r line || [ -n "$line" ]; do
+            [ -n "$line" ] && echo "::add-mask::$line"
+          done < "$keyfile"
+          delim=APP_PRIVATE_KEY_END
+          {
+            printf 'pem<<%s\n' "$delim"
+            cat "$keyfile"
+            printf '%s\n' "$delim"
+          } >> "$GITHUB_OUTPUT"
+      # Same App and key as agent.yml, narrower grant: read the branch, write
+      # the PR. No owner and no repositories scopes the token to the calling repo.
+      - name: App token
+        id: app-token
+        uses: actions/create-github-app-token@fee1f7d63c2ff003460e3d139729b119787bc349 # v2.2.2
+        with:
+          app-id: "4728578"
+          private-key: ${{ steps.app-key.outputs.pem }}
+          permission-contents: read
+          permission-pull-requests: write
+          skip-token-revoke: "false"
+      - name: Open the draft PR
+        id: open
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          BODY: |
+            Opened by the fleet's GitHub App, so the author is not a person and Nish can approve this PR with one tap.
+
+            The agent that pushed this branch replaces this body with `gh pr edit`.
+        run: |
+          set -euo pipefail
+          case $BRANCH in
+            main | gh-readonly-queue/* | claim/* | dependabot/* | renovate/*) echo "open-agent-pr: skip (excluded-branch)"; exit 0 ;;
+          esac
+          [[ $BRANCH =~ ^[A-Za-z0-9._/-]+$ ]] || { echo "open-agent-pr: skip (unusual-branch-name)"; exit 0; }
+          open=$(gh pr list -R "$REPO" --head "$BRANCH" --state open --json number --jq length)
+          [[ $open =~ ^[0-9]+$ ]] || { echo "::error::open-agent-pr: unreadable PR count"; exit 1; }
+          [ "$open" -eq 0 ] || { echo "open-agent-pr: skip (pr-exists)"; exit 0; }
+          ahead=$(gh api "repos/$REPO/compare/main...$BRANCH" --jq .ahead_by)
+          [[ $ahead =~ ^[0-9]+$ ]] || { echo "::error::open-agent-pr: unreadable ahead count"; exit 1; }
+          [ "$ahead" -gt 0 ] || { echo "open-agent-pr: skip (no-commits-ahead)"; exit 0; }
+          # The compare API lists commits oldest first: the first is the branch's first.
+          title=$(gh api "repos/$REPO/compare/main...$BRANCH" --jq '.commits[0].commit.message | split("\n")[0]')
+          [ -n "$title" ] || title=$BRANCH
+          if gh pr create --draft -R "$REPO" --head "$BRANCH" --base main --title "$title" --body "$BODY"; then
+            exit 0
+          fi
+          # A session that ran gh pr create first wins the race; that is fine.
+          open=$(gh pr list -R "$REPO" --head "$BRANCH" --state open --json number --jq length)
+          [ "$open" = 1 ] || { echo "::error::open-agent-pr: gh pr create failed and no PR exists"; exit 1; }
+          echo "open-agent-pr: a PR appeared first; nothing to do"

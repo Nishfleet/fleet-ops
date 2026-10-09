@@ -51,6 +51,7 @@
   the proxy's own admin credential — seat traffic uses the per-group virtual
   keys; `/jev` only where worker.md step 4 or miss-review say so (RUNBOOK).
 - `main`/`master` are protected. Branch or use a worktree.
+- Open PRs: push your branch; the fleet App opens the draft PR within about a minute; fill it with `gh pr edit`. Never `gh pr create` as nish3451, because Nish can't approve his own PRs (fleet-ops#9506; README "Agent-opened PRs"). Workers (`claim/issue-*`) and the orchestrator hand-off keep their own App-authored `gh pr create`.
 - Machine wiring — symlinks under `~/.config/systemd/user`, `~/.local/bin`,
   `~/.pi/agent`, and the vault — resolves only into stable install trees
   (`~/workspaces/tooling/fleet-ops-deploy-clone`, `~/.local/share`,

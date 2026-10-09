@@ -463,6 +463,58 @@ assertions in `config/lighthouserc.json` (LCP 1500 ms, interactive 3000 ms, CLS
 `uses: Nishfleet/fleet-ops/.github/workflows/lighthouse.yml@main` and
 `with: urls:` (one page URL per line); callers cannot change the assertions.
 
+## Agent-opened PRs (open-agent-pr)
+
+GitHub does not let a PR author approve their own PR, so a PR opened with
+Nish's login cannot take his one-tap Approve (fleet-ops#9506). Worker PRs
+(`claim/issue-*`) are already authored by the `nishfleet-worker` App.
+`.github/workflows/open-agent-pr.yml` does the same for every other branch:
+
+1. An agent pushes its branch. The `decide` job (GitHub-hosted, no key, read
+   access plus `actions: write`) skips `main`, `gh-readonly-queue/**`,
+   `claim/**`, `dependabot/**` and `renovate/**`, skips a branch with an open
+   PR, skips a branch with no commits ahead of `main`, and otherwise dispatches
+   the same file at `main`.
+2. The dispatched `open` job runs on the `agent` runner group, mints the App
+   token the way `agent.yml` does (contents read, pull requests write), checks
+   again, and runs `gh pr create --draft --base main`. The title is the first
+   commit's subject. A failed read or a failed create fails the run and opens
+   nothing.
+3. The agent fills the PR with `gh pr edit`. It never runs `gh pr create`
+   itself, or the PR is authored by the person whose login it used.
+
+The orchestrator job in `agent-dispatch.yml` takes the other route: it hands the
+session the App token as `PR_GH_TOKEN`, and the prompt uses it on the one
+`gh pr create` command. It is not exported as `GH_TOKEN` because the App cannot
+push `.github/workflows/**` and the session pushes with the runner login.
+
+**Enrol a repo.** The App is installed on every Nishfleet repo
+(`gh api orgs/Nishfleet/installations --jq '.installations[]|select(.app_slug=="nishfleet-worker")|.repository_selection'`
+prints `all`). Per repo:
+
+1. Add `Nishfleet/<repo>/.github/workflows/open-agent-pr.yml@refs/heads/main`
+   to the `agent` runner group's selected workflows (org admin). The group lists
+   workflow files at `refs/heads/main` only; a file missing from it queues
+   forever. fleet-ops needs its own entry the same way.
+2. In a repo other than fleet-ops, add a stub with the same name that has the
+   same `push` trigger and an `open` job calling
+   `uses: Nishfleet/fleet-ops/.github/workflows/open-agent-pr.yml@main` with
+   `with: branch: ${{ inputs.branch }}` from `workflow_dispatch`, and a
+   GitHub-hosted job that dispatches it. Copy the `decide` job from this repo.
+   Nishfleet/0509 is the next repo (follow-up issue).
+
+**Switch it off.** Set the repo variable `OPEN_AGENT_PR` to `off` (or
+`gh workflow disable open-agent-pr.yml`); a PR already open stays. **Remove
+it.** Delete `open-agent-pr.yml`, the "Open-agent-PR decision" step in
+`ci.yml`, the runner-group entry, the AGENTS.md "Open PRs" rule, and the
+orchestrator's two App steps, `PR_GH_TOKEN` line and prompt clause.
+
+**Close the race.** An agent that runs `gh pr create` right after its push beats
+the workflow and authors the PR as itself. The stock fix is a
+`Bash(gh pr create:*)` entry under `permissions.deny` in the Claude Code user
+settings (`~/.claude/settings.json`, hand-managed, not deployed from this repo)
+and the same refusal in the Pi runner guard package. Neither is in this repo.
+
 ## Allowlist
 
 There is no manifest and no installer. A path is live because something

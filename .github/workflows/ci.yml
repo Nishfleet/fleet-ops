@@ -451,6 +451,80 @@ jobs:
           done < <(jq -c '.session_cases[]' "$cfg")
           rm -rf "$t"
           test "$bad" -eq 0
+      - name: Open-agent-PR decision (fake gh)
+        # Runs open-agent-pr.yml's own decide and open scripts, read out of the
+        # workflow with yq, against a fake gh. Skip when a PR is open, skip
+        # claim/ and the other excluded branches, skip with no commits ahead,
+        # open otherwise; any failed read fails the step and opens nothing.
+        # The fake lives in a temp dir and is not a repo file.
+        if: always()
+        run: |
+          set -euo pipefail
+          f=.github/workflows/open-agent-pr.yml
+          dec=$(yq '.jobs.decide.steps[] | select(.id == "decide") | .run' "$f")
+          opn=$(yq '.jobs.open.steps[] | select(.id == "open") | .run' "$f")
+          for v in "$dec" "$opn"; do [ -n "$v" ] && [ "$v" != null ]; done
+          # The trigger and gates the scripts rely on.
+          [ "$(yq -o=json -I=0 '.on.push["branches-ignore"]' "$f")" = '["main","gh-readonly-queue/**","claim/**","dependabot/**","renovate/**"]' ]
+          [ "$(yq '.jobs.decide.steps[] | select(.name == "Dispatch the open job at main") | .if' "$f")" = "steps.decide.outputs.open == 'true'" ]
+          [ "$(yq '.jobs.open.runs-on | join(",")' "$f")" = "self-hosted,agent" ]
+          t=$(mktemp -d)
+          mkdir "$t/bin"
+          cat > "$t/bin/gh" <<'FAKE'
+          #!/usr/bin/env bash
+          # Fake gh: PR_COUNT open PRs (PR_AFTER on a later list call), AHEAD commits ahead, TITLE first subject.
+          # FAIL is a regex over the call line; a match exits 1. A create
+          # records its argv, one argument per line, in $FAKE_ARGV.
+          line="gh $*"
+          if [ -n "${FAIL:-}" ] && grep -qE -- "$FAIL" <<<"$line"; then echo "fake gh fails: $line" >&2; exit 1; fi
+          case "$*" in
+            "pr list"*) n=$(cat "$FAKE_ARGV.n" 2>/dev/null || echo 0); echo $((n + 1)) > "$FAKE_ARGV.n"
+              if [ "$n" -ge 1 ] && [ -n "${PR_AFTER:-}" ]; then echo "$PR_AFTER"; else echo "$PR_COUNT"; fi ;;
+            "api repos/"*/compare/main...*) case "$*" in *ahead_by*) echo "$AHEAD" ;; *) echo "$TITLE" ;; esac ;;
+            "pr create"*) printf '%s\n' "$@" > "$FAKE_ARGV"; echo https://example.invalid/pull/1 ;;
+            *) echo "fake gh: unexpected call: $*" >&2; exit 99 ;;
+          esac
+          FAKE
+          chmod +x "$t/bin/gh"
+          bad=0
+          # case|branch|open PRs|PR count after a failed create|commits ahead|first subject|FAIL regex|decide want|create want|open script exit
+          # decide want: open, skip or fail. create want: yes or no. open script exit: 0 or 1.
+          while IFS='|' read -r name branch prs after ahead title fail want_dec want_new want_rc; do
+            d="$t/$name"; mkdir "$d"; : > "$d/out"; : > "$d/argv"
+            envs=(PATH="$t/bin:$PATH" FAKE_ARGV="$d/argv" GITHUB_OUTPUT="$d/out" REPO=o/r BRANCH="$branch" GH_TOKEN=x PR_COUNT="$prs" PR_AFTER="$after" AHEAD="$ahead" TITLE="$title" FAIL="$fail" BODY=b)
+            rc=0; env "${envs[@]}" bash -c "$dec" > "$d/log" 2>&1 || rc=$?
+            got=skip
+            if [ "$rc" -ne 0 ]; then got=fail; elif grep -qx 'open=true' "$d/out"; then got=open; fi
+            [ "$got" = "$want_dec" ] || { echo "decide $name: got $got want $want_dec"; cat "$d/log"; bad=1; }
+            rm -f "$d/argv.n"
+            rc=0; env "${envs[@]}" bash -c "$opn" > "$d/log2" 2>&1 || rc=$?
+            made=no; [ ! -s "$d/argv" ] || made=yes
+            [ "$made" = "$want_new" ] || { echo "open $name: created=$made want $want_new"; cat "$d/log2"; bad=1; }
+            [ "$rc" = "$want_rc" ] || { echo "open $name: exit $rc want $want_rc"; cat "$d/log2"; bad=1; }
+            if [ "$want_new" = yes ]; then
+              mapfile -t av < "$d/argv"
+              want=(pr create --draft -R o/r --head "$branch" --base main --title "${title:-$branch}" --body b)
+              [ "${av[*]}" = "${want[*]}" ] || { echo "open $name: argv '${av[*]}'"; bad=1; }
+            fi
+          done <<'CASES'
+          opens|feat/x|0||2|Add the thing||open|yes|0
+          pr-exists|feat/x|1||2|Add the thing||skip|no|0
+          claim-branch|claim/issue-5|0||2|Add the thing||skip|no|0
+          claim-rework|claim/issue-5-r2|0||2|Add the thing||skip|no|0
+          main-branch|main|0||2|Add the thing||skip|no|0
+          queue-branch|gh-readonly-queue/main/pr-3-abc|0||2|Add the thing||skip|no|0
+          dependabot|dependabot/npm/x|0||2|Add the thing||skip|no|0
+          renovate|renovate/x|0||2|Add the thing||skip|no|0
+          no-commits-ahead|feat/x|0||0|Add the thing||skip|no|0
+          odd-branch-name|feat/x y|0||2|Add the thing||skip|no|0
+          empty-subject|feat/x|0||1|||open|yes|0
+          pr-list-fails|feat/x|0||2|Add the thing|pr list|fail|no|1
+          compare-fails|feat/x|0||2|Add the thing|compare|fail|no|1
+          create-fails-no-pr|feat/x|0|0|2|Add the thing|pr create|open|no|1
+          create-loses-race|feat/x|0|1|2|Add the thing|pr create|open|no|0
+          CASES
+          rm -rf "$t"
+          test "$bad" -eq 0
       - name: Tincan listener keeps its start-up trim flags
         # The headless claude in systemd/tincan-listen-claude-vps.service loads only
         # agent-tincan, no skills and no user settings. Delete a flag, or the MCP

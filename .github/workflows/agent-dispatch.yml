@@ -1138,6 +1138,42 @@ jobs:
             env -u GH_TOKEN -u GITHUB_TOKEN git -C "$mirror" worktree add -q -b "orch/issue-$ISSUE" "$wt" refs/remotes/origin/main
           fi
           echo "worktree=$wt" >> "$GITHUB_OUTPUT"
+      # Orchestrator PRs are authored by the fleet App, so Nish can approve them
+      # with one tap (GitHub forbids approving your own PR). The session still
+      # pushes as the runner login, because the App cannot push
+      # .github/workflows/**; only `gh pr create` takes the App token, through
+      # PR_GH_TOKEN (prompts/orchestrator-handoff.md step 4). Not GH_TOKEN: the
+      # git credential helper reads it, and a pushed workflow file would fail.
+      # A failed mint leaves PR_GH_TOKEN empty and the session opens the PR as
+      # the runner login, as before. To remove: delete these two steps and the
+      # PR_GH_TOKEN line below, and the prompt's PR_GH_TOKEN clause.
+      - name: Read App private key
+        id: app-key
+        if: steps.issue.outputs.go == 'true' && steps.worktree.outputs.worktree != ''
+        continue-on-error: true
+        run: |
+          keyfile="$HOME/.config/fleet-worker/nishfleet-worker.private-key.pem"
+          [ -s "$keyfile" ] || { echo "::error::app private key file missing on runner"; exit 1; }
+          while IFS= read -r line || [ -n "$line" ]; do
+            [ -n "$line" ] && echo "::add-mask::$line"
+          done < "$keyfile"
+          delim=APP_PRIVATE_KEY_END
+          {
+            printf 'pem<<%s\n' "$delim"
+            cat "$keyfile"
+            printf '%s\n' "$delim"
+          } >> "$GITHUB_OUTPUT"
+      - name: App token
+        id: app-token
+        if: steps.app-key.outcome == 'success'
+        continue-on-error: true
+        uses: actions/create-github-app-token@fee1f7d63c2ff003460e3d139729b119787bc349 # v2.2.2
+        with:
+          app-id: "4728578"
+          private-key: ${{ steps.app-key.outputs.pem }}
+          permission-contents: read
+          permission-pull-requests: write
+          skip-token-revoke: "false"
       - name: Run the orchestrator session
         if: steps.issue.outputs.go == 'true' && steps.worktree.outputs.worktree != ''
         env:
@@ -1151,6 +1187,7 @@ jobs:
           ORCH_RUNNER: ${{ steps.issue.outputs.runner }}
           SEAT: ${{ vars.ORCHESTRATE_SEAT }}
           HOOKS: ${{ vars.ORCHESTRATE_HOOKS }}
+          PR_GH_TOKEN: ${{ steps.app-token.outputs.token }}
         run: |
           set -euo pipefail
           cd "$WORKTREE"
