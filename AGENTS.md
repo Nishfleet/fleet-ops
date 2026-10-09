@@ -120,21 +120,22 @@ only User > API Tokens Write, from the dashboard template "Create Additional Tok
 deletes tokens and nothing else: never use it for work, never source it into a long-running
 process. It is a user token, not account-owned, because an account-owned token creator can only
 grant a subset of its own permissions (Cloudflare docs). It is IP-locked to this VPS
-(`159.195.212.168/32`, `2a0a:4cc0:c4:d5e:a8cb:f5ff:feb3:ed15/128`; outbound API calls leave over
+(`<vps-ip>/32`, `<vps-ipv6>/128`; outbound API calls leave over
 IPv6). Jailed workers get an empty tmpfs over `~/.config/cloudflare` (#9274), so only unjailed
 sessions can mint. The minter exists (2026-10-09): Cloudflare token name "fleet key-maker (VPS
 only)", permission "API Tokens Write" (User), no expiry. It was rolled once on 2026-10-09
 because the original value was pasted in chat. If it is ever exposed again, roll it with
 `PUT /user/tokens/<id>/value` (look the id up in the dashboard, My Profile > API Tokens) and
-pipe the response straight into the env file with jq, never print it. Account id:
-`f670a698e17bf160c8e4679823e68916`.
+pipe the response straight into the env file with jq, never print it. Account id: the `account_id` default in
+`infra/cloudflare-tokens/variables.tf` (an identifier, not a credential).
 
 **The gate.** The minter can create a token with any permission Nish's user holds, so it is not
 a free pass. Ad-hoc mints by an unjailed session are allowed ONLY when all of these hold:
 
 1. Name `job-<task>-<UTC stamp>` (for example `job-fleet-1234-20261009T120000Z`).
 2. `--expires-on` at most 24h from now (UTC RFC3339).
-3. `--condition-request-ip-in` the two VPS addresses above.
+3. `--condition-request-ip-in` the two VPS addresses (not kept in git; read them on the box:
+   `curl -4 -s ifconfig.me` and `curl -6 -s ifconfig.me`).
 4. Resources as narrow as the API allows. Cloudflare's token policy documents three resource
    types only: user, account and zone (`com.cloudflare.api.account.zone.<ZONE_ID>`). So scope to
    a specific zone whenever the permission group is zone-level. Account-wide is allowed only for
@@ -174,7 +175,7 @@ guarded delete, then a 404 check:
      POL=$(jq -nc --arg z "com.cloudflare.api.account.zone.$ZONE" --arg p "$PG" '[{effect:"allow",resources:{($z):"*"},permission_groups:[{id:$p}]}]')
      set -- --name "$NAME" --policies "$POL" \
        --expires-on "$(date -u -d '+24 hours' +%Y-%m-%dT%H:%M:%SZ)" \
-       --condition-request-ip-in 159.195.212.168/32 2a0a:4cc0:c4:d5e:a8cb:f5ff:feb3:ed15/128
+       --condition-request-ip-in <vps-ip>/32 <vps-ipv6>/128
      # 1. dry run first: read the request, check name, expiry, IPs and the single zone
      cf user tokens create "$@" --dry-run
      # 2. the real create; the secret goes to the 0600 file, not the terminal
