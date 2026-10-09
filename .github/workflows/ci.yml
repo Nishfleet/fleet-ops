@@ -508,7 +508,7 @@ jobs:
         run: |
           set -euo pipefail
           f=.github/workflows/agent-dispatch.yml
-          gated="new rework conflicts remerge ejected list unblocked miss-review miss-review-pr miss-stalled orchestrate review-risky"
+          gated="new rework conflicts remerge ejected list unblocked miss-review miss-review-pr miss-stalled orchestrate review-risky arm-approved"
           guards="hold-risky close-claim rework-note"
           bad=0
           for j in $(yq '.jobs | keys | .[]' "$f"); do
@@ -624,8 +624,9 @@ jobs:
         # of the workflow, against every case in config/risky-paths.json, so the list
         # and the program cannot drift from what the hold job runs. A case with
         # "paths": null stands for an unreadable list, which must hold. An
-        # approval case feeds APPROVAL {sha, statuses, comments}, the shape the
-        # job builds from the head sha, its statuses and the PR's comments.
+        # approval case feeds APPROVAL {sha, statuses, comments, reviews}, the shape
+        # the job builds from the head sha, its statuses, the PR's comments and
+        # its reviews.
         if: always()
         run: |
           prog=$(yq '.jobs.hold-risky.env.CLASSIFY' .github/workflows/agent-dispatch.yml)
@@ -642,7 +643,7 @@ jobs:
           ctx=$(yq '.jobs.hold-risky.env.CONTEXT' .github/workflows/agent-dispatch.yml)
           [ -n "$approved" ] && [ "$approved" != null ] && [ "$ctx" = coordinator-approval ]
           while IFS= read -r c; do
-            got=$(jq -r --arg c "$ctx" --arg who "$(jq -r '.approvers | join(" ")' <<<"$c")" "$approved" <<<"$(jq -c '{sha, statuses, comments}' <<<"$c")")
+            got=$(jq -r --arg c "$ctx" --arg who "$(jq -r '.approvers | join(" ")' <<<"$c")" "$approved" <<<"$(jq -c '{sha, statuses, comments, reviews}' <<<"$c")")
             [ "$got" = "$(jq -r .want <<<"$c")" ] || { echo "approval case $(jq -r .id <<<"$c"): got $got"; bad=1; }
           done < <(jq -c '.approval_cases[]' config/risky-paths.json)
           test "$bad" -eq 0
@@ -657,7 +658,8 @@ jobs:
           set -euo pipefail
           t=$RUNNER_TEMP/hold-mock
           mkdir -p "$t/bin"
-          yq '.jobs.hold-risky.steps[0].run' .github/workflows/agent-dispatch.yml > "$t/hold.sh"
+          yq '.jobs.hold-risky.steps[] | select(.id == "hold") | .run' .github/workflows/agent-dispatch.yml > "$t/hold.sh"
+          [ -s "$t/hold.sh" ] && ! grep -qx null "$t/hold.sh"
           for v in LABEL CONTEXT APPROVERS RISKY_PATHS_URL CLASSIFY APPROVAL; do
             val=$(yq ".jobs.hold-risky.env.$v" .github/workflows/agent-dispatch.yml)
             [ -n "$val" ] && [ "$val" != null ] || { echo "hold-risky env $v missing"; exit 1; }
@@ -678,8 +680,18 @@ jobs:
             *"/labels"*) touch "$STATE/labelled" ;;
             *"/files?"*) if [ -n "${SAFE:-}" ]; then echo '{"f":"app/routes/home.tsx","p":null,"patch":"@@ -1 +1 @@\n+x"}'; else echo '{"f":".github/workflows/deploy-production.yml","p":null,"patch":"@@ -1 +1 @@\n+x"}'; fi ;;
             *"/statuses?"*) ;;
+            *"/reviews?"*) if [ -n "${REVIEW:-}" ]; then u=nish3451 st=APPROVED cid=$SHA
+                case $REVIEW in
+                  stale) cid=0000000000000000000000000000000000000001 ;;
+                  non-approver) u=someone-else ;;
+                  bot) u='github-actions[bot]' ;;
+                  dismissed) st=DISMISSED ;;
+                esac
+                echo "{\"user\":{\"login\":\"$u\"},\"state\":\"$st\",\"commit_id\":\"$cid\",\"submitted_at\":\"2026-10-09T02:00:00Z\"}"
+              fi ;;
             *"/comments?"*) [ -z "${APPROVE:-}" ] || echo "{\"user\":{\"login\":\"nish3451\"},\"body\":\"coordinator-approval: $SHA\",\"created_at\":\"t\",\"updated_at\":\"t\"}" ;;
-            *"/pulls/7") echo "{\"state\":\"open\",\"head\":{\"sha\":\"$SHA\"},\"labels\":[],\"changed_files\":1,\"node_id\":\"PR_n\"}" ;;
+            *"/pulls/7") d=false am=null; [ -z "${DRAFT:-}" ] || d=true; [ -z "${ARMED:-}" ] || am='{"merge_method":"squash"}'
+              echo "{\"state\":\"open\",\"draft\":$d,\"auto_merge\":$am,\"head\":{\"sha\":\"$SHA\"},\"labels\":[],\"changed_files\":1,\"node_id\":\"PR_n\"}" ;;
             *) echo "mock gh: unexpected call: $args" >&2; exit 1 ;;
           esac
           MOCK
@@ -691,9 +703,12 @@ jobs:
           chmod +x "$t/bin/gh" "$t/bin/curl"
           export SHA=3f9c2a1b7d4e5f60718293a4b5c6d7e8f9012345 GITHUB_REPOSITORY=Nishfleet/0509 PR=7
           bad=0
-          # case: name|FAIL regex|APPROVE|SAFE|want held (yes/no)|want exit (0/1)
-          while IFS='|' read -r name fail approve safe held code; do
-            export STATE=$t/$name RUNNER_TEMP=$t/$name/tmp GITHUB_STEP_SUMMARY=$t/$name/summary GITHUB_OUTPUT=$t/$name/output FAIL=$fail APPROVE=$approve SAFE=$safe
+          # case: name|FAIL regex|APPROVE (comment)|SAFE|want held (yes/no)|want exit (0/1)|review shape|rearm|draft|armed|want arm output (yes/no, default no)
+          # A review shape is a PR review by nish3451 on the head unless the shape says otherwise.
+          # rearm runs the block as approval-signal does: it never holds, and arms only an approved, unarmed, non-draft risky PR.
+          while IFS='|' read -r name fail approve safe held code review rearm draft armed arm; do
+            export STATE=$t/$name RUNNER_TEMP=$t/$name/tmp GITHUB_STEP_SUMMARY=$t/$name/summary GITHUB_OUTPUT=$t/$name/output FAIL=$fail APPROVE=$approve SAFE=$safe REVIEW=$review DRAFT=$draft ARMED=$armed REARM=false
+            [ -z "$rearm" ] || REARM=true
             mkdir -p "$RUNNER_TEMP"
             rc=0
             PATH="$t/bin:$PATH" bash "$t/hold.sh" > "$t/$name/out" 2>&1 || rc=$?
@@ -705,6 +720,9 @@ jobs:
             if [ "$got" != "$held" ] || [ "$rc" != "$code" ]; then
               echo "case $name: held=$got (want $held) exit=$rc (want $code)"; cat "$t/$name/out"; bad=1
             fi
+            armout=no
+            ! grep -qx "arm_sha=$SHA" "$t/$name/output" 2>/dev/null || armout=yes
+            if [ "$armout" != "${arm:-no}" ]; then echo "case $name: arm output=$armout (want ${arm:-no})"; cat "$t/$name/out"; bad=1; fi
           done <<'CASES'
           risky-unapproved||||yes|0
           pr-read-fails|pulls/7$|||yes|0
@@ -717,6 +735,21 @@ jobs:
           label-write-fails|/labels|||yes|1
           approved-control||1||no|0
           safe-control|||1|no|0
+          review-approved-on-head||||no|0|approve
+          review-approved-stale-sha||||yes|0|stale
+          review-by-non-approver||||yes|0|non-approver
+          review-by-actions-bot||||yes|0|bot
+          review-dismissed||||yes|0|dismissed
+          reviews-read-fails|/reviews\?|1||yes|0|approve
+          rearm-review-approved||||no|0|approve|1|||yes
+          rearm-comment-approved||1||no|0||1|||yes
+          rearm-unapproved||||no|0||1|||no
+          rearm-stale-review||||no|0|stale|1|||no
+          rearm-bot-review||||no|0|bot|1|||no
+          rearm-draft||||no|0|approve|1|1||no
+          rearm-already-armed||||no|0|approve|1||1|no
+          rearm-safe-pr|||1|no|0|approve|1|||no
+          rearm-reviews-read-fails|/reviews\?|||no|0|approve|1|||no
           CASES
           test "$bad" -eq 0
       - name: coordinator-approval fails closed in the queue (fake gh)
@@ -741,6 +774,19 @@ jobs:
           case $args in
             *"/compare/"*) tr ';' '\n' <<<"$SUBJECTS" ;;
             *"/pulls/"*"/files?"*) n=${args#*pulls/}; n=${n%%/*}; if has "$RISKY" "$n"; then echo '{"f":".github/workflows/deploy-production.yml","p":null,"patch":"@@ -1 +1 @@\n+x"}'; else echo '{"f":"app/routes/home.tsx","p":null,"patch":"@@ -1 +1 @@\n+x"}'; fi ;;
+            *"/pulls/"*"/reviews?"*) n=${args#*pulls/}; n=${n%%/*}
+              # REVIEW picks a review shape for the PRs in REVIEWED; commit_id is the head unless the shape says stale.
+              if has "$REVIEWED" "$n"; then h=$(sha "$n"); u='{"login":"nish3451"}'; st=APPROVED; cid=$h
+                case ${REVIEW:-} in
+                  stale) cid=$(sha 999) ;;
+                  non-approver) u='{"login":"someone-else"}' ;;
+                  bot) u='{"login":"github-actions[bot]"}' ;;
+                  dismissed) st=DISMISSED ;;
+                  commented) st=COMMENTED ;;
+                  changes-requested-later) echo "{\"user\":{\"login\":\"nish3451\"},\"state\":\"APPROVED\",\"commit_id\":\"$h\",\"submitted_at\":\"2026-10-09T01:00:00Z\"}"; st=CHANGES_REQUESTED ;;
+                esac
+                echo "{\"user\":$u,\"state\":\"$st\",\"commit_id\":\"$cid\",\"submitted_at\":\"2026-10-09T02:00:00Z\"}"
+              fi ;;
             *"/pulls/"*) n=${args##*pulls/}; l='[]'; ! has "$LABELED" "$n" || l='[{"name":"needs-coordinator"}]'; echo "{\"state\":\"open\",\"head\":{\"sha\":\"$(sha "$n")\"},\"labels\":$l,\"changed_files\":1}" ;;
             *"/statuses?"*) ;;
             *"/issues/"*"/comments?"*) n=${args#*issues/}; n=${n%%/*}
@@ -751,9 +797,10 @@ jobs:
           chmod +x "$t/bin/gh"
           export GITHUB_REPOSITORY=Nishfleet/fleet-ops BASE_DIR=. BASE_SHA=b GROUP_SHA=g GH_TOKEN=x
           bad=0
-          # case: name|head ref PR|commit subjects (;)|risky PRs|labelled PRs|approved PRs|stale approval|FAIL regex|want exit
-          while IFS='|' read -r name pr subjects risky labeled approved stale fail want; do
-            export RUNNER_TEMP=$t/$name GITHUB_STEP_SUMMARY=$t/$name/summary SUBJECTS=$subjects RISKY=$risky LABELED=$labeled APPROVED=$approved STALE=$stale FAIL=$fail
+          # case: name|head ref PR|commit subjects (;)|risky PRs|labelled PRs|approved PRs|stale approval|FAIL regex|want exit|review shape (PRs with an approving review are the ones in "approved" only when the shape is empty; a shape applies to PR 7)
+          while IFS='|' read -r name pr subjects risky labeled approved stale fail want review; do
+            export RUNNER_TEMP=$t/$name GITHUB_STEP_SUMMARY=$t/$name/summary SUBJECTS=$subjects RISKY=$risky LABELED=$labeled APPROVED=$approved STALE=$stale FAIL=$fail REVIEW=$review REVIEWED=
+            [ -z "$review" ] || REVIEWED=7
             export HEAD_REF=refs/heads/gh-readonly-queue/main/pr-$pr-0123456789abcdef0123456789abcdef01234567
             [ "$pr" != badref ] || HEAD_REF=refs/heads/feature
             mkdir -p "$RUNNER_TEMP"
@@ -775,6 +822,15 @@ jobs:
           statuses-read-fails|7|Add x (#7)|7||7||/statuses\?|1
           comments-read-fails|7|Add x (#7)|7||7||/comments\?|1
           compare-read-fails|7|Add x (#7)|||||/compare/|1
+          review-approved-on-head|7|Add x (#7)|7|||||0|approve
+          review-approved-stale-sha|7|Add x (#7)|7|||||1|stale
+          review-by-non-approver|7|Add x (#7)|7|||||1|non-approver
+          review-by-actions-bot|7|Add x (#7)|7|||||1|bot
+          review-dismissed|7|Add x (#7)|7|||||1|dismissed
+          review-comment-only|7|Add x (#7)|7|||||1|commented
+          review-approve-then-changes-requested|7|Add x (#7)|7|||||1|changes-requested-later
+          review-approved-reviews-read-fails|7|Add x (#7)|7||7||/reviews\?|1|approve
+          comment-approval-without-reviews|7|Add x (#7)|7||7|||0|
           CASES
           test "$bad" -eq 0
       - name: Infra-wall classifier (fake gh)
@@ -1014,7 +1070,8 @@ jobs:
   # required check is the one thing the merge queue cannot skip. On merge_group
   # this job resolves the PR(s) in the queue entry, classifies each one's
   # changed files and fails when a risky PR's CURRENT head sha has no
-  # `coordinator-approval: <sha>` comment (or success status) from an approver.
+  # `coordinator-approval: <sha>` comment, success status or approving review
+  # (fleet-ops#9505) from an approver.
   # On pull_request and push it passes, so a PR can be enqueued and the queue
   # does the rejecting. The CLASSIFY and APPROVAL programs, APPROVERS and the
   # path list are read from the BASE commit's agent-dispatch.yml and
@@ -1102,15 +1159,18 @@ jobs:
             gh api --paginate "repos/$GITHUB_REPOSITORY/issues/$n/comments?per_page=100" \
               --jq '.[] | {user: {login: .user.login}, body, created_at, updated_at}' > "$RUNNER_TEMP/comments.txt" ||
               { echo "::error::coordinator-approval: comments read failed for #$n"; bad=1; continue; }
-            approved=$(jq -n --arg sha "$sha" --slurpfile s "$RUNNER_TEMP/statuses.txt" --slurpfile m "$RUNNER_TEMP/comments.txt" \
-              '{sha: $sha, statuses: $s, comments: $m}' |
+            gh api --paginate "repos/$GITHUB_REPOSITORY/pulls/$n/reviews?per_page=100" \
+              --jq '.[] | {user: {login: .user.login}, state, commit_id, submitted_at}' > "$RUNNER_TEMP/reviews.txt" ||
+              { echo "::error::coordinator-approval: reviews read failed for #$n"; bad=1; continue; }
+            approved=$(jq -n --arg sha "$sha" --slurpfile s "$RUNNER_TEMP/statuses.txt" --slurpfile m "$RUNNER_TEMP/comments.txt" --slurpfile r "$RUNNER_TEMP/reviews.txt" \
+              '{sha: $sha, statuses: $s, comments: $m, reviews: $r}' |
               jq -r --arg c "$CONTEXT" --arg who "$APPROVERS" "$APPROVAL") || approved=false
             if [ "$approved" = true ]; then
               echo "coordinator-approval: #$n is risky and $sha carries an approver's $CONTEXT"
             else
               echo "::error::coordinator-approval: #$n is risky and $sha has no $CONTEXT from $APPROVERS"
               jq -r '.why[] | "- \(.)"' <<<"$verdict" >> "$GITHUB_STEP_SUMMARY"
-              echo "Approve this exact head with an approver's PR comment line \`$CONTEXT: $sha\`." >> "$GITHUB_STEP_SUMMARY"
+              echo "To approve, open the PR in the GitHub app and tap Review changes, then Approve. Fallback: an approver's PR comment line \`$CONTEXT: $sha\`." >> "$GITHUB_STEP_SUMMARY"
               bad=1
             fi
           done

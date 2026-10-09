@@ -1,0 +1,34 @@
+# One-tap person approval (fleet-ops#9505), the untrusted half.
+#
+# pull_request_review runs the workflow file of the PR's own merge commit, so
+# this file is PR-head code. It therefore holds no write permission, checks
+# out nothing, and does one thing: when nish3451 submits an approving review
+# it uploads the PR number as an artifact. agent-dispatch.yml's workflow_run
+# trigger (base-branch code, write token) picks the run up, re-reads the
+# review through the API, and arms auto-merge only if the approval is real.
+# Nothing here is trusted by that job: a forged artifact can only name a PR,
+# and the arm still needs an approval the API confirms on the current head.
+# To remove one-tap approval: delete this file and the approval-signal entries
+# in agent-dispatch.yml (workflow_run list, hold-risky if/steps, arm-approved).
+name: approval-signal
+on:
+  pull_request_review:
+    types: [submitted]
+permissions: {}
+jobs:
+  signal:
+    if: github.event.review.state == 'approved' && github.event.review.user.login == 'nish3451'
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    permissions: {}
+    steps:
+      - name: Write the PR number
+        env:
+          PR: ${{ github.event.pull_request.number }}
+        run: printf '%s\n' "$PR" > pr.txt
+      - name: Hand the PR number to agent-dispatch
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: approval-pr
+          path: pr.txt
+          retention-days: 1
