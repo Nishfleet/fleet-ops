@@ -252,6 +252,45 @@ above for the single file it needs; nothing in this repo asks for it today. A
 hand-run `claude -p` or `systemd-run --user` that needs the token passes the
 line above.
 
+## Unattended Claude runs (fleet-ops#9502)
+
+Two units run Claude with nobody watching: `tincan-listen-claude-vps.service`
+(user unit, the tincan inbox drainer) and `claude-remote-control.service`
+(system unit, the Remote Control server). Both used to pass
+`--permission-mode bypassPermissions`, which skips every check, so the
+`permissions.ask` rules (force-push, `reset --hard`, `reboot`, `restic forget`,
+`gh repo delete`, ...) were decorative: exactly the rules that mark a step as
+destructive.
+
+Both now run `--permission-mode dontAsk`, which denies a tool call that would
+have raised a prompt nobody can answer. The allow list per unit is a file in
+this repo under `rootfs/etc/claude-code/roles/`, installed to
+`/etc/claude-code/roles/` by `ansible/host.yml`:
+
+| unit | role file | how it is loaded |
+| --- | --- | --- |
+| `tincan-listen-claude-vps.service` | `tincan-listener.json` | `--settings /etc/claude-code/roles/tincan-listener.json` on `claude -p` |
+| `claude-remote-control.service` | `remote-control.json` | ansible copies it to `/etc/claude-code/managed-settings.d/remote-control.json`; spawned sessions also read `~/.claude/settings.json` |
+
+`claude remote-control` refuses `--settings` (proved 2026-10-09: `Error:
+--settings before remote-control is not carried over to the sessions Remote
+Control starts, so Remote Control refuses to start rather than drop it`). The
+managed-settings drop-in is the stock extra file beside
+`/etc/claude-code/managed-settings.json`, so the global deny and ask lists stay
+in force. Edit a role file in a PR, never on the box. The CLI flag is the mode
+switch: do not set `permissions.defaultMode` in a role file.
+
+**Where denials show.** Each denied call is reported twice: in the unit's
+journal, and in the run transcript (`claude -p --output-format json` lists
+them under `permission_denials`). The tincan transcript is
+`~/.claude/projects/-home-nish--local-state-tincan-listen-claude-vps/<id>.jsonl`
+(the directory name is the escaped cwd, which is the unit's `StateDirectory`).
+
+**Rollback.** Put `--permission-mode bypassPermissions` back on the `ExecStart`
+line of the unit and restart it. That restores today's behaviour: the role
+file is then inert and nothing else in the unit changed. Only Nish restarts
+`claude-remote-control.service`, because that cuts the phone link.
+
 ## Break-glass access (SSH is Tailscale-only)
 
 If tailscaled is down, SSH is gone. The out-of-band layer exists today at zero
