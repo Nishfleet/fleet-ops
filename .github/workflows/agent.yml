@@ -733,6 +733,10 @@ jobs:
           p=$(jq -r --arg c "$choice" '.answers.verdict.probabilities[$c] // 0' <<<"$resp")
           [ "$(gh api "repos/$REPO/pulls/$PR" --jq .head.sha)" = "$SHA" ] || { echo "head moved during review; the newer event reviews it"; exit 0; }
           text=$(printf '%s' "$review" | head -c 3500)
+          if [ "${#review}" -gt 3500 ]; then
+            blockers=$(grep -iE '^[[:space:]*_-]*blocker' <<<"$review" | head -c 1500 || true)
+            text=$(printf 'The review is %s characters and this comment is cut at 3500 (truncated). Blocker lines first:\n%s\n\n%s' "${#review}" "$blockers" "$text")
+          fi
           if [ "$choice" = approve ] && jq -en --argjson p "$p" '$p >= 0.9' >/dev/null; then
             say "$(printf 'coordinator-approval: %s\n\nreviewer: %s approved. CI still has to pass before it merges.\n\n%s' "$SHA" "$SHA" "$text")"
             [ "$(jq -r .draft <<<"$pr")" = true ] || GH_TOKEN=$ARM_TOKEN gh pr merge "$PR" -R "$REPO" --auto --match-head-commit "$SHA"
