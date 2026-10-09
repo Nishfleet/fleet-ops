@@ -119,23 +119,27 @@ process. It is a user token, not account-owned, because an account-owned token c
 grant a subset of its own permissions (Cloudflare docs). It is IP-locked to this VPS
 (`159.195.212.168/32`, `2a0a:4cc0:c4:d5e:a8cb:f5ff:feb3:ed15/128`; outbound API calls leave over
 IPv6). Jailed workers get an empty tmpfs over `~/.config/cloudflare` (#9274), so only unjailed
-sessions can mint. Until Nish creates it (status 2026-10-09: not on the box yet) the file is
-absent and the parked-worker rule above holds. Account id: `f670a698e17bf160c8e4679823e68916`.
+sessions can mint. The minter exists (2026-10-09): Cloudflare token name "fleet key-maker (VPS
+only)", id `7abf6080d432d8efab5fd5852e251a41`, permission "API Tokens Write" (User), no expiry.
+It was rolled once on 2026-10-09 because the original value was pasted in chat. If it is ever
+exposed again, roll it with `PUT /user/tokens/<id>/value` and pipe the response straight into the
+env file with jq, never print it. Account id: `f670a698e17bf160c8e4679823e68916`.
 
 The rule: every job mints its own least-privilege token with `--expires-on` (default now+24h, UTC
 RFC3339), locked to the two VPS addresses above, keeps it in a 0600 env file under
 `~/.config/cloudflare/` (or only in the process env), and deletes it when done. Long-lived service
 tokens (deploy-ci, email) are minted the same way without the short expiry and are recorded in
-the list above. Look up permission group ids by name, never from memory:
+the list above. Look up permission group ids by name, never from memory (`permission-groups list` returns a bare
+JSON array, so use `.[]`):
 
     (set -a; . ~/.config/cloudflare/token-minter.env; set +a
-     cf user tokens permission-groups list | jq -r '(.result // .)[] | "\(.id)\t\(.name)"' | grep -i 'workers scripts')
+     cf user tokens permission-groups list | jq -r '.[] | "\(.id)\t\(.name)"' | grep -i 'workers scripts')
 
 Example, a 24h Workers Scripts Write token for the account (the secret never reaches the terminal):
 
     (set -a; . ~/.config/cloudflare/token-minter.env; set +a; umask 077
      ACCT=f670a698e17bf160c8e4679823e68916
-     PG=$(cf user tokens permission-groups list | jq -r '(.result // .)[] | select(.name=="Workers Scripts Write") | .id' | head -n1)
+     PG=$(cf user tokens permission-groups list | jq -r '.[] | select(.name=="Workers Scripts Write") | .id' | head -n1)
      POL=$(jq -nc --arg a "com.cloudflare.api.account.$ACCT" --arg p "$PG" '[{effect:"allow",resources:{($a):"*"},permission_groups:[{id:$p}]}]')
      cf user tokens create --name "job-$(date -u +%Y%m%dT%H%M%SZ)" --policies "$POL" \
        --expires-on "$(date -u -d '+24 hours' +%Y-%m-%dT%H:%M:%SZ)" \
@@ -148,7 +152,14 @@ ends (the minter deletes; the id is in the job file):
 
     (ID=$(sed -n 's/^CLOUDFLARE_TOKEN_ID=//p' ~/.config/cloudflare/job-workers.env)
      set -a; . ~/.config/cloudflare/token-minter.env; set +a
-     cf user tokens delete "$ID" && rm -f ~/.config/cloudflare/job-workers.env)
+     cf user tokens delete -f "$ID" && rm -f ~/.config/cloudflare/job-workers.env)
+
+`cf user tokens delete` silently does nothing without `-f`/`--force`, so always pass `-f`. Confirm
+the delete with `GET /user/tokens/<id>` -> 404.
+
+To check a new token is narrow, call a scoped endpoint it should not reach (for example
+`zones/<id>/dns_records` -> 403 for a Workers-only token). Do not use `/zones`: it lists zones for
+any account token and proves nothing.
 
 Add `--dry-run` to `create` to print the request without sending it. To switch minting off: delete
 the minter token in the dashboard (My Profile > API Tokens) and remove `token-minter.env`.
