@@ -104,12 +104,22 @@
         stdin: ""
       - argv: [rclone, selfupdate]
         stdin: ""
-      # The shadcn agent skill, installed once with
-      # `npx skills@1.7.2 add shadcn/ui -g -a '*' -s shadcn -y` (one copy in
-      # ~/.agents/skills, which Pi reads, and a link under ~/.claude/skills).
-      # The CLI is pinned and only the shadcn skill is named, so the run does
-      # not move the other skills the CLI tracks. Bump the pin in a PR.
-      - argv: [npx, -y, "skills@1.7.2", update, shadcn, -g, -y]
+      # The shadcn agent skill. `skills update` swaps the skill's link for a
+      # real directory, which would leave the shared skills library stale and
+      # make a second copy. So this installs the pinned CLI's current copy
+      # into a throwaway HOME and syncs it over the library copy, which every
+      # agent reads through links. Bump the CLI pin in a PR.
+      - argv:
+          - bash
+          - -c
+          - |
+            set -euo pipefail
+            t=$(mktemp -d)
+            trap 'rm -rf "$t"' EXIT
+            cd "$t"
+            HOME="$t" npx -y skills@1.7.2 add shadcn/ui -g -a universal -s shadcn -y
+            test -s "$t/.agents/skills/shadcn/SKILL.md"
+            rsync -a --delete "$t/.agents/skills/shadcn/" /home/nish/workspaces/tooling/nish-vault/_system/shared-memory/skills-library/shadcn/
         stdin: ""
     # Versioned before and after the update, and the report pairs the two
     # lists by position. pi is not in this list on purpose: `pi --version`
