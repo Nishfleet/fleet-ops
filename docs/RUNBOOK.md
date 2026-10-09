@@ -270,15 +270,23 @@ this repo under `rootfs/etc/claude-code/roles/`, installed to
 | unit | role file | how it is loaded |
 | --- | --- | --- |
 | `tincan-listen-claude-vps.service` | `tincan-listener.json` | `--settings /etc/claude-code/roles/tincan-listener.json` on `claude -p` |
-| `claude-remote-control.service` | `remote-control.json` | ansible copies it to `/etc/claude-code/managed-settings.d/remote-control.json`; spawned sessions also read `~/.claude/settings.json` |
+| `claude-remote-control.service` | `remote-control.json` | spawned sessions read `~/.claude/settings.json` (`claude remote-control` refuses `--settings`) |
 
 `claude remote-control` refuses `--settings` (proved 2026-10-09: `Error:
---settings before remote-control is not carried over to the sessions Remote
-Control starts, so Remote Control refuses to start rather than drop it`). The
-managed-settings drop-in is the stock extra file beside
-`/etc/claude-code/managed-settings.json`, so the global deny and ask lists stay
-in force. Edit a role file in a PR, never on the box. The CLI flag is the mode
-switch: do not set `permissions.defaultMode` in a role file.
+Unknown argument: --settings`). A `Bash` allow does not swallow the ask list:
+`git stash` was still denied under dontAsk with `Bash` in allow (2026-10-09).
+`sed -i` stayed denied by the managed deny list. Edit a role file in a PR,
+never on the box. The CLI flag is the mode switch: do not set
+`permissions.defaultMode` in a role file.
+
+dontAsk on Remote Control is intended: Nish cannot approve a one-off command
+from the phone. A denied call is reported in the session and there is no
+prompt to tap.
+
+The tincan unit goes live after merge, when fleet-sync has the new file and
+the user unit is reloaded (`systemctl --user daemon-reload && systemctl
+--user restart tincan-listen-claude-vps.service`). Remote Control stays on
+the old `ExecStart` until Nish restarts it.
 
 **Where denials show.** Each denied call is reported twice: in the unit's
 journal, and in the run transcript (`claude -p --output-format json` lists

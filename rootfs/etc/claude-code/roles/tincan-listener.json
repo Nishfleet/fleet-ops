@@ -10,7 +10,9 @@
       "WebFetch",
       "WebSearch",
       "Write",
-      "mcp__agent-tincan"
+      "mcp__agent-tincan",
+      "mcp__agent-tincan__check_inbox",
+      "mcp__agent-tincan__reply"
     ]
   }
 }

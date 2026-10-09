@@ -25,12 +25,12 @@ StandardOutput=null
 # Nish 2026-10-03: sessions got full permissions (no prompts). Nish 2026-10-09 (fleet-ops#9502):
 # bypassPermissions skipped every permissions.ask rule. --permission-mode dontAsk keeps the
 # bridge prompt-free and denies a call that would have prompted; the phone app can report it.
-# `claude remote-control` refuses --settings (not carried to spawned sessions). The allow list
-# is rootfs/etc/claude-code/roles/remote-control.json, installed by ansible/host.yml as
-# /etc/claude-code/managed-settings.d/remote-control.json (stock drop-in next to
-# managed-settings.json). Spawned sessions also read ~/.claude/settings.json. Roll back: put
-# --permission-mode bypassPermissions back on ExecStart and restart (only Nish restarts this
-# unit, see below).
+# `claude remote-control` refuses --settings (not carried to spawned sessions). Spawned
+# sessions read ~/.claude/settings.json. The allow list in the repo is
+# rootfs/etc/claude-code/roles/remote-control.json. dontAsk is intended: a call that
+# would have prompted is denied and the phone app reports it, with no prompt to tap.
+# Roll back: put --permission-mode bypassPermissions back on ExecStart and restart
+# (only Nish restarts this unit, see below).
 # Nish 2026-10-08 (#9425): --no-create-session-in-dir, so relayed coordinator
 # work is fresh-per-task instead of piling into one standing session that only
 # grows. The measurements, the cost and the session-file consequence are in the

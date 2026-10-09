@@ -85,12 +85,12 @@
       changed_when: false
       check_mode: false  # read-only; runs under --check too
 
-    # Per-role Claude Code allow lists (fleet-ops#9502). Installed before the
-    # units so no unit can start pointing at a file that is not on the box yet.
-    # tincan-listen-claude-vps.service passes --settings at the role file.
-    # claude remote-control refuses --settings (not carried to spawned sessions);
-    # that role is also copied to managed-settings.d, the stock drop-in beside
-    # the hand-kept managed-settings.json.
+    # Per-role Claude Code allow lists (fleet-ops#9502). tincan-listen-claude-vps
+    # passes --settings at /etc/claude-code/roles/tincan-listener.json, so this
+    # copy must exist on the box before that user unit is restarted after merge.
+    # claude remote-control refuses --settings; spawned sessions read
+    # ~/.claude/settings.json. The remote-control.json file here is the list in
+    # the repo, not a path that unit loads.
     - name: Install the per-role Claude permission allow lists
       ansible.builtin.copy:
         src: "{{ rootfs }}/etc/claude-code/roles/"
@@ -98,22 +98,6 @@
         owner: root
         group: root
         mode: preserve
-
-    - name: Ensure the Claude managed-settings drop-in directory exists
-      ansible.builtin.file:
-        path: /etc/claude-code/managed-settings.d
-        state: directory
-        owner: root
-        group: root
-        mode: "0755"
-
-    - name: Install the Remote Control allow list as a managed-settings drop-in
-      ansible.builtin.copy:
-        src: "{{ rootfs }}/etc/claude-code/roles/remote-control.json"
-        dest: /etc/claude-code/managed-settings.d/remote-control.json
-        owner: root
-        group: root
-        mode: "0644"
 
     - name: Install systemd units, slices and drop-ins
       ansible.builtin.copy:
