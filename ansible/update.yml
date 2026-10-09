@@ -104,6 +104,13 @@
         stdin: ""
       - argv: [rclone, selfupdate]
         stdin: ""
+      # The shadcn agent skill, installed once with
+      # `npx skills@1.7.2 add shadcn/ui -g -a '*' -s shadcn -y` (one copy in
+      # ~/.agents/skills, which Pi reads, and a link under ~/.claude/skills).
+      # The CLI is pinned and only the shadcn skill is named, so the run does
+      # not move the other skills the CLI tracks. Bump the pin in a PR.
+      - argv: [npx, -y, "skills@1.7.2", update, shadcn, -g, -y]
+        stdin: ""
     # Versioned before and after the update, and the report pairs the two
     # lists by position. pi is not in this list on purpose: `pi --version`
     # passes even when every pi start dies on a broken extension
