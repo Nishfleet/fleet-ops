@@ -97,6 +97,27 @@
           }
         }
       ]
+    },
+    "retryPolicy": {
+      "$comment": "fleet-ops#9375: in-router retries must not re-send a worker prompt to a different seat more than the fallback needs. The values are locked by tests/test_router_retry_policy_no_cross_seat.py: shipped (2,2,2) produced a third in-group pick that re-sent the whole prompt cold; proposed (0,1,1) caps the worker group at one attempt before the fallback group (or Pi's own retry, which keeps the session id and therefore the pin). On litellm 1.98.0 the one allowed retry goes back to the row that just failed when that row is still healthy after the 429 (router allowed_fails 1; the test drills it). A row that parks on its first 429 (RateLimitErrorAllowedFails 0, the daily-quota rows) is already cooling, so its retry goes to a peer: still capped at one extra pick, not a same-row retry. Either way the cap removes the third-seat re-send. A litellm upgrade can change that, which is why the test pins the version. ContentPolicyViolationErrorRetries is 0 because a content-policy refusal repeats on every seat; AuthenticationErrorRetries is 0 because a bad key can never recover on retry. RateLimitErrorRetries/TimeoutErrorRetries/InternalServerErrorRetries/BadRequestErrorRetries are capped at 1 (InternalServerErrorRetries is inert on 1.98.0: get_num_retries_from_retry_policy has no InternalServerError branch, so it is a forward bound only). All keys are required and unknown keys are forbidden on purpose: a new litellm knob must arrive as a reviewed schema change, not a silent config edit.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "AuthenticationErrorRetries",
+        "RateLimitErrorRetries",
+        "TimeoutErrorRetries",
+        "InternalServerErrorRetries",
+        "BadRequestErrorRetries",
+        "ContentPolicyViolationErrorRetries"
+      ],
+      "properties": {
+        "AuthenticationErrorRetries": { "type": "integer", "minimum": 0, "maximum": 0 },
+        "RateLimitErrorRetries": { "type": "integer", "minimum": 0, "maximum": 1 },
+        "TimeoutErrorRetries": { "type": "integer", "minimum": 0, "maximum": 1 },
+        "InternalServerErrorRetries": { "type": "integer", "minimum": 0, "maximum": 1 },
+        "BadRequestErrorRetries": { "type": "integer", "minimum": 0, "maximum": 1 },
+        "ContentPolicyViolationErrorRetries": { "type": "integer", "minimum": 0, "maximum": 0 }
+      }
     }
   },
   "properties": {
@@ -212,7 +233,7 @@
     "benched": false,
     "router_settings": {
       "type": "object",
-      "required": ["redis_url", "deployment_affinity_ttl_seconds", "optional_pre_call_checks", "allowed_fails_policy"],
+      "required": ["redis_url", "deployment_affinity_ttl_seconds", "optional_pre_call_checks", "allowed_fails_policy", "retry_policy"],
       "properties": {
         "cooldown_time": { "type": "integer", "minimum": 1, "maximum": 60 },
         "allowed_fails_policy": {
@@ -234,7 +255,8 @@
           "type": "array",
           "contains": { "const": "session_affinity" },
           "description": "Must contain session_affinity. Without that pre-call check the router never runs DeploymentAffinityCheck, so a session pin cannot exist, every call in a session shuffles across vendors and the prompt cache never hits (fleet-ops#9361)."
-        }
+        },
+        "retry_policy": { "$ref": "#/$defs/retryPolicy" }
       }
     }
   }
