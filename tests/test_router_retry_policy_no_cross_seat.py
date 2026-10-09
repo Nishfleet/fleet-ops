@@ -27,6 +27,13 @@ Measured on this host, litellm 1.98.0, one call into a pinned seat that 429s:
   shipped 2/2/2 -> 3 in-group picks (/fail, /fail, /failcapable) + 1 fallback
   fixed   0/1/1 -> 2 in-group picks (/fail, /fail - the same row) + 1 fallback
   fixed, the 429 clears on the 2nd call -> 2 in-group picks, 0 fallbacks
+  fixed, row parks on its first 429 (RateLimitErrorAllowedFails 0) -> 2 in-group
+    picks on two DIFFERENT seats (/fail, /failcapable) + 1 fallback
+
+The same-row retry therefore holds for rows under the router-level allowed_fails of 1
+and does not hold for the rows that park on the first 429 (see
+test_a_row_that_parks_on_its_first_429_retries_a_peer_not_itself). For those the fix
+still caps the in-group picks at 2 instead of 3, but one of them is a cross-seat hop.
 
 Two cross-seat re-sends become one, and a briefly-limited row is no longer kicked
 to another seat at all.
@@ -52,10 +59,12 @@ It runs under pytest from the repo root too, with that interpreter on the path.
 from __future__ import annotations
 
 import asyncio
+import glob
 import http.client
 import http.server
 import importlib.metadata
 import json
+import random
 import socketserver
 import threading
 from typing import List
@@ -67,9 +76,12 @@ from litellm.router_utils.get_retry_from_policy import get_num_retries_from_retr
 from litellm.router_utils.pre_call_checks.deployment_affinity_check import DeploymentAffinityCheck
 from litellm.types.router import RetryPolicy
 
+import jsonschema
 import yaml
 
 CONFIG_PATH = "config/litellm-proxy.yaml"
+SCHEMA_PATH = "config/litellm-proxy.schema.json"
+REJECTS_GLOB = "config/litellm-proxy.schema.rejects/retry-policy-*.yaml"
 
 # The litellm the proxy runs, as of this commit. Every behavioural number in this
 # file and in the retry_policy comment in config/litellm-proxy.yaml is a
@@ -202,11 +214,17 @@ class _Server:
 _CURRENT_SERVER: List[_Server] = []
 
 
-def _rows(port):
+def _rows(port, park_on_first_429=False):
+    """park_on_first_429 gives seat-a the row policy the prod rows that sit on a daily
+    quota wall carry (model_info.allowed_fails_policy.RateLimitErrorAllowedFails: 0,
+    fleet-ops#9075 / #9122 / #9248): the first 429 cools the row at once."""
+    seat_a_info = {"id": "seat-a", "supports_prompt_caching": True}
+    if park_on_first_429:
+        seat_a_info["allowed_fails_policy"] = {"RateLimitErrorAllowedFails": 0}
     return [
         {"model_name": "worker-capable",
          "litellm_params": {"model": "openai/seat-a", "api_base": f"http://127.0.0.1:{port}/fail", "api_key": "k"},
-         "model_info": {"id": "seat-a", "supports_prompt_caching": True}},
+         "model_info": seat_a_info},
         {"model_name": "worker-capable",
          "litellm_params": {"model": "openai/seat-c", "api_base": f"http://127.0.0.1:{port}/failcapable", "api_key": "k"},
          "model_info": {"id": "seat-c", "supports_prompt_caching": True}},
@@ -216,13 +234,16 @@ def _rows(port):
     ]
 
 
-async def _run(server, retry_policy, sid):
+async def _run(server, retry_policy, sid, park_on_first_429=False):
     server.hits.clear()
+    saved_callbacks = litellm.callbacks
+    # simple-shuffle draws from `random`; seed it so no draw can differ between runs.
+    random.seed(9375)
     _CURRENT_SERVER.append(server)
     litellm.callbacks = []
     try:
         router = Router(
-            model_list=_rows(server.port),
+            model_list=_rows(server.port, park_on_first_429),
             routing_strategy="simple-shuffle",
             num_retries=0, cooldown_time=60, allowed_fails=1,
             optional_pre_call_checks=["prompt_caching", "session_affinity"],
@@ -252,7 +273,7 @@ async def _run(server, retry_policy, sid):
         return attempts, outcome, pin
     finally:
         _CURRENT_SERVER.pop()
-        litellm.callbacks = []
+        litellm.callbacks = saved_callbacks
 
 
 # --------------------------------------------------------------------------- #
@@ -286,6 +307,28 @@ def test_the_pinned_litellm_is_the_one_these_numbers_were_measured_on():
 # --------------------------------------------------------------------------- #
 # Unit-level: the retry count the Router actually resolves per error class.
 # --------------------------------------------------------------------------- #
+def test_schema_accepts_the_live_config_and_each_reject_fails_on_the_retry_rule():
+    # The reject fixtures are minimal files, so each also trips unrelated keywords
+    # (the judge-row minContains). `check-jsonschema` would pass such a fixture even
+    # with the retry_policy rule deleted. Name the failing path instead: every
+    # retry-policy-* fixture must produce an error at router_settings[/retry_policy].
+    with open(SCHEMA_PATH, "rb") as fh:
+        schema = json.load(fh)
+    jsonschema.Draft202012Validator.check_schema(schema)
+    assert "retryPolicy" in schema["$defs"], list(schema["$defs"])
+    validator = jsonschema.Draft202012Validator(schema)
+    with open(CONFIG_PATH, "rb") as fh:
+        live = yaml.safe_load(fh)
+    assert [e.message for e in validator.iter_errors(live)] == []
+    fixtures = sorted(glob.glob(REJECTS_GLOB))
+    assert len(fixtures) == 5, fixtures
+    for path in fixtures:
+        with open(path, "rb") as fh:
+            doc = yaml.safe_load(fh)
+        paths = [list(e.absolute_path) for e in validator.iter_errors(doc)]
+        assert any(p[:1] == ["router_settings"] for p in paths), (path, paths)
+
+
 def test_authentication_error_gets_zero_retries():
     rp = RetryPolicy(**RP_PROPOSED)
     assert get_num_retries_from_retry_policy(AuthenticationError("401", "openai", "m", None), rp) == 0
@@ -359,6 +402,15 @@ def _in_group(attempts):
     return [p for p in attempts if "/fail" in p]
 
 
+def _assert_first_pick_is_the_pinned_seat(attempts):
+    """The invariant every end-to-end test below leans on. DeploymentAffinityCheck
+    .async_filter_deployments returns [pinned_deployment] alone while the pinned row
+    is healthy, so the shuffle never gets a say on the first attempt: it is seat-a
+    (path /fail/...), never seat-c (/failcapable/...). Asserting it explicitly means
+    a change in that filter fails here by name instead of as an off-by-one count."""
+    assert attempts and attempts[0].startswith("/fail/"), attempts
+
+
 def test_shipped_policy_spends_two_retries_on_two_seats_on_a_429_wall():
     server = _Server()
     try:
@@ -369,6 +421,7 @@ def test_shipped_policy_spends_two_retries_on_two_seats_on_a_429_wall():
     # then retry #2 hops to seat-c - a second seat, a second cold re-send - before
     # the worker-cheap fallback answers. Counts, not order, are asserted because
     # the in-group pick is a shuffle.
+    _assert_first_pick_is_the_pinned_seat(attempts)
     ing = _in_group(attempts)
     assert len(ing) == 3, attempts
     assert len(set(ing)) == 2, attempts          # two different seats attempted
@@ -388,11 +441,9 @@ def test_the_fix_retries_the_row_that_failed_not_a_peer():
     ing = _in_group(attempts)
     assert len(ing) == 2, attempts
     assert len(set(ing)) == 1, attempts
-    # Held over 30 runs: the worker-capable group is a shuffle over seat-a and
-    # seat-c, so which row the first (pinned) attempt picks is not fixed, but the
-    # retry came back to the row that just failed in every one of them - the
-    # affinity check re-scores the row in flight. Assert the property, not the
-    # seat name, so a red CI here means the router really changed.
+    # The first attempt is the pinned seat (see _assert_first_pick_is_the_pinned_seat)
+    # and the single retry came back to it: both in-group hits are the same row.
+    _assert_first_pick_is_the_pinned_seat(attempts)
     assert attempts.count("/okcheap/chat/completions") == 1, attempts
     assert outcome == "ok"
     assert pin == {"model_id": "seat-a"}, pin
@@ -410,8 +461,10 @@ def test_a_transient_429_recovers_on_the_row_it_hit():
         attempts, outcome, pin = asyncio.run(_run(server, RP_PROPOSED, "s-transient-429"))
     finally:
         server.close()
-    assert _in_group(attempts) == [
-        "/fail/chat/completions", "/fail/chat/completions"], attempts
+    _assert_first_pick_is_the_pinned_seat(attempts)
+    ing = _in_group(attempts)
+    assert len(ing) == 2 and all(p.startswith("/fail/") for p in ing), attempts  # both on seat-a
+    assert not any("failcapable" in p for p in attempts), attempts            # seat-c never touched
     assert attempts.count("/okcheap/chat/completions") == 0, attempts
     assert outcome == "ok"
     assert pin == {"model_id": "seat-a"}, pin
@@ -426,7 +479,32 @@ def test_zero_retries_hit_the_fallback_on_a_transient_429():
         attempts, outcome, pin = asyncio.run(_run(server, RP_ZERO, "s-transient-zero"))
     finally:
         server.close()
-    assert _in_group(attempts) == ["/fail/chat/completions"], attempts
+    _assert_first_pick_is_the_pinned_seat(attempts)
+    assert len(_in_group(attempts)) == 1, attempts
+    assert attempts.count("/okcheap/chat/completions") == 1, attempts
+    assert outcome == "ok"
+    assert pin == {"model_id": "seat-a"}, pin
+
+
+def test_a_row_that_parks_on_its_first_429_retries_a_peer_not_itself():
+    # The limit of the same-row claim, drilled. A prod row on a daily quota wall
+    # carries RateLimitErrorAllowedFails: 0 (8 worker-capable rows and 8 worker-cheap
+    # rows as of this commit), so its first 429 cools it BEFORE the in-router retry
+    # picks a row. The pinned row is then out of the healthy set, the affinity
+    # filter cannot return it, and the one allowed retry goes to a peer (seat-c),
+    # which 429s too, so the worker-cheap fallback answers: still a cross-seat
+    # re-send, but bounded at one extra in-group pick (the shipped 2 allowed two).
+    # The fix does not give these rows a same-row retry; it caps the damage.
+    server = _Server()
+    try:
+        attempts, outcome, pin = asyncio.run(
+            _run(server, RP_PROPOSED, "s-park-first-429", park_on_first_429=True))
+    finally:
+        server.close()
+    _assert_first_pick_is_the_pinned_seat(attempts)
+    ing = _in_group(attempts)
+    assert len(ing) == 2, attempts
+    assert len(set(ing)) == 2, attempts          # the retry left the failed row
     assert attempts.count("/okcheap/chat/completions") == 1, attempts
     assert outcome == "ok"
     assert pin == {"model_id": "seat-a"}, pin
@@ -448,6 +526,7 @@ if __name__ == "__main__":
     fns = [
         test_the_pinned_litellm_is_the_one_these_numbers_were_measured_on,
         test_config_retry_policy_is_the_fleet_ops_9375_fix,
+        test_schema_accepts_the_live_config_and_each_reject_fails_on_the_retry_rule,
         test_authentication_error_gets_zero_retries,
         test_rate_limit_gets_one_retry,
         test_internal_server_error_is_inert_on_litellm_1_98_0,
@@ -456,6 +535,7 @@ if __name__ == "__main__":
         test_shipped_policy_spends_two_retries_on_two_seats_on_a_429_wall,
         test_the_fix_retries_the_row_that_failed_not_a_peer,
         test_a_transient_429_recovers_on_the_row_it_hit,
+        test_a_row_that_parks_on_its_first_429_retries_a_peer_not_itself,
         test_zero_retries_hit_the_fallback_on_a_transient_429,
         test_pin_survives_a_failed_then_fallback_success,
     ]
