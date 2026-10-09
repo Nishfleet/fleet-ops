@@ -19,9 +19,11 @@ WorkingDirectory=/home/nish/workspaces
 Environment=HOME=/home/nish SHELL=/usr/bin/zsh LANG=en_US.UTF-8
 Environment=PATH=/home/nish/.local/bin:/usr/local/bin:/usr/bin:/bin
 Environment=XDG_RUNTIME_DIR=/run/user/1000 DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus
-# The TUI redraws the status line to stdout (~2k journal lines an hour); errors go
-# to stderr and still reach the journal.
+# The TUI redraws the status line to stdout (~32k journal lines an hour); send it
+# to /dev/null and keep stderr, which carries the errors. StandardError defaults
+# to inherit, so without the second line systemd sends stderr to /dev/null too.
 StandardOutput=null
+StandardError=journal
 # Nish 2026-10-03: sessions get full permissions (no prompts). Without the flag
 # the server starts every session in "auto" mode, which raises prompts with no
 # "always allow" option. permissions.ask/deny in ~/.claude/settings.json still
