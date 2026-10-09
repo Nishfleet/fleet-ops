@@ -125,6 +125,9 @@ jobs:
       - name: stub leviathan for systemd-analyze verify (host-only binary)
         if: always()
         run: install -D -m0755 /bin/true "$HOME/.local/bin/leviathan"
+      - name: stub tofu for systemd-analyze verify (host-only binary)
+        if: always()
+        run: install -D -m0755 /bin/true "$HOME/.local/bin/tofu"
       - name: systemd-analyze verify over unit files
         # nullglob: #8474 deleted the last systemd/*.path unit, and an unmatched
         # glob reaches systemd-analyze as a literal filename -> rc 1. With

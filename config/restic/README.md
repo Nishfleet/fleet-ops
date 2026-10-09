@@ -96,6 +96,7 @@ hand-installed R2 credentials (`netcup-r2.env`) and the retired
 | `/home/nish/.local/share/fleet-litellm-redis` | 8 KiB | Redis data for the same service. |
 | `/home/nish/.local/share/fleet-grafana` | 486 MiB, 4.5 MiB kept | `grafana.db`: users, annotations, dashboard state, unified-search. `plugins/` is reinstalled from the catalog. |
 | `/home/nish/.local/share/drive` | 53 MiB | labelled eval train and held-out cases. A different model family wrote them; re-running the harness is not the same data. |
+| `/home/nish/.local/state/fleet-ops/cloudflare-tokens` | 344 KiB | OpenTofu state for the per-repo Cloudflare tokens (`infra/cloudflare-tokens/`). The only record of the live tokens; without it the `gha-*` tokens are deleted by hand and minted again. |
 | `/home/nish/.local/share/containers/storage/volumes` | 83 MiB | podman container volumes. |
 | `/etc` | 10 MiB | units, ssh, polkit, sysctl, cron, rclone and prometheus config. |
 | `/root` | ~4 KiB | root's scripts and keys. |

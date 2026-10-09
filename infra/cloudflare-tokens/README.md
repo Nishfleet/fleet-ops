@@ -10,10 +10,10 @@ a variable. GitHub only ever holds the narrow tokens this config writes.
 Providers: `cloudflare/cloudflare` v5, `integrations/github`, `hashicorp/time`
 (`time_rotating`). Account: `f670a698e17bf160c8e4679823e68916`.
 
-Status: nothing has been applied. The minter token
-(`~/.config/cloudflare/token-minter.env`) does not exist yet, so the permission
-lists below are derived from the workflows and have not been proven against the
-live API. See "First apply".
+Status: applied for the 10 repos below on 2026-10-09 with the minter token
+(`~/.config/cloudflare/token-minter.env`); the plan resolved every permission
+group name against the live API. Which jobs have run on the new tokens is in
+the PR body. A weekly timer renews them (see "Renewal").
 
 ## What it creates
 
@@ -75,10 +75,15 @@ and never run `tofu show`, `tofu state show` or `tofu output -json` in a shared
 transcript. The outputs in this config are dates only. The `.terraform.lock.hcl`
 file is committed on purpose: it pins the provider versions.
 
-The state file is the only record of the live tokens' values, and
-`~/.local/state` is not in `config/restic/include.txt`, so it is not backed up.
-That is deliberate for now: if the state is lost, delete the old tokens in the
-Cloudflare dashboard (names start `gha-`) and apply again to mint fresh ones.
+The state file is the only record of the live tokens' values. The directory is
+in `config/restic/include.txt` (installed to `/etc/restic/include.txt` by
+`ansible/host.yml`), so the nightly restic backup carries it. Known gap: until
+that include reaches the box (the next `fleet-host-config` run after merge) the
+state is not backed up, and `/etc/restic/` itself is root-owned, so this repo
+cannot prove what the live list holds; check with
+`grep cloudflare-tokens /etc/restic/include.txt`. If the state is lost, delete
+the old tokens in the Cloudflare dashboard (names start `gha-`) and apply again
+to mint fresh ones.
 
 ## Apply
 
@@ -121,10 +126,55 @@ first and the old one deleted after the secret is rewritten
 (`create_before_destroy`), so a running deploy never sees a dead token. Token
 names end in the creation date, so the old and new tokens can coexist.
 
-Rotation happens only when someone runs `tofu apply`. Nothing runs it on a
-schedule yet. If no apply happens within 45 days of the last one, the tokens
-expire and the deploys that read them fail. A monthly apply on the VPS is a
-follow-up; until it exists, put a monthly apply on the calendar.
+Rotation happens only when `tofu apply` runs. If no apply happens within 45
+days of the last one, the tokens expire and the deploys that read them fail. The
+renewal timer below is what runs it.
+
+## Renewal
+
+Rotation is time-driven: Cloudflare keys expire on a date, so a schedule is the
+right trigger (not an event).
+
+| Unit | File | What |
+|---|---|---|
+| `cloudflare-tokens-apply.service` | `systemd/cloudflare-tokens-apply.service` | oneshot: `tofu -chdir=infra/cloudflare-tokens apply -auto-approve -input=false`, run from `~/workspaces/tooling/fleet-ops-deploy-clone` |
+| `cloudflare-tokens-apply.timer` | `systemd/cloudflare-tokens-apply.timer` | `OnCalendar=weekly`, `Persistent=true`, `RandomizedDelaySec=1h` |
+
+Weekly, because tokens rotate at 30 days and expire at 45: the apply does nothing
+for three weeks, then replaces them, and two missed weeks still leave slack.
+
+- Credentials: `EnvironmentFile=%h/.config/cloudflare/token-minter.env`. No env
+  file holds a GitHub token on this host, so the unit takes `GITHUB_TOKEN` from
+  `gh auth token` (the `~/.config/gh/hosts.yml` login, the same source
+  `blacksmith-flip.service` uses). That login needs admin on each repo.
+- State: the unit sets no state path. It uses the `backend "local"` path in
+  `versions.tf` (`~/.local/state/fleet-ops/cloudflare-tokens/terraform.tfstate`),
+  the same file as a hand apply. The provider cache goes to
+  `~/.cache/fleet-ops/cloudflare-tokens-tofu` (`TF_DATA_DIR`) so the deploy clone
+  stays clean for `fleet-sync.service`; `ExecStartPre` runs `tofu init`.
+- Failure is loud: `OnFailure=fleet-unit-failed@%N.service` sends the
+  healthchecks.io fail ping (fleet-ops#9033), and the unit shows in
+  `systemctl --user list-units --state=failed`. Logs:
+  `journalctl --user -u cloudflare-tokens-apply.service`.
+- `tofu` is installed to `~/.local/bin/tofu` by `ansible/host.yml` (root, on the
+  `fleet-host-config` run after merge). Until then the unit fails on a missing
+  binary.
+
+Wire it once, by hand, after the PR is merged and `fleet-sync` has pulled it
+(README "Wiring a NEW unit"):
+
+    systemctl --user link /home/nish/workspaces/tooling/fleet-ops-deploy-clone/systemd/cloudflare-tokens-apply.service
+    systemctl --user link /home/nish/workspaces/tooling/fleet-ops-deploy-clone/systemd/cloudflare-tokens-apply.timer
+    systemctl --user enable --now cloudflare-tokens-apply.timer
+    systemctl --user start cloudflare-tokens-apply.service   # first run now, then read the journal
+
+The user units live in `systemd/`, not in `ansible/host.yml`: that playbook is
+the root-owned half (it installs `tofu` and the restic list).
+
+Switch the renewal off: `systemctl --user disable --now cloudflare-tokens-apply.timer`.
+To retire it for good, also `systemctl --user unlink` both unit names and delete
+`systemd/cloudflare-tokens-apply.service` and `.timer` from the repo. The tokens
+then keep working until their expiry date (at most 45 days after the last apply).
 
 ## Switch it off and delete it
 
@@ -132,14 +182,16 @@ follow-up; until it exists, put a monthly apply on the calendar.
    this config made and every GitHub secret it wrote.
 2. The workflows then read nothing (or fall back to the org secret). Recreate
    whichever secrets you still want by hand.
-3. Remove `infra/cloudflare-tokens/`, the `cloudflare-tokens-tofu` job in
-   `.github/workflows/ci.yml`, and the OpenTofu tasks in `ansible/host.yml`.
+3. Remove `infra/cloudflare-tokens/`, the renewal units in `systemd/`, the
+   `cloudflare-tokens-tofu` job and the tofu stub step in
+   `.github/workflows/ci.yml`, the OpenTofu tasks in `ansible/host.yml`, and the
+   state line in `config/restic/include.txt`.
 4. Delete `~/.local/state/fleet-ops/cloudflare-tokens/` and
    `~/.config/cloudflare/token-minter.env`, and revoke the minter token in the
    Cloudflare dashboard.
 
-To pause rotation without deleting anything, just stop running `tofu apply`; the
-tokens keep working until their expiry date.
+To pause rotation without deleting anything, switch the timer off (see
+"Renewal"); the tokens keep working until their expiry date.
 
 ## CI
 
