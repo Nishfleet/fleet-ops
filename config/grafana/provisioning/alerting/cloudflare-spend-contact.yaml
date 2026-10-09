@@ -16,10 +16,6 @@
 # (~/.config/fleet-ops/github-issues.env, mode 0600). It needs issues:write on
 # Nishfleet/fleet-ops only. Rules carry label signal=cloudflare-spend and the
 # policy below picks them up, so there is one place that decides the route.
-#
-# fleet-ops#9470 adds a third signal to the same tree: signal=minimax-spend
-# opens the same agent-ready + priority-now issue from the MiniMax daily-cap
-# rule, with hermes-urgent as the same continue fallback.
 apiVersion: 1
 
 contactPoints:
@@ -62,25 +58,6 @@ contactPoints:
                      "labels" (coll.Slice "agent-ready" "priority-now") | data.ToJSON -}}
               {{- end -}}
 
-  - orgId: 1
-    name: minimax-spend-dispatch
-    receivers:
-      - uid: minimax-spend-gh-issues
-        type: webhook
-        disableResolveMessage: true
-        settings:
-          url: https://api.github.com/repos/Nishfleet/fleet-ops/issues
-          httpMethod: POST
-          authorization_scheme: Bearer
-          authorization_credentials: $GITHUB_ISSUES_TOKEN
-          maxAlerts: 1
-          payload:
-            template: |-
-              {{- with index .Alerts 0 -}}
-              {{- coll.Dict "title" (printf "minimax spend: %s of the $5/day cap" .Labels.model_id)
-                     "body" (printf "%s.\n\nValue: %s. Threshold: %s. Top row: %s.\n\n%s\n\nRule `%s`, started firing %s UTC (%s). Source: the Grafana minimax-spend rule (config/grafana/provisioning/alerting/minimax-spend.yaml), fleet-ops#9470. The four MiniMax M3.1 rows are capped at $1.25/day each and the alarm fires at 80%% of that $5. Find what is drawing the spend, then raise or lower the cap with Nish: do not raise it on your own." .Annotations.summary .Annotations.value .Annotations.threshold .Annotations.top .Annotations.description .Labels.alertname (.StartsAt.Format "2006-01-02 15:04:05") .GeneratorURL)
-                     "labels" (coll.Slice "agent-ready" "priority-now") | data.ToJSON -}}
-              {{- end -}}
 
 policies:
   - orgId: 1
@@ -120,25 +97,6 @@ policies:
       - receiver: hermes-urgent
         object_matchers:
           - [signal, "=", router-dead-row]
-          - [alertname, "!~", "DatasourceError|DatasourceNoData"]
-        group_by: [alertname, model_id]
-        group_wait: 0s
-        group_interval: 5m
-        repeat_interval: 12h
-      - receiver: minimax-spend-dispatch
-        object_matchers:
-          - [signal, "=", minimax-spend]
-          - [alertname, "!~", "DatasourceError|DatasourceNoData"]
-        group_by: [alertname, model_id]
-        group_wait: 0s
-        group_interval: 5m
-        repeat_interval: 12h
-        continue: true
-      # Same matcher again: a spend alarm also pages hermes-urgent, so a dead
-      # or missing GITHUB_ISSUES_TOKEN never silences it.
-      - receiver: hermes-urgent
-        object_matchers:
-          - [signal, "=", minimax-spend]
           - [alertname, "!~", "DatasourceError|DatasourceNoData"]
         group_by: [alertname, model_id]
         group_wait: 0s
