@@ -240,6 +240,9 @@ left alone:
 
 - `claude-scheduled-tasks.tar`, `drive-local-data.tar`, `codex-lsp-untracked.tar`,
   `codex-ops-untracked.tar` — archives of local data.
+  `claude-scheduled-tasks.tar` holds the 11 Claude desktop scheduled tasks and
+  their `SKILL.md` files. Their disposition, task by task, is in
+  [mac-scheduled-tasks.md](mac-scheduled-tasks.md).
 - `nish-vault.status.txt` — a status dump. The vault itself lives at
   `/home/nish/workspaces/tooling/nish-vault` and has a remote
   (`https://github.com/nish3451/nish-vault.git`), so it is not stranded.

@@ -1,7 +1,8 @@
 # The Mac's 11 desktop scheduled tasks: disposition (fleet-ops#9519)
 
-The Mac that ran these tasks was switched off on 2026-10-09. Its 11 scheduled
-tasks and their prompts were copied off it first, into
+The Mac that ran these tasks was switched off on 2026-10-09
+([mac-rescue-2026-10-09.md](mac-rescue-2026-10-09.md) records that date). Its 11
+scheduled tasks and their prompts were copied off it first, into
 `mac-rescue-20261009/claude-scheduled-tasks.tar` (see
 [mac-rescue-2026-10-09.md](mac-rescue-2026-10-09.md) for that folder's
 disposition). That copy stays off this public repo. Each task's `SKILL.md`
@@ -62,18 +63,28 @@ gate. They do not end the same way, and the difference matters.
 | --- | --- | --- |
 | `daily-fleet-digest` | retired | Its data source does not exist here: the task read `/home/nish/fleet2/var/` (`DIGEST.md`, `done`, `queue`, `quarantine`) and `var/scout/NEEDS-NISH.md` over ssh, and `/home/nish/fleet2` is absent on this box. Its delivery channel was the Mac's own push-notification tool. The same one-pager now runs here twice a day — `hermes cron list` shows `digest-morning` (08:00 IST) and `digest-evening` (20:00 IST), both active, both delivering to Telegram, last run `ok`. |
 | `drive-mac-walk` | retired | macOS GUI walk through the `cua-driver` tools. This box has no display, and desktop work here runs only inside Cua Spaces (fleet-ops#9297, #9298). Its own gate never opened — `gh issue view 760 -R nish3451/drive` answers `OPEN REOPENED`. |
-| `fleet-gate-ram-decision` | retired | The admission gate it audited is gone (`/home/nish/workspaces/agent-state/gate` is absent) and this box now reports 31 GiB across 12 vCPU, double the 16 GB the question was asked about. |
-| `fleet-steer-heartbeat` | retired | It ran from the Mac over ssh every 4 hours and sent one short Telegram message with fleet state. The Mac's ssh path is gone, and its cadence duplicated the twice-daily digest jobs that do run here. Its closest VPS twin, the hourly `fable-fleet-check` judge trio, was cut on 2026-09-18 as a money burn — three timers running one packet through three expensive models, about 600 paid flagship calls a week, two of the three failing more often than they succeeded (`agent-state/glue-sweep/kill-list-20260918T091044Z.md` §5). No `fable-*` unit is installed on this box now, and re-adding a 4-hour LLM judge would rebuild exactly that burn. What does run and covers the ground is the `hermes` digest jobs, the Grafana alerting rules provisioned under `config/grafana/provisioning/alerting/`, and `blacksmith-flip.timer`, which is hourly and owns the CI-runner decision. |
-| `github-minutes-reset-check` | retired | The PR it watched answers `state=CLOSED` with `mergedAt: null` (0509#770, closed 2026-08-18). The CI-runner decision it existed to make is now owned by this repo's own hourly `blacksmith-flip.timer` (fleet-ops#8936). |
-| `inbox-14-gmail-check` | retired | Its own description says DISABLED: it was created from a server session, points at a `/home/nish` path that does not exist on the Mac, and could never start. Gmail is reachable only through the Mac's Claude connector. |
+| `fleet-gate-ram-decision` | retired | Its own description asks whether 16 GB is limiting fleet output, and the admission gate it audited is gone (`/home/nish/workspaces/agent-state/gate` is absent). This box now reports 31 GiB across 12 vCPU, about twice the 16 GB the question was asked about. |
+| `fleet-steer-heartbeat` | retired | It ran every 4 hours from the Mac, whose `ssh netcup-rs2000` alias no longer exists. Its own checks were stale feeds, backlog-console dashboard freshness, saturation decisions, lane errors and restic backups under 24h old. Each has a live owner on this box now: `hermes cron` runs the twice-daily digest jobs, the Grafana alerting rules under `config/grafana/provisioning/alerting/` hold the alerts, and `blacksmith-flip.timer` is hourly. Its closest VPS twin, the hourly `fable-fleet-check` judge trio, was cut on 2026-09-18 as a money burn — three timers running one packet through three expensive models, about 600 paid flagship calls a week, two of the three failing more often than they succeeded (`agent-state/glue-sweep/kill-list-20260918T091044Z.md` §5), and no `fable-*` unit is installed here now. Re-adding a 4-hour LLM judge would rebuild exactly that burn. |
+| `github-minutes-reset-check` | retired | Its own description is "Re-test GitHub-hosted runner availability after monthly minutes reset; reopen PR 770 if green". The PR it would reopen answers `state=CLOSED` with `mergedAt: null` (0509#770, closed 2026-08-18). The CI-runner decision it existed to make is now owned by this repo's own hourly `blacksmith-flip.timer` (fleet-ops#8936). |
+| `inbox-14-gmail-check` | retired | Its own description says DISABLED: it was created from a server session, so it points at a `/home/nish` path that does not exist on the Mac and it could never start. The description also says the Gmail check now runs in the server session instead. |
 | `monthly-rulebook-redteam` | retired | The "Rulebook red-team cadence" rule it enforced is no longer in the binding rules file — it survives only in `standing-rules-archive.md`, which is history, not instruction. The Mac rulebook files it audited (`~/.codex/AGENTS.md`, `~/.codex/memories/profile.md`) do not exist on this box. |
 | `scorecard-mac-helper` | retired | The weekly scorecard already runs here — `hermes cron list` shows `scorecard-weekly` (Mondays 09:00 IST), active, delivering to Telegram. The Mac column it fed came from counting Nish's typed messages in `~/.claude/projects` on the Mac, and that has no source once the Mac is off. It also spent ten paid judge calls a week, which this retires with it. |
 | `weekly-fleet-gardener` | retired earlier | Cut on 2026-09-29 (fleet-ops#8954, merged) after filing 0 proposals. Recorded in `docs/skill-proposals.md`. |
 
 ## Checked, not assumed
 
-Every reason above was checked against live state during the run that added this
-page. The live-state commands and their output:
+Every reason above was checked against the rescued `SKILL.md` files and against
+live state on this box, not read from memory. The tar's checksum verifies
+(`claude-scheduled-tasks.tar: OK`), and the reason in each row quotes that
+task's own `description` line or its own body: `daily-fleet-digest` names
+`/home/nish/fleet2` and the PushNotification tool, `drive-mac-walk` names
+`cua-driver` and the gate issue, `fleet-gate-ram-decision` names the 16 GB
+question, `fleet-steer-heartbeat` names the 4-hour cadence and the ssh host,
+`github-minutes-reset-check` names PR 770, `inbox-14-gmail-check` says DISABLED
+in its own description, `scorecard-mac-helper` names the typed-message count and
+Jev grading, and `weekly-fleet-gardener` names the memory consolidation.
+
+The live-state commands and their output:
 
 - `tar -tf mac-rescue-20261009/claude-scheduled-tasks.tar` → the 11 task
   directories, each holding the `SKILL.md` quoted above. `sha256sum -c
@@ -82,9 +93,11 @@ page. The live-state commands and their output:
 - `ls /home/nish/workspaces/agent-state/gate` → `No such file or directory`
 - `ls /home/nish/workspaces/agent-state/fleet-landing-watch/fable-check.md` →
   present, and its header reads "You are one of two hourly fleet judges".
-  `ls /home/nish/.config/systemd/user/fable-*` → `No such file or directory`, and
-  `grep -rl fable-fleet-check /etc/systemd /home/nish/.config/systemd` → no
-  match, so no judge unit is installed on this box.
+- `find /usr/lib/systemd/user /etc/systemd/user /home/nish/.config/systemd
+  /run/user -name 'fable*'` → no output, so no `fable-*` unit is installed in
+  any standard unit directory on this box. `systemctl --user list-unit-files
+  'fable*'` cannot run in the worker jail (it answers `Failed to connect to bus:
+  No data available`), which is why the check is a filesystem walk instead.
 - `ls /home/nish/.codex/AGENTS.md` → absent, and
   `ls /home/nish/.codex/memories/profile.md` → absent
 - `grep -n 'RULEBOOK RED-TEAM CADENCE' nish-vault/_system/shared-memory/global-standing-rules.md`
@@ -107,6 +120,10 @@ page. The live-state commands and their output:
   `backup-d1.sh`
 - `gh api repos/nish3451/seo-fix-kit/contents/.github/workflows?ref=main` →
   `deploy-production.yml`, `pr-check.yml`, `secret-scan.yml`
+- `gh api repos/nish3451/seo-fix-kit/contents/.github/workflows/deploy-production.yml?ref=main`
+  → `CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}` and
+  `CLOUDFLARE_ACCOUNT_ID`, so that repo's own CI already holds a Cloudflare
+  token for the replacement export
 - `gh issue view 760 -R nish3451/drive --json number,state,stateReason` →
   `OPEN REOPENED`
 - `gh issue view 8936 -R Nishfleet/fleet-ops --json state,title` → `OPEN`,
@@ -115,9 +132,17 @@ page. The live-state commands and their output:
 - `git show origin/main:systemd/blacksmith-flip.timer` → `Description=Hourly
   Blacksmith CI_RUNNER auto-flip (fleet-ops#8936)`, `OnCalendar=hourly`,
   `Persistent=true`
-- `gh pr view 8954 -R Nishfleet/fleet-ops --json state,mergedAt` → `MERGED`,
-  `mergedAt=2026-09-29T12:00:09Z`, "Cut the scheduled agent jobs and the extra
-  workflows"
+- `gh pr view 8954 -R Nishfleet/fleet-ops --json number,state,title,mergedAt` →
+  `state=MERGED`, "Cut the scheduled agent jobs and the extra workflows",
+  `mergedAt=2026-09-29T12:00:09Z`
+- `gh issue view 9527 -R Nishfleet/fleet-ops --json number,state,labels` →
+  `number=9527`, `state=OPEN`, `labels=[]`
+- `grep -n 'GLUE-ZERO' docs/ARCHITECTURE.md` → line 43, "## GLUE-ZERO — no
+  hand-rolled code"
+- `grep -n 'No Wrangler' nish-vault/_system/shared-memory/global-standing-rules.md`
+  → line 31, the `cf` CLI rule quoted above
+- `grep -n 'gardener' docs/skill-proposals.md` → line 17, "The weekly gardener
+  was cut on 2026-09-29 (fleet-ops#8954) and filed 0 skill"
 
 The rest of the page quotes documents rather than live state. Each quote below is
 named with the command that read it:
@@ -137,6 +162,3 @@ named with the command that read it:
   `git ls-tree -r --name-only origin/main`, which returns 7 alerting rule files
   (`cloudflare-spend-contact`, `cloudflare-spend-delivery`, `cloudflare-spend`,
   `cpu-pressure`, `paid-plan-idle`, `prompt-cache-hit`, `router-dead-row`).
-- `gh pr view 8954 -R Nishfleet/fleet-ops --json state,mergedAt` → `MERGED`,
-  `mergedAt=2026-09-29T12:00:09Z`, "Cut the scheduled agent jobs and the extra
-  workflows"
