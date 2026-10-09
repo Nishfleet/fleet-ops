@@ -16,7 +16,13 @@ code and config.
 
 The work loop: `.github/workflows/agent-dispatch.yml` queues `agent-ready` issues as `agent.yml` jobs on the VPS self-hosted runners, workers open PRs on `claim/issue-<N>`, and the GitHub merge queue lands them.
 Dispatch pauses through the repo variable `FLEET_DISPATCH_PAUSED`, never by disabling the workflow: with it `true`, every job that starts a worker skips and logs one summary line, while `hold-risky` and `close-claim` keep running (a disabled workflow drops every trigger, guards included; 2026-10-05). Unset or any other value is not paused. The weekly `ansible/update.yml` sets it per repo and clears it in its `always:` block, then sweeps; it lists the repos it paused in `/var/lib/fleet-ops/dispatch-paused-by-update`, so a run killed before `always:` is undone at the start of the next, and a flag set by hand is left alone; ci.yml fails if a guard job gains the condition or a dispatch job loses it.
-No scheduled fleet job opens issues or PRs: issues come from people, red-main issues and dependabot, which runs weekly. The one scheduled model call is `systemd/blacksmith-flip.timer` (hourly): `prompts/blacksmith-flip.yml` runs through `pi --print` on the `worker-cheap` seat and sets or deletes the org `CI_RUNNER` variable at 95% of the free Blacksmith minutes (fleet-ops#8936).
+No scheduled fleet job opens PRs, and only one opens issues: the
+weekly /retro (`retro-weekly.timer`, Monday 07:00 IST, fleet-ops#9314)
+files one issue titled `Retro week <start>..<end>`, labelled
+`retro` and `needs-orchestrator`, public body counts-and-path only —
+never `agent-ready`, so a worker never queues fleet-ops work for itself. Otherwise issues come from people,
+red-main issues and dependabot, which runs weekly. The scheduled model
+calls are `systemd/blacksmith-flip.timer` (hourly): `prompts/blacksmith-flip.yml` runs through `pi --print` on the `worker-cheap` seat and sets or deletes the org `CI_RUNNER` variable at 95% of the free Blacksmith minutes (fleet-ops#8936); and `retro-weekly.timer` (weekly): `prompts/retro-weekly.md` runs through `pi --print` on `stepfun/step-5-preview`, writes the retro report and files that issue.
 
 ## Model plane
 

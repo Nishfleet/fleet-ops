@@ -104,6 +104,11 @@ ExecStart=/bin/sh -c 'cmp -s /home/nish/workspaces/tooling/fleet-ops-deploy-clon
 #    previous text. The repo is the only way in. ~/.local/share is an
 #    allowlisted stable tree, so the installed prompt outlives a re-clone.
 ExecStart=/usr/bin/install -C -D -m 0644 /home/nish/workspaces/tooling/fleet-ops-deploy-clone/prompts/blacksmith-flip.yml /home/nish/.local/share/blacksmith-flip/prompt.yml
+# 8b. ~/.local/share/retro-weekly/prompt.md is the same class (fleet-ops#9314):
+#    retro-weekly.service cats it into `pi --print` every Monday 07:00 IST, so a
+#    prompt edit that stayed only on a branch would leave the weekly retro on the
+#    previous text. Separate directory, same allowlisted stable tree.
+ExecStart=/usr/bin/install -C -D -m 0644 /home/nish/workspaces/tooling/fleet-ops-deploy-clone/prompts/retro-weekly.md /home/nish/.local/share/retro-weekly/prompt.md
 # 9. LINK-GUARD (fleet-ops#7743): machine wiring is hand-set symlinks, so a
 #    session CAN still point a live path at a throwaway checkout — the
 #    2026-09-18 incident linked standing-rules-render into a churning clone

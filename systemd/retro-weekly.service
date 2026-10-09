@@ -1,0 +1,123 @@
+# Weekly /retro (fleet-ops#9314). One scheduled run a week, Monday 07:00 IST:
+# pi reads one week of fleet sessions, writes the retro report, and files one
+# needs-orchestrator issue so a person triages the findings. Shape copied from
+# blacksmith-flip.service (fleet-ops#8936): one prompt file installed by
+# fleet-sync, piped into `pi --print`; no glue, the prompt is the whole job.
+#
+# gh auth: this unit runs under the systemd --user manager, which has no
+# GH_TOKEN, so `gh` reads ~/.config/gh/hosts.yml and acts as the nish3451
+# account, which can open a fleet-ops issue. No credential is in this file, in
+# the prompt, or in argv. Proved on the live run: issue #9332 was opened at
+# 2026-10-06 11:36 IST.
+#
+# This unit is NOT in the worker jail (agent.yml's empty-tmpfs over
+# ~/.config/gh and ~/.config/cloudflare, fleet-ops#9274), and unlike
+# blacksmith-flip it does read untrusted text: the week's sessions carry
+# outsider issue bodies and PR reviews. So a fooled model here can reach
+# nish3451's gh login and the no-expiry Cloudflare token. That is a known,
+# named risk, not an oversight, and the bound is the prompt plus the loaded
+# ~/AGENTS.md: read-only sources, "do not edit any file except $DELIVERABLE",
+# exactly ONE issue with no `agent-ready`, no PRs, no deploy.
+# InaccessiblePaths= does not fence this under the --user manager on this
+# host (systemd 255.4). A oneshot run 2026-10-06 12:53 IST with
+# InaccessiblePaths=/home/nish/.config/cloudflare /home/nish/.config/fleet-ops/litellm-master-key.env
+# showed the property set (`systemctl --user show -p InaccessiblePaths`) and
+# `systemd-analyze --user verify` accepted the file, but the unit's own
+# `test -e` still printed cf=yes and key=yes. Shipping the line would look
+# like a fence and not be one. The remaining exposure is the gh login;
+# fleet-ops#9339 is the narrowing (an issues-only token plus GH_CONFIG_DIR)
+# once Nish mints the token.
+#
+# Why stepfun/step-5-preview and no --no-context-files: that seat read a full
+# week of sessions and wrote the pilot report in 28.4 min on 2026-10-06
+# (retro-week-2026-10-06.md, 18,952 bytes), and ~/AGENTS.md must stay loaded —
+# it is what makes the report plain English. FLEET_TASK_ID is a fixed id on
+# purpose: a recurring check, not a per-task agent (blacksmith-flip comment).
+#
+# DELIVERABLE carries the date, and the date is computed ONCE. ExecStartPre writes
+# today's IST date to ~/workspaces/agent-state/retro/.retro-weekly-date, and
+# both ExecStart and ExecStopPost read that file back. Three `date +%%F` calls
+# (start, stop, and the grep) would disagree on a Persistent=true catch-up run
+# that starts before midnight IST and stops after it: the report is named with
+# the start date and the dead-man check would look for the stop date. One
+# write makes the start date, the model's $DELIVERABLE and the dead-man check
+# the same string. The report filename stays retro-week-<date>.md.
+#
+# Deadline: the issue text names RuntimeMaxSec=3600, but for Type=oneshot
+# systemd ignores RuntimeMaxSec — `systemd-analyze --user verify` prints
+# "RuntimeMaxSec= has no effect in combination with Type=oneshot. Ignoring.",
+# so shipping it would be dead config. The working deadline knob for a oneshot
+# is TimeoutStartSec, which defaults to infinity for oneshot: left alone, a
+# wedged model call hangs the unit forever. 3600 s covers the proven 28.4 min
+# pilot with headroom, and the kill lands as Result=timeout -> a failed unit
+# (`systemctl --user list-units --state=failed`), with ExecStopPost still
+# running the deliverable check.
+#
+# Two gates, one for each thing this run promises. ExecStopPost checks the
+# report file, and ExecStart checks that the run actually filed the issue
+# (fleet-ops#9327: a litellm 403 killed a run mid-flight and the unit stopped
+# with exit 0, because `out=$(...)` swallowed pi's status and the last command
+# was a printf). Same shape as blacksmith-flip's FLIP: trap: the prompt's last
+# line is `RETRO_ISSUE_URL: https://github.com/Nishfleet/fleet-ops/issues/N`
+# (or `RETRO_ISSUE_URL:` on failure) and a check that is absent fails the unit.
+# A failure is a failed unit someone can list, not a silent week with no retro.
+# `out=$(… | pi …)` discarding pi's exit is intentional: the last-line grep
+# is the first half of the gate. Do not wrap the substitution in `set -e` or
+# `pipefail`. The second half is `gh issue view <n>`: a hallucinated URL that
+# matches the regex is not a filed issue. Only the last line of the reply is
+# printed and checked, so a mid-reply URL cannot pass and the journal does
+# not keep the model's whole quote of a transcript.
+#
+# ExecStartPre order: drop the date file, drop today's report, rewrite the
+# date (`mkdir`/`printf` fail the pre-step), then check the prompt.
+# Without the report delete, a manual run earlier the same day leaves a
+# non-empty file that a later failed run then passes ExecStopPost on.
+# Without the prompt check, `pi` starts with stdin closed and writes nothing.
+# Without deleting the date file first, a stop during the pre-phase lets
+# ExecStopPost read a previous week's date and pass on that week's report.
+# ExecStopPost fails if the date file is missing. If ExecStartPre fails,
+# ExecStart does not run but ExecStopPost does.
+#
+# After=fleet-litellm-proxy.service because the model call goes through the
+# proxy on 127.0.0.1:4000: a Persistent=true catch-up run can start while the
+# proxy is still coming up. No Wants=, so the retro never starts a proxy that
+# was deliberately stopped. The ExecStart gate above turns a too-early run
+# into a loud failure rather than a fake clean week. There is no
+# network-online.target under the --user manager on this host
+# (`LoadState=not-found`, measured 2026-10-06).
+#
+# Environment=TZ=Asia/Kolkata: one timezone governs the calendar spec, the
+# report filename and the model's "today". The timer is Asia/Kolkata, so pin
+# TZ to the same zone instead of inheriting the host clock — on a catch-up run
+# starting just after 00:00 IST the window the model computes and the date in
+# the filename must not be able to disagree. A comment explaining a directive
+# goes ABOVE [Unit]: systemd parses every line inside a section as a directive
+# and prints "Missing '=', ignoring line." for prose (this was caught here by
+# `systemd-analyze verify` while writing it).
+#
+# WorkingDirectory=/home/nish is the documented default (`systemctl --user show`
+# prints `!/home/nish`), written out: pi's project context discovery and the
+# report's plain-English rule both assume ~ (the model must load ~/AGENTS.md).
+#
+# %%F, not %F: systemd expands % specifiers itself, before any shell runs
+# (same rule as the %%s in blacksmith-flip.service, ci.yml gate fleet-ops#8382).
+#
+# PrivateTmp=yes and ProtectSystem=full take effect under the --user manager
+# on this host (measured 2026-10-06: /usr not writable, /tmp present). They
+# do not hide ~/.config/cloudflare or ~/.config/gh. NoNewPrivileges=yes
+# already comes from /etc/systemd/user/service.d/10-no-new-privileges.conf.
+[Unit]
+Description=Weekly /retro over one week of fleet sessions (Monday 07:00 IST)
+After=fleet-litellm-proxy.service
+
+[Service]
+Type=oneshot
+Environment=FLEET_TASK_ID=retro-weekly
+Environment=TZ=Asia/Kolkata
+WorkingDirectory=/home/nish
+PrivateTmp=yes
+ProtectSystem=full
+ExecStartPre=/bin/sh -c 'datef=/home/nish/workspaces/agent-state/retro/.retro-weekly-date; /bin/rm -f "$datef"; d=$(date +%%F); /bin/rm -f /home/nish/workspaces/agent-state/retro/retro-week-"$d".md; mkdir -p /home/nish/workspaces/agent-state/retro || exit 1; printf %%s "$d" > "$datef" || exit 1; /bin/test -s /home/nish/.local/share/retro-weekly/prompt.md || { echo no-prompt >&2; exit 1; }'
+ExecStart=/bin/sh -c 'd=$(cat /home/nish/workspaces/agent-state/retro/.retro-weekly-date) || exit 1; DELIVERABLE=/home/nish/workspaces/agent-state/retro/retro-week-"$d".md; export DELIVERABLE; out=$(cat /home/nish/.local/share/retro-weekly/prompt.md | /home/nish/.local/bin/pi --print --provider stepfun --model step-5-preview); last=$(printf "%%s\n" "$out" | tail -n1); printf "%%s\n" "$last"; printf "%%s\n" "$last" | grep -qE "^RETRO_ISSUE_URL: https://github[.]com/Nishfleet/fleet-ops/issues/[0-9]+$" || exit 1; n=$(printf "%%s\n" "$last" | grep -oE "[0-9]+$"); gh issue view "$n" -R Nishfleet/fleet-ops --json number >/dev/null || exit 1'
+ExecStopPost=/bin/sh -c 'datef=/home/nish/workspaces/agent-state/retro/.retro-weekly-date; test -s "$datef" || { echo no-deliverable >&2; exit 1; }; d=$(cat "$datef"); test -s /home/nish/workspaces/agent-state/retro/retro-week-"$d".md || { echo no-deliverable >&2; exit 1; }'
+TimeoutStartSec=3600
