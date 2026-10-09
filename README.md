@@ -44,7 +44,12 @@ script, or prompt lands unseen.
   `session_affinity`, one case per cache-declaration rule (a row with no
   `supports_prompt_caching` flag, a row with no `cache_proof`, a
   non-cacheable worker row not on `order: 2`, and a worker row forced onto
-  `order: 1`). CI validates every file in the directory against the schema
+  `order: 1`), a router whose `allowed_fails_policy` drops
+  `NotFoundErrorAllowedFails`, a router whose `NotFoundErrorAllowedFails` is
+  not 0, a router with no `allowed_fails_policy` block at all, and a row whose
+  own `allowed_fails_policy` names `NotFoundErrorAllowedFails` at anything but
+  0 (a row-level threshold resolves before the router policy, so a row
+  override would re-open the two-404 leak). CI validates every file in the directory against the schema
   and each must fail, so a loosened schema goes red. A new schema rule gets a
   reject file in the same PR.
 - `config/grafana/` — the fleet-view Grafana provisioning

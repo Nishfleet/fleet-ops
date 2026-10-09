@@ -7,7 +7,37 @@
 # Alibaba Model Studio Token Plan (fleet-ops#9220): qwen3.8-max is a judge/orchestrator row only, never a worker rung (Nish 2026-09-08, #4445), so the row below is the only way that seat answers.
 # Cline stealth/union-alpha stopped being free 2026-09-30 (402 "Insufficient balance", 397 errors and 0 answers in 5 h). A 402 is neither retried nor cooled by LiteLLM v1.98.0 (no retry_policy key covers APIError; cooldown skips 4xx), so no setting below can move a job off such a row: its four rows are removed until Nish funds Cline credits. Cline's other rows stay. Any row that starts answering only 402 goes to Nish the same way (needs-nish-decision issue): it comes out only on his yes.
 # CommandCode stealth/pixel-canary and xkiro stealth/pixel-canary:free ended 2026-09-30 (403 "no longer available", 404 "does not exist"). openai-compatible 403 maps to APIError (no retry_policy key, same as 402); 404 maps to NotFoundError, which should_retry_this_error hard-raises on v1.98.0. Their four rows are removed.
-# Free inclusionai/ling-3.0-flash-sante:free ended on CommandCode, Cline and OpenRouter (checked 2026-10-08 by direct calls: 404 "This model is unavailable for free. The paid version is available now - use this slug instead: inclusionai/ling-3.0-flash-sante"; a pi job through worker-capable got that 404 at 23:03 IST). 404 maps to NotFoundError, which Router.should_retry_this_error hard-raises on v1.98.0, and no retry_policy key covers it, so no setting can move a job off such a row. Those six rows are removed (Nish asked for the removal 2026-10-08); the paid slug is NOT wired because that spends money and needs his yes. The xkiro ling-3.0 rows stay (still listed by /v1/models, answers 429 daily free-model quota) and the CommandCode ling-3.1-flash:free rows stay (200 on 3 of 4 spaced probes, 429 "temporarily unavailable" on 4 earlier back-to-back ones).
+# Free inclusionai/ling-3.0-flash-sante:free ended on CommandCode, Cline and OpenRouter (checked 2026-10-08 by direct calls: 404 "This model is unavailable for free. The paid version is available now - use this slug instead: inclusionai/ling-3.0-flash-sante"; a pi job through worker-capable got that 404 at 23:03 IST). 404 maps to NotFoundError, which Router.should_retry_this_error hard-raises on v1.98.0 and no retry_policy key covers, so the failed call itself still leaves the group (it falls through via the fallbacks below). Those six rows are removed (Nish asked for the removal 2026-10-08); the paid slug is NOT wired because that spends money and needs his yes. The xkiro ling-3.0 rows stay (still listed by /v1/models, answers 429 daily free-model quota) and the CommandCode ling-3.1-flash:free rows stay (200 on 3 of 4 spaced probes, 429 "temporarily unavailable" on 4 earlier back-to-back ones).
+# fleet-ops#9469: a 404 lane is taken out of rotation on the FIRST 404. LiteLLM v1.98.0's
+# _is_cooldown_required accepts 404, but the threshold is resolved PER EXCEPTION TYPE
+# (Router.get_allowed_fails_from_policy), and a key the policy does not name falls back to
+# the router-level allowed_fails (1) - two 404s - so the dead lane is picked again and
+# leaks a 404 to a caller. router_settings.allowed_fails_policy now carries
+# NotFoundErrorAllowedFails: 0, so the first 404 parks the row and the job falls through to
+# the next lane in the group (order filtering is applied after the cooldown filter, so the
+# order-2 overflow rows and the worker-group fallbacks both take the job). Measured on
+# ghcr.io/berriai/litellm:v1.98.0 in tests/test_router_404_fallthrough.py: one 404 parks the
+# row and the call still returns 200 on the next row; with the key at 1 the dead lane is
+# picked twice.
+#
+# The per-exception resolution is also what makes one router-level key reach every row:
+# _should_cooldown_based_on_deployment_policy reads the row's own policy first and, for an
+# exception type that policy does not name, defers to the router-level policy. All 81 rows
+# below carry a deployment-level allowed_fails_policy and none of them names NotFoundError,
+# so the fix is one key, not 81.
+#
+# Measured consequence, stated because it is a real trade: the cooldown a 404 applies is the
+# ROW's own cooldown_time, not the router-level 60 s. A 404 on one of the 14 rows parked
+# 21600 s for a named quota wall keeps that row out of rotation for 6 h. The row is not
+# removed: it stays in the router, comes back when the cooldown expires and re-probes
+# itself (proven in the same test file), so a restored model or a reset quota is picked up
+# within hours. The alternative - two 404s before the park - is the bug. A 404 is a
+# withdrawn free model or a dead model id, which is exactly what should park a row; there
+# is no per-exception-type cooldown_time in v1.98.0 (AllowedFailsPolicy has 9 fields, none
+# of them a duration), so the row's own cooldown_time is the only knob.
+#
+# Background health checks stay off: they spend the same free quota (Nish 2026-09-28) and
+# would probe every paid row.
 # OpenCode zen union-alpha answered 0 of 68 calls in the last 7 days (last attempt 2026-09-30 16:30 UTC, LiteLLM_SpendLogs); a direct probe on 2026-10-01 returns 400 "Upstream request failed: Model is unavailable." That 400 maps to BadRequestError, which v1.98.0 never cools, so no setting below can move a job off such a row: its four rows are removed. The opencodego-ds41flash rows on the Go endpoint (same key) stay: they are walled by a monthly quota (429 GoUsageLimitError, limitName monthly), not dead. A 900 s cool re-failed into worker groups every 15 min (0 of 68 calls in the 24 h to 2026-10-02 19:05 UTC). Those three rows now cool 21600 s and park on the first 429 (RateLimitErrorAllowedFails: 0), the same treatment #9075 gave the daily-quota rows (fleet-ops#9122). The opencodego2 rows on the second key stay at 900 s.
 # OpenRouter: stealth/space-bunny-alpha, nemotron-3-ultra, nemotron-3.5-lightning, inclusionai/ling-3.0-flash-sante:free, poolside/laguna-s-2.1:free (Nish 2026-10-04: 2 lanes per free model per provider). Pareto: glm-5.3-flash, never in judge.
 # Devin: SWE 2 only, through the devin CLI lane in agent.yml (no router route: 404 on every base).
@@ -1803,6 +1833,13 @@ router_settings:
     RateLimitErrorAllowedFails: 1
     TimeoutErrorAllowedFails: 1
     InternalServerErrorAllowedFails: 1
+    # fleet-ops#9469: a 404 is a withdrawn free model ("This model is unavailable for free")
+    # or a model id that no longer exists. _is_cooldown_required accepts 404, but with this
+    # key unset the router-level allowed_fails (1) needs two 404s before the lane parks, so a
+    # dead lane leaks a 404 to every other caller. 0 parks it on the first one; it comes back
+    # after its cooldown_time and re-probes. The failed call itself still raises NotFoundError
+    # (should_retry_this_error hard-raises), and the group's own order-2 row takes the job.
+    NotFoundErrorAllowedFails: 0
 litellm_settings:
   drop_params: true
   callbacks:
