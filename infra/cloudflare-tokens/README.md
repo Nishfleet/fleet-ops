@@ -8,7 +8,7 @@ to GitHub**: not as a repo, org or environment secret, not in a workflow, not in
 a variable. GitHub only ever holds the narrow tokens this config writes.
 
 Providers: `cloudflare/cloudflare` v5, `integrations/github`, `hashicorp/time`
-(`time_rotating`). Account: `f670a698e17bf160c8e4679823e68916`.
+(`time_rotating`). Account: kept in the private runbook.
 
 Status: applied for the 10 repos below on 2026-10-09 with the minter token
 (`~/.config/cloudflare/token-minter.env`); the plan resolved every permission
@@ -33,8 +33,8 @@ the PR body. A weekly timer renews them (see "Renewal").
 **No token is IP-locked.** Every job that reads a Cloudflare secret runs on
 `ubuntu-latest`, and GitHub-hosted runners have no fixed address (an IP-locked
 deploy token failed on them with Cloudflare error 9109). The lock exists in the
-config (`vps_only = true` adds `condition.request_ip` with the VPS addresses
-`159.195.212.168/32` and `2a0a:4cc0:c4:d5e:a8cb:f5ff:feb3:ed15/128`) and is for a
+config (`vps_only = true` adds `condition.request_ip` with the addresses in `vps_cidrs`;
+set them in a gitignored `*.tfvars` file, they are not kept in git) and is for a
 token whose jobs all run on the VPS self-hosted runners. No Cloudflare job does
 today.
 

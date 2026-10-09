@@ -28,10 +28,7 @@ variable "expiry_days" {
 }
 
 variable "vps_cidrs" {
-  description = "The VPS's addresses, used to IP-lock a token whose jobs all run on the VPS self-hosted runners."
+  description = "The VPS's addresses, used to IP-lock a token whose jobs all run on the VPS self-hosted runners. Not kept in git: set it in a gitignored *.tfvars file before turning vps_only on for any token."
   type        = list(string)
-  default = [
-    "159.195.212.168/32",
-    "2a0a:4cc0:c4:d5e:a8cb:f5ff:feb3:ed15/128",
-  ]
+  default     = []
 }

@@ -153,6 +153,11 @@ resource "cloudflare_api_token" "token" {
   lifecycle {
     create_before_destroy = true
     replace_triggered_by  = [time_rotating.token[each.key]]
+
+    precondition {
+      condition     = !each.value.vps_only || length(var.vps_cidrs) > 0
+      error_message = "vps_only is set for this token but vps_cidrs is empty. Set vps_cidrs in a gitignored *.tfvars file."
+    }
   }
 }
 
