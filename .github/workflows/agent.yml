@@ -732,10 +732,12 @@ jobs:
           choice=$(jq -r '.answers.verdict.choice // "block"' <<<"$resp")
           p=$(jq -r --arg c "$choice" '.answers.verdict.probabilities[$c] // 0' <<<"$resp")
           [ "$(gh api "repos/$REPO/pulls/$PR" --jq .head.sha)" = "$SHA" ] || { echo "head moved during review; the newer event reviews it"; exit 0; }
-          text=$(printf '%s' "$review" | head -c 3500)
-          if [ "${#review}" -gt 3500 ]; then
-            blockers=$(grep -iE '^[[:space:]*_-]*blocker' <<<"$review" | head -c 1500 || true)
-            text=$(printf 'The review is %s characters and this comment is cut at 3500 (truncated). Blocker lines first:\n%s\n\n%s' "${#review}" "$blockers" "$text")
+          shown=$(grep -viE '^[[:space:]]*coordinator-approval:' <<<"$review" || true)
+          text=$(printf '%s' "$shown" | head -c 3500)
+          bytes=$(printf '%s' "$shown" | wc -c)
+          if [ "$bytes" -gt 3500 ]; then
+            blockers=$(grep -iE '^[[:space:]*_-]*blocker' <<<"$shown" | head -c 1500 || true)
+            text=$(printf 'The review is %s bytes and this comment is cut at 3500 (truncated). Blocker lines first:\n%s\n\n%s' "$bytes" "$blockers" "$text")
           fi
           if [ "$choice" = approve ] && jq -en --argjson p "$p" '$p >= 0.9' >/dev/null; then
             say "$(printf 'coordinator-approval: %s\n\nreviewer: %s approved. CI still has to pass before it merges.\n\n%s' "$SHA" "$SHA" "$text")"
