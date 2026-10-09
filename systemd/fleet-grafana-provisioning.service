@@ -1,0 +1,19 @@
+[Unit]
+Description=Reload Grafana alerting and datasource provisioning (fleet-ops#9449 follow-up)
+Documentation=https://grafana.com/docs/grafana/latest/developers/http_api/admin/#reload-provisioning-configurations
+OnFailure=fleet-unit-failed@%N.service
+
+[Service]
+Type=oneshot
+# A stopped Grafana reads the files at its next start, so there is nothing to
+# reload: exit 1 here skips the unit without failing it (man systemd.service,
+# ExecCondition=).
+ExecCondition=/usr/bin/systemctl --user is-active --quiet fleet-grafana.service
+# git merge writes the changed files one after another; let the last one land.
+ExecStartPre=/bin/sleep 5
+# The stock admin API, same calls as the "Reload provisioning configurations"
+# section of the Grafana HTTP API docs. Basic auth as admin, with the password
+# handed to curl as a config fd so it never reaches argv
+# (docs/RUNBOOK.md, LiteLLM admin-API note). -f fails the unit on a non-2xx.
+ExecStart=/bin/bash -c 'exec /usr/bin/curl -fsS --retry 3 --retry-connrefused --max-time 30 -X POST --config <(/usr/bin/sed "s|^|user = admin:|" %h/.config/fleet-ops/grafana-admin-password) http://127.0.0.1:3001/api/admin/provisioning/alerting/reload http://127.0.0.1:3001/api/admin/provisioning/datasources/reload'
+TimeoutStartSec=90

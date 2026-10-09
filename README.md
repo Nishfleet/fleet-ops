@@ -7,8 +7,8 @@ script, or prompt lands unseen.
 ## What lives here
 
 - `systemd/` — the user units the fleet runs under `systemctl --user`:
-  services, timers, slices, one `.path` unit (`fleet-litellm-proxy-config.path`)
-  and one `.scope.d` drop-in (`tmux-spawn-.scope.d`).
+  services, timers, slices, two `.path` units (`fleet-litellm-proxy-config.path`,
+  `fleet-grafana-provisioning.path`) and one `.scope.d` drop-in (`tmux-spawn-.scope.d`).
 - `rootfs/` — root-owned host config, laid out like `/` (`rootfs/etc/X` is
   installed at `/etc/X`): system units, slices and drop-ins, `nftables.conf`,
   `sysctl.d/`, `audit/rules.d/`, polkit rules and the prometheus config.

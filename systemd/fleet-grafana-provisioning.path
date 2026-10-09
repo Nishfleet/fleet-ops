@@ -1,0 +1,25 @@
+[Unit]
+Description=Reload Grafana provisioning when its provisioning files change (fleet-ops#9449 follow-up)
+# Grafana reads provisioning/alerting and provisioning/datasources only at
+# start (the dashboards provider polls every 60 s, so it needs no help). The
+# deploy is a `git merge --ff-only` in the deploy clone, and nothing restarted
+# fleet-grafana: PR 9449 put a 1x-allowance floor under the Cloudflare rules on
+# 2026-10-08 08:56Z, the container kept the floorless rules from its start on
+# 2026-10-07 18:12Z, and a D1 read of 4,952 rows/h paged Telegram at 15:46Z on
+# 2026-10-09. Same shape as fleet-litellm-proxy-config.path (fleet-ops#8539).
+#
+# One PathChanged= per directory fleet-grafana.container mounts under
+# config/grafana/provisioning/ (inotify on a directory reports its direct
+# children; the provisioning files are all direct children). CI checks that
+# every mounted provisioning directory is listed here.
+
+[Path]
+PathChanged=%h/workspaces/tooling/fleet-ops-deploy-clone/config/grafana/provisioning/alerting
+PathChanged=%h/workspaces/tooling/fleet-ops-deploy-clone/config/grafana/provisioning/datasources
+Unit=fleet-grafana-provisioning.service
+# Storm cap: a merge writes several files in a row.
+TriggerLimitIntervalSec=60s
+TriggerLimitBurst=5
+
+[Install]
+WantedBy=default.target
