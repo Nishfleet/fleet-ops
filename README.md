@@ -27,6 +27,7 @@ script, or prompt lands unseen.
   LiteLLM 1.98.0 that no unit in this repo applies (the proxy runs a pinned
   container image).
 - `docs/` — `ARCHITECTURE.md`, `RUNBOOK.md`, `jev-call-sites.md`,
+  `mac-rescue-2026-10-09.md` (the disposition of the Mac rescue bundles),
   `quality-bar.md` and `incidents/` (one blameless write-up per outage,
   named `YYYY-MM-DD-<slug>.md`).
 - `template/` — `agents/`, `cursor-rules/`, `devin-config.json` and
