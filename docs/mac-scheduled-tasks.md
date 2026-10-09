@@ -15,7 +15,7 @@ root the vault's own status note records.
 **No clock is added on this box.** No task moves to a VPS timer, so nothing is
 built here (the GLUE-ZERO rule in `docs/ARCHITECTURE.md`, line 43).
 
-All 11 tasks leave the Mac. Ten are retired outright, and one of those ten — the
+All 11 tasks end here. Ten are retired outright, and one of those ten — the
 weekly gardener — was retired earlier. The last one, the weekly `seofixkit`
 database export, also leaves the Mac, but its capability has a next home in that
 product repo's own CI, and that CI needs a weekly schedule there, so it is handed
@@ -37,46 +37,57 @@ gate. They do not end the same way, and the difference matters.
 - **`0509-weekly-d1-backup` — retired, nothing to port.** The task exported the
   production D1 database `0509` to an R2 bucket through wrangler logged in on
   the Mac, so the Mac held the only OAuth session it could use.
-- The export script and its validator are gone from that repo's `main`. The
-  repo itself is readable, so the 404 is a missing path and not a permission
-  denial: `gh api repos/Nishfleet/0509` answers `"private": false`, and
-  `gh api repos/Nishfleet/0509/contents/wrangler.jsonc?ref=main` answers 200,
-  while `gh api repos/Nishfleet/0509/contents/scripts?ref=main` answers HTTP 404.
-- That repo's own recovery doc records the decision in its own words — "No
-  script, no cron, no helper. Time Travel is the platform feature and needs none.
-  Nothing in this repository runs a backup" (`docs/REBUILD-DONE.md`, the
-  2026-09-22 bullet, written `[0922]` there) — with a recovery window of about 30
-  days and a re-checked-live Time Travel bookmark in the 2026-09-28 bullet
-  (`[0928]`).
-- The nightly `snapshot-backup` Workflow (0509#5802) copies site-snapshot
-  objects from `0509-snapshots` to `0509-snapshots-backup` at 05:00 UTC. That is
-  a snapshot-objects copy, not a database export, so it does not stand in for the
-  D1 export. The platform's Time Travel does, by that repo's own recorded
-  decision. Nothing is lost by letting the Mac task die.
+  - The export script and its validator are gone from that repo's `main`. That
+    repo's tree holds 1537 paths, and no path in it exports the D1 database to
+    R2. `gh api repos/Nishfleet/0509/git/trees/main?recursive=1` filtered for
+    `backup|export|dump` returns only a signed-in user's workspace-export route
+    (`app/routes/settings.export.ts`, behind `requireFreshSession`), the
+    snapshot-object copy stack (`workers/workflows/snapshot-backup.ts`,
+    `app/lib/snapshot-backup.server.ts`) and an R2 object-expiry rule
+    (`.github/cloudflare/r2-backup-lifecycle.json`). The `scripts/` directory is
+    absent too (`gh api repos/Nishfleet/0509/contents/scripts?ref=main` →
+    HTTP 404).
+  - The repo is readable, so that 404 is a missing path and not a permission
+    denial: `gh api repos/Nishfleet/0509` answers `"private": false`, and
+    `gh api repos/Nishfleet/0509/contents/wrangler.jsonc?ref=main` answers 200.
+  - That repo's own recovery doc records the decision in its own words — "No
+    script, no cron, no helper. Time Travel is the platform feature and needs
+    none. Nothing in this repository runs a backup" (`docs/REBUILD-DONE.md`, the
+    2026-09-22 bullet, written `[0922]` there) — with a recovery window of about
+    30 days and a re-checked-live Time Travel bookmark in the 2026-09-28 bullet
+    (`[0928]`).
+  - The nightly `snapshot-backup` Workflow (0509#5802) copies site-snapshot
+    objects from the bucket bound as `SNAPSHOTS` (`0509-snapshots`) to the
+    bucket bound as `SNAPSHOTS_BACKUP` (`0509-snapshots-backup`) at 05:00 UTC.
+    `wrangler.jsonc` names both buckets at lines 195-196 and binds them at
+    lines 200-201. That is a snapshot-objects copy, not a database export, so it
+    does not stand in for the D1 export. The platform's Time Travel does, by
+    that repo's own recorded decision. Nothing is lost by letting the Mac task
+    die.
 - **`seofixkit-weekly-d1-backup` — retired from the Mac, capability still
   open.** The weekly export script still exists in the `seofixkit` product repo
   (`ops/backup-d1.sh`), and the Mac task was its only scheduler.
-- That repo's `.github/workflows` holds `deploy-production.yml`, `pr-check.yml`
-  and `secret-scan.yml` and no scheduled backup job.
-- The task runs through wrangler OAuth on the Mac, which this box cannot hold.
-  Wrangler is banned fleet-wide: the vault's `global-standing-rules.md` says
-  Cloudflare work uses the `cf` CLI and "No Wrangler, in any repo, CI job,
-  packet or skill" (Nish, 2026-09-28). That is also why the replacement uses
-  `cf` and not wrangler.
-- **Hand-off.** Move the weekly export into that product repo's own CI, which
-  already holds a Cloudflare token for it — `deploy-production.yml` sets
-  `CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}`.
-- This run cannot do that work, because this box's token writes to fleet-ops
-  alone and cannot open a pull request in `nish3451/seo-fix-kit`. That is the
-  reason the hand-off goes to the coordinator.
-- The hand-off is tracked in a plain issue, fleet-ops#9527, filed in this repo
-  with no label. A label here would put Cloudflare work in the worker queue, and
-  this box's token cannot file in the product repo anyway.
-- The coordinator sees it from this PR's body and from the open-issue list. A
-  docs-only change self-arms, so no coordinator review happens on this PR: as of
-  2026-10-09 the arm step's allowlist carries `docs/`
-  (`grep -n 'safe=' .github/workflows/agent.yml` → line 455, whose pattern list
-  ends with `docs/`).
+  - That repo's `.github/workflows` holds `deploy-production.yml`,
+    `pr-check.yml` and `secret-scan.yml` and no scheduled backup job.
+  - The task runs through wrangler OAuth on the Mac, which this box cannot hold.
+    Wrangler is banned fleet-wide: the vault's `global-standing-rules.md` says
+    Cloudflare work uses the `cf` CLI and "No Wrangler, in any repo, CI job,
+    packet or skill" (Nish, 2026-09-28). That is also why the replacement uses
+    `cf` and not wrangler.
+  - **Hand-off.** Move the weekly export into that product repo's own CI, which
+    already holds a Cloudflare token for it — `deploy-production.yml` sets
+    `CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}`.
+  - This run cannot do that work, because this box's token writes to fleet-ops
+    alone and cannot open a pull request in `nish3451/seo-fix-kit`. That is the
+    reason the hand-off goes to the coordinator.
+  - The hand-off is tracked in a plain issue, fleet-ops#9527, filed in this repo
+    with no label. A label here would put Cloudflare work in the worker queue,
+    and this box's token cannot file in the product repo anyway.
+  - The coordinator sees it from this PR's body and from the open-issue list. A
+    docs-only change self-arms, so no coordinator review happens on this PR: as
+    of 2026-10-09 the arm step's allowlist carries `docs/`
+    (`grep -n 'safe=' .github/workflows/agent.yml` → line 455, whose pattern
+    list ends with `docs/`).
 
 ## The other nine
 
@@ -89,7 +100,7 @@ gate. They do not end the same way, and the difference matters.
 | `github-minutes-reset-check` | retired | Its own description is "Re-test GitHub-hosted runner availability after monthly minutes reset; reopen PR 770 if green". The PR it would reopen answers `state=CLOSED` with `mergedAt: null` (0509#770, closed 2026-08-18). The CI-runner decision it existed to make is now owned by this repo's own hourly `blacksmith-flip.timer` (fleet-ops#8936), the timer that flips the CI runner when free minutes run low. |
 | `inbox-14-gmail-check` | retired | Its own description says DISABLED: it was created from a server session, so it points at a `/home/nish` path that does not exist on the Mac and it could never start. The description also says the Gmail check now runs in the server session instead. |
 | `monthly-rulebook-redteam` | retired | The "Rulebook red-team cadence" rule it enforced is no longer in the binding rules file — it survives only in `standing-rules-archive.md`, which is history, not instruction. The Mac rulebook files it audited (`~/.codex/AGENTS.md`, `~/.codex/memories/profile.md`) do not exist on this box. |
-| `scorecard-mac-helper` | retired | The weekly scorecard already runs here — `hermes cron list` shows `scorecard-weekly` (Mondays 09:00 IST), active, delivering to Telegram. The Mac column it fed came from counting Nish's typed messages in `~/.claude/projects` on the Mac, and that has no source once the Mac is off. It also spent ten paid judge calls a week (its own description has it "grade 10 merged 0509 PRs"), which this retires with it. |
+| `scorecard-mac-helper` | retired | The weekly scorecard already runs here — `hermes cron list` shows `scorecard-weekly` (Mondays 09:00 IST), active, delivering to Telegram. The Mac column it fed came from counting Nish's typed messages in `~/.claude/projects` on the Mac, and that has no source once the Mac is off. It also spent ten paid judge calls a week (its own description has it "grade 10 merged 0509 PRs"), which the retirement also ends. |
 | `weekly-fleet-gardener` | retired earlier | Cut on 2026-09-29 (fleet-ops#8954, merged) after filing 0 proposals. Recorded in `docs/skill-proposals.md`. |
 
 ### `fleet-steer-heartbeat` in full
@@ -164,6 +175,15 @@ The live-state commands and their output, all checked on 2026-10-09:
 - `gh api repos/Nishfleet/0509 --jq '.private'` → `false`, so the 404 below is a
   missing path and not a permission denial
 - `gh api repos/Nishfleet/0509/contents/scripts?ref=main` → HTTP 404
+- `gh api repos/Nishfleet/0509/git/trees/main?recursive=1 --jq '.tree | length'`
+  → 1537 paths, and the same call's `.tree[].path` filtered for
+  `backup|export|dump` returns `.github/cloudflare/r2-backup-lifecycle.json`,
+  `app/lib/data-export.server.ts`, `app/lib/snapshot-backup.server.ts`,
+  `app/routes/settings.export.ts`, `e2e/export-data.spec.ts`,
+  `tests/integration/data-export.integration.test.ts`,
+  `tests/integration/snapshot-backup.integration.test.ts`,
+  `workers/workflows/snapshot-backup.ts` — none of which exports the D1
+  database to R2
 - `gh api repos/Nishfleet/0509/contents/workers/workflows/snapshot-backup.ts?ref=main`
   → 200, and `grep -n '0 5 \* \* \*'` on the file's own content answers line 14,
   `schedule: { type: "crontab", value: "0 5 * * *" }`
