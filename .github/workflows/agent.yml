@@ -739,6 +739,10 @@ jobs:
             questions: {verdict: {type: "choice", instructions: "Is this pull request safe to merge?",
               criteria: {approve: "The review lists no blocker line. Risk and nit lines alone do not block.", block: "The review lists at least one blocker line, or the review is empty or unclear."}}}}')
           resp=$(curl -s 127.0.0.1:4000/jev --config <(sed -n 's|^LITELLM_JEV_KEY=\(.*\)|header = "Authorization: Bearer \1"|p' "$HOME/.config/fleet-ops/seats/typesafe-jev.env") -H 'content-type: application/json' -d "$body")
+          if [ -z "${review//[[:space:]]/}" ] || ! jq -e '.answers.verdict.choice' <<<"$resp" >/dev/null 2>&1; then
+            say "reviewer: $SHA could not be judged, because the review text was empty or the judge gave no answer. Nothing was approved or blocked. Push a new head to try again."
+            exit 0
+          fi
           choice=$(jq -r '.answers.verdict.choice // "block"' <<<"$resp")
           p=$(jq -r --arg c "$choice" '.answers.verdict.probabilities[$c] // 0' <<<"$resp")
           [ "$(gh api "repos/$REPO/pulls/$PR" --jq .head.sha)" = "$SHA" ] || { echo "head moved during review; the newer event reviews it"; exit 0; }
