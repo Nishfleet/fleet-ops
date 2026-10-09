@@ -9,7 +9,8 @@ disposition). That copy stays off this public repo. Each task's `SKILL.md`
 inside it is the source for what the task actually did. Every reason below was
 checked against those `SKILL.md` files and against live state on this box, not
 read from memory. Vault files cited below live under
-`nish-vault/_system/shared-memory/`.
+`/home/nish/workspaces/tooling/nish-vault/_system/shared-memory/`, which is the
+root the vault's own status note records.
 
 **No clock is added on this box.** No task moves to a VPS timer, so nothing is
 built here (the GLUE-ZERO rule in `docs/ARCHITECTURE.md`). All 11 leave the
@@ -55,7 +56,9 @@ gate. They do not end the same way, and the difference matters.
   fleet-ops and because a label here would put Cloudflare work in the worker
   queue. This needs the Cloudflare API, which the worker jail cannot reach
   (AGENTS.md), so it goes to the coordinator rather than being solved with an
-  ad-hoc credential.
+  ad-hoc credential. The coordinator sees it from this PR's body and from the
+  open-issue list, because a docs-only change self-arms and no coordinator
+  review happens on it.
 
 ## The other nine
 
@@ -64,11 +67,11 @@ gate. They do not end the same way, and the difference matters.
 | `daily-fleet-digest` | retired | Its data source does not exist here: the task read `/home/nish/fleet2/var/` (`DIGEST.md`, `done`, `queue`, `quarantine`) and `var/scout/NEEDS-NISH.md` over ssh, and `/home/nish/fleet2` is absent on this box. Its delivery channel was the Mac's own push-notification tool. The same one-pager now runs here twice a day — `hermes cron list` shows `digest-morning` (08:00 IST) and `digest-evening` (20:00 IST), both active, both delivering to Telegram, last run `ok`. |
 | `drive-mac-walk` | retired | macOS GUI walk through the `cua-driver` tools. This box has no display, and desktop work here runs only inside Cua Spaces (fleet-ops#9297, #9298). Its own gate never opened — `gh issue view 760 -R nish3451/drive` answers `OPEN REOPENED`. |
 | `fleet-gate-ram-decision` | retired | Its own description asks whether 16 GB is limiting fleet output, and the admission gate it audited is gone (`/home/nish/workspaces/agent-state/gate` is absent). This box now reports 31 GiB across 12 vCPU, about twice the 16 GB the question was asked about. |
-| `fleet-steer-heartbeat` | retired | It ran every 4 hours from the Mac, whose `ssh netcup-rs2000` alias no longer exists. Its own checks were stale feeds, backlog-console dashboard freshness, saturation decisions, lane errors and restic backups under 24h old. Each has a live owner on this box now: `hermes cron` runs the twice-daily digest jobs, the Grafana alerting rules under `config/grafana/provisioning/alerting/` hold the alerts, and `blacksmith-flip.timer` is hourly. Its closest VPS twin, the hourly `fable-fleet-check` judge trio, was cut on 2026-09-18 as a money burn — three timers running one packet through three expensive models, about 600 paid flagship calls a week, two of the three failing more often than they succeeded (`agent-state/glue-sweep/kill-list-20260918T091044Z.md` §5), and no `fable-*` unit is installed here now. Re-adding a 4-hour LLM judge would rebuild exactly that burn. |
+| `fleet-steer-heartbeat` | retired | It ran every 4 hours from the Mac, whose `ssh netcup-rs2000` alias no longer exists. Its own checks were stale feeds, backlog-console dashboard freshness, saturation decisions, lane errors and restic backups under 24h old. Each has a live owner on this box now: `hermes cron` runs the twice-daily digest jobs, the Grafana alerting rules under `config/grafana/provisioning/alerting/` hold the alerts, and `blacksmith-flip.timer` is hourly. Its closest VPS twin, the hourly `fable-fleet-check` judge trio, was cut on 2026-09-18 as a money burn — three timers running one packet through three expensive models, about 600 paid flagship calls a week. In that sweep's own words, "Two of three fail more often than they succeed", and its 7-day counts are 226 starts / 371 failures for `fable-fleet-check` and 267 / 566 for `-opus`, where the failure counter runs above the start counter (`agent-state/glue-sweep/kill-list-20260918T091044Z.md` §5). No `fable-*` unit is installed here now. Re-adding a 4-hour LLM judge would rebuild exactly that burn. |
 | `github-minutes-reset-check` | retired | Its own description is "Re-test GitHub-hosted runner availability after monthly minutes reset; reopen PR 770 if green". The PR it would reopen answers `state=CLOSED` with `mergedAt: null` (0509#770, closed 2026-08-18). The CI-runner decision it existed to make is now owned by this repo's own hourly `blacksmith-flip.timer` (fleet-ops#8936). |
 | `inbox-14-gmail-check` | retired | Its own description says DISABLED: it was created from a server session, so it points at a `/home/nish` path that does not exist on the Mac and it could never start. The description also says the Gmail check now runs in the server session instead. |
 | `monthly-rulebook-redteam` | retired | The "Rulebook red-team cadence" rule it enforced is no longer in the binding rules file — it survives only in `standing-rules-archive.md`, which is history, not instruction. The Mac rulebook files it audited (`~/.codex/AGENTS.md`, `~/.codex/memories/profile.md`) do not exist on this box. |
-| `scorecard-mac-helper` | retired | The weekly scorecard already runs here — `hermes cron list` shows `scorecard-weekly` (Mondays 09:00 IST), active, delivering to Telegram. The Mac column it fed came from counting Nish's typed messages in `~/.claude/projects` on the Mac, and that has no source once the Mac is off. It also spent ten paid judge calls a week, which this retires with it. |
+| `scorecard-mac-helper` | retired | The weekly scorecard already runs here — `hermes cron list` shows `scorecard-weekly` (Mondays 09:00 IST), active, delivering to Telegram. The Mac column it fed came from counting Nish's typed messages in `~/.claude/projects` on the Mac, and that has no source once the Mac is off. It also spent ten paid judge calls a week (its own description has it "grade 10 merged 0509 PRs"), which this retires with it. |
 | `weekly-fleet-gardener` | retired earlier | Cut on 2026-09-29 (fleet-ops#8954, merged) after filing 0 proposals. Recorded in `docs/skill-proposals.md`. |
 
 ## Checked, not assumed
@@ -93,9 +96,10 @@ The live-state commands and their output:
 - `ls /home/nish/workspaces/agent-state/gate` → `No such file or directory`
 - `ls /home/nish/workspaces/agent-state/fleet-landing-watch/fable-check.md` →
   present, and its header reads "You are one of two hourly fleet judges".
-- `find /usr/lib/systemd/user /etc/systemd/user /home/nish/.config/systemd
-  /run/user -name 'fable*'` → no output, so no `fable-*` unit is installed in
-  any standard unit directory on this box. `systemctl --user list-unit-files
+- `find /usr/lib/systemd/user /etc/systemd/user /etc/systemd/system
+  /home/nish/.config/systemd -maxdepth 2 -name 'fable*'` → no output and no
+  error, so no `fable-*` unit is installed in any standard unit directory on
+  this box. `systemctl --user list-unit-files
   'fable*'` cannot run in the worker jail (it answers `Failed to connect to bus:
   No data available`), which is why the check is a filesystem walk instead.
 - `ls /home/nish/.codex/AGENTS.md` → absent, and
