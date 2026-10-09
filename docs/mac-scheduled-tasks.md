@@ -13,17 +13,20 @@ read from memory. Vault files cited below live under
 root the vault's own status note records.
 
 **No clock is added on this box.** No task moves to a VPS timer, so nothing is
-built here (the GLUE-ZERO rule in `docs/ARCHITECTURE.md`). All 11 leave the Mac.
-Ten are retired outright, and one of those ten — the weekly gardener — was
-retired earlier. The last one, the weekly `seofixkit` database export, also
-leaves the Mac, but its capability has a next home in that product repo's own
-CI, and that CI needs a weekly schedule there, so it is handed to the
-coordinator instead of getting a tombstone.
+built here (the GLUE-ZERO rule in `docs/ARCHITECTURE.md`, line 43).
 
-`seofixkit` is this repo's short name for the SEO Fix Kit product repo. That
-repo is public, and this box's GitHub token can read public repos, but its
-installation — the only repo it can write to — is fleet-ops alone
-(`gh api /installation/repositories` → `total_count: 1`).
+All 11 tasks leave the Mac. Ten are retired outright, and one of those ten — the
+weekly gardener — was retired earlier. The last one, the weekly `seofixkit`
+database export, also leaves the Mac, but its capability has a next home in that
+product repo's own CI, and that CI needs a weekly schedule there, so it is handed
+to the coordinator instead of getting a tombstone.
+
+The task is named `seofixkit-weekly-d1-backup` in the rescued tar, and the repo
+it runs in is `nish3451/seo-fix-kit`. This page uses that repo path for the repo
+and the task's own name for the task. That repo is public, and this box's GitHub
+token can read public repos, but its installation — the only repo it can write
+to — is fleet-ops alone (`gh api /installation/repositories` →
+`total_count: 1`).
 
 ## The two backup tasks
 
@@ -68,18 +71,20 @@ gate. They do not end the same way, and the difference matters.
 - The hand-off is tracked in a plain issue, fleet-ops#9527, filed in this repo
   with no label. A label here would put Cloudflare work in the worker queue, and
   this box's token cannot file in the product repo anyway.
-- The coordinator sees it from this PR's body and from the open-issue list,
-  because a docs-only change self-arms: the arm step's own allowlist carries
-  `docs/`, so no coordinator review happens on this PR.
+- The coordinator sees it from this PR's body and from the open-issue list. A
+  docs-only change self-arms, so no coordinator review happens on this PR: as of
+  2026-10-09 the arm step's allowlist carries `docs/`
+  (`grep -n 'safe=' .github/workflows/agent.yml` → line 455, whose pattern list
+  ends with `docs/`).
 
 ## The other nine
 
 | Task | Disposition | Reason |
 | --- | --- | --- |
 | `daily-fleet-digest` | retired | Its data source does not exist here: the task read `/home/nish/fleet2/var/` (`DIGEST.md`, `done`, `queue`, `quarantine`) and `var/scout/NEEDS-NISH.md` over ssh, and `/home/nish/fleet2` is absent on this box. Its delivery channel was the Mac's own push-notification tool. The same digest job now runs here twice a day — `hermes cron list`, from this box's job scheduler, shows `digest-morning` (08:00 IST) and `digest-evening` (20:00 IST), both active, both delivering to Telegram, last run `ok`. |
-| `drive-mac-walk` | retired | macOS GUI walk through the `cua-driver` tools. This box has no display, and desktop work here runs only inside Cua Spaces (fleet-ops#9297, #9298), the hosted browser-desktop service that replaced local desktop automation. Its own gate never opened — `gh issue view 760 -R nish3451/drive` answers `OPEN REOPENED`. |
+| `drive-mac-walk` | retired | macOS GUI walk through the `cua-driver` tools, the Mac's local desktop-automation driver. This box has no display, and desktop work here runs only inside Cua Spaces (fleet-ops#9297, #9298), the hosted browser-desktop service that replaced local desktop automation. Its own gate never opened — `gh issue view 760 -R nish3451/drive` answers `OPEN REOPENED`. |
 | `fleet-gate-ram-decision` | retired | Its own description asks whether 16 GB is limiting fleet output, and the admission gate it audited is gone (`/home/nish/workspaces/agent-state/gate` is absent). This box now reports 31 GiB across 12 vCPU, about twice the 16 GB the question was asked about. |
-| `fleet-steer-heartbeat` | retired | It ran every 4 hours from the Mac, whose `ssh netcup-rs2000` alias no longer exists. See the note below the table for what covered its checks and why its judge twin does not run. |
+| `fleet-steer-heartbeat` | retired | It ran every 4 hours from the Mac, whose `ssh netcup-rs2000` alias no longer exists. Its own checks are covered on this box by the twice-daily `hermes cron` digest jobs and by the hourly `blacksmith-flip.timer`. The note below the table says what its judge twin was and why that does not run. |
 | `github-minutes-reset-check` | retired | Its own description is "Re-test GitHub-hosted runner availability after monthly minutes reset; reopen PR 770 if green". The PR it would reopen answers `state=CLOSED` with `mergedAt: null` (0509#770, closed 2026-08-18). The CI-runner decision it existed to make is now owned by this repo's own hourly `blacksmith-flip.timer` (fleet-ops#8936), the timer that flips the CI runner when free minutes run low. |
 | `inbox-14-gmail-check` | retired | Its own description says DISABLED: it was created from a server session, so it points at a `/home/nish` path that does not exist on the Mac and it could never start. The description also says the Gmail check now runs in the server session instead. |
 | `monthly-rulebook-redteam` | retired | The "Rulebook red-team cadence" rule it enforced is no longer in the binding rules file — it survives only in `standing-rules-archive.md`, which is history, not instruction. The Mac rulebook files it audited (`~/.codex/AGENTS.md`, `~/.codex/memories/profile.md`) do not exist on this box. |
