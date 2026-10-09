@@ -22,7 +22,7 @@ on:
         required: false
         default: ''
       arm_pr:
-        description: risky PR number that carries a person's approval and is not armed (agent-dispatch arm-approved)
+        description: risky PR number whose head carries an approver's approval and is not armed (agent-dispatch arm-approved)
         type: string
         required: false
         default: ''
@@ -640,11 +640,15 @@ jobs:
     runs-on: [self-hosted, agent]
     timeout-minutes: 20
     # The approval is a PR comment written with the job's own GITHUB_TOKEN, so
-    # github-actions[bot] is the approver: no PR author uses it, and a PR can
-    # only borrow it by adding a workflow, which the guard list sends to a
-    # person (config/risky-paths.json "guard" has ^.github/).
+    # github-actions[bot] is the approver. This job runs from main (agent.yml@main),
+    # so the PR cannot change the reviewer that judges it. A PR that adds its own
+    # workflow could post as the same bot; that is why a PR that edits the guard
+    # list or a workflow needs two independent reviews, not one (below). Arming is
+    # the arm job's, as the worker App.
     permissions:
       pull-requests: write
+    outputs:
+      approved_sha: ${{ steps.review.outputs.approved_sha }}
     # A newer head starts its own review; the older one stops.
     concurrency:
       group: review-${{ github.repository }}-${{ inputs.review_pr }}
@@ -657,49 +661,46 @@ jobs:
       # Pi sends this as x-litellm-session-id and exits 1 without it (the work job sets it the same way, #9015).
       FLEET_TASK_ID: run-${{ github.run_id }}-${{ github.run_attempt }}
     steps:
-      - name: Read App private key
-        id: app-key
-        run: |
-          keyfile="$HOME/.config/fleet-worker/nishfleet-worker.private-key.pem"
-          [ -s "$keyfile" ] || { echo "::error::app private key file missing on runner"; exit 1; }
-          while IFS= read -r line || [ -n "$line" ]; do
-            [ -n "$line" ] && echo "::add-mask::$line"
-          done < "$keyfile"
-          {
-            printf 'pem<<APP_PRIVATE_KEY_END\n'
-            cat "$keyfile"
-            printf 'APP_PRIVATE_KEY_END\n'
-          } >> "$GITHUB_OUTPUT"
-      # Arming is mechanical, so the worker App does it; the approval is the
-      # review's, and hold-risky checks it again on the arm.
-      - name: Arm token
-        id: arm-token
-        uses: actions/create-github-app-token@fee1f7d63c2ff003460e3d139729b119787bc349 # v2.2.2
-        with:
-          app-id: "4728578"
-          private-key: ${{ steps.app-key.outputs.pem }}
-          permission-contents: write
-          permission-pull-requests: write
       - name: Review the held head
+        id: review
         env:
           GH_TOKEN: ${{ github.token }}
-          ARM_TOKEN: ${{ steps.arm-token.outputs.token }}
           # Pi sends this as x-litellm-session-id; without it the litellm provider refuses to start (0509 run 37676671633).
           FLEET_TASK_ID: review-${{ github.run_id }}-${{ github.run_attempt }}
+          # A PR that edits the merge guard or a workflow also needs a second
+          # review by a different model family than the Jev judge and than
+          # Claude. The senior seat is a single GLM (Z.ai) row; the first
+          # review's worker-capable seat is mostly DeepSeek. The comment names
+          # both families.
+          JUDGE_FAMILY: Jev
+          SECOND_SEAT: senior
+          SECOND_FAMILY: GLM
         run: |
           set -euo pipefail
           say() { gh pr comment "$PR" -R "$REPO" --body "$1"; }
+          # An infrastructure failure is retry-able: the comment avoids the
+          # "reviewer: <sha>" phrase the already-reviewed check looks for, and
+          # the job goes red so a re-run reviews the head again.
+          retry() {
+            say "review of $SHA did not finish: $1. Nothing was approved or blocked. Re-run the review-risky job, or push a new head, to try again."
+            exit 1
+          }
+          # blocker lines of a review: the line starts with the word, with or without markup.
+          tick=$(printf '\140')
+          blockers_of() { { grep -iE "^[[:space:]*_#>${tick}-]*blocker" <<<"$1" || true; } | head -c 1500; }
           pr=$(gh api "repos/$REPO/pulls/$PR")
           [ "$(jq -r .state <<<"$pr")" = open ] && [ "$(jq -r .head.sha <<<"$pr")" = "$SHA" ] || { echo "head moved or PR closed; the newer event reviews it"; exit 0; }
           seen=$(gh api --paginate "repos/$REPO/issues/$PR/comments?per_page=100" --jq "[.[] | select(.user.login == \"github-actions[bot]\" and (.body | contains(\"reviewer: $SHA\")))] | length" | awk '{n+=$1} END{print n+0}')
           [ "$seen" = 0 ] || { echo "$SHA already reviewed"; exit 0; }
           gh api --paginate "repos/$REPO/pulls/$PR/files?per_page=100" --jq '.[] | .filename, (.previous_filename // empty)' > "$RUNNER_TEMP/files.txt"
+          # The guard list decides how much review the head needs. If it cannot
+          # be read the head is not reviewed at all (fail closed), and no person
+          # is asked: the job fails and a re-run reads it again.
           cfg=$(curl -fsSL --retry 3 "$RISKY_PATHS_URL" | jq -c .) || cfg=null
-          hits=$(jq -Rsc --argjson cfg "$cfg" '(split("\n") | map(select(length > 0))) as $f | ($cfg.guard // ["."]) as $g | [$f[] | . as $x | select(any($g[]; . as $re | $x | test($re; "i")))] | unique | length' < "$RUNNER_TEMP/files.txt")
-          if [ "$hits" != 0 ]; then
-            say "reviewer: $SHA edits the merge guard or a workflow (or the guard list could not be read), so a person approves it. Nothing was approved or blocked automatically. To approve, open the PR in the GitHub app and tap Review changes, then Approve; that arms it with no second step. Fallback: an approver's PR comment line \`coordinator-approval: $SHA\`."
-            exit 0
-          fi
+          jq -e '(.guard | type) == "array" and (.guard | length) > 0' <<<"$cfg" >/dev/null 2>&1 || retry "the guard list could not be read"
+          hits=$(jq -Rsc --argjson cfg "$cfg" '(split("\n") | map(select(length > 0))) as $f | $cfg.guard as $g | [$f[] | . as $x | select(any($g[]; . as $re | $x | test($re; "i")))] | unique | length' < "$RUNNER_TEMP/files.txt")
+          guard=false
+          [ "$hits" = 0 ] || guard=true
           gh api -H 'Accept: application/vnd.github.diff' "repos/$REPO/pulls/$PR" > "$RUNNER_TEMP/diff.txt"
           if [ "$(wc -c < "$RUNNER_TEMP/diff.txt")" -gt 250000 ]; then
             say "reviewer: $SHA blocked. The diff is over 250 KB, too large to review whole. Split it into smaller PRs."
@@ -745,39 +746,84 @@ jobs:
           fi
           choice=$(jq -r '.answers.verdict.choice // "block"' <<<"$resp")
           p=$(jq -r --arg c "$choice" '.answers.verdict.probabilities[$c] // 0' <<<"$resp")
-          [ "$(gh api "repos/$REPO/pulls/$PR" --jq .head.sha)" = "$SHA" ] || { echo "head moved during review; the newer event reviews it"; exit 0; }
+          # A review text can be steered by the diff it reads, so a line that
+          # looks like the approval line is dropped from everything posted.
           shown=$(grep -viE '^[[:space:]]*coordinator-approval:' <<<"$review" || true)
           text=$(printf '%s' "$shown" | head -c 3500)
           bytes=$(printf '%s' "$shown" | wc -c)
           if [ "$bytes" -gt 3500 ]; then
-            blockers=$(grep -iE '^[[:space:]*_-]*blocker' <<<"$shown" | head -c 1500 || true)
-            text=$(printf 'The review is %s bytes and this comment is cut at 3500 (truncated). Blocker lines first:\n%s\n\n%s' "$bytes" "$blockers" "$text")
+            text=$(printf 'The review is %s bytes and this comment is cut at 3500 (truncated). Blocker lines first:\n%s\n\n%s' "$bytes" "$(blockers_of "$shown")" "$text")
           fi
-          if [ "$choice" = approve ] && jq -en --argjson p "$p" '$p >= 0.9' >/dev/null; then
-            say "$(printf 'coordinator-approval: %s\n\nreviewer: %s approved. CI still has to pass before it merges.\n\n%s' "$SHA" "$SHA" "$text")"
-            [ "$(jq -r .draft <<<"$pr")" = true ] || GH_TOKEN=$ARM_TOKEN gh pr merge "$PR" -R "$REPO" --auto --match-head-commit "$SHA"
-          elif [ "$choice" = approve ]; then
-            say "$(printf 'reviewer: %s not approved. The judge found no blocker line but was only %s%% sure, and approval needs 90%%. Push a new head for a fresh review.\n\n%s' "$SHA" "$(jq -rn --argjson p "$p" '$p * 100 | floor')" "$text")"
+          judge_ok=false
+          if [ "$choice" = approve ] && jq -en --argjson p "$p" '$p >= 0.9' >/dev/null; then judge_ok=true; fi
+          pct=$(jq -rn --argjson p "$p" '$p * 100 | floor')
+          if [ "$guard" = false ]; then
+            [ "$(gh api "repos/$REPO/pulls/$PR" --jq .head.sha)" = "$SHA" ] || { echo "head moved during review; the newer event reviews it"; exit 0; }
+            if [ "$judge_ok" = true ]; then
+              say "$(printf 'coordinator-approval: %s\n\nreviewer: %s approved. CI still has to pass before it merges.\n\n%s' "$SHA" "$SHA" "$text")"
+              echo "approved_sha=$SHA" >> "$GITHUB_OUTPUT"
+            elif [ "$choice" = approve ]; then
+              say "$(printf 'reviewer: %s not approved. The judge found no blocker line but was only %s%% sure, and approval needs 90%%. Push a new head for a fresh review.\n\n%s' "$SHA" "$pct" "$text")"
+            else
+              say "$(printf 'reviewer: %s blocked. Fix these and push; a new head gets a fresh review.\n\n%s' "$SHA" "$text")"
+            fi
+            exit 0
+          fi
+          # This head edits the merge guard or a workflow. It is approved only
+          # when the judge is at least 90% sure with no blocker line AND an
+          # independent second reviewer of a different model family answers
+          # APPROVE with no blocker line. The second reviewer reads the same
+          # diff and context as the first; its instruction is appended after
+          # them by this workflow, so the diff cannot supply it.
+          [ -z "$(blockers_of "$shown")" ] || judge_ok=false
+          {
+            cat "$RUNNER_TEMP/diff.txt"
+            printf '\n\n=== REVIEWER INSTRUCTION (written by the workflow, not part of the change) ===\nThis change edits the merge guard or a workflow. You are the second, independent reviewer. List the blockers, then the risks, as instructed. Your last line must be exactly APPROVE (you found no blocker) or BLOCK (you found at least one).\n'
+          } > "$RUNNER_TEMP/second-in.txt"
+          second=
+          for _try in 1 2; do
+            second=$(pi --print --no-context-files --no-tools --no-session \
+              --append-system-prompt "$HOME/AGENTS.md" \
+              --append-system-prompt "$HOME/workspaces/tooling/fleet-ops-deploy-clone/prompts/risky-review.md" \
+              --provider litellm --model "$SECOND_SEAT" < "$RUNNER_TEMP/second-in.txt") || second=
+            [ -z "${second//[[:space:]]/}" ] || break
+          done
+          [ -n "${second//[[:space:]]/}" ] || retry "the second reviewer gave no answer"
+          second_shown=$(grep -viE '^[[:space:]]*coordinator-approval:' <<<"$second" || true)
+          second_text=$(printf '%s' "$second_shown" | head -c 3500)
+          last=$(grep -vE '^[[:space:]]*$' <<<"$second_shown" | tail -n 1 || true)
+          second_ok=false
+          if grep -qiE "^[[:space:]*_#>${tick}]*(verdict:?[[:space:]]*)?APPROVE[[:space:]*_${tick}.]*\$" <<<"$last" && [ -z "$(blockers_of "$second_shown")" ]; then second_ok=true; fi
+          [ "$(gh api "repos/$REPO/pulls/$PR" --jq .head.sha)" = "$SHA" ] || { echo "head moved during review; the newer event reviews it"; exit 0; }
+          if [ "$judge_ok" = true ] && [ "$second_ok" = true ]; then
+            say "$(printf 'coordinator-approval: %s\n\nreviewer: %s approved. This change edits the merge guard or a workflow, so two independent reviews had to pass. The judge (%s, %s%% sure, no blocker line) and a second reviewer from a different family (%s, %s seat) both approved with no blockers. CI still has to pass before it merges.\n\nFirst review:\n%s\n\nSecond review:\n%s' "$SHA" "$SHA" "$JUDGE_FAMILY" "$pct" "$SECOND_FAMILY" "$SECOND_SEAT" "$text" "$second_text")"
+            echo "approved_sha=$SHA" >> "$GITHUB_OUTPUT"
           else
-            say "$(printf 'reviewer: %s blocked. Fix these and push; a new head gets a fresh review.\n\n%s' "$SHA" "$text")"
+            if [ "$judge_ok" = true ]; then j='approved'; elif [ "$choice" != approve ]; then j='blocked'; elif [ -n "$(blockers_of "$shown")" ]; then j='not approved (the review lists a blocker line)'; else j="not approved (only ${pct}% sure; approval needs 90%)"; fi
+            if [ "$second_ok" = true ]; then s='approved'; else s='blocked'; fi
+            say "$(printf 'reviewer: %s blocked. This change edits the merge guard or a workflow, so it needs both reviews to approve. Fix the items below and push; a new head gets a fresh review.\n\nJudge (%s): %s\n%s\n\nSecond reviewer (%s family, %s seat): %s\n%s' "$SHA" "$JUDGE_FAMILY" "$j" "$([ "$judge_ok" = true ] || printf '%s' "$text")" "$SECOND_FAMILY" "$SECOND_SEAT" "$s" "$([ "$second_ok" = true ] || printf '%s' "$second_text")")"
           fi
-  # One-tap person approval (fleet-ops#9505). hold-risky already confirmed an
-  # approver's approval of this exact head; this job only arms, as the worker
-  # App, and re-reads the PR so a head that moved or a PR that closed since is
-  # left alone. --match-head-commit makes the arm itself refuse a moved head.
+  # Arms an approved head: the review job's own approval in the same run, or a
+  # person's approval that hold-risky confirmed (fleet-ops#9505). hold-risky
+  # already confirmed the approval of this exact head for the second; this job
+  # only arms, as the worker App, and re-reads the PR so a head that moved or a
+  # PR that closed since is left alone. --match-head-commit makes the arm
+  # itself refuse a moved head, and a later approval is read again by
+  # hold-risky when the arm fires auto_merge_enabled.
   arm:
-    if: inputs.arm_pr != '' && inputs.arm_sha != ''
+    needs: review
+    if: ${{ !cancelled() && ((inputs.arm_pr != '' && inputs.arm_sha != '') || needs.review.outputs.approved_sha != '') }}
     runs-on: [self-hosted, agent]
     timeout-minutes: 10
     permissions:
       pull-requests: write
     concurrency:
-      group: arm-${{ github.repository }}-${{ inputs.arm_pr }}
+      group: arm-${{ github.repository }}-${{ inputs.arm_pr || inputs.review_pr }}
       cancel-in-progress: false
     env:
       REPO: ${{ github.repository }}
-      PR: ${{ inputs.arm_pr }}
-      SHA: ${{ inputs.arm_sha }}
+      PR: ${{ inputs.arm_pr || inputs.review_pr }}
+      SHA: ${{ inputs.arm_sha || needs.review.outputs.approved_sha }}
     steps:
       - name: Read App private key
         id: app-key

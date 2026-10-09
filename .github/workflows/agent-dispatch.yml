@@ -92,7 +92,7 @@ on:
   # PR on the last five types but only calls the API: it reads file names as
   # data and never checks out or runs the head.
   pull_request_target:
-    types: [dequeued, auto_merge_disabled, closed, auto_merge_enabled, synchronize, labeled, opened, reopened]
+    types: [dequeued, auto_merge_disabled, closed, auto_merge_enabled, synchronize, labeled, opened, reopened, ready_for_review]
   # approval-signal (approval-signal.yml) is the untrusted half of one-tap
   # approval (fleet-ops#9505): it only uploads a PR number. Its completed run
   # lands here, in base-branch code, where hold-risky re-reads the review and
@@ -310,7 +310,7 @@ jobs:
   hold-risky:
     if: >-
       (github.event_name == 'pull_request_target' &&
-       contains(fromJSON('["auto_merge_enabled","synchronize","labeled","opened","reopened"]'), github.event.action)) ||
+       contains(fromJSON('["auto_merge_enabled","synchronize","labeled","opened","reopened","ready_for_review"]'), github.event.action)) ||
       (github.event_name == 'workflow_run' && github.event.workflow_run.name == 'approval-signal' &&
        github.event.workflow_run.conclusion == 'success')
     runs-on: ${{ fromJSON(inputs.runner || '"ubuntu-latest"') }}
@@ -340,12 +340,13 @@ jobs:
       # statuses: write can post a status, and anyone who can comment can
       # write the approval line, so the context name or line alone is not an
       # approval.
-      # github-actions[bot] is the independent reviewer (review-risky below):
-      # its approval comment is written by agent.yml's review job with
-      # GITHUB_TOKEN, an identity no PR author uses. nish3451 stays for a
-      # person's typed approval, and for his GitHub "Approve" review (the
-      # review path below never counts a [bot] login, so the reviewer's own
-      # approval stays a comment).
+      # github-actions[bot] is the approver (review-risky below): its approval
+      # comment is written by agent.yml's review job with GITHUB_TOKEN, after a
+      # judge review (and, for a PR that edits the guard or a workflow, a second
+      # review by another model family). Nobody has to be asked. nish3451 stays
+      # as an optional override: his typed comment, or his GitHub "Approve"
+      # review (the review path below never counts a [bot] login, so the
+      # reviewer's own approval stays a comment).
       APPROVERS: nish3451 github-actions[bot]
       RISKY_PATHS_URL: https://raw.githubusercontent.com/Nishfleet/fleet-ops/main/config/risky-paths.json
       # stdin: {repo, labels, files, patches, changed_files}; $cfg:
@@ -386,7 +387,7 @@ jobs:
       # Comment path: an approver's comment, never edited (updated_at ==
       # created_at, so an old comment cannot be edited onto a new sha), with a
       # line exactly "CONTEXT: <sha>" for the full 40-hex head sha. Review
-      # path (one tap in the GitHub app): a human approver's newest APPROVED or
+      # path (optional override in the GitHub app): a human approver's newest APPROVED or
       # CHANGES_REQUESTED review (a COMMENTED, PENDING or DISMISSED one is not
       # a vote) must be APPROVED with commit_id equal to the full head sha, so
       # a review of an older commit never counts and a later change request
@@ -433,9 +434,10 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           PR: ${{ github.event.pull_request.number || steps.signal.outputs.number }}
-          # true on the approval-signal path: never hold there, only report an
-          # approved, unarmed, non-draft risky PR to arm-approved.
-          REARM: ${{ github.event_name == 'workflow_run' && 'true' || 'false' }}
+          # true on the approval-signal path and when a draft turns ready:
+          # never hold there, only report an approved, unarmed, non-draft risky
+          # PR to arm-approved. (A draft's approval comment could not arm it.)
+          REARM: ${{ (github.event_name == 'workflow_run' || github.event.action == 'ready_for_review') && 'true' || 'false' }}
         # Fails closed: a read that fails (the PR, its files, the path list,
         # its statuses or comments, the merge state) never skips the hold. It
         # counts as risky or not approved, gets a ::warning:: naming the read,
@@ -494,8 +496,8 @@ jobs:
           fi
           if [ "$approved" = true ]; then
             echo "hold-risky: #$PR is risky and $sha carries an approver's $CONTEXT; no hold"
-            # One tap: hand the approved head to arm-approved. A draft, an
-            # armed PR or one already in the queue has nothing to arm.
+            # Hand the approved head to arm-approved. A draft, an armed PR or
+            # one already in the queue has nothing to arm.
             if [ "$REARM" = true ]; then
               if [ "$(jq -r '.draft' <<<"$pr")" = true ]; then
                 echo "hold-risky: #$PR is a draft; not arming"
@@ -567,18 +569,19 @@ jobs:
             echo "### hold-risky: #$PR held at \`$sha\`"
             jq -r '.why[] | "- \(.)"' <<<"$verdict"
             echo
-            echo "To approve, open the PR in the GitHub app and tap Review changes, then Approve. An approving review of this exact head arms it, no second step."
-            echo "review-risky reviews this exact head next. Fallback: an approver's PR comment line \`$CONTEXT: $sha\` (prompts/orchestrator-handoff.md step 4)."
+            echo "review-risky reviews this exact head next and arms it once the review approves. Nothing here needs a person."
           } >> "$GITHUB_STEP_SUMMARY"
           [ "$ok" = true ]
   # Independent review of a held risky PR (Nish 2026-10-05: reviewed PRs merge
   # themselves, no pasted approval lines). agent.yml's review job reads the
   # head's diff through the API, never checks out PR code, asks a model with no
   # tools for findings and Jev for approve or block, then posts the
-  # coordinator-approval comment as github-actions[bot] and arms the PR.
+  # coordinator-approval comment as github-actions[bot]; the same run's arm
+  # job then arms the PR.
   # hold-risky stays the only door: it reads that comment like any other.
-  # A PR that edits the guard itself (risky-paths.json "guard") is never
-  # approved here; a person approves it. Paused fleets do not review.
+  # A PR that edits the guard itself (risky-paths.json "guard") or a workflow
+  # needs two reviews to approve: the judge and a second reviewer of a
+  # different model family. No person is asked. Paused fleets do not review.
   review-risky:
     needs: hold-risky
     if: vars.FLEET_DISPATCH_PAUSED != 'true' && needs.hold-risky.outputs.review_sha != ''
@@ -590,10 +593,10 @@ jobs:
     with:
       review_pr: ${{ github.event.pull_request.number }}
       review_sha: ${{ needs.hold-risky.outputs.review_sha }}
-  # One-tap person approval (fleet-ops#9505): hold-risky, run by a completed
+  # Optional person override (fleet-ops#9505): hold-risky, run by a completed
   # approval-signal, found a risky PR whose current head carries an approver's
   # approval and that is not armed. agent.yml's arm job re-reads the head and
-  # arms it as the worker App, the same identity review-risky arms with. The
+  # arms it as the worker App, the same arm job that follows an automatic approval. The
   # arm fires auto_merge_enabled, so hold-risky checks the approval once more.
   arm-approved:
     needs: hold-risky
