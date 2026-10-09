@@ -12,3 +12,13 @@ out/
 
 # fleet-ops#8341: .bak-* config siblings are sprawl — versioned file + PR is the record.
 config/**/*.bak-*
+
+# infra/cloudflare-tokens/: provider cache and crash logs. The state itself lives
+# outside the repo (~/.local/state/fleet-ops/cloudflare-tokens/) because it holds
+# token values; these patterns are the second lock if one is ever copied in.
+.terraform/
+*.tfstate
+*.tfstate.*
+crash.log
+*.tfvars
+*.tfplan

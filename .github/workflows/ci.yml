@@ -125,6 +125,9 @@ jobs:
       - name: stub leviathan for systemd-analyze verify (host-only binary)
         if: always()
         run: install -D -m0755 /bin/true "$HOME/.local/bin/leviathan"
+      - name: stub tofu for systemd-analyze verify (host-only binary)
+        if: always()
+        run: install -D -m0755 /bin/true "$HOME/.local/bin/tofu"
       - name: systemd-analyze verify over unit files
         # nullglob: #8474 deleted the last systemd/*.path unit, and an unmatched
         # glob reaches systemd-analyze as a literal filename -> rc 1. With
@@ -976,6 +979,34 @@ jobs:
       - name: Grafana log on failure
         if: failure()
         run: docker logs grafana 2>&1 | cut -c1-400 | tail -n 40 || true
+
+  # infra/cloudflare-tokens/ is OpenTofu config. This job holds no Cloudflare or
+  # GitHub credential and never plans or applies: it only checks that the files
+  # are formatted and the config is valid, with the provider schemas from the
+  # lock file (-backend=false, so no state is read or written).
+  cloudflare-tokens-tofu:
+    name: cloudflare-tokens-tofu
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install OpenTofu
+        uses: opentofu/setup-opentofu@a1320f892987e89d278cc92dc5adc984fb93aca4 # v2.0.2
+        with:
+          tofu_version: 1.13.1
+          tofu_wrapper: false
+      - name: tofu fmt -check
+        working-directory: infra/cloudflare-tokens
+        run: tofu fmt -check -diff -recursive
+      - name: tofu init -backend=false
+        working-directory: infra/cloudflare-tokens
+        run: tofu init -backend=false -lockfile=readonly
+      - name: tofu validate
+        working-directory: infra/cloudflare-tokens
+        run: tofu validate
 
   # Coordinator approval as a required status check (fleet-ops#9383).
   # hold-risky (agent-dispatch.yml) disarms a risky PR on a few PR events, so a

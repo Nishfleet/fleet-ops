@@ -18,6 +18,9 @@ script, or prompt lands unseen.
 - `ansible/update.yml` — the weekly safe full update of the box (see
   [Weekly update](#weekly-update)). `fleet-update.service` runs it as root
   (`ansible-pull`).
+- `infra/cloudflare-tokens/` — OpenTofu config that makes one narrow Cloudflare
+  token per repo and writes it into that repo's GitHub Actions secret, replaced
+  every 30 days. Its README says how to apply, rotate and delete it.
 - `containers/quadlet/` — `*.container` Podman quadlet units for the
   LiteLLM proxy, its Postgres and Redis, Grafana and aiostreams.
 - `patches/` — `litellm-1.98.0-gchunk-usage-union.patch`, a source patch for

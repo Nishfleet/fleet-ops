@@ -40,6 +40,11 @@
 /home/nish/.local/share/fleet-grafana
 /home/nish/.local/share/drive
 
+# Cloudflare token state (infra/cloudflare-tokens/): the only record of the live
+# minted tokens. Lost state means deleting the gha-* tokens by hand and minting
+# again, so it is kept. 0700 dir, a few hundred KiB.
+/home/nish/.local/state/fleet-ops/cloudflare-tokens
+
 # System configuration: units, ssh keys, polkit, sysctl, cron entries.
 /etc
 /root

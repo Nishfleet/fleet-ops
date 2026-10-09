@@ -1,0 +1,40 @@
+# Renews the per-repo Cloudflare tokens (infra/cloudflare-tokens/). OpenTofu
+# replaces a token only when `tofu apply` runs: a time_rotating resource makes
+# a new one after 30 days and the old one expires at 45 days, so without a
+# scheduled apply every deploy secret goes dead. This oneshot is that apply;
+# cloudflare-tokens-apply.timer starts it weekly.
+#
+# Runs from the deploy clone (the stable install tree, AGENTS.md "Machine
+# wiring"), never from a worktree. The deploy clone must stay clean, so the
+# provider cache goes to TF_DATA_DIR under ~/.cache (not in restic, rebuilt by
+# init) instead of infra/cloudflare-tokens/.terraform.
+#
+# State: the backend path in infra/cloudflare-tokens/versions.tf, the local file
+# /home/nish/.local/state/fleet-ops/cloudflare-tokens/terraform.tfstate. This
+# unit sets no state path of its own, so it cannot drift from that block.
+#
+# Credentials: the Cloudflare minter token comes from EnvironmentFile (never
+# argv, never GitHub). The GitHub provider needs GITHUB_TOKEN; no env file holds
+# one on this host, so it is the nish3451 login's token, read from
+# ~/.config/gh/hosts.yml by `gh auth token` the way blacksmith-flip.service
+# gets its gh auth. That login needs admin on each repo to write its secrets.
+#
+# Failure is loud: OnFailure= fires the healthchecks.io fail ping
+# (fleet-unit-failed@.service, fleet-ops#9033), and `systemctl --user
+# list-units --state=failed` shows the unit.
+[Unit]
+Description=Renew the per-repo Cloudflare tokens (tofu apply)
+After=network-online.target
+Wants=network-online.target
+OnFailure=fleet-unit-failed@%N.service
+
+[Service]
+Type=oneshot
+WorkingDirectory=/home/nish/workspaces/tooling/fleet-ops-deploy-clone
+EnvironmentFile=%h/.config/cloudflare/token-minter.env
+Environment=TF_DATA_DIR=%h/.cache/fleet-ops/cloudflare-tokens-tofu
+Environment=TF_IN_AUTOMATION=1
+ExecStartPre=%h/.local/bin/tofu -chdir=infra/cloudflare-tokens init -input=false
+ExecStart=/bin/sh -c 'GITHUB_TOKEN=$(/home/nish/.local/bin/gh auth token) && export GITHUB_TOKEN && exec %h/.local/bin/tofu -chdir=infra/cloudflare-tokens apply -auto-approve -input=false'
+TimeoutStartSec=900
+UMask=0077

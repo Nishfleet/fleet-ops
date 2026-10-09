@@ -266,6 +266,49 @@
         - /tmp/leviathan.tar.gz
         - /tmp/leviathan
 
+    # OpenTofu runs infra/cloudflare-tokens/ (the per-repo Cloudflare tokens that
+    # GitHub Actions secrets are made from). Same shape as Leviathan above: a
+    # pinned release, its sha256 in the task, one binary in nish's ~/.local/bin.
+    # A bump is a PR that changes the version in the URL and the checksum
+    # together (the checksum is in tofu_<version>_SHA256SUMS on the release page).
+    - name: Download the pinned OpenTofu release
+      ansible.builtin.get_url:
+        url: https://github.com/opentofu/opentofu/releases/download/v1.13.1/tofu_1.13.1_linux_amd64.tar.gz
+        dest: /tmp/tofu.tar.gz
+        mode: "0644"
+        checksum: sha256:378ada19d4bc70c43732004e8159be771b23b9a5afdf059e5f8a2b3fa2c70a69
+
+    - name: Create the OpenTofu unpack directory
+      ansible.builtin.file:
+        path: /tmp/tofu
+        state: directory
+        mode: "0755"
+
+    - name: Unpack the pinned OpenTofu release
+      ansible.builtin.unarchive:
+        src: /tmp/tofu.tar.gz
+        dest: /tmp/tofu/
+        remote_src: true
+        include:
+          - tofu
+
+    - name: Install the OpenTofu binary for nish
+      ansible.builtin.copy:
+        src: /tmp/tofu/tofu
+        dest: /home/nish/.local/bin/tofu
+        owner: nish
+        group: nish
+        mode: "0755"
+        remote_src: true
+
+    - name: Drop the OpenTofu download and unpack tree
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: absent
+      loop:
+        - /tmp/tofu.tar.gz
+        - /tmp/tofu
+
     # enabled only: never restarts the Remote Control link this playbook may run
     # under, so a change to the unit file it installs is staged, not applied.
     # This task adds no reload of its own. The restart, and the reload before
