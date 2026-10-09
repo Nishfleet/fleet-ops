@@ -34,7 +34,7 @@ WorkingDirectory=/home/nish/workspaces/tooling/fleet-ops-deploy-clone
 EnvironmentFile=%h/.config/cloudflare/token-minter.env
 Environment=TF_DATA_DIR=%h/.cache/fleet-ops/cloudflare-tokens-tofu
 Environment=TF_IN_AUTOMATION=1
-ExecStartPre=/home/nish/.local/bin/tofu -chdir=infra/cloudflare-tokens init -input=false
-ExecStart=/bin/sh -c 'GITHUB_TOKEN=$(/home/nish/.local/bin/gh auth token) && export GITHUB_TOKEN && exec /home/nish/.local/bin/tofu -chdir=infra/cloudflare-tokens apply -auto-approve -input=false'
+ExecStartPre=%h/.local/bin/tofu -chdir=infra/cloudflare-tokens init -input=false
+ExecStart=/bin/sh -c 'GITHUB_TOKEN=$(/home/nish/.local/bin/gh auth token) && export GITHUB_TOKEN && exec %h/.local/bin/tofu -chdir=infra/cloudflare-tokens apply -auto-approve -input=false'
 TimeoutStartSec=900
 UMask=0077
