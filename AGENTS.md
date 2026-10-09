@@ -110,6 +110,49 @@ never print it, never copy it into a repo, PR or issue:
   The old account-admin token (`c617a6f2…`) is disabled. No token on the VPS can mint tokens now,
   so a new or wider token is Nish's call in the dashboard.
 
+### Minting Cloudflare tokens
+
+One minter token, `~/.config/cloudflare/token-minter.env` (0600, `CLOUDFLARE_API_TOKEN`), holds
+only User > API Tokens Write, from the dashboard template "Create Additional Tokens". It mints and
+deletes tokens and nothing else: never use it for work, never source it into a long-running
+process. It is a user token, not account-owned, because an account-owned token creator can only
+grant a subset of its own permissions (Cloudflare docs). It is IP-locked to this VPS
+(`159.195.212.168/32`, `2a0a:4cc0:c4:d5e:a8cb:f5ff:feb3:ed15/128`; outbound API calls leave over
+IPv6). Jailed workers get an empty tmpfs over `~/.config/cloudflare` (#9274), so only unjailed
+sessions can mint. Until Nish creates it (status 2026-10-09: not on the box yet) the file is
+absent and the parked-worker rule above holds. Account id: `f670a698e17bf160c8e4679823e68916`.
+
+The rule: every job mints its own least-privilege token with `--expires-on` (default now+24h, UTC
+RFC3339), locked to the two VPS addresses above, keeps it in a 0600 env file under
+`~/.config/cloudflare/` (or only in the process env), and deletes it when done. Long-lived service
+tokens (deploy-ci, email) are minted the same way without the short expiry and are recorded in
+the list above. Look up permission group ids by name, never from memory:
+
+    (set -a; . ~/.config/cloudflare/token-minter.env; set +a
+     cf user tokens permission-groups list | jq -r '(.result // .)[] | "\(.id)\t\(.name)"' | grep -i 'workers scripts')
+
+Example, a 24h Workers Scripts Write token for the account (the secret never reaches the terminal):
+
+    (set -a; . ~/.config/cloudflare/token-minter.env; set +a; umask 077
+     ACCT=f670a698e17bf160c8e4679823e68916
+     PG=$(cf user tokens permission-groups list | jq -r '(.result // .)[] | select(.name=="Workers Scripts Write") | .id' | head -n1)
+     POL=$(jq -nc --arg a "com.cloudflare.api.account.$ACCT" --arg p "$PG" '[{effect:"allow",resources:{($a):"*"},permission_groups:[{id:$p}]}]')
+     cf user tokens create --name "job-$(date -u +%Y%m%dT%H%M%SZ)" --policies "$POL" \
+       --expires-on "$(date -u -d '+24 hours' +%Y-%m-%dT%H:%M:%SZ)" \
+       --condition-request-ip-in 159.195.212.168/32 2a0a:4cc0:c4:d5e:a8cb:f5ff:feb3:ed15/128 \
+       | jq -r '(.result // .) | "CLOUDFLARE_API_TOKEN=\(.value)\nCLOUDFLARE_TOKEN_ID=\(.id)"' \
+       > ~/.config/cloudflare/job-workers.env)
+
+Use it with `(set -a; . ~/.config/cloudflare/job-workers.env; set +a; ...)`. Delete it when the job
+ends (the minter deletes; the id is in the job file):
+
+    (ID=$(sed -n 's/^CLOUDFLARE_TOKEN_ID=//p' ~/.config/cloudflare/job-workers.env)
+     set -a; . ~/.config/cloudflare/token-minter.env; set +a
+     cf user tokens delete "$ID" && rm -f ~/.config/cloudflare/job-workers.env)
+
+Add `--dry-run` to `create` to print the request without sending it. To switch minting off: delete
+the minter token in the dashboard (My Profile > API Tokens) and remove `token-minter.env`.
+
 ## Per-run invariants for the Pi fleet issue worker
 
 Moved here from `prompts/worker.md` on 2026-09-18: these rules are the same on every
