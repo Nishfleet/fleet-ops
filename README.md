@@ -496,11 +496,13 @@ prints `all`). Per repo:
    to the `agent` runner group's selected workflows (org admin). The group lists
    workflow files at `refs/heads/main` only; a file missing from it queues
    forever. fleet-ops needs its own entry the same way.
-2. In a repo other than fleet-ops, add a stub with the same name that has the
-   same `push` trigger and an `open` job calling
+2. In a repo other than fleet-ops, add the same-named stub there with two
+   triggers: `push` (same `branches-ignore`) running a GitHub-hosted job copied
+   from this repo's `decide` job, and `workflow_dispatch` with a `branch` input
+   running one job that calls
    `uses: Nishfleet/fleet-ops/.github/workflows/open-agent-pr.yml@main` with
-   `with: branch: ${{ inputs.branch }}` from `workflow_dispatch`, and a
-   GitHub-hosted job that dispatches it. Copy the `decide` job from this repo.
+   `with: branch: ${{ inputs.branch }}`. The runner group is open to every
+   Nishfleet repo (visibility `all`); only the workflow-file list restricts it.
    Nishfleet/0509 is the next repo (follow-up issue).
 
 **Switch it off.** Set the repo variable `OPEN_AGENT_PR` to `off` (or
