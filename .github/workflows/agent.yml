@@ -21,6 +21,16 @@ on:
         type: string
         required: false
         default: ''
+      arm_pr:
+        description: risky PR number that carries a person's approval and is not armed (agent-dispatch arm-approved)
+        type: string
+        required: false
+        default: ''
+      arm_sha:
+        description: head sha hold-risky saw approved; the arm uses --match-head-commit with exactly this sha
+        type: string
+        required: false
+        default: ''
 
 permissions: {}
 jobs:
@@ -687,7 +697,7 @@ jobs:
           cfg=$(curl -fsSL --retry 3 "$RISKY_PATHS_URL" | jq -c .) || cfg=null
           hits=$(jq -Rsc --argjson cfg "$cfg" '(split("\n") | map(select(length > 0))) as $f | ($cfg.guard // ["."]) as $g | [$f[] | . as $x | select(any($g[]; . as $re | $x | test($re; "i")))] | unique | length' < "$RUNNER_TEMP/files.txt")
           if [ "$hits" != 0 ]; then
-            say "reviewer: $SHA edits the merge guard or a workflow (or the guard list could not be read), so a person approves it. Nothing was approved or blocked automatically."
+            say "reviewer: $SHA edits the merge guard or a workflow (or the guard list could not be read), so a person approves it. Nothing was approved or blocked automatically. To approve, open the PR in the GitHub app and tap Review changes, then Approve; that arms it with no second step. Fallback: an approver's PR comment line \`coordinator-approval: $SHA\`."
             exit 0
           fi
           gh api -H 'Accept: application/vnd.github.diff' "repos/$REPO/pulls/$PR" > "$RUNNER_TEMP/diff.txt"
@@ -747,6 +757,57 @@ jobs:
           else
             say "$(printf 'reviewer: %s blocked. Fix these and push; a new head gets a fresh review.\n\n%s' "$SHA" "$text")"
           fi
+  # One-tap person approval (fleet-ops#9505). hold-risky already confirmed an
+  # approver's approval of this exact head; this job only arms, as the worker
+  # App, and re-reads the PR so a head that moved or a PR that closed since is
+  # left alone. --match-head-commit makes the arm itself refuse a moved head.
+  arm:
+    if: inputs.arm_pr != '' && inputs.arm_sha != ''
+    runs-on: [self-hosted, agent]
+    timeout-minutes: 10
+    permissions:
+      pull-requests: write
+    concurrency:
+      group: arm-${{ github.repository }}-${{ inputs.arm_pr }}
+      cancel-in-progress: false
+    env:
+      REPO: ${{ github.repository }}
+      PR: ${{ inputs.arm_pr }}
+      SHA: ${{ inputs.arm_sha }}
+    steps:
+      - name: Read App private key
+        id: app-key
+        run: |
+          keyfile="$HOME/.config/fleet-worker/nishfleet-worker.private-key.pem"
+          [ -s "$keyfile" ] || { echo "::error::app private key file missing on runner"; exit 1; }
+          while IFS= read -r line || [ -n "$line" ]; do
+            [ -n "$line" ] && echo "::add-mask::$line"
+          done < "$keyfile"
+          {
+            printf 'pem<<APP_PRIVATE_KEY_END\n'
+            cat "$keyfile"
+            printf 'APP_PRIVATE_KEY_END\n'
+          } >> "$GITHUB_OUTPUT"
+      - name: Arm token
+        id: arm-token
+        uses: actions/create-github-app-token@fee1f7d63c2ff003460e3d139729b119787bc349 # v2.2.2
+        with:
+          app-id: "4728578"
+          private-key: ${{ steps.app-key.outputs.pem }}
+          permission-contents: write
+          permission-pull-requests: write
+      - name: Arm the approved head
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ARM_TOKEN: ${{ steps.arm-token.outputs.token }}
+        run: |
+          set -euo pipefail
+          pr=$(gh api "repos/$REPO/pulls/$PR")
+          [ "$(jq -r .state <<<"$pr")" = open ] && [ "$(jq -r .head.sha <<<"$pr")" = "$SHA" ] || { echo "head moved or PR closed; the newer event decides"; exit 0; }
+          [ "$(jq -r .draft <<<"$pr")" != true ] || { echo "#$PR is a draft; not arming"; exit 0; }
+          [ "$(jq -r '.auto_merge != null' <<<"$pr")" != true ] || { echo "#$PR is already armed"; exit 0; }
+          GH_TOKEN=$ARM_TOKEN gh pr merge "$PR" -R "$REPO" --auto --squash --match-head-commit "$SHA"  # a merge queue overrides the method; repos without one need it
+          echo "armed #$PR at $SHA"
   report:
     needs: work
     if: (failure() || cancelled()) && needs.work.outputs.wall != 'true'

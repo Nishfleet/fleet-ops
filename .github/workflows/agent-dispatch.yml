@@ -93,8 +93,12 @@ on:
   # data and never checks out or runs the head.
   pull_request_target:
     types: [dequeued, auto_merge_disabled, closed, auto_merge_enabled, synchronize, labeled, opened, reopened]
+  # approval-signal (approval-signal.yml) is the untrusted half of one-tap
+  # approval (fleet-ops#9505): it only uploads a PR number. Its completed run
+  # lands here, in base-branch code, where hold-risky re-reads the review and
+  # arm-approved arms the PR.
   workflow_run:
-    workflows: [CI]
+    workflows: [CI, approval-signal]
     types: [completed]
   # GitHub emits no event when a job queued for a self-hosted runner expires
   # after 24h, or when a claim PR turns DIRTY outside the merge queue (0509#4373).
@@ -122,6 +126,7 @@ jobs:
     if: >-
       vars.FLEET_DISPATCH_PAUSED == 'true' &&
       (github.event_name != 'pull_request_target' || github.event.action == 'dequeued' || github.event.action == 'closed') &&
+      (github.event_name != 'workflow_run' || github.event.workflow_run.name != 'approval-signal') &&
       (github.event_name != 'issue_comment' || startsWith(github.event.comment.body, 'park:') || startsWith(github.event.comment.body, 'opus-vet:')) &&
       (github.event_name != 'issues' || github.event.action != 'labeled' ||
        contains(fromJSON('["agent-ready","agent-failed","needs-orchestrator"]'), github.event.label.name))
@@ -304,24 +309,30 @@ jobs:
   # and APPROVAL below against every case in config/risky-paths.json.
   hold-risky:
     if: >-
-      github.event_name == 'pull_request_target' &&
-      contains(fromJSON('["auto_merge_enabled","synchronize","labeled","opened","reopened"]'), github.event.action)
+      (github.event_name == 'pull_request_target' &&
+       contains(fromJSON('["auto_merge_enabled","synchronize","labeled","opened","reopened"]'), github.event.action)) ||
+      (github.event_name == 'workflow_run' && github.event.workflow_run.name == 'approval-signal' &&
+       github.event.workflow_run.conclusion == 'success')
     runs-on: ${{ fromJSON(inputs.runner || '"ubuntu-latest"') }}
     timeout-minutes: 10
     outputs:
       review_sha: ${{ steps.hold.outputs.review_sha }}
+      arm_pr: ${{ steps.hold.outputs.arm_pr }}
+      arm_sha: ${{ steps.hold.outputs.arm_sha }}
     concurrency:
-      group: hold-risky-${{ github.repository }}-${{ github.event.pull_request.number }}
+      group: hold-risky-${{ github.repository }}-${{ github.event.pull_request.number || github.event.workflow_run.id }}
       cancel-in-progress: false
     # pull-requests: write labels the PR and disables auto-merge. contents:
     # write is what GitHub asks of a merge-queue dequeue (it acts on the merge,
     # like arming does). statuses: read and pull-requests (which covers a PR's
-    # issue comments) read the approval. Nothing here checks
-    # out code, so contents: write never meets PR head code.
+    # issue comments, and a PR's reviews) read the approval. actions: read
+    # lets the approval-signal path fetch its one-number artifact. Nothing here
+    # checks out code, so contents: write never meets PR head code.
     permissions:
       contents: write
       pull-requests: write
       statuses: read
+      actions: read
     env:
       LABEL: needs-coordinator
       CONTEXT: coordinator-approval
@@ -332,7 +343,9 @@ jobs:
       # github-actions[bot] is the independent reviewer (review-risky below):
       # its approval comment is written by agent.yml's review job with
       # GITHUB_TOKEN, an identity no PR author uses. nish3451 stays for a
-      # person's typed approval.
+      # person's typed approval, and for his GitHub "Approve" review (the
+      # review path below never counts a [bot] login, so the reviewer's own
+      # approval stays a comment).
       APPROVERS: nish3451 github-actions[bot]
       RISKY_PATHS_URL: https://raw.githubusercontent.com/Nishfleet/fleet-ops/main/config/risky-paths.json
       # stdin: {repo, labels, files, patches, changed_files}; $cfg:
@@ -365,13 +378,19 @@ jobs:
            + ($hits | unique | .[:10] | map("path \(.)"))
            + ($dhits | unique | .[:10])) as $why
         | {risky: ($why | length > 0), why: $why}
-      # stdin: {sha, statuses, comments}. sha is the current head; statuses
-      # are that sha's, newest first (GitHub's order); comments are the PR's
-      # issue comments. Status path: only the newest status for CONTEXT counts,
-      # so a later failure revokes it. Comment path: an approver's comment,
-      # never edited (updated_at == created_at, so an old comment cannot be
-      # edited onto a new sha), with a line exactly "CONTEXT: <sha>" for the
-      # full 40-hex head sha. Either path approves.
+      # stdin: {sha, statuses, comments, reviews}. sha is the current head;
+      # statuses are that sha's, newest first (GitHub's order); comments are
+      # the PR's issue comments; reviews are the PR's reviews, oldest first,
+      # as {user: {login}, state, commit_id, submitted_at}. Status path: only
+      # the newest status for CONTEXT counts, so a later failure revokes it.
+      # Comment path: an approver's comment, never edited (updated_at ==
+      # created_at, so an old comment cannot be edited onto a new sha), with a
+      # line exactly "CONTEXT: <sha>" for the full 40-hex head sha. Review
+      # path (one tap in the GitHub app): a human approver's newest APPROVED or
+      # CHANGES_REQUESTED review (a COMMENTED, PENDING or DISMISSED one is not
+      # a vote) must be APPROVED with commit_id equal to the full head sha, so
+      # a review of an older commit never counts and a later change request
+      # revokes. A [bot] login never counts here. Any path approves.
       APPROVAL: |
         . as $in
         | ($who | split(" ") | map(select(length > 0))) as $approvers
@@ -383,13 +402,40 @@ jobs:
             | any($approvers[]; . == $l)
               and .created_at != null and .updated_at == .created_at
               and any((.body // "") | split("\n")[] | rtrimstr("\r"); . == "\($c): \($in.sha)"))) as $by_comment
-        | $by_status or $by_comment
+        | (([($in.reviews // [])[]
+              | select((.user.login // "") as $l
+                       | any($approvers[]; . == $l) and ($l | endswith("[bot]") | not)
+                       and (.state == "APPROVED" or .state == "CHANGES_REQUESTED"))]
+            | sort_by(.submitted_at // "") | group_by(.user.login) | map(last))
+           | any(.[]; .state == "APPROVED" and $full and .commit_id == $in.sha)) as $by_review
+        | $by_status or $by_comment or $by_review
     steps:
-      - name: Hold a risky PR whose head has no coordinator approval
-        id: hold
+      # approval-signal's completed run names the PR in a one-number artifact.
+      # The number is untrusted: it must be digits, and everything after it
+      # (state, head, approval) is read from the API, never from the artifact.
+      - name: Read the PR that approval-signal names
+        id: signal
+        if: github.event_name == 'workflow_run'
         env:
           GH_TOKEN: ${{ github.token }}
-          PR: ${{ github.event.pull_request.number }}
+          RUN: ${{ github.event.workflow_run.id }}
+        run: |
+          set -euo pipefail
+          aid=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$RUN/artifacts" --jq '[.artifacts[] | select(.name == "approval-pr" and (.expired | not))][0].id // empty')
+          [ -n "$aid" ] || { echo "approval-signal run $RUN has no approval-pr artifact; nothing to do"; exit 0; }
+          gh api "repos/$GITHUB_REPOSITORY/actions/artifacts/$aid/zip" > "$RUNNER_TEMP/signal.zip"
+          n=$(unzip -p "$RUNNER_TEMP/signal.zip" pr.txt | head -c 16 | tr -d '[:space:]')
+          [[ "$n" =~ ^[1-9][0-9]{0,8}$ ]] || { echo "::warning::approval-signal artifact is not a PR number; ignored"; exit 0; }
+          echo "number=$n" >> "$GITHUB_OUTPUT"
+      - name: Hold a risky PR whose head has no coordinator approval
+        id: hold
+        if: github.event_name != 'workflow_run' || steps.signal.outputs.number != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR: ${{ github.event.pull_request.number || steps.signal.outputs.number }}
+          # true on the approval-signal path: never hold there, only report an
+          # approved, unarmed, non-draft risky PR to arm-approved.
+          REARM: ${{ github.event_name == 'workflow_run' && 'true' || 'false' }}
         # Fails closed: a read that fails (the PR, its files, the path list,
         # its statuses or comments, the merge state) never skips the hold. It
         # counts as risky or not approved, gets a ::warning:: naming the read,
@@ -438,13 +484,34 @@ jobs:
           elif ! gh api --paginate "repos/$GITHUB_REPOSITORY/issues/$PR/comments?per_page=100" \
             --jq '.[] | {user: {login: .user.login}, body, created_at, updated_at}' > "$RUNNER_TEMP/comments.txt"; then
             echo "::warning::hold-risky: comments read failed for #$PR; not approved"
+          elif ! gh api --paginate "repos/$GITHUB_REPOSITORY/pulls/$PR/reviews?per_page=100" \
+            --jq '.[] | {user: {login: .user.login}, state, commit_id, submitted_at}' > "$RUNNER_TEMP/reviews.txt"; then
+            echo "::warning::hold-risky: reviews read failed for #$PR; not approved"
           else
-            approved=$(jq -n --arg sha "$sha" --slurpfile s "$RUNNER_TEMP/statuses.txt" --slurpfile m "$RUNNER_TEMP/comments.txt" \
-              '{sha: $sha, statuses: $s, comments: $m}' |
+            approved=$(jq -n --arg sha "$sha" --slurpfile s "$RUNNER_TEMP/statuses.txt" --slurpfile m "$RUNNER_TEMP/comments.txt" --slurpfile r "$RUNNER_TEMP/reviews.txt" \
+              '{sha: $sha, statuses: $s, comments: $m, reviews: $r}' |
               jq -r --arg c "$CONTEXT" --arg who "$APPROVERS" "$APPROVAL") || approved=false
           fi
           if [ "$approved" = true ]; then
             echo "hold-risky: #$PR is risky and $sha carries an approver's $CONTEXT; no hold"
+            # One tap: hand the approved head to arm-approved. A draft, an
+            # armed PR or one already in the queue has nothing to arm.
+            if [ "$REARM" = true ]; then
+              if [ "$(jq -r '.draft' <<<"$pr")" = true ]; then
+                echo "hold-risky: #$PR is a draft; not arming"
+              elif [ "$(jq -r '.auto_merge != null' <<<"$pr")" = true ]; then
+                echo "hold-risky: #$PR is already armed"
+              else
+                { echo "arm_pr=$PR"; echo "arm_sha=$sha"; } >> "$GITHUB_OUTPUT"
+                echo "hold-risky: #$PR approved at $sha; arm-approved arms it"
+              fi
+            fi
+            exit 0
+          fi
+          # The approval-signal path only arms. A review that does not approve
+          # this head is not a reason to hold: the PR events do that.
+          if [ "$REARM" = true ]; then
+            echo "hold-risky: #$PR at $sha has no approval on this head; nothing to arm"
             exit 0
           fi
           # Label first, so a dequeued event raised by the steps below already
@@ -500,7 +567,8 @@ jobs:
             echo "### hold-risky: #$PR held at \`$sha\`"
             jq -r '.why[] | "- \(.)"' <<<"$verdict"
             echo
-            echo "review-risky reviews this exact head next; or an approver's PR comment line \`$CONTEXT: $sha\` (prompts/orchestrator-handoff.md step 4)."
+            echo "To approve, open the PR in the GitHub app and tap Review changes, then Approve. An approving review of this exact head arms it, no second step."
+            echo "review-risky reviews this exact head next. Fallback: an approver's PR comment line \`$CONTEXT: $sha\` (prompts/orchestrator-handoff.md step 4)."
           } >> "$GITHUB_STEP_SUMMARY"
           [ "$ok" = true ]
   # Independent review of a held risky PR (Nish 2026-10-05: reviewed PRs merge
@@ -522,6 +590,22 @@ jobs:
     with:
       review_pr: ${{ github.event.pull_request.number }}
       review_sha: ${{ needs.hold-risky.outputs.review_sha }}
+  # One-tap person approval (fleet-ops#9505): hold-risky, run by a completed
+  # approval-signal, found a risky PR whose current head carries an approver's
+  # approval and that is not armed. agent.yml's arm job re-reads the head and
+  # arms it as the worker App, the same identity review-risky arms with. The
+  # arm fires auto_merge_enabled, so hold-risky checks the approval once more.
+  arm-approved:
+    needs: hold-risky
+    if: vars.FLEET_DISPATCH_PAUSED != 'true' && needs.hold-risky.outputs.arm_sha != ''
+    permissions:
+      pull-requests: write
+      # See review-risky: a caller job must grant what the called workflow's other jobs request.
+      issues: write
+    uses: Nishfleet/fleet-ops/.github/workflows/agent.yml@main # runner group 3 allows only agent.yml@refs/heads/main; a SHA pin strands every job
+    with:
+      arm_pr: ${{ needs.hold-risky.outputs.arm_pr }}
+      arm_sha: ${{ needs.hold-risky.outputs.arm_sha }}
   # A closed blocker frees the issues it was blocking; a manual run sweeps
   # every ready, unblocked issue (cutover backfill and missed-event recovery),
   # then open claim PRs that are unarmed, conflicting, missing a required-check
