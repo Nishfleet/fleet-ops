@@ -217,6 +217,26 @@ jobs:
       - name: Ollama rungs serve only the permitted slug on the native provider (fleet-ops#8332, fleet-ops#9253)
         if: always()
         run: yq -o=json '[.model_list[] | select(((.litellm_params.api_base // "") | test("ollama")) or ((.litellm_params.model // "") | test("^ollama"))) | "\(.litellm_params.model) @ \(.litellm_params.api_base)" | select(. != "ollama_chat/deepseek-v4.1-flash @ https://ollama.com")]' config/litellm-proxy.yaml | jq -e 'if length==0 then true else error("ollama rungs must be ollama_chat/deepseek-v4.1-flash @ https://ollama.com - \(join(","))") end'
+      # A drop-in that does not parse stops Claude Code from starting on the
+      # whole box, and an autoMode array without "$defaults" replaces the
+      # built-in safety rules instead of adding to them. To switch this gate
+      # off, delete this step.
+      - name: Claude Code managed-settings drop-ins parse and keep the autoMode defaults
+        if: always()
+        shell: bash
+        run: |
+          # shellcheck disable=SC2016 # "$defaults" is the literal rule name, not a shell variable
+          shopt -s nullglob
+          rc=0
+          for f in rootfs/etc/claude-code/managed-settings.d/*.json; do
+            jq -e 'type == "object"' "$f" >/dev/null || { echo "not a JSON object: $f"; rc=1; continue; }
+            jq -e --arg d '$defaults' '
+              (.autoMode // {}) | to_entries
+              | map(select((.key | IN("environment", "allow", "soft_deny", "hard_deny")) or (.value | type) == "array"))
+              | all(.value | type == "array" and index($d) != null)' "$f" >/dev/null \
+              || { echo "autoMode array without \"\$defaults\" (or not an array): $f"; rc=1; }
+          done
+          exit "$rc"
       # Dynamic text before static text breaks the shared prompt-cache prefix, so
       # the first call of every run pays full price (fleet-ops#9363). Static
       # first, then the marker line, then everything dynamic. To switch this

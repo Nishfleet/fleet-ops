@@ -431,6 +431,37 @@ number after the restart is the real test.
 - Delete it: remove `ansible/update.yml`, the two `fleet-update` units and
   `50-fleet.conf`, and add their `/etc` paths to `retired` in `ansible/host.yml`.
 
+## Agent autonomy drop-in
+
+`rootfs/etc/claude-code/managed-settings.d/50-agent-autonomy.json` is a Claude
+Code managed-settings drop-in; Claude Code merges every
+`/etc/claude-code/managed-settings.d/*.json` into its managed settings. The
+hand-installed `/etc/claude-code/managed-settings.json` is not touched and
+`/etc/claude-code` is not in `owned_dirs`. It does four things:
+
+- Tells the auto-mode safety checker which orgs and repos are ours.
+- Allows auto-merge (`gh pr merge --auto`) of an agent's own green PR in the
+  repos whose rulesets require checks. Not `--admin`, not approving, not any
+  other repo.
+- Allows cleanup of an agent's own comments and its own systemd units.
+- Adds a prompt hook on agent messages to Nish that bounces asks about routine,
+  reversible steps, so the agent does the step and reports the result. Reserved
+  matters (money, secrets, irreversible steps, safety gates) still go through.
+
+Every `autoMode` array keeps `"$defaults"`, so these rules add to the built-in
+ones and never replace them. `ansible/host.yml` installs the drop-in with a
+`validate:` that refuses a file that is not a JSON object (a drop-in that does
+not parse stops Claude Code from starting on the whole box), and the `ci` check
+"Claude Code managed-settings drop-ins parse and keep the autoMode defaults"
+holds both rules before merge.
+
+- Verify: `claude auto-mode config` prints the effective rules, which now
+  include the entries from the drop-in beside the defaults.
+- Switch it off: a PR that deletes the file from `rootfs/` and adds
+  `/etc/claude-code/managed-settings.d/50-agent-autonomy.json` to `retired` in
+  `ansible/host.yml`. Remove the "Claude Code managed-settings drop-ins" ci
+  step and the install task in the same PR once no drop-in is left.
+
 ## CI
 
 `.github/workflows/ci.yml` runs one job, `ci`, on every PR and push to main. Its
@@ -442,7 +473,9 @@ semgrep rule at `.semgrep/no-glue.yml`, a no long-lived personal-access-token
 `%s/%u/%h` check inside systemd Exec lines (fleet-ops#8382), pi seat ids
 resolving to `config/litellm-proxy.yaml` `model_name` (fleet-ops#8332), and
 Ollama rungs serving only the permitted slug on the native provider
-(fleet-ops#8332, fleet-ops#9253), the litellm-proxy
+(fleet-ops#8332, fleet-ops#9253), the Claude Code managed-settings drop-ins
+(each file under `rootfs/etc/claude-code/managed-settings.d/` is a JSON object
+and every `autoMode` array keeps `"$defaults"`), the litellm-proxy
 schema gate: `config/litellm-proxy.yaml` must validate against
 `config/litellm-proxy.schema.json`, and every
 `config/litellm-proxy.schema.rejects/*.yaml` must fail the same check

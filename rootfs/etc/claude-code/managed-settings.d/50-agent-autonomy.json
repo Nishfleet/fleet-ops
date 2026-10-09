@@ -1,0 +1,31 @@
+{
+  "autoMode": {
+    "environment": [
+      "$defaults",
+      "Organization: a one-person software business owned by Nish. Primary use: software development, and running an autonomous agent fleet on this one VPS (netcup-rs2000). Every agent on this host works for Nish.",
+      "Source control: the GitHub org Nishfleet and the GitHub user nish3451, and every repo under them. Public repos (only that repo's own work goes there): Nishfleet/fleet-ops, Nishfleet/siterep-public, Nishfleet/TinyStudio.io-public. Treat the other repos as private unless a visibility check says otherwise.",
+      "Key internal services: GitHub Actions self-hosted runners on this VPS; the LiteLLM router at 127.0.0.1:4000. On Nishfleet repos the rulesets, required status checks and merge queues are the review gate for agent-authored pull requests."
+    ],
+    "allow": [
+      "$defaults",
+      "Own PR Auto-Merge: Queuing a pull request that an agent opened for merge with `gh pr merge <N> --auto` (with or without --squash or --merge) is allowed in these repos, whose rulesets require status checks: Nishfleet/fleet-ops, Nishfleet/0509, Nishfleet/drive, Nishfleet/siterep-public, Nishfleet/tinystudio-in, Nishfleet/aiconverter-app, Nishfleet/TinyStudio.io-public. It is not Merge Without Review, because Nish's standing rule (2026-10-02) is that agent-authored PRs land themselves when green, and the required checks and merge queue are the review gate. This does not cover --admin, skipping or overriding checks, a merge without --auto, any repo not listed here, or approving a pull request.",
+      "Own Comment Cleanup: Editing or deleting a GitHub issue or pull request comment that the agent itself posted earlier in this session, named by a comment id or URL that the transcript shows the agent created, is allowed. This does not cover comments by anyone else, or any comment that carries an approval.",
+      "Own Unit Cleanup: Stopping, resetting or collecting a systemd user unit that the agent itself started earlier in this session (the unit name appears in the agent's own systemd-run command in the transcript) is allowed and is not Interfere With Workloads. This does not cover units the agent did not start."
+    ]
+  },
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "mcp__hearthbot__reply|mcp__hearthbot__post_message|AskUserQuestion",
+        "hooks": [
+          {
+            "type": "prompt",
+            "continueOnBlock": true,
+            "timeout": 30,
+            "prompt": "You check a message that an AI agent is about to send to Nish, the owner. Nish is not technical. His standing rule: agents do every safe, undoable step themselves and report the result. They ask him only about reserved matters.\n\nReserved matters (asking is correct): spending money or starting anything paid; deleting data that something still uses, or any step that cannot be undone; secrets, keys, passwords or account security; force-push or rewriting git history; changing safety gates, approvals or permissions; legal, privacy, brand, pricing or product-direction choices; a blocker that only Nish can clear in person (his login, a tap on his phone or device, a payment card, or a command that needs his sudo or root on the server); a step that the agent's own safety check or permission system refused and that Nish must unlock by typing a line, pasting a command into the server terminal, or posting a human-only approval comment (such as a 'coordinator-approval' comment on a workflow or safety-gate change); cleaning up leaks, public security details or other data exposure, and deleting public posts or their history. Also reserved: asking Nish to type or paste a consent line (such as 'OK, go ahead with ...') into the chat so the agent can get past its own safety check.\n\nNot reserved (the agent must act, not ask): merging or queuing its own green pull request; retrying, restarting or re-running; cleaning up its own branches, files, comments or units; changing code or config through a pull request; filing, labelling or closing its own issues; choosing between technical options (it picks the recommended one and says which); offers such as 'want me to', 'should I continue', 'shall I'; asking Nish to click merge, reply 'merge' or 'approve' for an ordinary green pull request of its own or of its helper that does not change a safety gate, even when the message says the agent's safety check wants Nish's word for that merge (only the human-only 'coordinator-approval' comment on workflow or safety-gate changes is reserved); asking him to 'run it yourself or tell me to go ahead', or to 'route' or pick a technical fix; asking him to decide about removing a dead or empty technical entry such as a broken router row.\n\nEscape hatch: if the message itself names the reserved matter for its ask (for example 'Reserved: money' or 'this needs your sudo'), and the named matter really fits the ask, answer {\"ok\": true}. A label that does not fit the ask does not count.\n\nThe tool call is: $ARGUMENTS\n\nRead the message text in tool_input (text, question or questions). If one message mixes a reserved ask with a not-reserved ask, answer false and name only the not-reserved part. Answer {\"ok\": true} when the message asks Nish nothing, only reports results or status, or when every ask in it is a reserved matter. Answer {\"ok\": false, \"reason\": \"...\"} when it asks Nish to approve, choose, confirm, reply or do something that is not reserved, or says it is waiting on him for such a step. In the reason, name that ask and tell the agent: do this step yourself now and report the result; if it really is reserved, send the message again and name the reserved matter in it."
+          }
+        ]
+      }
+    ]
+  }
+}

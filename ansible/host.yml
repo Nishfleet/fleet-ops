@@ -204,6 +204,23 @@
         group: root
         mode: preserve
 
+    # Claude Code merges /etc/claude-code/managed-settings.d/*.json into its
+    # managed settings: here, the agents' auto-mode rules and the hook that
+    # bounces routine asks to Nish (README, "Agent autonomy drop-in"). A drop-in
+    # that does not parse stops Claude Code from starting on the whole box, so
+    # validate refuses any file that is not a JSON object before it reaches
+    # /etc. /etc/claude-code is not in owned_dirs: its managed-settings.json is
+    # hand-installed. To switch this off, delete the file from rootfs/ and add
+    # its /etc path to `retired`.
+    - name: Install Claude Code managed-settings drop-ins
+      ansible.builtin.copy:
+        src: "{{ rootfs }}/etc/claude-code/managed-settings.d/"
+        dest: /etc/claude-code/managed-settings.d/
+        owner: root
+        group: root
+        mode: preserve
+        validate: /usr/bin/python3 -c 'import json,sys; sys.exit(0 if isinstance(json.load(open(sys.argv[1])), dict) else 1)' %s
+
     # Restic backup include and exclude lists (config/restic/). The backup unit
     # reads them from /etc/restic/ on every run; a change here is live after
     # the next fleet-host-config run, no daemon-reload needed. README.md is not
