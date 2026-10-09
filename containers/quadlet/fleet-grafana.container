@@ -9,7 +9,7 @@
 # deploy-ci token; a firing rule opens a priority-now fleet-ops issue through
 # the cloudflare-spend-dispatch webhook, and hermes-urgent is the fallback.
 #
-# Reach: https://<tailnet-name>:8443 — one-time
+# Reach: https://netcup-rs2000.tailc0f05f.ts.net:8443 — one-time
 # `tailscale serve --bg --https=8443 http://127.0.0.1:3001`, which tailscaled
 # persists across reboots.
 

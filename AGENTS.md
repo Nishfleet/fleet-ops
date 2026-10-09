@@ -126,14 +126,16 @@ sessions can mint. The minter exists (2026-10-09): Cloudflare token name "fleet 
 only)", permission "API Tokens Write" (User), no expiry. It was rolled once on 2026-10-09
 because the original value was pasted in chat. If it is ever exposed again, roll it with
 `PUT /user/tokens/<id>/value` (look the id up in the dashboard, My Profile > API Tokens) and
-pipe the response straight into the env file with jq, never print it. Account id: kept in the private runbook.
+pipe the response straight into the env file with jq, never print it. Account id: the `account_id` default in
+`infra/cloudflare-tokens/variables.tf` (an identifier, not a credential).
 
 **The gate.** The minter can create a token with any permission Nish's user holds, so it is not
 a free pass. Ad-hoc mints by an unjailed session are allowed ONLY when all of these hold:
 
 1. Name `job-<task>-<UTC stamp>` (for example `job-fleet-1234-20261009T120000Z`).
 2. `--expires-on` at most 24h from now (UTC RFC3339).
-3. `--condition-request-ip-in` the two VPS addresses above.
+3. `--condition-request-ip-in` the two VPS addresses (not kept in git; read them on the box:
+   `curl -4 -s ifconfig.me` and `curl -6 -s ifconfig.me`).
 4. Resources as narrow as the API allows. Cloudflare's token policy documents three resource
    types only: user, account and zone (`com.cloudflare.api.account.zone.<ZONE_ID>`). So scope to
    a specific zone whenever the permission group is zone-level. Account-wide is allowed only for
