@@ -27,8 +27,10 @@ script, or prompt lands unseen.
   LiteLLM 1.98.0 that no unit in this repo applies (the proxy runs a pinned
   container image).
 - `docs/` — `ARCHITECTURE.md`, `RUNBOOK.md`, `jev-call-sites.md`,
-  `mac-scheduled-tasks.md`, `quality-bar.md` and `incidents/` (one
-  blameless write-up per outage, named `YYYY-MM-DD-<slug>.md`).
+  `mac-scheduled-tasks.md` (the disposition of the Mac's 11 desktop
+  scheduled tasks), `mac-rescue-2026-10-09.md` (the disposition of the Mac
+  rescue bundles), `quality-bar.md` and `incidents/` (one blameless
+  write-up per outage, named `YYYY-MM-DD-<slug>.md`).
 - `template/` — `agents/`, `cursor-rules/`, `devin-config.json` and
   `README.md`, source files the live host links or copies by hand (see
   [template/README.md](template/README.md)).
