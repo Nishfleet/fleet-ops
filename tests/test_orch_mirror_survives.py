@@ -89,6 +89,48 @@ def test_mirror_that_lost_head_is_repaired(tmp_path):
     assert url == "https://github.com/Nishfleet/fleet-ops.git"
 
 
+def _commit(tmp_path, msg, line=None):
+    work = tmp_path / "seed"
+    if line is not None:
+        # A big file with one changed line: the next fetch sends a thin delta
+        # against a blob the mirror is expected to hold.
+        (work / "big.txt").write_text("".join(f"line {i}\n" for i in range(5000)) + f"{line}\n")
+        _git("add", "big.txt", cwd=work)
+    _git("-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "--allow-empty", "-m", msg, cwd=work)
+    _git("push", "-q", str(tmp_path / "seed.git"), "main", cwd=tmp_path / "seed")
+
+
+def test_mirror_with_a_damaged_object_store_is_rebuilt(tmp_path):
+    mirror, wt, env = _setup(tmp_path)
+    _commit(tmp_path, "base", line="a")
+    assert _step(env).returncode == 0
+    # The age-out also removed old objects: commits and trees survive, a blob
+    # does not, and the next fetch sends a delta against it.
+    blob = subprocess.run(["git", "-C", str(tmp_path / "seed"), "rev-parse", "HEAD:big.txt"], check=True, capture_output=True, text=True).stdout.strip()
+    (mirror / "objects" / blob[:2] / blob[2:]).unlink()
+    _commit(tmp_path, "next", line="b")
+    shutil.rmtree(wt)
+    r = _step(env)
+    assert r.returncode == 0, r.stderr
+    assert "rebuilding" in r.stdout + r.stderr
+    assert (wt / ".git").exists()
+    tip = subprocess.run(["git", "-C", str(wt), "log", "-1", "--format=%s"], capture_output=True, text=True).stdout.strip()
+    assert tip == "next"
+
+
+def test_failed_fetch_on_an_intact_mirror_is_not_rebuilt(tmp_path):
+    mirror, wt, env = _setup(tmp_path)
+    assert _step(env).returncode == 0
+    shutil.rmtree(wt)
+    keep = mirror / "keep-me"
+    keep.write_text("x\n")
+    # Same mirror, but origin is unreachable: a network or credential failure.
+    env = {**env, "GIT_CONFIG_VALUE_0": "https://github.com/Nishfleet/fleet-ops.git", "GIT_CONFIG_KEY_0": "url./nonexistent/seed.git.insteadOf"}
+    r = _step(env)
+    assert r.returncode != 0
+    assert keep.exists(), "an intact mirror must survive a failed fetch"
+
+
 def test_tmpfiles_age_out_keeps_the_mirror(tmp_path):
     if not shutil.which("systemd-tmpfiles"):
         pytest.skip("systemd-tmpfiles not installed")
