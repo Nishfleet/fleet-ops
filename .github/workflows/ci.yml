@@ -992,6 +992,7 @@ jobs:
                   near-approval) prior="reviewer: $SHA approved, but only 50% sure" ;;
                   fallback-text) prior="reviewer: $SHA edits the merge guard or a workflow, so a person approves it. Nothing was approved or blocked automatically. Fallback: an approver's PR comment line \`coordinator-approval: $SHA\`." ;;
                   blocked-none-only) prior="$(printf 'reviewer: %s blocked. This change edits the merge guard or a workflow, so it needs both reviews to approve.\n\nSecond reviewer (GLM family, senior seat): blocked\nblocker: none.\n\nrisk: x' "$SHA")" ;;
+                  blocked-none-thrice) copies=3; prior="$(printf 'reviewer: %s blocked. Fix these.\n\nblocker: none found.' "$SHA")" ;;
                   blocked-none-twice) copies=2; prior="$(printf 'reviewer: %s blocked. Fix these.\n\nblocker: none.' "$SHA")" ;;
                   blocked-none-and-real) prior="$(printf 'reviewer: %s blocked. Fix these.\n\nblocker: none.\nblocker a.yml: real problem' "$SHA")" ;;
                   *) echo "case $name: unknown PRIOR value ${extra#PRIOR=}"; bad=1; continue ;;
@@ -1051,7 +1052,8 @@ jobs:
           none-line-then-real-blocker-blocks|1|approve|0.95|clean|none_then_real||no|0|worker-capable senior
           prior-fallback-text-is-reviewed|1|approve|0.95|clean|clean_ok|PRIOR=fallback-text|yes|0|worker-capable senior
           prior-blocked-by-a-none-line-is-reviewed|1|approve|0.95|clean|clean_ok|PRIOR=blocked-none-only|yes|0|worker-capable senior
-          prior-blocked-by-none-lines-twice-skips|1|approve|0.95|clean|clean_ok|PRIOR=blocked-none-twice|no|0|
+          prior-blocked-by-none-lines-twice-is-reviewed|1|approve|0.95|clean|clean_ok|PRIOR=blocked-none-twice|yes|0|worker-capable senior
+          prior-blocked-by-none-lines-thrice-skips|1|approve|0.95|clean|clean_ok|PRIOR=blocked-none-thrice|no|0|
           prior-blocked-with-real-blocker-skips|1|approve|0.95|clean|clean_ok|PRIOR=blocked-none-and-real|no|0|
           prior-near-approval-text-is-reviewed|1|approve|0.95|clean|clean_ok|PRIOR=near-approval|yes|0|worker-capable senior
           CASES

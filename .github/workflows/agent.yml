@@ -711,15 +711,17 @@ jobs:
           # hold comment quotes the approval line inside a sentence, and that is
           # not a verdict. A blocked verdict whose only blocker lines say "none"
           # was a misread of the review (see blockers_of), so it does not count
-          # and the head is reviewed again, but twice at most, so a head that
-          # keeps getting such a verdict does not pay for a review per event.
-          seen=$(gh api --paginate "repos/$REPO/issues/$PR/comments?per_page=100" | jq --arg sha "$SHA" --arg none "$none_re" --arg blk "$blk_re" '
+          # and the head is reviewed again, but only until three such verdicts
+          # stand on it, so a head that keeps getting one does not pay for a
+          # review per event. The pages are read as one list (jq -s).
+          seen=$(gh api --paginate "repos/$REPO/issues/$PR/comments?per_page=100" | jq -s --arg sha "$SHA" --arg none "$none_re" --arg blk "$blk_re" '
             def blockers: [.[] | select(test($blk; "i"))];
-            [.[] | select(.user.login == "github-actions[bot]") | (.body | split("\n")) as $l
+            [.[][] | select(.user.login == "github-actions[bot]") | (.body | split("\n")) as $l
               | (($l | blockers) | length > 0 and all(.[]; test($none; "i"))) as $wrong
-              | if any($l[]; startswith("coordinator-approval: " + $sha) or startswith("reviewer: " + $sha + " approved.") or startswith("reviewer: " + $sha + " not approved.")) then 1
-                elif any($l[]; startswith("reviewer: " + $sha + " blocked.")) then (if $wrong then 0.5 else 1 end)
-                else 0 end] | add // 0' | awk '{n+=$1} END{print int(n)}')
+              | if any($l[]; startswith("coordinator-approval: " + $sha) or startswith("reviewer: " + $sha + " approved.") or startswith("reviewer: " + $sha + " not approved.")) then "verdict"
+                elif any($l[]; startswith("reviewer: " + $sha + " blocked.")) then (if $wrong then "none-only" else "verdict" end)
+                else "other" end] as $k
+            | ($k | map(select(. == "verdict")) | length) + (if ($k | map(select(. == "none-only")) | length) >= 3 then 1 else 0 end)')
           [ "$seen" = 0 ] || { echo "$SHA already reviewed"; exit 0; }
           gh api --paginate "repos/$REPO/pulls/$PR/files?per_page=100" --jq '.[] | .filename, (.previous_filename // empty)' > "$RUNNER_TEMP/files.txt"
           # The guard list decides how much review the head needs. If it cannot
