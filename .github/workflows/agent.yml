@@ -374,7 +374,9 @@ jobs:
           # login's credentials file and ~/.claude.json, which an empty bind
           # replaces. The claude lane sees only the seat it runs on: claude_jail_a
           # hides the default login, claude_jail_b hides seat a. ci.yml runs these
-          # three lines and fails if a hidden file can be read.
+          # three lines and fails if a hidden file can be read. A runner with no
+          # default login is fine: bwrap creates a missing bind target (checked
+          # 2026-10-10), so the line never refuses to start.
           seat_a=${CLAUDE_CONFIG_DIR:-$HOME/.config/gh}
           # Credential backups and every other Claude config dir sit beside the
           # seats (a glob resolved now, not a list): each ~/.claude-* and
@@ -955,6 +957,8 @@ jobs:
           echo "first review: built by '${built:-unknown}', model $first_model"
           # The model gets the diff as text and no tools (--tools ""): a tool could
           # open the runner's own key files, and the review is posted publicly. The
+          # installed claude honors an empty --tools: asked to run a shell command it
+          # answered that it had no tools (checked 2026-10-10 on this host). The
           # call runs on the runner's own login (CLAUDE_CONFIG_DIR, or the default login
           # when it has none). A call that fails or answers nothing, a usage limit included,
           # means the review did not finish: retry comments that and fails the job,
