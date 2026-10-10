@@ -124,6 +124,10 @@ The rules still in force:
   coordinator subagent polling every 20 minutes) is retired: the
   `review-risky` event's review job decides it, and no session polls for it
   (docs/incidents/2026-10-08-held-pr-approver-loop-retired.md, fleet-ops#9459).
+  Every comment the review job posts is scanned first with gitleaks and
+  `.github/gitleaks-private-detail.toml` (the rules file the PR text scan
+  shares, fleet-ops#9512): a matching line is replaced by a note that a line
+  was withheld, and if the scan cannot run nothing is posted (fleet-ops#9528).
 
 The full audit (rungs, counts, second wave) is git history
 (fleet-ops#8029/#8034).

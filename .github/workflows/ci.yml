@@ -917,6 +917,29 @@ jobs:
           comment-approval-without-reviews|7|Add x (#7)|7||7|||0|
           CASES
           test "$bad" -eq 0
+      - name: Install pinned gitleaks binary (review comment scan test)
+        # The same release and SHA-256 as secret-scan.yml. The reviewer scans its
+        # comment with the real gitleaks and the shared rules file, so the test
+        # below runs the real scanner and fakes only gh, curl, pi and git.
+        if: always()
+        env:
+          GITLEAKS_VERSION: 8.30.1
+          GITLEAKS_SHA256: 551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb
+        run: |
+          set -euo pipefail
+          install_dir="${RUNNER_TEMP:?}/gitleaks-review-test"
+          mkdir -p -- "$install_dir"
+          archive="$install_dir/gitleaks.tar.gz"
+          curl --fail --silent --show-error --location \
+            --retry 5 --retry-all-errors --max-time 180 \
+            --output "$archive" \
+            "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
+          printf '%s  %s\n' "$GITLEAKS_SHA256" "$archive" | sha256sum --check --strict -
+          tar -xzf "$archive" -C "$install_dir" gitleaks
+          rm -f -- "$archive"
+          chmod +x -- "$install_dir/gitleaks"
+          test "$("$install_dir/gitleaks" version)" = "$GITLEAKS_VERSION"
+          printf '%s\n' "$install_dir" >> "$GITHUB_PATH"
       - name: Reviewer approves, blocks and arms without a person (fake gh)
         # Runs the review job's own run block and the arm job's, read out of
         # agent.yml, against a fake gh, curl, pi and git. A PR that edits the guard or
@@ -924,7 +947,10 @@ jobs:
         # second reviewer approve; each block, a low judge, an unreadable guard list
         # and a second reviewer with no answer leave it unapproved, and none of them
         # asks a person. The review never arms itself: the arm job does, on the exact
-        # head, and refuses a stale one.
+        # head, and refuses a stale one. Every comment goes through the real gitleaks
+        # scan with the shared rules file first (fleet-ops#9528): a line with a fake
+        # private hostname is posted redacted, a clean review is posted unchanged,
+        # and an unreadable rules file posts nothing.
         if: always()
         run: |
           set -euo pipefail
@@ -944,7 +970,10 @@ jobs:
             export "$v=$val"
           done
           RISKY_PATHS_URL=$(yq '.jobs.review.env.RISKY_PATHS_URL' "$f")
-          export RISKY_PATHS_URL
+          PRIVATE_DETAIL_URL=$(yq '.jobs.review.env.PRIVATE_DETAIL_URL' "$f")
+          export RISKY_PATHS_URL PRIVATE_DETAIL_URL
+          command -v gitleaks >/dev/null || { echo "gitleaks is not installed"; exit 1; }
+          [[ $PRIVATE_DETAIL_URL == */main/.github/gitleaks-private-detail.toml ]] || { echo "PRIVATE_DETAIL_URL is not the shared rules file on main: $PRIVATE_DETAIL_URL"; exit 1; }
           # Wiring: the approval flows to the arm job in the same run, and the review step never arms or asks.
           bad=0
           [ "$(yq '.jobs.arm.needs' "$f")" = review ] || { echo "arm job must need review"; bad=1; }
@@ -988,6 +1017,9 @@ jobs:
           cat > "$t/bin/curl" <<'MOCK'
           #!/usr/bin/env bash
           case "$*" in
+            *gitleaks-private-detail.toml*) [ -z "${PRIVATE_RULES_FAIL:-}" ] || exit 22
+              out=; while [ $# -gt 0 ]; do [ "$1" = --output ] && out=$2; shift; done
+              cat .github/gitleaks-private-detail.toml > "$out" ;;
             *raw.githubusercontent.com*) [ -z "${GUARD_LIST_FAILS:-}" ] || exit 22; cat config/risky-paths.json ;;
             *4000/jev*) echo "{\"answers\":{\"verdict\":{\"choice\":\"$JEV_CHOICE\",\"probabilities\":{\"$JEV_CHOICE\":$JEV_P}}}}" ;;
             *) echo "mock curl: unexpected call: $*" >&2; exit 1 ;;
@@ -1032,11 +1064,18 @@ jobs:
           none_words='blocker: none found in the lock file, the gate is gone.\nAPPROVE'
           first_none='Blockers: none\nchecked: a, b'
           none_then_real='blocker: none.\nblocker .github/workflows/new.yml: removes a gate\nAPPROVE'
-          : "$none" "$clean" "$blocked" "$clean_ok" "$blocked_b" "$blocked_ok" "$forged" "$none_ok" "$first_none" "$none_then_real"  "$none_words" "$v_none" "$v_found" "$v_nob" "$v_nothing" "$v_na" "$v_dash" "$v_bold" "$v_ident" "$real_none_of" "$real_nothing" "$header_echo"  # read through ${!first} and ${!second}
+          # Fake private detail, all obviously invented: a tailnet-style hostname and an account id.
+          leak_line='checked: db1.fake-tailnet.ts.net answers on the new route' # gitleaks:allow
+          leak="No blockers.\n$leak_line\nchecked: a, b"
+          leak_blocker="blocker .github/workflows/new.yml: quotes db1.fake-tailnet.ts.net in a step\nrisk x" # gitleaks:allow
+          leak_marker="No blockers.\nchecked: db1.fake-tailnet.ts.net # gitleaks:allow" # a quoted allow marker must not bypass the scan
+          leak_account='No blockers.\nchecked: account_id 0123456789abcdef0123456789abcdef is unchanged'
+          leak_ok="No blockers.\n$leak_line\nAPPROVE"
+          : "$none" "$clean" "$blocked" "$clean_ok" "$blocked_b" "$blocked_ok" "$forged" "$none_ok" "$first_none" "$none_then_real"  "$none_words" "$v_none" "$v_found" "$v_nob" "$v_nothing" "$v_na" "$v_dash" "$v_bold" "$v_ident" "$real_none_of" "$real_nothing" "$header_echo" "$leak" "$leak_blocker" "$leak_marker" "$leak_account" "$leak_ok"  # read through ${!first} and ${!second}
           # case: name|guard (1 = edits a workflow)|judge choice|judge p|first review|second review|extra env|want approved (yes/no)|want exit|want models
           while IFS='|' read -r name guard choice p first second extra approved code models; do
             export STATE=$t/$name RUNNER_TEMP=$t/$name/tmp GITHUB_OUTPUT=$t/$name/output GUARD=$guard JEV_CHOICE=$choice JEV_P=$p FIRST=${!first} SECOND=${!second} \
-              GUARD_LIST_FAILS='' SECOND_FAILS='' HEAD_AFTER='' PRIOR='' COMMENTS='[]' copies=1
+              GUARD_LIST_FAILS='' SECOND_FAILS='' HEAD_AFTER='' PRIOR='' COMMENTS='[]' copies=1 PRIVATE_RULES_FAIL=''
             mkdir -p "$RUNNER_TEMP"; : > "$GITHUB_OUTPUT"; : > "$STATE/comments"; : > "$STATE/models"; : > "$STATE/comment-tokens"
             case $extra in
               PRIOR=*) # a comment the bot already left on this head
@@ -1072,6 +1111,20 @@ jobs:
             if [ "$approved" = yes ]; then [ "$n" = 1 ] && [ "$forged" = 1 ] || problem="$problem approval lines=$n/$forged (want 1/1)"
             else [ "$forged" = 0 ] || problem="$problem a not-approved run posted an approval line"; fi
             ! grep -qiwE 'person|tap review|nish|nish3451' "$STATE/comments" || problem="$problem comment asks a person"
+            # Private detail never reaches a comment; a clean review is posted as written (fleet-ops#9528).
+            # The unredacted text is not left on the runner's disk.
+            ! ls "$RUNNER_TEMP"/scan-in.txt "$RUNNER_TEMP"/scan-report.json "$RUNNER_TEMP"/scan-lines.txt >/dev/null 2>&1 || problem="$problem scan temp files left behind"
+            case $name in
+              redacts-*)
+                ! grep -qE 'fake-tailnet|0123456789abcdef0123456789abcdef' "$STATE/comments" || problem="$problem a comment carries the fake private detail"
+                grep -q 'a line was withheld' "$STATE/comments" && grep -q 'line(s) of this review were withheld' "$STATE/comments" || problem="$problem no withheld note" ;;
+              scan-rules-unreadable) [ "$(grep -c '^----$' "$STATE/comments" || true)" = 1 ] && grep -q 'private-detail scan could not run' "$STATE/comments" && ! grep -q 'checked: a, b, c' "$STATE/comments" || problem="$problem the unscanned-failure comment is not the one fixed line, or review text was posted" ;;
+              *) ! grep -q 'withheld' "$STATE/comments" || problem="$problem a clean review was altered" ;;
+            esac
+            if [ "$name" = normal-approved ]; then
+              want_body=$(printf 'coordinator-approval: %s\n\nreviewer: %s approved. CI still has to pass before it merges.\n\nNo blockers.\nchecked: a, b, c\n----' "$SHA" "$SHA")
+              [ "$(cat "$STATE/comments")" = "$want_body" ] || problem="$problem the clean approval comment is not byte-for-byte what the workflow wrote"
+            fi
             # Every comment is written with the App token, never the job's GITHUB_TOKEN (fleet-ops#9521).
             if grep -qvx app "$STATE/comment-tokens"; then problem="$problem a comment was not posted with the App token"; fi
             [ "$(grep -c '^----$' "$STATE/comments" || true)" = "$(grep -c '' "$STATE/comment-tokens" || true)" ] || problem="$problem comment/token count differs"
@@ -1119,6 +1172,12 @@ jobs:
           prior-blocked-with-real-blocker-skips|1|approve|0.95|clean|clean_ok|PRIOR=blocked-none-and-real|no|0|
           prior-near-approval-text-is-reviewed|1|approve|0.95|clean|clean_ok|PRIOR=near-approval|yes|0|worker-capable senior
           prior-approval-by-old-actions-bot-is-reviewed|1|approve|0.95|clean|clean_ok|PRIOR=old-bot-approved|yes|0|worker-capable senior
+          redacts-normal-approved||approve|0.95|leak|none||yes|0|worker-capable
+          redacts-blocker-line||block|0.97|leak_blocker|none||no|0|worker-capable
+          redacts-quoted-allow-marker||approve|0.95|leak_marker|none||yes|0|worker-capable
+          redacts-account-id||approve|0.95|leak_account|none||yes|0|worker-capable
+          redacts-guard-second-review|1|approve|0.95|clean|leak_ok||yes|0|worker-capable senior
+          scan-rules-unreadable||approve|0.95|clean|none|PRIVATE_RULES_FAIL|no|1|worker-capable
           CASES
           # The arm job's step: arms the exact approved head, and does nothing for a
           # stale head (a push after the approval), a draft, an armed PR or a closed one.
