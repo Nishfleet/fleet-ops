@@ -32,6 +32,21 @@ on:
         required: false
         default: ''
 
+  # The Daily (nish.sh/daily). Only fires on fleet-ops main; the job below
+  # tells a cron run from a workflow_call by the empty inputs.ref.
+  schedule:
+    - cron: '0 2 * * *'     # inish-daily, 07:30 IST
+    - cron: '0 5 * * *'     # inish-daily catch-up, 10:30 IST (no-op when live)
+  # A scheduled job must also be dispatchable, so a change to it is proven
+  # on demand, not the next morning: gh workflow run agent.yml -f job=inish-daily
+  workflow_dispatch:
+    inputs:
+      job:
+        description: scheduled job to run by hand
+        type: choice
+        options: [inish-daily]
+        default: inish-daily
+        required: true
 permissions: {}
 jobs:
   work:
@@ -904,6 +919,203 @@ jobs:
             GH_TOKEN=$ARM_TOKEN gh pr merge "$PR" -R "$REPO" --auto --squash --match-head-commit "$SHA"  # a merge queue overrides the method; repos without one need it
             echo "armed #$PR at $SHA"
           fi
+  inish-daily:
+    # The Daily edition, published to https://nish.sh/daily (inish.in is retired
+    # and only redirects). Its runner was a Hermes cron job, disabled 2026-08-20
+    # (seat quota), then this job was deleted by #8954 and the page sat stale from
+    # 2026-09-29. Restored 2026-10-10. The editorial standard lives in the product
+    # repo (automation/HERMES_DAILY.md); the mechanical contract lives in
+    # prompts/inish-daily.md here, so an edit to the product repo cannot widen
+    # what the job may do.
+    # The model never holds a write credential and nothing it writes is trusted:
+    # it runs jailed with a read-only token, the workflow takes two data files
+    # from its checkout into a fresh clone of main, rebuilds and tests there,
+    # then commits and pushes from that clone.
+    # The 10:30 IST catch-up covers a runner or host that was down at 07:30; the
+    # first step is a cheap live check, so a published day costs no model call.
+    if: ${{ !inputs.ref && github.ref == 'refs/heads/main' && (github.event.schedule == '0 2 * * *' || github.event.schedule == '0 5 * * *' || inputs.job == 'inish-daily') }}
+    runs-on: [self-hosted, agent]
+    timeout-minutes: 150
+    concurrency:
+      group: agent-${{ github.repository }}-scheduled-inish-daily
+      cancel-in-progress: false
+    env:
+      GIT_AUTHOR_NAME: nishfleet-worker[bot]
+      GIT_AUTHOR_EMAIL: 321485391+nishfleet-worker[bot]@users.noreply.github.com
+      GIT_COMMITTER_NAME: nishfleet-worker[bot]
+      GIT_COMMITTER_EMAIL: 321485391+nishfleet-worker[bot]@users.noreply.github.com
+    steps:
+      - name: Is today's edition already live
+        id: live
+        run: |
+          today=$(TZ=Asia/Kolkata date +%F)
+          live=$(curl -fsS --max-time 20 https://nish.sh/daily/latest.json | jq -r .date || true)
+          # An edition already pushed to main also counts: the site's deploy can
+          # outlast an earlier run's poll, and a second model run would only
+          # replace it.
+          pushed=$(curl -s -o /dev/null -w '%{http_code}' --max-time 20 "https://raw.githubusercontent.com/Nishfleet/inish-site/main/data/editions/$today.json" || true)
+          echo "today=$today live=${live:-unknown} pushed=$pushed"
+          if [ "$live" = "$today" ] || [ "$pushed" = 200 ]; then echo "done=true" >> "$GITHUB_OUTPUT"; else echo "done=false" >> "$GITHUB_OUTPUT"; fi
+      - name: Read App private key
+        if: steps.live.outputs.done != 'true'
+        id: app-key
+        run: |
+          keyfile="$HOME/.config/fleet-worker/nishfleet-worker.private-key.pem"
+          [ -s "$keyfile" ] || { echo "::error::app private key file missing on runner"; exit 1; }
+          while IFS= read -r line || [ -n "$line" ]; do
+            [ -n "$line" ] && echo "::add-mask::$line"
+          done < "$keyfile"
+          delim=APP_PRIVATE_KEY_END
+          {
+            printf 'pem<<%s\n' "$delim"
+            cat "$keyfile"
+            printf '%s\n' "$delim"
+          } >> "$GITHUB_OUTPUT"
+      # Two tokens for Nishfleet/inish-site: a read-only one for the jailed
+      # model (the candidate fetch calls the GitHub search API), and a
+      # contents-write one minted only after the model has finished, for the
+      # publish step alone.
+      - name: App token (read) for Nishfleet/inish-site
+        if: steps.live.outputs.done != 'true'
+        id: read-token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          app-id: "4728578"
+          private-key: ${{ steps.app-key.outputs.pem }}
+          owner: Nishfleet
+          repositories: inish-site
+          permission-contents: read
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        if: steps.live.outputs.done != 'true'
+        with:
+          repository: Nishfleet/inish-site
+          token: ${{ steps.read-token.outputs.token }}
+          path: inish-site
+          persist-credentials: false
+      - name: Compile today's edition (candidates fetched here, model jailed, result rebuilt in a clean clone)
+        id: compile
+        if: steps.live.outputs.done != 'true'
+        # The candidate fetch (which needs the Jev key and the GitHub search
+        # token) runs here, outside the jail, from a fresh clone of main before
+        # the model starts. The model then runs in a bwrap jail with neither
+        # secret in its environment, that hides Nish's gh login, the Cloudflare
+        # tokens, the seat files and the App key; it reads outsider text all day
+        # (fleet-ops#9274). Nothing the model leaves in its own checkout is
+        # trusted: after each attempt only its edition JSON is taken (a regular
+        # file, size-capped), a fresh clone of main is made, the edition and the
+        # pristine candidate file are dropped in, and the builder and the whole
+        # test suite run there. The publish step pushes from that clone, so
+        # model-written code, git hooks and .git state never reach the push.
+        env:
+          GH_TOKEN: ${{ steps.read-token.outputs.token }}
+        run: |
+          key=$(sed -n 's/^TYPESAFE_API_KEY=//p' "$HOME/.config/fleet-ops/seats/typesafe-jev.env")
+          [ -n "$key" ] || { echo "::error::TYPESAFE_API_KEY missing from the Jev seat file; an unranked edition is not worth 40 minutes of model time"; exit 1; }
+          echo "::add-mask::$key"
+          jail_base="bwrap --dev-bind / / --ro-bind $HOME/workspaces/tooling/fleet-ops-deploy-clone $HOME/workspaces/tooling/fleet-ops-deploy-clone --tmpfs $HOME/.config/gh --tmpfs $HOME/.config/cloudflare --tmpfs $HOME/.config/fleet-ops --tmpfs $HOME/.config/fleet-worker --proc /proc --unshare-pid --die-with-parent"
+          today=$(TZ=Asia/Kolkata date +%F)
+          src="$GITHUB_WORKSPACE/inish-site"
+          dst="$RUNNER_TEMP/publish"
+          pool="$RUNNER_TEMP/pool"
+          basic=$(tr -d '\n' <<<"x-access-token:$GH_TOKEN" | base64 -w0)
+          echo "::add-mask::$basic"
+          # Everything run through sys() (clone, fetch, build, tests) gets a system
+          # PATH and no user git config: the jailed model can write under $HOME, so a shim in
+          # ~/.local/bin or a line in ~/.gitconfig must not decide what gets
+          # fetched, built or pushed. /usr/bin/node and python3 run the same two
+          # suites `npm test` does; /usr/local/bin holds gh.
+          sys() { /usr/bin/env PATH=/usr/local/bin:/usr/bin:/bin GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 "$@"; }
+          fresh_clone() {
+            rm -rf "$1"
+            sys git -c "http.extraheader=AUTHORIZATION: basic $basic" clone -q --depth 1 https://github.com/Nishfleet/inish-site.git "$1"
+          }
+          fresh_clone "$pool" || { echo "clone for the candidate fetch failed"; exit 1; }
+          (cd "$pool" && TYPESAFE_API_KEY="$key" sys python3 -m inish_daily.fetch_candidates --date "$today") > "$RUNNER_TEMP/fetch.out" 2>&1 \
+            || { echo "candidate fetch failed:"; tail -n 5 "$RUNNER_TEMP/fetch.out" | cut -c1-200; exit 1; }
+          tail -n 4 "$RUNNER_TEMP/fetch.out" | cut -c1-200
+          [ -s "$pool/data/candidates/$today.json" ] || { echo "no candidate file"; exit 1; }
+          mkdir -p "$src/data/candidates"
+          cp -- "$pool/data/candidates/$today.json" "$src/data/candidates/$today.json"
+          checked() {
+            fresh_clone "$dst" || return 1
+            mkdir -p "$dst/data/editions" "$dst/data/candidates"
+            f="data/editions/$today.json"
+            if [ -f "$src/$f" ] && [ ! -L "$src/$f" ] && [ "$(stat -c %s "$src/$f")" -lt 3000000 ]; then
+              cp -- "$src/$f" "$dst/$f"
+            fi
+            [ -s "$dst/$f" ] || { echo "no valid edition file for $today"; return 1; }
+            cp -- "$pool/data/candidates/$today.json" "$dst/data/candidates/$today.json"
+            (cd "$dst" && sys python3 -m inish_daily.build_daily && sys node --test "tests/**/*.test.mjs" && sys python3 -m unittest discover -s tests)
+          }
+          n=0
+          # shellcheck disable=SC2086 # $jail_base is a command line to split, as in the work job
+          for model in worker-capable senior; do
+            n=$((n + 1))
+            out="$RUNNER_TEMP/inish-daily-$n.out"
+            rc=0
+            # One FLEET_TASK_ID per attempt: Pi sends it as the router session id (#9015).
+            # The agent- session prefix keeps the seat visible to the Gate's live() count.
+            # env -u: the model gets neither the GitHub token nor the Jev key.
+            echo "Compile today's The Daily edition (today = $today, Asia/Kolkata)." \
+              | (cd "$src" && env -u GH_TOKEN FLEET_TASK_ID="inish-daily-${GITHUB_RUN_ID}-$n" timeout 40m $jail_base -- pi --print --no-context-files \
+                  --append-system-prompt "$HOME/workspaces/tooling/fleet-ops-deploy-clone/AGENTS.md" \
+                  --append-system-prompt "$HOME/AGENTS.md" \
+                  --append-system-prompt "$HOME/workspaces/tooling/fleet-ops-deploy-clone/prompts/inish-daily.md" \
+                  --session-dir "$HOME/.pi/agent/sessions/agent-inish-daily-${GITHUB_RUN_ID}-$n" \
+                  --exclude-tools subagent --provider litellm --model "$model") > "$out" || rc=$?
+            echo "inish-daily: $model exited $rc"
+            tail -n 3 "$out" | cut -c1-200
+            if checked; then echo "today=$today" >> "$GITHUB_OUTPUT"; exit 0; fi
+            rm -rf "$dst"
+            echo "::warning::inish-daily: attempt $n ($model) left no valid edition; the next model starts from its files"
+          done
+          exit 1
+      - name: App token (write) for Nishfleet/inish-site
+        if: steps.live.outputs.done != 'true' && steps.compile.outputs.today != ''
+        id: write-token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          app-id: "4728578"
+          private-key: ${{ steps.app-key.outputs.pem }}
+          owner: Nishfleet
+          repositories: inish-site
+          permission-contents: write
+      - name: Publish today's edition
+        if: steps.live.outputs.done != 'true' && steps.compile.outputs.today != ''
+        # No model here, and the clone was made after the last model ran. The
+        # clone keeps no credential in .git/config; git gets the write token from
+        # the environment for inish-site URLs only, the same extraheader
+        # actions/checkout would have written. Success is the live page carrying
+        # today's date once the site's CI has deployed.
+        working-directory: ${{ runner.temp }}/publish
+        env:
+          GH_TOKEN: ${{ steps.write-token.outputs.token }}
+          TODAY: ${{ steps.compile.outputs.today }}
+        run: |
+          # Bare system PATH and no user git config, for the same reason as checked().
+          export PATH=/usr/bin:/bin GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1
+          basic=$(tr -d '\n' <<<"x-access-token:$GH_TOKEN" | base64 -w0)
+          echo "::add-mask::$basic"
+          export GIT_CONFIG_COUNT=2
+          export GIT_CONFIG_KEY_0=http.https://github.com/Nishfleet/inish-site.extraheader
+          export GIT_CONFIG_VALUE_0="AUTHORIZATION: basic $basic"
+          export GIT_CONFIG_KEY_1=http.https://github.com/Nishfleet/inish-site.git.extraheader
+          export GIT_CONFIG_VALUE_1="AUTHORIZATION: basic $basic"
+          today=$TODAY
+          for path in "data/editions/$today.json" "data/pools/$today.json" public/daily/index.html public/daily/latest.json public/daily/feed.xml; do
+            [ ! -e "$path" ] || git add -- "$path"
+          done
+          # build_daily wrote data/pools/$today.json from the candidate file in
+          # this same clone, so what was tested is what is pushed.
+          if git diff --cached --quiet; then echo "nothing new to commit; waiting for the deploy"; else git commit -m "daily: publish $today"; fi
+          git push origin HEAD:main || { git pull --rebase origin main && git push origin HEAD:main; }
+          for _ in $(seq 1 60); do
+            live=$(curl -fsS --max-time 20 https://nish.sh/daily/latest.json | jq -r .date || true)
+            [ "$live" = "$today" ] && { echo "published: $today https://nish.sh/daily"; exit 0; }
+            sleep 15
+          done
+          echo "publish-failed: live page still not $today after 15 minutes"
+          exit 1
   report:
     needs: work
     if: (failure() || cancelled()) && needs.work.outputs.wall != 'true'
