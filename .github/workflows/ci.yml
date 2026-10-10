@@ -218,7 +218,7 @@ jobs:
           echo "token wiring: %t/$rd -> $mount/token, $m contact points"
       - name: Only money and outage rules can page Nish (fleet-ops#9445)
         run: |
-          python3 -c 'import yaml' 2>/dev/null || sudo apt-get install -y -q python3-yaml >/dev/null
+          sudo apt-get install -y -q python3-yaml >/dev/null
           python3 tests/alert_routes_check.py
       - name: ansible/host.yml parses (ansible-playbook --syntax-check)
         # fleet-host-config.service runs this playbook as root on every merge;
@@ -1568,7 +1568,7 @@ jobs:
           for _ in $(seq 1 30); do grep -q '"title":"grafana alert: drill generic"' "$d/sink.log" && break; sleep 3; done
           g=$(grep '"title":"grafana alert: drill generic"' "$d/sink.log" | head -n 1 || true)
           [ -n "$g" ] || { echo "::error::a rule with no route of its own did not reach fleet-alert-dispatch"; cat "$d/sink.log"; exit 1; }
-          sed 's/^BODY [^ ]* //' <<<"$g" | jq -e '.labels == ["agent-ready"] and (.body | contains("drill generic"))' >/dev/null \
+          jq -e '.labels == ["agent-ready"] and (.body | contains("drill generic")) and (.body | contains("signal=drill-generic"))' <<<"${g#BODY * }" >/dev/null \
             || { echo "::error::fleet-alert-dispatch rendered an unexpected issue"; echo "$g"; exit 1; }
           echo "reload drill: webhook sent tokenA, then tokenB after the admin reload, no restart; a root-routed rule filed a fleet issue"
       - name: Grafana log on failure
