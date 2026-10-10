@@ -107,8 +107,14 @@ The rules still in force:
   `review-risky`) is the independent approver: it reads the held head's diff
   through the API, asks a no-tools model for findings and Jev for approve or
   block (p >= 0.9), and posts that approval as `github-actions[bot]` (an
-  approval comment written with GITHUB_TOKEN, an identity no PR author uses). A PR that edits the guard itself
-  (`guard` in risky-paths.json) stays with a person;
+  approval comment written with GITHUB_TOKEN). A PR that edits the guard itself
+  (`guard` in risky-paths.json) or a workflow needs a second review as well, by
+  a model family other than the judge's and Claude's, and both must approve; if
+  either blocks, its blockers go to the agent as fix-it items. The same run then
+  arms the PR (agent.yml `arm`, App token, `--match-head-commit`), so no person
+  is asked at any step. Nish's typed comment or app review stays an optional
+  override. The gate and `hold-risky` read their programs and the path list from
+  the base branch, so a PR cannot loosen the rules that judge it in the same PR;
   agent-authored PRs self-land green. The in-session held-PR approver loop (a
   coordinator subagent polling every 20 minutes) is retired: the
   `review-risky` event's review job decides it, and no session polls for it
