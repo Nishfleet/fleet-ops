@@ -13,7 +13,9 @@ ExecCondition=/usr/bin/systemctl --user is-active --quiet fleet-grafana.service
 ExecStartPre=/bin/sleep 5
 # The stock admin API, same calls as the "Reload provisioning configurations"
 # section of the Grafana HTTP API docs. Basic auth as admin, with the password
-# handed to curl as a config fd so it never reaches argv
-# (docs/RUNBOOK.md, LiteLLM admin-API note). -f fails the unit on a non-2xx.
-ExecStart=/bin/bash -c 'exec /usr/bin/curl -fsS --retry 3 --retry-connrefused --max-time 30 -X POST --config <(/usr/bin/sed "s|^|user = admin:|" %h/.config/fleet-ops/grafana-admin-password) http://127.0.0.1:3001/api/admin/provisioning/alerting/reload http://127.0.0.1:3001/api/admin/provisioning/datasources/reload'
-TimeoutStartSec=90
+# handed to curl as a config fd (quoted and escaped, so any password works)
+# so it never reaches argv (docs/RUNBOOK.md, LiteLLM admin-API note). Both
+# endpoints are always tried; the unit fails (and fleet-unit-failed alerts) if
+# the password file is missing or empty, or either call answers non-2xx.
+ExecStart=/bin/bash -c "set -euo pipefail; f=$$1; test -s \"$$f\" || { echo \"grafana admin password file missing or empty: $$f\" >&2; exit 1; }; rc=0; for e in alerting datasources; do /usr/bin/curl -fsS --connect-timeout 5 --max-time 30 --retry 3 --retry-connrefused -X POST --config <(/usr/bin/sed 's/[\"\\\\]/\\\\&/g; s/^/user = \"admin:/; s/$$/\"/' \"$$f\") \"http://127.0.0.1:3001/api/admin/provisioning/$$e/reload\" || rc=1; echo; done; exit $$rc" bash %h/.config/fleet-ops/grafana-admin-password
+TimeoutStartSec=120

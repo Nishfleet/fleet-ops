@@ -1212,6 +1212,7 @@ jobs:
             --env CLOUDFLARE_API_TOKEN=dummy --env GITHUB_ISSUES_TOKEN=dummy \
             "docker.io/$image"
           port=$(sed -n 's/^Environment=GF_SERVER_HTTP_PORT=//p' "$q")
+          [[ $port =~ ^[0-9]+$ ]] || { echo "::error::$q has no numeric GF_SERVER_HTTP_PORT (got '$port')"; exit 1; }
           for _ in $(seq 1 90); do
             if [ "$(docker inspect -f '{{.State.Running}}' grafana)" != true ]; then
               echo "::error::Grafana exited before /api/health answered"
@@ -1224,7 +1225,7 @@ jobs:
             fi
             sleep 2
           done
-          curl -fsS "http://127.0.0.1:$port/api/health" | jq -e '.database == "ok"'
+          curl -fsS --connect-timeout 5 --max-time 30 "http://127.0.0.1:$port/api/health" | jq -e '.database == "ok"'
           # Stay up past provisioning, then require no provisioning error.
           sleep 10
           if [ "$(docker inspect -f '{{.State.Running}}' grafana)" != true ]; then
@@ -1251,9 +1252,13 @@ jobs:
         # healthy with no provisioning error.
         if: steps.gate.outputs.run == 'true'
         run: |
+          set -euo pipefail
           q=containers/quadlet/fleet-grafana.container
           p=systemd/fleet-grafana-provisioning.path
           u=systemd/fleet-grafana-provisioning.service
+          pw="$RUNNER_TEMP/secrets/grafana-admin-password"
+          # The dummy password is written by the "Start the quadlet's Grafana" step above.
+          test -s "$pw" || { echo "::error::dummy admin password file missing or empty; the boot step must write it"; exit 1; }
           n=0
           while IFS= read -r d; do
             grep -qE "^PathChanged=.*/config/grafana/provisioning/$d\$" "$p" || { echo "::error::$p does not watch the provisioning dir $d that $q mounts"; exit 1; }
@@ -1261,15 +1266,17 @@ jobs:
           done < <(sed -n 's|^Volume=.*/config/grafana/provisioning/\([a-z]*\):.*|\1|p' "$q" | grep -vx dashboards)
           test "$n" -ge 2
           port=$(sed -n 's/^Environment=GF_SERVER_HTTP_PORT=//p' "$q")
+          [[ $port =~ ^[0-9]+$ ]] || { echo "::error::$q has no numeric GF_SERVER_HTTP_PORT (got '$port')"; exit 1; }
           m=0
           while IFS= read -r url; do
             url=${url/:3001\//:$port/}
-            curl -fsS -X POST --config <(sed "s|^|user = admin:|" "$RUNNER_TEMP/secrets/grafana-admin-password") "$url"
+            # Password as a quoted, escaped config fd, same as the .service: never in argv.
+            curl -fsS --connect-timeout 5 --max-time 30 -X POST --config <(sed 's/["\\]/\\&/g; s/^/user = "admin:/; s/$/"/' "$pw") "$url"
             echo
             m=$((m+1))
           done < <(grep -oE 'http://127\.0\.0\.1:[0-9]+/api/admin/provisioning/[a-z]+/reload' "$u")
           test "$m" -ge 2
-          curl -fsS "http://127.0.0.1:$port/api/health" | jq -e '.database == "ok"'
+          curl -fsS --connect-timeout 5 --max-time 30 "http://127.0.0.1:$port/api/health" | jq -e '.database == "ok"'
           sleep 5
           if docker logs grafana 2>&1 | grep -E 'logger=provisioning[^ ]* .*level=(error|crit)|level=(error|crit) .*(rovisioning|failure to map file)' > "$RUNNER_TEMP/rerr.txt"; then
             cut -c1-400 "$RUNNER_TEMP/rerr.txt" | head -n 8
