@@ -862,13 +862,16 @@ jobs:
           [ "$(jq -r .draft <<<"$pr")" != true ] || { echo "#$PR is a draft; not arming"; exit 0; }
           [ "$(jq -r '.auto_merge != null' <<<"$pr")" != true ] || { echo "#$PR is already armed"; exit 0; }
           # The App has no workflows permission, so GitHub refuses its arm on a PR
-          # that edits .github/workflows/**. Only then does the arm use the runner
-          # user's own gh login (GH_TOKEN and GITHUB_TOKEN unset), the way the
-          # orchestrator job does. This job runs on the agent runner group, which
-          # only runs agent.yml from main, and the head is the approved one
-          # (--match-head-commit), so a PR cannot choose its own arm token.
+          # that edits .github/workflows/**. For such a PR whose head carries the
+          # bot's own coordinator-approval comment, the arm uses the runner
+          # user's gh login (GH_TOKEN and GITHUB_TOKEN unset), the way the
+          # orchestrator job does. Without that comment, or for any other PR, it
+          # keeps the App token, so a workflow edit never gets the wider login
+          # unless the review approved this exact head. A failed read of the file
+          # list or the comments fails the step; it never falls to the wider login.
           files=$(gh api --paginate "repos/$REPO/pulls/$PR/files" --jq '.[] | .filename, (.previous_filename // empty)')
-          if grep -q '^\.github/workflows/' <<<"$files"; then
+          approved=$(GH_TOKEN=$ARM_TOKEN gh api --paginate "repos/$REPO/issues/$PR/comments?per_page=100" --jq "[.[] | select(.user.login == \"github-actions[bot]\" and (.body | startswith(\"coordinator-approval: $SHA\")))] | length" | awk '{n+=$1} END{print n+0}')
+          if grep -q '^\.github/workflows/' <<<"$files" && [ "$approved" != 0 ]; then
             env -u GH_TOKEN -u GITHUB_TOKEN gh pr merge "$PR" -R "$REPO" --auto --squash --match-head-commit "$SHA"
             echo "armed #$PR at $SHA (workflow edit, runner login)"
           else
