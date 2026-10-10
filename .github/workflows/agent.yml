@@ -679,6 +679,10 @@ jobs:
       PR: ${{ inputs.review_pr }}
       SHA: ${{ inputs.review_sha }}
       RISKY_PATHS_URL: https://raw.githubusercontent.com/Nishfleet/fleet-ops/main/config/risky-paths.json
+      # The private-detail rules the PR text scan uses (secret-scan.yml,
+      # fleet-ops#9512); the review is scanned with the same file before it is
+      # posted (fleet-ops#9528). Read from main, so a PR cannot loosen them.
+      PRIVATE_DETAIL_URL: https://raw.githubusercontent.com/Nishfleet/fleet-ops/main/.github/gitleaks-private-detail.toml
       # Pi sends this as x-litellm-session-id and exits 1 without it (the work job sets it the same way, #9015).
       FLEET_TASK_ID: run-${{ github.run_id }}-${{ github.run_attempt }}
     steps:
@@ -724,7 +728,55 @@ jobs:
           SECOND_FAMILY: GLM
         run: |
           set -euo pipefail
-          say() { GH_TOKEN=$POST_TOKEN gh pr comment "$PR" -R "$REPO" --body "$1"; }
+          # The review is posted on a public PR and quotes diff lines, so every
+          # comment goes through the private-detail scan first (fleet-ops#9528):
+          # gitleaks with the shared rules file, over the whole comment text. A
+          # line a rule matches is replaced by a note, and a footer says how many
+          # lines were withheld. The workflow's own approval line is not scanned
+          # (it is a fixed string with a sha). The scan runs on a copy: the
+          # approve or block decision above never reads the redacted text, so
+          # redaction cannot turn a blocker line into an approval. If the rules
+          # cannot be read or gitleaks fails, nothing is posted and the job goes
+          # red, so a re-run reviews the head again. --ignore-gitleaks-allow
+          # because the text is quoted from a diff, which could carry the marker;
+          # --redact keeps matched values out of the job log.
+          redact() {
+            local in="$RUNNER_TEMP/scan-in.txt" rep="$RUNNER_TEMP/scan-report.json" rules="$RUNNER_TEMP/private-detail.toml" rc=0 n
+            # The unredacted text and the report must not outlive the scan on the runner's disk.
+            trap 'rm -f -- "$RUNNER_TEMP/scan-in.txt" "$RUNNER_TEMP/scan-report.json" "$RUNNER_TEMP/scan-lines.txt"' RETURN
+            command -v gitleaks > /dev/null || { echo "::error::gitleaks is not on this runner's PATH (it lives beside pi); the review comment cannot be scanned"; return 1; }
+            [ -s "$rules" ] || curl -fsSL --retry 3 --max-time 60 --output "$rules" "$PRIVATE_DETAIL_URL" || { echo "::error::the private-detail rules file could not be read"; return 1; }
+            [ -s "$rules" ] || return 1
+            printf '%s\n' "$1" > "$in"
+            (cd "$RUNNER_TEMP" && gitleaks stdin --config "$rules" --ignore-gitleaks-allow --redact --report-format json --report-path "$rep" \
+              --exit-code 2 --no-banner --log-level error < "$in" > /dev/null 2>&1) || rc=$?
+            case $rc in
+              0) cat "$in" ;;
+              2)
+                jq -r '[.[] | range(.StartLine; .EndLine + 1)] | unique | .[]' "$rep" > "$RUNNER_TEMP/scan-lines.txt" || return 1
+                [ -s "$RUNNER_TEMP/scan-lines.txt" ] || return 1
+                awk 'NR == FNR { bad[$1] = 1; next } FNR in bad { if (!prev) print "[a line was withheld: it matched a private-detail rule]"; prev = 1; next } { prev = 0; print }' \
+                  "$RUNNER_TEMP/scan-lines.txt" "$in"
+                n=$(wc -l < "$RUNNER_TEMP/scan-lines.txt" | tr -d ' ')
+                printf '\nNote: %s line(s) of this review were withheld because they matched a private-detail rule (%s).\n' "$n" \
+                  "$(jq -r '[.[].RuleID] | unique | join(", ")' "$rep")" ;;
+              *) return 1 ;;
+            esac
+          }
+          say() {
+            local body=$1 first='' rest redacted
+            # The approval line is workflow-written; only the text after it is scanned.
+            first=${body%%$'\n'*}
+            if [[ $first =~ ^coordinator-approval:\ [0-9a-f]{40}$ ]]; then rest=${body#"$first"}; rest=${rest#$'\n'}; else first=; rest=$body; fi
+            if ! redacted=$(redact "$rest"); then
+              echo "::error::the private-detail scan could not run; no review text was posted. Re-run the review-risky job."
+              # Fixed text written by this workflow, so it needs no scan; it names no verdict phrase, so the head is reviewed again on a re-run.
+              GH_TOKEN=$POST_TOKEN gh pr comment "$PR" -R "$REPO" --body "review of $SHA did not finish: the private-detail scan could not run, so no review text was posted. Nothing was approved or blocked. Re-run the review-risky job, or push a new head, to try again." || true
+              exit 1
+            fi
+            [ -z "$first" ] || redacted=$first$'\n'$redacted
+            GH_TOKEN=$POST_TOKEN gh pr comment "$PR" -R "$REPO" --body "$redacted"
+          }
           # An infrastructure failure is retry-able: the comment avoids the
           # "reviewer: <sha>" phrase the already-reviewed check looks for, and
           # the job goes red so a re-run reviews the head again.
