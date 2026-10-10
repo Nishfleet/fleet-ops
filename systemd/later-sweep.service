@@ -1,0 +1,59 @@
+# Due-later sweep (fleet-ops#9541). A "later" job is an issue with a `due:`
+# line; the documented arming pattern was a one-shot
+# `systemd-run --user --on-calendar` timer that adds `agent-ready` at that
+# time. Those units are transient: they live only in
+# /run/user/1000/systemd/transient/, and the user manager does not reload them
+# when it restarts. later-0509-7304.timer was created 2026-10-09 and gone on
+# 2026-10-10 after the manager restarted at 2026-10-09 21:36 IST, so the job
+# silently never fired; fleet-ops#9376 is still past due for the same reason
+# (its due: line says "agent-ready is added by a one-shot timer").
+#
+# Stock only, no glue: one prompt file (prompts/later-sweep.yml, installed to
+# the stable path fleet-sync writes), piped into `pi --print` on the cheap
+# worker-cheap seat. The issue body's due: line is the durable state, and the
+# model re-reads it from GitHub on a fixed clock and runs exactly the
+# `gh issue edit --add-label agent-ready` the one-shot timer made. A model
+# rather than an inline shell program: "no glue or scripts" was Nish's
+# condition (issue #8936), the same reason blacksmith-flip.service is a
+# prompt, and a long jq/sed program cannot be written inside a systemd Exec
+# line without the nesting systemd forbids (fleet-ops#8382).
+#
+# gh auth: this unit runs under the systemd --user manager, which has no
+# GH_TOKEN, so `gh` reads ~/.config/gh/hosts.yml and acts as the nish3451
+# account, the same auth blacksmith-flip.service uses. No credential is in
+# this file, in the prompt, or in argv.
+#
+# FLEET_TASK_ID: models.json's litellm provider sends it as the
+# x-litellm-session-id header, so without it every call fails with
+# "Failed to resolve provider litellm header". A fixed id is correct here:
+# this is a recurring check, not a per-task agent.
+#
+# --no-context-files and the trailing grep are the two halves of one fact, the
+# same as blacksmith-flip (fleet-ops#8936, proved there 2026-10-01):
+#   * With AGENTS.md loaded, a scheduled check with no human in the loop would
+#     import the worker's stop conditions and abstain. `gh` here is
+#     authenticated from hosts.yml, not from GH_TOKEN.
+#   * The prompt's last line is SWEEP: DONE, and nothing else is accepted, so a
+#     failed CLI call, an unparseable body or a refusal exits non-zero and
+#     lands in `systemctl --user list-units --state=failed` instead of
+#     recording a successful sweep while a due job stays unpromoted.
+#
+# %%s, not %s: systemd expands % itself, in the Exec line and before any shell
+# runs (blacksmith-flip.service records the incident). There is no ${...} for
+# the same reason; both are what ci.yml's "No shell ${...} or bare %s/%u/%h
+# inside systemd Exec lines" gate (fleet-ops#8382) checks.
+[Unit]
+Description=Promote due-later issues whose due: has passed (fleet-ops#9541)
+After=network-online.target
+Wants=network-online.target
+StartLimitIntervalSec=1h
+StartLimitBurst=3
+OnFailure=fleet-unit-failed@%N.service
+
+[Service]
+Type=oneshot
+Environment=FLEET_TASK_ID=later-sweep-quarter-hourly
+ExecStart=/bin/sh -c 'out=$(cat /home/nish/.local/share/later-sweep/prompt.yml | /usr/bin/timeout 120 /home/nish/.local/bin/pi --print --provider litellm --model worker-cheap --no-context-files); printf "%%s\n" "$out"; printf "%%s\n" "$out" | tr -d "*_" | sed -E "s/^[[:space:]]+//; s/[[:space:]]+$//" | grep -qxE "SWEEP: DONE" || exit 1'
+TimeoutStartSec=300
+Restart=on-failure
+RestartSec=30

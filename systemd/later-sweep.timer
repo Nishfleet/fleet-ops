@@ -1,0 +1,14 @@
+# Due-later sweep timer (fleet-ops#9541). On disk, unlike the transient
+# one-shot later-* timers it replaces, so a user-manager restart cannot drop
+# it; Persistent=true fires one tick after a boot that missed the schedule.
+# Pairs with systemd/later-sweep.service (see the header there).
+[Unit]
+Description=Promote due-later issues every 15 minutes (fleet-ops#9541)
+
+[Timer]
+OnCalendar=*:0/15
+Persistent=true
+RandomizedDelaySec=120
+
+[Install]
+WantedBy=timers.target
