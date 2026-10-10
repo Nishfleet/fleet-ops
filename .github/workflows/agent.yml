@@ -686,8 +686,14 @@ jobs:
             exit 1
           }
           # blocker lines of a review: the line starts with the word, with or without markup.
+          # A line that only says there are none ("blocker: none.", "Blockers: none") is not one.
+          # none_re is the one copy of that pattern: grep reads it here and jq in the already-reviewed check.
+          # Only a whole line that says none is dropped (the pattern is anchored at both ends), so a
+          # line with any other words after "none" still blocks. Dropping it never approves by itself:
+          # the judge must still be 90% sure, and a guard PR's second reviewer must still end on APPROVE.
           tick=$(printf '\140')
-          blockers_of() { { grep -iE "^[[:space:]*_#>${tick}-]*blocker" <<<"$1" || true; } | head -c 1500; }
+          none_re="^[[:space:]*_#>${tick}-]*blockers?[[:space:]*_${tick}:-]*(none|n/a|nil|no blockers?)[[:space:]*_${tick}.!]*\$"
+          blockers_of() { { grep -iE "^[[:space:]*_#>${tick}-]*blocker" <<<"$1" | grep -ivE "$none_re" || true; } | head -c 1500; }
           pr=$(gh api "repos/$REPO/pulls/$PR")
           [ "$(jq -r .state <<<"$pr")" = open ] && [ "$(jq -r .head.sha <<<"$pr")" = "$SHA" ] || { echo "head moved or PR closed; the newer event reviews it"; exit 0; }
           # Only a real verdict counts as reviewed: approved, not approved or blocked.
@@ -695,7 +701,19 @@ jobs:
           # no verdict, so those heads are reviewed. The review then posts a
           # verdict, which ends it: one review per head, not one per event. The
           # verdict phrases end in a full stop, as the comments below write them.
-          seen=$(gh api --paginate "repos/$REPO/issues/$PR/comments?per_page=100" --jq "[.[] | select(.user.login == \"github-actions[bot]\" and (.body | (contains(\"coordinator-approval: $SHA\") or contains(\"reviewer: $SHA approved.\") or contains(\"reviewer: $SHA not approved.\") or contains(\"reviewer: $SHA blocked.\"))))] | length" | awk '{n+=$1} END{print n+0}')
+          # Each phrase must START a line of a comment by github-actions[bot]: the
+          # hold comment quotes the approval line inside a sentence, and that is
+          # not a verdict. A blocked verdict whose only blocker lines say "none"
+          # was a misread of the review (see blockers_of), so it does not count
+          # and the head is reviewed again, but twice at most, so a head that
+          # keeps getting such a verdict does not pay for a review per event.
+          seen=$(gh api --paginate "repos/$REPO/issues/$PR/comments?per_page=100" | jq --arg sha "$SHA" --arg none "$none_re" '
+            def blockers: [.[] | select(test("^[[:space:]*_#>\u0060-]*blocker"; "i"))];
+            [.[] | select(.user.login == "github-actions[bot]") | (.body | split("\n")) as $l
+              | (($l | blockers) | length > 0 and all(.[]; test($none; "i"))) as $wrong
+              | if any($l[]; startswith("coordinator-approval: " + $sha) or startswith("reviewer: " + $sha + " approved.") or startswith("reviewer: " + $sha + " not approved.")) then 1
+                elif any($l[]; startswith("reviewer: " + $sha + " blocked.")) then (if $wrong then 0.5 else 1 end)
+                else 0 end] | add // 0' | awk '{n+=$1} END{print int(n)}')
           [ "$seen" = 0 ] || { echo "$SHA already reviewed"; exit 0; }
           gh api --paginate "repos/$REPO/pulls/$PR/files?per_page=100" --jq '.[] | .filename, (.previous_filename // empty)' > "$RUNNER_TEMP/files.txt"
           # The guard list decides how much review the head needs. If it cannot
