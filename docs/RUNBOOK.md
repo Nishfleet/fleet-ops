@@ -81,6 +81,20 @@ the Quadlet `containers/quadlet/fleet-grafana.container`, read-only for every
 viewer. Dashboards, datasources and alerting come from `config/grafana/dashboards/`
 and `config/grafana/provisioning/`, edited in this repo only.
 
+Grafana reads the alerting and datasource provisioning files only at start, and the
+deploy is a `git merge --ff-only` that never restarts the container.
+`fleet-grafana-provisioning.path` (`PathChanged=` on both directories in the deploy
+clone) therefore triggers `fleet-grafana-provisioning.service`, which POSTs the stock
+admin API `/api/admin/provisioning/alerting/reload` and `/datasources/reload` (Grafana HTTP
+API docs, "Reload provisioning configurations"), authenticated as `admin` with
+`~/.config/fleet-ops/grafana-admin-password`. Dashboards need no help: their provider
+polls every 60 s. To check a rule landed, `GET /api/v1/provisioning/alert-rules` and
+compare the rule's `expression` with the repo file. Wire the pair once after merge, like
+`fleet-litellm-proxy-config` (README "Wiring a NEW unit"): `systemctl --user link` both
+files, then `systemctl --user enable --now fleet-grafana-provisioning.path`. Until it is
+wired, reload by hand with `systemctl --user start fleet-grafana-provisioning.service`
+once linked, or `curl -X POST` the two endpoints.
+
 Cloudflare cost alarm (fleet-ops#9355): `config/grafana/provisioning/alerting/cloudflare-spend.yaml`
 evaluates hourly through the Infinity data source `fleet-cloudflare` (the deploy-ci
 analytics token, from `~/.config/cloudflare/deploy-ci.env`). A firing rule opens a fleet-ops

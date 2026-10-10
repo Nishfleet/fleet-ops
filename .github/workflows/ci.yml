@@ -1177,7 +1177,7 @@ jobs:
         run: |
           run=true
           if [ "$EVENT" = pull_request ]; then
-            if git diff --name-only "$BASE_SHA" "$HEAD_SHA" | grep -qE '^(config/grafana/|containers/quadlet/fleet-grafana\.container$|\.github/workflows/ci\.yml$)'; then
+            if git diff --name-only "$BASE_SHA" "$HEAD_SHA" | grep -qE '^(config/grafana/|containers/quadlet/fleet-grafana\.container$|systemd/fleet-grafana-provisioning\.|\.github/workflows/ci\.yml$)'; then
               run=true
             else
               run=false
@@ -1212,6 +1212,7 @@ jobs:
             --env CLOUDFLARE_API_TOKEN=dummy --env GITHUB_ISSUES_TOKEN=dummy \
             "docker.io/$image"
           port=$(sed -n 's/^Environment=GF_SERVER_HTTP_PORT=//p' "$q")
+          [[ $port =~ ^[0-9]+$ ]] || { echo "::error::$q has no numeric GF_SERVER_HTTP_PORT (got '$port')"; exit 1; }
           for _ in $(seq 1 90); do
             if [ "$(docker inspect -f '{{.State.Running}}' grafana)" != true ]; then
               echo "::error::Grafana exited before /api/health answered"
@@ -1224,7 +1225,7 @@ jobs:
             fi
             sleep 2
           done
-          curl -fsS "http://127.0.0.1:$port/api/health" | jq -e '.database == "ok"'
+          curl -fsS --connect-timeout 5 --max-time 30 "http://127.0.0.1:$port/api/health" | jq -e '.database == "ok"'
           # Stay up past provisioning, then require no provisioning error.
           sleep 10
           if [ "$(docker inspect -f '{{.State.Running}}' grafana)" != true ]; then
@@ -1238,6 +1239,51 @@ jobs:
             exit 1
           fi
           echo "grafana-boot: $image healthy, no provisioning error"
+      - name: Provisioning reload path unit covers every mounted dir and its reload call works
+        # fleet-ops#9449 follow-up: Grafana reads provisioning only at start, so
+        # a merged rule change sat unloaded for 31 hours and paged a false
+        # alarm. systemd/fleet-grafana-provisioning.path watches the clone's
+        # provisioning dirs and the .service POSTs the stock admin reload API.
+        # (1) every config/grafana/provisioning/<dir> the quadlet mounts must be
+        # a PathChanged= in the .path unit, so a new mount cannot ship unwatched
+        # (dashboards is skipped: its provider polls every 60 s);
+        # (2) the .service's reload URLs, called with the dummy admin password
+        # against the booted pinned image, must answer 2xx and leave Grafana
+        # healthy with no provisioning error.
+        if: steps.gate.outputs.run == 'true'
+        run: |
+          set -euo pipefail
+          q=containers/quadlet/fleet-grafana.container
+          p=systemd/fleet-grafana-provisioning.path
+          u=systemd/fleet-grafana-provisioning.service
+          pw="$RUNNER_TEMP/secrets/grafana-admin-password"
+          # The dummy password is written by the "Start the quadlet's Grafana" step above.
+          test -s "$pw" || { echo "::error::dummy admin password file missing or empty; the boot step must write it"; exit 1; }
+          n=0
+          while IFS= read -r d; do
+            grep -qE "^PathChanged=.*/config/grafana/provisioning/$d\$" "$p" || { echo "::error::$p does not watch the provisioning dir $d that $q mounts"; exit 1; }
+            n=$((n+1))
+          done < <(sed -n 's|^Volume=.*/config/grafana/provisioning/\([a-z]*\):.*|\1|p' "$q" | grep -vx dashboards)
+          test "$n" -ge 2
+          port=$(sed -n 's/^Environment=GF_SERVER_HTTP_PORT=//p' "$q")
+          [[ $port =~ ^[0-9]+$ ]] || { echo "::error::$q has no numeric GF_SERVER_HTTP_PORT (got '$port')"; exit 1; }
+          m=0
+          while IFS= read -r url; do
+            url=${url/:3001\//:$port/}
+            # Password as a quoted, escaped config fd, same as the .service: never in argv.
+            curl -fsS --connect-timeout 5 --max-time 30 -X POST --config <(sed 's/["\\]/\\&/g; s/^/user = "admin:/; s/$/"/' "$pw") "$url"
+            echo
+            m=$((m+1))
+          done < <(grep -oE 'http://127\.0\.0\.1:[0-9]+/api/admin/provisioning/[a-z]+/reload' "$u")
+          test "$m" -ge 2
+          curl -fsS --connect-timeout 5 --max-time 30 "http://127.0.0.1:$port/api/health" | jq -e '.database == "ok"'
+          sleep 5
+          if docker logs grafana 2>&1 | grep -E 'logger=provisioning[^ ]* .*level=(error|crit)|level=(error|crit) .*(rovisioning|failure to map file)' > "$RUNNER_TEMP/rerr.txt"; then
+            cut -c1-400 "$RUNNER_TEMP/rerr.txt" | head -n 8
+            echo "::error::Grafana logged a provisioning error after the reload"
+            exit 1
+          fi
+          echo "grafana-boot: $n provisioning dirs watched, reload answered 2xx"
       - name: Grafana log on failure
         if: failure()
         run: docker logs grafana 2>&1 | cut -c1-400 | tail -n 40 || true
