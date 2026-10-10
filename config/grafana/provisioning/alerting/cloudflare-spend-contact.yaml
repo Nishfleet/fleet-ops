@@ -11,11 +11,14 @@
 #     Grafana's own webhook failure counter and routes to hermes-urgent).
 #
 # The webhook posts the GitHub issues API body from the payload template. The
-# token is an env reference, never a literal: $GITHUB_ISSUES_TOKEN expands at
-# provisioning load from the quadlet environment
-# (~/.config/fleet-ops/github-issues.env, mode 0600). It needs issues:write on
-# Nishfleet/fleet-ops only. Rules carry label signal=cloudflare-spend and the
-# policy below picks them up, so there is one place that decides the route.
+# token is a file reference, never a literal: $__file{} is Grafana's own
+# provisioning expansion and re-reads the file at every provisioning load. The
+# file holds a GitHub App installation token (issues:write on Nishfleet/fleet-ops
+# only) that expires after one hour, so fleet-grafana-github-token.timer
+# re-mints it every 20 min and reloads provisioning (fleet-ops#9445; before
+# that it was a static token in an env file and went stale in an hour). Rules
+# carry label signal=cloudflare-spend and the policy below picks them up, so
+# there is one place that decides the route.
 apiVersion: 1
 
 contactPoints:
@@ -29,7 +32,7 @@ contactPoints:
           url: https://api.github.com/repos/Nishfleet/fleet-ops/issues
           httpMethod: POST
           authorization_scheme: Bearer
-          authorization_credentials: $GITHUB_ISSUES_TOKEN
+          authorization_credentials: $__file{/run/secrets/github-token/token}
           maxAlerts: 1
           payload:
             template: |-
@@ -48,7 +51,7 @@ contactPoints:
           url: https://api.github.com/repos/Nishfleet/fleet-ops/issues
           httpMethod: POST
           authorization_scheme: Bearer
-          authorization_credentials: $GITHUB_ISSUES_TOKEN
+          authorization_credentials: $__file{/run/secrets/github-token/token}
           maxAlerts: 1
           payload:
             template: |-
@@ -74,7 +77,7 @@ policies:
         repeat_interval: 12h
         continue: true
       # Same matcher again: a spend alert also pages hermes-urgent, so a dead
-      # or missing GITHUB_ISSUES_TOKEN never silences it.
+      # or expired GitHub token never silences it.
       - receiver: hermes-urgent
         object_matchers:
           - [signal, "=", cloudflare-spend]
@@ -93,7 +96,7 @@ policies:
         repeat_interval: 12h
         continue: true
       # Same matcher again: a dead-row alert also pages hermes-urgent, so a dead
-      # or missing GITHUB_ISSUES_TOKEN never silences it.
+      # or expired GitHub token never silences it.
       - receiver: hermes-urgent
         object_matchers:
           - [signal, "=", router-dead-row]

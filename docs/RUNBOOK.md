@@ -100,13 +100,37 @@ evaluates hourly through the Infinity data source `fleet-cloudflare` (the deploy
 analytics token, from `~/.config/cloudflare/deploy-ci.env`). A firing rule opens a fleet-ops
 issue labelled `agent-ready` and `priority-now` through the webhook contact point
 `cloudflare-spend-dispatch`; `hermes-urgent` is the policy root and the fallback. The webhook
-needs `GITHUB_ISSUES_TOKEN` (issues:write on Nishfleet/fleet-ops) in
-`~/.config/fleet-ops/github-issues.env`, mode 0600. `grafana_alerting_notifications_failed_total`
-rising pages hermes-urgent through `cloudflare-spend-delivery.yaml`. Replay a rule by typing a past
+sends a GitHub App installation token (issues:write on Nishfleet/fleet-ops only), see
+"Grafana's GitHub token" below. `grafana_alerting_notifications_failed_total` rising pages hermes-urgent through `cloudflare-spend-delivery.yaml`. Replay a rule by typing a past
 window into its GraphQL `filter:` in place of the `${__timeFrom:date:iso}` and `${__timeTo:date:iso}`
 macros, run it, then restore the file; close the test issue at once, the dispatcher claims it.
 
-GITHUB_ISSUES_TOKEN lives in ~/.config/fleet-ops/github-issues.env (fine-grained, issues:write on Nishfleet/fleet-ops only). Spend alerts also go to hermes-urgent, so a dead token never silences them.
+Spend alerts also go to hermes-urgent, so a dead token never silences them.
+
+Grafana's GitHub token (fleet-ops#9445). A webhook contact point sends one static
+Authorization value and a GitHub App installation token lives an hour, so a token pasted into
+a file went stale and every delivery answered `401 Bad credentials` for days.
+`fleet-grafana-github-token.timer` (every 20 min, and 2 min after boot) starts
+`fleet-grafana-github-token.service`, which signs an RS256 App JWT with the nishfleet-worker
+key, asks the REST API for an installation token limited to `Nishfleet/fleet-ops` and
+`issues:write`, writes it to `$XDG_RUNTIME_DIR/fleet-grafana-github-token/token` (tmpfs,
+0700 dir, 0600 file) and starts `fleet-grafana-provisioning.service`, the stock admin-API
+reload above. The contact points read the file with Grafana's `$__file{}`, which is
+re-read on every provisioning load. Wire once after merge (README "Wiring a NEW unit"):
+`systemctl --user link` both files, `systemctl --user daemon-reload`, `systemctl --user
+enable --now fleet-grafana-github-token.timer`, then restart `fleet-grafana.service` once so
+the quadlet's new mount takes effect. Do it right after the merge deploys: until Grafana restarts, the
+provisioning reload the merge triggers cannot find the new mount and
+`fleet-grafana-provisioning.service` pages once per provisioning change. Read it: `systemctl --user show
+fleet-grafana-github-token.service -p Result -p ExecMainStartTimestamp` and the journal line
+`minted a GitHub App token`. A failed mint pages through `OnFailure=`
+(`fleet-unit-failed@`), keeps the previous token, and the delivery rule pages hermes-urgent
+if a webhook still fails. Switch off: `systemctl --user disable --now
+fleet-grafana-github-token.timer` and `systemctl --user mask fleet-grafana-github-token.service`
+(the quadlet's `Wants=` also mints once per Grafana start); the webhook then sends an empty token (401), the delivery
+rule pages hermes-urgent, and spend and dead-row alerts still reach Telegram. CI proof:
+`tests/github_app_stub.py` plus the "GitHub App token unit mints and refreshes" step run the
+unit's real ExecStart under systemd against a stub that checks the JWT the way GitHub does.
 
 `systemctl --user list-timers blacksmith-flip.timer` (hourly,
 `Persistent=true`) triggers `blacksmith-flip.service`, a oneshot piping

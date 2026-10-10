@@ -154,6 +154,68 @@ jobs:
         run: |
           shopt -s nullglob
           systemd-analyze verify --man=no systemd/*.service systemd/*.timer systemd/*.path systemd/*.slice rootfs/etc/systemd/system/*.slice rootfs/etc/systemd/system/fleet-host-config.service rootfs/etc/systemd/system/fleet-host-config.timer rootfs/etc/systemd/system/fleet-update.service rootfs/etc/systemd/system/fleet-update.timer
+      - name: GitHub App token unit mints and refreshes (fleet-ops#9445)
+        # Runs the unit's real ExecStart under systemd (system scope here, user
+        # scope on the host: same parser) against tests/github_app_stub.py, which
+        # verifies the RS256 App JWT and the token request body the way GitHub
+        # does. Proves: a mint writes the token 0600 in a 0700 dir, a second run
+        # replaces it, a 401 fails the unit and keeps the previous token, a
+        # failed first run still leaves the empty file Grafana's $__file{}
+        # needs, and neither the token nor the JWT reaches the journal.
+        if: always()
+        run: |
+          set -euo pipefail
+          u=systemd/fleet-grafana-github-token.service
+          d=$RUNNER_TEMP/gh-token
+          rm -rf "$d"; mkdir -p "$d"
+          openssl genrsa -out "$d/app.pem" 2048 2>/dev/null
+          openssl rsa -in "$d/app.pem" -pubout -out "$d/app.pub" 2>/dev/null
+          echo ok > "$d/mode"; : > "$d/log"
+          python3 tests/github_app_stub.py 18795 "$d/app.pub" 4728578 "$d/mode" "$d/log" &
+          stub=$!
+          trap 'kill $stub 2>/dev/null || true; sudo systemctl stop fleet-token-ci.service 2>/dev/null || true; sudo rm -f /etc/systemd/system/fleet-token-ci.service; sudo systemctl daemon-reload' EXIT
+          for _ in $(seq 1 20); do (echo > /dev/tcp/127.0.0.1/18795) 2>/dev/null && break; sleep 0.5; done
+          sed -e "s|%h/.config/fleet-worker/nishfleet-worker.private-key.pem|$d/app.pem|" \
+              -e '/^OnFailure=/d' -e '/^ExecStartPost=/d' \
+              -e 's|^Environment=GITHUB_API_URL=.*|Environment=GITHUB_API_URL=http://127.0.0.1:18795|' \
+              -e "s|^\[Service\]|[Service]\nUser=$(id -un)|" "$u" | sudo tee /etc/systemd/system/fleet-token-ci.service >/dev/null
+          sudo systemctl daemon-reload
+          t=/run/fleet-grafana-github-token/token
+          sudo systemctl start fleet-token-ci.service
+          [ "$(sudo cat $t)" = ghs_stub_1 ] || { echo "::error::first mint did not write the token"; exit 1; }
+          [ "$(sudo stat -c %a $t)" = 600 ] && [ "$(sudo stat -c %a /run/fleet-grafana-github-token)" = 700 ] || { echo "::error::token file/dir not 0600/0700"; exit 1; }
+          sudo systemctl start fleet-token-ci.service
+          [ "$(sudo cat $t)" = ghs_stub_2 ] || { echo "::error::second run did not refresh the token"; exit 1; }
+          echo fail > "$d/mode"
+          if sudo systemctl start fleet-token-ci.service; then echo "::error::unit succeeded while GitHub answered 401"; exit 1; fi
+          [ "$(sudo cat $t)" = ghs_stub_2 ] || { echo "::error::a failed mint replaced the previous token"; exit 1; }
+          sudo rm -f $t
+          if sudo systemctl start fleet-token-ci.service; then echo "::error::unit succeeded while GitHub answered 401"; exit 1; fi
+          [ -f $t ] && [ ! -s $t ] || { echo "::error::ExecStartPre did not leave an empty token file for Grafana's \$__file{}"; exit 1; }
+          if grep -q 'bad-jwt\|bad-body\|unknown' "$d/log"; then echo "::error::stub rejected the unit's requests"; cat "$d/log"; exit 1; fi
+          if sudo journalctl -u fleet-token-ci.service --no-pager | grep -q 'ghs_stub\|eyJ'; then echo "::error::token or JWT reached the journal"; exit 1; fi
+          cat "$d/log"
+          echo "GitHub App token unit: minted, refreshed, kept the old token on failure, left no secret in the journal"
+      - name: Grafana token wiring is consistent across unit, quadlet and contact points
+        # The unit's RuntimeDirectory, the quadlet's mount and the $__file{} path
+        # in the contact points must name the same directory, and Grafana must
+        # start after the unit; any one drifting means a 401 at the next alert.
+        if: always()
+        run: |
+          set -euo pipefail
+          u=systemd/fleet-grafana-github-token.service
+          q=containers/quadlet/fleet-grafana.container
+          c=config/grafana/provisioning/alerting/cloudflare-spend-contact.yaml
+          rd=$(sed -n 's/^RuntimeDirectory=//p' "$u")
+          test -n "$rd"
+          mount=$(sed -n "s|^Volume=%t/$rd:\\(/[^:]*\\):ro\$|\\1|p" "$q")
+          test -n "$mount" || { echo "::error::$q does not mount %t/$rd read-only"; exit 1; }
+          grep -q '^Wants=fleet-grafana-github-token.service$' "$q" || { echo "::error::$q must Wants= the token unit"; exit 1; }
+          grep -q '^After=fleet-grafana-github-token.service$' "$q" || { echo "::error::$q must order After= the token unit"; exit 1; }
+          n=$(grep -c 'authorization_credentials:' "$c")
+          m=$(grep -c "authorization_credentials: \$__file{$mount/token}\$" "$c")
+          test "$n" -ge 2 && test "$n" = "$m" || { echo "::error::$c: $m of $n webhook contact points read \$__file{$mount/token}"; exit 1; }
+          echo "token wiring: %t/$rd -> $mount/token, $m contact points"
       - name: ansible/host.yml parses (ansible-playbook --syntax-check)
         # fleet-host-config.service runs this playbook as root on every merge;
         # a parse error would stop every root config change at deploy time.
@@ -1278,7 +1340,7 @@ jobs:
         run: |
           run=true
           if [ "$EVENT" = pull_request ]; then
-            if git diff --name-only "$BASE_SHA" "$HEAD_SHA" | grep -qE '^(config/grafana/|containers/quadlet/fleet-grafana\.container$|systemd/fleet-grafana-provisioning\.|\.github/workflows/ci\.yml$)'; then
+            if git diff --name-only "$BASE_SHA" "$HEAD_SHA" | grep -qE '^(config/grafana/|containers/quadlet/fleet-grafana\.container$|systemd/fleet-grafana-provisioning\.|systemd/fleet-grafana-github-token\.|\.github/workflows/ci\.yml$)'; then
               run=true
             else
               run=false
@@ -1296,7 +1358,12 @@ jobs:
           mkdir -p "$RUNNER_TEMP/secrets"
           openssl genrsa -out "$RUNNER_TEMP/secrets/github-app.pem" 2048
           echo dummy-admin-password > "$RUNNER_TEMP/secrets/grafana-admin-password"
-          chmod 0644 "$RUNNER_TEMP/secrets/"*
+          # The contact points read $__file{/run/secrets/github-token/token}; the
+          # host mounts the runtime dir fleet-grafana-github-token.service fills.
+          mkdir -p "$RUNNER_TEMP/secrets/github-token"
+          echo dummy-github-token > "$RUNNER_TEMP/secrets/github-token/token"
+          chmod 0644 "$RUNNER_TEMP/secrets/"*.pem "$RUNNER_TEMP/secrets/grafana-admin-password" "$RUNNER_TEMP/secrets/github-token/token"
+          chmod 0755 "$RUNNER_TEMP/secrets/github-token"
           # Every Environment=GF_* line and every Volume= under config/grafana,
           # taken from the quadlet itself so the two cannot drift.
           args=()
@@ -1310,7 +1377,8 @@ jobs:
             -v "$RUNNER_TEMP/secrets/github-app.pem:/run/secrets/github-app.pem:ro" \
             -v "$RUNNER_TEMP/secrets/grafana-admin-password:/run/secrets/grafana-admin-password:ro" \
             --env TELEGRAM_BOT_TOKEN=dummy --env TELEGRAM_HOME_CHANNEL=dummy \
-            --env CLOUDFLARE_API_TOKEN=dummy --env GITHUB_ISSUES_TOKEN=dummy \
+            --env CLOUDFLARE_API_TOKEN=dummy \
+            -v "$RUNNER_TEMP/secrets/github-token:/run/secrets/github-token:ro" \
             "docker.io/$image"
           port=$(sed -n 's/^Environment=GF_SERVER_HTTP_PORT=//p' "$q")
           [[ $port =~ ^[0-9]+$ ]] || { echo "::error::$q has no numeric GF_SERVER_HTTP_PORT (got '$port')"; exit 1; }
@@ -1389,6 +1457,94 @@ jobs:
             exit 1
           fi
           echo "grafana-boot: $n provisioning dirs watched, reload answered 2xx"
+      - name: A provisioning reload re-reads the token file the contact points name (fleet-ops#9445)
+        # The refresh design rests on one Grafana behaviour: $__file{} is
+        # expanded again on every provisioning load, so the 20 min re-mint reaches
+        # the webhook through the stock admin reload without a restart. Proven
+        # here against the pinned image, with the REAL contact point file (only
+        # its URL and timers rewritten): a firing rule routed to the dead-row
+        # webhook delivers the first token, the file is replaced by rename, the
+        # reload API is called, and the next delivery must carry the second.
+        if: steps.gate.outputs.run == 'true'
+        run: |
+          set -euo pipefail
+          d=$RUNNER_TEMP/reload-drill
+          mkdir -p "$d/prov" "$d/tok" "$d/data"
+          chmod 0777 "$d/data"
+          printf 'tokenA' > "$d/tok/token"
+          # The host layout: 0700 dir, 0600 files, readable only by the owner. The
+          # container runs as that owner (on the host UserNS=keep-id maps the file
+          # owner to the image's grafana uid), so a mode the reader cannot use fails here.
+          chmod 0700 "$d/tok"; chmod 0600 "$d/tok/token"
+          sed -e 's|https://api.github.com/repos/Nishfleet/fleet-ops/issues|http://127.0.0.1:18796/|' \
+              -e 's|group_interval: 5m|group_interval: 10s|' -e 's|repeat_interval: 12h|repeat_interval: 1m|' \
+              config/grafana/provisioning/alerting/cloudflare-spend-contact.yaml > "$d/prov/contact.yaml"
+          cat > "$d/prov/fixture.yaml" <<'YAML'
+          apiVersion: 1
+          contactPoints:
+            - orgId: 1
+              name: hermes-urgent
+              receivers:
+                - uid: drill-urgent
+                  type: webhook
+                  disableResolveMessage: true
+                  settings: {url: "http://127.0.0.1:18796/urgent", httpMethod: POST}
+          groups:
+            - orgId: 1
+              name: drill
+              folder: drill
+              interval: 10s
+              rules:
+                - uid: drill-dead-row
+                  title: drill dead row
+                  condition: B
+                  data:
+                    - refId: A
+                      datasourceUid: __expr__
+                      model: {datasource: {type: __expr__, uid: __expr__}, type: math, expression: "1", refId: A}
+                    - refId: B
+                      datasourceUid: __expr__
+                      model: {datasource: {type: __expr__, uid: __expr__}, type: threshold, expression: A, refId: B, conditions: [{evaluator: {params: [0], type: gt}, operator: {type: and}, query: {params: [B]}, reducer: {params: [], type: last}, type: query}]}
+                  for: 0s
+                  noDataState: OK
+                  execErrState: Error
+                  annotations: {summary: drill, value: "1", threshold: "0", description: drill}
+                  labels: {signal: router-dead-row, model_id: drill}
+          YAML
+          echo drill-admin-pw > "$d/admin-pw"
+          : > "$d/sink.log"
+          python3 tests/webhook_sink.py 18796 "$d/sink.log" &
+          sink=$!
+          trap 'kill $sink 2>/dev/null || true; docker rm -f grafana-drill >/dev/null 2>&1 || true' EXIT
+          image=$(sed -n 's/^Image=docker\.io\///p' containers/quadlet/fleet-grafana.container)
+          docker run -d --name grafana-drill --network host --user "$(id -u):$(id -g)" \
+            --env GF_SERVER_HTTP_ADDR=127.0.0.1 --env GF_SERVER_HTTP_PORT=3998 --env GF_SECURITY_ADMIN_PASSWORD="$(cat "$d/admin-pw")" \
+            --env TELEGRAM_BOT_TOKEN=dummy --env TELEGRAM_HOME_CHANNEL=dummy \
+            -v "$d/prov:/etc/grafana/provisioning/alerting:ro" \
+            -v "$d/tok:/run/secrets/github-token:ro" \
+            -v "$d/data:/var/lib/grafana" \
+            "docker.io/$image" >/dev/null
+          for _ in $(seq 1 90); do curl -fsS http://127.0.0.1:3998/api/health >/dev/null 2>&1 && break; sleep 2; done
+          curl -fsS http://127.0.0.1:3998/api/health | jq -e '.database == "ok"' >/dev/null
+          for _ in $(seq 1 60); do grep -q '^AUTH Bearer tokenA$' "$d/sink.log" && break; sleep 3; done
+          grep -q '^AUTH Bearer tokenA$' "$d/sink.log" || { echo "::error::the dead-row webhook never delivered the first token"; docker logs grafana-drill 2>&1 | grep -E 'level=(error|warn)' | cut -c1-300 | tail -n 10; exit 1; }
+          printf 'tokenB' > "$d/tok/token.new"; chmod 0600 "$d/tok/token.new"; mv -f "$d/tok/token.new" "$d/tok/token"
+          pwcfg() { sed 's/["\\]/\\&/g; s/^/user = "admin:/; s/$/"/' "$d/admin-pw"; }
+          curl -fsS -X POST --config <(pwcfg) http://127.0.0.1:3998/api/admin/provisioning/alerting/reload; echo
+          # A firing alert is re-sent only on Grafana's own schedule, so make the
+          # next delivery deterministic: a second always-firing rule with another
+          # model_id is a new notification group and is sent at once through the
+          # contact point as it stands after the reload.
+          folder=$(curl -fsS --config <(pwcfg) http://127.0.0.1:3998/api/folders | jq -er '.[]|select(.title=="drill")|.uid')
+          jq -n --arg f "$folder" '{title: "drill dead row 2", ruleGroup: "drill-api", folderUID: $f, orgID: 1, condition: "B", for: "0s", noDataState: "OK", execErrState: "Error",
+            labels: {signal: "router-dead-row", model_id: "drill2"}, annotations: {summary: "drill", value: "1", threshold: "0", description: "drill"},
+            data: [{refId: "A", datasourceUid: "__expr__", relativeTimeRange: {from: 0, to: 0}, model: {datasource: {type: "__expr__", uid: "__expr__"}, type: "math", expression: "1", refId: "A"}},
+                   {refId: "B", datasourceUid: "__expr__", relativeTimeRange: {from: 0, to: 0}, model: {datasource: {type: "__expr__", uid: "__expr__"}, type: "threshold", expression: "A", refId: "B", conditions: [{evaluator: {params: [0], type: "gt"}, operator: {type: "and"}, query: {params: ["B"]}, reducer: {params: [], type: "last"}, type: "query"}]}}]}' > "$d/rule2.json"
+          curl -fsS -X POST --config <(pwcfg) -H 'content-type: application/json' --data @"$d/rule2.json" http://127.0.0.1:3998/api/v1/provisioning/alert-rules >/dev/null
+          for _ in $(seq 1 60); do grep -q '^AUTH Bearer tokenB$' "$d/sink.log" && break; sleep 3; done
+          grep -q '^AUTH Bearer tokenB$' "$d/sink.log" || { echo "::error::a provisioning reload did not make the webhook send the replaced token"; sort "$d/sink.log" | uniq -c; exit 1; }
+          sort "$d/sink.log" | uniq -c
+          echo "reload drill: webhook sent tokenA, then tokenB after the admin reload, no restart"
       - name: Grafana log on failure
         if: failure()
         run: docker logs grafana 2>&1 | cut -c1-400 | tail -n 40 || true
