@@ -59,7 +59,9 @@ rules:
       the way global-standing-rules.md "Only these reach Nish" says, not
       through this deleted path.
     # \b keeps the match word-sized: `paramtool` or `amtoolkit` must not fire.
-    pattern-regex: '(?i)\b(amtool|NishEscalation)\b'
+    # `amtool check-config` validates the config the dead-man and the
+    # hermes-gateway page use; it sends nothing, so it is the one use allowed.
+    pattern-regex: '(?i)\b(amtool(?![ \t]+check-config\b)|NishEscalation)\b'
     paths:
       # The exclude exists only so this rule's own literals cannot self-match.
       exclude:

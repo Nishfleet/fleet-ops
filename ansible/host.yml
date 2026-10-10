@@ -80,6 +80,11 @@
       changed_when: false
       check_mode: false  # read-only; runs under --check too
 
+    - name: Check the alertmanager config before installing it
+      ansible.builtin.command: /usr/bin/amtool check-config {{ rootfs }}/etc/prometheus/alertmanager.yml
+      changed_when: false
+      check_mode: false  # read-only; runs under --check too
+
     - name: Check the nftables ruleset before installing it
       ansible.builtin.command: /usr/sbin/nft -c -f {{ rootfs }}/etc/nftables.conf
       changed_when: false
@@ -184,7 +189,16 @@
         mode: preserve
       notify:
         - Reload prometheus
+        - Reload alertmanager
         - Reload blackbox exporter
+
+    # The package ships alertmanager disabled. The dead-man heartbeat and the
+    # hermes-gateway page both leave the box through it, so it runs.
+    - name: Enable and start alertmanager
+      ansible.builtin.systemd_service:
+        name: prometheus-alertmanager.service
+        enabled: true
+        state: started
 
     # polkitd watches rules.d itself; no reload needed.
     - name: Install polkit rules
@@ -445,6 +459,11 @@
     - name: Reload prometheus
       ansible.builtin.systemd_service:
         name: prometheus.service
+        state: reloaded
+
+    - name: Reload alertmanager
+      ansible.builtin.systemd_service:
+        name: prometheus-alertmanager.service
         state: reloaded
 
     - name: Reload blackbox exporter
