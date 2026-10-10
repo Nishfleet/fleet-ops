@@ -829,6 +829,8 @@ jobs:
       REPO: ${{ github.repository }}
       PR: ${{ inputs.arm_pr || inputs.review_pr }}
       SHA: ${{ inputs.arm_sha || needs.review.outputs.approved_sha }}
+      # The head this run's own review job approved; empty on an arm_pr dispatch.
+      REVIEWED: ${{ inputs.arm_pr == '' && needs.review.outputs.approved_sha || '' }}
     steps:
       - name: Read App private key
         id: app-key
@@ -861,8 +863,23 @@ jobs:
           [ "$(jq -r .state <<<"$pr")" = open ] && [ "$(jq -r .head.sha <<<"$pr")" = "$SHA" ] || { echo "head moved or PR closed; the newer event decides"; exit 0; }
           [ "$(jq -r .draft <<<"$pr")" != true ] || { echo "#$PR is a draft; not arming"; exit 0; }
           [ "$(jq -r '.auto_merge != null' <<<"$pr")" != true ] || { echo "#$PR is already armed"; exit 0; }
-          GH_TOKEN=$ARM_TOKEN gh pr merge "$PR" -R "$REPO" --auto --squash --match-head-commit "$SHA"  # a merge queue overrides the method; repos without one need it
-          echo "armed #$PR at $SHA"
+          # The App has no workflows permission, so GitHub refuses its arm on a PR
+          # that edits .github/workflows/**. For such a PR the arm uses the
+          # runner user's gh login (GH_TOKEN and GITHUB_TOKEN unset), the way the
+          # orchestrator job does, but only when this same run's review job just
+          # approved this exact head (REVIEWED, from the review job's output).
+          # No comment or dispatch input can switch it on. Any other arm, including
+          # a person's approval relayed through arm_pr, keeps the App token. A
+          # failed read of the file list fails the step; it never falls to the
+          # wider login.
+          files=$(gh api --paginate "repos/$REPO/pulls/$PR/files" --jq '.[] | .filename, (.previous_filename // empty)')
+          if grep -q '^\.github/workflows/' <<<"$files" && [ -n "$REVIEWED" ] && [ "$REVIEWED" = "$SHA" ]; then
+            env -u GH_TOKEN -u GITHUB_TOKEN gh pr merge "$PR" -R "$REPO" --auto --squash --match-head-commit "$SHA"
+            echo "armed #$PR at $SHA (workflow edit, runner login)"
+          else
+            GH_TOKEN=$ARM_TOKEN gh pr merge "$PR" -R "$REPO" --auto --squash --match-head-commit "$SHA"  # a merge queue overrides the method; repos without one need it
+            echo "armed #$PR at $SHA"
+          fi
   report:
     needs: work
     if: (failure() || cancelled()) && needs.work.outputs.wall != 'true'
