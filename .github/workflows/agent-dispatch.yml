@@ -340,14 +340,18 @@ jobs:
       # statuses: write can post a status, and anyone who can comment can
       # write the approval line, so the context name or line alone is not an
       # approval.
-      # github-actions[bot] is the approver (review-risky below): its approval
-      # comment is written by agent.yml's review job with GITHUB_TOKEN, after a
-      # judge review (and, for a PR that edits the guard or a workflow, a second
-      # review by another model family). Nobody has to be asked. nish3451 stays
-      # as an optional override: his typed comment, or his GitHub "Approve"
-      # review (the review path below never counts a [bot] login, so the
-      # reviewer's own approval stays a comment).
-      APPROVERS: nish3451 github-actions[bot]
+      # nishfleet-worker[bot], the fleet App, is the approver (review-risky
+      # below): its approval comment is written by agent.yml's review job with
+      # an App token that only a job on the `agent` runner group can mint (the
+      # group runs agent.yml@main only), after a judge review (and, for a PR
+      # that edits the guard or a workflow, a second review by another model
+      # family). Nobody has to be asked. github-actions[bot] is deliberately
+      # NOT listed: a workflow in any PR can post as it with its own
+      # GITHUB_TOKEN and forge the approval line (fleet-ops#9521). nish3451
+      # stays as an optional override: his typed comment, or his GitHub
+      # "Approve" review (the review path below never counts a [bot] login, so
+      # the reviewer's own approval stays a comment).
+      APPROVERS: nish3451 nishfleet-worker[bot]
       RISKY_PATHS_URL: https://raw.githubusercontent.com/Nishfleet/fleet-ops/main/config/risky-paths.json
       # stdin: {repo, labels, files, patches, changed_files}; $cfg:
       # risky-paths.json or null. patches is [{file, patch}] with patch null
@@ -576,7 +580,7 @@ jobs:
   # themselves, no pasted approval lines). agent.yml's review job reads the
   # head's diff through the API, never checks out PR code, asks a model with no
   # tools for findings and Jev for approve or block, then posts the
-  # coordinator-approval comment as github-actions[bot]; the same run's arm
+  # coordinator-approval comment as the nishfleet-worker App; the same run's arm
   # job then arms the PR.
   # hold-risky stays the only door: it reads that comment like any other.
   # A PR that edits the guard itself (risky-paths.json "guard") or a workflow

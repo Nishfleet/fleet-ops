@@ -106,8 +106,13 @@ The rules still in force:
   agent.yml's `review` job (called by
   `review-risky`) is the independent approver: it reads the held head's diff
   through the API, asks a no-tools model for findings and Jev for approve or
-  block (p >= 0.9), and posts that approval as `github-actions[bot]` (an
-  approval comment written with GITHUB_TOKEN). A PR that edits the guard itself
+  block (p >= 0.9), and posts that approval as the `nishfleet-worker` App (an
+  approval comment written with an App token minted in a job on the `agent`
+  runner group, which runs `agent.yml@main` only, so a PR's own workflow
+  cannot post it). `github-actions[bot]` is not an approver (fleet-ops#9521),
+  because any PR workflow can post as it. The worker agent holds the same App
+  token, so a worker steered by hostile issue text could post the line itself;
+  a reviewer identity the worker does not hold would close that. A PR that edits the guard itself
   (`guard` in risky-paths.json) or a workflow needs a second review as well, by
   a model family other than the judge's and Claude's, and both must approve; if
   either blocks, its blockers go to the agent as fix-it items. The same run then
