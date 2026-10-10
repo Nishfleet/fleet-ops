@@ -690,7 +690,10 @@ jobs:
           blockers_of() { { grep -iE "^[[:space:]*_#>${tick}-]*blocker" <<<"$1" || true; } | head -c 1500; }
           pr=$(gh api "repos/$REPO/pulls/$PR")
           [ "$(jq -r .state <<<"$pr")" = open ] && [ "$(jq -r .head.sha <<<"$pr")" = "$SHA" ] || { echo "head moved or PR closed; the newer event reviews it"; exit 0; }
-          seen=$(gh api --paginate "repos/$REPO/issues/$PR/comments?per_page=100" --jq "[.[] | select(.user.login == \"github-actions[bot]\" and (.body | contains(\"reviewer: $SHA\")))] | length" | awk '{n+=$1} END{print n+0}')
+          # Only a real verdict counts as reviewed: approved, not approved or blocked.
+          # The older hold comment and the "could not be judged" comment carry
+          # no verdict, so those heads are reviewed.
+          seen=$(gh api --paginate "repos/$REPO/issues/$PR/comments?per_page=100" --jq "[.[] | select(.user.login == \"github-actions[bot]\" and (.body | (contains(\"coordinator-approval: $SHA\") or contains(\"reviewer: $SHA approved\") or contains(\"reviewer: $SHA not approved\") or contains(\"reviewer: $SHA blocked\"))))] | length" | awk '{n+=$1} END{print n+0}')
           [ "$seen" = 0 ] || { echo "$SHA already reviewed"; exit 0; }
           gh api --paginate "repos/$REPO/pulls/$PR/files?per_page=100" --jq '.[] | .filename, (.previous_filename // empty)' > "$RUNNER_TEMP/files.txt"
           # The guard list decides how much review the head needs. If it cannot

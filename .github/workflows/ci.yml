@@ -897,7 +897,7 @@ jobs:
           case $args in
             "pr comment "*) while [ $# -gt 0 ]; do if [ "$1" = --body ]; then printf '%s\n----\n' "$2" >> "$STATE/comments"; break; fi; shift; done ;;
             "pr merge "*) echo "$args" >> "$STATE/merge" ;;
-            *"issues/7/comments"*) echo 0 ;;
+            *"issues/7/comments"*) while [ $# -gt 0 ]; do if [ "$1" = --jq ]; then jq -r "$2" <<<"${COMMENTS:-[]}"; break; fi; shift; done ;;
             *"pulls/7/files"*) if [ -n "${GUARD:-}" ]; then echo .github/workflows/new.yml; else echo app/routes/home.tsx; fi ;;
             *"Accept: application/vnd.github.diff"*) printf 'diff --git a/x b/x\n+x\n' ;;
             *"--jq .head.sha"*) echo "${HEAD_AFTER:-$SHA}" ;;
@@ -941,9 +941,20 @@ jobs:
           # case: name|guard (1 = edits a workflow)|judge choice|judge p|first review|second review|extra env|want approved (yes/no)|want exit|want models
           while IFS='|' read -r name guard choice p first second extra approved code models; do
             export STATE=$t/$name RUNNER_TEMP=$t/$name/tmp GITHUB_OUTPUT=$t/$name/output GUARD=$guard JEV_CHOICE=$choice JEV_P=$p FIRST=${!first} SECOND=${!second} \
-              GUARD_LIST_FAILS='' SECOND_FAILS='' HEAD_AFTER=''
+              GUARD_LIST_FAILS='' SECOND_FAILS='' HEAD_AFTER='' PRIOR='' COMMENTS='[]'
             mkdir -p "$RUNNER_TEMP"; : > "$GITHUB_OUTPUT"; : > "$STATE/comments"; : > "$STATE/models"
-            [ -z "$extra" ] || export "$extra=1"
+            case $extra in
+              PRIOR=*) # a comment the bot already left on this head
+                case ${extra#PRIOR=} in
+                  person-only) prior="reviewer: $SHA edits the merge guard or a workflow (or the guard list could not be read), so a person approves it. Nothing was approved or blocked automatically." ;;
+                  not-judged) prior="reviewer: $SHA could not be judged, because the review text was empty or the judge gave no answer. Nothing was approved or blocked. Push a new head to try again." ;;
+                  approved) prior="$(printf 'coordinator-approval: %s\n\nreviewer: %s approved. CI still has to pass before it merges.' "$SHA" "$SHA")" ;;
+                  not-approved) prior="reviewer: $SHA not approved. The judge found no blocker line but was only 80% sure, and approval needs 90%." ;;
+                  blocked) prior="$(printf 'reviewer: %s blocked. Fix these and push; a new head gets a fresh review.\n\nblocker x: y' "$SHA")" ;;
+                esac
+                COMMENTS=$(jq -cn --arg b "$prior" '[{user:{login:"github-actions[bot]"},body:$b}]') ;;
+              ?*) export "$extra=1" ;;
+            esac
             rc=0
             PATH="$t/bin:$PATH" bash "$t/review.sh" > "$STATE/out" 2>&1 || rc=$?
             got=no; grep -qx "approved_sha=$SHA" "$GITHUB_OUTPUT" && got=yes
@@ -972,6 +983,11 @@ jobs:
           guard-list-unreadable|1|approve|0.95|clean|clean_ok|GUARD_LIST_FAILS|no|1|
           guard-second-no-answer|1|approve|0.95|clean|clean_ok|SECOND_FAILS|no|1|worker-capable senior senior
           guard-head-moved-during-review|1|approve|0.95|clean|clean_ok|HEAD_AFTER|no|0|worker-capable senior
+          prior-person-only-comment-is-reviewed|1|approve|0.95|clean|clean_ok|PRIOR=person-only|yes|0|worker-capable senior
+          prior-not-judged-comment-is-reviewed|1|approve|0.95|clean|clean_ok|PRIOR=not-judged|yes|0|worker-capable senior
+          prior-approved-comment-skips|1|approve|0.95|clean|clean_ok|PRIOR=approved|no|0|
+          prior-not-approved-comment-skips|1|approve|0.95|clean|clean_ok|PRIOR=not-approved|no|0|
+          prior-blocked-comment-skips|1|approve|0.95|clean|clean_ok|PRIOR=blocked|no|0|
           CASES
           # The arm job's step: arms the exact approved head, and does nothing for a
           # stale head (a push after the approval), a draft, an armed PR or a closed one.
