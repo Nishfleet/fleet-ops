@@ -97,7 +97,12 @@ script, or prompt lands unseen.
   durable state. The decision lives in `prompts/later-sweep.yml`, which
   `fleet-sync.service` installs, and a model runs the `gh` calls rather than
   a checked-in script, because "no glue or scripts" was Nish's condition on
-  approval (the same reason `blacksmith-flip.service` is a prompt).
+  approval (the same reason `blacksmith-flip.service` is a prompt). Wire both
+  units once, like every new unit: `systemctl --user link
+  ~/workspaces/tooling/fleet-ops-deploy-clone/systemd/later-sweep.service
+  ~/workspaces/tooling/fleet-ops-deploy-clone/systemd/later-sweep.timer &&
+  systemctl --user enable --now later-sweep.timer` (the deploy clone path, not
+  a worktree).
 - `systemd/leviathan-index@.service` and `systemd/leviathan-index@.timer` —
   the Leviathan session-log search index, refreshed every 15 minutes per
   instance (`claude`, `pi`): an FTS5 index over the session JSONLs that
