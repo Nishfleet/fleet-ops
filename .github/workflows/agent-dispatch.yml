@@ -1234,10 +1234,13 @@ jobs:
           # (status=200/CHDIR, uncommitted edits lost, fleet-ops#9377). If the
           # unit list cannot be read, keep the tree too: systemd-tmpfiles ages
           # it out after 3 days and the next hand-off rebuilds it anyway.
+          # No user runtime directory (a runner with no user systemd instance)
+          # means no user manager and so no running unit that could use the
+          # tree: skip the check and remove as before.
           busy=0
-          if [ -d "$wt" ]; then
-            XDG_RUNTIME_DIR="/run/user/$(id -u)"
-            export XDG_RUNTIME_DIR
+          XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
+          export XDG_RUNTIME_DIR
+          if [ -d "$wt" ] && [ -d "$XDG_RUNTIME_DIR" ]; then
             if units=$(systemctl --user list-units --type=service --state=active,activating,deactivating,reloading --plain --no-legend --no-pager 'orch-*'); then
               while read -r unit _; do
                 [ -n "$unit" ] || continue

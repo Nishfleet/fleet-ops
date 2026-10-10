@@ -11,19 +11,18 @@ import os
 import pathlib
 import subprocess
 
-import yaml
-
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 STEP = "Clean up and mark a PR-less hand-off"
 
 
 def _run_block():
-    wf = yaml.safe_load((ROOT / ".github/workflows/agent-dispatch.yml").read_text())
-    for job in wf["jobs"].values():
-        for step in job.get("steps", []):
-            if step.get("name") == STEP:
-                return step["run"]
-    raise AssertionError(f"step {STEP!r} not found")
+    # yq, as the other ci.yml steps read workflow steps; no PyYAML needed.
+    out = subprocess.run(
+        ["yq", f'.jobs.orchestrate.steps[] | select(.name == "{STEP}") | .run', str(ROOT / ".github/workflows/agent-dispatch.yml")],
+        check=True, capture_output=True, text=True,
+    ).stdout
+    assert out.strip(), f"step {STEP!r} not found"
+    return out
 
 
 def _git(*args, cwd):
@@ -32,6 +31,8 @@ def _git(*args, cwd):
 
 def _setup(tmp_path, unit_wd, **extra):
     home = tmp_path / "home"
+    runtime = tmp_path / "runtime"
+    runtime.mkdir()
     base = home / "workspaces/agent-worktrees"
     mirror = base / ".orch-mirror/fleet-ops.git"
     wt = base / "orch-fleet-ops-9377"
@@ -48,6 +49,7 @@ def _setup(tmp_path, unit_wd, **extra):
     stub = stub_dir / "systemctl"
     stub.write_text(
         "#!/bin/sh\n"
+        'echo "$*" >> "$STUB_LOG"\n'
         'case "$*" in\n'
         '  *list-units*) [ -z "$LIST_FAILS" ] || exit 1; [ -n "$UNIT_WD" ] && echo "orch-fleet-ops-9377-build.service loaded active running x"; exit 0 ;;\n'
         '  *"show -p WorkingDirectory"*) [ -z "$SHOW_FAILS" ] || exit 1; echo "$UNIT_WD" ;;\n'
@@ -57,10 +59,12 @@ def _setup(tmp_path, unit_wd, **extra):
     env = {
         **os.environ,
         "HOME": str(home),
+        "XDG_RUNTIME_DIR": str(runtime),
         "PATH": f"{stub_dir}:{os.environ['PATH']}",
         "REPO": "Nishfleet/fleet-ops",
         "ISSUE": "9377",
         "GO": "false",
+        "STUB_LOG": str(tmp_path / "systemctl.log"),
         "UNIT_WD": str(unit_wd(wt)) if unit_wd else "",
         **extra,
     }
@@ -104,3 +108,11 @@ def test_failed_property_lookup_keeps_worktree(tmp_path):
     r = _cleanup(env)
     assert r.returncode == 0, r.stderr
     assert (wt / "uncommitted.txt").exists()
+
+
+def test_missing_user_runtime_dir_removes_worktree_without_calling_systemctl(tmp_path):
+    wt, env = _setup(tmp_path, None, XDG_RUNTIME_DIR=str(tmp_path / "no-such-runtime-dir"))
+    r = _cleanup(env)
+    assert r.returncode == 0, r.stderr
+    assert not wt.exists()
+    assert not (tmp_path / "systemctl.log").exists()
