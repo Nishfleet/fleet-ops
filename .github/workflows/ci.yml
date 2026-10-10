@@ -216,6 +216,10 @@ jobs:
           m=$(grep -c "authorization_credentials: \$__file{$mount/token}\$" "$c")
           test "$n" -ge 2 && test "$n" = "$m" || { echo "::error::$c: $m of $n webhook contact points read \$__file{$mount/token}"; exit 1; }
           echo "token wiring: %t/$rd -> $mount/token, $m contact points"
+      - name: Only money and outage rules can page Nish (fleet-ops#9445)
+        run: |
+          python3 -c 'import yaml' 2>/dev/null || sudo apt-get install -y -q python3-yaml >/dev/null
+          python3 tests/alert_routes_check.py
       - name: ansible/host.yml parses (ansible-playbook --syntax-check)
         # fleet-host-config.service runs this playbook as root on every merge;
         # a parse error would stop every root config change at deploy time.
@@ -1510,6 +1514,21 @@ jobs:
                   execErrState: Error
                   annotations: {summary: drill, value: "1", threshold: "0", description: drill}
                   labels: {signal: router-dead-row, model_id: drill}
+                - uid: drill-generic
+                  title: drill generic
+                  condition: B
+                  data:
+                    - refId: A
+                      datasourceUid: __expr__
+                      model: {datasource: {type: __expr__, uid: __expr__}, type: math, expression: "1", refId: A}
+                    - refId: B
+                      datasourceUid: __expr__
+                      model: {datasource: {type: __expr__, uid: __expr__}, type: threshold, expression: A, refId: B, conditions: [{evaluator: {params: [0], type: gt}, operator: {type: and}, query: {params: [B]}, reducer: {params: [], type: last}, type: query}]}
+                  for: 0s
+                  noDataState: OK
+                  execErrState: Error
+                  annotations: {summary: drill, value: "1", threshold: "0", description: drill}
+                  labels: {signal: drill-generic}
           YAML
           echo drill-admin-pw > "$d/admin-pw"
           : > "$d/sink.log"
@@ -1544,7 +1563,14 @@ jobs:
           for _ in $(seq 1 60); do grep -q '^AUTH Bearer tokenB$' "$d/sink.log" && break; sleep 3; done
           grep -q '^AUTH Bearer tokenB$' "$d/sink.log" || { echo "::error::a provisioning reload did not make the webhook send the replaced token"; sort "$d/sink.log" | uniq -c; exit 1; }
           sort "$d/sink.log" | uniq -c
-          echo "reload drill: webhook sent tokenA, then tokenB after the admin reload, no restart"
+          # A rule with no route of its own lands on the policy root,
+          # fleet-alert-dispatch: its payload must be a labelled fleet issue.
+          for _ in $(seq 1 30); do grep -q '"title":"grafana alert: drill generic"' "$d/sink.log" && break; sleep 3; done
+          g=$(grep '"title":"grafana alert: drill generic"' "$d/sink.log" | head -n 1 || true)
+          [ -n "$g" ] || { echo "::error::a rule with no route of its own did not reach fleet-alert-dispatch"; cat "$d/sink.log"; exit 1; }
+          sed 's/^BODY [^ ]* //' <<<"$g" | jq -e '.labels == ["agent-ready"] and (.body | contains("drill generic"))' >/dev/null \
+            || { echo "::error::fleet-alert-dispatch rendered an unexpected issue"; echo "$g"; exit 1; }
+          echo "reload drill: webhook sent tokenA, then tokenB after the admin reload, no restart; a root-routed rule filed a fleet issue"
       - name: Grafana log on failure
         if: failure()
         run: docker logs grafana 2>&1 | cut -c1-400 | tail -n 40 || true

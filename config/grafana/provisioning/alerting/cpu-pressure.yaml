@@ -14,10 +14,10 @@
 # sits near 2% when idle and reads 33% when the cores are saturated, so 25% is
 # above ordinary churn and well below a genuinely blocked box.
 #
-# Contact point: the existing hermes-urgent Telegram contact point from
-# paid-plan-idle.yaml, referenced by name. Grafana merges every file in
-# /etc/grafana/provisioning/alerting, so this file adds a rule and reuses that
-# receiver rather than declaring a second one.
+# Contact point: fleet-alert-dispatch (cloudflare-spend-contact.yaml), a fleet-ops
+# issue, not a page. Host load is something the fleet can shed (stop runners, move
+# work), so it does not interrupt Nish; a box that is really down also fails the
+# deploy and service units, which page on their own.
 apiVersion: 1
 
 groups:
@@ -80,7 +80,7 @@ groups:
           signal: cpu-pressure
         isPaused: false
         notification_settings:
-          receiver: hermes-urgent
+          receiver: fleet-alert-dispatch
           group_by: [alertname, grafana_folder]
           group_wait: 0s
           group_interval: 5m
