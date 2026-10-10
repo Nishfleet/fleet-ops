@@ -430,6 +430,13 @@ jobs:
             # what the Gate's lane count reads. The trim flags are the orchestrator
             # session's: no MCP servers, no skills, no user settings; managed
             # settings still apply.
+            # bypassPermissions is the same trust the other engines get (Devin runs
+            # --permission-mode dangerous, pi runs with its tools on): the bwrap jail
+            # is the boundary, not the permission prompt. The jail shows this lane only
+            # the seat it runs on. Project and local settings come from the worktree,
+            # which holds main's files plus what the model itself writes inside the
+            # same jail, so they add no reach; --settings turns every hook off, and
+            # --settings outranks project and local settings.
             echo "$packet" | $claude_jail --chdir "$dir" -- \
               claude -p --model "$CLAUDE_MODEL" --permission-mode bypassPermissions --max-turns "$CLAUDE_MAX_TURNS" \
               --strict-mcp-config --disable-slash-commands --setting-sources project,local \
@@ -940,6 +947,9 @@ jobs:
           # PR. Only the worker App's own comment counts (not any bot's); any claude in a list, or no such
           # comment at all (the orchestrator, a person's session), is Claude-built.
           built=$(gh api --paginate "repos/$REPO/issues/$PR/comments?per_page=100" | jq -rs '[.[][] | select(.user.login == "nishfleet-worker[bot]") | .body | select(startswith("builder-engine: ")) | ltrimstr("builder-engine: ") | split("\n")[0]] | join(",")' 2>/dev/null) || built=
+          # Unknown is the stricter pairing: Fable is the reviewer for Claude-built
+          # work, so a Claude builder (Sonnet or Opus) never meets a reviewer of its
+          # own model, and the verdict is Jev's (non-Claude) either way.
           first_model=$FIRST_MODEL_CLAUDE_BUILT
           if [ -n "$built" ] && ! grep -qw claude <<<"${built//,/ }"; then first_model=$FIRST_MODEL_OTHER; fi
           echo "first review: built by '${built:-unknown}', model $first_model"
