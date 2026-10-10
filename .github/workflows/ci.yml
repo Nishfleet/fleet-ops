@@ -902,7 +902,8 @@ jobs:
                 fail) exit 1 ;;
                 rename) printf 'app/routes/home.tsx\n.github/workflows/old.yml\n' ;;
                 "") echo app/routes/home.tsx ;;
-                *) echo .github/workflows/new.yml ;;
+                1) echo .github/workflows/new.yml ;;
+                *) echo "mock gh: unknown GUARD ${GUARD}" >&2; exit 2 ;;
               esac ;;
             *"Accept: application/vnd.github.diff"*) printf 'diff --git a/x b/x\n+x\n' ;;
             *"--jq .head.sha"*) echo "${HEAD_AFTER:-$SHA}" ;;
@@ -999,18 +1000,16 @@ jobs:
           CASES
           # The arm job's step: arms the exact approved head, and does nothing for a
           # stale head (a push after the approval), a draft, an armed PR or a closed one.
-          # A PR that edits .github/workflows/** and whose head carries the bot's
-          # coordinator-approval is armed with the runner's own login (GH_TOKEN
-          # unset), because the App lacks the workflows permission; every other PR
-          # is armed with the App token. A failed file listing arms nothing.
+          # A PR that edits .github/workflows/** is armed with the runner's own login
+          # (GH_TOKEN unset), because the App lacks the workflows permission, only
+          # when this run's review job approved the head (REVIEWED equals SHA; an
+          # arm_pr dispatch leaves it empty). Every other arm uses the App token. A
+          # failed file listing arms nothing.
           export SHA=3f9c2a1b7d4e5f60718293a4b5c6d7e8f9012345
-          botok="[{\"user\":{\"login\":\"github-actions[bot]\"},\"body\":\"coordinator-approval: $SHA\\n\\nreviewer: ok\"}]"
-          other="[{\"user\":{\"login\":\"someone\"},\"body\":\"coordinator-approval: $SHA\"},{\"user\":{\"login\":\"github-actions[bot]\"},\"body\":\"coordinator-approval: 0000000000000000000000000000000000000001\"}]"
-          : "$botok" "$other"  # read through ${!comments}
-          # case: name|HEAD_NOW|DRAFT|ARMED|CLOSED|files (1 = workflow edit, rename, fail)|comments var|want armed|want token|want exit
-          while IFS='|' read -r name head draft armed closed wf comments want tok code; do
-            export STATE=$t/arm-$name HEAD_NOW=${head:-$SHA} DRAFT=$draft ARMED=$armed CLOSED=$closed GUARD=$wf COMMENTS='[]'
-            [ -z "$comments" ] || export COMMENTS=${!comments}
+          # case: name|HEAD_NOW|DRAFT|ARMED|CLOSED|files (1 = workflow edit, rename, fail)|REVIEWED (sha, other or empty)|want armed|want token|want exit
+          while IFS='|' read -r name head draft armed closed wf reviewed want tok code; do
+            export STATE=$t/arm-$name HEAD_NOW=${head:-$SHA} DRAFT=$draft ARMED=$armed CLOSED=$closed GUARD=$wf REVIEWED=
+            case $reviewed in sha) export REVIEWED=$SHA ;; other) export REVIEWED=0000000000000000000000000000000000000001 ;; esac
             mkdir -p "$STATE"; : > "$STATE/merge"
             rc=0
             PATH="$t/bin:$PATH" bash "$t/arm.sh" > "$STATE/out" 2>&1 || rc=$?
@@ -1024,19 +1023,20 @@ jobs:
             fi
             if [ -n "$problem" ]; then echo "arm case $name: $problem"; cat "$STATE/out" "$STATE/merge"; bad=1; fi
           done <<'CASES'
-          approved-head|||||||yes|set|
-          workflow-edit-approved-uses-runner-login|||||1|botok|yes|unset|
-          workflow-rename-approved-uses-runner-login|||||rename|botok|yes|unset|
-          workflow-edit-no-bot-approval-keeps-app-token|||||1||yes|set|
-          workflow-edit-approval-by-someone-else-keeps-app-token|||||1|other|yes|set|
-          workflow-edit-file-list-fails|||||fail|botok|no||1
-          workflow-edit-stale-sha|0000000000000000000000000000000000000001||||1|botok|no||
-          workflow-edit-draft||1|||1|botok|no||
-          workflow-edit-already-armed|||1||1|botok|no||
-          stale-sha-after-bot-approval|0000000000000000000000000000000000000001|||||botok|no||
-          draft||1||||botok|no||
-          already-armed|||1|||botok|no||
-          closed||||1||botok|no||
+          approved-head||||||sha|yes|set|
+          approved-head-in-an-arm-dispatch|||||||yes|set|
+          workflow-edit-reviewed-uses-runner-login|||||1|sha|yes|unset|
+          workflow-rename-reviewed-uses-runner-login|||||rename|sha|yes|unset|
+          workflow-edit-arm-dispatch-keeps-app-token|||||1||yes|set|
+          workflow-edit-other-sha-reviewed-keeps-app-token|||||1|other|yes|set|
+          workflow-edit-file-list-fails|||||fail|sha|no||1
+          workflow-edit-stale-sha|0000000000000000000000000000000000000001||||1|sha|no||
+          workflow-edit-draft||1|||1|sha|no||
+          workflow-edit-already-armed|||1||1|sha|no||
+          stale-sha-after-bot-approval|0000000000000000000000000000000000000001|||||sha|no||
+          draft||1||||sha|no||
+          already-armed|||1|||sha|no||
+          closed||||1||sha|no||
           CASES
           test "$bad" -eq 0
       - name: Infra-wall classifier (fake gh)

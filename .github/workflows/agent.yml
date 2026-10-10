@@ -829,6 +829,8 @@ jobs:
       REPO: ${{ github.repository }}
       PR: ${{ inputs.arm_pr || inputs.review_pr }}
       SHA: ${{ inputs.arm_sha || needs.review.outputs.approved_sha }}
+      # The head this run's own review job approved; empty on an arm_pr dispatch.
+      REVIEWED: ${{ inputs.arm_pr == '' && needs.review.outputs.approved_sha || '' }}
     steps:
       - name: Read App private key
         id: app-key
@@ -862,16 +864,16 @@ jobs:
           [ "$(jq -r .draft <<<"$pr")" != true ] || { echo "#$PR is a draft; not arming"; exit 0; }
           [ "$(jq -r '.auto_merge != null' <<<"$pr")" != true ] || { echo "#$PR is already armed"; exit 0; }
           # The App has no workflows permission, so GitHub refuses its arm on a PR
-          # that edits .github/workflows/**. For such a PR whose head carries the
-          # bot's own coordinator-approval comment, the arm uses the runner
-          # user's gh login (GH_TOKEN and GITHUB_TOKEN unset), the way the
-          # orchestrator job does. Without that comment, or for any other PR, it
-          # keeps the App token, so a workflow edit never gets the wider login
-          # unless the review approved this exact head. A failed read of the file
-          # list or the comments fails the step; it never falls to the wider login.
+          # that edits .github/workflows/**. For such a PR the arm uses the
+          # runner user's gh login (GH_TOKEN and GITHUB_TOKEN unset), the way the
+          # orchestrator job does, but only when this same run's review job just
+          # approved this exact head (REVIEWED, from the review job's output).
+          # No comment or dispatch input can switch it on. Any other arm, including
+          # a person's approval relayed through arm_pr, keeps the App token. A
+          # failed read of the file list fails the step; it never falls to the
+          # wider login.
           files=$(gh api --paginate "repos/$REPO/pulls/$PR/files" --jq '.[] | .filename, (.previous_filename // empty)')
-          approved=$(GH_TOKEN=$ARM_TOKEN gh api --paginate "repos/$REPO/issues/$PR/comments?per_page=100" --jq "[.[] | select(.user.login == \"github-actions[bot]\" and (.body | startswith(\"coordinator-approval: $SHA\")))] | length" | awk '{n+=$1} END{print n+0}')
-          if grep -q '^\.github/workflows/' <<<"$files" && [ "$approved" != 0 ]; then
+          if grep -q '^\.github/workflows/' <<<"$files" && [ -n "$REVIEWED" ] && [ "$REVIEWED" = "$SHA" ]; then
             env -u GH_TOKEN -u GITHUB_TOKEN gh pr merge "$PR" -R "$REPO" --auto --squash --match-head-commit "$SHA"
             echo "armed #$PR at $SHA (workflow edit, runner login)"
           else
