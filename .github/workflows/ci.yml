@@ -208,9 +208,11 @@ jobs:
           echo 'CLOUDFLARE_API_TOKEN=planted' > "$HOME/.config/cloudflare/deploy-ci.env"
           echo visible > "$HOME/.config/control"
           test ! -e "$HOME/.config/fleet-ops/planted-seat"
+          test ! -e "$HOME/.config/fleet-ops/litellm-master-key.env"
           test ! -e "$HOME/.config/fleet-worker/planted-key"
-          trap 'rm -f "$HOME/.config/gh/hosts.yml" "$HOME/.config/cloudflare/deploy-ci.env" "$HOME/.config/control" "$HOME/.config/fleet-ops/planted-seat" "$HOME/.config/fleet-worker/planted-key"' EXIT
+          trap 'rm -f "$HOME/.config/gh/hosts.yml" "$HOME/.config/cloudflare/deploy-ci.env" "$HOME/.config/control" "$HOME/.config/fleet-ops/planted-seat" "$HOME/.config/fleet-ops/litellm-master-key.env" "$HOME/.config/fleet-worker/planted-key"' EXIT
           echo planted > "$HOME/.config/fleet-ops/planted-seat"
+          echo planted > "$HOME/.config/fleet-ops/litellm-master-key.env"
           echo planted > "$HOME/.config/fleet-worker/planted-key"
           sealed=0
           for line in "${lines[@]}"; do
@@ -224,15 +226,17 @@ jobs:
             # inish-daily line (the one that does) must keep doing both.
             # shellcheck disable=SC2016 # the line's literal text names $HOME, unexpanded
             case "$line" in
-              *'--tmpfs $HOME/.config/fleet-ops'*)
+              *'--tmpfs $HOME/.config/fleet-ops '*)
                 "${jail[@]}" test ! -e "$HOME/.config/fleet-ops/planted-seat"
+                # the router key is the one file pi needs back, deliberately
+                "${jail[@]}" test -r "$HOME/.config/fleet-ops/litellm-master-key.env"
                 "${jail[@]}" test ! -e "$HOME/.config/fleet-worker/planted-key"
                 sealed=$((sealed + 1)) ;;
             esac
           done
           test "$sealed" -ge 1
           test -r "$HOME/.config/gh/hosts.yml"
-          rm -f "$HOME/.config/fleet-ops/planted-seat" "$HOME/.config/fleet-worker/planted-key"
+          rm -f "$HOME/.config/fleet-ops/planted-seat" "$HOME/.config/fleet-ops/litellm-master-key.env" "$HOME/.config/fleet-worker/planted-key"
           rm -f "$HOME/.config/gh/hosts.yml" "$HOME/.config/cloudflare/deploy-ci.env" "$HOME/.config/control"
       - name: No shell ${...} or bare %s/%u/%h inside systemd Exec lines (fleet-ops#8382)
         # systemd expands ${...} and % specifiers itself, before any interpreter
