@@ -61,7 +61,23 @@ def route(node, labels):
     return out | {node["receiver"]}
 
 
+def selftest():
+    """The tree walk must follow Alertmanager: a matching child (also with continue)
+    contributes its own receiver, or its sub-route's when one matches; a non-matching
+    sub-route leaves the child's receiver; the root applies only when nothing matched."""
+    tree = {"receiver": "root", "routes": [
+        {"receiver": "a", "object_matchers": [["x", "=", "1"]], "continue": True,
+         "routes": [{"receiver": "a-sub", "object_matchers": [["y", "=", "1"]]}]},
+        {"receiver": "b", "object_matchers": [["x", "=~", "1|2"]]}]}
+    assert route(tree, {"x": "1", "y": "1"}) == {"a-sub", "b"}
+    assert route(tree, {"x": "1", "y": "0"}) == {"a", "b"}
+    assert route(tree, {"x": "2"}) == {"b"}
+    assert route(tree, {"x": "3"}) == {"root"}
+    assert route(tree, {"x": "11"}) == {"root"}  # =~ is anchored
+
+
 def main(root):
+    selftest()
     rules, policy, contacts = [], None, set()
     for f in sorted(Path(root).glob("*.y*ml")):
         doc = yaml.safe_load(f.read_text()) or {}
