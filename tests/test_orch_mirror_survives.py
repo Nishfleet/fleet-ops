@@ -110,9 +110,16 @@ def test_mirror_with_a_damaged_object_store_is_rebuilt(tmp_path):
     (mirror / "objects" / blob[:2] / blob[2:]).unlink()
     _commit(tmp_path, "next", line="b")
     shutil.rmtree(wt)
+    # A hand-off that died before its push leaves its commits on a local branch.
+    _git("branch", "orch/issue-localonly", "refs/remotes/origin/main", cwd=mirror)
     r = _step(env)
     assert r.returncode == 0, r.stderr
-    assert "rebuilding" in r.stdout + r.stderr
+    assert "setting it aside" in r.stdout + r.stderr
+    # The damaged mirror is moved, not deleted, so the local-only branch can be salvaged.
+    aside = list(mirror.parent.parent.glob("orch-damaged-fleet-ops-*.git"))
+    assert len(aside) == 1
+    branches = subprocess.run(["git", "--git-dir", str(aside[0]), "branch", "--list", "orch/issue-localonly"], capture_output=True, text=True).stdout
+    assert "orch/issue-localonly" in branches
     assert (wt / ".git").exists()
     tip = subprocess.run(["git", "-C", str(wt), "log", "-1", "--format=%s"], capture_output=True, text=True).stdout.strip()
     assert tip == "next"

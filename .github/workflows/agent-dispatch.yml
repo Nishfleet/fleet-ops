@@ -1130,17 +1130,23 @@ jobs:
           # The age-out that deleted HEAD also removed old objects, so the same
           # mirror can fail the fetch with "unresolved deltas" (fleet-ops#9526).
           # The mirror is a cache of origin: when the fetch fails AND the object
-          # store does not pass a connectivity check, throw it away and fetch
-          # fresh. A fetch that fails on an intact mirror (network, credential,
-          # a repo the login cannot read) is not rebuilt: it stays a loud
-          # failure and the local-only hand-off branches survive.
+          # store does not pass a connectivity check, set it aside and fetch
+          # fresh. It is moved, not deleted, because it can hold local-only
+          # hand-off branches (a hand-off that died before its push); the aside
+          # copy sits beside the worktrees, where the 3-day age-out reaps it, so
+          # there is a window to salvage from it. A fetch that fails on an intact
+          # mirror (network, credential, a repo the login cannot read) is not
+          # rebuilt: it stays a loud failure. Runs of one repo are serialised by
+          # the job's concurrency group, and each repo has its own mirror, so
+          # nothing else is using this one.
           if ! fetch_mirror; then
             if git -C "$mirror" fsck --connectivity-only --no-dangling >/dev/null 2>&1; then
               echo "::error::orchestrate: fetch failed on an intact mirror; not rebuilding it"
               exit 1
             fi
-            echo "::warning::orchestrate: the mirror's object store is damaged; rebuilding it from origin"
-            rm -rf "$mirror"
+            aside="$HOME/workspaces/agent-worktrees/orch-damaged-$repo-$(date +%s).git"
+            echo "::warning::orchestrate: the mirror's object store is damaged; setting it aside and fetching fresh"
+            mv "$mirror" "$aside"
             init_mirror
             fetch_mirror
           fi
