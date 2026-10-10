@@ -990,6 +990,9 @@ jobs:
           v_dash='blocker: -\nrisk: x\nAPPROVE'
           v_bold='**Blocker** — none found!\nrisk: x\nAPPROVE'
           v_ident='BLOCKER: None identified;\nrisk: x\nAPPROVE'
+          v_expl='Blockers: none. The diff only adds an advisory job; the gate is untouched.\nrisk: x\nAPPROVE'
+          v_dashexpl='**blocker:** none found — nothing here reaches the guard.\nrisk: x\nAPPROVE'
+          v_semi='blocker: n/a; see the risks.\nrisk: x\nAPPROVE'
           real_none_of='blocker: none of the callers check the token, so any id is accepted.\nAPPROVE'
           real_nothing='blocker: nothing stops a forged id from reaching the writer.\nAPPROVE'
           header_echo='blocker/risk/nit, one line each, then the three riskiest lines checked.\nNo blockers.'
@@ -997,7 +1000,7 @@ jobs:
           none_words='blocker: none found in the lock file, the gate is gone.\nAPPROVE'
           first_none='Blockers: none\nchecked: a, b'
           none_then_real='blocker: none.\nblocker .github/workflows/new.yml: removes a gate\nAPPROVE'
-          : "$none" "$clean" "$blocked" "$clean_ok" "$blocked_b" "$blocked_ok" "$forged" "$none_ok" "$first_none" "$none_then_real"  "$none_words" "$v_none" "$v_found" "$v_nob" "$v_nothing" "$v_na" "$v_dash" "$v_bold" "$v_ident" "$real_none_of" "$real_nothing" "$header_echo"  # read through ${!first} and ${!second}
+          : "$none" "$clean" "$blocked" "$clean_ok" "$blocked_b" "$blocked_ok" "$forged" "$none_ok" "$first_none" "$none_then_real"  "$none_words" "$v_none" "$v_found" "$v_nob" "$v_nothing" "$v_na" "$v_dash" "$v_bold" "$v_ident" "$v_expl" "$v_dashexpl" "$v_semi" "$real_none_of" "$real_nothing" "$header_echo"  # read through ${!first} and ${!second}
           # case: name|guard (1 = edits a workflow)|judge choice|judge p|first review|second review|extra env|want approved (yes/no)|want exit|want models
           while IFS='|' read -r name guard choice p first second extra approved code models; do
             export STATE=$t/$name RUNNER_TEMP=$t/$name/tmp GITHUB_OUTPUT=$t/$name/output GUARD=$guard JEV_CHOICE=$choice JEV_P=$p FIRST=${!first} SECOND=${!second} \
@@ -1014,8 +1017,8 @@ jobs:
                   near-approval) prior="reviewer: $SHA approved, but only 50% sure" ;;
                   fallback-text) prior="reviewer: $SHA edits the merge guard or a workflow, so a person approves it. Nothing was approved or blocked automatically. Fallback: an approver's PR comment line \`coordinator-approval: $SHA\`." ;;
                   blocked-none-only) prior="$(printf 'reviewer: %s blocked. This change edits the merge guard or a workflow, so it needs both reviews to approve.\n\nSecond reviewer (GLM family, senior seat): blocked\nblocker: none.\n\nrisk: x' "$SHA")" ;;
-                  blocked-none-thrice) copies=3; prior="$(printf 'reviewer: %s blocked. Fix these.\n\nblocker: none found.' "$SHA")" ;;
-                  blocked-none-twice) copies=2; prior="$(printf 'reviewer: %s blocked. Fix these.\n\nblocker: none.' "$SHA")" ;;
+                  blocked-none-five) copies=5; prior="$(printf 'reviewer: %s blocked. Fix these.\n\nblocker: none found.' "$SHA")" ;;
+                  blocked-none-four) copies=4; prior="$(printf 'reviewer: %s blocked. Fix these.\n\nblocker: none.' "$SHA")" ;;
                   blocked-none-and-real) prior="$(printf 'reviewer: %s blocked. Fix these.\n\nblocker: none.\nblocker a.yml: real problem' "$SHA")" ;;
                   *) echo "case $name: unknown PRIOR value ${extra#PRIOR=}"; bad=1; continue ;;
                 esac
@@ -1063,6 +1066,9 @@ jobs:
           second-dash-line-approves|1|approve|0.95|clean|v_dash||yes|0|worker-capable senior
           second-bold-line-approves|1|approve|0.95|clean|v_bold||yes|0|worker-capable senior
           second-ident-line-approves|1|approve|0.95|clean|v_ident||yes|0|worker-capable senior
+          second-expl-line-approves|1|approve|0.95|clean|v_expl||yes|0|worker-capable senior
+          second-dashexpl-line-approves|1|approve|0.95|clean|v_dashexpl||yes|0|worker-capable senior
+          second-semi-line-approves|1|approve|0.95|clean|v_semi||yes|0|worker-capable senior
           second-none-of-the-callers-blocks|1|approve|0.95|clean|real_none_of||no|0|worker-capable senior
           second-nothing-stops-blocks|1|approve|0.95|clean|real_nothing||no|0|worker-capable senior
           first-header-echo-approves||approve|0.95|header_echo|none||yes|0|worker-capable
@@ -1074,8 +1080,8 @@ jobs:
           none-line-then-real-blocker-blocks|1|approve|0.95|clean|none_then_real||no|0|worker-capable senior
           prior-fallback-text-is-reviewed|1|approve|0.95|clean|clean_ok|PRIOR=fallback-text|yes|0|worker-capable senior
           prior-blocked-by-a-none-line-is-reviewed|1|approve|0.95|clean|clean_ok|PRIOR=blocked-none-only|yes|0|worker-capable senior
-          prior-blocked-by-none-lines-twice-is-reviewed|1|approve|0.95|clean|clean_ok|PRIOR=blocked-none-twice|yes|0|worker-capable senior
-          prior-blocked-by-none-lines-thrice-skips|1|approve|0.95|clean|clean_ok|PRIOR=blocked-none-thrice|no|0|
+          prior-blocked-by-none-lines-four-is-reviewed|1|approve|0.95|clean|clean_ok|PRIOR=blocked-none-four|yes|0|worker-capable senior
+          prior-blocked-by-none-lines-five-skips|1|approve|0.95|clean|clean_ok|PRIOR=blocked-none-five|no|0|
           prior-blocked-with-real-blocker-skips|1|approve|0.95|clean|clean_ok|PRIOR=blocked-none-and-real|no|0|
           prior-near-approval-text-is-reviewed|1|approve|0.95|clean|clean_ok|PRIOR=near-approval|yes|0|worker-capable senior
           CASES
