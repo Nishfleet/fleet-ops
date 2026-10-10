@@ -473,6 +473,21 @@ Switch off: delete `50-alert-on-stop.conf` (alert and `OOMPolicy`), the
 next run installs it again. The running `ExecStopPost=` and `-500` stay until
 Remote Control is next restarted.
 
+### Remote Control keeps the Max login (2026-10-10)
+
+`claude-remote-control.service.d/10-max-config.conf` sets
+`CLAUDE_CONFIG_DIR=/home/nish/.claude-max`. The default login in `~/.claude`
+is now a Team seat whose organization policy disables Remote Control, and on
+that login the server exits at once and `Restart=always` loops on it (the
+link was down from 10:52 to 10:56 UTC on 2026-10-10). The drop-in keeps the
+link on the separate Max config dir whatever the default login is. A new
+config dir registers a new Remote Control environment on claude.ai; the old
+one stays listed as offline.
+
+Switch off: delete the file, add its path to `retired` in `ansible/host.yml`,
+`systemctl daemon-reload`, and restart Remote Control, only once the default
+login allows Remote Control again.
+
 ## Agent autonomy drop-in
 
 `rootfs/etc/claude-code/managed-settings.d/50-agent-autonomy.json` is a Claude
