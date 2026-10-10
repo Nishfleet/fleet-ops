@@ -95,18 +95,27 @@ The rules still in force:
   Cursor (cap 1) is the fallback when both seats are at 95% of their
   five-hour limit, the claude cap is reached, or claude exits on a rate limit
   or 429.
-  Pacing ("fill mode"), in plain words: the seats report only five-hour
-  windows (no weekly limit), and the senior lane alone uses about 2% of their
-  capacity, so ordinary issues also go to claude (Sonnet) whenever it is
-  cheap to do so. An ordinary issue takes the claude lane when the seat the
-  picker chooses is under `CLAUDE_FILL_BELOW` percent of its five-hour limit
-  (repo variable, default 80) and fewer than `CLAUDE_MAX_LIVE` claude workers
-  are running (repo variable, default 4, clamped to 6). Otherwise it keeps
-  the old order (pi, opencode, Devin) and never uses Cursor. A seat over the
-  fill line gets no new ordinary jobs but still takes senior jobs up to 95%,
-  and a usage reading that fails never starts a fill job. The Gate prints one
-  line per decision: `claude fill: seat=<a|b> five_hour=<n> live=<n>/<cap> ->
-  claude|skip(<reason>)`. Memory: each worker sits under its runner's
+  Routing by judgment, in plain words: Claude does the judgment work, free
+  workers do the mechanical work, and Jev decides which is which. For an issue
+  that is not `strong-only`, the Gate asks Jev one typed question from the issue
+  title and body: does completing this need engineering judgment (a design
+  choice, ambiguity, multi-file reasoning, debugging), as opposed to a
+  mechanical, fully specified change? Only the extremes count. At 0.9 or more
+  the issue goes to the claude lane (Sonnet, or Opus with `needs-opus`); at 0.1
+  or less it goes to the free lanes (pi, then opencode, then Devin), whatever
+  headroom Claude has. Anything between, or a Jev call that fails (a warning is
+  logged), goes to the free lanes; `strong-only` always goes to claude. The
+  decision is written as `judgment: p=<x> -> claude|free (<reason>)` to the log
+  and the job summary. Claude still obeys its limits: at most
+  `CLAUDE_MAX_LIVE` live claude workers (repo variable, default 4, clamped to
+  6) and a seat under 95% of its five-hour limit; past those a judgment job
+  falls to Cursor if it is `strong-only`, else to the free order, and never
+  uses Cursor. The Gate also logs `claude lane: seat=<a|b> five_hour=<n>
+  live=<n>/<cap> -> claude|skip(<reason>)`. Memory: each worker sits under its
+  runner's `MemoryHigh=4G` and `MemoryMax=8G`, and all runners share
+  `agent.slice` (`MemoryHigh=26G`, `MemoryMax=28G`), so the default 4 live
+  claude workers hold about 16G at the throttle line and the clamp of 6 about
+  24G. First reviews of every PR stay on Claude (above); Jev gives the verdict. Memory: each worker sits under its runner's
   `MemoryHigh=4G` and `MemoryMax=8G`, and all runners share `agent.slice`
   (`MemoryHigh=26G`, `MemoryMax=28G`), so the default 4 live claude workers
   hold about 16G at the throttle line and the clamp of 6 about 24G. The Worker step records the engines that ran in a `builder-engine:`

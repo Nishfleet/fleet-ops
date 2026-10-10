@@ -99,7 +99,7 @@ def test_usage_line_reports_mode_seat_and_five_hour(tmp_path):
     assert _run_usage(d, 7200, "10", "20") == "default b 20"
 
 
-def test_fill_threshold_moves_to_the_other_seat_then_is_full(tmp_path):
+def test_lower_threshold_moves_to_the_other_seat_then_is_full(tmp_path):
     # at 80 the bucket seat (85) is skipped for the other (50); both over 80 is full
     assert _run_usage(tmp_path, 0, "85", "50", skip_at="80") == "default b 50"
     d = tmp_path / "b"

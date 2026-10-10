@@ -3,13 +3,16 @@ text (read out with yq, never a copy).
 
 Gate: strong-only work goes to claude-sonnet-5-5, to claude-opus-5-5 after two
 failed runs or with needs-opus, and to Cursor when both seats are full or the
-claude cap (2) is reached.
+claude cap is reached. Any other issue is classified by a stubbed Jev: p >= 0.9
+judgment goes to claude, p <= 0.1 or anything between (or a Jev error) to the
+free pi, opencode, devin order; the decision is logged and written to the job
+summary.
 Worker: the claude invocation, the seat choice, the rate-limit fallthrough to
 Cursor, and the engines-ran record the review reads.
 Secret isolation: every other engine's jail hides the Claude seat logins; the
 claude jail sees only its own seat. The last test runs real bwrap.
 
-Fakes (gh, pgrep, bwrap, claude, cursor-agent, the seat script) live in a temp
+Fakes (gh, pgrep, curl as Jev, bwrap, claude, cursor-agent, the seat script) live in a temp
 dir. bwrap's fake drops its own options and runs the command after `--`, and
 logs its argv.
 """
@@ -66,6 +69,15 @@ echo "cursor-agent $*" >> "$STATE/cursor.log"
 NOOP = """#!/bin/bash
 echo "$0 $*" >> "$STATE/noop.log"
 """
+# Jev stub: JEV_FAIL makes it exit non-zero; otherwise it answers JEV_CHOICE with JEV_P.
+CURL = """#!/bin/bash
+echo "$*" >> "$STATE/curl.log"
+cat >/dev/null <<<""
+[ -z "$JEV_FAIL" ] || exit 22
+for a in "$@"; do last=$a; done
+echo "$last" > "$STATE/jev-body.json"
+echo "{\\"answers\\":{\\"needs_judgment\\":{\\"choice\\":\\"$JEV_CHOICE\\",\\"probabilities\\":{\\"$JEV_CHOICE\\":$JEV_P}}}}"
+"""
 SYS_PATH = "/usr/bin:/bin"
 
 
@@ -81,7 +93,7 @@ if [ "$1" = --usage ]; then echo "$mode a $util"; else echo "$mode"; fi
 def _bin(tmp, seat_out, util="10"):
     b = tmp / "bin"
     b.mkdir()
-    for name, body in (("pgrep", PGREP), ("gh", GH), ("bwrap", BWRAP), ("claude", CLAUDE), ("cursor-agent", CURSOR), ("pi", NOOP), ("devin", NOOP), ("opencode", NOOP)):
+    for name, body in (("pgrep", PGREP), ("gh", GH), ("bwrap", BWRAP), ("claude", CLAUDE), ("cursor-agent", CURSOR), ("pi", NOOP), ("devin", NOOP), ("opencode", NOOP), ("curl", CURL)):
         (b / name).write_text(body)
         (b / name).chmod(0o755)
     home = tmp / "home"
@@ -93,6 +105,7 @@ def _bin(tmp, seat_out, util="10"):
     (home / ".config/fleet-ops/seats/cursor.env").write_text("")
     (home / ".config/fleet-ops/seats/cursor-2.env").write_text("")
     (home / ".config/fleet-ops/seats/mobbin-mcp.env").write_text("")
+    (home / ".config/fleet-ops/seats/typesafe-jev.env").write_text("LITELLM_JEV_KEY=not-a-key\n")
     return b, home
 
 
@@ -101,13 +114,14 @@ def _comments(failed=0):
 
 
 def _gate_full(tmp_path, labels=",strong-only,", failed=0, seat="keep", live=None, util="10", env=None):
+    """Runs the Gate's engine routing; the issue is titled t with body b."""
     script = _step("work", "Gate")
     start = script.index("claude_seat=")
     start = script.rindex("live() {", 0, start)
     end = script.index('gh issue edit "$i" -R "$REPO" --remove-label agent-ready')
     seg = script[start:end]
     b, home = _bin(tmp_path, seat, util)
-    prog = f'skip() {{ echo "SKIP $1"; exit 0; }}\ni=5 REPO=o/r labels="{labels}"\n{seg}\necho "senior=$senior"\necho "engine=$engine model=$claude_model"\n'
+    prog = f'skip() {{ echo "SKIP $1"; exit 0; }}\ni=5 REPO=o/r labels="{labels}"\nissue=\'{{"title":"t","body":"b"}}\'\n{seg}\necho "senior=$senior"\necho "engine=$engine model=$claude_model"\n'
     env = {**os.environ, "HOME": str(home), "PATH": f"{b}:{SYS_PATH}", "COMMENTS_JSON": _comments(failed), **{f"LIVE_{k}": str(v) for k, v in (live or {}).items()}, **(env or {})}
     r = subprocess.run(["bash", "-c", prog], env=env, capture_output=True, text=True)
     assert r.returncode == 0, r.stderr
@@ -148,80 +162,116 @@ def test_senior_claude_cap_then_cursor_then_wait(tmp_path):
     assert _gate(d, live={"claude": 4, "cursor_agent": 1}) == "SKIP lanes-full"
 
 
-def _pacing(tmp_path, util, labels=",bug,", live=None, env=None, seat="keep"):
-    out = _gate_full(tmp_path, labels=labels, util=util, live=live, env=env, seat=seat)
-    log = [ln for ln in out if ln.startswith("claude fill:")]
+def _route(tmp_path, jev=None, labels=",bug,", util="10", live=None, env=None, seat="keep"):
+    """Runs the Gate's routing. jev = (choice, p), "fail", or None for no stub answer."""
+    state = tmp_path / "state"
+    state.mkdir()
+    summary = tmp_path / "summary.md"
+    e = {"STATE": str(state), "GITHUB_STEP_SUMMARY": str(summary), "JEV_CHOICE": "", "JEV_P": "0", "JEV_FAIL": "", **(env or {})}
+    if jev == "fail":
+        e["JEV_FAIL"] = "1"
+    elif jev:
+        e["JEV_CHOICE"], e["JEV_P"] = jev
+    out = _gate_full(tmp_path, labels=labels, util=util, live=live, env=e, seat=seat)
+    log = [ln for ln in out if ln.startswith("judgment:")]
     assert len(log) == 1, out
-    return out[-1], log[0]
+    assert summary.read_text().strip() == log[0], "the decision is recorded in the job summary"
+    return out[-1], log[0], out, state
 
 
-def test_fill_below_threshold_sends_ordinary_work_to_claude_sonnet(tmp_path):
-    last, log = _pacing(tmp_path, "50")
+FREE = ("engine=pi", "engine=opencode", "engine=devin")
+
+
+def test_judgment_p_95_goes_to_claude_sonnet(tmp_path):
+    last, log, out, _ = _route(tmp_path, ("judgment", "0.95"))
     assert last == "engine=claude model=claude-sonnet-5-5"
-    assert log == "claude fill: seat=a five_hour=50 live=0/4 -> claude"
+    assert log == "judgment: p=0.95 -> claude (needs judgment)"
+    assert "claude lane: seat=a five_hour=10 live=0/4 -> claude" in out
 
 
-def test_fill_skips_at_the_threshold_and_keeps_the_old_order(tmp_path):
-    last, log = _pacing(tmp_path, "80")
-    assert log == "claude fill: seat=a five_hour=80 live=0/4 -> skip(seat-full)"
-    assert last.split()[0] in ("engine=pi", "engine=opencode", "engine=devin")
+def test_mechanical_p_05_goes_to_the_free_lanes(tmp_path):
+    # Jev answers "mechanical" at 0.95, so P(judgment) = 0.05
+    last, log, _, _ = _route(tmp_path, ("mechanical", "0.95"))
+    assert log == "judgment: p=0.05 -> free (mechanical)"
+    assert last.split()[0] in FREE
 
 
-def test_fill_threshold_is_the_repo_variable(tmp_path):
-    assert _pacing(tmp_path, "60", env={"CLAUDE_FILL_BELOW": "50"})[1].endswith("skip(seat-full)")
+def test_free_lanes_whatever_claude_headroom(tmp_path):
+    last, _, out, _ = _route(tmp_path, ("mechanical", "0.95"), util="0")
+    assert last.split()[0] in FREE and not any("claude lane" in ln for ln in out)
+
+
+def test_unsure_strong_only_goes_to_claude(tmp_path):
+    last, log, _, state = _route(tmp_path, ("judgment", "0.5"), labels=",strong-only,")
+    assert last == "engine=claude model=claude-sonnet-5-5"
+    assert log == "judgment: p=n/a -> claude (strong-only label)"
+    assert not (state / "curl.log").exists()  # the label decides; Jev is not asked
+
+
+def test_unsure_without_strong_only_goes_to_the_free_lanes(tmp_path):
+    last, log, _, _ = _route(tmp_path, ("judgment", "0.5"))
+    assert log == "judgment: p=0.5 -> free (not sure enough)"
+    assert last.split()[0] in FREE
     d = tmp_path / "b"
     d.mkdir()
-    assert _pacing(d, "40", env={"CLAUDE_FILL_BELOW": "50"})[0].startswith("engine=claude ")
-
-
-def test_fill_skips_at_the_live_cap(tmp_path):
-    last, log = _pacing(tmp_path, "10", live={"claude": 4})
-    assert log == "claude fill: seat=? five_hour=n/a live=4/4 -> skip(cap)"
-    assert not last.startswith("engine=claude")
-
-
-def test_cap_is_the_repo_variable_and_clamped_to_six(tmp_path):
-    assert _pacing(tmp_path, "10", live={"claude": 2}, env={"CLAUDE_MAX_LIVE": "2"})[1].endswith("skip(cap)")
-    d = tmp_path / "b"
-    d.mkdir()
-    assert _pacing(d, "10", live={"claude": 5}, env={"CLAUDE_MAX_LIVE": "99"})[1].endswith("-> claude")
+    # 0.89 is still not enough, 0.9 is
+    assert _route(d, ("judgment", "0.89"))[0].split()[0] in FREE
     d = tmp_path / "c"
     d.mkdir()
-    assert _pacing(d, "10", live={"claude": 6}, env={"CLAUDE_MAX_LIVE": "99"})[1].endswith("live=6/6 -> skip(cap)")
+    assert _route(d, ("judgment", "0.9"))[0].startswith("engine=claude ")
 
 
-def test_strong_only_still_takes_a_seat_at_90_percent(tmp_path):
-    last, log = _pacing(tmp_path, "90", labels=",strong-only,")
-    assert last == "engine=claude model=claude-sonnet-5-5"
-    assert log == "claude fill: seat=a five_hour=90 live=0/4 -> claude"
-    # the same seat gets no new fill job
+def test_jev_error_falls_through_with_a_warning(tmp_path):
+    last, log, out, _ = _route(tmp_path, "fail")
+    assert log == "judgment: p=n/a -> free (jev-error)"
+    assert any(ln.startswith("::warning::judgment") for ln in out)
+    assert last.split()[0] in FREE
     d = tmp_path / "b"
     d.mkdir()
-    assert _pacing(d, "90", labels=",bug,")[1].endswith("skip(seat-full)")
+    # a strong-only issue still goes to claude when Jev is down (it is not asked)
+    assert _route(d, "fail", labels=",strong-only,")[0].startswith("engine=claude ")
 
 
-def test_both_seats_full_falls_back_to_the_old_lanes(tmp_path):
-    last, log = _pacing(tmp_path, "99")
-    assert log.endswith("skip(seat-full)") and last.split()[0] in ("engine=pi", "engine=opencode", "engine=devin")
+def test_jev_is_asked_the_question_with_the_issue_text(tmp_path):
+    _, _, _, state = _route(tmp_path, ("judgment", "0.95"))
+    body = json.loads((state / "jev-body.json").read_text())
+    q = body["questions"]["needs_judgment"]
+    assert q["instructions"] == "Does completing this issue require engineering judgment (design choice, ambiguity, multi-file reasoning, debugging), as opposed to a mechanical, fully specified change?"
+    assert body["model"] == "jev-latest" and body["state"]["item"].startswith("t\n\nb")
+    assert set(q["criteria"]) == {"judgment", "mechanical"}
+
+
+def test_judgment_job_with_both_seats_full_falls_back(tmp_path):
+    last, log, out, _ = _route(tmp_path, ("judgment", "0.95"), util="99")
+    assert log == "judgment: p=0.95 -> claude (needs judgment)"
+    assert "claude lane: seat=a five_hour=99 live=0/4 -> skip(seat-full)" in out
+    assert last.split()[0] in FREE  # pi for an ordinary job, never Cursor
     d = tmp_path / "b"
     d.mkdir()
-    last, log = _pacing(d, "99", labels=",strong-only,")
-    assert log.endswith("skip(seat-full)") and last.startswith("engine=cursor ")
+    assert _route(d, labels=",strong-only,", util="99")[0].startswith("engine=cursor ")
 
 
-def test_fill_never_runs_on_an_unreadable_usage_but_strong_only_does(tmp_path):
-    assert _pacing(tmp_path, "n/a")[1].endswith("skip(usage-unreadable)")
+def test_claude_cap_is_enforced_and_clamped(tmp_path):
+    last, _, out, _ = _route(tmp_path, ("judgment", "0.95"), live={"claude": 4})
+    assert "claude lane: seat=? five_hour=n/a live=4/4 -> skip(cap)" in out
+    assert last.split()[0] in FREE
     d = tmp_path / "b"
     d.mkdir()
-    assert _pacing(d, "n/a", labels=",strong-only,")[0].startswith("engine=claude ")
+    assert any("live=2/2 -> skip(cap)" in ln for ln in _route(d, ("judgment", "0.95"), live={"claude": 2}, env={"CLAUDE_MAX_LIVE": "2"})[2])
+    d = tmp_path / "c"
+    d.mkdir()
+    assert _route(d, ("judgment", "0.95"), live={"claude": 5}, env={"CLAUDE_MAX_LIVE": "99"})[0].startswith("engine=claude ")
+    d = tmp_path / "e"
+    d.mkdir()
+    assert any("live=6/6 -> skip(cap)" in ln for ln in _route(d, ("judgment", "0.95"), live={"claude": 6}, env={"CLAUDE_MAX_LIVE": "99"})[2])
 
 
-def test_fill_job_is_not_senior_and_never_opus(tmp_path):
-    out = _gate_full(tmp_path, labels=",bug,needs-opus,", util="10", failed=3)
-    assert "senior=false" in out and out[-1] == "engine=claude model=claude-sonnet-5-5"
+def test_needs_opus_picks_opus_and_only_claude_jobs_are_senior(tmp_path):
+    last, _, out, _ = _route(tmp_path, ("judgment", "0.95"), labels=",bug,needs-opus,")
+    assert last == "engine=claude model=claude-opus-5-5" and "senior=false" in out
     d = tmp_path / "b"
     d.mkdir()
-    assert "senior=true" in _gate_full(d)
+    assert "senior=true" in _route(d, labels=",strong-only,")[2]
 
 
 def _worker(tmp_path, engine, seat="keep", model="claude-sonnet-5-5", claude_rc=0, claude_out="", cursor_live=0, cfg_dir=True, senior="true"):
@@ -406,13 +456,13 @@ def test_real_jail_other_engines_cannot_read_seat_logins_or_backups(tmp_path):
     assert read_all("claude_jail_b") == {"a": False, **{**none, "b": True, "cj": True}}
 
 
-def test_fill_job_falls_to_pi_not_cursor_when_seats_are_full(tmp_path):
+def test_judgment_job_falls_to_pi_not_cursor_when_seats_are_full(tmp_path):
     r, _, claude, cursor, ran, _, _ = _worker(tmp_path, "claude", seat="full", senior="false")
     assert r.returncode == 0, r.stderr
     assert claude == "" and cursor == "" and ran == ["pi"]
 
 
-def test_fill_job_rate_limited_falls_to_pi_even_with_cursor_busy(tmp_path):
+def test_judgment_job_rate_limited_falls_to_pi_even_with_cursor_busy(tmp_path):
     r, _, claude, cursor, ran, _, _ = _worker(tmp_path, "claude", claude_rc=1, claude_out="429 rate limit", cursor_live=1, senior="false")
     assert r.returncode == 0, r.stderr
     assert "claude -p" in claude and cursor == "" and ran == ["claude", "pi"]
