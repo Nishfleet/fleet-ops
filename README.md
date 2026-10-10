@@ -433,6 +433,46 @@ number after the restart is the real test.
 - Delete it: remove `ansible/update.yml`, the two `fleet-update` units and
   `50-fleet.conf`, and add their `/etc` paths to `retired` in `ansible/host.yml`.
 
+## Remote Control stays on (OOM storm 2026-10-09)
+
+The phone link must not drop, and when it does someone must hear within
+seconds. Measured on 2026-10-09: a secret scan (trufflehog over a full git
+history) started from one Remote Control session grew to 15.4G RSS on the 32G
+host. Nothing capped `claude.slice`, and everything under Remote Control
+inherited `OOMScoreAdjust=-900`, which scores a 15G scan the same as an idle
+session. The kernel killed the unprotected services instead (hermes, the
+router, the executor) and stalled the link for about two minutes with all 8G
+of swap full. Nothing alerted anyone.
+
+| Piece | File | Takes effect |
+| --- | --- | --- |
+| `claude.slice` `MemoryHigh=14G` / `MemoryMax=18G` / `MemorySwapMax=2G` (normal use 6-7G, incident peak 21.5G) | `rootfs/etc/systemd/system/claude.slice` | at the daemon-reload after merge |
+| `OOMPolicy=continue`: a killed child no longer stops the whole unit | `claude-remote-control.service.d/50-alert-on-stop.conf` | at the daemon-reload after merge |
+| `ExecStopPost=` starts `fleet-unit-failed@claude-remote-control.service`, the existing healthchecks.io fail ping (fleet-ops#9033) | same file | next restart of Remote Control (Nish) |
+| `OOMScoreAdjust=-900` to `-500`, so a runaway session child can be chosen | `claude-remote-control.service` | next restart of Remote Control (Nish) |
+| `OOMScoreAdjust=-500` for `hermes-gateway.service` | `hermes-gateway.service.d/70-oom-protect.conf` | next restart of hermes (it restarts itself) |
+
+The alert uses `ExecStopPost=` because `OnFailure=` never fires for this unit:
+it fires on `failed`, and `Restart=always` with `StartLimitIntervalSec=0`
+(`selfheal.conf`) sends every exit to auto-restart. A deliberate restart by
+Nish pings too. The ping needs `HC_URL_RECONCILE` in
+`~/.config/fleet-ops/keystone-hc.env`; unset, the handler logs SKIP and exits 0.
+That check is shared with every `fleet-unit-failed@` caller and is fail-only,
+so it stays down until it is re-armed with a success ping, and a second drop
+while it is still down does not page again.
+
+The LiteLLM router gets no `OOMScoreAdjust`: it runs in the user manager,
+which cannot lower the value below its own 100 (measured:
+`systemd-run --user -p OOMScoreAdjust=-500` reads back 100). The cap above is
+what keeps it from being the victim.
+
+Switch off: delete `50-alert-on-stop.conf` (alert and `OOMPolicy`), the
+`MemoryHigh`/`MemoryMax`/`MemorySwapMax` lines in `claude.slice`, or
+`70-oom-protect.conf`, then `systemctl daemon-reload`. Delete the file from
+`rootfs/` and add its path to `retired` in `ansible/host.yml`, otherwise the
+next run installs it again. The running `ExecStopPost=` and `-500` stay until
+Remote Control is next restarted.
+
 ## Agent autonomy drop-in
 
 `rootfs/etc/claude-code/managed-settings.d/50-agent-autonomy.json` is a Claude
