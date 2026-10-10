@@ -1098,11 +1098,17 @@ jobs:
           repo=${REPO#*/}
           mirror="$HOME/workspaces/agent-worktrees/.orch-mirror/$repo.git"
           wt="$HOME/workspaces/agent-worktrees/orch-$repo-$ISSUE"
-          if [ ! -d "$mirror" ]; then
-            mkdir -p "$(dirname "$mirror")"
+          # Test for a repository, not a directory: a mirror whose HEAD file is
+          # gone (fleet-ops#9526) is a directory that git no longer recognises.
+          # `git init` on it recreates HEAD and keeps the objects, refs and
+          # config, so a damaged mirror is repaired in place, and the remote is
+          # added only when it is missing.
+          if [ "$(git -C "$mirror" rev-parse --is-bare-repository 2>/dev/null)" != true ]; then
+            mkdir -p "$mirror"
             git init -q --bare "$mirror"
-            git -C "$mirror" remote add origin "https://github.com/$REPO.git"
           fi
+          git -C "$mirror" remote get-url origin >/dev/null 2>&1 ||
+            git -C "$mirror" remote add origin "https://github.com/$REPO.git"
           # No GH_TOKEN on the fetch either: the App token cannot read a private
           # repo and has no workflows scope. The runner user's own gh login is the
           # credential (~/.gitconfig -> gh auth git-credential), and a repo it
