@@ -654,14 +654,20 @@ jobs:
     if: inputs.review_pr != '' && inputs.review_sha != ''
     runs-on: [self-hosted, agent]
     timeout-minutes: 20
-    # The approval is a PR comment written with the job's own GITHUB_TOKEN, so
-    # github-actions[bot] is the approver. This job runs from main (agent.yml@main),
-    # so the PR cannot change the reviewer that judges it. A PR that adds its own
-    # workflow could post as the same bot; that is why a PR that edits the guard
-    # list or a workflow needs two independent reviews, not one (below). Arming is
-    # the arm job's, as the worker App.
+    # The approval is a PR comment written as the nishfleet-worker App, so the
+    # approver is nishfleet-worker[bot] and not github-actions[bot] (fleet-ops#9521).
+    # Any workflow in any PR can post as github-actions[bot] with its own
+    # GITHUB_TOKEN, so that login no longer counts. A PR's own workflow cannot
+    # post as the App: the App key is read from the runner's home, and the
+    # `agent` runner group runs agent.yml@refs/heads/main and nothing else.
+    # Known limit: the worker job hands the same App token to the worker
+    # agent, so a worker steered by hostile issue text could post the approval
+    # line as the App on its own PR. Closing that needs a reviewer identity the
+    # worker does not hold. The job's own GITHUB_TOKEN is read-only here. A PR
+    # that edits the guard list or a workflow still needs two independent
+    # reviews, not one (below). Arming is the arm job's, as the same App.
     permissions:
-      pull-requests: write
+      pull-requests: read
     outputs:
       approved_sha: ${{ steps.review.outputs.approved_sha }}
     # A newer head starts its own review; the older one stops.
@@ -676,10 +682,36 @@ jobs:
       # Pi sends this as x-litellm-session-id and exits 1 without it (the work job sets it the same way, #9015).
       FLEET_TASK_ID: run-${{ github.run_id }}-${{ github.run_attempt }}
     steps:
+      - name: Read App private key
+        id: app-key
+        run: |
+          keyfile="$HOME/.config/fleet-worker/nishfleet-worker.private-key.pem"
+          [ -s "$keyfile" ] || { echo "::error::app private key file missing on runner"; exit 1; }
+          while IFS= read -r line || [ -n "$line" ]; do
+            [ -n "$line" ] && echo "::add-mask::$line"
+          done < "$keyfile"
+          {
+            printf 'pem<<APP_PRIVATE_KEY_END\n'
+            cat "$keyfile"
+            printf 'APP_PRIVATE_KEY_END\n'
+          } >> "$GITHUB_OUTPUT"
+      # A PR comment goes through the issue-comments endpoint, so the token
+      # needs issues: write as well as pull-requests: write. Both are inside
+      # the App's grant, and nothing else is asked for.
+      - name: Comment token
+        id: comment-token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          app-id: "4728578"
+          private-key: ${{ steps.app-key.outputs.pem }}
+          permission-issues: write
+          permission-pull-requests: write
       - name: Review the held head
         id: review
         env:
           GH_TOKEN: ${{ github.token }}
+          # Only say() below uses it; the model calls run with it removed.
+          POST_TOKEN: ${{ steps.comment-token.outputs.token }}
           # Pi sends this as x-litellm-session-id; without it the litellm provider refuses to start (0509 run 37676671633).
           FLEET_TASK_ID: review-${{ github.run_id }}-${{ github.run_attempt }}
           # A PR that edits the merge guard or a workflow also needs a second
@@ -692,7 +724,7 @@ jobs:
           SECOND_FAMILY: GLM
         run: |
           set -euo pipefail
-          say() { gh pr comment "$PR" -R "$REPO" --body "$1"; }
+          say() { GH_TOKEN=$POST_TOKEN gh pr comment "$PR" -R "$REPO" --body "$1"; }
           # An infrastructure failure is retry-able: the comment avoids the
           # "reviewer: <sha>" phrase the already-reviewed check looks for, and
           # the job goes red so a re-run reviews the head again.
@@ -724,7 +756,7 @@ jobs:
           # no verdict, so those heads are reviewed. The review then posts a
           # verdict, which ends it: one review per head, not one per event. The
           # verdict phrases end in a full stop, as the comments below write them.
-          # Each phrase must START a line of a comment by github-actions[bot]: the
+          # Each phrase must START a line of a comment by nishfleet-worker[bot]: the
           # hold comment quotes the approval line inside a sentence, and that is
           # not a verdict. A blocked verdict whose only blocker lines say "none"
           # was a misread of the review (see blockers_of), so it does not count
@@ -733,7 +765,7 @@ jobs:
           # review per event. The pages are read as one list (jq -s).
           seen=$(gh api --paginate "repos/$REPO/issues/$PR/comments?per_page=100" | jq -s --arg sha "$SHA" --arg none "$none_re" --arg blk "$blk_re" '
             def blockers: [.[] | select(test($blk; "i"))];
-            [.[][] | select(.user.login == "github-actions[bot]") | (.body | split("\n")) as $l
+            [.[][] | select(.user.login == "nishfleet-worker[bot]") | (.body | split("\n")) as $l
               | (($l | blockers) | length > 0 and all(.[]; test($none; "i"))) as $wrong
               | if any($l[]; startswith("coordinator-approval: " + $sha) or startswith("reviewer: " + $sha + " approved.") or startswith("reviewer: " + $sha + " not approved.")) then "verdict"
                 elif any($l[]; startswith("reviewer: " + $sha + " blocked.")) then (if $wrong then "none-only" else "verdict" end)
@@ -779,7 +811,7 @@ jobs:
             } | head -c 120000 > "$RUNNER_TEMP/context.txt" || true
             cat "$RUNNER_TEMP/context.txt" >> "$RUNNER_TEMP/diff.txt"
           fi
-          review=$(pi --print --no-context-files --no-tools --no-session \
+          review=$(env -u POST_TOKEN pi --print --no-context-files --no-tools --no-session \
             --append-system-prompt "$HOME/AGENTS.md" \
             --append-system-prompt "$HOME/workspaces/tooling/fleet-ops-deploy-clone/prompts/risky-review.md" \
             --provider litellm --model worker-capable < "$RUNNER_TEMP/diff.txt")
@@ -830,7 +862,7 @@ jobs:
           } > "$RUNNER_TEMP/second-in.txt"
           second=
           for _try in 1 2; do
-            second=$(pi --print --no-context-files --no-tools --no-session \
+            second=$(env -u POST_TOKEN pi --print --no-context-files --no-tools --no-session \
               --append-system-prompt "$HOME/AGENTS.md" \
               --append-system-prompt "$HOME/workspaces/tooling/fleet-ops-deploy-clone/prompts/risky-review.md" \
               --provider litellm --model "$SECOND_SEAT" < "$RUNNER_TEMP/second-in.txt") || second=
