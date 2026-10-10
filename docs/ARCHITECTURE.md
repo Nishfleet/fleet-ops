@@ -90,11 +90,26 @@ The rules still in force:
 - **Worker lanes and Claude seats.** `agent.yml` Gate: ordinary issues go to
   pi, then opencode, then Devin. `strong-only` (senior) issues go to Claude
   Code first (`claude-sonnet-5-5`; `claude-opus-5-5` after two failed runs or
-  with `needs-opus`), capped at 2 live workers, on a seat picked once at start
-  by `scripts/pick-claude-seat.sh` through `scripts/claude-lane-seat.sh`.
+  with `needs-opus`), on a seat picked once at start by
+  `scripts/pick-claude-seat.sh` through `scripts/claude-lane-seat.sh`.
   Cursor (cap 1) is the fallback when both seats are at 95% of their
   five-hour limit, the claude cap is reached, or claude exits on a rate limit
-  or 429. The Worker step records the engines that ran in a `builder-engine:`
+  or 429.
+  Pacing ("fill mode"), in plain words: the seats report only five-hour
+  windows (no weekly limit), and the senior lane alone uses about 2% of their
+  capacity, so ordinary issues also go to claude (Sonnet) whenever it is
+  cheap to do so. An ordinary issue takes the claude lane when the seat the
+  picker chooses is under `CLAUDE_FILL_BELOW` percent of its five-hour limit
+  (repo variable, default 80) and fewer than `CLAUDE_MAX_LIVE` claude workers
+  are running (repo variable, default 4, clamped to 6). Otherwise it keeps
+  the old order (pi, opencode, Devin) and never uses Cursor. A seat over the
+  fill line gets no new ordinary jobs but still takes senior jobs up to 95%,
+  and a usage reading that fails never starts a fill job. The Gate prints one
+  line per decision: `claude fill: seat=<a|b> five_hour=<n> live=<n>/<cap> ->
+  claude|skip(<reason>)`. Memory: each worker sits under its runner's
+  `MemoryHigh=4G` and `MemoryMax=8G`, and all runners share `agent.slice`
+  (`MemoryHigh=26G`, `MemoryMax=28G`), so the default 4 live claude workers
+  hold about 16G at the throttle line and the clamp of 6 about 24G. The Worker step records the engines that ran in a `builder-engine:`
   PR comment, which the review job reads. Secret isolation: the bwrap jail of
   every engine but claude hides both Claude seat logins (the runner's own
   config directory and the default login's credentials file and
