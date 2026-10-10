@@ -9,6 +9,10 @@ script, or prompt lands unseen.
 - `systemd/` — the user units the fleet runs under `systemctl --user`:
   services, timers, slices, two `.path` units (`fleet-litellm-proxy-config.path`,
   `fleet-grafana-provisioning.path`) and one `.scope.d` drop-in (`tmux-spawn-.scope.d`).
+  `fleet-grafana-github-token.timer` re-mints the one-hour GitHub App token Grafana's
+  alert webhook sends (fleet-ops#9445); switch off with
+  `systemctl --user disable --now fleet-grafana-github-token.timer` plus `systemctl --user mask
+  fleet-grafana-github-token.service` (the quadlet also mints once per Grafana start; docs/RUNBOOK.md).
 - `rootfs/` — root-owned host config, laid out like `/` (`rootfs/etc/X` is
   installed at `/etc/X`): system units, slices and drop-ins, `nftables.conf`,
   `sysctl.d/`, `audit/rules.d/`, polkit rules and the prometheus config.

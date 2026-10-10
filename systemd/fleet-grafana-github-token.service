@@ -1,0 +1,64 @@
+[Unit]
+Description=Mint the short-lived GitHub App token Grafana's alert webhook sends (fleet-ops#9445)
+# Grafana's webhook contact point can send only a static Authorization value
+# (Grafana docs, "Configure the webhook notifier"; no OAuth2 refresh, no
+# command or file hook) and GitHub has no token for a service that lives longer
+# than the App's one-hour installation token (REST docs, "Create an
+# installation access token for an app"). The contact points in
+# config/grafana/provisioning/alerting/cloudflare-spend-contact.yaml therefore
+# read `$__file{/run/secrets/github-token/token}`, which Grafana expands each
+# time provisioning loads, and this oneshot (fired every 20 min by
+# fleet-grafana-github-token.timer) writes a fresh token there and makes Grafana
+# reload. The reload is the stock admin API call that
+# fleet-grafana-provisioning.service already makes.
+#
+# The token is minted from the nishfleet-worker App key that fleet-grafana
+# already mounts, scoped by the request body to issues:write on this one repo
+# (the contact points only POST issues). It lives in the user runtime dir
+# (tmpfs, mode 0700), never on disk and never in argv: the App JWT goes to curl
+# as a config fd. A failed mint keeps the previous token file, pages through
+# OnFailure=, and Grafana's own delivery rule
+# (cloudflare-spend-delivery.yaml) pages hermes-urgent if a webhook still fails.
+#
+# Switch off: `systemctl --user disable --now fleet-grafana-github-token.timer`
+# and `systemctl --user mask fleet-grafana-github-token.service` (fleet-grafana
+# Wants= it, so without the mask it still mints once per Grafana start).
+# The contact points then send an empty token and the webhook answers 401; the
+# delivery rule pages hermes-urgent and spend and dead-row alerts still reach
+# Telegram.
+OnFailure=fleet-unit-failed@%N.service
+
+[Service]
+Type=oneshot
+RuntimeDirectory=fleet-grafana-github-token
+RuntimeDirectoryMode=0700
+RuntimeDirectoryPreserve=yes
+# GITHUB_API_URL exists so CI can run this very ExecStart against a local stub
+# (.github/workflows/ci.yml, step "GitHub App token unit"); the host never
+# overrides it.
+Environment=GITHUB_API_URL=https://api.github.com
+Environment=APP_ID=4728578
+Environment=APP_KEY=%h/.config/fleet-worker/nishfleet-worker.private-key.pem
+# Grafana expands $__file{} at load and a missing file fails the whole
+# alerting provisioning, so the file must exist before anything can fail.
+ExecStartPre=/bin/sh -c 'rm -f "$$RUNTIME_DIRECTORY/token.new"; test -e "$$RUNTIME_DIRECTORY/token" || { umask 077; : > "$$RUNTIME_DIRECTORY/token"; }'
+# RS256 App JWT (docs: "Generating a JSON Web Token (JWT) for a GitHub App";
+# iat 60 s back for clock drift, exp inside the 10 min cap), then the
+# installation id of this repo, then a token limited to this repo and
+# issues:write. `$$` is systemd's escape for a literal `$`, `%%` for `%`.
+ExecStart=/bin/bash -c 'set -euo pipefail; umask 077; \
+  b64() { openssl base64 -A | tr "+/" "-_" | tr -d "="; }; \
+  now=$$(date +%%s); \
+  h=$$(printf "{\\"alg\\":\\"RS256\\",\\"typ\\":\\"JWT\\"}" | b64); \
+  p=$$(printf "{\\"iat\\":%%d,\\"exp\\":%%d,\\"iss\\":\\"%%s\\"}" $$((now-60)) $$((now+540)) "$$APP_ID" | b64); \
+  s=$$(printf "%%s.%%s" "$$h" "$$p" | openssl dgst -sha256 -sign "$$APP_KEY" | b64); \
+  auth() { printf "header = \\"Authorization: Bearer %%s.%%s.%%s\\"\\nheader = \\"Accept: application/vnd.github+json\\"\\n" "$$h" "$$p" "$$s"; }; \
+  id=$$(curl -fsS --connect-timeout 10 --max-time 30 --retry 2 --config <(auth) "$$GITHUB_API_URL/repos/Nishfleet/fleet-ops/installation" | jq -er .id); \
+  tok=$$(curl -fsS --connect-timeout 10 --max-time 30 --retry 2 -X POST --config <(auth) -d "{\\"repositories\\":[\\"fleet-ops\\"],\\"permissions\\":{\\"issues\\":\\"write\\"}}" "$$GITHUB_API_URL/app/installations/$$id/access_tokens" | jq -er .token); \
+  printf "%%s" "$$tok" > "$$RUNTIME_DIRECTORY/token.new"; \
+  mv -f "$$RUNTIME_DIRECTORY/token.new" "$$RUNTIME_DIRECTORY/token"; \
+  echo "minted a GitHub App token for Nishfleet/fleet-ops issues:write, valid one hour"'
+# Grafana picks the new file up on a provisioning reload. The service skips
+# itself when Grafana is stopped (a starting Grafana reads the file anyway).
+ExecStartPost=/usr/bin/systemctl --user start fleet-grafana-provisioning.service
+TimeoutStartSec=300
