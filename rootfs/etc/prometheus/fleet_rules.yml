@@ -6,7 +6,7 @@
 # Stock sources only: node_exporter's systemd collector (node_systemd_unit_state,
 # unit-include covers .service and .timer) and Prometheus' own vector().
 #
-# Routing lives in alertmanager.yml:
+# Routing lives in rootfs/etc/alertmanager/alertmanager.yml:
 #   Watchdog          -> the outside dead-man (healthchecks.io), every 5m
 #   severity=nish     -> Telegram (a real outage, immediately)
 #   anything else     -> no receiver; visible as the ALERTS series and in

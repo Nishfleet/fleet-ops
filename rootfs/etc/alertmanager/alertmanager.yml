@@ -15,8 +15,10 @@
 # not part of this file.
 #
 # The ping URL and the bot token are credentials and stay out of the repo: they
-# are hand-placed, root-or-prometheus 0600 files next to this one, read through
-# url_file and bot_token_file.
+# are hand-placed 0600 files in /etc/prometheus, read through url_file and
+# bot_token_file. The Telegram chat id has no file option in Alertmanager, so
+# the repo holds chat_id 1 and the host-config run writes the real id from
+# /etc/prometheus/telegram_chat_id into the installed copy.
 global:
   resolve_timeout: 5m
 
@@ -49,6 +51,6 @@ receivers:
   - name: telegram
     telegram_configs:
       - bot_token_file: /etc/prometheus/telegram_bot_token
-        chat_id: 1144372019
+        chat_id: 1  # placeholder; ansible/host.yml fills in the id from /etc/prometheus/telegram_chat_id
         message: '[{{ .Status }}] {{ .CommonLabels.alertname }}: {{ .CommonAnnotations.summary }}'
         send_resolved: true

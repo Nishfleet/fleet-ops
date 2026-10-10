@@ -133,8 +133,8 @@ jobs:
         run: |
           promtool check config rootfs/etc/prometheus/prometheus.yml
           promtool check rules rootfs/etc/prometheus/fleet_rules.yml
-          amtool check-config rootfs/etc/prometheus/alertmanager.yml
-          cfg=rootfs/etc/prometheus/alertmanager.yml
+          amtool check-config rootfs/etc/alertmanager/alertmanager.yml
+          cfg=rootfs/etc/alertmanager/alertmanager.yml
           amtool config routes test --config.file=$cfg --verify.receivers=deadman alertname=Watchdog severity=none
           amtool config routes test --config.file=$cfg --verify.receivers=telegram alertname=HermesGatewayDown severity=nish
           amtool config routes test --config.file=$cfg --verify.receivers=none alertname=SystemUnitFailed severity=warning
