@@ -331,9 +331,17 @@ jobs:
           # hides the default login, claude_jail_b hides seat a. ci.yml runs these
           # three lines and fails if a hidden file can be read.
           seat_a=${CLAUDE_CONFIG_DIR:-$HOME/.config/gh}
-          jail_base="bwrap --dev-bind / / --ro-bind $HOME/workspaces/tooling/fleet-ops-deploy-clone $HOME/workspaces/tooling/fleet-ops-deploy-clone --tmpfs $HOME/.config/gh --tmpfs $HOME/.config/cloudflare --tmpfs $seat_a --ro-bind /dev/null $HOME/.claude/.credentials.json --ro-bind /dev/null $HOME/.claude.json --proc /proc --unshare-pid --die-with-parent"
-          claude_jail_a="bwrap --dev-bind / / --ro-bind $HOME/workspaces/tooling/fleet-ops-deploy-clone $HOME/workspaces/tooling/fleet-ops-deploy-clone --tmpfs $HOME/.config/gh --tmpfs $HOME/.config/cloudflare --ro-bind /dev/null $HOME/.claude/.credentials.json --ro-bind /dev/null $HOME/.claude.json --proc /proc --unshare-pid --die-with-parent"
-          claude_jail_b="bwrap --dev-bind / / --ro-bind $HOME/workspaces/tooling/fleet-ops-deploy-clone $HOME/workspaces/tooling/fleet-ops-deploy-clone --tmpfs $HOME/.config/gh --tmpfs $HOME/.config/cloudflare --tmpfs $seat_a --proc /proc --unshare-pid --die-with-parent"
+          # Credential backups and every other Claude config dir sit beside the
+          # seats (a glob resolved now, not a list): each ~/.claude-* and
+          # ~/backups-claude-* directory goes under an empty tmpfs, a plain file is
+          # bound to /dev/null. The one exception is the seat dir the claude lane
+          # runs on ($1).
+          claude_hides() { local d out=; for d in "$HOME"/.claude-* "$HOME"/backups-claude-*; do [ "$d" = "$1" ] && continue; if [ -L "$d" ]; then continue; elif [ -d "$d" ]; then out="$out --tmpfs $d"; elif [ -f "$d" ]; then out="$out --ro-bind /dev/null $d"; fi; done; echo "$out"; }
+          hide_all=$(claude_hides "")
+          hide_but_a=$(claude_hides "$seat_a")
+          jail_base="bwrap --dev-bind / / --ro-bind $HOME/workspaces/tooling/fleet-ops-deploy-clone $HOME/workspaces/tooling/fleet-ops-deploy-clone --tmpfs $HOME/.config/gh --tmpfs $HOME/.config/cloudflare --tmpfs $seat_a --ro-bind /dev/null $HOME/.claude/.credentials.json --ro-bind /dev/null $HOME/.claude.json $hide_all --proc /proc --unshare-pid --die-with-parent"
+          claude_jail_a="bwrap --dev-bind / / --ro-bind $HOME/workspaces/tooling/fleet-ops-deploy-clone $HOME/workspaces/tooling/fleet-ops-deploy-clone --tmpfs $HOME/.config/gh --tmpfs $HOME/.config/cloudflare --ro-bind /dev/null $HOME/.claude/.credentials.json --ro-bind /dev/null $HOME/.claude.json $hide_but_a --proc /proc --unshare-pid --die-with-parent"
+          claude_jail_b="bwrap --dev-bind / / --ro-bind $HOME/workspaces/tooling/fleet-ops-deploy-clone $HOME/workspaces/tooling/fleet-ops-deploy-clone --tmpfs $HOME/.config/gh --tmpfs $HOME/.config/cloudflare --tmpfs $seat_a $hide_all --proc /proc --unshare-pid --die-with-parent"
           jail="$jail_base --"
           dir="$HOME/workspaces/agent-worktrees/issue-$id"
           # Static text, the marker line, then the target id: the id is the only
@@ -1144,7 +1152,9 @@ jobs:
           [ -n "$key" ] || { echo "::error::TYPESAFE_API_KEY missing from the Jev seat file; an unranked edition is not worth 40 minutes of model time"; exit 1; }
           echo "::add-mask::$key"
           seat_a=${CLAUDE_CONFIG_DIR:-$HOME/.config/gh}
-          jail_base="bwrap --dev-bind / / --ro-bind $HOME/workspaces/tooling/fleet-ops-deploy-clone $HOME/workspaces/tooling/fleet-ops-deploy-clone --tmpfs $HOME/.config/gh --tmpfs $HOME/.config/cloudflare --tmpfs $HOME/.config/fleet-ops --tmpfs $HOME/.config/fleet-worker --tmpfs $seat_a --ro-bind /dev/null $HOME/.claude/.credentials.json --ro-bind /dev/null $HOME/.claude.json --proc /proc --unshare-pid --die-with-parent"
+          claude_hides() { local d out=; for d in "$HOME"/.claude-* "$HOME"/backups-claude-*; do [ "$d" = "$1" ] && continue; if [ -L "$d" ]; then continue; elif [ -d "$d" ]; then out="$out --tmpfs $d"; elif [ -f "$d" ]; then out="$out --ro-bind /dev/null $d"; fi; done; echo "$out"; }
+          hide_all=$(claude_hides "")
+          jail_base="bwrap --dev-bind / / --ro-bind $HOME/workspaces/tooling/fleet-ops-deploy-clone $HOME/workspaces/tooling/fleet-ops-deploy-clone --tmpfs $HOME/.config/gh --tmpfs $HOME/.config/cloudflare --tmpfs $HOME/.config/fleet-ops --tmpfs $HOME/.config/fleet-worker --tmpfs $seat_a --ro-bind /dev/null $HOME/.claude/.credentials.json --ro-bind /dev/null $HOME/.claude.json $hide_all --proc /proc --unshare-pid --die-with-parent"
           today=$(TZ=Asia/Kolkata date +%F)
           src="$GITHUB_WORKSPACE/inish-site"
           dst="$RUNNER_TEMP/publish"

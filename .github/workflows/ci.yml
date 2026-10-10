@@ -223,9 +223,22 @@ jobs:
           test ! -e "$HOME/.config/cloudflare/deploy-ci.env"
           # The Claude seats' logins: seat a is a config dir ($seat_a in the jail
           # lines), seat b is the default login's two files.
-          seat_a=$RUNNER_TEMP/claude-seat-a
-          test ! -e "$seat_a" && test ! -e "$HOME/.claude/.credentials.json" && test ! -e "$HOME/.claude.json"
-          mkdir -p "$seat_a" "$HOME/.claude" "$HOME/workspaces/tooling/fleet-ops-deploy-clone" "$HOME/.config/gh" "$HOME/.config/cloudflare" "$HOME/.config/fleet-ops" "$HOME/.config/fleet-worker"
+          # Credential backup dirs sit beside them; the jail hides every ~/.claude-*
+          # and ~/backups-claude-* by glob, except the running seat's dir.
+          seat_a=$HOME/.claude-ci-seat
+          bk1=$HOME/.claude-ci-backup
+          bk2=$HOME/backups-claude-ci
+          test ! -e "$seat_a" && test ! -e "$bk1" && test ! -e "$bk2" && test ! -e "$HOME/.claude/.credentials.json" && test ! -e "$HOME/.claude.json"
+          mkdir -p "$seat_a" "$bk1" "$bk2" "$HOME/.claude" "$HOME/workspaces/tooling/fleet-ops-deploy-clone" "$HOME/.config/gh" "$HOME/.config/cloudflare" "$HOME/.config/fleet-ops" "$HOME/.config/fleet-worker"
+          echo planted > "$bk1/creds"
+          echo planted > "$bk2/creds"
+          # The jail lines' hide lists come from agent.yml's own claude_hides function.
+          hide_fn=$(sed -n 's/^ *\(claude_hides() {.*}\)$/\1/p' .github/workflows/agent.yml | head -n 1)
+          test -n "$hide_fn"
+          hide_all=$(bash -c "$hide_fn"'; claude_hides ""')
+          hide_but_a=$(bash -c "$hide_fn"'; claude_hides "$1"' x "$seat_a")
+          case "$hide_all" in *"$bk1"*"$bk2"*|*"$bk2"*"$bk1"*) ;; *) echo "hide list misses a backup dir: $hide_all"; exit 1 ;; esac
+          case "$hide_but_a" in *"$seat_a"*) echo "hide list hides the running seat"; exit 1 ;; esac
           echo planted > "$seat_a/.credentials.json"
           echo planted > "$HOME/.claude/.credentials.json"
           echo planted > "$HOME/.claude.json"
@@ -234,14 +247,14 @@ jobs:
           echo visible > "$HOME/.config/control"
           test ! -e "$HOME/.config/fleet-ops/planted-seat"
           test ! -e "$HOME/.config/fleet-worker/planted-key"
-          trap 'rm -rf "$seat_a"; rm -f "$HOME/.claude/.credentials.json" "$HOME/.claude.json" "$HOME/.config/gh/hosts.yml" "$HOME/.config/cloudflare/deploy-ci.env" "$HOME/.config/control" "$HOME/.config/fleet-ops/planted-seat" "$HOME/.config/fleet-worker/planted-key"' EXIT
+          trap 'rm -rf "$seat_a" "$bk1" "$bk2"; rm -f "$HOME/.claude/.credentials.json" "$HOME/.claude.json" "$HOME/.config/gh/hosts.yml" "$HOME/.config/cloudflare/deploy-ci.env" "$HOME/.config/control" "$HOME/.config/fleet-ops/planted-seat" "$HOME/.config/fleet-worker/planted-key"' EXIT
           echo planted > "$HOME/.config/fleet-ops/planted-seat"
           echo planted > "$HOME/.config/fleet-worker/planted-key"
           sealed=0
           for line in "${lines[@]}"; do
             test -n "$line"
             # $HOME is the line's only expansion; no eval of file text.
-            exp=${line//\$HOME/$HOME}; exp=${exp//\$seat_a/$seat_a}
+            exp=${line//\$HOME/$HOME}; exp=${exp//\$seat_a/$seat_a}; exp=${exp//\$hide_all/$hide_all}
             read -ra jail <<< "$exp --"
             "${jail[@]}" test -r "$HOME/.config/control"
             # No engine but claude can read either Claude seat's login: the bound
@@ -249,6 +262,8 @@ jobs:
             test "$("${jail[@]}" cat "$seat_a/.credentials.json" 2>/dev/null)" != planted
             test "$("${jail[@]}" cat "$HOME/.claude/.credentials.json" 2>/dev/null)" != planted
             test "$("${jail[@]}" cat "$HOME/.claude.json" 2>/dev/null)" != planted
+            test "$("${jail[@]}" cat "$bk1/creds" 2>/dev/null)" != planted
+            test "$("${jail[@]}" cat "$bk2/creds" 2>/dev/null)" != planted
             "${jail[@]}" test ! -e "$HOME/.config/gh/hosts.yml"
             "${jail[@]}" test ! -e "$HOME/.config/cloudflare/deploy-ci.env"
             # A jail that hides the seat files must hide the App key too, and the
@@ -264,13 +279,15 @@ jobs:
           test "$sealed" -ge 1
           # The claude lane sees its own seat and only that one.
           for v in a b; do
-            l=line_$v; l=${!l}; l=${l//\$HOME/$HOME}; l=${l//\$seat_a/$seat_a}
+            l=line_$v; l=${!l}; l=${l//\$HOME/$HOME}; l=${l//\$seat_a/$seat_a}; l=${l//\$hide_all/$hide_all}; l=${l//\$hide_but_a/$hide_but_a}
             read -ra jail <<< "$l --"
             "${jail[@]}" test ! -e "$HOME/.config/gh/hosts.yml"
             "${jail[@]}" test ! -e "$HOME/.config/cloudflare/deploy-ci.env"
             got_a=$("${jail[@]}" cat "$seat_a/.credentials.json" 2>/dev/null || true)
             got_b=$("${jail[@]}" cat "$HOME/.claude/.credentials.json" 2>/dev/null || true)
             got_j=$("${jail[@]}" cat "$HOME/.claude.json" 2>/dev/null || true)
+            test "$("${jail[@]}" cat "$bk1/creds" 2>/dev/null || true)" != planted
+            test "$("${jail[@]}" cat "$bk2/creds" 2>/dev/null || true)" != planted
             if [ "$v" = a ]; then test "$got_a" = planted && test "$got_b" != planted && test "$got_j" != planted
             else test "$got_a" != planted && test "$got_b" = planted && test "$got_j" = planted; fi
           done

@@ -98,8 +98,10 @@ The rules still in force:
   PR comment, which the review job reads. Secret isolation: the bwrap jail of
   every engine but claude hides both Claude seat logins (the runner's own
   config directory and the default login's credentials file and
-  `~/.claude.json`) the same way it hides the gh and Cloudflare logins; the
-  claude jail hides the seat it is not running on. `ci.yml` runs the real
+  `~/.claude.json`) and every other Claude config or credential backup
+  directory (matched by glob at job start, not a list) the same way it hides
+  the gh and Cloudflare logins; the claude jail hides everything but the seat
+  it is running on. `ci.yml` runs the real
   jail lines and fails if a login can be read.
 - **The correction ladder.** A correction is encoded at the lowest rung that
   holds it: 1 structure (no file to put the mistake in), 2 static gate (CI

@@ -146,8 +146,11 @@ def _worker(tmp_path, engine, seat="keep", model="claude-sonnet-5-5", claude_rc=
     tmp = tmp_path / "runner-tmp"
     state.mkdir()
     tmp.mkdir()
-    seat_a = tmp_path / "seat-a"
+    seat_a = home / ".claude-seat-a"
     seat_a.mkdir()
+    for d in (".claude-auth-backup-x", "backups-claude-x", ".claude-other-seat"):
+        (home / d).mkdir()
+        (home / d / "creds").write_text("planted")
     script = _step("work", "Worker")
     env = {
         **os.environ,
@@ -194,6 +197,8 @@ def test_seat_a_run_keeps_its_dir_and_hides_the_default_login(tmp_path):
     assert f"CCD={seat_a}" in claude
     assert f"--ro-bind /dev/null {home}/.claude/.credentials.json" in bwrap
     assert f"--tmpfs {seat_a}" not in bwrap
+    # every other Claude dir and backup dir is hidden; only the running seat stays
+    _assert_backups_hidden(bwrap, home)
 
 
 def test_seat_b_run_unsets_the_config_dir_and_hides_seat_a(tmp_path):
@@ -201,6 +206,7 @@ def test_seat_b_run_unsets_the_config_dir_and_hides_seat_a(tmp_path):
     assert "CCD=unset" in claude
     assert f"--tmpfs {seat_a}" in bwrap
     assert f"--ro-bind /dev/null {home}/.claude/.credentials.json" not in bwrap
+    _assert_backups_hidden(bwrap, home)
 
 
 def test_both_seats_full_runs_cursor_not_claude(tmp_path):
@@ -236,6 +242,12 @@ def test_other_engines_jail_hides_both_seat_logins(tmp_path, engine):
     assert f"--tmpfs {seat_a}" in bwrap
     assert f"--ro-bind /dev/null {home}/.claude/.credentials.json" in bwrap
     assert f"--ro-bind /dev/null {home}/.claude.json" in bwrap
+    _assert_backups_hidden(bwrap, home)
+
+
+def _assert_backups_hidden(bwrap, home):
+    for d in (".claude-auth-backup-x", "backups-claude-x", ".claude-other-seat"):
+        assert f"--tmpfs {home}/{d}" in bwrap, d
 
 
 def _jail_lines():
@@ -256,26 +268,54 @@ def _real_bwrap_ok():
     return subprocess.run(["bwrap", "--dev-bind", "/", "/", "--", "true"], capture_output=True).returncode == 0
 
 
+def _hide_fn():
+    for ln in _step("work", "Worker").splitlines():
+        if ln.strip().startswith("claude_hides()"):
+            return ln.strip()
+    raise AssertionError("claude_hides not found")
+
+
+def _hides(home, keep):
+    r = subprocess.run(["bash", "-c", f'{_hide_fn()}\nclaude_hides "$1"', "x", keep], env={"HOME": str(home), "PATH": SYS_PATH}, capture_output=True, text=True)
+    assert r.returncode == 0, r.stderr
+    return r.stdout.strip()
+
+
 @pytest.mark.skipif(not _real_bwrap_ok(), reason="bwrap cannot run here")
-def test_real_jail_other_engines_cannot_read_seat_logins(tmp_path):
+def test_real_jail_other_engines_cannot_read_seat_logins_or_backups(tmp_path):
     home = tmp_path / "home"
-    seat_a = tmp_path / "seat-a"
+    seat_a = home / ".claude-seat"
     (home / ".claude").mkdir(parents=True)
     (home / ".config/gh").mkdir(parents=True)
     (home / "workspaces/tooling/fleet-ops-deploy-clone").mkdir(parents=True)
     seat_a.mkdir()
+    backups = [home / ".claude-auth-backup-x", home / "backups-claude-x", home / ".claude-team-x"]
+    for d in backups:
+        d.mkdir()
+        (d / "creds").write_text("planted")
+    (home / ".claude-backup.json").write_text("planted")  # a plain file matching the glob
     for p in (seat_a / ".credentials.json", home / ".claude/.credentials.json", home / ".claude.json"):
         p.write_text("planted")
     lines = _jail_lines()
+    sub = {"hide_all": _hides(home, ""), "hide_but_a": _hides(home, str(seat_a))}
+
+    def expand(name):
+        line = lines[name].replace("$HOME", str(home)).replace("$seat_a", str(seat_a))
+        for k, v in sub.items():
+            line = line.replace("$" + k, v)
+        return line.split() + ["--"]
 
     def read_all(name):
-        cmd = lines[name].replace("$HOME", str(home)).replace("$seat_a", str(seat_a)).split() + ["--"]
+        cmd = expand(name)
         out = {}
-        for key, path in (("a", seat_a / ".credentials.json"), ("b", home / ".claude/.credentials.json"), ("cj", home / ".claude.json")):
+        paths = {"a": seat_a / ".credentials.json", "b": home / ".claude/.credentials.json", "cj": home / ".claude.json", "file": home / ".claude-backup.json"}
+        paths.update({f"bk{i}": d / "creds" for i, d in enumerate(backups)})
+        for key, path in paths.items():
             r = subprocess.run(cmd + ["cat", str(path)], capture_output=True, text=True)
             out[key] = "planted" in r.stdout
         return out
 
-    assert read_all("jail_base") == {"a": False, "b": False, "cj": False}
-    assert read_all("claude_jail_a") == {"a": True, "b": False, "cj": False}
-    assert read_all("claude_jail_b") == {"a": False, "b": True, "cj": True}
+    none = {k: False for k in ("b", "cj", "file", "bk0", "bk1", "bk2")}
+    assert read_all("jail_base") == {"a": False, **none}
+    assert read_all("claude_jail_a") == {"a": True, **none}
+    assert read_all("claude_jail_b") == {"a": False, **{**none, "b": True, "cj": True}}
