@@ -173,28 +173,50 @@ jobs:
         # Runs agent.yml's own jail_base line, so a change there is what is
         # tested. Workers read outsider comments; only the filesystem view
         # keeps Nish's admin login and the deploy token out of their reach.
-        # One bwrap line only: a second inline jail would skip these mounts.
+        # Every bwrap line must be a jail_base= assignment, so each is tested here.
         # Ubuntu 24.04 blocks unprivileged user namespaces by default; the
         # VPS allows them, so the runner is set to match.
         if: always()
         run: |
-          test "$(grep -c 'bwrap --dev-bind' .github/workflows/agent.yml)" -eq 1
-          line=$(sed -n 's/^ *jail_base="\(.*\)"$/\1/p' .github/workflows/agent.yml)
-          test -n "$line"
+          # Every jail line (the worker's and the inish-daily job's) is tested; a
+          # bwrap line that is not a jail_base= assignment would skip the mounts.
+          test "$(grep -c 'bwrap --dev-bind' .github/workflows/agent.yml)" -eq "$(grep -cE '^ *jail_base="bwrap --dev-bind' .github/workflows/agent.yml)"
+          mapfile -t lines < <(sed -n 's/^ *jail_base="\(.*\)"$/\1/p' .github/workflows/agent.yml)
+          test "${#lines[@]}" -ge 2
           sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
           # Plant only where nothing exists, so a real login is never overwritten.
           test ! -e "$HOME/.config/gh/hosts.yml"
           test ! -e "$HOME/.config/cloudflare/deploy-ci.env"
-          mkdir -p "$HOME/workspaces/tooling/fleet-ops-deploy-clone" "$HOME/.config/gh" "$HOME/.config/cloudflare"
+          mkdir -p "$HOME/workspaces/tooling/fleet-ops-deploy-clone" "$HOME/.config/gh" "$HOME/.config/cloudflare" "$HOME/.config/fleet-ops" "$HOME/.config/fleet-worker"
           echo 'oauth_token: planted' > "$HOME/.config/gh/hosts.yml"
           echo 'CLOUDFLARE_API_TOKEN=planted' > "$HOME/.config/cloudflare/deploy-ci.env"
           echo visible > "$HOME/.config/control"
-          # $HOME is the line's only expansion; no eval of file text.
-          read -ra jail <<< "${line//\$HOME/$HOME} --"
-          "${jail[@]}" test -r "$HOME/.config/control"
-          "${jail[@]}" test ! -e "$HOME/.config/gh/hosts.yml"
-          "${jail[@]}" test ! -e "$HOME/.config/cloudflare/deploy-ci.env"
+          test ! -e "$HOME/.config/fleet-ops/planted-seat"
+          test ! -e "$HOME/.config/fleet-worker/planted-key"
+          trap 'rm -f "$HOME/.config/gh/hosts.yml" "$HOME/.config/cloudflare/deploy-ci.env" "$HOME/.config/control" "$HOME/.config/fleet-ops/planted-seat" "$HOME/.config/fleet-worker/planted-key"' EXIT
+          echo planted > "$HOME/.config/fleet-ops/planted-seat"
+          echo planted > "$HOME/.config/fleet-worker/planted-key"
+          sealed=0
+          for line in "${lines[@]}"; do
+            test -n "$line"
+            # $HOME is the line's only expansion; no eval of file text.
+            read -ra jail <<< "${line//\$HOME/$HOME} --"
+            "${jail[@]}" test -r "$HOME/.config/control"
+            "${jail[@]}" test ! -e "$HOME/.config/gh/hosts.yml"
+            "${jail[@]}" test ! -e "$HOME/.config/cloudflare/deploy-ci.env"
+            # A jail that hides the seat files must hide the App key too, and the
+            # inish-daily line (the one that does) must keep doing both.
+            # shellcheck disable=SC2016 # the line's literal text names $HOME, unexpanded
+            case "$line" in
+              *'--tmpfs $HOME/.config/fleet-ops'*)
+                "${jail[@]}" test ! -e "$HOME/.config/fleet-ops/planted-seat"
+                "${jail[@]}" test ! -e "$HOME/.config/fleet-worker/planted-key"
+                sealed=$((sealed + 1)) ;;
+            esac
+          done
+          test "$sealed" -ge 1
           test -r "$HOME/.config/gh/hosts.yml"
+          rm -f "$HOME/.config/fleet-ops/planted-seat" "$HOME/.config/fleet-worker/planted-key"
           rm -f "$HOME/.config/gh/hosts.yml" "$HOME/.config/cloudflare/deploy-ci.env" "$HOME/.config/control"
       - name: No shell ${...} or bare %s/%u/%h inside systemd Exec lines (fleet-ops#8382)
         # systemd expands ${...} and % specifiers itself, before any interpreter
