@@ -178,6 +178,10 @@ jobs:
         # worktree with a stub systemctl: busy tree survives, idle tree goes.
         if: always()
         run: pipx run --spec pytest==8.3.5 pytest -q -p no:cacheprovider tests/test_orch_cleanup_keeps_busy_worktree.py
+      - name: Claude seat pick alternates by two-hour bucket and skips a full seat
+        # Runs scripts/pick-claude-seat.sh with a forced clock and a stub curl.
+        if: always()
+        run: pipx run --spec pytest==8.3.5 pytest -q -p no:cacheprovider tests/test_pick_claude_seat.py
       - name: rootfs/etc/nftables.conf loads on a fresh boot (nft -c)
         # nft refuses the whole file when a rule names a cgroup path that does
         # not exist yet, as at boot before user@1000 starts: the 2026-09-22

@@ -1187,6 +1187,20 @@ jobs:
               < "$RUNNER_TEMP/orchestrator-prompt.md"
             exit 0
           fi
+          # Seat: picked once, here, never switched in a running process.
+          # scripts/pick-claude-seat.sh alternates by two-hour bucket and skips
+          # a seat at 95% of its five-hour limit; `default` means the
+          # runner's CLAUDE_CONFIG_DIR is dropped. It runs from the fleet's
+          # live copy (the job's cwd may be another repo); if that copy is
+          # missing or fails, the runner's own seat stays.
+          seat_script="$HOME/workspaces/tooling/fleet-ops-deploy-clone/scripts/pick-claude-seat.sh"
+          seat_mode=keep
+          if [ -x "$seat_script" ]; then
+            seat_mode=$("$seat_script") || seat_mode=keep
+          else
+            echo "::warning::$seat_script missing; keeping the runner's Claude seat"
+          fi
+          [ "$seat_mode" != default ] || unset CLAUDE_CONFIG_DIR
           model_args=()
           [ -z "$MODEL" ] || model_args=(--model "$MODEL")
           # The repo's hooks are for interactive and worker sessions; here they
