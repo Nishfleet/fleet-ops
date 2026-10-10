@@ -23,6 +23,8 @@ tests:
   # the alert fires once the 5 minute window holds no active sample.
   - interval: 30s
     input_series:
+      - series: 'up{job="node"}'
+        values: '1x60'
       - series: 'node_systemd_unit_state{name="hermes-gateway.service",state="active"}'
         values: '1x20 0x40'
     alert_rule_test:
@@ -58,6 +60,8 @@ tests:
   # The series disappears entirely: fires after the window empties.
   - interval: 30s
     input_series:
+      - series: 'up{job="node"}'
+        values: '1x60'
       - series: 'node_systemd_unit_state{name="hermes-gateway.service",state="active"}'
         values: '1x10 _x40'
     alert_rule_test:
@@ -96,3 +100,81 @@ tests:
             exp_annotations:
               summary: "system unit foo.service failed"
               description: "Systemd unit foo.service has been in the failed state for 5 minutes."
+
+  # (a) node_exporter down: the gateway series is stale and up is 0, so
+  # HermesGatewayDown stays quiet and NodeExporterDown fires after 5m.
+  - interval: 30s
+    input_series:
+      - series: 'up{job="node"}'
+        values: '1x10 0x40'
+      - series: 'node_systemd_unit_state{name="hermes-gateway.service",state="active"}'
+        values: '1x10 _x40'
+    alert_rule_test:
+      - eval_time: 18m
+        alertname: HermesGatewayDown
+        exp_alerts: []
+      - eval_time: 18m
+        alertname: NodeExporterDown
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              job: node
+            exp_annotations:
+              summary: "node_exporter is not being scraped"
+              description: "up{job=\"node\"} has been 0 for 5 minutes, so HermesGatewayDown and SystemUnitFailed cannot see."
+
+  # (a) node_exporter up, gateway series gone: still fires.
+  - interval: 30s
+    input_series:
+      - series: 'up{job="node"}'
+        values: '1x50'
+      - series: 'node_systemd_unit_state{name="hermes-gateway.service",state="active"}'
+        values: '1x10 _x40'
+    alert_rule_test:
+      - eval_time: 16m
+        alertname: HermesGatewayDown
+        exp_alerts:
+          - exp_labels:
+              severity: nish
+              name: hermes-gateway.service
+              state: active
+            exp_annotations:
+              summary: "hermes-gateway.service has not been active for 5 minutes"
+              description: "node_systemd_unit_state{name=\"hermes-gateway.service\",state=\"active\"} has no active sample in the last 5 minutes, or the series is missing."
+
+  # (b) a failed reload fires after 1m; a good one never does.
+  - interval: 30s
+    input_series:
+      - series: 'prometheus_config_last_reload_successful'
+        values: '1x4 0x20'
+      - series: 'alertmanager_config_last_reload_successful'
+        values: '1x24'
+    alert_rule_test:
+      - eval_time: 1m
+        alertname: PrometheusConfigReloadFailed
+        exp_alerts: []
+      - eval_time: 6m
+        alertname: PrometheusConfigReloadFailed
+        exp_alerts:
+          - exp_labels:
+              severity: nish
+            exp_annotations:
+              summary: "Prometheus rejected its last config reload"
+              description: "prometheus_config_last_reload_successful is 0: the running config is not the installed one."
+      - eval_time: 6m
+        alertname: AlertmanagerConfigReloadFailed
+        exp_alerts: []
+
+  - interval: 30s
+    input_series:
+      - series: 'alertmanager_config_last_reload_successful'
+        values: '1x4 0x20'
+    alert_rule_test:
+      - eval_time: 6m
+        alertname: AlertmanagerConfigReloadFailed
+        exp_alerts:
+          - exp_labels:
+              severity: nish
+            exp_annotations:
+              summary: "Alertmanager rejected its last config reload"
+              description: "alertmanager_config_last_reload_successful is 0: the running config is not the installed one."

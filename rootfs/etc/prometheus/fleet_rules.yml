@@ -43,14 +43,50 @@ groups:
       # Not active for 5 minutes. max_over_time rather than `for:` so a crash
       # loop that touches "active" for a moment between restarts does not reset
       # the clock on a gateway that is plainly not serving. absent_over_time
-      # covers the series vanishing (the unit is gone, or the exporter is).
+      # covers the series vanishing (the unit is gone). Both branches are gated
+      # on node_exporter being up: when it is down the gateway is unobserved,
+      # not down, and NodeExporterDown reports that instead.
       - alert: HermesGatewayDown
         expr: |
-          max_over_time(node_systemd_unit_state{name="hermes-gateway.service",state="active"}[5m]) == 0
-          or
-          absent_over_time(node_systemd_unit_state{name="hermes-gateway.service",state="active"}[5m])
+          (
+            max_over_time(node_systemd_unit_state{name="hermes-gateway.service",state="active"}[5m]) == 0
+            or
+            absent_over_time(node_systemd_unit_state{name="hermes-gateway.service",state="active"}[5m])
+          )
+          and on() (up{job="node"} == 1)
         labels:
           severity: nish
         annotations:
           summary: "hermes-gateway.service has not been active for 5 minutes"
           description: "node_systemd_unit_state{name=\"hermes-gateway.service\",state=\"active\"} has no active sample in the last 5 minutes, or the series is missing."
+
+      # Visible, not paged: without node_exporter the gateway rule cannot see.
+      - alert: NodeExporterDown
+        expr: up{job="node"} == 0
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "node_exporter is not being scraped"
+          description: "up{job=\"node\"} has been 0 for 5 minutes, so HermesGatewayDown and SystemUnitFailed cannot see."
+
+  - name: fleet_config
+    rules:
+      # A reload that fails keeps the old config running; these make that loud.
+      - alert: PrometheusConfigReloadFailed
+        expr: prometheus_config_last_reload_successful == 0
+        for: 1m
+        labels:
+          severity: nish
+        annotations:
+          summary: "Prometheus rejected its last config reload"
+          description: "prometheus_config_last_reload_successful is 0: the running config is not the installed one."
+
+      - alert: AlertmanagerConfigReloadFailed
+        expr: alertmanager_config_last_reload_successful == 0
+        for: 1m
+        labels:
+          severity: nish
+        annotations:
+          summary: "Alertmanager rejected its last config reload"
+          description: "alertmanager_config_last_reload_successful is 0: the running config is not the installed one."
