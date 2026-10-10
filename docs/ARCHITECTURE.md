@@ -87,6 +87,43 @@ The rules still in force:
   score. Where a review does not happen, the record says so rather than
   claiming a review it did not get: the `in-run review: unavailable -
 <reason>` line.
+- **Worker lanes and Claude seats.** `agent.yml` Gate: ordinary issues go to
+  pi, then opencode, then Devin. `strong-only` (senior) issues go to Claude
+  Code first (`claude-sonnet-5-5`; `claude-opus-5-5` after two failed runs or
+  with `needs-opus`). The seat is the runner the job lands on: a runner whose
+  `.env` sets `CLAUDE_CONFIG_DIR` runs seat a, a runner without it runs the
+  default login (seat b). Runners 1-11 are seat a and 12-22 are seat b, so jobs
+  split across both seats with no clock, and a job stays on one seat from the
+  Gate to the last call, which keeps the prompt cache. To switch it off, give
+  every runner the same `.env` (all with the line, or all without) and restart
+  each runner when it is idle. When claude exits on a rate limit or a usage
+  limit, the same packet falls through: Cursor (cap 1) for `strong-only`, pi for
+  any other job. Nothing polls usage.
+  Routing by judgment, in plain words: Claude does the judgment work, free
+  workers do the mechanical work, and Jev decides which is which. For an issue
+  that is not `strong-only`, the Gate asks Jev one typed question from the issue
+  title and body: does completing this need engineering judgment (a design
+  choice, ambiguity, multi-file reasoning, debugging), as opposed to a
+  mechanical, fully specified change? Only the extremes count. At 0.9 or more
+  the issue goes to the claude lane (Sonnet, or Opus with `needs-opus`); at 0.1
+  or less it goes to the free lanes (pi, then opencode, then Devin). Anything
+  between, or a Jev call that fails (a warning is logged), goes to the free
+  lanes; `strong-only` always goes to claude. The decision is written as
+  `judgment: p=<x> -> claude|free (<reason>)` to the log and the job summary.
+  Eval numbers: `tests/evals/results/needs_judgment.json`. There is no cap on
+  live claude workers: nothing stock gives N slots, and each worker sits under
+  its runner's `MemoryHigh=4G` and `MemoryMax=8G` while all runners share
+  `agent.slice` (`MemoryHigh=26G`, `MemoryMax=28G`). First reviews of every PR
+  stay on Claude (below); Jev gives the verdict. The Worker step records the
+  engines that ran in a `builder-engine:` PR comment, which the review job
+  reads. Secret isolation: the bwrap jail of every engine but claude hides both
+  Claude seat logins (the runner's own config directory and the default
+  login's credentials file and `~/.claude.json`) and every other Claude config
+  or credential backup directory (matched by glob at job start, not a list) the
+  same way it hides the gh and Cloudflare logins; the claude jail hides
+  everything but the seat it is running on. `ci.yml` runs the real jail lines
+  and fails if a login can be read, and if the claude lane cannot read its own
+  seat.
 - **The correction ladder.** A correction is encoded at the lowest rung that
   holds it: 1 structure (no file to put the mistake in), 2 static gate (CI
   check, ruleset, systemd property, router config), 3 rule, 4 skill, 5 prose.
@@ -105,9 +142,17 @@ The rules still in force:
   branch, which re-reads the review and calls `arm-approved` (agent.yml `arm`).
   agent.yml's `review` job (called by
   `review-risky`) is the independent approver: it reads the held head's diff
-  through the API, asks a no-tools model for findings and Jev for approve or
-  block (p >= 0.9), and posts that approval as `github-actions[bot]` (an
-  approval comment written with GITHUB_TOKEN). A PR that edits the guard itself
+  through the API, asks a no-tools Claude call for findings (on the runner's seat:
+  Opus 5.5 for work another engine built,
+  Fable 5.1 for Claude-built work; the worker App's `builder-engine:` PR
+  comment says which, and no comment counts as Claude-built) and Jev for
+  approve or block (p >= 0.9), and posts that approval as
+  `github-actions[bot]` (an approval comment written with GITHUB_TOKEN).
+  "Claude never grades Claude" has one exception, approved by Nish on
+  2026-10-10: the review model may be Claude when Fable reviews Claude-built
+  work, but the verdict is always Jev's, a non-Claude family, so a non-Claude
+  family always decides. With the runner's seat at its limit the review does not
+  finish and is re-run; it is never approved without it. A PR that edits the guard itself
   (`guard` in risky-paths.json) or a workflow needs a second review as well, by
   a model family other than the judge's and Claude's, and both must approve; if
   either blocks, its blockers go to the agent as fix-it items. The same run then

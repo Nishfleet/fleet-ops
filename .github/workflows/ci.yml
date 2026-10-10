@@ -178,6 +178,14 @@ jobs:
         # worktree with a stub systemctl: busy tree survives, idle tree goes.
         if: always()
         run: pipx run --spec pytest==8.3.5 pytest -q -p no:cacheprovider tests/test_orch_cleanup_keeps_busy_worktree.py
+      - name: Claude lanes route, fall through and stay out of reach of the other engines
+        # Runs agent.yml's Gate and Worker scripts (read out with yq) against fakes:
+        # senior work to claude-sonnet, second strike to claude-opus, a rate limit to
+        # Cursor or pi. The same file runs the real bwrap and proves the claude lane
+        # reads only its own seat (a seat-a and a seat-b runner), never the Max dir
+        # or a backup.
+        if: always()
+        run: pipx run --spec pytest==8.3.5 pytest -q -p no:cacheprovider tests/test_claude_lanes.py
       - name: rootfs/etc/nftables.conf loads on a fresh boot (nft -c)
         # nft refuses the whole file when a rule names a cgroup path that does
         # not exist yet, as at boot before user@1000 starts: the 2026-09-22
@@ -185,39 +193,75 @@ jobs:
         # reboot. This runner has no such cgroups, so the same rule fails here.
         if: always()
         run: sudo apt-get install -y --no-install-recommends nftables && sudo nft -c -f rootfs/etc/nftables.conf
-      - name: Worker jail hides the gh login and Cloudflare tokens (fleet-ops#9274)
+      - name: Worker jail hides the gh login, Cloudflare tokens and Claude seat logins (fleet-ops#9274)
         # Runs agent.yml's own jail_base line, so a change there is what is
         # tested. Workers read outsider comments; only the filesystem view
         # keeps Nish's admin login and the deploy token out of their reach.
-        # Every bwrap line must be a jail_base= assignment, so each is tested here.
+        # Every bwrap line must be a jail_base=, claude_jail_a= or claude_jail_b=
+        # assignment, so each is tested here. jail_base is every engine but claude
+        # and must hide both Claude seat logins; claude_jail_a (seat a, the runner's
+        # CLAUDE_CONFIG_DIR) hides the default login only, claude_jail_b the other way round.
         # Ubuntu 24.04 blocks unprivileged user namespaces by default; the
         # VPS allows them, so the runner is set to match.
         if: always()
         run: |
           # Every jail line (the worker's and the inish-daily job's) is tested; a
           # bwrap line that is not a jail_base= assignment would skip the mounts.
-          test "$(grep -c 'bwrap --dev-bind' .github/workflows/agent.yml)" -eq "$(grep -cE '^ *jail_base="bwrap --dev-bind' .github/workflows/agent.yml)"
+          test "$(grep -c 'bwrap --dev-bind' .github/workflows/agent.yml)" -eq "$(grep -cE '^ *(jail_base|claude_jail_[ab])="bwrap --dev-bind' .github/workflows/agent.yml)"
           mapfile -t lines < <(sed -n 's/^ *jail_base="\(.*\)"$/\1/p' .github/workflows/agent.yml)
           test "${#lines[@]}" -ge 2
+          mapfile -t la < <(sed -n 's/^ *claude_jail_a="\(.*\)"$/\1/p' .github/workflows/agent.yml)
+          line_a=${la[0]:-}
+          mapfile -t lb < <(sed -n 's/^ *claude_jail_b="\(.*\)"$/\1/p' .github/workflows/agent.yml)
+          line_b=${lb[0]:-}
+          test -n "$line_a" && test -n "$line_b"
           sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
           # Plant only where nothing exists, so a real login is never overwritten.
           test ! -e "$HOME/.config/gh/hosts.yml"
           test ! -e "$HOME/.config/cloudflare/deploy-ci.env"
-          mkdir -p "$HOME/workspaces/tooling/fleet-ops-deploy-clone" "$HOME/.config/gh" "$HOME/.config/cloudflare" "$HOME/.config/fleet-ops" "$HOME/.config/fleet-worker"
+          # The Claude seats' logins: seat a is a config dir ($seat_a in the jail
+          # lines), seat b is the default login's two files.
+          # Credential backup dirs sit beside them; the jail hides every ~/.claude-*
+          # and ~/backups-claude-* by glob, except the running seat's dir.
+          seat_a=$HOME/.claude-ci-seat
+          bk1=$HOME/.claude-ci-backup
+          bk2=$HOME/backups-claude-ci
+          test ! -e "$seat_a" && test ! -e "$bk1" && test ! -e "$bk2" && test ! -e "$HOME/.claude/.credentials.json" && test ! -e "$HOME/.claude.json"
+          mkdir -p "$seat_a" "$bk1" "$bk2" "$HOME/.claude" "$HOME/workspaces/tooling/fleet-ops-deploy-clone" "$HOME/.config/gh" "$HOME/.config/cloudflare" "$HOME/.config/fleet-ops" "$HOME/.config/fleet-worker"
+          echo planted > "$bk1/creds"
+          echo planted > "$bk2/creds"
+          # The jail lines' hide lists come from agent.yml's own claude_hides function.
+          hide_fn=$(sed -n 's/^ *\(claude_hides() {.*}\)$/\1/p' .github/workflows/agent.yml | head -n 1)
+          test -n "$hide_fn"
+          hide_all=$(bash -c "$hide_fn"'; claude_hides ""')
+          hide_but_a=$(bash -c "$hide_fn"'; claude_hides "$1"' x "$seat_a")
+          case "$hide_all" in *"$bk1"*"$bk2"*|*"$bk2"*"$bk1"*) ;; *) echo "hide list misses a backup dir: $hide_all"; exit 1 ;; esac
+          case "$hide_but_a" in *"$seat_a"*) echo "hide list hides the running seat"; exit 1 ;; esac
+          echo planted > "$seat_a/.credentials.json"
+          echo planted > "$HOME/.claude/.credentials.json"
+          echo planted > "$HOME/.claude.json"
           echo 'oauth_token: planted' > "$HOME/.config/gh/hosts.yml"
           echo 'CLOUDFLARE_API_TOKEN=planted' > "$HOME/.config/cloudflare/deploy-ci.env"
           echo visible > "$HOME/.config/control"
           test ! -e "$HOME/.config/fleet-ops/planted-seat"
           test ! -e "$HOME/.config/fleet-worker/planted-key"
-          trap 'rm -f "$HOME/.config/gh/hosts.yml" "$HOME/.config/cloudflare/deploy-ci.env" "$HOME/.config/control" "$HOME/.config/fleet-ops/planted-seat" "$HOME/.config/fleet-worker/planted-key"' EXIT
+          trap 'rm -rf "$seat_a" "$bk1" "$bk2"; rm -f "$HOME/.claude/.credentials.json" "$HOME/.claude.json" "$HOME/.config/gh/hosts.yml" "$HOME/.config/cloudflare/deploy-ci.env" "$HOME/.config/control" "$HOME/.config/fleet-ops/planted-seat" "$HOME/.config/fleet-worker/planted-key"' EXIT
           echo planted > "$HOME/.config/fleet-ops/planted-seat"
           echo planted > "$HOME/.config/fleet-worker/planted-key"
           sealed=0
           for line in "${lines[@]}"; do
             test -n "$line"
             # $HOME is the line's only expansion; no eval of file text.
-            read -ra jail <<< "${line//\$HOME/$HOME} --"
+            exp=${line//\$HOME/$HOME}; exp=${exp//\$seat_a/$seat_a}; exp=${exp//\$hide_all/$hide_all}
+            read -ra jail <<< "$exp --"
             "${jail[@]}" test -r "$HOME/.config/control"
+            # No engine but claude can read either Claude seat's login: the bound
+            # files are empty and the seat directory is an empty tmpfs.
+            test "$("${jail[@]}" cat "$seat_a/.credentials.json" 2>/dev/null)" != planted
+            test "$("${jail[@]}" cat "$HOME/.claude/.credentials.json" 2>/dev/null)" != planted
+            test "$("${jail[@]}" cat "$HOME/.claude.json" 2>/dev/null)" != planted
+            test "$("${jail[@]}" cat "$bk1/creds" 2>/dev/null)" != planted
+            test "$("${jail[@]}" cat "$bk2/creds" 2>/dev/null)" != planted
             "${jail[@]}" test ! -e "$HOME/.config/gh/hosts.yml"
             "${jail[@]}" test ! -e "$HOME/.config/cloudflare/deploy-ci.env"
             # A jail that hides the seat files must hide the App key too, and the
@@ -231,6 +275,20 @@ jobs:
             esac
           done
           test "$sealed" -ge 1
+          # The claude lane sees its own seat and only that one.
+          for v in a b; do
+            l=line_$v; l=${!l}; l=${l//\$HOME/$HOME}; l=${l//\$seat_a/$seat_a}; l=${l//\$hide_all/$hide_all}; l=${l//\$hide_but_a/$hide_but_a}
+            read -ra jail <<< "$l --"
+            "${jail[@]}" test ! -e "$HOME/.config/gh/hosts.yml"
+            "${jail[@]}" test ! -e "$HOME/.config/cloudflare/deploy-ci.env"
+            got_a=$("${jail[@]}" cat "$seat_a/.credentials.json" 2>/dev/null || true)
+            got_b=$("${jail[@]}" cat "$HOME/.claude/.credentials.json" 2>/dev/null || true)
+            got_j=$("${jail[@]}" cat "$HOME/.claude.json" 2>/dev/null || true)
+            test "$("${jail[@]}" cat "$bk1/creds" 2>/dev/null || true)" != planted
+            test "$("${jail[@]}" cat "$bk2/creds" 2>/dev/null || true)" != planted
+            if [ "$v" = a ]; then test "$got_a" = planted && test "$got_b" != planted && test "$got_j" != planted
+            else test "$got_a" != planted && test "$got_b" = planted && test "$got_j" = planted; fi
+          done
           test -r "$HOME/.config/gh/hosts.yml"
           rm -f "$HOME/.config/fleet-ops/planted-seat" "$HOME/.config/fleet-worker/planted-key"
           rm -f "$HOME/.config/gh/hosts.yml" "$HOME/.config/cloudflare/deploy-ci.env" "$HOME/.config/control"
@@ -906,13 +964,16 @@ jobs:
           rm -rf "$t"
           mkdir -p "$t/bin" "$t/home/.config/fleet-ops/seats"
           : > "$t/home/.config/fleet-ops/seats/typesafe-jev.env"
+          : > "$t/home/AGENTS.md"
+          mkdir -p "$t/home/workspaces/tooling/fleet-ops-deploy-clone/prompts"
+          : > "$t/home/workspaces/tooling/fleet-ops-deploy-clone/prompts/risky-review.md"
           f=.github/workflows/agent.yml
           yq '.jobs.review.steps[] | select(.id == "review") | .run' "$f" > "$t/review.sh"
           yq '.jobs.arm.steps[] | select(.name == "Arm the approved head") | .run' "$f" > "$t/arm.sh"
           for s in review arm; do
             if [ ! -s "$t/$s.sh" ] || grep -qx null "$t/$s.sh"; then echo "$s step missing"; exit 1; fi
           done
-          for v in JUDGE_FAMILY SECOND_SEAT SECOND_FAMILY; do
+          for v in JUDGE_FAMILY SECOND_SEAT SECOND_FAMILY FIRST_MODEL_OTHER FIRST_MODEL_CLAUDE_BUILT; do
             val=$(yq ".jobs.review.steps[] | select(.id == \"review\") | .env.$v" "$f")
             [ -n "$val" ] && [ "$val" != null ] || { echo "review env $v missing"; exit 1; }
             export "$v=$val"
@@ -971,8 +1032,23 @@ jobs:
             *) echo "mock pi: unexpected model $model" >&2; exit 1 ;;
           esac
           MOCK
+          # The first review is `claude -p --model <m> --tools ""`: no tools, a model
+          # from the builder rule, and never a permission bypass.
+          cat > "$t/bin/claude" <<'MOCK'
+          #!/usr/bin/env bash
+          model= tools=unset
+          while [ $# -gt 0 ]; do
+            case $1 in --model) model=$2 ;; --tools) tools=$2 ;; --permission-mode|--allowedTools|--dangerously-skip-permissions) echo "claude review uses $1" >> "$STATE/claude-bad" ;; esac
+            shift
+          done
+          [ "$tools" = "" ] || echo "tools not disabled: '$tools'" >> "$STATE/claude-bad"
+          cat > /dev/null
+          echo "$model" >> "$STATE/models"
+          [ -z "${CLAUDE_FAILS:-}" ] || exit 1
+          printf '%b\n' "$FIRST"
+          MOCK
           printf '#!/usr/bin/env bash\nexit 1\n' > "$t/bin/git"
-          chmod +x "$t/bin/gh" "$t/bin/curl" "$t/bin/pi" "$t/bin/git"
+          chmod +x "$t/bin/gh" "$t/bin/curl" "$t/bin/pi" "$t/bin/git" "$t/bin/claude"
           export SHA=3f9c2a1b7d4e5f60718293a4b5c6d7e8f9012345 GITHUB_REPOSITORY=Nishfleet/fleet-ops REPO=Nishfleet/fleet-ops PR=7 HOME=$t/home
           export GH_TOKEN=x ARM_TOKEN=y
           none=
@@ -1004,7 +1080,8 @@ jobs:
           # case: name|guard (1 = edits a workflow)|judge choice|judge p|first review|second review|extra env|want approved (yes/no)|want exit|want models
           while IFS='|' read -r name guard choice p first second extra approved code models; do
             export STATE=$t/$name RUNNER_TEMP=$t/$name/tmp GITHUB_OUTPUT=$t/$name/output GUARD=$guard JEV_CHOICE=$choice JEV_P=$p FIRST=${!first} SECOND=${!second} \
-              GUARD_LIST_FAILS='' SECOND_FAILS='' HEAD_AFTER='' PRIOR='' COMMENTS='[]' copies=1
+              GUARD_LIST_FAILS='' SECOND_FAILS='' HEAD_AFTER='' PRIOR='' COMMENTS='[]' copies=1 CLAUDE_FAILS=''
+            unset CLAUDE_CONFIG_DIR
             mkdir -p "$RUNNER_TEMP"; : > "$GITHUB_OUTPUT"; : > "$STATE/comments"; : > "$STATE/models"
             case $extra in
               PRIOR=*) # a comment the bot already left on this head
@@ -1023,6 +1100,12 @@ jobs:
                   *) echo "case $name: unknown PRIOR value ${extra#PRIOR=}"; bad=1; continue ;;
                 esac
                 COMMENTS=$(jq -cn --arg b "$prior" --argjson n "$copies" '[range($n) | {user:{login:"github-actions[bot]"},body:$b}]') ;;
+              BUILT=*) # the worker App's builder-engine record (a bot's comment)
+                COMMENTS=$(jq -cn --arg b "builder-engine: ${extra#BUILT=}" '[{user:{login:"nishfleet-worker[bot]",type:"Bot"},body:$b}]') ;;
+              BUILT_BY_PERSON=*) # the same words from a person count for nothing
+                COMMENTS=$(jq -cn --arg b "builder-engine: ${extra#BUILT_BY_PERSON=}" '[{user:{login:"someone",type:"User"},body:$b}]') ;;
+              BUILT_BY_OTHER_BOT=*) # another App's comment is not the worker App's record
+                COMMENTS=$(jq -cn --arg b "builder-engine: ${extra#BUILT_BY_OTHER_BOT=}" '[{user:{login:"github-actions[bot]",type:"Bot"},body:$b}]') ;;
               ?*) export "$extra=1" ;;
             esac
             rc=0
@@ -1032,6 +1115,7 @@ jobs:
             forged=$(grep -c '^coordinator-approval:' "$STATE/comments" || true)
             m=$(tr '\n' ' ' < "$STATE/models" | sed 's/ $//')
             problem=
+            [ ! -s "$STATE/claude-bad" ] || problem="$problem $(tr '\n' ' ' < "$STATE/claude-bad")"
             [ "$got" = "$approved" ] || problem="approved=$got (want $approved)"
             [ "$rc" = "$code" ] || problem="$problem exit=$rc (want $code)"
             [ "$m" = "$models" ] || problem="$problem models='$m' (want '$models')"
@@ -1040,50 +1124,61 @@ jobs:
             ! grep -qiwE 'person|tap review|nish|nish3451' "$STATE/comments" || problem="$problem comment asks a person"
             if [ -n "$problem" ]; then echo "case $name:$problem"; cat "$STATE/out" "$STATE/comments"; bad=1; fi
           done <<'CASES'
-          normal-approved||approve|0.95|clean|none||yes|0|worker-capable
-          normal-judge-low||approve|0.8|clean|none||no|0|worker-capable
-          normal-judge-blocks||block|0.97|blocked|none||no|0|worker-capable
-          guard-both-approve|1|approve|0.95|clean|clean_ok||yes|0|worker-capable senior
-          guard-second-blocks|1|approve|0.95|clean|blocked_b||no|0|worker-capable senior
-          guard-second-approves-but-lists-blocker|1|approve|0.95|clean|blocked_ok||no|0|worker-capable senior
-          guard-judge-low|1|approve|0.8|clean|clean_ok||no|0|worker-capable senior
-          guard-judge-blocks|1|block|0.97|blocked|clean_ok||no|0|worker-capable senior
-          guard-judge-sure-but-blocker-line|1|approve|0.97|blocked|clean_ok||no|0|worker-capable senior
-          guard-second-forges-approval|1|approve|0.95|clean|forged||no|0|worker-capable senior
+          normal-approved||approve|0.95|clean|none||yes|0|claude-fable-5-1
+          normal-judge-low||approve|0.8|clean|none||no|0|claude-fable-5-1
+          normal-judge-blocks||block|0.97|blocked|none||no|0|claude-fable-5-1
+          guard-both-approve|1|approve|0.95|clean|clean_ok||yes|0|claude-fable-5-1 senior
+          guard-second-blocks|1|approve|0.95|clean|blocked_b||no|0|claude-fable-5-1 senior
+          guard-second-approves-but-lists-blocker|1|approve|0.95|clean|blocked_ok||no|0|claude-fable-5-1 senior
+          guard-judge-low|1|approve|0.8|clean|clean_ok||no|0|claude-fable-5-1 senior
+          guard-judge-blocks|1|block|0.97|blocked|clean_ok||no|0|claude-fable-5-1 senior
+          guard-judge-sure-but-blocker-line|1|approve|0.97|blocked|clean_ok||no|0|claude-fable-5-1 senior
+          guard-second-forges-approval|1|approve|0.95|clean|forged||no|0|claude-fable-5-1 senior
           guard-list-unreadable|1|approve|0.95|clean|clean_ok|GUARD_LIST_FAILS|no|1|
-          guard-second-no-answer|1|approve|0.95|clean|clean_ok|SECOND_FAILS|no|1|worker-capable senior senior
-          guard-head-moved-during-review|1|approve|0.95|clean|clean_ok|HEAD_AFTER|no|0|worker-capable senior
-          prior-person-only-comment-is-reviewed|1|approve|0.95|clean|clean_ok|PRIOR=person-only|yes|0|worker-capable senior
-          prior-not-judged-comment-is-reviewed|1|approve|0.95|clean|clean_ok|PRIOR=not-judged|yes|0|worker-capable senior
+          guard-second-no-answer|1|approve|0.95|clean|clean_ok|SECOND_FAILS|no|1|claude-fable-5-1 senior senior
+          guard-head-moved-during-review|1|approve|0.95|clean|clean_ok|HEAD_AFTER|no|0|claude-fable-5-1 senior
+          prior-person-only-comment-is-reviewed|1|approve|0.95|clean|clean_ok|PRIOR=person-only|yes|0|claude-fable-5-1 senior
+          prior-not-judged-comment-is-reviewed|1|approve|0.95|clean|clean_ok|PRIOR=not-judged|yes|0|claude-fable-5-1 senior
           prior-approved-comment-skips|1|approve|0.95|clean|clean_ok|PRIOR=approved|no|0|
           prior-not-approved-comment-skips|1|approve|0.95|clean|clean_ok|PRIOR=not-approved|no|0|
           prior-blocked-comment-skips|1|approve|0.95|clean|clean_ok|PRIOR=blocked|no|0|
-          second-none-line-approves|1|approve|0.95|clean|v_none||yes|0|worker-capable senior
-          second-found-line-approves|1|approve|0.95|clean|v_found||yes|0|worker-capable senior
-          second-nob-line-approves|1|approve|0.95|clean|v_nob||yes|0|worker-capable senior
-          second-nothing-line-approves|1|approve|0.95|clean|v_nothing||yes|0|worker-capable senior
-          second-na-line-approves|1|approve|0.95|clean|v_na||yes|0|worker-capable senior
-          second-dash-line-approves|1|approve|0.95|clean|v_dash||yes|0|worker-capable senior
-          second-bold-line-approves|1|approve|0.95|clean|v_bold||yes|0|worker-capable senior
-          second-ident-line-approves|1|approve|0.95|clean|v_ident||yes|0|worker-capable senior
-          second-expl-line-approves|1|approve|0.95|clean|v_expl||yes|0|worker-capable senior
-          second-dashexpl-line-approves|1|approve|0.95|clean|v_dashexpl||yes|0|worker-capable senior
-          second-semi-line-approves|1|approve|0.95|clean|v_semi||yes|0|worker-capable senior
-          second-none-of-the-callers-blocks|1|approve|0.95|clean|real_none_of||no|0|worker-capable senior
-          second-nothing-stops-blocks|1|approve|0.95|clean|real_nothing||no|0|worker-capable senior
-          first-header-echo-approves||approve|0.95|header_echo|none||yes|0|worker-capable
-          first-header-echo-and-second-approve|1|approve|0.95|header_echo|v_found||yes|0|worker-capable senior
-          none-line-second-approves|1|approve|0.95|clean|none_ok||yes|0|worker-capable senior
-          none-line-first-and-second-approve|1|approve|0.95|first_none|none_ok||yes|0|worker-capable senior
-          none-line-first-normal-approves||approve|0.95|first_none|none||yes|0|worker-capable
-          none-line-with-trailing-words-blocks|1|approve|0.95|clean|none_words||no|0|worker-capable senior
-          none-line-then-real-blocker-blocks|1|approve|0.95|clean|none_then_real||no|0|worker-capable senior
-          prior-fallback-text-is-reviewed|1|approve|0.95|clean|clean_ok|PRIOR=fallback-text|yes|0|worker-capable senior
-          prior-blocked-by-a-none-line-is-reviewed|1|approve|0.95|clean|clean_ok|PRIOR=blocked-none-only|yes|0|worker-capable senior
-          prior-blocked-by-none-lines-four-is-reviewed|1|approve|0.95|clean|clean_ok|PRIOR=blocked-none-four|yes|0|worker-capable senior
+          second-none-line-approves|1|approve|0.95|clean|v_none||yes|0|claude-fable-5-1 senior
+          second-found-line-approves|1|approve|0.95|clean|v_found||yes|0|claude-fable-5-1 senior
+          second-nob-line-approves|1|approve|0.95|clean|v_nob||yes|0|claude-fable-5-1 senior
+          second-nothing-line-approves|1|approve|0.95|clean|v_nothing||yes|0|claude-fable-5-1 senior
+          second-na-line-approves|1|approve|0.95|clean|v_na||yes|0|claude-fable-5-1 senior
+          second-dash-line-approves|1|approve|0.95|clean|v_dash||yes|0|claude-fable-5-1 senior
+          second-bold-line-approves|1|approve|0.95|clean|v_bold||yes|0|claude-fable-5-1 senior
+          second-ident-line-approves|1|approve|0.95|clean|v_ident||yes|0|claude-fable-5-1 senior
+          second-expl-line-approves|1|approve|0.95|clean|v_expl||yes|0|claude-fable-5-1 senior
+          second-dashexpl-line-approves|1|approve|0.95|clean|v_dashexpl||yes|0|claude-fable-5-1 senior
+          second-semi-line-approves|1|approve|0.95|clean|v_semi||yes|0|claude-fable-5-1 senior
+          second-none-of-the-callers-blocks|1|approve|0.95|clean|real_none_of||no|0|claude-fable-5-1 senior
+          second-nothing-stops-blocks|1|approve|0.95|clean|real_nothing||no|0|claude-fable-5-1 senior
+          first-header-echo-approves||approve|0.95|header_echo|none||yes|0|claude-fable-5-1
+          first-header-echo-and-second-approve|1|approve|0.95|header_echo|v_found||yes|0|claude-fable-5-1 senior
+          none-line-second-approves|1|approve|0.95|clean|none_ok||yes|0|claude-fable-5-1 senior
+          none-line-first-and-second-approve|1|approve|0.95|first_none|none_ok||yes|0|claude-fable-5-1 senior
+          none-line-first-normal-approves||approve|0.95|first_none|none||yes|0|claude-fable-5-1
+          none-line-with-trailing-words-blocks|1|approve|0.95|clean|none_words||no|0|claude-fable-5-1 senior
+          none-line-then-real-blocker-blocks|1|approve|0.95|clean|none_then_real||no|0|claude-fable-5-1 senior
+          prior-fallback-text-is-reviewed|1|approve|0.95|clean|clean_ok|PRIOR=fallback-text|yes|0|claude-fable-5-1 senior
+          prior-blocked-by-a-none-line-is-reviewed|1|approve|0.95|clean|clean_ok|PRIOR=blocked-none-only|yes|0|claude-fable-5-1 senior
+          prior-blocked-by-none-lines-four-is-reviewed|1|approve|0.95|clean|clean_ok|PRIOR=blocked-none-four|yes|0|claude-fable-5-1 senior
           prior-blocked-by-none-lines-five-skips|1|approve|0.95|clean|clean_ok|PRIOR=blocked-none-five|no|0|
           prior-blocked-with-real-blocker-skips|1|approve|0.95|clean|clean_ok|PRIOR=blocked-none-and-real|no|0|
-          prior-near-approval-text-is-reviewed|1|approve|0.95|clean|clean_ok|PRIOR=near-approval|yes|0|worker-capable senior
+          prior-near-approval-text-is-reviewed|1|approve|0.95|clean|clean_ok|PRIOR=near-approval|yes|0|claude-fable-5-1 senior
+          built-by-pi-judge-is-opus||approve|0.95|clean|none|BUILT=pi|yes|0|claude-opus-5-5
+          built-by-devin-and-cursor-judge-is-opus||approve|0.95|clean|none|BUILT=cursor,devin|yes|0|claude-opus-5-5
+          built-by-claude-judge-is-fable||approve|0.95|clean|none|BUILT=claude|yes|0|claude-fable-5-1
+          built-by-claude-then-cursor-judge-is-fable||approve|0.95|clean|none|BUILT=claude,cursor|yes|0|claude-fable-5-1
+          built-by-nobody-recorded-judge-is-fable||approve|0.95|clean|none||yes|0|claude-fable-5-1
+          built-record-from-a-person-is-ignored||approve|0.95|clean|none|BUILT_BY_PERSON=pi|yes|0|claude-fable-5-1
+          built-record-from-another-bot-is-ignored||approve|0.95|clean|none|BUILT_BY_OTHER_BOT=pi|yes|0|claude-fable-5-1
+          claude-built-guard-second-reviewer-stays-non-claude|1|approve|0.95|clean|clean_ok|BUILT=claude|yes|0|claude-fable-5-1 senior
+          other-built-guard-second-reviewer-stays-non-claude|1|approve|0.95|clean|clean_ok|BUILT=pi|yes|0|claude-opus-5-5 senior
+          claude-built-jev-still-decides-and-can-block||block|0.97|blocked|none|BUILT=claude|no|0|claude-fable-5-1
+          claude-call-fails-or-seat-at-its-usage-limit-review-does-not-finish||approve|0.95|clean|none|CLAUDE_FAILS|no|1|claude-fable-5-1
           CASES
           # The arm job's step: arms the exact approved head, and does nothing for a
           # stale head (a push after the approval), a draft, an armed PR or a closed one.
