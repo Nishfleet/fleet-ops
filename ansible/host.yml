@@ -199,20 +199,37 @@
     - name: Seed the telegram chat id file from the installed alertmanager config
       ansible.builtin.shell: |
         set -o pipefail
-        id=$(sed -n 's/^ *chat_id: *\(-\?[0-9]\+\).*/\1/p' /etc/prometheus/alertmanager.yml | head -n1)
+        id=$(sed -n 's/^ *chat_id: *\([0-9]\+\) *$/\1/p' /etc/prometheus/alertmanager.yml | head -n1)
         [ -n "$id" ] && [ "$id" != 0 ] || exit 3
-        install -o prometheus -g prometheus -m 0600 /dev/stdin /etc/prometheus/telegram_chat_id <<< "$id"
+        install -o root -g root -m 0600 /dev/stdin /etc/prometheus/telegram_chat_id <<< "$id"
       args:
         executable: /bin/bash
         creates: /etc/prometheus/telegram_chat_id
       register: chat_seed
       failed_when: chat_seed.rc not in [0, 3]
 
+    # Root-owned and not writable by the service: its bytes go into a root-owned
+    # config, so the prometheus user must not be able to change them.
+    - name: Keep the telegram chat id file root-owned
+      ansible.builtin.file:
+        path: /etc/prometheus/telegram_chat_id
+        owner: root
+        group: root
+        mode: "0600"
+      failed_when: false
+
     - name: Read the telegram chat id
       ansible.builtin.slurp:
         src: /etc/prometheus/telegram_chat_id
       register: telegram_chat_id
       failed_when: false
+
+    - name: Fail the run when the telegram chat id is not digits only
+      ansible.builtin.assert:
+        that: (telegram_chat_id.content | b64decode | trim) is match('^[0-9]+$')
+        fail_msg: "/etc/prometheus/telegram_chat_id must hold digits only; the alertmanager config was not rendered."
+        quiet: true
+      when: telegram_chat_id.content is defined
 
     - name: Install the alertmanager config
       ansible.builtin.file:
@@ -266,7 +283,7 @@
       loop: "{{ alertmanager_credentials.results }}"
       loop_control:
         label: "{{ item.item }}"
-      when: item.stat.exists
+      when: item.stat.exists and item.item != 'telegram_chat_id'
       notify: Reload alertmanager
 
     # The package ships alertmanager disabled. The dead-man heartbeat and the
