@@ -1,0 +1,6 @@
+# Alertmanager's options. Loopback only: its API takes alerts and silences with
+# no authentication, so the listener must never face the network. HA gossip is
+# off (empty --cluster.listen-address). fleet-host-config.service installs this
+# file and restarts prometheus-alertmanager.service when it changes
+# (ansible/host.yml).
+ARGS="--config.file=/etc/prometheus/alertmanager.yml --web.listen-address=127.0.0.1:9093 --cluster.listen-address="

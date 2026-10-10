@@ -54,10 +54,13 @@ rules:
     languages: [generic]
     severity: ERROR
     message: >-
-      The alertmanager escalation stack is deleted (fleet-ops#8958): its
-      escalation command and alert no longer exist on any host. Reach Nish
-      the way global-standing-rules.md "Only these reach Nish" says, not
-      through this deleted path.
+      The alertmanager escalation stack (repair dispatch, the manual
+      escalation command and its alert) was deleted in fleet-ops#8958 and is
+      not coming back. Alertmanager itself runs again for the dead-man
+      heartbeat and the hermes-gateway page, which are rules and routes in
+      rootfs/etc/prometheus, never a command. Reach Nish the way
+      global-standing-rules.md "Only these reach Nish" says, not through this
+      deleted path.
     # \b keeps the match word-sized: `paramtool` or `amtoolkit` must not fire.
     # `amtool check-config` and `amtool config routes test` validate the config
     # the dead-man and the hermes-gateway page use; they send nothing, so they

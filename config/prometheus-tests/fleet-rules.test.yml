@@ -29,7 +29,7 @@ tests:
       - eval_time: 10m
         alertname: HermesGatewayDown
         exp_alerts: []
-      # last active sample at t=10m; window (t-5m, t] is all zero from t=15m30s
+      # last active sample at t=9.5m; the window (t-5m, t] holds none from t=14m30s
       - eval_time: 14m
         alertname: HermesGatewayDown
         exp_alerts: []
