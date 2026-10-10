@@ -37,7 +37,14 @@ StandardOutput=null
 # it already loaded and the flag never takes effect.
 ExecStart=/home/nish/.local/bin/claude remote-control --name vps-rc --spawn=same-dir --permission-mode bypassPermissions --no-create-session-in-dir
 Slice=claude.slice
-OOMScoreAdjust=-900
+# -900 -> -500 (OOM storm 2026-10-09). Every session, tool and child of this
+# server inherits the value. At -900 a 15G secret scan in one session scored
+# the same floor as a 300M idle session, so the kernel could not tell them
+# apart and killed unprotected services instead (hermes, the router). The
+# kernel scores a process as its RSS plus adjust x limit/1000: at -500 a
+# process below half the limit is still never chosen over an unprotected one,
+# and a runaway above it is. Staged: read at the next restart of this unit.
+OOMScoreAdjust=-500
 Restart=always
 RestartSec=10
 
