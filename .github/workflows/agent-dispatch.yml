@@ -1079,7 +1079,7 @@ jobs:
               verdict="Jev was not asked: the issue touches $reason, which is never admitted automatically. p: not asked. model: none."
             else
               body=$(jq -c "$REQUEST" <<<"$issue")
-              resp=$(curl -s --max-time 90 127.0.0.1:4000/jev --config <(sed -n 's|^LITELLM_JEV_KEY=\(.*\)|header = "Authorization: Bearer \1"|p' "$HOME/.config/fleet-ops/seats/typesafe-jev.env") -H 'content-type: application/json' -d "$body" || true)
+              resp=$(curl -s --max-time 90 127.0.0.1:4000/jev --config <(sed -n 's|^LITELLM_JEV_KEY=\(.*\)|header = "Authorization: Bearer \1"|p' "$HOME/.config/fleet-ops"/seats/typesafe-jev.env) -H 'content-type: application/json' -d "$body" || true)
               if ! jq -e '.answers.admit.probability | type == "number"' <<<"$resp" >/dev/null 2>&1; then
                 echo "::warning::admit: Jev gave no usable answer for #$n; left as needs-triage for the next sweep"
                 continue
