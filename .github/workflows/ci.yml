@@ -117,10 +117,28 @@ jobs:
           version: v0.11.0
       - name: apt binaries systemd-analyze verify needs (promtool, bwrap, redis-server, ansible-pull)
         if: always()
-        run: sudo apt-get install -y --no-install-recommends prometheus bubblewrap redis-server ansible-core
+        run: sudo apt-get install -y --no-install-recommends prometheus prometheus-alertmanager bubblewrap redis-server ansible-core
       - name: promtool test rules (config/grafana/tests, outside the provisioning dirs Grafana loads)
         if: always()
         run: promtool test rules config/grafana/tests/*.test.yml
+      # The dead-man Watchdog, SystemUnitFailed and HermesGatewayDown rules and
+      # the Alertmanager routing the host installs from rootfs/etc/prometheus.
+      # check config also loads the rule file named by rule_files. Neither check
+      # opens url_file or bot_token_file (verified with both paths missing), so
+      # a runner without the box's credential files passes. The routes tests
+      # prove the matchers: Watchdog reaches the dead-man, severity=nish reaches
+      # Telegram, a plain warning reaches neither.
+      - name: promtool and alertmanager config checks, promtool test rules (rootfs/etc/prometheus)
+        if: always()
+        run: |
+          promtool check config rootfs/etc/prometheus/prometheus.yml
+          promtool check rules rootfs/etc/prometheus/fleet_rules.yml
+          amtool check-config rootfs/etc/alertmanager/alertmanager.yml
+          cfg=rootfs/etc/alertmanager/alertmanager.yml
+          amtool config routes test --config.file=$cfg --verify.receivers=deadman alertname=Watchdog severity=none
+          amtool config routes test --config.file=$cfg --verify.receivers=telegram alertname=HermesGatewayDown severity=nish
+          amtool config routes test --config.file=$cfg --verify.receivers=none alertname=SystemUnitFailed severity=warning
+          promtool test rules config/prometheus-tests/*.test.yml
       - name: stub pi for systemd-analyze verify (host-only binary)
         if: always()
         run: sudo install -D -m0755 /bin/true /home/nish/.local/bin/pi

@@ -11,6 +11,16 @@ global:
   external_labels:
     monitor: fleet-netcup-rs2000
 
+# Relative to this file's directory, so `promtool check config` on the repo
+# copy (CI, and ansible before it installs) also validates the rules file.
+rule_files:
+  - fleet_rules.yml
+
+alerting:
+  alertmanagers:
+    - static_configs:
+        - targets: ['127.0.0.1:9093']
+
 scrape_configs:
   - job_name: prometheus
     static_configs:
@@ -41,19 +51,27 @@ scrape_configs:
     static_configs:
       - targets: ['127.0.0.1:3001']
 
+  # Alertmanager's own metrics: alertmanager_notifications_total{integration=
+  # "webhook"} is the count of Watchdog heartbeats it has sent to the outside
+  # dead-man, and up{job="alertmanager"} is the local half of "is it alive".
+  - job_name: alertmanager
+    static_configs:
+      - targets: ['127.0.0.1:9093']
+
   # --- 0509 blackbox probes removed 2026-10-01 (fleet-ops#9014) -----------
   # Deleted, not repointed. All 12 targets of the three blackbox-0509-* jobs
   # (/timeline/*, /search?...) answer 404 after the 0509 rebuild (0509#3842),
   # so all three probe_success series read 0; and the alert stack was cut on
   # 2026-09-29 (fleet-ops#8958 — 0 rules loaded, alertmanager disabled), so a
-  # blackbox failure reached nobody anyway. Net machinery goes down. 0509
+  # blackbox failure reached nobody anyway. (The dead-man and the hermes
+  # gateway rule are back since; the repair-dispatch rules are not.) Net machinery goes down. 0509
   # stays covered by the Sentry cron monitors in org 0509-gg (liveness-ping,
   # own-site-check, nightly) and the post-deploy e2e (0509#5736). The three
   # module definitions these jobs used were removed from config/blackbox.yml
   # in the same change.
 
   # 0509 homepage up/down for the fleet view (fleet-grafana, Nish 2026-10-03).
-  # Display only: the alert stack stays cut (fleet-ops#8958). One target, the
+  # Display only: no rule reads it. One target, the
   # stock http_2xx module, via the blackbox exporter already running on :9115.
   - job_name: site-0509
     metrics_path: /probe

@@ -1,0 +1,56 @@
+# Alertmanager routing, repo-sourced. Two things leave this box:
+#
+#   Watchdog      -> `deadman`: a plain webhook to an outside dead-man
+#                    (healthchecks.io). Alertmanager re-sends the always-firing
+#                    Watchdog every 5 minutes, so the outside service sees a
+#                    heartbeat for as long as Prometheus and Alertmanager are
+#                    both alive, and alerts when it stops. A dead-man inside the
+#                    box could not report the box dying.
+#   severity=nish -> `telegram`: a real outage (see fleet_rules.yml), paged
+#                    immediately and re-sent every 6 hours while it lasts.
+#
+# Everything else matches no route and lands on `none`, which has no
+# integrations: those alerts stay visible (ALERTS series, Alertmanager) and page
+# nobody. The repair-dispatch path was cut on 2026-09-29 (fleet-ops#8958) and is
+# not part of this file.
+#
+# The ping URL and the bot token are credentials and stay out of the repo: they
+# are hand-placed 0600 files in /etc/prometheus, read through url_file and
+# bot_token_file. The Telegram chat id has no file option in Alertmanager, so
+# the repo holds chat_id 1 and the host-config run writes the real id from
+# /etc/prometheus/telegram_chat_id into the installed copy.
+global:
+  resolve_timeout: 5m
+
+route:
+  receiver: none
+  group_by: ['alertname']
+  group_wait: 10s
+  group_interval: 5m
+  repeat_interval: 6h
+  routes:
+    - matchers:
+        - alertname="Watchdog"
+      receiver: deadman
+      group_wait: 0s
+      group_interval: 1m
+      repeat_interval: 5m
+    - matchers:
+        - severity="nish"
+      receiver: telegram
+      group_wait: 30s
+      group_interval: 5m
+      repeat_interval: 6h
+
+receivers:
+  - name: none
+  - name: deadman
+    webhook_configs:
+      - url_file: /etc/prometheus/deadman_url
+        send_resolved: false
+  - name: telegram
+    telegram_configs:
+      - bot_token_file: /etc/prometheus/telegram_bot_token
+        chat_id: 1  # placeholder; ansible/host.yml fills in the id from /etc/prometheus/telegram_chat_id
+        message: '[{{ .Status }}] {{ .CommonLabels.alertname }}: {{ .CommonAnnotations.summary }}'
+        send_resolved: true

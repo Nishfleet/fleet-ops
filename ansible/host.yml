@@ -80,6 +80,11 @@
       changed_when: false
       check_mode: false  # read-only; runs under --check too
 
+    - name: Check the alertmanager config before installing it
+      ansible.builtin.command: /usr/bin/amtool check-config {{ rootfs }}/etc/alertmanager/alertmanager.yml
+      changed_when: false
+      check_mode: false  # read-only; runs under --check too
+
     - name: Check the nftables ruleset before installing it
       ansible.builtin.command: /usr/sbin/nft -c -f {{ rootfs }}/etc/nftables.conf
       changed_when: false
@@ -184,7 +189,94 @@
         mode: preserve
       notify:
         - Reload prometheus
+        - Reload alertmanager
         - Reload blackbox exporter
+
+    # The Telegram chat id has no file option in Alertmanager, so it is kept out
+    # of the repo: the repo copy holds chat_id 1 and the installed copy gets the
+    # id from a hand-placed file. First run only: the id is taken from the
+    # alertmanager.yml the box already has, so nothing needs placing by hand.
+    - name: Seed the telegram chat id file from the installed alertmanager config
+      ansible.builtin.shell: |
+        set -o pipefail
+        id=$(sed -n 's/^ *chat_id: *\(-\?[0-9]\+\).*/\1/p' /etc/prometheus/alertmanager.yml | head -n1)
+        [ -n "$id" ] && [ "$id" != 0 ] || exit 3
+        install -o prometheus -g prometheus -m 0600 /dev/stdin /etc/prometheus/telegram_chat_id <<< "$id"
+      args:
+        executable: /bin/bash
+        creates: /etc/prometheus/telegram_chat_id
+      register: chat_seed
+      failed_when: chat_seed.rc not in [0, 3]
+
+    - name: Read the telegram chat id
+      ansible.builtin.slurp:
+        src: /etc/prometheus/telegram_chat_id
+      register: telegram_chat_id
+      failed_when: false
+
+    - name: Install the alertmanager config
+      ansible.builtin.file:
+        path: /etc/alertmanager
+        state: directory
+        owner: root
+        group: root
+        mode: "0755"
+
+    - name: Install alertmanager.yml with the chat id filled in
+      ansible.builtin.copy:
+        content: "{{ lookup('ansible.builtin.file', rootfs ~ '/etc/alertmanager/alertmanager.yml') | regex_replace('chat_id: 1 ', 'chat_id: ' ~ (telegram_chat_id.content | b64decode | trim) ~ ' ') }}"
+        dest: /etc/alertmanager/alertmanager.yml
+        owner: root
+        group: root
+        mode: "0644"
+      when: telegram_chat_id.content is defined
+      notify: Reload alertmanager
+
+    # Alertmanager's API is unauthenticated, so the options pin it to loopback.
+    - name: Install the alertmanager options
+      ansible.builtin.copy:
+        src: "{{ rootfs }}/etc/default/prometheus-alertmanager"
+        dest: /etc/default/prometheus-alertmanager
+        owner: root
+        group: root
+        mode: preserve
+      notify: Restart alertmanager
+
+    # The ping URL and the bot token are hand-placed credentials that stay out of
+    # the repo. Alertmanager exits at config load without them, so it starts only
+    # when both exist; the last task of the play fails the run, loudly, when one
+    # is missing, after everything else has been applied.
+    - name: Look for the alertmanager credential files
+      ansible.builtin.stat:
+        path: "/etc/prometheus/{{ item }}"
+      loop:
+        - deadman_url
+        - telegram_bot_token
+        - telegram_chat_id
+      register: alertmanager_credentials
+
+    # Alertmanager runs as the prometheus user and reads these at config load and
+    # when it notifies. Only the owner and mode are managed; the bytes stay hand-placed.
+    - name: Let the prometheus user read the alertmanager credential files
+      ansible.builtin.file:
+        path: "/etc/prometheus/{{ item.item }}"
+        owner: prometheus
+        group: prometheus
+        mode: "0600"
+      loop: "{{ alertmanager_credentials.results }}"
+      loop_control:
+        label: "{{ item.item }}"
+      when: item.stat.exists
+      notify: Reload alertmanager
+
+    # The package ships alertmanager disabled. The dead-man heartbeat and the
+    # hermes-gateway page both leave the box through it, so it runs.
+    - name: Enable and start alertmanager
+      ansible.builtin.systemd_service:
+        name: prometheus-alertmanager.service
+        enabled: true
+        state: started
+      when: alertmanager_credentials.results | map(attribute='stat.exists') | min
 
     # polkitd watches rules.d itself; no reload needed.
     - name: Install polkit rules
@@ -403,6 +495,17 @@
              | reject('search', '^(' ~ (retired | map('regex_escape') | join('|')) ~ ')(/|$)')
              | sort }}
 
+    # Last on purpose: the handlers run first, so a missing credential file
+    # fails this run without holding back the reloads above.
+    - name: Apply pending handlers before the credential check
+      ansible.builtin.meta: flush_handlers
+
+    - name: Fail when an alertmanager credential file is missing
+      ansible.builtin.assert:
+        that: alertmanager_credentials.results | map(attribute='stat.exists') | min
+        fail_msg: "Alertmanager is not running: a hand-placed credential file is missing from /etc/prometheus (deadman_url, telegram_bot_token or telegram_chat_id). The dead-man heartbeat and the hermes-gateway page are off until it is placed."
+        quiet: true
+
   handlers:
     - name: Reload systemd
       ansible.builtin.systemd_service:
@@ -446,6 +549,19 @@
       ansible.builtin.systemd_service:
         name: prometheus.service
         state: reloaded
+
+    - name: Reload alertmanager
+      ansible.builtin.systemd_service:
+        name: prometheus-alertmanager.service
+        state: reloaded
+      when: alertmanager_credentials.results | map(attribute='stat.exists') | min
+
+    # The options file is read only at start.
+    - name: Restart alertmanager
+      ansible.builtin.systemd_service:
+        name: prometheus-alertmanager.service
+        state: restarted
+      when: alertmanager_credentials.results | map(attribute='stat.exists') | min
 
     - name: Reload blackbox exporter
       ansible.builtin.systemd_service:
