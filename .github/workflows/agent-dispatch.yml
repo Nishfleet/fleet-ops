@@ -1136,9 +1136,11 @@ jobs:
           # copy sits beside the worktrees, where the 3-day age-out reaps it, so
           # there is a window to salvage from it. A fetch that fails on an intact
           # mirror (network, credential, a repo the login cannot read) is not
-          # rebuilt: it stays a loud failure. Runs of one repo are serialised by
-          # the job's concurrency group, and each repo has its own mirror, so
-          # nothing else is using this one.
+          # rebuilt: it stays a loud failure. Nothing else is using the mirror
+          # during the move: this job's own `concurrency: orchestrate-<repo>`
+          # group (cancel-in-progress false, set on the job, not the per-run
+          # group at the top of the file) lets one hand-off per repo run at a
+          # time, and each repo has its own mirror.
           if ! fetch_mirror; then
             if git -C "$mirror" fsck --connectivity-only --no-dangling >/dev/null 2>&1; then
               echo "::error::orchestrate: fetch failed on an intact mirror; not rebuilding it"
