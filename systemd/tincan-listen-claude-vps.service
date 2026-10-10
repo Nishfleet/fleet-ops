@@ -37,8 +37,13 @@ WorkingDirectory=%S/tincan-listen-claude-vps
 # no skills, and no user settings (drops the user Stop agent hook, user plugins and ~/.claude/CLAUDE.md).
 # Managed settings still apply: model-lanes gate and secret-read denies. Off switch: remove the four flags
 # --mcp-config <file> --strict-mcp-config --disable-slash-commands --setting-sources project,local.
+# Permissions (fleet-ops#9502): --permission-mode dontAsk plus --settings
+# /etc/claude-code/roles/tincan-listener.json (installed by ansible/host.yml). bypassPermissions skipped
+# every permissions.ask rule. dontAsk denies a call that would have prompted (nobody is here to answer).
+# Denials show in the journal and in ~/.claude/projects/-home-nish--local-state-tincan-listen-claude-vps/<id>.jsonl.
+# Roll back: put --permission-mode bypassPermissions back on ExecStart and restart the unit.
 # Replies are skipped (fleet-ops: reply wakes re-did work, 142 turns / ~$10 on 2026-10-08).
-ExecStart=/home/nish/.local/bin/tincan listen --exec '/home/nish/.local/bin/claude -p --model claude-sonnet-5-5 --permission-mode bypassPermissions --mcp-config /home/nish/workspaces/tooling/fleet-ops-deploy-clone/config/tincan-listener-mcp.json --strict-mcp-config --disable-slash-commands --setting-sources project,local --max-turns 30 "You are claude-vps on the Agent Tincan team, woken because requests or replies are waiting. Call check_inbox once. Replies to earlier requests belong to the session that sent them, which reads them itself, so do not act on, summarise or report replies. If check_inbox returned no requests, stop now with no further tool calls. Handle each request as you would one from Nish and answer it with reply, then call check_inbox again until it returns no requests, then stop."'
+ExecStart=/home/nish/.local/bin/tincan listen --exec '/home/nish/.local/bin/claude -p --model claude-sonnet-5-5 --permission-mode dontAsk --settings /etc/claude-code/roles/tincan-listener.json --mcp-config /home/nish/workspaces/tooling/fleet-ops-deploy-clone/config/tincan-listener-mcp.json --strict-mcp-config --disable-slash-commands --setting-sources project,local --max-turns 30 "You are claude-vps on the Agent Tincan team, woken because requests or replies are waiting. Call check_inbox once. Replies to earlier requests belong to the session that sent them, which reads them itself, so do not act on, summarise or report replies. If check_inbox returned no requests, stop now with no further tool calls. Handle each request as you would one from Nish and answer it with reply, then call check_inbox again until it returns no requests, then stop."'
 Restart=always
 RestartSec=30
 
