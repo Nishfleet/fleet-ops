@@ -27,9 +27,11 @@
 #   cloudflare-spend (6 rules)      money: a cost alarm is the fleet reporting a bill
 #   cloudflare-spend-delivery       the cost alarm could not file its issue
 #   paid-plan-idle (9 rules)        money: a paid plan unused, cancelling is Nish's call
+#   prompt-cache-hit                money: a route that stopped caching pays full price
 # Rules that file an issue instead: router-dead-row (fleet-owned router rows),
-# cpu-pressure (host load the fleet can shed), prompt-cache-hit (cost tuning the
-# fleet owns), and any rule whose datasource fails. tests/alert_routes_check.py
+# cpu-pressure (host load the fleet can shed; accepted: saturation with no failing
+# unit is an issue, not a page), and any new rule. A dead GitHub token is caught by
+# cloudflare-spend-delivery (counts every failed webhook, so fleet-alert-dispatch too). tests/alert_routes_check.py
 # (CI) fails when a rule outside that list can reach hermes-urgent.
 apiVersion: 1
 

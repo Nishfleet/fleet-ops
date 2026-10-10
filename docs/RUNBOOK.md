@@ -107,10 +107,11 @@ macros, run it, then restore the file; close the test issue at once, the dispatc
 
 Who gets paged (fleet-ops#9445). Nish's contract is that only a real outage, a money problem,
 or something only he can act on interrupts him. `hermes-urgent` (Telegram) therefore serves the
-cost alarm, its delivery-failed rule, the nine paid-plan-idle rules and cost rules that cannot
-evaluate. The policy root is `fleet-alert-dispatch`, a webhook that files a fleet-ops issue
+cost alarm, its delivery-failed rule (it counts every failed webhook, fleet issues too), the
+nine paid-plan-idle rules, prompt-cache-hit (a route that stopped caching pays full price) and
+cost rules that cannot evaluate. The policy root is `fleet-alert-dispatch`, a webhook that files a fleet-ops issue
 labelled `agent-ready` (one per alert instance, repeated at most daily); router-dead-row,
-cpu-pressure, prompt-cache-hit and any new rule land there. `tests/alert_routes_check.py` (CI)
+cpu-pressure and any new rule land there. `tests/alert_routes_check.py` (CI)
 fails when a rule outside its urgent list can reach `hermes-urgent`; to make a new rule page,
 add it there with the reason. Switch off the fleet route: point the policy root back at
 `hermes-urgent` in `cloudflare-spend-contact.yaml`.
