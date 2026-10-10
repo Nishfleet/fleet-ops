@@ -90,13 +90,14 @@ The rules still in force:
 - **Worker lanes and Claude seats.** `agent.yml` Gate: ordinary issues go to
   pi, then opencode, then Devin. `strong-only` (senior) issues go to Claude
   Code first (`claude-sonnet-5-5`; `claude-opus-5-5` after two failed runs or
-  with `needs-opus`). The seat is the runner the job lands on: a runner whose
-  `.env` sets `CLAUDE_CONFIG_DIR` runs seat a, a runner without it runs the
-  default login (seat b). Runners 1-11 are seat a and 12-22 are seat b, so jobs
-  split across both seats with no clock, and a job stays on one seat from the
-  Gate to the last call, which keeps the prompt cache. To switch it off, give
-  every runner the same `.env` (all with the line, or all without) and restart
-  each runner when it is idle. When claude exits on a rate limit or a usage
+  with `needs-opus`). The seat is set by the runner's number
+  (`RUNNER_NAME` is `netcup-agent-N`): in the claude lane step, before claude
+  runs, an even N unsets `CLAUDE_CONFIG_DIR` and runs the default login (seat b),
+  an odd N keeps it (seat a), and a name with no number keeps seat a. The step
+  logs `claude lane: seat=a|b runner=<name>`. The jail exposes only the chosen
+  seat. Jobs split across both seats with no clock, and a job stays on one seat
+  from the Gate to the last call, which keeps the prompt cache. To switch it
+  off, delete that block (every runner then runs seat a). When claude exits on a rate limit or a usage
   limit, the same packet falls through: Cursor (cap 1) for `strong-only`, pi for
   any other job. Nothing polls usage.
   Routing by judgment, in plain words: Claude does the judgment work, free
@@ -142,7 +143,7 @@ The rules still in force:
   branch, which re-reads the review and calls `arm-approved` (agent.yml `arm`).
   agent.yml's `review` job (called by
   `review-risky`) is the independent approver: it reads the held head's diff
-  through the API, asks a no-tools Claude call for findings (on the runner's seat:
+  through the API, asks a no-tools Claude call for findings (on the runner's own login:
   Opus 5.5 for work another engine built,
   Fable 5.1 for Claude-built work; the worker App's `builder-engine:` PR
   comment says which, and no comment counts as Claude-built) and Jev for

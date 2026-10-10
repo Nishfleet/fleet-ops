@@ -255,8 +255,8 @@ jobs:
           # anything between, or a Jev call that fails, goes to the free lanes. The
           # free order is pi, then opencode, then Devin, and never Cursor
           # (fleet-ops#8740). Claude is Sonnet, or Opus with needs-opus or after two
-          # failed runs. The seat is the runner's: a runner with CLAUDE_CONFIG_DIR
-          # set runs seat a, one without it runs the default login (seat b), so
+          # failed runs. The seat follows the runner's number (netcup-agent-N):
+          # odd runs seat a, even runs the default login (seat b), so
           # the jobs split across both seats and a job never changes seat (no
           # clock, and the prompt cache holds). A seat at its usage limit shows up
           # as a rate limit in the Worker, which falls through (below). There is no
@@ -368,7 +368,7 @@ jobs:
           # The worker's gh and git push use GH_TOKEN, the App token. ci.yml
           # runs this exact line and fails if either path can be read.
           # The Claude seats' logins are hidden the same way, from every engine
-          # but claude: seat a is the runner's own CLAUDE_CONFIG_DIR (unset means
+          # but claude: seat a is the runner's CLAUDE_CONFIG_DIR (unset means
           # one default login, and the already-hidden gh directory stands in so the
           # line never names a path that is not there), seat b is the default
           # login's credentials file and ~/.claude.json, which an empty bind
@@ -403,9 +403,11 @@ jobs:
           mark() { echo "$1" >> "$RUNNER_TEMP/engines-ran"; }
           live() { pgrep -af -- "^bwrap .* -- $1 " | grep -oE 'agent-worktrees/issue-[^ ]*|sessions/agent-[^ ]*' | sort -u | wc -l; }
           if [ "$ENGINE" = claude ]; then
-            # Claude Code on this runner's seat: seat a when the runner has
-            # CLAUDE_CONFIG_DIR, the default login (seat b) when it has none. The
-            # seat never changes inside a job. A run that dies on a rate limit or
+            # Claude Code on one of the two seats, chosen by the runner's number
+            # (RUNNER_NAME is netcup-agent-N): odd keeps the runner's
+            # CLAUDE_CONFIG_DIR (seat a), even unsets it (seat b, the default
+            # login). A name with no number keeps seat a. The seat never changes
+            # inside a job. A run that dies on a rate limit or
             # a usage limit sends the same packet to the Cursor lane for senior
             # work, or to pi (the first of the ordinary lanes) for any other job,
             # which never uses Cursor; either continues from whatever the branch
@@ -413,7 +415,10 @@ jobs:
             # logins (the jail lines above); this one sees only the seat it runs on.
             fallback=pi
             [ "$SENIOR" != true ] || fallback=cursor
-            if [ -n "${CLAUDE_CONFIG_DIR:-}" ]; then claude_jail="$claude_jail_a"; else claude_jail="$claude_jail_b"; fi
+            runner_n=${RUNNER_NAME:-}; runner_n=${runner_n##*[!0-9]}
+            if [ -n "$runner_n" ] && [ $((10#$runner_n % 2)) -eq 0 ]; then unset CLAUDE_CONFIG_DIR; fi
+            if [ -n "${CLAUDE_CONFIG_DIR:-}" ]; then claude_jail="$claude_jail_a" claude_seat=a; else claude_jail="$claude_jail_b" claude_seat=b; fi
+            echo "claude lane: seat=$claude_seat runner=${RUNNER_NAME:-unknown}"
             mkdir -p "$dir"
             mark claude
             rc=0
@@ -940,8 +945,8 @@ jobs:
           echo "first review: built by '${built:-unknown}', model $first_model"
           # The model gets the diff as text and no tools (--tools ""): a tool could
           # open the runner's own key files, and the review is posted publicly. The
-          # seat is the runner's own (CLAUDE_CONFIG_DIR, or the default login when it
-          # has none). A call that fails or answers nothing, a usage limit included,
+          # call runs on the runner's own login (CLAUDE_CONFIG_DIR, or the default login
+          # when it has none). A call that fails or answers nothing, a usage limit included,
           # means the review did not finish: retry comments that and fails the job,
           # and a re-run reviews the head again.
           # There is no fallback to another family's model, and a head is never

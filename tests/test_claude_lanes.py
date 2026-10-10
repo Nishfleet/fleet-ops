@@ -241,7 +241,7 @@ def test_needs_opus_picks_opus_and_only_claude_jobs_are_senior(tmp_path):
     assert "senior=true" in _route(d, labels=",strong-only,")[2]
 
 
-def _worker(tmp_path, engine, model="claude-sonnet-5-5", claude_rc=0, claude_out="", cursor_live=0, cfg_dir=True, senior="true", claude_err=""):
+def _worker(tmp_path, engine, model="claude-sonnet-5-5", claude_rc=0, claude_out="", cursor_live=0, runner_name="netcup-agent-1", senior="true", claude_err=""):
     b, home = _bin(tmp_path)
     state = tmp_path / "state"
     tmp = tmp_path / "runner-tmp"
@@ -270,10 +270,9 @@ def _worker(tmp_path, engine, model="claude-sonnet-5-5", claude_rc=0, claude_out
         "CLAUDE_OUT": claude_out,
         "CLAUDE_ERR": claude_err,
         "LIVE_cursor_agent": str(cursor_live),
+        "RUNNER_NAME": runner_name,
     }
-    env.pop("CLAUDE_CONFIG_DIR", None)
-    if cfg_dir:
-        env["CLAUDE_CONFIG_DIR"] = str(seat_a)
+    env["CLAUDE_CONFIG_DIR"] = str(seat_a)  # every runner carries seat a; the lane drops it on an even runner
     r = subprocess.run(["bash", "-c", script], env=env, capture_output=True, text=True)
 
     def rd(n):
@@ -295,18 +294,24 @@ def test_claude_lane_invocation(tmp_path):
     assert ran == ["claude"] and cursor == ""
 
 
-def test_seat_a_runner_keeps_its_dir_and_hides_the_default_login(tmp_path):
-    r, bwrap, claude, _, _, seat_a, home = _worker(tmp_path, "claude")
+@pytest.mark.parametrize("name", ["netcup-agent-1", "netcup-agent-3", "netcup-agent-11", "netcup-agent-09", "runner-without-a-number"])
+def test_odd_or_unnumbered_runner_keeps_seat_a_and_hides_the_default_login(tmp_path, name):
+    r, bwrap, claude, _, _, seat_a, home = _worker(tmp_path, "claude", runner_name=name)
+    assert r.returncode == 0, r.stderr
     assert f"CCD={seat_a}" in claude
+    assert f"claude lane: seat=a runner={name}" in r.stdout
     assert f"--ro-bind /dev/null {home}/.claude/.credentials.json" in bwrap
     assert f"--tmpfs {seat_a}" not in bwrap
     # every other Claude dir and backup dir is hidden; only the running seat stays
     _assert_backups_hidden(bwrap, home)
 
 
-def test_seat_b_runner_has_no_config_dir_and_hides_seat_a(tmp_path):
-    r, bwrap, claude, _, _, seat_a, home = _worker(tmp_path, "claude", cfg_dir=False)
+@pytest.mark.parametrize("name", ["netcup-agent-2", "netcup-agent-4", "netcup-agent-12", "netcup-agent-22", "netcup-agent-08"])
+def test_even_runner_unsets_the_config_dir_and_hides_seat_a(tmp_path, name):
+    r, bwrap, claude, _, _, seat_a, home = _worker(tmp_path, "claude", runner_name=name)
+    assert r.returncode == 0, r.stderr
     assert "CCD=unset" in claude
+    assert f"claude lane: seat=b runner={name}" in r.stdout
     assert f"--tmpfs {seat_a}" in bwrap
     assert f"--ro-bind /dev/null {home}/.claude/.credentials.json" not in bwrap
     _assert_backups_hidden(bwrap, home)
@@ -397,11 +402,26 @@ def _hides(home, keep):
     return r.stdout.strip()
 
 
+def _lane_seat(runner_name):
+    """Runs the lane's own parity lines and returns (seat, whether CLAUDE_CONFIG_DIR survives)."""
+    lines = _step("work", "Worker").splitlines()
+    a = next(i for i, ln in enumerate(lines) if ln.strip().startswith("runner_n="))
+    b = next(i for i, ln in enumerate(lines) if ln.strip().startswith('echo "claude lane:'))
+    prog = "\n".join(lines[a:b]) + '\necho "$claude_seat ${CLAUDE_CONFIG_DIR:-unset}"\n'
+    r = subprocess.run(["bash", "-c", "claude_jail_a=A claude_jail_b=B\n" + prog], env={"RUNNER_NAME": runner_name, "CLAUDE_CONFIG_DIR": "/seat-a", "PATH": SYS_PATH}, capture_output=True, text=True)
+    assert r.returncode == 0, r.stderr
+    seat, cfg = r.stdout.split()
+    return seat, cfg != "unset"
+
+
 @pytest.mark.skipif(not _real_bwrap_ok(), reason="bwrap cannot run here")
-@pytest.mark.parametrize("runner", ["seat-a", "seat-b"])
-def test_real_jail_claude_lane_reads_only_its_own_seat_and_nobody_reads_the_rest(tmp_path, runner):
-    """Real bwrap. A seat-a runner has CLAUDE_CONFIG_DIR; a seat-b runner has none, and the
-    Worker then uses the already-hidden gh dir as the stand-in `seat_a`."""
+@pytest.mark.parametrize("runner_name", ["netcup-agent-3", "netcup-agent-4"])
+def test_real_jail_claude_lane_reads_only_its_own_seat_and_nobody_reads_the_rest(tmp_path, runner_name):
+    """Real bwrap, an odd and an even runner. The lane's own parity rule picks the seat: odd
+    keeps CLAUDE_CONFIG_DIR (seat a), even unsets it (seat b); the Worker then uses the
+    already-hidden gh dir as the stand-in `seat_a` for seat b's jail."""
+    seat, keeps_cfg = _lane_seat(runner_name)
+    assert (seat, keeps_cfg) == (("a", True) if int(runner_name.rsplit("-", 1)[1]) % 2 else ("b", False))
     home = tmp_path / "home"
     seat_a = home / ".claude-seat"
     (home / ".claude").mkdir(parents=True)
@@ -417,7 +437,7 @@ def test_real_jail_claude_lane_reads_only_its_own_seat_and_nobody_reads_the_rest
     for p in (seat_a / ".credentials.json", home / ".claude/.credentials.json", home / ".claude.json"):
         p.write_text("planted")
     lines = _jail_lines()
-    seat_b = runner == "seat-b"
+    seat_b = seat == "b"
     jail_seat = home / ".config/gh" if seat_b else seat_a  # the Worker's seat_a=${CLAUDE_CONFIG_DIR:-$HOME/.config/gh}
     sub = {"hide_all": _hides(home, ""), "hide_but_a": _hides(home, str(jail_seat))}
 
