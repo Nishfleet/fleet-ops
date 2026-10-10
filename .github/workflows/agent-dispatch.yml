@@ -1103,12 +1103,15 @@ jobs:
           # `git init` on it recreates HEAD and keeps the objects, refs and
           # config, so a damaged mirror is repaired in place, and the remote is
           # added only when it is missing.
-          if [ "$(git -C "$mirror" rev-parse --is-bare-repository 2>/dev/null)" != true ]; then
-            mkdir -p "$mirror"
-            git init -q --bare "$mirror"
-          fi
-          git -C "$mirror" remote get-url origin >/dev/null 2>&1 ||
-            git -C "$mirror" remote add origin "https://github.com/$REPO.git"
+          init_mirror() {
+            if [ "$(git -C "$mirror" rev-parse --is-bare-repository 2>/dev/null)" != true ]; then
+              mkdir -p "$mirror"
+              git init -q --bare "$mirror"
+            fi
+            git -C "$mirror" remote get-url origin >/dev/null 2>&1 ||
+              git -C "$mirror" remote add origin "https://github.com/$REPO.git"
+          }
+          init_mirror
           # No GH_TOKEN on the fetch either: the App token cannot read a private
           # repo and has no workflows scope. The runner user's own gh login is the
           # credential (~/.gitconfig -> gh auth git-credential), and a repo it
@@ -1121,7 +1124,34 @@ jobs:
           # refs/heads/orch/issue-localonly). Pruning only refs/remotes is safe.
           # It also gives the worktree a real origin/main, which the prompt's
           # "git log --oneline origin/main..HEAD" reuse step needs.
-          env -u GH_TOKEN -u GITHUB_TOKEN git -C "$mirror" fetch -q --prune origin '+refs/heads/*:refs/remotes/origin/*'
+          fetch_mirror() {
+            env -u GH_TOKEN -u GITHUB_TOKEN git -C "$mirror" fetch -q --prune origin '+refs/heads/*:refs/remotes/origin/*'
+          }
+          # The age-out that deleted HEAD also removed old objects, so the same
+          # mirror can fail the fetch with "unresolved deltas" (fleet-ops#9526).
+          # The mirror is a cache of origin: when the fetch fails AND the object
+          # store does not pass a connectivity check, set it aside and fetch
+          # fresh. It is moved, not deleted, because it can hold local-only
+          # hand-off branches (a hand-off that died before its push); the aside
+          # copy sits beside the worktrees, where the 3-day age-out reaps it, so
+          # there is a window to salvage from it. A fetch that fails on an intact
+          # mirror (network, credential, a repo the login cannot read) is not
+          # rebuilt: it stays a loud failure. Nothing else is using the mirror
+          # during the move: this job's own `concurrency: orchestrate-<repo>`
+          # group (cancel-in-progress false, set on the job, not the per-run
+          # group at the top of the file) lets one hand-off per repo run at a
+          # time, and each repo has its own mirror.
+          if ! fetch_mirror; then
+            if git -C "$mirror" fsck --connectivity-only --no-dangling >/dev/null 2>&1; then
+              echo "::error::orchestrate: fetch failed on an intact mirror; not rebuilding it"
+              exit 1
+            fi
+            aside="$HOME/workspaces/agent-worktrees/orch-damaged-$repo-$(date +%s).git"
+            echo "::warning::orchestrate: the mirror's object store is damaged; setting it aside and fetching fresh"
+            mv "$mirror" "$aside"
+            init_mirror
+            fetch_mirror
+          fi
           # A killed run can leave the worktree registered, and a bare repo
           # refuses to check one branch out in two worktrees at once. Remove it
           # through git first, so the registration goes with the directory.
