@@ -99,13 +99,22 @@ Cloudflare cost alarm (fleet-ops#9355): `config/grafana/provisioning/alerting/cl
 evaluates hourly through the Infinity data source `fleet-cloudflare` (the deploy-ci
 analytics token, from `~/.config/cloudflare/deploy-ci.env`). A firing rule opens a fleet-ops
 issue labelled `agent-ready` and `priority-now` through the webhook contact point
-`cloudflare-spend-dispatch`; `hermes-urgent` is the policy root and the fallback. The webhook
+`cloudflare-spend-dispatch`. The webhook
 sends a GitHub App installation token (issues:write on Nishfleet/fleet-ops only), see
 "Grafana's GitHub token" below. `grafana_alerting_notifications_failed_total` rising pages hermes-urgent through `cloudflare-spend-delivery.yaml`. Replay a rule by typing a past
 window into its GraphQL `filter:` in place of the `${__timeFrom:date:iso}` and `${__timeTo:date:iso}`
 macros, run it, then restore the file; close the test issue at once, the dispatcher claims it.
 
-Spend alerts also go to hermes-urgent, so a dead token never silences them.
+Who gets paged (fleet-ops#9445). Nish's contract is that only a real outage, a money problem,
+or something only he can act on interrupts him. `hermes-urgent` (Telegram) therefore serves the
+cost alarm, its delivery-failed rule (it counts every failed webhook, fleet issues too), the
+nine paid-plan-idle rules, prompt-cache-hit (a route that stopped caching pays full price) and
+cost rules that cannot evaluate. The policy root is `fleet-alert-dispatch`, a webhook that files a fleet-ops issue
+labelled `agent-ready` (one per alert instance, repeated at most daily); router-dead-row,
+cpu-pressure and any new rule land there. `tests/alert_routes_check.py` (CI)
+fails when a rule outside its urgent list can reach `hermes-urgent`; to make a new rule page,
+add it there with the reason. Switch off the fleet route: point the policy root back at
+`hermes-urgent` in `cloudflare-spend-contact.yaml`.
 
 Grafana's GitHub token (fleet-ops#9445). A webhook contact point sends one static
 Authorization value and a GitHub App installation token lives an hour, so a token pasted into
@@ -128,7 +137,7 @@ fleet-grafana-github-token.service -p Result -p ExecMainStartTimestamp` and the 
 if a webhook still fails. Switch off: `systemctl --user disable --now
 fleet-grafana-github-token.timer` and `systemctl --user mask fleet-grafana-github-token.service`
 (the quadlet's `Wants=` also mints once per Grafana start); the webhook then sends an empty token (401), the delivery
-rule pages hermes-urgent, and spend and dead-row alerts still reach Telegram. CI proof:
+rule pages hermes-urgent, and spend alerts still reach Telegram. CI proof:
 `tests/github_app_stub.py` plus the "GitHub App token unit mints and refreshes" step run the
 unit's real ExecStart under systemd against a stub that checks the JWT the way GitHub does.
 

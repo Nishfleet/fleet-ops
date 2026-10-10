@@ -19,6 +19,20 @@
 # that it was a static token in an env file and went stale in an hour). Rules
 # carry label signal=cloudflare-spend and the policy below picks them up, so
 # there is one place that decides the route.
+# Who gets interrupted (Nish's message contract: only a real outage, a money
+# problem, or something only he can act on pages him; everything else is an
+# issue for the fleet). hermes-urgent (Telegram) is therefore NOT the policy
+# root any more: the root is fleet-alert-dispatch, which files a fleet-ops issue.
+# Rules that page, and why:
+#   cloudflare-spend (6 rules)      money: a cost alarm is the fleet reporting a bill
+#   cloudflare-spend-delivery       the cost alarm could not file its issue
+#   paid-plan-idle (9 rules)        money: a paid plan unused, cancelling is Nish's call
+#   prompt-cache-hit                money: a route that stopped caching pays full price
+# Rules that file an issue instead: router-dead-row (fleet-owned router rows),
+# cpu-pressure (host load the fleet can shed; accepted: saturation with no failing
+# unit is an issue, not a page), and any new rule. A dead GitHub token is caught by
+# cloudflare-spend-delivery (counts every failed webhook, so fleet-alert-dispatch too). tests/alert_routes_check.py
+# (CI) fails when a rule outside that list can reach hermes-urgent.
 apiVersion: 1
 
 contactPoints:
@@ -61,11 +75,35 @@ contactPoints:
                      "labels" (coll.Slice "agent-ready" "priority-now") | data.ToJSON -}}
               {{- end -}}
 
+  - orgId: 1
+    name: fleet-alert-dispatch
+    receivers:
+      - uid: fleet-alert-gh-issues
+        type: webhook
+        disableResolveMessage: true
+        settings:
+          url: https://api.github.com/repos/Nishfleet/fleet-ops/issues
+          httpMethod: POST
+          authorization_scheme: Bearer
+          authorization_credentials: $__file{/run/secrets/github-token/token}
+          maxAlerts: 1
+          payload:
+            template: |-
+              {{- with index .Alerts 0 -}}
+              {{- coll.Dict "title" (printf "grafana alert: %s" .Labels.alertname)
+                     "body" (printf "%s\n\n%s\n\nRule `%s`, started firing %s UTC (%s). Labels: %s. Source: a Grafana rule in config/grafana/provisioning/alerting, routed to the fleet because it is not one of the urgent classes (see the header of cloudflare-spend-contact.yaml). Find the cause, fix it, then close this issue." .Annotations.summary .Annotations.description .Labels.alertname (.StartsAt.Format "2006-01-02 15:04:05") .GeneratorURL (data.ToJSON (.Labels.Remove (stringSlice "alertname" "grafana_folder"))))
+                     "labels" (coll.Slice "agent-ready") | data.ToJSON -}}
+              {{- end -}}
+
 
 policies:
   - orgId: 1
-    receiver: hermes-urgent
-    group_by: [grafana_folder, alertname]
+    # Root: the fleet, not Nish. One issue per alert instance (group_by '...').
+    receiver: fleet-alert-dispatch
+    group_by: ['...']
+    group_wait: 0s
+    group_interval: 5m
+    repeat_interval: 24h
     routes:
       - receiver: cloudflare-spend-dispatch
         object_matchers:
@@ -94,14 +132,14 @@ policies:
         group_wait: 0s
         group_interval: 5m
         repeat_interval: 12h
-        continue: true
-      # Same matcher again: a dead-row alert also pages hermes-urgent, so a dead
-      # or expired GitHub token never silences it.
+      # A cost rule that cannot evaluate (alertname DatasourceError or
+      # DatasourceNoData skips the dispatch route above) is the fleet unable to
+      # see a bill: it pages, like the cost alarm itself.
       - receiver: hermes-urgent
         object_matchers:
-          - [signal, "=", router-dead-row]
-          - [alertname, "!~", "DatasourceError|DatasourceNoData"]
-        group_by: [alertname, model_id]
+          - [signal, "=", cloudflare-spend]
+          - [alertname, "=~", "DatasourceError|DatasourceNoData"]
+        group_by: [alertname, product]
         group_wait: 0s
         group_interval: 5m
         repeat_interval: 12h
