@@ -21,8 +21,19 @@ jobs:
   # shell block that lived here). Dropped with it: the shellcheck loop (no
   # systemd/*.sh remain) and the per-file yaml parse (the proxy and systemd
   # load these files on deploy and fail loud). Required check by this name.
+  #
+  # `ci` is also the aggregate gate: it needs every other job in this file that
+  # runs on pull_request or merge_group, so a red grafana-boot or
+  # cloudflare-tokens-tofu fails the required check (PR #9507 merged with
+  # grafana-boot red). coordinator-approval is its own required check and stays
+  # out. `!cancelled()` so a failed need still runs this job and turns it red:
+  # a skipped required check would pass. A need that skips on its own (a job-level
+  # `if:`) counts as a pass; failure and cancelled do not. grafana-boot's path
+  # gate skips its steps, not the job, so it reports success.
   ci:
     name: ci
+    needs: [grafana-boot, cloudflare-tokens-tofu]
+    if: ${{ !cancelled() }}
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -1147,6 +1158,20 @@ jobs:
             fi
           done < <(jq -r '.cases[] | [.name, .fixture, .ref, .env.LOAD1, .env.CORES, .env.SWAP_USED_KB, (.env.ROUTER_ERR // ""), (.prior_failed_comment|tostring), (.prior_infra_comments // 0 | tostring), (if .started_comment then 1 else 0 end), .want] | map(tostring) | join("|")' config/infra-wall-events.json)
           test "$bad" -eq 0
+      - name: Every other job in this workflow gates ci
+        if: always()
+        env:
+          NEEDS: ${{ toJSON(needs) }}
+        run: |
+          set -euo pipefail
+          # Pin: every job except ci and coordinator-approval must be in ci's needs.
+          want=$(yq -r '.jobs | keys | .[] | select(. != "ci" and . != "coordinator-approval")' .github/workflows/ci.yml | sort)
+          have=$(yq -r '.jobs.ci.needs[]' .github/workflows/ci.yml | sort)
+          [ "$want" = "$have" ] || { echo "::error::ci needs ${have//$'\n'/ } but the other jobs are ${want//$'\n'/ }"; exit 1; }
+          # Failure and cancelled block; success and skipped pass.
+          bad=$(jq -r 'to_entries[] | select(.value.result != "success" and .value.result != "skipped") | "\(.key)=\(.value.result)"' <<<"$NEEDS")
+          [ -z "$bad" ] || { echo "::error::needed jobs not green: $bad"; exit 1; }
+          echo "ci: needed jobs green: $(jq -r 'keys | join(", ")' <<<"$NEEDS")"
 
   # grafana-boot (fleet-ops#9358 follow-up): Grafana loads EVERY file under
   # config/grafana/provisioning/alerting as alert provisioning, so a promtool
