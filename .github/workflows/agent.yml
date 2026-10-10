@@ -685,15 +685,21 @@ jobs:
             say "review of $SHA did not finish: $1. Nothing was approved or blocked. Re-run the review-risky job, or push a new head, to try again."
             exit 1
           }
-          # blocker lines of a review: the line starts with the word, with or without markup.
-          # A line that only says there are none ("blocker: none.", "Blockers: none") is not one.
-          # none_re is the one copy of that pattern: grep reads it here and jq in the already-reviewed check.
-          # Only a whole line that says none is dropped (the pattern is anchored at both ends), so a
-          # line with any other words after "none" still blocks. Dropping it never approves by itself:
-          # the judge must still be 90% sure, and a guard PR's second reviewer must still end on APPROVE.
+          # Blocker lines of a review: the line starts with the word blocker or blockers
+          # (with or without markup) and its text after that is not a none-variant.
+          # blk_re finds a line that starts with the word; a slash after it ("blocker/risk/nit,
+          # one line each", a header the model echoes) is not a finding. none_re is a line whose
+          # text after the word is only a none-variant: none, none found, no blockers, nothing,
+          # n/a, nil, a dash, with optional markup before and punctuation after. Both patterns are
+          # case-insensitive and are the only copies: grep reads them here and jq reads the same
+          # strings in the already-reviewed check. none_re is anchored at both ends, so a line with
+          # any other words ("blocker: none of the callers check the token") still blocks.
+          # Dropping a none line never approves by itself: the judge must still be 90% sure, and
+          # a guard PR's second reviewer must still end on APPROVE.
           tick=$(printf '\140')
-          none_re="^[[:space:]*_#>${tick}-]*blockers?[[:space:]*_${tick}:-]*(none|n/a|nil|no blockers?)[[:space:]*_${tick}.!]*\$"
-          blockers_of() { { grep -iE "^[[:space:]*_#>${tick}-]*blocker" <<<"$1" | grep -ivE "$none_re" || true; } | head -c 1500; }
+          blk_re="^[[:space:]*_#>${tick}-]*blockers?([^[:alnum:]_/]|\$)"
+          none_re="^[[:space:]*_#>${tick}-]*blockers?([[:space:]*_${tick}:-]|—|–)*(no(ne|thing|[[:space:]]+blockers?)([[:space:]]+(found|identified|detected))?|n/a|nil|-+|—|–)[[:space:]*_${tick}.!;,]*\$"
+          blockers_of() { { grep -iE "$blk_re" <<<"$1" | grep -ivE "$none_re" || true; } | head -c 1500; }
           pr=$(gh api "repos/$REPO/pulls/$PR")
           [ "$(jq -r .state <<<"$pr")" = open ] && [ "$(jq -r .head.sha <<<"$pr")" = "$SHA" ] || { echo "head moved or PR closed; the newer event reviews it"; exit 0; }
           # Only a real verdict counts as reviewed: approved, not approved or blocked.
@@ -707,8 +713,8 @@ jobs:
           # was a misread of the review (see blockers_of), so it does not count
           # and the head is reviewed again, but twice at most, so a head that
           # keeps getting such a verdict does not pay for a review per event.
-          seen=$(gh api --paginate "repos/$REPO/issues/$PR/comments?per_page=100" | jq --arg sha "$SHA" --arg none "$none_re" '
-            def blockers: [.[] | select(test("^[[:space:]*_#>\u0060-]*blocker"; "i"))];
+          seen=$(gh api --paginate "repos/$REPO/issues/$PR/comments?per_page=100" | jq --arg sha "$SHA" --arg none "$none_re" --arg blk "$blk_re" '
+            def blockers: [.[] | select(test($blk; "i"))];
             [.[] | select(.user.login == "github-actions[bot]") | (.body | split("\n")) as $l
               | (($l | blockers) | length > 0 and all(.[]; test($none; "i"))) as $wrong
               | if any($l[]; startswith("coordinator-approval: " + $sha) or startswith("reviewer: " + $sha + " approved.") or startswith("reviewer: " + $sha + " not approved.")) then 1
