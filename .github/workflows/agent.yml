@@ -705,15 +705,17 @@ jobs:
           # blk_re finds a line that starts with the word; a slash after it ("blocker/risk/nit,
           # one line each", a header the model echoes) is not a finding. none_re is a line whose
           # text after the word is only a none-variant: none, none found, no blockers, nothing,
-          # n/a, nil, a dash, with optional markup before and punctuation after. Both patterns are
+          # n/a, nil, a dash, with optional markup before and punctuation after, or with a sentence
+          # of explanation after a full stop or dash ("Blockers: none. The diff only adds a job.").
+          # Both patterns are
           # case-insensitive and are the only copies: grep reads them here and jq reads the same
           # strings in the already-reviewed check. none_re is anchored at both ends, so a line with
-          # any other words ("blocker: none of the callers check the token") still blocks.
+          # other words straight after the variant ("blocker: none of the callers check the token") still blocks.
           # Dropping a none line never approves by itself: the judge must still be 90% sure, and
           # a guard PR's second reviewer must still end on APPROVE.
           tick=$(printf '\140')
           blk_re="^[[:space:]*_#>${tick}-]*blockers?([^[:alnum:]_/]|\$)"
-          none_re="^[[:space:]*_#>${tick}-]*blockers?([[:space:]*_${tick}:-]|—|–)*(no(ne|thing|[[:space:]]+blockers?)([[:space:]]+(found|identified|detected))?|n/a|nil|-+|—|–)[[:space:]*_${tick}.!;,]*\$"
+          none_re="^[[:space:]*_#>${tick}-]*blockers?([[:space:]*_${tick}:-]|—|–)*(no(ne|thing|[[:space:]]+blockers?)([[:space:]]+(found|identified|detected))?|n/a|nil|-+|—|–)([[:space:]*_${tick}.!;,]*|[[:space:]*_${tick}]*(\.|!|;|:|—|–)([[:space:]].*)?)\$"
           blockers_of() { { grep -iE "$blk_re" <<<"$1" | grep -ivE "$none_re" || true; } | head -c 1500; }
           pr=$(gh api "repos/$REPO/pulls/$PR")
           [ "$(jq -r .state <<<"$pr")" = open ] && [ "$(jq -r .head.sha <<<"$pr")" = "$SHA" ] || { echo "head moved or PR closed; the newer event reviews it"; exit 0; }
@@ -726,7 +728,7 @@ jobs:
           # hold comment quotes the approval line inside a sentence, and that is
           # not a verdict. A blocked verdict whose only blocker lines say "none"
           # was a misread of the review (see blockers_of), so it does not count
-          # and the head is reviewed again, but only until three such verdicts
+          # and the head is reviewed again, but only until five such verdicts
           # stand on it, so a head that keeps getting one does not pay for a
           # review per event. The pages are read as one list (jq -s).
           seen=$(gh api --paginate "repos/$REPO/issues/$PR/comments?per_page=100" | jq -s --arg sha "$SHA" --arg none "$none_re" --arg blk "$blk_re" '
@@ -736,7 +738,7 @@ jobs:
               | if any($l[]; startswith("coordinator-approval: " + $sha) or startswith("reviewer: " + $sha + " approved.") or startswith("reviewer: " + $sha + " not approved.")) then "verdict"
                 elif any($l[]; startswith("reviewer: " + $sha + " blocked.")) then (if $wrong then "none-only" else "verdict" end)
                 else "other" end] as $k
-            | ($k | map(select(. == "verdict")) | length) + (if ($k | map(select(. == "none-only")) | length) >= 3 then 1 else 0 end)')
+            | ($k | map(select(. == "verdict")) | length) + (if ($k | map(select(. == "none-only")) | length) >= 5 then 1 else 0 end)')
           [ "$seen" = 0 ] || { echo "$SHA already reviewed"; exit 0; }
           gh api --paginate "repos/$REPO/pulls/$PR/files?per_page=100" --jq '.[] | .filename, (.previous_filename // empty)' > "$RUNNER_TEMP/files.txt"
           # The guard list decides how much review the head needs. If it cannot
