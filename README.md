@@ -84,6 +84,20 @@ script, or prompt lands unseen.
   `prompts/blacksmith-flip.yml`, which `fleet-sync.service` installs, and a
   model runs `blacksmith usage` rather than a checked-in script, because
   "no glue or scripts" was Nish's condition on approval.
+- `systemd/later-sweep.service` and `systemd/later-sweep.timer` — a
+  quarter-hourly, on-disk sweep that promotes a "later" job (an open issue
+  with a `due:` line) by adding `agent-ready` once its time has passed
+  (fleet-ops#9541). The documented arming pattern was a one-shot
+  `systemd-run --user --on-calendar` timer, but those units are transient
+  (they live only in `/run/user/1000/systemd/transient/` and the user manager
+  does not reload them when it restarts), so `later-0509-7304.timer` was
+  silently lost at the 2026-10-09 21:36 IST restart and fleet-ops#9376 is
+  still past due. This timer is on disk with `Persistent=true`, so a restart
+  or a missed boot tick cannot drop it; the issue body's `due:` line is the
+  durable state. The decision lives in `prompts/later-sweep.yml`, which
+  `fleet-sync.service` installs, and a model runs the `gh` calls rather than
+  a checked-in script, because "no glue or scripts" was Nish's condition on
+  approval (the same reason `blacksmith-flip.service` is a prompt).
 - `systemd/leviathan-index@.service` and `systemd/leviathan-index@.timer` —
   the Leviathan session-log search index, refreshed every 15 minutes per
   instance (`claude`, `pi`): an FTS5 index over the session JSONLs that

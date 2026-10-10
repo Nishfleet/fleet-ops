@@ -104,6 +104,13 @@ ExecStart=/bin/sh -c 'cmp -s /home/nish/workspaces/tooling/fleet-ops-deploy-clon
 #    previous text. The repo is the only way in. ~/.local/share is an
 #    allowlisted stable tree, so the installed prompt outlives a re-clone.
 ExecStart=/usr/bin/install -C -D -m 0644 /home/nish/workspaces/tooling/fleet-ops-deploy-clone/prompts/blacksmith-flip.yml /home/nish/.local/share/blacksmith-flip/prompt.yml
+# 8b. ~/.local/share/later-sweep/prompt.yml is a COPY of
+#     prompts/later-sweep.yml, same class as 8 (fleet-ops#9541): the
+#     quarter-hourly later-sweep.service cats it into `pi --print`. The
+#     timer's job is a decision (which issues are due, and the label edit),
+#     so it is a prompt rather than an inline shell program, the same choice
+#     blacksmith-flip.service made. The repo is the only way in.
+ExecStart=/usr/bin/install -C -D -m 0644 /home/nish/workspaces/tooling/fleet-ops-deploy-clone/prompts/later-sweep.yml /home/nish/.local/share/later-sweep/prompt.yml
 # 9. LINK-GUARD (fleet-ops#7743): machine wiring is hand-set symlinks, so a
 #    session CAN still point a live path at a throwaway checkout — the
 #    2026-09-18 incident linked standing-rules-render into a churning clone

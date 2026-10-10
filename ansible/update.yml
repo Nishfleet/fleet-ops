@@ -67,9 +67,12 @@
       - Nishfleet/drive
     # Persistent user timers whose job calls a model or a CLI this run updates.
     # The transient later-* reminder timers only add a label, and stopping a
-    # transient timer deletes it, so they stay untouched.
+    # transient timer deletes it, so they stay untouched (they are being
+    # replaced by later-sweep.timer, fleet-ops#9541; that one is on disk and is
+    # listed here because its job calls `gh`, which this run updates).
     work_timers:
       - blacksmith-flip.timer
+      - later-sweep.timer
     # 150 one-minute polls: the 60-minute agent job timeout plus headroom.
     drain_polls: 150
     nish_env:
