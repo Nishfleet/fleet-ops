@@ -2,5 +2,6 @@
 # no authentication, so the listener must never face the network. HA gossip is
 # off (empty --cluster.listen-address). fleet-host-config.service installs this
 # file and restarts prometheus-alertmanager.service when it changes
-# (ansible/host.yml).
-ARGS="--config.file=/etc/prometheus/alertmanager.yml --web.listen-address=127.0.0.1:9093 --cluster.listen-address="
+# (ansible/host.yml). Silences and the notification log live in the package's
+# state directory, which the service user owns.
+ARGS="--config.file=/etc/prometheus/alertmanager.yml --storage.path=/var/lib/prometheus/alertmanager --web.listen-address=127.0.0.1:9093 --cluster.listen-address="

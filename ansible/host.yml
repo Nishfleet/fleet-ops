@@ -214,6 +214,20 @@
         - telegram_bot_token
       register: alertmanager_credentials
 
+    # Alertmanager runs as the prometheus user and reads these at config load and
+    # when it notifies. Only the owner and mode are managed; the bytes stay hand-placed.
+    - name: Let the prometheus user read the alertmanager credential files
+      ansible.builtin.file:
+        path: "/etc/prometheus/{{ item.item }}"
+        owner: prometheus
+        group: prometheus
+        mode: "0600"
+      loop: "{{ alertmanager_credentials.results }}"
+      loop_control:
+        label: "{{ item.item }}"
+      when: item.stat.exists
+      notify: Reload alertmanager
+
     # The package ships alertmanager disabled. The dead-man heartbeat and the
     # hermes-gateway page both leave the box through it, so it runs.
     - name: Enable and start alertmanager
