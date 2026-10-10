@@ -22,7 +22,8 @@
 - One-off -> skill -> routine ladder (fleet-ops#8871): the criteria live in the
   vault (`global-standing-rules.md` → "Skill ladder"); this bullet is a pointer,
   not a second source.
-- The quality bar your PR is held to is `docs/quality-bar.md` (all points met, zero findings). CI is the merge gate; a PR that touches any path outside the allowlist in agent.yml's arm step (anything not clearly safe, such as `.github/`, `migrations/`, `workers/`, auth, data, billing, CSP, package and wrangler config, prompts, policy docs and this repo's own config) is labelled `needs-coordinator` and the coordinator reviews it before it merges.
+- The quality bar your PR is held to is `docs/quality-bar.md` (all points met, zero findings). CI is the merge gate; a PR that touches any path outside the allowlist in agent.yml's arm step (anything not clearly safe, such as `.github/`, `migrations/`, `workers/`, auth, data, billing, CSP, package and wrangler config, prompts, policy docs and this repo's own config) is labelled `needs-coordinator` and is held until its exact head has a `coordinator-approval: <sha>` line.
+- **Who approves (Nish, 2026-10-09: he is never asked).** The approval is automatic. agent.yml's `review` job reads the held head's diff and posts `coordinator-approval: <sha>` as `github-actions[bot]` when the judge is at least 90% sure and the review lists no blocker. A PR that edits the merge guard (`guard` in `config/risky-paths.json`) or any workflow needs a second reviewer from a different model family as well; both must approve. If either blocks, the blockers are posted on the PR as fix-it items for the agent: fix them and push, and the new head is reviewed again. The same run then arms auto-merge on that exact head (`arm` job, `--match-head-commit`), so nobody types, taps or arms anything. Nish's own comment or app review still counts as an optional override and is never required. Never ask Nish, or any person, to approve a PR, and never post `coordinator-approval` yourself. The merge gate and `hold-risky` read their programs and the path list from the base branch, so a PR cannot loosen the rules that judge it in the same PR.
 - Any change that adds or edits an AI decision (a Jev question, or a model prompt that decides something users see) ships with before/after numbers in the PR body, measured on cases held out from tuning. The builder never grades its own work: a different model family writes and labels the held-out cases before tuning starts, and runs the final score. Where the repo has `tests/evals/` (0509#6161), use it. Never add a script to run it.
 - Never deploy without Nish; agent-authored PRs self-land per
   `global-standing-rules.md` → "Agent-authored PRs land themselves"
@@ -120,21 +121,22 @@ only User > API Tokens Write, from the dashboard template "Create Additional Tok
 deletes tokens and nothing else: never use it for work, never source it into a long-running
 process. It is a user token, not account-owned, because an account-owned token creator can only
 grant a subset of its own permissions (Cloudflare docs). It is IP-locked to this VPS
-(`159.195.212.168/32`, `2a0a:4cc0:c4:d5e:a8cb:f5ff:feb3:ed15/128`; outbound API calls leave over
+(`<vps-ip>/32`, `<vps-ipv6>/128`; outbound API calls leave over
 IPv6). Jailed workers get an empty tmpfs over `~/.config/cloudflare` (#9274), so only unjailed
 sessions can mint. The minter exists (2026-10-09): Cloudflare token name "fleet key-maker (VPS
 only)", permission "API Tokens Write" (User), no expiry. It was rolled once on 2026-10-09
 because the original value was pasted in chat. If it is ever exposed again, roll it with
 `PUT /user/tokens/<id>/value` (look the id up in the dashboard, My Profile > API Tokens) and
-pipe the response straight into the env file with jq, never print it. Account id:
-`f670a698e17bf160c8e4679823e68916`.
+pipe the response straight into the env file with jq, never print it. Account id: the `account_id` default in
+`infra/cloudflare-tokens/variables.tf` (an identifier, not a credential).
 
 **The gate.** The minter can create a token with any permission Nish's user holds, so it is not
 a free pass. Ad-hoc mints by an unjailed session are allowed ONLY when all of these hold:
 
 1. Name `job-<task>-<UTC stamp>` (for example `job-fleet-1234-20261009T120000Z`).
 2. `--expires-on` at most 24h from now (UTC RFC3339).
-3. `--condition-request-ip-in` the two VPS addresses above.
+3. `--condition-request-ip-in` the two VPS addresses (not kept in git; read them on the box:
+   `curl -4 -s ifconfig.me` and `curl -6 -s ifconfig.me`).
 4. Resources as narrow as the API allows. Cloudflare's token policy documents three resource
    types only: user, account and zone (`com.cloudflare.api.account.zone.<ZONE_ID>`). So scope to
    a specific zone whenever the permission group is zone-level. Account-wide is allowed only for
@@ -174,7 +176,7 @@ guarded delete, then a 404 check:
      POL=$(jq -nc --arg z "com.cloudflare.api.account.zone.$ZONE" --arg p "$PG" '[{effect:"allow",resources:{($z):"*"},permission_groups:[{id:$p}]}]')
      set -- --name "$NAME" --policies "$POL" \
        --expires-on "$(date -u -d '+24 hours' +%Y-%m-%dT%H:%M:%SZ)" \
-       --condition-request-ip-in 159.195.212.168/32 2a0a:4cc0:c4:d5e:a8cb:f5ff:feb3:ed15/128
+       --condition-request-ip-in <vps-ip>/32 <vps-ipv6>/128
      # 1. dry run first: read the request, check name, expiry, IPs and the single zone
      cf user tokens create "$@" --dry-run
      # 2. the real create; the secret goes to the 0600 file, not the terminal
