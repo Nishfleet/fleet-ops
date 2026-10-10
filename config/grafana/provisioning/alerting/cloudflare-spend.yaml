@@ -15,8 +15,26 @@
 #     Workers AI 10,000 neurons/day free -> 416.67
 #     D1 reads 25B/month, writes 50M/month (Workers Paid) -> 34,246,575 and 68,493
 #     email 3,000/month (Workers Paid) -> 4.11
+#   D1 rows written only: the median clause also needs the last hour over an
+#   absolute 10,000 rows/h (fleet-ops#9446: a 2,478-row hour tripped a tiny
+#   median with no leak; normal peaks are ~4,110 rows/h, drill peaks ~6M/h).
+#   Accepted blind spot: a real leak that stays under 10,000 rows/h on a
+#   near-zero median stays silent; bounded at ~7.3M rows/month, about 15%
+#   of the 50M monthly allowance.
 #   R2: total Standard storage over 20 GB, or a bucket up 2 GB within 24h
 #   (last value minus the 24h low, so a prune followed by regrowth still counts).
+#
+# Floor on the median leg (fleet-ops, incident 2026-10-06): the rule is
+#   ($D > 3 x allowance) || ($D > 3 x median && $D > 1 x allowance)
+# The 1x allowance floor is deliberate. After a quiet week the 7-day median
+# approaches zero, so an unfloored "$D > 3 * $C" fires on any bump: cf-d1-rows-written
+# fired on 2,492 rows/h (about 0.1% of the 50M/month allowance) because the median
+# was 22, an effective line of 66 rows/h; no leak was found. Do not delete the floor
+# as redundant. The floor cannot sit at the 3x line, because then the median leg
+# could never fire first and the rule would be the absolute leg alone; 1x keeps the
+# median leg useful for a jump that stays under 3x but is still a burn.
+# H = the median line after the floor, G = the line the rule really uses (the lower
+# of the 3x allowance and H); annotations render G, so the text always matches.
 #
 # Query shape per rule: A = last-hour total (one number), B = 7-day hourly
 # series, T = the top resource in the last hour (its string column becomes the
@@ -117,7 +135,9 @@ groups:
               datasource: {type: __expr__, uid: __expr__}
               type: math
               refId: E
-              expression: ($D > 3 * 416.67) || ($C > 0 && $D > 3 * $C)
+              expression: ($D > 3 * 416.67) || ($C > 0 && $D > 3 * $C && $D > 416.67)
+          - {refId: H, datasourceUid: __expr__, model: {datasource: {type: __expr__, uid: __expr__}, type: math, refId: H, expression: '3 * $C * (3 * $C >= 416.67) + 416.67 * (3 * $C < 416.67)'}}
+          - {refId: G, datasourceUid: __expr__, model: {datasource: {type: __expr__, uid: __expr__}, type: math, refId: G, expression: '3 * 416.67 * (3 * 416.67 <= $H) + $H * (3 * 416.67 > $H)'}}
           - refId: R
             datasourceUid: __expr__
             model:
@@ -138,9 +158,9 @@ groups:
         for: 0s
         annotations:
           summary: 'Workers AI used {{ $values.D.Value | printf "%.0f" }} neurons in the last hour'
-          description: 'The 3x line is the larger signal of 1250 neurons/h (3 x the 416.67/h free allowance) and 3 x the 7-day hourly median ({{ $values.C.Value | printf "%.0f" }}). On 2026-10-02 this product burned 1,113,645 neurons in one day.'
+          description: 'It fires above {{ $values.G.Value | humanize }} neurons/h: the lower of 3 x the allowance (1250 neurons/h, 3 x the 416.67/h free allowance) and the larger of 3 x the 7-day hourly median ({{ $values.C.Value | humanize }}) and the 1x allowance floor (416.67). On 2026-10-02 this product burned 1,113,645 neurons in one day.'
           value: '{{ $values.D.Value | printf "%.0f" }} neurons in the last hour'
-          threshold: 'over 1250 neurons/h (3 x free allowance) or over 3 x the 7-day hourly median'
+          threshold: 'over {{ $values.G.Value | humanize }} neurons/h (3 x allowance, or 3 x the 7-day hourly median above the 1x allowance floor of 416.67)'
           top: '{{ $labels.resource }}'
         labels: {signal: cloudflare-spend, product: workers-ai}
         isPaused: false
@@ -208,7 +228,9 @@ groups:
               datasource: {type: __expr__, uid: __expr__}
               type: math
               refId: E
-              expression: ($D > 3 * 34246575) || ($C > 0 && $D > 3 * $C)
+              expression: ($D > 3 * 34246575) || ($C > 0 && $D > 3 * $C && $D > 34246575)
+          - {refId: H, datasourceUid: __expr__, model: {datasource: {type: __expr__, uid: __expr__}, type: math, refId: H, expression: '3 * $C * (3 * $C >= 34246575) + 34246575 * (3 * $C < 34246575)'}}
+          - {refId: G, datasourceUid: __expr__, model: {datasource: {type: __expr__, uid: __expr__}, type: math, refId: G, expression: '3 * 34246575 * (3 * 34246575 <= $H) + $H * (3 * 34246575 > $H)'}}
           - refId: R
             datasourceUid: __expr__
             model: {datasource: {type: __expr__, uid: __expr__}, type: math, refId: R, expression: $T * 0 + $E}
@@ -218,9 +240,9 @@ groups:
         for: 0s
         annotations:
           summary: 'D1 read {{ $values.D.Value | printf "%.0f" }} rows in the last hour'
-          description: 'The 3x line is the larger signal of 102,739,725 rows/h (3 x the pro-rated 25B/month allowance) and 3 x the 7-day hourly median ({{ $values.C.Value | printf "%.0f" }}).'
+          description: 'It fires above {{ $values.G.Value | humanize }} rows/h: the lower of 3 x the allowance (102,739,725 rows/h, 3 x the pro-rated 25B/month allowance) and the larger of 3 x the 7-day hourly median ({{ $values.C.Value | humanize }}) and the 1x allowance floor (34246575).'
           value: '{{ $values.D.Value | printf "%.0f" }} rows read in the last hour'
-          threshold: 'over 102,739,725 rows/h (3 x allowance) or over 3 x the 7-day hourly median'
+          threshold: 'over {{ $values.G.Value | humanize }} rows/h (3 x allowance, or 3 x the 7-day hourly median above the 1x allowance floor of 34246575)'
           top: 'D1 database {{ $labels.resource }}'
         labels: {signal: cloudflare-spend, product: d1-rows-read}
         isPaused: false
@@ -288,7 +310,10 @@ groups:
               datasource: {type: __expr__, uid: __expr__}
               type: math
               refId: E
-              expression: ($D > 3 * 68493) || ($C > 0 && $D > 3 * $C)
+              # The 10,000 floor (fleet-ops#9446): a 2,478-row hour on a
+              # 2-row/h median tripped the clause with no real leak. Normal
+              # peaks are ~4,110 rows/h; the 2026-09-13 drill peak was ~6M/h.
+              expression: ($D > 3 * 68493) || ($C > 0 && $D > 3 * $C && $D > 10000)
           - refId: R
             datasourceUid: __expr__
             model: {datasource: {type: __expr__, uid: __expr__}, type: math, refId: R, expression: $T * 0 + $E}
@@ -298,9 +323,9 @@ groups:
         for: 0s
         annotations:
           summary: 'D1 wrote {{ $values.D.Value | printf "%.0f" }} rows in the last hour'
-          description: 'The 3x line is the larger signal of 205,479 rows/h (3 x the pro-rated 50M/month allowance) and 3 x the 7-day hourly median ({{ $values.C.Value | printf "%.0f" }}). The 2026-09-13 restore drills wrote about 145M rows in a day.'
+          description: 'The 3x line is the larger signal of 205,479 rows/h (3 x the pro-rated 50M/month allowance) and 3 x the 7-day hourly median ({{ $values.C.Value | printf "%.0f" }}) above an absolute 10,000 rows/h floor. The 2026-09-13 restore drills wrote about 145M rows in a day.'
           value: '{{ $values.D.Value | printf "%.0f" }} rows written in the last hour'
-          threshold: 'over 205,479 rows/h (3 x allowance) or over 3 x the 7-day hourly median'
+          threshold: 'over 205,479 rows/h (3 x allowance), or over 3 x the 7-day hourly median when that is also over 10,000 rows/h'
           top: 'D1 database {{ $labels.resource }}'
         labels: {signal: cloudflare-spend, product: d1-rows-written}
         isPaused: false
@@ -368,7 +393,9 @@ groups:
               datasource: {type: __expr__, uid: __expr__}
               type: math
               refId: E
-              expression: ($D > 3 * 4.11) || ($C > 0 && $D > 3 * $C)
+              expression: ($D > 3 * 4.11) || ($C > 0 && $D > 3 * $C && $D > 4.11)
+          - {refId: H, datasourceUid: __expr__, model: {datasource: {type: __expr__, uid: __expr__}, type: math, refId: H, expression: '3 * $C * (3 * $C >= 4.11) + 4.11 * (3 * $C < 4.11)'}}
+          - {refId: G, datasourceUid: __expr__, model: {datasource: {type: __expr__, uid: __expr__}, type: math, refId: G, expression: '3 * 4.11 * (3 * 4.11 <= $H) + $H * (3 * 4.11 > $H)'}}
           - refId: R
             datasourceUid: __expr__
             model: {datasource: {type: __expr__, uid: __expr__}, type: math, refId: R, expression: $T * 0 + $E}
@@ -378,9 +405,9 @@ groups:
         for: 0s
         annotations:
           summary: 'Cloudflare sent {{ $values.D.Value | printf "%.0f" }} emails in the last hour'
-          description: 'The 3x line is the larger signal of 12.3 emails/h (3 x the pro-rated 3,000/month allowance) and 3 x the 7-day hourly median ({{ $values.C.Value | printf "%.0f" }}). The 2026-09-28 sign-in e2e sent about 5,976 emails in a day.'
+          description: 'It fires above {{ $values.G.Value | humanize }} emails/h: the lower of 3 x the allowance (12.3 emails/h, 3 x the pro-rated 3,000/month allowance) and the larger of 3 x the 7-day hourly median ({{ $values.C.Value | humanize }}) and the 1x allowance floor (4.11). The 2026-09-28 sign-in e2e sent about 5,976 emails in a day.'
           value: '{{ $values.D.Value | printf "%.0f" }} emails in the last hour'
-          threshold: 'over 12.3 emails/h (3 x allowance) or over 3 x the 7-day hourly median'
+          threshold: 'over {{ $values.G.Value | humanize }} emails/h (3 x allowance, or 3 x the 7-day hourly median above the 1x allowance floor of 4.11)'
           top: 'sending domain {{ $labels.resource }}'
         labels: {signal: cloudflare-spend, product: email-sends}
         isPaused: false

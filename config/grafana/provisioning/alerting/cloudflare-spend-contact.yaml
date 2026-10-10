@@ -58,6 +58,7 @@ contactPoints:
                      "labels" (coll.Slice "agent-ready" "priority-now") | data.ToJSON -}}
               {{- end -}}
 
+
 policies:
   - orgId: 1
     receiver: hermes-urgent

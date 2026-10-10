@@ -1,11 +1,43 @@
 # Approved models per provider (Nish 2026-09-28: models are provider specific; a row outside this list needs his yes; no benching).
 # Nish 2026-09-30 free rows: CommandCode: stealth/space-bunny-alpha, poolside/laguna-s-2.1-free, inclusionai/ling-3.0-flash-sante:free, inclusionai/ling-3.1-flash:free. Cline: poolside/laguna-s-2.1:free, inclusionai/ling-3.0-flash-sante:free. xkiro: stealth/space-bunny-alpha:free, inclusionai/ling-3.0-flash-sante:free.
-# MiniMax M3.1-Flash-Preview is free for every MiniMax Code subscriber until 2026-10-07 (Nish 2026-09-30); its four rows are tagged free until then.
+# Nish 2026-10-08 free rows: OpenCode Go endpoint (OPENCODE_API_KEY and OPENCODE_API_KEY_2): step-5-preview-free, "free on OpenCode for a limited time" (opencode.ai/docs/zen, no end date published; Go "Unlimited" allowance, opencode.ai/docs/go). 2 lanes per key. Checked and NOT free: CommandCode stepfun/Step-5-Preview (spends plan credits), Vercel AI Gateway (billed), OpenRouter and ZenMux (paid, 402), Cline (402), OpenCode Zen endpoint (403 FreeTierError).
+# MiniMax M3.1-Flash-Preview free promo ended 2026-10-07 (free for every MiniMax Code subscriber through then, Nish 2026-09-30, #9008/#9009); the four rows below are tagged prepaid again (#9414). Nish 2026-10-09: he is on the flat MiniMax Yearly Plus plan (5-hour and weekly limits, no per-token bill), so the rows carry no dollar cap and no spend alert; the plan quota is the cap (see the comment above the rows).
 # CommandCode, Cline, OpenCode Go, Ollama: deepseek-v4.1-flash. MiniMax: M3.1-Flash-Preview. StepFun: step-5-preview. Synthetic: GLM-5.3-Flash.
 # xkiro: qwen3-coder-plus:free, qwen3.8-max:free. OpenCode zen: space-bunny-free. Cline: stealth/space-bunny-alpha.
 # Alibaba Model Studio Token Plan (fleet-ops#9220): qwen3.8-max is a judge/orchestrator row only, never a worker rung (Nish 2026-09-08, #4445), so the row below is the only way that seat answers.
 # Cline stealth/union-alpha stopped being free 2026-09-30 (402 "Insufficient balance", 397 errors and 0 answers in 5 h). A 402 is neither retried nor cooled by LiteLLM v1.98.0 (no retry_policy key covers APIError; cooldown skips 4xx), so no setting below can move a job off such a row: its four rows are removed until Nish funds Cline credits. Cline's other rows stay. Any row that starts answering only 402 goes to Nish the same way (needs-nish-decision issue): it comes out only on his yes.
 # CommandCode stealth/pixel-canary and xkiro stealth/pixel-canary:free ended 2026-09-30 (403 "no longer available", 404 "does not exist"). openai-compatible 403 maps to APIError (no retry_policy key, same as 402); 404 maps to NotFoundError, which should_retry_this_error hard-raises on v1.98.0. Their four rows are removed.
+# Free inclusionai/ling-3.0-flash-sante:free ended on CommandCode, Cline and OpenRouter (checked 2026-10-08 by direct calls: 404 "This model is unavailable for free. The paid version is available now - use this slug instead: inclusionai/ling-3.0-flash-sante"; a pi job through worker-capable got that 404 at 23:03 IST). 404 maps to NotFoundError, which Router.should_retry_this_error hard-raises on v1.98.0 and no retry_policy key covers, so the failed call itself still leaves the group (it falls through via the fallbacks below). Those six rows are removed (Nish asked for the removal 2026-10-08); the paid slug is NOT wired because that spends money and needs his yes. The xkiro ling-3.0 rows stay (still listed by /v1/models, answers 429 daily free-model quota) and the CommandCode ling-3.1-flash:free rows stay (200 on 3 of 4 spaced probes, 429 "temporarily unavailable" on 4 earlier back-to-back ones).
+# fleet-ops#9469: a 404 lane is taken out of rotation on the FIRST 404. LiteLLM v1.98.0's
+# _is_cooldown_required accepts 404, but the threshold is resolved PER EXCEPTION TYPE
+# (Router.get_allowed_fails_from_policy), and a key the policy does not name falls back to
+# the router-level allowed_fails (1) - two 404s - so the dead lane is picked again and
+# leaks a 404 to a caller. router_settings.allowed_fails_policy now carries
+# NotFoundErrorAllowedFails: 0, so the first 404 parks the row and the job falls through to
+# the next lane in the group (order filtering is applied after the cooldown filter, so the
+# order-2 overflow rows and the worker-group fallbacks both take the job). Measured on
+# ghcr.io/berriai/litellm:v1.98.0 in tests/test_router_404_fallthrough.py: one 404 parks the
+# row and the call still returns 200 on the next row; with the key at 1 the dead lane is
+# picked twice.
+#
+# The per-exception resolution is also what makes one router-level key reach every row:
+# _should_cooldown_based_on_deployment_policy reads the row's own policy first and, for an
+# exception type that policy does not name, defers to the router-level policy. All 81 rows
+# below carry a deployment-level allowed_fails_policy and none of them names NotFoundError,
+# so the fix is one key, not 81.
+#
+# Measured consequence, stated because it is a real trade: the cooldown a 404 applies is the
+# ROW's own cooldown_time, not the router-level 60 s. A 404 on one of the 14 rows parked
+# 21600 s for a named quota wall keeps that row out of rotation for 6 h. The row is not
+# removed: it stays in the router, comes back when the cooldown expires and re-probes
+# itself (proven in the same test file), so a restored model or a reset quota is picked up
+# within hours. The alternative - two 404s before the park - is the bug. A 404 is a
+# withdrawn free model or a dead model id, which is exactly what should park a row; there
+# is no per-exception-type cooldown_time in v1.98.0 (AllowedFailsPolicy has 9 fields, none
+# of them a duration), so the row's own cooldown_time is the only knob.
+#
+# Background health checks stay off: they spend the same free quota (Nish 2026-09-28) and
+# would probe every paid row.
 # OpenCode zen union-alpha answered 0 of 68 calls in the last 7 days (last attempt 2026-09-30 16:30 UTC, LiteLLM_SpendLogs); a direct probe on 2026-10-01 returns 400 "Upstream request failed: Model is unavailable." That 400 maps to BadRequestError, which v1.98.0 never cools, so no setting below can move a job off such a row: its four rows are removed. The opencodego-ds41flash rows on the Go endpoint (same key) stay: they are walled by a monthly quota (429 GoUsageLimitError, limitName monthly), not dead. A 900 s cool re-failed into worker groups every 15 min (0 of 68 calls in the 24 h to 2026-10-02 19:05 UTC). Those three rows now cool 21600 s and park on the first 429 (RateLimitErrorAllowedFails: 0), the same treatment #9075 gave the daily-quota rows (fleet-ops#9122). The opencodego2 rows on the second key stay at 900 s.
 # OpenRouter: stealth/space-bunny-alpha, nemotron-3-ultra, nemotron-3.5-lightning, inclusionai/ling-3.0-flash-sante:free, poolside/laguna-s-2.1:free (Nish 2026-10-04: 2 lanes per free model per provider). Pareto: glm-5.3-flash, never in judge.
 # Devin: SWE 2 only, through the devin CLI lane in agent.yml (no router route: 404 on every base).
@@ -59,6 +91,78 @@ model_list:
     id: commandcode-ds41flash-worker-cheap
     allowed_fails_policy:
       BadRequestErrorAllowedFails: 1
+# fleet-ops#9378 3-day A/B: a second DeepSeek V4.1 Flash lane on the prepaid
+# CommandCode seat, same shape as the existing lane, so simple-shuffle gives this
+# 8%-failed-run seat more of the worker share. Additive only, the existing lane is
+# untouched. Metrics scrape 2026-10-08: 0 429-wall on CommandCode DS-Flash rows.
+# order: 1 on every DeepSeek V4.1 Flash row of this seat, so the new lanes are
+# peers of the existing ones in the shuffle, not fallbacks.
+#
+# No max_budget on the two new rows. This head's budget decision, in one line:
+# the seat's allowance stays $20/day.
+#
+# Why. LiteLLM enforces max_budget per deployment, so a budget is per-lane
+# allowance, not a copy of the neighbouring lane's. Adding $10/day to each of
+# two rows on this one key would have taken the seat from $20/day to $40/day
+# against a single prepaid wallet, and holding $20/day by re-splitting it over
+# all four lanes (each $5) lowers the two existing lanes, which #9378 forbids.
+# So the new rows carry no wall, exactly like the nine budget-less rows already
+# on this key, and the wallet plus the ppi-commandcode 429 alert are the guard
+# for them.
+#
+# Measured LiteLLM_SpendLogs, 2026-10-01..08: openai/deepseek/deepseek-v4.1-flash,
+# 5,438 calls, $12.67 spend = $1.81/day, which is 18% of the existing $10/day
+# per-lane wall. Doubling the lane count doubles that draw to about $3.63/day.
+#
+# To take the three new lanes out of the shuffle, remove their rows (ids
+# commandcode-ds41flashb-worker-capable, commandcode-ds41flashb-worker-cheap and
+# cline-ds41flash-worker-cheap) in a one-line config change. fleet-sync copies the
+# file and the proxy restarts to load it: about 101 s end to end on this host, with
+# a 30 s drain of in-flight calls. POST /model/block cannot do this: it answers
+# HTTP 400 "Model updates only supported for DB-stored models" for a config-file row.
+- model_name: worker-capable
+  litellm_params:
+    model: openai/deepseek/deepseek-v4.1-flash
+    api_base: https://api.commandcode.ai/provider/v1
+    api_key: os.environ/COMMANDCODE_API_KEY
+    tags:
+    - prepaid
+    - commandcode
+    order: 1
+    input_cost_per_token: 3e-07
+    cache_read_input_token_cost: 6e-09
+    output_cost_per_token: 1.2e-06
+    max_parallel_requests: 4
+    cooldown_time: 900
+  model_info:
+    mode: chat
+    supports_prompt_caching: true
+    cache_proof: "2026-10-07 #9357 scoreboard: 82.9% (89.4% 48h) cache-read 7d on real router traffic."
+    id: commandcode-ds41flashb-worker-capable
+    allowed_fails_policy:
+      BadRequestErrorAllowedFails: 1
+# Its own model_info.id is commandcode-ds41flashb-worker-cheap.
+- model_name: worker-cheap
+  litellm_params:
+    model: openai/deepseek/deepseek-v4.1-flash
+    api_base: https://api.commandcode.ai/provider/v1
+    api_key: os.environ/COMMANDCODE_API_KEY
+    tags:
+    - prepaid
+    - commandcode
+    order: 1
+    input_cost_per_token: 3e-07
+    cache_read_input_token_cost: 6e-09
+    output_cost_per_token: 1.2e-06
+    max_parallel_requests: 4
+    cooldown_time: 900
+  model_info:
+    mode: chat
+    supports_prompt_caching: true
+    cache_proof: "2026-10-07 #9357 scoreboard: 82.9% (89.4% 48h) cache-read 7d on real router traffic."
+    id: commandcode-ds41flashb-worker-cheap
+    allowed_fails_policy:
+      BadRequestErrorAllowedFails: 1
 # Nish 2026-09-30 free rows (probe: all finish_reason=tool_calls). laguna-s-2.1-free answered 1 of 2 probe calls (1 upstream 429 "temporarily unavailable"): the row stays live and cools 900 s on a 429, never benched.
 # 2026-10-07 prompt-cache verdict, #9362: all three models cache upstream with NO hint. Two-call probe, same ~21K prefix 5 s apart, no cache_control anywhere: ling-3.0 21440/21474 prompt tokens cached (calls c92bc949..4fe6db50), ling-3.1 30592/30634 (8207f8dc..accc6461), laguna 32416/32427 (ed93cdb5..303f9a68). The stock cache_control_injection_points hint changes nothing on these openai/* rows (LiteLLM 1.98.0 strips cache_control before the upstream call), so it is NOT added. The low ledger cache share on laguna (0.7%) and ling-3.0 (0.4%) is a reporting artifact, not a cache miss: 94-98% of their 7-day responses carry no prompt_tokens_details, and the calls that do report read 58-59% of prompt tokens from cache. ling-3.1 reports on 91% of calls and reads 80.9%. No bench, no hint, no litellm_params change.
 # CommandCode stealth/space-bunny-alpha ended upstream (403 "no longer available"); its two rows removed on Nish's yes 2026-10-07 ~15:35 IST, fleet-ops#9312.
@@ -87,28 +191,6 @@ model_list:
     supports_prompt_caching: true
     cache_proof: "Caches: own-path direct probe 2026-10-07 through commandcode, 6 streamed calls on a ~20k prefix, cached_tokens 0/20000/0/20000/429/0 of 20017 prompt tokens (#9365); the #9362 probe measured 32416/32427 on calls ed93cdb5/303f9a68. The earlier false verdict rested on a cline probe, a different provider, and on a null-field spend log, which is a missing field rather than a measured 0."
     id: commandcode-lagunas21free-worker-cheap
-    allowed_fails_policy:
-      BadRequestErrorAllowedFails: 1
-- model_name: worker-capable
-  litellm_params:
-    <<: *commandcode-free
-    model: openai/inclusionai/ling-3.0-flash-sante:free
-  model_info:
-    mode: chat
-    supports_prompt_caching: true
-    cache_proof: "Caches: direct probe 2026-10-07 through commandcode, cached_tokens 0->7872 of 7915 (#9365). The router path drops the field: LiteLLM v1.98.0 stream bug, tracked in the follow-up issue."
-    id: commandcode-ling30flashsante-worker-capable
-    allowed_fails_policy:
-      BadRequestErrorAllowedFails: 1
-- model_name: worker-cheap
-  litellm_params:
-    <<: *commandcode-free
-    model: openai/inclusionai/ling-3.0-flash-sante:free
-  model_info:
-    mode: chat
-    supports_prompt_caching: true
-    cache_proof: "Caches: direct probe 2026-10-07 through commandcode, cached_tokens 0->7872 of 7915 (#9365). The router path drops the field: LiteLLM v1.98.0 stream bug, tracked in the follow-up issue."
-    id: commandcode-ling30flashsante-worker-cheap
     allowed_fails_policy:
       BadRequestErrorAllowedFails: 1
 - model_name: worker-capable
@@ -744,6 +826,61 @@ model_list:
       # Fail counter TTL = this row's cooldown_time (6 h): parks on the 4th 429 in the window.
       # A per-minute burst rarely totals 4 in 6 h; a quota wall 429s every call, so it does.
       RateLimitErrorAllowedFails: 3
+# fleet-ops#9378 3-day A/B: the worker-cheap lane of the prepaid Cline seat (same
+# shape as its proven worker-capable lane, one seat one key one budget), so Cline
+# contributes both worker rungs. Additive only. Its daily quota wall remains
+# (#9075): this lane also parks on the 4th 429 in a 6h window, so the lane count
+# stays modest. cache_proof is the same seat's proven probe (same model+key+budget).
+# order: 1 on both DeepSeek V4.1 Flash rows of this seat, so the new row is a peer
+# of the proven lane in the shuffle, not a fallback.
+#
+# No max_budget on the new row. This head's budget decision, in one line: the
+# seat's allowance stays $10/day.
+#
+# Why. LiteLLM enforces max_budget per deployment, so a budget is per-lane
+# allowance, not a copy of the neighbouring lane's. Adding $10/day to this row
+# would have taken the seat from $10/day to $20/day against a single prepaid
+# wallet, and splitting $10 over the two lanes (each $5) lowers the existing
+# lane, which #9378 forbids. So the new row carries no wall, like the three
+# budget-less rows already on this key, and the wallet plus the ppi-cline 429
+# alert are the guard for it.
+#
+# Measured LiteLLM_SpendLogs, 2026-10-01..08:
+# openai/cline-pass/deepseek-v4.1-flash, 2,756 calls, $28.75 spend = $4.11/day,
+# which is 41% of the existing $10/day per-lane wall. If the seat goes fully
+# dark on one bad hour (three fail-counted rows on the wall's 6 h TTL), raising
+# this row's RateLimitErrorAllowedFails is a one-line change through the same
+# deploy loop, about 101 s to apply on this host.
+#
+# To take this lane out of the shuffle, remove this row (id
+# cline-ds41flash-worker-cheap) in a one-line config change and let the config sync
+# restart the proxy, about 101 s with a 30 s drain. POST /model/block answers
+# HTTP 400 for a config-file row.
+- model_name: worker-cheap
+  litellm_params:
+    model: openai/cline-pass/deepseek-v4.1-flash
+    api_base: https://api.cline.bot/api/v1
+    api_key: os.environ/CLINE_API_KEY
+    tags:
+    - prepaid
+    - cline
+    order: 1
+    input_cost_per_token: 3e-07
+    cache_read_input_token_cost: 6e-09
+    output_cost_per_token: 1.2e-06
+    max_parallel_requests: 4
+    # 6 h, sized to the daily free-model quota wall it also hits (fleet-ops#9075).
+    cooldown_time: 21600
+  model_info:
+    mode: chat
+    supports_prompt_caching: true
+    cache_proof: "Caches: direct probe 2026-10-07 through cline, cached_tokens 0->5888 of 6025 (#9365). The router path drops the field: LiteLLM v1.98.0 stream bug."
+    id: cline-ds41flash-worker-cheap
+    allowed_fails_policy:
+      BadRequestErrorAllowedFails: 1
+      # Fail counter TTL = this row's cooldown_time (6 h): parks on the 4th 429 in the window.
+      # A per-minute burst rarely totals 4 in 6 h; a quota wall 429s every call, so it does.
+      RateLimitErrorAllowedFails: 3
 - model_name: worker-capable
   litellm_params:
     model: openai/space-bunny-free
@@ -780,18 +917,30 @@ model_list:
     id: zen-spacebunny-worker-cheap
     allowed_fails_policy:
       BadRequestErrorAllowedFails: 1
+# MiniMax Yearly Plus flat plan (Nish 2026-10-09, screenshot: 5-hour limit and weekly limit, no per-token bill):
+# the plan's quota is the cap, not dollars, so these rows carry no max_budget. The accounting prices below
+# (platform.minimax.io/docs/guides/pricing-paygo, M3 Standard as the proxy; M3.1-Flash-Preview has none of its
+# own) stay so the spend ledger still reads, but nothing filters a row on them. 12 lanes per row (48 across the
+# four) so the fleet can use the quota. When the 5-hour or weekly limit is hit MiniMax answers 429: a row parks
+# 1800 s on its 4th 429 inside that window (RateLimitErrorAllowedFails: 3, the cline-ds41flash shape, so a
+# per-minute burst does not park it but a quota wall does) and is re-probed. A 402 or other billing error is not
+# retried (router_settings.num_retries: 0). The idle guard is grafana ppi-minimax (paid-plan-idle.yaml): zero calls
+# in 24 h means the plan is going to waste.
 - model_name: worker-capable
   litellm_params:
     model: anthropic/MiniMax-M3.1-Flash-Preview
     api_base: https://api.minimax.io/anthropic
     api_key: os.environ/MINIMAX_API_KEY
-    # free until 2026-10-07 (Nish 2026-09-30), see follow-up issue
+    input_cost_per_token: 3e-07
+    output_cost_per_token: 1.2e-06
+    cache_read_input_token_cost: 6e-08
+    cache_creation_input_token_cost: 3.75e-07
     tags:
-    - free
+    - prepaid
     - minimax
     order: 1
-    max_parallel_requests: 6
-    cooldown_time: 120
+    max_parallel_requests: 12
+    cooldown_time: 1800
   model_info:
     mode: chat
     supports_prompt_caching: true
@@ -799,18 +948,22 @@ model_list:
     id: minimax-m31-worker-capable
     allowed_fails_policy:
       BadRequestErrorAllowedFails: 1
+      RateLimitErrorAllowedFails: 3
 - model_name: worker-capable
   litellm_params:
     model: anthropic/MiniMax-M3.1-Flash-Preview
     api_base: https://api.minimax.io/anthropic
     api_key: os.environ/MINIMAX_API_KEY
-    # free until 2026-10-07 (Nish 2026-09-30), see follow-up issue
+    input_cost_per_token: 3e-07
+    output_cost_per_token: 1.2e-06
+    cache_read_input_token_cost: 6e-08
+    cache_creation_input_token_cost: 3.75e-07
     tags:
-    - free
+    - prepaid
     - minimax
     order: 1
-    max_parallel_requests: 6
-    cooldown_time: 120
+    max_parallel_requests: 12
+    cooldown_time: 1800
   model_info:
     mode: chat
     supports_prompt_caching: true
@@ -818,18 +971,22 @@ model_list:
     id: minimax-m31b-worker-capable
     allowed_fails_policy:
       BadRequestErrorAllowedFails: 1
+      RateLimitErrorAllowedFails: 3
 - model_name: worker-cheap
   litellm_params:
     model: anthropic/MiniMax-M3.1-Flash-Preview
     api_base: https://api.minimax.io/anthropic
     api_key: os.environ/MINIMAX_API_KEY
-    # free until 2026-10-07 (Nish 2026-09-30), see follow-up issue
+    input_cost_per_token: 3e-07
+    output_cost_per_token: 1.2e-06
+    cache_read_input_token_cost: 6e-08
+    cache_creation_input_token_cost: 3.75e-07
     tags:
-    - free
+    - prepaid
     - minimax
     order: 1
-    max_parallel_requests: 6
-    cooldown_time: 120
+    max_parallel_requests: 12
+    cooldown_time: 1800
   model_info:
     mode: chat
     supports_prompt_caching: true
@@ -837,18 +994,22 @@ model_list:
     id: minimax-m31-worker-cheap
     allowed_fails_policy:
       BadRequestErrorAllowedFails: 1
+      RateLimitErrorAllowedFails: 3
 - model_name: worker-cheap
   litellm_params:
     model: anthropic/MiniMax-M3.1-Flash-Preview
     api_base: https://api.minimax.io/anthropic
     api_key: os.environ/MINIMAX_API_KEY
-    # free until 2026-10-07 (Nish 2026-09-30), see follow-up issue
+    input_cost_per_token: 3e-07
+    output_cost_per_token: 1.2e-06
+    cache_read_input_token_cost: 6e-08
+    cache_creation_input_token_cost: 3.75e-07
     tags:
-    - free
+    - prepaid
     - minimax
     order: 1
-    max_parallel_requests: 6
-    cooldown_time: 120
+    max_parallel_requests: 12
+    cooldown_time: 1800
   model_info:
     mode: chat
     supports_prompt_caching: true
@@ -856,6 +1017,7 @@ model_list:
     id: minimax-m31b-worker-cheap
     allowed_fails_policy:
       BadRequestErrorAllowedFails: 1
+      RateLimitErrorAllowedFails: 3
 # Nish 2026-10-04: Ollama can take more lanes. Probe 12 parallel 12x200; 24
 # parallel 13x200 11x429, cap ~12. Ten rows x mpr 1 = 10 lanes, leaving 2 for
 # direct `pi --provider ollama-cloud` (a 429 cools 900 s). DS4.1 Flash only.
@@ -1335,30 +1497,6 @@ model_list:
       BadRequestErrorAllowedFails: 1
       RateLimitErrorAllowedFails: 0
 - model_name: worker-capable
-  litellm_params:
-    <<: *cline-free
-    model: openai/inclusionai/ling-3.0-flash-sante:free
-  model_info:
-    mode: chat
-    supports_prompt_caching: true
-    cache_proof: "Caches: own-path direct probe 2026-10-07 through cline, 6 streamed calls on a ~20k prefix, cached_tokens 0/stream_error/0/19968/19968/19968 of 20023 prompt tokens (#9365). The earlier false verdict read one 0->0 pair, which is a cold prefix read and not a measurement of the provider."
-    id: cline-ling30flashsante-worker-capable
-    allowed_fails_policy:
-      BadRequestErrorAllowedFails: 1
-      RateLimitErrorAllowedFails: 0
-- model_name: worker-cheap
-  litellm_params:
-    <<: *cline-free
-    model: openai/inclusionai/ling-3.0-flash-sante:free
-  model_info:
-    mode: chat
-    supports_prompt_caching: true
-    cache_proof: "Caches: own-path direct probe 2026-10-07 through cline, 6 streamed calls on a ~20k prefix, cached_tokens 0/stream_error/0/19968/19968/19968 of 20023 prompt tokens (#9365). The earlier false verdict read one 0->0 pair, which is a cold prefix read and not a measurement of the provider."
-    id: cline-ling30flashsante-worker-cheap
-    allowed_fails_policy:
-      BadRequestErrorAllowedFails: 1
-      RateLimitErrorAllowedFails: 0
-- model_name: worker-capable
   litellm_params: &openrouter-spacebunny
     model: openai/stealth/space-bunny-alpha
     api_base: https://openrouter.ai/api/v1
@@ -1438,32 +1576,6 @@ model_list:
 - model_name: worker-capable
   litellm_params:
     <<: *openrouter-spacebunny
-    model: openai/inclusionai/ling-3.0-flash-sante:free
-    tags: [free, openrouter]
-  model_info:
-    mode: chat
-    supports_prompt_caching: true
-    cache_proof: "Caches: own-path direct probe 2026-10-07 through openrouter, 6 streamed calls on a ~20k prefix, cached_tokens 19968 on 5 of 6 calls of 20023 prompt tokens (#9365), the sixth a 429. The OpenRouter endpoint list reports supports_implicit_caching false for the Novita endpoint and is wrong here: the provider serves cached tokens anyway."
-    id: openrouter-ling30flashsante-worker-capable
-    allowed_fails_policy:
-      BadRequestErrorAllowedFails: 1
-      RateLimitErrorAllowedFails: 0
-- model_name: worker-cheap
-  litellm_params:
-    <<: *openrouter-spacebunny
-    model: openai/inclusionai/ling-3.0-flash-sante:free
-    tags: [free, openrouter]
-  model_info:
-    mode: chat
-    supports_prompt_caching: true
-    cache_proof: "Caches: own-path direct probe 2026-10-07 through openrouter, 6 streamed calls on a ~20k prefix, cached_tokens 19968 on 5 of 6 calls of 20023 prompt tokens (#9365), the sixth a 429. The OpenRouter endpoint list reports supports_implicit_caching false for the Novita endpoint and is wrong here: the provider serves cached tokens anyway."
-    id: openrouter-ling30flashsante-worker-cheap
-    allowed_fails_policy:
-      BadRequestErrorAllowedFails: 1
-      RateLimitErrorAllowedFails: 0
-- model_name: worker-capable
-  litellm_params:
-    <<: *openrouter-spacebunny
     model: openai/poolside/laguna-s-2.1:free
     tags: [free, openrouter]
   model_info:
@@ -1514,6 +1626,29 @@ model_list:
     order: 1
     max_parallel_requests: 3
     cooldown_time: 900
+    # fleet-ops#9405: qwen3.8-max reasons before it answers. With no thinking
+    # budget the model spent the whole completion on reasoning and returned an
+    # empty body on a 40 KB diff (completion_tokens pinned to the cap: 8192,
+    # 14449, 28888, 43470; content 0 bytes; the 2026-10-07 `pi --model judge`
+    # call stopped at its 8192-token cap with empty stdout). The DashScope
+    # compatible-mode endpoint that this row pins takes enable_thinking and
+    # thinking_budget; LiteLLM's openai-compatible path only forwards those
+    # through extra_body (utils.py + openai_like/chat/handler.py), so they
+    # live here, not as sibling keys and not as pi samplingParams. The
+    # schema pins extra_body on this row (config/litellm-proxy.schema.json).
+    # This row is model_name: judge only (Nish #4445: Token Plan is
+    # judge/orchestrator, no worker rung). The xkiro :free qwen3.8-max
+    # worker rows use a different key and do not get this budget. 2048
+    # caps the reasoning and the row answers in about 50 s with a verdict
+    # (proof on the #9393 diff in #9405). A larger diff that still returns
+    # empty content after 2048 is a seat failure for the retry ladder, not
+    # a reason to widen the budget here. max_tokens is respected once the
+    # budget is bounded, so no max_completion_tokens change is needed, and
+    # the two order-2 deepseek-v4.1-flash rows keep their reasoning_effort
+    # and already return text.
+    extra_body:
+      enable_thinking: true
+      thinking_budget: 2048
   model_info:
     mode: chat
     supports_prompt_caching: true
@@ -1521,11 +1656,96 @@ model_list:
     id: alibaba-qwen38max-judge
     allowed_fails_policy:
       BadRequestErrorAllowedFails: 1
+# Nish 2026-10-08 (in-thread: "add 2 lanes each from all the providers offering it"; standing rule 2 lanes per free promo model per provider) free rows: step-5-preview-free is free on OpenCode "for a limited time" (no end date published; opencode.ai/docs/zen). Probe 2026-10-08: 200 + finish_reason=tool_calls on both keys, 8-way burst 8x200 per key, usage carries no cost. The raw Zen endpoint 403s this model (FreeTierError); the Go endpoint with x-opencode-session answers it. No max_budget: LiteLLM has no price for this model id, so a per-row budget would read $0 forever; the spend wall is the Go plan itself (flat $10 plan, no per-token billing), and an ended promo shows up as 400/404 (BadRequest cools the row, then needs-nish-decision). 2 lanes per row = 4 concurrent per key (8 total), the same shape as fleet-ops#9210; a 429 parks a row 900 s on the first hit.
+- model_name: worker-capable
+  litellm_params:
+    model: openai/step-5-preview-free
+    api_base: https://opencode.ai/zen/go/v1
+    api_key: os.environ/OPENCODE_API_KEY
+    extra_headers:
+      x-opencode-session: fleet-step5free-worker-capable
+    tags:
+    - free
+    - opencode-go
+    order: 1
+    max_parallel_requests: 2
+    cooldown_time: 900
+  model_info:
+    mode: chat
+    supports_prompt_caching: true
+    cache_proof: "Direct probe 2026-10-08 on the Go endpoint, 5 streamed calls on a ~21k prefix, cached_tokens 21056 of 21122 prompt tokens on calls 2-5 (both keys)."
+    id: opencodego-step5free-worker-capable
+    allowed_fails_policy:
+      BadRequestErrorAllowedFails: 1
+      RateLimitErrorAllowedFails: 0
+- model_name: worker-cheap
+  litellm_params:
+    model: openai/step-5-preview-free
+    api_base: https://opencode.ai/zen/go/v1
+    api_key: os.environ/OPENCODE_API_KEY
+    extra_headers:
+      x-opencode-session: fleet-step5free-worker-cheap
+    tags:
+    - free
+    - opencode-go
+    order: 1
+    max_parallel_requests: 2
+    cooldown_time: 900
+  model_info:
+    mode: chat
+    supports_prompt_caching: true
+    cache_proof: "Direct probe 2026-10-08 on the Go endpoint, 5 streamed calls on a ~21k prefix, cached_tokens 21056 of 21122 prompt tokens on calls 2-5 (both keys)."
+    id: opencodego-step5free-worker-cheap
+    allowed_fails_policy:
+      BadRequestErrorAllowedFails: 1
+      RateLimitErrorAllowedFails: 0
+- model_name: worker-capable
+  litellm_params:
+    model: openai/step-5-preview-free
+    api_base: https://opencode.ai/zen/go/v1
+    api_key: os.environ/OPENCODE_API_KEY_2
+    extra_headers:
+      x-opencode-session: fleet2-step5free-worker-capable
+    tags:
+    - free
+    - opencode-go
+    order: 1
+    max_parallel_requests: 2
+    cooldown_time: 900
+  model_info:
+    mode: chat
+    supports_prompt_caching: true
+    cache_proof: "Direct probe 2026-10-08 on the Go endpoint, 5 streamed calls on a ~21k prefix, cached_tokens 21056 of 21122 prompt tokens on calls 2-5 (both keys)."
+    id: opencodego2-step5free-worker-capable
+    allowed_fails_policy:
+      BadRequestErrorAllowedFails: 1
+      RateLimitErrorAllowedFails: 0
+- model_name: worker-cheap
+  litellm_params:
+    model: openai/step-5-preview-free
+    api_base: https://opencode.ai/zen/go/v1
+    api_key: os.environ/OPENCODE_API_KEY_2
+    extra_headers:
+      x-opencode-session: fleet2-step5free-worker-cheap
+    tags:
+    - free
+    - opencode-go
+    order: 1
+    max_parallel_requests: 2
+    cooldown_time: 900
+  model_info:
+    mode: chat
+    supports_prompt_caching: true
+    cache_proof: "Direct probe 2026-10-08 on the Go endpoint, 5 streamed calls on a ~21k prefix, cached_tokens 21056 of 21122 prompt tokens on calls 2-5 (both keys)."
+    id: opencodego2-step5free-worker-cheap
+    allowed_fails_policy:
+      BadRequestErrorAllowedFails: 1
+      RateLimitErrorAllowedFails: 0
 router_settings:
   routing_strategy: simple-shuffle
   # One task = one model (Nish 2026-10-01, fleet-ops#9015). Pi sends x-litellm-session-id=$FLEET_TASK_ID
   # (config/pi-models.json; Pi refuses to call without it), and session_affinity pins that id to the
-  # first row picked in each group until it has been idle for deployment_affinity_ttl_seconds (default 3600).
+  # first row picked in each group until it has been idle for deployment_affinity_ttl_seconds (600 s, see below).
   optional_pre_call_checks: ["prompt_caching", "session_affinity"]
   # The pin store. Without this the Router keeps pins in each worker process's own memory, and the proxy
   # runs --num_workers 2, so a session flips between 2 rows with no failure (fleet-ops#9015: 6,188 of 6,473
@@ -1533,6 +1753,26 @@ router_settings:
   # has no redis_url key in v1.98.0 (proxy_server never reads it), so the Redis below sat empty (dbsize 0).
   # Cooldowns and usage counters now share it too, as fleet-ops#4174 P1 intended.
   redis_url: redis://127.0.0.1:6379
+  # The pin survives only while its row keeps being picked: the claim script refreshes the TTL when
+  # the stored row equals the row just chosen, and a row in cooldown makes async_filter_deployments
+  # return the whole group unfiltered. So a pin that lands on a row then hits a quota wall (zai, cline
+  # and commandcode free models all 429 "free-model token quota") is never refreshed and holds the
+  # session to a dead row for the full TTL, while every call re-shuffles the group. That scatter was
+  # 17.1% of non-first calls (16,673 of 97,326, 2026-10-02 to 10-07 07:55 UTC) and cost 90.4M
+  # already-cached tokens in 5.6 days (fleet-ops#9361). 600 s is the tested value: the p99 gap between
+  # consecutive calls in one session is 214 s and 99.7% of gaps are under 600 s, so a live session keeps
+  # its pin, and a pin on a dead row is dropped after 10 minutes instead of 60. The floor of 300 s (held
+  # in the schema) is the gap window the hop metric counts: a shorter TTL could expire a healthy pin inside
+  # a hop the metric would count, manufacturing the hops this value exists to remove.
+  # INTERIM ONLY (Nish 2026-10-07, fleet-ops#9361 scope change): this TTL caps the blast radius of a
+  # stale pin. It is not the fix. LiteLLM has no stock re-pin in the pinned image (v1.98.0) nor in the
+  # newest release: deployment_affinity_check.claim_affinity_pin takes eligible_values upstream, but only
+  # the complexity router passes it, so a fallback row never takes the pin. The fix is the upstream issue
+  # BerriAI/litellm#45145 (repro: first-writer-wins _claim_pin refreshes only when the row it names is
+  # re-selected, so a pin held by a row in cooldown can never move) plus its PR and a second image bump,
+  # tracked as fleet-ops#9411, until which the TTL above and the session-hop Grafana alert
+  # (config/grafana/provisioning/alerting/session-hop.yaml) bound the damage.
+  deployment_affinity_ttl_seconds: 600
   # worker groups hold only rungs proven to return finish_reason=tool_calls (fleet-ops#7761); every worker row is
   # order 1 because a worker group is a peer set, not a preference order. The judge group is the exception
   # (fleet-ops#9374): order 1 alibaba-qwen38max-judge, order 2 the two OpenCode Go judge rows. The stale note here
@@ -1559,10 +1799,13 @@ router_settings:
   timeout: 1800
   enable_tag_filtering: false
   retry_policy:
-    AuthenticationErrorRetries: 2
-    RateLimitErrorRetries: 2
+    # fleet-ops#9375: cut the in-router retry budget so a mid-session failure spends at most one attempt inside the worker group before the fallback group answers or the call reaches Pi's own retry. Pi keeps x-litellm-session-id, and the session pin is first-writer-wins, so a pinned seat that recovers is re-picked on the next call. Drilled on litellm 1.98.0 with a pinned seat whose first attempt 429s: shipped (2/2/2) made 4 upstream picks [seat-a, seat-a, seat-c, seat-b]; proposed (0/1/1) makes 3 [seat-a, seat-a, seat-b], where the retry lands back on the row that failed. When the 429 clears on that second call, proposed spends 2 picks on seat-a alone and no fallback fires, where a zeroed budget would kick the call to the fallback seat. The schema bounds this block and tests/test_router_retry_policy_no_cross_seat.py locks it.
+    # 0 for 401: a bad key can never recover on retry. 1 for 429 bounds the in-group attempts to one, and litellm 1.98.0 sends that retry back to the row that just failed, so a briefly-limited pinned seat is not kicked to another seat. That holds for rows under the router-level allowed_fails of 1 (measured that way). A row that parks on its first 429 (RateLimitErrorAllowedFails 0) is already cooling when the retry runs, so its retry goes to a peer (drilled: [seat-a, seat-c, fallback] by test_a_row_that_parks_on_its_first_429_retries_a_peer_not_itself): still one extra in-group pick at most, but not a same-row retry. 8 worker-capable and 8 worker-cheap rows are in that class. The retry is instant - Router._time_to_sleep_before_retry returns 0 while the group still has a healthy row - so the backoff itself stays in Pi's own retry, not here.
+    # Note: litellm 1.98.0's get_num_retries_from_retry_policy has no InternalServerError branch, so InternalServerErrorRetries resolves to None (num_retries 0 -> one attempt) until litellm adds the handler; 1 is the intended forward value and the test asserts the current inert behavior. The shipped 2 was inert too, so a 500 got no in-group retry before this change and gets none after: it still goes straight to the fallback group, and this change does not touch the 500 half of fleet-ops#9375.
+    AuthenticationErrorRetries: 0
+    RateLimitErrorRetries: 1
     TimeoutErrorRetries: 1
-    InternalServerErrorRetries: 2
+    InternalServerErrorRetries: 1
     # 400 only (a separate fix from the 402 removal above): LiteLLM never cools a 400, so a row whose model is gone upstream stays in the shuffle (zen union-alpha "Model is unavailable", stalled drive for an hour on 2026-09-30; its rows are removed since, so this guards against any future dead-model 400). 1 retry = 2 picks. The retry re-shuffles and does not exclude the failed row, so escape is by odds: a dead row's share of its group decides - tiny in the many-row worker groups, but all of senior's single remaining row, where 2 picks cannot escape. ContentPolicyViolation is matched first and stays 0; a context-window 400 is retried too, which costs one fast failure.
     BadRequestErrorRetries: 1
     ContentPolicyViolationErrorRetries: 0
@@ -1586,6 +1829,13 @@ router_settings:
     RateLimitErrorAllowedFails: 1
     TimeoutErrorAllowedFails: 1
     InternalServerErrorAllowedFails: 1
+    # fleet-ops#9469: a 404 is a withdrawn free model ("This model is unavailable for free")
+    # or a model id that no longer exists. _is_cooldown_required accepts 404, but with this
+    # key unset the router-level allowed_fails (1) needs two 404s before the lane parks, so a
+    # dead lane leaks a 404 to every other caller. 0 parks it on the first one; it comes back
+    # after its cooldown_time and re-probes. The failed call itself still raises NotFoundError
+    # (should_retry_this_error hard-raises), and the group's own order-2 row takes the job.
+    NotFoundErrorAllowedFails: 0
 litellm_settings:
   drop_params: true
   callbacks:

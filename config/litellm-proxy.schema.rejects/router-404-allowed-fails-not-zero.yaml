@@ -1,0 +1,22 @@
+model_list:
+- model_name: worker-cheap
+  litellm_params:
+    model: openai/x
+  model_info:
+    supports_prompt_caching: true
+    cache_proof: "fixture row: only the rule named in this file is under test (fleet-ops#9469)."
+router_settings:
+  redis_url: redis://127.0.0.1:6379
+  cooldown_time: 60
+  # Set so this file fails on the 404 value alone, not on the affinity rules
+  # fleet-ops#9473 added.
+  optional_pre_call_checks: ["prompt_caching", "session_affinity"]
+  deployment_affinity_ttl_seconds: 600
+  # 1 is the router-level default the key exists to override: two 404s park the
+  # row, so a withdrawn free model is picked again in between and leaks the 404.
+  allowed_fails_policy:
+    AuthenticationErrorAllowedFails: 0
+    RateLimitErrorAllowedFails: 1
+    TimeoutErrorAllowedFails: 1
+    InternalServerErrorAllowedFails: 1
+    NotFoundErrorAllowedFails: 1

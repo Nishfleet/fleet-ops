@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$comment": "Hard gate for config/litellm-proxy.yaml (fleet-ops#8653). Nish 2026-09-28: no benching unless he says so. A failed row is never taken out of rotation: no bench list. Row cooldown_time: <=900 s is for ordinary transients. Values over 900 s, up to the 86400 s cap, are reserved for rows with a named, self-refilling wall (a daily or monthly quota that outlasts 900 s) - the row stays live, parked, and re-probes itself; each such row cites its issue in a comment (fleet-ops#8398/#9075). A row on openrouter.ai/api/v1 must set model_info.allowed_fails_policy.RateLimitErrorAllowedFails: 0, because its 429s are OpenRouter's named daily free-tier wall and the row has to park on the first one (fleet-ops#9248). Router-level cooldown_time holds a failed row for at most 60 s. Every model_list row must declare its cache capability: model_info.supports_prompt_caching (boolean) and model_info.cache_proof (non-empty string, date plus measured cached tokens or a doc link), because ~0% cache-read on four provider groups was 70% of uncached router tokens and no rule forced a new seat to say which case it is (fleet-ops#9365). A worker-group row whose supports_prompt_caching is false must set litellm_params.order: 2 so long sessions fall to it only as overflow (order filtering is applied after the cooldown filter in LiteLLM v1.98.0 router.py, proven by tests/test_router_order2_overflow.py). router_settings.redis_url is required: session_affinity pins live in the Router cache, and without Redis each of the proxy's 2 worker processes keeps its own pin, so a session flips between rows with no failure (fleet-ops#9015). LiteLLM v1.98.0 never reads a redis_url under general_settings.",
+  "$comment": "Hard gate for config/litellm-proxy.yaml (fleet-ops#8653). Nish 2026-09-28: no benching unless he says so. A failed row is never taken out of rotation: no bench list. Row cooldown_time: <=900 s is for ordinary transients. Values over 900 s, up to the 86400 s cap, are reserved for rows with a named, self-refilling wall (a daily or monthly quota that outlasts 900 s) - the row stays live, parked, and re-probes itself; each such row cites its issue in a comment (fleet-ops#8398/#9075). A row on openrouter.ai/api/v1 must set model_info.allowed_fails_policy.RateLimitErrorAllowedFails: 0, because its 429s are OpenRouter's named daily free-tier wall and the row has to park on the first one (fleet-ops#9248). Router-level cooldown_time holds a failed row for at most 60 s. Every model_list row must declare its cache capability: model_info.supports_prompt_caching (boolean) and model_info.cache_proof (non-empty string, date plus measured cached tokens or a doc link), because ~0% cache-read on four provider groups was 70% of uncached router tokens and no rule forced a new seat to say which case it is (fleet-ops#9365). A worker-group row whose supports_prompt_caching is false must set litellm_params.order: 2 so long sessions fall to it only as overflow (order filtering is applied after the cooldown filter in LiteLLM v1.98.0 router.py, proven by tests/test_router_order2_overflow.py). router_settings.redis_url is required: session_affinity pins live in the Router cache, and without Redis each of the proxy's 2 worker processes keeps its own pin, so a session flips between rows with no failure (fleet-ops#9015). LiteLLM v1.98.0 never reads a redis_url under general_settings. router_settings.allowed_fails_policy.NotFoundErrorAllowedFails must be 0 (fleet-ops#9469): a 404 is a withdrawn free model or a dead model id, and the per-exception threshold falls back to the router-level allowed_fails (1) for a key the policy does not name, so without it a dead lane needs two 404s to park and leaks one to the next caller. See the allowed_fails_policy property for the mechanism and for what the 404 cooldown costs on the 14 quota-walled rows.",
   "type": "object",
   "required": ["model_list", "router_settings"],
   "$defs": {
@@ -11,20 +11,29 @@
       "properties": { "model_name": { "const": "judge" } }
     },
     "judgePaidRow": {
-      "$comment": "fleet-ops#9374: the paid row, on the Token Plan's own numbers. rpm and max_parallel_requests are what the plan allows (3 per minute, 3 at once); neither was raised when the row became the judge primary, and raising either is a deliberate change with its own issue, not an edit to this file. model, api_base and api_key pin the seat, so a judge row cannot point the order-1 rung at another provider or spend another seat's key.",
+      "$comment": "fleet-ops#9374: the paid row, on the Token Plan's own numbers. rpm and max_parallel_requests are what the plan allows (3 per minute, 3 at once); neither was raised when the row became the judge primary, and raising either is a deliberate change with its own issue, not an edit to this file. model, api_base and api_key pin the seat, so a judge row cannot point the order-1 rung at another provider or spend another seat's key. fleet-ops#9405: extra_body.enable_thinking and extra_body.thinking_budget 2048 are required, because without a thinking budget this row spent the whole completion on reasoning and returned an empty body on a 40 KB diff. Sibling keys on the row never reach the DashScope compatible-mode endpoint (LiteLLM only forwards them through extra_body), so the pair lives here, not as litellm_params siblings and not as pi samplingParams.",
       "allOf": [
         { "$ref": "#/$defs/judgeRow" },
         {
           "properties": {
             "litellm_params": {
-              "required": ["model", "api_base", "api_key", "order", "rpm", "max_parallel_requests"],
+              "required": ["model", "api_base", "api_key", "order", "rpm", "max_parallel_requests", "extra_body"],
               "properties": {
                 "model": { "const": "openai/qwen3.8-max" },
                 "api_base": { "const": "https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1" },
                 "api_key": { "const": "os.environ/ALIBABA_CODING_API_KEY" },
                 "order": { "const": 1 },
                 "rpm": { "const": 3 },
-                "max_parallel_requests": { "const": 3 }
+                "max_parallel_requests": { "const": 3 },
+                "extra_body": {
+                  "type": "object",
+                  "required": ["enable_thinking", "thinking_budget"],
+                  "additionalProperties": false,
+                  "properties": {
+                    "enable_thinking": { "const": true },
+                    "thinking_budget": { "const": 2048 }
+                  }
+                }
               }
             }
           }
@@ -88,6 +97,27 @@
           }
         }
       ]
+    },
+    "retryPolicy": {
+      "$comment": "fleet-ops#9375: in-router retries must not re-send a worker prompt to a different seat more than the fallback needs. The values are locked by tests/test_router_retry_policy_no_cross_seat.py: shipped (2,2,2) produced a third in-group pick that re-sent the whole prompt cold; proposed (0,1,1) caps the worker group at one attempt before the fallback group (or Pi's own retry, which keeps the session id and therefore the pin). On litellm 1.98.0 the one allowed retry goes back to the row that just failed when that row is still healthy after the 429 (router allowed_fails 1; the test drills it). A row that parks on its first 429 (RateLimitErrorAllowedFails 0, the daily-quota rows) is already cooling, so its retry goes to a peer: still capped at one extra pick, not a same-row retry. Either way the cap removes the third-seat re-send. A litellm upgrade can change that, which is why the test pins the version. ContentPolicyViolationErrorRetries is 0 because a content-policy refusal repeats on every seat; AuthenticationErrorRetries is 0 because a bad key can never recover on retry. RateLimitErrorRetries/TimeoutErrorRetries/InternalServerErrorRetries/BadRequestErrorRetries are capped at 1 (InternalServerErrorRetries is inert on 1.98.0: get_num_retries_from_retry_policy has no InternalServerError branch, so it is a forward bound only). All keys are required and unknown keys are forbidden on purpose: a new litellm knob must arrive as a reviewed schema change, not a silent config edit.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "AuthenticationErrorRetries",
+        "RateLimitErrorRetries",
+        "TimeoutErrorRetries",
+        "InternalServerErrorRetries",
+        "BadRequestErrorRetries",
+        "ContentPolicyViolationErrorRetries"
+      ],
+      "properties": {
+        "AuthenticationErrorRetries": { "type": "integer", "minimum": 0, "maximum": 0 },
+        "RateLimitErrorRetries": { "type": "integer", "minimum": 0, "maximum": 1 },
+        "TimeoutErrorRetries": { "type": "integer", "minimum": 0, "maximum": 1 },
+        "InternalServerErrorRetries": { "type": "integer", "minimum": 0, "maximum": 1 },
+        "BadRequestErrorRetries": { "type": "integer", "minimum": 0, "maximum": 1 },
+        "ContentPolicyViolationErrorRetries": { "type": "integer", "minimum": 0, "maximum": 0 }
+      }
     }
   },
   "properties": {
@@ -187,7 +217,14 @@
             "properties": {
               "cooldown_time": { "$ref": "#/$defs/rowCooldown" },
               "supports_prompt_caching": { "type": "boolean" },
-              "cache_proof": { "type": "string", "minLength": 1 }
+              "cache_proof": { "type": "string", "minLength": 1 },
+              "allowed_fails_policy": {
+                "$comment": "fleet-ops#9469 (PR 9472 coordinator risk): a row-level allowed_fails_policy resolves per exception type BEFORE the router policy (Router.get_allowed_fails_from_policy), so a row naming NotFoundErrorAllowedFails: 1 needs two 404s to park and re-opens the leak the router-level 0 closes. If a row names the key at all, it must be 0.",
+                "type": "object",
+                "properties": {
+                  "NotFoundErrorAllowedFails": { "const": 0 }
+                }
+              }
             }
           }
         }
@@ -196,10 +233,30 @@
     "benched": false,
     "router_settings": {
       "type": "object",
-      "required": ["redis_url"],
+      "required": ["redis_url", "deployment_affinity_ttl_seconds", "optional_pre_call_checks", "allowed_fails_policy", "retry_policy"],
       "properties": {
         "cooldown_time": { "type": "integer", "minimum": 1, "maximum": 60 },
-        "redis_url": { "type": "string", "pattern": "^redis://" }
+        "allowed_fails_policy": {
+          "$comment": "fleet-ops#9469: a 404 is a withdrawn free model or a model id that no longer exists, and it must park the row on the FIRST one. LiteLLM v1.98.0 resolves the threshold per exception type (Router.get_allowed_fails_from_policy), and a key the policy does not name falls back to the router-level allowed_fails (1) - two 404s - so a dead lane is picked again and leaks the 404 to the next caller. NotFoundErrorAllowedFails is required and pinned to 0 for that reason. The other four keys are the ones this file already sets; additionalProperties is false so a typo (NotFoundErrorAllowedFail, NotFoundErrorFails) is a rejected config rather than a silent fallback to 1. When LiteLLM adds an exception type, add its key here too - a rejection naming an unknown key is expected friction, not a bug. A row's own cooldown_time is what the 404 cooldown lasts, which is 21600 s on the 14 rows parked for a named quota wall - see config/litellm-proxy.yaml.",
+          "type": "object",
+          "required": ["NotFoundErrorAllowedFails"],
+          "additionalProperties": false,
+          "properties": {
+            "AuthenticationErrorAllowedFails": { "type": "integer", "minimum": 0 },
+            "RateLimitErrorAllowedFails": { "type": "integer", "minimum": 0 },
+            "TimeoutErrorAllowedFails": { "type": "integer", "minimum": 0 },
+            "InternalServerErrorAllowedFails": { "type": "integer", "minimum": 0 },
+            "NotFoundErrorAllowedFails": { "type": "integer", "const": 0 }
+          }
+        },
+        "redis_url": { "type": "string", "pattern": "^redis://" },
+        "deployment_affinity_ttl_seconds": { "type": "integer", "minimum": 300, "maximum": 600 },
+        "optional_pre_call_checks": {
+          "type": "array",
+          "contains": { "const": "session_affinity" },
+          "description": "Must contain session_affinity. Without that pre-call check the router never runs DeploymentAffinityCheck, so a session pin cannot exist, every call in a session shuffles across vendors and the prompt cache never hits (fleet-ops#9361)."
+        },
+        "retry_policy": { "$ref": "#/$defs/retryPolicy" }
       }
     }
   }

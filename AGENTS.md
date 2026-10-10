@@ -22,7 +22,8 @@
 - One-off -> skill -> routine ladder (fleet-ops#8871): the criteria live in the
   vault (`global-standing-rules.md` → "Skill ladder"); this bullet is a pointer,
   not a second source.
-- The quality bar your PR is held to is `docs/quality-bar.md` (all points met, zero findings). CI is the merge gate; a PR that touches any path outside the allowlist in agent.yml's arm step (anything not clearly safe, such as `.github/`, `migrations/`, `workers/`, auth, data, billing, CSP, package and wrangler config, prompts, policy docs and this repo's own config) is labelled `needs-coordinator` and the coordinator reviews it before it merges.
+- The quality bar your PR is held to is `docs/quality-bar.md` (all points met, zero findings). CI is the merge gate; a PR that touches any path outside the allowlist in agent.yml's arm step (anything not clearly safe, such as `.github/`, `migrations/`, `workers/`, auth, data, billing, CSP, package and wrangler config, prompts, policy docs and this repo's own config) is labelled `needs-coordinator` and is held until its exact head has a `coordinator-approval: <sha>` line.
+- **Who approves (Nish, 2026-10-09: he is never asked).** The approval is automatic. agent.yml's `review` job reads the held head's diff and posts `coordinator-approval: <sha>` as `github-actions[bot]` when the judge is at least 90% sure and the review lists no blocker. A PR that edits the merge guard (`guard` in `config/risky-paths.json`) or any workflow needs a second reviewer from a different model family as well; both must approve. If either blocks, the blockers are posted on the PR as fix-it items for the agent: fix them and push, and the new head is reviewed again. The same run then arms auto-merge on that exact head (`arm` job, `--match-head-commit`), so nobody types, taps or arms anything. Nish's own comment or app review still counts as an optional override and is never required. Never ask Nish, or any person, to approve a PR, and never post `coordinator-approval` yourself. The merge gate and `hold-risky` read their programs and the path list from the base branch, so a PR cannot loosen the rules that judge it in the same PR.
 - Any change that adds or edits an AI decision (a Jev question, or a model prompt that decides something users see) ships with before/after numbers in the PR body, measured on cases held out from tuning. The builder never grades its own work: a different model family writes and labels the held-out cases before tuning starts, and runs the final score. Where the repo has `tests/evals/` (0509#6161), use it. Never add a script to run it.
 - Never deploy without Nish; agent-authored PRs self-land per
   `global-standing-rules.md` → "Agent-authored PRs land themselves"
@@ -91,14 +92,16 @@ worker jail in `agent.yml` mounts an empty tmpfs over `~/.config/cloudflare` and
 not reach Nish's admin GitHub login or a no-expiry deploy token. A jailed worker's
 GitHub access is `GH_TOKEN`, the App token, and nothing else; ci.yml fails if the
 jail line, run against planted files, can read either path. Credential parity still holds for
-sessions outside the jail (the orchestrator hand-off, interactive sessions). A
-scoped Cloudflare token for worker duties (D1 drills, preview uploads,
-analytics) is not minted yet: no token on the VPS can mint tokens (Cloudflare
-`/user/tokens/permission_groups` answers 9109 for both, 2026-10-05), so it is
-Nish's to mint.
-Until it exists, a worker packet whose acceptance needs the Cloudflare API parks
-with `blocked-on: orchestrator`. Outside the jail, read the token from the file,
-never print it, never copy it into a repo, PR or issue:
+sessions outside the jail (the orchestrator hand-off, interactive sessions).
+Jailed workers cannot mint (the minter file is hidden from them too), so a worker
+packet whose acceptance needs the Cloudflare API still parks with
+`blocked-on: orchestrator`. An unjailed session that needs a Cloudflare token for a
+job mints its own short-lived one under the gate in "Minting Cloudflare tokens"
+below; a long-lived or wider token goes through a reviewed PR to
+`infra/cloudflare-tokens`, not through ad-hoc minting. (Before the minter existed,
+2026-10-05, no VPS token could mint and every new token was Nish's to create in
+the dashboard; that no longer holds.) Outside the jail, read the token from the
+file, never print it, never copy it into a repo, PR or issue:
 
 - `~/.config/cloudflare/deploy-ci.env` — user token, no expiry: Workers scripts,
   D1, KV, Zone read, GraphQL analytics (proven 2026-09-22: workers list, D1 list,
@@ -107,8 +110,100 @@ never print it, never copy it into a repo, PR or issue:
 - `~/.config/cloudflare/email.env` — `CLOUDFLARE_EMAIL_TOKEN`, narrowed 2026-09-25: Email
   Routing (addresses, rules, suppressions), Email Sending, R2 storage and Turnstile only, and it
   works only from this VPS's IPs. It cannot create tokens, touch DNS or Workers, or read analytics.
-  The old account-admin token (`c617a6f2…`) is disabled. No token on the VPS can mint tokens now,
-  so a new or wider token is Nish's call in the dashboard.
+  The old account-admin token (`c617a6f2…`) is disabled. Neither of these two can mint tokens.
+  New short-lived tokens come from the minter; a new long-lived or wider token needs a reviewed
+  PR (see "Minting Cloudflare tokens").
+
+### Minting Cloudflare tokens
+
+One minter token, `~/.config/cloudflare/token-minter.env` (0600, `CLOUDFLARE_API_TOKEN`), holds
+only User > API Tokens Write, from the dashboard template "Create Additional Tokens". It mints and
+deletes tokens and nothing else: never use it for work, never source it into a long-running
+process. It is a user token, not account-owned, because an account-owned token creator can only
+grant a subset of its own permissions (Cloudflare docs). It is IP-locked to this VPS
+(`<vps-ip>/32`, `<vps-ipv6>/128`; outbound API calls leave over
+IPv6). Jailed workers get an empty tmpfs over `~/.config/cloudflare` (#9274), so only unjailed
+sessions can mint. The minter exists (2026-10-09): Cloudflare token name "fleet key-maker (VPS
+only)", permission "API Tokens Write" (User), no expiry. It was rolled once on 2026-10-09
+because the original value was pasted in chat. If it is ever exposed again, roll it with
+`PUT /user/tokens/<id>/value` (look the id up in the dashboard, My Profile > API Tokens) and
+pipe the response straight into the env file with jq, never print it. Account id: the `account_id` default in
+`infra/cloudflare-tokens/variables.tf` (an identifier, not a credential).
+
+**The gate.** The minter can create a token with any permission Nish's user holds, so it is not
+a free pass. Ad-hoc mints by an unjailed session are allowed ONLY when all of these hold:
+
+1. Name `job-<task>-<UTC stamp>` (for example `job-fleet-1234-20261009T120000Z`).
+2. `--expires-on` at most 24h from now (UTC RFC3339).
+3. `--condition-request-ip-in` the two VPS addresses (not kept in git; read them on the box:
+   `curl -4 -s ifconfig.me` and `curl -6 -s ifconfig.me`).
+4. Resources as narrow as the API allows. Cloudflare's token policy documents three resource
+   types only: user, account and zone (`com.cloudflare.api.account.zone.<ZONE_ID>`). So scope to
+   a specific zone whenever the permission group is zone-level. Account-wide is allowed only for
+   groups that have no narrower resource: Workers Scripts, D1, Workers KV Storage, Workers R2
+   Storage, Email Routing and Account Analytics. A per-Worker-script resource (something like
+   `com.cloudflare.edge.worker.script.<acct>.<name>`) is not in Cloudflare's documented
+   resource list and could not be verified (2026-10-09), so do not assume a Workers Scripts
+   token can be limited to one script.
+
+Anything long-lived (no expiry, or more than 24h) or broader than the gate goes only through a
+reviewed fleet-ops PR to `infra/cloudflare-tokens` (OpenTofu, PR #9489); the PR review is the
+approval step. The existing long-lived `deploy-ci` and `email` tokens will move under
+`infra/cloudflare-tokens` via issue #9490; until then they are out of scope for the minter: do
+not mint, roll, edit or delete them with it.
+
+**The minter must never be used to edit, roll or delete any token whose name does not start with
+`job-`.** That covers `deploy-ci`, `email`, the minter itself and everything else. Check the name
+first (the delete example below does).
+
+Every job keeps its token in its own 0600 env file, `~/.config/cloudflare/job-${FLEET_TASK_ID:-<UTC
+stamp>}.env` (or only in the process env), so concurrent sessions never share a file, and deletes
+it when done. Look up permission group ids by name, never from memory (`permission-groups list`
+returns a bare JSON array, so use `.[]`):
+
+    (set -a; . ~/.config/cloudflare/token-minter.env; set +a
+     cf user tokens permission-groups list | jq -r '.[] | "\(.id)\t\(.name)"' | grep -i 'cache purge')
+
+Example, a 24h Cache Purge token for one zone (a zone-level group, so the resource is that zone;
+the secret never reaches the terminal). Order: dry run, real create, scoped 403 check, the work,
+guarded delete, then a 404 check:
+
+    STAMP=$(date -u +%Y%m%dT%H%M%SZ); ZONE=<zone id>
+    JOBENV=~/.config/cloudflare/job-${FLEET_TASK_ID:-$STAMP}.env
+    NAME="job-${FLEET_TASK_ID:-adhoc}-$STAMP"
+    (set -a; . ~/.config/cloudflare/token-minter.env; set +a; umask 077
+     PG=$(cf user tokens permission-groups list | jq -r '.[] | select(.name=="Cache Purge") | .id' | head -n1)
+     POL=$(jq -nc --arg z "com.cloudflare.api.account.zone.$ZONE" --arg p "$PG" '[{effect:"allow",resources:{($z):"*"},permission_groups:[{id:$p}]}]')
+     set -- --name "$NAME" --policies "$POL" \
+       --expires-on "$(date -u -d '+24 hours' +%Y-%m-%dT%H:%M:%SZ)" \
+       --condition-request-ip-in <vps-ip>/32 <vps-ipv6>/128
+     # 1. dry run first: read the request, check name, expiry, IPs and the single zone
+     cf user tokens create "$@" --dry-run
+     # 2. the real create; the secret goes to the 0600 file, not the terminal
+     cf user tokens create "$@" \
+       | jq -r '(.result // .) | "CLOUDFLARE_API_TOKEN=\(.value)\nCLOUDFLARE_TOKEN_ID=\(.id)"' > "$JOBENV")
+    # 3. scoped check: this token must get 403 on DNS for the zone
+    (set -a; . "$JOBENV"; set +a; cf dns records list --zone "$ZONE" >/dev/null && echo "NOT NARROW")
+    # 4. the work: (set -a; . "$JOBENV"; set +a; ...)
+    # 5. guarded delete: GET the token, require the job- prefix, only then delete with -f
+    (ID=$(sed -n 's/^CLOUDFLARE_TOKEN_ID=//p' "$JOBENV")
+     set -a; . ~/.config/cloudflare/token-minter.env; set +a
+     case "$(cf user tokens get "$ID" | jq -r '(.result // .).name')" in
+       job-*) cf user tokens delete -f "$ID" && rm -f "$JOBENV" ;;
+       *) echo "REFUSING: token $ID is not a job- token" >&2; exit 1 ;;
+     esac
+     # 6. the GET must now fail with 404
+     cf user tokens get "$ID")
+
+`cf user tokens delete` silently does nothing without `-f`/`--force`, so always pass `-f`. The
+final GET must answer 404; if it returns the token, the delete did not happen.
+
+To check a new token is narrow, call a scoped endpoint it should not reach (step 3: the zone's
+`dns_records` -> 403 for a Cache Purge token). Do not use `/zones`: it lists zones for any
+account token and proves nothing.
+
+To switch minting off: delete the minter token in the dashboard (My Profile > API Tokens) and
+remove `token-minter.env`.
 
 ## Per-run invariants for the Pi fleet issue worker
 

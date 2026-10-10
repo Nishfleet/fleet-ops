@@ -125,6 +125,9 @@ jobs:
       - name: stub leviathan for systemd-analyze verify (host-only binary)
         if: always()
         run: install -D -m0755 /bin/true "$HOME/.local/bin/leviathan"
+      - name: stub tofu for systemd-analyze verify (host-only binary)
+        if: always()
+        run: install -D -m0755 /bin/true "$HOME/.local/bin/tofu"
       - name: systemd-analyze verify over unit files
         # nullglob: #8474 deleted the last systemd/*.path unit, and an unmatched
         # glob reaches systemd-analyze as a literal filename -> rc 1. With
@@ -219,6 +222,26 @@ jobs:
       - name: Ollama rungs serve only the permitted slug on the native provider (fleet-ops#8332, fleet-ops#9253)
         if: always()
         run: yq -o=json '[.model_list[] | select(((.litellm_params.api_base // "") | test("ollama")) or ((.litellm_params.model // "") | test("^ollama"))) | "\(.litellm_params.model) @ \(.litellm_params.api_base)" | select(. != "ollama_chat/deepseek-v4.1-flash @ https://ollama.com")]' config/litellm-proxy.yaml | jq -e 'if length==0 then true else error("ollama rungs must be ollama_chat/deepseek-v4.1-flash @ https://ollama.com - \(join(","))") end'
+      # A drop-in that does not parse stops Claude Code from starting on the
+      # whole box, and an autoMode array without "$defaults" replaces the
+      # built-in safety rules instead of adding to them. To switch this gate
+      # off, delete this step.
+      - name: Claude Code managed-settings drop-ins parse and keep the autoMode defaults
+        if: always()
+        shell: bash
+        run: |
+          # shellcheck disable=SC2016 # "$defaults" is the literal rule name, not a shell variable
+          shopt -s nullglob
+          rc=0
+          for f in rootfs/etc/claude-code/managed-settings.d/*.json; do
+            jq -e 'type == "object"' "$f" >/dev/null || { echo "not a JSON object: $f"; rc=1; continue; }
+            jq -e --arg d '$defaults' '
+              (.autoMode // {}) | to_entries
+              | map(select((.key | IN("environment", "allow", "soft_deny", "hard_deny")) or (.value | type) == "array"))
+              | all(.value | type == "array" and index($d) != null)' "$f" >/dev/null \
+              || { echo "autoMode array without \"\$defaults\" (or not an array): $f"; rc=1; }
+          done
+          exit "$rc"
       # Dynamic text before static text breaks the shared prompt-cache prefix, so
       # the first call of every run pays full price (fleet-ops#9363). Static
       # first, then the marker line, then everything dynamic. To switch this
@@ -378,7 +401,7 @@ jobs:
             : > "$d/out"
             rc=0
             log=$(env PATH="$t/bin:$PATH" FAKE_DIR="$d" GITHUB_OUTPUT="$d/out" REPO=o/r ISSUE=5 GH_TOKEN=x RUN_ID=1 CAP_COUNT="$cap" \
-              DAILY_MAX="$(jq -r '.daily_max // ""' <<<"$c")" MODEL_VAR="$(jq -r '.model_var // ""' <<<"$c")" \
+              DAILY_MAX="$(jq -r '.daily_max // ""' <<<"$c")" MODEL_VAR="$(jq -r '.model_var // ""' <<<"$c")" RUNNER_VAR="$(jq -r '.runner_var // ""' <<<"$c")" \
               bash -c "$chk" 2>&1) || rc=$?
             if [ "$(jq -r '.want_fail // false' <<<"$c")" = true ]; then
               [ "$rc" -ne 0 ] || { echo "cap case $id: want failure, got rc 0"; bad=1; }
@@ -390,6 +413,8 @@ jobs:
             if [ "$go" = true ]; then
               [ "$(sed -n 's/^model=//p' "$d/out")" = "$(jq -r .want_model <<<"$c")" ] || { echo "cap case $id: model $(sed -n 's/^model=//p' "$d/out")"; bad=1; }
               [ "$(sed -n 's/^turns=//p' "$d/out")" = "$(jq -r .want_turns <<<"$c")" ] || { echo "cap case $id: turns $(sed -n 's/^turns=//p' "$d/out")"; bad=1; }
+              want_runner=$(jq -r '.want_runner // empty' <<<"$c")
+              [ -z "$want_runner" ] || [ "$(sed -n 's/^runner=//p' "$d/out")" = "$want_runner" ] || { echo "cap case $id: runner $(sed -n 's/^runner=//p' "$d/out")"; bad=1; }
             else
               grep -q 'daily cap' <<<"$log" || { echo "cap case $id: capped without the cap log line: $log"; bad=1; }
             fi
@@ -400,25 +425,47 @@ jobs:
           # shellcheck disable=SC2016 # the fake's body is literal script text
           printf '#!/usr/bin/env bash\nprintf "%%s\\n" "$@" > "$FAKE_ARGV"\ncat > /dev/null\n' > "$t/claude"
           chmod +x "$t/claude"
+          # shellcheck disable=SC2016 # the fake's body is literal script text
+          printf '#!/usr/bin/env bash\nprintf "%%s\\n" "$FLEET_TASK_ID" "$@" > "$FAKE_ARGV"\ncat > /dev/null\n' > "$t/pi"
+          chmod +x "$t/pi"
           grep -qF /home/nish/.local/bin/claude <<<"$ses"
+          grep -qF /home/nish/.local/bin/pi <<<"$ses"
           ses=${ses//\/home\/nish\/.local\/bin\/claude/$t\/claude}
+          ses=${ses//\/home\/nish\/.local\/bin\/pi/$t\/pi}
           mkdir -p "$t/wt/prompts"
           echo '---' > "$t/wt/prompts/orchestrator-handoff.md"
           while IFS= read -r c; do
             id=$(jq -r .id <<<"$c")
             : > "$t/argv"
-            env FAKE_ARGV="$t/argv" WORKTREE="$t/wt" RUNNER_TEMP="$t" REPO_NAME=o/r ISSUE_N=5 \
+            env FAKE_ARGV="$t/argv" ORCH_RUNNER="$(jq -r .runner <<<"$c")" SEAT="$(jq -r '.seat // ""' <<<"$c")" WORKTREE="$t/wt" RUNNER_TEMP="$t" REPO_NAME=o/r ISSUE_N=5 \
               MODEL="$(jq -r .model <<<"$c")" TURNS="$(jq -r .turns <<<"$c")" HOOKS="$(jq -r .hooks <<<"$c")" \
               bash -c "$ses" > /dev/null 2>&1 || { echo "session case $id: step failed"; bad=1; continue; }
             mapfile -t argv < "$t/argv"
-            got_model=; got_turns=; got_settings=
+            if [ "$(jq -r .want_runner <<<"$c")" = pi ]; then
+              [ "${argv[0]}" = "orch-r-5" ] || { echo "session case $id: FLEET_TASK_ID '${argv[0]}'"; bad=1; }
+              got_seat=; got_prov=
+              for ((i = 1; i < ${#argv[@]}; i++)); do
+                case ${argv[i]} in --model) got_seat=${argv[i+1]} ;; --provider) got_prov=${argv[i+1]} ;; esac
+              done
+              [ "$got_prov" = litellm ] || { echo "session case $id: provider '$got_prov'"; bad=1; }
+              [ "$got_seat" = "$(jq -r .want_seat <<<"$c")" ] || { echo "session case $id: seat '$got_seat'"; bad=1; }
+              continue
+            fi
+            got_model=; got_turns=; got_settings=; got_sources=; got_strict=; got_noslash=
             for ((i = 0; i < ${#argv[@]}; i++)); do
               case ${argv[i]} in
                 --model) got_model=${argv[i+1]} ;;
                 --max-turns) got_turns=${argv[i+1]} ;;
                 --settings) got_settings=${argv[i+1]} ;;
+                --setting-sources) got_sources=${argv[i+1]} ;;
+                --strict-mcp-config) got_strict=1 ;;
+                --disable-slash-commands) got_noslash=1 ;;
               esac
             done
+            # Start-up trim flags: deleting any of them fails CI.
+            [ "$got_strict" = 1 ] || { echo "session case $id: --strict-mcp-config missing"; bad=1; }
+            [ "$got_noslash" = 1 ] || { echo "session case $id: --disable-slash-commands missing"; bad=1; }
+            [ "$got_sources" = project,local ] || { echo "session case $id: --setting-sources '$got_sources'"; bad=1; }
             [ "$got_model" = "$(jq -r .want_model <<<"$c")" ] || { echo "session case $id: model '$got_model'"; bad=1; }
             [ "$got_turns" = "$(jq -r .want_turns <<<"$c")" ] || { echo "session case $id: turns '$got_turns'"; bad=1; }
             if [ "$(jq -r .want_settings <<<"$c")" = true ]; then
@@ -429,6 +476,26 @@ jobs:
           done < <(jq -c '.session_cases[]' "$cfg")
           rm -rf "$t"
           test "$bad" -eq 0
+      - name: Tincan listener keeps its start-up trim flags
+        # The headless claude in systemd/tincan-listen-claude-vps.service loads only
+        # agent-tincan, no skills and no user settings. Delete a flag, or the MCP
+        # file it names, and this fails. --mcp-config must come before
+        # --strict-mcp-config: its value list is variadic and would eat the prompt.
+        if: always()
+        run: |
+          set -euo pipefail
+          u=systemd/tincan-listen-claude-vps.service
+          exec_line=$(grep '^ExecStart=' "$u")
+          for n in '--strict-mcp-config' '--disable-slash-commands' '--setting-sources project,local' '--mcp-config /home/nish/workspaces/tooling/fleet-ops-deploy-clone/config/tincan-listener-mcp.json --strict-mcp-config'; do
+            grep -qF -- "$n" <<<"$exec_line" || { echo "$u: ExecStart is missing: $n"; exit 1; }
+          done
+          jq -e '.mcpServers | keys == ["agent-tincan"]' config/tincan-listener-mcp.json > /dev/null
+          # cwd must be a dedicated dir: with WorkingDirectory=/home/nish, the project
+          # settings source is ~/.claude/settings.json (the user file) and
+          # --setting-sources project,local still loads the user Stop hook and plugins.
+          grep -qx 'StateDirectory=tincan-listen-claude-vps' "$u" || { echo "$u: StateDirectory is not tincan-listen-claude-vps"; exit 1; }
+          grep -qx 'WorkingDirectory=%S/tincan-listen-claude-vps' "$u" || { echo "$u: WorkingDirectory is not the dedicated state dir"; exit 1; }
+          ! grep -E '^WorkingDirectory=(/home/nish/?|~|%h/?)$' "$u" || { echo "$u: WorkingDirectory must not be the home dir"; exit 1; }
       - name: Sweep re-sends red claim PRs (RED_REWORK)
         # Runs the list job's own RED_REWORK program, read out of the workflow
         # with the CHECK_DEFS it shares with the missing-checks case, against
@@ -466,7 +533,7 @@ jobs:
         run: |
           set -euo pipefail
           f=.github/workflows/agent-dispatch.yml
-          gated="new rework conflicts remerge ejected list unblocked miss-review miss-review-pr miss-stalled orchestrate review-risky"
+          gated="new rework conflicts remerge ejected list unblocked miss-review miss-review-pr miss-stalled orchestrate review-risky arm-approved"
           guards="hold-risky close-claim rework-note"
           bad=0
           for j in $(yq '.jobs | keys | .[]' "$f"); do
@@ -582,8 +649,9 @@ jobs:
         # of the workflow, against every case in config/risky-paths.json, so the list
         # and the program cannot drift from what the hold job runs. A case with
         # "paths": null stands for an unreadable list, which must hold. An
-        # approval case feeds APPROVAL {sha, statuses, comments}, the shape the
-        # job builds from the head sha, its statuses and the PR's comments.
+        # approval case feeds APPROVAL {sha, statuses, comments, reviews}, the shape
+        # the job builds from the head sha, its statuses, the PR's comments and
+        # its reviews.
         if: always()
         run: |
           prog=$(yq '.jobs.hold-risky.env.CLASSIFY' .github/workflows/agent-dispatch.yml)
@@ -600,7 +668,7 @@ jobs:
           ctx=$(yq '.jobs.hold-risky.env.CONTEXT' .github/workflows/agent-dispatch.yml)
           [ -n "$approved" ] && [ "$approved" != null ] && [ "$ctx" = coordinator-approval ]
           while IFS= read -r c; do
-            got=$(jq -r --arg c "$ctx" --arg who "$(jq -r '.approvers | join(" ")' <<<"$c")" "$approved" <<<"$(jq -c '{sha, statuses, comments}' <<<"$c")")
+            got=$(jq -r --arg c "$ctx" --arg who "$(jq -r '.approvers | join(" ")' <<<"$c")" "$approved" <<<"$(jq -c '{sha, statuses, comments, reviews}' <<<"$c")")
             [ "$got" = "$(jq -r .want <<<"$c")" ] || { echo "approval case $(jq -r .id <<<"$c"): got $got"; bad=1; }
           done < <(jq -c '.approval_cases[]' config/risky-paths.json)
           test "$bad" -eq 0
@@ -615,7 +683,8 @@ jobs:
           set -euo pipefail
           t=$RUNNER_TEMP/hold-mock
           mkdir -p "$t/bin"
-          yq '.jobs.hold-risky.steps[0].run' .github/workflows/agent-dispatch.yml > "$t/hold.sh"
+          yq '.jobs.hold-risky.steps[] | select(.id == "hold") | .run' .github/workflows/agent-dispatch.yml > "$t/hold.sh"
+          [ -s "$t/hold.sh" ] && ! grep -qx null "$t/hold.sh"
           for v in LABEL CONTEXT APPROVERS RISKY_PATHS_URL CLASSIFY APPROVAL; do
             val=$(yq ".jobs.hold-risky.env.$v" .github/workflows/agent-dispatch.yml)
             [ -n "$val" ] && [ "$val" != null ] || { echo "hold-risky env $v missing"; exit 1; }
@@ -636,8 +705,18 @@ jobs:
             *"/labels"*) touch "$STATE/labelled" ;;
             *"/files?"*) if [ -n "${SAFE:-}" ]; then echo '{"f":"app/routes/home.tsx","p":null,"patch":"@@ -1 +1 @@\n+x"}'; else echo '{"f":".github/workflows/deploy-production.yml","p":null,"patch":"@@ -1 +1 @@\n+x"}'; fi ;;
             *"/statuses?"*) ;;
+            *"/reviews?"*) if [ -n "${REVIEW:-}" ]; then u=nish3451 st=APPROVED cid=$SHA
+                case $REVIEW in
+                  stale) cid=0000000000000000000000000000000000000001 ;;
+                  non-approver) u=someone-else ;;
+                  bot) u='github-actions[bot]' ;;
+                  dismissed) st=DISMISSED ;;
+                esac
+                echo "{\"user\":{\"login\":\"$u\"},\"state\":\"$st\",\"commit_id\":\"$cid\",\"submitted_at\":\"2026-10-09T02:00:00Z\"}"
+              fi ;;
             *"/comments?"*) [ -z "${APPROVE:-}" ] || echo "{\"user\":{\"login\":\"nish3451\"},\"body\":\"coordinator-approval: $SHA\",\"created_at\":\"t\",\"updated_at\":\"t\"}" ;;
-            *"/pulls/7") echo "{\"state\":\"open\",\"head\":{\"sha\":\"$SHA\"},\"labels\":[],\"changed_files\":1,\"node_id\":\"PR_n\"}" ;;
+            *"/pulls/7") d=false am=null; [ -z "${DRAFT:-}" ] || d=true; [ -z "${ARMED:-}" ] || am='{"merge_method":"squash"}'
+              echo "{\"state\":\"open\",\"draft\":$d,\"auto_merge\":$am,\"head\":{\"sha\":\"$SHA\"},\"labels\":[],\"changed_files\":1,\"node_id\":\"PR_n\"}" ;;
             *) echo "mock gh: unexpected call: $args" >&2; exit 1 ;;
           esac
           MOCK
@@ -649,9 +728,12 @@ jobs:
           chmod +x "$t/bin/gh" "$t/bin/curl"
           export SHA=3f9c2a1b7d4e5f60718293a4b5c6d7e8f9012345 GITHUB_REPOSITORY=Nishfleet/0509 PR=7
           bad=0
-          # case: name|FAIL regex|APPROVE|SAFE|want held (yes/no)|want exit (0/1)
-          while IFS='|' read -r name fail approve safe held code; do
-            export STATE=$t/$name RUNNER_TEMP=$t/$name/tmp GITHUB_STEP_SUMMARY=$t/$name/summary GITHUB_OUTPUT=$t/$name/output FAIL=$fail APPROVE=$approve SAFE=$safe
+          # case: name|FAIL regex|APPROVE (comment)|SAFE|want held (yes/no)|want exit (0/1)|review shape|rearm|draft|armed|want arm output (yes/no, default no)
+          # A review shape is a PR review by nish3451 on the head unless the shape says otherwise.
+          # rearm runs the block as approval-signal does: it never holds, and arms only an approved, unarmed, non-draft risky PR.
+          while IFS='|' read -r name fail approve safe held code review rearm draft armed arm; do
+            export STATE=$t/$name RUNNER_TEMP=$t/$name/tmp GITHUB_STEP_SUMMARY=$t/$name/summary GITHUB_OUTPUT=$t/$name/output FAIL=$fail APPROVE=$approve SAFE=$safe REVIEW=$review DRAFT=$draft ARMED=$armed REARM=false
+            [ -z "$rearm" ] || REARM=true
             mkdir -p "$RUNNER_TEMP"
             rc=0
             PATH="$t/bin:$PATH" bash "$t/hold.sh" > "$t/$name/out" 2>&1 || rc=$?
@@ -663,6 +745,9 @@ jobs:
             if [ "$got" != "$held" ] || [ "$rc" != "$code" ]; then
               echo "case $name: held=$got (want $held) exit=$rc (want $code)"; cat "$t/$name/out"; bad=1
             fi
+            armout=no
+            ! grep -qx "arm_sha=$SHA" "$t/$name/output" 2>/dev/null || armout=yes
+            if [ "$armout" != "${arm:-no}" ]; then echo "case $name: arm output=$armout (want ${arm:-no})"; cat "$t/$name/out"; bad=1; fi
           done <<'CASES'
           risky-unapproved||||yes|0
           pr-read-fails|pulls/7$|||yes|0
@@ -675,6 +760,21 @@ jobs:
           label-write-fails|/labels|||yes|1
           approved-control||1||no|0
           safe-control|||1|no|0
+          review-approved-on-head||||no|0|approve
+          review-approved-stale-sha||||yes|0|stale
+          review-by-non-approver||||yes|0|non-approver
+          review-by-actions-bot||||yes|0|bot
+          review-dismissed||||yes|0|dismissed
+          reviews-read-fails|/reviews\?|1||yes|0|approve
+          rearm-review-approved||||no|0|approve|1|||yes
+          rearm-comment-approved||1||no|0||1|||yes
+          rearm-unapproved||||no|0||1|||no
+          rearm-stale-review||||no|0|stale|1|||no
+          rearm-bot-review||||no|0|bot|1|||no
+          rearm-draft||||no|0|approve|1|1||no
+          rearm-already-armed||||no|0|approve|1||1|no
+          rearm-safe-pr|||1|no|0|approve|1|||no
+          rearm-reviews-read-fails|/reviews\?|||no|0|approve|1|||no
           CASES
           test "$bad" -eq 0
       - name: coordinator-approval fails closed in the queue (fake gh)
@@ -699,6 +799,19 @@ jobs:
           case $args in
             *"/compare/"*) tr ';' '\n' <<<"$SUBJECTS" ;;
             *"/pulls/"*"/files?"*) n=${args#*pulls/}; n=${n%%/*}; if has "$RISKY" "$n"; then echo '{"f":".github/workflows/deploy-production.yml","p":null,"patch":"@@ -1 +1 @@\n+x"}'; else echo '{"f":"app/routes/home.tsx","p":null,"patch":"@@ -1 +1 @@\n+x"}'; fi ;;
+            *"/pulls/"*"/reviews?"*) n=${args#*pulls/}; n=${n%%/*}
+              # REVIEW picks a review shape for the PRs in REVIEWED; commit_id is the head unless the shape says stale.
+              if has "$REVIEWED" "$n"; then h=$(sha "$n"); u='{"login":"nish3451"}'; st=APPROVED; cid=$h
+                case ${REVIEW:-} in
+                  stale) cid=$(sha 999) ;;
+                  non-approver) u='{"login":"someone-else"}' ;;
+                  bot) u='{"login":"github-actions[bot]"}' ;;
+                  dismissed) st=DISMISSED ;;
+                  commented) st=COMMENTED ;;
+                  changes-requested-later) echo "{\"user\":{\"login\":\"nish3451\"},\"state\":\"APPROVED\",\"commit_id\":\"$h\",\"submitted_at\":\"2026-10-09T01:00:00Z\"}"; st=CHANGES_REQUESTED ;;
+                esac
+                echo "{\"user\":$u,\"state\":\"$st\",\"commit_id\":\"$cid\",\"submitted_at\":\"2026-10-09T02:00:00Z\"}"
+              fi ;;
             *"/pulls/"*) n=${args##*pulls/}; l='[]'; ! has "$LABELED" "$n" || l='[{"name":"needs-coordinator"}]'; echo "{\"state\":\"open\",\"head\":{\"sha\":\"$(sha "$n")\"},\"labels\":$l,\"changed_files\":1}" ;;
             *"/statuses?"*) ;;
             *"/issues/"*"/comments?"*) n=${args#*issues/}; n=${n%%/*}
@@ -709,9 +822,10 @@ jobs:
           chmod +x "$t/bin/gh"
           export GITHUB_REPOSITORY=Nishfleet/fleet-ops BASE_DIR=. BASE_SHA=b GROUP_SHA=g GH_TOKEN=x
           bad=0
-          # case: name|head ref PR|commit subjects (;)|risky PRs|labelled PRs|approved PRs|stale approval|FAIL regex|want exit
-          while IFS='|' read -r name pr subjects risky labeled approved stale fail want; do
-            export RUNNER_TEMP=$t/$name GITHUB_STEP_SUMMARY=$t/$name/summary SUBJECTS=$subjects RISKY=$risky LABELED=$labeled APPROVED=$approved STALE=$stale FAIL=$fail
+          # case: name|head ref PR|commit subjects (;)|risky PRs|labelled PRs|approved PRs|stale approval|FAIL regex|want exit|review shape (PRs with an approving review are the ones in "approved" only when the shape is empty; a shape applies to PR 7)
+          while IFS='|' read -r name pr subjects risky labeled approved stale fail want review; do
+            export RUNNER_TEMP=$t/$name GITHUB_STEP_SUMMARY=$t/$name/summary SUBJECTS=$subjects RISKY=$risky LABELED=$labeled APPROVED=$approved STALE=$stale FAIL=$fail REVIEW=$review REVIEWED=
+            [ -z "$review" ] || REVIEWED=7
             export HEAD_REF=refs/heads/gh-readonly-queue/main/pr-$pr-0123456789abcdef0123456789abcdef01234567
             [ "$pr" != badref ] || HEAD_REF=refs/heads/feature
             mkdir -p "$RUNNER_TEMP"
@@ -733,6 +847,201 @@ jobs:
           statuses-read-fails|7|Add x (#7)|7||7||/statuses\?|1
           comments-read-fails|7|Add x (#7)|7||7||/comments\?|1
           compare-read-fails|7|Add x (#7)|||||/compare/|1
+          review-approved-on-head|7|Add x (#7)|7|||||0|approve
+          review-approved-stale-sha|7|Add x (#7)|7|||||1|stale
+          review-by-non-approver|7|Add x (#7)|7|||||1|non-approver
+          review-by-actions-bot|7|Add x (#7)|7|||||1|bot
+          review-dismissed|7|Add x (#7)|7|||||1|dismissed
+          review-comment-only|7|Add x (#7)|7|||||1|commented
+          review-approve-then-changes-requested|7|Add x (#7)|7|||||1|changes-requested-later
+          review-approved-reviews-read-fails|7|Add x (#7)|7||7||/reviews\?|1|approve
+          comment-approval-without-reviews|7|Add x (#7)|7||7|||0|
+          CASES
+          test "$bad" -eq 0
+      - name: Reviewer approves, blocks and arms without a person (fake gh)
+        # Runs the review job's own run block and the arm job's, read out of
+        # agent.yml, against a fake gh, curl, pi and git. A PR that edits the guard or
+        # a workflow is approved only when the judge (>= 0.9, no blocker line) AND the
+        # second reviewer approve; each block, a low judge, an unreadable guard list
+        # and a second reviewer with no answer leave it unapproved, and none of them
+        # asks a person. The review never arms itself: the arm job does, on the exact
+        # head, and refuses a stale one.
+        if: always()
+        run: |
+          set -euo pipefail
+          t=$RUNNER_TEMP/review-mock
+          rm -rf "$t"
+          mkdir -p "$t/bin" "$t/home/.config/fleet-ops/seats"
+          : > "$t/home/.config/fleet-ops/seats/typesafe-jev.env"
+          f=.github/workflows/agent.yml
+          yq '.jobs.review.steps[] | select(.id == "review") | .run' "$f" > "$t/review.sh"
+          yq '.jobs.arm.steps[] | select(.name == "Arm the approved head") | .run' "$f" > "$t/arm.sh"
+          for s in review arm; do
+            if [ ! -s "$t/$s.sh" ] || grep -qx null "$t/$s.sh"; then echo "$s step missing"; exit 1; fi
+          done
+          for v in JUDGE_FAMILY SECOND_SEAT SECOND_FAMILY; do
+            val=$(yq ".jobs.review.steps[] | select(.id == \"review\") | .env.$v" "$f")
+            [ -n "$val" ] && [ "$val" != null ] || { echo "review env $v missing"; exit 1; }
+            export "$v=$val"
+          done
+          RISKY_PATHS_URL=$(yq '.jobs.review.env.RISKY_PATHS_URL' "$f")
+          export RISKY_PATHS_URL
+          # Wiring: the approval flows to the arm job in the same run, and the review step never arms or asks.
+          bad=0
+          [ "$(yq '.jobs.arm.needs' "$f")" = review ] || { echo "arm job must need review"; bad=1; }
+          yq '.jobs.arm.if' "$f" | grep -q 'needs.review.outputs.approved_sha' || { echo "arm job if does not read the review's approved_sha"; bad=1; }
+          yq '.jobs.arm.env.SHA' "$f" | grep -q 'needs.review.outputs.approved_sha' || { echo "arm job SHA does not come from the review"; bad=1; }
+          yq '.jobs.review.outputs.approved_sha' "$f" | grep -q 'steps.review.outputs.approved_sha' || { echo "review job does not export approved_sha"; bad=1; }
+          yq '.jobs.hold-risky.steps[] | select(.id == "hold") | .env.REARM' .github/workflows/agent-dispatch.yml | grep -q ready_for_review || { echo "a draft turning ready does not re-arm"; bad=1; }
+          ! grep -q 'pr merge' "$t/review.sh" || { echo "the review step arms; the arm job must"; bad=1; }
+          ! grep -iE 'a person approves|person approve|tap Review|ask nish' "$t/review.sh" || { echo "person-request wording in the review step"; bad=1; }
+          ! grep -iE 'a person approves|person approve|tap Review|ask nish' <(yq '.jobs.hold-risky.steps[] | select(.id == "hold") | .run' .github/workflows/agent-dispatch.yml) || { echo "person-request wording in hold-risky"; bad=1; }
+          cat > "$t/bin/gh" <<'MOCK'
+          #!/usr/bin/env bash
+          args="$*"
+          case $args in
+            "pr comment "*) while [ $# -gt 0 ]; do if [ "$1" = --body ]; then printf '%s\n----\n' "$2" >> "$STATE/comments"; break; fi; shift; done ;;
+            "pr merge "*) if [ -n "$GH_TOKEN" ]; then k=set; else k=unset; fi; echo "$args token=$k" >> "$STATE/merge" ;;
+            *"issues/7/comments"*) while [ $# -gt 0 ]; do if [ "$1" = --jq ]; then jq -r "$2" <<<"${COMMENTS:-[]}"; break; fi; shift; done ;;
+            *"pulls/7/files"*) case "${GUARD:-}" in
+                fail) exit 1 ;;
+                rename) printf 'app/routes/home.tsx\n.github/workflows/old.yml\n' ;;
+                "") echo app/routes/home.tsx ;;
+                1) echo .github/workflows/new.yml ;;
+                *) echo "mock gh: unknown GUARD ${GUARD}" >&2; exit 2 ;;
+              esac ;;
+            *"Accept: application/vnd.github.diff"*) printf 'diff --git a/x b/x\n+x\n' ;;
+            *"--jq .head.sha"*) echo "${HEAD_AFTER:-$SHA}" ;;
+            *"pulls/7") a=null d=false st=open; [ -z "${ARMED:-}" ] || a='{"merge_method":"squash"}'; [ -z "${DRAFT:-}" ] || d=true; [ -z "${CLOSED:-}" ] || st=closed
+              echo "{\"state\":\"$st\",\"draft\":$d,\"auto_merge\":$a,\"head\":{\"sha\":\"${HEAD_NOW:-$SHA}\"},\"base\":{\"sha\":\"b4d5e6f708192a3b4c5d6e7f8091a2b3c4d5e6f7\"}}" ;;
+            *) echo "mock gh: unexpected call: $args" >&2; exit 1 ;;
+          esac
+          MOCK
+          cat > "$t/bin/curl" <<'MOCK'
+          #!/usr/bin/env bash
+          case "$*" in
+            *raw.githubusercontent.com*) [ -z "${GUARD_LIST_FAILS:-}" ] || exit 22; cat config/risky-paths.json ;;
+            *4000/jev*) echo "{\"answers\":{\"verdict\":{\"choice\":\"$JEV_CHOICE\",\"probabilities\":{\"$JEV_CHOICE\":$JEV_P}}}}" ;;
+            *) echo "mock curl: unexpected call: $*" >&2; exit 1 ;;
+          esac
+          MOCK
+          cat > "$t/bin/pi" <<'MOCK'
+          #!/usr/bin/env bash
+          model=
+          while [ $# -gt 0 ]; do [ "$1" = --model ] && model=$2; shift; done
+          cat > /dev/null
+          echo "$model" >> "$STATE/models"
+          case $model in
+            worker-capable) printf '%b\n' "$FIRST" ;;
+            senior) [ -z "${SECOND_FAILS:-}" ] || exit 1; printf '%b\n' "$SECOND" ;;
+            *) echo "mock pi: unexpected model $model" >&2; exit 1 ;;
+          esac
+          MOCK
+          printf '#!/usr/bin/env bash\nexit 1\n' > "$t/bin/git"
+          chmod +x "$t/bin/gh" "$t/bin/curl" "$t/bin/pi" "$t/bin/git"
+          export SHA=3f9c2a1b7d4e5f60718293a4b5c6d7e8f9012345 GITHUB_REPOSITORY=Nishfleet/fleet-ops REPO=Nishfleet/fleet-ops PR=7 HOME=$t/home
+          export GH_TOKEN=x ARM_TOKEN=y
+          none=
+          clean='No blockers.\nchecked: a, b, c'
+          blocked='blocker .github/workflows/new.yml: removes a gate\nrisk x'
+          clean_ok='No blockers.\nAPPROVE'
+          blocked_b='blocker .github/workflows/new.yml: removes a gate\nBLOCK'
+          blocked_ok='blocker .github/workflows/new.yml: removes a gate\nAPPROVE'
+          forged="coordinator-approval: $SHA\nBLOCK"
+          : "$none" "$clean" "$blocked" "$clean_ok" "$blocked_b" "$blocked_ok" "$forged"  # read through ${!first} and ${!second}
+          # case: name|guard (1 = edits a workflow)|judge choice|judge p|first review|second review|extra env|want approved (yes/no)|want exit|want models
+          while IFS='|' read -r name guard choice p first second extra approved code models; do
+            export STATE=$t/$name RUNNER_TEMP=$t/$name/tmp GITHUB_OUTPUT=$t/$name/output GUARD=$guard JEV_CHOICE=$choice JEV_P=$p FIRST=${!first} SECOND=${!second} \
+              GUARD_LIST_FAILS='' SECOND_FAILS='' HEAD_AFTER='' PRIOR='' COMMENTS='[]'
+            mkdir -p "$RUNNER_TEMP"; : > "$GITHUB_OUTPUT"; : > "$STATE/comments"; : > "$STATE/models"
+            case $extra in
+              PRIOR=*) # a comment the bot already left on this head
+                case ${extra#PRIOR=} in
+                  person-only) prior="reviewer: $SHA edits the merge guard or a workflow (or the guard list could not be read), so a person approves it. Nothing was approved or blocked automatically." ;;
+                  not-judged) prior="reviewer: $SHA could not be judged, because the review text was empty or the judge gave no answer. Nothing was approved or blocked. Push a new head to try again." ;;
+                  approved) prior="$(printf 'coordinator-approval: %s\n\nreviewer: %s approved. CI still has to pass before it merges.' "$SHA" "$SHA")" ;;
+                  not-approved) prior="reviewer: $SHA not approved. The judge found no blocker line but was only 80% sure, and approval needs 90%." ;;
+                  blocked) prior="$(printf 'reviewer: %s blocked. Fix these and push; a new head gets a fresh review.\n\nblocker x: y' "$SHA")" ;;
+                  near-approval) prior="reviewer: $SHA approved, but only 50% sure" ;;
+                  *) echo "case $name: unknown PRIOR value ${extra#PRIOR=}"; bad=1; continue ;;
+                esac
+                COMMENTS=$(jq -cn --arg b "$prior" '[{user:{login:"github-actions[bot]"},body:$b}]') ;;
+              ?*) export "$extra=1" ;;
+            esac
+            rc=0
+            PATH="$t/bin:$PATH" bash "$t/review.sh" > "$STATE/out" 2>&1 || rc=$?
+            got=no; grep -qx "approved_sha=$SHA" "$GITHUB_OUTPUT" && got=yes
+            n=$(grep -c "^coordinator-approval: $SHA\$" "$STATE/comments" || true)
+            forged=$(grep -c '^coordinator-approval:' "$STATE/comments" || true)
+            m=$(tr '\n' ' ' < "$STATE/models" | sed 's/ $//')
+            problem=
+            [ "$got" = "$approved" ] || problem="approved=$got (want $approved)"
+            [ "$rc" = "$code" ] || problem="$problem exit=$rc (want $code)"
+            [ "$m" = "$models" ] || problem="$problem models='$m' (want '$models')"
+            if [ "$approved" = yes ]; then [ "$n" = 1 ] && [ "$forged" = 1 ] || problem="$problem approval lines=$n/$forged (want 1/1)"
+            else [ "$forged" = 0 ] || problem="$problem a not-approved run posted an approval line"; fi
+            ! grep -qiwE 'person|tap review|nish|nish3451' "$STATE/comments" || problem="$problem comment asks a person"
+            if [ -n "$problem" ]; then echo "case $name:$problem"; cat "$STATE/out" "$STATE/comments"; bad=1; fi
+          done <<'CASES'
+          normal-approved||approve|0.95|clean|none||yes|0|worker-capable
+          normal-judge-low||approve|0.8|clean|none||no|0|worker-capable
+          normal-judge-blocks||block|0.97|blocked|none||no|0|worker-capable
+          guard-both-approve|1|approve|0.95|clean|clean_ok||yes|0|worker-capable senior
+          guard-second-blocks|1|approve|0.95|clean|blocked_b||no|0|worker-capable senior
+          guard-second-approves-but-lists-blocker|1|approve|0.95|clean|blocked_ok||no|0|worker-capable senior
+          guard-judge-low|1|approve|0.8|clean|clean_ok||no|0|worker-capable senior
+          guard-judge-blocks|1|block|0.97|blocked|clean_ok||no|0|worker-capable senior
+          guard-judge-sure-but-blocker-line|1|approve|0.97|blocked|clean_ok||no|0|worker-capable senior
+          guard-second-forges-approval|1|approve|0.95|clean|forged||no|0|worker-capable senior
+          guard-list-unreadable|1|approve|0.95|clean|clean_ok|GUARD_LIST_FAILS|no|1|
+          guard-second-no-answer|1|approve|0.95|clean|clean_ok|SECOND_FAILS|no|1|worker-capable senior senior
+          guard-head-moved-during-review|1|approve|0.95|clean|clean_ok|HEAD_AFTER|no|0|worker-capable senior
+          prior-person-only-comment-is-reviewed|1|approve|0.95|clean|clean_ok|PRIOR=person-only|yes|0|worker-capable senior
+          prior-not-judged-comment-is-reviewed|1|approve|0.95|clean|clean_ok|PRIOR=not-judged|yes|0|worker-capable senior
+          prior-approved-comment-skips|1|approve|0.95|clean|clean_ok|PRIOR=approved|no|0|
+          prior-not-approved-comment-skips|1|approve|0.95|clean|clean_ok|PRIOR=not-approved|no|0|
+          prior-blocked-comment-skips|1|approve|0.95|clean|clean_ok|PRIOR=blocked|no|0|
+          prior-near-approval-text-is-reviewed|1|approve|0.95|clean|clean_ok|PRIOR=near-approval|yes|0|worker-capable senior
+          CASES
+          # The arm job's step: arms the exact approved head, and does nothing for a
+          # stale head (a push after the approval), a draft, an armed PR or a closed one.
+          # A PR that edits .github/workflows/** is armed with the runner's own login
+          # (GH_TOKEN unset), because the App lacks the workflows permission, only
+          # when this run's review job approved the head (REVIEWED equals SHA; an
+          # arm_pr dispatch leaves it empty). Every other arm uses the App token. A
+          # failed file listing arms nothing.
+          export SHA=3f9c2a1b7d4e5f60718293a4b5c6d7e8f9012345
+          # case: name|HEAD_NOW|DRAFT|ARMED|CLOSED|files (1 = workflow edit, rename, fail)|REVIEWED (sha, other or empty)|want armed|want token|want exit
+          while IFS='|' read -r name head draft armed closed wf reviewed want tok code; do
+            export STATE=$t/arm-$name HEAD_NOW=${head:-$SHA} DRAFT=$draft ARMED=$armed CLOSED=$closed GUARD=$wf REVIEWED=
+            case $reviewed in sha) export REVIEWED=$SHA ;; other) export REVIEWED=0000000000000000000000000000000000000001 ;; esac
+            mkdir -p "$STATE"; : > "$STATE/merge"
+            rc=0
+            PATH="$t/bin:$PATH" bash "$t/arm.sh" > "$STATE/out" 2>&1 || rc=$?
+            got=no; [ ! -s "$STATE/merge" ] || got=yes
+            problem=
+            [ "$rc" = "${code:-0}" ] || problem="exit=$rc (want ${code:-0})"
+            [ "$got" = "$want" ] || problem="$problem armed=$got (want $want)"
+            if [ "$got" = yes ]; then
+              grep -q -- "--auto" "$STATE/merge" && grep -q -- "--match-head-commit $SHA" "$STATE/merge" || problem="$problem arm lacks --auto or --match-head-commit"
+              grep -q -- " token=$tok\$" "$STATE/merge" || problem="$problem arm token is not $tok"
+            fi
+            if [ -n "$problem" ]; then echo "arm case $name: $problem"; cat "$STATE/out" "$STATE/merge"; bad=1; fi
+          done <<'CASES'
+          approved-head||||||sha|yes|set|
+          approved-head-in-an-arm-dispatch|||||||yes|set|
+          workflow-edit-reviewed-uses-runner-login|||||1|sha|yes|unset|
+          workflow-rename-reviewed-uses-runner-login|||||rename|sha|yes|unset|
+          workflow-edit-arm-dispatch-keeps-app-token|||||1||yes|set|
+          workflow-edit-other-sha-reviewed-keeps-app-token|||||1|other|yes|set|
+          workflow-edit-file-list-fails|||||fail|sha|no||1
+          workflow-edit-stale-sha|0000000000000000000000000000000000000001||||1|sha|no||
+          workflow-edit-draft||1|||1|sha|no||
+          workflow-edit-already-armed|||1||1|sha|no||
+          stale-sha-after-bot-approval|0000000000000000000000000000000000000001|||||sha|no||
+          draft||1||||sha|no||
+          already-armed|||1|||sha|no||
+          closed||||1||sha|no||
           CASES
           test "$bad" -eq 0
       - name: Infra-wall classifier (fake gh)
@@ -873,7 +1182,7 @@ jobs:
         run: |
           run=true
           if [ "$EVENT" = pull_request ]; then
-            if git diff --name-only "$BASE_SHA" "$HEAD_SHA" | grep -qE '^(config/grafana/|containers/quadlet/fleet-grafana\.container$|\.github/workflows/ci\.yml$)'; then
+            if git diff --name-only "$BASE_SHA" "$HEAD_SHA" | grep -qE '^(config/grafana/|containers/quadlet/fleet-grafana\.container$|systemd/fleet-grafana-provisioning\.|\.github/workflows/ci\.yml$)'; then
               run=true
             else
               run=false
@@ -908,6 +1217,7 @@ jobs:
             --env CLOUDFLARE_API_TOKEN=dummy --env GITHUB_ISSUES_TOKEN=dummy \
             "docker.io/$image"
           port=$(sed -n 's/^Environment=GF_SERVER_HTTP_PORT=//p' "$q")
+          [[ $port =~ ^[0-9]+$ ]] || { echo "::error::$q has no numeric GF_SERVER_HTTP_PORT (got '$port')"; exit 1; }
           for _ in $(seq 1 90); do
             if [ "$(docker inspect -f '{{.State.Running}}' grafana)" != true ]; then
               echo "::error::Grafana exited before /api/health answered"
@@ -920,7 +1230,7 @@ jobs:
             fi
             sleep 2
           done
-          curl -fsS "http://127.0.0.1:$port/api/health" | jq -e '.database == "ok"'
+          curl -fsS --connect-timeout 5 --max-time 30 "http://127.0.0.1:$port/api/health" | jq -e '.database == "ok"'
           # Stay up past provisioning, then require no provisioning error.
           sleep 10
           if [ "$(docker inspect -f '{{.State.Running}}' grafana)" != true ]; then
@@ -934,9 +1244,86 @@ jobs:
             exit 1
           fi
           echo "grafana-boot: $image healthy, no provisioning error"
+      - name: Provisioning reload path unit covers every mounted dir and its reload call works
+        # fleet-ops#9449 follow-up: Grafana reads provisioning only at start, so
+        # a merged rule change sat unloaded for 31 hours and paged a false
+        # alarm. systemd/fleet-grafana-provisioning.path watches the clone's
+        # provisioning dirs and the .service POSTs the stock admin reload API.
+        # (1) every config/grafana/provisioning/<dir> the quadlet mounts must be
+        # a PathChanged= in the .path unit, so a new mount cannot ship unwatched
+        # (dashboards is skipped: its provider polls every 60 s);
+        # (2) the .service's reload URLs, called with the dummy admin password
+        # against the booted pinned image, must answer 2xx and leave Grafana
+        # healthy with no provisioning error.
+        if: steps.gate.outputs.run == 'true'
+        run: |
+          set -euo pipefail
+          q=containers/quadlet/fleet-grafana.container
+          p=systemd/fleet-grafana-provisioning.path
+          u=systemd/fleet-grafana-provisioning.service
+          pw="$RUNNER_TEMP/secrets/grafana-admin-password"
+          # The dummy password is written by the "Start the quadlet's Grafana" step above.
+          test -s "$pw" || { echo "::error::dummy admin password file missing or empty; the boot step must write it"; exit 1; }
+          n=0
+          while IFS= read -r d; do
+            grep -qE "^PathChanged=.*/config/grafana/provisioning/$d\$" "$p" || { echo "::error::$p does not watch the provisioning dir $d that $q mounts"; exit 1; }
+            n=$((n+1))
+          done < <(sed -n 's|^Volume=.*/config/grafana/provisioning/\([a-z]*\):.*|\1|p' "$q" | grep -vx dashboards)
+          test "$n" -ge 2
+          port=$(sed -n 's/^Environment=GF_SERVER_HTTP_PORT=//p' "$q")
+          [[ $port =~ ^[0-9]+$ ]] || { echo "::error::$q has no numeric GF_SERVER_HTTP_PORT (got '$port')"; exit 1; }
+          # The .service loops `for e in <endpoints>` over one URL base; take both from it.
+          base=$(grep -oE 'http://127\.0\.0\.1:[0-9]+/api/admin/provisioning/' "$u" | head -n 1)
+          eps=$(sed -n 's/.*for e in \([a-z ]*\); do.*/\1/p' "$u")
+          [ -n "$base" ] && [ -n "$eps" ] || { echo "::error::$u: could not read the reload URL base and endpoint list"; exit 1; }
+          m=0
+          for e in $eps; do
+            url=${base/:3001\//:$port/}${e}/reload
+            # Password as a quoted, escaped config fd, same as the .service: never in argv.
+            curl -fsS --connect-timeout 5 --max-time 30 -X POST --config <(sed 's/["\\]/\\&/g; s/^/user = "admin:/; s/$/"/' "$pw") "$url"
+            echo
+            m=$((m+1))
+          done
+          [ "$m" -ge 2 ] || { echo "::error::$u reloads $m endpoints, want at least 2"; exit 1; }
+          curl -fsS --connect-timeout 5 --max-time 30 "http://127.0.0.1:$port/api/health" | jq -e '.database == "ok"'
+          sleep 5
+          if docker logs grafana 2>&1 | grep -E 'logger=provisioning[^ ]* .*level=(error|crit)|level=(error|crit) .*(rovisioning|failure to map file)' > "$RUNNER_TEMP/rerr.txt"; then
+            cut -c1-400 "$RUNNER_TEMP/rerr.txt" | head -n 8
+            echo "::error::Grafana logged a provisioning error after the reload"
+            exit 1
+          fi
+          echo "grafana-boot: $n provisioning dirs watched, reload answered 2xx"
       - name: Grafana log on failure
         if: failure()
         run: docker logs grafana 2>&1 | cut -c1-400 | tail -n 40 || true
+
+  # infra/cloudflare-tokens/ is OpenTofu config. This job holds no Cloudflare or
+  # GitHub credential and never plans or applies: it only checks that the files
+  # are formatted and the config is valid, with the provider schemas from the
+  # lock file (-backend=false, so no state is read or written).
+  cloudflare-tokens-tofu:
+    name: cloudflare-tokens-tofu
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install OpenTofu
+        uses: opentofu/setup-opentofu@a1320f892987e89d278cc92dc5adc984fb93aca4 # v2.0.2
+        with:
+          tofu_version: 1.13.1
+          tofu_wrapper: false
+      - name: tofu fmt -check
+        working-directory: infra/cloudflare-tokens
+        run: tofu fmt -check -diff -recursive
+      - name: tofu init -backend=false
+        working-directory: infra/cloudflare-tokens
+        run: tofu init -backend=false -lockfile=readonly
+      - name: tofu validate
+        working-directory: infra/cloudflare-tokens
+        run: tofu validate
 
   # Coordinator approval as a required status check (fleet-ops#9383).
   # hold-risky (agent-dispatch.yml) disarms a risky PR on a few PR events, so a
@@ -944,7 +1331,8 @@ jobs:
   # required check is the one thing the merge queue cannot skip. On merge_group
   # this job resolves the PR(s) in the queue entry, classifies each one's
   # changed files and fails when a risky PR's CURRENT head sha has no
-  # `coordinator-approval: <sha>` comment (or success status) from an approver.
+  # `coordinator-approval: <sha>` comment, success status or approving review
+  # (fleet-ops#9505) from an approver.
   # On pull_request and push it passes, so a PR can be enqueued and the queue
   # does the rejecting. The CLASSIFY and APPROVAL programs, APPROVERS and the
   # path list are read from the BASE commit's agent-dispatch.yml and
@@ -1032,15 +1420,18 @@ jobs:
             gh api --paginate "repos/$GITHUB_REPOSITORY/issues/$n/comments?per_page=100" \
               --jq '.[] | {user: {login: .user.login}, body, created_at, updated_at}' > "$RUNNER_TEMP/comments.txt" ||
               { echo "::error::coordinator-approval: comments read failed for #$n"; bad=1; continue; }
-            approved=$(jq -n --arg sha "$sha" --slurpfile s "$RUNNER_TEMP/statuses.txt" --slurpfile m "$RUNNER_TEMP/comments.txt" \
-              '{sha: $sha, statuses: $s, comments: $m}' |
+            gh api --paginate "repos/$GITHUB_REPOSITORY/pulls/$n/reviews?per_page=100" \
+              --jq '.[] | {user: {login: .user.login}, state, commit_id, submitted_at}' > "$RUNNER_TEMP/reviews.txt" ||
+              { echo "::error::coordinator-approval: reviews read failed for #$n"; bad=1; continue; }
+            approved=$(jq -n --arg sha "$sha" --slurpfile s "$RUNNER_TEMP/statuses.txt" --slurpfile m "$RUNNER_TEMP/comments.txt" --slurpfile r "$RUNNER_TEMP/reviews.txt" \
+              '{sha: $sha, statuses: $s, comments: $m, reviews: $r}' |
               jq -r --arg c "$CONTEXT" --arg who "$APPROVERS" "$APPROVAL") || approved=false
             if [ "$approved" = true ]; then
               echo "coordinator-approval: #$n is risky and $sha carries an approver's $CONTEXT"
             else
               echo "::error::coordinator-approval: #$n is risky and $sha has no $CONTEXT from $APPROVERS"
               jq -r '.why[] | "- \(.)"' <<<"$verdict" >> "$GITHUB_STEP_SUMMARY"
-              echo "Approve this exact head with an approver's PR comment line \`$CONTEXT: $sha\`." >> "$GITHUB_STEP_SUMMARY"
+              echo "review-risky reviews and approves this head on its own; this check passes once the approval names $sha. Nothing needs a person." >> "$GITHUB_STEP_SUMMARY"
               bad=1
             fi
           done

@@ -7,8 +7,8 @@ script, or prompt lands unseen.
 ## What lives here
 
 - `systemd/` — the user units the fleet runs under `systemctl --user`:
-  services, timers, slices, one `.path` unit (`fleet-litellm-proxy-config.path`)
-  and one `.scope.d` drop-in (`tmux-spawn-.scope.d`).
+  services, timers, slices, two `.path` units (`fleet-litellm-proxy-config.path`,
+  `fleet-grafana-provisioning.path`) and one `.scope.d` drop-in (`tmux-spawn-.scope.d`).
 - `rootfs/` — root-owned host config, laid out like `/` (`rootfs/etc/X` is
   installed at `/etc/X`): system units, slices and drop-ins, `nftables.conf`,
   `sysctl.d/`, `audit/rules.d/`, polkit rules and the prometheus config.
@@ -18,14 +18,19 @@ script, or prompt lands unseen.
 - `ansible/update.yml` — the weekly safe full update of the box (see
   [Weekly update](#weekly-update)). `fleet-update.service` runs it as root
   (`ansible-pull`).
+- `infra/cloudflare-tokens/` — OpenTofu config that makes one narrow Cloudflare
+  token per repo and writes it into that repo's GitHub Actions secret, replaced
+  every 30 days. Its README says how to apply, rotate and delete it.
 - `containers/quadlet/` — `*.container` Podman quadlet units for the
   LiteLLM proxy, its Postgres and Redis, Grafana and aiostreams.
 - `patches/` — `litellm-1.98.0-gchunk-usage-union.patch`, a source patch for
   LiteLLM 1.98.0 that no unit in this repo applies (the proxy runs a pinned
   container image).
 - `docs/` — `ARCHITECTURE.md`, `RUNBOOK.md`, `jev-call-sites.md`,
-  `quality-bar.md` and `incidents/` (one blameless write-up per outage,
-  named `YYYY-MM-DD-<slug>.md`).
+  `mac-rescue-2026-10-09.md` (the disposition of the Mac rescue bundles),
+  `mac-scheduled-tasks.md` (the disposition of the Mac's 11 desktop
+  scheduled tasks), `quality-bar.md` and `incidents/` (one blameless
+  write-up per outage, named `YYYY-MM-DD-<slug>.md`).
 - `template/` — `agents/`, `cursor-rules/`, `devin-config.json` and
   `README.md`, source files the live host links or copies by hand (see
   [template/README.md](template/README.md)).
@@ -34,15 +39,24 @@ script, or prompt lands unseen.
   repos enrolled in the agent-ready queue (see [Intake enrolment](#intake-enrolment)).
   `config/litellm-proxy.schema.rejects/` holds one YAML per rule
   `config/litellm-proxy.schema.json` must refuse: the bench block, a router
-  cooldown over 60, a zero row cooldown, a row cooldown, and one case per
+  cooldown over 60, a zero row cooldown, a row cooldown, one case per
   judge-group rule (the fallback rows back on order 1, the paid row's rpm
   raised, its concurrency raised, a fourth judge row, the paid row doubled
   as its own fallback, a fallback row renamed, both fallbacks on one key, and
   a swap of the paid row's model, host or key, or of a fallback's model or
-  host). CI
-  validates every file
-  in the directory against the schema and each must fail, so a loosened schema
-  goes red. A new schema rule gets a reject file in the same PR.
+  host), a router with no Redis pin store, a router affinity TTL below 300 and
+  a router affinity TTL above 600, an `optional_pre_call_checks` list without
+  `session_affinity`, one case per cache-declaration rule (a row with no
+  `supports_prompt_caching` flag, a row with no `cache_proof`, a
+  non-cacheable worker row not on `order: 2`, and a worker row forced onto
+  `order: 1`), a router whose `allowed_fails_policy` drops
+  `NotFoundErrorAllowedFails`, a router whose `NotFoundErrorAllowedFails` is
+  not 0, a router with no `allowed_fails_policy` block at all, and a row whose
+  own `allowed_fails_policy` names `NotFoundErrorAllowedFails` at anything but
+  0 (a row-level threshold resolves before the router policy, so a row
+  override would re-open the two-404 leak). CI validates every file in the directory against the schema
+  and each must fail, so a loosened schema goes red. A new schema rule gets a
+  reject file in the same PR.
 - `config/grafana/` — the fleet-view Grafana provisioning
   (`provisioning/datasources/`, `provisioning/dashboards/`,
   `provisioning/alerting/`) and `dashboards/fleet.json`. Only provisioning
@@ -392,7 +406,24 @@ It never reboots. When a package needs a reboot, it opens one
 `needs-nish-decision` issue. The daily security updates (`unattended-upgrades`)
 stay on; `rootfs/etc/needrestart/conf.d/50-fleet.conf` makes them only list
 services on old libraries, so they never restart a service mid-job.
-`claude-remote-control.service` is never restarted, by either path.
+`claude-remote-control.service` is never restarted, by either path. A change to
+it is therefore staged on merge: the file is copied in and the running server
+keeps its old session until Nish restarts it, because that restart cuts his
+phone link (#9425). The staged file as of 2026-10-08 adds
+`--no-create-session-in-dir`, so relayed coordinator work no longer piles into
+one standing session. Each request from the phone or a claude.ai/code project
+relay then gets its own session with a fresh context. The one standing session
+it replaces was measured at $52.0 over 21.0 h with a 69k average context; the
+number after the restart is the real test.
+
+- Apply a staged change to it. Nish does this, because it cuts the phone link
+  for about a minute:
+  1. `sudo systemctl daemon-reload` — without it systemd keeps the `ExecStart`
+     line it already loaded, so the new flag never takes effect.
+  2. `sudo systemctl restart claude-remote-control.service`.
+  3. `systemctl --no-pager status claude-remote-control.service` shows
+     `active (running)` with no restart loop, and one message sent from the
+     phone is answered by a session with a fresh context.
 
 - Run it now: `sudo systemctl start --no-block fleet-update.service`, then
   `journalctl -u fleet-update -f`.
@@ -401,6 +432,77 @@ services on old libraries, so they never restart a service mid-job.
   In an emergency: `sudo systemctl disable --now fleet-update.timer`.
 - Delete it: remove `ansible/update.yml`, the two `fleet-update` units and
   `50-fleet.conf`, and add their `/etc` paths to `retired` in `ansible/host.yml`.
+
+## Remote Control stays on (OOM storm 2026-10-09)
+
+The phone link must not drop, and when it does someone must hear within
+seconds. Measured on 2026-10-09: a secret scan (trufflehog over a full git
+history) started from one Remote Control session grew to 15.4G RSS on the 32G
+host. Nothing capped `claude.slice`, and everything under Remote Control
+inherited `OOMScoreAdjust=-900`, which scores a 15G scan the same as an idle
+session. The kernel killed the unprotected services instead (hermes, the
+router, the executor) and stalled the link for about two minutes with all 8G
+of swap full. Nothing alerted anyone.
+
+| Piece | File | Takes effect |
+| --- | --- | --- |
+| `claude.slice` `MemoryHigh=14G` / `MemoryMax=18G` / `MemorySwapMax=2G` (normal use 6-7G, incident peak 21.5G) | `rootfs/etc/systemd/system/claude.slice` | at the daemon-reload after merge |
+| `OOMPolicy=continue`: a killed child no longer stops the whole unit | `claude-remote-control.service.d/50-alert-on-stop.conf` | at the daemon-reload after merge |
+| `ExecStopPost=` starts `fleet-unit-failed@claude-remote-control.service`, the existing healthchecks.io fail ping (fleet-ops#9033) | same file | next restart of Remote Control (Nish) |
+| `OOMScoreAdjust=-900` to `-500`, so a runaway session child can be chosen | `claude-remote-control.service` | next restart of Remote Control (Nish) |
+| `OOMScoreAdjust=-500` for `hermes-gateway.service` | `hermes-gateway.service.d/70-oom-protect.conf` | next restart of hermes (it restarts itself) |
+
+The alert uses `ExecStopPost=` because `OnFailure=` never fires for this unit:
+it fires on `failed`, and `Restart=always` with `StartLimitIntervalSec=0`
+(`selfheal.conf`) sends every exit to auto-restart. A deliberate restart by
+Nish pings too. The ping needs `HC_URL_RECONCILE` in
+`~/.config/fleet-ops/keystone-hc.env`; unset, the handler logs SKIP and exits 0.
+That check is shared with every `fleet-unit-failed@` caller and is fail-only,
+so it stays down until it is re-armed with a success ping, and a second drop
+while it is still down does not page again.
+
+The LiteLLM router gets no `OOMScoreAdjust`: it runs in the user manager,
+which cannot lower the value below its own 100 (measured:
+`systemd-run --user -p OOMScoreAdjust=-500` reads back 100). The cap above is
+what keeps it from being the victim.
+
+Switch off: delete `50-alert-on-stop.conf` (alert and `OOMPolicy`), the
+`MemoryHigh`/`MemoryMax`/`MemorySwapMax` lines in `claude.slice`, or
+`70-oom-protect.conf`, then `systemctl daemon-reload`. Delete the file from
+`rootfs/` and add its path to `retired` in `ansible/host.yml`, otherwise the
+next run installs it again. The running `ExecStopPost=` and `-500` stay until
+Remote Control is next restarted.
+
+## Agent autonomy drop-in
+
+`rootfs/etc/claude-code/managed-settings.d/50-agent-autonomy.json` is a Claude
+Code managed-settings drop-in; Claude Code merges every
+`/etc/claude-code/managed-settings.d/*.json` into its managed settings. The
+hand-installed `/etc/claude-code/managed-settings.json` is not touched and
+`/etc/claude-code` is not in `owned_dirs`. It does four things:
+
+- Tells the auto-mode safety checker which orgs and repos are ours.
+- Allows auto-merge (`gh pr merge --auto`) of an agent's own green PR in the
+  repos whose rulesets require checks. Not `--admin`, not approving, not any
+  other repo.
+- Allows cleanup of an agent's own comments and its own systemd units.
+- Adds a prompt hook on agent messages to Nish that bounces asks about routine,
+  reversible steps, so the agent does the step and reports the result. Reserved
+  matters (money, secrets, irreversible steps, safety gates) still go through.
+
+Every `autoMode` array keeps `"$defaults"`, so these rules add to the built-in
+ones and never replace them. `ansible/host.yml` installs the drop-in with a
+`validate:` that refuses a file that is not a JSON object (a drop-in that does
+not parse stops Claude Code from starting on the whole box), and the `ci` check
+"Claude Code managed-settings drop-ins parse and keep the autoMode defaults"
+holds both rules before merge.
+
+- Verify: `claude auto-mode config` prints the effective rules, which now
+  include the entries from the drop-in beside the defaults.
+- Switch it off: a PR that deletes the file from `rootfs/` and adds
+  `/etc/claude-code/managed-settings.d/50-agent-autonomy.json` to `retired` in
+  `ansible/host.yml`. Remove the "Claude Code managed-settings drop-ins" ci
+  step and the install task in the same PR once no drop-in is left.
 
 ## CI
 
@@ -413,7 +515,9 @@ semgrep rule at `.semgrep/no-glue.yml`, a no long-lived personal-access-token
 `%s/%u/%h` check inside systemd Exec lines (fleet-ops#8382), pi seat ids
 resolving to `config/litellm-proxy.yaml` `model_name` (fleet-ops#8332), and
 Ollama rungs serving only the permitted slug on the native provider
-(fleet-ops#8332, fleet-ops#9253), the litellm-proxy
+(fleet-ops#8332, fleet-ops#9253), the Claude Code managed-settings drop-ins
+(each file under `rootfs/etc/claude-code/managed-settings.d/` is a JSON object
+and every `autoMode` array keeps `"$defaults"`), the litellm-proxy
 schema gate: `config/litellm-proxy.yaml` must validate against
 `config/litellm-proxy.schema.json`, and every
 `config/litellm-proxy.schema.rejects/*.yaml` must fail the same check
