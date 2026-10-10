@@ -1267,15 +1267,19 @@ jobs:
           test "$n" -ge 2
           port=$(sed -n 's/^Environment=GF_SERVER_HTTP_PORT=//p' "$q")
           [[ $port =~ ^[0-9]+$ ]] || { echo "::error::$q has no numeric GF_SERVER_HTTP_PORT (got '$port')"; exit 1; }
+          # The .service loops `for e in <endpoints>` over one URL base; take both from it.
+          base=$(grep -oE 'http://127\.0\.0\.1:[0-9]+/api/admin/provisioning/' "$u" | head -n 1)
+          eps=$(sed -n 's/.*for e in \([a-z ]*\); do.*/\1/p' "$u")
+          [ -n "$base" ] && [ -n "$eps" ] || { echo "::error::$u: could not read the reload URL base and endpoint list"; exit 1; }
           m=0
-          while IFS= read -r url; do
-            url=${url/:3001\//:$port/}
+          for e in $eps; do
+            url=${base/:3001\//:$port/}${e}/reload
             # Password as a quoted, escaped config fd, same as the .service: never in argv.
             curl -fsS --connect-timeout 5 --max-time 30 -X POST --config <(sed 's/["\\]/\\&/g; s/^/user = "admin:/; s/$/"/' "$pw") "$url"
             echo
             m=$((m+1))
-          done < <(grep -oE 'http://127\.0\.0\.1:[0-9]+/api/admin/provisioning/[a-z]+/reload' "$u")
-          test "$m" -ge 2
+          done
+          [ "$m" -ge 2 ] || { echo "::error::$u reloads $m endpoints, want at least 2"; exit 1; }
           curl -fsS --connect-timeout 5 --max-time 30 "http://127.0.0.1:$port/api/health" | jq -e '.database == "ok"'
           sleep 5
           if docker logs grafana 2>&1 | grep -E 'logger=provisioning[^ ]* .*level=(error|crit)|level=(error|crit) .*(rovisioning|failure to map file)' > "$RUNNER_TEMP/rerr.txt"; then
