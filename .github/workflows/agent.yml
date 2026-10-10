@@ -861,8 +861,20 @@ jobs:
           [ "$(jq -r .state <<<"$pr")" = open ] && [ "$(jq -r .head.sha <<<"$pr")" = "$SHA" ] || { echo "head moved or PR closed; the newer event decides"; exit 0; }
           [ "$(jq -r .draft <<<"$pr")" != true ] || { echo "#$PR is a draft; not arming"; exit 0; }
           [ "$(jq -r '.auto_merge != null' <<<"$pr")" != true ] || { echo "#$PR is already armed"; exit 0; }
-          GH_TOKEN=$ARM_TOKEN gh pr merge "$PR" -R "$REPO" --auto --squash --match-head-commit "$SHA"  # a merge queue overrides the method; repos without one need it
-          echo "armed #$PR at $SHA"
+          # The App has no workflows permission, so GitHub refuses its arm on a PR
+          # that edits .github/workflows/**. Only then does the arm use the runner
+          # user's own gh login (GH_TOKEN and GITHUB_TOKEN unset), the way the
+          # orchestrator job does. This job runs on the agent runner group, which
+          # only runs agent.yml from main, and the head is the approved one
+          # (--match-head-commit), so a PR cannot choose its own arm token.
+          files=$(gh api --paginate "repos/$REPO/pulls/$PR/files" --jq '.[] | .filename, (.previous_filename // empty)')
+          if grep -q '^\.github/workflows/' <<<"$files"; then
+            env -u GH_TOKEN -u GITHUB_TOKEN gh pr merge "$PR" -R "$REPO" --auto --squash --match-head-commit "$SHA"
+            echo "armed #$PR at $SHA (workflow edit, runner login)"
+          else
+            GH_TOKEN=$ARM_TOKEN gh pr merge "$PR" -R "$REPO" --auto --squash --match-head-commit "$SHA"  # a merge queue overrides the method; repos without one need it
+            echo "armed #$PR at $SHA"
+          fi
   report:
     needs: work
     if: (failure() || cancelled()) && needs.work.outputs.wall != 'true'

@@ -896,7 +896,7 @@ jobs:
           args="$*"
           case $args in
             "pr comment "*) while [ $# -gt 0 ]; do if [ "$1" = --body ]; then printf '%s\n----\n' "$2" >> "$STATE/comments"; break; fi; shift; done ;;
-            "pr merge "*) echo "$args" >> "$STATE/merge" ;;
+            "pr merge "*) echo "$args token=${GH_TOKEN:-unset}" >> "$STATE/merge" ;;
             *"issues/7/comments"*) while [ $# -gt 0 ]; do if [ "$1" = --jq ]; then jq -r "$2" <<<"${COMMENTS:-[]}"; break; fi; shift; done ;;
             *"pulls/7/files"*) if [ -n "${GUARD:-}" ]; then echo .github/workflows/new.yml; else echo app/routes/home.tsx; fi ;;
             *"Accept: application/vnd.github.diff"*) printf 'diff --git a/x b/x\n+x\n' ;;
@@ -994,10 +994,13 @@ jobs:
           CASES
           # The arm job's step: arms the exact approved head, and does nothing for a
           # stale head (a push after the approval), a draft, an armed PR or a closed one.
+          # A PR that edits .github/workflows/** is armed with the runner's own login
+          # (GH_TOKEN unset) because the App lacks the workflows permission; every other
+          # PR is armed with the App token.
           export SHA=3f9c2a1b7d4e5f60718293a4b5c6d7e8f9012345
-          # case: name|HEAD_NOW|DRAFT|ARMED|CLOSED|want armed
-          while IFS='|' read -r name head draft armed closed want; do
-            export STATE=$t/arm-$name HEAD_NOW=${head:-$SHA} DRAFT=$draft ARMED=$armed CLOSED=$closed
+          # case: name|HEAD_NOW|DRAFT|ARMED|CLOSED|workflow edit|want armed|want token
+          while IFS='|' read -r name head draft armed closed wf want tok; do
+            export STATE=$t/arm-$name HEAD_NOW=${head:-$SHA} DRAFT=$draft ARMED=$armed CLOSED=$closed GUARD=$wf
             mkdir -p "$STATE"; : > "$STATE/merge"
             rc=0
             PATH="$t/bin:$PATH" bash "$t/arm.sh" > "$STATE/out" 2>&1 || rc=$?
@@ -1005,14 +1008,21 @@ jobs:
             problem=
             [ "$rc" = 0 ] || problem="exit=$rc"
             [ "$got" = "$want" ] || problem="$problem armed=$got (want $want)"
-            if [ "$got" = yes ]; then grep -q -- "--auto" "$STATE/merge" && grep -q -- "--match-head-commit $SHA" "$STATE/merge" || problem="$problem arm lacks --auto or --match-head-commit"; fi
+            if [ "$got" = yes ]; then
+              grep -q -- "--auto" "$STATE/merge" && grep -q -- "--match-head-commit $SHA" "$STATE/merge" || problem="$problem arm lacks --auto or --match-head-commit"
+              grep -q -- " token=$tok\$" "$STATE/merge" || problem="$problem arm token is not $tok"
+            fi
             if [ -n "$problem" ]; then echo "arm case $name: $problem"; cat "$STATE/out" "$STATE/merge"; bad=1; fi
           done <<'CASES'
-          approved-head|||||yes
-          stale-sha-after-bot-approval|0000000000000000000000000000000000000001||||no
-          draft||1|||no
-          already-armed|||1||no
-          closed||||1|no
+          approved-head||||||yes|y
+          workflow-edit-uses-runner-login|||||1|yes|unset
+          workflow-edit-stale-sha|0000000000000000000000000000000000000001||||1|no|
+          workflow-edit-draft||1|||1|no|
+          workflow-edit-already-armed|||1||1|no|
+          stale-sha-after-bot-approval|0000000000000000000000000000000000000001|||||no|
+          draft||1||||no|
+          already-armed|||1|||no|
+          closed||||1||no|
           CASES
           test "$bad" -eq 0
       - name: Infra-wall classifier (fake gh)
