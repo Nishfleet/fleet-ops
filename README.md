@@ -595,6 +595,37 @@ The `bin/intake-reconcile` reconciler and its `intake-reconcile.{path,
 service,timer}` units were deleted in the glue sweep — the file itself is
 the enrolment mechanism (fleet-ops#32, #25).
 
+## Triage admission (needs-triage)
+
+An open issue labelled `needs-triage` in an enrolled **product** repo
+(`repos` with `product: true` in `config/intake-repos.json`) gets a Jev verdict
+instead of waiting for a person to add `agent-ready`. The `admit` job in
+`.github/workflows/agent-dispatch.yml` runs on the hourly sweep, on the
+`needs-triage` label event and on `workflow_dispatch` (`task=admit`, optionally
+`issue=<N>`). It asks the router `/jev` the same way `agent.yml` does: "Admit
+this issue for an automated worker now?", with the title, body and labels as
+state.
+
+- p >= 0.9: `agent-ready` added, `needs-triage` removed.
+- p <= 0.1: `triage-declined` added, `needs-triage` removed.
+- otherwise: `needs-orchestrator` added, `needs-triage` removed.
+
+Every issue gets one comment with p, the model and the run link. An issue whose
+title, body or labels touch secrets, money or payments, or customer-data
+deletion, or that carries `blocked-on: nish-decision`, `nish-reserved` or
+`needs-nish-decision`, never reaches Jev and never gets `agent-ready`: it goes to
+`needs-orchestrator`. Only `nish3451`, `nishfleet-worker[bot]` and
+`github-actions[bot]` count as labellers. `Nishfleet/fleet-ops` is never acted
+on (fo#8304). If Jev gives no answer the label stays and the next sweep retries.
+The labels are written with the worker App token, so the `agent-ready` and
+`needs-orchestrator` events start the next job.
+
+**Switch it off:** set the repo variable `ADMIT_TRIAGE` to `off` on the calling
+repo (`gh variable set ADMIT_TRIAGE --body off -R Nishfleet/<repo>`).
+**Delete it:** remove the `admit` job, `tests/test_triage_admit.py`, its step in
+`ci.yml`, and this section. CI runs the job's real scripts against a fake `gh`
+and a fake router (`tests/test_triage_admit.py`).
+
 ## Worker capacity
 
 The concurrency bound is the runner count (#8429): 22 `agent` runners
