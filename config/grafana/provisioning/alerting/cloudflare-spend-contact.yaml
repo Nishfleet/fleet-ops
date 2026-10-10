@@ -88,10 +88,8 @@ contactPoints:
           payload:
             template: |-
               {{- with index .Alerts 0 -}}
-              {{- $l := "" -}}
-              {{- range (.Labels.Remove (stringSlice "alertname" "grafana_folder")).SortedPairs -}}{{- $l = printf "%s %s=%s" $l .Name .Value -}}{{- end -}}
               {{- coll.Dict "title" (printf "grafana alert: %s" .Labels.alertname)
-                     "body" (printf "%s\n\n%s\n\nRule `%s`, started firing %s UTC (%s). Labels:%s. Source: a Grafana rule in config/grafana/provisioning/alerting, routed to the fleet because it is not one of the urgent classes (see the header of cloudflare-spend-contact.yaml). Find the cause, fix it, then close this issue." .Annotations.summary .Annotations.description .Labels.alertname (.StartsAt.Format "2006-01-02 15:04:05") .GeneratorURL $l)
+                     "body" (printf "%s\n\n%s\n\nRule `%s`, started firing %s UTC (%s). Labels: %s. Source: a Grafana rule in config/grafana/provisioning/alerting, routed to the fleet because it is not one of the urgent classes (see the header of cloudflare-spend-contact.yaml). Find the cause, fix it, then close this issue." .Annotations.summary .Annotations.description .Labels.alertname (.StartsAt.Format "2006-01-02 15:04:05") .GeneratorURL (data.ToJSON (.Labels.Remove (stringSlice "alertname" "grafana_folder"))))
                      "labels" (coll.Slice "agent-ready") | data.ToJSON -}}
               {{- end -}}
 
