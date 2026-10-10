@@ -115,6 +115,9 @@ jobs:
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
           MISS_REVIEW: ${{ vars.MISS_REVIEW }}
+          # Claude lane pacing (repo variables; unset means the defaults 80 and 4).
+          CLAUDE_FILL_BELOW: ${{ vars.CLAUDE_FILL_BELOW }}
+          CLAUDE_MAX_LIVE: ${{ vars.CLAUDE_MAX_LIVE }}
         run: |
           # Suffixed rework refs carry a -<tag> tail (claim/issue-<N>-<tag>);
           # the issue number is the leading digits (fleet-ops#8793).
@@ -221,10 +224,9 @@ jobs:
             skip cap
           fi
 
-          # Engine (Nish, 2026-09-25). Cursor is the senior lane and is paced to
-          # 1 run at once. strong-only issues need a senior model other than
-          # SWE-2, so they go only to Cursor; a full Cursor lane leaves them
-          # agent-ready. Every other issue: pi while it has a free router slot
+          # Engine (Nish, 2026-09-25). strong-only issues need a senior model other
+          # than SWE-2: Claude Code on a Claude seat first, then Cursor (paced to
+          # 1 run at once); with both full they stay agent-ready. Every other issue: pi while it has a free router slot
           # (first-try clean 85% tune, 5/5 held-out vs Devin 73%, 1/3;
           # fleet-ops#8975), else LongCat-2.5-Preview on the opencode CLI while
           # fewer than 2 run (free until ~2026-10-10, fleet-ops#8790; its free
@@ -248,14 +250,62 @@ jobs:
           devin_free() {
             [ "$(live devin)" -lt 4 ]
           }
-          # Cursor is the strong-only lane only. A non-strong-only issue never
-          # falls back to it: with Devin and pi both full it waits
-          # (lanes-full) rather than burning the paced Cursor quota on work
-          # those seats can do (fleet-ops#8740). The cap stays 1.
+          # Claude Code lanes. strong-only (senior) work is Claude first: Sonnet on
+          # one of the two Claude seats, Opus once the packet has failed twice or
+          # carries needs-opus; Cursor (cap 1) is the fallback when claude is at its
+          # cap or both seats are at 95% of their five-hour limit
+          # (claude-lane-seat.sh says `full`).
+          # Fill mode: any other issue also goes to claude (Sonnet) while the seat
+          # the picker chooses is under CLAUDE_FILL_BELOW percent (default 80) of its
+          # five-hour limit and live claude workers are under CLAUDE_MAX_LIVE
+          # (default 4); otherwise it keeps the pi, opencode, Devin order below and
+          # never uses Cursor (fleet-ops#8740). An unreadable usage never fills.
+          # Cap: each worker runs under its runner's MemoryHigh=4G/MemoryMax=8G and
+          # all runners under agent.slice MemoryHigh=26G, so 4 claude workers hold
+          # about 16G at the throttle line; the cap is clamped to 6 (24G) whatever
+          # the variable says.
+          claude_seat=$HOME/workspaces/tooling/fleet-ops-deploy-clone/scripts/claude-lane-seat.sh
+          claude_cap=${CLAUDE_MAX_LIVE:-4}; fill_below=${CLAUDE_FILL_BELOW:-80}
+          case $claude_cap in ''|*[!0-9]*) claude_cap=4 ;; esac
+          case $fill_below in ''|*[!0-9]*) fill_below=80 ;; esac
+          [ "$claude_cap" -le 6 ] || claude_cap=6
+          # claude_pick <threshold>: sets claude_ok, and logs the decision in one line.
+          claude_pick() {
+            local n mode=full seat='?' used=n/a reason=
+            claude_ok=false
+            n=$(live claude)
+            if [ "$n" -ge "$claude_cap" ]; then reason="cap"
+            elif [ ! -x "$claude_seat" ]; then reason="no-seat-script"
+            else
+              read -r mode seat used < <(CLAUDE_SEAT_SKIP_AT=$1 "$claude_seat" --usage 2>/dev/null || echo "full ? n/a")
+              if [ "$mode" = full ]; then reason="seat-full"
+              elif [ "$used" = n/a ] && [ "$2" = fill ]; then reason="usage-unreadable"
+              else claude_ok=true
+              fi
+            fi
+            if [ "$claude_ok" = true ]; then echo "claude fill: seat=$seat five_hour=$used live=$n/$claude_cap -> claude"
+            else echo "claude fill: seat=$seat five_hour=$used live=$n/$claude_cap -> skip($reason)"
+            fi
+          }
+          claude_model=claude-sonnet-5-5
+          senior=false
+          # shellcheck disable=SC2016 # $v is a jq variable
+          failed=$(gh issue view "$i" -R "$REPO" --json comments --jq '[.comments[] | if (.body | startswith("park:") or startswith("opus-vet:")) or ((.body | test("^attempt-cap reset: \\S")) and (.authorAssociation | IN("OWNER", "MEMBER", "COLLABORATOR"))) then "park:" else .body end] | (map(startswith("park:")) | rindex(true) // -1) as $v | .[$v+1:] | map(select(startswith("agent run failed: "))) | length')
           case $labels in
-            *,strong-only,*) [ "$(live cursor-agent)" -lt 1 ] || skip lanes-full; engine=cursor ;;
+            *,strong-only,*)
+              senior=true
+              case $labels in *,needs-opus,*) claude_model=claude-opus-5-5 ;; esac
+              [ "$failed" -lt 2 ] || claude_model=claude-opus-5-5
+              claude_pick 95 senior
+              if [ "$claude_ok" = true ]; then
+                engine=claude
+              elif [ "$(live cursor-agent)" -lt 1 ]; then engine=cursor
+              else skip lanes-full
+              fi ;;
             *)
-              if pi_free; then engine=pi
+              claude_pick "$fill_below" fill
+              if [ "$claude_ok" = true ]; then engine=claude
+              elif pi_free; then engine=pi
               elif [ "$(live opencode)" -lt 2 ]; then engine=opencode
               elif devin_free; then engine=devin
               else skip lanes-full
@@ -263,8 +313,7 @@ jobs:
           esac
           gh issue edit "$i" -R "$REPO" --remove-label agent-ready --add-label agent-in-progress
           gh issue comment "$i" -R "$REPO" --body "agent run started: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
-          echo "engine=$engine" >> "$GITHUB_OUTPUT"
-          echo go=true >> "$GITHUB_OUTPUT"
+          printf '%s\n' "engine=$engine" "claude_model=$claude_model" "senior=$senior" go=true >> "$GITHUB_OUTPUT"
       - name: Branch
         if: steps.gate.outputs.go == 'true' && steps.gate.outputs.miss != 'true'
         env:
@@ -273,6 +322,7 @@ jobs:
           gh api "repos/$REPO/git/ref/heads/$REF" --silent 2>/dev/null ||
             gh api "repos/$REPO/git/refs" -f ref="refs/heads/$REF" -f sha="$(gh api "repos/$REPO/git/ref/heads/main" --jq .object.sha)" --silent
       - name: Worker
+        id: worker
         if: steps.gate.outputs.go == 'true'
         # A step timeout fails the job, so the report job strikes it. A job
         # timeout only cancels it, and failure() || cancelled() skips report,
@@ -284,6 +334,13 @@ jobs:
           ENGINE: ${{ steps.gate.outputs.engine }}
           MISS: ${{ steps.gate.outputs.miss }}
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          # Claude lane: Sonnet, or Opus for a packet that failed twice or has
+          # needs-opus (the Gate decides). The other lanes have no turn cap, only
+          # the 55 minute step wall; this is a backstop under it.
+          CLAUDE_MODEL: ${{ steps.gate.outputs.claude_model }}
+          CLAUDE_MAX_TURNS: '200'
+          # true for strong-only work; a fill-mode job that claude cannot take goes to pi, never Cursor.
+          SENIOR: ${{ steps.gate.outputs.senior }}
           # Pi sends this as x-litellm-session-id so the router keeps the whole run on one model (#9015).
           FLEET_TASK_ID: run-${{ github.run_id }}-${{ github.run_attempt }}
         run: |
@@ -303,7 +360,26 @@ jobs:
           # model cannot read what the jail does not show (fleet-ops#9274).
           # The worker's gh and git push use GH_TOKEN, the App token. ci.yml
           # runs this exact line and fails if either path can be read.
-          jail_base="bwrap --dev-bind / / --ro-bind $HOME/workspaces/tooling/fleet-ops-deploy-clone $HOME/workspaces/tooling/fleet-ops-deploy-clone --tmpfs $HOME/.config/gh --tmpfs $HOME/.config/cloudflare --proc /proc --unshare-pid --die-with-parent"
+          # The Claude seats' logins are hidden the same way, from every engine
+          # but claude: seat a is the runner's own CLAUDE_CONFIG_DIR (unset means
+          # one default login, and the already-hidden gh directory stands in so the
+          # line never names a path that is not there), seat b is the default
+          # login's credentials file and ~/.claude.json, which an empty bind
+          # replaces. The claude lane sees only the seat it runs on: claude_jail_a
+          # hides the default login, claude_jail_b hides seat a. ci.yml runs these
+          # three lines and fails if a hidden file can be read.
+          seat_a=${CLAUDE_CONFIG_DIR:-$HOME/.config/gh}
+          # Credential backups and every other Claude config dir sit beside the
+          # seats (a glob resolved now, not a list): each ~/.claude-* and
+          # ~/backups-claude-* directory goes under an empty tmpfs, a plain file is
+          # bound to /dev/null. The one exception is the seat dir the claude lane
+          # runs on ($1).
+          claude_hides() { local d out=; for d in "$HOME"/.claude-* "$HOME"/backups-claude-*; do [ "$d" = "$1" ] && continue; if [ -L "$d" ]; then continue; elif [ -d "$d" ]; then out="$out --tmpfs $d"; elif [ -f "$d" ]; then out="$out --ro-bind /dev/null $d"; fi; done; echo "$out"; }
+          hide_all=$(claude_hides "")
+          hide_but_a=$(claude_hides "$seat_a")
+          jail_base="bwrap --dev-bind / / --ro-bind $HOME/workspaces/tooling/fleet-ops-deploy-clone $HOME/workspaces/tooling/fleet-ops-deploy-clone --tmpfs $HOME/.config/gh --tmpfs $HOME/.config/cloudflare --tmpfs $seat_a --ro-bind /dev/null $HOME/.claude/.credentials.json --ro-bind /dev/null $HOME/.claude.json $hide_all --proc /proc --unshare-pid --die-with-parent"
+          claude_jail_a="bwrap --dev-bind / / --ro-bind $HOME/workspaces/tooling/fleet-ops-deploy-clone $HOME/workspaces/tooling/fleet-ops-deploy-clone --tmpfs $HOME/.config/gh --tmpfs $HOME/.config/cloudflare --ro-bind /dev/null $HOME/.claude/.credentials.json --ro-bind /dev/null $HOME/.claude.json $hide_but_a --proc /proc --unshare-pid --die-with-parent"
+          claude_jail_b="bwrap --dev-bind / / --ro-bind $HOME/workspaces/tooling/fleet-ops-deploy-clone $HOME/workspaces/tooling/fleet-ops-deploy-clone --tmpfs $HOME/.config/gh --tmpfs $HOME/.config/cloudflare --tmpfs $seat_a $hide_all --proc /proc --unshare-pid --die-with-parent"
           jail="$jail_base --"
           dir="$HOME/workspaces/agent-worktrees/issue-$id"
           # Static text, the marker line, then the target id: the id is the only
@@ -314,10 +390,64 @@ jobs:
           else
             packet="Fleet issue worker. Follow $HOME/workspaces/tooling/fleet-ops-deploy-clone/prompts/worker.md (read AGENTS.md beside it first); every \$1 there means the id after the marker.${nl}=== FLEET-DYNAMIC-BELOW ===${nl}Target: $id"
           fi
+          # Engines that actually start, for the builder-engine record the review
+          # reads (a fallthrough marks both).
+          : > "$RUNNER_TEMP/engines-ran"
+          mark() { echo "$1" >> "$RUNNER_TEMP/engines-ran"; }
+          live() { pgrep -af -- "^bwrap .* -- $1 " | grep -oE 'agent-worktrees/issue-[^ ]*|sessions/agent-[^ ]*' | sort -u | wc -l; }
+          if [ "$ENGINE" = claude ]; then
+            # Claude Code on one of the two Claude seats. The seat is picked once,
+            # here, by scripts/pick-claude-seat.sh through claude-lane-seat.sh and
+            # never switched in a running process; `default` drops the runner's
+            # CLAUDE_CONFIG_DIR. With both seats at the usage limit (`full`), or a
+            # run that dies on a rate limit or 429, the same packet goes to the
+            # Cursor lane for senior work, or to pi (the first of the ordinary lanes)
+            # for a fill-mode job, which never uses Cursor; either continues from
+            # whatever the branch holds (worker.md step 2b). Other engines never see these seats' logins (the jail
+            # lines above); this one sees only the seat it runs on.
+            fallback=pi
+            [ "$SENIOR" != true ] || fallback=cursor
+            seat=full
+            seat_script="$HOME/workspaces/tooling/fleet-ops-deploy-clone/scripts/claude-lane-seat.sh"
+            if [ -x "$seat_script" ]; then seat=$("$seat_script") || seat=full; fi
+            if [ "$seat" = full ]; then
+              ENGINE=$fallback
+              echo "fallthrough: $ENGINE (both Claude seats full)"
+            else
+              if [ "$seat" = default ] || [ -z "${CLAUDE_CONFIG_DIR:-}" ]; then
+                unset CLAUDE_CONFIG_DIR
+                claude_jail="$claude_jail_b"
+              else
+                claude_jail="$claude_jail_a"
+              fi
+              mkdir -p "$dir"
+              mark claude
+              rc=0
+              # --chdir puts the worker directory on the bwrap command line, which is
+              # what the Gate's lane count reads. The trim flags are the orchestrator
+              # session's: no MCP servers, no skills, no user settings; managed
+              # settings still apply.
+              echo "$packet" | $claude_jail --chdir "$dir" -- \
+                claude -p --model "$CLAUDE_MODEL" --permission-mode bypassPermissions --max-turns "$CLAUDE_MAX_TURNS" \
+                --strict-mcp-config --disable-slash-commands --setting-sources project,local \
+                >"$RUNNER_TEMP/try.out" 2>"$RUNNER_TEMP/try.err" || rc=$?
+              if [ "$rc" != 0 ] && grep -qiE 'rate[ _-]?limit|\b429\b|usage limit|limit reached' "$RUNNER_TEMP/try.out" "$RUNNER_TEMP/try.err" && { [ "$SENIOR" != true ] || [ "$(live cursor-agent)" -lt 1 ]; }; then
+                ENGINE=$fallback
+                echo "fallthrough: $ENGINE (claude rate limit)"
+              else
+                cat "$RUNNER_TEMP/try.err" >&2
+                # A refused seat is not a failed packet: say so where the Router
+                # wall step reads, so a branch with nothing pushed is requeued.
+                if [ "$rc" != 0 ] && grep -qiE 'rate[ _-]?limit|\b429\b|usage limit|limit reached' "$RUNNER_TEMP/try.out"; then echo "claude: 429 rate limit, cursor lane full" >&2; fi
+                [ "$rc" = 0 ] || exit 1
+              fi
+            fi
+          fi
           if [ "$ENGINE" = devin ]; then
             # --chdir puts the worker directory on the bwrap command line,
             # which is what the Gate's lane count reads.
             mkdir -p "$dir"
+            mark devin
             for model in swe-2-max swe-2-high; do
               rc=0
               echo "$packet" | $jail_base --chdir "$dir" -- \
@@ -343,6 +473,7 @@ jobs:
             # --dir puts the worker directory on the bwrap command line; --auto
             # approves what the worker needs outside it (prompts, gh, the repo).
             mkdir -p "$dir"
+            mark opencode
             rc=0
             $jail opencode run --dir "$dir" -m opencode/longcat-2.5-preview-free --auto "$packet" >/dev/null 2> "$RUNNER_TEMP/try.err" || rc=$?
             # A refused free seat is not a failed packet: with nothing pushed
@@ -369,6 +500,7 @@ jobs:
             . "$HOME/.config/fleet-ops/seats/$cursor_env"
             set +a
             mkdir -p "$dir"
+            mark cursor
             $jail cursor-agent -p --output-format text --model cursor-grok-4.6-high --force --trust \
               --workspace "$dir" "$packet" >/dev/null
           elif [ "$ENGINE" = pi ]; then
@@ -379,6 +511,7 @@ jobs:
             # shellcheck disable=SC1091 # constant seat file, not in the repo
             . "$HOME/.config/fleet-ops/seats/mobbin-mcp.env"
             set +a
+            mark pi
             if [ "$MISS" = true ]; then
               echo "$packet" | $jail pi --print --no-context-files \
                 --append-system-prompt "$HOME/workspaces/tooling/fleet-ops-deploy-clone/AGENTS.md" \
@@ -393,10 +526,25 @@ jobs:
                 --session-dir "$HOME/.pi/agent/sessions/agent-$id" \
                 --exclude-tools subagent --provider litellm --model worker-capable >/dev/null
             fi
-          elif [ "$ENGINE" != devin ] && [ "$ENGINE" != opencode ]; then
+          elif [ "$ENGINE" != devin ] && [ "$ENGINE" != opencode ] && [ "$ENGINE" != claude ]; then
             echo "no lane for ENGINE='$ENGINE'" >&2
             exit 1
           fi
+      - name: Record the builder engine
+        # The review job reads this to pick its model: Claude-built work goes to
+        # Fable, anything else to Opus (see the review job). Posted on the PR by
+        # the worker App, so only a bot's comment counts there. A PR with no such
+        # comment (the orchestrator's, a person's session) counts as Claude-built.
+        if: always() && steps.gate.outputs.go == 'true' && steps.gate.outputs.miss != 'true'
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          GATE_ENGINE: ${{ steps.gate.outputs.engine }}
+        run: |
+          pr=$(gh pr list -R "$REPO" --head "$REF" --state all --json number --jq '.[0].number // empty') || pr=
+          [ -n "$pr" ] || { echo "no PR on $REF yet; nothing to record"; exit 0; }
+          ran=$(sort -u "$RUNNER_TEMP/engines-ran" 2>/dev/null | paste -sd, -) || ran=
+          [ -n "$ran" ] || ran=$GATE_ENGINE
+          gh pr comment "$pr" -R "$REPO" --body "builder-engine: $ran"
       - name: Host sample
         id: host
         # fleet-ops#9291: report classifies a Worker death as host-overload
@@ -582,13 +730,19 @@ jobs:
         if: always() && steps.gate.outputs.go == 'true' && steps.gate.outputs.miss != 'true'
         env:
           GH_TOKEN: ${{ steps.arm-token.outputs.token || steps.app-token.outputs.token }}
+          CLAUDE_MAX_LIVE: ${{ vars.CLAUDE_MAX_LIVE }}
         run: |
           i=${REF#claim/issue-}; i=${i%%-*}
           live() { pgrep -af -- "^bwrap .* -- $1 " | grep -oE 'agent-worktrees/issue-[^ ]*|sessions/agent-[^ ]*' | sort -u | wc -l; }
           # shellcheck disable=SC2016 # $n is yq's variable
           slots=$(yq '[.model_list[] | select(.model_name == "worker-capable") | .litellm_params.max_parallel_requests // 0] | .[] as $n ireduce (0; . + $n)' "$HOME/.config/fleet-ops/litellm-proxy.yaml")
           strong_free=false; regular_free=false
-          [ "$(live cursor-agent)" -lt 1 ] && strong_free=true
+          # The senior lane is free while claude (cap CLAUDE_MAX_LIVE, default 4) or Cursor (cap 1) has a slot;
+          # the Gate still decides which, and whether a Claude seat is at its limit.
+          claude_cap=${CLAUDE_MAX_LIVE:-4}
+          case $claude_cap in ''|*[!0-9]*) claude_cap=4 ;; esac
+          [ "$claude_cap" -le 6 ] || claude_cap=6
+          if [ "$(live claude)" -lt "$claude_cap" ] || [ "$(live cursor-agent)" -lt 1 ]; then strong_free=true; fi
           if [ "$(live devin)" -lt 4 ] || [ "$(live opencode)" -lt 2 ] || [ "$(live pi)" -lt "$slots" ]; then regular_free=true; fi
           # An issue whose labeled run still waits for a runner must not be
           # poked again: the new run displaces the waiting one in the
@@ -682,11 +836,15 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           # Pi sends this as x-litellm-session-id; without it the litellm provider refuses to start (0509 run 37676671633).
           FLEET_TASK_ID: review-${{ github.run_id }}-${{ github.run_attempt }}
-          # A PR that edits the merge guard or a workflow also needs a second
-          # review by a different model family than the Jev judge and than
-          # Claude. The senior seat is a single GLM (Z.ai) row; the first
-          # review's worker-capable seat is mostly DeepSeek. The comment names
-          # both families.
+          # The first review is a no-tools Claude call on a Claude seat: Opus 5.5
+          # for work another engine built, Fable 5.1 for Claude-built work (Nish
+          # approved that exception to "Claude never grades Claude", 2026-10-10).
+          # The verdict is always Jev's (not Claude) and a PR that edits the merge
+          # guard or a workflow also needs a second review by a different model
+          # family than the Jev judge and than Claude. The senior seat is a single
+          # GLM (Z.ai) row. The comment names both families.
+          FIRST_MODEL_OTHER: claude-opus-5-5
+          FIRST_MODEL_CLAUDE_BUILT: claude-fable-5-1
           JUDGE_FAMILY: Jev
           SECOND_SEAT: senior
           SECOND_FAMILY: GLM
@@ -779,10 +937,32 @@ jobs:
             } | head -c 120000 > "$RUNNER_TEMP/context.txt" || true
             cat "$RUNNER_TEMP/context.txt" >> "$RUNNER_TEMP/diff.txt"
           fi
-          review=$(pi --print --no-context-files --no-tools --no-session \
-            --append-system-prompt "$HOME/AGENTS.md" \
-            --append-system-prompt "$HOME/workspaces/tooling/fleet-ops-deploy-clone/prompts/risky-review.md" \
-            --provider litellm --model worker-capable < "$RUNNER_TEMP/diff.txt")
+          # Who built it: the worker App's "builder-engine: <list>" comments on the
+          # PR. Only a bot's comment counts; any claude in a list, or no such
+          # comment at all (the orchestrator, a person's session), is Claude-built.
+          built=$(gh api --paginate "repos/$REPO/issues/$PR/comments?per_page=100" | jq -rs '[.[][] | select(.user.type == "Bot") | .body | select(startswith("builder-engine: ")) | ltrimstr("builder-engine: ") | split("\n")[0]] | join(",")' 2>/dev/null) || built=
+          first_model=$FIRST_MODEL_CLAUDE_BUILT
+          if [ -n "$built" ] && ! grep -qw claude <<<"${built//,/ }"; then first_model=$FIRST_MODEL_OTHER; fi
+          echo "first review: built by '${built:-unknown}', model $first_model"
+          # The model gets the diff as text and no tools (--tools ""): a tool could
+          # open the runner's own key files, and the review is posted publicly. The
+          # seat comes from claude-lane-seat.sh, once, here. With both seats full, or
+          # a call that fails or answers nothing, the review did not finish: retry
+          # comments that and fails the job, and a re-run reviews the head again.
+          # There is no fallback to another family's model, and a head is never
+          # approved without this review.
+          review=
+          seat=full
+          seat_script="$HOME/workspaces/tooling/fleet-ops-deploy-clone/scripts/claude-lane-seat.sh"
+          if [ -x "$seat_script" ]; then seat=$("$seat_script") || seat=full; fi
+          [ "$seat" != full ] || retry "both Claude seats are at their usage limit"
+          [ "$seat" != default ] || unset CLAUDE_CONFIG_DIR
+          review=$(timeout 600 claude -p --model "$first_model" --tools "" --no-session-persistence \
+            --strict-mcp-config --disable-slash-commands --setting-sources project,local \
+            --settings '{"disableAllHooks":true}' \
+            --append-system-prompt "$(cat "$HOME/AGENTS.md" "$HOME/workspaces/tooling/fleet-ops-deploy-clone/prompts/risky-review.md")" \
+            < "$RUNNER_TEMP/diff.txt") || review=
+          [ -n "${review//[[:space:]]/}" ] || retry "the first review ($first_model) gave no answer"
           body=$(jq -nc --arg item "$review" '{model: "jev-latest",
             state: {item: $item, context: "Independent review findings for one risky pull request. approve = the review lists no blocker line (risk and nit lines alone are not a reason to block). block = the review lists a blocker line, or it is empty or unclear."},
             questions: {verdict: {type: "choice", instructions: "Is this pull request safe to merge?",
@@ -1016,7 +1196,10 @@ jobs:
           key=$(sed -n 's/^TYPESAFE_API_KEY=//p' "$HOME/.config/fleet-ops/seats/typesafe-jev.env")
           [ -n "$key" ] || { echo "::error::TYPESAFE_API_KEY missing from the Jev seat file; an unranked edition is not worth 40 minutes of model time"; exit 1; }
           echo "::add-mask::$key"
-          jail_base="bwrap --dev-bind / / --ro-bind $HOME/workspaces/tooling/fleet-ops-deploy-clone $HOME/workspaces/tooling/fleet-ops-deploy-clone --tmpfs $HOME/.config/gh --tmpfs $HOME/.config/cloudflare --tmpfs $HOME/.config/fleet-ops --tmpfs $HOME/.config/fleet-worker --proc /proc --unshare-pid --die-with-parent"
+          seat_a=${CLAUDE_CONFIG_DIR:-$HOME/.config/gh}
+          claude_hides() { local d out=; for d in "$HOME"/.claude-* "$HOME"/backups-claude-*; do [ "$d" = "$1" ] && continue; if [ -L "$d" ]; then continue; elif [ -d "$d" ]; then out="$out --tmpfs $d"; elif [ -f "$d" ]; then out="$out --ro-bind /dev/null $d"; fi; done; echo "$out"; }
+          hide_all=$(claude_hides "")
+          jail_base="bwrap --dev-bind / / --ro-bind $HOME/workspaces/tooling/fleet-ops-deploy-clone $HOME/workspaces/tooling/fleet-ops-deploy-clone --tmpfs $HOME/.config/gh --tmpfs $HOME/.config/cloudflare --tmpfs $HOME/.config/fleet-ops --tmpfs $HOME/.config/fleet-worker --tmpfs $seat_a --ro-bind /dev/null $HOME/.claude/.credentials.json --ro-bind /dev/null $HOME/.claude.json $hide_all --proc /proc --unshare-pid --die-with-parent"
           today=$(TZ=Asia/Kolkata date +%F)
           src="$GITHUB_WORKSPACE/inish-site"
           dst="$RUNNER_TEMP/publish"

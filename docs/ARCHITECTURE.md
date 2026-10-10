@@ -87,6 +87,37 @@ The rules still in force:
   score. Where a review does not happen, the record says so rather than
   claiming a review it did not get: the `in-run review: unavailable -
 <reason>` line.
+- **Worker lanes and Claude seats.** `agent.yml` Gate: ordinary issues go to
+  pi, then opencode, then Devin. `strong-only` (senior) issues go to Claude
+  Code first (`claude-sonnet-5-5`; `claude-opus-5-5` after two failed runs or
+  with `needs-opus`), on a seat picked once at start by
+  `scripts/pick-claude-seat.sh` through `scripts/claude-lane-seat.sh`.
+  Cursor (cap 1) is the fallback when both seats are at 95% of their
+  five-hour limit, the claude cap is reached, or claude exits on a rate limit
+  or 429.
+  Pacing ("fill mode"), in plain words: the seats report only five-hour
+  windows (no weekly limit), and the senior lane alone uses about 2% of their
+  capacity, so ordinary issues also go to claude (Sonnet) whenever it is
+  cheap to do so. An ordinary issue takes the claude lane when the seat the
+  picker chooses is under `CLAUDE_FILL_BELOW` percent of its five-hour limit
+  (repo variable, default 80) and fewer than `CLAUDE_MAX_LIVE` claude workers
+  are running (repo variable, default 4, clamped to 6). Otherwise it keeps
+  the old order (pi, opencode, Devin) and never uses Cursor. A seat over the
+  fill line gets no new ordinary jobs but still takes senior jobs up to 95%,
+  and a usage reading that fails never starts a fill job. The Gate prints one
+  line per decision: `claude fill: seat=<a|b> five_hour=<n> live=<n>/<cap> ->
+  claude|skip(<reason>)`. Memory: each worker sits under its runner's
+  `MemoryHigh=4G` and `MemoryMax=8G`, and all runners share `agent.slice`
+  (`MemoryHigh=26G`, `MemoryMax=28G`), so the default 4 live claude workers
+  hold about 16G at the throttle line and the clamp of 6 about 24G. The Worker step records the engines that ran in a `builder-engine:`
+  PR comment, which the review job reads. Secret isolation: the bwrap jail of
+  every engine but claude hides both Claude seat logins (the runner's own
+  config directory and the default login's credentials file and
+  `~/.claude.json`) and every other Claude config or credential backup
+  directory (matched by glob at job start, not a list) the same way it hides
+  the gh and Cloudflare logins; the claude jail hides everything but the seat
+  it is running on. `ci.yml` runs the real
+  jail lines and fails if a login can be read.
 - **The correction ladder.** A correction is encoded at the lowest rung that
   holds it: 1 structure (no file to put the mistake in), 2 static gate (CI
   check, ruleset, systemd property, router config), 3 rule, 4 skill, 5 prose.
@@ -105,9 +136,17 @@ The rules still in force:
   branch, which re-reads the review and calls `arm-approved` (agent.yml `arm`).
   agent.yml's `review` job (called by
   `review-risky`) is the independent approver: it reads the held head's diff
-  through the API, asks a no-tools model for findings and Jev for approve or
-  block (p >= 0.9), and posts that approval as `github-actions[bot]` (an
-  approval comment written with GITHUB_TOKEN). A PR that edits the guard itself
+  through the API, asks a no-tools Claude call for findings (on a seat from
+  `scripts/claude-lane-seat.sh`: Opus 5.5 for work another engine built,
+  Fable 5.1 for Claude-built work; the worker App's `builder-engine:` PR
+  comment says which, and no comment counts as Claude-built) and Jev for
+  approve or block (p >= 0.9), and posts that approval as
+  `github-actions[bot]` (an approval comment written with GITHUB_TOKEN).
+  "Claude never grades Claude" has one exception, approved by Nish on
+  2026-10-10: the review model may be Claude when Fable reviews Claude-built
+  work, but the verdict is always Jev's, a non-Claude family, so a non-Claude
+  family always decides. With both seats at their limit the review does not
+  finish and is re-run; it is never approved without it. A PR that edits the guard itself
   (`guard` in risky-paths.json) or a workflow needs a second review as well, by
   a model family other than the judge's and Claude's, and both must approve; if
   either blocks, its blockers go to the agent as fix-it items. The same run then
