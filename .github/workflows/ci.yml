@@ -951,6 +951,8 @@ jobs:
                   approved) prior="$(printf 'coordinator-approval: %s\n\nreviewer: %s approved. CI still has to pass before it merges.' "$SHA" "$SHA")" ;;
                   not-approved) prior="reviewer: $SHA not approved. The judge found no blocker line but was only 80% sure, and approval needs 90%." ;;
                   blocked) prior="$(printf 'reviewer: %s blocked. Fix these and push; a new head gets a fresh review.\n\nblocker x: y' "$SHA")" ;;
+                  near-approval) prior="reviewer: $SHA approved, but only 50% sure" ;;
+                  *) echo "case $name: unknown PRIOR value ${extra#PRIOR=}"; bad=1; continue ;;
                 esac
                 COMMENTS=$(jq -cn --arg b "$prior" '[{user:{login:"github-actions[bot]"},body:$b}]') ;;
               ?*) export "$extra=1" ;;
@@ -988,6 +990,7 @@ jobs:
           prior-approved-comment-skips|1|approve|0.95|clean|clean_ok|PRIOR=approved|no|0|
           prior-not-approved-comment-skips|1|approve|0.95|clean|clean_ok|PRIOR=not-approved|no|0|
           prior-blocked-comment-skips|1|approve|0.95|clean|clean_ok|PRIOR=blocked|no|0|
+          prior-near-approval-text-is-reviewed|1|approve|0.95|clean|clean_ok|PRIOR=near-approval|yes|0|worker-capable senior
           CASES
           # The arm job's step: arms the exact approved head, and does nothing for a
           # stale head (a push after the approval), a draft, an armed PR or a closed one.
