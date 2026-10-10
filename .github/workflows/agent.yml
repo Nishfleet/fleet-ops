@@ -688,6 +688,9 @@ jobs:
           # blocker lines of a review: the line starts with the word, with or without markup.
           # A line that only says there are none ("blocker: none.", "Blockers: none") is not one.
           # none_re is the one copy of that pattern: grep reads it here and jq in the already-reviewed check.
+          # Only a whole line that says none is dropped (the pattern is anchored at both ends), so a
+          # line with any other words after "none" still blocks. Dropping it never approves by itself:
+          # the judge must still be 90% sure, and a guard PR's second reviewer must still end on APPROVE.
           tick=$(printf '\140')
           none_re="^[[:space:]*_#>${tick}-]*blockers?[[:space:]*_${tick}:-]*(none|n/a|nil|no blockers?)[[:space:]*_${tick}.!]*\$"
           blockers_of() { { grep -iE "^[[:space:]*_#>${tick}-]*blocker" <<<"$1" | grep -ivE "$none_re" || true; } | head -c 1500; }
