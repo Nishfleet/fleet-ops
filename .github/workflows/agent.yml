@@ -1001,7 +1001,9 @@ jobs:
         # token) runs here, outside the jail, from a fresh clone of main before
         # the model starts. The model then runs in a bwrap jail with neither
         # secret in its environment, that hides Nish's gh login, the Cloudflare
-        # tokens, the seat files and the App key; it reads outsider text all day
+        # tokens, everything in ~/.config/fleet-ops (seats, proxy config) and the
+        # App key; the one file it gets back is the router key pi reads, as in
+        # the work job; it reads outsider text all day
         # (fleet-ops#9274). Nothing the model leaves in its own checkout is
         # trusted: after each attempt only its edition JSON is taken (a regular
         # file, size-capped), a fresh clone of main is made, the edition and the
@@ -1011,10 +1013,14 @@ jobs:
         env:
           GH_TOKEN: ${{ steps.read-token.outputs.token }}
         run: |
-          key=$(sed -n 's/^TYPESAFE_API_KEY=//p' "$HOME/.config/fleet-ops/seats/typesafe-jev.env")
-          [ -n "$key" ] || { echo "::error::TYPESAFE_API_KEY missing from the Jev seat file; an unranked edition is not worth 40 minutes of model time"; exit 1; }
+          # Jev goes through the fleet's /jev pass-through (TypeSafe direct ran out
+          # of credits 2026-10-04): JEV_URL points jev_rank at the proxy and the
+          # key is the seat file's LITELLM_JEV_KEY, handed over under the name
+          # fetch_candidates reads (TYPESAFE_API_KEY). It never goes to TypeSafe.
+          key=$(sed -n 's/^LITELLM_JEV_KEY=//p' "$HOME/.config/fleet-ops/seats/typesafe-jev.env")
+          [ -n "$key" ] || { echo "::error::LITELLM_JEV_KEY missing from the Jev seat file; an unranked edition is not worth 40 minutes of model time"; exit 1; }
           echo "::add-mask::$key"
-          jail_base="bwrap --dev-bind / / --ro-bind $HOME/workspaces/tooling/fleet-ops-deploy-clone $HOME/workspaces/tooling/fleet-ops-deploy-clone --tmpfs $HOME/.config/gh --tmpfs $HOME/.config/cloudflare --tmpfs $HOME/.config/fleet-ops --tmpfs $HOME/.config/fleet-worker --proc /proc --unshare-pid --die-with-parent"
+          jail_base="bwrap --dev-bind / / --ro-bind $HOME/workspaces/tooling/fleet-ops-deploy-clone $HOME/workspaces/tooling/fleet-ops-deploy-clone --tmpfs $HOME/.config/gh --tmpfs $HOME/.config/cloudflare --tmpfs $HOME/.config/fleet-ops --ro-bind $HOME/.config/fleet-ops/litellm-master-key.env $HOME/.config/fleet-ops/litellm-master-key.env --tmpfs $HOME/.config/fleet-worker --proc /proc --unshare-pid --die-with-parent"
           today=$(TZ=Asia/Kolkata date +%F)
           src="$GITHUB_WORKSPACE/inish-site"
           dst="$RUNNER_TEMP/publish"
@@ -1032,7 +1038,7 @@ jobs:
             sys git -c "http.extraheader=AUTHORIZATION: basic $basic" clone -q --depth 1 https://github.com/Nishfleet/inish-site.git "$1"
           }
           fresh_clone "$pool" || { echo "clone for the candidate fetch failed"; exit 1; }
-          (cd "$pool" && TYPESAFE_API_KEY="$key" sys python3 -m inish_daily.fetch_candidates --date "$today") > "$RUNNER_TEMP/fetch.out" 2>&1 \
+          (cd "$pool" && JEV_URL=http://127.0.0.1:4000/jev TYPESAFE_API_KEY="$key" sys python3 -m inish_daily.fetch_candidates --date "$today") > "$RUNNER_TEMP/fetch.out" 2>&1 \
             || { echo "candidate fetch failed:"; tail -n 5 "$RUNNER_TEMP/fetch.out" | cut -c1-200; exit 1; }
           tail -n 4 "$RUNNER_TEMP/fetch.out" | cut -c1-200
           [ -s "$pool/data/candidates/$today.json" ] || { echo "no candidate file"; exit 1; }
