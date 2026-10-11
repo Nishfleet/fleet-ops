@@ -409,7 +409,8 @@ jobs:
             # (RUNNER_NAME is netcup-agent-N): odd keeps the runner's
             # CLAUDE_CONFIG_DIR (seat a), even unsets it (seat b, the default
             # login). A name with no number keeps seat a. The seat never changes
-            # inside a job. A run that dies on a rate limit or
+            # inside a job, except to the other seat when its own login is missing
+            # (below). A run that dies on a rate limit or
             # a usage limit sends the same packet to the Cursor lane for senior
             # work, or to pi (the first of the ordinary lanes) for any other job,
             # which never uses Cursor; either continues from whatever the branch
@@ -418,8 +419,35 @@ jobs:
             fallback=pi
             [ "$SENIOR" != true ] || fallback=cursor
             runner_n=${RUNNER_NAME:-}; runner_n=${runner_n##*[!0-9]}
+            seat_a_dir=${CLAUDE_CONFIG_DIR:-}
             if [ -n "$runner_n" ] && [ $((10#$runner_n % 2)) -eq 0 ]; then unset CLAUDE_CONFIG_DIR; fi
-            if [ -n "${CLAUDE_CONFIG_DIR:-}" ]; then claude_jail="$claude_jail_a" claude_seat=a; else claude_jail="$claude_jail_b" claude_seat=b; fi
+            if [ -n "${CLAUDE_CONFIG_DIR:-}" ]; then claude_seat=a; else claude_seat=b; fi
+            # A seat whose login file is missing or empty fails every job on it, so a
+            # missing login costs one seat, never both. Only the file's presence and
+            # size are tested, never its content. The other seat takes the job if it
+            # has a login; with neither, the lane is skipped and the job falls
+            # through as a refused seat does (below).
+            seat_login() { if [ "$1" = a ]; then [ -n "$seat_a_dir" ] && [ -s "$seat_a_dir/.credentials.json" ]; else [ -s "$HOME/.claude/.credentials.json" ]; fi; }
+            claude_other=a; [ "$claude_seat" = a ] && claude_other=b
+            if ! seat_login "$claude_seat"; then
+              if seat_login "$claude_other"; then
+                echo "::warning::claude lane: seat=$claude_seat missing login, using seat=$claude_other"
+                claude_seat=$claude_other
+                if [ "$claude_seat" = a ]; then export CLAUDE_CONFIG_DIR="$seat_a_dir"; else unset CLAUDE_CONFIG_DIR; fi
+              else
+                echo "::warning::claude lane: seat=a and seat=b both missing login, skipping the claude lane"
+                if [ "$SENIOR" != true ] || [ "$(live cursor-agent)" -lt 1 ]; then
+                  ENGINE=$fallback
+                  echo "fallthrough: $ENGINE (claude login missing)"
+                else
+                  echo "claude: no login on either seat, treated as 429 rate limit, cursor lane full" >&2
+                  exit 1
+                fi
+              fi
+            fi
+            if [ "$claude_seat" = a ]; then claude_jail="$claude_jail_a"; else claude_jail="$claude_jail_b"; fi
+          fi
+          if [ "$ENGINE" = claude ]; then
             echo "claude lane: seat=$claude_seat runner=${RUNNER_NAME:-unknown}"
             mkdir -p "$dir"
             mark claude
