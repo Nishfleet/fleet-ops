@@ -233,7 +233,7 @@
     "benched": false,
     "router_settings": {
       "type": "object",
-      "required": ["redis_url", "deployment_affinity_ttl_seconds", "optional_pre_call_checks", "allowed_fails_policy", "retry_policy"],
+      "required": ["redis_url", "fallbacks", "deployment_affinity_ttl_seconds", "optional_pre_call_checks", "allowed_fails_policy", "retry_policy"],
       "properties": {
         "cooldown_time": { "type": "integer", "minimum": 1, "maximum": 60 },
         "allowed_fails_policy": {
@@ -248,6 +248,16 @@
             "InternalServerErrorAllowedFails": { "type": "integer", "minimum": 0 },
             "NotFoundErrorAllowedFails": { "type": "integer", "const": 0 }
           }
+        },
+        "fallbacks": {
+          "$comment": "fleet-ops#9596: senior is one Pareto row, and a 429 credit wall on it left the group with no fallback. It must fall back to senior-backup (the same GLM-5.3-Flash on Synthetic, equal strength; senior never falls back down). The backup group must not name a fallback of its own, so judge -> senior -> senior-backup cannot cycle back to judge or senior.",
+          "type": "array",
+          "contains": {
+            "type": "object",
+            "required": ["senior"],
+            "properties": { "senior": { "const": ["senior-backup"] } }
+          },
+          "not": { "contains": { "type": "object", "required": ["senior-backup"] } }
         },
         "redis_url": { "type": "string", "pattern": "^redis://" },
         "deployment_affinity_ttl_seconds": { "type": "integer", "minimum": 300, "maximum": 600 },

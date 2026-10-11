@@ -1,0 +1,15 @@
+# fleet-ops#9596: router_settings.fallbacks must send senior to senior-backup. A
+# config that drops that entry leaves the single-row senior group with nowhere to go
+# on a 429 credit wall, which is the 2026-10-11 evening-audit failure.
+model_list:
+- model_name: worker-cheap
+  litellm_params:
+    model: openai/x
+  model_info:
+    supports_prompt_caching: true
+    cache_proof: "fixture row: only the rule named in this file is under test (#9596)."
+router_settings:
+  fallbacks:
+  - judge: [senior]
+  - worker-capable: [worker-cheap]
+  - worker-cheap: [worker-capable]
