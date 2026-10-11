@@ -270,6 +270,13 @@ jobs:
         # or a backup.
         if: always()
         run: pipx run --spec pytest==8.3.5 pytest -q -p no:cacheprovider tests/test_claude_lanes.py
+      - name: gh login check pages on a lost login; the jail step refuses off a hosted runner
+        # Runs fleet-gh-login-check.service's own ExecStart against a stub gh,
+        # and the jail step below with plain bash in a temp home, with no
+        # RUNNER_ENVIRONMENT and with self-hosted: it must refuse before
+        # touching a file.
+        if: always()
+        run: pipx run --spec pytest==8.3.5 pytest -q -p no:cacheprovider tests/test_gh_login_check.py
       - name: rootfs/etc/nftables.conf loads on a fresh boot (nft -c)
         # nft refuses the whole file when a rule names a cgroup path that does
         # not exist yet, as at boot before user@1000 starts: the 2026-09-22
@@ -289,6 +296,17 @@ jobs:
         # VPS allows them, so the runner is set to match.
         if: always()
         run: |
+          # This step plants fake logins over $HOME's real login files and its
+          # EXIT trap deletes them. On 2026-10-11 a session replayed it on the
+          # fleet box with plain `bash` (no -e, so the `test ! -e` guards below
+          # did not stop it) and wiped the gh, Cloudflare and Claude Team seat
+          # logins. Refuse anywhere but a throwaway GitHub-hosted runner, and
+          # stop at the first failed guard however the step is run.
+          set -euo pipefail
+          if [ "${RUNNER_ENVIRONMENT:-}" != github-hosted ]; then
+            echo "refusing: this step overwrites and deletes login files under \$HOME; it runs only on a GitHub-hosted runner"
+            exit 1
+          fi
           # Every jail line (the worker's and the inish-daily job's) is tested; a
           # bwrap line that is not a jail_base= assignment would skip the mounts.
           test "$(grep -c 'bwrap --dev-bind' .github/workflows/agent.yml)" -eq "$(grep -cE '^ *(jail_base|claude_jail_[ab])="bwrap --dev-bind' .github/workflows/agent.yml)"
