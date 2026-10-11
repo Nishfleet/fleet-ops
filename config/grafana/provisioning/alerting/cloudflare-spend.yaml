@@ -37,6 +37,14 @@
 #   neurons/h stays silent; bounded at ~240k neurons/day, about $2.64 a day
 #   at $0.011 per 1,000 neurons, and a 0509 runaway at the AI Gateway rate
 #   cap (~60 calls/min) burns ~640k/h, so it fires in its first hour.
+#   Email only (fleet-ops#9591): the 3x allowance line (12.3/h) sits below the
+#   weekly production e2e suite, which sends 54 to 75 real sign-in emails in
+#   one hour by design (0509 e2e-scheduled, Sunday cron; run 38146870606 sent
+#   54 at 2026-10-11T14:21Z, about 75 a week against a ~700 a week allowance).
+#   Both legs now also need the last hour over an absolute 100 emails/h. The
+#   2026-09-28 sign-in e2e (5,976 a day, about 250/h) still fires in its first
+#   hour. Accepted blind spot: a leak under 100/h stays silent; bounded at
+#   2,400/day.
 #   R2: total Standard storage over 20 GB, or a bucket up 2 GB within 24h
 #   (last value minus the 24h low, so a prune followed by regrowth still counts).
 #
@@ -409,9 +417,9 @@ groups:
               datasource: {type: __expr__, uid: __expr__}
               type: math
               refId: E
-              expression: ($D > 3 * 4.11) || ($C > 0 && $D > 3 * $C && $D > 4.11)
-          - {refId: H, datasourceUid: __expr__, model: {datasource: {type: __expr__, uid: __expr__}, type: math, refId: H, expression: '3 * $C * (3 * $C >= 4.11) + 4.11 * (3 * $C < 4.11)'}}
-          - {refId: G, datasourceUid: __expr__, model: {datasource: {type: __expr__, uid: __expr__}, type: math, refId: G, expression: '3 * 4.11 * (3 * 4.11 <= $H) + $H * (3 * 4.11 > $H)'}}
+              expression: ($D > 100) || ($C > 0 && $D > 3 * $C && $D > 100)
+          - {refId: H, datasourceUid: __expr__, model: {datasource: {type: __expr__, uid: __expr__}, type: math, refId: H, expression: '3 * $C * (3 * $C >= 100) + 100 * (3 * $C < 100)'}}
+          - {refId: G, datasourceUid: __expr__, model: {datasource: {type: __expr__, uid: __expr__}, type: math, refId: G, expression: '100 * (100 <= $H) + $H * (100 > $H)'}}
           - refId: R
             datasourceUid: __expr__
             model: {datasource: {type: __expr__, uid: __expr__}, type: math, refId: R, expression: $T * 0 + $E}
@@ -421,9 +429,9 @@ groups:
         for: 0s
         annotations:
           summary: 'Cloudflare sent {{ $values.D.Value | printf "%.0f" }} emails in the last hour'
-          description: 'It fires above {{ $values.G.Value | humanize }} emails/h: the lower of 3 x the allowance (12.3 emails/h, 3 x the pro-rated 3,000/month allowance) and the larger of 3 x the 7-day hourly median ({{ $values.C.Value | humanize }}) and the 1x allowance floor (4.11). The 2026-09-28 sign-in e2e sent about 5,976 emails in a day.'
+          description: 'It fires above {{ $values.G.Value | humanize }} emails/h: the lower of the 100 emails/h floor and the larger of 3 x the 7-day hourly median ({{ $values.C.Value | humanize }}) and the same floor. The floor sits above the weekly production e2e suite (about 54 to 75 sign-in emails in one hour, 0509 e2e-scheduled, Sundays 07:40 UTC cron, fleet-ops#9591). The 2026-09-28 sign-in e2e sent about 5,976 emails in a day.'
           value: '{{ $values.D.Value | printf "%.0f" }} emails in the last hour'
-          threshold: 'over {{ $values.G.Value | humanize }} emails/h (3 x allowance, or 3 x the 7-day hourly median above the 1x allowance floor of 4.11)'
+          threshold: 'over {{ $values.G.Value | humanize }} emails/h (100/h floor, or 3 x the 7-day hourly median above it)'
           top: 'sending domain {{ $labels.resource }}'
         labels: {signal: cloudflare-spend, product: email-sends}
         isPaused: false
