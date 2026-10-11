@@ -277,6 +277,11 @@ jobs:
         # dir in the link's place fails the sync.
         if: always()
         run: pipx run --spec pytest==8.3.5 pytest -q -p no:cacheprovider tests/test_claude_max_agents.py
+      - name: needs-triage admission (Jev verdict, then queue)
+        # Runs the admit job's own exclusion program, band program and run block,
+        # read out of agent-dispatch.yml, against a fake gh and a fake Jev router.
+        if: always()
+        run: pipx run --spec pytest==8.3.5 pytest -q -p no:cacheprovider tests/test_triage_admit.py
       - name: rootfs/etc/nftables.conf loads on a fresh boot (nft -c)
         # nft refuses the whole file when a rule names a cgroup path that does
         # not exist yet, as at boot before user@1000 starts: the 2026-09-22
@@ -307,7 +312,16 @@ jobs:
           line_b=${lb[0]:-}
           test -n "$line_a" && test -n "$line_b"
           sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
-          # Plant only where nothing exists, so a real login is never overwritten.
+          # Everything below plants and removes files under $HOME, so $HOME is a
+          # throwaway directory for this step. On a self-hosted runner the real
+          # home holds live logins; the guard fails the step if the swap did not
+          # happen.
+          real_home=$(getent passwd "$(id -u)" | cut -d: -f6)
+          test -n "$real_home"
+          tmp_home=$(mktemp -d)
+          export HOME="$tmp_home"
+          if [ "$HOME" = "$real_home" ] || [ -z "$HOME" ]; then echo "refusing to run against the real home directory"; exit 1; fi
+          # Plant only where nothing exists, so a login is never overwritten.
           test ! -e "$HOME/.config/gh/hosts.yml"
           test ! -e "$HOME/.config/cloudflare/deploy-ci.env"
           # The Claude seats' logins: seat a is a config dir ($seat_a in the jail
@@ -336,7 +350,7 @@ jobs:
           echo visible > "$HOME/.config/control"
           test ! -e "$HOME/.config/fleet-ops/planted-seat"
           test ! -e "$HOME/.config/fleet-worker/planted-key"
-          trap 'rm -rf "$seat_a" "$bk1" "$bk2"; rm -f "$HOME/.claude/.credentials.json" "$HOME/.claude.json" "$HOME/.config/gh/hosts.yml" "$HOME/.config/cloudflare/deploy-ci.env" "$HOME/.config/control" "$HOME/.config/fleet-ops/planted-seat" "$HOME/.config/fleet-worker/planted-key"' EXIT
+          trap 'rm -rf "$seat_a" "$bk1" "$bk2" "$tmp_home"; rm -f "$HOME/.claude/.credentials.json" "$HOME/.claude.json" "$HOME/.config/gh/hosts.yml" "$HOME/.config/cloudflare/deploy-ci.env" "$HOME/.config/control" "$HOME/.config/fleet-ops/planted-seat" "$HOME/.config/fleet-worker/planted-key"' EXIT
           echo planted > "$HOME/.config/fleet-ops/planted-seat"
           echo planted > "$HOME/.config/fleet-worker/planted-key"
           sealed=0
@@ -715,7 +729,7 @@ jobs:
         run: |
           set -euo pipefail
           f=.github/workflows/agent-dispatch.yml
-          gated="new rework conflicts remerge ejected list unblocked miss-review miss-review-pr miss-stalled orchestrate review-risky arm-approved"
+          gated="new rework conflicts remerge ejected list unblocked miss-review miss-review-pr miss-stalled orchestrate admit review-risky arm-approved"
           guards="hold-risky close-claim rework-note"
           bad=0
           for j in $(yq '.jobs | keys | .[]' "$f"); do
