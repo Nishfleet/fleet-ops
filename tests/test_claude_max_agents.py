@@ -16,7 +16,7 @@ import pytest
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 UNIT = ROOT / "systemd/fleet-sync.service"
-CLONE = "/home/nish/workspaces/tooling/fleet-ops-deploy-clone"
+CLONE = "%h/workspaces/tooling/fleet-ops-deploy-clone"
 LANES = {"helper": "sonnet", "scout": "haiku"}  # claude-mods model-lanes/lanes.json
 
 
@@ -33,8 +33,8 @@ def _exec_lines():
 
 
 def _run(home, cmd):
-    # The checkout itself may sit under /home/nish, so swap the clone path last.
-    cmd = cmd.replace(CLONE, "@CLONE@").replace("/home/nish", str(home)).replace("@CLONE@", str(ROOT))
+    # %h is systemd's home specifier; the clone path is swapped first so it points at this checkout.
+    cmd = cmd.replace(CLONE, str(ROOT)).replace("%h", str(home))
     env = {"HOME": str(home), "XDG_CONFIG_HOME": str(home / ".config"), "PATH": "/usr/bin:/bin"}
     return subprocess.run(shlex.split(cmd), env=env, capture_output=True, text=True)
 
@@ -46,9 +46,9 @@ def _sync(home):
 def test_unit_ships_every_agent_file_and_the_link_rule():
     cmds = "\n".join(_exec_lines())
     for name in LANES:
-        assert f"config/claude-agents/{name}.md /home/nish/.claude/agents/{name}.md" in cmds
+        assert f"config/claude-agents/{name}.md %h/.claude/agents/{name}.md" in cmds
     assert "config/user-tmpfiles.d/claude-max-agents.conf" in cmds
-    assert "readlink /home/nish/.claude-max/agents" in cmds
+    assert "readlink %h/.claude-max/agents" in cmds
     shipped = {p.stem for p in (ROOT / "config/claude-agents").glob("*.md")}
     assert shipped == set(LANES), "every shipped agent file needs its install line and a lane"
 
