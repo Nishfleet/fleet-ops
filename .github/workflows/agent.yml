@@ -402,8 +402,14 @@ jobs:
           # seats (a glob resolved now, not a list): each ~/.claude-* and
           # ~/backups-claude-* directory goes under an empty tmpfs, a plain file is
           # bound to /dev/null. The one exception is the seat dir the claude lane
-          # runs on ($1).
-          claude_hides() { local d out=; for d in "$HOME"/.claude-* "$HOME"/backups-claude-*; do [ "$d" = "$1" ] && continue; if [ -L "$d" ]; then continue; elif [ -d "$d" ]; then out="$out --tmpfs $d"; elif [ -f "$d" ]; then out="$out --ro-bind /dev/null $d"; fi; done; echo "$out"; }
+          # runs on ($1). The seats' one-year token files (seats/claude-seat-*.env)
+          # and their backup dir (~/.local/share/claude-seat-backup) are hidden from
+          # every jail, the claude lane's too: the lane reads its seat's token file
+          # before the jail starts and hands the token to claude through the
+          # environment only. A symlink is resolved and its target hidden (bwrap
+          # follows a link in a mount path, so the target is what must be covered);
+          # a link that points nowhere is skipped.
+          claude_hides() { local d t out=; for d in "$HOME"/.claude-* "$HOME"/backups-claude-* "$HOME"/.config/fleet-ops/seats/claude-seat-*.env "$HOME"/.local/share/claude-seat-backup*; do t=$d; if [ -L "$d" ]; then t=$(readlink -f "$d") || continue; fi; { [ "$d" = "$1" ] || [ "$t" = "$1" ]; } && continue; if [ -d "$t" ]; then out="$out --tmpfs $t"; elif [ -f "$t" ]; then out="$out --ro-bind /dev/null $t"; fi; done; echo "$out"; } # gitleaks:allow
           hide_all=$(claude_hides "")
           hide_but_a=$(claude_hides "$seat_a")
           jail_base="bwrap --dev-bind / / --ro-bind $HOME/workspaces/tooling/fleet-ops-deploy-clone $HOME/workspaces/tooling/fleet-ops-deploy-clone --tmpfs $HOME/.config/gh --tmpfs $HOME/.config/cloudflare --tmpfs $seat_a --ro-bind /dev/null $HOME/.claude/.credentials.json --ro-bind /dev/null $HOME/.claude.json $hide_all --proc /proc --unshare-pid --die-with-parent"
@@ -450,7 +456,26 @@ jobs:
             # through as a refused seat does (below).
             seat_login() { if [ "$1" = a ]; then [ -n "$seat_a_dir" ] && [ -s "$seat_a_dir/.credentials.json" ]; else [ -s "$HOME/.claude/.credentials.json" ]; fi; }
             claude_other=a; [ "$claude_seat" = a ] && claude_other=b
-            if ! seat_login "$claude_seat"; then
+            # A seat with a one-year token file (`claude setup-token`, non-rotating) logs in
+            # with that token alone: claude gets it in its own environment and a fresh
+            # empty config dir under the job's temp dir (deleted when the lane ends), and
+            # no rotating login is read or written. The file is parsed, never sourced
+            # (it is not run as shell and defines nothing else), and the token is masked,
+            # never echoed, and never exported in this shell, so a fallthrough to another
+            # engine does not inherit it. No file (or no token in it) keeps the login
+            # path below.
+            unset CLAUDE_CODE_OAUTH_TOKEN
+            claude_seats=$HOME/.config/fleet-ops/seats # gitleaks:allow
+            claude_tok_of() { sed -n 's/^CLAUDE_CODE_OAUTH_TOKEN=//p' "$claude_seats/claude-seat-$1.env" 2>/dev/null | head -n 1 | tr -d '\r' || true; }
+            claude_auth=login
+            claude_tok=$(claude_tok_of "$claude_seat")
+            if [ -n "$claude_tok" ]; then
+              echo "::add-mask::$claude_tok"
+              claude_auth=token
+            elif [ -s "$claude_seats/claude-seat-$claude_seat.env" ]; then
+              echo "::warning::claude lane: seat=$claude_seat token file has no token, using the login"
+            fi
+            if [ "$claude_auth" = login ] && ! seat_login "$claude_seat"; then
               if seat_login "$claude_other"; then
                 echo "::warning::claude lane: seat=$claude_seat missing login, using seat=$claude_other"
                 claude_seat=$claude_other
@@ -467,15 +492,43 @@ jobs:
               fi
             fi
             if [ "$claude_seat" = a ]; then claude_jail="$claude_jail_a"; else claude_jail="$claude_jail_b"; fi
+            # Token auth needs no login at all, so it runs in the jail that hides every one.
+            [ "$claude_auth" != token ] || claude_jail="$jail_base"
           fi
           if [ "$ENGINE" = claude ]; then
-            echo "claude lane: seat=$claude_seat runner=${RUNNER_NAME:-unknown}"
+            echo "claude lane: seat=$claude_seat auth=$claude_auth runner=${RUNNER_NAME:-unknown}"
             mark claude
             rc=0
             # A refused seat shows in the last lines the CLI prints. Earlier lines are
             # the model's own text (an issue about rate limits mentions them), and a
             # run that stopped on the turn cap is a failed run, not a refused seat.
             refused() { tail -q -n 3 "$RUNNER_TEMP/try.out" "$RUNNER_TEMP/try.err" | grep -qiE 'rate[ _-]?limit|\b429\b|usage limit|limit reached'; }
+            # One attempt. $1 is the token to log in with, empty for the seat's login.
+            # The token and a fresh empty config dir are exported inside a subshell, so
+            # they reach claude (bwrap passes the environment through) and nothing else:
+            # the step shell never holds them in its environment.
+            claude_cfg_root=
+            claude_try() {
+              local cfg=
+              if [ -n "$1" ]; then
+                if [ -z "$claude_cfg_root" ]; then
+                  claude_cfg_root=$(mktemp -d "$RUNNER_TEMP/claude-config.XXXXXX")
+                  trap 'rm -rf "$claude_cfg_root"' EXIT
+                fi
+                cfg=$(mktemp -d "$claude_cfg_root/c.XXXXXX")
+              fi
+              rc=0
+              (
+                if [ -n "$1" ]; then export CLAUDE_CODE_OAUTH_TOKEN="$1" CLAUDE_CONFIG_DIR="$cfg"; fi
+                echo "$packet" | $claude_jail --chdir "$dir" -- \
+                  claude -p --model "$CLAUDE_MODEL" --permission-mode bypassPermissions --max-turns "$CLAUDE_MAX_TURNS" \
+                  --strict-mcp-config --disable-slash-commands --setting-sources project,local \
+                  --settings '{"disableAllHooks":true}'
+              ) >"$RUNNER_TEMP/try.out" 2>"$RUNNER_TEMP/try.err" || rc=$?
+              [ -z "$cfg" ] || rm -rf "$cfg"
+            }
+            # The CLI says why it refused a login in the last lines it prints.
+            authfail() { tail -q -n 3 "$RUNNER_TEMP/try.out" "$RUNNER_TEMP/try.err" | grep -qiE 'api error: 401|authentication[_ ]error|unauthorized|invalid (api key|bearer|token|authentication)|token (has )?(expired|been revoked|revoked)|please run /login|not logged in'; }
             # --chdir puts the worker directory on the bwrap command line, which is
             # what the Gate's lane count reads. The trim flags are the orchestrator
             # session's: no MCP servers, no skills, no user settings; managed
@@ -487,11 +540,23 @@ jobs:
             # which holds main's files plus what the model itself writes inside the
             # same jail, so they add no reach; --settings turns every hook off, and
             # --settings outranks project and local settings.
-            echo "$packet" | $claude_jail --chdir "$dir" -- \
-              claude -p --model "$CLAUDE_MODEL" --permission-mode bypassPermissions --max-turns "$CLAUDE_MAX_TURNS" \
-              --strict-mcp-config --disable-slash-commands --setting-sources project,local \
-              --settings '{"disableAllHooks":true}' \
-              >"$RUNNER_TEMP/try.out" 2>"$RUNNER_TEMP/try.err" || rc=$?
+            claude_try "$claude_tok"
+            # A seat whose token was revoked or has expired fails every job on it, so
+            # one auth failure (not a rate limit) retries once with the other seat's
+            # token, before any fallthrough to another engine. No token on the other
+            # seat, or a second failure, ends as a failed run.
+            if [ "$rc" != 0 ] && [ "$claude_auth" = token ] && ! refused && authfail; then
+              claude_tok=$(claude_tok_of "$claude_other")
+              if [ -n "$claude_tok" ]; then
+                echo "::add-mask::$claude_tok"
+                echo "::warning::claude lane: seat=$claude_seat token rejected, retrying with seat=$claude_other"
+                claude_seat=$claude_other
+                echo "claude lane: seat=$claude_seat auth=token retry=after-auth-failure runner=${RUNNER_NAME:-unknown}"
+                claude_try "$claude_tok"
+              fi
+            fi
+            unset claude_tok
+            [ -z "$claude_cfg_root" ] || rm -rf "$claude_cfg_root"
             if [ "$rc" != 0 ] && refused && { [ "$SENIOR" != true ] || [ "$(live cursor-agent)" -lt 1 ]; }; then
               ENGINE=$fallback
               echo "fallthrough: $ENGINE (claude rate limit)"
@@ -1328,7 +1393,7 @@ jobs:
           [ -n "$key" ] || { echo "::error::TYPESAFE_API_KEY missing from the Jev seat file; an unranked edition is not worth 40 minutes of model time"; exit 1; }
           echo "::add-mask::$key"
           seat_a=${CLAUDE_CONFIG_DIR:-$HOME/.config/gh}
-          claude_hides() { local d out=; for d in "$HOME"/.claude-* "$HOME"/backups-claude-*; do [ "$d" = "$1" ] && continue; if [ -L "$d" ]; then continue; elif [ -d "$d" ]; then out="$out --tmpfs $d"; elif [ -f "$d" ]; then out="$out --ro-bind /dev/null $d"; fi; done; echo "$out"; }
+          claude_hides() { local d t out=; for d in "$HOME"/.claude-* "$HOME"/backups-claude-* "$HOME"/.local/share/claude-seat-backup*; do t=$d; if [ -L "$d" ]; then t=$(readlink -f "$d") || continue; fi; { [ "$d" = "$1" ] || [ "$t" = "$1" ]; } && continue; if [ -d "$t" ]; then out="$out --tmpfs $t"; elif [ -f "$t" ]; then out="$out --ro-bind /dev/null $t"; fi; done; echo "$out"; }
           hide_all=$(claude_hides "")
           jail_base="bwrap --dev-bind / / --ro-bind $HOME/workspaces/tooling/fleet-ops-deploy-clone $HOME/workspaces/tooling/fleet-ops-deploy-clone --tmpfs $HOME/.config/gh --tmpfs $HOME/.config/cloudflare --tmpfs $HOME/.config/fleet-ops --tmpfs $HOME/.config/fleet-worker --tmpfs $seat_a --ro-bind /dev/null $HOME/.claude/.credentials.json --ro-bind /dev/null $HOME/.claude.json $hide_all --proc /proc --unshare-pid --die-with-parent"
           today=$(TZ=Asia/Kolkata date +%F)
