@@ -1,0 +1,22 @@
+# Starts one agent-dispatch sweep in Nishfleet/%i (see fleet-pr-sweep@.timer
+# for why). Stock only: one gh call, no script. The sweep itself runs on
+# GitHub; this unit only asks for it. gh reads ~/.config/gh/hosts.yml (the
+# user manager has no GH_TOKEN) and acts as nish3451, who may dispatch
+# workflows in every Nishfleet repo; no credential is in this file or argv.
+# Absolute path: user units have no ~/.local/bin on PATH.
+[Unit]
+Description=Start the agent-dispatch sweep in Nishfleet/%i
+After=network-online.target
+Wants=network-online.target
+StartLimitIntervalSec=1h
+StartLimitBurst=3
+OnFailure=fleet-unit-failed@%N.service
+
+[Service]
+Type=oneshot
+ExecStart=/home/nish/.local/bin/gh workflow run agent-dispatch.yml -R Nishfleet/%i
+TimeoutStartSec=120
+# A network blip retries twice in the hour, then the unit stays failed and
+# OnFailure pages.
+Restart=on-failure
+RestartSec=60
