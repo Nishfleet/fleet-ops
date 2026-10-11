@@ -930,7 +930,12 @@ jobs:
             jq -c --argjson q "$queued" --argjson cut "$cutoff" '[.[] | select((.isDraft | not) and (.isCrossRepository | not) and .autoMergeRequest == null
               and (.headRefName | IN($q[]) | not) and (.updatedAt | fromdateiso8601) < $cut)] | sort_by(.number)')
           review='[]' arm='[]' rework='[]' file='[]' seen=0 errs=0
-          add() { jq -c --argjson x "$2" '. + [$x] | .[:20]' <<<"$1"; }
+          add() { jq -c --argjson x "$2" --argjson cap "${3:-20}" '. + [$x] | .[:$cap]' <<<"$1"; }
+          # PR heads an open stuck-PR issue already reports (agent.yml's stuck
+          # job writes `stuck-pr: #<pr> <sha>` in the body or a comment), so a
+          # reported head takes no slot below.
+          reported=$(gh issue list -R "$GITHUB_REPOSITORY" --state open -L 200 --search '"stuck-pr:" in:body' --json body,comments \
+            --jq '[.[] | .body, .comments[].body | split("\n")[] | select(startswith("stuck-pr: #"))] | unique')
           while IFS= read -r p; do
             seen=$((seen + 1))
             n=$(jq -r .number <<<"$p"); ref=$(jq -r .headRefName <<<"$p"); sha=$(jq -r .headRefOid <<<"$p")
@@ -1002,7 +1007,14 @@ jobs:
                 echo "::warning::#$n: issue #$i unreadable, skipped"; errs=$((errs + 1)); continue
               fi
             fi
-            file=$(add "$file" "$(jq -nc --arg p "$n" --arg s "$sha" --arg r "$reason" --arg u "$url" '{pr: $p, sha: $s, reason: $r, url: $u}')")
+            if jq -e --arg l "stuck-pr: #$n $sha" 'index($l)' <<<"$reported" >/dev/null; then
+              echo "#$n: already reported at ${sha:0:7}"; continue
+            fi
+            # Two a sweep: the orchestrate job keeps one run and one waiting
+            # per repo and cancels any older waiting run, so a burst of
+            # labels would leave most issues with no run (18 at once in
+            # fleet-ops on 2026-10-11). The rest go out on later sweeps.
+            file=$(add "$file" "$(jq -nc --arg p "$n" --arg s "$sha" --arg r "$reason" --arg u "$url" '{pr: $p, sha: $s, reason: $r, url: $u}')" 2)
           done < <(jq -c '.[]' <<<"$cands")
           echo "waiting over an hour: $seen, unreadable: $errs"
           echo "arm: $arm"; echo "review: $review"; echo "rework: $rework"; echo "file: $file"
