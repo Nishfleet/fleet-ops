@@ -270,6 +270,13 @@ jobs:
         # or a backup.
         if: always()
         run: pipx run --spec pytest==8.3.5 pytest -q -p no:cacheprovider tests/test_claude_lanes.py
+      - name: helper and scout subagents reach the Max config dir
+        # Runs fleet-sync.service's own agent installs, the real
+        # systemd-tmpfiles --user --create and the link check against a temp
+        # home: both lanes read through ~/.claude-max/agents, and a hand-made
+        # dir in the link's place fails the sync.
+        if: always()
+        run: pipx run --spec pytest==8.3.5 pytest -q -p no:cacheprovider tests/test_claude_max_agents.py
       - name: rootfs/etc/nftables.conf loads on a fresh boot (nft -c)
         # nft refuses the whole file when a rule names a cgroup path that does
         # not exist yet, as at boot before user@1000 starts: the 2026-09-22
