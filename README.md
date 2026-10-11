@@ -68,6 +68,9 @@ script, or prompt lands unseen.
   a bad one); promtool fixtures live in `config/grafana/tests/`.
   `containers/quadlet/fleet-grafana.container` mounts all four read-only, so
   the UI cannot save edits.
+- `config/claude-agents/` — the `helper` and `scout` subagent files
+  `fleet-sync.service` copies into `~/.claude/agents` (README "Subagents on
+  the Max config dir").
 - `config/user-tmpfiles.d/agent-worktrees.conf` — the `systemd-tmpfiles`
   age-out rules `fleet-sync.service` applies on every sync: an
   `agent-worktrees/` dir untouched for 3 days goes, and so do the dated files
@@ -513,6 +516,23 @@ one stays listed as offline.
 Switch off: delete the file, add its path to `retired` in `ansible/host.yml`,
 `systemctl daemon-reload`, and restart Remote Control, only once the default
 login allows Remote Control again.
+
+### Subagents on the Max config dir (2026-10-11)
+
+Claude Code reads subagents from `$CLAUDE_CONFIG_DIR/agents`, so with the
+drop-in above every Remote Control thread got "helper not found", and the
+model-lanes gate denies every other subagent type: no thread could delegate.
+`config/claude-agents/` now ships `helper.md` and `scout.md` (until now
+hand-placed in `~/.claude/agents`). `fleet-sync.service` step 2d copies them
+there, `config/user-tmpfiles.d/claude-max-agents.conf` links
+`~/.claude-max/agents` to `~/.claude/agents` (step 5), and step 5b fails the
+sync if that path is anything but the link. Edit an agent here, by PR; a hand
+edit of the live file is overwritten on the next sync.
+`tests/test_claude_max_agents.py` runs those unit lines against a temp home.
+
+Switch off: delete the three step-2d install lines and step 5b, the tmpfiles
+file and its live copy in `~/.config/user-tmpfiles.d/`, then
+`rm ~/.claude-max/agents`. The live agent files stay as plain files.
 
 ## Agent autonomy drop-in
 
