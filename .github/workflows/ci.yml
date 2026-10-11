@@ -305,7 +305,16 @@ jobs:
           line_b=${lb[0]:-}
           test -n "$line_a" && test -n "$line_b"
           sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
-          # Plant only where nothing exists, so a real login is never overwritten.
+          # Everything below plants and removes files under $HOME, so $HOME is a
+          # throwaway directory for this step. On a self-hosted runner the real
+          # home holds live logins; the guard fails the step if the swap did not
+          # happen.
+          real_home=$(getent passwd "$(id -u)" | cut -d: -f6)
+          test -n "$real_home"
+          tmp_home=$(mktemp -d)
+          export HOME="$tmp_home"
+          if [ "$HOME" = "$real_home" ] || [ -z "$HOME" ]; then echo "refusing to run against the real home directory"; exit 1; fi
+          # Plant only where nothing exists, so a login is never overwritten.
           test ! -e "$HOME/.config/gh/hosts.yml"
           test ! -e "$HOME/.config/cloudflare/deploy-ci.env"
           # The Claude seats' logins: seat a is a config dir ($seat_a in the jail
@@ -334,7 +343,7 @@ jobs:
           echo visible > "$HOME/.config/control"
           test ! -e "$HOME/.config/fleet-ops/planted-seat"
           test ! -e "$HOME/.config/fleet-worker/planted-key"
-          trap 'rm -rf "$seat_a" "$bk1" "$bk2"; rm -f "$HOME/.claude/.credentials.json" "$HOME/.claude.json" "$HOME/.config/gh/hosts.yml" "$HOME/.config/cloudflare/deploy-ci.env" "$HOME/.config/control" "$HOME/.config/fleet-ops/planted-seat" "$HOME/.config/fleet-worker/planted-key"' EXIT
+          trap 'rm -rf "$seat_a" "$bk1" "$bk2" "$tmp_home"; rm -f "$HOME/.claude/.credentials.json" "$HOME/.claude.json" "$HOME/.config/gh/hosts.yml" "$HOME/.config/cloudflare/deploy-ci.env" "$HOME/.config/control" "$HOME/.config/fleet-ops/planted-seat" "$HOME/.config/fleet-worker/planted-key"' EXIT
           echo planted > "$HOME/.config/fleet-ops/planted-seat"
           echo planted > "$HOME/.config/fleet-worker/planted-key"
           sealed=0
