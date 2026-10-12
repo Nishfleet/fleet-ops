@@ -24,7 +24,7 @@ OnFailure=fleet-unit-failed@%N.service
 [Service]
 Type=oneshot
 ExecStart=/usr/bin/env gh workflow run agent-dispatch.yml -R Nishfleet/%i
-ExecStart=/usr/bin/env gh run list -R Nishfleet/%i -w agent-dispatch.yml -s completed -L 1 --json conclusion,url --jq 'if .[0].conclusion == "startup_failure" then error("agent-dispatch ended in startup_failure: " + .[0].url) else empty end'
+ExecStart=/usr/bin/env gh run list -R Nishfleet/%i -w agent-dispatch.yml -s completed -L 1 --json conclusion,url --jq 'if .[0].conclusion == "startup_failure" then error("previous agent-dispatch run ended in startup_failure: " + .[0].url) else empty end'
 TimeoutStartSec=120
 # A network blip retries twice in the hour, then the unit stays failed and
 # OnFailure pages.
