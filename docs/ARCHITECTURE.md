@@ -144,14 +144,14 @@ The rules still in force:
   agent.yml's `review` job (called by
   `review-risky`) is the independent approver: it reads the held head's diff
   through the API, asks a no-tools Claude call for findings (on the runner's own login:
-  Opus 5.5 for work another engine built,
-  Fable 5.1 for Claude-built work; the worker App's `builder-engine:` PR
-  comment says which, and no comment counts as Claude-built) and Jev for
+  Opus 5.5 for all work, Claude-built or not; the worker App's
+  `builder-engine:` PR comment is still recorded, and no comment counts as
+  Claude-built) and Jev for
   approve or block (p >= 0.9), and posts that approval as
   `github-actions[bot]` (an approval comment written with GITHUB_TOKEN).
   "Claude never grades Claude" has one exception, approved by Nish on
-  2026-10-10: the review model may be Claude when Fable reviews Claude-built
-  work, but the verdict is always Jev's, a non-Claude family, so a non-Claude
+  2026-10-10: the review model may be Claude (Opus 5.5 reviews Claude-built
+  work), but the verdict is always Jev's, a non-Claude family, so a non-Claude
   family always decides. With the runner's seat at its limit the review does not
   finish and is re-run; it is never approved without it. A PR that edits the guard itself
   (`guard` in risky-paths.json) or a workflow needs a second review as well, by
