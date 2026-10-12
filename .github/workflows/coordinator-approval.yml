@@ -6,7 +6,7 @@
 # (agent.yml, GITHUB_TOKEN) and nish3451.
 # A review written with GITHUB_TOKEN fires no pull_request_review, so `refresh` re-runs
 # the head's check when an agent-dispatch run ends. For a pull_request_target run the
-# workflow_run head_sha is the PR head (checked on a live run); an hourly schedule or
+# workflow_run head_sha is the PR head (checked on run 38261233637); an hourly schedule or
 # manual sweep run re-runs every open PR head whose last check failed.
 # Trust boundary, unchanged from the comment gate this replaces: any workflow a PR runs can
 # write a check or a GITHUB_TOKEN review under these names, so a PR that adds or edits one is
