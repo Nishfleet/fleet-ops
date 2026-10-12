@@ -1843,6 +1843,9 @@ jobs:
         working-directory: infra/cloudflare-tokens
         run: tofu validate
 
+  ratchet:
+    uses: ./.github/workflows/ratchet.yml
+
   # Coordinator approval as a required status check (fleet-ops#9383).
   # hold-risky (agent-dispatch.yml) disarms a risky PR on a few PR events, so a
   # direct enqueue or merge got past it (#9371 merged with no approval). A
@@ -1858,9 +1861,6 @@ jobs:
   # what this job runs and a PR cannot loosen the list it is judged by.
   # Every failed read fails the check. Ruleset bypass actors (repository admin)
   # can still skip a required check.
-  ratchet:
-    uses: ./.github/workflows/ratchet.yml
-
   coordinator-approval:
     name: coordinator-approval
     runs-on: ubuntu-latest
