@@ -362,3 +362,17 @@ cost: the netcup provider VNC console.
 - It is not a second SSH listener, not a standing open console, and not a
   live-tailscaled kill (a lockout, not an experiment — that stays a Nish
   game-day). Panel login lives in Nish's password manager; never here.
+
+## Main has no ruleset bypass (2026-10-12)
+
+- Ruleset 23692529 has an empty `bypass_actors`. Check: `gh api repos/Nishfleet/fleet-ops/rulesets/23692529 --jq '.bypass_actors, .current_user_can_bypass'` prints `[]` and `"never"`.
+- Repository admins, including every session acting as `nish3451`, merge only through the required checks and the merge queue: `gh pr merge <PR> --auto`.
+- Warning: the emergency path removes the merge guard. Only Nish takes it, as org owner, and restores the state after. Restore the admin role (actor 5) with `echo '{"bypass_actors":[{"actor_id":5,"actor_type":"RepositoryRole","bypass_mode":"always"}]}' | gh api -X PUT repos/Nishfleet/fleet-ops/rulesets/23692529 --input -`. Remove it again with `echo '{"bypass_actors":[]}' | gh api -X PUT repos/Nishfleet/fleet-ops/rulesets/23692529 --input -`.
+
+## The ratchet runs from main (2026-10-12)
+
+- Before: ruleset 23692529 required `ratchet`, an inline job in `ci.yml`, so a PR judged itself by its own copy (#9627). After: `ci.yml` calls `.github/workflows/ratchet.yml` and the ruleset requires `ratchet / ratchet`. 0509 and drive call the same file at `@main` and require the same context. Nothing else in the ruleset changed.
+- Order, because the PR's own head cannot report the old name: remove `ratchet` from the required list, merge, add `ratchet / ratchet`. `ci` kept `ratchet` in its `needs` the whole time.
+- A reusable workflow cannot be required from another repo on the Free plan: `gh api orgs/Nishfleet/rulesets` answers 403 "Upgrade to GitHub Team", and a repository ruleset `workflows` rule is rejected. So the caller file still lives in the PR. The reusable job fails a PR that edits the caller's `ratchet` job; a PR that repoints the caller's `uses:` is still caught only by review.
+- Check: `gh api repos/Nishfleet/fleet-ops/rulesets/23692529 --jq '[.rules[]|select(.type=="required_status_checks").parameters.required_status_checks[].context]'`.
+- Undo (switch the ratchet off, as the Nish-only emergency path): `gh api repos/Nishfleet/fleet-ops/rulesets/23692529 | jq '{name,target,enforcement,bypass_actors,conditions,rules:(.rules|map(if .type=="required_status_checks" then .parameters.required_status_checks|=map(select(.context!="ratchet / ratchet")) else . end))}' | gh api -X PUT repos/Nishfleet/fleet-ops/rulesets/23692529 --input -`.

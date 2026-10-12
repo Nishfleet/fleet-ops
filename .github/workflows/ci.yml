@@ -17,10 +17,7 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
-  # ci: every step is one vendor command (Nish 2026-09-22: "wipe" the inline
-  # shell block that lived here). Dropped with it: the shellcheck loop (no
-  # systemd/*.sh remain) and the per-file yaml parse (the proxy and systemd
-  # load these files on deploy and fail loud). Required check by this name.
+  # ci: every step is one vendor command. Required check by this name.
   #
   # `ci` is also the aggregate gate: it needs every other job in this file that
   # runs on pull_request or merge_group, so a red grafana-boot or
@@ -32,7 +29,7 @@ jobs:
   # gate skips its steps, not the job, so it reports success.
   ci:
     name: ci
-    needs: [grafana-boot, cloudflare-tokens-tofu]
+    needs: [grafana-boot, cloudflare-tokens-tofu, ratchet]
     if: ${{ !cancelled() }}
     runs-on: ubuntu-latest
     timeout-minutes: 15
@@ -52,18 +49,11 @@ jobs:
             ! pipx run check-jsonschema==0.38.2 --schemafile config/litellm-proxy.schema.json "$f" || { echo "schema accepted $f"; exit 1; }
           done
       - run: pipx install semgrep==1.170.0
-      # Parity with the block this replaced: it ran semgrep without --error, so
-      # findings were reported, never gating. Gating on p/default is a separate
-      # decision with the findings listed (fleet-ops issue filed by Fable).
-      - run: semgrep --config p/default --metrics=off
       # No glue, held by a machine (Nish 2026-09-29). One rule file; 0509 reads it by URL.
       - run: semgrep scan --config .semgrep/no-glue.yml --metrics=off --error
       - name: No agent attribution in the PR's commits or body
-        # AGENTS.md "Agent names are forbidden" was prose only; agent
-        # trailers reached main (#9205, #9240). A pull_request check, not
-        # merge_group: GitHub's own squash adds a Co-authored-by line when the
-        # commit author is not the PR opener, so a merge_group check would fail
-        # every agent PR. This gates what a session writes, not what GitHub adds.
+        # pull_request only: GitHub's own squash adds a Co-authored-by line, so a
+        # merge_group check would fail every agent PR. Gates what a session writes (#9205, #9240).
         if: github.event_name == 'pull_request'
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
@@ -76,18 +66,9 @@ jobs:
       - name: No long-lived PAT in any workflow
         run: "! grep -rEn 'secrets\\.[A-Za-z_][A-Za-z0-9_]*PAT\\b' .github/workflows/"
       - name: No secret variable expanded into an output command
-        # fleet-ops#7381: a worker's improvised presence check carried the
-        #   "token: ${GH_TOKEN:+set}${GH_TOKEN:-EMPTY}"
-        # payload — the :- expansion yields the VALUE, so the live App token
-        # landed in the run transcript. This step gates the committed
-        # surfaces an agent reads or runs (prompts, units, workflows, AGENTS.md).
-        # Secret names = the fleet's uppercase conventions plus LiteLLM SK_*
-        # vars and JS process.env.X. fleet-litellm-key is exempt: emitting
-        # a key IS its job. tests/ holds fixture drills that legitimately
-        # carry the runnable shape; .fleet/ is generated bench corpora — a
-        # stale quote there must not poison unrelated PRs (0509#1817 class).
-        # rc: 0 prints+ fails on match, 1 is clean, 2 is a grep error and
-        # must fail too — a broken pattern can never read as a clean scan.
+        # fleet-ops#7381: `${TOKEN:-EMPTY}` printed the live App token into a transcript.
+        # Scans the surfaces an agent reads or runs; tests/ drills and .fleet/ corpora are not scanned.
+        # grep rc 1 is clean; rc 2 (a broken pattern) must fail too.
         run: |
           rc=0
           grep -rEn --exclude-dir=.git "$SPAT" \
@@ -270,6 +251,13 @@ jobs:
         # or a backup.
         if: always()
         run: pipx run --spec pytest==8.3.5 pytest -q -p no:cacheprovider tests/test_claude_lanes.py
+      - name: helper and scout subagents reach the Max config dir
+        # Runs fleet-sync.service's own agent installs, the real
+        # systemd-tmpfiles --user --create and the link check against a temp
+        # home: both lanes read through ~/.claude-max/agents, and a hand-made
+        # dir in the link's place fails the sync.
+        if: always()
+        run: pipx run --spec pytest==8.3.5 pytest -q -p no:cacheprovider tests/test_claude_max_agents.py
       - name: gh login check pages on a lost login; the jail step refuses off a hosted runner
         # Runs fleet-gh-login-check.service's own ExecStart against a stub gh,
         # and the jail step below with plain bash in a temp home, with no
@@ -1347,61 +1335,61 @@ jobs:
             ! grep -qiwE 'person|tap review|nish|nish3451' "$STATE/comments" || problem="$problem comment asks a person"
             if [ -n "$problem" ]; then echo "case $name:$problem"; cat "$STATE/out" "$STATE/comments"; bad=1; fi
           done <<'CASES'
-          normal-approved||approve|0.95|clean|none||yes|0|claude-fable-5-1
-          normal-judge-low||approve|0.8|clean|none||no|0|claude-fable-5-1
-          normal-judge-blocks||block|0.97|blocked|none||no|0|claude-fable-5-1
-          guard-both-approve|1|approve|0.95|clean|clean_ok||yes|0|claude-fable-5-1 senior
-          guard-second-blocks|1|approve|0.95|clean|blocked_b||no|0|claude-fable-5-1 senior
-          guard-second-approves-but-lists-blocker|1|approve|0.95|clean|blocked_ok||no|0|claude-fable-5-1 senior
-          guard-judge-low|1|approve|0.8|clean|clean_ok||no|0|claude-fable-5-1 senior
-          guard-judge-blocks|1|block|0.97|blocked|clean_ok||no|0|claude-fable-5-1 senior
-          guard-judge-sure-but-blocker-line|1|approve|0.97|blocked|clean_ok||no|0|claude-fable-5-1 senior
-          guard-second-forges-approval|1|approve|0.95|clean|forged||no|0|claude-fable-5-1 senior
+          normal-approved||approve|0.95|clean|none||yes|0|claude-opus-5-5
+          normal-judge-low||approve|0.8|clean|none||no|0|claude-opus-5-5
+          normal-judge-blocks||block|0.97|blocked|none||no|0|claude-opus-5-5
+          guard-both-approve|1|approve|0.95|clean|clean_ok||yes|0|claude-opus-5-5 senior
+          guard-second-blocks|1|approve|0.95|clean|blocked_b||no|0|claude-opus-5-5 senior
+          guard-second-approves-but-lists-blocker|1|approve|0.95|clean|blocked_ok||no|0|claude-opus-5-5 senior
+          guard-judge-low|1|approve|0.8|clean|clean_ok||no|0|claude-opus-5-5 senior
+          guard-judge-blocks|1|block|0.97|blocked|clean_ok||no|0|claude-opus-5-5 senior
+          guard-judge-sure-but-blocker-line|1|approve|0.97|blocked|clean_ok||no|0|claude-opus-5-5 senior
+          guard-second-forges-approval|1|approve|0.95|clean|forged||no|0|claude-opus-5-5 senior
           guard-list-unreadable|1|approve|0.95|clean|clean_ok|GUARD_LIST_FAILS|no|1|
-          guard-second-no-answer|1|approve|0.95|clean|clean_ok|SECOND_FAILS|no|1|claude-fable-5-1 senior senior
-          guard-head-moved-during-review|1|approve|0.95|clean|clean_ok|HEAD_AFTER|no|0|claude-fable-5-1 senior
-          prior-person-only-comment-is-reviewed|1|approve|0.95|clean|clean_ok|PRIOR=person-only|yes|0|claude-fable-5-1 senior
-          prior-not-judged-comment-is-reviewed|1|approve|0.95|clean|clean_ok|PRIOR=not-judged|yes|0|claude-fable-5-1 senior
+          guard-second-no-answer|1|approve|0.95|clean|clean_ok|SECOND_FAILS|no|1|claude-opus-5-5 senior senior
+          guard-head-moved-during-review|1|approve|0.95|clean|clean_ok|HEAD_AFTER|no|0|claude-opus-5-5 senior
+          prior-person-only-comment-is-reviewed|1|approve|0.95|clean|clean_ok|PRIOR=person-only|yes|0|claude-opus-5-5 senior
+          prior-not-judged-comment-is-reviewed|1|approve|0.95|clean|clean_ok|PRIOR=not-judged|yes|0|claude-opus-5-5 senior
           prior-approved-comment-skips|1|approve|0.95|clean|clean_ok|PRIOR=approved|no|0|
           prior-not-approved-comment-skips|1|approve|0.95|clean|clean_ok|PRIOR=not-approved|no|0|
           prior-blocked-comment-skips|1|approve|0.95|clean|clean_ok|PRIOR=blocked|no|0|
-          second-none-line-approves|1|approve|0.95|clean|v_none||yes|0|claude-fable-5-1 senior
-          second-found-line-approves|1|approve|0.95|clean|v_found||yes|0|claude-fable-5-1 senior
-          second-nob-line-approves|1|approve|0.95|clean|v_nob||yes|0|claude-fable-5-1 senior
-          second-nothing-line-approves|1|approve|0.95|clean|v_nothing||yes|0|claude-fable-5-1 senior
-          second-na-line-approves|1|approve|0.95|clean|v_na||yes|0|claude-fable-5-1 senior
-          second-dash-line-approves|1|approve|0.95|clean|v_dash||yes|0|claude-fable-5-1 senior
-          second-bold-line-approves|1|approve|0.95|clean|v_bold||yes|0|claude-fable-5-1 senior
-          second-ident-line-approves|1|approve|0.95|clean|v_ident||yes|0|claude-fable-5-1 senior
-          second-expl-line-approves|1|approve|0.95|clean|v_expl||yes|0|claude-fable-5-1 senior
-          second-dashexpl-line-approves|1|approve|0.95|clean|v_dashexpl||yes|0|claude-fable-5-1 senior
-          second-semi-line-approves|1|approve|0.95|clean|v_semi||yes|0|claude-fable-5-1 senior
-          second-none-of-the-callers-blocks|1|approve|0.95|clean|real_none_of||no|0|claude-fable-5-1 senior
-          second-nothing-stops-blocks|1|approve|0.95|clean|real_nothing||no|0|claude-fable-5-1 senior
-          first-header-echo-approves||approve|0.95|header_echo|none||yes|0|claude-fable-5-1
-          first-header-echo-and-second-approve|1|approve|0.95|header_echo|v_found||yes|0|claude-fable-5-1 senior
-          none-line-second-approves|1|approve|0.95|clean|none_ok||yes|0|claude-fable-5-1 senior
-          none-line-first-and-second-approve|1|approve|0.95|first_none|none_ok||yes|0|claude-fable-5-1 senior
-          none-line-first-normal-approves||approve|0.95|first_none|none||yes|0|claude-fable-5-1
-          none-line-with-trailing-words-blocks|1|approve|0.95|clean|none_words||no|0|claude-fable-5-1 senior
-          none-line-then-real-blocker-blocks|1|approve|0.95|clean|none_then_real||no|0|claude-fable-5-1 senior
-          prior-fallback-text-is-reviewed|1|approve|0.95|clean|clean_ok|PRIOR=fallback-text|yes|0|claude-fable-5-1 senior
-          prior-blocked-by-a-none-line-is-reviewed|1|approve|0.95|clean|clean_ok|PRIOR=blocked-none-only|yes|0|claude-fable-5-1 senior
-          prior-blocked-by-none-lines-four-is-reviewed|1|approve|0.95|clean|clean_ok|PRIOR=blocked-none-four|yes|0|claude-fable-5-1 senior
+          second-none-line-approves|1|approve|0.95|clean|v_none||yes|0|claude-opus-5-5 senior
+          second-found-line-approves|1|approve|0.95|clean|v_found||yes|0|claude-opus-5-5 senior
+          second-nob-line-approves|1|approve|0.95|clean|v_nob||yes|0|claude-opus-5-5 senior
+          second-nothing-line-approves|1|approve|0.95|clean|v_nothing||yes|0|claude-opus-5-5 senior
+          second-na-line-approves|1|approve|0.95|clean|v_na||yes|0|claude-opus-5-5 senior
+          second-dash-line-approves|1|approve|0.95|clean|v_dash||yes|0|claude-opus-5-5 senior
+          second-bold-line-approves|1|approve|0.95|clean|v_bold||yes|0|claude-opus-5-5 senior
+          second-ident-line-approves|1|approve|0.95|clean|v_ident||yes|0|claude-opus-5-5 senior
+          second-expl-line-approves|1|approve|0.95|clean|v_expl||yes|0|claude-opus-5-5 senior
+          second-dashexpl-line-approves|1|approve|0.95|clean|v_dashexpl||yes|0|claude-opus-5-5 senior
+          second-semi-line-approves|1|approve|0.95|clean|v_semi||yes|0|claude-opus-5-5 senior
+          second-none-of-the-callers-blocks|1|approve|0.95|clean|real_none_of||no|0|claude-opus-5-5 senior
+          second-nothing-stops-blocks|1|approve|0.95|clean|real_nothing||no|0|claude-opus-5-5 senior
+          first-header-echo-approves||approve|0.95|header_echo|none||yes|0|claude-opus-5-5
+          first-header-echo-and-second-approve|1|approve|0.95|header_echo|v_found||yes|0|claude-opus-5-5 senior
+          none-line-second-approves|1|approve|0.95|clean|none_ok||yes|0|claude-opus-5-5 senior
+          none-line-first-and-second-approve|1|approve|0.95|first_none|none_ok||yes|0|claude-opus-5-5 senior
+          none-line-first-normal-approves||approve|0.95|first_none|none||yes|0|claude-opus-5-5
+          none-line-with-trailing-words-blocks|1|approve|0.95|clean|none_words||no|0|claude-opus-5-5 senior
+          none-line-then-real-blocker-blocks|1|approve|0.95|clean|none_then_real||no|0|claude-opus-5-5 senior
+          prior-fallback-text-is-reviewed|1|approve|0.95|clean|clean_ok|PRIOR=fallback-text|yes|0|claude-opus-5-5 senior
+          prior-blocked-by-a-none-line-is-reviewed|1|approve|0.95|clean|clean_ok|PRIOR=blocked-none-only|yes|0|claude-opus-5-5 senior
+          prior-blocked-by-none-lines-four-is-reviewed|1|approve|0.95|clean|clean_ok|PRIOR=blocked-none-four|yes|0|claude-opus-5-5 senior
           prior-blocked-by-none-lines-five-skips|1|approve|0.95|clean|clean_ok|PRIOR=blocked-none-five|no|0|
           prior-blocked-with-real-blocker-skips|1|approve|0.95|clean|clean_ok|PRIOR=blocked-none-and-real|no|0|
-          prior-near-approval-text-is-reviewed|1|approve|0.95|clean|clean_ok|PRIOR=near-approval|yes|0|claude-fable-5-1 senior
+          prior-near-approval-text-is-reviewed|1|approve|0.95|clean|clean_ok|PRIOR=near-approval|yes|0|claude-opus-5-5 senior
           built-by-pi-judge-is-opus||approve|0.95|clean|none|BUILT=pi|yes|0|claude-opus-5-5
           built-by-devin-and-cursor-judge-is-opus||approve|0.95|clean|none|BUILT=cursor,devin|yes|0|claude-opus-5-5
-          built-by-claude-judge-is-fable||approve|0.95|clean|none|BUILT=claude|yes|0|claude-fable-5-1
-          built-by-claude-then-cursor-judge-is-fable||approve|0.95|clean|none|BUILT=claude,cursor|yes|0|claude-fable-5-1
-          built-by-nobody-recorded-judge-is-fable||approve|0.95|clean|none||yes|0|claude-fable-5-1
-          built-record-from-a-person-is-ignored||approve|0.95|clean|none|BUILT_BY_PERSON=pi|yes|0|claude-fable-5-1
-          built-record-from-another-bot-is-ignored||approve|0.95|clean|none|BUILT_BY_OTHER_BOT=pi|yes|0|claude-fable-5-1
-          claude-built-guard-second-reviewer-stays-non-claude|1|approve|0.95|clean|clean_ok|BUILT=claude|yes|0|claude-fable-5-1 senior
+          built-by-claude-first-review-is-opus||approve|0.95|clean|none|BUILT=claude|yes|0|claude-opus-5-5
+          built-by-claude-then-cursor-first-review-is-opus||approve|0.95|clean|none|BUILT=claude,cursor|yes|0|claude-opus-5-5
+          built-by-nobody-recorded-first-review-is-opus||approve|0.95|clean|none||yes|0|claude-opus-5-5
+          built-record-from-a-person-is-ignored||approve|0.95|clean|none|BUILT_BY_PERSON=pi|yes|0|claude-opus-5-5
+          built-record-from-another-bot-is-ignored||approve|0.95|clean|none|BUILT_BY_OTHER_BOT=pi|yes|0|claude-opus-5-5
+          claude-built-guard-second-reviewer-stays-non-claude|1|approve|0.95|clean|clean_ok|BUILT=claude|yes|0|claude-opus-5-5 senior
           other-built-guard-second-reviewer-stays-non-claude|1|approve|0.95|clean|clean_ok|BUILT=pi|yes|0|claude-opus-5-5 senior
-          claude-built-jev-still-decides-and-can-block||block|0.97|blocked|none|BUILT=claude|no|0|claude-fable-5-1
-          claude-call-fails-or-seat-at-its-usage-limit-review-does-not-finish||approve|0.95|clean|none|CLAUDE_FAILS|no|1|claude-fable-5-1
+          claude-built-jev-still-decides-and-can-block||block|0.97|blocked|none|BUILT=claude|no|0|claude-opus-5-5
+          claude-call-fails-or-seat-at-its-usage-limit-review-does-not-finish||approve|0.95|clean|none|CLAUDE_FAILS|no|1|claude-opus-5-5
           CASES
           # The arm job's step: arms the exact approved head, and does nothing for a
           # stale head (a push after the approval), a draft, an armed PR or a closed one.
@@ -1870,6 +1858,9 @@ jobs:
   # what this job runs and a PR cannot loosen the list it is judged by.
   # Every failed read fails the check. Ruleset bypass actors (repository admin)
   # can still skip a required check.
+  ratchet:
+    uses: ./.github/workflows/ratchet.yml
+
   coordinator-approval:
     name: coordinator-approval
     runs-on: ubuntu-latest

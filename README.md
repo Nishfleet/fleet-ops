@@ -68,6 +68,9 @@ script, or prompt lands unseen.
   a bad one); promtool fixtures live in `config/grafana/tests/`.
   `containers/quadlet/fleet-grafana.container` mounts all four read-only, so
   the UI cannot save edits.
+- `config/claude-agents/` — the `helper` and `scout` subagent files
+  `fleet-sync.service` copies into `~/.claude/agents` (README "Subagents on
+  the Max config dir").
 - `config/user-tmpfiles.d/agent-worktrees.conf` — the `systemd-tmpfiles`
   age-out rules `fleet-sync.service` applies on every sync: an
   `agent-worktrees/` dir untouched for 3 days goes, and so do the dated files
@@ -96,8 +99,9 @@ script, or prompt lands unseen.
   the review job for a head with no verdict, sends a claim PR back to its worker, or files a `needs-orchestrator`
   issue for a PR no worker owns. One instance per repo with an agent-dispatch
   stub (fleet-ops, 0509, drive, inish-site, aiconverter-app, tinystudio-in,
-  TinyStudio.io-public, siterep-public). Off switch:
-  `systemctl --user disable --now 'fleet-pr-sweep@*.timer'`.
+  TinyStudio.io-public, siterep-public), linked and enabled by
+  `fleet-sync.service` on every deploy. Off switch: remove its step 2a and enable
+  line, then `systemctl --user disable --now 'fleet-pr-sweep@*.timer'`.
 - `systemd/fleet-gh-login-check.service`, `.path` and `.timer` — fail, and so
   page through `fleet-unit-failed@`, when the box's github.com gh login is gone,
   revoked or not `nish3451`. The path unit checks on every change to
@@ -531,6 +535,23 @@ Switch off: delete the file, add its path to `retired` in `ansible/host.yml`,
 `systemctl daemon-reload`, and restart Remote Control, only once the default
 login allows Remote Control again.
 
+### Subagents on the Max config dir (2026-10-11)
+
+Claude Code reads subagents from `$CLAUDE_CONFIG_DIR/agents`, so with the
+drop-in above every Remote Control thread got "helper not found", and the
+model-lanes gate denies every other subagent type: no thread could delegate.
+`config/claude-agents/` now ships `helper.md` and `scout.md` (until now
+hand-placed in `~/.claude/agents`). `fleet-sync.service` step 2d copies them
+there, `config/user-tmpfiles.d/claude-max-agents.conf` links
+`~/.claude-max/agents` to `~/.claude/agents` (step 5), and step 5b fails the
+sync if that path is anything but the link. Edit an agent here, by PR; a hand
+edit of the live file is overwritten on the next sync.
+`tests/test_claude_max_agents.py` runs those unit lines against a temp home.
+
+Switch off: delete the three step-2d install lines and step 5b, the tmpfiles
+file and its live copy in `~/.config/user-tmpfiles.d/`, then
+`rm ~/.claude-max/agents`. The live agent files stay as plain files.
+
 ## Agent autonomy drop-in
 
 `rootfs/etc/claude-code/managed-settings.d/50-agent-autonomy.json` is a Claude
@@ -565,7 +586,7 @@ holds both rules before merge.
 ## CI
 
 `.github/workflows/ci.yml` runs one job, `ci`, on every PR and push to main. Its
-checks are stock: semgrep `--config p/default`, the secret-expansion grep,
+checks are stock: the secret-expansion grep,
 `jq` config sanity, actionlint, zizmor, shellcheck, and systemd-analyze verify
 over `systemd/`. The stock linters are joined by repo-specific gates: a no-glue
 semgrep rule at `.semgrep/no-glue.yml`, a no long-lived personal-access-token
@@ -581,6 +602,26 @@ schema gate: `config/litellm-proxy.yaml` must validate against
 `config/litellm-proxy.schema.rejects/*.yaml` must fail the same check
 (fleet-ops#8653), so a loosened schema goes red.
 
+### Ratchet: workflow and script code only shrinks
+
+The `ratchet` job in `ci.yml` calls `.github/workflows/ratchet.yml`, the one definition of the rule. It fails a PR whose net added lines (additions minus
+deletions, `git diff --numstat` against the merge base) under `.github/workflows/`,
+`.github/actions/`, `scripts/` and `bin/` are greater than 0. A PR that adds lines must delete at least
+as many, so removing glue earns room. There are no exceptions in this repo: a new
+mechanism is a component in its own repo, behind an official extension point. The job
+self-tests on throwaway repos every run (growing fails; shrinking and an in-place edit pass).
+A web or product repo adds a workflow with one job named `ratchet` that calls
+`uses: Nishfleet/fleet-ops/.github/workflows/ratchet.yml@main` on `pull_request` and `merge_group`,
+and requires the check `ratchet / ratchet` in its ruleset. Run from `@main`, the rule is
+the base branch's, not the PR's; and a PR that edits the caller's `ratchet` job fails the check.
+Not covered, because the Free plan has no org required workflows or org rulesets (the API answers
+403, and a repository ruleset `workflows` rule is rejected): a PR can still repoint the caller's
+`uses:` at another repository (fleet-ops#9627). Pin `@main`, never a SHA: the `agent` runner group allows
+only `@main`, and a SHA pin queues forever. The check is in `ci`'s `needs` and in the `main-merge-queue`
+ruleset's required status checks as `ratchet / ratchet`. To switch it off, remove that
+context from the ruleset (Settings, Rules, `main-merge-queue`) and from `ci`'s `needs`. Deleting
+the job alone does not switch it off: a required check that never reports blocks the PR.
+
 `.github/workflows/secret-scan.yml` is the gitleaks scan (pinned binary +
 sha256, `--redact`). fleet-ops has no deploy target. All actions are pinned to exact commit
 SHAs. `agent.yml`, `ci.yml`, `deploy-box.yml`, `lighthouse.yml` and
@@ -594,7 +635,7 @@ assertions in `config/lighthouserc.json` (LCP 1500 ms, interactive 3000 ms, CLS
 0.05, script 150 KB, total 500 KB, no console errors; sizes are bytes there,
 153600 and 512000). A web repo calls it with
 `uses: Nishfleet/fleet-ops/.github/workflows/lighthouse.yml@main` and
-`with: urls:` (one page URL per line); callers cannot change the assertions.
+`with: urls:` (one page URL per line); callers cannot change the assertions. It no longer prints the LCP breakdown to the step summary (removed to offset the `ratchet` job, fleet-ops#9622); the assertions are unchanged.
 
 ## Allowlist
 
