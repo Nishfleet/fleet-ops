@@ -1858,44 +1858,8 @@ jobs:
   # what this job runs and a PR cannot loosen the list it is judged by.
   # Every failed read fails the check. Ruleset bypass actors (repository admin)
   # can still skip a required check.
-  # ratchet: workflow and script code may only shrink or stay flat. A PR's net
-  # added lines under .github/workflows/, .github/actions/, scripts/ and bin/ must be 0 or fewer.
-  # Required by name in the main-merge-queue ruleset; to switch it off, remove
-  # "ratchet" there. Deleting this job leaves the check unreported, so PRs block.
   ratchet:
-    name: ratchet
-    if: github.event_name != 'push'
-    runs-on: ubuntu-latest
-    timeout-minutes: 5
-    steps:
-      - name: Checkout
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-          fetch-depth: 0
-      - name: Self-test (growing fails; shrinking, flat and no code change pass)
-        run: |
-          set -euo pipefail
-          t=$(mktemp -d)
-          yq '.jobs.ratchet.steps[] | select(.id == "count") | .run' .github/workflows/ci.yml > "$t/count.sh"
-          git init -q "$t/r" && cd "$t/r" && mkdir -p .github/workflows bin && seq 9 | tee .github/workflows/a.yml > bin/b && echo x > README
-          git add -A && git -c user.name=t -c user.email=t@t commit -qm base
-          for c in 'seq 5 >> .github/workflows/a.yml;1' 'seq 5 >> bin/b;1' 'sed -i 1,3d .github/workflows/a.yml;0' 'sed -i 1s/1/9/ .github/workflows/a.yml;0' 'echo y >> README;0'; do
-            eval "${c%;*}" && git -c user.name=t -c user.email=t@t commit -qam t
-            rc=0; BASE=HEAD~1 HEAD=HEAD bash "$t/count.sh" >/dev/null || rc=$?
-            git reset -q --hard HEAD~1
-            [ "$rc" = "${c##*;}" ] || { echo "self-test '${c%;*}' exited $rc, want ${c##*;}"; exit 1; }
-          done
-      - name: Net added lines under .github/workflows, scripts and bin are 0 or fewer
-        id: count
-        env:
-          BASE: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha }}
-          HEAD: ${{ github.event.pull_request.head.sha || github.event.merge_group.head_sha }}
-        run: |
-          set -euo pipefail
-          net=$(git diff --numstat "$(git merge-base "$BASE" "$HEAD")" "$HEAD" -- .github/workflows .github/actions scripts bin | awk '{a+=$1; d+=$2} END {print a-d}')
-          echo "ratchet: net added lines under .github/workflows, .github/actions, scripts, bin: $net"
-          [ "$net" -le 0 ] || { echo "::error::ratchet: +$net net lines of workflow or script code. Delete as many as you add, or build the mechanism in its own repo behind an official extension point."; exit 1; }
+    uses: ./.github/workflows/ratchet.yml
 
   coordinator-approval:
     name: coordinator-approval

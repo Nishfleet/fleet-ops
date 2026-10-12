@@ -604,15 +604,22 @@ schema gate: `config/litellm-proxy.yaml` must validate against
 
 ### Ratchet: workflow and script code only shrinks
 
-The `ratchet` job in `ci.yml` fails a PR whose net added lines (additions minus
+The `ratchet` job in `ci.yml` calls `.github/workflows/ratchet.yml`, the one definition of the rule. It fails a PR whose net added lines (additions minus
 deletions, `git diff --numstat` against the merge base) under `.github/workflows/`,
 `.github/actions/`, `scripts/` and `bin/` are greater than 0. A PR that adds lines must delete at least
 as many, so removing glue earns room. There are no exceptions in this repo: a new
 mechanism is a component in its own repo, behind an official extension point. The job
-self-tests on throwaway repos every run (growing fails; shrinking, flat and no code
-change pass). `ratchet` is a required status check in the `main-merge-queue` ruleset
-and in `ci`'s `needs`. To switch it off, remove `ratchet` from the ruleset's required
-status checks (Settings, Rules, `main-merge-queue`) and from `ci`'s `needs`. Deleting
+self-tests on throwaway repos every run (growing fails; shrinking and an in-place edit pass).
+A web or product repo adds a workflow with one job named `ratchet` that calls
+`uses: Nishfleet/fleet-ops/.github/workflows/ratchet.yml@main` on `pull_request` and `merge_group`,
+and requires the check `ratchet / ratchet` in its ruleset. Run from `@main`, the rule is
+the base branch's, not the PR's; and a PR that edits the caller's `ratchet` job fails the check.
+Not covered, because the Free plan has no org required workflows or org rulesets (the API answers
+403, and a repository ruleset `workflows` rule is rejected): a PR can still repoint the caller's
+`uses:` at another repository (fleet-ops#9627). Pin `@main`, never a SHA: the `agent` runner group allows
+only `@main`, and a SHA pin queues forever. The check is in `ci`'s `needs` and in the `main-merge-queue`
+ruleset's required status checks as `ratchet / ratchet`. To switch it off, remove that
+context from the ruleset (Settings, Rules, `main-merge-queue`) and from `ci`'s `needs`. Deleting
 the job alone does not switch it off: a required check that never reports blocks the PR.
 
 `.github/workflows/secret-scan.yml` is the gitleaks scan (pinned binary +
