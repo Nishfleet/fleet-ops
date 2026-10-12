@@ -860,7 +860,7 @@ jobs:
             rm -rf "$HOME/workspaces/agent-worktrees/issue-$id"
           fi
   review:
-    if: inputs.review_pr != '' && inputs.review_sha != ''
+    if: (inputs.review_pr != '' && inputs.review_sha != '') || github.event_name == 'workflow_dispatch'
     runs-on: [self-hosted, agent]
     timeout-minutes: 20
     # The approval is a PR comment written with the job's own GITHUB_TOKEN, so
@@ -885,7 +885,19 @@ jobs:
       # Pi sends this as x-litellm-session-id and exits 1 without it (the work job sets it the same way, #9015).
       FLEET_TASK_ID: run-${{ github.run_id }}-${{ github.run_attempt }}
     steps:
+      - name: PROBE judge schema (temporary, never merged)
+        if: github.event_name == 'workflow_dispatch'
+        run: |
+          set -u
+          body='{"model":"judge","messages":[{"role":"user","content":"Pull request review: the change adds one comment line and nothing else. Give your verdict."}],"response_format":{"type":"json_schema","json_schema":{"name":"verdict","strict":true,"schema":{"type":"object","properties":{"verdict":{"type":"string","enum":["approve","request_changes"]},"reasons":{"type":"array","items":{"type":"string"}}},"required":["verdict","reasons"],"additionalProperties":false}}}}'
+          for i in 1 2 3; do
+            out=$RUNNER_TEMP/probe$i.json
+            code=$(curl -s --max-time 120 -o "$out" -w '%{http_code}' 127.0.0.1:4000/v1/chat/completions --config <(sed -n 's|^LITELLM_JEV_KEY=\(.*\)|header = "Authorization: Bearer \1"|p' "$HOME/.config/fleet-ops/seats/typesafe-jev.env") -H 'content-type: application/json' -d "$body") || code=curl-fail
+            if jq -e '.choices[0].message.content | fromjson | (.verdict | IN("approve","request_changes")) and (.reasons | type == "array" and all(type == "string"))' "$out" >/dev/null 2>&1; then ok=schema-valid; else ok=NOT-valid; fi
+            echo "probe $i: http=$code model=$(jq -r '.model // "none"' "$out" 2>/dev/null) content=$ok err=$(jq -r '(.error.message // "") | .[0:120]' "$out" 2>/dev/null)"
+          done
       - name: Review the held head
+        if: github.event_name != 'workflow_dispatch'
         id: review
         env:
           GH_TOKEN: ${{ github.token }}
