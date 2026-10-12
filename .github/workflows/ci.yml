@@ -1019,7 +1019,7 @@ jobs:
               fi ;;
             *"/comments?"*) [ -z "${APPROVE:-}" ] || echo "{\"user\":{\"login\":\"nish3451\"},\"body\":\"coordinator-approval: $SHA\",\"created_at\":\"t\",\"updated_at\":\"t\"}" ;;
             *"/pulls/7") d=false am=null; [ -z "${DRAFT:-}" ] || d=true; [ -z "${ARMED:-}" ] || am='{"merge_method":"squash"}'
-              echo "{\"state\":\"open\",\"draft\":$d,\"auto_merge\":$am,\"head\":{\"sha\":\"$SHA\"},\"labels\":[],\"changed_files\":1,\"node_id\":\"PR_n\"}" ;;
+              echo "{\"state\":\"open\",\"draft\":$d,\"auto_merge\":$am,\"head\":{\"sha\":\"$SHA\",\"repo\":{\"full_name\":\"$([ "${SAFE:-}" = fork ] && echo someone/fork || echo Nishfleet/0509)\"}},\"labels\":[],\"changed_files\":1,\"node_id\":\"PR_n\"}" ;;
             *) echo "mock gh: unexpected call: $args" >&2; exit 1 ;;
           esac
           MOCK
@@ -1041,14 +1041,13 @@ jobs:
             rc=0
             PATH="$t/bin:$PATH" bash "$t/hold.sh" > "$t/$name/out" 2>&1 || rc=$?
             got=no
-            # Held = disarmed, dequeued and labelled (the label write itself
-            # fails in label-write-fails, which must still disarm and dequeue).
+            # Held = disarmed, dequeued and labelled (label-write-fails fails the label write and must still disarm and dequeue).
             [ -f "$STATE/disarmed" ] && [ -f "$STATE/dequeued" ] && { [ -f "$STATE/labelled" ] || [ "$name" = label-write-fails ]; } && got=yes
             if [ "$held" = no ] && { [ -f "$STATE/labelled" ] || [ -f "$STATE/disarmed" ] || [ -f "$STATE/dequeued" ]; }; then got=partial; fi
             if [ "$got" != "$held" ] || [ "$rc" != "$code" ]; then
               echo "case $name: held=$got (want $held) exit=$rc (want $code)"; cat "$t/$name/out"; bad=1
             fi
-            want=no; ap=no; [ "$held" != no ] || [ -z "$safe" ] || want=yes; [ ! -f "$STATE/approved" ] || ap=yes  # a PR that is not risky gets a review on the head it classified
+            want=no; ap=no; [ "$held" != no ] || [ -z "$safe" ] || [ "$safe" = fork ] || want=yes; [ ! -f "$STATE/approved" ] || ap=yes  # a same-repo PR that is not risky gets a review on the head it classified (SAFE=fork: a fork's head repo)
             if [ "$ap" != "$want" ] || { [ "$ap" = yes ] && ! grep -q "commit_id=$SHA" "$STATE/approved"; }; then echo "case $name: review posted=$ap (want $want)"; bad=1; fi
             armout=no
             ! grep -qx "arm_sha=$SHA" "$t/$name/output" 2>/dev/null || armout=yes
@@ -1065,6 +1064,7 @@ jobs:
           label-write-fails|/labels|||yes|1
           approved-control||1||no|0
           safe-control|||1|no|0
+          safe-fork-pr|||fork|no|0
           review-approved-on-head||||no|0|approve
           review-approved-stale-sha||||yes|0|stale
           review-by-non-approver||||yes|0|non-approver

@@ -478,8 +478,8 @@ jobs:
           # An unread PR has no labels or file count to classify, so it holds.
           [ "$pr" != null ] || verdict=$(jq -c '.risky = true | .why += ["PR read failed"]' <<<"$verdict")
           echo "hold-risky: #$PR at $sha: $verdict"
-          # Not risky: nothing to review, so the review the ruleset requires is given here. commit_id makes GitHub refuse a head that moved since the read.
-          jq -e .risky <<<"$verdict" >/dev/null || { gh api -X POST "repos/$GITHUB_REPOSITORY/pulls/$PR/reviews" -f event=APPROVE -f commit_id="$sha" -f body="hold-risky: not risky, no review needed." --silent || echo "::warning::hold-risky: could not approve #$PR"; exit 0; }
+          # Not risky: the merge list says these merge on green checks (as before), so the review the ruleset now requires on every PR is given here, for a same-repo head only; a fork PR waits for a person. The API refuses a commit_id that is no longer the head (HTTP 422, checked 2026-10-12), so a push after the read gets no approval. The repo setting "Allow GitHub Actions to create and approve pull requests" is on.
+          jq -e .risky <<<"$verdict" >/dev/null || { [ "$(jq -r .head.repo.full_name <<<"$pr")" != "$GITHUB_REPOSITORY" ] || gh api -X POST "repos/$GITHUB_REPOSITORY/pulls/$PR/reviews" -f event=APPROVE -f commit_id="$sha" -f body="hold-risky: not risky, no review needed." --silent || echo "::warning::hold-risky: could not approve #$PR"; exit 0; }
           # Either approval read failing means not approved, even if the other
           # read alone would approve.
           approved=false
