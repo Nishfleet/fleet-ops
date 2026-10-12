@@ -7,7 +7,7 @@ script, or prompt lands unseen.
 ## What lives here
 
 - `systemd/` — the user units the fleet runs under `systemctl --user`:
-  services, timers, slices, two `.path` units (`fleet-litellm-proxy-config.path`,
+  services, timers, slices, three `.path` units (`fleet-litellm-proxy-config.path`, `fleet-gh-login-check.path`,
   `fleet-grafana-provisioning.path`) and one `.scope.d` drop-in (`tmux-spawn-.scope.d`).
   `fleet-grafana-github-token.timer` re-mints the one-hour GitHub App token Grafana's
   alert webhook sends (fleet-ops#9445); switch off with
@@ -98,6 +98,13 @@ script, or prompt lands unseen.
   stub (fleet-ops, 0509, drive, inish-site, aiconverter-app, tinystudio-in,
   TinyStudio.io-public, siterep-public). Off switch:
   `systemctl --user disable --now 'fleet-pr-sweep@*.timer'`.
+- `systemd/fleet-gh-login-check.service`, `.path` and `.timer` — fail, and so
+  page through `fleet-unit-failed@`, when the box's github.com gh login is gone,
+  revoked or not `nish3451`. The path unit checks on every change to
+  `~/.config/gh/hosts.yml`, the timer hourly. Wire once with `systemctl --user
+  link` of all three, then `enable --now` the `.path` and `.timer`. Switch off:
+  `systemctl --user disable --now fleet-gh-login-check.timer
+  fleet-gh-login-check.path` and delete the files.
 - `systemd/leviathan-index@.service` and `systemd/leviathan-index@.timer` —
   the Leviathan session-log search index, refreshed every 15 minutes per
   instance (`claude`, `pi`): an FTS5 index over the session JSONLs that
