@@ -1305,13 +1305,13 @@ jobs:
       - name: Compile today's edition (candidates fetched here, model jailed, result rebuilt in a clean clone)
         id: compile
         if: steps.live.outputs.done != 'true'
-        # The candidate fetch (which needs the Jev key and the GitHub search
-        # token) runs here, outside the jail, from a fresh clone of main before
-        # the model starts. The model then runs in a bwrap jail with neither
-        # secret in its environment, that hides Nish's gh login, the Cloudflare
-        # tokens, the seat files and the App key; it reads outsider text all day
-        # (fleet-ops#9274). Nothing the model leaves in its own checkout is
-        # trusted: after each attempt only its edition JSON is taken (a regular
+        # The candidate fetch (Jev key, GitHub search token) runs outside the jail before the model starts.
+        # The jail hides both, Nish's gh login, the Cloudflare tokens, the seat files, the App key and
+        # litellm-master-key.env (the model reads outsider text, fleet-ops#9274). pi instead reads a virtual
+        # key bound at that path (fleet-ops#9634): models worker-capable and senior only (the loop's two
+        # --model values; this is the step's only trap), 3h (two 40m attempts plus fetch and builds), $5
+        # for the whole run, revoked on exit. The key file in $RUNNER_TEMP holds only that virtual key.
+        # Nothing the model leaves is trusted: after each attempt only its edition JSON is taken (a regular
         # file, size-capped), a fresh clone of main is made, the edition and the
         # pristine candidate file are dropped in, and the builder and the whole
         # test suite run there. The publish step pushes from that clone, so
@@ -1321,7 +1321,9 @@ jobs:
         run: |
           key=$(sed -n 's/^TYPESAFE_API_KEY=//p' "$HOME/.config/fleet-ops/seats/typesafe-jev.env")
           [ -n "$key" ] || { echo "::error::TYPESAFE_API_KEY missing from the Jev seat file; an unranked edition is not worth 40 minutes of model time"; exit 1; }
-          echo "::add-mask::$key"
+          admin() { curl -sf --max-time 30 --config <(sed -n 's|^LITELLM_MASTER_KEY=\(.*\)|header = "Authorization: Bearer \1"|p' "$HOME/.config/fleet-ops/litellm-master-key.env") -H 'Content-Type: application/json' "$@"; }; key_alias="inish-daily-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"; router_key="$RUNNER_TEMP/router-key.env"
+          trap '[ -s "$router_key" ] && { admin -d @<(sed -n "s/^LITELLM_MASTER_KEY=\(.*\)/{\"keys\":[\"\1\"]}/p" "$router_key") http://127.0.0.1:4000/key/delete > /dev/null || echo "::warning::could not revoke $key_alias; it expires in 3h"; }' EXIT; (umask 077; admin -d "{\"models\":[\"worker-capable\",\"senior\"],\"duration\":\"3h\",\"max_budget\":5,\"key_alias\":\"$key_alias\"}" http://127.0.0.1:4000/key/generate | jq -er '"LITELLM_MASTER_KEY=" + (.key | strings)' > "$router_key") || { echo "::error::could not mint the inish-daily router key"; exit 1; }
+          echo "::add-mask::$key"; echo "::add-mask::$(cut -d= -f2- "$router_key")"
           seat_a=${CLAUDE_CONFIG_DIR:-$HOME/.config/gh}
           claude_hides() { local d out=; for d in "$HOME"/.claude-* "$HOME"/backups-claude-*; do [ "$d" = "$1" ] && continue; if [ -L "$d" ]; then continue; elif [ -d "$d" ]; then out="$out --tmpfs $d"; elif [ -f "$d" ]; then out="$out --ro-bind /dev/null $d"; fi; done; echo "$out"; }
           hide_all=$(claude_hides "")
@@ -1366,11 +1368,9 @@ jobs:
             n=$((n + 1))
             out="$RUNNER_TEMP/inish-daily-$n.out"
             rc=0
-            # One FLEET_TASK_ID per attempt: Pi sends it as the router session id (#9015).
-            # The agent- session prefix keeps the seat visible to the Gate's live() count.
-            # env -u: the model gets neither the GitHub token nor the Jev key.
+            # One FLEET_TASK_ID per attempt (router session id, #9015); the agent- prefix keeps it in the Gate's live() count.
             echo "Compile today's The Daily edition (today = $today, Asia/Kolkata)." \
-              | (cd "$src" && env -u GH_TOKEN FLEET_TASK_ID="inish-daily-${GITHUB_RUN_ID}-$n" timeout 40m $jail_base -- pi --print --no-context-files \
+              | (cd "$src" && env -u GH_TOKEN FLEET_TASK_ID="inish-daily-${GITHUB_RUN_ID}-$n" timeout 40m $jail_base --ro-bind "$router_key" "$HOME/.config/fleet-ops/litellm-master-key.env" -- pi --print --no-context-files \
                   --append-system-prompt "$HOME/workspaces/tooling/fleet-ops-deploy-clone/AGENTS.md" \
                   --append-system-prompt "$HOME/AGENTS.md" \
                   --append-system-prompt "$HOME/workspaces/tooling/fleet-ops-deploy-clone/prompts/inish-daily.md" \
