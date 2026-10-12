@@ -1,0 +1,13 @@
+[Unit]
+Description=Check the GitHub CLI login whenever its file changes or goes away
+# See fleet-gh-login-check.service. PathChanged= watches the file and its
+# directory, so a rewrite, a delete and a restore each trigger one check.
+
+[Path]
+PathChanged=%h/.config/gh/hosts.yml
+Unit=fleet-gh-login-check.service
+TriggerLimitIntervalSec=60s
+TriggerLimitBurst=3
+
+[Install]
+WantedBy=default.target
