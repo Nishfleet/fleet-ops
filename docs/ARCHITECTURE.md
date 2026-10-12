@@ -138,7 +138,9 @@ The rules still in force:
   holds the approver's identity, the head binding and, from the base commit's CLASSIFY and path list, the risk (a risky PR needs more than hold-risky's own safe-head approval); it reads no comment or status.
   It runs on merge_group because a review written with GITHUB_TOKEN fires no
   `pull_request_review`, so a PR-level check over review state would need a poller.
-  Nothing disarms, dequeues, re-arms or relays. agent-dispatch.yml's `hold-risky` job classifies a PR by
+  Nothing disarms, dequeues, re-arms or relays in fleet-ops. A caller repo whose
+  ruleset lacks a push-dismissed approving review or that check keeps a hold: its
+  risky PR loses its arm until the review job has approved the head. agent-dispatch.yml's `hold-risky` job classifies a PR by
   `config/risky-paths.json` (0509#7092): a risky one is labelled `needs-coordinator`
   and goes to the independent review, one that is not risky gets its approving
   review from the job itself. agent.yml's `review` job (called by

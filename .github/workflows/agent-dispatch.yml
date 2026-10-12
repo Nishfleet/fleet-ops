@@ -102,7 +102,7 @@ on:
   # PR on the last five types but only calls the API: it reads file names as
   # data and never checks out or runs the head.
   pull_request_target:
-    types: [dequeued, closed, synchronize, labeled, opened, reopened, ready_for_review]
+    types: [dequeued, closed, auto_merge_enabled, synchronize, labeled, opened, reopened, ready_for_review]
   workflow_run:
     workflows: [CI]
     types: [completed]
@@ -300,8 +300,9 @@ jobs:
   # config/risky-paths.json on fleet-ops main, read by URL so every caller repo
   # uses the same copy; an unreadable list counts as risky. A PR that is not
   # risky gets a real GitHub approving review on its head from this job. A
-  # risky one gets the label and goes to the review job below. This job never
-  # touches auto-merge: every PR is armed when it is opened, and the merge
+  # risky one gets the label and goes to the review job below. In a repo with the
+  # native gate (fleet-ops) this job never touches auto-merge: every PR is armed
+  # when it is opened, and the merge
   # waits natively for the ruleset's approving review (a push dismisses it) and
   # the required checks, coordinator-approval among them (ci.yml, in the queue).
   # ci.yml runs CLASSIFY below against every case in
@@ -309,7 +310,7 @@ jobs:
   hold-risky:
     if: >-
       github.event_name == 'pull_request_target' &&
-      contains(fromJSON('["synchronize","labeled","opened","reopened","ready_for_review"]'), github.event.action)
+      contains(fromJSON('["auto_merge_enabled","synchronize","labeled","opened","reopened","ready_for_review"]'), github.event.action)
     runs-on: ${{ fromJSON(inputs.runner || '"ubuntu-latest"') }}
     timeout-minutes: 10
     outputs:
@@ -406,6 +407,11 @@ jobs:
             echo
             echo "review-risky reviews this exact head next. Auto-merge waits for its approving review and the required checks. Nothing here needs a person."
           } >> "$GITHUB_STEP_SUMMARY"
+          # A repo whose ruleset does not make every PR wait for a push-dismissed approving review and the coordinator-approval check has no native hold (fleet-ops has both): a risky PR there loses its arm until the review job has approved this head.
+          if [ "$sha" != unknown ] && ! gh api "repos/$GITHUB_REPOSITORY/rules/branches/main" | jq -e '([.[] | select(.type == "pull_request") | .parameters | select(.required_approving_review_count > 0 and .dismiss_stale_reviews_on_push)] | length) > 0 and ([.[] | select(.type == "required_status_checks") | .parameters.required_status_checks[] | select(.context == "coordinator-approval")] | length) > 0' > /dev/null; then
+            gh api --paginate "repos/$GITHUB_REPOSITORY/pulls/$PR/reviews?per_page=100" --jq '.[]' | jq -se --arg sha "$sha" 'any(.[]; .state == "APPROVED" and .commit_id == $sha and .user.login == "github-actions[bot]" and (.body | startswith("reviewer:")))' > /dev/null ||
+              gh pr merge "$PR" -R "$GITHUB_REPOSITORY" --disable-auto || echo "::warning::hold-risky: could not disarm #$PR"
+          fi
           # A head this job approved as safe stays approved when a later event finds it risky (a label added, the list grown): withdraw that review, and fail the job if that fails. The review job's own approval has a different body.
           [ "$sha" = unknown ] || gh api --paginate "repos/$GITHUB_REPOSITORY/pulls/$PR/reviews?per_page=100" --jq '.[]' |
             jq -r --arg sha "$sha" 'select(.state == "APPROVED" and .commit_id == $sha and (.body | startswith("hold-risky:"))) | .id' |
