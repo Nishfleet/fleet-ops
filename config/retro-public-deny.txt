@@ -34,6 +34,6 @@ AKIA[0-9A-Z]{16}
 [A-Za-z0-9+/]{40,}
 ://
 \]\(
-[A-Za-z0-9-]+\.(com|net|org|io|dev|app|ai|co|in|me|so|xyz|cloud|sh|cc|gg|fun|site|online|space|tech|live|run|icu|to|us|uk|de|ru|cn|info|biz|pw|tk)([/:]|$|[[:space:]])
+[A-Za-z0-9-]+\.(com|net|org|io|dev|app|ai|co|in|me|so|xyz|cloud|sh|cc|gg|fun|site|online|space|tech|live|run|icu|to|us|uk|de|ru|cn|info|biz|pw|tk)([/:.,]|$|[[:space:]])
 (^|[[:space:](])'[^']{8,}'([[:space:]).,;:]|$)
 `[^`]{40,}`

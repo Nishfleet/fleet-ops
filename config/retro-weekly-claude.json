@@ -16,11 +16,14 @@
       "Bash(date:*)",
       "Bash(stat:*)",
       "Bash(du:*)",
-      "Bash(git show:*)",
-      "Bash(git log:*)",
-      "Bash(git ls-tree:*)"
+      "Bash(git --git-dir=*/workspaces/products/*/.git show:*)",
+      "Bash(git --git-dir=*/workspaces/products/*/.git log:*)",
+      "Bash(git --git-dir=*/workspaces/products/*/.git ls-tree:*)"
     ],
     "deny": [
+      "Read(~/.claude/.credentials.json)",
+      "Read(~/.claude.json)",
+      "Bash(*credentials*)",
       "WebFetch",
       "WebSearch",
       "Agent",

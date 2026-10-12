@@ -88,7 +88,7 @@ script, or prompt lands unseen.
   `prompts/blacksmith-flip.yml`, which `fleet-sync.service` installs, and a
   model runs `blacksmith usage` rather than a checked-in script, because
   "no glue or scripts" was Nish's condition on approval.
-- `systemd/retro-weekly.service` and `systemd/retro-weekly.timer` — the weekly
+- `systemd/retro-weekly.service`, `systemd/retro-weekly.timer`, `systemd/retro-weekly-api.socket` and `systemd/retro-weekly-api.service` — the weekly
   /retro (fleet-ops#9314, rebuilt in #9641): one Claude Code call on the
   Anthropic API reads a week of sessions inside a bwrap jail with no gh login and
   no GitHub token, and writes a private report to the vault. `prompts/retro-weekly.md`
@@ -784,8 +784,10 @@ It is built so a fooled model cannot do harm, not so it is asked not to.
   body from a template, then `config/retro-public-deny.txt` must find no session
   id, path, quote, time of day, link, email or secret shape in it. One refusal
   fails the unit and files nothing.
-- The jail has no network. The only way out is a socket to a forwarder, run
-  outside the jail, that reaches `api.anthropic.com` and nothing else.
+- The jail has no network. The only way out is `retro-weekly-api.socket`, served
+  by `systemd-socket-proxyd` to `api.anthropic.com:443` and nothing else.
+- Follow-up issues carry only the label `retro` (`needs-orchestrator` would start
+  a paid orchestrator run per issue), one open issue per class.
 - The call is Claude Code to the Anthropic API with the model pinned in the unit.
   The `ollama` seat is a cloud service (`api_base` is `https://ollama.com`), so
   it is not used. The pin check fails the unit if the call was anything else
@@ -795,6 +797,6 @@ It is built so a fooled model cannot do harm, not so it is asked not to.
   `journalctl --user -u retro-weekly -f`.
 - Switch it on: `systemctl --user enable --now retro-weekly.timer`.
 - Switch it off: `systemctl --user disable --now retro-weekly.timer`.
-- Delete it: switch it off, delete the units, `prompts/retro-weekly.md`, the two
+- Delete it: switch it off, delete the four units (service, timer, api socket and api service), `prompts/retro-weekly.md`, the two
   `config/retro-*` files and step 2e of `systemd/fleet-sync.service`, then
   `systemctl --user unlink retro-weekly.service retro-weekly.timer`.
