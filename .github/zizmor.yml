@@ -9,6 +9,8 @@ rules:
         # agent.yml@refs/heads/main, and a SHA pin strands every job
         # (0509#5231, fleet-ops#8617).
         Nishfleet/fleet-ops/.github/workflows/agent.yml: ref-pin
+        # The ratchet must run from main so a PR cannot change the rule it is judged by (#9627).
+        Nishfleet/fleet-ops/.github/workflows/ratchet.yml: ref-pin
         "*": hash-pin
   dangerous-triggers:
     ignore:
@@ -26,8 +28,3 @@ rules:
       # (ci.yml asserts it). The paused job that logs a pause reads only the
       # event name and action, through env, and has no permissions.
       - agent-dispatch.yml
-  self-repository:
-    ignore:
-      # Bootstrap: ci.yml's ratchet job calls ./ until ratchet.yml exists on main.
-      # The next PR switches it to @main and drops this entry (fleet-ops#9627).
-      - ci.yml
