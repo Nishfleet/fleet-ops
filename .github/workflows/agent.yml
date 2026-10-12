@@ -22,12 +22,12 @@ on:
         required: false
         default: ''
       arm_pr:
-        description: risky PR number whose head carries an approver's approval and is not armed (agent-dispatch arm-approved)
+        description: PR number whose head carries an approval and is not armed (agent-dispatch stuck-arm)
         type: string
         required: false
         default: ''
       arm_sha:
-        description: head sha hold-risky saw approved; the arm uses --match-head-commit with exactly this sha
+        description: head sha the sweep saw approved; the arm uses --match-head-commit with exactly this sha
         type: string
         required: false
         default: ''
@@ -127,7 +127,6 @@ jobs:
           permission-contents: write
           permission-issues: write
           permission-pull-requests: write
-          skip-token-revoke: "false"
       - name: Gate
         # The dispatch policy that the old intake prompt used to carry, now in one
         # step: skip parked or blocked work, cap runs, then claim.
@@ -412,6 +411,12 @@ jobs:
           jail="$jail_base --"
           dir="$HOME/workspaces/agent-worktrees/issue-$id"
           mkdir -p "$dir"
+          # Plain git, local edits kept (no reset, clean or checkout -B); a failed switch fails the step.
+          if [ "$MISS" != true ]; then
+            [ -e "$dir/.git" ] || git clone --reference-if-able "$HOME/workspaces/.mirrors/${REPO#*/}.git" "https://github.com/$REPO.git" "$dir"
+            git -C "$dir" fetch -v origin
+            git -C "$dir" switch "$REF"
+          fi
           # Static text, the marker line, then the target id: the id is the only
           # per-run text, so the prompt-cache prefix is shared (fleet-ops#9363).
           nl=$'\n'
@@ -504,8 +509,6 @@ jobs:
             fi
           fi
           if [ "$ENGINE" = devin ]; then
-            # --chdir puts the worker directory on the bwrap command line,
-            # which is what the Gate's lane count reads.
             mark devin
             for model in swe-2-max swe-2-high; do
               rc=0
@@ -518,7 +521,6 @@ jobs:
             # ends here; after a fallthrough, the Router wall must judge the
             # lane that actually ran.
             if [ "$rc" != 0 ] && grep -qiE 'capacity issues|free model rate limit' "$RUNNER_TEMP/try.err" && [ "$(gh api "repos/$REPO/compare/main...$REF" --jq .ahead_by)" = 0 ]; then
-              live() { pgrep -af -- "^bwrap .* -- $1 " | grep -oE 'agent-worktrees/issue-[^ ]*|sessions/agent-[^ ]*' | sort -u | wc -l; }
               if [ "$(live opencode)" -lt 2 ]; then ENGINE=opencode
               else ENGINE=pi
               fi
@@ -529,8 +531,7 @@ jobs:
             fi
           fi
           if [ "$ENGINE" = opencode ]; then
-            # --dir puts the worker directory on the bwrap command line; --auto
-            # approves what the worker needs outside it (prompts, gh, the repo).
+            # --auto approves what the worker needs outside --dir (prompts, gh, the repo).
             mark opencode
             rc=0
             $jail opencode run --dir "$dir" -m opencode/longcat-2.5-preview-free --auto "$packet" >/dev/null 2> "$RUNNER_TEMP/try.err" || rc=$?
@@ -633,7 +634,6 @@ jobs:
           permission-contents: write
           permission-issues: write
           permission-pull-requests: write
-          skip-token-revoke: "false"
       - name: Router wall
         id: wall
         # A router seat wall or a Devin capacity refusal is infra, not a bad
@@ -907,6 +907,7 @@ jobs:
         run: |
           set -euo pipefail
           say() { gh pr comment "$PR" -R "$REPO" --body "$1"; }
+          approve() { gh api -X POST "repos/$REPO/pulls/$PR/reviews" -f event=APPROVE -f commit_id="$SHA" -f body="reviewer: $SHA approved." --silent; }  # the ruleset counts this review, a push dismisses it; it goes before the verdict comment so a failed call is re-run
           # An infrastructure failure is retry-able: the comment avoids the
           # "reviewer: <sha>" phrase the already-reviewed check looks for, and
           # the job goes red so a re-run reviews the head again.
@@ -1044,7 +1045,7 @@ jobs:
           if [ "$guard" = false ]; then
             [ "$(gh api "repos/$REPO/pulls/$PR" --jq .head.sha)" = "$SHA" ] || { echo "head moved during review; the newer event reviews it"; exit 0; }
             if [ "$judge_ok" = true ]; then
-              say "$(printf 'coordinator-approval: %s\n\nreviewer: %s approved. CI still has to pass before it merges.\n\n%s' "$SHA" "$SHA" "$text")"
+              approve; say "$(printf 'coordinator-approval: %s\n\nreviewer: %s approved. CI still has to pass before it merges.\n\n%s' "$SHA" "$SHA" "$text")"
               echo "approved_sha=$SHA" >> "$GITHUB_OUTPUT"
             elif [ "$choice" = approve ]; then
               say "$(printf 'reviewer: %s not approved. The judge found no blocker line but was only %s%% sure, and approval needs 90%%. Push a new head for a fresh review.\n\n%s' "$SHA" "$pct" "$text")"
@@ -1080,20 +1081,18 @@ jobs:
           if grep -qiE "^[[:space:]*_#>${tick}]*(verdict:?[[:space:]]*)?APPROVE[[:space:]*_${tick}.]*\$" <<<"$last" && [ -z "$(blockers_of "$second_shown")" ]; then second_ok=true; fi
           [ "$(gh api "repos/$REPO/pulls/$PR" --jq .head.sha)" = "$SHA" ] || { echo "head moved during review; the newer event reviews it"; exit 0; }
           if [ "$judge_ok" = true ] && [ "$second_ok" = true ]; then
-            say "$(printf 'coordinator-approval: %s\n\nreviewer: %s approved. This change edits the merge guard or a workflow, so two independent reviews had to pass. The judge (%s, %s%% sure, no blocker line) and a second reviewer from a different family (%s, %s seat) both approved with no blockers. CI still has to pass before it merges.\n\nFirst review:\n%s\n\nSecond review:\n%s' "$SHA" "$SHA" "$JUDGE_FAMILY" "$pct" "$SECOND_FAMILY" "$SECOND_SEAT" "$text" "$second_text")"
+            approve; say "$(printf 'coordinator-approval: %s\n\nreviewer: %s approved. This change edits the merge guard or a workflow, so two independent reviews had to pass. The judge (%s, %s%% sure, no blocker line) and a second reviewer from a different family (%s, %s seat) both approved with no blockers. CI still has to pass before it merges.\n\nFirst review:\n%s\n\nSecond review:\n%s' "$SHA" "$SHA" "$JUDGE_FAMILY" "$pct" "$SECOND_FAMILY" "$SECOND_SEAT" "$text" "$second_text")"
             echo "approved_sha=$SHA" >> "$GITHUB_OUTPUT"
           else
             if [ "$judge_ok" = true ]; then j='approved'; elif [ "$choice" != approve ]; then j='blocked'; elif [ -n "$(blockers_of "$shown")" ]; then j='not approved (the review lists a blocker line)'; else j="not approved (only ${pct}% sure; approval needs 90%)"; fi
             if [ "$second_ok" = true ]; then s='approved'; else s='blocked'; fi
             say "$(printf 'reviewer: %s blocked. This change edits the merge guard or a workflow, so it needs both reviews to approve. Fix the items below and push; a new head gets a fresh review.\n\nJudge (%s): %s\n%s\n\nSecond reviewer (%s family, %s seat): %s\n%s' "$SHA" "$JUDGE_FAMILY" "$j" "$([ "$judge_ok" = true ] || printf '%s' "$text")" "$SECOND_FAMILY" "$SECOND_SEAT" "$s" "$([ "$second_ok" = true ] || printf '%s' "$second_text")")"
           fi
-  # Arms an approved head: the review job's own approval in the same run, or a
-  # person's approval that hold-risky confirmed (fleet-ops#9505). hold-risky
-  # already confirmed the approval of this exact head for the second; this job
-  # only arms, as the worker App, and re-reads the PR so a head that moved or a
-  # PR that closed since is left alone. --match-head-commit makes the arm
-  # itself refuse a moved head, and a later approval is read again by
-  # hold-risky when the arm fires auto_merge_enabled.
+  # Arms an approved head: the review job's own approval in the same run, or
+  # one the hourly sweep found (stuck-arm). This job only arms, as the worker
+  # App, and re-reads the PR so a head that moved or a PR that closed since is
+  # left alone. --match-head-commit makes the arm itself refuse a moved head,
+  # and hold-risky checks the approval again when the arm fires auto_merge_enabled.
   arm:
     needs: review
     if: ${{ !cancelled() && ((inputs.arm_pr != '' && inputs.arm_sha != '') || needs.review.outputs.approved_sha != '') }}
@@ -1148,7 +1147,7 @@ jobs:
           # orchestrator job does, but only when this same run's review job just
           # approved this exact head (REVIEWED, from the review job's output).
           # No comment or dispatch input can switch it on. Any other arm, including
-          # a person's approval relayed through arm_pr, keeps the App token. A
+          # the sweep's arm_pr, keeps the App token. A
           # failed read of the file list fails the step; it never falls to the
           # wider login.
           files=$(gh api --paginate "repos/$REPO/pulls/$PR/files" --jq '.[] | .filename, (.previous_filename // empty)')

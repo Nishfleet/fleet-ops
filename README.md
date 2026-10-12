@@ -27,9 +27,6 @@ script, or prompt lands unseen.
   every 30 days. Its README says how to apply, rotate and delete it.
 - `containers/quadlet/` — `*.container` Podman quadlet units for the
   LiteLLM proxy, its Postgres and Redis, Grafana and aiostreams.
-- `patches/` — `litellm-1.98.0-gchunk-usage-union.patch`, a source patch for
-  LiteLLM 1.98.0 that no unit in this repo applies (the proxy runs a pinned
-  container image).
 - `docs/` — `ARCHITECTURE.md`, `RUNBOOK.md`, `jev-call-sites.md`,
   `mac-rescue-2026-10-09.md` (the disposition of the Mac rescue bundles),
   `mac-scheduled-tasks.md` (the disposition of the Mac's 11 desktop
@@ -91,6 +88,25 @@ script, or prompt lands unseen.
   `prompts/blacksmith-flip.yml`, which `fleet-sync.service` installs, and a
   model runs `blacksmith usage` rather than a checked-in script, because
   "no glue or scripts" was Nish's condition on approval.
+- `systemd/amp-runner-nish.service`, `amp-runner-rajeev.service`,
+  `executor.service`, `syncthing.service`, `tigervnc.service` and the drop-in
+  `systemd/tincan-listen-claude-vps.service.d/10-nish-seat.conf` — stock vendor
+  binaries (Amp, Executor, Syncthing, TigerVNC) run under systemd, and the
+  second-login env line for the Tincan listener. They were hand-placed on the
+  host with no repo copy (fleet-ops#9645); they decide nothing and wrap
+  nothing. The live path under `~/.config/systemd/user` is a symlink into the
+  deploy clone, so `fleet-sync.service` pulls every edit and LINK-GUARD checks
+  the link. Install on a fresh host: `ln -s` each file from the deploy clone's
+  `systemd/` into `~/.config/systemd/user/` (the drop-in goes into
+  `tincan-listen-claude-vps.service.d/`), then `systemctl --user daemon-reload`
+  and `enable --now`. The files match what ran before (only the two Amp
+  `Description=` lines lost their account names), so adopting them restarted
+  nothing: a unit edit applies at the unit's next restart (never restart
+  `tigervnc.service` while a remote-desktop session is live). `ci.yml` runs
+  `systemd-analyze verify` on the five units; the drop-in is not a unit file,
+  so only its parent unit is verified. Switch one off with
+  `systemctl --user disable --now <unit>`; delete it by removing its file here
+  and the live link, then `systemctl --user daemon-reload`.
 - `systemd/fleet-pr-sweep@.service` and `systemd/fleet-pr-sweep@.timer` — start
   the agent-dispatch sweep in `Nishfleet/<instance>` every hour with one
   `gh workflow run`, because GitHub fired the sweep's own cron only 4 to 5
@@ -98,7 +114,7 @@ script, or prompt lands unseen.
   any PR left waiting over an hour: it arms a head a reviewer approved, asks
   the review job for a head with no verdict, sends a claim PR back to its worker, or files a `needs-orchestrator`
   issue for a PR no worker owns. One instance per repo with an agent-dispatch
-  stub (fleet-ops, 0509, drive, inish-site, aiconverter-app, tinystudio-in,
+  stub (fleet-ops, 0509, drive, aiconverter-app,
   TinyStudio.io-public, siterep-public), linked and enabled by
   `fleet-sync.service` on every deploy. Off switch: remove its step 2a and enable
   line, then `systemctl --user disable --now 'fleet-pr-sweep@*.timer'`.

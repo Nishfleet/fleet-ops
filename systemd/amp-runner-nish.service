@@ -1,0 +1,21 @@
+[Unit]
+Description=Amp runner vps-nish (Claude Code mode, second seat)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/home/nish/workspaces/tooling
+# ~/.zshrc / other shells may export CLAUDE_CODE_OAUTH_TOKEN, which overrides the config-dir login; never inherit it.
+UnsetEnvironment=CLAUDE_CODE_OAUTH_TOKEN ANTHROPIC_API_KEY ANTHROPIC_AUTH_TOKEN
+Environment=CLAUDE_CONFIG_DIR=/home/nish/.claude-nish
+Environment=PATH=/home/nish/.local/bin:/home/nish/.amp/bin:/usr/local/bin:/usr/bin:/bin
+ExecStart=/home/nish/.amp/bin/amp --no-tui --runner-id vps-nish --no-serve-cwd --discover-dirs=/home/nish/workspaces/tooling
+Restart=on-failure
+RestartSec=15
+MemoryHigh=1500M
+MemoryMax=3G
+TasksMax=512
+
+[Install]
+WantedBy=default.target

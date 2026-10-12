@@ -135,12 +135,9 @@ The rules still in force:
   any PR whose changed paths or added diff lines match `config/risky-paths.json` until its exact
   head sha is approved: an approver's unedited PR comment with the line
   `coordinator-approval: <full head sha>`, or a `coordinator-approval=success`
-  status on it (0509#7092), or a GitHub `Approve` review by nish3451 whose
-  `commit_id` is that head (one tap in the app, fleet-ops#9505; a `[bot]` review
-  never counts, a later change request revokes). That review re-arms with no
-  second step: `approval-signal.yml` (PR-head code, no permissions) uploads the
-  PR number, and the `workflow_run` it triggers runs `hold-risky` from the base
-  branch, which re-reads the review and calls `arm-approved` (agent.yml `arm`).
+  status on it (0509#7092). A person's Approve review counts toward the
+  ruleset's required review, not toward this gate, and there is no relay that
+  re-arms on it (the one-tap relay of fleet-ops#9505 is removed).
   agent.yml's `review` job (called by
   `review-risky`) is the independent approver: it reads the held head's diff
   through the API, asks a no-tools Claude call for findings (on the runner's own login:
@@ -148,7 +145,11 @@ The rules still in force:
   `builder-engine:` PR comment is still recorded, and no comment counts as
   Claude-built) and Jev for
   approve or block (p >= 0.9), and posts that approval as
-  `github-actions[bot]` (an approval comment written with GITHUB_TOKEN).
+  `github-actions[bot]` (an approval comment written with GITHUB_TOKEN) and as a
+  GitHub `Approve` review on that exact head. The `main-merge-queue` ruleset
+  requires one approving review and dismisses it on a push, so GitHub itself
+  refuses a merge on any head the reviewer did not approve; `hold-risky` gives
+  the same review to a PR that is not risky.
   "Claude never grades Claude" has one exception, approved by Nish on
   2026-10-10: the review model may be Claude (Opus 5.5 reviews Claude-built
   work), but the verdict is always Jev's, a non-Claude family, so a non-Claude

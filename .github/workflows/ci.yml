@@ -72,7 +72,7 @@ jobs:
         run: |
           rc=0
           grep -rEn --exclude-dir=.git "$SPAT" \
-            AGENTS.md README.md prompts systemd rootfs ansible config template docs patches .github credentials || rc=$?
+            AGENTS.md README.md prompts systemd rootfs ansible config template docs .github credentials || rc=$?
           test "$rc" -eq 1
         env:
           SPAT: (echo|printf|printenv|console\.(log|error|warn|info))[^|;]*(\$\{?|process\.env\.)([A-Za-z_][A-Za-z0-9_]*(TOKEN|SECRET|PASS(WORD|WD)?|CREDENTIALS?|PRIVATE|_KEY)[A-Za-z0-9_]*|SK_[A-Z][A-Z0-9_]*)
@@ -120,24 +120,15 @@ jobs:
           amtool config routes test --config.file=$cfg --verify.receivers=telegram alertname=HermesGatewayDown severity=nish
           amtool config routes test --config.file=$cfg --verify.receivers=none alertname=SystemUnitFailed severity=warning
           promtool test rules config/prometheus-tests/*.test.yml
-      - name: stub pi for systemd-analyze verify (host-only binary)
+      - name: stub host-only binaries for systemd-analyze verify
         if: always()
-        run: sudo install -D -m0755 /bin/true /home/nish/.local/bin/pi
-      - name: stub tincan for systemd-analyze verify (host-only binary)
-        if: always()
-        run: sudo install -D -m0755 /bin/true /home/nish/.local/bin/tincan
-      - name: stub litellm for systemd-analyze verify (host-only binary)
-        if: always()
-        run: sudo install -D -m0755 /bin/true /home/nish/.local/venvs/litellm/bin/litellm
-      - name: stub cursor-agent for systemd-analyze verify (host-only binary)
-        if: always()
-        run: install -D -m0755 /bin/true "$HOME/.local/bin/cursor-agent"
-      - name: stub leviathan for systemd-analyze verify (host-only binary)
-        if: always()
-        run: install -D -m0755 /bin/true "$HOME/.local/bin/leviathan"
-      - name: stub tofu for systemd-analyze verify (host-only binary)
-        if: always()
-        run: install -D -m0755 /bin/true "$HOME/.local/bin/tofu"
+        run: |
+          for b in /home/nish/.local/bin/pi /home/nish/.local/bin/tincan /home/nish/.local/bin/syncthing /home/nish/.local/venvs/litellm/bin/litellm /home/nish/.amp/bin/amp /home/nish/.nvm/versions/node/v24.21.0/bin/executor /usr/bin/tigervncserver; do # gitleaks:allow
+            sudo install -D -m0755 /bin/true "$b"
+          done
+          for b in cursor-agent leviathan tofu; do
+            install -D -m0755 /bin/true "$HOME/.local/bin/$b"
+          done
       - name: systemd-analyze verify over unit files
         # nullglob: #8474 deleted the last systemd/*.path unit, and an unmatched
         # glob reaches systemd-analyze as a literal filename -> rc 1. With
@@ -835,7 +826,7 @@ jobs:
         run: |
           set -euo pipefail
           f=.github/workflows/agent-dispatch.yml
-          gated="new rework conflicts remerge ejected list unblocked miss-review miss-review-pr miss-stalled orchestrate admit review-risky arm-approved stuck-prs stuck-review stuck-arm stuck-rework stuck-file"
+          gated="new rework conflicts remerge ejected list unblocked miss-review miss-review-pr miss-stalled orchestrate admit review-risky stuck-prs stuck-review stuck-arm stuck-rework stuck-file"
           guards="hold-risky close-claim rework-note"
           bad=0
           for j in $(yq '.jobs | keys | .[]' "$f"); do
@@ -951,9 +942,8 @@ jobs:
         # of the workflow, against every case in config/risky-paths.json, so the list
         # and the program cannot drift from what the hold job runs. A case with
         # "paths": null stands for an unreadable list, which must hold. An
-        # approval case feeds APPROVAL {sha, statuses, comments, reviews}, the shape
-        # the job builds from the head sha, its statuses, the PR's comments and
-        # its reviews.
+        # approval case feeds APPROVAL {sha, statuses, comments}, the shape
+        # the job builds from the head sha, its statuses and the PR's comments.
         if: always()
         run: |
           prog=$(yq '.jobs.hold-risky.env.CLASSIFY' .github/workflows/agent-dispatch.yml)
@@ -970,7 +960,7 @@ jobs:
           ctx=$(yq '.jobs.hold-risky.env.CONTEXT' .github/workflows/agent-dispatch.yml)
           [ -n "$approved" ] && [ "$approved" != null ] && [ "$ctx" = coordinator-approval ]
           while IFS= read -r c; do
-            got=$(jq -r --arg c "$ctx" --arg who "$(jq -r '.approvers | join(" ")' <<<"$c")" "$approved" <<<"$(jq -c '{sha, statuses, comments, reviews}' <<<"$c")")
+            got=$(jq -r --arg c "$ctx" --arg who "$(jq -r '.approvers | join(" ")' <<<"$c")" "$approved" <<<"$(jq -c '{sha, statuses, comments}' <<<"$c")")
             [ "$got" = "$(jq -r .want <<<"$c")" ] || { echo "approval case $(jq -r .id <<<"$c"): got $got"; bad=1; }
           done < <(jq -c '.approval_cases[]' config/risky-paths.json)
           test "$bad" -eq 0
@@ -1007,18 +997,9 @@ jobs:
             *"/labels"*) touch "$STATE/labelled" ;;
             *"/files?"*) if [ -n "${SAFE:-}" ]; then echo '{"f":"app/routes/home.tsx","p":null,"patch":"@@ -1 +1 @@\n+x"}'; else echo '{"f":".github/workflows/deploy-production.yml","p":null,"patch":"@@ -1 +1 @@\n+x"}'; fi ;;
             *"/statuses?"*) ;;
-            *"/reviews?"*) if [ -n "${REVIEW:-}" ]; then u=nish3451 st=APPROVED cid=$SHA
-                case $REVIEW in
-                  stale) cid=0000000000000000000000000000000000000001 ;;
-                  non-approver) u=someone-else ;;
-                  bot) u='github-actions[bot]' ;;
-                  dismissed) st=DISMISSED ;;
-                esac
-                echo "{\"user\":{\"login\":\"$u\"},\"state\":\"$st\",\"commit_id\":\"$cid\",\"submitted_at\":\"2026-10-09T02:00:00Z\"}"
-              fi ;;
+            *"-X POST"*"/reviews"*) echo "$args" > "$STATE/approved" ;;
             *"/comments?"*) [ -z "${APPROVE:-}" ] || echo "{\"user\":{\"login\":\"nish3451\"},\"body\":\"coordinator-approval: $SHA\",\"created_at\":\"t\",\"updated_at\":\"t\"}" ;;
-            *"/pulls/7") d=false am=null; [ -z "${DRAFT:-}" ] || d=true; [ -z "${ARMED:-}" ] || am='{"merge_method":"squash"}'
-              echo "{\"state\":\"open\",\"draft\":$d,\"auto_merge\":$am,\"head\":{\"sha\":\"$SHA\"},\"labels\":[],\"changed_files\":1,\"node_id\":\"PR_n\"}" ;;
+            *"/pulls/7") echo "{\"state\":\"open\",\"head\":{\"sha\":\"$SHA\",\"repo\":{\"full_name\":\"$([ "${SAFE:-}" = fork ] && echo someone/fork || echo Nishfleet/0509)\"}},\"labels\":[],\"changed_files\":1,\"node_id\":\"PR_n\"}" ;;
             *) echo "mock gh: unexpected call: $args" >&2; exit 1 ;;
           esac
           MOCK
@@ -1030,26 +1011,21 @@ jobs:
           chmod +x "$t/bin/gh" "$t/bin/curl"
           export SHA=3f9c2a1b7d4e5f60718293a4b5c6d7e8f9012345 GITHUB_REPOSITORY=Nishfleet/0509 PR=7
           bad=0
-          # case: name|FAIL regex|APPROVE (comment)|SAFE|want held (yes/no)|want exit (0/1)|review shape|rearm|draft|armed|want arm output (yes/no, default no)
-          # A review shape is a PR review by nish3451 on the head unless the shape says otherwise.
-          # rearm runs the block as approval-signal does: it never holds, and arms only an approved, unarmed, non-draft risky PR.
-          while IFS='|' read -r name fail approve safe held code review rearm draft armed arm; do
-            export STATE=$t/$name RUNNER_TEMP=$t/$name/tmp GITHUB_STEP_SUMMARY=$t/$name/summary GITHUB_OUTPUT=$t/$name/output FAIL=$fail APPROVE=$approve SAFE=$safe REVIEW=$review DRAFT=$draft ARMED=$armed REARM=false
-            [ -z "$rearm" ] || REARM=true
+          # case: name|FAIL regex|APPROVE (comment)|SAFE|want held (yes/no)|want exit (0/1)
+          while IFS='|' read -r name fail approve safe held code; do
+            export STATE=$t/$name RUNNER_TEMP=$t/$name/tmp GITHUB_STEP_SUMMARY=$t/$name/summary GITHUB_OUTPUT=$t/$name/output FAIL=$fail APPROVE=$approve SAFE=$safe
             mkdir -p "$RUNNER_TEMP"
             rc=0
             PATH="$t/bin:$PATH" bash "$t/hold.sh" > "$t/$name/out" 2>&1 || rc=$?
             got=no
-            # Held = disarmed, dequeued and labelled (the label write itself
-            # fails in label-write-fails, which must still disarm and dequeue).
+            # Held = disarmed, dequeued and labelled (label-write-fails fails the label write and must still disarm and dequeue).
             [ -f "$STATE/disarmed" ] && [ -f "$STATE/dequeued" ] && { [ -f "$STATE/labelled" ] || [ "$name" = label-write-fails ]; } && got=yes
             if [ "$held" = no ] && { [ -f "$STATE/labelled" ] || [ -f "$STATE/disarmed" ] || [ -f "$STATE/dequeued" ]; }; then got=partial; fi
             if [ "$got" != "$held" ] || [ "$rc" != "$code" ]; then
               echo "case $name: held=$got (want $held) exit=$rc (want $code)"; cat "$t/$name/out"; bad=1
             fi
-            armout=no
-            ! grep -qx "arm_sha=$SHA" "$t/$name/output" 2>/dev/null || armout=yes
-            if [ "$armout" != "${arm:-no}" ]; then echo "case $name: arm output=$armout (want ${arm:-no})"; cat "$t/$name/out"; bad=1; fi
+            want=no; ap=no; [ "$held" != no ] || [ -z "$safe" ] || [ "$safe" = fork ] || want=yes; [ ! -f "$STATE/approved" ] || ap=yes  # a same-repo PR that is not risky gets a review on the head it classified (SAFE=fork: a fork's head repo)
+            if [ "$ap" != "$want" ] || { [ "$ap" = yes ] && ! grep -q "commit_id=$SHA" "$STATE/approved"; }; then echo "case $name: review posted=$ap (want $want)"; bad=1; fi
           done <<'CASES'
           risky-unapproved||||yes|0
           pr-read-fails|pulls/7$|||yes|0
@@ -1062,21 +1038,7 @@ jobs:
           label-write-fails|/labels|||yes|1
           approved-control||1||no|0
           safe-control|||1|no|0
-          review-approved-on-head||||no|0|approve
-          review-approved-stale-sha||||yes|0|stale
-          review-by-non-approver||||yes|0|non-approver
-          review-by-actions-bot||||yes|0|bot
-          review-dismissed||||yes|0|dismissed
-          reviews-read-fails|/reviews\?|1||yes|0|approve
-          rearm-review-approved||||no|0|approve|1|||yes
-          rearm-comment-approved||1||no|0||1|||yes
-          rearm-unapproved||||no|0||1|||no
-          rearm-stale-review||||no|0|stale|1|||no
-          rearm-bot-review||||no|0|bot|1|||no
-          rearm-draft||||no|0|approve|1|1||no
-          rearm-already-armed||||no|0|approve|1||1|no
-          rearm-safe-pr|||1|no|0|approve|1|||no
-          rearm-reviews-read-fails|/reviews\?|||no|0|approve|1|||no
+          safe-fork-pr|||fork|no|0
           CASES
           test "$bad" -eq 0
       - name: coordinator-approval fails closed in the queue (fake gh)
@@ -1101,19 +1063,6 @@ jobs:
           case $args in
             *"/compare/"*) tr ';' '\n' <<<"$SUBJECTS" ;;
             *"/pulls/"*"/files?"*) n=${args#*pulls/}; n=${n%%/*}; if has "$RISKY" "$n"; then echo '{"f":".github/workflows/deploy-production.yml","p":null,"patch":"@@ -1 +1 @@\n+x"}'; else echo '{"f":"app/routes/home.tsx","p":null,"patch":"@@ -1 +1 @@\n+x"}'; fi ;;
-            *"/pulls/"*"/reviews?"*) n=${args#*pulls/}; n=${n%%/*}
-              # REVIEW picks a review shape for the PRs in REVIEWED; commit_id is the head unless the shape says stale.
-              if has "$REVIEWED" "$n"; then h=$(sha "$n"); u='{"login":"nish3451"}'; st=APPROVED; cid=$h
-                case ${REVIEW:-} in
-                  stale) cid=$(sha 999) ;;
-                  non-approver) u='{"login":"someone-else"}' ;;
-                  bot) u='{"login":"github-actions[bot]"}' ;;
-                  dismissed) st=DISMISSED ;;
-                  commented) st=COMMENTED ;;
-                  changes-requested-later) echo "{\"user\":{\"login\":\"nish3451\"},\"state\":\"APPROVED\",\"commit_id\":\"$h\",\"submitted_at\":\"2026-10-09T01:00:00Z\"}"; st=CHANGES_REQUESTED ;;
-                esac
-                echo "{\"user\":$u,\"state\":\"$st\",\"commit_id\":\"$cid\",\"submitted_at\":\"2026-10-09T02:00:00Z\"}"
-              fi ;;
             *"/pulls/"*) n=${args##*pulls/}; l='[]'; ! has "$LABELED" "$n" || l='[{"name":"needs-coordinator"}]'; echo "{\"state\":\"open\",\"head\":{\"sha\":\"$(sha "$n")\"},\"labels\":$l,\"changed_files\":1}" ;;
             *"/statuses?"*) ;;
             *"/issues/"*"/comments?"*) n=${args#*issues/}; n=${n%%/*}
@@ -1124,10 +1073,9 @@ jobs:
           chmod +x "$t/bin/gh"
           export GITHUB_REPOSITORY=Nishfleet/fleet-ops BASE_DIR=. BASE_SHA=b GROUP_SHA=g GH_TOKEN=x
           bad=0
-          # case: name|head ref PR|commit subjects (;)|risky PRs|labelled PRs|approved PRs|stale approval|FAIL regex|want exit|review shape (PRs with an approving review are the ones in "approved" only when the shape is empty; a shape applies to PR 7)
-          while IFS='|' read -r name pr subjects risky labeled approved stale fail want review; do
-            export RUNNER_TEMP=$t/$name GITHUB_STEP_SUMMARY=$t/$name/summary SUBJECTS=$subjects RISKY=$risky LABELED=$labeled APPROVED=$approved STALE=$stale FAIL=$fail REVIEW=$review REVIEWED=
-            [ -z "$review" ] || REVIEWED=7
+          # case: name|head ref PR|commit subjects (;)|risky PRs|labelled PRs|approved PRs|stale approval|FAIL regex|want exit
+          while IFS='|' read -r name pr subjects risky labeled approved stale fail want; do
+            export RUNNER_TEMP=$t/$name GITHUB_STEP_SUMMARY=$t/$name/summary SUBJECTS=$subjects RISKY=$risky LABELED=$labeled APPROVED=$approved STALE=$stale FAIL=$fail
             export HEAD_REF=refs/heads/gh-readonly-queue/main/pr-$pr-0123456789abcdef0123456789abcdef01234567
             [ "$pr" != badref ] || HEAD_REF=refs/heads/feature
             mkdir -p "$RUNNER_TEMP"
@@ -1149,15 +1097,6 @@ jobs:
           statuses-read-fails|7|Add x (#7)|7||7||/statuses\?|1
           comments-read-fails|7|Add x (#7)|7||7||/comments\?|1
           compare-read-fails|7|Add x (#7)|||||/compare/|1
-          review-approved-on-head|7|Add x (#7)|7|||||0|approve
-          review-approved-stale-sha|7|Add x (#7)|7|||||1|stale
-          review-by-non-approver|7|Add x (#7)|7|||||1|non-approver
-          review-by-actions-bot|7|Add x (#7)|7|||||1|bot
-          review-dismissed|7|Add x (#7)|7|||||1|dismissed
-          review-comment-only|7|Add x (#7)|7|||||1|commented
-          review-approve-then-changes-requested|7|Add x (#7)|7|||||1|changes-requested-later
-          review-approved-reviews-read-fails|7|Add x (#7)|7||7||/reviews\?|1|approve
-          comment-approval-without-reviews|7|Add x (#7)|7||7|||0|
           CASES
           test "$bad" -eq 0
       - name: Reviewer approves, blocks and arms without a person (fake gh)
@@ -1197,7 +1136,6 @@ jobs:
           yq '.jobs.arm.if' "$f" | grep -q 'needs.review.outputs.approved_sha' || { echo "arm job if does not read the review's approved_sha"; bad=1; }
           yq '.jobs.arm.env.SHA' "$f" | grep -q 'needs.review.outputs.approved_sha' || { echo "arm job SHA does not come from the review"; bad=1; }
           yq '.jobs.review.outputs.approved_sha' "$f" | grep -q 'steps.review.outputs.approved_sha' || { echo "review job does not export approved_sha"; bad=1; }
-          yq '.jobs.hold-risky.steps[] | select(.id == "hold") | .env.REARM' .github/workflows/agent-dispatch.yml | grep -q ready_for_review || { echo "a draft turning ready does not re-arm"; bad=1; }
           ! grep -q 'pr merge' "$t/review.sh" || { echo "the review step arms; the arm job must"; bad=1; }
           ! grep -iE 'a person approves|person approve|tap Review|ask nish' "$t/review.sh" || { echo "person-request wording in the review step"; bad=1; }
           ! grep -iE 'a person approves|person approve|tap Review|ask nish' <(yq '.jobs.hold-risky.steps[] | select(.id == "hold") | .run' .github/workflows/agent-dispatch.yml) || { echo "person-request wording in hold-risky"; bad=1; }
@@ -1206,6 +1144,7 @@ jobs:
           args="$*"
           case $args in
             "pr comment "*) while [ $# -gt 0 ]; do if [ "$1" = --body ]; then printf '%s\n----\n' "$2" >> "$STATE/comments"; break; fi; shift; done ;;
+            *"-X POST"*"pulls/7/reviews"*) echo "$args" > "$STATE/approved" ;;
             "pr merge "*) if [ -n "$GH_TOKEN" ]; then k=set; else k=unset; fi; echo "$args token=$k" >> "$STATE/merge" ;;
             *"issues/7/comments"*) q=; while [ $# -gt 0 ]; do if [ "$1" = --jq ]; then q=$2; break; fi; shift; done
               if [ -n "$q" ]; then jq -r "$q" <<<"${COMMENTS:-[]}"; else jq -c . <<<"${COMMENTS:-[]}"; fi ;;
@@ -1328,6 +1267,7 @@ jobs:
             problem=
             [ ! -s "$STATE/claude-bad" ] || problem="$problem $(tr '\n' ' ' < "$STATE/claude-bad")"
             [ "$got" = "$approved" ] || problem="approved=$got (want $approved)"
+            if [ "$approved" = yes ]; then grep -q "event=APPROVE.*commit_id=$SHA" "$STATE/approved" || problem="$problem no review on the head"; elif [ -f "$STATE/approved" ]; then problem="$problem review without approval"; fi
             [ "$rc" = "$code" ] || problem="$problem exit=$rc (want $code)"
             [ "$m" = "$models" ] || problem="$problem models='$m' (want '$models')"
             if [ "$approved" = yes ]; then [ "$n" = 1 ] && [ "$forged" = 1 ] || problem="$problem approval lines=$n/$forged (want 1/1)"
@@ -1843,14 +1783,16 @@ jobs:
         working-directory: infra/cloudflare-tokens
         run: tofu validate
 
+  ratchet:
+    uses: Nishfleet/fleet-ops/.github/workflows/ratchet.yml@main
+
   # Coordinator approval as a required status check (fleet-ops#9383).
   # hold-risky (agent-dispatch.yml) disarms a risky PR on a few PR events, so a
   # direct enqueue or merge got past it (#9371 merged with no approval). A
   # required check is the one thing the merge queue cannot skip. On merge_group
   # this job resolves the PR(s) in the queue entry, classifies each one's
   # changed files and fails when a risky PR's CURRENT head sha has no
-  # `coordinator-approval: <sha>` comment, success status or approving review
-  # (fleet-ops#9505) from an approver.
+  # `coordinator-approval: <sha>` comment or success status from an approver.
   # On pull_request and push it passes, so a PR can be enqueued and the queue
   # does the rejecting. The CLASSIFY and APPROVAL programs, APPROVERS and the
   # path list are read from the BASE commit's agent-dispatch.yml and
@@ -1858,9 +1800,6 @@ jobs:
   # what this job runs and a PR cannot loosen the list it is judged by.
   # Every failed read fails the check. Ruleset bypass actors (repository admin)
   # can still skip a required check.
-  ratchet:
-    uses: ./.github/workflows/ratchet.yml
-
   coordinator-approval:
     name: coordinator-approval
     runs-on: ubuntu-latest
@@ -1941,11 +1880,8 @@ jobs:
             gh api --paginate "repos/$GITHUB_REPOSITORY/issues/$n/comments?per_page=100" \
               --jq '.[] | {user: {login: .user.login}, body, created_at, updated_at}' > "$RUNNER_TEMP/comments.txt" ||
               { echo "::error::coordinator-approval: comments read failed for #$n"; bad=1; continue; }
-            gh api --paginate "repos/$GITHUB_REPOSITORY/pulls/$n/reviews?per_page=100" \
-              --jq '.[] | {user: {login: .user.login}, state, commit_id, submitted_at}' > "$RUNNER_TEMP/reviews.txt" ||
-              { echo "::error::coordinator-approval: reviews read failed for #$n"; bad=1; continue; }
-            approved=$(jq -n --arg sha "$sha" --slurpfile s "$RUNNER_TEMP/statuses.txt" --slurpfile m "$RUNNER_TEMP/comments.txt" --slurpfile r "$RUNNER_TEMP/reviews.txt" \
-              '{sha: $sha, statuses: $s, comments: $m, reviews: $r}' |
+            approved=$(jq -n --arg sha "$sha" --slurpfile s "$RUNNER_TEMP/statuses.txt" --slurpfile m "$RUNNER_TEMP/comments.txt" \
+              '{sha: $sha, statuses: $s, comments: $m}' |
               jq -r --arg c "$CONTEXT" --arg who "$APPROVERS" "$APPROVAL") || approved=false
             if [ "$approved" = true ]; then
               echo "coordinator-approval: #$n is risky and $sha carries an approver's $CONTEXT"
