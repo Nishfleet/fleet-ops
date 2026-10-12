@@ -1,0 +1,41 @@
+# Required check `coordinator-approval` (ruleset main-merge-queue). Success when the
+# PR's current head has an APPROVED review from an approver and the approver has not
+# since requested changes on it. The ruleset dismisses stale reviews on push, so a new
+# head starts unapproved. Auto-merge, armed when the PR is opened, waits for this check
+# like any other. Approvers: the review job's identity (agent.yml, GITHUB_TOKEN) and nish3451.
+name: coordinator-approval
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+  pull_request_review:
+    types: [submitted, dismissed]
+  merge_group:
+permissions: {}
+concurrency:
+  group: coordinator-approval-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+jobs:
+  coordinator-approval:
+    name: coordinator-approval
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      pull-requests: read
+    steps:
+      # A queue entry only forms for a PR that already passed this check and the ruleset's review.
+      - if: github.event_name == 'merge_group'
+        run: echo "coordinator-approval is enforced on the pull request; the queue entry passes."
+      - if: github.event_name != 'merge_group'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR: ${{ github.event.pull_request.number }}
+          APPROVERS: nish3451 github-actions[bot]
+        run: |
+          set -euo pipefail
+          sha=$(gh api "repos/$GITHUB_REPOSITORY/pulls/$PR" --jq .head.sha)
+          gh api --paginate "repos/$GITHUB_REPOSITORY/pulls/$PR/reviews?per_page=100" --jq '.[]' |
+            jq -es --arg sha "$sha" --arg who "$APPROVERS" '
+              [.[] | select(.commit_id == $sha and (.state | IN("APPROVED", "CHANGES_REQUESTED", "DISMISSED")))]
+              | group_by(.user.login) | map(last)
+              | any(.[]; .state == "APPROVED" and (.user.login as $l | $who | split(" ") | index($l)))' ||
+            { echo "::error::coordinator-approval: no approving review from $APPROVERS on $sha"; exit 1; }
