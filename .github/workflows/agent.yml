@@ -1372,10 +1372,10 @@ jobs:
             n=$((n + 1))
             out="$RUNNER_TEMP/inish-daily-$n.out"
             rc=0
-            # FLEET_TASK_ID per attempt = router session id (#9015); the agent- prefix keeps the seat in live().
-            # env -u: no GitHub token or Jev key; only the scoped router key (#9634).
+            # env -u: no GitHub token or Jev key; only LITELLM_INISH_DAILY_KEY, the scoped router key (#9634), a prefix
+            # assignment never an `env NAME=...` argument (which sits in argv, #8403); FLEET_TASK_ID per attempt = session id (#9015).
             echo "Compile today's The Daily edition (today = $today, Asia/Kolkata)." \
-              | (cd "$src" && env -u GH_TOKEN FLEET_TASK_ID="inish-daily-${GITHUB_RUN_ID}-$n" LITELLM_INISH_DAILY_KEY="$dkey" timeout 40m $jail_base -- pi --print --no-context-files \
+              | (cd "$src" && LITELLM_INISH_DAILY_KEY="$dkey" env -u GH_TOKEN FLEET_TASK_ID="inish-daily-${GITHUB_RUN_ID}-$n" timeout 40m $jail_base -- pi --print --no-context-files \
                   --append-system-prompt "$HOME/workspaces/tooling/fleet-ops-deploy-clone/AGENTS.md" \
                   --append-system-prompt "$HOME/AGENTS.md" \
                   --append-system-prompt "$HOME/workspaces/tooling/fleet-ops-deploy-clone/prompts/inish-daily.md" \
